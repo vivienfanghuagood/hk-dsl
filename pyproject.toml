@@ -1,0 +1,39 @@
+[build-system]
+requires = ["setuptools>=64", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "hipkittens"
+version = "0.1.0"
+description = "A Python kernel IR for Radeon GPUs, generating HipKittens C++"
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "Apache-2.0" }
+dependencies = ["pybind11>=2.10"]
+
+# torch is not a dependency. hk traces without it and compiles without it --
+# only launching needs it, and on a ROCm box it is already installed by
+# something with strong opinions about which build. Declaring it here would
+# fight that.
+[project.optional-dependencies]
+test = ["pytest>=7"]
+
+[tool.setuptools]
+package-dir = { "" = "python" }
+
+[tool.setuptools.packages.find]
+where = ["python"]
+
+# The generated kernels #include these at JIT time, so the headers are data the
+# package needs at runtime, not build inputs.
+[tool.setuptools.package-data]
+hk = ["include/**/*.cuh", "include/**/*.h"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests/hk"]
+# gpu marks the tier that needs a Radeon; ir and codegen tiers run anywhere,
+# and codegen needs only hipcc. Two of the three run on a laptop.
+markers = [
+    "gpu: requires a Radeon GPU and torch",
+    "hipcc: requires a working hipcc (but no GPU)",
+]

@@ -1,0 +1,121 @@
+# hk — HipKittens as a Python kernel IR
+
+Write Radeon kernels in Python, get HipKittens C++, get a `.so`, call it from
+torch. The point is not convenience: it is that three classes of *silently
+wrong* kernel on RDNA3 stop being expressible.
+
+```python
+import hk
+from hk import bf16
+
+@hk.kernel(arch="gfx1100",
+           grid=lambda p: (hk.cdiv(p.o.cols, 64), hk.cdiv(p.o.rows, 16), 1))
+def add(a: hk.GL[bf16], b: hk.GL[bf16], o: hk.GL[bf16], *, ROWS=16, COLS=64):
+    t   = hk.rt(bf16, ROWS, COLS)
+    idx = hk.tile_coord(0, 0, hk.block_idx.y, hk.block_idx.x)
+    hk.store(o, hk.load(a, idx, t) + hk.load(b, idx, t), idx)
+
+add(a, b, out)          # traces, compiles (once), launches
+```
+
+Three entry points, in increasing order of what they need:
+
+| call | needs | does |
+|---|---|---|
+| `k.trace()` | nothing | runs the body once, returns the IR |
+| `k.source()` | nothing | the generated HipKittens C++ |
+| `k.build()` | hipcc | compiles and **gates on the resource remarks** |
+| `k(*tensors)` | a Radeon + torch | launches |
+
+`build()` needing no GPU is deliberate: the failure most likely to bite —
+generated code that compiles but spills — is caught on a laptop.
+
+## Why this exists
+
+`include/rdna3` is 9494 lines of verified C++ hitting 77.2 TFLOPs on GEMM and
+64–65 on attention. Using it meant writing C++: `kernels/rdna3/attn/fwd/attn.cpp`
+is 1237 lines plus 20 `#define` knobs, and retuning meant editing macros,
+`make clean`, rebuild, remeasure. vLLM and SGLang could not touch it.
+
+But the real argument is the three traps, each of which cost days:
+
+1. **`s_waitcnt` carries no register dependence.** The compiler will hoist a
+   WMMA above the wait that was supposed to guard it. Results are randomly
+   wrong, `ScratchSize` is 0, and nothing is reported. The emitter binds the
+   fragment with a volatile asm after every wait — you cannot forget to.
+2. **A VGPR spill is silent corruption, not slowness**, because this library
+   hand-places `s_waitcnt` and scratch traffic reorders against it.
+   `hk.build()` parses `-Rpass-analysis=kernel-resource-usage` and *refuses to
+   return* a spilling kernel.
+3. **Only row-layout 16-bit operands reach `ds_read_b128`**; column layout
+   degrades to 16 scalar `ds_read_u16`, eight times the instructions. The
+   verifier rejects it while tracing, not at benchmark time.
+
+Plus the arch facts that used to live in `RDNA.md`, kernel comments and
+notebooks, now in `target/gfx1100.py` as data shared by the verifier, the LDS
+allocator, the register model and the emitter — the VGPR granule is 24, so
+occupancy 6 needs ≤240 registers, not ≤256.
+
+An op that the library does not implement for the requested dtype is the same
+kind of late failure, so it is caught the same way: `hk.gelu` on a bf16 tile
+raises while tracing rather than producing `undefined hidden symbol` at the end
+of a 30-second compile.
+
+## Layout
+
+```
+hk/lang/      the DSL surface -- @kernel, tile types, ops
+hk/ir/        Value/Op/KernelIR, the tracing builder, passes
+hk/target/    gfx1100 / gfx1201 facts, as data
+hk/codegen/   IR -> HipKittens C++ (cpp.py) and the module boundary (scaffold.py)
+hk/runtime/   arch detection, hipcc + content-hash cache, the resource gate
+hk/ops/       kernels written in the DSL and shipped with the package
+```
+
+The generated C++ is kept readable — named tile aliases, value names shared
+with the IR dump, a provenance header — because it is the artifact you take to
+the disassembler when something spills.
+
+`codegen/scaffold.py` is separate from `codegen/cpp.py` so that the torch
+registration path can reuse the identical kernel body instead of becoming a
+second emitter that drifts.
+
+## Caching
+
+Key = hipcc version + a content hash of `include/rdna3` + the full flag list +
+the generated source. A build lands in `~/.cache/hk/<key>/` via a rename, so a
+killed compile never leaves an importable half-written `.so`. Failed builds are
+kept as `failed-<key>/` with their source and log.
+
+The thresholds (`max_vgprs`, `min_occupancy`) are *not* in the key — they are
+re-applied on every cache hit, so a kernel with a strict occupancy requirement
+is not let through by whoever happened to compile the same bytes first.
+
+First compile of a small kernel is ~5 s; an attention kernel is 20–40 s.
+
+## Tests
+
+Three tiers, by what they need. The first two run anywhere:
+
+```bash
+python3 -m pytest tests/hk/ir tests/hk/codegen -q   # no GPU, no torch
+```
+
+| tier | needs | what it catches |
+|---|---|---|
+| `tests/hk/ir/` | pure Python | tracing and emitted C++ |
+| `tests/hk/codegen/` | hipcc | compiles; spill/occupancy gates fire |
+| `tests/hk/gpu/` | Radeon + torch | numerics vs torch |
+
+A tier that cannot run is skipped with a reason, never silently passed.
+
+## Status
+
+**Phase 1 (spine) is done.** End to end: Python → IR → C++ → hipcc → `.so` →
+torch, plus 31 shipped elementwise kernels (5 binary × 3 dtypes, unary ops
+where the library has the specialisation). All of them build with
+`scratch=0 spill=0`; all of them match torch on a W7900D.
+
+Next: Phase 2 (RMSNorm / LayerNorm / softmax / RoPE / SiLU-mul — reductions and
+cross-warp LDS, no WMMA), then GEMM and attention parity. See
+`.claude/plans/` for the full plan and its gates.

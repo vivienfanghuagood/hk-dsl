@@ -1,0 +1,317 @@
+"""The async-LDS pass: what it derives, and what it refuses.
+
+Every failure in here is one that the C++ compiler accepts, that
+`hip_resources.py` passes with ScratchSize 0, and that produces a wrong answer
+only sometimes. That is the whole reason the pass exists, so the error paths
+are worth more tests than the happy one -- a pass that silently stopped
+checking would look exactly like a pass that had nothing to complain about.
+
+The shape of the derivation: LDS retires in issue order, so retiring tile T
+means waiting until only the reads issued *after* T are outstanding. `lgkmcnt`
+counts individual ds_read instructions, which for a vectorised pair is two per
+16x16 base tile -- see ops.lds_loads.
+"""
+
+import pytest
+
+import hk
+from hk import bf16, fp16, fp32
+from hk.ir.verify import VerifyError
+from hk.lang import ops
+
+
+def _trace(body, **kw):
+    k = hk.kernel(body, arch="gfx1100", warps=1,
+                  grid=lambda p: (1, 1, 1), name=body.__name__)
+    return k.trace(**kw)
+
+
+def _src(body):
+    return hk.kernel(body, arch="gfx1100", warps=1,
+                     grid=lambda p: (1, 1, 1), name=body.__name__).source()
+
+
+def _pair(rows=32, cols=64, dtype=bf16, layout="row"):
+    """(shared tile value, register tile type) that takes the vectorised path."""
+    return ops.alloc_shared(ops.st(dtype, rows, cols)), ops.rt(dtype, rows, cols, layout)
+
+
+def _waits(ir):
+    """Every lds_wait_for in the kernel body, innermost regions included."""
+    out = []
+
+    def walk(ops_):
+        for op in ops_:
+            if op.body is not None:
+                walk(op.body)
+            elif op.opcode == "lds_wait_for":
+                out.append(op)
+
+    walk(ir.body)
+    return out
+
+
+# -- the count ---------------------------------------------------------------
+
+
+def test_reads_per_tile_is_two_per_base_tile():
+    # The number the whole derivation is denominated in. 32x64 bf16 is 2x4
+    # base tiles, two ds_read_b128 apiece.
+    assert ops.lds_loads(ops.rt(bf16, 32, 64, "row"), ops.st(bf16, 32, 64)) == 16
+    assert ops.lds_loads(ops.rt(bf16, 16, 16, "row"), ops.st(bf16, 16, 16)) == 2
+    # And zero for every pair that misses the vectorised path, which is what
+    # load_shared(wait=False) keys its refusal off.
+    assert ops.lds_loads(ops.rt(bf16, 32, 64, "col"), ops.st(bf16, 32, 64)) == 0
+    assert ops.lds_loads(ops.rt(fp32, 32, 64, "row"), ops.st(fp32, 32, 64)) == 0
+    assert ops.lds_loads(ops.rt(fp16, 32, 64, "row"), ops.st(bf16, 32, 64)) == 0
+
+
+def test_n_counts_only_the_reads_issued_after_the_named_tile():
+    def two_in_flight(o: hk.GL[fp32]):
+        sa, ta = _pair(32, 64)       # 16 reads
+        sb, tb = _pair(16, 32)       # 2x2 base tiles -> 4 reads
+        a = ops.load_shared(sa, ta, wait=False)
+        b = ops.load_shared(sb, tb, wait=False)
+        ops.lds_wait_for(a)          # b is still out: lgkmcnt(4)
+        ops.lds_wait_for(b)          # nothing left: lgkmcnt(0)
+
+    n = [w.attrs["n"] for w in _waits(_trace(two_in_flight))]
+    assert n == [4, 0]
+
+
+def test_naming_both_tiles_waits_for_the_later_one():
+    def both(o: hk.GL[fp32]):
+        sa, ta = _pair(32, 64)
+        sb, tb = _pair(16, 32)
+        a = ops.load_shared(sa, ta, wait=False)
+        b = ops.load_shared(sb, tb, wait=False)
+        ops.lds_wait_for(a, b)
+
+    assert [w.attrs["n"] for w in _waits(_trace(both))] == [0]
+
+
+def test_the_count_reaches_the_generated_source():
+    def emit(o: hk.GL[fp32]):
+        sa, ta = _pair(32, 64)
+        sb, tb = _pair(16, 32)
+        a = ops.load_shared(sa, ta, wait=False)
+        b = ops.load_shared(sb, tb, wait=False)
+        ops.lds_wait_for(a)
+        ops.lds_wait_for(b)
+
+    src = _src(emit)
+    assert "kittens::load<false>(" in src
+    line = [ln.strip() for ln in src.splitlines() if "lds_wait_for" in ln]
+    assert len(line) == 2, line
+    # a retires with b's four reads still out; b then retires with none.
+    assert line[0].startswith("kittens::lds_wait_for<4>("), line
+    assert line[1].startswith("kittens::lds_wait_for<0>("), line
+
+
+# -- the two things it refuses -----------------------------------------------
+
+
+def test_reading_a_tile_whose_reads_are_in_flight():
+    def early(o: hk.GL[fp32]):
+        sa, ta = _pair(32, 64)
+        a = ops.load_shared(sa, ta, wait=False)
+        b = ops.zeros(ops.rt(bf16, 64, 64, "row"))
+        ops.mma_ABt(a, b, ops.zeros(ops.rt(fp32, 32, 64, "col")))
+
+    with pytest.raises(VerifyError, match="still in flight"):
+        _trace(early)
+
+
+def test_reading_a_tile_someone_elses_wait_retired():
+    """The one that costs days. The data has landed; the dependence has not.
+
+    `lds_wait_for(b)` waits down to lgkmcnt(0) as far as `a` is concerned, so a
+    consumer of `a` reads correct memory -- until the scheduler moves it above
+    the wait, which nothing forbids, and which it starts doing when register
+    pressure shifts somewhere else in the kernel.
+    """
+    def retired_not_bound(o: hk.GL[fp32]):
+        sa, ta = _pair(32, 64)
+        sb, tb = _pair(16, 32)
+        a = ops.load_shared(sa, ta, wait=False)
+        b = ops.load_shared(sb, tb, wait=False)
+        ops.lds_wait_for(b)          # retires a's reads too, binds only b
+        ops.copy(a, out=a)
+
+    with pytest.raises(VerifyError) as e:
+        _trace(retired_not_bound)
+    msg = str(e.value)
+    assert "did not name it" in msg and "register dependence" in msg
+    # It has to say which wait to fix, not only that one is wrong.
+    assert "Add " in msg and "to that lds_wait_for" in msg
+
+
+def test_a_synchronous_load_retires_everything_and_binds_nothing():
+    """`kittens::load<true>` ends in a bare lgkmcnt(0). Same trap, no wait op.
+
+    This is the version with no `lds_wait_for` anywhere to point at, which is
+    why it is worth its own test: the offending op is an innocuous-looking
+    second load.
+    """
+    def sync_in_the_middle(o: hk.GL[fp32]):
+        sa, ta = _pair(32, 64)
+        sb, tb = _pair(16, 32)
+        a = ops.load_shared(sa, ta, wait=False)
+        ops.load_shared(sb, tb)      # wait=True: lgkmcnt(0), binds only itself
+        ops.copy(a, out=a)
+
+    with pytest.raises(VerifyError, match="register dependence"):
+        _trace(sync_in_the_middle)
+
+
+def test_waiting_for_a_tile_that_has_nothing_outstanding():
+    def dead_wait(o: hk.GL[fp32]):
+        sa, ta = _pair(32, 64)
+        a = ops.load_shared(sa, ta)  # already retired and bound
+        ops.lds_wait_for(a)
+
+    with pytest.raises(VerifyError, match="no LDS reads outstanding"):
+        _trace(dead_wait)
+
+
+def test_waiting_too_late_says_so():
+    def too_late(o: hk.GL[fp32]):
+        sa, ta = _pair(32, 64)
+        sb, tb = _pair(16, 32)
+        a = ops.load_shared(sa, ta, wait=False)
+        b = ops.load_shared(sb, tb, wait=False)
+        ops.lds_wait_for(b)
+        ops.lds_wait_for(a)          # a was retired by the previous wait
+
+    with pytest.raises(VerifyError, match="window is already open"):
+        _trace(too_late)
+
+
+def test_overwriting_a_tile_that_is_still_being_read_into():
+    def clobber(o: hk.GL[fp32]):
+        sa, ta = _pair(32, 64)
+        sb = ops.alloc_shared(ops.st(bf16, 32, 64), "b")
+        a = ops.load_shared(sa, ta, wait=False)
+        ops.load_shared(sb, ta, out=a, wait=False)
+
+    with pytest.raises(VerifyError, match="while its previous LDS reads"):
+        _trace(clobber)
+
+
+def test_the_overwrite_is_diagnosed_as_a_write_not_a_read():
+    """`out=` puts the destination at operands[0], which the in-flight *read*
+    check would otherwise reach first.
+
+    It was an error either way -- nothing silent escaped -- but the message
+    said "name it in an lds_wait_for before using it" about a tile that is not
+    being used, which sends the reader to the wrong fix.
+    """
+    def clobber(o: hk.GL[fp32]):
+        sa, ta = _pair(32, 64)
+        sb = ops.alloc_shared(ops.st(bf16, 32, 64), "b")
+        a = ops.load_shared(sa, ta, wait=False)
+        ops.load_shared(sb, ta, out=a, wait=False)
+
+    with pytest.raises(VerifyError) as e:
+        _trace(clobber)
+    assert "load_shared writes" in str(e.value)
+    assert "before using it" not in str(e.value)
+
+
+def test_an_in_place_consumer_is_still_a_read():
+    """The exception above is for load_shared only. `mul(a, x, out=a)` reads
+    `a` through the same operand slot and must not get the write treatment."""
+    def in_place_use(o: hk.GL[fp32]):
+        sa, ta = _pair(32, 64)
+        a = ops.load_shared(sa, ta, wait=False)
+        ops.mul(a, 2.0, out=a)
+        ops.lds_wait_for(a)
+
+    with pytest.raises(VerifyError, match="still in flight"):
+        _trace(in_place_use)
+
+
+def test_a_kernel_may_not_end_with_reads_in_flight():
+    def leaked(o: hk.GL[fp32]):
+        sa, ta = _pair(32, 64)
+        ops.load_shared(sa, ta, wait=False)
+
+    with pytest.raises(VerifyError, match="ends with LDS reads still in flight"):
+        _trace(leaked)
+
+
+def test_an_unvectorizable_pair_cannot_be_issued_asynchronously():
+    """Refused at the op, not at the pass: there is nothing to keep in flight.
+
+    A col-layout or 32-bit destination goes through the elementwise fallback,
+    whose waits the compiler places itself -- so `wait=False` would be a lie
+    rather than a race.
+    """
+    def col_async(o: hk.GL[fp32]):
+        s, t = _pair(32, 64, layout="col")
+        ops.load_shared(s, t, wait=False)
+
+    with pytest.raises(TypeError, match="does not take the vectorised path"):
+        _trace(col_async)
+
+
+def test_a_wait_must_name_something():
+    with pytest.raises(TypeError, match="needs the tiles it retires"):
+        ops.lds_wait_for()
+
+
+# -- loops -------------------------------------------------------------------
+
+
+def test_the_prefetch_loop_has_one_count_for_every_iteration():
+    """The shape a GEMM K-loop actually has: wait for this slice, issue the
+    next, do the math on this one. The queue is non-empty across the back
+    edge, which is the case a single forward walk gets wrong."""
+    def prefetch(o: hk.GL[fp32]):
+        sa, ta = _pair(32, 64)
+        a = ops.load_shared(sa, ta, wait=False)
+        acc = ops.zeros(ops.rt(fp32, 32, 64, "col"))
+        b = ops.zeros(ops.rt(bf16, 64, 64, "row"))
+        for _ in hk.range(8):
+            ops.lds_wait_for(a)
+            ops.mma_ABt(a, b, acc, out=acc)
+            ops.load_shared(sa, ta, out=a, wait=False)
+        ops.lds_wait_for(a)
+
+    ir = _trace(prefetch)
+    assert [w.attrs["n"] for w in _waits(ir)] == [0, 0]
+
+
+def test_a_loop_whose_queue_depth_drifts_is_an_error():
+    """Two tiles prefetched, one recycled: the first iteration waits with the
+    other still outstanding and later ones do not. Either lgkmcnt would be
+    wrong for some iteration, so the pass reports instead of picking."""
+    def no_steady_state(o: hk.GL[fp32]):
+        sa, ta = _pair(32, 64)
+        sb, tb = _pair(16, 32)
+        a = ops.load_shared(sa, ta, wait=False)
+        b = ops.load_shared(sb, tb, wait=False)
+        for _ in hk.range(8):
+            ops.lds_wait_for(a)
+            ops.load_shared(sa, ta, out=a, wait=False)
+        ops.lds_wait_for(a, b)
+
+    with pytest.raises(VerifyError) as e:
+        _trace(no_steady_state)
+    assert "no steady state" in str(e.value)
+    assert "Peel the prologue" in str(e.value)
+
+
+def test_a_tile_read_before_the_loops_wait_is_still_caught():
+    """The check does not stop at region boundaries."""
+    def inside(o: hk.GL[fp32]):
+        sa, ta = _pair(32, 64)
+        acc = ops.zeros(ops.rt(fp32, 32, 64, "col"))
+        b = ops.zeros(ops.rt(bf16, 64, 64, "row"))
+        a = ops.load_shared(sa, ta, wait=False)
+        for _ in hk.range(8):
+            ops.mma_ABt(a, b, acc, out=acc)   # no wait anywhere
+        ops.lds_wait_for(a)
+
+    with pytest.raises(VerifyError, match="still in flight"):
+        _trace(inside)
