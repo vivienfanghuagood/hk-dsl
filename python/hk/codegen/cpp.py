@@ -456,7 +456,19 @@ class Emitter:
         # what actually makes the LDS visible to the warps on the other side.
         if op.attrs.get("drain"):
             self.w("kittens::lds_wait<0>();")
-        self.w("__syncthreads();")
+        # The builtin, not `__syncthreads()`. They differ on gfx11: HIP lowers
+        # `__syncthreads()` to the barrier *plus* a `buffer_gl0_inv`, because
+        # it promises to order global memory too, and the only way to do that
+        # across a workgroup is to drop the per-WGP vector L0. That is a real
+        # cost in a loop -- in the GEMM it is one L0 flush per K-tile, which
+        # throws away the B-tile lines the other workgroup on the WGP is about
+        # to read -- and this op does not promise it. `hk.ops.barrier` is
+        # documented as ordering execution and not memory; `lds_pipeline`
+        # separately proves the LDS side, either by finding a wait that already
+        # retired the queue or by making the author write `drain=True`. A
+        # kernel that genuinely needs cross-workgroup *global* ordering needs a
+        # fence op of its own, which would be honest about costing an L0 flush.
+        self.w("__builtin_amdgcn_s_barrier();")
 
     def _op_retype_vec(self, op: Op) -> None:
         (src,) = op.operands
@@ -583,6 +595,34 @@ class Emitter:
         args = [self.name(s) for s in src]
         args.append(f"({dst.type.dtype.cpp}){self._float_lit(op.attrs['value'])}")
         self._call(op.opcode, dst, args)
+
+    # transpose and masking
+
+    def _op_transpose(self, op: Op) -> None:
+        dst, src = self._dest(op)
+        self._call("transpose", dst, [self.name(s) for s in src])
+
+    def _op_transpose_sep(self, op: Op) -> None:
+        dst, src = self._dest(op)
+        self._call("transpose_sep", dst, [self.name(s) for s in src])
+
+    def _op_make_causal(self, op: Op) -> None:
+        self._causal("make_causal", op)
+
+    def _op_make_causal_t(self, op: Op) -> None:
+        self._causal("make_causal_t", op)
+
+    def _causal(self, fn: str, op: Op) -> None:
+        dst, src = self._dest(op)
+        args = [self.name(s) for s in src]
+        # The fill value is the *unpacked* element type, not the tile's packed
+        # one -- `base_types::packing<T>::unpacked_type` in the signature. For
+        # fp32 those coincide; for bf16 the tile's `dtype.cpp` is the packed
+        # pair and casting to it here would be a compile error naming a
+        # template. So no cast at all: the literal converts implicitly, which
+        # is what the library's own `val=0` default does.
+        args.append(self._float_lit(op.attrs["value"]))
+        self._call(fn, dst, args)
 
     # scalar arithmetic
     #

@@ -313,12 +313,25 @@ def test_draining_costs_an_lgkmcnt_zero_in_the_source():
 
     src = _src(drained)
     i = src.index("kittens::lds_wait<0>();")
-    assert src.index("__syncthreads();", i) > i
+    assert src.index("__builtin_amdgcn_s_barrier();", i) > i
     # And a plain barrier does not pay for it.
     def plain(a: hk.GL[bf16]):
         ops.barrier()
 
     assert "lds_wait<0>" not in _src(plain)
+
+
+def test_the_barrier_is_the_builtin_not_syncthreads():
+    """`__syncthreads()` orders global memory as well, and on gfx11 pays for
+    that with a `buffer_gl0_inv` -- a per-WGP vector L0 flush. In the GEMM that
+    is one flush per K-tile and it was the whole measured gap against the
+    handwritten kernel. This op only ever promised execution ordering."""
+    def plain(a: hk.GL[bf16]):
+        ops.barrier()
+
+    src = _src(plain)
+    assert "__builtin_amdgcn_s_barrier();" in src
+    assert "__syncthreads" not in src
 
 
 def test_a_wait_the_math_needed_anyway_is_enough():

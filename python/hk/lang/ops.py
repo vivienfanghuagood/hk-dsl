@@ -1214,6 +1214,107 @@ def cast(a: Value, dtype: DType, out: Optional[Value] = None) -> Value:
     return _emit("cast", [a], ty, out=out, name="cvt")
 
 
+# ---------------------------------------------------- transpose and masking
+
+
+def transpose(a: Value, *, out: Optional[Value] = None) -> Value:
+    """Transpose a register tile by *relabelling*, moving no data.
+
+    A base tile's storage depends only on its dtype; the layout tag is purely
+    how `(lane_low, pos)` is read -- `(row, col)` for row and `(col, row)` for
+    col. So reading the same registers under the opposite tag already is the
+    transpose, and pairing that with sending `tiles[i][j]` to `tiles[j][i]`
+    transposes the whole tile for the cost of the register moves alone
+    (`conversions.cuh:253`). The result has the mirrored shape *and the
+    opposite layout*, which is the part worth saying out loud: this is how a
+    `col` accumulator becomes a `row` operand for the next mma without a
+    round trip through LDS.
+
+    The library spells this `kittens::transpose`; the cost is register moves,
+    not shuffles. If you want the shape mirrored while *keeping* the layout --
+    which really does move data -- that is `transpose_sep`.
+    """
+    _expect(a, RegTileType, "transpose operand")
+    ty = RegTileType(a.type.dtype, a.type.cols, a.type.rows,
+                     "col" if a.type.layout == "row" else "row")
+    return _emit("transpose", [a], ty, out=out, name="tr")
+
+
+def transpose_sep(a: Value, *, out: Optional[Value] = None) -> Value:
+    """Transpose a register tile, keeping its layout. Moves data.
+
+    The "sep" is the library's: dst and src must occupy separate registers
+    (`conversions.cuh:228`), so this never writes in place and `out=a` is
+    refused. That is not a formality -- the per-base-tile `transpose` it calls
+    permutes within a fragment as it goes, and an aliased destination is
+    overwritten mid-permutation.
+
+    Mind the register cost before reaching for it on a whole tile. The
+    handwritten attention epilogue transposes the output accumulator one
+    fragment at a time precisely because the whole-tile form needs a second
+    `[Q_BLOCK, HEAD_DIM]` tile live alongside the first -- 128 VGPRs between
+    them, which measured 392 bytes/lane of scratch and 99 spilled VGPRs. If
+    the shape is big, `hk.compile`'s spill gate will catch it, but it is
+    cheaper to know first.
+    """
+    _expect(a, RegTileType, "transpose_sep operand")
+    if out is a:
+        raise TypeError(
+            "transpose_sep: out= is the same tile as the source. The library "
+            "requires separate registers -- its per-fragment transpose permutes "
+            "as it goes and would overwrite values it has not read yet. Pass a "
+            "different tile, or use hk.transpose, which relabels instead of "
+            "moving and has no such restriction."
+        )
+    ty = RegTileType(a.type.dtype, a.type.cols, a.type.rows, a.type.layout)
+    return _emit("transpose_sep", [a], ty, out=out, name="trs")
+
+
+#: `make_causal` keeps the lower triangle (`col <= row`); `make_causal_t`
+#: keeps the upper (`col >= row`). The `_t` one is what a kernel wants when it
+#: has computed S transposed -- which on RDNA3 is the orientation that makes
+#: the softmax reduction a column reduction and keeps the accumulator in col
+#: layout -- because transposing the tile transposes the mask with it.
+CAUSAL = {"make_causal": "col <= row", "make_causal_t": "col >= row"}
+
+
+def _causal(op: str, src: Value, value: float, out: Optional[Value]) -> Value:
+    _expect(src, RegTileType, f"{op} operand")
+    if src.type.rows != src.type.cols:
+        raise TypeError(
+            f"{op}: the tile is {src.type.rows}x{src.type.cols}, not square. "
+            f"A diagonal only means something on a square tile; on anything "
+            f"else `row == col` picks out a line whose position depends on "
+            f"which of the two extents you measured it in, and the library "
+            f"picks one without saying so. Mask the off-diagonal blocks with "
+            f"left_fill/right_fill, which take the index explicitly, and use "
+            f"this on the square block that straddles the diagonal."
+        )
+    # Unlike the triangular fills, this one has no early return: it is a
+    # map_by_coord over every element (`conversions.cuh:451`), so a fresh
+    # destination is fully written and `out=None` is safe.
+    return _emit(op, [src], src.type, out=out, name=op, value=value)
+
+
+def _make_causal(name):
+    def f(src: Value, value: float = 0.0, *, out: Optional[Value] = None) -> Value:
+        return _causal(name, src, value, out)
+
+    f.__name__ = name
+    f.__doc__ = (
+        f"Keep the elements where `{CAUSAL[name]}` and overwrite the rest with "
+        f"`value`. Pass the reduction's identity -- for a softmax that is "
+        f"-inf, not 0, because the masked entries go through exp2 before they "
+        f"are summed."
+    )
+    return f
+
+
+for _n in CAUSAL:
+    globals()[_n] = _make_causal(_n)
+del _n
+
+
 # ---------------------------------------------------------------- helpers
 
 
@@ -1239,6 +1340,7 @@ __all__ = [
     "shared_vec", "alloc_shared_vec", "load_shared_vec", "store_shared_vec",
     "barrier",
     "zeros", "full", "neg_infty", "cast", "neg",
+    "transpose", "transpose_sep", *CAUSAL,
     "zeros_vec", "full_vec", "neg_infty_vec",
     "broadcast_row", "broadcast_col", "as_vec",
     *BINARY, *UNARY, *REDUCTIONS, *BROADCASTS, *MMA,
