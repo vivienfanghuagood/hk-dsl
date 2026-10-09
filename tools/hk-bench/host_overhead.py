@@ -35,6 +35,27 @@ worth measuring per op and not once: the fix was a per-shape memo in each
 wrapper (`norm._PLAN_CACHE` and friends) and a launcher memo in
 `Kernel.__call__`, and this file is how the before and after were read.
 
+Three rounds of that, measured here on a W7900D:
+
+    variant            before   wrapper memo   dtype key   fast pybind
+    hk.ops.rmsnorm       11.3        8.5           6.6          6.6
+    Kernel(**consts)      6.9        5.7           6.2          6.2
+    specialized           6.3        5.3           5.8          5.8
+    hk.ops.quantize      13.9       11.2           9.9          9.9
+    hk.ops.silu_mul        --       12.9          12.7         12.7
+
+The third column is worth a note, because two of its entries went *up*. Keying
+the plan cache on the `torch.dtype` object instead of `str(dtype)` removed a
+str() per call from the wrapper rows and nothing from the other two -- the 0.4
+us those gained back is run-to-run spread, not a regression, and it is a useful
+scale reference: anything under half a microsecond here is noise.
+
+The fourth column is the one that did not pay. `pyutils/hk_bind.cuh` reads a
+tensor in five Python calls with interned attribute names, against pybind11's
+generic caster; it is plainly less work, and it moved nothing measurable. By
+then the remaining 6.6 us is in hk's own Python, not in the C++ boundary, and
+that is where it stops being worth chasing: the kernel under it is 345 us.
+
 So `regimes()` times the identical thunk three ways -- alone, round-robin with
 eager and compile at block 1, and round-robin with them at block 8 -- and the
 spread between the last two is the size of the artifact.

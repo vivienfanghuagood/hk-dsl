@@ -111,11 +111,37 @@ A tier that cannot run is skipped with a reason, never silently passed.
 
 ## Status
 
-**Phase 1 (spine) is done.** End to end: Python → IR → C++ → hipcc → `.so` →
-torch, plus 31 shipped elementwise kernels (5 binary × 3 dtypes, unary ops
-where the library has the specialisation). All of them build with
-`scratch=0 spill=0`; all of them match torch on a W7900D.
+**Phases 1 and 2 are done.** End to end: Python → IR → C++ → hipcc → `.so` →
+torch. 291 shipped kernels — elementwise (5 binary × 3 dtypes plus the unary ops
+the library specialises), RMSNorm / LayerNorm / softmax, RoPE, SiLU-mul, and
+per-row int8 quantize/dequantize. Every one builds with `scratch=0 spill=0`
+(a hard gate, not a check) and matches torch elementwise on a W7900D, including
+shapes that do not divide the tile.
 
-Next: Phase 2 (RMSNorm / LayerNorm / softmax / RoPE / SiLU-mul — reductions and
-cross-warp LDS, no WMMA), then GEMM and attention parity. See
-`.claude/plans/` for the full plan and its gates.
+Phase 2's gate was "do not require a win". It won anyway: against
+`torch.compile` on a W7900D, 13 of 15 cases are faster and the other two lose by
+under 1%.
+
+```
+case                        hk      compile    eager
+rmsnorm   4096x4096      0.060 ms   0.093     0.418
+rmsnorm  16384x5120      0.486      0.775     2.823
+layernorm 4096x4096      0.061      0.081     0.063
+softmax   8192x16384     0.707      0.874     0.738
+silu_mul  8192x11008     0.761      0.763     1.218
+rope     128x1024x128    0.076      0.107     0.583
+quantize 16384x5120      0.367      0.369     6.118
+```
+
+Getting there was mostly *not* kernel work. A 4096x4096 quantize is 60 µs of
+GPU; the Python wrapper around it was 13.9 µs. Three rounds — memoising the
+launcher on the kwargs as passed, caching the plan on the `torch.dtype` object
+rather than `str(dtype)`, and a pybind converter that interns the attribute
+names and reads a tensor in five Python calls (`pyutils/hk_bind.cuh`) — took the
+worst wrapper to 9.9 µs and `rmsnorm` from 11.3 to 6.6. See
+`tools/hk-bench/host_overhead.py`, which measures host time, queue depth and
+device time separately so the three cannot be confused for each other.
+
+Next: GEMM parity (Phase 3; `mma` ops and `lds_pipeline` are in, staging and
+`hk.group` are not), then attention parity (Phase 4). See `.claude/plans/` for
+the full plan and its gates.
