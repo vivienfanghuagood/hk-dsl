@@ -39,13 +39,14 @@ Three entry points, in increasing order of what they need:
   `k(*tensors)` a GPU
 """
 
-from . import codegen, ir, lang, ops, runtime, target
+from . import autotune, codegen, ir, lang, ops, runtime, target
 from .ir.nodes import DTYPES, DType, bf16, fp16, fp32, i8, i32
 from .ir.verify import VerifyError
 from .lang import *  # noqa: F401,F403
 from .lang import __all__ as _lang_all
 from .ops import attention
 from .runtime import Build, CompileError, ResourceError
+from .runtime.torch_ext import torch_op
 from .runtime.arch import detect as detect_arch
 from .target import TARGETS, get_target
 
@@ -56,7 +57,8 @@ __all__ = [
     "bf16", "fp16", "fp32", "i8", "i32", "DType", "DTYPES",
     "VerifyError", "CompileError", "ResourceError", "Build",
     "get_target", "TARGETS", "detect_arch",
-    "codegen", "ir", "lang", "ops", "runtime", "target",
+    "autotune", "codegen", "ir", "lang", "ops", "runtime", "target",
+    "torch_op",
     # The one op promoted out of `hk.ops`: it is the drop-in a
     # framework reaches for, and `hk.attention` is what the SDPA
     # patches in `kernels/rdna3/attn` already call it.

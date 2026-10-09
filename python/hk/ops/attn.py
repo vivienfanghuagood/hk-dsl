@@ -37,8 +37,9 @@ a base tile's storage does not depend on its layout tag.
 from __future__ import annotations
 
 import math
-from typing import Dict, Optional
+from typing import Any, Dict, Optional
 
+from .. import autotune as _autotune
 from .. import lang as _ops
 from ..lang import GL, const, kernel as _kernel
 from ..ir.nodes import bf16, fp32
@@ -408,16 +409,94 @@ def attn_kernel(name: str, *, head_dim: int = 128, q_block: int = 16,
                    max_vgprs=max_vgprs, min_occupancy=min_occupancy)
 
 
-#: The shapes H3 runs. More tilings go here as they are measured. Nothing here
-#: is traced or compiled at import: `attn_kernel` only builds a Kernel object.
-KERNELS = {
-    "attn_fwd_d128": attn_kernel("attn_fwd_d128", head_dim=128),
-    "attn_fwd_d64": attn_kernel("attn_fwd_d64", head_dim=64),
-    "attn_fwd_d128_causal": attn_kernel("attn_fwd_d128_causal", head_dim=128,
-                                        causal=True),
-    "attn_fwd_d64_causal": attn_kernel("attn_fwd_d64_causal", head_dim=64,
-                                       causal=True),
-}
+#: The tiling the C++'s sweep.sh picked, and the one every shape gets until a
+#: tuning record says otherwise.
+DEFAULT = dict(vt_d_chunk=16, qk_tiles=2, pv_tiles=2)
+
+#: What the tuner searches, and deliberately not more than this.
+#:
+#: `qk_tiles`/`pv_tiles` are how many 16x16 LDS reads go in flight before the
+#: wait that retires them, and `vt_d_chunk` is how wide a band of V^T is staged
+#: at a time. All three are *pure schedule*: they move instruction scheduling
+#: and register pressure and nothing else. The knobs that are not here --
+#: q_block, kv_block, warps -- change `Q_TILE`, which is part of what
+#: `attention` will accept, so tuning them would make the set of supported
+#: shapes depend on a file in a cache directory. That is a trade this kernel
+#: does not need to make: it is already at 1.000-1.008x of the handwritten C++,
+#: so the upside here is small and the downside is a shape that worked last
+#: week.
+SPACE = _autotune.space(vt_d_chunk=[16, 32], qk_tiles=[1, 2, 3, 4],
+                        pv_tiles=[1, 2, 3, 4])
+
+#: Sequence lengths the CLI tunes by default: one per order of magnitude that
+#: H3 actually runs, bucketed the same way `_tune_key` buckets them.
+TUNE_KEYS = ["n4096", "n16384", "n65536"]
+
+
+def _bench_for(head_dim: int, causal: bool):
+    """A benchmark closure factory for one (head_dim, causal) tuner.
+
+    One shape, timed with CUDA events, warmed up first. The tuner owns the
+    *order* the candidates run in -- that is the part that has to be
+    interleaved for the numbers to mean anything on this chip -- and this owns
+    nothing but the launch.
+    """
+    def for_key(key: str):
+        import torch  # noqa: PLC0415
+
+        n = int(key.lstrip("n"))
+        g = torch.Generator(device="cuda").manual_seed(0)
+        q, k, v = (torch.randn(1, 16, n, head_dim, device="cuda",
+                               dtype=torch.bfloat16, generator=g)
+                   for _ in range(3))
+        o = torch.empty_like(q)
+
+        # Fewer iterations as N grows: the kernel is O(N^2) and a 65536-long
+        # sequence is 25 s of GPU for ten of them, times 32 candidates times
+        # three rounds. The comparison is between candidates measured the same
+        # way, so what matters is that every candidate gets the same count --
+        # not that the count is the same at every length.
+        iters = 10 if n <= 16384 else 3
+
+        def run(kernel, warmup=2, iters=iters):
+            for _ in range(warmup):
+                kernel(q, k, v, o)
+            torch.cuda.synchronize()
+            beg, end = (torch.cuda.Event(enable_timing=True) for _ in range(2))
+            beg.record()
+            for _ in range(iters):
+                kernel(q, k, v, o)
+            end.record()
+            torch.cuda.synchronize()
+            return beg.elapsed_time(end) / iters
+
+        return run
+
+    return for_key
+
+
+def _tuner(head_dim: int, causal: bool) -> _autotune.Tuner:
+    base = f"attn_fwd_d{head_dim}{'_causal' if causal else ''}"
+
+    def make(**sched):
+        # The default schedule keeps the bare name. That is not cosmetic: it is
+        # the name in the compile cache, in every resource report in the README
+        # and in the four-row table this kernel is judged by, and a tuner that
+        # renamed it would invalidate all of them on the day it was added.
+        name = base if sched == DEFAULT else f"{base}_{_autotune.label_of(sched)}"
+        return attn_kernel(name, head_dim=head_dim, causal=causal, **sched)
+
+    return _autotune.Tuner(base, make, SPACE, DEFAULT,
+                           bench=_bench_for(head_dim, causal), keys=TUNE_KEYS)
+
+#: One tuner per (head_dim, causal): the two are not schedule knobs, they are
+#: different kernels, and a space that contained them would be a space most of
+#: whose points answer a question nobody asked.
+TUNERS = {(d, c): _tuner(d, c) for d in (128, 64) for c in (False, True)}
+
+#: The shapes H3 runs, at the default schedule. Nothing here is traced or
+#: compiled at import: `attn_kernel` only builds a Kernel object.
+KERNELS = {t.name: t._kernel_for(DEFAULT) for t in TUNERS.values()}
 
 #: Head dims with a shipped tiling.
 HEAD_DIMS = (64, 128)
@@ -431,7 +510,21 @@ KV_BLOCK = 32
 _SCALED: Dict[str, object] = {}
 
 
-def _kernel_for(head_dim: int, causal: bool, scale: Optional[float]):
+def _tune_key(n: int) -> str:
+    """The tuning key for a sequence length: the next power of two.
+
+    A record per exact N would be a record per request and a cache that never
+    hits. What the schedule is sensitive to is how many KV blocks one workgroup
+    walks before it retires, and that moves on a log scale.
+    """
+    b = 4096
+    while b < n:
+        b *= 2
+    return f"n{b}"
+
+
+def _kernel_for(head_dim: int, causal: bool, scale: Optional[float],
+                n: int = 4096):
     """The compiled kernel for one (head_dim, causal, scale).
 
     `scale` is a trace-time constant (see `attn_kernel`), so a non-default one
@@ -441,7 +534,7 @@ def _kernel_for(head_dim: int, causal: bool, scale: Optional[float]):
     """
     suffix = "_causal" if causal else ""
     if scale is None or scale == head_dim ** -0.5:
-        return KERNELS[f"attn_fwd_d{head_dim}{suffix}"]
+        return TUNERS[(head_dim, causal)].kernel(_tune_key(n))
     import struct  # noqa: PLC0415 -- only on the non-default path
     bits = struct.unpack("<Q", struct.pack("<d", float(scale)))[0]
     name = f"attn_fwd_d{head_dim}{suffix}_s{bits:016x}"
@@ -516,7 +609,7 @@ def attention(q, k, v, *, causal: bool = False, scale: Optional[float] = None,
     elif out.shape != q.shape or out.dtype != q.dtype or not out.is_contiguous():
         raise ValueError(f"hk.attention: out is {tuple(out.shape)}/{out.dtype}, "
                          f"expected a contiguous {tuple(q.shape)}/{q.dtype}")
-    _kernel_for(q.shape[-1], causal, scale)(q, k, v, out)
+    _kernel_for(q.shape[-1], causal, scale, q.shape[-2])(q, k, v, out)
     return out
 
 
@@ -525,5 +618,5 @@ def supported(q, k, v, causal: bool = False) -> bool:
     return not _why(q, k, v, causal)
 
 
-__all__ = ["KERNELS", "attn_kernel", "attention", "supported",
-           "HEAD_DIMS", "Q_TILE", "KV_BLOCK"]
+__all__ = ["KERNELS", "TUNERS", "SPACE", "DEFAULT", "attn_kernel",
+           "attention", "supported", "HEAD_DIMS", "Q_TILE", "KV_BLOCK"]

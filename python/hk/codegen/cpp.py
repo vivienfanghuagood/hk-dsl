@@ -190,19 +190,31 @@ class Emitter:
         self.w()
 
     def _launch(self) -> None:
+        """Two entry points, one body.
+
+        `launch_on` takes the stream because a torch custom op has to run on
+        the stream torch is on -- anything else is a silent correctness bug the
+        moment the caller captures a CUDA graph or overlaps a copy. `launch` is
+        the no-stream form pybind binds, and it delegates rather than repeating
+        the dynamic-LDS attribute call, which is the one piece of this that is
+        easy to get subtly wrong twice.
+        """
         ir = self.ir
-        self.w("static void launch(const globals &g) {")
+        self.w("static void launch_on(const globals &g, hipStream_t stream) {")
         self.indent = 1
         if ir.lds_bytes:
             self.w(
                 f"hipFuncSetAttribute((void *)&{ir.name}_kernel, "
                 f"hipFuncAttributeMaxDynamicSharedMemorySize, {ir.lds_bytes});"
             )
-            self.w(f"{ir.name}_kernel<<<g.grid(), g.block(), {ir.lds_bytes}>>>(g);")
+            self.w(f"{ir.name}_kernel<<<g.grid(), g.block(), {ir.lds_bytes}, "
+                   f"stream>>>(g);")
         else:
-            self.w(f"{ir.name}_kernel<<<g.grid(), g.block()>>>(g);")
+            self.w(f"{ir.name}_kernel<<<g.grid(), g.block(), 0, stream>>>(g);")
         self.indent = 0
         self.w("}")
+        self.w()
+        self.w("static void launch(const globals &g) { launch_on(g, 0); }")
         self.w()
 
     # -- ops ---------------------------------------------------------------

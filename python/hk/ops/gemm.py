@@ -40,6 +40,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, Tuple
 
+from .. import autotune as _autotune
 from .. import lang as _ops
 from ..lang import GL, const, kernel as _kernel
 from ..ir.nodes import bf16, fp32
@@ -275,16 +276,118 @@ def gemm_kernel(name: str, *, block_m: int = 128, block_n: int = 128,
                    max_vgprs=max_vgprs, min_occupancy=min_occupancy)
 
 
-#: The shape this file is named for. More tilings go here as they are measured;
-#: no single one wins across shapes, which is what Phase 5's autotune is for.
-KERNELS = {
-    "gemm_bf16_128x128": gemm_kernel("gemm_bf16_128x128"),
-}
+#: The tiling the C++ calls `big_config`, and the one every shape gets until a
+#: tuning record says otherwise.
+DEFAULT = dict(block_m=128, block_n=128, k_step=64, dot_slice=16, warps=8,
+               warp_rows=4, n_split=4, wgm=8, write_pos=2)
+
+#: What the tuner searches. Five axes and 48 points, chosen so that each one
+#: trades something real against something else rather than wandering:
+#:
+#:   block_m   128 is 1.5x the LDS traffic per WMMA for the registers to run a
+#:             64-deep K-tile at 7 waves; 64 is the other side of that trade.
+#:   k_step    how much global latency one barrier covers, against LDS.
+#:   n_split   how the warp tile is cut into accumulators -- register pressure
+#:             against ds_read width.
+#:   wgm       the L2 swizzle: how long a B panel stays resident.
+#:   write_pos where the staging drain lands relative to the math.
+#:
+#: dot_slice, warps and warp_rows are held at the default: moving them changes
+#: the fragment shapes rather than the schedule, and every combination that
+#: spills does so for a reason the resource gate reports more usefully than a
+#: benchmark would. Points that cannot work -- LDS over 64 KB, a split that
+#: does not divide -- stay in the space on purpose and come back as `invalid`
+#: rows, because "it does not fit" is an answer.
+SPACE = _autotune.space(
+    block_m=[64, 128], k_step=[32, 64], n_split=[2, 4],
+    wgm=[4, 8, 16], write_pos=[1, 2],
+)
+
+#: Shapes the CLI tunes by default: a square prefill GEMM, a bigger one, a
+#: decode-shaped thin-M one, and the 16384-row prefill from the Qwen3 TP2 runs.
+TUNE_KEYS = ["4096x4096x4096", "8192x8192x8192",
+             "1024x8192x4096", "16384x4096x4096"]
+
+
+def _sched_name(s: Dict[str, Any]) -> str:
+    return ("gemm_bf16_{block_m}x{block_n}x{k_step}_w{warps}r{warp_rows}"
+            "_s{n_split}_d{dot_slice}_g{wgm}_p{write_pos}").format(**s)
+
+
+def _make(**sched):
+    """One kernel per schedule. The name carries the whole schedule because the
+    symbol ends up in a resource report, and a report that says
+    `gemm_bf16_128x128` for six different tilings is a report you cannot read."""
+    return gemm_kernel(_sched_name({**DEFAULT, **sched}), **sched)
+
+
+def _bench_for(key: str):
+    """`key` is "MxNxK". Returns a closure that times one kernel on it."""
+    import torch  # noqa: PLC0415
+
+    m, n, k = (int(x) for x in key.split("x"))
+    g = torch.Generator(device="cuda").manual_seed(0)
+    a = torch.randn(m, k, device="cuda", dtype=torch.bfloat16, generator=g)
+    b = torch.randn(n, k, device="cuda", dtype=torch.bfloat16, generator=g)
+    c = torch.empty(m, n, device="cuda", dtype=torch.bfloat16)
+
+    def run(kernel, warmup=3, iters=10):
+        for _ in range(warmup):
+            kernel(a, b, c)
+        torch.cuda.synchronize()
+        beg, end = (torch.cuda.Event(enable_timing=True) for _ in range(2))
+        beg.record()
+        for _ in range(iters):
+            kernel(a, b, c)
+        end.record()
+        torch.cuda.synchronize()
+        return beg.elapsed_time(end) / iters
+
+    return run
+
+
+#: The tuner. Building it registers it, which is all `python3 -m hk.autotune`
+#: needs to find it.
+TUNER = _autotune.Tuner("gemm_bf16", _make, SPACE, DEFAULT,
+                        bench=_bench_for, keys=TUNE_KEYS)
+
+#: The default kernel, by name, for anything that wants it without going
+#: through the tuner -- cache warming, resource checks, the tests.
+KERNELS = {"gemm_bf16_128x128": TUNER._kernel_for(DEFAULT)}
 
 #: What the default tiling requires of a shape. K and N have to tile exactly --
 #: the staging path has no bounds check and predicating it would make vmcnt a
 #: runtime value. M does not, because the last block backs up instead.
-BLOCK_M, BLOCK_N, K_STEP = 128, 128, 64
+BLOCK_M, BLOCK_N, K_STEP = DEFAULT["block_m"], DEFAULT["block_n"], DEFAULT["k_step"]
+
+
+def _bucket(m: int) -> int:
+    """M rounded up to a power of two, for the tuning key.
+
+    A record per exact M would be a record per batch size, which is a cache
+    that never hits. The schedule's sensitivity to M is through how many
+    block-rows there are and whether the last one backs up, and that moves on a
+    log scale.
+    """
+    b = 1
+    while b < m:
+        b *= 2
+    return b
+
+
+def schedule_for(m: int, n: int, k: int) -> Dict[str, Any]:
+    """The tuned schedule for this shape, or the default.
+
+    The fallback is not belt and braces. A record is keyed on a bucketed M and
+    an exact N and K, so a recorded schedule has tiled *a* shape in this
+    bucket, but `k_step=64` chosen at K=4096 must not turn K=4064 -- which the
+    default tiles fine -- into an exception two months later. A schedule that
+    cannot tile the shape in front of it loses to the one that can.
+    """
+    s = TUNER.schedule_for(f"{_bucket(m)}x{n}x{k}")
+    if k % s["k_step"] or n % s["block_n"] or m < s["block_m"]:
+        return dict(DEFAULT)
+    return s
 
 
 def matmul(a, b, out=None):
@@ -302,21 +405,23 @@ def matmul(a, b, out=None):
         raise ValueError(f"matmul: want 2D, got {a.dim()}D and {b.dim()}D")
     m, k = a.shape
     n, kb = b.shape
+    sched = schedule_for(m, n, k)
+    block_m, block_n, k_step = sched["block_m"], sched["block_n"], sched["k_step"]
     if kb != k:
         raise ValueError(f"matmul: A is (M={m}, K={k}) and B is (N={n}, K={kb}); "
                          f"B is passed pre-transposed, so its second axis is K")
     if a.dtype != torch.bfloat16 or b.dtype != torch.bfloat16:
         raise TypeError(f"matmul: bf16 only for now, got {a.dtype} and {b.dtype}")
-    if k % K_STEP or n % BLOCK_N:
+    if k % k_step or n % block_n:
         raise ValueError(
-            f"matmul: K={k} must be a multiple of {K_STEP} and N={n} a multiple "
-            f"of {BLOCK_N}. Only M may be ragged -- the last block backs up to "
+            f"matmul: K={k} must be a multiple of {k_step} and N={n} a multiple "
+            f"of {block_n}. Only M may be ragged -- the last block backs up to "
             f"end at M and recomputes the overlap, which it can do because the "
             f"rows it repeats are a function of A and the full K alone."
         )
-    if m < BLOCK_M:
+    if m < block_m:
         raise ValueError(
-            f"matmul: M={m} is below one block ({BLOCK_M}). Backing up needs a "
+            f"matmul: M={m} is below one block ({block_m}). Backing up needs a "
             f"whole block of rows to back into; a short-M shape wants the thin "
             f"tiling, which is not ported yet."
         )
@@ -325,8 +430,9 @@ def matmul(a, b, out=None):
     elif out.shape != (m, n) or out.dtype != torch.bfloat16:
         raise ValueError(f"matmul: out is {tuple(out.shape)}/{out.dtype}, "
                          f"expected ({m}, {n})/bfloat16")
-    KERNELS["gemm_bf16_128x128"](a, b, out)
+    TUNER._kernel_for(sched)(a, b, out)
     return out
 
 
-__all__ = ["KERNELS", "gemm_kernel", "matmul", "BLOCK_M", "BLOCK_N", "K_STEP"]
+__all__ = ["KERNELS", "TUNER", "SPACE", "DEFAULT", "gemm_kernel", "matmul",
+           "schedule_for", "BLOCK_M", "BLOCK_N", "K_STEP"]

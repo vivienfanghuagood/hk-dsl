@@ -64,12 +64,16 @@ of a 30-second compile.
 ## Layout
 
 ```
-hk/lang/      the DSL surface -- @kernel, tile types, ops
-hk/ir/        Value/Op/KernelIR, the tracing builder, passes
-hk/target/    gfx1100 / gfx1201 facts, as data
-hk/codegen/   IR -> HipKittens C++ (cpp.py) and the module boundary (scaffold.py)
-hk/runtime/   arch detection, hipcc + content-hash cache, the resource gate
-hk/ops/       kernels written in the DSL and shipped with the package
+hk/lang/        the DSL surface -- @kernel, tile types, ops
+hk/ir/          Value/Op/KernelIR, the tracing builder, passes
+hk/target/      gfx1100 / gfx1201 facts, as data
+hk/codegen/     IR -> HipKittens C++ (cpp.py) and the module boundary (scaffold.py)
+hk/runtime/     arch detection, hipcc + content-hash cache, the resource gate,
+                and the torch.ops registration (torch_ext.py)
+hk/autotune/    schedule search: build the space, keep what passes the gate, time
+hk/tuned/       the schedules that search picked, as shipped data
+hk/ops/         kernels written in the DSL, plus the SDPA drop-in (sdpa.py)
+hk/integration/ patching a running vLLM or SGLang
 ```
 
 The generated C++ is kept readable — named tile aliases, value names shared
@@ -92,6 +96,11 @@ re-applied on every cache hit, so a kernel with a strict occupancy requirement
 is not let through by whoever happened to compile the same bytes first.
 
 First compile of a small kernel is ~5 s; an attention kernel is 20–40 s.
+
+`python3 -m hk.runtime.warm -j 32` fills the cache in parallel (19x on 24
+kernels), and `python3 -m hk.autotune --aot` does the same for every schedule a
+tuning record can reach. Those two are how the serving path ends up with no
+hipcc in it.
 
 ## Tests
 
@@ -119,8 +128,10 @@ per-row int8 quantize/dequantize. Every one builds with `scratch=0 spill=0`
 shapes that do not divide the tile.
 
 Phase 2's gate was "do not require a win". It won anyway: against
-`torch.compile` on a W7900D, 13 of 15 cases are faster and the other two lose by
-under 1%.
+`torch.compile` on a W7900D, 13 of 15 cases are faster and the other two
+(`quantize 16384x4096` and `layernorm 16384x5120`) land within 1% behind --
+which is inside the same noise band Phase 5 later had to make explicit, and so
+is reported as a tie rather than as a win for either side.
 
 ```
 case                        hk      compile    eager
@@ -233,5 +244,175 @@ exactly. Causal then went ahead on longest-processing-time-first dispatch: the
 work per workgroup is a ramp, so reversing the q index starts the long ones
 while there is still short work to fill the slots they free.
 
-Next: autotune, AOT and packaging (Phase 5), then framework integration
-(Phase 6). See `.claude/plans/` for the full plan and its gates.
+**Phase 5 is done: `hk.autotune` replaces `sweep.sh`, and most of what it
+measured turned out not to be worth acting on.** A `Tuner` is a kernel factory, a schedule
+space and a record. Searching it is two stages, and the first one never touches
+the GPU:
+
+```
+python3 -m hk.autotune --list
+python3 -m hk.autotune --tune gemm_bf16 -j 32      # search
+python3 -m hk.autotune --ship                      # promote what is real
+python3 -m hk.autotune --aot  -j 32                # prebuild it all
+```
+
+Stage 1 builds every candidate through `runtime.warm` -- 32 hipcc invocations
+at a time -- and three kinds of candidate die there for free: the factory's own
+arithmetic refuses a tiling that does not divide, the verifier refuses an
+illegal layout, and the resource gate refuses anything that spills. Of
+attention's 32 schedules, 26 never reach the GPU. Stage 2 times what is left in
+*one process*, interleaved, reversing the order on odd rounds and scoring each
+candidate by its minimum, because cross-process A/B on this chip manufactures
+13-16% differences out of nothing.
+
+The production path never searches. `Tuner.kernel(key)` is a dict probe and a
+memoised factory call, so a record costs nothing per launch; a missing, stale
+or foreign record costs performance and never correctness.
+
+`min` over a column of noisy numbers always names a winner, so a tuner that
+ships its winner unconditionally ships noise as a finding. `tune()` therefore
+also records `default_ms`, and a record changes nothing unless it beat the
+default by `MIN_GAIN` (1%). The bar is applied at `--ship` *and* on the lookup
+path, so a record measured here is held to the same standard as one that
+arrived in a wheel; `HK_AUTOTUNE_MIN_GAIN` moves it and `HK_AUTOTUNE=0` ignores
+records entirely.
+
+Out of 16 keys across five tuners, four clear it:
+
+```
+tuner                  key                 winner                  gain
+gemm_bf16              4096x4096x4096      k_step32 wgm16 pos1    +1.2%
+attn_fwd_d128          n16384              qk1 pv2                +1.1%
+attn_fwd_d128          n65536              qk1 pv2                +1.1%
+attn_fwd_d128_causal   n4096               qk1 pv1                +2.8%
+```
+
+The other twelve stay on the default, including every `gemm_bf16` shape but
+one and all six `attn_fwd_d64` keys. That is the result and not a gap: a space
+whose winners are inside the noise is a space whose default was already right.
+
+The bar had to be checked against itself before any of this was believable.
+The first attention sweep reported gains of 0.10-0.21% with four *different*
+winners across three lengths -- a coin. A second sweep on the same machine
+reported 0.26% to 2.8%. Two runs of one tuner disagreeing by 10x is not a
+result, so the three keys above were re-measured three times each at
+`--rounds 5`:
+
+```
+key                        repeat 1        repeat 2        repeat 3
+d128 n16384          qk1 pv2 +1.04%  qk1 pv2 +0.99%  qk1 pv2 +1.00%
+d128 n65536          qk1 pv2 +1.12%  qk1 pv2 +1.12%  qk1 pv2 +1.09%
+d128_causal n4096    qk2 pv1 +1.81%  qk1 pv4 +2.13%  qk1 pv2 +1.29%
+```
+
+The first two reproduce exactly -- same schedule, same gain to within 0.05 --
+so `qk1 pv2` is a real if small win at head_dim 128, and the original sweep's
+0.1% was the measurement that was wrong. The third says something different
+and more useful: at `n4096` causal the gain is reproducible but the *winner* is
+not, because the default (`qk2 pv2`) is specifically the slow one there and all
+three alternatives beat it by about the same amount. The shipped record names
+one of them, and this paragraph is what stops the next reader from concluding
+that `qk1 pv1` is special.
+
+`--aot` prebuilds every schedule production can reach -- the recorded ones *and*
+the default, since the default is what an unrecorded key gets -- into the
+content-addressed cache, which is what takes hipcc's 20-40 s off the first
+request. `pip install -e .` works from the repo root; `hk/tuned/*.json` and
+`hk/include/**` are package data, because the generated C++ `#include`s the
+headers at JIT time.
+
+**Phase 6 is done: a DSL kernel becomes a `torch.ops.hk.*` op, and the SDPA
+entry point is a drop-in.**
+
+```python
+import hk
+from hk.ops import sdpa
+
+sdpa.patch()                 # F.scaled_dot_product_attention -> hk, where it fits
+torch.ops.hk.attn_fwd_d128(q, k, v, o)
+```
+
+`hk.torch_op(kernel)` emits a third scaffold beside `pybind` and `bare`, builds
+it with plain `hipcc -shared -fPIC` and loads it with `torch.ops.load_library`
+-- not `cpp_extension.load`, which would hipify source that is already HIP. The
+schema is derived from the IR rather than from the author: `written_tensors`
+walks the ops that write memory the caller can see (`store_global`,
+`store_scalar`, `group_store`, and deliberately not `store_frag`, which writes
+a shared tile), and those tensors become `Tensor(a!)` out-parameters. A schema
+that forgets to mark an output mutable compiles, loads, runs, and is wrong only
+under `torch.compile`'s functionalization -- which is exactly the kind of bug a
+derivation removes and a convention does not.
+
+It costs nothing. Same process, interleaved, bit-identity checked before timing
+(`tools/hk-bench/sdpa_paths.py`); `aotriton` is the backend torch's own SDPA
+picks on this chip, and is the thing being replaced:
+
+```
+shape             path             ms      TF   host us   vs pybind
+1x56x4096x128     pybind        7.875    61.1       3.7       1.00x
+                  torch.ops     7.857    61.2       3.5       1.00x
+                  sdpa drop-in  7.872    61.1       9.4       1.00x
+                  aotriton     22.612    21.3      11.5       0.35x
+
+1x56x16384x128    pybind      120.204    64.0       3.8       1.00x
+                  torch.ops   120.449    63.9       3.1       1.00x
+                  sdpa drop-in 120.466   63.9       9.5       1.00x
+                  aotriton    368.805    20.9      11.7       0.33x
+
+1x32x8192x128 c   pybind        9.769    56.3       3.3       1.00x
+                  torch.ops     9.525    57.7       2.9       1.03x
+                  sdpa drop-in  9.599    57.3       9.6       1.02x
+                  aotriton     40.467    13.6      15.0       0.24x
+```
+
+Device time is identical across the three hk paths, which is what the shared
+kernel body predicts. The surprise is the host column: torch's dispatcher is
+*cheaper* than the pybind converter it replaces (3.1 us against 3.8), so the
+registration is not a tax even on a 60 us elementwise op. The drop-in's 9.4 us
+is the entry point's own work -- the support check and the output allocation --
+and is the price of being callable as `F.scaled_dot_product_attention`.
+
+Three details are load-bearing:
+
+* **The kernel launches on torch's stream.** `cpp.py` now emits
+  `launch_on(const globals&, hipStream_t)` with `launch(g)` as the default-stream
+  wrapper, and the torch impl passes `getCurrentHIPStream()`. A default-stream
+  launch breaks CUDA-graph capture and overlapped copies, silently.
+* **`TORCH_LIBRARY_FRAGMENT`, not `TORCH_LIBRARY`.** Every kernel is its own
+  `.so` and they share one namespace; the non-fragment form claims the namespace
+  exclusively, and the second `.so` to load throws.
+* **A `Meta` implementation** makes the op traceable by `torch.compile`. It is a
+  no-op, because the op allocates nothing -- which is also what a serving
+  framework wants.
+
+`hk.integration` patches a running vLLM or SGLang. It rebinds **by identity**,
+not by name: `_common.rebind` walks `sys.modules` under a prefix and replaces
+every attribute that *is* `torch.nn.functional.scaled_dot_product_attention`,
+which catches the modules that did `from torch.nn.functional import ...` at
+import time and cannot be fooled by a same-named impostor. `python3 -m
+hk.integration --warm -j 32` fills the cache for the torch half specifically:
+libtorch's include and ABI flags are part of the cache key, so a `--aot` pass
+built for pybind does not spare a server its first attention compile.
+
+Two things are deliberately *not* patched, and the reason is the same both
+times -- the patch would be slower than what it replaces:
+
+* **RMSNorm.** Every framework's RMSNorm applies a learned weight;
+  `hk.ops.rmsnorm` is unweighted, so the patch would add an elementwise pass to
+  save one.
+* **SiLU-mul.** `SiluAndMul` slices one `(..., 2d)` tensor into two
+  non-contiguous halves and `hk.ops.silu_mul` has no stride support, so the
+  patch would add two copies to save one pass.
+
+Both are written down as missing *kernel* work rather than attempted as
+patches. Neither framework is installed on the bench pod, so the patches are
+reported as unverified end to end; what is verified is the layer underneath
+them (`tests/hk/gpu/test_sdpa.py`, `tests/hk/gpu/test_torch_op.py`), including
+`torch.compile(fullgraph=True)` and CUDA-graph capture and replay. The whole
+GPU tier is 225 tests.
+
+`python3 -m hk.integration --warm -j 32` builds the six distinct attention
+registrations in 17.8 s, which is the number that matters for a server's first
+request.
+
+See `.claude/plans/` for the full plan and its gates.

@@ -27,7 +27,16 @@ where = ["python"]
 # The generated kernels #include these at JIT time, so the headers are data the
 # package needs at runtime, not build inputs.
 [tool.setuptools.package-data]
-hk = ["include/**/*.cuh", "include/**/*.h"]
+hk = [
+    "include/**/*.cuh",
+    "include/**/*.h",
+    # Tuning records: the schedules measured per arch, read by hk.autotune at
+    # launch and prebuilt by `python3 -m hk.autotune --aot`. Data, like the
+    # headers -- shipping the wheel without them means every install starts at
+    # the default tiling and JITs on its first call.
+    "tuned/*.json",
+    "tuned/README.md",
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests/hk"]
