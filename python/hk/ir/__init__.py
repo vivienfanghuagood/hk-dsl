@@ -12,6 +12,7 @@ from .nodes import (
     RegTileType,
     ScalarType,
     SharedTileType,
+    StageBufferType,
     Type,
     Value,
     bf16,
@@ -25,5 +26,6 @@ __all__ = [
     "builder", "passes", "verify", "VerifyError",
     "KernelIR", "Op", "Param", "Value", "Type",
     "DType", "DTYPES", "bf16", "fp16", "fp32", "i32",
-    "ScalarType", "RegTileType", "SharedTileType", "GlobalType", "CoordType",
+    "ScalarType", "RegTileType", "SharedTileType", "StageBufferType",
+    "GlobalType", "CoordType",
 ]

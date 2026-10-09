@@ -301,7 +301,98 @@ class Emitter:
 
     def _op_alloc_shared(self, op: Op) -> None:
         r = op.result
-        self.w(f"{self.cpp(r.type)} &{self.name(r)} = al.allocate<{self.cpp(r.type)}>();")
+        el = r.type.cpp()  # the entry type; the [N] goes on the declarator
+        if r.type.count == 1:
+            self.w(f"{el} &{self.name(r)} = al.allocate<{el}>();")
+        else:
+            self.w(
+                f"{el} (&{self.name(r)})[{r.type.count}] = "
+                f"al.allocate<{el}, {r.type.count}>();"
+            )
+
+    def _op_shared_at(self, op: Op) -> None:
+        buf, idx = op.operands
+        r = op.result
+        self.w(
+            f"{self.cpp(r.type)} &{self.name(r)} = "
+            f"{self.name(buf)}[{self.name(idx)}];"
+        )
+
+    def _op_subtile(self, op: Op) -> None:
+        src, row, col = op.operands
+        r = op.result
+        ty = r.type
+        # By value, not by reference: the shared `subtile_inplace` returns a
+        # fresh `st_subtile` (a pointer plus the parent's swizzle constants),
+        # not a reference into anything, so `auto &` will not bind to it. The
+        # copy is free and does not dangle -- st_subtile holds a raw `data`
+        # pointer into LDS, which outlives every expression here. The register
+        # overload of the same name *does* return a reference; if subtiling of
+        # register tiles ever lands, this has to branch on the operand type.
+        self.w(
+            f"auto {self.name(r)} = kittens::subtile_inplace"
+            f"<{ty.rows}, {ty.cols}>({self.name(src)}, "
+            f"{{{self.name(row)}, {self.name(col)}}});"
+        )
+
+    def _op_setprio(self, op: Op) -> None:
+        self.w(f"__builtin_amdgcn_s_setprio({op.attrs['level']});")
+
+    # staging: the two halves of a global->LDS copy, with the bytes in VGPRs
+    # in between. See hk.lang.ops.stage_buffer.
+
+    def _op_stage_buffer(self, op: Op) -> None:
+        r = op.result
+        ty = r.type
+        dim = f"[{ty.depth}]" if ty.depth > 1 else ""
+        self.w(f"float4 {self.name(r)}{dim}[{ty.calls}];")
+
+    def _stage_args(self, buf: Value, slot: int) -> "tuple[str, str, str]":
+        """(group<W>::, buffer expression, destination template)."""
+        ty = buf.type
+        g = f"kittens::group<{ty.threads // 32}>::"
+        expr = self.name(buf) + (f"[{slot}]" if ty.depth > 1 else "")
+        tmpl = self.name(buf.producer.operands[0])
+        if buf.producer.operands[0].type.count != 1:
+            tmpl += "[0]"
+        return g, expr, tmpl
+
+    def _op_stage_load(self, op: Op) -> None:
+        buf, src, idx = op.operands
+        g, expr, tmpl = self._stage_args(buf, op.attrs["slot"])
+        self.w(
+            f"{g}load_global_to_register_buffer({expr}, {buf.type.calls}, "
+            f"{self.name(src)}, {self._coord_arg(idx, buf.type.tile.cpp())}, "
+            f"{tmpl});"
+        )
+
+    def _op_stage_commit(self, op: Op) -> None:
+        dst, buf = op.operands
+        g, expr, _ = self._stage_args(buf, op.attrs["slot"])
+        wait = "true" if op.attrs.get("wait") else "false"
+        self.w(
+            f"{g}store_register_buffer_to_shared<{wait}>("
+            f"{self.name(dst)}, {expr}, {buf.type.calls});"
+        )
+
+    def _op_vm_wait(self, op: Op) -> None:
+        self.w(f"kittens::vm_wait<{op.attrs['keep']}>();")
+
+    def _op_group_load(self, op: Op) -> None:
+        dst, src, idx = op.operands
+        g = f"kittens::group<{op.attrs['threads'] // 32}>::"
+        self.w(
+            f"{g}load({self.name(dst)}, {self.name(src)}, "
+            f"{self._coord_arg(idx, dst.type.cpp())});"
+        )
+
+    def _op_group_store(self, op: Op) -> None:
+        dst, src, idx = op.operands
+        g = f"kittens::group<{op.attrs['threads'] // 32}>::"
+        self.w(
+            f"{g}store({self.name(dst)}, {self.name(src)}, "
+            f"{self._coord_arg(idx, src.type.cpp())});"
+        )
 
     def _op_load_shared(self, op: Op) -> None:
         dst, srcs = self._dest(op)
@@ -360,6 +451,11 @@ class Emitter:
         self.w(f"kittens::load({self.name(dst)}, {self._sv_entry(src, index)});")
 
     def _op_barrier(self, op: Op) -> None:
+        # The drain goes *before* the barrier and is a separate instruction:
+        # s_barrier has no memory semantics of its own, so the lgkmcnt(0) is
+        # what actually makes the LDS visible to the warps on the other side.
+        if op.attrs.get("drain"):
+            self.w("kittens::lds_wait<0>();")
         self.w("__syncthreads();")
 
     def _op_retype_vec(self, op: Op) -> None:

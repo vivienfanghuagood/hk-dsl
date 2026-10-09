@@ -4,7 +4,7 @@ Importing this module builds the IR for nothing: kernels are traced on first
 use and compiled on first launch. `import hk` therefore costs no hipcc.
 """
 
-from . import elementwise, fused, norm, quant
+from . import elementwise, fused, gemm, norm, quant
 from .elementwise import (
     abs,  # noqa: A004 -- torch.abs, not the builtin
     add,
@@ -18,14 +18,16 @@ from .elementwise import (
     sub,
 )
 from .fused import rope, silu_mul
+from .gemm import matmul
 from .norm import layernorm, rmsnorm, softmax
 from .quant import dequantize, quantize
 
 __all__ = [
-    "elementwise", "fused", "norm", "quant",
+    "elementwise", "fused", "gemm", "norm", "quant",
     "add", "sub", "mul", "maximum", "minimum",
     "exp", "relu", "gelu", "neg", "abs",
     "rmsnorm", "layernorm", "softmax",
     "silu_mul", "rope",
     "quantize", "dequantize",
+    "matmul",
 ]

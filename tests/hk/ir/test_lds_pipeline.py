@@ -174,17 +174,50 @@ def test_waiting_for_a_tile_that_has_nothing_outstanding():
         _trace(dead_wait)
 
 
-def test_waiting_too_late_says_so():
-    def too_late(o: hk.GL[fp32]):
+def test_binding_late_is_legal_and_free():
+    """Naming a tile some earlier wait already retired is the fix, not a fault.
+
+    The hazard is never that the data has not landed -- the earlier wait saw
+    to that, and lgkmcnt only shrinks in between. It is that the register
+    dependence is missing, so the consumer can be scheduled above the point
+    where it became safe. A later `lds_wait_for` that names the tile puts that
+    edge back: `s_waitcnt` (a no-op by then) followed by the bind, after which
+    nothing can move up past it.
+
+    The rotated GEMM does exactly this on most of its chunks. A is reloaded at
+    the end of a slice, so it sits behind B chunks 0..n-2 in the queue; the
+    next slice's first wait names A and so retires those B chunks early, and
+    each is bound at its own chunk's wait. The C++ says so in as many words:
+    "A was issued after B chunks 0..n-2 and before B chunk n-1, so for every
+    chunk but the last, A is the read that gates."
+    """
+    def late(o: hk.GL[fp32]):
+        sa, ta = _pair(32, 64)
+        sb, tb = _pair(16, 32)
+        a = ops.load_shared(sa, ta, wait=False)
+        b = ops.load_shared(sb, tb, wait=False)
+        ops.lds_wait_for(b)          # retires a's reads too, binds only b
+        ops.lds_wait_for(a)          # catches up: waits for nothing, binds a
+        ops.copy(a, out=a)
+
+    # The second wait found an empty queue, so it costs an lgkmcnt(0) that is
+    # already satisfied -- the bind is the whole instruction that matters.
+    assert [w.attrs["n"] for w in _waits(_trace(late))] == [0, 0]
+
+
+def test_reading_without_ever_binding_is_still_the_error():
+    """The relaxation above is only about *waits*. Drop the catch-up wait and
+    the consumer is back to reading a tile nothing bound."""
+    def unbound(o: hk.GL[fp32]):
         sa, ta = _pair(32, 64)
         sb, tb = _pair(16, 32)
         a = ops.load_shared(sa, ta, wait=False)
         b = ops.load_shared(sb, tb, wait=False)
         ops.lds_wait_for(b)
-        ops.lds_wait_for(a)          # a was retired by the previous wait
+        ops.copy(a, out=a)
 
-    with pytest.raises(VerifyError, match="window is already open"):
-        _trace(too_late)
+    with pytest.raises(VerifyError, match="register dependence"):
+        _trace(unbound)
 
 
 def test_overwriting_a_tile_that_is_still_being_read_into():

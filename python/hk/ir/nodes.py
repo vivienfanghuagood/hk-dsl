@@ -133,21 +133,90 @@ class SharedTileType(Type):
     dtype: DType
     rows: int
     cols: int
+    #: How many of these the allocation holds. >1 is a multi-buffer: the
+    #: allocator hands out one contiguous, size-aligned block and the emitter
+    #: writes the `[N]`. Contiguity is the point -- the XOR buffer swap flips
+    #: one address bit, which is only legal if the pair differs in one bit.
+    count: int = 1
 
     def __post_init__(self):
         for n, v in (("rows", self.rows), ("cols", self.cols)):
             if v <= 0 or v % 16:
                 raise ValueError(f"shared tile {n}={v} must be a positive multiple of 16")
+        if self.count <= 0:
+            raise ValueError(f"shared tile count={self.count} must be positive")
 
     def __repr__(self) -> str:
-        return f"st<{self.dtype},{self.rows}x{self.cols}>"
+        n = f"[{self.count}]" if self.count != 1 else ""
+        return f"st<{self.dtype},{self.rows}x{self.cols}>{n}"
 
     @property
     def nbytes(self) -> int:
-        return self.rows * self.cols * self.dtype.bytes
+        return self.rows * self.cols * self.dtype.bytes * self.count
+
+    def element(self) -> "SharedTileType":
+        """One buffer of the stack -- what an index into it has as its type."""
+        return SharedTileType(self.dtype, self.rows, self.cols)
 
     def cpp(self) -> str:
+        """The *element* type, for every count, for the reason SharedVecType
+        gives: `st<T,R,C>[N]` is a declarator and not a type name."""
         return f"kittens::st<{self.dtype.cpp}, {self.rows}, {self.cols}>"
+
+
+@dataclass(frozen=True)
+class StageBufferType(Type):
+    """`float4 buf[calls]` -- the VGPR half of a global->LDS copy.
+
+    gfx11 has no global->LDS DMA, so the asynchronous path to LDS is two ops
+    with the data sitting in registers in between: issue the global loads into
+    this buffer, do something else, then write the buffer to LDS. That makes
+    the buffer a *live range in the register file* for as long as the copy is
+    in flight, which is why it is a type here rather than a detail of the load:
+    its size is register pressure, and register pressure on this target is the
+    difference between occupancy 2 and a spill.
+
+    `calls` is transcribed from `stage_calls` in
+    include/rdna3/ops/warp/memory/tile/global_to_shared.cuh. It must agree with
+    the C++ exactly -- it is the caller's side of the contract, and a buffer
+    one float4 short is an out-of-bounds write to the stack.
+    """
+
+    tile: "SharedTileType"
+    threads: int
+    #: Batches kept in flight. The buffer is declared `[depth][calls]` and the
+    #: slot index must be a compile-time constant, or it lands in scratch.
+    depth: int = 1
+
+    def __post_init__(self):
+        if self.threads <= 0 or self.threads % 32:
+            raise ValueError(f"stage buffer threads={self.threads} must be a multiple of 32")
+        if self.depth <= 0:
+            raise ValueError(f"stage buffer depth={self.depth} must be positive")
+        if self.tile.count != 1:
+            raise ValueError(
+                f"stage buffer models one shared tile, not {self.tile}. A "
+                f"multi-buffer is several destinations for the same staged "
+                f"bytes; stage once and commit to whichever buffer is free."
+            )
+
+    @property
+    def calls(self) -> int:
+        per_float4 = 16 // self.tile.dtype.bytes
+        n = self.tile.rows * self.tile.cols
+        return -(-(n // per_float4) // self.threads)
+
+    @property
+    def floats(self) -> int:
+        """float4s held, hence 4x this many VGPRs while the copy is in flight."""
+        return self.calls * self.depth
+
+    def __repr__(self) -> str:
+        d = f"[{self.depth}]" if self.depth != 1 else ""
+        return f"stage<{self.tile},{self.threads}t>{d}x{self.calls}"
+
+    def cpp(self) -> str:
+        return "float4"
 
 
 @dataclass(frozen=True)
@@ -377,6 +446,17 @@ class Value:
         if isinstance(self.type, ScalarType):
             return ops.s_sub(0, self)
         return ops.neg(self)
+
+    def __getitem__(self, i):
+        """One buffer of a multi-buffer LDS allocation.
+
+        The index may be a runtime value -- it is an LDS address computation,
+        not a register index, so unlike the stage buffer's slot there is no
+        reason it has to be a constant.
+        """
+        from ..lang import ops
+
+        return ops.shared_at(self, i)
 
 
 @dataclass(eq=False)

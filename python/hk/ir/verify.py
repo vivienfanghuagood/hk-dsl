@@ -89,6 +89,18 @@ def check_structure(ir: KernelIR) -> None:
 # ---------------------------------------------------------------- layout
 
 
+def _flat(ir: KernelIR) -> List:
+    """Every op in the kernel, nested ones included, in program order.
+
+    Regions are flattened rather than skipped. For the register estimate that
+    is an approximation -- a loop body's live set is scanned once, as if it ran
+    once -- but the alternative in force until the GEMM arrived was to not look
+    inside loops at all, which on a kernel whose entire body is one K loop
+    meant estimating zero.
+    """
+    return [inner for op in ir.body for inner in op.walk()]
+
+
 def check_layouts(ir: KernelIR) -> List[Warning_]:
     """The one that pays for itself: a col-layout 16-bit operand read out of LDS
     costs 8x the instructions of a row-layout one, and nothing about the result
@@ -96,10 +108,13 @@ def check_layouts(ir: KernelIR) -> List[Warning_]:
     tgt = get_target(ir.arch)
     warns: List[Warning_] = []
 
-    for op in ir.body:
+    for op in _flat(ir):
         if op.opcode != "load_shared":
             continue
-        dst = op.results[0].type
+        d = op.dst
+        if d is None:
+            continue
+        dst = d.type
         if not isinstance(dst, RegTileType):
             continue
         if dst.dtype.bits == 16 and dst.layout not in tgt.fast_smem_layouts:
@@ -132,14 +147,15 @@ def estimate_vgprs(ir: KernelIR) -> int:
     tiling that cannot possibly fit, useless to certify one that can.
     """
     tgt = get_target(ir.arch)
+    ops = _flat(ir)
     last_use = {}
-    for i, op in enumerate(ir.body):
+    for i, op in enumerate(ops):
         for v in op.operands:
             last_use[id(v)] = i
 
     live = {}
     peak = 0
-    for i, op in enumerate(ir.body):
+    for i, op in enumerate(ops):
         for r in op.results:
             if isinstance(r.type, RegTileType):
                 live[id(r)] = tgt.tile_vgprs(r.type.dtype.bits, r.type.rows, r.type.cols)

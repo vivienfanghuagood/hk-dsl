@@ -25,6 +25,7 @@ from ..ir.nodes import (
     ScalarType,
     SharedTileType,
     SharedVecType,
+    StageBufferType,
     Value,
     bf16,
     fp32,
@@ -46,9 +47,9 @@ def rt(dtype: DType, rows: int, cols: int, layout: str = "row") -> RegTileType:
     return RegTileType(dtype, rows, cols, layout)
 
 
-def st(dtype: DType, rows: int, cols: int) -> SharedTileType:
-    """A shared (LDS) tile type."""
-    return SharedTileType(dtype, rows, cols)
+def st(dtype: DType, rows: int, cols: int, count: int = 1) -> SharedTileType:
+    """A shared (LDS) tile type. `count` > 1 is a multi-buffer."""
+    return SharedTileType(dtype, rows, cols, count)
 
 
 def col_vec(tile: RegTileType) -> RegVecType:
@@ -355,10 +356,37 @@ def store_shared(dst: Value, val: Value) -> None:
     _b().emit("store_shared", [dst, val])
 
 
-def alloc_shared(tile: SharedTileType, name: str = "smem") -> Value:
-    """Reserve an LDS tile. Offsets are assigned by the lds_alloc pass, which
-    is also what checks the 64 KB budget."""
+def alloc_shared(tile: SharedTileType, name: str = "smem",
+                 count: Optional[int] = None) -> Value:
+    """Reserve an LDS tile, or `count` of them contiguously.
+
+    Offsets are assigned by the lds_alloc pass, which is also what checks the
+    64 KB budget. A multi-buffer is one allocation and not N because the two
+    buffers of a double-buffered pair have to differ in exactly one address
+    bit for the XOR swap to be legal, and only a single size-aligned
+    allocation guarantees that.
+
+    Index it to get one buffer: `buf[tic]`. The index may be a runtime value.
+    """
+    if count is not None:
+        tile = SharedTileType(tile.dtype, tile.rows, tile.cols, count)
     return _b().emit("alloc_shared", result_type=tile, name=name)
+
+
+def shared_at(buf: Value, index: Scalar) -> Value:
+    """One buffer of a multi-buffer LDS allocation. Also spelled `buf[i]`."""
+    _expect(buf, SharedTileType, "shared buffer")
+    ty = buf.type
+    if ty.count == 1:
+        raise TypeError(
+            f"{buf} is a single LDS tile, not a stack of them -- indexing it "
+            f"would be `As[0]` on something declared `st As;`. Pass count= to "
+            f"alloc_shared if you meant a multi-buffer."
+        )
+    if isinstance(index, int) and not 0 <= index < ty.count:
+        raise IndexError(f"buffer {index} of {buf}, which holds {ty.count}")
+    idx = _as_value(index, i32)
+    return _b().emit("shared_at", [buf, idx], result_type=ty.element(), name="sb")
 
 
 # ---------------------------------------------------------------- cross-warp
@@ -412,14 +440,184 @@ def load_shared_vec(src: Value, vt: RegVecType, index: Scalar = 0) -> Value:
     )
 
 
-def barrier() -> None:
-    """__syncthreads(). Orders LDS across the whole workgroup.
+def subtile(src: Value, rows: int, cols: int,
+            row: Scalar = 0, col: Scalar = 0) -> Value:
+    """A `rows` x `cols` window of an LDS tile, indexed in units of itself.
+
+    `kittens::subtile_inplace`. This is how a warp gets its slice of a
+    workgroup-sized block: eight warps share one 128x32 A-tile in LDS, and each
+    reads the 32x16 piece its accumulator covers. The window is a view -- no
+    copy, no allocation -- so the shared tile's swizzle still applies and
+    `load_shared` still hits the vectorised path.
+
+    `row` and `col` may be runtime values; they usually are, since one of them
+    is normally derived from `warp_id`.
+    """
+    _expect(src, SharedTileType, "subtile source")
+    st = src.type
+    if st.count != 1:
+        raise TypeError(f"subtile of {st}, a stack of {st.count}. Index it first.")
+    for n, v, whole in (("rows", rows, st.rows), ("cols", cols, st.cols)):
+        if v <= 0 or v % 16:
+            raise ValueError(f"subtile {n}={v} must be a positive multiple of 16")
+        if whole % v:
+            raise ValueError(
+                f"subtile {n}={v} does not divide the {whole} of {st}. "
+                f"subtile_inplace indexes in units of the subtile, so a "
+                f"window that does not tile the parent has no index to give."
+            )
+    return _b().emit(
+        "subtile", [src, _as_value(row, i32), _as_value(col, i32)],
+        result_type=SharedTileType(st.dtype, rows, cols), name="sub",
+    )
+
+
+def setprio(level: int) -> None:
+    """`s_setprio`. Raise this wave's issue priority for the next few ops.
+
+    The one scheduling hint in the DSL, and it is here because it measurably
+    matters on this target: bracketing a WMMA sequence with setprio(1)/setprio(0)
+    keeps a wave that is issuing dense matrix ops from being interleaved out by
+    one that is only issuing memory, which is worth a few percent in the GEMM.
+    It has no effect on correctness in either direction.
+    """
+    if not isinstance(level, int) or not 0 <= level <= 3:
+        raise TypeError(f"setprio({level!r}): the priority field is 2 bits, 0..3")
+    _b().emit("setprio", level=level)
+
+
+# ------------------------------------------------------------------ staging
+#
+# gfx11 has no global->LDS DMA. The asynchronous path is a pair of ops with the
+# bytes parked in VGPRs in between, which is why there are three names here and
+# not one: the register buffer has a lifetime, and that lifetime is the thing
+# the schedule is built out of.
+
+
+def stage_buffer(dst: Value, threads: int, depth: int = 1,
+                 name: str = "buf") -> Value:
+    """Declare the register buffer for a group copy into `dst`.
+
+    Takes the LDS allocation rather than its type, for two reasons. The buffer
+    size is `stage_calls` of the tile shape, so deriving it from the
+    destination is the only way the two cannot disagree -- and a buffer one
+    float4 short is an out-of-bounds write to the stack, not an error anyone
+    would see. The second reason is that the C++ needs the destination as a
+    template argument it can deduce `ST` from, and an `st` is an LDS object:
+    the emitter cannot conjure one, so the IR has to carry it.
+
+    Declared, not produced: this op emits an array declaration and nothing
+    else, and `stage_load` writes into it. It has to work that way because the
+    point of staging is that the load and the store are in *different* loop
+    iterations, and a value produced inside a traced loop body cannot be read
+    by the next pass through it.
+
+    Put it at the top of the kernel, outside any `hk.range`.
+    """
+    _expect(dst, SharedTileType, "stage_buffer destination")
+    ty = StageBufferType(dst.type.element(), threads, depth)
+    return _b().emit("stage_buffer", [dst], result_type=ty, name=name)
+
+
+def stage_load(buf: Value, src: Value, idx: Value, slot: int = 0) -> None:
+    """Issue the global loads for one K-tile into `buf`. Does not wait.
+
+    `slot` indexes the buffer's depth and must be a Python int: a runtime slot
+    index puts the whole array in scratch, which on this target is not slow,
+    it is a different kernel.
+    """
+    _expect(buf, StageBufferType, "stage_load buffer")
+    _expect(src, GlobalType, "stage_load source")
+    _expect(idx, CoordType, "stage_load index")
+    ty = buf.type
+    if not isinstance(slot, int) or not 0 <= slot < ty.depth:
+        raise TypeError(
+            f"stage_load slot={slot!r}: must be a Python int in [0, {ty.depth}). "
+            f"It is a register array index, so it is resolved at compile time "
+            f"or it is not resolved at all."
+        )
+    _b().emit("stage_load", [buf, src, idx], slot=slot)
+
+
+def stage_commit(dst: Value, buf: Value, slot: int = 0, wait: bool = False) -> None:
+    """Write a staged buffer to LDS.
+
+    `wait=False` -- the default, and what the GEMM uses -- leaves the ds_writes
+    outstanding. Whatever reads that buffer next must be separated from this by
+    a barrier *and* by a wait that retires the writes, because `s_barrier` does
+    not order memory. Pass `wait=True` to drain here instead.
+
+    You must call `vm_wait` before this: the bytes have to have landed in the
+    registers it is about to write out. That is checked by the lds_pipeline
+    pass rather than left to the author, for the usual reason -- missing it is
+    a wrong answer, not a crash.
+    """
+    _expect(dst, SharedTileType, "stage_commit destination")
+    _expect(buf, StageBufferType, "stage_commit buffer")
+    ty = buf.type
+    if dst.type.count != 1:
+        raise TypeError(
+            f"stage_commit into {dst}, which is a stack of {dst.type.count}. "
+            f"Index it: `stage_commit(As[toc], buf)`."
+        )
+    if (dst.type.rows, dst.type.cols, dst.type.dtype) != (
+            ty.tile.rows, ty.tile.cols, ty.tile.dtype):
+        raise TypeError(
+            f"stage_commit: buffer stages {ty.tile} but the destination is "
+            f"{dst.type}. The buffer size is computed from the tile shape, so "
+            f"these cannot differ -- a mismatch writes past the array."
+        )
+    if not isinstance(slot, int) or not 0 <= slot < ty.depth:
+        raise TypeError(f"stage_commit slot={slot!r}: must be an int in [0, {ty.depth})")
+    _b().emit("stage_commit", [dst, buf], slot=slot, wait=wait)
+
+
+def vm_wait(keep: int = 0) -> None:
+    """Retire outstanding vector-memory loads, leaving `keep` in flight.
+
+    `s_waitcnt vmcnt(keep)`. The counter is 6 bits, so `keep` is bounded at 63;
+    a deeper pipeline than that cannot be expressed in the instruction and the
+    check here is the only place that says so.
+
+    Unlike `lds_wait_for` this one takes a number and not a list of tiles,
+    which is not an inconsistency: the staged bytes go to a `float4` array that
+    nothing reads directly, so there is no register dependence to re-establish
+    -- the dependence that matters is on the buffer, and `stage_commit` has it
+    as an operand.
+    """
+    if not isinstance(keep, int) or not 0 <= keep <= 63:
+        raise TypeError(
+            f"vm_wait(keep={keep!r}): vmcnt is 6 bits, so keep must be an int "
+            f"in [0, 63]. A pipeline deeper than that has to be restructured, "
+            f"not expressed."
+        )
+    _b().emit("vm_wait", keep=keep)
+
+
+def barrier(drain: bool = False) -> None:
+    """`s_barrier`. Orders *execution* across the workgroup -- not memory.
+
+    That distinction is the whole reason this takes an argument. `s_barrier`
+    does not retire anything: an LDS op still in flight when a warp reaches it
+    is still in flight afterwards, racing whatever the other warps do next. On
+    a double-buffered kernel that is always the opposite access -- outstanding
+    ds_writes against the next tile's ds_reads, outstanding ds_reads against
+    the next tile's ds_writes -- so it is a race with no safe outcome, and one
+    that shows up only when the scheduler happens to tighten the window.
+
+    `hk.ir.passes.lds_pipeline` therefore refuses a barrier with a non-empty
+    queue. The cheap fix is usually to retire the ops in a wait the math
+    needed anyway; `drain=True` is the other one, an explicit `lgkmcnt(0)`
+    here, which is what the handwritten GEMM spends after its interleaved
+    store. Making it an argument rather than a separate op is deliberate: the
+    drain is only ever wanted *immediately* before a barrier, and splitting
+    them would let something be scheduled in between.
 
     Emitted as an op rather than folded into the collective helpers because a
     barrier is a control-flow fact -- every warp of the workgroup must reach
     it -- and a pass that reorders or hoists ops has to be able to see it.
     """
-    _b().emit("barrier")
+    _b().emit("barrier", drain=bool(drain))
 
 
 # ---------------------------------------------------------------- creation
@@ -1036,7 +1234,8 @@ __all__ = [
     "batch", "depth", "rows", "cols",
     *(f"s_{s}" for s in SCALARS), *FILLS,
     "load", "store", "store_scalar", "load_shared", "store_shared", "alloc_shared",
-    "lds_loads", "lds_wait_for",
+    "shared_at", "subtile", "setprio", "lds_loads", "lds_wait_for",
+    "stage_buffer", "stage_load", "stage_commit", "vm_wait",
     "shared_vec", "alloc_shared_vec", "load_shared_vec", "store_shared_vec",
     "barrier",
     "zeros", "full", "neg_infty", "cast", "neg",
