@@ -45,6 +45,7 @@ class Emitter:
         self.aliases: Dict[object, str] = {}
         self.lines: List[str] = []
         self.indent = 1
+        self._opaque = 0
 
     # -- helpers -----------------------------------------------------------
 
@@ -253,7 +254,25 @@ class Emitter:
         self.w(f"const int {self.name(op.result)} = blockIdx.{op.attrs['axis']};")
 
     def _op_warp_id(self, op: Op) -> None:
-        self.w(f"const int {self.name(op.result)} = kittens::warpid();")
+        # Uniform, not `warpid()`: see kittens::warpid_uniform. The IR
+        # hoists this into the prologue, where every lane is active, so
+        # the readfirstlane is always well defined.
+        self.w(f"const int {self.name(op.result)} = kittens::warpid_uniform();")
+
+    def _op_s_any_ne(self, op: Op) -> None:
+        """A loop the compiler fully unrolls into `outer*inner` v_cmp, an or
+        tree, and one `__any`. Written out rather than called because there is
+        no library op for it: every other reduction in `include/rdna3` lands
+        back in the register file, and this one lands in a branch."""
+        a, b = (self.name(v) for v in op.operands)
+        r = self.name(op.result)
+        self.w(f"bool {r}_v = false;")
+        self.w("#pragma unroll")
+        self.w(f"for (int o = 0; o < decltype({a})::outer_dim; o++)")
+        self.w("    #pragma unroll")
+        self.w(f"    for (int i = 0; i < decltype({a})::inner_dim; i++)")
+        self.w(f"        {r}_v |= ({a}.data[o][i] != {b}.data[o][i]);")
+        self.w(f"const int {r} = __any({r}_v);")
 
     def _op_lane_id(self, op: Op) -> None:
         self.w(f"const int {self.name(op.result)} = kittens::laneid();")
@@ -282,13 +301,10 @@ class Emitter:
     # memory
 
     def _op_load_global(self, op: Op) -> None:
-        src, idx = op.operands
-        dst = op.result
-        ty = dst.type
-        self.w(f"{self.cpp(ty)} {self.name(dst)};")
+        dst, (src, idx) = self._dest(op)
         self.w(
             f"kittens::load({self.name(dst)}, {self.name(src)}, "
-            f"{self._coord_arg(idx, self.cpp(ty))});"
+            f"{self._coord_arg(idx, self.cpp(dst.type))});"
         )
 
     def _op_store_global(self, op: Op) -> None:
@@ -402,6 +418,40 @@ class Emitter:
         t = "" if op.attrs.get("wait", True) else "<false>"
         self.w(f"kittens::load{t}({self.name(dst)}, {self.name(src)});")
 
+    def _op_granules(self, op: Op) -> None:
+        r = op.result
+        self.w(f"{self.cpp(r.type)} {self.name(r)};")
+        self.w(f"{self.name(r)}.init({self.name(op.operands[0])});")
+
+    def _op_load_frag(self, op: Op) -> None:
+        dst, srcs = self._dest(op)
+        (gr,) = srcs
+        # The coordinates are template arguments, which is the whole point:
+        # lds_read_frag turns them into ds_read_b128's immediate offset instead
+        # of into an address register.
+        self.w(
+            f"kittens::lds_read_frag<{16 * op.attrs['row']}, "
+            f"{16 * op.attrs['col']}>({self.name(dst)}, {self.name(gr)});"
+        )
+
+    def _op_store_frag(self, op: Op) -> None:
+        gr, val = op.operands[0], op.operands[1]
+        row = op.attrs["row"]
+        if row is None:
+            # A runtime row is an addend on the granule address, pre-scaled to
+            # bytes by the caller's side of lds_write_frag's contract: the row
+            # term of st::idx is swizzle_bytes per row.
+            sb = gr.type.swizzle_bytes
+            off = f"(uint32_t)({16 * sb} * {self.name(op.operands[2])})"
+            tmpl = f"<0, {16 * op.attrs['col']}>"
+        else:
+            off = "0u"
+            tmpl = f"<{16 * row}, {16 * op.attrs['col']}>"
+        self.w(
+            f"kittens::lds_write_frag{tmpl}({self.name(gr)}, {off}, "
+            f"{self.name(val)});"
+        )
+
     def _op_lds_wait_for(self, op: Op) -> None:
         """s_waitcnt lgkmcnt(N), then re-bind each retired tile's registers.
 
@@ -487,8 +537,7 @@ class Emitter:
     # creation
 
     def _op_zero(self, op: Op) -> None:
-        r = op.result
-        self.w(f"{self.cpp(r.type)} {self.name(r)};")
+        r, _ = self._dest(op)
         self.w(f"kittens::zero({self.name(r)});")
 
     @staticmethod
@@ -509,10 +558,9 @@ class Emitter:
         return repr(float(v))
 
     def _op_full(self, op: Op) -> None:
-        r = op.result
+        r, _ = self._dest(op)
         n = self.name(r)
         v = op.attrs["value"]
-        self.w(f"{self.cpp(r.type)} {n};")
         if v == 0:
             self.w(f"kittens::zero({n});")
         elif v == 1:
@@ -528,8 +576,7 @@ class Emitter:
             self.w(f"kittens::add({n}, {n}, ({r.type.dtype.cpp}){self._float_lit(v)});")
 
     def _op_neg_infty(self, op: Op) -> None:
-        r = op.result
-        self.w(f"{self.cpp(r.type)} {self.name(r)};")
+        r, _ = self._dest(op)
         self.w(f"kittens::neg_infty({self.name(r)});")
 
     # maps
@@ -639,6 +686,8 @@ class Emitter:
         "min": "({a} < {b}) ? {a} : {b}",
         "max": "({a} > {b}) ? {a} : {b}",
         "cdiv": "({a} + {b} - 1) / {b}",
+        "lt": "{a} < {b}", "le": "{a} <= {b}", "gt": "{a} > {b}",
+        "ge": "{a} >= {b}", "eq": "{a} == {b}", "ne": "{a} != {b}",
     }
 
     def _op_scalar(self, op: Op) -> None:
@@ -652,6 +701,27 @@ class Emitter:
         self.w(f"const int {self.name(op.result)} = {self.name(t)}.{axis}();")
 
     # control flow
+
+    def _op_if(self, op: Op) -> None:
+        (cond,) = op.operands
+        c = self.name(cond)
+        if op.attrs.get("opaque"):
+            # The condition is `const int` everywhere else, and an "+v" operand
+            # has to be writable, so the opaque form needs a copy to hand the
+            # optimizer something it cannot see through.
+            self._opaque += 1
+            c = f"{c}_live{self._opaque}"
+            self.w(f"int {c} = {self.name(cond)};")
+            self.w(f'asm volatile("" : "+v"({c}));')
+        self.w(f"if ({c}) {{")
+        self.indent += 1
+        for inner in op.body:
+            self._op(inner)
+        self.indent -= 1
+        self.w("}")
+
+    def _op_sched_barrier(self, op: Op) -> None:
+        self.w("__builtin_amdgcn_sched_barrier(0);")
 
     def _op_for(self, op: Op) -> None:
         (bound,) = op.operands

@@ -20,6 +20,8 @@ from typing import List
 
 from ..target import get_target
 from .nodes import (
+    GranuleSetType,
+    StageBufferType,
     CoordType,
     GlobalType,
     KernelIR,
@@ -141,9 +143,10 @@ def check_layouts(ir: KernelIR) -> List[Warning_]:
 def estimate_vgprs(ir: KernelIR) -> int:
     """Peak live register-tile VGPRs, by linear scan.
 
-    An estimate and nothing more: it counts tile storage only, so it misses
-    addresses, loop induction variables, prefetch buffers and anything the
-    compiler decides to keep. Treat it as a lower bound -- useful to reject a
+    An estimate and nothing more: it counts register tiles, staging buffers
+    and granule sets -- the things whose size the IR knows -- so it misses
+    loop induction variables, the addressing of anything not behind a
+    granule set, and whatever else the compiler decides to keep. Treat it as a lower bound -- useful to reject a
     tiling that cannot possibly fit, useless to certify one that can.
     """
     tgt = get_target(ir.arch)
@@ -159,6 +162,13 @@ def estimate_vgprs(ir: KernelIR) -> int:
         for r in op.results:
             if isinstance(r.type, RegTileType):
                 live[id(r)] = tgt.tile_vgprs(r.type.dtype.bits, r.type.rows, r.type.cols)
+            elif isinstance(r.type, GranuleSetType):
+                # Not a tile, but real and long-lived: a granule set exists to
+                # be hoisted out of the loop, so it is live across all of it.
+                live[id(r)] = r.type.n
+            elif isinstance(r.type, StageBufferType):
+                # float4s held while a global->LDS copy is in flight.
+                live[id(r)] = 4 * r.type.floats
         peak = max(peak, sum(live.values()))
         for v in op.operands:
             if last_use.get(id(v)) == i:
@@ -217,7 +227,41 @@ def check_budgets(ir: KernelIR) -> List[Warning_]:
 # ---------------------------------------------------------------- entry
 
 
+#: Ops every warp in the workgroup has to reach. A warp that skips one and its
+#: neighbours that do not are deadlocked: `s_barrier` waits for a wave count,
+#: and the group staging calls have barriers inside them.
+_WORKGROUP_OPS = ("barrier", "stage_load", "stage_commit", "group_load",
+                  "group_store")
+
+
+def check_divergence(ir: KernelIR) -> None:
+    """Nothing workgroup-wide inside an `if`.
+
+    Divergence itself is fine -- that is what exec masks are for -- and the
+    attention kernel depends on it: the warps with no V^T band to stage skip
+    the staging, and under causal the warps with nothing above the diagonal
+    skip the math. What is not fine is skipping a rendezvous. The failure is
+    a hang rather than a wrong answer, which is worse to debug and trivial to
+    rule out here."""
+
+    def walk(ops, inside: bool) -> None:
+        for op in ops:
+            if inside and op.opcode in _WORKGROUP_OPS:
+                raise _fail(
+                    op,
+                    f"{op.opcode} is inside an hk.if_. It is a workgroup "
+                    f"operation -- every warp has to reach it or the ones that "
+                    f"do wait forever. Hoist it out and put only the work it "
+                    f"guards inside the branch.",
+                )
+            if op.body is not None:
+                walk(op.body, inside or op.opcode == "if")
+
+    walk(ir.body, False)
+
+
 def verify(ir: KernelIR) -> List[Warning_]:
     """Run every check. Raises on the first error; returns the warnings."""
     check_structure(ir)
+    check_divergence(ir)
     return check_layouts(ir) + check_budgets(ir)

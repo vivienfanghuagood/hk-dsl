@@ -20,6 +20,7 @@ from ..ir.nodes import (
     CoordType,
     DType,
     GlobalType,
+    GranuleSetType,
     RegTileType,
     RegVecType,
     ScalarType,
@@ -159,7 +160,13 @@ def cols(t: Value) -> Value:
 #: across a whole tile, and giving them the same name would hide which one a
 #: line costs. The operators on a scalar Value route here (see Value._bin), so
 #: `cb * COLS` in a kernel is an s_mul.
-SCALARS = ("add", "sub", "mul", "div", "mod", "min", "max", "cdiv")
+SCALARS = ("add", "sub", "mul", "div", "mod", "min", "max", "cdiv",
+           "lt", "le", "gt", "ge", "eq", "ne")
+
+#: The subset of SCALARS that yields 0/1 rather than a number. Kept separate so
+#: `hk.if_` can insist on one: `if_(q_row)` is a plausible typo for
+#: `if_(s_gt(q_row, 0))` and would silently invert on the row-zero workgroup.
+PREDICATES = ("lt", "le", "gt", "ge", "eq", "ne")
 
 
 def _scalar_binary(op: str, a: Scalar, b: Scalar) -> Value:
@@ -192,12 +199,18 @@ s_min.__doc__ = (
     "double counting -- see left_fill."
 )
 s_cdiv.__doc__ = "Ceiling division, as a device-side expression."
+for _n in PREDICATES:
+    globals()[f"s_{_n}"].__doc__ = (
+        f"Integer comparison, 0 or 1. The only thing to pass to hk.if_ -- see "
+        f"hk.lang.control.if_ for why a bare index is refused."
+    )
+del _n
 
 
 # ---------------------------------------------------------------- memory
 
 
-def load(src: Value, idx: Value, tile) -> Value:
+def load(src: Value, idx: Value, tile, *, out: Optional[Value] = None) -> Value:
     """Global -> register tile, or global -> register vector.
 
     One function for both because `kittens::load` is one overload set, and
@@ -213,7 +226,12 @@ def load(src: Value, idx: Value, tile) -> Value:
     _expect(idx, CoordType, "load index")
     if not isinstance(tile, _ELEMENTWISE):
         raise TypeError(f"load destination type is {tile!r}, expected a tile or a vector")
-    return _b().emit("load_global", [src, idx], result_type=tile, name="ld")
+    # `out=` matters here for the same reason it does on load_shared: a global
+    # read issued in one loop iteration and consumed in the next has to land in
+    # a register that exists outside the loop. Without it the prefetch is
+    # unwriteable -- the value traced inside the body is a different value every
+    # iteration, and the IR rejects one escaping.
+    return _emit("load_global", [src, idx], tile, out=out, name="ld")
 
 
 def store(dst: Value, val: Value, idx: Value) -> None:
@@ -320,6 +338,96 @@ def load_shared(src: Value, tile: RegTileType, *, wait: bool = True,
         )
     return _emit("load_shared", [src], tile, out=out, name="lds",
                  wait=wait, lds_loads=n)
+
+
+def granules(src: Value, name: str = "gr") -> Value:
+    """Factor one LDS tile's addressing into `swizzle_bytes/16` registers.
+
+    Use this instead of `subtile` + `load_shared` whenever a loop reads many
+    fragments out of the same shared tile. Those addresses are loop-invariant,
+    so the compiler hoists every one of them out of the loop and then spills
+    them -- 312 B/lane in this IR's first attention kernel, 372 in the
+    handwritten one before the same fix. `load_frag` off a granule set folds
+    the fragment coordinate into ds_read_b128's immediate offset instead, where
+    it costs nothing.
+
+    The set is per-lane and per-tile. It is register pressure for as long as it
+    is live (`GranuleSetType.n` registers), which the budget model counts.
+    """
+    _expect(src, SharedTileType, "granule source")
+    return _b().emit("granules", [src],
+                     result_type=GranuleSetType(src.type), name=name)
+
+
+def _frag_coord(gr: Value, row, col, what: str):
+    st = gr.type.tile
+    if not isinstance(col, int):
+        raise TypeError(
+            f"{what}: col={col!r} must be a Python int. The column is the "
+            f"granule selector and half of ds_read_b128's immediate; a runtime "
+            f"column has no decomposition and would need its own address."
+        )
+    rows_ok = isinstance(row, int)
+    if not rows_ok and what == "load_frag":
+        raise TypeError(
+            f"load_frag: row={row!r} must be a Python int. Only the *write* "
+            f"side takes a runtime row -- there the row is a warp's slice of "
+            f"the head dimension, and it is passed as an addend. Reading at a "
+            f"runtime row would hoist one address per site, which is the thing "
+            f"this op exists to avoid."
+        )
+    for n, v, whole in (("row", row, st.rows), ("col", col, st.cols)):
+        if isinstance(v, int) and not (0 <= v and 16 * v + 16 <= whole):
+            raise ValueError(
+                f"{what}: {n}={v} is out of {st}. Fragment coordinates are in "
+                f"units of 16."
+            )
+    return rows_ok
+
+
+def load_frag(gr: Value, row: int, col: int, tile: RegTileType, *,
+              out: Optional[Value] = None) -> Value:
+    """One 16x16 operand fragment out of a granule set, at fragment (row, col).
+
+    Two `ds_read_b128`, neither of which waits -- there is no `wait=True` form
+    because the whole point is to batch the waits, and `lds_wait_for` is how
+    they are retired. Everything `load_shared(wait=False)` obliges you to do,
+    this obliges you to do.
+    """
+    _expect(gr, GranuleSetType, "load_frag granules")
+    if not isinstance(tile, RegTileType):
+        raise TypeError(f"load_frag destination type is {tile!r}, expected an rt")
+    st = gr.type.tile
+    if (tile.rows, tile.cols) != (16, 16) or tile.layout != "row" or tile.dtype != st.dtype:
+        raise TypeError(
+            f"load_frag into {tile} from {st}: lds_read_frag writes eight "
+            f"contiguous elements of one row into data[0..7], which is a 16x16 "
+            f"'row' tile of the shared tile's own dtype and nothing else."
+        )
+    _frag_coord(gr, row, col, "load_frag")
+    return _emit("load_frag", [gr], tile, out=out, name="frag",
+                 row=row, col=col, wait=False, lds_loads=2)
+
+
+def store_frag(gr: Value, val: Value, row: Scalar, col: int) -> None:
+    """One 16x16 fragment into a granule set's tile, at fragment (row, col).
+
+    `row` may be a runtime value and `col` may not, for the reason
+    `_frag_coord` gives: the column picks the granule, the row is an addend.
+    """
+    _expect(gr, GranuleSetType, "store_frag granules")
+    _expect(val, RegTileType, "store_frag value")
+    st = gr.type.tile
+    t = val.type
+    if (t.rows, t.cols) != (16, 16) or t.layout != "row" or t.dtype != st.dtype:
+        raise TypeError(
+            f"store_frag of {t} into {st}: lds_write_frag reads eight "
+            f"contiguous elements out of data[0..7], which is a 16x16 'row' "
+            f"tile of the shared tile's own dtype and nothing else."
+        )
+    const_row = _frag_coord(gr, row, col, "store_frag")
+    ops = [gr, val] if const_row else [gr, val, _as_value(row, i32)]
+    _b().emit("store_frag", ops, row=(row if const_row else None), col=col)
 
 
 def lds_wait_for(*tiles: Value) -> None:
@@ -486,6 +594,22 @@ def setprio(level: int) -> None:
     _b().emit("setprio", level=level)
 
 
+def sched_barrier() -> None:
+    """`__builtin_amdgcn_sched_barrier(0)`: nothing crosses this line.
+
+    Not a memory fence and not a wait -- it costs no instruction at all. It
+    bounds the *scheduler*, and the reason it is in the op set rather than left
+    to the compiler is register allocation, not latency. The attention kernel
+    has a staging half and a math half in the same straight-line iteration;
+    with nothing between them LLVM hoists the staging loads up into the math,
+    both live sets are held at once, and the allocator gives up -- 256 VGPRs
+    and ~480 bytes/lane of scratch. On a kernel that hand-manages s_waitcnt
+    that is not slower, it is wrong. The overlap given up was never the point:
+    staging is hidden across waves, by the SIMD having another wave to run.
+    """
+    _b().emit("sched_barrier")
+
+
 # ------------------------------------------------------------------ staging
 #
 # gfx11 has no global->LDS DMA. The asynchronous path is a pair of ops with the
@@ -623,16 +747,24 @@ def barrier(drain: bool = False) -> None:
 # ---------------------------------------------------------------- creation
 
 
-def zeros(tile: RegTileType) -> Value:
-    return _b().emit("zero", result_type=tile, name="z")
+# `out=` on a constant fill is not a convenience: a tile that has to be reset at
+# the top of every iteration of an hk.range body cannot be re-created there,
+# because a value traced inside the body is a different value each iteration and
+# the one outside is what the accumulator math names. Attention's score tile is
+# exactly that -- zeroed per KV block, accumulated across eight WMMAs -- and
+# without this it silently sums every block's scores into the next.
 
 
-def full(tile: RegTileType, value: float) -> Value:
-    return _b().emit("full", result_type=tile, name="f", value=value)
+def zeros(tile: RegTileType, *, out: Optional[Value] = None) -> Value:
+    return _emit("zero", [], tile, out=out, name="z")
 
 
-def neg_infty(tile: RegTileType) -> Value:
-    return _b().emit("neg_infty", result_type=tile, name="ninf")
+def full(tile: RegTileType, value: float, *, out: Optional[Value] = None) -> Value:
+    return _emit("full", [], tile, out=out, name="f", value=value)
+
+
+def neg_infty(tile: RegTileType, *, out: Optional[Value] = None) -> Value:
+    return _emit("neg_infty", [], tile, out=out, name="ninf")
 
 
 # ---------------------------------------------------------------- maps
@@ -698,6 +830,35 @@ def _check_dtype(op: str, m: Map, ty) -> None:
             f"alternative is an undefined-symbol link error at the end of the "
             f"compile that names a template, not this line."
         )
+
+
+def s_any_ne(a: Value, b: Value) -> Value:
+    """Wave-level "did any entry of `a` differ from `b`", as a condition.
+
+    The one thing in the attention kernel that cannot be written with the
+    elementwise ops: it is a reduction *out of* the register file and into
+    control flow. The online softmax rescales the accumulator by
+    `exp2(m_old - m_new)` on every KV block, and after the first few blocks the
+    running max is usually already the global max -- alpha is 1 and all 64
+    `v_mul_f32` at head_dim 128 are wasted. Guarding them needs a predicate
+    that is true if *any* entry grew, because the rescale is a tile operation
+    and a wave cannot do it half way.
+
+    Wave-uniform by construction, so this is a scalar branch and not a
+    divergent one: `m_*` is a vector over the q range of the warp's own tile
+    and every lane holds all of it, so the comparison has the same answer in
+    every lane before the `__any` ever runs. The `__any` is there for the
+    compiler, which has no way to know that.
+    """
+    for v, side in ((a, "left"), (b, "right")):
+        _expect(v, RegVecType, f"s_any_ne {side} operand")
+    if a.type.plain != b.type.plain:
+        raise TypeError(
+            f"s_any_ne: operands are {a.type} and {b.type}. The comparison is "
+            f"entry by entry, so the two have to be the same shape."
+        )
+    return _b().emit("s_any_ne", [a, b], result_type=ScalarType(i32),
+                     name="grew")
 
 
 #: Tiles and vectors take the same op names -- `kittens::add` is overloaded on
@@ -999,6 +1160,15 @@ FILLS = {
     "right_fill": "col",   # columns >= idx
     "upper_fill": "row",   # rows < idx
     "lower_fill": "row",   # rows >= idx
+    # The same shape of op, about the shifted diagonal rather than an axis.
+    # `triu(t, d, -inf)` is attention's causal predicate when the scores are
+    # stored transposed: a row of S^T is a kv index and a column is a query,
+    # so "kv may not exceed q" is `col < row - d`, with `d` the offset between
+    # the two blocks' starting indices. `make_causal_t` is the d == 0 case,
+    # which is all you need when every extent is 16-aligned and not enough for
+    # a ragged one.
+    "triu": "diag",        # col < row - idx
+    "tril": "diag",        # col > row - idx
 }
 
 
@@ -1040,14 +1210,23 @@ def _make_fill(name):
         return _fill(name, src, idx, value, out)
 
     axis = FILLS[name]
-    side = {"left_fill": "before", "right_fill": "from", "upper_fill": "above",
-            "lower_fill": "from"}[name]
     f.__name__ = name
-    f.__doc__ = (
-        f"Overwrite every element {side} {axis} `idx` with `value`, keeping the "
-        f"rest. Pass the reduction's identity (0 for sum, -inf for max, 1 for "
-        f"prod) when you are masking an overlap out of a reduction."
-    )
+    if axis == "diag":
+        kept = "col <= row - idx" if name == "triu" else "col >= row - idx"
+        f.__doc__ = (
+            f"Overwrite every element with `value` except where `{kept}` -- the "
+            f"main diagonal shifted down by `idx`. `idx` may be a runtime value, "
+            f"and the degenerate shifts behave: at `idx <= -rows` the whole tile "
+            f"is filled, at `idx >= cols` none of it is."
+        )
+    else:
+        side = {"left_fill": "before", "right_fill": "from",
+                "upper_fill": "above", "lower_fill": "from"}[name]
+        f.__doc__ = (
+            f"Overwrite every element {side} {axis} `idx` with `value`, keeping "
+            f"the rest. Pass the reduction's identity (0 for sum, -inf for max, "
+            f"1 for prod) when you are masking an overlap out of a reduction."
+        )
     return f
 
 
@@ -1059,18 +1238,18 @@ del _n
 # ---------------------------------------------------------------- vectors
 
 
-def zeros_vec(vt: RegVecType) -> Value:
-    return _b().emit("zero", result_type=vt, name="zv")
+def zeros_vec(vt: RegVecType, *, out: Optional[Value] = None) -> Value:
+    return _emit("zero", [], vt, out=out, name="zv")
 
 
-def full_vec(vt: RegVecType, value: float) -> Value:
-    return _b().emit("full", result_type=vt, name="fv", value=value)
+def full_vec(vt: RegVecType, value: float, *, out: Optional[Value] = None) -> Value:
+    return _emit("full", [], vt, out=out, name="fv", value=value)
 
 
-def neg_infty_vec(vt: RegVecType) -> Value:
+def neg_infty_vec(vt: RegVecType, *, out: Optional[Value] = None) -> Value:
     """The identity for max. Starting an online max at zero is a bug that only
     shows up on all-negative rows, which is why this exists."""
-    return _b().emit("neg_infty", result_type=vt, name="ninfv")
+    return _emit("neg_infty", [], vt, out=out, name="ninfv")
 
 
 # ---------------------------------------------------------------- wmma
@@ -1329,16 +1508,18 @@ def _expect(v: Value, ty, what: str) -> None:
 
 
 __all__ = [
+    "s_any_ne",
     "rt", "st", "col_vec", "row_vec",
     "block_idx", "warp_id", "lane_id",
     "coord", "tile_coord", "elem_coord",
     "batch", "depth", "rows", "cols",
     *(f"s_{s}" for s in SCALARS), *FILLS,
     "load", "store", "store_scalar", "load_shared", "store_shared", "alloc_shared",
+    "granules", "load_frag", "store_frag",
     "shared_at", "subtile", "setprio", "lds_loads", "lds_wait_for",
     "stage_buffer", "stage_load", "stage_commit", "vm_wait",
     "shared_vec", "alloc_shared_vec", "load_shared_vec", "store_shared_vec",
-    "barrier",
+    "barrier", "sched_barrier",
     "zeros", "full", "neg_infty", "cast", "neg",
     "transpose", "transpose_sep", *CAUSAL,
     "zeros_vec", "full_vec", "neg_infty_vec",

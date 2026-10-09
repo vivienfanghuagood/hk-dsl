@@ -165,6 +165,71 @@ class SharedTileType(Type):
 
 
 @dataclass(frozen=True)
+class GranuleSetType(Type):
+    """The per-lane LDS addresses of one shared tile, factored.
+
+    `kittens::lds_granules<ST>` -- see
+    include/rdna3/ops/warp/memory/util/granule.cuh. A fragment read off a
+    shared tile normally forms its own full address; that is fine for a tile or
+    two and fatal for a loop that reads dozens of fragments out of the same
+    tile, because every one of those addresses is loop-invariant and they all
+    get hoisted and then spilled. The attention kernel measured 372 B/lane of
+    scratch that way, and this IR measured 312 doing it through
+    `subtile` + `load_shared`.
+
+    `st::idx` is affine in the fragment coordinate, so the entire (row, col)
+    dependence folds into ds_read_b128's 16-bit immediate and what is left is
+    `swizzle_bytes/16` lane-dependent addresses for the whole tile, however
+    many fragments come out of it. That number is `n` below, and it is real
+    register pressure, which is why this is a type and not a code-generation
+    detail.
+    """
+
+    tile: "SharedTileType"
+
+    def __post_init__(self):
+        if self.tile.dtype.bytes != 2:
+            raise ValueError(
+                f"granules of {self.tile}: the decomposition is derived and "
+                f"checked for 2-byte tiles only."
+            )
+        if self.tile.count != 1:
+            raise ValueError(
+                f"granules of {self.tile}, a stack of {self.tile.count}. "
+                f"Index it first -- the two buffers of a pair differ in one "
+                f"address bit, so one granule set serves both via a swap, but "
+                f"it still has to be built against a particular buffer."
+            )
+        if self.swizzle_bytes < 64:
+            raise ValueError(
+                f"granules of {self.tile}: swizzle_bytes is "
+                f"{self.swizzle_bytes}. At 32 the row stride is small enough "
+                f"that 16 rows reach bit 9 of the offset, the swizzle key "
+                f"changes with the row, and the row term stops being a "
+                f"compile-time addend. Needs >= 32 columns of a 2-byte tile."
+            )
+
+    @property
+    def swizzle_bytes(self) -> int:
+        """Transcribed from `st<T,R,C>::swizzle_bytes` in
+        include/rdna3/types/shared/st.cuh. 2-byte case only, which is all this
+        type admits."""
+        width = self.tile.cols // 16
+        return 128 if width % 4 == 0 else 64 if width % 2 == 0 else 32
+
+    @property
+    def n(self) -> int:
+        """Addresses held, hence VGPRs held, for as long as the set is live."""
+        return self.swizzle_bytes // 16
+
+    def __repr__(self) -> str:
+        return f"granules<{self.tile}>x{self.n}"
+
+    def cpp(self) -> str:
+        return f"kittens::lds_granules<{self.tile.cpp()}>"
+
+
+@dataclass(frozen=True)
 class StageBufferType(Type):
     """`float4 buf[calls]` -- the VGPR half of a global->LDS copy.
 
@@ -270,7 +335,7 @@ class SharedVecType(Type):
         return f"kittens::sv<{self.dtype.cpp}, {self.length}>"
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, eq=False)
 class RegVecType(Type):
     """A register vector: one entry per row (kind="col") or per column
     (kind="row") of the tile it came off.
@@ -326,6 +391,34 @@ class RegVecType(Type):
     def __repr__(self) -> str:
         u = ",uniform" if self.uniform else ""
         return f"rv<{self.dtype},{self.length},{self.kind}{u}>"
+
+    def _key(self):
+        """What makes two of these the same C++ type.
+
+        Not the tile. `rt<T,R,C,L>::row_vec` is `rv<T, C, rt_base<T,L>::
+        row_vec_layout>` (rt.cuh:78) -- the *number of rows* does not appear,
+        and neither does anything else about the tile beyond its dtype and its
+        layout. So the row_vec of a 16x16 col tile and the row_vec of a 32x16
+        col tile are one type, and the attention kernel needs them to be: its
+        running max is produced by reducing 16x16 score fragments and consumed
+        by `mul_col` on a 32x16 slice of the accumulator, which in C++ is the
+        same `rv_fl<16>` on both sides.
+
+        Carrying the tile in the field is still right -- it is what `cpp()`
+        spells and what makes the wrong lane layout unspellable -- but letting
+        dataclass equality fall out of it would reject that kernel for a
+        difference the compiler cannot see.
+        """
+        return (self.dtype, self.length, self.kind, self.tile.layout,
+                self.uniform)
+
+    def __eq__(self, other) -> bool:
+        if not isinstance(other, RegVecType):
+            return NotImplemented
+        return self._key() == other._key()
+
+    def __hash__(self) -> int:
+        return hash(self._key())
 
     def cpp(self) -> str:
         return f"typename {self.tile.cpp()}::{self.kind}_vec"

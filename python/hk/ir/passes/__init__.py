@@ -24,6 +24,10 @@ def run_all(ir: KernelIR) -> List["_verify.Warning_"]:
     """Lower and verify. Raises VerifyError if the kernel is wrong; returns
     warnings about kernels that are merely slow."""
     _verify.check_structure(ir)
+    # Before the passes, so the error points at the op the body wrote rather
+    # than at whatever lowering turned it into. The rule is about the traced
+    # program and no pass introduces a workgroup op inside a branch.
+    _verify.check_divergence(ir)
     for p in PIPELINE:
         p(ir)
     warns = _verify.check_layouts(ir) + _verify.check_budgets(ir)

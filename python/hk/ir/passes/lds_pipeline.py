@@ -60,12 +60,19 @@ class _State:
     in flight, still missing the register dependence, still unusable.
     """
 
-    #: Outstanding LDS ops in issue order: (id, count, value, kind). `kind` is
-    #: "read" or "write" -- lgkmcnt counts both, and a schedule that leaves
-    #: ds_writes in flight across a wait has to carry them in the immediate or
-    #: it retires more reads than it meant to. The handwritten GEMM calls that
-    #: term TAIL_OPS and computes it by hand; here it is just a queue entry.
-    queue: List[Tuple[int, int, Value, str]] = field(default_factory=list)
+    #: Outstanding LDS ops in issue order: (id, count, value, kind, cond).
+    #: `kind` is "read" or "write" -- lgkmcnt counts both, and a schedule that
+    #: leaves ds_writes in flight across a wait has to carry them in the
+    #: immediate or it retires more reads than it meant to. The handwritten
+    #: GEMM calls that term TAIL_OPS and computes it by hand; here it is just a
+    #: queue entry.
+    #:
+    #: `cond` records that the op was issued inside an `hk.if_`, so some lanes
+    #: of the wave may not have issued it at all. That is fine until a *counted*
+    #: wait has one in its tail: `lgkmcnt(n)` is a number, not a set, so a wave
+    #: that took the other side of the branch waits down to the wrong depth.
+    #: Only the tail matters -- see the wait handler.
+    queue: List[Tuple[int, int, Value, str, bool]] = field(default_factory=list)
     #: Tiles a wait has retired *and* named, so their register dependence is
     #: in place. Naming one again is legal and free; see the wait handler.
     bound: Dict[int, Value] = field(default_factory=dict)
@@ -76,7 +83,7 @@ class _State:
                       unbound=dict(self.unbound))
 
     def index_of(self, v: Value) -> Optional[int]:
-        for i, (vid, _, _, kind) in enumerate(self.queue):
+        for i, (vid, _, _, kind, _c) in enumerate(self.queue):
             if vid == id(v) and kind == "read":
                 return i
         return None
@@ -107,13 +114,26 @@ def _check_reads(op: Op, st: _State) -> None:
             )
 
 
-def _walk(ops: List[Op], st: _State, second: bool) -> _State:
+def _walk(ops: List[Op], st: _State, second: bool, cond: bool = False) -> _State:
     for op in ops:
         if op.body is not None:
-            # A loop (or any region). Run it twice and require agreement; see
-            # the module docstring.
-            after_first = _walk(op.body, st.copy(), second)
-            st = _walk(op.body, after_first, True)
+            inner = cond or op.opcode == "if"
+            if op.opcode == "if":
+                # Once. A branch body runs at most once per encounter, so the
+                # steady state a loop has to converge to does not exist here,
+                # and walking twice makes the second pass see the first pass's
+                # own conditionally-issued reads still in flight -- which gets
+                # reported as "writes a tile whose reads are in flight", a
+                # confident diagnosis of something the kernel never does. The
+                # tail rule below is what actually covers a branch: ops issued
+                # inside one are marked, and a *counted* wait that would have
+                # to count them is the error.
+                st = _walk(op.body, st, second, inner)
+            else:
+                # A loop. Run it twice and require agreement; see the module
+                # docstring.
+                after_first = _walk(op.body, st.copy(), second, inner)
+                st = _walk(op.body, after_first, True, inner)
             continue
 
         if op.opcode == "lds_wait_for":
@@ -158,9 +178,19 @@ def _walk(ops: List[Op], st: _State, second: bool) -> _State:
             cut = max(positions) if positions else -1
             # Everything issued after the last-named tile stays in flight, and
             # its read count is exactly the lgkmcnt to wait down to.
-            n = sum(c for _, c, _, _ in st.queue[cut + 1:])
+            n = sum(c for _, c, _, _, _cc in st.queue[cut + 1:])
+            if n and any(c for _, _, _, _, c in st.queue[cut + 1:]):
+                raise VerifyError(
+                    f"this lds_wait_for needs lgkmcnt({n}), but some of the "
+                    f"LDS ops it is counting were issued inside an hk.if_. A "
+                    f"wave that took the other side of the branch has fewer in "
+                    f"flight and this wait lets it run on past reads that have "
+                    f"not landed. Retire the conditional ops before the branch "
+                    f"closes, or use barrier(drain=True), which is lgkmcnt(0) "
+                    f"and does not count." + _at(op)
+                )
             named = {id(v) for v in op.operands}
-            for vid, _, v, kind in st.queue[: cut + 1]:
+            for vid, _, v, kind, _c in st.queue[: cut + 1]:
                 if kind == "write":
                     # A retired write needs no binding: nothing reads the
                     # registers it came from, and the LDS it wrote is read
@@ -197,7 +227,7 @@ def _walk(ops: List[Op], st: _State, second: bool) -> _State:
             # kernel that is correct until the scheduler moves something.
             if st.queue:
                 if not op.attrs.get("drain"):
-                    kinds = sorted({k for _, _, _, k in st.queue})
+                    kinds = sorted({k for _, _, _, k, _c in st.queue})
                     what = " and ".join(f"ds_{k}s" for k in kinds)
                     raise VerifyError(
                         f"barrier with {what} still in flight. s_barrier orders "
@@ -210,13 +240,13 @@ def _walk(ops: List[Op], st: _State, second: bool) -> _State:
                     )
                 # drain=True is lgkmcnt(0): it retires everything and binds
                 # nothing, exactly like load<true>.
-                for vid, _, _, kind in st.queue:
+                for vid, _, _, kind, _c in st.queue:
                     if kind == "read":
                         st.unbound[vid] = op
                 st.queue = []
             continue
 
-        if op.opcode == "load_shared":
+        if op.opcode in ("load_shared", "load_frag"):
             # Before _check_reads, and that order is load-bearing. `out=`
             # compiles to emit_into, which puts the destination at operands[0]
             # -- so a load into an in-flight tile looks to _check_reads like a
@@ -229,7 +259,7 @@ def _walk(ops: List[Op], st: _State, second: bool) -> _State:
             dst = op.dst
             if st.index_of(dst) is not None:
                 raise VerifyError(
-                    f"load_shared writes {dst.name} while its previous LDS "
+                    f"{op.opcode} writes {dst.name} while its previous LDS "
                     f"reads are still in flight. The earlier reads would land "
                     f"on top of the newer ones -- retire them with an "
                     f"lds_wait_for first." + _at(op)
@@ -238,7 +268,7 @@ def _walk(ops: List[Op], st: _State, second: bool) -> _State:
                 # kittens::load<true> ends in lgkmcnt(0), which retires every
                 # outstanding read, not only this tile's -- and binds none of
                 # them. Anything else in the queue becomes unbound.
-                for vid, _, _, kind in st.queue:
+                for vid, _, _, kind, _c in st.queue:
                     if kind == "read":
                         st.unbound[vid] = op
                 st.queue = []
@@ -246,7 +276,16 @@ def _walk(ops: List[Op], st: _State, second: bool) -> _State:
             else:
                 st.unbound.pop(id(dst), None)
                 st.bound.pop(id(dst), None)
-                st.queue.append((id(dst), op.attrs["lds_loads"], dst, "read"))
+                st.queue.append((id(dst), op.attrs["lds_loads"], dst,
+                                 "read", cond))
+            continue
+
+        if op.opcode == "store_frag":
+            # Two raw ds_write_b128 with no wait of their own -- unlike
+            # kittens::store, which ends in lgkmcnt(0). Nothing ever names them
+            # in a wait; they are here only to raise the immediate of every
+            # wait issued while they are in flight.
+            st.queue.append((id(op), 2, op.operands[0], "write", cond))
             continue
 
         if op.opcode == "stage_commit":
@@ -256,12 +295,12 @@ def _walk(ops: List[Op], st: _State, second: bool) -> _State:
             # while they are in flight.
             dst, buf = op.operands
             if op.attrs.get("wait"):
-                for vid, _, _, kind in st.queue:
+                for vid, _, _, kind, _c in st.queue:
                     if kind == "read":
                         st.unbound[vid] = op
                 st.queue = []
             else:
-                st.queue.append((id(op), buf.type.calls, dst, "write"))
+                st.queue.append((id(op), buf.type.calls, dst, "write", cond))
             continue
 
         _check_reads(op, st)
@@ -270,7 +309,7 @@ def _walk(ops: List[Op], st: _State, second: bool) -> _State:
 
 def lds_pipeline(ir: KernelIR) -> None:
     final = _walk(ir.body, _State(), False)
-    reads = [v for _, _, v, kind in final.queue if kind == "read"]
+    reads = [v for _, _, v, kind, _c in final.queue if kind == "read"]
     if reads:
         names = ", ".join(v.name for v in reads)
         raise VerifyError(

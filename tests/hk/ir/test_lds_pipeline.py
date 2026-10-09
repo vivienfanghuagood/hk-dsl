@@ -348,3 +348,76 @@ def test_a_tile_read_before_the_loops_wait_is_still_caught():
 
     with pytest.raises(VerifyError, match="still in flight"):
         _trace(inside)
+
+
+# -- conditional issue -------------------------------------------------------
+
+
+def test_a_counted_wait_may_not_count_conditional_ops():
+    """`lgkmcnt(n)` counts what *this* wave issued.
+
+    A wave that took the other side of an `hk.if_` has fewer reads in flight,
+    so the same `lgkmcnt(n)` lets it run on past reads that have not landed --
+    on some waves, on some schedules. The branch itself is fine; counting
+    across it is not.
+    """
+    def conditional_tail(o: hk.GL[fp32]):
+        sa, ta = _pair(32, 64)
+        sb, tb = _pair(16, 32)
+        a = ops.load_shared(sa, ta, wait=False)
+        with hk.if_(ops.s_gt(ops.block_idx.x, 0)):
+            ops.load_shared(sb, tb, wait=False)
+        ops.lds_wait_for(a)          # would be lgkmcnt(4), but only sometimes
+        ops.copy(a, out=a)
+
+    with pytest.raises(VerifyError, match="issued inside an hk.if_"):
+        _trace(conditional_tail)
+
+
+def test_the_error_names_both_ways_out():
+    def conditional_tail(o: hk.GL[fp32]):
+        sa, ta = _pair(32, 64)
+        sb, tb = _pair(16, 32)
+        a = ops.load_shared(sa, ta, wait=False)
+        with hk.if_(ops.s_gt(ops.block_idx.x, 0)):
+            ops.load_shared(sb, tb, wait=False)
+        ops.lds_wait_for(a)
+        ops.copy(a, out=a)
+
+    with pytest.raises(VerifyError) as e:
+        _trace(conditional_tail)
+    msg = str(e.value)
+    assert "Retire the conditional ops before the branch" in msg
+    assert "barrier(drain=True)" in msg
+
+
+def test_a_conditional_op_the_wait_does_not_count_is_fine():
+    """The rule is about the *tail*. Ops issued before the named tile are
+    retired by the wait regardless of how many of them there were, because
+    `lgkmcnt` counts down to a depth rather than counting them off."""
+    def conditional_head(o: hk.GL[fp32]):
+        sa, ta = _pair(32, 64)
+        sb, tb = _pair(16, 32)
+        with hk.if_(ops.s_gt(ops.block_idx.x, 0)):
+            ops.load_shared(sb, tb, wait=False)
+        a = ops.load_shared(sa, ta, wait=False)
+        ops.lds_wait_for(a)          # lgkmcnt(0): nothing after a
+        ops.copy(a, out=a)
+
+    _trace(conditional_head)
+
+
+def test_a_draining_barrier_does_not_count_and_so_is_allowed():
+    """`barrier(drain=True)` is lgkmcnt(0), which is the same instruction on
+    every wave however many ops it issued."""
+    def drained(o: hk.GL[fp32]):
+        sa, ta = _pair(32, 64)
+        sb, tb = _pair(16, 32)
+        a = ops.load_shared(sa, ta, wait=False)
+        with hk.if_(ops.s_gt(ops.block_idx.x, 0)):
+            ops.load_shared(sb, tb, wait=False)
+        ops.barrier(drain=True)
+        ops.lds_wait_for(a)          # a pure re-bind now: nothing outstanding
+        ops.copy(a, out=a)
+
+    _trace(drained)
