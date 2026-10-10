@@ -545,12 +545,20 @@ def _kernel_for(head_dim: int, causal: bool, scale: Optional[float],
     return k
 
 
-def _why(q, k, v, causal):
+def _why(q, k, v, causal, *, require_contiguous: bool = True):
     """Why this call cannot run on the kernel, or '' if it can.
 
     Separate from `attention` because a drop-in SDPA has to *decide* without
     raising -- it falls back to torch -- while a direct call should get the
     reason as an exception. One list of rules, two policies.
+
+    `require_contiguous=False` asks the question the drop-in needs: *would*
+    this run if the tensors were made contiguous? Every other rule here reads
+    shapes and dtypes only, so asking it costs nothing, and asking it first is
+    what stops a call that is going to fall back from paying for three copies
+    on its way to not using them. Measured on a SigLIP tower (head_dim 72,
+    which this kernel does not have): copying first made the patched path 16%
+    slower than no patch at all.
     """
     import torch  # noqa: PLC0415
 
@@ -558,7 +566,8 @@ def _why(q, k, v, causal):
         return f"bf16 only, got {q.dtype}/{k.dtype}/{v.dtype}"
     if q.dim() != 4 or k.dim() != 4 or v.dim() != 4:
         return f"expects (B, H, N, D), got {q.dim()}/{k.dim()}/{v.dim()} dims"
-    if not (q.is_contiguous() and k.is_contiguous() and v.is_contiguous()):
+    if require_contiguous and not (
+            q.is_contiguous() and k.is_contiguous() and v.is_contiguous()):
         return "q, k and v must be contiguous (B, H, N, D)"
     if k.shape != v.shape:
         return f"k and v must match: {tuple(k.shape)} vs {tuple(v.shape)}"

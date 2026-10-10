@@ -136,3 +136,78 @@ def test_the_op_behind_it_is_a_torch_custom_op():
     op = sdpa.op_for(128, False, None, 1024)
     assert "attn_fwd_d128" in str(op)
     assert sdpa.op_for(128, False, None, 1024) is op
+
+
+# ------------------------------------------------- the strided-input contract
+#
+# vLLM's vision towers hand SDPA a `(b, s, h, d)` tensor permuted to
+# `(b, h, s, d)` -- never contiguous -- and do it for every tower, including
+# the ones whose head_dim this kernel does not have. Both halves of that are
+# tested here because the first measurement of it found a 16% regression on
+# the second half.
+
+
+def _vit_qkv(heads=16, n=577, head_dim=64):
+    """Exactly what `vllm...vit_attn_wrappers.apply_sdpa` passes on."""
+    g = torch.Generator(device="cuda").manual_seed(0)
+    bshd = [torch.randn(1, n, heads, head_dim, device="cuda",
+                        dtype=torch.bfloat16, generator=g) for _ in range(3)]
+    return tuple(x.permute(0, 2, 1, 3) for x in bshd)
+
+
+def test_a_permuted_vit_input_is_not_a_reason_to_fall_back():
+    q, k, v = _vit_qkv()
+    assert not q.is_contiguous()
+    assert sdpa.why_unsupported(q, k, v) == ""
+
+
+def test_a_permuted_vit_input_computes_the_right_answer():
+    q, k, v = _vit_qkv()
+    sdpa.reset_stats()
+    got = sdpa.scaled_dot_product_attention(q, k, v, scale=64 ** -0.5)
+    want = F.scaled_dot_product_attention(q, k, v, scale=64 ** -0.5)
+    assert sdpa.STATS == {"kernel": 1, "fallback": 0}
+    torch.testing.assert_close(got, want, **TOL)
+
+
+def test_a_call_that_falls_back_does_not_copy_anything_first(monkeypatch):
+    # The regression this guards: `.contiguous()` ran before the support
+    # check, so a SigLIP tower (head_dim 72) paid for three copies and then
+    # handed torch the original strided tensors anyway -- 16% slower than not
+    # patching at all. The fix is an ordering, so the test is on the ordering.
+    q, k, v = _vit_qkv(head_dim=72)
+    calls = []
+    real = torch.Tensor.contiguous
+
+    def counting(self, *a, **kw):
+        calls.append(tuple(self.shape))
+        return real(self, *a, **kw)
+
+    monkeypatch.setattr(torch.Tensor, "contiguous", counting)
+    sdpa.reset_stats()
+    got = sdpa.scaled_dot_product_attention(q, k, v, scale=72 ** -0.5)
+    monkeypatch.undo()
+
+    assert sdpa.STATS == {"kernel": 0, "fallback": 1}
+    assert calls == [], f"copied {calls} on the way to falling back"
+    torch.testing.assert_close(
+        got, F.scaled_dot_product_attention(q, k, v, scale=72 ** -0.5))
+
+
+def test_the_fallback_records_why():
+    sdpa.reset_stats()
+    q, k, v = _vit_qkv(head_dim=72)
+    sdpa.scaled_dot_product_attention(q, k, v)
+    assert len(sdpa.FALLBACKS) == 1
+    assert "head_dim 72" in next(iter(sdpa.FALLBACKS.values()))
+
+
+def test_the_fallback_record_is_bounded():
+    # A serving process must not grow a dict because someone sent it a new
+    # sequence length.
+    sdpa.reset_stats()
+    for n in range(sdpa._FALLBACK_CAP + 20):
+        q, k, v = _vit_qkv(n=64 + n, head_dim=72)
+        sdpa.scaled_dot_product_attention(q, k, v)
+    assert len(sdpa.FALLBACKS) == sdpa._FALLBACK_CAP
+    assert sdpa.STATS["fallback"] == sdpa._FALLBACK_CAP + 20

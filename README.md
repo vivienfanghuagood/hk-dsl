@@ -405,11 +405,70 @@ times -- the patch would be slower than what it replaces:
   patch would add two copies to save one pass.
 
 Both are written down as missing *kernel* work rather than attempted as
-patches. Neither framework is installed on the bench pod, so the patches are
-reported as unverified end to end; what is verified is the layer underneath
-them (`tests/hk/gpu/test_sdpa.py`, `tests/hk/gpu/test_torch_op.py`), including
-`torch.compile(fullgraph=True)` and CUDA-graph capture and replay. The whole
-GPU tier is 225 tests.
+patches.
+
+**What the patch can and cannot reach in vLLM**, read against vLLM at 1dfe9fb
+and checked at runtime by `hk.integration.vllm.probe()`:
+
+* **The decoder's attention is out of reach, structurally.** vLLM V1 keeps KV
+  in a paged cache and dispatches through `AttentionImpl.forward(..., kv_cache,
+  block_table, ...)` -- `RocmAttentionImpl` or `TritonAttentionImpl` on this
+  chip. There is no dense `(B, H, N, D)` tensor on that path for an SDPA
+  drop-in to intercept. Reaching it needs a *paged* kernel registered through
+  `vllm.v1.attention.backends.registry.register_backend`, which is kernel work
+  `hk.ops.attn` has not done.
+* **The vision tower's attention is in reach, exactly.**
+  `mm_encoder_attention._forward_sdpa` -> `torch.ops.vllm.torch_sdpa_wrapper`
+  -> `apply_sdpa` is a literal `F.scaled_dot_product_attention` on a dense
+  `(B, H, N, D)` tensor, and patching `F` reaches it because the attribute is
+  resolved on the module at call time.
+* **It is not the default on RDNA3.** `RocmPlatform.get_vit_attn_backend`
+  prefers the Triton flash-attention whenever `flash_attn_triton_available()`;
+  `--mm-encoder-attn-backend TORCH_SDPA` selects it deliberately, and that is a
+  supported configuration rather than a trick.
+
+An earlier version of this file said `VLLM_ATTENTION_BACKEND=TORCH_SDPA` was
+the lever for the decode path. That was wrong twice over: the variable no
+longer exists in current vLLM, and `AttentionBackendEnum.TORCH_SDPA` carries
+the comment "this tag is only used for ViT".
+
+Measured on the exact call the ViT path makes -- `(b, s, h, d)` permuted to
+`(b, h, s, d)`, so never contiguous -- against aotriton on a W7900D:
+
+```
+tower                      B,H,N,D        path           ms   vs fp32   speedup
+CLIP ViT-L/14-336 (LLaVA)  1,16,577,64    hk (kernel) 0.0978   0.00369     1.69x
+                                          torch       0.1657   0.00185     1.00x
+InternViT-300M             1,16,1025,64   hk (kernel) 0.1508   0.00243     2.49x
+                                          torch       0.3759   0.00105     1.00x
+SigLIP so400m              1,16,729,72    hk (back)   0.1945   0.00128     0.95x
+                                          torch       0.1850   0.00128     1.00x
+Qwen2.5-VL ViT             1,16,1024,80   hk (back)   0.3406   0.00113     0.97x
+                                          torch       0.3295   0.00113     1.00x
+```
+
+`hk.ops.attn` has head_dim 64 and 128, so CLIP-L/14 (LLaVA, Pixtral,
+InternViT) fits and SigLIP's 72 and Qwen2-VL's 80 fall back. The fallback rows
+are the reason this table exists: the first measurement of them was 0.84x and
+0.90x, because `scaled_dot_product_attention` copied `q`, `k` and `v`
+contiguous *before* asking whether the kernel could take them -- three copies
+thrown away, and torch handed the original strided tensors anyway. Deciding
+first and memoising the verdict took it to 0.95x and 0.97x, the remainder
+being the Python predicate itself on a 0.19 ms call.
+
+The drop-in now counts which branch it took (`hk.ops.sdpa.STATS`), because a
+patch that silently falls back produces identical answers and no speedup,
+which is indistinguishable from one that works unless something counts.
+
+`tools/hk-bench/vllm_verify.py` is the verification: `--probe` reports what the
+installed vLLM actually does, `--unit` is the table above, and `--e2e MODEL`
+runs a real multimodal request twice and reads the counters. The first two
+need no vLLM and are green; `--e2e` has not been run, because no vLLM is
+installed on the bench pod.
+
+The layer underneath is covered by the GPU tier -- 225 tests including
+`torch.compile(fullgraph=True)`, CUDA-graph capture and replay, and the
+strided-ViT-input contract in both directions.
 
 `python3 -m hk.integration --warm -j 32` builds the six distinct attention
 registrations in 17.8 s, which is the number that matters for a server's first
