@@ -4,7 +4,7 @@ Importing this module builds the IR for nothing: kernels are traced on first
 use and compiled on first launch. `import hk` therefore costs no hipcc.
 """
 
-from . import attn, elementwise, fused, gemm, norm, quant, sdpa
+from . import attn, elementwise, fused, gemm, norm, paged, quant, sdpa
 from .attn import attention
 from .elementwise import (
     abs,  # noqa: A004 -- torch.abs, not the builtin
