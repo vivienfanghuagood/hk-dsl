@@ -40,12 +40,26 @@ def register() -> None:
     slower server, not a broken one."""
     if not enabled():
         return
+    notes = []
+    # The decoder backend is a second opt-in, not something this one implies.
+    # On ROCm it has to be registered *over* an existing enum member (see
+    # vllm_backend.SLOT), and the member it overrides is the one ROCm picks by
+    # default -- so enabling it quietly would replace a server's attention
+    # without anyone asking for it. It also has to happen in every process
+    # that builds a model, which is what a general plugin is for.
+    if os.environ.get("HK_VLLM_BACKEND", "0") not in ("0", "", "off", "no"):
+        try:
+            from . import vllm_backend  # noqa: PLC0415
+
+            slot = os.environ.get("HK_VLLM_BACKEND")
+            notes.append(vllm_backend.register(
+                slot if slot not in ("1", "on", "yes", "true") else None))
+        except BaseException as e:  # noqa: BLE001
+            notes.append(f"backend not registered ({type(e).__name__}: {e})")
     try:
         from . import vllm as hkv  # noqa: PLC0415
 
-        report = hkv.apply()
+        notes.append(hkv.apply())
     except BaseException as e:  # noqa: BLE001
-        print(f"[hk] vllm plugin failed, leaving torch attention in place: "
-              f"{type(e).__name__}: {e}", flush=True)
-        return
-    print(f"[hk] {report} (pid {os.getpid()})", flush=True)
+        notes.append(f"sdpa not patched ({type(e).__name__}: {e})")
+    print(f"[hk] {'; '.join(notes)} (pid {os.getpid()})", flush=True)
