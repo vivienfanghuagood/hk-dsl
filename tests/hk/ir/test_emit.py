@@ -138,3 +138,53 @@ def test_shipped_kernels_only_exist_where_the_library_supports_them():
     assert "gelu_fp32" in KERNELS
     assert "gelu_bf16" not in KERNELS and "gelu_fp16" not in KERNELS
     assert "neg_bf16" in KERNELS  # a multiply, so every dtype has it
+
+
+# ------------------------------------------------------------- load_scalar
+#
+# The primitive a paged kernel is built on. A page table turns "which block"
+# into a value fetched from memory, which `block_idx` and arithmetic on it
+# cannot express at all.
+
+
+def _scalar_kernel(coord=None, name="scalar_probe"):
+    mk = coord or hk.elem_coord
+
+    # hk.i32 rather than a bare `i32`: PEP 563 makes these annotations strings
+    # resolved against this module's globals, not against this function's.
+    def body(table: hk.GL[hk.i32], x: hk.GL[bf16], o: hk.GL[bf16]):
+        blk = hk.load_scalar(table, mk(0, 0, 0, hk.block_idx.x))
+        t = hk.rt(bf16, 16, 64)
+        hk.store(o, hk.load(x, hk.elem_coord(blk, 0, 0, 0), t),
+                 hk.elem_coord(0, 0, 0, 0))
+
+    return hk.kernel(body, arch="gfx1100", warps=1, name=name,
+                     grid=lambda p: (1, 1, 1))
+
+
+def test_load_scalar_emits_the_library_call():
+    src = _scalar_kernel().source("bare")
+    # A plain int, so it composes with s_* and elem_coord like block_idx does.
+    assert "const int scalar = kittens::load_scalar(g.table," in src
+
+
+def test_the_loaded_value_reaches_an_address():
+    # The whole point of the op: the page number indexes a load.
+    src = _scalar_kernel().source("bare")
+    coords = [l for l in src.splitlines() if "kittens::coord<>" in l]
+    assert any("scalar" in l for l in coords), coords
+
+
+def test_load_scalar_refuses_a_tile_coordinate():
+    with pytest.raises(TypeError, match="element coordinate"):
+        _scalar_kernel(coord=hk.tile_coord, name="p_tile").source("bare")
+
+
+def test_load_scalar_refuses_a_float_global():
+    def body(x: hk.GL[bf16], o: hk.GL[bf16]):
+        hk.load_scalar(x, hk.elem_coord(0, 0, 0, 0))
+        hk.store(o, hk.zeros(hk.rt(bf16, 16, 64)), hk.elem_coord(0, 0, 0, 0))
+
+    with pytest.raises(TypeError, match="must be i32"):
+        hk.kernel(body, arch="gfx1100", warps=1, name="p_float",
+                  grid=lambda p: (1, 1, 1)).source("bare")

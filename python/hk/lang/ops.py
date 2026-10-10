@@ -286,6 +286,45 @@ def store_scalar(dst: Value, val: Value, idx: Value) -> None:
     _b().emit("store_scalar", [dst, val, idx])
 
 
+def load_scalar(src: Value, idx: Value) -> Value:
+    """One element of a global -> a wave-uniform integer.
+
+    The read counterpart of `store_scalar`, and the primitive a paged kernel
+    needs: `block_table[req][i]`, `seq_lens[req]` and `slot_mapping[t]` are all
+    "fetch an integer from memory, then index with it". Without it the IR can
+    only index by `block_idx` and arithmetic on it, which cannot express a page
+    table at all.
+
+    The result is a plain scalar, so it composes with `s_add`, `elem_coord`
+    and `hk.range` exactly like `block_idx` does -- a loop whose trip count is
+    a loaded value, or a tile coordinate whose batch index is a page number,
+    needs nothing further.
+
+    Uniform by construction (`readfirstlane` in the emitted call): the value is
+    the same for every lane, which is what keeps the address arithmetic built
+    on it in SGPRs. A page index that is accidentally per-lane costs a VGPR for
+    every value derived from it, and on this architecture that is how a kernel
+    that fits becomes a kernel that spills.
+    """
+    _expect(src, GlobalType, "load_scalar source")
+    _expect(idx, CoordType, "load_scalar index")
+    if idx.type.unit != "element":
+        raise TypeError(
+            f"load_scalar takes an element coordinate, got {idx.type}. It "
+            f"reads one element, so a tile-unit index would be off by the "
+            f"tile size -- use hk.elem_coord."
+        )
+    if src.type.dtype not in (i32,):
+        raise TypeError(
+            f"load_scalar reads an integer index, so the global must be i32, "
+            f"not {src.type.dtype.name}. A page table, a sequence length and a "
+            f"slot mapping are all int32 tensors; if you want a float out of "
+            f"memory, that is hk.load into a vector."
+        )
+    return _b().emit("load_scalar", [src, idx], ScalarType(i32),
+                     name="scalar")
+
+
 def lds_loads(tile: RegTileType, src: SharedTileType) -> int:
     """How many ds_read instructions `load_shared` issues for this pair.
 
@@ -1514,7 +1553,8 @@ __all__ = [
     "coord", "tile_coord", "elem_coord",
     "batch", "depth", "rows", "cols",
     *(f"s_{s}" for s in SCALARS), *FILLS,
-    "load", "store", "store_scalar", "load_shared", "store_shared", "alloc_shared",
+    "load", "store", "store_scalar", "load_scalar", "load_shared",
+    "store_shared", "alloc_shared",
     "granules", "load_frag", "store_frag",
     "shared_at", "subtile", "setprio", "lds_loads", "lds_wait_for",
     "stage_buffer", "stage_load", "stage_commit", "vm_wait",

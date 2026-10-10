@@ -502,6 +502,13 @@ class Emitter:
             f"{self.name(idx)});"
         )
 
+    def _op_load_scalar(self, op: Op) -> None:
+        src, idx = op.operands
+        self.w(
+            f"const int {self.name(op.result)} = kittens::load_scalar("
+            f"{self.name(src)}, {self.name(idx)});"
+        )
+
     def _op_store_shared_vec(self, op: Op) -> None:
         dst, val, index = op.operands
         self.w(f"kittens::store({self._sv_entry(dst, index)}, {self.name(val)});")
