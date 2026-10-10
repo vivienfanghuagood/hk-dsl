@@ -584,4 +584,58 @@ strided-ViT-input contract in both directions.
 registrations in 17.8 s, which is the number that matters for a server's first
 request.
 
+**Phase 7: the decoder, which the SDPA patch structurally could not reach.**
+vLLM V1 keeps KV in a paged cache and dispatches through `AttentionImpl`, so
+the way in is to *be* a backend. `hk/ops/paged.py` is the kernel and
+`hk/integration/vllm_backend.py` registers it.
+
+The cache layout decides the kernel. `gl` derives its strides from its dims,
+so vLLM's default `(block, token, head, dim)` cannot yield a contiguous
+`(block_size, head_dim)` tile for one head. A backend declares its own shape,
+so this one declares `(2, num_blocks, num_kv_heads, block_size, head_size)` --
+exactly `gl`'s `(b, d, r, c)`, so one page of one head is a plain tile load.
+The price is that the cache *update* becomes a strided scatter, and that is
+the right way round: a decode step reads `seq_len` pages per layer and writes
+one.
+
+Running Qwen3-0.6B, four prompts x 32 greedy tokens, three runs of each
+backend alternating:
+
+```
+backend        runs (ms)            min     median   spread
+hk             484.0 466.3 483.7    466.3   483.7      4%
+TRITON_ATTN    576.9 569.6 567.4    567.4   569.6      2%
+```
+
+**1.18x on medians, 1.22x on minima**, against a within-backend spread of
+2-4%, so the gap is five to ten times the noise. Three of the four
+continuations are token-identical; the fourth is a degenerate repetition where
+both backends loop and they loop differently.
+
+Most of that margin was not the kernel. The first working version was *slower*
+than Triton -- 731.6 ms -- because `forward` called `.tolist()` on
+`query_start_loc` and `seq_lens` to decide which requests were decoding. That
+is a device sync per layer per step, 28 of them on this model, in front of a
+kernel that takes microseconds. `max_query_len` is already a host int in the
+metadata and a pure-decode step has `query` already in request order, so
+neither the sync nor a gather is needed: 731.6 -> 484.2 ms, and only then does
+the kernel's own speed become the thing being measured.
+
+Four facts about vLLM's plugin surface are written down in
+`vllm_backend.py` because each cost a run to find: `AttentionBackendEnum` is
+closed and `register_backend` overrides rather than adds; the reserved
+`CUSTOM` member is rejected by `RocmPlatform`'s allowlist, so the override has
+to target a member the platform accepts (`TRITON_ATTN`, which is also ROCm's
+default -- hence the separate `HK_VLLM_BACKEND=1` opt-in); `get_name()` must
+answer with the member it overrides because vLLM round-trips the name through
+the enum; and short prompts cannot use the dense kernel and cannot be padded
+into it, because zero-padded keys are not masked out, they are keys with score
+zero and `exp(0)` is a real weight in the softmax sum.
+
+Scope, stated rather than discovered: no paged *prefill* kernel, so prefix
+caching and chunked prefill are refused rather than silently attending over
+part of a context; and no split along the KV axis, so one workgroup per
+(request, kv head) walks the whole sequence and the machine is under-used at
+low batch. Both are the next measurable steps.
+
 See `.claude/plans/` for the full plan and its gates.
