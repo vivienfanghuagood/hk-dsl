@@ -177,6 +177,7 @@ def _build():
             self.scale = float(scale)
             self.num_kv_heads = num_kv_heads
             self.group = num_heads // num_kv_heads
+            self._buf_cache = {}
             HKAttentionBackend.validate_head_size(head_size)
 
         # -- the cache -----------------------------------------------------
@@ -279,21 +280,55 @@ def _build():
                 out = hk_attn.attention(q, k, v, causal=True, scale=self.scale)
             output[lo:lo + m] = out[0].transpose(0, 1).reshape(m, h, d)
 
-        def _decode_all(self, query, output, k_cache, v_cache, attn_metadata,
-                        n):
-            """Every request has exactly one token. No gather, no sync."""
+        def _buffers(self, n, splits, device, dtype):
+            """Scratch for one decode step, allocated once per shape.
+
+            Allocating these per call is 36 allocations and 36 frees per step
+            on this model. That is the same class of mistake as the host sync
+            that made the first version slower than Triton -- a kernel that
+            takes microseconds does not get to be preceded by millisecond
+            bookkeeping -- so they are cached on the impl and keyed by the
+            shape that decides them.
+            """
             import torch
 
             g, hkv, d = self.group, self.num_kv_heads, self.head_size
             tile = hk_paged.Q_TILE
-            q = torch.zeros(n, hkv, tile, d, device=query.device,
-                            dtype=query.dtype)
+            key = (n, splits, device, dtype)
+            buf = self._buf_cache.get(key)
+            if buf is None:
+                q = torch.zeros(n, hkv, tile, d, device=device, dtype=dtype)
+                out = torch.empty_like(q)
+                if splits > 1:
+                    o_part = torch.empty(n * splits, hkv, tile, d,
+                                         device=device, dtype=torch.float32)
+                    ml = torch.empty(n * splits, hkv, 2, tile, device=device,
+                                     dtype=torch.float32)
+                else:
+                    o_part = ml = None
+                buf = self._buf_cache[key] = (q, out, o_part, ml)
+            return buf
+
+        def _decode_all(self, query, output, k_cache, v_cache, attn_metadata,
+                        n):
+            """Every request has exactly one token. No gather, no sync."""
+            g, hkv, d = self.group, self.num_kv_heads, self.head_size
+            # How empty the machine is decides the schedule. `max_seq_len` is
+            # a host int in the metadata, so this costs no sync.
+            pages = max(1, -(-attn_metadata.max_seq_len // hk_paged.KV_BLOCK))
+            splits = hk_paged.plan_splits(n, hkv, pages)
+            q, out, o_part, ml = self._buffers(n, splits, query.device,
+                                               query.dtype)
             q[:, :, :g] = query[:n].view(n, hkv, g, d)
-            o = torch.empty_like(q)
-            hk_paged.KERNELS[d](
-                q, k_cache, v_cache,
-                attn_metadata.block_table[:n], attn_metadata.seq_lens[:n], o)
-            output[:n] = o[:, :, :g].reshape(n, hkv * g, d)
+            table = attn_metadata.block_table[:n]
+            lens = attn_metadata.seq_lens[:n]
+            if splits > 1:
+                hk_paged.split_kernel(d, splits)(
+                    q, k_cache, v_cache, table, lens, o_part, ml)
+                hk_paged.merge_splits(o_part, ml, splits, out)
+            else:
+                hk_paged.KERNELS[d](q, k_cache, v_cache, table, lens, out)
+            output[:n] = out[:, :, :g].reshape(n, hkv * g, d)
 
         def _decode(self, query, output, k_cache, v_cache, attn_metadata,
                     starts, rows):

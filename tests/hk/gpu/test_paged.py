@@ -122,3 +122,62 @@ def test_garbage_past_the_sequence_end_is_not_read():
     rel = (clean - want[:, :, :group]).abs().max().item() / \
         want[:, :, :group].abs().max().item()
     assert rel < 5e-2
+
+
+# ------------------------------------------------------------ split along KV
+#
+# The same answer, computed by `splits` workgroups that each see part of the
+# sequence and then combine. The combination is the part that can be wrong in
+# a way the unsplit kernel cannot: each split's softmax is normalised against
+# its own maximum, so merging means rescaling by the difference of maxima, and
+# getting that backwards is a plausible-looking answer rather than a crash.
+
+
+def _run_split(seq_lens, splits, **kw):
+    q, k_cache, v_cache, table, lens, group = _case(seq_lens, **kw)
+    d = q.shape[-1]
+    r, hkv = q.shape[0], q.shape[1]
+    o_part = torch.empty(r * splits, hkv, TILE, d, device="cuda",
+                         dtype=torch.float32)
+    ml = torch.empty(r * splits, hkv, 2, TILE, device="cuda",
+                     dtype=torch.float32)
+    paged.split_kernel(d, splits)(q, k_cache, v_cache, table, lens,
+                                  o_part, ml)
+    out = torch.empty(r, hkv, TILE, d, device="cuda", dtype=torch.float32)
+    paged.merge_splits(o_part, ml, splits, out)
+    want = _reference(q, k_cache, v_cache, table, lens, group)
+    got = out[:, :, :group]
+    want = want[:, :, :group]
+    return (got - want).abs().max().item() / want.abs().max().item()
+
+
+@pytest.mark.parametrize("splits", [1, 2, 4, 8])
+def test_splitting_the_kv_axis_gives_the_same_answer(splits):
+    assert _run_split([PAGE * 8], splits) < 5e-2
+
+
+@pytest.mark.parametrize("splits", [2, 4])
+def test_more_splits_than_pages(splits):
+    # The planner caps splits at the page count, but the kernel must not rely
+    # on that: a split with no pages writes m = -inf and l = 0 and has to drop
+    # out of the merge rather than poison it with a NaN.
+    assert _run_split([PAGE], splits) < 5e-2
+
+
+@pytest.mark.parametrize("splits", [2, 4])
+def test_split_with_a_ragged_tail(splits):
+    assert _run_split([PAGE * 5 + 11], splits) < 5e-2
+
+
+def test_splits_agree_with_the_unsplit_kernel():
+    # Same inputs, two schedules. They are not required to be bit-identical --
+    # the splits sum in a different order -- but a disagreement bigger than
+    # bf16 rounding means the merge is wrong, not the arithmetic.
+    seq = [PAGE * 6 + 3]
+    a = _run_split(seq, 1)
+    b = _run_split(seq, 4)
+    assert abs(a - b) < 1e-2, f"unsplit {a:.4f} vs split {b:.4f}"
+
+
+def test_mixed_lengths_with_splits():
+    assert _run_split([PAGE * 7, PAGE, PAGE * 3 + 5], 4) < 5e-2

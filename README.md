@@ -647,10 +647,47 @@ and extra requests fill it for free. Triton starts near the bandwidth limit
 and degrades as requests compete for it (42.0 -> 61.5). The two cross at
 batch 32, which is the only cell hk wins, and it wins it by 4%.
 
-So the kernel is correct, it is integrated, and it is not yet worth running:
-the missing split is worth something like 25x at low batch and nothing at
-all at the batch where hk already wins. That is the next thing to build, and
-the number above is what it has to move.
+**Splitting the KV axis closes most of it.** `paged_decode_split_kernel` cuts
+the page range `splits` ways and writes a partial `(O, m, l)` per split;
+`merge_splits` combines them. How many ways was measured rather than reasoned
+(`tools/hk-bench/paged_splits.py`, fifteen shapes), and the first guess was
+wrong by an order of magnitude: the best split at every point puts
+`n_reqs * n_kv_heads * splits` near **a thousand** workgroups, not the 96 that
+"two per WGP" suggests -- which is the right instinct for a twelve-warp
+workgroup and wrong for a one-warp one. At batch 16 the old rule asked for one
+split, i.e. 128 workgroups of a single warp each walking 128 pages in series.
+
+```
+                 ms / decode step
+ctx   batch   before   split   +planner   triton   ratio
+1024      1    54.43   48.60     49.16     42.01   1.17x
+1024      4    54.60   51.66     51.10     42.83   1.19x
+1024     16    57.65   57.65     54.46     46.54   1.17x
+1024     32    59.23   59.68     59.59     61.53   0.97x   <- win
+4096      1    82.68   51.10     50.67     42.97   1.18x
+4096      4    83.09   61.65     53.51     45.97   1.16x
+4096      8    83.86   71.20     58.06     49.13   1.18x
+4096     16    91.74   91.29     64.54     56.78   1.14x
+```
+
+Worst case 1.92x -> 1.19x. Standalone, the kernel now reaches 56% of the
+card's 864 GB/s at ctx 4096 batch 16 and 76% at ctx 16384 batch 32, against
+1.9% before.
+
+**And the remaining gap is flat, which says what it is.** 1.14-1.19x at every
+shape is not a kernel that is uniformly slower -- a kernel-speed difference
+would grow with context, as the 1.92x did. It is a constant ~7-9 ms per step,
+or ~0.2 ms per layer, and the backend's `forward` issues about a dozen small
+torch ops per layer around the kernel: the query pad copy, the output copy,
+two scatters for the cache update, and six or seven elementwise passes in
+`merge_splits`. At ROCm's launch cost that is the whole difference. It is the
+same class of mistake as the `.tolist()` that made the first version slower
+than Triton, one level down.
+
+So: the kernel is no longer the problem and the wrapper is. Folding the merge
+and the cache update into kernels, and keeping the pad and the output copy out
+of the per-layer path, is what the next round has to do -- and the flatness of
+that column is the evidence that it is worth doing.
 
 Four facts about vLLM's plugin surface are written down in
 `vllm_backend.py` because each cost a run to find: `AttentionBackendEnum` is

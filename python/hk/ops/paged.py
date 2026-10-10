@@ -181,8 +181,222 @@ def paged_decode_kernel(name: str, *, head_dim: int = 128,
                    max_vgprs=max_vgprs, min_occupancy=min_occupancy)
 
 
+def paged_decode_split_kernel(name: str, *, head_dim: int = 128,
+                              splits: int = 4, kv_block: int = KV_BLOCK,
+                              scale: Optional[float] = None,
+                              max_vgprs: int = 256, min_occupancy: int = 1):
+    """The same walk, cut `splits` ways along the KV axis.
+
+    Why this exists, measured rather than assumed. Without it one workgroup
+    per (request, kv head) walks the whole context, so a batch-1 step on
+    Qwen3-8B launches 8 workgroups of one warp each on a 48-WGP GPU. Going
+    from 1024 to 4096 tokens of context cost that kernel +28.2 ms/step against
+    vLLM's Triton backend's +0.97 -- 16 GB/s against 469, or 1.9% of this
+    card's bandwidth against 54%. Decode attention is a bandwidth problem and
+    the only way to use the bandwidth is to put the machine on it.
+
+    Each workgroup produces a *partial* softmax over its page range: the
+    unnormalised O, the running max m, and the running sum l. It does not
+    divide, because a split's l is not the sequence's l. `merge_splits` below
+    combines them.
+
+    `splits` is a constexpr rather than a grid dimension read from a tensor,
+    so the page range is compile-time arithmetic and a split past the end is
+    a branch the workgroup takes once. A handful of instantiations covers
+    every batch size; they are cached like any other schedule.
+    """
+    if head_dim % 16 or kv_block % 16:
+        raise ValueError("head_dim and kv_block must be multiples of 16")
+    d_frags, kv_frags = head_dim // 16, kv_block // 16
+    scale_l2e = (scale if scale is not None else head_dim ** -0.5) * math.log2(math.e)
+
+    ty_q = _ops.rt(bf16, 16, 16, "row")
+    ty_k = _ops.rt(bf16, 16, 16, "row")
+    ty_s = _ops.rt(fp32, 16, Q_TILE, "col")
+    ty_o = _ops.rt(fp32, 16, Q_TILE, "col")
+    ty_v = _ops.rt(bf16, 16, 16, "row")
+    ty_vec = _ops.row_vec(ty_s)
+
+    def body(q, k_cache, v_cache, block_table, seq_lens, o_part, ml_part):
+        split = _ops.block_idx.x
+        kv_head = _ops.block_idx.y
+        req = _ops.block_idx.z
+
+        seq_len = _ops.load_scalar(seq_lens, _ops.elem_coord(0, 0, 0, req))
+        n_pages = _ops.s_cdiv(seq_len, kv_block)
+        per = _ops.s_cdiv(n_pages, splits)
+        lo = split * per
+        hi = _ops.s_min(n_pages, lo + per)
+
+        q_r = [_ops.load(q, _ops.elem_coord(req, kv_head, 0, 16 * kk), ty_q)
+               for kk in range(d_frags)]
+        o_c = [_ops.zeros(ty_o) for _ in range(d_frags)]
+        m_run = _ops.neg_infty_vec(ty_vec)
+        l_run = _ops.zeros_vec(ty_vec)
+
+        # A split past the end of a short sequence contributes nothing. It
+        # still has to write, because the merge reads every split's slot --
+        # m = -inf and l = 0 make it weightless there.
+        for pi in _ops.range(_ops.s_max(hi - lo, 0)):
+            page = _ops.load_scalar(block_table,
+                                    _ops.elem_coord(0, 0, req, lo + pi))
+            with _ops.scope():
+                s_f = [_ops.zeros(ty_s) for _ in range(kv_frags)]
+                for kk in range(d_frags):
+                    for n in range(kv_frags):
+                        with _ops.scope():
+                            k_f = _ops.load(
+                                k_cache,
+                                _ops.elem_coord(page, kv_head, 16 * n,
+                                                16 * kk), ty_k)
+                            _ops.mma_ABt(k_f, q_r[kk], s_f[n], out=s_f[n])
+                for n in range(kv_frags):
+                    _ops.mul(s_f[n], scale_l2e, out=s_f[n])
+
+                valid = _ops.s_sub(seq_len, (lo + pi) * kv_block)
+                with _ops.if_(_ops.s_lt(valid, kv_block)):
+                    for n in range(kv_frags):
+                        _ops.lower_fill(s_f[n], _ops.s_sub(valid, 16 * n),
+                                        NEG_INF, out=s_f[n])
+
+                m_old = _ops.copy(m_run)
+                for n in range(kv_frags):
+                    _ops.col_max(s_f[n], out=m_run, accumulate=True)
+                for n in range(kv_frags):
+                    _ops.sub_col(s_f[n], m_run, out=s_f[n])
+                    _ops.exp2(s_f[n], out=s_f[n])
+                with _ops.if_(_ops.s_any_ne(m_run, m_old)):
+                    alpha = _ops.exp2(_ops.sub(m_old, m_run))
+                    _ops.mul(l_run, alpha, out=l_run)
+                    for c in o_c:
+                        _ops.mul_col(c, alpha, out=c)
+                for n in range(kv_frags):
+                    _ops.col_sum(s_f[n], out=l_run, accumulate=True)
+
+                for n in range(kv_frags):
+                    p_cvt = _ops.cast(s_f[n], bf16)
+                    for g0 in range(d_frags):
+                        with _ops.scope():
+                            v_f = _ops.load(
+                                v_cache,
+                                _ops.elem_coord(page, kv_head, 16 * n,
+                                                16 * g0), ty_v)
+                            _ops.mma_AB(_ops.transpose_sep(v_f), p_cvt,
+                                        o_c[g0], out=o_c[g0])
+
+        # Unnormalised. The merge divides once, by the sum of the rescaled
+        # per-split sums; dividing here would throw away the only thing that
+        # makes the splits combinable.
+        row = req * splits + split
+        for i, c in enumerate(o_c):
+            _ops.store(o_part, _ops.transpose(c),
+                       _ops.elem_coord(row, kv_head, 0, 16 * i))
+        _ops.store(ml_part, m_run, _ops.elem_coord(row, kv_head, 0, 0))
+        _ops.store(ml_part, l_run, _ops.elem_coord(row, kv_head, 1, 0))
+
+    body.__name__ = name
+    body.__annotations__ = {
+        "q": GL[bf16], "k_cache": GL[bf16], "v_cache": GL[bf16],
+        "block_table": GL[i32], "seq_lens": GL[i32],
+        "o_part": GL[fp32], "ml_part": GL[fp32],
+    }
+    return _kernel(body, arch="gfx1100", warps=1, name=name,
+                   grid=lambda p: (splits, p.q.depth, p.q.batch),
+                   max_vgprs=max_vgprs, min_occupancy=min_occupancy)
+
+
+def merge_splits(o_part, ml_part, splits: int, out):
+    """Combine the per-split partial softmaxes into the answer.
+
+    In torch, for now, and deliberately: it is a few elementwise passes over a
+    tensor whose size is `splits` times the output, which is small next to the
+    KV traffic the splits exist to parallelise. If it shows up in a profile it
+    becomes a kernel; writing it as one first would be optimising a thing
+    nobody has measured.
+    """
+    import torch  # noqa: PLC0415
+
+    r_s, hkv, tile, d = o_part.shape
+    reqs = r_s // splits
+    o = o_part.view(reqs, splits, hkv, tile, d)
+    m = ml_part.view(reqs, splits, hkv, 2, tile)[:, :, :, 0]      # (r,s,h,t)
+    l = ml_part.view(reqs, splits, hkv, 2, tile)[:, :, :, 1]
+
+    m_max = m.amax(dim=1, keepdim=True)
+    # A split that saw nothing has m = -inf and l = 0; exp2(-inf - m) is 0, so
+    # it drops out -- unless *every* split saw nothing, which cannot happen
+    # because split 0 always covers page 0.
+    #
+    # The numerator and the denominator take *different* weights, and getting
+    # that wrong is the whole difficulty of a split softmax. O_s is already a
+    # sum of (probability x V) under split s's own maximum, so rescaling it to
+    # the global maximum takes exp2(m_s - m) and nothing else; l_s is a sum of
+    # those same probabilities and takes the same factor. Weighting O by
+    # exp2(m_s - m) * l_s -- which is what this did first -- multiplies every
+    # numerator by its split's sum a second time. The weights still sum to
+    # something, so the answer looks like an answer: 77x off, not NaN.
+    rescale = torch.exp2(m - m_max)                                # (r,s,h,t)
+    num = (o * rescale.unsqueeze(-1)).sum(dim=1)                   # (r,h,t,d)
+    den = (l * rescale).sum(dim=1).clamp_min(1e-30)                # (r,h,t)
+    out.copy_((num / den.unsqueeze(-1)).to(out.dtype))
+    return out
+
+
 #: head_dim -> kernel. Nothing is traced or compiled at import.
 KERNELS: Dict[int, object] = {
     64: paged_decode_kernel("paged_decode_d64", head_dim=64),
     128: paged_decode_kernel("paged_decode_d128", head_dim=128),
 }
+
+#: (head_dim, splits) -> kernel, built on demand.
+_SPLIT: Dict[tuple, object] = {}
+
+
+def split_kernel(head_dim: int, splits: int):
+    key = (head_dim, splits)
+    if key not in _SPLIT:
+        _SPLIT[key] = paged_decode_split_kernel(
+            f"paged_decode_d{head_dim}_s{splits}",
+            head_dim=head_dim, splits=splits)
+    return _SPLIT[key]
+
+
+#: Workgroups to aim for, measured rather than reasoned
+#: (tools/hk-bench/paged_splits.py, Qwen3-8B's shape on a W7900D: 8 kv heads,
+#: head_dim 128). Each column is a split count, each cell the kernel plus its
+#: merge in ms, and the last two are the achieved fraction of the card's
+#: 864 GB/s at the best split:
+#:
+#:     ctx  batch     s1     s4    s16    s32   best   %HBM
+#:    1024      1  0.312  0.173  0.135  0.132     32     4%
+#:    1024     16  0.310  0.205  0.242  0.323      8    41%
+#:    4096      1  0.991  0.327  0.157  0.132     32    15%
+#:    4096     16  1.310  0.643  0.607  0.682      8    56%
+#:   16384      1  3.835  1.047  0.366  0.246     32    32%
+#:   16384     16  5.081  2.183  1.796  1.869      8    71%
+#:   16384     32  5.675  3.287  3.403  3.649      4    76%
+#:
+#: The best split at every one of the fifteen points measured puts
+#: `n_reqs * n_kv_heads * splits` at about a thousand, so that is the target.
+#: The first version of this aimed for 96 -- two per WGP -- which is the right
+#: instinct for a workgroup of twelve warps and wrong by an order of magnitude
+#: for one of a single warp. At batch 16 it asked for one split, which is 128
+#: workgroups of one warp each walking 128 pages in series.
+TARGET_WORKGROUPS = 1024
+
+#: Past this the merge's traffic grows faster than the split saves, and every
+#: value is a separate compile.
+MAX_SPLITS = 32
+
+
+def plan_splits(n_reqs: int, n_kv_heads: int, n_pages: int) -> int:
+    """How many ways to cut the KV axis, given how empty the machine is.
+
+    Without a split the grid is `n_reqs * n_kv_heads` one-warp workgroups.
+    This asks for enough splits to reach `TARGET_WORKGROUPS`, capped by the
+    page count -- a split with no pages is pure overhead -- and by
+    `MAX_SPLITS`.
+    """
+    have = max(1, n_reqs * n_kv_heads)
+    want = -(-TARGET_WORKGROUPS // have)          # ceil
+    return max(1, min(want, n_pages, MAX_SPLITS))
