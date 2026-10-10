@@ -598,28 +598,59 @@ The price is that the cache *update* becomes a strided scatter, and that is
 the right way round: a decode step reads `seq_len` pages per layer and writes
 one.
 
-Running Qwen3-0.6B, four prompts x 32 greedy tokens, three runs of each
-backend alternating:
+**It loses, and an earlier version of this file said it won.** That claim came
+from Qwen3-0.6B, four short prompts, measured as total wall time. Total wall
+time mixes prefill with decode and is neither latency nor throughput, and a
+0.6B model spends so little of a step in attention that the number was mostly
+measuring something else. Retracted.
+
+The measurement that means something isolates one decode step. Each point runs
+the same requests at two output lengths and takes the *slope*,
+`(T(72) - T(8)) / 64`, which cancels prefill and every other fixed cost.
+Qwen3-8B (36 layers, 32 query heads over 8 KV heads, head_dim 128), bf16,
+eager, three reps per endpoint, `tools/hk-bench/vllm_sweep.py`:
 
 ```
-backend        runs (ms)            min     median   spread
-hk             484.0 466.3 483.7    466.3   483.7      4%
-TRITON_ATTN    576.9 569.6 567.4    567.4   569.6      2%
+                 ms / decode step            tokens / s
+ctx   batch     hk     triton   ratio      hk    triton
+1024      1   54.43    42.01    1.30x    18.4     23.8
+1024      4   54.60    42.83    1.27x    73.3     93.4
+1024     16   57.65    46.54    1.24x   277.5    343.8
+1024     32   59.23    61.53    0.96x   540.3    520.1   <- the only win
+4096      1   82.68    42.97    1.92x    12.1     23.3
+4096      4   83.09    45.97    1.81x    48.1     87.0
+4096      8   83.86    49.13    1.71x    95.4    162.8
+4096     16   91.74    56.78    1.62x   174.4    281.8
 ```
 
-**1.18x on medians, 1.22x on minima**, against a within-backend spread of
-2-4%, so the gap is five to ten times the noise. Three of the four
-continuations are token-identical; the fourth is a degenerate repetition where
-both backends loop and they loop differently.
+Measurement bands were under 1% of the value at every point except hk at
+ctx 1024 batch 1, so the ordering is not in question.
 
-Most of that margin was not the kernel. The first working version was *slower*
-than Triton -- 731.6 ms -- because `forward` called `.tolist()` on
-`query_start_loc` and `seq_lens` to decide which requests were decoding. That
-is a device sync per layer per step, 28 of them on this model, in front of a
-kernel that takes microseconds. `max_query_len` is already a host int in the
-metadata and a pure-decode step has `query` already in request order, so
-neither the sync nor a gather is needed: 731.6 -> 484.2 ms, and only then does
-the kernel's own speed become the thing being measured.
+**Why, in one number.** Going from 1024 to 4096 tokens of context at batch 1
+costs Triton **+0.97 ms/step** and this kernel **+28.2 ms/step**. That extra
+3072 tokens is 12.6 MB of K and V per layer, so per layer:
+
+```
+triton   0.027 ms   469 GB/s    54% of the W7900D's 864 GB/s
+hk       0.785 ms    16 GB/s     1.9%
+```
+
+Decode attention is a bandwidth problem and this kernel is getting 2% of the
+bandwidth. The cause is the limitation already written down when it was built:
+**no split along the KV axis**. One workgroup per (request, kv head) means
+batch 1 launches 8 workgroups of one warp each on a 48-WGP GPU, and they walk
+the whole context serially. Triton splits the KV range across the machine.
+
+That also explains the shape of the whole table. hk is nearly flat in batch --
+54.4 ms at batch 1, 59.2 at batch 32 -- because at low batch the GPU is idle
+and extra requests fill it for free. Triton starts near the bandwidth limit
+and degrades as requests compete for it (42.0 -> 61.5). The two cross at
+batch 32, which is the only cell hk wins, and it wins it by 4%.
+
+So the kernel is correct, it is integrated, and it is not yet worth running:
+the missing split is worth something like 25x at low batch and nothing at
+all at the batch where hk already wins. That is the next thing to build, and
+the number above is what it has to move.
 
 Four facts about vLLM's plugin surface are written down in
 `vllm_backend.py` because each cost a run to find: `AttentionBackendEnum` is
