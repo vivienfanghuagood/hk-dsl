@@ -178,6 +178,7 @@ def _build():
             self.num_kv_heads = num_kv_heads
             self.group = num_heads // num_kv_heads
             self._buf_cache = {}
+            self._checked = False
             HKAttentionBackend.validate_head_size(head_size)
 
         # -- the cache -----------------------------------------------------
@@ -272,7 +273,9 @@ def _build():
             q = query[lo:lo + m].transpose(0, 1).unsqueeze(0).contiguous()
             k = key[lo:lo + m].transpose(0, 1).unsqueeze(0).contiguous()
             v = value[lo:lo + m].transpose(0, 1).unsqueeze(0).contiguous()
-            if hk_attn._why(q, k, v, True):
+            import os
+
+            if os.environ.get("HK_NO_PREFILL") or hk_attn._why(q, k, v, True):
                 out = F.scaled_dot_product_attention(
                     q, k, v, is_causal=True, scale=self.scale,
                     enable_gqa=self.group > 1)
@@ -294,20 +297,36 @@ def _build():
 
             g, hkv, d = self.group, self.num_kv_heads, self.head_size
             tile = hk_paged.Q_TILE
-            key = (n, splits, device, dtype)
+            # Keyed on `splits`, not on `n`, and grown rather than added to.
+            # A decode step's request count moves continuously as a batch
+            # ramps -- 1, 3, 7, 13, 16 -- so keying on it means a fresh
+            # allocation per distinct count, per split count, per layer, and
+            # 36 layers of that against a KV cache already sized to 90% of the
+            # card is how a serving process runs itself out of memory in the
+            # middle of a run. One buffer per (splits, device, dtype), sized
+            # to the largest `n` yet seen and sliced down.
+            key = (splits, device, dtype)
             buf = self._buf_cache.get(key)
-            if buf is None:
-                q = torch.zeros(n, hkv, tile, d, device=device, dtype=dtype)
+            if buf is None or buf[0].shape[0] < n:
+                cap = max(n, buf[0].shape[0] if buf else 0)
+                q = torch.zeros(cap, hkv, tile, d, device=device, dtype=dtype)
                 out = torch.empty_like(q)
                 if splits > 1:
-                    o_part = torch.empty(n * splits, hkv, tile, d,
+                    o_part = torch.empty(cap * splits, hkv, tile, d,
                                          device=device, dtype=torch.float32)
-                    ml = torch.empty(n * splits, hkv, 2, tile, device=device,
+                    ml = torch.empty(cap * splits, hkv, 2, tile, device=device,
                                      dtype=torch.float32)
                 else:
                     o_part = ml = None
                 buf = self._buf_cache[key] = (q, out, o_part, ml)
-            return buf
+            q, out, o_part, ml = buf
+            # o_part and ml are indexed as `req * splits + split`, so the
+            # slice for `n` requests is the first `n * splits` rows -- not the
+            # first `n`, which would be the right answer for a different
+            # layout and silently wrong for this one.
+            return (q[:n], out[:n],
+                    None if o_part is None else o_part[:n * splits],
+                    None if ml is None else ml[:n * splits])
 
         def _decode_all(self, query, output, k_cache, v_cache, attn_metadata,
                         n):
@@ -322,6 +341,31 @@ def _build():
             q[:, :, :g] = query[:n].view(n, hkv, g, d)
             table = attn_metadata.block_table[:n]
             lens = attn_metadata.seq_lens[:n]
+            if not self._checked:
+                self._checked = True
+                import torch as _t
+
+                # Once per layer object, not per step. The kernel reads these
+                # two as int32 and indexes memory with the result, so a dtype
+                # or a stride that is not what it assumes is not a wrong
+                # answer, it is a page fault several kernels later.
+                for name, t, want in (("block_table", table, _t.int32),
+                                      ("seq_lens", lens, _t.int32)):
+                    if t.dtype != want or not t.is_contiguous():
+                        raise TypeError(
+                            f"{NAME}: {name} is {t.dtype} "
+                            f"{'contiguous' if t.is_contiguous() else 'strided'}"
+                            f" {tuple(t.shape)}; the kernel reads it as "
+                            f"contiguous {want}."
+                        )
+                mx = int(lens.max())
+                cols = table.shape[-1]
+                if -(-mx // hk_paged.KV_BLOCK) > cols:
+                    raise ValueError(
+                        f"{NAME}: seq_len {mx} needs "
+                        f"{-(-mx // hk_paged.KV_BLOCK)} pages but block_table "
+                        f"has {cols} columns."
+                    )
             if splits > 1:
                 hk_paged.split_kernel(d, splits)(
                     q, k_cache, v_cache, table, lens, o_part, ml)

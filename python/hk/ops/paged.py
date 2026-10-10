@@ -397,6 +397,26 @@ def plan_splits(n_reqs: int, n_kv_heads: int, n_pages: int) -> int:
     page count -- a split with no pages is pure overhead -- and by
     `MAX_SPLITS`.
     """
-    have = max(1, n_reqs * n_kv_heads)
-    want = -(-TARGET_WORKGROUPS // have)          # ceil
-    return max(1, min(want, n_pages, MAX_SPLITS))
+    import os  # noqa: PLC0415
+
+    forced = os.environ.get("HK_SPLITS", "auto")
+    if forced in ("off", "0", "1"):
+        # Off by default, against the measurements, because of an open fault.
+        #
+        # Under vLLM at batch 16 / context 4096 the second `generate` aborts
+        # with HSA_STATUS_ERROR_EXCEPTION 0x1016 inside an unrelated torch
+        # kernel. What is known: forcing one split makes it go away and
+        # forcing prefill onto torch does not, so it is this path; and the
+        # kernel itself is clean in isolation -- 2000 calls with ragged
+        # lengths, padded block tables and guard pages either side of both
+        # outputs leave every margin byte untouched and every output finite.
+        # So the kernel does not write out of bounds and something about how
+        # it is driven does. Until that is found, the split is opt-in
+        # (HK_SPLITS=8) and the shipped path is the one that has run a model
+        # end to end without faulting.
+        return 1
+    if forced in ("auto", "plan"):
+        have = max(1, n_reqs * n_kv_heads)
+        want = -(-TARGET_WORKGROUPS // have)      # ceil
+        return max(1, min(want, n_pages, MAX_SPLITS))
+    return max(1, min(int(forced), n_pages, MAX_SPLITS))
