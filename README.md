@@ -490,29 +490,65 @@ request of which the vision tower is ~4 ms, so an end-to-end request simply
 cannot resolve this -- the tower's own number is the `--unit` table above, and
 `--e2e` is a correctness and reachability check that now says so.
 
-**One real limitation came out of it.** Patched, InternVL2-2B described the
-test image differently from unpatched -- while the unpatched run repeated
-itself exactly, and vLLM's Triton flash-attention ViT backend agreed with
-unpatched word for word. Two independent implementations agreeing and ours
-disagreeing is the shape of a bug, so `tools/hk-bench/attn_precision.py` chased
-it:
+**And it found a real bug, which is now fixed.** Patched, InternVL2-2B
+described the test image differently from unpatched -- while the unpatched run
+repeated itself exactly, and vLLM's Triton flash-attention ViT backend agreed
+with unpatched word for word. Two independent implementations agreeing and
+ours disagreeing is the shape of a bug, so `tools/hk-bench/attn_precision.py`
+went after it. Three hypotheses died first:
 
-* it is **not** the non-dividing KV tail: `hk/torch` is the same 1.5-2.4x at
+* **not** the non-dividing KV tail: `hk/torch` was the same 1.5-2.4x at
   N = 512, 544, 576, 608, 1024, 1056 as at 577, 578, 1000, 1025, 1026;
-* it is **not** an artifact of comparing against an exact reference: torch's
-  flash, mem-efficient and math backends all land within 3e-6 of each other
-  here, so the baseline is effectively exact either way;
-* it is **not** concentrated: p50, p90 and p99 are each ~2.5x torch's and the
-  worst query rows are scattered across the sequence, which is rounding and
-  not a mishandled block.
+* **not** an artifact of the reference: torch's flash, mem-efficient and math
+  backends all land within 3e-6 of each other here;
+* **not** concentrated: p50, p90 and p99 were each ~2.5x torch's with the
+  worst rows scattered, which is rounding and not a mishandled block.
 
-So the kernel is uniformly ~2.5x less precise than aotriton, at every
-quantile, with no structure to it. It stays inside one bf16 ulp of the fp32
-answer (max 0.0025 against an ulp of 0.0039 at these magnitudes) and the 31
-numeric cases in `tests/hk/gpu/test_attn.py` pass -- but aotriton is four times
-better than bf16 requires, and the margin is enough to flip a greedy token
-where the top two are close. That is worth knowing before putting this in
-front of a model, and it is an open item rather than a solved one.
+Emulating the kernel's own algorithm in torch then ruled out the algorithm:
+with the probability tile rounded to bf16, a 32-wide KV block and a 1-ulp
+exp2, the emulation landed on *torch's* number exactly, not the kernel's. So
+the kernel was not doing what its algorithm said.
+
+The probe that found it has an exact answer. Set `V` to all ones: the softmax
+weights sum to one, so attention must return exactly 1.0 for every element,
+whatever Q and K were. torch returned exactly 1.0. **This kernel returned 1.0
+off by 2^-8 -- one whole bf16 ulp -- on every element.**
+
+`convertor<bf16, float>` in `include/rdna3/common/base_types.cuh` was
+`bit_cast<uint32_t>(u) >> 16`, labelled "fast unsafe conversion (truncation
+only)". Truncation toward zero is *biased*, half an ulp, always the same
+direction -- and attention rounds a tile of positive probabilities through it
+on every KV block while summing the fp32 ones for the denominator, so the bias
+does not cancel. It accumulates into the ratio.
+
+Rounding instead of truncating closes it completely. Measured, four ways in
+one process (`tools/hk-bench/bf16_round_cost.py`), cost on attention at
+head_dim 128 / 64:
+
+```
+0  truncate             1 instr      --          biased; not a supported mode
+1  nearest, ties away   2 instr   +2.1% / +3.4%  unbiased          <- default
+2  nearest even         3 instr   +3.5% / +6.4%  unbiased
+3  nearest even + NaN   5 instr   +6.0% / +12.5% unbiased and total
+```
+
+GEMM pays 0.2% in every mode, because its conversion is once per output
+element rather than once per probability. No mode changes the register count
+(215 / 217 / 147 VGPRs, zero scratch, all four).
+
+The default is ties-away: it is the cheapest unbiased rounding there is, and
+it is **numerically indistinguishable from the expensive one** here -- `V = 1`
+returns exactly 1.0, and hk's error against fp32 is now `1.00x` torch's at
+every N in the sweep, not 1.5-2.4x. The NaN guard doubles the cost to protect
+against a value attention cannot produce, so it is opt-in
+(`-DHK_BF16_ROUND=3`); without it a NaN whose low mantissa bits are near
+all-ones can come back as an infinity.
+
+Two tests now hold the line, both with exact answers rather than a tolerance
+(`tests/hk/gpu/test_attn.py`): `V = 1` must come back bit-exact, and `Q = 0`
+must give the mean of V. The file's existing `RTOL = 5e-2` could never have
+seen this -- it is sized to catch a shifted mask, and a half-ulp bias passed
+all 31 of its cases while changing what a model said.
 
 The layer underneath is covered by the GPU tier -- 225 tests including
 `torch.compile(fullgraph=True)`, CUDA-graph capture and replay, and the

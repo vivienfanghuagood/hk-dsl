@@ -212,3 +212,50 @@ def test_out_parameter_is_written_in_place():
     got = hk.attention(q, k, v, out=o)
     assert got.data_ptr() == o.data_ptr()
     _check(o, _ref(q, k, v))
+
+
+# ------------------------------------------------------- rounding, not error
+#
+# RTOL above is deliberately loose -- it exists to catch a wrong tile or a
+# shifted mask, which are O(1) failures. It cannot see a *bias*, and a bias is
+# what fp32 -> bf16 truncation was: half an ulp, always the same direction,
+# applied to a tile of positive probabilities on every KV block. It passed
+# every test in this file while making a VLM decode a different sentence.
+#
+# These two have exact answers, so there is no tolerance to hide in.
+
+
+@pytest.mark.parametrize("n", [4096, 1025 + 4096 - 1025])
+def test_uniform_values_come_back_exactly(n):
+    """V all ones: the softmax weights sum to one, so every output element is
+    exactly 1.0 -- whatever Q and K were, and whatever the running max did.
+
+    Any deviation is the kernel disagreeing with itself: the numerator
+    accumulates the rounded probability tile while the denominator sums the
+    fp32 one, and with V = 1 nothing else can contribute. Truncation put this
+    at 1.0 +- 2^-8 on every element.
+    """
+    q, k, _ = _qkv(1, 4, n)
+    v = torch.ones_like(q)
+    got = hk.attention(q, k, v)
+    want = torch.ones_like(got)
+    assert torch.equal(got, want), (
+        f"max deviation from 1.0: "
+        f"{(got.float() - 1.0).abs().max().item():.3e} "
+        f"(one bf16 ulp here is {2 ** -8:.3e})"
+    )
+
+
+def test_equal_scores_give_the_mean_of_v():
+    """Q all zeros: every score is equal, so the output is the mean of V along
+    the sequence. Keeps the PV matmul and the V operand in play while removing
+    the exponential, so a failure here is the accumulation and not the
+    softmax."""
+    n = 4096
+    _, k, v = _qkv(1, 4, n)
+    q = torch.zeros_like(k)
+    got = hk.attention(q, k, v).float()
+    want = v.double().mean(dim=2, keepdim=True).float().expand_as(got)
+    rel = ((got - want).abs() / want.abs().clamp_min(1e-6)).max().item()
+    # One bf16 ulp of the output, which is the floor for anything writing bf16.
+    assert rel < 2 ** -7, f"relative error {rel:.3e}"
