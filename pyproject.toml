@@ -18,6 +18,15 @@ dependencies = ["pybind11>=2.10"]
 [project.optional-dependencies]
 test = ["pytest>=7"]
 
+# vLLM loads this in the driver *and* in every worker process, which is the
+# only place a patch of torch.nn.functional reaches the model: V1 runs the
+# engine in a spawned subprocess, so patching from the process that built the
+# LLM object patches a process the model never runs in. Gated on
+# HK_PATCH_VLLM=1 -- installing a kernel library must not silently change the
+# numerics of every vLLM on the machine. See hk/integration/_vllm_plugin.py.
+[project.entry-points."vllm.general_plugins"]
+hk_attention = "hk.integration._vllm_plugin:register"
+
 [tool.setuptools]
 package-dir = { "" = "python" }
 

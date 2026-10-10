@@ -460,11 +460,59 @@ The drop-in now counts which branch it took (`hk.ops.sdpa.STATS`), because a
 patch that silently falls back produces identical answers and no speedup,
 which is indistinguishable from one that works unless something counts.
 
-`tools/hk-bench/vllm_verify.py` is the verification: `--probe` reports what the
-installed vLLM actually does, `--unit` is the table above, and `--e2e MODEL`
-runs a real multimodal request twice and reads the counters. The first two
-need no vLLM and are green; `--e2e` has not been run, because no vLLM is
-installed on the bench pod.
+`tools/hk-bench/vllm_verify.py` is the verification, and it has now been run
+inside a real vLLM (0.16.1.dev0, ROCm 7.2.1, W7900D) serving
+`OpenGVLab/InternVL2-2B` with `--mm-encoder-attn-backend TORCH_SDPA`. The
+engine reaches the kernel: **120 kernel calls, 0 fallbacks** over five
+requests, which is 24 InternViT layers each, and the server answers normally.
+
+Getting there found two failures that nothing short of a live engine would
+have shown, both of which looked like success:
+
+* **vLLM V1 runs the model in a spawned process.** `apply()` in the process
+  that built `LLM(...)` patches a process the model never runs in. The first
+  end-to-end run reported `{'kernel': 0, 'fallback': 0}` with byte-identical
+  answers and a plausible-looking 1.001x. Production therefore needs the
+  `vllm.general_plugins` entry point (`hk/integration/_vllm_plugin.py`), which
+  vLLM loads in the driver *and* every worker; it is opt-in on
+  `HK_PATCH_VLLM=1`, because installing a kernel library must not silently
+  change the numerics of every vLLM on the machine.
+* **The vision tower runs once per distinct image.** With
+  `mm_processor_cache` and prefix caching on, a warm-up request consumed the
+  only ViT pass and every later request was served from cache -- counters at
+  zero again, for a different reason.
+
+And one measurement was wrong until a control caught it. Running the arms in
+blocks gave "1.18x end to end"; running the *same* arm twice under a different
+ViT backend gave 1.16x with the kernel never called at all. The order effect
+was the whole number. Interleaved, the end-to-end spread is +-25% on a ~250 ms
+request of which the vision tower is ~4 ms, so an end-to-end request simply
+cannot resolve this -- the tower's own number is the `--unit` table above, and
+`--e2e` is a correctness and reachability check that now says so.
+
+**One real limitation came out of it.** Patched, InternVL2-2B described the
+test image differently from unpatched -- while the unpatched run repeated
+itself exactly, and vLLM's Triton flash-attention ViT backend agreed with
+unpatched word for word. Two independent implementations agreeing and ours
+disagreeing is the shape of a bug, so `tools/hk-bench/attn_precision.py` chased
+it:
+
+* it is **not** the non-dividing KV tail: `hk/torch` is the same 1.5-2.4x at
+  N = 512, 544, 576, 608, 1024, 1056 as at 577, 578, 1000, 1025, 1026;
+* it is **not** an artifact of comparing against an exact reference: torch's
+  flash, mem-efficient and math backends all land within 3e-6 of each other
+  here, so the baseline is effectively exact either way;
+* it is **not** concentrated: p50, p90 and p99 are each ~2.5x torch's and the
+  worst query rows are scattered across the sequence, which is rounding and
+  not a mishandled block.
+
+So the kernel is uniformly ~2.5x less precise than aotriton, at every
+quantile, with no structure to it. It stays inside one bf16 ulp of the fp32
+answer (max 0.0025 against an ulp of 0.0039 at these magnitudes) and the 31
+numeric cases in `tests/hk/gpu/test_attn.py` pass -- but aotriton is four times
+better than bf16 requires, and the margin is enough to flip a greedy token
+where the top two are close. That is worth knowing before putting this in
+front of a model, and it is an open item rather than a solved one.
 
 The layer underneath is covered by the GPU tier -- 225 tests including
 `torch.compile(fullgraph=True)`, CUDA-graph capture and replay, and the

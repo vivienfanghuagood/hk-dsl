@@ -14,12 +14,26 @@ Three stages, each answering a question the one before it cannot:
             time. Runs without an engine, so a failure here is this package's
             and not vLLM's.
 
-  --e2e     A real multimodal request through a real engine, generated twice:
-            once unpatched, once patched. Compares the decoded text and reads
-            `hk.ops.sdpa.STATS` to prove which branch the server actually took.
-            A patch that silently falls back produces identical text and no
-            speedup, which is indistinguishable from a patch that works unless
-            something counts.
+  --e2e     A real multimodal request through a real engine, run patched and
+            unpatched, interleaved. Reads `hk.ops.sdpa.STATS` to prove which
+            branch the server took, and compares the decoded text against an
+            unpatched run *repeated*, so that "the patched arm said something
+            else" can be distinguished from "this engine is not reproducible".
+
+            It is not a speed measurement and the number it prints is not one.
+            The vision tower is ~2% of a 2B VLM's request and the per-request
+            spread is +-25%; `--unit` is where the tower's time is.
+
+            Two things it caught that nothing else could. vLLM V1 runs the
+            model in a *spawned* process, so `apply()` in the process that
+            built `LLM(...)` patches a process the model never runs in -- the
+            counters read zero while the answers and the timings looked
+            perfectly normal. And with `mm_processor_cache` and prefix caching
+            on, the second request for an image already seen skips the vision
+            tower entirely, so a warm-up consumed the only ViT pass. Hence
+            `VLLM_ENABLE_V1_MULTIPROCESSING=0` here, the general plugin for
+            production (`hk/integration/_vllm_plugin.py`), the caches off, and
+            a distinct image per request.
 
 The decoder's attention is NOT under test and cannot be: vLLM V1 keeps KV in a
 paged cache and dispatches through AttentionImpl.forward(kv_cache, block_table,
@@ -136,76 +150,145 @@ def unit(rounds: int = 5) -> int:
     return rc
 
 
-def _image(px: int = 336):
+def _image_data_url(seed: int = 0, px: int = 448) -> str:
+    """A synthetic image, inline, so this needs no egress and no fixture.
+
+    `seed` matters more than it looks. vLLM caches the vision encoder's output
+    per image (`mm_processor_cache`) and caches prefixes, so sending the *same*
+    image twice runs the tower exactly once -- which is how the first run of
+    this script reported `{'kernel': 0, 'fallback': 0}` after a warm-up had
+    already consumed the only ViT pass. Every request here gets its own image.
+    """
+    import base64
+    import io
+
+    import numpy as np
     from PIL import Image
 
-    # Synthetic rather than downloaded: the content does not matter, only that
-    # the vision tower runs, and a pod with no egress should still be able to
-    # run this.
-    import numpy as np
+    rng = np.random.default_rng(seed)
+    # Smooth rather than white noise: a noise image makes a VLM produce
+    # degenerate text, and degenerate text is a weak equality check.
+    small = rng.integers(0, 255, (16, 16, 3), dtype="uint8")
+    img = Image.fromarray(small).resize((px, px), Image.BICUBIC)
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    return "data:image/png;base64," + base64.b64encode(buf.getvalue()).decode()
 
-    rng = np.random.default_rng(0)
-    return Image.fromarray(rng.integers(0, 255, (px, px, 3), dtype="uint8"))
 
+def e2e(model: str, *, max_tokens: int = 64, reps: int = 6) -> int:
+    """One real multimodal request, generated unpatched and then patched.
 
-def e2e(model: str, *, max_tokens: int = 64, reps: int = 3) -> int:
-    import torch  # noqa: F401 -- imported for the side effect of being first
+    `llm.chat` rather than a hand-written prompt so this does not encode one
+    model's placeholder convention; the model's own chat template inserts it.
+    """
+    import torch  # noqa: F401 -- torch first, as vLLM expects
 
     from vllm import LLM, SamplingParams
 
     import hk.integration.vllm as hkv
     from hk.ops import sdpa as hk_sdpa
 
-    print(f"building engine for {model} with --mm-encoder-attn-backend "
-          f"TORCH_SDPA")
+    backend = os.environ.get("HK_VIT_BACKEND", "TORCH_SDPA")
+    print(f"building {model} with mm_encoder_attn_backend={backend}")
     llm = LLM(
         model=model,
         dtype="bfloat16",
-        max_model_len=4096,
+        max_model_len=int(os.environ.get("HK_MAX_LEN", "4096")),
         gpu_memory_utilization=float(os.environ.get("HK_GPU_UTIL", "0.85")),
-        mm_encoder_attn_backend="TORCH_SDPA",
+        mm_encoder_attn_backend=backend,
+        trust_remote_code=True,
+        limit_mm_per_prompt={"image": 1},
+        # Both caches off. With them on, the second request for an image it has
+        # already seen skips the vision tower entirely, and the thing under
+        # test stops running without anything saying so.
+        mm_processor_cache_gb=0,
+        enable_prefix_caching=False,
         enforce_eager=os.environ.get("HK_EAGER", "0") == "1",
     )
     params = SamplingParams(temperature=0.0, max_tokens=max_tokens)
-    req = {"prompt": "USER: <image>\nDescribe this image.\nASSISTANT:",
-           "multi_modal_data": {"image": _image()}}
 
-    def run():
+    def run(seed: int):
+        messages = [{"role": "user", "content": [
+            {"type": "image_url",
+             "image_url": {"url": _image_data_url(seed)}},
+            {"type": "text", "text": "Describe this image in one sentence."},
+        ]}]
         t0 = time.perf_counter()
-        out = llm.generate([req], params)
+        out = llm.chat(messages, params)
         return out[0].outputs[0].text, time.perf_counter() - t0
 
-    # Warm the engine (compile, capture, allocator) before either arm.
-    run()
+    run(0)                      # warm: compile, capture, allocator
+    hkv.apply()
+    run(0)                      # warm again: the kernel JITs on first call
+    hkv.revert()
 
+    # Image 1 is the one both arms are compared on.
     hk_sdpa.reset_stats()
-    base_text, _ = run()
-    base = min(run()[1] for _ in range(reps))
+    base_text, _ = run(1)
+    # The same request again, still unpatched. Without this the comparison
+    # below cannot be read: vLLM with chunked prefill and async scheduling is
+    # not bitwise reproducible, so "the patched arm said something else" is
+    # only evidence if the unpatched arm says the same thing twice.
+    base_text2, _ = run(1)
     before = dict(hk_sdpa.STATS)
 
     print(hkv.apply())
     hk_sdpa.reset_stats()
-    run()                       # let the kernel JIT and the graph re-warm
-    hk_text, _ = run()
-    hk_ms = min(run()[1] for _ in range(reps))
+    hk_text, _ = run(1)
     after = dict(hk_sdpa.STATS)
+    hkv.revert()
+
+    # Interleaved, because two blocks of requests are not comparable here.
+    # The first version of this ran one arm and then the other and reported
+    # 1.18x -- and the control that ran the *same* arm twice under a
+    # different ViT backend reported 1.16x with the kernel never called at
+    # all. Whatever that 16% is (allocator, caches, clocks), it belongs to
+    # whichever block ran second, so the arms alternate and swap order
+    # between rounds, and every request gets its own image.
+    times = {"torch": [], "hk": []}
+    seed = 100
+    for r in range(reps):
+        for arm in (["torch", "hk"] if r % 2 == 0 else ["hk", "torch"]):
+            hkv.apply() if arm == "hk" else hkv.revert()
+            times[arm].append(run(seed)[1])
+            seed += 1
+    hkv.revert()
+    base, hk_s = min(times["torch"]), min(times["hk"])
 
     print(f"\nunpatched  {base * 1e3:8.1f} ms   sdpa calls {before}")
-    print(f"patched    {hk_ms * 1e3:8.1f} ms   sdpa calls {after}")
-    print(f"same text: {base_text == hk_text}")
-    if base_text != hk_text:
-        print(f"  unpatched: {base_text!r}")
-        print(f"  patched:   {hk_text!r}")
+    print(f"patched    {hk_s * 1e3:8.1f} ms   sdpa calls {after}")
+    # Printed, and not to be read as a speedup. A 2B VLM generating 64
+    # tokens spends ~250 ms in the decoder and ~4 ms in the vision tower, so
+    # even a tower that took no time at all would move this by under 2% --
+    # and the per-request spread below is +-25%. The tower's own number is
+    # `--unit`. What --e2e establishes is that the kernel is reached, that
+    # the server does not crash, and what the model then says.
+    print(f"request    {base / hk_s:.3f}x  (end to end -- NOISE, see below; "
+          f"the tower is ~2% of this)")
+    print(f"  torch ms: {[round(t * 1e3, 1) for t in times['torch']]}")
+    print(f"  hk ms   : {[round(t * 1e3, 1) for t in times['hk']]}")
+    print(f"unpatched reproducible: {base_text == base_text2}")
+    print(f"same text as unpatched:  {base_text == hk_text}")
+    print(f"  unpatched : {base_text!r}")
+    print(f"  unpatched2: {base_text2!r}")
+    print(f"  patched   : {hk_text!r}")
     if hk_sdpa.FALLBACKS:
         print("fallbacks:")
         for shape, why in hk_sdpa.FALLBACKS.items():
-            print(f"  {list(shape[0])} {shape[1]}: {why}")
+            print(f"  {shape}: {why}")
 
     rc = 0
     if after["kernel"] == 0:
         print("\n!! the server never took the kernel branch -- the patch did "
               "not reach this model's attention")
         rc = 1
+    if base_text != hk_text and base_text == base_text2:
+        # Only a finding if the baseline was reproducible. Greedy decoding on
+        # an ambiguous image is a near-tie between tokens, and any kernel swap
+        # -- aotriton for Triton, one vLLM version for the next -- can flip
+        # one. The numeric gate is tests/hk/gpu/test_attn.py, not this.
+        print("\n?? the arms differ while the unpatched arm repeated itself; "
+              "worth a logprob comparison before trusting the kernel here")
     return rc
 
 
