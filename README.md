@@ -550,6 +550,32 @@ must give the mean of V. The file's existing `RTOL = 5e-2` could never have
 seen this -- it is sized to catch a shifted mask, and a half-ulp bias passed
 all 31 of its cases while changing what a model said.
 
+**What is left is a tie, and it was measured rather than assumed.** hk and
+aotriton now differ on 0.02-0.04% of the vision tower's output elements, by
+exactly one bf16 ulp -- two correctly-rounded kernels breaking ties from
+different intermediates, which is as close as independent implementations get.
+Whether that changes a caption is a property of how close the model's top two
+tokens were, so the e2e runs six images under all three implementations:
+
+```
+image   aotriton (TORCH_SDPA)      Triton FA        hk
+  1     "mosaic of shapes"         same             "crowd of people"
+  2     "mosaic of shapes"         same             same
+  3     "crowd of people"          same             same
+  4     "crowd of people"          "digital noise"  "digital noise"
+  5     "blurred and distorted"    same             same
+  6     "shades of green, red"     same             same
+```
+
+vLLM's own two backends already disagree with each other on 1 of 6; hk
+disagrees with aotriton on 2 of 6, and on one of those (image 4) it agrees
+with Triton FA *against* aotriton. Each arm repeated itself 6/6, so the engine
+is deterministic and these are real disagreements -- between three
+implementations, on inputs chosen to be maximally ambiguous (synthetic noise).
+hk is inside the spread that already exists between shipped backends, not
+outside it. A real-image benchmark would say more; this says enough to stop
+treating the remaining difference as a defect.
+
 The layer underneath is covered by the GPU tier -- 225 tests including
 `torch.compile(fullgraph=True)`, CUDA-graph capture and replay, and the
 strided-ViT-input contract in both directions.
