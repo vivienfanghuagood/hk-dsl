@@ -229,6 +229,26 @@ def dispatch_unquantized_gemm(*args, **kwargs):
     return _gemm
 
 
+def _own_compile_cache() -> str:
+    """Give the patched engine a vLLM cache root of its own, and return it.
+
+    vLLM keys the graphs it compiles -- torch_compile_cache, and since 0.2x
+    the AOT cache that skips Dynamo altogether -- by its config and its
+    source, not by what is patched into it. Sharing a root with an unpatched
+    run, the engine loads back a graph whose linear layers call vLLM's GEMM,
+    and the routes are never reached. Read before the engine caches its
+    environment, so this runs before the engine starts.
+    """
+    import os  # noqa: PLC0415
+
+    root = os.environ.get("VLLM_CACHE_ROOT") or os.path.join(
+        os.environ.get("XDG_CACHE_HOME") or os.path.expanduser("~/.cache"), "vllm")
+    if os.path.basename(os.path.normpath(root)) != "hk-linear":
+        root = os.path.join(root, "hk-linear")
+        os.environ["VLLM_CACHE_ROOT"] = root
+    return root
+
+
 def apply() -> str:
     """Route vLLM's linear layers. Returns what happened, in one line."""
     global _ORIG_DISPATCH
@@ -250,9 +270,10 @@ def apply() -> str:
     register_op()
     _ORIG_DISPATCH = vu.dispatch_unquantized_gemm
     names = _common.rebind(PREFIXES, _ORIG_DISPATCH, dispatch_unquantized_gemm)
+    cache = _own_compile_cache()
     return (f"linear -> hk where {table.source} measured it faster, on "
             f"{len(list(table.shapes()))} shapes ({len(names)} binding"
-            f"{'' if len(names) == 1 else 's'} rebound)")
+            f"{'' if len(names) == 1 else 's'} rebound; compile cache {cache})")
 
 
 def revert() -> str:

@@ -11,9 +11,9 @@ the gaps between them. So this measures the grid itself: every M up to 64,
 every 16 rows to 1024, coarser above, where the wasted rows are at most an
 eighth of the work.
 
-At each (N, K) of the model and each M: the engine's own path (`F.linear`,
-which is what vLLM's linear reaches on gfx1100), the generated GEMM, and the
-decode GEMV where it takes the shape. Each is checked against fp32 before it
+At each (N, K) of the model and each M: the engine's own path (the installed
+vLLM's `rocm_unquantized_gemm`, or `F.linear` without vLLM), the generated
+GEMM, and the decode GEMV where it takes the shape. Each is checked against fp32 before it
 is timed; they interleave in one process, min over rounds, the weights
 rotated through more than three times the Infinity Cache. A kernel takes an M
 only if it beat the engine there by `--min-gain`; a tie stays the engine's.
@@ -43,6 +43,23 @@ from vllm_gemm import MAX_SEQS, ROTATE_BYTES, linear_shapes, model_config  # noq
 GRID = (list(range(1, 65)) + list(range(80, 1025, 16)) +
         list(range(1088, 2049, 64)) + list(range(2176, 4097, 128)) +
         list(range(4608, 8193, 512)) + [12288, 16384])
+
+
+def _engine():
+    """What vLLM's unquantized linear reaches, and its name: the installed
+    vLLM's own op where it registers one -- since 0.2x it runs skinny GEMMs
+    (wvSplitK, LLMM1) at M <= 5 on gfx11 -- else F.linear. A table measured
+    against one is a table for that vLLM."""
+    import torch
+    import torch.nn.functional as F
+
+    try:
+        import vllm
+        import vllm.model_executor.layers.utils  # noqa: F401 -- registers the op
+        return (torch.ops.vllm.rocm_unquantized_gemm,
+                f"vllm {vllm.__version__} rocm_unquantized_gemm")
+    except (ImportError, AttributeError, RuntimeError):
+        return F.linear, "F.linear"
 
 
 def runs(points, min_gain):
@@ -135,8 +152,10 @@ def main() -> int:
             ops[key] = hk.torch_op(hk_decode.kernel_for(**s))
         return ops[key]
 
+    engine, engine_name = _engine()
+    print(f"engine path: {engine_name}", flush=True)
     table = dict(kind="vllm_linear", arch=arch, model=args.name or args.model,
-                 tp=args.tp, device=torch.cuda.get_device_name(dev),
+                 engine=engine_name, tp=args.tp, device=torch.cuda.get_device_name(dev),
                  torch=torch.__version__, hip=torch.version.hip,
                  blas=str(torch.backends.cuda.preferred_blas_library()),
                  toolchain=toolchain_fingerprint(), min_gain=args.min_gain,
@@ -156,7 +175,7 @@ def main() -> int:
             out = torch.empty(m, n, device=dev, dtype=torch.bfloat16)
             ref = x.float() @ ws[0].float().t()
             scale = ref.abs().max().item()
-            variants = {"engine": lambda w: F.linear(x, w)}
+            variants = {"engine": lambda w: engine(x, w, None)}
             op = gemm_op(m, n, k)
             if op is not None:
                 variants["hk"] = lambda w, op=op: op(x, w, out) or out

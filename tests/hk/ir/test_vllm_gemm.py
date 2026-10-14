@@ -3,9 +3,12 @@
 Routing is a measured table (hk/tuned/routes_vllm_linear_gfx1100.json, from
 tools/hk-bench/route_tune.py). What is pinned here is what the table has to
 keep saying for the measurement to have been worth taking: the decode kernel
-owns every batch to 64, the generated GEMM's wins are a comb in M rather than
-a threshold, and no route sends a shape to a kernel that cannot take it.
+owns every batch from 6 to 64 (below that, vLLM 0.31's skinny GEMMs), the
+generated GEMM's wins are a comb in M rather than a threshold, and no route
+sends a shape to a kernel that cannot take it.
 """
+
+import os
 
 import pytest
 
@@ -31,9 +34,17 @@ def test_the_shipped_table_covers_qwen3_8b():
 
 
 @pytest.mark.parametrize("nk", SHAPES)
-@pytest.mark.parametrize("m", [1, 2, 5, 8, 15, 16, 17, 24, 32, 33, 48, 64])
+@pytest.mark.parametrize("m", [6, 8, 15, 16, 17, 24, 32, 33, 48, 64])
 def test_decode_batches_take_the_decode_kernel(m, nk):
     assert vllm_gemm.route_for(m, *nk) == "hk_decode"
+
+
+@pytest.mark.parametrize("nk", SHAPES)
+@pytest.mark.parametrize("m", [1, 2])
+def test_the_smallest_batches_stay_on_vllms_skinny_gemm(m, nk):
+    # Since 0.2x vLLM runs wvSplitK / LLMM1 at M <= 5 on gfx11, and the table
+    # is measured against what the installed vLLM runs.
+    assert vllm_gemm.route_for(m, *nk) == "fallback"
 
 
 @pytest.mark.parametrize("nk", (QKV, O, GATE_UP, DOWN))
@@ -110,6 +121,23 @@ def test_the_patched_dispatcher_ignores_its_arguments():
     # and has no meaning on ROCm, so whatever is passed the answer is ours.
     assert vllm_gemm.dispatch_unquantized_gemm() is vllm_gemm._gemm
     assert vllm_gemm.dispatch_unquantized_gemm("auto") is vllm_gemm._gemm
+
+
+@pytest.mark.parametrize("given, want", [
+    (None, "/home/u/.cache/vllm/hk-linear"),
+    ("/data/vllm", "/data/vllm/hk-linear"),
+    ("/data/vllm/hk-linear", "/data/vllm/hk-linear"),
+])
+def test_the_patched_engine_compiles_into_a_cache_of_its_own(monkeypatch, given, want):
+    # A graph compiled with vLLM's linear layers, loaded back, never calls ours.
+    monkeypatch.delenv("XDG_CACHE_HOME", raising=False)
+    monkeypatch.setenv("HOME", "/home/u")
+    if given is None:
+        monkeypatch.delenv("VLLM_CACHE_ROOT", raising=False)
+    else:
+        monkeypatch.setenv("VLLM_CACHE_ROOT", given)
+    assert vllm_gemm._own_compile_cache() == want
+    assert os.environ["VLLM_CACHE_ROOT"] == want
 
 
 def test_apply_without_vllm_reports_rather_than_raises():

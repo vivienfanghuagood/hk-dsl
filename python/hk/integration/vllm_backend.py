@@ -394,6 +394,19 @@ def _build():
             return (2, num_blocks, num_kv_heads, block_size, head_size)
 
         @classmethod
+        def supported_kv_cache_layouts(cls):
+            """vLLM 0.31 and later lay the cache out themselves -- logically
+            [layers, blocks, heads, tokens, K|V], in the physical order a
+            backend declares here -- and ignore get_kv_cache_shape. LBHNC is
+            this backend's head-major page, one layer's [B, H, N, 2C] block
+            contiguous, so K and V are each a slice of the last axis (a row
+            stride of 2C) that a gl takes as it is. vLLM's default, LBNHC,
+            puts heads inside tokens, which no gl can address."""
+            from vllm.v1.kv_cache_layout import KVCacheLayout
+
+            return [KVCacheLayout.LBHNC]
+
+        @classmethod
         def validate_head_size(cls, head_size: int) -> None:
             # Defined here rather than inherited: the base class grew this in
             # a later release than the one this was first run against, and a
@@ -483,6 +496,16 @@ def _build():
 
         # -- the launch ----------------------------------------------------
 
+        def _kv(self, kv_cache):
+            """(k_cache, v_cache), each (blocks, kv_heads, block, head_dim).
+            Up to vLLM 0.30 the layer's cache is get_kv_cache_shape's
+            (2, ...); from 0.31 it is [B, H, N, 2C], K and V side by side
+            in the last axis -- two strided views of one tensor."""
+            if kv_cache.dim() == 5:
+                return kv_cache[0], kv_cache[1]
+            d = self.head_size
+            return kv_cache[..., :d], kv_cache[..., d:2 * d]
+
         def forward(self, layer, query, key, value, kv_cache, attn_metadata,
                     output=None, output_scale=None, output_block_scale=None):
             if attn_metadata is None:                 # profiling run
@@ -491,7 +514,7 @@ def _build():
                 raise NotImplementedError(f"{NAME} has no fused output quant")
 
             n = attn_metadata.num_actual_tokens
-            k_cache, v_cache = kv_cache[0], kv_cache[1]
+            k_cache, v_cache = self._kv(kv_cache)
             self._update_cache(layer, key[:n], value[:n], k_cache, v_cache,
                                attn_metadata.slot_mapping[:n])
 
