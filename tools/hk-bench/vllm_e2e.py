@@ -49,6 +49,9 @@ def one_arm(args, backend: str) -> dict:
     stock attention, `hk+gemm` is both; anything else names a vLLM backend.
     `gemm@NAME` routes the linear layers by the table `--routes` names NAME.
     """
+    # The patches below go into this process. An engine core in a process
+    # of its own would import vLLM afresh and run unpatched, timing like stock.
+    os.environ.setdefault("VLLM_ENABLE_V1_MULTIPROCESSING", "0")
     backend, _, table = backend.partition("@")
     if table:
         routes = dict(kv.split("=", 1) for kv in args.routes.split(",") if kv)
