@@ -82,7 +82,8 @@ losses.
 
 | kernel | result | against | source |
 |---|---|---|---|
-| GEMM, bf16 | 75.0 TFLOPs at 4096³, 77.9 at 8192x8192x4096: 1.00x | the handwritten HipKittens C++ (rocBLAS: 0.93x, 0.92x) | [Phase 3](docs/history/02-phase-3-gemm.md) |
+| GEMM, bf16, Qwen3-8B's linear shapes | 82.1–85.7 TFLOP/s: 1.03–1.08x | the faster of Triton (autotuned) and FlyDSL; hipBLASLt 1.19–1.34x | [the scoreboard](docs/history/18-the-scoreboard.md) |
+| RMSNorm, fused add + RMSNorm, softmax | 0.37–0.97x, *slower* | the faster of Triton, FlyDSL and Inductor | [the scoreboard](docs/history/18-the-scoreboard.md) |
 | attention forward | 61.0–64.9 TFLOPs, 0.999–1.002x (1.008x causal); 2.9–3.2x torch SDPA, 4.0x causal | the handwritten C++; torch SDPA | [Phase 4](docs/history/03-phase-4-attention.md) |
 | norms, softmax, RoPE, SiLU-mul, quantize | 13 of 15 cases faster, the other two a tie | `torch.compile` | [Phases 1 and 2](docs/history/01-phases-1-2.md) |
 | decode GEMV, 1–32 tokens | 1.93–2.03x per step | hipBLASLt | [cross-workgroup reduction](docs/history/11-cross-workgroup-reduction.md) |
