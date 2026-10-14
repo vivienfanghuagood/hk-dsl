@@ -73,9 +73,18 @@ def _derive(block_m: int, block_n: int, k_step: int, dot_slice: int,
 def gemm_kernel(name: str, *, block_m: int = 128, block_n: int = 128,
                 k_step: int = 64, dot_slice: int = 16, warps: int = 8,
                 warp_rows: int = 4, n_split: int = 4, wgm: int = 8,
-                write_pos: int = 2,
+                write_pos: int = 2, lds_buffers: int = 1,
                 max_vgprs: int = 256, min_occupancy: int = 1):
     """The default tiling is `big_config` from the C++: 128x128x64, 8 warps.
+
+    The default LDS is one buffer, not the C++'s two. Two let the next
+    K-tile be written while this one is read, one barrier a tile; but a
+    workgroup then takes all 64 KB of LDS, which is half of what a WGP has,
+    so a WGP holds two workgroups -- four waves a SIMD where the registers
+    allow seven. One buffer is 32 KB and a second barrier a tile, and the
+    WGP holds three: 83.4-86.9 TFLOP/s at Qwen3-8B's linear shapes against
+    74.4-77.2 with two, and against Triton's autotuned 76.0-82.1, which
+    makes the same choice (tools/hk-bench/gemm_variants.py).
 
     That is a 32x64 warp tile rather than the 64x64 everything else on this
     GPU runs, and the README next to the C++ has the sweep that justifies it:
@@ -102,8 +111,15 @@ def gemm_kernel(name: str, *, block_m: int = 128, block_n: int = 128,
              WGM: hk.Constexpr = wgm):
         g = hk.group(warps)
 
-        As = hk.lds.alloc(st_a, count=2, name="As")
-        Bs = hk.lds.alloc(st_b, count=2, name="Bs")
+        if lds_buffers == 2:
+            As = hk.lds.alloc(st_a, count=2, name="As")
+            Bs = hk.lds.alloc(st_b, count=2, name="Bs")
+        else:
+            As = hk.lds.alloc(st_a, name="As")
+            Bs = hk.lds.alloc(st_b, name="Bs")
+
+        def at(s, i):
+            return s[i] if lds_buffers == 2 else s
         buf_a = g.stage_buffer(As, name="buf_a")
         buf_b = g.stage_buffer(Bs, name="buf_b")
 
@@ -165,8 +181,8 @@ def gemm_kernel(name: str, *, block_m: int = 128, block_n: int = 128,
             the operand tiles instead was tried in the C++ and is slower -- the
             second set costs 48 VGPRs and takes occupancy from 9 to 7.
             """
-            A_s = As[buf]
-            B_s = Bs[buf]
+            A_s = at(As, buf)
+            B_s = at(Bs, buf)
 
             def load_A(k):
                 A_s.subtile(reg_m, dot_slice, warp_row, k).load(
@@ -213,46 +229,60 @@ def gemm_kernel(name: str, *, block_m: int = 128, block_n: int = 128,
                             run_tail()
 
         # Prologue: tile 0 resident, tile 1 in flight.
-        g.load(As[0], a[a_coord(0)])
-        g.load(Bs[0], b[b_coord(0)])
+        g.load(at(As, 0), a[a_coord(0)])
+        g.load(at(Bs, 0), b[b_coord(0)])
         stage(1)
         hk.arch.barrier()
 
-        for t in range(n_tiles - 1):
-            tic = t % 2
-            toc = 1 - tic
+        if lds_buffers == 2:
+            for t in range(n_tiles - 1):
+                tic = t % 2
+                toc = 1 - tic
 
-            def store_tile():
-                # Land the batch issued an iteration ago, drain it into the
-                # buffer nobody is reading, and refill the registers at once so
-                # they are never idle. GPREFETCH is 1, so vmcnt keeps nothing.
+                def store_tile():
+                    # Land the batch issued an iteration ago, drain it into the
+                    # buffer nobody is reading, and refill the registers at once
+                    # so they are never idle. GPREFETCH is 1, so vmcnt keeps
+                    # nothing.
+                    hk.arch.vm_wait(0)
+                    g.commit(As[toc], buf_a)
+                    g.commit(Bs[toc], buf_b)
+                    stage(t + 2)
+
+                if write_pos == 0:
+                    store_tile()
+                    dot_tile(tic)
+                elif write_pos == 1:
+                    dot_tile(tic)
+                    store_tile()
+                else:
+                    dot_tile(tic, store_tile)
+
+                # The writes are still moving: dot_tile's last chunk stopped at
+                # the two of them rather than at zero, on purpose, and s_barrier
+                # does not order memory. Nearly free here -- a whole K-slice of
+                # WMMAs has run since they issued -- and the pass refuses the
+                # barrier without it, so it cannot be dropped by accident.
+                hk.arch.barrier(drain=True)
+        else:
+            # One LDS buffer: half the LDS, so twice the workgroups a WGP can
+            # hold, for a second barrier a K-tile -- the tile is read out, then
+            # overwritten, with nothing to overlap the write with.
+            for t in range(n_tiles - 1):
+                dot_tile(0)
+                hk.arch.barrier()
                 hk.arch.vm_wait(0)
-                g.commit(As[toc], buf_a)
-                g.commit(Bs[toc], buf_b)
+                g.commit(As, buf_a)
+                g.commit(Bs, buf_b)
                 stage(t + 2)
-
-            if write_pos == 0:
-                store_tile()
-                dot_tile(tic)
-            elif write_pos == 1:
-                dot_tile(tic)
-                store_tile()
-            else:
-                dot_tile(tic, store_tile)
-
-            # The writes are still moving: dot_tile's last chunk stopped at the
-            # two of them rather than at zero, on purpose, and s_barrier does
-            # not order memory. Nearly free here -- a whole K-slice of WMMAs
-            # has run since they issued -- and the pass refuses the barrier
-            # without it, so it cannot be dropped by accident.
-            hk.arch.barrier(drain=True)
+                hk.arch.barrier(drain=True)
 
         # Epilogue: the last tile is already resident and there is nothing left
         # to stage, so no tail -- and therefore no write for the waits to
         # carry. Counting writes that were never issued would be the dangerous
         # direction, and here that is structural rather than an argument the
         # caller has to remember to pass.
-        dot_tile((n_tiles - 1) % 2)
+        dot_tile((n_tiles - 1) % lds_buffers)
 
         # Columns are in units of the chunk width; rows in elements.
         m_row = m_base + warp_row * reg_m
@@ -273,12 +303,13 @@ def gemm_kernel(name: str, *, block_m: int = 128, block_n: int = 128,
                      max_vgprs=max_vgprs, min_occupancy=min_occupancy)
 
 
-#: The tiling the C++ calls `big_config`, and the one every shape gets until a
-#: tuning record says otherwise.
+#: The tiling the C++ calls `big_config`, in one LDS buffer (see
+#: gemm_kernel), and the one every shape gets until a tuning record says
+#: otherwise. write_pos only places the two-buffer schedule's LDS write.
 DEFAULT = dict(block_m=128, block_n=128, k_step=64, dot_slice=16, warps=8,
-               warp_rows=4, n_split=4, wgm=8, write_pos=2)
+               warp_rows=4, n_split=4, wgm=8, write_pos=2, lds_buffers=1)
 
-#: What the tuner searches. Five axes and 48 points, chosen so that each one
+#: What the tuner searches. Six axes and 96 points, chosen so that each one
 #: trades something real against something else rather than wandering:
 #:
 #:   block_m   128 is 1.5x the LDS traffic per WMMA for the registers to run a
@@ -287,7 +318,10 @@ DEFAULT = dict(block_m=128, block_n=128, k_step=64, dot_slice=16, warps=8,
 #:   n_split   how the warp tile is cut into accumulators -- register pressure
 #:             against ds_read width.
 #:   wgm       the L2 swizzle: how long a B panel stays resident.
-#:   write_pos where the staging drain lands relative to the math.
+#:   write_pos where the staging drain lands relative to the math, with two
+#:             LDS buffers (one buffer has nothing to overlap the write with).
+#:   lds_buffers  two: a barrier a tile and a WGP of two workgroups; one: two
+#:             barriers and three (see gemm_kernel).
 #:
 #: dot_slice, warps and warp_rows are held at the default: moving them changes
 #: the fragment shapes rather than the schedule, and every combination that
@@ -297,7 +331,7 @@ DEFAULT = dict(block_m=128, block_n=128, k_step=64, dot_slice=16, warps=8,
 #: rows, because "it does not fit" is an answer.
 SPACE = _autotune.space(
     block_m=[64, 128], k_step=[32, 64], n_split=[2, 4],
-    wgm=[4, 8, 16], write_pos=[1, 2],
+    wgm=[4, 8, 16], write_pos=[1, 2], lds_buffers=[1, 2],
 )
 
 #: Shapes the CLI tunes by default: a square prefill GEMM, a bigger one, a
@@ -308,7 +342,8 @@ TUNE_KEYS = ["4096x4096x4096", "8192x8192x8192",
 
 def _sched_name(s: Dict[str, Any]) -> str:
     return ("gemm_bf16_{block_m}x{block_n}x{k_step}_w{warps}r{warp_rows}"
-            "_s{n_split}_d{dot_slice}_g{wgm}_p{write_pos}").format(**s)
+            "_s{n_split}_d{dot_slice}_g{wgm}_p{write_pos}_l{lds_buffers}"
+            ).format(**s)
 
 
 def _make(**sched):
@@ -362,7 +397,7 @@ BLOCK_M, BLOCK_N, K_STEP = DEFAULT["block_m"], DEFAULT["block_n"], DEFAULT["k_st
 #: hk.ops.decode_gemm, laid
 #: out for the weight stream, is faster still.
 THIN = dict(block_m=16, block_n=128, k_step=64, dot_slice=16, warps=4,
-            warp_rows=1, n_split=2, wgm=8, write_pos=2)
+            warp_rows=1, n_split=2, wgm=8, write_pos=2, lds_buffers=2)
 
 
 def _bucket(m: int) -> int:

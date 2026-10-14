@@ -36,8 +36,13 @@ read, so a record that measured a tie is inert whether it travelled in a wheel
 or was written on this machine; `HK_AUTOTUNE_MIN_GAIN` overrides it.
 
 The bar exists because `min` over a column of noisy numbers always names a
-winner. Four keys out of sixteen clear it. Of the GEMM space's four shapes only
-4096x4096x4096 does; of attention's twelve, three, all at head_dim 128.
+winner. Four keys out of sixteen cleared it. Of the GEMM space's four shapes
+only 4096x4096x4096 did, by 1.2%; of attention's twelve, three, all at
+head_dim 128. The GEMM record has since been withdrawn: it was measured
+against a two-LDS-buffer default, and the one-buffer default that replaced
+it is 15% faster than either (`gemm_kernel`'s docstring), while the record's
+k_step=32 under one buffer is slower than the new default. A record is only
+as good as the default it beat.
 
 One of those three deserves reading before it is trusted. `attn_fwd_d128` at
 n16384 and n65536 reproduces across repeated sweeps -- same schedule, same gain

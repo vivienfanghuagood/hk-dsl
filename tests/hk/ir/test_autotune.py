@@ -309,7 +309,7 @@ def test_gemm_ships_a_space_and_a_default_that_agree():
     assert gemm.TUNER.default == gemm.DEFAULT
     assert (gemm.BLOCK_M, gemm.BLOCK_N, gemm.K_STEP) == (
         gemm.DEFAULT["block_m"], gemm.DEFAULT["block_n"], gemm.DEFAULT["k_step"])
-    assert len(gemm.SPACE) == 48
+    assert len(gemm.SPACE) == 96
 
 
 def test_gemm_will_not_let_a_record_break_a_shape_that_worked(monkeypatch, tmp_path):

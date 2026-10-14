@@ -37,11 +37,11 @@ def test_the_code_object_op_writes_what_the_library_op_writes(monkeypatch):
 
 
 def test_a_kernel_with_all_64_kb_of_lds_launches():
-    """The default GEMM double-buffers 2 x (128 + 128) x 64 bf16: the whole
-    of a gfx11 workgroup's LDS, asked for at launch with no attribute set."""
+    """The two-buffer GEMM holds 2 x (128 + 128) x 64 bf16: the whole of a
+    gfx11 workgroup's LDS, asked for at launch with no attribute set."""
     from hk.ops import gemm  # noqa: PLC0415
 
-    k = gemm.KERNELS["gemm_bf16_128x128"]
+    k = gemm.gemm_kernel("co_test_gemm_lds2", lds_buffers=2)
     co = codeobj.load(k)
     assert co.shmem == 64 * 1024
     a = torch.randn(256, 512, device="cuda", dtype=torch.bfloat16)
