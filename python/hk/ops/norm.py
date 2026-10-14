@@ -84,7 +84,7 @@ softmax wants it folded at the same width, by half again. The reason is in
 """
 
 
-from typing import Any
+from typing import Any, Optional
 
 from .. import dsl as hk
 from ..dsl.collective import cross_warp, fold_rows
@@ -283,17 +283,30 @@ _FOLD_MIN_WARPS = 4
 #:     rms    6144x4096      0.117              0.087
 #:     softmax 8192x4096     0.191              0.290   <- the exception
 #:
-#: softmax is the exception, and not by a little: folded is 1.5x there, and
-#: the ordering holds at 2048x4096 too (0.051 vs 0.059). Its rescale pass is
-#: the one of the three that is arithmetic-bound rather than issue-bound --
-#: `v_exp_f32` is quarter rate on gfx1100 -- so occupancy is worth more to it
-#: than the saved issue slots are, and folding is what buys occupancy. Which
-#: is the paragraph above, surviving in the one place it is still true.
-_FOLD_FIRST_KINDS = ("softmax",)
+#: softmax was the exception, and not by a little: folded was 1.5x there, and
+#: the ordering held at 2048x4096 too (0.051 vs 0.059). Its passes were the
+#: arithmetic-bound ones -- two `v_exp_f32` an element, quarter rate on
+#: gfx1100 -- so occupancy was worth more to it than the saved issue slots.
+#: The online softmax computes one exp an element, and the exception went
+#: with the second (scoreboard harness, ms, folded / unfolded):
+#:
+#:     softmax 2048x4096     0.0317 / 0.0317
+#:     softmax 8192x4096     0.1978 / 0.1860
+#:
+#: So no op folds first by kind any more. What still folds first is a short
+#: tensor (_FOLD_ROWS_BELOW), for every kind.
+_FOLD_FIRST_KINDS: tuple = ()
+
+#: Below this many rows a foldable row is folded first, whatever the op: the
+#: unfolded plan is a workgroup per sixteen rows, too few to fill the card,
+#: where folded is one a row. The weighted norms measured the crossing
+#: (_WEIGHTED_UNFOLD_ROWS) and softmax ties at 2048.
+_FOLD_ROWS_BELOW = 4096
 
 
-def plan(cols: int, kind: str = "rms"):
-    """(WARPS, TPW, FOLD) for a normalization over rows of `cols` elements.
+def plan(cols: int, kind: str = "rms", rows: Optional[int] = None):
+    """(WARPS, TPW, FOLD) for a normalization over rows of `cols` elements,
+    `rows` of them if known (fewer than _FOLD_ROWS_BELOW fold first).
 
     Three outcomes, all about the row:
 
@@ -361,7 +374,8 @@ def plan(cols: int, kind: str = "rms"):
     and would roughly double the kernel count.
     """
     foldable = cols % ROWS == 0 and cols // ROWS >= COLS
-    if kind in _FOLD_FIRST_KINDS and foldable:
+    short = rows is not None and rows < _FOLD_ROWS_BELOW
+    if (kind in _FOLD_FIRST_KINDS or short) and foldable:
         fw, ftpw = _split(_ceil(cols // ROWS, COLS))
         if ftpw <= MAX_TPW and fw >= _FOLD_MIN_WARPS:
             return fw, ftpw, ROWS
@@ -454,46 +468,82 @@ def _row_reduce_kernel(name: str, dtype, kind: str, warps: int):
             return fold_rows(vec, op, WARPS) if FOLD != 1 else vec
 
         if kind == "softmax":
-            # Pass 1: the row max, for the shift that keeps exp in range.
+            # Online: a running max and a sum of exp under it, rescaled when
+            # the max moves, then the warps' (max, sum) pairs combined. The
+            # max is unmasked -- a backed-up block re-reads real columns of
+            # the same row, and a max cannot be moved by an element it has
+            # already seen -- the sum is masked, since a sum is not
+            # idempotent: shift first, mask second, so the overlap is -inf
+            # and exp(-inf) = 0.
             #
-            # Unmasked, and that is not an oversight. Backing the address up
-            # makes a block re-read columns of the *same row* that its
-            # neighbour already covered -- real elements, never garbage -- and
-            # a max cannot be moved by an element it has already seen. Same for
-            # a warp whose step ran past the last block: it re-reads that block.
-            # Only the sum below needs the overlap masked, because a sum is not
-            # idempotent. Not masking also means nothing here writes to `v`,
-            # which is the rule visit() states.
-            m = hk.full(vt, _NEG_INF)
-            visit(lambda v, pad, idx: m.max_(v.max(axis=1)))
-            m = combine(m, "max")
+            # Held, it is one pass and one exp an element: each tile becomes
+            # its own exp(v - m_tile) in place, and the write scales it by
+            # exp(m_tile - M) / S, a vector. Three passes and two exps an
+            # element before (max; sum of exp; exp again to write), and
+            # v_exp_f32 is quarter rate on gfx1100. Streamed, it is two
+            # passes over memory instead of three.
+            if TPW:
+                tms = []
+                for v, pad, idx in held:
+                    mt = hk.full(vt, _NEG_INF)
+                    mt.max_(v.max(axis=1))
+                    v -= mt
+                    v.exp_()
+                    st = hk.zeros(vt)
+                    st += (_mask(v.copy(), pad, 0.0) if pad is not None
+                           else v).sum(axis=1)
+                    tms.append((mt, st))
+                m = tms[0][0].copy()
+                for mt, _ in tms[1:]:
+                    m.max_(mt)
+                s = hk.zeros(vt)
+                for mt, st in tms:
+                    w = mt - m
+                    w.exp_()
+                    s += st * w
+            else:
+                m = hk.full(vt, _NEG_INF)
+                s = hk.zeros(vt)
 
-            # Pass 2: sum of exp. The mask carries through: m is finite, so a
-            # masked element is exp(-inf) = 0, the identity for sum.
-            s = hk.zeros(vt)
+                # In place throughout: this runs inside visit()'s device
+                # loop, where a rebound name would not be carried round it.
+                def online(v, pad, idx):
+                    nonlocal m, s
+                    m_old = m.copy()
+                    m.max_(v.max(axis=1))
+                    alpha = m_old - m
+                    alpha.exp_()
+                    s *= alpha
+                    p = _mask(v - m, pad, _NEG_INF)
+                    p.exp_()
+                    s += p.sum(axis=1)
 
-            def accumulate_exp(v, pad, idx):
-                nonlocal s
-                # Shift first, mask second. The broadcast already allocates
-                # the tile, so the mask lands on a temporary for free and `v`
-                # stays untouched. The order is not arbitrary either way:
-                # masking after the shift writes -inf, and exp(-inf) is 0,
-                # the identity for the sum.
-                p = _mask(v - m, pad, _NEG_INF)
-                p.exp_()
-                s += p.sum(axis=1)
-
-            visit(accumulate_exp)
+                visit(online)
+            g_m = combine(m, "max")
+            w = m - g_m
+            w.exp_()
+            s *= w
             s = combine(s, "add")
 
-            # Pass 3: write. Unmasked -- a repeated column is written twice
-            # with the same value, which is the point of backing up.
-            def write(v, pad, idx):
-                p = (v - m).exp()
-                p /= s
-                o[idx] = p.to(dtype)
+            # The write. Unmasked -- a repeated column is written twice with
+            # the same value, which is the point of backing up -- and stored
+            # from fp32: the store narrows in registers, where .to() first
+            # moved every element across the wave halves.
+            if TPW:
+                for (v, pad, idx), (mt, _) in zip(held, tms):
+                    scale = mt - g_m
+                    scale.exp_()
+                    scale /= s
+                    v *= scale
+                    o[idx] = v
+            else:
+                def write(v, pad, idx):
+                    p = v - g_m
+                    p.exp_()
+                    p /= s
+                    o[idx] = p
 
-            visit(write)
+                visit(write)
             return
 
         sq = hk.zeros(vt)
@@ -761,14 +811,15 @@ def _view(t, rows: int, cols: int, fold: int):
 _PLAN_CACHE: dict = {}
 
 
-def _resolve(kind: str, dtype, cols: int):
-    key = (kind, dtype, cols)
+def _resolve(kind: str, dtype, cols: int, rows: int):
+    short = rows < _FOLD_ROWS_BELOW
+    key = (kind, dtype, cols, short)
     got = _PLAN_CACHE.get(key)
     if got is None:
         suffix = _TORCH_DTYPES.get(str(dtype))
         if suffix is None:
             raise TypeError(f"hk norms handle bf16/fp16/fp32, not {dtype}")
-        warps, tpw, fold = plan(cols, kind)
+        warps, tpw, fold = plan(cols, kind, rows if short else None)
         got = _PLAN_CACHE[key] = (
             KERNELS[f"{kind}_{suffix}_w{warps}"], tpw, fold,
             int(_exact(cols // fold, warps, tpw)),
@@ -791,7 +842,7 @@ def _run(kind: str, x, out, eps: float):
             f"{kind}: out is {tuple(out.shape)}/{out.dtype}, "
             f"expected {tuple(x.shape)}/{x.dtype}"
         )
-    k, tpw, fold, exact = _resolve(kind, x.dtype, cols)
+    k, tpw, fold, exact = _resolve(kind, x.dtype, cols, rows)
     # The constexprs go through the call rather than `specialize(...)`: the
     # call path is keyed on them and hits the trace/build/module caches, where
     # a fresh specialization would re-trace and re-resolve the module on every

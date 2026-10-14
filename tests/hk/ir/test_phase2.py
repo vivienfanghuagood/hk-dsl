@@ -259,9 +259,10 @@ def test_the_three_ops_do_not_want_the_same_plan():
     """Why `plan` takes `kind`, against the sweep that put it there.
 
     Each row is a case from tools/hk-bench/norm_plan.py under burst timing.
-    rms and layer want the row held unfolded wherever that is legal; softmax
-    wants it folded at the same width, by 1.5x. One rule cannot say both, and
-    `cols` alone cannot tell which is being asked.
+    rms and layer want the row held unfolded wherever that is legal. softmax
+    wanted it folded at the same width, by 1.5x, until it went online with
+    one exp an element: now it wants what they want (8192x4096: held 0.186,
+    folded 0.198 ms), and `kind` survives only for the plans below.
     """
     from hk.ops.norm import plan
 
@@ -269,7 +270,7 @@ def test_the_three_ops_do_not_want_the_same_plan():
     cases = [
         (4096, "rms", (16, 4, 1)),      # 0.361 vs folded w4 tpw1  0.402
         (4096, "layer", (16, 4, 1)),    # 0.354 vs folded w4 tpw1  0.378
-        (4096, "softmax", (4, 1, 16)),  # 0.191 vs held w16 tpw4   0.290
+        (4096, "softmax", (16, 4, 1)),  # 0.186 vs folded w4 tpw1  0.198
         # Too wide to hold unfolded: every kind folds, and the kind stops
         # mattering because there is only one plan left.
         (8192, "rms", (8, 1, 16)),      # 0.067
@@ -295,8 +296,8 @@ def test_the_three_ops_do_not_want_the_same_plan():
     for cols, kind, want in cases:
         assert plan(cols, kind) == want, (cols, kind)
 
-    # rms is the default, because it is the shape of two of the three.
-    assert plan(4096) == plan(4096, "rms") != plan(4096, "softmax")
+    # rms is the default; since softmax went online it is all three's shape.
+    assert plan(4096) == plan(4096, "rms") == plan(4096, "softmax")
 
 
 def test_the_plan_is_not_simply_flat():
@@ -344,9 +345,12 @@ def test_quantize_and_norm_agree_about_the_regime_and_differ_about_fold():
         for ws in (None, 1 << 20, 50 << 20, 201 << 20, 1 << 40):
             assert plan(cols, ws) == plan(cols), (cols, ws)
 
-    # Unfolded, and held: four tiles each across all sixteen warps.
+    # Unfolded, and held: four tiles each across all sixteen warps -- softmax
+    # too, since it went online. A short tensor folds, whatever the op.
     assert plan(4096) == (16, 4, 1) == norm_plan(4096, "rms")
-    assert norm_plan(4096, "softmax") == (4, 1, 16)
+    assert norm_plan(4096, "softmax") == (16, 4, 1)
+    assert norm_plan(4096, "softmax", rows=2048) == (4, 1, 16)
+    assert norm_plan(4096, "rms", rows=1) == (4, 1, 16)
 
 
 def test_exact_still_holds_for_every_kind():
