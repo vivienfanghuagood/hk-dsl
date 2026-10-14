@@ -84,8 +84,12 @@ def test_the_top_of_the_tpw_range_does_not_spill(name):
     blocks, so the inexact variant is the one that has to hold, and a version
     of this test written with EXACT=1 passed while the sweep was skipping the
     same kernel as unbuildable.
+
+    The top is the kernel's own cap (norm._tpw_cap): the weighted residual
+    norm stops a tile short of MAX_TPW when inexact, and its planner says so.
     """
-    b = KERNELS[name].build(TPW=norm.MAX_TPW, FOLD=1, EXACT=0)
+    kind = name.split(".")[-1].split("_")[0]
+    b = KERNELS[name].build(TPW=norm._tpw_cap(kind, 1, False), FOLD=1, EXACT=0)
     assert b.kernels, f"{name}: no resource remarks parsed"
     for k in b.kernels:
         assert k.scratch == 0 and not k.spills, f"{name}: {k.line()}"

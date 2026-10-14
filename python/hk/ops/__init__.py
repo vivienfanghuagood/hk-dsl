@@ -20,14 +20,14 @@ from .elementwise import (
 )
 from .fused import rope, silu_mul
 from .gemm import matmul
-from .norm import layernorm, rmsnorm, softmax
+from .norm import fused_add_rms_norm, layernorm, rms_norm, rmsnorm, softmax
 from .quant import dequantize, quantize
 
 __all__ = [
     "attn", "sdpa", "elementwise", "fused", "gemm", "decode_gemm", "norm", "quant",
     "add", "sub", "mul", "maximum", "minimum",
     "exp", "relu", "gelu", "neg", "abs",
-    "rmsnorm", "layernorm", "softmax",
+    "rmsnorm", "layernorm", "softmax", "rms_norm", "fused_add_rms_norm",
     "silu_mul", "rope",
     "quantize", "dequantize",
     "matmul",

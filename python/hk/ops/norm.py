@@ -560,6 +560,112 @@ def _row_reduce_kernel(name: str, dtype, kind: str, warps: int):
     return hk.kernel(body, warps=warps, grid=_grid, name=name)
 
 
+def _rms_weighted_kernel(name: str, dtype, warps: int, residual: bool):
+    """The RMSNorm a model runs: y = x * rsqrt(mean(x^2) + eps) * w, and with
+    `residual` vLLM's fused_add_rms_norm -- x + r is what is normalised, and
+    it is written back to `r_out` -- one read of each operand.
+
+    `_row_reduce_kernel`'s schedule. With FOLD the caller views the row as
+    FOLD chunks -- one workgroup a row, a tile's rows its chunks -- and the
+    weight the same way, so a weight tile loaded at the data tile's
+    coordinates is the weight of every element in it. In place is safe: the
+    persistent variant reads every tile before the cross-warp sum's barriers,
+    and the streaming one reads and writes each block in the same warp.
+    """
+    @hk.func
+    def core(x, w, o, r, r_out, ROWS, COLS, WARPS, TPW, FOLD, EXACT, EPS):
+        t = hk.RT(fp32, ROWS, COLS)
+        vt = hk.col_vec(t)
+        rv = hk.row_vec(t)
+        ncols = x.cols
+        nblk = hk.cdiv(ncols, COLS)
+        rowlen = ncols * FOLD if FOLD != 1 else ncols
+        # Rows bounded rather than backed up: a decode step normalises one
+        # row per request, fewer than a tile's sixteen, and a row past the
+        # tensor reads zero and is never written.
+        row_lo = hk.arch.block_idx.y * ROWS
+
+        def cb_of(step):
+            return step * WARPS + hk.arch.warp_id() if WARPS > 1 else step
+
+        # A folded weight tile is loaded with its data tile, so its latency
+        # hides under the reduction's instead of following it -- unless the
+        # warp holds several tiles, where the extra tiles would spill.
+        hold_w = FOLD != 1 and TPW <= 1
+
+        # Every load and store is bounded, the weight's too though its
+        # sixteen rows always fill the tile: the bounded forms are the
+        # straight-line buffer accesses, widening and narrowing in registers.
+        # Loading 16-bit tiles and copy()ing instead moves every element
+        # across the wave halves (tools/hk-bench/norm_stages.py, one 1x4096
+        # row: 0.86 us of a 3.5 us kernel).
+        def weight(widx):
+            return w[widx].load(t, bounded=True) if FOLD != 1 else w[widx].load(rv)
+
+        def tile(cb):
+            col_lo, pad = _block_start(cb, COLS, ncols, EXACT)
+            idx = hk.elem_coord(0, 0, row_lo, col_lo)
+            v = x[idx].load(t, bounded=True)
+            if r is not None:
+                v += r[idx].load(t, bounded=True)
+            widx = hk.elem_coord(0, 0, 0, col_lo)
+            return v, pad, idx, weight(widx) if hold_w else widx
+
+        held = [tile(cb_of(s)) for s in range(TPW)] if TPW else None
+        steps = None if TPW else hk.cdiv(nblk, WARPS)
+
+        def visit(fn):
+            if TPW:
+                for rec in held:
+                    fn(*rec)
+            else:
+                for s in range(steps):
+                    fn(*tile(cb_of(s)))
+
+        sq = hk.zeros(vt)
+
+        def accumulate(v, pad, idx, g):
+            nonlocal sq
+            sq += _mask(v * v, pad, 0.0).sum(axis=1)
+
+        visit(accumulate)
+        sq = cross_warp(sq, "add", WARPS)
+        if FOLD != 1:
+            sq = fold_rows(sq, "add", WARPS)
+        sq /= rowlen
+        sq += EPS
+        scale = sq.rsqrt()
+
+        def write(v, pad, idx, g):
+            if r_out is not None:
+                r_out[idx].store(v, bounded=True)
+            v *= scale
+            v *= g if hold_w else weight(g)
+            o[idx].store(v, bounded=True)
+
+        visit(write)
+
+    if residual:
+        def body(x: hk.Tensor[dtype], r: hk.Tensor[dtype], w: hk.Tensor[dtype],
+                 o: hk.Tensor[dtype], r_out: hk.Tensor[dtype], *, ROWS=ROWS,
+                 COLS=COLS, WARPS=warps, TPW=0, FOLD=1, EXACT=0, EPS=1e-6):
+            core(x, w, o, r, r_out, ROWS, COLS, WARPS, TPW, FOLD, EXACT, EPS)
+    else:
+        def body(x: hk.Tensor[dtype], w: hk.Tensor[dtype], o: hk.Tensor[dtype],
+                 *, ROWS=ROWS, COLS=COLS, WARPS=warps, TPW=0, FOLD=1, EXACT=0,
+                 EPS=1e-6):
+            core(x, w, o, None, None, ROWS, COLS, WARPS, TPW, FOLD, EXACT, EPS)
+
+    body.__name__ = name
+    # Ties to even for the residual: a sum of two bf16s is exact in fp32, so
+    # its tie bit is set about one time in ten (measured: 10.7% of a 300x4096
+    # add), not "essentially never" as HipKittens' default assumes, and ties
+    # away from zero would grow the residual stream's magnitude a little at
+    # every layer. Rounded like torch and vLLM, it matches them bit for bit.
+    return hk.kernel(body, warps=warps, grid=_grid, name=name,
+                     defines={"HK_BF16_ROUND": 2} if residual else None)
+
+
 _DTYPES = {"bf16": bf16, "fp16": fp16, "fp32": fp32}
 
 #: How many warps a workgroup may have. `plan` only ever returns one of these,
@@ -577,7 +683,11 @@ for _s, _dt in _DTYPES.items():
         for _w in WARP_COUNTS:
             _n = f"{_k}_{_s}_w{_w}"
             KERNELS[_n] = _row_reduce_kernel(_n, _dt, _k, _w)
-del _s, _dt, _k, _w, _n
+    for _k, _res in (("rmsw", False), ("addrmsw", True)):
+        for _w in WARP_COUNTS:
+            _n = f"{_k}_{_s}_w{_w}"
+            KERNELS[_n] = _rms_weighted_kernel(_n, _dt, _w, _res)
+del _s, _dt, _k, _w, _n, _res
 
 
 # ---------------------------------------------------------------- wrappers
@@ -724,7 +834,96 @@ def softmax(x, out=None):
     return _run("softmax", x, out, 0.0)
 
 
+#: Rows from which the weighted norms stop folding. Folded is one workgroup a
+#: row, which is what keeps a decode step's handful of rows from being one
+#: workgroup with fifteen of its sixteen rows empty; unfolded is a sixteenth
+#: of the workgroups holding four times the tiles, which wins once there are
+#: enough of them to fill the machine. Measured (scoreboard.py, 4096 columns,
+#: ms, folded / unfolded):
+#:
+#:                    rows 1          32              2048            8192
+#:     rms_norm       0.0052/0.0087   0.0049/0.0096   0.0277/0.0333   0.2033/0.1964
+#:     fused add      0.0069/0.0210   0.0055/0.0215   0.0505/0.0713   0.4030/0.3653
+_WEIGHTED_UNFOLD_ROWS = 4096
+
+#: The residual variant's own TPW cap, unfolded and with its last block backed
+#: up: four tiles a warp spill there (measured at 3584 columns), where exact
+#: it is 207 VGPRs.
+_ADD_TPW_INEXACT = 3
+
+
+def _tpw_cap(kind: str, fold: int, exact: bool) -> int:
+    """The most tiles a warp of `kind` may hold; plan()s never ask for more."""
+    if kind == "addrmsw" and fold == 1 and not exact:
+        return _ADD_TPW_INEXACT
+    return MAX_TPW
+
+
+def _resolve_weighted(kind: str, dtype, cols: int, rows: int):
+    """(kernel, TPW, FOLD, EXACT). HK_NORM_FOLD=on/off overrides the row
+    rule, for measuring the one plan against the other."""
+    import os  # noqa: PLC0415
+
+    mode = os.environ.get("HK_NORM_FOLD", "auto")
+    want = mode == "on" or (mode == "auto" and rows < _WEIGHTED_UNFOLD_ROWS)
+    key = (kind, dtype, cols, want)
+    got = _PLAN_CACHE.get(key)
+    if got is None:
+        suffix = _TORCH_DTYPES.get(str(dtype))
+        if suffix is None:
+            raise TypeError(f"hk norms handle bf16/fp16/fp32, not {dtype}")
+        fold = ROWS if want and cols % ROWS == 0 and cols // ROWS >= COLS else 1
+        warps, tpw = _split(_ceil(cols // fold, COLS))
+        exact = _exact(cols // fold, warps, tpw)
+        if tpw > _tpw_cap(kind, fold, exact):
+            tpw = 0
+            exact = _exact(cols // fold, warps, tpw)
+        got = _PLAN_CACHE[key] = (KERNELS[f"{kind}_{suffix}_w{warps}"], tpw,
+                                  fold, int(exact))
+    return got
+
+
+def _rows_cols(x):
+    if not x.is_contiguous():
+        raise ValueError("hk kernels take contiguous tensors; call .contiguous()")
+    cols = x.shape[-1]
+    if cols < COLS:
+        raise ValueError(f"rows of {cols} elements; the weighted norms need "
+                         f"at least {COLS}")
+    return x.numel() // cols, cols
+
+
+def rms_norm(x, weight, eps: float = 1e-6, out=None):
+    """x * rsqrt(mean(x^2) + eps) * weight over the last axis -- the RMSNorm
+    a model has. Any number of rows, including fewer than a tile's."""
+    rows, cols = _rows_cols(x)
+    if out is None:
+        import torch  # noqa: PLC0415
+        out = torch.empty_like(x)
+    k, tpw, fold, exact = _resolve_weighted("rmsw", x.dtype, cols, rows)
+    shape = (rows * fold, cols // fold)
+    k(x.view(shape), weight.view(fold, cols // fold), out.view(shape),
+      TPW=tpw, FOLD=fold, EXACT=exact, EPS=eps)
+    return out
+
+
+def fused_add_rms_norm(x, residual, weight, eps: float = 1e-6):
+    """vLLM's fused_add_rms_norm, in place: `residual` becomes x + residual
+    and `x` its RMSNorm times `weight`. One read of x, residual and weight,
+    one write of each result."""
+    rows, cols = _rows_cols(x)
+    if residual.shape != x.shape or not residual.is_contiguous():
+        raise ValueError(f"residual is {tuple(residual.shape)}, expected a "
+                         f"contiguous {tuple(x.shape)}")
+    k, tpw, fold, exact = _resolve_weighted("addrmsw", x.dtype, cols, rows)
+    shape = (rows * fold, cols // fold)
+    xv, rv = x.view(shape), residual.view(shape)
+    k(xv, rv, weight.view(fold, cols // fold), xv, rv, TPW=tpw, FOLD=fold,
+      EXACT=exact, EPS=eps)
+    return x, residual
+
+
 __all__ = [
     "KERNELS", "ROWS", "COLS", "MAX_TPW", "MAX_WARPS", "WARP_COUNTS",
-    "plan", "rmsnorm", "layernorm", "softmax",
+    "plan", "rmsnorm", "layernorm", "softmax", "rms_norm", "fused_add_rms_norm",
 ]

@@ -78,7 +78,9 @@ def source(kernel, *, ns: str = "hk", name: str = "", **const_overrides) -> str:
     from ..codegen import scaffold as sc
 
     ir = kernel.trace(**const_overrides)
-    return sc.torch_library(ir, ns=ns, op_name=name or ir.name)
+    src = sc.torch_library(ir, ns=ns, op_name=name or ir.name)
+    with_defines = getattr(kernel, "with_defines", None)
+    return with_defines(src) if with_defines else src
 
 
 def build(kernel, *, ns: str = "hk", name: str = "", **const_overrides):

@@ -189,8 +189,13 @@ class Kernel:
         name: Optional[str] = None,
         max_vgprs: Optional[int] = None,
         min_occupancy: Optional[int] = None,
+        defines: Optional[Dict[str, Any]] = None,
     ):
         self.fn = fn
+        #: Preprocessor definitions ahead of the includes, for this kernel's
+        #: build only -- a library knob such as HK_BF16_ROUND. Part of the
+        #: source, so the compile cache keys on them.
+        self.defines = dict(defines or {})
         #: None means "whatever this process builds for" -- see
         #: hk.target.current_arch. Resolved on first read, not here, so that
         #: importing hk.ops traces nothing and probes no GPU.
@@ -351,7 +356,15 @@ class Kernel:
         artifact you take to /kernel-resource-check when something spills."""
         from ..codegen import scaffold as sc  # noqa: PLC0415
 
-        return sc.render(self.trace(**const_overrides), scaffold)
+        return self.with_defines(sc.render(self.trace(**const_overrides),
+                                           scaffold))
+
+    def with_defines(self, src: str) -> str:
+        """`src` with this kernel's preprocessor definitions ahead of it."""
+        if not self.defines:
+            return src
+        head = "".join(f"#define {k} {v}\n" for k, v in self.defines.items())
+        return head + src
 
     def build(self, **const_overrides: Any):
         """Generate and compile. Returns a runtime.Build, which carries the
@@ -449,7 +462,7 @@ class Kernel:
             k = type(self)(
                 self.fn, arch=self._arch, warps=self.warps, grid=self.grid_fn,
                 name=self.name, max_vgprs=self.max_vgprs,
-                min_occupancy=self.min_occupancy,
+                min_occupancy=self.min_occupancy, defines=self.defines,
             )
             k._defaults = dict(key)
             self._spec_cache[key] = k
@@ -461,13 +474,15 @@ class Kernel:
 
 def kernel(fn=None, *, arch: Optional[str] = None, warps: int = 1, grid=None,
            name: Optional[str] = None, max_vgprs: Optional[int] = None,
-           min_occupancy: Optional[int] = None):
+           min_occupancy: Optional[int] = None,
+           defines: Optional[Dict[str, Any]] = None):
     """Mark a function as a tile kernel. See the module docstring for the
     parameter rules."""
 
     def wrap(f):
         return Kernel(f, arch=arch, warps=warps, grid=grid, name=name,
-                      max_vgprs=max_vgprs, min_occupancy=min_occupancy)
+                      max_vgprs=max_vgprs, min_occupancy=min_occupancy,
+                      defines=defines)
 
     return wrap(fn) if fn is not None else wrap
 
