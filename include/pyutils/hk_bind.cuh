@@ -40,7 +40,7 @@
  * be on the GPU" and a memory access fault with no context.
  */
 
-#include "util.cuh"
+#include "pyutils/util.cuh"
 #include <pybind11/pybind11.h>
 
 #include <cstdint>

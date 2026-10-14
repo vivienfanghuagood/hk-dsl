@@ -7,9 +7,10 @@ every import and far too slow to pay inside an autotune sweep. So the compiled
   * the generated source (which already folds in the kernel's Python source,
     its constexpr arguments and the target, since all three shaped the text),
   * the toolchain -- hipcc's own version string and the flags,
-  * the contents of include/, because editing a header changes the kernel while
-    leaving the generator's output byte-identical. This is the one people get
-    wrong, and it is the one that produces a stale kernel that looks right.
+  * the contents of the include directories (hk's and HipKittens'), because
+    editing a header changes the kernel while leaving the generator's output
+    byte-identical. This is the one people get wrong, and it is the one that
+    produces a stale kernel that looks right.
 
 Cache entries are never invalidated, only added: a key that hashes everything
 does not need eviction for correctness, and `HK_CACHE_DIR` is a directory the
@@ -40,25 +41,31 @@ class CompileError(Exception):
 
 # ---------------------------------------------------------------- paths
 
-#: Repo root, i.e. the directory that has include/. Works from a source
-#: checkout (python/hk/runtime -> ../../..) and from an installed wheel, where
-#: the headers are packaged under hk/include.
-def _repo_root() -> Path:
-    here = Path(__file__).resolve()
-    for cand in (here.parents[3], here.parents[1]):
-        if (cand / "include" / "kittens.cuh").exists():
-            return cand
-    raise CompileError(
-        f"cannot find include/kittens.cuh above {here}. hk needs the HipKittens "
-        f"headers; set HK_INCLUDE_DIR to the directory containing them."
-    )
+def include_dirs() -> List[Path]:
+    """Where the generated C++ finds its headers: hk's own (pyutils/hk_bind.cuh)
+    and HipKittens' (kittens.cuh and the arch libraries), in that order.
 
-
-def include_dir() -> Path:
+    An installed wheel carries both, merged, in hk/include. A checkout has hk's
+    in include/ and HipKittens' in the third_party/HipKittens submodule, pinned
+    to the commit the passes were validated against -- they encode facts about
+    those headers, down to how many ds_reads a load issues. HK_INCLUDE_DIR
+    overrides, as a path list."""
     env = os.environ.get("HK_INCLUDE_DIR")
     if env:
-        return Path(env)
-    return _repo_root() / "include"
+        return [Path(p) for p in env.split(os.pathsep) if p]
+    here = Path(__file__).resolve()
+    packaged = here.parents[1] / "include"
+    if (packaged / "kittens.cuh").exists():
+        return [packaged]
+    repo = here.parents[3]
+    kittens = repo / "third_party" / "HipKittens" / "include"
+    if (kittens / "kittens.cuh").exists():
+        return [repo / "include", kittens]
+    raise CompileError(
+        f"cannot find the HipKittens headers: no {packaged / 'kittens.cuh'} and "
+        f"no {kittens / 'kittens.cuh'}. In a checkout, run `git submodule "
+        f"update --init`; or set HK_INCLUDE_DIR to the directories to search."
+    )
 
 
 def cache_dir() -> Path:
@@ -137,7 +144,7 @@ def flags(target: Target, module_name: str, extra: Sequence[str] = ()) -> List[s
         "-std=c++20",
         "-O3",
         "-w",
-        f"-I{include_dir()}",
+        *(f"-I{d}" for d in include_dirs()),
         f"-I{rocm_path() / 'include' / 'hip'}",
         *_pybind_includes(),
         f"-DHK_MODULE_NAME={module_name}",
@@ -177,7 +184,7 @@ def toolchain_fingerprint() -> str:
     except Exception as e:
         raise CompileError(f"{exe} --version failed: {e}") from e
     fp = hashlib.sha256(
-        (ver + _tree_hash(include_dir())).encode()
+        (ver + "".join(_tree_hash(d) for d in include_dirs())).encode()
     ).hexdigest()[:32]
     _toolchain_cache[exe] = fp
     return fp

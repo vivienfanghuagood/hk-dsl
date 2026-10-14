@@ -1,8 +1,14 @@
-# hk — HipKittens kernels in Python, over an MLIR dialect
+# hk-dsl — HipKittens kernels in Python, over an MLIR dialect
 
 Write Radeon kernels in Python, get HipKittens C++, get a `.so`, call it from
 torch. The point is not convenience: it is that three classes of *silently
 wrong* kernel on RDNA3 stop being expressible.
+
+This repository is `hk`, the language and its compiler. Its backend, the
+HipKittens C++ tile library with its RDNA3 and RDNA4 ports, is the
+`third_party/HipKittens` submodule, pinned to the commit the passes were
+validated against. Clone with `--recursive`, or run `git submodule update
+--init`.
 
 ```python
 import hk
@@ -187,11 +193,14 @@ file, which is how the lit tests in `mlir/test` are written.
 ## Building
 
 The backend is the stock hipcc compiling the translated C++ against
-`include/rdna3`, so nothing at run time needs LLVM. The dialect does, once:
+HipKittens' `include/rdna3`, so nothing at run time needs LLVM. The dialect
+does, once:
 
 ```bash
+git clone --recursive https://github.com/vivienfanghuagood/hk-dsl.git && cd hk-dsl
 scripts/build_mlir.sh       # MLIR 23.1.3 only, X86 target, Python bindings (~20 min on 64 cores)
 scripts/build_hk_mlir.sh    # the dialect, passes, translation and hk._mlir (~1 min)
+scripts/build_wheel.sh      # optional: a wheel for this interpreter, headers included
 ```
 
 `build_mlir.sh` takes `LLVM_TAG`, `PYTHON`, `HK_LLVM_ROOT`, `JOBS` and
@@ -218,11 +227,17 @@ hk/integration/ patching a running vLLM or SGLang; engine.py is what every
                 patch shares (op, routes, counters, CUDA-graph contract)
 mlir/           the hk dialect (ODS), its passes, the C++ translation,
                 hk-opt / hk-translate, lit tests
+include/        hk's own headers (pyutils/hk_bind.cuh, the fast pybind entry)
+third_party/HipKittens/
+                the backend: kittens.cuh and include/rdna3, include/rdna4;
+                also the C++ kernels hk is measured against (kernels/rdna3)
+scripts/        building MLIR, the dialect and the wheels
+tools/hk-bench/ the benchmarks and engine harnesses behind every number here
 ```
 
 ## Caching
 
-Key = hipcc version + a content hash of `include/rdna3` + the full flag list +
+Key = hipcc version + a content hash of the include directories + the full flag list +
 the dialect version + the generated source. A build lands in
 `~/.cache/hk/<key>/` via a rename, so a killed compile never leaves an
 importable half-written `.so`. Failed builds are kept as `failed-<key>/` with
@@ -259,8 +274,10 @@ A tier that cannot run is skipped with a reason, never silently passed.
 
 ## Status
 
-The sections below are a record, in the order the work happened, and they name
-the API of their time: before the last section the IR was Python and kernels
+The sections below are a record, in the order the work happened, written while
+hk lived inside the HipKittens repository: paths such as `kernels/rdna3`,
+`include/rdna3` and `tools/rdna-probes` are HipKittens', now under
+`third_party/HipKittens`. They also name the API of their time: before the last section the IR was Python and kernels
 were written as flat calls (`hk.load(x, idx, ty, bounded=True)` is now
 `x[idx].load(ty, bounded=True)`). The kernels themselves have all been ported;
 the numbers are as measured then, and the last section re-measures the ones
@@ -1707,8 +1724,9 @@ except for two spellings, both kept on purpose:
 
 **Wheels.** `scripts/build_wheel.sh` builds one per interpreter, because
 `hk._mlir` is nanobind extension modules for one CPython:
-`hipkittens-0.2.0-cp310-cp310-linux_x86_64.whl` (11.2 MB) and
-`hipkittens-0.2.0-cp312-cp312-linux_x86_64.whl` (11.3 MB). Each
+`hk_dsl-0.2.0-cp310-cp310-linux_x86_64.whl` (11.2 MB) and
+`hk_dsl-0.2.0-cp312-cp312-linux_x86_64.whl` (11.3 MB) -- named `hipkittens` when
+they were measured, before the split. Each
 carries the package, include/ (the generated kernels include it at JIT
 time) and the bindings. A wheel built for another interpreter installs and
 then fails at import, so the script refuses to build one. The link-time

@@ -1,0 +1,9 @@
+hk-dsl began as part of a fork of HipKittens
+(https://github.com/HazyResearch/HipKittens), MIT License, Copyright (c) 2024
+HazyResearch, and its history up to the split is that fork's.
+
+It generates C++ against the HipKittens headers. A checkout takes them from
+the third_party/HipKittens submodule (the rdna branch of
+https://github.com/vivienfanghuagood/HipKittens, which carries the RDNA3 and
+RDNA4 libraries), and the wheels bundle them under hk/include. Those headers
+remain HipKittens', under its MIT License.

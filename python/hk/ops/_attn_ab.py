@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import os
 import sys
+from pathlib import Path
 
 import torch
 
@@ -24,7 +25,8 @@ from hk.ops._attn_bench import D_HEAD, N_HEADS, bench, flops, qkv
 
 EXT = os.environ.get(
     "HK_ATTN_EXT",
-    "/workspace/HipKittens/kernels/rdna3/attn/torch_ext/hk_attn_ext.so")
+    str(Path(__file__).resolve().parents[3] / "third_party" / "HipKittens" /
+        "kernels" / "rdna3" / "attn" / "torch_ext" / "hk_attn_ext.so"))
 
 SHAPES = [
     ("N=4096",   1, N_HEADS,  4096, False),

@@ -28,7 +28,8 @@ import torch
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "python"))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..",
-                                "kernels", "rdna3", "gemm", "bf16fp32"))
+                                "third_party", "HipKittens", "kernels", "rdna3",
+                                "gemm", "bf16fp32"))
 
 from _timing import interleave  # noqa: E402
 
@@ -69,7 +70,8 @@ def main(argv=None):
     try:
         import tk_kernel
     except ImportError:
-        print("tk_kernel not built: make -C kernels/rdna3/gemm/bf16fp32", file=sys.stderr)
+        print("tk_kernel not built: make -C third_party/HipKittens/kernels/rdna3/gemm/bf16fp32",
+              file=sys.stderr)
         return 1
 
     print(f"torch {torch.__version__}  {torch.cuda.get_device_name(0)}")
