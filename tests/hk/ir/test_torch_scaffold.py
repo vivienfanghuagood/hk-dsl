@@ -142,9 +142,10 @@ def test_warm_cache_can_build_the_torch_scaffold(monkeypatch):
     seen = {}
 
     def fake_build(source, arch, *, name, max_vgprs, min_occupancy,
-                   extra_flags=()):
+                   extra_flags=(), kind="so"):
         seen["source"] = source
         seen["extra_flags"] = tuple(extra_flags)
+        seen["kind"] = kind
         return object()
 
     monkeypatch.setattr(warm_mod, "build", fake_build)
@@ -155,18 +156,35 @@ def test_warm_cache_can_build_the_torch_scaffold(monkeypatch):
     assert seen["extra_flags"] == ("-DFOO",)
 
 
+def _recording_build(seen):
+    def fake_build(source, arch, *, name, max_vgprs, min_occupancy,
+                   extra_flags=(), kind="so"):
+        seen["source"] = source
+        seen["extra_flags"] = tuple(extra_flags)
+        seen["kind"] = kind
+        return object()
+    return fake_build
+
+
 def test_warm_cache_still_defaults_to_pybind(monkeypatch):
     from hk.runtime import warm as warm_mod
 
     seen = {}
-
-    def fake_build(source, arch, *, name, max_vgprs, min_occupancy,
-                   extra_flags=()):
-        seen["source"] = source
-        seen["extra_flags"] = tuple(extra_flags)
-        return object()
-
-    monkeypatch.setattr(warm_mod, "build", fake_build)
+    monkeypatch.setattr(warm_mod, "build", _recording_build(seen))
     warm_mod.warm_cache([("add", _add, {})], workers=1)
     assert "PYBIND11_MODULE" in seen["source"]
-    assert seen["extra_flags"] == ()
+    assert seen["extra_flags"] == () and seen["kind"] == "so"
+
+
+def test_warm_cache_can_build_the_code_object_a_torch_op_loads(monkeypatch):
+    """What `python3 -m hk.integration --warm` asks for by default: the
+    device scaffold, as a code object, which is the artifact
+    hk.runtime.codeobj.load looks up."""
+    from hk.runtime import warm as warm_mod
+
+    seen = {}
+    monkeypatch.setattr(warm_mod, "build", _recording_build(seen))
+    warm_mod.warm_cache([("add", _add, {})], workers=1, scaffold="device",
+                        kind="co")
+    assert scaffold.LAYOUT_SYMBOL in seen["source"]
+    assert "PYBIND11_MODULE" not in seen["source"] and seen["kind"] == "co"

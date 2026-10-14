@@ -156,6 +156,28 @@ def flags(target: Target, module_name: str, extra: Sequence[str] = ()) -> List[s
     ]
 
 
+def codeobj_flags(target: Target, extra: Sequence[str] = ()) -> List[str]:
+    """The hipcc command line for a device-only code object: no host pass, so
+    no pybind or libtorch headers to parse -- which is most of a build
+    (tools/hk-bench/compile_split: 4.4 s for the pybind module against 0.6-0.9
+    for the code object, here; 17 s for the torch op on the pod). A raw ELF,
+    not an offload bundle, so its symbols can be read without a GPU."""
+    return [
+        f"-D{target.kittens_define}",
+        f"--offload-arch={target.arch}",
+        "-std=c++20",
+        "-O3",
+        "-w",
+        *(f"-I{d}" for d in include_dirs()),
+        f"-I{rocm_path() / 'include' / 'hip'}",
+        "--offload-device-only",
+        "--genco",
+        "--no-gpu-bundle-output",
+        "-Rpass-analysis=kernel-resource-usage",
+        *extra,
+    ]
+
+
 # ---------------------------------------------------------------- key
 
 
@@ -213,7 +235,8 @@ def dialect_version() -> str:
     return _dialect_version[0]
 
 
-def cache_key(source: str, target: Target, extra: Sequence[str] = ()) -> str:
+def cache_key(source: str, target: Target, extra: Sequence[str] = (),
+              kind: str = "so") -> str:
     """Everything that can change the compiled bytes.
 
     The full flag list is in here, not just `extra`: hk's own flags change when
@@ -224,9 +247,15 @@ def cache_key(source: str, target: Target, extra: Sequence[str] = ()) -> str:
     h = hashlib.sha256()
     h.update(toolchain_fingerprint().encode())
     h.update(dialect_version().encode())
-    h.update("\0".join(flags(target, _KEY_MODULE, extra)).encode())
+    fl = (flags(target, _KEY_MODULE, extra) if kind == "so"
+          else codeobj_flags(target, extra))
+    h.update("\0".join(fl).encode())
     h.update(source.encode())
     return h.hexdigest()[:32]
+
+
+#: What a device-only build leaves in its cache directory.
+CODEOBJ = "kernel.co"
 
 
 # ---------------------------------------------------------------- build
@@ -249,7 +278,8 @@ class Build:
 
 
 def _load_cached(d: Path, target: Target) -> Optional[Build]:
-    so = next(d.glob("*.so"), None) or next(d.glob("*.*.so"), None)
+    so = (next(d.glob("*.so"), None) or next(d.glob("*.*.so"), None)
+          or ((d / CODEOBJ) if (d / CODEOBJ).exists() else None))
     marker = d / "OK"
     if so is None or not marker.exists():
         return None
@@ -281,14 +311,19 @@ def build(
     max_vgprs: Optional[int] = None,
     min_occupancy: Optional[int] = None,
     verbose: bool = False,
+    kind: str = "so",
 ) -> Build:
     """Compile generated C++ into a loadable extension, or return the cached one.
 
-    Raises ResourceError, and leaves nothing importable behind, if any
+    `kind` "so" is an importable extension (pybind or torch registration),
+    "co" a device-only code object for hk.runtime.codeobj -- same cache, same
+    gate. Raises ResourceError, and leaves nothing importable behind, if any
     instantiation spills.
     """
+    if kind not in ("so", "co"):
+        raise ValueError(f"build kind {kind!r}; 'so' or 'co'")
     target = get_target(arch)
-    key = cache_key(source, target, extra_flags)
+    key = cache_key(source, target, extra_flags, kind)
     out = cache_dir() / key
 
     if (hit := _load_cached(out, target)) is not None:
@@ -308,7 +343,7 @@ def build(
         return hit
 
     module_name = f"hk_{name}_{key[:12]}"
-    so_name = module_name + ext_suffix()
+    so_name = module_name + ext_suffix() if kind == "so" else CODEOBJ
 
     # Build in a scratch directory and move into place, so a killed or failing
     # compile never leaves a half-written .so that the next run would import.
@@ -317,10 +352,9 @@ def build(
     try:
         src = tmp / "kernel.cpp"
         src.write_text(source)
-        cmd = [
-            hipcc(), *flags(target, module_name, extra_flags),
-            str(src), "-o", str(tmp / so_name),
-        ]
+        fl = (flags(target, module_name, extra_flags) if kind == "so"
+              else codeobj_flags(target, extra_flags))
+        cmd = [hipcc(), *fl, str(src), "-o", str(tmp / so_name)]
         if verbose:
             print(" ".join(cmd), file=sys.stderr)
 

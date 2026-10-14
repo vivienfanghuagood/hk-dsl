@@ -23,6 +23,12 @@ class HostExpr:
     def emit(self) -> str:
         raise NotImplementedError
 
+    def value(self, extents) -> int:
+        """The expression for real tensors: `extents` maps a tensor parameter
+        to its (batch, depth, rows, cols). What the C++ `grid()` computes, for
+        a launcher that has no C++ host side."""
+        raise NotImplementedError
+
     def __repr__(self) -> str:
         return self.emit()
 
@@ -66,10 +72,13 @@ class HostExpr:
 
 class HostConst(HostExpr):
     def __init__(self, value: int):
-        self.value = int(value)
+        self.const = int(value)
 
     def emit(self) -> str:
-        return str(self.value)
+        return str(self.const)
+
+    def value(self, extents) -> int:
+        return self.const
 
 
 class HostDim(HostExpr):
@@ -89,6 +98,15 @@ class HostDim(HostExpr):
     def emit(self) -> str:
         return f"g.{self.tensor}.{self.dim}()"
 
+    def value(self, extents) -> int:
+        return extents[self.tensor][self.DIMS.index(self.dim)]
+
+
+#: C++ int arithmetic. Extents are never negative, so `/` truncating toward
+#: zero and Python's flooring `//` agree, and so do `%` and Python's.
+_HOST_OPS = {"+": int.__add__, "-": int.__sub__, "*": int.__mul__,
+             "/": int.__floordiv__, "%": int.__mod__}
+
 
 class HostBin(HostExpr):
     def __init__(self, op: str, lhs: HostExpr, rhs: HostExpr):
@@ -96,6 +114,10 @@ class HostBin(HostExpr):
 
     def emit(self) -> str:
         return f"({self.lhs.emit()} {self.op} {self.rhs.emit()})"
+
+    def value(self, extents) -> int:
+        return _HOST_OPS[self.op](self.lhs.value(extents),
+                                  self.rhs.value(extents))
 
 
 def cdiv(a: Numeric, b: Numeric) -> HostExpr:

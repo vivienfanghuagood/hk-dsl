@@ -96,7 +96,7 @@ def build_grid(mod: ir.Module, name: str, tensors, dims) -> None:
         if isinstance(e, int):
             e = host.HostConst(e)
         if isinstance(e, host.HostConst):
-            return arith.ConstantOp(i32, e.value).result
+            return arith.ConstantOp(i32, e.const).result
         if isinstance(e, host.HostDim):
             return hkd.ExtentOp(i32, args[e.tensor],
                                 getattr(hkd.Extent, e.dim)).result

@@ -56,14 +56,22 @@ def main(argv=None) -> int:
     args = ap.parse_args(argv)
 
     if args.warm:
-        from ..runtime.torch_ext import torch_flags  # noqa: PLC0415
+        import os  # noqa: PLC0415
+
         from ..runtime.warm import default_workers, warm_cache  # noqa: PLC0415
 
         jobs = warm_jobs()
         n = args.jobs or default_workers()
-        print(f"warming {len(jobs)} torch registrations, {n} at a time")
-        res = warm_cache(jobs, workers=n, verbose=args.verbose,
-                         scaffold="torch", extra_flags=torch_flags())
+        if os.environ.get("HK_TORCH_OP", "codeobj") == "library":
+            from ..runtime.torch_ext import torch_flags  # noqa: PLC0415
+
+            print(f"warming {len(jobs)} torch registrations, {n} at a time")
+            res = warm_cache(jobs, workers=n, verbose=args.verbose,
+                             scaffold="torch", extra_flags=torch_flags())
+        else:
+            print(f"warming {len(jobs)} code objects for torch ops, {n} at a time")
+            res = warm_cache(jobs, workers=n, verbose=args.verbose,
+                             scaffold="device", kind="co")
         cached = sum(1 for b in res.built.values() if b.cached)
         print(f"{len(res.built)} built ({cached} already cached), "
               f"{len(res.errors)} failed, {res.seconds:.1f}s")

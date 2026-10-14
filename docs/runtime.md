@@ -132,10 +132,12 @@ keeps its state in a module-global stack — and only the hipcc invocations run
 in parallel; the default is one per core, capped at 32
 (`python/hk/runtime/warm.py`).
 
-A third pass covers the torch registrations: `python3 -m hk.integration
---warm -j 32`. libtorch's include and ABI flags are part of the cache key, so
-a `--aot` pass built for pybind does not spare a server its first attention
-compile. Run both ([integration](integration.md#ahead-of-time-builds)).
+A third pass covers the torch ops: `python3 -m hk.integration --warm -j 32`.
+A torch op is a device-only code object ([below](#over-a-device-only-code-object)),
+a different artifact from the pybind module, so a `--aot` pass built for
+pybind does not spare a server its first attention compile. Run both
+([integration](integration.md#ahead-of-time-builds)); with
+`HK_TORCH_OP=library` the pass builds the libtorch registrations instead.
 
 ## Autotune
 
@@ -205,6 +207,44 @@ op(a, b, out)                 # == torch.ops.hk.add_bf16(a, b, out)
 The reasons for each of these are in [Phase 6](history/05-phase-6-torch-ops.md),
 with the measurement that the registration costs nothing.
 
+### Over a device-only code object
+
+Both the pybind module and the libtorch registration compile a host half, and
+that is most of a build. `hk.runtime.codeobj` compiles the kernel alone
+(`hipcc --offload-device-only --genco`) and does the host half in Python:
+
+* The code object carries a table of the `globals` struct's layout -- each
+  tensor's offset, and each of its gl's fields -- emitted by
+  `codegen.scaffold.device` and asked of the compiler rather than
+  reconstructed. It is read out of the ELF, so no GPU is needed to read it.
+* A launch packs the tensors' pointers, extents and row strides at those
+  offsets, evaluates the traced grid over the extents, and calls
+  `hipModuleLaunchKernel` through the HIP runtime torch already loaded, on
+  torch's current stream. So it is captured into a CUDA graph like any other
+  launch.
+* The torch op over it (`codeobj.torch_op`) has the same schema, the same
+  out-parameters and the same tensor checks as the libtorch one.
+
+Same cache, same gate. Cold compile time, one kernel each
+(`tools/hk-bench/compile_time.py`; the pod has hipcc 7.2 and torch, the
+workstation hipcc 7.1 and no torch):
+
+| kernel | pybind, workstation | code object, workstation | pybind, pod | torch op (libtorch), pod | code object, pod |
+|---|---|---|---|---|---|
+| weighted RMSNorm | 4.15 s | 0.62 s | 6.80 s | 14.69 s | 1.09 s |
+| GEMM 128x128 | 4.24 s | 0.75 s | 7.01 s | 15.05 s | 1.35 s |
+| attention d128 | 4.39 s | 0.83 s | 7.14 s | 15.14 s | 1.46 s |
+| paged decode walk | 4.48 s | 0.88 s | 7.27 s | 15.20 s | 1.52 s |
+
+`hk.torch_op` registers over the code object by default; inside vLLM's
+decode graphs the backend's layer takes the same time either way
+(`paged_ab.py --layers 36`, 0.0215 against 0.0214 ms at one request), and
+`HK_TORCH_OP=library` builds the libtorch registration instead.
+`HK_LAUNCH=codeobj` makes `Kernel.__call__` launch the code object too,
+instead of loading the pybind module. That is opt-in because its launch is
+Python where the pybind entry point is C++: nothing inside a captured graph,
+measurable in front of a microsecond kernel run eagerly.
+
 `hk.ops.sdpa` is `F.scaled_dot_product_attention` on the generated kernel
 where it fits, and torch where it does not:
 
@@ -238,6 +278,8 @@ ones that turn on engine patches are listed in
 | `ROCM_PATH` | `runtime/compile.py` | where `include/hip` is |
 | `HK_INCLUDE_DIR` | `runtime/compile.py` | header directories, as a path list, instead of the packaged or checkout ones |
 | `HK_CACHE_DIR` | `runtime/compile.py` | the compile cache (else `$XDG_CACHE_HOME/hk`, else `~/.cache/hk`) |
+| `HK_TORCH_OP` | `runtime/torch_ext.py` | `library`: `hk.torch_op` builds the libtorch registration (default: over a device-only code object) |
+| `HK_LAUNCH` | `dsl/kernel.py` | `codeobj`: `Kernel.__call__` launches the device-only code object (else the pybind module) |
 | `HK_TUNE_DIR` | `autotune/__init__.py` | where tuning records are written (default: `autotune/` in the cache) |
 | `HK_AUTOTUNE` | `autotune/__init__.py` | `0`, `off` or `no` pins every tuner to its default schedule |
 | `HK_AUTOTUNE_MIN_GAIN` | `autotune/__init__.py` | the smallest recorded win that changes what launches (default 0.01) |

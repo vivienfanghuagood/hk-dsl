@@ -106,12 +106,15 @@ class TracedKernel:
     what the module boundary needs to know about it."""
 
     def __init__(self, name: str, arch: str, warps: int, consts: Dict[str, Any],
-                 tensors: List, module: ir.Module):
+                 tensors: List, module: ir.Module, grid: Tuple = ()):
         self.name = name
         self.arch = arch
         self.warps = warps
         self.consts = consts
         self.module = module
+        #: The grid as host expressions (ints or hk.dsl.host.HostExpr), for a
+        #: launcher that evaluates it in Python rather than in the C++ grid().
+        self.grid = tuple(grid)
         self._tensors = [Param(n, t) for n, t in tensors]
         self.params = self._tensors + [
             Param(k, ScalarType(_const_dtype(v)), is_const=True, const_value=v)
@@ -323,7 +326,8 @@ class Kernel:
             with t.at(ir.InsertionPoint(entry)):
                 body(**args, **consts)
                 func_d.ReturnOp([], loc=ir.Location.unknown())
-            build_grid(mod, self.name, self._tensors, self._trace_grid(consts))
+            grid = self._trace_grid(consts)
+            build_grid(mod, self.name, self._tensors, grid)
         try:
             with M.context():
                 mod.operation.verify()
@@ -331,7 +335,8 @@ class Kernel:
         except ir.MLIRError as e:
             raise verify_error(e) from None
         traced = self._ir_cache[key] = TracedKernel(
-            self.name, arch, self.warps, dict(consts), list(self._tensors), mod)
+            self.name, arch, self.warps, dict(consts), list(self._tensors), mod,
+            grid)
         return traced
 
     def _trace_grid(self, consts: Dict[str, Any]):
@@ -432,13 +437,40 @@ class Kernel:
         except (KeyError, TypeError):
             # TypeError: an unhashable constexpr value. It will be rejected
             # downstream with a better message than this would give.
-            mod = self.compile(**const_overrides)
-            launch = getattr(mod, self.name)
+            launch = self._launcher(**const_overrides)
             try:
                 self._launch_cache[tuple(const_overrides.items())] = launch
             except TypeError:
                 pass
         return launch(*tensors)
+
+    def _launcher(self, **const_overrides: Any):
+        """The pybind entry point, or with HK_LAUNCH=codeobj a launch of the
+        device-only code object on torch's current stream: a fifth of the
+        compile, for a Python launch in front of every call."""
+        import os  # noqa: PLC0415
+
+        if os.environ.get("HK_LAUNCH", "pybind") != "codeobj":
+            return getattr(self.compile(**const_overrides), self.name)
+        import torch  # noqa: PLC0415
+
+        from ..runtime import codeobj  # noqa: PLC0415
+
+        k = codeobj.load(self, **const_overrides)
+
+        def launch(*tensors):
+            shapes, ptrs, rows = codeobj.tensor_args(k, tensors, self.name)
+            dev = tensors[0].device
+            stream = torch.cuda.current_stream(dev).cuda_stream
+            if dev.index == torch.cuda.current_device():
+                k.launch(dev.index, stream, shapes, ptrs, rows)
+            else:
+                # A module is loaded into, and launched on, the device that
+                # is current.
+                with torch.cuda.device(dev):
+                    k.launch(dev.index, stream, shapes, ptrs, rows)
+
+        return launch
 
     def specialize(self, **const_overrides: Any) -> "Kernel":
         """A view of this kernel with different constexpr defaults.

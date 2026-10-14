@@ -84,17 +84,18 @@ def jobs_for(kernels, consts: Sequence[Dict[str, Any]] = ({},)):
 def warm_cache(jobs: Iterable[Tuple[str, Any, Dict[str, Any]]],
          *, workers: Optional[int] = None, verbose: bool = False,
          scaffold: str = "pybind",
-         extra_flags: Sequence[str] = ()) -> WarmResult:
+         extra_flags: Sequence[str] = (), kind: str = "so") -> WarmResult:
     """Build every job, tracing serially and compiling `workers` at a time.
 
     Never raises for a job: a kernel that fails to compile, or that the spill
     gate refuses, lands in `errors` so that one bad kernel does not hide the
     state of the other 290. The caller decides whether that is fatal.
 
-    `scaffold` and `extra_flags` exist so the torch registrations can be warmed
-    by the same pool as the pybind modules. They are part of the cache key, so
-    they have to match what the serving path will ask for exactly -- a warm
-    pass with different flags fills the cache with entries nobody will hit.
+    `scaffold`, `extra_flags` and `kind` exist so the torch registrations and
+    the code objects can be warmed by the same pool as the pybind modules.
+    They are part of the cache key, so they have to match what the serving
+    path will ask for exactly -- a warm pass with different flags fills the
+    cache with entries nobody will hit.
     """
     t0 = time.perf_counter()
     res = WarmResult()
@@ -114,7 +115,7 @@ def warm_cache(jobs: Iterable[Tuple[str, Any, Dict[str, Any]]],
         return label, build(
             source, kernel.arch, name=kernel.name,
             max_vgprs=kernel.max_vgprs, min_occupancy=kernel.min_occupancy,
-            extra_flags=extra_flags,
+            extra_flags=extra_flags, kind=kind,
         )
 
     n = workers or default_workers()

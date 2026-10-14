@@ -74,6 +74,51 @@ def bare(ir: "TracedKernel") -> str:
     return ir.cpp(('"kittens.cuh"',))
 
 
+#: A gl's fields, in the order `device` lists their offsets: the base pointer,
+#: the four extents and the row stride.
+GL_FIELDS = ("raw_ptr", "batch_internal", "depth_internal", "rows_internal",
+             "cols_internal", "row_stride_internal")
+
+#: The symbol `device` emits the layout table as.
+LAYOUT_SYMBOL = "hk_layout"
+
+
+def kernel_symbol(ir: "TracedKernel") -> str:
+    """The kernel's symbol in the code object: `void <name>_kernel(const
+    globals)`, Itanium-mangled. Top-level const is not part of a parameter's
+    mangling, so the parameter is plain `7globals`."""
+    k = f"{ir.name}_kernel"
+    return f"_Z{len(k)}{k}7globals"
+
+
+def device(ir: "TracedKernel") -> str:
+    """The kernel alone, for a device-only code object (`--offload-device-only`,
+    which never compiles the host half), and a table of where every tensor's
+    fields sit in the `globals` the kernel takes by value.
+
+    The table is what a launcher with no C++ host side packs the kernel
+    argument by: sizeof(globals), then per tensor its offset in globals and
+    each of GL_FIELDS' offsets in its gl. Asked of the compiler rather than
+    reconstructed, because a gl's layout is the compiler's to decide -- an
+    extent fixed at compile time is an empty member, and the TMA descriptor
+    dictionary sits between the extents and the stride.
+    """
+    rows = ["sizeof(globals)"]
+    for p in ir.tensors():
+        gl = f"decltype(globals::{p.name})"
+        rows.append(f"offsetof(globals, {p.name})")
+        rows += [f"offsetof({gl}, {f})" for f in GL_FIELDS]
+    return "\n".join([
+        ir.cpp(('"kittens.cuh"',)),
+        "#include <cstddef>",
+        "",
+        f'extern "C" __device__ __attribute__((used)) const long long '
+        f"{LAYOUT_SYMBOL}[] = {{",
+        ",\n".join(f"    (long long)({r})" for r in rows),
+        "};",
+    ]) + "\n"
+
+
 def written_tensors(ir: "TracedKernel") -> List[str]:
     """The tensor parameters the kernel stores into, in declaration order.
 
@@ -252,7 +297,8 @@ def torch_library(ir: "TracedKernel", ns: str = "hk", op_name: str = "") -> str:
     ]) + "\n"
 
 
-SCAFFOLDS = {"pybind": pybind_module, "bare": bare, "torch": torch_library}
+SCAFFOLDS = {"pybind": pybind_module, "bare": bare, "torch": torch_library,
+             "device": device}
 
 
 def render(ir: "TracedKernel", scaffold: str = "pybind") -> str:

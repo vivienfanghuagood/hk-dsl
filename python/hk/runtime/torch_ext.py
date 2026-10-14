@@ -105,7 +105,20 @@ def torch_op(kernel, *, ns: str = "hk", name: str = "", **const_overrides):
     Memoised on (ns, name): the second call in a process returns the same op
     rather than re-registering it, which torch refuses with "Tried to register
     an operator with the same name twice".
+
+    By default it is registered over a device-only code object
+    (hk.runtime.codeobj): the same schema and checks, without compiling
+    libtorch's headers -- 1.1-1.5 s a kernel on the pod where this
+    registration takes 15 (tools/hk-bench/compile_time.py), and the same
+    time a layer inside vLLM's decode graphs. HK_TORCH_OP=library builds the
+    libtorch registration below instead.
     """
+    import os  # noqa: PLC0415
+
+    if os.environ.get("HK_TORCH_OP", "codeobj") != "library":
+        from . import codeobj  # noqa: PLC0415
+
+        return codeobj.torch_op(kernel, ns=ns, name=name, **const_overrides)
     torch = _torch()
     ir = kernel.trace(**const_overrides)
     op = name or ir.name
