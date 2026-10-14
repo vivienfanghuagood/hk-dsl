@@ -62,15 +62,16 @@ HK_PATCH_VLLM=1 vllm serve OpenGVLab/InternVL2-2B --mm-encoder-attn-backend TORC
 # the linear layers
 HK_PATCH_VLLM=1 HK_VLLM_GEMM=1 vllm serve Qwen/Qwen3-8B
 
-# the decoder attention backend: no paged prefill, so the last two are required
-HK_PATCH_VLLM=1 HK_VLLM_BACKEND=1 vllm serve <model> --attention-backend TRITON_ATTN \
-    --no-enable-prefix-caching --enable-chunked-prefill=False
+# the decoder attention backend, with vLLM's defaults: CUDA graphs, prefix
+# caching and chunked prefill all on
+HK_PATCH_VLLM=1 HK_VLLM_BACKEND=1 vllm serve <model> --attention-backend TRITON_ATTN
 ```
 
 The plugin prints one `[hk] ...` line per process saying what each patch did.
-The end-to-end measurements built the engine with `block_size=32`,
-`attention_backend="TRITON_ATTN"` for the backend arm, and prefix caching and
-chunked prefill off (`tools/hk-bench/vllm_e2e.py`).
+The end-to-end measurements build the engine with
+`attention_backend="TRITON_ATTN"` for the backend arm and vLLM's defaults
+otherwise (`HK_VLLM_DEFAULTS=1` in `tools/hk-bench/vllm_e2e.py`; the backend
+asks for its own page size, 32).
 
 **In-process**, for a script or a framework without plugins:
 
@@ -173,29 +174,37 @@ The page size must be the kernel's KV block, 32, and the head size one the
 kernels have, 64 or 128; anything else is refused with a sentence, as are
 ALiBi, sliding windows, sinks, a logits soft cap and a quantized KV cache.
 
-**What it refuses.** Scope, stated rather than discovered: no paged *prefill*
-kernel, so prefix caching and chunked prefill are refused rather than silently
-attending over part of a context. Prefill is served by the dense kernel
-(`hk.ops.attn`) over the request's own tokens; prompts too short for it go to
-torch, because zero-padded keys are not masked out, they are keys with score
-zero and `exp(0)` is a real weight in the softmax sum.
+**Every step's three paths.** Each step writes its new tokens' K/V with
+vLLM's own `reshape_and_cache_flash`, through a `(blocks, block, heads, d)`
+view of the head-major pages (it takes its strides from the tensor, and skips
+the slot -1 a CUDA graph's padding carries). Then, with the batch ordered
+decodes first by the builder:
 
-**It is slower than Triton at decode.** The kernel splits the KV axis
-(`plan_splits` in `python/hk/ops/paged.py`, aiming at about a thousand
-workgroups), and what is left is a flat 1.14-1.19x per decode step, which is
-the dozen small torch ops the backend issues per layer around the kernel
-([Phase 7](history/06-phase-7-paged-decode.md)). It pays where prefill
-dominates, because prefill goes to the dense kernel
-([Against the engine](history/07-against-the-engine.md)).
+* **Decode, sixteen requests and up**: `hk.ops.paged`'s split walk and its
+  merge, two launches, reading the engine's query and writing its output in
+  place. The split count is planned from the batch size and max_model_len
+  alone, so a graph captured on any batch is right for every replay.
+* **Decode, up to eight requests**: vLLM's own Triton kernel
+  (`unified_attention`, its 16-segment path), reading the same head-major
+  cache through the same transposed view. That is hk's decode losing, and it
+  is recorded as such: at these batch sizes the walk and the merge are each a
+  latency-bound launch and together cost ~10 us a layer more than Triton's
+  kernel and its reduction ([the decode step captured
+  whole](history/17-the-decode-step-captured-whole.md)). Batches are padded
+  to a capture size first, so 9-15 requests run as 16, on hk.
+  `vllm_backend.TRITON_DECODE_MAX` is the boundary; 0 turns the routing off.
+* **Prefill**: `hk.ops.paged_prefill`, one launch for every prefill request
+  in the step, reading K/V through the page table. A cached prefix or an
+  earlier chunk is just context in front of the new tokens, so prefix caching
+  and chunked prefill work as vLLM ships them.
 
-Two debugging switches are read by the code: `HK_SPLITS` (`off`, `0` or `1`
-forces one split; `auto` or `plan`, the default, uses the planner; an integer
-forces that many, capped by the page count and 32), and `HK_NO_PREFILL` (any
-non-empty value sends the backend's prefill to
-`F.scaled_dot_product_attention`). The comment on `HK_SPLITS` records an open
-fault: under vLLM at batch 16 and context 4096 the second `generate` aborted
-with `HSA_STATUS_ERROR_EXCEPTION 0x1016`, and forcing one split made it go
-away. That comment calls the split opt-in; the code's default is `auto`.
+`HK_SPLITS` is the one debugging switch: `off`, `0` or `1` forces one split;
+`auto` or `plan`, the default, uses the planner; an integer forces that many,
+capped by the page count and 32. Its comment records a fault from before the
+decode was a captured launch -- under vLLM at batch 16 and context 4096 the
+second `generate` aborted with `HSA_STATUS_ERROR_EXCEPTION 0x1016`, and
+forcing one split made it go away -- which the current path has not
+reproduced.
 
 ## The linear-layer patch
 
@@ -281,12 +290,15 @@ own syncs (`.item()`, `.tolist()`, blocking copies, `synchronize()`), not a
 raw HIP call inside an extension.
 
 The linear-layer op is `graph="safe"`: its route depends on shapes alone,
-which a graph captured per batch size fixes. The attention backend is
-`graph="never"`: the decode split count is planned on the host from
-`max_seq_len`, the first call per layer checks the metadata with a device
-read, and scratch regrown after capture would leave the graph writing to freed
-memory, so vLLM captures the model piecewise around it and runs this attention
-eagerly between the pieces (`vllm_backend.PATCH`).
+which a graph captured per batch size fixes. So is the attention backend, and
+its builder declares `UNIFORM_SINGLE_TOKEN_DECODE`: vLLM captures pure-decode
+steps whole and runs steps with prefill in them between its pieces. What makes
+the decode capturable is that nothing in it depends on more than shapes -- the
+split count comes from the batch size and max_model_len, the scratch is
+allocated once at its largest, the first-call metadata check that reads the
+device is skipped under capture, and the hk-or-Triton choice is the batch
+size. A prefill step reads its query lengths on the host, so `forward`
+refuses, with `GraphCaptureError`, to be captured on one (`vllm_backend.PATCH`).
 
 Not ported: the two SDPA rebinding patches (`vllm.py`, `sglang.py`) still
 keep their own counters.
@@ -311,10 +323,11 @@ models (`python/hk/integration/sglang.py`).
 ## Ahead-of-time builds
 
 `python3 -m hk.integration --warm -j 32` fills the cache for the torch half
-specifically: libtorch's include and ABI flags are part of the cache key, so a
-`--aot` pass built for pybind does not spare a server its first attention
-compile. It builds the six distinct attention registrations in 17.8 s, which
-is the number that matters for a server's first request. Run it and
+specifically. A torch op is a device-only code object by default
+([runtime](runtime.md#over-a-device-only-code-object)): 1.1-1.5 s a kernel
+cold on the pod, where the libtorch registration it replaced took 15, so a
+server's first request compiles in seconds even unwarmed. A `--aot` pass
+built for pybind does not cover it, since the artifacts differ. Run it and
 `python3 -m hk.autotune --aot` both ([warming the cache](runtime.md#warming-the-cache)).
 
 ## What is deliberately not patched
@@ -322,9 +335,12 @@ is the number that matters for a server's first request. Run it and
 Two things are deliberately *not* patched, and the reason is the same both
 times -- the patch would be slower than what it replaces:
 
-* **RMSNorm.** Every framework's RMSNorm applies a learned weight;
-  `hk.ops.rmsnorm` is unweighted, so the patch would add an elementwise pass to
-  save one.
+* **RMSNorm.** Every framework's RMSNorm applies a learned weight, and
+  vLLM's fuses the residual add. `hk.ops.rms_norm` and
+  `hk.ops.fused_add_rms_norm` are those two ops, bit-identical to torch on
+  the residual; they are not patched in because under torch.compile vLLM's
+  norms come from Inductor, fused with their neighbours, and at a decode
+  step's handful of rows they lose to it ([performance](performance.md)).
 * **SiLU-mul.** `SiluAndMul` slices one `(..., 2d)` tensor into two
   non-contiguous halves and `hk.ops.silu_mul` has no stride support, so the
   patch would add two copies to save one pass.
@@ -347,7 +363,7 @@ spelled:
 | `HK_VLLM_GEMM` | `_vllm_plugin.py` | route the unquantized linear layers |
 | `HK_VLLM_ROUTES` | `vllm_gemm.py`, via `engine.shipped_table` | a routing table to use instead of the shipped one |
 | `HK_SPLITS` | `ops/paged.py` | the decode backend's KV split: `auto` (default), `off`/`0`/`1`, or a count |
-| `HK_NO_PREFILL` | `vllm_backend.py` | non-empty: the backend's prefill goes to torch SDPA |
+| `HK_NORM_FOLD` | `ops/norm.py` | the weighted norms' plan: `auto` (default, folded below 4096 rows), `on`, `off` |
 
 `HK_PATCH_VLLM`, `HK_VLLM_BACKEND` and `HK_VLLM_GEMM` are off when unset or
 `0`, `off`, `no` or empty. The benchmark harnesses in `tools/hk-bench/` read

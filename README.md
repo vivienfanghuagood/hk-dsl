@@ -86,8 +86,10 @@ losses.
 | attention forward | 61.0–64.9 TFLOPs, 0.999–1.002x (1.008x causal); 2.9–3.2x torch SDPA, 4.0x causal | the handwritten C++; torch SDPA | [Phase 4](docs/history/03-phase-4-attention.md) |
 | norms, softmax, RoPE, SiLU-mul, quantize | 13 of 15 cases faster, the other two a tie | `torch.compile` | [Phases 1 and 2](docs/history/01-phases-1-2.md) |
 | decode GEMV, 1–32 tokens | 1.93–2.03x per step | hipBLASLt | [cross-workgroup reduction](docs/history/11-cross-workgroup-reduction.md) |
-| paged decode attention | 1.14–1.19x *slower* per step | vLLM's Triton attention | [Phase 7](docs/history/06-phase-7-paged-decode.md) |
+| paged decode attention | 1.02–1.04x per layer at 16 requests, 2.6x at 32; *slower* (0.66–0.97x) up to 8, where the backend runs Triton's kernel instead | vLLM's Triton attention, captured | [captured whole](docs/history/17-the-decode-step-captured-whole.md) |
+| paged prefill, cached prefixes and chunks included | 3.6–7.9x | vLLM's Triton `unified_attention` | [captured whole](docs/history/17-the-decode-step-captured-whole.md) |
 | Qwen3-8B in vLLM, linear-layer patch | 1.52–1.84x at batch 1, 1.10–1.35x at batch 16 | stock vLLM 0.16.1.dev0 | [cross-workgroup reduction](docs/history/11-cross-workgroup-reduction.md) |
+| Qwen3-8B in vLLM under its defaults, both patches | 1.48–1.85x per request at every shape; attention alone 1.007–1.48x | stock vLLM 0.16.1.dev0, CUDA graphs, prefix caching, chunked prefill | [captured whole](docs/history/17-the-decode-step-captured-whole.md) |
 | shipped ops at 7-8B shapes ([`validate.py`](examples/validate.py)) | GEMM 1.12x, decode GEMV 3.90–4.38x, attention 2.76x (3.94x causal), quantize 2.78x; norms 0.88–0.96x | torch eager, PyTorch 2.10 | [validation](docs/history/16-validation-and-the-cross-warp-race.md) |
 
 ## Repository layout

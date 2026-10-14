@@ -21,6 +21,7 @@ it is a time ratio.
 - [Norms and elementwise](#norms-and-elementwise)
 - [Decode GEMV](#decode-gemv)
 - [Paged decode attention](#paged-decode-attention)
+- [Paged prefill](#paged-prefill)
 - [End to end in vLLM](#end-to-end-in-vllm)
 - [After the MLIR move](#after-the-mlir-move)
 - [Against torch, at full size, after the cross-warp fix](#against-torch-at-full-size-after-the-cross-warp-fix)
@@ -35,8 +36,10 @@ it is a time ratio.
 | norms, elementwise, RoPE, quantize | 13 of 15 cases faster | `torch.compile` | win; the other two are a tie | [Phases 1 and 2](history/01-phases-1-2.md) |
 | RMSNorm, SiLU-mul | slower | Inductor, at Qwen3-8B shapes | loss; the patches were dropped | [strided globals](history/12-strided-globals.md) |
 | decode GEMV | 1.93-2.03x per step, 1-32 tokens | hipBLASLt | win; upstream vLLM's `wvSplitK` is ahead at one token | [cross-workgroup reduction](history/11-cross-workgroup-reduction.md) |
-| paged decode attention | 1.14-1.19x slower per step | vLLM's Triton attention | loss, except one shape | [Phase 7](history/06-phase-7-paged-decode.md) |
+| paged decode attention | 0.66-0.97x per layer up to 8 requests, 1.02-1.04x at 16, 2.6x at 32 | vLLM's Triton attention, captured | loss below 16 requests, where the backend runs Triton's kernel on hk's cache | [captured whole](history/17-the-decode-step-captured-whole.md) |
+| paged prefill | 3.6-7.9x | vLLM's Triton `unified_attention` | win | [captured whole](history/17-the-decode-step-captured-whole.md) |
 | vLLM end to end, linear-layer patch | 1.10-1.84x per request | stock vLLM 0.16.1.dev0 | win at every shape, in both modes | [cross-workgroup reduction](history/11-cross-workgroup-reduction.md) |
+| vLLM end to end under its defaults, attention backend / both patches | 1.007-1.48x / 1.48-1.85x per request | stock vLLM 0.16.1.dev0, CUDA graphs, prefix caching, chunked prefill | win at every shape | [captured whole](history/17-the-decode-step-captured-whole.md) |
 | shipped ops at 7-8B shapes (`examples/validate.py`) | GEMM 1.12x, decode GEMV 3.90-4.38x, attention 2.76x / 3.94x causal, quantize 2.78x; norms 0.88-0.96x | torch eager, PyTorch 2.10 | win, except norms and elementwise, 2-12% behind torch's own fused kernels | [validation](history/16-validation-and-the-cross-warp-race.md) |
 
 ## GEMM
@@ -279,6 +282,56 @@ the card's 864 GB/s at ctx 4096 batch 16 and 76% at ctx 16384 batch 32,
 against 1.9% before. The remaining gap is flat, a constant ~7-9 ms per step,
 which is the wrapper's small torch ops rather than the kernel.
 
+### Captured whole, layer by layer
+
+[The decode step captured whole](history/17-the-decode-step-captured-whole.md).
+The wrapper is gone: a cache write and the decode's own launches, captured in
+vLLM's decode graphs. Each arm walks 36 layers' caches per call, so K/V is
+read cold as a decode step reads it; a one-layer A/B rereads it from the
+Infinity Cache and hid the loss below (`tools/hk-bench/paged_ab.py --layers
+36`, graph clock, ms per layer). "hk kernel" is hk's split decode, walk and
+merge, without the cache write; "hk layer" is the backend as shipped, which
+below sixteen requests runs Triton's kernel on hk's cache.
+
+| ctx | batch | Triton layer | Triton attention | hk kernel | hk layer |
+|---|---|---|---|---|---|
+| 1024 | 1 | 0.0207 | 0.0174 | 0.0264 | 0.0214 |
+| 1024 | 4 | 0.0427 | 0.0392 | 0.0493 | 0.0431 |
+| 1024 | 8 | 0.0725 | 0.0687 | 0.0841 | 0.0730 |
+| 1024 | 16 | 0.1322 | 0.1284 | 0.1264 | 0.1328 |
+| 4096 | 1 | 0.0447 | 0.0412 | 0.0503 | 0.0452 |
+| 4096 | 4 | 0.1184 | 0.1151 | 0.1217 | 0.1157 |
+| 4096 | 8 | 0.2187 | 0.2149 | 0.2221 | 0.2128 |
+| 4096 | 16 | 0.4204 | 0.4166 | 0.4016 | 0.4080 |
+| 1024 | 32 | 0.5852 | 0.5832 | 0.2211 | 0.2302 |
+| 4096 | 32 | 2.0337 | 2.0301 | 0.7626 | 0.7696 |
+
+The 32-request rows walk 16 layers' caches, not 36, which is still four
+times the Infinity Cache at 1024 tokens. Above 16 requests Triton's backend
+leaves its 16-segment kernel for the unsplit one, and hk is 2.6x it.
+
+hk's kernel loses up to eight requests and wins from sixteen. The loss is in
+every launch: at 1024 tokens and one request the walk is 21.0 us to Triton's
+13.5, the merge 8.0 to its reduction's 3.1, and vLLM's C++ cache write
+through hk's view 4.1 to the Triton one's 2.6 (`tools/hk-bench/paged_kernels.py`).
+The kernel reaches 83-86% of HBM where there is enough of it to stream.
+
+## Paged prefill
+
+[The decode step captured whole](history/17-the-decode-step-captured-whole.md).
+One launch for every prefill request in a step, K/V through the page table;
+against vLLM's `unified_attention` on the same batches (`tools/hk-bench/paged_ab.py
+--prefill`, ms):
+
+| batch | Triton | hk | |
+|---|---|---|---|
+| prompt 2048 | 4.47 | 0.87 | 5.1x |
+| prompt 8192 | 82.6 | 10.5 | 7.9x |
+| chunk 512 after 4096 | 4.69 | 0.79 | 5.9x |
+| 4 x 1024 after 1024 | 12.6 | 2.38 | 5.3x |
+| 8 x 3000 + 200 | 10.2 | 2.85 | 3.6x |
+| 16 decodes + chunk 512 | 3.03 | 0.72 | 4.2x |
+
 ## End to end in vLLM
 
 Qwen3-8B, bf16, one W7900D. The baseline (1.00x) is stock vLLM 0.16.1.dev0
@@ -286,6 +339,26 @@ choosing its own backends; arms alternate in separate processes and each takes
 its minimum over rounds; every arm produced the same greedy tokens as stock.
 Ratios are stock time over patched time, so above 1 is hk faster. "Graph mode"
 is vLLM as it ships: torch.compile and CUDA graphs on.
+
+### Under vLLM's defaults, with the decode captured whole
+
+[The decode step captured whole](history/17-the-decode-step-captured-whole.md).
+vLLM's defaults: CUDA graphs, prefix caching and chunked prefill on. `hk` is
+the attention backend (hk's paged prefill, hk's decode from 16 requests and
+Triton's on hk's cache below), `hk+gemm` with the linear-layer patch as well.
+72 output tokens, best of two rounds; "step" is one decode step at the full
+batch. Greedy tokens identical to stock's.
+
+| ctx x batch | stock ms | hk ms | x | hk+gemm ms | x | step, stock ms | hk | x | hk+gemm | x |
+|---|---|---|---|---|---|---|---|---|---|---|
+| 1024 x 1 | 3206 | 3184 | 1.007x | 1730 | 1.85x | 41.32 | 41.35 | 0.999x | 21.29 | 1.94x |
+| 1024 x 4 | 4033 | 3924 | 1.028x | 2384 | 1.69x | 42.31 | 42.46 | 0.996x | 22.16 | 1.91x |
+| 1024 x 16 | 7628 | 7160 | 1.065x | 5150 | 1.48x | 46.32 | 46.81 | 0.989x | 26.57 | 1.74x |
+| 1024 x 32 | 13059 | 11264 | 1.159x | 8768 | 1.49x | 61.64 | 51.00 | 1.209x | 31.18 | 1.98x |
+| 4096 x 1 | 4448 | 3986 | 1.116x | 2458 | 1.81x | 42.21 | 42.24 | 0.999x | 22.16 | 1.91x |
+| 4096 x 4 | 9195 | 7274 | 1.264x | 5286 | 1.74x | 45.29 | 44.84 | 1.010x | 24.54 | 1.85x |
+| 4096 x 16 | 27923 | 20254 | 1.379x | 16738 | 1.67x | 56.20 | 56.36 | 0.997x | 36.92 | 1.52x |
+| 4096 x 32 | 55372 | 37439 | 1.479x | 31789 | 1.74x | 109.38 | 70.56 | 1.550x | 50.32 | 2.17x |
 
 ### The linear-layer patch (`HK_VLLM_GEMM=1`)
 
