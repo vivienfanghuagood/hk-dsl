@@ -226,6 +226,27 @@ def HK_PhiloxOp : HK_Op<"philox_uniform"> {
   let hasVerifier = 1;
 }
 
+def HK_LoadW4Op : HK_Op<"load_w4"> {
+  let summary = "4-bit weight codes -> a dequantized bf16 row-layout tile";
+  let description = [{
+    Tile element (r, c) is q * s - zs for W row n0 + r and column k0 + c: q is
+    nibble (k % 8) of `qw[n][k / 8]` (int32 [N, K/8]), s and zs the group's
+    scale and zero-times-scale `s[n][k / group]`, `zs[n][k / group]` (bf16
+    [N, K/group]). hk's repack of an AWQ or GPTQ checkpoint.
+  }];
+  let arguments = (ins Optional<HK_RegTileType>:$dst, HK_GlobalType:$qw,
+                       HK_GlobalType:$s, HK_GlobalType:$zs, I32:$n0, I32:$k0,
+                       I64Attr:$group);
+  let results = (outs Optional<HK_RegTileType>:$result);
+  let assemblyFormat = [{
+    $qw `,` $s `,` $zs `[` $n0 `,` $k0 `]` `group` $group (`into` $dst^)? attr-dict `:`
+    qualified(type($qw)) `,` qualified(type($s)) `,` qualified(type($zs))
+    (`into` qualified(type($dst))^)?
+    (`->` qualified(type($result))^)?
+  }];
+  let hasVerifier = 1;
+}
+
 //===----------------------------------------------------------------------===//
 // LDS
 //===----------------------------------------------------------------------===//

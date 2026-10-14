@@ -807,6 +807,13 @@ private:
             name(o.getCount()) + ", " + name(o.getCol()) + ", " +
             name(o.getDiv()) + ");");
         })
+        .Case([&](LoadW4Op o) {
+          Value d = dest(o.getDst(), o.getResult());
+          w("kittens::load_w4<" + std::to_string(o.getGroup()) + ">(" + name(d) +
+            ", " + name(o.getQw()) + ", " + name(o.getS()) + ", " +
+            name(o.getZs()) + ", " + name(o.getN0()) + ", " + name(o.getK0()) +
+            ");");
+        })
         .Case([&](ScatterRowsOp o) {
           w("kittens::store_scatter(" + name(o.getDst()) + ", " +
             name(o.getValue()) + ", " + name(o.getIdx()) + ", " +

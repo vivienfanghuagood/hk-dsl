@@ -957,6 +957,30 @@ def zeros(ty, *, into=None):
     return _make(hkd.ZeroOp, ty, (), into=into, name=name)
 
 
+def load_w4(ty, qw: "Global", s: "Global", zs: "Global", n0, k0, *,
+            group: int = 128, into=None) -> "Tile":
+    """Rows n0.. and columns k0.. of W, dequantized from 4-bit codes into a
+    bf16 row-layout tile: element (n, k) is q * s - zs, q being nibble k % 8
+    of `qw[n][k // 8]` (int32 [N, K/8]), s and zs the group's scale and
+    zero-times-scale `s[n][k // group]`, `zs[n][k // group]` (bf16
+    [N, K/group]). The layout `hk.ops.w4a16.repack_*` writes. k0 is a
+    multiple of the tile's width when the group spans it."""
+    if not isinstance(ty, RegTileType) or ty.layout != "row" or ty.dtype.name != "bf16":
+        raise TypeError(f"load_w4 dequantizes into a bf16 row-layout tile, not {ty!r}")
+    if group <= 0 or group % 16:
+        raise ValueError(f"load_w4: group {group} must be a positive multiple of 16")
+    for name, g, want in (("qw", qw, i32), ("s", s, None), ("zs", zs, None)):
+        if not isinstance(g, Global):
+            raise TypeError(f"load_w4: {name} must be a tensor parameter, got {g!r}")
+        if want is not None and g.dtype is not want:
+            raise TypeError(f"load_w4: {name} holds int32 words of eight codes, "
+                            f"not {g.dtype.name}")
+        if want is None and g.dtype.name != "bf16":
+            raise TypeError(f"load_w4: {name} is bf16, not {g.dtype.name}")
+    return _make(hkd.LoadW4Op, ty, (qw.v, s.v, zs.v, as_int(n0).v, as_int(k0).v),
+                 into=into, name="w4", group=group)
+
+
 def rand(ty, seed, offset, row_stride, *, into=None) -> "Tile":
     """Uniform [0, 1) draws into an fp32 tile: element (r, c) is the draw
     `triton.language.rand(seed, offset + r * row_stride + c)` makes, bit for
@@ -1158,6 +1182,6 @@ __all__ = [
     "SharedTile", "SharedVec", "Granules", "Stage", "Reduction", "MatMul",
     "Transposed", "const", "as_int", "scalar_op", "compare", "i1", "coord",
     "tile_coord", "elem_coord", "binary", "unary", "broadcast", "mma", "zeros",
-    "full", "neg_infty", "rand", "transpose", "transpose_sep", "broadcast_row",
+    "full", "neg_infty", "rand", "load_w4", "transpose", "transpose_sep", "broadcast_row",
     "broadcast_col", "as_vec", "lds_loads", "wrap",
 ]
