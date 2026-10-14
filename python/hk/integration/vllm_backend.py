@@ -20,10 +20,10 @@ dims and vLLM's default `(2, num_blocks, block_size, num_kv_heads,
 head_size)` cannot yield a contiguous `(block_size, head_dim)` tile for one
 head. Having its own layout means every attention it serves is its own:
 
-* decode (`hk.ops.paged`): the paged walk and its merge, two launches a
-  layer, captured whole in vLLM's full decode graphs -- from sixteen
-  requests up. Below that hk's decode loses to Triton's, and Triton's
-  kernel runs instead, on this backend's cache (TRITON_DECODE_MAX);
+* decode: vLLM's own Triton kernel, on this backend's cache, captured whole
+  in vLLM's full decode graphs. On vLLM 0.31 it beats hk's paged walk and
+  merge (`hk.ops.paged`) at every batch measured (TRITON_DECODE_MAX);
+  hk's walk takes decode where this vLLM has no compatible kernel;
 * prefill (`hk.ops.paged_prefill`): one launch for every prefill request in
   the batch, cached prefixes and chunks included -- the new tokens' K/V are
   in the cache before either runs.
@@ -187,19 +187,28 @@ def decode(q, k_cache, v_cache, block_table, seq_lens, out, scratch,
 #: Pure-decode batches up to this many requests are run by vLLM's own Triton
 #: kernel, reading this backend's cache through a transposed view (it
 #: addresses K/V by stride; the output is bit-identical to the stock
-#: backend's). That is hk losing a kernel, recorded as such: below sixteen
-#: requests the split walk and its merge are each a latency-bound launch, and
-#: together they cost ~10 us a layer more than Triton's 16-segment kernel and
-#: its reduction. Measured with every layer's cache cold, as a decode step
-#: reads them (tools/hk-bench/paged_ab.py --layers 36, graph clock, ms per
-#: layer, Triton on hk's cache / hk):
+#: backend's). That is hk losing a kernel, recorded as such. Measured with
+#: every layer's cache cold, as a decode step reads them
+#: (tools/hk-bench/paged_ab.py --layers 36, graph clock, ms per layer,
+#: Triton on hk's cache / hk's walk and merge). On vLLM 0.16.1, where hk
+#: still took 16 requests up:
 #:
 #:     ctx 1024   n1 0.0174/0.0278   n4 0.0388/0.0509   n8 0.0685/0.0845   n16 0.1293/0.1228
 #:     ctx 4096   n1 0.0410/0.0527   n4 0.1109/0.1233   n8 0.2078/0.2219   n16 0.4018/0.3939
 #:
-#: 0 turns it off. Batches are padded to a capture size first, so a batch of
-#: 9-15 is a 16 and stays on hk.
-TRITON_DECODE_MAX = 8
+#: On vLLM 0.31 (triton-rocm 3.7.1) Triton's 2-D kernel wins at every batch
+#: measured, so every decode batch is Triton's:
+#:
+#:     ctx 1024   n16 0.1201/0.1264   n32 0.1804/0.2166   n64 0.3505/0.3972
+#:     ctx 4096   n16 0.3738/0.4001   n32 0.6907/0.7587
+#:
+#: 0 turns it off, and hk's walk takes every batch.
+TRITON_DECODE_MAX = 1 << 16
+
+#: Up to this many requests Triton runs its 3-D kernel (16 KV segments and a
+#: reduction); above, its 2-D one. The 3-D kernel's per-segment buffers are
+#: sized for this many rows.
+TRITON_3D_MAX = 8
 
 #: (device, q heads, head_dim) -> the 3-D kernel's per-segment buffers.
 _SEGM: dict = {}
@@ -232,7 +241,7 @@ def _segm(device, n_heads: int, head_dim: int):
     key = (device, n_heads, head_dim)
     got = _SEGM.get(key)
     if got is None:
-        rows, segs = TRITON_DECODE_MAX, 16
+        rows, segs = TRITON_3D_MAX, 16
         d = 1 << (head_dim - 1).bit_length()
         got = _SEGM[key] = (
             torch.empty(rows, n_heads, segs, d, device=device,
@@ -273,7 +282,7 @@ def triton_decode(q, k_cache, v_cache, block_table, seq_lens, query_start,
               block_table=block_table, softcap=0, q_descale=None,
               k_descale=k_scale.expand((n, hkv)),
               v_descale=v_scale.expand((n, hkv)),
-              seq_threshold_3D=TRITON_DECODE_MAX, num_par_softmax_segments=16,
+              seq_threshold_3D=TRITON_3D_MAX, num_par_softmax_segments=16,
               softmax_segm_output=o, softmax_segm_max=m,
               softmax_segm_expsum=l)
     optional = dict(use_alibi_sqrt=False, sinks=None, output_scale=None,
