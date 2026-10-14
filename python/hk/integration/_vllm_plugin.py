@@ -65,6 +65,14 @@ def register() -> None:
             notes.append(vllm_gemm.apply())
         except BaseException as e:  # noqa: BLE001
             notes.append(f"linear not patched ({type(e).__name__}: {e})")
+    # MoE layers likewise: every bf16 expert GEMM changes kernels.
+    if os.environ.get("HK_VLLM_MOE", "0") not in ("0", "", "off", "no"):
+        try:
+            from . import vllm_moe  # noqa: PLC0415
+
+            notes.append(vllm_moe.apply())
+        except BaseException as e:  # noqa: BLE001
+            notes.append(f"moe not patched ({type(e).__name__}: {e})")
     try:
         from . import vllm as hkv  # noqa: PLC0415
 

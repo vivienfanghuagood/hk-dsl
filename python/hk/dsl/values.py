@@ -373,16 +373,18 @@ class Global(Value):
         n = ids.cols if count is None else count
         return (ids.v, as_int(at).v, as_int(n).v, as_int(col).v)
 
-    def gather(self, tile, ids: "Global", at, *, count=None, col=0,
+    def gather(self, tile, ids: "Global", at, *, count=None, col=0, div=1,
                into=None) -> "Tile":
-        """Rows by index: tile row r is row `ids[at + r]` of this tensor
-        (rows flattened over batch and depth), from column `col`. An index
-        outside the tensor, or a position at or past `count` (default: all
-        of `ids`), reads zeros -- the padding a MoE sort fills its index
-        list with costs no branch."""
-        ops = self._indexed("gather", tile, ids, at, count, col)
-        return _make(hkd.GatherRowsOp, tile, (self.v, *ops), into=into,
-                     name="gat")
+        """Rows by index: tile row r is row `ids[at + r] // div` of this
+        tensor (rows flattened over batch and depth), from column `col`. An
+        index outside the tensor, or a position at or past `count` (default:
+        all of `ids`), reads zeros -- the padding a MoE sort fills its index
+        list with costs no branch. `div` is how many index values name one
+        row: a MoE's top-k, whose sorted list counts (token, choice) pairs."""
+        idx, at_v, n_v, col_v = self._indexed("gather", tile, ids, at, count, col)
+        return _make(hkd.GatherRowsOp, tile,
+                     (self.v, idx, at_v, n_v, as_int(div).v, col_v),
+                     into=into, name="gat")
 
     def scatter(self, value: "Tile", ids: "Global", at, *, count=None,
                 col=0) -> None:

@@ -4,7 +4,7 @@
 // of the same name, with its runtime operands in order.
 
 // CHECK-LABEL: indexed_kernel
-// CHECK: kittens::load_gather(ld, g.x, g.ids, at, n, c);
+// CHECK: kittens::load_gather(ld, g.x, g.ids, at, n, c, k);
 // CHECK: kittens::store_scatter(g.o, ld, g.ids, at, n, c);
 // CHECK: kittens::philox_uniform(rnd, (uint32_t)at, 0u, c, n);
 // CHECK: kittens::atomic_add(g.acc, rnd, {{.*}});
@@ -21,8 +21,9 @@ module {
     %c = arith.constant 0 : i32 loc("c")
     %at = arith.constant 16 : i32 loc("at")
     %n = arith.constant 64 : i32 loc("n")
+    %k = arith.constant 8 : i32 loc("k")
     %li = hk.coord %c, %c, %c, %c : !hk.coord<element> loc("li")
-    %ld = hk.gather_rows %x[%ids[%at, %n], %c] : !hk.gl<bf16>, !hk.gl<i32> -> !hk.rt<bf16, 16x64, row> loc("ld")
+    %ld = hk.gather_rows %x[%ids[%at, %n], %c] div %k : !hk.gl<bf16>, !hk.gl<i32> -> !hk.rt<bf16, 16x64, row> loc("ld")
     hk.scatter_rows %ld, %o[%ids[%at, %n], %c] : !hk.rt<bf16, 16x64, row>, !hk.gl<bf16>, !hk.gl<i32>
     %rnd = hk.philox_uniform %at, %c, %n -> !hk.rt<f32, 16x64, row> loc("rnd")
     %idx = hk.coord %c, %c, %by, %c : !hk.coord<tile> loc("idx")

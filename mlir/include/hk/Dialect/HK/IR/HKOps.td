@@ -156,17 +156,20 @@ def HK_WgArriveOp : HK_Op<"wg_arrive"> {
 }
 
 def HK_GatherRowsOp : HK_Op<"gather_rows"> {
-  let summary = "global -> row-layout register tile, row r from row idx[at + r]";
+  let summary = "global -> row-layout register tile, row r from row idx[at + r] / div";
   let description = [{
-    Tile row r is row `idx[at + r]` of `src` (rows flattened over batch and
-    depth), from column `col`. An index outside the tensor, or a position at
-    or past `count`, reads zeros. `idx` is an int32 global.
+    Tile row r is row `idx[at + r] / div` of `src` (rows flattened over batch
+    and depth), from column `col`. An index outside the tensor, or a position
+    at or past `count`, reads zeros. `idx` is an int32 global; `div` is how
+    many index values name one row -- a MoE's top-k, whose sorted list counts
+    (token, choice) pairs.
   }];
   let arguments = (ins Optional<HK_RegTileType>:$dst, HK_GlobalType:$src,
-                       HK_GlobalType:$idx, I32:$at, I32:$count, I32:$col);
+                       HK_GlobalType:$idx, I32:$at, I32:$count, I32:$div,
+                       I32:$col);
   let results = (outs Optional<HK_RegTileType>:$result);
   let assemblyFormat = [{
-    $src `[` $idx `[` $at `,` $count `]` `,` $col `]` (`into` $dst^)? attr-dict `:`
+    $src `[` $idx `[` $at `,` $count `]` `,` $col `]` `div` $div (`into` $dst^)? attr-dict `:`
     qualified(type($src)) `,` qualified(type($idx)) (`into` qualified(type($dst))^)?
     (`->` qualified(type($result))^)?
   }];

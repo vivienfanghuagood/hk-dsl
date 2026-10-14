@@ -804,7 +804,8 @@ private:
           Value d = dest(o.getDst(), o.getResult());
           w("kittens::load_gather(" + name(d) + ", " + name(o.getSrc()) +
             ", " + name(o.getIdx()) + ", " + name(o.getAt()) + ", " +
-            name(o.getCount()) + ", " + name(o.getCol()) + ");");
+            name(o.getCount()) + ", " + name(o.getCol()) + ", " +
+            name(o.getDiv()) + ");");
         })
         .Case([&](ScatterRowsOp o) {
           w("kittens::store_scatter(" + name(o.getDst()) + ", " +

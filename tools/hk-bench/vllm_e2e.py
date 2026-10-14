@@ -46,7 +46,8 @@ def one_arm(args, backend: str) -> dict:
     """Run one arm in this process and return its timings.
 
     `hk` is the attention backend, `gemm` is the linear-layer patch over
-    stock attention, `hk+gemm` is both; anything else names a vLLM backend.
+    stock attention and `moe` the MoE-GEMM patch; `+` joins them (`hk+gemm`,
+    `hk+moe`, `moe`); anything else names a vLLM backend.
     `gemm@NAME` routes the linear layers by the table `--routes` names NAME.
     """
     # The patches below go into this process. An engine core in a process
@@ -56,15 +57,16 @@ def one_arm(args, backend: str) -> dict:
     if table:
         routes = dict(kv.split("=", 1) for kv in args.routes.split(",") if kv)
         os.environ["HK_VLLM_ROUTES"] = routes[table]
-    attn, _, extra = backend.partition("+")
-    gemm = attn == "gemm" or extra == "gemm"
+    attn, *extras = backend.split("+")
+    gemm = attn == "gemm" or "gemm" in extras
+    moe = attn == "moe" or "moe" in extras
     if attn == "hk":
         from hk.integration import vllm_backend
 
         slot = os.environ.get("HK_VLLM_BACKEND_SLOT", "TRITON_ATTN")
         print(vllm_backend.register(slot), flush=True)
         sel = slot
-    elif attn in ("stock", "gemm"):
+    elif attn in ("stock", "gemm", "moe"):
         # None, not a name. The baseline is the engine as it ships, which
         # means letting the platform choose -- naming TRITON_ATTN here would
         # be a different experiment that happens to agree today.
@@ -75,6 +77,10 @@ def one_arm(args, backend: str) -> dict:
         from hk.integration import vllm_gemm
 
         print(vllm_gemm.apply(), flush=True)
+    if moe:
+        from hk.integration import vllm_moe
+
+        print(vllm_moe.apply(), flush=True)
 
     import torch  # noqa: F401
     from vllm import LLM, SamplingParams
@@ -140,6 +146,10 @@ def one_arm(args, backend: str) -> dict:
         print(f"  linear routing: {vllm_gemm.PATCH.summary()}", flush=True)
         out["_gemm_stats"] = dict(vllm_gemm.STATS)
         out["_gemm_captured"] = dict(vllm_gemm.PATCH.captured)
+    if moe:
+        print(f"  moe routing: {vllm_moe.PATCH.summary()}", flush=True)
+        out["_moe_stats"] = dict(vllm_moe.STATS)
+        out["_moe_captured"] = dict(vllm_moe.PATCH.captured)
     return out
 
 
