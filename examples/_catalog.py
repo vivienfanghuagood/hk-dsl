@@ -29,6 +29,9 @@ def kernels() -> List[Tuple[str, object]]:
     gemm = load("04_gemm")
     attn = load("05_attention")
     cf = load("06_control_flow")
+    drop = load("07_dropout")
+    emb = load("08_embedding")
+    kv = load("09_kv_scatter")
     return [
         ("vector_add", add.add),
         ("rmsnorm", rms.rmsnorm_kernel()),
@@ -38,6 +41,9 @@ def kernels() -> List[Tuple[str, object]]:
         ("attention_causal", attn.attention_kernel(causal=True)),
         ("prefix_sum_for", cf.prefix_sum_for),
         ("prefix_sum_while", cf.prefix_sum_while),
+        ("dropout", drop.dropout_kernel()),
+        ("embedding", emb.embedding),
+        ("kv_scatter", kv.kv_scatter),
     ]
 
 
@@ -50,5 +56,8 @@ SCRIPTS = [
     ("05_attention.py",),
     ("05_attention.py", "--causal"),
     ("06_control_flow.py",),
+    ("07_dropout.py",),
+    ("08_embedding.py",),
+    ("09_kv_scatter.py",),
     ("validate.py", "--quick"),
 ]

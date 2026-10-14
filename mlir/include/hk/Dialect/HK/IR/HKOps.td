@@ -155,6 +155,74 @@ def HK_WgArriveOp : HK_Op<"wg_arrive"> {
   let hasVerifier = 1;
 }
 
+def HK_GatherRowsOp : HK_Op<"gather_rows"> {
+  let summary = "global -> row-layout register tile, row r from row idx[at + r]";
+  let description = [{
+    Tile row r is row `idx[at + r]` of `src` (rows flattened over batch and
+    depth), from column `col`. An index outside the tensor, or a position at
+    or past `count`, reads zeros. `idx` is an int32 global.
+  }];
+  let arguments = (ins Optional<HK_RegTileType>:$dst, HK_GlobalType:$src,
+                       HK_GlobalType:$idx, I32:$at, I32:$count, I32:$col);
+  let results = (outs Optional<HK_RegTileType>:$result);
+  let assemblyFormat = [{
+    $src `[` $idx `[` $at `,` $count `]` `,` $col `]` (`into` $dst^)? attr-dict `:`
+    qualified(type($src)) `,` qualified(type($idx)) (`into` qualified(type($dst))^)?
+    (`->` qualified(type($result))^)?
+  }];
+  let hasVerifier = 1;
+}
+
+def HK_ScatterRowsOp : HK_Op<"scatter_rows"> {
+  let summary = "row-layout register tile -> global, row r to row idx[at + r]";
+  let arguments = (ins HK_GlobalType:$dst, HK_RegTileType:$value,
+                       HK_GlobalType:$idx, I32:$at, I32:$count, I32:$col);
+  let assemblyFormat = [{
+    $value `,` $dst `[` $idx `[` $at `,` $count `]` `,` $col `]` attr-dict `:`
+    qualified(type($value)) `,` qualified(type($dst)) `,` qualified(type($idx))
+  }];
+  let hasVerifier = 1;
+}
+
+def HK_AtomicAddOp : HK_Op<"atomic_add"> {
+  let summary = "add an fp32 register tile into a float global, atomically";
+  let arguments = (ins HK_GlobalType:$dst, HK_RegTileType:$value,
+                       HK_CoordType:$idx);
+  let assemblyFormat = [{
+    $value `,` $dst `[` $idx `]` attr-dict `:` qualified(type($value)) `,`
+    qualified(type($dst)) `,` qualified(type($idx))
+  }];
+  let hasVerifier = 1;
+}
+
+def HK_AtomicScalarOp : HK_Op<"atomic_scalar"> {
+  let summary = "one int32 atomic (add or max) per warp; the value before it";
+  let arguments = (ins HK_GlobalType:$dst, HK_CoordType:$idx, I32:$value,
+                       StrAttr:$kind);
+  let results = (outs I32:$result);
+  let assemblyFormat = [{
+    $kind $dst `[` $idx `]` `,` $value attr-dict `:` qualified(type($dst)) `,`
+    qualified(type($idx))
+  }];
+  let hasVerifier = 1;
+}
+
+def HK_PhiloxOp : HK_Op<"philox_uniform"> {
+  let summary = "uniform [0, 1) draws into an fp32 tile, as Triton's tl.rand";
+  let description = [{
+    Element (r, c) is Philox4x32-10 of counter `offset + r * row_stride + c`
+    under key (seed, 0), converted as triton.language.rand converts it.
+  }];
+  let arguments = (ins Optional<HK_RegTileType>:$dst, I32:$seed, I32:$offset,
+                       I32:$row_stride);
+  let results = (outs Optional<HK_RegTileType>:$result);
+  let assemblyFormat = [{
+    $seed `,` $offset `,` $row_stride (`into` $dst^)? attr-dict
+    (`:` qualified(type($dst))^)? (`->` qualified(type($result))^)?
+  }];
+  let hasVerifier = 1;
+}
+
 //===----------------------------------------------------------------------===//
 // LDS
 //===----------------------------------------------------------------------===//
@@ -423,6 +491,7 @@ def HK_DgeluOp : HK_UnaryMapOp<"dgelu">;
 def HK_SqrtOp : HK_UnaryMapOp<"sqrt">;
 def HK_RsqrtOp : HK_UnaryMapOp<"rsqrt">;
 def HK_SiluOp : HK_UnaryMapOp<"silu">;
+def HK_StepOp : HK_UnaryMapOp<"step">;
 
 //===----------------------------------------------------------------------===//
 // Reductions and broadcasts

@@ -48,7 +48,7 @@ static bool sameCpp(Type a, Type b) {
 
 static LogicalResult checkMapDtype(Operation *op, Type t) {
   static const llvm::StringSet<> fp32Only = {"gelu", "dgelu", "sqrt", "rsqrt",
-                                             "silu"};
+                                             "silu", "step"};
   StringRef name = op->getName().stripDialect();
   StringRef dn = dtypeName(elementOf(t));
   bool ok = fp32Only.contains(name)
@@ -113,6 +113,54 @@ LogicalResult WgArriveOp::verify() {
     return emitOpError("takes an element coordinate");
   if (!getCounter().getType().getElementType().isInteger(32))
     return emitOpError("counts in an int32 global");
+  return success();
+}
+
+/// Gather and scatter: a lane's elements of a row-layout base tile are all in
+/// its row, which is what lets each lane address its own row.
+static LogicalResult checkIndexedRows(Operation *op, Type tile, GlobalType idx) {
+  if (!idx.getElementType().isInteger(32))
+    return op->emitOpError("takes its row indices from an int32 global");
+  if (cast<RegTileType>(tile).getColLayout())
+    return op->emitOpError("moves row-layout tiles");
+  return success();
+}
+
+LogicalResult GatherRowsOp::verify() {
+  if (failed(verifyDest(*this, getDst(), getResult())))
+    return failure();
+  return checkIndexedRows(*this, destType(getDst(), getResult()),
+                          getIdx().getType());
+}
+
+LogicalResult ScatterRowsOp::verify() {
+  return checkIndexedRows(*this, getValue().getType(), getIdx().getType());
+}
+
+LogicalResult AtomicAddOp::verify() {
+  // A 16-bit operand tile is replicated across the wave halves; adding one
+  // would count every element twice.
+  if (!getValue().getType().getElementType().isF32() ||
+      !getDst().getType().getElementType().isF32())
+    return emitOpError("adds an fp32 tile into an fp32 global");
+  return success();
+}
+
+LogicalResult AtomicScalarOp::verify() {
+  if (!getIdx().getType().getElement())
+    return emitOpError("takes an element coordinate");
+  if (!getDst().getType().getElementType().isInteger(32))
+    return emitOpError("works on an int32 global");
+  if (getKind() != "add" && getKind() != "max")
+    return emitOpError("kind is \"add\" or \"max\"");
+  return success();
+}
+
+LogicalResult PhiloxOp::verify() {
+  if (failed(verifyDest(*this, getDst(), getResult())))
+    return failure();
+  if (!cast<RegTileType>(destType(getDst(), getResult())).getElementType().isF32())
+    return emitOpError("draws into an fp32 tile");
   return success();
 }
 
@@ -292,6 +340,7 @@ HK_UNARY_VERIFY(DgeluOp)
 HK_UNARY_VERIFY(SqrtOp)
 HK_UNARY_VERIFY(RsqrtOp)
 HK_UNARY_VERIFY(SiluOp)
+HK_UNARY_VERIFY(StepOp)
 #undef HK_UNARY_VERIFY
 
 //===----------------------------------------------------------------------===//

@@ -800,6 +800,35 @@ private:
             name(o.getCounter()) + ", " + name(o.getIdx()) + ", " +
             name(o.getExpected()) + ");");
         })
+        .Case([&](GatherRowsOp o) {
+          Value d = dest(o.getDst(), o.getResult());
+          w("kittens::load_gather(" + name(d) + ", " + name(o.getSrc()) +
+            ", " + name(o.getIdx()) + ", " + name(o.getAt()) + ", " +
+            name(o.getCount()) + ", " + name(o.getCol()) + ");");
+        })
+        .Case([&](ScatterRowsOp o) {
+          w("kittens::store_scatter(" + name(o.getDst()) + ", " +
+            name(o.getValue()) + ", " + name(o.getIdx()) + ", " +
+            name(o.getAt()) + ", " + name(o.getCount()) + ", " +
+            name(o.getCol()) + ");");
+        })
+        .Case([&](AtomicAddOp o) {
+          w("kittens::atomic_add(" + name(o.getDst()) + ", " +
+            name(o.getValue()) + ", " +
+            coordArg(o.getIdx(), cpp(o.getValue().getType())) + ");");
+        })
+        .Case([&](AtomicScalarOp o) {
+          w("const int " + name(o.getResult()) + " = kittens::atomic_scalar(" +
+            name(o.getDst()) + ", " + name(o.getIdx()) + ", " +
+            name(o.getValue()) + ", " +
+            std::string(o.getKind() == "max" ? "1" : "0") + ");");
+        })
+        .Case([&](PhiloxOp o) {
+          Value d = dest(o.getDst(), o.getResult());
+          w("kittens::philox_uniform(" + name(d) + ", (uint32_t)" +
+            name(o.getSeed()) + ", 0u, " + name(o.getOffset()) + ", " +
+            name(o.getRowStride()) + ");");
+        })
         // LDS
         .Case([&](AllocSharedOp o) {
           auto t = o.getResult().getType();
@@ -973,7 +1002,7 @@ private:
         .Case<AddOp, SubOp, MulOp, DivOp, MaxOp, MinOp>(
             [&](auto o) { emitBinary(o); })
         .Case<ExpOp, Exp2Op, LogOp, Log2Op, AbsOp, ReluOp, CopyOp, GeluOp,
-              DgeluOp, SqrtOp, RsqrtOp, SiluOp>([&](auto o) {
+              DgeluOp, SqrtOp, RsqrtOp, SiluOp, StepOp>([&](auto o) {
           Value d = dest(o.getDst(), o.getResult());
           call(o->getName().stripDialect(), d, {name(o.getSrc())});
         })

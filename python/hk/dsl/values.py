@@ -31,7 +31,7 @@ Scalar = Union[int, float, "Int"]
 #: Elementwise ops include/rdna3 specialises only for fp32. Asking for one it
 #: does not have is a link error at the end of a long compile, naming a
 #: template rather than the line that asked for it.
-_FP32_ONLY = ("gelu", "dgelu", "sqrt", "rsqrt", "silu")
+_FP32_ONLY = ("gelu", "dgelu", "sqrt", "rsqrt", "silu", "step")
 _ALL_FLOAT = ("bf16", "fp16", "fp32")
 
 
@@ -362,6 +362,39 @@ class Global(Value):
     def __setitem__(self, idx, value) -> None:
         self[idx].store(value)
 
+    def _indexed(self, what: str, tile, ids, at, count, col):
+        if not isinstance(tile, RegTileType) or tile.layout != "row":
+            raise TypeError(f"{what} moves row-layout tiles, not {tile!r}: a "
+                            f"lane's elements of a row tile are all in its "
+                            f"row, which is what lets it address its own row")
+        if not isinstance(ids, Global) or ids.dtype is not i32:
+            raise TypeError(f"{what} takes its row indices from an int32 "
+                            f"global, not {ids!r}")
+        n = ids.cols if count is None else count
+        return (ids.v, as_int(at).v, as_int(n).v, as_int(col).v)
+
+    def gather(self, tile, ids: "Global", at, *, count=None, col=0,
+               into=None) -> "Tile":
+        """Rows by index: tile row r is row `ids[at + r]` of this tensor
+        (rows flattened over batch and depth), from column `col`. An index
+        outside the tensor, or a position at or past `count` (default: all
+        of `ids`), reads zeros -- the padding a MoE sort fills its index
+        list with costs no branch."""
+        ops = self._indexed("gather", tile, ids, at, count, col)
+        return _make(hkd.GatherRowsOp, tile, (self.v, *ops), into=into,
+                     name="gat")
+
+    def scatter(self, value: "Tile", ids: "Global", at, *, count=None,
+                col=0) -> None:
+        """Rows by index: tile row r goes to row `ids[at + r]`, from column
+        `col`; an index outside the tensor, or a position at or past
+        `count`, writes nothing. Two rows naming one row race."""
+        value = _vec_of(value)
+        if not isinstance(value, Tile):
+            raise TypeError(f"scatter stores a tile, not {value!r}")
+        ops = self._indexed("scatter", value.ty, ids, at, count, col)
+        hkd.ScatterRowsOp(self.v, value.v, *ops, loc=_t().loc())
+
 
 class View:
     """A global at a coordinate: what a load reads and a store writes."""
@@ -448,6 +481,39 @@ class View:
         t = _t()
         hkd.StoreScalarOp(self.tensor.v, vec.v, self.idx.v, loc=t.loc())
 
+    def atomic_add(self, value: "Tile") -> None:
+        """Add an fp32 tile into this float global, element by element,
+        atomically: the reduction for partials in different workgroups."""
+        value = _vec_of(value)
+        if not isinstance(value, Tile) or value.ty.dtype is not fp32:
+            raise TypeError(f"atomic_add adds an fp32 tile, not {value!r}: a "
+                            f"16-bit operand tile is replicated across the "
+                            f"wave halves and would be added twice")
+        if self.tensor.dtype is not fp32:
+            raise TypeError(f"atomic_add adds into an fp32 global, not "
+                            f"{self.tensor.dtype.name}")
+        hkd.AtomicAddOp(self.tensor.v, value.v, self.idx.v, loc=_t().loc())
+
+    def _atomic_scalar(self, kind: str, value) -> Int:
+        if self.idx.unit != "element":
+            raise TypeError(f"atomic_{kind}_scalar takes an element coordinate "
+                            f"(x.at[...]), not coord<{self.idx.unit}>")
+        if self.tensor.dtype is not i32:
+            raise TypeError(f"atomic_{kind}_scalar works on an int32 global, "
+                            f"not {self.tensor.dtype.name}")
+        op = hkd.AtomicScalarOp(_i32(), self.tensor.v, self.idx.v,
+                                as_int(value).v, kind, loc=_t().loc("old"))
+        return Int(op.result, ScalarType(i32))
+
+    def atomic_add_scalar(self, value) -> Int:
+        """One int32 atomic add per warp; the element's value before it, in
+        every lane. W warps that call it add W times."""
+        return self._atomic_scalar("add", value)
+
+    def atomic_max_scalar(self, value) -> Int:
+        """One int32 atomic max per warp; the value before it."""
+        return self._atomic_scalar("max", value)
+
 
 # ---------------------------------------------------------------- tiles
 
@@ -481,7 +547,8 @@ _BINARY = {"add": hkd.AddOp, "sub": hkd.SubOp, "mul": hkd.MulOp,
 _UNARY = {"exp": hkd.ExpOp, "exp2": hkd.Exp2Op, "log": hkd.LogOp,
           "log2": hkd.Log2Op, "abs": hkd.AbsOp, "relu": hkd.ReluOp,
           "copy": hkd.CopyOp, "gelu": hkd.GeluOp, "dgelu": hkd.DgeluOp,
-          "sqrt": hkd.SqrtOp, "rsqrt": hkd.RsqrtOp, "silu": hkd.SiluOp}
+          "sqrt": hkd.SqrtOp, "rsqrt": hkd.RsqrtOp, "silu": hkd.SiluOp,
+          "step": hkd.StepOp}
 _BROADCAST = {("add", "row"): hkd.AddRowOp, ("sub", "row"): hkd.SubRowOp,
               ("mul", "row"): hkd.MulRowOp, ("div", "row"): hkd.DivRowOp,
               ("add", "col"): hkd.AddColOp, ("sub", "col"): hkd.SubColOp,
@@ -628,6 +695,12 @@ class _Elementwise(Value):
     def sqrt(self, *, into=None): return unary("sqrt", self, into=into)
     def rsqrt(self, *, into=None): return unary("rsqrt", self, into=into)
     def silu(self, *, into=None): return unary("silu", self, into=into)
+    def step(self, *, into=None):
+        """1 where the element is positive, else 0: a comparison as a factor,
+        `x * (r - p).step()` keeping where r > p. Tiles only."""
+        if not isinstance(self, Tile):
+            raise TypeError("step is defined on tiles, not on register vectors")
+        return unary("step", self, into=into)
 
     def copy(self, *, into=None): return unary("copy", self, into=into)
 
@@ -882,6 +955,18 @@ def zeros(ty, *, into=None):
     return _make(hkd.ZeroOp, ty, (), into=into, name=name)
 
 
+def rand(ty, seed, offset, row_stride, *, into=None) -> "Tile":
+    """Uniform [0, 1) draws into an fp32 tile: element (r, c) is the draw
+    `triton.language.rand(seed, offset + r * row_stride + c)` makes, bit for
+    bit -- Philox4x32-10 with Triton's constants and conversion -- so a
+    dropout written here keeps exactly the elements Triton's keeps."""
+    if not isinstance(ty, RegTileType) or ty.dtype is not fp32:
+        raise TypeError(f"rand draws into an fp32 tile type, not {ty!r}")
+    return _make(hkd.PhiloxOp, ty, (as_int(seed).v, as_int(offset).v,
+                                    as_int(row_stride).v),
+                 into=into, name="rnd")
+
+
 def full(ty, value: float, *, into=None):
     name = "f" if isinstance(ty, RegTileType) else "fv"
     return _make(hkd.FullOp, ty, (float(value),), into=into, name=name)
@@ -1071,6 +1156,6 @@ __all__ = [
     "SharedTile", "SharedVec", "Granules", "Stage", "Reduction", "MatMul",
     "Transposed", "const", "as_int", "scalar_op", "compare", "i1", "coord",
     "tile_coord", "elem_coord", "binary", "unary", "broadcast", "mma", "zeros",
-    "full", "neg_infty", "transpose", "transpose_sep", "broadcast_row",
+    "full", "neg_infty", "rand", "transpose", "transpose_sep", "broadcast_row",
     "broadcast_col", "as_vec", "lds_loads", "wrap",
 ]
