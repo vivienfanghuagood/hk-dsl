@@ -10,9 +10,12 @@ vLLM 0.16.1 calls it, so the wrapper around each kernel is in the number:
                 its reduction at or below, as TritonAttentionMetadataBuilder
                 decides)
   stock_attn    unified_attention alone
-  hk_layer      HKAttentionImpl.forward (the cache write is inside it)
-  hk_attn       HKAttentionImpl._decode_all (no cache write)
-  hk_kernel     the fused decode launch alone, no wrapper around it
+  hk_layer      HKAttentionImpl.forward (the cache write is inside it), as
+                routed: Triton's kernel on hk's cache up to
+                vllm_backend.TRITON_DECODE_MAX requests, hk's above
+  hk_attn       HKAttentionImpl._decode_all (no cache write), as routed
+  hk_kernel     hk's split decode alone, walk and merge, at every batch
+  tri_on_hk     unified_attention reading hk's head-major cache
 
 The first run of this file, against the backend before its decode was fused
 (a torch scatter, a padded query copy, a pybind launch on stream 0, a torch
@@ -33,7 +36,12 @@ torch scatter the hk backend does, bit for bit, with slot -1 entries that must
 be skipped.
 
     HIP_VISIBLE_DEVICES=0 python3 tools/hk-bench/paged_ab.py \\
-        --ctx 1024,4096,16384 --batch 1,4,8,16,32
+        --ctx 1024,4096,16384 --batch 1,4,8,16,32 [--layers 36]
+
+`--layers 36` is the one to believe for a decode step. With one cache, every
+replay rereads K/V the previous one left in the 96 MB Infinity Cache, and a
+one-layer graph's replay overhead (~13 us) sits on top of both arms; at
+1024 tokens and one request that hid hk losing by 10 us a layer.
 """
 
 from __future__ import annotations
@@ -138,7 +146,7 @@ def cache_write_check():
 
 # ---------------------------------------------------------------- the arms
 
-def stock_arms(n, ctx, key, value, q, k_new, v_new, gen):
+def stock_arms(n, ctx, key, value, q, k_new, v_new, gen, layers=1):
     from vllm.v1.attention.ops.triton_reshape_and_cache_flash import (
         triton_reshape_and_cache_flash,
     )
@@ -154,6 +162,7 @@ def stock_arms(n, ctx, key, value, q, k_new, v_new, gen):
         key.view(-1, HKV, D), value.view(-1, HKV, D), key_cache, value_cache,
         slots.reshape(-1), "auto", scale1, scale1)
     new_slots = slots[:, -1].contiguous()
+    kvs = [kv] + [kv.clone() for _ in range(layers - 1)]
 
     cu = torch.arange(n + 1, device="cuda", dtype=I32)
     seq_lens = torch.full((n,), ctx, device="cuda", dtype=I32)
@@ -164,7 +173,7 @@ def stock_arms(n, ctx, key, value, q, k_new, v_new, gen):
     segm_l = torch.empty_like(segm_m)
     out = torch.empty(n, HQ, D, device="cuda", dtype=BF16)
 
-    def attn():
+    def attn_one(kv):
         kc, vc = kv.unbind(1)
         unified_attention(
             q=q[:n], k=kc, v=vc, out=out[:n], cu_seqlens_q=cu,
@@ -179,16 +188,21 @@ def stock_arms(n, ctx, key, value, q, k_new, v_new, gen):
             softmax_segm_max=segm_m, softmax_segm_expsum=segm_l, sinks=None,
             output_scale=None, mm_prefix_range=None)
 
+    def attn():
+        for kv in kvs:
+            attn_one(kv)
+
     def layer():
-        kc, vc = kv.unbind(1)
-        triton_reshape_and_cache_flash(k_new, v_new, kc, vc, new_slots,
-                                       "auto", scale1, scale1)
-        attn()
+        for kv in kvs:
+            kc, vc = kv.unbind(1)
+            triton_reshape_and_cache_flash(k_new, v_new, kc, vc, new_slots,
+                                           "auto", scale1, scale1)
+            attn_one(kv)
 
     return {"stock_layer": layer, "stock_attn": attn}, out
 
 
-def hk_arms(n, ctx, key, value, q, k_new, v_new, gen):
+def hk_arms(n, ctx, key, value, q, k_new, v_new, gen, layers=1):
     from hk.integration import vllm_backend
     from hk.ops import paged
 
@@ -202,6 +216,7 @@ def hk_arms(n, ctx, key, value, q, k_new, v_new, gen):
                      dtype=BF16)
     impl._update_cache(None, key.view(-1, HKV, D), value.view(-1, HKV, D),
                        kv[0], kv[1], slots.reshape(-1))
+    kvs = [kv] + [kv.clone() for _ in range(layers - 1)]
     md = types.SimpleNamespace(
         num_actual_tokens=n, slot_mapping=slots[:, -1].contiguous(),
         max_query_len=1, max_seq_len=ctx, block_table=table,
@@ -211,10 +226,12 @@ def hk_arms(n, ctx, key, value, q, k_new, v_new, gen):
     out = torch.empty(n, HQ, D, device="cuda", dtype=BF16)
 
     def layer():
-        impl.forward(None, q, k_new, v_new, kv, md, out)
+        for kv in kvs:
+            impl.forward(None, q, k_new, v_new, kv, md, out)
 
     def attn():
-        impl._decode_all(q, out, kv[0], kv[1], md, n)
+        for kv in kvs:
+            impl._decode_all(q, out, kv[0], kv[1], md, n)
 
     # The launches as the backend plans them, nothing around them.
     splits = impl._plan(n)
@@ -222,11 +239,43 @@ def hk_arms(n, ctx, key, value, q, k_new, v_new, gen):
     q4, o4 = q.view(n, HKV, G, D), out.view(n, HKV, G, D)
 
     def kernel():
-        vllm_backend.decode(q4, kv[0], kv[1], table, md.seq_lens, o4,
-                            scratch, splits)
+        for kv in kvs:
+            vllm_backend.decode(q4, kv[0], kv[1], table, md.seq_lens, o4,
+                                scratch, splits)
 
-    arms = {"hk_layer": layer, "hk_attn": attn, "hk_kernel": kernel}
-    return arms, out, {}, splits
+    # Triton's kernel reading this backend's cache: it addresses K/V by
+    # stride, so the head-major pages are a (blocks, block, heads, d) view.
+    from vllm.v1.attention.ops.triton_unified_attention import (
+        unified_attention,
+    )
+    cu = torch.arange(n + 1, device="cuda", dtype=I32)
+    segm_o = torch.empty(SEQ_THRESHOLD_3D, HQ, SEGMENTS, D, device="cuda",
+                         dtype=F32)
+    segm_m = torch.empty(SEQ_THRESHOLD_3D, HQ, SEGMENTS, device="cuda",
+                         dtype=F32)
+    segm_l = torch.empty_like(segm_m)
+    scale1 = torch.ones((), device="cuda", dtype=F32)
+    tri_out = torch.empty(n, HQ, D, device="cuda", dtype=BF16)
+
+    def tri_on_hk():
+        for kv in kvs:
+            kc, vc = kv[0].transpose(1, 2), kv[1].transpose(1, 2)
+            unified_attention(
+                q=q[:n], k=kc, v=vc, out=tri_out[:n], cu_seqlens_q=cu,
+                max_seqlen_q=1, seqused_k=md.seq_lens, max_seqlen_k=ctx,
+                softmax_scale=SCALE, causal=True, alibi_slopes=None,
+                use_alibi_sqrt=False, window_size=(-1, -1), block_table=table,
+                softcap=0, q_descale=None,
+                k_descale=scale1.expand((n, HKV)),
+                v_descale=scale1.expand((n, HKV)),
+                seq_threshold_3D=SEQ_THRESHOLD_3D,
+                num_par_softmax_segments=SEGMENTS, softmax_segm_output=segm_o,
+                softmax_segm_max=segm_m, softmax_segm_expsum=segm_l,
+                sinks=None, output_scale=None, mm_prefix_range=None)
+
+    arms = {"hk_layer": layer, "hk_attn": attn, "hk_kernel": kernel,
+            "tri_on_hk": tri_on_hk}
+    return arms, (out, tri_out), {}, splits
 
 
 # ---------------------------------------------------------------- clocks
@@ -245,7 +294,7 @@ def graphed(fn):
     return g.replay
 
 
-def run_case(n, ctx, rounds):
+def run_case(n, ctx, rounds, layers=1):
     gen = torch.Generator(device="cuda").manual_seed(n * 100003 + ctx)
     key = torch.randn(n, ctx, HKV, D, device="cuda", dtype=BF16, generator=gen)
     value = torch.randn_like(key)
@@ -255,15 +304,20 @@ def run_case(n, ctx, rounds):
     k_new = key[:, -1].contiguous()
     v_new = value[:, -1].contiguous()
 
-    stock, s_out = stock_arms(n, ctx, key, value, q, k_new, v_new, gen)
+    stock, s_out = stock_arms(n, ctx, key, value, q, k_new, v_new, gen,
+                              layers)
     hk, h_out, uncapturable, splits = hk_arms(n, ctx, key, value, q, k_new,
-                                              v_new, gen)
+                                              v_new, gen, layers)
     del key, value
 
     stock["stock_attn"]()
     hk["hk_attn"]()
+    hk["tri_on_hk"]()
     torch.cuda.synchronize()
+    h_out, t_out = h_out
     if not check(f"n{n} c{ctx}", h_out, s_out):
+        return None
+    if not check("tri_on_hk", t_out, s_out):
         return None
 
     eager = interleave({**stock, **hk}, rounds=rounds)
@@ -280,7 +334,9 @@ def run_case(n, ctx, rounds):
     for name, why in refused.items():
         print(f"  {name}: not captured ({why})")
         gbest[name] = None
-    return eager, gbest, splits
+    per = {k: v / layers for k, v in eager.items()}
+    gper = {k: (v / layers if v is not None else None) for k, v in gbest.items()}
+    return per, gper, splits
 
 
 #: Batches with prefill in them, as vLLM's defaults make them: (name, [(ctx,
@@ -409,6 +465,11 @@ def main() -> int:
     ap.add_argument("--rounds", type=int, default=4)
     ap.add_argument("--prefill", action="store_true",
                     help="batches with prefill in them instead of decode")
+    ap.add_argument("--layers", type=int, default=1,
+                    help="each arm walks this many caches per call, as a "
+                         "decode step walks its layers': at 36, a layer's K/V "
+                         "is no longer in the Infinity Cache when it is read "
+                         "again. Times stay per layer.")
     args = ap.parse_args()
 
     if args.prefill:
@@ -433,7 +494,8 @@ def main() -> int:
     cache_ok = cache_write_check()
     burn_in()
 
-    arms = ("stock_layer", "stock_attn", "hk_layer", "hk_attn", "hk_kernel")
+    arms = ("stock_layer", "stock_attn", "hk_layer", "hk_attn", "hk_kernel",
+            "tri_on_hk")
     head = f"{'ctx':>6}{'batch':>6}{'split':>6}  clock "
     print("\nms per layer call; GB/s is K+V read over the attention arm's time")
     print(head + "".join(f"{a:>12}" for a in arms) +
@@ -441,7 +503,7 @@ def main() -> int:
     failed = False
     for ctx in (int(c) for c in args.ctx.split(",")):
         for n in (int(b) for b in args.batch.split(",")):
-            res = run_case(n, ctx, args.rounds)
+            res = run_case(n, ctx, args.rounds, args.layers)
             if res is None:
                 failed = True
                 continue

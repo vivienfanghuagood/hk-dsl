@@ -351,6 +351,13 @@ def _merge_splits(out, o_part, ml_part, req, kv_head, splits, active, cols,
     (q, d) tiles. The max starts finite, so a split that saw nothing weighs
     zero rather than NaN; a step past the last split rereads it and weighs it
     zero.
+
+    The partials are read bounded, as bf16, and widened by copy(). Read
+    unbounded straight into fp32 -- no descriptor per read, so a step of 16
+    fits -- the merge was slower at every point measured, 7.8-8.8 us to
+    11.6-14.8 (tools/hk-bench/paged_kernels.py, 36 layers' caches): each
+    unbounded read carries its alignment branch and its elementwise
+    fallback, and the larger code is what this latency-bound launch pays.
     """
     d_frags = len(cols)
     ty_ot = hk.RT(fp32, Q_TILE, 16, "row")

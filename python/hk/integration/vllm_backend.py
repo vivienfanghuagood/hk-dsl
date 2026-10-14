@@ -21,7 +21,9 @@ head_size)` cannot yield a contiguous `(block_size, head_dim)` tile for one
 head. Having its own layout means every attention it serves is its own:
 
 * decode (`hk.ops.paged`): the paged walk and its merge, two launches a
-  layer, captured whole in vLLM's full decode graphs;
+  layer, captured whole in vLLM's full decode graphs -- from sixteen
+  requests up. Below that hk's decode loses to Triton's, and Triton's
+  kernel runs instead, on this backend's cache (TRITON_DECODE_MAX);
 * prefill (`hk.ops.paged_prefill`): one launch for every prefill request in
   the batch, cached prefixes and chunks included -- the new tokens' K/V are
   in the cache before either runs.
@@ -42,14 +44,16 @@ from . import engine
 NAME = "HK_ATTN"
 
 #: The paths a forward takes, counted, and the CUDA-graph contract. A decode
-#: step is one cache write and one launch, both on torch's stream, planned on
-#: shapes alone: the split count comes from the batch size and max_model_len,
-#: the scratch is allocated once at its largest, and the metadata check that
-#: reads the device runs only outside capture. The builder claims
+#: step is one cache write and its launches, all on torch's stream, planned on
+#: shapes alone: hk's or Triton's by the batch size, the split count from the
+#: batch size and max_model_len, the scratch allocated once at its largest,
+#: and the metadata check that reads the device only outside capture. "decode"
+#: counts hk's decode, "decode_triton" Triton's on hk's cache. The builder claims
 #: UNIFORM_SINGLE_TOKEN_DECODE, so vLLM captures decode steps whole and runs
 #: steps with prefill in them eagerly, between its pieces; `forward` refuses
 #: to have one of those captured.
-PATCH = engine.Patch(NAME, paths=("decode", "prefill"), graph="safe")
+PATCH = engine.Patch(NAME, paths=("decode", "decode_triton", "prefill"),
+                     graph="safe")
 
 #: What `get_name()` answers, which is not the same thing.
 #:
@@ -178,6 +182,107 @@ def decode(q, k_cache, v_cache, block_table, seq_lens, out, scratch,
     merge = _op("merge", d, splits) if splits > 1 else None
     hk_paged.decode(_op("walk", d, splits), merge, q, k_cache, v_cache,
                     block_table, seq_lens, out, scratch, splits)
+
+
+#: Pure-decode batches up to this many requests are run by vLLM's own Triton
+#: kernel, reading this backend's cache through a transposed view (it
+#: addresses K/V by stride; the output is bit-identical to the stock
+#: backend's). That is hk losing a kernel, recorded as such: below sixteen
+#: requests the split walk and its merge are each a latency-bound launch, and
+#: together they cost ~10 us a layer more than Triton's 16-segment kernel and
+#: its reduction. Measured with every layer's cache cold, as a decode step
+#: reads them (tools/hk-bench/paged_ab.py --layers 36, graph clock, ms per
+#: layer, Triton on hk's cache / hk):
+#:
+#:     ctx 1024   n1 0.0174/0.0278   n4 0.0388/0.0509   n8 0.0685/0.0845   n16 0.1293/0.1228
+#:     ctx 4096   n1 0.0410/0.0527   n4 0.1109/0.1233   n8 0.2078/0.2219   n16 0.4018/0.3939
+#:
+#: 0 turns it off. Batches are padded to a capture size first, so a batch of
+#: 9-15 is a 16 and stays on hk.
+TRITON_DECODE_MAX = 8
+
+#: (device, q heads, head_dim) -> the 3-D kernel's per-segment buffers.
+_SEGM: dict = {}
+
+_TRITON: list = []
+
+
+def _triton_decode():
+    """vLLM's unified_attention and the keyword arguments this vLLM's
+    version of it takes, or None where it is missing. Checked against the
+    signature rather than assumed: the arguments moved between releases."""
+    if not _TRITON:
+        try:
+            import inspect
+
+            from vllm.v1.attention.ops.triton_unified_attention import (
+                unified_attention,
+            )
+
+            params = set(inspect.signature(unified_attention).parameters)
+            _TRITON.append((unified_attention, params))
+        except Exception:        # noqa: BLE001 -- no vLLM, or it moved
+            _TRITON.append(None)
+    return _TRITON[0]
+
+
+def _segm(device, n_heads: int, head_dim: int):
+    import torch
+
+    key = (device, n_heads, head_dim)
+    got = _SEGM.get(key)
+    if got is None:
+        rows, segs = TRITON_DECODE_MAX, 16
+        d = 1 << (head_dim - 1).bit_length()
+        got = _SEGM[key] = (
+            torch.empty(rows, n_heads, segs, d, device=device,
+                        dtype=torch.float32),
+            torch.empty(rows, n_heads, segs, device=device,
+                        dtype=torch.float32),
+            torch.empty(rows, n_heads, segs, device=device,
+                        dtype=torch.float32))
+    return got
+
+
+def _kv_scales(layer, device):
+    ks = getattr(layer, "_k_scale", None)
+    vs = getattr(layer, "_v_scale", None)
+    if ks is None or vs is None:
+        ks = vs = _unit_scale(device)
+    return ks, vs
+
+
+def triton_decode(q, k_cache, v_cache, block_table, seq_lens, query_start,
+                  out, scale: float, max_seq_len: int, k_scale,
+                  v_scale) -> bool:
+    """One decode of `q.shape[0]` <= TRITON_DECODE_MAX requests by Triton's
+    3-D kernel on hk's head-major cache. False if this vLLM has no kernel
+    with the arguments it needs, and nothing was launched."""
+    got = _triton_decode()
+    if got is None:
+        return False
+    fn, params = got
+    n, h, d = q.shape
+    o, m, l = _segm(q.device, h, d)
+    hkv = k_cache.shape[1]
+    kw = dict(q=q, k=k_cache.transpose(1, 2), v=v_cache.transpose(1, 2),
+              out=out, cu_seqlens_q=query_start, max_seqlen_q=1,
+              seqused_k=seq_lens, max_seqlen_k=max_seq_len,
+              softmax_scale=scale,
+              causal=True, alibi_slopes=None, window_size=(-1, -1),
+              block_table=block_table, softcap=0, q_descale=None,
+              k_descale=k_scale.expand((n, hkv)),
+              v_descale=v_scale.expand((n, hkv)),
+              seq_threshold_3D=TRITON_DECODE_MAX, num_par_softmax_segments=16,
+              softmax_segm_output=o, softmax_segm_max=m,
+              softmax_segm_expsum=l)
+    optional = dict(use_alibi_sqrt=False, sinks=None, output_scale=None,
+                    mm_prefix_range=None)
+    if not set(kw) <= params:
+        return False
+    kw.update({k: v for k, v in optional.items() if k in params})
+    fn(**kw)
+    return True
 
 
 def _build():
@@ -371,10 +476,7 @@ def _build():
             """
             from vllm import _custom_ops as ops
 
-            ks = getattr(layer, "_k_scale", None)
-            vs = getattr(layer, "_v_scale", None)
-            if ks is None or vs is None:
-                ks = vs = _unit_scale(key.device)
+            ks, vs = _kv_scales(layer, key.device)
             ops.reshape_and_cache_flash(
                 key, value, k_cache.transpose(1, 2), v_cache.transpose(1, 2),
                 slot_mapping, "auto", ks, vs)
@@ -403,8 +505,7 @@ def _build():
             # in front of a kernel that takes microseconds.
             if attn_metadata.max_query_len == 1:
                 self._decode_all(query, output, k_cache, v_cache,
-                                 attn_metadata, n)
-                PATCH.count("decode")
+                                 attn_metadata, n, layer)
                 return output
             if engine.capturing():
                 raise engine.GraphCaptureError(
@@ -423,8 +524,7 @@ def _build():
             nd = getattr(attn_metadata, "hk_num_decodes", 0)
             if nd:
                 self._decode_all(query, output, k_cache, v_cache,
-                                 attn_metadata, nd)
-                PATCH.count("decode")
+                                 attn_metadata, nd, layer)
             tiles = getattr(attn_metadata, "hk_prefill_tiles", None)
             if tiles is not None:
                 self._prefill(query, output, k_cache, v_cache, attn_metadata,
@@ -447,10 +547,20 @@ def _build():
                 output[:n].view(n, h * d))
 
         def _decode_all(self, query, output, k_cache, v_cache, attn_metadata,
-                        n):
+                        n, layer=None):
             """Every request has exactly one token: the walk and its merge,
-            which read the query and write the answer where vLLM keeps them.
-            No copy, no sync, nothing allocated."""
+            which read the query and write the answer where vLLM keeps them
+            -- or, for up to TRITON_DECODE_MAX requests, Triton's kernel on
+            the same cache. No copy, no sync, nothing allocated past the
+            first call."""
+            if n <= TRITON_DECODE_MAX and triton_decode(
+                    query[:n], k_cache, v_cache,
+                    attn_metadata.block_table[:n], attn_metadata.seq_lens[:n],
+                    attn_metadata.query_start_loc[:n + 1], output[:n],
+                    self.scale, attn_metadata.max_seq_len,
+                    *_kv_scales(layer, query.device)):
+                PATCH.count("decode_triton")
+                return
             g, hkv, d = self.group, self.num_kv_heads, self.head_size
             q = query[:n].view(n, hkv, g, d)
             if not q.is_contiguous():
@@ -465,6 +575,7 @@ def _build():
             decode(q, k_cache, v_cache, table, lens, out,
                    _scratch(query.device, hkv, d, self._rows, g),
                    self._plan(n))
+            PATCH.count("decode")
 
         def _check(self, table, lens):
             """Once per layer object, never under capture: it reads the device.
