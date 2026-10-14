@@ -229,8 +229,9 @@ def dispatch_unquantized_gemm(*args, **kwargs):
     return _gemm
 
 
-def _own_compile_cache() -> str:
-    """Give the patched engine a vLLM cache root of its own, and return it.
+def _own_compile_cache(name: str = "hk-linear") -> str:
+    """Give the patched engine a vLLM cache root of its own, `name` under the
+    current one, and return it.
 
     vLLM keys the graphs it compiles -- torch_compile_cache, and since 0.2x
     the AOT cache that skips Dynamo altogether -- by its config and its
@@ -243,8 +244,8 @@ def _own_compile_cache() -> str:
 
     root = os.environ.get("VLLM_CACHE_ROOT") or os.path.join(
         os.environ.get("XDG_CACHE_HOME") or os.path.expanduser("~/.cache"), "vllm")
-    if os.path.basename(os.path.normpath(root)) != "hk-linear":
-        root = os.path.join(root, "hk-linear")
+    if os.path.basename(os.path.normpath(root)) != name:
+        root = os.path.join(root, name)
         os.environ["VLLM_CACHE_ROOT"] = root
     return root
 

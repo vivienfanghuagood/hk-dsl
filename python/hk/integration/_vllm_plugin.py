@@ -65,6 +65,14 @@ def register() -> None:
             notes.append(vllm_gemm.apply())
         except BaseException as e:  # noqa: BLE001
             notes.append(f"linear not patched ({type(e).__name__}: {e})")
+    # 4-bit AWQ layers likewise.
+    if os.environ.get("HK_VLLM_INT4", "0") not in ("0", "", "off", "no"):
+        try:
+            from . import vllm_int4  # noqa: PLC0415
+
+            notes.append(vllm_int4.apply_patch())
+        except BaseException as e:  # noqa: BLE001
+            notes.append(f"int4 not patched ({type(e).__name__}: {e})")
     # MoE layers likewise: every bf16 expert GEMM changes kernels.
     if os.environ.get("HK_VLLM_MOE", "0") not in ("0", "", "off", "no"):
         try:
@@ -73,6 +81,16 @@ def register() -> None:
             notes.append(vllm_moe.apply())
         except BaseException as e:  # noqa: BLE001
             notes.append(f"moe not patched ({type(e).__name__}: {e})")
+    # A user's own kernels: the modules that register and patch them, imported
+    # here because this is the process the model runs in.
+    user = os.environ.get("HK_VLLM_USER", "")
+    if user:
+        try:
+            from . import register as hk_register  # noqa: PLC0415
+
+            notes.append(f"user: {', '.join(hk_register.load_user(user))}")
+        except BaseException as e:  # noqa: BLE001
+            notes.append(f"user modules not loaded ({type(e).__name__}: {e})")
     try:
         from . import vllm as hkv  # noqa: PLC0415
 

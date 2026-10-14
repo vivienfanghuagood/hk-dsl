@@ -33,6 +33,7 @@ def kernels() -> List[Tuple[str, object]]:
     emb = load("08_embedding")
     kv = load("09_kv_scatter")
     lnb = load("10_layernorm_backward")
+    vi = load("11_vllm_integration")
     return [
         ("vector_add", add.add),
         ("rmsnorm", rms.rmsnorm_kernel()),
@@ -48,6 +49,7 @@ def kernels() -> List[Tuple[str, object]]:
         ("ln_bwd_dx", lnb.ln_bwd_dx_kernel()),
         ("ln_bwd_dx_held", lnb.ln_bwd_dx_kernel(*lnb.plan(2048))),
         ("ln_bwd_dwdb", lnb.ln_bwd_dwdb),
+        ("silu_mul_vllm", vi.silu_mul),
     ]
 
 
@@ -64,5 +66,6 @@ SCRIPTS = [
     ("08_embedding.py",),
     ("09_kv_scatter.py",),
     ("10_layernorm_backward.py",),
+    ("11_vllm_integration.py",),
     ("validate.py", "--quick"),
 ]
