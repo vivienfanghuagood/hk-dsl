@@ -31,6 +31,7 @@ for how the decode path was measured.
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from typing import ClassVar, Optional
 
@@ -39,16 +40,17 @@ from . import engine
 #: What this backend calls itself in diagnostics.
 NAME = "HK_ATTN"
 
-#: The paths a forward takes, counted, and the CUDA-graph contract. vLLM reads
-#: the contract through the metadata builder's `_cudagraph_support`; `forward`
-#: refuses to be captured whatever vLLM decides.
+#: The paths a forward takes, counted, and the CUDA-graph contract. A decode
+#: step is one cache write and one launch, both on torch's stream, planned on
+#: shapes alone: the split count comes from the batch size and max_model_len,
+#: the scratch is allocated once at its largest, and the metadata check that
+#: reads the device runs only outside capture. The builder claims
+#: UNIFORM_SINGLE_TOKEN_DECODE, so vLLM captures decode steps whole and runs
+#: steps with prefill in them eagerly, between its pieces; `forward` refuses
+#: to have one of those captured.
 PATCH = engine.Patch(
     NAME, paths=("decode", "decode_gather", "prefill", "prefill_sdpa"),
-    graph="never",
-    why="the decode split count is planned on the host from max_seq_len, the "
-        "first call per layer checks the metadata with a device read, and "
-        "scratch regrown after capture would leave the graph writing to freed "
-        "memory. vLLM captures the model piecewise around it instead.")
+    graph="safe")
 
 #: What `get_name()` answers, which is not the same thing.
 #:
@@ -79,6 +81,93 @@ SLOT = "TRITON_ATTN"
 
 #: The metadata builder class, made once: vLLM asks for it per KV-cache group.
 _BUILDER: list = []
+
+#: Decode scratch, one set per (device, kv heads, head_dim) for every layer:
+#: layers run one after another on one stream, and a set per layer would be
+#: 36 copies of the largest one. Allocated at its largest on first use, so a
+#: captured graph's pointers stay valid.
+_SCRATCH: dict = {}
+
+#: (kind, head_dim, splits) -> a decode launch as a torch op, on torch's
+#: stream: "walk" is the paged walk (which with one split writes the answer
+#: itself), "merge" the launch that folds the splits' partials.
+_OPS: dict = {}
+
+_UNIT: dict = {}
+
+
+def _engine_limits():
+    """(max_model_len, max_num_seqs) of the engine being built, or vLLM's
+    defaults outside one."""
+    try:
+        from vllm.config import get_current_vllm_config
+
+        cfg = get_current_vllm_config()
+        return (int(cfg.model_config.max_model_len),
+                int(cfg.scheduler_config.max_num_seqs))
+    except Exception:            # noqa: BLE001 -- no engine: a bench, a test
+        return 40960, 256
+
+
+def _unit_scale(device):
+    import torch
+
+    t = _UNIT.get(device)
+    if t is None:
+        t = _UNIT[device] = torch.ones((), device=device, dtype=torch.float32)
+    return t
+
+
+def _scratch(device, n_kv_heads: int, head_dim: int, rows: int, group: int):
+    from ..ops import paged as hk_paged
+
+    key = (device, n_kv_heads, head_dim, group)
+    got = _SCRATCH.get(key)
+    if got is None or got[0].shape[0] < rows:
+        got = _SCRATCH[key] = hk_paged.fused_scratch(
+            rows, n_kv_heads, head_dim, device, group=group)
+    return got
+
+
+def decode_splits(n: int, n_kv_heads: int, pages_cap: int) -> int:
+    """The decode's split count for `n` requests: the plan
+    (hk.ops.paged.plan_splits) rounded to a power of two.
+
+    A function of the batch size and of max_model_len (through `pages_cap`),
+    never of the step's max_seq_len: a graph captured on a dummy batch of
+    length-1 sequences would keep whatever it planned there for every replay.
+    Rounded because each count is its own compile, and unrounded the counts
+    a batch passes through on its way from 1 to 256 requests are nineteen;
+    every best split measured (hk_paged.TARGET_WORKGROUPS) was a power of two
+    anyway."""
+    from ..ops import paged as hk_paged
+
+    want = hk_paged.plan_splits(n, n_kv_heads, pages_cap)
+    return 1 << round(math.log2(want))
+
+
+def _op(kind: str, head_dim: int, splits: int):
+    op = _OPS.get((kind, head_dim, splits))
+    if op is None:
+        from ..ops import paged as hk_paged
+        from ..runtime.torch_ext import torch_op
+
+        k = (hk_paged.fused_kernel(head_dim, splits) if kind == "walk"
+             else hk_paged.merge_kernel(head_dim, splits))
+        op = _OPS[(kind, head_dim, splits)] = torch_op(k)
+    return op
+
+
+def decode(q, k_cache, v_cache, block_table, seq_lens, out, scratch,
+           splits: int) -> None:
+    """One decode, as torch ops: the paged walk, and with more than one split
+    the merge (hk.ops.paged.decode)."""
+    from ..ops import paged as hk_paged
+
+    d = q.shape[-1]
+    merge = _op("merge", d, splits) if splits > 1 else None
+    hk_paged.decode(_op("walk", d, splits), merge, q, k_cache, v_cache,
+                    block_table, seq_lens, out, scratch, splits)
 
 
 def _build():
@@ -128,12 +217,10 @@ def _build():
             support = type(RocmAttentionMetadataBuilder._cudagraph_support)
 
             class HKAttentionMetadataBuilder(RocmAttentionMetadataBuilder):
-                # The ROCm builder claims ALWAYS, which puts `forward` inside
-                # a full graph; PATCH.why is what goes wrong there. NEVER
-                # makes vLLM capture the model piecewise, with attention run
-                # eagerly between the pieces.
-                _cudagraph_support = (support.NEVER if PATCH.graph == "never"
-                                      else support.ALWAYS)
+                # Decode steps are captured whole; a step with prefill in it
+                # reads its query lengths on the host and runs eagerly
+                # between vLLM's pieces. See PATCH.
+                _cudagraph_support = support.UNIFORM_SINGLE_TOKEN_DECODE
 
             _BUILDER.append(HKAttentionMetadataBuilder)
             return HKAttentionMetadataBuilder
@@ -210,25 +297,47 @@ def _build():
             self.scale = float(scale)
             self.num_kv_heads = num_kv_heads
             self.group = num_heads // num_kv_heads
-            self._buf_cache = {}
             self._checked = False
             HKAttentionBackend.validate_head_size(head_size)
+            # What the decode plan is a function of, read once (see
+            # decode_splits), and the scratch sized for its largest batch.
+            max_len, max_seqs = _engine_limits()
+            self._pages_cap = -(-max_len // hk_paged.KV_BLOCK)
+            self._splits = {}
+            self._rows = max(
+                max_seqs,
+                max(m * self._plan(m) for m in range(1, max_seqs + 1)))
+
+        def _plan(self, n: int) -> int:
+            s = self._splits.get(n)
+            if s is None:
+                s = self._splits[n] = decode_splits(n, self.num_kv_heads,
+                                                    self._pages_cap)
+            return s
 
         # -- the cache -----------------------------------------------------
 
-        def _update_cache(self, key, value, k_cache, v_cache, slot_mapping):
-            """Scatter the new tokens into their pages.
+        def _update_cache(self, layer, key, value, k_cache, v_cache,
+                          slot_mapping):
+            """vLLM's own cache write, into this backend's head-major pages.
 
-            A strided scatter, because the layout is head-major: slot s lives
-            at `[s // block, :, s % block, :]`. That is the trade this backend
-            makes on purpose -- a decode step reads seq_len pages per layer and
-            writes one, so the read is what the layout is chosen for.
+            reshape_and_cache_flash takes its block, page and head strides
+            from the tensor, so a `(blocks, block, heads, d)` view of
+            head-major storage is a layout it writes correctly --
+            tools/hk-bench/paged_ab.py checks it bit for bit against a torch
+            scatter. One launch, and it skips slot -1, which is what a CUDA
+            graph's padding tokens carry: the scatter this replaced was six
+            launches and sent them to the last slot of the last block.
             """
-            bs = k_cache.shape[2]
-            blk = slot_mapping // bs
-            pos = slot_mapping % bs
-            k_cache[blk, :, pos] = key
-            v_cache[blk, :, pos] = value
+            from vllm import _custom_ops as ops
+
+            ks = getattr(layer, "_k_scale", None)
+            vs = getattr(layer, "_v_scale", None)
+            if ks is None or vs is None:
+                ks = vs = _unit_scale(key.device)
+            ops.reshape_and_cache_flash(
+                key, value, k_cache.transpose(1, 2), v_cache.transpose(1, 2),
+                slot_mapping, "auto", ks, vs)
 
         # -- the launch ----------------------------------------------------
 
@@ -238,11 +347,10 @@ def _build():
                 return output.fill_(0)
             if output_scale is not None or output_block_scale is not None:
                 raise NotImplementedError(f"{NAME} has no fused output quant")
-            PATCH.check_capture()
 
             n = attn_metadata.num_actual_tokens
             k_cache, v_cache = kv_cache[0], kv_cache[1]
-            self._update_cache(key[:n], value[:n], k_cache, v_cache,
+            self._update_cache(layer, key[:n], value[:n], k_cache, v_cache,
                                attn_metadata.slot_mapping[:n])
 
             # The common case, and the one that must not touch the host.
@@ -258,6 +366,12 @@ def _build():
                                  attn_metadata, n)
                 PATCH.count("decode")
                 return output
+            if engine.capturing():
+                raise engine.GraphCaptureError(
+                    f"{NAME} is being captured on a batch with prefill in it. "
+                    f"It claims UNIFORM_SINGLE_TOKEN_DECODE: a prefill step "
+                    f"reads its query lengths on the host, which a replay "
+                    f"would not repeat.")
 
             starts = attn_metadata.query_start_loc
             seq_lens = attn_metadata.seq_lens
@@ -321,96 +435,49 @@ def _build():
                 PATCH.count("prefill")
             output[lo:lo + m] = out[0].transpose(0, 1).reshape(m, h, d)
 
-        def _buffers(self, n, splits, device, dtype):
-            """Scratch for one decode step, allocated once per shape.
-
-            Allocating these per call is 36 allocations and 36 frees per step
-            on this model. That is the same class of mistake as the host sync
-            that made the first version slower than Triton -- a kernel that
-            takes microseconds does not get to be preceded by millisecond
-            bookkeeping -- so they are cached on the impl and keyed by the
-            shape that decides them.
-            """
-            import torch
-
-            g, hkv, d = self.group, self.num_kv_heads, self.head_size
-            tile = hk_paged.Q_TILE
-            # Keyed on `splits`, not on `n`, and grown rather than added to.
-            # A decode step's request count moves continuously as a batch
-            # ramps -- 1, 3, 7, 13, 16 -- so keying on it means a fresh
-            # allocation per distinct count, per split count, per layer, and
-            # 36 layers of that against a KV cache already sized to 90% of the
-            # card is how a serving process runs itself out of memory in the
-            # middle of a run. One buffer per (splits, device, dtype), sized
-            # to the largest `n` yet seen and sliced down.
-            key = (splits, device, dtype)
-            buf = self._buf_cache.get(key)
-            if buf is None or buf[0].shape[0] < n:
-                cap = max(n, buf[0].shape[0] if buf else 0)
-                q = torch.zeros(cap, hkv, tile, d, device=device, dtype=dtype)
-                out = torch.empty_like(q)
-                if splits > 1:
-                    o_part = torch.empty(cap * splits, hkv, tile, d,
-                                         device=device, dtype=torch.float32)
-                    ml = torch.empty(cap * splits, hkv, 2, tile, device=device,
-                                     dtype=torch.float32)
-                else:
-                    o_part = ml = None
-                buf = self._buf_cache[key] = (q, out, o_part, ml)
-            q, out, o_part, ml = buf
-            # o_part and ml are indexed as `req * splits + split`, so the
-            # slice for `n` requests is the first `n * splits` rows -- not the
-            # first `n`, which would be the right answer for a different
-            # layout and silently wrong for this one.
-            return (q[:n], out[:n],
-                    None if o_part is None else o_part[:n * splits],
-                    None if ml is None else ml[:n * splits])
-
         def _decode_all(self, query, output, k_cache, v_cache, attn_metadata,
                         n):
-            """Every request has exactly one token. No gather, no sync."""
+            """Every request has exactly one token: the walk and its merge,
+            which read the query and write the answer where vLLM keeps them.
+            No copy, no sync, nothing allocated."""
             g, hkv, d = self.group, self.num_kv_heads, self.head_size
-            # How empty the machine is decides the schedule. `max_seq_len` is
-            # a host int in the metadata, so this costs no sync.
-            pages = max(1, -(-attn_metadata.max_seq_len // hk_paged.KV_BLOCK))
-            splits = hk_paged.plan_splits(n, hkv, pages)
-            q, out, o_part, ml = self._buffers(n, splits, query.device,
-                                               query.dtype)
-            q[:, :, :g] = query[:n].view(n, hkv, g, d)
+            q = query[:n].view(n, hkv, g, d)
+            if not q.is_contiguous():
+                # A q split off a fused qkv projection is strided by the
+                # projection's width, a second stride a gl does not carry.
+                q = q.contiguous()
+            out = output[:n].view(n, hkv, g, d)
             table = attn_metadata.block_table[:n]
             lens = attn_metadata.seq_lens[:n]
-            if not self._checked:
-                self._checked = True
-                import torch as _t
+            if not self._checked and not engine.capturing():
+                self._check(table, lens)
+            decode(q, k_cache, v_cache, table, lens, out,
+                   _scratch(query.device, hkv, d, self._rows, g),
+                   self._plan(n))
 
-                # Once per layer object, not per step. The kernel reads these
-                # two as int32 and indexes memory with the result, so a dtype
-                # or a stride that is not what it assumes is not a wrong
-                # answer, it is a page fault several kernels later.
-                for name, t, want in (("block_table", table, _t.int32),
-                                      ("seq_lens", lens, _t.int32)):
-                    if t.dtype != want or not t.is_contiguous():
-                        raise TypeError(
-                            f"{NAME}: {name} is {t.dtype} "
-                            f"{'contiguous' if t.is_contiguous() else 'strided'}"
-                            f" {tuple(t.shape)}; the kernel reads it as "
-                            f"contiguous {want}."
-                        )
-                mx = int(lens.max())
-                cols = table.shape[-1]
-                if -(-mx // hk_paged.KV_BLOCK) > cols:
-                    raise ValueError(
-                        f"{NAME}: seq_len {mx} needs "
-                        f"{-(-mx // hk_paged.KV_BLOCK)} pages but block_table "
-                        f"has {cols} columns."
-                    )
-            if splits > 1:
-                hk_paged.split_kernel(d, splits)(
-                    q, k_cache, v_cache, table, lens, o_part, ml)
-                hk_paged.merge_splits(o_part, ml, splits, out)
-            else:
-                hk_paged.KERNELS[d](q, k_cache, v_cache, table, lens, out)
-            output[:n] = out[:, :, :g].reshape(n, hkv * g, d)
+        def _check(self, table, lens):
+            """Once per layer object, never under capture: it reads the device.
+
+            The kernel reads these two as int32 and indexes memory with the
+            result, so a dtype or a stride that is not what it assumes is not
+            a wrong answer, it is a page fault several kernels later."""
+            import torch
+
+            self._checked = True
+            for name, t in (("block_table", table), ("seq_lens", lens)):
+                if t.dtype != torch.int32 or not t.is_contiguous():
+                    raise TypeError(
+                        f"{NAME}: {name} is {t.dtype} "
+                        f"{'contiguous' if t.is_contiguous() else 'strided'}"
+                        f" {tuple(t.shape)}; the kernel reads it as "
+                        f"contiguous int32.")
+            mx = int(lens.max())
+            cols = table.shape[-1]
+            if -(-mx // hk_paged.KV_BLOCK) > cols:
+                raise ValueError(
+                    f"{NAME}: seq_len {mx} needs "
+                    f"{-(-mx // hk_paged.KV_BLOCK)} pages but block_table "
+                    f"has {cols} columns.")
 
         def _decode(self, query, output, k_cache, v_cache, attn_metadata,
                     starts, rows):

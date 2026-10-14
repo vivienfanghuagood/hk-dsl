@@ -337,6 +337,333 @@ def split_kernel(head_dim: int, splits: int):
     return _SPLIT[key]
 
 
+@hk.func
+def _merge_splits(out, o_part, ml_part, req, kv_head, splits, active, cols,
+                  step):
+    """Fold `active` normalised split partials of one (request, kv head) into
+    the answer, for the 16-column fragments of head_dim starting at `cols`.
+
+    One pass, online across steps of `step` splits: a step's m's, l's and
+    partials are all read before any is used, the running max takes the
+    step's, the accumulator is rescaled once, and the step's partials go in
+    at exp2(m_s - max) * l_s -- one round of L2 latency a step, where a pass
+    for the max and a pass for the sum paid two. Vectors are per row of the
+    (q, d) tiles. The max starts finite, so a split that saw nothing weighs
+    zero rather than NaN; a step past the last split rereads it and weighs it
+    zero.
+    """
+    d_frags = len(cols)
+    ty_ot = hk.RT(fp32, Q_TILE, 16, "row")
+    ty_ob = hk.RT(bf16, Q_TILE, 16, "row")
+    cvec = hk.col_vec(ty_ot)
+    m_run = hk.zeros(cvec)
+    m_run -= -NEG_INF
+    top = active - 1
+    acc = [hk.zeros(ty_ot) for _ in range(d_frags)]
+    l_acc = hk.zeros(cvec)
+    for s1 in hk.range(0, active, step):
+        rows = [req * splits + hk.min(s1 + j2, top) for j2 in range(step)]
+        ws = [ml_part[hk.elem_coord(r, kv_head, 0, 0)].load(cvec) for r in rows]
+        ls = [ml_part[hk.elem_coord(r, kv_head, 1, 0)].load(cvec) for r in rows]
+        os_ = [[o_part[hk.elem_coord(r, kv_head, 0, cols[fi])].load(
+            ty_ob, bounded=True) for r in rows] for fi in range(d_frags)]
+        m_old = m_run.copy()
+        for w in ws:
+            m_run.max_(w)
+        alpha = m_old - m_run
+        alpha.exp2_()
+        l_acc *= alpha
+        for fi in range(d_frags):
+            acc[fi] *= alpha
+        for j3, (w, l_s) in enumerate(zip(ws, ls)):
+            w -= m_run
+            w.exp2_()
+            w *= l_s
+            if j3:
+                # 1 for a real split, 0 for a reread of the last.
+                w *= hk.min(hk.max(active - s1 - j3, 0), 1)
+            l_acc += w
+        for fi in range(d_frags):
+            for w2, o_b in zip(ws, os_[fi]):
+                o_s = o_b.to(fp32)
+                o_s *= w2
+                acc[fi] += o_s
+    # A request with no context at all -- a CUDA graph's padding -- has l = 0;
+    # the floor makes its rows zero rather than 0/0.
+    l_acc += 1e-30
+    for i in range(d_frags):
+        acc[i] /= l_acc
+        out[hk.elem_coord(req, kv_head, 0, cols[i])].store(acc[i], bounded=True)
+
+
+def paged_merge_kernel(name: str, *, head_dim: int = 128, splits: int = 8,
+                       kv_block: int = KV_BLOCK, merge_step: int = 0,
+                       warps: int = 0):
+    """The split decode's merge as a launch of its own: one workgroup per
+    (request, kv head), one warp per 16 columns of head_dim.
+
+    Measured apart (tools/hk-bench/paged_attrib.py), the merge one warp ran
+    at the end of the walk was slow code, not slow placement: alone it took
+    18 us over 8 splits and 36-47 over 32, about 400 instructions a split for
+    eight fragments, in series. A warp a fragment shares that eight ways, and
+    the warps need nothing from each other."""
+    d_frags = head_dim // 16
+    # Splits read per round of latency. More would be fewer rounds, but each
+    # bounded read builds a 4-SGPR buffer descriptor: 16 spilled SGPRs under
+    # both hipcc 7.1 and 7.2, and 12 under 7.2 only.
+    step = merge_step or min(splits, MERGE_STEP)
+    warps = warps or d_frags
+    if d_frags % warps:
+        raise ValueError(f"{d_frags} fragments do not split over {warps} warps")
+    per_warp = d_frags // warps
+
+    def body(seq_lens: hk.Tensor[i32], out: hk.Tensor[bf16],
+             o_part: hk.Tensor[bf16], ml_part: hk.Tensor[fp32]):
+        kv_head = hk.arch.block_idx.y
+        req = hk.arch.block_idx.z
+        seq_len = seq_lens[hk.elem_coord(0, 0, 0, req)].load_scalar()
+        n_pages = hk.cdiv(seq_len, kv_block)
+        per = hk.max(hk.cdiv(n_pages, splits), MIN_SPLIT_PAGES)
+        active = hk.cdiv(n_pages, per)
+        base = hk.arch.warp_id() * (16 * per_warp)
+        _merge_splits(out, o_part, ml_part, req, kv_head, splits, active,
+                      [base + 16 * f for f in range(per_warp)], step)
+
+    body.__name__ = name
+    return hk.kernel(body, warps=warps, name=name,
+                     grid=lambda p: (1, p.out.depth, p.out.batch))
+
+
+def paged_decode_fused_kernel(name: str, *, head_dim: int = 128,
+                              splits: int = 1, kv_block: int = KV_BLOCK,
+                              scale: Optional[float] = None,
+                              max_vgprs: int = 256, min_occupancy: int = 1,
+                              ablate: tuple = ()):
+    """The decode a serving engine can capture: the engine's query in, and
+    with one split the answer out; with more, `paged_merge_kernel` after it.
+
+    Differences from the two kernels above, each a launch or a copy the vLLM
+    backend no longer makes per layer per step:
+
+    * The query and the output are the engine's own `(tokens, kv_heads, group,
+      head_dim)` views. A group of four rows loads into a 16-row tile bounded
+      by the global, so the pad rows read zeros and are never stored, where
+      the backend used to copy into a zero-padded tile and slice back out.
+    * With `splits > 1` each split writes its partial normalised, as bf16,
+      for the group's rows only, and the merge is one launch with a warp per
+      head_dim fragment instead of torch's dozen. Folding it into the split
+      that finishes last (`wg_arrive`) was measured and lost: that is one
+      warp doing all of it in series, 18-47 us on every decode.
+    * Nothing comes from the host but the grid. A split's page range is
+      arithmetic on the device `seq_len`, so a split count fixed when a CUDA
+      graph was captured is right for every replay: a split past the end of a
+      short sequence is empty and merges with weight zero.
+
+    `ablate` deletes stages for tools/hk-bench/paged_attrib.py, and makes the
+    answer wrong on purpose: "page" (pages are contiguous, no table read),
+    "kload"/"vload" (one K or V fragment loaded once and reused, so the math
+    stays and the stream goes), "qk", "softmax", "pv".
+    """
+    if head_dim % 16 or kv_block % 16:
+        raise ValueError("head_dim and kv_block must be multiples of 16")
+    bad = set(ablate) - {"page", "kload", "vload", "qk", "softmax", "pv"}
+    if bad:
+        raise ValueError(f"unknown ablation {sorted(bad)}")
+    d_frags, kv_frags = head_dim // 16, kv_block // 16
+    scale_l2e = (scale if scale is not None else head_dim ** -0.5) * math.log2(math.e)
+
+    ty_q = hk.RT(bf16, 16, 16, "row")
+    ty_k = hk.RT(bf16, 16, 16, "row")
+    ty_s = hk.RT(fp32, 16, Q_TILE, "col")
+    ty_o = hk.RT(fp32, 16, Q_TILE, "col")
+    ty_v = hk.RT(bf16, 16, 16, "row")
+    ty_vec = hk.row_vec(ty_s)
+
+    def body(q: hk.Tensor[bf16], k_cache: hk.Tensor[bf16], v_cache: hk.Tensor[bf16],
+             block_table: hk.Tensor[i32], seq_lens: hk.Tensor[i32],
+             out: hk.Tensor[bf16], o_part: hk.Tensor[bf16],
+             ml_part: hk.Tensor[fp32]):
+        split = hk.arch.block_idx.x
+        kv_head = hk.arch.block_idx.y
+        req = hk.arch.block_idx.z
+
+        seq_len = seq_lens[hk.elem_coord(0, 0, 0, req)].load_scalar()
+        n_pages = hk.cdiv(seq_len, kv_block)
+        # At least MIN_SPLIT_PAGES a split, so a short sequence under a split
+        # count planned for a long one uses a few splits instead of many
+        # one-page ones -- each of which the merge would have to read.
+        per = hk.max(hk.cdiv(n_pages, splits), MIN_SPLIT_PAGES)
+        lo = split * per
+        hi = hk.min(n_pages, lo + per)
+
+        q_r = [q[hk.elem_coord(req, kv_head, 0, 16 * kk)].load(ty_q, bounded=True)
+               for kk in range(d_frags)]
+        o_c = [hk.zeros(ty_o) for _ in range(d_frags)]
+        m_run = hk.neg_infty(ty_vec)
+        l_run = hk.zeros(ty_vec)
+        k_keep = (k_cache[hk.elem_coord(0, kv_head, 0, 0)].load(ty_k)
+                  if "kload" in ablate else None)
+        v_keep = (v_cache[hk.elem_coord(0, kv_head, 0, 0)].load(ty_v)
+                  if "vload" in ablate else None)
+
+        # The page index is a load the page's K loads wait on, so it is read
+        # one page ahead: the next index is in flight while this page is
+        # worked. Every column read is clamped into the request's pages -- an
+        # empty split's `lo` can be past the end of the table's row.
+        nxt = block_table[hk.elem_coord(
+            0, 0, req, hk.max(hk.min(lo, n_pages - 1), 0))].load_scalar()
+        for pi in range(hk.max(hi - lo, 0)):
+            if "page" in ablate:
+                page = req * n_pages + lo + pi
+            else:
+                page = nxt
+                nxt = block_table[hk.elem_coord(
+                    0, 0, req, hk.min(lo + pi + 1, hi - 1))].load_scalar()
+            # Loads are issued a 16-token row of the page at a time -- eight
+            # fragments, then their eight WMMAs -- and through the bounded
+            # (buffer) path, which is straight-line code. One fragment per
+            # `hk.scope()` made every load an opaque branch of its own: load,
+            # wait the full latency, multiply, sixteen times a page for K
+            # and sixteen for V.
+            def k_row(n):
+                return [k_keep if k_keep is not None else
+                        k_cache[hk.elem_coord(page, kv_head, 16 * n, 16 * kk)]
+                        .load(ty_k, bounded=True) for kk in range(d_frags)]
+
+            def v_row(n):
+                return [v_keep if v_keep is not None else
+                        v_cache[hk.elem_coord(page, kv_head, 16 * n, 16 * g0)]
+                        .load(ty_v, bounded=True) for g0 in range(d_frags)]
+
+            with hk.scope():
+                s_f = [hk.zeros(ty_s) for _ in range(kv_frags)]
+                for n in range(kv_frags if "qk" not in ablate else 0):
+                    ks = k_row(n)
+                    for kk in range(d_frags):
+                        s_f[n] += ks[kk] @ q_r[kk].T
+                # V's first row does not wait on the softmax; in flight
+                # during it.
+                vs = v_row(0) if "pv" not in ablate else None
+
+                if "softmax" not in ablate:
+                    for n in range(kv_frags):
+                        s_f[n] *= scale_l2e
+
+                    valid = seq_len - (lo + pi) * kv_block
+                    if valid < kv_block:
+                        for n in range(kv_frags):
+                            s_f[n].lower_fill_(valid - 16 * n, NEG_INF)
+
+                    m_old = m_run.copy()
+                    for n in range(kv_frags):
+                        m_run.max_(s_f[n].max(axis=0))
+                    for n in range(kv_frags):
+                        s_f[n] -= m_run
+                        s_f[n].exp2_()
+                    if m_run.any_ne(m_old):
+                        alpha = (m_old - m_run).exp2()
+                        l_run *= alpha
+                        for c in o_c:
+                            c *= alpha
+                    for n in range(kv_frags):
+                        l_run += s_f[n].sum(axis=0)
+
+                for n in range(kv_frags if "pv" not in ablate else 0):
+                    p_cvt = s_f[n].to(bf16)
+                    if n:
+                        vs = v_row(n)
+                    for g0 in range(d_frags):
+                        o_c[g0] += hk.transpose_sep(vs[g0]) @ p_cvt
+
+        if splits == 1:
+            for i, c in enumerate(o_c):
+                c /= l_run
+                out[hk.elem_coord(req, kv_head, 0, 16 * i)].store(
+                    hk.transpose(c), bounded=True)
+            return
+
+        # The partial goes out normalised, transposed to (q, d) and in bf16,
+        # bounded to the group's rows: a quarter of the 16-row tile, and in
+        # the one register layout a load vectorises (a bf16 row reads as two
+        # b128 per lane; an fp32 accumulator tile is eight scalar loads).
+        # Normalised, its values are a convex mix of V's, so bf16 costs the
+        # partial what bf16 costs the output. An empty split has l = 0 and
+        # O = 0; the floor keeps 0/0 out of what the merge multiplies by 0.
+        row = req * splits + split
+        l_safe = l_run.copy()
+        l_safe += 1e-30
+        for i, c in enumerate(o_c):
+            c /= l_safe
+            o_part[hk.elem_coord(row, kv_head, 0, 16 * i)].store(
+                hk.transpose(c), bounded=True)
+        ml_part[hk.elem_coord(row, kv_head, 0, 0)] = m_run
+        ml_part[hk.elem_coord(row, kv_head, 1, 0)] = l_run
+
+    body.__name__ = name
+    return hk.kernel(body, warps=1, name=name,
+                     grid=lambda p: (splits, p.q.depth, p.q.batch),
+                     max_vgprs=max_vgprs, min_occupancy=min_occupancy)
+
+
+#: The fewest pages a split of the fused decode takes. Above 1 it trades the
+#: merge's reads for a longer serial walk per split, and at 4 that lost on
+#: both ends (tools/hk-bench/paged_attrib.py: a ctx-1024 decode went from
+#: 56 to 67 us with the main loop 16 -> 42 us); the merge is cheapened
+#: instead, by what it reads.
+MIN_SPLIT_PAGES = 1
+
+#: Splits whose partials the merge reads at once.
+MERGE_STEP = 8
+
+#: (head_dim, splits) -> the fused kernel, built on demand.
+_FUSED: Dict[tuple, object] = {}
+
+
+def fused_kernel(head_dim: int, splits: int, ablate: tuple = ()):
+    key = (head_dim, splits, tuple(sorted(ablate)))
+    if key not in _FUSED:
+        tag = "".join(f"_no{a}" for a in key[2])
+        _FUSED[key] = paged_decode_fused_kernel(
+            f"paged_decode_fused_d{head_dim}_s{splits}{tag}",
+            head_dim=head_dim, splits=splits, ablate=key[2])
+    return _FUSED[key]
+
+
+#: (head_dim, splits) -> the merge launch, built on demand.
+_MERGE: Dict[tuple, object] = {}
+
+
+def merge_kernel(head_dim: int, splits: int):
+    key = (head_dim, splits)
+    if key not in _MERGE:
+        _MERGE[key] = paged_merge_kernel(
+            f"paged_merge_d{head_dim}_s{splits}", head_dim=head_dim,
+            splits=splits)
+    return _MERGE[key]
+
+
+def fused_scratch(rows: int, n_kv_heads: int, head_dim: int, device,
+                  group: int = 4):
+    """(o_part, ml_part) for `rows` = requests x splits: each split's
+    normalised partial for the `group` real query rows, and its (m, l)."""
+    import torch  # noqa: PLC0415
+
+    o_part = torch.empty(rows, n_kv_heads, group, head_dim, device=device,
+                         dtype=torch.bfloat16)
+    ml = torch.empty(rows, n_kv_heads, 2, Q_TILE, device=device,
+                     dtype=torch.float32)
+    return o_part, ml
+
+
+def decode(walk, merge, q, k_cache, v_cache, block_table, seq_lens, out,
+           scratch, splits: int) -> None:
+    """The split decode's two launches, with whatever callables run them --
+    Kernels for a bench, torch ops for an engine."""
+    walk(q, k_cache, v_cache, block_table, seq_lens, out, *scratch)
+    if splits > 1:
+        merge(seq_lens, out, *scratch)
+
+
 #: Workgroups to aim for, measured rather than reasoned
 #: (tools/hk-bench/paged_splits.py, Qwen3-8B's shape on a W7900D: 8 kv heads,
 #: head_dim 128). Each column is a split count, each cell the kernel plus its

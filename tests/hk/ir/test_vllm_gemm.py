@@ -99,11 +99,10 @@ def test_the_op_declares_itself_graph_safe():
     assert vllm_gemm.STATS is vllm_gemm.PATCH.stats
 
 
-def test_the_attention_backend_declares_why_it_cannot_be_captured():
+def test_the_attention_backend_declares_its_decode_capturable():
     from hk.integration import vllm_backend
 
-    assert vllm_backend.PATCH.graph == "never"
-    assert "max_seq_len" in vllm_backend.PATCH.why
+    assert vllm_backend.PATCH.graph == "safe"
 
 
 def test_the_patched_dispatcher_ignores_its_arguments():
