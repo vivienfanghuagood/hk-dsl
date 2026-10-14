@@ -45,8 +45,9 @@ to within 0.05 points -- so `qk1 pv2` is a real win. `attn_fwd_d128_causal` at
 n4096 does not: the gain reproduces (+1.3% to +2.1%) but the winner is a
 different schedule every time. What is actually true there is that the default
 `qk2 pv2` is the slow one and all three alternatives beat it by about the same
-amount; the record names one of them, arbitrarily. See `python/README.md` for
-the three-repeat table.
+amount; the record names one of them, arbitrarily. See
+[the autotune chapter](../../../docs/history/04-phase-5-autotune.md) for the
+three-repeat table.
 
 So this directory being nearly empty is the finding, not a gap. A schedule
 space whose winners are inside the noise is a space whose default was already

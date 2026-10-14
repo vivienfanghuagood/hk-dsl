@@ -1,0 +1,206 @@
+# The language
+
+A kernel is a Python function, traced once per set of constexprs into the
+[hk dialect](ir.md), translated to HipKittens C++ and compiled by hipcc. This
+page is the language a kernel body is written in. For what happens to it after
+tracing, see [the IR](ir.md) and [the runtime](runtime.md); for complete
+programs, see [`examples/`](../examples/README.md).
+
+- [Kernels and parameters](#kernels-and-parameters)
+- [Types](#types)
+- [Values and operators](#values-and-operators)
+- [Memory](#memory)
+- [Control flow](#control-flow)
+- [Namespaces](#namespaces)
+- [`@hk.func`](#hkfunc)
+- [Errors and locations](#errors-and-locations)
+- [Limits](#limits)
+
+## Kernels and parameters
+
+A kernel is a Python function. Positional parameters are tensors
+(`hk.Tensor[dtype]`, 4-D `(batch, depth, rows, cols)`). Constexprs are the
+keyword-only parameters, or any parameter annotated `hk.Constexpr[int]` with a
+default. They are baked into the source and are ordinary Python values in the
+body, so `range(D // 16)` unrolls and `if KIND == "softmax"` picks a branch at
+trace time.
+
+```python
+T = hk.RT(hk.fp32, 16, 64)
+
+@hk.kernel(warps=4, grid=lambda p: (1, hk.cdiv(p.x.rows, 16), p.x.batch))
+def row_sumsq(x: hk.Tensor[hk.bf16], o: hk.Tensor[hk.fp32]):
+    row = hk.arch.block_idx.y * 16
+    acc = hk.zeros(hk.col_vec(T))
+    for cb in range(hk.arch.warp_id(), hk.cdiv(x.cols, 64), 4):
+        v = x.at[row, cb * 64].load(T)       # global -> registers, bf16 -> fp32
+        acc += (v * v).sum(axis=1)           # one row_sum, accumulated in place
+    o.at[row, hk.arch.warp_id()] = acc
+```
+
+`@hk.kernel` takes `warps`, `grid`, and optionally `arch`, `name`,
+`max_vgprs` and `min_occupancy` (`python/hk/dsl/kernel.py`). The grid is a
+function of the parameters: `p.<tensor>.<batch|depth|rows|cols>` gives an
+extent and `p.<CONSTEXPR>` gives a constexpr value, and it must return a
+3-tuple. A kernel that names no `arch` is built for `hk.target.current_arch()`
+(see [runtime](runtime.md#which-gpu)). `max_vgprs` and `min_occupancy` are
+extra build gates on top of the unconditional no-spill rule
+([resource gates](runtime.md#the-resource-gates)).
+
+A constexpr does not have to be keyword-only. A positional one is a constexpr
+when it is annotated so, and it still needs a default, because every
+constexpr is baked into the source:
+
+```python
+@hk.kernel(grid=lambda p: (hk.cdiv(p.o.cols, 64), hk.cdiv(p.o.rows, 16), p.o.batch))
+def scale_pow2(x: hk.Tensor[hk.bf16], o: hk.Tensor[hk.bf16], N: hk.Constexpr[int] = 1):
+    idx = hk.tile_coord(hk.arch.block_idx.z, 0, hk.arch.block_idx.y,
+                        hk.arch.block_idx.x)
+    v = x[idx].load(hk.RT(hk.fp32, 16, 64))
+    for _ in range(N):                       # N is a Python int: unrolled
+        v = v + v
+    o[idx] = v.to(hk.bf16)
+```
+
+Constexpr values are ints or floats. Specialising on a constexpr produces a
+different kernel, and a different compilation. `k.specialize(D=64)` is
+explicit about that; calling with a different value does the same thing
+implicitly — `k(x, o, EPS=eps)` passes the constexpr to the call itself, uses
+the caches directly and makes no object at all. `specialize()` is for handing
+a configured kernel to something that will call it many times.
+
+A tensor with fewer than four dimensions fills the trailing ones, so a 2-D
+tensor is `(rows, cols)` (`include/pyutils/hk_bind.cuh`).
+
+## Types
+
+* **Types are values you build**: `hk.RT(dtype, rows, cols, layout)` a register
+  tile, `hk.ST` an LDS tile, `hk.col_vec(t)` / `hk.row_vec(t)` the vectors a
+  reduction of `t` gives, `hk.SV` an LDS vector.
+
+The dtypes are `hk.bf16`, `hk.fp16`, `hk.fp32`, `hk.i8` and `hk.i32`, plus
+`hk.fp8e4m3` and `hk.fp8e5m2`, which are accepted only where the target has an
+fp8 WMMA — gfx1201, not gfx1100 (see
+[the gfx1201 chapter](history/13-gfx1201.md)).
+
+Two spellings are deliberate, both kept on purpose when the language moved to
+MLIR ([history](history/15-mlir-dialect.md)):
+- a vector type is named by the tile it reduces, `hk.col_vec(T)`, not
+  `hk.ColVec[fp32, 16]`, because the dialect ties a vector's layout to its
+  tile;
+- a load names the register tile it makes, `x.at[r, c].load(T)`, not
+  `x.tile(16, 64)[r, c].load(fp32)`, because `x.tile[r, c]` already means a
+  tile-unit coordinate.
+
+## Values and operators
+
+* **Device values are objects with operators.** `a + b`, `t * v` (a vector
+  broadcasts along the axis it came off; `v[:, None]` / `v[None, :]` spell
+  that axis out and check it), `t.exp()`, `t.to(hk.bf16)`,
+  `t.sum(axis=1)`, `acc += a @ b.T` (one WMMA into `acc`; the variant follows
+  from the transposes), `-t`, `hk.min(a, b)`; scalars are `Int`/`Bool` with
+  Python arithmetic and comparisons.
+* **Tiles are buffers.** An operation either makes a new tile or writes an
+  existing one — `+=`, `t.exp_()`, `into=` — which is how include/rdna3 spells
+  everything and what keeps a loop's registers the same registers.
+
+## Memory
+
+* **Memory is indexed.** `x[coord]`, `x.at[r, c]` (element coordinate) and
+  `x.tile[r, c]` are views; `.load(type)`, `.store(value)`, `x[idx] = value`,
+  `.load_scalar()`. LDS tiles come from `hk.lds.alloc`, and `s[i]`,
+  `s.subtile(...)`, `s.load(type, wait=False)`, `s.granules()` follow.
+
+A global carries one runtime row stride, so a slice of the last axis — the
+two halves of a fused `(M, 2I)` output, say — is accepted without a copy:
+contiguous along it, rows evenly strided, outer axes compact over the rows.
+Anything else is refused with a message saying why
+([strided globals](history/12-strided-globals.md)). Register loads and stores
+can be bounded by rows, `x[idx].load(ty, bounded=True)`, which makes a tile
+that runs past the last row read zeros and drop the stores past it, with no
+branch ([row-predicated loads and stores](history/10-row-predicated.md)).
+
+LDS offsets and every `lgkmcnt` are derived by the passes, which also prove
+that every asynchronously loaded tile is waited for before it is read: see
+[`hk-lds-alloc` and `hk-lds-pipeline`](ir.md#passes).
+[`examples/04_gemm.py`](../examples/04_gemm.py) stages through LDS with a
+derived wait.
+
+## Control flow
+
+* **Control flow is Python.** The body is rewritten at the AST level, as CuTe
+  DSL does: a `for` over a device bound, an `if` on a device condition and a
+  `while` on a device test become `scf.for` / `scf.if` / `scf.while`. A scalar
+  the loop or branch rebinds is carried through it (iter_args, branch
+  results); rebinding a *tile* inside a runtime loop is refused, with the
+  in-place spelling in the message. `hk.range(n, unroll=4)` asks for a runtime
+  loop with a pragma, `hk.range_constexpr` insists on unrolling, and
+  `hk.scope()` / `hk.if_(c, opaque=True)` keep their register-allocator meaning.
+
+A `for` over a Python bound — a constexpr, `range(D // 16)` — is unrolled at
+trace time, as in `scale_pow2` above. [`examples/06_control_flow.py`](../examples/06_control_flow.py)
+shows `for`, `if` and `while` on device values, carried scalars, and the
+`scf` and C++ they become. What control flow cannot do is under
+[limits](#limits).
+
+## Namespaces
+
+* **The rest has namespaces**: `hk.arch` (block and warp ids, `barrier`,
+  `sched_barrier`, `setprio`, `vm_wait`, `wg_arrive`), `hk.lds` (`alloc`,
+  `wait_for`), `hk.math` (elementwise functions, and `add`/`mul`/... with
+  `into=`), `hk.group(n)` (workgroup loads, stores and the staging pipeline),
+  `hk.collective` (`cross_warp`, `fold_rows`).
+
+`hk.arch.wg_arrive(counter, expected)` counts this workgroup's arrival at
+`counter` (an element view of an int32 global) and returns how many arrived
+before it; the last to arrive resets the counter, and it contains barriers, so
+every warp must reach it (`python/hk/dsl/arch.py`). Why it is a counter rather
+than fp32 atomics is in [the chapter that added it](history/11-cross-workgroup-reduction.md),
+where it was introduced as `hk.wg_arrive(counter, idx, expected)`.
+
+## `@hk.func`
+
+`@hk.func` marks a helper that is traced inline, with its control flow
+rewritten too. Calling one outside a kernel that is being traced raises.
+
+## Errors and locations
+
+A device value used where Python needs a number — a tile extent, a list index,
+`range()` outside a traced function — raises at that line, saying which of
+those it was.
+
+The passes' errors come out of `k.trace()` as `hk.VerifyError`, ending
+`at file:line in function` — the kernel author's line
+([passes](ir.md#passes)).
+
+An op that the library does not implement for the requested dtype is the same
+kind of late failure, so it is caught the same way: `gelu` on a bf16 tile
+raises while tracing rather than producing `undefined hidden symbol` at the end
+of a 30-second compile.
+
+## Limits
+
+**What the language does not do.** Each of these raises, with the
+spelling that works:
+
+* A loop or branch body that `return`s, `break`s or `continue`s is left as
+  Python, so its condition has to be known at trace time. `while ... else`
+  is not rewritten.
+* A workgroup operation (`barrier`, group loads and stores, staging) cannot
+  sit inside a runtime branch or a runtime `while`: a warp that leaves early
+  leaves the rest waiting. A `for` over a bound every warp agrees on is fine.
+* A tile rebound inside a runtime loop is refused; it is updated in place
+  (`+=`, `into=`), so that every iteration writes the same registers.
+* A kernel body must be source `inspect` can read. Code built with `exec`
+  or a lambda traces, but its loops cannot be runtime loops.
+* Pass errors name values by their base name (`lds`), not the C++'s
+  deduplicated one (`lds1`), so "add lds to that lds_wait_for" can be
+  ambiguous with several LDS tiles in flight. The old front end had the same
+  limit.
+* Nothing is eliminated before the passes, so an unused allocation still
+  counts in `lds_bytes`. The old front end behaved the same way.
+* MLIR is built from source (23.1.3). Wheels are Linux x86_64 only, one
+  CPython each; gfx1201 is still compile-only.
+
+This list is from [the MLIR chapter](history/15-mlir-dialect.md), which ends
+with "For whoever continues": the next pieces of work, in order of value.

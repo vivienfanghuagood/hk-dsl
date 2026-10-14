@@ -358,7 +358,8 @@ BLOCK_M, BLOCK_N, K_STEP = DEFAULT["block_m"], DEFAULT["block_n"], DEFAULT["k_st
 
 #: For a batch of at most 16 rows: one 16-row block, so a decode-sized M does
 #: not compute 128 rows to keep one. 1.19-1.62x over hipBLASLt on Qwen3-8B's
-#: decode shapes at M=16 (python/README.md), though hk.ops.decode_gemm, laid
+#: decode shapes at M=16 (docs/history/09-decode-kernel.md), though
+#: hk.ops.decode_gemm, laid
 #: out for the weight stream, is faster still.
 THIN = dict(block_m=16, block_n=128, k_step=64, dot_slice=16, warps=4,
             warp_rows=1, n_split=2, wgm=8, write_pos=2)

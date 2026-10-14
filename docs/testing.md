@@ -1,0 +1,175 @@
+# Testing
+
+- [The four tiers](#the-four-tiers)
+- [Running each tier](#running-each-tier)
+- [What the GPU tier holds the line on](#what-the-gpu-tier-holds-the-line-on)
+- [Examples, and checks at full size](#examples-and-checks-at-full-size)
+- [The gates for a change to the generated code](#the-gates-for-a-change-to-the-generated-code)
+- [Reproducing](#reproducing)
+
+## The four tiers
+
+Four tiers, by what they need. The first three run anywhere:
+
+```bash
+ninja -C $HK_MLIR_BUILD check-hk                     # lit: the dialect, passes, translation
+python3 -m pytest tests/hk/ir tests/hk/codegen -q    # no GPU, no torch
+```
+
+| tier | needs | what it catches |
+|---|---|---|
+| `mlir/test/` | the MLIR build | op verifiers, pass results and errors, the C++ for hand-written IR |
+| `tests/hk/ir/` | hk._mlir | tracing, the language, pass errors from Python, generated C++ |
+| `tests/hk/codegen/` | hipcc | compiles; spill/occupancy gates fire |
+| `tests/hk/gpu/` | Radeon + torch | numerics vs torch |
+
+A tier that cannot run is skipped with a reason, never silently passed.
+
+**Tests, now.**
+- `mlir/test` (lit): 8 files, for:
+  - the op verifiers and a round trip through text;
+  - each of the four passes on hand-written IR, including the
+    workgroup-operation checks, the budget warning, and the refusal of a plain
+    barrier after an ordinary LDS store;
+  - the translation of a kernel and of a `while`.
+- tests/hk/ir and tests/hk/codegen: 1010, no xfails.
+- tests/hk/gpu: 401 passed on gfx1100. That is Gate B's 379 (below), plus:
+  - four for `while`;
+  - three for the RMSNorm the plan for the MLIR move set as the language's
+    target;
+  - eight that run the examples;
+  - seven at full size.
+
+[The MLIR chapter](history/15-mlir-dialect.md) records the counts as they
+stood then (990 and 386).
+
+## Running each tier
+
+* **lit** — `ninja -C $HK_MLIR_BUILD check-hk`, where `$HK_MLIR_BUILD` is the
+  directory `scripts/build_hk_mlir.sh` built in (default
+  `/dev/shm/hk-llvm/hk-build-cpXY`; see [building](building.md#mlir-and-the-dialect)).
+  The tests are `mlir/test/Dialect`, `mlir/test/Transforms` and
+  `mlir/test/Target`, each file driven by its `RUN:` line through `hk-opt`,
+  `hk-translate` and `FileCheck` ([the tools](ir.md#hk-opt-and-hk-translate)).
+* **ir** — `python3 -m pytest tests/hk/ir -q`. Needs `hk._mlir`; no compiler,
+  no GPU, no torch.
+* **codegen** — `python3 -m pytest tests/hk/codegen -q`. Needs hipcc, no GPU;
+  generates and compiles, never launches. Skipped, with that reason, when
+  there is no working hipcc.
+* **gpu** — `python3 -m pytest tests/hk/gpu -q`. Needs a Radeon and torch;
+  skipped when either is missing. This is the tier that launches, and the
+  only one that can catch an indexing error — a kernel that reads the wrong
+  tile compiles perfectly and passes every gate.
+
+The gates are by directory, in `tests/hk/conftest.py`, which also puts
+`python/` on `sys.path`, so the suite runs from a checkout without installing.
+A test outside those directories opts into a gate with the `hipcc` or `gpu`
+marker (`pyproject.toml`). `python3 -m pytest` with no path runs `tests/hk`.
+
+## What the GPU tier holds the line on
+
+Numerics against torch, with tolerances per dtype rather than global (bf16
+carries about three decimal digits), plus a few tests with exact answers. Two
+of those came out of a real bug: a biased bf16 conversion that a tolerance
+sized for indexing errors could never have seen
+([Phase 6](history/05-phase-6-torch-ops.md)):
+
+Two tests now hold the line, both with exact answers rather than a tolerance
+(`tests/hk/gpu/test_attn.py`): `V = 1` must come back bit-exact, and `Q = 0`
+must give the mean of V. The file's existing `RTOL = 5e-2` could never have
+seen this -- it is sized to catch a shifted mask, and a half-ulp bias passed
+all 31 of its cases while changing what a model said.
+
+The GPU tier also covers the integration layer: `torch.compile(fullgraph=True)`,
+CUDA-graph capture and replay, and the strided-ViT-input contract in both
+directions.
+
+## Examples, and checks at full size
+
+Every kernel in [`examples/`](../examples) is held at three tiers, through
+`examples/_catalog.py`:
+- tests/hk/ir/test_examples.py traces and translates it, and pins the facts
+  its docstring teaches: the GEMM's waits step down 4 then 0, the attention's
+  rescale is a runtime branch, and the control-flow example carries its
+  scalars.
+- tests/hk/codegen/test_example_builds.py compiles it, with no spill.
+- tests/hk/gpu/test_example_runs.py runs every script with its check against
+  torch.
+
+The GPU tier's own shapes are small on purpose: they hunt indexing errors at
+ragged edges, and a handful of workgroups is enough for that. It is not
+enough for a race between workgroups that share a WGP. The cross-warp combine
+had one for as long as hk had norms, and only a full-size run showed it
+([the record](history/16-validation-and-the-cross-warp-race.md)). Two things
+now run at the sizes a model produces:
+- [`examples/validate.py`](../examples/validate.py) checks every shipped op at
+  7-8B decoder shapes against an fp32 reference, then times it against torch.
+  Its exit status is the number of failures.
+- tests/hk/gpu/test_phase2.py runs rmsnorm, layernorm and softmax at
+  8192x4096 and 16384x1024, and quantize at 4096x4096, each twice.
+
+```bash
+python3 examples/validate.py --quick --no-bench   # every op checked, smaller shapes
+python3 examples/validate.py                      # full size, then timed
+```
+
+## The gates for a change to the generated code
+
+The move to MLIR was gated three times, each against the code it replaced, and
+the record treats the same gates as the bar for later changes: a
+canonicalize/DCE pass "will change the C++, so it needs Gate B again,
+resources first". From [the MLIR chapter](history/15-mlir-dialect.md):
+
+**Gate A — the dialect against the Python IR.** A temporary converter
+turned every kernel the old front end traced into the dialect, and ran it
+through the C++ passes and the C++ translation. For all 354 shipped
+instantiations, and the constexpr points the tests use (708 translations),
+the C++ was byte-identical to the Python emitter's. The whole no-GPU suite
+ran under the gate as its corpus — 394 tests, the error paths included,
+where the C++ passes had to refuse what the Python ones refused, in the same
+words. Then the converter was deleted with the rest.
+
+**Gate B — each kernel family against its old self** (elementwise, norm,
+quant, fused, decode GEMV, GEMM, paged, attention):
+
+* All 422 instantiations rendered both ways. 49 are byte-identical, 281
+  differ only in a loop variable's name (`i` became the `kb` the source
+  wrote), and 92 differ in constant folding, hoist order or names. Those 92
+  were compiled: VGPRs, SGPRs, scratch, LDS and occupancy are identical in
+  every one.
+* tests/hk/gpu: 379 passed on gfx1100.
+* Old and new in one process, interleaved for 7 rounds, the old as control
+  (the table is in [performance](performance.md#after-the-mlir-move)). Every
+  gap is smaller than that row's own round-to-round spread, which is the
+  expected answer for kernels whose C++ differs in names.
+
+**Gate C — the engine.** vLLM 0.16.1 serving Qwen3-8B on the W7900D with the
+GEMM patch (`vllm_e2e.py`, eager, context 1024, batch 1 and 16, 72 output
+tokens, three rounds of each arm alternating), once from the tree before the
+move and once after, each against stock vLLM in its own run. The routing
+counters match call for call (5,472 prefill GEMMs, 102,553 decode GEMVs, no
+fallback). At both shapes the first request's greedy output is identical to
+stock, and so to the other run's (72/72).
+
+The first attempt at this gate measured nothing. With vLLM's engine in its
+own process, the patch installed in the driver never reached the model, and
+both arms timed as stock (0.995–1.000x, `hk 0, hk_decode 0`). The tool prints
+the routing counters for exactly this reason. The gate is run with
+`VLLM_ENABLE_V1_MULTIPROCESSING=0`, as every earlier measurement here was.
+
+Gate B's resource comparison needs only hipcc, and it is the part the record
+asks for first ("resources first"): a change that spills is a wrong kernel,
+not a slow one ([resource gates](runtime.md#the-resource-gates)).
+
+## Reproducing
+
+```bash
+scripts/build_mlir.sh && scripts/build_hk_mlir.sh
+ninja -C $HK_MLIR_BUILD check-hk
+python3 -m pytest tests/hk/ir tests/hk/codegen -q
+python3 -m pytest tests/hk/gpu -q                       # gfx1100
+python3 examples/validate.py                            # gfx1100, full size
+scripts/build_wheel.sh
+VLLM_ENABLE_V1_MULTIPROCESSING=0 HK_GPU_UTIL=0.85 python3 tools/hk-bench/vllm_e2e.py \
+    --context 1024 --batch 1,16 --tokens 72 --short 24 --reps 3 --arms stock,gemm
+```

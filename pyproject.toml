@@ -12,6 +12,13 @@ license = { text = "MIT" }
 # numpy and typing_extensions are what the MLIR Python bindings import.
 dependencies = ["pybind11>=2.10", "numpy", "typing_extensions"]
 
+# The README's links are relative, which resolve nowhere on a package index.
+[project.urls]
+Homepage = "https://github.com/vivienfanghuagood/hk-dsl"
+Documentation = "https://github.com/vivienfanghuagood/hk-dsl/tree/main/docs"
+Examples = "https://github.com/vivienfanghuagood/hk-dsl/tree/main/examples"
+Issues = "https://github.com/vivienfanghuagood/hk-dsl/issues"
+
 # torch is not a dependency. hk traces without it and compiles without it --
 # only launching needs it, and on a ROCm box it is already installed by
 # something with strong opinions about which build. Declaring it here would

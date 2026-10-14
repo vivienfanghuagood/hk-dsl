@@ -148,7 +148,8 @@ def decode_gemm_kernel(name: str, *, tokens: int = 1, slices: int = 4,
 
 
 #: Per token-tile count, measured on Qwen3-8B's decode shapes, timed as a
-#: step reads them (python/README.md has the sweep). One tile wants 16 warps,
+#: step reads them (docs/history/09-decode-kernel.md has the sweep). One tile
+#: wants 16 warps,
 #: two per WGP; two tiles cannot hold 15 partials of 16 VGPRs and batch them;
 #: four cannot afford 16 warps at all. The wider two are held to one and two
 #: workgroups per WGP by their registers already.

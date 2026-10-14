@@ -24,10 +24,12 @@ than a tiling choice, so one loop iteration is one page and the within-page
 offset is always zero. vLLM's ROCm backends offer 16 and 32; 32 is what the
 dense kernel already uses.
 
-What this does not do, deliberately, in its first form: no split across the KV
-axis (one workgroup per (request, kv head), walking the whole sequence), and
-no prefill. Both are measurable next steps rather than guesses -- see
-`python/README.md`.
+Its first form had no split across the KV axis -- one workgroup per (request,
+kv head), walking the whole sequence -- and that was most of the gap to
+Triton. `paged_decode_split_kernel` and `merge_splits` close it, with the
+split count planned per call (`plan_splits`). There is still no paged prefill:
+the backend serves prefill with the dense kernel. The measurements are in
+docs/history/06-phase-7-paged-decode.md.
 """
 
 import math
@@ -375,19 +377,17 @@ def plan_splits(n_reqs: int, n_kv_heads: int, n_pages: int) -> int:
 
     forced = os.environ.get("HK_SPLITS", "auto")
     if forced in ("off", "0", "1"):
-        # Off by default, against the measurements, because of an open fault.
-        #
-        # Under vLLM at batch 16 / context 4096 the second `generate` aborts
-        # with HSA_STATUS_ERROR_EXCEPTION 0x1016 inside an unrelated torch
-        # kernel. What is known: forcing one split makes it go away and
-        # forcing prefill onto torch does not, so it is this path; and the
-        # kernel itself is clean in isolation -- 2000 calls with ragged
-        # lengths, padded block tables and guard pages either side of both
-        # outputs leave every margin byte untouched and every output finite.
-        # So the kernel does not write out of bounds and something about how
-        # it is driven does. Until that is found, the split is opt-in
-        # (HK_SPLITS=8) and the shipped path is the one that has run a model
-        # end to end without faulting.
+        # One split: the switch that ruled this path in when vLLM at batch 16
+        # / context 4096 aborted on its second `generate` with
+        # HSA_STATUS_ERROR_EXCEPTION 0x1016 inside an unrelated torch kernel.
+        # Forcing one split made it go away and forcing prefill onto torch did
+        # not; 2000 calls of the kernel with ragged lengths, padded block
+        # tables and guard pages either side of both outputs left every margin
+        # byte untouched, so it was not the kernel but how it was driven. The
+        # backend's scratch was keyed on the decode request count, which moves
+        # as a batch ramps, so it allocated a fresh set per count, per split,
+        # per layer, until the card ran out. It is keyed on the split count
+        # now (vllm_backend._buffers), and the planned split is the default.
         return 1
     if forced in ("auto", "plan"):
         have = max(1, n_reqs * n_kv_heads)

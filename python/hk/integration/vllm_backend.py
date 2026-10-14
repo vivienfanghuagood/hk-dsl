@@ -3,11 +3,14 @@
 This is the part an SDPA drop-in cannot reach. vLLM V1 keeps KV in a paged
 cache and dispatches through `AttentionImpl.forward(..., kv_cache,
 attn_metadata)`; there is no dense tensor on that path, so the only way into a
-decoder is to *be* a backend. Registered as `HK_ATTN` through
-`vllm.v1.attention.backends.registry.register_backend`, which is vLLM's own
-hook for third-party backends.
+decoder is to *be* a backend. vLLM's backend enum is closed and ROCm will not
+select `CUSTOM`, so it is registered *over* a member the platform accepts --
+`TRITON_ATTN`, unless `HK_VLLM_BACKEND` names another (see `SLOT` below) --
+through `vllm.v1.attention.backends.registry.register_backend`, vLLM's own
+hook for third-party backends. In diagnostics it calls itself `HK_ATTN`.
 
-    HK_PATCH_VLLM=1 vllm serve <model> --attention-backend HK_ATTN \\
+    HK_PATCH_VLLM=1 HK_VLLM_BACKEND=1 vllm serve <model> \\
+        --attention-backend TRITON_ATTN \\
         --no-enable-prefix-caching --enable-chunked-prefill=False
 
 **The two flags are a real restriction, not boilerplate.** This backend
@@ -22,7 +25,8 @@ front of it. Prefix caching and chunked prefill both break that, so both are
 refused rather than silently computing attention over part of the context.
 
 What is missing, stated plainly: a paged prefill kernel. With one, both flags
-go away. See `python/README.md`.
+go away. See docs/integration.md, and docs/history/06-phase-7-paged-decode.md
+for how the decode path was measured.
 """
 
 from __future__ import annotations
