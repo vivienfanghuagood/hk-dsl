@@ -372,30 +372,41 @@ class View:
         self.tensor, self.idx = tensor, idx
 
     def load(self, tile, *, into: Optional["Value"] = None,
-             bounded: bool = False):
+             bounded=False):
         """Global -> register tile or vector. The element type converts on the
-        way in, for free; `bounded` predicates rows past the global's last
-        (they read zero and touch no memory)."""
+        way in, for free. `bounded=True` predicates rows past the global's
+        last (they read zero and touch no memory); `bounded=n`, an int or a
+        device Int, also predicates rows at or past `n` counted from the
+        tile's first -- for a tile whose rows end before the tensor's."""
         if not isinstance(tile, (RegTileType, RegVecType)):
             raise TypeError(f"load destination type is {tile!r}, expected a "
                             f"tile or a vector type")
-        if bounded and not isinstance(tile, RegTileType):
-            raise TypeError(f"load(bounded=True) predicates tile rows; {tile!r} "
+        if bounded is not False and not isinstance(tile, RegTileType):
+            raise TypeError(f"load(bounded=...) predicates tile rows; {tile!r} "
                             f"is not a tile")
-        return _make(hkd.LoadOp, tile, (self.tensor.v, self.idx.v), into=into,
-                     name="ld", bounded=bool(bounded))
+        if bounded is True or bounded is False:
+            return _make(hkd.LoadOp, tile, (self.tensor.v, self.idx.v),
+                         into=into, name="ld", bounded=bounded)
+        return _make(hkd.LoadRowsOp, tile,
+                     (self.tensor.v, self.idx.v, as_int(bounded).v),
+                     into=into, name="ld")
 
-    def store(self, value, *, bounded: bool = False) -> None:
-        """Register tile or vector -> global."""
+    def store(self, value, *, bounded=False) -> None:
+        """Register tile or vector -> global. `bounded` as for load: True
+        drops rows past the global's last, `n` also rows at or past `n`."""
         value = _vec_of(value)
         if not isinstance(value, (Tile, Vec)):
             raise TypeError(f"store value is {value!r}, expected a tile or a vector")
-        if bounded and not isinstance(value, Tile):
-            raise TypeError("store(bounded=True) predicates tile rows; the "
+        if bounded is not False and not isinstance(value, Tile):
+            raise TypeError("store(bounded=...) predicates tile rows; the "
                             "value is not a tile")
         t = _t()
-        hkd.StoreOp(self.tensor.v, value.v, self.idx.v, bounded=bool(bounded),
-                    loc=t.loc())
+        if bounded is True or bounded is False:
+            hkd.StoreOp(self.tensor.v, value.v, self.idx.v, bounded=bounded,
+                        loc=t.loc())
+        else:
+            hkd.StoreRowsOp(self.tensor.v, value.v, self.idx.v,
+                            as_int(bounded).v, loc=t.loc())
 
     def load_scalar(self) -> Int:
         """One int32 element -> a wave-uniform scalar (a page index, a length)."""

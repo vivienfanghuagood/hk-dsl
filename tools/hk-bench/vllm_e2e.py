@@ -78,21 +78,32 @@ def one_arm(args, backend: str) -> dict:
 
     ctxs = [int(x) for x in args.context.split(",")]
     batches = [int(x) for x in args.batch.split(",")]
+    # HK_VLLM_DEFAULTS=1: prefix caching and chunked prefill as vLLM ships
+    # them. Otherwise both off, the setting every number before them used.
+    defaults = os.environ.get("HK_VLLM_DEFAULTS", "0") == "1"
+    knobs = {} if defaults else dict(enable_prefix_caching=False,
+                                     enable_chunked_prefill=False)
     llm = LLM(model=args.model, dtype="bfloat16", block_size=32,
               max_model_len=max(ctxs) + args.tokens + 64,
               max_num_seqs=max(batches),
               gpu_memory_utilization=float(os.environ.get("HK_GPU_UTIL", "0.90")),
               attention_backend=sel,
-              enable_prefix_caching=False, enable_chunked_prefill=False,
-              enforce_eager=os.environ.get("HK_EAGER", "1") == "1")
+              enforce_eager=os.environ.get("HK_EAGER", "1") == "1", **knobs)
     tok = llm.get_tokenizer()
     out = {}
+    salt = iter(range(1 << 30))
     for n_ctx in ctxs:
         for n_req in batches:
-            reqs = [{"prompt_token_ids":
-                     tok.encode(f"{i} " + "the quick brown fox " *
-                                (n_ctx // 4))[:n_ctx]}
-                    for i in range(n_req)]
+            def prompts():
+                # A fresh first token per generate: with prefix caching on, a
+                # repeated prompt would be a cache hit and the timing would
+                # stop measuring attention.
+                s = next(salt)
+                return [{"prompt_token_ids":
+                         tok.encode(f"{s}.{i} " + "the quick brown fox " *
+                                    (n_ctx // 4))[:n_ctx]}
+                        for i in range(n_req)]
+            reqs = prompts()
             def params(n):
                 return SamplingParams(temperature=0.0, max_tokens=n,
                                       ignore_eos=True)
@@ -108,8 +119,9 @@ def one_arm(args, backend: str) -> dict:
             got = {k: [] for k in lengths}
             for _ in range(args.reps):
                 for k, n in lengths.items():
+                    batch = prompts() if defaults else reqs
                     t0 = time.perf_counter()
-                    llm.generate(reqs, params(n))
+                    llm.generate(batch, params(n))
                     got[k].append(time.perf_counter() - t0)
             out[f"{n_ctx}x{n_req}"] = {
                 **{k: min(v) for k, v in got.items()}, "all": got["min"],
@@ -201,7 +213,10 @@ def main() -> int:
             b["decode"] = (b["total"] - b["short"]) / (args.tokens - args.short)
 
     print(f"\n{args.model}, {args.tokens} output tokens, enforce_eager="
-          f"{os.environ.get('HK_EAGER', '1') == '1'}, baseline = stock vLLM "
+          f"{os.environ.get('HK_EAGER', '1') == '1'}, prefix caching and "
+          f"chunked prefill "
+          f"{'on' if os.environ.get('HK_VLLM_DEFAULTS') == '1' else 'off'}, "
+          f"baseline = stock vLLM "
           f"= 1.00x.\ntotal = the whole batch, prompt to last token; prefill "
           f"= the same batch generating one token; decode = (T({args.tokens})"
           f" - T({args.short})) / {args.tokens - args.short}, one step at the "

@@ -283,12 +283,149 @@ def run_case(n, ctx, rounds):
     return eager, gbest, splits
 
 
+#: Batches with prefill in them, as vLLM's defaults make them: (name, [(ctx,
+#: q_len)]), decodes first, the order vLLM's reorder gives the backend.
+PREFILL_CASES = (
+    ("prompt 2048", [(0, 2048)]),
+    ("prompt 8192", [(0, 8192)]),
+    ("chunk 512 @4096", [(4096, 512)]),
+    ("4 x chunk 1024 @1024", [(1024, 1024)] * 4),
+    ("8 x prefix 3000 + 200", [(3000, 200)] * 8),
+    ("16 decodes + chunk 512", [(2047, 1)] * 16 + [(2048, 512)]),
+)
+
+
+def prefill_case(reqs, rounds):
+    """One mixed batch: each side writes the new tokens' K/V through its own
+    cache write and attends, eagerly -- a step with prefill in it runs
+    between vLLM's graph pieces."""
+    from vllm.v1.attention.ops.triton_reshape_and_cache_flash import (
+        triton_reshape_and_cache_flash,
+    )
+    from vllm.v1.attention.ops.triton_unified_attention import (
+        unified_attention,
+    )
+    from hk.integration import vllm_backend
+    from hk.ops import paged, paged_prefill
+
+    gen = torch.Generator(device="cuda").manual_seed(len(reqs))
+    seq = [c + n for c, n in reqs]
+    q_lens = [n for _, n in reqs]
+    r = len(reqs)
+    n_new = sum(q_lens)
+    starts = [0]
+    for n in q_lens:
+        starts.append(starts[-1] + n)
+    keys = [torch.randn(s, HKV, D, device="cuda", dtype=BF16, generator=gen)
+            for s in seq]
+    vals = [torch.randn_like(k) for k in keys]
+    q = torch.randn(n_new, HQ, D, device="cuda", dtype=BF16, generator=gen)
+    k_new = torch.cat([k[-n:] for k, n in zip(keys, q_lens)])
+    v_new = torch.cat([v[-n:] for v, n in zip(vals, q_lens)])
+    cu = torch.tensor(starts, device="cuda", dtype=I32)
+    lens = torch.tensor(seq, device="cuda", dtype=I32)
+
+    def layout(block):
+        pages = max(-(-s // block) for s in seq)
+        perm = torch.randperm(r * pages, device="cuda", generator=gen)
+        table = perm.view(r, pages).to(I32)
+        slots_all, slots_new = [], []
+        for i, s in enumerate(seq):
+            pos = torch.arange(s, device="cuda")
+            sl = table[i, pos // block].long() * block + pos % block
+            slots_all.append(sl)
+            slots_new.append(sl[-q_lens[i]:])
+        return table, r * pages, torch.cat(slots_all), torch.cat(slots_new)
+
+    # stock
+    t_table, t_blocks, t_all, t_new = layout(T_BLOCK)
+    kv_t = torch.zeros(t_blocks, 2, T_BLOCK, HKV, D, device="cuda", dtype=BF16)
+    one = torch.ones((), device="cuda", dtype=F32)
+    kc, vc = kv_t.unbind(1)
+    triton_reshape_and_cache_flash(torch.cat(keys), torch.cat(vals), kc, vc,
+                                   t_all, "auto", one, one)
+    segm = (torch.empty(SEQ_THRESHOLD_3D, HQ, SEGMENTS, D, device="cuda",
+                        dtype=F32),
+            torch.empty(SEQ_THRESHOLD_3D, HQ, SEGMENTS, device="cuda",
+                        dtype=F32),
+            torch.empty(SEQ_THRESHOLD_3D, HQ, SEGMENTS, device="cuda",
+                        dtype=F32))
+    s_out = torch.empty(n_new, HQ, D, device="cuda", dtype=BF16)
+
+    def stock():
+        kc, vc = kv_t.unbind(1)
+        triton_reshape_and_cache_flash(k_new, v_new, kc, vc, t_new, "auto",
+                                       one, one)
+        unified_attention(
+            q=q, k=kc, v=vc, out=s_out, cu_seqlens_q=cu,
+            max_seqlen_q=max(q_lens), seqused_k=lens, max_seqlen_k=max(seq),
+            softmax_scale=SCALE, causal=True, alibi_slopes=None,
+            use_alibi_sqrt=False, window_size=(-1, -1), block_table=t_table,
+            softcap=0, q_descale=None,
+            k_descale=one.expand((r, HKV)), v_descale=one.expand((r, HKV)),
+            seq_threshold_3D=SEQ_THRESHOLD_3D,
+            num_par_softmax_segments=SEGMENTS, softmax_segm_output=segm[0],
+            softmax_segm_max=segm[1], softmax_segm_expsum=segm[2], sinks=None,
+            output_scale=None, mm_prefix_range=None)
+
+    # hk
+    _, impl_cls = vllm_backend._build()
+    impl = impl_cls(num_heads=HQ, head_size=D, scale=SCALE, num_kv_heads=HKV,
+                    alibi_slopes=None, sliding_window=None,
+                    kv_cache_dtype="auto")
+    h_table, h_blocks, h_all, h_new = layout(paged.KV_BLOCK)
+    kv_h = torch.zeros(2, h_blocks, HKV, paged.KV_BLOCK, D, device="cuda",
+                       dtype=BF16)
+    impl._update_cache(None, torch.cat(keys), torch.cat(vals), kv_h[0],
+                       kv_h[1], h_all)
+    nd = 0
+    while nd < r and q_lens[nd] == 1:
+        nd += 1
+    md = types.SimpleNamespace(
+        num_actual_tokens=n_new, slot_mapping=h_new, max_query_len=max(q_lens),
+        max_seq_len=max(seq), block_table=h_table, seq_lens=lens,
+        query_start_loc=cu, hk_num_decodes=nd,
+        hk_prefill_tiles=paged_prefill.work_list(
+            [(i, q_lens[i]) for i in range(nd, r)], "cuda") if nd < r else None)
+    h_out = torch.empty(n_new, HQ, D, device="cuda", dtype=BF16)
+
+    def hk_layer():
+        impl.forward(None, q, k_new, v_new, kv_h, md, h_out)
+
+    stock()
+    hk_layer()
+    torch.cuda.synchronize()
+    ok = check(f"r{r} t{n_new}", h_out, s_out)
+    best = interleave({"stock": stock, "hk": hk_layer}, rounds=rounds)
+    # Causal attention FLOPs: 4 * d per (query, key) pair it does not mask.
+    flops = sum(4 * D * HQ * (n * c + n * (n + 1) / 2) for c, n in reqs)
+    return ok, best, flops
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--ctx", default="1024,4096,16384")
     ap.add_argument("--batch", default="1,4,8,16,32")
     ap.add_argument("--rounds", type=int, default=4)
+    ap.add_argument("--prefill", action="store_true",
+                    help="batches with prefill in them instead of decode")
     args = ap.parse_args()
+
+    if args.prefill:
+        torch.manual_seed(0)
+        print(f"{torch.cuda.get_device_name()}  torch {torch.__version__}")
+        burn_in()
+        print(f"\n{'batch':<26}{'stock ms':>10}{'hk ms':>10}{'hk/stock':>10}"
+              f"{'hk TFLOP/s':>12}")
+        failed = False
+        for name, reqs in PREFILL_CASES:
+            ok, best, flops = prefill_case(reqs, args.rounds)
+            failed |= not ok
+            print(f"{name:<26}{best['stock']:>10.3f}{best['hk']:>10.3f}"
+                  f"{best['stock'] / best['hk']:>9.2f}x"
+                  f"{flops / (best['hk'] * 1e-3) / 1e12:>12.1f}", flush=True)
+            torch.cuda.empty_cache()
+        return 1 if failed else 0
 
     torch.manual_seed(0)
     print(f"{torch.cuda.get_device_name()}  torch {torch.__version__}")

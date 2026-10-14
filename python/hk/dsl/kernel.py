@@ -137,7 +137,8 @@ class TracedKernel:
         out = set()
 
         def visit(op):
-            if op.name in ("hk.store", "hk.store_scalar", "hk.group_store"):
+            if op.name in ("hk.store", "hk.store_rows", "hk.store_scalar",
+                           "hk.group_store"):
                 dst = op.operands[0]
                 for i, a in enumerate(args):
                     if a == dst:

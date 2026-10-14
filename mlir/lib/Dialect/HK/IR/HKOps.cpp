@@ -88,6 +88,10 @@ LogicalResult StoreOp::verify() {
   return success();
 }
 
+LogicalResult LoadRowsOp::verify() {
+  return verifyDest(*this, getDst(), getResult());
+}
+
 LogicalResult StoreScalarOp::verify() {
   if (!getIdx().getType().getElement())
     return emitOpError("takes an element coordinate");

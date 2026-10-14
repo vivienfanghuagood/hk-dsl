@@ -775,6 +775,18 @@ private:
             name(o.getValue()) + ", " +
             coordArg(o.getIdx(), cpp(o.getValue().getType())) + ");");
         })
+        .Case([&](LoadRowsOp o) {
+          Value d = dest(o.getDst(), o.getResult());
+          w("kittens::load_bounded(" + name(d) + ", " + name(o.getSrc()) +
+            ", " + coordArg(o.getIdx(), cpp(d.getType())) + ", " +
+            name(o.getRows()) + ");");
+        })
+        .Case([&](StoreRowsOp o) {
+          w("kittens::store_bounded(" + name(o.getDst()) + ", " +
+            name(o.getValue()) + ", " +
+            coordArg(o.getIdx(), cpp(o.getValue().getType())) + ", " +
+            name(o.getRows()) + ");");
+        })
         .Case([&](StoreScalarOp o) {
           w("kittens::store_scalar(" + name(o.getDst()) + ", " +
             name(o.getValue()) + ", " + name(o.getIdx()) + ");");

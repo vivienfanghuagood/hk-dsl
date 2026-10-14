@@ -96,6 +96,34 @@ def HK_StoreOp : HK_Op<"store"> {
   let hasVerifier = 1;
 }
 
+def HK_LoadRowsOp : HK_Op<"load_rows"> {
+  let summary = "global -> register tile, rows at or past `rows` read as zero";
+  let description = [{
+    `load ... bounded` with a runtime limit as well as the global's: a tile
+    whose rows end before the tensor's -- a query tile of one request running
+    into the next request's tokens -- reads zeros past `rows` and never
+    touches that memory. `rows` counts from the tile's first row.
+  }];
+  let arguments = (ins Optional<HK_RegTileType>:$dst, HK_GlobalType:$src,
+                       HK_CoordType:$idx, I32:$rows);
+  let results = (outs Optional<HK_RegTileType>:$result);
+  let assemblyFormat = [{
+    $src `[` $idx `]` `rows` $rows (`into` $dst^)? attr-dict `:` qualified(type($src)) `,`
+    qualified(type($idx)) (`into` qualified(type($dst))^)? (`->` qualified(type($result))^)?
+  }];
+  let hasVerifier = 1;
+}
+
+def HK_StoreRowsOp : HK_Op<"store_rows"> {
+  let summary = "register tile -> global, rows at or past `rows` not written";
+  let arguments = (ins HK_GlobalType:$dst, HK_RegTileType:$value,
+                       HK_CoordType:$idx, I32:$rows);
+  let assemblyFormat = [{
+    $value `,` $dst `[` $idx `]` `rows` $rows attr-dict `:` qualified(type($value)) `,`
+    qualified(type($dst)) `,` qualified(type($idx))
+  }];
+}
+
 def HK_StoreScalarOp : HK_Op<"store_scalar"> {
   let summary = "one entry of a uniform register vector -> one global element";
   let arguments = (ins HK_GlobalType:$dst, HK_RegVecType:$value,

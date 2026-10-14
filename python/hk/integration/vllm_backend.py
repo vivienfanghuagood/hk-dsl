@@ -10,23 +10,24 @@ through `vllm.v1.attention.backends.registry.register_backend`, vLLM's own
 hook for third-party backends. In diagnostics it calls itself `HK_ATTN`.
 
     HK_PATCH_VLLM=1 HK_VLLM_BACKEND=1 vllm serve <model> \\
-        --attention-backend TRITON_ATTN \\
-        --no-enable-prefix-caching --enable-chunked-prefill=False
+        --attention-backend TRITON_ATTN
 
-**The two flags are a real restriction, not boilerplate.** This backend
-declares its own KV cache layout -- `(2, num_blocks, num_kv_heads, block_size,
-head_size)` -- because `gl` derives strides from dims and vLLM's default
-`(2, num_blocks, block_size, num_kv_heads, head_size)` cannot yield a
-contiguous `(block_size, head_dim)` tile for one head. Having its own layout
-means it cannot hand a prefill off to vLLM's Triton kernel, so prefill is
-served by the *dense* kernel (`hk.ops.attn`) over the new tokens -- which is
-only the whole answer when a prefill request's KV is exactly the tokens in
-front of it. Prefix caching and chunked prefill both break that, so both are
-refused rather than silently computing attention over part of the context.
+with vLLM's defaults: CUDA graphs, prefix caching and chunked prefill on.
 
-What is missing, stated plainly: a paged prefill kernel. With one, both flags
-go away. See docs/integration.md, and docs/history/06-phase-7-paged-decode.md
-for how the decode path was measured.
+The backend declares its own KV cache layout -- `(2, num_blocks,
+num_kv_heads, block_size, head_size)` -- because `gl` derives strides from
+dims and vLLM's default `(2, num_blocks, block_size, num_kv_heads,
+head_size)` cannot yield a contiguous `(block_size, head_dim)` tile for one
+head. Having its own layout means every attention it serves is its own:
+
+* decode (`hk.ops.paged`): the paged walk and its merge, two launches a
+  layer, captured whole in vLLM's full decode graphs;
+* prefill (`hk.ops.paged_prefill`): one launch for every prefill request in
+  the batch, cached prefixes and chunks included -- the new tokens' K/V are
+  in the cache before either runs.
+
+docs/integration.md is the reference; docs/history/17-the-decode-step-
+captured-whole.md how it was measured against vLLM's Triton attention.
 """
 
 from __future__ import annotations
@@ -48,9 +49,7 @@ NAME = "HK_ATTN"
 #: UNIFORM_SINGLE_TOKEN_DECODE, so vLLM captures decode steps whole and runs
 #: steps with prefill in them eagerly, between its pieces; `forward` refuses
 #: to have one of those captured.
-PATCH = engine.Patch(
-    NAME, paths=("decode", "decode_gather", "prefill", "prefill_sdpa"),
-    graph="safe")
+PATCH = engine.Patch(NAME, paths=("decode", "prefill"), graph="safe")
 
 #: What `get_name()` answers, which is not the same thing.
 #:
@@ -158,6 +157,17 @@ def _op(kind: str, head_dim: int, splits: int):
     return op
 
 
+def _prefill_op(head_dim: int, group: int, scale: float):
+    op = _OPS.get(("prefill", head_dim, group, scale))
+    if op is None:
+        from ..ops import paged_prefill as hk_prefill
+        from ..runtime.torch_ext import torch_op
+
+        op = _OPS[("prefill", head_dim, group, scale)] = torch_op(
+            hk_prefill.kernel_for(head_dim, group, scale))
+    return op
+
+
 def decode(q, k_cache, v_cache, block_table, seq_lens, out, scratch,
            splits: int) -> None:
     """One decode, as torch ops: the paged walk, and with more than one split
@@ -188,6 +198,7 @@ def _build():
 
     from ..ops import attn as hk_attn
     from ..ops import paged as hk_paged
+    from ..ops import paged_prefill as hk_prefill
 
     class HKAttentionBackend(AttentionBackend):
         accept_output_buffer: bool = True
@@ -216,11 +227,40 @@ def _build():
 
             support = type(RocmAttentionMetadataBuilder._cudagraph_support)
 
+            from vllm.v1.attention.backends.utils import (
+                split_decodes_and_prefills,
+            )
+
             class HKAttentionMetadataBuilder(RocmAttentionMetadataBuilder):
                 # Decode steps are captured whole; a step with prefill in it
-                # reads its query lengths on the host and runs eagerly
-                # between vLLM's pieces. See PATCH.
+                # runs eagerly between vLLM's pieces. See PATCH.
                 _cudagraph_support = support.UNIFORM_SINGLE_TOKEN_DECODE
+
+                def __init__(self, *args, **kwargs):
+                    super().__init__(*args, **kwargs)
+                    # Decodes first, so `forward` takes them as one run.
+                    init = getattr(self, "_init_reorder_batch_threshold", None)
+                    if init is not None:
+                        init(1)
+                    else:
+                        self.reorder_batch_threshold = 1
+
+                def build(self, common_prefix_len, common_attn_metadata,
+                          fast_build=False):
+                    md = super().build(common_prefix_len, common_attn_metadata,
+                                       fast_build)
+                    # On the host, where vLLM already has the lengths: how
+                    # many leading decodes, and the prefill's work list.
+                    nd, n_pf, _, _ = split_decodes_and_prefills(
+                        common_attn_metadata, decode_threshold=1)
+                    md.hk_num_decodes = nd
+                    md.hk_prefill_tiles = None
+                    if n_pf:
+                        qs = common_attn_metadata.query_start_loc_cpu.tolist()
+                        md.hk_prefill_tiles = hk_prefill.work_list(
+                            [(r, qs[r + 1] - qs[r]) for r in range(nd, nd + n_pf)],
+                            self.device)
+                    return md
 
             _BUILDER.append(HKAttentionMetadataBuilder)
             return HKAttentionMetadataBuilder
@@ -373,67 +413,38 @@ def _build():
                     f"reads its query lengths on the host, which a replay "
                     f"would not repeat.")
 
-            starts = attn_metadata.query_start_loc
-            seq_lens = attn_metadata.seq_lens
-            # A step with prefill in it is heavy enough that one host round
-            # trip is noise, and what it buys is the ability to refuse a batch
-            # the kernel cannot serve instead of answering it wrongly.
-            q_lens = (starts[1:] - starts[:-1]).tolist()
-            lens = seq_lens.tolist()
-
-            decode = [i for i, q in enumerate(q_lens) if q == 1]
-            prefill = [i for i, q in enumerate(q_lens) if q != 1]
-
-            for i in prefill:
-                if q_lens[i] != lens[i]:
-                    raise NotImplementedError(
-                        f"{NAME} has no paged prefill: request {i} has "
-                        f"{q_lens[i]} new tokens against a context of "
-                        f"{lens[i]}, so part of its KV is in the cache. Run "
-                        f"with --no-enable-prefix-caching and chunked prefill "
-                        f"off, or implement the paged prefill kernel."
-                    )
-                lo = int(starts[i])
-                self._prefill(query, key, value, output, lo, q_lens[i])
-
-            if decode:
-                self._decode(query, output, k_cache, v_cache, attn_metadata,
-                             starts, decode)
-                PATCH.count("decode_gather")
+            # A step with prefill in it. The builder ordered the batch decodes
+            # first and counted them on the host, so the decodes are the
+            # first `nd` tokens and go to the decode; the rest are one paged
+            # prefill launch over the builder's work list -- chunks and cached
+            # prefixes included, since every new token's K/V is in the cache
+            # by now. A batch vLLM did not reorder is still right: whatever is
+            # not a leading decode is prefilled, a lone token as a short chunk.
+            nd = getattr(attn_metadata, "hk_num_decodes", 0)
+            if nd:
+                self._decode_all(query, output, k_cache, v_cache,
+                                 attn_metadata, nd)
+                PATCH.count("decode")
+            tiles = getattr(attn_metadata, "hk_prefill_tiles", None)
+            if tiles is not None:
+                self._prefill(query, output, k_cache, v_cache, attn_metadata,
+                              n, tiles)
+                PATCH.count("prefill")
             return output
 
-        def _prefill(self, query, key, value, output, lo, m):
-            """Dense causal attention over this request's own tokens.
-
-            Correct exactly when the request's KV is the tokens in front of
-            it, which `forward` has already checked.
-
-            Short prompts go to torch. The dense kernel wants at least one
-            192-row query tile and one 32-row KV block, and a prompt below
-            that cannot be padded into shape: zero-padded keys are not masked
-            out, they are keys whose score is zero, and `exp(0)` is a real
-            weight in the softmax sum. Prefilling eight tokens is a rounding
-            error of the step's work anyway -- what matters is that the
-            fallback is the *reason* the shape is unsupported, checked, rather
-            than a length threshold guessed here and left to drift.
-            """
-            import torch.nn.functional as F
-
+        def _prefill(self, query, output, k_cache, v_cache, attn_metadata, n,
+                     tiles):
+            """Every prefill request in the batch, one launch: the engine's
+            rows as (tokens, heads * head_dim), which a q split off a fused
+            qkv projection is too, strided by the projection's width."""
             h, d = self.num_heads, self.head_size
-            q = query[lo:lo + m].transpose(0, 1).unsqueeze(0).contiguous()
-            k = key[lo:lo + m].transpose(0, 1).unsqueeze(0).contiguous()
-            v = value[lo:lo + m].transpose(0, 1).unsqueeze(0).contiguous()
-            import os
-
-            if os.environ.get("HK_NO_PREFILL") or hk_attn._why(q, k, v, True):
-                out = F.scaled_dot_product_attention(
-                    q, k, v, is_causal=True, scale=self.scale,
-                    enable_gqa=self.group > 1)
-                PATCH.count("prefill_sdpa")
-            else:
-                out = hk_attn.attention(q, k, v, causal=True, scale=self.scale)
-                PATCH.count("prefill")
-            output[lo:lo + m] = out[0].transpose(0, 1).reshape(m, h, d)
+            if not self._checked:
+                self._check(attn_metadata.block_table, attn_metadata.seq_lens)
+            _prefill_op(d, self.group, self.scale)(
+                query[:n].view(n, h * d), k_cache, v_cache,
+                attn_metadata.block_table, attn_metadata.seq_lens,
+                attn_metadata.query_start_loc, tiles,
+                output[:n].view(n, h * d))
 
         def _decode_all(self, query, output, k_cache, v_cache, attn_metadata,
                         n):
@@ -478,26 +489,6 @@ def _build():
                     f"{NAME}: seq_len {mx} needs "
                     f"{-(-mx // hk_paged.KV_BLOCK)} pages but block_table "
                     f"has {cols} columns.")
-
-        def _decode(self, query, output, k_cache, v_cache, attn_metadata,
-                    starts, rows):
-            import torch
-
-            g, hkv, d = self.group, self.num_kv_heads, self.head_size
-            tile = hk_paged.Q_TILE
-            idx = torch.tensor([int(starts[i]) for i in rows],
-                               device=query.device)
-            # (reqs, kv_heads, tile, d): the GQA group packed into the query
-            # tile, zero-padded. The pad rows are computed and dropped -- each
-            # query row's output depends on nothing but that row.
-            q = torch.zeros(len(rows), hkv, tile, d, device=query.device,
-                            dtype=query.dtype)
-            q[:, :, :g] = query[idx].view(len(rows), hkv, g, d)
-            o = torch.empty_like(q)
-            table = attn_metadata.block_table[rows].contiguous()
-            lens = attn_metadata.seq_lens[rows].contiguous().to(torch.int32)
-            hk_paged.KERNELS[d](q, k_cache, v_cache, table, lens, o)
-            output[idx] = o[:, :, :g].reshape(len(rows), hkv * g, d)
 
     return HKAttentionBackend, HKAttentionImpl
 
