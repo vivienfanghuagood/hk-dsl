@@ -84,6 +84,7 @@ losses.
 |---|---|---|---|
 | GEMM, bf16, Qwen3-8B's linear shapes | 82.1–85.7 TFLOP/s: 1.03–1.08x | the faster of Triton (autotuned) and FlyDSL; hipBLASLt 1.19–1.34x | [the scoreboard](docs/history/18-the-scoreboard.md) |
 | RMSNorm, fused add + RMSNorm, softmax | 0.37–0.97x, *slower* | the faster of Triton, FlyDSL and Inductor | [the scoreboard](docs/history/18-the-scoreboard.md) |
+| dropout, KV cache write, LayerNorm backward | 1.02x; 1.18–3.00x; 1.12x at 1024 wide, 0.66–0.92x (*slower*) at 2048–8192 | the Triton tutorial or a Triton row kernel | [rows by index](docs/history/19-rows-by-index.md) |
 | attention forward | 61.0–64.9 TFLOPs, 0.999–1.002x (1.008x causal); 2.9–3.2x torch SDPA, 4.0x causal | the handwritten C++; torch SDPA | [Phase 4](docs/history/03-phase-4-attention.md) |
 | norms, softmax, RoPE, SiLU-mul, quantize | 13 of 15 cases faster, the other two a tie | `torch.compile` | [Phases 1 and 2](docs/history/01-phases-1-2.md) |
 | decode GEMV, 1–32 tokens | 1.93–2.03x per step | hipBLASLt | [cross-workgroup reduction](docs/history/11-cross-workgroup-reduction.md) |
@@ -152,6 +153,10 @@ Each runs on the GPU (checks against torch, then times), and with
 | [`examples/04_gemm.py`](examples/04_gemm.py) | C = A·Bᵀ with LDS staging, WMMA and a derived LDS wait |
 | [`examples/05_attention.py`](examples/05_attention.py) | flash-attention forward with an online softmax |
 | [`examples/06_control_flow.py`](examples/06_control_flow.py) | `for` / `if` / `while` on device values, carried scalars, the generated `scf` and C++ |
+| [`examples/07_dropout.py`](examples/07_dropout.py) | Triton's dropout tutorial: `hk.rand`, the same draws as `tl.rand`, the same elements kept |
+| [`examples/08_embedding.py`](examples/08_embedding.py) | an embedding lookup: rows by index with `gather` |
+| [`examples/09_kv_scatter.py`](examples/09_kv_scatter.py) | a KV cache write: rows to slots with `scatter`, padding slots dropped |
+| [`examples/10_layernorm_backward.py`](examples/10_layernorm_backward.py) | Triton's LayerNorm backward: row and column reductions, partial sums without a lock |
 | [`examples/validate.py`](examples/validate.py) | the shipped `hk.ops` kernels at typical shapes against torch: correctness and speed |
 
 ## License

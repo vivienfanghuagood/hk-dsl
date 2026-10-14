@@ -1,10 +1,12 @@
 # Examples
 
-Six kernels written from scratch, in the order they introduce the language,
+Ten kernels written from scratch, in the order they introduce the language,
 and a script that checks the shipped kernels against torch. Each kernel
 example checks its result against an fp32 torch reference before it times
 anything, and times itself against the torch call it would replace and,
-where there is one, the tuned kernel in `hk.ops`.
+where there is one, the tuned kernel in `hk.ops` or the Triton kernel it
+ports (7-10 are Triton tutorials and the kernels a serving engine runs
+beside its model).
 
 | | example | what it shows |
 |---|---|---|
@@ -14,6 +16,10 @@ where there is one, the tuned kernel in `hk.ops`.
 | 4 | [`04_gemm.py`](04_gemm.py) | LDS staging by the workgroup, asynchronous LDS reads, a derived `lgkmcnt`, `acc += a @ b.T` on WMMA |
 | 5 | [`05_attention.py`](05_attention.py) | flash attention: scores computed transposed, an online softmax, a uniform rescale branch, `hk.scope()` |
 | 6 | [`06_control_flow.py`](06_control_flow.py) | `for` / `if` / `while` on device values, a carried scalar, the C++ they become |
+| 7 | [`07_dropout.py`](07_dropout.py) | `hk.rand`, Triton's Philox bit for bit; a runtime seed via `load_scalar`; `(r - p).step()` as the keep mask |
+| 8 | [`08_embedding.py`](08_embedding.py) | `table.gather(T, ids, at)`: rows by index, an out-of-range id read as zeros without a branch |
+| 9 | [`09_kv_scatter.py`](09_kv_scatter.py) | `cache.scatter(t, slots, at)`: rows to slots, a `-1` slot dropped by the buffer store |
+| 10 | [`10_layernorm_backward.py`](10_layernorm_backward.py) | a row reduction and a column reduction (`sum(axis=0)`) in one kernel, tiles held in registers across two passes, partial sums without a lock |
 | | [`validate.py`](validate.py) | the shipped `hk.ops` kernels at typical LLM shapes: correctness, then speed against torch |
 
 ## Running

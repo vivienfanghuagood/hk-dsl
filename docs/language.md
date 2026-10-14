@@ -126,6 +126,42 @@ that every asynchronously loaded tile is waited for before it is read: see
 [`examples/04_gemm.py`](../examples/04_gemm.py) stages through LDS with a
 derived wait.
 
+## Rows by index, atomics, random numbers
+
+What a mixture-of-experts GEMM, an embedding, a KV cache write, a split-K
+reduction and a dropout need, and a tile load cannot say:
+
+```python
+t = table.gather(T, ids, at, col=c)   # tile row r <- table row ids[at + r]
+cache.scatter(t, slots, at, col=c)    # tile row r -> cache row slots[at + r]
+out.at[r, c].atomic_add(acc)          # an fp32 tile, element by element
+old = cnt.at[0, e].atomic_add_scalar(1)   # one int32 add per warp (also _max_)
+u = hk.rand(T32, seed, offset, row_stride)   # what triton.language.rand draws
+keep = (u - p).step()                 # 1 where u > p, else 0
+```
+
+`ids` is an int32 global. Gather and scatter move row-layout tiles, a lane's
+row being its own; an index outside the tensor -- `-1` for a CUDA graph's
+padding, `numel` for `moe_align_block_size`'s -- or a position at or past
+`count=` reads zeros or writes nothing, with no branch, because the row is a
+buffer offset and an out-of-range one points past the resource. Two tile rows
+scattered to one row race.
+
+`atomic_add` takes fp32 tiles only: a 16-bit row tile is replicated across the
+wave halves, and adding it would count every element twice. The scalar
+atomics are issued by lane 0 and return the old value to every lane; a
+workgroup of W warps that calls one performs W of them.
+
+`hk.rand(ty, seed, offset, row_stride)` fills an fp32 tile: element (r, c) is
+Philox4x32-10 at `offset + r * row_stride + c`, bit for bit Triton's draw for
+that seed and offset, so a kernel can be checked against its Triton original
+exactly. The seed may be a device scalar (`x.at[0].load_scalar()`): a
+non-tensor argument is a constexpr, built in, and a seed that changes every
+step would compile every step. `step()` turns a comparison into a factor;
+[`examples/07_dropout.py`](../examples/07_dropout.py) is a dropout with it,
+and [chapter 19](history/19-rows-by-index.md) records what each of these
+measured.
+
 ## Control flow
 
 * **Control flow is Python.** The body is rewritten at the AST level, as CuTe

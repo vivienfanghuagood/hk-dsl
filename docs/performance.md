@@ -17,6 +17,7 @@ it is a time ratio.
 
 - [Summary](#summary)
 - [Against Triton and FlyDSL](#against-triton-and-flydsl)
+  - [Triton tutorials and the kernels beside a model](#triton-tutorials-and-the-kernels-beside-a-model)
 - [GEMM](#gemm)
 - [Attention forward](#attention-forward)
 - [Norms and elementwise](#norms-and-elementwise)
@@ -34,6 +35,7 @@ it is a time ratio.
 | GEMM, bf16, Qwen3-8B's linear shapes | 82.1-85.7 TFLOP/s | the faster of Triton (autotuned) and FlyDSL; hipBLASLt | win, 1.03-1.08x; hipBLASLt 1.19-1.34x | [the scoreboard](history/18-the-scoreboard.md) |
 | GEMM, bf16 | 75.0 TFLOPs at 4096³, 77.9 at 8192x8192x4096 | handwritten HipKittens C++; rocBLAS | tie with the C++ (1.00x); rocBLAS 0.93x and 0.92x; since overtaken by one LDS buffer | [Phase 3](history/02-phase-3-gemm.md) |
 | RMSNorm (weighted), fused add + RMSNorm, softmax | 0.37-0.97x | the faster of Triton, FlyDSL, Inductor | loss: fixed latency at 1-32 rows, 3-8% at 8192 | [the scoreboard](history/18-the-scoreboard.md) |
+| dropout, KV cache write, LayerNorm backward, embedding (`examples/07`-`10`) | dropout 1.02x; KV write 1.18-3.00x; LayerNorm backward 1.12x at 1024 wide, 0.66-0.92x wider; embedding 1.18-1.28x torch at 1-32 tokens, 0.93x Triton at 4096 | the Triton tutorial or a Triton row kernel; torch | win for dropout, the KV write and LayerNorm backward at 1024; loss where a 16-row tile cannot hold a 2048+ wide row, and for the embedding at 4096 tokens | [rows by index](history/19-rows-by-index.md) |
 | GEMM on Qwen3-8B's linear layers | 1.09-1.23x at M ≥ 1024 | hipBLASLt (`F.linear`) | win at M ≥ 1024; a comb below it, with losses | [linear layers](history/08-linear-layers.md) |
 | attention forward | 61.0-64.9 TFLOPs | handwritten C++; torch SDPA (aotriton) | tie with the C++, 1.008x causal; 2.9-3.2x torch, 4.0x causal | [Phase 4](history/03-phase-4-attention.md) |
 | norms, elementwise, RoPE, quantize | 13 of 15 cases faster | `torch.compile` | win; the other two are a tie | [Phases 1 and 2](history/01-phases-1-2.md) |
@@ -82,6 +84,32 @@ The losses, and why:
 - **Mid-size softmax** pays two LDS round trips with barriers per
   reduction, twice.
 - **8192 rows** is bandwidth, 3-8% behind.
+
+### Triton tutorials and the kernels beside a model
+
+[Rows by index](history/19-rows-by-index.md): `examples/07`-`10`. Each is
+checked against fp32 torch before it is timed (the dropout's mask also
+against Triton's, which it equals), all arms in one process, best round. ms.
+
+| kernel | shape | hk | Triton | torch | hk vs Triton |
+|---|---|---|---|---|---|
+| dropout, p = 0.5 (tutorial 04) | 8192 x 4096 bf16 | 0.415 | 0.424 | 0.278 | 1.02x |
+| KV cache write, -1 slots skipped | 16 tokens, 1024 wide | 0.005 | 0.014 | 0.107 | 3.00x |
+| | 256 tokens | 0.005 | 0.014 | 0.110 | 2.88x |
+| | 4096 tokens | 0.012 | 0.014 | 0.146 | 1.18x |
+| LayerNorm backward (tutorial 05), 4096 rows | 1024 wide | 0.040 | 0.044 | 0.070 | 1.12x |
+| | 2048 | 0.065 | 0.060 | 0.110 | 0.92x |
+| | 4096 | 0.153 | 0.105 | 0.203 | 0.69x |
+| | 8192 | 0.534 | 0.354 | 0.564 | 0.66x |
+| embedding, 151936 x 4096 bf16, ids rotated past the cache | 1 token | 0.005 | 0.012 | 0.006 | 2.4x |
+| | 32 tokens | 0.005 | 0.012 | 0.006 | 2.4x |
+| | 4096 tokens | 0.090 | 0.084 | 0.083 | 0.93x |
+
+The dropout is bound by Philox's multiplies in both DSLs; torch's is 1.5x
+because it uses all four outputs of a Philox call. The LayerNorm backward
+holds a row in registers up to 2048 wide; wider, its 16-row tile reads the
+row twice, where Triton's one-row program holds it. The embedding at 4096
+tokens is the row layout's 16 random rows per load.
 
 ## GEMM
 
