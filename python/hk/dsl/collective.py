@@ -34,10 +34,12 @@ def cross_warp(vec: Vec, op: str, warps: int, *,
         raise ValueError(f"scratch holds {scratch.ty.count} vectors, need {warps}")
     # [1] the scratch may still be being read by a previous combine; [2] the
     # stores must land before any warp reads. No third: after the loads every
-    # warp holds the answer in registers.
-    arch.barrier()
+    # warp holds the answer in registers. Both drain: a vector store is
+    # ordinary ds_writes that nothing retires before an s_barrier, and a warp
+    # on the WGP's other CU reads past one before they land.
+    arch.barrier(drain=True)
     scratch.store(vec, arch.warp_id())
-    arch.barrier()
+    arch.barrier(drain=True)
     acc = scratch.load(vec.ty, 0)
     for w in range(1, warps):
         binary(op, acc, scratch.load(vec.ty, w), into=acc)
@@ -59,7 +61,7 @@ def fold_rows(vec: Vec, op: str, warps: int, *,
         scratch = lds.alloc_vec(lds.shared_vec(vec.ty, warps), name=name)
     slot = arch.warp_id() if warps > 1 else 0
     scratch.store(vec, slot)
-    arch.barrier()
+    arch.barrier(drain=True)
     across = scratch.load(RegVecType(square, "row"), slot)
     spread = broadcast_col(square, across)
     folded = getattr(spread, _REDUCE[op])(axis=1).value()

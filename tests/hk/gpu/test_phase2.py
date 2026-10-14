@@ -377,3 +377,39 @@ def test_dequantize_refuses_a_scale_vector_of_the_wrong_length():
     q = torch.zeros(32, 128, device="cuda", dtype=torch.int8)
     with pytest.raises(ValueError, match="scales for"):
         hk.ops.dequantize(q, torch.ones(16, device="cuda"))
+
+
+# -- full size ----------------------------------------------------------------
+#
+# Every shape above fits in a handful of workgroups. The cross-warp combine
+# raced only when enough of them shared a WGP: each warp stored its partial
+# with ordinary LDS writes and passed a plain s_barrier, and a warp on the
+# other CU read before they landed -- whole rows came out NaN or scaled wrong,
+# a different few hundred each run, from 1024 rows up. These are the shapes
+# that found it (examples/validate.py), each run twice because it was
+# intermittent.
+
+FULL = [(8192, 4096), (16384, 1024)]
+
+
+@pytest.mark.parametrize("shape", FULL, ids=[f"{r}x{c}" for r, c in FULL])
+@pytest.mark.parametrize("op", ["rmsnorm", "layernorm", "softmax"])
+def test_a_full_size_norm_is_right_on_every_row(op, shape):
+    for _ in range(2):
+        x = _rand(shape, torch.bfloat16)
+        if op == "rmsnorm":
+            got, want = hk.ops.rmsnorm(x), _ref_rmsnorm(x, 1e-6)
+        elif op == "layernorm":
+            got, want = hk.ops.layernorm(x), F.layer_norm(x.float(), (shape[1],), eps=1e-5)
+        else:
+            got, want = hk.ops.softmax(x), torch.softmax(x.float(), -1)
+        _close(got, want, torch.bfloat16, msg=f"{op} {shape}")
+
+
+def test_a_full_size_quantize_is_right_on_every_row():
+    for _ in range(2):
+        x = _rand((4096, 4096), torch.bfloat16)
+        q, s = hk.ops.quantize(x)
+        wq, ws = _ref_quant(x)
+        torch.testing.assert_close(s, ws, rtol=1e-5, atol=1e-8)
+        assert (q.int() - wq.int()).abs().max() <= 1

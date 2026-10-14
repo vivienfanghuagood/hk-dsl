@@ -495,3 +495,25 @@ def test_a_draining_barrier_does_not_count_and_so_is_allowed():
         a.copy(into=a)
 
     _trace(drained)
+
+
+def test_a_barrier_after_an_ordinary_lds_store_is_refused():
+    """The cross-warp combine as hk.collective wrote it until it was found
+    corrupting rows on a full-size RMSNorm: store each warp's partial, then a
+    plain barrier, then read the others'. The vector store's ds_writes are the
+    compiler's, nothing waits for them before s_barrier, and a warp on the
+    WGP's other CU reads past the barrier before they land."""
+    T = hk.RT(hk.fp32, 16, 64)
+
+    def body(x: hk.Tensor[hk.bf16], o: hk.Tensor[hk.bf16]):
+        v = x.at[0, 0].load(T).sum(axis=1).value()
+        scratch = hk.lds.alloc_vec(hk.lds.shared_vec(v.ty, 4), name="xw")
+        scratch.store(v, hk.arch.warp_id())
+        hk.arch.barrier()
+        total = scratch.load(v.ty, 0)
+        o.at[0, 0] = (x.at[0, 0].load(T) * total[:, None]).to(hk.bf16)
+
+    k = hk.kernel(body, arch="gfx1100", warps=4, name="combine_race",
+                  grid=lambda p: (1, 1, 1))
+    with pytest.raises(hk.VerifyError, match="barrier after store_shared_vec"):
+        k.trace()

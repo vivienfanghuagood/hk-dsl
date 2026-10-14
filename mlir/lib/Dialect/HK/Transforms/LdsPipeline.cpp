@@ -46,6 +46,12 @@ struct State {
   SmallVector<Entry> queue;
   llvm::MapVector<const void *, Value> bound;
   llvm::MapVector<const void *, Operation *> unbound;
+  /// The latest ordinary LDS store nothing has retired yet. Its ds_writes are
+  /// the compiler's, so they are not counted -- the compiler waits for them
+  /// before this warp reads, and an estimate in a counted wait could only
+  /// under-wait. But nothing waits for them before a barrier, and past one
+  /// another warp reads the old value.
+  Operation *plainStore = nullptr;
 
   int indexOf(Value v) const {
     for (auto [i, e] : llvm::enumerate(queue))
@@ -184,6 +190,19 @@ struct Walker {
   }
 
   bool barrier(BarrierOp op, State &st) {
+    if (op.getDrain()) {
+      st.plainStore = nullptr;
+    } else if (st.plainStore) {
+      return fail(op, "barrier after " + Twine(opcodeOf(st.plainStore)) +
+                          " with nothing waiting for its ds_writes. They are "
+                          "ordinary stores: the compiler retires them before "
+                          "this warp's own reads and not before a barrier, and "
+                          "s_barrier orders execution, not memory -- past it "
+                          "another warp can read what was there before. Write "
+                          "barrier(drain=True), which spends an lgkmcnt(0) "
+                          "here." +
+                          atLoc(st.plainStore) + atLoc(op));
+    }
     if (st.queue.empty())
       return true;
     if (!op.getDrain()) {
@@ -223,6 +242,7 @@ struct Walker {
     if (wait) {
       // load<true> ends in lgkmcnt(0): it retires everything, binds nothing.
       st.retireAllUnbound(op);
+      st.plainStore = nullptr;
       st.unbound.erase(id);
     } else {
       st.unbound.erase(id);
@@ -289,11 +309,43 @@ struct Walker {
         continue;
       }
       if (auto c = dyn_cast<StageCommitOp>(op)) {
-        if (c.getWait())
+        if (c.getWait()) {
           st.retireAllUnbound(op);
-        else
+          st.plainStore = nullptr;
+        } else {
           st.queue.push_back(
               {op, c.getBuf().getType().getCalls(), c.getDst(), true, scope});
+        }
+        continue;
+      }
+      if (isa<StoreSharedVecOp>(op)) {
+        checkReads(op, st);
+        st.plainStore = op;
+        continue;
+      }
+      if (auto s = dyn_cast<StoreSharedOp>(op)) {
+        checkReads(op, st);
+        // The vectorised form -- a row-layout 16-bit tile into an LDS tile of
+        // its own type -- writes through inline asm and ends in lgkmcnt(0);
+        // every other form is ordinary stores.
+        auto src = cast<RegTileType>(s.getValue().getType());
+        auto dst = cast<SharedTileType>(s.getDst().getType());
+        bool vectorised = src.getLayout() == "row" &&
+                          dtypeBits(src.getElementType()) == 16 &&
+                          src.getElementType() == dst.getElementType();
+        if (vectorised) {
+          st.retireAllUnbound(op);
+          st.plainStore = nullptr;
+        } else {
+          st.plainStore = op;
+        }
+        continue;
+      }
+      if (isa<GroupLoadOp>(op)) {
+        // Issued and waited by the group: it ends in s_waitcnt 0.
+        checkReads(op, st);
+        st.retireAllUnbound(op);
+        st.plainStore = nullptr;
         continue;
       }
       checkReads(op, st);

@@ -26,3 +26,56 @@ func.func @unbound_read() attributes {hk.kernel} {
   hk.lds_wait_for %a : !hk.rt<bf16, 16x16, row>
   return
 }
+
+// -----
+
+// A vector store is ordinary ds_writes: nothing retires them before an
+// s_barrier, and a warp past it reads what was there before. Found in the
+// cross-warp combine of the shipped norms, where it corrupted rows whenever
+// enough workgroups shared a WGP.
+
+func.func @plain_store_then_barrier(%v: !hk.rv<f32, 16x64, row, col>) attributes {hk.kernel} {
+  %i = arith.constant 0 : i32
+  %s = hk.alloc_shared_vec : !hk.sv<f32, 16, 4>
+  hk.store_shared_vec %v, %s[%i] : !hk.rv<f32, 16x64, row, col>, !hk.sv<f32, 16, 4>
+  // expected-error@+1 {{barrier after store_shared_vec with nothing waiting for its ds_writes}}
+  hk.barrier
+  return
+}
+
+// -----
+
+// CHECK-LABEL: func.func @plain_store_then_drain
+func.func @plain_store_then_drain(%v: !hk.rv<f32, 16x64, row, col>) attributes {hk.kernel} {
+  %i = arith.constant 0 : i32
+  %s = hk.alloc_shared_vec : !hk.sv<f32, 16, 4>
+  hk.store_shared_vec %v, %s[%i] : !hk.rv<f32, 16x64, row, col>, !hk.sv<f32, 16, 4>
+  hk.barrier {drain}
+  hk.barrier
+  return
+}
+
+// -----
+
+// An fp32 tile cannot take the vectorised path, so it is ordinary stores too.
+
+func.func @f32_tile_store_then_barrier(%t: !hk.rt<f32, 16x16, row>) attributes {hk.kernel} {
+  %s = hk.alloc_shared : !hk.st<f32, 16x16>
+  hk.store_shared %t, %s : !hk.rt<f32, 16x16, row>, !hk.st<f32, 16x16>
+  // expected-error@+1 {{barrier after store_shared}}
+  hk.barrier
+  return
+}
+
+// -----
+
+// A row-layout bf16 tile into a bf16 LDS tile is the vectorised path, which
+// ends in lgkmcnt(0) of its own.
+
+// CHECK-LABEL: func.func @bf16_tile_store_then_barrier
+func.func @bf16_tile_store_then_barrier(%t: !hk.rt<bf16, 16x16, row>) attributes {hk.kernel} {
+  %s = hk.alloc_shared : !hk.st<bf16, 16x16>
+  hk.store_shared %t, %s : !hk.rt<bf16, 16x16, row>, !hk.st<bf16, 16x16>
+  hk.barrier
+  return
+}
