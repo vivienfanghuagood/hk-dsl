@@ -11,8 +11,10 @@ RDNA.md, kernel comments and a notebook, and they drifted.
 from .base import MmaShape, Target
 from .gfx1100 import GFX1100
 from .gfx1201 import GFX1201
+from .gfx942 import GFX942
+from .gfx950 import GFX950
 
-TARGETS = {t.arch: t for t in (GFX1100, GFX1201)}
+TARGETS = {t.arch: t for t in (GFX1100, GFX1201, GFX942, GFX950)}
 
 # Accept the marketing names too; the Makefiles use these.
 _ALIASES = {
@@ -20,6 +22,8 @@ _ALIASES = {
     "RDNA4": "gfx1201",
     "gfx11": "gfx1100",
     "gfx12": "gfx1201",
+    "CDNA3": "gfx942",
+    "CDNA4": "gfx950",
 }
 
 
@@ -58,5 +62,5 @@ def current_arch() -> str:
     return _CURRENT[0]
 
 
-__all__ = ["GFX1100", "GFX1201", "TARGETS", "current_arch", "get_target",
-           "Target", "MmaShape"]
+__all__ = ["GFX1100", "GFX1201", "GFX942", "GFX950", "TARGETS", "current_arch",
+           "get_target", "Target", "MmaShape"]

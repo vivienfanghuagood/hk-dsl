@@ -72,12 +72,31 @@ class Target:
     #: unverified target because a wrong hard limit is worse than none.
     verified: bool = True
 
+    #: True where the accumulation registers (AGPRs) are carved out of the
+    #: same per-lane file as the VGPRs -- gfx90a and later CDNA. Occupancy is
+    #: then charged on align(VGPRs, 4) + AGPRs, and a kernel that reads fine
+    #: on its VGPR count alone can be a whole occupancy step lower.
+    unified_agprs: bool = False
+
+    #: Headers from hk's own include/ the generated source needs on this
+    #: target, after kittens.cuh: what the translation calls that this
+    #: target's HipKittens tree does not define.
+    extra_includes: Tuple[str, ...] = ()
+
     # ---- derived ----
 
     def vgpr_rounded(self, vgprs: int) -> int:
         """VGPRs actually charged for a kernel that uses `vgprs`."""
         g = self.vgpr_granule
         return -(-vgprs // g) * g
+
+    def charged_vgprs(self, vgprs: int, agprs: int = 0) -> int:
+        """The register count occupancy is computed from: the VGPRs, plus the
+        AGPRs where they share the file (allocated from the next multiple of
+        four). Rounding to the granule is vgpr_rounded's job, not this one's."""
+        if not self.unified_agprs or agprs <= 0:
+            return vgprs
+        return -(-vgprs // 4) * 4 + agprs
 
     def occupancy(self, vgprs: int) -> int:
         """Waves/SIMD the register footprint allows. Register-only: LDS can and
@@ -123,12 +142,17 @@ class Target:
         16x16 base tile -- that is the mirrored-halves fact (1) restated: a bf16
         operand tile is exactly as expensive as an fp32 accumulator tile, which
         is what bounds tile shapes on this architecture.
+
+        On CDNA the fragment is not 16x16 -- gfx950's bf16 operand is 16x32 --
+        so the price is scaled by the fragment's element count, not by a count
+        of 16x16 bases. For every 16x16x16 target the two are the same number.
         """
         shape = next(iter(self.mma.values()), None)
         if shape is None:
             return (rows // 16) * (cols // 16) * 8
-        per_base = shape.operand_vgprs if dtype_bits == 16 else shape.accum_vgprs
-        return (rows // 16) * (cols // 16) * per_base
+        if dtype_bits == 16:
+            return rows * cols * shape.operand_vgprs // (shape.m * shape.k)
+        return rows * cols * shape.accum_vgprs // (shape.m * shape.n)
 
     def occupancy_achieved(self, vgprs: int, lds_bytes: int, waves_per_workgroup: int) -> int:
         """What the kernel actually gets: the smaller of the two limits."""
