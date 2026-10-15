@@ -91,6 +91,7 @@ def test_the_plugin_does_nothing_unless_asked(fake_sglang, monkeypatch, capsys):
     from hk.integration import _sglang_plugin
 
     monkeypatch.delenv("HK_SGLANG_LINEAR", raising=False)
+    monkeypatch.delenv("HK_SGLANG_MOE", raising=False)
     orig = Unquantized.apply
     _sglang_plugin.register()
     assert Unquantized.apply is orig
