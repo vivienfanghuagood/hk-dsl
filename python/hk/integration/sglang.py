@@ -19,11 +19,57 @@ models, which call SDPA directly.
 
 from __future__ import annotations
 
+import importlib
+
 from . import _common
 
 PREFIXES = ("sglang",)
 
 _APPLIED = None
+_LINEAR = None
+
+#: Where SGLang has kept UnquantizedLinearMethod, newest first.
+_LINEAR_HOMES = ("sglang.srt.layers.quantization.unquant", "sglang.srt.layers.linear")
+
+
+def apply_linear() -> str:
+    """Route SGLang's unquantized linear layers through hk's GEMM op,
+    `torch.ops.hk_vllm.linear` -- the op `vllm_gemm` defines, routed by the
+    same measured table and falling back to F.linear, since without vLLM
+    there is no other engine GEMM to fall back to. bf16 on the GPU only;
+    every other call keeps SGLang's own apply. Returns what happened."""
+    global _LINEAR
+    if not available():
+        return "sglang is not importable; linear not patched"
+    if _LINEAR is not None:
+        return "linear: already patched"
+    from . import vllm_gemm  # noqa: PLC0415
+
+    if vllm_gemm.routes() is None:
+        return "linear: not patched -- no routing table for this arch"
+    cls = None
+    for home in _LINEAR_HOMES:
+        try:
+            cls = getattr(importlib.import_module(home), "UnquantizedLinearMethod", None)
+        except ImportError:
+            continue
+        if cls is not None:
+            break
+    if cls is None:
+        return f"linear: not patched -- no UnquantizedLinearMethod in {_LINEAR_HOMES}"
+    vllm_gemm.register_op()
+    orig = cls.apply
+
+    def apply(self, layer, x, bias=None, *args, **kwargs):
+        import torch  # noqa: PLC0415
+
+        if x.is_cuda and x.dtype == torch.bfloat16 and not args and not kwargs:
+            return torch.ops.hk_vllm.linear(x, layer.weight, bias)
+        return orig(self, layer, x, bias, *args, **kwargs)
+
+    cls.apply = apply
+    _LINEAR = (cls, orig)
+    return f"linear -> hk ({cls.__module__}.UnquantizedLinearMethod.apply)"
 
 
 def available() -> bool:
@@ -47,9 +93,14 @@ def apply() -> str:
 
 
 def revert() -> str:
-    global _APPLIED
+    global _APPLIED, _LINEAR
     out = _common.unpatch_sdpa(PREFIXES)
     _APPLIED = None
+    if _LINEAR is not None:
+        cls, orig = _LINEAR
+        cls.apply = orig
+        _LINEAR = None
+        out += "; linear -> sglang"
     return out
 
 
