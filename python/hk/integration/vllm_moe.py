@@ -62,9 +62,9 @@ def invoke_fused_moe_triton_kernel(A, B, C, A_scale, B_scale, topk_weights,
             and _plain(A_scale, B_scale, B_bias, block_shape, use_fp8_w8a8,
                        use_int8_w8a8, use_int8_w8a16, use_int4_w4a16)
             and moe.takes(A, B, bm)):
-        moe.moe_gemm(A, B, C, sorted_token_ids, expert_ids, num_tokens_post_padded,
-                     top_k=top_k, block_m=bm,
-                     topk_weights=topk_weights if mul_routed_weight else None)
+        moe._launch(A, B, C, sorted_token_ids, expert_ids, num_tokens_post_padded,
+                    top_k=top_k, block_m=bm,
+                    topk_weights=topk_weights if mul_routed_weight else None)
         PATCH.count("hk")
         return None
     PATCH.count("fallback")

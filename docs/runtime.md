@@ -245,6 +245,17 @@ instead of loading the pybind module. That is opt-in because its launch is
 Python where the pybind entry point is C++: nothing inside a captured graph,
 measurable in front of a microsecond kernel run eagerly.
 
+What an eager launch costs on the host is what an eager server pays per hk
+call whenever the CPU, not the GPU, sets the pace. SGLang on RDNA3 decodes
+eagerly. The torch op used to cost 27 µs of host time per call on the pod:
+it packed the argument field by field, built a ctypes buffer per launch and
+entered a device context. It now costs 17 µs ([chapter
+25](history/25-sglang-moe.md)):
+- one precompiled `struct` packs the whole argument in one call;
+- each thread reuses one argument buffer, since the launch copies the
+  argument out before it returns;
+- there is no device switch when the device is already current.
+
 `hk.ops.sdpa` is `F.scaled_dot_product_attention` on the generated kernel
 where it fits, and torch where it does not:
 

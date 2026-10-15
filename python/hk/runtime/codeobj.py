@@ -25,8 +25,9 @@ from __future__ import annotations
 
 import ctypes
 import struct
+import threading
 from pathlib import Path
-from typing import Any, Dict, List, Sequence, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from . import compile as _compile
 from .compile import CompileError
@@ -103,6 +104,35 @@ def _check(err: int, what: str) -> None:
 #: hipModuleLaunchKernel's `extra` keys (hip_runtime_api.h).
 _PARAM_BUFFER, _PARAM_SIZE, _PARAM_END = 1, 2, 3
 
+
+def _layout(offsets, size: int) -> Tuple[struct.Struct, Optional[List[int]]]:
+    """One struct for the whole argument, so a launch packs it in one call
+    instead of one per field: every field at its offset, in offset order,
+    with padding between. Also the permutation from the natural order (per
+    tensor: pointer, batch, depth, rows, cols, row stride) to offset order,
+    or None where the two agree."""
+    fields = []
+    for po, dims, ro in offsets:
+        fields.append((po, "Q", len(fields)))
+        for o in dims:
+            fields.append((o, "i", len(fields)))
+        fields.append((ro, "i", len(fields)))
+    fields.sort()
+    fmt, at = ["<"], 0
+    for off, code, _ in fields:
+        if off < at:
+            raise CompileError(f"argument fields overlap at offset {off}")
+        if off > at:
+            fmt.append(f"{off - at}x")
+        fmt.append(code)
+        at = off + struct.calcsize("<" + code)
+    if at > size:
+        raise CompileError(f"argument fields end at {at}, past its {size} bytes")
+    if size > at:
+        fmt.append(f"{size - at}x")
+    perm = [i for _, _, i in fields]
+    return struct.Struct("".join(fmt)), (None if perm == list(range(len(perm))) else perm)
+
 # ---------------------------------------------------------------- a kernel
 
 
@@ -139,8 +169,11 @@ class CodeObjectKernel:
             base, ptr, b, d, r, c, rs = table[1 + per * i:1 + per * (i + 1)]
             self.offsets.append((base + ptr, (base + b, base + d, base + r,
                                               base + c), base + rs))
+        self._struct, self._perm = _layout(self.offsets, self.size)
         self._fn: Dict[int, ctypes.c_void_p] = {}
         self._modules: Dict[int, ctypes.c_void_p] = {}
+        self._local = threading.local()
+        self.torch_dtypes = None
 
     def function(self, device: int) -> ctypes.c_void_p:
         fn = self._fn.get(device)
@@ -154,16 +187,34 @@ class CodeObjectKernel:
             self._modules[device], self._fn[device] = mod, fn
         return fn
 
+    def _values(self, shapes, ptrs, row_strides) -> List[int]:
+        flat: List[int] = []
+        for s, p, rs in zip(shapes, ptrs, row_strides):
+            flat.append(p)
+            flat.extend(s)
+            flat.append(rs)
+        return flat if self._perm is None else [flat[i] for i in self._perm]
+
     def pack(self, shapes: Sequence[Tuple[int, int, int, int]],
              ptrs: Sequence[int], row_strides: Sequence[int]) -> bytes:
         buf = bytearray(self.size)
-        for (po, dims, ro), s, p, rs in zip(self.offsets, shapes, ptrs,
-                                            row_strides):
-            struct.pack_into("<Q", buf, po, p)
-            for o, v in zip(dims, s):
-                struct.pack_into("<i", buf, o, v)
-            struct.pack_into("<i", buf, ro, rs)
+        self._struct.pack_into(buf, 0, *self._values(shapes, ptrs, row_strides))
         return bytes(buf)
+
+    def _argument(self):
+        """This thread's argument buffer and the `extra` array naming it. The
+        launch copies the argument out before it returns, so one buffer
+        serves every launch; one per thread, since ctypes drops the GIL for
+        the call."""
+        held = getattr(self._local, "arg", None)
+        if held is None:
+            buf = ctypes.create_string_buffer(self.size)
+            size = ctypes.c_size_t(self.size)
+            extra = (ctypes.c_void_p * 5)(
+                _PARAM_BUFFER, ctypes.addressof(buf), _PARAM_SIZE,
+                ctypes.addressof(size), _PARAM_END)
+            held = self._local.arg = (buf, size, extra)
+        return held
 
     def grid_for(self, shapes) -> Tuple[int, int, int]:
         ext = dict(zip(self.tensors, shapes))
@@ -175,16 +226,13 @@ class CodeObjectKernel:
         gx, gy, gz = self.grid_for(shapes)
         if gx <= 0 or gy <= 0 or gz <= 0:
             return                      # an empty grid launches nothing
-        arg = ctypes.create_string_buffer(self.pack(shapes, ptrs, row_strides),
-                                          self.size)
-        size = ctypes.c_size_t(self.size)
-        extra = (ctypes.c_void_p * 5)(
-            _PARAM_BUFFER, ctypes.addressof(arg), _PARAM_SIZE,
-            ctypes.addressof(size), _PARAM_END)
-        _check(hip().hipModuleLaunchKernel(
+        buf, _, extra = self._argument()
+        self._struct.pack_into(buf, 0, *self._values(shapes, ptrs, row_strides))
+        err = hip().hipModuleLaunchKernel(
             self.function(device), gx, gy, gz, self.block, 1, 1, self.shmem,
-            ctypes.c_void_p(stream), None, extra),
-            f"{self.ir.name}: hipModuleLaunchKernel")
+            stream, None, extra)
+        if err:
+            _check(err, f"{self.ir.name}: hipModuleLaunchKernel")
 
 
 def load(kernel, **const_overrides) -> CodeObjectKernel:
@@ -216,13 +264,16 @@ def tensor_args(k: CodeObjectKernel, tensors, op: str):
     axis, left-padded to (batch, depth, rows, cols). Refused with
     RuntimeError, which is what TORCH_CHECK raises there, so a caller cannot
     tell which registration it got."""
-    import torch  # noqa: PLC0415
+    dtypes = k.torch_dtypes
+    if dtypes is None:
+        import torch  # noqa: PLC0415
 
+        dtypes = k.torch_dtypes = [getattr(torch, _TORCH_DTYPES[d]) for d in k.dtypes]
     shapes, ptrs, rows = [], [], []
-    for name, want, t in zip(k.tensors, k.dtypes, tensors):
+    for name, want, dt, t in zip(k.tensors, k.dtypes, dtypes, tensors):
         if not t.is_cuda:
             raise RuntimeError(f"{op}: {name} must be on the GPU")
-        if t.dtype != getattr(torch, _TORCH_DTYPES[want]):
+        if t.dtype != dt:
             raise RuntimeError(f"{op}: {name} must be {want}, got {t.dtype}")
         nd = t.dim()
         if not 1 <= nd <= 4:
@@ -272,15 +323,21 @@ def torch_op(kernel, *, ns: str = "hk", name: str = "", **const_overrides):
                          f"would mutate nothing and return nothing")
     k = load(kernel, **const_overrides)
     qual = f"{ns}::{op}"
+    raw_stream = getattr(torch._C, "_cuda_getCurrentRawStream", None) or (
+        lambda i: torch.cuda.current_stream(i).cuda_stream)
 
     def impl(*tensors):
         shapes, ptrs, rows = tensor_args(k, tensors, qual)
-        dev = tensors[0].device
-        if any(t.device != dev for t in tensors[1:]):
-            raise RuntimeError(f"{qual}: every tensor must be on one device")
-        with torch.cuda.device(dev):
-            k.launch(dev.index, torch.cuda.current_stream(dev).cuda_stream,
-                     shapes, ptrs, rows)
+        idx = tensors[0].get_device()
+        for t in tensors[1:]:
+            if t.get_device() != idx:
+                raise RuntimeError(f"{qual}: every tensor must be on one device")
+        stream = raw_stream(idx)
+        if torch.cuda.current_device() == idx:
+            k.launch(idx, stream, shapes, ptrs, rows)
+        else:
+            with torch.cuda.device(idx):
+                k.launch(idx, stream, shapes, ptrs, rows)
 
     def meta(*tensors):
         return None

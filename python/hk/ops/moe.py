@@ -192,11 +192,16 @@ def moe_gemm(a, w, c, sorted_ids, expert_ids, num_tokens_post_padded, *,
     assignment, one pair per block, `expert_ids` then being the flattened
     top-k ids. `topk_weights` given multiplies each row by its routing
     weight. Raises ValueError for a GEMM `takes` refuses."""
-    import torch  # noqa: PLC0415
-
     if not takes(a, w, block_m):
         raise ValueError(f"moe_gemm: does not take A {tuple(a.shape)} {a.dtype}, "
                          f"W {tuple(w.shape)} {w.dtype} at BLOCK_M={block_m}")
+    _launch(a, w, c, sorted_ids, expert_ids, num_tokens_post_padded, top_k=top_k,
+            block_m=block_m, topk_weights=topk_weights)
+
+
+def _launch(a, w, c, sorted_ids, expert_ids, num_tokens_post_padded, *,
+            top_k: int, block_m: int, topk_weights=None) -> None:
+    """`moe_gemm` for a caller that has already asked `takes`."""
     n, k = w.shape[1], w.shape[2]
     s = schedule_for(block_m, k)
     m = a.shape[0]
@@ -204,12 +209,12 @@ def moe_gemm(a, w, c, sorted_ids, expert_ids, num_tokens_post_padded, *,
     if naive:
         ids = _arange(expert_ids.numel(), a.device)
     else:
-        em = sorted_ids.numel()
+        em = total = sorted_ids.numel()
         if m < block_m:
             # vLLM's own bound: with fewer tokens than a block, each of the
             # tokens * top_k pairs opens at most one block.
             em = min(em, m * top_k * block_m)
-        ids = sorted_ids[:em]
+        ids = sorted_ids if em == total else sorted_ids[:em]
     routed = topk_weights is not None
     tw = topk_weights.reshape(-1, 1) if routed else _placeholder(a.device)
     if not a.is_contiguous():
