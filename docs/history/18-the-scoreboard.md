@@ -2,6 +2,11 @@
 
 > Part of the [development record](README.md), in the order the work happened. Paths, API names and numbers are those of the time.
 
+> The opponents here were under-tuned: Triton ran the tutorial's seven GEMM
+> configs and FlyDSL its bare 128x128x32 default rather than its own
+> dispatcher. Against FlyDSL's dispatcher the GEMM loses; [chapter 26](26-the-scoreboard-retuned.md)
+> re-measures every row with each DSL tuned.
+
 The goal this chapter serves is that hk's kernels be no slower than the
 faster of Triton and FlyDSL at the shapes an LLM runs, on this card. That
 needs a scoreboard first.

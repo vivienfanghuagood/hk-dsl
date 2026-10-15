@@ -33,9 +33,9 @@ it is a time ratio.
 
 | kernel | result | against | verdict | source |
 |---|---|---|---|---|
-| GEMM, bf16, Qwen3-8B's linear shapes | 82.1-85.7 TFLOP/s | the faster of Triton (autotuned) and FlyDSL; hipBLASLt | win, 1.03-1.08x; hipBLASLt 1.19-1.34x | [the scoreboard](history/18-the-scoreboard.md) |
+| GEMM, bf16, Qwen3-8B's linear shapes | 84.8-87.5 TFLOP/s | FlyDSL's dispatcher and its autotuner; Triton autotuned over gfx1100's space; hipBLASLt | loss to FlyDSL, 0.95-0.98x; win over tuned Triton 1.05-1.07x and hipBLASLt 1.23-1.33x | [the scoreboard, retuned](history/26-the-scoreboard-retuned.md) |
 | GEMM, bf16 | 75.0 TFLOPs at 4096³, 77.9 at 8192x8192x4096 | handwritten HipKittens C++; rocBLAS | tie with the C++ (1.00x); rocBLAS 0.93x and 0.92x; since overtaken by one LDS buffer | [Phase 3](history/02-phase-3-gemm.md) |
-| RMSNorm (weighted), fused add + RMSNorm, softmax | 0.37-0.97x | the faster of Triton, FlyDSL, Inductor | loss: fixed latency at 1-32 rows, 3-8% at 8192 | [the scoreboard](history/18-the-scoreboard.md) |
+| RMSNorm (weighted), fused add + RMSNorm, softmax | 0.44-0.97x | the fastest of Triton and FlyDSL, each autotuned, and Inductor | loss: a longer instruction stream at 1-32 rows; WMMA-shaped register tiles at 2048 (0.77-0.90x); 3-9% at 8192 | [the scoreboard, retuned](history/26-the-scoreboard-retuned.md) |
 | dropout, KV cache write, LayerNorm backward, embedding (`examples/07`-`10`) | dropout 1.02x; KV write 1.18-3.00x; LayerNorm backward 1.12x at 1024 wide, 0.66-0.92x wider; embedding 1.18-1.28x torch at 1-32 tokens, 0.93x Triton at 4096 | the Triton tutorial or a Triton row kernel; torch | win for dropout, the KV write and LayerNorm backward at 1024; loss where a 16-row tile cannot hold a 2048+ wide row, and for the embedding at 4096 tokens | [rows by index](history/19-rows-by-index.md) |
 | GEMM on Qwen3-8B's linear layers | 1.09-1.23x at M ≥ 1024 | hipBLASLt (`F.linear`) | win at M ≥ 1024; a comb below it, with losses | [linear layers](history/08-linear-layers.md) |
 | attention forward | 61.0-64.9 TFLOPs | handwritten C++; torch SDPA (aotriton) | tie with the C++, 1.008x causal; 2.9-3.2x torch, 4.0x causal | [Phase 4](history/03-phase-4-attention.md) |
@@ -62,41 +62,81 @@ it is a time ratio.
 
 ## Against Triton and FlyDSL
 
-[The scoreboard](history/18-the-scoreboard.md). `tools/hk-bench/scoreboard.py`:
-every way to compute each op, in one process, each checked against fp32
-before it is timed, GPU time from the profiler's kernel records by kernel
-name. Triton is the tutorial kernel with its own autotune (`triton_ref.py`);
-FlyDSL is 0.4.0.dev970's own kernel (its flash attention does not run on
-gfx11, which has no global-to-LDS load). GPU ms; the last column is hk against
-the fastest other arm.
+[The scoreboard, retuned](history/26-the-scoreboard-retuned.md).
+`tools/hk-bench/scoreboard.py`: every way to compute each op in one process,
+each checked against fp32 before it is timed, each in a profiler session of
+its own per round, rounds rotated, best round. Every DSL runs out of the box
+and tuned, and records what it searched:
+- hk: its default GEMM schedule, and its tuner's record (96 points);
+- Triton: the tutorial kernel, and the same kernel autotuned over gfx1100's
+  space (120 matmul configs; num_warps x waves_per_eu for the row kernels),
+  ranked with the scoreboard's own warm timing;
+- FlyDSL 0.4.0.dev970: its dispatcher (`pick_tile` and per-tile options),
+  and its autotuner forced to search.
 
-| case | hk | torch | Inductor | Triton | FlyDSL | hk vs best |
-|---|---|---|---|---|---|---|
-| gemm 4096x4096x4096 | 1.612 | 1.999 | -- | 1.687 | 1.743 | 1.05x |
-| gemm 2048x6144x4096 | 1.202 | 1.613 | -- | 1.300 | 1.306 | 1.08x |
-| gemm 2048x4096x4096 | 0.837 | 1.043 | -- | 0.903 | 0.930 | 1.08x |
-| gemm 2048x24576x4096 | 4.847 | 5.944 | -- | 5.090 | 5.075 | 1.05x |
-| gemm 2048x4096x12288 | 2.490 | 2.958 | -- | 2.645 | 2.571 | 1.03x |
-| attention n4096 causal, GQA 4 | 2.994 | 10.924 | -- | -- | -- | 3.65x |
-| attention n4096, GQA 4 | 4.823 | 13.240 | -- | -- | -- | 2.75x |
-| rms_norm 1x4096 | 0.0057 | 0.0044 | 0.0025 | 0.0026 | 0.0023 | 0.41x |
-| rms_norm 32x4096 | 0.0048 | 0.0044 | 0.0026 | 0.0026 | 0.0023 | 0.47x |
-| rms_norm 2048x4096 | 0.0274 | 0.0264 | 0.0196 | 0.0193 | 0.0191 | 0.70x |
-| rms_norm 8192x4096 | 0.1949 | 0.1812 | 0.1810 | 0.1807 | 0.1791 | 0.92x |
-| fused add + rms_norm 1x4096 | 0.0074 | 0.0080 | 0.0027 | 0.0031 | 0.0032 | 0.37x |
-| fused add + rms_norm 32x4096 | 0.0051 | 0.0063 | 0.0026 | 0.0026 | 0.0028 | 0.51x |
-| fused add + rms_norm 2048x4096 | 0.0505 | 0.0537 | 0.0436 | 0.0438 | 0.0394 | 0.78x |
-| fused add + rms_norm 8192x4096 | 0.3560 | 0.4621 | 0.3664 | 0.3460 | 0.3831 | 0.97x |
-| softmax 2048x4096 | 0.0305 | 0.0313 | 0.0582 | 0.0261 | 0.0192 | 0.63x |
-| softmax 8192x4096 | 0.1893 | 0.1775 | 0.2271 | 0.1781 | 0.1757 | 0.93x |
+Its flash attention does not run on gfx11, which has no global-to-LDS load.
+GPU ms. "Triton" and "FlyDSL" are the faster of each DSL's two arms; the
+verdict is hk's faster arm against the fastest other, a tie within the
+larger of 2% and the two arms' noise. Rows marked * are best of 9 rounds of
+50 calls, the rest best of 5 of 10.
 
-The losses, and why:
-- **1-32 rows** is fixed latency: hk's 16x64 fp32 tile per warp is a
-  longer instruction stream than Triton's one-dimensional block for the
-  same 8 KB.
-- **Mid-size softmax** pays two LDS round trips with barriers per
-  reduction, twice.
-- **8192 rows** is bandwidth, 3-8% behind.
+| case | hk | torch | Inductor | Triton | FlyDSL | hk vs best | chapter 18 said |
+|---|---|---|---|---|---|---|---|
+| gemm 4096x4096x4096 | 1.574 | 1.971 | -- | 1.669 | 1.540 | 0.98x loss | 1.05x |
+| gemm 2048x6144x4096 | 1.178 | 1.571 | -- | 1.257 | 1.139 | 0.97x loss | 1.08x |
+| gemm 2048x4096x4096 | 0.8106 | 0.9975 | -- | 0.8582 | 0.7721 | 0.95x loss | 1.08x |
+| gemm 2048x24576x4096 | 4.766 | 5.952 | -- | 4.999 | 4.631 | 0.97x loss | 1.05x |
+| gemm 2048x4096x12288 | 2.401 | 2.943 | -- | 2.539 | 2.296 | 0.96x loss | 1.03x |
+| attention n4096 causal, GQA 4 | 2.847 | 10.831 | -- | -- | -- | 3.80x win | 3.65x |
+| attention n4096, GQA 4 | 4.677 | 12.762 | -- | -- | -- | 2.73x win | 2.75x |
+| rms_norm 1x4096* | 0.0051 | 0.0043 | 0.0026 | 0.0026 | 0.0025 | 0.48x loss | 0.41x |
+| rms_norm 32x4096* | 0.0039 | 0.0044 | 0.0027 | 0.0027 | 0.0026 | 0.66x, a tie by hk's 35% noise | 0.47x |
+| rms_norm 2048x4096 | 0.0248 | 0.0262 | 0.0198 | 0.0193 | 0.0191 | 0.77x loss | 0.70x |
+| rms_norm 8192x4096 | 0.1901 | 0.1788 | 0.1769 | 0.1737 | 0.1744 | 0.91x loss | 0.92x |
+| fused add + rms_norm 1x4096* | 0.0060 | 0.0061 | 0.0027 | 0.0027 | 0.0030 | 0.44x loss | 0.37x |
+| fused add + rms_norm 32x4096* | 0.0045 | 0.0066 | 0.0029 | 0.0029 | 0.0031 | 0.64x, a tie by hk's 36% noise | 0.51x |
+| fused add + rms_norm 2048x4096 | 0.0401 | 0.0489 | 0.0395 | 0.0365 | 0.0360 | 0.90x loss | 0.78x |
+| fused add + rms_norm 8192x4096 | 0.3478 | 0.4545 | 0.3656 | 0.3360 | 0.3689 | 0.97x loss | 0.97x |
+| softmax 2048x4096 | 0.0231 | 0.0307 | 0.0576 | 0.0258 | 0.0192 | 0.83x loss | 0.63x |
+| softmax 8192x4096 | 0.1846 | 0.1739 | 0.2240 | 0.1733 | 0.1746 | 0.94x loss | 0.93x |
+
+Chapter 18's GEMM win was against FlyDSL's bare 128x128x32 default (1.743 ms
+at 4096³) and Triton's seven tutorial configs. FlyDSL's dispatcher runs
+4096³ in 1.547 ms. FlyDSL's tile with each option taken away, beside hk's
+(`tools/hk-bench/gemm_vs_flydsl.py`), shows where the lead comes from:
+`sched_group_barrier` hints are worth 5-6% at every shape, and a per-workgroup
+rotation of the K start 5-12%. Bare, its kernel is 0.89-0.97x hk's.
+- hk can express the rotation (`gemm_kernel(stagger=)`), and it does not pay
+  in hk's schedule: 0.91-1.00x at ten of eleven shapes.
+- hk cannot express the hints: `hk.arch` has a full `sched_barrier` but no
+  instruction-group interleave.
+- FlyDSL's four-wave 64x64 warp tile spills in hk's `dot_tile` (281 VGPRs),
+  which keeps its whole A slice live where FlyDSL streams one fragment.
+- FlyDSL's 256x256x32 tile fits hk (252 VGPRs) and is 0.77-0.88x.
+- n_split=2, now hk's default, was +0.4-2.6% at 15 of 16 shape-runs.
+
+The norm losses, and why:
+- **1-32 rows** is the instruction stream. hk's folded RMSNorm is 846
+  instructions a warp, with 16 b128 loads, 8 b128 stores and 3 barriers.
+  Triton's, at its tuned 16 warps, is 221 instructions a wave, with 2 loads,
+  1 store and 2 barriers. A bare hk tile copy of one row takes 3.47 us, and
+  Triton's whole RMSNorm 2.69.
+- **2048 rows** (33 MB, Infinity-Cache resident): hk's register tiles have
+  WMMA's lane layouts. A 16-bit row tile holds each row twice, in lanes l and
+  l + 16, so every load and store moved each 32-byte run from both wave
+  halves. HipKittens' `HK_RT_HALF_SPLIT` now moves it once. On the folded
+  plans: rms_norm 27.17 to 24.72 us, the fused add 46.12 to 40.15; softmax,
+  switched to the bounded accesses, 29.99 to 23.22, ahead of tuned Triton's
+  25.73. The remaining gap is the absence of a register layout in which a
+  lane owns a contiguous run of one row, which is what Triton's blocked
+  layout and FlyDSL's tiled copies give their kernels.
+- **8192 rows** is HBM, 3-9% behind. The unfolded plan's weight is a row
+  vector broadcast down a WMMA-shaped tile, read with 128 element loads a
+  lane.
+
+So on this card at these shapes: FlyDSL wins the GEMM and the row kernels,
+Triton the 8192-row norms, and hk attention, where neither has a gfx11
+kernel. hk's GEMM is second, ahead of tuned Triton and hipBLASLt.
 
 ### Triton tutorials and the kernels beside a model
 
