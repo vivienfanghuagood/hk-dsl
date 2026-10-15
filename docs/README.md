@@ -11,6 +11,7 @@
 | [Building](building.md) | MLIR and the dialect, the wheels and what they carry, the repository layout |
 | [Testing](testing.md) | the four test tiers, how to run each, and the three gates the MLIR move passed |
 | [Development record](history/README.md) | the chronological record, Phases 1-7 and the chapters after them, verbatim |
+| [CDNA3/4 (design)](design/cdna.md) | what is RDNA3-only, what HipKittens offers on gfx942/gfx950, the op-family estimates, and the MI355X prototype on branch `cdna` |
 
 New to hk: read [getting started](getting-started.md), then
 [the language](language.md). Deciding whether to use it:
