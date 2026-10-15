@@ -36,15 +36,19 @@ The whole argument is in [why this exists](docs/README.md#why-this-exists).
 
 ## Install
 
-**From a wheel.** One per Python interpreter, because it carries the MLIR
-bindings for one CPython; it includes the HipKittens headers, so at run time
-only hipcc is needed. CPython 3.10 and 3.12 wheels are attached to each
-[GitHub release](https://github.com/vivienfanghuagood/hk-dsl/releases), or
-build one with `scripts/build_wheel.sh` ([building](docs/building.md#wheels)):
+**From PyPI**, for CPython 3.10 (glibc 2.35+) or 3.12 (glibc 2.38+) on Linux
+x86_64:
 
 ```bash
-pip install hk_dsl-0.3.1-cp310-cp310-manylinux_2_35_x86_64.whl
+pip install hk-dsl
 ```
+
+A wheel is built per Python interpreter, because it carries the MLIR bindings
+for one CPython. It includes the HipKittens headers, so at run time only hipcc
+is needed. The same wheels are attached to each
+[GitHub release](https://github.com/vivienfanghuagood/hk-dsl/releases). For
+another interpreter, build one with `scripts/build_wheel.sh`
+([building](docs/building.md#wheels)).
 
 **From source.** The backend is the `third_party/HipKittens` submodule, so
 clone with `--recursive`:

@@ -163,6 +163,18 @@ is Rome", hk "France is Paris", repeated.
 - **Attention** is SGLang's Triton backend in both arms. The SDPA rebinding
   (`apply()`) is still not verified inside SGLang.
 
+## On PyPI
+
+The SGLang plugin needs the wheel's entry-point metadata, so it shipped as
+0.3.1. Those wheels were the first on PyPI, uploaded with twine and
+retagged by `scripts/manylinux_tag.sh`: manylinux_2_35 for cp310 and 2_38
+for cp312, with nothing grafted, since they link only libc, libm, libgcc_s
+and libstdc++. `pip install hk-dsl` into a fresh venv then traced,
+translated and built outside the checkout. The cp312 wheel, installed into
+SGLang's venv with nothing copied over it, served with `HK_SGLANG_LINEAR=1`
+at 24.1 ms per token. `.github/workflows/pypi.yml` can upload later
+releases once the repository has a token or a trusted publisher.
+
 ## Reproducing
 
 ```bash

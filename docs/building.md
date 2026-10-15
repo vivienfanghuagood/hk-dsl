@@ -103,8 +103,9 @@ builds nothing, because a hosted runner has neither the ROCm nor the MLIR
 toolchain. It runs by hand with `gh workflow run pypi.yml -f tag=vX.Y.Z`, and
 on every published release once the repository variable `PYPI_PUBLISH` is
 `true`. It uses the `PYPI_API_TOKEN` secret of the `pypi` environment, or PyPI
-trusted publishing when that secret is not set. hk-dsl is not on PyPI yet,
-because the project has neither credential.
+trusted publishing when that secret is not set. The repository has neither
+yet. 0.3.1, the first version on PyPI, was uploaded by hand with twine from
+the same manylinux wheels.
 
 What is in the wheel (`scripts/build_wheel.sh`, `pyproject.toml`):
 

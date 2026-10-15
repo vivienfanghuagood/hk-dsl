@@ -15,14 +15,16 @@ You need Linux x86_64 and ROCm's hipcc to compile; a Radeon (gfx1100, RDNA3)
 and torch to launch. torch is not a dependency of the package — install the
 ROCm build you already use.
 
-**From a wheel.** A wheel is built per Python interpreter, because it carries
-the MLIR bindings for one CPython. CPython 3.10 and 3.12 wheels are attached
-to each [GitHub release](https://github.com/vivienfanghuagood/hk-dsl/releases);
-for another interpreter, build one ([building](building.md#wheels)). Then:
+**From PyPI**, for CPython 3.10 (glibc 2.35+) or 3.12 (glibc 2.38+):
 
 ```bash
-pip install hk_dsl-0.3.1-cp310-cp310-manylinux_2_35_x86_64.whl
+pip install hk-dsl
 ```
+
+A wheel is built per Python interpreter, because it carries the MLIR bindings
+for one CPython. The same wheels are attached to each
+[GitHub release](https://github.com/vivienfanghuagood/hk-dsl/releases). For
+another interpreter, build one ([building](building.md#wheels)).
 
 It carries the HipKittens headers, the bindings and the shipped tuning
 records, so nothing else is needed at run time but hipcc.
