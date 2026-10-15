@@ -79,8 +79,12 @@ W7900D, with a result equal to torch's bit for bit.
 ```bash
 scripts/build_wheel.sh                                   # python3, wheel in dist/
 PYTHON=/opt/venv/bin/python3 ISOLATION=0 scripts/build_wheel.sh
-pip install dist/hk_dsl-0.2.0-cp310-cp310-linux_x86_64.whl
+pip install dist/hk_dsl-0.3.0-cp310-cp310-linux_x86_64.whl
 ```
+
+Releases carry the cp310 and cp312 wheels as assets
+(`gh release create vX.Y.Z dist/*.whl`); publishing to PyPI is a separate
+decision, not taken.
 
 What is in the wheel (`scripts/build_wheel.sh`, `pyproject.toml`):
 

@@ -16,11 +16,12 @@ and torch to launch. torch is not a dependency of the package — install the
 ROCm build you already use.
 
 **From a wheel.** A wheel is built per Python interpreter, because it carries
-the MLIR bindings for one CPython, and today wheels are built by hand
-([building](building.md#wheels)). With one for your interpreter:
+the MLIR bindings for one CPython. CPython 3.10 and 3.12 wheels are attached
+to each [GitHub release](https://github.com/vivienfanghuagood/hk-dsl/releases);
+for another interpreter, build one ([building](building.md#wheels)). Then:
 
 ```bash
-pip install dist/hk_dsl-0.2.0-cp310-cp310-linux_x86_64.whl
+pip install hk_dsl-0.3.0-cp310-cp310-linux_x86_64.whl
 ```
 
 It carries the HipKittens headers, the bindings and the shipped tuning
