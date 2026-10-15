@@ -43,7 +43,7 @@ only hipcc is needed. CPython 3.10 and 3.12 wheels are attached to each
 build one with `scripts/build_wheel.sh` ([building](docs/building.md#wheels)):
 
 ```bash
-pip install hk_dsl-0.3.0-cp310-cp310-linux_x86_64.whl
+pip install hk_dsl-0.3.1-cp310-cp310-manylinux_2_35_x86_64.whl
 ```
 
 **From source.** The backend is the `third_party/HipKittens` submodule, so

@@ -24,6 +24,10 @@ permissions:
 
 jobs:
   publish:
+    # A published release uploads only once the repository variable
+    # PYPI_PUBLISH is "true", i.e. once one of the two credentials exists; a
+    # manual run always tries.
+    if: github.event_name == 'workflow_dispatch' || vars.PYPI_PUBLISH == 'true'
     runs-on: ubuntu-latest
     environment: pypi
     permissions:

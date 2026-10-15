@@ -79,7 +79,7 @@ W7900D, with a result equal to torch's bit for bit.
 ```bash
 scripts/build_wheel.sh                                   # python3, wheel in dist/
 PYTHON=/opt/venv/bin/python3 ISOLATION=0 scripts/build_wheel.sh
-pip install dist/hk_dsl-0.3.0-cp310-cp310-linux_x86_64.whl
+pip install dist/hk_dsl-0.3.1-cp310-cp310-linux_x86_64.whl
 ```
 
 Releases carry the cp310 and cp312 wheels as assets
@@ -100,10 +100,11 @@ gh release upload vX.Y.Z dist/manylinux/*.whl
 
 `.github/workflows/pypi.yml` uploads a release's manylinux wheels to PyPI. It
 builds nothing, because a hosted runner has neither the ROCm nor the MLIR
-toolchain. It runs when a release is published, or by hand with
-`gh workflow run pypi.yml -f tag=vX.Y.Z`, and uses the `PYPI_API_TOKEN`
-secret of the `pypi` environment, or PyPI trusted publishing when that secret
-is not set. 0.3.0 is not on PyPI yet, because the project has neither.
+toolchain. It runs by hand with `gh workflow run pypi.yml -f tag=vX.Y.Z`, and
+on every published release once the repository variable `PYPI_PUBLISH` is
+`true`. It uses the `PYPI_API_TOKEN` secret of the `pypi` environment, or PyPI
+trusted publishing when that secret is not set. hk-dsl is not on PyPI yet,
+because the project has neither credential.
 
 What is in the wheel (`scripts/build_wheel.sh`, `pyproject.toml`):
 

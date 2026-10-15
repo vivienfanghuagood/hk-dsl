@@ -21,7 +21,7 @@ to each [GitHub release](https://github.com/vivienfanghuagood/hk-dsl/releases);
 for another interpreter, build one ([building](building.md#wheels)). Then:
 
 ```bash
-pip install hk_dsl-0.3.0-cp310-cp310-linux_x86_64.whl
+pip install hk_dsl-0.3.1-cp310-cp310-manylinux_2_35_x86_64.whl
 ```
 
 It carries the HipKittens headers, the bindings and the shipped tuning
