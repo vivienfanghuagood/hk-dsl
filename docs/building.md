@@ -83,8 +83,27 @@ pip install dist/hk_dsl-0.3.0-cp310-cp310-linux_x86_64.whl
 ```
 
 Releases carry the cp310 and cp312 wheels as assets
-(`gh release create vX.Y.Z dist/*.whl`); publishing to PyPI is a separate
-decision, not taken.
+(`gh release create vX.Y.Z dist/*.whl`), and a manylinux copy of each, because
+PyPI refuses the `linux_x86_64` tag. `scripts/manylinux_tag.sh` makes them: it
+retags each wheel with the tag `auditwheel` says it already satisfies,
+`manylinux_2_35` for the cp310 wheel built on Ubuntu 22.04 and `manylinux_2_38`
+for the cp312 one built in the Ubuntu 24.04 pod. Nothing is grafted and the
+binaries are not touched, since the wheels link only libc, libm, libgcc_s and
+libstdc++. Installed into a fresh venv, the retagged cp310 wheel pulls its
+three dependencies from PyPI, traces, translates and builds outside the
+checkout.
+
+```bash
+PYTHON=/path/with/auditwheel/python3 scripts/manylinux_tag.sh dist/*linux_x86_64.whl
+gh release upload vX.Y.Z dist/manylinux/*.whl
+```
+
+`.github/workflows/pypi.yml` uploads a release's manylinux wheels to PyPI. It
+builds nothing, because a hosted runner has neither the ROCm nor the MLIR
+toolchain. It runs when a release is published, or by hand with
+`gh workflow run pypi.yml -f tag=vX.Y.Z`, and uses the `PYPI_API_TOKEN`
+secret of the `pypi` environment, or PyPI trusted publishing when that secret
+is not set. 0.3.0 is not on PyPI yet, because the project has neither.
 
 What is in the wheel (`scripts/build_wheel.sh`, `pyproject.toml`):
 

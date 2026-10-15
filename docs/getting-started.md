@@ -86,7 +86,7 @@ A kernel that spilled would not get this far: `build()` raises
 
 ## The four entry points
 
-Three entry points, in increasing order of what they need:
+Four entry points, in increasing order of what they need:
 
 | call | needs | does |
 |---|---|---|

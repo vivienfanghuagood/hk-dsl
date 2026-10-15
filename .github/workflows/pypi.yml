@@ -1,0 +1,43 @@
+name: Publish to PyPI
+
+# Builds nothing. The wheels carry MLIR bindings built on the machines that
+# have the ROCm and MLIR toolchains, which a hosted runner has neither of, so
+# this uploads the manylinux wheels attached to a GitHub release
+# (scripts/manylinux_tag.sh makes them from scripts/build_wheel.sh's).
+#
+# Credentials: the PYPI_API_TOKEN secret of the `pypi` environment if it is
+# set; if it is not, the password is empty and the action uses PyPI trusted
+# publishing instead, which needs a (pending) publisher on PyPI naming this
+# repository, pypi.yml and the `pypi` environment.
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag whose manylinux wheels to publish, e.g. v0.3.0"
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Download the release's manylinux wheels
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.event.release.tag_name || inputs.tag }}
+        run: |
+          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" \
+            --pattern '*manylinux*.whl' --dir dist
+          ls -l dist
+      - uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          password: ${{ secrets.PYPI_API_TOKEN }}
