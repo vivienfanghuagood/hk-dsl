@@ -20,10 +20,12 @@ dims and vLLM's default `(2, num_blocks, block_size, num_kv_heads,
 head_size)` cannot yield a contiguous `(block_size, head_dim)` tile for one
 head. Having its own layout means every attention it serves is its own:
 
-* decode: vLLM's own Triton kernel, on this backend's cache, captured whole
-  in vLLM's full decode graphs. On vLLM 0.31 it beats hk's paged walk and
-  merge (`hk.ops.paged`) at every batch measured (TRITON_DECODE_MAX);
-  hk's walk takes decode where this vLLM has no compatible kernel;
+* decode (`hk.ops.paged`): the paged walk and its merge, two launches a
+  layer, captured whole in vLLM's full decode graphs -- from sixteen
+  requests up. Below that Triton's kernel runs instead, on this backend's
+  cache (TRITON_DECODE_MAX). On vLLM 0.31 Triton's kernel is also faster at
+  16-64 requests kernel for kernel, but routing those to it made the
+  captured step slower, so they stay on hk;
 * prefill (`hk.ops.paged_prefill`): one launch for every prefill request in
   the batch, cached prefixes and chunks included -- the new tokens' K/V are
   in the cache before either runs.
@@ -197,13 +199,18 @@ def decode(q, k_cache, v_cache, block_table, seq_lens, out, scratch,
 #:     ctx 4096   n1 0.0410/0.0527   n4 0.1109/0.1233   n8 0.2078/0.2219   n16 0.4018/0.3939
 #:
 #: On vLLM 0.31 (triton-rocm 3.7.1) Triton's 2-D kernel wins at every batch
-#: measured, so every decode batch is Triton's:
+#: measured, kernel against kernel:
 #:
 #:     ctx 1024   n16 0.1201/0.1264   n32 0.1804/0.2166   n64 0.3505/0.3972
 #:     ctx 4096   n16 0.3738/0.4001   n32 0.6907/0.7587
 #:
+#: and yet giving it 16 and 32 requests made vLLM's captured decode step
+#: slower, not faster -- Qwen3-8B, 4096 x 16, 59.0 -> 74.2 ms a step, and
+#: 38.2 -> 52.0 with the linear-layer patch (docs/history/20-vllm-031.md).
+#: The two measurements disagree and why is not found; the step is what a
+#: server pays, so the boundary stays where the step was measured faster.
 #: 0 turns it off, and hk's walk takes every batch.
-TRITON_DECODE_MAX = 1 << 16
+TRITON_DECODE_MAX = 8
 
 #: Up to this many requests Triton runs its 3-D kernel (16 KV segments and a
 #: reduction); above, its 2-D one. The 3-D kernel's per-segment buffers are

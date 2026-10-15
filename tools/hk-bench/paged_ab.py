@@ -12,8 +12,7 @@ vLLM 0.16.1 calls it, so the wrapper around each kernel is in the number:
   stock_attn    unified_attention alone
   hk_layer      HKAttentionImpl.forward (the cache write is inside it), as
                 routed: Triton's kernel on hk's cache up to
-                vllm_backend.TRITON_DECODE_MAX requests (every batch, on
-                vLLM 0.31), hk's above
+                vllm_backend.TRITON_DECODE_MAX requests, hk's above
   hk_attn       HKAttentionImpl._decode_all (no cache write), as routed
   hk_kernel     hk's split decode alone, walk and merge, at every batch
   tri_on_hk     unified_attention reading hk's head-major cache
