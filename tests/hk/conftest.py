@@ -12,6 +12,7 @@ cannot run is skipped with a reason, never silently passed.
 
 from __future__ import annotations
 
+import os
 import shutil
 import subprocess
 import sys
@@ -21,6 +22,12 @@ import pytest
 
 REPO = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO / "python"))
+
+# The ir and codegen tiers assert gfx1100 facts -- the routing tables, the LDS
+# plans, the derived waits were all measured on a W7900. Before gfx942/gfx950
+# were targets, an Instinct box fell back to gfx1100 by not being recognised;
+# now it is recognised, so the pin has to be said. HK_ARCH set by hand wins.
+os.environ.setdefault("HK_ARCH", "gfx1100")
 
 
 def _hipcc_works() -> bool:
@@ -52,9 +59,22 @@ def _have_gpu() -> bool:
 HAVE_GPU = _have_gpu()
 
 
+def _gpu_arch() -> str:
+    try:
+        import torch
+
+        return torch.cuda.get_device_properties(0).gcnArchName.split(":")[0]
+    except Exception:
+        return ""
+
+
 def pytest_collection_modifyitems(config, items):
     no_hipcc = pytest.mark.skip(reason="no working hipcc on this machine")
     no_gpu = pytest.mark.skip(reason="no GPU (or no torch) on this machine")
+    gpu_arch = _gpu_arch() if HAVE_GPU else ""
+    wrong_gpu = pytest.mark.skip(
+        reason=f"the GPU is {gpu_arch} and the tests build for "
+               f"{os.environ['HK_ARCH']}; set HK_ARCH={gpu_arch} to run them on it")
     for item in items:
         path = str(item.fspath)
         if "/codegen/" in path or "hipcc" in item.keywords:
@@ -63,6 +83,8 @@ def pytest_collection_modifyitems(config, items):
         if "/gpu/" in path or "gpu" in item.keywords:
             if not HAVE_GPU:
                 item.add_marker(no_gpu)
+            elif gpu_arch and gpu_arch != os.environ["HK_ARCH"]:
+                item.add_marker(wrong_gpu)
 
 
 @pytest.fixture(scope="session")

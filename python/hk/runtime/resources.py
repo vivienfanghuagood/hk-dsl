@@ -30,6 +30,7 @@ _FIELD_RE = re.compile(r"remark:\s+(.+?):\s*(-?\d+|True|False)\s*\[")
 
 _FIELDS = {
     "VGPRs": "vgpr",
+    "AGPRs": "agpr",
     "TotalSGPRs": "sgpr",
     "ScratchSize [bytes/lane]": "scratch",
     "Occupancy [waves/SIMD]": "occupancy",
@@ -48,6 +49,9 @@ class KernelResources:
     name: str
     mangled: str
     vgpr: int = 0
+    #: Accumulation registers. Zero on RDNA; on CDNA they come out of the
+    #: VGPRs' file and are charged with them (Target.charged_vgprs).
+    agpr: int = 0
     sgpr: int = 0
     scratch: int = 0
     vgpr_spill: int = 0
@@ -65,8 +69,10 @@ class KernelResources:
 
     def line(self) -> str:
         vg = str(self.vgpr)
-        if self.vgpr_rounded and self.vgpr_rounded != self.vgpr:
-            vg = f"{self.vgpr}->{self.vgpr_rounded}"
+        if self.agpr:
+            vg = f"{self.vgpr}+{self.agpr}a"
+        if self.vgpr_rounded and self.vgpr_rounded != self.vgpr + self.agpr:
+            vg = f"{vg}->{self.vgpr_rounded}"
         occ = self.occ_by_reg if self.occ_by_reg is not None else self.occupancy
         hdrm = "" if self.vgpr_headroom is None else f" hdrm={self.vgpr_headroom}"
         return (
@@ -128,9 +134,10 @@ def parse(log: str, target: Optional[Target] = None) -> List[KernelResources]:
     for mangled, fields in raw.items():
         r = KernelResources(name=pretty[mangled], mangled=mangled, **fields)
         if target is not None and r.vgpr:
-            r.vgpr_rounded = target.vgpr_rounded(r.vgpr)
-            r.occ_by_reg = target.occupancy(r.vgpr)
-            r.vgpr_headroom = target.vgpr_headroom(r.vgpr)
+            charged = target.charged_vgprs(r.vgpr, r.agpr)
+            r.vgpr_rounded = target.vgpr_rounded(charged)
+            r.occ_by_reg = target.occupancy(charged)
+            r.vgpr_headroom = target.vgpr_headroom(charged)
         out.append(r)
     out.sort(key=lambda r: -r.vgpr)
     return out

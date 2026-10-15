@@ -19,12 +19,27 @@ const std::pair<llvm::StringRef, MmaShape> kMma1201[] = {
     {"fp8e4m3", {16, 16, 16, 2, 8}},
     {"fp8e5m2", {16, 16, 16, 2, 8}},
 };
+// gfx942: compiler-modelled, not run. See python/hk/target/gfx942.py.
+const std::pair<llvm::StringRef, MmaShape> kMma942[] = {
+    {"bf16", {16, 16, 16, 2, 4}},
+    {"fp16", {16, 16, 16, 2, 4}},
+};
+// gfx950: compiler-modelled, not timed. See python/hk/target/gfx950.py.
+const std::pair<llvm::StringRef, MmaShape> kMma950[] = {
+    {"bf16", {16, 16, 32, 4, 4}},
+    {"fp16", {16, 16, 32, 4, 4}},
+};
 const llvm::StringRef kRowOnly[] = {"row"};
+const llvm::StringRef kRowCol[] = {"row", "col"};
 
 const TargetInfo kGfx1100{"gfx1100", 32, 16, 1536, 24, 106, 65536, 131072, 4,
                           kMma1100, kRowOnly, true};
 const TargetInfo kGfx1201{"gfx1201", 32, 16, 1536, 24, 106, 65536, 65536, 4,
                           kMma1201, kRowOnly, false};
+const TargetInfo kGfx942{"gfx942", 64, 8, 512, 8, 102, 65536, 65536, 4,
+                         kMma942, kRowOnly, false};
+const TargetInfo kGfx950{"gfx950", 64, 8, 512, 8, 102, 160000, 163840, 4,
+                         kMma950, kRowCol, false};
 } // namespace
 
 const TargetInfo *mlir::hk::getTarget(llvm::StringRef arch) {
@@ -33,11 +48,17 @@ const TargetInfo *mlir::hk::getTarget(llvm::StringRef arch) {
                             .Case("gfx11", "gfx1100")
                             .Case("RDNA4", "gfx1201")
                             .Case("gfx12", "gfx1201")
+                            .Case("CDNA3", "gfx942")
+                            .Case("CDNA4", "gfx950")
                             .Default(arch);
   if (key == "gfx1100")
     return &kGfx1100;
   if (key == "gfx1201")
     return &kGfx1201;
+  if (key == "gfx942")
+    return &kGfx942;
+  if (key == "gfx950")
+    return &kGfx950;
   return nullptr;
 }
 
@@ -73,8 +94,12 @@ int TargetInfo::tileVgprs(unsigned bits, unsigned rows, unsigned cols) const {
   int base = int(rows / 16) * int(cols / 16);
   if (mma.empty())
     return base * 8;
+  // Scaled by the fragment's element count: gfx950's operand is 16x32.
   const MmaShape &s = mma.front().second;
-  return base * (bits == 16 ? s.operandVgprs : s.accumVgprs);
+  int elems = int(rows) * int(cols);
+  if (bits == 16)
+    return elems * s.operandVgprs / (s.m * s.k);
+  return elems * s.accumVgprs / (s.m * s.n);
 }
 
 bool TargetInfo::hasMma(llvm::StringRef dtype) const {
