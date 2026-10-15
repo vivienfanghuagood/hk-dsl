@@ -392,18 +392,30 @@ def plan(cols: int, kind: str = "rms", rows: Optional[int] = None):
     return warps, 0, 1
 
 
-def _row_reduce_kernel(name: str, dtype, kind: str, warps: int):
+def _row_reduce_kernel(name: str, dtype, kind: str, warps: int,
+                       bounded: bool = False, split: int = 0):
     """A kernel that reduces each row and rescales it.
 
     `kind` picks the arithmetic:
       rms    -- y = x * rsqrt(mean(x^2) + eps)
       layer  -- y = (x - mean(x)) * rsqrt(var(x) + eps)
       softmax-- y = exp(x - max(x)) / sum(exp(x - max(x)))
+
+    `bounded` takes the bounded loads and stores, the buffer accesses the
+    weighted norms use; every tile here is backed up into bounds, so they
+    read and write the same elements. `split` is HK_RT_HALF_SPLIT, which only
+    the bounded forms have.
     """
     def body(x: hk.Tensor[dtype], o: hk.Tensor[dtype], *, ROWS=ROWS, COLS=COLS,
              WARPS=warps, TPW=0, FOLD=1, EXACT=0, EPS=1e-6):
         t = hk.RT(fp32, ROWS, COLS)
         vt = hk.col_vec(t)
+
+        def put(idx, v):
+            if bounded:
+                o[idx].store(v, bounded=True)
+            else:
+                o[idx] = v
         ncols = x.cols
         nblk = hk.cdiv(ncols, COLS)
         row_lo, _ = _block_start(hk.arch.block_idx.y, ROWS, x.rows)
@@ -424,7 +436,7 @@ def _row_reduce_kernel(name: str, dtype, kind: str, warps: int):
         def tile(cb):
             col_lo, pad = _block_start(cb, COLS, ncols, EXACT)
             idx = hk.elem_coord(0, 0, row_lo, col_lo)
-            return x[idx].load(t), pad, idx
+            return x[idx].load(t, bounded=bounded), pad, idx
 
         # Over-provisioned blocks -- WARPS*TPW can exceed nblk, and a warp
         # whose step runs past the end gets cb >= nblk -- are not a special
@@ -535,13 +547,13 @@ def _row_reduce_kernel(name: str, dtype, kind: str, warps: int):
                     scale.exp_()
                     scale /= s
                     v *= scale
-                    o[idx] = v
+                    put(idx, v)
             else:
                 def write(v, pad, idx):
                     p = v - g_m
                     p.exp_()
                     p /= s
-                    o[idx] = p
+                    put(idx, p)
 
                 visit(write)
             return
@@ -602,18 +614,23 @@ def _row_reduce_kernel(name: str, dtype, kind: str, warps: int):
             if kind == "layer":
                 v -= mean
             v *= scale
-            o[idx] = v.to(dtype)
+            put(idx, v.to(dtype))
 
         visit(write)
 
     body.__name__ = name
-    return hk.kernel(body, warps=warps, grid=_grid, name=name)
+    return hk.kernel(body, warps=warps, grid=_grid, name=name,
+                     defines={"HK_RT_HALF_SPLIT": split} if split else None)
 
 
-def _rms_weighted_kernel(name: str, dtype, warps: int, residual: bool):
+def _rms_weighted_kernel(name: str, dtype, warps: int, residual: bool,
+                         split: int = 0):
     """The RMSNorm a model runs: y = x * rsqrt(mean(x^2) + eps) * w, and with
     `residual` vLLM's fused_add_rms_norm -- x + r is what is normalised, and
     it is written back to `r_out` -- one read of each operand.
+
+    `split` is HipKittens' HK_RT_HALF_SPLIT for this kernel: see
+    _HALF_SPLIT for which plans take it.
 
     `_row_reduce_kernel`'s schedule. With FOLD the caller views the row as
     FOLD chunks -- one workgroup a row, a tile's rows its chunks -- and the
@@ -712,11 +729,50 @@ def _rms_weighted_kernel(name: str, dtype, warps: int, residual: bool):
     # add), not "essentially never" as HipKittens' default assumes, and ties
     # away from zero would grow the residual stream's magnitude a little at
     # every layer. Rounded like torch and vLLM, it matches them bit for bit.
+    defines = {"HK_BF16_ROUND": 2} if residual else {}
+    if split:
+        defines["HK_RT_HALF_SPLIT"] = split
     return hk.kernel(body, warps=warps, grid=_grid, name=name,
-                     defines={"HK_BF16_ROUND": 2} if residual else None)
+                     defines=defines or None)
 
 
 _DTYPES = {"bf16": bf16, "fp16": fp16, "fp32": fp32}
+
+#: HipKittens' HK_RT_HALF_SPLIT for the weighted norms' folded plans. A 16-bit
+#: row tile holds each row twice, in lanes l and l + 16, and the packed fp32 ->
+#: 16-bit store completes the same 32-byte run in both lanes, so by default
+#: every bounded load and store moves each run twice. 3 has each wave half read
+#: its own 16 bytes, take the other 16 from its partner over v_permlanex16,
+#: and write only its own. Measured (tools/hk-bench/norm_layout.py, one
+#: process, output bit-identical to the mirrored kernel, us):
+#:
+#:                                   plan            mirrored   split
+#:     rms_norm 2048x4096            w4 tpw1 fold16     27.17   24.72
+#:     fused_add_rms_norm 2048x4096  w4 tpw1 fold16     46.12   40.15
+#:     rms_norm 1x4096 / 32x4096     w4 tpw1 fold16  3.84/3.91  3.67/3.77
+#:     rms_norm 8192x4096            w16 tpw4           193.1   197.9
+#:     fused_add_rms_norm 8192x4096  w16 tpw4           349.0   370.3
+#:
+#: So the folded one-tile plans take it and the unfolded hold does not: with
+#: four tiles a warp the exchange's VALU work costs more than the halved
+#: memory traffic returns. Only 16-bit globals have a run to split; fp16 is
+#: the same layout and code path as the bf16 that was measured.
+_HALF_SPLIT = 3
+_HALF_SPLIT_DTYPES = ("bf16", "fp16")
+
+#: Softmax's folded one-tile plan, the same way, with one more step: its
+#: loads and stores were the unbounded ones, which have no split. Bounded --
+#: the buffer accesses the weighted norms use, and every tile here is backed
+#: up into bounds, so the same elements -- and with the store split
+#: (norm_layout.py, us, bit-identical):
+#:
+#:                          plan            shipped  bounded  bounded+split 2
+#:     softmax 2048x4096    w4 tpw1 fold16    29.99    23.69    23.22
+#:     softmax 8192x4096    w16 tpw4          185.99   197.13   197.06
+#:
+#: The load split (3) measured 23.89 at 2048, so softmax takes the stores
+#: only; the unfolded plan stays as it was.
+_SOFTMAX_SPLIT = 2
 
 #: How many warps a workgroup may have. `plan` only ever returns one of these,
 #: and it can return any of them: `_split` hands out one warp per column block
@@ -733,10 +789,18 @@ for _s, _dt in _DTYPES.items():
         for _w in WARP_COUNTS:
             _n = f"{_k}_{_s}_w{_w}"
             KERNELS[_n] = _row_reduce_kernel(_n, _dt, _k, _w)
+    if _s in _HALF_SPLIT_DTYPES:
+        for _w in WARP_COUNTS:
+            _n = f"softmax_{_s}_w{_w}_hb"
+            KERNELS[_n] = _row_reduce_kernel(_n, _dt, "softmax", _w, bounded=True,
+                                             split=_SOFTMAX_SPLIT)
     for _k, _res in (("rmsw", False), ("addrmsw", True)):
         for _w in WARP_COUNTS:
             _n = f"{_k}_{_s}_w{_w}"
             KERNELS[_n] = _rms_weighted_kernel(_n, _dt, _w, _res)
+            if _s in _HALF_SPLIT_DTYPES:
+                KERNELS[_n + "_h"] = _rms_weighted_kernel(_n + "_h", _dt, _w, _res,
+                                                         split=_HALF_SPLIT)
 del _s, _dt, _k, _w, _n, _res
 
 
@@ -820,8 +884,10 @@ def _resolve(kind: str, dtype, cols: int, rows: int):
         if suffix is None:
             raise TypeError(f"hk norms handle bf16/fp16/fp32, not {dtype}")
         warps, tpw, fold = plan(cols, kind, rows if short else None)
+        hb = (kind == "softmax" and fold != 1 and tpw == 1
+              and suffix in _HALF_SPLIT_DTYPES)
         got = _PLAN_CACHE[key] = (
-            KERNELS[f"{kind}_{suffix}_w{warps}"], tpw, fold,
+            KERNELS[f"{kind}_{suffix}_w{warps}" + ("_hb" if hb else "")], tpw, fold,
             int(_exact(cols // fold, warps, tpw)),
         )
     return got
@@ -929,8 +995,10 @@ def _resolve_weighted(kind: str, dtype, cols: int, rows: int):
         if tpw > _tpw_cap(kind, fold, exact):
             tpw = 0
             exact = _exact(cols // fold, warps, tpw)
-        got = _PLAN_CACHE[key] = (KERNELS[f"{kind}_{suffix}_w{warps}"], tpw,
-                                  fold, int(exact))
+        half = fold != 1 and tpw == 1 and suffix in _HALF_SPLIT_DTYPES
+        got = _PLAN_CACHE[key] = (
+            KERNELS[f"{kind}_{suffix}_w{warps}" + ("_h" if half else "")], tpw,
+            fold, int(exact))
     return got
 
 
