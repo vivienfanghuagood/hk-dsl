@@ -47,6 +47,30 @@ off unless `SGLANG_USE_AITER` is set. The runs set
 `USE_ROCM_AITER_ROPE_BACKEND=0`, so apex's RoPE stays on its native kernel
 as sglang-radeon pins it.
 
+## vLLM 0.31, rebuilt on the volume
+
+The eviction had taken the vLLM 0.31 build too. It was rebuilt in the same
+pod, in a venv of its own. The ingredients were torch 2.13.0+rocm7.2 from
+download.pytorch.org, the requirements curated the first time, and vLLM
+0.31.0 from source for gfx1100 only, against the image's ROCm 7.2.1. It
+came out as `0.31.0+rocm721` again, on Python 3.12 this time. Three steps
+needed care:
+- `pip download --no-binary :all:` extends to the build requirements, so
+  pip started bootstrapping cmake from source. The sdist was copied in
+  instead.
+- CMake git-clones all of ROCm/triton for one Python directory, which
+  stalled at 129 MB. `TRITON_KERNELS_SRC_DIR` points it at that directory,
+  from the commit's 7 MB tarball.
+- Without `amdsmi` (`/opt/rocm/share/amd_smi`), vLLM's platform is
+  unspecified and the engine dies on an empty device string.
+
+The build took 27 minutes: about six for the HIP code, and most of the
+rest for Rust's toolchain and crates, at a fraction of the bandwidth
+download.pytorch.org gets. `python -m hk.integration ab` on Qwen3-8B then matched
+[chapter 20](20-vllm-031.md): the GEMM patch ran 1.55x per request at 512 x
+8, and decode was unchanged at batch 1, where vLLM's skinny GEMM keeps M = 1.
+Greedy tokens matched, 48 of 48.
+
 ## What SGLang's linear runs, and what hk's table says about it
 
 Without aiter, SGLang's `UnquantizedLinearMethod.apply` on ROCm is
