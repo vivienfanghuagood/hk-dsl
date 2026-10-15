@@ -38,11 +38,12 @@ The whole argument is in [why this exists](docs/README.md#why-this-exists).
 
 **From a wheel.** One per Python interpreter, because it carries the MLIR
 bindings for one CPython; it includes the HipKittens headers, so at run time
-only hipcc is needed. Build it with `scripts/build_wheel.sh`
-([building](docs/building.md#wheels)), then:
+only hipcc is needed. CPython 3.10 and 3.12 wheels are attached to each
+[GitHub release](https://github.com/vivienfanghuagood/hk-dsl/releases), or
+build one with `scripts/build_wheel.sh` ([building](docs/building.md#wheels)):
 
 ```bash
-pip install dist/hk_dsl-0.2.0-cp310-cp310-linux_x86_64.whl
+pip install hk_dsl-0.3.0-cp310-cp310-linux_x86_64.whl
 ```
 
 **From source.** The backend is the `third_party/HipKittens` submodule, so
@@ -88,10 +89,15 @@ losses.
 | attention forward | 61.0–64.9 TFLOPs, 0.999–1.002x (1.008x causal); 2.9–3.2x torch SDPA, 4.0x causal | the handwritten C++; torch SDPA | [Phase 4](docs/history/03-phase-4-attention.md) |
 | norms, softmax, RoPE, SiLU-mul, quantize | 13 of 15 cases faster, the other two a tie | `torch.compile` | [Phases 1 and 2](docs/history/01-phases-1-2.md) |
 | decode GEMV, 1–32 tokens | 1.93–2.03x per step | hipBLASLt | [cross-workgroup reduction](docs/history/11-cross-workgroup-reduction.md) |
-| paged decode attention | 1.02–1.04x per layer at 16 requests, 2.6x at 32; *slower* (0.66–0.97x) up to 8, where the backend runs Triton's kernel instead | vLLM's Triton attention, captured | [captured whole](docs/history/17-the-decode-step-captured-whole.md) |
+| paged decode attention | *slower*: 0.83–0.95x per layer at 16–64 requests on vLLM 0.31 (it won from 16 up on 0.16.1); up to 8 requests the backend runs Triton's kernel on hk's cache, and routing more to it slowed the captured step | vLLM 0.31's Triton attention, captured | [vLLM 0.31](docs/history/20-vllm-031.md) |
 | paged prefill, cached prefixes and chunks included | 3.6–7.9x | vLLM's Triton `unified_attention` | [captured whole](docs/history/17-the-decode-step-captured-whole.md) |
 | Qwen3-8B in vLLM, linear-layer patch | 1.52–1.84x at batch 1, 1.10–1.35x at batch 16 | stock vLLM 0.16.1.dev0 | [cross-workgroup reduction](docs/history/11-cross-workgroup-reduction.md) |
 | Qwen3-8B in vLLM under its defaults, both patches | 1.48–1.85x per request at every shape; attention alone 1.007–1.48x | stock vLLM 0.16.1.dev0, CUDA graphs, prefix caching, chunked prefill | [captured whole](docs/history/17-the-decode-step-captured-whole.md) |
+| Qwen3-8B in vLLM 0.31 under its defaults, both patches | 1.20–1.75x per request; attention alone 1.05–1.48x (1.01–1.39x the TRITON_ATTN backend it replaces) | stock vLLM 0.31.0 | [vLLM 0.31](docs/history/20-vllm-031.md) |
+| MoE GEMM, bf16 | 1.07–2.77x at 1–256 tokens; *slower* above, where the layer stays on Triton | vLLM 0.31's Triton `fused_moe` | [MoE](docs/history/21-moe.md) |
+| OLMoE-1B-7B in vLLM 0.31, MoE patch / with hk's attention | 1.02–1.41x / 1.17–2.22x per request | stock vLLM 0.31.0 | [MoE](docs/history/21-moe.md) |
+| W4A16 decode GEMM (AWQ), fp16 | 1.40–2.61x | vLLM 0.31's Triton AWQ kernel; *slower* (0.69–0.90x) than `gptq_gemm_rdna3` at 1–4 tokens | [4-bit weights](docs/history/22-int4.md) |
+| Qwen3-8B-AWQ / Qwen3-14B-AWQ in vLLM 0.31, 4-bit patch | 1.07–3.80x / 1.16–4.43x per request; decode step to 4.46x / 5.52x | stock vLLM 0.31.0, fp16 | [4-bit weights](docs/history/22-int4.md) |
 | shipped ops at 7-8B shapes ([`validate.py`](examples/validate.py)) | GEMM 1.12x, decode GEMV 3.90–4.38x, attention 2.76x (3.94x causal), quantize 2.78x; norms 0.88–0.96x | torch eager, PyTorch 2.10 | [validation](docs/history/16-validation-and-the-cross-warp-race.md) |
 
 ## Repository layout
@@ -157,6 +163,7 @@ Each runs on the GPU (checks against torch, then times), and with
 | [`examples/08_embedding.py`](examples/08_embedding.py) | an embedding lookup: rows by index with `gather` |
 | [`examples/09_kv_scatter.py`](examples/09_kv_scatter.py) | a KV cache write: rows to slots with `scatter`, padding slots dropped |
 | [`examples/10_layernorm_backward.py`](examples/10_layernorm_backward.py) | Triton's LayerNorm backward: row and column reductions, partial sums without a lock |
+| [`examples/11_vllm_integration.py`](examples/11_vllm_integration.py) | your kernel in vLLM: register, check, patch, and an end-to-end A/B in one command |
 | [`examples/validate.py`](examples/validate.py) | the shipped `hk.ops` kernels at typical shapes against torch: correctness and speed |
 
 ## License

@@ -27,6 +27,9 @@ and what each patch measured is in [performance](performance.md).
 | SDPA drop-in | `vllm.py`, `sglang.py`, `_common.py` | `F.scaled_dot_product_attention`, rebound by identity | `HK_PATCH_VLLM=1` (vLLM); `apply()` in-process |
 | decoder attention backend | `vllm_backend.py` | vLLM's `TRITON_ATTN` backend slot | `HK_PATCH_VLLM=1 HK_VLLM_BACKEND=1` |
 | linear layers | `vllm_gemm.py` | `dispatch_unquantized_gemm`, rebound by identity | `HK_PATCH_VLLM=1 HK_VLLM_GEMM=1` |
+| MoE GEMMs | `vllm_moe.py` | `invoke_fused_moe_triton_kernel` and `try_get_optimal_moe_config`, rebound by identity | `HK_PATCH_VLLM=1 HK_VLLM_MOE=1` |
+| AWQ linear layers | `vllm_int4.py` | `AutoAWQLinearMethod.process_weights_after_loading` and `.apply` | `HK_PATCH_VLLM=1 HK_VLLM_INT4=1` |
+| your kernels | `register.py` | whatever `register.patch` names | `HK_PATCH_VLLM=1 HK_VLLM_USER=<modules or files>` |
 
 `engine.py` is what the last two share: the custom op, the counters, the
 routing table and the CUDA-graph contract.
@@ -47,11 +50,12 @@ routing table and the CUDA-graph contract.
   `HK_PATCH_VLLM=1`, because installing a kernel library must not silently
   change the numerics of every vLLM on the machine.
 
-With `HK_PATCH_VLLM=1` the plugin applies the SDPA patch. The decoder backend
-and the linear layers are each a further opt-in, because each replaces kernels
-a server was already running: `HK_VLLM_BACKEND` registers over the slot ROCm
-picks by default, and `HK_VLLM_GEMM` changes every unquantized GEMM in the
-model. A variable is off when unset or `0`, `off`, `no` or empty
+With `HK_PATCH_VLLM=1` the plugin applies the SDPA patch. The decoder
+backend, the linear layers and the MoE layers are each a further opt-in,
+because each replaces kernels a server was already running: `HK_VLLM_BACKEND`
+registers over the slot ROCm picks by default, `HK_VLLM_GEMM` changes every
+unquantized GEMM in the model, and `HK_VLLM_MOE` every bf16 expert GEMM up
+to 256 tokens a step. A variable is off when unset or `0`, `off`, `no` or empty
 (`python/hk/integration/_vllm_plugin.py`). The invocations, as the module
 docstrings give them:
 
@@ -61,6 +65,9 @@ HK_PATCH_VLLM=1 vllm serve OpenGVLab/InternVL2-2B --mm-encoder-attn-backend TORC
 
 # the linear layers
 HK_PATCH_VLLM=1 HK_VLLM_GEMM=1 vllm serve Qwen/Qwen3-8B
+
+# the MoE layers
+HK_PATCH_VLLM=1 HK_VLLM_MOE=1 vllm serve allenai/OLMoE-1B-7B-0125-Instruct
 
 # the decoder attention backend, with vLLM's defaults: CUDA graphs, prefix
 # caching and chunked prefill all on
@@ -180,18 +187,19 @@ view of the head-major pages (it takes its strides from the tensor, and skips
 the slot -1 a CUDA graph's padding carries). Then, with the batch ordered
 decodes first by the builder:
 
+* **Decode, up to eight requests**: vLLM's own Triton kernel
+  (`unified_attention`, its 16-segment 3-D path), reading the head-major
+  cache through the same transposed view. That is hk's decode losing, and it
+  is recorded as such.
 * **Decode, sixteen requests and up**: `hk.ops.paged`'s split walk and its
   merge, two launches, reading the engine's query and writing its output in
   place. The split count is planned from the batch size and max_model_len
-  alone, so a graph captured on any batch is right for every replay.
-* **Decode, up to eight requests**: vLLM's own Triton kernel
-  (`unified_attention`, its 16-segment path), reading the same head-major
-  cache through the same transposed view. That is hk's decode losing, and it
-  is recorded as such: at these batch sizes the walk and the merge are each a
-  latency-bound launch and together cost ~10 us a layer more than Triton's
-  kernel and its reduction ([the decode step captured
-  whole](history/17-the-decode-step-captured-whole.md)). Batches are padded
-  to a capture size first, so 9-15 requests run as 16, on hk.
+  alone, so a graph captured on any batch is right for every replay. On
+  vLLM 0.31 Triton's 2-D kernel is 5-20% faster than the walk kernel for
+  kernel, but giving it these batches made the captured step slower (4096 x
+  16: 59.0 -> 74.2 ms), and the step is what is kept
+  ([vLLM 0.31](history/20-vllm-031.md)). Batches are padded to a capture
+  size first, so 9-15 requests run as 16, on hk.
   `vllm_backend.TRITON_DECODE_MAX` is the boundary; 0 turns the routing off.
 * **Prefill**: `hk.ops.paged_prefill`, one launch for every prefill request
   in the step, reading K/V through the page table. A cached prefix or an
@@ -208,9 +216,12 @@ reproduced.
 
 ## The linear-layer patch
 
-On gfx1100 every one of vLLM's unquantized GEMMs ends in
-`torch.nn.functional.linear`, i.e. hipBLASLt; the installed vLLM's skinny-GEMM
-path is gated on gfx9, and correctly ([the linear layers](history/08-linear-layers.md)).
+On gfx1100, vLLM 0.16.1's unquantized GEMMs all end in
+`torch.nn.functional.linear`, which is hipBLASLt, because its skinny-GEMM
+path is gated on gfx9 ([the linear layers](history/08-linear-layers.md)).
+vLLM 0.31 runs those skinny GEMMs on gfx11 too, at M ≤ 5. The routing table
+is measured against whichever path the installed vLLM takes
+([vLLM 0.31](history/20-vllm-031.md)).
 `hk/integration/vllm_gemm.py` installs the replacement, behind its own opt-in
 (`HK_PATCH_VLLM=1 HK_VLLM_GEMM=1`). It rebinds `dispatch_unquantized_gemm` by
 identity in every vLLM module that imported it, and what that returns calls a
@@ -226,6 +237,52 @@ one is a [routing table](#routing-tables). A call also falls back when it is
 not bf16, has a bias, has a non-contiguous weight, does not tile, or runs on a
 device of another arch. With no table for the current arch the patch is not
 installed at all, and says so.
+
+The patch also points `VLLM_CACHE_ROOT` at a `hk-linear` subdirectory.
+vLLM keys its compiled graphs, including the AOT cache, by config and
+source, not by what is patched. A patched engine sharing a cache root with
+an unpatched one loads back graphs whose linear layers never call the op
+([vLLM 0.31](history/20-vllm-031.md)).
+
+## The MoE patch
+
+vLLM's unquantized MoE sorts each batch's (token, choice) pairs by expert,
+then makes each of the layer's two GEMMs one call of
+`invoke_fused_moe_triton_kernel` on the sorted lists.
+`hk/integration/vllm_moe.py` rebinds that name, plus the
+`try_get_optimal_moe_config` that sizes the sort's blocks, by identity in
+every vLLM module that imported them:
+- **Up to `BLOCK16_MAX_TOKENS` (256) tokens a step**, the config asks for
+  16-row blocks and hk's GEMM (`hk.ops.moe`) runs both GEMMs.
+- **Above that, or for a quantized, biased or otherwise untaken GEMM**,
+  vLLM's own kernel runs.
+
+The counters are `vllm_moe.STATS`. The MoE layer is a custom op the compiler
+does not trace into, so the stand-in runs on every call, and the graphs
+vLLM captures for decode record hk's launches
+([the MoE GEMM](history/21-moe.md)).
+
+## The 4-bit patch
+
+On ROCm, vLLM runs an AutoAWQ checkpoint through `AutoAWQLinearMethod`. Its
+GEMM is the Triton AWQ kernel: the C++ one is not built there, so
+`VLLM_USE_TRITON_AWQ=1` has to be set. That kernel takes fp16 activations
+only, so an AWQ model is served with `--dtype float16`.
+`hk/integration/vllm_int4.py` wraps the method:
+- after vLLM's own weight processing, each layer also gets hk's 4-bit layout
+  (`hk.ops.w4a16.repack_awq`), a second copy of the codes;
+- `apply` calls the opaque op `hk_vllm::w4a16`, inside which batches of up
+  to 64 tokens take hk's decode GEMM, and the rest vLLM's own path on vLLM's
+  own tensors.
+
+The counters are `vllm_int4.STATS`. The patch changes what compiled graphs
+call, so it uses the compile-cache root `hk-int4`
+([4-bit weights](history/22-int4.md)).
+
+```bash
+VLLM_USE_TRITON_AWQ=1 HK_PATCH_VLLM=1 HK_VLLM_INT4=1 \
+    vllm serve Qwen/Qwen3-8B-AWQ --dtype float16
+```
 
 ## The engine layer: `Op`, `Patch`, `RouteTable`
 
@@ -308,17 +365,25 @@ keep their own counters.
 ```python
 import sglang                      # let SGLang import its modules first
 import hk.integration.sglang as hks
-print(hks.apply())                 # before the engine is built
+print(hks.apply())                 # SDPA, before the engine is built
+print(hks.apply_linear())          # unquantized linear layers -> hk_vllm::linear
 ```
 
-Not verified inside an SGLang server: there was no SGLang build for RDNA3 on
-the machine this was developed on. `tests/hk/gpu/test_sdpa.py` verifies the
-drop-in itself; the module's reading of SGLang's internals is what is
-untested. SGLang's RDNA3 path normally selects its Triton attention backend,
-which does not call `F.scaled_dot_product_attention`, so on a text model the
-patch reports that it rebound nothing; it bites with
-`--attention-backend torch_native` and in the vision encoders of multimodal
-models (`python/hk/integration/sglang.py`).
+**Not verified inside an SGLang server.**
+- SGLang's RDNA3 path selects its Triton attention backend, which does not
+  call `F.scaled_dot_product_attention`. On a text model `apply()` therefore
+  reports that it rebound nothing; it bites with
+  `--attention-backend torch_native` and in the vision encoders of
+  multimodal models.
+- `apply_linear()` rebinds SGLang's `UnquantizedLinearMethod.apply` to the
+  op the vLLM GEMM patch defines, which falls back to `F.linear`.
+- The time-boxed attempt to run AMD-AIM/sglang-radeon on this card ended
+  before SGLang started: the node ran out of ephemeral disk while the venv
+  was being built, and the pod was evicted
+  ([chapter 23](history/23-integration-path.md)).
+- `tests/hk/gpu/test_sdpa.py` verifies the SDPA drop-in itself; this
+  module's reading of SGLang's internals is what is untested
+  (`python/hk/integration/sglang.py`).
 
 ## Ahead-of-time builds
 
@@ -350,6 +415,62 @@ being written: under torch.compile both ops come from Inductor, fused with
 their neighbours, and the kernels lose to it, so both integrations were
 dropped ([strided globals](history/12-strided-globals.md)).
 
+## Your own kernel, in four steps
+
+`hk.integration.register` is the path from a kernel you wrote to a vLLM that
+runs it. [`examples/11_vllm_integration.py`](../examples/11_vllm_integration.py)
+is the whole thing, for vLLM's SiLU-and-mul.
+
+**1. Register it** as a torch op with the reference it replaces:
+
+```python
+from hk.integration import register
+
+op = register.op(
+    "silu_mul",                                # torch.ops.hk_user.silu_mul
+    kernel=silu_mul,                           # @hk.kernel: inputs, then outputs
+    reference=lambda x: F.silu(x[:, :x.shape[1] // 2]) * x[:, x.shape[1] // 2:],
+    out=lambda x: x.new_empty(x.shape[0], x.shape[1] // 2),
+    route=lambda x: (x.shape[1] // 2) % 256 == 0,
+)
+```
+
+`out` allocates the outputs, and on meta tensors it is the op's fake, which
+torch.compile traces. `route` runs inside the op, where shapes are numbers;
+a call it declines runs `reference`. The op launches on torch's stream, so
+CUDA graphs capture it, and it counts its calls (`op.summary()`).
+
+**2. Check it**: `op.check(x)` runs kernel and reference and raises past
+`rel` (default 2e-2).
+
+**3. Patch vLLM**: `register.patch("vllm.<module>.<Class>.<method>", fn)`.
+Patch the method vLLM actually calls. Under its default compile config
+custom ops are off, so for a `CustomOp` that is `forward_native`, not
+`forward_cuda`. A patch inside vLLM also moves the engine's compile cache to
+a root of its own, because the cache does not know what is patched into it
+([vLLM 0.31](history/20-vllm-031.md)).
+
+**4. A/B it** in vLLM's own process. vLLM builds the model in the process
+that loads its plugins, so the module that registers and patches is named
+to the plugin, which imports it there:
+
+```bash
+HK_VLLM_USER=examples/11_vllm_integration.py \
+    python -m hk.integration ab --model Qwen/Qwen3-8B --arms user \
+    --context 1024 --batch 1,16 --short 16 --tokens 48
+HK_PATCH_VLLM=1 HK_VLLM_USER=my_kernels.py vllm serve Qwen/Qwen3-8B
+```
+
+`ab` runs stock and your arm alternately in fresh engines. It prints total,
+prefill and decode-step time per shape, and whether the first request's
+greedy tokens match stock's. `HK_VLLM_USER` takes comma-separated module
+names or `.py` paths.
+
+**Measure first.** The example's kernel is 0.62-0.93x the SiLU-and-mul vLLM
+compiles with Inductor, which is the result chapter 12 recorded when it
+dropped the same patch. It is there for the mechanics. A kernel that wins
+only at some shapes should keep only those, through `route`.
+
 ## Environment variables
 
 Read by `python/hk/integration` and the kernels it routes to, exactly as
@@ -361,10 +482,13 @@ spelled:
 | `HK_VLLM_BACKEND` | `_vllm_plugin.py` | register the decoder attention backend; a value other than `1`/`on`/`yes`/`true` names the slot |
 | `HK_VLLM_BACKEND_SLOT` | `vllm_backend.py` | the `AttentionBackendEnum` member to register over (default `TRITON_ATTN`) |
 | `HK_VLLM_GEMM` | `_vllm_plugin.py` | route the unquantized linear layers |
+| `HK_VLLM_MOE` | `_vllm_plugin.py` | route the bf16 MoE GEMMs up to 256 tokens a step |
+| `HK_VLLM_INT4` | `_vllm_plugin.py` | route AWQ linear layers' fp16/bf16 batches up to 64 tokens |
+| `HK_VLLM_USER` | `_vllm_plugin.py` | comma-separated modules or `.py` files to import in vLLM's process: your `register.op` / `register.patch` calls |
 | `HK_VLLM_ROUTES` | `vllm_gemm.py`, via `engine.shipped_table` | a routing table to use instead of the shipped one |
 | `HK_SPLITS` | `ops/paged.py` | the decode backend's KV split: `auto` (default), `off`/`0`/`1`, or a count |
 | `HK_NORM_FOLD` | `ops/norm.py` | the weighted norms' plan: `auto` (default, folded below 4096 rows), `on`, `off` |
 
-`HK_PATCH_VLLM`, `HK_VLLM_BACKEND` and `HK_VLLM_GEMM` are off when unset or
-`0`, `off`, `no` or empty. The benchmark harnesses in `tools/hk-bench/` read
+`HK_PATCH_VLLM`, `HK_VLLM_BACKEND`, `HK_VLLM_GEMM`, `HK_VLLM_MOE` and
+`HK_VLLM_INT4` are off when unset or `0`, `off`, `no` or empty. The benchmark harnesses in `tools/hk-bench/` read
 more (`HK_GPU_UTIL`, `HK_EAGER`, ...); those are theirs, not the library's.
