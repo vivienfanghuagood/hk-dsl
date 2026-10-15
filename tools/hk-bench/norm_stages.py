@@ -105,8 +105,8 @@ def main():
     fns["hk rms_norm"] = lambda: hk.ops.rms_norm(x, w, out=o)
     fns["triton rms"] = lambda: triton_ref.rms_norm(x, w)
     t = scoreboard.gpu_times(fns, rounds=5, calls=20)
-    for k, v in t.items():
-        print(f"{k:<16} {v * 1e3:7.2f} us")
+    for k, (ms, noise) in t.items():
+        print(f"{k:<16} {ms * 1e3:7.2f} us  noise {noise * 100:4.1f}%")
 
 
 if __name__ == "__main__":
