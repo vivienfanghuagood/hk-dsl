@@ -31,6 +31,7 @@ and what each patch measured is in [performance](performance.md).
 | AWQ linear layers | `vllm_int4.py` | `AutoAWQLinearMethod.process_weights_after_loading` and `.apply` | `HK_PATCH_VLLM=1 HK_VLLM_INT4=1` |
 | your kernels | `register.py` | whatever `register.patch` names | `HK_PATCH_VLLM=1 HK_VLLM_USER=<modules or files>` |
 | SGLang linear layers | `sglang.py`, `_sglang_plugin.py` | `UnquantizedLinearMethod.apply` | `HK_SGLANG_LINEAR=1` (SGLang); `apply_linear()` in-process |
+| SGLang MoE layers | `sglang_moe.py`, `_sglang_plugin.py` | `topk_softmax`, `invoke_fused_moe_kernel` and `try_get_optimal_moe_config`, rebound by identity | `HK_SGLANG_MOE=1`, or `=topk` for the routing alone |
 
 `engine.py` is what the last two share: the custom op, the counters, the
 routing table and the CUDA-graph contract.
@@ -84,11 +85,15 @@ asks for its own page size, 32).
 **In SGLang, through its plugin entry point.** The package also registers
 `hk = "hk.integration._sglang_plugin:register"` under `sglang.srt.plugins`.
 SGLang loads it in the launcher and in every scheduler process, which is where
-its model runs. It is opt-in on `HK_SGLANG_LINEAR=1` and prints the same
-`[hk] ...` line per process:
+its model runs. It prints the same `[hk] ...` line per process. Each patch is
+opt-in on its own switch: `HK_SGLANG_LINEAR=1` for the linear layers and
+`HK_SGLANG_MOE=1` for the MoE layers.
 
 ```bash
 HK_SGLANG_LINEAR=1 python -m sglang.launch_server --model-path Qwen/Qwen3-8B \
+    --attention-backend triton --disable-cuda-graph
+HK_SGLANG_MOE=1 python -m sglang.launch_server \
+    --model-path allenai/OLMoE-1B-7B-0125-Instruct \
     --attention-backend triton --disable-cuda-graph
 ```
 
@@ -409,13 +414,26 @@ sglang-radeon runs it ([chapter 24](history/24-sglang.md)).
   prompts matched stock over 48 tokens; the third took the other side of a
   near-tie at its ninth token.
 
+**MoE models run, and the expert GEMMs are measured inside SGLang**
+([chapter 25](history/25-sglang-moe.md)).
+- **Without the patch they do not run.** sgl_kernel's `topk_softmax` fails
+  on gfx1100 on its own, with `unspecified launch failure`, before any
+  expert GEMM. So no softmax-routed MoE model ran in SGLang on this card.
+- **What the patch changes.** `sglang_moe.apply_topk()` computes the top-k
+  in torch, as SGLang's own `fused_topk_torch_native` does, and with only
+  that, OLMoE runs on SGLang's Triton MoE kernel. `sglang_moe.apply()` also
+  routes the bf16 expert GEMMs through `hk.ops.moe`, asking for 16-row
+  blocks up to 256 tokens a step.
+- **Results.** Against Triton's GEMMs, OLMoE served 1.06x faster at
+  concurrency 1, 1.32x at 8 and 1.26x at 32, with greedy output identical
+  over SGLang's correctness prompts. Prefill steps of more than 256 tokens
+  stay on Triton.
+
 **Limits.**
 - **No CUDA graphs.** sglang-radeon disables them on RDNA3 because HIP graph
   capture hangs there, so these are eager numbers. Even so, the decode step
   is GPU-bound: at batch 1 the linear layers' timings, measured one by one,
   add up to 42.1 ms of a 44.3 ms step.
-- **MoE models do not run in SGLang on RDNA3.** Its Triton fused-MoE faults
-  on gfx1100. hk's MoE GEMM, which runs in vLLM, is not wired into SGLang.
 - **Attention is not verified.** SGLang's RDNA3 path selects its Triton
   attention backend, which does not call `F.scaled_dot_product_attention`.
   On a text model `apply()` therefore reports that it rebound nothing; it
@@ -525,10 +543,11 @@ spelled:
 | `HK_VLLM_ROUTES` | `vllm_gemm.py`, via `engine.shipped_table` | a routing table to use instead of the shipped one |
 | `HK_SGLANG_LINEAR` | `_sglang_plugin.py` | route SGLang's unquantized linear layers |
 | `HK_SGLANG_ROUTES` | `sglang.py`, via `engine.shipped_table` | a routing table for SGLang's linear layers instead of the shipped one |
+| `HK_SGLANG_MOE` | `_sglang_plugin.py` | `1`: the torch top-k and hk's expert GEMMs; `topk`: the torch top-k alone |
 | `HK_SPLITS` | `ops/paged.py` | the decode backend's KV split: `auto` (default), `off`/`0`/`1`, or a count |
 | `HK_NORM_FOLD` | `ops/norm.py` | the weighted norms' plan: `auto` (default, folded below 4096 rows), `on`, `off` |
 
 `HK_PATCH_VLLM`, `HK_VLLM_BACKEND`, `HK_VLLM_GEMM`, `HK_VLLM_MOE`,
-`HK_VLLM_INT4` and `HK_SGLANG_LINEAR` are off when unset or `0`, `off`, `no`
-or empty. The benchmark harnesses in `tools/hk-bench/` read
+`HK_VLLM_INT4`, `HK_SGLANG_LINEAR` and `HK_SGLANG_MOE` are off when unset or
+`0`, `off`, `no` or empty. The benchmark harnesses in `tools/hk-bench/` read
 more (`HK_GPU_UTIL`, `HK_EAGER`, ...); those are theirs, not the library's.

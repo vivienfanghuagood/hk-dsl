@@ -56,6 +56,8 @@ it is a time ratio.
 | vLLM 0.31 end to end, Qwen3-14B-AWQ, 4-bit patch | 1.16-4.43x per request; decode step 2.87-5.52x | stock vLLM 0.31.0, fp16, Triton AWQ | win at every shape | [4-bit weights](history/22-int4.md) |
 | decode GEMV, Qwen3-8B's layers, 1-64 tokens | 1.18-2.30x | `F.linear`, torch 2.9.1 (hipBLASLt): what SGLang's linear runs on ROCm | win at every shape | [SGLang](history/24-sglang.md) |
 | SGLang 0.5.18 end to end, Qwen3-8B, linear patch | 1.49-1.81x output throughput at concurrency 1-32; time per output token 1.59-1.81x | stock SGLang with sglang-radeon, eager, Triton attention | win at every concurrency | [SGLang](history/24-sglang.md) |
+| MoE layer (bf16) in SGLang, OLMoE and Qwen3-30B-A3B shapes | 1.03-2.51x at 1-256 tokens; 0.61-1.01x at 512-2048 | SGLang's Triton fused-MoE, its default configs | win to 256 tokens, which the route takes; above, it stays on Triton | [SGLang MoE](history/25-sglang-moe.md) |
+| SGLang 0.5.18 end to end, OLMoE-1B-7B, MoE patch | 1.06-1.32x output throughput at concurrency 1-32 (stock SGLang does not run it) | SGLang with the top-k in torch and its Triton MoE GEMMs | win at every concurrency | [SGLang MoE](history/25-sglang-moe.md) |
 | shipped ops at 7-8B shapes (`examples/validate.py`) | GEMM 1.12x, decode GEMV 3.90-4.38x, attention 2.76x / 3.94x causal, quantize 2.78x; norms 0.88-0.96x | torch eager, PyTorch 2.10 | win, except norms and elementwise, 2-12% behind torch's own fused kernels | [validation](history/16-validation-and-the-cross-warp-race.md) |
 
 ## Against Triton and FlyDSL
@@ -565,6 +567,26 @@ since its first paid Triton's JIT):
 Routed by vLLM's table instead, batch 1 stays on F.linear (44.25 ms). hk's
 linear and F.linear are equally far from fp64. In a greedy check, two of three
 prompts matched stock over 48 tokens and the third split at a near-tie.
+
+### MoE: OLMoE-1B-7B
+
+[SGLang MoE](history/25-sglang-moe.md). Stock SGLang does not run it on
+gfx1100, because sgl_kernel's `topk_softmax` fails. So the baseline is
+`HK_SGLANG_MOE=topk`, which computes the top-k in torch and keeps SGLang's
+Triton expert GEMMs. The patched arm is `HK_SGLANG_MOE=1`, with hk's GEMMs up
+to 256 tokens a step. Both were measured after hk's launch got leaner, with
+warm caches.
+
+| concurrency | output tok/s, Triton GEMMs | hk | x | mean TTFT ms, Triton | hk | mean TPOT ms, Triton | hk | x |
+|---|---|---|---|---|---|---|---|---|
+| 1 | 61.6 | 65.5 | 1.06 | 36.4 | 34.5 | 16.07 | 15.10 | 1.06 |
+| 8 | 345.6 | 457.2 | 1.32 | 142.3 | 132.2 | 22.15 | 16.55 | 1.34 |
+| 32 | 836.2 | 1057.6 | 1.26 | 328.4 | 311.1 | 35.82 | 27.92 | 1.28 |
+
+These are mean TTFTs. The medians at concurrency 8 differ by 2.4x only
+because the two servers batched their prefills differently, and prefill
+runs Triton in both. Greedy output was identical over SGLang's three
+correctness prompts.
 
 ## After the MLIR move
 

@@ -103,6 +103,7 @@ losses.
 | W4A16 decode GEMM (AWQ), fp16 | 1.40–2.61x | vLLM 0.31's Triton AWQ kernel; *slower* (0.69–0.90x) than `gptq_gemm_rdna3` at 1–4 tokens | [4-bit weights](docs/history/22-int4.md) |
 | Qwen3-8B-AWQ / Qwen3-14B-AWQ in vLLM 0.31, 4-bit patch | 1.07–3.80x / 1.16–4.43x per request; decode step to 4.46x / 5.52x | stock vLLM 0.31.0, fp16 | [4-bit weights](docs/history/22-int4.md) |
 | Qwen3-8B served by SGLang 0.5.18, linear patch (`HK_SGLANG_LINEAR=1`) | 1.49–1.81x output throughput at concurrency 1–32 | stock SGLang with sglang-radeon, eager | [SGLang](docs/history/24-sglang.md) |
+| OLMoE-1B-7B served by SGLang 0.5.18, MoE patch (`HK_SGLANG_MOE=1`) | runs at all (stock fails in sgl_kernel's top-k); 1.06–1.32x output throughput at concurrency 1–32 | SGLang with the top-k in torch and its Triton MoE GEMMs | [SGLang MoE](docs/history/25-sglang-moe.md) |
 | shipped ops at 7-8B shapes ([`validate.py`](examples/validate.py)) | GEMM 1.12x, decode GEMV 3.90–4.38x, attention 2.76x (3.94x causal), quantize 2.78x; norms 0.88–0.96x | torch eager, PyTorch 2.10 | [validation](docs/history/16-validation-and-the-cross-warp-race.md) |
 
 ## Repository layout

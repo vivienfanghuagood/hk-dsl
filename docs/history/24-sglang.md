@@ -157,7 +157,8 @@ is Rome", hk "France is Paris", repeated.
 - **MoE.** SGLang's Triton fused-MoE faults on gfx1100, so MoE models do not
   run in SGLang on this card at all. hk's MoE GEMM, which runs in vLLM
   ([chapter 21](21-moe.md)), is the obvious candidate. It is not wired into
-  SGLang.
+  SGLang. ([Chapter 25](25-sglang-moe.md) found that what fails is
+  sgl_kernel's top-k, not Triton's kernel, and wires hk's GEMM in.)
 - **One model, one GPU, tp 1.** Another model needs its own table before
   its shapes route (a minute and a half for Qwen3-8B).
 - **Attention** is SGLang's Triton backend in both arms. The SDPA rebinding
