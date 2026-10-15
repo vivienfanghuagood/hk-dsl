@@ -94,7 +94,7 @@ losses.
 | Qwen3-8B in vLLM, linear-layer patch | 1.52–1.84x at batch 1, 1.10–1.35x at batch 16 | stock vLLM 0.16.1.dev0 | [cross-workgroup reduction](docs/history/11-cross-workgroup-reduction.md) |
 | Qwen3-8B in vLLM under its defaults, both patches | 1.48–1.85x per request at every shape; attention alone 1.007–1.48x | stock vLLM 0.16.1.dev0, CUDA graphs, prefix caching, chunked prefill | [captured whole](docs/history/17-the-decode-step-captured-whole.md) |
 | Qwen3-8B in vLLM 0.31 under its defaults, both patches | 1.20–1.75x per request; attention alone 1.05–1.48x (1.01–1.39x the TRITON_ATTN backend it replaces) | stock vLLM 0.31.0 | [vLLM 0.31](docs/history/20-vllm-031.md) |
-| MoE GEMM, bf16 | 1.07–2.77x at 1–256 tokens; *slower* above, where the layer stays on Triton | vLLM 0.31's Triton `fused_moe` | [MoE](docs/history/21-moe.md) |
+| MoE GEMM, bf16 | 1.00–2.77x at 1–256 tokens; *slower* above, where the layer stays on Triton | vLLM 0.31's Triton `fused_moe` | [MoE](docs/history/21-moe.md) |
 | OLMoE-1B-7B in vLLM 0.31, MoE patch / with hk's attention | 1.02–1.41x / 1.17–2.22x per request | stock vLLM 0.31.0 | [MoE](docs/history/21-moe.md) |
 | W4A16 decode GEMM (AWQ), fp16 | 1.40–2.61x | vLLM 0.31's Triton AWQ kernel; *slower* (0.69–0.90x) than `gptq_gemm_rdna3` at 1–4 tokens | [4-bit weights](docs/history/22-int4.md) |
 | Qwen3-8B-AWQ / Qwen3-14B-AWQ in vLLM 0.31, 4-bit patch | 1.07–3.80x / 1.16–4.43x per request; decode step to 4.46x / 5.52x | stock vLLM 0.31.0, fp16 | [4-bit weights](docs/history/22-int4.md) |
