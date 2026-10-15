@@ -168,13 +168,14 @@ LogicalResult LoadW4Op::verify() {
   if (failed(verifyDest(*this, getDst(), getResult())))
     return failure();
   auto tile = cast<RegTileType>(destType(getDst(), getResult()));
-  if (!tile.getElementType().isBF16() || tile.getColLayout())
-    return emitOpError("dequantizes into a bf16 row-layout tile");
+  Type et = tile.getElementType();
+  if (!(et.isBF16() || et.isF16()) || tile.getColLayout())
+    return emitOpError("dequantizes into a bf16 or f16 row-layout tile");
   if (!getQw().getType().getElementType().isInteger(32))
     return emitOpError("reads its codes from an int32 global, eight to a word");
-  if (!getS().getType().getElementType().isBF16() ||
-      !getZs().getType().getElementType().isBF16())
-    return emitOpError("reads bf16 scales and zero-times-scales");
+  if (getS().getType().getElementType() != et ||
+      getZs().getType().getElementType() != et)
+    return emitOpError("reads scales and zero-times-scales of the tile's type");
   if (getGroup() <= 0 || getGroup() % 16)
     return emitOpError("group must be a positive multiple of 16, got ")
            << getGroup();

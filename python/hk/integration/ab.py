@@ -89,7 +89,7 @@ def one_arm(args, backend: str) -> dict:
     defaults = os.environ.get("HK_VLLM_DEFAULTS", "0") == "1"
     knobs = {} if defaults else dict(enable_prefix_caching=False,
                                      enable_chunked_prefill=False)
-    llm = LLM(model=args.model, dtype="bfloat16", block_size=32,
+    llm = LLM(model=args.model, dtype=args.dtype, block_size=32,
               max_model_len=max(ctxs) + args.tokens + 64,
               max_num_seqs=max(batches),
               gpu_memory_utilization=float(os.environ.get("HK_GPU_UTIL", "0.90")),
@@ -152,6 +152,8 @@ def main(argv=None) -> int:
     ap = argparse.ArgumentParser(prog="python -m hk.integration ab",
                                  description=__doc__.splitlines()[0])
     ap.add_argument("--model", default="Qwen/Qwen3-8B")
+    ap.add_argument("--dtype", default="bfloat16",
+                    help="the engine's dtype; float16 for an AWQ model on ROCm")
     ap.add_argument("--context", default="1024,4096")
     ap.add_argument("--batch", default="1,4,16")
     ap.add_argument("--tokens", type=int, default=72)
@@ -182,7 +184,7 @@ def main(argv=None) -> int:
     # Parent: one child per arm and round, because two backends cannot share
     # one engine and a backend chosen at construction cannot be swapped.
     base = [sys.executable, "-m", "hk.integration.ab", "--model", args.model,
-            "--context", args.context, "--batch", args.batch,
+            "--dtype", args.dtype, "--context", args.context, "--batch", args.batch,
             "--tokens", str(args.tokens), "--short", str(args.short),
             "--reps", str(args.reps), "--routes", args.routes]
     env = dict(os.environ)

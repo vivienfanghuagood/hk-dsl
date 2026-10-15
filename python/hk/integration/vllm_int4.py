@@ -11,14 +11,19 @@ entry points:
     take still runs vLLM's own path on vLLM's own tensors;
   * `apply` makes one call of the opaque custom op `hk_vllm::w4a16`. Inside
     it -- where the token count is a number, not a symbolic shape torch.compile
-    would guard on -- bf16 batches of up to 64 tokens take hk's kernel and
-    the rest vLLM's path.
+    would guard on -- fp16 or bf16 batches of up to 64 tokens take hk's
+    kernel and the rest vLLM's path.
+
+On ROCm vLLM's AWQ path is its Triton kernel (the C++ one is not built
+there, so VLLM_USE_TRITON_AWQ=1), and that kernel takes fp16 only: an AWQ
+model is served in fp16, and so are these numbers.
 
 Like the linear-layer patch it changes what the compiled graph calls, so it
 gives the engine its own compile-cache root, `hk-int4` under the current one
 (`vllm_gemm._own_compile_cache`).
 
-    HK_PATCH_VLLM=1 HK_VLLM_INT4=1 vllm serve Qwen/Qwen3-8B-AWQ --dtype bfloat16
+    VLLM_USE_TRITON_AWQ=1 HK_PATCH_VLLM=1 HK_VLLM_INT4=1 \\
+        vllm serve Qwen/Qwen3-8B-AWQ --dtype float16
 """
 
 from __future__ import annotations
@@ -63,7 +68,8 @@ def w4a16(x, qweight, scales, qzeros, hk_qw, hk_s, hk_zs, group: int):
     from ..ops import w4a16 as hk_w4  # noqa: PLC0415
 
     m, k = x.shape
-    if x.dtype == torch.bfloat16 and hk_w4.takes(m, hk_qw.shape[0], k, group):
+    if (x.dtype == hk_s.dtype and x.dtype in (torch.bfloat16, torch.float16)
+            and hk_w4.takes(m, hk_qw.shape[0], k, group)):
         PATCH.count("hk")
         return hk_w4.matmul(x, hk_qw, hk_s, hk_zs, group)
     PATCH.count("fallback")
@@ -78,10 +84,10 @@ def process_weights_after_loading(self, layer) -> None:
 
     _ORIG_PWAL(self, layer)
     group = self.quant_config.group_size
-    if layer.scales.dtype != torch.bfloat16 or group % 64:
+    if layer.scales.dtype not in (torch.bfloat16, torch.float16) or group % 64:
         return
     qw, s, zs = hk_w4.repack_awq(layer.qweight.data, layer.qzeros.data,
-                                 layer.scales.data, group)
+                                 layer.scales.data, group, dtype=layer.scales.dtype)
     layer.hk_qw = torch.nn.Parameter(qw, requires_grad=False)
     layer.hk_s = torch.nn.Parameter(s, requires_grad=False)
     layer.hk_zs = torch.nn.Parameter(zs, requires_grad=False)
@@ -118,7 +124,7 @@ def apply_patch() -> str:
     _ORIG_PWAL, _ORIG_APPLY = cls.process_weights_after_loading, cls.apply
     cls.process_weights_after_loading = process_weights_after_loading
     cls.apply = apply
-    return (f"int4 -> hk for AWQ layers, bf16 batches up to 64 tokens "
+    return (f"int4 -> hk for AWQ layers, 16-bit batches up to 64 tokens "
             f"(compile cache {_own_compile_cache('hk-int4')})")
 
 

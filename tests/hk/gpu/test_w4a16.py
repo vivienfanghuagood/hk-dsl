@@ -56,14 +56,16 @@ def test_gptq_repack_means_what_the_checkpoint_means():
     assert (got - w).abs().max().item() <= 2e-2 * w.abs().max().item()
 
 
+@pytest.mark.parametrize("dtype", ["bf16", "fp16"])
 @pytest.mark.parametrize("m", [1, 7, 16, 33, 64])
-def test_the_decode_kernel_matches_the_dequantized_product(m):
+def test_the_decode_kernel_matches_the_dequantized_product(m, dtype):
     g = torch.Generator(device="cuda").manual_seed(m)
     n, k, group = 512, 2048, 128
+    td = {"bf16": torch.bfloat16, "fp16": torch.float16}[dtype]
     qweight, qzeros, scales, w = _awq_checkpoint(n, k, group, g)
-    qw, s, zs = w4a16.repack_awq(qweight, qzeros, scales, group)
+    qw, s, zs = w4a16.repack_awq(qweight, qzeros, scales, group, dtype=td)
     assert w4a16.takes(m, n, k, group)
-    x = torch.randn(m, k, device="cuda", dtype=torch.bfloat16, generator=g)
+    x = torch.randn(m, k, device="cuda", dtype=td, generator=g)
     got = w4a16.matmul(x, qw, s, zs, group).float()
     want = x.float() @ w4a16.dequant(qw, s, zs, group).float().t()
     err = (got - want).abs().max().item() / want.abs().max().item()

@@ -961,12 +961,19 @@ def load_w4(ty, qw: "Global", s: "Global", zs: "Global", n0, k0, *,
             group: int = 128, into=None) -> "Tile":
     """Rows n0.. and columns k0.. of W, dequantized from 4-bit codes into a
     bf16 row-layout tile: element (n, k) is q * s - zs, q being nibble k % 8
-    of `qw[n][k // 8]` (int32 [N, K/8]), s and zs the group's scale and
-    zero-times-scale `s[n][k // group]`, `zs[n][k // group]` (bf16
-    [N, K/group]). The layout `hk.ops.w4a16.repack_*` writes. k0 is a
-    multiple of the tile's width when the group spans it."""
-    if not isinstance(ty, RegTileType) or ty.layout != "row" or ty.dtype.name != "bf16":
-        raise TypeError(f"load_w4 dequantizes into a bf16 row-layout tile, not {ty!r}")
+    of row n's word k // 8 (int32 [N, K/8], interleaved [N/16][K/32][16][4]),
+    s and zs the group's scale and zero-times-scale `s[n][k // group]`,
+    `zs[n][k // group]` (bf16 [N, K/group]). The layout
+    `hk.ops.w4a16.repack_*` writes. The tile is a whole number of 32-column
+    chunks and k0 a multiple of 32, and of the tile's width when the group
+    spans it."""
+    if ty.cols % 32:
+        raise ValueError(f"load_w4 reads whole 32-column chunks; the tile is "
+                         f"{ty.cols} wide")
+    if (not isinstance(ty, RegTileType) or ty.layout != "row"
+            or ty.dtype.name not in ("bf16", "fp16")):
+        raise TypeError(f"load_w4 dequantizes into a bf16 or fp16 row-layout tile, "
+                        f"not {ty!r}")
     if group <= 0 or group % 16:
         raise ValueError(f"load_w4: group {group} must be a positive multiple of 16")
     for name, g, want in (("qw", qw, i32), ("s", s, None), ("zs", zs, None)):
@@ -975,8 +982,9 @@ def load_w4(ty, qw: "Global", s: "Global", zs: "Global", n0, k0, *,
         if want is not None and g.dtype is not want:
             raise TypeError(f"load_w4: {name} holds int32 words of eight codes, "
                             f"not {g.dtype.name}")
-        if want is None and g.dtype.name != "bf16":
-            raise TypeError(f"load_w4: {name} is bf16, not {g.dtype.name}")
+        if want is None and g.dtype.name != ty.dtype.name:
+            raise TypeError(f"load_w4: {name} is the tile's {ty.dtype.name}, "
+                            f"not {g.dtype.name}")
     return _make(hkd.LoadW4Op, ty, (qw.v, s.v, zs.v, as_int(n0).v, as_int(k0).v),
                  into=into, name="w4", group=group)
 

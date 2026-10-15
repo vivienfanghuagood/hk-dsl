@@ -43,7 +43,7 @@ def _pack_along(v, order, dim):
     return words.movedim(-1, dim).contiguous()
 
 
-def checkpoint(n, k, group, g):
+def checkpoint(n, k, group, g, dtype):
     """One random 4-bit W as an AWQ checkpoint, a shuffled GPTQ one, and hk's."""
     import torch
     from vllm import _custom_ops as ops
@@ -54,12 +54,12 @@ def checkpoint(n, k, group, g):
     s = (torch.rand(k // group, n, device="cuda", generator=g) * 0.004 + 0.001)
     z = torch.full((k // group, n), 8, device="cuda", dtype=torch.int32)
     awq = (_pack_along(q, w4a16.AWQ_ORDER, 1), _pack_along(z, w4a16.AWQ_ORDER, 1),
-           s.to(torch.bfloat16))
+           s.to(dtype))
     gq = _pack_along(q, range(8), 0)                    # [K/8, N], along K
     gz = _pack_along(z - 1, range(8), 1)                # GPTQ v1's zero, one short
     ops.gptq_shuffle(gq, 4)
-    rdna3 = (gq, gz, s.to(torch.bfloat16))
-    hk = w4a16.repack_awq(*awq, group)
+    rdna3 = (gq, gz, s.to(dtype))
+    hk = w4a16.repack_awq(*awq, group, dtype=dtype)
     return awq, rdna3, hk
 
 
@@ -67,6 +67,8 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--tokens", default="1,2,4,8,16,32,64")
     ap.add_argument("--rounds", type=int, default=5)
+    ap.add_argument("--dtype", default="fp16", choices=("fp16", "bf16"),
+                    help="activations and scales; vLLM's Triton AWQ kernel takes fp16 only")
     ap.add_argument("--out")
     args = ap.parse_args()
 
@@ -75,21 +77,32 @@ def main():
 
     from hk.ops import w4a16
 
+    dtype = {"fp16": torch.float16, "bf16": torch.bfloat16}[args.dtype]
     group = 128
     g = torch.Generator(device="cuda").manual_seed(0)
     rows = []
     for sname, (n, k) in SHAPES.items():
         copies = max(2, -(-ROTATE_BYTES // (n * k // 2)))
-        ws = [checkpoint(n, k, group, g) for _ in range(copies)]
+        ws = [checkpoint(n, k, group, g, dtype) for _ in range(copies)]
         ref_w = w4a16.dequant(*ws[0][2], group).float()
         for m in (int(t) for t in args.tokens.split(",")):
-            x = torch.randn(m, k, device="cuda", dtype=torch.bfloat16, generator=g)
+            x = torch.randn(m, k, device="cuda", dtype=dtype, generator=g)
             want = x.float() @ ref_w.t()
             arms = {
                 "awq": lambda c: ops.awq_gemm(x, c[0][0], c[0][2], c[0][1], 8),
                 "rdna3": lambda c: ops.gptq_gemm_rdna3(x, c[1][0], c[1][1], c[1][2], False),
                 "hk": lambda c: w4a16.matmul(x, *c[2], group),
             }
+            if m <= 16:
+                # One token tile: the schedules that read it once for several
+                # 16-row blocks of W (slices, warps, blocks).
+                out = torch.empty(m, n, device="cuda", dtype=dtype)
+                for sl, wp, bl in ((4, 8, 2),):
+                    if n % (16 * bl) or k % (16 * sl * wp):
+                        continue
+                    op = w4a16._op_for(1, sl, wp, group, bl, args.dtype)
+                    arms[f"hk_b{bl}w{wp}"] = (
+                        lambda c, op=op, out=out: op(x, *c[2], out) or out)
             ok = {}
             for name, fn in arms.items():
                 try:

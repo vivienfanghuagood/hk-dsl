@@ -230,8 +230,9 @@ def HK_LoadW4Op : HK_Op<"load_w4"> {
   let summary = "4-bit weight codes -> a dequantized bf16 row-layout tile";
   let description = [{
     Tile element (r, c) is q * s - zs for W row n0 + r and column k0 + c: q is
-    nibble (k % 8) of `qw[n][k / 8]` (int32 [N, K/8]), s and zs the group's
-    scale and zero-times-scale `s[n][k / group]`, `zs[n][k / group]` (bf16
+    nibble (k % 8) of row n's word k / 8 (int32 [N, K/8], interleaved by
+    16-row block and 32-column chunk), s and zs the group's scale and
+    zero-times-scale `s[n][k / group]`, `zs[n][k / group]` (bf16
     [N, K/group]). hk's repack of an AWQ or GPTQ checkpoint.
   }];
   let arguments = (ins Optional<HK_RegTileType>:$dst, HK_GlobalType:$qw,
