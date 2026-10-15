@@ -127,7 +127,9 @@ class TracedKernel:
 
     @property
     def threads(self) -> int:
-        return self.warps * 32
+        from ..target import get_target  # noqa: PLC0415
+
+        return self.warps * get_target(self.arch).wave
 
     def tensors(self) -> List[Param]:
         return list(self._tensors)

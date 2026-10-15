@@ -1111,6 +1111,15 @@ class SharedTile(Value):
             raise TypeError(f"load: {tile} from {st}; register and shared tiles "
                             f"must have the same extents")
         n = lds_loads(tile, st)
+        if not wait and get_target(_t().arch).wave != 32:
+            raise TypeError(
+                f"load(wait=False) from {st} into {tile} on {_t().arch}: the "
+                f"hk-lds-pipeline pass derives lgkmcnt from how many ds_reads "
+                f"a load issues, and that count is include/rdna3's (2 per "
+                f"16x16 base tile). The CDNA trees issue a different number "
+                f"per fragment shape, and lgkmcnt is 4 bits there, so a wait "
+                f"derived from it would under-wait. Use wait=True until the "
+                f"count is per target.")
         if not wait and not n:
             raise TypeError(f"load(wait=False) from {st} into {tile}: this pair "
                             f"does not take the vectorised path, so there is "
