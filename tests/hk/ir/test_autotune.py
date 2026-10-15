@@ -66,6 +66,9 @@ def _tuner(monkeypatch, tmp_path, schedules, *, make=None, outcomes=None,
         return res
 
     monkeypatch.setattr(hk.runtime.warm, "warm_cache", fake_warm)
+    # A record is tagged with the toolchain that built it, which asks hipcc
+    # for its version; the builds here are fakes, so is the toolchain.
+    monkeypatch.setattr(hk.autotune, "toolchain_fingerprint", lambda: "fake-toolchain")
     return Tuner(name, make or default_make, schedules, DEFAULT, register=False)
 
 
