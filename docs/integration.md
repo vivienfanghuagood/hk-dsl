@@ -30,6 +30,7 @@ and what each patch measured is in [performance](performance.md).
 | MoE GEMMs | `vllm_moe.py` | `invoke_fused_moe_triton_kernel` and `try_get_optimal_moe_config`, rebound by identity | `HK_PATCH_VLLM=1 HK_VLLM_MOE=1` |
 | AWQ linear layers | `vllm_int4.py` | `AutoAWQLinearMethod.process_weights_after_loading` and `.apply` | `HK_PATCH_VLLM=1 HK_VLLM_INT4=1` |
 | your kernels | `register.py` | whatever `register.patch` names | `HK_PATCH_VLLM=1 HK_VLLM_USER=<modules or files>` |
+| SGLang linear layers | `sglang.py`, `_sglang_plugin.py` | `UnquantizedLinearMethod.apply` | `HK_SGLANG_LINEAR=1` (SGLang); `apply_linear()` in-process |
 
 `engine.py` is what the last two share: the custom op, the counters, the
 routing table and the CUDA-graph contract.
@@ -79,6 +80,19 @@ The end-to-end measurements build the engine with
 `attention_backend="TRITON_ATTN"` for the backend arm and vLLM's defaults
 otherwise (`HK_VLLM_DEFAULTS=1` in `tools/hk-bench/vllm_e2e.py`; the backend
 asks for its own page size, 32).
+
+**In SGLang, through its plugin entry point.** The package also registers
+`hk = "hk.integration._sglang_plugin:register"` under `sglang.srt.plugins`.
+SGLang loads it in the launcher and in every scheduler process, which is where
+its model runs. It is opt-in on `HK_SGLANG_LINEAR=1` and prints the same
+`[hk] ...` line per process:
+
+```bash
+HK_SGLANG_LINEAR=1 python -m sglang.launch_server --model-path Qwen/Qwen3-8B \
+    --attention-backend triton --disable-cuda-graph
+```
+
+If `SGLANG_PLUGINS` is set, it has to name `hk` for SGLang to load it.
 
 **In-process**, for a script or a framework without plugins:
 
@@ -319,8 +333,14 @@ stays the engine's. The table answers an M as follows:
 * below the smallest, or for a shape never measured, the engine's path, and
   the shape is recorded as a miss.
 
-Tables are per arch and per model. `hk/tuned/routes_vllm_linear_gfx1100.json`
-is Qwen3-8B's, raw timings included, and `$HK_VLLM_ROUTES` names another. A
+Tables are per arch, per model and per engine, because the path a kernel has
+to beat is the engine's. `hk/tuned/routes_vllm_linear_gfx1100.json` is
+Qwen3-8B's against vLLM 0.31's op, raw timings included, and `$HK_VLLM_ROUTES`
+names another. `routes_sglang_linear_gfx1100.json` (`route_tune.py --engine
+sglang`) is measured against the F.linear SGLang calls on ROCm, and
+`$HK_SGLANG_ROUTES` names another. The two disagree below M = 4: vLLM runs its
+own skinny GEMMs there and ties hk's GEMV, while F.linear is 1.3-2.3x slower
+than it. A
 table measured on another arch is refused, and an `$HK_VLLM_ROUTES` that names
 a missing file raises (`engine.shipped_table`). There are no buckets: GEMM time
 is a comb in M, not a curve, and a power-of-two bucket either routes the teeth
@@ -362,28 +382,45 @@ keep their own counters.
 
 ## SGLang
 
+```bash
+HK_SGLANG_LINEAR=1 python -m sglang.launch_server --model-path Qwen/Qwen3-8B \
+    --attention-backend triton --disable-cuda-graph
+```
+
 ```python
 import sglang                      # let SGLang import its modules first
 import hk.integration.sglang as hks
-print(hks.apply())                 # SDPA, before the engine is built
 print(hks.apply_linear())          # unquantized linear layers -> hk_vllm::linear
+print(hks.apply())                 # SDPA, before the engine is built
 ```
 
-**Not verified inside an SGLang server.**
-- SGLang's RDNA3 path selects its Triton attention backend, which does not
-  call `F.scaled_dot_product_attention`. On a text model `apply()` therefore
-  reports that it rebound nothing; it bites with
-  `--attention-backend torch_native` and in the vision encoders of
-  multimodal models.
-- `apply_linear()` rebinds SGLang's `UnquantizedLinearMethod.apply` to the
-  op the vLLM GEMM patch defines, which falls back to `F.linear`.
-- The time-boxed attempt to run AMD-AIM/sglang-radeon on this card ended
-  before SGLang started: the node ran out of ephemeral disk while the venv
-  was being built, and the pod was evicted
-  ([chapter 23](history/23-integration-path.md)).
-- `tests/hk/gpu/test_sdpa.py` verifies the SDPA drop-in itself; this
-  module's reading of SGLang's internals is what is untested
-  (`python/hk/integration/sglang.py`).
+**The linear layers are measured inside SGLang.** The setup was SGLang 0.5.18
+with AMD-AIM/sglang-radeon 0.1.5 and its prebuilt gfx1100 kernel, torch
+2.9.1 on ROCm 7.2.1, and Qwen3-8B in bf16, eager with Triton attention as
+sglang-radeon runs it ([chapter 24](history/24-sglang.md)).
+- `apply_linear()` rebinds `UnquantizedLinearMethod.apply`, whose ROCm path
+  without aiter is `F.linear`, to `torch.ops.hk_vllm.linear`, routed by the
+  SGLang table. Every call took an hk kernel.
+- Served with `launch_server` and `bench_serving` (512 tokens in, 128 out),
+  output throughput rose 1.81x at concurrency 1, 1.70x at 8 and 1.49x at 32,
+  and time per output token fell from 43.5 to 24.0 ms at concurrency 1.
+- The patch does not change accuracy: hk's linear and F.linear land equally
+  far from an fp64 matmul, to three digits. In a greedy check, two of three
+  prompts matched stock over 48 tokens; the third took the other side of a
+  near-tie at its ninth token.
+
+**Limits.**
+- **No CUDA graphs.** sglang-radeon disables them on RDNA3 because HIP graph
+  capture hangs there, so these are eager numbers. Even so, the decode step
+  is GPU-bound: at batch 1 the linear layers' timings, measured one by one,
+  add up to 42.1 ms of a 44.3 ms step.
+- **MoE models do not run in SGLang on RDNA3.** Its Triton fused-MoE faults
+  on gfx1100. hk's MoE GEMM, which runs in vLLM, is not wired into SGLang.
+- **Attention is not verified.** SGLang's RDNA3 path selects its Triton
+  attention backend, which does not call `F.scaled_dot_product_attention`.
+  On a text model `apply()` therefore reports that it rebound nothing; it
+  bites with `--attention-backend torch_native` and in the vision encoders
+  of multimodal models.
 
 ## Ahead-of-time builds
 
@@ -486,9 +523,12 @@ spelled:
 | `HK_VLLM_INT4` | `_vllm_plugin.py` | route AWQ linear layers' fp16/bf16 batches up to 64 tokens |
 | `HK_VLLM_USER` | `_vllm_plugin.py` | comma-separated modules or `.py` files to import in vLLM's process: your `register.op` / `register.patch` calls |
 | `HK_VLLM_ROUTES` | `vllm_gemm.py`, via `engine.shipped_table` | a routing table to use instead of the shipped one |
+| `HK_SGLANG_LINEAR` | `_sglang_plugin.py` | route SGLang's unquantized linear layers |
+| `HK_SGLANG_ROUTES` | `sglang.py`, via `engine.shipped_table` | a routing table for SGLang's linear layers instead of the shipped one |
 | `HK_SPLITS` | `ops/paged.py` | the decode backend's KV split: `auto` (default), `off`/`0`/`1`, or a count |
 | `HK_NORM_FOLD` | `ops/norm.py` | the weighted norms' plan: `auto` (default, folded below 4096 rows), `on`, `off` |
 
-`HK_PATCH_VLLM`, `HK_VLLM_BACKEND`, `HK_VLLM_GEMM`, `HK_VLLM_MOE` and
-`HK_VLLM_INT4` are off when unset or `0`, `off`, `no` or empty. The benchmark harnesses in `tools/hk-bench/` read
+`HK_PATCH_VLLM`, `HK_VLLM_BACKEND`, `HK_VLLM_GEMM`, `HK_VLLM_MOE`,
+`HK_VLLM_INT4` and `HK_SGLANG_LINEAR` are off when unset or `0`, `off`, `no`
+or empty. The benchmark harnesses in `tools/hk-bench/` read
 more (`HK_GPU_UTIL`, `HK_EAGER`, ...); those are theirs, not the library's.

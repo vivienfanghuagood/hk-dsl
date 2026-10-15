@@ -25,6 +25,7 @@ it is a time ratio.
 - [Paged decode attention](#paged-decode-attention)
 - [Paged prefill](#paged-prefill)
 - [End to end in vLLM](#end-to-end-in-vllm)
+- [End to end in SGLang](#end-to-end-in-sglang)
 - [After the MLIR move](#after-the-mlir-move)
 - [Against torch, at full size, after the cross-warp fix](#against-torch-at-full-size-after-the-cross-warp-fix)
 
@@ -53,6 +54,8 @@ it is a time ratio.
 | W4A16 decode GEMM, against `gptq_gemm_rdna3` | 0.69-0.90x at 1-4 tokens; 1.13-2.25x from 8 | vLLM's HIP W4A16 kernel for gfx1100 | loss to 4 tokens, a skinny GEMV without WMMA's padding; win above | [4-bit weights](history/22-int4.md) |
 | vLLM 0.31 end to end, Qwen3-8B-AWQ, 4-bit patch | 1.07-3.80x per request; decode step 1.57-4.46x | stock vLLM 0.31.0, fp16, Triton AWQ | win at every shape | [4-bit weights](history/22-int4.md) |
 | vLLM 0.31 end to end, Qwen3-14B-AWQ, 4-bit patch | 1.16-4.43x per request; decode step 2.87-5.52x | stock vLLM 0.31.0, fp16, Triton AWQ | win at every shape | [4-bit weights](history/22-int4.md) |
+| decode GEMV, Qwen3-8B's layers, 1-64 tokens | 1.18-2.30x | `F.linear`, torch 2.9.1 (hipBLASLt): what SGLang's linear runs on ROCm | win at every shape | [SGLang](history/24-sglang.md) |
+| SGLang 0.5.18 end to end, Qwen3-8B, linear patch | 1.49-1.81x output throughput at concurrency 1-32; time per output token 1.59-1.81x | stock SGLang with sglang-radeon, eager, Triton attention | win at every concurrency | [SGLang](history/24-sglang.md) |
 | shipped ops at 7-8B shapes (`examples/validate.py`) | GEMM 1.12x, decode GEMV 3.90-4.38x, attention 2.76x / 3.94x causal, quantize 2.78x; norms 0.88-0.96x | torch eager, PyTorch 2.10 | win, except norms and elementwise, 2-12% behind torch's own fused kernels | [validation](history/16-validation-and-the-cross-warp-race.md) |
 
 ## Against Triton and FlyDSL
@@ -532,6 +535,36 @@ kernel calls, 0 fallbacks over five requests. An end-to-end time cannot resolve
 it: the spread is +-25% on a ~250 ms request of which the vision tower is
 ~4 ms, so the tower's own number is the
 [vision-tower table](#vision-towers-on-the-call-vllms-vit-path-makes) above.
+
+## End to end in SGLang
+
+[SGLang](history/24-sglang.md). SGLang 0.5.18 with AMD-AIM/sglang-radeon
+0.1.5 and its prebuilt gfx1100 kernel, torch 2.9.1 on ROCm 7.2.1, Qwen3-8B in
+bf16. Eager with Triton attention, as sglang-radeon runs RDNA3, because HIP
+graph capture hangs there. `HK_SGLANG_LINEAR=1` routes every unquantized
+linear by the table measured against SGLang's F.linear.
+
+Served (`launch_server`, then `bench_serving`: random ids, 512 tokens in,
+128 out, each server warmed first):
+
+| concurrency | output tok/s, stock | hk | x | TTFT ms, stock | hk | TPOT ms, stock | hk | x |
+|---|---|---|---|---|---|---|---|---|
+| 1 | 22.75 | 41.27 | 1.81 | 93.5 | 51.9 | 43.53 | 24.00 | 1.81 |
+| 8 | 159.52 | 270.65 | 1.70 | 534.6 | 431.7 | 46.08 | 26.14 | 1.76 |
+| 32 | 456.02 | 678.08 | 1.49 | 606.2 | 489.7 | 54.41 | 34.26 | 1.59 |
+
+In one process (`bench_one_batch`, 512 tokens in, 64 out; stock's warm runs,
+since its first paid Triton's JIT):
+
+| batch | prefill, stock ms | hk | x | decode step, stock ms | hk | x |
+|---|---|---|---|---|---|---|
+| 1 | 147.3-148.0 | 110.2-110.3 | 1.34 | 44.24-44.28 | 25.06-25.64 | 1.75 |
+| 8 | 911.0-912.5 | 744.4-745.2 | 1.22 | 46.57-46.83 | 26.57-26.58 | 1.76 |
+| 32 | 3969-4117 | 3114-3120 | 1.30 | 54.81-55.06 | 34.51-34.63 | 1.59 |
+
+Routed by vLLM's table instead, batch 1 stays on F.linear (44.25 ms). hk's
+linear and F.linear are equally far from fp64. In a greedy check, two of three
+prompts matched stock over 48 tokens and the third split at a near-tie.
 
 ## After the MLIR move
 
