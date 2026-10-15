@@ -154,10 +154,11 @@ and pull request, on GitHub's `ubuntu-22.04` runner:
   `rocm-device-libs` of ROCm 7.1, about 2.3 GB.
 - **The codegen tier runs** (`tests/hk/codegen`, 798 tests), under
   pytest-xdist. hk's compile cache survives between runs in `actions/cache`
-  (about 100 MB). Cold, the tier took 19 minutes on the runner's four cores
-  and 4 minutes on 8 workers in a clean Ubuntu 22.04 container. The first
-  run on a branch is cold, because `actions/cache` does not share a branch's
-  cache with `main`.
+  (about 100 MB). Cold, the tier took 19-30 minutes on the runner's four
+  cores, and 4 minutes on 8 workers in a clean Ubuntu 22.04 container. Warm,
+  it took 10 seconds, and the whole run 3 minutes. The first run on a new
+  branch is cold, because `actions/cache` does not hand one branch's cache to
+  another; pull requests read `main`'s.
 
 A new MLIR, or a CPython other than the runner's, needs a new archive. Build
 it with `scripts/build_mlir.sh`, pack the install tree with LLVM's and MLIR's
