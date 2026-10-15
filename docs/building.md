@@ -7,6 +7,7 @@ see [getting started](getting-started.md).
 - [MLIR and the dialect](#mlir-and-the-dialect)
 - [Wheels](#wheels)
 - [Using a checkout without a wheel](#using-a-checkout-without-a-wheel)
+- [CI](#ci)
 - [Layout](#layout)
 
 ## The submodule
@@ -138,6 +139,37 @@ With `hk._mlir` built, put `python/` on `PYTHONPATH` — which is what
 root. In a checkout the generated C++ finds its headers in `include/` and the
 submodule; `HK_INCLUDE_DIR` overrides that ([compiling](runtime.md#compiling)).
 
+## CI
+
+`.github/workflows/ci.yml` runs the two tiers that need no GPU on every push
+and pull request, on GitHub's `ubuntu-22.04` runner:
+- **MLIR is prebuilt.** It downloads MLIR 23.1.3, installed by
+  `scripts/build_mlir.sh` for that runner's CPython 3.10, from the
+  `ci-mlir-23.1.3` release (0.9 GB). Building LLVM on the runner would take
+  hours.
+- **The dialect is built.** `scripts/build_hk_mlir.sh` builds it against
+  that MLIR in about 20 seconds.
+- **The IR tier runs** (`tests/hk/ir`).
+- **hipcc is installed from AMD's apt repository**, as `hip-dev` and
+  `rocm-device-libs` of ROCm 7.1, about 2.3 GB.
+- **The codegen tier runs** (`tests/hk/codegen`, 798 tests), under
+  pytest-xdist. hk's compile cache survives between runs in `actions/cache`.
+  Cold, on 8 workers, the tier took 4 minutes in a clean Ubuntu 22.04
+  container; it is about 100 MB.
+
+A new MLIR, or a CPython other than the runner's, needs a new archive. Build
+it with `scripts/build_mlir.sh`, pack the install tree with LLVM's and MLIR's
+licence files, attach it to a release, and point `MLIR_RELEASE` and
+`MLIR_ASSET` at it.
+
+The GPU tier needs a Radeon and runs on the development pod:
+`HK_GPU=3 scripts/gpu_suite.sh OUTDIR` runs `tests/hk/gpu` in groups, three
+at a time on one GPU, and exits non-zero if a group failed. Moving it into
+CI means a self-hosted runner on that pod, which runs code it is handed. On a
+public repository that runner must only take pushes to `main` and manual
+dispatches, never a pull request from a fork, and it must stay on the GPUs
+that are this project's.
+
 ## Layout
 
 ```
@@ -162,7 +194,7 @@ include/        hk's own headers (pyutils/hk_bind.cuh, the fast pybind entry)
 third_party/HipKittens/
                 the backend: kittens.cuh and include/rdna3, include/rdna4;
                 also the C++ kernels hk is measured against (kernels/rdna3)
-scripts/        building MLIR, the dialect and the wheels
+scripts/        building MLIR, the dialect and the wheels; the GPU tier (gpu_suite.sh)
 tools/hk-bench/ the benchmarks and engine harnesses behind every number here
 examples/       complete kernels, each checked against torch and timed
 docs/           these pages, and the development record (docs/history)
