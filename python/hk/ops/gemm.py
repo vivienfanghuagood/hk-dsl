@@ -73,7 +73,7 @@ def _derive(block_m: int, block_n: int, k_step: int, dot_slice: int,
 def gemm_kernel(name: str, *, block_m: int = 128, block_n: int = 128,
                 k_step: int = 64, dot_slice: int = 16, warps: int = 8,
                 warp_rows: int = 4, n_split: int = 4, wgm: int = 8,
-                write_pos: int = 2, lds_buffers: int = 1,
+                write_pos: int = 2, lds_buffers: int = 1, stagger: int = 0,
                 max_vgprs: int = 256, min_occupancy: int = 1):
     """The default tiling is `big_config` from the C++: 128x128x64, 8 warps.
 
@@ -156,11 +156,31 @@ def gemm_kernel(name: str, *, block_m: int = 128, block_n: int = 128,
 
         n_tiles = a.cols // k_step
 
+        # Stagger: workgroup w walks K from k-tile (w * stagger) mod n_tiles
+        # and wraps, so the workgroups resident at once are not all reading
+        # the same columns of A and rows of B -- FlyDSL's `stagger`. The sum
+        # is the same, in a different order. The wrap is a compare, not a
+        # remainder: rot + t is below 2 * n_tiles, and a remainder by a runtime
+        # value is a division sequence on every staged tile.
+        #
+        # Not a lever for this schedule, and so not in SPACE: FlyDSL's
+        # four-wave kernel gains 5-12% from it, this one loses 0-9% at ten of
+        # eleven shapes (tools/hk-bench/gemm_vs_flydsl.py,
+        # docs/history/26-the-scoreboard-retuned.md).
+        rot = (wgid * stagger) % n_tiles if stagger else None
+
+        def k_tile(t):
+            if not stagger:
+                return t
+            kk = rot + t
+            past = hk.min(hk.max(kk - n_tiles + 1, 0), 1)
+            return kk - past * n_tiles
+
         def a_coord(t):
-            return hk.elem_coord(0, 0, m_base, t * k_step)
+            return hk.elem_coord(0, 0, m_base, k_tile(t) * k_step)
 
         def b_coord(t):
-            return hk.tile_coord(0, 0, col, t)
+            return hk.tile_coord(0, 0, col, k_tile(t))
 
         def stage(t):
             # Clamped rather than predicated: past the end this re-reads the
@@ -306,8 +326,16 @@ def gemm_kernel(name: str, *, block_m: int = 128, block_n: int = 128,
 #: The tiling the C++ calls `big_config`, in one LDS buffer (see
 #: gemm_kernel), and the one every shape gets until a tuning record says
 #: otherwise. write_pos only places the two-buffer schedule's LDS write.
+#:
+#: n_split is 2, not big_config's 4: the warp's 64 columns as two 32-wide
+#: accumulators rather than four 16-wide ones, at the same 211 VGPRs and
+#: occupancy 7. The tuner picked 2 at all five of the scoreboard's shapes, and
+#: in one process (tools/hk-bench/gemm_vs_flydsl.py) it was faster at 15 of 16
+#: shape-runs, M from 512 to 16384, by 0.4-2.6%; the one loss, -1.2% at
+#: 8192x24576x4096, is inside that run's 2.1% noise. Each gain is under the
+#: tuner's 1% bar on its own; together they are the default.
 DEFAULT = dict(block_m=128, block_n=128, k_step=64, dot_slice=16, warps=8,
-               warp_rows=4, n_split=4, wgm=8, write_pos=2, lds_buffers=1)
+               warp_rows=4, n_split=2, wgm=8, write_pos=2, lds_buffers=1)
 
 #: What the tuner searches. Six axes and 96 points, chosen so that each one
 #: trades something real against something else rather than wandering:
@@ -343,7 +371,7 @@ TUNE_KEYS = ["4096x4096x4096", "8192x8192x8192",
 def _sched_name(s: Dict[str, Any]) -> str:
     return ("gemm_bf16_{block_m}x{block_n}x{k_step}_w{warps}r{warp_rows}"
             "_s{n_split}_d{dot_slice}_g{wgm}_p{write_pos}_l{lds_buffers}"
-            ).format(**s)
+            ).format(**s) + (f"_t{s['stagger']}" if s.get("stagger") else "")
 
 
 def _make(**sched):
