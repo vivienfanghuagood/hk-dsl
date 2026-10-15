@@ -35,6 +35,12 @@ test = ["pytest>=7"]
 [project.entry-points."vllm.general_plugins"]
 hk_attention = "hk.integration._vllm_plugin:register"
 
+# SGLang loads these in the launcher and in every scheduler process, where its
+# model runs. Gated on HK_SGLANG_LINEAR=1 for the same reason. See
+# hk/integration/_sglang_plugin.py.
+[project.entry-points."sglang.srt.plugins"]
+hk = "hk.integration._sglang_plugin:register"
+
 [tool.setuptools]
 package-dir = { "" = "python" }
 

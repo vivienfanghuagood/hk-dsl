@@ -1,20 +1,29 @@
-"""SGLang on the generated attention kernel.
+"""SGLang on hk's linear layers, and on the generated attention kernel.
 
-    import sglang                      # let SGLang import its modules first
+**Linear layers** (`apply_linear`), measured inside SGLang 0.5.18 with
+AMD-AIM/sglang-radeon on a W7900D: every unquantized bf16 linear goes through
+`torch.ops.hk_vllm.linear`, routed by a table measured against the F.linear
+SGLang calls on ROCm. A server turns it on with `HK_SGLANG_LINEAR=1`, through
+the `sglang.srt.plugins` entry point (`_sglang_plugin`), which SGLang loads in
+the scheduler process where the model runs:
+
+    HK_SGLANG_LINEAR=1 python -m sglang.launch_server --model-path Qwen/Qwen3-8B \\
+        --attention-backend triton --disable-cuda-graph
+
+In one process (an offline engine, a benchmark), call it after importing
+SGLang and before the model is built:
+
+    import sglang
     import hk.integration.sglang as hks
-    print(hks.apply())                 # before the engine is built
+    print(hks.apply_linear())
 
-NOT VERIFIED INSIDE AN SGLANG SERVER, for the same reason as the vLLM module
-next to it: there is no SGLang build for RDNA3 on the machine this was
-developed on. `tests/hk/gpu/test_sdpa.py` verifies the drop-in itself against
-`F.scaled_dot_product_attention`; this file's reading of SGLang's internals is
-what is untested.
-
-SGLang's RDNA3 path normally selects its Triton attention backend, which does
-not call `F.scaled_dot_product_attention` -- so on a text model this patch will
-honestly report that it rebound nothing. Where it does bite is
-`--attention-backend torch_native` and the vision encoders in the multimodal
-models, which call SDPA directly.
+**Attention** (`apply`) is still not verified inside SGLang.
+`tests/hk/gpu/test_sdpa.py` verifies the drop-in itself against
+`F.scaled_dot_product_attention`. SGLang's RDNA3 path selects its Triton
+attention backend, which does not call `F.scaled_dot_product_attention`, so on
+a text model this patch will honestly report that it rebound nothing. Where it
+does bite is `--attention-backend torch_native` and the vision encoders in the
+multimodal models, which call SDPA directly.
 """
 
 from __future__ import annotations
@@ -25,6 +34,9 @@ from . import _common
 
 PREFIXES = ("sglang",)
 
+#: Where a routing table override for SGLang's linear comes from.
+ROUTES_ENV = "HK_SGLANG_ROUTES"
+
 _APPLIED = None
 _LINEAR = None
 
@@ -32,12 +44,25 @@ _LINEAR = None
 _LINEAR_HOMES = ("sglang.srt.layers.quantization.unquant", "sglang.srt.layers.linear")
 
 
+def routes():
+    """The table SGLang's linear is routed by: one measured against F.linear,
+    which SGLang's linear calls on ROCm (routes_sglang_linear_<arch>.json, or
+    $HK_SGLANG_ROUTES), where there is one; else vLLM's. vLLM's fallback rows
+    were measured against vLLM's skinny GEMMs, so under SGLang they keep
+    F.linear at Ms where the generated GEMV beats it."""
+    from ..target import current_arch  # noqa: PLC0415
+    from . import engine, vllm_gemm  # noqa: PLC0415
+
+    return (engine.shipped_table("sglang_linear", current_arch(), ROUTES_ENV)
+            or vllm_gemm.routes())
+
+
 def apply_linear() -> str:
     """Route SGLang's unquantized linear layers through hk's GEMM op,
-    `torch.ops.hk_vllm.linear` -- the op `vllm_gemm` defines, routed by the
-    same measured table and falling back to F.linear, since without vLLM
-    there is no other engine GEMM to fall back to. bf16 on the GPU only;
-    every other call keeps SGLang's own apply. Returns what happened."""
+    `torch.ops.hk_vllm.linear` -- the op `vllm_gemm` defines, routed by
+    `routes()` and falling back to F.linear, since without vLLM there is no
+    other engine GEMM to fall back to. bf16 on the GPU only; every other call
+    keeps SGLang's own apply. Returns what happened."""
     global _LINEAR
     if not available():
         return "sglang is not importable; linear not patched"
@@ -45,8 +70,10 @@ def apply_linear() -> str:
         return "linear: already patched"
     from . import vllm_gemm  # noqa: PLC0415
 
-    if vllm_gemm.routes() is None:
+    table = routes()
+    if table is None:
         return "linear: not patched -- no routing table for this arch"
+    vllm_gemm.set_routes(table)
     cls = None
     for home in _LINEAR_HOMES:
         try:
@@ -69,7 +96,8 @@ def apply_linear() -> str:
 
     cls.apply = apply
     _LINEAR = (cls, orig)
-    return f"linear -> hk ({cls.__module__}.UnquantizedLinearMethod.apply)"
+    return (f"linear -> hk ({cls.__module__}.UnquantizedLinearMethod.apply; "
+            f"routes measured against {table.meta.get('engine', '?')})")
 
 
 def available() -> bool:
@@ -97,9 +125,12 @@ def revert() -> str:
     out = _common.unpatch_sdpa(PREFIXES)
     _APPLIED = None
     if _LINEAR is not None:
+        from . import vllm_gemm  # noqa: PLC0415
+
         cls, orig = _LINEAR
         cls.apply = orig
         _LINEAR = None
+        vllm_gemm.set_routes(None)
         out += "; linear -> sglang"
     return out
 

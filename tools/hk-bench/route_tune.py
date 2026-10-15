@@ -12,14 +12,17 @@ every 16 rows to 1024, coarser above, where the wasted rows are at most an
 eighth of the work.
 
 At each (N, K) of the model and each M: the engine's own path (the installed
-vLLM's `rocm_unquantized_gemm`, or `F.linear` without vLLM), the generated
-GEMM, and the decode GEMV where it takes the shape. Each is checked against fp32 before it
+vLLM's `rocm_unquantized_gemm`, or `F.linear` without vLLM; with `--engine
+sglang`, `F.linear`, which is what SGLang's linear reaches on ROCm), the
+generated GEMM, and the decode GEMV where it takes the shape. Each is checked against fp32 before it
 is timed; they interleave in one process, min over rounds, the weights
 rotated through more than three times the Infinity Cache. A kernel takes an M
 only if it beat the engine there by `--min-gain`; a tie stays the engine's.
 
     HIP_VISIBLE_DEVICES=3 python3 tools/hk-bench/route_tune.py \\
         --model Qwen/Qwen3-8B --out python/hk/tuned/routes_vllm_linear_gfx1100.json
+    HIP_VISIBLE_DEVICES=3 python3 tools/hk-bench/route_tune.py --engine sglang \\
+        --model Qwen/Qwen3-8B --out python/hk/tuned/routes_sglang_linear_gfx1100.json
 
 The table is per arch and per model: a (N, K) it has not measured takes the
 engine's path, so another model needs its own run (a few minutes) before
@@ -45,14 +48,18 @@ GRID = (list(range(1, 65)) + list(range(80, 1025, 16)) +
         list(range(4608, 8193, 512)) + [12288, 16384])
 
 
-def _engine():
-    """What vLLM's unquantized linear reaches, and its name: the installed
-    vLLM's own op where it registers one -- since 0.2x it runs skinny GEMMs
-    (wvSplitK, LLMM1) at M <= 5 on gfx11 -- else F.linear. A table measured
-    against one is a table for that vLLM."""
+def _engine(name="vllm"):
+    """What the engine's unquantized linear reaches, and its name. vLLM: the
+    installed vLLM's own op where it registers one -- since 0.2x it runs
+    skinny GEMMs (wvSplitK, LLMM1) at M <= 5 on gfx11 -- else F.linear.
+    SGLang: F.linear, which its UnquantizedLinearMethod calls on ROCm without
+    aiter, whether or not a vLLM is importable beside it. A table measured
+    against one is a table for that engine."""
     import torch
     import torch.nn.functional as F
 
+    if name == "sglang":
+        return F.linear, "sglang F.linear"
     try:
         import vllm
         import vllm.model_executor.layers.utils  # noqa: F401 -- registers the op
@@ -106,6 +113,9 @@ def main() -> int:
                     help="HF name, or a path to its config.json")
     ap.add_argument("--name", default="", help="what the table says it was "
                     "measured for (default: --model)")
+    ap.add_argument("--engine", choices=("vllm", "sglang"), default="vllm",
+                    help="whose linear the kernels must beat; the table is "
+                    "routes_vllm_linear_* or routes_sglang_linear_*")
     ap.add_argument("--tp", type=int, default=1)
     ap.add_argument("--shapes", default="",
                     help="comma-separated subset of qkv,o,gate_up,down,lm_head")
@@ -152,9 +162,9 @@ def main() -> int:
             ops[key] = hk.torch_op(hk_decode.kernel_for(**s))
         return ops[key]
 
-    engine, engine_name = _engine()
+    engine, engine_name = _engine(args.engine)
     print(f"engine path: {engine_name}", flush=True)
-    table = dict(kind="vllm_linear", arch=arch, model=args.name or args.model,
+    table = dict(kind=f"{args.engine}_linear", arch=arch, model=args.name or args.model,
                  engine=engine_name, tp=args.tp, device=torch.cuda.get_device_name(dev),
                  torch=torch.__version__, hip=torch.version.hip,
                  blas=str(torch.backends.cuda.preferred_blas_library()),
