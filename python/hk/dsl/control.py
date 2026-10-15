@@ -54,11 +54,13 @@ class DynRange:
         self.start, self.stop, self.step, self.unroll = start, stop, step, unroll
 
     def __iter__(self):
+        from .rewrite import unrewritten_hint  # noqa: PLC0415
+
         raise TypeError(
             "a runtime range is iterated by the kernel, not by Python: write "
             "the loop as a plain `for` in a function hk traces (an @hk.kernel "
             "or @hk.func), or use `with`-free hk.range(...) as the iterable of "
-            "such a loop.")
+            "such a loop." + unrewritten_hint())
 
 
 def _is_static(*xs) -> bool:

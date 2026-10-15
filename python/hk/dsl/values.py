@@ -181,19 +181,23 @@ class Int(Value):
                         "division on a device integer")
 
     def __bool__(self):
+        from .rewrite import unrewritten_hint  # noqa: PLC0415
+
         raise TypeError(
             "a device Int was used where Python needs a bool. A runtime "
             "condition is a comparison (`i < n`), and it can only steer an "
             "`if` or a loop the kernel compiles, not Python logic at trace "
-            "time.")
+            "time." + unrewritten_hint())
 
     def __index__(self):
+        from .rewrite import unrewritten_hint  # noqa: PLC0415
+
         raise TypeError(
             "a device Int was used where Python needs an int -- a tile "
             "extent, a Python range, a list index. Those are decided at "
             "trace time; make the value a constexpr parameter, or use it as "
             "a loop bound (`for i in range(n)` compiles a loop for a device "
-            "n).")
+            "n)." + unrewritten_hint())
 
     __int__ = __index__
 
@@ -228,11 +232,13 @@ class Bool(Value):
                    ScalarType(i32))
 
     def __bool__(self):
+        from .rewrite import unrewritten_hint  # noqa: PLC0415
+
         raise TypeError(
             "a runtime condition was used where Python needs a bool -- an "
             "`and`, an `or`, a `not`, or an `if` with a `return` or `break` "
             "inside. Combine conditions with &, | and ~, and branch with a "
-            "plain `if`, which the kernel compiles.")
+            "plain `if`, which the kernel compiles." + unrewritten_hint())
 
 
 def i1(x) -> ir.Value:

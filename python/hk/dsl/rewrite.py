@@ -25,6 +25,8 @@ cells, so a location captured inside it is the kernel author's line.
 from __future__ import annotations
 
 import ast
+import contextvars
+import functools
 import inspect
 import itertools
 import textwrap
@@ -32,8 +34,40 @@ import types
 from typing import Dict, List, Optional, Set
 
 _CACHE: Dict[types.CodeType, Optional[types.CodeType]] = {}
+#: Functions whose source could not be read, and why.
+_UNREAD: Dict[types.CodeType, str] = {}
+#: The function being traced unrewritten because its source could not be
+#: read, while it runs; None inside a rewritten one.
+_UNREWRITTEN: contextvars.ContextVar = contextvars.ContextVar("hk_unrewritten",
+                                                              default=None)
 _counter = itertools.count()
 _RANGES = ("range", "range_constexpr")
+
+
+def unrewritten_hint() -> str:
+    """What an error about Python control flow on a device value appends when
+    the function being traced was never rewritten. Without it the error
+    blames the code -- "use a plain `if`" -- when the code was never seen."""
+    who = _UNREWRITTEN.get()
+    if who is None:
+        return ""
+    return (f" Here the code is probably not the cause: hk could not read the "
+            f"source of {who}, so none of its `for`, `if` or `while` were "
+            f"rewritten. The usual reasons are a function defined in `python "
+            f"-c` or exec(), and a stale __pycache__ compiled at another path "
+            f"(delete it).")
+
+
+def _within(fn, who: Optional[str]):
+    @functools.wraps(fn)
+    def call(*args, **kwargs):
+        token = _UNREWRITTEN.set(who)
+        try:
+            return fn(*args, **kwargs)
+        finally:
+            _UNREWRITTEN.reset(token)
+
+    return call
 
 
 def fetch(scope: dict, names) -> tuple:
@@ -376,7 +410,10 @@ class _Rewriter:
 def _compile(fn) -> Optional[types.CodeType]:
     try:
         src = textwrap.dedent(inspect.getsource(fn))
-    except (OSError, TypeError):
+    except (OSError, TypeError) as e:
+        code = fn.__code__
+        _UNREAD[code] = (f"{code.co_filename}, line {code.co_firstlineno}: "
+                         f"{type(e).__name__}: {e}")
         return None
     tree = ast.parse(src)
     fdef = next((n for n in tree.body if isinstance(n, (ast.FunctionDef,
@@ -404,14 +441,15 @@ def _compile(fn) -> Optional[types.CodeType]:
 
 def rewrite(fn):
     """`fn` with its `for`, `if` and `while` routed through hk.dsl.control. Cached on
-    the code object; a function whose source cannot be read is returned
-    as it is."""
+    the code object. A function whose source cannot be read runs as it is,
+    and the errors its device control flow raises then say so."""
     code = fn.__code__
     if code not in _CACHE:
         _CACHE[code] = _compile(fn)
     new_code = _CACHE[code]
     if new_code is None:
-        return fn
+        why = _UNREAD.get(code)
+        return fn if why is None else _within(fn, f"`{fn.__qualname__}` ({why})")
     from . import control  # noqa: PLC0415
 
     cells = dict(zip(code.co_freevars, fn.__closure__ or ()))
@@ -422,7 +460,7 @@ def rewrite(fn):
                              fn.__defaults__, closure)
     new.__kwdefaults__ = fn.__kwdefaults__
     new.__dict__.update(fn.__dict__)
-    return new
+    return _within(new, None)
 
 
 _RUNTIME: list = []
