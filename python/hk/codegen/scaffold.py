@@ -18,6 +18,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, List
 
+from ..target import get_target
 from ..types import GlobalType
 
 if TYPE_CHECKING:
@@ -41,10 +42,15 @@ def _members(ir: "TracedKernel") -> str:
     return ", ".join(f"&globals::{p.name}" for p in ir.tensors())
 
 
+def _includes(ir: "TracedKernel", *more: str) -> tuple:
+    """kittens.cuh, then what this target's tree lacks, then the wrapper's."""
+    return ('"kittens.cuh"', *get_target(ir.arch).extra_includes, *more)
+
+
 def pybind_module(ir: "TracedKernel") -> str:
     """A self-contained pybind11 extension exporting one function, `ir.name`,
     that takes the tensor parameters positionally in declaration order."""
-    src = ir.cpp(('"kittens.cuh"', '"pyutils/hk_bind.cuh"'))
+    src = ir.cpp(_includes(ir, '"pyutils/hk_bind.cuh"'))
     lines = [
         src,
         f"#ifndef {MODULE_NAME_MACRO}",
@@ -71,7 +77,7 @@ def pybind_module(ir: "TracedKernel") -> str:
 def bare(ir: "TracedKernel") -> str:
     """Kernel and `launch`, no module boundary. For AOT objects and for reading
     the generated code when debugging a schedule."""
-    return ir.cpp(('"kittens.cuh"',))
+    return ir.cpp(_includes(ir))
 
 
 #: A gl's fields, in the order `device` lists their offsets: the base pointer,
@@ -109,7 +115,7 @@ def device(ir: "TracedKernel") -> str:
         rows.append(f"offsetof(globals, {p.name})")
         rows += [f"offsetof({gl}, {f})" for f in GL_FIELDS]
     return "\n".join([
-        ir.cpp(('"kittens.cuh"',)),
+        ir.cpp(_includes(ir)),
         "#include <cstddef>",
         "",
         f'extern "C" __device__ __attribute__((used)) const long long '
@@ -215,7 +221,7 @@ def torch_library(ir: "TracedKernel", ns: str = "hk", op_name: str = "") -> str:
         for p in tensors
     )
 
-    src = ir.cpp(('"kittens.cuh"',))
+    src = ir.cpp(_includes(ir))
     return "\n".join([
         src,
         "#include <torch/library.h>",

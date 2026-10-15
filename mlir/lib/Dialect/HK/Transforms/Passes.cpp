@@ -87,6 +87,13 @@ struct VerifyPass : public mlir::hk::impl::HKVerifyBase<VerifyPass> {
                     << " waves/SIMD x " << tgt->simdsPerLdsPool << " SIMDs)";
       return signalPassFailure();
     }
+    // A workgroup is at most 1024 threads: 16 warps of wave64.
+    if (warps * tgt->wave > 1024) {
+      f.emitError() << "warps=" << warps << " is " << warps * tgt->wave
+                    << " threads on " << tgt->arch << " (wave" << tgt->wave
+                    << "); a workgroup is at most 1024";
+      return signalPassFailure();
+    }
 
     // Nothing workgroup-wide inside a branch: a warp that skips a barrier
     // deadlocks the rest. A hang rather than a wrong answer, which is worse to

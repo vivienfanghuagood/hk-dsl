@@ -14,6 +14,7 @@ from __future__ import annotations
 
 from .._mlir.dialects import hk as hkd
 from .module import mlir_type
+from ..target import get_target
 from ..types import StageBufferType
 from . import builder as B
 from .values import SharedTile, Stage, View
@@ -29,7 +30,10 @@ class Group:
 
     @property
     def threads(self) -> int:
-        return self.warps * 32
+        # The wave of the kernel being traced: a group of W warps is 64 W
+        # threads on CDNA, and a buffer sized for 32 W stages half the tile.
+        t = B.current_or_none()
+        return self.warps * (get_target(t.arch).wave if t else 32)
 
     def __repr__(self) -> str:
         return f"group<{self.warps}>"

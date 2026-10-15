@@ -133,6 +133,7 @@ public:
       return kernel.emitError("unknown arch");
     if (failed(findGrid()))
       return failure();
+    findMmaOperands();
     assignNames();
     header(includes);
     if (failed(globalsStruct()))
@@ -175,6 +176,8 @@ private:
   llvm::MapVector<std::string, std::pair<Type, std::string>,
                   std::map<std::string, unsigned>>
       aliases;
+  std::map<std::string, std::string> operandShape;
+  std::map<std::string, std::string> sharedShape;
 
   // -- helpers ----------------------------------------------------------
 
@@ -191,7 +194,72 @@ private:
       return a.getInt();
     return d;
   }
-  int64_t threads() { return intAttr(attrs::kWarps, 1) * 32; }
+  int64_t threads() { return intAttr(attrs::kWarps, 1) * tgt->wave; }
+
+  /// Where the mma fragment is not 16x16 (gfx950: 16x32 operands), the
+  /// operand tiles' C++ type has to name the fragment, and every other tile
+  /// keeps the library's 16x16 default. A tile type used both as an operand
+  /// and elsewhere gets the operand shape everywhere; a copy between it and a
+  /// 16x16 tile is then a static_assert in the library, not a silent relayout.
+  void findMmaOperands() {
+    if (tgt->mma.empty() || tgt->mma.front().second.k == 16)
+      return;
+    int k = tgt->mma.front().second.k;
+    auto note = [&](Value v) {
+      auto r = dyn_cast<RegTileType>(v.getType());
+      if (!r || dtypeBits(r.getElementType()) != 16)
+        return;
+      std::string kk = std::to_string(k);
+      operandShape[typeKey(r)] =
+          r.getLayout() == "col" ? "rt_" + kk + "x16" : "rt_16x" + kk;
+    };
+    kernel.walk([&](Operation *op) {
+      llvm::TypeSwitch<Operation *>(op)
+          .Case<MmaABOp, MmaABtOp, MmaAtBOp, MmaAtBtOp>([&](auto o) {
+            note(o.getA());
+            note(o.getB());
+          });
+    });
+    // The same targets spell a shared tile's shape too, and it has to match
+    // the register tile read out of it: the allocation an operand is loaded
+    // from (through any subtile) gets the operand's fragment, as st_16x32.
+    kernel.walk([&](LoadSharedOp l) {
+      Type dt = l.getDst() ? l.getDst().getType() : l.getResult().getType();
+      auto it = operandShape.find(typeKey(dt));
+      if (it == operandShape.end())
+        return;
+      Value src = l.getSrc();
+      while (Operation *def = src.getDefiningOp()) {
+        if (auto s = dyn_cast<SubtileOp>(def))
+          src = s.getSrc();
+        else if (auto a = dyn_cast<SharedAtOp>(def))
+          src = a.getBuf();
+        else
+          break;
+      }
+      sharedShape[rawCpp(src.getType())] = "st" + it->second.substr(2);
+    });
+  }
+
+  /// gfx950's shared tile takes a shape parameter and has no default.
+  bool sharedTilesHaveShape() {
+    return !tgt->mma.empty() && tgt->mma.front().second.k != 16;
+  }
+
+  /// rawCpp, with the fragment shape findMmaOperands assigned.
+  std::string tileCpp(Type t) {
+    std::string s = rawCpp(t);
+    if (isa<RegTileType>(t)) {
+      auto it = operandShape.find(typeKey(t));
+      if (it != operandShape.end())
+        s.insert(s.size() - 1, ", kittens::ducks::rt_shape::" + it->second);
+    } else if (isa<SharedTileType>(t) && sharedTilesHaveShape()) {
+      auto it = sharedShape.find(s);
+      std::string shape = it != sharedShape.end() ? it->second : "st_16x16";
+      s.insert(s.size() - 1, ", kittens::ducks::st_shape::" + shape);
+    }
+    return s;
+  }
   int64_t ldsBytes() { return intAttr(attrs::kLdsBytes); }
 
   StringRef argName(func::FuncOp f, unsigned i) {
@@ -347,7 +415,7 @@ private:
     auto it = aliases.find(typeKey(t));
     if (it != aliases.end())
       return it->second.second;
-    return rawCpp(t);
+    return tileCpp(t);
   }
 
   // -- top level -------------------------------------------------------
@@ -467,7 +535,7 @@ private:
           aliases[typeKey(v.getTile())].second + "::" + v.getKind().str() +
           "_vec;");
       else
-        w("using " + kv.second.second + " = " + rawCpp(t) + ";");
+        w("using " + kv.second.second + " = " + tileCpp(t) + ";");
     }
     w();
   }
@@ -840,7 +908,7 @@ private:
         // LDS
         .Case([&](AllocSharedOp o) {
           auto t = o.getResult().getType();
-          std::string el = rawCpp(t);
+          std::string el = tileCpp(t);
           if (t.getCount() == 1)
             w(el + " &" + name(o.getResult()) + " = al.allocate<" + el +
               ">();");
@@ -873,6 +941,15 @@ private:
         })
         .Case([&](LoadSharedOp o) {
           Value d = dest(o.getDst(), o.getResult());
+          if (tgt->wave == 64) {
+            // include/cdna{3,4}'s load(rt, st) issues its ds_reads through
+            // inline-asm outputs and never waits, so `wait` is ours to keep:
+            // the wait, then the bind that orders the tile's readers after it.
+            w("kittens::load(" + name(d) + ", " + name(o.getSrc()) + ");");
+            if (o.getWait())
+              w("kittens::lds_wait_for<0>(" + name(d) + ");");
+            return;
+          }
           std::string t = o.getWait() ? "" : "<false>";
           w("kittens::load" + t + "(" + name(d) + ", " + name(o.getSrc()) +
             ");");
@@ -938,7 +1015,7 @@ private:
           auto t = o.getBuf().getType();
           w(g + "load_global_to_register_buffer(" + expr + ", " +
             std::to_string(t.getCalls()) + ", " + name(o.getSrc()) + ", " +
-            coordArg(o.getIdx(), rawCpp(t.getTile())) + ", " + tmpl + ");");
+            coordArg(o.getIdx(), tileCpp(t.getTile())) + ", " + tmpl + ");");
         })
         .Case([&](StageCommitOp o) {
           auto [g, expr, tmpl] = stageArgs(o.getBuf(), o.getSlot());
@@ -953,15 +1030,23 @@ private:
         })
         .Case([&](GroupLoadOp o) {
           std::string g = "kittens::group<" +
-                          std::to_string(o.getThreads() / 32) + ">::";
+                          std::to_string(o.getThreads() / tgt->wave) + ">::";
           w(g + "load(" + name(o.getDst()) + ", " + name(o.getSrc()) + ", " +
-            coordArg(o.getIdx(), rawCpp(o.getDst().getType())) + ");");
+            coordArg(o.getIdx(), tileCpp(o.getDst().getType())) + ");");
+          // include/cdna4's group load is buffer_load ... lds, a DMA that
+          // counts on vmcnt and returns in flight; gfx90a+ has a back-off
+          // barrier, so the compiler puts no wait before the s_barrier that
+          // follows, and the LDS reads after it are inline asm it cannot see.
+          // Measured on an MI355X without this: a different wrong answer per
+          // run. The op promises "issued and waited", so wait here.
+          if (tgt->wave == 64)
+            w("kittens::vm_wait<0>();");
         })
         .Case([&](GroupStoreOp o) {
           std::string g = "kittens::group<" +
-                          std::to_string(o.getThreads() / 32) + ">::";
+                          std::to_string(o.getThreads() / tgt->wave) + ">::";
           w(g + "store(" + name(o.getDst()) + ", " + name(o.getSrc()) + ", " +
-            coordArg(o.getIdx(), rawCpp(o.getSrc().getType())) + ");");
+            coordArg(o.getIdx(), tileCpp(o.getSrc().getType())) + ");");
         })
         // synchronization
         .Case([&](BarrierOp o) {
@@ -1100,7 +1185,7 @@ private:
                                                               int64_t slot) {
     auto t = cast<StageType>(buf.getType());
     std::string g =
-        "kittens::group<" + std::to_string(t.getThreads() / 32) + ">::";
+        "kittens::group<" + std::to_string(t.getThreads() / tgt->wave) + ">::";
     std::string expr =
         name(buf) + (t.getDepth() > 1 ? "[" + std::to_string(slot) + "]" : "");
     auto sb = buf.getDefiningOp<StageBufferOp>();
