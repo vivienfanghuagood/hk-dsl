@@ -133,6 +133,18 @@ MAX_WARPS = 16
 _NEG_INF = float("-inf")
 
 
+
+def _ftile(rows, cols, fold=1):
+    """The fp32 tile a row is worked in. Where tiles take a fragment shape
+    (gfx950) it is laid out in 16x32 fragments, so a lane's run of a 16-bit row is 8 elements:
+    one 16-byte buffer load or store where the 16x16 fragment's is 8 bytes.
+    Not when the row is folded onto the tile's rows (FOLD > 1): fold_rows
+    reduces through a 16x16 tile whose vector is retyped onto this one's,
+    and include/cdna4's vectors differ by fragment."""
+    if hk.arch.target().tile_shapes and fold == 1:
+        return hk.RT(fp32, rows, cols, frag=(16, 32))
+    return hk.RT(fp32, rows, cols)
+
 def _grid(p):
     # One workgroup per row block. The column loop is inside the kernel: a
     # normalization is a reduction along the row, so the whole row has to be
@@ -408,7 +420,7 @@ def _row_reduce_kernel(name: str, dtype, kind: str, warps: int,
     """
     def body(x: hk.Tensor[dtype], o: hk.Tensor[dtype], *, ROWS=ROWS, COLS=COLS,
              WARPS=warps, TPW=0, FOLD=1, EXACT=0, EPS=1e-6):
-        t = hk.RT(fp32, ROWS, COLS)
+        t = _ftile(ROWS, COLS, FOLD)
         vt = hk.col_vec(t)
 
         def put(idx, v):
@@ -641,7 +653,7 @@ def _rms_weighted_kernel(name: str, dtype, warps: int, residual: bool,
     """
     @hk.func
     def core(x, w, o, r, r_out, ROWS, COLS, WARPS, TPW, FOLD, EXACT, EPS):
-        t = hk.RT(fp32, ROWS, COLS)
+        t = _ftile(ROWS, COLS, FOLD)
         vt = hk.col_vec(t)
         rv = hk.row_vec(t)
         ncols = x.cols

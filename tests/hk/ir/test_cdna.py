@@ -289,3 +289,31 @@ def test_a_kernel_for_another_arch_is_refused_before_it_loads(monkeypatch):
         rta.check_device("gfx1100", "kernel 'k'", device=0)
     monkeypatch.setattr(rta, "device_arch", lambda device: None)
     rta.check_device("gfx1100", "kernel 'k'", device=0)   # no GPU: nothing to check
+
+
+def test_gfx950_elementwise_and_row_tiles_take_16x32_fragments():
+    # 16-byte runs a lane instead of 8: bf16 add went 0.58x -> 0.92x torch.
+    from hk.ops import elementwise, norm  # noqa: PLC0415
+
+    def ir(k, arch, **c):
+        return hk.kernel(k.fn, arch=arch, warps=k.warps, grid=k.grid_fn,
+                         name=k.name).trace(**c).dump()
+
+    add = elementwise.KERNELS["add_bf16"]
+    assert "frag 16x32" in ir(add, "gfx950", COLS=256)
+    assert "frag" not in ir(add, "gfx942") and "frag" not in ir(add, "gfx1100")
+    rms = norm.KERNELS["rms_bf16_w4"]
+    assert "!hk.rt<f32, 16x64, row, frag 16x32>" in ir(rms, "gfx950", TPW=1)
+    # Folded rows reduce through a 16x16 tile: no fragment there.
+    assert "frag" not in ir(rms, "gfx950", TPW=1, FOLD=16)
+
+
+def test_a_fragment_on_a_target_without_tile_shapes_is_refused():
+    t = hk.RT(hk.bf16, 16, 64, frag=(16, 32))
+
+    @hk.kernel(arch="gfx942", warps=1, grid=lambda p: (1, 1, 1))
+    def k(a: hk.Tensor[hk.bf16], o: hk.Tensor[hk.bf16]):
+        o.at[0, 0] = a.at[0, 0].load(t)
+
+    with pytest.raises(Exception, match="no fragment shape"):
+        k.trace()
