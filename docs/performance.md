@@ -720,3 +720,12 @@ tile each) gave rmsnorm 0.89x, layernorm 0.82x and softmax 0.77x; the CDNA
 plan (2 warps, 4 tiles each) is the table's. Short tensors (2048 rows) still
 lose, the weighted RMSNorm most (0.61x); at 64 rows the losses are fixed
 launch latency.
+
+### GEMM: hk's own, and why HipKittens' is wrapped instead
+
+`examples/04_gemm.py` (64x64 blocks, unwaited LDS reads with counted waits,
+no pipelining) on the MI355X at 4096³: 631 TFLOP/s, 0.41x hipBLASLt (1531).
+With every LDS read waited it was 540 (0.35x). `hk.ops.gemm` has no gfx950
+form yet (32x16 operand tiles, register staging). Closing the gap natively is
+HipKittens-level scheduling work, which is why HipKittens' own CDNA4 GEMM is
+wrapped as an hk op (below).
