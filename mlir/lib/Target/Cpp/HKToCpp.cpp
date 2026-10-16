@@ -461,9 +461,15 @@ private:
   LogicalResult globalsStruct() {
     w("struct globals {");
     indent = 1;
-    for (unsigned i = 0; i < kernel.getNumArguments(); ++i)
-      w(rawCpp(kernel.getArgument(i).getType()) + " " +
-        argName(kernel, i).str() + ";");
+    for (unsigned i = 0; i < kernel.getNumArguments(); ++i) {
+      Type t = kernel.getArgument(i).getType();
+      // include/cdna{3,4}'s gl has no row stride; hk/cdna.cuh's strided_gl
+      // is that gl with the one the launchers pass.
+      std::string ty = rawCpp(t);
+      if (auto g = dyn_cast<GlobalType>(t); g && tgt->wave == 64)
+        ty = "kittens::strided_gl<" + dtypeCpp(g.getElementType()).str() + ">";
+      w(ty + " " + argName(kernel, i).str() + ";");
+    }
     w();
     w("dim3 grid() const {");
     indent = 2;

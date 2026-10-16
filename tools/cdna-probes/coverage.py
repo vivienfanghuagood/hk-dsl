@@ -6,7 +6,7 @@ device-only code object through hk's own build (the spill gate included), and
 prints one line per kernel: its resources, or the first distinct errors.
 Compile-only; no GPU.
 
-    HK_ARCH=gfx950 python3 tools/cdna-probes/coverage.py [--ops]
+    HK_ARCH=gfx950 JOBS=16 python3 tools/cdna-probes/coverage.py [--ops]
 """
 
 import importlib
@@ -49,32 +49,48 @@ def first_errors(text: str, n: int = 3):
     return out[:n]
 
 
+def build_one(name, src, arch, traced_name):
+    try:
+        b = hc.build(src, arch, name=traced_name, kind="co")
+        return True, f"{name:28s} OK      " + "; ".join(r.line() for r in b.kernels)
+    except Exception as e:  # noqa: BLE001
+        errs = first_errors(str(e)) or [str(e).splitlines()[0]]
+        return False, f"{name:28s} FAIL    " + " | ".join(x[:110] for x in errs)
+
+
 def main():
+    from concurrent.futures import ThreadPoolExecutor  # noqa: PLC0415
+
     arch = os.environ.get("HK_ARCH", "gfx950")
+    workers = int(os.environ.get("JOBS", "16"))
     jobs = list(_catalog.kernels())
     if "--ops" in sys.argv:
         jobs += ops_kernels()
-    ok = 0
+    if os.environ.get("FILTER"):
+        jobs = [(n, k) for n, k in jobs if re.search(os.environ["FILTER"], n)]
+    lines, todo = {}, []
     for name, k in jobs:
         try:
             traced = k.trace()
         except Exception as e:  # noqa: BLE001
-            print(f"{name:28s} TRACE   {str(e).splitlines()[0][:160]}")
+            lines[name] = (False, f"{name:28s} TRACE   {str(e).splitlines()[0][:160]}")
             continue
         try:
-            # bare, not device: device's layout table names gl::row_stride_
-            # internal, which only the rdna3 gl has (see docs/design/cdna.md).
-            src = scaffold.bare(traced)
+            # The device scaffold: what the code-object launcher builds.
+            src = scaffold.device(traced)
         except Exception as e:  # noqa: BLE001
-            print(f"{name:28s} EMIT    {str(e).splitlines()[0][:160]}")
+            lines[name] = (False, f"{name:28s} EMIT    {str(e).splitlines()[0][:160]}")
             continue
-        try:
-            b = hc.build(src, arch, name=traced.name, kind="co")
-            print(f"{name:28s} OK      " + "; ".join(r.line() for r in b.kernels))
-            ok += 1
-        except Exception as e:  # noqa: BLE001
-            errs = first_errors(str(e)) or [str(e).splitlines()[0]]
-            print(f"{name:28s} FAIL    " + " | ".join(x[:110] for x in errs))
+        todo.append((name, src, traced.name))
+    with ThreadPoolExecutor(workers) as ex:
+        futs = {name: ex.submit(build_one, name, src, arch, tn) for name, src, tn in todo}
+        for name, f in futs.items():
+            lines[name] = f.result()
+    ok = 0
+    for name, _ in jobs:
+        good, line = lines[name]
+        ok += good
+        print(line)
     print(f"{arch}: {ok}/{len(jobs)} build")
 
 
