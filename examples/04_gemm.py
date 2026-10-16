@@ -82,11 +82,15 @@ def main():
     _common.check("this kernel vs fp32 torch", c, a.float() @ b.float().T, rel=1e-2)
     if args.no_bench:
         return
-    best = _common.compare({
-        "hk (this kernel)": lambda: gemm(a, b, c),
-        "hk.ops.gemm.matmul": lambda: hk.ops.gemm.matmul(a, b, c),
-        "torch.matmul": lambda: torch.matmul(a, b.T),
-    }, args.rounds)
+    contenders = {"hk (this kernel)": lambda: gemm(a, b, c),
+                  "hk.ops.gemm.matmul": lambda: hk.ops.gemm.matmul(a, b, c),
+                  "torch.matmul": lambda: torch.matmul(a, b.T)}
+    from hk.target import current_arch, get_target  # noqa: PLC0415
+
+    if get_target(current_arch()).wave == 64:
+        # hk.ops.gemm's 32x16 operand tiles have no gfx950 form yet.
+        del contenders["hk.ops.gemm.matmul"]
+    best = _common.compare(contenders, args.rounds)
     _common.report("time", best, baseline="torch.matmul", work=2.0 * m * n * k,
                    unit="TFLOP/s")
 
