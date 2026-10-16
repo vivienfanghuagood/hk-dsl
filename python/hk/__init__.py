@@ -1,4 +1,4 @@
-"""hk -- HipKittens kernels for Radeon GPUs, written in Python.
+"""hk -- HipKittens kernels for AMD GPUs, written in Python.
 
     import hk
 
@@ -13,15 +13,16 @@
 
 A kernel is traced into the hk MLIR dialect (mlir/): tiles are buffers, scalars
 are arith, a Python `for`/`if`/`while` on device values is scf. The passes --
-verification, LDS allocation, the LDS wait pipeline, the register budget --
-and the translation to HipKittens C++ are C++. The backend is the stock hipcc
-compiling that C++ against include/rdna3, not a custom LLVM, which is what
-lets a kernel written here run inside any ROCm container -- the point of
-shipping into vLLM and SGLang.
+verification, the matrix-core fragments, LDS allocation, the LDS wait
+pipeline, the register budget -- and the translation to HipKittens C++ are
+C++. The backend is the stock hipcc compiling that C++ against HipKittens'
+headers (include/rdna3, or cdna3/cdna4 on Instinct), not a custom LLVM, which
+is what lets a kernel written here run inside any ROCm container -- the point
+of shipping into vLLM and SGLang.
 
 Three things this layer exists to make impossible rather than merely
 discouraged, each of which is a silent wrong answer on gfx11 and cost days to
-find by hand:
+find by hand (CDNA4 adds a fourth, docs/README.md#the-traps):
 
   1. A spilling kernel is never returned. `s_waitcnt` in include/rdna3 is placed
      by hand; scratch traffic reorders against it and the kernel computes the
@@ -33,8 +34,9 @@ find by hand:
      degrades to 16 scalar ds_read_u16. The passes say so at trace time
      rather than letting you find it in a benchmark.
 
-Three entry points, in increasing order of what they need:
+Four entry points, in increasing order of what they need:
   `k.trace()`   the hk module -- no compiler, no GPU
+  `k.source()`  the HipKittens C++ it translates to -- no compiler, no GPU
   `k.build()`   hipcc, no GPU (this is where the gates run)
   `k(*tensors)` a GPU
 """

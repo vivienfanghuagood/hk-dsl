@@ -38,12 +38,21 @@ python3 examples/validate.py --only gemm,attention
 ```
 
 `--dump` and `--build` need no GPU, so the examples can be read and compiled
-on any machine with hipcc. `--arch gfx1201` builds for a part that is not in
-the machine. `--no-bench` checks correctness without timing.
+on any machine with hipcc. `--arch gfx1201` (or `gfx942`, `gfx950`) builds
+for a part that is not in the machine. `--no-bench` checks correctness
+without timing.
+
+On an MI355X (gfx950), `04_gemm.py` runs and passes its check, as do most of
+the others; attention has no CDNA path yet and is refused while tracing, and
+`validate.py` skips the GEMM, decode GEMV and attention there
+([CDNA3/4](../docs/design/cdna.md)).
 
 The timings follow the protocol every number in this repository was taken
 with: all contenders in one process, interleaved round by round, best round
-reported. Absolute times drift between processes; the ratios do not.
+reported. Absolute times drift between processes; ratios taken in one
+process drift much less, though for microsecond kernels they still moved
+5-30% from one process to the next
+([the performance gate](../docs/testing.md#the-performance-gate)).
 
 ## What they leave out
 

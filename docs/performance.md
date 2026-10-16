@@ -3,7 +3,7 @@
 Every number on this page is copied from the [development record](history/README.md),
 with a link to the chapter it comes from; the chapter has the method, the
 harness in `tools/hk-bench/` and the caveats. Unless a section says otherwise
-the hardware is one W7900D (gfx1100, RDNA3; 864 GB/s of HBM). The numbers are
+the hardware is one W7900D (gfx1100, RDNA3; 864 GB/s of GDDR6). The numbers are
 as measured at the time. When the IR moved to MLIR, the kernels that matter
 were re-measured against their old selves and came out within noise
 ([after the MLIR move](#after-the-mlir-move)).
@@ -42,7 +42,7 @@ rewritten); they stay because the chapters cite them.
 | kernel | result | against | verdict | source |
 |---|---|---|---|---|
 | vLLM 0.31 end to end, Qwen3-8B, attention backend / both patches | 1.05-1.48x / 1.20-1.75x per request; 1.01-1.39x TRITON_ATTN | stock vLLM 0.31.0 (ROCM_ATTN), and the TRITON_ATTN backend hk replaces | win at every shape; the gain over TRITON_ATTN is prefill | [vLLM 0.31](history/20-vllm-031.md) |
-| vLLM 0.31 end to end, Qwen3-8B, linear routes with FlyDSL's GEMM rows | decode step 1.14x hk+gemm's at 96-128 requests (1.394x / 1.666x stock); prefill 1.0-2.6% faster at 1-4 requests; tie elsewhere | the same patches routed by the table without FlyDSL rows; stock vLLM 0.31.0 | win where a step's M is one FlyDSL's tiles divide and it measured faster; otherwise unchanged | [chapter 30](history/30-flydsl-routes-gate-contracts.md) |
+| vLLM 0.31 end to end, Qwen3-8B, linear routes with FlyDSL's GEMM rows | decode step 1.14x hk+gemm's at 96-128 requests (1.394x / 1.666x stock); prefill 0.9-2.5% faster at 1-4 requests; tie elsewhere | the same patches routed by the table without FlyDSL rows; stock vLLM 0.31.0 | win where a step's M is one FlyDSL's tiles divide and it measured faster; otherwise unchanged | [chapter 30](history/30-flydsl-routes-gate-contracts.md) |
 | vLLM 0.31 end to end, Qwen3-8B-AWQ, 4-bit patch | 1.07-3.80x per request; decode step 1.57-4.46x | stock vLLM 0.31.0, fp16, Triton AWQ | win at every shape | [4-bit weights](history/22-int4.md) |
 | vLLM 0.31 end to end, Qwen3-14B-AWQ, 4-bit patch | 1.16-4.43x per request; decode step 2.87-5.52x | stock vLLM 0.31.0, fp16, Triton AWQ | win at every shape | [4-bit weights](history/22-int4.md) |
 | vLLM 0.31 end to end, OLMoE-1B-7B, MoE patch / with hk's attention | 1.02-1.41x / 1.17-2.22x per request; decode step to 2.62x | stock vLLM 0.31.0 | win at every shape | [MoE](history/21-moe.md) |
@@ -54,8 +54,8 @@ rewritten); they stay because the chapters cite them.
 | kernel | result | against | verdict | source |
 |---|---|---|---|---|
 | GEMM, bf16, Qwen3-8B's linear shapes | 87.9-91.3 TFLOP/s | FlyDSL's dispatcher and its autotuner; Triton autotuned over gfx1100's space; hipBLASLt | tie with FlyDSL at all five shapes, 0.99-1.01x (from 0.95-0.98x), once `s_setprio` stopped fencing the scheduler; win over tuned Triton 1.09-1.11x and hipBLASLt 1.28-1.39x | [the GEMM schedule](history/28-gemm-schedule.md) |
-| RMSNorm (weighted), fused add + RMSNorm, softmax, on register strips | RMSNorm 1.04-1.12x, softmax 1.02x, fused add 0.83-1.11x across runs | the fastest of Triton and FlyDSL, each autotuned, and Inductor | RMSNorm and softmax win or tie at 1-8192 rows; the fused add ties, with a loss at 1 row in one run of five (the clock) and at 8192 rows in one of two (buffer placement) | [strips](history/27-strips.md) |
-| attention forward, n4096 GQA 4, against torch 2.13 | 1.16x causal, 0.99x non-causal | torch 2.13.0+rocm7.2's SDPA, 3.3x faster than 2.10's causal | win causal, tie non-causal; the 2.73-3.80x elsewhere on this page is against torch 2.10 | [chapter 30](history/30-flydsl-routes-gate-contracts.md) |
+| RMSNorm (weighted), fused add + RMSNorm, softmax, on register strips | RMSNorm 1.02-1.12x, softmax 1.02x, fused add 0.83-1.11x across runs | the fastest of Triton and FlyDSL, each autotuned, and Inductor | RMSNorm and softmax win or tie at 1-8192 rows; the fused add ties, with a loss at 1 row in one run of five (the clock) and at 8192 rows in one of two (buffer placement) | [strips](history/27-strips.md) |
+| attention forward, n4096 GQA 4, against torch 2.13 | 1.16x causal, 0.99x non-causal | torch 2.13.0+rocm7.2's SDPA, 3.3x faster than 2.10's causal | win causal, tie non-causal; the 2.8-4.0x elsewhere on this page is against an older torch (2.10 where recorded) | [chapter 30](history/30-flydsl-routes-gate-contracts.md) |
 | dropout, KV cache write, LayerNorm backward, embedding (`examples/07`-`10`) | dropout 1.02x; KV write 1.18-3.00x; LayerNorm backward 1.12x at 1024 wide, 0.66-0.92x wider; embedding 1.18-1.28x torch at 1-32 tokens, 0.93x Triton at 4096 | the Triton tutorial or a Triton row kernel; torch | win for dropout, the KV write and LayerNorm backward at 1024; loss where a 16-row tile cannot hold a 2048+ wide row, and for the embedding at 4096 tokens | [rows by index](history/19-rows-by-index.md) |
 
 ### Kernels against the kernel the engine runs
@@ -76,7 +76,7 @@ rewritten); they stay because the chapters cite them.
 
 | kernel | result | against | verdict | source |
 |---|---|---|---|---|
-| GEMM, bf16 | 75.0 TFLOPs at 4096³, 77.9 at 8192x8192x4096 | handwritten HipKittens C++; rocBLAS | tie with the C++ (1.00x); rocBLAS 0.93x and 0.92x; since overtaken by one LDS buffer | [Phase 3](history/02-phase-3-gemm.md) |
+| GEMM, bf16 | 75.0 TFLOPs at 4096³, 77.9 at 8192x8192x4096 | handwritten HipKittens C++; rocBLAS | tie with the C++ (1.00x); rocBLAS 0.93x and 0.92x; since overtaken by hk's later schedule with one LDS buffer | [Phase 3](history/02-phase-3-gemm.md) |
 | attention forward | 61.0-64.9 TFLOPs | handwritten C++; torch SDPA (aotriton) | tie with the C++, 1.008x causal; 2.9-3.2x torch, 4.0x causal (torch 2.10) | [Phase 4](history/03-phase-4-attention.md) |
 | norms, elementwise, RoPE, quantize | 13 of 15 cases faster | `torch.compile` | win; the other two are a tie | [Phases 1 and 2](history/01-phases-1-2.md) |
 | RMSNorm, SiLU-mul | slower | Inductor, at Qwen3-8B shapes | loss; the patches were dropped | [strided globals](history/12-strided-globals.md) |
@@ -100,8 +100,10 @@ and tuned, and records what it searched:
   and its autotuner forced to search.
 
 Its flash attention does not run on gfx11, which has no global-to-LDS load.
-GPU ms. "Triton" and "FlyDSL" are the faster of each DSL's two arms; the
-verdict is hk's faster arm against the fastest other, a tie within the
+The rest of the stack was torch 2.10.0+rocm7.2.4 and Triton 3.6.0, which
+matters for attention: torch 2.13's SDPA is 3.3x faster (below).
+GPU ms. "hk", "Triton" and "FlyDSL" are each the faster of that DSL's two
+arms; the verdict is hk's against the fastest other, a tie within the
 larger of 2% and the two arms' noise. Rows marked * are best of 9 rounds of
 50 calls, the rest best of 5 of 10.
 
@@ -138,10 +140,14 @@ at 4096³) and Triton's seven tutorial configs. FlyDSL's dispatcher runs
 rotation of the K start 5-12%. Bare, its kernel is 0.89-0.97x hk's.
 - hk can express the rotation (`gemm_kernel(stagger=)`), and it does not pay
   in hk's schedule: 0.91-1.00x at ten of eleven shapes.
-- hk cannot express the hints: `hk.arch` has a full `sched_barrier` but no
-  instruction-group interleave.
-- FlyDSL's four-wave 64x64 warp tile spills in hk's `dot_tile` (281 VGPRs),
-  which keeps its whole A slice live where FlyDSL streams one fragment.
+- hk could not express the hints: `hk.arch` had a full `sched_barrier` but
+  no instruction-group interleave. Chapter 28 added
+  `hk.arch.sched_group_barrier`; with `s_setprio` gone, the hint added
+  nothing on top.
+- FlyDSL's four-wave 64x64 warp tile spilled in hk's `dot_tile` (281 VGPRs),
+  which kept its whole A slice live where FlyDSL streams one fragment.
+  Chapter 28's `gemm_kernel(stream_a=True)` streams A: 256 VGPRs and no
+  spill under ROCm 7.1, 3 spilled under 7.2.
 - FlyDSL's 256x256x32 tile fits hk (252 VGPRs) and is 0.77-0.88x.
 - n_split=2, now hk's default, was +0.4-2.6% at 15 of 16 shape-runs.
 
@@ -163,26 +169,29 @@ The norm losses chapter 26 measured, and why:
   halves. HipKittens' `HK_RT_HALF_SPLIT` now moves it once. On the folded
   plans: rms_norm 27.17 to 24.72 us, the fused add 46.12 to 40.15; softmax,
   switched to the bounded accesses, 29.99 to 23.22, ahead of tuned Triton's
-  25.73. The remaining gap is the absence of a register layout in which a
+  25.73. The remaining gap was the absence of a register layout in which a
   lane owns a contiguous run of one row, which is what Triton's blocked
-  layout and FlyDSL's tiled copies give their kernels.
-- **8192 rows** is HBM, 3-9% behind. The unfolded plan's weight is a row
+  layout and FlyDSL's tiled copies give their kernels. Chapter 27's strips
+  are that layout.
+- **8192 rows** is DRAM-bound, 3-9% behind. The unfolded plan's weight is a row
   vector broadcast down a WMMA-shaped tile, read with 128 element loads a
   lane.
 
 So on this card at these shapes, as of chapters 27 and 28: hk and FlyDSL
 tie the GEMM, hk wins the norms and softmax (the fused add ties) and
-attention, where neither other DSL has a gfx11 kernel; tuned Triton and
-hipBLASLt are behind both on the GEMM.
+attention, where neither other DSL has a gfx11 kernel (against torch 2.10's
+SDPA; against torch 2.13's, 1.16x causal and a tie non-causal); tuned Triton
+and hipBLASLt are behind both on the GEMM.
 
 The performance gate's baseline (`tests/perf/baselines/gfx1100.json`,
 [chapter 30](history/30-flydsl-routes-gate-contracts.md)) is the same
 scoreboard's out-of-the-box arms, four runs on the vLLM 0.31 venv: torch
-2.13.0+rocm7.2, Triton 3.8.0, FlyDSL 0.4.0. Against FlyDSL the GEMM ratios
-are unchanged (0.97-0.98x hk's speed). Attention is not: torch 2.13's SDPA
-runs the causal n4096 case in 3.24-3.27 ms where 2.10's took 10.83, so hk's
-attention is 1.16x torch causal and 0.99x non-causal on that torch, against
-3.80x and 2.73x above. The attention rows above are torch 2.10's.
+2.13.0+rocm7.2, Triton 3.8.0, FlyDSL 0.4.0. It predates chapter 28: there
+FlyDSL took 0.97-0.98x hk's time on the GEMM, as in chapter 26. Attention
+changed with torch: 2.13's SDPA runs the causal n4096 case in 3.24-3.27 ms
+where 2.10's took 10.83, so hk's attention is 1.16x torch causal and 0.99x
+non-causal on that torch, against 3.61x and 2.82x in the table above
+(chapter 26: 3.80x and 2.73x). The attention rows above are torch 2.10's.
 
 ### Triton tutorials and the kernels beside a model
 
@@ -482,7 +491,8 @@ hk's kernel loses up to eight requests and wins from sixteen. The loss is in
 every launch: at 1024 tokens and one request the walk is 21.0 us to Triton's
 13.5, the merge 8.0 to its reduction's 3.1, and vLLM's C++ cache write
 through hk's view 4.1 to the Triton one's 2.6 (`tools/hk-bench/paged_kernels.py`).
-The kernel reaches 83-86% of HBM where there is enough of it to stream.
+The kernel reaches 83-86% of the DRAM bandwidth where there is enough of it
+to stream.
 
 ## Paged prefill
 
@@ -768,8 +778,11 @@ check passing, hk against torch's eager call, interleaved in one process.
 | decode GEMV | M=1, N=4096 / N=12288, K=4096 | 4.38x / 3.90x |
 | attention | 1x32x4096x128, non-causal / causal | 2.76x / 3.94x |
 
-The norms trail torch's own fused kernels by 4-12%; Phase 2's "13 of 15
-faster" was against `torch.compile`, a different baseline. Before the fix the
+The norms trailed torch's own fused kernels by 4-12% on the tile kernels of
+the time; on chapter 27's strips the scoreboard's torch column has hk ahead
+at every norm and softmax shape (softmax 8192x4096: 0.1686 against 0.1755
+ms). Phase 2's "13 of 15 faster" was against `torch.compile`, a different
+baseline. Before the fix the
 norm and quantize rows were wrong at this size, not slow. The drain the fix
 added costs nothing measurable: 1.002x for rmsnorm, 1.010x for softmax, after
 against before.

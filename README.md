@@ -173,9 +173,9 @@ ones replaced here.
 | kernel | result | against | source |
 |---|---|---|---|
 | GEMM, bf16, Qwen3-8B's linear shapes | 87.9-91.3 TFLOP/s: a tie with FlyDSL, 0.99-1.01x; 1.09-1.11x tuned Triton; 1.28-1.39x hipBLASLt | FlyDSL's dispatcher and autotuner; Triton autotuned; hipBLASLt | [the GEMM schedule](docs/history/28-gemm-schedule.md) |
-| RMSNorm, softmax, on register strips | 1.04-1.12x and 1.02x: a win or a tie at 1-8192 rows | the fastest of Triton and FlyDSL, each autotuned, and Inductor | [strips](docs/history/27-strips.md) |
+| RMSNorm, softmax, on register strips | 1.02-1.12x and 1.02x: a win or a tie at 1-8192 rows | the fastest of Triton and FlyDSL, each autotuned, and Inductor | [strips](docs/history/27-strips.md) |
 | fused add + RMSNorm, on register strips | a tie, 0.83-1.11x across runs | the same | [strips](docs/history/27-strips.md) |
-| attention forward, n4096, GQA 4 | 1.16x causal, 0.99x non-causal; a tie with HipKittens' C++ | torch 2.13's SDPA (3.3x faster than 2.10's, against which hk is 2.73-3.80x); FlyDSL has no attention on gfx11 | [chapter 30](docs/history/30-flydsl-routes-gate-contracts.md), [Phase 4](docs/history/03-phase-4-attention.md) |
+| attention forward, n4096, GQA 4 | 1.16x causal, 0.99x non-causal; a tie with HipKittens' C++ | torch 2.13's SDPA (3.3x faster than 2.10's, against which hk is 2.7-3.8x); FlyDSL has no attention on gfx11 | [chapter 30](docs/history/30-flydsl-routes-gate-contracts.md), [Phase 4](docs/history/03-phase-4-attention.md) |
 | dropout, KV cache write, LayerNorm backward | 1.02x; 1.18-3.00x; 1.12x at 1024 wide, *slower* (0.66-0.92x) at 2048-8192 | the Triton tutorial or a Triton row kernel | [rows by index](docs/history/19-rows-by-index.md) |
 
 **Kernels inside the engines**, against the kernel the engine runs:

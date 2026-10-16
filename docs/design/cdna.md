@@ -29,11 +29,14 @@ Builds now (`tools/cdna-probes/coverage.py --ops`, device scaffold, spill gate):
 on gfx950 and 494/506 on gfx942**, from 196/410 and 195/410. What fails names its reason at
 trace time: attention, paged and decode (16-column operand tiles, an accumulator cast into
 an operand, `lds_granules`), and `hk.ops.gemm` (32x16 operand tiles, register staging). On
-the MI355X the GPU tier's elementwise, bounded, strided, while, indexed, load_scalar,
-phase2, weighted-norm, target-rmsnorm, torch_op and example-run files pass (all but
-attention and `validate.py`, which reaches the decode GEMM).
+the MI355X (ROCm 7.2.3) the GPU tier is 350 passed, 190 skipped, 0 failed (at `3b6c6ce`):
+the skips are the kernels above, reported with their reason
+([testing](../testing.md#running-each-tier)). `examples/validate.py` passes every case hk
+has a native CDNA path for, and skips the GEMM, decode GEMV and attention.
 
-## Summary
+## Summary of the assessment (at `fdb87f1`)
+
+Sections 1-5 as written before the work above; the status table says what has changed.
 
 * **hk's IR and Python frontend are not RDNA3-bound.** The RDNA3 parts are a short list:
   the target table, four `* 32`s, the C++ spelling of two tile types, about 25 library
@@ -129,7 +132,8 @@ CDNA trees are upstream `de0cddbd` plus five MXFP8/overflow files):
    shipped GEMM relies on a bare `asm volatile("s_waitcnt lgkmcnt(0)")` before
    `mma_ABt` (`kernels/cdna4/gemm/bf16fp32/256_256_64_32_with16x32.cpp:146-148`).
    Whether the scheduler actually hoists an MFMA there on gfx950 has not been measured
-   (§3, *validate first*).
+   (§3, *validate first*). *Since measured (status, step 3): it does, and every LDS GEMM
+   built without the bind returns NaN.*
 2. **The LDS-load contract differs.** hk assumes `load(rt, st)` waits and `load<false>`
    does not (`rdna3/.../tile/shared_to_register.cuh:81, 141`; `HKToCpp.cpp:876`). cdna3
    and cdna4 `load(rt, st)` never wait and take no `<false>`. Unchanged, a `wait=True`
@@ -156,7 +160,9 @@ CDNA trees are upstream `de0cddbd` plus five MXFP8/overflow files):
 **gfx1100 measurements**: the shipped route tables and `hk/tuned/*.json` are keyed on
 gfx1100. On gfx950, `RouteTable` finds no table and routes nothing to hk
 (`tests/hk/ir/test_vllm_gemm.py:31` asserts the gfx1100 one exists). That is the safe
-default and the right one until there are MI355X measurements.
+default and the right one until there are MI355X measurements. *Since measured (status,
+step 4): `routes_vllm_linear_gfx950.json` sends 37 of 206 points to HipKittens' CDNA4
+GEMM, and none to `hk.ops.gemm`.*
 
 ---
 
@@ -181,7 +187,7 @@ register, and LLVM's Occupancy remark is read back; gfx942 and gfx950 are identi
 512 registers per lane shared by VGPRs and AGPRs, allocation granule **8**, AGPRs start
 at `align4(VGPRs)`, at most **8 waves/SIMD**. 64 VGPRs gives 8 waves, 65 gives 7, and
 64 + 1 AGPR also gives 7. This is the compiler's model and has not been timed on the part
-the way gfx1100's 24 was.
+the way gfx1100's 24 was. *Since timed on the MI355X (status, step 8).*
 
 ### 2.2 hk ops onto it (gfx950)
 
@@ -247,10 +253,13 @@ list plus `gelu`, which `include/cdna3` lacks.
    whole tensor and caps at 3.75 GiB, as on RDNA3.*
 4. **The register model is compiler-modelled, not timed**, so the new targets are
    `verified=False`. Also, LLVM may park VGPRs in AGPRs (`v_accvgpr_write`) instead of
-   scratch. That is not a correctness issue, but the gate does not see it.
+   scratch. That is not a correctness issue, but the gate does not see it. *Since step
+   8, gfx950's model is timed on the MI355X and the target is `verified=True`; gfx942's
+   is still modelled.*
 5. **The fragment shape is a translator heuristic.** A tile type used both as an
    operand and as a 16x16 tile becomes a library `static_assert` (loud, not silent). The
-   proper fix is shape as a field of `!hk.rt`.
+   proper fix is shape as a field of `!hk.rt`. *Fixed (step 7): the fragment is in the
+   type, and `hk-fragments` refuses a type tied to two fragments.*
 6. **An arch mismatch at launch segfaults** (`tests/hk/gpu/test_bounded.py` pins
    gfx1100 and crashed the process on gfx950) instead of raising. *Fixed (step 6).*
 7. **Strided tensors.** The CDNA `gl` has no row stride. The shim accepts contiguous
@@ -258,12 +267,12 @@ list plus `gelu`, which `include/cdna3` lacks.
    `scaffold.py:79-80`) names `row_stride_internal` and does not build on CDNA, which
    blocks `test_torch_op` (0/8 here). *Fixed (step 5): `kittens::strided_gl`;
    `test_torch_op` passes on the MI355X.*
-9. **Truncating bf16 conversions in the CDNA trees.** Found in step 1: both trees'
+8. **Truncating bf16 conversions in the CDNA trees.** Found in step 1: both trees'
    scalar `convertor<bf16, float>` truncates, and include/cdna3's packed one too. hk's
    stores and CDNA3 casts round to nearest even. One library path hk does not wrap still
    truncates: include/cdna4's ortho and naive register-vector stores to a bf16 global (its
    align store uses the packed, rounding conversion).
-8. **Upstream churn.** cdna4's fast GEMM path uses `G::load(…, swizzled_offsets, srd,
+9. **Upstream churn.** cdna4's fast GEMM path uses `G::load(…, swizzled_offsets, srd,
    base, lds_base)`, an API still moving upstream.
 
 ### 3.3 What to validate first
@@ -380,7 +389,7 @@ contract can be kept for every kernel.
 HK_LLVM_ROOT=/dev/shm/hk-llvm HK_MLIR_BUILD=/dev/shm/$USER-hk-build-cp310 \
   PYTHON=python3 scripts/build_hk_mlir.sh
 HK_ARCH=gfx950 python3 examples/02_rmsnorm.py --build        # compile + gate, no GPU
-HK_ARCH=gfx950 python3 tools/cdna-probes/coverage.py --ops   # 196/410
+HK_ARCH=gfx950 python3 tools/cdna-probes/coverage.py --ops   # 494/506 now; 196/410 at the assessment
 python3 tools/cdna-probes/granule_sweep.py gfx950
 # a cp312 hk._mlir for rocm/pytorch: same cmake against the cp310 MLIR install (its C++
 # is interpreter-agnostic; the core Python extension builds from the installed sources),

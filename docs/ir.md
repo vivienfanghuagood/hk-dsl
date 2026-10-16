@@ -35,8 +35,9 @@ That is the `row_sumsq` kernel from [the language guide](language.md#kernels-and
 
 ## Types
 
-* **Types**: `!hk.rt<f32, 16x64, row>` register tile, `!hk.rt<f32, 1x1024,
-  strip<8>>` register strip (each lane owning 8-element runs of a row;
+* **Types**: `!hk.rt<f32, 16x64, row>` register tile (on gfx950,
+  `!hk.rt<bf16, 16x64, row, frag 16x32>` names the matrix-core fragment it is
+  laid out in), `!hk.rt<f32, 1x1024, strip<8>>` register strip (each lane owning 8-element runs of a row;
   `kittens::rs`), `!hk.st<bf16, 128x64, 2>` LDS tile (a double buffer),
   `!hk.rv<..., col>` register vector (a strip's carries the strip),
   `!hk.sv`, `!hk.gl<bf16>` global, `!hk.coord<tile|element>`,
@@ -59,7 +60,7 @@ The ODS definitions are in `mlir/include/hk/Dialect/HK/IR` (`HKTypes.td`,
 
 ## Ops, the kernel and its grid
 
-* **Ops**, about seventy, each with an optional destination: `hk.add %a, %b`
+* **Ops**, about a hundred, each with an optional destination: `hk.add %a, %b`
   makes a tile, `hk.add %a, %b into %d` writes one. Scalars are `arith`,
   control flow is `scf`, a kernel is a `func.func` with `hk.*` attributes, and
   the launch grid is a second, host-side function of the tensors.
@@ -90,9 +91,10 @@ with `hk.grid_of`. The destination form is the IR's spelling of
   `at file:line in function` — the kernel author's line.
 
 The passes are also where the third of
-[the traps](README.md#the-traps) is caught: only row-layout 16-bit
+[the traps](README.md#the-traps) is caught: on RDNA3 only row-layout 16-bit
 operands reach `ds_read_b128`, column layout degrades to 16 scalar
 `ds_read_u16`, and the passes flag it while tracing, not at benchmark time.
+The target tables say which layouts are fast; gfx950 reads both.
 
 ## Target facts
 
@@ -105,7 +107,7 @@ occupancy 6 needs ≤240 registers, not ≤256.
 | target | file | status |
 |---|---|---|
 | gfx1100, RDNA3 | `gfx1100.py` | probed and measured on a W7900D |
-| gfx1201, RDNA4 | `gfx1201.py` | register granule and LDS pool carried over from gfx1100, marked unverified ([gfx1201](history/13-gfx1201.md)) |
+| gfx1201, RDNA4 | `gfx1201.py` | a 64 KB LDS pool; the VGPR granule carried over from gfx1100, not measured, so the target is `verified=False` and budget violations are warnings ([gfx1201](history/13-gfx1201.md)) |
 | gfx942, CDNA3 | `gfx942.py` | modelled from the compiler, not run |
 | gfx950, CDNA4 | `gfx950.py` | modelled from the compiler, timed on an MI355X ([chapter 29](history/29-cdna.md)) |
 
@@ -136,12 +138,13 @@ The C++ for the kernel above:
     }
 ```
 
-The translation is where the first of the
-[three traps](README.md#why-this-exists) is closed: `s_waitcnt` carries no
+The translation is where the first of
+[the traps](README.md#the-traps) is closed: `s_waitcnt` carries no
 register dependence, so it binds the fragment with a volatile asm after every
 wait — you cannot forget to. `k.source()` returns this C++ with the pybind
-scaffold; `k.source("torch")` and `k.source("bare")` are the other two
-scaffolds (`python/hk/codegen/scaffold.py`).
+scaffold; `k.source("torch")`, `k.source("bare")` and `k.source("device")`
+(the device-only code object's, with its argument-layout table) are the
+other three (`python/hk/codegen/scaffold.py`).
 
 ## Value names in the dump
 
@@ -164,6 +167,8 @@ hk-opt %s --pass-pipeline='builtin.module(func.func(hk-lds-alloc))' | FileCheck 
 ```
 
 The tests are in `mlir/test/Dialect` (round trip, invalid IR),
-`mlir/test/Transforms` (one file per pass) and `mlir/test/Target` (the C++
-for a kernel and for a `while`). Building the tools and running them is in
+`mlir/test/Transforms` (a file each for four of the five passes;
+`hk-fragments` is tested from Python, in `tests/hk/ir/test_cdna.py`) and
+`mlir/test/Target` (the C++ for a kernel, for indexed and row accesses, and
+for a `while`). Building the tools and running them is in
 [building](building.md) and [testing](testing.md).

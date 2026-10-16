@@ -40,9 +40,10 @@ scoreboard run ([the performance gate](#the-performance-gate)).
     (`tests/hk/ir/test_cdna.py`);
   - the translation of a kernel, of indexed and row accesses, and of a
     `while`.
-- tests/hk/ir and tests/hk/codegen: 1674 collected (641 and 1033). The one
-  xfail is conditional: HipKittens' CDNA4 attention does not compile with
-  ROCm 7.2's clang.
+- tests/hk/ir and tests/hk/codegen, in CI at `596522c`: 639 passed and 4
+  skipped (the IR tier, with `tests/hk/engines` skipping), and 1033 passed.
+  The one xfail is conditional: HipKittens' CDNA4 attention does not compile
+  with ROCm 7.2's clang.
 - tests/hk/gpu: run in groups by `scripts/gpu_suite.sh` ([CI](#ci)). On
   gfx950 the attention and RDNA GEMM tests skip
   ([chapter 29](history/29-cdna.md)).
@@ -67,9 +68,18 @@ stood at the move (990 no-GPU tests, 386 on the GPU).
   skipped when either is missing. This is the tier that launches, and the
   only one that can catch an indexing error — a kernel that reads the wrong
   tile compiles perfectly and passes every gate. `tests/hk/conftest.py` pins
-  `HK_ARCH=gfx1100` unless one is set, so on another GPU set `HK_ARCH` to it.
+  `HK_ARCH=gfx1100` unless one is set, and skips the tier, saying so, when
+  the GPU is another arch; set `HK_ARCH` to the GPU's to run it there.
   `test_flydsl_gemm.py` also needs FlyDSL (`FLYDSL_ROOT`), and says so when
   it skips.
+
+  On a wave64 target (gfx942, gfx950), a test that fails because its kernel
+  has no CDNA path yet is reported as skipped, with the reason. The reasons
+  are listed in `conftest.py` (`_NO_CDNA_PATH`): `hk-fragments`' refusals
+  (16-wide operand tiles, an accumulator cast into an operand: attention,
+  paged attention, `hk.ops.gemm`) and the library functions hk has only for
+  RDNA3 (LDS granules, register staging, `load_w4`). Every other failure
+  stays a failure.
 * **engines** — `python3 -m pytest tests/hk/engines -q`, in each engine's
   venv. Every symbol a vLLM or SGLang patch rebinds, with the signature its
   stand-in forwards to and the call sites the rebind must reach; a module is
@@ -139,7 +149,8 @@ and pull request, on GitHub's `ubuntu-22.04` runner:
   hours.
 - **The dialect is built.** `scripts/build_hk_mlir.sh` builds it against
   that MLIR in about 20 seconds.
-- **The IR tier runs** (`tests/hk/ir`).
+- **The IR tier runs** (`tests/hk/ir`), with `tests/hk/engines`, which
+  skips there: the runner has neither vLLM nor SGLang.
 - **hipcc is installed from AMD's apt repository**, as `hip-dev` and
   `rocm-device-libs` of ROCm 7.1, about 2.3 GB.
 - **The codegen tier runs** (`tests/hk/codegen`), under pytest-xdist. hk's
@@ -202,10 +213,14 @@ and two after a 70-minute vLLM run on the same GPU, give 45 gated pairs over
   and softmax up to 2.9%. 32 pairs sit at the 3% floor, and the widest gated
   tolerance is 12.7% (Inductor against the 32-row RMSNorm).
 - Twelve pairs are not gated, because their ratios moved 5-30% between
-  processes. They are the microsecond norms' torch and FlyDSL arms (FlyDSL's
-  32-row RMSNorm took 1.18x hk's time in one run and 0.83x in the next),
-  Triton's 32-row RMSNorm, and FlyDSL against the 2048x4096x4096 GEMM. That
-  leaves the one-row RMSNorm with no gated pair at all.
+  processes (the file's `not_gated` lists each with its noise):
+  - torch and FlyDSL against RMSNorm and the fused add, at 1 and 32 rows
+    (FlyDSL's 32-row RMSNorm took 1.18x hk's time in one run and 0.83x in
+    the next);
+  - Triton against RMSNorm at 1 and 32 rows, and Inductor at 1 row;
+  - FlyDSL against the 2048x4096x4096 GEMM.
+
+  That leaves the one-row RMSNorm with no gated pair at all.
 - Two later clean runs used at most 68% and 63% of any pair's tolerance.
 - With hk's GEMM made slower on purpose (`k_step` 32 instead of 64 in its
   default schedule, 9-12% a call), the gate failed with exit 1 on all 14
@@ -217,9 +232,10 @@ and two after a 70-minute vLLM run on the same GPU, give 45 gated pairs over
 [chapter 27](history/27-strips.md) moved the norms and softmax onto strips
 and changed how every RDNA kernel reads its arguments, and
 [chapter 28](history/28-gemm-schedule.md) changed the GEMM's schedule. Both
-moved hk's side of their pairs. The first gate run on a tree with them will
-report those pairs as `better` (or as a regression), and then the baseline
-wants `--refresh`. That needs the dev pod's hk dialect bindings rebuilt to
+moved hk's side of their pairs. hk's GEMM got 2.9-6.5% faster, which moves
+every GEMM pair by as much, most of them past the 3% floor.
+The first gate run on a tree with them will report those pairs as `better`
+(or as a regression), and then the baseline wants `--refresh`. That needs the dev pod's hk dialect bindings rebuilt to
 match the tree; the pod's Python 3.12 venvs carry the 0.3.1 wheel's.
 
 **Refreshing the baseline.** Refresh it when the opponent changed (a new
@@ -240,51 +256,34 @@ its message.
 
 ## The gates for a change to the generated code
 
-The move to MLIR was gated three times, each against the code it replaced, and
-the record treats the same gates as the bar for later changes: a
-canonicalize/DCE pass "will change the C++, so it needs Gate B again,
-resources first". From [the MLIR chapter](history/15-mlir-dialect.md):
+The move to MLIR was gated three times, each against the code it replaced,
+and the same gates are the bar for any later change to the generated C++ ("it
+needs Gate B again, resources first"). What each gate checks, with what it
+found at the move; the full account is in
+[the MLIR chapter](history/15-mlir-dialect.md):
 
-**Gate A — the dialect against the Python IR.** A temporary converter
-turned every kernel the old front end traced into the dialect, and ran it
-through the C++ passes and the C++ translation. For all 354 shipped
-instantiations, and the constexpr points the tests use (708 translations),
-the C++ was byte-identical to the Python emitter's. The whole no-GPU suite
-ran under the gate as its corpus — 394 tests, the error paths included,
-where the C++ passes had to refuse what the Python ones refused, in the same
-words. Then the converter was deleted with the rest.
+- **Gate A — the C++ against the code it replaces.** Every shipped
+  instantiation is rendered both ways and compared. At the move, all 354
+  (708 translations with the tests' constexpr points) were byte-identical,
+  and the whole no-GPU suite ran as the corpus, the error paths included:
+  the new passes had to refuse what the old ones refused, in the same words.
+- **Gate B — each kernel family against its old self.** Every instantiation
+  is rendered both ways; those that differ beyond names are compiled, and
+  VGPRs, SGPRs, scratch, LDS and occupancy must match. Then the GPU tier, and
+  old and new timed in one process, interleaved, the old as control. At the
+  move: 422 instantiations, 92 differing beyond names and all identical in
+  resources; every timing gap inside its row's own round-to-round spread
+  ([performance](performance.md#after-the-mlir-move)).
+- **Gate C — the engine.** vLLM serving Qwen3-8B with the patch, from the
+  tree before and after, each against stock vLLM: the routing counters must
+  match call for call, and the greedy output must match stock's. Run it with
+  `VLLM_ENABLE_V1_MULTIPROCESSING=0`. Without it the patch installed in the
+  driver never reaches the model, and both arms time as stock; the tool
+  prints the routing counters to catch exactly that.
 
-**Gate B — each kernel family against its old self** (elementwise, norm,
-quant, fused, decode GEMV, GEMM, paged, attention):
-
-* All 422 instantiations rendered both ways. 49 are byte-identical, 281
-  differ only in a loop variable's name (`i` became the `kb` the source
-  wrote), and 92 differ in constant folding, hoist order or names. Those 92
-  were compiled: VGPRs, SGPRs, scratch, LDS and occupancy are identical in
-  every one.
-* tests/hk/gpu: 379 passed on gfx1100.
-* Old and new in one process, interleaved for 7 rounds, the old as control
-  (the table is in [performance](performance.md#after-the-mlir-move)). Every
-  gap is smaller than that row's own round-to-round spread, which is the
-  expected answer for kernels whose C++ differs in names.
-
-**Gate C — the engine.** vLLM 0.16.1 serving Qwen3-8B on the W7900D with the
-GEMM patch (`vllm_e2e.py`, eager, context 1024, batch 1 and 16, 72 output
-tokens, three rounds of each arm alternating), once from the tree before the
-move and once after, each against stock vLLM in its own run. The routing
-counters match call for call (5,472 prefill GEMMs, 102,553 decode GEMVs, no
-fallback). At both shapes the first request's greedy output is identical to
-stock, and so to the other run's (72/72).
-
-The first attempt at this gate measured nothing. With vLLM's engine in its
-own process, the patch installed in the driver never reached the model, and
-both arms timed as stock (0.995–1.000x, `hk 0, hk_decode 0`). The tool prints
-the routing counters for exactly this reason. The gate is run with
-`VLLM_ENABLE_V1_MULTIPROCESSING=0`, as every earlier measurement here was.
-
-Gate B's resource comparison needs only hipcc, and it is the part the record
-asks for first ("resources first"): a change that spills is a wrong kernel,
-not a slow one ([resource gates](runtime.md#the-resource-gates)).
+Gate B's resource comparison needs only hipcc, and it is the part to run
+first: a change that spills is a wrong kernel, not a slow one
+([resource gates](runtime.md#the-resource-gates)).
 
 ## Reproducing
 

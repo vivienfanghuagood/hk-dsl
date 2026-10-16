@@ -297,7 +297,7 @@ How `vllm_gemm` reads it:
 
 | tier | file | result |
 |---|---|---|
-| IR (no torch, no hipcc) | `tests/hk/ir/test_hipkittens.py`, 37 | pass. Full tier: 553 passed, 2 skipped |
+| IR (no torch, no hipcc) | `tests/hk/ir/test_hipkittens.py`, 37 | pass. Full tier at the merge: 553 passed, 2 skipped |
 | codegen (hipcc) | `tests/hk/codegen/test_hipkittens_builds.py`, 2 builds | pass, 14 s cold on ROCm 7.1. The GQA build xfails, with the reason, under a clang-22 hipcc |
 | GPU (gfx950) | `tests/hk/gpu/test_hipkittens.py`, 31 | ROCm 7.2.3: 21 pass, 10 skip (GQA does not build). ROCm 7.1: 14 pass, 17 skip (the GEMM fails its check) |
 
@@ -320,8 +320,10 @@ The GPU tier covers:
 * a first launch under capture refused;
 * `hk_vllm::linear` on the gfx950 table.
 
-`tests/hk/gpu/test_vllm_gemm.py` on gfx950 has 4 failures. All four assert gfx1100's
-`hk`/`hk_decode` routes, and they fail the same way with no gfx950 table.
+`tests/hk/gpu/test_vllm_gemm.py` on gfx950 had 4 failures. All four assert gfx1100's
+`hk`/`hk_decode` routes, and they failed the same way with no gfx950 table. They now skip
+where the arch's table sends nothing to `hk.ops.gemm`, as gfx950's does;
+`test_hipkittens.py` covers what it sends to HipKittens.
 
 gfx1100 and gfx1201 output is byte-identical: every scaffold of all 509 example and
 `hk.ops` instantiations matches the `cdna` dump.

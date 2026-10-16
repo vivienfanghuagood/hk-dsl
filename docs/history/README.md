@@ -1,17 +1,20 @@
 # Development record
 
-The sections below are a record, in the order the work happened, written while
-hk lived inside the HipKittens repository: paths such as `kernels/rdna3`,
-`include/rdna3` and `tools/rdna-probes` are HipKittens', now under
-`third_party/HipKittens`. They also name the API of their time: before [the last section](15-mlir-dialect.md) the IR was Python and kernels
-were written as flat calls (`hk.load(x, idx, ty, bounded=True)` is now
+The chapters below are a record, in the order the work happened. Chapters
+01-15 were written while hk lived inside the HipKittens repository: paths
+such as `kernels/rdna3`, `include/rdna3` and `tools/rdna-probes` are
+HipKittens', now under `third_party/HipKittens`. They also name the API of
+their time: before [chapter 15](15-mlir-dialect.md) the IR was Python and
+kernels were written as flat calls (`hk.load(x, idx, ty, bounded=True)` is now
 `x[idx].load(ty, bounded=True)`). The kernels themselves have all been ported;
-the numbers are as measured then, and [the MLIR chapter](15-mlir-dialect.md) re-measures the ones
-that matter against the port.
+the numbers are as measured then, and [the MLIR chapter](15-mlir-dialect.md)
+re-measures the ones that matter against the port. A later chapter can
+overturn an earlier one's verdict (chapter 26 did, for the GEMM); each
+chapter is kept as written.
 
 For the results in one place, with the hardware and baseline of each, see [performance](../performance.md).
 
-| | chapter | in one line |
+| | chapter | in brief |
 |---|---|---|
 | 01 | [Phases 1 and 2: Python to torch, end to end](01-phases-1-2.md) | 291 shipped kernels, every one spill-free; 13 of 15 cases faster than `torch.compile` and two ties; the worst Python wrapper cut to 9.9 µs. |
 | 02 | [Phase 3: the generated GEMM matches the handwritten one](02-phase-3-gemm.md) | `hk.ops.matmul` compiles to the same 209 VGPRs as the handwritten GEMM and runs within noise of it (75.0 and 77.9 TFLOPs); the first 2.4-3.0% gap was one instruction. |
@@ -39,7 +42,7 @@ For the results in one place, with the hardware and baseline of each, see [perfo
 | 24 | [SGLang, second attempt: a volume, the right torch, and the GEMV F.linear leaves behind](24-sglang.md) | A pod on a persistent volume, with the torch the prebuilt kernel links; SGLang's F.linear runs decode GEMVs at 38% of bandwidth, so a table measured against it gives M 1-64 to hk; served Qwen3-8B 1.49-1.81x through an `sglang.srt.plugins` entry point; vLLM 0.31 rebuilt on the volume; 0.3.1 on PyPI. |
 | 25 | [MoE in SGLang: the routing kernel that failed, hk's expert GEMM, and a leaner launch](25-sglang-moe.md) | What stops MoE in SGLang on gfx1100 is sgl_kernel's top-k, not Triton; with it in torch OLMoE runs, and hk's GEMM serves it 1.06-1.32x faster; the one-token loss was hk's Python launch, now 17.8 µs a call from 27.3. |
 | 26 | [The scoreboard again, with every baseline tuned](26-the-scoreboard-retuned.md) | FlyDSL's GEMM autotuner had never searched, and Triton's ranked cold calls. Retuned, the GEMM loses to FlyDSL's dispatcher (0.95-0.98x): its sched_group_barrier hints and K rotation, one of which hk-dsl cannot express. Norm tiles moved each row twice and now move it once: folded RMSNorm and fused add +9-17%, softmax at 2048 rows 1.29x. |
-| 27 | [Strips: a register layout for rows, and kernel arguments read too late](27-strips.md) | `hk.RS`, each lane owning 16-byte runs of a row, through the dialect, the translator and HipKittens; the one-row penalty was a late kernarg line, now read at entry (3.63 to 2.59 us on the old kernel); norms and softmax on strips: RMSNorm 1.04-1.12x and softmax 1.02x the best tuned Triton or FlyDSL, the fused add a tie; non-temporal stores' 2.2x was the Infinity Cache, not the kernel. |
+| 27 | [Strips: a register layout for rows, and kernel arguments read too late](27-strips.md) | `hk.RS`, each lane owning 16-byte runs of a row, through the dialect, the translator and HipKittens; the one-row penalty was a late kernarg line, now read at entry (3.63 to 2.59 us on the old kernel); norms and softmax on strips: RMSNorm 1.02-1.12x and softmax 1.02x the best tuned Triton or FlyDSL, the fused add a tie; non-temporal stores' 2.2x was the Infinity Cache, not the kernel. |
 | 28 | [The GEMM schedule: sched_group_barrier, and the s_setprio that was the fence](28-gemm-schedule.md) | `hk.arch.sched_group_barrier` and `sched_barrier`'s mask; the C++'s `s_setprio` around each WMMA group was a scheduling boundary, and without it the GEMM is 2.9-6.5% faster and ties FlyDSL at all five scoreboard shapes (from 0.95-0.98x); the hint itself added nothing on top; FlyDSL's four-wave tile, with A streamed, fits under ROCm 7.1 and spills 3 under 7.2. |
 | 29 | [CDNA3 and CDNA4: wave64 targets, and a race the IR caught on the first GEMM](29-cdna.md) | gfx942/gfx950 as targets. A shim instead of HipKittens edits: a strided gl, bounded rows, RNE bf16. The MFMA fragment in the type, CDNA's own ds_read counts and a 15-deep lgkmcnt. The bind is load-bearing on gfx950: unbound LDS GEMMs return NaN. `hk.runtime.cocheck` runs hk's gates on any code object. CDNA tiles bring the norms to 0.93-1.04x torch; the occupancy model is timed. HipKittens' GQA runs 1.28-2.62x SDPA; its GEMM is routed only where hipBLASLt is slow. ROCm 7.1 miscompiles that GEMM and no static gate sees it. RDNA output is byte-identical. |
 | 30 | [FlyDSL on the routes, a performance gate, and the engines' contracts](30-flydsl-routes-gate-contracts.md) | FlyDSL's GEMM as an optional overlay on the linear routes, keyed by the tile it would run: a decode step at 96-128 requests 12% shorter, tile-aligned prefill steps 1-2.6%, nothing elsewhere. A gate on ratios taken within one scoreboard run, tolerances from measured noise: silent on drift, it flagged all 14 GEMM pairs when hk's GEMM was made 9-12% slower. Contract tests for every symbol the vLLM and SGLang patches rebind: vLLM 0.31 19/19, SGLang 0.5.18 8/8, vLLM 0.16.1 18/19 (no auto_awq). |

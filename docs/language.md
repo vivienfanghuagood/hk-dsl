@@ -10,6 +10,7 @@ programs, see [`examples/`](../examples/README.md).
 - [Types](#types)
 - [Values and operators](#values-and-operators)
 - [Memory](#memory)
+- [Rows by index, atomics, random numbers](#rows-by-index-atomics-random-numbers)
 - [Control flow](#control-flow)
 - [Namespaces](#namespaces)
 - [`@hk.func`](#hkfunc)
@@ -39,7 +40,9 @@ def row_sumsq(x: hk.Tensor[hk.bf16], o: hk.Tensor[hk.fp32]):
 ```
 
 `@hk.kernel` takes `warps`, `grid`, and optionally `arch`, `name`,
-`max_vgprs` and `min_occupancy` (`python/hk/dsl/kernel.py`). The grid is a
+`max_vgprs`, `min_occupancy` and `defines` (`python/hk/dsl/kernel.py`).
+`defines` is a dict emitted as `#define KEY value` lines ahead of the
+generated C++, for the knobs of the headers it includes. The grid is a
 function of the parameters: `p.<tensor>.<batch|depth|rows|cols>` gives an
 extent and `p.<CONSTEXPR>` gives a constexpr value, and it must return a
 3-tuple. A kernel that names no `arch` is built for `hk.target.current_arch()`
@@ -74,37 +77,49 @@ tensor is `(rows, cols)` (`include/pyutils/hk_bind.cuh`).
 
 ## Types
 
-* **Types are values you build**: `hk.RT(dtype, rows, cols, layout)` a register
-  tile, `hk.RS(dtype, rows, cols, run=8)` a register strip, `hk.ST` an LDS
-  tile, `hk.col_vec(t)` / `hk.row_vec(t)` the vectors a reduction of `t`
-  gives, `hk.SV` an LDS vector.
+* **Types are values you build**: `hk.RT(dtype, rows, cols, layout, frag=None)`
+  a register tile, `hk.RS(dtype, rows, cols, run=8)` a register strip, `hk.ST`
+  an LDS tile, `hk.col_vec(t)` / `hk.row_vec(t)` the vectors a reduction of
+  `t` gives, `hk.SV` an LDS vector. A tile's `frag` is the matrix-core
+  fragment it is laid out in, where that is not 16x16; left as `None`, the
+  `hk-fragments` pass sets it on the operand tiles of a target that needs one
+  (gfx950's bf16 operand is 16x32) ([IR](ir.md#passes)).
+
+### Register strips
 
 A tile's lane layout is the one WMMA gives it: a 16-bit row tile holds each
-row twice, an fp32 tile gives a lane alternate columns. A kernel that only
-streams rows wants a lane to own contiguous runs of a row instead, and that
-is a strip (`!hk.rt<f32, 1x1024, strip<8>>`, `kittens::rs`): lane l owns, of
-every row, the runs of `run` columns starting at `j*32*run + l*run`, so a
-bf16 run of 8 is one 16-byte access and nothing is held twice. `cols` is a
-whole number of `32*run`-column chunks. A strip loads and stores in elements
-(`x.at[r, c]`; `bounded=True` reads zero past the tensor's last row and
-column and writes nothing there), converts its element type on the way,
-maps, reduces along rows (a butterfly that leaves the answer in every lane)
-and along columns, broadcasts its `col_vec` and `row_vec`, and fills by
-column (`right_fill_`, `left_fill_`); its `row_vec` has the strip's own
-column layout, so a weight vector loads with the accesses of the rows it
-scales, and its `col_vec` is what `hk.collective.cross_warp` combines. It is
-never an mma operand or an LDS tile, and it is gfx11-only.
+row twice, and an fp32 tile gives a lane alternate columns. A kernel that only
+streams rows wants each lane to own contiguous runs of a row instead. That is
+a strip (`!hk.rt<f32, 1x1024, strip<8>>`, `kittens::rs`):
+- **Layout.** Lane l owns, of every row, the runs of `run` columns starting
+  at `j*32*run + l*run`. A bf16 run of 8 is one 16-byte access, and nothing
+  is held twice. `cols` is a whole number of `32*run`-column chunks.
+- **Memory.** A strip loads and stores in elements (`x.at[r, c]`), and
+  converts its element type on the way. `bounded=True` reads zero past the
+  tensor's last row and column, and writes nothing there.
+- **Operations.** It maps, reduces along rows (a butterfly that leaves the
+  answer in every lane) and along columns, broadcasts its `col_vec` and
+  `row_vec`, and fills by column (`right_fill_`, `left_fill_`).
+- **Vectors.** Its `row_vec` has the strip's own column layout, so a weight
+  vector loads with the accesses of the rows it scales. Its `col_vec` is
+  what `hk.collective.cross_warp` combines.
+- **Limits.** It is never an MMA operand or an LDS tile. It is
+  include/rdna3's alone, so gfx1100 only: gfx1201 and the CDNA targets
+  refuse it while tracing.
 
 ```python
+# WARPS and EPS are constexprs; row and warp come from hk.arch
 S = hk.RS(hk.fp32, 1, 512)                  # one row, 512 columns a warp
 v = x.at[row, warp * 512].load(S)           # 2 x 16 bytes a lane of bf16
-sq = cross_warp((v * v).sum(axis=1), "add", WARPS)
-v *= (sq / x.cols + eps).rsqrt()
+sq = hk.collective.cross_warp((v * v).sum(axis=1), "add", WARPS)
+v *= (sq / x.cols + EPS).rsqrt()
 o.at[row, warp * 512].store(v)
 ```
 
 `hk.ops.norm`'s RMSNorm, fused add + RMSNorm, LayerNorm and softmax run on
 strips wherever a row fits one ([chapter 27](history/27-strips.md)).
+
+### Dtypes, and two deliberate spellings
 
 The dtypes are `hk.bf16`, `hk.fp16`, `hk.fp32`, `hk.i8` and `hk.i32`, plus
 `hk.fp8e4m3` and `hk.fp8e5m2`, which are accepted only where the target has an
@@ -209,25 +224,32 @@ shows `for`, `if` and `while` on device values, carried scalars, and the
 
 ## Namespaces
 
-* **The rest has namespaces**: `hk.arch` (block and warp ids, `barrier`,
-  `sched_barrier`, `sched_group_barrier`, `setprio`, `vm_wait`,
-  `wg_arrive`), `hk.lds` (`alloc`, `reserve`, `wait_for`), `hk.math` (elementwise functions, and `add`/`mul`/... with
-  `into=`), `hk.group(n)` (workgroup loads, stores and the staging pipeline),
-  `hk.collective` (`cross_warp`, `fold_rows`).
+* **The rest has namespaces**:
+  - `hk.arch`: block, warp and lane ids, `target()` (the target being traced
+    for, for a body whose tiling depends on it), `barrier(drain=False)`,
+    `sched_barrier`, `sched_group_barrier` and `SCHED_CLASSES`, `setprio`,
+    `vm_wait`, `wg_arrive`;
+  - `hk.lds`: `alloc`, `shared_vec` and `alloc_vec`, `reserve`, `wait_for`;
+  - `hk.math`: elementwise functions, and `add`/`mul`/... with `into=`;
+  - `hk.group(n)`: workgroup loads, stores and the staging pipeline;
+  - `hk.collective`: `cross_warp`, `fold_rows`.
 
-`hk.arch.sched_group_barrier(classes, size, sync_id=0)` asks the compiler's
-scheduler for `size` instructions of `classes` (`"mma"`, `"vmem_read"`,
-`"ds_read"`, `"valu"`, ... or a mask) at this point, after the earlier
-groups with the same `sync_id`: a run of them is an interleave, "one staging
-load, then two WMMAs". It moves only what the scheduler can see, and an
-inline-asm instruction is in no class; include/rdna3's LDS fragment reads
-and writes are asm, so in hk's GEMM it can place the staging loads and the
-WMMAs, not the LDS traffic. `s_setprio` ends a scheduling region, so a
-group does not reach across one. `hk.arch.sched_barrier(allow)` is a fence
-that lets the classes in `allow` cross. `hk.lds.reserve(nbytes)` takes LDS
-and uses none of it, an occupancy cap: 128 KB a WGP over the bytes a
-workgroup holds is how many it runs ([chapter 27](history/27-strips.md),
-[chapter 28](history/28-gemm-schedule.md)).
+**Scheduling hints.** `hk.arch.sched_group_barrier(classes, size,
+sync_id=0)` asks the compiler's scheduler for `size` instructions of
+`classes` (`"mma"`, `"vmem_read"`, `"ds_read"`, `"valu"`, ... or a mask; the
+names are `hk.arch.SCHED_CLASSES`) at this point, after the earlier groups
+with the same `sync_id`. A run of them is an interleave: "one staging load,
+then two WMMAs". It moves only what the scheduler can see, and an inline-asm
+instruction is in no class. include/rdna3's LDS fragment reads and writes are
+asm, so in hk's GEMM it can place the staging loads and the WMMAs, not the
+LDS traffic. `s_setprio` ends a scheduling region, so a group does not reach
+across one. `hk.arch.sched_barrier(allow)` is a fence that lets the classes
+in `allow` cross ([chapter 28](history/28-gemm-schedule.md)).
+
+**Occupancy caps.** `hk.lds.reserve(nbytes)` allocates LDS the kernel never
+uses, to cap how many workgroups share a WGP: on gfx1100 a WGP holds
+128 KB ÷ (the kernel's LDS + `nbytes`) workgroups
+([chapter 27](history/27-strips.md)).
 
 `hk.arch.wg_arrive(counter, expected)` counts this workgroup's arrival at
 `counter` (an element view of an int32 global) and returns how many arrived

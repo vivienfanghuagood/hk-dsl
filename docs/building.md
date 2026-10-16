@@ -67,11 +67,10 @@ builds both scripts twice, once with each `PYTHON`.
 
 **Wheels.** `scripts/build_wheel.sh` builds one per interpreter, because
 `hk._mlir` is nanobind extension modules for one CPython:
-`hk_dsl-0.2.0-cp310-cp310-linux_x86_64.whl` (11.2 MB) and
-`hk_dsl-0.2.0-cp312-cp312-linux_x86_64.whl` (11.3 MB) -- named `hipkittens` when
-they were measured, before the split. Each
-carries the package, include/ (the generated kernels include it at JIT
-time) and the bindings. A wheel built for another interpreter installs and
+`hk_dsl-<version>-cp310-cp310-linux_x86_64.whl` and its cp312 twin, about
+11 MB each (11.2 and 11.3 MB at 0.2.0, when they were still named
+`hipkittens`). Each carries the package, include/ (the generated kernels
+include it at JIT time) and the bindings. A wheel built for another interpreter installs and
 then fails at import, so the script refuses to build one. The link-time
 `libHKPythonCAPI.so` symlink is dropped, because a wheel would carry it as a
 second 34 MB copy. Installed outside the checkout, each wheel
@@ -109,6 +108,12 @@ trusted publishing when that secret is not set. The repository has neither
 yet. 0.3.1, the first version on PyPI, was uploaded by hand with twine from
 the same manylinux wheels.
 
+It is still the only one. Main has since added CDNA, register strips, the
+GEMM schedule, SGLang's MoE patch and plugin, and FlyDSL on the routes, but
+`pyproject.toml` and `hk.__version__` still say 0.3.1, so a wheel built from
+main today carries the released version's number. The next release needs
+the version raised and a publishing credential.
+
 What is in the wheel (`scripts/build_wheel.sh`, `pyproject.toml`):
 
 * `python/hk`, the package;
@@ -127,8 +132,9 @@ index to fetch one from. The package's dependencies are `pybind11>=2.10`,
 `numpy` and `typing_extensions`. torch is deliberately not one: hk traces and
 compiles without it, only launching needs it, and on a ROCm machine it is
 already installed by something with strong opinions about which build. The
-wheel also registers the `vllm.general_plugins` entry point, which does
-nothing unless `HK_PATCH_VLLM=1` ([integration](integration.md#turning-them-on)).
+wheel also registers two entry points, `vllm.general_plugins` and
+`sglang.srt.plugins`, each of which does nothing until one of its switches
+is set ([integration](integration.md#turning-them-on)).
 
 Wheels are Linux x86_64 only, one CPython each, and are built by hand today
 on the machines that have the toolchain.
@@ -181,6 +187,10 @@ scripts/        building MLIR, the dialect and the wheels; the GPU suite and the
                 performance gate
 tools/hk-bench/ the benchmarks, the scoreboard, the performance gate and the
                 engine harnesses behind every number here
+tools/cdna-probes/
+                the CDNA probes: coverage, the bind hazard, occupancy timing
+tests/perf/baselines/
+                the performance gate's measured ratios and tolerances
 examples/       complete kernels, each checked against torch and timed
 docs/           these pages, and the development record (docs/history)
 ```

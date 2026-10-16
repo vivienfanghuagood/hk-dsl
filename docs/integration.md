@@ -12,6 +12,9 @@ and what each patch measured is in [performance](performance.md).
 - [The SDPA patch: vision towers](#the-sdpa-patch-vision-towers)
 - [The decoder attention backend](#the-decoder-attention-backend)
 - [The linear-layer patch](#the-linear-layer-patch)
+  - [FlyDSL's GEMM as an optional path](#flydsls-gemm-as-an-optional-path)
+- [The MoE patch](#the-moe-patch)
+- [The 4-bit patch](#the-4-bit-patch)
 - [The engine layer: `Op`, `Patch`, `RouteTable`](#the-engine-layer-op-patch-routetable)
 - [Routing tables](#routing-tables)
 - [The CUDA-graph contract](#the-cuda-graph-contract)
@@ -19,6 +22,7 @@ and what each patch measured is in [performance](performance.md).
 - [Ahead-of-time builds](#ahead-of-time-builds)
 - [Supported versions, and the contract tests](#supported-versions-and-the-contract-tests)
 - [What is deliberately not patched](#what-is-deliberately-not-patched)
+- [Your own kernel, in four steps](#your-own-kernel-in-four-steps)
 - [Environment variables](#environment-variables)
 
 ## The patches
@@ -34,8 +38,8 @@ and what each patch measured is in [performance](performance.md).
 | SGLang linear layers | `sglang.py`, `_sglang_plugin.py` | `UnquantizedLinearMethod.apply` | `HK_SGLANG_LINEAR=1` (SGLang); `apply_linear()` in-process |
 | SGLang MoE layers | `sglang_moe.py`, `_sglang_plugin.py` | `topk_softmax`, `invoke_fused_moe_kernel` and `try_get_optimal_moe_config`, rebound by identity | `HK_SGLANG_MOE=1`, or `=topk` for the routing alone |
 
-`engine.py` is what the last two share: the custom op, the counters, the
-routing table and the CUDA-graph contract.
+`engine.py` is what every patch but the two SDPA rebinds shares: the custom
+op, the counters, the routing table and the CUDA-graph contract.
 
 ## Turning them on
 
@@ -80,8 +84,9 @@ HK_PATCH_VLLM=1 HK_VLLM_BACKEND=1 vllm serve <model> --attention-backend TRITON_
 The plugin prints one `[hk] ...` line per process saying what each patch did.
 The end-to-end measurements build the engine with
 `attention_backend="TRITON_ATTN"` for the backend arm and vLLM's defaults
-otherwise (`HK_VLLM_DEFAULTS=1` in `tools/hk-bench/vllm_e2e.py`; the backend
-asks for its own page size, 32).
+otherwise (`HK_VLLM_DEFAULTS=1`, read by `python -m hk.integration ab`,
+which `tools/hk-bench/vllm_e2e.py` wraps; the backend asks for its own page
+size, 32).
 
 **In SGLang, through its plugin entry point.** The package also registers
 `hk = "hk.integration._sglang_plugin:register"` under `sglang.srt.plugins`.
@@ -182,14 +187,18 @@ the way in is to *be* a backend. `hk/ops/paged.py` is the kernel and
 
 **Which slot.** Four facts about vLLM's plugin surface decide it, each written
 down in `vllm_backend.py` because each cost a run to find:
-`AttentionBackendEnum` is closed and `register_backend` overrides rather than
-adds; the reserved `CUSTOM` member is rejected by `RocmPlatform`'s allowlist,
-so the override has to target a member the platform accepts (`TRITON_ATTN`,
-which is also ROCm's default -- hence the separate `HK_VLLM_BACKEND=1`
-opt-in); `get_name()` must answer with the member it overrides because vLLM
-round-trips the name through the enum. `HK_VLLM_BACKEND_SLOT`, or a value of
-`HK_VLLM_BACKEND` other than `1`/`on`/`yes`/`true`, names a different member
-to register over. `register()` reports the slot it took, as
+1. `AttentionBackendEnum` is closed, and `register_backend` overrides a
+   member rather than adding one.
+2. The reserved `CUSTOM` member is rejected by `RocmPlatform`'s allowlist, so
+   the override has to target a member the platform accepts.
+3. That member is `TRITON_ATTN`, which is also ROCm's default -- hence the
+   separate `HK_VLLM_BACKEND=1` opt-in.
+4. `get_name()` must answer with the member it overrides, because vLLM
+   round-trips the name through the enum.
+
+`HK_VLLM_BACKEND_SLOT`, or a value of `HK_VLLM_BACKEND` other than
+`1`/`on`/`yes`/`true`, names a different member to register over.
+`register()` reports the slot it took, as
 `HK_ATTN registered over TRITON_ATTN (--attention-backend TRITON_ATTN)`.
 
 **The cache layout decides the kernel.** `gl` derives its strides from its
@@ -293,12 +302,12 @@ measurement) where a routing table measured it fastest
   install without FlyDSL, takes the table's own path, hk's or the engine's.
 - **Costs.** Each new M is a FlyDSL compile, 0.4-0.8 s cold and 0.04 s from
   FlyDSL's disk cache. A call costs about 60 us of host time through
-  FlyDSL's launch path, against 18 for hk's op. Both are hidden behind a GEMM
+  FlyDSL's launch path, against 17.8 us for hk's op. Both are hidden behind a GEMM
   at the sizes where FlyDSL wins. The launch is on torch's stream with no
   host sync, so CUDA graphs capture it (`tests/hk/gpu/test_flydsl_gemm.py`).
 
 The shipped Qwen3-8B table carries FlyDSL rows. End to end they shorten a
-decode step at 96-128 requests by 12% and pure-prefill steps by 1-2.6%, and
+decode step at 96-128 requests by 12% and pure-prefill steps by 0.9-2.5%, and
 change nothing else ([performance](performance.md#flydsls-gemm-on-the-routes)).
 
 ## The MoE patch
@@ -377,18 +386,25 @@ stays the engine's. The table answers an M as follows:
   the shape is recorded as a miss.
 
 Tables are per arch, per model and per engine, because the path a kernel has
-to beat is the engine's. `hk/tuned/routes_vllm_linear_gfx1100.json` is
-Qwen3-8B's against vLLM 0.31's op, raw timings included, and `$HK_VLLM_ROUTES`
-names another. `routes_sglang_linear_gfx1100.json` (`route_tune.py --engine
-sglang`) is measured against the F.linear SGLang calls on ROCm, and
-`$HK_SGLANG_ROUTES` names another. The two disagree below M = 4: vLLM runs its
-own skinny GEMMs there and ties hk's GEMV, while F.linear is 1.3-2.3x slower
-than it. A
-table measured on another arch is refused, and an `$HK_VLLM_ROUTES` that names
-a missing file raises (`engine.shipped_table`). There are no buckets: GEMM time
-is a comb in M, not a curve, and a power-of-two bucket either routes the teeth
-or gives up the gaps between them. What the table bought over the hand-written
-rule is in [its chapter](history/14-routing-table.md).
+to beat is the engine's. The shipped ones, in `hk/tuned/`, named
+`routes_<engine>_<kind>_<arch>.json`:
+- `routes_vllm_linear_gfx1100.json`: Qwen3-8B against vLLM 0.31's op, raw
+  timings included, with FlyDSL rows (below). `$HK_VLLM_ROUTES` names
+  another.
+- `routes_sglang_linear_gfx1100.json` (`route_tune.py --engine sglang`):
+  against the `F.linear` SGLang calls on ROCm. `$HK_SGLANG_ROUTES` names
+  another. It disagrees with vLLM's below M = 4: vLLM runs its own skinny
+  GEMMs there and ties hk's GEMV, while `F.linear` is 1.3-2.3x slower than
+  it.
+- `routes_vllm_linear_gfx950.json`: on an MI355X, against hipBLASLt, with
+  HipKittens' CDNA4 GEMM as the candidate. It takes 37 of 206 points, all at
+  M ≥ 1792 ([design note](design/cdna-hipkittens-ops.md)).
+
+A table measured on another arch is refused, and an `$HK_VLLM_ROUTES` that
+names a missing file raises (`engine.shipped_table`). There are no buckets:
+GEMM time is a comb in M, not a curve, and a power-of-two bucket either
+routes the teeth or gives up the gaps between them. What the table bought
+over the hand-written rule is in [its chapter](history/14-routing-table.md).
 
 **Optional paths are an overlay.** With FlyDSL installed, `route_tune.py`
 also times FlyDSL's GEMM, through the same call the op makes, at every M one
@@ -436,10 +452,8 @@ keep their own counters.
 
 ## SGLang
 
-```bash
-HK_SGLANG_LINEAR=1 python -m sglang.launch_server --model-path Qwen/Qwen3-8B \
-    --attention-backend triton --disable-cuda-graph
-```
+Launched with the plugin as in [turning them on](#turning-them-on), or patched
+in-process:
 
 ```python
 import sglang                      # let SGLang import its modules first
@@ -567,17 +581,18 @@ times -- the patch would be slower than what it replaces:
 * **RMSNorm.** Every framework's RMSNorm applies a learned weight, and
   vLLM's fuses the residual add. `hk.ops.rms_norm` and
   `hk.ops.fused_add_rms_norm` are those two ops, bit-identical to torch on
-  the residual; they are not patched in because under torch.compile vLLM's
-  norms come from Inductor, fused with their neighbours, and at a decode
-  step's handful of rows they lose to it ([performance](performance.md)).
+  the residual. Under torch.compile vLLM's norms come from Inductor, fused
+  with their neighbours, and an opaque op would cost Inductor those fusions.
+  On Qwen3-8B shapes the tile kernels of the time also took 44-64% longer
+  than Inductor's norms before multiplying any weight
+  ([performance](performance.md#against-what-vllm-runs-under-torchcompile)).
+  That was before chapter 27's strips, which beat Inductor's standalone
+  RMSNorm at 1-8192 rows; inside vLLM's compiled graph it has not been
+  re-measured.
 * **SiLU-mul.** `SiluAndMul` slices one `(..., 2d)` tensor into two
-  non-contiguous halves and `hk.ops.silu_mul` has no stride support, so the
-  patch would add two copies to save one pass.
-
-The stride half of that was built later and the patches were measured before
-being written: under torch.compile both ops come from Inductor, fused with
-their neighbours, and the kernels lose to it, so both integrations were
-dropped ([strided globals](history/12-strided-globals.md)).
+  non-contiguous halves. `hk.ops.silu_mul` takes strided halves since
+  [strided globals](history/12-strided-globals.md), but at (4096, 2x12288)
+  it ran 429.7 µs to Inductor's fused 409.5, so the patch was not built.
 
 ## Your own kernel, in four steps
 
@@ -656,9 +671,15 @@ spelled:
 | `HK_SGLANG_ROUTES` | `sglang.py`, via `engine.shipped_table` | a routing table for SGLang's linear layers instead of the shipped one |
 | `HK_SGLANG_MOE` | `_sglang_plugin.py` | `1`: the torch top-k and hk's expert GEMMs; `topk`: the torch top-k alone |
 | `HK_SPLITS` | `ops/paged.py` | the decode backend's KV split: `auto` (default), `off`/`0`/`1`, or a count |
-| `HK_NORM_FOLD` | `ops/norm.py` | the weighted norms' plan: `auto` (default, folded below 4096 rows), `on`, `off` |
+| `HK_NORM_LAYOUT` | `ops/norm.py` | `strip` (default): the norms and softmax run on the strip kernel wherever a row fits one; `tile`: always on the tile kernels |
+| `HK_NORM_FOLD` | `ops/norm.py` | the tile kernels' plan for the weighted norms: `auto` (default), `on`, `off`. Reached only for rows too wide for a strip (over 32768 elements) or under `HK_NORM_LAYOUT=tile` |
+| `HK_HIPKITTENS_KERNELS` | `ops/hipkittens.py` | HipKittens' `kernels/cdna4` to build the wrapped CDNA4 kernels from (default: the submodule's) |
+| `HK_VLLM_DEFAULTS` | `ab.py` | `1`: the A/B builds vLLM with prefix caching and chunked prefill on, as vLLM ships |
+| `HK_EAGER` | `ab.py` | `1` (default): the A/B runs vLLM eager; `0`: with CUDA graphs |
+| `HK_GPU_UTIL` | `ab.py` | the A/B's `gpu_memory_utilization` (default 0.90) |
 
 `HK_PATCH_VLLM`, `HK_VLLM_BACKEND`, `HK_VLLM_GEMM`, `HK_VLLM_MOE`,
 `HK_VLLM_INT4`, `HK_SGLANG_LINEAR` and `HK_SGLANG_MOE` are off when unset or
 `0`, `off`, `no` or empty. The benchmark harnesses in `tools/hk-bench/` read
-more (`HK_GPU_UTIL`, `HK_EAGER`, ...); those are theirs, not the library's.
+more; those are theirs, not the library's. The runtime's own variables are in
+[the runtime](runtime.md#environment-variables).

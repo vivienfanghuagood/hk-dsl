@@ -70,7 +70,9 @@ found by walking up from hipcc. The flags include `--offload-arch=<arch>`,
 `-Rpass-analysis=kernel-resource-usage`, which the gate depends on; the full
 list is `flags()` in `python/hk/runtime/compile.py`.
 
-First compile of a small kernel is ~5 s; an attention kernel is 20–40 s.
+A cold compile takes about 4-7 s as a pybind module and about 1 s as a code
+object, attention included; the libtorch op takes about 15 s
+([the table](#over-a-device-only-code-object)).
 
 ## The cache
 
@@ -111,8 +113,10 @@ The gate is `python/hk/runtime/resources.py`. What it enforces:
   (`@hk.kernel(max_vgprs=..., min_occupancy=...)`), so a change that quietly
   costs a wave fails the build instead of the benchmark. Occupancy is charged
   on the register count rounded up to the target's granule — 24 on gfx1100 —
-  not on the raw count. On CDNA the AGPRs are charged to the same file as the
-  VGPRs, and the report prints both (`vgpr=20+16a`).
+  not on the raw count. On CDNA (gfx90a and later) the AGPRs share the
+  VGPRs' file: the charge is the VGPRs rounded up to a multiple of four plus
+  the AGPRs, then rounded to the granule, 8 there
+  (`Target.charged_vgprs`). The report prints both (`vgpr=20+16a`).
 * **No remarks is an error.** A build that emits no resource remarks cannot
   be certified, so it is fatal rather than skipped.
 
@@ -207,8 +211,8 @@ one, and a record from another arch is ignored. A record changes nothing
 unless it beat the default by `MIN_GAIN` (1%); the bar is applied at `--ship`
 and again on lookup, `HK_AUTOTUNE_MIN_GAIN` moves it, and `HK_AUTOTUNE=0`
 ignores records entirely. `python/hk/tuned/README.md` says why there are so
-few: 4 of 16 keys clear the bar, and the measurements behind that are in
-[Phase 5](history/04-phase-5-autotune.md).
+few: in [Phase 5](history/04-phase-5-autotune.md) 4 of 16 keys cleared the
+bar, and three attention records ship today (`gemm_bf16.json` is empty).
 
 `--aot` prebuilds every schedule production can reach — the recorded ones and
 the default, since the default is what an unrecorded key gets.
@@ -224,17 +228,21 @@ op = hk.torch_op(hk.ops.elementwise.KERNELS["add_bf16"])
 op(a, b, out)                 # == torch.ops.hk.add_bf16(a, b, out)
 ```
 
+By default the op runs over a device-only code object
+([below](#over-a-device-only-code-object)). Either way:
 * The op takes its outputs as arguments. The schema is derived from the IR:
   the tensors the kernel stores into become `Tensor(a!)` out-parameters.
+* It launches on torch's current stream and has a `Meta` implementation so
+  `torch.compile` can trace it.
+* Building it needs no GPU, and it still gates on spills. It is memoised on
+  (namespace, name), because torch refuses to register the same op twice.
+
+With `HK_TORCH_OP=library`, the op is a libtorch registration instead:
 * It is built with plain `hipcc -shared -fPIC` and loaded with
   `torch.ops.load_library` — not `torch.utils.cpp_extension.load`, which
   would hipify source that is already HIP.
-* It launches on torch's current stream, registers with
-  `TORCH_LIBRARY_FRAGMENT` (every kernel is its own `.so` in one namespace),
-  and has a `Meta` implementation so `torch.compile` can trace it.
-* Building it needs hipcc and torch but no GPU, and it still gates on spills.
-  It is memoised on (namespace, name), because torch refuses to register the
-  same op twice.
+* It registers with `TORCH_LIBRARY_FRAGMENT` (every kernel is its own `.so`
+  in one namespace), and building it needs torch's headers.
 
 The reasons for each of these are in [Phase 6](history/05-phase-6-torch-ops.md),
 with the measurement that the registration costs nothing.
@@ -279,9 +287,9 @@ measurable in front of a microsecond kernel run eagerly.
 
 What an eager launch costs on the host is what an eager server pays per hk
 call whenever the CPU, not the GPU, sets the pace. SGLang on RDNA3 decodes
-eagerly. The torch op used to cost 27 µs of host time per call on the pod:
+eagerly. The torch op used to cost 27.3 µs of host time per call on the pod:
 it packed the argument field by field, built a ctypes buffer per launch and
-entered a device context. It now costs 17 µs ([chapter
+entered a device context. It now costs 17.8 µs ([chapter
 25](history/25-sglang-moe.md)):
 - one precompiled `struct` packs the whole argument in one call;
 - each thread reuses one argument buffer, since the launch copies the
@@ -310,8 +318,9 @@ framework with it is [integration](integration.md).
 ## Environment variables
 
 Read by `python/hk/runtime`, `python/hk/autotune` and `python/hk/ops`. The
-ones that turn on engine patches are listed in
-[integration](integration.md#environment-variables).
+ones that turn on engine patches, and the ops' own plan switches
+(`HK_SPLITS`, `HK_NORM_LAYOUT`, `HK_NORM_FOLD`, `HK_HIPKITTENS_KERNELS`), are
+listed in [integration](integration.md#environment-variables).
 
 | variable | read by | effect |
 |---|---|---|

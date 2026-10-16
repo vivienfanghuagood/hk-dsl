@@ -81,7 +81,7 @@ the space:
   space, hk's GEMM is 1.09-1.11x faster, and hk's register strips tie or beat
   its row kernels ([strips](history/27-strips.md)). The attention torch runs
   on ROCm is aotriton.
-- **hk-dsl** has the attention: 2.73-3.80x torch 2.10's SDPA, and 1.16x causal
+- **hk-dsl** has the attention: 2.7-3.8x torch 2.10's SDPA, and 1.16x causal
   and 0.99x non-causal against torch 2.13's, which is 3.3x faster
   ([chapter 30](history/30-flydsl-routes-gate-contracts.md)).
 

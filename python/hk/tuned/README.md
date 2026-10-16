@@ -19,10 +19,11 @@ default beside the compile cache) and override these, because whoever ran the
 tuner on this machine measured this machine. `HK_AUTOTUNE=0` ignores both and
 pins every tuner to its built-in default schedule.
 
-Records do not travel across toolchains. The `toolchain` field is the same
-fingerprint the compile cache keys on -- hipcc's version, the contents of
-`include/rdna3`, and `hk` itself -- so a record whose fingerprint no longer
-matches was measured on a different compiler and is a guess. Nothing refuses
+Records do not travel across toolchains. The `toolchain` field is the
+fingerprint the compile cache keys on -- `hipcc --version` and the contents of
+every include directory (`runtime/compile.py`, `toolchain_fingerprint`) -- so
+a record whose fingerprint no longer matches was measured on a different
+compiler or headers and is a guess. Nothing refuses
 to use a stale record (a stale schedule is a correct kernel, just possibly not
 the fastest one); it is recorded so that a surprising number has somewhere to
 be traced back to.
@@ -61,13 +62,16 @@ nothing needed changing.
 
 ## Routing tables
 
-`routes_<kind>_<arch>.json` is a different kind of record: not which
-schedule a kernel should use, but which kernel -- or the engine's own -- a
-call of a given shape should go to. `tools/hk-bench/route_tune.py` writes
+`routes_<engine>_<kind>_<arch>.json` is a different kind of record: not
+which schedule a kernel should use, but which kernel -- or the engine's own --
+a call of a given shape should go to. `tools/hk-bench/route_tune.py` writes
 them, and `hk.integration.engine.RouteTable` reads them. Each keeps the raw
 timings it decided from, the toolchain fingerprint and the margin (a kernel
-takes an M only where it beat the engine by `min_gain`). A table is per arch
-and per model: a shape it never measured takes the engine's path.
+takes an M only where it beat the engine by `min_gain`). A table is per
+engine, per arch and per model: a shape it never measured takes the engine's
+path. Shipped: vLLM's and SGLang's linear layers on gfx1100, and vLLM's on
+gfx950, where the candidate is HipKittens' CDNA4 GEMM (`hk.ops.hipkittens`)
+rather than hk's.
 
 A table measured with FlyDSL installed also carries, per shape, a `prefer`
 overlay: `[lo, hi, tile]` ranges where FlyDSL's GEMM, at the tile its
