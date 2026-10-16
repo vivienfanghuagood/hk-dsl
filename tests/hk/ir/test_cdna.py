@@ -159,3 +159,35 @@ def test_gfx950_shared_tiles_take_the_fragment_of_what_is_read_out_of_them():
 def test_unwaited_lds_reads_are_refused_until_the_count_is_per_target():
     with pytest.raises(TypeError, match="wait=False"):
         _lds_gemm("gfx950", wait=False)
+
+
+@pytest.mark.parametrize("arch", CDNA)
+def test_cdna_globals_carry_a_row_stride(arch):
+    # include/cdna{3,4}'s gl has rows exactly `cols` apart; hk/cdna.cuh's
+    # strided_gl has the stride the launchers pass and the code-object
+    # layout table names.
+    t = hk.RT(hk.bf16, 16, 64)
+
+    @hk.kernel(arch=arch, warps=1, grid=lambda p: (1, 1, 1))
+    def k(a: hk.Tensor[hk.bf16], o: hk.Tensor[hk.bf16]):
+        idx = hk.tile_coord(0, 0, 0, 0)
+        o[idx] = a[idx].load(t)
+
+    src = scaffold.device(k.trace())
+    assert "kittens::strided_gl<bf16> a;" in src
+    assert "offsetof(decltype(globals::a), row_stride_internal)" in src
+    assert "kittens::gl<" not in src
+
+
+def test_rdna_globals_are_the_library_gl():
+    t = hk.RT(hk.bf16, 16, 64)
+
+    @hk.kernel(arch="gfx1100", warps=1, grid=lambda p: (1, 1, 1))
+    def k(a: hk.Tensor[hk.bf16], o: hk.Tensor[hk.bf16]):
+        idx = hk.tile_coord(0, 0, 0, 0)
+        o[idx] = a[idx].load(t)
+
+    src = scaffold.bare(k.trace())
+    assert "kittens::gl<bf16, -1, -1, -1, -1> a;" in src
+    assert "strided_gl" not in src
+
