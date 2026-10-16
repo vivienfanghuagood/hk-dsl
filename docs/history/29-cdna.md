@@ -334,6 +334,66 @@ says so; on RDNA it still runs them. Against torch eager: rope 8.85x, int8
 quantize 2.21x, `silu_mul` 1.77x, softmax 1.06x, layernorm 0.98x, rmsnorm
 0.94x, add 0.93x, exp 0.87x.
 
+## Part 5: HipKittens' CDNA4 kernels behind hk's engine layer
+
+A native hk GEMM or attention on CDNA that matches HipKittens is
+HipKittens-level scheduling work. HipKittens already ships both for
+gfx950, so they were wrapped instead. `hk.ops.hipkittens` builds them
+through hk's compile cache and spill gate:
+- `kernels/cdna4/gemm/bf16fp32/256_256_64_32_with16x32.cpp`;
+- the four `attn/gqa{,_causal}/kernel{,_d64}.cpp`.
+
+Each source is upstream's, verbatim, with hk's entry point appended. That
+entry point launches on torch's stream rather than the null stream, so a
+CUDA graph can capture it. The ops are `gemm_bf16` and `gqa_fwd`, plus the
+`engine.Op`s `hk_cdna::gemm_bf16` and `hk_cdna::gqa_fwd`. They refuse, with
+the reason, a shape the kernel cannot take; nothing is padded. vLLM's linear
+patch gains a `hipkittens` path. The full write-up is
+[design/cdna-hipkittens-ops.md](../design/cdna-hipkittens-ops.md).
+
+### The toolchain decides whether the kernels are right
+
+This was the most important finding, and neither of hk's gates sees it.
+- **The GEMM under ROCm 7.1's hipcc** builds cleanly and passes the spill
+  gate, then gets rows 128-191 of every 256-row tile wrong (relative error
+  0.1-0.86). Upstream's own `dispatch_micro`, built unchanged, does the same.
+  `hk.runtime.cocheck` passes that build too: no MFMA reads an unfilled
+  register, and the waits are intact. The difference between the two
+  toolchains' ISA is scalar and 64-bit address arithmetic.
+- **The GEMM under ROCm 7.2.3** is correct.
+- **The attention kernels under ROCm 7.2.3** do not compile. clang 22 finds
+  include/cdna4's three textually identical `all` concepts (rt, art, rv)
+  ambiguous.
+- **The attention kernels under ROCm 7.1** compile and are correct.
+
+So the first launch of every build on each device runs it on seeded inputs
+against fp32 torch. A wrong build raises `Miscompiled`, which names the
+hipcc. The engine ops and vLLM's linear then take torch, with one warning.
+This is the same argument as the spill gate: a kernel that cannot be
+trusted is refused, not returned. Here the evidence has to come from the
+device, because no static check sees it.
+
+### What it measured (MI355X, HipKittens unmodified)
+
+- **GQA forward is the win.** It runs 1.28-2.62x torch SDPA, which picks
+  aotriton's flash kernel for every configuration measured: 1.66-1.84x
+  non-causal and 2.17-2.62x causal at d=128. FlyDSL's gfx950 flash attention
+  is level with it: HipKittens is 0.92-1.00x FlyDSL.
+- **The GEMM mostly is not.** hipBLASLt is ahead almost everywhere: by 4-9%
+  at M ≥ 4096, and by much more below M = 2048. There, a 256x256 tile per
+  workgroup leaves most of the 256 CUs idle.
+- **Where the GEMM wins, it is hipBLASLt's heuristic.** HipKittens wins 4-27%
+  only where hipBLASLt picks a slow kernel. At M = 2048, N = K = 4096,
+  hipBLASLt runs 708 TFLOP/s, rocBLAS 965 and HipKittens 886.
+- **The route table records this.** The measured gfx950 table,
+  `routes_vllm_linear_gfx950.json` (from `route_tune.py --paths hipkittens`),
+  sends 37 of 206 (N, K, M) points to HipKittens, all at M ≥ 1792. A re-run
+  agreed on 271 of the 272 lookups. This is the engine layer doing its job:
+  it routes a shape to whichever kernel measured fastest, including the
+  vendor library, and records the evidence.
+- **aiter could not be measured.** PyPI's `aiter` is an unrelated package,
+  and `amd-aiter` is not published.
+
 ### Regressions
 
 None for RDNA. Every example and `hk.ops` instantiation, in every scaffold

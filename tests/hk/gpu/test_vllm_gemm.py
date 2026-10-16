@@ -43,12 +43,14 @@ def _ref(x, w, b=None):
 
 def _needs_table():
     """A test that asserts a call took the hk path needs this arch's measured
-    route table; with none every call takes the engine's path, which the
-    rest of this file still checks."""
-    if vllm_gemm.routes() is None:
+    route table to route somewhere to it. gfx950's routes only to HipKittens'
+    GEMM (hk.ops.gemm has no gfx950 form), and test_hipkittens.py checks that
+    path; the rest of this file still checks the engine's."""
+    t = vllm_gemm.routes()
+    if t is None or "hk" not in t.paths():
         from hk.target import current_arch  # noqa: PLC0415
 
-        pytest.skip(f"no measured route table for {current_arch()}")
+        pytest.skip(f"{current_arch()}'s route table sends nothing to hk.ops.gemm")
 
 
 def _took(fn):
