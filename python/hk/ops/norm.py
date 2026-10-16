@@ -278,9 +278,12 @@ def _fold_split(nblk: int):
         softmax 16384x8192    0.76           0.93    0.93
         rms     512x8192      1.08           1.07    1.10 (w4 tpw2)
 
-    Below eight blocks the alternatives were within 3% either way.
+    Below eight blocks the alternatives were within 3% either way. Past 64
+    a quarter of the blocks is more warps than a workgroup has (a 131072- or
+    262144-wide softmax asked for a 32- and a 64-warp kernel), and the row
+    goes to _split.
     """
-    if nblk >= 8 and nblk % 4 == 0:
+    if 8 <= nblk <= 4 * MAX_WARPS and nblk % 4 == 0:
         from ..target import current_arch, get_target  # noqa: PLC0415
 
         if get_target(current_arch()).wave == 64:

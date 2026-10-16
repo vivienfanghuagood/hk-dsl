@@ -300,6 +300,24 @@ def test_the_three_ops_do_not_want_the_same_plan():
     assert plan(4096) == plan(4096, "rms") == plan(4096, "softmax")
 
 
+def test_a_wave64_fold_asks_for_no_more_warps_than_a_workgroup_has(monkeypatch):
+    """_fold_split's CDNA rule is a quarter of the warps at four tiles each.
+    Past 64 folded blocks a quarter is more than MAX_WARPS: a 131072- or
+    262144-wide row asked for a 32- or 64-warp kernel, which is not in the
+    table, and every norm raised KeyError on an MI355X at those widths."""
+    import hk.target
+    from hk.ops import norm
+
+    monkeypatch.setattr(hk.target, "_CURRENT", ["gfx950"])
+    assert norm._fold_split(64) == (16, 4)
+    for nblk in range(1, 1025):
+        assert norm._fold_split(nblk)[0] in norm.WARP_COUNTS, nblk
+    for cols in (68624, 131072, 262144):
+        for kind in ("rms", "layer", "softmax"):
+            for rows in (16, 8192):
+                assert norm.plan(cols, kind, rows)[0] in norm.WARP_COUNTS, (cols, kind, rows)
+
+
 def test_the_plan_is_not_simply_flat():
     """Streaming is the last resort, not the default.
 
