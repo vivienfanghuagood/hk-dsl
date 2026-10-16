@@ -20,7 +20,7 @@ pytestmark = pytest.mark.gpu
 def test_it_matches_torch(rows, cols):
     x = torch.randn(1, 1, rows, cols, device="cuda", dtype=torch.bfloat16)
     o = torch.empty_like(x)
-    rmsnorm_kernel()(x, o)
+    rmsnorm_kernel(arch=None)(x, o)
     xf = x.float()
     want = xf * torch.rsqrt(xf.pow(2).mean(-1, keepdim=True) + 1e-6)
     torch.testing.assert_close(o.float(), want, rtol=2e-2, atol=2e-2)

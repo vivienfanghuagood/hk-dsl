@@ -17,8 +17,8 @@ import hk  # noqa: E402
 T = hk.RT(hk.fp32, 16, 64)
 
 
-def rmsnorm_kernel(warps: int = 4):
-    @hk.kernel(arch="gfx1100", warps=warps,
+def rmsnorm_kernel(warps: int = 4, arch="gfx1100"):
+    @hk.kernel(arch=arch, warps=warps,
                grid=lambda p: (1, hk.cdiv(p.x.rows, 16), p.x.batch))
     def rmsnorm(x: hk.Tensor[hk.bf16], o: hk.Tensor[hk.bf16],
                 WARPS: hk.Constexpr[int] = warps, EPS: hk.Constexpr[float] = 1e-6):

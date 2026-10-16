@@ -52,7 +52,7 @@ def _make(*, ROWS, COLS):
         o[idx] = a[idx].load(t) + b[idx].load(t)
 
     body.__name__ = name
-    return hk.kernel(body, arch="gfx1100", warps=1, name=name,
+    return hk.kernel(body, warps=1, name=name,
                      grid=lambda p: (hk.cdiv(p.o.cols, COLS),
                                      hk.cdiv(p.o.rows, ROWS), p.o.batch))
 

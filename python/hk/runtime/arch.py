@@ -72,6 +72,50 @@ def detect() -> Optional[str]:
     return None
 
 
+@functools.lru_cache(maxsize=None)
+def device_arch(device: int) -> Optional[str]:
+    """The gfx name the runtime reports for HIP device `device`, or None
+    with no torch or no GPU. Not `detect()`: HK_ARCH says what to compile
+    for, and this is what the kernel is about to run on."""
+    try:
+        import torch  # noqa: PLC0415
+
+        if not torch.cuda.is_available():
+            return None
+        name = torch.cuda.get_device_properties(device).gcnArchName
+    except Exception:
+        return None
+    m = _GFX_RE.search(name or "")
+    return m.group(1) if m else None
+
+
+class ArchMismatchError(RuntimeError):
+    """A kernel built for one arch was about to be loaded onto another."""
+
+
+def check_device(arch: str, what: str, device: Optional[int] = None) -> None:
+    """Raise ArchMismatchError if `device` (default: torch's current one) is
+    not `arch`. A code object for another arch does not fail cleanly at
+    launch: a gfx1100 kernel launched on a gfx950 crashed the process. Free
+    after the first call per device; does nothing with no GPU."""
+    if device is None:
+        try:
+            import torch  # noqa: PLC0415
+
+            if not torch.cuda.is_available():
+                return
+            device = torch.cuda.current_device()
+        except Exception:
+            return
+    have = device_arch(device)
+    if have is None or have == arch:
+        return
+    raise ArchMismatchError(
+        f"{what} was built for {arch}, but GPU {device} is {have}. Build it "
+        f"for {have}: pass arch='{have}' to the kernel, or leave arch unset "
+        f"and set HK_ARCH={have} (or unset HK_ARCH to detect it).")
+
+
 def resolve(arch: Optional[str]) -> str:
     """Normalise an explicit arch, or detect one. Raises rather than defaulting."""
     if arch is None:

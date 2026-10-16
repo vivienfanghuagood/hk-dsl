@@ -178,6 +178,9 @@ class CodeObjectKernel:
     def function(self, device: int) -> ctypes.c_void_p:
         fn = self._fn.get(device)
         if fn is None:
+            from .arch import check_device  # noqa: PLC0415
+
+            check_device(self.ir.arch, f"kernel {self.ir.name!r}", device)
             mod, fn = ctypes.c_void_p(), ctypes.c_void_p()
             _check(hip().hipModuleLoadData(ctypes.byref(mod), self.image),
                    f"{self.ir.name}: hipModuleLoadData")

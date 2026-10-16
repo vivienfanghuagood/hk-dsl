@@ -130,7 +130,10 @@ def torch_op(kernel, *, ns: str = "hk", name: str = "", **const_overrides):
     # would compile fine and then throw at load.
     existing = _existing(torch, ns, op)
     if existing is None:
+        from .arch import check_device  # noqa: PLC0415
+
         b = build(kernel, ns=ns, name=op, **const_overrides)
+        check_device(ir.arch, f"torch op {ns}::{op}")
         torch.ops.load_library(str(b.so_path))
         existing = _existing(torch, ns, op)
         if existing is None:  # pragma: no cover -- a torch-side failure
