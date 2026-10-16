@@ -28,6 +28,7 @@ it is a time ratio.
 - [End to end in SGLang](#end-to-end-in-sglang)
 - [After the MLIR move](#after-the-mlir-move)
 - [Against torch, at full size, after the cross-warp fix](#against-torch-at-full-size-after-the-cross-warp-fix)
+- [CDNA, on one MI355X](#cdna-on-one-mi355x) -- a different GPU; kept apart from everything above
 
 ## Summary
 
@@ -672,3 +673,24 @@ faster" was against `torch.compile`, a different baseline. Before the fix the
 norm and quantize rows were wrong at this size, not slow. The drain the fix
 added costs nothing measurable: 1.002x for rmsnorm, 1.010x for softmax, after
 against before.
+
+## CDNA, on one MI355X
+
+Everything above is gfx1100. This section is gfx950 (CDNA4, Instinct MI355X),
+measured on one GPU of a shared 8-GPU node, inside `rocm/pytorch` (ROCm 7.2.3,
+PyTorch 2.10). Contenders were interleaved in one process, best of 5, and each
+check is `max|got - want| / max|want|` against an fp32 torch reference. gfx942
+(MI300X) is compile-only: there is no part here. Source:
+[CDNA3 and CDNA4](history/29-cdna.md).
+
+### The first pass: correct, not yet tuned
+
+The elementwise and row kernels below ran with tiles planned for RDNA3.
+
+| kernel | shape | check | resources (gate) | hk vs baseline |
+|---|---|---|---|---|
+| `examples/01_vector_add.py` | 8192² bf16 | exact | 25 VGPR, 8 waves | 0.61x `torch.add` |
+| `examples/02_rmsnorm.py` | 8192x4096 | 2.9e-3 | 28 VGPR, 8 waves | 0.58x `F.rms_norm`; `hk.ops.norm.rmsnorm` 0.72x |
+| `examples/03_softmax.py` | 8192x4096 | 1.95e-3 | 37 VGPR, 8 waves | 0.51x `torch.softmax`; `hk.ops.norm.softmax` 0.76x |
+| MFMA GEMM, registers only (`tools/cdna-probes/mma_reg.py`) | up to 2048x2048x1024 | ≤ 6.3e-3 | 22 VGPR + 16 AGPR, 8 waves | -- |
+| GEMM through LDS (`tools/cdna-probes/gemm_lds.py`) | 4096³ | ≤ 5.7e-3, identical in 3 runs | 20 VGPR + 16 AGPR, 8 waves | 540 TFLOP/s, 0.35x hipBLASLt (1530) |
