@@ -106,6 +106,24 @@ losses.
 | OLMoE-1B-7B served by SGLang 0.5.18, MoE patch (`HK_SGLANG_MOE=1`) | runs at all (stock fails in sgl_kernel's top-k); 1.06–1.32x output throughput at concurrency 1–32 | SGLang with the top-k in torch and its Triton MoE GEMMs | [SGLang MoE](docs/history/25-sglang-moe.md) |
 | shipped ops at 7-8B shapes ([`validate.py`](examples/validate.py)) | GEMM 1.12x, decode GEMV 3.90–4.38x, attention 2.76x (3.94x causal), quantize 2.78x; norms 0.88–0.96x | torch eager, PyTorch 2.10 | [validation](docs/history/16-validation-and-the-cross-warp-race.md) |
 
+### On CDNA (MI355X, MI300X)
+
+hk also targets gfx950 (CDNA4, Instinct MI355X) and gfx942 (CDNA3, MI300X;
+compile-only, since none was available). On one MI355X:
+- The elementwise, norm, fused, quantize and rows-by-index kernels run and
+  pass. Against torch: add 0.93x, rmsnorm 0.94x, softmax 1.06x, silu_mul
+  1.77x, rope 8.85x, int8 quantize 2.21x.
+- The GPU tier passes, with attention and the GEMMs skipped. Those have no
+  native CDNA path yet.
+- On gfx950 the bind after hk's LDS waits was measured to be load-bearing.
+  Without it, every LDS GEMM build returned NaN.
+- `python -m hk.runtime.cocheck` runs hk's resource and wait gates on any
+  code object, hk's or not.
+
+See [design/cdna.md](docs/design/cdna.md) for the status, [chapter
+29](docs/history/29-cdna.md) for the record, and [performance](docs/performance.md#cdna-on-one-mi355x)
+for the numbers.
+
 ## Repository layout
 
 ```
@@ -114,7 +132,7 @@ hk/dsl/         the language: @kernel / @func, values and operators, the AST
 hk/types.py     dtypes and the tile / vector / tensor types a kernel is written in
 hk/compiler/    the MLIR context, the pass pipeline, the translation entry point
 hk/_mlir/       the built bindings (hk dialect + MLIR core), not checked in
-hk/target/      gfx1100 / gfx1201 facts, as data
+hk/target/      gfx1100 / gfx1201 / gfx942 / gfx950 facts, as data
 hk/codegen/     the module boundary around a translated kernel (scaffold.py)
 hk/runtime/     arch detection, hipcc + content-hash cache, the resource gate,
                 and the torch.ops registration (torch_ext.py)

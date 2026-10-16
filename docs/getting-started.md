@@ -12,7 +12,8 @@ From nothing to a kernel you have traced, read, compiled and launched.
 ## Install
 
 You need Linux x86_64 and ROCm's hipcc to compile; a Radeon (gfx1100, RDNA3)
-and torch to launch. torch is not a dependency of the package — install the
+or an Instinct MI355X (gfx950, CDNA4; see [CDNA](design/cdna.md) for what runs
+there) and torch to launch. torch is not a dependency of the package — install the
 ROCm build you already use.
 
 **From PyPI**, for CPython 3.10 (glibc 2.35+) or 3.12 (glibc 2.38+):
