@@ -61,6 +61,87 @@ def test_a_kernels_package_that_is_not_flydsls_is_named(fresh, monkeypatch, tmp_
             del sys.modules[mod]
 
 
+def _pkg(root: Path, files: dict):
+    for rel, text in files.items():
+        p = root / rel
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(text)
+
+
+@pytest.fixture
+def beside(fresh, monkeypatch, tmp_path):
+    """HuggingFace's `kernels` first on sys.path, FlyDSL's checkout in
+    FLYDSL_ROOT, as in SGLang's venv; whatever `kernels` modules the test
+    leaves are cleared after it."""
+    import hk.target
+
+    hf, fly = tmp_path / "site", tmp_path / "FlyDSL"
+    _pkg(hf, {"flydsl/__init__.py": "", "kernels/__init__.py": "WHO = 'hf'\n",
+              "kernels/layer.py": "WHO = 'hf.layer'\n"})
+    _pkg(fly, {"kernels/__init__.py": "WHO = 'flydsl'\n",
+               "kernels/common/__init__.py": "", "kernels/common/ops.py": "X = 42\n",
+               "kernels/gemm/__init__.py": "",
+               "kernels/gemm/rdna3_f16_gemm.py": "from kernels.common.ops import X\n",
+               "kernels/gemm/rdna3_f16_gemm_autotune.py":
+                   "from kernels.gemm.rdna3_f16_gemm import X\n"
+                   "def feasible_tiles(m, n, k):\n    return [(4, 4, 2, 2, 2)]\n"
+                   "def pick_tile(m, n, k):\n    return (4, 4, 2, 2, 2)\n"})
+    monkeypatch.syspath_prepend(str(hf))
+    monkeypatch.setattr(hk.target, "current_arch", lambda: "gfx1100")
+    monkeypatch.delenv("HK_FLYDSL", raising=False)
+    monkeypatch.setenv("FLYDSL_ROOT", str(fly))
+    monkeypatch.setattr(fresh, "_PRIVATE", {})
+    for mod in [m for m in sys.modules if m.split(".")[0] in ("kernels", "flydsl")]:
+        monkeypatch.delitem(sys.modules, mod)
+    yield fresh, hf, fly
+    for mod in [m for m in sys.modules if m.split(".")[0] in ("kernels", "flydsl")]:
+        del sys.modules[mod]
+
+
+def test_flydsls_kernels_load_beside_huggingfaces(beside):
+    fg_mod, hf, fly = beside
+    path = list(sys.path)
+    assert fg_mod.available(), fg_mod.status()
+    fg = sys.modules["kernels.gemm.rdna3_f16_gemm_autotune"]
+    assert fg_mod._load() is fg and fg.X == 42 and fg.__file__.startswith(str(fly))
+    assert sys.path == path and "kernels" not in sys.modules
+    import kernels                                       # SGLang's, later
+
+    assert kernels.WHO == "hf" and kernels.__file__.startswith(str(hf))
+    from kernels.layer import WHO
+
+    assert WHO == "hf.layer"
+    assert fg_mod.variant(1024, 4096, 4096) == "128x128x32w4"
+
+
+def test_a_huggingface_kernels_already_imported_stays(beside):
+    fg_mod, hf, _ = beside
+    import kernels
+    import kernels.layer
+
+    assert fg_mod.available(), fg_mod.status()
+    assert sys.modules["kernels"] is kernels and sys.modules["kernels.layer"] is kernels.layer
+    assert sys.modules["kernels.gemm.rdna3_f16_gemm"].X == 42
+
+
+def test_a_name_both_packages_have_stays_huggingfaces(beside):
+    fg_mod, hf, _ = beside
+    _pkg(hf, {"kernels/common/__init__.py": "WHO = 'hf.common'\n"})
+    assert fg_mod.available(), fg_mod.status()
+    assert "kernels.common" not in sys.modules
+    assert fg_mod._PRIVATE["kernels.common.ops"].X == 42
+    import kernels.common
+
+    assert kernels.common.WHO == "hf.common"
+
+
+def test_without_flydsl_root_the_shadow_is_named(beside, monkeypatch):
+    fg_mod, _, _ = beside
+    monkeypatch.delenv("FLYDSL_ROOT")
+    assert not fg_mod.available()
+    assert "is not FlyDSL's" in fg_mod.status() and "FLYDSL_ROOT" in fg_mod.status()
+
+
 def test_tile_names():
     assert flydsl_gemm.tile_name((4, 4, 2, 2, 2)) == "128x128x32w4"
     assert flydsl_gemm.tile_name((4, 4, 2, 4, 4)) == "256x256x32w16"

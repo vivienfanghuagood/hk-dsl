@@ -13,6 +13,9 @@ It is optional in every sense:
   importable and so is FlyDSL's `kernels` package, which is in its
   repository and not in its wheel: on sys.path already, or under
   `$FLYDSL_ROOT`. `HK_FLYDSL=0` turns it off.
+* Where another `kernels` is installed (HuggingFace's, beside SGLang),
+  FlyDSL's is imported from `$FLYDSL_ROOT` beside it, and `import kernels`
+  still finds the other one (`_import_beside`).
 * A table's FlyDSL rows are an overlay (`engine.RouteTable`). Where the path
   does not exist, or does not take a call, the call goes where the same table
   without those rows sends it -- hk's kernels or the engine's.
@@ -40,10 +43,66 @@ from typing import Dict, Optional, Tuple
 
 NAME = "flydsl"
 _OFF = ("0", "off", "no", "false")
+MODULE = "kernels.gemm.rdna3_f16_gemm_autotune"
 
 #: [FlyDSL's rdna3_f16_gemm_autotune module or None, why it is None].
 _STATE: list = []
 _VARIANT: Dict[Tuple[int, int, int], Optional[str]] = {}
+#: FlyDSL's modules that could not keep their names beside another `kernels`.
+_PRIVATE: Dict[str, object] = {}
+
+
+def _is_flydsl(dirs) -> bool:
+    return any(os.path.isfile(os.path.join(d, "gemm", "rdna3_f16_gemm.py")) for d in dirs)
+
+
+def _kernels_dirs() -> list:
+    """Where `import kernels` finds (or found) its package, without importing it."""
+    mod = sys.modules.get("kernels")
+    spec = getattr(mod, "__spec__", None) if mod is not None else None
+    if spec is None and mod is None:
+        try:
+            spec = importlib.util.find_spec("kernels")
+        except (ImportError, ValueError):
+            spec = None
+    return list(getattr(spec, "submodule_search_locations", None) or [])
+
+
+def _import_beside(root: str, other: list):
+    """FlyDSL's GEMM module, imported from `root`'s `kernels` package although
+    another distribution's `kernels` (HuggingFace's, beside SGLang) is the one
+    `import kernels` finds -- and leaving that one the one it finds.
+
+    FlyDSL's modules import each other as `kernels.<...>`, so they are imported
+    under those names, with `root` first on sys.path and the other package's
+    modules out of sys.modules. Then sys.path and the other package's modules
+    are put back, and `kernels` itself names the other package again. FlyDSL's
+    submodules (`kernels.gemm.*`, `kernels.common.*`) keep their names, which
+    FlyDSL's compile cache resolves its functions by; the other package has no
+    such submodules, and one that did would keep its own (FlyDSL's is then
+    held here only)."""
+    def ours(k):
+        return k == "kernels" or k.startswith("kernels.")
+
+    theirs = {m.split(".")[0] for d in other for m in os.listdir(d)
+              if os.path.isdir(os.path.join(d, m)) or m.endswith(".py")} if other else set()
+    theirs = {m[:-3] if m.endswith(".py") else m for m in theirs}
+    saved = {k: sys.modules.pop(k) for k in list(sys.modules) if ours(k)}
+    path = list(sys.path)
+    sys.path.insert(0, root)
+    importlib.invalidate_caches()
+    try:
+        return importlib.import_module(MODULE)
+    finally:
+        fly = {k: sys.modules.pop(k) for k in list(sys.modules) if ours(k)}
+        sys.path[:] = path
+        importlib.invalidate_caches()
+        sys.modules.update(saved)
+        for k, mod in fly.items():
+            if k == "kernels" or k in saved or k.split(".")[1] in theirs:
+                _PRIVATE[k] = mod
+            else:
+                sys.modules[k] = mod
 
 
 def _load():
@@ -60,17 +119,20 @@ def _load():
         why = "flydsl is not importable"
     else:
         root = os.environ.get("FLYDSL_ROOT")
-        if root and root not in sys.path:
-            sys.path.append(root)
+        other = _kernels_dirs()
         try:
-            fg = importlib.import_module("kernels.gemm.rdna3_f16_gemm_autotune")
+            if other and not _is_flydsl(other) and root and _is_flydsl([os.path.join(root, "kernels")]):
+                fg = _import_beside(root, other)
+            else:
+                if root and root not in sys.path:
+                    sys.path.append(root)
+                fg = importlib.import_module(MODULE)
         except Exception as e:  # noqa: BLE001 -- any failure means no path
-            spec = importlib.util.find_spec("kernels")
-            dirs = list(spec.submodule_search_locations or []) if spec else []
-            if dirs and not any(os.path.isfile(os.path.join(d, "gemm", "rdna3_f16_gemm.py"))
-                                for d in dirs):
+            dirs = _kernels_dirs()
+            if dirs and not _is_flydsl(dirs):
                 why = (f"the 'kernels' package in {dirs[0]} is not FlyDSL's and "
-                       f"shadows it ({type(e).__name__}: {e})")
+                       f"shadows it ({type(e).__name__}: {e}); set FLYDSL_ROOT to a "
+                       f"checkout of FlyDSL to import FlyDSL's beside it")
             else:
                 why = (f"FlyDSL's kernels package is not importable ({type(e).__name__}: "
                        f"{e}); it is in FlyDSL's repository, not its wheel -- set "
