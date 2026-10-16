@@ -36,6 +36,9 @@ band -- the larger of 2% and the two arms' noise -- is a tie.
 
     FLYDSL_ROOT=/workspace/FlyDSL HIP_VISIBLE_DEVICES=0 \\
         python3 tools/hk-bench/scoreboard.py [--only gemm,norm,...] [--tune] [--json f]
+
+`--arms` runs a subset; the performance gate (check_regression.py) runs the
+out-of-the-box arms only, because the tuned ones search on every run.
 """
 
 from __future__ import annotations
@@ -458,13 +461,20 @@ def main() -> int:
     ap.add_argument("--tune", action="store_true",
                     help="run hk's GEMM tuner for shapes it has no record for")
     ap.add_argument("--json", default="", help="write every case, arm and verdict here")
+    ap.add_argument("--arms", default=",".join(ARMS),
+                    help="comma-separated arms to run; the others are listed as "
+                    "not selected (the tuned arms search, which takes minutes)")
     args = ap.parse_args()
+    selected = set(args.arms.split(","))
+    if not selected <= set(ARMS):
+        ap.error(f"unknown arms {sorted(selected - set(ARMS))}; arms are {ARMS}")
     meta = _versions()
     print(f"{meta['device']} {meta['arch']}, torch {meta['torch']}, triton "
           f"{meta['triton']}, flydsl {meta['flydsl']}, hk {meta['hk']}")
     burn_in()
 
     report = {"meta": {**meta, "rounds": args.rounds, "calls": args.calls, "band": BAND,
+                       "arms": [a for a in ARMS if a in selected],
                        "date": time.strftime("%Y-%m-%d %H:%M")}, "cases": []}
     head = f"{'case':<28}" + "".join(f"{a:>13}" for a in ARMS) + "   oob / tuned"
     for group in args.only.split(","):
@@ -478,7 +488,7 @@ def main() -> int:
             # do not go through the autotuner at all.
             os.environ["FLYDSL_AUTOTUNE"] = "1"
             for a in ARMS:
-                spec = arms.get(a, "no kernel")
+                spec = arms.get(a, "no kernel") if a in selected else "not selected (--arms)"
                 if isinstance(spec, str):
                     notes[a] = spec
                     continue
@@ -506,7 +516,8 @@ def main() -> int:
                             else f"{'':>13}" for a in ARMS)
             print(f"{'':<28}{rates}")
             for a, why in notes.items():
-                print(f"{'':<30}{a}: {why}")
+                if a in selected:
+                    print(f"{'':<30}{a}: {why}")
             for a in ("hk_tuned", "triton_tuned", "flydsl_tuned"):
                 if a in tuning and tuning[a].get("chosen"):
                     print(f"{'':<30}{a} chose {tuning[a]['chosen'][:110]}")

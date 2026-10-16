@@ -8,6 +8,7 @@ see [getting started](getting-started.md).
 - [Wheels](#wheels)
 - [Using a checkout without a wheel](#using-a-checkout-without-a-wheel)
 - [CI](#ci)
+- [The performance gate](#the-performance-gate)
 - [Layout](#layout)
 
 ## The submodule
@@ -171,7 +172,82 @@ at a time on one GPU, and exits non-zero if a group failed. Moving it into
 CI means a self-hosted runner on that pod, which runs code it is handed. On a
 public repository that runner must only take pushes to `main` and manual
 dispatches, never a pull request from a fork, and it must stay on the GPUs
-that are this project's.
+that are this project's. No such runner is registered.
+
+## The performance gate
+
+`scripts/perf_gate.sh` catches a kernel that got slower. It runs on the dev
+pod, alone on one GPU, by hand or nightly; `HK_PERF_GATE=1
+scripts/gpu_suite.sh` runs it after the GPU tier as group `perf`.
+
+```bash
+HK_GPU=3 FLYDSL_ROOT=/workspace/FlyDSL scripts/perf_gate.sh [OUTDIR]   # exit 1 on a regression
+```
+
+**What it compares.** The node is shared, and absolute times drift 3-5%
+between sessions, more than most regressions worth catching. So the gate
+never compares a time with a time from another run. It runs the scoreboard
+(`tools/hk-bench/scoreboard.py`) with the out-of-the-box arms (hk, torch,
+Inductor, Triton, FlyDSL), every case at 7 rounds of 50 calls. For each case
+and each arm A it takes the ratio t_A / t_hk measured in that one run, and
+`tools/hk-bench/check_regression.py` fails if the ratio fell below the
+baseline's by more than that pair's tolerance. A slower node moves both
+times and not the ratio; a slower hk kernel moves every ratio of its case.
+The tuned arms are left out because they search on every run, which takes
+minutes and adds a noise of its own.
+
+**Where the tolerance comes from.** `tests/perf/baselines/gfx1100.json` is
+built from several scoreboard runs, each its own process, spread over time.
+For each (case, arm) the ratio is the median across runs and the noise is
+the larger of two spreads: across runs, max |r_i / median - 1|; within a
+run, the two arms' second-best-round spreads summed, at their worst. Then
+tolerance = max(3%, 3 x noise). A pair whose tolerance would pass 15% is
+not gated, and is listed as such with its noise. The file records every
+run's ratio beside the tolerance it produced. To change a tolerance,
+re-measure the noise; editing the number by hand loosens the gate blindly.
+
+**What the shipped baseline measured.** Four runs on the dev pod, two before
+and two after a 70-minute vLLM run on the same GPU, give 45 gated pairs over
+16 cases:
+- GEMM ratios moved 0.02-1.5% between runs, and the 2048- and 8192-row norms
+  and softmax up to 2.9%. 32 pairs sit at the 3% floor, and the widest gated
+  tolerance is 12.7% (Inductor against the 32-row RMSNorm).
+- Twelve pairs are not gated, because their ratios moved 5-30% between
+  processes. They are the microsecond norms' torch and FlyDSL arms (FlyDSL's
+  32-row RMSNorm took 1.18x hk's time in one run and 0.83x in the next),
+  Triton's 32-row RMSNorm, and FlyDSL against the 2048x4096x4096 GEMM. That
+  leaves the one-row RMSNorm with no gated pair at all.
+- Two later clean runs used at most 68% and 63% of any pair's tolerance.
+- With hk's GEMM made slower on purpose (`k_step` 32 instead of 64 in its
+  default schedule, 9-12% a call), the gate failed with exit 1 on all 14
+  GEMM pairs (-11.6% to -15.2% against tolerances of 3.0-4.6%) and on
+  nothing else. Reverted, it passed.
+
+**The shipped baseline is due a refresh.** It was measured on hk as of
+[chapter 26](history/26-the-scoreboard-retuned.md), before
+[chapter 27](history/27-strips.md)'s strip kernels for the norms and softmax
+and its change to how every RDNA kernel reads its arguments. Those moved
+hk's side of most norm and softmax pairs, and possibly the short GEMM and
+attention calls. The first gate run on a tree with them will report the
+pairs that moved, as `better` or as a regression, and then the baseline
+wants `--refresh`. That needs the dev pod's hk dialect bindings rebuilt to
+match the tree; the pod's Python 3.12 venvs carry the 0.3.1 wheel's.
+
+**Refreshing the baseline.** Refresh it when the opponent changed (a new
+torch, Triton or FlyDSL: the check prints a note when the versions differ
+from the baseline's), when hk got faster on purpose (pairs that beat their
+tolerance are reported as `better`), or for another arch:
+
+```bash
+HK_GPU=3 FLYDSL_ROOT=/workspace/FlyDSL scripts/perf_gate.sh --refresh 4
+git diff tests/perf/baselines/gfx1100.json      # every moved ratio is a claim
+```
+
+`--refresh N` runs the scoreboard N times (at least three) and rewrites the
+baseline from them. Back-to-back runs see less drift than runs hours apart;
+for a baseline that has to last, run `check_regression.py --refresh` on
+reports from separate sessions. A refresh is a commit, with the reason in
+its message.
 
 ## Layout
 

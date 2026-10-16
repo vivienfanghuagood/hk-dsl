@@ -25,6 +25,8 @@ python3 -m pytest tests/hk/ir tests/hk/codegen -q    # no GPU, no torch
 | `tests/hk/engines/` | vLLM or SGLang importable | an engine release moving a symbol a patch rebinds |
 
 A tier that cannot run is skipped with a reason, never silently passed.
+Performance has a gate of its own, ratios against the arms beside hk in one
+scoreboard run ([building](building.md#the-performance-gate)).
 
 **Tests, now.**
 - `mlir/test` (lit): 8 files, for:

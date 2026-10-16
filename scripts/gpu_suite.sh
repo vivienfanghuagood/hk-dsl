@@ -8,6 +8,9 @@
 # group failed. Groups run three at a time because they compile different
 # kernels: hipcc keeps the CPUs busy while the GPU runs another group's tests,
 # and three keeps a small pod's memory clear of the compile.
+#
+# HK_PERF_GATE=1 then runs the performance gate (scripts/perf_gate.sh) alone,
+# after every group, as group `perf`; it needs FLYDSL_ROOT for FlyDSL's arm.
 set -u
 cd "$(dirname "$0")/.."
 out=${1:-/tmp/hk-gpu-run}
@@ -33,5 +36,9 @@ run torch  $G/test_torch_op.py $G/test_engine.py $G/test_vllm_gemm.py $G/test_fl
 wait
 rest=$(ls $G/test_*.py | grep -v -E "test_(gemm|autotune|attn|sdpa|decode_gemm|paged|load_scalar|phase2|target_rmsnorm|elementwise|bounded|strided|while|indexed|torch_op|engine|vllm_gemm|flydsl_gemm)\.py")
 run rest $rest
+if [ "${HK_PERF_GATE:-0}" = 1 ]; then
+    HK_GPU=$gpu scripts/perf_gate.sh "$out/perf" > "$out/perf.log" 2>&1
+    echo "perf exit $?" >> "$out/status"
+fi
 echo done >> "$out/status"
 ! grep -q -v -E " exit 0$|^done$" "$out/status"

@@ -41,6 +41,7 @@ it is a time ratio.
 | dropout, KV cache write, LayerNorm backward, embedding (`examples/07`-`10`) | dropout 1.02x; KV write 1.18-3.00x; LayerNorm backward 1.12x at 1024 wide, 0.66-0.92x wider; embedding 1.18-1.28x torch at 1-32 tokens, 0.93x Triton at 4096 | the Triton tutorial or a Triton row kernel; torch | win for dropout, the KV write and LayerNorm backward at 1024; loss where a 16-row tile cannot hold a 2048+ wide row, and for the embedding at 4096 tokens | [rows by index](history/19-rows-by-index.md) |
 | GEMM on Qwen3-8B's linear layers | 1.09-1.23x at M ≥ 1024 | hipBLASLt (`F.linear`) | win at M ≥ 1024; a comb below it, with losses | [linear layers](history/08-linear-layers.md) |
 | attention forward | 61.0-64.9 TFLOPs | handwritten C++; torch SDPA (aotriton) | tie with the C++, 1.008x causal; 2.9-3.2x torch, 4.0x causal | [Phase 4](history/03-phase-4-attention.md) |
+| attention forward, n4096 GQA 4, against torch 2.13 | 1.16x causal, 0.99x non-causal | torch 2.13.0+rocm7.2's SDPA, 3.3x faster than 2.10's causal | win causal, tie non-causal; the 2.73-3.80x elsewhere on this page is against torch 2.10 | [chapter 30](history/30-flydsl-routes-gate-contracts.md) |
 | norms, elementwise, RoPE, quantize | 13 of 15 cases faster | `torch.compile` | win; the other two are a tie | [Phases 1 and 2](history/01-phases-1-2.md) |
 | RMSNorm, SiLU-mul | slower | Inductor, at Qwen3-8B shapes | loss; the patches were dropped | [strided globals](history/12-strided-globals.md) |
 | decode GEMV | 1.93-2.03x per step, 1-32 tokens | hipBLASLt | win; upstream vLLM's `wvSplitK` is ahead at one token | [cross-workgroup reduction](history/11-cross-workgroup-reduction.md) |
@@ -147,6 +148,15 @@ So on this card at these shapes, as of chapter 27: FlyDSL wins the GEMM,
 hk the norms and softmax (the fused add ties) and attention, where neither
 other DSL has a gfx11 kernel. hk's GEMM is second, ahead of tuned Triton and
 hipBLASLt.
+
+The performance gate's baseline (`tests/perf/baselines/gfx1100.json`,
+[chapter 30](history/30-flydsl-routes-gate-contracts.md)) is the same
+scoreboard's out-of-the-box arms, four runs on the vLLM 0.31 venv: torch
+2.13.0+rocm7.2, Triton 3.8.0, FlyDSL 0.4.0. Against FlyDSL the GEMM ratios
+are unchanged (0.97-0.98x hk's speed). Attention is not: torch 2.13's SDPA
+runs the causal n4096 case in 3.24-3.27 ms where 2.10's took 10.83, so hk's
+attention is 1.16x torch causal and 0.99x non-causal on that torch, against
+3.80x and 2.73x above. The attention rows above are torch 2.10's.
 
 ### Triton tutorials and the kernels beside a model
 
