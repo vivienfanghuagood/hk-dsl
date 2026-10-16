@@ -26,7 +26,18 @@ only if it beat the engine there by `--min-gain`; a tie stays the engine's.
 
 The table is per arch and per model: a (N, K) it has not measured takes the
 engine's path, so another model needs its own run (a few minutes) before
-anything of it is routed.
+anything of it is routed. `--model` takes a comma-separated list, whose
+shapes are measured once each.
+
+On gfx950 hk's own GEMM and decode GEMV do not build yet; the candidate there
+is HipKittens' CDNA4 GEMM (hk.ops.hipkittens), which takes M and N in
+multiples of 256, so the grid is those Ms. The MI355X's Infinity Cache is
+256 MB, not 96:
+
+    python3 tools/hk-bench/route_tune.py --paths hipkittens --rotate-mb 768 \\
+        --model Qwen/Qwen3-8B,meta-llama/Meta-Llama-3-8B \\
+        --m $(seq -s, 256 256 8192),12288,16384 \\
+        --out python/hk/tuned/routes_vllm_linear_gfx950.json
 """
 
 from __future__ import annotations
@@ -122,21 +133,33 @@ def main() -> int:
     ap.add_argument("--m", default="", help="comma-separated Ms (default: the grid)")
     ap.add_argument("--rounds", type=int, default=3)
     ap.add_argument("--min-gain", type=float, default=0.03)
+    ap.add_argument("--paths", default="hk,hk_decode",
+                    help="the candidates, of hk (the generated GEMM), hk_decode "
+                    "(the decode GEMV) and hipkittens (HipKittens' CDNA4 GEMM)")
+    ap.add_argument("--rotate-mb", type=int, default=ROTATE_BYTES // 2**20,
+                    help="weight bytes one timed pass streams; three times the "
+                    "part's Infinity Cache (96 MB on a W7900, 256 MB on an MI355X)")
     ap.add_argument("--out", required=True)
     args = ap.parse_args()
+    paths = set(args.paths.split(","))
+    if not paths <= {"hk", "hk_decode", "hipkittens"}:
+        raise SystemExit(f"--paths: unknown {sorted(paths - {'hk', 'hk_decode', 'hipkittens'})}")
+    rotate_bytes = args.rotate_mb * 2**20
 
     import torch
     import torch.nn.functional as F
 
     import hk
-    from hk.ops import decode_gemm as hk_decode
-    from hk.ops import gemm as hk_gemm
     from hk.runtime.compile import toolchain_fingerprint
 
     dev = torch.device("cuda")
     arch = (torch.cuda.get_device_properties(dev).gcnArchName or "").split(":")[0]
-    cfg = model_config(args.model)
-    shapes = linear_shapes(cfg, args.tp)
+    shapes, seen = [], set()
+    for model in args.model.split(","):
+        for s in linear_shapes(model_config(model), args.tp):
+            if s[1:3] not in seen:
+                seen.add(s[1:3])
+                shapes.append(s)
     if args.shapes:
         keep = set(args.shapes.split(","))
         shapes = [s for s in shapes if s[0] in keep]
@@ -145,6 +168,10 @@ def main() -> int:
     ops = {}
 
     def gemm_op(m, n, k):
+        if "hk" not in paths:
+            return None
+        from hk.ops import gemm as hk_gemm
+
         s = hk_gemm.schedule_for(m, n, k)
         if k % s["k_step"] or n % s["block_n"]:
             return None
@@ -154,6 +181,10 @@ def main() -> int:
         return ops[key]
 
     def decode_op(m, n, k):
+        if "hk_decode" not in paths:
+            return None
+        from hk.ops import decode_gemm as hk_decode
+
         if not hk_decode.fits(m, n, k):
             return None
         s = hk_decode.schedule_for(m, k)
@@ -164,16 +195,24 @@ def main() -> int:
 
     engine, engine_name = _engine(args.engine)
     print(f"engine path: {engine_name}", flush=True)
+    hkk = None
+    if "hipkittens" in paths:
+        from hk.ops import hipkittens as hkk
+
     table = dict(kind=f"{args.engine}_linear", arch=arch, model=args.name or args.model,
                  engine=engine_name, tp=args.tp, device=torch.cuda.get_device_name(dev),
                  torch=torch.__version__, hip=torch.version.hip,
                  blas=str(torch.backends.cuda.preferred_blas_library()),
                  toolchain=toolchain_fingerprint(), min_gain=args.min_gain,
                  rounds=args.rounds, date=time.strftime("%Y-%m-%d"), shapes={})
+    if hkk is not None:
+        table["hipcc"] = hkk.hipcc_version()
+    if args.rotate_mb != ROTATE_BYTES // 2**20:
+        table["rotate_mb"] = args.rotate_mb
     t0 = time.time()
     for sname, n, k, _ in shapes:
         w_bytes = n * k * 2
-        copies = max(2, -(-ROTATE_BYTES // w_bytes))
+        copies = max(2, -(-rotate_bytes // w_bytes))
         g = torch.Generator(device=dev).manual_seed(0)
         ws = [torch.randn(n, k, device=dev, dtype=torch.bfloat16, generator=g)
               * k ** -0.5 for _ in range(copies)]
@@ -192,6 +231,8 @@ def main() -> int:
             dop = decode_op(m, n, k)
             if dop is not None:
                 variants["hk_decode"] = lambda w, dop=dop: dop(x, w, out) or out
+            if hkk is not None and hkk.gemm_fits(m, n, k):
+                variants["hipkittens"] = lambda w: hkk.gemm_bf16(x, w, out=out)
             ok = {}
             for name, call in variants.items():
                 y = call(ws[0]).float()

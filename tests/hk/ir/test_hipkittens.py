@@ -1,5 +1,5 @@
-"""HipKittens' CDNA4 kernels as hk ops: what each takes, and what it is built
-from -- no GPU, no hipcc.
+"""HipKittens' CDNA4 kernels as hk ops: what each takes, what it is built from,
+and where the gfx950 routing table sends a linear layer -- no GPU, no hipcc.
 
 The shape rules are the kernels' own, read off their source: a partial tile
 or an odd K step is a wrong answer or a write past the end of C, not a slow
@@ -8,8 +8,12 @@ one. They are pinned here so a refactor cannot loosen one silently.
 
 import pytest
 
-from hk.integration import engine
+from hk.integration import engine, vllm_gemm
 from hk.ops import hipkittens as hkk
+
+QKV, O, GATE_UP, DOWN, LM_HEAD = ((6144, 4096), (4096, 4096), (24576, 4096),
+                                  (4096, 12288), (151936, 4096))
+LLAMA_GATE_UP, LLAMA_DOWN, LLAMA_LM_HEAD = (28672, 4096), (4096, 14336), (128256, 4096)
 
 
 @pytest.mark.parametrize("m,n,k", [(256, 256, 128), (4096, 4096, 4096), (8192, 28672, 4096),
@@ -97,3 +101,75 @@ def test_the_ops_are_graph_safe_with_a_fallback():
         assert op.name == name and op.graph == "safe"
         assert op.paths == ("hipkittens", "fallback")
         assert engine.PATCHES[name] is op
+
+
+# ---------------------------------------------------------------- the gfx950 table
+
+
+@pytest.fixture
+def gfx950():
+    t = engine.shipped_table("vllm_linear", "gfx950", "HK_TEST_NO_SUCH_ENV")
+    vllm_gemm.set_routes(t)
+    yield t
+    vllm_gemm.set_routes(None)
+
+
+def test_the_gfx950_table_is_measured_on_gfx950_against_f_linear(gfx950):
+    assert gfx950 is not None and gfx950.meta["arch"] == "gfx950"
+    assert gfx950.meta["engine"] == "F.linear"
+    assert gfx950.paths() <= set(vllm_gemm.PATCH.paths)
+    assert gfx950.paths() <= {"hipkittens", "fallback"}
+    for nk in (QKV, O, GATE_UP, DOWN, LM_HEAD, LLAMA_GATE_UP, LLAMA_DOWN, LLAMA_LM_HEAD):
+        assert nk in set(gfx950.shapes())
+
+
+def test_the_gfx1100_table_is_not_loaded_as_gfx950(tmp_path, monkeypatch):
+    from pathlib import Path
+
+    tuned = Path(vllm_gemm.__file__).resolve().parents[1] / "tuned"
+    p = tmp_path / "routes.json"
+    p.write_text((tuned / "routes_vllm_linear_gfx1100.json").read_text())
+    monkeypatch.setenv("HK_TEST_GFX950_ROUTES", str(p))
+    with pytest.raises(ValueError, match="measured on gfx1100, not gfx950"):
+        engine.shipped_table("vllm_linear", "gfx950", "HK_TEST_GFX950_ROUTES")
+
+
+def test_small_batches_stay_on_hipblaslt(gfx950):
+    # 256x256 tiles over 256 CUs: at M <= 1024 the GEMM ran at 0.2-0.7x hipBLASLt.
+    for nk in (QKV, O, GATE_UP, DOWN):
+        for m in (1, 16, 64, 128, 256, 512, 1024):
+            assert vllm_gemm.route_for(m, *nk) == "fallback"
+
+
+def test_a_ragged_m_inside_a_hipkittens_run_falls_back(gfx950):
+    # o_proj at M=2048 measured 1.27x hipBLASLt; 2047 and 2049 are not whole tiles.
+    assert vllm_gemm.route_for(2048, *O) == "hipkittens"
+    assert vllm_gemm.route_for(2047, *O) == "fallback"
+    assert vllm_gemm.route_for(2049, *O) == "fallback"
+
+
+def test_the_wins_are_teeth_not_a_threshold(gfx950):
+    # hipBLASLt's pick is the comb: HipKittens wins at Ms where it picks a slow
+    # kernel and loses 5-10% at the powers of two either side.
+    r = [vllm_gemm.route_for(m, *O) for m in (1792, 2048, 2304, 3840, 4096)]
+    assert r == ["hipkittens", "hipkittens", "fallback", "hipkittens", "fallback"]
+    for nk in (QKV, O, GATE_UP, DOWN, LLAMA_GATE_UP, LLAMA_DOWN):
+        assert vllm_gemm.route_for(8192, *nk) == "fallback"
+        assert vllm_gemm.route_for(7680, *nk) == "hipkittens"
+
+
+def test_lm_heads_never_take_the_hipkittens_gemm(gfx950):
+    for m in range(1, 300, 7):
+        assert vllm_gemm.route_for(m, *LM_HEAD) == "fallback"
+        assert vllm_gemm.route_for(m, *LLAMA_LM_HEAD) == "fallback"
+
+
+def test_a_table_cannot_send_a_shape_to_hipkittens_that_it_refuses():
+    vllm_gemm.set_routes(engine.RouteTable({(6100, 4096): {"runs": [[1, 99999, "hipkittens"]]},
+                                            (6144, 4160): {"runs": [[1, 99999, "hipkittens"]]}}))
+    try:
+        assert vllm_gemm.route_for(4096, 6100, 4096) == "fallback"
+        assert vllm_gemm.route_for(4096, 6144, 4160) == "fallback"
+        assert vllm_gemm.route_for(4096, 6100, 4096, bias=True) == "fallback"
+    finally:
+        vllm_gemm.set_routes(None)
