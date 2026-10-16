@@ -79,7 +79,8 @@ void mlirHKTargetFacts(MlirStringRef arch, MlirStringCallback callback,
      << "\nlds_per_workgroup=" << t->ldsPerWorkgroup
      << "\nlds_pool_bytes=" << t->ldsPoolBytes
      << "\nsimds_per_lds_pool=" << t->simdsPerLdsPool
-     << "\nverified=" << (t->verified ? 1 : 0);
+     << "\nverified=" << (t->verified ? 1 : 0)
+     << "\nlgkmcnt_max=" << t->lgkmcntMax;
   for (auto &[name, m] : t->mma)
     os << "\nmma." << name << "=" << m.m << "," << m.n << "," << m.k << ","
        << m.operandVgprs << "," << m.accumVgprs;

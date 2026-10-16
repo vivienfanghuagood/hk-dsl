@@ -31,7 +31,7 @@ def test_the_cpp_target_table_is_the_python_one(arch):
     t, f = TARGETS[arch], _facts(arch)
     for field in ("wave", "max_waves_per_simd", "vgprs_per_simd", "vgpr_granule",
                   "sgprs_per_wave", "lds_per_workgroup", "lds_pool_bytes",
-                  "simds_per_lds_pool"):
+                  "simds_per_lds_pool", "lgkmcnt_max"):
         assert int(f[field][0]) == getattr(t, field), field
     assert bool(int(f["verified"][0])) == t.verified
     mma = {k[4:]: v[0] for k, v in f.items() if k.startswith("mma.")}

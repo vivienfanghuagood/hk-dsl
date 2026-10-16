@@ -352,6 +352,7 @@ struct CheckBudgetsPass : public mlir::hk::impl::HKCheckBudgetsBase<CheckBudgets
 
 void mlir::hk::buildKernelPipeline(OpPassManager &pm) {
   pm.addNestedPass<func::FuncOp>(createHKVerify());
+  pm.addNestedPass<func::FuncOp>(createHKFragments());
   pm.addNestedPass<func::FuncOp>(createHKLdsAlloc());
   pm.addNestedPass<func::FuncOp>(createHKLdsPipeline());
   pm.addNestedPass<func::FuncOp>(createHKCheckBudgets());
@@ -360,6 +361,6 @@ void mlir::hk::buildKernelPipeline(OpPassManager &pm) {
 void mlir::hk::registerKernelPipeline() {
   PassPipelineRegistration<>(
       "hk-kernel-pipeline",
-      "verify, allocate LDS, derive LDS waits, check budgets",
+      "verify, assign fragments, allocate LDS, derive LDS waits, check budgets",
       [](OpPassManager &pm) { buildKernelPipeline(pm); });
 }

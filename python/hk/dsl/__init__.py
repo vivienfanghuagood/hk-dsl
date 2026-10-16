@@ -40,9 +40,11 @@ from .values import (  # noqa: F401
 from .values import scalar_op as _scalar_op
 
 
-def RT(dtype: DType, rows: int, cols: int, layout: str = "row") -> _RT:
-    """A register tile type: kittens::rt<T, rows, cols, layout>."""
-    return _RT(dtype, rows, cols, layout)
+def RT(dtype: DType, rows: int, cols: int, layout: str = "row", frag=None) -> _RT:
+    """A register tile type: kittens::rt<T, rows, cols, layout>. `frag`,
+    (rows, cols), names the matrix-core fragment where it is not 16x16; left
+    out, the hk-fragments pass sets it on the operand tiles that need one."""
+    return _RT(dtype, rows, cols, layout, tuple(frag) if frag else None)
 
 
 def ST(dtype: DType, rows: int, cols: int, count: int = 1) -> _ST:

@@ -62,26 +62,49 @@ static bool knownDtype(Type t) { return !dtypeName(t).empty(); }
 // rt
 //===----------------------------------------------------------------------===//
 
+/// `, frag RxC`, if present.
+static ParseResult parseOptionalFrag(AsmParser &p, unsigned &rows,
+                                     unsigned &cols) {
+  rows = cols = 0;
+  if (failed(p.parseOptionalKeyword("frag")))
+    return success();
+  return parseExtents(p, rows, cols);
+}
+
 Type RegTileType::parse(AsmParser &p) {
   Type et;
-  unsigned rows, cols;
+  unsigned rows, cols, fr = 0, fc = 0;
   bool col;
   SMLoc at = p.getNameLoc();
   if (p.parseLess() || p.parseType(et) || p.parseComma() ||
-      parseExtents(p, rows, cols) || p.parseComma() || parseRowCol(p, col) ||
-      p.parseGreater())
+      parseExtents(p, rows, cols) || p.parseComma() || parseRowCol(p, col))
+    return {};
+  if (succeeded(p.parseOptionalComma()) && parseOptionalFrag(p, fr, fc))
+    return {};
+  if (p.parseGreater())
     return {};
   return RegTileType::getChecked([&] { return p.emitError(at); },
-                                 p.getContext(), et, rows, cols, col);
+                                 p.getContext(), et, rows, cols, col, fr, fc);
 }
 
 void RegTileType::print(AsmPrinter &p) const {
   p << "<" << getElementType() << ", " << getRows() << "x" << getCols() << ", "
-    << getLayout() << ">";
+    << getLayout();
+  if (hasFrag())
+    p << ", frag " << getFragRows() << "x" << getFragCols();
+  p << ">";
 }
 
 LogicalResult RegTileType::verify(function_ref<InFlightDiagnostic()> emitError,
-                                  Type et, unsigned rows, unsigned cols, bool) {
+                                  Type et, unsigned rows, unsigned cols, bool,
+                                  unsigned fr, unsigned fc) {
+  if ((fr == 0) != (fc == 0) || (fr && (fr % 16 || fc % 16)))
+    return emitError() << "register tile fragment " << fr << "x" << fc
+                       << ": both extents, multiples of 16 (or unset)";
+  if (fr && (rows % fr || cols % fc))
+    return emitError() << "register tile " << rows << "x" << cols
+                       << " is not a whole number of " << fr << "x" << fc
+                       << " fragments";
   if (!knownDtype(et))
     return emitError() << "register tile of " << et
                        << ": not an element type include/rdna3 has";
@@ -145,26 +168,31 @@ uint64_t SharedTileType::getNumBytes() const {
 
 Type RegVecType::parse(AsmParser &p) {
   Type et;
-  unsigned rows, cols;
+  unsigned rows, cols, fr = 0, fc = 0;
   bool tileCol, kindCol, uniform = false;
   if (p.parseLess() || p.parseType(et) || p.parseComma() ||
       parseExtents(p, rows, cols) || p.parseComma() ||
       parseRowCol(p, tileCol) || p.parseComma() || parseRowCol(p, kindCol))
     return {};
-  if (succeeded(p.parseOptionalComma())) {
-    if (p.parseKeyword("uniform"))
+  while (succeeded(p.parseOptionalComma())) {
+    if (succeeded(p.parseOptionalKeyword("uniform"))) {
+      uniform = true;
+      continue;
+    }
+    if (p.parseKeyword("frag") || parseExtents(p, fr, fc))
       return {};
-    uniform = true;
   }
   if (p.parseGreater())
     return {};
   return RegVecType::get(p.getContext(), et, rows, cols, tileCol, kindCol,
-                         uniform);
+                         uniform, fr, fc);
 }
 
 void RegVecType::print(AsmPrinter &p) const {
   p << "<" << getElementType() << ", " << getTileRows() << "x" << getTileCols()
     << ", " << (getTileColLayout() ? "col" : "row") << ", " << getKind();
+  if (getTileFragRows())
+    p << ", frag " << getTileFragRows() << "x" << getTileFragCols();
   if (getUniform())
     p << ", uniform";
   p << ">";

@@ -20,14 +20,16 @@ def mlir_type(t: Type) -> ir.Type:
     """The hk dialect type for an hk type."""
     e = lambda d: M.element(d.name)  # noqa: E731
     if isinstance(t, RegTileType):
-        s = f"!hk.rt<{e(t.dtype)}, {t.rows}x{t.cols}, {t.layout}>"
+        f = f", frag {t.frag[0]}x{t.frag[1]}" if t.frag else ""
+        s = f"!hk.rt<{e(t.dtype)}, {t.rows}x{t.cols}, {t.layout}{f}>"
     elif isinstance(t, SharedTileType):
         n = f", {t.count}" if t.count != 1 else ""
         s = f"!hk.st<{e(t.dtype)}, {t.rows}x{t.cols}{n}>"
     elif isinstance(t, RegVecType):
         u = ", uniform" if t.uniform else ""
+        f = f", frag {t.tile.frag[0]}x{t.tile.frag[1]}" if t.tile.frag else ""
         s = (f"!hk.rv<{e(t.dtype)}, {t.tile.rows}x{t.tile.cols}, "
-             f"{t.tile.layout}, {t.kind}{u}>")
+             f"{t.tile.layout}, {t.kind}{f}{u}>")
     elif isinstance(t, SharedVecType):
         n = f", {t.count}" if t.count != 1 else ""
         s = f"!hk.sv<{e(t.dtype)}, {t.length}{n}>"

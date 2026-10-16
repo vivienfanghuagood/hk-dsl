@@ -15,6 +15,7 @@
 // A port of python/hk/ir/passes/lds_pipeline.py; the messages are its.
 
 #include "hk/Dialect/HK/Transforms/Passes.h"
+#include "hk/Target/Target.h"
 
 #include "mlir/IR/BuiltinOps.h"
 #include "llvm/ADT/MapVector.h"
@@ -89,8 +90,38 @@ bool live(const std::optional<Scope> &issued, const Scope &scope) {
   return true;
 }
 
+/// ds_reads one load_shared issues on a wave64 target, where the count is
+/// include/cdna{3,4}'s and depends on the fragment (hk-fragments has set it):
+///   gfx950, per fragment: 16x16 row, one ds_read_b64; 16x32 row, one
+///   ds_read_b128; 16x16 col, one ds_read_b64_tr_b16; 32x16 col, two
+///   (include/cdna4 tile/shared_to_register.cuh);
+///   gfx942: one ds_read_b64 per 16x16 of a row-layout tile; a col-layout
+///   tile is read with ordinary loads the compiler waits for itself.
+/// 0: not inline asm, so nothing to count. -1: a pair hk has no count for.
+/// The count has to be exact or low, never high: a load counted high makes
+/// every wait issued while it is in flight too shallow.
+int64_t cdnaLdsReads(const TargetInfo &t, RegTileType rt, SharedTileType st) {
+  if (dtypeBits(rt.getElementType()) != 16 ||
+      rt.getElementType() != st.getElementType())
+    return 0;
+  int64_t frags = int64_t(rt.getRows() / rt.fragR()) * (rt.getCols() / rt.fragC());
+  bool col = rt.getColLayout();
+  unsigned fr = rt.fragR(), fc = rt.fragC();
+  if (t.arch == "gfx942")
+    return col ? 0 : frags;
+  if (fr == 16 && fc == 16)
+    return frags;
+  if (!col && fr == 16 && fc == 32)
+    return frags;
+  if (col && fr == 32 && fc == 16)
+    return 2 * frags;
+  return -1;
+}
+
 struct Walker {
   bool failed = false;
+  /// Set on wave64 targets: the per-load ds_read count is derived here.
+  const TargetInfo *cdna = nullptr;
 
   bool fail(Operation *op, const Twine &msg) {
     op->emitError(msg);
@@ -294,7 +325,25 @@ struct Walker {
       }
       if (auto l = dyn_cast<LoadSharedOp>(op)) {
         Value dst = l.getDst() ? l.getDst() : l.getResult();
-        load(op, dst, l.getWait(), l.getLdsLoads(), st, scope);
+        int64_t n = l.getLdsLoads();
+        if (cdna) {
+          n = cdnaLdsReads(*cdna, cast<RegTileType>(dst.getType()),
+                           l.getSrc().getType());
+          if (!l.getWait() && n <= 0) {
+            fail(op, "load(wait=False) of " + nameOf(dst) + " on " +
+                         cdna->arch +
+                         (n == 0 ? Twine(": this tile is read with ordinary "
+                                         "loads the compiler waits for, so "
+                                         "there is nothing to keep in flight")
+                                 : Twine(": hk has no ds_read count for this "
+                                         "fragment, and a wait derived from "
+                                         "a guess could under-wait")) +
+                         ". Use wait=True." + atLoc(op));
+            continue;
+          }
+          l.setLdsLoads(n < 0 ? 0 : n);
+        }
+        load(op, dst, l.getWait(), n, st, scope);
         continue;
       }
       if (auto l = dyn_cast<LoadFragOp>(op)) {
@@ -362,6 +411,10 @@ struct LdsPipelinePass : public mlir::hk::impl::HKLdsPipelineBase<LdsPipelinePas
     // A stale count from an earlier run would read as a missing steady state.
     f.walk([](LdsWaitForOp op) { op.removeNAttr(); });
     Walker w;
+    auto arch = f->getAttrOfType<StringAttr>(attrs::kArch);
+    if (const TargetInfo *t = getTarget(arch ? arch.getValue() : "gfx1100");
+        t && t->wave == 64)
+      w.cdna = t;
     State fin = w.walk(f.getBody().front(), State(), Scope());
     if (w.failed)
       return signalPassFailure();
