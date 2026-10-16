@@ -72,7 +72,11 @@ def no_host_sync(what: str):
     try:
         yield
     except RuntimeError as ex:
-        if "synchroniz" not in str(ex) or isinstance(ex, GraphCaptureError):
+        # torch 2.10 reports the sync from its debug mode; on 2.13 the HIP
+        # call fails first, "operation not permitted when stream is capturing".
+        msg = str(ex)
+        if isinstance(ex, GraphCaptureError) or not (
+                "synchroniz" in msg or "stream is capturing" in msg):
             raise
         raise GraphCaptureError(
             f"{what} synchronized with the host while a CUDA graph was being "
