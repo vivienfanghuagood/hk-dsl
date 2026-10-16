@@ -17,6 +17,7 @@ and what each patch measured is in [performance](performance.md).
 - [The CUDA-graph contract](#the-cuda-graph-contract)
 - [SGLang](#sglang)
 - [Ahead-of-time builds](#ahead-of-time-builds)
+- [Supported versions, and the contract tests](#supported-versions-and-the-contract-tests)
 - [What is deliberately not patched](#what-is-deliberately-not-patched)
 - [Environment variables](#environment-variables)
 
@@ -449,6 +450,66 @@ cold on the pod, where the libtorch registration it replaced took 15, so a
 server's first request compiles in seconds even unwarmed. A `--aot` pass
 built for pybind does not cover it, since the artifacts differ. Run it and
 `python3 -m hk.autotune --aot` both ([warming the cache](runtime.md#warming-the-cache)).
+
+## Supported versions, and the contract tests
+
+Every patch rebinds engine internals by name, so an engine release can break
+one without an error: the rebind finds nothing, a stand-in forwards
+arguments into the wrong slots, or a backend hook becomes dead code.
+`tests/hk/engines/` checks each patched symbol against the engine installed,
+and is skipped where the engine is not importable (CI, a laptop):
+- **the signature a stand-in forwards to**, parameter for parameter and
+  default for default (`invoke_fused_moe_triton_kernel`,
+  `try_get_optimal_moe_config`, `topk_softmax`, `invoke_fused_moe_kernel`,
+  `UnquantizedLinearMethod.apply`, the AWQ method and ops,
+  `reshape_and_cache_flash`, the keyword arguments hk passes to vLLM's
+  `unified_attention`);
+- **every call site a rebind by identity has to reach**: each engine module
+  with a function that loads the patched name as a global is found by
+  disassembly, and must hold the original object, so the rebind redirects it;
+- **the attention backend**: it registers over `TRITON_ATTN`, is not abstract,
+  takes `AttentionImpl`'s arguments in order, and every hook it overrides is
+  one the installed vLLM reads, or is listed as legacy or as hk's own;
+- **the plugin groups** each engine loads, and that hk's entry points are in
+  them.
+
+```bash
+python3 -m pytest tests/hk/engines/test_vllm_contract.py -q        # vLLM's venv
+HIP_VISIBLE_DEVICES=3 python3 -m pytest tests/hk/engines -q        # SGLang's
+```
+
+SGLang reads the GPU's arch while importing its kernels, so its file needs a
+GPU visible, though nothing is launched.
+
+What was run, on the dev pod (`hfang-hk-vllm`, gfx1100), 2026-10-16:
+
+| patch | vLLM 0.31.0+rocm721 | vLLM 0.16.1 | SGLang 0.5.18 |
+|---|---|---|---|
+| linear layers (`dispatch_unquantized_gemm`, its call sites in `linear` and `vocab_parallel_embedding`, `rocm_unquantized_gemm`) | holds | holds | -- |
+| MoE (`invoke_fused_moe_triton_kernel`, `try_get_optimal_moe_config`) | holds | holds | -- |
+| AWQ (`auto_awq.AutoAWQLinearMethod`, `awq_gemm`, `awq_dequantize`) | holds | **breaks**: no `quantization.auto_awq` | -- |
+| attention backend (registry, `AttentionImpl`, ROCm builder, cache layout, `unified_attention`, `reshape_and_cache_flash`) | holds | holds; the layout comes from `get_kv_cache_shape` | -- |
+| SDPA (`vit_attn_wrappers` through `F`) and the plugin group | holds | holds | -- |
+| SGLang linear (`UnquantizedLinearMethod.apply`) | -- | -- | holds |
+| SGLang MoE (`topk_softmax`, `invoke_fused_moe_kernel`, `try_get_optimal_moe_config` and what it returns) | -- | -- | holds |
+| SGLang plugin group, loaded by the scheduler | -- | -- | holds |
+| tests passed | 19 of 19 | 18 of 19 | 8 of 8 |
+
+The supported versions are the ones measured end to end: **vLLM 0.31.0**
+(torch 2.13.0+rocm7.2, Python 3.12;
+[vLLM 0.31](history/20-vllm-031.md), [MoE](history/21-moe.md),
+[4-bit](history/22-int4.md), [chapter 30](history/30-flydsl-routes-gate-contracts.md))
+and **SGLang 0.5.18** with sglang-radeon 0.1.5 (torch 2.9.1, ROCm 7.2.1;
+[chapter 24](history/24-sglang.md), [chapter 25](history/25-sglang-moe.md)).
+vLLM 0.16.1 is the copy installed beside SGLang. Its contract holds except
+for AWQ, but nothing has been run end to end on it since the port to 0.31.
+
+On 0.31, three of the backend's hooks are no longer read
+(`accept_output_buffer`, `get_kv_cache_shape`, the backend's
+`use_cascade_attention`). They are kept for older vLLM, and the test lists
+them as legacy rather than letting them pass as live. A new vLLM gets the
+same treatment: run the file in its venv, and a failure names the symbol
+and what moved.
 
 ## What is deliberately not patched
 

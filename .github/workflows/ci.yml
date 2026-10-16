@@ -78,8 +78,10 @@ jobs:
           key: hk-cache-rocm${{ env.ROCM_VERSION }}-${{ hashFiles('include/**', 'python/hk/**/*.py', 'third_party/HipKittens/include/**') }}
           restore-keys: hk-cache-rocm${{ env.ROCM_VERSION }}-
 
+      # tests/hk/engines skips here (no vLLM, no SGLang); it runs in the
+      # engines' venvs on the dev pod (docs/testing.md).
       - name: IR tier
-        run: PYTHONPATH=python /usr/bin/python3 -m pytest -q -p no:cacheprovider -m "not gpu" tests/hk/ir
+        run: PYTHONPATH=python /usr/bin/python3 -m pytest -q -p no:cacheprovider -m "not gpu" tests/hk/ir tests/hk/engines
 
       - name: codegen tier
         run: PYTHONPATH=python /usr/bin/python3 -m pytest -q -p no:cacheprovider -n auto tests/hk/codegen

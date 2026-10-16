@@ -22,6 +22,7 @@ python3 -m pytest tests/hk/ir tests/hk/codegen -q    # no GPU, no torch
 | `tests/hk/ir/` | hk._mlir | tracing, the language, pass errors from Python, generated C++ |
 | `tests/hk/codegen/` | hipcc | compiles; spill/occupancy gates fire |
 | `tests/hk/gpu/` | Radeon + torch | numerics vs torch |
+| `tests/hk/engines/` | vLLM or SGLang importable | an engine release moving a symbol a patch rebinds |
 
 A tier that cannot run is skipped with a reason, never silently passed.
 
@@ -60,6 +61,12 @@ stood then (990 and 386).
   skipped when either is missing. This is the tier that launches, and the
   only one that can catch an indexing error — a kernel that reads the wrong
   tile compiles perfectly and passes every gate.
+* **engines** — `python3 -m pytest tests/hk/engines -q`, in each engine's
+  venv. Every symbol a vLLM or SGLang patch rebinds, with the signature its
+  stand-in forwards to and the call sites the rebind must reach; a module is
+  skipped when its engine is not importable. SGLang's needs a GPU visible,
+  since it reads the arch while importing. The versions it was run against
+  are in [integration](integration.md#supported-versions-and-the-contract-tests).
 
 The gates are by directory, in `tests/hk/conftest.py`, which also puts
 `python/` on `sys.path`, so the suite runs from a checkout without installing.
