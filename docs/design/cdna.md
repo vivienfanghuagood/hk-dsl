@@ -17,12 +17,19 @@ What has landed since the assessment, in the order of section 6:
 | 1. library | `include/hk/cdna.cuh`: a strided gl (`kittens::strided_gl<T>`, the globals on wave64 targets); register-tile load/store through one descriptor per tile, which is all of `load_bounded`/`store_bounded`; int8; `store_scalar`, `load_scalar`, `wg_arrive`; `atomic_add`, `atomic_scalar`; `load_gather`, `store_scatter`; `philox_uniform`; GELU on CDNA3; RNE float->bf16 on every hk store and CDNA3 cast; lane-direct vector loads on CDNA3 | the shim; HipKittens untouched |
 | 5. row stride | the strided gl above; the code-object launcher builds on CDNA | `cdna.cuh`, `HKToCpp.cpp` |
 | 6. arch check | `runtime.arch.check_device` before any load: `ArchMismatchError` instead of a crash | `python/hk/runtime/arch.py` |
+| 7. fragment in the type | `!hk.rt<..., frag 16x32>`; `hk-fragments` assigns it to operand types and refuses a type tied to two fragments (attention's accumulator->operand cast) | `HKTypes.td`, `Fragments.cpp` |
+| 2. counted waits | per-target `ds_read` counts from the type, held to the ISA by a test; `lgkmcnt_max` 15 on gfx9; `wait=False` on CDNA; `lgkmcnt(0)` after include/cdna4's vectorised LDS store and DMA, which the pass assumes retire | `LdsPipeline.cpp`, `HKToCpp.cpp` |
+| 3. bind hazard | measured: without the bind every gfx950 build hoists MFMAs above the wait and returns NaN; with it, correct | `tools/cdna-probes/bind_hazard.py` |
+| code-object gate | `hk.runtime.cocheck`: resources and wait hazards from any code object (hk, HipKittens, Triton, FlyDSL) | `python/hk/runtime/cocheck.py` |
+| CDNA tiles | 16x32 fragments and wider blocks for the elementwise and row kernels; the gate picks the width; four tiles a warp for wide folded norm rows | `hk.ops.elementwise`, `norm`, `fused`, `quant` |
 
-Builds now (`tools/cdna-probes/coverage.py --ops`, device scaffold, spill gate): **493/506
-on gfx950 and 493/506 on gfx942**, from 196/410 and 195/410. What fails: the two GEMMs'
-`wait=False` (step 2), and attention, paged and decode (16-column operand tiles, transposes,
-`lds_granules`). On the MI355X, the GPU tier's elementwise, bounded, strided, while,
-indexed, load_scalar, phase2, weighted-norm and target-rmsnorm files pass (207 tests).
+Builds now (`tools/cdna-probes/coverage.py --ops`, device scaffold, spill gate): **494/506
+on gfx950 and 494/506 on gfx942**, from 196/410 and 195/410. What fails names its reason at
+trace time: attention, paged and decode (16-column operand tiles, an accumulator cast into
+an operand, `lds_granules`), and `hk.ops.gemm` (32x16 operand tiles, register staging). On
+the MI355X the GPU tier's elementwise, bounded, strided, while, indexed, load_scalar,
+phase2, weighted-norm, target-rmsnorm, torch_op and example-run files pass (all but
+attention and `validate.py`, which reaches the decode GEMM).
 
 ## Summary
 
@@ -424,15 +431,16 @@ Where hk adds something on CDNA:
 
 1. ~~`load_bounded`/`store_bounded` via the buffer descriptor, `int8`, `store_scalar`; then
    the norm and quant GPU tier on the MI355X.~~ Done (see Status).
-2. `hk-lds-pipeline`: per-target ds_read counts and the 4-bit cap; re-enable `wait=False`
-   on CDNA.
-3. The bind-hazard probe on gfx950 (§3.3.1).
+2. ~~`hk-lds-pipeline`: per-target ds_read counts and the 4-bit cap; re-enable `wait=False`
+   on CDNA.~~ Done.
+3. ~~The bind-hazard probe on gfx950 (§3.3.1).~~ Done: the bind is load-bearing.
 4. HipKittens' CDNA4 GEMM and GQA attention as `hk.ops` behind `engine.Op`, with a
    RouteTable measured in vLLM on MI355X against hipBLASLt/aiter.
 5. ~~A row stride for the CDNA `gl` (on the fork's branch, not upstream), which also
    unblocks the code-object launcher.~~ Done in hk's shim instead (`strided_gl`), with
    HipKittens untouched.
 6. ~~An arch check at first launch (raise, don't segfault).~~ Done.
-7. MFMA fragment shape as a field of `!hk.rt` rather than a translator heuristic; then
-   32x32x16 and fp8 `mfma_scale` fragments.
+7. ~~MFMA fragment shape as a field of `!hk.rt` rather than a translator heuristic;~~
+   done. Next: 32x32x16 and fp8 `mfma_scale` fragments, and a CDNA path for attention
+   (operands loaded from LDS in their own fragment, as include/cdna4's GQA does).
 8. Time the unified-file occupancy on the part and set `verified=True`.

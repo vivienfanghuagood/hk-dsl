@@ -694,3 +694,29 @@ The elementwise and row kernels below ran with tiles planned for RDNA3.
 | `examples/03_softmax.py` | 8192x4096 | 1.95e-3 | 37 VGPR, 8 waves | 0.51x `torch.softmax`; `hk.ops.norm.softmax` 0.76x |
 | MFMA GEMM, registers only (`tools/cdna-probes/mma_reg.py`) | up to 2048x2048x1024 | ≤ 6.3e-3 | 22 VGPR + 16 AGPR, 8 waves | -- |
 | GEMM through LDS (`tools/cdna-probes/gemm_lds.py`) | 4096³ | ≤ 5.7e-3, identical in 3 runs | 20 VGPR + 16 AGPR, 8 waves | 540 TFLOP/s, 0.35x hipBLASLt (1530) |
+
+### CDNA tiles for the elementwise and row kernels
+
+[CDNA3 and CDNA4, part 3](history/29-cdna.md#cdna-tiles-for-the-elementwise-and-row-kernels).
+`hk.ops` on the MI355X after the CDNA tiling (16x32 fragments, wider blocks),
+bf16, against torch 2.10's eager call, best of 5 x 50 launches, interleaved in
+one process, each checked first.
+
+| op | 64x4096 | 2048x4096 | 8192x4096 | 16384x8192 |
+|---|---|---|---|---|
+| add | 0.59x | 0.95x | 0.90x | 0.99x |
+| exp | 0.72x | 0.78x | 0.87x | 0.76x |
+| rmsnorm (no weight) | 0.94x | 0.71x | 0.93x | 1.05x |
+| rms_norm (weight) | 0.73x | 0.61x | 0.95x | 0.98x |
+| layernorm | 0.99x | 0.89x | 0.98x | 0.98x |
+| softmax | 0.68x | 0.87x | 1.04x | 0.91x |
+| fused add + RMSNorm (in place) | 1.27x | 1.06x | 1.44x | 1.25x |
+| silu_mul | 1.48x | 1.82x | 1.76x | 1.28x |
+
+Before the CDNA tiling, at 8192x4096: add 0.58x (8192x8192), rmsnorm 0.70x,
+weighted RMSNorm 0.72x, layernorm 0.76x, softmax 0.80x, fused add + RMSNorm
+1.19x. At 16384x8192, where the row is folded, gfx1100's plan (8 warps a
+tile each) gave rmsnorm 0.89x, layernorm 0.82x and softmax 0.77x; the CDNA
+plan (2 warps, 4 tiles each) is the table's. Short tensors (2048 rows) still
+lose, the weighted RMSNorm most (0.61x); at 64 rows the losses are fixed
+launch latency.
