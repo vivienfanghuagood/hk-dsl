@@ -595,9 +595,12 @@ times -- the patch would be slower than what it replaces:
   RMSNorm at 1-8192 rows; inside vLLM's compiled graph it has not been
   re-measured.
 * **SiLU-mul.** `SiluAndMul` slices one `(..., 2d)` tensor into two
-  non-contiguous halves. `hk.ops.silu_mul` takes strided halves since
-  [strided globals](history/12-strided-globals.md), but at (4096, 2x12288)
-  it ran 429.7 µs to Inductor's fused 409.5, so the patch was not built.
+  non-contiguous halves. A kernel's globals take such halves since
+  [strided globals](history/12-strided-globals.md), but the `hk.ops.silu_mul`
+  wrapper still asks for contiguous operands (it reshapes them to a faster
+  2-D shape), so the patch would copy both halves first. And at (4096,
+  2x12288) the kernel on contiguous halves ran 429.7 µs to Inductor's fused
+  409.5, so the patch was not built.
 
 ## Your own kernel, in four steps
 
