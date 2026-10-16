@@ -81,12 +81,82 @@ numbers. In short:
   195 for gfx942 with no hand edits. Almost all the failures were missing
   library functions. Bounded load and store were the biggest of them.
 
+## Part 2: the library, and three things it found
+
+Most of what still failed was the library: `load_bounded` and `int8` alone
+were 200 of the 214 failures on gfx950. The fix kept HipKittens untouched.
+The register-tile memory ops became hk's own, in `include/hk/cdna.cuh`.
+They are written once against both CDNA lane layouts, through one coordinate
+function. A base tile is R x C, and a lane holds K runs of S contiguous
+elements, G apart: include/cdna3's 16x16 tile with S = 4, or include/cdna4's
+shape from the tile type.
+
+- **A strided gl.** On wave64 targets the globals are
+  `kittens::strided_gl<T>`. This is upstream's gl plus `row_stride_internal`,
+  the field the fork's rdna3 gl has and the code-object layout table names.
+  Group (DMA) loads and vector loads take it unchanged, because they reach a
+  global through `stride<>()` and `operator[]`. A slice of the last axis now
+  reads in place, and the code-object launcher builds on CDNA.
+- **One buffer descriptor per tile.** It is based at the tile and sized by
+  the tile's rows that are inside the tensor and before `limit`. Rows past
+  the end read zero, and stores to them are dropped, with no branch. That is
+  all of `load_bounded` and `store_bounded`. The unbounded load and store on
+  a strided gl take the same path, as include/rdna3's do. Because it is sized
+  by the tile, the descriptor cannot wrap. include/cdna4's is sized by the
+  whole tensor, in 32 bits, and reads zeros past 4 GiB.
+- **Everything else the translation calls.** int8 as a storage type,
+  `store_scalar`, `load_scalar`, `wg_arrive`, the two atomics, rows by index
+  and Philox, plus GELU on CDNA3.
+
+Three things turned up on the way, each of them silent in its own way.
+
+1. **A waterfall loop.** On gfx942 the first build of a weighted RMSNorm
+   wrapped every `buffer_load` in a `v_readfirstlane` / `s_and_saveexec`
+   loop. LLVM could not prove the descriptor wave-uniform, so it looped over
+   each distinct value. The result is correct but serialized. A
+   `readfirstlane` on each word of the descriptor states what is true: one
+   tile, the same descriptor in every lane.
+2. **Truncating bf16.** On the MI355X, fused add + RMSNorm failed its
+   bit-exact check on the residual it writes back. Both CDNA trees' scalar
+   `convertor<bf16, float>` truncates, which biases every value toward zero
+   by up to one ulp. include/cdna3's packed conversion truncates too.
+   include/cdna4's packed one, `v_cvt_pk_bf16_f32`, rounds. hk's stores now
+   round to nearest even, through `__float2bfloat16` (one
+   `v_cvt_pk_bf16_f32` on gfx950). On CDNA3, so does the fp32-to-bf16 tile
+   copy that hk's casts emit.
+3. **Vector loads from another GPU.** include/cdna3's register-vector loads
+   are ThunderKittens' wave32 code. They index a register array by lane,
+   which puts it in scratch: 72 B a lane for the weighted norms and 648 B for
+   LayerNorm backward. The gate refused all 163 of those kernels. Their ortho
+   mapping is also not cdna3's 16-lane layout. hk's versions load lane by
+   lane.
+
+**An arch check.** A test that pinned `arch="gfx1100"` crashed the process on
+the MI355X, and another hung for 400 s. `runtime.arch.check_device` now
+compares the kernel's arch with what the runtime reports for the device, not
+with `HK_ARCH`, and raises `ArchMismatchError` before anything loads. The GPU
+tests that pinned gfx1100 now leave the arch to `HK_ARCH`. conftest pins it
+to gfx1100, so an RDNA run is unchanged.
+
+**Result.** 493 of 506 kernel instantiations build for gfx950 and 493 for
+gfx942, up from 196/410 and 195/410. This uses the device scaffold, with the
+spill gate (`tools/cdna-probes/coverage.py --ops`). What is left:
+- the two GEMMs' unwaited LDS reads, which wait for a per-target count;
+- attention, paged and decode, whose 16-column operand tiles, transposes and
+  LDS granules have no CDNA form yet.
+
+On the MI355X, these GPU-tier files pass: elementwise, bounded, strided,
+while, indexed (gather, scatter, atomics), load_scalar, phase2 (int8 and
+`store_scalar` among them), the weighted norms and the target RMSNorm, 207
+tests in all. `test_torch_op` passes too, now that the code-object launcher
+builds.
+
 ### Regressions
 
 None for RDNA. Every example and `hk.ops` instantiation, in every scaffold
 plus the IR dump, is byte-identical to main for gfx1100 and gfx1201: 509
-kernels after the rebase onto `992a180`
+kernels after the rebase onto `5d7dd28`
 (`tools/cdna-probes/dump_sources.py`, run on both checkouts and diffed). `tests/hk/ir`:
-516 passed. `tests/hk/conftest.py` now pins `HK_ARCH=gfx1100` unless one is
+520 passed, and `tests/hk/codegen` 1010. `tests/hk/conftest.py` now pins `HK_ARCH=gfx1100` unless one is
 set, because an MI355X is now recognised rather than falling back to
 gfx1100. The GPU tier skips itself when the GPU is not the pinned arch.
