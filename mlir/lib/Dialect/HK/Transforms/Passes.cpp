@@ -225,7 +225,11 @@ static int estimateVgprs(func::FuncOp f, const TargetInfo &tgt) {
   for (auto [i, op] : llvm::enumerate(ops)) {
     for (Value r : op->getResults()) {
       Type t = r.getType();
-      if (auto rt = dyn_cast<RegTileType>(t))
+      if (auto rt = dyn_cast<RegTileType>(t); rt && rt.isStrip())
+        // Unreplicated: rows * cols elements over 32 lanes, packed in dwords.
+        live[r] = int(rt.getRows() * rt.getCols() / 32 *
+                      dtypeBits(rt.getElementType()) + 31) / 32;
+      else if (rt)
         live[r] = tgt.tileVgprs(dtypeBits(rt.getElementType()), rt.getRows(),
                                 rt.getCols());
       else if (auto g = dyn_cast<GranulesType>(t))

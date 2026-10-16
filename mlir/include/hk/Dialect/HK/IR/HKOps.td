@@ -122,6 +122,7 @@ def HK_StoreRowsOp : HK_Op<"store_rows"> {
     $value `,` $dst `[` $idx `]` `rows` $rows attr-dict `:` qualified(type($value)) `,`
     qualified(type($dst)) `,` qualified(type($idx))
   }];
+  let hasVerifier = 1;
 }
 
 def HK_StoreScalarOp : HK_Op<"store_scalar"> {
@@ -295,6 +296,7 @@ def HK_StoreSharedOp : HK_Op<"store_shared"> {
   let summary = "register tile -> LDS";
   let arguments = (ins HK_SharedTileType:$dst, HK_RegTileType:$value);
   let assemblyFormat = "$value `,` $dst attr-dict `:` qualified(type($value)) `,` qualified(type($dst))";
+  let hasVerifier = 1;
 }
 
 def HK_GranulesOp : HK_Op<"granules"> {

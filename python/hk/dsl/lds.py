@@ -6,11 +6,11 @@ from typing import Optional
 
 from .._mlir.dialects import hk as hkd
 from .module import mlir_type
-from ..types import RegVecType, SharedTileType, SharedVecType
+from ..types import RegVecType, SharedTileType, SharedVecType, fp32
 from . import builder as B
 from .values import SharedTile, SharedVec, Tile, lds_loads
 
-__all__ = ["alloc", "alloc_vec", "shared_vec", "wait_for", "lds_loads"]
+__all__ = ["alloc", "alloc_vec", "shared_vec", "reserve", "wait_for", "lds_loads"]
 
 
 def alloc(tile: SharedTileType, name: str = "smem",
@@ -29,6 +29,10 @@ def shared_vec(vt: RegVecType, count: int = 1) -> SharedVecType:
     """The LDS type a register vector round-trips through."""
     if not isinstance(vt, RegVecType):
         raise TypeError(f"shared_vec takes a register vector type, got {vt!r}")
+    if vt.tile.layout == "strip" and vt.kind == "col":
+        # One value a row, and a strip may have fewer rows than the sixteen
+        # an sv holds; the vector uses its first `length` entries.
+        return SharedVecType(vt.dtype, -(-vt.length // 16) * 16, count)
     return SharedVecType(vt.dtype, vt.length, count)
 
 
@@ -38,6 +42,18 @@ def alloc_vec(ty: SharedVecType, name: str = "svec") -> SharedVec:
     t = B.current()
     return SharedVec(hkd.AllocSharedVecOp(mlir_type(ty), loc=t.loc(name)).result,
                      ty)
+
+
+def reserve(nbytes: int, name: str = "reserve") -> None:
+    """Take `nbytes` of LDS and use none of it: an occupancy cap.
+
+    A WGP has 128 KB of LDS, so a workgroup holding 30 KB leaves room for
+    four of them, 60 KB for two. A kernel that streams HBM can run faster
+    with fewer rows in flight than its registers would allow (chapter 27);
+    this is the knob, at the granularity LDS gives it."""
+    if not isinstance(nbytes, int) or nbytes <= 0:
+        raise TypeError(f"reserve({nbytes!r}): a positive number of bytes")
+    alloc_vec(SharedVecType(fp32, 16, -(-nbytes // 64)), name=name)
 
 
 def wait_for(*tiles: Tile) -> None:

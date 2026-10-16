@@ -53,6 +53,10 @@ std::string fragName(unsigned r, unsigned c) {
 }
 
 std::string rawCpp(Type t) {
+  if (auto r = dyn_cast<RegTileType>(t); r && r.isStrip())
+    return "kittens::rs<" + dtypeCpp(r.getElementType()).str() + ", " +
+           std::to_string(r.getRows()) + ", " + std::to_string(r.getCols()) +
+           ", " + std::to_string(r.getRun()) + ">";
   if (auto r = dyn_cast<RegTileType>(t))
     return "kittens::rt<" + dtypeCpp(r.getElementType()).str() + ", " +
            std::to_string(r.getRows()) + ", " + std::to_string(r.getCols()) +
@@ -90,13 +94,16 @@ Type plainOf(Type t) {
 }
 
 /// What makes two types one alias: the C++ they spell. An rv's identity is
-/// (element, length, kind, layout), not the tile it carries.
+/// (element, length, kind, layout), not the tile it carries; a strip's
+/// col_vec is rs_cv<T, rows> and its row_vec rs<T, 1, cols, run>.
 std::string typeKey(Type t) {
   t = plainOf(t);
   if (auto v = dyn_cast<RegVecType>(t))
     return "rv|" + dtypeName(v.getElementType()).str() + "|" +
            std::to_string(v.getLength()) + "|" + v.getKind().str() + "|" +
-           (v.getTileColLayout() ? "col" : "row") +
+           (v.isStrip() ? (v.getColKind() ? std::string("strip")
+                                          : "strip" + std::to_string(v.getTileRun()))
+                        : std::string(v.getTileColLayout() ? "col" : "row")) +
            (v.getTileFragRows()
                 ? "|" + fragName(v.getTileFragRows(), v.getTileFragCols())
                 : std::string());
@@ -107,6 +114,15 @@ std::string typeKey(Type t) {
 }
 
 std::string aliasName(Type t) {
+  if (auto r = dyn_cast<RegTileType>(t); r && r.isStrip())
+    return "rs_" + dtypeName(r.getElementType()).str() + "_" +
+           std::to_string(r.getRows()) + "x" + std::to_string(r.getCols()) +
+           "_r" + std::to_string(r.getRun());
+  if (auto v = dyn_cast<RegVecType>(t); v && v.isStrip())
+    return "rv_" + dtypeName(v.getElementType()).str() + "_" +
+           std::to_string(v.getTileRows()) + "x" +
+           std::to_string(v.getTileCols()) + "_r" +
+           std::to_string(v.getTileRun()) + "_" + v.getKind().str();
   if (auto r = dyn_cast<RegTileType>(t))
     return "rt_" + dtypeName(r.getElementType()).str() + "_" +
            std::to_string(r.getRows()) + "x" + std::to_string(r.getCols()) +

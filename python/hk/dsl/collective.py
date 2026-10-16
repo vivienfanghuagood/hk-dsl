@@ -11,7 +11,8 @@ from typing import Optional
 
 from ..types import RegTileType, RegVecType
 from . import arch, lds
-from .values import SharedVec, Vec, as_vec, broadcast_col, binary
+from . import builder as B
+from .values import SharedVec, Vec, _vec_of, as_vec, broadcast_col, binary
 
 #: combiner -> the reduction that implements it. Associative and commutative
 #: only: the warps write concurrently and the read order is not fixed.
@@ -24,26 +25,39 @@ def cross_warp(vec: Vec, op: str, warps: int, *,
     """One register vector per warp combined, the answer in every warp."""
     if op not in COMBINERS:
         raise ValueError(f"cross_warp combiner must be one of {COMBINERS}, got {op!r}")
+    vec = _vec_of(vec)
     if not isinstance(vec, Vec):
         raise TypeError(f"cross_warp takes a register vector, got {vec!r}")
     if warps == 1:
         return vec
+    # A scratch allocated here, outside any loop, has never been read: LDS is
+    # allocated linearly (hk-lds-alloc), so no earlier combine shares it.
+    fresh = scratch is None and _top_level()
     if scratch is None:
         scratch = lds.alloc_vec(lds.shared_vec(vec.ty, warps), name=name)
     elif scratch.ty.count < warps:
         raise ValueError(f"scratch holds {scratch.ty.count} vectors, need {warps}")
-    # [1] the scratch may still be being read by a previous combine; [2] the
-    # stores must land before any warp reads. No third: after the loads every
-    # warp holds the answer in registers. Both drain: a vector store is
-    # ordinary ds_writes that nothing retires before an s_barrier, and a warp
-    # on the WGP's other CU reads past one before they land.
-    arch.barrier(drain=True)
+    # [1] the scratch may still be being read by a previous combine -- not a
+    # fresh one; [2] the stores must land before any warp reads. No third:
+    # after the loads every warp holds the answer in registers. Both drain: a
+    # vector store is ordinary ds_writes that nothing retires before an
+    # s_barrier, and a warp on the WGP's other CU reads past one before they
+    # land.
+    if not fresh:
+        arch.barrier(drain=True)
     scratch.store(vec, arch.warp_id())
     arch.barrier(drain=True)
     acc = scratch.load(vec.ty, 0)
     for w in range(1, warps):
         binary(op, acc, scratch.load(vec.ty, w), into=acc)
     return acc
+
+
+def _top_level() -> bool:
+    """Is the op being traced in the kernel's entry block, outside every loop
+    and branch?"""
+    t = B.current()
+    return t.ip.block == t.entry
 
 
 def fold_rows(vec: Vec, op: str, warps: int, *,

@@ -1,0 +1,167 @@
+"""Register strips: the row-contiguous layout row kernels use (hk.RS,
+`!hk.rt<T, RxC, strip<RUN>>`, kittens::rs). The type, its textual form, its
+translation, and what it refuses.
+
+No GPU, no hipcc.
+"""
+
+from __future__ import annotations
+
+import pytest
+
+pytest.importorskip("hk._mlir")
+
+import hk  # noqa: E402
+from hk.compiler import mlir as M  # noqa: E402
+from hk.dsl.collective import cross_warp  # noqa: E402
+
+
+def _kernel(body, warps=2):
+    body.__name__ = body.__name__.lstrip("_")
+    return hk.kernel(body, arch="gfx1100", warps=warps, name=body.__name__,
+                     grid=lambda p: (p.x.rows, 1, 1))
+
+
+S = hk.RS(hk.fp32, 1, 256)
+
+
+def _rms(x: hk.Tensor[hk.bf16], w: hk.Tensor[hk.bf16], o: hk.Tensor[hk.bf16]):
+    row, c0 = hk.arch.block_idx.x, hk.arch.warp_id() * 256
+    g = w.at[0, c0].load(hk.row_vec(S))
+    v = x.at[row, c0].load(S)
+    sq = cross_warp((v * v).sum(axis=1), "add", 2)
+    sq /= x.cols
+    sq += 1e-6
+    v *= sq.rsqrt()
+    v *= g
+    o.at[row, c0].store(v, bounded=True)
+
+
+# ---------------------------------------------------------------- the type
+
+
+def test_a_strip_is_a_whole_number_of_chunks():
+    assert S.span == 256 and S.strip and repr(S) == "rt<fp32,1x256,strip<8>>"
+    assert hk.RS(hk.fp32, 3, 128, 4).cpp() == "kittens::rs<float, 3, 128, 4>"
+    with pytest.raises(ValueError, match="whole number of chunks"):
+        hk.RS(hk.fp32, 1, 200)
+    with pytest.raises(ValueError, match="power of two"):
+        hk.RS(hk.fp32, 1, 256, 3)
+    with pytest.raises(TypeError, match="no i8 strip"):
+        hk.RS(hk.i8, 1, 256)
+    with pytest.raises(ValueError, match="strip's"):
+        hk.RT(hk.fp32, 16, 64, "row").__class__(hk.fp32, 16, 64, "row", run=8)
+
+
+def test_the_dialect_spells_and_checks_a_strip():
+    with M.context():
+        assert str(M.type_("!hk.rt<f32, 2x512, strip<4>>")) == "!hk.rt<f32, 2x512, strip<4>>"
+        assert str(M.type_("!hk.rv<f32, 1x256, strip<8>, col>")) == \
+            "!hk.rv<f32, 1x256, strip<8>, col>"
+        with pytest.raises(Exception, match="multiple of 32\\*run"):
+            M.type_("!hk.rt<f32, 1x100, strip<8>>")
+        with pytest.raises(Exception, match="power of two"):
+            M.type_("!hk.rt<f32, 1x256, strip<5>>")
+
+
+def test_a_strips_vectors_are_its_own():
+    """A strip's col_vec is rs_cv<T, rows> whatever its columns; its row_vec
+    is rs<T, 1, cols, run>, so the run is part of that one's type."""
+    a, b = hk.RS(hk.fp32, 2, 256), hk.RS(hk.fp32, 2, 512)
+    assert hk.col_vec(a) == hk.col_vec(b)
+    assert hk.row_vec(a) != hk.row_vec(hk.RS(hk.fp32, 2, 256, 4))
+    assert hk.col_vec(a) != hk.col_vec(hk.RT(hk.fp32, 16, 64))
+
+
+# ---------------------------------------------------------------- translation
+
+
+def test_the_ir_and_the_cpp_name_the_strip():
+    k = _kernel(_rms)
+    text = k.trace().module.operation.get_asm()
+    assert "!hk.rt<f32, 1x256, strip<8>>" in text
+    assert "!hk.rv<f32, 1x256, strip<8>, row>" in text
+    src = k.source()
+    assert "using rs_fp32_1x256_r8 = kittens::rs<float, 1, 256, 8>;" in src
+    assert "using rv_fp32_1x256_r8_col = rs_fp32_1x256_r8::col_vec;" in src
+    assert "kittens::row_sum(" in src and "kittens::mul_col(" in src
+    assert "kittens::store_bounded(g.o, " in src
+
+
+def test_every_rdna_kernel_reads_its_arguments_at_entry():
+    """kittens::touch_kernargs: a late kernarg field is a cold miss nothing
+    overlaps (0.8-1.0 us on a one-row norm)."""
+    src = _kernel(_rms).source()
+    body = src[src.index("_kernel(const globals g) {"):]
+    assert body.splitlines()[1].strip() == "kittens::touch_kernargs<sizeof(globals)>();"
+
+
+def test_a_fresh_cross_warp_combine_needs_one_barrier():
+    """Its scratch has never been read: LDS is allocated linearly."""
+    src = _kernel(_rms).source()
+    assert src.count("__builtin_amdgcn_s_barrier();") == 1
+
+
+def test_the_strip_round_trips_through_text():
+    t = _kernel(_rms).trace()
+    before = t.cpp(['"kittens.cuh"'])
+    with M.context():
+        again = M.ir.Module.parse(t.module.operation.get_asm(enable_debug_info=True))
+    assert M.translate(again, ['"kittens.cuh"']) == before
+
+
+# ---------------------------------------------------------------- refusals
+
+
+def _refuses(body, match):
+    with pytest.raises((TypeError, ValueError, hk.VerifyError), match=match):
+        _kernel(body).trace()
+
+
+def test_a_strip_indexes_in_elements():
+    def _tile_coord(x: hk.Tensor[hk.bf16], o: hk.Tensor[hk.bf16]):
+        o.at[0, 0].store(x.tile[0, 0].load(S))
+    _refuses(_tile_coord, "indexes in elements")
+
+
+def test_a_strips_bound_is_the_tensors():
+    def _row_limit(x: hk.Tensor[hk.bf16], o: hk.Tensor[hk.bf16]):
+        o.at[0, 0].store(x.at[0, 0].load(S, bounded=3))
+    _refuses(_row_limit, "bounded=True")
+
+
+def test_a_strip_is_never_an_mma_operand():
+    def _mma(x: hk.Tensor[hk.bf16], o: hk.Tensor[hk.fp32]):
+        a = x.at[0, 0].load(hk.RS(hk.bf16, 16, 256))
+        acc = hk.zeros(hk.RT(hk.fp32, 16, 16, "col"))
+        acc += a @ a.T
+    _refuses(_mma, "strip")
+
+
+def test_a_strip_does_not_go_through_lds_as_a_tile():
+    def _lds(x: hk.Tensor[hk.bf16], o: hk.Tensor[hk.bf16]):
+        s = hk.lds.alloc(hk.ST(hk.bf16, 16, 256))
+        s.store(x.at[0, 0].load(hk.RS(hk.bf16, 16, 256)))
+    _refuses(_lds, "strip")
+
+
+def test_only_a_strips_col_vec_goes_through_an_lds_vector():
+    def _row_vec(x: hk.Tensor[hk.bf16], o: hk.Tensor[hk.bf16]):
+        v = x.at[0, 0].load(S)
+        sv = hk.lds.alloc_vec(hk.SV(hk.fp32, 256, 1))
+        sv.store(hk.zeros(hk.row_vec(S)))
+    _refuses(_row_vec, "row_vec")
+
+
+def test_a_strip_fills_by_column_only():
+    def _triu(x: hk.Tensor[hk.bf16], o: hk.Tensor[hk.bf16]):
+        v = x.at[0, 0].load(hk.RS(hk.fp32, 256, 256))
+        v.triu_(0)
+    _refuses(_triu, "strip")
+
+
+def test_a_strip_is_gfx11_only():
+    k = hk.kernel(_rms, arch="gfx1201", warps=2, name="rms_gfx12",
+                  grid=lambda p: (p.x.rows, 1, 1))
+    with pytest.raises(TypeError, match="include/rdna3 only"):
+        k.trace()

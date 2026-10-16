@@ -83,11 +83,17 @@ class ScalarType(Type):
 
 @dataclass(frozen=True)
 class RegTileType(Type):
-    """A register tile: rt<T, rows, cols, layout>.
+    """A register tile: rt<T, rows, cols, layout>, or a strip.
 
     `layout` is row or col and is not cosmetic -- it decides which mma variant
     applies and whether a shared->register load hits ds_read_b128 or degrades to
     16 scalar reads. The hk-check-budgets pass warns on it.
+
+    `layout="strip"` with a `run` is kittens::rs<T, rows, cols, run>: not a
+    WMMA layout but the one a row kernel wants, each lane owning `run`
+    contiguous elements of a row per 32*run-column chunk -- one 16-byte access
+    per lane for a bf16 run of 8, nothing replicated. Any number of rows;
+    columns a whole number of chunks. See hk.RS.
     """
 
     dtype: DType
@@ -99,10 +105,18 @@ class RegTileType(Type):
     #: row layout and (32, 16) in the col. None leaves it to the hk-fragments
     #: pass, which sets it on the operand tiles of such a target.
     frag: Optional[Tuple[int, int]] = None
+    #: A strip's run (layout "strip"); 0 for a WMMA-layout tile.
+    run: int = 0
 
     def __post_init__(self):
+        if self.layout == "strip":
+            self._check_strip()
+            return
         if self.layout not in ("row", "col"):
-            raise ValueError(f"layout must be row or col, got {self.layout!r}")
+            raise ValueError(f"layout must be row, col or strip, got {self.layout!r}")
+        if self.run:
+            raise ValueError(f"run={self.run} is a strip's; a {self.layout} tile "
+                             f"has the lane layout WMMA gives it")
         if self.frag is not None:
             fr, fc = self.frag
             if fr <= 0 or fc <= 0 or fr % 16 or fc % 16 or self.rows % fr or self.cols % fc:
@@ -127,15 +141,46 @@ class RegTileType(Type):
                     f"16x16 WMMA fragment, so it must be a positive multiple of 16"
                 )
 
+    def _check_strip(self):
+        if self.run not in (1, 2, 4, 8, 16):
+            raise ValueError(f"strip run={self.run}: a power of two of at most 16 "
+                             f"elements, 8 for the 16-byte access a bf16 row wants")
+        if self.dtype.bits not in (16, 32) or self.dtype.kind != "float":
+            raise TypeError(f"there is no {self.dtype} strip: rs holds bf16, fp16 "
+                            f"and fp32 elements")
+        if self.rows <= 0:
+            raise ValueError(f"strip rows={self.rows}: at least one")
+        if self.cols <= 0 or self.cols % self.span:
+            raise ValueError(
+                f"strip cols={self.cols}: a strip is a whole number of chunks, "
+                f"32 lanes x run {self.run} = {self.span} columns each")
+
+    @property
+    def strip(self) -> bool:
+        return self.layout == "strip"
+
+    @property
+    def span(self) -> int:
+        """Columns one chunk of a strip covers: 32 lanes x run."""
+        return 32 * self.run
+
+    @property
+    def layout_spelling(self) -> str:
+        """The layout as the dialect writes it."""
+        return f"strip<{self.run}>" if self.strip else self.layout
+
     def __repr__(self) -> str:
         f = f",frag {self.frag[0]}x{self.frag[1]}" if self.frag else ""
-        return f"rt<{self.dtype},{self.rows}x{self.cols},{self.layout}{f}>"
+        return f"rt<{self.dtype},{self.rows}x{self.cols},{self.layout_spelling}{f}>"
 
     @property
     def base_tiles(self) -> int:
         return (self.rows // 16) * (self.cols // 16)
 
     def cpp(self) -> str:
+        if self.strip:
+            return (f"kittens::rs<{self.dtype.cpp}, {self.rows}, {self.cols}, "
+                    f"{self.run}>")
         f = (f", kittens::ducks::rt_shape::rt_{self.frag[0]}x{self.frag[1]}"
              if self.frag else "")
         return (
@@ -144,6 +189,8 @@ class RegTileType(Type):
         )
 
     def transposed(self) -> "RegTileType":
+        if self.strip:
+            raise TypeError(f"{self!r} is a strip; it has no transpose")
         return RegTileType(
             self.dtype, self.cols, self.rows, "col" if self.layout == "row" else "row",
             (self.frag[1], self.frag[0]) if self.frag else None,
@@ -434,7 +481,10 @@ class RegVecType(Type):
         dataclass equality fall out of it would reject that kernel for a
         difference the compiler cannot see.
         """
-        return (self.dtype, self.length, self.kind, self.tile.layout,
+        # A strip's col_vec is rs_cv<T, rows>, its row_vec rs<T, 1, cols,
+        # run>: the run is part of the row_vec's type and not the col_vec's.
+        run = self.tile.run if self.kind == "row" else 0
+        return (self.dtype, self.length, self.kind, self.tile.layout, run,
                 self.uniform)
 
     def __eq__(self, other) -> bool:

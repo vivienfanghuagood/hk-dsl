@@ -46,6 +46,24 @@ static bool sameCpp(Type a, Type b) {
   return a == b;
 }
 
+static bool isStrip(Type t) {
+  if (auto r = dyn_cast<RegTileType>(t))
+    return r.isStrip();
+  if (auto v = dyn_cast<RegVecType>(t))
+    return v.isStrip();
+  return false;
+}
+
+/// The ops whose C++ exists only for WMMA-layout tiles.
+static LogicalResult noStrip(Operation *op, Type t) {
+  if (isStrip(t))
+    return op->emitOpError()
+           << "takes WMMA-layout tiles, not the strip " << t
+           << ": a strip has loads, stores, maps, row and column reductions, "
+              "broadcasts and left/right fills, and nothing else";
+  return success();
+}
+
 static LogicalResult checkMapDtype(Operation *op, Type t) {
   static const llvm::StringSet<> fp32Only = {"gelu", "dgelu", "sqrt", "rsqrt",
                                              "silu", "step"};
@@ -74,22 +92,46 @@ LogicalResult AnyNeOp::verify() {
 // Global memory
 //===----------------------------------------------------------------------===//
 
+/// A strip moves in elements; its row vector is a one-row strip and moves
+/// the same way, bounded or not. Its col vector loads one value per row and
+/// is stored only with store_scalar.
+static LogicalResult checkStripAccess(Operation *op, Type t, CoordType idx,
+                                      bool bounded, bool store) {
+  if (!isStrip(t))
+    return success();
+  if (!idx.getElement())
+    return op->emitOpError("a strip indexes in elements, not tiles");
+  auto v = dyn_cast<RegVecType>(t);
+  if (v && v.getColKind() && (bounded || store))
+    return op->emitOpError(store ? "stores a strip's col vector; use store_scalar"
+                                 : "bounded loads a strip, or its row vector");
+  return success();
+}
+
 LogicalResult LoadOp::verify() {
   if (failed(verifyDest(*this, getDst(), getResult())))
     return failure();
-  if (getBounded() && !isa<RegTileType>(destType(getDst(), getResult())))
+  Type t = destType(getDst(), getResult());
+  if (getBounded() && !isa<RegTileType>(t) && !isStrip(t))
     return emitOpError("bounded predicates tile rows; the destination is not a tile");
-  return success();
+  return checkStripAccess(*this, t, getIdx().getType(), getBounded(), false);
 }
 
 LogicalResult StoreOp::verify() {
-  if (getBounded() && !isa<RegTileType>(getValue().getType()))
+  Type t = getValue().getType();
+  if (getBounded() && !isa<RegTileType>(t) && !isStrip(t))
     return emitOpError("bounded predicates tile rows; the value is not a tile");
-  return success();
+  return checkStripAccess(*this, t, getIdx().getType(), getBounded(), true);
 }
 
 LogicalResult LoadRowsOp::verify() {
-  return verifyDest(*this, getDst(), getResult());
+  if (failed(verifyDest(*this, getDst(), getResult())))
+    return failure();
+  return noStrip(*this, destType(getDst(), getResult()));
+}
+
+LogicalResult StoreRowsOp::verify() {
+  return noStrip(*this, getValue().getType());
 }
 
 LogicalResult StoreScalarOp::verify() {
@@ -121,6 +163,8 @@ LogicalResult WgArriveOp::verify() {
 static LogicalResult checkIndexedRows(Operation *op, Type tile, GlobalType idx) {
   if (!idx.getElementType().isInteger(32))
     return op->emitOpError("takes its row indices from an int32 global");
+  if (failed(noStrip(op, tile)))
+    return failure();
   if (cast<RegTileType>(tile).getColLayout())
     return op->emitOpError("moves row-layout tiles");
   return success();
@@ -143,7 +187,7 @@ LogicalResult AtomicAddOp::verify() {
   if (!getValue().getType().getElementType().isF32() ||
       !getDst().getType().getElementType().isF32())
     return emitOpError("adds an fp32 tile into an fp32 global");
-  return success();
+  return noStrip(*this, getValue().getType());
 }
 
 LogicalResult AtomicScalarOp::verify() {
@@ -161,7 +205,7 @@ LogicalResult PhiloxOp::verify() {
     return failure();
   if (!cast<RegTileType>(destType(getDst(), getResult())).getElementType().isF32())
     return emitOpError("draws into an fp32 tile");
-  return success();
+  return noStrip(*this, destType(getDst(), getResult()));
 }
 
 LogicalResult LoadW4Op::verify() {
@@ -169,7 +213,7 @@ LogicalResult LoadW4Op::verify() {
     return failure();
   auto tile = cast<RegTileType>(destType(getDst(), getResult()));
   Type et = tile.getElementType();
-  if (!(et.isBF16() || et.isF16()) || tile.getColLayout())
+  if (!(et.isBF16() || et.isF16()) || tile.getColLayout() || tile.isStrip())
     return emitOpError("dequantizes into a bf16 or f16 row-layout tile");
   if (!getQw().getType().getElementType().isInteger(32))
     return emitOpError("reads its codes from an int32 global, eight to a word");
@@ -212,11 +256,17 @@ LogicalResult LoadSharedOp::verify() {
     return failure();
   auto t = cast<RegTileType>(destType(getDst(), getResult()));
   auto st = getSrc().getType();
+  if (failed(noStrip(*this, t)))
+    return failure();
   if (t.getRows() != st.getRows() || t.getCols() != st.getCols())
     return emitOpError("register and shared tiles must have the same extents");
   if (!getWait() && getLdsLoads() == 0)
     return emitOpError("wait = false on a pair that does not vectorise");
   return success();
+}
+
+LogicalResult StoreSharedOp::verify() {
+  return noStrip(*this, getValue().getType());
 }
 
 LogicalResult GranulesOp::verify() {
@@ -373,7 +423,7 @@ static LogicalResult verifyReduce(OpT op, bool colKind) {
   auto want = RegVecType::get(op.getContext(), src.getElementType(),
                               src.getRows(), src.getCols(), src.getColLayout(),
                               colKind, false, src.getFragRows(),
-                              src.getFragCols());
+                              src.getFragCols(), src.getRun());
   auto got = cast<RegVecType>(destType(op.getDst(), op.getResult()));
   if (!got.sameCpp(want))
     return op.emitOpError() << "reducing " << src << " gives " << want
@@ -405,7 +455,8 @@ static LogicalResult verifyBroadcast(OpT op, bool rowOp) {
   if (vec.getColKind() != rowOp)
     return op.emitOpError() << "takes a " << (rowOp ? "col" : "row")
                             << " vector";
-  if (vec.getTileRows() != src.getRows() || vec.getTileCols() != src.getCols())
+  if (vec.getTileRows() != src.getRows() || vec.getTileCols() != src.getCols() ||
+      vec.getTileRun() != src.getRun())
     return op.emitOpError("the vector came off a tile of another shape");
   if (vec.getTile().fragR() != src.fragR() || vec.getTile().fragC() != src.fragC())
     return op.emitOpError("the vector came off a tile of another fragment");
@@ -430,6 +481,8 @@ template <typename OpT>
 static LogicalResult verifyBroadcastFill(OpT op, bool row) {
   auto vec = op.getVec().getType();
   auto res = op.getResult().getType();
+  if (failed(noStrip(op, res)) || failed(noStrip(op, vec)))
+    return failure();
   if (vec.getColKind() != row)
     return op.emitOpError() << "takes a " << (row ? "col" : "row") << " vector";
   if (vec.getTileRows() != res.getRows() || vec.getTileCols() != res.getCols())
@@ -446,7 +499,7 @@ LogicalResult RetypeVecOp::verify() {
   if (a.getElementType() != b.getElementType() ||
       a.getLength() != b.getLength() ||
       a.getTileColLayout() != b.getTileColLayout() ||
-      a.getColKind() != b.getColKind())
+      a.getColKind() != b.getColKind() || !a.sameCpp(b.plain()))
     return emitOpError("an rv's C++ type is (element, length, layout); these differ");
   return success();
 }
@@ -456,22 +509,25 @@ LogicalResult RetypeVecOp::verify() {
 //===----------------------------------------------------------------------===//
 
 template <typename OpT>
-static LogicalResult verifyFill(OpT op) {
+static LogicalResult verifyFill(OpT op, bool columns) {
   if (failed(verifyDest(op, op.getDst(), op.getResult())))
     return failure();
   if (destType(op.getDst(), op.getResult()) != op.getSrc().getType())
     return op.emitOpError("a fill keeps shape, layout and element type");
+  // A strip fills by column only: its rows are not lanes.
+  if (!columns)
+    return noStrip(op, op.getSrc().getType());
   return success();
 }
 
-#define HK_FILL_VERIFY(OP)                                                     \
-  LogicalResult OP::verify() { return verifyFill(*this); }
-HK_FILL_VERIFY(LeftFillOp)
-HK_FILL_VERIFY(RightFillOp)
-HK_FILL_VERIFY(UpperFillOp)
-HK_FILL_VERIFY(LowerFillOp)
-HK_FILL_VERIFY(TriuOp)
-HK_FILL_VERIFY(TrilOp)
+#define HK_FILL_VERIFY(OP, COLUMNS)                                            \
+  LogicalResult OP::verify() { return verifyFill(*this, COLUMNS); }
+HK_FILL_VERIFY(LeftFillOp, true)
+HK_FILL_VERIFY(RightFillOp, true)
+HK_FILL_VERIFY(UpperFillOp, false)
+HK_FILL_VERIFY(LowerFillOp, false)
+HK_FILL_VERIFY(TriuOp, false)
+HK_FILL_VERIFY(TrilOp, false)
 #undef HK_FILL_VERIFY
 
 template <typename OpT>
@@ -479,6 +535,8 @@ static LogicalResult verifyCausal(OpT op) {
   if (failed(verifyDest(op, op.getDst(), op.getResult())))
     return failure();
   auto src = cast<RegTileType>(op.getSrc().getType());
+  if (failed(noStrip(op, src)))
+    return failure();
   if (src.getRows() != src.getCols())
     return op.emitOpError("a diagonal only means something on a square tile");
   if (destType(op.getDst(), op.getResult()) != src)
@@ -501,7 +559,7 @@ LogicalResult CastOp::verify() {
   if (!src || !dst)
     return emitOpError("casts register tiles");
   if (src.getRows() != dst.getRows() || src.getCols() != dst.getCols() ||
-      src.getColLayout() != dst.getColLayout())
+      src.getColLayout() != dst.getColLayout() || src.getRun() != dst.getRun())
     return emitOpError("a cast keeps shape and layout");
   if (src.fragR() != dst.fragR() || src.fragC() != dst.fragC())
     return emitOpError() << "a cast keeps the fragment: " << src << " into "
@@ -513,6 +571,8 @@ LogicalResult TransposeOp::verify() {
   if (failed(verifyDest(*this, getDst(), getResult())))
     return failure();
   auto src = dyn_cast<RegTileType>(getSrc().getType());
+  if (src && failed(noStrip(*this, src)))
+    return failure();
   if (!src || destType(getDst(), getResult()) != src.transposed())
     return emitOpError("transposes a tile into the mirrored shape and opposite layout");
   return success();
@@ -524,6 +584,8 @@ LogicalResult TransposeSepOp::verify() {
   auto src = dyn_cast<RegTileType>(getSrc().getType());
   if (!src)
     return emitOpError("transposes register tiles");
+  if (failed(noStrip(*this, src)))
+    return failure();
   auto want = RegTileType::get(getContext(), src.getElementType(),
                                src.getCols(), src.getRows(),
                                src.getColLayout(), src.getFragCols(),
@@ -553,6 +615,9 @@ static LogicalResult verifyMma(OpT op, MmaSpec s) {
     return failure();
   auto a = op.getA().getType(), b = op.getB().getType(),
        c = op.getC().getType();
+  for (Type t : {Type(a), Type(b), Type(c)})
+    if (failed(noStrip(op, t)))
+      return failure();
   bool fp8 = isFp8(a.getElementType()) && isFp8(b.getElementType());
   if (a.getElementType() != b.getElementType() && !fp8)
     return op.emitOpError("takes one operand type, not a mixed pair");

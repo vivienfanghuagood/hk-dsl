@@ -14,7 +14,8 @@ std::string mlir::hk::pyRepr(Type t) {
   auto dn = [](Type e) { return dtypeName(e).str(); };
   if (auto r = dyn_cast<RegTileType>(t))
     return "rt<" + dn(r.getElementType()) + "," + std::to_string(r.getRows()) +
-           "x" + std::to_string(r.getCols()) + "," + r.getLayout().str() + ">";
+           "x" + std::to_string(r.getCols()) + "," + r.getLayout().str() +
+           (r.isStrip() ? "<" + std::to_string(r.getRun()) + ">" : "") + ">";
   if (auto s = dyn_cast<SharedTileType>(t)) {
     std::string n = s.getCount() != 1 ? "[" + std::to_string(s.getCount()) + "]"
                                       : "";

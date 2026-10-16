@@ -4,7 +4,7 @@
 include "hk/Dialect/HK/IR/HKBase.td"
 
 def HK_RegTileType : HK_Type<"RegTile", "rt"> {
-  let summary = "a register tile: kittens::rt<T, rows, cols, layout>";
+  let summary = "a register tile: kittens::rt<T, rows, cols, layout>, or a strip";
   let description = [{
     `!hk.rt<f32, 16x64, row>`. The layout is not cosmetic: it decides which
     mma variant applies and whether an LDS load is a ds_read_b128 or sixteen
@@ -15,14 +15,35 @@ def HK_RegTileType : HK_Type<"RegTile", "rt"> {
     16x16x32 MFMA reads 16x32 operands, and include/cdna4 spells that tile
     rt<bf16, 16, 64, row, rt_16x32>. Unset (0x0) is the 16x16 default;
     hk-fragments sets it on the operand tiles of such a target.
+
+    `!hk.rt<f32, 1x1024, strip<8>>` is a strip, kittens::rs<T, rows, cols, 8>:
+    the layout a row kernel wants rather than the one WMMA gives, each lane
+    owning `run` contiguous elements of a row per 32*run-column chunk. Rows
+    are any positive count; columns a whole number of chunks. A strip is
+    never an mma operand, never goes through LDS as a tile, and has no
+    fragment.
   }];
   let parameters = (ins "::mlir::Type":$elementType, "unsigned":$rows,
                         "unsigned":$cols, "bool":$colLayout,
-                        "unsigned":$fragRows, "unsigned":$fragCols);
+                        "unsigned":$fragRows, "unsigned":$fragCols,
+                        DefaultValuedParameter<"unsigned", "0">:$run);
+  let builders = [
+    TypeBuilder<(ins "::mlir::Type":$elementType, "unsigned":$rows,
+                     "unsigned":$cols, "bool":$colLayout,
+                     "unsigned":$fragRows, "unsigned":$fragCols,
+                     CArg<"unsigned", "0">:$run), [{
+      return $_get($_ctxt, elementType, rows, cols, colLayout, fragRows,
+                   fragCols, run);
+    }]>
+  ];
+  let skipDefaultBuilders = 1;
   let hasCustomAssemblyFormat = 1;
   let genVerifyDecl = 1;
   let extraClassDeclaration = [{
-    ::llvm::StringRef getLayout() const { return getColLayout() ? "col" : "row"; }
+    bool isStrip() const { return getRun() != 0; }
+    ::llvm::StringRef getLayout() const {
+      return isStrip() ? "strip" : getColLayout() ? "col" : "row";
+    }
     unsigned getBaseTiles() const { return (getRows() / 16) * (getCols() / 16); }
     bool hasFrag() const { return getFragRows() != 0; }
     /// The fragment's rows and cols, 16x16 where unset.
@@ -30,7 +51,7 @@ def HK_RegTileType : HK_Type<"RegTile", "rt"> {
     unsigned fragC() const { return hasFrag() ? getFragCols() : 16; }
     RegTileType withFrag(unsigned r, unsigned c) const {
       return RegTileType::get(getContext(), getElementType(), getRows(),
-                              getCols(), getColLayout(), r, c);
+                              getCols(), getColLayout(), r, c, getRun());
     }
     RegTileType transposed() const {
       return RegTileType::get(getContext(), getElementType(), getCols(),
@@ -66,39 +87,59 @@ def HK_RegVecType : HK_Type<"RegVec", "rv"> {
     `!hk.rv<f32, 16x64, row, col>`: the col_vec of an rt<f32,16x64,row>. It
     carries the tile it came off, because an rv's lane layout is derived from
     that tile and a vector spelled independently of it reduces the wrong
-    lanes. `uniform` records that every entry holds the same value.
+    lanes. `uniform` records that every entry holds the same value. A
+    strip's vectors carry the strip: `!hk.rv<f32, 1x1024, strip<8>, col>`.
   }];
   let parameters = (ins "::mlir::Type":$elementType, "unsigned":$tileRows,
                         "unsigned":$tileCols, "bool":$tileColLayout,
                         "bool":$colKind, "bool":$uniform,
-                        "unsigned":$tileFragRows, "unsigned":$tileFragCols);
+                        "unsigned":$tileFragRows, "unsigned":$tileFragCols,
+                        DefaultValuedParameter<"unsigned", "0">:$tileRun);
+  let builders = [
+    TypeBuilder<(ins "::mlir::Type":$elementType, "unsigned":$tileRows,
+                     "unsigned":$tileCols, "bool":$tileColLayout,
+                     "bool":$colKind, "bool":$uniform,
+                     "unsigned":$tileFragRows, "unsigned":$tileFragCols,
+                     CArg<"unsigned", "0">:$tileRun), [{
+      return $_get($_ctxt, elementType, tileRows, tileCols, tileColLayout,
+                   colKind, uniform, tileFragRows, tileFragCols, tileRun);
+    }]>
+  ];
+  let skipDefaultBuilders = 1;
   let hasCustomAssemblyFormat = 1;
   let extraClassDeclaration = [{
     ::llvm::StringRef getKind() const { return getColKind() ? "col" : "row"; }
     unsigned getLength() const { return getColKind() ? getTileRows() : getTileCols(); }
+    bool isStrip() const { return getTileRun() != 0; }
     RegTileType getTile() const {
       return RegTileType::get(getContext(), getElementType(), getTileRows(),
                               getTileCols(), getTileColLayout(),
-                              getTileFragRows(), getTileFragCols());
+                              getTileFragRows(), getTileFragCols(), getTileRun());
     }
     RegVecType plain() const {
       return RegVecType::get(getContext(), getElementType(), getTileRows(),
                              getTileCols(), getTileColLayout(), getColKind(),
-                             false, getTileFragRows(), getTileFragCols());
+                             false, getTileFragRows(), getTileFragCols(),
+                             getTileRun());
     }
     /// The same vector off a tile of fragment `t`.
     RegVecType withTile(RegTileType t) const {
       return RegVecType::get(getContext(), getElementType(), getTileRows(),
                              getTileCols(), getTileColLayout(), getColKind(),
-                             getUniform(), t.getFragRows(), t.getFragCols());
+                             getUniform(), t.getFragRows(), t.getFragCols(),
+                             getTileRun());
     }
     /// Same C++ type: rt<T,R,C,L>::col_vec does not depend on C (rt.cuh:78);
-    /// it does on the fragment, which include/cdna4's rv carries.
+    /// it does on the fragment, which include/cdna4's rv carries. A strip's
+    /// col_vec is rs_cv<T, R>, its row_vec rs<T, 1, C, run>.
     bool sameCpp(RegVecType other) const {
-      return getElementType() == other.getElementType() &&
-             getLength() == other.getLength() &&
-             getColKind() == other.getColKind() &&
-             getTileColLayout() == other.getTileColLayout() &&
+      if (getElementType() != other.getElementType() ||
+          getLength() != other.getLength() ||
+          getColKind() != other.getColKind() || isStrip() != other.isStrip())
+        return false;
+      if (isStrip())
+        return getColKind() || getTileRun() == other.getTileRun();
+      return getTileColLayout() == other.getTileColLayout() &&
              getTileFragRows() == other.getTileFragRows() &&
              getTileFragCols() == other.getTileFragCols();
     }

@@ -55,6 +55,44 @@ def _check_map_dtype(op: str, ty) -> None:
             f"compile that names a template, not this line.")
 
 
+def _is_strip(ty) -> bool:
+    """A strip tile, or a vector of one."""
+    if isinstance(ty, RegVecType):
+        ty = ty.tile
+    return isinstance(ty, RegTileType) and ty.layout == "strip"
+
+
+def _no_strip(what: str, *tys) -> None:
+    for ty in tys:
+        if _is_strip(ty):
+            raise TypeError(
+                f"{what} takes WMMA-layout tiles, and {ty!r} is a strip. A "
+                f"strip loads and stores, maps, reduces along rows and "
+                f"columns, broadcasts its vectors and fills by column; it is "
+                f"never an mma operand or an LDS tile.")
+
+
+def _strip_access(what: str, ty, idx: "Coord", bounded) -> None:
+    """A strip moves in elements; its col_vec loads unbounded and stores only
+    through store_scalar; bounded=n (a row limit) is the tiles'."""
+    if not _is_strip(ty):
+        return
+    arch = _t().arch
+    if get_target(arch).kittens_define != "KITTENS_RDNA3":
+        raise TypeError(f"{what} of {ty!r}: strips (kittens::rs) are in "
+                        f"include/rdna3 only, and this kernel is for {arch}")
+    if idx.unit != "element":
+        raise TypeError(f"{what} of {ty!r}: a strip indexes in elements "
+                        f"(x.at[r, c] or hk.elem_coord), not tiles")
+    if bounded is not False and bounded is not True:
+        raise TypeError(f"{what}(bounded=n) limits a tile's rows; a strip's "
+                        f"bound is the tensor's, bounded=True")
+    if isinstance(ty, RegVecType) and ty.kind == "col" and (
+            bounded or what == "store"):
+        raise TypeError(f"{what} of a strip's col_vec: it loads unbounded, one "
+                        f"value a row, and stores with store_scalar")
+
+
 # ---------------------------------------------------------------- base
 
 
@@ -422,7 +460,9 @@ class View:
         if not isinstance(tile, (RegTileType, RegVecType)):
             raise TypeError(f"load destination type is {tile!r}, expected a "
                             f"tile or a vector type")
-        if bounded is not False and not isinstance(tile, RegTileType):
+        _strip_access("load", tile, self.idx, bounded)
+        if (bounded is not False and not isinstance(tile, RegTileType)
+                and not _is_strip(tile)):
             raise TypeError(f"load(bounded=...) predicates tile rows; {tile!r} "
                             f"is not a tile")
         if bounded is True or bounded is False:
@@ -438,7 +478,9 @@ class View:
         value = _vec_of(value)
         if not isinstance(value, (Tile, Vec)):
             raise TypeError(f"store value is {value!r}, expected a tile or a vector")
-        if bounded is not False and not isinstance(value, Tile):
+        _strip_access("store", value.ty, self.idx, bounded)
+        if (bounded is not False and not isinstance(value, Tile)
+                and not _is_strip(value.ty)):
             raise TypeError("store(bounded=...) predicates tile rows; the "
                             "value is not a tile")
         t = _t()
@@ -493,6 +535,7 @@ class View:
         """Add an fp32 tile into this float global, element by element,
         atomically: the reduction for partials in different workgroups."""
         value = _vec_of(value)
+        _no_strip("atomic_add", getattr(value, "ty", None))
         if not isinstance(value, Tile) or value.ty.dtype is not fp32:
             raise TypeError(f"atomic_add adds an fp32 tile, not {value!r}: a "
                             f"16-bit operand tile is replicated across the "
@@ -603,7 +646,8 @@ def broadcast(op: str, t: "Tile", v: "Vec", *, into=None) -> "Tile":
     """`op` vec[i] into every element of row i (column vector) or column i
     (row vector) of the tile."""
     axis = "row" if v.ty.kind == "col" else "col"
-    if v.ty.tile.rows != t.ty.rows or v.ty.tile.cols != t.ty.cols:
+    if (v.ty.tile.rows != t.ty.rows or v.ty.tile.cols != t.ty.cols
+            or v.ty.tile.run != t.ty.run):
         raise TypeError(f"{op}_{axis}: the vector came off a {v.ty.tile} but is "
                         f"being applied to a {t.ty}. The lane replication "
                         f"would not line up.")
@@ -745,7 +789,8 @@ class Tile(_Elementwise):
 
     def to(self, dtype: DType, *, into=None) -> "Tile":
         """Change the element type, keeping shape and layout (kittens::copy)."""
-        ty = RegTileType(dtype, self.ty.rows, self.ty.cols, self.ty.layout, self.ty.frag)
+        ty = RegTileType(dtype, self.ty.rows, self.ty.cols, self.ty.layout, self.ty.frag,
+                         run=self.ty.run)
         return _make(hkd.CastOp, ty, (self.v,), into=into, name="cvt")
 
     @property
@@ -762,6 +807,8 @@ class Tile(_Elementwise):
         cls = {"left_fill": hkd.LeftFillOp, "right_fill": hkd.RightFillOp,
                "upper_fill": hkd.UpperFillOp, "lower_fill": hkd.LowerFillOp,
                "triu": hkd.TriuOp, "tril": hkd.TrilOp}[op]
+        if op not in ("left_fill", "right_fill"):
+            _no_strip(op, self.ty)
         out = self if into is None else into
         if out is not self:
             if out.ty != self.ty:
@@ -780,6 +827,7 @@ class Tile(_Elementwise):
     def tril_(self, idx, value=0.0, *, into=None): return self._fill("tril", idx, value, into)
 
     def make_causal(self, value: float = 0.0, *, into=None, transposed: bool = False):
+        _no_strip("make_causal", self.ty)
         if self.ty.rows != self.ty.cols:
             raise TypeError(f"make_causal: the tile is {self.ty.rows}x"
                             f"{self.ty.cols}, not square; mask the off-diagonal "
@@ -838,6 +886,7 @@ def mma(variant: str, a: Tile, b: Tile, acc: Tile, *, into=None) -> Tile:
     for v, what in ((a, "A"), (b, "B"), (acc, "C")):
         if not isinstance(v, Tile):
             raise TypeError(f"{variant} {what} operand is {v!r}, expected a tile")
+        _no_strip(variant, v.ty)
     fp8 = a.ty.dtype in FP8 and b.ty.dtype in FP8
     if a.ty.dtype != b.ty.dtype and not fp8:
         raise TypeError(f"{variant}: A is {a.ty.dtype} and B is {b.ty.dtype}. "
@@ -1002,6 +1051,7 @@ def rand(ty, seed, offset, row_stride, *, into=None) -> "Tile":
     dropout written here keeps exactly the elements Triton's keeps."""
     if not isinstance(ty, RegTileType) or ty.dtype is not fp32:
         raise TypeError(f"rand draws into an fp32 tile type, not {ty!r}")
+    _no_strip("rand", ty)
     return _make(hkd.PhiloxOp, ty, (as_int(seed).v, as_int(offset).v,
                                     as_int(row_stride).v),
                  into=into, name="rnd")
@@ -1020,12 +1070,14 @@ def neg_infty(ty, *, into=None):
 def transpose(t: Tile, *, into=None) -> Tile:
     """Transpose by relabelling: mirrored shape, opposite layout, no data
     moved beyond the register shuffle."""
+    _no_strip("transpose", t.ty)
     ty = t.ty.transposed()
     return _make(hkd.TransposeOp, ty, (t.v,), into=into, name="tr")
 
 
 def transpose_sep(t: Tile, *, into=None) -> Tile:
     """Transpose keeping the layout. Moves data; needs separate registers."""
+    _no_strip("transpose_sep", t.ty)
     if into is t:
         raise TypeError("transpose_sep needs separate registers for source "
                         "and destination; use hk.transpose to relabel instead")
@@ -1044,6 +1096,7 @@ def broadcast_col(ty: RegTileType, vec: Vec) -> Tile:
 
 
 def _broadcast_fill(cls, ty, vec, want):
+    _no_strip("broadcast_row/broadcast_col", ty)
     if not isinstance(vec, Vec) or vec.ty.kind != want:
         raise TypeError(f"takes a {want} vector, got {getattr(vec, 'ty', vec)}")
     if vec.ty.tile.rows != ty.rows or vec.ty.tile.cols != ty.cols:
@@ -1057,8 +1110,7 @@ def as_vec(vec: Vec, tile: RegTileType, *, uniform: bool = False) -> Vec:
     want = RegVecType(tile, vec.ty.kind, vec.ty.uniform or uniform)
     if want == vec.ty:
         return vec
-    if (want.dtype, want.length, tile.layout) != (
-            vec.ty.dtype, vec.ty.length, vec.ty.tile.layout):
+    if want.plain._key() != vec.ty.plain._key():
         raise TypeError(f"as_vec cannot retype {vec.ty} (off {vec.ty.tile}) as "
                         f"{want} (off {tile}); route it through LDS instead.")
     return _make(hkd.RetypeVecOp, want, (vec.v,), name="rv")
@@ -1107,6 +1159,7 @@ class SharedTile(Value):
         """LDS -> register tile. `wait=False` leaves the reads in flight; the
         tile must then be named in hk.lds.wait_for before it is read."""
         st = self.ty
+        _no_strip("an LDS tile load", tile)
         if (tile.rows, tile.cols) != (st.rows, st.cols):
             raise TypeError(f"load: {tile} from {st}; register and shared tiles "
                             f"must have the same extents")
@@ -1122,6 +1175,7 @@ class SharedTile(Value):
 
     def store(self, value: Tile) -> None:
         """Register tile -> LDS."""
+        _no_strip("an LDS tile store", value.ty)
         t = _t()
         hkd.StoreSharedOp(self.v, value.v, loc=t.loc())
 
@@ -1186,13 +1240,22 @@ class SharedVec(Value):
     __slots__ = ()
 
     def store(self, vec: Vec, index: Scalar = 0) -> None:
+        _strip_vec_lds(vec.ty)
         t = _t()
         hkd.StoreSharedVecOp(self.v, vec.v, as_int(index).v, loc=t.loc())
 
     def load(self, vt: RegVecType, index: Scalar = 0) -> Vec:
+        _strip_vec_lds(vt)
         t = _t()
         return Vec(hkd.LoadSharedVecOp(mlir_type(vt), self.v, as_int(index).v,
                                        loc=t.loc("ldv")).result, vt)
+
+
+def _strip_vec_lds(vt) -> None:
+    if _is_strip(vt) and vt.kind != "col":
+        raise TypeError(f"{vt!r} is a strip's row_vec, a strip itself; only a "
+                        f"strip's col_vec (one value a row) goes through an "
+                        f"LDS vector")
 
 
 class Stage(Value):

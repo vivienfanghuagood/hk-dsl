@@ -47,6 +47,22 @@ def RT(dtype: DType, rows: int, cols: int, layout: str = "row", frag=None) -> _R
     return _RT(dtype, rows, cols, layout, tuple(frag) if frag else None)
 
 
+def RS(dtype: DType, rows: int, cols: int, run: int = 8) -> _RT:
+    """A register strip type: kittens::rs<T, rows, cols, run>.
+
+    The layout for kernels that stream rows -- a norm, a softmax -- rather
+    than feed WMMA: lane l owns, of every row, the runs of `run` contiguous
+    columns starting at j*32*run + l*run, so a bf16 run of 8 is one 16-byte
+    access and nothing is held twice. `cols` is a whole number of 32*run
+    chunks. A strip loads and stores (element coordinates only, the element
+    type converting on the way), maps, reduces along rows (a butterfly that
+    leaves the answer in every lane) and columns, broadcasts its col_vec and
+    row_vec, and fills by column. Its row_vec has the strip's own column
+    layout: a weight vector loads with the same accesses as the rows it
+    scales."""
+    return _RT(dtype, rows, cols, "strip", run=run)
+
+
 def ST(dtype: DType, rows: int, cols: int, count: int = 1) -> _ST:
     """An LDS tile type; count > 1 is a multi-buffer."""
     return _ST(dtype, rows, cols, count)
@@ -100,7 +116,7 @@ def max(a, b):  # noqa: A001
 
 __all__ = [
     "kernel", "func", "Kernel", "TracedKernel", "Tensor", "Constexpr",
-    "RT", "ST", "SV", "col_vec", "row_vec", "DType",
+    "RT", "RS", "ST", "SV", "col_vec", "row_vec", "DType",
     "bf16", "fp16", "fp32", "i32", "i8", "fp8e4m3", "fp8e5m2",
     "arch", "lds", "math", "collective", "group", "Group",
     "range", "range_constexpr", "if_", "scope",

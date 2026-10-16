@@ -35,6 +35,33 @@ static ParseResult parseRowCol(AsmParser &p, bool &col) {
   return success();
 }
 
+/// A tile's layout: `row`, `col`, or `strip<RUN>`.
+static ParseResult parseTileLayout(AsmParser &p, bool &col, unsigned &run) {
+  StringRef kw;
+  SMLoc at = p.getCurrentLocation();
+  run = 0;
+  col = false;
+  if (p.parseKeyword(&kw))
+    return failure();
+  if (kw == "row")
+    return success();
+  if (kw == "col") {
+    col = true;
+    return success();
+  }
+  if (kw == "strip")
+    return failure(p.parseLess() || p.parseInteger(run) || p.parseGreater());
+  return p.emitError(at, "expected 'row', 'col' or 'strip<RUN>', got '")
+         << kw << "'";
+}
+
+static void printTileLayout(AsmPrinter &p, bool col, unsigned run) {
+  if (run)
+    p << "strip<" << run << ">";
+  else
+    p << (col ? "col" : "row");
+}
+
 static ParseResult parseExtents(AsmParser &p, unsigned &rows, unsigned &cols) {
   SmallVector<int64_t, 2> dims;
   SMLoc at = p.getCurrentLocation();
@@ -73,31 +100,51 @@ static ParseResult parseOptionalFrag(AsmParser &p, unsigned &rows,
 
 Type RegTileType::parse(AsmParser &p) {
   Type et;
-  unsigned rows, cols, fr = 0, fc = 0;
+  unsigned rows, cols, fr = 0, fc = 0, run;
   bool col;
   SMLoc at = p.getNameLoc();
   if (p.parseLess() || p.parseType(et) || p.parseComma() ||
-      parseExtents(p, rows, cols) || p.parseComma() || parseRowCol(p, col))
+      parseExtents(p, rows, cols) || p.parseComma() ||
+      parseTileLayout(p, col, run))
     return {};
   if (succeeded(p.parseOptionalComma()) && parseOptionalFrag(p, fr, fc))
     return {};
   if (p.parseGreater())
     return {};
   return RegTileType::getChecked([&] { return p.emitError(at); },
-                                 p.getContext(), et, rows, cols, col, fr, fc);
+                                 p.getContext(), et, rows, cols, col, fr, fc,
+                                 run);
 }
 
 void RegTileType::print(AsmPrinter &p) const {
-  p << "<" << getElementType() << ", " << getRows() << "x" << getCols() << ", "
-    << getLayout();
+  p << "<" << getElementType() << ", " << getRows() << "x" << getCols() << ", ";
+  printTileLayout(p, getColLayout(), getRun());
   if (hasFrag())
     p << ", frag " << getFragRows() << "x" << getFragCols();
   p << ">";
 }
 
 LogicalResult RegTileType::verify(function_ref<InFlightDiagnostic()> emitError,
-                                  Type et, unsigned rows, unsigned cols, bool,
-                                  unsigned fr, unsigned fc) {
+                                  Type et, unsigned rows, unsigned cols,
+                                  bool col, unsigned fr, unsigned fc,
+                                  unsigned run) {
+  if (run) {
+    if (!knownDtype(et) || dtypeBits(et) < 16)
+      return emitError() << "there is no " << dtypeName(et)
+                         << " strip: rs holds 16- and 32-bit elements";
+    if (col || fr)
+      return emitError() << "a strip has no col layout and no fragment";
+    if (run > 16 || (run & (run - 1)))
+      return emitError() << "strip run " << run
+                         << " must be a power of two of at most 16";
+    if (rows == 0)
+      return emitError() << "a strip has at least one row";
+    if (cols == 0 || cols % (32 * run))
+      return emitError() << "strip cols=" << cols
+                         << " must be a positive multiple of 32*run = "
+                         << 32 * run << ": a whole number of chunks";
+    return success();
+  }
   if ((fr == 0) != (fc == 0) || (fr && (fr % 16 || fc % 16)))
     return emitError() << "register tile fragment " << fr << "x" << fc
                        << ": both extents, multiples of 16 (or unset)";
@@ -168,11 +215,12 @@ uint64_t SharedTileType::getNumBytes() const {
 
 Type RegVecType::parse(AsmParser &p) {
   Type et;
-  unsigned rows, cols, fr = 0, fc = 0;
+  unsigned rows, cols, fr = 0, fc = 0, run;
   bool tileCol, kindCol, uniform = false;
   if (p.parseLess() || p.parseType(et) || p.parseComma() ||
       parseExtents(p, rows, cols) || p.parseComma() ||
-      parseRowCol(p, tileCol) || p.parseComma() || parseRowCol(p, kindCol))
+      parseTileLayout(p, tileCol, run) || p.parseComma() ||
+      parseRowCol(p, kindCol))
     return {};
   while (succeeded(p.parseOptionalComma())) {
     if (succeeded(p.parseOptionalKeyword("uniform"))) {
@@ -185,12 +233,14 @@ Type RegVecType::parse(AsmParser &p) {
   if (p.parseGreater())
     return {};
   return RegVecType::get(p.getContext(), et, rows, cols, tileCol, kindCol,
-                         uniform, fr, fc);
+                         uniform, fr, fc, run);
 }
 
 void RegVecType::print(AsmPrinter &p) const {
   p << "<" << getElementType() << ", " << getTileRows() << "x" << getTileCols()
-    << ", " << (getTileColLayout() ? "col" : "row") << ", " << getKind();
+    << ", ";
+  printTileLayout(p, getTileColLayout(), getTileRun());
+  p << ", " << getKind();
   if (getTileFragRows())
     p << ", frag " << getTileFragRows() << "x" << getTileFragCols();
   if (getUniform())
