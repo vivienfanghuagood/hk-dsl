@@ -30,6 +30,11 @@ On gfx950 the candidate is a third path, "hipkittens": HipKittens' own CDNA4
 GEMM (`ops.hipkittens`), which takes M and N in multiples of 256. Its table,
 routes_vllm_linear_gfx950.json, is measured the same way, against F.linear.
 
+A table may also name kernels hk does not ship: FlyDSL's GEMM
+(`flydsl_gemm`), where FlyDSL is installed and measured faster. Those rows
+are an overlay on the table's own (see `engine.RouteTable`), so without
+FlyDSL the routes are exactly the table's own ones.
+
 How it gets in. `UnquantizedLinearMethod.apply` calls
 `dispatch_unquantized_gemm()` on every forward, as does the LM head, so
 rebinding that one name -- by identity, in every vLLM module that imported it
@@ -50,9 +55,14 @@ from __future__ import annotations
 
 from typing import Any, Callable, Dict, Optional
 
-from . import _common, engine
+from . import _common, engine, flydsl_gemm
 
 PREFIXES = ("vllm",)
+
+#: Paths a table may prefer that come from libraries hk does not depend on:
+#: name -> a module with `variant(m, n, k)` (None where it does not take the
+#: shape or is not installed) and `run(x, weight, out)`.
+OPTIONAL = {flydsl_gemm.NAME: flydsl_gemm}
 
 #: Where a routing table override comes from.
 ROUTES_ENV = "HK_VLLM_ROUTES"
@@ -68,10 +78,14 @@ def _linear_fake(x, weight, bias=None):
     return x.new_empty((*x.shape[:-1], weight.shape[0]))
 
 
+#: What a table's runs may name: hk's kernels, HipKittens' and the engine's.
+#: Optional paths come only through a table's overlay, where their variant
+#: is checked.
+RUN_PATHS = ("hk", "hk_decode", "hipkittens", "fallback")
+
 PATCH = engine.Op("hk_vllm::linear",
                   "linear(Tensor x, Tensor weight, Tensor? bias=None) -> Tensor",
-                  _linear_fake, paths=("hk", "hk_decode", "hipkittens", "fallback"),
-                  graph="safe")
+                  _linear_fake, paths=RUN_PATHS + tuple(OPTIONAL), graph="safe")
 
 #: Which way each call went; see `engine.Patch` for what a replay counts as.
 STATS = PATCH.stats
@@ -101,11 +115,14 @@ def set_routes(table: Optional[engine.RouteTable]) -> None:
 
 def route_for(m: int, n: int, k: int, *, bf16: bool = True, bias: bool = False,
               contiguous_weight: bool = True) -> str:
-    """"hk", "hk_decode", "hipkittens" or "fallback" for y = x @ W.T, x (m, k), W (n, k).
+    """"hk", "hk_decode", "hipkittens", "flydsl" or "fallback" for y = x @ W.T,
+    x (m, k), W (n, k).
 
     The table says which kernel measured fastest; this also asks whether that
-    kernel takes the call at all. A bias falls back rather than paying a
-    second pass over the output; no Qwen3 linear has one.
+    kernel takes the call at all. An optional path the table prefers here is
+    taken only if its library would run the variant that was measured;
+    otherwise the table's own answer stands. A bias falls back rather than
+    paying a second pass over the output; no Qwen3 linear has one.
     """
     from ..ops import decode_gemm  # noqa: PLC0415
     from ..ops import gemm as hk_gemm  # noqa: PLC0415
@@ -113,7 +130,13 @@ def route_for(m: int, n: int, k: int, *, bf16: bool = True, bias: bool = False,
     if m < 1 or not bf16 or bias or not contiguous_weight:
         return "fallback"
     table = routes()
-    path = table.lookup(m, n, k) if table is not None else "fallback"
+    if table is None:
+        return "fallback"
+    for name, var in table.preferred(m, n, k):
+        opt = OPTIONAL.get(name)
+        if opt is not None and opt.variant(m, n, k) == var:
+            return name
+    path = table.lookup(m, n, k)
     if path == "hk" and (n % hk_gemm.BLOCK_N or k % hk_gemm.K_STEP):
         return "fallback"
     if path == "hk_decode" and not decode_gemm.fits(m, n, k):
@@ -123,7 +146,7 @@ def route_for(m: int, n: int, k: int, *, bf16: bool = True, bias: bool = False,
 
         if not hipkittens.gemm_fits(m, n, k):
             return "fallback"
-    return path if path in PATCH.paths else "fallback"
+    return path if path in RUN_PATHS else "fallback"
 
 
 def route(m: int, n: int, k: int, **how) -> bool:
@@ -208,6 +231,8 @@ def linear(x, weight, bias=None):
     out = torch.empty((m, n), device=x.device, dtype=x.dtype)
     if path == "hk":
         _op_for(m, n, k)(x2, weight, out)
+    elif path in OPTIONAL:
+        OPTIONAL[path].run(x2, weight, out)
     else:
         from ..ops import decode_gemm  # noqa: PLC0415
 
@@ -304,7 +329,14 @@ def apply() -> str:
     cache = _own_compile_cache()
     return (f"linear -> hk where {table.source} measured it faster, on "
             f"{len(list(table.shapes()))} shapes ({len(names)} binding"
-            f"{'' if len(names) == 1 else 's'} rebound; compile cache {cache})")
+            f"{'' if len(names) == 1 else 's'} rebound; compile cache {cache})"
+            + optional_status(table))
+
+
+def optional_status(table: engine.RouteTable) -> str:
+    """What became of the table's optional rows, for a patch's report line."""
+    return "".join(f"; {name} rows: {OPTIONAL[name].status()}"
+                   for name in sorted(table.optional_paths()) if name in OPTIONAL)
 
 
 def revert() -> str:

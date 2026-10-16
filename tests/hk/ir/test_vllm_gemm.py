@@ -20,7 +20,10 @@ SHAPES = (QKV, O, GATE_UP, DOWN, LM_HEAD)
 
 
 @pytest.fixture(autouse=True)
-def shipped():
+def shipped(monkeypatch):
+    # The table's own runs, whatever is installed: with FlyDSL importable its
+    # rows would answer some of these Ms (tests/hk/gpu/test_flydsl_gemm.py).
+    monkeypatch.setattr(vllm_gemm, "OPTIONAL", {})
     vllm_gemm.set_routes(None)
     yield
     vllm_gemm.set_routes(None)
@@ -88,6 +91,60 @@ def test_a_table_cannot_send_a_shape_to_a_kernel_that_refuses_it():
 def test_an_unknown_path_in_a_table_falls_back():
     vllm_gemm.set_routes(engine.RouteTable({QKV: {"runs": [[1, 99999, "cutlass"]]}}))
     assert vllm_gemm.route_for(4096, *QKV) == "fallback"
+
+
+class _Fly:
+    """Stands in for flydsl_gemm: the tile its dispatcher would pick, per M."""
+
+    def __init__(self, tiles):
+        self.tiles = tiles
+
+    def variant(self, m, n, k):
+        return self.tiles.get(m)
+
+    def run(self, x, weight, out):
+        raise AssertionError("routing tests launch nothing")
+
+
+FLY = engine.RouteTable({QKV: {
+    "runs": [[1, 64, "hk_decode"], [80, 99999, "hk"]],
+    "prefer": {"flydsl": [[1024, 4096, "128x128x32w4"], [96, 96, "32x32x64w1"]]}}})
+
+
+def test_flydsl_takes_an_m_only_at_the_tile_that_was_measured(monkeypatch):
+    vllm_gemm.set_routes(FLY)
+    monkeypatch.setitem(vllm_gemm.OPTIONAL, "flydsl", _Fly({
+        96: "32x32x64w1", 1024: "128x128x32w4", 2048: "128x128x32w4",
+        1056: "32x64x64w2", 8192: "128x128x32w4"}))
+    assert vllm_gemm.route_for(1024, *QKV) == "flydsl"
+    assert vllm_gemm.route_for(2048, *QKV) == "flydsl"
+    assert vllm_gemm.route_for(96, *QKV) == "flydsl"
+    assert vllm_gemm.route_for(1056, *QKV) == "hk"      # a tile not measured here
+    assert vllm_gemm.route_for(1030, *QKV) == "hk"      # no FlyDSL tile divides it
+    assert vllm_gemm.route_for(8192, *QKV) == "hk"      # outside every range
+    assert vllm_gemm.route_for(1024, 4096, 4096) == "fallback"   # shape not in table
+    assert vllm_gemm.route_for(1024, *QKV, bias=True) == "fallback"
+    assert vllm_gemm.route_for(1024, *QKV, bf16=False) == "fallback"
+
+
+def test_without_flydsl_its_rows_route_as_if_absent(monkeypatch):
+    vllm_gemm.set_routes(FLY)
+    monkeypatch.setitem(vllm_gemm.OPTIONAL, "flydsl", _Fly({}))
+    for m in (4, 96, 1024, 2048, 4096):
+        assert vllm_gemm.route_for(m, *QKV) == FLY.lookup(m, *QKV)
+
+
+def test_an_optional_path_inside_the_runs_is_refused():
+    # The runs are what every install routes by; FlyDSL there would bypass
+    # the check that it runs the tile that was measured.
+    vllm_gemm.set_routes(engine.RouteTable({QKV: {"runs": [[1, 99999, "flydsl"]]}}))
+    assert vllm_gemm.route_for(4096, *QKV) == "fallback"
+
+
+def test_the_op_counts_the_flydsl_path():
+    from hk.integration import flydsl_gemm
+
+    assert flydsl_gemm.NAME == "flydsl" in vllm_gemm.PATCH.paths
 
 
 def test_bias_dtype_and_layout_fall_back():

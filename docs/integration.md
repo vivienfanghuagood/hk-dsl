@@ -250,10 +250,13 @@ vLLM's torch.compile the token count is symbolic, so branching on it inside
 traced code would be a guard and a recompile; inside the op it is neither, and
 CUDA-graph capture sees a launch on torch's stream.
 
-Each call takes one of three paths, counted in `vllm_gemm.STATS`: `hk` (the
-prefill GEMM), `hk_decode` (the decode GEMV, for small M) or `fallback` —
-vLLM's own `rocm_unquantized_gemm` where it has one, else `F.linear`. Which
-one is a [routing table](#routing-tables). A call also falls back when it is
+On gfx1100 each call takes one of three paths, counted in `vllm_gemm.STATS`:
+`hk` (the prefill GEMM), `hk_decode` (the decode GEMV, for small M) or
+`fallback` — vLLM's own `rocm_unquantized_gemm` where it has one, else
+`F.linear`. Which one is a [routing table](#routing-tables). A table may
+also send a call to FlyDSL's GEMM (`flydsl`, below), and on gfx950 to
+HipKittens' CDNA4 GEMM (`hipkittens`,
+[design note](design/cdna-hipkittens-ops.md)). A call also falls back when it is
 not bf16, has a bias, has a non-contiguous weight, does not tile, or runs on a
 device of another arch. With no table for the current arch the patch is not
 installed at all, and says so.
@@ -263,6 +266,40 @@ vLLM keys its compiled graphs, including the AOT cache, by config and
 source, not by what is patched. A patched engine sharing a cache root with
 an unpatched one loads back graphs whose linear layers never call the op
 ([vLLM 0.31](history/20-vllm-031.md)).
+
+### FlyDSL's GEMM as an optional path
+
+hk-dsl sits beside FlyDSL rather than replacing it: FlyDSL's RDNA3 GEMM is
+faster than hk's at some shapes, and hk's decode GEMV and attention at
+others ([the scoreboard](history/26-the-scoreboard-retuned.md)). So the op
+has another path, `flydsl`, which calls FlyDSL's dispatcher
+(`rdna3_gemm_dispatch`: its tile heuristic and per-tile options, no
+measurement) where a routing table measured it fastest
+(`hk/integration/flydsl_gemm.py`).
+- **Optional.** hk does not depend on FlyDSL. The path exists when `flydsl`
+  is importable and so is FlyDSL's `kernels` package, which is in FlyDSL's
+  repository, not its wheel: put a checkout of the installed version on
+  `sys.path`, or name it in `FLYDSL_ROOT`. HuggingFace's unrelated `kernels`
+  package (installed beside SGLang) shadows it, and the patch's report line
+  says so. `HK_FLYDSL=0` turns the path off.
+- **Only at the tile that was measured.** FlyDSL compiles M into the kernel,
+  so its tiles must divide the shape (M a multiple of 32 at least), and its
+  speed depends on which tile M leaves it. At (4096, 4096), 1024 rows run a
+  128x128 tile at 0.95x hk's time, while 1056 rows fit only 32-row tiles,
+  at 1.42x. A table's FlyDSL rows therefore name the tile, and a call takes the
+  path only if FlyDSL's dispatcher would pick that tile for it.
+- **Everything else goes where the table without FlyDSL sends it.** A
+  bf16, contiguous call whose M no tile divides, at another tile, or on an
+  install without FlyDSL, takes the table's own path, hk's or the engine's.
+- **Costs.** Each new M is a FlyDSL compile, 0.4-0.8 s cold and 0.04 s from
+  FlyDSL's disk cache. A call costs about 60 us of host time through
+  FlyDSL's launch path, against 18 for hk's op. Both are hidden behind a GEMM
+  at the sizes where FlyDSL wins. The launch is on torch's stream with no
+  host sync, so CUDA graphs capture it (`tests/hk/gpu/test_flydsl_gemm.py`).
+
+The shipped Qwen3-8B table carries FlyDSL rows. End to end they shorten a
+decode step at 96-128 requests by 12% and pure-prefill steps by 1-2.6%, and
+change nothing else ([performance](performance.md#flydsls-gemm-on-the-routes)).
 
 ## The MoE patch
 
@@ -352,6 +389,17 @@ a missing file raises (`engine.shipped_table`). There are no buckets: GEMM time
 is a comb in M, not a curve, and a power-of-two bucket either routes the teeth
 or gives up the gaps between them. What the table bought over the hand-written
 rule is in [its chapter](history/14-routing-table.md).
+
+**Optional paths are an overlay.** With FlyDSL installed, `route_tune.py`
+also times FlyDSL's GEMM, through the same call the op makes, at every M one
+of its tiles divides (`--no-flydsl` leaves it out). FlyDSL never enters the
+runs above, which are what every install routes by. Instead each shape gets
+`prefer: {"flydsl": [[lo, hi, tile], ...]}`: for each tile FlyDSL's
+dispatcher picked, the measured Ms where it beat the engine by `min_gain` and
+the runs' own answer by `opt_gain` (2%), merged over consecutive measured Ms
+of that tile. `hi` null means "and above". `RouteTable.preferred` answers which
+ranges cover an M; `vllm_gemm.route_for` takes one only if FlyDSL's dispatcher
+would pick that tile, and otherwise answers from the runs.
 
 ## The CUDA-graph contract
 
@@ -602,6 +650,8 @@ spelled:
 | `HK_VLLM_INT4` | `_vllm_plugin.py` | route AWQ linear layers' fp16/bf16 batches up to 64 tokens |
 | `HK_VLLM_USER` | `_vllm_plugin.py` | comma-separated modules or `.py` files to import in vLLM's process: your `register.op` / `register.patch` calls |
 | `HK_VLLM_ROUTES` | `vllm_gemm.py`, via `engine.shipped_table` | a routing table to use instead of the shipped one |
+| `HK_FLYDSL` | `flydsl_gemm.py` | `0`/`off`/`no`/`false`: never take a table's FlyDSL rows, even with FlyDSL installed |
+| `FLYDSL_ROOT` | `flydsl_gemm.py` | a FlyDSL checkout whose `kernels/` package matches the installed `flydsl`, appended to `sys.path` |
 | `HK_SGLANG_LINEAR` | `_sglang_plugin.py` | route SGLang's unquantized linear layers |
 | `HK_SGLANG_ROUTES` | `sglang.py`, via `engine.shipped_table` | a routing table for SGLang's linear layers instead of the shipped one |
 | `HK_SGLANG_MOE` | `_sglang_plugin.py` | `1`: the torch top-k and hk's expert GEMMs; `topk`: the torch top-k alone |

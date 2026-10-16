@@ -29,6 +29,12 @@ def op():
     return torch.ops.hk_vllm.linear
 
 
+@pytest.fixture(autouse=True)
+def hk_paths_only(monkeypatch):
+    # hk's paths and the engine's; FlyDSL's is test_flydsl_gemm.py's.
+    monkeypatch.setattr(vllm_gemm, "OPTIONAL", {})
+
+
 def _wx(m, n, k, seed=0, dtype=torch.bfloat16):
     g = torch.Generator(device="cuda").manual_seed(seed)
     x = torch.randn(m, k, device="cuda", dtype=dtype, generator=g)

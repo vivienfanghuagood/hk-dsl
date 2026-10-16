@@ -60,7 +60,8 @@ stood then (990 and 386).
 * **gpu** — `python3 -m pytest tests/hk/gpu -q`. Needs a Radeon and torch;
   skipped when either is missing. This is the tier that launches, and the
   only one that can catch an indexing error — a kernel that reads the wrong
-  tile compiles perfectly and passes every gate.
+  tile compiles perfectly and passes every gate. `test_flydsl_gemm.py` also
+  needs FlyDSL (`FLYDSL_ROOT`), and says so when it skips.
 * **engines** — `python3 -m pytest tests/hk/engines -q`, in each engine's
   venv. Every symbol a vLLM or SGLang patch rebinds, with the signature its
   stand-in forwards to and the call sites the rebind must reach; a module is

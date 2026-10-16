@@ -25,6 +25,7 @@ it is a time ratio.
 - [Paged decode attention](#paged-decode-attention)
 - [Paged prefill](#paged-prefill)
 - [End to end in vLLM](#end-to-end-in-vllm)
+  - [FlyDSL's GEMM on the routes](#flydsls-gemm-on-the-routes)
 - [End to end in SGLang](#end-to-end-in-sglang)
 - [After the MLIR move](#after-the-mlir-move)
 - [Against torch, at full size, after the cross-warp fix](#against-torch-at-full-size-after-the-cross-warp-fix)
@@ -48,6 +49,7 @@ it is a time ratio.
 | vLLM end to end, linear-layer patch | 1.10-1.84x per request | stock vLLM 0.16.1.dev0 | win at every shape, in both modes | [cross-workgroup reduction](history/11-cross-workgroup-reduction.md) |
 | vLLM end to end under its defaults, attention backend / both patches | 1.007-1.48x / 1.48-1.85x per request | stock vLLM 0.16.1.dev0, CUDA graphs, prefix caching, chunked prefill | win at every shape | [captured whole](history/17-the-decode-step-captured-whole.md) |
 | vLLM 0.31 end to end, Qwen3-8B, attention backend / both patches | 1.05-1.48x / 1.20-1.75x per request; 1.01-1.39x TRITON_ATTN | stock vLLM 0.31.0 (ROCM_ATTN), and the TRITON_ATTN backend hk replaces | win at every shape; the gain over TRITON_ATTN is prefill | [vLLM 0.31](history/20-vllm-031.md) |
+| vLLM 0.31 end to end, Qwen3-8B, linear routes with FlyDSL's GEMM rows | decode step 1.14x hk+gemm's at 96-128 requests (1.394x / 1.666x stock); prefill 1.0-2.6% faster at 1-4 requests; tie elsewhere | the same patches routed by the table without FlyDSL rows; stock vLLM 0.31.0 | win where a step's M is one FlyDSL's tiles divide and it measured faster; otherwise unchanged | [chapter 30](history/30-flydsl-routes-gate-contracts.md) |
 | paged decode attention, vLLM 0.31 | 0.83-0.95x per layer at 16-64 requests | Triton's `unified_attention` on hk's cache, triton-rocm 3.7.1 | loss, kernel for kernel; yet routing 16+ requests to Triton slowed the captured step (4096 x 16: 59.0 -> 74.2 ms), so only up to 8 go there | [vLLM 0.31](history/20-vllm-031.md) |
 | MoE GEMM (bf16), OLMoE and Qwen3-30B-A3B shapes | 1.00-2.77x at 1-256 tokens; 0.41-0.87x at 512-4096 | vLLM 0.31's Triton `fused_moe` kernel, its own config | win to 256 tokens, which the route takes; loss above, which stays on Triton | [MoE](history/21-moe.md) |
 | vLLM 0.31 end to end, OLMoE-1B-7B, MoE patch / with hk's attention | 1.02-1.41x / 1.17-2.22x per request; decode step to 2.62x | stock vLLM 0.31.0 | win at every shape | [MoE](history/21-moe.md) |
@@ -576,6 +578,61 @@ old hand-written rule, `table` by the measured table.
 |---|---|---|---|---|---|---|---|---|---|---|
 | 512x96 | 27349.9 | 25561.4 | 1.07 | 24523.9 | 1.12 | 97.48 | 97.98 | 0.99 | 91.48 | 1.07 |
 | 512x128 | 37156.1 | 34813.6 | 1.07 | 32419.1 | 1.15 | 136.11 | 136.92 | 0.99 | 121.14 | 1.12 |
+
+### FlyDSL's GEMM on the routes
+
+[Chapter 30](history/30-flydsl-routes-gate-contracts.md). vLLM 0.31.0, torch
+2.13.0+rocm7.2, FlyDSL 0.4.0, Qwen3-8B, bf16. Prefix caching and chunked
+prefill off; three rounds, arms alternating, best of each. `hk+gemm` is the
+attention backend and the linear layers routed by the table shipped before
+(2026-10-14). `+FlyDSL` uses the same patches with the table re-measured with
+FlyDSL installed. Its own runs equal the old table's, but for one tie at
+gate_up M = 3; it adds FlyDSL rows where FlyDSL's GEMM, at the tile its
+dispatcher picks, beat the table's answer by 2%. Ratios are against stock.
+Every arm's greedy tokens matched stock's.
+
+Per call (`route_tune.py`, against the table's own answer at each M, where
+one of FlyDSL's tiles divides M):
+
+| M | qkv | o | gate_up | down |
+|---|---|---|---|---|
+| 64-256, median | 0.84x the time | 0.85x | 0.87x | 0.97x |
+| 272-1024, median | 1.19x | 1.14x | 1.33x | 1.22x |
+| above 1024, median | 0.98x | 0.98x | 0.99x | 0.975x |
+
+FlyDSL ran at 304 of the table's 740 (shape, M) points and was routed at
+105. Between 272 and 1024 rows most Ms leave it only 32- or 64-row tiles,
+and it loses.
+
+Eager, 72 output tokens:
+
+| ctx x batch | stock | hk+gemm | x | +FlyDSL | x | prefill, hk+gemm ms | +FlyDSL ms |
+|---|---|---|---|---|---|---|---|
+| 1024 x 1 | 2011.98 | 1686.58 | 1.193x | 1682.37 | 1.196x | 196.56 | 191.56 |
+| 1024 x 4 | 2820.60 | 2392.51 | 1.179x | 2381.10 | 1.185x | 727.52 | 721.03 |
+| 1024 x 16 | 7503.73 | 5020.04 | 1.495x | 5022.69 | 1.494x | 2934.70 | 2937.27 |
+| 4096 x 1 | 3645.15 | 2343.31 | 1.556x | 2339.26 | 1.558x | 795.19 | 786.91 |
+| 4096 x 4 | 7240.82 | 5069.63 | 1.428x | 5055.22 | 1.432x | 3183.78 | 3183.20 |
+| 4096 x 16 | 24676.60 | 15732.51 | 1.569x | 15747.82 | 1.567x | 12728.54 | 12745.88 |
+
+Decode steps at batch 1-16 are within 0.7% of each other. Graph mode (vLLM
+as it ships), 512-token prompts, 160 output tokens:
+
+| ctx x batch | total, stock ms | hk+gemm | x | +FlyDSL | x | decode, stock ms | hk+gemm | x | +FlyDSL | x |
+|---|---|---|---|---|---|---|---|---|---|---|
+| 512 x 96 | 22471.29 | 17750.13 | 1.266x | 16732.92 | 1.343x | 71.72 | 58.58 | 1.224x | 51.44 | 1.394x |
+| 512 x 128 | 29184.06 | 21325.82 | 1.368x | 20232.26 | 1.442x | 92.32 | 62.95 | 1.467x | 55.42 | 1.666x |
+
+Prefill there is unchanged (8543 against 8549 ms, 11412 against 11447).
+FlyDSL pays where a step's M is one of its tiles divides and one it was
+measured fastest at:
+- decode at 96 and 128 requests, 12% a step, where hk's 128-row GEMM
+  leaves the grid underfilled and FlyDSL runs 32- and 64-row tiles;
+- pure prefill steps of 1024 and 4096 tokens, 1.0-2.6% of prefill.
+
+Below 64 requests decode stays on hk's GEMV and vLLM's skinny GEMMs. A step
+mixing decodes into a prefill has an M no tile divides. FlyDSL ran in
+vLLM's captured decode graphs (2,052 captured launches a round).
 
 ### The vision tower
 

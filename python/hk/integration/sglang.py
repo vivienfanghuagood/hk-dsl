@@ -97,7 +97,8 @@ def apply_linear() -> str:
     cls.apply = apply
     _LINEAR = (cls, orig)
     return (f"linear -> hk ({cls.__module__}.UnquantizedLinearMethod.apply; "
-            f"routes measured against {table.meta.get('engine', '?')})")
+            f"routes measured against {table.meta.get('engine', '?')})"
+            + vllm_gemm.optional_status(table))
 
 
 def available() -> bool:

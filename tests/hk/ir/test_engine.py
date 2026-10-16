@@ -30,6 +30,42 @@ def test_a_table_answers_inside_runs_and_falls_back_between_them(m, path):
     assert T.lookup(m, 64, 32) == path
 
 
+P = engine.RouteTable({
+    (64, 32): {"runs": [[1, 64, "hk_decode"], [80, 99999, "hk"]],
+               "prefer": {"flydsl": [[1024, 2048, "128x128x32w4"],
+                                     [1088, 1216, "64x64x64w4"],
+                                     [4096, None, "128x128x32w4"]]}},
+})
+
+
+@pytest.mark.parametrize("m,want", [
+    (1024, [("flydsl", "128x128x32w4")]), (2048, [("flydsl", "128x128x32w4")]),
+    (1100, [("flydsl", "128x128x32w4"), ("flydsl", "64x64x64w4")]),
+    (2049, []), (4095, []),                    # between ranges: the runs decide
+    (4096, [("flydsl", "128x128x32w4")]),      # hi None: and above
+    (10 ** 6, [("flydsl", "128x128x32w4")]),
+    (512, []),
+])
+def test_optional_ranges_answer_with_the_variant_measured(m, want):
+    assert P.preferred(m, 64, 32) == want
+
+
+def test_optional_rows_leave_the_runs_alone():
+    assert P.lookup(1024, 64, 32) == "hk" and P.lookup(4, 64, 32) == "hk_decode"
+    assert P.preferred(1024, 128, 32) == [] and T.preferred(100, 64, 32) == []
+    assert P.optional_paths() == {"flydsl"} and "flydsl" in P.paths()
+    assert T.optional_paths() == set()
+
+
+def test_optional_rows_round_trip_through_json(tmp_path):
+    p = tmp_path / "t.json"
+    p.write_text(json.dumps({"arch": "gfx1100", "shapes": {"64x32": {
+        "runs": [[1, 99999, "hk"]], "prefer": {"flydsl": [[96, None, "32x32x64w1"]]}}}}))
+    t = engine.RouteTable.from_json(p)
+    assert t.preferred(96, 64, 32) == [("flydsl", "32x32x64w1")]
+    assert t.preferred(95, 64, 32) == []
+
+
 def test_a_shape_never_measured_falls_back_and_is_remembered():
     t = engine.RouteTable({(64, 32): {"runs": [[1, 8, "hk"]]}})
     assert t.lookup(4, 128, 32) == "fallback"

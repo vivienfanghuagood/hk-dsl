@@ -68,3 +68,11 @@ them, and `hk.integration.engine.RouteTable` reads them. Each keeps the raw
 timings it decided from, the toolchain fingerprint and the margin (a kernel
 takes an M only where it beat the engine by `min_gain`). A table is per arch
 and per model: a shape it never measured takes the engine's path.
+
+A table measured with FlyDSL installed also carries, per shape, a `prefer`
+overlay: `[lo, hi, tile]` ranges where FlyDSL's GEMM, at the tile its
+dispatcher picked, beat the engine by `min_gain` and the table's own answer
+by `opt_gain`. The `runs` are what every install routes by; the overlay
+applies only where FlyDSL is importable and would pick that same tile
+(`hk.integration.flydsl_gemm`). Each point's timings include FlyDSL's and
+the tile it ran.

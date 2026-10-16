@@ -29,9 +29,9 @@ run decode $G/test_decode_gemm.py $G/test_paged.py $G/test_load_scalar.py &
 wait
 run phase2 $G/test_phase2.py $G/test_target_rmsnorm.py &
 run elem   $G/test_elementwise.py $G/test_bounded.py $G/test_strided.py $G/test_while.py $G/test_indexed.py &
-run torch  $G/test_torch_op.py $G/test_engine.py $G/test_vllm_gemm.py &
+run torch  $G/test_torch_op.py $G/test_engine.py $G/test_vllm_gemm.py $G/test_flydsl_gemm.py &
 wait
-rest=$(ls $G/test_*.py | grep -v -E "test_(gemm|autotune|attn|sdpa|decode_gemm|paged|load_scalar|phase2|target_rmsnorm|elementwise|bounded|strided|while|indexed|torch_op|engine|vllm_gemm)\.py")
+rest=$(ls $G/test_*.py | grep -v -E "test_(gemm|autotune|attn|sdpa|decode_gemm|paged|load_scalar|phase2|target_rmsnorm|elementwise|bounded|strided|while|indexed|torch_op|engine|vllm_gemm|flydsl_gemm)\.py")
 run rest $rest
 echo done >> "$out/status"
 ! grep -q -v -E " exit 0$|^done$" "$out/status"

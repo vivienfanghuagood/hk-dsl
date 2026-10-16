@@ -11,6 +11,135 @@ project could be wrong without noticing:
 - every patch rebinds engine internals by name, and nothing caught an engine
   release moving one.
 
+## FlyDSL's GEMM on the routes
+
+Chapter 26 left a division: FlyDSL's RDNA3 GEMM, through its own dispatcher,
+is 2-5% faster than hk's at prefill shapes, while hk's decode GEMV and
+attention have no FlyDSL counterpart that beats them. hk-dsl's place is
+beside FlyDSL, so the linear-layer op `hk_vllm::linear` now has a path for
+it, `flydsl`, taken where a measured table says FlyDSL is fastest.
+
+**Installing FlyDSL takes two halves.** PyPI's `flydsl` 0.4.0 is the
+compiler and runtime. The kernels, `kernels/gemm/rdna3_f16_gemm_autotune.py`
+and its siblings, are in FlyDSL's repository and not in the wheel. The
+checkout has to match the wheel: the v0.4.0 tag, commit 1f35116, cloned
+beside the vLLM venv as `/workspace/FlyDSL`. `FLYDSL_ROOT` names it.
+The SGLang venv has HuggingFace's unrelated `kernels` package installed,
+which would shadow FlyDSL's. `flydsl_gemm` says so rather than failing
+with an import error three modules deep.
+
+**What a call costs** (gfx1100, GPU 3):
+- A new M is a compile, 0.4-0.8 s cold and 0.04 s from FlyDSL's disk cache.
+  M is a compile-time constant of the kernel.
+- A call is about 60 us of host time through `rdna3_gemm_dispatch`. The
+  launcher alone is 46 us and `pick_tile` 2.7; hk's op takes 18.
+- So calling around the public dispatcher would save 5 us, and the path uses
+  the dispatcher. At the Ms FlyDSL wins the GEMM takes longer than the host
+  does.
+
+**The tile decides the speed, so the table names the tile.** FlyDSL's tiles
+must divide the shape, with M a multiple of 32 at least, and its dispatcher
+picks among the ones that do. At (4096, 4096):
+
+| M | the tile FlyDSL picks | FlyDSL ms | hk ms |
+|---|---|---|---|
+| 128 | 64x64x64, 4 waves | 0.080 | 0.115 |
+| 1024 | 128x128x32, 4 waves | 0.429 | 0.453 |
+| 1056 | 32x32x64, 1 wave | 0.658 | 0.463 |
+| 4096 | 128x128x32, 4 waves | 1.574 | 1.627 |
+
+A route that said "FlyDSL from 1024 to 2048" would send 1056 rows to a
+kernel 42% slower than hk's. So the table's FlyDSL rows are ranges per tile,
+`[lo, hi, "128x128x32w4"]`. A call takes the path only if FlyDSL's
+dispatcher would pick that same tile for its M (`flydsl_gemm.variant`).
+
+**And they are an overlay, not routes.** The table's runs are measured
+exactly as before, from hk's kernels against the engine's, and they are
+what every install routes by. FlyDSL's rows sit beside them
+(`RouteTable.preferred`). Where FlyDSL is not installed, or its tile there
+was not the one measured, or no tile divides M, a call goes where a table
+without FlyDSL would send it. Making FlyDSL one more path in the runs would
+have been simpler, but wrong in two ways:
+- an install without FlyDSL would then send those Ms to the engine instead
+  of to hk;
+- the runs would break into alternating rows: hk at the odd multiples of 16,
+  FlyDSL at the even ones, and the engine's path at every M between two
+  rows that disagree.
+
+**`route_tune.py` times FlyDSL through the same call the op makes**, at
+every M a tile divides, and records the tile. A FlyDSL row needs FlyDSL to
+beat the engine by `min_gain` (3%) and the runs' own answer by `opt_gain`
+(2%). Consecutive measured Ms of the same tile merge; Ms of other tiles,
+and Ms where FlyDSL did not run, do not break a range, since the tile check
+excludes them at run time. Qwen3-8B's five shapes took 214 s:
+- the runs came out identical to the table shipped two days earlier, but for
+  one tie at gate_up M = 3, between vLLM's skinny GEMM and hk's GEMV;
+- FlyDSL ran at 304 of the 740 (shape, M) points and was routed at 105.
+
+Against the runs' answer, FlyDSL's time by region:
+
+| M | qkv | o | gate_up | down |
+|---|---|---|---|---|
+| 64-256, median | 0.84x | 0.85x | 0.87x | 0.97x |
+| 272-1024, median | 1.19x | 1.14x | 1.33x | 1.22x |
+| above 1024, median | 0.98x | 0.98x | 0.99x | 0.975x |
+
+The first row is the useful finding. Below 256 rows hk's GEMM is a comb, one
+128-row block computed whole however much of it is kept, while FlyDSL's 32-
+and 64-row tiles fill the grid: 0.63-0.96x hk's time at 96-256 rows. The
+middle row is FlyDSL's dispatcher with only small tiles left, and is never
+routed. The last row is chapter 26's 2-5%, often under the 2% bar.
+
+**End to end, two runs.** Three arms in vLLM 0.31's own process, alternating,
+three rounds, best of each: stock; `hk+gemm` (the attention backend and the
+table shipped before); `+FlyDSL` (the same, with the new table). Every arm's
+greedy tokens matched stock's.
+
+At the shapes every vLLM chapter has used (eager, 72 tokens), FlyDSL took
+3,240 of hk's 30,816 GEMM calls a round. Those are the pure-prefill steps of
+1024 and 4096 tokens, on qkv, o and down (at gate_up FlyDSL was 1-2% faster
+at those Ms, under the 2% bar):
+
+| ctx x batch | total, hk+gemm ms | +FlyDSL | prefill, hk+gemm ms | +FlyDSL |
+|---|---|---|---|---|
+| 1024 x 1 | 1686.58 | 1682.37 | 196.56 | 191.56 (-2.5%) |
+| 1024 x 4 | 2392.51 | 2381.10 | 727.52 | 721.03 (-0.9%) |
+| 1024 x 16 | 5020.04 | 5022.69 | 2934.70 | 2937.27 |
+| 4096 x 1 | 2343.31 | 2339.26 | 795.19 | 786.91 (-1.0%) |
+| 4096 x 4 | 5069.63 | 5055.22 | 3183.78 | 3183.20 |
+| 4096 x 16 | 15732.51 | 15747.82 | 12728.54 | 12745.88 |
+
+At 16 requests, and at 4096 x 4, every prefill step after the first also
+carries decodes, so its M is 4096 plus a few, which no tile divides. Decode at 1-16 requests
+never reaches FlyDSL: it is hk's GEMV or vLLM's skinny GEMM. So the FlyDSL
+rows are worth 1-2.6% of prefill there, and nothing measurable in total.
+
+At 96 and 128 requests (graph mode, as vLLM ships; 512-token prompts, 160
+tokens, chapter 14's shape), a decode step's M is in FlyDSL's best range:
+
+| ctx x batch | decode, stock ms | hk+gemm | +FlyDSL | total, hk+gemm x | +FlyDSL x |
+|---|---|---|---|---|---|
+| 512 x 96 | 71.72 | 58.58 (1.224x) | 51.44 (1.394x) | 1.266x | 1.343x |
+| 512 x 128 | 92.32 | 62.95 (1.467x) | 55.42 (1.666x) | 1.368x | 1.442x |
+
+The decode step is 12% shorter, and the request 5-6%. Prefill is unchanged,
+8543 against 8549 ms. FlyDSL ran inside vLLM's captured decode graphs, 2,052
+captured launches a round. `tests/hk/gpu/test_flydsl_gemm.py` holds that:
+it captures and replays FlyDSL's path under the op's `graph="safe"`
+contract, which makes a host sync raise.
+
+**So, honestly:**
+- The FlyDSL rows win end to end where a step's M is one FlyDSL's tile
+  divides and was measured faster: decode at 96 and 128 requests, by 12%
+  a step (the rows reach 192-384 requests, depending on the shape), and
+  pure-prefill steps of tile-aligned length, by 1-2.6%.
+- Everywhere else they change nothing, by construction.
+- The table shipped in `hk/tuned/` now carries them. An install without
+  FlyDSL routes exactly as before.
+- The 2-5% chapter 26 measured on square prefill GEMMs is mostly not what
+  pays. What pays is that FlyDSL's dispatcher has small tiles for the Ms
+  where hk's 128-row GEMM is weakest.
+
 ## The engines' contracts
 
 The patches rebind, by name or by identity, about twenty symbols across vLLM

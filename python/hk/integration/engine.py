@@ -199,6 +199,18 @@ class RouteTable:
 
     No buckets. GEMM time is a comb in M, not a curve, and a power-of-two
     bucket either routes the teeth or gives up the gaps between them.
+
+    **Optional paths.** A kernel from a library hk does not depend on --
+    FlyDSL's GEMM -- is not in the runs above, which are what every install
+    gets. It is an overlay, `ent["prefer"][path]`: a list of `[lo, hi,
+    variant]`, each saying that at every measured M in [lo, hi] where the
+    library picked `variant` (its tile, say) it beat the runs' answer. `hi`
+    None means "and above". `preferred` answers which optional paths an M is
+    inside a range of, with the variant measured there; the caller takes one
+    only if that library is importable and would pick that same variant at
+    this M, and otherwise uses `lookup`. So a table with FlyDSL rows routes
+    exactly as one without them wherever FlyDSL is missing or would run
+    something that was not measured.
     """
 
     def __init__(self, shapes: Dict[Tuple[int, int], dict], *, fallback: str = "fallback",
@@ -209,6 +221,7 @@ class RouteTable:
         self._runs: Dict[Tuple[int, int], List[Tuple[int, int, str]]] = {}
         self._lows: Dict[Tuple[int, int], List[int]] = {}
         self._above: Dict[Tuple[int, int], str] = {}
+        self._prefer: Dict[Tuple[int, int], List[Tuple[str, int, float, str]]] = {}
         for nk, ent in shapes.items():
             rs = sorted((int(lo), int(hi), str(p)) for lo, hi, p in ent["runs"])
             for (_, hi, _), (lo2, _, _) in zip(rs, rs[1:]):
@@ -217,6 +230,11 @@ class RouteTable:
             self._runs[nk] = rs
             self._lows[nk] = [r[0] for r in rs]
             self._above[nk] = str(ent.get("above", rs[-1][2] if rs else fallback))
+            pref = [(str(path), int(lo), float("inf") if hi is None else int(hi), str(var))
+                    for path, ranges in ent.get("prefer", {}).items()
+                    for lo, hi, var in ranges]
+            if pref:
+                self._prefer[nk] = pref
         #: (N, K) asked for and not in the table -- each is a shape a tuner
         #: run would route, and until then takes the engine's path.
         self.misses: set = set()
@@ -236,7 +254,19 @@ class RouteTable:
         return self._runs.keys()
 
     def paths(self) -> set:
-        return {p for rs in self._runs.values() for _, _, p in rs} | set(self._above.values())
+        return ({p for rs in self._runs.values() for _, _, p in rs} | set(self._above.values())
+                | self.optional_paths())
+
+    def optional_paths(self) -> set:
+        return {p for pref in self._prefer.values() for p, _, _, _ in pref}
+
+    def preferred(self, m: int, n: int, k: int) -> List[Tuple[str, str]]:
+        """`(path, variant)` for every optional path whose measured ranges
+        cover M at this shape. Empty for most tables and most Ms."""
+        pref = self._prefer.get((n, k))
+        if not pref:
+            return []
+        return [(p, var) for p, lo, hi, var in pref if lo <= m <= hi]
 
     def lookup(self, m: int, n: int, k: int) -> str:
         rs = self._runs.get((n, k))
