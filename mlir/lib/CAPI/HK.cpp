@@ -16,7 +16,7 @@
 MLIR_DEFINE_CAPI_DIALECT_REGISTRATION(HK, hk, mlir::hk::HKDialect)
 
 MlirStringRef mlirHKDialectVersion(void) {
-  return mlirStringRefCreateFromCString("hk-dialect-1");
+  return mlirStringRefCreateFromCString("hk-dialect-2");
 }
 
 void mlirHKRegisterPasses(void) {

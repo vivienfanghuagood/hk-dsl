@@ -646,7 +646,7 @@ def HK_TransposeOp : HK_UnaryMapOp<"transpose">;
 def HK_TransposeSepOp : HK_UnaryMapOp<"transpose_sep">;
 
 class HK_MmaOp<string mnemonic> : HK_Op<mnemonic> {
-  let summary = mnemonic # ": acc + A x B on the WMMA unit";
+  let summary = mnemonic # ": acc + A x B on the matrix cores (WMMA on RDNA, MFMA on CDNA)";
   let arguments = (ins Optional<HK_RegTileType>:$dst, HK_RegTileType:$a,
                        HK_RegTileType:$b, HK_RegTileType:$c);
   let results = (outs Optional<HK_RegTileType>:$result);

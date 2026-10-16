@@ -8,7 +8,8 @@ def HK_RegTileType : HK_Type<"RegTile", "rt"> {
   let description = [{
     `!hk.rt<f32, 16x64, row>`. The layout is not cosmetic: it decides which
     mma variant applies and whether an LDS load is a ds_read_b128 or sixteen
-    scalar reads. Extents are in units of the 16x16 WMMA fragment.
+    scalar reads. Extents are in units of the 16x16 base fragment (WMMA's
+    on RDNA, MFMA's on CDNA).
 
     `!hk.rt<bf16, 16x64, row, frag 16x32>` names the matrix-core fragment
     the tile is laid out in, where it is not the target's 16x16: gfx950's
@@ -21,7 +22,7 @@ def HK_RegTileType : HK_Type<"RegTile", "rt"> {
     owning `run` contiguous elements of a row per 32*run-column chunk. Rows
     are any positive count; columns a whole number of chunks. A strip is
     never an mma operand, never goes through LDS as a tile, and has no
-    fragment.
+    fragment. kittens::rs is include/rdna3's alone, so strips are gfx1100's.
   }];
   let parameters = (ins "::mlir::Type":$elementType, "unsigned":$rows,
                         "unsigned":$cols, "bool":$colLayout,
