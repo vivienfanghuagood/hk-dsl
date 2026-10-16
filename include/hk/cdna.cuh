@@ -580,6 +580,60 @@ __device__ inline static void store_bounded(const GL &dst, const RT &src, const 
     detail::hk_store_tile(dst, src, idx, limit);
 }
 
+/*
+ * fp32 register tiles <-> LDS tiles. include/cdna4's load(rt, st) and
+ * store(st, rt) take 16-bit tiles only (static_assert "Unsupported type"),
+ * and a cross-warp combine of fp32 partial sums -- the decode GEMV's -- is
+ * exactly this. Plain LDS accesses, one element at a time through the
+ * fragment's coordinates and the shared tile's own swizzle: the compiler
+ * sees them and waits for them, which is what hk-lds-pipeline takes an fp32
+ * tile's store and load to be. More specialized than the library's
+ * templates, so an fp32 pair picks these.
+ */
+namespace detail {
+template<typename ST> __device__ inline float *hk_st_elem(ST &s, int r, int c) {
+    const int sub = (r / ST::underlying_subtile_rows) * ST::underlying_subtiles_per_row +
+                    c / ST::underlying_subtile_cols;
+    const uint32_t off = ST::swizzle({r % ST::underlying_subtile_rows, c % ST::underlying_subtile_cols});
+    return (float *)((char *)&s.data[0] + sub * ST::underlying_subtile_bytes + off);
+}
+}  // namespace detail
+
+#if defined(KITTENS_CDNA4)
+template<int R, int C, typename SS, typename L, typename RS>
+__device__ inline static void store(st<float, R, C, SS> &dst, const rt<float, R, C, L, RS> &src) {
+    using RT = rt<float, R, C, L, RS>;
+    using F = detail::hk_frag<RT>;
+    const int lane = laneid();
+    #pragma unroll
+    for (int i = 0; i < RT::height; i++)
+        #pragma unroll
+        for (int j = 0; j < RT::width; j++)
+            #pragma unroll
+            for (int e = 0; e < F::E; e++) {
+                const int2 c = detail::hk_frag_coord<RT>(e, lane);
+                *detail::hk_st_elem(dst, i * F::R + c.x, j * F::C + c.y) = detail::hk_get(src, i, j, e);
+            }
+}
+template<int R, int C, typename SS, typename L, typename RS>
+__device__ inline static void load(rt<float, R, C, L, RS> &dst, const st<float, R, C, SS> &src) {
+    using RT = rt<float, R, C, L, RS>;
+    using F = detail::hk_frag<RT>;
+    const int lane = laneid();
+    #pragma unroll
+    for (int i = 0; i < RT::height; i++)
+        #pragma unroll
+        for (int j = 0; j < RT::width; j++)
+            #pragma unroll
+            for (int e = 0; e < F::E; e++) {
+                const int2 c = detail::hk_frag_coord<RT>(e, lane);
+                detail::hk_set(dst, i, j, e,
+                               *detail::hk_st_elem(const_cast<st<float, R, C, SS> &>(src),
+                                                   i * F::R + c.x, j * F::C + c.y));
+            }
+}
+#endif
+
 #if defined(KITTENS_CDNA4)
 namespace detail {
 typedef __attribute__((address_space(3))) uint32_t *hk_lds_ptr;
@@ -603,10 +657,13 @@ __device__ void hk_buf_ld_lds(hk_i32x4 rsrc, hk_lds_ptr lds, int size, int voffs
  *
  * The copies count on vmcnt only. hk's group_wait_for retires them with the
  * count hk-lds-pipeline derives, and a barrier after it makes every warp's
- * share visible; nothing here waits.
+ * share visible; nothing here waits. `limit` ends the descriptor that many
+ * rows from the tile's first as well: a copy with limit 0 fills the tile with
+ * zeros, and moves none of its addressing.
  */
 template<int NW, ducks::st::all ST, typename U, ducks::coord::tile COORD>
-__device__ inline static void group_load_async(ST &dst, const strided_gl<U> &src, const COORD &idx) {
+__device__ inline static void group_load_async(ST &dst, const strided_gl<U> &src, const COORD &idx,
+                                               int limit = ST::rows) {
     using T = typename ST::dtype;
     static_assert(sizeof(T) == sizeof(U) && sizeof(T) == 2, "16-bit tiles of the global's own dtype");
     static_assert(ST::underlying_subtile_bytes_per_thread == 16, "the 16-byte DMA needs a 16-byte lane run");
@@ -617,7 +674,7 @@ __device__ inline static void group_load_async(ST &dst, const strided_gl<U> &src
     const auto unit = idx.template unit_coord<2, 3>();
     const U *base = (const U *)&src[unit];
     const int rs = int(src.template stride<2>());
-    const detail::hk_i32x4 r = detail::hk_tile_srsrc<ST::rows>(src, unit, base, ST::rows);
+    const detail::hk_i32x4 r = detail::hk_tile_srsrc<ST::rows>(src, unit, base, limit);
     const int lane = laneid();
     const int w = warpid_uniform() % NW;
     const uint32_t lds = __builtin_amdgcn_readfirstlane(

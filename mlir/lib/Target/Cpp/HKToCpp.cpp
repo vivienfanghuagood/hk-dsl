@@ -1067,7 +1067,8 @@ private:
             w("kittens::group_load_async<" +
               std::to_string(o.getThreads() / tgt->wave) + ">(" +
               name(o.getDst()) + ", " + name(o.getSrc()) + ", " +
-              coordArg(o.getIdx(), tileCpp(o.getDst().getType())) + ");");
+              coordArg(o.getIdx(), tileCpp(o.getDst().getType())) +
+              (o.getRows() ? ", " + name(o.getRows()) : std::string()) + ");");
             return;
           }
           std::string g = "kittens::group<" +

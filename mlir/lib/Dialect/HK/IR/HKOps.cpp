@@ -325,6 +325,9 @@ LogicalResult GroupLoadOp::verify() {
   if (getAsync() && !dmaCalls())
     return emitOpError("async: the tile is not a whole number of 16-byte "
                        "copies per thread");
+  if (getRows() && !getAsync())
+    return emitOpError("rows: a row limit is the async copy's, whose "
+                       "descriptor it narrows");
   return success();
 }
 

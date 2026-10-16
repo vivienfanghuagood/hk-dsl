@@ -414,12 +414,15 @@ def HK_GroupLoadOp : HK_Op<"group_load"> {
     hk-lds-pipeline, and a barrier after that makes the whole tile visible.
     The tile is a whole allocation or one buffer of a stack picked by a
     constant, so the pass can tell which tile a read or a later copy touches.
+    `rows` (async only) ends the copy that many rows from the tile's first:
+    rows past it read zero, as past the tensor's last row.
   }];
   let arguments = (ins HK_SharedTileType:$dst, HK_GlobalType:$src,
-                       HK_CoordType:$idx, I64Attr:$threads, UnitAttr:$async);
+                       HK_CoordType:$idx, Optional<I32>:$rows,
+                       I64Attr:$threads, UnitAttr:$async);
   let assemblyFormat = [{
-    $src `[` $idx `]` `into` $dst attr-dict `:` qualified(type($src)) `,` qualified(type($idx))
-    `into` qualified(type($dst))
+    $src `[` $idx `]` (`rows` $rows^)? `into` $dst attr-dict `:` qualified(type($src)) `,`
+    qualified(type($idx)) `into` qualified(type($dst))
   }];
   let hasVerifier = 1;
   let extraClassDeclaration = [{

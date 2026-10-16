@@ -21,7 +21,7 @@ from .module import mlir_type
 from ..target import get_target
 from ..types import StageBufferType
 from . import builder as B
-from .values import SharedTile, Stage, View
+from .values import SharedTile, Stage, View, as_int
 
 
 class Group:
@@ -49,16 +49,22 @@ class Group:
         if dst.ty.count != 1:
             raise TypeError(f"{what} is {dst.ty}, a stack; index it: As[tic]")
 
-    def load(self, dst: SharedTile, src: View, *, wait: bool = True) -> None:
+    def load(self, dst: SharedTile, src: View, *, wait: bool = True,
+             rows=None) -> None:
         """Global -> LDS by the whole group, issued and waited.
 
         `wait=False` (gfx950) issues the DMA, buffer_load ... lds, and returns
         with it in flight: name the tile in `g.wait_for` and put a barrier
         after that before any warp reads it. `dst` is a whole allocation or
         one buffer of a stack picked by a Python int, so hk-lds-pipeline can
-        check every read of it and every later copy into it."""
+        check every read of it and every later copy into it. `rows` (with
+        wait=False) ends the copy that many rows from the tile's first, as
+        the tensor's last row does: rows past it read zero."""
         self._one(dst, "group load destination")
         t = B.current()
+        if rows is not None and wait:
+            raise TypeError("g.load(rows=...) narrows the asynchronous copy's "
+                            "descriptor; pass wait=False")
         if not wait:
             tgt = get_target(t.arch)
             if not tgt.has_global_to_lds_dma or tgt.arch != "gfx950":
@@ -72,6 +78,7 @@ class Group:
                     "whole LDS tile. Copy into the allocation, or one buffer "
                     "of a stack.")
         hkd.GroupLoadOp(dst.v, src.tensor.v, src.idx.v, self.threads,
+                        rows=None if rows is None else as_int(rows).v,
                         async_=not wait, loc=t.loc())
 
     def wait_for(self, *tiles: SharedTile) -> None:

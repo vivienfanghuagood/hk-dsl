@@ -79,3 +79,12 @@ func.func @pingpong_two_conditions(%p: i1, %q: i1) {
   hk.pingpong_end %q
   return
 }
+
+// -----
+
+func.func @rows_on_a_waited_copy(%g: !hk.gl<bf16>, %i: !hk.coord<element>, %n: i32) {
+  %s = hk.alloc_shared : !hk.st<bf16, 128x64>
+  // expected-error@+1 {{rows: a row limit is the async copy's}}
+  hk.group_load %g[%i] rows %n into %s {threads = 512 : i64} : !hk.gl<bf16>, !hk.coord<element> into !hk.st<bf16, 128x64>
+  return
+}

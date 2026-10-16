@@ -40,6 +40,8 @@ func.func @types(%g: !hk.gl<bf16>) attributes {hk.kernel} {
   hk.setprio 1
   // CHECK: hk.group_load {{.*}} {async, threads = 512 : i64}
   hk.group_load %g[%idx] into %a0 {async, threads = 512 : i64} : !hk.gl<bf16>, !hk.coord<element> into !hk.st<bf16, 128x64>
+  // CHECK: hk.group_load {{.*}} rows %{{.*}} into
+  hk.group_load %g[%idx] rows %by into %a0 {async, threads = 512 : i64} : !hk.gl<bf16>, !hk.coord<element> into !hk.st<bf16, 128x64>
   // CHECK: hk.group_wait_for {{.*}} : !hk.st<bf16, 128x64>
   hk.group_wait_for %a0 : !hk.st<bf16, 128x64>
   %wid = hk.warp_id

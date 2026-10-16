@@ -3,7 +3,8 @@
 // gfx950's asynchronous group load, the vmcnt hk-lds-pipeline derives for it,
 // and the pingpong pair: two copies in flight, the first retired with the
 // second's two instructions still outstanding, one half of the workgroup a
-// barrier behind the other between pingpong_begin and pingpong_end.
+// barrier behind the other between pingpong_begin and pingpong_end. The
+// second copy has a row limit of 0: it fills its tile with zeros.
 
 module {
   func.func @dma(%a: !hk.gl<bf16> {hk.name = "a"})
@@ -20,8 +21,8 @@ module {
     %a1 = hk.shared_at %As[%c1] : !hk.st<bf16, 128x64, 2> -> !hk.st<bf16, 128x64> loc("a1")
     // CHECK: kittens::group_load_async<8>(a0, g.a, idx);
     hk.group_load %a[%idx] into %a0 {async, threads = 512 : i64} : !hk.gl<bf16>, !hk.coord<element> into !hk.st<bf16, 128x64>
-    // CHECK: kittens::group_load_async<8>(a1, g.a, idx);
-    hk.group_load %a[%idx] into %a1 {async, threads = 512 : i64} : !hk.gl<bf16>, !hk.coord<element> into !hk.st<bf16, 128x64>
+    // CHECK: kittens::group_load_async<8>(a1, g.a, idx, c);
+    hk.group_load %a[%idx] rows %c0 into %a1 {async, threads = 512 : i64} : !hk.gl<bf16>, !hk.coord<element> into !hk.st<bf16, 128x64>
     // CHECK: if (behind) __builtin_amdgcn_s_barrier();
     hk.pingpong_begin %behind
     // CHECK: kittens::vm_wait<2>();
