@@ -729,3 +729,44 @@ With every LDS read waited it was 540 (0.35x). `hk.ops.gemm` has no gfx950
 form yet (32x16 operand tiles, register staging). Closing the gap natively is
 HipKittens-level scheduling work, which is why HipKittens' own CDNA4 GEMM is
 wrapped as an hk op (below).
+
+### HipKittens' CDNA4 GEMM and GQA forward, as hk ops
+
+[CDNA3 and CDNA4, part 5](history/29-cdna.md#part-5-hipkittens-cdna4-kernels-behind-hks-engine-layer);
+method and every number in [design/cdna-hipkittens-ops.md](design/cdna-hipkittens-ops.md).
+`hk.ops.hipkittens` builds HipKittens' kernels verbatim through hk's cache and
+gate, and checks each build on the device first. Every arm is checked against
+fp32 first, then interleaved in one process, best of 7 rounds.
+
+GEMM, bf16, C = A·Bᵀ, TFLOP/s eager. HipKittens needs M and N to be multiples
+of 256.
+
+| M=N=K | HipKittens | hipBLASLt | rocBLAS | FlyDSL `gemm_a16w16` | HK / hipBLASLt |
+|---|---|---|---|---|---|
+| 1024 | 90 | 169 | 157 | 38 | 0.53x |
+| 2048 | 420 | 667 | 655 | 302 | 0.63x |
+| 4096 | 1432 | 1484 | 1502 | 1447 | 0.96x |
+| 8192 | 1539 | 1612 | 1614 | 1574 | 0.95x |
+
+At Llama-3-8B and Qwen3-8B's linear shapes, HipKittens trails hipBLASLt:
+- 0.18-0.93x at M = 256-1024, where a 256x256 tile per workgroup is too few
+  workgroups;
+- 0.91-0.96x at M ≥ 4096.
+
+It wins 4-27% only where hipBLASLt's heuristic picks a slow kernel. For
+example, at o_proj M = 2048 it runs 886 TFLOP/s against hipBLASLt's 708. The
+measured gfx950 route table (`routes_vllm_linear_gfx950.json`) sends those
+points, 37 of 206 and all at M ≥ 1792, to HipKittens.
+
+GQA forward, bf16, TFLOP/s:
+
+| B, H, H_KV, N, D | causal | HipKittens | torch SDPA (aotriton flash) | FlyDSL flash | HK / SDPA | HK / FlyDSL |
+|---|---|---|---|---|---|---|
+| 16, 64, 8, 1024, 128 | no / yes | 966 / 663 | 570 / 253 | 1010 / 702 | 1.69x / 2.62x | 0.96x / 0.94x |
+| 16, 64, 8, 4096, 128 | no / yes | 1242 / 1092 | 690 / 432 | 1254 / 1120 | 1.80x / 2.53x | 0.99x / 0.98x |
+| 16, 64, 8, 8192, 128 | no / yes | 1283 / 1192 | 772 / 497 | 1277 / 1212 | 1.66x / 2.40x | 1.00x / 0.98x |
+| 1, 32, 8, 4096, 128 | no / yes | 1149 / 896 | 659 / 349 | 1145 / 974 | 1.74x / 2.57x | 1.00x / 0.92x |
+| 16, 64, 8, 4096, 64 | no / yes | 933 / 796 | 726 / 539 | 929 / 855 | 1.28x / 1.48x | 1.00x / 0.93x |
+
+aiter is not installable here: PyPI's `aiter` is an unrelated package, and
+`amd-aiter` is not published.

@@ -1,6 +1,6 @@
 # HipKittens' CDNA4 GEMM and GQA attention as hk ops, measured on an MI355X
 
-> Branch `cdna-hkops`, from `cdna` at `3e2f70a`. Hardware: one Instinct MI355X (gfx950,
+> Written on branch `cdna-hkops` (from `cdna` at `3e2f70a`); merged with chapter 29, part 5. Hardware: one Instinct MI355X (gfx950,
 > GPU 5 of a shared node, idle at the start of every session). Everything that launches
 > ran in `rocm/pytorch:rocm7.2.3 … py3.12 torch 2.10`; ROCm 7.1's hipcc was mounted
 > read-only from the host where a build needed it. HipKittens is the pinned submodule

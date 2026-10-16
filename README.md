@@ -119,6 +119,9 @@ compile-only, since none was available). On one MI355X:
   Without it, every LDS GEMM build returned NaN.
 - `python -m hk.runtime.cocheck` runs hk's resource and wait gates on any
   code object, hk's or not.
+- HipKittens' own gfx950 kernels are hk ops behind the engine layer. GQA
+  forward runs 1.28-2.62x torch SDPA. The GEMM is routed only where it beats
+  hipBLASLt, by a measured table.
 
 See [design/cdna.md](docs/design/cdna.md) for the status, [chapter
 29](docs/history/29-cdna.md) for the record, and [performance](docs/performance.md#cdna-on-one-mi355x)

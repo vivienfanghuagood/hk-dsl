@@ -12,6 +12,7 @@
 | [Testing](testing.md) | the four test tiers, how to run each, and the three gates the MLIR move passed |
 | [Development record](history/README.md) | the chronological record, Phases 1-7 and the chapters after them, verbatim |
 | [CDNA3/4 (design)](design/cdna.md) | what is RDNA3-only, what HipKittens offers on gfx942/gfx950, the op-family estimates, and what runs on an MI355X |
+| [HipKittens on CDNA4 (design)](design/cdna-hipkittens-ops.md) | HipKittens' gfx950 GEMM and GQA forward as hk ops: constraints, the toolchain matrix, the on-device check, measurements against hipBLASLt / SDPA / FlyDSL, the route table |
 
 New to hk: read [getting started](getting-started.md), then
 [the language](language.md). Deciding whether to use it:

@@ -22,6 +22,7 @@ What has landed since the assessment, in the order of section 6:
 | 3. bind hazard | measured: without the bind every gfx950 build hoists MFMAs above the wait and returns NaN; with it, correct | `tools/cdna-probes/bind_hazard.py` |
 | code-object gate | `hk.runtime.cocheck`: resources and wait hazards from any code object (hk, HipKittens, Triton, FlyDSL) | `python/hk/runtime/cocheck.py` |
 | CDNA tiles | 16x32 fragments and wider blocks for the elementwise and row kernels; the gate picks the width; four tiles a warp for wide folded norm rows | `hk.ops.elementwise`, `norm`, `fused`, `quant` |
+| 4. HipKittens' CDNA4 kernels | `hk.ops.hipkittens`: the GEMM and GQA forward, verbatim, as `engine.Op`s, checked on the device first (ROCm 7.1 miscompiles the GEMM, 7.2.3 cannot compile the GQA); GQA 1.28-2.62x SDPA; the GEMM routed only where it beats hipBLASLt, by a measured gfx950 table ([details](cdna-hipkittens-ops.md)) | `python/hk/ops/hipkittens.py`, `hk/tuned/routes_vllm_linear_gfx950.json` |
 | 8. occupancy timed | the gfx950 register model's steps measured on the part, at the model's boundaries; gfx950 `verified=True` | `tools/cdna-probes/occupancy_timed.py` |
 
 Builds now (`tools/cdna-probes/coverage.py --ops`, device scaffold, spill gate): **494/506
@@ -435,8 +436,10 @@ Where hk adds something on CDNA:
 2. ~~`hk-lds-pipeline`: per-target ds_read counts and the 4-bit cap; re-enable `wait=False`
    on CDNA.~~ Done.
 3. ~~The bind-hazard probe on gfx950 (§3.3.1).~~ Done: the bind is load-bearing.
-4. HipKittens' CDNA4 GEMM and GQA attention as `hk.ops` behind `engine.Op`, with a
-   RouteTable measured in vLLM on MI355X against hipBLASLt/aiter.
+4. ~~HipKittens' CDNA4 GEMM and GQA attention as `hk.ops` behind `engine.Op`, with a
+   RouteTable measured in vLLM on MI355X against hipBLASLt/aiter.~~ Done, measured against
+   hipBLASLt, rocBLAS, SDPA and FlyDSL (aiter not installable here); the table is measured
+   against `F.linear` (no vLLM in the container), and vLLM end to end on MI355X is next.
 5. ~~A row stride for the CDNA `gl` (on the fork's branch, not upstream), which also
    unblocks the code-object launcher.~~ Done in hk's shim instead (`strided_gl`), with
    HipKittens untouched.
