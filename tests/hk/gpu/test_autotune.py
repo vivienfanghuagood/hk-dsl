@@ -90,6 +90,11 @@ def test_a_space_compiles_times_and_records(records):
     assert len(res.rows) == 4
     assert res.survivors, res.report()
     assert res.best is not None and res.best.ms > 0
+    # The pick is a timed survivor of the gate and the fastest of them. Which
+    # one that is, is the GPU's business: on a shared MI355X the two tilings
+    # of this add came out within noise and swapped places between runs.
+    assert res.best in res.survivors
+    assert res.best.ms == min(r.ms for r in res.survivors)
     # Every surviving row carries what the gate saw: these are tiny kernels, so
     # no scratch and plenty of registers left.
     for r in res.survivors:
@@ -97,11 +102,16 @@ def test_a_space_compiles_times_and_records(records):
 
     # The record is what production reads back, not a separate copy of the
     # answer: the schedule it names is the one the tuner's own kernel() hands
-    # out for that key.
+    # out for that key -- unless it beat the default by less than the bar,
+    # where production keeps the default.
     assert (records / "test_add.json").exists()
-    assert t.schedule_for("2048x2048") == {**t.default, **res.best.schedule}
-    assert t.kernel("2048x2048") is t._kernel_for(
-        {**t.default, **res.best.schedule})
+    rec = hk.autotune.load_records("test_add")["2048x2048"]
+    assert rec["schedule"] == res.best.schedule
+    gain = rec.get("gain")
+    won = hk.autotune.enabled() and (gain is None or gain >= hk.autotune.min_gain())
+    want = {**t.default, **(res.best.schedule if won else {})}
+    assert t.schedule_for("2048x2048") == want
+    assert t.kernel("2048x2048") is t._kernel_for(want)
 
 
 def test_the_tuned_kernel_still_computes_the_right_answer(records):
