@@ -288,17 +288,58 @@ def test_a_barrier_with_writes_in_flight_is_refused():
         _trace(racy)
 
 
-def test_a_barrier_with_reads_in_flight_is_refused_too():
+def test_a_barrier_with_reads_of_an_unnamed_buffer_in_flight_is_refused_too():
     """The mirror hazard, and the one that is easier to talk yourself out of:
     the reads have landed *somewhere*, just not yet in registers, and the
-    buffer they came from is about to be overwritten by another warp."""
+    buffer they came from is about to be overwritten by another warp. When
+    the buffer is picked by a runtime index the pass cannot tell which writes
+    touch it, so the reads have to land before the barrier."""
     def racy(a: hk.Tensor[bf16]):
-        s = hk.lds.alloc(hk.ST(bf16, 128, 32))
-        s.subtile(32, 16, 0, 0).load(hk.RT(bf16, 32, 16, "row"), wait=False)
+        s = hk.lds.alloc(hk.ST(bf16, 128, 32), count=2, name="s")
+        s[a.rows % 2].subtile(32, 16, 0, 0).load(hk.RT(bf16, 32, 16, "row"), wait=False)
         hk.arch.barrier()
 
     with pytest.raises(VerifyError, match="ds_reads still in flight"):
         _trace(racy)
+
+
+def test_reads_of_a_named_buffer_may_cross_a_barrier_but_not_its_overwrite():
+    """A buffer the pass can name -- an allocation, or a stack's buffer picked
+    by a Python int -- lets the reads stay in flight across the barrier (as
+    HipKittens' CDNA4 GEMM keeps its A reads in flight across one), because
+    the hazard is checked where it happens: a later write into that buffer
+    while they are in flight, or before a barrier has passed since they
+    landed, is refused."""
+    t = hk.RT(bf16, 32, 16, "row")
+
+    def crossing(a: hk.Tensor[bf16]):
+        s = hk.lds.alloc(hk.ST(bf16, 128, 32), name="s")
+        x = s.subtile(32, 16, 0, 0).load(t, wait=False)
+        hk.arch.barrier()
+        hk.lds.wait_for(x)
+        a.at[0, 0] = x
+
+    _trace(crossing)
+
+    def overwritten(a: hk.Tensor[bf16]):
+        s = hk.lds.alloc(hk.ST(bf16, 128, 32), name="s")
+        x = s.subtile(32, 16, 0, 0).load(t, wait=False)
+        hk.arch.barrier()
+        s.subtile(32, 16, 1, 0).store(hk.zeros(t))
+        hk.lds.wait_for(x)
+
+    with pytest.raises(VerifyError, match="writes s while this warp's reads of it"):
+        _trace(overwritten)
+
+    def too_soon(a: hk.Tensor[bf16]):
+        s = hk.lds.alloc(hk.ST(bf16, 128, 32), name="s")
+        x = s.subtile(32, 16, 0, 0).load(t, wait=False)
+        hk.arch.barrier()
+        hk.lds.wait_for(x)
+        s.subtile(32, 16, 1, 0).store(hk.zeros(t))
+
+    with pytest.raises(VerifyError, match="overwrites s 0 barriers after"):
+        _trace(too_soon)
 
 
 def test_draining_costs_an_lgkmcnt_zero_in_the_source():

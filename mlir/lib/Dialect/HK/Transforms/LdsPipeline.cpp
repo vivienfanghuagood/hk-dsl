@@ -12,6 +12,16 @@
 // Loops are walked twice, the second time from the state the first left,
 // and must agree -- a body whose derived counts differ has no steady state.
 //
+// The same walk derives every `s_waitcnt vmcnt` for gfx950's asynchronous
+// group loads (buffer_load ... lds, counted on vmcnt and returned in flight)
+// and checks the two cross-warp hazards a copy into a shared buffer has:
+// reading it before every warp's share has landed, and copying into it
+// before every warp's reads of it have. Both come down to how many barriers
+// separate the two events in program order -- one, or two inside an
+// hk.pingpong, where half the workgroup runs a barrier behind the other.
+// That is what lets a read of a named buffer stay in flight across a
+// barrier: every later write into the buffer is checked against it instead.
+//
 // A port of python/hk/ir/passes/lds_pipeline.py; the messages are its.
 
 #include "hk/Dialect/HK/Transforms/Passes.h"
@@ -35,12 +45,69 @@ namespace {
 
 using Scope = SmallVector<Operation *, 4>;
 
+/// Which LDS buffer a shared-tile value is: its allocation and, for one
+/// buffer of a stack, the constant index. A runtime index is -1: the
+/// cross-warp checks below cannot tell which buffer that is, and leave it to
+/// the rules that do not need to know.
+struct Root {
+  Operation *alloc = nullptr;
+  int64_t index = -1;
+  bool known() const { return alloc && index >= 0; }
+  bool operator==(const Root &o) const {
+    return alloc == o.alloc && index == o.index;
+  }
+  /// Whether two buffers may overlap: the same allocation, and the same
+  /// buffer of it or one nobody can name.
+  bool overlaps(const Root &o) const {
+    return alloc && alloc == o.alloc &&
+           (index < 0 || o.index < 0 || index == o.index);
+  }
+};
+
+Root rootOf(Value v) {
+  int64_t index = 0;
+  while (Operation *def = v.getDefiningOp()) {
+    if (auto s = dyn_cast<SubtileOp>(def)) {
+      v = s.getSrc();
+    } else if (auto g = dyn_cast<GranulesOp>(def)) {
+      v = g.getSrc();
+    } else if (auto a = dyn_cast<SharedAtOp>(def)) {
+      index = -1;
+      if (auto c = a.getIndex().getDefiningOp<arith::ConstantOp>())
+        if (auto i = dyn_cast<IntegerAttr>(c.getValue()))
+          index = i.getInt();
+      v = a.getBuf();
+    } else if (isa<AllocSharedOp>(def)) {
+      return {def, index};
+    } else {
+      break;
+    }
+  }
+  return {};
+}
+
+/// When something happened, for the cross-warp checks: how many barriers
+/// this warp had passed, and the hk.pingpong it was inside, if any.
+struct Stamp {
+  int64_t barriers = 0;
+  Operation *region = nullptr;
+};
+
 struct Entry {
   const void *id;  ///< the tile for a read, the op for a write
   int64_t count;
   Value value;
   bool write;
   std::optional<Scope> scope;  ///< nullopt once a region it was issued in closed
+  Root src = {};               ///< the LDS buffer a read reads
+  bool crossed = false;        ///< a read still in flight at a barrier
+};
+
+/// One async group load, in flight on vmcnt.
+struct Dma {
+  Root root;
+  int64_t count;
+  Operation *op;
 };
 
 struct State {
@@ -54,19 +121,68 @@ struct State {
   /// another warp reads the old value.
   Operation *plainStore = nullptr;
 
+  /// Barriers passed (hk.pingpong's own are not counted: they are what makes
+  /// the two halves' counts differ by one), and the pingpong we are inside.
+  Stamp now;
+  /// Async group loads this warp has issued and not retired, in issue order.
+  SmallVector<Dma> dma;
+  /// When this warp's share of the latest copy into a buffer landed.
+  SmallVector<std::pair<Root, Stamp>> landed;
+  /// When this warp's latest read of a buffer landed; `crossed` reads only
+  /// for the second list, which every LDS write is checked against.
+  SmallVector<std::pair<Root, Stamp>> readsDone, crossedDone;
+  /// The op that last wrote a buffer through a group load, for messages.
+  SmallVector<std::pair<Root, Operation *>> copiedBy;
+
   int indexOf(Value v) const {
     for (auto [i, e] : llvm::enumerate(queue))
       if (e.id == v.getAsOpaquePointer() && !e.write)
         return i;
     return -1;
   }
+  static void stamp(SmallVector<std::pair<Root, Stamp>> &list, Root r,
+                    Stamp s) {
+    if (!r.known())
+      return;
+    for (auto &[k, v] : list)
+      if (k == r) {
+        v = s;
+        return;
+      }
+    list.push_back({r, s});
+  }
+  /// A read's data has landed: when, for the copy that will overwrite it.
+  void readLanded(const Entry &e) {
+    if (e.write)
+      return;
+    stamp(readsDone, e.src, now);
+    if (e.crossed)
+      stamp(crossedDone, e.src, now);
+  }
   void retireAllUnbound(Operation *by) {
-    for (auto &e : queue)
-      if (!e.write)
-        unbound[e.id] = by;
+    for (auto &e : queue) {
+      if (e.write)
+        continue;
+      unbound[e.id] = by;
+      readLanded(e);
+    }
     queue.clear();
   }
+  /// vmcnt(0): every async copy this warp issued has landed.
+  void retireAllDma() {
+    for (auto &d : dma)
+      stamp(landed, d.root, now);
+    dma.clear();
+  }
 };
+
+/// Barriers that must separate two events in different warps, the earlier
+/// stamped `then`: one, so the later warp is past a barrier the earlier one
+/// reached after its event; two when both are inside one hk.pingpong, where
+/// the same barrier is one program point later in half the workgroup.
+int64_t barriersNeeded(const Stamp &then, const Stamp &now) {
+  return 1 + (then.region && then.region == now.region ? 1 : 0);
+}
 
 std::string nameOf(Value v) {
   if (auto r = dyn_cast<OpResult>(v))
@@ -200,6 +316,7 @@ struct Walker {
       auto &e = st.queue[j];
       if (e.write)
         continue;
+      st.readLanded(e);
       if (!named.count(e.id))
         st.unbound[e.id] = op;
     }
@@ -220,8 +337,10 @@ struct Walker {
     return true;
   }
 
-  bool barrier(BarrierOp op, State &st) {
-    if (op.getDrain()) {
+  /// `counted`: whether it advances the stamp. hk.pingpong's barriers are
+  /// barriers for half the workgroup, and are what the stamp's region is for.
+  bool barrier(Operation *op, bool drain, State &st, bool counted = true) {
+    if (drain) {
       st.plainStore = nullptr;
     } else if (st.plainStore) {
       return fail(op, "barrier after " + Twine(opcodeOf(st.plainStore)) +
@@ -234,34 +353,223 @@ struct Walker {
                           "here." +
                           atLoc(st.plainStore) + atLoc(op));
     }
-    if (st.queue.empty())
-      return true;
-    if (!op.getDrain()) {
-      std::set<std::string> kinds;
-      for (auto &e : st.queue)
-        kinds.insert(e.write ? "write" : "read");
-      std::string what;
-      for (auto &k : kinds) {
-        if (!what.empty())
-          what += " and ";
-        what += "ds_" + k + "s";
+    if (drain) {
+      st.retireAllUnbound(op);
+    } else if (!st.queue.empty()) {
+      // A read of a buffer the pass can name may stay in flight: every
+      // write into that buffer is checked against it (writeAfterRead). A
+      // write in flight, or a read of a buffer picked at run time, may not.
+      bool refused = llvm::any_of(st.queue, [](const Entry &e) {
+        return e.write || !e.src.known();
+      });
+      if (refused) {
+        std::set<std::string> kinds;
+        for (auto &e : st.queue)
+          kinds.insert(e.write ? "write" : "read");
+        std::string what;
+        for (auto &k : kinds) {
+          if (!what.empty())
+            what += " and ";
+          what += "ds_" + k + "s";
+        }
+        return fail(op, "barrier with " + what +
+                            " still in flight. s_barrier orders execution, not "
+                            "memory: past it the other warps touch this LDS "
+                            "the other way round, and nothing waits for these. "
+                            "Either retire them first -- an lds_wait_for that "
+                            "names the tiles, which is free if the math needed "
+                            "them anyway -- or write barrier(drain=True) to "
+                            "spend an lgkmcnt(0) here." +
+                            atLoc(op));
       }
-      return fail(op, "barrier with " + what +
-                          " still in flight. s_barrier orders execution, not "
-                          "memory: past it the other warps touch this LDS "
-                          "the other way round, and nothing waits for these. "
-                          "Either retire them first -- an lds_wait_for that "
-                          "names the tiles, which is free if the math needed "
-                          "them anyway -- or write barrier(drain=True) to "
-                          "spend an lgkmcnt(0) here." +
-                          atLoc(op));
+      for (auto &e : st.queue)
+        e.crossed = true;
     }
-    st.retireAllUnbound(op);
+    if (counted)
+      ++st.now.barriers;
     return true;
   }
 
+  static std::string bufName(Root r) {
+    auto a = cast<AllocSharedOp>(r.alloc);
+    std::string n = valueNameOf(a->getLoc()).str();
+    if (a.getResult().getType().getCount() != 1)
+      n += "[" + (r.index < 0 ? std::string("?") : std::to_string(r.index)) +
+           "]";
+    return n;
+  }
+
+  static std::string barriersText(int64_t n) {
+    return n == 1 ? "a barrier" : std::to_string(n) + " barriers";
+  }
+
+  static std::string pingpongText(const Stamp &then, const Stamp &now) {
+    return barriersNeeded(then, now) > 1
+               ? " Inside hk.pingpong half the workgroup is a barrier "
+                 "behind, so it takes two."
+               : "";
+  }
+
+  /// Every warp writes part of a group load's tile, so before one is issued
+  /// every warp's reads of that buffer must have landed, a barrier (two in a
+  /// pingpong) ago. Any other write is checked only against reads that were
+  /// in flight at a barrier, which the barrier rule lets through for a
+  /// buffer the pass can name and nowhere else.
+  bool writeAfterRead(Operation *op, Root dst, bool workgroup, State &st) {
+    if (!dst.alloc)
+      return true;
+    for (auto &e : st.queue) {
+      if (e.write || !e.src.overlaps(dst) || (!workgroup && !e.crossed))
+        continue;
+      return fail(op, Twine(opcodeOf(op)) + " writes " + bufName(dst) +
+                          " while this warp's reads of it into " +
+                          nameOf(e.value) +
+                          " are still in flight, and the other warps' reads "
+                          "of it are no further along. Retire them with an "
+                          "lds_wait_for, then put " +
+                          barriersText(barriersNeeded(st.now, st.now)) +
+                          " between that and this write." +
+                          atLoc(op));
+    }
+    for (auto &[r, s] : workgroup ? st.readsDone : st.crossedDone) {
+      if (!r.overlaps(dst))
+        continue;
+      int64_t have = st.now.barriers - s.barriers, need = barriersNeeded(s, st.now);
+      if (have < need)
+        return fail(op, Twine(opcodeOf(op)) + " overwrites " + bufName(dst) +
+                            " " + Twine(have) + " barrier" +
+                            (have == 1 ? "" : "s") +
+                            " after this warp's reads of it landed. Another "
+                            "warp may still be reading it: a warp is only "
+                            "known to be past its reads once it has reached " +
+                            barriersText(need) + " after them." +
+                            pingpongText(s, st.now) + atLoc(op));
+    }
+    return true;
+  }
+
+  /// A read of a buffer a group load wrote: this warp's share must have
+  /// landed (group_wait_for), and every other warp's, which a barrier (two
+  /// in a pingpong) after their waits makes sure of.
+  bool readAfterCopy(Operation *op, Root src, State &st) {
+    if (!src.alloc)
+      return true;
+    for (auto &d : st.dma)
+      if (d.root.overlaps(src))
+        return fail(op, Twine(opcodeOf(op)) + " reads " + bufName(src) +
+                            " while this warp's copy into it is in flight. "
+                            "Name it in a group_wait_for, then a barrier, "
+                            "before reading it." +
+                            atLoc(d.op) + atLoc(op));
+    for (auto &[r, s] : st.landed) {
+      if (!r.overlaps(src))
+        continue;
+      int64_t have = st.now.barriers - s.barriers, need = barriersNeeded(s, st.now);
+      if (have < need)
+        return fail(op, Twine(opcodeOf(op)) + " reads " + bufName(src) +
+                            " " + Twine(have) + " barrier" +
+                            (have == 1 ? "" : "s") +
+                            " after this warp's share of the copy into it "
+                            "landed. The other warps' shares are only known "
+                            "to have landed " +
+                            barriersText(need) + " after their waits." +
+                            pingpongText(s, st.now) + atLoc(op));
+    }
+    return true;
+  }
+
+  bool groupLoad(GroupLoadOp op, State &st) {
+    Root dst = rootOf(op.getDst());
+    if (op.getAsync()) {
+      if (!cdna || cdna->arch != "gfx950")
+        return fail(op, "an asynchronous group load on " +
+                            (cdna ? cdna->arch : std::string("this target")) +
+                            ": only gfx950 has the 16-byte buffer_load ... lds "
+                            "it is. Use wait=True." +
+                            atLoc(op));
+      if (!dst.known())
+        return fail(op, "an asynchronous group load into a buffer picked by "
+                        "a runtime index. hk tracks which buffer a copy is in "
+                        "flight to, to check every read and every later copy "
+                        "against it; index the stack with a Python int." +
+                            atLoc(op));
+      for (auto &d : st.dma)
+        if (d.root == dst)
+          return fail(op, "a second copy into " + bufName(dst) +
+                              " while the first is still in flight. Retire "
+                              "the first with a group_wait_for." +
+                              atLoc(d.op) + atLoc(op));
+      if (!writeAfterRead(op, dst, true, st))
+        return false;
+      st.dma.push_back({dst, op.dmaCalls(), op});
+      return true;
+    }
+    if (!writeAfterRead(op, dst, true, st))
+      return false;
+    // Issued and waited by the group: it ends in s_waitcnt 0.
+    st.retireAllUnbound(op);
+    st.retireAllDma();
+    st.plainStore = nullptr;
+    State::stamp(st.landed, dst, st.now);
+    return true;
+  }
+
+  bool groupWaitFor(GroupWaitForOp op, State &st) {
+    int cut = -1;
+    for (Value v : op.getTiles()) {
+      Root r = rootOf(v);
+      int last = -1;
+      for (auto [i, d] : llvm::enumerate(st.dma))
+        if (d.root.overlaps(r))
+          last = int(i);
+      if (last < 0) {
+        bool landed = llvm::any_of(st.landed, [&](auto &kv) {
+          return kv.first.overlaps(r);
+        });
+        if (landed)
+          continue;
+        return fail(op, "group_wait_for names " +
+                            (r.alloc ? bufName(r) : nameOf(v)) +
+                            ", which has no copy in flight and has never had "
+                            "one. Either the group load is missing, or this "
+                            "names the wrong buffer." +
+                            atLoc(op));
+      }
+      cut = std::max(cut, last);
+    }
+    int64_t n = 0;
+    for (size_t j = cut + 1; j < st.dma.size(); ++j)
+      n += st.dma[j].count;
+    for (int j = 0; j <= cut; ++j)
+      State::stamp(st.landed, st.dma[j].root, st.now);
+    st.dma.erase(st.dma.begin(), st.dma.begin() + (cut + 1));
+    if (auto prev = op.getN(); prev && *prev != uint64_t(n))
+      return fail(op, "this group_wait_for needs vmcnt(" + Twine(*prev) +
+                          ") on one iteration and vmcnt(" + Twine(n) +
+                          ") on the next: the loop has no steady state. Issue "
+                          "the same copies every iteration, or peel the "
+                          "prologue out of the loop." +
+                          atLoc(op));
+    op.setNAttr(Builder(op.getContext()).getI64IntegerAttr(n));
+    return true;
+  }
+
+  /// hk.arch.vm_wait(keep): the oldest copies land until `keep` are left.
+  void vmWait(VmWaitOp op, State &st) {
+    int64_t total = 0;
+    for (auto &d : st.dma)
+      total += d.count;
+    size_t k = 0;
+    while (k < st.dma.size() && total > int64_t(op.getKeep())) {
+      total -= st.dma[k].count;
+      State::stamp(st.landed, st.dma[k].root, st.now);
+      ++k;
+    }
+    st.dma.erase(st.dma.begin(), st.dma.begin() + k);
+  }
+
   bool load(Operation *op, Value dst, bool wait, int64_t count, State &st,
-            const Scope &scope) {
+            const Scope &scope, Root src = {}) {
     if (st.indexOf(dst) >= 0)
       return fail(op, Twine(opcodeOf(op)) + " writes " + nameOf(dst) +
                           " while its previous LDS reads are still in "
@@ -269,16 +577,21 @@ struct Walker {
                           "the newer ones -- retire them with an "
                           "lds_wait_for first." +
                           atLoc(op));
+    if (!readAfterCopy(op, src, st))
+      return false;
     const void *id = dst.getAsOpaquePointer();
     if (wait) {
       // load<true> ends in lgkmcnt(0): it retires everything, binds nothing.
       st.retireAllUnbound(op);
+      State::stamp(st.readsDone, src, st.now);
       st.plainStore = nullptr;
       st.unbound.erase(id);
     } else {
       st.unbound.erase(id);
       st.bound.erase(id);
-      st.queue.push_back({id, count, dst, false, scope});
+      Entry e{id, count, dst, false, scope};
+      e.src = src;
+      st.queue.push_back(e);
     }
     return true;
   }
@@ -320,7 +633,29 @@ struct Walker {
         continue;
       }
       if (auto b = dyn_cast<BarrierOp>(op)) {
-        barrier(b, st);
+        barrier(op, b.getDrain(), st);
+        continue;
+      }
+      if (isa<PingPongBeginOp>(op)) {
+        barrier(op, false, st, /*counted=*/false);
+        st.now.region = op;
+        continue;
+      }
+      if (isa<PingPongEndOp>(op)) {
+        barrier(op, false, st, /*counted=*/false);
+        st.now.region = nullptr;
+        continue;
+      }
+      if (auto g = dyn_cast<GroupLoadOp>(op)) {
+        groupLoad(g, st);
+        continue;
+      }
+      if (auto w = dyn_cast<GroupWaitForOp>(op)) {
+        groupWaitFor(w, st);
+        continue;
+      }
+      if (auto v = dyn_cast<VmWaitOp>(op)) {
+        vmWait(v, st);
         continue;
       }
       if (auto l = dyn_cast<LoadSharedOp>(op)) {
@@ -343,21 +678,26 @@ struct Walker {
           }
           l.setLdsLoads(n < 0 ? 0 : n);
         }
-        load(op, dst, l.getWait(), n, st, scope);
+        load(op, dst, l.getWait(), n, st, scope, rootOf(l.getSrc()));
         continue;
       }
       if (auto l = dyn_cast<LoadFragOp>(op)) {
         Value dst = l.getDst() ? l.getDst() : l.getResult();
-        load(op, dst, l.getWait(), l.getLdsLoads(), st, scope);
+        load(op, dst, l.getWait(), l.getLdsLoads(), st, scope,
+             rootOf(l.getGranules()));
         continue;
       }
       if (auto s = dyn_cast<StoreFragOp>(op)) {
+        if (!writeAfterRead(op, rootOf(s.getGranules()), false, st))
+          continue;
         // Two raw ds_write_b128 with no wait of their own: they only raise
         // the immediate of every wait issued while they are in flight.
         st.queue.push_back({op, 2, s.getGranules(), true, scope});
         continue;
       }
       if (auto c = dyn_cast<StageCommitOp>(op)) {
+        if (!writeAfterRead(op, rootOf(c.getDst()), false, st))
+          continue;
         if (c.getWait()) {
           st.retireAllUnbound(op);
           st.plainStore = nullptr;
@@ -374,6 +714,8 @@ struct Walker {
       }
       if (auto s = dyn_cast<StoreSharedOp>(op)) {
         checkReads(op, st);
+        if (!writeAfterRead(op, rootOf(s.getDst()), false, st))
+          continue;
         // The vectorised form -- a row-layout 16-bit tile into an LDS tile of
         // its own type -- writes through inline asm and ends in lgkmcnt(0);
         // every other form is ordinary stores.
@@ -390,13 +732,6 @@ struct Walker {
         }
         continue;
       }
-      if (isa<GroupLoadOp>(op)) {
-        // Issued and waited by the group: it ends in s_waitcnt 0.
-        checkReads(op, st);
-        st.retireAllUnbound(op);
-        st.plainStore = nullptr;
-        continue;
-      }
       checkReads(op, st);
     }
     return st;
@@ -410,6 +745,7 @@ struct LdsPipelinePass : public mlir::hk::impl::HKLdsPipelineBase<LdsPipelinePas
       return;
     // A stale count from an earlier run would read as a missing steady state.
     f.walk([](LdsWaitForOp op) { op.removeNAttr(); });
+    f.walk([](GroupWaitForOp op) { op.removeNAttr(); });
     Walker w;
     auto arch = f->getAttrOfType<StringAttr>(attrs::kArch);
     if (const TargetInfo *t = getTarget(arch ? arch.getValue() : "gfx1100");
@@ -431,6 +767,14 @@ struct LdsPipelinePass : public mlir::hk::impl::HKLdsPipelineBase<LdsPipelinePas
                     << names
                     << ". Either they are dead -- drop the load -- or a wait "
                        "is missing.";
+      return signalPassFailure();
+    }
+    if (!fin.dma.empty()) {
+      f.emitError() << "the kernel ends with a copy into "
+                    << Walker::bufName(fin.dma.front().root)
+                    << " still in flight. Either nothing reads it -- drop the "
+                       "group load -- or a group_wait_for is missing."
+                    << atLoc(fin.dma.front().op);
       return signalPassFailure();
     }
   }

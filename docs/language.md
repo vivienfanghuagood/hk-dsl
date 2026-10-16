@@ -169,6 +169,40 @@ that every asynchronously loaded tile is waited for before it is read: see
 [`examples/04_gemm.py`](../examples/04_gemm.py) stages through LDS with a
 derived wait.
 
+**Copies left in flight (gfx950).** `g.load(tile, view, wait=False)` is
+gfx950's DMA, `buffer_load_dwordx4 ... lds`: sixteen bytes a lane straight
+into LDS, counted on vmcnt and returned in flight. `g.wait_for(*tiles)` is the
+`s_waitcnt vmcnt(n)` that retires this warp's share of the copies into those
+tiles, with `n` derived from the order the copies were issued, as `lgkmcnt` is
+for LDS reads. The other warps' shares are visible after a barrier:
+
+```python
+g.load(As[1], a.at[m0, k1], wait=False)   # next tile, in flight
+...                                        # math on As[0]
+g.wait_for(As[1])                          # vmcnt, derived
+hk.arch.barrier()                          # every warp's share has landed
+x = As[1].subtile(64, 64, wr, 0).load(T, wait=False)
+```
+
+The tile is a whole allocation or a buffer of a stack picked by a Python int,
+so `hk-lds-pipeline` knows which buffer each copy writes and checks the two
+hazards a copy has across warps: a read of the buffer before every warp's
+share has landed, and a copy into it before every warp's reads of it have.
+Both are a count of barriers between the two events. In exchange, a read of
+such a buffer may stay in flight across a barrier, which the LDS rules refuse
+for a buffer picked at run time.
+
+**Two halves a barrier apart.** `with hk.arch.pingpong(behind):` makes the
+warps where `behind` holds wait at one extra `s_barrier` on entry, and the
+others at one on exit. Between the two, every barrier pairs a program point in
+one half with the next in the other: a schedule that alternates memory and
+math between barriers runs the halves out of phase, so with eight warps the
+two waves on a SIMD take turns at the matrix core. `behind` comes from
+`warp_id()`, both ends are in the kernel's own body, and inside, the pass
+counts two barriers where one would do outside. gfx950's GEMM
+(`hk.ops.gemm_cdna`, [chapter 33](history/33-cdna-gemm.md)) is built from
+these.
+
 ## Rows by index, atomics, random numbers
 
 What a mixture-of-experts GEMM, an embedding, a KV cache write, a split-K
@@ -227,11 +261,12 @@ shows `for`, `if` and `while` on device values, carried scalars, and the
 * **The rest has namespaces**:
   - `hk.arch`: block, warp and lane ids, `target()` (the target being traced
     for, for a body whose tiling depends on it), `barrier(drain=False)`,
-    `sched_barrier`, `sched_group_barrier` and `SCHED_CLASSES`, `setprio`,
-    `vm_wait`, `wg_arrive`;
+    `pingpong(behind)`, `sched_barrier`, `sched_group_barrier` and
+    `SCHED_CLASSES`, `setprio`, `vm_wait`, `wg_arrive`;
   - `hk.lds`: `alloc`, `shared_vec` and `alloc_vec`, `reserve`, `wait_for`;
   - `hk.math`: elementwise functions, and `add`/`mul`/... with `into=`;
-  - `hk.group(n)`: workgroup loads, stores and the staging pipeline;
+  - `hk.group(n)`: workgroup loads (`wait=False` on gfx950) and their
+    `wait_for`, stores, and the staging pipeline;
   - `hk.collective`: `cross_warp`, `fold_rows`.
 
 **Scheduling hints.** `hk.arch.sched_group_barrier(classes, size,

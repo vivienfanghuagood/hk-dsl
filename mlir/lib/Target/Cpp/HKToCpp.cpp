@@ -1061,6 +1061,15 @@ private:
           w("kittens::vm_wait<" + std::to_string(o.getKeep()) + ">();");
         })
         .Case([&](GroupLoadOp o) {
+          if (o.getAsync()) {
+            // hk/cdna.cuh: gfx950's DMA, left in flight on vmcnt until the
+            // hk.group_wait_for hk-lds-pipeline counted.
+            w("kittens::group_load_async<" +
+              std::to_string(o.getThreads() / tgt->wave) + ">(" +
+              name(o.getDst()) + ", " + name(o.getSrc()) + ", " +
+              coordArg(o.getIdx(), tileCpp(o.getDst().getType())) + ");");
+            return;
+          }
           std::string g = "kittens::group<" +
                           std::to_string(o.getThreads() / tgt->wave) + ">::";
           w(g + "load(" + name(o.getDst()) + ", " + name(o.getSrc()) + ", " +
@@ -1084,7 +1093,22 @@ private:
           w(g + "store(" + name(o.getDst()) + ", " + name(o.getSrc()) + ", " +
             coordArg(o.getIdx(), tileCpp(o.getSrc().getType())) + ");");
         })
+        .Case([&](GroupWaitForOp o) {
+          if (!o.getN()) {
+            fail(o, "group_wait_for has no count: run hk-lds-pipeline first");
+            return;
+          }
+          // vmcnt is 6 bits on gfx9, and issue stalls at the cap.
+          w("kittens::vm_wait<" +
+            std::to_string(std::min<int64_t>(*o.getN(), 63)) + ">();");
+        })
         // synchronization
+        .Case([&](PingPongBeginOp o) {
+          w("if (" + name(o.getCond()) + ") __builtin_amdgcn_s_barrier();");
+        })
+        .Case([&](PingPongEndOp o) {
+          w("if (!(" + name(o.getCond()) + ")) __builtin_amdgcn_s_barrier();");
+        })
         .Case([&](BarrierOp o) {
           // The drain goes before the barrier: s_barrier has no memory
           // semantics of its own. The builtin, not __syncthreads(), which on

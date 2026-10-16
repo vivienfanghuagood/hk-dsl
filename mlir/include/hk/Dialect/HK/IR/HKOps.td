@@ -406,13 +406,64 @@ def HK_VmWaitOp : HK_Op<"vm_wait"> {
 }
 
 def HK_GroupLoadOp : HK_Op<"group_load"> {
-  let summary = "global -> LDS by the whole workgroup, issued and waited";
+  let summary = "global -> LDS by the whole workgroup, issued and waited unless `async`";
+  let description = [{
+    `async` (gfx950): the copy is the DMA, buffer_load ... lds, issued and
+    left in flight. It counts on vmcnt; an hk.group_wait_for that names the
+    tile retires this warp's share, with the count derived by
+    hk-lds-pipeline, and a barrier after that makes the whole tile visible.
+    The tile is a whole allocation or one buffer of a stack picked by a
+    constant, so the pass can tell which tile a read or a later copy touches.
+  }];
   let arguments = (ins HK_SharedTileType:$dst, HK_GlobalType:$src,
-                       HK_CoordType:$idx, I64Attr:$threads);
+                       HK_CoordType:$idx, I64Attr:$threads, UnitAttr:$async);
   let assemblyFormat = [{
     $src `[` $idx `]` `into` $dst attr-dict `:` qualified(type($src)) `,` qualified(type($idx))
     `into` qualified(type($dst))
   }];
+  let hasVerifier = 1;
+  let extraClassDeclaration = [{
+    /// buffer_load ... lds a thread issues for the tile, 16 bytes a lane:
+    /// 0 when the tile is not a whole number of them per thread.
+    int64_t dmaCalls();
+  }];
+}
+
+def HK_GroupWaitForOp : HK_Op<"group_wait_for"> {
+  let summary = "s_waitcnt vmcnt(n): this warp's async copies into the named LDS tiles have landed";
+  let description = [{
+    `n` is derived by hk-lds-pipeline from the order the copies were issued,
+    never written by hand. It retires this warp's share only: the other
+    warps' shares are visible after a barrier (two inside an hk.pingpong,
+    where half the workgroup runs a barrier behind the other), and the pass
+    refuses a read of the tile before that.
+  }];
+  let arguments = (ins Variadic<HK_SharedTileType>:$tiles,
+                       OptionalAttr<I64Attr>:$n);
+  let assemblyFormat = "$tiles attr-dict `:` qualified(type($tiles))";
+  let hasVerifier = 1;
+}
+
+def HK_PingPongBeginOp : HK_Op<"pingpong_begin"> {
+  let summary = "s_barrier in the warps where `cond` holds: they run a barrier behind the rest";
+  let description = [{
+    The half of the workgroup where `cond` holds waits at one extra barrier,
+    so from here every s_barrier pairs its program point in one half with
+    the next one in the other: while one half is between two barriers doing
+    math, the other is between the same two doing memory. `cond` is wave
+    uniform. hk.pingpong_end, later in the same block, gives the other half
+    its extra barrier and the halves meet again.
+  }];
+  let arguments = (ins I1:$cond);
+  let assemblyFormat = "$cond attr-dict";
+  let hasVerifier = 1;
+}
+
+def HK_PingPongEndOp : HK_Op<"pingpong_end"> {
+  let summary = "s_barrier in the warps where `cond` does not hold: the halves meet again";
+  let arguments = (ins I1:$cond);
+  let assemblyFormat = "$cond attr-dict";
+  let hasVerifier = 1;
 }
 
 def HK_GroupStoreOp : HK_Op<"group_store"> {

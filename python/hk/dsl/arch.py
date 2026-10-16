@@ -3,11 +3,14 @@ instructions that order and schedule them."""
 
 from __future__ import annotations
 
+from contextlib import contextmanager
+from typing import Iterator
+
 from .._mlir import ir
 from .._mlir.dialects import hk as hkd
 from ..types import CoordType, GlobalType, ScalarType, i32
 from . import builder as B
-from .values import Coord, Global, Int, Scalar, View, as_int
+from .values import Bool, Coord, Global, Int, Scalar, View, as_int, i1
 
 
 def _i32():
@@ -116,6 +119,34 @@ def sched_group_barrier(classes, size: int, sync_id: int = 0) -> None:
     hkd.SchedGroupBarrierOp(mask, size, sync_id, loc=B.current().loc())
 
 
+@contextmanager
+def pingpong(behind) -> Iterator[None]:
+    """Run the warps where `behind` holds one barrier behind the rest.
+
+    On entry those warps wait at one extra s_barrier; on exit the others do,
+    and the halves meet again. In between, every barrier pairs a program
+    point in one half with the next one in the other, so a schedule that
+    alternates memory and math between barriers runs the two halves out of
+    phase: with eight warps, the two waves on a SIMD take turns at the
+    matrix core. HipKittens' CDNA4 GEMM is built on it.
+
+        with hk.arch.pingpong(warp_id // 4 == 1):
+            ...                     # memory, barrier, math, barrier, ...
+
+    `behind` is wave-uniform (from warp_id, not lane_id). hk-lds-pipeline
+    knows the skew: inside, a warp is only sure another has passed a point
+    two barriers later, not one."""
+    if not isinstance(behind, Bool):
+        raise TypeError(f"pingpong({behind!r}): a device comparison, e.g. "
+                        f"warp_id() // 4 == 1")
+    t = B.current()
+    hkd.PingPongBeginOp(i1(behind), loc=t.loc())
+    try:
+        yield
+    finally:
+        hkd.PingPongEndOp(i1(behind), loc=t.loc())
+
+
 def setprio(level: int) -> None:
     """`s_setprio`: this wave's issue priority, 0..3."""
     if not isinstance(level, int) or not 0 <= level <= 3:
@@ -148,5 +179,5 @@ def wg_arrive(counter, expected: Scalar) -> Int:
 
 
 __all__ = ["block_idx", "warp_id", "lane_id", "barrier", "sched_barrier",
-           "sched_group_barrier", "SCHED_CLASSES", "setprio", "vm_wait",
-           "wg_arrive"]
+           "sched_group_barrier", "SCHED_CLASSES", "pingpong", "setprio",
+           "vm_wait", "wg_arrive"]

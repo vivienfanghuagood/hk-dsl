@@ -38,5 +38,17 @@ func.func @types(%g: !hk.gl<bf16>) attributes {hk.kernel} {
   hk.barrier {drain}
   hk.vm_wait 0
   hk.setprio 1
+  // CHECK: hk.group_load {{.*}} {async, threads = 512 : i64}
+  hk.group_load %g[%idx] into %a0 {async, threads = 512 : i64} : !hk.gl<bf16>, !hk.coord<element> into !hk.st<bf16, 128x64>
+  // CHECK: hk.group_wait_for {{.*}} : !hk.st<bf16, 128x64>
+  hk.group_wait_for %a0 : !hk.st<bf16, 128x64>
+  %wid = hk.warp_id
+  %c4 = arith.constant 4 : i32
+  %half = arith.divsi %wid, %c4 : i32
+  %behind = arith.cmpi eq, %half, %c0 : i32
+  // CHECK: hk.pingpong_begin
+  hk.pingpong_begin %behind
+  // CHECK: hk.pingpong_end
+  hk.pingpong_end %behind
   return
 }

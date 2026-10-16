@@ -309,6 +309,60 @@ LogicalResult LdsWaitForOp::verify() {
   return success();
 }
 
+int64_t GroupLoadOp::dmaCalls() {
+  auto t = getDst().getType();
+  int64_t bytes = int64_t(t.getRows()) * t.getCols() *
+                  (dtypeBits(t.getElementType()) / 8);
+  int64_t perCall = 16 * getThreads();
+  if (bytes < perCall || bytes % perCall)
+    return 0;
+  return bytes / perCall;
+}
+
+LogicalResult GroupLoadOp::verify() {
+  if (getDst().getType().getCount() != 1)
+    return emitOpError("copies into a stack of LDS tiles; index it");
+  if (getAsync() && !dmaCalls())
+    return emitOpError("async: the tile is not a whole number of 16-byte "
+                       "copies per thread");
+  return success();
+}
+
+LogicalResult GroupWaitForOp::verify() {
+  if (getTiles().empty())
+    return emitOpError("needs the LDS tiles it retires");
+  return success();
+}
+
+/// A pingpong pair: the begin, and one end later in the same block on the
+/// same condition, with no other pingpong between them.
+static LogicalResult verifyPingPong(Operation *op, Value cond, bool begin) {
+  Operation *other = nullptr;
+  for (Operation *o = begin ? op->getNextNode() : op->getPrevNode(); o;
+       o = begin ? o->getNextNode() : o->getPrevNode()) {
+    if (isa<PingPongBeginOp, PingPongEndOp>(o)) {
+      other = o;
+      break;
+    }
+  }
+  bool paired = other && (begin ? isa<PingPongEndOp>(other)
+                                : isa<PingPongBeginOp>(other));
+  if (!paired)
+    return op->emitOpError(begin ? "has no pingpong_end after it in its block"
+                                 : "has no pingpong_begin before it in its block");
+  if (other->getOperand(0) != cond)
+    return op->emitOpError("pairs with a pingpong on another condition");
+  return success();
+}
+
+LogicalResult PingPongBeginOp::verify() {
+  return verifyPingPong(*this, getCond(), true);
+}
+
+LogicalResult PingPongEndOp::verify() {
+  return verifyPingPong(*this, getCond(), false);
+}
+
 //===----------------------------------------------------------------------===//
 // Staging
 //===----------------------------------------------------------------------===//

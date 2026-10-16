@@ -75,7 +75,8 @@ with `hk.grid_of`. The destination form is the IR's spelling of
 * **Passes**, in C++ (`mlir/lib/Dialect/HK/Transforms`), run by `k.trace()` as
   `hk-kernel-pipeline`, in this order:
   - `hk-verify`: op legality, dtype support, no workgroup operation inside a
-    branch or a runtime while;
+    branch or a runtime while, `hk.pingpong` in the kernel's own body on a
+    condition from `warp_id`;
   - `hk-fragments`: on a target whose bf16 matrix-core operand is not 16x16
     (gfx950's is 16x32), names the fragment in the type of every tile an MMA
     reads, and of every tile tied to one by a cast, transpose or broadcast;
@@ -83,7 +84,11 @@ with `hk.grid_of`. The destination form is the IR's spelling of
   - `hk-lds-alloc`: LDS offsets, against the target's limit;
   - `hk-lds-pipeline`: every `lgkmcnt` derived, every asynchronously loaded
     tile proven waited for before it is read, loops walked until they reach
-    a steady state;
+    a steady state; on gfx950, every `vmcnt` of an asynchronous group load
+    derived too, and each copy checked across warps by counting barriers:
+    no warp reads a buffer before every warp's share of the copy into it has
+    landed, and no copy goes into a buffer before every warp's reads of it
+    have (two barriers inside `hk.pingpong`, one outside);
   - `hk-check-budgets`: the register estimate against the occupancy the
     kernel asked for, and the slow-layout warnings.
 

@@ -580,6 +580,65 @@ __device__ inline static void store_bounded(const GL &dst, const RT &src, const 
     detail::hk_store_tile(dst, src, idx, limit);
 }
 
+#if defined(KITTENS_CDNA4)
+namespace detail {
+typedef __attribute__((address_space(3))) uint32_t *hk_lds_ptr;
+__device__ void hk_buf_ld_lds(hk_i32x4 rsrc, hk_lds_ptr lds, int size, int voffset, int soffset,
+                              int offset, int aux) __asm("llvm.amdgcn.raw.buffer.load.lds");
+}  // namespace detail
+
+/**
+ * @brief A group of NW warps copies one LDS tile from a strided_gl with
+ * gfx950's DMA, buffer_load_dwordx4 ... lds, and returns with it in flight.
+ *
+ * Each instruction moves 16 bytes a lane into LDS at M0 + 16 * lane, so the
+ * swizzle of the tile's st_shape is applied on the global side, as
+ * include/cdna4's group load does: LDS byte p holds the element the swizzled
+ * layout puts there. Unlike that load, the descriptor is the tile's own
+ * (hk_tile_srsrc): based at the tile and ending at the tensor's last row, so
+ * the rows of a last, partial tile read zero instead of past the tensor, and
+ * nothing wraps however large it is. The per-lane offsets depend only on the
+ * lane, the warp and the row stride, which a K loop does not change, so
+ * the compiler computes them once.
+ *
+ * The copies count on vmcnt only. hk's group_wait_for retires them with the
+ * count hk-lds-pipeline derives, and a barrier after it makes every warp's
+ * share visible; nothing here waits.
+ */
+template<int NW, ducks::st::all ST, typename U, ducks::coord::tile COORD>
+__device__ inline static void group_load_async(ST &dst, const strided_gl<U> &src, const COORD &idx) {
+    using T = typename ST::dtype;
+    static_assert(sizeof(T) == sizeof(U) && sizeof(T) == 2, "16-bit tiles of the global's own dtype");
+    static_assert(ST::underlying_subtile_bytes_per_thread == 16, "the 16-byte DMA needs a 16-byte lane run");
+    constexpr int PER_WARP = 16 * WARP_THREADS;
+    constexpr int PER_CALL = PER_WARP * NW;
+    constexpr int BYTES = ST::rows * ST::cols * int(sizeof(T));
+    static_assert(BYTES % PER_CALL == 0, "a whole number of copies per thread");
+    const auto unit = idx.template unit_coord<2, 3>();
+    const U *base = (const U *)&src[unit];
+    const int rs = int(src.template stride<2>());
+    const detail::hk_i32x4 r = detail::hk_tile_srsrc<ST::rows>(src, unit, base, ST::rows);
+    const int lane = laneid();
+    const int w = warpid_uniform() % NW;
+    const uint32_t lds = __builtin_amdgcn_readfirstlane(
+        uint32_t(reinterpret_cast<uintptr_t>(&dst.data[0])) + w * PER_WARP);
+    #pragma unroll
+    for (int i = 0; i < BYTES / PER_CALL; i++) {
+        const int byte = lane * 16 + w * PER_WARP + i * PER_CALL;
+        const int sub = byte / ST::underlying_subtile_bytes;
+        const int in = byte % ST::underlying_subtile_bytes;
+        const uint32_t sw = ST::swizzle({in / ST::underlying_subtile_row_bytes,
+                                         (in % ST::underlying_subtile_row_bytes) / int(sizeof(T))});
+        const int row = int(sw) / ST::underlying_subtile_row_bytes +
+                        (sub / ST::underlying_subtiles_per_row) * ST::underlying_subtile_rows;
+        const int col = (int(sw) % ST::underlying_subtile_row_bytes) / int(sizeof(T)) +
+                        (sub % ST::underlying_subtiles_per_row) * ST::underlying_subtile_cols;
+        detail::hk_buf_ld_lds(r, (detail::hk_lds_ptr)(uintptr_t)(lds + i * PER_CALL), 16,
+                              (row * rs + col) * int(sizeof(T)), 0, 0, 0);
+    }
+}
+#endif
+
 #if defined(KITTENS_CDNA3)
 /*
  * Register vectors <-> global and shared memory, on include/cdna3.

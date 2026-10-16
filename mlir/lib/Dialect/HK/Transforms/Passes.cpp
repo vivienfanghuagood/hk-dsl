@@ -127,6 +127,48 @@ struct VerifyPass : public mlir::hk::impl::HKVerifyBase<VerifyPass> {
     if (div.wasInterrupted())
       return signalPassFailure();
 
+    // hk.pingpong: in the kernel's own block, so the pair cannot nest or sit
+    // in a loop the halves leave at different times, and on a condition
+    // every lane of a warp agrees on -- a warp split by it would wait at a
+    // barrier with half its lanes.
+    WalkResult pp = f.walk([&](Operation *op) {
+      if (!isa<PingPongBeginOp, PingPongEndOp>(op))
+        return WalkResult::advance();
+      if (op->getBlock() != &f.getBody().front()) {
+        op->emitError() << "hk.pingpong is inside a loop or a branch. It "
+                           "splits the workgroup's barriers for everything "
+                           "between its two ends, so both have to be in the "
+                           "kernel's own body."
+                        << atLoc(op);
+        return WalkResult::interrupt();
+      }
+      if (!isa<PingPongBeginOp>(op))
+        return WalkResult::advance();
+      SmallVector<Value> work{op->getOperand(0)};
+      llvm::DenseSet<Value> seen;
+      while (!work.empty()) {
+        Value v = work.pop_back_val();
+        if (!seen.insert(v).second)
+          continue;
+        Operation *def = v.getDefiningOp();
+        if (!def)
+          continue;
+        if (isa<LaneIdOp>(def)) {
+          op->emitError() << "hk.pingpong's condition depends on lane_id(). "
+                             "It picks which half of the workgroup runs a "
+                             "barrier behind, so it has to be the same in "
+                             "every lane of a warp: build it from warp_id()."
+                          << atLoc(op);
+          return WalkResult::interrupt();
+        }
+        for (Value o : def->getOperands())
+          work.push_back(o);
+      }
+      return WalkResult::advance();
+    });
+    if (pp.wasInterrupted())
+      return signalPassFailure();
+
     // fp8 register tiles exist only where the target has an fp8 WMMA.
     WalkResult dt = f.walk([&](Operation *op) {
       auto check = [&](Value v) {

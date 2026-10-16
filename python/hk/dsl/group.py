@@ -8,6 +8,10 @@ copies, synchronous and staged through registers.
     g.stage(buf, a[idx])            # issue into VGPRs
     hk.arch.vm_wait(0)
     g.commit(As[1], buf)            # VGPRs -> LDS
+
+    g.load(As[1], a[idx], wait=False)   # gfx950: the DMA, left in flight
+    g.wait_for(As[1])                   # vmcnt, derived
+    hk.arch.barrier()                   # every warp's share has landed
 """
 
 from __future__ import annotations
@@ -45,11 +49,42 @@ class Group:
         if dst.ty.count != 1:
             raise TypeError(f"{what} is {dst.ty}, a stack; index it: As[tic]")
 
-    def load(self, dst: SharedTile, src: View) -> None:
-        """Global -> LDS, issued and waited by the whole group."""
+    def load(self, dst: SharedTile, src: View, *, wait: bool = True) -> None:
+        """Global -> LDS by the whole group, issued and waited.
+
+        `wait=False` (gfx950) issues the DMA, buffer_load ... lds, and returns
+        with it in flight: name the tile in `g.wait_for` and put a barrier
+        after that before any warp reads it. `dst` is a whole allocation or
+        one buffer of a stack picked by a Python int, so hk-lds-pipeline can
+        check every read of it and every later copy into it."""
         self._one(dst, "group load destination")
+        t = B.current()
+        if not wait:
+            tgt = get_target(t.arch)
+            if not tgt.has_global_to_lds_dma or tgt.arch != "gfx950":
+                raise TypeError(
+                    f"g.load(wait=False) on {t.arch}: an asynchronous copy is "
+                    f"gfx950's 16-byte buffer_load ... lds, which this target "
+                    f"does not have. Use wait=True.")
+            if dst.v.owner.name == "hk.subtile":
+                raise TypeError(
+                    "g.load(wait=False) into a subtile: the copy lays out a "
+                    "whole LDS tile. Copy into the allocation, or one buffer "
+                    "of a stack.")
         hkd.GroupLoadOp(dst.v, src.tensor.v, src.idx.v, self.threads,
-                        loc=B.current().loc())
+                        async_=not wait, loc=t.loc())
+
+    def wait_for(self, *tiles: SharedTile) -> None:
+        """`s_waitcnt vmcnt(n)`: this warp's share of the asynchronous copies
+        into `tiles` has landed, `n` derived by hk-lds-pipeline. The other
+        warps' shares are visible only after a barrier (two inside an
+        hk.arch.pingpong), and the pass refuses a read before that."""
+        if not tiles:
+            raise TypeError("g.wait_for() needs the LDS tiles it retires")
+        for x in tiles:
+            if not isinstance(x, SharedTile):
+                raise TypeError(f"g.wait_for operand is {x!r}, expected an LDS tile")
+        hkd.GroupWaitForOp([x.v for x in tiles], loc=B.current().loc())
 
     def store(self, dst: View, src: SharedTile) -> None:
         """LDS -> global, by the whole group."""

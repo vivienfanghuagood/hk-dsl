@@ -34,3 +34,34 @@ func.func @barrier_in_if(%x: !hk.gl<bf16> {hk.name = "x"})
   }
   return
 }
+
+// -----
+
+// hk.pingpong splits the barriers of everything between its ends, so both
+// ends are in the kernel's own block, on a condition from warp_id.
+
+func.func @pingpong_in_loop(%x: !hk.gl<bf16> {hk.name = "x"}, %p: i1)
+    attributes {hk.kernel, hk.arch = "gfx950", hk.warps = 8 : i64, hk.consts = {}} {
+  %c0 = arith.constant 0 : i32
+  %c1 = arith.constant 1 : i32
+  %c4 = arith.constant 4 : i32
+  scf.for %i = %c0 to %c4 step %c1 : i32 {
+    // expected-error@+1 {{hk.pingpong is inside a loop or a branch}}
+    hk.pingpong_begin %p
+    hk.pingpong_end %p
+  }
+  return
+}
+
+// -----
+
+func.func @pingpong_by_lane(%x: !hk.gl<bf16> {hk.name = "x"})
+    attributes {hk.kernel, hk.arch = "gfx950", hk.warps = 8 : i64, hk.consts = {}} {
+  %l = hk.lane_id
+  %c32 = arith.constant 32 : i32
+  %p = arith.cmpi slt, %l, %c32 : i32
+  // expected-error@+1 {{hk.pingpong's condition depends on lane_id()}}
+  hk.pingpong_begin %p
+  hk.pingpong_end %p
+  return
+}

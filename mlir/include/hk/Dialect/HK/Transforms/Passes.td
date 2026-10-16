@@ -33,12 +33,16 @@ def HKLdsAlloc : Pass<"hk-lds-alloc", "::mlir::func::FuncOp"> {
 }
 
 def HKLdsPipeline : Pass<"hk-lds-pipeline", "::mlir::func::FuncOp"> {
-  let summary = "Derive every lgkmcnt and prove every async tile is bound";
+  let summary = "Derive every lgkmcnt and vmcnt, prove every async tile is bound, check copies into LDS across warps";
   let description = [{
     Walks the LDS issue queue. A tile in flight may not be read; a tile
     retired by somebody else's wait may not be read; a barrier may not be
-    reached with LDS ops in flight. Loop bodies are walked twice and must
-    agree. Sets `n` on every hk.lds_wait_for.
+    reached with LDS writes, or reads of a buffer picked at run time, in
+    flight. Async group loads are a second queue, on vmcnt: a buffer may not
+    be read until this warp's copy is retired and a barrier (two inside an
+    hk.pingpong) has passed, nor copied into until every warp's reads of it
+    have landed as long ago. Loop bodies are walked twice and must agree.
+    Sets `n` on every hk.lds_wait_for and hk.group_wait_for.
   }];
 }
 
