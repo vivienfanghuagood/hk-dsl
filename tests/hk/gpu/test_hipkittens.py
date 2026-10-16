@@ -20,7 +20,7 @@ import pytest
 
 torch = pytest.importorskip("torch")
 
-from hk.integration import engine  # noqa: E402
+from hk.integration import engine, vllm_gemm  # noqa: E402
 from hk.ops import hipkittens as hkk  # noqa: E402
 
 
@@ -69,6 +69,7 @@ def _wx(m, n, k, seed=0):
 @pytest.fixture(scope="module", autouse=True)
 def ops():
     hkk.register_ops()
+    vllm_gemm.register_op()
 
 
 # ---------------------------------------------------------------- GEMM
@@ -172,6 +173,25 @@ def test_the_first_launch_under_capture_is_refused_not_frozen(monkeypatch):
     with pytest.raises(engine.GraphCaptureError, match="run this shape once"):
         with torch.cuda.graph(graph):
             hkk.gemm_bf16(x, w)
+
+
+@pytest.mark.parametrize("m", [2048, 2047, 3840, 4096])
+def test_vllms_linear_on_the_gfx950_table(m):
+    _gemm_or_skip()
+    n, k = 4096, 4096
+    vllm_gemm.set_routes(engine.shipped_table("vllm_linear", "gfx950", "HK_TEST_NO_SUCH_ENV"))
+    try:
+        path = vllm_gemm.route_for(m, n, k)
+        x, w = _wx(m, n, k)
+        before = dict(vllm_gemm.STATS)
+        y = torch.ops.hk_vllm.linear(x.view(1, m, k), w, None)
+        took = {p: vllm_gemm.STATS[p] - before[p] for p in before}
+        assert took == {p: int(p == path) for p in took}
+        assert y.shape == (1, m, n)
+        assert rel(y[0], x.float() @ w.float().t()) < TOL
+    finally:
+        vllm_gemm.set_routes(None)
+    assert path == ("hipkittens" if m in (2048, 3840) else "fallback")
 
 
 # ---------------------------------------------------------------- GQA

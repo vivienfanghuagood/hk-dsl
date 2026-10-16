@@ -26,6 +26,10 @@ Decode is a different problem: M is the batch, the math is free, and the
 whole cost is streaming the weights once. `ops.decode_gemm` is the kernel for
 that, at 1.93-2.03x hipBLASLt per step at M <= 32.
 
+On gfx950 the candidate is a third path, "hipkittens": HipKittens' own CDNA4
+GEMM (`ops.hipkittens`), which takes M and N in multiples of 256. Its table,
+routes_vllm_linear_gfx950.json, is measured the same way, against F.linear.
+
 How it gets in. `UnquantizedLinearMethod.apply` calls
 `dispatch_unquantized_gemm()` on every forward, as does the LM head, so
 rebinding that one name -- by identity, in every vLLM module that imported it
@@ -66,7 +70,8 @@ def _linear_fake(x, weight, bias=None):
 
 PATCH = engine.Op("hk_vllm::linear",
                   "linear(Tensor x, Tensor weight, Tensor? bias=None) -> Tensor",
-                  _linear_fake, paths=("hk", "hk_decode", "fallback"), graph="safe")
+                  _linear_fake, paths=("hk", "hk_decode", "hipkittens", "fallback"),
+                  graph="safe")
 
 #: Which way each call went; see `engine.Patch` for what a replay counts as.
 STATS = PATCH.stats
@@ -96,7 +101,7 @@ def set_routes(table: Optional[engine.RouteTable]) -> None:
 
 def route_for(m: int, n: int, k: int, *, bf16: bool = True, bias: bool = False,
               contiguous_weight: bool = True) -> str:
-    """"hk", "hk_decode" or "fallback" for y = x @ W.T, x (m, k), W (n, k).
+    """"hk", "hk_decode", "hipkittens" or "fallback" for y = x @ W.T, x (m, k), W (n, k).
 
     The table says which kernel measured fastest; this also asks whether that
     kernel takes the call at all. A bias falls back rather than paying a
@@ -113,6 +118,11 @@ def route_for(m: int, n: int, k: int, *, bf16: bool = True, bias: bool = False,
         return "fallback"
     if path == "hk_decode" and not decode_gemm.fits(m, n, k):
         return "fallback"
+    if path == "hipkittens":
+        from ..ops import hipkittens  # noqa: PLC0415
+
+        if not hipkittens.gemm_fits(m, n, k):
+            return "fallback"
     return path if path in PATCH.paths else "fallback"
 
 
@@ -193,6 +203,8 @@ def linear(x, weight, bias=None):
     x2 = x.reshape(m, k)
     if not x2.is_contiguous():
         x2 = x2.contiguous()
+    if path == "hipkittens":
+        return _hipkittens(x, x2, weight, bias, m, n)
     out = torch.empty((m, n), device=x.device, dtype=x.dtype)
     if path == "hk":
         _op_for(m, n, k)(x2, weight, out)
@@ -207,6 +219,24 @@ def linear(x, weight, bias=None):
             _decode_op(s)(x2, weight, out)
     PATCH.count(path)
     return out.view(*x.shape[:-1], n)
+
+
+def _hipkittens(x, x2, weight, bias, m, n):
+    """The "hipkittens" path, or the fallback if this toolchain cannot have the
+    kernel (it did not build, or failed its on-device check) or the tensors
+    are not ones it takes."""
+    from ..ops import hipkittens  # noqa: PLC0415
+
+    if hipkittens.gemm_takes(x2, weight):
+        try:
+            out = hipkittens.gemm_bf16(x2, weight)
+        except hipkittens.Unavailable as e:
+            hipkittens.warn_unavailable(PATCH.name, e)
+        else:
+            PATCH.count("hipkittens")
+            return out.view(*x.shape[:-1], n)
+    PATCH.count("fallback")
+    return _fallback(x, weight, bias)
 
 
 def register_op():
