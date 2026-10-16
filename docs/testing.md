@@ -44,7 +44,8 @@ scoreboard run ([the performance gate](#the-performance-gate)).
   skipped (the IR tier, with `tests/hk/engines` skipping), and 1033 passed.
   The one xfail is conditional: HipKittens' CDNA4 attention does not compile
   with ROCm 7.2's clang.
-- tests/hk/gpu: run in groups by `scripts/gpu_suite.sh` ([CI](#ci)). On
+- tests/hk/gpu: run in groups by `scripts/gpu_suite.sh`, on main on a
+  W7900D and an MI355X ([the GPU tier](#the-gpu-tier)). On
   gfx950 the attention and RDNA GEMM tests skip
   ([chapter 29](history/29-cdna.md)).
 
@@ -166,13 +167,48 @@ it with `scripts/build_mlir.sh`, pack the install tree with LLVM's and MLIR's
 licence files, attach it to a release, and point `MLIR_RELEASE` and
 `MLIR_ASSET` at it.
 
-The GPU tier runs on the development pod, not in CI:
-`HK_GPU=3 scripts/gpu_suite.sh OUTDIR` runs `tests/hk/gpu` in groups, three
-at a time on one GPU, and exits non-zero if a group failed. Moving it into
-CI means a self-hosted runner on that pod, which runs code it is handed. On a
-public repository that runner must only take pushes to `main` and manual
-dispatches, never a pull request from a fork, and it must stay on the GPUs
-that are this project's. No such runner is registered.
+### The GPU tier
+
+`HK_GPU=0 scripts/gpu_suite.sh OUTDIR` runs `tests/hk/gpu` in groups, three
+at a time on one GPU, and exits non-zero if a group failed. It runs on main
+on two GPUs, and each commit it tests gets a status on GitHub:
+- **`gpu/gfx1100`**: GPU 0 of the W7900D dev pod.
+- **`gpu/gfx950`**: one MI355X of the workstation, whichever is idle when the
+  run starts, in `rocm/pytorch`.
+
+Its "Details" link opens the run's report: each group's result, the failing
+tests and the tail of each failed group's log. Reports are assets of the
+[`gpu-ci-logs`](https://github.com/vivienfanghuagood/hk-dsl/releases/tag/gpu-ci-logs)
+prerelease.
+
+It is not a GitHub Actions workflow. The cluster reaches github.com and
+api.github.com only through the `gh-test` and `gh-api-test.anruicloud.com`
+proxies, and not GitHub's Actions service, so no self-hosted runner can sit
+next to the W7900D. So it is driven from the workstation, which can reach
+GitHub (`scripts/gpu_ci/`):
+- **`orchestrate.py`** runs from cron every 10 minutes. It tests main's head
+  when it changes, and again nightly. It starts the gfx1100 run in the pod
+  over `ssh 0004` and `kubectl exec`, starts the gfx950 run locally, and
+  posts each status when its run finishes.
+- **`pod_run.sh`** runs in the pod. It fetches the commit itself, through the
+  proxy, then builds the dialect and runs the suite. No code from the
+  repository runs on the jump host.
+- **`local_run.sh`** and **`container_run.sh`** run the gfx950 tier in a
+  container that sees one GPU and CI's own directories, not `$HOME`.
+
+Commits pushed together are tested together, as one head. A commit that
+changes only documentation carries its parent's passing result.
+
+```bash
+python3 ~/hk-ci/orchestrate.py status          # what each tier last did
+python3 ~/hk-ci/orchestrate.py run REF         # test a branch or commit now
+python3 scripts/gpu_ci/orchestrate.py install  # copy the scripts to ~/hk-ci, add the cron entries
+```
+
+A gfx1100 run holds `/workspace/ci/gpu0.lock` in the pod while it uses
+GPU 0. A manual benchmark on GPU 0 should hold it too
+(`flock /workspace/ci/gpu0.lock <command>`), so that neither times the
+other.
 
 ## The performance gate
 
