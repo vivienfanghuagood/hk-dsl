@@ -436,8 +436,30 @@ def HK_BarrierOp : HK_Op<"barrier"> {
 }
 
 def HK_SchedBarrierOp : HK_Op<"sched_barrier"> {
-  let summary = "__builtin_amdgcn_sched_barrier(0): nothing crosses this line";
+  let summary = "__builtin_amdgcn_sched_barrier(mask): only `mask` crosses this line";
+  let description = [{
+    `mask` names the instruction classes the scheduler may still move across
+    (the sched_group_barrier classes below); 0, the default, is none.
+  }];
+  let arguments = (ins DefaultValuedAttr<I64Attr, "0">:$mask);
   let assemblyFormat = "attr-dict";
+  let hasVerifier = 1;
+}
+
+def HK_SchedGroupBarrierOp : HK_Op<"sched_group_barrier"> {
+  let summary = "__builtin_amdgcn_sched_group_barrier(mask, size, syncid)";
+  let description = [{
+    Asks the scheduler for a group of `size` instructions of the classes in
+    `mask`, placed in program order after the groups before it that share
+    `syncid`. A run of these is an interleave: "one VMEM read, then two
+    WMMAs, then ..." The classes: 0x1 all ALU, 0x2 VALU, 0x4 SALU, 0x8
+    MFMA/WMMA, 0x10 all VMEM, 0x20 VMEM read, 0x40 VMEM write, 0x80 all DS,
+    0x100 DS read, 0x200 DS write, 0x400 transcendental. It orders only
+    what the scheduler can see: an inline-asm instruction is in no class.
+  }];
+  let arguments = (ins I64Attr:$mask, I64Attr:$size, I64Attr:$syncid);
+  let assemblyFormat = "$mask `,` $size `,` $syncid attr-dict";
+  let hasVerifier = 1;
 }
 
 def HK_SetPrioOp : HK_Op<"setprio"> {

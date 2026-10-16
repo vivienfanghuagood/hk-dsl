@@ -1093,8 +1093,14 @@ private:
             w("kittens::lds_wait<0>();");
           w("__builtin_amdgcn_s_barrier();");
         })
-        .Case([&](SchedBarrierOp) {
-          w("__builtin_amdgcn_sched_barrier(0);");
+        .Case([&](SchedBarrierOp o) {
+          w("__builtin_amdgcn_sched_barrier(" + std::to_string(o.getMask()) +
+            ");");
+        })
+        .Case([&](SchedGroupBarrierOp o) {
+          w("__builtin_amdgcn_sched_group_barrier(" +
+            std::to_string(o.getMask()) + ", " + std::to_string(o.getSize()) +
+            ", " + std::to_string(o.getSyncid()) + ");");
         })
         .Case([&](SetPrioOp o) {
           w("__builtin_amdgcn_s_setprio(" + std::to_string(o.getLevel()) +

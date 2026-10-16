@@ -63,9 +63,57 @@ def barrier(drain: bool = False) -> None:
     hkd.BarrierOp(drain=bool(drain), loc=B.current().loc())
 
 
-def sched_barrier() -> None:
-    """Nothing crosses this line in the scheduler; it costs no instruction."""
-    hkd.SchedBarrierOp(loc=B.current().loc())
+#: The instruction classes of __builtin_amdgcn_sched_barrier and
+#: sched_group_barrier, by name. An inline-asm instruction is in none of them:
+#: include/rdna3's LDS fragment reads and writes are asm, its staging loads
+#: and WMMAs are not.
+SCHED_CLASSES = {
+    "alu": 0x1, "valu": 0x2, "salu": 0x4, "mma": 0x8, "wmma": 0x8,
+    "vmem": 0x10, "vmem_read": 0x20, "vmem_write": 0x40, "ds": 0x80,
+    "ds_read": 0x100, "ds_write": 0x200, "trans": 0x400,
+}
+
+
+def _sched_mask(classes) -> int:
+    if isinstance(classes, int) and not isinstance(classes, bool):
+        mask = classes
+    else:
+        names = (classes,) if isinstance(classes, str) else tuple(classes)
+        bad = [n for n in names if n not in SCHED_CLASSES]
+        if bad:
+            raise TypeError(f"unknown instruction class {bad[0]!r}; the classes "
+                            f"are {', '.join(SCHED_CLASSES)}")
+        mask = 0
+        for n in names:
+            mask |= SCHED_CLASSES[n]
+    if not 0 <= mask <= 0x7FF:
+        raise TypeError(f"instruction class mask {mask:#x} is outside 0x1..0x400")
+    return mask
+
+
+def sched_barrier(allow=()) -> None:
+    """Nothing but the classes in `allow` crosses this line in the scheduler;
+    it costs no instruction. `allow` is a class name, several, or a mask."""
+    hkd.SchedBarrierOp(mask=_sched_mask(allow), loc=B.current().loc())
+
+
+def sched_group_barrier(classes, size: int, sync_id: int = 0) -> None:
+    """Ask the scheduler for `size` instructions of `classes` here, after
+    the groups before this one with the same `sync_id`: a run of these is an
+    interleave. `classes` is a name from SCHED_CLASSES, several, or a mask.
+
+        for _ in range(4):                     # one staging load, two WMMAs
+            hk.arch.sched_group_barrier("vmem_read", 1)
+            hk.arch.sched_group_barrier("mma", 2)
+    """
+    mask = _sched_mask(classes)
+    if not mask:
+        raise TypeError("sched_group_barrier needs at least one class")
+    if not isinstance(size, int) or size < 1:
+        raise TypeError(f"sched_group_barrier size={size!r}: at least one")
+    if not isinstance(sync_id, int) or sync_id < 0:
+        raise TypeError(f"sched_group_barrier sync_id={sync_id!r}: a group id >= 0")
+    hkd.SchedGroupBarrierOp(mask, size, sync_id, loc=B.current().loc())
 
 
 def setprio(level: int) -> None:
@@ -100,4 +148,5 @@ def wg_arrive(counter, expected: Scalar) -> Int:
 
 
 __all__ = ["block_idx", "warp_id", "lane_id", "barrier", "sched_barrier",
-           "setprio", "vm_wait", "wg_arrive"]
+           "sched_group_barrier", "SCHED_CLASSES", "setprio", "vm_wait",
+           "wg_arrive"]

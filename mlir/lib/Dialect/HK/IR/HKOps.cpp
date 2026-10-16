@@ -337,6 +337,26 @@ LogicalResult StageCommitOp::verify() {
   return success();
 }
 
+/// The instruction classes sched_barrier and sched_group_barrier name.
+static constexpr int64_t kSchedClasses = 0x7FF;
+
+LogicalResult SchedBarrierOp::verify() {
+  if (getMask() < 0 || getMask() > kSchedClasses)
+    return emitOpError("mask names classes 0x1..0x400; got ") << getMask();
+  return success();
+}
+
+LogicalResult SchedGroupBarrierOp::verify() {
+  if (getMask() <= 0 || getMask() > kSchedClasses)
+    return emitOpError("mask names at least one class of 0x1..0x400; got ")
+           << getMask();
+  if (getSize() <= 0)
+    return emitOpError("a group has at least one instruction");
+  if (getSyncid() < 0)
+    return emitOpError("syncid is a non-negative group id");
+  return success();
+}
+
 LogicalResult SetPrioOp::verify() {
   if (getLevel() < 0 || getLevel() > 3)
     return emitOpError("the priority field is 2 bits, 0..3");
