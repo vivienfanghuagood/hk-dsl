@@ -30,9 +30,8 @@ another interpreter, build one ([building](building.md#wheels)).
 It carries the HipKittens headers, the bindings and the shipped tuning
 records, so nothing else is needed at run time but hipcc.
 
-The release on PyPI is 0.3.1. Since then, main has added CDNA, register
-strips, the GEMM schedule, SGLang's MoE patch and plugin, and FlyDSL on the
-routes; until the next release, those need a source build.
+The release on PyPI is 0.4.0. It has CDNA, register strips, the GEMM
+schedule, SGLang's MoE patch and FlyDSL on the routes, which 0.3.1 lacked.
 
 **From source.** The backend is the `third_party/HipKittens` submodule, so
 clone with `--recursive` (or run `git submodule update --init`). The dialect

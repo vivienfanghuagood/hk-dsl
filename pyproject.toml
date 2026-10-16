@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "hk-dsl"
-version = "0.3.1"
-description = "Radeon kernels in Python over an MLIR dialect, generating HipKittens C++"
+version = "0.4.0"
+description = "AMD GPU kernels in Python (RDNA3/4, CDNA3/4) over an MLIR dialect, generating HipKittens C++"
 readme = "README.md"
 requires-python = ">=3.9"
 license = { text = "MIT" }

@@ -147,6 +147,3 @@ the resource gate ([runtime](runtime.md#the-resource-gates)), the passes
   Triton's at 2048-8192 wide, and the W4A16 GEMM 0.69-0.90x vLLM's
   `gptq_gemm_rdna3` at 1-4 tokens. [Performance](performance.md) lists every
   loss.
-- **The PyPI release lags main.** CDNA, register strips, the GEMM schedule,
-  SGLang's MoE patch and FlyDSL on the routes need a source build until the
-  next release.

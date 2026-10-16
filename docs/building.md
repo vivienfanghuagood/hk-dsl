@@ -80,7 +80,7 @@ W7900D, with a result equal to torch's bit for bit.
 ```bash
 scripts/build_wheel.sh                                   # python3, wheel in dist/
 PYTHON=/opt/venv/bin/python3 ISOLATION=0 scripts/build_wheel.sh
-pip install dist/hk_dsl-0.3.1-cp310-cp310-linux_x86_64.whl
+pip install dist/hk_dsl-0.4.0-cp310-cp310-linux_x86_64.whl
 ```
 
 Releases carry the cp310 and cp312 wheels as assets
@@ -105,14 +105,12 @@ toolchain. It runs by hand with `gh workflow run pypi.yml -f tag=vX.Y.Z`, and
 on every published release once the repository variable `PYPI_PUBLISH` is
 `true`. It uses the `PYPI_API_TOKEN` secret of the `pypi` environment, or PyPI
 trusted publishing when that secret is not set. The repository has neither
-yet. 0.3.1, the first version on PyPI, was uploaded by hand with twine from
-the same manylinux wheels.
+yet. 0.3.1, the first version on PyPI, and 0.4.0 were uploaded by hand with
+twine from the same manylinux wheels.
 
-It is still the only one. Main has since added CDNA, register strips, the
-GEMM schedule, SGLang's MoE patch and plugin, and FlyDSL on the routes, but
-`pyproject.toml` and `hk.__version__` still say 0.3.1, so a wheel built from
-main today carries the released version's number. The next release needs
-the version raised and a publishing credential.
+`pyproject.toml` and `hk.__version__` say the last release's version until
+the next release raises both, so a wheel built from main between releases
+carries the released version's number.
 
 What is in the wheel (`scripts/build_wheel.sh`, `pyproject.toml`):
 

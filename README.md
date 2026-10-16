@@ -116,9 +116,8 @@ is needed. The same wheels are attached to each
 another interpreter, build one with `scripts/build_wheel.sh`
 ([building](docs/building.md#wheels)).
 
-The release on PyPI is 0.3.1. Since then, main has added CDNA, register strips,
-the GEMM schedule, SGLang's MoE patch and plugin, and FlyDSL on the routes;
-until the next release, those need a source build.
+The release on PyPI is 0.4.0. It has CDNA, register strips, the GEMM
+schedule, SGLang's MoE patch and FlyDSL on the routes, which 0.3.1 lacked.
 
 **From source.** The backend is the `third_party/HipKittens` submodule, so
 clone with `--recursive`:
