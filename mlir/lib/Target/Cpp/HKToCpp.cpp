@@ -544,6 +544,10 @@ private:
     w("__global__ __launch_bounds__(" + std::to_string(threads()) + ", 1)");
     w("void " + kernelName().str() + "_kernel(const globals g) {");
     indent = 1;
+    // RDNA: the arguments' scalar-cache lines all at once, rather than a cold
+    // miss wherever LLVM sinks a late field's load (include/rdna3, util.cuh).
+    if (tgt->wave == 32)
+      w("kittens::touch_kernargs<sizeof(globals)>();");
     if (ldsBytes()) {
       w("extern __shared__ alignment_dummy __shm[];");
       w("shared_allocator al((int*)&__shm[0]);");
