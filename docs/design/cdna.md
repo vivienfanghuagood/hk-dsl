@@ -22,6 +22,7 @@ What has landed since the assessment, in the order of section 6:
 | 3. bind hazard | measured: without the bind every gfx950 build hoists MFMAs above the wait and returns NaN; with it, correct | `tools/cdna-probes/bind_hazard.py` |
 | code-object gate | `hk.runtime.cocheck`: resources and wait hazards from any code object (hk, HipKittens, Triton, FlyDSL) | `python/hk/runtime/cocheck.py` |
 | CDNA tiles | 16x32 fragments and wider blocks for the elementwise and row kernels; the gate picks the width; four tiles a warp for wide folded norm rows | `hk.ops.elementwise`, `norm`, `fused`, `quant` |
+| 8. occupancy timed | the gfx950 register model's steps measured on the part, at the model's boundaries; gfx950 `verified=True` | `tools/cdna-probes/occupancy_timed.py` |
 
 Builds now (`tools/cdna-probes/coverage.py --ops`, device scaffold, spill gate): **494/506
 on gfx950 and 494/506 on gfx942**, from 196/410 and 195/410. What fails names its reason at
@@ -443,4 +444,4 @@ Where hk adds something on CDNA:
 7. ~~MFMA fragment shape as a field of `!hk.rt` rather than a translator heuristic;~~
    done. Next: 32x32x16 and fp8 `mfma_scale` fragments, and a CDNA path for attention
    (operands loaded from LDS in their own fragment, as include/cdna4's GQA does).
-8. Time the unified-file occupancy on the part and set `verified=True`.
+8. ~~Time the unified-file occupancy on the part and set `verified=True`.~~ Done for gfx950.

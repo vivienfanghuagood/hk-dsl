@@ -302,6 +302,38 @@ the live tiles that cost gfx1100 its occupancy are cheap. With that rule, at
 and softmax from 0.77x to 0.91x. Short tensors (2048 rows) still trail
 torch, the weighted RMSNorm most (0.61x).
 
+## Part 4: the register model timed, and validate.py on the MI355X
+
+The gfx950 register model came from LLVM's occupancy remark: 512 registers
+a lane, VGPRs and AGPRs together, granule 8, 8 waves a SIMD. It stayed
+unverified until it was timed, as gfx1100's granule had been.
+
+`tools/cdna-probes/occupancy_timed.py` does the timing. Each kernel pins N
+VGPRs (and M AGPRs) with an asm clobber, then runs a latency-bound chain of
+dependent loads. 65536 waves go through, and the total time steps at the
+model's boundaries:
+
+| VGPRs | 32-64 | 65-72 | 73-80 | 81-96 | 97-128 | 129-168 | 169-256 |
+|---|---|---|---|---|---|---|---|
+| model, waves/SIMD | 8 | 7 | 6 | 5 | 4 | 3 | 2 |
+| timed, 8 x t(32)/t | 8.00 | 7.10 | 6.47 | 5.50 | 4.46 | 3.46 | 2.33 |
+
+The AGPR cases step too: 64 VGPRs + 1 AGPR at 7, + 64 at 4, and 128 + 64
+at 2.
+
+The first version of the probe timed flat. Each lane chased its own random
+entry, so every step was a 64-address gather, limited by the cache's address
+rate rather than by resident waves. One contiguous 256-byte read a step
+fixed it. gfx950 is now `verified=True`, so a register-tile estimate past
+the file is an error there, not a warning. gfx942 stays unverified, since
+there is no MI300X here.
+
+`examples/validate.py` now runs on the MI355X and passes every case hk has a
+native CDNA path for. It skips GEMM, decode GEMV and attention there, and
+says so; on RDNA it still runs them. Against torch eager: rope 8.85x, int8
+quantize 2.21x, `silu_mul` 1.77x, softmax 1.06x, layernorm 0.98x, rmsnorm
+0.94x, add 0.93x, exp 0.87x.
+
 ### Regressions
 
 None for RDNA. Every example and `hk.ops` instantiation, in every scaffold
