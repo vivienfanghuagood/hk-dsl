@@ -46,7 +46,7 @@ rewritten); they stay because the chapters cite them.
 | vLLM 0.31 end to end, Qwen3-8B-AWQ, 4-bit patch | 1.07-3.80x per request; decode step 1.57-4.46x | stock vLLM 0.31.0, fp16, Triton AWQ | win at every shape | [4-bit weights](history/22-int4.md) |
 | vLLM 0.31 end to end, Qwen3-14B-AWQ, 4-bit patch | 1.16-4.43x per request; decode step 2.87-5.52x | stock vLLM 0.31.0, fp16, Triton AWQ | win at every shape | [4-bit weights](history/22-int4.md) |
 | vLLM 0.31 end to end, OLMoE-1B-7B, MoE patch / with hk's attention | 1.02-1.41x / 1.17-2.22x per request; decode step to 2.62x | stock vLLM 0.31.0 | win at every shape | [MoE](history/21-moe.md) |
-| SGLang 0.5.18 end to end, Qwen3-8B, linear patch | 1.49-1.81x output throughput at concurrency 1-32; time per output token 1.59-1.81x | stock SGLang with sglang-radeon, eager, Triton attention | win at every concurrency | [SGLang](history/24-sglang.md) |
+| SGLang 0.5.18 end to end, Qwen3-8B, linear patch | 1.49-1.81x output throughput at concurrency 1-32; time per output token 1.59-1.81x. With FlyDSL's rows, 0.4-0.6% less time per token at 32, the same at 1 and 8 | stock SGLang with sglang-radeon, eager, Triton attention; the table without FlyDSL rows | win at every concurrency | [SGLang](history/24-sglang.md), [chapter 32](history/32-measuring-the-measurements.md) |
 | SGLang 0.5.18 end to end, OLMoE-1B-7B, MoE patch | 1.06-1.32x output throughput at concurrency 1-32 (stock SGLang does not run it) | SGLang with the top-k in torch and its Triton MoE GEMMs | win at every concurrency | [SGLang MoE](history/25-sglang-moe.md) |
 
 ### Kernels against Triton and FlyDSL, every arm tuned
@@ -156,6 +156,25 @@ run on register strips, every RDNA kernel reads its arguments at entry, and
 past the Infinity Cache the strip kernels cap their occupancy. The rest of
 this list is chapter 26's diagnosis of the tile kernels, which strips
 replaced; it stays because the tile kernels still run rows wider than 32768.
+
+**The rows marked \* measured the launchers as much as the kernels.** A call
+that reaches the GPU 5-16 us after it went idle takes about 10 us longer,
+and the arms that launch in 5-8 us (hk's pybind entry, torch, FlyDSL) got
+10-20% of such calls, Triton and Inductor, at 21-28 us a launch, none.
+The scoreboard now queues each round's calls behind a GPU spin
+([chapter 32](history/32-measuring-the-measurements.md)). Out of the box,
+queued, one run, median of 7 rounds of 50 calls, us:
+
+| case | hk | Inductor | Triton | FlyDSL | torch |
+|---|---|---|---|---|---|
+| rms_norm 1x4096 | 1.95 | 2.04 | 2.06 | 2.17 | 3.62 |
+| rms_norm 32x4096 | 2.17 | 2.27 | 2.27 | 2.37 | 3.77 |
+| fused add + rms_norm 1x4096 | 2.12 | 2.14 | 2.20 | 2.64 | 7.16 |
+| fused add + rms_norm 32x4096 | 2.33 | 2.56 | 2.48 | 2.84 | 7.57 |
+
+Every arm's rounds sit within 1.1% of their median, and hk's kernels are
+the fastest at all four: over three queued runs, 1.01-1.06x the next by the
+median ratio. The tuned arms were not run queued.
 
 The norm losses chapter 26 measured, and why:
 - **1-32 rows** is the instruction stream. hk's folded RMSNorm is 846
@@ -751,6 +770,22 @@ since its first paid Triton's JIT):
 Routed by vLLM's table instead, batch 1 stays on F.linear (44.25 ms). hk's
 linear and F.linear are equally far from fp64. In a greedy check, two of three
 prompts matched stock over 48 tokens and the third split at a near-tie.
+
+**With FlyDSL's rows** ([chapter 32](history/32-measuring-the-measurements.md)).
+SGLang's table re-measured with FlyDSL installed beside it, served the same
+way (warmed with 32 requests at concurrency 32), each hk arm twice, ms per
+output token:
+
+| concurrency | stock | hk, previous table | hk, with FlyDSL rows |
+|---|---|---|---|
+| 1 | 43.29 | 23.55, 23.57 | 23.56, 23.54 |
+| 8 | 45.79 | 26.10, 26.15 | 26.14, 26.11 |
+| 32 | 54.34 | 34.37, 34.46 | 34.23, 34.25 |
+
+At 32 requests qkv's decode GEMM runs on FlyDSL's 32x32 tile, and the step
+is 0.4-0.6% shorter (output 687.3-687.7 tok/s against 684.3-685.7); at 1 and
+8 nothing changes measurably. The hk arms' greedy text was identical with
+and without the rows.
 
 ### MoE: OLMoE-1B-7B
 

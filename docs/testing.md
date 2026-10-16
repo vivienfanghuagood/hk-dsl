@@ -243,42 +243,103 @@ times and not the ratio; a slower hk kernel moves every ratio of its case.
 The tuned arms are left out because they search on every run, which takes
 minutes and adds a noise of its own.
 
+**Which rounds count** (`tools/hk-bench/_rounds.py`). The scoreboard times
+each arm in 7 rounds, each a profiler session of its own whose kernel
+records it sums. It used to keep each arm's fastest round, and so kept a
+round that could not have happened: hk's 8192x4096 RMSNorm at 97.4 us, 1.38
+TB/s for the 134 MB the call moves through 864 GB/s of GDDR6, when every
+other round of seven runs took 173 us. Now a round is rejected, and listed
+with its reason in the run's log and `--json`, by any of three rules:
+- **records**: a round whose kernel-record count differs from the arm's
+  usual one. A session that lost records sums fewer calls than it divides
+  by.
+- **ceiling**: a round faster than the card can go at the case's footprint
+  (the distinct bytes the call reads and writes). Up to the 96 MB Infinity
+  Cache, back-to-back calls find their data resident, and the ceiling is the
+  fastest cache-resident rate measured on this card, 2.43 TB/s (a two-input
+  add at 80-96 MB, `scoreboard.py --probe-ceilings`; a copy reaches 1.77,
+  hk's 2048-row RMSNorm 1.82). Past the cache it is GDDR6's 864 GB/s
+  (a copy reaches 0.72-0.75, the 8192-row norms 0.78). GEMM and attention
+  FLOPs are held to the bf16 peak, 122.6 TFLOP/s. Each ceiling carries 15%
+  of headroom.
+- **lone**: of the rounds left, the fastest when it is more than the larger
+  of 5% and 4x the other rounds' spread (their median over the second best)
+  ahead of the second best. Repeated while more than half the rounds remain.
+
+**Each round's calls are queued.** A GPU spin of 1 ms a call goes first in
+each session, so the host has launched every call before the first runs
+and they run back to back, as in a captured graph, whatever the launcher
+costs. Without it a microsecond kernel's time was its launcher's: a call
+that reached the GPU 5-16 us after it went idle took about 10 us longer,
+10-20% of the calls of the arms that launch in 5-8 us (hk's pybind entry,
+torch, FlyDSL) and none of Triton's or Inductor's, which take 21-28 us. That,
+and not hk's kernels, was the one- and 32-row cases' noise
+([chapter 32](history/32-measuring-the-measurements.md)).
+
+An arm's time is the **median** of the rounds it kept, and its noise their
+median absolute deviation; the best kept round is reported beside it. On
+four runs of the gate's arguments the median and the best round moved the
+41 gated-size pairs' ratios alike between runs (median spread 0.36% and
+0.45%, 90th percentile 3.7% and 3.5%), and the 16 small-row pairs less (90th
+percentile 19% against 28%). The median cannot be set by one round.
+
+Run on the reports kept from [chapter 31](history/31-remeasured.md) (six
+baseline runs, the run it left out, four gate runs, six norm A/B runs:
+`check_regression.py --audit`), the ceiling rejects exactly one round, the
+97.4 us one. Those reports keep only each arm's best round and the second's
+distance from it, so `lone` can only be named there as a candidate: 11
+best rounds, all at 1 and 32 rows, sat 22-42% ahead of their second. On
+the reports that keep every round, the rules rejected 2 of 2,072 rounds (296
+arm-cases) in four clean runs, both `lone`, both at one or 32 rows.
+
+`check_regression.py` holds reports to the same rules. A time in a report
+that is still faster than the card can go (one written before the
+scoreboard screened its rounds) is left out of a refresh, for that run and
+pair only, and named in the baseline's `left_out`; in a check it is
+`IMPLAUSIBLE` and the run cannot pass (exit 2). A run whose times are
+another statistic than the baseline's (median of kept rounds, or best
+round) is refused: every ratio would move.
+
 **Where the tolerance comes from.** `tests/perf/baselines/gfx1100.json` is
 built from several scoreboard runs, each its own process, spread over time.
 For each (case, arm) the ratio is the median across runs and the noise is
 the larger of two spreads: across runs, max |r_i / median - 1|; within a
-run, the two arms' second-best-round spreads summed, at their worst. Then
+run, the two arms' spreads (the median absolute deviation of their kept
+rounds) summed, at their worst. Then
 tolerance = max(3%, 3 x noise). A pair whose tolerance would pass 15% is
 not gated, and is listed as such with its noise. The file records every
 run's ratio beside the tolerance it produced. To change a tolerance,
 re-measure the noise; editing the number by hand loosens the gate blindly.
 
-**What the shipped baseline measured.** hk at `f155cd6`, with
-[chapter 27](history/27-strips.md)'s strips and
-[chapter 28](history/28-gemm-schedule.md)'s GEMM schedule, on the vLLM 0.31
-venv of the engines' pod (torch 2.13.0+rocm7.2, Triton 3.8.0, FlyDSL 0.4.0),
-GPU 3. Six runs, four within 15 minutes and two after an 18-minute vLLM run,
-give 40 gated pairs over 13 cases ([chapter 31](history/31-remeasured.md)):
-- GEMM ratios moved 0.1-1.6% between runs. The 2048- and 8192-row norms and
-  softmax moved up to 3.6%, and the 8192-row fused add 4.6%, in one run where
-  hk ran it 4.5% faster. torch's non-causal attention ran 2.9% faster in the
-  session's first process, as it had in the previous baseline's. 28 pairs sit
-  at the 3% floor, and the widest gated tolerance is 13.7% (Inductor against
-  the 8192-row fused add).
-- 17 pairs are not gated (the file's `not_gated` lists each with its noise):
-  - every arm of RMSNorm and the fused add at 1 and 32 rows. hk ran those in
-    2.4-3.9 us depending on the process, while Inductor and Triton held
-    2.4-2.8, so the ratios moved 18-52% between runs. Those four cases have
-    no gate at all;
-  - Triton against the 8192-row fused add (noise 5.1%).
-- A seventh run was left out. In it, hk's 8192-row RMSNorm took 97.4 us
-  in its best round: 1.38 TB/s for the 134 MB it moves, which HBM (0.86
-  TB/s) cannot do. Its other rounds took 173 us. The minimum over rounds
-  trusts the fastest round, however it came about.
-- Clean runs against it used at most 34% of a pair's tolerance four
-  minutes later, 50% after a 58-minute vLLM run, and 51% on the 0.4.0
-  release. 0.4.0's kernels are the measured tree's, but the check prints
-  there that the baseline was made on 0.3.1.
+**What the shipped baseline measured.** hk with
+[chapter 32](history/32-measuring-the-measurements.md)'s scoreboard: queued
+rounds, timed by the median of the rounds kept. Ten runs on GPU 3 of the
+engines' pod (vLLM 0.31 venv: torch 2.13.0+rocm7.2, Triton 3.8.0, FlyDSL
+0.4.0): six on `28ffe21` with this work, three of them half an hour after the
+others, and four four hours later on `47b40aa`, after
+[chapter 33](history/33-cdna-gemm.md). All ten built the same kernels (one
+`kernels` hash) and none of them had a round rejected:
+- 57 gated pairs over 17 cases, and none left out for noise. The one- and
+  32-row RMSNorm and fused add are gated again: queued, hk's kernels there
+  take 1.95-2.33 us and every arm's rounds sit within about 1%, where
+  before the launch-timing artifact moved their ratios 18-52% between runs.
+- 37 pairs sit at the 3% floor. GEMM tolerances are 3.0-4.4%, attention's
+  3.3-7.3%, and the widest is 12.8% (torch against the one-row RMSNorm,
+  whose ratio moved 4.3% across the runs).
+- The 40 pairs both this and the previous baseline gate moved by a median
+  0.68% (at most 5.1%, Inductor against the 8192-row softmax), from the
+  statistic and the queue; their widest tolerance went from 13.7% to 7.3%.
+- With the norms on the tile kernels instead (`HK_NORM_LAYOUT=tile`, a
+  regression on purpose: chapter 27 measured the strips faster everywhere
+  but the 8192-row fused add), the check failed with exit 1 on 35 pairs:
+  the one- and 32-row norms by 15-26%, the 2048-row ones by 10-27%, the
+  8192-row RMSNorm by 9-12% and three arms of the 8192-row softmax by
+  5.8-7.0%. The GEMM, attention and the 8192-row fused add moved -1.5% to
+  +0.8%, and passed. The check also printed that hk's kernels had changed.
+- `scripts/perf_gate.sh` on `47b40aa` with this baseline, a run after the
+  ten: exit 0, all 57 pairs within tolerance, no note, no round rejected;
+  the largest change used 31% of its pair's tolerance (Inductor against the
+  8192-row softmax, -2.2% of 7.2%).
 
 The previous baseline, measured on hk as of
 [chapter 26](history/26-the-scoreboard-retuned.md), was the one tested for
@@ -291,9 +352,18 @@ against that baseline, this tree came out with no regression and 33 pairs
 6.6-35%.
 
 **Refreshing the baseline.** Refresh it when the opponent changed (a new
-torch, Triton or FlyDSL: the check prints a note when the versions differ
-from the baseline's), when hk got faster on purpose (pairs that beat their
-tolerance are reported as `better`), or for another arch:
+torch, Triton or FlyDSL), when hk's kernels changed, when hk got faster on
+purpose (pairs that beat their tolerance are reported as `better`), or for
+another arch. The check prints a note for the first two: the baseline and
+each run record torch's, Triton's and FlyDSL's versions, the device, a hash
+of the generated C++ and hipcc flags of every hk kernel the run built or
+loaded (`kernels`, `hk.runtime.compile.built_fingerprint`), and hipcc's
+version (`hipcc`). hk's own version, the dialect's and `toolchain` (hipcc
+with every header's contents) are recorded and not compared: 0.4.0 bumped
+the first two and changed no kernel, and on it every gate run printed that
+a 0.3.1 baseline was due a refresh; chapter 33's CDNA shim moved the third
+and left every RDNA kernel's C++ as it was. A HipKittens header change that
+leaves the generated C++ alone is the one change the note does not see.
 
 ```bash
 HK_GPU=3 FLYDSL_ROOT=/workspace/FlyDSL scripts/perf_gate.sh --refresh 4
@@ -303,11 +373,13 @@ git diff tests/perf/baselines/gfx1100.json      # every moved ratio is a claim
 `--refresh N` runs the scoreboard N times (at least three) and rewrites the
 baseline from them. Back-to-back runs see less drift than runs hours apart;
 for a baseline that has to last, run `check_regression.py --refresh` on
-reports from separate sessions. Read the runs before using them: a time
-faster than the hardware can go, or a `spread` far above its neighbours',
-is the measurement and not the kernel, and it would widen every tolerance of
-its case. A refresh is a commit, with the reason in its message, and with
-any run left out named there.
+reports from separate sessions. Read the runs before using them
+(`check_regression.py --audit` lists every rejected round): a round faster
+than the hardware can go is now rejected by the scoreboard and a time left
+out by the refresh, but a `spread` far above its neighbours' is still the
+measurement and not the kernel, and it would widen every tolerance of its
+case. A refresh is a commit, with the reason in its message, and with any
+run left out named there.
 
 ## The gates for a change to the generated code
 

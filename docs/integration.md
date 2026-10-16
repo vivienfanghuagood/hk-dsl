@@ -288,9 +288,11 @@ measurement) where a routing table measured it fastest
 - **Optional.** hk does not depend on FlyDSL. The path exists when `flydsl`
   is importable and so is FlyDSL's `kernels` package, which is in FlyDSL's
   repository, not its wheel: put a checkout of the installed version on
-  `sys.path`, or name it in `FLYDSL_ROOT`. HuggingFace's unrelated `kernels`
-  package (installed beside SGLang) shadows it, and the patch's report line
-  says so. `HK_FLYDSL=0` turns the path off.
+  `sys.path`, or name it in `FLYDSL_ROOT`. Where HuggingFace's unrelated
+  `kernels` package is installed (beside SGLang), FlyDSL's is imported from
+  `FLYDSL_ROOT` beside it, and `import kernels` still finds HuggingFace's;
+  without `FLYDSL_ROOT` the patch's report line says the package is
+  shadowed. `HK_FLYDSL=0` turns the path off.
 - **Only at the tile that was measured.** FlyDSL compiles M into the kernel,
   so its tiles must divide the shape (M a multiple of 32 at least), and its
   speed depends on which tile M leaves it. At (4096, 4096), 1024 rows run a
@@ -313,7 +315,10 @@ by 2% at few prefill Ms: the re-measured table routes 41 points to FlyDSL
 instead of 105. Of its prefill rows, the one measured end to end, gate_up's
 8192-token steps, makes those prefills 1.5-1.7% shorter; dropping the rows
 at M = 1024 cost a 1024-token prefill 1.2%
-([performance](performance.md#flydsls-gemm-on-the-routes)).
+([performance](performance.md#flydsls-gemm-on-the-routes)). SGLang's table
+carries FlyDSL rows too (38 points); served at 32 requests they make the
+decode step 0.4-0.6% shorter, and at 1 and 8 requests change nothing
+measurable ([chapter 32](history/32-measuring-the-measurements.md)).
 
 ## The MoE patch
 
@@ -381,7 +386,19 @@ to 64, every 16 rows up to 1024, and coarser above. At each point it times the
 engine's path, the prefill GEMM and the decode GEMV, each gated against fp32
 first, interleaved in one process, with weights rotated through 3x the
 Infinity Cache. A kernel takes an M only where it beat the engine by 3%; a tie
-stays the engine's. The table answers an M as follows:
+stays the engine's. How a point is timed:
+- a set of 3 rounds on fresh activations is thrown away first: straight
+  after the correctness check FlyDSL ran a median 1.5% slow;
+- one set is timed, and a point with a decision within 2x its noise of the
+  bar gets two sets more, its time then the median of the sets;
+- each path's noise and the number of sets are written beside its time.
+
+Two runs an hour apart decide about 12 of 740 points differently, all in
+FlyDSL's overlay, where it and hk's GEMM are within 2%; the runs themselves
+agree. `route_tune.py --compare A B` lists the differences, and `--confirm`
+an earlier run's table keeps only the overlay points both runs took
+([chapter 32](history/32-measuring-the-measurements.md)). The table answers
+an M as follows:
 
 * inside a run of measured Ms with the same winner, that winner;
 * between two runs, which means between two measured Ms that disagreed, the
@@ -397,10 +414,10 @@ to beat is the engine's. The shipped ones, in `hk/tuned/`, named
   timings included, with FlyDSL rows (below). `$HK_VLLM_ROUTES` names
   another.
 - `routes_sglang_linear_gfx1100.json` (`route_tune.py --engine sglang`):
-  against the `F.linear` SGLang calls on ROCm. `$HK_SGLANG_ROUTES` names
-  another. It disagrees with vLLM's below M = 4: vLLM runs its own skinny
-  GEMMs there and ties hk's GEMV, while `F.linear` is 1.3-2.3x slower than
-  it.
+  against the `F.linear` SGLang calls on ROCm, with FlyDSL rows.
+  `$HK_SGLANG_ROUTES` names another. It disagrees with vLLM's below M = 4:
+  vLLM runs its own skinny GEMMs there and ties hk's GEMV, while `F.linear`
+  is 1.3-2.3x slower than it.
 - `routes_vllm_linear_gfx950.json`: on an MI355X, against hipBLASLt, with
   HipKittens' CDNA4 GEMM as the candidate. It takes 37 of 206 points, all at
   M ≥ 1792 ([design note](design/cdna-hipkittens-ops.md)).
@@ -674,7 +691,7 @@ spelled:
 | `HK_VLLM_USER` | `_vllm_plugin.py` | comma-separated modules or `.py` files to import in vLLM's process: your `register.op` / `register.patch` calls |
 | `HK_VLLM_ROUTES` | `vllm_gemm.py`, via `engine.shipped_table` | a routing table to use instead of the shipped one |
 | `HK_FLYDSL` | `flydsl_gemm.py` | `0`/`off`/`no`/`false`: never take a table's FlyDSL rows, even with FlyDSL installed |
-| `FLYDSL_ROOT` | `flydsl_gemm.py` | a FlyDSL checkout whose `kernels/` package matches the installed `flydsl`, appended to `sys.path` |
+| `FLYDSL_ROOT` | `flydsl_gemm.py` | a FlyDSL checkout whose `kernels/` package matches the installed `flydsl`, appended to `sys.path`; where another `kernels` is installed, imported from beside it |
 | `HK_SGLANG_LINEAR` | `_sglang_plugin.py` | route SGLang's unquantized linear layers |
 | `HK_SGLANG_ROUTES` | `sglang.py`, via `engine.shipped_table` | a routing table for SGLang's linear layers instead of the shipped one |
 | `HK_SGLANG_MOE` | `_sglang_plugin.py` | `1`: the torch top-k and hk's expert GEMMs; `topk`: the torch top-k alone |
