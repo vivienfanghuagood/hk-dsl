@@ -88,17 +88,20 @@ The longer argument is in [why this exists](docs/README.md#why-this-exists).
 |---|---|---|
 | gfx1100, RDNA3 | Radeon PRO W7900 / W7900D, RX 7900 | primary: every kernel and every patch; every number below unless marked |
 | gfx1201, RDNA4 | Radeon RX 9070 | every `hk.ops` kernel compiles and passes the gates; not run on hardware |
-| gfx950, CDNA4 | Instinct MI355X | the elementwise, norm, fused, quantize and rows-by-index kernels run and pass; GEMM and GQA forward through HipKittens' own CDNA4 kernels, as hk ops |
+| gfx950, CDNA4 | Instinct MI355X | the elementwise, norm, fused, quantize, rows-by-index, GEMM and decode GEMV kernels run and pass, the GEMM as hk's own kernels; GQA forward through HipKittens' CDNA4 kernels, as hk ops |
 | gfx942, CDNA3 | Instinct MI300X | compiles; none was available to run on |
 
 On one MI355X, against torch: hk's fused kernels are ahead (fused add +
 RMSNorm 1.06-1.44x, SiLU-mul 1.28-1.82x, RoPE 8.85x, int8 quantize 2.21x); its
-plain elementwise and norm kernels are mostly behind (0.59-1.05x); its own
-GEMM reaches 0.41x hipBLASLt. HipKittens' GQA forward, wrapped, runs
-1.28-2.62x torch SDPA, level with FlyDSL. HipKittens' GEMM is routed to the
-37 of 206 linear shapes where it beats hipBLASLt. Status:
-[design/cdna.md](docs/design/cdna.md); record: [chapter 29](docs/history/29-cdna.md);
-numbers: [performance](docs/performance.md#cdna-on-one-mi355x).
+plain elementwise and norm kernels are mostly behind (0.59-1.05x). Its own
+GEMM, HipKittens' CDNA4 schedule written in hk, runs 1463 TFLOP/s at 4096³
+and 1566 at 8192³, 0.97-0.98x the best of hipBLASLt, FlyDSL and HipKittens.
+Routed with two more hk kernels, it is at 0.9x or better at 92 of 122
+Llama-3-8B and Qwen3-8B linear shapes, M from 1 to 8192. HipKittens' GQA
+forward, wrapped, runs 1.28-2.62x torch SDPA, level with FlyDSL. Status:
+[design/cdna.md](docs/design/cdna.md); record: [chapter 29](docs/history/29-cdna.md),
+[chapter 33](docs/history/33-cdna-gemm.md); numbers:
+[performance](docs/performance.md#cdna-on-one-mi355x).
 
 ## Install
 

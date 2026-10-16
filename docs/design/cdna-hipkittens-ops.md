@@ -337,7 +337,13 @@ gfx1100 and gfx1201 output is byte-identical: every scaffold of all 509 example 
 * **Upstream's waits are hand-counted for one schedule.** `s_waitcnt vmcnt(N)` against the
   DMA is counted by hand, and `asm volatile` `ds_read`s carry no dependence. A compiler
   that schedules differently can break them silently. The ISA comparison above found the
-  waits intact; the 7.1 GEMM error lies elsewhere.
+  waits intact; the 7.1 GEMM error lies elsewhere. *Since then
+  ([chapter 33](../history/33-cdna-gemm.md)):* written in hk, the same schedule's waits
+  are derived and checked, and the check found one read they do not cover. The fourth
+  memory phase reads `Bs[1][0]` with the copy into it still outstanding after the
+  `vmcnt(6)`, right by timing. Patched back into hk's kernel the read is still right
+  under 7.1, so it is not the miscompile. hk's GEMM, which reads that tile a phase
+  later, is correct under ROCm 7.1 and 7.2.3, and runs level with this one.
 * **The descriptor sizes are 32-bit**, which caps operand size (the table in §1).
 * **To route ragged Ms**, the GEMM needs a bounded C store (row-predicated, or through
   the buffer descriptor). Padding A costs a copy that loses most of the 6–27% margins.

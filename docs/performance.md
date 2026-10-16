@@ -867,14 +867,36 @@ plan (2 warps, 4 tiles each) is the table's. Short tensors (2048 rows) still
 lose, the weighted RMSNorm most (0.61x); at 64 rows the losses are fixed
 launch latency.
 
-### GEMM: hk's own, and why HipKittens' is wrapped instead
+### GEMM: hk's own
 
-`examples/04_gemm.py` (64x64 blocks, unwaited LDS reads with counted waits,
-no pipelining) on the MI355X at 4096³: 631 TFLOP/s, 0.41x hipBLASLt (1531).
-With every LDS read waited it was 540 (0.35x). `hk.ops.gemm` has no gfx950
-form yet (32x16 operand tiles, register staging). Closing the gap natively is
-HipKittens-level scheduling work, which is why HipKittens' own CDNA4 GEMM is
-wrapped as an hk op (below).
+[gfx950's GEMM in hk](history/33-cdna-gemm.md). `hk.ops.gemm.matmul` on gfx950
+routes every shape to one of hk's own kernels: HipKittens' CDNA4 schedule
+written in hk (`hk.ops.gemm_cdna`: copies into LDS left in flight, the
+pingpong), a four-warp kernel with two-launch split-K
+(`hk.ops.gemm_cdna_dp`), or the decode GEMV. bf16, C = A·Bᵀ, eager, every arm
+checked against fp32 and interleaved in one process, best of 5 rounds:
+
+| M = N = K | hk | HipKittens | hipBLASLt | FlyDSL `gemm_a16w16` | hk / best |
+|---|---|---|---|---|---|
+| 4096 | 1463 | 1444 | 1487 | 1440 | 0.98x |
+| 8192 | 1566 | 1575 | 1616 | 1591 | 0.97x |
+
+At Llama-3-8B's and Qwen3-8B's linear shapes (N x K of qkv, o, gate_up, down
+and lm_head, M from 1 to 8192, 122 points), hk's routed kernel is at 0.9x
+or better of the best of hipBLASLt, FlyDSL and HipKittens at 92 points.
+- M ≥ 2048 runs at 0.94-1.05x, except down_proj at M = 2048 (0.76-0.77x).
+- M = 1-4 runs at 0.93-1.59x.
+- Most of the 30 misses are at M = 16-1024 with N = 6144-14336 or
+  K = 12288-14336 (0.72-0.89x).
+
+The full grid and what limits it are in
+[the chapter](history/33-cdna-gemm.md#routed). Before this, `examples/04_gemm.py`
+(64x64 blocks, no pipelining) ran at 631 TFLOP/s at 4096³, 0.41x hipBLASLt.
+
+Where the time goes at 8192³ (hand-patched builds in one process): without
+its copies the kernel runs 15% faster, and with C's store switched off it is
+level with hipBLASLt. The store's cost follows its bytes, and the pattern is a
+fifth of it.
 
 ### HipKittens' CDNA4 GEMM and GQA forward, as hk ops
 
@@ -902,7 +924,8 @@ At Llama-3-8B and Qwen3-8B's linear shapes, HipKittens trails hipBLASLt:
 It wins 4-27% only where hipBLASLt's heuristic picks a slow kernel. For
 example, at o_proj M = 2048 it runs 886 TFLOP/s against hipBLASLt's 708. The
 measured gfx950 route table (`routes_vllm_linear_gfx950.json`) sends those
-points, 37 of 206 and all at M ≥ 1792, to HipKittens.
+points, 37 of 206 and all at M ≥ 1792, to HipKittens. hk's own GEMM (above)
+now runs level with it at large M and ahead of it below M = 2048.
 
 GQA forward, bf16, TFLOP/s:
 
