@@ -47,6 +47,24 @@ def _rand(shape, dtype):
     return torch.randn(*shape, device="cuda", dtype=dtype)
 
 
+@pytest.fixture(params=["strip", "tile"])
+def layout(request, monkeypatch):
+    """The norms on the strip kernels and on the tile kernels: hk.ops runs
+    the strips wherever a row fits one, and the tiles beyond that."""
+    from hk.ops import norm
+
+    monkeypatch.setattr(norm, "LAYOUT", request.param)
+    return request.param
+
+
+@pytest.fixture
+def tile(monkeypatch):
+    """The tile kernels, for the tests about their own plan and tail."""
+    from hk.ops import norm
+
+    monkeypatch.setattr(norm, "LAYOUT", "tile")
+
+
 def _close(got, want, dtype, msg=""):
     rtol, atol = TOL[dtype]
     torch.testing.assert_close(got.float(), want.float(), rtol=rtol, atol=atol, msg=msg)
@@ -62,37 +80,40 @@ def _ref_rmsnorm(x, eps):
 
 @pytest.mark.parametrize("shape", SHAPES, ids=[f"{r}x{c}" for r, c in SHAPES])
 @pytest.mark.parametrize("dtype", DTYPES)
-def test_rmsnorm(shape, dtype):
+def test_rmsnorm(shape, dtype, layout):
     x = _rand(shape, dtype)
     _close(hk.ops.rmsnorm(x), _ref_rmsnorm(x, 1e-6), dtype, msg=f"{shape}")
 
 
 @pytest.mark.parametrize("shape", SHAPES, ids=[f"{r}x{c}" for r, c in SHAPES])
 @pytest.mark.parametrize("dtype", DTYPES)
-def test_layernorm(shape, dtype):
+def test_layernorm(shape, dtype, layout):
     x = _rand(shape, dtype)
     want = F.layer_norm(x.float(), (shape[-1],), eps=1e-5).to(dtype)
     _close(hk.ops.layernorm(x), want, dtype, msg=f"{shape}")
 
 
-def test_layernorm_on_a_row_with_a_large_offset():
-    """var is computed as E[x^2] - E[x]^2, which cancels. At an offset of 100
-    the two terms agree to four digits and fp32 keeps seven, so ~1e-3 of
-    relative error in the variance is expected and accepted -- see the note in
-    norm.py. This pins how much: if a change makes it worse, it shows here."""
+def test_layernorm_on_a_row_with_a_large_offset(layout):
+    """The tile kernels compute var as E[x^2] - E[x]^2, which cancels. At an
+    offset of 100 the two terms agree to four digits and fp32 keeps seven, so
+    ~1e-3 of relative error in the variance is expected and accepted -- see
+    the note in norm.py. This pins how much: if a change makes it worse, it
+    shows here. The strip kernel holds the row and subtracts the mean first,
+    so nothing cancels and it is held to fp32's own tolerance."""
     x = torch.randn(64, 4096, device="cuda", dtype=torch.float32) + 100.0
     want = F.layer_norm(x, (4096,), eps=1e-5)
-    torch.testing.assert_close(hk.ops.layernorm(x), want, rtol=5e-3, atol=5e-3)
+    tol = 5e-3 if layout == "tile" else 1e-4
+    torch.testing.assert_close(hk.ops.layernorm(x), want, rtol=tol, atol=tol)
 
 
 @pytest.mark.parametrize("shape", SHAPES, ids=[f"{r}x{c}" for r, c in SHAPES])
 @pytest.mark.parametrize("dtype", DTYPES)
-def test_softmax(shape, dtype):
+def test_softmax(shape, dtype, layout):
     x = _rand(shape, dtype)
     _close(hk.ops.softmax(x), torch.softmax(x.float(), -1).to(dtype), dtype, f"{shape}")
 
 
-def test_softmax_is_max_shifted():
+def test_softmax_is_max_shifted(layout):
     """Without the shift, exp() of a logit in the hundreds is inf and the row
     comes back NaN. Large logits are what a real model produces, so this is
     the case that matters, not the randn one."""
@@ -102,7 +123,7 @@ def test_softmax_is_max_shifted():
     _close(got, torch.softmax(x, -1), torch.float32)
 
 
-def test_the_ragged_tail_is_masked_not_double_counted():
+def test_the_ragged_tail_is_masked_not_double_counted(tile):
     """The sharpest version of the gate. The backed-up last block re-reads
     columns the previous block already saw; if the overlap were not masked
     with the reduction's identity, those elements would count twice and every
@@ -138,7 +159,8 @@ WIDE = [(8192, (8, 1, 16), (2, 4, 16)), (8208, (9, 1, 16), (9, 1, 16)),
 
 
 @pytest.mark.parametrize("cols,want_plan,want_plan64", WIDE, ids=[f"{c}" for c, *_ in WIDE])
-def test_wide_rows_take_the_path_they_are_meant_to_and_get_it_right(cols, want_plan, want_plan64):
+def test_wide_rows_take_the_path_they_are_meant_to_and_get_it_right(cols, want_plan, want_plan64,
+                                                                    tile):
     from hk.ops import norm
     from hk.target import current_arch, get_target
 
@@ -152,7 +174,7 @@ def test_wide_rows_take_the_path_they_are_meant_to_and_get_it_right(cols, want_p
     _close(hk.ops.softmax(x), torch.softmax(x, -1), torch.float32, f"softmax {cols}")
 
 
-def test_a_held_tile_is_not_masked_in_place():
+def test_a_held_tile_is_not_masked_in_place(tile):
     """The persistent variant keeps its tiles in registers across all three
     passes, so a mask applied to one is still there when the write pass stores
     it -- the overlap columns come back as zeros, and whichever warp also owns
@@ -178,19 +200,27 @@ def test_a_held_tile_is_not_masked_in_place():
     assert (q.int() - wq.int()).abs().max() <= 1
 
 
-def test_rows_below_one_tile_are_refused_with_the_reason():
+def test_rows_below_one_tile_are_refused_with_the_reason(tile):
     x = _rand((8, 256), torch.float32)
     with pytest.raises(ValueError, match="at least 16x64"):
         hk.ops.rmsnorm(x)
 
 
-def test_a_leading_batch_axis_normalizes_over_the_last_one():
+def test_a_strip_takes_any_row_count():
+    """One workgroup a row: eight rows, or one, need no tile to exist."""
+    for rows in (1, 8):
+        x = _rand((rows, 256), torch.float32)
+        _close(hk.ops.rmsnorm(x), _ref_rmsnorm(x, 1e-6), torch.float32, f"{rows}")
+        _close(hk.ops.softmax(x), torch.softmax(x, -1), torch.float32, f"{rows}")
+
+
+def test_a_leading_batch_axis_normalizes_over_the_last_one(layout):
     x = _rand((4, 32, 128), torch.float32)
     _close(hk.ops.rmsnorm(x), _ref_rmsnorm(x, 1e-6), torch.float32)
     assert hk.ops.rmsnorm(x).shape == x.shape
 
 
-def test_eps_reaches_the_kernel():
+def test_eps_reaches_the_kernel(layout):
     """eps is a constexpr, so a wrong one is baked into a *separately cached*
     build -- passing it and ignoring it would look right on the default and
     wrong nowhere else."""
@@ -400,7 +430,7 @@ FULL = [(8192, 4096), (16384, 1024)]
 
 @pytest.mark.parametrize("shape", FULL, ids=[f"{r}x{c}" for r, c in FULL])
 @pytest.mark.parametrize("op", ["rmsnorm", "layernorm", "softmax"])
-def test_a_full_size_norm_is_right_on_every_row(op, shape):
+def test_a_full_size_norm_is_right_on_every_row(op, shape, layout):
     for _ in range(2):
         x = _rand(shape, torch.bfloat16)
         if op == "rmsnorm":

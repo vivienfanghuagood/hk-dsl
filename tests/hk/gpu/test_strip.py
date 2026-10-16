@@ -14,7 +14,14 @@ torch = pytest.importorskip("torch")
 import hk  # noqa: E402
 from hk.dsl.collective import cross_warp  # noqa: E402
 
-pytestmark = pytest.mark.gpu
+def _rdna3() -> bool:
+    from hk.target import current_arch, get_target
+
+    return get_target(current_arch()).kittens_define == "KITTENS_RDNA3"
+
+
+pytestmark = [pytest.mark.gpu,
+              pytest.mark.skipif(not _rdna3(), reason="strips are include/rdna3's")]
 
 _DT = {torch.bfloat16: hk.bf16, torch.float16: hk.fp16, torch.float32: hk.fp32}
 

@@ -1,12 +1,18 @@
 """RMSNorm over the last axis: a runtime loop, a row reduction, a cross-warp
-combine and a broadcast.
+combine and a broadcast -- on a register tile, and on a register strip.
 
-o = x * rsqrt(mean(x^2) + eps), one workgroup per 16 rows. The row is split
-across WARPS warps, each walking every WARPS-th 64-column block; the per-warp
-sums meet through LDS (`hk.collective.cross_warp`), and the scale is
-broadcast back along the rows with `scale[:, None]`. Columns have to be a
-multiple of 64 and rows of 16 here; hk.ops.norm.rmsnorm, which this is
-compared against, handles any width and plans its own warp count.
+o = x * rsqrt(mean(x^2) + eps). The tile kernel takes one workgroup per 16
+rows. The row is split across WARPS warps, each walking every WARPS-th
+64-column block; the per-warp sums meet through LDS
+(`hk.collective.cross_warp`), and the scale is broadcast back along the rows
+with `scale[:, None]`. Columns have to be a multiple of 64 and rows of 16.
+
+The strip kernel takes one workgroup per row and holds it: warp w owns
+columns [w*CW, (w+1)*CW) as an `hk.RS` strip, in which each lane owns runs of
+8 contiguous columns -- one 16-byte load each, which is the layout a row
+kernel wants and a WMMA tile does not have. It reads the row once.
+hk.ops.norm.rmsnorm, which both are compared against, runs that strip with a
+planned warp count, at any width.
 
     python3 examples/02_rmsnorm.py
     python3 examples/02_rmsnorm.py --dump ir
@@ -35,6 +41,22 @@ def rmsnorm_kernel(warps: int = 4):
     return rmsnorm
 
 
+def rmsnorm_strip_kernel(cols: int = 4096, warps: int = 8):
+    cw = cols // warps
+    S = hk.RS(hk.fp32, 1, cw)                                     # 1 row, cw columns a warp
+
+    @hk.kernel(warps=warps, grid=lambda p: (p.x.rows, 1, 1))
+    def rmsnorm_strip(x: hk.Tensor[hk.bf16], o: hk.Tensor[hk.bf16],
+                      EPS: hk.Constexpr[float] = 1e-6):
+        row, c0 = hk.arch.block_idx.x, hk.arch.warp_id() * cw
+        v = x.at[row, c0].load(S)                                 # cw/256 x 16 bytes a lane
+        sq = hk.collective.cross_warp((v * v).sum(axis=1), "add", warps)
+        v *= hk.math.rsqrt(sq / x.cols + EPS)                     # the col_vec broadcasts
+        o.at[row, c0].store(v)
+
+    return rmsnorm_strip
+
+
 def main():
     args = _common.parse(__doc__)
     kernel = rmsnorm_kernel()
@@ -52,10 +74,14 @@ def main():
     xf = x.float()
     want = xf * torch.rsqrt(xf.pow(2).mean(-1, keepdim=True) + 1e-6)
     _common.check("this kernel vs fp32 torch", o, want, rel=2e-2)
+    strip = rmsnorm_strip_kernel(cols)
+    strip(x, o)
+    _common.check("the strip kernel vs fp32 torch", o, want, rel=2e-2)
     if args.no_bench:
         return
     best = _common.compare({
         "hk (this kernel)": lambda: kernel(x, o),
+        "hk (the strip kernel)": lambda: strip(x, o),
         "hk.ops.norm.rmsnorm": lambda: hk.ops.norm.rmsnorm(x, out=o),
         "torch rms_norm": lambda: F.rms_norm(x, (cols,), eps=1e-6),
     }, args.rounds)

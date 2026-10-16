@@ -20,6 +20,19 @@ pytestmark = pytest.mark.gpu
 SHAPES = [(1, 4096), (5, 4096), (16, 4096), (37, 2048), (300, 4096),
           (8192, 4096), (4100, 2560)]
 
+#: Widths the strip kernels take with a bounded tail: a run of 4 (4100), of 2
+#: (2050), of 1 (129), a ragged last chunk (3000), and one narrower than a
+#: chunk (64).
+RAGGED = [(3, 4100), (2, 2050), (7, 129), (5, 3000), (9, 64)]
+
+
+@pytest.fixture(params=["strip", "tile"])
+def layout(request, monkeypatch):
+    from hk.ops import norm
+
+    monkeypatch.setattr(norm, "LAYOUT", request.param)
+    return request.param
+
 
 def _ref(z, w, eps=1e-6):
     z = z.float()
@@ -31,7 +44,7 @@ def _rel(got, want):
 
 
 @pytest.mark.parametrize("rows,cols", SHAPES)
-def test_rms_norm_weighted(rows, cols):
+def test_rms_norm_weighted(rows, cols, layout):
     g = torch.Generator(device="cuda").manual_seed(rows + cols)
     x = torch.randn(rows, cols, device="cuda", dtype=torch.bfloat16, generator=g)
     w = torch.rand(cols, device="cuda", dtype=torch.bfloat16, generator=g) + 0.5
@@ -39,7 +52,7 @@ def test_rms_norm_weighted(rows, cols):
 
 
 @pytest.mark.parametrize("rows,cols", SHAPES)
-def test_fused_add_rms_norm_in_place(rows, cols):
+def test_fused_add_rms_norm_in_place(rows, cols, layout):
     g = torch.Generator(device="cuda").manual_seed(rows * 7 + cols)
     x = torch.randn(rows, cols, device="cuda", dtype=torch.bfloat16, generator=g)
     r = torch.randn_like(x)
@@ -48,5 +61,22 @@ def test_fused_add_rms_norm_in_place(rows, cols):
     want_y, want_r = _ref(z, w), z.to(torch.bfloat16)
     y, r2 = hk.ops.fused_add_rms_norm(x, r, w)
     assert y.data_ptr() == x.data_ptr() and r2.data_ptr() == r.data_ptr()
+    assert torch.equal(r, want_r)
+    assert _rel(x, want_y) < 2e-2
+
+
+@pytest.mark.parametrize("rows,cols", RAGGED)
+@pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float16, torch.float32])
+def test_strip_tails(rows, cols, dtype):
+    """Bounded strips: the runs past the row read zero, are not written, and
+    the residual stays bit-exact."""
+    g = torch.Generator(device="cuda").manual_seed(rows * 13 + cols)
+    x = torch.randn(rows, cols, device="cuda", dtype=dtype, generator=g)
+    r = torch.randn_like(x)
+    w = (torch.rand(cols, device="cuda", generator=g) + 0.5).to(dtype)
+    assert _rel(hk.ops.rms_norm(x, w), _ref(x, w)) < 2e-2
+    z = x.float() + r.float()
+    want_y, want_r = _ref(z, w), z.to(dtype)
+    hk.ops.fused_add_rms_norm(x, r, w)
     assert torch.equal(r, want_r)
     assert _rel(x, want_y) < 2e-2

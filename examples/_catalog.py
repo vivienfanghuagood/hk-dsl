@@ -37,6 +37,7 @@ def kernels() -> List[Tuple[str, object]]:
     return [
         ("vector_add", add.add),
         ("rmsnorm", rms.rmsnorm_kernel()),
+        ("rmsnorm_strip", rms.rmsnorm_strip_kernel()),
         ("softmax", sm.softmax_kernel()),
         ("gemm", gemm.gemm),
         ("attention", attn.attention_kernel()),

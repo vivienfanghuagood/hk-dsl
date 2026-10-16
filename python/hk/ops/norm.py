@@ -841,6 +841,248 @@ for _s, _dt in _DTYPES.items():
 del _s, _dt, _k, _w, _n, _res
 
 
+# ---------------------------------------------------------------- strips
+#
+# Everything above works in the register layouts WMMA gives: a 16-row tile
+# whose 16-bit form holds each row twice and whose fp32 form gives a lane
+# alternate columns. A row kernel wants neither. The kernels below hold the
+# row in a strip (hk.RS, kittens::rs): each lane owns runs of RUN contiguous
+# elements, one 16-byte access each, nothing replicated -- Triton's blocked
+# layout, and FlyDSL's. One workgroup a row; warp w holds columns
+# [w*CW, (w+1)*CW), CW = CHUNKS*32*RUN, read once.
+#
+# What that bought, at 4096 columns, against the fastest of Triton and FlyDSL
+# each tuned, Inductor and torch (tools/hk-bench/scoreboard.py, us; the
+# tile column is this file's tile kernels, the strip column what hk.ops now
+# runs):
+#
+#                         rows 1        32            2048          8192
+#     rms_norm   tile     5.1           3.9           24.8          190.1
+#                strip    2.4           2.3           18.4          169.9
+#                best     2.5           2.5           19.0          174.1
+#     fused add  tile     6.0           4.5           40.1          347.8
+#                strip    2.5-3.2       2.5-3.0       36.2          339.0
+#                best     2.6           2.8           35.8          328.0
+#     softmax    tile     --            --            23.1          184.6
+#                strip    --            --            18.7          168.6
+#                best     --            --            19.1          172.5
+#
+# Most of the tile kernels' one-row time was not the tile path at all; see
+# kittens::touch_kernargs. At 8192 rows every arm sits at the HBM roof.
+
+#: Elements of one row a lane may hold. 64 is 64 VGPRs of data, and a
+#: weighted norm holds as many again of weight; past it the row is wider than
+#: 16 warps x 64 x 32 = 32768 elements and goes to the tile kernels' streaming
+#: plan.
+STRIP_MAX_PER_LANE = 64
+
+#: Elements of a row a lane aims to hold: two 16-byte runs of bf16, one for
+#: the in-place fused add. Fewer a lane is more warps on the row. Measured
+#: across 1024-8192 columns and 1-8192 rows (tools/hk-bench/strip_plan.py,
+#: us), two runs win or tie for the read-only kernels nearly everywhere --
+#:
+#:                          8/lane    16/lane    32/lane
+#:     rms_norm  2048x2048   10.33      9.62      11.23
+#:     rms_norm  8192x1024   19.07     18.32      20.95
+#:     softmax   2048x4096   20.23     18.82      20.00
+#:     softmax   8192x2048   37.00     36.22      37.49
+#:
+#: -- with misses of 1-3% at a few shapes (8 a lane at 2048x1024; at
+#: 8192x4096 and 5120 the two orders swap between runs). The fused add, which
+#: reads and writes both of its row operands, is slowest at two runs of all
+#: three in the cache-resident regime, by 5-19%, and takes one:
+#:
+#:     fused add 2048x1024   10.81     12.04      10.89
+#:     fused add 2048x2048   19.14     21.17      19.85
+#:     fused add 2048x4096   36.26     37.22      35.60
+#:
+#: Holding two or four rows a strip (ROWS) won nowhere by more than noise but
+#: the fused add at 2048x1024 (7%), and it is not taken.
+_STRIP_PER_LANE = {"addrmsw": 8}
+_STRIP_PER_LANE_DEFAULT = 16
+
+#: Past the Infinity Cache a strip kernel streams HBM, and there it runs
+#: faster with fewer rows in flight than its registers allow: LDS reserved
+#: so that a WGP (128 KB of LDS) holds two workgroups. 8192x4096, us
+#: (scoreboard timing, 50 calls a round; tuned Triton beside):
+#:
+#:                   no cap   5 a WGP   3 a WGP   2 a WGP   Triton
+#:     rms_norm  w8   177.0    177.4     175.8     173.9     173.7
+#:     softmax   w8   177.1    178.7     175.5     173.7     174.5
+#:     fused add w16  350.1    353.3     348.1     346.5     337.4
+#:
+#: Inside the cache it is the other way round -- the same cap took a
+#: 2048x4096 rms_norm from 18.4 to 22.3 us -- so it applies only when the
+#: bytes a call moves exceed the cache. Tuned Triton gets the same effect
+#: from its register allocation: its 8192-row fused add, at waves_per_eu=4,
+#: allocates 241 VGPRs, one workgroup a WGP.
+_STRIP_CACHE_BYTES = 96 << 20
+_STRIP_RESERVE = 48 << 10
+
+#: Row operands each kind reads or writes once: the bytes a call moves are
+#: this times rows x cols x the element size.
+_STRIP_STREAMS = {"addrmsw": 4}
+
+
+def strip_run(cols: int, nbytes: int) -> int:
+    """Elements in a lane's run: a 16-byte access wherever the row's length
+    keeps the runs aligned, halved until it does."""
+    r = 16 // nbytes
+    while r > 1 and cols % r:
+        r //= 2
+    return r
+
+
+def strip_plan(cols: int, kind: str, nbytes: int):
+    """(WARPS, CHUNKS, RUN, EXACT) for a strip kernel, or None where the row
+    is too wide to hold.
+
+    RUN from strip_run; CHUNKS, the 32*RUN-column chunks one warp holds, from
+    the per-lane target; WARPS to cover the row, at most MAX_WARPS, the chunks
+    then rebalanced so that no warp holds more than it must. EXACT when the
+    warps cover the row with nothing left over: then nothing is bounded."""
+    run = strip_run(cols, nbytes)
+    span = 32 * run
+    chunks = _ceil(cols, span)
+    target = _STRIP_PER_LANE.get(kind, _STRIP_PER_LANE_DEFAULT)
+    per = max(1, target // run)
+    warps = min(MAX_WARPS, _ceil(chunks, per))
+    per = _ceil(chunks, warps)
+    if per * run > STRIP_MAX_PER_LANE:
+        return None
+    return warps, per, run, int(warps * per * span == cols)
+
+
+def _strip_kernel(name: str, dtype, kind: str, warps: int):
+    """A row kernel on a strip: one workgroup a row, the row read once.
+
+    `kind`: rms, layer, softmax (unweighted, as _row_reduce_kernel), rmsw
+    (times a weight) and addrmsw (vLLM's fused_add_rms_norm: x + r is
+    normalised and written back to r_out). Rows are any count, columns any
+    count: without EXACT every access is bounded -- a run at or past the row's
+    end reads zero and is not written -- and the reductions that a zero would
+    move are masked.
+    """
+    @hk.func
+    def core(x, w, o, r, r_out, ROWS, CHUNKS, RUN, EXACT, RESERVE, EPS):
+        if RESERVE:
+            hk.lds.reserve(RESERVE)
+        cw = CHUNKS * 32 * RUN
+        S = hk.RS(fp32, ROWS, cw, RUN)
+        row = hk.arch.block_idx.x * ROWS if ROWS > 1 else hk.arch.block_idx.x
+        c0 = hk.arch.warp_id() * cw if warps > 1 else 0
+        bounded = not EXACT
+        # The weight first: its loads then issue beside the row's rather than
+        # after the reduction has waited for them.
+        g = w.at[0, c0].load(hk.row_vec(S), bounded=bounded) if w is not None else None
+        v = x.at[row, c0].load(S, bounded=bounded)
+        if r is not None:
+            v += r.at[row, c0].load(S, bounded=bounded)
+            # Before the combine's barrier, though gfx11's s_barrier then
+            # waits for it (s_waitcnt_vscnt 0): issued after the barrier it
+            # lands on the kernel's tail, which measured 0.1-0.2 us slower at
+            # 1-32 rows and no faster at 2048 and 8192.
+            r_out.at[row, c0].store(v, bounded=bounded)
+        n = x.cols
+        # Columns of this warp's strip inside the row; past them the bounded
+        # load left zeros.
+        tail = None if EXACT else n - c0
+        if kind == "softmax":
+            if tail is not None:
+                v.right_fill_(tail, _NEG_INF)
+            m = cross_warp(v.max(axis=1), "max", warps)
+            v -= m
+            v.exp_()
+            s = cross_warp(v.sum(axis=1), "add", warps)
+            inv = hk.full(hk.col_vec(S), 1.0)
+            inv /= s
+            v *= inv
+        elif kind == "layer":
+            # Two passes over registers, not E[x^2] - E[x]^2: the row is
+            # held, so the deviations cost a reduction and not a pass over
+            # memory, and they do not cancel.
+            mean = cross_warp(v.sum(axis=1), "add", warps)
+            mean /= n
+            v -= mean
+            if tail is not None:
+                v.right_fill_(tail, 0.0)
+            var = cross_warp((v * v).sum(axis=1), "add", warps)
+            var /= n
+            var += EPS
+            v *= var.rsqrt()
+        else:
+            sq = cross_warp((v * v).sum(axis=1), "add", warps)
+            sq /= n
+            sq += EPS
+            v *= sq.rsqrt()
+            if g is not None:
+                v *= g
+        o.at[row, c0].store(v, bounded=bounded)
+
+    if kind == "addrmsw":
+        def body(x: hk.Tensor[dtype], r: hk.Tensor[dtype], w: hk.Tensor[dtype],
+                 o: hk.Tensor[dtype], r_out: hk.Tensor[dtype], *, ROWS=1, CHUNKS=1,
+                 RUN=8, EXACT=1, RESERVE=0, EPS=1e-6):
+            core(x, w, o, r, r_out, ROWS, CHUNKS, RUN, EXACT, RESERVE, EPS)
+    elif kind == "rmsw":
+        def body(x: hk.Tensor[dtype], w: hk.Tensor[dtype], o: hk.Tensor[dtype], *,
+                 ROWS=1, CHUNKS=1, RUN=8, EXACT=1, RESERVE=0, EPS=1e-6):
+            core(x, w, o, None, None, ROWS, CHUNKS, RUN, EXACT, RESERVE, EPS)
+    else:
+        def body(x: hk.Tensor[dtype], o: hk.Tensor[dtype], *, ROWS=1, CHUNKS=1, RUN=8,
+                 EXACT=1, RESERVE=0, EPS=1e-6):
+            core(x, None, o, None, None, ROWS, CHUNKS, RUN, EXACT, RESERVE, EPS)
+
+    body.__name__ = name
+    # Ties to even for the residual, as _rms_weighted_kernel says why.
+    defines = {"HK_BF16_ROUND": 2} if kind == "addrmsw" else None
+    return hk.kernel(body, warps=warps, grid=_strip_grid, name=name, defines=defines)
+
+
+def _strip_grid(p):
+    return (hk.cdiv(p.x.rows, p.ROWS), 1, 1)
+
+
+#: (kind, dtype suffix, warps) -> strip Kernel; CHUNKS, RUN and EXACT are
+#: constexprs, so one entry covers every width.
+STRIP_KERNELS = {}
+for _s, _dt in _DTYPES.items():
+    for _k in ("rms", "layer", "softmax", "rmsw", "addrmsw"):
+        for _w in WARP_COUNTS:
+            _n = f"strip_{_k}_{_s}_w{_w}"
+            STRIP_KERNELS[_n] = _strip_kernel(_n, _dt, _k, _w)
+del _s, _dt, _k, _w, _n
+
+
+def _strips_here() -> bool:
+    """Strips are include/rdna3's; on any other target the tile kernels run."""
+    from ..target import current_arch, get_target  # noqa: PLC0415
+
+    return get_target(current_arch()).kittens_define == "KITTENS_RDNA3"
+
+
+def _resolve_strip(kind: str, dtype, cols: int, rows: int):
+    """(kernel, CHUNKS, RUN, EXACT, RESERVE), or None for a row too wide for a
+    strip. RESERVE caps the workgroups a WGP holds when the call streams HBM:
+    see _STRIP_RESERVE."""
+    nbytes = getattr(dtype, "itemsize", 2)
+    streams = rows * cols * nbytes * _STRIP_STREAMS.get(kind, 2) > _STRIP_CACHE_BYTES
+    key = ("strip", kind, dtype, cols, streams)
+    got = _PLAN_CACHE.get(key, False)
+    if got is False:
+        suffix = _TORCH_DTYPES.get(str(dtype))
+        if suffix is None:
+            raise TypeError(f"hk norms handle bf16/fp16/fp32, not {dtype}")
+        p = strip_plan(cols, kind, _DTYPES[suffix].bytes) if _strips_here() else None
+        got = None
+        if p is not None:
+            warps, chunks, run, exact = p
+            got = (STRIP_KERNELS[f"strip_{kind}_{suffix}_w{warps}"], chunks, run, exact,
+                   _STRIP_RESERVE if streams else 0)
+        _PLAN_CACHE[key] = got
+    return got
+
+
 # ---------------------------------------------------------------- wrappers
 
 _TORCH_DTYPES = {
@@ -930,8 +1172,37 @@ def _resolve(kind: str, dtype, cols: int, rows: int):
     return got
 
 
+#: "strip" runs the norms on the strip kernels wherever a row fits one;
+#: "tile" keeps them on the tile kernels above, for measuring the one against
+#: the other. Read once; a tool may assign it.
+LAYOUT = __import__("os").environ.get("HK_NORM_LAYOUT", "strip")
+
+
+def _flat(t, rows: int, cols: int):
+    return t if t.dim() == 2 else t.view(rows, cols)
+
+
+def _run_strip(kind: str, x, out, eps: float) -> bool:
+    """Run `kind` on a strip kernel if one holds the row; False if not."""
+    if not x.is_contiguous():
+        raise ValueError("hk kernels take contiguous tensors; call .contiguous()")
+    cols = x.shape[-1] if x.dim() else 0
+    rows = x.numel() // cols if cols else 0
+    if not rows:
+        return True
+    got = _resolve_strip(kind, x.dtype, cols, rows)
+    if got is None:
+        return False
+    k, chunks, run, exact, reserve = got
+    xv, ov = _flat(x, rows, cols), _flat(out, rows, cols)
+    if kind == "softmax":
+        k(xv, ov, CHUNKS=chunks, RUN=run, EXACT=exact, RESERVE=reserve)
+    else:
+        k(xv, ov, CHUNKS=chunks, RUN=run, EXACT=exact, RESERVE=reserve, EPS=eps)
+    return True
+
+
 def _run(kind: str, x, out, eps: float):
-    rows, cols = _shape_of(x)
     if out is None:
         # Imported here and not at the top because `hk` traces, builds and
         # compiles without torch -- tests/hk/ir and tests/hk/codegen run on a
@@ -945,6 +1216,13 @@ def _run(kind: str, x, out, eps: float):
             f"{kind}: out is {tuple(out.shape)}/{out.dtype}, "
             f"expected {tuple(x.shape)}/{x.dtype}"
         )
+    if LAYOUT == "strip" and _run_strip(kind, x, out, eps):
+        return out
+    return _run_tile(kind, x, out, eps)
+
+
+def _run_tile(kind: str, x, out, eps: float):
+    rows, cols = _shape_of(x)
     k, tpw, fold, exact = _resolve(kind, x.dtype, cols, rows)
     # The constexprs go through the call rather than `specialize(...)`: the
     # call path is keyed on them and hits the trace/build/module caches, where
@@ -1043,10 +1321,16 @@ def _rows_cols(x):
     if not x.is_contiguous():
         raise ValueError("hk kernels take contiguous tensors; call .contiguous()")
     cols = x.shape[-1]
-    if cols < COLS:
-        raise ValueError(f"rows of {cols} elements; the weighted norms need "
+    if cols < COLS and LAYOUT != "strip":
+        raise ValueError(f"rows of {cols} elements; the tile norms need "
                          f"at least {COLS}")
-    return x.numel() // cols, cols
+    return (x.numel() // cols if cols else 0), cols
+
+
+def _weighted_strip(kind: str, x, rows: int, cols: int):
+    if LAYOUT != "strip" or not rows:
+        return None
+    return _resolve_strip(kind, x.dtype, cols, rows)
 
 
 def rms_norm(x, weight, eps: float = 1e-6, out=None):
@@ -1056,6 +1340,14 @@ def rms_norm(x, weight, eps: float = 1e-6, out=None):
     if out is None:
         import torch  # noqa: PLC0415
         out = torch.empty_like(x)
+    got = _weighted_strip("rmsw", x, rows, cols)
+    if got is not None:
+        k, chunks, run, exact, reserve = got
+        k(_flat(x, rows, cols), weight.view(1, cols), _flat(out, rows, cols),
+          CHUNKS=chunks, RUN=run, EXACT=exact, RESERVE=reserve, EPS=eps)
+        return out
+    if not rows:
+        return out
     k, tpw, fold, exact = _resolve_weighted("rmsw", x.dtype, cols, rows)
     shape = (rows * fold, cols // fold)
     k(x.view(shape), weight.view(fold, cols // fold), out.view(shape),
@@ -1071,6 +1363,15 @@ def fused_add_rms_norm(x, residual, weight, eps: float = 1e-6):
     if residual.shape != x.shape or not residual.is_contiguous():
         raise ValueError(f"residual is {tuple(residual.shape)}, expected a "
                          f"contiguous {tuple(x.shape)}")
+    got = _weighted_strip("addrmsw", x, rows, cols)
+    if got is not None:
+        k, chunks, run, exact, reserve = got
+        xv, rv = _flat(x, rows, cols), _flat(residual, rows, cols)
+        k(xv, rv, weight.view(1, cols), xv, rv, CHUNKS=chunks, RUN=run,
+          EXACT=exact, RESERVE=reserve, EPS=eps)
+        return x, residual
+    if not rows:
+        return x, residual
     k, tpw, fold, exact = _resolve_weighted("addrmsw", x.dtype, cols, rows)
     shape = (rows * fold, cols // fold)
     xv, rv = x.view(shape), residual.view(shape)
@@ -1080,6 +1381,7 @@ def fused_add_rms_norm(x, residual, weight, eps: float = 1e-6):
 
 
 __all__ = [
-    "KERNELS", "ROWS", "COLS", "MAX_TPW", "MAX_WARPS", "WARP_COUNTS",
-    "plan", "rmsnorm", "layernorm", "softmax", "rms_norm", "fused_add_rms_norm",
+    "KERNELS", "STRIP_KERNELS", "ROWS", "COLS", "MAX_TPW", "MAX_WARPS",
+    "WARP_COUNTS", "plan", "strip_plan", "rmsnorm", "layernorm", "softmax",
+    "rms_norm", "fused_add_rms_norm",
 ]

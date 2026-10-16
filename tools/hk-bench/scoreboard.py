@@ -555,9 +555,9 @@ def loc():
          "kernels/gemm/rdna3_f16_gemm.py"),
         ("attention", attn.attn_kernel, None,
          "kernels/attention/flash_attn_generic.py"),
-        ("rms_norm + fused add", norm._rms_weighted_kernel,
+        ("rms_norm + fused add", norm._strip_kernel,
          py(triton_ref._rmsnorm), "kernels/norm/rmsnorm_kernel.py"),
-        ("softmax", norm._row_reduce_kernel, py(triton_ref._softmax),
+        ("softmax", norm._strip_kernel, py(triton_ref._softmax),
          "kernels/norm/softmax_kernel.py"),
     ]
     root = Path(os.environ.get("FLYDSL_ROOT", "/workspace/FlyDSL"))
@@ -568,8 +568,9 @@ def loc():
         print(f"{name:<24}{_loc(inspect.getsource(h)):>8}"
               f"{(_loc(inspect.getsource(t)) if t else 0):>8}"
               f"{(_loc(fl.read_text()) if fl.exists() else 0):>8}")
-    print("hk's softmax row is the whole rms/layer/softmax kernel; FlyDSL's "
-          "rows are whole files, helpers included.")
+    print("hk's norm rows are one strip kernel, rms/layer/softmax and the "
+          "weighted and fused-add forms; FlyDSL's rows are whole files, helpers "
+          "included.")
 
 
 if __name__ == "__main__":
