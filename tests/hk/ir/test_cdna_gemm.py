@@ -196,6 +196,17 @@ def test_reading_that_tile_one_phase_later_makes_hipkittens_waits_right():
     assert _waits(src) == [4, 6, 6, 6, 2, 0]
 
 
+def test_split_k_writes_fp32_shares_and_grids_the_splits():
+    """K cut across workgroups: the grid's y is the split, each share is the
+    fp32 accumulators stored to the scratch's depth, and the waits inside are
+    the unsplit kernel's."""
+    src = scaffold.bare(_gemm("g_t5", splits=2).trace())
+    assert "* (g.b.rows() / 256)), 2, 1);" in src
+    assert src.count("kittens::store_bounded(g.ws,") == 4
+    assert "g.c" not in src
+    assert _waits(src) == [4, 6, 6, 6, 2, 0]
+
+
 def test_shapes_pick_their_blocks():
     assert gemm_cdna.schedule_for(4096, 4096, 4096)["block_n"] == 256
     assert gemm_cdna.schedule_for(4096, 4224, 4096)["block_n"] == 128

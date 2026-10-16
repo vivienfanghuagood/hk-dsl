@@ -288,9 +288,15 @@ def launch(sched: Dict[str, Any], a, b, out):
     m, n = out.shape
     ws = scratch_for(a.device, s["splits"], m, n)
     k(a, b, ws)
-    name = f"gemm_cdna_dp_reduce_k{s['splits']}"
+    return reduce(ws, out)
+
+
+def reduce(ws, out):
+    """out = bf16 of the sum of ws's shares, in order (reduce_kernel)."""
+    splits = ws.shape[0]
+    name = f"gemm_cdna_dp_reduce_k{splits}"
     if name not in _KERNELS:
-        _KERNELS[name] = reduce_kernel(name, s["splits"])
+        _KERNELS[name] = reduce_kernel(name, splits)
     _KERNELS[name](ws, out)
     return out
 

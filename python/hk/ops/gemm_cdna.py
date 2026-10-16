@@ -61,7 +61,7 @@ def gemm_kernel(name: str, *, block_m: int = 256, block_n: int = 256,
                 wgm: int = 8, xcd_chunk: int = 64, setprio: bool = True,
                 transposed_c: bool = False, early_store: bool = True,
                 hipkittens_waits: bool = False, late_b: bool = True,
-                arch: Optional[str] = None,
+                splits: int = 1, arch: Optional[str] = None,
                 max_vgprs: int = 256, min_occupancy: int = 1):
     """HipKittens' tiling by default: 256x256x64, eight warps as 2 x 4.
 
@@ -97,8 +97,8 @@ def gemm_kernel(name: str, *, block_m: int = 256, block_n: int = 256,
     t_c = (hk.RT(fp32, reg_n, reg_m, "col") if transposed_c
            else hk.RT(fp32, reg_m, reg_n, "col"))
 
-    def body(a: hk.Tensor[bf16], b: hk.Tensor[bf16], c: hk.Tensor[bf16], *,
-             WGM: hk.Constexpr = wgm):
+    @hk.func
+    def gemm(a, b, WGM, k0, k_count, out):
         g = hk.group(warps)
         # Buffer u, half h of A is As[2u + h]: every index below is a Python
         # int, so each copy and read names its buffer.
@@ -142,8 +142,8 @@ def gemm_kernel(name: str, *, block_m: int = 256, block_n: int = 256,
         # nothing. The limit narrows the descriptor and moves no address --
         # moving the tile's row instead put the 64-bit address arithmetic of
         # every copy back in the loop, 60 VALU an iteration, 7% slower.
-        n_tiles = 2 * hk.cdiv(a.cols // k_step, 2)
-        k_tiles = a.cols // k_step
+        n_tiles = 2 * hk.cdiv(k_count, 2)
+        k_tiles = k_count
 
         # Only the copies of a pair's second tile can be the pad: they take
         # the limit, and the rest no arithmetic at all.
@@ -151,11 +151,11 @@ def gemm_kernel(name: str, *, block_m: int = 256, block_n: int = 256,
             return (1 - hk.min(hk.max(t - k_tiles + 1, 0), 1)) * rows if pad else None
 
         def copy_a(t, u, h, pad=False):
-            g.load(As[2 * u + h], a.at[m0 + h * half_m, t * k_step], wait=False,
+            g.load(As[2 * u + h], a.at[m0 + h * half_m, k0 + t * k_step], wait=False,
                    rows=limit(t, half_m, pad))
 
         def copy_b(t, u, h, pad=False):
-            g.load(Bs[2 * u + h], b.at[n0 + h * half_n, t * k_step], wait=False,
+            g.load(Bs[2 * u + h], b.at[n0 + h * half_n, k0 + t * k_step], wait=False,
                    rows=limit(t, half_n, pad))
 
         def read_a(u, h):
@@ -171,9 +171,8 @@ def gemm_kernel(name: str, *, block_m: int = 256, block_n: int = 256,
                 C[i][j] += A @ B[j].T
 
         def store(i, j):
-            out = hk.transpose(C[i][j]) if transposed_c else C[i][j]
-            c[hk.elem_coord(0, 0, m0 + i * half_m + wr * reg_m,
-                            n0 + j * half_n + wc * reg_n)].store(out, bounded=True)
+            tile = hk.transpose(C[i][j]) if transposed_c else C[i][j]
+            out(tile, m0 + i * half_m + wr * reg_m, n0 + j * half_n + wc * reg_n)
 
         def math(i, j):
             if setprio:
@@ -320,26 +319,48 @@ def gemm_kernel(name: str, *, block_m: int = 256, block_n: int = 256,
                 if not (early_store and i == 0):
                     store(i, j)
 
-    body.__name__ = name
+    def body(a: hk.Tensor[bf16], b: hk.Tensor[bf16], c: hk.Tensor[bf16], *,
+             WGM: hk.Constexpr = wgm):
+        def out(tile, r, col):
+            c[hk.elem_coord(0, 0, r, col)].store(tile, bounded=True)
+
+        gemm(a, b, WGM, 0, a.cols // k_step, out)
+
+    # splits > 1: K cut across workgroups, each share to an fp32 scratch
+    # (splits, M, N), and hk.ops.gemm_cdna_dp.reduce_kernel adds them.
+    def body_split(a: hk.Tensor[bf16], b: hk.Tensor[bf16], ws: hk.Tensor[fp32], *,
+                   WGM: hk.Constexpr = wgm):
+        s = hk.arch.block_idx.y
+        per = a.cols // splits
+
+        def out(tile, r, col):
+            ws[hk.elem_coord(0, s, r, col)].store(tile, bounded=True)
+
+        gemm(a, b, WGM, s * per, per // k_step, out)
+
+    fn = body if splits == 1 else body_split
+    fn.__name__ = name
 
     def _grid(p):
-        return (hk.cdiv(p.a.rows, block_m) * (p.b.rows // block_n), 1, 1)
+        return (hk.cdiv(p.a.rows, block_m) * (p.b.rows // block_n), splits, 1)
 
-    return hk.kernel(body, arch=arch, warps=warps, grid=_grid, name=name,
+    return hk.kernel(fn, arch=arch, warps=warps, grid=_grid, name=name,
                      max_vgprs=max_vgprs, min_occupancy=min_occupancy)
 
 
 #: HipKittens' tiling.
 DEFAULT: Dict[str, Any] = dict(block_m=256, block_n=256, k_step=64, warps_m=2,
                                warps_n=4, wgm=8, xcd_chunk=64, setprio=True,
-                               transposed_c=False, early_store=True, late_b=True)
+                               transposed_c=False, early_store=True, late_b=True,
+                               splits=1)
 
 
 def _sched_name(s: Dict[str, Any]) -> str:
     return ("gemm_cdna_{block_m}x{block_n}x{k_step}_w{warps_m}x{warps_n}"
             "_g{wgm}_x{xcd_chunk}").format(**s) + ("_sp" if s.get("setprio") else "") + (
                 "_ct" if s.get("transposed_c") else "") + ("_es" if s.get("early_store") else "") + (
-                "_lb" if s.get("late_b") else "")
+                "_lb" if s.get("late_b") else "") + (
+                f"_k{s['splits']}" if s.get("splits", 1) > 1 else "")
 
 
 _KERNELS: Dict[str, Any] = {}
@@ -378,12 +399,19 @@ def schedule_for(m: int, n: int, k: int) -> Dict[str, Any]:
 #: batches. tools/hk-bench/gemm_cdna_routes.py measures them.
 CANDIDATES: Dict[str, Any] = {
     "pp": ("pp", {}),
+    "ppk2": ("pp", {"splits": 2}),
+    "ppk4": ("pp", {"splits": 4}),
     "dp128": ("dp", {"block_m": 128, "block_n": 128, "stages": 4}),
     "dp128k2": ("dp", {"block_m": 128, "block_n": 128, "stages": 4, "splits": 2}),
     "dp128k4": ("dp", {"block_m": 128, "block_n": 128, "stages": 4, "splits": 4}),
     "dp64": ("dp", {"block_m": 64, "block_n": 128, "stages": 3, "xcd_chunk": 0}),
     "dp64k4": ("dp", {"block_m": 64, "block_n": 128, "stages": 3, "xcd_chunk": 0, "splits": 4}),
     "dp64k8": ("dp", {"block_m": 64, "block_n": 128, "stages": 3, "xcd_chunk": 0, "splits": 8}),
+    "dp64x64": ("dp", {"block_m": 64, "block_n": 64, "stages": 4, "xcd_chunk": 0}),
+    "dp64x64k2": ("dp", {"block_m": 64, "block_n": 64, "stages": 4, "xcd_chunk": 0, "splits": 2}),
+    "dp64x64k4": ("dp", {"block_m": 64, "block_n": 64, "stages": 4, "xcd_chunk": 0, "splits": 4}),
+    "dp64x64k8": ("dp", {"block_m": 64, "block_n": 64, "stages": 4, "xcd_chunk": 0, "splits": 8}),
+    "pp128": ("pp", {"block_m": 128}),
     "decode": ("decode", {}),
 }
 
@@ -453,15 +481,23 @@ def run(name: str, a, b, out):
         return gemm_cdna_dp.launch(sched, a, b, out)
     m, k = a.shape
     n = b.shape[0]
+    if sched.get("splits", 1) > 1:
+        from . import gemm_cdna_dp  # noqa: PLC0415
+
+        s = {**schedule_for(m, n, k), **sched}
+        ws = gemm_cdna_dp.scratch_for(a.device, s["splits"], m, n)
+        kernel_for(s)(a, b, ws)
+        gemm_cdna_dp.reduce(ws, out)
+        return out
     wide = n - n % 256
     if n % 256 and wide:
         # A 128-wide block runs at two thirds of a 256-wide one, so only the
         # last 128 columns take it: two launches into column slices of out,
         # which a strided global takes as they are (lm_head's 151936).
-        kernel_for(schedule_for(m, wide, k))(a, b[:wide], out[:, :wide])
-        kernel_for(schedule_for(m, n - wide, k))(a, b[wide:], out[:, wide:])
+        kernel_for({**schedule_for(m, wide, k), **sched})(a, b[:wide], out[:, :wide])
+        kernel_for({**schedule_for(m, n - wide, k), **sched})(a, b[wide:], out[:, wide:])
         return out
-    kernel_for(schedule_for(m, n, k))(a, b, out)
+    kernel_for({**schedule_for(m, n, k), **sched})(a, b, out)
     return out
 
 
