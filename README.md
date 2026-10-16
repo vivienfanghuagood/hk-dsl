@@ -1,8 +1,48 @@
-# hk-dsl — HipKittens kernels in Python, over an MLIR dialect
+# hk-dsl — tile-level AMD GPU kernels in Python, on HipKittens
 
-Write Radeon kernels in Python, get HipKittens C++, get a `.so`, call it from
-torch. The point is not convenience: it is that three classes of *silently
-wrong* kernel on RDNA3 stop being expressible.
+hk-dsl is a Python DSL for AMD GPU kernels at the level of
+[HipKittens](https://github.com/HazyResearch/HipKittens)' tiles (register and
+shared-memory tiles, matrix-core MMAs, explicit waits), together with the
+patches that put those kernels into vLLM and SGLang wherever they measure
+faster than the engine's own. A kernel is traced into an MLIR dialect,
+checked, translated to HipKittens C++, compiled by the stock hipcc and called
+from torch. The primary target is RDNA3 (Radeon PRO W7900, RX 7900); CDNA4
+(Instinct MI355X) runs part of it; RDNA4 and CDNA3 compile
+([where it runs](#where-it-runs)).
+
+## Why it exists
+
+Fast tile kernels for AMD GPUs can be written: HipKittens' C++ reaches the
+hardware's peak. Three things stood between that and a faster model.
+
+- **The serving engines do not use them.** vLLM and SGLang are tuned for
+  Instinct, and on a Radeon they run slow paths. On a W7900D, SGLang's decode
+  GEMMs use 38-44% of the memory bandwidth, and the kernel vLLM runs for 4-bit
+  weights is 1.4-2.6x slower than hk's. hk-dsl ships its kernels with
+  patches that put them into the engines, and measures each patch end to end.
+  Qwen3-8B is 1.20-1.75x faster per request in vLLM 0.31 and has 1.49-1.81x
+  the output throughput in SGLang; Qwen3-14B-AWQ is up to 4.43x faster.
+- **The kernels fail silently.** At the tile level, the compiler can hoist an
+  MMA above the wait that guards it, a register spill reorders against
+  hand-placed waits, an operand in the wrong layout takes eight times the
+  instructions, and on CDNA4 an asynchronous copy into shared memory races the
+  barrier after it. None of these produces a diagnostic, and the first three
+  cost days each to find. In hk-dsl each is either impossible to write or
+  refused before the kernel runs ([the traps](#the-traps-it-removes)).
+- **Writing and tuning them is slow.** HipKittens' RDNA3 flash-attention
+  forward is 1108 lines of C++ with 18 `#define` knobs, and retuning it means
+  editing macros and rebuilding. In hk-dsl the knobs are Python parameters
+  that a tuner searches. One 59-line kernel is RMSNorm, LayerNorm and
+  softmax, weighted and with a fused add, and the forms measured win or tie
+  against tuned Triton and FlyDSL. A kernel becomes a torch op, then an
+  engine patch, in a few lines.
+
+hk-dsl does not replace Triton or FlyDSL. Each patch has a route table that
+picks, shape by shape, the kernel that measured fastest: hk's, the engine's
+own, HipKittens' or FlyDSL's. In vLLM, FlyDSL's GEMM serves the decode steps at
+96 and 128 requests, which it makes 12% shorter.
+
+A complete kernel, and the call that compiles and launches it:
 
 ```python
 import hk
@@ -17,22 +57,48 @@ def add(a: hk.Tensor[hk.bf16], b: hk.Tensor[hk.bf16], o: hk.Tensor[hk.bf16]):
 add(a, b, out)          # traces, verifies, translates, compiles (once), launches
 ```
 
-## The three traps
+## The traps it removes
 
-Each of these cost days to find by hand, and none of them produces a
-diagnostic:
+None of these produces a diagnostic when it happens:
 
 - **`s_waitcnt` carries no register dependence**, so the compiler will hoist a
   WMMA above the wait that was supposed to guard it. The translation binds the
   fragment with a volatile asm after every wait ([IR](docs/ir.md#translation)).
+  CDNA4 is no different: on an MI355X, every LDS GEMM built without the bind
+  returned NaN.
 - **A VGPR spill is silent corruption, not slowness**, because the library
   hand-places `s_waitcnt` and scratch traffic reorders against it. `k.build()`
   refuses to return a spilling kernel ([runtime](docs/runtime.md#the-resource-gates)).
 - **Only row-layout 16-bit operands reach `ds_read_b128`**; column layout
   degrades to eight times the instructions. The passes flag it while tracing,
   not at benchmark time ([IR](docs/ir.md#passes)).
+- **On CDNA4, a copy from global memory into LDS is still in flight at the
+  barrier after it.** It counts on `vmcnt`, which nothing waits for before the
+  barrier, so the first LDS GEMM on an MI355X gave a different wrong answer on
+  each run. The translation follows every such copy with its wait
+  ([chapter 29](docs/history/29-cdna.md#the-race)).
 
-The whole argument is in [why this exists](docs/README.md#why-this-exists).
+`python -m hk.runtime.cocheck` runs the same resource and wait gates on any
+code object, hk's or not ([runtime](docs/runtime.md#any-code-object-cocheck)).
+The longer argument is in [why this exists](docs/README.md#why-this-exists).
+
+## Where it runs
+
+| target | GPUs | status |
+|---|---|---|
+| gfx1100, RDNA3 | Radeon PRO W7900 / W7900D, RX 7900 | primary: every kernel and every patch; every number below unless marked |
+| gfx1201, RDNA4 | Radeon RX 9070 | every `hk.ops` kernel compiles and passes the gates; not run on hardware |
+| gfx950, CDNA4 | Instinct MI355X | the elementwise, norm, fused, quantize and rows-by-index kernels run and pass; GEMM and GQA forward through HipKittens' own CDNA4 kernels, as hk ops |
+| gfx942, CDNA3 | Instinct MI300X | compiles; none was available to run on |
+
+On one MI355X, against torch: hk's fused kernels are ahead (fused add +
+RMSNorm 1.06-1.44x, SiLU-mul 1.28-1.82x, RoPE 8.85x, int8 quantize 2.21x); its
+plain elementwise and norm kernels are mostly behind (0.59-1.05x); its own
+GEMM reaches 0.41x hipBLASLt. HipKittens' GQA forward, wrapped, runs
+1.28-2.62x torch SDPA, level with FlyDSL. HipKittens' GEMM is routed to the
+37 of 206 linear shapes where it beats hipBLASLt. Status:
+[design/cdna.md](docs/design/cdna.md); record: [chapter 29](docs/history/29-cdna.md);
+numbers: [performance](docs/performance.md#cdna-on-one-mi355x).
 
 ## Install
 
@@ -49,6 +115,10 @@ is needed. The same wheels are attached to each
 [GitHub release](https://github.com/vivienfanghuagood/hk-dsl/releases). For
 another interpreter, build one with `scripts/build_wheel.sh`
 ([building](docs/building.md#wheels)).
+
+The release on PyPI is 0.3.1. Since then, main has added CDNA, register strips,
+the GEMM schedule, SGLang's MoE patch and plugin, and FlyDSL on the routes;
+until the next release, those need a source build.
 
 **From source.** The backend is the `third_party/HipKittens` submodule, so
 clone with `--recursive`:
@@ -71,7 +141,7 @@ With `add` above, each step needs more than the one before it:
 print(add.trace().dump())     # the hk MLIR module, after the passes -- needs nothing
 print(add.source())           # the HipKittens C++ it translates to -- needs nothing
 print(add.build().report())   # hipcc + the resource gate -- no GPU
-add(a, b, out)                # launch -- a Radeon and torch
+add(a, b, out)                # launch -- an AMD GPU and torch
 ```
 
 `build()` needing no GPU is deliberate: the failure most likely to bite —
@@ -81,51 +151,42 @@ walk-through, with tensors and a check against torch, is
 
 ## Results
 
-On one W7900D (gfx1100). Each number is from the development record, linked;
-[performance](docs/performance.md) has the full tables, the methods, and the
-losses.
+On one W7900D (gfx1100). Each number is from the development record, linked.
+[Performance](docs/performance.md) has the full tables, the methods, the
+losses, and the older results (vLLM 0.16, the first scoreboard) that newer
+ones replaced here.
+
+**End to end**, against the stock engine:
+
+| model, engine | patch | result | against | source |
+|---|---|---|---|---|
+| Qwen3-8B, vLLM 0.31 | linear layers and attention | 1.20-1.75x per request; attention alone 1.05-1.48x | stock vLLM 0.31.0 | [vLLM 0.31](docs/history/20-vllm-031.md) |
+| Qwen3-8B, vLLM 0.31 | the same, with FlyDSL's GEMM on the routes | decode step 12% shorter at 96-128 requests, the request 5-6%; unchanged elsewhere | the same patches without FlyDSL | [chapter 30](docs/history/30-flydsl-routes-gate-contracts.md) |
+| Qwen3-8B-AWQ / Qwen3-14B-AWQ, vLLM 0.31 | 4-bit linear layers | 1.07-3.80x / 1.16-4.43x per request | stock vLLM 0.31.0, fp16 | [4-bit weights](docs/history/22-int4.md) |
+| OLMoE-1B-7B, vLLM 0.31 | MoE / MoE and attention | 1.02-1.41x / 1.17-2.22x per request | stock vLLM 0.31.0 | [MoE](docs/history/21-moe.md) |
+| Qwen3-8B, SGLang 0.5.18 | linear layers (`HK_SGLANG_LINEAR=1`) | 1.49-1.81x output throughput at concurrency 1-32 | stock SGLang with sglang-radeon, eager | [SGLang](docs/history/24-sglang.md) |
+| OLMoE-1B-7B, SGLang 0.5.18 | MoE (`HK_SGLANG_MOE=1`) | runs at all (stock fails in sgl_kernel's top-k); 1.06-1.32x output throughput | SGLang with the top-k in torch and its Triton MoE GEMMs | [SGLang MoE](docs/history/25-sglang-moe.md) |
+
+**Kernels against Triton and FlyDSL**, each tuned for gfx1100, in one process
+([the scoreboard](docs/history/26-the-scoreboard-retuned.md)):
 
 | kernel | result | against | source |
 |---|---|---|---|
-| GEMM, bf16, Qwen3-8B's linear shapes | 87.9–91.3 TFLOP/s: a tie with FlyDSL's dispatcher and autotuner, 0.99–1.01x; 1.09–1.11x Triton autotuned over gfx1100's space | FlyDSL, its dispatcher and autotuner; Triton autotuned; hipBLASLt 1.28–1.39x | [the GEMM schedule](docs/history/28-gemm-schedule.md) |
-| RMSNorm, fused add + RMSNorm, softmax (register strips) | RMSNorm 1.04–1.12x, softmax 1.02x faster; fused add a tie (0.83–1.11x across runs) | the fastest of Triton and FlyDSL, each autotuned, and Inductor | [strips](docs/history/27-strips.md) |
-| dropout, KV cache write, LayerNorm backward | 1.02x; 1.18–3.00x; 1.12x at 1024 wide, 0.66–0.92x (*slower*) at 2048–8192 | the Triton tutorial or a Triton row kernel | [rows by index](docs/history/19-rows-by-index.md) |
-| attention forward | 61.0–64.9 TFLOPs, 0.999–1.002x (1.008x causal); 2.9–3.2x torch SDPA, 4.0x causal | the handwritten C++; torch SDPA | [Phase 4](docs/history/03-phase-4-attention.md) |
-| norms, softmax, RoPE, SiLU-mul, quantize | 13 of 15 cases faster, the other two a tie | `torch.compile` | [Phases 1 and 2](docs/history/01-phases-1-2.md) |
-| decode GEMV, 1–32 tokens | 1.93–2.03x per step | hipBLASLt | [cross-workgroup reduction](docs/history/11-cross-workgroup-reduction.md) |
-| paged decode attention | *slower*: 0.83–0.95x per layer at 16–64 requests on vLLM 0.31 (it won from 16 up on 0.16.1); up to 8 requests the backend runs Triton's kernel on hk's cache, and routing more to it slowed the captured step | vLLM 0.31's Triton attention, captured | [vLLM 0.31](docs/history/20-vllm-031.md) |
-| paged prefill, cached prefixes and chunks included | 3.6–7.9x | vLLM's Triton `unified_attention` | [captured whole](docs/history/17-the-decode-step-captured-whole.md) |
-| Qwen3-8B in vLLM, linear-layer patch | 1.52–1.84x at batch 1, 1.10–1.35x at batch 16 | stock vLLM 0.16.1.dev0 | [cross-workgroup reduction](docs/history/11-cross-workgroup-reduction.md) |
-| Qwen3-8B in vLLM under its defaults, both patches | 1.48–1.85x per request at every shape; attention alone 1.007–1.48x | stock vLLM 0.16.1.dev0, CUDA graphs, prefix caching, chunked prefill | [captured whole](docs/history/17-the-decode-step-captured-whole.md) |
-| Qwen3-8B in vLLM 0.31 under its defaults, both patches | 1.20–1.75x per request; attention alone 1.05–1.48x (1.01–1.39x the TRITON_ATTN backend it replaces) | stock vLLM 0.31.0 | [vLLM 0.31](docs/history/20-vllm-031.md) |
-| MoE GEMM, bf16 | 1.00–2.77x at 1–256 tokens; *slower* above, where the layer stays on Triton | vLLM 0.31's Triton `fused_moe` | [MoE](docs/history/21-moe.md) |
-| OLMoE-1B-7B in vLLM 0.31, MoE patch / with hk's attention | 1.02–1.41x / 1.17–2.22x per request | stock vLLM 0.31.0 | [MoE](docs/history/21-moe.md) |
-| W4A16 decode GEMM (AWQ), fp16 | 1.40–2.61x | vLLM 0.31's Triton AWQ kernel; *slower* (0.69–0.90x) than `gptq_gemm_rdna3` at 1–4 tokens | [4-bit weights](docs/history/22-int4.md) |
-| Qwen3-8B-AWQ / Qwen3-14B-AWQ in vLLM 0.31, 4-bit patch | 1.07–3.80x / 1.16–4.43x per request; decode step to 4.46x / 5.52x | stock vLLM 0.31.0, fp16 | [4-bit weights](docs/history/22-int4.md) |
-| Qwen3-8B served by SGLang 0.5.18, linear patch (`HK_SGLANG_LINEAR=1`) | 1.49–1.81x output throughput at concurrency 1–32 | stock SGLang with sglang-radeon, eager | [SGLang](docs/history/24-sglang.md) |
-| OLMoE-1B-7B served by SGLang 0.5.18, MoE patch (`HK_SGLANG_MOE=1`) | runs at all (stock fails in sgl_kernel's top-k); 1.06–1.32x output throughput at concurrency 1–32 | SGLang with the top-k in torch and its Triton MoE GEMMs | [SGLang MoE](docs/history/25-sglang-moe.md) |
-| shipped ops at 7-8B shapes ([`validate.py`](examples/validate.py)) | GEMM 1.12x, decode GEMV 3.90–4.38x, attention 2.76x (3.94x causal), quantize 2.78x; norms 0.88–0.96x | torch eager, PyTorch 2.10 | [validation](docs/history/16-validation-and-the-cross-warp-race.md) |
+| GEMM, bf16, Qwen3-8B's linear shapes | 87.9-91.3 TFLOP/s: a tie with FlyDSL, 0.99-1.01x; 1.09-1.11x tuned Triton; 1.28-1.39x hipBLASLt | FlyDSL's dispatcher and autotuner; Triton autotuned; hipBLASLt | [the GEMM schedule](docs/history/28-gemm-schedule.md) |
+| RMSNorm, softmax, on register strips | 1.04-1.12x and 1.02x: a win or a tie at 1-8192 rows | the fastest of Triton and FlyDSL, each autotuned, and Inductor | [strips](docs/history/27-strips.md) |
+| fused add + RMSNorm, on register strips | a tie, 0.83-1.11x across runs | the same | [strips](docs/history/27-strips.md) |
+| attention forward, n4096, GQA 4 | 1.16x causal, 0.99x non-causal; a tie with HipKittens' C++ | torch 2.13's SDPA (3.3x faster than 2.10's, against which hk is 2.73-3.80x); FlyDSL has no attention on gfx11 | [chapter 30](docs/history/30-flydsl-routes-gate-contracts.md), [Phase 4](docs/history/03-phase-4-attention.md) |
+| dropout, KV cache write, LayerNorm backward | 1.02x; 1.18-3.00x; 1.12x at 1024 wide, *slower* (0.66-0.92x) at 2048-8192 | the Triton tutorial or a Triton row kernel | [rows by index](docs/history/19-rows-by-index.md) |
 
-### On CDNA (MI355X, MI300X)
+**Kernels inside the engines**, against the kernel the engine runs:
 
-hk also targets gfx950 (CDNA4, Instinct MI355X) and gfx942 (CDNA3, MI300X;
-compile-only, since none was available). On one MI355X:
-- The elementwise, norm, fused, quantize and rows-by-index kernels run and
-  pass. Against torch: add 0.93x, rmsnorm 0.94x, softmax 1.06x, silu_mul
-  1.77x, rope 8.85x, int8 quantize 2.21x.
-- The GPU tier passes, with attention and the GEMMs skipped. Those have no
-  native CDNA path yet.
-- On gfx950 the bind after hk's LDS waits was measured to be load-bearing.
-  Without it, every LDS GEMM build returned NaN.
-- `python -m hk.runtime.cocheck` runs hk's resource and wait gates on any
-  code object, hk's or not.
-- HipKittens' own gfx950 kernels are hk ops behind the engine layer. GQA
-  forward runs 1.28-2.62x torch SDPA. The GEMM is routed only where it beats
-  hipBLASLt, by a measured table.
-
-See [design/cdna.md](docs/design/cdna.md) for the status, [chapter
-29](docs/history/29-cdna.md) for the record, and [performance](docs/performance.md#cdna-on-one-mi355x)
-for the numbers.
+| kernel | result | against | source |
+|---|---|---|---|
+| decode GEMV, 1-32 tokens | 1.93-2.03x per step; upstream vLLM's `wvSplitK` is ahead at one token | hipBLASLt | [cross-workgroup reduction](docs/history/11-cross-workgroup-reduction.md) |
+| W4A16 decode GEMM (AWQ), fp16 | 1.40-2.61x; *slower* (0.69-0.90x) than `gptq_gemm_rdna3` at 1-4 tokens | vLLM 0.31's Triton AWQ kernel | [4-bit weights](docs/history/22-int4.md) |
+| MoE GEMM, bf16 | 1.00-2.77x at 1-256 tokens; *slower* above, where the layer stays on Triton | vLLM 0.31's Triton `fused_moe` | [MoE](docs/history/21-moe.md) |
+| paged prefill, cached prefixes and chunks included | 3.6-7.9x | vLLM's Triton `unified_attention` | [captured whole](docs/history/17-the-decode-step-captured-whole.md) |
+| paged decode attention | *slower*: 0.83-0.95x per layer at 16-64 requests; up to 8 requests the backend runs Triton's kernel on hk's cache | vLLM 0.31's Triton attention, captured | [vLLM 0.31](docs/history/20-vllm-031.md) |
 
 ## Repository layout
 
@@ -138,21 +199,26 @@ hk/_mlir/       the built bindings (hk dialect + MLIR core), not checked in
 hk/target/      gfx1100 / gfx1201 / gfx942 / gfx950 facts, as data
 hk/codegen/     the module boundary around a translated kernel (scaffold.py)
 hk/runtime/     arch detection, hipcc + content-hash cache, the resource gate,
-                and the torch.ops registration (torch_ext.py)
+                the code-object checker (cocheck.py), and the torch.ops
+                registration (torch_ext.py)
 hk/autotune/    schedule search: build the space, keep what passes the gate, time
 hk/tuned/       the schedules that search picked, and the measured routing
                 tables, as shipped data
-hk/ops/         kernels written in the DSL, plus the SDPA drop-in (sdpa.py)
+hk/ops/         kernels written in the DSL, the SDPA drop-in (sdpa.py), and
+                HipKittens' CDNA4 kernels wrapped as hk ops (hipkittens.py)
 hk/integration/ patching a running vLLM or SGLang; engine.py is what every
                 patch shares (op, routes, counters, CUDA-graph contract)
 mlir/           the hk dialect (ODS), its passes, the C++ translation,
                 hk-opt / hk-translate, lit tests
-include/        hk's own headers (pyutils/hk_bind.cuh, the fast pybind entry)
+include/        hk's own headers: pyutils/hk_bind.cuh (the fast pybind entry)
+                and hk/cdna.cuh (what CDNA needs beside HipKittens)
 third_party/HipKittens/
-                the backend: kittens.cuh and include/rdna3, include/rdna4;
-                also the C++ kernels hk is measured against (kernels/rdna3)
-scripts/        building MLIR, the dialect and the wheels
-tools/hk-bench/ the benchmarks and engine harnesses behind every number here
+                the backend: kittens.cuh and include/rdna3, rdna4, cdna3,
+                cdna4; also the C++ kernels hk is measured against
+scripts/        building MLIR, the dialect and the wheels; the GPU suite and the
+                performance gate
+tools/hk-bench/ the benchmarks, the scoreboard, the performance gate and the
+                engine harnesses behind every number here
 examples/       complete kernels, each checked against torch and timed
 docs/           the documentation, and the development record (docs/history)
 ```
@@ -169,8 +235,9 @@ The `hk/` paths are under `python/`; the tests are in `tests/hk/`.
 - [Integration](docs/integration.md) — vLLM and SGLang: the patches, their switches, routing, CUDA graphs
 - [Performance](docs/performance.md) — every result, with its hardware, baseline and source
 - [Building](docs/building.md) — MLIR, the dialect, the wheels
-- [Testing](docs/testing.md) — the four tiers and the gates
-- [Development record](docs/history/README.md) — how it got here, phase by phase, with the negative results
+- [Testing](docs/testing.md) — the test tiers, CI and the performance gate
+- [CDNA3/4](docs/design/cdna.md) — what runs on gfx942 / gfx950, and what does not yet
+- [Development record](docs/history/README.md) — how it got here, chapter by chapter, with the negative results
 
 ## Examples
 
