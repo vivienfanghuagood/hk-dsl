@@ -225,6 +225,8 @@ hk's side of most norm and softmax pairs has moved. The first gate run on
 that tree will say which pairs moved, and the baseline then wants a refresh.
 It could not be refreshed here: the dev pod's Python 3.12 venvs carry the
 0.3.1 wheel's dialect bindings, which do not build chapter 27's kernels.
+([Chapter 31](31-remeasured.md) built them in the engines' pod and
+refreshed it, along with the route tables.)
 
 ## The engines' contracts
 
@@ -331,7 +333,8 @@ recognizes both now, and the GPU tests that cover the integration layer
    per M, might find better, but it compiles and times every candidate on
    every call while `FLYDSL_AUTOTUNE=1`, which no server can afford.
 4. **Refresh the gate's baseline on a tree with chapter 27's strips,** on
-   a pod whose hk dialect bindings match it (see above).
+   a pod whose hk dialect bindings match it (see above). Done in
+   [chapter 31](31-remeasured.md).
 5. **The one-row RMSNorm has no gate.** Its arms move 7-19% between
    processes at 50 calls a round. A gate on it needs a steadier
    measurement: more calls, or a graph-replayed timing.

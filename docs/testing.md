@@ -250,37 +250,42 @@ not gated, and is listed as such with its noise. The file records every
 run's ratio beside the tolerance it produced. To change a tolerance,
 re-measure the noise; editing the number by hand loosens the gate blindly.
 
-**What the shipped baseline measured.** Four runs on the dev pod, two before
-and two after a 70-minute vLLM run on the same GPU, give 45 gated pairs over
-16 cases:
-- GEMM ratios moved 0.02-1.5% between runs, and the 2048- and 8192-row norms
-  and softmax up to 2.9%. 32 pairs sit at the 3% floor, and the widest gated
-  tolerance is 12.7% (Inductor against the 32-row RMSNorm).
-- Twelve pairs are not gated, because their ratios moved 5-30% between
-  processes (the file's `not_gated` lists each with its noise):
-  - torch and FlyDSL against RMSNorm and the fused add, at 1 and 32 rows
-    (FlyDSL's 32-row RMSNorm took 1.18x hk's time in one run and 0.83x in
-    the next);
-  - Triton against RMSNorm at 1 and 32 rows, and Inductor at 1 row;
-  - FlyDSL against the 2048x4096x4096 GEMM.
+**What the shipped baseline measured.** hk at `f155cd6`, with
+[chapter 27](history/27-strips.md)'s strips and
+[chapter 28](history/28-gemm-schedule.md)'s GEMM schedule, on the vLLM 0.31
+venv of the engines' pod (torch 2.13.0+rocm7.2, Triton 3.8.0, FlyDSL 0.4.0),
+GPU 3. Six runs, four within 15 minutes and two after an 18-minute vLLM run,
+give 40 gated pairs over 13 cases ([chapter 31](history/31-remeasured.md)):
+- GEMM ratios moved 0.1-1.6% between runs. The 2048- and 8192-row norms and
+  softmax moved up to 3.6%, and the 8192-row fused add 4.6%, in one run where
+  hk ran it 4.5% faster. torch's non-causal attention ran 2.9% faster in the
+  session's first process, as it had in the previous baseline's. 28 pairs sit
+  at the 3% floor, and the widest gated tolerance is 13.7% (Inductor against
+  the 8192-row fused add).
+- 17 pairs are not gated (the file's `not_gated` lists each with its noise):
+  - every arm of RMSNorm and the fused add at 1 and 32 rows. hk ran those in
+    2.4-3.9 us depending on the process, while Inductor and Triton held
+    2.4-2.8, so the ratios moved 18-52% between runs. Those four cases have
+    no gate at all;
+  - Triton against the 8192-row fused add (noise 5.1%).
+- A seventh run was left out. In it, hk's 8192-row RMSNorm took 97.4 us
+  in its best round: 1.38 TB/s for the 134 MB it moves, which HBM (0.86
+  TB/s) cannot do. Its other rounds took 173 us. The minimum over rounds
+  trusts the fastest round, however it came about.
+- Clean runs against it used at most 34% of a pair's tolerance four
+  minutes later, 50% after a 58-minute vLLM run, and 51% on the 0.4.0
+  release. 0.4.0's kernels are the measured tree's, but the check prints
+  there that the baseline was made on 0.3.1.
 
-  That leaves the one-row RMSNorm with no gated pair at all.
-- Two later clean runs used at most 68% and 63% of any pair's tolerance.
-- With hk's GEMM made slower on purpose (`k_step` 32 instead of 64 in its
-  default schedule, 9-12% a call), the gate failed with exit 1 on all 14
-  GEMM pairs (-11.6% to -15.2% against tolerances of 3.0-4.6%) and on
-  nothing else. Reverted, it passed.
-
-**The shipped baseline is due a refresh.** It was measured on hk as of
-[chapter 26](history/26-the-scoreboard-retuned.md). Since then
-[chapter 27](history/27-strips.md) moved the norms and softmax onto strips
-and changed how every RDNA kernel reads its arguments, and
-[chapter 28](history/28-gemm-schedule.md) changed the GEMM's schedule. Both
-moved hk's side of their pairs. hk's GEMM got 2.9-6.5% faster, which moves
-every GEMM pair by as much, most of them past the 3% floor.
-The first gate run on a tree with them will report those pairs as `better`
-(or as a regression), and then the baseline wants `--refresh`. That needs the dev pod's hk dialect bindings rebuilt to
-match the tree; the pod's Python 3.12 venvs carry the 0.3.1 wheel's.
+The previous baseline, measured on hk as of
+[chapter 26](history/26-the-scoreboard-retuned.md), was the one tested for
+firing. With hk's GEMM made slower on purpose (`k_step` 32 instead of 64 in
+its default schedule, 9-12% a call), the gate failed with exit 1 on all 14
+GEMM pairs (-11.6% to -15.2% against tolerances of 3.0-4.6%) and on nothing
+else; reverted, it passed. The GEMM tolerances are now 3.0-4.8%. Run
+against that baseline, this tree came out with no regression and 33 pairs
+`better`: 11 GEMM pairs by 3.5-5.0%, and 22 norm and softmax pairs by
+6.6-35%.
 
 **Refreshing the baseline.** Refresh it when the opponent changed (a new
 torch, Triton or FlyDSL: the check prints a note when the versions differ
@@ -295,8 +300,11 @@ git diff tests/perf/baselines/gfx1100.json      # every moved ratio is a claim
 `--refresh N` runs the scoreboard N times (at least three) and rewrites the
 baseline from them. Back-to-back runs see less drift than runs hours apart;
 for a baseline that has to last, run `check_regression.py --refresh` on
-reports from separate sessions. A refresh is a commit, with the reason in
-its message.
+reports from separate sessions. Read the runs before using them: a time
+faster than the hardware can go, or a `spread` far above its neighbours',
+is the measurement and not the kernel, and it would widen every tolerance of
+its case. A refresh is a commit, with the reason in its message, and with
+any run left out named there.
 
 ## The gates for a change to the generated code
 

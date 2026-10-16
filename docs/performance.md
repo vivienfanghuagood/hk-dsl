@@ -42,7 +42,7 @@ rewritten); they stay because the chapters cite them.
 | kernel | result | against | verdict | source |
 |---|---|---|---|---|
 | vLLM 0.31 end to end, Qwen3-8B, attention backend / both patches | 1.05-1.48x / 1.20-1.75x per request; 1.01-1.39x TRITON_ATTN | stock vLLM 0.31.0 (ROCM_ATTN), and the TRITON_ATTN backend hk replaces | win at every shape; the gain over TRITON_ATTN is prefill | [vLLM 0.31](history/20-vllm-031.md) |
-| vLLM 0.31 end to end, Qwen3-8B, linear routes with FlyDSL's GEMM rows | decode step 1.14x hk+gemm's at 96-128 requests (1.394x / 1.666x stock); prefill 0.9-2.5% faster at 1-4 requests; tie elsewhere | the same patches routed by the table without FlyDSL rows; stock vLLM 0.31.0 | win where a step's M is one FlyDSL's tiles divide and it measured faster; otherwise unchanged | [chapter 30](history/30-flydsl-routes-gate-contracts.md) |
+| vLLM 0.31 end to end, Qwen3-8B, linear routes with FlyDSL's GEMM rows | decode step 1.14x hk+gemm's at 96-128 requests (1.394x / 1.666x stock); prefill 0.9-2.5% faster at 1-4 requests; tie elsewhere. Re-measured after chapter 28, most prefill rows went: decode the same (1.413x / 1.651x stock), prefill 1.5-1.7% faster at 8192-token steps and 1.2% slower at a 1024-token one | the same patches routed by the table without FlyDSL rows; stock vLLM 0.31.0; the table before re-measuring | win where a step's M is one FlyDSL's tiles divide and it measured faster; otherwise unchanged | [chapter 30](history/30-flydsl-routes-gate-contracts.md), [chapter 31](history/31-remeasured.md) |
 | vLLM 0.31 end to end, Qwen3-8B-AWQ, 4-bit patch | 1.07-3.80x per request; decode step 1.57-4.46x | stock vLLM 0.31.0, fp16, Triton AWQ | win at every shape | [4-bit weights](history/22-int4.md) |
 | vLLM 0.31 end to end, Qwen3-14B-AWQ, 4-bit patch | 1.16-4.43x per request; decode step 2.87-5.52x | stock vLLM 0.31.0, fp16, Triton AWQ | win at every shape | [4-bit weights](history/22-int4.md) |
 | vLLM 0.31 end to end, OLMoE-1B-7B, MoE patch / with hk's attention | 1.02-1.41x / 1.17-2.22x per request; decode step to 2.62x | stock vLLM 0.31.0 | win at every shape | [MoE](history/21-moe.md) |
@@ -184,14 +184,18 @@ SDPA; against torch 2.13's, 1.16x causal and a tie non-causal); tuned Triton
 and hipBLASLt are behind both on the GEMM.
 
 The performance gate's baseline (`tests/perf/baselines/gfx1100.json`,
-[chapter 30](history/30-flydsl-routes-gate-contracts.md)) is the same
-scoreboard's out-of-the-box arms, four runs on the vLLM 0.31 venv: torch
-2.13.0+rocm7.2, Triton 3.8.0, FlyDSL 0.4.0. It predates chapter 28: there
-FlyDSL took 0.97-0.98x hk's time on the GEMM, as in chapter 26. Attention
-changed with torch: 2.13's SDPA runs the causal n4096 case in 3.24-3.27 ms
-where 2.10's took 10.83, so hk's attention is 1.16x torch causal and 0.99x
-non-causal on that torch, against 3.61x and 2.82x in the table above
-(chapter 26: 3.80x and 2.73x). The attention rows above are torch 2.10's.
+[chapter 30](history/30-flydsl-routes-gate-contracts.md), re-measured in
+[chapter 31](history/31-remeasured.md)) is the same scoreboard's
+out-of-the-box arms, six runs on the vLLM 0.31 venv: torch 2.13.0+rocm7.2,
+Triton 3.8.0, FlyDSL 0.4.0, hk with chapters 27 and 28. There FlyDSL's
+dispatcher takes 1.00-1.03x hk's time on the GEMM (0.97-0.98x before
+chapter 28). On the 2048- and 8192-row norms and softmax each
+out-of-the-box arm takes 0.99-3.03x hk's time (Triton's tutorial kernels,
+not the tuned ones above; the 0.99x is FlyDSL's 2048-row fused add). Attention changed with torch: 2.13's SDPA runs the causal n4096
+case in 3.24-3.27 ms where 2.10's took 10.83, so hk's attention is 1.16x
+torch causal and 0.99x non-causal on that torch, against 3.61x and 2.82x in
+the table above (chapter 26: 3.80x and 2.73x). The attention rows above are
+torch 2.10's.
 
 ### Triton tutorials and the kernels beside a model
 
@@ -679,6 +683,35 @@ measured fastest at:
 Below 64 requests decode stays on hk's GEMV and vLLM's skinny GEMMs. A step
 mixing decodes into a prefill has an M no tile divides. FlyDSL ran in
 vLLM's captured decode graphs (2,052 captured launches a round).
+
+**Re-measured after chapter 28** ([chapter 31](history/31-remeasured.md)).
+hk's GEMM gained 3% on vLLM's op and FlyDSL's dispatcher did not, so the
+table shipped now routes FlyDSL at 41 points instead of 105. Per call,
+against the table's own answer:
+
+| M | qkv | o | gate_up | down |
+|---|---|---|---|---|
+| 64-256, median | 0.84x the time | 0.87x | 0.88x | 1.00x |
+| 272-1024, median | 1.22x | 1.17x | 1.42x | 1.28x |
+| above 1024, median | 1.02x | 1.005x | 1.02x | 0.997x |
+
+The decode rows route 96 and 128 requests as before. End to end, the
+shipped table against the one above, on the same tree, three rounds,
+greedy tokens matching stock's:
+
+| ctx x batch | prefill, previous table ms | shipped | total, previous ms | shipped | decode |
+|---|---|---|---|---|---|
+| 1024 x 1, eager | 188.65 | 190.94 (+1.2%) | 1678.40 | 1680.82 | within 0.7% |
+| 1024 x 4, eager | 710.85 | 708.58 (-0.3%) | 2373.18 | 2364.15 | |
+| 4096 x 1, eager | 776.68 | 773.35 (-0.4%) | 2322.72 | 2321.58 | |
+| 4096 x 4, eager | 3117.40 | 3063.70 (-1.7%) | 4990.75 | 4955.49 | |
+| 512 x 96, graph | 8367.64 | 8238.37 (-1.5%) | 16544.46 | 16523.99 | 51.18 / 51.66 ms |
+| 512 x 128, graph | 11214.53 | 11041.54 (-1.5%) | 20016.65 | 19982.60 | 56.08 / 56.16 ms |
+
+The 1.5-1.7% is a row the new table added, gate_up's 8192-token steps on
+FlyDSL's 256x256 tile. The 1.2% loss is the rows it dropped at M = 1024,
+which measured under the 2% bar per call. Against stock, decode at 96 and
+128 requests is 1.413x and 1.651x (chapter 30: 1.394x and 1.666x).
 
 ### The vision tower
 

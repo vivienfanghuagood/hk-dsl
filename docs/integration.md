@@ -294,8 +294,8 @@ measurement) where a routing table measured it fastest
 - **Only at the tile that was measured.** FlyDSL compiles M into the kernel,
   so its tiles must divide the shape (M a multiple of 32 at least), and its
   speed depends on which tile M leaves it. At (4096, 4096), 1024 rows run a
-  128x128 tile at 0.95x hk's time, while 1056 rows fit only 32-row tiles,
-  at 1.42x. A table's FlyDSL rows therefore name the tile, and a call takes the
+  128x128 tile at 1.02x hk's time, while 1088 rows fit only 64-row tiles,
+  at 1.34x. A table's FlyDSL rows therefore name the tile, and a call takes the
   path only if FlyDSL's dispatcher would pick that tile for it.
 - **Everything else goes where the table without FlyDSL sends it.** A
   bf16, contiguous call whose M no tile divides, at another tile, or on an
@@ -306,9 +306,14 @@ measurement) where a routing table measured it fastest
   at the sizes where FlyDSL wins. The launch is on torch's stream with no
   host sync, so CUDA graphs capture it (`tests/hk/gpu/test_flydsl_gemm.py`).
 
-The shipped Qwen3-8B table carries FlyDSL rows. End to end they shorten a
-decode step at 96-128 requests by 12% and pure-prefill steps by 0.9-2.5%, and
-change nothing else ([performance](performance.md#flydsls-gemm-on-the-routes)).
+The shipped Qwen3-8B table carries FlyDSL rows, mostly at decode-sized Ms.
+End to end they shorten a decode step at 96-128 requests by 12%. Since hk's
+GEMM got faster ([chapter 28](history/28-gemm-schedule.md)), FlyDSL beats it
+by 2% at few prefill Ms: the re-measured table routes 41 points to FlyDSL
+instead of 105. Of its prefill rows, the one measured end to end, gate_up's
+8192-token steps, makes those prefills 1.5-1.7% shorter; dropping the rows
+at M = 1024 cost a 1024-token prefill 1.2%
+([performance](performance.md#flydsls-gemm-on-the-routes)).
 
 ## The MoE patch
 
