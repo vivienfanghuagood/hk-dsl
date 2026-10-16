@@ -193,20 +193,33 @@ def _tree_hash(root: Path, suffixes=(".cuh", ".hpp", ".h")) -> str:
 _toolchain_cache: dict = {}
 
 
+def _hipcc_version() -> str:
+    exe = hipcc()
+    key = ("version", exe)
+    if key not in _toolchain_cache:
+        try:
+            _toolchain_cache[key] = subprocess.run(
+                [exe, "--version"], capture_output=True, text=True, timeout=120
+            ).stdout
+        except Exception as e:
+            raise CompileError(f"{exe} --version failed: {e}") from e
+    return _toolchain_cache[key]
+
+
+def hipcc_fingerprint() -> str:
+    """hipcc's version alone: unlike toolchain_fingerprint, it does not move
+    when a header no kernel of this arch includes does."""
+    return hashlib.sha256(_hipcc_version().encode()).hexdigest()[:16]
+
+
 def toolchain_fingerprint() -> str:
     """hipcc version + the include tree. Cached per process; hashing include/
     is ~10 ms and the answer cannot change mid-run."""
     exe = hipcc()
     if exe in _toolchain_cache:
         return _toolchain_cache[exe]
-    try:
-        ver = subprocess.run(
-            [exe, "--version"], capture_output=True, text=True, timeout=120
-        ).stdout
-    except Exception as e:
-        raise CompileError(f"{exe} --version failed: {e}") from e
     fp = hashlib.sha256(
-        (ver + "".join(_tree_hash(d) for d in include_dirs())).encode()
+        (_hipcc_version() + "".join(_tree_hash(d) for d in include_dirs())).encode()
     ).hexdigest()[:32]
     _toolchain_cache[exe] = fp
     return fp
@@ -256,6 +269,21 @@ def cache_key(source: str, target: Target, extra: Sequence[str] = (),
 
 #: What a device-only build leaves in its cache directory.
 CODEOBJ = "kernel.co"
+
+#: sha256 of every generated source this process has built or loaded, with
+#: its flags but not its include paths.
+_BUILT: set = set()
+
+
+def built_fingerprint() -> str:
+    """One hash over the generated C++ (and hipcc flags) of every kernel this
+    process has built or taken from the cache, or "" if none. Two processes
+    that ran the same kernels agree on it whatever hk's version, the
+    dialect's or the checkout's path; a change to any of those kernels' code
+    changes it. What the C++ includes is toolchain_fingerprint()'s."""
+    if not _BUILT:
+        return ""
+    return hashlib.sha256("".join(sorted(_BUILT)).encode()).hexdigest()[:16]
 
 
 # ---------------------------------------------------------------- build
@@ -325,6 +353,10 @@ def build(
     target = get_target(arch)
     key = cache_key(source, target, extra_flags, kind)
     out = cache_dir() / key
+    fl = (flags(target, _KEY_MODULE, extra_flags) if kind == "so"
+          else codeobj_flags(target, extra_flags))
+    _BUILT.add(hashlib.sha256("\0".join(
+        [source, *(f for f in fl if not f.startswith("-I"))]).encode()).hexdigest())
 
     if (hit := _load_cached(out, target)) is not None:
         # Re-gate on a hit. The key covers the source and the flags but not the

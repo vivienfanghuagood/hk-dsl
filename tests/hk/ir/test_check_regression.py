@@ -119,6 +119,49 @@ def _same(tmp_path, name, **meta):
         "rms 1x4096": {"hk": 0.005, "torch": 0.004, "triton": 0.0026}}, **meta)
 
 
+def test_a_new_hk_version_with_the_same_kernels_is_no_reason_to_refresh(
+        baseline, cr, tmp_path, capsys):
+    # 0.3.1 -> 0.4.0 changed the dialect's version and no kernel.
+    run = _same(tmp_path, "rel.json", hk="0.4.0", dialect="hk-dialect-2")
+    assert cr.check(run, baseline) == 0
+    assert "note:" not in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("key, what", [
+    ("kernels", "hk's kernels"), ("hipcc", "hipcc's version"),
+    ("torch", "torch"), ("triton", "triton"), ("flydsl", "flydsl")])
+def test_what_changes_a_measured_kernel_or_opponent_asks_for_a_refresh(
+        baseline, cr, tmp_path, capsys, key, what):
+    run = _same(tmp_path, "moved.json", **{key: "other"})
+    assert cr.check(run, baseline) == 0
+    out = capsys.readouterr().out
+    assert "note:" in out and what in out and "refresh" in out
+
+
+def test_a_header_for_another_arch_is_no_reason_to_refresh(baseline, cr, tmp_path, capsys):
+    # The include tree's hash moves with any header, CDNA's shim included.
+    run = _same(tmp_path, "hdr.json", toolchain="other")
+    assert cr.check(run, baseline) == 0
+    assert "note:" not in capsys.readouterr().out
+
+
+def test_a_key_one_side_lacks_is_not_compared(cr, tmp_path, capsys):
+    # A baseline from before the scoreboard recorded its kernels.
+    old = [report(tmp_path, f"o{i}.json", {"c": {"hk": 1.0, "torch": 1.2}}, kernels=None)
+           for i in range(3)]
+    b = tmp_path / "old.json"
+    assert cr.refresh(old, b) == 0
+    assert "kernels" not in json.loads(b.read_text())["meta"]
+    assert cr.check(report(tmp_path, "r.json", {"c": {"hk": 1.0, "torch": 1.2}}), b) == 0
+    assert "note:" not in capsys.readouterr().out
+
+
+def test_the_baseline_records_what_its_runs_measured(baseline):
+    meta = json.loads(baseline.read_text())["meta"]
+    assert meta["kernels"] == "k1" and meta["hipcc"] == "hc" and meta["hk"] == "h"
+    assert meta["toolchain"] == "tc" and meta["dialect"] == "hk-dialect-1"
+
+
 RMS_8192 = (2 * 8192 * 4096 * 2 + 2 * 4096, "byte")     # 134 MB, past the cache
 
 

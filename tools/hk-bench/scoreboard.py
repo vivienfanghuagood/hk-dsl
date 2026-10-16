@@ -643,6 +643,10 @@ def main() -> int:
             report["cases"].append({
                 "group": group, "case": name, "work": work, "unit": unit,
                 "footprint": footprint, "arms": {a: arm(a) for a in ARMS}, "verdicts": v})
+    from hk.runtime.compile import (built_fingerprint, dialect_version, hipcc_fingerprint,
+                                    toolchain_fingerprint)
+    report["meta"].update(kernels=built_fingerprint(), hipcc=hipcc_fingerprint(),
+                          toolchain=toolchain_fingerprint(), dialect=dialect_version())
     if args.json:
         Path(args.json).write_text(json.dumps(report, indent=1))
         print(f"\nwrote {args.json}")

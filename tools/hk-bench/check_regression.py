@@ -29,6 +29,12 @@ that run only, and makes a check unable to pass (exit 2). A baseline and a
 run must time their arms by the same statistic (median of kept rounds, or
 best round), or every ratio moves.
 
+The note that the baseline is due a refresh is keyed on what can move a
+ratio besides a slower hk: torch, Triton, FlyDSL, the device, the generated
+C++ of hk's kernels (`kernels`, compile.built_fingerprint) and hipcc's
+version (`hipcc`) -- not hk's version. A HipKittens header change that
+leaves the generated C++ alone is not seen.
+
     # check a run against the baseline; exit 1 on a regression
     python3 tools/hk-bench/check_regression.py run.json
     # the scoreboard arguments the baseline was measured with
@@ -77,6 +83,17 @@ TOLERANCE_NOTE = (
     "The multiplier covers what a handful of runs does not see; the floor keeps it above "
     "zero. A pair whose tol would exceed cap is not gated. To change a tolerance, "
     "re-measure the noise (--refresh with more runs); do not edit tol by hand.")
+
+
+#: What a moved ratio can be the fault of, besides hk's kernels getting
+#: slower: the opponents, the card, and hk's kernels themselves -- their
+#: generated C++ and flags (`kernels`) and the compiler (`hipcc`). Not hk's
+#: version: a release that changes no kernel changes no ratio. Compared
+#: where both the baseline and the run record the key.
+DRIFT = ("device", "torch", "triton", "flydsl", "kernels", "hipcc")
+#: Recorded beside them, and not compared. `toolchain` hashes every header
+#: too, and a header for another arch moves it (chapter 33's CDNA shim did).
+INFO = ("hk", "dialect", "toolchain")
 
 
 def stat_of(report: dict) -> str:
@@ -208,11 +225,15 @@ def refresh(paths, out: Path) -> int:
         "date": max(r["meta"].get("date", "") for r in reports)[:10] or time.strftime("%Y-%m-%d"),
         "args": ARGS, "floor": FLOOR, "multiplier": MULTIPLIER, "cap": CAP,
         "runs": len(reports), "stat": stats.pop(),
-        "meta": {k: meta.get(k) for k in ("device", "torch", "triton", "flydsl", "hk")},
+        "meta": {k: meta.get(k) for k in DRIFT + INFO if meta.get(k) is not None},
         "cases": cases, "not_gated": skipped,
     }
     if dropped:
         base["left_out"] = dropped
+    kernels = {r["meta"].get("kernels") for r in reports}
+    if len(kernels) > 1:
+        print(f"note: the runs measured {len(kernels)} different sets of hk kernels "
+              f"(meta.kernels {sorted(map(str, kernels))}); the baseline records the first")
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(json.dumps(base, indent=1) + "\n")
     tols = sorted(e["tol"] for r in cases.values() for e in r.values())
@@ -233,11 +254,13 @@ def check(run_path: Path, base_path: Path) -> int:
               f"'{base.get('stat', 'best')}': every ratio would move. Refresh the "
               f"baseline with this scoreboard, or run the one it was made with.")
         return 2
-    drift = {k: (base["meta"].get(k), run["meta"].get(k)) for k in base["meta"]
-             if base["meta"].get(k) != run["meta"].get(k)}
-    for k, (was, now) in drift.items():
-        print(f"note: {k} was {was} when the baseline was made, is {now}; a moved "
-              f"ratio may be the opponent's, and the baseline due a refresh")
+    for k in DRIFT:
+        was, now_ = base["meta"].get(k), run["meta"].get(k)
+        if was is not None and now_ is not None and was != now_:
+            what = ("hk's kernels (their generated C++ or flags)" if k == "kernels" else
+                    "hipcc's version" if k == "hipcc" else k)
+            print(f"note: {what} changed since the baseline was made ({k} {was} -> {now_}); "
+                  f"a moved ratio may be that, and the baseline due a refresh")
     for line in _rounds.audit(run):
         print(f"rejected: {line}")
     now, bad_time = ratios(run), implausible(run)
