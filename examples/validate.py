@@ -193,8 +193,19 @@ def main():
             print(f"{c.group:<12} {c.name:<20} {c.shape}")
         return 0
 
+    from hk.target import current_arch, get_target  # noqa: PLC0415
+
+    # No native CDNA path yet for these: their operand tiles are 16 wide, and
+    # hk-fragments refuses them at trace time on gfx950 (docs/design/cdna.md).
+    # Skipped and said so, on wave64 targets only, so an RDNA regression in
+    # them still fails.
+    no_cdna = {"gemm", "decode", "attention"}
+    arch = current_arch()
     rows, failures = [], 0
     for c in cases:
+        if get_target(arch).wave == 64 and c.group in no_cdna:
+            print(f"{c.group}: {c.name} -- skipped: no native {arch} path yet")
+            continue
         print(f"{c.group}: {c.name}, {c.shape}")
         t = c.setup()
         try:
