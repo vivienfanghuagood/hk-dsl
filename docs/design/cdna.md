@@ -1,10 +1,28 @@
 # hk-dsl on CDNA3 / CDNA4 (gfx942 / gfx950): assessment and prototype
 
-> Branch `cdna`, based on `fdb87f1`. Hardware: one Instinct MI355X (gfx950) of a shared
-> 8-GPU node; ROCm 7.1 hipcc on the host, `rocm/pytorch:rocm7.2.3 … py3.12 torch 2.10` for
-> anything that launches. gfx942 (MI300X) is compile-only: no part here. File:line
-> references are to `fdb87f1` for hk-dsl and to the pinned submodule (`cbd4effc`) for
-> HipKittens unless they name a file this branch adds.
+> Hardware: one Instinct MI355X (gfx950) of a shared 8-GPU node; ROCm 7.1 hipcc on the
+> host, `rocm/pytorch:rocm7.2.3 … py3.12 torch 2.10` for anything that launches. gfx942
+> (MI300X) is compile-only: no part here. Sections 1-5 are the assessment as written on
+> branch `cdna` (based on `fdb87f1`); their file:line references are to `fdb87f1` for
+> hk-dsl and to the submodule at `cbd4effc` for HipKittens. The history is
+> [chapter 29](../history/29-cdna.md).
+
+## Status
+
+What has landed since the assessment, in the order of section 6:
+
+| step | what | where |
+|---|---|---|
+| targets, wave64, fragment, two waits | gfx942/gfx950 as data; AGPRs charged in one file; `rt_16x32` operands; `lds_wait_for` after CDNA LDS reads, `vm_wait<0>` after the DMA | `python/hk/target/gfx9{42,50}.py`, `HKToCpp.cpp` |
+| 1. library | `include/hk/cdna.cuh`: a strided gl (`kittens::strided_gl<T>`, the globals on wave64 targets); register-tile load/store through one descriptor per tile, which is all of `load_bounded`/`store_bounded`; int8; `store_scalar`, `load_scalar`, `wg_arrive`; `atomic_add`, `atomic_scalar`; `load_gather`, `store_scatter`; `philox_uniform`; GELU on CDNA3; RNE float->bf16 on every hk store and CDNA3 cast; lane-direct vector loads on CDNA3 | the shim; HipKittens untouched |
+| 5. row stride | the strided gl above; the code-object launcher builds on CDNA | `cdna.cuh`, `HKToCpp.cpp` |
+| 6. arch check | `runtime.arch.check_device` before any load: `ArchMismatchError` instead of a crash | `python/hk/runtime/arch.py` |
+
+Builds now (`tools/cdna-probes/coverage.py --ops`, device scaffold, spill gate): **493/506
+on gfx950 and 493/506 on gfx942**, from 196/410 and 195/410. What fails: the two GEMMs'
+`wait=False` (step 2), and attention, paged and decode (16-column operand tiles, transposes,
+`lds_granules`). On the MI355X, the GPU tier's elementwise, bounded, strided, while,
+indexed, load_scalar, phase2, weighted-norm and target-rmsnorm files pass (207 tests).
 
 ## Summary
 
@@ -214,7 +232,10 @@ list plus `gelu`, which `include/cdna3` lacks.
    `uint32_t buffer_size = batch*depth*rows*cols*sizeof(U)` from the tile's origin
    (`cdna4/.../tile/global_to_register.cuh:39, 199`). A tensor over 4 GiB, such as stacked
    MoE expert weights, wraps the count, and the hardware returns zeros past it. This is
-   silent, and upstream's.
+   silent, and upstream's. *Since step 1, hk's register-tile loads and stores no longer use
+   it: their descriptor is sized by the tile's own rows. The group (DMA) load sizes by
+   `rows * row_stride` of the tile and is safe too; rows-by-index (`load_gather`) spans the
+   whole tensor and caps at 3.75 GiB, as on RDNA3.*
 4. **The register model is compiler-modelled, not timed**, so the new targets are
    `verified=False`. Also, LLVM may park VGPRs in AGPRs (`v_accvgpr_write`) instead of
    scratch. That is not a correctness issue, but the gate does not see it.
@@ -222,11 +243,17 @@ list plus `gelu`, which `include/cdna3` lacks.
    operand and as a 16x16 tile becomes a library `static_assert` (loud, not silent). The
    proper fix is shape as a field of `!hk.rt`.
 6. **An arch mismatch at launch segfaults** (`tests/hk/gpu/test_bounded.py` pins
-   gfx1100 and crashed the process on gfx950) instead of raising.
+   gfx1100 and crashed the process on gfx950) instead of raising. *Fixed (step 6).*
 7. **Strided tensors.** The CDNA `gl` has no row stride. The shim accepts contiguous
    rows and refuses the rest. The code-object launcher (`scaffold.device`,
    `scaffold.py:79-80`) names `row_stride_internal` and does not build on CDNA, which
-   blocks `test_torch_op` (0/8 here).
+   blocks `test_torch_op` (0/8 here). *Fixed (step 5): `kittens::strided_gl`;
+   `test_torch_op` passes on the MI355X.*
+9. **Truncating bf16 conversions in the CDNA trees.** Found in step 1: both trees'
+   scalar `convertor<bf16, float>` truncates, and include/cdna3's packed one too. hk's
+   stores and CDNA3 casts round to nearest even. One library path hk does not wrap still
+   truncates: include/cdna4's ortho and naive register-vector stores to a bf16 global (its
+   align store uses the packed, rounding conversion).
 8. **Upstream churn.** cdna4's fast GEMM path uses `G::load(…, swizzled_offsets, srd,
    base, lds_base)`, an API still moving upstream.
 
@@ -395,16 +422,17 @@ Where hk adds something on CDNA:
 
 ## 6. Recommended next steps, in order
 
-1. `load_bounded`/`store_bounded` via the buffer descriptor, `int8`, `store_scalar`; then
-   the norm and quant GPU tier on the MI355X.
+1. ~~`load_bounded`/`store_bounded` via the buffer descriptor, `int8`, `store_scalar`; then
+   the norm and quant GPU tier on the MI355X.~~ Done (see Status).
 2. `hk-lds-pipeline`: per-target ds_read counts and the 4-bit cap; re-enable `wait=False`
    on CDNA.
 3. The bind-hazard probe on gfx950 (§3.3.1).
 4. HipKittens' CDNA4 GEMM and GQA attention as `hk.ops` behind `engine.Op`, with a
    RouteTable measured in vLLM on MI355X against hipBLASLt/aiter.
-5. A row stride for the CDNA `gl` (on the fork's branch, not upstream), which also
-   unblocks the code-object launcher.
-6. An arch check at first launch (raise, don't segfault).
+5. ~~A row stride for the CDNA `gl` (on the fork's branch, not upstream), which also
+   unblocks the code-object launcher.~~ Done in hk's shim instead (`strided_gl`), with
+   HipKittens untouched.
+6. ~~An arch check at first launch (raise, don't segfault).~~ Done.
 7. MFMA fragment shape as a field of `!hk.rt` rather than a translator heuristic; then
    32x32x16 and fp8 `mfma_scale` fragments.
 8. Time the unified-file occupancy on the part and set `verified=True`.
