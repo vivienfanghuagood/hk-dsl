@@ -1,9 +1,9 @@
 # The runtime: compile, cache, gate, tune, launch
 
 Everything after tracing: finding the GPU and the compiler, the
-content-addressed cache, the resource gate that refuses a spilling kernel,
-filling the cache ahead of time, schedule search, and the `torch.ops`
-boundary a framework calls. The code is `python/hk/runtime/` and
+content-addressed cache, the resource gate that refuses a spilling kernel and
+the same gates for any code object, filling the cache ahead of time, schedule
+search, and the `torch.ops` boundary a framework calls. The code is `python/hk/runtime/` and
 `python/hk/autotune/`; their module docstrings are the source for this page.
 
 - [What a launch does](#what-a-launch-does)
@@ -41,18 +41,25 @@ IR and probes no GPU ([gfx1201](history/13-gfx1201.md)).
 `detect()` tries, in order, `HK_ARCH`, `HCC_AMDGPU_TARGET` and
 `PYTORCH_ROCM_ARCH` (the first entry of a list), then the device torch sees,
 then `rocminfo`. `HK_ARCH` is the only way to build for a part that is not in
-the machine, which is how the gfx1201 kernels get their compile gate on a
-gfx1100 box. The gfx1100 fallback exists so that a box with no GPU gets the
-source a W7900 would; a detected GPU that is not one of the targets
-(`hk.TARGETS`: gfx1100 and gfx1201) falls back the same way
-(`python/hk/target/__init__.py`). Only launch on the arch you built for: a
-wrong `--offload-arch` fails at load time or, on a near-enough arch, computes
-the wrong answer (`python/hk/runtime/arch.py`).
+the machine, which is how the gfx1201 and gfx942 kernels get their compile
+gate on a gfx1100 box. The gfx1100 fallback exists so that a box with no GPU
+gets the source a W7900 would; a detected GPU that is not one of the targets
+(`hk.target.TARGETS`: gfx1100, gfx1201, gfx942, gfx950) falls back the same
+way (`python/hk/target/__init__.py`).
+
+Only launch on the arch you built for. A code object for another arch does
+not fail cleanly: a gfx1100 kernel launched on a gfx950 crashed the process.
+So before a kernel is loaded, hk compares its arch with the device's and
+raises `hk.runtime.arch.ArchMismatchError` if they differ; the check costs
+nothing after the first call per device (`python/hk/runtime/arch.py`).
 
 ## Compiling
 
 The backend is the stock hipcc compiling the translated C++ against
-HipKittens' `include/rdna3`, so nothing at run time needs LLVM.
+HipKittens' `kittens.cuh`, so nothing at run time needs LLVM. `kittens.cuh`
+picks `include/rdna3`, `cdna3` or `cdna4` by the arch it is compiled for; on
+CDNA, hk's `include/hk/cdna.cuh` adds what that tree lacks (the target's
+`extra_includes`).
 
 hipcc is `$HK_HIPCC`, else the one on `PATH`, else `/opt/rocm/bin/hipcc`. The
 headers come from the wheel's `hk/include`, or in a checkout from `include/`
@@ -104,7 +111,8 @@ The gate is `python/hk/runtime/resources.py`. What it enforces:
   (`@hk.kernel(max_vgprs=..., min_occupancy=...)`), so a change that quietly
   costs a wave fails the build instead of the benchmark. Occupancy is charged
   on the register count rounded up to the target's granule — 24 on gfx1100 —
-  not on the raw count.
+  not on the raw count. On CDNA the AGPRs are charged to the same file as the
+  VGPRs, and the report prints both (`vgpr=20+16a`).
 * **No remarks is an error.** A build that emits no resource remarks cannot
   be certified, so it is fatal rather than skipped.
 
@@ -118,6 +126,30 @@ add_kernel(globals): vgpr=71->72 occ=16 lds=0 scratch=0 spill=0 hdrm=25
 
 (`71->72` is the raw and the rounded register count; `hdrm` is the headroom
 before the next occupancy step.)
+
+### Any code object: `cocheck`
+
+Neither the resource rule nor the waits need hk's source. Both can be read
+off a compiled code object, so `hk.runtime.cocheck` runs them on any AMDGPU
+kernel — hk's, HipKittens', Triton's, FlyDSL's:
+
+```bash
+python -m hk.runtime.cocheck kernel.co [more.co ...]
+python -m hk.runtime.cocheck --bundle lib.so     # a host binary with an embedded HIP fat binary
+```
+
+- **Resources**, from the metadata note: scratch or a spill fails; the VGPR,
+  AGPR and SGPR counts and the occupancy they allow are reported.
+- **Waits**, from the disassembly: an instruction that reads a VGPR that an
+  LDS or vector-memory load is still writing fails. The compiler inserts the
+  waits for loads it emitted, and nothing does for loads written as inline
+  asm. On gfx950, with hk's bind removed, LLVM hoisted the MFMAs above the
+  waits and every configuration returned NaN
+  ([chapter 29](history/29-cdna.md)).
+
+It exits 1 if any kernel fails either gate. The wait scan is a linear walk,
+done twice for loops, so a report can be a false alarm, and a clean pass is
+only as good as that walk is for the kernel's control flow.
 
 ## Warming the cache
 

@@ -30,6 +30,10 @@ another interpreter, build one ([building](building.md#wheels)).
 It carries the HipKittens headers, the bindings and the shipped tuning
 records, so nothing else is needed at run time but hipcc.
 
+The release on PyPI is 0.3.1. Since then, main has added CDNA, register
+strips, the GEMM schedule, SGLang's MoE patch and plugin, and FlyDSL on the
+routes; until the next release, those need a source build.
+
 **From source.** The backend is the `third_party/HipKittens` submodule, so
 clone with `--recursive` (or run `git submodule update --init`). The dialect
 needs MLIR, built once:
@@ -66,7 +70,7 @@ print(add.build().report())     # hipcc and the resource gate -- no GPU
 a = torch.randn(256, 512, device="cuda", dtype=torch.bfloat16)
 b = torch.randn_like(a)
 out = torch.empty_like(a)
-add(a, b, out)                  # launches, on a Radeon
+add(a, b, out)                  # launches, on the GPU
 torch.testing.assert_close(out, a + b, rtol=3e-2, atol=1e-2)
 ```
 
@@ -96,7 +100,7 @@ Four entry points, in increasing order of what they need:
 | `k.trace()` | nothing | runs the body once into an hk MLIR module and runs the passes |
 | `k.source()` | nothing | the HipKittens C++ translated from that module |
 | `k.build()` | hipcc | compiles and **gates on the resource remarks** |
-| `k(*tensors)` | a Radeon + torch | launches |
+| `k(*tensors)` | an AMD GPU + torch | launches |
 
 `build()` needing no GPU is deliberate: the failure most likely to bite —
 generated code that compiles but spills — is caught on a laptop.
@@ -111,18 +115,22 @@ does all of trace, source and build (once) and later calls are a dict lookup
 ```bash
 ninja -C $HK_MLIR_BUILD check-hk                     # lit: the dialect, passes, translation
 python3 -m pytest tests/hk/ir tests/hk/codegen -q    # no GPU, no torch
-python3 -m pytest tests/hk/gpu -q                    # a Radeon and torch
+python3 -m pytest tests/hk/gpu -q                    # an AMD GPU and torch
 ```
 
-A tier that cannot run on this machine is skipped with a reason. The tiers and
-what each catches are in [testing](testing.md).
+A tier that cannot run on this machine is skipped with a reason. The suite
+builds for gfx1100 unless `HK_ARCH` says otherwise, so on another GPU run it
+with `HK_ARCH` set to that GPU's arch (`HK_ARCH=gfx950` on an MI355X). The
+tiers and what each catches are in [testing](testing.md).
 
 ## Running the examples
 
-[`examples/`](../examples/README.md) has six kernels, from the smallest
-complete one to flash attention, and `validate.py`, which checks the shipped
-`hk.ops` kernels against torch. Each kernel example checks itself against
-torch and then times itself:
+[`examples/`](../examples/README.md) has ten kernels, from the smallest
+complete one to flash attention, Triton's tutorials and the row kernels a
+serving engine runs; a kernel taken into vLLM end to end
+(`11_vllm_integration.py`); and `validate.py`,
+which checks the shipped `hk.ops` kernels against torch. Each kernel example
+checks itself against torch and then times itself:
 
 ```bash
 python3 examples/01_vector_add.py              # on the GPU: check against torch, then time
@@ -144,3 +152,7 @@ python3 examples/01_vector_add.py --build      # compile with hipcc, print the r
 * [The IR](ir.md): what `dump()` shows, the passes, the translation.
 * [The runtime](runtime.md): the cache, the gates, autotune, `torch.ops`.
 * [Integration](integration.md): running the kernels inside vLLM or SGLang.
+* [Performance](performance.md): what each kernel and patch measured, the
+  losses included.
+* [CDNA3/4](design/cdna.md): what runs on an MI300X or MI355X, and what does
+  not yet.

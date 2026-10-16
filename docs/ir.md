@@ -72,29 +72,46 @@ with `hk.grid_of`. The destination form is the IR's spelling of
 ## Passes
 
 * **Passes**, in C++ (`mlir/lib/Dialect/HK/Transforms`), run by `k.trace()` as
-  `hk-kernel-pipeline`: `hk-verify` (op legality, dtype support, no workgroup
-  operation inside a branch or a runtime while), `hk-lds-alloc` (offsets, the
-  64 KB ceiling), `hk-lds-pipeline` (every `lgkmcnt` derived, every
-  asynchronously loaded tile proven waited for before it is read, loops walked
-  until they reach a steady state) and `hk-check-budgets` (the register
-  estimate against the occupancy the kernel asked for). Their errors come out
-  of `k.trace()` as `hk.VerifyError`, ending `at file:line in function` —
-  the kernel author's line.
+  `hk-kernel-pipeline`, in this order:
+  - `hk-verify`: op legality, dtype support, no workgroup operation inside a
+    branch or a runtime while;
+  - `hk-fragments`: on a target whose bf16 matrix-core operand is not 16x16
+    (gfx950's is 16x32), names the fragment in the type of every tile an MMA
+    reads, and of every tile tied to one by a cast, transpose or broadcast;
+    a no-op on RDNA and gfx942;
+  - `hk-lds-alloc`: LDS offsets, against the target's limit;
+  - `hk-lds-pipeline`: every `lgkmcnt` derived, every asynchronously loaded
+    tile proven waited for before it is read, loops walked until they reach
+    a steady state;
+  - `hk-check-budgets`: the register estimate against the occupancy the
+    kernel asked for, and the slow-layout warnings.
 
-The passes are also where the third of the
-[three traps](README.md#why-this-exists) is caught: only row-layout 16-bit
+  Their errors come out of `k.trace()` as `hk.VerifyError`, ending
+  `at file:line in function` — the kernel author's line.
+
+The passes are also where the third of
+[the traps](README.md#the-traps) is caught: only row-layout 16-bit
 operands reach `ds_read_b128`, column layout degrades to 16 scalar
 `ds_read_u16`, and the passes flag it while tracing, not at benchmark time.
 
 ## Target facts
 
 The arch facts that used to live in `RDNA.md`, kernel comments and notebooks
-are now data: `target/gfx1100.py` for Python and `mlir/lib/Target/Target.cpp`
-for the passes, with a test that the two tables agree field by field — the
-VGPR granule is 24, so occupancy 6 needs ≤240 registers, not ≤256. The Python
-side is `python/hk/target/` (`gfx1100.py`, `gfx1201.py`); gfx1201's register
-granule and LDS pool are carried over from gfx1100 and marked unverified there
-([gfx1201](history/13-gfx1201.md)).
+are now data: `python/hk/target/` for Python and `mlir/lib/Target/Target.cpp`
+for the passes, with a test that the two tables agree field by field
+(`tests/hk/ir/test_mlir_dialect.py`). On gfx1100 the VGPR granule is 24, so
+occupancy 6 needs ≤240 registers, not ≤256.
+
+| target | file | status |
+|---|---|---|
+| gfx1100, RDNA3 | `gfx1100.py` | probed and measured on a W7900D |
+| gfx1201, RDNA4 | `gfx1201.py` | register granule and LDS pool carried over from gfx1100, marked unverified ([gfx1201](history/13-gfx1201.md)) |
+| gfx942, CDNA3 | `gfx942.py` | modelled from the compiler, not run |
+| gfx950, CDNA4 | `gfx950.py` | modelled from the compiler, timed on an MI355X ([chapter 29](history/29-cdna.md)) |
+
+The CDNA tables differ in more than numbers: wave64, a 16x32 bf16 operand on
+gfx950 (hence `hk-fragments`), a 4-bit lgkmcnt (a derived wait above 15 is
+emitted as the cap), and LDS pools of 64 KB (gfx942) and 160 KB (gfx950).
 
 ## Translation
 

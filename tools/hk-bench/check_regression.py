@@ -29,7 +29,7 @@ the noise it came from rather than loosened.
     python3 tools/hk-bench/check_regression.py --refresh r1.json r2.json r3.json
 
 scripts/perf_gate.sh runs the scoreboard with the baseline's arguments and
-then this; docs/building.md#the-performance-gate says when to refresh.
+then this; docs/testing.md#the-performance-gate says when to refresh.
 """
 
 from __future__ import annotations

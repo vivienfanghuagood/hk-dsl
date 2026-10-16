@@ -14,8 +14,8 @@ see [getting started](getting-started.md).
 ## The submodule
 
 This repository is `hk`, the language and its compiler. Its backend, the
-HipKittens C++ tile library with its RDNA3 and RDNA4 ports, is the
-`third_party/HipKittens` submodule, pinned to the commit the passes were
+HipKittens C++ tile library with its RDNA3 and RDNA4 ports and its CDNA3 and
+CDNA4 headers, is the `third_party/HipKittens` submodule, pinned to the commit the passes were
 validated against. Clone with `--recursive`, or run `git submodule update
 --init`.
 
@@ -142,112 +142,13 @@ submodule; `HK_INCLUDE_DIR` overrides that ([compiling](runtime.md#compiling)).
 
 ## CI
 
-`.github/workflows/ci.yml` runs the two tiers that need no GPU on every push
-and pull request, on GitHub's `ubuntu-22.04` runner:
-- **MLIR is prebuilt.** It downloads MLIR 23.1.3, installed by
-  `scripts/build_mlir.sh` for that runner's CPython 3.10, from the
-  `ci-mlir-23.1.3` release (0.9 GB). Building LLVM on the runner would take
-  hours.
-- **The dialect is built.** `scripts/build_hk_mlir.sh` builds it against
-  that MLIR in about 20 seconds.
-- **The IR tier runs** (`tests/hk/ir`).
-- **hipcc is installed from AMD's apt repository**, as `hip-dev` and
-  `rocm-device-libs` of ROCm 7.1, about 2.3 GB.
-- **The codegen tier runs** (`tests/hk/codegen`, 798 tests), under
-  pytest-xdist. hk's compile cache survives between runs in `actions/cache`
-  (about 100 MB). Cold, the tier took 19-30 minutes on the runner's four
-  cores, and 4 minutes on 8 workers in a clean Ubuntu 22.04 container. Warm,
-  it took 10 seconds, and the whole run 3 minutes. The first run on a new
-  branch is cold, because `actions/cache` does not hand one branch's cache to
-  another; pull requests read `main`'s.
-
-A new MLIR, or a CPython other than the runner's, needs a new archive. Build
-it with `scripts/build_mlir.sh`, pack the install tree with LLVM's and MLIR's
-licence files, attach it to a release, and point `MLIR_RELEASE` and
-`MLIR_ASSET` at it.
-
-The GPU tier needs a Radeon and runs on the development pod:
-`HK_GPU=3 scripts/gpu_suite.sh OUTDIR` runs `tests/hk/gpu` in groups, three
-at a time on one GPU, and exits non-zero if a group failed. Moving it into
-CI means a self-hosted runner on that pod, which runs code it is handed. On a
-public repository that runner must only take pushes to `main` and manual
-dispatches, never a pull request from a fork, and it must stay on the GPUs
-that are this project's. No such runner is registered.
+CI builds the dialect against a prebuilt MLIR 23.1.3 and runs the two tiers
+that need no GPU. How, what it costs, and how to make a new MLIR archive:
+[testing](testing.md#ci).
 
 ## The performance gate
 
-`scripts/perf_gate.sh` catches a kernel that got slower. It runs on the dev
-pod, alone on one GPU, by hand or nightly; `HK_PERF_GATE=1
-scripts/gpu_suite.sh` runs it after the GPU tier as group `perf`.
-
-```bash
-HK_GPU=3 FLYDSL_ROOT=/workspace/FlyDSL scripts/perf_gate.sh [OUTDIR]   # exit 1 on a regression
-```
-
-**What it compares.** The node is shared, and absolute times drift 3-5%
-between sessions, more than most regressions worth catching. So the gate
-never compares a time with a time from another run. It runs the scoreboard
-(`tools/hk-bench/scoreboard.py`) with the out-of-the-box arms (hk, torch,
-Inductor, Triton, FlyDSL), every case at 7 rounds of 50 calls. For each case
-and each arm A it takes the ratio t_A / t_hk measured in that one run, and
-`tools/hk-bench/check_regression.py` fails if the ratio fell below the
-baseline's by more than that pair's tolerance. A slower node moves both
-times and not the ratio; a slower hk kernel moves every ratio of its case.
-The tuned arms are left out because they search on every run, which takes
-minutes and adds a noise of its own.
-
-**Where the tolerance comes from.** `tests/perf/baselines/gfx1100.json` is
-built from several scoreboard runs, each its own process, spread over time.
-For each (case, arm) the ratio is the median across runs and the noise is
-the larger of two spreads: across runs, max |r_i / median - 1|; within a
-run, the two arms' second-best-round spreads summed, at their worst. Then
-tolerance = max(3%, 3 x noise). A pair whose tolerance would pass 15% is
-not gated, and is listed as such with its noise. The file records every
-run's ratio beside the tolerance it produced. To change a tolerance,
-re-measure the noise; editing the number by hand loosens the gate blindly.
-
-**What the shipped baseline measured.** Four runs on the dev pod, two before
-and two after a 70-minute vLLM run on the same GPU, give 45 gated pairs over
-16 cases:
-- GEMM ratios moved 0.02-1.5% between runs, and the 2048- and 8192-row norms
-  and softmax up to 2.9%. 32 pairs sit at the 3% floor, and the widest gated
-  tolerance is 12.7% (Inductor against the 32-row RMSNorm).
-- Twelve pairs are not gated, because their ratios moved 5-30% between
-  processes. They are the microsecond norms' torch and FlyDSL arms (FlyDSL's
-  32-row RMSNorm took 1.18x hk's time in one run and 0.83x in the next),
-  Triton's 32-row RMSNorm, and FlyDSL against the 2048x4096x4096 GEMM. That
-  leaves the one-row RMSNorm with no gated pair at all.
-- Two later clean runs used at most 68% and 63% of any pair's tolerance.
-- With hk's GEMM made slower on purpose (`k_step` 32 instead of 64 in its
-  default schedule, 9-12% a call), the gate failed with exit 1 on all 14
-  GEMM pairs (-11.6% to -15.2% against tolerances of 3.0-4.6%) and on
-  nothing else. Reverted, it passed.
-
-**The shipped baseline is due a refresh.** It was measured on hk as of
-[chapter 26](history/26-the-scoreboard-retuned.md), before
-[chapter 27](history/27-strips.md)'s strip kernels for the norms and softmax
-and its change to how every RDNA kernel reads its arguments. Those moved
-hk's side of most norm and softmax pairs, and possibly the short GEMM and
-attention calls. The first gate run on a tree with them will report the
-pairs that moved, as `better` or as a regression, and then the baseline
-wants `--refresh`. That needs the dev pod's hk dialect bindings rebuilt to
-match the tree; the pod's Python 3.12 venvs carry the 0.3.1 wheel's.
-
-**Refreshing the baseline.** Refresh it when the opponent changed (a new
-torch, Triton or FlyDSL: the check prints a note when the versions differ
-from the baseline's), when hk got faster on purpose (pairs that beat their
-tolerance are reported as `better`), or for another arch:
-
-```bash
-HK_GPU=3 FLYDSL_ROOT=/workspace/FlyDSL scripts/perf_gate.sh --refresh 4
-git diff tests/perf/baselines/gfx1100.json      # every moved ratio is a claim
-```
-
-`--refresh N` runs the scoreboard N times (at least three) and rewrites the
-baseline from them. Back-to-back runs see less drift than runs hours apart;
-for a baseline that has to last, run `check_regression.py --refresh` on
-reports from separate sessions. A refresh is a commit, with the reason in
-its message.
+Moved to [testing](testing.md#the-performance-gate).
 
 ## Layout
 
@@ -257,24 +158,29 @@ hk/dsl/         the language: @kernel / @func, values and operators, the AST
 hk/types.py     dtypes and the tile / vector / tensor types a kernel is written in
 hk/compiler/    the MLIR context, the pass pipeline, the translation entry point
 hk/_mlir/       the built bindings (hk dialect + MLIR core), not checked in
-hk/target/      gfx1100 / gfx1201 facts, as data
+hk/target/      gfx1100 / gfx1201 / gfx942 / gfx950 facts, as data
 hk/codegen/     the module boundary around a translated kernel (scaffold.py)
 hk/runtime/     arch detection, hipcc + content-hash cache, the resource gate,
-                and the torch.ops registration (torch_ext.py)
+                the code-object checker (cocheck.py), and the torch.ops
+                registration (torch_ext.py)
 hk/autotune/    schedule search: build the space, keep what passes the gate, time
 hk/tuned/       the schedules that search picked, and the measured routing
                 tables, as shipped data
-hk/ops/         kernels written in the DSL, plus the SDPA drop-in (sdpa.py)
+hk/ops/         kernels written in the DSL, the SDPA drop-in (sdpa.py), and
+                HipKittens' CDNA4 kernels wrapped as hk ops (hipkittens.py)
 hk/integration/ patching a running vLLM or SGLang; engine.py is what every
                 patch shares (op, routes, counters, CUDA-graph contract)
 mlir/           the hk dialect (ODS), its passes, the C++ translation,
                 hk-opt / hk-translate, lit tests
-include/        hk's own headers (pyutils/hk_bind.cuh, the fast pybind entry)
+include/        hk's own headers: pyutils/hk_bind.cuh (the fast pybind entry)
+                and hk/cdna.cuh (what CDNA needs beside HipKittens)
 third_party/HipKittens/
-                the backend: kittens.cuh and include/rdna3, include/rdna4;
-                also the C++ kernels hk is measured against (kernels/rdna3)
-scripts/        building MLIR, the dialect and the wheels; the GPU tier (gpu_suite.sh)
-tools/hk-bench/ the benchmarks and engine harnesses behind every number here
+                the backend: kittens.cuh and include/rdna3, rdna4, cdna3,
+                cdna4; also the C++ kernels hk is measured against
+scripts/        building MLIR, the dialect and the wheels; the GPU suite and the
+                performance gate
+tools/hk-bench/ the benchmarks, the scoreboard, the performance gate and the
+                engine harnesses behind every number here
 examples/       complete kernels, each checked against torch and timed
 docs/           these pages, and the development record (docs/history)
 ```

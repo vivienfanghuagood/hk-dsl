@@ -269,8 +269,12 @@ spelling that works:
   leaves the rest waiting. A `for` over a bound every warp agrees on is fine.
 * A tile rebound inside a runtime loop is refused; it is updated in place
   (`+=`, `into=`), so that every iteration writes the same registers.
-* A kernel body must be source `inspect` can read. Code built with `exec`
-  or a lambda traces, but its loops cannot be runtime loops.
+* A kernel body must be source `inspect` can read. Code built with `exec`,
+  typed into `python -c`, written as a lambda, or loaded from a stale
+  `__pycache__` compiled at another path traces, but its `for`, `if` and
+  `while` are not rewritten, so its loops cannot be runtime loops. An error
+  about control flow on a device value then says that the source could not
+  be read, and why.
 * Pass errors name values by their base name (`lds`), not the C++'s
   deduplicated one (`lds1`), so "add lds to that lds_wait_for" can be
   ambiguous with several LDS tiles in flight. The old front end had the same
@@ -278,7 +282,10 @@ spelling that works:
 * Nothing is eliminated before the passes, so an unused allocation still
   counts in `lds_bytes`. The old front end behaved the same way.
 * MLIR is built from source (23.1.3). Wheels are Linux x86_64 only, one
-  CPython each; gfx1201 is still compile-only.
+  CPython each.
+* gfx1201 and gfx942 are compile-only. On gfx950, `hk.ops`' GEMM and
+  attention have no native form yet; HipKittens' own CDNA4 kernels are
+  wrapped as hk ops instead ([CDNA3/4](design/cdna.md)).
 
 This list is from [the MLIR chapter](history/15-mlir-dialect.md), which ends
 with "For whoever continues": the next pieces of work, in order of value.
