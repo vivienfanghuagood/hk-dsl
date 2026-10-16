@@ -41,6 +41,16 @@ def _ref(x, w, b=None):
     return y if b is None else y + b.float()
 
 
+def _needs_table():
+    """A test that asserts a call took the hk path needs this arch's measured
+    route table; with none every call takes the engine's path, which the
+    rest of this file still checks."""
+    if vllm_gemm.routes() is None:
+        from hk.target import current_arch  # noqa: PLC0415
+
+        pytest.skip(f"no measured route table for {current_arch()}")
+
+
 def _took(fn):
     before = dict(vllm_gemm.STATS)
     out = fn()
@@ -61,11 +71,13 @@ def test_every_branch_computes_x_wt(op, m, n, k):
 
 
 def test_the_table_reaches_all_three_paths():
+    _needs_table()
     paths = {vllm_gemm.route_for(m, 6144, 4096) for m in (4, 192, 1024)}
     assert paths == {"hk_decode", "fallback", "hk"}
 
 
 def test_a_decode_batch_with_a_leading_axis_is_padded_and_sliced(op):
+    _needs_table()
     x, w = _wx(6, 4096, 4096)
     y, took = _took(lambda: op(x.view(2, 3, 4096), w, None))
     assert y.shape == (2, 3, 4096) and took["hk_decode"] == 1
@@ -74,6 +86,7 @@ def test_a_decode_batch_with_a_leading_axis_is_padded_and_sliced(op):
 
 
 def test_a_leading_batch_axis_is_flattened_into_m(op):
+    _needs_table()
     x, w = _wx(1024, 4096, 4096)
     x3 = x.view(2, 512, 4096)
     y, took = _took(lambda: op(x3, w, None))
@@ -83,6 +96,7 @@ def test_a_leading_batch_axis_is_flattened_into_m(op):
 
 
 def test_a_strided_activation_is_copied_not_read_wrong(op):
+    _needs_table()
     x, w = _wx(1024, 6144, 4096)
     xt = x.t().contiguous().t()                   # same values, column-major
     assert not xt.is_contiguous()
