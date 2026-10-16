@@ -29,7 +29,11 @@ jobs.append(("paged.split", paged.paged_decode_split_kernel("rd_paged_split")))
 for t, s in sorted(decode_gemm.SCHEDULES.items()):
     jobs.append((f"decode_gemm.t{t}", decode_gemm.kernel_for(tokens=t, **s)))
 for name, k in jobs:
-    tr = k.trace()
+    try:
+        tr = k.trace()
+    except Exception as e:  # noqa: BLE001 -- a refusal is a line to diff too
+        print(f"{name} refused {type(e).__name__}: {str(e).splitlines()[0][:120]}")
+        continue
     parts = []
     for sc in ("pybind", "bare", "device"):
         parts.append(scaffold.render(tr, sc))
