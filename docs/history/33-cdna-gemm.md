@@ -120,8 +120,8 @@ a 256-wide one.
 
 | M = N = K | hk | HipKittens | hipBLASLt | FlyDSL | hk / best |
 |---|---|---|---|---|---|
-| 4096 | 1463-1465 | 1444-1445 | 1475-1487 | 1440-1445 | 0.99 |
-| 8192 | 1566 | 1575 | 1616 | 1591 | 0.97 |
+| 4096 | 1453-1465 | 1435-1445 | 1474-1487 | 1428-1445 | 0.98-0.99 |
+| 8192 | 1566-1568 | 1571-1575 | 1613-1616 | 1582-1591 | 0.97 |
 
 Two measured knobs, kept as options:
 - `s_setprio` around the math is worth 10% here (1308 without it at 4096³),
@@ -188,7 +188,9 @@ dropped:
   each have their own L2.
 - **Split-K as two launches** (fp32 shares to a scratch, then
   `reduce_kernel`): 35 → 122 TFLOP/s at 32x4096x14336 (1.06x hipBLASLt),
-  268 → 557 at 256x4096x14336 (1.05x).
+  268 → 557 at 256x4096x14336 (1.05x). The pingpong takes the same splits:
+  445 → 1162 at 1024x4096x14336 (1.12x), 886 → 1341 at 2048x4096x14336
+  (1.10x).
 
 The decode GEMV (`hk.ops.decode_gemm`, W straight to registers, chapter 9)
 did not build on gfx950 because include/cdna4 has no fp32 register ↔ LDS
@@ -198,8 +200,9 @@ gfx950 (slices, warps, residency) and none moved it by more than 10%.
 
 ## Routed
 
-`gemm_cdna.CANDIDATES` names hk's kernels: the pingpong, the four-warp kernel
-at 128x128 and 64x128 with and without splits, and the decode GEMV.
+`gemm_cdna.CANDIDATES` names hk's kernels: the pingpong at 256 and 128 rows
+with and without splits, the four-warp kernel at 128x128, 64x128 and 64x64
+with and without splits, and the decode GEMV.
 `tools/hk-bench/gemm_cdna_routes.py` times every candidate that takes a shape
 against hipBLASLt, FlyDSL and HipKittens, and writes
 `hk/tuned/routes_gemm_gfx950.json`. `matmul` takes the table's candidate at
@@ -207,46 +210,55 @@ the nearest measured M for that N x K, and a rule for unmeasured shapes.
 Every kernel it routes to is hk's own.
 
 The table below is hk's routed kernel over the best of hipBLASLt, FlyDSL and
-HipKittens, eager. 92 of 122 points are at or above 0.9.
+HipKittens, eager. 108 of 122 points are at or above 0.9.
 
 Bold is below 0.9 (a bold 0.90 rounds up from below).
 
 | N x K | M=1 | 4 | 16 | 32 | 64 | 128 | 256 | 512 | 1024 | 2048 | 4096 | 8192 |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|
-| 4096 x 4096 | 1.59 | 1.24 | 1.02 | **0.81** | 1.04 | 1.04 | **0.90** | **0.88** | 1.13 | 1.05 | 0.99 | 0.95 |
-| 6144 x 4096 | 1.09 | 1.04 | **0.87** | 0.92 | 0.97 | 0.92 | **0.90** | **0.75** | **0.72** | 0.95 | 0.94 | 0.95 |
-| 12288 x 4096 | 1.18 | 1.02 | **0.85** | **0.79** | **0.81** | **0.84** | **0.87** | **0.73** | 0.95 | 0.94 | 0.97 | 0.97 |
-| 14336 x 4096 | 1.02 | 0.96 | **0.88** | **0.84** | **0.82** | 0.95 | 1.17 | 0.95 | 1.00 | 1.03 | 0.99 | 0.97 |
-| 24576 x 4096 | 1.06 | 0.94 | 1.03 | **0.85** | **0.88** | 0.94 | **0.80** | 0.90 | 0.91 | 0.99 | 0.96 | 0.95 |
-| 28672 x 4096 | 1.00 | 1.01 | 0.92 | 1.00 | 0.92 | 1.05 | **0.76** | 0.98 | 1.01 | 1.01 | 0.96 | 0.96 |
-| 4096 x 12288 | 1.19 | 1.21 | **0.84** | 1.06 | **0.85** | **0.83** | 0.92 | 1.05 | **0.84** | **0.77** | 0.97 | 0.97 |
-| 4096 x 14336 | 1.08 | 1.13 | 0.99 | 1.04 | 0.91 | **0.83** | 1.05 | 1.06 | **0.81** | **0.76** | 0.96 | 0.96 |
-| 128256 x 4096 | 1.01 | 0.93 | 0.94 | 0.93 | 0.92 | 0.92 | 0.94 | 1.02 | 1.01 | 1.00 | 1.01 | 1.01 |
-| 151936 x 4096 | 1.03 | 0.96 | 0.94 | 0.91 | **0.89** | 0.91 | **0.85** | 1.00 | 1.05 | 0.96 | 0.97 | 0.97 |
+| 4096 x 4096 | 1.85 | 1.35 | 1.16 | 0.97 | 1.05 | 1.10 | 0.92 | **0.88** | 1.15 | 1.06 | 0.98 | 0.96 |
+| 6144 x 4096 | 1.13 | 1.11 | 0.95 | 0.96 | 1.02 | 0.93 | 0.92 | **0.86** | 0.93 | 0.95 | 0.94 | 0.96 |
+| 12288 x 4096 | 1.14 | 1.00 | 1.03 | 0.91 | 0.94 | 0.90 | **0.87** | 0.94 | 0.94 | 0.92 | 0.97 | 0.96 |
+| 14336 x 4096 | 1.01 | 0.96 | 1.01 | 0.95 | 0.92 | 0.97 | 1.13 | 1.12 | 1.00 | 1.01 | 0.99 | 0.96 |
+| 24576 x 4096 | 1.06 | **0.89** | 0.96 | **0.83** | **0.88** | 0.94 | 0.95 | **0.89** | 0.91 | 0.99 | 0.94 | 0.92 |
+| 28672 x 4096 | 1.07 | 1.02 | 0.96 | 1.02 | **0.86** | 0.92 | **0.87** | 0.96 | 1.01 | 1.01 | 0.94 | 0.94 |
+| 4096 x 12288 | 1.20 | 1.20 | 0.92 | 1.06 | **0.90** | **0.84** | 0.94 | 1.06 | 1.13 | 1.11 | 0.97 | 0.98 |
+| 4096 x 14336 | 1.11 | 1.12 | 0.97 | 1.14 | 0.95 | **0.84** | 1.06 | 1.07 | 1.12 | 1.11 | 0.95 | 0.94 |
+| 128256 x 4096 | 1.06 | 0.92 | 0.91 | **0.90** | 0.92 | 0.90 | 0.91 | 1.02 | 0.99 | 0.97 | 0.99 | 0.98 |
+| 151936 x 4096 | 1.00 | 0.93 | 0.90 | 0.91 | 0.93 | 0.91 | **0.81** | 0.98 | 1.04 | 0.94 | 0.98 | 0.96 |
 
-The kernel each point routes to (`pp` the pingpong, `dp128`/`dp64` the four-warp kernel's 128x128 and 64x128 blocks, `kN` N splits of K, `decode` the GEMV):
+The kernel each point routes to (`pp` the pingpong, `pp128` its 128-row block, `dp128`/`dp64`/`dp64x64` the four-warp kernel's 128x128, 64x128 and 64x64 blocks, `kN` N splits of K, `decode` the GEMV):
 
 | N x K | 1 | 4 | 16 | 32 | 64 | 128 | 256 | 512 | 1024 | 2048 | 4096 | 8192 |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|
-| 4096 x 4096 | decode | decode | decode | dp64k4 | dp64k4 | dp64k4 | dp128k4 | dp128k2 | dp128 | dp128 | pp | pp |
-| 6144 x 4096 | decode | decode | dp64k4 | dp128k4 | dp64k4 | dp128k4 | dp128k2 | dp128 | dp64 | pp | pp | pp |
-| 12288 x 4096 | decode | decode | dp128k2 | dp128k2 | dp128k2 | dp128k2 | dp128 | pp | pp | pp | pp | pp |
-| 14336 x 4096 | decode | decode | dp128k2 | dp128k2 | dp128k2 | dp128k2 | dp128 | pp | pp | pp | pp | pp |
-| 24576 x 4096 | decode | decode | dp64 | dp128 | dp128 | dp128 | pp | pp | pp | pp | pp | pp |
-| 28672 x 4096 | decode | decode | dp64 | dp64 | dp128 | dp128 | pp | pp | pp | pp | pp | pp |
-| 4096 x 12288 | decode | decode | dp64k8 | dp64k8 | dp64k8 | dp64k4 | dp128k4 | dp128k2 | dp128 | dp128 | pp | pp |
-| 4096 x 14336 | decode | decode | dp64k8 | dp64k8 | dp64k8 | dp64k4 | dp128k4 | dp128k2 | dp128 | dp128 | pp | pp |
-| 128256 x 4096 | decode | dp64 | dp64 | dp64 | dp64 | dp128 | pp | pp | pp | pp | pp | pp |
-| 151936 x 4096 | decode | dp64 | dp64 | dp64 | dp64 | dp128 | pp | pp | pp | pp | pp | pp |
+| 4096 x 4096 | decode | decode | decode | dp64x64k2 | dp64k4 | dp64k4 | dp128k4 | dp128k2 | dp128 | ppk2 | pp | pp |
+| 6144 x 4096 | decode | decode | dp64x64k2 | dp64k4 | dp64k4 | dp128k4 | dp128k2 | ppk4 | ppk2 | pp | pp | pp |
+| 12288 x 4096 | decode | decode | dp64x64 | dp64x64 | dp64x64 | ppk4 | ppk4 | ppk2 | pp | pp | pp | pp |
+| 14336 x 4096 | decode | decode | dp64x64 | dp64x64 | dp64x64 | ppk4 | dp128 | ppk2 | pp | pp | pp | pp |
+| 24576 x 4096 | decode | decode | dp64x64 | dp64x64 | dp64 | dp128 | pp128 | pp | pp | pp | pp | pp |
+| 28672 x 4096 | decode | decode | dp64 | dp64x64 | dp64 | dp128 | pp128 | pp | pp | pp | pp | pp |
+| 4096 x 12288 | decode | decode | dp64x64k4 | dp64k8 | dp64x64k4 | dp64k4 | dp128k4 | dp128k2 | ppk4 | ppk2 | pp | pp |
+| 4096 x 14336 | decode | decode | dp64k8 | dp64x64k4 | dp64x64k4 | dp64k4 | dp128k4 | dp128k2 | ppk4 | ppk2 | pp | pp |
+| 128256 x 4096 | decode | decode | dp64 | dp64x64 | dp64 | dp128 | pp | pp | pp | pp | pp | pp |
+| 151936 x 4096 | decode | decode | dp64 | dp64 | dp64 | dp128 | pp | pp | pp | pp | pp | pp |
+
+How the grid got there: a first table with the pingpong, the four-warp
+kernel and the GEMV had 76 points at 0.9. Split-K as two launches for the
+four-warp kernel took it to 92. Split-K for the pingpong too (`ppk2`,
+`ppk4`) took down_proj at M = 1024-2048 from 0.76-0.84 to 1.11-1.13, and
+1024 x 6144 to 0.93: 96. A 64x64 block and its splits (twice the
+workgroups at small M), and a 128-row pingpong block, took it to 108.
 
 Below 0.9, and why:
-- **M = 512-2048 with N = 6144/12288 or K = 12288/14336** (0.72-0.84): the
-  four-warp kernel tops out near 900-1000 TFLOP/s on its copy path, and a
-  256x256 pingpong has too few blocks there.
-- **M = 256 with N = 24576/28672** (0.76-0.80): between the two kernels'
-  sweet spots.
-- **M = 16-128 at N = 6144-14336** (0.79-0.88): split-K and the GEMV come
-  close, not to the bar.
+- **M = 256-512 with N = 6144-151936** (0.81-0.89): between the two kernels.
+  The pingpong has too few blocks, the four-warp kernel's copy path tops out
+  near 900-1000 TFLOP/s, and splitting a 4096-deep K costs its scratch. The
+  worst is lm_head at M = 256 (0.81).
+- **M = 32-128 with N = 24576/28672, or down_proj** (0.83-0.90): weight
+  streaming at 3.3-4.4 TB/s against hipBLASLt's 4-5. A kernel that keeps W
+  out of LDS, as the GEMV does, with X shared through it, is the next
+  candidate.
+- **4 x 24576 and 32 x 128256** (0.89, 0.90): within the run-to-run spread.
 
 Two caveats. First, these are eager calls: hk's pybind launch costs 5.6 µs on
 the host against `F.linear`'s 12 µs, which favours hk at the smallest M. hk's
@@ -274,9 +286,12 @@ query block, and the same store-at-once burst will show at large batch.
 ## Tests and CI
 
 - lit: 12 of 12.
-- IR tier: 656 passed, 2 skipped.
+- IR tier: 657 passed, 2 skipped.
 - Codegen tier: 1038 passed.
-- gfx950 GPU tier: 548 passed, 139 skipped, 0 failed (main: 471 / 216).
+- gfx950 GPU tier: 608 passed, 170 skipped, 0 failed (main: 471 / 216). The
+  new `tests/hk/gpu/test_gemm_cdna.py` checks every candidate against fp32
+  at six shapes chosen for their edges; 31 of the skips are a candidate and
+  a shape it does not take.
 - `tests/hk/gpu/test_gemm.py` (23) and `test_decode_gemm.py` (48) run
   natively on gfx950 where they skipped.
 - RDNA and existing CDNA output: every example and `hk.ops` instantiation is

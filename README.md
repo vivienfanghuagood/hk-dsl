@@ -94,10 +94,10 @@ The longer argument is in [why this exists](docs/README.md#why-this-exists).
 On one MI355X, against torch: hk's fused kernels are ahead (fused add +
 RMSNorm 1.06-1.44x, SiLU-mul 1.28-1.82x, RoPE 8.85x, int8 quantize 2.21x); its
 plain elementwise and norm kernels are mostly behind (0.59-1.05x). Its own
-GEMM, HipKittens' CDNA4 schedule written in hk, runs 1463 TFLOP/s at 4096³
-and 1566 at 8192³, 0.97-0.98x the best of hipBLASLt, FlyDSL and HipKittens.
-Routed with two more hk kernels, it is at 0.9x or better at 92 of 122
-Llama-3-8B and Qwen3-8B linear shapes, M from 1 to 8192. HipKittens' GQA
+GEMM, HipKittens' CDNA4 schedule written in hk, runs 1453-1465 TFLOP/s at
+4096³ and 1566 at 8192³, 0.97-0.99x the best of hipBLASLt, FlyDSL and
+HipKittens. Routed with two more hk kernels, it is at 0.9x or better at 108
+of 122 Llama-3-8B and Qwen3-8B linear shapes, M from 1 to 8192. HipKittens' GQA
 forward, wrapped, runs 1.28-2.62x torch SDPA, level with FlyDSL. Status:
 [design/cdna.md](docs/design/cdna.md); record: [chapter 29](docs/history/29-cdna.md),
 [chapter 33](docs/history/33-cdna-gemm.md); numbers:

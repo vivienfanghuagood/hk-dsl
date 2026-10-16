@@ -24,7 +24,7 @@ What has landed since the assessment, in the order of section 6:
 | CDNA tiles | 16x32 fragments and wider blocks for the elementwise and row kernels; the gate picks the width; four tiles a warp for wide folded norm rows | `hk.ops.elementwise`, `norm`, `fused`, `quant` |
 | 4. HipKittens' CDNA4 kernels | `hk.ops.hipkittens`: the GEMM and GQA forward, verbatim, as `engine.Op`s, checked on the device first (ROCm 7.1 miscompiles the GEMM, 7.2.3 cannot compile the GQA); GQA 1.28-2.62x SDPA; the GEMM routed only where it beats hipBLASLt, by a measured gfx950 table ([details](cdna-hipkittens-ops.md)) | `python/hk/ops/hipkittens.py`, `hk/tuned/routes_vllm_linear_gfx950.json` |
 | 8. occupancy timed | the gfx950 register model's steps measured on the part, at the model's boundaries; gfx950 `verified=True` | `tools/cdna-probes/occupancy_timed.py` |
-| 9. hk's own GEMM | `g.load(wait=False)` (the DMA left in flight, `rows=` limit) and `g.wait_for` with derived vmcnts; `hk.arch.pingpong`; cross-warp copy hazards checked by barrier count, so named reads may cross a barrier. HipKittens' CDNA4 GEMM written with them (`hk.ops.gemm_cdna`), level with HipKittens; a four-warp kernel with two-launch split-K and the decode GEMV on gfx950, routed by a measured table: `hk.ops.gemm.matmul` has a gfx950 form ([chapter 33](../history/33-cdna-gemm.md)) | `group.py`, `arch.py`, `LdsPipeline.cpp`, `hk/cdna.cuh`, `hk.ops.gemm_cdna{,_dp}`, `hk/tuned/routes_gemm_gfx950.json` |
+| 9. hk's own GEMM | `g.load(wait=False)` (the DMA left in flight, `rows=` limit) and `g.wait_for` with derived vmcnts; `hk.arch.pingpong`; cross-warp copy hazards checked by barrier count, so named reads may cross a barrier. HipKittens' CDNA4 GEMM written with them (`hk.ops.gemm_cdna`), level with HipKittens; a four-warp kernel, two-launch split-K for both, and the decode GEMV on gfx950, routed by a measured table (108 of 122 Llama/Qwen linear points at 0.9x the best baseline or better): `hk.ops.gemm.matmul` has a gfx950 form ([chapter 33](../history/33-cdna-gemm.md)) | `group.py`, `arch.py`, `LdsPipeline.cpp`, `hk/cdna.cuh`, `hk.ops.gemm_cdna{,_dp}`, `hk/tuned/routes_gemm_gfx950.json` |
 
 Builds now (`tools/cdna-probes/coverage.py --ops`, device scaffold, spill gate): **494/506
 on gfx950 and 494/506 on gfx942**, from 196/410 and 195/410. What fails names its reason at
@@ -32,7 +32,7 @@ trace time: attention and paged (16-column operand tiles, an accumulator cast in
 an operand, `lds_granules`), and the RDNA form of `hk.ops.gemm` (32x16 operand tiles,
 register staging), which gfx950 no longer runs: `hk.ops.gemm.matmul` routes to hk's gfx950
 GEMMs, and the decode GEMV builds there since the shim gained fp32 register-LDS tile copies.
-On the MI355X (ROCm 7.2.3) the GPU tier is 548 passed, 139 skipped, 0 failed (from 350/190
+On the MI355X (ROCm 7.2.3) the GPU tier is 608 passed, 170 skipped, 0 failed (from 350/190
 at `3b6c6ce` and 471/216 at `be52996`): the skips are the kernels above, reported with their
 reason ([testing](../testing.md#running-each-tier)). `examples/validate.py` passes every case
 hk has a native CDNA path for, and skips attention.

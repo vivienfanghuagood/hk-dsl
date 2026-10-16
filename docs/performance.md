@@ -872,22 +872,24 @@ launch latency.
 [gfx950's GEMM in hk](history/33-cdna-gemm.md). `hk.ops.gemm.matmul` on gfx950
 routes every shape to one of hk's own kernels: HipKittens' CDNA4 schedule
 written in hk (`hk.ops.gemm_cdna`: copies into LDS left in flight, the
-pingpong), a four-warp kernel with two-launch split-K
-(`hk.ops.gemm_cdna_dp`), or the decode GEMV. bf16, C = A·Bᵀ, eager, every arm
+pingpong), a four-warp kernel (`hk.ops.gemm_cdna_dp`), either with two-launch
+split-K, or the decode GEMV. bf16, C = A·Bᵀ, eager, every arm
 checked against fp32 and interleaved in one process, best of 5 rounds:
 
 | M = N = K | hk | HipKittens | hipBLASLt | FlyDSL `gemm_a16w16` | hk / best |
 |---|---|---|---|---|---|
-| 4096 | 1463 | 1444 | 1487 | 1440 | 0.98x |
-| 8192 | 1566 | 1575 | 1616 | 1591 | 0.97x |
+| 4096 | 1453-1465 | 1435-1445 | 1474-1487 | 1428-1445 | 0.98-0.99x |
+| 8192 | 1566-1568 | 1571-1575 | 1613-1616 | 1582-1591 | 0.97x |
 
 At Llama-3-8B's and Qwen3-8B's linear shapes (N x K of qkv, o, gate_up, down
 and lm_head, M from 1 to 8192, 122 points), hk's routed kernel is at 0.9x
-or better of the best of hipBLASLt, FlyDSL and HipKittens at 92 points.
-- M ≥ 2048 runs at 0.94-1.05x, except down_proj at M = 2048 (0.76-0.77x).
-- M = 1-4 runs at 0.93-1.59x.
-- Most of the 30 misses are at M = 16-1024 with N = 6144-14336 or
-  K = 12288-14336 (0.72-0.89x).
+or better of the best of hipBLASLt, FlyDSL and HipKittens at 108 points.
+- M ≥ 1024 runs at 0.91-1.15x.
+- M = 1-4 runs at 0.89-1.85x.
+- 13 of the 14 misses are at M = 32-512 (0.81-0.90): lm_head at M = 256
+  (0.81), N = 24576-28672 at M = 32-64 (0.83-0.88), down_proj at M = 128
+  (0.84), N = 6144-12288 at M = 256-512 (0.86-0.88). The 14th is 4 x 24576
+  (0.89), within the run-to-run spread.
 
 The full grid and what limits it are in
 [the chapter](history/33-cdna-gemm.md#routed). Before this, `examples/04_gemm.py`
