@@ -263,6 +263,31 @@ def _split(nblk: int):
     return warps, _ceil(nblk, warps)
 
 
+def _fold_split(nblk: int):
+    """(warps, tiles per warp) for a row folded onto a tile's rows.
+
+    _split's one-warp-a-block, except on a wave64 (CDNA) target from eight
+    blocks up, where four tiles a warp and a quarter of the warps wins. A
+    16x64 fp32 tile there is 16 VGPRs a lane, not 32, so the live tiles that
+    cost gfx1100 its occupancy are cheap. Measured on an MI355X
+    (norm_plan_sweep, bf16, x torch):
+
+                         w8 tpw1 (split)   w2 tpw4   best
+        rms   16384x8192      0.90           0.97    1.01 (w1 tpw8)
+        layer 16384x8192      0.84           1.01    1.02 (w1 tpw8)
+        softmax 16384x8192    0.76           0.93    0.93
+        rms     512x8192      1.08           1.07    1.10 (w4 tpw2)
+
+    Below eight blocks the alternatives were within 3% either way.
+    """
+    if nblk >= 8 and nblk % 4 == 0:
+        from ..target import current_arch, get_target  # noqa: PLC0415
+
+        if get_target(current_arch()).wave == 64:
+            return nblk // 4, 4
+    return _split(nblk)
+
+
 #: Below this many warps the folded view is not worth taking. Folding divides
 #: the blocks a workgroup covers by 16, so a row narrow enough would fold down
 #: to a one- or two-warp workgroup that still pays fold_rows' LDS round trip.
@@ -388,7 +413,7 @@ def plan(cols: int, kind: str = "rms", rows: Optional[int] = None):
     foldable = cols % ROWS == 0 and cols // ROWS >= COLS
     short = rows is not None and rows < _FOLD_ROWS_BELOW
     if (kind in _FOLD_FIRST_KINDS or short) and foldable:
-        fw, ftpw = _split(_ceil(cols // ROWS, COLS))
+        fw, ftpw = _fold_split(_ceil(cols // ROWS, COLS))
         if ftpw <= MAX_TPW and fw >= _FOLD_MIN_WARPS:
             return fw, ftpw, ROWS
     warps, tpw = _split(_ceil(cols, COLS))
@@ -398,7 +423,7 @@ def plan(cols: int, kind: str = "rms", rows: Optional[int] = None):
     # two-warp folded workgroup beats re-reading the row, which is why
     # _FOLD_MIN_WARPS does not apply here.
     if foldable:
-        fw, ftpw = _split(_ceil(cols // ROWS, COLS))
+        fw, ftpw = _fold_split(_ceil(cols // ROWS, COLS))
         if ftpw <= MAX_TPW:
             return fw, ftpw, ROWS
     return warps, 0, 1
@@ -1002,7 +1027,7 @@ def _resolve_weighted(kind: str, dtype, cols: int, rows: int):
         if suffix is None:
             raise TypeError(f"hk norms handle bf16/fp16/fp32, not {dtype}")
         fold = ROWS if want and cols % ROWS == 0 and cols // ROWS >= COLS else 1
-        warps, tpw = _split(_ceil(cols // fold, COLS))
+        warps, tpw = (_fold_split if fold != 1 else _split)(_ceil(cols // fold, COLS))
         exact = _exact(cols // fold, warps, tpw)
         if tpw > _tpw_cap(kind, fold, exact):
             tpw = 0

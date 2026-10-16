@@ -131,13 +131,19 @@ def test_the_ragged_tail_is_masked_not_double_counted():
 #: which is a thing `_split` only started producing when it stopped rounding
 #: the warp count down; nine warps is 288 threads and a nine-entry cross-warp
 #: LDS reduction.
-WIDE = [(8192, (8, 1, 16)), (8208, (9, 1, 16)), (8199, (16, 0, 1))]
+#: The second plan is a wave64 (CDNA) target's: from eight folded blocks up
+#: it holds four tiles a warp (norm._fold_split).
+WIDE = [(8192, (8, 1, 16), (2, 4, 16)), (8208, (9, 1, 16), (9, 1, 16)),
+        (8199, (16, 0, 1), (16, 0, 1))]
 
 
-@pytest.mark.parametrize("cols,want_plan", WIDE, ids=[f"{c}" for c, _ in WIDE])
-def test_wide_rows_take_the_path_they_are_meant_to_and_get_it_right(cols, want_plan):
+@pytest.mark.parametrize("cols,want_plan,want_plan64", WIDE, ids=[f"{c}" for c, *_ in WIDE])
+def test_wide_rows_take_the_path_they_are_meant_to_and_get_it_right(cols, want_plan, want_plan64):
     from hk.ops import norm
+    from hk.target import current_arch, get_target
 
+    if get_target(current_arch()).wave == 64:
+        want_plan = want_plan64
     assert norm.plan(cols) == want_plan, f"{cols}: plan moved to {norm.plan(cols)}"
     x = _rand((32, cols), torch.float32)
     _close(hk.ops.rmsnorm(x), _ref_rmsnorm(x, 1e-6), torch.float32, f"rms {cols}")
