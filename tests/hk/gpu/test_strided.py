@@ -26,7 +26,7 @@ def _copy_kernel():
                             hk.arch.block_idx.x * 64)
         y[idx] = x[idx].load(ty)
 
-    return hk.kernel(strided_copy, arch="gfx1100", warps=1, name="strided_copy",
+    return hk.kernel(strided_copy, warps=1, name="strided_copy",
                      grid=lambda p: (p.x.cols // 64, p.x.rows // 16, 1))
 
 

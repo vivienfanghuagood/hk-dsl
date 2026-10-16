@@ -191,3 +191,14 @@ def test_rdna_globals_are_the_library_gl():
     assert "kittens::gl<bf16, -1, -1, -1, -1> a;" in src
     assert "strided_gl" not in src
 
+
+def test_a_kernel_for_another_arch_is_refused_before_it_loads(monkeypatch):
+    # A gfx1100 code object launched on a gfx950 crashed the process.
+    from hk.runtime import arch as rta  # noqa: PLC0415
+
+    monkeypatch.setattr(rta, "device_arch", lambda device: "gfx950")
+    rta.check_device("gfx950", "kernel 'k'", device=0)
+    with pytest.raises(rta.ArchMismatchError, match="built for gfx1100, but GPU 0 is gfx950"):
+        rta.check_device("gfx1100", "kernel 'k'", device=0)
+    monkeypatch.setattr(rta, "device_arch", lambda device: None)
+    rta.check_device("gfx1100", "kernel 'k'", device=0)   # no GPU: nothing to check

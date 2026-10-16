@@ -30,7 +30,7 @@ def _gather_kernel():
         o[hk.elem_coord(hk.arch.block_idx.z, 0, 0, 0)] = (
             x[hk.elem_coord(src, 0, 0, 0)].load(t))
 
-    return hk.kernel(body, arch="gfx1100", warps=1, name="gather_probe",
+    return hk.kernel(body, warps=1, name="gather_probe",
                      grid=lambda p: (1, 1, p.o.batch))
 
 

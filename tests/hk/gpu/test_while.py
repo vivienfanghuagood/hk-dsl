@@ -26,7 +26,7 @@ def block_sum(step: int = 16):
             k += step
         o[hk.elem_coord(0, 0, 0, 0)] = acc
 
-    return hk.kernel(body, arch="gfx1100", warps=1, name=f"while_sum_s{step}",
+    return hk.kernel(body, warps=1, name=f"while_sum_s{step}",
                      grid=lambda p: (1, 1, 1))
 
 

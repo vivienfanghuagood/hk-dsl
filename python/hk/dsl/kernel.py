@@ -405,9 +405,11 @@ class Kernel:
         consts = self._resolve_consts(const_overrides)
         key = self._key(consts)
         if key not in self._mod_cache:
+            from ..runtime import arch as rta  # noqa: PLC0415
             from ..runtime import module as rtm  # noqa: PLC0415
 
             b = self.build(**const_overrides)
+            rta.check_device(self.trace(**const_overrides).arch, f"kernel {self.name!r}")
             self._mod_cache[key] = rtm.load(b.so_path, b.module_name)
         return self._mod_cache[key]
 
