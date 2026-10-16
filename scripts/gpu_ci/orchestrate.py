@@ -3,6 +3,7 @@
 on this workstation, reported on each commit as a GitHub status.
 
     orchestrate.py install              copy these scripts to ~/hk-ci, unpack MLIR, add the cron entries
+    orchestrate.py daemon               from an SSH login: tick every 10 minutes, with docker access
     orchestrate.py tick [--nightly]     start what is due, collect what finished (cron runs this)
     orchestrate.py run REF [--tier T]   test REF now, on one tier or both
     orchestrate.py status               what each tier last did
@@ -18,7 +19,9 @@ next to the GPU. This workstation reaches GitHub, so it orchestrates:
   runs on the jump host.
 - gfx950: the commit runs here, in rocm/pytorch, on one MI355X that is idle
   when the run starts (local_run.sh). The container sees CI's directories,
-  not $HOME.
+  not $HOME. Only the daemon can start it: this workstation grants the
+  docker group to login sessions only, so cron's tick leaves the commit
+  pending for the daemon's.
 
 Each finished run posts a status on its commit (gpu/gfx1100, gpu/gfx950)
 linking to its report, an asset of the gpu-ci-logs prerelease. Only main's
@@ -28,6 +31,7 @@ changes only documentation carries its parent's passing result.
 
 import argparse
 import datetime
+import fcntl
 import json
 import os
 import re
@@ -93,6 +97,14 @@ def post_status(sha: str, state: str, context: str, description: str, url=None) 
     if url:
         args += ["-f", f"target_url={url}"]
     gh(*args)
+
+
+def docker_ok() -> bool:
+    """This workstation grants the docker, render and video groups through
+    pam_group, to SSH and console logins only: a cron job has none of them,
+    and cannot start the gfx950 container. `orchestrate.py daemon`, started
+    from an SSH login, keeps them."""
+    return os.access("/var/run/docker.sock", os.R_OK | os.W_OK)
 
 
 def main_head() -> str:
@@ -280,13 +292,19 @@ class Gfx950(Tier):
                 return g
         return None
 
+    def wait(self, sha, why):
+        if self.state.get("waiting") != [sha, why]:
+            post_status(sha, "pending", self.context, why)
+            self.state["waiting"] = [sha, why]
+            self.save()
+
     def start(self, sha):
+        if not docker_ok():
+            self.wait(sha, "waiting for the gfx950 launcher (orchestrate.py daemon, started from an SSH login)")
+            return None
         g = self.idle_gpu()
         if g is None:
-            if self.state.get("waiting") != sha:
-                post_status(sha, "pending", self.context, "waiting for an idle MI355X")
-                self.state["waiting"] = sha
-                self.save()
+            self.wait(sha, "waiting for an idle MI355X")
             return None
         shutil.rmtree(HOME / "runs" / self.name / sha, ignore_errors=True)
         p = subprocess.Popen(["bash", str(HOME / "local_run.sh"), sha, str(g)],
@@ -338,7 +356,41 @@ def cmd_install(args) -> None:
     print(f"installed in {HOME}; cron: every 10 minutes, and nightly at 03:30")
 
 
+def cmd_daemon(args) -> None:
+    if not docker_ok():
+        raise SystemExit("the daemon needs the docker group, which this workstation grants "
+                         "only to login sessions: start it from an SSH login")
+    if not args.foreground:
+        out = open(HOME / "logs" / "daemon.log", "a")
+        p = subprocess.Popen([sys.executable, str(Path(__file__).resolve()), "daemon", "--foreground"],
+                             stdin=subprocess.DEVNULL, stdout=out, stderr=out,
+                             start_new_session=True, cwd=HOME)
+        print(f"daemon started, pid {p.pid}; log {out.name}")
+        return
+    single = open(HOME / "daemon.lock", "w")
+    try:
+        fcntl.flock(single, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        raise SystemExit("a daemon is already running")
+    log(f"daemon {os.getpid()} up")
+    while True:
+        with open(HOME / "tick.lock", "w") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            try:
+                cmd_tick(argparse.Namespace(nightly=False))
+            except Exception as e:
+                log(f"tick: {type(e).__name__}: {e}")
+        (HOME / "daemon.json").write_text(
+            json.dumps({"pid": os.getpid(), "tick": time.time()}) + "\n")
+        time.sleep(600)
+
+
 def cmd_tick(args) -> None:
+    if not docker_ok():
+        beat = HOME / "daemon.json"
+        age = time.time() - json.loads(beat.read_text())["tick"] if beat.exists() else None
+        if age is None or age > 1800:
+            log("the gfx950 launcher is down: start `orchestrate.py daemon` from an SSH login")
     head = main_head()
     for cls in TIERS.values():
         tier = cls()
@@ -385,6 +437,9 @@ def main() -> None:
     r.add_argument("--tier", choices=["all", *TIERS], default="all")
     r.set_defaults(fn=cmd_run)
     sub.add_parser("status").set_defaults(fn=cmd_status)
+    d = sub.add_parser("daemon", help="tick every 10 minutes, with the docker access cron lacks")
+    d.add_argument("--foreground", action="store_true")
+    d.set_defaults(fn=cmd_daemon)
     args = ap.parse_args()
     args.fn(args)
 

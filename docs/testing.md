@@ -186,10 +186,15 @@ api.github.com only through the `gh-test` and `gh-api-test.anruicloud.com`
 proxies, and not GitHub's Actions service, so no self-hosted runner can sit
 next to the W7900D. So it is driven from the workstation, which can reach
 GitHub (`scripts/gpu_ci/`):
-- **`orchestrate.py`** runs from cron every 10 minutes. It tests main's head
-  when it changes, and again nightly. It starts the gfx1100 run in the pod
-  over `ssh 0004` and `kubectl exec`, starts the gfx950 run locally, and
-  posts each status when its run finishes.
+- **`orchestrate.py`** checks every 10 minutes. It tests main's head when it
+  changes, and again nightly. It starts the gfx1100 run in the pod over
+  `ssh 0004` and `kubectl exec`, starts the gfx950 run locally, and posts
+  each status when its run finishes. It runs twice over: from cron, and as
+  `orchestrate.py daemon`, started once from an SSH login. Only the daemon
+  can start gfx950: the workstation grants the docker, render and video
+  groups through `pam_group`, to login sessions only, so a cron job has none
+  of them. Until the daemon starts a commit's gfx950 run, the status says it
+  is waiting for the launcher. After a reboot, start the daemon again.
 - **`pod_run.sh`** runs in the pod. It fetches the commit itself, through the
   proxy, then builds the dialect and runs the suite. No code from the
   repository runs on the jump host.
@@ -197,12 +202,15 @@ GitHub (`scripts/gpu_ci/`):
   container that sees one GPU and CI's own directories, not `$HOME`.
 
 Commits pushed together are tested together, as one head. A commit that
-changes only documentation carries its parent's passing result.
+changes only documentation carries its parent's passing result. With a warm
+compile cache a gfx1100 run takes a minute or two; a change to the dialect's
+version recompiles every kernel and takes about half an hour.
 
 ```bash
 python3 ~/hk-ci/orchestrate.py status          # what each tier last did
 python3 ~/hk-ci/orchestrate.py run REF         # test a branch or commit now
 python3 scripts/gpu_ci/orchestrate.py install  # copy the scripts to ~/hk-ci, add the cron entries
+python3 ~/hk-ci/orchestrate.py daemon          # from an SSH login: the gfx950 launcher
 ```
 
 A gfx1100 run holds `/workspace/ci/gpu0.lock` in the pod while it uses
