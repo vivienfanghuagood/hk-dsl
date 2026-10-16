@@ -1,13 +1,13 @@
 """gfx950 -- CDNA4, Instinct MI355X / MI350X.
 
-READ THIS AS "COMPILER-MODELLED, NOT TIMED." The register numbers are read off
-LLVM's own Occupancy remark by a clobber sweep (tools/cdna-probes/
-granule_sweep.py): a kernel that pins v<N-1> (and a<M-1>) gets exactly that
-many registers, and the remark says what occupancy the compiler charges for
-it. The LDS figure is HipKittens' include/cdna4 MAX_SHARED_MEMORY. Nothing here
-has been checked against a timing on the part the way gfx1100's 24-register
-granule was, so `verified=False`: hk-check-budgets reports budget violations
-as warnings, not errors.
+The register numbers were read off LLVM's own Occupancy remark by a clobber
+sweep (tools/cdna-probes/granule_sweep.py) and then timed on an MI355X
+(tools/cdna-probes/occupancy_timed.py): kernels pinning N VGPRs (and M AGPRs)
+run a latency-bound chain of dependent loads, and the time to push 65536
+waves through steps at exactly the model's boundaries -- 64/65, 72/73, 80/81,
+96/97, 128/129 and 168/169 VGPRs, and 64 VGPRs + 1 AGPR -- by the model's
+ratios. So `verified=True`, as gfx1100's timed 24-register granule is. The
+LDS figure is HipKittens' include/cdna4 MAX_SHARED_MEMORY.
 
 What is different from gfx1100, and why each one matters to hk:
 
@@ -64,7 +64,7 @@ GFX950 = Target(
     mma_operands_mirrored=False,
     fast_smem_layouts=("row", "col"),
 
-    verified=False,
+    verified=True,
     unified_agprs=True,
     lgkmcnt_max=15,
     tile_shapes=True,

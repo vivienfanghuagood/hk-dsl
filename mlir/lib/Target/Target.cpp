@@ -24,7 +24,7 @@ const std::pair<llvm::StringRef, MmaShape> kMma942[] = {
     {"bf16", {16, 16, 16, 2, 4}},
     {"fp16", {16, 16, 16, 2, 4}},
 };
-// gfx950: compiler-modelled, not timed. See python/hk/target/gfx950.py.
+// gfx950: compiler-modelled, timed on an MI355X. See python/hk/target/gfx950.py.
 const std::pair<llvm::StringRef, MmaShape> kMma950[] = {
     {"bf16", {16, 16, 32, 4, 4}},
     {"fp16", {16, 16, 32, 4, 4}},
@@ -39,7 +39,7 @@ const TargetInfo kGfx1201{"gfx1201", 32, 16, 1536, 24, 106, 65536, 65536, 4,
 const TargetInfo kGfx942{"gfx942", 64, 8, 512, 8, 102, 65536, 65536, 4,
                          kMma942, kRowOnly, false, 15};
 const TargetInfo kGfx950{"gfx950", 64, 8, 512, 8, 102, 160000, 163840, 4,
-                         kMma950, kRowCol, false, 15};
+                         kMma950, kRowCol, true, 15};
 } // namespace
 
 const TargetInfo *mlir::hk::getTarget(llvm::StringRef arch) {
