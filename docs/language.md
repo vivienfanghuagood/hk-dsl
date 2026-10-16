@@ -210,10 +210,24 @@ shows `for`, `if` and `while` on device values, carried scalars, and the
 ## Namespaces
 
 * **The rest has namespaces**: `hk.arch` (block and warp ids, `barrier`,
-  `sched_barrier`, `setprio`, `vm_wait`, `wg_arrive`), `hk.lds` (`alloc`,
-  `wait_for`), `hk.math` (elementwise functions, and `add`/`mul`/... with
+  `sched_barrier`, `sched_group_barrier`, `setprio`, `vm_wait`,
+  `wg_arrive`), `hk.lds` (`alloc`, `reserve`, `wait_for`), `hk.math` (elementwise functions, and `add`/`mul`/... with
   `into=`), `hk.group(n)` (workgroup loads, stores and the staging pipeline),
   `hk.collective` (`cross_warp`, `fold_rows`).
+
+`hk.arch.sched_group_barrier(classes, size, sync_id=0)` asks the compiler's
+scheduler for `size` instructions of `classes` (`"mma"`, `"vmem_read"`,
+`"ds_read"`, `"valu"`, ... or a mask) at this point, after the earlier
+groups with the same `sync_id`: a run of them is an interleave, "one staging
+load, then two WMMAs". It moves only what the scheduler can see, and an
+inline-asm instruction is in no class; include/rdna3's LDS fragment reads
+and writes are asm, so in hk's GEMM it can place the staging loads and the
+WMMAs, not the LDS traffic. `s_setprio` ends a scheduling region, so a
+group does not reach across one. `hk.arch.sched_barrier(allow)` is a fence
+that lets the classes in `allow` cross. `hk.lds.reserve(nbytes)` takes LDS
+and uses none of it, an occupancy cap: 128 KB a WGP over the bytes a
+workgroup holds is how many it runs ([chapter 27](history/27-strips.md),
+[chapter 28](history/28-gemm-schedule.md)).
 
 `hk.arch.wg_arrive(counter, expected)` counts this workgroup's arrival at
 `counter` (an element view of an int32 global) and returns how many arrived

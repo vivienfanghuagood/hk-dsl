@@ -35,7 +35,7 @@ it is a time ratio.
 
 | kernel | result | against | verdict | source |
 |---|---|---|---|---|
-| GEMM, bf16, Qwen3-8B's linear shapes | 84.8-87.5 TFLOP/s | FlyDSL's dispatcher and its autotuner; Triton autotuned over gfx1100's space; hipBLASLt | loss to FlyDSL, 0.95-0.98x; win over tuned Triton 1.05-1.07x and hipBLASLt 1.23-1.33x | [the scoreboard, retuned](history/26-the-scoreboard-retuned.md) |
+| GEMM, bf16, Qwen3-8B's linear shapes | 87.9-91.3 TFLOP/s | FlyDSL's dispatcher and its autotuner; Triton autotuned over gfx1100's space; hipBLASLt | tie with FlyDSL at all five shapes, 0.99-1.01x (from 0.95-0.98x), once `s_setprio` stopped fencing the scheduler; win over tuned Triton 1.09-1.11x and hipBLASLt 1.28-1.39x | [the GEMM schedule](history/28-gemm-schedule.md) |
 | GEMM, bf16 | 75.0 TFLOPs at 4096³, 77.9 at 8192x8192x4096 | handwritten HipKittens C++; rocBLAS | tie with the C++ (1.00x); rocBLAS 0.93x and 0.92x; since overtaken by one LDS buffer | [Phase 3](history/02-phase-3-gemm.md) |
 | RMSNorm (weighted), fused add + RMSNorm, softmax, on register strips | RMSNorm 1.04-1.12x, softmax 1.02x, fused add 0.83-1.11x across runs | the fastest of Triton and FlyDSL, each autotuned, and Inductor | RMSNorm and softmax win or tie at 1-8192 rows; the fused add ties, with a loss at 1 row in one run of five (the clock) and at 8192 rows in one of two (buffer placement) | [strips](history/27-strips.md) |
 | dropout, KV cache write, LayerNorm backward, embedding (`examples/07`-`10`) | dropout 1.02x; KV write 1.18-3.00x; LayerNorm backward 1.12x at 1024 wide, 0.66-0.92x wider; embedding 1.18-1.28x torch at 1-32 tokens, 0.93x Triton at 4096 | the Triton tutorial or a Triton row kernel; torch | win for dropout, the KV write and LayerNorm backward at 1024; loss where a 16-row tile cannot hold a 2048+ wide row, and for the embedding at 4096 tokens | [rows by index](history/19-rows-by-index.md) |
@@ -86,13 +86,13 @@ larger of 2% and the two arms' noise. Rows marked * are best of 9 rounds of
 
 | case | hk | torch | Inductor | Triton | FlyDSL | hk vs best | chapter 18 said |
 |---|---|---|---|---|---|---|---|
-| gemm 4096x4096x4096 | 1.574 | 1.971 | -- | 1.669 | 1.540 | 0.98x loss | 1.05x |
-| gemm 2048x6144x4096 | 1.178 | 1.571 | -- | 1.257 | 1.139 | 0.97x loss | 1.08x |
-| gemm 2048x4096x4096 | 0.8106 | 0.9975 | -- | 0.8582 | 0.7721 | 0.95x loss | 1.08x |
-| gemm 2048x24576x4096 | 4.766 | 5.952 | -- | 4.999 | 4.631 | 0.97x loss | 1.05x |
-| gemm 2048x4096x12288 | 2.401 | 2.943 | -- | 2.539 | 2.296 | 0.96x loss | 1.03x |
-| attention n4096 causal, GQA 4 | 2.847 | 10.831 | -- | -- | -- | 3.80x win | 3.65x |
-| attention n4096, GQA 4 | 4.677 | 12.762 | -- | -- | -- | 2.73x win | 2.75x |
+| gemm 4096x4096x4096 | 1.5229 | 1.9682 | -- | 1.6638 | 1.5423 | 1.01x tie | 1.05x |
+| gemm 2048x6144x4096 | 1.1285 | 1.5719 | -- | 1.2523 | 1.1325 | 1.00x tie | 1.08x |
+| gemm 2048x4096x4096 | 0.7785 | 0.9988 | -- | 0.8615 | 0.7721 | 0.99x tie | 1.08x |
+| gemm 2048x24576x4096 | 4.6041 | 5.9432 | -- | 5.0004 | 4.6292 | 1.00x tie | 1.05x |
+| gemm 2048x4096x12288 | 2.3099 | 2.9459 | -- | 2.5596 | 2.2950 | 0.99x tie | 1.03x |
+| attention n4096 causal, GQA 4 | 3.0094 | 10.8671 | -- | -- | -- | 3.61x win | 3.65x |
+| attention n4096, GQA 4 | 4.6924 | 13.2199 | -- | -- | -- | 2.82x win | 2.75x |
 | rms_norm 1x4096* | 0.0024 | 0.0042 | 0.0026 | 0.0026 | 0.0025 | 1.04x win | 0.41x |
 | rms_norm 32x4096* | 0.0023 | 0.0044 | 0.0027 | 0.0027 | 0.0025 | 1.12x, a tie by noise | 0.47x |
 | rms_norm 2048x4096 | 0.0184 | 0.0263 | 0.0197 | 0.0193 | 0.0190 | 1.04x win | 0.70x |
@@ -103,6 +103,11 @@ larger of 2% and the two arms' noise. Rows marked * are best of 9 rounds of
 | fused add + rms_norm 8192x4096 | 0.3390 | 0.4547 | 0.3708 | 0.3280 | 0.3690 | 0.97x loss (1.02x tie in the other run) | 0.97x |
 | softmax 2048x4096 | 0.0187 | 0.0304 | 0.0573 | 0.0255 | 0.0191 | 1.02x tie | 0.63x |
 | softmax 8192x4096 | 0.1686 | 0.1755 | 0.2240 | 0.1725 | 0.1725 | 1.02x win | 0.93x |
+
+The GEMM and attention rows are [chapter 28](history/28-gemm-schedule.md)'s:
+without the `s_setprio` fence around each WMMA group, hk's schedule gets the
+interleave FlyDSL's hints ask for, and the GEMM ties FlyDSL at every shape.
+The paragraphs below are chapter 26's account of the gap that closed.
 
 Chapter 18's GEMM win was against FlyDSL's bare 128x128x32 default (1.743 ms
 at 4096³) and Triton's seven tutorial configs. FlyDSL's dispatcher runs
@@ -144,10 +149,10 @@ The norm losses chapter 26 measured, and why:
   vector broadcast down a WMMA-shaped tile, read with 128 element loads a
   lane.
 
-So on this card at these shapes, as of chapter 27: FlyDSL wins the GEMM,
-hk the norms and softmax (the fused add ties) and attention, where neither
-other DSL has a gfx11 kernel. hk's GEMM is second, ahead of tuned Triton and
-hipBLASLt.
+So on this card at these shapes, as of chapters 27 and 28: hk and FlyDSL
+tie the GEMM, hk wins the norms and softmax (the fused add ties) and
+attention, where neither other DSL has a gfx11 kernel; tuned Triton and
+hipBLASLt are behind both on the GEMM.
 
 The performance gate's baseline (`tests/perf/baselines/gfx1100.json`,
 [chapter 30](history/30-flydsl-routes-gate-contracts.md)) is the same
