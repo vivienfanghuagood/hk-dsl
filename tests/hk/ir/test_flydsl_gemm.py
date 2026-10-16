@@ -4,6 +4,7 @@ says when it does not, and how route_tune turns timings into its overlay."""
 from __future__ import annotations
 
 import importlib.util
+import json
 import sys
 from pathlib import Path
 
@@ -123,6 +124,56 @@ def test_the_overlay_merges_per_tile_across_other_tiles_and_gaps(rt):
 
 def test_no_flydsl_points_no_overlay(rt):
     assert rt.prefer([_pt(1024, 1.0, hk=0.9)], "flydsl", 0.03, 0.02) == []
+
+
+def test_a_points_time_is_the_median_set_and_its_noise_the_wider_spread(rt):
+    sets = [{"engine": [1.00, 1.01, 1.02], "hk": [0.90, 0.95, 0.91]},
+            {"engine": [1.02, 1.02, 1.03], "hk": [0.92, 0.92, 0.93]},
+            {"engine": [1.01, 1.03, 1.01], "hk": [0.91, 0.94, 0.92]}]
+    t, noise = rt.estimate(sets)
+    assert t == {"engine": 1.01, "hk": 0.91}
+    assert noise["engine"] == pytest.approx(0.0099, abs=1e-4)          # sets: (1.02-1.00)/2/1.01
+    assert noise["hk"] == pytest.approx(0.0110, abs=1e-4)              # rounds: 0.92/0.91 - 1
+
+
+def test_a_margin_inside_its_noise_is_a_close_call(rt):
+    t = {"engine": 1.0, "hk": 1 / 1.035}              # 3.5% ahead of the engine
+    assert rt.close_call(t, {"engine": 0.002, "hk": 0.002}, 0.03, 0.02)
+    assert not rt.close_call(t, {"engine": 0.0005, "hk": 0.0005}, 0.03, 0.02)
+    t = {"engine": 1.0, "hk": 0.7, "hk_decode": 0.705}   # hk's two paths within 0.7%
+    assert rt.close_call(t, {"engine": 0.002, "hk": 0.002, "hk_decode": 0.002}, 0.03, 0.02)
+
+
+def test_the_noise_bar_is_off_by_default_and_raises_the_gain_when_on(rt):
+    pt = [1024, {"engine": 1.0, "hk": 0.9, "flydsl": 0.87}, {"flydsl": A},
+          {"engine": 0.01, "hk": 0.01, "flydsl": 0.01}, 3]
+    assert rt.prefer([pt], "flydsl", 0.03, 0.02) == [[1024, None, A]]           # 3.4% > 2%
+    assert rt.prefer([pt], "flydsl", 0.03, 0.02, k=2.0) == []                   # < 2 x 2%
+    assert rt.runs([pt], 0.03, k=2.0)[0] == [[1024, 1024, "hk"]]                # 11% > 4%
+
+
+def test_a_confirmed_overlay_keeps_only_what_both_runs_took(rt):
+    pts = [_pt(1024, 1.0, hk=0.9, fly=0.8, tile=A), _pt(1088, 1.0, hk=0.9, fly=0.8, tile=A)]
+    assert rt.prefer(pts, "flydsl", 0.03, 0.02) == [[1024, None, A]]
+    assert rt.prefer(pts, "flydsl", 0.03, 0.02, confirm={1088}) == [[1088, None, A]]
+    assert rt.prefer(pts, "flydsl", 0.03, 0.02, confirm=set()) == []
+
+
+def test_two_tables_decisions_compare_point_by_point(rt, tmp_path, capsys):
+    def table(fly):
+        pts = [_pt(1024, 1.0, hk=0.9, fly=fly, tile=A), _pt(2048, 2.0, hk=1.8)]
+        rs, above = rt.runs(pts, 0.03)
+        return {"min_gain": 0.03, "shapes": {"64x32": {
+            "name": "o", "runs": rs, "above": above, "points": pts,
+            "prefer": {"flydsl": rt.prefer(pts, "flydsl", 0.03, 0.02)}}}}
+
+    a, b = tmp_path / "a.json", tmp_path / "b.json"
+    a.write_text(rt.dump(table(0.80)))
+    b.write_text(rt.dump(table(0.89)))
+    assert rt.decisions(json.loads(a.read_text()))[("64x32", 1024)] == ("hk", True)
+    assert rt.compare(a, b) == 0
+    assert "1 of 2 points decided differently (0 in the runs, 1 in FlyDSL's overlay)" in \
+        capsys.readouterr().out
 
 
 def test_the_dump_is_a_table_the_engine_reads(rt, tmp_path):
