@@ -35,10 +35,24 @@ That is the `row_sumsq` kernel from [the language guide](language.md#kernels-and
 
 ## Types
 
-* **Types**: `!hk.rt<f32, 16x64, row>` register tile, `!hk.st<bf16, 128x64, 2>`
-  LDS tile (a double buffer), `!hk.rv<..., col>` register vector,
+* **Types**: `!hk.rt<f32, 16x64, row>` register tile, `!hk.rt<f32, 1x1024,
+  strip<8>>` register strip (each lane owning 8-element runs of a row;
+  `kittens::rs`), `!hk.st<bf16, 128x64, 2>` LDS tile (a double buffer),
+  `!hk.rv<..., col>` register vector (a strip's carries the strip),
   `!hk.sv`, `!hk.gl<bf16>` global, `!hk.coord<tile|element>`,
   `!hk.granules`, `!hk.stage`. All print in full, so a dump reads on its own.
+
+A strip is a third layout of `!hk.rt`, not a type of its own, so the maps,
+loads, stores, reductions, broadcasts and column fills take it unchanged;
+the ops whose C++ exists only for WMMA layouts (the mma variants, LDS tile
+loads and stores, transposes, gathers, the row-limited loads, the
+upper/lower fills, `philox_uniform`, `load_w4`, `atomic_add`) refuse it in
+their verifiers, and a strip load or store takes an element coordinate.
+
+Every RDNA kernel's C++ begins with `kittens::touch_kernargs<sizeof(globals)>()`,
+which reads each 64-byte line of the kernel's arguments at entry: LLVM sinks
+an argument's load to its first use, and a late one is a cold miss nothing
+overlaps ([chapter 27](history/27-strips.md)).
 
 The ODS definitions are in `mlir/include/hk/Dialect/HK/IR` (`HKTypes.td`,
 `HKOps.td`).

@@ -88,7 +88,7 @@ losses.
 | kernel | result | against | source |
 |---|---|---|---|
 | GEMM, bf16, Qwen3-8B's linear shapes | 84.8–87.5 TFLOP/s: *slower* than FlyDSL's dispatcher, 0.95–0.98x; 1.05–1.07x Triton autotuned over gfx1100's space | FlyDSL, its dispatcher and autotuner; Triton autotuned; hipBLASLt 1.23–1.33x | [the scoreboard, retuned](docs/history/26-the-scoreboard-retuned.md) |
-| RMSNorm, fused add + RMSNorm, softmax | 0.44–0.97x, *slower* | the fastest of Triton and FlyDSL, each autotuned, and Inductor | [the scoreboard, retuned](docs/history/26-the-scoreboard-retuned.md) |
+| RMSNorm, fused add + RMSNorm, softmax (register strips) | RMSNorm 1.04–1.12x, softmax 1.02x faster; fused add a tie (0.83–1.11x across runs) | the fastest of Triton and FlyDSL, each autotuned, and Inductor | [strips](docs/history/27-strips.md) |
 | dropout, KV cache write, LayerNorm backward | 1.02x; 1.18–3.00x; 1.12x at 1024 wide, 0.66–0.92x (*slower*) at 2048–8192 | the Triton tutorial or a Triton row kernel | [rows by index](docs/history/19-rows-by-index.md) |
 | attention forward | 61.0–64.9 TFLOPs, 0.999–1.002x (1.008x causal); 2.9–3.2x torch SDPA, 4.0x causal | the handwritten C++; torch SDPA | [Phase 4](docs/history/03-phase-4-attention.md) |
 | norms, softmax, RoPE, SiLU-mul, quantize | 13 of 15 cases faster, the other two a tie | `torch.compile` | [Phases 1 and 2](docs/history/01-phases-1-2.md) |

@@ -75,8 +75,36 @@ tensor is `(rows, cols)` (`include/pyutils/hk_bind.cuh`).
 ## Types
 
 * **Types are values you build**: `hk.RT(dtype, rows, cols, layout)` a register
-  tile, `hk.ST` an LDS tile, `hk.col_vec(t)` / `hk.row_vec(t)` the vectors a
-  reduction of `t` gives, `hk.SV` an LDS vector.
+  tile, `hk.RS(dtype, rows, cols, run=8)` a register strip, `hk.ST` an LDS
+  tile, `hk.col_vec(t)` / `hk.row_vec(t)` the vectors a reduction of `t`
+  gives, `hk.SV` an LDS vector.
+
+A tile's lane layout is the one WMMA gives it: a 16-bit row tile holds each
+row twice, an fp32 tile gives a lane alternate columns. A kernel that only
+streams rows wants a lane to own contiguous runs of a row instead, and that
+is a strip (`!hk.rt<f32, 1x1024, strip<8>>`, `kittens::rs`): lane l owns, of
+every row, the runs of `run` columns starting at `j*32*run + l*run`, so a
+bf16 run of 8 is one 16-byte access and nothing is held twice. `cols` is a
+whole number of `32*run`-column chunks. A strip loads and stores in elements
+(`x.at[r, c]`; `bounded=True` reads zero past the tensor's last row and
+column and writes nothing there), converts its element type on the way,
+maps, reduces along rows (a butterfly that leaves the answer in every lane)
+and along columns, broadcasts its `col_vec` and `row_vec`, and fills by
+column (`right_fill_`, `left_fill_`); its `row_vec` has the strip's own
+column layout, so a weight vector loads with the accesses of the rows it
+scales, and its `col_vec` is what `hk.collective.cross_warp` combines. It is
+never an mma operand or an LDS tile, and it is gfx11-only.
+
+```python
+S = hk.RS(hk.fp32, 1, 512)                  # one row, 512 columns a warp
+v = x.at[row, warp * 512].load(S)           # 2 x 16 bytes a lane of bf16
+sq = cross_warp((v * v).sum(axis=1), "add", WARPS)
+v *= (sq / x.cols + eps).rsqrt()
+o.at[row, warp * 512].store(v)
+```
+
+`hk.ops.norm`'s RMSNorm, fused add + RMSNorm, LayerNorm and softmax run on
+strips wherever a row fits one ([chapter 27](history/27-strips.md)).
 
 The dtypes are `hk.bf16`, `hk.fp16`, `hk.fp32`, `hk.i8` and `hk.i32`, plus
 `hk.fp8e4m3` and `hk.fp8e5m2`, which are accepted only where the target has an
