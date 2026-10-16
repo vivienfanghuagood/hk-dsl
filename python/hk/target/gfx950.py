@@ -66,6 +66,7 @@ GFX950 = Target(
 
     verified=False,
     unified_agprs=True,
+    lgkmcnt_max=15,
     extra_includes=('"hk/cdna.cuh"',),
 )
 

@@ -32,6 +32,10 @@ struct TargetInfo {
   llvm::ArrayRef<std::pair<llvm::StringRef, MmaShape>> mma;
   llvm::ArrayRef<llvm::StringRef> fastSmemLayouts;
   bool verified;
+  /// The largest count s_waitcnt lgkmcnt encodes: 6 bits on gfx10+, 4 on
+  /// gfx9. A wave cannot have more LDS ops outstanding than this (issue
+  /// stalls at the cap), so a derived wait above it is exactly the cap.
+  int lgkmcntMax;
 
   int vgprRounded(int vgprs) const;
   int occupancy(int vgprs) const;

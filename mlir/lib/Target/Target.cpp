@@ -33,13 +33,13 @@ const llvm::StringRef kRowOnly[] = {"row"};
 const llvm::StringRef kRowCol[] = {"row", "col"};
 
 const TargetInfo kGfx1100{"gfx1100", 32, 16, 1536, 24, 106, 65536, 131072, 4,
-                          kMma1100, kRowOnly, true};
+                          kMma1100, kRowOnly, true, 63};
 const TargetInfo kGfx1201{"gfx1201", 32, 16, 1536, 24, 106, 65536, 65536, 4,
-                          kMma1201, kRowOnly, false};
+                          kMma1201, kRowOnly, false, 63};
 const TargetInfo kGfx942{"gfx942", 64, 8, 512, 8, 102, 65536, 65536, 4,
-                         kMma942, kRowOnly, false};
+                         kMma942, kRowOnly, false, 15};
 const TargetInfo kGfx950{"gfx950", 64, 8, 512, 8, 102, 160000, 163840, 4,
-                         kMma950, kRowCol, false};
+                         kMma950, kRowCol, false, 15};
 } // namespace
 
 const TargetInfo *mlir::hk::getTarget(llvm::StringRef arch) {

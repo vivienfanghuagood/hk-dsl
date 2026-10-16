@@ -78,6 +78,11 @@ class Target:
     #: on its VGPR count alone can be a whole occupancy step lower.
     unified_agprs: bool = False
 
+    #: The largest count `s_waitcnt lgkmcnt` encodes: 6 bits on gfx10+, 4 on
+    #: gfx9. A wave cannot have more LDS ops outstanding than this -- issue
+    #: stalls at the cap -- so a derived wait above it is exactly the cap.
+    lgkmcnt_max: int = 63
+
     #: Headers from hk's own include/ the generated source needs on this
     #: target, after kittens.cuh: what the translation calls that this
     #: target's HipKittens tree does not define.

@@ -372,7 +372,8 @@ static LogicalResult verifyReduce(OpT op, bool colKind) {
   auto src = op.getSrc().getType();
   auto want = RegVecType::get(op.getContext(), src.getElementType(),
                               src.getRows(), src.getCols(), src.getColLayout(),
-                              colKind, false);
+                              colKind, false, src.getFragRows(),
+                              src.getFragCols());
   auto got = cast<RegVecType>(destType(op.getDst(), op.getResult()));
   if (!got.sameCpp(want))
     return op.emitOpError() << "reducing " << src << " gives " << want
@@ -406,6 +407,8 @@ static LogicalResult verifyBroadcast(OpT op, bool rowOp) {
                             << " vector";
   if (vec.getTileRows() != src.getRows() || vec.getTileCols() != src.getCols())
     return op.emitOpError("the vector came off a tile of another shape");
+  if (vec.getTile().fragR() != src.fragR() || vec.getTile().fragC() != src.fragC())
+    return op.emitOpError("the vector came off a tile of another fragment");
   if (destType(op.getDst(), op.getResult()) != src)
     return op.emitOpError("result type differs from the tile's");
   return success();
@@ -500,6 +503,9 @@ LogicalResult CastOp::verify() {
   if (src.getRows() != dst.getRows() || src.getCols() != dst.getCols() ||
       src.getColLayout() != dst.getColLayout())
     return emitOpError("a cast keeps shape and layout");
+  if (src.fragR() != dst.fragR() || src.fragC() != dst.fragC())
+    return emitOpError() << "a cast keeps the fragment: " << src << " into "
+                         << dst << " is a relayout across lanes, not a cast";
   return success();
 }
 
@@ -520,7 +526,8 @@ LogicalResult TransposeSepOp::verify() {
     return emitOpError("transposes register tiles");
   auto want = RegTileType::get(getContext(), src.getElementType(),
                                src.getCols(), src.getRows(),
-                               src.getColLayout());
+                               src.getColLayout(), src.getFragCols(),
+                               src.getFragRows());
   if (destType(getDst(), getResult()) != want)
     return emitOpError("transpose_sep mirrors the shape and keeps the layout");
   if (getDst() && getDst() == getSrc())
@@ -562,7 +569,7 @@ static LogicalResult verifyMma(OpT op, MmaSpec s) {
   unsigned rows = s.dRowsFromACols ? a.getCols() : a.getRows();
   unsigned cols = s.dColsFromBRows ? b.getRows() : b.getCols();
   auto want = RegTileType::get(op.getContext(), c.getElementType(), rows, cols,
-                               true);
+                               true, 0, 0);
   if (c != want || destType(op.getDst(), op.getResult()) != want)
     return op.emitOpError() << "A " << a << " times B " << b << " is " << want;
   return success();

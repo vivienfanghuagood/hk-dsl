@@ -156,9 +156,96 @@ def test_gfx950_shared_tiles_take_the_fragment_of_what_is_read_out_of_them():
     assert "st_shape" not in _lds_gemm("gfx942")
 
 
-def test_unwaited_lds_reads_are_refused_until_the_count_is_per_target():
-    with pytest.raises(TypeError, match="wait=False"):
-        _lds_gemm("gfx950", wait=False)
+def _two_loads(arch, depth=1):
+    st = hk.ST(hk.bf16, 32, 32)
+    ta = hk.RT(hk.bf16, 32, 32, "row")
+    tc = hk.RT(hk.fp32, 32, 32, "col")
+
+    @hk.kernel(arch=arch, warps=1, grid=lambda p: (1, 1, 1))
+    def two(a: hk.Tensor[hk.bf16], c: hk.Tensor[hk.bf16]):
+        As = hk.lds.alloc(st, name="As")
+        Bs = hk.lds.alloc(st, name="Bs")
+        g = hk.group(1)
+        g.load(As, a.at[0, 0])
+        g.load(Bs, a.at[0, 0])
+        hk.arch.barrier()
+        x = As.load(ta, wait=False)
+        ys = [Bs.load(ta, wait=False) for _ in range(depth)]
+        hk.lds.wait_for(x)
+        acc = hk.zeros(tc)
+        acc += x @ x.T
+        for y in ys:
+            hk.lds.wait_for(y)
+            acc += y @ y.T
+        c.at[0, 0] = acc
+
+    return two.trace()
+
+
+def test_unwaited_lds_reads_wait_for_the_target_count():
+    # gfx950: a 32x32 operand is two 16x32 fragments, one ds_read_b128 each,
+    # so retiring x leaves y's two in flight. gfx942: one ds_read_b64 per
+    # 16x16, four. (include/rdna3's count would be 8.)
+    for arch, n in (("gfx950", 2), ("gfx942", 4)):
+        src = scaffold.bare(_two_loads(arch))
+        assert f"kittens::lds_wait_for<{n}>(lds);" in src, arch
+        assert "kittens::lds_wait_for<0>(lds1);" in src, arch
+
+
+def test_the_ir_names_the_fragment_and_the_count():
+    ir = _two_loads("gfx950").dump()
+    assert "!hk.rt<bf16, 32x32, row, frag 16x32>" in ir
+    assert "lds_loads = 2" in ir
+    assert "frag" not in _two_loads("gfx942").dump()
+
+
+def test_a_wait_deeper_than_the_counter_is_the_counter():
+    # Eight loads of two ds_reads behind x: lgkmcnt(16) does not encode in
+    # gfx9's 4 bits, and a wave cannot have more than 15 outstanding anyway.
+    src = scaffold.bare(_two_loads("gfx950", depth=8))
+    assert "kittens::lds_wait_for<15>(lds);" in src
+
+
+def test_an_accumulator_cast_into_an_operand_is_refused_on_gfx950():
+    # Attention's S -> P: a 16x16 accumulator fragment is not a 16x32
+    # operand; on gfx950 that is a relayout across lanes, not a cast.
+    tq = hk.RT(hk.bf16, 32, 32, "row")
+    ts = hk.RT(hk.fp32, 32, 32, "col")
+
+    @hk.kernel(arch="gfx950", warps=1, grid=lambda p: (1, 1, 1))
+    def sp(q: hk.Tensor[hk.bf16], o: hk.Tensor[hk.bf16]):
+        x = q.at[0, 0].load(tq)
+        s = hk.zeros(ts)
+        s += x @ x.T
+        p = s.to(hk.bf16)
+        acc = hk.zeros(ts)
+        acc += x @ p
+        o.at[0, 0] = acc
+
+    with pytest.raises(Exception, match="fragments"):
+        sp.trace()
+
+
+def test_cdna_lds_stores_and_group_loads_end_with_the_lds_counter_empty():
+    # hk-lds-pipeline takes both to retire every LDS op, as include/rdna3's
+    # do; include/cdna4's vectorised store returns with its ds_writes in
+    # flight, and the DMA counts on vmcnt only.
+    t = hk.RT(hk.bf16, 16, 32)
+    st = hk.ST(hk.bf16, 16, 32)
+
+    @hk.kernel(arch="gfx950", warps=1, grid=lambda p: (1, 1, 1))
+    def k(a: hk.Tensor[hk.bf16], o: hk.Tensor[hk.bf16]):
+        s = hk.lds.alloc(st, name="s")
+        s.store(a.at[0, 0].load(t))
+        hk.arch.barrier()
+        o.at[0, 0] = s.load(t)
+
+    src = scaffold.bare(k.trace())
+    i = src.index("kittens::store(s, ")
+    assert src.index("kittens::lds_wait<0>();", i) < src.index("__builtin_amdgcn_s_barrier", i)
+    src = _lds_gemm("gfx950")
+    i = src.index("kittens::vm_wait<0>();")
+    assert src.index("kittens::lds_wait<0>();", i) < src.index("__builtin_amdgcn_s_barrier", i)
 
 
 @pytest.mark.parametrize("arch", CDNA)

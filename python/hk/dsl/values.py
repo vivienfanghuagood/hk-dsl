@@ -745,7 +745,7 @@ class Tile(_Elementwise):
 
     def to(self, dtype: DType, *, into=None) -> "Tile":
         """Change the element type, keeping shape and layout (kittens::copy)."""
-        ty = RegTileType(dtype, self.ty.rows, self.ty.cols, self.ty.layout)
+        ty = RegTileType(dtype, self.ty.rows, self.ty.cols, self.ty.layout, self.ty.frag)
         return _make(hkd.CastOp, ty, (self.v,), into=into, name="cvt")
 
     @property
@@ -1020,8 +1020,7 @@ def neg_infty(ty, *, into=None):
 def transpose(t: Tile, *, into=None) -> Tile:
     """Transpose by relabelling: mirrored shape, opposite layout, no data
     moved beyond the register shuffle."""
-    ty = RegTileType(t.ty.dtype, t.ty.cols, t.ty.rows,
-                     "col" if t.ty.layout == "row" else "row")
+    ty = t.ty.transposed()
     return _make(hkd.TransposeOp, ty, (t.v,), into=into, name="tr")
 
 
@@ -1030,7 +1029,8 @@ def transpose_sep(t: Tile, *, into=None) -> Tile:
     if into is t:
         raise TypeError("transpose_sep needs separate registers for source "
                         "and destination; use hk.transpose to relabel instead")
-    ty = RegTileType(t.ty.dtype, t.ty.cols, t.ty.rows, t.ty.layout)
+    f = (t.ty.frag[1], t.ty.frag[0]) if t.ty.frag else None
+    ty = RegTileType(t.ty.dtype, t.ty.cols, t.ty.rows, t.ty.layout, f)
     return _make(hkd.TransposeSepOp, ty, (t.v,), into=into, name="trs")
 
 
@@ -1110,16 +1110,7 @@ class SharedTile(Value):
         if (tile.rows, tile.cols) != (st.rows, st.cols):
             raise TypeError(f"load: {tile} from {st}; register and shared tiles "
                             f"must have the same extents")
-        n = lds_loads(tile, st)
-        if not wait and get_target(_t().arch).wave != 32:
-            raise TypeError(
-                f"load(wait=False) from {st} into {tile} on {_t().arch}: the "
-                f"hk-lds-pipeline pass derives lgkmcnt from how many ds_reads "
-                f"a load issues, and that count is include/rdna3's (2 per "
-                f"16x16 base tile). The CDNA trees issue a different number "
-                f"per fragment shape, and lgkmcnt is 4 bits there, so a wait "
-                f"derived from it would under-wait. Use wait=True until the "
-                f"count is per target.")
+        n = lds_loads(tile, st, _t().arch)
         if not wait and not n:
             raise TypeError(f"load(wait=False) from {st} into {tile}: this pair "
                             f"does not take the vectorised path, so there is "
@@ -1143,10 +1134,20 @@ class SharedTile(Value):
                                        loc=t.loc(name)).result, ty)
 
 
-def lds_loads(tile: RegTileType, src: SharedTileType) -> int:
+def lds_loads(tile: RegTileType, src: SharedTileType, arch: str = "gfx1100") -> int:
     """ds_read instructions load_shared issues for this pair; 0 when it
-    misses the vectorised path."""
-    ok = (tile.layout == "row" and tile.dtype.bits == 16 and src.dtype == tile.dtype)
+    misses the vectorised path.
+
+    On a wave64 (CDNA) target the count depends on the matrix-core fragment,
+    which hk-fragments assigns after tracing, so this only says whether the
+    pair is asynchronous at all; hk-lds-pipeline sets the real count."""
+    if src.dtype != tile.dtype or tile.dtype.bits != 16:
+        return 0
+    if get_target(arch).wave == 64:
+        if tile.layout == "col" and get_target(arch).arch == "gfx942":
+            return 0                    # ordinary loads the compiler waits for
+        return (tile.rows // 16) * (tile.cols // 16)
+    ok = tile.layout == "row"
     return (tile.rows // 16) * (tile.cols // 16) * 2 if ok else 0
 
 

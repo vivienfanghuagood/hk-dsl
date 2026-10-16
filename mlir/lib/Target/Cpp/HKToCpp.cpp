@@ -48,11 +48,19 @@ std::string floatLit(double v) {
   return pyFloat(v);
 }
 
+std::string fragName(unsigned r, unsigned c) {
+  return std::to_string(r) + "x" + std::to_string(c);
+}
+
 std::string rawCpp(Type t) {
   if (auto r = dyn_cast<RegTileType>(t))
     return "kittens::rt<" + dtypeCpp(r.getElementType()).str() + ", " +
            std::to_string(r.getRows()) + ", " + std::to_string(r.getCols()) +
-           ", kittens::ducks::rt_layout::" + r.getLayout().str() + ">";
+           ", kittens::ducks::rt_layout::" + r.getLayout().str() +
+           (r.hasFrag() ? ", kittens::ducks::rt_shape::rt_" +
+                              fragName(r.getFragRows(), r.getFragCols())
+                        : std::string()) +
+           ">";
   if (auto s = dyn_cast<SharedTileType>(t))
     return "kittens::st<" + dtypeCpp(s.getElementType()).str() + ", " +
            std::to_string(s.getRows()) + ", " + std::to_string(s.getCols()) +
@@ -88,7 +96,10 @@ std::string typeKey(Type t) {
   if (auto v = dyn_cast<RegVecType>(t))
     return "rv|" + dtypeName(v.getElementType()).str() + "|" +
            std::to_string(v.getLength()) + "|" + v.getKind().str() + "|" +
-           (v.getTileColLayout() ? "col" : "row");
+           (v.getTileColLayout() ? "col" : "row") +
+           (v.getTileFragRows()
+                ? "|" + fragName(v.getTileFragRows(), v.getTileFragCols())
+                : std::string());
   std::string s;
   llvm::raw_string_ostream os(s);
   os << t;
@@ -99,12 +110,18 @@ std::string aliasName(Type t) {
   if (auto r = dyn_cast<RegTileType>(t))
     return "rt_" + dtypeName(r.getElementType()).str() + "_" +
            std::to_string(r.getRows()) + "x" + std::to_string(r.getCols()) +
-           "_" + r.getLayout().str();
+           "_" + r.getLayout().str() +
+           (r.hasFrag() ? "_f" + fragName(r.getFragRows(), r.getFragCols())
+                        : std::string());
   if (auto v = dyn_cast<RegVecType>(t))
     return "rv_" + dtypeName(v.getElementType()).str() + "_" +
            std::to_string(v.getTileRows()) + "x" +
            std::to_string(v.getTileCols()) + "_" +
-           (v.getTileColLayout() ? "col" : "row") + "_" + v.getKind().str();
+           (v.getTileColLayout() ? "col" : "row") +
+           (v.getTileFragRows()
+                ? "_f" + fragName(v.getTileFragRows(), v.getTileFragCols())
+                : std::string()) +
+           "_" + v.getKind().str();
   auto s = cast<SharedTileType>(t);
   return "st_" + dtypeName(s.getElementType()).str() + "_" +
          std::to_string(s.getRows()) + "x" + std::to_string(s.getCols());
@@ -133,7 +150,7 @@ public:
       return kernel.emitError("unknown arch");
     if (failed(findGrid()))
       return failure();
-    findMmaOperands();
+    findSharedShapes();
     assignNames();
     header(includes);
     if (failed(globalsStruct()))
@@ -176,7 +193,6 @@ private:
   llvm::MapVector<std::string, std::pair<Type, std::string>,
                   std::map<std::string, unsigned>>
       aliases;
-  std::map<std::string, std::string> operandShape;
   std::map<std::string, std::string> sharedShape;
 
   // -- helpers ----------------------------------------------------------
@@ -196,37 +212,17 @@ private:
   }
   int64_t threads() { return intAttr(attrs::kWarps, 1) * tgt->wave; }
 
-  /// Where the mma fragment is not 16x16 (gfx950: 16x32 operands), the
-  /// operand tiles' C++ type has to name the fragment, and every other tile
-  /// keeps the library's 16x16 default. A tile type used both as an operand
-  /// and elsewhere gets the operand shape everywhere; a copy between it and a
-  /// 16x16 tile is then a static_assert in the library, not a silent relayout.
-  void findMmaOperands() {
-    if (tgt->mma.empty() || tgt->mma.front().second.k == 16)
+  /// gfx950's shared tile names a shape, and it has to match the register
+  /// tile read out of it: the allocation a fragment tile is loaded from
+  /// (through any subtile) takes that fragment, as st_16x32. hk-fragments
+  /// has put the fragment in the register tile's type.
+  void findSharedShapes() {
+    if (!sharedTilesHaveShape())
       return;
-    int k = tgt->mma.front().second.k;
-    auto note = [&](Value v) {
-      auto r = dyn_cast<RegTileType>(v.getType());
-      if (!r || dtypeBits(r.getElementType()) != 16)
-        return;
-      std::string kk = std::to_string(k);
-      operandShape[typeKey(r)] =
-          r.getLayout() == "col" ? "rt_" + kk + "x16" : "rt_16x" + kk;
-    };
-    kernel.walk([&](Operation *op) {
-      llvm::TypeSwitch<Operation *>(op)
-          .Case<MmaABOp, MmaABtOp, MmaAtBOp, MmaAtBtOp>([&](auto o) {
-            note(o.getA());
-            note(o.getB());
-          });
-    });
-    // The same targets spell a shared tile's shape too, and it has to match
-    // the register tile read out of it: the allocation an operand is loaded
-    // from (through any subtile) gets the operand's fragment, as st_16x32.
     kernel.walk([&](LoadSharedOp l) {
-      Type dt = l.getDst() ? l.getDst().getType() : l.getResult().getType();
-      auto it = operandShape.find(typeKey(dt));
-      if (it == operandShape.end())
+      auto dt = cast<RegTileType>(l.getDst() ? l.getDst().getType()
+                                             : l.getResult().getType());
+      if (!dt.hasFrag())
         return;
       Value src = l.getSrc();
       while (Operation *def = src.getDefiningOp()) {
@@ -237,7 +233,8 @@ private:
         else
           break;
       }
-      sharedShape[rawCpp(src.getType())] = "st" + it->second.substr(2);
+      sharedShape[rawCpp(src.getType())] =
+          "st_" + fragName(dt.getFragRows(), dt.getFragCols());
     });
   }
 
@@ -246,14 +243,10 @@ private:
     return !tgt->mma.empty() && tgt->mma.front().second.k != 16;
   }
 
-  /// rawCpp, with the fragment shape findMmaOperands assigned.
+  /// rawCpp, with the shared tile shape findSharedShapes assigned.
   std::string tileCpp(Type t) {
     std::string s = rawCpp(t);
-    if (isa<RegTileType>(t)) {
-      auto it = operandShape.find(typeKey(t));
-      if (it != operandShape.end())
-        s.insert(s.size() - 1, ", kittens::ducks::rt_shape::" + it->second);
-    } else if (isa<SharedTileType>(t) && sharedTilesHaveShape()) {
+    if (isa<SharedTileType>(t) && sharedTilesHaveShape()) {
       auto it = sharedShape.find(s);
       std::string shape = it != sharedShape.end() ? it->second : "st_16x16";
       s.insert(s.size() - 1, ", kittens::ducks::st_shape::" + shape);
@@ -963,6 +956,16 @@ private:
         .Case([&](StoreSharedOp o) {
           w("kittens::store(" + name(o.getDst()) + ", " + name(o.getValue()) +
             ");");
+          // hk-lds-pipeline takes the vectorised store (a row-layout 16-bit
+          // tile into LDS of its type) to end in lgkmcnt(0), as
+          // include/rdna3's does. include/cdna4's issues inline-asm ds_writes
+          // and returns, so a barrier after it would let another warp read
+          // the LDS before they land.
+          auto v = cast<RegTileType>(o.getValue().getType());
+          if (tgt->wave == 64 && !v.getColLayout() &&
+              dtypeBits(v.getElementType()) == 16 &&
+              v.getElementType() == o.getDst().getType().getElementType())
+            w("kittens::lds_wait<0>();");
         })
         .Case([&](GranulesOp o) {
           std::string r = name(o.getResult());
@@ -995,7 +998,10 @@ private:
             fail(o, "lds_wait_for has no count: run hk-lds-pipeline first");
             return;
           }
-          w("kittens::lds_wait_for<" + std::to_string(*o.getN()) + ">(" +
+          // A wave cannot have more LDS ops outstanding than the counter
+          // holds (issue stalls at the cap), so a deeper wait is the cap.
+          int64_t n = std::min<int64_t>(*o.getN(), tgt->lgkmcntMax);
+          w("kittens::lds_wait_for<" + std::to_string(n) + ">(" +
             join(names_(o.getTiles())) + ");");
         })
         .Case([&](StoreSharedVecOp o) {
@@ -1045,8 +1051,12 @@ private:
           // follows, and the LDS reads after it are inline asm it cannot see.
           // Measured on an MI355X without this: a different wrong answer per
           // run. The op promises "issued and waited", so wait here.
-          if (tgt->wave == 64)
+          // hk-lds-pipeline also takes it to retire every LDS op, as on
+          // RDNA3, where the group load ends in s_waitcnt 0.
+          if (tgt->wave == 64) {
             w("kittens::vm_wait<0>();");
+            w("kittens::lds_wait<0>();");
+          }
         })
         .Case([&](GroupStoreOp o) {
           std::string g = "kittens::group<" +

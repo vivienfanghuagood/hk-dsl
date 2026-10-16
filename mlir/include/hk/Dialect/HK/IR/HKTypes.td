@@ -9,17 +9,33 @@ def HK_RegTileType : HK_Type<"RegTile", "rt"> {
     `!hk.rt<f32, 16x64, row>`. The layout is not cosmetic: it decides which
     mma variant applies and whether an LDS load is a ds_read_b128 or sixteen
     scalar reads. Extents are in units of the 16x16 WMMA fragment.
+
+    `!hk.rt<bf16, 16x64, row, frag 16x32>` names the matrix-core fragment
+    the tile is laid out in, where it is not the target's 16x16: gfx950's
+    16x16x32 MFMA reads 16x32 operands, and include/cdna4 spells that tile
+    rt<bf16, 16, 64, row, rt_16x32>. Unset (0x0) is the 16x16 default;
+    hk-fragments sets it on the operand tiles of such a target.
   }];
   let parameters = (ins "::mlir::Type":$elementType, "unsigned":$rows,
-                        "unsigned":$cols, "bool":$colLayout);
+                        "unsigned":$cols, "bool":$colLayout,
+                        "unsigned":$fragRows, "unsigned":$fragCols);
   let hasCustomAssemblyFormat = 1;
   let genVerifyDecl = 1;
   let extraClassDeclaration = [{
     ::llvm::StringRef getLayout() const { return getColLayout() ? "col" : "row"; }
     unsigned getBaseTiles() const { return (getRows() / 16) * (getCols() / 16); }
+    bool hasFrag() const { return getFragRows() != 0; }
+    /// The fragment's rows and cols, 16x16 where unset.
+    unsigned fragR() const { return hasFrag() ? getFragRows() : 16; }
+    unsigned fragC() const { return hasFrag() ? getFragCols() : 16; }
+    RegTileType withFrag(unsigned r, unsigned c) const {
+      return RegTileType::get(getContext(), getElementType(), getRows(),
+                              getCols(), getColLayout(), r, c);
+    }
     RegTileType transposed() const {
       return RegTileType::get(getContext(), getElementType(), getCols(),
-                              getRows(), !getColLayout());
+                              getRows(), !getColLayout(), getFragCols(),
+                              getFragRows());
     }
   }];
 }
@@ -54,26 +70,37 @@ def HK_RegVecType : HK_Type<"RegVec", "rv"> {
   }];
   let parameters = (ins "::mlir::Type":$elementType, "unsigned":$tileRows,
                         "unsigned":$tileCols, "bool":$tileColLayout,
-                        "bool":$colKind, "bool":$uniform);
+                        "bool":$colKind, "bool":$uniform,
+                        "unsigned":$tileFragRows, "unsigned":$tileFragCols);
   let hasCustomAssemblyFormat = 1;
   let extraClassDeclaration = [{
     ::llvm::StringRef getKind() const { return getColKind() ? "col" : "row"; }
     unsigned getLength() const { return getColKind() ? getTileRows() : getTileCols(); }
     RegTileType getTile() const {
       return RegTileType::get(getContext(), getElementType(), getTileRows(),
-                              getTileCols(), getTileColLayout());
+                              getTileCols(), getTileColLayout(),
+                              getTileFragRows(), getTileFragCols());
     }
     RegVecType plain() const {
       return RegVecType::get(getContext(), getElementType(), getTileRows(),
                              getTileCols(), getTileColLayout(), getColKind(),
-                             false);
+                             false, getTileFragRows(), getTileFragCols());
     }
-    /// Same C++ type: rt<T,R,C,L>::col_vec does not depend on C (rt.cuh:78).
+    /// The same vector off a tile of fragment `t`.
+    RegVecType withTile(RegTileType t) const {
+      return RegVecType::get(getContext(), getElementType(), getTileRows(),
+                             getTileCols(), getTileColLayout(), getColKind(),
+                             getUniform(), t.getFragRows(), t.getFragCols());
+    }
+    /// Same C++ type: rt<T,R,C,L>::col_vec does not depend on C (rt.cuh:78);
+    /// it does on the fragment, which include/cdna4's rv carries.
     bool sameCpp(RegVecType other) const {
       return getElementType() == other.getElementType() &&
              getLength() == other.getLength() &&
              getColKind() == other.getColKind() &&
-             getTileColLayout() == other.getTileColLayout();
+             getTileColLayout() == other.getTileColLayout() &&
+             getTileFragRows() == other.getTileFragRows() &&
+             getTileFragCols() == other.getTileFragCols();
     }
   }];
 }

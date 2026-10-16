@@ -12,7 +12,7 @@ fails on the line that wrote it.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Optional, Tuple
 
 # ---------------------------------------------------------------- dtypes
 
@@ -94,10 +94,22 @@ class RegTileType(Type):
     rows: int
     cols: int
     layout: str = "row"
+    #: The matrix-core fragment the tile is laid out in, (rows, cols), where
+    #: it is not the 16x16 one: gfx950's bf16 MFMA operand is (16, 32) in the
+    #: row layout and (32, 16) in the col. None leaves it to the hk-fragments
+    #: pass, which sets it on the operand tiles of such a target.
+    frag: Optional[Tuple[int, int]] = None
 
     def __post_init__(self):
         if self.layout not in ("row", "col"):
             raise ValueError(f"layout must be row or col, got {self.layout!r}")
+        if self.frag is not None:
+            fr, fc = self.frag
+            if fr <= 0 or fc <= 0 or fr % 16 or fc % 16 or self.rows % fr or self.cols % fc:
+                raise ValueError(
+                    f"register tile {self.rows}x{self.cols} in {fr}x{fc} "
+                    f"fragments: a fragment is a multiple of 16 each way and "
+                    f"tiles the register tile")
         # fp8 is let through here and judged per kernel by the hk-verify pass, which
         # knows the target: gfx1201 has fp8 WMMA tiles, gfx1100 has none.
         if self.dtype.bits < 16 and self.dtype not in FP8:
@@ -116,21 +128,25 @@ class RegTileType(Type):
                 )
 
     def __repr__(self) -> str:
-        return f"rt<{self.dtype},{self.rows}x{self.cols},{self.layout}>"
+        f = f",frag {self.frag[0]}x{self.frag[1]}" if self.frag else ""
+        return f"rt<{self.dtype},{self.rows}x{self.cols},{self.layout}{f}>"
 
     @property
     def base_tiles(self) -> int:
         return (self.rows // 16) * (self.cols // 16)
 
     def cpp(self) -> str:
+        f = (f", kittens::ducks::rt_shape::rt_{self.frag[0]}x{self.frag[1]}"
+             if self.frag else "")
         return (
             f"kittens::rt<{self.dtype.cpp}, {self.rows}, {self.cols}, "
-            f"kittens::ducks::rt_layout::{self.layout}>"
+            f"kittens::ducks::rt_layout::{self.layout}{f}>"
         )
 
     def transposed(self) -> "RegTileType":
         return RegTileType(
-            self.dtype, self.cols, self.rows, "col" if self.layout == "row" else "row"
+            self.dtype, self.cols, self.rows, "col" if self.layout == "row" else "row",
+            (self.frag[1], self.frag[0]) if self.frag else None,
         )
 
 

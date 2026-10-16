@@ -11,6 +11,17 @@ def HKVerify : Pass<"hk-verify", "::mlir::func::FuncOp"> {
   }];
 }
 
+def HKFragments : Pass<"hk-fragments", "::mlir::func::FuncOp"> {
+  let summary = "Name the matrix-core fragment in the type of every tile that needs one";
+  let description = [{
+    On a target whose bf16 MFMA operand is not 16x16 (gfx950: 16x32), set
+    `frag` on every tile type an mma reads as A or B and on every type tied
+    to one by a cast, a transpose or a broadcast. A type tied to two
+    fragments -- an accumulator cast into an operand -- is an error. A no-op
+    on RDNA and gfx942.
+  }];
+}
+
 def HKLdsAlloc : Pass<"hk-lds-alloc", "::mlir::func::FuncOp"> {
   let summary = "Assign LDS offsets: declaration order, power-of-two alignment";
   let description = [{
