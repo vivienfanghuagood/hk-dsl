@@ -52,3 +52,39 @@ def test_the_gemm_builds_within_two_waves_and_its_copies_are_counted(block_n):
     assert dma == 2 * a_copies + per_b * b_copies
     (ck,) = cocheck.check(b.so_path)
     assert ck.ok, ck.line()
+
+
+@pytest.mark.parametrize("sched", [dict(block_m=128, block_n=128, stages=4),
+                                   dict(block_m=64, block_n=128, stages=3, xcd_chunk=0)])
+def test_the_four_warp_gemm_builds_and_its_copies_are_counted(sched):
+    from hk.ops import gemm_cdna_dp
+
+    k = gemm_cdna_dp.gemm_kernel("gemm_dp_build_%d" % sched["block_m"],
+                                 **{**gemm_cdna_dp.DEFAULT, **sched}, arch="gfx950")
+    tr = k.trace()
+    b = hc.build(scaffold.device(tr), "gfx950", name=tr.name, kind="co")
+    (kr,) = b.kernels
+    assert kr.scratch == 0
+    asm = subprocess.run([_objdump(), "-d", str(b.so_path)], capture_output=True,
+                         text=True, check=True).stdout
+    # A tile is block x 64 bf16 over 256 threads: block / 32 copies a thread.
+    per = {"A": sched["block_m"] // 32, "B": sched["block_n"] // 32}
+    dma = len(re.findall(r"buffer_load_dwordx4 .* lds", asm))
+    a_copies = len(re.findall(r"group_load_async<4>\(\w+, g\.a", scaffold.device(tr)))
+    b_copies = len(re.findall(r"group_load_async<4>\(\w+, g\.b", scaffold.device(tr)))
+    assert dma == per["A"] * a_copies + per["B"] * b_copies
+    (ck,) = cocheck.check(b.so_path)
+    assert ck.ok, ck.line()
+
+
+def test_the_decode_gemv_builds_for_gfx950():
+    """Its combine stores and loads fp32 tiles through LDS, which include/cdna4
+    does not do for fp32; hk's shim does."""
+    from hk.ops.decode_gemm import decode_gemm_kernel
+
+    k = decode_gemm_kernel("decode_build_950", tokens=1, slices=4, warps=16,
+                           resident=2, arch="gfx950")
+    tr = k.trace()
+    b = hc.build(scaffold.device(tr), "gfx950", name=tr.name, kind="co")
+    (kr,) = b.kernels
+    assert kr.scratch == 0

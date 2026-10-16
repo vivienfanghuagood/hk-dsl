@@ -87,8 +87,8 @@ def main():
                   "torch.matmul": lambda: torch.matmul(a, b.T)}
     from hk.target import current_arch, get_target  # noqa: PLC0415
 
-    if get_target(current_arch()).wave == 64:
-        # hk.ops.gemm's 32x16 operand tiles have no gfx950 form yet.
+    if get_target(current_arch()).wave == 64 and current_arch() != "gfx950":
+        # hk.ops.gemm has a gfx950 form (hk.ops.gemm_cdna), not a gfx942 one.
         del contenders["hk.ops.gemm.matmul"]
     best = _common.compare(contenders, args.rounds)
     _common.report("time", best, baseline="torch.matmul", work=2.0 * m * n * k,

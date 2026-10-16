@@ -4,6 +4,7 @@ runs for the same call, on an MI355X.
 
 GEMM is C = A @ B.T in F.linear's layout, A (M, K) and B (N, K). The arms:
 
+  hk           hk.ops.gemm.matmul, hk's own gfx950 GEMM (hk.ops.gemm_cdna), with --hk
   hipkittens   hk.ops.hipkittens.gemm_bf16 (M, N multiples of 256, K of 128)
   hipblaslt    F.linear, torch's default BLAS on gfx950
   rocblas      F.linear with preferred_blas_library("cublas")
@@ -61,6 +62,8 @@ SQUARES = (1024, 2048, 3072, 4096, 6144, 8192)
 #: (N, K) of Llama-3-8B and Qwen3-8B's linears, merged and unmerged, at TP=1.
 LLM_NK = ((4096, 4096), (6144, 4096), (12288, 4096), (14336, 4096), (24576, 4096),
           (28672, 4096), (4096, 12288), (4096, 14336))
+#: lm_head: Llama-3-8B's and Qwen3-8B's vocabularies, with --lm-head.
+LM_HEAD_NK = ((128256, 4096), (151936, 4096))
 LLM_M = (64, 128, 256, 512, 1024, 2048, 4096, 8192)
 GQA_CONFIGS = tuple((16, 64, 8, n, 128) for n in (1024, 2048, 4096, 8192)) + (
     (1, 32, 8, 4096, 128), (16, 64, 8, 4096, 64))
@@ -131,9 +134,10 @@ def flydsl_import(what):
 
 
 def gemm_points(args):
-    pts = [(m, m, m, "square") for m in SQUARES]
-    for n, k in LLM_NK:
-        pts += [(m, n, k, "llm") for m in LLM_M if (m, n, k) != (m, m, m)]
+    ms = tuple(int(x) for x in args.m.split(",")) if args.m else LLM_M
+    pts = [] if args.no_squares else [(m, m, m, "square") for m in SQUARES]
+    for n, k in LLM_NK + (LM_HEAD_NK if args.lm_head else ()):
+        pts += [(m, n, k, "llm") for m in ms if (m, n, k) != (m, m, m)]
     if args.only:
         keep = {tuple(int(x) for x in s.split("x")) for s in args.only.split(",")}
         pts = [p for p in pts if p[:3] in keep]
@@ -144,6 +148,7 @@ def run_gemm(args):
     import torch
     import torch.nn.functional as F
 
+    from hk.ops import gemm as hk_gemm
     from hk.ops import hipkittens as hkk
 
     dev = torch.device("cuda")
@@ -170,6 +175,8 @@ def run_gemm(args):
             return call
 
         arms = {}
+        if args.hk:
+            arms["hk"] = lambda i: hk_gemm.matmul(x, ws[i], out=out)
         if hkk.gemm_fits(m, n, k):
             arms["hipkittens"] = lambda i: hkk.gemm_bf16(x, ws[i], out=out)
         arms["hipblaslt"] = lambda i: F.linear(x, ws[i])
@@ -320,6 +327,10 @@ def main() -> int:
     ap.add_argument("--only", default="", help="comma-separated MxNxK (gemm) or BxHxHKVxNxD (gqa)")
     ap.add_argument("--flydsl", action="store_true", help="add FlyDSL's gfx950 kernel")
     ap.add_argument("--graphs", action="store_true", help="gemm: also time CUDA-graph replays")
+    ap.add_argument("--hk", action="store_true", help="gemm: add hk's own GEMM (hk.ops.gemm.matmul)")
+    ap.add_argument("--m", default="", help="gemm: comma-separated M for the LLM shapes")
+    ap.add_argument("--lm-head", action="store_true", help="gemm: add the two lm_head shapes")
+    ap.add_argument("--no-squares", action="store_true", help="gemm: skip the square shapes")
     ap.add_argument("--out", default="")
     args = ap.parse_args()
 

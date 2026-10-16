@@ -169,8 +169,9 @@ def test_the_gemm_is_hipkittens_schedule_with_derived_waits():
     # Four copies before the pingpong, three in its prologue, eight a loop
     # iteration, one in the epilogue.
     assert src.count("kittens::group_load_async<8>(") == 4 + 3 + 8 + 1
-    # The prologue's two waits, the loop's two, the epilogue's two.
-    assert _waits(src) == [4, 4, 6, 4, 2, 0]
+    # The prologue's two waits, the loop's two, the epilogue's two: all but
+    # three copies in flight where HipKittens leaves three.
+    assert _waits(src) == [4, 6, 6, 6, 2, 0]
     # Eight math phases a loop iteration, six in the epilogue.
     assert src.count("__builtin_amdgcn_s_setprio(1);") == 8 + 6
     assert "if (eq) __builtin_amdgcn_s_barrier();" in src
@@ -182,10 +183,17 @@ def test_hipkittens_own_waits_are_refused():
     """HipKittens waits for all but three copies at the end of each iteration
     (vmcnt(6)). The copy that leaves outstanding is the one into Bs[1][0] --
     hk's Bs[2] -- and the next iteration's fourth memory phase reads it before
-    its own wait: right by timing, not by any wait. hk retires it one phase
-    earlier, at vmcnt(4)."""
+    its own wait: right by timing, not by any wait."""
     with pytest.raises(VerifyError, match=r"reads Bs\[2\] while this warp's copy into it is in flight"):
-        _gemm("g_t2", hipkittens_waits=True).trace()
+        _gemm("g_t2", hipkittens_waits=True, late_b=False).trace()
+
+
+def test_reading_that_tile_one_phase_later_makes_hipkittens_waits_right():
+    """hk's schedule reads Bs[2] in the fifth memory phase with A's half,
+    after the fourth phase's wait: HipKittens' own counts then cover every
+    read, and the pass accepts them unchanged."""
+    src = scaffold.bare(_gemm("g_t4", hipkittens_waits=True, late_b=True).trace())
+    assert _waits(src) == [4, 6, 6, 6, 2, 0]
 
 
 def test_shapes_pick_their_blocks():
@@ -200,3 +208,36 @@ def test_an_odd_count_of_k_tiles_is_padded_with_zeros():
     tensors' last row, where the tile descriptor ends."""
     src = scaffold.bare(_gemm("g_t3").trace())
     assert re.search(r"cdiv\w* = \(\w+ \+ c\w* - 1\) / c\w*;", src)
+
+
+def test_a_row_limit_narrows_the_copy_and_needs_it_left_in_flight():
+    def k(a: hk.Tensor[hk.bf16]):
+        g = hk.group(8)
+        s = hk.lds.alloc(ST, name="s")
+        g.load(s, a.at[0, 0], wait=False, rows=a.rows - 5)
+        g.wait_for(s)
+
+    assert re.search(r"group_load_async<8>\(s, g\.a, idx, \w+\);", _src(k))
+
+    def waited(a: hk.Tensor[hk.bf16]):
+        g = hk.group(8)
+        s = hk.lds.alloc(ST, name="s")
+        g.load(s, a.at[0, 0], rows=4)
+
+    with pytest.raises(TypeError, match="pass wait=False"):
+        _trace(waited)
+
+
+def test_shapes_route_to_hk_kernels():
+    """Every point of the table is one of hk's candidates, and a shape the
+    table did not measure falls to the rule."""
+    for m in (1, 16, 64, 256, 1024, 4096, 8192):
+        name = gemm_cdna.route(m, 4096, 4096)
+        assert name in gemm_cdna.CANDIDATES
+        assert gemm_cdna.fits(name, m, 4096, 4096)
+    assert gemm_cdna.route(8192, 3968 * 2, 6016 + 128) == "pp"
+    assert not gemm_cdna.fits("pp", 64, 4096, 96)
+    # A measured point that is also a square is in the table: the squares
+    # route to the pingpong, not to whatever an M either side of them took.
+    assert gemm_cdna.route(4096, 4096, 4096) == "pp"
+    assert gemm_cdna.route(8192, 8192, 8192) == "pp"

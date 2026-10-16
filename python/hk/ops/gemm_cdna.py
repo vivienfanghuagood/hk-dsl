@@ -24,8 +24,11 @@ written in hk, and it is what the three gfx950 features were added for:
 Translating HipKittens' schedule found one thing its hand-counted waits do not
 cover: the fourth memory phase reads Bs[1][0] before any vmcnt has retired
 the copy into it (the vmcnt(6) a phase earlier leaves exactly that copy
-outstanding), so it is right by timing. Here the pass refused it, and the
-wait at the end of each loop iteration retires that copy too (vmcnt(4)).
+outstanding), so it is right by timing. The pass refused it. Here that read
+moves one phase later, into the fifth memory phase with A's half
+(`late_b`), after the fourth phase's wait, and HipKittens' own counts then
+cover every read; waiting for the copy where it was read instead
+(vmcnt(4)) leaves fewer copies in flight and is 0.3-0.6% slower.
 
 The block is block_m x block_n in four quadrants: A and B are each staged as
 two halves, and every warp of the warps_m x warps_n grid owns one
@@ -57,7 +60,8 @@ def gemm_kernel(name: str, *, block_m: int = 256, block_n: int = 256,
                 k_step: int = 64, warps_m: int = 2, warps_n: int = 4,
                 wgm: int = 8, xcd_chunk: int = 64, setprio: bool = True,
                 transposed_c: bool = False, early_store: bool = True,
-                hipkittens_waits: bool = False, arch: Optional[str] = None,
+                hipkittens_waits: bool = False, late_b: bool = True,
+                arch: Optional[str] = None,
                 max_vgprs: int = 256, min_occupancy: int = 1):
     """HipKittens' tiling by default: 256x256x64, eight warps as 2 x 4.
 
@@ -133,21 +137,26 @@ def gemm_kernel(name: str, *, block_m: int = 256, block_n: int = 256,
         wr = wid // warps_n
         wc = wid % warps_n
 
-        # The loop takes K-tiles in pairs. An odd count gets one more, past K:
-        # its copies start at the tensors' last row, where the tile's
-        # descriptor ends, so they read zeros and its MFMAs add nothing.
+        # The loop takes K-tiles in pairs. An odd count gets one more, past K,
+        # copied with a row limit of 0: it reads zeros and its MFMAs add
+        # nothing. The limit narrows the descriptor and moves no address --
+        # moving the tile's row instead put the 64-bit address arithmetic of
+        # every copy back in the loop, 60 VALU an iteration, 7% slower.
         n_tiles = 2 * hk.cdiv(a.cols // k_step, 2)
         k_tiles = a.cols // k_step
 
-        def at(x, first, t):
-            past = hk.min(hk.max(t - k_tiles + 1, 0), 1)
-            return x.at[first + past * (x.rows - first), (t - past * t) * k_step]
+        # Only the copies of a pair's second tile can be the pad: they take
+        # the limit, and the rest no arithmetic at all.
+        def limit(t, rows, pad):
+            return (1 - hk.min(hk.max(t - k_tiles + 1, 0), 1)) * rows if pad else None
 
-        def copy_a(t, u, h):
-            g.load(As[2 * u + h], at(a, m0 + h * half_m, t), wait=False)
+        def copy_a(t, u, h, pad=False):
+            g.load(As[2 * u + h], a.at[m0 + h * half_m, t * k_step], wait=False,
+                   rows=limit(t, half_m, pad))
 
-        def copy_b(t, u, h):
-            g.load(Bs[2 * u + h], at(b, n0 + h * half_n, t), wait=False)
+        def copy_b(t, u, h, pad=False):
+            g.load(Bs[2 * u + h], b.at[n0 + h * half_n, t * k_step], wait=False,
+                   rows=limit(t, half_n, pad))
 
         def read_a(u, h):
             As[2 * u + h].subtile(reg_m, k_step, wr, 0).load(t_a, wait=False, into=A)
@@ -182,12 +191,12 @@ def gemm_kernel(name: str, *, block_m: int = 256, block_n: int = 256,
         with hk.arch.pingpong(wr == 1):
             g.wait_for(Bs[0], As[0])
             hk.arch.barrier()
-            copy_b(1, 1, 0)
-            copy_a(1, 1, 0)
-            copy_b(1, 1, 1)
+            copy_b(1, 1, 0, pad=True)
+            copy_a(1, 1, 0, pad=True)
+            copy_b(1, 1, 1, pad=True)
             # Bs[2] too, as at the end of every iteration: the first fourth
             # memory phase reads it before its own wait.
-            g.wait_for(*((Bs[1], As[1]) if hipkittens_waits else (Bs[2],)))
+            g.wait_for(*((Bs[1], As[1]) if hipkittens_waits or late_b else (Bs[2],)))
             hk.arch.barrier()
 
             for t in range(0, n_tiles - 2, 2):
@@ -214,13 +223,16 @@ def gemm_kernel(name: str, *, block_m: int = 256, block_n: int = 256,
                 math(1, 0)
                 hk.arch.sched_barrier()
 
-                read_b(1, 0, 0)                 # the next K-tile's first B
+                if not late_b:
+                    read_b(1, 0, 0)             # the next K-tile's first B
                 copy_b(t + 2, 0, 1)
                 g.wait_for(As[3])
                 hk.arch.barrier()
                 math(1, 1)
 
                 # K-tile t + 1, buffer 1.
+                if late_b:
+                    read_b(1, 0, 0)
                 read_a(1, 0)
                 copy_a(t + 2, 0, 1)
                 hk.lds.wait_for(B[0])
@@ -230,23 +242,23 @@ def gemm_kernel(name: str, *, block_m: int = 256, block_n: int = 256,
                 hk.arch.sched_barrier()
 
                 read_b(1, 1, 1)
-                copy_b(t + 3, 1, 0)
+                copy_b(t + 3, 1, 0, pad=True)
                 hk.arch.barrier()
                 hk.lds.wait_for(B[1])
                 math(0, 1)
 
                 read_a(1, 1)
-                copy_a(t + 3, 1, 0)
+                copy_a(t + 3, 1, 0, pad=True)
                 hk.arch.barrier()
                 hk.lds.wait_for(A)
                 math(1, 0)
                 hk.arch.sched_barrier()
 
-                copy_b(t + 3, 1, 1)
+                copy_b(t + 3, 1, 1, pad=True)
                 # HipKittens waits for all but three copies here, which leaves
                 # Bs[2] -- read by the next iteration's fourth memory phase,
                 # before its own wait -- covered by nothing but time.
-                g.wait_for(As[1] if hipkittens_waits else Bs[2])
+                g.wait_for(As[1] if hipkittens_waits or late_b else Bs[2])
                 hk.arch.barrier()
                 math(1, 1)
 
@@ -254,7 +266,7 @@ def gemm_kernel(name: str, *, block_m: int = 256, block_n: int = 256,
             t = n_tiles - 2
             read_b(0, 0, 0)
             read_a(0, 0)
-            copy_a(t + 1, 1, 1)
+            copy_a(t + 1, 1, 1, pad=True)
             hk.arch.barrier()
             hk.lds.wait_for(B[0], A)
             math(0, 0)
@@ -320,13 +332,14 @@ def gemm_kernel(name: str, *, block_m: int = 256, block_n: int = 256,
 #: HipKittens' tiling.
 DEFAULT: Dict[str, Any] = dict(block_m=256, block_n=256, k_step=64, warps_m=2,
                                warps_n=4, wgm=8, xcd_chunk=64, setprio=True,
-                               transposed_c=False, early_store=True)
+                               transposed_c=False, early_store=True, late_b=True)
 
 
 def _sched_name(s: Dict[str, Any]) -> str:
     return ("gemm_cdna_{block_m}x{block_n}x{k_step}_w{warps_m}x{warps_n}"
             "_g{wgm}_x{xcd_chunk}").format(**s) + ("_sp" if s.get("setprio") else "") + (
-                "_ct" if s.get("transposed_c") else "") + ("_es" if s.get("early_store") else "")
+                "_ct" if s.get("transposed_c") else "") + ("_es" if s.get("early_store") else "") + (
+                "_lb" if s.get("late_b") else "")
 
 
 _KERNELS: Dict[str, Any] = {}
@@ -359,9 +372,103 @@ def schedule_for(m: int, n: int, k: int) -> Dict[str, Any]:
     return s
 
 
+#: hk's own gfx950 GEMMs a shape is routed among: this module's pingpong for
+#: large M, hk.ops.gemm_cdna_dp's four-warp kernel for the M it has too few
+#: blocks at, and hk.ops.decode_gemm (W straight to registers) for decode
+#: batches. tools/hk-bench/gemm_cdna_routes.py measures them.
+CANDIDATES: Dict[str, Any] = {
+    "pp": ("pp", {}),
+    "dp128": ("dp", {"block_m": 128, "block_n": 128, "stages": 4}),
+    "dp128k2": ("dp", {"block_m": 128, "block_n": 128, "stages": 4, "splits": 2}),
+    "dp128k4": ("dp", {"block_m": 128, "block_n": 128, "stages": 4, "splits": 4}),
+    "dp64": ("dp", {"block_m": 64, "block_n": 128, "stages": 3, "xcd_chunk": 0}),
+    "dp64k4": ("dp", {"block_m": 64, "block_n": 128, "stages": 3, "xcd_chunk": 0, "splits": 4}),
+    "dp64k8": ("dp", {"block_m": 64, "block_n": 128, "stages": 3, "xcd_chunk": 0, "splits": 8}),
+    "decode": ("decode", {}),
+}
+
+_ROUTES: Dict[str, Dict[int, str]] = {}
+
+
+def _routes() -> Dict[str, Dict[int, str]]:
+    """The measured table, NxK -> {M: candidate}, read once."""
+    if not _ROUTES:
+        import json  # noqa: PLC0415
+        from pathlib import Path  # noqa: PLC0415
+
+        p = Path(__file__).resolve().parents[1] / "tuned" / "routes_gemm_gfx950.json"
+        if p.exists():
+            doc = json.loads(p.read_text())
+            for nk, by_m in doc.get("routes", {}).items():
+                _ROUTES[nk] = {int(m): c for m, c in by_m.items()}
+        _ROUTES.setdefault("", {})
+    return _ROUTES
+
+
+def fits(name: str, m: int, n: int, k: int) -> bool:
+    """Whether candidate `name` takes the shape at all -- not whether it wins."""
+    kind, sched = CANDIDATES[name]
+    splits = sched.get("splits", 1)
+    if m < 1 or k % (K_STEP * splits) or n % BLOCK_N_MIN:
+        return False
+    # A split's fp32 shares are a scratch tensor per shape, kept: past a GiB
+    # of it the shape has blocks enough not to need splitting.
+    if splits > 1 and m * n * splits * 4 > 2**30:
+        return False
+    if kind == "decode":
+        from . import decode_gemm  # noqa: PLC0415
+
+        return decode_gemm.fits(m, n, k)
+    return True
+
+
+def route(m: int, n: int, k: int) -> str:
+    """The candidate for a shape: the measured table's, at the nearest M it
+    measured for this N x K (on a log scale), if that candidate takes the
+    shape; else the rule the table's measurements mostly follow."""
+    by_m = _routes().get(f"{n}x{k}")
+    if by_m:
+        near = min(by_m, key=lambda x: (abs((x / m) if x > m else (m / x)), x))
+        if fits(by_m[near], m, n, k):
+            return by_m[near]
+    if m <= 32 and fits("decode", m, n, k):
+        return "decode"
+    if m <= 512:
+        return "dp64"
+    if m <= 2048:
+        return "dp128"
+    return "pp"
+
+
+def run(name: str, a, b, out):
+    """Candidate `name` on (a, b) into out; the shape checks are matmul's."""
+    kind, sched = CANDIDATES[name]
+    if kind == "decode":
+        from . import decode_gemm  # noqa: PLC0415
+
+        return decode_gemm.matmul(a, b, out=out)
+    if kind == "dp":
+        from . import gemm_cdna_dp  # noqa: PLC0415
+
+        return gemm_cdna_dp.launch(sched, a, b, out)
+    m, k = a.shape
+    n = b.shape[0]
+    wide = n - n % 256
+    if n % 256 and wide:
+        # A 128-wide block runs at two thirds of a 256-wide one, so only the
+        # last 128 columns take it: two launches into column slices of out,
+        # which a strided global takes as they are (lm_head's 151936).
+        kernel_for(schedule_for(m, wide, k))(a, b[:wide], out[:, :wide])
+        kernel_for(schedule_for(m, n - wide, k))(a, b[wide:], out[:, wide:])
+        return out
+    kernel_for(schedule_for(m, n, k))(a, b, out)
+    return out
+
+
 def matmul(a, b, out=None):
     """A @ B.T for bf16 on gfx950, fp32 accumulate; `b` is (N, K), as in
-    hk.ops.gemm.matmul, whose gfx950 form this is."""
+    hk.ops.gemm.matmul, whose gfx950 form this is. The kernel is one of hk's
+    own, by route()."""
     import torch  # noqa: PLC0415 -- hk traces and compiles without torch
 
     if a.dim() != 2 or b.dim() != 2:
@@ -385,9 +492,9 @@ def matmul(a, b, out=None):
     elif out.shape != (m, n) or out.dtype != torch.bfloat16:
         raise ValueError(f"matmul: out is {tuple(out.shape)}/{out.dtype}, "
                          f"expected ({m}, {n})/bfloat16")
-    kernel_for(schedule_for(m, n, k))(a, b, out)
+    run(route(m, n, k), a, b, out)
     return out
 
 
-__all__ = ["gemm_kernel", "kernel_for", "schedule_for", "matmul", "DEFAULT",
-           "K_STEP", "BLOCK_N_MIN"]
+__all__ = ["gemm_kernel", "kernel_for", "schedule_for", "matmul", "route", "run",
+           "fits", "CANDIDATES", "DEFAULT", "K_STEP", "BLOCK_N_MIN"]

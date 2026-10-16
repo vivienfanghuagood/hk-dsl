@@ -36,7 +36,8 @@ from ..target import current_arch, get_target
 def decode_gemm_kernel(name: str, *, tokens: int = 1, slices: int = 4,
                        warps: int = 16, combine_depth: int = 0,
                        resident: int = 0, splits: int = 1,
-                       max_vgprs: int = 256, min_occupancy: int = 1):
+                       max_vgprs: int = 256, min_occupancy: int = 1,
+                       arch: Optional[str] = None):
     """`tokens` 16-row token tiles (M <= 16*tokens), `slices` 16-deep K slices
     per load, `warps` waves sharing each 16-row block of W.
 
@@ -62,7 +63,7 @@ def decode_gemm_kernel(name: str, *, tokens: int = 1, slices: int = 4,
     """
     m_rows = 16 * tokens
     kc = 16 * slices
-    tgt = get_target(current_arch())
+    tgt = get_target(arch or current_arch())
 
     ty_w = hk.RT(bf16, 16, kc, "row")
     ty_x = hk.RT(bf16, m_rows, kc, "row")
@@ -142,7 +143,7 @@ def decode_gemm_kernel(name: str, *, tokens: int = 1, slices: int = 4,
     fn = body if splits == 1 else body_split
     fn.__name__ = name
 
-    return hk.kernel(fn, warps=warps, name=name,
+    return hk.kernel(fn, arch=arch, warps=warps, name=name,
                      grid=lambda p: (p.w.rows // 16, splits, 1),
                      max_vgprs=max_vgprs, min_occupancy=min_occupancy)
 
@@ -241,8 +242,9 @@ def fits(m: int, n: int, k: int) -> bool:
     return n % 16 == 0 and schedule_for(m, k) is not None
 
 
-def matmul(x, w, **override):
-    """x @ w.T for a decode batch. `w` is (N, K), as in `gemm.matmul`.
+def matmul(x, w, out=None, **override):
+    """x @ w.T for a decode batch. `w` is (N, K), as in `gemm.matmul`; `out`,
+    if given, is the (M, N) bf16 tensor to write.
 
     `override` replaces fields of the schedule (slices, warps, combine_depth,
     resident, splits) -- for measuring, not for use.
@@ -266,7 +268,11 @@ def matmul(x, w, **override):
             f"splits (every warp takes whole rounds)")
     if not x.is_contiguous():
         x = x.contiguous()
-    out = torch.empty((m, n), device=x.device, dtype=torch.bfloat16)
+    if out is None:
+        out = torch.empty((m, n), device=x.device, dtype=torch.bfloat16)
+    elif out.shape != (m, n) or out.dtype != torch.bfloat16:
+        raise ValueError(f"decode matmul: out is {tuple(out.shape)}/{out.dtype}, "
+                         f"expected ({m}, {n})/bfloat16")
     if s["splits"] > 1:
         kernel_for(**s)(x, w.contiguous(), out,
                         *scratch_for(x.device, s["splits"], s["tokens"], n))
