@@ -85,9 +85,9 @@ the space:
   and 0.99x non-causal against torch 2.13's, which is 3.3x faster
   ([chapter 30](history/30-flydsl-routes-gate-contracts.md)).
 
-So hk-dsl is built to sit beside them. Each patch's route table may name a
-FlyDSL kernel, HipKittens' own or the engine's for the shapes where they
-measured fastest, and the scoreboard keeps measuring all of them.
+So hk-dsl is built to sit beside them. A route table may name FlyDSL's
+kernel, HipKittens' own or the engine's for the shapes where they measured
+fastest, and the scoreboard keeps measuring all of them.
 
 ### The traps
 

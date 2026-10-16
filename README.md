@@ -37,9 +37,9 @@ hardware's peak. Three things stood between that and a faster model.
   against tuned Triton and FlyDSL. A kernel becomes a torch op, then an
   engine patch, in a few lines.
 
-hk-dsl does not replace Triton or FlyDSL. Each patch has a route table that
-picks, shape by shape, the kernel that measured fastest: hk's, the engine's
-own, HipKittens' or FlyDSL's. In vLLM, FlyDSL's GEMM serves the decode steps at
+hk-dsl does not replace Triton or FlyDSL. Its patches pick, shape by shape,
+the kernel that measured fastest: hk's, the engine's own, HipKittens' or
+FlyDSL's. In vLLM, FlyDSL's GEMM serves the decode steps at
 96 and 128 requests, which it makes 12% shorter.
 
 A complete kernel, and the call that compiles and launches it:
