@@ -672,9 +672,17 @@ def _rms_weighted_kernel(name: str, dtype, warps: int, residual: bool,
     `_row_reduce_kernel`'s schedule. With FOLD the caller views the row as
     FOLD chunks -- one workgroup a row, a tile's rows its chunks -- and the
     weight the same way, so a weight tile loaded at the data tile's
-    coordinates is the weight of every element in it. In place is safe: the
-    persistent variant reads every tile before the cross-warp sum's barriers,
-    and the streaming one reads and writes each block in the same warp.
+    coordinates is the weight of every element in it.
+
+    In place -- and the fused add always is -- no warp may read an element
+    after any warp has written it. The persistent variant reads every tile
+    before the cross-warp sum's barrier. The streaming one re-reads in its
+    write pass, and that is safe only for a block no other warp covers: an
+    inexact plan's backed-up last block overlaps the block before it, and an
+    over-provisioned warp is clamped onto it, so a re-read there could see a
+    neighbour's output and add the residual a second time (3x4100 came back
+    with its last 64 columns several times too large). So the blocks that
+    overlap are all read before any of them is written; see visit_writing().
     """
     @hk.func
     def core(x, w, o, r, r_out, ROWS, COLS, WARPS, TPW, FOLD, EXACT, EPS):
@@ -706,14 +714,16 @@ def _rms_weighted_kernel(name: str, dtype, warps: int, residual: bool,
         def weight(widx):
             return w[widx].load(t, bounded=True) if FOLD != 1 else w[widx].load(rv)
 
-        def tile(cb):
-            col_lo, pad = _block_start(cb, COLS, ncols, EXACT)
+        def load(col_lo, pad=None):
             idx = hk.elem_coord(0, 0, row_lo, col_lo)
             v = x[idx].load(t, bounded=True)
             if r is not None:
                 v += r[idx].load(t, bounded=True)
             widx = hk.elem_coord(0, 0, 0, col_lo)
             return v, pad, idx, weight(widx) if hold_w else widx
+
+        def tile(cb):
+            return load(*_block_start(cb, COLS, ncols, EXACT))
 
         held = [tile(cb_of(s)) for s in range(TPW)] if TPW else None
         steps = None if TPW else hk.cdiv(nblk, WARPS)
@@ -725,6 +735,40 @@ def _rms_weighted_kernel(name: str, dtype, warps: int, residual: bool,
             else:
                 for s in range(steps):
                     fn(*tile(cb_of(s)))
+
+        def visit_writing(fn):
+            """visit() for the write pass of a streamed, inexact plan.
+
+            The blocks are aligned to the row's end instead, so the one that
+            is clamped is block 0, onto [0, COLS), and the one it overlaps is
+            block 1: both in the first step. The first step is read, the reads
+            retired and a barrier passed before any of it is written; after
+            it, each warp takes only blocks that exist, all whole, so nothing
+            it reads is anyone else's to write. A one-warp workgroup reads
+            blocks 0 and 1 together, in a scope of their own so that the
+            pair's registers are not held across the loop.
+
+            Aligned to the start, the overlapping pair is split across two
+            steps whenever the block count is one more than a multiple of
+            WARPS. Holding the last step's tile across the loop instead cost
+            the fused add two waves of occupancy on gfx1100, three on gfx950,
+            and spilled its folded form."""
+            def at_end(cb):
+                return load(hk.min(hk.max(ncols - (nblk - cb) * COLS, 0), ncols - COLS))
+
+            if WARPS > 1:
+                first = at_end(cb_of(0))
+                hk.arch.vm_wait(0)
+                hk.arch.barrier()
+                fn(*first)
+            else:
+                with hk.scope():
+                    first = [at_end(0), at_end(1)]
+                    hk.arch.vm_wait(0)
+                    for rec in first:
+                        fn(*rec)
+            for cb in range(cb_of(0) + max(WARPS, 2), nblk, WARPS):
+                fn(*at_end(cb))
 
         sq = hk.zeros(vt)
 
@@ -747,7 +791,7 @@ def _rms_weighted_kernel(name: str, dtype, warps: int, residual: bool,
             v *= g if hold_w else weight(g)
             o[idx].store(v, bounded=True)
 
-        visit(write)
+        (visit if TPW or EXACT else visit_writing)(write)
 
     if residual:
         def body(x: hk.Tensor[dtype], r: hk.Tensor[dtype], w: hk.Tensor[dtype],
