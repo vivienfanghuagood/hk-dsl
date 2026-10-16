@@ -22,14 +22,17 @@ def cr():
     return mod
 
 
-def report(tmp_path, name, times, spread=0.002, arch="gfx1100"):
-    """times: {case: {arm: ms}}."""
-    cases = [{"case": c, "arms": {a: {"ms": ms, "spread": spread} for a, ms in arms.items()}}
+META = {"torch": "t", "triton": "tr", "flydsl": "f", "hk": "h", "device": "d",
+        "kernels": "k1", "hipcc": "hc", "toolchain": "tc", "dialect": "hk-dialect-1"}
+
+
+def report(tmp_path, name, times, spread=0.002, arch="gfx1100", work=None, **meta):
+    """times: {case: {arm: ms}}; work: {case: (work, unit)}."""
+    cases = [{"case": c, "arms": {a: {"ms": ms, "spread": spread} for a, ms in arms.items()},
+              **(dict(zip(("work", "unit"), work[c])) if work and c in work else {})}
              for c, arms in times.items()]
     p = tmp_path / name
-    p.write_text(json.dumps({"meta": {"arch": arch, "torch": "t", "triton": "tr",
-                                      "flydsl": "f", "hk": "h", "device": "d"},
-                             "cases": cases}))
+    p.write_text(json.dumps({"meta": {"arch": arch, **META, **meta}, "cases": cases}))
     return p
 
 
@@ -108,3 +111,46 @@ def test_another_arch_is_refused(baseline, cr, tmp_path):
 
 def test_fewer_than_three_runs_make_no_baseline(cr, tmp_path):
     assert cr.refresh(runs(tmp_path)[:2], tmp_path / "b.json") == 2
+
+
+def _same(tmp_path, name, **meta):
+    return report(tmp_path, name, {
+        "gemm 4096": {"hk": 1.0, "torch": 1.25, "flydsl": 0.98},
+        "rms 1x4096": {"hk": 0.005, "torch": 0.004, "triton": 0.0026}}, **meta)
+
+
+RMS_8192 = (2 * 8192 * 4096 * 2 + 2 * 4096, "byte")     # 134 MB, past the cache
+
+
+def test_a_time_faster_than_the_card_is_left_out_of_a_refresh(cr, tmp_path, capsys):
+    # Chapter 31's seventh run: hk's 8192-row RMSNorm at 97.4 us, 1.38 TB/s.
+    rs = [report(tmp_path, f"r{i}.json", {"rms 8192": {"hk": hk, "torch": 0.180}},
+                 work={"rms 8192": RMS_8192})
+          for i, hk in enumerate((0.0974, 0.1734, 0.1735, 0.1736))]
+    b = tmp_path / "b.json"
+    assert cr.refresh(rs, b) == 0
+    base = json.loads(b.read_text())
+    e = base["cases"]["rms 8192"]["torch"]
+    assert len(e["runs"]) == 3 and e["ratio"] == pytest.approx(0.180 / 0.1735, rel=1e-3)
+    assert base["left_out"] == [f"{rs[0]}: rms 8192 / hk"]
+    assert "faster than the card can" in capsys.readouterr().out
+
+
+def test_a_run_with_a_time_faster_than_the_card_cannot_pass(cr, tmp_path, capsys):
+    rs = [report(tmp_path, f"r{i}.json", {"rms 8192": {"hk": 0.1734, "torch": 0.180}},
+                 work={"rms 8192": RMS_8192}) for i in range(3)]
+    b = tmp_path / "b.json"
+    assert cr.refresh(rs, b) == 0
+    fast = report(tmp_path, "fast.json", {"rms 8192": {"hk": 0.0974, "torch": 0.180}},
+                  work={"rms 8192": RMS_8192})
+    assert cr.check(fast, b) == 2
+    assert "IMPLAUSIBLE" in capsys.readouterr().out
+
+
+def test_runs_of_another_statistic_are_refused(baseline, cr, tmp_path, capsys):
+    p = _same(tmp_path, "median.json")
+    rep = json.loads(p.read_text())
+    rep["meta"]["screen"] = {"stat": "median"}
+    p.write_text(json.dumps(rep))
+    assert cr.check(p, baseline) == 2
+    assert "every ratio would move" in capsys.readouterr().out

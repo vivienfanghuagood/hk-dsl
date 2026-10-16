@@ -26,9 +26,16 @@ arm that is wrong is reported and not timed, an arm with no kernel here says
 why. Then GPU time, from the torch profiler, from the kernels' own records:
 each arm in a profiler session of its own, so nothing has to be attributed by
 name, and every launch path -- pybind, Triton, FlyDSL's module launch -- is
-measured the same way. Rounds interleave the arms, rotating the order; the
-best round counts, and how far the next best round sits from it is the
-arm's noise.
+measured the same way. Rounds interleave the arms, rotating the order.
+
+Not every round is believed (_rounds.py): a round whose session lost kernel
+records, one faster than the card can go at the case's footprint (bytes
+inside the 96 MB Infinity Cache, or past it to GDDR6), and a best round no
+other round comes near are rejected and listed. An arm's time is the median
+of the rounds it kept (`--stat best`: the fastest), its noise their median
+absolute deviation; --json keeps every round, its kernel record count and
+why any was rejected. `--probe-ceilings` measures what the cache's ceiling
+stands on.
 
 Two verdicts per row, hk's best against the best other: out of the box (hk,
 torch, inductor, triton, flydsl) and tuned (everything). A gap inside the
@@ -59,6 +66,7 @@ import torch                                       # noqa: E402
 import torch.nn.functional as F                    # noqa: E402
 from torch.profiler import ProfilerActivity, profile  # noqa: E402
 
+import _rounds                                     # noqa: E402
 import hk                                          # noqa: E402
 import triton_ref                                  # noqa: E402
 from _timing import burn_in                        # noqa: E402
@@ -196,7 +204,7 @@ def gemm_case(m, n, k, tune):
         arms["flydsl_tuned"] = _flydsl_gemm_tuned(fg, a, b, outs["flydsl_tuned"], m, n, k)
     except Exception as e:                         # noqa: BLE001
         arms["flydsl"] = arms["flydsl_tuned"] = _why(e)
-    return f"gemm {m}x{n}x{k}", 2 * m * n * k, "flop", ref, arms
+    return f"gemm {m}x{n}x{k}", 2 * m * n * k, "flop", ref, arms, None
 
 
 def attn_case(n, causal, tune, h=32, hkv=8, d=128):
@@ -221,7 +229,7 @@ def attn_case(n, causal, tune, h=32, hkv=8, d=128):
     }
     flops = 4 * h * n * n * d // (2 if causal else 1)
     return (f"attn n{n} {'causal' if causal else 'full'} gqa{h // hkv}",
-            flops, "flop", ref, arms)
+            flops, "flop", ref, arms, None)
 
 
 def _flydsl_compiled(build, *args):
@@ -273,7 +281,7 @@ def rmsnorm_case(m, tune, n=4096):
                      "candidates": len(fr._SEARCH_CONFIGS), "chosen": chosen()})
     except Exception as e:                         # noqa: BLE001
         arms["flydsl_tuned"] = _why(e)
-    return f"rms_norm {m}x{n}", 2 * m * n * 2 + 2 * n, "byte", ref, arms
+    return f"rms_norm {m}x{n}", 2 * m * n * 2 + 2 * n, "byte", ref, arms, None
 
 
 def fused_add_case(m, tune, n=4096):
@@ -322,7 +330,9 @@ def fused_add_case(m, tune, n=4096):
     except Exception as e:                         # noqa: BLE001
         arms["flydsl"] = _why(e)
     arms["flydsl_tuned"] = "FlyDSL has no autotuned fused add + RMSNorm"
-    return f"fused_add_rms_norm {m}x{n}", 2 * m * n * 4 + 2 * n, "byte", ref, arms
+    # Moves x and r in and out: twice the bytes it touches.
+    return (f"fused_add_rms_norm {m}x{n}", 2 * m * n * 4 + 2 * n, "byte", ref, arms,
+            2 * m * n * 2 + 2 * n)
 
 
 def softmax_case(m, tune, n=4096):
@@ -364,7 +374,7 @@ def softmax_case(m, tune, n=4096):
                      "chosen": chosen()})
     except Exception as e:                         # noqa: BLE001
         arms["flydsl_tuned"] = _why(e)
-    return f"softmax {m}x{n}", 2 * m * n * 2, "byte", ref, arms
+    return f"softmax {m}x{n}", 2 * m * n * 2, "byte", ref, arms, None
 
 
 CASES = {
@@ -385,8 +395,35 @@ def _kernels(prof):
             and not e.name.startswith(("Memcpy", "Memset"))]
 
 
-def gpu_times(fns, rounds, calls):
-    """{arm: (best per-call GPU ms, spread across rounds)}.
+#: Each round's calls wait behind a GPU spin this long per call (at least
+#: QUEUE_MIN_US), so the host has launched them all before the first runs.
+#: Inside a profiler session a launch costs the host more than outside one:
+#: behind 40 us a call, hk's one-row rounds still varied by 1.5x.
+QUEUE_US_PER_CALL = 1000
+QUEUE_MIN_US = 10000
+_SPIN = []
+
+
+def _spin(us):
+    """torch's spin kernel for `us` microseconds, its clock calibrated on
+    first use (on gfx1100 it counts 100 MHz)."""
+    if not _SPIN:
+        s, e = torch.cuda.Event(True), torch.cuda.Event(True)
+        torch.cuda.synchronize()
+        s.record()
+        torch.cuda._sleep(200_000)
+        e.record()
+        torch.cuda.synchronize()
+        _SPIN.append(200_000 / (s.elapsed_time(e) * 1e3))
+    torch.cuda._sleep(int(us * _SPIN[0]))
+
+
+def _is_spin(e):
+    return "spin_kernel" in e.name
+
+
+def gpu_rounds(fns, rounds, calls, queue=True):
+    """{arm: ([per-call GPU ms, one per round], [kernel records, per round])}.
 
     Each arm runs in a profiler session of its own, and its time is the sum
     of the kernel records in it -- the hardware's timestamps. On ROCm the
@@ -394,9 +431,20 @@ def gpu_times(fns, rounds, calls):
     launched outside ATen (pybind, Triton, FlyDSL's module launch): duplicate
     flow warnings, kernels credited to the wrong range, a GEMM at 347 TFLOP/s
     on a 123 TFLOP/s card. A session per arm needs no correlation at all.
-    Rounds interleave the arms and rotate which goes first.
+    Rounds interleave the arms and rotate which goes first. The record count
+    is kept because a session that lost records sums fewer calls than it is
+    divided by (_rounds.py).
+
+    With `queue`, a GPU spin goes first in each session, long enough for the
+    host to launch every call behind it, so the calls run back to back
+    whatever their launcher costs. Without it, a microsecond kernel's time
+    was the launcher's: a call that reached the GPU a few microseconds after
+    it went idle took about 10 us more, 10-20% of the calls of the arms that
+    launch in 5-8 us (hk's pybind entry, torch, FlyDSL) and none of those
+    that take 21-28 (Triton, Inductor), nor any queued or spaced 20 us
+    apart (small_rows.py, docs/history/32).
     """
-    per = {a: [] for a in fns}
+    per = {a: ([], []) for a in fns}
     order = list(fns)
     for r in range(rounds):
         k = r % len(order)
@@ -404,22 +452,50 @@ def gpu_times(fns, rounds, calls):
             fns[a]()
             torch.cuda.synchronize()
             with profile(activities=[ProfilerActivity.CUDA]) as p:
+                if queue:
+                    _spin(max(QUEUE_MIN_US, QUEUE_US_PER_CALL * calls))
                 for _ in range(calls):
                     fns[a]()
                 torch.cuda.synchronize()
-            total = sum(e.device_time_total for e in _kernels(p))
-            per[a].append(total / 1e3 / calls if total else float("inf"))
+            ks = [e for e in _kernels(p) if not _is_spin(e)]
+            total = sum(e.device_time_total for e in ks)
+            per[a][0].append(total / 1e3 / calls if total else float("inf"))
+            per[a][1].append(len(ks))
+    return per
+
+
+def gpu_times(fns, rounds, calls, stat=None, queue=True):
+    """{arm: (per-call GPU ms, spread)}: `_rounds.STAT` (or `stat`) of the
+    rounds `_rounds.screen` keeps, without a ceiling, which needs the work."""
     out = {}
-    for a, ts in per.items():
-        ts = sorted(ts)
-        best = ts[0]
-        # How well the best round reproduces: the next best against it. The
-        # whole range would charge a microsecond kernel's one slow round
-        # (a quarter or more, at these sizes) to every comparison it is in.
-        spread = ((ts[1] - best) / best if len(ts) > 1 and 0 < best < float("inf")
-                  else 0.0)
-        out[a] = (best, spread)
+    for a, (ts, recs) in gpu_rounds(fns, rounds, calls, queue).items():
+        kept, _ = _rounds.screen(ts, recs)
+        ms, spread, _ = _rounds.summarize(ts, kept, stat or _rounds.STAT)
+        out[a] = (ms if ms is not None else float("inf"), spread)
     return out
+
+
+def probe_ceilings(rounds, calls):
+    """The fastest a plain copy and a two-input add move bytes on this card,
+    by footprint, timed as the arms are: what _rounds.IC_BYTES_S stands on."""
+    print(f"footprint MB   copy TB/s   add TB/s   (best kept round of {rounds} x {calls})")
+    for mb in (8, 16, 32, 48, 64, 80, 96, 128, 192, 256, 512):
+        fp = mb * 2**20
+        x = torch.randn(fp // 4, device="cuda", dtype=BF16)          # copy: 2 tensors
+        y = torch.empty_like(x)
+        a, b = (torch.randn(fp // 6, device="cuda", dtype=BF16) for _ in range(2))
+        c = torch.empty_like(a)                                       # add: 3 tensors
+        fns = {"copy": lambda: y.copy_(x), "add": lambda: torch.add(a, b, out=c)}
+        res = {}
+        for name, (ts, recs) in gpu_rounds(fns, rounds, calls).items():
+            kept, _ = _rounds.screen(ts, recs)
+            _, _, best = _rounds.summarize(ts, kept)
+            moved = 2 * x.numel() * 2 if name == "copy" else 3 * a.numel() * 2
+            res[name] = moved / (best * 1e-3) / 1e12
+        print(f"{mb:>12}   {res['copy']:>9.3f}   {res['add']:>8.3f}")
+        del x, y, a, b, c
+        torch.cuda.empty_cache()
+    return 0
 
 
 def verdicts(t):
@@ -464,6 +540,13 @@ def main() -> int:
     ap.add_argument("--arms", default=",".join(ARMS),
                     help="comma-separated arms to run; the others are listed as "
                     "not selected (the tuned arms search, which takes minutes)")
+    ap.add_argument("--stat", choices=_rounds.STATS, default=_rounds.STAT,
+                    help="an arm's time over the rounds it kept (_rounds.py)")
+    ap.add_argument("--probe-ceilings", action="store_true",
+                    help="time a copy and an add by footprint, and stop")
+    ap.add_argument("--no-queue", action="store_true",
+                    help="launch each round's calls onto an idle GPU, as before "
+                    "chapter 32 (gpu_rounds)")
     args = ap.parse_args()
     selected = set(args.arms.split(","))
     if not selected <= set(ARMS):
@@ -472,15 +555,23 @@ def main() -> int:
     print(f"{meta['device']} {meta['arch']}, torch {meta['torch']}, triton "
           f"{meta['triton']}, flydsl {meta['flydsl']}, hk {meta['hk']}")
     burn_in()
+    if args.probe_ceilings:
+        return probe_ceilings(args.rounds, args.calls)
 
+    rules = {"stat": args.stat, "queued": not args.no_queue, "peak_flops": _rounds.PEAK_FLOPS,
+             "hbm_bytes_s": _rounds.HBM_BYTES_S, "ic_bytes": _rounds.IC_BYTES,
+             "ic_bytes_s": _rounds.IC_BYTES_S, "margin": _rounds.MARGIN,
+             "gap_floor": _rounds.GAP_FLOOR, "gap_k": _rounds.GAP_K}
     report = {"meta": {**meta, "rounds": args.rounds, "calls": args.calls, "band": BAND,
-                       "arms": [a for a in ARMS if a in selected],
+                       "arms": [a for a in ARMS if a in selected], "screen": rules,
                        "date": time.strftime("%Y-%m-%d %H:%M")}, "cases": []}
     head = f"{'case':<28}" + "".join(f"{a:>13}" for a in ARMS) + "   oob / tuned"
     for group in args.only.split(","):
-        print(f"\n[{group}] GPU ms per call, then rate (TFLOP/s or TB/s)")
+        print(f"\n[{group}] GPU ms per call ({args.stat} of the rounds kept), then rate "
+              f"(TFLOP/s or TB/s)")
         print(head)
-        for name, work, unit, ref, arms in CASES[group](args.tune):
+        for name, work, unit, ref, arms, footprint in CASES[group](args.tune):
+            footprint = footprint or (work if unit == "byte" else None)
             fns, notes, tuning, errs = {}, {}, {}, {}
             # FlyDSL's autotuner searches on every call while FLYDSL_AUTOTUNE
             # is set, and serves its cached winner once it is not: set for the
@@ -506,7 +597,17 @@ def main() -> int:
                 except Exception as e:             # noqa: BLE001
                     notes[a] = _why(e)
             os.environ.pop("FLYDSL_AUTOTUNE", None)
-            t = gpu_times(fns, args.rounds, args.calls) if fns else {}
+            floor = _rounds.floor_ms(work, unit, footprint)
+            t, raw = {}, (gpu_rounds(fns, args.rounds, args.calls, not args.no_queue)
+                          if fns else {})
+            for a, (ts, recs) in raw.items():
+                kept, rejected = _rounds.screen(ts, recs, floor)
+                ms, spread, best = _rounds.summarize(ts, kept, args.stat)
+                raw[a] = (ts, recs, rejected, best)
+                if ms is None:
+                    notes[a] = f"every round rejected: {rejected[0]}"
+                else:
+                    t[a] = (ms, spread)
             v = verdicts(t)
             cells = "".join(f"{t[a][0]:>13.4f}" if a in t else f"{'-':>13}" for a in ARMS)
             vtxt = " / ".join(f"{v[l]['ratio']:.2f}x {v[l]['verdict']}" if l in v else "-"
@@ -521,15 +622,27 @@ def main() -> int:
             for a in ("hk_tuned", "triton_tuned", "flydsl_tuned"):
                 if a in tuning and tuning[a].get("chosen"):
                     print(f"{'':<30}{a} chose {tuning[a]['chosen'][:110]}")
+            for a, (ts, _, rejected, _) in raw.items():
+                for i, why in sorted(rejected.items()):
+                    print(f"{'':<30}{a}: round {i + 1} of {len(ts)} rejected, "
+                          f"{ts[i]:.5g} ms -- {why}")
+
+            def arm(a):
+                ent = {"ms": round(t[a][0], 6) if a in t else None,
+                       "rate": (round(work / (t[a][0] * 1e-3) / 1e12, 3) if a in t else None),
+                       "spread": round(t[a][1], 4) if a in t else None,
+                       "rel_err": errs.get(a), "tuning": tuning.get(a), "note": notes.get(a)}
+                if a in raw:
+                    ts, recs, rejected, best = raw[a]
+                    ent.update(best=round(best, 6) if best else None,
+                               rounds=[round(x, 6) if x < float("inf") else None for x in ts],
+                               records=recs,
+                               rejected={str(i): why for i, why in sorted(rejected.items())})
+                return ent
+
             report["cases"].append({
                 "group": group, "case": name, "work": work, "unit": unit,
-                "arms": {a: {"ms": round(t[a][0], 5) if a in t else None,
-                             "rate": (round(work / (t[a][0] * 1e-3) / 1e12, 3)
-                                      if a in t else None),
-                             "spread": round(t[a][1], 4) if a in t else None,
-                             "rel_err": errs.get(a), "tuning": tuning.get(a),
-                             "note": notes.get(a)} for a in ARMS},
-                "verdicts": v})
+                "footprint": footprint, "arms": {a: arm(a) for a in ARMS}, "verdicts": v})
     if args.json:
         Path(args.json).write_text(json.dumps(report, indent=1))
         print(f"\nwrote {args.json}")
