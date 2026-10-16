@@ -200,6 +200,28 @@ def test_a_held_tile_is_not_masked_in_place(tile):
     assert (q.int() - wq.int()).abs().max() <= 1
 
 
+#: In place on the tile kernels: a streamed width that does not divide
+#: (8199: 129 blocks, too many to hold and not a multiple of 16 to fold), and
+#: ragged rows, whose last row block is backed up over the one before it.
+IN_PLACE = [(64, 8199), (100, 200)]
+
+
+@pytest.mark.parametrize("shape", IN_PLACE, ids=[f"{r}x{c}" for r, c in IN_PLACE])
+@pytest.mark.parametrize("op", ["rmsnorm", "layernorm", "softmax"])
+def test_a_norm_written_over_its_input_is_right(op, shape, tile):
+    """out=x. A block that two warps or two workgroups cover could be read
+    by the second after the first had written it: a row normalized twice,
+    which softmax is not idempotent under (64x8199 came back 0.4 off). Such
+    plans run out of place and copy back."""
+    x = _rand(shape, torch.float32)
+    f = x.clone()
+    want = {"rmsnorm": lambda: _ref_rmsnorm(f, 1e-6),
+            "layernorm": lambda: F.layer_norm(f, (shape[1],), eps=1e-5),
+            "softmax": lambda: torch.softmax(f, -1)}[op]()
+    assert getattr(hk.ops, op)(x, out=x).data_ptr() == x.data_ptr()
+    _close(x, want, torch.float32, f"{op} {shape}")
+
+
 def test_rows_below_one_tile_are_refused_with_the_reason(tile):
     x = _rand((8, 256), torch.float32)
     with pytest.raises(ValueError, match="at least 16x64"):
@@ -243,6 +265,20 @@ def test_silu_mul(dtype, shape):
     same bytes at once. They have to write the same *values*."""
     a, b = _rand(shape, dtype), _rand(shape, dtype)
     _close(hk.ops.silu_mul(a, b), F.silu(a.float()).to(dtype) * b, dtype, f"{shape}")
+
+
+@pytest.mark.parametrize("which", ["a", "b"])
+@pytest.mark.parametrize("shape", [(17, 65), (128, 256)], ids=["17x65", "128x256"])
+def test_silu_mul_written_over_an_operand(shape, which):
+    """out=a or out=b. Where no width divides (17x65) the backed-up blocks
+    overlap, and the workgroup that covered one second could read the
+    first one's output; that shape runs out of place and copies back. One
+    that tiles (128x256) runs in place."""
+    a, b = _rand(shape, torch.float32), _rand(shape, torch.float32)
+    want = F.silu(a) * b
+    out = a if which == "a" else b
+    assert hk.ops.silu_mul(a, b, out=out).data_ptr() == out.data_ptr()
+    _close(out, want, torch.float32, f"{shape} out={which}")
 
 
 def test_silu_mul_needs_one_whole_tile():

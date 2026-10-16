@@ -36,6 +36,7 @@ from functools import lru_cache as _lru_cache
 
 from .. import dsl as hk
 from ..types import bf16, fp16, fp32
+from .norm import _overlaps
 
 ROWS, COLS = 16, 64
 
@@ -304,6 +305,13 @@ def silu_mul(a, b, out=None):
         import torch  # noqa: PLC0415  -- see norm._run
         out = torch.empty_like(a)
     av, bv, ov = _as_2d(a, "a"), _as_2d(b, "b"), _as_2d(out, "out")
+    r, c = ov.shape
+    if (r % ROWS or c % COLS) and (_overlaps(out, a) or _overlaps(out, b)):
+        # A backed-up block is computed twice to the same answer only if its
+        # inputs are still there the second time. In place, the workgroup
+        # that covers it second can read the first one's output and apply
+        # silu_mul again; so out of place, and copied back.
+        return out.copy_(silu_mul(a, b))
     k, tiles = _resolve(a.dtype, av.shape[-1])
     k(av, bv, ov, TILES=tiles)
     return out

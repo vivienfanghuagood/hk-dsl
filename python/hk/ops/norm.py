@@ -1226,6 +1226,12 @@ def _flat(t, rows: int, cols: int):
     return t if t.dim() == 2 else t.view(rows, cols)
 
 
+def _overlaps(a, b) -> bool:
+    """Do two contiguous tensors share any bytes?"""
+    pa, pb = a.data_ptr(), b.data_ptr()
+    return pa < pb + b.numel() * b.element_size() and pb < pa + a.numel() * a.element_size()
+
+
 def _run_strip(kind: str, x, out, eps: float) -> bool:
     """Run `kind` on a strip kernel if one holds the row; False if not."""
     if not x.is_contiguous():
@@ -1268,6 +1274,16 @@ def _run(kind: str, x, out, eps: float):
 def _run_tile(kind: str, x, out, eps: float):
     rows, cols = _shape_of(x)
     k, tpw, fold, exact = _resolve(kind, x.dtype, cols, rows)
+    if (not (tpw or exact) or (fold == 1 and rows % ROWS)) and _overlaps(x, out):
+        # Blocks backed up into bounds can be covered twice: by two
+        # workgroups (a ragged last row block) or by two warps (a streamed,
+        # inexact last column block), and in place one of them may re-read
+        # what the other has already written -- a row normalized twice,
+        # which softmax is not idempotent under. So out of place and copied
+        # back. The fused add, in place by contract, orders its reads and
+        # writes instead (_rms_weighted_kernel).
+        import torch  # noqa: PLC0415
+        return out.copy_(_run_tile(kind, x, torch.empty_like(x), eps))
     # The constexprs go through the call rather than `specialize(...)`: the
     # call path is keyed on them and hits the trace/build/module caches, where
     # a fresh specialization would re-trace and re-resolve the module on every
