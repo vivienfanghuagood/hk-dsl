@@ -47,6 +47,14 @@ def _rand(shape, dtype):
     return torch.randn(*shape, device="cuda", dtype=dtype)
 
 
+def _rdna3() -> bool:
+    """Strips are include/rdna3's: elsewhere the strip layout runs the tile
+    kernels."""
+    from hk.target import current_arch, get_target
+
+    return get_target(current_arch()).kittens_define == "KITTENS_RDNA3"
+
+
 @pytest.fixture(params=["strip", "tile"])
 def layout(request, monkeypatch):
     """The norms on the strip kernels and on the tile kernels: hk.ops runs
@@ -99,10 +107,11 @@ def test_layernorm_on_a_row_with_a_large_offset(layout):
     ~1e-3 of relative error in the variance is expected and accepted -- see
     the note in norm.py. This pins how much: if a change makes it worse, it
     shows here. The strip kernel holds the row and subtracts the mean first,
-    so nothing cancels and it is held to fp32's own tolerance."""
+    so nothing cancels and it is held to fp32's own tolerance -- where it
+    runs: on a target without strips the strip layout is the tile kernel."""
     x = torch.randn(64, 4096, device="cuda", dtype=torch.float32) + 100.0
     want = F.layer_norm(x, (4096,), eps=1e-5)
-    tol = 5e-3 if layout == "tile" else 1e-4
+    tol = 1e-4 if layout == "strip" and _rdna3() else 5e-3
     torch.testing.assert_close(hk.ops.layernorm(x), want, rtol=tol, atol=tol)
 
 
@@ -228,8 +237,13 @@ def test_rows_below_one_tile_are_refused_with_the_reason(tile):
         hk.ops.rmsnorm(x)
 
 
-def test_a_strip_takes_any_row_count():
+@pytest.mark.skipif(not _rdna3(), reason="strips are include/rdna3's; the tile "
+                    "kernels need a whole tile, as the test above says")
+def test_a_strip_takes_any_row_count(monkeypatch):
     """One workgroup a row: eight rows, or one, need no tile to exist."""
+    from hk.ops import norm
+
+    monkeypatch.setattr(norm, "LAYOUT", "strip")
     for rows in (1, 8):
         x = _rand((rows, 256), torch.float32)
         _close(hk.ops.rmsnorm(x), _ref_rmsnorm(x, 1e-6), torch.float32, f"{rows}")

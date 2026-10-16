@@ -47,7 +47,9 @@ scoreboard run ([the performance gate](#the-performance-gate)).
 - tests/hk/gpu: run in groups by `scripts/gpu_suite.sh`, on main on a
   W7900D and an MI355X ([the GPU tier](#the-gpu-tier)). On
   gfx950 the attention and RDNA GEMM tests skip
-  ([chapter 29](history/29-cdna.md)).
+  ([chapter 29](history/29-cdna.md)), and so do the register strip tests:
+  strips are include/rdna3's, and there the norms' strip layout runs the
+  tile kernels and is held to their tolerances.
 
 [The MLIR chapter](history/15-mlir-dialect.md) records the counts as they
 stood at the move (990 no-GPU tests, 386 on the GPU).
@@ -80,7 +82,8 @@ stood at the move (990 no-GPU tests, 386 on the GPU).
   (16-wide operand tiles, an accumulator cast into an operand: attention,
   paged attention, `hk.ops.gemm`) and the library functions hk has only for
   RDNA3 (LDS granules, register staging, `load_w4`). Every other failure
-  stays a failure.
+  stays a failure. What CDNA lacks by design rather than by omission, the
+  strips, is a skip condition in the test itself.
 * **engines** — `python3 -m pytest tests/hk/engines -q`, in each engine's
   venv. Every symbol a vLLM or SGLang patch rebinds, with the signature its
   stand-in forwards to and the call sites the rebind must reach; a module is
