@@ -54,11 +54,13 @@ struct Assigner {
       return;
     if (t.getRows() % f.r || t.getCols() % f.c) {
       why->emitError() << "this op needs " << t << " in " << str(f)
-                       << " fragments, and " << t.getRows() << "x"
-                       << t.getCols() << " is not a whole number of them. On "
-                          "this target an mma operand is a 16x32 (row) or "
-                          "32x16 (col) fragment: make the operand tile a "
-                          "multiple of that, e.g. 32 wide along the reduction."
+                       << " fragments -- as an mma operand, or tied to a tile "
+                          "that is one, or that names them -- and "
+                       << t.getRows() << "x" << t.getCols()
+                       << " is not a whole number of them. On this target an "
+                          "mma operand is a 16x32 (row) or 32x16 (col) "
+                          "fragment: make the tile a multiple of that, e.g. "
+                          "32 wide along the reduction."
                        << atLoc(why);
       failed = true;
       return;
@@ -121,8 +123,20 @@ struct FragmentsPass : public mlir::hk::impl::HKFragmentsBase<FragmentsPass> {
       return;
     auto arch = f->getAttrOfType<StringAttr>(attrs::kArch);
     const TargetInfo *tgt = getTarget(arch ? arch.getValue() : "gfx1100");
-    if (!tgt || tgt->mma.empty() || tgt->mma.front().second.k == 16)
+    if (!tgt || tgt->mma.empty() || tgt->mma.front().second.k == 16) {
+      // These targets' tiles have no fragment shape to name (include/rdna3,
+      // include/cdna3): a fragment in a type there has no C++ spelling.
+      f.walk([&](Operation *op) {
+        for (Value v : op->getResults())
+          if (auto t = dyn_cast<RegTileType>(v.getType()); t && t.hasFrag()) {
+            op->emitError() << t << ": " << (tgt ? tgt->arch : "this target")
+                            << "'s register tiles have no fragment shape; "
+                               "leave frag unset" << atLoc(op);
+            return signalPassFailure();
+          }
+      });
       return;
+    }
     unsigned k = tgt->mma.front().second.k;
 
     Assigner as;

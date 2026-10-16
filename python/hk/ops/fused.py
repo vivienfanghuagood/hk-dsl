@@ -50,6 +50,15 @@ ROWS, COLS = 16, 64
 MAX_TILES = 3
 
 
+
+def _ftile(rows, cols):
+    """The fp32 tile a row is worked in. Where tiles take a fragment shape
+    (gfx950) it is laid out in 16x32 fragments, so a lane's run of a 16-bit row is 8 elements:
+    one 16-byte buffer load or store where the 16x16 fragment's is 8 bytes."""
+    if hk.arch.target().tile_shapes:
+        return hk.RT(fp32, rows, cols, frag=(16, 32))
+    return hk.RT(fp32, rows, cols)
+
 def _start(idx, block: int, extent):
     """Where block `idx` starts, backed up so the whole tile is in bounds.
 
@@ -72,7 +81,7 @@ def _silu_mul_kernel(name: str, dtype, warps: int):
         # fp32 throughout: base_ops::silu is specialised for float only, and
         # the load converts on the way in for free, so there is nothing to pay
         # for the extra precision but register width.
-        t = hk.RT(fp32, ROWS, COLS)
+        t = _ftile(ROWS, COLS)
         ncols = o.cols
         row_lo = _start(hk.arch.block_idx.y, ROWS, o.rows)
         base = hk.arch.block_idx.x * (WARPS * TILES)
@@ -128,7 +137,7 @@ def _rope_kernel(name: str, dtype, half: int):
 
     def body(x: hk.Tensor[dtype], cos: hk.Tensor[fp32], sin: hk.Tensor[fp32],
              o: hk.Tensor[dtype], *, ROWS=ROWS, COLS=COLS, HALF=half):
-        t = hk.RT(fp32, ROWS, COLS)
+        t = _ftile(ROWS, COLS)
         bh = hk.arch.block_idx.z
         r = hk.arch.block_idx.y
         c = hk.arch.block_idx.x

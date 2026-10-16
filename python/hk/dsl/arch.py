@@ -35,6 +35,15 @@ class _BlockIdx:
 block_idx = _BlockIdx()
 
 
+def target():
+    """The hk.target.Target this kernel is being traced for: wave size,
+    register file, matrix-core fragments. For a kernel body whose tiling is
+    a property of the target, chosen while tracing."""
+    from ..target import get_target  # noqa: PLC0415
+
+    return get_target(B.current().arch)
+
+
 def warp_id() -> Int:
     """This warp's index in the workgroup (wave-uniform)."""
     t = B.current()

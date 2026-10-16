@@ -19,6 +19,7 @@ from typing import Any, Tuple
 
 from .. import dsl as hk
 from ..dsl.values import _FP32_ONLY
+from ..runtime.resources import ResourceError
 
 #: Tile the elementwise kernels work in. 16x64 is 4 base tiles: 32 VGPRs for a
 #: bf16 tile on gfx1100, so three live tiles sit nowhere near the granule
@@ -29,6 +30,17 @@ ROWS, COLS = 16, 64
 
 def _grid(p):
     return (hk.cdiv(p.o.cols, p.COLS), hk.cdiv(p.o.rows, p.ROWS), 1)
+
+
+def _tile(dtype, rows, cols):
+    """The register tile a block moves. Where tiles take a fragment shape
+    (gfx950) a 16-bit tile is laid out in 16x32 fragments: a lane's run is then 8 elements, one
+    16-byte buffer_load_dwordx4, where the 16x16 fragment's is an 8-byte
+    dwordx2. Measured on an MI355X with the 16x256 tile the wrappers pick
+    there, bf16 add at 8192x8192 went from 0.58x torch to 0.92x."""
+    if hk.arch.target().tile_shapes and dtype.bits == 16:
+        return hk.RT(dtype, rows, cols, frag=(16, 32))
+    return hk.RT(dtype, rows, cols)
 
 
 #: op -> what it does to two tiles, or to one.
@@ -50,7 +62,7 @@ def _binary_kernel(name: str, op: str, dtype):
 
     def body(a: hk.Tensor[dtype], b: hk.Tensor[dtype], o: hk.Tensor[dtype], *,
              ROWS=ROWS, COLS=COLS):
-        t = hk.RT(dtype, ROWS, COLS)
+        t = _tile(dtype, ROWS, COLS)
         idx = hk.tile_coord(0, 0, hk.arch.block_idx.y, hk.arch.block_idx.x)
         x = a[idx].load(t)
         y = b[idx].load(t)
@@ -64,7 +76,7 @@ def _unary_kernel(name: str, op: str, dtype):
     fn = _UNARY_FN[op]
 
     def body(a: hk.Tensor[dtype], o: hk.Tensor[dtype], *, ROWS=ROWS, COLS=COLS):
-        t = hk.RT(dtype, ROWS, COLS)
+        t = _tile(dtype, ROWS, COLS)
         idx = hk.tile_coord(0, 0, hk.arch.block_idx.y, hk.arch.block_idx.x)
         o[idx] = fn(a[idx].load(t))
 
@@ -124,7 +136,21 @@ def _suffix_of(t) -> str:
 
 
 @_lru_cache(maxsize=None)
-def _tile_shape(shape: Tuple[int, ...], numel: int) -> Tuple[int, int]:
+def _col_choices(suffix: str) -> Tuple[int, ...]:
+    """The tile widths to try, widest first. On a wave64 (CDNA) target a
+    wider tile is more bytes in flight a lane (with _tile's 16x32 fragment,
+    16-byte runs): measured on an MI355X, 16x256 was the fastest 16-bit
+    shape and 16x128 the fastest fp32 one, within 1% of each other across
+    1-4 warps. Elsewhere, the 16x64 the kernels were tuned for."""
+    from ..target import current_arch, get_target  # noqa: PLC0415
+
+    if get_target(current_arch()).wave != 64:
+        return (COLS,)
+    return (128, COLS) if suffix == "fp32" else (256, 128, COLS)
+
+
+@_lru_cache(maxsize=None)
+def _tile_shape(shape: Tuple[int, ...], numel: int, cols: int = COLS) -> Tuple[int, int]:
     """Pick the (rows, cols) 2D view to launch over.
 
     Memoized: `_apply` asks it once per operand plus once for the output, and
@@ -137,10 +163,10 @@ def _tile_shape(shape: Tuple[int, ...], numel: int) -> Tuple[int, int]:
     essentially never is.
     """
     last = shape[-1] if shape else 0
-    if last and last % COLS == 0 and (numel // last) % ROWS == 0:
+    if last and last % cols == 0 and (numel // last) % ROWS == 0:
         return numel // last, last
-    if numel % (ROWS * COLS) == 0:
-        return numel // COLS, COLS
+    if numel % (ROWS * cols) == 0:
+        return numel // cols, cols
     raise ValueError(
         f"shape {tuple(shape)} ({numel} elements) does not tile: hk's elementwise "
         f"kernels need either a last dim that is a multiple of {COLS} with a "
@@ -150,14 +176,14 @@ def _tile_shape(shape: Tuple[int, ...], numel: int) -> Tuple[int, int]:
     )
 
 
-def _as_2d(t):
+def _as_2d(t, cols: int = COLS):
     if not t.is_contiguous():
         raise ValueError(
             "hk kernels take contiguous tensors; call .contiguous() first "
             "(the global layout is a base pointer plus strides, and a "
             "non-contiguous view does not have the strides it claims)."
         )
-    r, c = _tile_shape(tuple(t.shape), t.numel())
+    r, c = _tile_shape(tuple(t.shape), t.numel(), cols)
     return t if t.dim() == 2 and t.shape[0] == r and t.shape[1] == c \
         else t.view(r, c)
 
@@ -191,10 +217,38 @@ def _apply(op: str, *tensors: Any, out=None):
             f"expected {tuple(a.shape)}/{a.dtype}"
         )
 
-    k = _kernel_for(op, _suffix_of(a))
-    views = [_as_2d(t) for t in tensors] + [_as_2d(out)]
-    k(*views)
+    suffix = _suffix_of(a)
+    k = _kernel_for(op, suffix)
+    shape, n = tuple(a.shape), a.numel()
+    choices = _col_choices(suffix)
+    for cols in choices:
+        if cols != COLS and ((op, suffix, cols) in _REFUSED or not _fits(shape, n, cols)):
+            continue
+        views = [_as_2d(t, cols) for t in tensors] + [_as_2d(out, cols)]
+        if cols == COLS:
+            k(*views)
+            return out
+        try:
+            k(*views, COLS=cols)
+            return out
+        except ResourceError:
+            # The gate picks the width: a wider tile that spills on this
+            # compiler (bf16 relu at 256 spilled SGPRs under ROCm 7.2.3 and
+            # not 7.1) steps down, once, rather than being chosen by hand.
+            _REFUSED.add((op, suffix, cols))
     return out
+
+
+#: (op, dtype, width) builds the resource gate refused, in this process.
+_REFUSED: set = set()
+
+
+def _fits(shape, numel, cols) -> bool:
+    try:
+        _tile_shape(shape, numel, cols)
+        return True
+    except ValueError:
+        return False
 
 
 def add(a, b, out=None):

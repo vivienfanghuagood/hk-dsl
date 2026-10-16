@@ -39,6 +39,18 @@ from .norm import (COLS, MAX_TPW, ROWS, WARP_COUNTS, _block_start, _ceil,
 _TINY = 1e-12
 
 
+
+def _ftile(rows, cols, fold=1):
+    """The fp32 tile a row is worked in. Where tiles take a fragment shape
+    (gfx950) it is laid out in 16x32 fragments, so a lane's run of a 16-bit row is 8 elements:
+    one 16-byte buffer load or store where the 16x16 fragment's is 8 bytes.
+    Not when the row is folded onto the tile's rows (FOLD > 1): fold_rows
+    reduces through a 16x16 tile whose vector is retyped onto this one's,
+    and include/cdna4's vectors differ by fragment."""
+    if hk.arch.target().tile_shapes and fold == 1:
+        return hk.RT(fp32, rows, cols, frag=(16, 32))
+    return hk.RT(fp32, rows, cols)
+
 def _grid_q(p):
     return (1, hk.cdiv(p.x.rows, p.ROWS), 1)
 
@@ -142,7 +154,7 @@ def _quantize_kernel(name: str, dtype, warps: int):
         # The tile is fp32 even though the tensor is bf16, and holding it in
         # bf16 instead is not an optimization on this part -- it is a
         # pessimization, measured. See the note above `visit`.
-        t = hk.RT(fp32, ROWS, COLS)
+        t = _ftile(ROWS, COLS, FOLD)
         vt = hk.col_vec(t)
         ncols = x.cols
         nblk = hk.cdiv(ncols, COLS)
@@ -227,7 +239,7 @@ def _quantize_kernel(name: str, dtype, warps: int):
 def _dequantize_kernel(name: str, dtype, warps: int):
     def body(q: hk.Tensor[i8], s: hk.Tensor[fp32], o: hk.Tensor[dtype], *,
              ROWS=ROWS, COLS=COLS, WARPS=warps, EXACT=0):
-        t = hk.RT(fp32, ROWS, COLS)
+        t = _ftile(ROWS, COLS)
         vt = hk.col_vec(t)
         ncols = q.cols
         nblk = hk.cdiv(ncols, COLS)
