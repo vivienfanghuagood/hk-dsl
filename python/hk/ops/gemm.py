@@ -563,6 +563,10 @@ def matmul(a, b, out=None):
     """
     import torch  # noqa: PLC0415 -- hk traces and compiles without torch
 
+    if current_arch() == "gfx950":
+        from . import gemm_cdna  # noqa: PLC0415
+
+        return gemm_cdna.matmul(a, b, out)
     if a.dim() != 2 or b.dim() != 2:
         raise ValueError(f"matmul: want 2D, got {a.dim()}D and {b.dim()}D")
     m, k = a.shape
