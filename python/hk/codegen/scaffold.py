@@ -47,10 +47,30 @@ def _includes(ir: "TracedKernel", *more: str) -> tuple:
     return ('"kittens.cuh"', *get_target(ir.arch).extra_includes, *more)
 
 
+def takes_stream(arch: str) -> bool:
+    """Whether the pybind entry point for `arch` takes the stream to launch
+    on as a trailing argument (`Kernel.__call__` passes torch's current one).
+
+    The CDNA targets' does: on the null stream a launch is ordered against
+    nothing torch did on its own streams, and a CUDA graph cannot capture
+    it, so a captured decode step or a framework's side stream would miss
+    every hk kernel. The RDNA targets' launches on the null stream, as it
+    always has; their serving paths go through `torch_op`, which takes
+    torch's stream."""
+    return get_target(arch).wave == 64
+
+
 def pybind_module(ir: "TracedKernel") -> str:
     """A self-contained pybind11 extension exporting one function, `ir.name`,
-    that takes the tensor parameters positionally in declaration order."""
+    that takes the tensor parameters positionally in declaration order, and
+    on CDNA the stream after them (`takes_stream`)."""
     src = ir.cpp(_includes(ir, '"pyutils/hk_bind.cuh"'))
+    if takes_stream(ir.arch):
+        bind = (f'    kittens::py::fast::bind_function_on_stream<launch_on>(m, '
+                f'"{ir.name}", {_members(ir)});')
+    else:
+        bind = (f'    kittens::py::fast::bind_function<launch>(m, "{ir.name}", '
+                f'{_members(ir)});')
     lines = [
         src,
         f"#ifndef {MODULE_NAME_MACRO}",
@@ -67,8 +87,7 @@ def pybind_module(ir: "TracedKernel") -> str:
         # behind a millisecond kernel and is not free behind a sixty-
         # microsecond one. See include/pyutils/hk_bind.cuh for what it drops
         # and what it keeps.
-        f'    kittens::py::fast::bind_function<launch>(m, "{ir.name}", '
-        f'{_members(ir)});',
+        bind,
         "}",
     ]
     return "\n".join(lines) + "\n"

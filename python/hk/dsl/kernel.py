@@ -452,11 +452,29 @@ class Kernel:
     def _launcher(self, **const_overrides: Any):
         """The pybind entry point, or with HK_LAUNCH=codeobj a launch of the
         device-only code object on torch's current stream: a fifth of the
-        compile, for a Python launch in front of every call."""
+        compile, for a Python launch in front of every call.
+
+        On CDNA the pybind entry point takes the stream too
+        (`scaffold.takes_stream`), and gets torch's current stream for the
+        first tensor's device, so the launch is ordered against torch's work
+        and a CUDA graph captures it."""
         import os  # noqa: PLC0415
 
         if os.environ.get("HK_LAUNCH", "pybind") != "codeobj":
-            return getattr(self.compile(**const_overrides), self.name)
+            fn = getattr(self.compile(**const_overrides), self.name)
+            from ..codegen.scaffold import takes_stream  # noqa: PLC0415
+
+            if not takes_stream(self.trace(**const_overrides).arch):
+                return fn
+            import torch  # noqa: PLC0415
+
+            raw = getattr(torch._C, "_cuda_getCurrentRawStream", None) or (
+                lambda i: torch.cuda.current_stream(i).cuda_stream)
+
+            def on_stream(*tensors):
+                return fn(*tensors, raw(tensors[0].get_device()))
+
+            return on_stream
         import torch  # noqa: PLC0415
 
         from ..runtime import codeobj  # noqa: PLC0415

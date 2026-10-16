@@ -192,6 +192,21 @@ static void bind_function(auto m, auto name, auto TGlobal::*... member_ptrs) {
     });
 }
 
+/* The same entry point with a trailing stream, a hipStream_t passed as an
+ * integer: the caller's (torch's current stream, from Python), so the launch
+ * is ordered against the caller's work and a CUDA graph can capture it. The
+ * pybind module links no torch, so it cannot ask for that stream itself. */
+template<auto function, typename TGlobal>
+static void bind_function_on_stream(auto m, auto name, auto TGlobal::*... member_ptrs) {
+    m.def(name, [](handle<decltype(member_ptrs)>... args, std::uintptr_t stream) {
+        TGlobal g {
+            from_object<typename trait<decltype(member_ptrs)>::member_type>
+                ::make(args)...
+        };
+        function(g, reinterpret_cast<hipStream_t>(stream));
+    });
+}
+
 } // namespace fast
 } // namespace py
 } // namespace kittens

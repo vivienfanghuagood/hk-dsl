@@ -51,6 +51,26 @@ def test_rdna_sources_do_not_include_the_cdna_shim():
     assert "hk/cdna.cuh" not in scaffold.bare(k.trace())
 
 
+@pytest.mark.parametrize("arch", CDNA + ("gfx1100", "gfx1201"))
+def test_the_cdna_entry_point_takes_the_stream(arch):
+    """On the null stream a launch is ordered against nothing torch did on
+    its own streams and a CUDA graph cannot capture it; on CDNA the pybind
+    entry point takes the stream Kernel.__call__ passes (torch's current
+    one). RDNA's is unchanged."""
+    t = hk.RT(hk.bf16, 16, 64)
+
+    @hk.kernel(arch=arch, grid=lambda p: (1, 1, 1))
+    def k(a: hk.Tensor[hk.bf16], o: hk.Tensor[hk.bf16]):
+        idx = hk.tile_coord(0, 0, 0, 0)
+        o[idx] = a[idx].load(t)
+
+    src = scaffold.pybind_module(k.trace())
+    cdna = arch in CDNA
+    assert scaffold.takes_stream(arch) == cdna
+    assert ("bind_function_on_stream<launch_on>(m, \"k\"" in src) == cdna
+    assert ("bind_function<launch>(m, \"k\"" in src) == (not cdna)
+
+
 def test_the_register_file_is_512_with_a_granule_of_8():
     for arch in CDNA:
         t = get_target(arch)

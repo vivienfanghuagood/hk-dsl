@@ -27,6 +27,17 @@ That matters at these sizes: a 4096x4096 quantize is 60 µs of GPU, so ten
 microseconds of Python in front of it is sixteen percent. The host-overhead
 work is in [Phases 1 and 2](history/01-phases-1-2.md).
 
+**The stream.** On CDNA (gfx942, gfx950) the pybind entry point takes the
+stream to launch on, and `Kernel.__call__` passes torch's current stream for
+the first tensor's device (`scaffold.takes_stream`). So every hk op there --
+`hk.ops.gemm`'s gfx950 routes, the norms, the decode GEMV -- is ordered
+against torch's work and is captured by a CUDA graph like any torch op;
+`tests/hk/gpu/test_stream_cdna.py` captures and replays them. It costs
+0.2 µs a call on the host (2.97 → 3.18 µs for a tiny kernel, eager). The
+RDNA targets' pybind entry point still launches on the null stream, as their
+generated source always has; their serving paths go through
+[`torch_op`](#torch-ops-and-the-sdpa-drop-in), which takes torch's stream.
+
 A compiled `.so` is never overwritten in place: every build writes a new
 content-hashed path, because rebuilding a `.so` while a process has it mapped
 corrupts that process's view of the code (`python/hk/runtime/module.py`).
