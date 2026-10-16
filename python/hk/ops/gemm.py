@@ -74,6 +74,7 @@ def gemm_kernel(name: str, *, block_m: int = 128, block_n: int = 128,
                 k_step: int = 64, dot_slice: int = 16, warps: int = 8,
                 warp_rows: int = 4, n_split: int = 4, wgm: int = 8,
                 write_pos: int = 2, lds_buffers: int = 1, stagger: int = 0,
+                stream_a: bool = False, setprio: bool = False, sched: int = 0,
                 max_vgprs: int = 256, min_occupancy: int = 1):
     """The default tiling is `big_config` from the C++: 128x128x64, 8 warps.
 
@@ -99,10 +100,31 @@ def gemm_kernel(name: str, *, block_m: int = 128, block_n: int = 128,
     carry by hand and calls it TAIL_OPS; here lds_pipeline derives it, which
     is the difference between a schedule you can edit and one you can only
     admire.
+
+    `stream_a` holds the warp's A slice one 16-row fragment at a time, the
+    next in flight behind the current one's WMMAs, as FlyDSL's four-wave
+    kernel does, rather than all of it: two fragments live instead of
+    reg_m/16, with an accumulator per fragment row. It is what lets a 64x64
+    warp tile fit beside a staging buffer.
+
+    `setprio` raises the wave's priority around each WMMA group, as the C++
+    does. It is off: the same schedule without it is 3.5-4.3% faster at the
+    scoreboard's five shapes, enough to pass FlyDSL's dispatcher at four of
+    them (tools/hk-bench/gemm_vs_flydsl.py, docs/history/28-gemm-schedule.md).
+    `sched` > 0 asks the scheduler, with sched_group_barrier, to place one
+    staging load then `sched` WMMAs, repeated, across a K-tile: FlyDSL's
+    hint, for the instructions hk's schedule leaves to the compiler (the LDS
+    reads and writes are inline asm, in no class, and stay where the code
+    puts them). s_setprio ends a scheduling region, so a hint does not reach
+    across one.
     """
     d = _derive(block_m, block_n, k_step, dot_slice, warps, warp_rows, n_split)
     warp_cols, reg_m, reg_n = d["warp_cols"], d["reg_m"], d["reg_n"]
     split_n, slices = d["split_n"], d["slices"]
+    frags = reg_m // 16
+    if stream_a and frags < 2:
+        raise ValueError(f"stream_a streams a {reg_m}-row warp tile by 16-row "
+                         f"fragments; it needs at least two")
 
     st_a = hk.ST(bf16, block_m, k_step)
     st_b = hk.ST(bf16, block_n, k_step)
@@ -123,11 +145,16 @@ def gemm_kernel(name: str, *, block_m: int = 128, block_n: int = 128,
         buf_a = g.stage_buffer(As, name="buf_a")
         buf_b = g.stage_buffer(Bs, name="buf_b")
 
-        A_tile = hk.zeros(hk.RT(bf16, reg_m, dot_slice, "row"))
         B_tile = [hk.zeros(hk.RT(bf16, split_n, dot_slice, "row"))
                   for _ in range(n_split)]
-        C_acc = [hk.zeros(hk.RT(fp32, reg_m, split_n, "col"))
-                 for _ in range(n_split)]
+        if stream_a:
+            A_frag = [hk.zeros(hk.RT(bf16, 16, dot_slice, "row")) for _ in range(2)]
+            C_rows = [[hk.zeros(hk.RT(fp32, 16, split_n, "col"))
+                       for _ in range(n_split)] for _ in range(frags)]
+        else:
+            A_tile = hk.zeros(hk.RT(bf16, reg_m, dot_slice, "row"))
+            C_acc = [hk.zeros(hk.RT(fp32, reg_m, split_n, "col"))
+                     for _ in range(n_split)]
 
         M = a.rows
         m_blocks = hk.cdiv(M, block_m)
@@ -191,6 +218,58 @@ def gemm_kernel(name: str, *, block_m: int = 128, block_n: int = 128,
             g.stage(buf_a, a[a_coord(tt)])
             g.stage(buf_b, b[b_coord(tt)])
 
+        def prio(level):
+            if setprio:
+                hk.arch.setprio(level)
+
+        def interleave():
+            # One staging load, then `sched` WMMAs, for every load a tile
+            # stages; groups the scheduler cannot fill are left empty.
+            if sched:
+                for _ in range(buf_a.ty.calls + buf_b.ty.calls):
+                    hk.arch.sched_group_barrier("vmem_read", 1)
+                    hk.arch.sched_group_barrier("mma", sched)
+
+        def dot_tile_streamed(buf, tail=None):
+            """dot_tile with A one fragment at a time: fragment i+1's read in
+            flight behind fragment i's WMMAs, the next slice's first fragment
+            behind this slice's last, and each B chunk re-read as soon as the
+            slice's last fragment has used it."""
+            A_s = at(As, buf)
+            B_s = at(Bs, buf)
+
+            def load_A(k, i, slot):
+                A_s.subtile(16, dot_slice, warp_row * frags + i, k).load(
+                    A_frag[slot].ty, wait=False, into=A_frag[slot])
+
+            def load_B(k, s):
+                B_s.subtile(split_n, dot_slice, warp_col * n_split + s, k).load(
+                    B_tile[s].ty, wait=False, into=B_tile[s])
+
+            for s in range(n_split):
+                load_B(0, s)
+            load_A(0, 0, 0)
+            for k in range(slices):
+                for i in range(frags):
+                    slot = (k * frags + i) % 2
+                    if i + 1 < frags:
+                        load_A(k, i + 1, 1 - slot)
+                    elif k + 1 < slices:
+                        load_A(k + 1, 0, 1 - slot)
+                    # The tile's last read is in flight once the last
+                    # fragment's is: the drain goes here, under the final
+                    # fragment's math.
+                    if tail is not None and k == slices - 1 and i == frags - 2:
+                        tail()
+                    for s in range(n_split):
+                        hk.lds.wait_for(A_frag[slot], B_tile[s])
+                        prio(1)
+                        C_rows[i][s] += A_frag[slot] @ B_tile[s].T
+                        prio(0)
+                        if i == frags - 1 and k + 1 < slices:
+                            load_B(k + 1, s)
+            interleave()
+
         def dot_tile(buf, tail=None):
             """One K-tile of math out of LDS buffer `buf`, with `tail` woven in.
 
@@ -201,6 +280,8 @@ def gemm_kernel(name: str, *, block_m: int = 128, block_n: int = 128,
             the operand tiles instead was tried in the C++ and is slower -- the
             second set costs 48 VGPRs and takes occupancy from 9 to 7.
             """
+            if stream_a:
+                return dot_tile_streamed(buf, tail)
             A_s = at(As, buf)
             B_s = at(Bs, buf)
 
@@ -227,9 +308,9 @@ def gemm_kernel(name: str, *, block_m: int = 128, block_n: int = 128,
             for k in range(slices):
                 for s in range(n_split):
                     hk.lds.wait_for(A_tile, B_tile[s])
-                    hk.arch.setprio(1)
+                    prio(1)
                     C_acc[s] += A_tile @ B_tile[s].T
-                    hk.arch.setprio(0)
+                    prio(0)
                     # B_tile[s] is dead the instant this chunk's WMMAs have
                     # issued, so the next slice's read of it goes in flight
                     # here, a full chunk of math early, at no register cost.
@@ -247,6 +328,7 @@ def gemm_kernel(name: str, *, block_m: int = 128, block_n: int = 128,
                         # one number in this kernel nobody has to write down.
                         if k + 2 == slices and s == n_split - 1:
                             run_tail()
+            interleave()
 
         # Prologue: tile 0 resident, tile 1 in flight.
         g.load(at(As, 0), a[a_coord(0)])
@@ -308,8 +390,13 @@ def gemm_kernel(name: str, *, block_m: int = 128, block_n: int = 128,
         m_row = m_base + warp_row * reg_m
         col_tile = (col * warp_cols + warp_col) * n_split
         for s in range(n_split):
-            c[hk.elem_coord(0, 0, m_row, (col_tile + s) * split_n)].store(
-                C_acc[s], bounded=True)
+            if stream_a:
+                for i in range(frags):
+                    c[hk.elem_coord(0, 0, m_row + 16 * i, (col_tile + s) * split_n)].store(
+                        C_rows[i][s], bounded=True)
+            else:
+                c[hk.elem_coord(0, 0, m_row, (col_tile + s) * split_n)].store(
+                    C_acc[s], bounded=True)
 
     body.__name__ = name
 
@@ -371,7 +458,10 @@ TUNE_KEYS = ["4096x4096x4096", "8192x8192x8192",
 def _sched_name(s: Dict[str, Any]) -> str:
     return ("gemm_bf16_{block_m}x{block_n}x{k_step}_w{warps}r{warp_rows}"
             "_s{n_split}_d{dot_slice}_g{wgm}_p{write_pos}_l{lds_buffers}"
-            ).format(**s) + (f"_t{s['stagger']}" if s.get("stagger") else "")
+            ).format(**s) + (f"_t{s['stagger']}" if s.get("stagger") else "") + (
+                "_a1" if s.get("stream_a") else "") + (
+                "_sp" if s.get("setprio") else "") + (
+                f"_i{s['sched']}" if s.get("sched") else "")
 
 
 def _make(**sched):
@@ -422,10 +512,12 @@ BLOCK_M, BLOCK_N, K_STEP = DEFAULT["block_m"], DEFAULT["block_n"], DEFAULT["k_st
 #: For a batch of at most 16 rows: one 16-row block, so a decode-sized M does
 #: not compute 128 rows to keep one. 1.19-1.62x over hipBLASLt on Qwen3-8B's
 #: decode shapes at M=16 (docs/history/09-decode-kernel.md), though
-#: hk.ops.decode_gemm, laid
-#: out for the weight stream, is faster still.
+#: hk.ops.decode_gemm, laid out for the weight stream, is faster still. It
+#: keeps s_setprio, which DEFAULT drops: at M = 1-16 the two are within 1.2%,
+#: 0.5-1.2% its way at four of five shapes (tools/hk-bench/gemm_vs_flydsl.py).
 THIN = dict(block_m=16, block_n=128, k_step=64, dot_slice=16, warps=4,
-            warp_rows=1, n_split=2, wgm=8, write_pos=2, lds_buffers=2)
+            warp_rows=1, n_split=2, wgm=8, write_pos=2, lds_buffers=2,
+            setprio=True)
 
 
 def _bucket(m: int) -> int:

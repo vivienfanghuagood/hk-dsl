@@ -55,6 +55,34 @@ HK = {
                                  warp_rows=4, lds_buffers=2, wgm=16),
     "hk 256x256x32 l2 g16 +stagger": dict(block_m=256, block_n=256, k_step=32, warps=16,
                                           warp_rows=4, lds_buffers=2, wgm=16, stagger=1),
+    # FlyDSL's tile in hk's schedule: four warps of 64x64, A streamed one
+    # fragment at a time (stream_a), two LDS buffers -- 256 VGPRs, no spill.
+    "hk 128x128x32 w4 a1 s4": dict(k_step=32, warps=4, warp_rows=2, n_split=4,
+                                   lds_buffers=2, write_pos=2, stream_a=True),
+    "hk 128x128x32 w4 a1 s2": dict(k_step=32, warps=4, warp_rows=2, n_split=2,
+                                   lds_buffers=2, write_pos=2, stream_a=True),
+    "hk 128x128x32 w4 a1 s4 +stagger": dict(k_step=32, warps=4, warp_rows=2, n_split=4,
+                                            lds_buffers=2, write_pos=2, stream_a=True,
+                                            stagger=1),
+    "hk 128x128x32 w4 a1 s4 +setprio": dict(k_step=32, warps=4, warp_rows=2, n_split=4,
+                                            lds_buffers=2, write_pos=2, stream_a=True,
+                                            setprio=True),
+    # sched_group_barrier: one staging load, then N WMMAs. s_setprio ends a
+    # scheduling region, so the hint has room only without it.
+    "hk 128x128x32 w4 a1 s4 i4": dict(k_step=32, warps=4, warp_rows=2, n_split=4,
+                                      lds_buffers=2, write_pos=2, stream_a=True, sched=4),
+    "hk l2": dict(lds_buffers=2),
+    "hk l2 i2": dict(lds_buffers=2, sched=2),
+    "hk l2 +setprio": dict(lds_buffers=2, setprio=True),
+    "hk i2": dict(sched=2),
+    # The C++'s s_setprio around each WMMA group, the default until chapter 28.
+    "hk +setprio": dict(setprio=True),
+    # hk.ops.gemm's schedule for M <= 16 (gemm.THIN), with and without it.
+    "hk thin": dict(block_m=16, block_n=128, k_step=64, dot_slice=16, warps=4,
+                    warp_rows=1, n_split=2, wgm=8, write_pos=2, lds_buffers=2),
+    "hk thin +setprio": dict(block_m=16, block_n=128, k_step=64, dot_slice=16, warps=4,
+                             warp_rows=1, n_split=2, wgm=8, write_pos=2, lds_buffers=2,
+                             setprio=True),
 }
 
 T128 = (4, 4, 2, 2, 2)

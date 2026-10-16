@@ -97,7 +97,7 @@ def _derive(head_dim: int, q_block: int, kv_block: int, warps: int,
 def attn_kernel(name: str, *, head_dim: int = 128, q_block: int = 16,
                 kv_block: int = 32, warps: int = 12, vt_d_chunk: int = 16,
                 qk_tiles: int = 2, pv_tiles: int = 2, causal: bool = False,
-                scale: Optional[float] = None,
+                scale: Optional[float] = None, setprio: bool = True,
                 max_vgprs: int = 256, min_occupancy: int = 1):
     """The default tiling is the C++'s, which its sweep.sh picked.
 
@@ -110,6 +110,11 @@ def attn_kernel(name: str, *, head_dim: int = 128, q_block: int = 16,
     one more SALU; it is a constant because the shapes a server runs are fixed
     at startup and a recompile per distinct scale is a one-time 30 s, paid off
     the moment the second request arrives.
+
+    `setprio` keeps the C++'s s_setprio around each MMA group. hk's GEMM
+    dropped it for 3-4% (docs/history/28-gemm-schedule.md); here, at n=4096,
+    32 heads, d=128, dropping it measured 0.5% causal and 0.8% not, under
+    noise, so it stays.
     """
     d = _derive(head_dim, q_block, kv_block, warps, vt_d_chunk, qk_tiles, pv_tiles)
     q_tile, d_frags, kv_frags = d["q_tile"], d["d_frags"], d["kv_frags"]
@@ -286,10 +291,12 @@ def attn_kernel(name: str, *, head_dim: int = 128, q_block: int = 16,
                         k_win = [gr_k.load_frag(n0 + i, kk, ty_k)
                                  for i in range(qk_tiles)]
                         hk.lds.wait_for(*k_win)
-                        hk.arch.setprio(1)
+                        if setprio:
+                            hk.arch.setprio(1)
                         for i in range(qk_tiles):
                             s_f[n0 + i] += k_win[i] @ q_r[kk].T
-                        hk.arch.setprio(0)
+                        if setprio:
+                            hk.arch.setprio(0)
 
                 for n in range(kv_frags):
                     s_f[n] *= scale_l2e
@@ -377,10 +384,12 @@ def attn_kernel(name: str, *, head_dim: int = 128, q_block: int = 16,
                         v_win = [gr_vt.load_frag(g0 + i, n, ty_vr)
                                  for i in range(pv_tiles)]
                         hk.lds.wait_for(*v_win)
-                        hk.arch.setprio(1)
+                        if setprio:
+                            hk.arch.setprio(1)
                         for i in range(pv_tiles):
                             o_c[g0 + i] += v_win[i] @ p_cvt
-                        hk.arch.setprio(0)
+                        if setprio:
+                            hk.arch.setprio(0)
 
         # Normalise and go back to [q, d] for the store. The C++ moves the data
         # here, one fragment at a time; `hk.transpose` relabels, which is the
