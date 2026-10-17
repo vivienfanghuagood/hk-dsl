@@ -523,6 +523,15 @@ def _tune_key(n: int) -> str:
     return f"n{b}"
 
 
+def _native_cdna() -> bool:
+    """Whether calls go to `attn_cdna`, gfx950's own kernel: this module's
+    tiles (16-wide WMMA operands, P cast straight into an operand) have no
+    CDNA layout, and the CDNA kernel is a different schedule, not a port."""
+    from ..target import current_arch  # noqa: PLC0415
+
+    return current_arch() == "gfx950"
+
+
 def _kernel_for(head_dim: int, causal: bool, scale: Optional[float],
                 n: int = 4096):
     """The compiled kernel for one (head_dim, causal, scale).
@@ -532,6 +541,10 @@ def _kernel_for(head_dim: int, causal: bool, scale: Optional[float],
     than a counter keeps it stable across processes, which is what lets the
     on-disk compile cache hit on the second run instead of the second call.
     """
+    if _native_cdna():
+        from . import attn_cdna  # noqa: PLC0415
+
+        return attn_cdna.kernel_for(head_dim, causal, scale)
     suffix = "_causal" if causal else ""
     if scale is None or scale == head_dim ** -0.5:
         return TUNERS[(head_dim, causal)].kernel(_tune_key(n))
@@ -579,6 +592,16 @@ def _why(q, k, v, causal, *, require_contiguous: bool = True):
         return f"head_dim {d} has no tiling; have {HEAD_DIMS}"
     if h_kv == 0 or h % h_kv:
         return f"GQA needs h_kv to divide h, got {h} query heads and {h_kv} kv heads"
+    if causal and n_kv != n_q:
+        # Two conventions for where the diagonal sits when the lengths differ;
+        # this kernel's is top-left and torch's is bottom-right.
+        return f"causal cross attention: n_kv={n_kv} != n_q={n_q}"
+    if _native_cdna():
+        # gfx950's kernel bounds its Q loads and stores and masks the KV
+        # tail, so any length runs; only an empty one has nothing to launch.
+        if n_q == 0 or n_kv == 0:
+            return f"empty sequence: n_q={n_q}, n_kv={n_kv}"
+        return ""
     if n_q < Q_TILE:
         # The last Q block backs up to end at n_q instead of predicating, and
         # there is nothing to back into below one tile. Decode wants a split-KV
@@ -586,10 +609,6 @@ def _why(q, k, v, causal, *, require_contiguous: bool = True):
         return f"n_q={n_q} is below one Q tile ({Q_TILE})"
     if n_kv < KV_BLOCK:
         return f"n_kv={n_kv} is below one KV block ({KV_BLOCK})"
-    if causal and n_kv != n_q:
-        # Two conventions for where the diagonal sits when the lengths differ;
-        # this kernel's is top-left and torch's is bottom-right.
-        return f"causal cross attention: n_kv={n_kv} != n_q={n_q}"
     return ""
 
 

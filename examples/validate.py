@@ -195,13 +195,12 @@ def main():
 
     from hk.target import current_arch, get_target  # noqa: PLC0415
 
-    # No native CDNA path yet for these: attention's operand tiles are 16 wide,
-    # and hk-fragments refuses them at trace time on gfx950; the GEMM and the
-    # decode GEMV have a gfx950 path (docs/history/33-cdna-gemm.md), not a
-    # gfx942 one. Skipped and said so, on wave64 targets only, so an RDNA
-    # regression in them still fails.
+    # No native gfx942 path yet for these: the GEMM, the decode GEMV and
+    # attention have gfx950 ones (docs/history/33-cdna-gemm.md,
+    # 34-cdna-attention.md). Skipped and said so, on wave64 targets only, so
+    # an RDNA regression in them still fails.
     arch = current_arch()
-    no_cdna = {"attention"} if arch == "gfx950" else {"gemm", "decode", "attention"}
+    no_cdna = set() if arch == "gfx950" else {"gemm", "decode", "attention"}
     rows, failures = [], 0
     for c in cases:
         if get_target(arch).wave == 64 and c.group in no_cdna:

@@ -70,8 +70,9 @@ def _gpu_arch() -> str:
 
 #: What a kernel with no native CDNA path yet fails with on a wave64 target:
 #: hk-fragments' refusals (16-wide operand tiles, an accumulator cast into
-#: an operand -- attention, paged attention, hk.ops.gemm), and the library
-#: functions hk only has for RDNA3 (LDS granules, register staging, load_w4).
+#: an operand -- paged attention, the RDNA hk.ops.gemm; attention itself runs
+#: hk.ops.attn_cdna on gfx950), and the library functions hk only has for
+#: RDNA3 (LDS granules, register staging, load_w4).
 #: On such a target a test failing with one of these is reported as skipped,
 #: with the reason; every other failure is a failure.
 _NO_CDNA_PATH = (
