@@ -164,7 +164,9 @@ python -m hk.runtime.cocheck --bundle lib.so     # a host binary with an embedde
 
 It exits 1 if any kernel fails either gate. The wait scan is a linear walk,
 done twice for loops, so a report can be a false alarm, and a clean pass is
-only as good as that walk is for the kernel's control flow.
+only as good as that walk is for the kernel's control flow. gfx950's copies
+into LDS (`buffer_load … lds`) write no register but count on vmcnt, so they
+take their place in its queue ([chapter 34](history/34-cdna-attention.md)).
 
 ## Warming the cache
 

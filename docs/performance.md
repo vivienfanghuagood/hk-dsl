@@ -935,6 +935,32 @@ its copies the kernel runs 15% faster, and with C's store switched off it is
 level with hipBLASLt. The store's cost follows its bytes, and the pattern is a
 fifth of it.
 
+Chapter 34's copy descriptor (scalar, its range free of the K column) made
+this GEMM 1.2% faster: 1470 against 1452 TFLOP/s at 4096³ and 1549 against
+1530 at 8192³, the two shims built in alternating processes.
+
+### Attention: hk's own
+
+[gfx950's attention in hk](history/34-cdna-attention.md). `hk.ops.attn_cdna`
+is HipKittens' CDNA4 GQA schedule written in hk; `hk.attention` and
+`hk.ops.sdpa` run it on gfx950. bf16, (B, H, N, D), TFLOP/s counted as
+4·B·H·N²·D (halved under causal). Every arm is checked against fp32 first
+(and hk's against V = 1, exactly), then interleaved in one process, best of 7
+rounds; HipKittens built with ROCm 7.1, hk with 7.2.3:
+
+| B, H, H_KV, N, D | causal | hk | HipKittens | FlyDSL | torch SDPA | hk / best | hk / SDPA |
+|---|---|---|---|---|---|---|---|
+| 16, 64, 8, 1024, 128 | no / yes | 1056 / 739 | 978 / 681 | 1055 / 746 | 574 / 256 | 1.00x / 0.99x | 1.84x / 2.89x |
+| 16, 64, 8, 4096, 128 | no / yes | 1230 / 1107 | 1233 / 1091 | 1247 / 1122 | 690 / 431 | 0.99x / 0.99x | 1.78x / 2.57x |
+| 16, 64, 8, 8192, 128 | no / yes | 1259 / 1209 | 1277 / 1202 | 1283 / 1226 | 773 / 497 | 0.98x / 0.99x | 1.63x / 2.43x |
+| 1, 32, 8, 4096, 128 | no / yes | 1164 / 1104 | 1157 / 902 | 1178 / 1024 | 653 / 353 | 0.99x / 1.08x | 1.78x / 3.13x |
+| 16, 64, 8, 4096, 64 | no / yes | 938 / 857 | 939 / 804 | 942 / 862 | 724 / 539 | 1.00x / 0.99x | 1.30x / 1.59x |
+
+Round-to-round spreads are 0.3-2.5%, 6-16% for every arm at N = 1024 and at
+one batch. What is left is per step: hk's step is 2% slower than FlyDSL's,
+and its fixed cost a workgroup 10% lower
+([the chapter](history/34-cdna-attention.md#where-it-stands)).
+
 ### HipKittens' CDNA4 GEMM and GQA forward, as hk ops
 
 [CDNA3 and CDNA4, part 5](history/29-cdna.md#part-5-hipkittens-cdna4-kernels-behind-hks-engine-layer);

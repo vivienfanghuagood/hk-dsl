@@ -88,7 +88,7 @@ The longer argument is in [why this exists](docs/README.md#why-this-exists).
 |---|---|---|
 | gfx1100, RDNA3 | Radeon PRO W7900 / W7900D, RX 7900 | primary: every kernel and every patch; every number below unless marked |
 | gfx1201, RDNA4 | Radeon RX 9070 | every `hk.ops` kernel compiles and passes the gates; not run on hardware |
-| gfx950, CDNA4 | Instinct MI355X | the elementwise, norm, fused, quantize, rows-by-index, GEMM and decode GEMV kernels run and pass, the GEMM as hk's own kernels; GQA forward through HipKittens' CDNA4 kernels, as hk ops |
+| gfx950, CDNA4 | Instinct MI355X | the elementwise, norm, fused, quantize, rows-by-index, GEMM, decode GEMV and attention kernels run and pass, the GEMM and attention as hk's own kernels; paged attention not yet |
 | gfx942, CDNA3 | Instinct MI300X | compiles; none was available to run on |
 
 On one MI355X, against torch: hk's fused kernels are ahead (fused add +
@@ -97,10 +97,13 @@ plain elementwise and norm kernels are mostly behind (0.59-1.05x). Its own
 GEMM, HipKittens' CDNA4 schedule written in hk, runs 1453-1465 TFLOP/s at
 4096³ and 1566 at 8192³, 0.97-0.99x the best of hipBLASLt, FlyDSL and
 HipKittens. Routed with two more hk kernels, it is at 0.9x or better at 108
-of 122 Llama-3-8B and Qwen3-8B linear shapes, M from 1 to 8192. HipKittens' GQA
-forward, wrapped, runs 1.28-2.62x torch SDPA, level with FlyDSL. Status:
-[design/cdna.md](docs/design/cdna.md); record: [chapter 29](docs/history/29-cdna.md),
-[chapter 33](docs/history/33-cdna-gemm.md); numbers:
+of 122 Llama-3-8B and Qwen3-8B linear shapes, M from 1 to 8192. Its own flash
+attention forward (GQA, bf16, head dim 64 and 128, causal or not), HipKittens'
+CDNA4 schedule written in hk, runs 0.98-1.08x the best of HipKittens and FlyDSL
+at ten shapes and 1.30-3.13x torch SDPA; `hk.attention` and the SDPA drop-in run
+it. Status: [design/cdna.md](docs/design/cdna.md); record:
+[chapter 29](docs/history/29-cdna.md), [chapter 33](docs/history/33-cdna-gemm.md),
+[chapter 34](docs/history/34-cdna-attention.md); numbers:
 [performance](docs/performance.md#cdna-on-one-mi355x).
 
 ## Install

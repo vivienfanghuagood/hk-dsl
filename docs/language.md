@@ -83,7 +83,11 @@ tensor is `(rows, cols)` (`include/pyutils/hk_bind.cuh`).
   `t` gives, `hk.SV` an LDS vector. A tile's `frag` is the matrix-core
   fragment it is laid out in, where that is not 16x16; left as `None`, the
   `hk-fragments` pass sets it on the operand tiles of a target that needs one
-  (gfx950's bf16 operand is 16x32) ([IR](ir.md#passes)).
+  (gfx950's bf16 operand is 16x32) ([IR](ir.md#passes)). On gfx950 an
+  accumulator may be `frag=(32, 32)` (the 32x32x16 MFMA), and an operand may
+  name its lane run, `frag=(16, 32, 4)`: a lane holding two runs of 4 rows
+  rather than one of 8, which is what a 32x32 accumulator's lane holds (see
+  [below](#an-accumulator-read-as-an-operand-gfx950)).
 
 ### Register strips
 
@@ -203,6 +207,42 @@ counts two barriers where one would do outside. gfx950's GEMM
 (`hk.ops.gemm_cdna`, [chapter 33](history/33-cdna-gemm.md)) is built from
 these.
 
+### An accumulator read as an operand (gfx950)
+
+Attention's P comes out of an MFMA as an accumulator and P·V wants it as an
+operand. On gfx950 that needs no data movement if the scores are kept
+transposed (Sᵀ = K·Qᵀ, Oᵀ += Vᵀ·Pᵀ) and P is read in place:
+
+```python
+T_S = hk.RT(hk.fp32, 64, 32, "col", frag=(32, 32))       # Sᵀ, an accumulator
+T_P = hk.RT(hk.bf16, 64, 32, "col", frag=(16, 32, 4))    # Pᵀ, an operand
+S = hk.zeros(T_S)
+S += k_tile @ q_tile.T
+S.subtile(32, 1).exp2_()               # rows 32-63: the same registers
+grow = m_new.any_above(m, 8.0)         # one int a wave: did any lane's max jump
+S.as_operand(hk.bf16, into=P)          # converts, no register moves
+hk.arch.pin(P, m)                      # P and m stay in this phase
+O += v_tile.T @ P                      # V read with P's lane run
+```
+
+- `Tile.as_operand(dtype, into=)` reads a col-layout accumulator (32x32 or
+  16x16) as the stride-4 operand fragment of the same rows, converting fp32
+  to bf16 or fp16 on the way. The reduction index then runs down the rows in
+  the accumulator's order; `hk-fragments` gives the MMA's other operand the
+  same stride, so the product is unchanged.
+- `Tile.subtile(rows, index)` is rows `[index*rows, (index+1)*rows)` of a
+  register tile as a tile: an alias, so a write into it writes the tile.
+  `index` is a Python int.
+- `Vec.any_above(other, threshold)` is 1 in every lane if any lane's entry
+  exceeds `other`'s by more than `threshold`: a wave vote, usable as a
+  branch condition or a factor.
+- `hk.arch.pin(*values)` holds register values to the program point: their
+  definitions stay above it and their uses below. LLVM sinks a value to its
+  use; in a schedule of phases a barrier apart that moves work into the other
+  phase, which `sched_barrier` (a fence for the scheduler only) does not stop.
+
+`hk.ops.attn_cdna` is built from these ([chapter 34](history/34-cdna-attention.md)).
+
 ## Rows by index, atomics, random numbers
 
 What a mixture-of-experts GEMM, an embedding, a KV cache write, a split-K
@@ -262,7 +302,7 @@ shows `for`, `if` and `while` on device values, carried scalars, and the
   - `hk.arch`: block, warp and lane ids, `target()` (the target being traced
     for, for a body whose tiling depends on it), `barrier(drain=False)`,
     `pingpong(behind)`, `sched_barrier`, `sched_group_barrier` and
-    `SCHED_CLASSES`, `setprio`, `vm_wait`, `wg_arrive`;
+    `SCHED_CLASSES`, `setprio`, `pin`, `vm_wait`, `wg_arrive`;
   - `hk.lds`: `alloc`, `shared_vec` and `alloc_vec`, `reserve`, `wait_for`;
   - `hk.math`: elementwise functions, and `add`/`mul`/... with `into=`;
   - `hk.group(n)`: workgroup loads (`wait=False` on gfx950) and their

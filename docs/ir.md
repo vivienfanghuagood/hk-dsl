@@ -37,7 +37,9 @@ That is the `row_sumsq` kernel from [the language guide](language.md#kernels-and
 
 * **Types**: `!hk.rt<f32, 16x64, row>` register tile (on gfx950,
   `!hk.rt<bf16, 16x64, row, frag 16x32>` names the matrix-core fragment it is
-  laid out in), `!hk.rt<f32, 1x1024, strip<8>>` register strip (each lane owning 8-element runs of a row;
+  laid out in; `frag 32x32` is the 32x32x16 MFMA's accumulator, and
+  `frag 16x32 stride 4` the operand whose lane holds two runs of 4 rows, the
+  rows a 32x32 accumulator's lane holds -- `kittens::rt_16x32_4`), `!hk.rt<f32, 1x1024, strip<8>>` register strip (each lane owning 8-element runs of a row;
   `kittens::rs`), `!hk.st<bf16, 128x64, 2>` LDS tile (a double buffer),
   `!hk.rv<..., col>` register vector (a strip's carries the strip),
   `!hk.sv`, `!hk.gl<bf16>` global, `!hk.coord<tile|element>`,
@@ -70,6 +72,23 @@ In the dump above the kernel carries `hk.kernel`, `hk.arch`, `hk.warps` and
 with `hk.grid_of`. The destination form is the IR's spelling of
 [tiles are buffers](language.md#values-and-operators).
 
+gfx950's attention added four ops ([chapter 34](history/34-cdna-attention.md)):
+
+```mlir
+%h = hk.rt_subtile %s[1] : !hk.rt<f32, 64x32, col, frag 32x32> -> !hk.rt<f32, 32x32, col, frag 32x32>
+hk.as_operand %s into %p : !hk.rt<f32, 64x32, col, frag 32x32> into !hk.rt<bf16, 64x32, col, frag 16x32 stride 4>
+%g = hk.any_above %m_new, %m, 8.000000e+00 : !hk.rv<...>, !hk.rv<...>
+hk.pin %p, %m : !hk.rt<bf16, 64x32, col, frag 16x32 stride 4>, !hk.rv<...>
+```
+
+`hk.rt_subtile` is an alias (`kittens::subtile_inplace`; hk-lds-pipeline
+takes a read of it as a read of the tile and refuses an LDS load into it);
+`hk.as_operand` reads a col-layout accumulator as the stride-4 operand of the
+same rows, converting to 16 bits (its verifier names the one operand type an
+accumulator has); `hk.any_above` is a wave vote, an `i32`; `hk.pin` binds
+each value (`kittens::lds_bind`), so its definition stays above and its uses
+below.
+
 ## Passes
 
 * **Passes**, in C++ (`mlir/lib/Dialect/HK/Transforms`), run by `k.trace()` as
@@ -79,8 +98,10 @@ with `hk.grid_of`. The destination form is the IR's spelling of
     condition from `warp_id`;
   - `hk-fragments`: on a target whose bf16 matrix-core operand is not 16x16
     (gfx950's is 16x32), names the fragment in the type of every tile an MMA
-    reads, and of every tile tied to one by a cast, transpose or broadcast;
-    a no-op on RDNA and gfx942;
+    reads, and of every tile tied to one by a cast, transpose, broadcast or
+    subtile; an MMA into a 32x32 accumulator gives its operands the 32x16
+    or 16x32 fragment that MFMA takes, and the stride of the operand read off
+    an accumulator to the other one; a no-op on RDNA and gfx942;
   - `hk-lds-alloc`: LDS offsets, against the target's limit;
   - `hk-lds-pipeline`: every `lgkmcnt` derived, every asynchronously loaded
     tile proven waited for before it is read, loops walked until they reach
@@ -150,6 +171,12 @@ wait — you cannot forget to. `k.source()` returns this C++ with the pybind
 scaffold; `k.source("torch")`, `k.source("bare")` and `k.source("device")`
 (the device-only code object's, with its argument-layout table) are the
 other three (`python/hk/codegen/scaffold.py`).
+
+On gfx950 an LDS tile's C++ layout (its `st_shape`, the swizzle) is chosen by
+the fragment of what is read out of it, and per allocation: attention's K and
+V blocks are one `!hk.st<bf16, 64x128>`, but K is read as row operands and V
+transposed into the stride-4 operand, so each allocation is declared in its
+own shape and a `shared_at` of either takes a reference of that type.
 
 ## Value names in the dump
 

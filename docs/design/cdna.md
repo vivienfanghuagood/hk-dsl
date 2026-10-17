@@ -26,17 +26,19 @@ What has landed since the assessment, in the order of section 6:
 | 8. occupancy timed | the gfx950 register model's steps measured on the part, at the model's boundaries; gfx950 `verified=True` | `tools/cdna-probes/occupancy_timed.py` |
 | 9. hk's own GEMM | `g.load(wait=False)` (the DMA left in flight, `rows=` limit) and `g.wait_for` with derived vmcnts; `hk.arch.pingpong`; cross-warp copy hazards checked by barrier count, so named reads may cross a barrier. HipKittens' CDNA4 GEMM written with them (`hk.ops.gemm_cdna`), level with HipKittens; a four-warp kernel, two-launch split-K for both, and the decode GEMV on gfx950, routed by a measured table (108 of 122 Llama/Qwen linear points at 0.9x the best baseline or better): `hk.ops.gemm.matmul` has a gfx950 form ([chapter 33](../history/33-cdna-gemm.md)) | `group.py`, `arch.py`, `LdsPipeline.cpp`, `hk/cdna.cuh`, `hk.ops.gemm_cdna{,_dp}`, `hk/tuned/routes_gemm_gfx950.json` |
 | 10. torch's stream | the CDNA pybind entry point takes the stream and `Kernel.__call__` passes torch's current one, so every hk op on gfx950 is ordered against torch's work and CUDA graphs capture it (0.2 µs a call); before, it launched on the null stream and a capture came out empty | `scaffold.takes_stream`, `pyutils/hk_bind.cuh`, `tests/hk/gpu/test_stream_cdna.py` |
+| 11. hk's own attention | 32x32 accumulators, `Tile.as_operand` (the stride-4 operand fragment, `rt_16x32_4`), `Tile.subtile`, `Vec.any_above`, `hk.arch.pin`, LDS shapes per allocation. HipKittens' CDNA4 GQA forward written with them (`hk.ops.attn_cdna`), bf16, D 64/128, causal or not, any N: 0.98-1.08x the stronger of HipKittens and FlyDSL at the ten measured points, 1.30-3.13x SDPA; `hk.attention` and `hk.ops.sdpa` run it on gfx950 ([chapter 34](../history/34-cdna-attention.md)) | `values.py`, `arch.py`, `Fragments.cpp`, `HKToCpp.cpp`, `hk/cdna.cuh`, `hk.ops.attn_cdna`, `hk.ops.attn` |
 
 Builds now (`tools/cdna-probes/coverage.py --ops`, device scaffold, spill gate): **494/506
 on gfx950 and 494/506 on gfx942**, from 196/410 and 195/410. What fails names its reason at
-trace time: attention and paged (16-column operand tiles, an accumulator cast into
-an operand, `lds_granules`), and the RDNA form of `hk.ops.gemm` (32x16 operand tiles,
-register staging), which gfx950 no longer runs: `hk.ops.gemm.matmul` routes to hk's gfx950
-GEMMs, and the decode GEMV builds there since the shim gained fp32 register-LDS tile copies.
-On the MI355X (ROCm 7.2.3) the GPU tier is 608 passed, 170 skipped, 0 failed (from 350/190
-at `3b6c6ce` and 471/216 at `be52996`): the skips are the kernels above, reported with their
-reason ([testing](../testing.md#running-each-tier)). `examples/validate.py` passes every case
-hk has a native CDNA path for, and skips attention.
+trace time: the RDNA attention kernels and paged attention (16-column operand tiles, an
+accumulator cast into an operand, `lds_granules`), and the RDNA form of `hk.ops.gemm`
+(32x16 operand tiles, register staging). gfx950 runs neither RDNA form:
+`hk.ops.gemm.matmul` routes to hk's gfx950 GEMMs and `hk.attention` to `hk.ops.attn_cdna`,
+and the decode GEMV builds there since the shim gained fp32 register-LDS tile copies.
+On the MI355X (ROCm 7.2.3) the GPU tier is 658 passed, 127 skipped, 0 failed (from 615/170
+at `535be1c`, 350/190 at `3b6c6ce` and 471/216 at `be52996`): the skips are the kernels above,
+reported with their reason ([testing](../testing.md#running-each-tier)). `examples/validate.py`
+passes every case on gfx950, attention included.
 
 ## Summary of the assessment (at `fdb87f1`)
 
@@ -458,6 +460,8 @@ Where hk adds something on CDNA:
    HipKittens untouched.
 6. ~~An arch check at first launch (raise, don't segfault).~~ Done.
 7. ~~MFMA fragment shape as a field of `!hk.rt` rather than a translator heuristic;~~
-   done. Next: 32x32x16 and fp8 `mfma_scale` fragments, and a CDNA path for attention
-   (operands loaded from LDS in their own fragment, as include/cdna4's GQA does).
+   done. ~~32x32x16 fragments and a CDNA path for attention.~~ Done: 32x32 accumulators,
+   the stride-4 operand read off one, and `hk.ops.attn_cdna`
+   ([chapter 34](../history/34-cdna-attention.md)). Next: fp8 `mfma_scale` fragments, and
+   paged prefill and split-KV decode on gfx950.
 8. ~~Time the unified-file occupancy on the part and set `verified=True`.~~ Done for gfx950.
