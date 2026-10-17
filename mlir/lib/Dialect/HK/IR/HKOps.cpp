@@ -492,11 +492,23 @@ HK_UNARY_VERIFY(StepOp)
 // Reductions and broadcasts
 //===----------------------------------------------------------------------===//
 
+/// A strided operand fragment's rows and columns are the reduction index
+/// permuted: a vector off it would name the wrong rows.
+static LogicalResult noStrided(Operation *op, RegTileType t) {
+  if (t.getFragStride())
+    return op->emitOpError()
+           << t << " is laid out as an mma operand with its reduction index "
+              "permuted; reduce or broadcast over the tile it came from";
+  return success();
+}
+
 template <typename OpT>
 static LogicalResult verifyReduce(OpT op, bool colKind) {
   if (failed(verifyDest(op, op.getDst(), op.getResult())))
     return failure();
   auto src = op.getSrc().getType();
+  if (failed(noStrided(op, src)))
+    return failure();
   auto want = RegVecType::get(op.getContext(), src.getElementType(),
                               src.getRows(), src.getCols(), src.getColLayout(),
                               colKind, false, src.getFragRows(),
@@ -528,6 +540,8 @@ static LogicalResult verifyBroadcast(OpT op, bool rowOp) {
     return failure();
   auto src = op.getSrc().getType();
   auto vec = op.getVec().getType();
+  if (failed(noStrided(op, src)))
+    return failure();
   // A row op takes one value per row: the column vector row_sum gives.
   if (vec.getColKind() != rowOp)
     return op.emitOpError() << "takes a " << (rowOp ? "col" : "row")
@@ -591,6 +605,8 @@ static LogicalResult verifyFill(OpT op, bool columns) {
     return failure();
   if (destType(op.getDst(), op.getResult()) != op.getSrc().getType())
     return op.emitOpError("a fill keeps shape, layout and element type");
+  if (failed(noStrided(op, op.getSrc().getType())))
+    return failure();
   // A strip fills by column only: its rows are not lanes.
   if (!columns)
     return noStrip(op, op.getSrc().getType());
@@ -638,9 +654,95 @@ LogicalResult CastOp::verify() {
   if (src.getRows() != dst.getRows() || src.getCols() != dst.getCols() ||
       src.getColLayout() != dst.getColLayout() || src.getRun() != dst.getRun())
     return emitOpError("a cast keeps shape and layout");
-  if (src.fragR() != dst.fragR() || src.fragC() != dst.fragC())
+  if (src.fragR() != dst.fragR() || src.fragC() != dst.fragC() ||
+      src.fragS() != dst.fragS())
     return emitOpError() << "a cast keeps the fragment: " << src << " into "
                          << dst << " is a relayout across lanes, not a cast";
+  return success();
+}
+
+/// The accumulator fragments whose lanes hold exactly what an operand
+/// fragment of the same tile holds, with the reduction index running down
+/// the rows in another order: a 32x32 accumulator's lane holds rows
+/// 4(l/32) + 8k + s, which is a 16x32 stride-4 operand two fragments a
+/// 32-row band; a 16x16 one's, rows 4(l/16) + s, which stacked in pairs is
+/// a 32x16 stride-4 operand. Returns the operand fragment, or nothing.
+static std::optional<std::pair<unsigned, unsigned>>
+operandOfAccumulator(RegTileType src) {
+  if (src.getFragStride())
+    return std::nullopt;
+  if (src.fragR() == 32 && src.fragC() == 32)
+    return std::make_pair(16u, 32u);
+  if (src.fragR() == 16 && src.fragC() == 16)
+    return std::make_pair(32u, 16u);
+  return std::nullopt;
+}
+
+LogicalResult AsOperandOp::verify() {
+  if (failed(verifyDest(*this, getDst(), getResult())))
+    return failure();
+  auto src = getSrc().getType();
+  auto dst = cast<RegTileType>(destType(getDst(), getResult()));
+  if (failed(noStrip(*this, src)))
+    return failure();
+  // fp32 -> 16-bit converts each element on the way (rounding to nearest
+  // even); a 16-bit source is read as it is.
+  bool fromF32 = src.getElementType().isF32();
+  if (!src.getColLayout() ||
+      (!fromF32 && dtypeBits(src.getElementType()) != 16))
+    return emitOpError() << "reads a col-layout accumulator tile, fp32 or "
+                            "16-bit (an MFMA result, or its cast), not "
+                         << src;
+  if (dtypeBits(dst.getElementType()) != 16 ||
+      (!fromF32 && dst.getElementType() != src.getElementType()))
+    return emitOpError() << "makes a bf16 or fp16 operand of " << src
+                         << ", not " << dst;
+  auto op = operandOfAccumulator(src);
+  if (!op)
+    return emitOpError() << src
+                         << " is not in an accumulator fragment (16x16 or "
+                            "32x32)";
+  auto want = RegTileType::get(getContext(), dst.getElementType(),
+                               src.getRows(), src.getCols(), true, op->first,
+                               op->second, 0, 4);
+  if (src.getRows() % op->first || dst != want)
+    return emitOpError() << src << " read as an operand is " << want
+                         << (src.getRows() % op->first
+                                 ? ", which needs rows in multiples of " +
+                                       std::to_string(op->first)
+                                 : std::string());
+  return success();
+}
+
+LogicalResult RegSubtileOp::verify() {
+  auto src = getSrc().getType();
+  auto dst = getResult().getType();
+  if (failed(noStrip(*this, src)))
+    return failure();
+  if (dst.getElementType() != src.getElementType() ||
+      dst.getCols() != src.getCols() ||
+      dst.getColLayout() != src.getColLayout() ||
+      dst.getFragRows() != src.getFragRows() ||
+      dst.getFragCols() != src.getFragCols() ||
+      dst.getFragStride() != src.getFragStride())
+    return emitOpError() << "a subtile keeps the element type, columns, "
+                            "layout and fragment of " << src;
+  if (!dst.getRows() || src.getRows() % dst.getRows() ||
+      dst.getRows() % dst.fragR())
+    return emitOpError() << dst.getRows() << " rows: a whole number of "
+                         << dst.fragR() << "-row fragments that tiles the "
+                         << src.getRows() << " rows of " << src;
+  if (getIndex() < 0 ||
+      uint64_t(getIndex()) >= uint64_t(src.getRows() / dst.getRows()))
+    return emitOpError() << "subtile " << getIndex() << " of "
+                         << src.getRows() / dst.getRows();
+  return success();
+}
+
+LogicalResult AnyAboveOp::verify() {
+  auto a = getLhs().getType(), b = getRhs().getType();
+  if (!a.sameCpp(b.plain()) || !a.getElementType().isF32())
+    return emitOpError("compares two fp32 vectors of one type");
   return success();
 }
 
@@ -710,10 +812,29 @@ static LogicalResult verifyMma(OpT op, MmaSpec s) {
     return op.emitOpError("reduction extents disagree");
   unsigned rows = s.dRowsFromACols ? a.getCols() : a.getRows();
   unsigned cols = s.dColsFromBRows ? b.getRows() : b.getCols();
+  // The accumulator is 16x16 fragments (unset), or 32x32 for gfx950's
+  // 32x32x16 MFMA, whose operands are then 32x16 (row) / 16x32 (col).
+  bool big = c.getFragRows() == 32 && c.getFragCols() == 32 &&
+             !c.getFragStride();
   auto want = RegTileType::get(op.getContext(), c.getElementType(), rows, cols,
-                               true, 0, 0);
+                               true, big ? 32 : 0, big ? 32 : 0);
   if (c != want || destType(op.getDst(), op.getResult()) != want)
     return op.emitOpError() << "A " << a << " times B " << b << " is " << want;
+  if (big)
+    for (RegTileType t : {a, b})
+      if (t.hasFrag() &&
+          (t.getColLayout() ? t.fragR() != 16 || t.fragC() != 32
+                            : t.fragR() != 32 || t.fragC() != 16))
+        return op.emitOpError()
+               << "a 32x32 accumulator takes 32x16 (row) and 16x32 (col) "
+                  "operand fragments, not "
+               << t;
+  if (a.hasFrag() && b.hasFrag() && a.fragS() != b.fragS())
+    return op.emitOpError() << "A's lane run is " << a.fragS() << " and B's "
+                            << b.fragS()
+                            << ": the MFMA pairs A and B element by element "
+                               "along the reduction, so both are laid out "
+                               "with one stride";
   return success();
 }
 

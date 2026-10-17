@@ -17,6 +17,15 @@ def HK_RegTileType : HK_Type<"RegTile", "rt"> {
     rt<bf16, 16, 64, row, rt_16x32>. Unset (0x0) is the 16x16 default;
     hk-fragments sets it on the operand tiles of such a target.
 
+    `frag 16x32 stride 4` names a fragment whose lane runs along the
+    reduction axis are 4 elements long rather than the shape's own (8 for
+    16x32 and 32x16, 4 for 16x16 and 32x32): include/cdna4's rt_16x32_4.
+    A col-layout 16x32/4 operand holds, in each lane, exactly the rows a
+    32x32 MFMA accumulator holds, so an accumulator is that operand with its
+    reduction index permuted (`hk.as_operand`), and an MMA whose other
+    operand is laid out with the same permutation computes the same
+    product. Unset (0) is the shape's own stride.
+
     `!hk.rt<f32, 1x1024, strip<8>>` is a strip, kittens::rs<T, rows, cols, 8>:
     the layout a row kernel wants rather than the one WMMA gives, each lane
     owning `run` contiguous elements of a row per 32*run-column chunk. Rows
@@ -27,14 +36,16 @@ def HK_RegTileType : HK_Type<"RegTile", "rt"> {
   let parameters = (ins "::mlir::Type":$elementType, "unsigned":$rows,
                         "unsigned":$cols, "bool":$colLayout,
                         "unsigned":$fragRows, "unsigned":$fragCols,
-                        DefaultValuedParameter<"unsigned", "0">:$run);
+                        DefaultValuedParameter<"unsigned", "0">:$run,
+                        DefaultValuedParameter<"unsigned", "0">:$fragStride);
   let builders = [
     TypeBuilder<(ins "::mlir::Type":$elementType, "unsigned":$rows,
                      "unsigned":$cols, "bool":$colLayout,
                      "unsigned":$fragRows, "unsigned":$fragCols,
-                     CArg<"unsigned", "0">:$run), [{
+                     CArg<"unsigned", "0">:$run,
+                     CArg<"unsigned", "0">:$fragStride), [{
       return $_get($_ctxt, elementType, rows, cols, colLayout, fragRows,
-                   fragCols, run);
+                   fragCols, run, fragStride);
     }]>
   ];
   let skipDefaultBuilders = 1;
@@ -50,14 +61,22 @@ def HK_RegTileType : HK_Type<"RegTile", "rt"> {
     /// The fragment's rows and cols, 16x16 where unset.
     unsigned fragR() const { return hasFrag() ? getFragRows() : 16; }
     unsigned fragC() const { return hasFrag() ? getFragCols() : 16; }
-    RegTileType withFrag(unsigned r, unsigned c) const {
+    /// A fragment shape's own lane run along the reduction axis.
+    static unsigned naturalStride(unsigned r, unsigned c) {
+      return r == c ? 4 : 8;
+    }
+    /// The lane run of this tile's fragment.
+    unsigned fragS() const {
+      return getFragStride() ? getFragStride() : naturalStride(fragR(), fragC());
+    }
+    RegTileType withFrag(unsigned r, unsigned c, unsigned s = 0) const {
       return RegTileType::get(getContext(), getElementType(), getRows(),
-                              getCols(), getColLayout(), r, c, getRun());
+                              getCols(), getColLayout(), r, c, getRun(), s);
     }
     RegTileType transposed() const {
       return RegTileType::get(getContext(), getElementType(), getCols(),
                               getRows(), !getColLayout(), getFragCols(),
-                              getFragRows());
+                              getFragRows(), 0, getFragStride());
     }
   }];
 }

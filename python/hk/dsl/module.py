@@ -20,7 +20,7 @@ def mlir_type(t: Type) -> ir.Type:
     """The hk dialect type for an hk type."""
     e = lambda d: M.element(d.name)  # noqa: E731
     if isinstance(t, RegTileType):
-        f = f", frag {t.frag[0]}x{t.frag[1]}" if t.frag else ""
+        f = f", frag {t.frag_spelling}" if t.frag else ""
         s = f"!hk.rt<{e(t.dtype)}, {t.rows}x{t.cols}, {t.layout_spelling}{f}>"
     elif isinstance(t, SharedTileType):
         n = f", {t.count}" if t.count != 1 else ""

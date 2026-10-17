@@ -147,6 +147,23 @@ def pingpong(behind) -> Iterator[None]:
         hkd.PingPongEndOp(i1(behind), loc=t.loc())
 
 
+def pin(*values) -> None:
+    """Keep these register tiles' and vectors' values here: what computes
+    them stays above this point and what reads them below. No instruction.
+    `sched_barrier` fences only the scheduler; LLVM still sinks a value's
+    computation to its first use, across barriers and into another phase of
+    a hand-written schedule. A value with an LDS read in flight is refused,
+    as any read of it is, until it is waited for."""
+    from .values import Tile, Vec  # noqa: PLC0415
+
+    if not values:
+        raise TypeError("pin() needs the tiles or vectors to keep here")
+    for x in values:
+        if not isinstance(x, (Tile, Vec)):
+            raise TypeError(f"pin takes register tiles and vectors, got {x!r}")
+    hkd.PinOp([x.v for x in values], loc=B.current().loc())
+
+
 def setprio(level: int) -> None:
     """`s_setprio`: this wave's issue priority, 0..3."""
     if not isinstance(level, int) or not 0 <= level <= 3:
@@ -179,5 +196,5 @@ def wg_arrive(counter, expected: Scalar) -> Int:
 
 
 __all__ = ["block_idx", "warp_id", "lane_id", "barrier", "sched_barrier",
-           "sched_group_barrier", "SCHED_CLASSES", "pingpong", "setprio",
+           "sched_group_barrier", "SCHED_CLASSES", "pingpong", "pin", "setprio",
            "vm_wait", "wg_arrive"]

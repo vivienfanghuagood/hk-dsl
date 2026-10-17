@@ -81,6 +81,16 @@ class ScalarType(Type):
         return self.dtype.cpp
 
 
+def natural_stride(rows: int, cols: int) -> int:
+    """A fragment shape's own lane run along the reduction: 4 for the square
+    16x16 and 32x32, 8 for 16x32 and 32x16 (include/cdna4 rt_shape.cuh)."""
+    return 4 if rows == cols else 8
+
+
+#: include/cdna4's fragments with a lane run other than their shape's own.
+STRIDED_FRAGS = ((32, 32, 8), (32, 16, 4), (16, 32, 4))
+
+
 @dataclass(frozen=True)
 class RegTileType(Type):
     """A register tile: rt<T, rows, cols, layout>, or a strip.
@@ -102,9 +112,12 @@ class RegTileType(Type):
     layout: str = "row"
     #: The matrix-core fragment the tile is laid out in, (rows, cols), where
     #: it is not the 16x16 one: gfx950's bf16 MFMA operand is (16, 32) in the
-    #: row layout and (32, 16) in the col. None leaves it to the hk-fragments
-    #: pass, which sets it on the operand tiles of such a target.
-    frag: Optional[Tuple[int, int]] = None
+    #: row layout and (32, 16) in the col, and (32, 32) is the 32x32x16
+    #: MFMA's accumulator. None leaves it to the hk-fragments pass, which
+    #: sets it on the operand tiles of such a target. (rows, cols, stride)
+    #: names a lane run along the reduction other than the shape's own:
+    #: (16, 32, 4) is the operand an accumulator is read as (Tile.as_operand).
+    frag: Optional[Tuple[int, ...]] = None
     #: A strip's run (layout "strip"); 0 for a WMMA-layout tile.
     run: int = 0
 
@@ -118,12 +131,24 @@ class RegTileType(Type):
             raise ValueError(f"run={self.run} is a strip's; a {self.layout} tile "
                              f"has the lane layout WMMA gives it")
         if self.frag is not None:
-            fr, fc = self.frag
+            if len(self.frag) not in (2, 3):
+                raise ValueError(f"frag={self.frag!r}: (rows, cols) or "
+                                 f"(rows, cols, stride)")
+            fr, fc = self.frag[:2]
             if fr <= 0 or fc <= 0 or fr % 16 or fc % 16 or self.rows % fr or self.cols % fc:
                 raise ValueError(
                     f"register tile {self.rows}x{self.cols} in {fr}x{fc} "
                     f"fragments: a fragment is a multiple of 16 each way and "
                     f"tiles the register tile")
+            if len(self.frag) == 3:
+                s = self.frag[2]
+                if s == natural_stride(fr, fc):
+                    # One spelling per type: the shape's own stride is unset.
+                    object.__setattr__(self, "frag", (fr, fc))
+                elif (fr, fc, s) not in STRIDED_FRAGS:
+                    raise ValueError(
+                        f"frag={self.frag!r}: the strided fragments are "
+                        f"{', '.join(map(str, STRIDED_FRAGS))}")
         # fp8 is let through here and judged per kernel by the hk-verify pass, which
         # knows the target: gfx1201 has fp8 WMMA tiles, gfx1100 has none.
         if self.dtype.bits < 16 and self.dtype not in FP8:
@@ -169,8 +194,21 @@ class RegTileType(Type):
         """The layout as the dialect writes it."""
         return f"strip<{self.run}>" if self.strip else self.layout
 
+    @property
+    def frag_stride(self) -> int:
+        """The fragment's lane run when it is not the shape's own, else 0."""
+        return self.frag[2] if self.frag and len(self.frag) == 3 else 0
+
+    @property
+    def frag_spelling(self) -> str:
+        """`16x32`, or `16x32 stride 4`, as the dialect writes the fragment."""
+        if not self.frag:
+            return ""
+        s = f" stride {self.frag_stride}" if self.frag_stride else ""
+        return f"{self.frag[0]}x{self.frag[1]}{s}"
+
     def __repr__(self) -> str:
-        f = f",frag {self.frag[0]}x{self.frag[1]}" if self.frag else ""
+        f = f",frag {self.frag_spelling}" if self.frag else ""
         return f"rt<{self.dtype},{self.rows}x{self.cols},{self.layout_spelling}{f}>"
 
     @property
@@ -181,7 +219,8 @@ class RegTileType(Type):
         if self.strip:
             return (f"kittens::rs<{self.dtype.cpp}, {self.rows}, {self.cols}, "
                     f"{self.run}>")
-        f = (f", kittens::ducks::rt_shape::rt_{self.frag[0]}x{self.frag[1]}"
+        s = f"_{self.frag_stride}" if self.frag_stride else ""
+        f = (f", kittens::ducks::rt_shape::rt_{self.frag[0]}x{self.frag[1]}{s}"
              if self.frag else "")
         return (
             f"kittens::rt<{self.dtype.cpp}, {self.rows}, {self.cols}, "
@@ -193,7 +232,7 @@ class RegTileType(Type):
             raise TypeError(f"{self!r} is a strip; it has no transpose")
         return RegTileType(
             self.dtype, self.cols, self.rows, "col" if self.layout == "row" else "row",
-            (self.frag[1], self.frag[0]) if self.frag else None,
+            (self.frag[1], self.frag[0], *self.frag[2:]) if self.frag else None,
         )
 
 
@@ -483,9 +522,10 @@ class RegVecType(Type):
         """
         # A strip's col_vec is rs_cv<T, rows>, its row_vec rs<T, 1, cols,
         # run>: the run is part of the row_vec's type and not the col_vec's.
+        # include/cdna4's rv carries the tile's fragment shape.
         run = self.tile.run if self.kind == "row" else 0
         return (self.dtype, self.length, self.kind, self.tile.layout, run,
-                self.uniform)
+                self.tile.frag, self.uniform)
 
     def __eq__(self, other) -> bool:
         if not isinstance(other, RegVecType):

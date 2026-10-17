@@ -73,3 +73,13 @@ def test_gfx9_stores_count_on_vmcnt():
                  "s_waitcnt vmcnt(1)", "v_cvt_f32_f16_e32 v18, v16")
     assert not wait_hazards(code, arch="gfx950")    # the store is the one left
     assert wait_hazards(code, arch="gfx1100")       # stores have their own counter there
+
+
+def test_copies_into_lds_count_on_vmcnt():
+    """Attention's prologue: Q into registers, then K's and V's blocks into
+    LDS. vmcnt(2) leaves the two copies in flight and Q landed."""
+    q = "buffer_load_dwordx4 v[30:33], v34, s[40:43], 0 offen"
+    dma = "buffer_load_dwordx4 v216, s[20:23], 0 offen lds"
+    read = "v_and_b32_e32 v59, 0xffff0000, v31"
+    assert not wait_hazards(_code(q, dma, dma, "s_waitcnt vmcnt(2)", read), arch="gfx950")
+    assert wait_hazards(_code(q, dma, dma, "s_waitcnt vmcnt(3)", read), arch="gfx950")

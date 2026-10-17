@@ -88,3 +88,52 @@ func.func @rows_on_a_waited_copy(%g: !hk.gl<bf16>, %i: !hk.coord<element>, %n: i
   hk.group_load %g[%i] rows %n into %s {threads = 512 : i64} : !hk.gl<bf16>, !hk.coord<element> into !hk.st<bf16, 128x64>
   return
 }
+
+// -----
+
+// expected-error@+1 {{the strided fragments are 32x32 stride 8, 32x16 stride 4 and 16x32 stride 4}}
+func.func @unknown_stride(%t: !hk.rt<bf16, 64x32, col, frag 16x32 stride 2>) {
+  return
+}
+
+// -----
+
+func.func @operand_of_a_row_tile(%s: !hk.rt<f32, 64x32, row, frag 32x32>,
+                                 %p: !hk.rt<bf16, 64x32, col, frag 16x32 stride 4>) {
+  // expected-error@+1 {{reads a col-layout accumulator tile}}
+  hk.as_operand %s into %p : !hk.rt<f32, 64x32, row, frag 32x32> into !hk.rt<bf16, 64x32, col, frag 16x32 stride 4>
+  return
+}
+
+// -----
+
+func.func @operand_in_the_wrong_fragment(%s: !hk.rt<f32, 64x32, col, frag 32x32>,
+                                         %p: !hk.rt<bf16, 64x32, col, frag 16x32>) {
+  // expected-error@+1 {{read as an operand is '!hk.rt<bf16, 64x32, col, frag 16x32 stride 4>'}}
+  hk.as_operand %s into %p : !hk.rt<f32, 64x32, col, frag 32x32> into !hk.rt<bf16, 64x32, col, frag 16x32>
+  return
+}
+
+// -----
+
+func.func @subtile_past_the_tile(%s: !hk.rt<f32, 64x32, col, frag 32x32>) {
+  // expected-error@+1 {{subtile 2 of 2}}
+  %h = hk.rt_subtile %s[2] : !hk.rt<f32, 64x32, col, frag 32x32> -> !hk.rt<f32, 32x32, col, frag 32x32>
+  return
+}
+
+// -----
+
+func.func @subtile_that_does_not_tile(%s: !hk.rt<f32, 96x32, col, frag 32x32>) {
+  // expected-error@+1 {{64 rows: a whole number of 32-row fragments that tiles the 96 rows}}
+  %h = hk.rt_subtile %s[1] : !hk.rt<f32, 96x32, col, frag 32x32> -> !hk.rt<f32, 64x32, col, frag 32x32>
+  return
+}
+
+// -----
+
+func.func @vote_on_bf16(%m: !hk.rv<bf16, 64x32, col, row, frag 32x32>) {
+  // expected-error@+1 {{compares two fp32 vectors of one type}}
+  %g = hk.any_above %m, %m, 8.0 : !hk.rv<bf16, 64x32, col, row, frag 32x32>, !hk.rv<bf16, 64x32, col, row, frag 32x32>
+  return
+}

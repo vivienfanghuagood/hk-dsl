@@ -100,7 +100,7 @@ static ParseResult parseOptionalFrag(AsmParser &p, unsigned &rows,
 
 Type RegTileType::parse(AsmParser &p) {
   Type et;
-  unsigned rows, cols, fr = 0, fc = 0, run;
+  unsigned rows, cols, fr = 0, fc = 0, run, stride = 0;
   bool col;
   SMLoc at = p.getNameLoc();
   if (p.parseLess() || p.parseType(et) || p.parseComma() ||
@@ -109,11 +109,14 @@ Type RegTileType::parse(AsmParser &p) {
     return {};
   if (succeeded(p.parseOptionalComma()) && parseOptionalFrag(p, fr, fc))
     return {};
+  if (fr && succeeded(p.parseOptionalKeyword("stride")) &&
+      p.parseInteger(stride))
+    return {};
   if (p.parseGreater())
     return {};
   return RegTileType::getChecked([&] { return p.emitError(at); },
                                  p.getContext(), et, rows, cols, col, fr, fc,
-                                 run);
+                                 run, stride);
 }
 
 void RegTileType::print(AsmPrinter &p) const {
@@ -121,13 +124,28 @@ void RegTileType::print(AsmPrinter &p) const {
   printTileLayout(p, getColLayout(), getRun());
   if (hasFrag())
     p << ", frag " << getFragRows() << "x" << getFragCols();
+  if (getFragStride())
+    p << " stride " << getFragStride();
   p << ">";
 }
 
 LogicalResult RegTileType::verify(function_ref<InFlightDiagnostic()> emitError,
                                   Type et, unsigned rows, unsigned cols,
                                   bool col, unsigned fr, unsigned fc,
-                                  unsigned run) {
+                                  unsigned run, unsigned stride) {
+  if (stride) {
+    // include/cdna4's rt_shape list: rt_32x32_8, rt_32x16_4, rt_16x32_4 are
+    // the shapes with a lane run other than their own.
+    bool known = (fr == 32 && fc == 32 && stride == 8) ||
+                 (fr == 32 && fc == 16 && stride == 4) ||
+                 (fr == 16 && fc == 32 && stride == 4);
+    if (!known)
+      return emitError() << "register tile fragment " << fr << "x" << fc
+                         << " stride " << stride
+                         << ": the strided fragments are 32x32 stride 8, "
+                            "32x16 stride 4 and 16x32 stride 4 (a shape's "
+                            "own stride is written without one)";
+  }
   if (run) {
     if (!knownDtype(et) || dtypeBits(et) < 16)
       return emitError() << "there is no " << dtypeName(et)

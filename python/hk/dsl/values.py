@@ -291,7 +291,7 @@ def i1(x) -> ir.Value:
     if isinstance(x, Int):
         owner = x.v.owner if isinstance(x.v, ir.OpResult) else None
         name = owner.name if owner is not None else ""
-        if name not in ("hk.any_ne", "arith.constant"):
+        if name not in ("hk.any_ne", "hk.any_above", "arith.constant"):
             raise TypeError(
                 "a branch condition is an index, not a comparison. Write the "
                 "test you mean -- `if i > 0:` -- rather than relying on "
@@ -826,6 +826,64 @@ class Tile(_Elementwise):
     def triu_(self, idx, value=0.0, *, into=None): return self._fill("triu", idx, value, into)
     def tril_(self, idx, value=0.0, *, into=None): return self._fill("tril", idx, value, into)
 
+    def as_operand(self, dtype: Optional[DType] = None, *, into=None) -> "Tile":
+        """This accumulator's registers read as an MFMA operand: no data
+        moves across lanes (gfx950).
+
+        `self` is a col-layout tile in an accumulator fragment -- an MFMA
+        result, or its cast to bf16. Each lane holds a column and four rows
+        at a time; read as a stride-4 operand fragment (32x32 -> 16x32/4,
+        16x16 -> 32x16/4), its rows are the reduction index in another order,
+        and an MMA whose other operand has the same stride (hk-fragments
+        lays it out so) computes the same product. So with the scores kept
+        transposed, `o_t += v.T @ p_t.as_operand(bf16)` is P·V straight off
+        the softmax, with no reshuffle across lanes. `dtype` converts an
+        fp32 accumulator on the way (to nearest even); a 16-bit one is read
+        as it is."""
+        t = self.ty
+        dtype = dtype or t.dtype
+        if t.layout != "col" or (t.dtype is not fp32 and t.dtype.bits != 16):
+            raise TypeError(f"as_operand reads a col-layout accumulator tile, "
+                            f"fp32 or 16-bit, not {t}")
+        if dtype.bits != 16 or (t.dtype is not fp32 and dtype != t.dtype):
+            raise TypeError(f"as_operand makes a bf16 or fp16 operand of {t}, "
+                            f"not {dtype}")
+        if t.frag == (32, 32):
+            f = (16, 32, 4)
+        elif t.frag in (None, (16, 16)):
+            f = (32, 16, 4)
+            if t.rows % 32:
+                raise TypeError(f"as_operand: {t} in 16x16 fragments is read "
+                                f"as 32x16 stride-4 ones, two to a 32-row band; "
+                                f"{t.rows} rows is not a whole number of them")
+        else:
+            raise TypeError(f"as_operand: {t} is not in an accumulator "
+                            f"fragment (16x16, or 32x32)")
+        ty = RegTileType(dtype, t.rows, t.cols, "col", f)
+        return _make(hkd.AsOperandOp, ty, (self.v,), into=into, name="opnd")
+
+    def subtile(self, rows: int, index: int) -> "Tile":
+        """Rows [index*rows, (index+1)*rows) of this tile, as a tile of
+        `rows` rows that is the same registers: an op writing into it writes
+        this tile (include/cdna4's subtile_inplace). `index` is a Python int
+        -- a runtime one would index the register file. Not an LDS load's
+        destination: load into the whole tile."""
+        t = self.ty
+        _no_strip("subtile", t)
+        if not isinstance(index, int) or not isinstance(rows, int):
+            raise TypeError("subtile(rows, index) takes Python ints: a register "
+                            "tile has no runtime-indexed window")
+        fr = t.frag[0] if t.frag else 16
+        if rows <= 0 or t.rows % rows or rows % fr:
+            raise ValueError(f"subtile rows={rows} of {t}: a whole number of "
+                             f"{fr}-row fragments that tiles its {t.rows} rows")
+        if not 0 <= index < t.rows // rows:
+            raise IndexError(f"subtile {index} of {t.rows // rows}")
+        ty = RegTileType(t.dtype, rows, t.cols, t.layout, t.frag)
+        tt = _t()
+        return Tile(hkd.RegSubtileOp(mlir_type(ty), self.v, index,
+                                     loc=tt.loc("sub")).result, ty)
+
     def make_causal(self, value: float = 0.0, *, into=None, transposed: bool = False):
         _no_strip("make_causal", self.ty)
         if self.ty.rows != self.ty.cols:
@@ -919,7 +977,14 @@ def mma(variant: str, a: Tile, b: Tile, acc: Tile, *, into=None) -> Tile:
         raise TypeError(f"{variant}: reduction extents disagree -- A.{spec[4]}="
                         f"{getattr(a.ty, spec[4])}, B.{spec[5]}="
                         f"{getattr(b.ty, spec[5])}.")
-    ty = RegTileType(fp32, getattr(a.ty, spec[2]), getattr(b.ty, spec[3]), "col")
+    # An accumulator declared in 32x32 fragments is gfx950's 32x32x16 MFMA;
+    # hk-fragments lays its operands out to match.
+    big = acc.ty.frag == (32, 32)
+    if big and get_target(arch).wave != 64:
+        raise TypeError(f"{variant}: a 32x32-fragment accumulator is gfx950's "
+                        f"32x32x16 MFMA; {arch} has none")
+    ty = RegTileType(fp32, getattr(a.ty, spec[2]), getattr(b.ty, spec[3]), "col",
+                     (32, 32) if big else None)
     if acc.ty != ty:
         raise TypeError(f"{variant}: A {a.ty} times B {b.ty} is {ty}, but the "
                         f"accumulator is {acc.ty}.")
@@ -1003,6 +1068,20 @@ class Vec(_Elementwise):
         return Int(hkd.AnyNeOp(_i32(), self.v, other.v, loc=t.loc("grew")).result,
                    ScalarType(i32))
 
+    def any_above(self, other: "Vec", threshold: float) -> Int:
+        """Wave-level: did any entry exceed `other`'s by more than
+        `threshold`. A uniform branch. The online softmax's lazy rescale:
+        keep taking exp2 against a stale running max until the new one is
+        more than `threshold` (log2 units) above it."""
+        if (not isinstance(other, Vec) or self.ty.plain != other.ty.plain
+                or self.ty.dtype is not fp32):
+            raise TypeError(
+                f"any_above: operands are {self.ty} and "
+                f"{getattr(other, 'ty', other)}; two fp32 vectors of one type")
+        t = _t()
+        return Int(hkd.AnyAboveOp(_i32(), self.v, other.v, float(threshold),
+                                  loc=t.loc("grew")).result, ScalarType(i32))
+
 
 # ---------------------------------------------------------------- creation
 
@@ -1081,7 +1160,7 @@ def transpose_sep(t: Tile, *, into=None) -> Tile:
     if into is t:
         raise TypeError("transpose_sep needs separate registers for source "
                         "and destination; use hk.transpose to relabel instead")
-    f = (t.ty.frag[1], t.ty.frag[0]) if t.ty.frag else None
+    f = (t.ty.frag[1], t.ty.frag[0], *t.ty.frag[2:]) if t.ty.frag else None
     ty = RegTileType(t.ty.dtype, t.ty.cols, t.ty.rows, t.ty.layout, f)
     return _make(hkd.TransposeSepOp, ty, (t.v,), into=into, name="trs")
 
@@ -1108,7 +1187,7 @@ def as_vec(vec: Vec, tile: RegTileType, *, uniform: bool = False) -> Vec:
     """Re-attach a register vector to a tile of another shape, where the C++
     types are the same: element type, length and layout."""
     want = RegVecType(tile, vec.ty.kind, vec.ty.uniform or uniform)
-    if want == vec.ty:
+    if want == vec.ty and want.tile == vec.ty.tile:
         return vec
     if want.plain._key() != vec.ty.plain._key():
         raise TypeError(f"as_vec cannot retype {vec.ty} (off {vec.ty.tile}) as "

@@ -14,6 +14,14 @@
 // matters is attention's: S, an fp32 accumulator (16x16), cast into P, the
 // bf16 A operand of P@V (16x32). On gfx950 that is a relayout across lanes,
 // not a cast; before this pass it was a static_assert deep in include/cdna4.
+// What attention does instead is compute Sᵀ and read the accumulator as an
+// operand with its reduction index permuted (hk.as_operand), which is a
+// fragment with a lane run of 4 rather than 8 ("stride 4"); an MMA's other
+// operand then takes the same stride, since the two are paired element by
+// element along the reduction.
+//
+// An accumulator declared in 32x32 fragments (gfx950's 32x32x16 MFMA) gives
+// its operands 32x16 (row) and 16x32 (col) fragments.
 //
 // Targets whose fragment is 16x16 (RDNA, gfx942) are left untouched.
 
@@ -34,20 +42,29 @@ using namespace mlir::hk;
 
 namespace {
 
+/// A fragment shape and its lane run along the reduction; s is 0 where the
+/// run is the shape's own, as in the type.
 struct Frag {
-  unsigned r = 0, c = 0;
-  bool operator==(const Frag &o) const { return r == o.r && c == o.c; }
+  unsigned r = 0, c = 0, s = 0;
+  bool operator==(const Frag &o) const {
+    return r == o.r && c == o.c && s == o.s;
+  }
   bool operator!=(const Frag &o) const { return !(*this == o); }
 };
 
-std::string str(Frag f) { return std::to_string(f.r) + "x" + std::to_string(f.c); }
+std::string str(Frag f) {
+  return std::to_string(f.r) + "x" + std::to_string(f.c) +
+         (f.s ? " stride " + std::to_string(f.s) : std::string());
+}
 
 struct Assigner {
   /// The fragment each (unannotated) tile type takes, and the op that said so.
   llvm::MapVector<Type, std::pair<Frag, Operation *>> want;
   bool failed = false, changed = false;
 
-  static Frag declared(RegTileType t) { return {t.fragR(), t.fragC()}; }
+  static Frag declared(RegTileType t) {
+    return {t.fragR(), t.fragC(), t.getFragStride()};
+  }
 
   void assign(RegTileType t, Frag f, Operation *why) {
     if (failed)
@@ -108,7 +125,7 @@ struct Assigner {
 
   /// `a` and `b` share one fragment (`swap`: b's is a's transposed).
   void tie(RegTileType a, RegTileType b, Operation *why, bool swap = false) {
-    auto flip = [&](Frag f) { return swap ? Frag{f.c, f.r} : f; };
+    auto flip = [&](Frag f) { return swap ? Frag{f.c, f.r, f.s} : f; };
     if (auto fa = current(a))
       assign(b, flip(*fa), why);
     if (auto fb = current(b))
@@ -142,26 +159,46 @@ struct FragmentsPass : public mlir::hk::impl::HKFragmentsBase<FragmentsPass> {
     Assigner as;
     auto tile = [](Value v) { return dyn_cast<RegTileType>(v.getType()); };
     auto dest = [](auto o) -> Value { return o.getDst() ? o.getDst() : o.getResult(); };
-    // Seeds: the operands and accumulators of every mma.
-    f.walk([&](Operation *op) {
+    // Seeds: the operands and accumulators of every mma. An accumulator in
+    // 32x32 fragments makes the operands 32x16 / 16x32; an operand already
+    // laid out with a stride (an accumulator read by hk.as_operand) gives
+    // the other operand that stride. In the fixed-point loop, so a stride
+    // that reaches an operand through a cast or transpose still arrives.
+    auto seed = [&](Operation *op) {
       llvm::TypeSwitch<Operation *>(op)
           .Case<MmaABOp, MmaABtOp, MmaAtBOp, MmaAtBtOp>([&](auto o) {
+            RegTileType c = tile(o.getC());
+            auto fc = as.current(c);
+            bool big = fc && fc->r == 32 && fc->c == 32;
+            unsigned s = 0;
+            for (Value v : {o.getA(), o.getB()})
+              if (auto fv = as.current(tile(v)); fv && fv->s)
+                s = fv->s;
             for (Value v : {o.getA(), o.getB()}) {
               RegTileType t = tile(v);
               if (dtypeBits(t.getElementType()) != 16)
                 continue;
-              as.assign(t, t.getColLayout() ? Frag{k, 16} : Frag{16, k}, op);
+              Frag want = t.getColLayout() ? (big ? Frag{16, 32} : Frag{k, 16})
+                                           : (big ? Frag{32, 16} : Frag{16, k});
+              if (s && s != RegTileType::naturalStride(want.r, want.c))
+                want.s = s;
+              as.assign(t, want, op);
             }
-            as.assign(tile(o.getC()), Frag{16, 16}, op);
+            as.assign(c, big ? Frag{32, 32} : Frag{16, 16}, op);
           });
-    });
+    };
+    f.walk([&](Operation *op) { seed(op); });
     // Ties, to a fixed point: each round can only add assignments.
     do {
       as.changed = false;
+      f.walk([&](Operation *op) { seed(op); });
       f.walk([&](Operation *op) {
         llvm::TypeSwitch<Operation *>(op)
             .Case([&](CastOp o) {
               as.tie(tile(o.getSrc()), tile(dest(o)), op);
+            })
+            .Case([&](RegSubtileOp o) {
+              as.tie(tile(o.getSrc()), tile(o.getResult()), op);
             })
             .Case<TransposeOp, TransposeSepOp>([&](auto o) {
               as.tie(tile(o.getSrc()), tile(dest(o)), op, /*swap=*/true);
@@ -188,7 +225,7 @@ struct FragmentsPass : public mlir::hk::impl::HKFragmentsBase<FragmentsPass> {
     for (auto &[t, w] : as.want) {
       if (w.first == Frag{16, 16})
         continue;
-      to[t] = cast<RegTileType>(t).withFrag(w.first.r, w.first.c);
+      to[t] = cast<RegTileType>(t).withFrag(w.first.r, w.first.c, w.first.s);
     }
     if (to.empty())
       return;

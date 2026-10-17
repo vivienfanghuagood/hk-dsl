@@ -209,8 +209,10 @@ bool live(const std::optional<Scope> &issued, const Scope &scope) {
 /// ds_reads one load_shared issues on a wave64 target, where the count is
 /// include/cdna{3,4}'s and depends on the fragment (hk-fragments has set it):
 ///   gfx950, per fragment: 16x16 row, one ds_read_b64; 16x32 row, one
-///   ds_read_b128; 16x16 col, one ds_read_b64_tr_b16; 32x16 col, two
-///   (include/cdna4 tile/shared_to_register.cuh);
+///   ds_read_b128; 16x16 col, one ds_read_b64_tr_b16; 32x16 col, two;
+///   32x16 row (from st_32x32), one ds_read_b128; 16x32 stride-4 col (from
+///   st_8x32), two ds_read_b64_tr_b16 (include/cdna4
+///   tile/shared_to_register.cuh);
 ///   gfx942: one ds_read_b64 per 16x16 of a row-layout tile; a col-layout
 ///   tile is read with ordinary loads the compiler waits for itself.
 /// 0: not inline asm, so nothing to count. -1: a pair hk has no count for.
@@ -225,12 +227,19 @@ int64_t cdnaLdsReads(const TargetInfo &t, RegTileType rt, SharedTileType st) {
   unsigned fr = rt.fragR(), fc = rt.fragC();
   if (t.arch == "gfx942")
     return col ? 0 : frags;
+  if (rt.getFragStride()) {
+    if (col && fr == 16 && fc == 32 && rt.getFragStride() == 4)
+      return 2 * frags;
+    return -1;
+  }
   if (fr == 16 && fc == 16)
     return frags;
   if (!col && fr == 16 && fc == 32)
     return frags;
   if (col && fr == 32 && fc == 16)
     return 2 * frags;
+  if (!col && fr == 32 && fc == 16)
+    return frags;
   return -1;
 }
 
@@ -245,11 +254,20 @@ struct Walker {
     return false;
   }
 
-  /// Nothing may read a tile that is in flight or retired-but-unbound.
+  /// The register tile a value is, through any hk.rt_subtile (an alias).
+  static Value tileRoot(Value v) {
+    while (auto s = v.getDefiningOp<RegSubtileOp>())
+      v = s.getSrc();
+    return v;
+  }
+
+  /// Nothing may read a tile that is in flight or retired-but-unbound; a
+  /// subtile is read as the tile it is part of.
   bool checkReads(Operation *op, State &st) {
-    for (Value v : op->getOperands()) {
-      if (!isa<RegTileType>(v.getType()))
+    for (Value operand : op->getOperands()) {
+      if (!isa<RegTileType>(operand.getType()))
         continue;
+      Value v = tileRoot(operand);
       if (st.indexOf(v) >= 0)
         return fail(op, Twine(opcodeOf(op)) + " reads " + nameOf(v) +
                             ", whose LDS reads are still in flight. Name it "
@@ -570,6 +588,12 @@ struct Walker {
 
   bool load(Operation *op, Value dst, bool wait, int64_t count, State &st,
             const Scope &scope, Root src = {}) {
+    if (dst.getDefiningOp<RegSubtileOp>())
+      return fail(op, Twine(opcodeOf(op)) + " reads LDS into " + nameOf(dst) +
+                          ", a subtile of another register tile. The wait "
+                          "and the bind name tiles, not windows of them: "
+                          "load into the whole tile." +
+                          atLoc(op));
     if (st.indexOf(dst) >= 0)
       return fail(op, Twine(opcodeOf(op)) + " writes " + nameOf(dst) +
                           " while its previous LDS reads are still in "

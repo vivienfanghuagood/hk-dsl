@@ -65,6 +65,21 @@ def HK_AnyNeOp : HK_Op<"any_ne"> {
   let hasVerifier = 1;
 }
 
+def HK_AnyAboveOp : HK_Op<"any_above"> {
+  let summary = "wave-level: did any entry of lhs exceed rhs's by more than `threshold`";
+  let description = [{
+    1 in every lane if `lhs[i] - rhs[i] > threshold` for some entry in some
+    lane, else 0: one vote across the wave, so a branch on it is uniform.
+    The online softmax's lazy rescale asks it of the new running max against
+    the one the probabilities are taken against.
+  }];
+  let arguments = (ins HK_RegVecType:$lhs, HK_RegVecType:$rhs,
+                       F64Attr:$threshold);
+  let results = (outs I32:$result);
+  let assemblyFormat = "$lhs `,` $rhs `,` $threshold attr-dict `:` qualified(type($lhs)) `,` qualified(type($rhs))";
+  let hasVerifier = 1;
+}
+
 //===----------------------------------------------------------------------===//
 // Global memory
 //===----------------------------------------------------------------------===//
@@ -516,6 +531,22 @@ def HK_SchedGroupBarrierOp : HK_Op<"sched_group_barrier"> {
   let hasVerifier = 1;
 }
 
+def HK_PinOp : HK_Op<"pin"> {
+  let summary = "keep register values here: their definitions stay above, their uses below";
+  let description = [{
+    No instruction. Each value is bound with an empty volatile asm that
+    LLVM takes to read and write its registers, so nothing that computes
+    the value moves below this point and nothing that reads it moves above
+    it. sched_barrier fences only the scheduler; LLVM's sinking still moves
+    a computation down to its first use, across s_barrier and into another
+    phase of a schedule -- attention's P conversions, sunk from their math
+    phase into the next memory phase. A value whose LDS read is still in
+    flight is refused, as any other read of it.
+  }];
+  let arguments = (ins Variadic<HK_Elementwise>:$values);
+  let assemblyFormat = "$values attr-dict `:` qualified(type($values))";
+}
+
 def HK_SetPrioOp : HK_Op<"setprio"> {
   let summary = "s_setprio";
   let arguments = (ins I64Attr:$level);
@@ -698,6 +729,47 @@ def HK_MakeCausalTOp : HK_UnaryMapOp<"make_causal_t", (ins F64Attr:$value)>;
 def HK_CastOp : HK_UnaryMapOp<"cast">;
 def HK_TransposeOp : HK_UnaryMapOp<"transpose">;
 def HK_TransposeSepOp : HK_UnaryMapOp<"transpose_sep">;
+
+def HK_RegSubtileOp : HK_Op<"rt_subtile"> {
+  let summary = "rows [index*R, (index+1)*R) of a register tile, as a tile of R rows: an alias";
+  let description = [{
+    include/cdna4's subtile_inplace on a register tile: the same registers,
+    so an op that writes into the subtile writes the tile. What attention
+    needs it for is one 64-row score tile -- one column reduction over it,
+    one conversion -- whose two 32-row halves take their exp2 in different
+    phases of the schedule. `index` is a constant: a runtime one would index
+    the register file. hk-lds-pipeline takes a read of the subtile as a read
+    of the tile, and refuses an LDS load into a subtile.
+  }];
+  let arguments = (ins HK_RegTileType:$src, I64Attr:$index);
+  let results = (outs HK_RegTileType:$result);
+  let assemblyFormat = [{
+    $src `[` $index `]` attr-dict `:` qualified(type($src)) `->` qualified(type($result))
+  }];
+  let hasVerifier = 1;
+}
+
+def HK_AsOperandOp : HK_Op<"as_operand"> {
+  let summary = "an MFMA accumulator's registers read as an operand fragment, no data moved";
+  let description = [{
+    A 16-bit col-layout tile in an accumulator fragment, read as the
+    stride-4 operand fragment whose lanes hold the same rows: 32x32 to
+    16x32 stride 4, 16x16 to 32x16 stride 4. The reduction index then runs
+    down the rows in the accumulator's order rather than the operand's, and
+    an MMA pairs it with an operand laid out with the same permutation (the
+    verifier holds A's and B's strides equal), so the product is the same.
+    This is how P, the softmax of an MFMA result, feeds P·V on gfx950
+    without a cross-lane reshuffle: the scores are computed transposed,
+    Sᵀ = K·Qᵀ, and Oᵀ += Vᵀ·Pᵀ reads Pᵀ in place.
+  }];
+  let arguments = (ins Optional<HK_RegTileType>:$dst, HK_RegTileType:$src);
+  let results = (outs Optional<HK_RegTileType>:$result);
+  let assemblyFormat = [{
+    $src (`into` $dst^)? attr-dict `:` qualified(type($src)) (`into` qualified(type($dst))^)?
+    (`->` qualified(type($result))^)?
+  }];
+  let hasVerifier = 1;
+}
 
 class HK_MmaOp<string mnemonic> : HK_Op<mnemonic> {
   let summary = mnemonic # ": acc + A x B on the matrix cores (WMMA on RDNA, MFMA on CDNA)";

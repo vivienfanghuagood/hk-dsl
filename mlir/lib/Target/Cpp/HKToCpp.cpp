@@ -22,6 +22,7 @@
 
 #include <cmath>
 #include <map>
+#include <set>
 #include <vector>
 
 using namespace mlir;
@@ -52,6 +53,15 @@ std::string fragName(unsigned r, unsigned c) {
   return std::to_string(r) + "x" + std::to_string(c);
 }
 
+/// A tile's fragment as include/cdna4 names it: rt_16x32, or rt_16x32_4
+/// where the lane run is not the shape's own.
+std::string fragName(RegTileType r) {
+  std::string s = fragName(r.getFragRows(), r.getFragCols());
+  if (r.getFragStride())
+    s += "_" + std::to_string(r.getFragStride());
+  return s;
+}
+
 std::string rawCpp(Type t) {
   if (auto r = dyn_cast<RegTileType>(t); r && r.isStrip())
     return "kittens::rs<" + dtypeCpp(r.getElementType()).str() + ", " +
@@ -61,8 +71,7 @@ std::string rawCpp(Type t) {
     return "kittens::rt<" + dtypeCpp(r.getElementType()).str() + ", " +
            std::to_string(r.getRows()) + ", " + std::to_string(r.getCols()) +
            ", kittens::ducks::rt_layout::" + r.getLayout().str() +
-           (r.hasFrag() ? ", kittens::ducks::rt_shape::rt_" +
-                              fragName(r.getFragRows(), r.getFragCols())
+           (r.hasFrag() ? ", kittens::ducks::rt_shape::rt_" + fragName(r)
                         : std::string()) +
            ">";
   if (auto s = dyn_cast<SharedTileType>(t))
@@ -127,8 +136,7 @@ std::string aliasName(Type t) {
     return "rt_" + dtypeName(r.getElementType()).str() + "_" +
            std::to_string(r.getRows()) + "x" + std::to_string(r.getCols()) +
            "_" + r.getLayout().str() +
-           (r.hasFrag() ? "_f" + fragName(r.getFragRows(), r.getFragCols())
-                        : std::string());
+           (r.hasFrag() ? "_f" + fragName(r) : std::string());
   if (auto v = dyn_cast<RegVecType>(t))
     return "rv_" + dtypeName(v.getElementType()).str() + "_" +
            std::to_string(v.getTileRows()) + "x" +
@@ -210,6 +218,8 @@ private:
                   std::map<std::string, unsigned>>
       aliases;
   std::map<std::string, std::string> sharedShape;
+  llvm::MapVector<Value, std::string> allocShape;
+  std::set<std::string> conflicted;
 
   // -- helpers ----------------------------------------------------------
 
@@ -228,30 +238,85 @@ private:
   }
   int64_t threads() { return intAttr(attrs::kWarps, 1) * tgt->wave; }
 
+  /// The st_shape an LDS tile read into a register tile of fragment `dt`
+  /// is swizzled as. Mostly the fragment's own (a 16x32 row operand from
+  /// st_16x32); a 32x16 row operand from st_32x32's swizzle, one
+  /// ds_read_b128 a fragment, and a 16x32 stride-4 col operand from
+  /// st_8x32, two ds_read_b64_tr_b16 -- the pair HipKittens' CDNA4
+  /// attention reads K and V with.
+  static std::string sharedShapeFor(RegTileType dt) {
+    unsigned r = dt.getFragRows(), c = dt.getFragCols(), s = dt.fragS();
+    if (!dt.getColLayout() && r == 32 && c == 16 && s == 8)
+      return "st_32x32";
+    if (dt.getColLayout() && r == 16 && c == 32 && s == 4)
+      return "st_8x32";
+    return "st_" + fragName(r, c);
+  }
+
+  /// The allocation an LDS tile value is a buffer or window of.
+  static Value sharedRoot(Value src) {
+    while (Operation *def = src.getDefiningOp()) {
+      if (auto s = dyn_cast<SubtileOp>(def))
+        src = s.getSrc();
+      else if (auto a = dyn_cast<SharedAtOp>(def))
+        src = a.getBuf();
+      else
+        break;
+    }
+    return src;
+  }
+
   /// gfx950's shared tile names a shape, and it has to match the register
   /// tile read out of it: the allocation a fragment tile is loaded from
-  /// (through any subtile) takes that fragment, as st_16x32. hk-fragments
-  /// has put the fragment in the register tile's type.
+  /// (through any subtile) takes that fragment's shape (sharedShapeFor).
+  /// hk-fragments has put the fragment in the register tile's type. Two
+  /// reads that want two shapes of one allocation are refused: the swizzle
+  /// is the allocation's, so one of them would read the wrong elements.
+  /// Allocations of one type that want different shapes (attention's K and
+  /// V) are spelled apart: their type is `conflicted`, and the allocation
+  /// and its buffers are declared with their own shape.
   void findSharedShapes() {
     if (!sharedTilesHaveShape())
       return;
+    std::map<Operation *, Operation *> by;
     kernel.walk([&](LoadSharedOp l) {
       auto dt = cast<RegTileType>(l.getDst() ? l.getDst().getType()
                                              : l.getResult().getType());
       if (!dt.hasFrag())
         return;
-      Value src = l.getSrc();
-      while (Operation *def = src.getDefiningOp()) {
-        if (auto s = dyn_cast<SubtileOp>(def))
-          src = s.getSrc();
-        else if (auto a = dyn_cast<SharedAtOp>(def))
-          src = a.getBuf();
-        else
-          break;
+      Value root = sharedRoot(l.getSrc());
+      std::string shape = sharedShapeFor(dt);
+      auto [it, fresh] = allocShape.insert({root, shape});
+      if (!fresh && it->second != shape) {
+        InFlightDiagnostic d = l.emitError();
+        d << "this read wants its LDS tile swizzled as " << shape
+          << ", and another read of the same allocation wants " << it->second
+          << ". The swizzle is the allocation's, so read both with one "
+             "fragment, or stage them in two allocations";
+        d.attachNote(by[root.getDefiningOp()]->getLoc()) << "the other read";
+        bad = true;
       }
-      sharedShape[rawCpp(src.getType())] =
-          "st_" + fragName(dt.getFragRows(), dt.getFragCols());
+      by.insert({root.getDefiningOp(), l});
     });
+    for (auto &[root, shape] : allocShape) {
+      std::string key = rawCpp(root.getType());
+      auto [it, fresh] = sharedShape.insert({key, shape});
+      if (!fresh && it->second != shape)
+        conflicted.insert(key);
+    }
+  }
+
+  /// An allocation's C++ type, with its own shape where its type is
+  /// conflicted.
+  std::string allocCpp(Value root) {
+    auto t = cast<SharedTileType>(root.getType());
+    std::string s = rawCpp(t);
+    if (!conflicted.count(s))
+      return tileCpp(t);
+    auto it = allocShape.find(root);
+    std::string shape = it != allocShape.end() ? it->second : "st_16x16";
+    s.insert(s.size() - 1, ", kittens::ducks::st_shape::" + shape);
+    return s;
   }
 
   /// gfx950's shared tile takes a shape parameter and has no default.
@@ -849,6 +914,20 @@ private:
             ".data[o][i]);");
           w("const int " + r + " = __any(" + r + "_v);");
         })
+        .Case([&](AnyAboveOp o) {
+          std::string a = name(o.getLhs()), b = name(o.getRhs()),
+                      r = name(o.getResult());
+          std::string t =
+              "(float)" + floatLit(o.getThreshold().convertToDouble());
+          w("bool " + r + "_v = false;");
+          w("#pragma unroll");
+          w("for (int o = 0; o < decltype(" + a + ")::outer_dim; o++)");
+          w("    #pragma unroll");
+          w("    for (int i = 0; i < decltype(" + a + ")::inner_dim; i++)");
+          w("        " + r + "_v |= (" + a + ".data[o][i] - " + b +
+            ".data[o][i] > " + t + ");");
+          w("const int " + r + " = __any(" + r + "_v);");
+        })
         // global memory
         .Case([&](LoadOp o) {
           Value d = dest(o.getDst(), o.getResult());
@@ -927,7 +1006,7 @@ private:
         // LDS
         .Case([&](AllocSharedOp o) {
           auto t = o.getResult().getType();
-          std::string el = tileCpp(t);
+          std::string el = allocCpp(o.getResult());
           if (t.getCount() == 1)
             w(el + " &" + name(o.getResult()) + " = al.allocate<" + el +
               ">();");
@@ -948,8 +1027,13 @@ private:
               std::to_string(t.getCount()) + ">();");
         })
         .Case([&](SharedAtOp o) {
-          w(cpp(o.getResult().getType()) + " &" + name(o.getResult()) + " = " +
-            name(o.getBuf()) + "[" + name(o.getIndex()) + "];");
+          // A buffer of an allocation spelled with its own shape has that
+          // allocation's element type, not the alias.
+          std::string t = conflicted.count(rawCpp(o.getResult().getType()))
+                              ? "auto"
+                              : cpp(o.getResult().getType());
+          w(t + " &" + name(o.getResult()) + " = " + name(o.getBuf()) + "[" +
+            name(o.getIndex()) + "];");
         })
         .Case([&](SubtileOp o) {
           auto t = o.getResult().getType();
@@ -1127,6 +1211,10 @@ private:
             std::to_string(o.getMask()) + ", " + std::to_string(o.getSize()) +
             ", " + std::to_string(o.getSyncid()) + ");");
         })
+        .Case([&](PinOp o) {
+          for (Value v : o.getValues())
+            w("kittens::lds_bind(" + name(v) + ");");
+        })
         .Case([&](SetPrioOp o) {
           w("__builtin_amdgcn_s_setprio(" + std::to_string(o.getLevel()) +
             ");");
@@ -1224,6 +1312,17 @@ private:
         .Case([&](TransposeSepOp o) {
           Value d = dest(o.getDst(), o.getResult());
           call("transpose_sep", d, {name(o.getSrc())});
+        })
+        .Case([&](RegSubtileOp o) {
+          w("auto &" + name(o.getResult()) + " = kittens::subtile_inplace<" +
+            std::to_string(o.getResult().getType().getRows()) + ">(" +
+            name(o.getSrc()) + ", " + std::to_string(o.getIndex()) + ");");
+        })
+        .Case([&](AsOperandOp o) {
+          // hk/cdna.cuh: register renaming only; the verifier has held the
+          // two fragments to the same lanes.
+          Value d = dest(o.getDst(), o.getResult());
+          call("as_operand", d, {name(o.getSrc())});
         })
         .Default([&](Operation *o) {
           fail(o, "no C++ emitter for " + o->getName().getStringRef());

@@ -251,6 +251,11 @@ template<> __device__ inline float2 step::op<float2>(const float2 &x) {
 }
 }  // namespace base_ops
 
+#if defined(KITTENS_CDNA4)
+/** @brief Fill with 1: include/rdna3's and include/cdna3's spelling, which hk's full(1.0) emits; include/cdna4 calls it ones. */
+template<ducks::rt::all T> __device__ static inline void one(T &dst) { ones(dst); }
+template<ducks::rv::all T> __device__ static inline void one(T &dst) { ones(dst); }
+#endif
 template<ducks::rt::all T> __device__ static inline void rsqrt(T &dst, const T &src) { unary_map<base_ops::rsqrt, T>(dst, src); }
 template<ducks::rt::all T> __device__ static inline void silu (T &dst, const T &src) { unary_map<base_ops::silu,  T>(dst, src); }
 template<ducks::rt::all T> __device__ static inline void step (T &dst, const T &src) { unary_map<base_ops::step,  T>(dst, src); }
@@ -310,6 +315,44 @@ __device__ static inline void copy(rt_base<bf16, layout> &dst, const rt_base<flo
     #pragma unroll
     for (int k = 0; k < dst.packed_per_thread; k++)
         dst.data[k] = bf16_2{__float2bfloat16(src.data[k].x), __float2bfloat16(src.data[k].y)};
+}
+#endif
+
+namespace detail {
+/** Two floats to a bf16 pair, rounding to nearest even: an fptrunc of a
+ * 2-vector, which gfx950 selects as one v_cvt_pk_bf16_f32 (two scalar
+ * __float2bfloat16 can come out as two converts and the ALU to pack them). */
+__device__ inline bf16_2 hk_cvt_pk_bf16(float x, float y) {
+    typedef float f2 __attribute__((ext_vector_type(2)));
+    typedef __bf16 b2 __attribute__((ext_vector_type(2)));
+    const b2 v = __builtin_convertvector(f2{x, y}, b2);
+    bf16_2 out;
+    __builtin_memcpy(&out, &v, sizeof(out));
+    return out;
+}
+
+}  // namespace detail
+
+#if defined(KITTENS_CDNA4)
+/**
+ * @brief fp32 -> bf16 tile copy the compiler can see.
+ *
+ * include/cdna4's convertor<bf16_2, float2> is an inline-asm
+ * v_cvt_pk_bf16_f32. LLVM's hazard recognizer cannot see what inline asm
+ * reads, so it does not give the asm the wait state gfx950 needs between a
+ * transcendental and a VALU that reads its result: with exp2 scheduled
+ * right before the cast (attention's softmax, interleaved with MFMAs), some
+ * lanes converted the value from before the exp2 -- measured on an MI355X,
+ * a softmax denominator that disagreed with its numerator. __float2bfloat16
+ * is an fptrunc, the same v_cvt_pk_bf16_f32 (round to nearest even), and
+ * the compiler places it and its wait states itself. More specialized than
+ * the library's copy(rt_base<T, L, S>&, const rt_base<U, L, S>&).
+ */
+template<ducks::rt_layout::all layout, ducks::rt_shape::all shape>
+__device__ static inline void copy(rt_base<bf16, layout, shape> &dst, const rt_base<float, layout, shape> &src) {
+    #pragma unroll
+    for (int k = 0; k < dst.packed_per_thread; k++)
+        dst.data[k] = detail::hk_cvt_pk_bf16(src.data[k].x, src.data[k].y);
 }
 #endif
 
@@ -399,6 +442,15 @@ template<typename RT> __device__ inline int2 hk_frag_coord(int e, int lane) {
 template<typename U, typename T> __device__ inline U hk_cvt(const T &v) {
     if constexpr (std::is_same_v<U, bf16> && std::is_same_v<T, float>) return __float2bfloat16(v);
     else return base_types::convertor<U, T>::convert(v);
+}
+
+/** The lane index, opaque to LLVM: what is computed from it is computed where
+ * it is used, not hoisted out of the loop around it or shared with an
+ * earlier use and held live in between. */
+__device__ inline int hk_lane_opaque() {
+    int lane = laneid();
+    asm volatile("" : "+v"(lane));
+    return lane;
 }
 
 template<typename RT> __device__ inline auto hk_get(const RT &t, int i, int j, int e) {
@@ -514,7 +566,52 @@ __device__ inline void hk_store_tile(const GL &dst, const RT &src, const COORD &
     U *base = (U *)&dst[unit];
     const uint32_t rs = uint32_t(dst.template stride<2>());
     const hk_i32x4 r = hk_tile_srsrc<RT::rows>(dst, unit, base, limit);
-    const int lane = laneid();
+    // Opaque, so the per-lane offsets are computed here and not shared with
+    // the load of the same layout at the top of the kernel: shared, LLVM keeps
+    // them live across the kernel's main loop (attention's KV walk: a spill).
+    const int lane = hk_lane_opaque();
+#if defined(KITTENS_CDNA4)
+    if constexpr (F::row && F::R == 32 && F::C == 32 && F::S == 4 &&
+                  std::is_same_v<T, float> && std::is_same_v<U, bf16>) {
+        // A 32x32 accumulator fragment, transposed: lane l holds row l%32,
+        // in runs of 4 columns at 4(l/32) + 8k. v_permlane32_swap trades
+        // runs between lanes l and l+32, so that each holds runs of 8 --
+        // lane l columns 0-7 and 16-23, lane l+32 8-15 and 24-31 -- and the
+        // tile goes out in 16-byte stores, half as many as 8-byte ones.
+        const int half = lane / 32;
+        #pragma unroll
+        for (int i = 0; i < RT::height; i++) {
+            #pragma unroll
+            for (int j = 0; j < RT::width; j++) {
+                uint32_t w[4][2];
+                #pragma unroll
+                for (int k = 0; k < 4; k++)
+                    #pragma unroll
+                    for (int q = 0; q < 2; q++) {
+                        const bf16_2 p = hk_cvt_pk_bf16(src.tiles[i][j].data[2 * k + q].x,
+                                                        src.tiles[i][j].data[2 * k + q].y);
+                        __builtin_memcpy(&w[k][q], &p, 4);
+                    }
+                #pragma unroll
+                for (int k = 0; k < 4; k += 2)
+                    #pragma unroll
+                    for (int q = 0; q < 2; q++) {
+                        const auto s = __builtin_amdgcn_permlane32_swap(w[k][q], w[k + 1][q], false, true);
+                        w[k][q] = s[0];
+                        w[k + 1][q] = s[1];
+                    }
+                const uint32_t row = uint32_t(i * 32 + lane % 32);
+                #pragma unroll
+                for (int g = 0; g < 2; g++) {
+                    uint32_t chunk[4] = {w[2 * g][0], w[2 * g][1], w[2 * g + 1][0], w[2 * g + 1][1]};
+                    hk_buf_store_bytes<16>(
+                        r, (row * rs + uint32_t(j * 32 + 8 * half + 16 * g)) * sizeof(U), chunk);
+                }
+            }
+        }
+        return;
+    }
+#endif
     #pragma unroll
     for (int i = 0; i < RT::height; i++) {
         #pragma unroll
@@ -524,9 +621,22 @@ __device__ inline void hk_store_tile(const GL &dst, const RT &src, const COORD &
                 for (int k = 0; k < F::K; k++) {
                     const int2 c = hk_frag_coord<RT>(k * F::S, lane);
                     U run[F::S];
-                    #pragma unroll
-                    for (int s = 0; s < F::S; s++)
-                        run[s] = hk_cvt<U, T>(hk_get(src, i, j, k * F::S + s));
+                    if constexpr (std::is_same_v<U, bf16> && std::is_same_v<T, float>) {
+                        // A pair at a time: one packed v_cvt_pk_bf16_f32 for
+                        // two elements. Converted one by one, LLVM packed the
+                        // halves back with shifts and ors (attention's O
+                        // store: 64 converts and ~80 ALU for 32 pairs).
+                        #pragma unroll
+                        for (int s = 0; s < F::S; s += 2) {
+                            const bf16_2 p = hk_cvt_pk_bf16(hk_get(src, i, j, k * F::S + s),
+                                                            hk_get(src, i, j, k * F::S + s + 1));
+                            __builtin_memcpy(&run[s], &p, sizeof(p));
+                        }
+                    } else {
+                        #pragma unroll
+                        for (int s = 0; s < F::S; s++)
+                            run[s] = hk_cvt<U, T>(hk_get(src, i, j, k * F::S + s));
+                    }
                     hk_buf_store_bytes<F::S * sizeof(U)>(
                         r, ((i * F::R + c.x) * rs + j * F::C + c.y) * sizeof(U), run);
                 }
@@ -661,9 +771,51 @@ __device__ void hk_buf_ld_lds(hk_i32x4 rsrc, hk_lds_ptr lds, int size, int voffs
  * rows from the tile's first as well: a copy with limit 0 fills the tile with
  * zeros, and moves none of its addressing.
  */
+namespace detail {
+/**
+ * The descriptor of one asynchronous copy: based at the tile's first
+ * element and ending where this (batch, depth)'s rows of the tensor end, or
+ * `limit` rows from the tile's first, whichever comes first. Every input is
+ * wave-uniform (the tensor's fields, the tile's coordinates), so it is all
+ * scalar arithmetic: a few SALU a copy. An earlier form clamped the row count
+ * to the tile's own rows as well, which LLVM folds into a v_med3 and the rest
+ * into VALU and readfirstlanes -- ~20 SALU and ~15 VALU a copy, recomputed
+ * for every tile of a loop, measured on attention's KV walk. The window does
+ * not need the tile's own bound: the copy's lanes address only the tile.
+ */
+template<typename U>
+__device__ inline hk_i32x4 hk_copy_srsrc(const strided_gl<U> &src, int b, int d, int r, int c,
+                                         int limit_rows) {
+    const uint32_t rs = uint32_t(src.template stride<2>());
+    // The slab's base and its rows' end do not depend on the tile: hoisted.
+    const U *slab = src.raw_ptr + (int64_t(b) * src.depth() + d) * src.rows() * int64_t(rs);
+    // 32-bit row counts, clamped with scalar min/max; the byte counts are
+    // 64-bit, and the clamp to the descriptor's 32 bits reads the high word
+    // (a 64-bit compare would be a VALU compare and a branch).
+    int left = src.rows() - r;
+    left = left < limit_rows ? left : limit_rows;
+    left = left > 0 ? left : 0;
+    const uint64_t first = uint64_t(uint32_t(r)) * rs + uint32_t(c);
+    // Whole rows from the tile's base: its lanes address only its own
+    // columns, so a row past the end starts past the range. Not ending at
+    // the slab's last element keeps the range free of the column, which a K
+    // loop moves: the GEMM's range is computed once, not per copy. Past 32
+    // bits it saturates, the overflow read off the product's high word
+    // (s_mul_hi_u32): a 64-bit compare, however written, is a VALU compare
+    // and a VCC-to-SALU hop on gfx9.
+    const uint32_t pitch = rs * uint32_t(sizeof(U));
+    const uint32_t range = __umulhi(uint32_t(left), pitch) ? 0xFFFFFFFFu : uint32_t(left) * pitch;
+    struct { uint64_t ptr; uint32_t range; uint32_t config; } s{
+        reinterpret_cast<uint64_t>(slab + first), range, 0x00020000u};
+    hk_i32x4 out;
+    __builtin_memcpy(&out, &s, sizeof(out));
+    return out;
+}
+}  // namespace detail
+
 template<int NW, ducks::st::all ST, typename U, ducks::coord::tile COORD>
-__device__ inline static void group_load_async(ST &dst, const strided_gl<U> &src, const COORD &idx,
-                                               int limit = ST::rows) {
+__device__ inline static void group_load_async_rows(ST &dst, const strided_gl<U> &src, const COORD &idx,
+                                                    int limit) {
     using T = typename ST::dtype;
     static_assert(sizeof(T) == sizeof(U) && sizeof(T) == 2, "16-bit tiles of the global's own dtype");
     static_assert(ST::underlying_subtile_bytes_per_thread == 16, "the 16-byte DMA needs a 16-byte lane run");
@@ -672,11 +824,13 @@ __device__ inline static void group_load_async(ST &dst, const strided_gl<U> &src
     constexpr int BYTES = ST::rows * ST::cols * int(sizeof(T));
     static_assert(BYTES % PER_CALL == 0, "a whole number of copies per thread");
     const auto unit = idx.template unit_coord<2, 3>();
-    const U *base = (const U *)&src[unit];
     const int rs = int(src.template stride<2>());
-    const detail::hk_i32x4 r = detail::hk_tile_srsrc<ST::rows>(src, unit, base, limit);
+    const detail::hk_i32x4 r = detail::hk_copy_srsrc(src, unit.b, unit.d, unit.r, unit.c, limit);
     const int lane = laneid();
-    const int w = warpid_uniform() % NW;
+    // The warp from threadIdx.x rather than a readfirstlane, which LLVM
+    // never moves out of a loop: the per-lane offsets below depend only on
+    // the lane, the warp and the row stride, and are computed once.
+    const int w = int(threadIdx.x / WARP_THREADS) % NW;
     const uint32_t lds = __builtin_amdgcn_readfirstlane(
         uint32_t(reinterpret_cast<uintptr_t>(&dst.data[0])) + w * PER_WARP);
     #pragma unroll
@@ -693,6 +847,294 @@ __device__ inline static void group_load_async(ST &dst, const strided_gl<U> &src
         detail::hk_buf_ld_lds(r, (detail::hk_lds_ptr)(uintptr_t)(lds + i * PER_CALL), 16,
                               (row * rs + col) * int(sizeof(T)), 0, 0, 0);
     }
+}
+
+template<int NW, ducks::st::all ST, typename U, ducks::coord::tile COORD>
+__device__ inline static void group_load_async(ST &dst, const strided_gl<U> &src, const COORD &idx) {
+    group_load_async_rows<NW>(dst, src, idx, 0x7FFFFFFF);
+}
+template<int NW, ducks::st::all ST, typename U, ducks::coord::tile COORD>
+__device__ inline static void group_load_async(ST &dst, const strided_gl<U> &src, const COORD &idx,
+                                               int limit) {
+    group_load_async_rows<NW>(dst, src, idx, limit);
+}
+
+/*
+ * Row masks of a col-layout tile that leave nothing loop-invariant per
+ * element. include/cdna4's lower_fill and triu compute each element's row as
+ * a lane term plus a constant; inside a loop LLVM hoists those sums, one
+ * VGPR an element held across the whole loop (attention's KV walk: 16 more
+ * VGPRs, and a spill). Here the lane's terms are folded into the one runtime
+ * value the mask is compared against, and each element compares it with an
+ * immediate: its row offset from the lane's first row.
+ *
+ * An element (e of base tile i, j) of a col-layout tile sits at row
+ * S(l/C) + i R + (e/S) G + e%S and column l%C + j C (hk_frag_coord).
+ */
+namespace detail {
+/* `neg(c, jc)` is negative exactly where element (c, jc) is masked: an int
+ * whose sign bit decides. Masking an fp32 tile with -inf is then integer
+ * work on that sign bit -- a subtract, a shift and a bitfield insert an
+ * element, and no compare: a compare writes VCC, and gfx950 wants two wait
+ * states before a v_cndmask reads it (cmp, s_nop 1, cndmask for every
+ * element, measured). Other fills keep the select. */
+template<typename RT, typename F>
+__device__ inline void hk_col_rows_fill(RT &dst, const RT &src, F neg,
+                                        typename hk_frag<RT>::T val) {
+    using Fr = hk_frag<RT>;
+    using T = typename Fr::T;
+    const bool neg_inf = std::is_same_v<T, float> && val == -INFINITY;
+    if constexpr (std::is_same_v<T, float> && Fr::S % 2 == 0) {
+        if (neg_inf) {
+            // -inf where masked, +0 elsewhere, added a pair at a time in the
+            // pair's own registers: behind a branch, a sum in new registers
+            // makes every other path copy the tile into them. (A bit select
+            // LLVM turns back into cmp + cndmask; an fminf it canonicalizes.)
+            typedef float f2 __attribute__((ext_vector_type(2)));
+            auto mask = [&](int c, int jc) {
+                const uint32_t mb = uint32_t(__builtin_amdgcn_sbfe(neg(c, jc), 31, 1)) & 0xff800000u;
+                float add;
+                __builtin_memcpy(&add, &mb, sizeof(add));
+                return add;
+            };
+            #pragma unroll
+            for (int i = 0; i < RT::height; i++)
+                #pragma unroll
+                for (int j = 0; j < RT::width; j++)
+                    #pragma unroll
+                    for (int e = 0; e < Fr::E; e += 2) {
+                        const int c = i * Fr::R + (e / Fr::S) * Fr::G + e % Fr::S;
+                        const f2 add = {mask(c, j * Fr::C), mask(c + 1, j * Fr::C)};
+                        f2 s = {hk_get(src, i, j, e), hk_get(src, i, j, e + 1)};
+                        asm("v_pk_add_f32 %0, %0, %1" : "+v"(s) : "v"(add));
+                        hk_set(dst, i, j, e, s.x);
+                        hk_set(dst, i, j, e + 1, s.y);
+                    }
+            return;
+        }
+    }
+    #pragma unroll
+    for (int i = 0; i < RT::height; i++)
+        #pragma unroll
+        for (int j = 0; j < RT::width; j++)
+            #pragma unroll
+            for (int e = 0; e < Fr::E; e++) {
+                const int c = i * Fr::R + (e / Fr::S) * Fr::G + e % Fr::S;
+                const int n = neg(c, j * Fr::C);
+                if constexpr (std::is_same_v<T, float>) {
+                    if (neg_inf) {
+                        // -inf where masked, +0 elsewhere, added: a shift,
+                        // an and and an add. (A bit select LLVM turns back
+                        // into cmp + cndmask; an fminf it canonicalizes.)
+                        const uint32_t mb = uint32_t(__builtin_amdgcn_sbfe(n, 31, 1)) & 0xff800000u;
+                        float add;
+                        __builtin_memcpy(&add, &mb, sizeof(add));
+                        hk_set(dst, i, j, e, hk_get(src, i, j, e) + add);
+                        continue;
+                    }
+                }
+                hk_set(dst, i, j, e, n < 0 ? val : hk_get(src, i, j, e));
+            }
+}
+
+template<int N, typename F> __device__ inline void hk_static_for(F &&f) {
+    [&]<int... I>(std::integer_sequence<int, I...>) {
+        (f(std::integral_constant<int, I>{}), ...);
+    }(std::make_integer_sequence<int, N>{});
+}
+
+/* An element's key from its row offset c (from the lane's first row) and its
+ * base tile's first column jc; masked where the lane's t is below it. */
+struct hk_key_triu  { static constexpr int key(int c, int jc) { return c - jc; } };
+struct hk_key_lower { static constexpr int key(int c, int)    { return c + 1; } };
+
+template<typename RT, typename Key> constexpr bool hk_keys_inline() {
+    using Fr = hk_frag<RT>;
+    for (int i = 0; i < RT::height; i++)
+        for (int j = 0; j < RT::width; j++)
+            for (int e = 0; e < Fr::E; e++) {
+                const int k = Key::key(i * Fr::R + (e / Fr::S) * Fr::G + e % Fr::S, j * Fr::C);
+                if (k < -16 || k > 64) return false;
+            }
+    return Fr::E % 4 == 0;
+}
+
+/* Elements whose key is above the lane's t become -inf, in their own
+ * registers: four v_cmp into SGPR pairs, then four v_cndmask, so each select
+ * is three instructions after its compare (the wait states a VALU-written
+ * lane mask needs). Through VCC, LLVM put an s_nop between every compare and
+ * its select, and a mask value plus an add after it: seven issues a pair of
+ * elements against four. The keys are inline constants (hk_keys_inline). */
+template<typename Key, typename RT>
+__device__ inline void hk_ninf_where_key_above(RT &dst, int t) {
+    using Fr = hk_frag<RT>;
+    const uint32_t ninf_bits = 0xff800000u;
+    float ninf;
+    __builtin_memcpy(&ninf, &ninf_bits, sizeof(ninf));
+    hk_static_for<RT::height>([&](auto I) {
+        hk_static_for<RT::width>([&](auto J) {
+            hk_static_for<Fr::E / 4>([&](auto Q) {
+                constexpr int i = decltype(I)::value, j = decltype(J)::value;
+                constexpr int e = 4 * decltype(Q)::value;
+                constexpr int k0 = Key::key(i * Fr::R + ((e + 0) / Fr::S) * Fr::G + (e + 0) % Fr::S, j * Fr::C);
+                constexpr int k1 = Key::key(i * Fr::R + ((e + 1) / Fr::S) * Fr::G + (e + 1) % Fr::S, j * Fr::C);
+                constexpr int k2 = Key::key(i * Fr::R + ((e + 2) / Fr::S) * Fr::G + (e + 2) % Fr::S, j * Fr::C);
+                constexpr int k3 = Key::key(i * Fr::R + ((e + 3) / Fr::S) * Fr::G + (e + 3) % Fr::S, j * Fr::C);
+                float x0 = hk_get(dst, i, j, e), x1 = hk_get(dst, i, j, e + 1);
+                float x2 = hk_get(dst, i, j, e + 2), x3 = hk_get(dst, i, j, e + 3);
+                uint64_t m0, m1, m2, m3;
+                asm("v_cmp_lt_i32_e64 %4, %8, %10\n\t"
+                    "v_cmp_lt_i32_e64 %5, %8, %11\n\t"
+                    "v_cmp_lt_i32_e64 %6, %8, %12\n\t"
+                    "v_cmp_lt_i32_e64 %7, %8, %13\n\t"
+                    "v_cndmask_b32_e64 %0, %0, %9, %4\n\t"
+                    "v_cndmask_b32_e64 %1, %1, %9, %5\n\t"
+                    "v_cndmask_b32_e64 %2, %2, %9, %6\n\t"
+                    "v_cndmask_b32_e64 %3, %3, %9, %7"
+                    : "+v"(x0), "+v"(x1), "+v"(x2), "+v"(x3),
+                      "=s"(m0), "=s"(m1), "=s"(m2), "=s"(m3)
+                    : "v"(t), "v"(ninf), "n"(k0), "n"(k1), "n"(k2), "n"(k3));
+                hk_set(dst, i, j, e, x0);
+                hk_set(dst, i, j, e + 1, x1);
+                hk_set(dst, i, j, e + 2, x2);
+                hk_set(dst, i, j, e + 3, x3);
+            });
+        });
+    });
+}
+}  // namespace detail
+
+/** @brief Every element becomes -inf, in its own register. Behind a branch
+ * (attention's causal mask: a block wholly past the warp's queries) the plain
+ * constant fill leaves the branch empty and its moves are placed before it,
+ * in registers of their own, and every other path copies the tile into those
+ * (16 moves and 16 VGPRs a 32x32 tile, every step, measured). */
+template<int R, int C, typename S>
+__device__ inline static void neg_infty(rt<float, R, C, ducks::rt_layout::col, S> &dst) {
+    using RT = rt<float, R, C, ducks::rt_layout::col, S>;
+    #pragma unroll
+    for (int i = 0; i < RT::height; i++)
+        #pragma unroll
+        for (int j = 0; j < RT::width; j++)
+            #pragma unroll
+            for (int k = 0; k < RT::packed_per_base_tile; k++) {
+                float x, y;
+                asm volatile("v_mov_b32 %0, 0xff800000" : "=v"(x));
+                asm volatile("v_mov_b32 %0, 0xff800000" : "=v"(y));
+                dst.tiles[i][j].data[k] = {x, y};
+            }
+}
+
+/** @brief Rows at or past `row_idx` become `val`. */
+template<typename T, int R, int C, typename S>
+__device__ inline static void lower_fill(rt<T, R, C, ducks::rt_layout::col, S> &dst,
+                                         const rt<T, R, C, ducks::rt_layout::col, S> &src,
+                                         const int row_idx, const typename base_types::packing<T>::unpacked_type &val = 0) {
+    using RT = rt<T, R, C, ducks::rt_layout::col, S>;
+    using Fr = detail::hk_frag<RT>;
+    const int t = row_idx - Fr::S * (detail::hk_lane_opaque() / Fr::C);
+    // masked where c >= t
+    if constexpr (std::is_same_v<T, float> && detail::hk_keys_inline<RT, detail::hk_key_lower>()) {
+        if (val == -INFINITY) {
+            if (&dst != &src) dst = src;
+            detail::hk_ninf_where_key_above<detail::hk_key_lower>(dst, t);
+            return;
+        }
+    }
+    detail::hk_col_rows_fill(dst, src, [&](int c, int) { return t - 1 - c; }, val);
+}
+/** @brief Rows before `row_idx` become `val`. */
+template<typename T, int R, int C, typename S>
+__device__ inline static void upper_fill(rt<T, R, C, ducks::rt_layout::col, S> &dst,
+                                         const rt<T, R, C, ducks::rt_layout::col, S> &src,
+                                         const int row_idx, const typename base_types::packing<T>::unpacked_type &val = 0) {
+    using Fr = detail::hk_frag<rt<T, R, C, ducks::rt_layout::col, S>>;
+    const int t = row_idx - Fr::S * (detail::hk_lane_opaque() / Fr::C);
+    // masked where c < t
+    detail::hk_col_rows_fill(dst, src, [&](int c, int) { return c - t; }, val);
+}
+/** @brief Element (r, c) becomes `val` where c < r - row_idx, as include/cdna4's triu. */
+template<typename T, int R, int C, typename S>
+__device__ inline static void triu(rt<T, R, C, ducks::rt_layout::col, S> &dst,
+                                   const rt<T, R, C, ducks::rt_layout::col, S> &src,
+                                   const int row_idx, const typename base_types::packing<T>::unpacked_type &val = 0) {
+    using RT = rt<T, R, C, ducks::rt_layout::col, S>;
+    using Fr = detail::hk_frag<RT>;
+    const int lane = detail::hk_lane_opaque();
+    const int t = lane % Fr::C - Fr::S * (lane / Fr::C) + row_idx;
+    // masked where c - jc > t
+    if constexpr (std::is_same_v<T, float> && detail::hk_keys_inline<RT, detail::hk_key_triu>()) {
+        if (val == -INFINITY) {
+            if (&dst != &src) dst = src;
+            detail::hk_ninf_where_key_above<detail::hk_key_triu>(dst, t);
+            return;
+        }
+    }
+    detail::hk_col_rows_fill(dst, src, [&](int c, int jc) { return t - (c - jc); }, val);
+}
+/** @brief Element (r, c) becomes `val` where c > r - row_idx, as include/cdna4's tril. */
+template<typename T, int R, int C, typename S>
+__device__ inline static void tril(rt<T, R, C, ducks::rt_layout::col, S> &dst,
+                                   const rt<T, R, C, ducks::rt_layout::col, S> &src,
+                                   const int row_idx, const typename base_types::packing<T>::unpacked_type &val = 0) {
+    using Fr = detail::hk_frag<rt<T, R, C, ducks::rt_layout::col, S>>;
+    const int lane = detail::hk_lane_opaque();
+    const int t = lane % Fr::C - Fr::S * (lane / Fr::C) + row_idx;
+    // masked where c - jc < t
+    detail::hk_col_rows_fill(dst, src, [&](int c, int jc) { return (c - jc) - t; }, val);
+}
+
+/*
+ * An MFMA accumulator's registers, read as an operand fragment (hk's
+ * as_operand). No instruction: each lane already holds the operand's
+ * elements, with the reduction index running down the rows in the
+ * accumulator's order.
+ *
+ * A 32x32 accumulator's lane l holds rows 4(l/32) + 8k + s (k < 4, s < 4)
+ * of its column l%32. A 16x32 stride-4 col operand's lane holds rows
+ * 4(l/32) + 8k + s (k < 2) of the same column: the top and bottom 16 rows of
+ * the accumulator are two such fragments, in register order. A 16x16
+ * accumulator's lane holds rows 4(l/16) + s of column l%16, and a 32x16
+ * stride-4 col operand rows 4(l/16) + 16k + s: two accumulators stacked.
+ */
+namespace detail {
+template<typename D, typename S> __device__ inline D hk_as_elem(const S &x) { return x; }
+template<> __device__ inline bf16_2 hk_as_elem<bf16_2, float2>(const float2 &x) {
+    return hk_cvt_pk_bf16(x.x, x.y);
+}
+}  // namespace detail
+
+/* Packed pair by packed pair; fp32 -> bf16 converts each (to nearest even,
+ * the compiler's own v_cvt_pk_bf16_f32: see copy() above for why not the
+ * library's inline-asm one). */
+template<typename T, typename U, int R, int C>
+__device__ inline static void as_operand(rt<T, R, C, ducks::rt_layout::col, ducks::rt_shape::rt_16x32_4> &dst,
+                                         const rt<U, R, C, ducks::rt_layout::col, ducks::rt_shape::rt_32x32> &src) {
+    using D = rt<T, R, C, ducks::rt_layout::col, ducks::rt_shape::rt_16x32_4>;
+    #pragma unroll
+    for (int i = 0; i < D::height; i++)
+        #pragma unroll
+        for (int j = 0; j < D::width; j++)
+            #pragma unroll
+            for (int k = 0; k < D::packed_per_base_tile; k++)
+                dst.tiles[i][j].data[k] = detail::hk_as_elem<typename D::dtype>(
+                    src.tiles[i / 2][j].data[(i % 2) * D::packed_per_base_tile + k]);
+}
+template<typename T, typename U, int R, int C>
+__device__ inline static void as_operand(rt<T, R, C, ducks::rt_layout::col, ducks::rt_shape::rt_32x16_4> &dst,
+                                         const rt<U, R, C, ducks::rt_layout::col, ducks::rt_shape::rt_16x16> &src) {
+    using D = rt<T, R, C, ducks::rt_layout::col, ducks::rt_shape::rt_32x16_4>;
+    constexpr int per = D::base_tile_packed_per_stride;
+    #pragma unroll
+    for (int i = 0; i < D::height; i++)
+        #pragma unroll
+        for (int j = 0; j < D::width; j++)
+            #pragma unroll
+            for (int k = 0; k < 2; k++)
+                #pragma unroll
+                for (int p = 0; p < per; p++)
+                    dst.tiles[i][j].data[k * per + p] = detail::hk_as_elem<typename D::dtype>(
+                        src.tiles[2 * i + k][j].data[p]);
 }
 #endif
 

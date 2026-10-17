@@ -54,3 +54,24 @@ func.func @types(%g: !hk.gl<bf16>) attributes {hk.kernel} {
   hk.pingpong_end %behind
   return
 }
+
+// gfx950 attention's forms: a 32x32 accumulator, a half of it, the operand
+// read off its registers (a 16x32 fragment with a lane run of 4), the vote on
+// the running max, and the pin that holds values to their phase.
+
+// CHECK-LABEL: func.func @cdna_attention
+func.func @cdna_attention(%s: !hk.rt<f32, 64x32, col, frag 32x32>,
+                          %m: !hk.rv<f32, 64x32, col, row, frag 32x32>) {
+  // CHECK: hk.rt_subtile %{{.*}}[1] : !hk.rt<f32, 64x32, col, frag 32x32> -> !hk.rt<f32, 32x32, col, frag 32x32>
+  %h = hk.rt_subtile %s[1] : !hk.rt<f32, 64x32, col, frag 32x32> -> !hk.rt<f32, 32x32, col, frag 32x32>
+  hk.exp2 %h into %h : !hk.rt<f32, 32x32, col, frag 32x32> into !hk.rt<f32, 32x32, col, frag 32x32>
+  // CHECK: hk.zero -> !hk.rt<bf16, 64x32, col, frag 16x32 stride 4>
+  %p = hk.zero -> !hk.rt<bf16, 64x32, col, frag 16x32 stride 4>
+  // CHECK: hk.as_operand %{{.*}} into %{{.*}} : !hk.rt<f32, 64x32, col, frag 32x32> into !hk.rt<bf16, 64x32, col, frag 16x32 stride 4>
+  hk.as_operand %s into %p : !hk.rt<f32, 64x32, col, frag 32x32> into !hk.rt<bf16, 64x32, col, frag 16x32 stride 4>
+  // CHECK: hk.any_above %{{.*}}, %{{.*}}, 8.000000e+00
+  %g = hk.any_above %m, %m, 8.0 : !hk.rv<f32, 64x32, col, row, frag 32x32>, !hk.rv<f32, 64x32, col, row, frag 32x32>
+  // CHECK: hk.pin %{{.*}}, %{{.*}} : !hk.rt<bf16, 64x32, col, frag 16x32 stride 4>, !hk.rv<f32, 64x32, col, row, frag 32x32>
+  hk.pin %p, %m : !hk.rt<bf16, 64x32, col, frag 16x32 stride 4>, !hk.rv<f32, 64x32, col, row, frag 32x32>
+  return
+}

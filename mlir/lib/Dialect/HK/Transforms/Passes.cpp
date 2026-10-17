@@ -267,6 +267,8 @@ static int estimateVgprs(func::FuncOp f, const TargetInfo &tgt) {
   for (auto [i, op] : llvm::enumerate(ops)) {
     for (Value r : op->getResults()) {
       Type t = r.getType();
+      if (isa<RegSubtileOp>(op))
+        continue;             // registers of a tile already counted
       if (auto rt = dyn_cast<RegTileType>(t); rt && rt.isStrip())
         // Unreplicated: rows * cols elements over 32 lanes, packed in dwords.
         live[r] = int(rt.getRows() * rt.getCols() / 32 *

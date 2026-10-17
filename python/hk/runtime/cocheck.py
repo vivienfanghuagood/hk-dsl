@@ -24,7 +24,7 @@ The wait scan is a linear walk of each kernel's instructions, done twice so
 a load at the bottom of a loop that is consumed at its top is seen. It
 models the counters as in-order queues of loads (`lgkmcnt(n)` / `dscnt`
 leaves the newest n LDS loads in flight, `vmcnt(n)` / `loadcnt` the newest
-n vector-memory loads), which over-approximates what is in flight when
+n vector-memory loads, copies into LDS among them), which over-approximates what is in flight when
 scalar loads or stores share a counter: a report can be a false alarm, a
 clean pass is only as good as the linear walk is for the kernel's control
 flow.
@@ -248,7 +248,12 @@ class _Walker:
                 vmem = [(d - dst, l) for d, l in vmem]
         if _LDS_LOAD.match(mnem) and ops:
             lds = lds + [(_regs(ops[0]), ins.text)]
-        elif _VMEM_LOAD.match(mnem) and ops and not re.search(r"\blds\b", rest):
+        elif _VMEM_LOAD.match(mnem) and ops and re.search(r"\blds\b", rest):
+            # gfx950's DMA into LDS writes no register but takes its place in
+            # vmcnt's order: without it, a load into registers issued before
+            # the copies looks unretired by the wait that does retire it.
+            vmem = vmem + [(set(), ins.text)]
+        elif _VMEM_LOAD.match(mnem) and ops:
             vmem = vmem + [(_regs(ops[0]), ins.text)]
         elif self.stores_in_vmcnt and mnem.startswith(("buffer_store", "global_store",
                                                        "flat_store", "scratch_store")):
