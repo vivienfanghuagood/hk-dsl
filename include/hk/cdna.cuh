@@ -492,7 +492,8 @@ template<int N> __device__ inline void hk_buf_load_bytes(hk_i32x4 r, uint32_t of
     else if constexpr (N == 8) { const uint64_t x = hk_buf_ld64(r, off, 0, 0); __builtin_memcpy(dst, &x, 8); }
     else if constexpr (N == 4) { const uint32_t x = hk_buf_ld32(r, off, 0, 0); __builtin_memcpy(dst, &x, 4); }
     else if constexpr (N == 2) { const uint16_t x = hk_buf_ld16(r, off, 0, 0); __builtin_memcpy(dst, &x, 2); }
-    else static_assert(N == 16, "a run of 2, 4, 8 or a multiple of 16 bytes");
+    else if constexpr (N == 1) { const uint8_t x = hk_buf_ld8(r, off, 0, 0); __builtin_memcpy(dst, &x, 1); }
+    else static_assert(N == 16, "a run of 1, 2, 4, 8 or a multiple of 16 bytes");
 }
 template<int N> __device__ inline void hk_buf_store_bytes(hk_i32x4 r, uint32_t off, const void *src) {
     if constexpr (N % 16 == 0) {
@@ -505,7 +506,8 @@ template<int N> __device__ inline void hk_buf_store_bytes(hk_i32x4 r, uint32_t o
     else if constexpr (N == 8) { uint64_t x; __builtin_memcpy(&x, src, 8); hk_buf_st64(x, r, off, 0, 0); }
     else if constexpr (N == 4) { uint32_t x; __builtin_memcpy(&x, src, 4); hk_buf_st32(x, r, off, 0, 0); }
     else if constexpr (N == 2) { uint16_t x; __builtin_memcpy(&x, src, 2); hk_buf_st16(x, r, off, 0, 0); }
-    else static_assert(N == 16, "a run of 2, 4, 8 or a multiple of 16 bytes");
+    else if constexpr (N == 1) { uint8_t x; __builtin_memcpy(&x, src, 1); hk_buf_st8(x, r, off, 0, 0); }
+    else static_assert(N == 16, "a run of 1, 2, 4, 8 or a multiple of 16 bytes");
 }
 
 /**
@@ -1905,10 +1907,12 @@ __device__ inline void strip_read(U (&run)[RUN], const U *p) {
     } else if constexpr (BYTES == 4) {
         const uint32_t v = *reinterpret_cast<const uint32_t*>(p);
         __builtin_memcpy((void*)&run[0], &v, 4);
-    } else {
-        static_assert(BYTES == 2, "a run is 2, 4, 8 or a multiple of 16 bytes");
+    } else if constexpr (BYTES == 2) {
         const uint16_t v = *reinterpret_cast<const uint16_t*>(p);
         __builtin_memcpy((void*)&run[0], &v, 2);
+    } else {
+        static_assert(BYTES == 1, "a run is 1, 2, 4, 8 or a multiple of 16 bytes");
+        __builtin_memcpy((void*)&run[0], (const void*)p, 1);
     }
 }
 
@@ -1928,10 +1932,12 @@ __device__ inline void strip_write(U *p, const U (&run)[RUN]) {
     } else if constexpr (BYTES == 4) {
         uint32_t v; __builtin_memcpy(&v, (const void*)&run[0], 4);
         *reinterpret_cast<uint32_t*>(p) = v;
-    } else {
-        static_assert(BYTES == 2, "a run is 2, 4, 8 or a multiple of 16 bytes");
+    } else if constexpr (BYTES == 2) {
         uint16_t v; __builtin_memcpy(&v, (const void*)&run[0], 2);
         *reinterpret_cast<uint16_t*>(p) = v;
+    } else {
+        static_assert(BYTES == 1, "a run is 1, 2, 4, 8 or a multiple of 16 bytes");
+        __builtin_memcpy((void*)p, (const void*)&run[0], 1);
     }
 }
 
