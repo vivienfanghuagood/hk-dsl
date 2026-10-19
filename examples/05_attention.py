@@ -21,6 +21,11 @@ shipped kernel (hk.attention, hk/ops/attn.py) shares them across 12 warps
 through LDS and is several times faster. Sequence lengths have to be
 multiples of 32 here.
 
+On gfx950 (wave64, the MFMA) the same walk is written with a 32-key block
+in one tile: Sᵀ = K·Qᵀ in 16x16 accumulators, and Pᵀ read in place as the
+operand of Oᵀ += Vᵀ·Pᵀ (`as_operand`: no register moves; V is read with the
+same lane run). The shipped gfx950 kernel is hk/ops/attn_cdna.py.
+
     python3 examples/05_attention.py
     python3 examples/05_attention.py --causal
 """
@@ -41,6 +46,48 @@ T_V = hk.RT(hk.bf16, 16, 16, "row")       # 16 keys x 16 of d
 VEC = hk.row_vec(T_S)                     # one value per query
 
 
+@hk.func
+def _wave64_body(q, k, v, o, head_dim, causal, scale):
+    """The walk on gfx950: one 32-key block a step, whole tiles."""
+    T_Qw = hk.RT(hk.bf16, 16, head_dim, "row")    # 16 queries
+    T_Kw = hk.RT(hk.bf16, KV, head_dim, "row")    # a block of keys
+    T_Vw = hk.RT(hk.bf16, KV, head_dim, "col")    # its values, read with P's run
+    T_Sw = hk.RT(hk.fp32, KV, 16, "col")          # Sᵀ: keys x queries
+    T_Pw = hk.RT(hk.bf16, KV, 16, "col", frag=(32, 16, 4))   # Pᵀ, as an operand
+    T_Ow = hk.RT(hk.fp32, head_dim, 16, "col")    # Oᵀ: d x queries
+    vec = hk.row_vec(T_Sw)
+    b, h = hk.arch.block_idx.z, hk.arch.block_idx.y
+    q0 = hk.arch.block_idx.x * 16
+    q_r = q[hk.elem_coord(b, h, q0, 0)].load(T_Qw)
+    o_t = hk.zeros(T_Ow)
+    m = hk.neg_infty(vec)
+    l = hk.zeros(vec)
+    s = hk.zeros(T_Sw)
+    p = hk.zeros(T_Pw)
+    kv_end = hk.min(k.rows, q0 + 16) if causal else k.rows
+    for kv0 in range(0, kv_end, KV):
+        kf = k[hk.elem_coord(b, h, kv0, 0)].load(T_Kw)
+        s.zero_()
+        s += kf @ q_r.T                                    # Sᵀ += K·Qᵀ
+        s *= scale
+        if causal:
+            s.triu_(q0 - kv0, NEG_INF)
+        m_old = m.copy()
+        m.max_(s.max(axis=0))
+        s -= m[None, :]
+        s.exp2_()
+        if m.any_ne(m_old):
+            alpha = (m_old - m).exp2()
+            l *= alpha
+            o_t *= hk.as_vec(alpha, T_Ow)[None, :]
+        l += s.sum(axis=0)
+        s.as_operand(hk.bf16, into=p)                     # Pᵀ, in place
+        vf = v[hk.elem_coord(b, h, kv0, 0)].load(T_Vw)
+        o_t += vf.T @ p                                    # Oᵀ += Vᵀ·Pᵀ
+    o_t /= hk.as_vec(l, T_Ow)[None, :]
+    o[hk.elem_coord(b, h, q0, 0)] = hk.transpose(o_t)
+
+
 def attention_kernel(head_dim: int = 128, causal: bool = False):
     d_frags, kv_frags = head_dim // 16, KV // 16
     scale = head_dim ** -0.5 * math.log2(math.e)   # exp2, so fold log2(e) in
@@ -49,6 +96,9 @@ def attention_kernel(head_dim: int = 128, causal: bool = False):
                grid=lambda p: (hk.cdiv(p.q.rows, 16), p.q.depth, p.q.batch))
     def attention(q: hk.Tensor[hk.bf16], k: hk.Tensor[hk.bf16],
                   v: hk.Tensor[hk.bf16], o: hk.Tensor[hk.bf16]):
+        if hk.arch.target().wave == 64:
+            _wave64_body(q, k, v, o, head_dim, causal, scale)
+            return
         b, h = hk.arch.block_idx.z, hk.arch.block_idx.y
         q0 = hk.arch.block_idx.x * 16
         q_r = [q[hk.elem_coord(b, h, q0, 16 * kk)].load(T_Q) for kk in range(d_frags)]

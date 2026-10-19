@@ -36,17 +36,30 @@ def test_the_code_object_op_writes_what_the_library_op_writes(monkeypatch):
     assert torch.equal(a, b)
 
 
-def test_a_kernel_with_all_64_kb_of_lds_launches():
-    """The two-buffer GEMM holds 2 x (128 + 128) x 64 bf16: the whole of a
-    gfx11 workgroup's LDS, asked for at launch with no attribute set."""
+def _gemm_with_all_its_lds():
+    """(kernel, LDS bytes, (M, N, K)): on gfx11 the two-buffer GEMM, 2 x
+    (128 + 128) x 64 bf16, the whole of a workgroup's LDS; on gfx950 the
+    pingpong GEMM's 128 KB, twice what a launch gets without the attribute."""
+    from hk.target import current_arch  # noqa: PLC0415
+
+    if current_arch() == "gfx950":
+        from hk.ops import gemm_cdna  # noqa: PLC0415
+
+        return gemm_cdna.kernel_for(gemm_cdna.DEFAULT), 128 * 1024, (512, 512, 512)
     from hk.ops import gemm  # noqa: PLC0415
 
-    k = gemm.gemm_kernel("co_test_gemm_lds2", lds_buffers=2)
+    return gemm.gemm_kernel("co_test_gemm_lds2", lds_buffers=2), 64 * 1024, (256, 384, 512)
+
+
+def test_a_kernel_with_all_its_lds_launches():
+    """A GEMM that asks for all the LDS it is allowed, at launch, with no
+    attribute set."""
+    k, lds, (m, n, kk) = _gemm_with_all_its_lds()
     co = codeobj.load(k)
-    assert co.shmem == 64 * 1024
-    a = torch.randn(256, 512, device="cuda", dtype=torch.bfloat16)
-    b = torch.randn(384, 512, device="cuda", dtype=torch.bfloat16)
-    want, got = (torch.empty(256, 384, device="cuda", dtype=torch.bfloat16)
+    assert co.shmem == lds
+    a = torch.randn(m, kk, device="cuda", dtype=torch.bfloat16)
+    b = torch.randn(n, kk, device="cuda", dtype=torch.bfloat16)
+    want, got = (torch.empty(m, n, device="cuda", dtype=torch.bfloat16)
                  for _ in range(2))
     k(a, b, want)
     shapes, ptrs, rows = codeobj.tensor_args(co, (a, b, got), "gemm")
