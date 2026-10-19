@@ -27,13 +27,10 @@ mkdir -p "$RUN" "$OUT" "$STATE/x950/ci"
 NAME=hk-gha-gfx950-$KEY
 trap 'docker rm -f "$NAME" >/dev/null 2>&1; exit 130' INT TERM
 
-# Under 10% use and 3% VRAM, and not the GPU of ~/hk-ci's local_run.sh, whose
-# container may not have touched it yet.
+# Under 10% use and 3% VRAM.
 pick() {
-    local busy g out use mem
-    busy=$(ps -u "$(id -un)" -o args= | sed -n 's/.*local_run\.sh [0-9a-f]\{40\} \([0-7]\).*/\1/p' | tr '\n' ' ')
+    local g out use mem
     for g in 0 1 2 3 4 5 6 7; do
-        [[ " $busy " == *" $g "* ]] && continue
         out=$(rocm-smi -d $g --showuse --showmemuse 2>/dev/null)
         use=$(grep -o "GPU use (%): [0-9]*" <<<"$out" | grep -o "[0-9]*$")
         mem=$(grep -o "VRAM%): [0-9]*" <<<"$out" | grep -o "[0-9]*$")
