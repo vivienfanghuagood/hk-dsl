@@ -89,14 +89,24 @@ def one_arm(args, backend: str) -> dict:
     defaults = os.environ.get("HK_VLLM_DEFAULTS", "0") == "1"
     knobs = {} if defaults else dict(enable_prefix_caching=False,
                                      enable_chunked_prefill=False)
+    t_start = time.perf_counter()
     llm = LLM(model=args.model, dtype=args.dtype, block_size=32,
               max_model_len=max(ctxs) + args.tokens + 64,
               max_num_seqs=max(batches),
               gpu_memory_utilization=float(os.environ.get("HK_GPU_UTIL", "0.90")),
               attention_backend=sel,
               enforce_eager=os.environ.get("HK_EAGER", "1") == "1", **knobs)
+    out = {"_startup": {"engine_s": round(time.perf_counter() - t_start, 1)}}
+    if "gemm" in want:
+        from . import vllm_autotune
+
+        out["_startup"]["routes"] = dict(vllm_autotune.REPORT)
+    print(f"  engine built in {out['_startup']['engine_s']:.1f} s"
+          + (f"; linear routes at load: "
+             f"{vllm_autotune.REPORT.get('line', 'nothing measured (no hook installed)')}, "
+             f"{vllm_autotune.REPORT.get('seconds', 0.0):.1f} s" if "gemm" in want else ""),
+          flush=True)
     tok = llm.get_tokenizer()
-    out = {}
     salt = iter(range(1 << 30))
     for n_ctx in ctxs:
         for n_req in batches:
@@ -211,10 +221,16 @@ def main(argv=None) -> int:
         print("stock failed every round; nothing to compare against")
         return 1
 
-    best, toks = {}, {}
+    best, toks, starts, rounds = {}, {}, {}, {}
     for arm, fs in files.items():
         for f in fs:
-            for k, v in json.loads(Path(f).read_text()).items():
+            got = json.loads(Path(f).read_text())
+            rounds.setdefault(arm, []).append(
+                {k: {m: v[m] for m in ("min", "short", "prefill")}
+                 for k, v in got.items() if not k.startswith("_")})
+            for k, v in got.items():
+                if k == "_startup":
+                    starts.setdefault(arm, []).append(v)
                 if k.startswith("_"):
                     continue
                 b = best.setdefault(arm, {}).setdefault(
@@ -264,8 +280,23 @@ def main(argv=None) -> int:
                      min(len(ref), len(got)))
             same.append(f"{arm} {n}/{len(ref)}")
         print(f"{k:>12}  " + ", ".join(same))
+    if starts:
+        print("\nengine start (s), round by round; of it, measuring linear routes at load")
+        for arm in arms:
+            if arm not in starts:
+                continue
+            row = "  ".join(
+                f"{s['engine_s']:7.1f}" + (f" ({s['routes'].get('seconds', 0.0):.1f})"
+                                           if "routes" in s else "")
+                for s in starts[arm])
+            print(f"{arm:>12}  {row}")
+        for arm in arms:
+            for i, s in enumerate(starts.get(arm, [])):
+                if s.get("routes", {}).get("line"):
+                    print(f"  {arm} round {i}: {s['routes']['line']}")
     if args.out:
-        Path(args.out).write_text(json.dumps(best, indent=2))
+        Path(args.out).write_text(json.dumps(
+            {**best, "_startup": starts, "_rounds": rounds}, indent=2))
     return 0
 
 

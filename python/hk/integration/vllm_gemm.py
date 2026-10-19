@@ -11,10 +11,14 @@ Where each call goes is a measured table, not a rule:
 tools/hk-bench/route_tune.py, which times the engine's path, the prefill GEMM
 and the decode GEMV on each (N, K) of the model at every M up to 64, every 16
 rows to 1024 and coarser above -- each gated against fp32 first -- and routes
-an M to a kernel only where it won by 3%. `$HK_VLLM_ROUTES` names another
-table. A shape the table has never seen takes vLLM's path, as does every
-shape on an arch with no table. See `engine.RouteTable` for how an M between
-two measured ones is answered.
+an M to a kernel only where it won by 3%. Shapes this machine measured
+(`hk.autotune.routes`) are laid over it, and the patch measures the loaded
+model's shapes the table lacks when vLLM loads it (`vllm_autotune`), within
+`HK_AUTOTUNE_BUDGET`; `python -m hk.integration tune --model X` does the
+same before the server starts. `$HK_VLLM_ROUTES` names another table, which
+is then the whole table. A shape nobody measured takes vLLM's path, as does
+every shape on an arch with no table. See `engine.RouteTable` for how an M
+between two measured ones is answered.
 
 The table replaces four hand-written lines because the GEMM's time is a comb
 in M, not a curve: the last 128-row block is computed whole however little of
@@ -91,12 +95,30 @@ PATCH = engine.Op("hk_vllm::linear",
 STATS = PATCH.stats
 
 
+def engine_name() -> Optional[str]:
+    """The name of the path vLLM's linear runs here, as the tuner records it,
+    or None outside a process that has imported vLLM."""
+    import sys  # noqa: PLC0415
+
+    if "vllm" not in sys.modules:
+        return None
+    from ..autotune import routes as _routes  # noqa: PLC0415
+
+    try:
+        return _routes.engine_path("vllm")[1]
+    except Exception:  # noqa: BLE001 -- a name is for filtering, not for failing
+        return None
+
+
 def routes() -> Optional[engine.RouteTable]:
-    """The routing table for this process's arch, or None. Loaded once."""
+    """The routing table for this process's arch, or None: the shipped one
+    with this machine's measured shapes over it (`engine.shipped_table`).
+    Loaded once; `set_routes(None)` reloads it."""
     if not _TABLE:
         from ..target import current_arch  # noqa: PLC0415
 
-        _TABLE.append(engine.shipped_table("vllm_linear", current_arch(), ROUTES_ENV))
+        _TABLE.append(engine.shipped_table("vllm_linear", current_arch(), ROUTES_ENV,
+                                           engine=engine_name()))
     return _TABLE[0]
 
 
@@ -327,10 +349,21 @@ def apply() -> str:
     _ORIG_DISPATCH = vu.dispatch_unquantized_gemm
     names = _common.rebind(PREFIXES, _ORIG_DISPATCH, dispatch_unquantized_gemm)
     cache = _own_compile_cache()
-    return (f"linear -> hk where {table.source} measured it faster, on "
-            f"{len(list(table.shapes()))} shapes ({len(names)} binding"
-            f"{'' if len(names) == 1 else 's'} rebound; compile cache {cache})"
-            + optional_status(table))
+    from . import vllm_autotune  # noqa: PLC0415
+
+    return (f"linear -> hk where {table_status(table)} measured it faster "
+            f"({len(names)} binding{'' if len(names) == 1 else 's'} rebound; "
+            f"compile cache {cache})" + optional_status(table)
+            + f"; {vllm_autotune.install()}")
+
+
+def table_status(table: engine.RouteTable) -> str:
+    """Where a table's shapes were measured, for a patch's report line."""
+    by: Dict[str, int] = {}
+    for src in table.origin.values():
+        by[src] = by.get(src, 0) + 1
+    return ", ".join(f"{src or 'records'} ({n} shape{'s' * (n != 1)})"
+                     for src, n in by.items()) or "no table"
 
 
 def optional_status(table: engine.RouteTable) -> str:

@@ -29,6 +29,14 @@ sys.path.insert(0, str(REPO / "python"))
 # now it is recognised, so the pin has to be said. HK_ARCH set by hand wins.
 os.environ.setdefault("HK_ARCH", "gfx1100")
 
+# Records this machine's tuning wrote -- routes for a model someone measured
+# here -- would change what the shipped tables are tested to say. The tests
+# read the shipped ones, and write only into a directory of their own.
+if "HK_TUNE_DIR" not in os.environ:
+    import tempfile
+
+    os.environ["HK_TUNE_DIR"] = tempfile.mkdtemp(prefix="hk-tune-tests-")
+
 
 def _hipcc_works() -> bool:
     exe = shutil.which("hipcc") or "/opt/rocm/bin/hipcc"

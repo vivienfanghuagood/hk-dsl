@@ -3,6 +3,7 @@
     python3 -m hk.integration --status          # what is importable, what is patched
     python3 -m hk.integration --warm -j 32      # build the torch ops ahead of time
     python3 -m hk.integration ab --arms user    # end-to-end A/B in vLLM (hk.integration.ab)
+    python3 -m hk.integration tune --model M    # measure M's linear routes (hk.integration.tune)
 
 `--warm` is the half of "no JIT on the serving path" that `hk.autotune --aot`
 does not cover. The two fill different cache entries: a torch registration is
@@ -47,6 +48,10 @@ def main(argv=None) -> int:
         from .ab import main as ab_main  # noqa: PLC0415
 
         return ab_main(argv[1:])
+    if argv[:1] == ["tune"]:
+        from .tune import main as tune_main  # noqa: PLC0415
+
+        return tune_main(argv[1:])
     ap = argparse.ArgumentParser(prog="python3 -m hk.integration",
                                  description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)

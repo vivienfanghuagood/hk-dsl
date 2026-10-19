@@ -29,9 +29,7 @@ fp32 reference before it is timed, and variants interleave in one process.
 from __future__ import annotations
 
 import argparse
-import glob
 import json
-import os
 import sys
 from pathlib import Path
 
@@ -49,37 +47,7 @@ ROTATE_BYTES = 3 * 96 * 2**20
 #: head's M is a sequence count, never a prefill's token count.
 MAX_SEQS = 256
 
-
-def model_config(name: str) -> dict:
-    """config.json out of the local HF cache -- the pods have no network."""
-    if os.path.isfile(name):
-        return json.loads(Path(name).read_text())
-    root = os.environ.get("HF_HOME", os.path.expanduser("~/.cache/huggingface"))
-    pat = os.path.join(root, "hub", f"models--{name.replace('/', '--')}",
-                       "snapshots", "*", "config.json")
-    hits = sorted(glob.glob(pat))
-    if not hits:
-        raise SystemExit(f"no config.json for {name} under {pat}")
-    return json.loads(Path(hits[-1]).read_text())
-
-
-def linear_shapes(cfg: dict, tp: int = 1):
-    """(name, N, K, calls per step) for every unquantized linear of a dense
-    decoder, sharded the way vLLM shards them at tensor-parallel size `tp`."""
-    hid = cfg["hidden_size"]
-    heads = cfg["num_attention_heads"]
-    kv = cfg.get("num_key_value_heads", heads)
-    hd = cfg.get("head_dim", hid // heads)
-    inter = cfg["intermediate_size"]
-    layers = cfg["num_hidden_layers"]
-    vocab = cfg["vocab_size"]
-    return [
-        ("qkv", (heads + 2 * kv) * hd // tp, hid, layers),
-        ("o", hid, heads * hd // tp, layers),
-        ("gate_up", 2 * inter // tp, hid, layers),
-        ("down", hid, inter // tp, layers),
-        ("lm_head", vocab // tp, hid, 1),
-    ]
+from hk.autotune.routes import linear_shapes, model_config  # noqa: E402,F401
 
 
 def main() -> int:

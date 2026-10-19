@@ -68,10 +68,17 @@ a call of a given shape should go to. `tools/hk-bench/route_tune.py` writes
 them, and `hk.integration.engine.RouteTable` reads them. Each keeps the raw
 timings it decided from, the toolchain fingerprint and the margin (a kernel
 takes an M only where it beat the engine by `min_gain`). A table is per
-engine, per arch and per model: a shape it never measured takes the engine's
-path. Shipped: vLLM's and SGLang's linear layers on gfx1100, and vLLM's on
-gfx950, where the candidate is HipKittens' CDNA4 GEMM (`hk.ops.hipkittens`)
-rather than hk's.
+engine, per arch and per model. Shipped: vLLM's and SGLang's linear layers
+on gfx1100, and vLLM's on gfx950, where the candidate is HipKittens' CDNA4
+GEMM (`hk.ops.hipkittens`) rather than hk's.
+
+A shape no shipped table has is measured on the machine that runs it, by the
+same code (`hk.autotune.routes`): `python -m hk.integration tune --model X`,
+or vLLM's linear patch when it loads a model, within `HK_AUTOTUNE_BUDGET`.
+Those land beside the schedule records, in `$HK_TUNE_DIR` as a file of the
+same format with each shape's own measurement metadata, and override the
+shipped entry for the same (N, K), as user schedule records do;
+`HK_AUTOTUNE=0` ignores them.
 
 A table measured with FlyDSL installed also carries, per shape, a `prefer`
 overlay: `[lo, hi, tile]` ranges where FlyDSL's GEMM, at the tile its

@@ -189,13 +189,19 @@ class Op(Patch):
 class RouteTable:
     """Measured winners: for each (N, K), which path each measured M took.
 
-    Written by tools/hk-bench/route_tune.py, never by hand. A shape's entry is
+    Written by the tuner (`hk.autotune.routes`, through route_tune.py, `python
+    -m hk.integration tune` or vLLM's load), never by hand. A shape's entry is
     a list of runs `[lo, hi, path]`: every measured M in [lo, hi] had `path`
     as its fastest by the tuner's margin. An M inside a run takes its path.
     An M between two runs lies between two measured Ms that disagreed, so it
     takes `fallback` -- the table does not guess which side of a tooth it is
     on. Above the largest measured M it takes the path measured there; below
-    the smallest, and for a shape never measured, `fallback`.
+    the smallest, and for a shape never measured, `fallback`. An entry whose
+    grid a budget cut short is `partial`, and its `above` is `fallback`.
+
+    **This machine's records.** `shipped_table` overlays the shapes this
+    machine measured on the shipped table, each replacing the shipped entry
+    for its (N, K) whole; `origin` says which file each shape came from.
 
     No buckets. GEMM time is a comb in M, not a curve, and a power-of-two
     bucket either routes the teeth or gives up the gaps between them.
@@ -222,36 +228,67 @@ class RouteTable:
         self._lows: Dict[Tuple[int, int], List[int]] = {}
         self._above: Dict[Tuple[int, int], str] = {}
         self._prefer: Dict[Tuple[int, int], List[Tuple[str, int, float, str]]] = {}
+        #: Where each shape's entry came from: `source`, or an overlay's.
+        self.origin: Dict[Tuple[int, int], str] = {}
+        #: Shapes whose grid was cut short (a tuning budget ran out): they
+        #: answer only up to the largest M measured.
+        self.partial: set = set()
         for nk, ent in shapes.items():
-            rs = sorted((int(lo), int(hi), str(p)) for lo, hi, p in ent["runs"])
-            for (_, hi, _), (lo2, _, _) in zip(rs, rs[1:]):
-                if lo2 <= hi:
-                    raise ValueError(f"{source}: runs for {nk} overlap at M={lo2}")
-            self._runs[nk] = rs
-            self._lows[nk] = [r[0] for r in rs]
-            self._above[nk] = str(ent.get("above", rs[-1][2] if rs else fallback))
-            pref = [(str(path), int(lo), float("inf") if hi is None else int(hi), str(var))
-                    for path, ranges in ent.get("prefer", {}).items()
-                    for lo, hi, var in ranges]
-            if pref:
-                self._prefer[nk] = pref
+            self._add(nk, ent, source)
         #: (N, K) asked for and not in the table -- each is a shape a tuner
         #: run would route, and until then takes the engine's path.
         self.misses: set = set()
+
+    def _add(self, nk: Tuple[int, int], ent: dict, source: str) -> None:
+        rs = sorted((int(lo), int(hi), str(p)) for lo, hi, p in ent["runs"])
+        for (_, hi, _), (lo2, _, _) in zip(rs, rs[1:]):
+            if lo2 <= hi:
+                raise ValueError(f"{source}: runs for {nk} overlap at M={lo2}")
+        self._runs[nk] = rs
+        self._lows[nk] = [r[0] for r in rs]
+        self._above[nk] = str(ent.get("above", rs[-1][2] if rs else self.fallback))
+        pref = [(str(path), int(lo), float("inf") if hi is None else int(hi), str(var))
+                for path, ranges in ent.get("prefer", {}).items()
+                for lo, hi, var in ranges]
+        self._prefer.pop(nk, None)
+        if pref:
+            self._prefer[nk] = pref
+        self.origin[nk] = source
+        (self.partial.add if ent.get("partial") else self.partial.discard)(nk)
+
+    def overlay(self, shapes: Dict[Tuple[int, int], dict], source: str) -> "RouteTable":
+        """Replace or add entries -- this machine's records over a shipped
+        table -- each shape whole: an overlaid shape keeps nothing of the
+        entry it replaced."""
+        for nk, ent in shapes.items():
+            self._add(nk, ent, source)
+        return self
+
+    @staticmethod
+    def parse(d: dict) -> Dict[Tuple[int, int], dict]:
+        """A table file's shapes, keyed by (N, K)."""
+        out = {}
+        for key, ent in d.get("shapes", {}).items():
+            n, k = (int(v) for v in key.split("x"))
+            out[(n, k)] = ent
+        return out
 
     @classmethod
     def from_json(cls, path) -> "RouteTable":
         path = Path(path)
         d = json.loads(path.read_text())
-        shapes = {}
-        for key, ent in d.get("shapes", {}).items():
-            n, k = (int(v) for v in key.split("x"))
-            shapes[(n, k)] = ent
         meta = {k: v for k, v in d.items() if k != "shapes"}
-        return cls(shapes, meta=meta, source=str(path))
+        return cls(cls.parse(d), meta=meta, source=str(path))
 
     def shapes(self) -> Iterable[Tuple[int, int]]:
         return self._runs.keys()
+
+    def complete(self) -> set:
+        """The shapes measured over their whole grid."""
+        return set(self._runs) - self.partial
+
+    def from_source(self, source: str) -> List[Tuple[int, int]]:
+        return [nk for nk, s in self.origin.items() if s == source]
 
     def paths(self) -> set:
         return ({p for rs in self._runs.values() for _, _, p in rs} | set(self._above.values())
@@ -282,17 +319,46 @@ class RouteTable:
         return self._above[(n, k)] if i == len(rs) - 1 else self.fallback
 
 
-def shipped_table(kind: str, arch: str, env: str) -> Optional[RouteTable]:
-    """The routing table for `kind` on `arch`: `$env` if set, else the one in
-    hk/tuned/, else None. A table measured on another arch is not loaded."""
+def shipped_table(kind: str, arch: str, env: str, *,
+                  engine: Optional[str] = None) -> Optional[RouteTable]:
+    """The routing table for `kind` on `arch`: `$env` if set, and then that
+    table alone; else the one in hk/tuned/ with this machine's records over
+    it (`hk.autotune.routes`), each measured shape replacing the shipped
+    one; else None. A table measured on another arch is not loaded.
+
+    With `engine` -- the name of the path the installed engine runs, as the
+    tuner writes it -- a record of this machine's measured against another
+    engine is left out (and listed in `meta["stale"]`): the path a kernel
+    had to beat is not the one it would be beating. `HK_AUTOTUNE=0` leaves
+    every record out, as it does schedule records."""
     override = os.environ.get(env)
     path = Path(override) if override else (
         Path(__file__).resolve().parents[1] / "tuned" / f"routes_{kind}_{arch}.json")
-    if not path.is_file():
-        if override:
-            raise FileNotFoundError(f"${env} names {path}, which does not exist")
-        return None
-    t = RouteTable.from_json(path)
-    if t.meta.get("arch") not in (None, arch):
+    if override and not path.is_file():
+        raise FileNotFoundError(f"${env} names {path}, which does not exist")
+    t = RouteTable.from_json(path) if path.is_file() else None
+    if t is not None and t.meta.get("arch") not in (None, arch):
         raise ValueError(f"{path} was measured on {t.meta['arch']}, not {arch}")
+    if override:
+        return t
+    from .. import autotune  # noqa: PLC0415
+    from ..autotune import routes as _routes  # noqa: PLC0415
+
+    user = _routes.load_user(kind, arch) if autotune.enabled() else None
+    if user is None or user.get("arch") not in (None, arch):
+        return t
+    shapes, stale = {}, []
+    for nk, ent in RouteTable.parse(user).items():
+        made = ent.get("meta", {}).get("engine")
+        if engine is not None and made not in (None, engine):
+            stale.append(nk)
+            continue
+        shapes[nk] = ent
+    if t is None:
+        if not shapes:
+            return None
+        t = RouteTable({}, meta={"kind": kind, "arch": arch}, source="")
+    t.overlay(shapes, str(_routes.user_path(kind, arch)))
+    if stale:
+        t.meta = {**t.meta, "stale": stale}
     return t

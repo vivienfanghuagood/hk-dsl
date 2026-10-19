@@ -60,8 +60,8 @@ def test_a_table_measured_against_f_linear_is_preferred(fake_sglang, tmp_path, m
 def test_without_one_it_routes_by_vllms(fake_sglang, monkeypatch):
     real = engine.shipped_table
     monkeypatch.setattr(engine, "shipped_table",
-                        lambda kind, arch, env: None if kind == "sglang_linear"
-                        else real(kind, arch, env))
+                        lambda kind, arch, env, **kw: None if kind == "sglang_linear"
+                        else real(kind, arch, env, **kw))
 
     assert "vllm 0.31.0" in hks.apply_linear()
     assert vllm_gemm.route_for(1, *QKV) == "fallback"

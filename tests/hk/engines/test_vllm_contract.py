@@ -63,6 +63,25 @@ def test_every_linear_reaches_the_dispatcher_through_a_rebindable_name():
             "vllm.model_executor.layers.vocab_parallel_embedding"} <= sites
 
 
+def test_the_tuning_at_load_finds_the_worker_and_the_layers_it_walks():
+    # vllm_autotune wraps the GPU worker's load_model -- which ROCm runs, and
+    # which returns before the profile run and capture -- and reads each
+    # loaded layer's quant_method, weight, bias and skip_bias_add.
+    from vllm.model_executor.layers.linear import (
+        LinearBase, UnquantizedLinearMethod)
+    from vllm.model_executor.layers.vocab_parallel_embedding import (
+        ParallelLMHead, UnquantizedEmbeddingMethod, VocabParallelEmbedding)
+    from vllm.v1.worker import gpu_worker
+
+    for step in ("load_model", "determine_available_memory", "compile_or_warm_up_model"):
+        assert callable(getattr(gpu_worker.Worker, step)), step
+    assert "model_runner" in inspect.getsource(gpu_worker.Worker.load_model)
+    assert callable(UnquantizedLinearMethod.apply)
+    assert callable(UnquantizedEmbeddingMethod.apply)
+    assert "skip_bias_add" in inspect.signature(LinearBase.__init__).parameters
+    assert issubclass(ParallelLMHead, VocabParallelEmbedding)
+
+
 def test_the_fallback_op_takes_x_weight_bias():
     import torch
     from vllm.platforms import current_platform
