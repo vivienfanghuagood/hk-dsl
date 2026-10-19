@@ -318,17 +318,42 @@ def merge_splits(o_part, ml_part, splits: int, out):
     return out
 
 
+def _native_cdna() -> bool:
+    """Whether calls go to hk.ops.paged_cdna, gfx950's own decode: the
+    kernels here are RDNA's (16-wide WMMA operands, V transposed in
+    registers), and gfx950's is another schedule (K and V by DMA through
+    LDS, Pᵀ read in place), not a port."""
+    from ..target import current_arch  # noqa: PLC0415
+
+    return current_arch() == "gfx950"
+
+
+class _Kernels(dict):
+    """head_dim -> the unsplit decode; on gfx950, paged_cdna's."""
+
+    def __getitem__(self, head_dim):
+        if _native_cdna():
+            from . import paged_cdna  # noqa: PLC0415
+
+            return paged_cdna.kernel_for(head_dim, 1, "plain")
+        return dict.__getitem__(self, head_dim)
+
+
 #: head_dim -> kernel. Nothing is traced or compiled at import.
-KERNELS: Dict[int, object] = {
+KERNELS: Dict[int, object] = _Kernels({
     64: paged_decode_kernel("paged_decode_d64", head_dim=64),
     128: paged_decode_kernel("paged_decode_d128", head_dim=128),
-}
+})
 
 #: (head_dim, splits) -> kernel, built on demand.
 _SPLIT: Dict[tuple, object] = {}
 
 
 def split_kernel(head_dim: int, splits: int):
+    if _native_cdna():
+        from . import paged_cdna  # noqa: PLC0415
+
+        return paged_cdna.kernel_for(head_dim, splits, "split")
     key = (head_dim, splits)
     if key not in _SPLIT:
         _SPLIT[key] = paged_decode_split_kernel(
@@ -627,6 +652,13 @@ _FUSED: Dict[tuple, object] = {}
 
 
 def fused_kernel(head_dim: int, splits: int, ablate: tuple = ()):
+    if _native_cdna():
+        if ablate:
+            raise ValueError("ablate= takes stages out of the RDNA walk; "
+                             "gfx950's decode is hk.ops.paged_cdna's")
+        from . import paged_cdna  # noqa: PLC0415
+
+        return paged_cdna.kernel_for(head_dim, splits, "fused")
     key = (head_dim, splits, tuple(sorted(ablate)))
     if key not in _FUSED:
         tag = "".join(f"_no{a}" for a in key[2])
@@ -641,6 +673,10 @@ _MERGE: Dict[tuple, object] = {}
 
 
 def merge_kernel(head_dim: int, splits: int):
+    if _native_cdna():
+        from . import paged_cdna  # noqa: PLC0415
+
+        return paged_cdna.merge_for(head_dim, splits)
     key = (head_dim, splits)
     if key not in _MERGE:
         _MERGE[key] = paged_merge_kernel(
@@ -725,6 +761,11 @@ def plan_splits(n_reqs: int, n_kv_heads: int, n_pages: int) -> int:
         return 1
     if forced in ("auto", "plan"):
         have = max(1, n_reqs * n_kv_heads)
-        want = -(-TARGET_WORKGROUPS // have)      # ceil
+        target = TARGET_WORKGROUPS
+        if _native_cdna():
+            from . import paged_cdna  # noqa: PLC0415
+
+            target = paged_cdna.TARGET_WORKGROUPS
+        want = -(-target // have)                 # ceil
         return max(1, min(want, n_pages, MAX_SPLITS))
     return max(1, min(int(forced), n_pages, MAX_SPLITS))
