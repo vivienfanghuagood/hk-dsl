@@ -255,6 +255,27 @@ def test_tritons_decode_takes_every_argument_hk_passes(monkeypatch):
     assert set(seen) <= accepted
 
 
+# ---------------------------------------------------------------- headroom
+
+def test_headroom_can_drive_and_count_steps():
+    # hk.integration.headroom adds requests and steps the engine itself, and
+    # counts steps by wrapping the in-process engine core's scheduler.
+    from vllm.v1.core.sched.output import SchedulerOutput
+    from vllm.v1.engine import core
+    from vllm.v1.engine import core_client
+    from vllm.v1.engine.llm_engine import LLMEngine
+
+    for m in ("add_request", "step", "has_unfinished_requests", "abort_request"):
+        assert callable(getattr(LLMEngine, m, None)), f"LLMEngine.{m} is gone"
+    assert "engine_core" in inspect.getsource(core_client.InprocClient.__init__)
+    assert "self.scheduler" in inspect.getsource(core.EngineCore.__init__)
+    # Called with arguments on 0.31 (whether to throttle prefills); the
+    # wrapper forwards whatever it is given.
+    assert "self.scheduler.schedule(" in inspect.getsource(core.EngineCore.step)
+    fields = set(getattr(SchedulerOutput, "__dataclass_fields__", {}))
+    assert {"total_num_scheduled_tokens", "num_scheduled_tokens"} <= fields
+
+
 # ---------------------------------------------------------------- SDPA, plugin
 
 def test_the_vit_path_still_calls_torch_sdpa():
