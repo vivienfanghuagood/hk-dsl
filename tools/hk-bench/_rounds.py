@@ -61,6 +61,28 @@ GAP_K = 4.0
 STATS = ("median", "best")
 STAT = "median"
 
+#: The same ceilings for each card a report can come from, by arch. gfx1100's
+#: are the figures above. gfx950 (MI355X): the bf16 dense peak, HBM3E's
+#: 8 TB/s, and the 256 MB Infinity Cache at the fastest cache-resident rate
+#: `--probe-ceilings` measured: an in-place add (a += b) at a 32 MB
+#: footprint, inside the eight XCDs' 4 MB L2s, 9.1 TB/s. torch's out-of-place
+#: add and neg peak at 6.9-7.2 at 160-256 MB, and past the cache all three
+#: sit at 5.8-6.1; at 7.2 the rule rejected a fused add's real 8.35 TB/s.
+CARDS = {
+    "gfx1100": {"PEAK_FLOPS": PEAK_FLOPS, "HBM_BYTES_S": HBM_BYTES_S,
+                "IC_BYTES": IC_BYTES, "IC_BYTES_S": IC_BYTES_S},
+    "gfx950": {"PEAK_FLOPS": 2.52e15, "HBM_BYTES_S": 8.0e12,
+               "IC_BYTES": 256 * 2**20, "IC_BYTES_S": 9.1e12},
+}
+
+
+def use(arch: str) -> None:
+    """Screen against `arch`'s ceilings (CARDS); an arch with none keeps the
+    current ones."""
+    card = CARDS.get(arch)
+    if card:
+        globals().update(card)
+
 
 def ceiling_rate(unit: str, footprint: Optional[float]) -> Optional[float]:
     """The fastest plausible rate (FLOP/s or bytes/s), or None if unknown."""

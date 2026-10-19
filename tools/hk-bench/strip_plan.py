@@ -31,10 +31,11 @@ BF16 = torch.bfloat16
 def plan_for(cols: int, per_lane: int, nbytes: int = 2):
     """(warps, chunks, run, exact) at `per_lane` elements a lane."""
     run = norm.strip_run(cols, nbytes)
-    chunks = norm._ceil(cols, 32 * run)
+    span = norm._wave() * run
+    chunks = norm._ceil(cols, span)
     warps = min(norm.MAX_WARPS, norm._ceil(chunks, max(1, per_lane // run)))
     per = norm._ceil(chunks, warps)
-    return warps, per, run, int(warps * per * 32 * run == cols)
+    return warps, per, run, int(warps * per * span == cols)
 
 
 def arms(kind: str, m: int, n: int, targets, rows_per=(1,)):
@@ -44,6 +45,8 @@ def arms(kind: str, m: int, n: int, targets, rows_per=(1,)):
     xa, ra = x.clone(), torch.randn_like(x)
     out = {}
 
+    unweighted = {"softmax": hk.ops.softmax, "rms": hk.ops.rmsnorm, "layer": hk.ops.layernorm}
+
     def tile():
         norm.LAYOUT = "tile"
         try:
@@ -52,12 +55,23 @@ def arms(kind: str, m: int, n: int, targets, rows_per=(1,)):
             elif kind == "addrmsw":
                 hk.ops.fused_add_rms_norm(xa, ra, w)
             else:
-                hk.ops.softmax(x, out=o)
+                unweighted[kind](x, out=o)
         finally:
             norm.LAYOUT = "strip"
 
+    if kind == "quant":
+        from hk.ops import quant  # noqa: PLC0415
+
+        q = torch.empty(m, n, device="cuda", dtype=torch.int8)
+        s = torch.empty(1, m, device="cuda")
+        for t in targets:
+            warps, per, run, exact = plan_for(n, t)
+            k = quant.STRIP_KERNELS[f"strip_quantize_bf16_w{warps}"]
+            out[f"{t:2d}/lane w{warps}"] = (lambda k=k, per=per, run=run, exact=exact:
+                                            k(x, q, s, CHUNKS=per, RUN=run, EXACT=exact))
+        return out
     # The unweighted tile kernels need a whole 16-row tile.
-    if m >= norm.ROWS or kind != "softmax":
+    if m >= norm.ROWS or kind not in unweighted:
         out["tile"] = tile
     for t in targets:
         for rp in rows_per:
@@ -71,8 +85,10 @@ def arms(kind: str, m: int, n: int, targets, rows_per=(1,)):
                 fn = (lambda k=k, ob=ob, c=c: k(x, w.view(1, n), ob, **c))
             elif kind == "addrmsw":
                 fn = (lambda k=k, xb=xb, rb=rb, c=c: k(xb, rb, w.view(1, n), xb, rb, **c))
-            else:
+            elif kind == "softmax":
                 fn = (lambda k=k, ob=ob, c=c: k(x, ob, **c))
+            else:
+                fn = (lambda k=k, ob=ob, c=c: k(x, ob, EPS=1e-6, **c))
             out[f"{t:2d}/lane w{warps}" + (f" R{rp}" if rp > 1 else "")] = fn
     return out
 

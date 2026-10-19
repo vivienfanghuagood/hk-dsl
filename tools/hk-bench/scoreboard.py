@@ -245,6 +245,18 @@ def _flydsl_compiled(build, *args):
 
 _HK_PLANNER = "no search: hk's planner picks the schedule, as in the hk column"
 
+#: Static shapes for Inductor (the llm-* groups): every case is its own graph,
+#: compiled for its shape. The expressions are lambdas of one code object per
+#: op, so without this Dynamo marks the row axis dynamic at the second shape
+#: and, past its recompile limit, runs eager under Inductor's name.
+_STATIC = []
+
+
+def _compile(fn):
+    if not _STATIC:
+        return torch.compile(fn)
+    return torch.compile(fn, dynamic=False)
+
 
 def rmsnorm_case(m, tune, n=4096):
     x = torch.randn(m, n, device="cuda", dtype=BF16)
@@ -252,7 +264,7 @@ def rmsnorm_case(m, tune, n=4096):
     xf = x.float()
     ref = xf * torch.rsqrt(xf.pow(2).mean(-1, keepdim=True) + 1e-6) * w.float()
     outs = {a: torch.empty_like(x) for a in ARMS}
-    comp = torch.compile(lambda x, w: F.rms_norm(x, (n,), w, 1e-6))
+    comp = _compile(lambda x, w: F.rms_norm(x, (n,), w, 1e-6))
     res = {}
     arms = {
         "hk": (lambda: hk.ops.rms_norm(x, w, out=outs["hk"]), lambda: outs["hk"],
@@ -305,7 +317,7 @@ def fused_add_case(m, tune, n=4096):
         r.add_(x)
         x.copy_(F.rms_norm(r, (n,), w, 1e-6))
 
-    comp = torch.compile(lambda x, r, w: (F.rms_norm(x + r, (n,), w, 1e-6), x + r))
+    comp = _compile(lambda x, r, w: (F.rms_norm(x + r, (n,), w, 1e-6), x + r))
     got = {}
 
     def inductor():
@@ -345,7 +357,7 @@ def softmax_case(m, tune, n=4096):
     x = torch.randn(m, n, device="cuda", dtype=BF16)
     ref = torch.softmax(x.float(), dim=-1)
     outs = {a: torch.empty_like(x) for a in ARMS}
-    comp = torch.compile(lambda x: torch.softmax(x, dim=-1))
+    comp = _compile(lambda x: torch.softmax(x, dim=-1))
     res = {}
     arms = {
         "hk": (lambda: hk.ops.softmax(x, out=outs["hk"]), lambda: outs["hk"],
@@ -383,6 +395,314 @@ def softmax_case(m, tune, n=4096):
     return f"softmax {m}x{n}", 2 * m * n * 2, "byte", ref, arms, None
 
 
+# ---------------------------------------------------------------- the LLM rows
+#
+# Every row and pointwise op of a decoder layer at the shapes LLMs run it:
+# rows (tokens) x hidden for the norms, softmax, quantize, the elementwise ops
+# and RoPE (hidden = heads x 128), rows x intermediate for silu_and_mul. The
+# llm-* groups; --rows, --hidden and --inter pick the shapes.
+
+LLM_ROWS = (1, 32, 2048, 8192)
+LLM_HIDDEN = (4096, 5120, 8192)
+#: Llama-3-8B, Qwen3-14B and Llama-3-70B's intermediate sizes.
+LLM_INTER = (14336, 17408, 28672)
+_SHAPES = {"rows": LLM_ROWS, "hidden": LLM_HIDDEN, "inter": LLM_INTER}
+
+_NO_FLYDSL = "FlyDSL has no standalone {} kernel (kernels/: only fused into norms or caches)"
+
+
+def _hk_arm(run, out, what="hk.ops"):
+    return (run, out, {"level": "planner", "space": f"{what}'s planner", "candidates": None})
+
+
+def _torch_arm(run, out):
+    return (run, out, {"level": "library", "candidates": None})
+
+
+def _inductor_arm(run, out):
+    return (run, out, {"level": "default mode", "candidates": None})
+
+
+def _flydsl_tuned_arm(tuner, run, out, space, candidates):
+    chosen = _flydsl_chosen(tuner)
+    return (run, out, lambda: {"level": "tuned", "space": space,
+                               "bench": "FlyDSL's do_bench: warm batches behind a GPU "
+                                        "sleep, median",
+                               "candidates": candidates, "chosen": chosen()})
+
+
+def llm_rms_case(kind, m, n):
+    """rms_norm (weighted), rmsnorm (no weight) or layernorm (unweighted)."""
+    x = torch.randn(m, n, device="cuda", dtype=BF16)
+    w = torch.rand(n, device="cuda", dtype=BF16) + 0.5
+    ones, zeros = torch.ones_like(w), torch.zeros_like(w)
+    xf = x.float()
+    if kind == "layernorm":
+        ref = F.layer_norm(xf, (n,), eps=1e-5)
+    else:
+        ref = xf * torch.rsqrt(xf.pow(2).mean(-1, keepdim=True) + 1e-6)
+        if kind == "rms_norm":
+            ref = ref * w.float()
+    outs = {a: torch.empty_like(x) for a in ARMS}
+    res = {}
+    if kind == "rms_norm":
+        hk_run = lambda: hk.ops.rms_norm(x, w, out=outs["hk"])          # noqa: E731
+        expr = lambda x: F.rms_norm(x, (n,), w, 1e-6)                   # noqa: E731
+        tri, tri_t = (lambda: triton_ref.rms_norm(x, w, out=outs["triton"]),
+                      lambda: triton_ref.rms_norm_tuned(x, w, out=outs["triton_tuned"]))
+        fns = (triton_ref.rms_norm, triton_ref.rms_norm_tuned)
+    elif kind == "rmsnorm":
+        hk_run = lambda: hk.ops.rmsnorm(x, out=outs["hk"])              # noqa: E731
+        expr = lambda x: F.rms_norm(x, (n,), None, 1e-6)                # noqa: E731
+        tri, tri_t = (lambda: triton_ref.rmsnorm(x, out=outs["triton"]),
+                      lambda: triton_ref.rmsnorm_tuned(x, out=outs["triton_tuned"]))
+        fns = (triton_ref.rmsnorm, triton_ref.rmsnorm_tuned)
+    else:
+        hk_run = lambda: hk.ops.layernorm(x, out=outs["hk"])            # noqa: E731
+        expr = lambda x: F.layer_norm(x, (n,), eps=1e-5)                # noqa: E731
+        tri, tri_t = (lambda: triton_ref.layernorm(x, out=outs["triton"]),
+                      lambda: triton_ref.layernorm_tuned(x, out=outs["triton_tuned"]))
+        fns = (triton_ref.layernorm, triton_ref.layernorm_tuned)
+    comp = _compile(expr)
+    arms = {
+        "hk": _hk_arm(hk_run, lambda: outs["hk"]),
+        "hk_tuned": _HK_PLANNER,
+        "torch": _torch_arm(lambda: res.__setitem__("torch", expr(x)), lambda: res["torch"]),
+        "inductor": _inductor_arm(lambda: res.__setitem__("inductor", comp(x)),
+                                  lambda: res["inductor"]),
+    }
+    _triton_arms(arms, *fns, tri, tri_t, lambda: outs["triton"],
+                 lambda: outs["triton_tuned"])
+    s = torch.cuda.current_stream()
+    try:
+        if kind == "layernorm":
+            import flydsl.compiler as flyc
+            import flydsl.expr as fx
+            from kernels.norm.layernorm_kernel import build_layernorm_module
+            ptrs = [t.data_ptr() for t in (x, ones, zeros, outs["flydsl"])]
+            f = _flydsl_compiled(build_layernorm_module(n, "bf16", eps=1e-5),
+                                 *(flyc.from_c_void_p(fx.BFloat16, p) for p in ptrs), m, s)
+            arms["flydsl"] = (lambda: f(*ptrs, m, s), lambda: outs["flydsl"],
+                              {"level": "default", "space": "build_layernorm_module's "
+                               "block size, gamma 1 and beta 0", "candidates": 1})
+        else:
+            from kernels.norm.rmsnorm_kernel import build_rmsnorm_module
+            g = w if kind == "rms_norm" else ones
+            f = _flydsl_compiled(build_rmsnorm_module(n, "bf16"), x, g, outs["flydsl"], m, s)
+            arms["flydsl"] = (lambda: f(x, g, outs["flydsl"], m, s), lambda: outs["flydsl"],
+                              {"level": "default", "space": "build_rmsnorm_module's block "
+                               "size" + ("" if kind == "rms_norm" else ", a weight of ones"),
+                               "candidates": 1})
+    except Exception as e:                         # noqa: BLE001
+        arms["flydsl"] = _why(e)
+    if kind == "layernorm":
+        arms["flydsl_tuned"] = "FlyDSL has no autotuned LayerNorm"
+    else:
+        try:
+            from kernels.norm import rmsnorm_autotune as fr
+            g = w if kind == "rms_norm" else ones
+            arms["flydsl_tuned"] = _flydsl_tuned_arm(
+                fr._rmsnorm_tuner, lambda: fr.rmsnorm_autotuned(x, g, outs["flydsl_tuned"], m),
+                lambda: outs["flydsl_tuned"], "BLOCK_THREADS x waves_per_eu",
+                len(fr._SEARCH_CONFIGS))
+        except Exception as e:                     # noqa: BLE001
+            arms["flydsl_tuned"] = _why(e)
+    work = 2 * m * n * 2 + (2 * n if kind == "rms_norm" else 0)
+    return f"{kind} {m}x{n}", work, "byte", ref, arms, None
+
+
+def llm_softmax_case(m, n):
+    name, work, unit, ref, arms, fp = softmax_case(m, False, n)
+    return name, work, unit, ref, arms, fp
+
+
+def llm_fused_add_case(m, n):
+    return fused_add_case(m, False, n)
+
+
+def llm_quant_case(m, n):
+    """Per-row symmetric int8: scale = absmax / 127, q = round(x / scale)."""
+    x = torch.randn(m, n, device="cuda", dtype=BF16)
+    xf = x.float()
+    amax = xf.abs().amax(-1, keepdim=True).clamp_min(1e-12)
+    ref = (xf * (127.0 / amax)).round().clamp(-128, 127)
+    q = {a: torch.empty(m, n, device="cuda", dtype=torch.int8) for a in ARMS}
+    sc = {a: torch.empty(m, device="cuda", dtype=torch.float32) for a in ARMS}
+    res = {}
+
+    def eager(x):
+        a = x.float().abs().amax(-1, keepdim=True).clamp_min(1e-12)
+        return (x.float() * (127.0 / a)).round().clamp(-128, 127).to(torch.int8), a / 127.0
+
+    comp = _compile(eager)
+
+    # Checked as q in units of one step, so one rounding flip is 1/127.
+    def check(qq):
+        return lambda: qq.float()
+
+    arms = {
+        "hk": _hk_arm(lambda: hk.ops.quantize(x, out=q["hk"], scales=sc["hk"]), check(q["hk"])),
+        "hk_tuned": _HK_PLANNER,
+        "torch": _torch_arm(lambda: res.__setitem__("torch", eager(x)),
+                            lambda: res["torch"][0].float()),
+        "inductor": _inductor_arm(lambda: res.__setitem__("inductor", comp(x)),
+                                  lambda: res["inductor"][0].float()),
+        "flydsl": _NO_FLYDSL.format("int8 quantize"),
+        "flydsl_tuned": _NO_FLYDSL.format("int8 quantize"),
+    }
+    _triton_arms(arms, triton_ref.quantize, triton_ref.quantize_tuned,
+                 lambda: triton_ref.quantize(x, q["triton"], sc["triton"]),
+                 lambda: triton_ref.quantize_tuned(x, q["triton_tuned"], sc["triton_tuned"]),
+                 check(q["triton"]), check(q["triton_tuned"]))
+    return f"quantize {m}x{n}", m * n * 3 + 4 * m, "byte", ref, arms, None
+
+
+def llm_elementwise_case(op, m, n):
+    a = torch.randn(m, n, device="cuda", dtype=BF16)
+    b = torch.randn_like(a)
+    if op == "add":
+        expr = lambda a, b: a + b                       # noqa: E731
+    elif op == "mul":
+        expr = lambda a, b: a * b                       # noqa: E731
+    else:
+        a = a.clamp(-8, 8)
+        expr = lambda a, b: torch.exp(a)                # noqa: E731
+    ref = expr(a.float(), b.float())
+    outs = {x: torch.empty_like(a) for x in ARMS}
+    comp = _compile(expr)
+    res = {}
+    hk_fn = getattr(hk.ops, op)
+    hk_run = ((lambda: hk_fn(a, out=outs["hk"])) if op == "exp"
+              else (lambda: hk_fn(a, b, out=outs["hk"])))
+    tfn = {"add": torch.add, "mul": torch.mul}.get(op)
+    torch_run = ((lambda: torch.exp(a, out=outs["torch"])) if op == "exp"
+                 else (lambda: tfn(a, b, out=outs["torch"])))
+    arms = {
+        "hk": _hk_arm(hk_run, lambda: outs["hk"]),
+        "hk_tuned": _HK_PLANNER,
+        "torch": _torch_arm(torch_run, lambda: outs["torch"]),
+        "inductor": _inductor_arm(lambda: res.__setitem__("inductor", comp(a, b)),
+                                  lambda: res["inductor"]),
+        "flydsl": _NO_FLYDSL.format(op),
+        "flydsl_tuned": _NO_FLYDSL.format(op),
+    }
+    _triton_arms(arms, triton_ref.elementwise, triton_ref.elementwise_tuned,
+                 lambda: triton_ref.elementwise(op, a, b, outs["triton"]),
+                 lambda: triton_ref.elementwise_tuned(op, a, b, outs["triton_tuned"]),
+                 lambda: outs["triton"], lambda: outs["triton_tuned"])
+    work = m * n * 2 * (2 if op == "exp" else 3)
+    return f"{op} {m}x{n}", work, "byte", ref, arms, None
+
+
+def llm_silu_mul_case(m, i):
+    """vLLM's silu_and_mul: the gate/up GEMM's (m, 2i) output to (m, i)."""
+    x = torch.randn(m, 2 * i, device="cuda", dtype=BF16)
+    xf = x.float()
+    ref = F.silu(xf[:, :i]) * xf[:, i:]
+    outs = {a: torch.empty(m, i, device="cuda", dtype=BF16) for a in ARMS}
+
+    def expr(x):
+        return F.silu(x[:, :i]) * x[:, i:]
+
+    comp = _compile(expr)
+    res = {}
+    gate, up = x[:, :i], x[:, i:]
+    hk_note = "on x's halves in place"
+    try:
+        hk.ops.silu_mul(gate, up, out=outs["hk"])
+    except ValueError:
+        # A wrapper that wants contiguous operands: the halves copied once,
+        # outside the timing. The kernel moves the same bytes either way.
+        gate, up = gate.contiguous(), up.contiguous()
+        hk_note = "on contiguous copies of x's halves (the wrapper refused the views)"
+    arms = {
+        "hk": (lambda: hk.ops.silu_mul(gate, up, out=outs["hk"]), lambda: outs["hk"],
+               {"level": "planner", "space": "hk.ops's planner", "candidates": None,
+                "note": hk_note}),
+        "hk_tuned": _HK_PLANNER,
+        "torch": _torch_arm(lambda: res.__setitem__("torch", expr(x)), lambda: res["torch"]),
+        "inductor": _inductor_arm(lambda: res.__setitem__("inductor", comp(x)),
+                                  lambda: res["inductor"]),
+        "flydsl": _NO_FLYDSL.format("silu_and_mul"),
+        "flydsl_tuned": _NO_FLYDSL.format("silu_and_mul"),
+    }
+    _triton_arms(arms, triton_ref.silu_and_mul, triton_ref.silu_and_mul_tuned,
+                 lambda: triton_ref.silu_and_mul(x, outs["triton"]),
+                 lambda: triton_ref.silu_and_mul_tuned(x, outs["triton_tuned"]),
+                 lambda: outs["triton"], lambda: outs["triton_tuned"])
+    return f"silu_mul {m}x{i}", m * i * 6, "byte", ref, arms, None
+
+
+def llm_rope_case(t, hidden, d=128):
+    """NeoX RoPE on (t, heads, d): each token's angles, cos and sin (t, d/2)
+    in fp32 -- vLLM's rotary_embedding after its cos_sin_cache lookup."""
+    h = hidden // d
+    x = torch.randn(t, h, d, device="cuda", dtype=BF16)
+    pos = torch.arange(t, device="cuda", dtype=torch.float32)[:, None]
+    inv = 1.0 / (1e6 ** (torch.arange(0, d, 2, device="cuda", dtype=torch.float32) / d))
+    cos, sin = torch.cos(pos * inv), torch.sin(pos * inv)
+    half = d // 2
+
+    def expr(x, cos, sin):
+        x1, x2 = x[..., :half].float(), x[..., half:].float()
+        c, s = cos[:, None, :], sin[:, None, :]
+        return torch.cat((x1 * c - x2 * s, x2 * c + x1 * s), -1).to(x.dtype)
+
+    ref = expr(x.float(), cos, sin)
+    outs = {a: torch.empty_like(x) for a in ARMS}
+    comp = _compile(expr)
+    res = {}
+    # hk takes vLLM's cos_sin_cache layout, one (t, d) fp32 row [cos | sin]
+    # a token: the same bytes as cos and sin apart.
+    cs = torch.cat((cos, sin), -1).contiguous()
+    arms = {
+        "hk": _hk_arm(lambda: hk.ops.rotary(x, cs, out=outs["hk"]), lambda: outs["hk"]),
+        "hk_tuned": _HK_PLANNER,
+        "torch": _torch_arm(lambda: res.__setitem__("torch", expr(x, cos, sin)),
+                            lambda: res["torch"]),
+        "inductor": _inductor_arm(lambda: res.__setitem__("inductor", comp(x, cos, sin)),
+                                  lambda: res["inductor"]),
+        "flydsl": _NO_FLYDSL.format("RoPE"),
+        "flydsl_tuned": _NO_FLYDSL.format("RoPE"),
+    }
+    _triton_arms(arms, triton_ref.rope, triton_ref.rope_tuned,
+                 lambda: triton_ref.rope(x, cos, sin, outs["triton"]),
+                 lambda: triton_ref.rope_tuned(x, cos, sin, outs["triton_tuned"]),
+                 lambda: outs["triton"], lambda: outs["triton_tuned"])
+    return f"rope {t}x{h}x{d}", 2 * t * h * d * 2 + 2 * t * half * 4, "byte", ref, arms, None
+
+
+def _llm(fn, *dims):
+    """Each case of `fn` over the shapes, built one at a time as the run
+    reaches it: a case holds its arms' buffers and compiled kernels."""
+    import itertools
+
+    def gen(_tune):
+        for shape in itertools.product(*(_SHAPES[d] for d in dims)):
+            yield fn(*shape)
+    return gen
+
+
+LLM_GROUPS = {
+    "llm-norm": [(lambda m, n, k=k: llm_rms_case(k, m, n), ("rows", "hidden"))
+                 for k in ("rms_norm", "rmsnorm", "layernorm")]
+                + [(llm_fused_add_case, ("rows", "hidden")),
+                   (llm_softmax_case, ("rows", "hidden"))],
+    "llm-quant": [(llm_quant_case, ("rows", "hidden"))],
+    "llm-pointwise": [(lambda m, n, o=o: llm_elementwise_case(o, m, n), ("rows", "hidden"))
+                      for o in ("add", "mul", "exp")]
+                     + [(llm_silu_mul_case, ("rows", "inter")),
+                        (llm_rope_case, ("rows", "hidden"))],
+}
+
+
+def _llm_group(parts):
+    def gen(tune):
+        for fn, dims in parts:
+            yield from _llm(fn, *dims)(tune)
+    return gen
+
+
 CASES = {
     "gemm": lambda t: [gemm_case(4096, 4096, 4096, t), gemm_case(2048, 6144, 4096, t),
                        gemm_case(2048, 4096, 4096, t), gemm_case(2048, 24576, 4096, t),
@@ -391,6 +711,7 @@ CASES = {
     "norm": lambda t: [rmsnorm_case(m, t) for m in (1, 32, 2048, 8192)]
                       + [fused_add_case(m, t) for m in (1, 32, 2048, 8192)],
     "softmax": lambda t: [softmax_case(m, t) for m in (2048, 8192)],
+    **{g: _llm_group(parts) for g, parts in LLM_GROUPS.items()},
 }
 
 
@@ -485,20 +806,34 @@ def probe_ceilings(rounds, calls):
     """The fastest a plain copy and a two-input add move bytes on this card,
     by footprint, timed as the arms are: what _rounds.IC_BYTES_S stands on."""
     print(f"footprint MB   copy TB/s   add TB/s   (best kept round of {rounds} x {calls})")
-    for mb in (8, 16, 32, 48, 64, 80, 96, 128, 192, 256, 512):
+    sizes = (8, 16, 32, 48, 64, 80, 96, 128, 192, 256, 512)
+    if _rounds.IC_BYTES > 128 * 2**20:
+        sizes = (16, 32, 64, 96, 128, 160, 192, 224, 256, 320, 384, 512, 1024)
+    for mb in sizes:
         fp = mb * 2**20
         x = torch.randn(fp // 4, device="cuda", dtype=BF16)          # copy: 2 tensors
         y = torch.empty_like(x)
         a, b = (torch.randn(fp // 6, device="cuda", dtype=BF16) for _ in range(2))
         c = torch.empty_like(a)                                       # add: 3 tensors
-        fns = {"copy": lambda: y.copy_(x), "add": lambda: torch.add(a, b, out=c)}
+        # On gfx950 copy_ is a DMA memcpy, which leaves no kernel record:
+        # a one-input elementwise kernel moves the same bytes. And an
+        # in-place add there, a += b, three tensors' bytes over a footprint
+        # of two: what the in-place fused add does.
+        wide = _rounds.IC_BYTES > 128 * 2**20
+        copy = (lambda: torch.neg(x, out=y)) if wide else (lambda: y.copy_(x))
+        fns = {"copy": copy, "add": lambda: torch.add(a, b, out=c)}
+        if wide:
+            p, q = (torch.randn(fp // 4, device="cuda", dtype=BF16) for _ in range(2))
+            fns["add_"] = lambda: p.add_(q)
         res = {}
         for name, (ts, recs) in gpu_rounds(fns, rounds, calls).items():
             kept, _ = _rounds.screen(ts, recs)
             _, _, best = _rounds.summarize(ts, kept)
-            moved = 2 * x.numel() * 2 if name == "copy" else 3 * a.numel() * 2
+            moved = {"copy": 2 * x.numel() * 2, "add": 3 * a.numel() * 2,
+                     "add_": 3 * fp // 4 * 2}[name]
             res[name] = moved / (best * 1e-3) / 1e12
-        print(f"{mb:>12}   {res['copy']:>9.3f}   {res['add']:>8.3f}")
+        print(f"{mb:>12}   {res['copy']:>9.3f}   {res['add']:>8.3f}"
+              + (f"   in place {res['add_']:>6.3f}" if wide else ""))
         del x, y, a, b, c
         torch.cuda.empty_cache()
     return 0
@@ -558,6 +893,9 @@ def main() -> int:
     ap.add_argument("--no-queue", action="store_true",
                     help="launch each round's calls onto an idle GPU, as before "
                     "chapter 32 (gpu_rounds)")
+    for dim, default in _SHAPES.items():
+        ap.add_argument(f"--{dim}", default=",".join(map(str, default)),
+                        help=f"the llm-* groups' {dim} (default %(default)s)")
     args = ap.parse_args()
     selected = set(args.arms.split(","))
     if not selected <= set(ARMS):
@@ -571,7 +909,16 @@ def main() -> int:
     unknown = [g for g in args.only.split(",") if g not in CASES]
     if unknown:
         ap.error(f"unknown groups {unknown}; have {sorted(CASES)}")
+    for dim in _SHAPES:
+        _SHAPES[dim] = tuple(int(v) for v in getattr(args, dim).split(","))
+    if any(g in LLM_GROUPS for g in args.only.split(",")):
+        _STATIC.append(True)
+        for knob in ("recompile_limit", "cache_size_limit", "accumulated_recompile_limit",
+                     "accumulated_cache_size_limit"):
+            if hasattr(torch._dynamo.config, knob):
+                setattr(torch._dynamo.config, knob, 4096)
     meta = _versions()
+    _rounds.use(meta["arch"])
     print(f"{meta['device']} {meta['arch']}, torch {meta['torch']}, triton "
           f"{meta['triton']}, flydsl {meta['flydsl']}, hk {meta['hk']}")
     burn_in()

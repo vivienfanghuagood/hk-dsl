@@ -265,10 +265,230 @@ def softmax_tuned(x, out=None):
     return out
 
 
+# ---------------------------------------------------------------- the LLM rows
+#
+# The rest of an LLM layer's row and pointwise ops, for scoreboard.py's llm-*
+# groups: RMSNorm without a weight, LayerNorm (unweighted, as hk's), int8
+# quantize (per row, absmax / 127), the three elementwise ops, silu_and_mul on
+# a gate/up output (T, 2I) -> (T, I), and NeoX RoPE on (T, H, D) with each
+# token's angles. Each as a Triton user writes it, and autotuned over the
+# space TUNED_SPACE names, ranked by _warm_bench.
+
+def _rows_unweighted_body(x_ptr, o_ptr, M, N, eps, KIND: tl.constexpr,
+                          BLOCK: tl.constexpr):
+    row = tl.program_id(0)
+    cols = tl.arange(0, BLOCK)
+    m = cols < N
+    x = tl.load(x_ptr + row * N + cols, mask=m, other=0.0).to(tl.float32)
+    if KIND == 0:
+        y = x * (1.0 / tl.sqrt(tl.sum(x * x, axis=0) / N + eps))
+    else:
+        mean = tl.sum(x, axis=0) / N
+        d = tl.where(m, x - mean, 0.0)
+        y = d * (1.0 / tl.sqrt(tl.sum(d * d, axis=0) / N + eps))
+    tl.store(o_ptr + row * N + cols, y.to(o_ptr.dtype.element_ty), mask=m)
+
+
+_rows_unweighted = triton.jit(_rows_unweighted_body)
+_rows_unweighted_tuned = _autotune(_row_configs_tuned(), ["M", "N", "KIND"])(
+    triton.jit(_rows_unweighted_body))
+
+
+def _unweighted(kernel, x, out, eps, kind, **launch):
+    n = x.shape[-1]
+    m = x.numel() // n
+    kernel[(m,)](x, out, m, n, eps, KIND=kind, BLOCK=triton.next_power_of_2(n), **launch)
+    return out
+
+
+def rmsnorm(x, eps=1e-6, out=None):
+    out = torch.empty_like(x) if out is None else out
+    return _unweighted(_rows_unweighted, x, out, eps, 0,
+                       num_warps=8 if x.shape[-1] >= 2048 else 4)
+
+
+def rmsnorm_tuned(x, eps=1e-6, out=None):
+    out = torch.empty_like(x) if out is None else out
+    return _unweighted(_rows_unweighted_tuned, x, out, eps, 0)
+
+
+def layernorm(x, eps=1e-5, out=None):
+    out = torch.empty_like(x) if out is None else out
+    return _unweighted(_rows_unweighted, x, out, eps, 1,
+                       num_warps=8 if x.shape[-1] >= 2048 else 4)
+
+
+def layernorm_tuned(x, eps=1e-5, out=None):
+    out = torch.empty_like(x) if out is None else out
+    return _unweighted(_rows_unweighted_tuned, x, out, eps, 1)
+
+
+def _quant_body(x_ptr, q_ptr, s_ptr, M, N, BLOCK: tl.constexpr):
+    row = tl.program_id(0)
+    cols = tl.arange(0, BLOCK)
+    m = cols < N
+    x = tl.load(x_ptr + row * N + cols, mask=m, other=0.0).to(tl.float32)
+    amax = tl.maximum(tl.max(tl.abs(x), axis=0), 1e-12)
+    tl.store(s_ptr + row, amax / 127.0)
+    q = x * (127.0 / amax)
+    # Round half to even, as hk and torch.round do: HIP's libdevice has no
+    # rint, and adding then subtracting 1.5 * 2^23 rounds an fp32 |q| < 2^22
+    # to an integer under the default rounding mode. |q| <= 127 here.
+    q = (q + 12582912.0) - 12582912.0
+    tl.store(q_ptr + row * N + cols, q.to(tl.int8), mask=m)
+
+
+_quant = triton.jit(_quant_body)
+_quant_tuned = _autotune(_row_configs_tuned(), ["M", "N"])(triton.jit(_quant_body))
+
+
+def _quantize(kernel, x, q, s, **launch):
+    n = x.shape[-1]
+    m = x.numel() // n
+    kernel[(m,)](x, q, s, m, n, BLOCK=triton.next_power_of_2(n), **launch)
+    return q, s
+
+
+def quantize(x, q, s):
+    return _quantize(_quant, x, q, s, num_warps=8 if x.shape[-1] >= 2048 else 4)
+
+
+def quantize_tuned(x, q, s):
+    return _quantize(_quant_tuned, x, q, s)
+
+
+def _ew_configs_tuned():
+    return [triton.Config({"BLOCK": b, "waves_per_eu": wpe}, num_warps=w)
+            for b in (1024, 2048, 4096, 8192, 16384) for w in (4, 8, 16)
+            for wpe in (0, 2) if b >= w * 64 * 4]
+
+
+def _ew_body(a_ptr, b_ptr, o_ptr, n, OP: tl.constexpr, BLOCK: tl.constexpr):
+    offs = tl.program_id(0) * BLOCK + tl.arange(0, BLOCK)
+    m = offs < n
+    a = tl.load(a_ptr + offs, mask=m)
+    if OP == 0:
+        y = a + tl.load(b_ptr + offs, mask=m)
+    elif OP == 1:
+        y = a * tl.load(b_ptr + offs, mask=m)
+    else:
+        y = tl.exp(a.to(tl.float32)).to(a.dtype)
+    tl.store(o_ptr + offs, y, mask=m)
+
+
+_ew = triton.jit(_ew_body)
+_ew_tuned = _autotune(_ew_configs_tuned(), ["n", "OP"])(triton.jit(_ew_body))
+EW_OPS = {"add": 0, "mul": 1, "exp": 2}
+
+
+def elementwise(op, a, b, out, BLOCK=1024):
+    """The tutorial's vector add, for add, mul and exp (b is ignored)."""
+    n = a.numel()
+    _ew[(triton.cdiv(n, BLOCK),)](a, b, out, n, OP=EW_OPS[op], BLOCK=BLOCK)
+    return out
+
+
+def elementwise_tuned(op, a, b, out):
+    n = a.numel()
+    _ew_tuned[lambda meta: (triton.cdiv(n, meta["BLOCK"]),)](a, b, out, n, OP=EW_OPS[op])
+    return out
+
+
+def _silu_mul_configs_tuned():
+    return [triton.Config({"BLOCK": b, "waves_per_eu": wpe}, num_warps=w)
+            for b in (512, 1024, 2048, 4096, 8192) for w in (2, 4, 8, 16)
+            for wpe in (0, 2) if b >= w * 64]
+
+
+def _silu_mul_body(x_ptr, o_ptr, M, I, BLOCK: tl.constexpr):
+    """vLLM's silu_and_mul: x is (M, 2I), gate then up; out (M, I)."""
+    row = tl.program_id(1)
+    cols = tl.program_id(0) * BLOCK + tl.arange(0, BLOCK)
+    m = cols < I
+    g = tl.load(x_ptr + row * 2 * I + cols, mask=m, other=0.0).to(tl.float32)
+    u = tl.load(x_ptr + row * 2 * I + I + cols, mask=m, other=0.0).to(tl.float32)
+    y = g / (1.0 + tl.exp(-g)) * u
+    tl.store(o_ptr + row * I + cols, y.to(o_ptr.dtype.element_ty), mask=m)
+
+
+_silu_mul = triton.jit(_silu_mul_body)
+_silu_mul_tuned = _autotune(_silu_mul_configs_tuned(), ["M", "I"])(
+    triton.jit(_silu_mul_body))
+
+
+def silu_and_mul(x, out, BLOCK=1024):
+    m, i2 = x.shape
+    _silu_mul[(triton.cdiv(i2 // 2, BLOCK), m)](x, out, m, i2 // 2, BLOCK=BLOCK, num_warps=4)
+    return out
+
+
+def silu_and_mul_tuned(x, out):
+    m, i2 = x.shape
+    i = i2 // 2
+    _silu_mul_tuned[lambda meta: (triton.cdiv(i, meta["BLOCK"]), m)](x, out, m, i)
+    return out
+
+
+def _rope_configs_tuned():
+    return [triton.Config({"BLOCK_H": bh, "waves_per_eu": wpe}, num_warps=w)
+            for bh in (1, 2, 4, 8, 16, 32, 64) for w in (1, 2, 4, 8)
+            for wpe in (0, 2)]
+
+
+def _rope_body(x_ptr, c_ptr, s_ptr, o_ptr, T, H, HALF: tl.constexpr,
+               BLOCK_H: tl.constexpr):
+    """NeoX RoPE on (T, H, 2*HALF): token t's angles c[t], s[t] (HALF each)."""
+    t = tl.program_id(0)
+    hs = tl.program_id(1) * BLOCK_H + tl.arange(0, BLOCK_H)
+    j = tl.arange(0, HALF)
+    mh = (hs < H)[:, None]
+    c = tl.load(c_ptr + t * HALF + j)[None, :]
+    s = tl.load(s_ptr + t * HALF + j)[None, :]
+    base = t * H * 2 * HALF + hs[:, None] * 2 * HALF + j[None, :]
+    x1 = tl.load(x_ptr + base, mask=mh, other=0.0).to(tl.float32)
+    x2 = tl.load(x_ptr + base + HALF, mask=mh, other=0.0).to(tl.float32)
+    tl.store(o_ptr + base, (x1 * c - x2 * s).to(o_ptr.dtype.element_ty), mask=mh)
+    tl.store(o_ptr + base + HALF, (x2 * c + x1 * s).to(o_ptr.dtype.element_ty), mask=mh)
+
+
+_rope = triton.jit(_rope_body)
+_rope_tuned = _autotune(_rope_configs_tuned(), ["T", "H", "HALF"])(triton.jit(_rope_body))
+
+
+def rope(x, cos, sin, out):
+    t, h, d = x.shape
+    bh = min(triton.next_power_of_2(h), 8)
+    _rope[(t, triton.cdiv(h, bh))](x, cos, sin, out, t, h, HALF=d // 2, BLOCK_H=bh,
+                                   num_warps=4)
+    return out
+
+
+def rope_tuned(x, cos, sin, out):
+    t, h, d = x.shape
+    _rope_tuned[lambda meta: (t, triton.cdiv(h, meta["BLOCK_H"]))](
+        x, cos, sin, out, t, h, HALF=d // 2)
+    return out
+
+
+TUNED_SPACE.update({
+    "elementwise": "BLOCK in {1024..16384} x num_warps in {4,8,16} x waves_per_eu "
+                   "in {0,2}, keyed on the element count",
+    "silu_mul": "BLOCK in {512..8192} x num_warps in {2,4,8,16} x waves_per_eu in "
+                "{0,2}, keyed on rows and I",
+    "rope": "BLOCK_H (heads a program) in {1..64} x num_warps in {1,2,4,8} x "
+            "waves_per_eu in {0,2}, keyed on tokens, heads, head dim",
+})
+
 _TUNED = {matmul_abt_tuned: (_matmul_abt_tuned, "matmul"),
           rms_norm_tuned: (_rmsnorm_tuned, "row"),
           fused_add_rms_norm_tuned: (_rmsnorm_tuned, "row"),
-          softmax_tuned: (_softmax_tuned, "row")}
+          softmax_tuned: (_softmax_tuned, "row"),
+          rmsnorm_tuned: (_rows_unweighted_tuned, "row"),
+          layernorm_tuned: (_rows_unweighted_tuned, "row"),
+          quantize_tuned: (_quant_tuned, "row"),
+          elementwise_tuned: (_ew_tuned, "elementwise"),
+          silu_and_mul_tuned: (_silu_mul_tuned, "silu_mul"),
+          rope_tuned: (_rope_tuned, "rope")}
 
 
 def tuning(fn):
