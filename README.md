@@ -21,7 +21,9 @@ hardware's peak. Three things stood between that and a faster model.
   weights is 1.4-2.6x slower than hk's. hk-dsl ships its kernels with
   patches that put them into the engines, and measures each patch end to end.
   Qwen3-8B is 1.20-1.75x faster per request in vLLM 0.31 and has 1.49-1.81x
-  the output throughput in SGLang; Qwen3-14B-AWQ is up to 4.43x faster.
+  the output throughput in SGLang; Qwen3-14B-AWQ is up to 4.43x faster. A
+  model nobody tuned for gets its linear layers' routes measured at its
+  first start: Qwen2.5-7B, 1.17-1.32x per request at 16-128 requests.
 - **The kernels fail silently.** At the tile level, the compiler can hoist an
   MMA above the wait that guards it, a register spill reorders against
   hand-placed waits, an operand in the wrong layout takes eight times the
@@ -166,6 +168,7 @@ ones replaced here.
 | model, engine | patch | result | against | source |
 |---|---|---|---|---|
 | Qwen3-8B, vLLM 0.31 | linear layers and attention | 1.20-1.75x per request; attention alone 1.05-1.48x | stock vLLM 0.31.0 | [vLLM 0.31](docs/history/20-vllm-031.md) |
+| Qwen2.5-7B-Instruct, vLLM 0.31, a model no table had | linear layers, the shapes measured at the first start | 1.19-1.32x per request at 16-32 requests, 1.17-1.31x at 96-128, 1.04-1.15x at 1-4; the first start 60 s longer, the second 43 s | stock vLLM 0.31.0 | [chapter 35](docs/history/35-any-model.md) |
 | Qwen3-8B, vLLM 0.31 | the same, with FlyDSL's GEMM on the routes | decode step 12% shorter at 96-128 requests, the request 5-6%; unchanged elsewhere | the same patches without FlyDSL | [chapter 30](docs/history/30-flydsl-routes-gate-contracts.md) |
 | Qwen3-8B-AWQ / Qwen3-14B-AWQ, vLLM 0.31 | 4-bit linear layers | 1.07-3.80x / 1.16-4.43x per request | stock vLLM 0.31.0, fp16 | [4-bit weights](docs/history/22-int4.md) |
 | OLMoE-1B-7B, vLLM 0.31 | MoE / MoE and attention | 1.02-1.41x / 1.17-2.22x per request | stock vLLM 0.31.0 | [MoE](docs/history/21-moe.md) |
@@ -206,7 +209,8 @@ hk/codegen/     the module boundary around a translated kernel (scaffold.py)
 hk/runtime/     arch detection, hipcc + content-hash cache, the resource gate,
                 the code-object checker (cocheck.py), and the torch.ops
                 registration (torch_ext.py)
-hk/autotune/    schedule search: build the space, keep what passes the gate, time
+hk/autotune/    schedule search: build the space, keep what passes the gate, time;
+                and the linear routes' measurement (routes.py)
 hk/tuned/       the schedules that search picked, and the measured routing
                 tables, as shipped data
 hk/ops/         kernels written in the DSL, the SDPA drop-in (sdpa.py), and

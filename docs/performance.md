@@ -26,6 +26,7 @@ it is a time ratio.
 - [Paged prefill](#paged-prefill)
 - [End to end in vLLM](#end-to-end-in-vllm)
   - [FlyDSL's GEMM on the routes](#flydsls-gemm-on-the-routes)
+  - [A model no table had measured](#a-model-no-table-had-measured)
 - [End to end in SGLang](#end-to-end-in-sglang)
 - [After the MLIR move](#after-the-mlir-move)
 - [Against torch, at full size, after the cross-warp fix](#against-torch-at-full-size-after-the-cross-warp-fix)
@@ -43,6 +44,7 @@ rewritten); they stay because the chapters cite them.
 |---|---|---|---|---|
 | vLLM 0.31 end to end, Qwen3-8B, attention backend / both patches | 1.05-1.48x / 1.20-1.75x per request; 1.01-1.39x TRITON_ATTN | stock vLLM 0.31.0 (ROCM_ATTN), and the TRITON_ATTN backend hk replaces | win at every shape; the gain over TRITON_ATTN is prefill | [vLLM 0.31](history/20-vllm-031.md) |
 | vLLM 0.31 end to end, Qwen3-8B, linear routes with FlyDSL's GEMM rows | decode step 1.14x hk+gemm's at 96-128 requests (1.394x / 1.666x stock); prefill 0.9-2.5% faster at 1-4 requests; tie elsewhere. Re-measured after chapter 28, most prefill rows went: decode the same (1.413x / 1.651x stock), prefill 1.5-1.7% faster at 8192-token steps and 1.2% slower at a 1024-token one | the same patches routed by the table without FlyDSL rows; stock vLLM 0.31.0; the table before re-measuring | win where a step's M is one FlyDSL's tiles divide and it measured faster; otherwise unchanged | [chapter 30](history/30-flydsl-routes-gate-contracts.md), [chapter 31](history/31-remeasured.md) |
+| vLLM 0.31 end to end, Qwen2.5-7B-Instruct, a model no table had: linear patch measuring its shapes at load | 1.19-1.32x per request at 16-32 requests, 1.17x / 1.31x at 96 / 128, 1.04-1.15x at 1-4; decode step 1.22-1.38x at 16-32 and 128 requests, a tie at 1-4 and 96. First start 60 s longer (the budget), the second 43 s, then nothing | stock vLLM 0.31.0 | win per request at every shape; decode gains where a step has 6-64 or 128 rows | [chapter 35](history/35-any-model.md) |
 | vLLM 0.31 end to end, Qwen3-8B-AWQ, 4-bit patch | 1.07-3.80x per request; decode step 1.57-4.46x | stock vLLM 0.31.0, fp16, Triton AWQ | win at every shape | [4-bit weights](history/22-int4.md) |
 | vLLM 0.31 end to end, Qwen3-14B-AWQ, 4-bit patch | 1.16-4.43x per request; decode step 2.87-5.52x | stock vLLM 0.31.0, fp16, Triton AWQ | win at every shape | [4-bit weights](history/22-int4.md) |
 | vLLM 0.31 end to end, OLMoE-1B-7B, MoE patch / with hk's attention | 1.02-1.41x / 1.17-2.22x per request; decode step to 2.62x | stock vLLM 0.31.0 | win at every shape | [MoE](history/21-moe.md) |
@@ -731,6 +733,51 @@ The 1.5-1.7% is a row the new table added, gate_up's 8192-token steps on
 FlyDSL's 256x256 tile. The 1.2% loss is the rows it dropped at M = 1024,
 which measured under the 2% bar per call. Against stock, decode at 96 and
 128 requests is 1.413x and 1.651x (chapter 30: 1.394x and 1.666x).
+
+### A model no table had measured
+
+[Chapter 35](history/35-any-model.md). vLLM 0.31.0, Qwen2.5-7B-Instruct,
+bf16, whose linear shapes are in no shipped table. The `gemm` arm is
+`HK_VLLM_GEMM` with nothing else set, from an empty record directory: its
+first start measured the shapes at load within the default 60 s, its second
+measured the rest (43 s), its third nothing. Three rounds, arms alternating,
+best of each; greedy tokens identical to stock's at every shape. Qwen2.5's
+qkv projection has a bias, so its calls stay on vLLM's path.
+
+vLLM's defaults (CUDA graphs, prefix caching, chunked prefill), 72 tokens:
+
+| ctx x batch | total, stock ms | gemm | x | prefill x | decode, stock ms | gemm | x |
+|---|---|---|---|---|---|---|---|
+| 1024 x 1 | 1740.8 | 1675.9 | 1.039x | 1.317x | 21.12 | 21.03 | 1.005x |
+| 1024 x 4 | 2429.1 | 2242.4 | 1.083x | 1.260x | 21.93 | 21.84 | 1.004x |
+| 1024 x 16 | 6165.6 | 4679.3 | 1.318x | 1.284x | 35.63 | 25.76 | 1.383x |
+| 1024 x 32 | 10032.1 | 7716.2 | 1.300x | 1.287x | 37.96 | 27.60 | 1.376x |
+| 4096 x 1 | 3118.4 | 2927.6 | 1.065x | 1.229x | 29.86 | 29.86 | 1.000x |
+| 4096 x 4 | 6325.4 | 5497.8 | 1.151x | 1.252x | 30.26 | 30.40 | 0.995x |
+| 4096 x 16 | 22332.5 | 18527.9 | 1.205x | 1.267x | 47.91 | 37.36 | 1.283x |
+| 4096 x 32 | 42259.2 | 35427.7 | 1.193x | 1.267x | 53.96 | 44.38 | 1.216x |
+
+Graph mode, 512-token prompts, 160 tokens:
+
+| ctx x batch | total, stock ms | gemm | x | prefill x | decode, stock ms | gemm | x |
+|---|---|---|---|---|---|---|---|
+| 512 x 96 | 17588.6 | 14997.9 | 1.173x | 1.295x | 42.75 | 42.10 | 1.015x |
+| 512 x 128 | 24594.3 | 18728.8 | 1.313x | 1.295x | 66.22 | 48.78 | 1.358x |
+
+At 1 and 4 requests decode is vLLM's own skinny GEMMs (M <= 5), which hk's
+GEMV does not beat. At 96 requests the measured routes keep three of the
+four shapes on vLLM's op, and the measuring at load does not time FlyDSL,
+whose small tiles made Qwen3-8B's step there 12% shorter. Qwen3-8B itself,
+routed by the same code with nothing to measure, matched the shipped table
+pinned, within 0.4% per request at every shape.
+
+DeepSeek-R1-Distill-Llama-8B (three new shapes), vLLM's defaults, two
+rounds: 1.41x / 1.32x per request at 1024 x 16 / 32, 1.21x / 1.18x at
+4096, 1.03-1.14x at 1-4 requests; decode steps 1.62x / 1.41x / 1.38x /
+1.20x at 16-32 requests. Starts 60 s and 17 s longer, then nothing. Its
+greedy tokens matched at six shapes; at 1024 x 32 the first token's two
+leading logits are neighbouring bf16 values, and the arms pick opposite
+ones.
 
 ### The vision tower
 

@@ -7,6 +7,7 @@ From nothing to a kernel you have traced, read, compiled and launched.
 - [The four entry points](#the-four-entry-points)
 - [Running the tests](#running-the-tests)
 - [Running the examples](#running-the-examples)
+- [Your model in vLLM](#your-model-in-vllm)
 - [Where next](#where-next)
 
 ## Install
@@ -143,6 +144,39 @@ python3 examples/01_vector_add.py --dump ir    # the hk MLIR module -- no GPU, n
 python3 examples/01_vector_add.py --dump cpp   # the HipKittens C++ it translates to
 python3 examples/01_vector_add.py --build      # compile with hipcc, print the resources -- no GPU
 ```
+
+## Your model in vLLM
+
+On a Radeon (gfx1100), with vLLM installed, hk's linear-layer patch runs a
+model's unquantized bf16 linear layers on hk's decode GEMV and GEMM wherever
+they measured faster than vLLM's own kernels:
+
+```bash
+HK_PATCH_VLLM=1 HK_VLLM_GEMM=1 vllm serve Qwen/Qwen2.5-7B-Instruct
+```
+
+The routes shipped in the wheel were measured on Qwen3-8B. For any other
+model, the first start measures the shapes the shipped table lacks, after
+the weights load and before vLLM sizes its cache. It spends at most
+`HK_AUTOTUNE_BUDGET` seconds on that (60 by default), decode-sized batches
+first. The results are kept, so later starts measure nothing. The `[hk]`
+line in the server's log says what was measured and what stayed on vLLM's
+path. To pay that cost ahead of time instead:
+
+```bash
+python -m hk.integration tune --model Qwen/Qwen2.5-7B-Instruct   # add --tp N for tensor parallel
+```
+
+To see what it bought on your machine, against vLLM as it ships, in one
+command (greedy outputs are compared too):
+
+```bash
+python -m hk.integration ab --model Qwen/Qwen2.5-7B-Instruct --arms stock,gemm
+```
+
+What it measured on a model no table had, and what it costs, is in
+[chapter 35](history/35-any-model.md). The patches, and what each one
+replaces, are in [integration](integration.md).
 
 ## Where next
 

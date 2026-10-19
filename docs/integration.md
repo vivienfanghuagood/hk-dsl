@@ -270,6 +270,45 @@ not bf16, has a bias, has a non-contiguous weight, does not tile, or runs on a
 device of another arch. With no table for the current arch the patch is not
 installed at all, and says so.
 
+### A model no table has measured
+
+The shipped table is Qwen3-8B's, and a (N, K) it never measured takes vLLM's
+path. So the patch measures the model it is given, on the machine it runs on
+(`hk/integration/vllm_autotune.py`, [chapter 35](history/35-any-model.md)):
+
+- **When.** It wraps vLLM's GPU worker's `load_model`. After the weights load
+  it walks the model vLLM built, every unquantized bf16 linear layer and the
+  LM head, sharded as this rank holds them. The shapes the table lacks are
+  measured before vLLM's profile run sizes the KV cache, and before any CUDA
+  graph is captured. The tuner's buffers are freed before the profile run.
+- **What.** The tuner behind `route_tune.py` (`hk.autotune.routes`), against
+  the installed vLLM's own op. It measures every decode M (1-64) of every
+  missing shape first, largest weight stream first, then the prefill grid.
+  A shape whose calls all carry a bias is not measured, since those calls
+  fall back anyway.
+- **How long.** `HK_AUTOTUNE_BUDGET` seconds, 60 by default. A shape whose
+  grid the budget cut short routes only up to the largest M measured; the
+  next start carries on. The patch's report line says what was measured,
+  how long it took, and which shapes stayed on vLLM's path.
+- **Where it goes.** This machine's records: `$HK_TUNE_DIR` (by default
+  beside the compile cache), `routes_vllm_linear_<arch>.json`. Each shape
+  there replaces the shipped entry for the same (N, K). The next start of
+  the same model finds every shape and measures nothing.
+- **Once per machine.** Writers hold a file lock. Tensor-parallel ranks, or
+  two servers, measure a shape once: the others wait, then read it.
+
+To pay the cost before a server starts instead, on a quiet card and with no
+budget unless one is given:
+
+```bash
+python -m hk.integration tune --model Qwen/Qwen2.5-7B-Instruct          # --tp N, --force, --dry-run
+```
+
+It reads the model's `config.json` (a path, the local HF cache, or the hub)
+and writes the same records. `HK_AUTOTUNE_BUDGET=0` turns the measuring at
+load off. `HK_AUTOTUNE=0` ignores the records as well. A table named by
+`$HK_VLLM_ROUTES` is used alone, and nothing is measured against it.
+
 The patch also points `VLLM_CACHE_ROOT` at a `hk-linear` subdirectory.
 vLLM keys its compiled graphs, including the AOT cache, by config and
 source, not by what is patched. A patched engine sharing a cache root with
@@ -405,7 +444,16 @@ an M as follows:
   engine's path;
 * above the largest measured M, the winner measured there;
 * below the smallest, or for a shape never measured, the engine's path, and
-  the shape is recorded as a miss.
+  the shape is recorded as a miss;
+* for a shape whose grid a tuning budget cut short (`partial`), above the
+  largest M measured, the engine's path.
+
+The measuring is a library, `hk.autotune.routes`: `tune_shape(n, k, ...)`
+returns one shape's entry, and `route_tune.py`, `python -m hk.integration
+tune` and the [measuring at load](#a-model-no-table-has-measured) are thin
+shells over it. `engine.shipped_table` lays this machine's records over the
+shipped table, shape by shape. A record measured against another engine's
+path (vLLM upgraded, say) is left out, and measured again at the next load.
 
 Tables are per arch, per model and per engine, because the path a kernel has
 to beat is the engine's. The shipped ones, in `hk/tuned/`, named
@@ -689,7 +737,10 @@ spelled:
 | `HK_VLLM_MOE` | `_vllm_plugin.py` | route the bf16 MoE GEMMs up to 256 tokens a step |
 | `HK_VLLM_INT4` | `_vllm_plugin.py` | route AWQ linear layers' fp16/bf16 batches up to 64 tokens |
 | `HK_VLLM_USER` | `_vllm_plugin.py` | comma-separated modules or `.py` files to import in vLLM's process: your `register.op` / `register.patch` calls |
-| `HK_VLLM_ROUTES` | `vllm_gemm.py`, via `engine.shipped_table` | a routing table to use instead of the shipped one |
+| `HK_VLLM_ROUTES` | `vllm_gemm.py`, via `engine.shipped_table` | a routing table to use instead of the shipped one and this machine's records; nothing is measured at load against it |
+| `HK_AUTOTUNE_BUDGET` | `vllm_autotune.py` | seconds the linear patch may spend at load measuring the model's shapes no table has (default 60); `0` measures nothing, `inf` without a limit |
+| `HK_AUTOTUNE` | `hk.autotune`, `engine.shipped_table`, `vllm_autotune.py` | `0`: ignore this machine's records -- schedules and routes -- and measure nothing at load |
+| `HK_TUNE_DIR` | `hk.autotune` | where this machine's records go (default `$HK_CACHE_DIR/autotune`): `routes_<engine>_linear_<arch>.json` for routes |
 | `HK_FLYDSL` | `flydsl_gemm.py` | `0`/`off`/`no`/`false`: never take a table's FlyDSL rows, even with FlyDSL installed |
 | `FLYDSL_ROOT` | `flydsl_gemm.py` | a FlyDSL checkout whose `kernels/` package matches the installed `flydsl`, appended to `sys.path`; where another `kernels` is installed, imported from beside it |
 | `HK_SGLANG_LINEAR` | `_sglang_plugin.py` | route SGLang's unquantized linear layers |
