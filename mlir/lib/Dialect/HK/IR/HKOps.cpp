@@ -488,6 +488,20 @@ HK_UNARY_VERIFY(SiluOp)
 HK_UNARY_VERIFY(StepOp)
 #undef HK_UNARY_VERIFY
 
+LogicalResult SwapHalvesOp::verify() {
+  if (failed(verifyUnary(*this)))
+    return failure();
+  auto t = dyn_cast<RegTileType>(getSrc().getType());
+  if (!t || !t.isStrip())
+    return emitOpError("exchanges the halves of a strip's rows; it takes a "
+                       "strip, not ")
+           << getSrc().getType();
+  if (t.getCols() % (2 * t.getRun()))
+    return emitOpError("a strip row of ")
+           << t.getCols() << " columns has no two halves of whole runs";
+  return success();
+}
+
 //===----------------------------------------------------------------------===//
 // Reductions and broadcasts
 //===----------------------------------------------------------------------===//

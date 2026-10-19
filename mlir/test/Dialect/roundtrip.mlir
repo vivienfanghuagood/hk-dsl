@@ -75,3 +75,13 @@ func.func @cdna_attention(%s: !hk.rt<f32, 64x32, col, frag 32x32>,
   hk.pin %p, %m : !hk.rt<bf16, 64x32, col, frag 16x32 stride 4>, !hk.rv<f32, 64x32, col, row, frag 32x32>
   return
 }
+
+// A strip's halves exchanged (RoPE's rotate_half), fresh and in place.
+// CHECK-LABEL: func.func @strip_swap_halves
+func.func @strip_swap_halves(%s: !hk.rt<f32, 1x128, strip<2>>) {
+  // CHECK: hk.swap_halves %{{.*}} : !hk.rt<f32, 1x128, strip<2>> -> !hk.rt<f32, 1x128, strip<2>>
+  %h = hk.swap_halves %s : !hk.rt<f32, 1x128, strip<2>> -> !hk.rt<f32, 1x128, strip<2>>
+  // CHECK: hk.swap_halves %{{.*}} into %{{.*}}
+  hk.swap_halves %h into %s : !hk.rt<f32, 1x128, strip<2>> into !hk.rt<f32, 1x128, strip<2>>
+  return
+}

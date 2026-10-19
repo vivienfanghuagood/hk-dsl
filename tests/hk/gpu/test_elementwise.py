@@ -117,10 +117,18 @@ def test_out_parameter_is_written_in_place():
     _close(out, a + b, torch.float32)
 
 
-def test_a_shape_that_does_not_tile_is_refused():
+def test_a_shape_that_does_not_tile_is_refused_or_bounded():
     """A partial tile reads past the end of the tensor. That returns whatever
-    is next in memory rather than failing, so it has to be refused up front."""
+    is next in memory rather than failing, so the tile kernels refuse it up
+    front; where the ops run on strips (gfx950) the accesses are bounded and
+    any size is exact."""
+    from hk.ops import elementwise
+    from hk.target import current_arch
+
     a = torch.randn(7, 13, device="cuda", dtype=torch.bfloat16)
+    if current_arch() in elementwise.STRIP_ARCHS:
+        assert torch.equal(hk.ops.add(a, a), a + a)
+        return
     with pytest.raises(ValueError, match="does not tile"):
         hk.ops.add(a, a)
 

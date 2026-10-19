@@ -50,7 +50,7 @@ def rmsnorm_strip_kernel(cols: int = 4096, warps: int = 8):
     def rmsnorm_strip(x: hk.Tensor[hk.bf16], o: hk.Tensor[hk.bf16],
                       EPS: hk.Constexpr[float] = 1e-6):
         row, c0 = hk.arch.block_idx.x, hk.arch.warp_id() * cw
-        v = x.at[row, c0].load(S)                                 # cw/256 x 16 bytes a lane
+        v = x.at[row, c0].load(S)                                 # 16 bytes a lane a wave*8 columns
         sq = hk.collective.cross_warp((v * v).sum(axis=1), "add", warps)
         v *= hk.math.rsqrt(sq / x.cols + EPS)                     # the col_vec broadcasts
         o.at[row, c0].store(v)
@@ -78,14 +78,14 @@ def main():
     contenders = {"hk (this kernel)": lambda: kernel(x, o)}
     from hk.target import current_arch, get_target  # noqa: PLC0415
 
-    if get_target(current_arch()).kittens_define == "KITTENS_RDNA3":
+    if get_target(current_arch()).strips:
         strip = rmsnorm_strip_kernel(cols)
         strip(x, o)
         _common.check("the strip kernel vs fp32 torch", o, want, rel=2e-2)
         contenders["hk (the strip kernel)"] = lambda: strip(x, o)
     else:
-        print(f"  the strip kernel: skipped, strips are include/rdna3's "
-              f"and this is {current_arch()}")
+        print(f"  the strip kernel: skipped, strips are include/rdna3's and "
+              f"gfx950's, and this is {current_arch()}")
     if args.no_bench:
         return
     best = _common.compare({

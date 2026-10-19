@@ -137,3 +137,11 @@ func.func @vote_on_bf16(%m: !hk.rv<bf16, 64x32, col, row, frag 32x32>) {
   %g = hk.any_above %m, %m, 8.0 : !hk.rv<bf16, 64x32, col, row, frag 32x32>, !hk.rv<bf16, 64x32, col, row, frag 32x32>
   return
 }
+
+// -----
+
+func.func @swap_halves_of_a_tile(%t: !hk.rt<f32, 16x64, row>) {
+  // expected-error@+1 {{exchanges the halves of a strip's rows; it takes a strip}}
+  %s = hk.swap_halves %t : !hk.rt<f32, 16x64, row> -> !hk.rt<f32, 16x64, row>
+  return
+}

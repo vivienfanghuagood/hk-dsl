@@ -160,8 +160,76 @@ def test_a_strip_fills_by_column_only():
     _refuses(_triu, "strip")
 
 
-def test_a_strip_is_gfx11_only():
+def test_a_strip_is_refused_where_no_tree_has_one():
     k = hk.kernel(_rms, arch="gfx1201", warps=2, name="rms_gfx12",
                   grid=lambda p: (p.x.rows, 1, 1))
-    with pytest.raises(TypeError, match="include/rdna3 only"):
+    with pytest.raises(TypeError, match="include/rdna3 and hk's wave64 port"):
         k.trace()
+
+
+# ---------------------------------------------------------------- wave64
+
+
+S64 = hk.RS(hk.fp32, 1, 512)
+
+
+def _rms64(x: hk.Tensor[hk.bf16], w: hk.Tensor[hk.bf16], o: hk.Tensor[hk.bf16]):
+    row, c0 = hk.arch.block_idx.x, hk.arch.warp_id() * 512
+    g = w.at[0, c0].load(hk.row_vec(S64))
+    v = x.at[row, c0].load(S64)
+    sq = cross_warp((v * v).sum(axis=1), "add", 2)
+    sq /= x.cols
+    sq += 1e-6
+    v *= sq.rsqrt()
+    v *= g
+    o.at[row, c0].store(v, bounded=True)
+
+
+def _k950(body, warps=2):
+    body.__name__ = body.__name__.lstrip("_") + "_950"
+    return hk.kernel(body, arch="gfx950", warps=warps, name=body.__name__,
+                     grid=lambda p: (p.x.rows, 1, 1))
+
+
+def test_a_wave64_strip_is_kittens_rs_from_hks_port():
+    """The same type and translation as gfx11's; the C++ comes from
+    include/hk/cdna.cuh, which a gfx950 kernel includes."""
+    src = _k950(_rms64).source()
+    assert "using rs_fp32_1x512_r8 = kittens::rs<float, 1, 512, 8>;" in src
+    assert '"hk/cdna.cuh"' in src
+    assert "kittens::row_sum(" in src and "kittens::store_bounded(g.o, " in src
+
+
+def test_a_wave64_strips_chunk_is_64_lanes():
+    """256 columns of runs of 8 are one gfx11 chunk and half a gfx950 one."""
+    with pytest.raises(TypeError, match="chunk is 64 lanes x 8"):
+        _k950(_rms).trace()
+
+
+def _swap(x: hk.Tensor[hk.bf16], o: hk.Tensor[hk.bf16]):
+    S2 = hk.RS(hk.fp32, 1, 128, 2)
+    v = x.at[hk.arch.block_idx.x, 0].load(S2)
+    v += v.swap_halves()
+    o.at[hk.arch.block_idx.x, 0].store(v)
+
+
+def test_swap_halves_is_one_map_in_the_ir_and_the_cpp():
+    k = _k950(_swap, warps=1)
+    assert "hk.swap_halves" in k.trace().module.operation.get_asm()
+    assert "kittens::swap_halves(" in k.source()
+
+
+def test_swap_halves_takes_a_wave64_strip_of_one_or_an_even_number_of_chunks():
+    with pytest.raises(TypeError, match="wave64 strip port"):
+        _kernel(_swap, warps=1).trace()
+
+    def _tile(x: hk.Tensor[hk.bf16], o: hk.Tensor[hk.bf16]):
+        o.tile[0, 0].store(x.tile[0, 0].load(hk.RT(hk.fp32, 16, 64)).swap_halves())
+    with pytest.raises(TypeError, match="takes a strip"):
+        _k950(_tile, warps=1).trace()
+
+    def _three(x: hk.Tensor[hk.bf16], o: hk.Tensor[hk.bf16]):
+        v = x.at[0, 0].load(hk.RS(hk.fp32, 1, 1536))
+        o.at[0, 0].store(v.swap_halves())
+    with pytest.raises(TypeError, match="neither one nor an even number"):
+        _k950(_three, warps=1).trace()

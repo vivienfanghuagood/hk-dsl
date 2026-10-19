@@ -14,14 +14,20 @@ torch = pytest.importorskip("torch")
 import hk  # noqa: E402
 from hk.dsl.collective import cross_warp  # noqa: E402
 
-def _rdna3() -> bool:
+def _target():
     from hk.target import current_arch, get_target
 
-    return get_target(current_arch()).kittens_define == "KITTENS_RDNA3"
+    return get_target(current_arch())
 
 
 pytestmark = [pytest.mark.gpu,
-              pytest.mark.skipif(not _rdna3(), reason="strips are include/rdna3's")]
+              pytest.mark.skipif(not _target().strips,
+                                 reason="strips are include/rdna3's and gfx950's")]
+
+#: Columns scale with the wave: a chunk is `wave` lanes of one run, so a
+#: wave32 case's widths double on wave64 and every edge stays where it was
+#: relative to the chunks.
+W = _target().wave // 32
 
 _DT = {torch.bfloat16: hk.bf16, torch.float16: hk.fp16, torch.float32: hk.fp32}
 
@@ -72,6 +78,7 @@ CASES = [
 @pytest.mark.parametrize("dtype,rows,cols,run,warps,m,n,bounded", CASES)
 def test_strip_loads_reduces_broadcasts_and_stores(dtype, rows, cols, run, warps, m, n,
                                                    bounded):
+    cols, n = cols * W, n * W
     g = torch.Generator(device="cuda").manual_seed(m * 31 + n)
     x = torch.randn(m, n, device="cuda", dtype=dtype, generator=g)
     w = torch.randn(1, n, device="cuda", dtype=dtype, generator=g)
@@ -105,7 +112,7 @@ def test_a_16bit_strip_copies_bit_for_bit():
 def test_a_bounded_store_leaves_the_rest_of_the_tensor_alone():
     """Runs past the last column and rows past the last row are not
     written: the guard band around a narrower view stays as it was."""
-    S = hk.RS(hk.fp32, 2, 256)
+    S = hk.RS(hk.fp32, 2, 256 * W)
 
     def strip_fill(x: hk.Tensor[hk.fp32], o: hk.Tensor[hk.fp32]):
         r0 = hk.arch.block_idx.x * 2
@@ -115,10 +122,10 @@ def test_a_bounded_store_leaves_the_rest_of_the_tensor_alone():
 
     k = hk.kernel(strip_fill, warps=1, name="strip_fill",
                   grid=lambda p: (hk.cdiv(p.x.rows, 2), 1, 1))
-    big = torch.full((8, 320), -5.0, device="cuda")
-    view = big[:3, :200]
-    x = torch.randn(3, 200, device="cuda")
+    big = torch.full((8, 320 * W), -5.0, device="cuda")
+    view = big[:3, :200 * W]
+    x = torch.randn(3, 200 * W, device="cuda")
     # A strided output: the kernel's row stride is the big tensor's.
     k(x, view)
-    torch.testing.assert_close(big[:3, :200], x + 1.0)
-    assert (big[:3, 200:] == -5.0).all() and (big[3:] == -5.0).all()
+    torch.testing.assert_close(big[:3, :200 * W], x + 1.0)
+    assert (big[:3, 200 * W:] == -5.0).all() and (big[3:] == -5.0).all()

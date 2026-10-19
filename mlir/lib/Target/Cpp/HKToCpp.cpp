@@ -1250,7 +1250,7 @@ private:
         .Case<AddOp, SubOp, MulOp, DivOp, MaxOp, MinOp>(
             [&](auto o) { emitBinary(o); })
         .Case<ExpOp, Exp2Op, LogOp, Log2Op, AbsOp, ReluOp, CopyOp, GeluOp,
-              DgeluOp, SqrtOp, RsqrtOp, SiluOp, StepOp>([&](auto o) {
+              DgeluOp, SqrtOp, RsqrtOp, SiluOp, StepOp, SwapHalvesOp>([&](auto o) {
           Value d = dest(o.getDst(), o.getResult());
           call(o->getName().stripDialect(), d, {name(o.getSrc())});
         })

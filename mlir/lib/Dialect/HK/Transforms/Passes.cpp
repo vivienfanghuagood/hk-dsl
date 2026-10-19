@@ -270,8 +270,9 @@ static int estimateVgprs(func::FuncOp f, const TargetInfo &tgt) {
       if (isa<RegSubtileOp>(op))
         continue;             // registers of a tile already counted
       if (auto rt = dyn_cast<RegTileType>(t); rt && rt.isStrip())
-        // Unreplicated: rows * cols elements over 32 lanes, packed in dwords.
-        live[r] = int(rt.getRows() * rt.getCols() / 32 *
+        // Unreplicated: rows * cols elements over the wave's lanes, packed
+        // in dwords.
+        live[r] = int(rt.getRows() * rt.getCols() / tgt.wave *
                       dtypeBits(rt.getElementType()) + 31) / 32;
       else if (rt)
         live[r] = tgt.tileVgprs(dtypeBits(rt.getElementType()), rt.getRows(),

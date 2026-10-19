@@ -60,11 +60,17 @@ template<> struct constants<int8> {
     static __device__ inline constexpr int8 one()  { return 1; }
 };
 #endif
-/** float -> int8 rounds to nearest-even and saturates; a C cast truncates and wraps. */
+/** float -> int8 rounds to nearest-even and saturates; a C cast truncates and wraps.
+ * On the device the clamp is one v_med3_f32: written as two comparisons it
+ * was two v_cmp, two v_cndmask and the VCC hazard's s_nop an element. */
 template<> struct convertor<int8, float> {
     static __host__ __device__ inline int8 convert(const float &u) {
         float r = __builtin_rintf(u);
+#if defined(__HIP_DEVICE_COMPILE__)
+        r = __builtin_amdgcn_fmed3f(r, -128.f, 127.f);
+#else
         r = r < -128.f ? -128.f : (r > 127.f ? 127.f : r);
+#endif
         return static_cast<int8>(r);
     }
 };
@@ -1463,6 +1469,632 @@ __device__ inline void philox_uniform(RT &dst, uint32_t seed_lo, uint32_t seed_h
                 detail::hk_set(dst, i, j, e,
                                detail::hk_uniform_from(detail::hk_philox_first(ctr, seed_lo, seed_hi)));
             }
+}
+
+/* ------------------------------------------------------------------------
+ * Register strips (kittens::rs) on wave64: include/rdna3's rs, its warp ops
+ * and its memory ops, with the two facts that differ changed.
+ *
+ *  - A chunk is 64 lanes x RUN: lane l owns, of every row, the runs
+ *    [j*64*RUN + l*RUN, +RUN). A bf16 run of 8 is one buffer_load_dwordx4.
+ *  - The row reduction's butterfly crosses 64 lanes: DPP quad_perm (xor 1,
+ *    xor 2), row_half_mirror and row_mirror inside each 16-lane row, then
+ *    v_permlane16_swap and v_permlane32_swap across rows (gfx950), or
+ *    ds_bpermute (__shfl_xor) on gfx942, which has no swap. Each stage
+ *    combines a value with a partner that combines the same pair, so every
+ *    lane ends with the same bits, as on gfx11.
+ *
+ * Stores narrow through hk_cvt (bf16 rounds to nearest even; the CDNA
+ * trees' convertor truncates), and the bounded forms go through hk_srsrc.
+ * ---------------------------------------------------------------------- */
+
+namespace ducks {
+namespace rs {
+struct identifier {};
+struct cv_identifier {};
+}  // namespace rs
+}  // namespace ducks
+
+/** @brief One value per row of a strip, held by every lane of the warp. */
+template<typename _T, int _length>
+struct rs_cv {
+    using identifier = ducks::rs::cv_identifier;
+    static_assert(_length > 0, "a strip has at least one row");
+    using T = typename base_types::packing<_T>::unpacked_type;
+    using dtype = T;
+    static constexpr int length    = _length;
+    static constexpr int outer_dim = _length;
+    static constexpr int inner_dim = 1;
+    T data[outer_dim][inner_dim];
+    __device__ inline       T* operator[](size_t idx)       { return &data[idx][0]; }
+    __device__ inline const T* operator[](size_t idx) const { return &data[idx][0]; }
+};
+
+/** @brief ROWS rows of COLS columns, RUN contiguous elements of a row per
+ * lane per 64*RUN-column chunk. */
+template<typename _T, int _rows, int _cols, int _run = 8>
+struct rs {
+    using identifier = ducks::rs::identifier;
+    using T = typename base_types::packing<_T>::unpacked_type;
+    using dtype = T;
+    static constexpr int rows   = _rows;
+    static constexpr int cols   = _cols;
+    static constexpr int run    = _run;
+    static_assert(rows > 0, "a strip has at least one row");
+    static_assert(run == 1 || run == 2 || run == 4 || run == 8 || run == 16,
+                  "a run is a power of two of at most 16 elements");
+    static constexpr int span   = run * WARP_THREADS;
+    static_assert(cols % span == 0, "a strip is a whole number of chunks: COLS % (64*RUN) == 0");
+    static constexpr int chunks = cols / span;
+    static constexpr int elements_per_thread = rows * chunks * run;
+    T data[rows][chunks][run];
+    using col_vec = rs_cv<T, rows>;
+    using row_vec = rs<T, 1, cols, run>;
+};
+
+namespace ducks {
+namespace rs {
+template<typename T>
+concept all = requires { typename T::identifier; } &&
+              std::is_same_v<typename T::identifier, identifier>;
+template<typename T>
+concept cv = requires { typename T::identifier; } &&
+             std::is_same_v<typename T::identifier, cv_identifier>;
+}  // namespace rs
+}  // namespace ducks
+
+namespace detail {
+
+template<typename T> __device__ inline uint32_t hk_bits(const T &v) {
+    if constexpr (sizeof(T) == 4) return __builtin_bit_cast(uint32_t, v);
+    else { static_assert(sizeof(T) == 2, "a strip holds 16- and 32-bit elements");
+           return uint32_t(__builtin_bit_cast(uint16_t, v)); }
+}
+template<typename T> __device__ inline T hk_from_bits(uint32_t u) {
+    if constexpr (sizeof(T) == 4) return __builtin_bit_cast(T, u);
+    else return __builtin_bit_cast(T, uint16_t(u));
+}
+
+/// v from the lane DPP control CTRL names (gfx9's encoding).
+template<int CTRL, typename T> __device__ inline T hk_dpp(const T &v) {
+    return hk_from_bits<T>(uint32_t(__builtin_amdgcn_mov_dpp(int(hk_bits(v)), CTRL, 0xF, 0xF, true)));
+}
+
+/// op of the value in this lane's 16-lane row and the one in the row XOR 1
+/// (gfx950: v_permlane16_swap), or the half XOR 1 (v_permlane32_swap), in
+/// that order in every lane.
+template<typename op, int ROWS_APART, typename T> __device__ inline T hk_swap_op(const T &v) {
+#if defined(KITTENS_CDNA4)
+    const uint32_t u = hk_bits(v);
+    if constexpr (ROWS_APART == 1) {
+        const auto r = __builtin_amdgcn_permlane16_swap(u, u, false, true);
+        return op::template op<T>(hk_from_bits<T>(r[0]), hk_from_bits<T>(r[1]));
+    } else {
+        const auto r = __builtin_amdgcn_permlane32_swap(u, u, false, true);
+        return op::template op<T>(hk_from_bits<T>(r[0]), hk_from_bits<T>(r[1]));
+    }
+#else
+    return op::template op<T>(v, hk_from_bits<T>(uint32_t(
+        __shfl_xor(int(hk_bits(v)), 16 * ROWS_APART, WARP_THREADS))));
+#endif
+}
+
+/// Fold N values with `op`, as a balanced tree.
+template<typename op, typename T, int N>
+__device__ inline T strip_tree(T (&a)[N]) {
+    #pragma unroll
+    for (int n = N; n > 1; n = (n + 1) / 2) {
+        const int h = (n + 1) / 2;
+        #pragma unroll
+        for (int i = 0; i < n - h; i++) a[i] = op::template op<T>(a[i], a[i + h]);
+    }
+    return a[0];
+}
+
+/// Combine one value across all 64 lanes; every lane ends with the answer.
+template<typename op, typename T>
+__device__ inline T strip_butterfly(T v) {
+    v = op::template op<T>(v, hk_dpp<0xB1>(v));    // quad_perm [1,0,3,2]: lane ^ 1
+    v = op::template op<T>(v, hk_dpp<0x4E>(v));    // quad_perm [2,3,0,1]: lane ^ 2
+    v = op::template op<T>(v, hk_dpp<0x141>(v));   // row_half_mirror: the other quad of 8
+    v = op::template op<T>(v, hk_dpp<0x140>(v));   // row_mirror: the other 8 of 16
+    v = hk_swap_op<op, 1>(v);
+    return hk_swap_op<op, 2>(v);
+}
+
+template<typename RS, typename F>
+__device__ inline void strip_each(F &&f) {
+    #pragma unroll
+    for (int r = 0; r < RS::rows; r++) {
+        #pragma unroll
+        for (int j = 0; j < RS::chunks; j++) {
+            #pragma unroll
+            for (int e = 0; e < RS::run; e++) f(r, j, e);
+        }
+    }
+}
+
+template<typename RS, typename U>
+__device__ inline typename RS::T strip_scalar(const U &u) {
+    using T = typename RS::T;
+    if constexpr (std::is_same_v<U, T>) return u;
+    else return hk_cvt<T, float>(float(u));
+}
+
+}  // namespace detail
+
+/* ----------  maps  ---------- */
+
+template<typename op, ducks::rs::all RS>
+__device__ static inline void unary_map(RS &dst, const RS &src) {
+    detail::strip_each<RS>([&](int r, int j, int e) {
+        dst.data[r][j][e] = op::template op<typename RS::T>(src.data[r][j][e]);
+    });
+}
+template<typename op, ducks::rs::cv CV>
+__device__ static inline void unary_map(CV &dst, const CV &src) {
+    #pragma unroll
+    for (int r = 0; r < CV::length; r++)
+        dst.data[r][0] = op::template op<typename CV::T>(src.data[r][0]);
+}
+
+template<typename op, ducks::rs::all RS, typename U>
+__device__ static inline void bin_map(RS &dst, const RS &lhs, const U &rhs) {
+    using T = typename RS::T;
+    if constexpr (std::is_same_v<U, RS>) {
+        detail::strip_each<RS>([&](int r, int j, int e) {
+            dst.data[r][j][e] = op::template op<T>(lhs.data[r][j][e], rhs.data[r][j][e]);
+        });
+    } else {
+        const T s = detail::strip_scalar<RS>(rhs);
+        detail::strip_each<RS>([&](int r, int j, int e) {
+            dst.data[r][j][e] = op::template op<T>(lhs.data[r][j][e], s);
+        });
+    }
+}
+template<typename op, ducks::rs::cv CV, typename U>
+__device__ static inline void bin_map(CV &dst, const CV &lhs, const U &rhs) {
+    using T = typename CV::T;
+    #pragma unroll
+    for (int r = 0; r < CV::length; r++) {
+        if constexpr (std::is_same_v<U, CV>)
+            dst.data[r][0] = op::template op<T>(lhs.data[r][0], rhs.data[r][0]);
+        else
+            dst.data[r][0] = op::template op<T>(lhs.data[r][0], detail::strip_scalar<CV>(rhs));
+    }
+}
+
+#define HK_STRIP_UNARY(name, opname)                                               \
+    template<typename S> requires (ducks::rs::all<S> || ducks::rs::cv<S>)          \
+    __device__ static inline void name(S &dst, const S &src) {                     \
+        unary_map<base_ops::opname, S>(dst, src);                                   \
+    }
+HK_STRIP_UNARY(exp,   exp)
+HK_STRIP_UNARY(exp2,  exp2)
+HK_STRIP_UNARY(log,   log)
+HK_STRIP_UNARY(log2,  log2)
+HK_STRIP_UNARY(abs,   abs)
+HK_STRIP_UNARY(relu,  relu)
+HK_STRIP_UNARY(gelu,  gelu)
+HK_STRIP_UNARY(dgelu, dgelu)
+HK_STRIP_UNARY(rsqrt, rsqrt)
+HK_STRIP_UNARY(silu,  silu)
+HK_STRIP_UNARY(step,  step)
+#undef HK_STRIP_UNARY
+
+#define HK_STRIP_FILL(name, opname)                                                \
+    template<typename S> requires (ducks::rs::all<S> || ducks::rs::cv<S>)          \
+    __device__ static inline void name(S &dst) {                                   \
+        unary_map<base_ops::opname, S>(dst, dst);                                   \
+    }
+HK_STRIP_FILL(zero,      zero)
+HK_STRIP_FILL(pos_infty, pos_infty)
+HK_STRIP_FILL(neg_infty, neg_infty)
+#undef HK_STRIP_FILL
+/** @brief Fill with 1 (include/cdna4's base op is `one` too). */
+template<typename S> requires (ducks::rs::all<S> || ducks::rs::cv<S>)
+__device__ static inline void one(S &dst) {
+    if constexpr (ducks::rs::all<S>)
+        detail::strip_each<S>([&](int r, int j, int e) { dst.data[r][j][e] = typename S::T(1.f); });
+    else
+        for (int r = 0; r < S::length; r++) dst.data[r][0] = typename S::T(1.f);
+}
+
+#define HK_STRIP_BINARY(name, opname)                                              \
+    template<typename S, typename U> requires (ducks::rs::all<S> || ducks::rs::cv<S>) \
+    __device__ static inline void name(S &dst, const S &lhs, const U &rhs) {       \
+        bin_map<base_ops::opname, S>(dst, lhs, rhs);                                \
+    }
+HK_STRIP_BINARY(add, sum)
+HK_STRIP_BINARY(sub, sub)
+HK_STRIP_BINARY(mul, mul)
+HK_STRIP_BINARY(div, div)
+HK_STRIP_BINARY(max, max)
+HK_STRIP_BINARY(min, min)
+#undef HK_STRIP_BINARY
+
+/** @brief Copy a strip or a per-row vector, converting the element type. */
+template<ducks::rs::all D, ducks::rs::all S>
+__device__ static inline void copy(D &dst, const S &src) {
+    static_assert(D::rows == S::rows && D::cols == S::cols && D::run == S::run,
+                  "a strip copy keeps the shape and the run");
+    detail::strip_each<D>([&](int r, int j, int e) {
+        dst.data[r][j][e] = detail::hk_cvt<typename D::T, typename S::T>(src.data[r][j][e]);
+    });
+}
+template<ducks::rs::cv D, ducks::rs::cv S>
+__device__ static inline void copy(D &dst, const S &src) {
+    static_assert(D::length == S::length, "a vector copy keeps the length");
+    #pragma unroll
+    for (int r = 0; r < D::length; r++)
+        dst.data[r][0] = detail::hk_cvt<typename D::T, typename S::T>(src.data[r][0]);
+}
+
+/**
+ * @brief Each row's two halves exchanged: dst(r, c) = src(r, (c + COLS/2) %
+ * COLS). A row of an even number of chunks swaps registers; a row of one
+ * chunk exchanges lane l's run with lane l ^ 32's, one v_permlane32_swap a
+ * dword on gfx950 (ds_bpermute on gfx942).
+ */
+template<ducks::rs::all RS>
+__device__ static inline void swap_halves(RS &dst, const RS &src) {
+    using T = typename RS::T;
+    if constexpr (RS::chunks % 2 == 0) {
+        RS tmp;
+        detail::strip_each<RS>([&](int r, int j, int e) {
+            tmp.data[r][j][e] = src.data[r][(j + RS::chunks / 2) % RS::chunks][e];
+        });
+        dst = tmp;
+    } else {
+        static_assert(RS::chunks == 1, "swap_halves takes a row of one chunk or an even number");
+        detail::strip_each<RS>([&](int r, int j, int e) {
+            const uint32_t u = detail::hk_bits(src.data[r][j][e]);
+#if defined(KITTENS_CDNA4)
+            // vdst's upper half takes vsrc's lower and vsrc's lower vdst's
+            // upper: from (u, u), lane l < 32 finds lane l + 32's value in
+            // the second result and lane l + 32 finds lane l's in the first.
+            const auto p = __builtin_amdgcn_permlane32_swap(u, u, false, true);
+            dst.data[r][j][e] = detail::hk_from_bits<T>(laneid() < 32 ? p[1] : p[0]);
+#else
+            dst.data[r][j][e] = detail::hk_from_bits<T>(uint32_t(__shfl_xor(int(u), 32, WARP_THREADS)));
+#endif
+        });
+    }
+}
+
+/* ----------  reductions  ---------- */
+
+namespace detail {
+template<typename op, bool reset, ducks::rs::cv CV, ducks::rs::all RS>
+__device__ inline void strip_row_reduce(CV &dst, const RS &src, const CV &acc) {
+    static_assert(CV::length == RS::rows, "one value per row of the strip");
+    using T = typename RS::T;
+    constexpr int N = RS::chunks * RS::run;
+    #pragma unroll
+    for (int r = 0; r < RS::rows; r++) {
+        T a[N];
+        #pragma unroll
+        for (int j = 0; j < RS::chunks; j++) {
+            #pragma unroll
+            for (int e = 0; e < RS::run; e++) a[j*RS::run + e] = src.data[r][j][e];
+        }
+        const T v = strip_butterfly<op>(strip_tree<op>(a));
+        if constexpr (reset) dst.data[r][0] = v;
+        else                 dst.data[r][0] = op::template op<T>(acc.data[r][0], v);
+    }
+}
+
+template<typename op, bool reset, ducks::rs::all RV, ducks::rs::all RS>
+__device__ inline void strip_col_reduce(RV &dst, const RS &src, const RV &acc) {
+    static_assert(RV::rows == 1 && RV::cols == RS::cols && RV::run == RS::run,
+                  "a column reduction gives the strip's row_vec");
+    using T = typename RS::T;
+    #pragma unroll
+    for (int j = 0; j < RS::chunks; j++) {
+        #pragma unroll
+        for (int e = 0; e < RS::run; e++) {
+            T v = src.data[0][j][e];
+            #pragma unroll
+            for (int r = 1; r < RS::rows; r++) v = op::template op<T>(v, src.data[r][j][e]);
+            if constexpr (reset) dst.data[0][j][e] = v;
+            else                 dst.data[0][j][e] = op::template op<T>(acc.data[0][j][e], v);
+        }
+    }
+}
+}  // namespace detail
+
+#define HK_STRIP_REDUCE(name, opname, kind, VEC)                                   \
+    template<ducks::rs::VEC V, ducks::rs::all RS>                                   \
+    __device__ static inline void name(V &dst, const RS &src) {                    \
+        detail::strip_##kind##_reduce<base_ops::opname, true>(dst, src, dst);      \
+    }                                                                              \
+    template<ducks::rs::VEC V, ducks::rs::all RS>                                   \
+    __device__ static inline void name(V &dst, const RS &src, const V &acc) {      \
+        detail::strip_##kind##_reduce<base_ops::opname, false>(dst, src, acc);     \
+    }
+HK_STRIP_REDUCE(row_sum,  sum, row, cv)
+HK_STRIP_REDUCE(row_max,  max, row, cv)
+HK_STRIP_REDUCE(row_min,  min, row, cv)
+HK_STRIP_REDUCE(row_prod, mul, row, cv)
+HK_STRIP_REDUCE(col_sum,  sum, col, all)
+HK_STRIP_REDUCE(col_max,  max, col, all)
+HK_STRIP_REDUCE(col_min,  min, col, all)
+HK_STRIP_REDUCE(col_prod, mul, col, all)
+#undef HK_STRIP_REDUCE
+
+/* ----------  broadcasts  ---------- */
+
+template<typename op, ducks::rs::all RS, ducks::rs::cv CV>
+__device__ static inline void row_map(RS &dst, const RS &src, const CV &v) {
+    static_assert(CV::length == RS::rows, "one value per row of the strip");
+    detail::strip_each<RS>([&](int r, int j, int e) {
+        dst.data[r][j][e] = op::template op<typename RS::T>(src.data[r][j][e], v.data[r][0]);
+    });
+}
+template<typename op, ducks::rs::all RS>
+__device__ static inline void col_map(RS &dst, const RS &src, const typename RS::row_vec &v) {
+    detail::strip_each<RS>([&](int r, int j, int e) {
+        dst.data[r][j][e] = op::template op<typename RS::T>(src.data[r][j][e], v.data[0][j][e]);
+    });
+}
+
+#define HK_STRIP_BROADCAST(name, opname)                                           \
+    template<ducks::rs::all RS, ducks::rs::cv CV>                                   \
+    __device__ static inline void name##_row(RS &dst, const RS &src, const CV &v) { \
+        row_map<base_ops::opname>(dst, src, v);                                     \
+    }                                                                              \
+    template<ducks::rs::all RS>                                                     \
+    __device__ static inline void name##_col(RS &dst, const RS &src,               \
+                                             const typename RS::row_vec &v) {      \
+        col_map<base_ops::opname, RS>(dst, src, v);                                 \
+    }
+HK_STRIP_BROADCAST(add, sum)
+HK_STRIP_BROADCAST(sub, sub)
+HK_STRIP_BROADCAST(mul, mul)
+HK_STRIP_BROADCAST(div, div)
+#undef HK_STRIP_BROADCAST
+
+/* ----------  fills  ---------- */
+
+namespace detail {
+template<bool left, ducks::rs::all RS>
+__device__ inline void strip_axis_fill(RS &dst, const RS &src, int col_idx,
+                                       const typename RS::T &val) {
+    const int lane0 = laneid() * RS::run;
+    detail::strip_each<RS>([&](int r, int j, int e) {
+        const int c = j*RS::span + lane0 + e;
+        const bool hit = left ? c < col_idx : c >= col_idx;
+        dst.data[r][j][e] = hit ? val : src.data[r][j][e];
+    });
+}
+}  // namespace detail
+
+/// Columns col_idx and past it become `val`; the rest are copied from `src`.
+template<ducks::rs::all RS>
+__device__ static inline void right_fill(RS &dst, const RS &src, const int col_idx,
+                                         const typename RS::T &val = 0) {
+    detail::strip_axis_fill<false>(dst, src, col_idx, val);
+}
+/// Columns before col_idx become `val`; the rest are copied from `src`.
+template<ducks::rs::all RS>
+__device__ static inline void left_fill(RS &dst, const RS &src, const int col_idx,
+                                        const typename RS::T &val = 0) {
+    detail::strip_axis_fill<true>(dst, src, col_idx, val);
+}
+
+/* ----------  memory  ---------- */
+
+namespace detail {
+
+using hk_u32x4 = unsigned __attribute__((ext_vector_type(4)));
+using hk_u32x2 = unsigned __attribute__((ext_vector_type(2)));
+
+/// RUN elements at `p`, in the widest accesses the run's bytes allow.
+template<typename U, int RUN>
+__device__ inline void strip_read(U (&run)[RUN], const U *p) {
+    constexpr int BYTES = RUN * sizeof(U);
+    if constexpr (BYTES % 16 == 0) {
+        #pragma unroll
+        for (int k = 0; k < BYTES / 16; k++) {
+            const hk_u32x4 v = *(reinterpret_cast<const hk_u32x4*>(p) + k);
+            __builtin_memcpy((void*)&run[k * 16 / sizeof(U)], &v, 16);
+        }
+    } else if constexpr (BYTES == 8) {
+        const hk_u32x2 v = *reinterpret_cast<const hk_u32x2*>(p);
+        __builtin_memcpy((void*)&run[0], &v, 8);
+    } else if constexpr (BYTES == 4) {
+        const uint32_t v = *reinterpret_cast<const uint32_t*>(p);
+        __builtin_memcpy((void*)&run[0], &v, 4);
+    } else {
+        static_assert(BYTES == 2, "a run is 2, 4, 8 or a multiple of 16 bytes");
+        const uint16_t v = *reinterpret_cast<const uint16_t*>(p);
+        __builtin_memcpy((void*)&run[0], &v, 2);
+    }
+}
+
+template<typename U, int RUN>
+__device__ inline void strip_write(U *p, const U (&run)[RUN]) {
+    constexpr int BYTES = RUN * sizeof(U);
+    if constexpr (BYTES % 16 == 0) {
+        #pragma unroll
+        for (int k = 0; k < BYTES / 16; k++) {
+            hk_u32x4 v;
+            __builtin_memcpy(&v, (const void*)&run[k * 16 / sizeof(U)], 16);
+            *(reinterpret_cast<hk_u32x4*>(p) + k) = v;
+        }
+    } else if constexpr (BYTES == 8) {
+        hk_u32x2 v; __builtin_memcpy(&v, (const void*)&run[0], 8);
+        *reinterpret_cast<hk_u32x2*>(p) = v;
+    } else if constexpr (BYTES == 4) {
+        uint32_t v; __builtin_memcpy(&v, (const void*)&run[0], 4);
+        *reinterpret_cast<uint32_t*>(p) = v;
+    } else {
+        static_assert(BYTES == 2, "a run is 2, 4, 8 or a multiple of 16 bytes");
+        uint16_t v; __builtin_memcpy(&v, (const void*)&run[0], 2);
+        *reinterpret_cast<uint16_t*>(p) = v;
+    }
+}
+
+/// Past any buffer range this library builds: reads zero, writes nothing.
+static constexpr uint32_t HK_STRIP_OOB = 0x80000000u;
+
+/// The descriptor over a strip's rows that are in bounds, from column 0.
+template<int ROWS, typename GL>
+__device__ inline hk_i32x4 strip_srsrc(const GL &g, const coord<> &idx) {
+    using U = typename GL::dtype;
+    coord<> row0 = idx;
+    row0.c = 0;
+    const int left = int(g.rows()) - idx.r;
+    const int valid = left <= 0 ? 0 : (left < ROWS ? left : ROWS);
+    return hk_srsrc(&g[row0], uint64_t(valid) * uint64_t(g.row_stride()) * sizeof(U));
+}
+
+}  // namespace detail
+
+/** @brief Global -> strip. Row r of the strip is row idx.r + r of `src`, from column idx.c. */
+template<ducks::rs::all RS, ducks::gl::all GL>
+__device__ inline static void load(RS &dst, const GL &src, const coord<> &idx) {
+    using T = typename RS::T;
+    using U = typename GL::dtype;
+    const U *base = &src[idx] + laneid() * RS::run;
+    const int stride = src.row_stride();
+    #pragma unroll
+    for (int r = 0; r < RS::rows; r++) {
+        #pragma unroll
+        for (int j = 0; j < RS::chunks; j++) {
+            U run[RS::run];
+            detail::strip_read(run, base + r * stride + j * RS::span);
+            #pragma unroll
+            for (int e = 0; e < RS::run; e++)
+                dst.data[r][j][e] = base_types::convertor<T, U>::convert(run[e]);
+        }
+    }
+}
+
+/** @brief Strip -> global, the inverse of load(). */
+template<ducks::rs::all RS, ducks::gl::all GL>
+__device__ inline static void store(const GL &dst, const RS &src, const coord<> &idx) {
+    using T = typename RS::T;
+    using U = typename GL::dtype;
+    U *base = &dst[idx] + laneid() * RS::run;
+    const int stride = dst.row_stride();
+    #pragma unroll
+    for (int r = 0; r < RS::rows; r++) {
+        #pragma unroll
+        for (int j = 0; j < RS::chunks; j++) {
+            U run[RS::run];
+            #pragma unroll
+            for (int e = 0; e < RS::run; e++)
+                run[e] = detail::hk_cvt<U, T>(src.data[r][j][e]);
+            detail::strip_write(base + r * stride + j * RS::span, run);
+        }
+    }
+}
+
+/** @brief load(), predicated on the global's extent: rows past its last row
+ * and runs at or past its last column read as zero and touch no memory. */
+template<ducks::rs::all RS, ducks::gl::all GL>
+__device__ inline static void load_bounded(RS &dst, const GL &src, const coord<> &idx) {
+    using T = typename RS::T;
+    using U = typename GL::dtype;
+    const detail::hk_i32x4 srsrc = detail::strip_srsrc<RS::rows>(src, idx);
+    const int lane0 = laneid() * RS::run;
+    const int cols_left = int(src.cols()) - idx.c;
+    const int stride = src.row_stride();
+    #pragma unroll
+    for (int r = 0; r < RS::rows; r++) {
+        #pragma unroll
+        for (int j = 0; j < RS::chunks; j++) {
+            const int c = j * RS::span + lane0;
+            const uint32_t voff = c < cols_left ? uint32_t(r * stride + idx.c + c) * sizeof(U)
+                                                : detail::HK_STRIP_OOB;
+            U run[RS::run];
+            detail::hk_buf_load_bytes<RS::run * sizeof(U)>(srsrc, voff, run);
+            #pragma unroll
+            for (int e = 0; e < RS::run; e++)
+                dst.data[r][j][e] = base_types::convertor<T, U>::convert(run[e]);
+        }
+    }
+}
+
+/** @brief store(), predicated as load_bounded(). */
+template<ducks::rs::all RS, ducks::gl::all GL>
+__device__ inline static void store_bounded(const GL &dst, const RS &src, const coord<> &idx) {
+    using T = typename RS::T;
+    using U = typename GL::dtype;
+    const detail::hk_i32x4 srsrc = detail::strip_srsrc<RS::rows>(dst, idx);
+    const int lane0 = laneid() * RS::run;
+    const int cols_left = int(dst.cols()) - idx.c;
+    const int stride = dst.row_stride();
+    #pragma unroll
+    for (int r = 0; r < RS::rows; r++) {
+        #pragma unroll
+        for (int j = 0; j < RS::chunks; j++) {
+            const int c = j * RS::span + lane0;
+            const uint32_t voff = c < cols_left ? uint32_t(r * stride + idx.c + c) * sizeof(U)
+                                                : detail::HK_STRIP_OOB;
+            U run[RS::run];
+            #pragma unroll
+            for (int e = 0; e < RS::run; e++)
+                run[e] = detail::hk_cvt<U, T>(src.data[r][j][e]);
+            detail::hk_buf_store_bytes<RS::run * sizeof(U)>(srsrc, voff, run);
+        }
+    }
+}
+
+/** @brief Global -> one value per row: entry r is element (idx.r + r, idx.c). */
+template<ducks::rs::cv CV, ducks::gl::all GL>
+__device__ inline static void load(CV &dst, const GL &src, const coord<> &idx) {
+    using U = typename GL::dtype;
+    const U *base = &src[idx];
+    const int stride = src.row_stride();
+    #pragma unroll
+    for (int r = 0; r < CV::length; r++)
+        dst.data[r][0] = base_types::convertor<typename CV::T, U>::convert(base[r * stride]);
+}
+
+/** @brief Entry 0 of a uniform per-row vector -> one element, from lane 0. */
+template<ducks::gl::all GL, ducks::rs::cv CV>
+__device__ inline static void store_scalar(const GL &dst, const CV &src, const coord<> &idx) {
+    using U = typename GL::dtype;
+    if (laneid() != 0) return;
+    *(U*)&dst[idx] = detail::hk_cvt<U, typename CV::T>(src.data[0][0]);
+}
+
+namespace detail {
+/// An LDS vector's entries through an LDS pointer: through the generic one
+/// the vector is reached by, they are flat_load/flat_store, which wait on
+/// both counters and take the flat path.
+template<typename U> __device__ inline __attribute__((address_space(3))) U *hk_lds(const U *p) {
+    return (__attribute__((address_space(3))) U *)(uint32_t)(uintptr_t)p;
+}
+}  // namespace detail
+
+/** @brief A per-row vector -> the first CV::length entries of an LDS vector,
+ * from lane 0 (every lane holds the same values). */
+template<ducks::sv::all SV, ducks::rs::cv CV>
+__device__ inline static void store(SV &dst, const CV &src) {
+    static_assert(SV::length >= CV::length, "the LDS vector holds every row's value");
+    using U = typename SV::dtype;
+    if (laneid() == 0) {
+        auto *p = detail::hk_lds(&dst.data[0]);
+        #pragma unroll
+        for (int r = 0; r < CV::length; r++)
+            p[r] = detail::hk_cvt<U, typename CV::T>(src.data[r][0]);
+    }
+}
+
+/** @brief The first CV::length entries of an LDS vector -> a per-row vector, in every lane. */
+template<ducks::rs::cv CV, ducks::sv::all SV>
+__device__ inline static void load(CV &dst, const SV &src) {
+    static_assert(SV::length >= CV::length, "the LDS vector holds every row's value");
+    using U = typename SV::dtype;
+    const auto *p = detail::hk_lds(&src.data[0]);
+    #pragma unroll
+    for (int r = 0; r < CV::length; r++) {
+        const U u = p[r];
+        dst.data[r][0] = base_types::convertor<typename CV::T, U>::convert(u);
+    }
 }
 
 }  // namespace kittens

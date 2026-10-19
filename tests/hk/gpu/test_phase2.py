@@ -47,12 +47,12 @@ def _rand(shape, dtype):
     return torch.randn(*shape, device="cuda", dtype=dtype)
 
 
-def _rdna3() -> bool:
-    """Strips are include/rdna3's: elsewhere the strip layout runs the tile
-    kernels."""
+def _strips() -> bool:
+    """Strips are include/rdna3's and gfx950's (Target.strips): elsewhere the
+    strip layout runs the tile kernels."""
     from hk.target import current_arch, get_target
 
-    return get_target(current_arch()).kittens_define == "KITTENS_RDNA3"
+    return get_target(current_arch()).strips
 
 
 @pytest.fixture(params=["strip", "tile"])
@@ -111,7 +111,7 @@ def test_layernorm_on_a_row_with_a_large_offset(layout):
     runs: on a target without strips the strip layout is the tile kernel."""
     x = torch.randn(64, 4096, device="cuda", dtype=torch.float32) + 100.0
     want = F.layer_norm(x, (4096,), eps=1e-5)
-    tol = 1e-4 if layout == "strip" and _rdna3() else 5e-3
+    tol = 1e-4 if layout == "strip" and _strips() else 5e-3
     torch.testing.assert_close(hk.ops.layernorm(x), want, rtol=tol, atol=tol)
 
 
@@ -237,7 +237,7 @@ def test_rows_below_one_tile_are_refused_with_the_reason(tile):
         hk.ops.rmsnorm(x)
 
 
-@pytest.mark.skipif(not _rdna3(), reason="strips are include/rdna3's; the tile "
+@pytest.mark.skipif(not _strips(), reason="strips are include/rdna3's; the tile "
                     "kernels need a whole tile, as the test above says")
 def test_a_strip_takes_any_row_count(monkeypatch):
     """One workgroup a row: eight rows, or one, need no tile to exist."""
@@ -295,8 +295,14 @@ def test_silu_mul_written_over_an_operand(shape, which):
     _close(out, want, torch.float32, f"{shape} out={which}")
 
 
-def test_silu_mul_needs_one_whole_tile():
+def test_silu_mul_needs_one_whole_tile_except_on_strips():
+    from hk.ops import fused
+    from hk.target import current_arch
+
     a = _rand((8, 200), torch.float32)
+    if current_arch() in fused.STRIP_ARCHS:
+        _close(hk.ops.silu_mul(a, a), F.silu(a) * a, torch.float32)
+        return
     with pytest.raises(ValueError, match="at least 16x64"):
         hk.ops.silu_mul(a, a)
 

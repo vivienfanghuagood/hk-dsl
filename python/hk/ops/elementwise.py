@@ -84,6 +84,42 @@ def _unary_kernel(name: str, op: str, dtype):
     return hk.kernel(body, warps=1, grid=_grid, name=name)
 
 
+def _strip_kernel(name: str, op: str, dtype, warps: int):
+    """`op` on strips over a flat (1, n) view: warp w of workgroup g owns
+    elements [(g*WARPS + w)*CW, +CW), CW a constexpr of whole wave x RUN
+    chunks, in fp32 between a load that widens and a store that rounds to
+    nearest even -- torch's arithmetic for a 16-bit tensor. Without EXACT the
+    accesses are bounded: a run at or past n reads zero and is not written."""
+    unary = op in _UNARY_FN
+    fn = _UNARY_FN[op] if unary else _BINARY_FN[op]
+
+    def strip(a, CW, RUN):
+        return hk.RS(hk.fp32, 1, CW, RUN)
+
+    def at(CW):
+        blk = hk.arch.block_idx.x * warps + hk.arch.warp_id() if warps > 1 else \
+            hk.arch.block_idx.x
+        return blk * CW
+
+    if unary:
+        def body(a: hk.Tensor[dtype], o: hk.Tensor[dtype], *, CW=512, RUN=8, EXACT=1):
+            c0 = at(CW)
+            x = a.at[0, c0].load(strip(a, CW, RUN), bounded=not EXACT)
+            o.at[0, c0].store(fn(x), bounded=not EXACT)
+    else:
+        def body(a: hk.Tensor[dtype], b: hk.Tensor[dtype], o: hk.Tensor[dtype], *,
+                 CW=512, RUN=8, EXACT=1):
+            c0 = at(CW)
+            S = strip(a, CW, RUN)
+            x = a.at[0, c0].load(S, bounded=not EXACT)
+            y = b.at[0, c0].load(S, bounded=not EXACT)
+            o.at[0, c0].store(fn(x, y), bounded=not EXACT)
+
+    body.__name__ = name
+    return hk.kernel(body, warps=warps, name=name,
+                     grid=lambda p: (hk.cdiv(p.o.cols, warps * p.CW), 1, 1))
+
+
 _DTYPES = {"bf16": hk.bf16, "fp16": hk.fp16, "fp32": hk.fp32}
 _BINARY = ("add", "sub", "mul", "max", "min")
 _UNARY = ("exp", "exp2", "relu", "gelu", "abs", "neg")
@@ -115,6 +151,44 @@ for _suffix, _dt in _DTYPES.items():
         _n = f"{_op}_{_suffix}"
         KERNELS[_n] = _unary_kernel(_n, _op, _dt)
 del _suffix, _dt, _op, _n
+
+#: Warp counts a strip workgroup may have.
+STRIP_WARPS = (1, 2, 4, 8)
+
+#: (op, dtype suffix, warps) -> the strip kernel; CW, RUN and EXACT are
+#: constexprs, so one entry covers every size.
+STRIP_KERNELS = {f"strip_{_op}_{_s}_w{_w}": _strip_kernel(f"strip_{_op}_{_s}_w{_w}", _op, _dt, _w)
+                 for _s, _dt in _DTYPES.items() for _op in _BINARY + _UNARY
+                 if _supports(_op, _s) for _w in STRIP_WARPS}
+
+#: Where the elementwise ops run on strips: gfx950, measured there
+#: (scoreboard.py --only llm-pointwise). gfx1100 keeps the tile kernels it
+#: was tuned on.
+STRIP_ARCHS = ("gfx950",)
+
+#: The strip plan, (warps, chunks a warp) -- a chunk is wave x RUN elements,
+#: one 16-byte access a lane: eight warps of one chunk, 4096 bf16 a
+#: workgroup, except for a two-input op moving 24-48 MB, which takes eight
+#: chunks a warp. Measured on an MI355X (tools/hk-bench/strip_pointwise_ab.py,
+#: bf16, one process, each plan's time over the fastest of tuned Triton,
+#: Inductor and torch; two runs, the worse of the two):
+#:
+#:                      moved    8x1     8x8     4x2     1x2
+#:     add  2048x4096    48 MB   0.88    1.18    0.93    0.84
+#:     add  2048x5120    60 MB   0.97    0.93    1.00    0.97
+#:     add  8192x8192   384 MB   0.97    0.88    0.95    0.98
+#:     exp  2048x4096    32 MB   1.01    0.79    0.98    1.01
+#:     exp  8192x8192   256 MB   1.00    0.93    0.97    0.98
+#:     12 shapes x 2 runs, mean  0.985   0.959   0.980   0.984
+#:
+#: At 1-32 rows every plan is at the ~3.9 us floor. The cache-resident sizes
+#: move with where the buffers sit: in a run with three buffer sets the 8x8
+#: add at 2048x4096 took 7.96-8.34 us to tuned Triton's 7.5, where these two
+#: runs, and the plan sweep on another GPU, had it 18-20% ahead.
+STRIP_PLANS = (((24 << 20, 48 << 20), (8, 8)), (None, (8, 1)))
+
+#: Past 2 GiB a strip's bounded offsets would reach the out-of-range marker.
+_STRIP_MAX_BYTES = 1 << 31
 
 
 # ---------------------------------------------------------------- wrappers
@@ -220,6 +294,17 @@ def _apply(op: str, *tensors: Any, out=None):
     suffix = _suffix_of(a)
     k = _kernel_for(op, suffix)
     shape, n = tuple(a.shape), a.numel()
+    plan = _strip_plan(op, suffix, n, a.element_size())
+    if plan is not None:
+        for t in tensors:
+            if not t.is_contiguous():
+                raise ValueError("hk kernels take contiguous tensors; call .contiguous()")
+        if not out.is_contiguous():
+            raise ValueError("hk kernels take contiguous tensors; call .contiguous()")
+        if n:
+            sk, cw, run, exact = plan
+            sk(*(t.view(1, n) for t in tensors), out.view(1, n), CW=cw, RUN=run, EXACT=exact)
+        return out
     choices = _col_choices(suffix)
     for cols in choices:
         if cols != COLS and ((op, suffix, cols) in _REFUSED or not _fits(shape, n, cols)):
@@ -241,6 +326,32 @@ def _apply(op: str, *tensors: Any, out=None):
 
 #: (op, dtype, width) builds the resource gate refused, in this process.
 _REFUSED: set = set()
+
+_STRIP_PLANS: dict = {}
+
+
+def _strip_plan(op: str, suffix: str, n: int, nbytes: int):
+    """(kernel, CW, RUN, EXACT) for `op` over n elements on strips, or None
+    where the elementwise ops do not run on strips here."""
+    key = (op, suffix, n)
+    got = _STRIP_PLANS.get(key, False)
+    if got is False:
+        from ..target import current_arch, get_target  # noqa: PLC0415
+        from .norm import strip_run  # noqa: PLC0415
+
+        got = None
+        arch = current_arch()
+        if arch in STRIP_ARCHS and n * nbytes < _STRIP_MAX_BYTES:
+            moved = n * nbytes * (2 if op in _UNARY_FN else 3)
+            warps, chunks = next(p for window, p in STRIP_PLANS
+                                 if window is None or (window[0] <= moved <= window[1]
+                                                       and op not in _UNARY_FN))
+            run = strip_run(n, nbytes) if n else 16 // nbytes
+            cw = chunks * get_target(arch).wave * run
+            got = (STRIP_KERNELS[f"strip_{op}_{suffix}_w{warps}"], cw, run,
+                   int(n % (warps * cw) == 0))
+        _STRIP_PLANS[key] = got
+    return got
 
 
 def _fits(shape, numel, cols) -> bool:

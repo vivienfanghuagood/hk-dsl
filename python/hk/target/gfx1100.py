@@ -59,6 +59,8 @@ GFX1100 = Target(
     # ds_read_u16 -- 8x the instructions -- see
     # ops/warp/memory/tile/shared_to_register.cuh.
     fast_smem_layouts=("row",),
+
+    strips=True,
 )
 
 #: Measured ceilings on a W7900D, for reporting a result as a percentage of

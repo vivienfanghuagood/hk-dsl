@@ -114,7 +114,90 @@ def _silu_mul_kernel(name: str, dtype, warps: int):
     return hk.kernel(body, warps=warps, grid=_silu_mul_grid, name=name)
 
 
+def _strip_silu_mul_kernel(name: str, dtype, warps: int):
+    """silu_mul on strips: workgroup i is row i / G, block g = i % G of it (G
+    blocks a row), its warp w the columns [(g*WARPS + w)*CW, +CW), CW whole
+    wave x RUN chunks. Consecutive workgroups walk along a row, not down a
+    column, as the memory lies. Each operand is its own global with its own
+    row stride, so a and b can be the two halves of one (rows, 2I) gate/up
+    output, read in place. Without EXACT the accesses are bounded: a run at
+    or past the row's end is neither read nor written."""
+    def body(a: hk.Tensor[dtype], b: hk.Tensor[dtype], o: hk.Tensor[dtype], *,
+             CW=512, RUN=8, EXACT=1):
+        S = hk.RS(fp32, 1, CW, RUN)
+        per_row = hk.cdiv(o.cols, warps * CW)
+        i = hk.arch.block_idx.x
+        row = i // per_row
+        g = i - row * per_row
+        blk = g * warps + hk.arch.warp_id() if warps > 1 else g
+        c0 = blk * CW
+        x = a.at[row, c0].load(S, bounded=not EXACT)
+        y = b.at[row, c0].load(S, bounded=not EXACT)
+        x.silu(into=x)
+        x *= y
+        o.at[row, c0].store(x, bounded=not EXACT)
+
+    body.__name__ = name
+    return hk.kernel(body, warps=warps, name=name,
+                     grid=lambda p: (p.o.rows * hk.cdiv(p.o.cols, warps * p.CW), 1, 1))
+
+
 # ---------------------------------------------------------------- rope
+
+
+def _rotary_kernel(name: str, dtype, warps: int, positions: bool):
+    """vLLM's rotary_embedding, NeoX style, on strips: token t's heads are
+    rows t*H .. t*H+H-1 of x viewed (T*H, D); its angles are row pos[t] (or
+    t) of cs, (P, D) fp32 holding [cos | sin]. One workgroup a token, warp w
+    the heads w, w + WARPS, ...; a head is one strip row of D = 64*RUN
+    columns, the halves lanes l and l + 32 apart, so
+
+        out = x * [cos | cos] + swap_halves(x) * [-sin | sin]
+
+    with both factors built once a warp from the one row of cs, by the same
+    swap and a fill on each side of D/2."""
+    def build(x, cs, pos, o, H, D, RUN):
+        S = hk.RS(fp32, 1, D, RUN)
+        t = hk.arch.block_idx.x
+        prow = pos.at[0, t].load_scalar() if positions else t
+        c = cs.at[prow, 0].load(S)                 # [cos | sin]
+        sw = c.swap_halves()                       # [sin | cos]
+        half = D // 2
+        cosv = c.copy()
+        cosv.right_fill_(half, 0.0)                # [cos | 0]
+        lo = sw.copy()
+        lo.left_fill_(half, 0.0)                   # [0 | cos]
+        cosv += lo
+        sinv = sw.copy()
+        sinv.right_fill_(half, 0.0)                # [sin | 0]
+        sinv *= -1.0
+        hi = c.copy()
+        hi.left_fill_(half, 0.0)                   # [0 | sin]
+        sinv += hi
+        w = hk.arch.warp_id() if warps > 1 else 0
+        rows = [t * H + w + h * warps for h in range(H // warps)]
+        # Every head's load before any store: x and o may be one tensor (in
+        # place), so a load after a store is not one the compiler may hoist,
+        # and written head by head each head waited a memory round trip.
+        vs = [x.at[row, 0].load(S) for row in rows]
+        for row, v in zip(rows, vs):
+            p = v.swap_halves()
+            v *= cosv
+            p *= sinv
+            v += p
+            o.at[row, 0].store(v)
+
+    if positions:
+        def body(x: hk.Tensor[dtype], cs: hk.Tensor[fp32], pos: hk.Tensor[hk.i32],
+                 o: hk.Tensor[dtype], *, H=32, D=128, RUN=2):
+            build(x, cs, pos, o, H, D, RUN)
+    else:
+        def body(x: hk.Tensor[dtype], cs: hk.Tensor[fp32], o: hk.Tensor[dtype], *,
+                 H=32, D=128, RUN=2):
+            build(x, cs, None, o, H, D, RUN)
+    body.__name__ = name
+    return hk.kernel(body, warps=warps, name=name,
+                     grid=lambda p: (hk.cdiv(p.x.rows, p.H), 1, 1))
 
 
 def _rope_grid(p):
@@ -175,6 +258,39 @@ for _s, _dt in _DTYPES.items():
             f"silu_mul_{_s}_w{_w}", _dt, _w)
     KERNELS[f"rope_{_s}"] = _rope_kernel(f"rope_{_s}", _dt, COLS)
 del _s, _dt, _w
+
+#: Warp counts a strip silu_mul workgroup may have.
+STRIP_WARPS = (1, 2, 4, 8)
+STRIP_KERNELS = {f"strip_silu_mul_{_s}_w{_w}": _strip_silu_mul_kernel(
+                     f"strip_silu_mul_{_s}_w{_w}", _dt, _w)
+                 for _s, _dt in _DTYPES.items() for _w in STRIP_WARPS}
+
+#: The rotary kernels: (dtype suffix, warps, with positions) -> Kernel; H,
+#: D and RUN are constexprs.
+ROTARY_WARPS = (1, 2, 4, 5, 8, 10, 16)
+ROTARY_KERNELS = {f"rotary_{_s}_w{_w}" + ("_pos" if _p else ""): _rotary_kernel(
+                      f"rotary_{_s}_w{_w}" + ("_pos" if _p else ""), _dt, _w, _p)
+                  for _s, _dt in _DTYPES.items() for _w in ROTARY_WARPS
+                  for _p in (False, True)}
+
+#: Where silu_mul runs on strips: gfx950, measured there (scoreboard.py
+#: --only llm-pointwise). gfx1100 keeps the tile kernel it was tuned on.
+STRIP_ARCHS = ("gfx950",)
+
+#: The strip plan, (warps, chunks a warp), as elementwise's: one warp, one
+#: 16-byte run a lane, 512 elements a workgroup. Measured on an MI355X
+#: (tools/hk-bench/strip_pointwise.py, us), against tuned Triton, whose
+#: search picked 512-element programs of two warps at every shape:
+#:
+#:                  w1 c1, 16 B   w1 c1, 8 B   rows first, best of 16   Triton
+#:     2048x14336      25.1          28.2           26.0 (w1 c1)         25.3
+#:     8192x14336     116.7         112.5          123.9 (w8 c8)        127.5
+#:     2048x28672      59.2          57.6           63.4 (w8 c8)         60.9
+#:     8192x28672     229.2         229.3          263.6 (w8 c8)        250.9
+#:
+#: "Rows first" is the grid this kernel had before workgroups walked along a
+#: row: consecutive workgroups a row (57 KB at 14336) apart.
+STRIP_PLAN = (1, 1)
 
 
 # ---------------------------------------------------------------- wrappers
@@ -303,7 +419,10 @@ def silu_mul(a, b, out=None):
         )
     if out is None:
         import torch  # noqa: PLC0415  -- see norm._run
-        out = torch.empty_like(a)
+        out = torch.empty(a.shape, dtype=a.dtype, device=a.device)
+    plan = _strip_silu_plan(a.dtype, a.shape[-1] if a.dim() else 0)
+    if plan is not None:
+        return _strip_silu_mul(plan, a, b, out)
     av, bv, ov = _as_2d(a, "a"), _as_2d(b, "b"), _as_2d(out, "out")
     r, c = ov.shape
     if (r % ROWS or c % COLS) and (_overlaps(out, a) or _overlaps(out, b)):
@@ -314,6 +433,138 @@ def silu_mul(a, b, out=None):
         return out.copy_(silu_mul(a, b))
     k, tiles = _resolve(a.dtype, av.shape[-1])
     k(av, bv, ov, TILES=tiles)
+    return out
+
+
+_STRIP_PLANS: dict = {}
+
+
+def _strip_silu_plan(dtype, cols: int):
+    """(kernel, CW, RUN, EXACT) for silu_mul over rows of `cols` on strips,
+    or None where it does not run on strips here."""
+    key = (dtype, cols)
+    got = _STRIP_PLANS.get(key, False)
+    if got is False:
+        from ..target import current_arch, get_target  # noqa: PLC0415
+        from .norm import strip_run  # noqa: PLC0415
+
+        got = None
+        arch = current_arch()
+        suffix = _TORCH_DTYPES.get(str(dtype))
+        if arch in STRIP_ARCHS and suffix is not None and cols:
+            warps, chunks = STRIP_PLAN
+            run = strip_run(cols, _DTYPES[suffix].bytes)
+            cw = chunks * get_target(arch).wave * run
+            got = (STRIP_KERNELS[f"strip_silu_mul_{suffix}_w{warps}"], cw, run,
+                   int(cols % (warps * cw) == 0))
+        _STRIP_PLANS[key] = got
+    return got
+
+
+def _rows_view(t, what: str):
+    """t as (rows, cols) without a copy: a unit column stride, and the
+    leading axes compact over one row stride (a slice of the last axis, such
+    as one half of a gate/up output, qualifies)."""
+    if t.dim() and t.stride(-1) != 1 and t.shape[-1] > 1:
+        raise ValueError(f"silu_mul: {what}'s last axis must have stride 1")
+    cols = t.shape[-1] if t.dim() else 1
+    if t.dim() <= 2:
+        return t.view(1, cols) if t.dim() < 2 else t
+    rows = t.numel() // cols if cols else 0
+    try:
+        return t.view(rows, cols)
+    except RuntimeError as e:
+        raise ValueError(f"silu_mul: {what}'s leading axes are not one row "
+                         f"stride apart; call .contiguous()") from e
+
+
+def _strip_silu_mul(plan, a, b, out):
+    k, cw, run, exact = plan
+    av, bv, ov = _rows_view(a, "a"), _rows_view(b, "b"), _rows_view(out, "out")
+    if not ov.shape[0] or not ov.shape[1]:
+        return out
+    if _overlaps(out, a) or _overlaps(out, b):
+        if not (out.data_ptr() in (a.data_ptr(), b.data_ptr())
+                and out.stride() in (a.stride(), b.stride())):
+            # Each element is read and written by one lane, so exactly in
+            # place is safe; a partial overlap is not.
+            return out.copy_(silu_mul(a.clone(), b.clone()))
+    k(av, bv, ov, CW=cw, RUN=run, EXACT=exact)
+    return out
+
+
+_ROTARY_CACHE: dict = {}
+
+
+def _rotary_warps(heads: int) -> int:
+    """Warps a token's workgroup has: four, or one per eight heads from 64
+    heads up; a count that divides the heads. Measured on an MI355X (us,
+    bf16, D 128; tuned Triton beside):
+
+                    w4      w5      w8      w16     Triton
+        2048x32    5.65            5.64    6.89     5.45
+        2048x40    6.50    6.80    6.81             6.19
+        2048x64   10.59           10.72   11.34    10.07
+        8192x40   25.17   25.25   25.09            24.23
+        8192x64   40.94           39.33   42.93    39.16
+    """
+    want = heads // 8 if heads >= 64 else 4
+    return max(w for w in ROTARY_WARPS if heads % w == 0 and w <= want)
+
+
+def rotary(x, cos_sin, positions=None, out=None):
+    """vLLM's rotary_embedding, NeoX (half-split) style, token-major:
+    `x` is (..., heads, D) with the tokens on the leading axes, `cos_sin` is
+    (P, D) float32 holding [cos | sin] (vLLM's cos_sin_cache), and token t
+    turns by row `positions[t]` of it -- int32, one per token -- or by row t
+    without positions:
+
+        out[..., :D/2] = x1 * cos - x2 * sin,  out[..., D/2:] = x2 * cos + x1 * sin
+
+    In place when `out` is `x`. D is 64 * a power of two up to 16 (128 and
+    256 qualify). On strips, so gfx950 only for now."""
+    import torch  # noqa: PLC0415
+
+    from ..target import current_arch  # noqa: PLC0415
+
+    if current_arch() not in STRIP_ARCHS:
+        raise NotImplementedError(f"hk.ops.rotary runs on strips' wave64 port "
+                                  f"(gfx950); on {current_arch()} use hk.ops.rope")
+    if x.dim() < 2 or not x.is_contiguous():
+        raise ValueError(f"rotary: x must be a contiguous (..., heads, D) tensor, "
+                         f"got {tuple(x.shape)}")
+    h, d = x.shape[-2], x.shape[-1]
+    run = d // 64
+    if d % 64 or run not in (1, 2, 4, 8, 16):
+        raise ValueError(f"rotary: head dim {d} is not 64 x a power of two up to 16")
+    if cos_sin.dim() != 2 or cos_sin.shape[1] != d or cos_sin.dtype != torch.float32 \
+            or not cos_sin.is_contiguous():
+        raise ValueError(f"rotary: cos_sin must be a contiguous float32 (P, {d}), got "
+                         f"{tuple(cos_sin.shape)}/{cos_sin.dtype}")
+    tokens = x.numel() // (h * d) if h and d else 0
+    if positions is not None and (positions.dtype != torch.int32
+                                  or positions.numel() != tokens):
+        raise ValueError(f"rotary: positions must be {tokens} int32s, got "
+                         f"{positions.numel()} {positions.dtype}")
+    if positions is None and cos_sin.shape[0] < tokens:
+        raise ValueError(f"rotary: {tokens} tokens and no positions need "
+                         f"{tokens} rows of cos_sin, got {cos_sin.shape[0]}")
+    if out is None:
+        out = torch.empty_like(x)
+    if not tokens:
+        return out
+    key = (x.dtype, h, positions is not None)
+    k = _ROTARY_CACHE.get(key)
+    if k is None:
+        suffix = _suffix_of(x)
+        warps = _rotary_warps(h)
+        k = _ROTARY_CACHE[key] = ROTARY_KERNELS[
+            f"rotary_{suffix}_w{warps}" + ("_pos" if positions is not None else "")]
+    xv, ov = x.view(tokens * h, d), out.view(tokens * h, d)
+    if positions is not None:
+        k(xv, cos_sin, positions.view(1, tokens), ov, H=h, D=d, RUN=run)
+    else:
+        k(xv, cos_sin, ov, H=h, D=d, RUN=run)
     return out
 
 
@@ -369,4 +620,4 @@ def rope(x, cos, sin, out=None):
 
 
 __all__ = ["KERNELS", "ROWS", "COLS", "MAX_TILES", "WARP_COUNTS", "WIDTHS",
-           "canonical", "plan", "silu_mul", "rope"]
+           "canonical", "plan", "silu_mul", "rope", "rotary"]

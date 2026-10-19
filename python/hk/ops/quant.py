@@ -28,6 +28,7 @@ on an activation is decided by whichever row has the worst outlier, and on a
 
 from .. import dsl as hk
 from ..dsl.collective import cross_warp, fold_rows
+from ..dsl.values import as_vec
 from ..types import bf16, fp16, fp32, i8
 from .norm import (COLS, MAX_TPW, ROWS, WARP_COUNTS, _block_start, _ceil,
                    _exact, _split, _view)
@@ -262,6 +263,32 @@ def _dequantize_kernel(name: str, dtype, warps: int):
     return hk.kernel(body, warps=warps, grid=_grid_dq, name=name)
 
 
+def _strip_quantize_kernel(name: str, dtype, warps: int):
+    """quantize on a strip (hk.RS), as norm._strip_kernel: one workgroup a
+    row, warp w holding columns [w*CW, (w+1)*CW), the row read once and any
+    row count. A run past the row's end loads zero, which no absmax sees."""
+    def body(x: hk.Tensor[dtype], q: hk.Tensor[i8], s: hk.Tensor[fp32], *,
+             CHUNKS=1, RUN=8, EXACT=1):
+        cw = CHUNKS * hk.arch.target().wave * RUN
+        S = hk.RS(fp32, 1, cw, RUN)
+        row = hk.arch.block_idx.x
+        c0 = hk.arch.warp_id() * cw if warps > 1 else 0
+        bounded = not EXACT
+        v = x.at[row, c0].load(S, bounded=bounded)
+        amax = cross_warp(v.abs().max(axis=1), "max", warps)
+        amax.maximum(_TINY, into=amax)
+        inv = hk.full(hk.col_vec(S), 127.0) / amax
+        v *= inv
+        q.at[row, c0].store(v, bounded=bounded)
+        amax *= 1.0 / 127.0
+        # One row, so one entry, which every lane holds after the butterfly:
+        # uniform by construction.
+        s[hk.elem_coord(0, 0, 0, row)].store_scalar(as_vec(amax, S, uniform=True))
+
+    body.__name__ = name
+    return hk.kernel(body, warps=warps, grid=lambda p: (p.x.rows, 1, 1), name=name)
+
+
 _DTYPES = {"bf16": bf16, "fp16": fp16, "fp32": fp32}
 
 #: (op, dtype suffix, warps) -> Kernel. TPW rides in as a constexpr argument,
@@ -273,6 +300,17 @@ for _s, _dt in _DTYPES.items():
         KERNELS[f"dequantize_{_s}_w{_w}"] = _dequantize_kernel(
             f"dequantize_{_s}_w{_w}", _dt, _w)
 del _s, _dt, _w
+
+#: (dtype suffix, warps) -> the strip quantize. CHUNKS, RUN and EXACT are
+#: constexprs, so one entry covers every width.
+STRIP_KERNELS = {f"strip_quantize_{_s}_w{_w}": _strip_quantize_kernel(
+                     f"strip_quantize_{_s}_w{_w}", _dt, _w)
+                 for _s, _dt in _DTYPES.items() for _w in WARP_COUNTS}
+
+#: Where quantize runs on strips: gfx950, measured there (scoreboard.py
+#: --only llm-quant). gfx1100 keeps the tile plan above, which it was tuned
+#: on and which has not been measured against a strip there.
+STRIP_ARCHS = ("gfx950",)
 
 
 # ---------------------------------------------------------------- wrappers
@@ -297,6 +335,41 @@ def _suffix(dtype, what: str) -> str:
     if suffix is None:
         raise TypeError(f"hk {what} takes bf16/fp16/fp32, not {dtype}")
     return suffix
+
+
+#: From this many rows the strip quantize holds 16 elements a lane, not the
+#: norms' 32: it streams HBM there, and more warps on a row won. MI355X, us
+#: (tools/hk-bench/strip_plan.py --kinds quant):
+#:
+#:                   16/lane    32/lane (or 40)   tuned Triton
+#:     2048x4096       5.01       5.01               4.9
+#:     2048x5120       6.23       5.77 (w2c5)        5.9
+#:     8192x4096      15.80      15.95              15.6
+#:     8192x5120      19.22      20.09 (w2c5)       19.8
+#:     8192x8192      29.06      29.55              28.6
+_STRIP_NARROW_ROWS = 4096
+
+
+def _resolve_strip_q(dtype, cols: int, rows: int):
+    """(kernel, CHUNKS, RUN, EXACT) on a strip, or None where quantize does
+    not run on strips here or the row is too wide for one."""
+    many = rows >= _STRIP_NARROW_ROWS
+    key = ("strip", dtype, cols, many)
+    got = _QPLAN_CACHE.get(key, False)
+    if got is False:
+        from ..target import current_arch  # noqa: PLC0415
+        from .norm import _DTYPES as _NDT, strip_plan  # noqa: PLC0415
+
+        got = None
+        suffix = _suffix(dtype, "quantize")
+        if current_arch() in STRIP_ARCHS:
+            p = strip_plan(cols, "quantize", _NDT[suffix].bytes,
+                           per_lane=16 if many else None)
+            if p is not None:
+                warps, chunks, run, exact = p
+                got = (STRIP_KERNELS[f"strip_quantize_{suffix}_w{warps}"], chunks, run, exact)
+        _QPLAN_CACHE[key] = got
+    return got
 
 
 def _resolve_q(dtype, cols: int):
@@ -342,7 +415,9 @@ def quantize(x, out=None, scales=None):
         raise ValueError("hk quantize: x must be contiguous")
     cols = x.shape[-1]
     rows = x.numel() // cols if cols else 0
-    _check_2d(rows, cols)
+    strip = _resolve_strip_q(x.dtype, cols, rows) if rows else None
+    if strip is None:
+        _check_2d(rows, cols)
 
     if out is None or scales is None:
         import torch  # noqa: PLC0415  -- see norm._run
@@ -351,6 +426,14 @@ def quantize(x, out=None, scales=None):
         if scales is None:
             scales = torch.empty(x.shape[:-1], dtype=torch.float32,
                                  device=x.device)
+    if strip is not None:
+        k, chunks, run, exact = strip
+        flat = x if x.dim() == 2 else x.view(rows, cols)
+        k(flat, out if out.dim() == 2 else out.view(rows, cols), scales.view(1, rows),
+          CHUNKS=chunks, RUN=run, EXACT=exact)
+        return out, scales
+    if not rows:
+        return out, scales
     k, tpw, fold, exact = _resolve_q(x.dtype, cols)
     # The scales tensor is *not* folded: it has one entry per real row either
     # way, and under FOLD the kernel indexes it by workgroup rather than by the

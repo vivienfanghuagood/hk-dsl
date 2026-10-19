@@ -23,6 +23,26 @@ def test_the_strip_plan(cols, kind, nbytes, want):
     assert norm.strip_plan(cols, kind, nbytes) == want
 
 
+@pytest.mark.parametrize("cols,kind,nbytes,want", [
+    (4096, "rmsw", 2, (2, 4, 8, 1)),     # 32 a lane: 8 chunks as 2 warps of 4
+    (4096, "addrmsw", 2, (2, 4, 8, 1)),  # the fused add too, on wave64
+    (5120, "rms", 2, (2, 5, 8, 1)),      # 10 chunks: the exact split nearest 4 a warp
+    (8192, "softmax", 2, (4, 4, 8, 1)),
+    (4096, "layer", 4, (2, 8, 4, 1)),    # fp32: runs of 4, so 32 a lane is 8 chunks
+    (4100, "rms", 2, (3, 6, 4, 0)),      # 17 chunks: one warp of 17 is too many; ceiling
+    (64, "rms", 2, (1, 1, 8, 0)),
+])
+def test_the_wave64_strip_plan(cols, kind, nbytes, want):
+    """A chunk is 64 lanes x RUN; 32 elements a lane, the warps chosen to
+    split the chunks exactly (tools/hk-bench/strip_plan.py on an MI355X)."""
+    assert norm.strip_plan(cols, kind, nbytes, wave=64) == want
+
+
+def test_the_wave64_capacity_is_the_same_per_lane():
+    assert norm.strip_plan(16 * 64 * 64, "rms", 2, wave=64) == (16, 8, 8, 1)
+    assert norm.strip_plan(16 * 64 * 64 + 512, "rms", 2, wave=64) is None
+
+
 def test_a_row_past_a_strips_capacity_goes_to_the_tiles():
     assert norm.strip_plan(16 * 64 * 32, "rms", 2) is not None
     assert norm.strip_plan(16 * 64 * 32 + 256, "rms", 2) is None

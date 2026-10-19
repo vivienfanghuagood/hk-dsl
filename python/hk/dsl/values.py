@@ -78,9 +78,16 @@ def _strip_access(what: str, ty, idx: "Coord", bounded) -> None:
     if not _is_strip(ty):
         return
     arch = _t().arch
-    if get_target(arch).kittens_define != "KITTENS_RDNA3":
+    tgt = get_target(arch)
+    if not tgt.strips:
         raise TypeError(f"{what} of {ty!r}: strips (kittens::rs) are in "
-                        f"include/rdna3 only, and this kernel is for {arch}")
+                        f"include/rdna3 and hk's wave64 port for gfx950, and "
+                        f"this kernel is for {arch}")
+    strip = ty.tile if isinstance(ty, RegVecType) else ty
+    if strip.cols % (tgt.wave * strip.run):
+        raise TypeError(f"{what} of {ty!r}: on {arch} a strip's chunk is "
+                        f"{tgt.wave} lanes x {strip.run}, and {strip.cols} "
+                        f"columns are not a whole number of them")
     if idx.unit != "element":
         raise TypeError(f"{what} of {ty!r}: a strip indexes in elements "
                         f"(x.at[r, c] or hk.elem_coord), not tiles")
@@ -599,7 +606,7 @@ _UNARY = {"exp": hkd.ExpOp, "exp2": hkd.Exp2Op, "log": hkd.LogOp,
           "log2": hkd.Log2Op, "abs": hkd.AbsOp, "relu": hkd.ReluOp,
           "copy": hkd.CopyOp, "gelu": hkd.GeluOp, "dgelu": hkd.DgeluOp,
           "sqrt": hkd.SqrtOp, "rsqrt": hkd.RsqrtOp, "silu": hkd.SiluOp,
-          "step": hkd.StepOp}
+          "step": hkd.StepOp, "swap_halves": hkd.SwapHalvesOp}
 _BROADCAST = {("add", "row"): hkd.AddRowOp, ("sub", "row"): hkd.SubRowOp,
               ("mul", "row"): hkd.MulRowOp, ("div", "row"): hkd.DivRowOp,
               ("add", "col"): hkd.AddColOp, ("sub", "col"): hkd.SubColOp,
@@ -755,6 +762,25 @@ class _Elementwise(Value):
         return unary("step", self, into=into)
 
     def copy(self, *, into=None): return unary("copy", self, into=into)
+
+    def swap_halves(self, *, into=None):
+        """A strip with each row's two halves exchanged: column c takes
+        column (c + cols/2) mod cols -- RoPE's rotate_half without the sign.
+        Strips only, on the wave64 port (gfx950), and a row of one chunk (a
+        lane exchange across the wave's halves) or of an even number of
+        chunks (a register swap)."""
+        ty = self.ty
+        if not (isinstance(self, Tile) and _is_strip(ty)):
+            raise TypeError(f"swap_halves takes a strip, not {ty!r}")
+        tgt = get_target(_t().arch)
+        if not tgt.strips or tgt.wave != 64:
+            raise TypeError(f"swap_halves is in hk's wave64 strip port; this "
+                            f"kernel is for {_t().arch}")
+        chunks = ty.cols // (tgt.wave * ty.run)
+        if chunks != 1 and chunks % 2:
+            raise TypeError(f"swap_halves of {ty!r}: {chunks} chunks a row, "
+                            f"neither one nor an even number")
+        return unary("swap_halves", self, into=into)
 
     def exp_(self): return unary("exp", self, into=self)
     def exp2_(self): return unary("exp2", self, into=self)

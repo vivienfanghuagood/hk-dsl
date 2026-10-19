@@ -69,6 +69,7 @@ GFX950 = Target(
     lgkmcnt_max=15,
     tile_shapes=True,
     extra_includes=('"hk/cdna.cuh"',),
+    strips=True,
 )
 
 #: The two numbers a result is reported against, for an MI355X: AMD's

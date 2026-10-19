@@ -18,7 +18,7 @@ from .elementwise import (
     relu,
     sub,
 )
-from .fused import rope, silu_mul
+from .fused import rope, rotary, silu_mul
 from .gemm import matmul
 from .norm import fused_add_rms_norm, layernorm, rms_norm, rmsnorm, softmax
 from .quant import dequantize, quantize
@@ -28,7 +28,7 @@ __all__ = [
     "add", "sub", "mul", "maximum", "minimum",
     "exp", "relu", "gelu", "neg", "abs",
     "rmsnorm", "layernorm", "softmax", "rms_norm", "fused_add_rms_norm",
-    "silu_mul", "rope",
+    "silu_mul", "rope", "rotary",
     "quantize", "dequantize",
     "matmul",
     "attention",

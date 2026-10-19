@@ -28,10 +28,12 @@ def HK_RegTileType : HK_Type<"RegTile", "rt"> {
 
     `!hk.rt<f32, 1x1024, strip<8>>` is a strip, kittens::rs<T, rows, cols, 8>:
     the layout a row kernel wants rather than the one WMMA gives, each lane
-    owning `run` contiguous elements of a row per 32*run-column chunk. Rows
-    are any positive count; columns a whole number of chunks. A strip is
-    never an mma operand, never goes through LDS as a tile, and has no
-    fragment. kittens::rs is include/rdna3's alone, so strips are gfx1100's.
+    owning `run` contiguous elements of a row per wave*run-column chunk. Rows
+    are any positive count; columns a whole number of chunks (here at least
+    of 32*run, the wave32 chunk; a wave64 target's DSL checks 64*run). A
+    strip is never an mma operand, never goes through LDS as a tile, and has
+    no fragment. kittens::rs is include/rdna3's and hk's wave64 port's
+    (include/hk/cdna.cuh), so strips are gfx1100's and gfx950's.
   }];
   let parameters = (ins "::mlir::Type":$elementType, "unsigned":$rows,
                         "unsigned":$cols, "bool":$colLayout,

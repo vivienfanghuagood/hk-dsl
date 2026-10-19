@@ -93,6 +93,11 @@ class Target:
     #: target's HipKittens tree does not define.
     extra_includes: Tuple[str, ...] = ()
 
+    #: Whether register strips (hk.RS, kittens::rs) exist here: include/rdna3
+    #: has them, and hk's include/hk/cdna.cuh has a wave64 port. A strip's
+    #: chunk is `wave` lanes of one run each.
+    strips: bool = False
+
     # ---- derived ----
 
     def vgpr_rounded(self, vgprs: int) -> int:

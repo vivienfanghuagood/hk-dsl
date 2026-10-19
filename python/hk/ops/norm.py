@@ -948,6 +948,37 @@ STRIP_MAX_PER_LANE = 64
 _STRIP_PER_LANE = {"addrmsw": 8}
 _STRIP_PER_LANE_DEFAULT = 16
 
+#: The same target on wave64 (gfx950), every kind: 32 elements, four
+#: 16-byte runs of bf16, the warps then chosen to split the row's chunks
+#: exactly where a split near the target does (_wave64_split): 4096 bf16
+#: columns are 2 warps of 4 chunks, 5120 2 of 5, 8192 4 of 4. Measured on an
+#: MI355X (tools/hk-bench/strip_plan.py, us, the five kinds at 8, 16, 32 and
+#: 64 a lane): within 5% of the fastest at all 30 of kind x {4096, 5120,
+#: 8192} x {2048, 8192} rows and within 1% at 23, where gfx11's 16 (8 for
+#: the fused add) was 7-16% behind at 2048x8192, and 32 a lane split by
+#: ceiling (5120's ten chunks as three warps of four) 8-30% at 2048x5120:
+#:
+#:                          16/lane    32/lane      64/lane
+#:     rmsnorm   2048x8192   11.17     10.32 w4       9.99
+#:     softmax   2048x8192   12.10     11.30 w4      11.82
+#:     layernorm 2048x5120    7.11      8.93 w3c4     6.86 w2c5  (the rule)
+#:     rms_norm  8192x8192   38.32     38.49 w4      38.77
+_STRIP_PER_LANE_WAVE64 = 32
+
+
+def _wave64_split(chunks: int, per: int, most: int):
+    """(warps, chunks a warp) for `chunks` chunks at about `per` a warp: of
+    the exact splits (warps dividing chunks, at most MAX_WARPS, at most
+    `most` chunks a warp) the one whose chunks a warp are nearest `per`, the
+    larger on a tie; a ceiling split where none is."""
+    exact = [(abs(chunks // w - per), -(chunks // w), w)
+             for w in range(1, MAX_WARPS + 1) if chunks % w == 0 and chunks // w <= most]
+    if exact:
+        _, neg, w = min(exact)
+        return w, -neg
+    warps = min(MAX_WARPS, _ceil(chunks, per))
+    return warps, _ceil(chunks, warps)
+
 #: Past the Infinity Cache a strip kernel streams HBM, and there it runs
 #: faster with fewer rows in flight than its registers allow: LDS reserved
 #: so that a WGP (128 KB of LDS) holds two workgroups. 8192x4096, us
@@ -965,6 +996,8 @@ _STRIP_PER_LANE_DEFAULT = 16
 #: allocates 241 VGPRs, one workgroup a WGP.
 _STRIP_CACHE_BYTES = 96 << 20
 _STRIP_RESERVE = 48 << 10
+#: The targets that cap a streaming strip kernel's workgroups, as above.
+_STRIP_RESERVE_ARCHS = ("gfx1100",)
 
 #: Row operands each kind reads or writes once: the bytes a call moves are
 #: this times rows x cols x the element size.
@@ -980,17 +1013,33 @@ def strip_run(cols: int, nbytes: int) -> int:
     return r
 
 
-def strip_plan(cols: int, kind: str, nbytes: int):
+def _wave() -> int:
+    from ..target import current_arch, get_target  # noqa: PLC0415
+
+    return get_target(current_arch()).wave
+
+
+def strip_plan(cols: int, kind: str, nbytes: int, wave: Optional[int] = None,
+               per_lane: Optional[int] = None):
     """(WARPS, CHUNKS, RUN, EXACT) for a strip kernel, or None where the row
     is too wide to hold.
 
-    RUN from strip_run; CHUNKS, the 32*RUN-column chunks one warp holds, from
-    the per-lane target; WARPS to cover the row, at most MAX_WARPS, the chunks
-    then rebalanced so that no warp holds more than it must. EXACT when the
-    warps cover the row with nothing left over: then nothing is bounded."""
+    RUN from strip_run; CHUNKS, the wave*RUN-column chunks one warp holds,
+    from the per-lane target; WARPS to cover the row, at most MAX_WARPS, the
+    chunks then rebalanced so that no warp holds more than it must. EXACT when
+    the warps cover the row with nothing left over: then nothing is bounded.
+    `wave` is the target's (32 on gfx11, 64 on CDNA), the current one's if
+    not given; `per_lane` overrides wave64's per-lane target."""
+    wave = wave or _wave()
     run = strip_run(cols, nbytes)
-    span = 32 * run
+    span = wave * run
     chunks = _ceil(cols, span)
+    if wave == 64:
+        warps, per = _wave64_split(chunks, max(1, (per_lane or _STRIP_PER_LANE_WAVE64) // run),
+                                   STRIP_MAX_PER_LANE // run)
+        if per * run > STRIP_MAX_PER_LANE:
+            return None
+        return warps, per, run, int(warps * per * span == cols)
     target = _STRIP_PER_LANE.get(kind, _STRIP_PER_LANE_DEFAULT)
     per = max(1, target // run)
     warps = min(MAX_WARPS, _ceil(chunks, per))
@@ -1014,7 +1063,7 @@ def _strip_kernel(name: str, dtype, kind: str, warps: int):
     def core(x, w, o, r, r_out, ROWS, CHUNKS, RUN, EXACT, RESERVE, EPS):
         if RESERVE:
             hk.lds.reserve(RESERVE)
-        cw = CHUNKS * 32 * RUN
+        cw = CHUNKS * hk.arch.target().wave * RUN
         S = hk.RS(fp32, ROWS, cw, RUN)
         row = hk.arch.block_idx.x * ROWS if ROWS > 1 else hk.arch.block_idx.x
         c0 = hk.arch.warp_id() * cw if warps > 1 else 0
@@ -1102,10 +1151,17 @@ del _s, _dt, _k, _w, _n
 
 
 def _strips_here() -> bool:
-    """Strips are include/rdna3's; on any other target the tile kernels run."""
+    """Strips are include/rdna3's and hk's wave64 port's (Target.strips); on
+    any other target the tile kernels run."""
     from ..target import current_arch, get_target  # noqa: PLC0415
 
-    return get_target(current_arch()).kittens_define == "KITTENS_RDNA3"
+    return get_target(current_arch()).strips
+
+
+def _reserve_here() -> bool:
+    from ..target import current_arch  # noqa: PLC0415
+
+    return current_arch() in _STRIP_RESERVE_ARCHS
 
 
 def _resolve_strip(kind: str, dtype, cols: int, rows: int):
@@ -1113,7 +1169,8 @@ def _resolve_strip(kind: str, dtype, cols: int, rows: int):
     strip. RESERVE caps the workgroups a WGP holds when the call streams HBM:
     see _STRIP_RESERVE."""
     nbytes = getattr(dtype, "itemsize", 2)
-    streams = rows * cols * nbytes * _STRIP_STREAMS.get(kind, 2) > _STRIP_CACHE_BYTES
+    streams = (rows * cols * nbytes * _STRIP_STREAMS.get(kind, 2) > _STRIP_CACHE_BYTES
+               and _reserve_here())
     key = ("strip", kind, dtype, cols, streams)
     got = _PLAN_CACHE.get(key, False)
     if got is False:

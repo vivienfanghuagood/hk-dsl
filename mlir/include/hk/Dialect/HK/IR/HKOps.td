@@ -626,6 +626,15 @@ def HK_SqrtOp : HK_UnaryMapOp<"sqrt">;
 def HK_RsqrtOp : HK_UnaryMapOp<"rsqrt">;
 def HK_SiluOp : HK_UnaryMapOp<"silu">;
 def HK_StepOp : HK_UnaryMapOp<"step">;
+def HK_SwapHalvesOp : HK_UnaryMapOp<"swap_halves"> {
+  let description = [{
+    A strip's rows with their two halves exchanged: element (r, c) of the
+    result is element (r, (c + cols/2) mod cols) of the operand -- RoPE's
+    rotate_half without its sign. Strips only, and a row of one chunk or of
+    an even number of them: a register swap between chunks, or one lane
+    exchange across the wave's halves.
+  }];
+}
 
 //===----------------------------------------------------------------------===//
 // Reductions and broadcasts
