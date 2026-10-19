@@ -1,5 +1,11 @@
 include(AddMLIRPython)
 
+# hk's libraries carry their own LLVM and MLIR. In a process that loaded
+# another LLVM first -- vLLM's _C links ROCm's libLLVM.so -- their calls into
+# LLVM resolved to that copy and the first MLIR context segfaulted; bound
+# locally, each library calls its own.
+add_link_options("LINKER:-Bsymbolic")
+
 # Every MLIR module lives under hk._mlir (the API is embedded relocatably).
 add_compile_definitions("MLIR_PYTHON_PACKAGE_PREFIX=${MLIR_PYTHON_PACKAGE_PREFIX}.")
 
