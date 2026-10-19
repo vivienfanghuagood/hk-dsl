@@ -96,32 +96,43 @@ row twice, and an fp32 tile gives a lane alternate columns. A kernel that only
 streams rows wants each lane to own contiguous runs of a row instead. That is
 a strip (`!hk.rt<f32, 1x1024, strip<8>>`, `kittens::rs`):
 - **Layout.** Lane l owns, of every row, the runs of `run` columns starting
-  at `j*32*run + l*run`. A bf16 run of 8 is one 16-byte access, and nothing
-  is held twice. `cols` is a whole number of `32*run`-column chunks.
+  at `j*wave*run + l*run`: a chunk is the wave's lanes, 32 on gfx11 and 64 on
+  gfx950. A bf16 run of 8 is one 16-byte access, and nothing is held twice.
+  `cols` is a whole number of `wave*run`-column chunks.
 - **Memory.** A strip loads and stores in elements (`x.at[r, c]`), and
   converts its element type on the way. `bounded=True` reads zero past the
   tensor's last row and column, and writes nothing there.
 - **Operations.** It maps, reduces along rows (a butterfly that leaves the
   answer in every lane) and along columns, broadcasts its `col_vec` and
-  `row_vec`, and fills by column (`right_fill_`, `left_fill_`).
+  `row_vec`, and fills by column (`right_fill_`, `left_fill_`). On gfx950,
+  `swap_halves()` exchanges each row's two halves (column c takes column
+  `(c + cols/2) % cols`, RoPE's rotate_half without the sign): a register
+  swap for an even number of chunks, one `v_permlane32_swap` a dword for a
+  row of one chunk.
 - **Vectors.** Its `row_vec` has the strip's own column layout, so a weight
   vector loads with the accesses of the rows it scales. Its `col_vec` is
   what `hk.collective.cross_warp` combines.
-- **Limits.** It is never an MMA operand or an LDS tile. It is
-  include/rdna3's alone, so gfx1100 only: gfx1201 and the CDNA targets
-  refuse it while tracing.
+- **Limits.** It is never an MMA operand or an LDS tile. It exists where
+  `Target.strips` says: gfx1100 (include/rdna3) and gfx950 (hk's wave64
+  port in `include/hk/cdna.cuh`); gfx1201 and gfx942 refuse it while
+  tracing.
 
 ```python
 # WARPS and EPS are constexprs; row and warp come from hk.arch
 S = hk.RS(hk.fp32, 1, 512)                  # one row, 512 columns a warp
-v = x.at[row, warp * 512].load(S)           # 2 x 16 bytes a lane of bf16
+v = x.at[row, warp * 512].load(S)           # 16 bytes a lane of bf16, twice on gfx11
 sq = hk.collective.cross_warp((v * v).sum(axis=1), "add", WARPS)
 v *= (sq / x.cols + EPS).rsqrt()
 o.at[row, warp * 512].store(v)
 ```
 
 `hk.ops.norm`'s RMSNorm, fused add + RMSNorm, LayerNorm and softmax run on
-strips wherever a row fits one ([chapter 27](history/27-strips.md)).
+strips wherever a row fits one ([chapter 27](history/27-strips.md)). On
+gfx950 so do quantize, the elementwise ops, `silu_mul` (which then takes
+the two halves of a gate/up output as strided views) and `hk.ops.rotary`,
+vLLM's rotary_embedding in NeoX style, token-major, from a `cos_sin_cache`
+of `[cos | sin]` rows and optional int32 positions
+([chapter 37](history/37-cdna-rows.md)).
 
 ### Dtypes, and two deliberate spellings
 

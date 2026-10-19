@@ -73,6 +73,20 @@ def test_the_occupancy_cap_starts_past_the_infinity_cache(monkeypatch):
         CHUNKS=2, RUN=8, EXACT=1, RESERVE=48 << 10)
 
 
+def test_gfx950s_cap_starts_at_its_256_mb_cache(monkeypatch):
+    """53 KB reserved -- three workgroups a CU -- from the 256 MiB cache's
+    size: 8192x8192 rmsnorm (exactly 256 MiB) 39.2 -> 37.8 us, 8192x4096
+    20.1 -> 22.6 had it been capped."""
+    monkeypatch.setattr(norm, "_strips_here", lambda: True)
+    monkeypatch.setattr(norm, "_PLAN_CACHE", {})
+    monkeypatch.setattr(norm, "_RESERVE_HERE", [norm._STRIP_RESERVE_AT["gfx950"]])
+    monkeypatch.setattr(norm, "_wave", lambda: 64)
+    dt = _BF16()
+    assert norm._resolve_strip("rms", dt, 4096, 8192)[4] == 0              # 134 MB
+    assert norm._resolve_strip("rms", dt, 8192, 8192)[4] == 53 << 10       # 268 MB
+    assert norm._resolve_strip("addrmsw", dt, 4096, 8192)[4] == 53 << 10   # 4 streams
+
+
 def test_off_rdna3_the_norms_stay_on_the_tiles(monkeypatch):
     monkeypatch.setattr(norm, "_strips_here", lambda: False)
     monkeypatch.setattr(norm, "_PLAN_CACHE", {})

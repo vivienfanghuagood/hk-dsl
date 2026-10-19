@@ -996,8 +996,23 @@ def _wave64_split(chunks: int, per: int, most: int):
 #: allocates 241 VGPRs, one workgroup a WGP.
 _STRIP_CACHE_BYTES = 96 << 20
 _STRIP_RESERVE = 48 << 10
-#: The targets that cap a streaming strip kernel's workgroups, as above.
-_STRIP_RESERVE_ARCHS = ("gfx1100",)
+
+#: The same cap on gfx950, past its 256 MB cache: 53 KB of a CU's 160, three
+#: workgroups a CU. 8192x8192 bf16, us (one process; tuned Triton beside,
+#: whose pick there carries a waves_per_eu):
+#:
+#:                  no cap   32 KB   53 KB   80 KB   Triton
+#:     rmsnorm       39.19   38.79   37.83   45.07   37.67
+#:     layernorm     39.96   38.95   38.81   54.04   37.64
+#:     rms_norm      38.75   38.52   37.77   48.80   38.19
+#:     softmax       39.91   39.37   38.88   58.94   50.41
+#:     fused add     76.95   76.83   77.53   76.00     --
+#:
+#: Inside the cache it costs, as on gfx11: 8192x4096 rmsnorm 20.13 uncapped,
+#: 22.63 at 53 KB. 8192x8192's in and out are exactly the cache's 256 MiB,
+#: so the cap starts at the cache's size rather than past it.
+_STRIP_RESERVE_AT = {"gfx1100": (_STRIP_CACHE_BYTES, _STRIP_RESERVE),
+                     "gfx950": ((256 << 20) - 1, 53 << 10)}
 
 #: Row operands each kind reads or writes once: the bytes a call moves are
 #: this times rows x cols x the element size.
@@ -1158,19 +1173,25 @@ def _strips_here() -> bool:
     return get_target(current_arch()).strips
 
 
-def _reserve_here() -> bool:
-    from ..target import current_arch  # noqa: PLC0415
+_RESERVE_HERE: list = []
 
-    return current_arch() in _STRIP_RESERVE_ARCHS
+
+def _reserve_here():
+    """(cache bytes, LDS reserve) of this target's occupancy cap, or None."""
+    if not _RESERVE_HERE:
+        from ..target import current_arch  # noqa: PLC0415
+
+        _RESERVE_HERE.append(_STRIP_RESERVE_AT.get(current_arch()))
+    return _RESERVE_HERE[0]
 
 
 def _resolve_strip(kind: str, dtype, cols: int, rows: int):
     """(kernel, CHUNKS, RUN, EXACT, RESERVE), or None for a row too wide for a
-    strip. RESERVE caps the workgroups a WGP holds when the call streams HBM:
-    see _STRIP_RESERVE."""
+    strip. RESERVE caps the workgroups a WGP (a CU on gfx950) holds when the
+    call streams HBM: see _STRIP_RESERVE and _STRIP_RESERVE_AT."""
     nbytes = getattr(dtype, "itemsize", 2)
-    streams = (rows * cols * nbytes * _STRIP_STREAMS.get(kind, 2) > _STRIP_CACHE_BYTES
-               and _reserve_here())
+    cap = _reserve_here()
+    streams = cap is not None and rows * cols * nbytes * _STRIP_STREAMS.get(kind, 2) > cap[0]
     key = ("strip", kind, dtype, cols, streams)
     got = _PLAN_CACHE.get(key, False)
     if got is False:
@@ -1182,7 +1203,7 @@ def _resolve_strip(kind: str, dtype, cols: int, rows: int):
         if p is not None:
             warps, chunks, run, exact = p
             got = (STRIP_KERNELS[f"strip_{kind}_{suffix}_w{warps}"], chunks, run, exact,
-                   _STRIP_RESERVE if streams else 0)
+                   cap[1] if streams else 0)
         _PLAN_CACHE[key] = got
     return got
 
