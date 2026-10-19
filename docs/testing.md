@@ -4,6 +4,7 @@
 - [Running each tier](#running-each-tier)
 - [What the GPU tier holds the line on](#what-the-gpu-tier-holds-the-line-on)
 - [Examples, and checks at full size](#examples-and-checks-at-full-size)
+- [The agents' tools](#the-agents-tools)
 - [CI](#ci)
 - [The performance gate](#the-performance-gate)
 - [The gates for a change to the generated code](#the-gates-for-a-change-to-the-generated-code)
@@ -142,6 +143,29 @@ now run at the sizes a model produces:
 python3 examples/validate.py --quick --no-bench   # every op checked, smaller shapes
 python3 examples/validate.py                      # full size, then timed
 ```
+
+## The agents' tools
+
+`headroom`, `ab --json` and `new-op` ([agents](agents.md)) are tested in the
+IR tier, without a GPU or torch:
+- `tests/hk/ir/test_headroom.py`: kernel names from vLLM 0.31's traces (eager
+  and graphs), hk's and Inductor's land in their families; hk's and FlyDSL's
+  kernels are told from the engine's; the rank is the upper bound times a
+  ceiling, a ratio from another arm comes before the routing table's, the
+  record's ratio is used only against the kernel it measured, and with no
+  ratio the roofline is the ceiling; a graph trace without its replays is
+  blind; the CLI ranks a trace from elsewhere.
+- `tests/hk/ir/test_ab_verdicts.py`: win, loss, tie and noise from rounds
+  with known spreads; rounds pair by number when one failed; every row has
+  the same keys; `--from` judges a raw file again.
+- `tests/hk/ir/test_new_op.py`: the scaffold writes the op and its test, the
+  kernel traces and translates, the generated no-GPU tests pass, and the
+  scoreboard's `--cases` finds the row (`tools/hk-bench/_cases.py`).
+
+On the GPU, `tests/hk/gpu/test_new_op.py` generates an op and runs its
+`check()`: the exact answer bit for bit, the reference at every shape, and a
+call the route declines running the reference. The scoreboard takes the
+generated file as it is: `scoreboard.py --cases DIR/NAME.py`.
 
 ## CI
 

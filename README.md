@@ -245,6 +245,7 @@ The `hk/` paths are under `python/`; the tests are in `tests/hk/`.
 - [Performance](docs/performance.md) — every result, with its hardware, baseline and source
 - [Building](docs/building.md) — MLIR, the dialect, the wheels
 - [Testing](docs/testing.md) — the test tiers, CI and the performance gate
+- [For agents](docs/agents.md) — find a gap (`headroom`), add a kernel (`new-op`), prove it helps (`ab --json`, the scoreboard, the gate), and which numbers not to trust
 - [CDNA3/4](docs/design/cdna.md) — what runs on gfx942 / gfx950, and what does not yet
 - [Development record](docs/history/README.md) — how it got here, chapter by chapter, with the negative results
 

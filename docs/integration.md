@@ -125,7 +125,13 @@ the record were run with `VLLM_ENABLE_V1_MULTIPROCESSING=0`.
 python3 -m hk.integration --status          # what is importable, what is patched
 python3 -m hk.integration --patch           # apply every available patch and report
 python3 -m hk.integration --warm -j 32      # build the torch ops ahead of time
+python3 -m hk.integration headroom ...      # a step's device time by kernel family, against what hk has
+python3 -m hk.integration ab ... --json f   # end to end against stock, with verdicts
+python3 -m hk.integration new-op NAME       # a new op's kernel, registration, tests and bench row
 ```
+
+The last three are the loop [for agents](agents.md): find the gap, add the
+kernel, prove it helped.
 
 ## The SDPA patch: vision towers
 
@@ -716,7 +722,15 @@ HK_PATCH_VLLM=1 HK_VLLM_USER=my_kernels.py vllm serve Qwen/Qwen3-8B
 `ab` runs stock and your arm alternately in fresh engines. It prints total,
 prefill and decode-step time per shape, and whether the first request's
 greedy tokens match stock's. `HK_VLLM_USER` takes comma-separated module
-names or `.py` paths.
+names or `.py` paths. `--json PATH` writes one row per shape, metric and arm
+with a verdict, `win`, `loss`, `tie` or `noise`, against a band measured
+from the rounds' own spread; `--out` keeps every round raw, and `--from`
+judges such a file again ([agents](agents.md#prove-it-helps)).
+
+`python -m hk.integration new-op NAME --dir DIR` writes the four steps' code
+for a new op, as a working stub with an exact-answer test and a scoreboard
+row, and `python -m hk.integration headroom` says which of the engine's
+kernels are worth one: [the agents' page](agents.md) is the whole loop.
 
 **Measure first.** The example's kernel is 0.62-0.93x the SiLU-and-mul vLLM
 compiles with Inductor, which is the result chapter 12 recorded when it
