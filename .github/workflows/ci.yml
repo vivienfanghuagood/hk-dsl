@@ -2,8 +2,8 @@ name: CI
 
 # The two tiers that need no GPU, on every push and pull request: the hk
 # dialect built against a prebuilt MLIR, then the IR tier (no hipcc) and the
-# codegen tier (hipcc, no GPU). The GPU tier needs a Radeon and runs on the
-# development pod (scripts/gpu_suite.sh; docs/building.md#ci).
+# codegen tier (hipcc, no GPU). The GPU tier runs on self-hosted runners, on
+# pushes to main only (gpu.yml; docs/testing.md#the-gpu-tier).
 
 on:
   push:

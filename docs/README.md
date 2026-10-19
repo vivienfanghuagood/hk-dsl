@@ -9,7 +9,7 @@
 | [Integration](integration.md) | the vLLM and SGLang patches, the environment variables that turn them on, `Op` / `Patch` / `RouteTable`, FlyDSL on the routes, the CUDA-graph contract |
 | [Performance](performance.md) | the measured results in one place, each with its hardware, baseline and source chapter |
 | [Building](building.md) | MLIR and the dialect, the wheels and what they carry, the repository layout |
-| [Testing](testing.md) | the test tiers and how to run each, CI, the engine contract tests, the performance gate, and the gates for a change to the generated code |
+| [Testing](testing.md) | the test tiers and how to run each, CI and the GPU tier's self-hosted runners, the engine contract tests, the performance gate, and the gates for a change to the generated code |
 | [For agents](agents.md) | the loop without a harness of your own: `headroom` (where a step's time goes, against what hk has), `new-op` (a kernel on the rails), `ab --json` (win, loss, tie or noise), and the numbers not to trust |
 | [Development record](history/README.md) | the chronological record, Phases 1-7 and the chapters after them, verbatim |
 | [CDNA3/4 (design)](design/cdna.md) | what is RDNA3-only, what HipKittens offers on gfx942/gfx950, the op-family estimates, and what runs on an MI355X |

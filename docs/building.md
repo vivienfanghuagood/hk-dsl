@@ -146,9 +146,13 @@ submodule; `HK_INCLUDE_DIR` overrides that ([compiling](runtime.md#compiling)).
 
 ## CI
 
-CI builds the dialect against a prebuilt MLIR 23.1.3 and runs the two tiers
-that need no GPU. How, what it costs, and how to make a new MLIR archive:
-[testing](testing.md#ci).
+CI is two workflows. `ci.yml`, on GitHub's runners, on every push and pull
+request, builds the dialect against a prebuilt MLIR 23.1.3 and runs the two
+tiers that need no GPU. `gpu.yml`, on two self-hosted runners on the MI355X
+workstation, on pushes to main only, runs the GPU tier on a gfx950 and a
+gfx1100; its jobs, `gfx950` and `gfx1100`, are main's required checks. How,
+what each costs, and how to make a new MLIR archive:
+[testing](testing.md#ci) and [the GPU tier](testing.md#the-gpu-tier).
 
 ## The performance gate
 
@@ -182,7 +186,7 @@ third_party/HipKittens/
                 the backend: kittens.cuh and include/rdna3, rdna4, cdna3,
                 cdna4; also the C++ kernels hk is measured against
 scripts/        building MLIR, the dialect and the wheels; the GPU suite, the
-                performance gate, and the GPU CI that runs them (gpu_ci/)
+                performance gate, and the GPU CI jobs that run them (ci/)
 tools/hk-bench/ the benchmarks, the scoreboard, the performance gate and the
                 engine harnesses behind every number here
 tools/cdna-probes/

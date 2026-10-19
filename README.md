@@ -233,7 +233,7 @@ third_party/HipKittens/
                 the backend: kittens.cuh and include/rdna3, rdna4, cdna3,
                 cdna4; also the C++ kernels hk is measured against
 scripts/        building MLIR, the dialect and the wheels; the GPU suite, the
-                performance gate, and the GPU CI that runs them (gpu_ci/)
+                performance gate, and the GPU CI jobs that run them (ci/)
 tools/hk-bench/ the benchmarks, the scoreboard, the performance gate and the
                 engine harnesses behind every number here
 examples/       complete kernels, each checked against torch and timed

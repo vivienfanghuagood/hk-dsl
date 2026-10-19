@@ -195,53 +195,120 @@ licence files, attach it to a release, and point `MLIR_RELEASE` and
 ### The GPU tier
 
 `HK_GPU=0 scripts/gpu_suite.sh OUTDIR` runs `tests/hk/gpu` in groups, three
-at a time on one GPU, and exits non-zero if a group failed. It runs on main
-on two GPUs, and each commit it tests gets a status on GitHub:
-- **`gpu/gfx1100`**: GPU 0 of the W7900D dev pod.
-- **`gpu/gfx950`**: one MI355X of the workstation, whichever is idle when the
-  run starts, in `rocm/pytorch`.
+at a time on one GPU, and exits non-zero if a group failed. On every push to
+main it runs on two GPUs, as `.github/workflows/gpu.yml`, whose two jobs are
+main's required checks:
+- **`gfx950`**: one MI355X of the workstation, the lowest-numbered one that
+  is idle when the job starts, in `rocm/pytorch`.
+- **`gfx1100`**: a W7900D of the dev pod `hfang-hk-rdna3-b`, an idle one of
+  GPUs 5-7, else GPU 0.
 
-Its "Details" link opens the run's report: each group's result, the failing
-tests and the tail of each failed group's log. Reports are assets of the
-[`gpu-ci-logs`](https://github.com/vivienfanghuagood/hk-dsl/releases/tag/gpu-ci-logs)
-prerelease.
+Each job has a self-hosted runner of its own on the workstation:
+`smci355-gfx950` and `smci355-gfx1100`, labelled `self-hosted, hk-gpu,
+gfx950` and `self-hosted, hk-gpu, gfx1100`. Both are ephemeral: registered
+for one job, then registered again. A job's page has its counts as an
+annotation and, in its summary, each group's result and the failing tests.
+Its artifact (`gfx950-report`, `gfx1100-report`) holds `result.json`,
+`report.txt` (with the tail of each failed group's log) and the build log;
+gfx950's also every group's log, gfx1100's the pod's driver log.
 
-It is not a GitHub Actions workflow. The cluster reaches github.com and
-api.github.com only through the `gh-test` and `gh-api-test.anruicloud.com`
-proxies, and not GitHub's Actions service, so no self-hosted runner can sit
-next to the W7900D. So it is driven from the workstation, which can reach
-GitHub (`scripts/gpu_ci/`):
-- **`orchestrate.py`** checks every 10 minutes. It tests main's head when it
-  changes, and again nightly. It starts the gfx1100 run in the pod over
-  `ssh 0004` and `kubectl exec`, starts the gfx950 run locally, and posts
-  each status when its run finishes. It runs twice over: from cron, and as
-  `orchestrate.py daemon`, started once from an SSH login. Only the daemon
-  can start gfx950: the workstation grants the docker, render and video
-  groups through `pam_group`, to login sessions only, so a cron job has none
-  of them. Until the daemon starts a commit's gfx950 run, the status says it
-  is waiting for the launcher. After a reboot, start the daemon again.
-- **`pod_run.sh`** runs in the pod. It fetches the commit itself, through the
-  proxy, then builds the dialect and runs the suite. No code from the
+The workflow runs on pushes to main and by hand
+(`gh workflow run gpu.yml --ref BRANCH`), and never on pull requests: the
+repository is public, and a fork's code must not reach these machines. Do
+not add a `pull_request` or `pull_request_target` trigger. One run per arch
+and ref at a time: a push waits for the run in progress, and replaces a push
+that was waiting, so commits pushed close together are tested at the last.
+With a warm compile cache the suite takes a minute or two; a change that
+recompiles the kernels takes about 25 minutes on gfx950 and 32 on gfx1100.
+
+**What the jobs run** (`scripts/ci/`, from the job's checkout):
+- **`run_gfx950.sh`** picks the GPU (under 10% use and 3% VRAM; it waits up
+  to an hour for one) and starts `rocm/pytorch` with that GPU's render node,
+  the checkout, the run's directory, CI's own directory, and the MLIR
+  install read-only; nothing else of `$HOME`. In it, **`container_run.sh`**
+  builds the dialect for the image's CPython 3.12 against MLIR 23.1.3's cp310
+  install (the MLIR C++ libraries do not depend on the interpreter), then
+  runs the suite.
+- **`run_gfx1100.sh`** works over `ssh 0004` and `kubectl exec`: it installs
+  **`pod_run.sh`** and `summarize.py` in the pod and starts the run there,
+  detached, then follows its log and brings back its result. The pod
+  fetches the commit itself, through the `gh-test.anruicloud.com` proxy: its
+  cluster DNS resolves no GitHub name, and github.com is blocked by name, so
+  git is pointed at the address the jump host resolves. No code from the
   repository runs on the jump host.
-- **`local_run.sh`** and **`container_run.sh`** run the gfx950 tier in a
-  container that sees one GPU and CI's own directories, not `$HOME`.
+- **`summarize.py`** turns the suite's output into `result.json` and
+  `report.txt`; **`report.py`** writes the annotation and the summary, and
+  sets the job's exit status.
 
-Commits pushed together are tested together, as one head. A commit that
-changes only documentation carries its parent's passing result. With a warm
-compile cache a gfx1100 run takes a minute or two; a change to the dialect's
-version recompiles every kernel and takes about half an hour.
+**GPUs and locks.** The MI355X are shared with whoever else is measuring on
+the workstation; the idle test is the only claim, as it is for the CDNA
+work. In the pod, a run takes GPU 5, 6 or 7 under
+`/workspace/gha/gpuN.lock` when one is idle, and otherwise GPU 0 under
+`/workspace/ci/gpu0.lock`; it never touches GPU 3, where the performance
+gate runs. A manual benchmark on GPU 0 should hold that lock too
+(`flock /workspace/ci/gpu0.lock <command>`), so that neither times the
+other. The minutes in a result count from when the GPU was taken.
+
+**Required checks.** main's branch protection requires `gfx950` and
+`gfx1100` from GitHub Actions, not up to date with main (`strict: false`),
+without enforcing it on admins, and nothing else: no reviews, no other
+rule. The workflow runs on main's pushes and by hand, never for a pull
+request, so:
+- a pull request can be merged once its head commit has passed both checks,
+  and it gets them only if someone with write access runs the workflow by
+  hand on a branch here at that commit. For a fork's pull request that would
+  put the fork's code on these machines: do not. In practice only an admin,
+  bypassing the rule, merges one;
+- a non-admin's push to main is refused unless its commit has already
+  passed both, the same way;
+- the owner's pushes, the agents' among them, go through, and GitHub
+  records each as a bypass. For them the checks are a record on each commit
+  of main, after the fact, not a gate in front of it.
+
+**Where things live.** Host state is kept out of the checkout:
+- `~/gha`: the runners (`runner-gfx950`, `runner-gfx1100`), `supervise.sh`,
+  which keeps each registered, and its logs (`logs/gfx950.log`,
+  `logs/gfx1100.log`; the runners' own are in `runner-*/_diag`);
+- `~/gha/runs/gfx950/RUN_ID-ATTEMPT`: a gfx950 run's directory;
+- `~/gha/x950/ci`: `/ci` in the container, with the dialect's build
+  (`hk-build-cp312`), pip's packages (`pylib`) and the compile cache
+  (`hk-cache`);
+- `~/hk-ci/mlir/install-cp310`: the MLIR install, the `ci-mlir-23.1.3`
+  release's asset unpacked, mounted read-only;
+- `/workspace/gha` in the pod: its clone, `hk-build-cp312`, `hk-cache` and
+  `runs/RUN_ID-ATTEMPT`.
+
+`HK_CI_STATE` moves the gfx950 runs and `x950` (default `~/gha`),
+`HK_CI_MLIR` the MLIR install and `HK_CI_IMAGE` the image; `HK_CI_POD`,
+`HK_CI_JUMP`, `HK_CI_PROXY`, `HK_CI_POD_DIR` and `HK_CI_POD_GPUS` set the
+pod's side. A job inherits its runner's environment, so set them where
+`supervise.sh` is started.
+
+**Starting and stopping the runners.** After a reboot, start them from an
+SSH login: the workstation grants the docker, render and video groups
+through `pam_group`, to login sessions only, and a runner started from cron
+or a service could not start the gfx950 container.
 
 ```bash
-python3 ~/hk-ci/orchestrate.py status          # what each tier last did
-python3 ~/hk-ci/orchestrate.py run REF         # test a branch or commit now
-python3 scripts/gpu_ci/orchestrate.py install  # copy the scripts to ~/hk-ci, add the cron entries
-python3 ~/hk-ci/orchestrate.py daemon          # from an SSH login: the gfx950 launcher
+cd ~/gha && rm -f STOP STOP-gfx950 STOP-gfx1100
+for n in gfx950 gfx1100; do nohup setsid ./supervise.sh $n >> logs/$n.log 2>&1 < /dev/null & done
+gh api repos/vivienfanghuagood/hk-dsl/actions/runners --jq '.runners[] | [.name, .status, .busy] | @tsv'
 ```
 
-A gfx1100 run holds `/workspace/ci/gpu0.lock` in the pod while it uses
-GPU 0. A manual benchmark on GPU 0 should hold it too
-(`flock /workspace/ci/gpu0.lock <command>`), so that neither times the
-other.
+To stop them, `touch ~/gha/STOP` (both) or `~/gha/STOP-gfx950` /
+`STOP-gfx1100` (one). Within 10 seconds the listener gets SIGTERM, which
+cancels a job in progress, the runner is unregistered and `supervise.sh`
+exits. Remove the file before starting again. Stop them this way rather
+than by killing processes: `supervise.sh` registers a new runner whenever
+its listener exits, and a runner that did not exit cleanly stays
+registered, offline. While a runner is down its jobs queue, and GitHub
+cancels a job that found no runner in 24 hours.
+
+Until 19 October 2026 the tier was a polling CI on the same machines
+(`scripts/gpu_ci/`, cron and a daemon in `~/hk-ci`), posting `gpu/gfx1100`
+and `gpu/gfx950` commit statuses; older commits carry those, with reports
+in the [`gpu-ci-logs`](https://github.com/vivienfanghuagood/hk-dsl/releases/tag/gpu-ci-logs)
+prerelease. [Chapter 40](history/40-gpu-ci-on-actions.md) records the switch.
 
 ## The performance gate
 
