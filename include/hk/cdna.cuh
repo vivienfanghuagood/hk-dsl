@@ -1147,6 +1147,40 @@ __device__ inline static void as_operand(rt<T, R, C, ducks::rt_layout::col, duck
                         src.tiles[2 * i + k][j].data[p]);
 }
 
+/*
+ * 4-bit weight codes -> a dequantized bf16 or half operand tile (hk.load_w4),
+ * from hk's layout (hk.ops.w4a16): codes eight to an int32 in K order,
+ * nibble t of word w of row n being column 8w + t, the words interleaved
+ * [N/16][K/32][16 rows][4 words]; per group of G columns a scale s and the
+ * zero point times it, zs, so element (n, k) is q * s - zs, one FMA.
+ *
+ * A 16x32 operand fragment's lane l holds columns 8(l/16) .. +7 of row l%16:
+ * one word of codes. Its 64 lanes read their fragment's 256 contiguous bytes,
+ * one dword each, and nothing crosses lanes (include/rdna3's tile holds each
+ * row twice, and trades halves with permlanex16).
+ */
+namespace detail {
+/// Eight codes of one word -> four pairs of T, q * s - zs: columns (2t, 2t+1)
+/// in out[t]. bf16 rounds to nearest even (one v_cvt_pk_bf16_f32 a pair).
+template<typename T>
+__device__ inline void hk_w4_word(uint32_t word, float sc, float zsc, uint32_t out[4]) {
+    const uint32_t lo = word & 0x0F0F0F0Fu;          // columns 0, 2, 4, 6
+    const uint32_t hi = (word >> 4) & 0x0F0F0F0Fu;   // columns 1, 3, 5, 7
+    #pragma unroll
+    for (int t = 0; t < 4; t++) {
+        const float a = float((lo >> (8 * t)) & 0xFFu) * sc - zsc;
+        const float b = float((hi >> (8 * t)) & 0xFFu) * sc - zsc;
+        if constexpr (std::is_same_v<T, bf16>) {
+            const bf16_2 p = hk_cvt_pk_bf16(a, b);
+            __builtin_memcpy(&out[t], &p, 4);
+        } else {
+            const auto p = __builtin_amdgcn_cvt_pkrtz(a, b);
+            __builtin_memcpy(&out[t], &p, 4);
+        }
+    }
+}
+}  // namespace detail
+
 /**
  * @brief A column reduction of a col-layout fp32 tile in 16-column base
  * tiles (16x16 accumulators): a column's four lanes l, l+16, l+32, l+48
@@ -1184,6 +1218,76 @@ __device__ static inline void col_reduce(V &col_accum, const T &src, const V &sr
     }
 }
 
+/**
+ * @brief mma_ABt of fp16 operands into an fp32 accumulator. include/cdna4's
+ * takes fp16 only into an fp16 accumulator, though v_mfma_f32_16x16x32_f16
+ * and its 32x32x16 sibling accumulate in fp32 and its mma_ABt_base issues
+ * them. More constrained than the library's, so fp16 x fp16 -> fp32 picks it.
+ */
+template<ducks::rt::col_layout D, ducks::rt::all A, ducks::rt::all B, ducks::rt::col_layout C>
+    requires (std::is_same_v<typename D::T, float> && std::is_same_v<typename A::T, half> &&
+              std::is_same_v<typename B::T, half> && std::is_same_v<typename C::T, float>)
+__device__ static inline void mma_ABt(D &d, const A &a, const B &b, const C &c) {
+    static_assert(D::rows == A::rows && D::cols == B::rows && A::cols == B::cols &&
+                  D::rows == C::rows && D::cols == C::cols, "mma_ABt shapes");
+    #pragma unroll
+    for (int n = 0; n < D::height; n++) {
+        #pragma unroll
+        for (int m = 0; m < D::width; m++) {
+            mma_ABt_base(d.tiles[n][m], a.tiles[n][0], b.tiles[m][0], c.tiles[n][m]);
+            #pragma unroll
+            for (int k = 1; k < A::width; k++)
+                mma_ABt_base(d.tiles[n][m], a.tiles[n][k], b.tiles[m][k], d.tiles[n][m]);
+        }
+    }
+}
+
+template<int G, ducks::rt::all RT, ducks::gl::all QL, ducks::gl::all SL>
+__device__ inline static void load_w4(RT &dst, const QL &qw, const SL &s, const SL &zs,
+                                      int n0, int k0) {
+    using F = detail::hk_frag<RT>;
+    using T = typename F::T;
+    static_assert(F::row && F::R == 16 && F::C == 32 && F::S == 8 && F::K == 1,
+                  "W4 codes load into 16x32 row-layout operand fragments");
+    static_assert(std::is_same_v<T, bf16> || std::is_same_v<T, half>,
+                  "W4 codes dequantize into bf16 or half tiles");
+    static_assert(std::is_same_v<typename QL::dtype, int>, "codes are packed in int32");
+    static_assert(std::is_same_v<typename SL::dtype, T>, "scales are the tile's type");
+    static_assert(G % 8 == 0, "a lane's eight columns lie in one group");
+    constexpr bool one_group = G % (32 * RT::width) == 0;
+
+    const int lane = laneid();
+    const int r = lane % 16, wq = lane / 16;      // row, and word of the chunk
+    const int chunks = qw.cols() / 4;             // 32-column chunks per row
+    const int groups = s.cols();
+    const int *qp = reinterpret_cast<const int *>(qw.raw_ptr);
+    const T *sp = s.raw_ptr;
+    const T *zp = zs.raw_ptr;
+    #pragma unroll
+    for (int i = 0; i < RT::height; i++) {
+        const int n = n0 + i * 16 + r;
+        const int *blk = qp + (n >> 4) * chunks * 64 + r * 4 + wq;
+        float sc = 0.f, zsc = 0.f;
+        if constexpr (one_group) {
+            sc = base_types::convertor<float, T>::convert(sp[n * groups + k0 / G]);
+            zsc = base_types::convertor<float, T>::convert(zp[n * groups + k0 / G]);
+        }
+        #pragma unroll
+        for (int j = 0; j < RT::width; j++) {
+            const uint32_t word = uint32_t(blk[((k0 + j * 32) / 32) * 64]);
+            if constexpr (!one_group) {
+                const int g = (k0 + j * 32 + 8 * wq) / G;
+                sc = base_types::convertor<float, T>::convert(sp[n * groups + g]);
+                zsc = base_types::convertor<float, T>::convert(zp[n * groups + g]);
+            }
+            uint32_t out[4];
+            detail::hk_w4_word<T>(word, sc, zsc, out);
+            #pragma unroll
+            for (int t = 0; t < 4; t++)
+                __builtin_memcpy(&dst.tiles[i][j].data[t], &out[t], 4);
+        }
+    }
+}
 #endif
 
 #if defined(KITTENS_CDNA3)

@@ -29,7 +29,23 @@ sys.path.insert(0, str(HERE.parents[2] / "python"))
 
 SHAPES = {"qkv": (6144, 4096), "o": (4096, 4096), "gate_up": (24576, 4096),
           "down": (4096, 12288)}
+#: Three times the Infinity Cache, so a call reads its weights cold:
+#: 96 MB on a W7900, 256 MB on an MI355X.
+#: Three times the Infinity Cache, so a call reads its weights cold:
+#: 96 MB on a W7900, 256 MB on an MI355X.
 ROTATE_BYTES = 3 * 96 * 2 ** 20
+
+
+def _rotate_bytes() -> int:
+    from hk.target import current_arch  # noqa: PLC0415
+
+    return 3 * 256 * 2 ** 20 if current_arch() == "gfx950" else ROTATE_BYTES
+
+
+def _rotate_bytes() -> int:
+    from hk.target import current_arch  # noqa: PLC0415
+
+    return 3 * 256 * 2 ** 20 if current_arch() == "gfx950" else ROTATE_BYTES
 
 
 def _pack_along(v, order, dim):
@@ -82,7 +98,7 @@ def main():
     g = torch.Generator(device="cuda").manual_seed(0)
     rows = []
     for sname, (n, k) in SHAPES.items():
-        copies = max(2, -(-ROTATE_BYTES // (n * k // 2)))
+        copies = max(2, -(-_rotate_bytes() // (n * k // 2)))
         ws = [checkpoint(n, k, group, g, dtype) for _ in range(copies)]
         ref_w = w4a16.dequant(*ws[0][2], group).float()
         for m in (int(t) for t in args.tokens.split(",")):
@@ -93,6 +109,10 @@ def main():
                 "rdna3": lambda c: ops.gptq_gemm_rdna3(x, c[1][0], c[1][1], c[1][2], False),
                 "hk": lambda c: w4a16.matmul(x, *c[2], group),
             }
+            from hk.target import current_arch  # noqa: PLC0415
+            if not current_arch().startswith("gfx11"):
+                # An RDNA3 kernel: on another part it faults, not raises.
+                del arms["rdna3"]
             if m <= 16:
                 # One token tile: the schedules that read it once for several
                 # 16-row blocks of W (slices, warps, blocks).
