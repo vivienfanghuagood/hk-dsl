@@ -5,6 +5,7 @@
     python3 -m hk.integration ab --arms user    # end-to-end A/B in vLLM (hk.integration.ab)
     python3 -m hk.integration tune --model M    # measure M's linear routes (hk.integration.tune)
     python3 -m hk.integration headroom --model M  # where a step's time goes (hk.integration.headroom)
+    python3 -m hk.integration new-op NAME       # a new op on the rails (hk.integration.newop)
 
 `--warm` is the half of "no JIT on the serving path" that `hk.autotune --aot`
 does not cover. The two fill different cache entries: a torch registration is
@@ -57,6 +58,10 @@ def main(argv=None) -> int:
         from .headroom import main as headroom_main  # noqa: PLC0415
 
         return headroom_main(argv[1:])
+    if argv[:1] == ["new-op"]:
+        from .newop import main as newop_main  # noqa: PLC0415
+
+        return newop_main(argv[1:])
     ap = argparse.ArgumentParser(prog="python3 -m hk.integration",
                                  description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
