@@ -1,0 +1,59 @@
+name: GPU tier
+
+# The GPU tier (scripts/gpu_suite.sh) on two self-hosted runners on the MI355X
+# workstation (scripts/ci/, docs/testing.md#the-gpu-tier): gfx950 on one of its
+# idle MI355X, gfx1100 relayed to a W7900D of the dev pod. On pushes to main
+# and by hand only. Never add pull_request or pull_request_target: the
+# repository is public, and a fork's code must never reach these machines.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  # The job names are main's required checks; renaming one is a change to
+  # main's branch protection too.
+  gfx950:
+    runs-on: [self-hosted, hk-gpu, gfx950]
+    timeout-minutes: 120
+    # One run per arch and ref: a push waits for the run in progress, and
+    # replaces a push still waiting.
+    concurrency:
+      group: gpu-gfx950-${{ github.ref }}
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          persist-credentials: false
+      - name: GPU tier on an MI355X
+        run: scripts/ci/run_gfx950.sh
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: gfx950-report
+          path: gha-report/
+          if-no-files-found: ignore
+
+  gfx1100:
+    runs-on: [self-hosted, hk-gpu, gfx1100]
+    timeout-minutes: 180
+    concurrency:
+      group: gpu-gfx1100-${{ github.ref }}
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: GPU tier on a W7900D of the dev pod
+        run: scripts/ci/run_gfx1100.sh
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: gfx1100-report
+          path: gha-report/
+          if-no-files-found: ignore
