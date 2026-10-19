@@ -171,3 +171,13 @@ def test_kernels_iterates_the_rdna_kernels():
     and coverage walk it."""
     assert sorted(paged.KERNELS) == [64, 128]
     assert all(not k.name.endswith("_cdna") for k in paged.KERNELS.values())
+
+
+def test_the_vllm_backend_gives_hk_every_decode_on_gfx950(monkeypatch):
+    from hk import target
+    from hk.integration import vllm_backend
+
+    monkeypatch.setattr(target, "current_arch", lambda: "gfx950")
+    assert vllm_backend._triton_decode_max() == 0
+    monkeypatch.setattr(target, "current_arch", lambda: "gfx1100")
+    assert vllm_backend._triton_decode_max() == vllm_backend.TRITON_DECODE_MAX

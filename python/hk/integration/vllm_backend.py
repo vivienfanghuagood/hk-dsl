@@ -212,6 +212,18 @@ def decode(q, k_cache, v_cache, block_table, seq_lens, out, scratch,
 #: 0 turns it off, and hk's walk takes every batch.
 TRITON_DECODE_MAX = 8
 
+
+def _triton_decode_max() -> int:
+    """TRITON_DECODE_MAX, or 0 on gfx950, where hk's decode (hk.ops.paged_cdna)
+    takes every batch. Against Triton's kernel on this cache at one to eight
+    requests (tools/hk-bench/paged_cdna.py, an MI355X, caches cold): 0.81-0.91x
+    at 512 tokens and one to four requests, 0.99-1.18x at 1024, 1.14-1.99x
+    from 2048. A captured step cannot see the length, and the long contexts
+    are where the difference is."""
+    from ..target import current_arch  # noqa: PLC0415
+
+    return 0 if current_arch() == "gfx950" else TRITON_DECODE_MAX
+
 #: Up to this many requests Triton runs its 3-D kernel (16 KV segments and a
 #: reduction); above, its 2-D one. The 3-D kernel's per-segment buffers are
 #: sized for this many rows.
@@ -592,7 +604,7 @@ def _build():
             -- or, for up to TRITON_DECODE_MAX requests, Triton's kernel on
             the same cache. No copy, no sync, nothing allocated past the
             first call."""
-            if n <= TRITON_DECODE_MAX and triton_decode(
+            if n <= _triton_decode_max() and triton_decode(
                     query[:n], k_cache, v_cache,
                     attn_metadata.block_table[:n], attn_metadata.seq_lens[:n],
                     attn_metadata.query_start_loc[:n + 1], output[:n],
