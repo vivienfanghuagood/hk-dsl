@@ -36,9 +36,10 @@ accumulator cast into an operand, `lds_granules`), and the RDNA form of `hk.ops.
 (32x16 operand tiles, register staging). gfx950 runs neither RDNA form:
 `hk.ops.gemm.matmul` routes to hk's gfx950 GEMMs and `hk.attention` to `hk.ops.attn_cdna`,
 and the decode GEMV builds there since the shim gained fp32 register-LDS tile copies.
-On the MI355X (ROCm 7.2.3) the GPU tier is 658 passed, 127 skipped, 0 failed (from 615/170
-at `535be1c`, 350/190 at `3b6c6ce` and 471/216 at `be52996`): the skips are the kernels above,
-reported with their reason ([testing](../testing.md#running-each-tier)). `examples/validate.py`
+On the MI355X (ROCm 7.2.3) the GPU tier is 729 passed, 121 skipped, 0 failed at `6a97779`
+(from 658/127 at `35421a7`, 615/170 at `535be1c`, 350/190 at `3b6c6ce` and 471/216 at
+`be52996`): the skips are the kernels above, reported with their reason
+([testing](../testing.md#running-each-tier)). `examples/validate.py`
 passes every case on gfx950, attention included.
 
 ## Summary of the assessment (at `fdb87f1`)

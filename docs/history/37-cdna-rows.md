@@ -130,7 +130,11 @@ at 2048x5120.
 
 The host's ROCm 7.1 accepted binding a `const float&` to an LDS-address-space
 value; the image's 7.2.3 refused it. The codegen tier runs on the host, so
-only a GPU run in the image caught it.
+only a GPU run in the image caught it. The GPU tier on the first push
+(`95cd1d0`) caught one more: at a width no power of two above one divides
+(65, 1001 columns) a strip's run is one element, and the shim's byte runs
+had no one-byte form for quantize's int8 output. They have one now
+(`6a97779`).
 
 **An occupancy cap past the cache**, as gfx11's ([chapter 27](27-strips.md)).
 Tuned Triton's 8192x8192 picks carry a `waves_per_eu`. A strip kernel with
@@ -272,6 +276,10 @@ What the 33 losses are:
   at D 64/128/256 and in place, a zero rotation that is a copy.
   `test_strip.py` runs on gfx950 with its widths scaled by wave/32.
 - lit: `swap_halves` round-trips and is refused on a tile.
+
+The gfx950 GPU tier went from 658 passed and 127 skipped at `35421a7` to 729
+and 121 at `6a97779`, none failed; gfx1100's is 659 passed, its 61 new skips
+`test_cdna_rows.py`'s.
 
 RDNA output is unchanged. With `tools/cdna-probes/dump_sources.py`, which
 now hashes the strip and RoPE tables too, run on `origin/main` and on this
