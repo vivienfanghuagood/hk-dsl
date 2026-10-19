@@ -46,6 +46,11 @@ band -- the larger of 2% and the two arms' noise -- is a tie.
 
 `--arms` runs a subset; the performance gate (check_regression.py) runs the
 out-of-the-box arms only, because the tuned ones search on every run.
+
+`--cases PATH` (or $HK_SCOREBOARD_CASES) adds the rows a file of your own
+defines, `scoreboard_cases(tune)`, as a group named by its NAME (_cases.py);
+`python -m hk.integration new-op` writes such a file. With `--cases` and no
+`--only`, those groups are what runs.
 """
 
 from __future__ import annotations
@@ -66,6 +71,7 @@ import torch                                       # noqa: E402
 import torch.nn.functional as F                    # noqa: E402
 from torch.profiler import ProfilerActivity, profile  # noqa: E402
 
+import _cases                                      # noqa: E402
 import _rounds                                     # noqa: E402
 import hk                                          # noqa: E402
 import triton_ref                                  # noqa: E402
@@ -531,7 +537,12 @@ def _versions():
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    ap.add_argument("--only", default="gemm,attn,norm,softmax")
+    ap.add_argument("--only", default="",
+                    help="comma-separated groups (default gemm,attn,norm,softmax, or "
+                         "the --cases groups)")
+    ap.add_argument("--cases", default="",
+                    help="comma-separated .py files or directories defining "
+                         "scoreboard_cases(tune) (_cases.py)")
     ap.add_argument("--rounds", type=int, default=5)
     ap.add_argument("--calls", type=int, default=10)
     ap.add_argument("--tune", action="store_true",
@@ -551,6 +562,15 @@ def main() -> int:
     selected = set(args.arms.split(","))
     if not selected <= set(ARMS):
         ap.error(f"unknown arms {sorted(selected - set(ARMS))}; arms are {ARMS}")
+    extra = _cases.load(_cases.paths(args.cases))
+    clash = sorted(set(extra) & set(CASES))
+    if clash:
+        ap.error(f"--cases groups {clash} are the scoreboard's own; rename them (NAME)")
+    CASES.update(extra)
+    args.only = args.only or (",".join(extra) if extra else "gemm,attn,norm,softmax")
+    unknown = [g for g in args.only.split(",") if g not in CASES]
+    if unknown:
+        ap.error(f"unknown groups {unknown}; have {sorted(CASES)}")
     meta = _versions()
     print(f"{meta['device']} {meta['arch']}, torch {meta['torch']}, triton "
           f"{meta['triton']}, flydsl {meta['flydsl']}, hk {meta['hk']}")
