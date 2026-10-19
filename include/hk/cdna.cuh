@@ -777,7 +777,9 @@ __device__ void hk_buf_ld_lds(hk_i32x4 rsrc, hk_lds_ptr lds, int size, int voffs
  * count hk-lds-pipeline derives, and a barrier after it makes every warp's
  * share visible; nothing here waits. `limit` ends the descriptor that many
  * rows from the tile's first as well: a copy with limit 0 fills the tile with
- * zeros, and moves none of its addressing.
+ * zeros, and moves none of its addressing. `NT` copies with sc0 nt, past the
+ * caches' keeping: for data read once, in runs of whole lines (a tile laid
+ * out in half-line runs had each line fetched twice).
  */
 namespace detail {
 /**
@@ -821,7 +823,7 @@ __device__ inline hk_i32x4 hk_copy_srsrc(const strided_gl<U> &src, int b, int d,
 }
 }  // namespace detail
 
-template<int NW, ducks::st::all ST, typename U, ducks::coord::tile COORD>
+template<int NW, bool NT = false, ducks::st::all ST, typename U, ducks::coord::tile COORD>
 __device__ inline static void group_load_async_rows(ST &dst, const strided_gl<U> &src, const COORD &idx,
                                                     int limit) {
     using T = typename ST::dtype;
@@ -853,18 +855,18 @@ __device__ inline static void group_load_async_rows(ST &dst, const strided_gl<U>
         const int col = (int(sw) % ST::underlying_subtile_row_bytes) / int(sizeof(T)) +
                         (sub % ST::underlying_subtiles_per_row) * ST::underlying_subtile_cols;
         detail::hk_buf_ld_lds(r, (detail::hk_lds_ptr)(uintptr_t)(lds + i * PER_CALL), 16,
-                              (row * rs + col) * int(sizeof(T)), 0, 0, 0);
+                              (row * rs + col) * int(sizeof(T)), 0, 0, NT ? 3 : 0);
     }
 }
 
-template<int NW, ducks::st::all ST, typename U, ducks::coord::tile COORD>
+template<int NW, bool NT = false, ducks::st::all ST, typename U, ducks::coord::tile COORD>
 __device__ inline static void group_load_async(ST &dst, const strided_gl<U> &src, const COORD &idx) {
-    group_load_async_rows<NW>(dst, src, idx, 0x7FFFFFFF);
+    group_load_async_rows<NW, NT>(dst, src, idx, 0x7FFFFFFF);
 }
-template<int NW, ducks::st::all ST, typename U, ducks::coord::tile COORD>
+template<int NW, bool NT = false, ducks::st::all ST, typename U, ducks::coord::tile COORD>
 __device__ inline static void group_load_async(ST &dst, const strided_gl<U> &src, const COORD &idx,
                                                int limit) {
-    group_load_async_rows<NW>(dst, src, idx, limit);
+    group_load_async_rows<NW, NT>(dst, src, idx, limit);
 }
 
 /*
@@ -1144,6 +1146,44 @@ __device__ inline static void as_operand(rt<T, R, C, ducks::rt_layout::col, duck
                     dst.tiles[i][j].data[k * per + p] = detail::hk_as_elem<typename D::dtype>(
                         src.tiles[2 * i + k][j].data[p]);
 }
+
+/**
+ * @brief A column reduction of a col-layout fp32 tile in 16-column base
+ * tiles (16x16 accumulators): a column's four lanes l, l+16, l+32, l+48
+ * combined by v_permlane32_swap and v_permlane16_swap, every lane left with
+ * its column's answer. include/cdna4 swaps lanes only for 32-column tiles
+ * and shuffles a 16-column one through LDS -- three ds_bpermute, each waited
+ * for with lgkmcnt(0), which also waits out the LDS reads in flight (the
+ * paged decode's softmax: two of them a page). More constrained than the
+ * library's, so such a tile picks it.
+ */
+template<typename op, ducks::rv::all V, ducks::rt::col_layout T, bool reset>
+    requires (T::base_tile_cols == 16 && std::is_same_v<typename V::dtype, float>)
+__device__ static inline void col_reduce(V &col_accum, const T &src, const V &src_accum) {
+    static_assert(V::outer_dim == T::width, "compatible size");
+    static_assert(T::base_tile_threads_per_reduction == 4, "four lanes a column");
+    #pragma unroll
+    for (int j = 0; j < src.width; j++) {
+        float2 acc = src.tiles[0][j].data[0];
+        #pragma unroll
+        for (int k = 1; k < src.packed_per_base_tile; k++)
+            acc = op::template op<float2>(acc, src.tiles[0][j].data[k]);
+        #pragma unroll
+        for (int i = 1; i < src.height; i++)
+            #pragma unroll
+            for (int k = 0; k < src.packed_per_base_tile; k++)
+                acc = op::template op<float2>(acc, src.tiles[i][j].data[k]);
+        float x = op::template op<float>(acc.x, acc.y);
+        const auto h = __builtin_amdgcn_permlane32_swap(__float_as_uint(x), __float_as_uint(x),
+                                                        false, true);
+        x = op::template op<float>(__uint_as_float(h[0]), __uint_as_float(h[1]));
+        const auto q = __builtin_amdgcn_permlane16_swap(__float_as_uint(x), __float_as_uint(x),
+                                                        false, true);
+        x = op::template op<float>(__uint_as_float(q[0]), __uint_as_float(q[1]));
+        col_accum[j][0] = reset ? x : op::template op<float>(src_accum[j][0], x);
+    }
+}
+
 #endif
 
 #if defined(KITTENS_CDNA3)
@@ -1249,6 +1289,23 @@ __device__ inline static int load_scalar(const GL &src, const COORD &idx) {
     using U = typename GL::dtype;
     const U *p = (const U *)&src[(idx.template unit_coord<-1, 3>())];
     return __builtin_amdgcn_readfirstlane((int)(*p));
+}
+
+/**
+ * @brief load_scalar of an element the kernel never writes: a load from the
+ * constant address space at a uniform address, which is an s_load_dword
+ * through the scalar cache. A global load's wait counts vmcnt, in one queue
+ * with the DMA copies: a page index read beside them waited out every copy
+ * issued before it (the paged decode's ring: one page in flight however
+ * deep the ring).
+ */
+template<ducks::gl::all GL, typename COORD=coord<>>
+__device__ inline static int load_scalar_invariant(const GL &src, const COORD &idx) {
+    using U = typename GL::dtype;
+    static_assert(sizeof(U) == 4, "a 32-bit element");
+    const U *p = (const U *)&src[(idx.template unit_coord<-1, 3>())];
+    typedef const __attribute__((address_space(4))) int *hk_const_i32;
+    return __builtin_amdgcn_readfirstlane(*(hk_const_i32)(uintptr_t)p);
 }
 
 /**

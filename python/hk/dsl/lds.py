@@ -13,16 +13,41 @@ from .values import SharedTile, SharedVec, Tile, lds_loads
 __all__ = ["alloc", "alloc_vec", "shared_vec", "reserve", "wait_for", "lds_loads"]
 
 
+#: Layouts an allocation may name (gfx950): include/cdna4's st_shapes that
+#: also serve a read of the fragment that would otherwise pick another.
+SHAPES = ("16x64", "32x32")
+
+
 def alloc(tile: SharedTileType, name: str = "smem",
-          count: Optional[int] = None) -> SharedTile:
+          count: Optional[int] = None, *, shape: Optional[str] = None) -> SharedTile:
     """Reserve an LDS tile, or `count` of them in one size-aligned block (the
     two buffers of a pair must differ in one address bit for the XOR swap).
-    Offsets and the 64 KB check come from the hk-lds-alloc pass."""
+    Offsets and the 64 KB check come from the hk-lds-alloc pass.
+
+    `shape` (gfx950) lays the allocation out as include/cdna4's st_<shape>
+    rather than the layout its reads' fragment picks: "16x64" for tiles read
+    as 16x32 row operands, "32x32" for 32x16 stride-4 col ones. A DMA copy
+    into it reads each row in 128- or 64-byte runs instead of 64 or 32 (the
+    paged decode's copies: 6.15 to 6.9 TB/s with `nontemporal`), and its
+    reads may conflict on banks more; a read of another fragment is
+    refused."""
     if count is not None:
         tile = SharedTileType(tile.dtype, tile.rows, tile.cols, count)
     t = B.current()
-    return SharedTile(hkd.AllocSharedOp(mlir_type(tile), loc=t.loc(name)).result,
-                      tile)
+    if shape is not None:
+        from ..target import get_target  # noqa: PLC0415
+
+        if shape not in SHAPES:
+            raise TypeError(f"lds.alloc(shape={shape!r}): one of {SHAPES}")
+        if get_target(t.arch).arch != "gfx950":
+            raise TypeError(f"lds.alloc(shape=...) names an include/cdna4 st_shape; "
+                            f"{t.arch} has none")
+    op = hkd.AllocSharedOp(mlir_type(tile), loc=t.loc(name))
+    if shape is not None:
+        from .._mlir import ir  # noqa: PLC0415
+
+        op.attributes["shape"] = ir.StringAttr.get(f"st_{shape}")
+    return SharedTile(op.result, tile)
 
 
 def shared_vec(vt: RegVecType, count: int = 1) -> SharedVecType:

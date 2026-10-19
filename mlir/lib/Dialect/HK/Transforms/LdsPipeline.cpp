@@ -211,7 +211,8 @@ bool live(const std::optional<Scope> &issued, const Scope &scope) {
 ///   gfx950, per fragment: 16x16 row, one ds_read_b64; 16x32 row, one
 ///   ds_read_b128; 16x16 col, one ds_read_b64_tr_b16; 32x16 col, two;
 ///   32x16 row (from st_32x32), one ds_read_b128; 16x32 stride-4 col (from
-///   st_8x32), two ds_read_b64_tr_b16 (include/cdna4
+///   st_8x32), two ds_read_b64_tr_b16; 32x16 stride-4 col (from st_32x16),
+///   one ds_read_b64_tr_b16 a run, two (include/cdna4
 ///   tile/shared_to_register.cuh);
 ///   gfx942: one ds_read_b64 per 16x16 of a row-layout tile; a col-layout
 ///   tile is read with ordinary loads the compiler waits for itself.
@@ -229,6 +230,8 @@ int64_t cdnaLdsReads(const TargetInfo &t, RegTileType rt, SharedTileType st) {
     return col ? 0 : frags;
   if (rt.getFragStride()) {
     if (col && fr == 16 && fc == 32 && rt.getFragStride() == 4)
+      return 2 * frags;
+    if (col && fr == 32 && fc == 16 && rt.getFragStride() == 4)
       return 2 * frags;
     return -1;
   }

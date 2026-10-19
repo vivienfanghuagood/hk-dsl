@@ -328,6 +328,8 @@ LogicalResult GroupLoadOp::verify() {
   if (getRows() && !getAsync())
     return emitOpError("rows: a row limit is the async copy's, whose "
                        "descriptor it narrows");
+  if (getNontemporal() && !getAsync())
+    return emitOpError("nontemporal: the cache policy is the async copy's");
   return success();
 }
 

@@ -50,7 +50,7 @@ class Group:
             raise TypeError(f"{what} is {dst.ty}, a stack; index it: As[tic]")
 
     def load(self, dst: SharedTile, src: View, *, wait: bool = True,
-             rows=None) -> None:
+             rows=None, nontemporal: bool = False) -> None:
         """Global -> LDS by the whole group, issued and waited.
 
         `wait=False` (gfx950) issues the DMA, buffer_load ... lds, and returns
@@ -59,12 +59,19 @@ class Group:
         one buffer of a stack picked by a Python int, so hk-lds-pipeline can
         check every read of it and every later copy into it. `rows` (with
         wait=False) ends the copy that many rows from the tile's first, as
-        the tensor's last row does: rows past it read zero."""
+        the tensor's last row does: rows past it read zero. `nontemporal`
+        (with wait=False) reads past the caches' keeping, sc0 nt, for data
+        read once -- in runs of a whole line it streams faster; in the
+        half-line runs of a 16x32 tile it fetched lines twice (4.8 against
+        6.15 TB/s in the paged decode)."""
         self._one(dst, "group load destination")
         t = B.current()
         if rows is not None and wait:
             raise TypeError("g.load(rows=...) narrows the asynchronous copy's "
                             "descriptor; pass wait=False")
+        if nontemporal and wait:
+            raise TypeError("g.load(nontemporal=True) is the asynchronous "
+                            "copy's cache policy; pass wait=False")
         if not wait:
             tgt = get_target(t.arch)
             if not tgt.has_global_to_lds_dma or tgt.arch != "gfx950":
@@ -79,7 +86,8 @@ class Group:
                     "of a stack.")
         hkd.GroupLoadOp(dst.v, src.tensor.v, src.idx.v, self.threads,
                         rows=None if rows is None else as_int(rows).v,
-                        async_=not wait, loc=t.loc())
+                        async_=not wait, nontemporal=bool(nontemporal),
+                        loc=t.loc())
 
     def wait_for(self, *tiles: SharedTile) -> None:
         """`s_waitcnt vmcnt(n)`: this warp's share of the asynchronous copies

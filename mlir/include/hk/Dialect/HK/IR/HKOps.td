@@ -153,7 +153,14 @@ def HK_StoreScalarOp : HK_Op<"store_scalar"> {
 
 def HK_LoadScalarOp : HK_Op<"load_scalar"> {
   let summary = "one int32 element of a global -> a wave-uniform scalar";
-  let arguments = (ins HK_GlobalType:$src, HK_CoordType:$idx);
+  let description = [{
+    `invariant`: the kernel never writes the element, so on a wave64 target
+    it is read through the scalar cache (s_load_dword, on lgkmcnt) rather
+    than by a vector load, whose wait is in vmcnt's queue behind every copy
+    issued before it.
+  }];
+  let arguments = (ins HK_GlobalType:$src, HK_CoordType:$idx,
+                       UnitAttr:$invariant);
   let results = (outs I32:$result);
   let assemblyFormat = "$src `[` $idx `]` attr-dict `:` qualified(type($src)) `,` qualified(type($idx))";
   let hasVerifier = 1;
@@ -270,8 +277,16 @@ def HK_LoadW4Op : HK_Op<"load_w4"> {
 
 def HK_AllocSharedOp : HK_Op<"alloc_shared"> {
   let summary = "reserve an LDS tile, or `count` of them contiguously";
+  let description = [{
+    `shape` (gfx950) names the st_shape the allocation is laid out in, where
+    the translator would otherwise take the one its reads' fragment wants:
+    a layout the reads also support whose rows a DMA copy reads in longer
+    runs (st_16x64 for a 16x32 row operand, st_32x32 for a 32x16 stride-4
+    col operand).
+  }];
   let arguments = (ins OptionalAttr<I64Attr>:$offset,
-                       OptionalAttr<I64Attr>:$nbytes);
+                       OptionalAttr<I64Attr>:$nbytes,
+                       OptionalAttr<StrAttr>:$shape);
   let results = (outs HK_SharedTileType:$result);
   let assemblyFormat = "attr-dict `:` qualified(type($result))";
 }
@@ -431,10 +446,13 @@ def HK_GroupLoadOp : HK_Op<"group_load"> {
     constant, so the pass can tell which tile a read or a later copy touches.
     `rows` (async only) ends the copy that many rows from the tile's first:
     rows past it read zero, as past the tensor's last row.
+    `nontemporal` (async only): the copy reads past the caches' keeping
+    (sc0 nt), for data read once.
   }];
   let arguments = (ins HK_SharedTileType:$dst, HK_GlobalType:$src,
                        HK_CoordType:$idx, Optional<I32>:$rows,
-                       I64Attr:$threads, UnitAttr:$async);
+                       I64Attr:$threads, UnitAttr:$async,
+                       UnitAttr:$nontemporal);
   let assemblyFormat = [{
     $src `[` $idx `]` (`rows` $rows^)? `into` $dst attr-dict `:` qualified(type($src)) `,`
     qualified(type($idx)) `into` qualified(type($dst))

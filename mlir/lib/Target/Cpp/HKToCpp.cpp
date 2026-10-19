@@ -275,9 +275,30 @@ private:
   /// Allocations of one type that want different shapes (attention's K and
   /// V) are spelled apart: their type is `conflicted`, and the allocation
   /// and its buffers are declared with their own shape.
+  /// Whether include/cdna4 reads fragment `dt` out of an allocation laid
+  /// out as `shape`: its own, or one of the layouts its reads also take
+  /// (tile/shared_to_register.cuh's generic paths).
+  static bool readsFrom(RegTileType dt, StringRef shape) {
+    std::string own = sharedShapeFor(dt);
+    if (shape == own)
+      return true;
+    unsigned r = dt.getFragRows(), c = dt.getFragCols(), s = dt.fragS();
+    if (!dt.getColLayout() && r == 16 && c == 32 && s == 8)
+      return shape == "st_16x64";
+    if (dt.getColLayout() && r == 32 && c == 16 && s == 4)
+      return shape == "st_32x32";
+    return false;
+  }
+
   void findSharedShapes() {
     if (!sharedTilesHaveShape())
       return;
+    // An allocation that names its layout keeps it; its reads are held to
+    // fragments that layout serves.
+    kernel.walk([&](AllocSharedOp a) {
+      if (auto s = a.getShapeAttr())
+        allocShape.insert({a.getResult(), s.getValue().str()});
+    });
     std::map<Operation *, Operation *> by;
     kernel.walk([&](LoadSharedOp l) {
       auto dt = cast<RegTileType>(l.getDst() ? l.getDst().getType()
@@ -285,6 +306,16 @@ private:
       if (!dt.hasFrag())
         return;
       Value root = sharedRoot(l.getSrc());
+      if (auto a = root.getDefiningOp<AllocSharedOp>(); a && a.getShapeAttr()) {
+        if (!readsFrom(dt, a.getShapeAttr().getValue())) {
+          l.emitError() << "this read's fragment is not one an LDS tile laid "
+                           "out as "
+                        << a.getShapeAttr().getValue()
+                        << " serves; it wants " << sharedShapeFor(dt);
+          bad = true;
+        }
+        return;
+      }
       std::string shape = sharedShapeFor(dt);
       auto [it, fresh] = allocShape.insert({root, shape});
       if (!fresh && it->second != shape) {
@@ -958,7 +989,12 @@ private:
             name(o.getValue()) + ", " + name(o.getIdx()) + ");");
         })
         .Case([&](LoadScalarOp o) {
-          w("const int " + name(o.getResult()) + " = kittens::load_scalar(" +
+          // include/rdna3 has one load_scalar; the scalar-cache read is
+          // hk's shim's, on wave64 targets.
+          std::string fn = o.getInvariant() && tgt->wave == 64
+                               ? "load_scalar_invariant"
+                               : "load_scalar";
+          w("const int " + name(o.getResult()) + " = kittens::" + fn + "(" +
             name(o.getSrc()) + ", " + name(o.getIdx()) + ");");
         })
         .Case([&](WgArriveOp o) {
@@ -1149,7 +1185,8 @@ private:
             // hk/cdna.cuh: gfx950's DMA, left in flight on vmcnt until the
             // hk.group_wait_for hk-lds-pipeline counted.
             w("kittens::group_load_async<" +
-              std::to_string(o.getThreads() / tgt->wave) + ">(" +
+              std::to_string(o.getThreads() / tgt->wave) +
+              (o.getNontemporal() ? ", true" : "") + ">(" +
               name(o.getDst()) + ", " + name(o.getSrc()) + ", " +
               coordArg(o.getIdx(), tileCpp(o.getDst().getType())) +
               (o.getRows() ? ", " + name(o.getRows()) : std::string()) + ");");

@@ -498,8 +498,13 @@ class View:
             hkd.StoreRowsOp(self.tensor.v, value.v, self.idx.v,
                             as_int(bounded).v, loc=t.loc())
 
-    def load_scalar(self) -> Int:
-        """One int32 element -> a wave-uniform scalar (a page index, a length)."""
+    def load_scalar(self, *, invariant: bool = False) -> Int:
+        """One int32 element -> a wave-uniform scalar (a page index, a length).
+
+        `invariant`: nothing writes the element while the kernel runs (a page
+        table, the sequence lengths), so on gfx950 it is a scalar load
+        (s_load_dword), counted on lgkmcnt -- not a vector load whose wait
+        also waits out every copy issued before it."""
         if self.idx.unit != "element":
             raise TypeError(
                 f"load_scalar takes an element coordinate, got coord<"
@@ -514,6 +519,7 @@ class View:
                 f"of memory is a load into a vector.")
         t = _t()
         return Int(hkd.LoadScalarOp(_i32(), self.tensor.v, self.idx.v,
+                                    invariant=bool(invariant),
                                     loc=t.loc("scalar")).result, ScalarType(i32))
 
     def store_scalar(self, vec: "Vec") -> None:
