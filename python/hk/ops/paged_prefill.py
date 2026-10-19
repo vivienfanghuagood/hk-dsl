@@ -205,7 +205,20 @@ def paged_prefill_kernel(name: str, *, head_dim: int = 128, group: int = 4,
 _KERNELS: Dict[tuple, object] = {}
 
 
+def _native_cdna() -> bool:
+    """Whether calls go to gfx950's own prefill, hk.ops.attn_cdna's schedule
+    over the paged cache: this kernel's tiles are RDNA's (16-wide WMMA
+    operands, LDS granules)."""
+    from ..target import current_arch  # noqa: PLC0415
+
+    return current_arch() == "gfx950"
+
+
 def kernel_for(head_dim: int, group: int, scale: Optional[float] = None):
+    if _native_cdna():
+        from . import attn_cdna  # noqa: PLC0415
+
+        return attn_cdna.paged_kernel_for(head_dim, scale)
     key = (head_dim, group, None if scale is None or scale == head_dim ** -0.5
            else float(scale))
     k = _KERNELS.get(key)
@@ -225,6 +238,14 @@ def work_list(q_lens, device):
     Q_TILE rows of each, ints on the host, one int32 copy to the device."""
     import torch  # noqa: PLC0415
 
+    if _native_cdna():
+        # gfx950's tile, and a request's tiles last first: causal, the last
+        # reads the most of the cache, so the longest start first.
+        from .attn_cdna import Q_TILE as tile  # noqa: PLC0415
+
+        rows = [(r, t) for r, n in q_lens for t in reversed(range(-(-n // tile)))]
+        return torch.tensor(rows or [(0, 0)], dtype=torch.int32).to(
+            device, non_blocking=True)
     rows = [(r, t) for r, n in q_lens for t in range(-(-n // Q_TILE))]
     return torch.tensor(rows or [(0, 0)], dtype=torch.int32).to(
         device, non_blocking=True)

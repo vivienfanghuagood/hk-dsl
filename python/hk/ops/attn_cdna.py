@@ -58,7 +58,7 @@ import math
 from typing import Any, Dict, Optional
 
 from .. import dsl as hk
-from ..types import bf16, fp32
+from ..types import bf16, fp32, i32
 
 NEG_INF = float("-inf")
 
@@ -67,6 +67,8 @@ Q_ROWS, WARPS = 32, 8
 Q_TILE = Q_ROWS * WARPS
 #: The KV block.
 KV_BLOCK = 64
+#: The paged cache's page (hk.ops.paged.KV_BLOCK): two to a KV block.
+PAGE = 32
 #: Head dims with a schedule.
 HEAD_DIMS = (64, 128)
 
@@ -89,7 +91,7 @@ def _pairs(n_mma: int, groups, sync_id: int) -> None:
 def attn_kernel(name: str, *, head_dim: int = 128, causal: bool = False,
                 scale: Optional[float] = None, setprio: bool = True,
                 lazy: float = 8.0, sched: bool = True, lpt: bool = True,
-                skip: bool = True, _nomask: bool = False,
+                skip: bool = True, _nomask: bool = False, paged: bool = False,
                 arch: Optional[str] = None):
     """`lazy`: the running max is taken as stale until a block's max exceeds
     it by more than this (log2 units), so P stays below 2^lazy and O is
@@ -102,6 +104,15 @@ def attn_kernel(name: str, *, head_dim: int = 128, causal: bool = False,
     `skip` drops, under `causal`, the last two steps' math for the warps
     whose queries they are wholly past. `_nomask` (wrong answers) is for
     timing what the masks cost.
+
+    `paged` is the same schedule over a paged KV cache, for chunked prefill
+    and prefix caching (hk.ops.paged_prefill's contract): q and o are the
+    engine's (tokens, heads * D) rows, K and V (blocks, kv heads, PAGE, D)
+    pages through `block_table`, and a workgroup is one entry of the
+    (request, query tile) work list `tiles`; a request's new tokens are the
+    last q_len of its sequence, causal from the cached prefix on. A 64-row
+    KV block is two pages, each its own copy and LDS buffer, read into the
+    two 32-row halves of the block's registers.
     """
     D = head_dim
     if D not in HEAD_DIMS:
@@ -112,35 +123,54 @@ def attn_kernel(name: str, *, head_dim: int = 128, causal: bool = False,
     # (D x 64) . (64 x 32); both are 2 * D / 16.
     n_mma = 2 * D // 16
 
+    if paged and not causal:
+        raise ValueError("the paged prefill is causal")
     T_Q32 = hk.RT(fp32, Q_ROWS, D, "row")      # this warp's Q, scaled in fp32
-    T_K = hk.RT(bf16, KV_BLOCK, D, "row")      # a K block, [kv, d]
-    T_V = hk.RT(bf16, KV_BLOCK, D, "col")      # a V block, [kv, d]
+    # A K or V block in registers, [kv, d]; paged, two pages of it.
+    kv_rows = PAGE if paged else KV_BLOCK
+    T_K = hk.RT(bf16, kv_rows, D, "row")
+    T_V = hk.RT(bf16, kv_rows, D, "col")
     T_S = hk.RT(fp32, KV_BLOCK, Q_ROWS, "col", frag=(32, 32))     # Sᵀ, [kv, q]
     T_P = hk.RT(bf16, KV_BLOCK, Q_ROWS, "col", frag=(16, 32, 4))  # Pᵀ as an operand
     T_O = hk.RT(fp32, D, Q_ROWS, "col", frag=(32, 32))            # Oᵀ, [d, q]
     T_VEC = hk.row_vec(T_S)                    # one value per query
-    ST = hk.ST(bf16, KV_BLOCK, D)
+    ST = hk.ST(bf16, kv_rows, D)
+    # Buffers a block takes in LDS: one, or its pages.
+    nbuf = KV_BLOCK // kv_rows
 
-    def body(q: hk.Tensor[bf16], k: hk.Tensor[bf16], v: hk.Tensor[bf16],
-             o: hk.Tensor[bf16]):
+    def walk(q, k, v, o, block_table, seq_lens, q_start, tiles):
         g = hk.group(WARPS)
-        Ks = hk.lds.alloc(ST, count=2, name="Ks")
-        Vs = hk.lds.alloc(ST, count=2, name="Vs")
+        Ks = hk.lds.alloc(ST, count=2 * nbuf, name="Ks")
+        Vs = hk.lds.alloc(ST, count=2 * nbuf, name="Vs")
 
-        n_q, n_kv = q.rows, k.rows
-        b = hk.arch.block_idx.z
+        if not paged:
+            n_q, n_kv = q.rows, k.rows
+            b = hk.arch.block_idx.z
         x = hk.arch.block_idx.x
         # GQA: workgroup x of a query block takes KV head x % H_KV, so
         # consecutive workgroups -- dealt round robin to the XCDs -- read
         # different KV heads, and the query heads that share one KV head land
         # on one XCD and share its L2 (HipKittens' numbering).
         h_kv = k.depth
-        group = q.depth // h_kv
+        group = (q.cols // D if paged else q.depth) // h_kv
         head_kv = x % h_kv
         head = head_kv * group + x // h_kv
-        qb = hk.arch.block_idx.y
-        if causal and lpt:
-            qb = hk.cdiv(n_q, Q_TILE) - 1 - qb
+        if paged:
+            # A work list entry: the request and its query tile. Query i of
+            # the request's new tokens sits at position ctx + i.
+            t_ = hk.arch.block_idx.y
+            req = tiles[hk.elem_coord(0, 0, t_, 0)].load_scalar(invariant=True)
+            qb = tiles[hk.elem_coord(0, 0, t_, 1)].load_scalar(invariant=True)
+            tok0 = q_start[hk.elem_coord(0, 0, 0, req)].load_scalar(invariant=True)
+            n_q = q_start[hk.elem_coord(0, 0, 0, req + 1)].load_scalar(invariant=True) - tok0
+            seq_len = seq_lens[hk.elem_coord(0, 0, 0, req)].load_scalar(invariant=True)
+            ctx = seq_len - n_q
+            last_col = block_table.cols - 1
+        else:
+            qb = hk.arch.block_idx.y
+            if causal and lpt:
+                qb = hk.cdiv(n_q, Q_TILE) - 1 - qb
+            ctx = 0
         q0 = qb * Q_TILE
         wid = hk.arch.warp_id()
         q_row = q0 + wid * Q_ROWS
@@ -150,20 +180,49 @@ def attn_kernel(name: str, *, head_dim: int = 128, causal: bool = False,
         # four (the blocks past N_kv are masked), so the loop below runs at
         # least once and the compiler can see it: with a path around the
         # loop, values for the epilogue were held across it, and spilled.
-        n_blk = hk.cdiv(n_kv, KV_BLOCK)
-        if causal:
-            n_blk = hk.min(n_blk, hk.cdiv(hk.min(q0 + Q_TILE, n_q), KV_BLOCK))
+        if paged:
+            # Blocks past the sequence copy nothing and are past every query.
+            n_blk = hk.cdiv(ctx + hk.min(q0 + Q_TILE, n_q), KV_BLOCK)
+        else:
+            n_blk = hk.cdiv(n_kv, KV_BLOCK)
+            if causal:
+                n_blk = hk.min(n_blk, hk.cdiv(hk.min(q0 + Q_TILE, n_q), KV_BLOCK))
         n_iter = hk.max(hk.cdiv(n_blk, 2) - 1, 1)
         n_blk = 2 * n_iter + 2
 
+        # A page is 64 D bytes, a warp's copy 1 KB: at D = 64 half the
+        # warps cover it, and the other half copies the same bytes again
+        # (identical LDS writes; the second read is the L2's).
+        gp = hk.group(min(WARPS, PAGE * D * 2 // 1024)) if paged else g
+
+        def copy_pages(dst, src, t, par):
+            # A page past the sequence is copied with no rows -- zeros, and
+            # no address followed: the table's unused columns hold anything.
+            for p in range(nbuf):
+                pos = t * nbuf + p
+                page = block_table[hk.elem_coord(
+                    0, 0, req, hk.min(pos, last_col))].load_scalar(invariant=True)
+                rows = hk.min(hk.max(seq_len - pos * PAGE, 0), PAGE)
+                gp.load(dst[par * nbuf + p], src[hk.elem_coord(page, head_kv, 0, 0)],
+                        wait=False, rows=rows)
+
         def copy_k(t, par):
+            if paged:
+                copy_pages(Ks, k, t, par)
+                return
             g.load(Ks[par], k[hk.elem_coord(b, head_kv, t * KV_BLOCK, 0)], wait=False)
 
         def copy_v(t, par):
+            if paged:
+                copy_pages(Vs, v, t, par)
+                return
             g.load(Vs[par], v[hk.elem_coord(b, head_kv, t * KV_BLOCK, 0)], wait=False)
 
-        kr = hk.zeros(T_K)
-        vr = hk.zeros(T_V)
+        def bufs(st, par):
+            return [st[par * nbuf + p] for p in range(nbuf)]
+
+        krs = [hk.zeros(T_K) for _ in range(nbuf)]
+        vrs = [hk.zeros(T_V) for _ in range(nbuf)]
         # Two blocks of scores in flight, each one tile -- one reduction and
         # one conversion over 64 rows -- whose 32-row halves (subtiles, the
         # same registers) take their exp2 in different phases.
@@ -179,24 +238,33 @@ def attn_kernel(name: str, *, head_dim: int = 128, causal: bool = False,
         ell = hk.zeros(T_VEC)
 
         def read_k(par, wait=True):
-            Ks[par].load(T_K, wait=False, into=kr)
+            for p in range(nbuf):
+                Ks[par * nbuf + p].load(T_K, wait=False, into=krs[p])
             if wait:
-                hk.lds.wait_for(kr)
+                hk.lds.wait_for(*krs)
 
         def read_v(par, wait=True):
-            Vs[par].load(T_V, wait=False, into=vr)
+            for p in range(nbuf):
+                Vs[par * nbuf + p].load(T_V, wait=False, into=vrs[p])
             if wait:
-                hk.lds.wait_for(vr)
+                hk.lds.wait_for(*vrs)
 
         def qk(bb):
             S[bb].zero_()
-            S[bb] += kr @ qb_.T
+            if nbuf == 1:
+                S[bb] += krs[0] @ qb_.T
+            else:
+                for p in range(nbuf):
+                    Sp = S[bb].subtile(kv_rows, p)
+                    Sp += krs[p] @ qb_.T
 
         def mask(t, bb):
             # Sᵀ rows are KV positions and columns queries, so the causal
             # mask (kv > q) is triu and the KV tail rows a lower fill. Each
             # behind a wave-uniform branch: most blocks need neither.
             kv0 = t * KV_BLOCK
+            if paged:
+                kv0 = kv0 - ctx
             if causal and not _nomask:
                 # One branch, one path: a block that reaches past any of
                 # this warp's queries takes the element-wise triu whole,
@@ -250,7 +318,11 @@ def attn_kernel(name: str, *, head_dim: int = 128, causal: bool = False,
             hk.arch.pin(P_op)
 
         def pv():
-            O.__iadd__(vr.T @ P_op)
+            if nbuf == 1:
+                O.__iadd__(vrs[0].T @ P_op)
+            else:
+                for p in range(nbuf):
+                    O.__iadd__(vrs[p].T @ P_op.subtile(kv_rows, p))
 
         def rescale(grow):
             if grow > 0:
@@ -301,16 +373,22 @@ def attn_kernel(name: str, *, head_dim: int = 128, causal: bool = False,
         # ---- prologue ----------------------------------------------------
         # Q and the first three blocks in flight together: one trip to
         # memory before the first MFMA rather than three in a row.
-        qf = q[hk.elem_coord(b, head, q_row, 0)].load(T_Q32, bounded=True)
+        if paged:
+            # Rows past the request's are another request's tokens: read as
+            # zero, never stored.
+            left = hk.max(n_q - q_row, 0)
+            qf = q[hk.elem_coord(0, 0, tok0 + q_row, head * D)].load(T_Q32, bounded=left)
+        else:
+            qf = q[hk.elem_coord(b, head, q_row, 0)].load(T_Q32, bounded=True)
         copy_k(0, 0)
         copy_k(1, 1)
         copy_v(0, 0)
         qf *= scale_l2e
         qb_ = qf.to(bf16)
-        g.wait_for(Ks[0])
+        g.wait_for(*bufs(Ks, 0))
         hk.arch.barrier()
         read_k(0)
-        g.wait_for(Ks[1])
+        g.wait_for(*bufs(Ks, 1))
         end_phase()
         qk(0)
         mask(0, 0)
@@ -323,7 +401,7 @@ def attn_kernel(name: str, *, head_dim: int = 128, causal: bool = False,
             read_k(1)
             copy_k(2, 0)
             copy_v(1, 1)
-            g.wait_for(Vs[0])
+            g.wait_for(*bufs(Vs, 0))
             end_phase()
 
             # ---- two steps an iteration: t = 2i (buffers 0/1), t + 1 ------
@@ -337,15 +415,15 @@ def attn_kernel(name: str, *, head_dim: int = 128, causal: bool = False,
                     # next math phase waits on.
                     read_v(b0, wait=False)
                     copy_k(ts + 3, b1)
-                    hk.lds.wait_for(vr)
+                    hk.lds.wait_for(*vrs)
                     mask(ts + 1, b1)
-                    g.wait_for(Ks[b0])
+                    g.wait_for(*bufs(Ks, b0))
                     end_phase()
                     grow = math_pv(b1)
                     read_k(b0, wait=False)
                     copy_v(ts + 2, b0)
-                    hk.lds.wait_for(kr)
-                    g.wait_for(Vs[b1])
+                    hk.lds.wait_for(*krs)
+                    g.wait_for(*bufs(Vs, b1))
                     end_phase()
 
             # ---- the last two steps: nothing left to copy ----------------
@@ -355,7 +433,7 @@ def attn_kernel(name: str, *, head_dim: int = 128, causal: bool = False,
                 math_qk(u + 1, 1, 0, grow)
                 read_v(0)
                 mask(u + 1, 1)
-                g.wait_for(Vs[1])
+                g.wait_for(*bufs(Vs, 1))
                 end_phase()
                 grow = math_pv(1)
                 end_phase()
@@ -376,12 +454,13 @@ def attn_kernel(name: str, *, head_dim: int = 128, causal: bool = False,
                 # barriers -- a loop of 0 or 1 trips, as a branch may not
                 # hold a barrier. (A branch around each phase's math held
                 # the scores, P and V live into the steps, and spilled.)
-                n_go = hk.min(hk.max(q_row + Q_ROWS - u * KV_BLOCK, 0), 1)
+                n_go = hk.min(hk.max((ctx + q_row if paged else q_row) + Q_ROWS
+                                     - u * KV_BLOCK, 0), 1)
                 for _ in range(n_go):
                     last_two(grow)
                 for _ in range(1 - n_go):
                     end_phase()
-                    g.wait_for(Vs[1])
+                    g.wait_for(*bufs(Vs, 1))
                     for _ in range(6):
                         end_phase()
             else:
@@ -392,13 +471,31 @@ def attn_kernel(name: str, *, head_dim: int = 128, causal: bool = False,
         inv = hk.full(T_VEC, 1.0)
         inv.__itruediv__(ell)
         O.__imul__(hk.as_vec(inv, T_O))
-        o[hk.elem_coord(b, head, q_row, 0)].store(hk.transpose(O), bounded=True)
+        if paged:
+            o[hk.elem_coord(0, 0, tok0 + q_row, head * D)].store(
+                hk.transpose(O), bounded=left)
+        else:
+            o[hk.elem_coord(b, head, q_row, 0)].store(hk.transpose(O), bounded=True)
+
+    walk = hk.func(walk)
+    if paged:
+        def body(q: hk.Tensor[bf16], k_cache: hk.Tensor[bf16],
+                 v_cache: hk.Tensor[bf16], block_table: hk.Tensor[i32],
+                 seq_lens: hk.Tensor[i32], q_start: hk.Tensor[i32],
+                 tiles: hk.Tensor[i32], o: hk.Tensor[bf16]):
+            walk(q, k_cache, v_cache, o, block_table, seq_lens, q_start, tiles)
+
+        def _grid(p):
+            return (p.o.cols // D, p.tiles.rows, 1)
+    else:
+        def body(q: hk.Tensor[bf16], k: hk.Tensor[bf16], v: hk.Tensor[bf16],
+                 o: hk.Tensor[bf16]):
+            walk(q, k, v, o, None, None, None, None)
+
+        def _grid(p):
+            return (p.q.depth, hk.cdiv(p.q.rows, Q_TILE), p.q.batch)
 
     body.__name__ = name
-
-    def _grid(p):
-        return (p.q.depth, hk.cdiv(p.q.rows, Q_TILE), p.q.batch)
-
     return hk.kernel(body, arch=arch, warps=WARPS, grid=_grid, name=name)
 
 
@@ -424,4 +521,21 @@ def kernel_for(head_dim: int, causal: bool, scale: Optional[float] = None, **opt
     return _KERNELS[key]
 
 
-__all__ = ["attn_kernel", "kernel_for", "HEAD_DIMS", "Q_TILE", "KV_BLOCK"]
+def paged_kernel_for(head_dim: int, scale: Optional[float] = None):
+    """The paged prefill (attn_kernel's `paged`) for (head_dim, scale), built
+    once: hk.ops.paged_prefill's kernel on gfx950."""
+    if scale is not None and scale == head_dim ** -0.5:
+        scale = None
+    key = ("paged", head_dim, scale)
+    if key not in _KERNELS:
+        name = f"paged_prefill_d{head_dim}_cdna"
+        if scale is not None:
+            import struct  # noqa: PLC0415
+            name += f"_s{struct.unpack('<Q', struct.pack('<d', float(scale)))[0]:016x}"
+        _KERNELS[key] = attn_kernel(name, head_dim=head_dim, causal=True,
+                                    scale=scale, paged=True)
+    return _KERNELS[key]
+
+
+__all__ = ["attn_kernel", "kernel_for", "paged_kernel_for", "HEAD_DIMS", "Q_TILE",
+           "KV_BLOCK", "PAGE"]
