@@ -1050,6 +1050,52 @@ one batch. What is left is per step: hk's step is 2% slower than FlyDSL's,
 and its fixed cost a workgroup 10% lower
 ([the chapter](history/34-cdna-attention.md#where-it-stands)).
 
+### Paged attention: hk's own
+
+[gfx950's paged attention](history/39-cdna-paged.md). On gfx950 `hk.ops.paged`
+routes to `hk.ops.paged_cdna` (the split-KV decode and its merge) and
+`hk.ops.paged_prefill` to the paged form of `hk.ops.attn_cdna`. Measured
+against what vLLM runs on an MI355X, in the ROCm 10 vLLM image (vLLM
+0.30.1rc1, aiter 0.1.23, triton 3.8). Qwen3-8B's attention (32/8 heads, D
+128), bf16, us a layer; each arm at its own cache layout holding the same
+K/V, checked against fp32 first, its calls rotating through caches past
+the 256 MB Infinity Cache, captured in a CUDA graph and replayed, rounds
+interleaved, median of 7 (`tools/hk-bench/paged_cdna.py`). aiter's gluon
+unified attention runs on hk's cache, ROCM_ATTN (vLLM's default on gfx950)
+and TRITON_ATTN on their own pages of 16.
+
+Decode:
+
+| requests x context | hk | aiter gluon | ROCM_ATTN | TRITON_ATTN | hk / best | hk / ROCM_ATTN |
+|---|---|---|---|---|---|---|
+| 1 x 1024 | 9.1 | 15.5 | 9.4 | 9.1 | 1.00x | 1.03x |
+| 1 x 8192 | 16.1 | 12.2 | 12.8 | 31.0 | 0.76x | 0.80x |
+| 4 x 8192 | 28.2 | 27.3 | 30.7 | 42.5 | 0.97x | 1.09x |
+| 16 x 1024 | 17.3 | 17.4 | 18.3 | 22.7 | 1.01x | 1.05x |
+| 16 x 8192 | 88.7 | 89.9 | 99.0 | 131.8 | 1.01x | 1.12x |
+| 32 x 8192 | 171.4 | 166.1 | 194.7 | 301.5 | 0.97x | 1.14x |
+| 128 x 1024 | 84.0 | 85.0 | 104.4 | 118.4 | 1.01x | 1.24x |
+| 128 x 8192 | 659.2 | 644.6 | 725.8 | 898.1 | 0.98x | 1.10x |
+
+Over 40 shapes (1-128 requests, 512-8192 tokens): 0.90-1.05x the best
+alternative at 8-128 requests, 1.04-1.27x ROCM_ATTN there; at one to two
+requests 0.71-0.88x past 2048 tokens (the merge, and a lone wave's walk),
+0.81-1.02x at 512-1024. SDPA over gathered pages is 5-13x slower than any.
+
+Prefill (cached prefix + new tokens):
+
+| requests | hk | aiter gluon | ROCM_ATTN | TRITON_ATTN | hk / best | hk / ROCM_ATTN |
+|---|---|---|---|---|---|---|
+| 0 + 2048 | 59.3 | 58.3 | 153.3 | 224.5 | 0.98x | 2.59x |
+| 4096 + 512 | 106.2 | 92.0 | 283.7 | 228.3 | 0.87x | 2.67x |
+| 4 x (2048 + 1024) | 171.8 | 192.6 | 600.6 | 920.8 | 1.12x | 3.50x |
+| 8 x (0 + 2048) | 297.9 | 327.0 | 889.6 | 1511.2 | 1.10x | 2.99x |
+| 0+300, 1000+77, 4000+1000, 64+2048 | 142.7 | 176.9 | 1908.3 | 683.9 | 1.24x | 13.4x |
+
+The 4-bit decode GEMM (`hk.ops.w4a16`) runs on gfx950 too: 2.3-4.0x vLLM's
+Triton AWQ kernel at 1-16 tokens and 1.5-2.3x at 32-64, on gfx1100's
+schedules.
+
 ### HipKittens' CDNA4 GEMM and GQA forward, as hk ops
 
 [CDNA3 and CDNA4, part 5](history/29-cdna.md#part-5-hipkittens-cdna4-kernels-behind-hks-engine-layer);
@@ -1090,4 +1136,5 @@ GQA forward, bf16, TFLOP/s:
 | 16, 64, 8, 4096, 64 | no / yes | 933 / 796 | 726 / 539 | 929 / 855 | 1.28x / 1.48x | 1.00x / 0.93x |
 
 aiter is not installable here: PyPI's `aiter` is an unrelated package, and
-`amd-aiter` is not published.
+`amd-aiter` is not published. The ROCm 10 vLLM image ships `amd-aiter`
+0.1.23, which the paged attention section above measures.

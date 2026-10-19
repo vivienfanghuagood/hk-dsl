@@ -28,18 +28,23 @@ What has landed since the assessment, in the order of section 6:
 | 10. torch's stream | the CDNA pybind entry point takes the stream and `Kernel.__call__` passes torch's current one, so every hk op on gfx950 is ordered against torch's work and CUDA graphs capture it (0.2 µs a call); before, it launched on the null stream and a capture came out empty | `scaffold.takes_stream`, `pyutils/hk_bind.cuh`, `tests/hk/gpu/test_stream_cdna.py` |
 | 11. hk's own attention | 32x32 accumulators, `Tile.as_operand` (the stride-4 operand fragment, `rt_16x32_4`), `Tile.subtile`, `Vec.any_above`, `hk.arch.pin`, LDS shapes per allocation. HipKittens' CDNA4 GQA forward written with them (`hk.ops.attn_cdna`), bf16, D 64/128, causal or not, any N: 0.98-1.08x the stronger of HipKittens and FlyDSL at the ten measured points, 1.30-3.13x SDPA; `hk.attention` and `hk.ops.sdpa` run it on gfx950 ([chapter 34](../history/34-cdna-attention.md)) | `values.py`, `arch.py`, `Fragments.cpp`, `HKToCpp.cpp`, `hk/cdna.cuh`, `hk.ops.attn_cdna`, `hk.ops.attn` |
 | 12. strips on wave64 | `kittens::rs` ported to wave64 in the shim (a DPP `quad_perm`/`row_half_mirror`/`row_mirror` and `v_permlane16/32_swap` butterfly, LDS-pointer combines), `Target.strips`; on gfx950 the norms, softmax, quantize (any row count), the elementwise ops (bit for bit torch's), silu_mul on a gate/up output's halves in place and `hk.ops.rotary` (vLLM's NeoX RoPE, `Tile.swap_halves`) run on strips, planned at 32 elements a lane, capped at three workgroups a CU from the 256 MiB cache. Against the fastest of torch, Inductor, Triton and FlyDSL each tuned, at rows 1-8192 x hidden 4096-8192: 99 of 132 cases tie or win, the rest 0.90-0.98x ([chapter 37](../history/37-cdna-rows.md)) | `hk/cdna.cuh`, `norm.py`, `quant.py`, `elementwise.py`, `fused.py`, `values.py`, `HKOps.td` |
+| 13. paged attention | `load_scalar(invariant=True)` (an s_load through the scalar cache), `hk.lds.alloc(shape=)` (an allocation laid out as a named st_shape its reads also take), `g.load(nontemporal=True)`, the 32x16 stride-4 col read counted, 16-column column reductions by permlane swaps. The split-KV decode (`hk.ops.paged_cdna`: a warp a split, Pᵀ read in place, pages by DMA in whole-line runs, a merge a strip a query row) and the paged prefill (`attn_kernel(paged=True)`); `hk.ops.paged` and `hk.ops.paged_prefill` route to them. Qwen3-8B against what vLLM runs: decode 0.90-1.05x aiter's gluon kernel and 1.04-1.27x ROCM_ATTN at 8-128 requests, 0.71-0.88x at one or two past 2048 tokens; prefill 1.10-1.24x aiter at batches. `load_w4` and fp16 MFMA into fp32 for the 4-bit GEMM; hk._mlir linked -Bsymbolic so it runs in a vLLM process ([chapter 39](../history/39-cdna-paged.md)) | `values.py`, `lds.py`, `group.py`, `HKOps.td`, `HKToCpp.cpp`, `LdsPipeline.cpp`, `hk/cdna.cuh`, `hk.ops.paged_cdna`, `hk.ops.attn_cdna`, `mlir/python/CMakeLists.txt` |
 
-Builds now (`tools/cdna-probes/coverage.py --ops`, device scaffold, spill gate): **494/506
-on gfx950 and 494/506 on gfx942**, from 196/410 and 195/410. What fails names its reason at
-trace time: the RDNA attention kernels and paged attention (16-column operand tiles, an
-accumulator cast into an operand, `lds_granules`), and the RDNA form of `hk.ops.gemm`
-(32x16 operand tiles, register staging). gfx950 runs neither RDNA form:
-`hk.ops.gemm.matmul` routes to hk's gfx950 GEMMs and `hk.attention` to `hk.ops.attn_cdna`,
-and the decode GEMV builds there since the shim gained fp32 register-LDS tile copies.
-On the MI355X (ROCm 7.2.3) the GPU tier is 729 passed, 121 skipped, 0 failed at `6a97779`
-(from 658/127 at `35421a7`, 615/170 at `535be1c`, 350/190 at `3b6c6ce` and 471/216 at
-`be52996`): the skips are the kernels above, reported with their reason
-([testing](../testing.md#running-each-tier)). `examples/validate.py`
+Builds now (`tools/cdna-probes/coverage.py --ops`, device scaffold, spill gate): **496/506
+on gfx950** (the attention example's two kernels since chapter 39) **and 494/506 on gfx942**,
+from 196/410 and 195/410. What fails names its reason at trace time: the RDNA attention
+kernels and paged attention (16-column operand tiles, an accumulator cast into an operand,
+`lds_granules`), and the RDNA form of `hk.ops.gemm` (32x16 operand tiles, register
+staging). gfx950 runs none of the RDNA forms: `hk.ops.gemm.matmul` routes to hk's gfx950
+GEMMs, `hk.attention` to `hk.ops.attn_cdna`, `hk.ops.paged` to `hk.ops.paged_cdna` and
+`hk.ops.paged_prefill` to `attn_cdna`'s paged form, and the decode GEMV builds there since
+the shim gained fp32 register-LDS tile copies, the 4-bit GEMM since it gained `load_w4`.
+On the MI355X (ROCm 7.2.3) the GPU tier is 784 passed, 66 skipped, 0 failed with them
+(from 729/121 at `6a97779`, 658/127 at `35421a7`, 615/170 at `535be1c`, 350/190 at
+`3b6c6ce` and 471/216 at `be52996`). The 66 are not missing paths: schedules a shape
+does not fit, FlyDSL's RDNA3 GEMM, HipKittens' GQA under ROCm 7.2.3's hipcc, gfx1100's
+route candidates, and vLLM not installed; the rule that reported a missing CDNA path as
+a skip is gone ([testing](../testing.md#running-each-tier)). `examples/validate.py`
 passes every case on gfx950, attention included.
 
 ## Summary of the assessment (at `fdb87f1`)
@@ -464,6 +469,7 @@ Where hk adds something on CDNA:
 7. ~~MFMA fragment shape as a field of `!hk.rt` rather than a translator heuristic;~~
    done. ~~32x32x16 fragments and a CDNA path for attention.~~ Done: 32x32 accumulators,
    the stride-4 operand read off one, and `hk.ops.attn_cdna`
-   ([chapter 34](../history/34-cdna-attention.md)). Next: fp8 `mfma_scale` fragments, and
-   paged prefill and split-KV decode on gfx950.
+   ([chapter 34](../history/34-cdna-attention.md)). ~~Paged prefill and split-KV decode on
+   gfx950.~~ Done ([chapter 39](../history/39-cdna-paged.md)). Next: fp8 `mfma_scale`
+   fragments.
 8. ~~Time the unified-file occupancy on the part and set `verified=True`.~~ Done for gfx950.

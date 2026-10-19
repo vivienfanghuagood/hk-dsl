@@ -241,6 +241,14 @@ decodes first by the builder:
   earlier chunk is just context in front of the new tokens, so prefix caching
   and chunked prefill work as vLLM ships them.
 
+On gfx950 (MI355X) the same paths run gfx950's kernels (`hk.ops.paged_cdna`
+and the paged form of `hk.ops.attn_cdna`), with the same page, cache layout
+and capture, and hk's decode takes every batch: against Triton's kernel on
+this cache it is 0.81-0.91x only at 512 tokens and one to four requests, and
+1.14-1.99x from 2048 ([gfx950's paged attention](history/39-cdna-paged.md)).
+The planner aims at 256 one-warp workgroups there, a split taking at least
+four pages.
+
 `HK_SPLITS` is the one debugging switch: `off`, `0` or `1` forces one split;
 `auto` or `plan`, the default, uses the planner; an integer forces that many,
 capped by the page count and 32. Its comment records a fault from before the

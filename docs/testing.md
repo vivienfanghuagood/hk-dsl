@@ -77,14 +77,12 @@ stood at the move (990 no-GPU tests, 386 on the GPU).
   `test_flydsl_gemm.py` also needs FlyDSL (`FLYDSL_ROOT`), and says so when
   it skips.
 
-  On a wave64 target (gfx942, gfx950), a test that fails because its kernel
-  has no CDNA path yet is reported as skipped, with the reason. The reasons
-  are listed in `conftest.py` (`_NO_CDNA_PATH`): `hk-fragments`' refusals
-  (16-wide operand tiles, an accumulator cast into an operand: attention,
-  paged attention, `hk.ops.gemm`) and the library functions hk has only for
-  RDNA3 (LDS granules, register staging, `load_w4`). Every other failure
-  stays a failure. What CDNA lacks by design rather than by omission, the
-  strips, is a skip condition in the test itself.
+  On gfx950 every kernel the tier runs has a native path, so a failure is a
+  failure; until [chapter 39](history/39-cdna-paged.md) a rule in
+  `conftest.py` reported the kernels that had none (paged attention, the
+  4-bit GEMM, two RDNA-only tests) as skips. What a target lacks by design
+  -- FlyDSL's RDNA3 GEMM on gfx950, the strips on gfx942 -- is a skip
+  condition in the test itself.
 * **engines** — `python3 -m pytest tests/hk/engines -q`, in each engine's
   venv. Every symbol a vLLM or SGLang patch rebinds, with the signature its
   stand-in forwards to and the call sites the rebind must reach; a module is

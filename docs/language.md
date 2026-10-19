@@ -168,6 +168,10 @@ MLIR ([history](history/15-mlir-dialect.md)):
   `x.tile[r, c]` are views; `.load(type)`, `.store(value)`, `x[idx] = value`,
   `.load_scalar()`. LDS tiles come from `hk.lds.alloc`, and `s[i]`,
   `s.subtile(...)`, `s.load(type, wait=False)`, `s.granules()` follow.
+  `load_scalar(invariant=True)` says the kernel never writes the element (a
+  page table, a length): on gfx950 it is a scalar-cache `s_load`, on
+  lgkmcnt, where a global load's wait would sit behind every copy in
+  vmcnt's queue.
 
 A global carries one runtime row stride, so a slice of the last axis — the
 two halves of a fused `(M, 2I)` output, say — is accepted without a copy:
@@ -198,6 +202,15 @@ g.wait_for(As[1])                          # vmcnt, derived
 hk.arch.barrier()                          # every warp's share has landed
 x = As[1].subtile(64, 64, wr, 0).load(T, wait=False)
 ```
+
+`g.load(..., nontemporal=True)` copies with `sc0 nt`, for data read once, and
+`hk.lds.alloc(..., shape="16x64" | "32x32")` lays an allocation out as that
+include/cdna4 st_shape rather than the one its reads' fragment picks (16x32
+row operands, and 32x16 stride-4 col operands, read out of those too): a copy
+then reads each row in 128- or 64-byte runs instead of 64 or 32, and its
+lines once. The paged decode's copies went from 6.15 to 6.9 TB/s with both
+([chapter 39](history/39-cdna-paged.md)); non-temporal in the shorter runs
+fetched each line twice.
 
 The tile is a whole allocation or a buffer of a stack picked by a Python int,
 so `hk-lds-pipeline` knows which buffer each copy writes and checks the two
