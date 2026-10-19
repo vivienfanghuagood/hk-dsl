@@ -949,6 +949,48 @@ plan (2 warps, 4 tiles each) is the table's. Short tensors (2048 rows) still
 lose, the weighted RMSNorm most (0.61x); at 64 rows the losses are fixed
 launch latency.
 
+### Strips: the rows against every arm, at LLM shapes
+
+[gfx950's rows](history/37-cdna-rows.md). `tools/hk-bench/scoreboard.py
+--only llm-norm,llm-quant,llm-pointwise`: rows 1, 32, 2048, 8192 x hidden
+4096, 5120, 8192 (intermediate 14336, 17408, 28672 for silu_mul; heads of 128
+for RoPE), bf16. One process, every arm checked against fp32 first, rounds
+queued behind a GPU spin, median of 7 rounds of 50 calls. The arms are torch
+2.10 eager, Inductor (static shapes), Triton 3.6 as written and autotuned,
+and FlyDSL 0.4.0's dispatcher and autotuner (norms and softmax; it has no
+standalone kernel for the rest). The cells give hk's time over the fastest
+other arm's; a tie is within the larger of 2% and the two arms' noise. The
+norms come from one run and the rest from the run before it, with the same
+kernels (the later run was shared with another job from quantize on).
+
+| op | 1-32 rows | 2048 rows | 8192 rows | verdicts | `35421a7`: 2048 / 8192 rows |
+|---|---|---|---|---|---|
+| rms_norm | 0.99-1.01 | 0.96-1.04 | 0.98-1.01 | 1 loss, 9 tie, 2 win | 0.40-0.50 / 0.57-0.64 |
+| rmsnorm | 0.97-1.00 | 0.94-1.01 | 0.98-1.00 | 4 loss, 8 tie | 0.46-0.56 / 0.56-0.70 |
+| layernorm | 1.00-1.08 | 0.95-1.14 | 0.95-0.99 | 3 loss, 4 tie, 5 win | 0.51-0.56 / 0.53-0.66 |
+| fused add + RMSNorm | 0.99-1.02 | 0.95-1.01 | 0.98-1.00 | 3 loss, 8 tie, 1 win | 0.42-0.56 / 0.61-0.76 |
+| softmax | 0.98-1.00 | 0.95-0.97 | 0.98-1.01 | 4 loss, 8 tie | 0.48-0.57 / 0.54-0.64 |
+| int8 quantize | 1.06-1.09 | 0.98-1.04 | 0.98-1.02 | 2 loss, 2 tie, 8 win | 0.44-0.45 / 0.43-0.61 |
+| add | 0.98-1.04 | 0.90-0.97 | 0.97-1.00 | 5 loss, 6 tie, 1 win | 0.80-0.88 / 0.88-0.92 |
+| mul | 0.98-1.02 | 0.90-0.97 | 0.97-1.00 | 5 loss, 6 tie, 1 win | 0.80-0.88 / 0.88-0.92 |
+| exp | 0.97-1.00 | 0.99-1.05 | 0.99-1.00 | 2 loss, 9 tie, 1 win | 0.58-0.72 / 0.75-0.81 |
+| silu_mul (gate/up halves in place) | 1.05-1.08 | 1.00-1.04 | 1.08-1.09 | 2 tie, 10 win | 0.71-0.88 / 0.74-0.76 |
+| RoPE (`hk.ops.rotary`) | 1.04-1.09 | 0.94-1.03 | 0.96-0.99 | 4 loss, 1 tie, 7 win | no token-major op |
+
+99 of 132 cases tie or win. At 1-32 rows every arm sits at a 3.8-4.2 us
+floor. The 33 losses are 0.90-0.98x:
+- six at that floor (3.9 us to 3.8);
+- the 2048-row norms and softmax (0.94-0.97x);
+- four 8192-row norms (0.95-0.98x);
+- add and mul at 2048 rows, whose plans inside the cache move with where the
+  buffers sit (0.90-0.97x), and at 8192x8192 (0.97x);
+- RoPE at 40 and 64 heads, on 4-byte accesses (0.94-0.98x);
+- two quantize shapes (0.98x).
+
+Examples at 8192x8192: rms_norm 37.5 us against tuned Triton's 38.0 (66.3
+at `35421a7`), softmax 39.3 against FlyDSL's 39.7 (61.6). silu_mul at
+8192x28672 takes 228.2 us against tuned Triton's 248.7 (338.5).
+
 ### GEMM: hk's own
 
 [gfx950's GEMM in hk](history/33-cdna-gemm.md). `hk.ops.gemm.matmul` on gfx950

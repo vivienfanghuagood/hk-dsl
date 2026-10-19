@@ -32,8 +32,20 @@ def main() -> int:
     ap.add_argument("report")
     ap.add_argument("--level", default="tuned", choices=("oob", "tuned"))
     ap.add_argument("--md", action="store_true", help="a markdown table, us")
+    ap.add_argument("--brief", action="store_true",
+                    help="markdown: hk, the fastest other arm and the verdict only")
     args = ap.parse_args()
     rep = json.load(open(args.report))
+    if args.brief:
+        print("| case | hk, us | fastest other, us | hk vs it |")
+        print("|---|---|---|---|")
+        for r in rows(rep, args.level):
+            v = r["verdict"]
+            hk = f"{r['hk'][0] * 1e3:.2f}" if r["hk"] else "--"
+            best = f"{r['best'][0] * 1e3:.2f} {r['best'][1]}" if r["best"] else "--"
+            verdict = f"{v['ratio']:.2f}x {v['verdict']}" if v else "--"
+            print(f"| {r['case']} | {hk} | {best} | {verdict} |")
+        return 0
     cols = ("hk", "torch", "inductor", "triton", "triton_tuned", "flydsl", "flydsl_tuned")
     if args.md:
         print("| case | " + " | ".join(cols) + " | best other | hk / best |")
