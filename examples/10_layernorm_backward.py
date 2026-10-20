@@ -95,6 +95,88 @@ def ln_bwd_dx_kernel(warps: int = 8, tpw: int = 0):
     return ln_bwd_dx
 
 
+def strip_plan(cols: int):
+    """(warps, chunks) for a row of `cols` on strips: each lane holds two
+    16-byte runs of bf16 (16 columns) of a row, as hk.ops.norm's strips do,
+    and the warps cover the row exactly; None where they cannot."""
+    span = 32 * RUN
+    if cols % (2 * span):
+        return None
+    warps = cols // (2 * span)
+    return (warps, 2) if warps <= 16 else None
+
+
+RUN = 8                                     # bf16 a lane reads at once: 16 bytes
+
+
+def ln_bwd_strip_kernel(warps: int, chunks: int = 2):
+    """dx on strips, and each workgroup's share of dw and db.
+
+    The tile kernel's 16-row tile cannot hold a wide row in registers, so
+    past 2048 columns it reads the row twice. A strip is one row, each lane
+    holding 16-byte runs of it and nothing twice; `warps` of them cover the
+    row, so it is read once at any width. A workgroup walks rows g, g + G,
+    ... (G workgroups, one partial row each), the next row's x and dy in
+    flight while this one is reduced, and keeps its rows' dy * x-hat and dy
+    in registers: one partial row a workgroup, written once, which the
+    second kernel sums."""
+    cw = chunks * 32 * RUN
+    S = hk.RS(hk.fp32, 1, cw, RUN)
+    CV, RS_ = hk.col_vec(S), hk.row_vec(S)
+
+    @hk.kernel(warps=warps, grid=lambda p: (p.pdw.rows, 1, 1),
+               name=f"ln_bwd_strip_w{warps}_c{chunks}")
+    def ln_bwd_strip(x: hk.Tensor[hk.bf16], dy: hk.Tensor[hk.bf16],
+                     w: hk.Tensor[hk.bf16], mean: hk.Tensor[hk.fp32],
+                     rstd: hk.Tensor[hk.fp32], dx: hk.Tensor[hk.bf16],
+                     pdw: hk.Tensor[hk.fp32], pdb: hk.Tensor[hk.fp32]):
+        g, groups = hk.arch.block_idx.x, pdw.rows
+        wid = hk.arch.warp_id()
+        c0 = wid * cw
+        n = x.cols
+        # Both row sums of every warp, for two rows in turn: a row's partials
+        # go out, one barrier, and every warp reads all of them. The next
+        # row writes the other half, so nothing overwrites what a slower warp
+        # is still reading without a barrier in between.
+        xw = hk.lds.alloc_vec(hk.lds.shared_vec(CV, 4 * warps), name="xw")
+        wv = w.at[0, c0].load(RS_)
+        acc_w, acc_b = hk.zeros(S), hk.zeros(S)
+        xs, gs = hk.zeros(S), hk.zeros(S)
+        # Rows past the last read zero; a workgroup with no rows writes zeros.
+        xn = x.at[g, c0].load(S, bounded=True)
+        gn = dy.at[g, c0].load(S, bounded=True)
+        it = 0
+        for r in range(g, x.rows, groups):
+            xn.copy(into=xs)
+            gn.copy(into=gs)
+            x.at[r + groups, c0].load(S, bounded=True, into=xn)
+            dy.at[r + groups, c0].load(S, bounded=True, into=gn)
+            mu = mean.at[0, r].load(CV)
+            rs = rstd.at[0, r].load(CV)
+            xh = (xs - mu) * rs
+            wdy = gs * wv
+            base = (it % 2) * (2 * warps)
+            xw.store((xh * wdy).sum(axis=1).value(), base + wid)
+            xw.store(wdy.sum(axis=1).value(), base + warps + wid)
+            hk.arch.barrier(drain=True)
+            c1 = xw.load(CV, base)
+            c2 = xw.load(CV, base + warps)
+            for k in range(1, warps):
+                c1 += xw.load(CV, base + k)
+                c2 += xw.load(CV, base + warps + k)
+            c1 /= n
+            c2 /= n
+            it = it + 1
+            d = (wdy - (xh * c1 + c2)) * rs
+            dx.at[r, c0].store(d)
+            acc_w += gs * xh
+            acc_b += gs
+        pdw.at[g, c0].store(acc_w)
+        pdb.at[g, c0].store(acc_b)
+
+    return ln_bwd_strip
+
+
 def ln_bwd_dwdb_kernel(warps: int = 4):
     @hk.kernel(warps=warps, grid=lambda p: (hk.cdiv(p.pdw.cols, 64), 1, 1),
                name=f"ln_bwd_dwdb_w{warps}")
@@ -212,8 +294,17 @@ def _triton_ln_bwd():
     return make
 
 
+def groups_for(rows: int, warps: int) -> int:
+    """Workgroups (= partial rows) for the strip path: about 768 waves in
+    flight, measured on a W7900D at 4096 rows (192 workgroups were best at
+    1024 and 2048 columns, 96 at 4096 and 8192)."""
+    return max(1, min(rows, 768 // warps))
+
+
 def main():
-    args = _common.parse(__doc__)
+    args = _common.parse(__doc__, lambda p: p.add_argument(
+        "--groups", default="", help="strip path: workgroup counts to time, "
+        "comma separated (default: groups_for)"))
     dx_kernel = ln_bwd_dx_kernel()
     if any([_common.static(args, k) for k in (dx_kernel, ln_bwd_dwdb)]):
         return
@@ -231,6 +322,10 @@ def main():
         xf = x.float()
         mean = xf.mean(-1)
         rstd = torch.rsqrt(xf.var(-1, unbiased=False) + eps)
+        xr = xf.clone().requires_grad_()
+        wr = w.float().requires_grad_()
+        br = b.float().requires_grad_()
+        F.layer_norm(xr, (n,), wr, br, eps).backward(dy.float())
 
         dx = torch.empty_like(x)
         pdw = torch.empty(m // 16, n, device="cuda", dtype=torch.float32)
@@ -245,22 +340,42 @@ def main():
             k(x, dy, w, mean, rstd, dx, pdw, pdb)
             ln_bwd_dwdb(pdw, pdb, dw, db)
 
-        print(f"\nLayerNorm backward, {m} x {n} bf16 ({warps} warps, "
+        print(f"\nLayerNorm backward, {m} x {n} bf16 (tiles: {warps} warps, "
               f"{'row held' if tpw else 'row read twice'})")
         hk_bwd()
-        xr = xf.clone().requires_grad_()
-        wr = w.float().requires_grad_()
-        br = b.float().requires_grad_()
-        F.layer_norm(xr, (n,), wr, br, eps).backward(dy.float())
-        _common.check("dx vs fp32 torch autograd", dx, xr.grad, rel=2e-2)
-        _common.check("dw vs fp32 torch autograd", dw, wr.grad, rel=1e-3)
-        _common.check("db vs fp32 torch autograd", db, br.grad, rel=1e-3)
+        _common.check("tiles: dx vs fp32 autograd", dx, xr.grad, rel=2e-2)
+        _common.check("tiles: dw vs fp32 autograd", dw, wr.grad, rel=1e-3)
+        _common.check("tiles: db vs fp32 autograd", db, br.grad, rel=1e-3)
 
         mean2, rstd2 = mean[:, None], rstd[:, None]
         mask = [True, True, True]
-        fns = {"hk (these kernels)": hk_bwd,
-               "torch native_layer_norm_backward": lambda: torch.ops.aten.native_layer_norm_backward(
-                   dy, x, (n,), mean2, rstd2, w, b, mask)}
+        fns = {"hk tiles": hk_bwd}
+
+        sp = strip_plan(n)
+        if sp is not None:
+            sk = ln_bwd_strip_kernel(*sp)
+            gs = ([int(v) for v in args.groups.split(",")] if args.groups
+                  else [groups_for(m, sp[0])])
+            for G in gs:
+                s_dx = torch.empty_like(x)
+                s_pdw = torch.empty(G, n, device="cuda", dtype=torch.float32)
+                s_pdb = torch.empty_like(s_pdw)
+                s_dw, s_db = torch.empty_like(dw), torch.empty_like(db)
+
+                def hk_strip(s_dx=s_dx, s_pdw=s_pdw, s_pdb=s_pdb, s_dw=s_dw,
+                             s_db=s_db):
+                    sk(x, dy, w, mean, rstd, s_dx, s_pdw, s_pdb)
+                    ln_bwd_dwdb(s_pdw, s_pdb, s_dw, s_db)
+
+                hk_strip()
+                tag = f"hk strips G={G}"
+                _common.check(f"strips G={G}: dx", s_dx, xr.grad, rel=2e-2)
+                _common.check(f"strips G={G}: dw", s_dw, wr.grad, rel=1e-3)
+                _common.check(f"strips G={G}: db", s_db, br.grad, rel=1e-3)
+                fns[tag] = hk_strip
+        fns["torch native_layer_norm_backward"] = (
+            lambda: torch.ops.aten.native_layer_norm_backward(
+                dy, x, (n,), mean2, rstd2, w, b, mask))
         try:
             tri = _triton_ln_bwd()(x, w)
             t_dx = torch.empty_like(x)
