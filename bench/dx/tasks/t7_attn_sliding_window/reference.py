@@ -17,7 +17,8 @@ SHAPES = [
 ]
 QUICK = ("B1-N2048", "B1-N8192")
 SMALL = [dict(name="small", B=1, N=512, Hq=4, Hkv=1, D=128, scale=128 ** -0.5, window=128),
-         dict(name="small-ragged", B=1, N=300, Hq=4, Hkv=2, D=128, scale=128 ** -0.5, window=100)]
+         dict(name="small-ragged", B=1, N=300, Hq=4, Hkv=2, D=128, scale=128 ** -0.5, window=100),
+         dict(name="small-inwindow", B=1, N=256, Hq=4, Hkv=2, D=128, scale=128 ** -0.5, window=256)]
 WINDOW = 4096
 
 

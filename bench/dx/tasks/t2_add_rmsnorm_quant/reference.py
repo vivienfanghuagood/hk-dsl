@@ -17,6 +17,10 @@ SHAPES = [
 QUICK = ("T16-H4096", "T37-H5120", "T8192-H4096")
 SMALL = [dict(name="small", T=16, H=1024), dict(name="small-ragged", T=5, H=4096)]
 MUTABLE_INPUTS = ("x", "residual")
+# Rounding (0.5 of a step) plus vLLM's two bf16 roundings of the normed value
+# (x * rstd, then * weight: 2 * 2**-9 of up to 127 steps) plus the scale's
+# absmax taken over those rounded values (another 2**-9): 1.25 steps.
+Q_STEPS = 1.25
 
 
 def make_inputs(shape, device="cuda", seed=0):
@@ -34,7 +38,7 @@ def reference(x, residual, weight, eps):
     y = rf * torch.rsqrt(rf.pow(2).mean(-1, keepdim=True) + eps) * weight.float()
     scale = (y.abs().amax(-1, keepdim=True) / 127.0).clamp_min(1e-10)
     q = torch.round(y / scale).clamp(-128, 127).to(torch.int8)
-    return q, scale, r
+    return q, scale, r, y
 
 
 def torch_impl(x, residual, weight, eps):
@@ -51,17 +55,20 @@ def check(out, ref, inputs):
     if not isinstance(out, (tuple, list)) or len(out) != 3:
         raise Mismatch(f"expected (q, scale, r), got {type(out).__name__}")
     q, scale, r = out
-    q_ref, s_ref, r_ref = ref
+    q_ref, s_ref, r_ref, y_ref = ref
     msgs = [assert_close("r", r, r_ref, rtol=2.0 ** -8, atol=1e-6, dtype=torch.bfloat16),
             assert_close("scale", scale, s_ref, rtol=1e-2, atol=0.0, dtype=torch.float32)]
     if q.dtype != torch.int8 or tuple(q.shape) != tuple(q_ref.shape):
         raise Mismatch(f"q: {q.dtype} {tuple(q.shape)}, expected int8 {tuple(q_ref.shape)}")
+    # q against the solution's own scale: round(y / scale), within Q_STEPS steps.
+    dev = (q.float() - y_ref / scale.float()).abs()
+    if dev.max().item() > Q_STEPS:
+        i = int(dev.flatten().argmax())
+        raise Mismatch(f"q: {int((dev > Q_STEPS).sum())} elements more than {Q_STEPS} steps from y/scale, "
+                       f"first at flat index {i}: got {q.flatten()[i].item()}, y/scale = "
+                       f"{(y_ref / scale.float()).flatten()[i].item():.3f}")
     d = (q.int() - q_ref.int()).abs()
-    if d.max().item() > 1:
-        i = int(d.flatten().argmax())
-        raise Mismatch(f"q: {int((d > 1).sum())} elements off by more than 1, first at flat "
-                       f"index {i}: got {q.flatten()[i].item()}, want {q_ref.flatten()[i].item()}")
-    msgs.append(f"q: {int((d == 1).sum())}/{d.numel()} off by one")
+    msgs.append(f"q: max |q - y/scale| {dev.max().item():.2f}, {int((d != 0).sum())}/{d.numel()} differ from the reference's q")
     return "; ".join(msgs)
 
 

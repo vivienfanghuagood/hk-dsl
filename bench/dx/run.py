@@ -333,9 +333,9 @@ def _fmt(v, nd=2):
 
 def markdown(board: Dict[str, Any]) -> str:
     m = board["meta"]
-    L = [f"# DX suite scoreboard: {m.get('gpu_arch', '?')} ({m.get('gpu', '?')}), {m['date']}", ""]
+    L = [f"# DX suite scoreboard: {m.get('gpu_product', '?')} ({m.get('gpu_arch', '?')}), {m['date']}", ""]
     L.append("| | |\n|---|---|")
-    for k in ("gpu", "gpu_arch", "cu", "gpu_mem_gb", "torch", "hip", "triton", "hk", "hk_arch",
+    for k in ("gpu_product", "gpu", "gpu_arch", "cu", "gpu_mem_gb", "torch", "hip", "triton", "hk", "hk_arch",
               "hk_commit", "python", "host", "visible_devices", "command"):
         if k in m:
             L.append(f"| {k} | `{m[k]}` |")

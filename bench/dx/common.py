@@ -288,6 +288,9 @@ def versions() -> Dict[str, Any]:
         p = torch.cuda.get_device_properties(0)
         info["gpu"] = p.name
         info["gpu_arch"] = getattr(p, "gcnArchName", "?")
+        # ROCm names both "AMD Radeon Graphics"; these are the parts the suite runs on.
+        info["gpu_product"] = {"gfx950": "Instinct MI355X", "gfx1100": "Radeon PRO W7900D"}.get(
+            info["gpu_arch"].split(":")[0], p.name)
         info["gpu_mem_gb"] = round(p.total_memory / 2**30, 1)
         info["cu"] = p.multi_processor_count
     info["visible_devices"] = os.environ.get("HIP_VISIBLE_DEVICES") or os.environ.get(
