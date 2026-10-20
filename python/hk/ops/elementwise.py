@@ -388,6 +388,15 @@ _REFUSED: set = set()
 _STRIP_PLANS: dict = {}
 
 
+def flat_strip_plan(moved: int, binary: bool):
+    """(warps, chunks a warp) of gfx950's elementwise strip plan for a flat
+    pass that moves `moved` bytes, from STRIP_PLANS; the windows apply to
+    ops of two inputs or more (`binary`). hk.templates.elementwise plans a
+    flat pass with it."""
+    return next(p for window, p in STRIP_PLANS
+                if window is None or (window[0] <= moved <= window[1] and binary))
+
+
 def _strip_plan(op: str, suffix: str, n: int, nbytes: int):
     """(kernel, CW, RUN, EXACT) for `op` over n elements on strips, or None
     where the elementwise ops do not run on strips here."""
@@ -401,9 +410,7 @@ def _strip_plan(op: str, suffix: str, n: int, nbytes: int):
         arch = current_arch()
         if arch in STRIP_ARCHS and n * nbytes < _STRIP_MAX_BYTES:
             moved = n * nbytes * (2 if op in _UNARY_FN else 3)
-            warps, chunks = next(p for window, p in STRIP_PLANS
-                                 if window is None or (window[0] <= moved <= window[1]
-                                                       and op not in _UNARY_FN))
+            warps, chunks = flat_strip_plan(moved, op not in _UNARY_FN)
             run = strip_run(n, nbytes) if n else 16 // nbytes
             cw = chunks * get_target(arch).wave * run
             got = (STRIP_KERNELS[f"strip_{op}_{suffix}_w{warps}"], cw, run,

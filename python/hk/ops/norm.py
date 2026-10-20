@@ -1245,19 +1245,49 @@ def _per_lane_here():
     return _PER_LANE_HERE[0]
 
 
+def _strip_regime(kind: str, nbytes: int, cols: int, rows: int, cap, per_lane_at):
+    """(streams, per-lane target) of a strip call: whether it moves more
+    than the cache holds and keeps the occupancy cap there, and gfx950's
+    measured per-lane target for (kind, cols, rows band), if any."""
+    streams = cap is not None and rows * cols * nbytes * _STRIP_STREAMS.get(kind, 2) > cap[0]
+    at, capped = None, True
+    if nbytes == 2:
+        band = ("short" if rows < _STRIP_AT_ROWS else
+                "long" if rows >= _STRIP_LONG_ROWS else "mid")
+        at, capped = per_lane_at.get((kind, cols, band), (None, True))
+    return streams and capped, at
+
+
+def strip_plan_for(kind: str, nbytes: int, cols: int, rows: int,
+                   arch: Optional[str] = None):
+    """(WARPS, CHUNKS, RUN, EXACT, RESERVE): the strip plan hk.ops runs `kind`
+    ("rms", "layer", "softmax", "rmsw", "addrmsw", "quantize") on, over `rows`
+    rows of `cols` elements of `nbytes` each, on `arch` (the current one if
+    not given) -- or None where the target has no strips or the row is too
+    wide for one. The same answer _resolve_strip gives the norm kernels,
+    without the kernel: hk.templates.rowwise plans with it."""
+    from ..target import current_arch, get_target  # noqa: PLC0415
+
+    arch = arch or current_arch()
+    tgt = get_target(arch)
+    if not tgt.strips:
+        return None
+    cap = _STRIP_RESERVE_AT.get(arch)
+    streams, at = _strip_regime(kind, nbytes, cols, rows, cap,
+                                _STRIP_PER_LANE_AT if arch in _STRIP_PER_LANE_ARCHS else {})
+    p = strip_plan(cols, kind, nbytes, wave=tgt.wave, per_lane=at)
+    if p is None:
+        return None
+    return (*p, cap[1] if streams else 0)
+
+
 def _resolve_strip(kind: str, dtype, cols: int, rows: int):
     """(kernel, CHUNKS, RUN, EXACT, RESERVE), or None for a row too wide for a
     strip. RESERVE caps the workgroups a WGP (a CU on gfx950) holds when the
     call streams HBM: see _STRIP_RESERVE and _STRIP_RESERVE_AT."""
     nbytes = getattr(dtype, "itemsize", 2)
     cap = _reserve_here()
-    streams = cap is not None and rows * cols * nbytes * _STRIP_STREAMS.get(kind, 2) > cap[0]
-    at, capped = None, True
-    if nbytes == 2:
-        band = ("short" if rows < _STRIP_AT_ROWS else
-                "long" if rows >= _STRIP_LONG_ROWS else "mid")
-        at, capped = _per_lane_here().get((kind, cols, band), (None, True))
-    streams = streams and capped
+    streams, at = _strip_regime(kind, nbytes, cols, rows, cap, _per_lane_here())
     key = ("strip", kind, dtype, cols, streams, at)
     got = _PLAN_CACHE.get(key, False)
     if got is False:

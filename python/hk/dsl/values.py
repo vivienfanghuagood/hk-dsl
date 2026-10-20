@@ -649,6 +649,15 @@ def binary(op: str, a: "Value", b, *, into=None):
         raise TypeError(f"{op}: left operand is {a!r}, expected a tile or a vector")
     if isinstance(a, Tile) and isinstance(b, Vec) and op in ("add", "sub", "mul", "div"):
         return broadcast(op, a, b, into=into)
+    if (isinstance(a, Vec) and isinstance(b, Tile) and into is None
+            and op in ("add", "sub", "mul", "div")):
+        # The vector on the left, as in `scale * x` or `m - x`: the same
+        # broadcast, the operands swapped -- one more map for `-` and `/`.
+        if op in ("add", "mul"):
+            return broadcast(op, b, a)
+        if op == "sub":
+            return binary("mul", broadcast("sub", b, a), -1.0)
+        return broadcast("mul", binary("div", full(b.ty, 1.0), b), a)
     _check_map_dtype(op, a.ty)
     if isinstance(b, Int):
         return _make(_BINARY[op], a.ty, (a.v,), into=into, name=op, rhs=b.v)
@@ -738,6 +747,9 @@ class _Elementwise(Value):
 
     def __radd__(self, o): return binary("add", self, o)
     def __rmul__(self, o): return binary("mul", self, o)
+    # A number on the left of `-` or `/`: `1.0 - p`, `127.0 / amax`.
+    def __rsub__(self, o): return binary("add", binary("mul", self, -1.0), o)
+    def __rtruediv__(self, o): return binary("div", full(self.ty, float(o)), self)
 
     def __iadd__(self, o): return self._inplace("add", o)
     def __isub__(self, o): return self._inplace("sub", o)
@@ -761,6 +773,9 @@ class _Elementwise(Value):
 
     def __neg__(self):
         return binary("mul", self, -1.0)
+
+    def __abs__(self):
+        return unary("abs", self)
 
     def maximum(self, o, *, into=None): return binary("max", self, o, into=into)
     def minimum(self, o, *, into=None): return binary("min", self, o, into=into)
