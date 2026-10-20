@@ -360,11 +360,20 @@ def launch(sched: Dict[str, Any], a, b, out):
     return reduce(ws, out)
 
 
-def reduce_epilogue_kernel(splits: int, n: int, epilogue, arch: Optional[str] = None):
-    """(kernel, constexprs) of the reduction of `splits` shares of an N-wide
+#: Warps the epilogue's reduction aims to spread an output over: two a CU
+#: of an MI355X. A split is what small-M shapes take, and at M = 16 a
+#: 4096-wide C is 64K elements -- four chunks a warp and four warps a
+#: workgroup would put 16 workgroups on 256 CUs.
+REDUCE_WARPS = 512
+
+
+def reduce_epilogue_kernel(splits: int, n: int, epilogue, arch: Optional[str] = None,
+                           m: int = 1 << 20):
+    """(kernel, constexprs) of the reduction of `splits` shares of an M x N
     C with hk.templates.gemm's epilogue on the sum: a row of strips a grid
     row (the epilogue's coordinates are C's, so never the flat view), up to
-    four chunks of runs a warp and four warps a workgroup."""
+    four chunks of runs a warp and four warps a workgroup, fewer where that
+    would leave too few warps (REDUCE_WARPS)."""
     from ..target import current_arch, get_target  # noqa: PLC0415
 
     tgt = get_target(arch or current_arch())
@@ -372,8 +381,10 @@ def reduce_epilogue_kernel(splits: int, n: int, epilogue, arch: Optional[str] = 
         raise NotImplementedError(f"a split GEMM's epilogue runs on the strip "
                                   f"reduction, which {tgt.arch} has not got")
     run = 4 if n % (4 * tgt.wave) == 0 else 2
-    cw = run * tgt.wave * max(1, min(4, n // (run * tgt.wave)))
-    warps = max(1, min(4, n // cw))
+    chunk = run * tgt.wave
+    per = max(1, min(4, n // chunk, (m * n) // (REDUCE_WARPS * chunk)))
+    cw = chunk * per
+    warps = max(1, min(4, n // cw, (m * n) // (REDUCE_WARPS * cw * 4) or 1))
     name = _epilogue.name(f"gemm_cdna_dp_sreduce_k{splits}_w{warps}", epilogue)
     if name not in _KERNELS:
         _KERNELS[name] = strip_reduce_kernel(name, splits, warps, arch=arch,
@@ -395,7 +406,7 @@ def reduce(ws, out, strips=None, epilogue=None, operands=(), **consts):
     m, n = out.shape
     tgt = get_target(current_arch())
     if epilogue is not None:
-        k, kc = reduce_epilogue_kernel(splits, n, epilogue)
+        k, kc = reduce_epilogue_kernel(splits, n, epilogue, m=m)
         k(ws, out, *operands, **kc, **consts)
         return out
     flat = out.is_contiguous()

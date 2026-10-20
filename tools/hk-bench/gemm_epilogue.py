@@ -27,18 +27,19 @@ import sys
 import time
 from pathlib import Path
 
-import torch
-import torch.nn.functional as F
-
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-import hk  # noqa: E402
+if sys.argv[1:2] != ["--table"]:            # the table needs neither
+    import torch
+    import torch.nn.functional as F
 
-# Every case compiles its own graph; past dynamo's default limit of 8 it
-# would quietly run the rest eagerly.
-torch._dynamo.config.recompile_limit = 1 << 20
-torch._dynamo.config.cache_size_limit = 1 << 20
-from _timing import burn_in  # noqa: E402
+    import hk  # noqa: E402
+    from _timing import burn_in  # noqa: E402
+
+    # Every case compiles its own graph; past dynamo's default limit of 8 it
+    # would quietly run the rest eagerly.
+    torch._dynamo.config.recompile_limit = 1 << 20
+    torch._dynamo.config.cache_size_limit = 1 << 20
 
 #: (N, K) of each linear layer, unsharded.
 MODELS = {
@@ -71,6 +72,28 @@ def timeit(variants, rounds=7, burst=None, warmup=3):
             torch.cuda.synchronize()
             times[name].append(s.elapsed_time(e) * 1e3 / n)
     return {k: statistics.median(v) for k, v in times.items()}
+
+
+def graphed(variants, burst=10):
+    """{name: thunk} -> {name: replay of `burst` calls captured in a CUDA
+    graph}, for the ones that capture: the GPU's time, without the host's."""
+    out = {}
+    for name, fn in variants.items():
+        try:
+            s = torch.cuda.Stream()
+            s.wait_stream(torch.cuda.current_stream())
+            with torch.cuda.stream(s):
+                fn()
+            torch.cuda.current_stream().wait_stream(s)
+            g = torch.cuda.CUDAGraph()
+            with torch.cuda.graph(g):
+                for _ in range(burst):
+                    fn()
+            out[name] = (lambda g=g: g.replay(), burst)
+        except Exception as e:  # noqa: BLE001 -- recorded, not fatal
+            print(f"  ({name} does not capture: {type(e).__name__}: {str(e)[:80]})")
+    torch.cuda.synchronize()
+    return out
 
 
 def case(model, layer, m, epilogue, use_compile=True):
@@ -121,21 +144,71 @@ def case(model, layer, m, epilogue, use_compile=True):
         comp(x, w)
         variants["compile"] = lambda: comp(x, w)
     t = timeit(variants)
+    dev = {}
+    if GRAPHS:
+        gs = graphed(variants)
+        d = timeit({k_: f for k_, (f, _) in gs.items()}, burst=1)
+        dev = {k_: v / gs[k_][1] for k_, v in d.items()}
     flops = 2 * m * n * k
     return dict(model=model, layer=layer, m=m, n=n, k=k, epilogue=epilogue, err=err,
-                us=t, tflops={k_: flops / v / 1e6 for k_, v in t.items()},
+                us=t, dev_us=dev, tflops={k_: flops / v / 1e6 for k_, v in t.items()},
                 plan=[str(s) for s in T.plan(m, n, k)])
 
 
+#: Also time each variant replayed from a CUDA graph (--graphs).
+GRAPHS = False
+
+
+DEVICE = False
+
+
+def table(paths):
+    """The markdown table docs/templates/gemm.md shows, from result files
+    (--device: the CUDA-graph times where a variant has one)."""
+    global DEVICE
+    if paths and paths[0] == "--device":
+        DEVICE, paths = True, paths[1:]
+    rows, meta = [], None
+    for p in paths:
+        doc = json.loads(Path(p).read_text())
+        meta = meta or doc["meta"]
+        rows += doc["rows"]
+    print(f"{meta['device']} ({meta['arch']}), torch {meta['torch']}, HIP {meta['hip']}, "
+          f"{meta['date']}; {meta['stat']}.")
+    print()
+    print("| layer (N x K) | M | epilogue | hk.ops.matmul | template | vs hk | "
+          "unfused hk + torch | torch.compile | hipBLASLt + torch | template vs "
+          "compile | vs hipBLASLt+ep |")
+    print("|---|---:|---|---:|---:|---:|---:|---:|---:|---:|---:|")
+    names = {"qkv": "qkv", "o": "o_proj", "gate_up": "gate_up", "down": "down"}
+    for r in sorted(rows, key=lambda r: (r["epilogue"], r["n"], r["k"], r["m"])):
+        u = dict(r["us"])
+        if DEVICE and r.get("dev_us"):
+            u.update(r["dev_us"])
+        comp = u.get("compile")
+        print(f"| {r['model']} {names[r['layer']]} ({r['n']} x {r['k']}) | {r['m']} | "
+              f"{r['epilogue']} | {u['hk']:.1f} | {u['tmpl']:.1f} | "
+              f"{u['tmpl'] / u['hk']:.3f} | {u['unfused']:.1f} | "
+              + (f"{comp:.1f}" if comp else "-") + f" | {u['blas']:.1f} | "
+              + (f"{comp / u['tmpl']:.2f}x" if comp else "-")
+              + f" | {u['blas'] / u['tmpl']:.2f}x |")
+
+
 def main():
+    if len(sys.argv) > 1 and sys.argv[1] == "--table":
+        return table(sys.argv[2:])
     ap = argparse.ArgumentParser()
     ap.add_argument("--models", default="qwen3-8b,llama3-8b")
     ap.add_argument("--layers", default="qkv,o,gate_up,down")
     ap.add_argument("--m", default="16,128,1024,4096")
     ap.add_argument("--epilogues", default="bias_gelu,residual")
     ap.add_argument("--no-compile", action="store_true")
+    ap.add_argument("--graphs", action="store_true",
+                    help="also the GPU's time: each variant replayed from a CUDA graph")
     ap.add_argument("--json", default="")
     args = ap.parse_args()
+    global GRAPHS
+    GRAPHS = args.graphs
 
     meta = dict(arch=hk.target.current_arch(), device=torch.cuda.get_device_name(),
                 torch=torch.__version__, hip=torch.version.hip,
@@ -161,6 +234,12 @@ def main():
                             + (f"compile {u['compile']:8.1f}  " if "compile" in u else "")
                             + f"blas+ep {u['blas']:8.1f}  blas {u['blas_plain']:8.1f}  "
                             f"err {r['err']:.1e}")
+                    d = r["dev_us"]
+                    if d:
+                        line += "\n    graph: " + "  ".join(
+                            f"{k_} {v:.1f}" for k_, v in d.items())
+                        if "hk" in d and "tmpl" in d:
+                            line += f"  (tmpl {d['tmpl'] / d['hk']:.3f}x hk)"
                     print(line, flush=True)
     if args.json:
         Path(args.json).write_text(json.dumps(dict(meta=meta, rows=rows), indent=1))

@@ -537,7 +537,7 @@ def prepare(steps: List[Step], ep: Epilogue, m: int, n: int, k: int,
         whole = (lo, hi) == (0, n)
         if st.kernel == "reduce":
             kern, consts = gemm_cdna_dp.reduce_epilogue_kernel(st.sched["splits"],
-                                                               hi - lo, ep)
+                                                               hi - lo, ep, m=m)
             kern.trace(**consts)
             if lo and ep.uses_coords:
                 consts = {**consts, "EP_COL0": lo}
@@ -637,7 +637,7 @@ def kernels(m: int, n: int, k: int, *, epilogue=None, out_dtype=None,
     for st in plan(m, n, k, arch=arch):
         if st.kernel == "reduce":
             kern, consts = gemm_cdna_dp.reduce_epilogue_kernel(
-                st.sched["splits"], st.cols[1] - st.cols[0], ep, arch=arch)
+                st.sched["splits"], st.cols[1] - st.cols[0], ep, arch=arch, m=m)
         elif st.into == "scratch":
             mod = gemm_cdna if st.kernel == "pp" else gemm_cdna_dp
             kern, consts = mod.kernel_for(st.sched), {}
