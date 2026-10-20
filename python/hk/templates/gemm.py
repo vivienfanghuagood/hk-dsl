@@ -61,6 +61,7 @@ from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from .. import dsl as hk
+from ..runtime import ResourceError
 from ..types import (DType, GlobalType, RegTileType, bf16, fp8e4m3, fp8e5m2, fp16,
                      fp32, i8)
 
@@ -73,6 +74,11 @@ ROW, COL, TILE, CONST = "row", "col", "tile", "const"
 #: block of M any route stores (the gfx950 pingpong's), since a vector load
 #: is not bounded and a block of M past C's last row still loads its entries.
 COL_PAD = 256
+
+#: On gfx1100, batches of at most this many rows go to hk.ops.decode_gemm
+#: (with the epilogue) rather than the WMMA kernel's 16-row schedule, which
+#: is what hk.ops.matmul runs. 0: off, as hk.ops.matmul.
+RDNA_DECODE_MAX_M = 0
 
 #: Rows of an accumulator an epilogue with a tile operand read at the store
 #: runs on at a time, the next band's operand loaded under this one's math:
@@ -468,8 +474,11 @@ def plan(m: int, n: int, k: int, arch: Optional[str] = None) -> List[Step]:
         from ..ops import gemm_cdna  # noqa: PLC0415
 
         return _steps_cdna(gemm_cdna.route(m, n, k), m, n, k, 0)
+    from ..ops import decode_gemm  # noqa: PLC0415
     from ..ops import gemm as rdna  # noqa: PLC0415
 
+    if m <= RDNA_DECODE_MAX_M and decode_gemm.fits(m, n, k):
+        return [Step("decode", decode_gemm.schedule_for(m, k), (0, n), True)]
     sched = rdna.schedule_for(m, n, k)
     if k % sched["k_step"] or n % sched["block_n"]:
         raise ValueError(f"hk.templates.gemm: K={k} must be a multiple of "
@@ -551,13 +560,34 @@ def prepare(steps: List[Step], ep: Epilogue, m: int, n: int, k: int,
             calls.append((mod.kernel_for(st.sched), ("a", "b", ws), {}, lo, hi, whole,
                           False))
             continue
-        kern = kernel_for(st, ep)
-        kern.trace()
-        consts = {"EP_COL0": lo} if lo and ep.uses_coords else {}
         extra = ()
         if st.kernel == "decode" and st.sched["splits"] > 1:
             s = st.sched
             extra = decode_gemm.scratch_for(device, s["splits"], s["tokens"], hi - lo)
+        kern = kernel_for(st, ep)
+        try:
+            kern.trace()
+            kern.build()
+        except ResourceError as e:
+            # The epilogue does not fit beside this kernel's registers (the
+            # build refuses a spill). Store the sum in fp32 and run the
+            # epilogue in a pass of its own -- the split-K reduction, of one
+            # share: an extra read and write of C, never a wrong answer.
+            import warnings  # noqa: PLC0415
+
+            warnings.warn(f"hk.templates.gemm: {ep.tag} spills in {st} "
+                          f"({str(e).splitlines()[1].strip()[:80]}...); it runs "
+                          f"in a separate pass over C instead", stacklevel=3)
+            ws1 = gemm_cdna_dp.scratch_for(device, 1, m, hi - lo)
+            k32 = kernel_for(st, bind(_identity, {}, m, n, fp32))
+            calls.append((k32, ("a", "b", ws1, *extra), {}, lo, hi, whole, False))
+            rk, rc = gemm_cdna_dp.reduce_epilogue_kernel(1, hi - lo, ep, m=m)
+            rk.trace(**rc)
+            if lo and ep.uses_coords:
+                rc = {**rc, "EP_COL0": lo}
+            calls.append((rk, (ws1, "out"), rc, lo, hi, whole, True))
+            continue
+        consts = {"EP_COL0": lo} if lo and ep.uses_coords else {}
         calls.append((kern, ("a", "b", "out", *extra), consts, lo, hi, whole, True))
 
     decode = any(st.kernel == "decode" for st in steps)

@@ -177,6 +177,32 @@ def test_a_column_operand_at_a_ragged_m():
         _close(T(a, b, epilogue=T.scale, scale=s), acc * s)
 
 
+def heavy(acc, ctx):
+    """Four tile operands and a GELU each: more than a 64x64 pingpong
+    quadrant or the decode GEMV's combine has registers for."""
+    for t in (ctx.r0, ctx.r1, ctx.r2, ctx.r3):
+        acc += T.gelu_tanh(acc * t)
+    return acc
+
+
+def test_an_epilogue_that_spills_runs_in_a_pass_of_its_own():
+    """The build refuses a spill; the template then stores fp32 and runs the
+    epilogue in a separate pass -- slower, right, and said."""
+    import warnings  # noqa: PLC0415
+
+    gelu = lambda x: F.gelu(x, approximate="tanh")  # noqa: E731
+    for (m, n, k) in [(4, 4096, 4096), (4096, 4096, 1024)]:
+        a, b, acc = _data(m, n, k)
+        rs = [torch.randn(m, n, device="cuda", dtype=torch.bfloat16) for _ in range(4)]
+        with warnings.catch_warnings(record=True):
+            warnings.simplefilter("always")
+            got = T(a, b, epilogue=heavy, r0=rs[0], r1=rs[1], r2=rs[2], r3=rs[3])
+        want = acc
+        for t in rs:
+            want = want + gelu(want * t.float())
+        _close(got, want, rel=2e-2)
+
+
 def test_misuse_is_named():
     a, b, _ = _data(64, 4096, 1024)
     with pytest.raises(ValueError, match="broadcast"):
