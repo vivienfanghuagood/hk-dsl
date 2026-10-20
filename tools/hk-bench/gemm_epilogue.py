@@ -131,6 +131,8 @@ def case(model, layer, m, epilogue, use_compile=True):
 
     got = tmpl()
     err = ((got.float() - ref).abs().max() / ref.abs().max()).item()
+    from hk.ops import decode_gemm  # noqa: PLC0415
+
     variants = {
         "hk": lambda: mm(x, w),
         "tmpl": tmpl,
@@ -138,6 +140,10 @@ def case(model, layer, m, epilogue, use_compile=True):
         "blas": lambda: eager(x, w),
         "blas_plain": lambda: F.linear(x, w),
     }
+    if any(st.kernel == "decode" for st in T.plan(m, n, k)):
+        # The plain kernel the template runs here, where hk.ops.matmul does
+        # not (gfx1100 at M <= 32).
+        variants["hk_decode"] = lambda: decode_gemm.matmul(x, w)
     if use_compile:
         torch._dynamo.reset()
         comp = torch.compile(eager, dynamic=False)
@@ -186,9 +192,12 @@ def table(paths):
         if DEVICE and r.get("dev_us"):
             u.update(r["dev_us"])
         comp = u.get("compile")
+        # Where the template runs the decode GEMV and hk.ops.matmul does not
+        # (gfx1100, M <= 32), its plain kernel is decode_gemm's: marked *.
+        base, mark = (u["hk_decode"], "*") if "hk_decode" in u else (u["hk"], "")
         print(f"| {r['model']} {names[r['layer']]} ({r['n']} x {r['k']}) | {r['m']} | "
-              f"{r['epilogue']} | {u['hk']:.1f} | {u['tmpl']:.1f} | "
-              f"{u['tmpl'] / u['hk']:.3f} | {u['unfused']:.1f} | "
+              f"{r['epilogue']} | {base:.1f}{mark} | {u['tmpl']:.1f} | "
+              f"{u['tmpl'] / base:.3f} | {u['unfused']:.1f} | "
               + (f"{comp:.1f}" if comp else "-") + f" | {u['blas']:.1f} | "
               + (f"{comp / u['tmpl']:.2f}x" if comp else "-")
               + f" | {u['blas'] / u['tmpl']:.2f}x |")
