@@ -60,6 +60,10 @@ def _cases(m, n, k):
         "coords": (mask_cols, {}, lambda c: torch.cat([c[:, :1000], c[:, 1000:] * 0], 1)),
         "chain": (T.chain(T.residual, T.relu), dict(residual=res),
                   lambda c: F.relu(c + res.float())),
+        # operands by parameter name, a keyword-only constant
+        "named": (lambda acc, bias, residual, *, alpha=0.5: (acc + bias) * alpha + residual,
+                  dict(bias=bias, residual=res),
+                  lambda c: (c + bias.float()) * 0.5 + res.float()),
         # a tile read at the store (not init_from): loaded a band ahead
         "tile_mul": (lambda acc, ctx: acc * ctx.gate, dict(gate=res),
                      lambda c: c * res.float()),
@@ -67,7 +71,7 @@ def _cases(m, n, k):
 
 
 NAMES = ["bias", "bias_gelu", "bias_silu", "residual", "bias_residual", "row_scale",
-         "number", "own_gelu", "coords", "chain", "tile_mul"]
+         "number", "own_gelu", "coords", "chain", "tile_mul", "named"]
 
 SHAPES = [(1, 4096, 4096), (33, 6144, 4096), (128, 4096, 4096), (200, 1408, 640),
           (1024, 4096, 4096), (2048, 12288, 4096), (4096, 4224, 1024)]

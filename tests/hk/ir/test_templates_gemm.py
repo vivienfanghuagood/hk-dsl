@@ -254,3 +254,21 @@ def test_a_binding_is_named_the_same_in_every_process():
     assert _ep(scaled(2.0)).tag != _ep(scaled(3.0)).tag
     assert _ep(T.chain(T.bias, T.gelu), {"bias": "row"}).tag != \
         _ep(T.chain(T.bias, T.silu), {"bias": "row"}).tag
+
+
+def named(acc, bias, *, alpha=2.0):
+    return (acc + bias) * alpha
+
+
+def test_operands_bind_by_parameter_name():
+    """fn(acc, bias, *, alpha=2.0): operands by name, as hk.templates.rowwise's
+    hooks take them; a keyword-only parameter a number the call may set."""
+    step = T.plan(1024, 4096, 4096, arch="gfx1100")[0]
+    src = T.kernel_for(step, _ep(named, {"bias": "row"}), arch="gfx1100").source()
+    assert "2.0" in src or "2.000" in src
+    ep3 = TG.Epilogue(named, {"bias": "row", "alpha": "const"}, {"bias": BF16},
+                      {"alpha": 3.0}, BF16)
+    src3 = T.kernel_for(step, ep3, arch="gfx1100").source()
+    assert ("3.0" in src3 or "3.000" in src3) and src3 != src
+    with pytest.raises(AttributeError, match="bias"):
+        T.kernel_for(step, _ep(named, {"gate": "row"}), arch="gfx1100").trace()

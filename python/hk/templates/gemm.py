@@ -241,13 +241,7 @@ class Epilogue:
         #: Set while tracing if the epilogue read ctx.row / ctx.col: a launch
         #: on a column slice of C then passes the slice's offset.
         self.uses_coords = False
-        npar = len([p for p in inspect.signature(fn).parameters.values()
-                    if p.kind in (p.POSITIONAL_ONLY, p.POSITIONAL_OR_KEYWORD)])
-        if npar not in (1, 2):
-            raise TypeError(f"an epilogue is fn(acc) or fn(acc, ctx); "
-                            f"{getattr(fn, '__name__', fn)} takes {npar} "
-                            f"positional parameters")
-        self._takes_ctx = npar == 2
+        _params(_INITS[fn][1] if fn in _INITS else fn)    # checks the shape
         #: The tile operand the accumulator starts as (init_from), or None.
         self.init = _INITS[fn][0] if fn in _INITS else None
         if self.init is not None and kinds.get(self.init) != TILE:
@@ -331,7 +325,7 @@ class Epilogue:
         if self.init is not None and not inited:
             tile += getattr(ctx, self.init)
         fn = rewrite(_INITS[self.fn][1] if self.fn in _INITS else self.fn)
-        got = fn(tile, ctx) if self._takes_ctx else fn(tile)
+        got = _call(fn, _INITS[self.fn][1] if self.fn in _INITS else self.fn, tile, ctx)
         got = tile if got is None else got
         if not isinstance(got, hk.Tile) or (got.ty.rows, got.ty.cols, got.ty.layout) != (
                 tile.ty.rows, tile.ty.cols, tile.ty.layout):
@@ -341,6 +335,34 @@ class Epilogue:
                 f"({tile.ty!r}) or one of the same shape -- C's elements, "
                 f"computed elementwise")
         c[hk.elem_coord(0, 0, r, col)].store(got, bounded=bounded)
+
+
+def _params(fn):
+    """(positional names after acc, keyword-only names with defaults) of an
+    epilogue: fn(acc), fn(acc, ctx), or fn(acc, bias, residual, ..., *,
+    alpha=1.0) -- operands by name, `ctx` for the context, a keyword-only
+    one a number with a default the call may override."""
+    ps = list(inspect.signature(fn).parameters.values())
+    pos = [p for p in ps if p.kind in (p.POSITIONAL_ONLY, p.POSITIONAL_OR_KEYWORD)]
+    kw = [p for p in ps if p.kind is p.KEYWORD_ONLY]
+    if not pos or any(p.kind in (p.VAR_POSITIONAL, p.VAR_KEYWORD) for p in ps):
+        raise TypeError(f"an epilogue is fn(acc, ...): the accumulator, then "
+                        f"`ctx` or operands by name; "
+                        f"{getattr(fn, '__name__', fn)} is {inspect.signature(fn)}")
+    if any(p.default is inspect.Parameter.empty for p in kw):
+        raise TypeError(f"{getattr(fn, '__name__', fn)}: a keyword-only parameter "
+                        f"of an epilogue is a number with a default")
+    return [p.name for p in pos[1:]], {p.name: p.default for p in kw}
+
+
+def _call(rewritten, fn, acc, ctx):
+    """Call epilogue `fn` (traced as `rewritten`) on acc, binding its
+    parameters: `ctx` the context, any other name the operand of that name,
+    a keyword-only one the operand if the call passed it, else its default."""
+    pos, kw = _params(fn)
+    args = [ctx if n == "ctx" else getattr(ctx, n) for n in pos]
+    kws = {n: (getattr(ctx, n) if n in ctx._ep.kinds else d) for n, d in kw.items()}
+    return rewritten(acc, *args, **kws)
 
 
 def _fn_key(fn) -> str:
@@ -872,16 +894,14 @@ def chain(*fns: Callable) -> Callable:
     if fns and fns[0] in _INITS:
         name, first = _INITS[fns[0]]
         return init_from(name)(chain(first, *fns[1:]))
-    takes = [len([p for p in inspect.signature(f).parameters.values()
-                  if p.kind in (p.POSITIONAL_ONLY, p.POSITIONAL_OR_KEYWORD)]) == 2
-             for f in fns]
+    for f in fns:
+        _params(f)
 
     def chained(acc, ctx):
         from ..dsl.rewrite import rewrite  # noqa: PLC0415
 
-        for f, t in zip(fns, takes):
-            f = rewrite(f)
-            got = f(acc, ctx) if t else f(acc)
+        for f in fns:
+            got = _call(rewrite(f), f, acc, ctx)
             acc = acc if got is None else got
         return acc
 
@@ -909,14 +929,10 @@ def init_from(name: str) -> Callable:
         raise TypeError(f"init_from takes an operand's name, not {name!r}")
 
     def deco(fn):
-        n = len([p for p in inspect.signature(fn).parameters.values()
-                 if p.kind in (p.POSITIONAL_ONLY, p.POSITIONAL_OR_KEYWORD)])
-        if n == 1:
-            def wrapped(acc):
-                return fn(acc)
-        else:
-            def wrapped(acc, ctx):
-                return fn(acc, ctx)
+        _params(fn)
+
+        def wrapped(acc, ctx):
+            return _call(fn, fn, acc, ctx)
         wrapped.__name__ = getattr(fn, "__name__", "fn")
         wrapped.__qualname__ = "init_from(%r)(%s)" % (name, getattr(fn, "__qualname__", "?"))
         wrapped.__doc__ = getattr(fn, "__doc__", None)

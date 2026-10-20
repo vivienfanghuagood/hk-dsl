@@ -74,7 +74,15 @@ may be `torch.empty(..., device="meta")`.
 def epilogue(acc, ctx):     # or epilogue(acc), if it reads nothing
     ...
     return tile             # what to store; or None, having written acc in place
+
+def epilogue(acc, bias, residual, *, alpha=1.0):   # the same, operands by name
+    return (acc + bias) * alpha + residual
 ```
+
+The parameters after `acc` are bound by name: `ctx` is the context, any
+other name the operand the call passed by that name (as
+`hk.templates.rowwise`'s hooks take theirs), and a keyword-only parameter a
+number with a default that the call may override (`alpha=0.5`).
 
 It is traced like an `@hk.func` body ([the language](../language.md)), once
 per kernel and per accumulator tile the kernel stores:
