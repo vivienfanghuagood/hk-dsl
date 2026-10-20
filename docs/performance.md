@@ -995,36 +995,39 @@ queued behind a GPU spin, median of 7 rounds of 50 calls. The arms are torch
 and FlyDSL 0.4.0's dispatcher and autotuner (norms and softmax; it has no
 standalone kernel for the rest). The cells give hk's time over the fastest
 other arm's; a tie is within the larger of 2% and the two arms' noise. One
-run, after [gfx950's leftovers](history/41-cdna-leftovers.md) (the 16-byte
-RoPE, per-lane norm targets, placement-proof elementwise plans); the last
-column is chapter 37's run.
+run, after [gfx950's last rows](history/43-cdna-last-rows.md) (strip kernels
+on flat `__restrict__` arguments, preloaded past 32 MB moved, the 2048-row
+fused add a warp a row, RoPE's eight-byte runs at 40 heads), with
+`--rotate-buffers`: each round every arm takes the next arm's output buffer,
+because at one row which buffer a kernel writes moves it 0.1 us. The last
+column is [chapter 41](history/41-cdna-leftovers.md)'s run.
 
-| op | 1-32 rows | 2048 rows | 8192 rows | verdicts | chapter 37: verdicts |
+| op | 1-32 rows | 2048 rows | 8192 rows | verdicts | chapter 41: verdicts |
 |---|---|---|---|---|---|
-| rms_norm | 0.99-1.02 | 1.01-1.09 | 1.00-1.02 | 9 tie, 3 win | 1 loss, 9 tie, 2 win |
-| rmsnorm | 0.97-1.01 | 1.02-1.04 | 0.99-1.00 | 1 loss, 10 tie, 1 win | 4 loss, 8 tie |
-| layernorm | 1.00-1.05 | 1.01-1.16 | 0.98-1.01 | 2 loss, 4 tie, 6 win | 3 loss, 4 tie, 5 win |
-| fused add + RMSNorm | 0.96-1.02 | 0.95-1.00 | 0.99-1.01 | 3 loss, 8 tie, 1 win | 3 loss, 8 tie, 1 win |
-| softmax | 0.99-1.00 | 0.98-0.99 | 0.99-1.01 | 12 tie | 4 loss, 8 tie |
-| int8 quantize | 1.03-1.05 | 0.98-1.03 | 0.98-1.02 | 1 loss, 2 tie, 9 win | 2 loss, 2 tie, 8 win |
-| add | 0.97-1.04 | 0.98-1.05 | 1.00 | 1 loss, 9 tie, 2 win | 5 loss, 6 tie, 1 win |
-| mul | 0.97-1.04 | 0.98-1.05 | 0.99-1.00 | 1 loss, 8 tie, 3 win | 5 loss, 6 tie, 1 win |
-| exp | 0.98-1.02 | 1.00-1.05 | 1.00 | 1 loss, 9 tie, 2 win | 2 loss, 9 tie, 1 win |
-| silu_mul (gate/up halves in place) | 1.03-1.05 | 1.00-1.01 | 1.08-1.11 | 3 tie, 9 win | 2 tie, 10 win |
-| RoPE (`hk.ops.rotary`) | 1.05-1.06 | 0.97-1.06 | 0.96-0.99 | 2 loss, 3 tie, 7 win | 4 loss, 1 tie, 7 win |
+| rms_norm | 1.00 | 1.02-1.14 | 1.00-1.02 | 7 tie, 5 win | 9 tie, 3 win |
+| rmsnorm | 1.00 | 1.03-1.07 | 1.00-1.01 | 9 tie, 3 win | 1 loss, 10 tie, 1 win |
+| layernorm | 1.00-1.05 | 1.02-1.22 | 0.99-1.02 | 5 tie, 7 win | 2 loss, 4 tie, 6 win |
+| fused add + RMSNorm | 0.99-1.00 | 0.99-1.01 | 1.00-1.01 | 12 tie | 3 loss, 8 tie, 1 win |
+| softmax | 0.99-1.00 | 0.99-1.04 | 1.02-1.04 | 9 tie, 3 win | 12 tie |
+| int8 quantize | 1.04-1.05 | 0.99-1.04 | 0.99-1.04 | 3 tie, 9 win | 1 loss, 2 tie, 9 win |
+| add | 0.99-1.01 | 1.00-1.04 | 1.00-1.01 | 11 tie, 1 win | 1 loss, 9 tie, 2 win |
+| mul | 0.99-1.01 | 1.00-1.05 | 1.00-1.01 | 11 tie, 1 win | 1 loss, 8 tie, 3 win |
+| exp | 0.98-1.02 | 1.04-1.06 | 1.01-1.02 | 1 loss, 8 tie, 3 win | 1 loss, 9 tie, 2 win |
+| silu_mul (gate/up halves in place) | 1.04-1.06 | 1.00-1.03 | 1.10-1.12 | 2 tie, 10 win | 3 tie, 9 win |
+| RoPE (`hk.ops.rotary`) | 1.03-1.06 | 0.99-1.05 | 0.98-1.01 | 4 tie, 8 win | 2 loss, 3 tie, 7 win |
 
-120 of 132 cases tie or win (chapter 37: 99). At 1-32 rows every arm sits at
-a 3.8-4.2 us floor. The 12 losses are 0.95-0.98x:
-- five at that floor (3.90-3.97 us to 3.79-3.81);
-- fused add + RMSNorm at 2048x4096 and 2048x8192 (0.97, 0.95x; no per-lane
-  plan closes it);
-- layernorm at 8192x4096 and 8192x8192 (0.98x);
-- quantize at 2048x8192 (0.98x);
-- RoPE at 2048x64 and 8192x40 (0.97, 0.96x).
-
-Examples at 8192x8192: rms_norm 37.5 us against tuned Triton's 38.1, softmax
-39.9 against FlyDSL's 39.7. silu_mul at 8192x28672 takes 225.7 us against
-tuned Triton's 250.3.
+131 of 132 cases tie or win (chapter 41: 120; re-measured on its tree, 117);
+a second rotated run gave 128, its four losses three floor cases and RoPE at
+8192x40 (0.977x).
+Without rotation the same tree gives 126, every case past 32 rows a tie or
+a win and the six losses at 1-32 rows (0.97-0.98x).
+At 1-32 rows every arm sits at the card's floor, an empty kernel's 3.80 us
+plus 0.05-0.1. The one loss is there: exp 1x5120 at 0.979x (3.88 us against
+torch's 3.80), a case that was 1.015, 1.000, 0.997 and 0.979x in four runs.
+The fused add + RMSNorm at 2048x8192 takes 19.17 us against tuned Triton's
+19.38, RoPE at 8192x40 24.61 against 24.20. At 8192x8192 rms_norm takes 37.2
+us against tuned Triton's 38.1, softmax 38.1 against FlyDSL's 39.7;
+silu_mul at 8192x28672 226.1 against tuned Triton's 251.3.
 
 ### GEMM: hk's own
 
