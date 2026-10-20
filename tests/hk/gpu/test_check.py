@@ -78,3 +78,24 @@ def test_cli_ref_expression_over_an_op(capsys):
     out = json.loads(capsys.readouterr().out)
     assert code == 0, out
     assert out["builds"] and out["cases"][0]["correct"]["ok"]
+
+
+def test_inplace_arguments():
+    """vLLM's fused_add_rms_norm updates x and residual in place: --inplace
+    gives the reference their values before the call and compares both."""
+    import torch
+
+    import hk
+
+    def reference(x, r, w):
+        s = x + r
+        return s * torch.rsqrt(s.pow(2).mean(-1, keepdim=True) + 1e-6) * w, s
+
+    def inputs(device):
+        x = torch.randn(64, 4096, device=device, dtype=torch.bfloat16)
+        return x, torch.randn_like(x), torch.randn(4096, device=device, dtype=torch.bfloat16)
+
+    r = hk.check(hk.ops.fused_add_rms_norm, reference, inputs, inplace=[0, 1],
+                 time=False)
+    assert r.status == "pass", str(r)
+    assert len(r.cases[0]["correct"]["outputs"]) == 2

@@ -18,7 +18,7 @@ Correctness, resources and timing of a kernel in one call; the guide is [docs/ch
 ### `hk.check.check`
 
 ```python
-hk.check.check(fn, reference: Optional[Callable] = None, inputs=None, *, cases: Optional[Sequence] = None, consts: Optional[Dict[str, Any]] = None, outputs: Optional[Sequence] = None, baselines: Sequence[str] = ('eager', 'compile'), extra: Optional[Dict[str, Callable]] = None, rtol: Optional[float] = None, atol: Optional[float] = None, exact: bool = False, ref_precision: str = 'fp32', time: bool = True, rounds: int = 15, warmup: int = 3, batch_ms: float = 1.0, burn: float = 0.5, compile_mode: Optional[str] = None, bytes: Optional[float] = None, flops: Optional[float] = None, name: Optional[str] = None, gpu: Optional[bool] = None, build: bool = True, seed: int = 0) -> Report
+hk.check.check(fn, reference: Optional[Callable] = None, inputs=None, *, cases: Optional[Sequence] = None, consts: Optional[Dict[str, Any]] = None, outputs: Optional[Sequence] = None, inplace: Optional[Sequence] = None, baselines: Sequence[str] = ('eager', 'compile'), extra: Optional[Dict[str, Callable]] = None, rtol: Optional[float] = None, atol: Optional[float] = None, exact: bool = False, ref_precision: str = 'fp32', time: bool = True, rounds: int = 15, warmup: int = 3, batch_ms: float = 1.0, burn: float = 0.5, compile_mode: Optional[str] = None, bytes: Optional[float] = None, flops: Optional[float] = None, name: Optional[str] = None, gpu: Optional[bool] = None, build: bool = True, seed: int = 0) -> Report
 ```
 
 *New after 0.4.0* (the `hk.check` module is not in the 0.4.0 wheel)
@@ -37,7 +37,12 @@ consts     constexprs for a raw kernel, passed as `k(*tensors, **consts)`
 outputs    which arguments are outputs (indices or a raw kernel's
            parameter names): for a function that writes into an
            argument instead of returning. A raw kernel's default is the
-           tensors it stores into (`TracedKernel.written_tensors`)
+           tensors it stores into (`TracedKernel.written_tensors`).
+           They are NaN-filled first and not passed to the reference
+inplace    arguments updated in place (read, then written): passed to
+           the reference as they were, compared after the call. The
+           reference returns the outputs and in-place arguments in
+           argument order
 baselines  which of "eager" (the reference itself) and "compile"
            (`torch.compile(reference, mode=compile_mode)`) to time
 extra      more contenders, {name: callable taking the reference's
@@ -253,6 +258,7 @@ Each card's ceilings, for the bandwidth and FLOP rates the summary prints (tools
 | `--inputs INPUTS` | a case's inputs (a spec, or FILE.py:name); repeat for more cases |
 | `--const K=V` | a constexpr for a raw kernel (repeatable) |
 | `--outputs OUTPUTS` | comma list of output arguments (indices or a raw kernel's parameter names) |
+| `--inplace INPLACE` | comma list of arguments updated in place (read, then written): given to the reference, compared after |
 | `--baseline NAME=REF` | another contender, e.g. ops=hk.ops:silu_mul (repeatable) |
 | `--no-eager` | do not time torch eager |
 | `--no-compile` | do not time torch.compile |

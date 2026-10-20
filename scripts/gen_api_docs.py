@@ -121,6 +121,13 @@ ARCH_RULES.update({
         ("`group`", "compiled in; must match the tensors", "ignored (read off the shapes)"),
         ("head_dim", "a multiple of 32 up to 192", "64 or 128")],
     "paged_prefill.work_list": [("query tile", "192 rows, in order", "256 rows, longest first")],
+    "dequantize": [("all of it", "the same tile kernel, at least 16 x 64", "the same")],
+    "moe.moe_gemm": [("all of it", "one code path", "the same")],
+    "moe.moe_align": [("all of it", "one code path", "the same")],
+    "w4a16.matmul": [("all of it", "one code path", "the same")],
+    "decode_gemm.matmul": [("all of it", "one code path (non-contiguous operands "
+                                         "are copied)", "the same")],
+    "paged.merge_splits": [("all of it", "torch, arch-neutral", "the same")],
     "hipkittens.gemm_bf16": [("availability", "`WrongArch`", "runs")],
     "hipkittens.gqa_fwd": [("availability", "`WrongArch`", "runs")],
 })

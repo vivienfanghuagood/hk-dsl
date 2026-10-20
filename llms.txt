@@ -28,7 +28,7 @@ python -m hk.check gelu_mul.py:gelu_mul --ref "F.gelu(a, approximate='tanh') * b
     --inputs "bf16[4096,14336], bf16[4096,14336], bf16[4096,14336]" --json out.json
 ```
 
-Measured with that command (torch 2.10, interleaved in one process): on an MI355X it ties torch.compile at 4096x14336 (61.7 vs 61.9 us) and is 3.7x it at 16x14336; on a W7900D 1.02x (500.4 vs 511.5 us) and 4.7x; ragged shapes (100x1000) run on both. The same op on 16x64 register tiles (`hk.RT`), as a first page usually teaches, is 0.54x torch.compile on the MI355X. Streaming kernels (elementwise, row-wise) go on strips (`hk.RS`); matrix-core kernels (GEMM, attention) on tiles (`hk.RT`) staged through LDS (`hk.ST`).
+Measured with hk.check (torch 2.10, interleaved in one process): on an MI355X it ties torch.compile at 4096x14336 (61.7 vs 61.9 us) and is 3.7x it at 16x14336; on a W7900D 1.02x (500.4 vs 511.5 us) and 4.7x; ragged shapes (100x1000) run on both. The same op on 16x64 register tiles (`hk.RT`), as a first page usually teaches, is 0.54x torch.compile on the MI355X. Streaming kernels (elementwise, row-wise) go on strips (`hk.RS`); matrix-core kernels (GEMM, attention) on tiles (`hk.RT`) staged through LDS (`hk.ST`).
 
 ## Docs
 

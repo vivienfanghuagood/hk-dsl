@@ -135,7 +135,11 @@ For a raw kernel the reference takes the tensors the kernel only reads and
 returns the ones it writes, in order (`TracedKernel.written_tensors`).
 Constexprs are `--const NAME=VALUE`. A function's reference takes the same
 arguments the function does. A function that writes into an argument
-instead of returning names it: `--outputs 2`.
+instead of returning names it: `--outputs 2` (outputs are NaN-filled before
+the call and not given to the reference). An argument updated in place --
+read, then written, as `fused_add_rms_norm`'s `x` and `residual` -- is
+`--inplace NAME` (or an index): the reference gets it as it was and returns
+its new value, in argument order with the outputs.
 
 **The reference** (`--ref`): `FILE.py:name`, `module:name`, a `lambda`, or an
 expression over the reference's argument names -- the target's own parameter
@@ -284,4 +288,6 @@ facts that change a kernel's plan are in [hk.target](api/hk.target.md).
   needs a GPU tensor to decide what to launch is reported as not
   discoverable; check its kernel directly.
 - `hk.__version__` of a checkout is its last release's; the report's
-  `versions` carries `hk_commit` where git can see the checkout.
+  `versions` carries `hk_commit` where git can see the checkout, and
+  `hk_src` (a hash of the package's Python sources) everywhere, so two
+  reports from the same code say so.

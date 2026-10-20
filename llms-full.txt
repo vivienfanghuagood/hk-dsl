@@ -123,7 +123,9 @@ a strip (`!hk.rt<f32, 1x1024, strip<8>>`, `kittens::rs`):
 - **Limits.** It is never an MMA operand or an LDS tile. It exists where
   `Target.strips` says: gfx1100 (include/rdna3) and gfx950 (hk's wave64
   port in `include/hk/cdna.cuh`); gfx1201 and gfx942 refuse it while
-  tracing.
+  tracing. The gfx950 port is newer than the 0.4.0 wheel on PyPI, which
+  refuses strips there: install from a checkout for them
+  ([what each version has](api/README.md)).
 
 ```python
 # WARPS and EPS are constexprs; row and warp come from hk.arch
@@ -559,7 +561,11 @@ For a raw kernel the reference takes the tensors the kernel only reads and
 returns the ones it writes, in order (`TracedKernel.written_tensors`).
 Constexprs are `--const NAME=VALUE`. A function's reference takes the same
 arguments the function does. A function that writes into an argument
-instead of returning names it: `--outputs 2`.
+instead of returning names it: `--outputs 2` (outputs are NaN-filled before
+the call and not given to the reference). An argument updated in place --
+read, then written, as `fused_add_rms_norm`'s `x` and `residual` -- is
+`--inplace NAME` (or an index): the reference gets it as it was and returns
+its new value, in argument order with the outputs.
 
 **The reference** (`--ref`): `FILE.py:name`, `module:name`, a `lambda`, or an
 expression over the reference's argument names -- the target's own parameter
@@ -708,7 +714,9 @@ facts that change a kernel's plan are in [hk.target](api/hk.target.md).
   needs a GPU tensor to decide what to launch is reported as not
   discoverable; check its kernel directly.
 - `hk.__version__` of a checkout is its last release's; the report's
-  `versions` carries `hk_commit` where git can see the checkout.
+  `versions` carries `hk_commit` where git can see the checkout, and
+  `hk_src` (a hash of the package's Python sources) everywhere, so two
+  reports from the same code say so.
 
 
 <!-- docs/api/hk.md -->
@@ -3093,6 +3101,12 @@ hk.ops.dequantize(q, scales, dtype=None, out=None)
 
 q * scales[..., None], back to a float dtype.
 
+**Per architecture** ([audit](../dx/api-consistency.md)):
+
+| | gfx1100 (RDNA3) | gfx950 (CDNA4) |
+|---|---|---|
+| all of it | the same tile kernel, at least 16 x 64 | the same |
+
 ## GEMM and attention
 
 ### `hk.ops.matmul`
@@ -3262,6 +3276,12 @@ KV traffic the splits exist to parallelise. If it shows up in a profile it
 becomes a kernel; writing it as one first would be optimising a thing
 nobody has measured.
 
+**Per architecture** ([audit](../dx/api-consistency.md)):
+
+| | gfx1100 (RDNA3) | gfx950 (CDNA4) |
+|---|---|---|
+| all of it | torch, arch-neutral | the same |
+
 ### `hk.ops.paged_prefill.kernel_for`
 
 ```python
@@ -3310,6 +3330,12 @@ if given, is the (M, N) bf16 tensor to write.
 `override` replaces fields of the schedule (slices, warps, combine_depth,
 resident, splits) -- for measuring, not for use.
 
+**Per architecture** ([audit](../dx/api-consistency.md)):
+
+| | gfx1100 (RDNA3) | gfx950 (CDNA4) |
+|---|---|---|
+| all of it | one code path (non-contiguous operands are copied) | the same |
+
 ### `hk.ops.moe.moe_gemm`
 
 ```python
@@ -3322,6 +3348,12 @@ assignment, one pair per block, `expert_ids` then being the flattened
 top-k ids. `topk_weights` given multiplies each row by its routing
 weight. Raises ValueError for a GEMM `takes` refuses.
 
+**Per architecture** ([audit](../dx/api-consistency.md)):
+
+| | gfx1100 (RDNA3) | gfx950 (CDNA4) |
+|---|---|---|
+| all of it | one code path | the same |
+
 ### `hk.ops.moe.moe_align`
 
 ```python
@@ -3331,6 +3363,12 @@ hk.ops.moe.moe_align(topk_ids, block_m: int, num_experts: int)
 A torch moe_align_block_size, for tests and for running without vLLM:
 (sorted_ids, expert_ids, num_tokens_post_padded).
 
+**Per architecture** ([audit](../dx/api-consistency.md)):
+
+| | gfx1100 (RDNA3) | gfx950 (CDNA4) |
+|---|---|---|
+| all of it | one code path | the same |
+
 ### `hk.ops.w4a16.matmul`
 
 ```python
@@ -3339,6 +3377,12 @@ hk.ops.w4a16.matmul(x, qw, s, zs, group: int, out=None)
 
 x @ W.T for W in hk's 4-bit layout: the decode kernel up to 64 rows of
 x, dequantize-then-F.linear above (or for a shape it does not take).
+
+**Per architecture** ([audit](../dx/api-consistency.md)):
+
+| | gfx1100 (RDNA3) | gfx950 (CDNA4) |
+|---|---|---|
+| all of it | one code path | the same |
 
 ### `hk.ops.hipkittens.gemm_bf16`
 
@@ -3431,7 +3475,7 @@ Correctness, resources and timing of a kernel in one call; the guide is [docs/ch
 ### `hk.check.check`
 
 ```python
-hk.check.check(fn, reference: Optional[Callable] = None, inputs=None, *, cases: Optional[Sequence] = None, consts: Optional[Dict[str, Any]] = None, outputs: Optional[Sequence] = None, baselines: Sequence[str] = ('eager', 'compile'), extra: Optional[Dict[str, Callable]] = None, rtol: Optional[float] = None, atol: Optional[float] = None, exact: bool = False, ref_precision: str = 'fp32', time: bool = True, rounds: int = 15, warmup: int = 3, batch_ms: float = 1.0, burn: float = 0.5, compile_mode: Optional[str] = None, bytes: Optional[float] = None, flops: Optional[float] = None, name: Optional[str] = None, gpu: Optional[bool] = None, build: bool = True, seed: int = 0) -> Report
+hk.check.check(fn, reference: Optional[Callable] = None, inputs=None, *, cases: Optional[Sequence] = None, consts: Optional[Dict[str, Any]] = None, outputs: Optional[Sequence] = None, inplace: Optional[Sequence] = None, baselines: Sequence[str] = ('eager', 'compile'), extra: Optional[Dict[str, Callable]] = None, rtol: Optional[float] = None, atol: Optional[float] = None, exact: bool = False, ref_precision: str = 'fp32', time: bool = True, rounds: int = 15, warmup: int = 3, batch_ms: float = 1.0, burn: float = 0.5, compile_mode: Optional[str] = None, bytes: Optional[float] = None, flops: Optional[float] = None, name: Optional[str] = None, gpu: Optional[bool] = None, build: bool = True, seed: int = 0) -> Report
 ```
 
 *New after 0.4.0* (the `hk.check` module is not in the 0.4.0 wheel)
@@ -3450,7 +3494,12 @@ consts     constexprs for a raw kernel, passed as `k(*tensors, **consts)`
 outputs    which arguments are outputs (indices or a raw kernel's
            parameter names): for a function that writes into an
            argument instead of returning. A raw kernel's default is the
-           tensors it stores into (`TracedKernel.written_tensors`)
+           tensors it stores into (`TracedKernel.written_tensors`).
+           They are NaN-filled first and not passed to the reference
+inplace    arguments updated in place (read, then written): passed to
+           the reference as they were, compared after the call. The
+           reference returns the outputs and in-place arguments in
+           argument order
 baselines  which of "eager" (the reference itself) and "compile"
            (`torch.compile(reference, mode=compile_mode)`) to time
 extra      more contenders, {name: callable taking the reference's
@@ -3666,6 +3715,7 @@ Each card's ceilings, for the bandwidth and FLOP rates the summary prints (tools
 | `--inputs INPUTS` | a case's inputs (a spec, or FILE.py:name); repeat for more cases |
 | `--const K=V` | a constexpr for a raw kernel (repeatable) |
 | `--outputs OUTPUTS` | comma list of output arguments (indices or a raw kernel's parameter names) |
+| `--inplace INPLACE` | comma list of arguments updated in place (read, then written): given to the reference, compared after |
 | `--baseline NAME=REF` | another contender, e.g. ops=hk.ops:silu_mul (repeatable) |
 | `--no-eager` | do not time torch eager |
 | `--no-compile` | do not time torch.compile |

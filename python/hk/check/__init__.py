@@ -193,6 +193,16 @@ def versions() -> Dict[str, str]:
                                  capture_output=True, text=True, timeout=10).stdout.strip()
             if sha:
                 out["hk_commit"] = sha
+        # Which code, where git cannot say (a container, a wheel): a hash of
+        # the package's Python sources.
+        import hashlib  # noqa: PLC0415
+        from pathlib import Path  # noqa: PLC0415
+
+        h = hashlib.sha256()
+        for p in sorted(Path(here).rglob("*.py")):
+            if "_mlir" not in p.parts:
+                h.update(p.read_bytes())
+        out["hk_src"] = h.hexdigest()[:12]
     except Exception:  # noqa: BLE001
         pass
     try:
@@ -631,6 +641,7 @@ def check(fn, reference: Optional[Callable] = None, inputs=None, *,
           cases: Optional[Sequence] = None,
           consts: Optional[Dict[str, Any]] = None,
           outputs: Optional[Sequence] = None,
+          inplace: Optional[Sequence] = None,
           baselines: Sequence[str] = ("eager", "compile"),
           extra: Optional[Dict[str, Callable]] = None,
           rtol: Optional[float] = None, atol: Optional[float] = None,
@@ -655,7 +666,12 @@ def check(fn, reference: Optional[Callable] = None, inputs=None, *,
     outputs    which arguments are outputs (indices or a raw kernel's
                parameter names): for a function that writes into an
                argument instead of returning. A raw kernel's default is the
-               tensors it stores into (`TracedKernel.written_tensors`)
+               tensors it stores into (`TracedKernel.written_tensors`).
+               They are NaN-filled first and not passed to the reference
+    inplace    arguments updated in place (read, then written): passed to
+               the reference as they were, compared after the call. The
+               reference returns the outputs and in-place arguments in
+               argument order
     baselines  which of "eager" (the reference itself) and "compile"
                (`torch.compile(reference, mode=compile_mode)`) to time
     extra      more contenders, {name: callable taking the reference's
@@ -769,20 +785,29 @@ def check(fn, reference: Optional[Callable] = None, inputs=None, *,
             _err(report, "inputs", e)
             continue
         case["inputs"] = describe(args)
-        # Which arguments are outputs.
+        # Which arguments are outputs (written only) and in place (read
+        # and written).
+        try:
+            names = [p.name for p in fn.trace(**consts).tensors()] if is_kernel else []
+        except Exception as e:  # noqa: BLE001
+            _err(report, "trace", e)
+            continue
+
+        def index(o):
+            return names.index(o) if isinstance(o, str) else int(o)
+
+        in_idx = [index(o) for o in (inplace or [])]
         out_idx: List[int] = []
         if outputs is not None:
-            names = []
-            if is_kernel:
-                names = [p.name for p in fn.trace(**consts).tensors()]
-            for o in outputs:
-                out_idx.append(names.index(o) if isinstance(o, str) else int(o))
+            out_idx = [index(o) for o in outputs]
         elif is_kernel:
             try:
                 out_idx = _kernel_outputs(fn, consts, len(args))
             except Exception as e:  # noqa: BLE001
                 _err(report, "trace", e)
                 continue
+        out_idx = [i for i in out_idx if i not in in_idx]
+        compared = sorted(set(out_idx) | set(in_idx))
         ref_args = [a for i, a in enumerate(args) if i not in out_idx]
 
         # The reference, in fp32 unless asked otherwise.
@@ -817,7 +842,7 @@ def check(fn, reference: Optional[Callable] = None, inputs=None, *,
         add_builds(rec.calls)
         if len(report.errors) > n_errors:      # this case's kernels did not build
             continue
-        got = [mine[i] for i in out_idx] if out_idx else _outputs_of(res)
+        got = [mine[i] for i in compared] if compared else _outputs_of(res)
         case["first_call_s"] = first
 
         if want is not None:
@@ -881,7 +906,7 @@ def check(fn, reference: Optional[Callable] = None, inputs=None, *,
         nbytes = bytes
         if nbytes is None:
             nbytes = sum(a.numel() * a.element_size() for a in args if _is_tensor(a))
-            if not out_idx:
+            if not compared:
                 nbytes += sum(g.numel() * g.element_size() for g in got)
         tm: Dict[str, Any] = {"rounds": rounds, "calls_per_round": calls,
                               "bytes": nbytes, "flops": flops, "ms": {}}

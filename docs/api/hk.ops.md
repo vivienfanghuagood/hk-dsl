@@ -300,6 +300,12 @@ hk.ops.dequantize(q, scales, dtype=None, out=None)
 
 q * scales[..., None], back to a float dtype.
 
+**Per architecture** ([audit](../dx/api-consistency.md)):
+
+| | gfx1100 (RDNA3) | gfx950 (CDNA4) |
+|---|---|---|
+| all of it | the same tile kernel, at least 16 x 64 | the same |
+
 ## GEMM and attention
 
 ### `hk.ops.matmul`
@@ -469,6 +475,12 @@ KV traffic the splits exist to parallelise. If it shows up in a profile it
 becomes a kernel; writing it as one first would be optimising a thing
 nobody has measured.
 
+**Per architecture** ([audit](../dx/api-consistency.md)):
+
+| | gfx1100 (RDNA3) | gfx950 (CDNA4) |
+|---|---|---|
+| all of it | torch, arch-neutral | the same |
+
 ### `hk.ops.paged_prefill.kernel_for`
 
 ```python
@@ -517,6 +529,12 @@ if given, is the (M, N) bf16 tensor to write.
 `override` replaces fields of the schedule (slices, warps, combine_depth,
 resident, splits) -- for measuring, not for use.
 
+**Per architecture** ([audit](../dx/api-consistency.md)):
+
+| | gfx1100 (RDNA3) | gfx950 (CDNA4) |
+|---|---|---|
+| all of it | one code path (non-contiguous operands are copied) | the same |
+
 ### `hk.ops.moe.moe_gemm`
 
 ```python
@@ -529,6 +547,12 @@ assignment, one pair per block, `expert_ids` then being the flattened
 top-k ids. `topk_weights` given multiplies each row by its routing
 weight. Raises ValueError for a GEMM `takes` refuses.
 
+**Per architecture** ([audit](../dx/api-consistency.md)):
+
+| | gfx1100 (RDNA3) | gfx950 (CDNA4) |
+|---|---|---|
+| all of it | one code path | the same |
+
 ### `hk.ops.moe.moe_align`
 
 ```python
@@ -538,6 +562,12 @@ hk.ops.moe.moe_align(topk_ids, block_m: int, num_experts: int)
 A torch moe_align_block_size, for tests and for running without vLLM:
 (sorted_ids, expert_ids, num_tokens_post_padded).
 
+**Per architecture** ([audit](../dx/api-consistency.md)):
+
+| | gfx1100 (RDNA3) | gfx950 (CDNA4) |
+|---|---|---|
+| all of it | one code path | the same |
+
 ### `hk.ops.w4a16.matmul`
 
 ```python
@@ -546,6 +576,12 @@ hk.ops.w4a16.matmul(x, qw, s, zs, group: int, out=None)
 
 x @ W.T for W in hk's 4-bit layout: the decode kernel up to 64 rows of
 x, dequantize-then-F.linear above (or for a shape it does not take).
+
+**Per architecture** ([audit](../dx/api-consistency.md)):
+
+| | gfx1100 (RDNA3) | gfx950 (CDNA4) |
+|---|---|---|
+| all of it | one code path | the same |
 
 ### `hk.ops.hipkittens.gemm_bf16`
 

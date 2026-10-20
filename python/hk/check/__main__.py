@@ -304,6 +304,8 @@ def build_parser() -> argparse.ArgumentParser:
                    help="a constexpr for a raw kernel (repeatable)")
     p.add_argument("--outputs", help="comma list of output arguments (indices or a raw "
                                      "kernel's parameter names)")
+    p.add_argument("--inplace", help="comma list of arguments updated in place (read, "
+                                     "then written): given to the reference, compared after")
     p.add_argument("--baseline", action="append", default=[], metavar="NAME=REF",
                    help="another contender, e.g. ops=hk.ops:silu_mul (repeatable)")
     p.add_argument("--no-eager", action="store_true", help="do not time torch eager")
@@ -432,6 +434,10 @@ def main(argv: Optional[List[str]] = None) -> int:
         outputs = [int(o) if o.strip().isdigit() else o.strip()
                    for o in args.outputs.split(",")]
     out_idx = [o for o in (outputs or []) if isinstance(o, int)]
+    inplace = cfg.pop("inplace", None)
+    if args.inplace:
+        inplace = [int(o) if o.strip().isdigit() else o.strip()
+                   for o in args.inplace.split(",")]
 
     ref = cfg.pop("reference", None)
     if args.ref:
@@ -464,7 +470,8 @@ def main(argv: Optional[List[str]] = None) -> int:
                  if not off]
     gpu = False if (args.build_only or args.trace_only) else None
     report = hkc.check(
-        fn, ref, cases=cases, consts=consts, outputs=outputs, baselines=baselines,
+        fn, ref, cases=cases, consts=consts, outputs=outputs, inplace=inplace,
+        baselines=baselines,
         extra=extra, rtol=args.rtol, atol=args.atol, exact=args.exact,
         ref_precision=args.ref_precision, time=not args.no_time, rounds=args.rounds,
         warmup=args.warmup, batch_ms=args.batch_ms, burn=args.burn,
