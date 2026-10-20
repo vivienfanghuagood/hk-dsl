@@ -70,14 +70,15 @@ def test_unary_ops(shape):
 
 
 def test_the_plan_depends_on_the_bytes_and_the_arity():
-    """Eight warps of eight chunks for a two-input op moving 24-48 MB, eight
-    warps of one chunk otherwise (elementwise.STRIP_PLANS)."""
+    """Two warps of eight chunks for a two-input op moving 24-64 MB, two of
+    one chunk past 257 MB, eight warps of one chunk otherwise
+    (elementwise.STRIP_PLANS)."""
     big = elementwise._strip_plan("add", "bf16", 2048 * 4096, 2)
     one = elementwise._strip_plan("exp", "bf16", 2048 * 4096, 2)
     huge = elementwise._strip_plan("add", "bf16", 8192 * 8192, 2)
-    assert big[0].warps == 8 and big[1] == 8 * 64 * 8
+    assert big[0].warps == 2 and big[1] == 8 * 64 * 8
     assert one[0].warps == 8 and one[1] == 64 * 8
-    assert huge[0].warps == 8 and huge[1] == 64 * 8
+    assert huge[0].warps == 2 and huge[1] == 64 * 8
 
 
 @pytest.mark.parametrize("m,i", [(1, 14336), (32, 17408), (2048, 28672), (5, 1000), (3, 72)])

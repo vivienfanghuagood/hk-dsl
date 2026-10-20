@@ -120,6 +120,44 @@ def _strip_kernel(name: str, op: str, dtype, warps: int):
                      grid=lambda p: (hk.cdiv(p.o.cols, warps * p.CW), 1, 1))
 
 
+def _strip_gs_kernel(name: str, op: str, dtype, warps: int):
+    """_strip_kernel over a grid a STEP-th of the chunks: workgroup g takes
+    blocks g, g + G, ..., g + (STEP-1)G of warps x CW elements (G the grid),
+    every block's loads issued before the first store -- at each step the
+    grid reads one contiguous span of the tensor."""
+    unary = op in _UNARY_FN
+    fn = _UNARY_FN[op] if unary else _BINARY_FN[op]
+
+    def strip(CW, RUN):
+        return hk.RS(hk.fp32, 1, CW, RUN)
+
+    def starts(o, CW, STEP):
+        g = hk.cdiv(o.cols, warps * CW * STEP)
+        w = hk.arch.warp_id() if warps > 1 else 0
+        return [((hk.arch.block_idx.x + i * g) * warps + w) * CW for i in range(STEP)]
+
+    if unary:
+        def body(a: hk.Tensor[dtype], o: hk.Tensor[dtype], *, CW=512, RUN=8, STEP=2):
+            S = strip(CW, RUN)
+            cs = starts(o, CW, STEP)
+            xs = [a.at[0, c].load(S, bounded=True) for c in cs]
+            for c, x in zip(cs, xs):
+                o.at[0, c].store(fn(x), bounded=True)
+    else:
+        def body(a: hk.Tensor[dtype], b: hk.Tensor[dtype], o: hk.Tensor[dtype], *,
+                 CW=512, RUN=8, STEP=2):
+            S = strip(CW, RUN)
+            cs = starts(o, CW, STEP)
+            xs = [(a.at[0, c].load(S, bounded=True), b.at[0, c].load(S, bounded=True))
+                  for c in cs]
+            for c, (x, y) in zip(cs, xs):
+                o.at[0, c].store(fn(x, y), bounded=True)
+
+    body.__name__ = name
+    return hk.kernel(body, warps=warps, name=name,
+                     grid=lambda p: (hk.cdiv(p.o.cols, warps * p.CW * p.STEP), 1, 1))
+
+
 _DTYPES = {"bf16": hk.bf16, "fp16": hk.fp16, "fp32": hk.fp32}
 _BINARY = ("add", "sub", "mul", "max", "min")
 _UNARY = ("exp", "exp2", "relu", "gelu", "abs", "neg")
@@ -161,6 +199,12 @@ STRIP_KERNELS = {f"strip_{_op}_{_s}_w{_w}": _strip_kernel(f"strip_{_op}_{_s}_w{_
                  for _s, _dt in _DTYPES.items() for _op in _BINARY + _UNARY
                  if _supports(_op, _s) for _w in STRIP_WARPS}
 
+#: The grid-stride form, for measuring: (op, dtype suffix, warps) as above.
+STRIP_GS_KERNELS = {f"strip_gs_{_op}_{_s}_w{_w}": _strip_gs_kernel(
+                        f"strip_gs_{_op}_{_s}_w{_w}", _op, _dt, _w)
+                    for _s, _dt in _DTYPES.items() for _op in ("add", "mul")
+                    for _w in STRIP_WARPS}
+
 #: Where the elementwise ops run on strips: gfx950, measured there
 #: (scoreboard.py --only llm-pointwise). gfx1100 keeps the tile kernels it
 #: was tuned on.
@@ -185,7 +229,21 @@ STRIP_ARCHS = ("gfx950",)
 #: move with where the buffers sit: in a run with three buffer sets the 8x8
 #: add at 2048x4096 took 7.96-8.34 us to tuned Triton's 7.5, where these two
 #: runs, and the plan sweep on another GPU, had it 18-20% ahead.
-STRIP_PLANS = (((24 << 20, 48 << 20), (8, 8)), (None, (8, 1)))
+#:
+#: What moves it is where x, y and o sit relative to each other. Carved out
+#: of one allocation at seven relative offsets (packed, gaps of 4 KB, 1.5 MB,
+#: 2 MB, 8 MB, shifted, reversed), add at 2048x4096, us, one process:
+#:
+#:                  8x8          8x1          2x8          tuned Triton
+#:     2048x4096    6.34-7.97    8.21-8.32    7.06-7.31    7.27-7.50
+#:     2048x5120   10.24-10.53   9.76-10.04   9.70-9.82    9.61-9.78
+#:
+#: Two warps of eight chunks hold their time wherever the operands sit, so
+#: 24-64 MB takes them. Past the cache a two-input op takes two warps of one
+#: chunk: 8192x8192 add 67.66 us against 69.11 for 8x1 (tuned Triton 67.44),
+#: mul 67.95 against 69.67 (68.20).
+STRIP_PLANS = (((24 << 20, 64 << 20), (2, 8)), ((257 << 20, 1 << 62), (2, 1)),
+               (None, (8, 1)))
 
 #: Past 2 GiB a strip's bounded offsets would reach the out-of-range marker.
 _STRIP_MAX_BYTES = 1 << 31
