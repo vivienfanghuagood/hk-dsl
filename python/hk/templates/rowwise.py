@@ -236,6 +236,9 @@ class Plan:
     steps: int
     rows: int
     cols: int
+    #: Launch the preloaded twin, as hk.ops' strips do past 32 MB on gfx950
+    #: (the fused add excepted).
+    preload: bool = False
 
     @property
     def wave(self) -> int:
@@ -250,6 +253,7 @@ class Plan:
     def __str__(self) -> str:
         how = (f"{self.steps} steps a pass" if self.steps else "held, read once")
         cap = f", {self.reserve >> 10} KB LDS reserved" if self.reserve else ""
+        cap += ", preloaded" if self.preload else ""
         return (f"{self.rows}x{self.cols} like {self.like} on {self.arch}: one workgroup a "
                 f"row, {self.warps} warp(s) x {self.chunks} chunk(s) of {self.wave}x"
                 f"{self.run} ({self.chunks * self.run} a lane), {how}, "
@@ -264,7 +268,7 @@ _STREAM = {"gfx950": (8, 32), "gfx1100": (16, 16)}
 
 
 def plan_for(arch: str, like: str, rows: int, cols: int, nbytes: int,
-             override: Optional[Dict[str, int]] = None) -> Plan:
+             override: Optional[Dict[str, int]] = None, moved: int = 0) -> Plan:
     """The plan for `rows` rows of `cols` `nbytes`-byte elements, planned
     like hk.ops' `like` kernel ("rms", "rmsw", "addrmsw", "layer",
     "softmax", "quantize") on `arch`: hk.ops.norm.strip_plan_for (and
@@ -284,6 +288,10 @@ def plan_for(arch: str, like: str, rows: int, cols: int, nbytes: int,
     else:
         p = norm.strip_plan_for(like, nbytes, cols, rows, arch)
     override = dict(override or {})
+    past = norm.STRIP_PRELOAD_PAST.get(arch)
+    preload = like != "addrmsw" and past is not None and moved > past
+    if "preload" in override:
+        preload = bool(override.pop("preload"))
     if override.pop("stream", False):
         p = None
     if p is not None and not p[3] and p[1] * p[2] > 32 and cols > 8192:
@@ -305,7 +313,7 @@ def plan_for(arch: str, like: str, rows: int, cols: int, nbytes: int,
     chunks = override.get("chunks", chunks)
     run = override.get("run", run)
     reserve = override.get("reserve", reserve)
-    plan = Plan(arch, like, warps, chunks, run, False, reserve, 0, rows, cols)
+    plan = Plan(arch, like, warps, chunks, run, False, reserve, 0, rows, cols, preload)
     step = warps * plan.span
     if steps or override.get("steps"):
         steps = override.get("steps") or -(-cols // step)
@@ -347,7 +355,8 @@ class Rowwise:
         self.name = name or C.kernel_name("rw", fn)
         self._arch = arch
         self.override = dict(plan or {})
-        bad = set(self.override) - {"warps", "chunks", "run", "steps", "reserve", "stream"}
+        bad = set(self.override) - {"warps", "chunks", "run", "steps", "reserve", "stream",
+                                    "preload"}
         if bad:
             raise TypeError(f"plan= overrides warps, chunks, run, steps and reserve, "
                             f"not {sorted(bad)}")
@@ -466,15 +475,18 @@ class Rowwise:
         steps down to: the same row over twice the warps, then a stream."""
         rows, cols = C.rows_cols(shape)
         nbytes = next(o.dtype for o in ops if o.kind == "full").bytes
+        moved = rows * cols * sum(o.dtype.bytes for o in ops + outs if o.kind == "full")
         like = self._like(ops, outs)
-        p = plan_for(self.arch, like, rows, cols, nbytes, self.override)
+        p = plan_for(self.arch, like, rows, cols, nbytes, self.override, moved)
         yield p
         if p.steps:
             return
         if p.warps * 2 <= 16 and p.chunks % 2 == 0:
             yield plan_for(self.arch, like, rows, cols, nbytes,
-                           {**self.override, "warps": p.warps * 2, "chunks": p.chunks // 2})
-        yield plan_for(self.arch, like, rows, cols, nbytes, {**self.override, "stream": True})
+                           {**self.override, "warps": p.warps * 2, "chunks": p.chunks // 2},
+                           moved)
+        yield plan_for(self.arch, like, rows, cols, nbytes, {**self.override, "stream": True},
+                       moved)
 
     def _kernel(self, ops, outs, p: Plan):
         key = (p.arch, ops, outs, p.warps)
@@ -482,7 +494,7 @@ class Rowwise:
         if k is None:
             k = self._kernels[key] = _build(self.fn, ops, outs, p.warps, p.arch,
                                             f"{self.name}_w{p.warps}", self.consts, {})
-        return k
+        return k.preloaded() if p.preload else k
 
     def _consts(self, p: Plan, consts):
         unknown = set(consts) - set(self.consts)
@@ -716,8 +728,11 @@ def _build(fn, ops, outs, warps: int, arch: str, name: str, user_consts, info=No
         # A sum of two 16-bit values is exact in fp32 and ties often: rounded
         # to nearest even, as torch does (hk.ops.norm's fused add says why).
         defines = {"HK_BF16_ROUND": 2}
+    # noalias: a lane reads its elements before it writes them, and no lane
+    # reads another's output (a partial overlap is copied first), as hk.ops'
+    # strips promise on CDNA.
     return hk.kernel(body, warps=warps, arch=arch, name=name, defines=defines,
-                     grid=lambda p: (getattr(p, grid_of).rows, 1, 1))
+                     noalias=True, grid=lambda p: (getattr(p, grid_of).rows, 1, 1))
 
 
 def rowwise(fn: Optional[Callable] = None, inputs: Optional[Sequence] = None,

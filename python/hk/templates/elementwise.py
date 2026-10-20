@@ -44,6 +44,9 @@ class Plan:
     rows: int
     cols: int
     reserve: int = 0
+    #: Launch the preloaded twin (hk.Kernel.preloaded: the arguments in
+    #: SGPRs at dispatch), as hk.ops' flat strips do past 32 MB on gfx950.
+    preload: bool = False
 
     @property
     def wave(self) -> int:
@@ -65,7 +68,8 @@ class Plan:
         return (f"{'flat' if self.flat else 'rows'} {self.rows}x{self.cols} on {self.arch}: "
                 f"{self.warps} warp(s) x {self.chunks} chunk(s) of {self.wave}x{self.run}, "
                 f"grid {self.grid[0]}, {'exact' if self.exact else 'bounded'}"
-                + (f", {self.reserve >> 10} KB LDS reserved" if self.reserve else ""))
+                + (f", {self.reserve >> 10} KB LDS reserved" if self.reserve else "")
+                + (", preloaded" if self.preload else ""))
 
 
 def plan_for(arch: str, rows: int, cols: int, flat: bool, moved: int, inputs: int,
@@ -103,7 +107,13 @@ def plan_for(arch: str, rows: int, cols: int, flat: bool, moved: int, inputs: in
         chunks = override.get("chunks", chunks)
         run = override.get("run", run)
         reserve = override.get("reserve", reserve)
-    p = Plan(arch, flat, warps, chunks, run, False, rows, cols, reserve)
+    from ..ops.norm import STRIP_PRELOAD_PAST  # noqa: PLC0415
+
+    past = STRIP_PRELOAD_PAST.get(arch)
+    preload = bool(flat and past is not None and moved > past)
+    if override and "preload" in override:
+        preload = bool(override["preload"])
+    p = Plan(arch, flat, warps, chunks, run, False, rows, cols, reserve, preload)
     return replace(p, exact=cols % (warps * p.span) == 0)
 
 
@@ -128,10 +138,10 @@ class Elementwise:
         self.name = name or C.kernel_name("ew", fn)
         self._arch = arch
         self.override = dict(plan or {})
-        bad = set(self.override) - {"warps", "chunks", "run", "flat", "reserve"}
+        bad = set(self.override) - {"warps", "chunks", "run", "flat", "reserve", "preload"}
         if bad:
-            raise TypeError(f"plan= overrides warps, chunks, run, flat and reserve, "
-                            f"not {sorted(bad)}")
+            raise TypeError(f"plan= overrides warps, chunks, run, flat, reserve and "
+                            f"preload, not {sorted(bad)}")
         self.consts = C.hook_consts(fn)
         self._arity = C.hook_arity(fn)
         if self.inputs is not None and self._arity is not None \
@@ -225,7 +235,7 @@ class Elementwise:
         if k is None:
             k = self._kernels[key] = _build(self.fn, ops, outs, p.warps, p.arch,
                                             f"{self.name}_w{p.warps}", self.consts)
-        return k
+        return k.preloaded() if p.preload else k
 
     def kernel(self, *args, out=None, **consts):
         """(hk.Kernel, constexprs) for a call with these operands: `k.trace(**c)`,
@@ -357,7 +367,10 @@ def _build(fn, ops, outs, warps: int, arch: str, name: str, user_consts):
         [(n, d) for n, d in zip(names[nin:], outs)],
         {"T_CW": 512, "T_RUN": 8, "T_EXACT": 1, "T_FLAT": 0, "T_RESERVE": 0,
          **user_consts})
-    return hk.kernel(body, warps=warps, arch=arch, name=name,
+    # noalias: each element is read and written by one lane, an in-place call
+    # included (a partial overlap is copied first) -- the flat, __restrict__
+    # arguments hk.ops' strips take on CDNA.
+    return hk.kernel(body, warps=warps, arch=arch, name=name, noalias=True,
                      grid=lambda p: (_grid_x(p, warps), 1, 1))
 
 
