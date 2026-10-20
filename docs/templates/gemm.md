@@ -338,7 +338,69 @@ at every M <= 128 shape.
 
 ### W7900D (gfx1100)
 
-GFX1100_TABLE
+Host time (eager calls: hk's gfx1100 entry points launch on the null
+stream, which a CUDA graph cannot capture, so there is no replay of them;
+at these sizes the host's share is small but for M = 16). `*`: at M = 16 the plain kernel is
+`hk.ops.decode_gemm` -- the GEMV the template runs there -- not
+`hk.ops.matmul`'s 16-row WMMA kernel, which is 1.2-1.8x slower still (its
+times are in the result files). The torch columns are hipBLASLt on this
+part, which hk's GEMM beats by 1.3x (docs/history), hence the margins.
+
+All 48 within 5% of the plain kernel (0.89-1.03x); faster than the unfused
+sequence, `torch.compile` and hipBLASLt + the epilogue at all 48 (geomean
+1.69x over `torch.compile`).
+
+| layer (N x K) | M | epilogue | hk.ops.matmul | template | vs hk | unfused hk + torch | torch.compile | hipBLASLt + torch | template vs compile | vs hipBLASLt+ep |
+|---|---:|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| qwen3-8b o_proj (4096 x 4096) | 16 | bias_gelu | 25.4* | 24.7 | 0.971 | 53.6 | 97.5 | 97.6 | 3.95x | 3.96x |
+| qwen3-8b o_proj (4096 x 4096) | 128 | bias_gelu | 98.0 | 99.7 | 1.016 | 118.0 | 134.7 | 139.9 | 1.35x | 1.40x |
+| qwen3-8b o_proj (4096 x 4096) | 1024 | bias_gelu | 436.4 | 444.0 | 1.017 | 477.3 | 640.4 | 636.8 | 1.44x | 1.43x |
+| qwen3-8b o_proj (4096 x 4096) | 4096 | bias_gelu | 1538.1 | 1566.6 | 1.019 | 1687.3 | 2075.2 | 2069.3 | 1.32x | 1.32x |
+| qwen3-8b down (4096 x 12288) | 16 | bias_gelu | 58.8* | 56.4 | 0.958 | 129.1 | 236.5 | 238.3 | 4.20x | 4.23x |
+| qwen3-8b down (4096 x 12288) | 128 | bias_gelu | 248.4 | 249.0 | 1.002 | 266.8 | 337.7 | 339.8 | 1.36x | 1.36x |
+| qwen3-8b down (4096 x 12288) | 1024 | bias_gelu | 1293.0 | 1321.0 | 1.022 | 1354.5 | 1800.2 | 1798.6 | 1.36x | 1.36x |
+| qwen3-8b down (4096 x 12288) | 4096 | bias_gelu | 4739.6 | 4804.8 | 1.014 | 4892.4 | 6312.6 | 6276.5 | 1.31x | 1.31x |
+| llama3-8b down (4096 x 14336) | 16 | bias_gelu | 158.0* | 156.9 | 0.993 | 194.4 | 285.8 | 285.6 | 1.82x | 1.82x |
+| llama3-8b down (4096 x 14336) | 128 | bias_gelu | 305.5 | 305.7 | 1.001 | 327.6 | 403.2 | 406.7 | 1.32x | 1.33x |
+| llama3-8b down (4096 x 14336) | 1024 | bias_gelu | 1510.3 | 1524.5 | 1.009 | 1545.8 | 2110.5 | 2107.7 | 1.38x | 1.38x |
+| llama3-8b down (4096 x 14336) | 4096 | bias_gelu | 5653.9 | 5706.4 | 1.009 | 5787.4 | 7623.3 | 7575.6 | 1.34x | 1.33x |
+| qwen3-8b qkv (6144 x 4096) | 16 | bias_gelu | 32.5* | 31.7 | 0.975 | 58.4 | 136.8 | 132.7 | 4.32x | 4.19x |
+| qwen3-8b qkv (6144 x 4096) | 128 | bias_gelu | 99.7 | 99.8 | 1.001 | 132.8 | 186.7 | 193.1 | 1.87x | 1.94x |
+| qwen3-8b qkv (6144 x 4096) | 1024 | bias_gelu | 582.0 | 590.3 | 1.014 | 638.3 | 852.6 | 858.0 | 1.44x | 1.45x |
+| qwen3-8b qkv (6144 x 4096) | 4096 | bias_gelu | 2242.3 | 2289.5 | 1.021 | 2497.1 | 3091.7 | 3086.0 | 1.35x | 1.35x |
+| qwen3-8b gate_up (24576 x 4096) | 16 | bias_gelu | 260.7* | 260.8 | 1.000 | 439.1 | 585.0 | 577.1 | 2.24x | 2.21x |
+| qwen3-8b gate_up (24576 x 4096) | 128 | bias_gelu | 538.4 | 538.6 | 1.000 | 596.9 | 732.3 | 726.7 | 1.36x | 1.35x |
+| qwen3-8b gate_up (24576 x 4096) | 1024 | bias_gelu | 2330.6 | 2376.5 | 1.020 | 2566.0 | 3167.7 | 3180.0 | 1.33x | 1.34x |
+| qwen3-8b gate_up (24576 x 4096) | 4096 | bias_gelu | 9431.2 | 9421.5 | 0.999 | 10364.5 | 13340.7 | 13207.8 | 1.42x | 1.40x |
+| llama3-8b gate_up (28672 x 4096) | 16 | bias_gelu | 302.2* | 301.7 | 0.998 | 505.7 | 602.5 | 610.4 | 2.00x | 2.02x |
+| llama3-8b gate_up (28672 x 4096) | 128 | bias_gelu | 587.9 | 592.1 | 1.007 | 646.2 | 904.9 | 895.5 | 1.53x | 1.51x |
+| llama3-8b gate_up (28672 x 4096) | 1024 | bias_gelu | 2714.6 | 2755.0 | 1.015 | 3010.5 | 3726.4 | 3715.6 | 1.35x | 1.35x |
+| llama3-8b gate_up (28672 x 4096) | 4096 | bias_gelu | 11004.7 | 11022.2 | 1.002 | 12142.5 | 15645.3 | 15490.7 | 1.42x | 1.41x |
+| qwen3-8b o_proj (4096 x 4096) | 16 | residual | 25.4* | 24.9 | 0.981 | 45.7 | 100.0 | 96.9 | 4.02x | 3.90x |
+| qwen3-8b o_proj (4096 x 4096) | 128 | residual | 103.8 | 104.1 | 1.003 | 111.9 | 147.9 | 148.4 | 1.42x | 1.43x |
+| qwen3-8b o_proj (4096 x 4096) | 1024 | residual | 436.0 | 444.4 | 1.019 | 450.7 | 627.6 | 621.5 | 1.41x | 1.40x |
+| qwen3-8b o_proj (4096 x 4096) | 4096 | residual | 1560.8 | 1596.7 | 1.023 | 1674.2 | 2102.4 | 2120.0 | 1.32x | 1.33x |
+| qwen3-8b down (4096 x 12288) | 16 | residual | 59.2* | 56.2 | 0.949 | 123.2 | 243.5 | 237.2 | 4.33x | 4.22x |
+| qwen3-8b down (4096 x 12288) | 128 | residual | 246.4 | 241.8 | 0.981 | 256.0 | 370.0 | 369.1 | 1.53x | 1.53x |
+| qwen3-8b down (4096 x 12288) | 1024 | residual | 1306.1 | 1286.9 | 0.985 | 1331.3 | 1817.7 | 1817.4 | 1.41x | 1.41x |
+| qwen3-8b down (4096 x 12288) | 4096 | residual | 4765.2 | 4793.6 | 1.006 | 5015.2 | 6141.4 | 6232.6 | 1.28x | 1.30x |
+| llama3-8b down (4096 x 14336) | 16 | residual | 158.1* | 157.7 | 0.997 | 188.1 | 289.3 | 285.1 | 1.84x | 1.81x |
+| llama3-8b down (4096 x 14336) | 128 | residual | 304.5 | 296.7 | 0.975 | 318.3 | 408.8 | 408.9 | 1.38x | 1.38x |
+| llama3-8b down (4096 x 14336) | 1024 | residual | 1505.0 | 1485.5 | 0.987 | 1529.2 | 2120.9 | 2117.9 | 1.43x | 1.43x |
+| llama3-8b down (4096 x 14336) | 4096 | residual | 5675.3 | 5594.2 | 0.986 | 5795.8 | 7629.2 | 7574.8 | 1.36x | 1.35x |
+| qwen3-8b qkv (6144 x 4096) | 16 | residual | 32.6* | 32.9 | 1.011 | 49.2 | 138.6 | 132.2 | 4.21x | 4.01x |
+| qwen3-8b qkv (6144 x 4096) | 128 | residual | 99.9 | 99.1 | 0.992 | 116.0 | 188.7 | 194.2 | 1.90x | 1.96x |
+| qwen3-8b qkv (6144 x 4096) | 1024 | residual | 589.9 | 599.9 | 1.017 | 606.2 | 851.2 | 846.3 | 1.42x | 1.41x |
+| qwen3-8b qkv (6144 x 4096) | 4096 | residual | 2279.4 | 2356.2 | 1.034 | 2521.5 | 3112.1 | 3190.0 | 1.32x | 1.35x |
+| qwen3-8b gate_up (24576 x 4096) | 16 | residual | 260.4* | 261.6 | 1.005 | 421.4 | 590.8 | 578.6 | 2.26x | 2.21x |
+| qwen3-8b gate_up (24576 x 4096) | 128 | residual | 536.5 | 474.9 | 0.885 | 581.8 | 745.2 | 726.6 | 1.57x | 1.53x |
+| qwen3-8b gate_up (24576 x 4096) | 1024 | residual | 2334.7 | 2386.7 | 1.022 | 2555.4 | 3207.3 | 3253.0 | 1.34x | 1.36x |
+| qwen3-8b gate_up (24576 x 4096) | 4096 | residual | 9595.7 | 9883.5 | 1.030 | 10297.8 | 13374.0 | 13280.5 | 1.35x | 1.34x |
+| llama3-8b gate_up (28672 x 4096) | 16 | residual | 302.9* | 303.0 | 1.001 | 487.5 | 601.9 | 616.7 | 1.99x | 2.04x |
+| llama3-8b gate_up (28672 x 4096) | 128 | residual | 593.2 | 530.2 | 0.894 | 628.8 | 904.1 | 901.4 | 1.71x | 1.70x |
+| llama3-8b gate_up (28672 x 4096) | 1024 | residual | 2712.1 | 2726.0 | 1.005 | 2977.0 | 3731.3 | 3789.1 | 1.37x | 1.39x |
+| llama3-8b gate_up (28672 x 4096) | 4096 | residual | 11023.0 | 11043.5 | 1.002 | 11866.6 | 15775.5 | 15747.5 | 1.43x | 1.43x |
+
 
 
 ## Limits
@@ -359,6 +421,11 @@ GFX1100_TABLE
   row-wise absmax for per-token quantization) is not an epilogue -- every
   tile holds part of a row.
 - GELU is the tanh form only.
+- The template is as fast as the GEMM it takes: on gfx950 a shape outside
+  `routes_gemm_gfx950.json` gets `route()`'s rule, which is not always the
+  best kernel (2048 x 16384 x 4096 runs the four-warp `dp128` at 0.76x
+  hipBLASLt), and the template inherits it. Tuning the route
+  (`tools/hk-bench/gemm_cdna_routes.py`) helps both.
 - On gfx950, an epilogue's arithmetic at the end of the pingpong overlaps
   nothing (every wave of the CU stores at once), so its cost is its
   instruction count: GELU(tanh) is ~3.5% of a large GEMM, and 5-8% at
