@@ -122,3 +122,15 @@ def test_cpu_discovery_through_a_kept_launcher():
 
     r = hk.check(fn, fx.reference, fx.fn_inputs, gpu=False, build=False)
     assert [b["kernel"] for b in r.builds] == ["gelu_mul"]
+
+
+def test_sweep_drops_a_variant_that_does_not_trace():
+    import hk
+
+    import check_fixture as fx
+
+    # gfx1100's strip chunk at run 8 is 32 lanes x 8 = 256 columns: 128 is not one.
+    r = hk.check(fx.gelu_mul_strip, gpu=False, build=False, sweep={"CW": [128, 1024]})
+    assert r.status == "built"
+    assert [b.get("variant") for b in r.builds] == [None, "hk[CW=1024]"]
+    assert any("hk[CW=128] does not build" in n for n in r.notes)

@@ -99,3 +99,16 @@ def test_inplace_arguments():
                  time=False)
     assert r.status == "pass", str(r)
     assert len(r.cases[0]["correct"]["outputs"]) == 2
+
+
+def test_sweep_times_each_variant():
+    import hk
+
+    import check_fixture as fx
+
+    r = hk.check(fx.gelu_mul_strip, fx.reference, fx.inputs, sweep={"CW": [1024]},
+                 rounds=3, burn=0)
+    assert r.status == "pass", str(r)
+    t = r.cases[0]["time"]
+    assert "hk[CW=1024]" in t["ms"] and t["best"] in ("hk", "hk[CW=1024]")
+    assert r.cases[0]["correct"]["variants"]["hk[CW=1024]"]["ok"]

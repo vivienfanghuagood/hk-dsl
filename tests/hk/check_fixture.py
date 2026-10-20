@@ -38,6 +38,20 @@ def gelu_mul_wrong(a: hk.Tensor[hk.bf16], b: hk.Tensor[hk.bf16], o: hk.Tensor[hk
         o[idx] = x.to(hk.bf16)
 
 
+@hk.kernel(grid=lambda p: (p.o.rows * hk.cdiv(p.o.cols, p.CW), 1, 1))
+def gelu_mul_strip(a: hk.Tensor[hk.bf16], b: hk.Tensor[hk.bf16], o: hk.Tensor[hk.bf16], *,
+                   CW=512):
+    """llms.txt's kernel: the same op on register strips, 16-byte runs."""
+    S = hk.RS(hk.fp32, 1, CW, 8)
+    per_row = hk.cdiv(o.cols, CW)
+    row = hk.arch.block_idx.x // per_row
+    c0 = (hk.arch.block_idx.x - row * per_row) * CW
+    x = a.at[row, c0].load(S, bounded=True)
+    x.gelu(into=x)
+    x *= b.at[row, c0].load(S, bounded=True)
+    o.at[row, c0].store(x, bounded=True)
+
+
 def gelu_mul_fn(a, b):
     """The same kernel behind a function: allocates and returns the output."""
     import torch

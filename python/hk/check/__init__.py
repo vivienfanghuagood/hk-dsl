@@ -637,11 +637,39 @@ def _fill_nan(args, idx):
             a.fill_(torch.iinfo(a.dtype).min if a.dtype != torch.bool else False)
 
 
+def _sweep_variants(fn, consts, sweep, build: bool, report: Report) -> Dict[str, Dict[str, Any]]:
+    """{label: constexprs} for every combination of `sweep` over `consts`,
+    each traced and built; one that does not is a note and is dropped."""
+    import itertools  # noqa: PLC0415
+
+    if not sweep:
+        return {}
+    names = list(sweep)
+    out: Dict[str, Dict[str, Any]] = {}
+    for combo in itertools.product(*(list(sweep[n]) for n in names)):
+        vc = {**consts, **dict(zip(names, combo))}
+        if vc == consts:
+            continue
+        label = "hk[" + ",".join(f"{n}={v}" for n, v in zip(names, combo)) + "]"
+        try:
+            row = _resources(fn, vc, build)
+        except Exception as e:  # noqa: BLE001
+            msg = str(e).strip().splitlines()
+            report.notes.append(f"{label} does not build: {type(e).__name__}: "
+                                f"{msg[0] if msg else ''}")
+            continue
+        row["variant"] = label
+        report.builds.append(row)
+        out[label] = vc
+    return out
+
+
 def check(fn, reference: Optional[Callable] = None, inputs=None, *,
           cases: Optional[Sequence] = None,
           consts: Optional[Dict[str, Any]] = None,
           outputs: Optional[Sequence] = None,
           inplace: Optional[Sequence] = None,
+          sweep: Optional[Dict[str, Sequence]] = None,
           baselines: Sequence[str] = ("eager", "compile"),
           extra: Optional[Dict[str, Callable]] = None,
           rtol: Optional[float] = None, atol: Optional[float] = None,
@@ -668,6 +696,9 @@ def check(fn, reference: Optional[Callable] = None, inputs=None, *,
                argument instead of returning. A raw kernel's default is the
                tensors it stores into (`TracedKernel.written_tensors`).
                They are NaN-filled first and not passed to the reference
+    sweep      {CONSTEXPR: [values]} of a raw kernel: every combination is
+               built, checked and timed beside it as `hk[NAME=value,...]`;
+               one that does not build or is wrong is reported and not timed
     inplace    arguments updated in place (read, then written): passed to
                the reference as they were, compared after the call. The
                reference returns the outputs and in-place arguments in
@@ -746,10 +777,15 @@ def check(fn, reference: Optional[Callable] = None, inputs=None, *,
     # 1. build: a raw kernel needs only its constexprs; a function is run
     # once with launching off to find what it launches.
     built_s = 0.0
+    variants: Dict[str, Dict[str, Any]] = {}
     if is_kernel:
         t0 = _time.perf_counter()
         add_builds([(fn, consts)])
         built_s = _time.perf_counter() - t0
+        variants = _sweep_variants(fn, consts, sweep, build, report)
+    elif sweep:
+        report.notes.append("sweep= varies an @hk.kernel's constexprs; this target "
+                            "is a function, so it was not swept")
     elif not use_gpu:
         for ci, make in enumerate(all_cases):
             if make is None:
@@ -855,9 +891,30 @@ def check(fn, reference: Optional[Callable] = None, inputs=None, *,
                         for g, w in zip(got, want)]
                 case["correct"] = {"ok": all(o["ok"] for o in outs), "outputs": outs}
 
-        # Baselines: built, checked, then timed with the subject.
+        # The sweep's variants: checked like the subject, timed beside it.
         contenders: Dict[str, Callable] = {
             "hk": lambda f=fn, a=args, c=consts: f(*a, **c)}
+        for label, vc in variants.items():
+            try:
+                vm = _clone(args)
+                _fill_nan(vm, out_idx)
+                fn(*vm, **vc)
+                _sync()
+                if want is not None:
+                    vg = [vm[i] for i in compared]
+                    cmp = [compare(g, w, rtol=rtol, atol=atol, exact=exact)
+                           for g, w in zip(vg, want)]
+                    ok = all(c["ok"] for c in cmp) and len(vg) == len(want)
+                    case.setdefault("correct", {}).setdefault("variants", {})[label] = {
+                        "ok": ok, "max_abs": max((c.get("max_abs", 0.0) for c in cmp),
+                                                 default=0.0)}
+                    if not ok:
+                        report.notes.append(f"case {ci}: {label} is wrong; not timed")
+                        continue
+                contenders[label] = (lambda f=fn, a=args, c=vc: f(*a, **c))
+            except Exception as e:  # noqa: BLE001
+                report.notes.append(f"case {ci}: {label} did not run: {type(e).__name__}: "
+                                    f"{str(e).splitlines()[0] if str(e) else ''}")
         others: Dict[str, Callable] = {}
         if reference is not None and "eager" in baselines:
             others["eager"] = reference
@@ -921,6 +978,11 @@ def check(fn, reference: Optional[Callable] = None, inputs=None, *,
                 row["tflop_s"] = round(flops / med / 1e9, 2)
             tm["ms"][k] = row
         tm["vs"] = _ratios(times, "hk")
+        if variants:
+            tm["variants"] = {lab: _ratios(times, lab) for lab in times
+                              if lab.startswith("hk[")}
+            tm["best"] = min((lab for lab in times if lab == "hk" or lab.startswith("hk[")),
+                             key=lambda lab: tm["ms"][lab]["median"])
         hk_ms = tm["ms"]["hk"]["median"]
         if card and nbytes and hk_ms > 0:
             rate = nbytes / (hk_ms * 1e-3)
@@ -1053,6 +1115,12 @@ def summary(r: Report) -> str:
                            for k, x in t["vs"].items())
             if vs:
                 lines.append("    speed   hk is " + vs)
+            for lab, vs in t.get("variants", {}).items():
+                lines.append(f"            {lab} is " + "   ".join(
+                    f"{x['x']:.2f}x {k} ({x['verdict']})" for k, x in vs.items()
+                    if not k.startswith("hk[")))
+            if t.get("best"):
+                lines.append(f"    best    {t['best']}")
             hk_m = t["ms"]["hk"]
             if hk_m.get("gb_s"):
                 peak = (f" = {t['of_dram_peak'] * 100:.0f}% of DRAM peak"

@@ -302,6 +302,9 @@ def build_parser() -> argparse.ArgumentParser:
                    help="a case's inputs (a spec, or FILE.py:name); repeat for more cases")
     p.add_argument("--const", action="append", default=[], metavar="K=V",
                    help="a constexpr for a raw kernel (repeatable)")
+    p.add_argument("--sweep", action="append", default=[], metavar="K=V1,V2,...",
+                   help="time a raw kernel at each value of a constexpr (repeatable: "
+                        "every combination), each checked first")
     p.add_argument("--outputs", help="comma list of output arguments (indices or a raw "
                                      "kernel's parameter names)")
     p.add_argument("--inplace", help="comma list of arguments updated in place (read, "
@@ -468,9 +471,16 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     baselines = [b for b, off in (("eager", args.no_eager), ("compile", args.no_compile))
                  if not off]
+    sweep = dict(cfg.pop("sweep", {}) or {})
+    for kv in args.sweep:
+        k, _, v = kv.partition("=")
+        try:
+            sweep[k.strip()] = [ast.literal_eval(x.strip()) for x in v.split(",") if x.strip()]
+        except (ValueError, SyntaxError):
+            raise SystemExit(f"hk.check: --sweep {kv!r}: NAME=v1,v2,... with numbers") from None
     gpu = False if (args.build_only or args.trace_only) else None
     report = hkc.check(
-        fn, ref, cases=cases, consts=consts, outputs=outputs, inplace=inplace,
+        fn, ref, cases=cases, consts=consts, outputs=outputs, inplace=inplace, sweep=sweep,
         baselines=baselines,
         extra=extra, rtol=args.rtol, atol=args.atol, exact=args.exact,
         ref_precision=args.ref_precision, time=not args.no_time, rounds=args.rounds,
