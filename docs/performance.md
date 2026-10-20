@@ -1,175 +1,395 @@
 # Performance
 
-Every number on this page is copied from the [development record](history/README.md),
-with a link to the chapter it comes from; the chapter has the method, the
-harness in `tools/hk-bench/` and the caveats. Unless a section says otherwise
-the hardware is one W7900D (gfx1100, RDNA3; 864 GB/s of GDDR6). The numbers are
-as measured at the time. When the IR moved to MLIR, the kernels that matter
-were re-measured against their old selves and came out within noise
-([after the MLIR move](#after-the-mlir-move)).
+Every number on this page comes from the [development record](history/README.md),
+and each table names the chapter it was copied from; the chapter has the
+harness in `tools/hk-bench/`, the raw output and the caveats. The two GPU
+families are kept apart, because nothing measured on one says anything about
+the other: [Part A](#part-a-rdna3-gfx1100-one-w7900d) is RDNA3 (one Radeon PRO
+W7900D) and [Part B](#part-b-cdna4-gfx950-one-mi355x) is CDNA4 (one Instinct
+MI355X). Each part goes level by level: end to end in each engine, kernels
+against the tuned field, kernels inside the engines against what the engine
+calls, and the losses. Results that newer ones replaced are in
+[the appendix](#appendix-superseded-results).
 
-How the numbers were taken matters as much as the numbers: contenders run in
-one process, interleaved, with correctness checked before timing, because
-cross-process A/B on this chip manufactures 13-16% differences out of nothing
-([Phase 5](history/04-phase-5-autotune.md)). Ratios are hk's speed relative to
-the baseline named in each table (above 1 is hk faster) unless the table says
-it is a time ratio.
+Ratios are hk's speed relative to the baseline named beside them, the
+baseline's time over hk's, so above 1 is hk faster, unless a table says it
+is a time ratio.
 
-- [Summary](#summary)
-- [Against Triton and FlyDSL](#against-triton-and-flydsl)
-  - [Triton tutorials and the kernels beside a model](#triton-tutorials-and-the-kernels-beside-a-model)
-- [GEMM](#gemm)
-- [Attention forward](#attention-forward)
-- [Norms and elementwise](#norms-and-elementwise)
-- [Decode GEMV](#decode-gemv)
-- [Paged decode attention](#paged-decode-attention)
-- [Paged prefill](#paged-prefill)
-- [End to end in vLLM](#end-to-end-in-vllm)
-  - [FlyDSL's GEMM on the routes](#flydsls-gemm-on-the-routes)
-  - [A model no table had measured](#a-model-no-table-had-measured)
-- [End to end in SGLang](#end-to-end-in-sglang)
-- [After the MLIR move](#after-the-mlir-move)
-- [Against torch, at full size, after the cross-warp fix](#against-torch-at-full-size-after-the-cross-warp-fix)
-- [CDNA, on one MI355X](#cdna-on-one-mi355x) -- a different GPU; kept apart from everything above
+- [How the numbers are taken](#how-the-numbers-are-taken)
+  - [The stacks](#the-stacks)
+- [Part A: RDNA3 (gfx1100, one W7900D)](#part-a-rdna3-gfx1100-one-w7900d)
+  - [A1. End to end, by engine](#a1-end-to-end-by-engine)
+  - [A2. Kernels against the tuned field](#a2-kernels-against-the-tuned-field)
+  - [A3. Kernels inside the engines](#a3-kernels-inside-the-engines)
+  - [A4. Losses and limits](#a4-losses-and-limits)
+- [Part B: CDNA4 (gfx950, one MI355X)](#part-b-cdna4-gfx950-one-mi355x)
+  - [B1. End to end in vLLM, aiter on](#b1-end-to-end-in-vllm-aiter-on)
+  - [B2. Kernels against the tuned field](#b2-kernels-against-the-tuned-field)
+  - [B3. Kernels inside the engine](#b3-kernels-inside-the-engine)
+  - [B4. Losses and no-headroom findings](#b4-losses-and-no-headroom-findings)
+- [Appendix: superseded results](#appendix-superseded-results)
 
-## Summary
+## How the numbers are taken
 
-Grouped by the question each result answers. The last group holds results
-that newer ones replaced (an older vLLM, torch 2.10, a kernel since
-rewritten); they stay because the chapters cite them.
+How a number was taken matters as much as the number. Each rule below exists
+because breaking it once produced a plausible result that was wrong
+([numbers not to trust](agents.md#numbers-not-to-trust) has the stories).
 
-### End to end, against the stock engine
+- **One process, interleaved.** Kernels being compared run in one process,
+  round by round, with the order rotated. A kernel A/B across processes is
+  invalid on these GPUs: it manufactures 13-16% differences out of nothing
+  ([Phase 5](history/04-phase-5-autotune.md)).
+- **Checked first.** Every arm is checked against an fp32 torch reference
+  before it is timed, and where a case has an exact answer (V all ones for
+  attention, small integers for an add) against that too.
+- **Rounds queued behind a spin.** A launch that reaches the GPU 5-16 us
+  after it went idle costs about 10 us more, so since
+  [chapter 32](history/32-measuring-the-measurements.md) the scoreboard
+  queues each round's calls behind a GPU spin. The gfx950 GEMM harness and
+  the engine-kernel bench do the same ([chapter 41](history/41-cdna-leftovers.md),
+  [chapter 42](history/42-mi355x-in-the-engine.md)).
+- **The median of rounds, with impossible rounds rejected.** The scoreboard
+  rejects rounds that lost kernel records, ran faster than the card can at
+  their footprint (GDDR6 past the W7900D's 96 MB cache, 2.43 TB/s inside
+  it), or stand alone, and reports the median of the rest (chapter 32).
+  Tables that report the best round instead (most chapters before 32, and
+  chapters 29 and 34 on gfx950) say so.
+- **Verdict bands.** Per call, a tie is within the larger of 2% and the two
+  arms' measured noise. End to end, `python -m hk.integration ab` calls a
+  result a win or a loss past a band of max(2%, noise), a tie inside a band
+  of at most 5%, and noise for a single round, a band past 15%, or a ratio
+  inside a band wider than 5% ([chapter 36](history/36-the-agent-loop.md)).
+- **End to end, each arm is its own engine.** An engine cannot be
+  interleaved inside one process, so arms alternate across rounds in
+  separate processes, `ab` pairs the ratio round by round and takes the
+  median, and every arm's greedy tokens are compared with stock's. Older
+  end-to-end tables took each arm's best round; they say so.
+- **The engine as it ships**, unless a table says otherwise: vLLM's defaults
+  (CUDA graphs and torch.compile, prefix caching, chunked prefill). SGLang on
+  gfx1100 runs eager with Triton attention, as sglang-radeon runs RDNA3,
+  because HIP graph capture hangs there.
 
-| kernel | result | against | verdict | source |
-|---|---|---|---|---|
-| vLLM 0.31 end to end, Qwen3-8B, attention backend / both patches | 1.05-1.48x / 1.20-1.75x per request; 1.01-1.39x TRITON_ATTN | stock vLLM 0.31.0 (ROCM_ATTN), and the TRITON_ATTN backend hk replaces | win at every shape; the gain over TRITON_ATTN is prefill | [vLLM 0.31](history/20-vllm-031.md) |
-| vLLM 0.31 end to end, Qwen3-8B, with chapter 38's decode, graphs on, 16-64 requests at 1024 and 4096 tokens | attention backend 1.06-1.43x per request, decode step 1.06-1.47x (before 1.04-1.42x and 1.03-1.42x); both patches 1.53-1.86x, decode step 1.79-2.05x (before 1.50-1.83x and 1.72-1.96x) | stock vLLM 0.31.0, each tree against its own stock arm | win at every shape; the decode step 4-9% shorter than before, outputs identical | [chapter 38](history/38-rdna-losses.md) |
-| vLLM 0.31 end to end, Qwen3-8B, linear routes with FlyDSL's GEMM rows | decode step 1.14x hk+gemm's at 96-128 requests (1.394x / 1.666x stock); prefill 0.9-2.5% faster at 1-4 requests; tie elsewhere. Re-measured after chapter 28, most prefill rows went: decode the same (1.413x / 1.651x stock), prefill 1.5-1.7% faster at 8192-token steps and 1.2% slower at a 1024-token one | the same patches routed by the table without FlyDSL rows; stock vLLM 0.31.0; the table before re-measuring | win where a step's M is one FlyDSL's tiles divide and it measured faster; otherwise unchanged | [chapter 30](history/30-flydsl-routes-gate-contracts.md), [chapter 31](history/31-remeasured.md) |
-| vLLM 0.31 end to end, Qwen2.5-7B-Instruct, a model no table had: linear patch measuring its shapes at load | 1.19-1.32x per request at 16-32 requests, 1.17x / 1.31x at 96 / 128, 1.04-1.15x at 1-4; decode step 1.22-1.38x at 16-32 and 128 requests, a tie at 1-4 and 96. First start 60 s longer (the budget), the second 43 s, then nothing | stock vLLM 0.31.0 | win per request at every shape; decode gains where a step has 6-64 or 128 rows | [chapter 35](history/35-any-model.md) |
-| vLLM 0.31 end to end, Qwen3-8B-AWQ, 4-bit patch | 1.07-3.80x per request; decode step 1.57-4.46x | stock vLLM 0.31.0, fp16, Triton AWQ | win at every shape | [4-bit weights](history/22-int4.md) |
-| vLLM 0.31 end to end, Qwen3-14B-AWQ, 4-bit patch | 1.16-4.43x per request; decode step 2.87-5.52x | stock vLLM 0.31.0, fp16, Triton AWQ | win at every shape | [4-bit weights](history/22-int4.md) |
-| vLLM 0.31 end to end, OLMoE-1B-7B, MoE patch / with hk's attention | 1.02-1.41x / 1.17-2.22x per request; decode step to 2.62x | stock vLLM 0.31.0 | win at every shape | [MoE](history/21-moe.md) |
-| SGLang 0.5.18 end to end, Qwen3-8B, linear patch | 1.49-1.81x output throughput at concurrency 1-32; time per output token 1.59-1.81x. With FlyDSL's rows, 0.4-0.6% less time per token at 32, the same at 1 and 8 | stock SGLang with sglang-radeon, eager, Triton attention; the table without FlyDSL rows | win at every concurrency | [SGLang](history/24-sglang.md), [chapter 32](history/32-measuring-the-measurements.md) |
-| SGLang 0.5.18 end to end, OLMoE-1B-7B, MoE patch | 1.06-1.32x output throughput at concurrency 1-32 (stock SGLang does not run it) | SGLang with the top-k in torch and its Triton MoE GEMMs | win at every concurrency | [SGLang MoE](history/25-sglang-moe.md) |
+### The stacks
 
-### Kernels against Triton and FlyDSL, every arm tuned
+The software around a number moves it: torch 2.13's SDPA is 3.3x faster than
+2.10's on the W7900D, and a Triton 3.8.0 wheel installed over triton-rocm
+3.7.1 made vLLM's decode kernel up to 40% slower
+([chapter 38](history/38-rdna-losses.md)). Each table below names the stack it
+ran on, from these.
 
-| kernel | result | against | verdict | source |
-|---|---|---|---|---|
-| GEMM, bf16, Qwen3-8B's linear shapes | 87.9-91.3 TFLOP/s | FlyDSL's dispatcher and its autotuner; Triton autotuned over gfx1100's space; hipBLASLt | tie with FlyDSL at all five shapes, 0.99-1.01x (from 0.95-0.98x), once `s_setprio` stopped fencing the scheduler; win over tuned Triton 1.09-1.11x and hipBLASLt 1.28-1.39x | [the GEMM schedule](history/28-gemm-schedule.md) |
-| RMSNorm (weighted), fused add + RMSNorm, softmax, on register strips | RMSNorm 1.02-1.12x, softmax 1.02x, fused add 0.83-1.11x across runs | the fastest of Triton and FlyDSL, each autotuned, and Inductor | RMSNorm and softmax win or tie at 1-8192 rows; the fused add ties, with a loss at 1 row in one run of five (the clock) and at 8192 rows in one of two (buffer placement) | [strips](history/27-strips.md) |
-| attention forward, n4096 GQA 4, against torch 2.13 | 1.24x causal, 1.05x non-causal (1.16x and 0.99x before V's transpose was packed) | torch 2.13.0+rocm7.2's SDPA, 3.3x faster than 2.10's causal | win; the 2.8-4.0x elsewhere on this page is against an older torch (2.10 where recorded) | [chapter 30](history/30-flydsl-routes-gate-contracts.md), [chapter 38](history/38-rdna-losses.md) |
-| dropout, KV cache write, embedding (`examples/07`-`09`) | dropout 1.02x; KV write 1.18-3.00x; embedding 1.18-1.28x torch at 1-32 tokens, 0.93x Triton at 4096 | the Triton tutorial or a Triton row kernel; torch | win for dropout and the KV write; loss for the embedding at 4096 tokens | [rows by index](history/19-rows-by-index.md) |
-| LayerNorm backward on register strips (`examples/10`), 4096 rows | 1.90x at 1024 wide, 1.69x at 2048, 1.15x at 4096 and 8192 (the 16-row tiles: 1.27x, 0.88x, 0.69x, 0.65x in the same runs) | the Triton tutorial 05 backward | win at every width; a strip holds a row of any width, read once | [chapter 38](history/38-rdna-losses.md) |
+**RDNA3: one Radeon PRO W7900D** (gfx1100; 864 GB/s of GDDR6, a 96 MB
+Infinity Cache).
 
-### Kernels against the kernel the engine runs
+| stack | ROCm | torch | Triton | FlyDSL | engine | used by |
+|---|---|---|---|---|---|---|
+| vLLM 0.31 venv, as built | 7.2.1 | 2.13.0+rocm7.2 | triton-rocm 3.7.1 | -- | vLLM 0.31.0+rocm721, built from source | [chapters 20-22](history/20-vllm-031.md): vLLM 0.31 end to end, MoE, 4-bit |
+| the same venv, after October 15 | 7.2.1 | 2.13.0+rocm7.2 | Triton 3.8.0, installed over triton-rocm 3.7.1 | 0.4.0 | vLLM 0.31.0+rocm721 | chapters 30-38: FlyDSL routes, any model, `ab`, chapter 38's end to end; the performance gate's baseline |
+| SGLang venv | 7.2.1 | 2.9.1 (HIP 7.2.53211) | triton 3.5.1 | installed in chapter 32 | SGLang 0.5.18, sglang-radeon 0.1.5 | [chapters 24-25](history/24-sglang.md), 32 |
+| the scoreboard | 7.2.4 | 2.10.0+rocm7.2.4 | 3.6.0 | 0.4.0.dev970 | -- | [chapters 26-28](history/26-the-scoreboard-retuned.md): kernels against the tuned field |
+| vLLM 0.16 (superseded) | 7.2.1 | -- | -- | -- | vLLM 0.16.1.dev0 | chapters 07-17; [appendix](#vllm-016-end-to-end) |
 
-| kernel | result | against | verdict | source |
-|---|---|---|---|---|
-| decode GEMV | 1.93-2.03x per step, 1-32 tokens | hipBLASLt | win; upstream vLLM's `wvSplitK` is ahead at one token | [cross-workgroup reduction](history/11-cross-workgroup-reduction.md) |
-| decode GEMV, Qwen3-8B's layers, 1-64 tokens | 1.18-2.30x | `F.linear`, torch 2.9.1 (hipBLASLt): what SGLang's linear runs on ROCm | win at every shape | [SGLang](history/24-sglang.md) |
-| GEMM on Qwen3-8B's linear layers | 1.09-1.23x at M ≥ 1024 | hipBLASLt (`F.linear`) | win at M ≥ 1024; a comb below it, with losses | [linear layers](history/08-linear-layers.md) |
-| W4A16 decode GEMM, fp16, Qwen3-8B's layers | 2.20-2.61x at 1-16 tokens, 1.40-1.84x at 32-64 | vLLM 0.31's Triton AWQ kernel (what AWQ runs on ROCm) | win at every shape | [4-bit weights](history/22-int4.md) |
-| W4A16 decode GEMM, against `gptq_gemm_rdna3` | 0.69-0.90x at 1-4 tokens; 1.13-2.25x from 8 | vLLM's HIP W4A16 kernel for gfx1100 | loss to 4 tokens, a skinny GEMV without WMMA's padding; win above | [4-bit weights](history/22-int4.md) |
-| MoE GEMM (bf16), OLMoE and Qwen3-30B-A3B shapes | 1.00-2.77x at 1-256 tokens; 0.41-0.87x at 512-4096 | vLLM 0.31's Triton `fused_moe` kernel, its own config | win to 256 tokens, which the route takes; loss above, which stays on Triton | [MoE](history/21-moe.md) |
-| MoE layer (bf16) in SGLang, OLMoE and Qwen3-30B-A3B shapes | 1.03-2.51x at 1-256 tokens; 0.61-1.01x at 512-2048 | SGLang's Triton fused-MoE, its default configs | win to 256 tokens, which the route takes; above, it stays on Triton | [SGLang MoE](history/25-sglang-moe.md) |
-| paged prefill | 3.6-7.9x | vLLM's Triton `unified_attention` | win | [captured whole](history/17-the-decode-step-captured-whole.md) |
-| paged decode attention, vLLM 0.31's cache | against triton-rocm 3.7.1 (vLLM 0.31's pin): 1.12x at 1024 x 16, 0.99x at 4096 x 16, 1.01-1.02x at 48, 0.86-0.95x at 24, 32, 40, 56 and 64; against Triton 3.8.0 (installed over it in the pod): 1.03-1.30x at 16, 32 and 64, 1.07-1.13x at 40, 1.02-1.07x at 48, 0.90x at 24, 0.96-1.03x at 56; hk 581-721 GB/s, Triton 3.7.1 730-810 | Triton's `unified_attention` on hk's cache as TRITON_ATTN calls it; on TRITON_ATTN's own cache it is no faster | loss against 3.7.1 at most batches, kernel for kernel; in the captured step Triton's kernel is the slower (1.93 ms a call against hk's 0.451 at 17-22 requests), so 16 requests and up stay on hk; up to 8 Triton's 3-D kernel runs on hk's cache | [chapter 38](history/38-rdna-losses.md) |
-| bf16 stores, RDNA | an add of random bf16 rows bit for bit torch's at every element (89.3% before, every difference a tie); norms and softmax a few ties a million closer; cost within about 1% | torch's round to nearest even | tie with torch where an output is a tie; the GEMM keeps ties away, 0.7% cheaper and no tie at 4096³ | [chapter 38](history/38-rdna-losses.md) |
+**CDNA4: one Instinct MI355X** (gfx950; 256 CUs, a 256 MB Infinity Cache;
+measured peaks 2.48 PFLOP/s of bf16 MFMA and 6.6 TB/s past the cache,
+[chapter 42](history/42-mi355x-in-the-engine.md)), one GPU of a shared
+8-GPU node.
 
-### Earlier results, since replaced
+| stack | ROCm | torch | Triton | FlyDSL | engine | used by |
+|---|---|---|---|---|---|---|
+| `rocm/pytorch` image | 7.2.3 (hipcc 7.2.3; HipKittens' attention built with 7.1) | 2.10.0+rocm7.2.3 | 3.6.0 | 0.4.0 | -- | [chapters 29](history/29-cdna.md), [33](history/33-cdna-gemm.md), [34](history/34-cdna-attention.md), [37](history/37-cdna-rows.md), [41](history/41-cdna-leftovers.md), [43](history/43-cdna-last-rows.md): kernels against the tuned field |
+| vLLM nightly image `vllm/vllm-openai-rocm:nightly-rocm100-0cbac6cd` | 10 (HIP 7.15) | 2.12 | 3.8 | -- | vLLM 0.30.1rc1.dev558, aiter 0.1.23; aiter on (`VLLM_ROCM_USE_AITER=1`) end to end | [chapters 39](history/39-cdna-paged.md), [42](history/42-mi355x-in-the-engine.md): end to end, kernels against what the engine calls |
 
-| kernel | result | against | verdict | source |
-|---|---|---|---|---|
-| GEMM, bf16 | 75.0 TFLOPs at 4096³, 77.9 at 8192x8192x4096 | handwritten HipKittens C++; rocBLAS | tie with the C++ (1.00x); rocBLAS 0.93x and 0.92x; since overtaken by hk's later schedule with one LDS buffer | [Phase 3](history/02-phase-3-gemm.md) |
-| attention forward | 61.0-64.9 TFLOPs | handwritten C++; torch SDPA (aotriton) | tie with the C++, 1.008x causal; 2.9-3.2x torch, 4.0x causal (torch 2.10) | [Phase 4](history/03-phase-4-attention.md) |
-| norms, elementwise, RoPE, quantize | 13 of 15 cases faster | `torch.compile` | win; the other two are a tie | [Phases 1 and 2](history/01-phases-1-2.md) |
-| RMSNorm, SiLU-mul | slower | Inductor, at Qwen3-8B shapes | loss; the patches were dropped | [strided globals](history/12-strided-globals.md) |
-| paged decode attention | 0.66-0.97x per layer up to 8 requests, 1.02-1.04x at 16, 2.6x at 32 | vLLM's Triton attention, captured | loss below 16 requests, where the backend runs Triton's kernel on hk's cache | [captured whole](history/17-the-decode-step-captured-whole.md) |
-| paged decode attention, vLLM 0.31 | 0.83-0.95x per layer at 16-64 requests | Triton's `unified_attention` on hk's cache, triton-rocm 3.7.1 | loss, kernel for kernel; replaced: with V's transpose packed and the split plan re-measured, 0.86-1.12x the same Triton | [vLLM 0.31](history/20-vllm-031.md) |
-| vLLM end to end, linear-layer patch | 1.10-1.84x per request | stock vLLM 0.16.1.dev0 | win at every shape, in both modes | [cross-workgroup reduction](history/11-cross-workgroup-reduction.md) |
-| vLLM end to end under its defaults, attention backend / both patches | 1.007-1.48x / 1.48-1.85x per request | stock vLLM 0.16.1.dev0, CUDA graphs, prefix caching, chunked prefill | win at every shape | [captured whole](history/17-the-decode-step-captured-whole.md) |
-| shipped ops at 7-8B shapes (`examples/validate.py`) | GEMM 1.12x, decode GEMV 3.90-4.38x, attention 2.76x / 3.94x causal, quantize 2.78x; norms 0.88-0.96x | torch eager, PyTorch 2.10 | win, except norms and elementwise, 2-12% behind torch's own fused kernels | [validation](history/16-validation-and-the-cross-warp-race.md) |
+## Part A: RDNA3 (gfx1100, one W7900D)
 
-## Against Triton and FlyDSL
+Everything in this part was measured on one W7900D. It is hk's primary
+target: every kernel and every engine patch runs there.
 
-[The scoreboard, retuned](history/26-the-scoreboard-retuned.md).
-`tools/hk-bench/scoreboard.py`: every way to compute each op in one process,
-each checked against fp32 before it is timed, each in a profiler session of
-its own per round, rounds rotated, best round. Every DSL runs out of the box
-and tuned, and records what it searched:
-- hk: its default GEMM schedule, and its tuner's record (96 points);
-- Triton: the tutorial kernel, and the same kernel autotuned over gfx1100's
-  space (120 matmul configs; num_warps x waves_per_eu for the row kernels),
-  ranked with the scoreboard's own warm timing;
-- FlyDSL 0.4.0.dev970: its dispatcher (`pick_tile` and per-tile options),
-  and its autotuner forced to search.
+### A1. End to end, by engine
 
-Its flash attention does not run on gfx11, which has no global-to-LDS load.
-The rest of the stack was torch 2.10.0+rocm7.2.4 and Triton 3.6.0, which
-matters for attention: torch 2.13's SDPA is 3.3x faster (below).
-GPU ms. "hk", "Triton" and "FlyDSL" are each the faster of that DSL's two
-arms; the verdict is hk's against the fastest other, a tie within the
-larger of 2% and the two arms' noise. Rows marked * are best of 9 rounds of
-50 calls, the rest best of 5 of 10.
+#### vLLM 0.31 on gfx1100
 
-| case | hk | torch | Inductor | Triton | FlyDSL | hk vs best | chapter 18 said |
+Qwen3-8B, bf16, vLLM 0.31.0 under its defaults. Stock 0.31 picks
+`ROCM_ATTN` on gfx1100, whose custom paged-attention kernel refuses the card
+and falls back to a Triton kernel. hk's attention backend registers over
+`TRITON_ATTN`, so there are two baselines: stock, and TRITON_ATTN, the
+backend hk replaces. The arms: `hk` is the attention backend (hk's paged
+prefill; hk's decode walk from 16 requests, to which vLLM pads 9-15, and
+Triton's kernel on hk's cache up to 8); `hk+gemm` adds the linear-layer
+patch.
+
+**The patches against stock** ([chapter 20](history/20-vllm-031.md); the
+venv as built, triton-rocm 3.7.1). 72 output tokens, the best of two rounds,
+one process per arm; every arm's greedy tokens were identical to stock's.
+Total time per request batch, as a ratio to stock; then the decode step:
+
+| ctx x batch | stock ms | TRITON_ATTN | hk | hk+gemm | step, stock ms | hk ms | hk+gemm ms |
 |---|---|---|---|---|---|---|---|
-| gemm 4096x4096x4096 | 1.5229 | 1.9682 | -- | 1.6638 | 1.5423 | 1.01x tie | 1.05x |
-| gemm 2048x6144x4096 | 1.1285 | 1.5719 | -- | 1.2523 | 1.1325 | 1.00x tie | 1.08x |
-| gemm 2048x4096x4096 | 0.7785 | 0.9988 | -- | 0.8615 | 0.7721 | 0.99x tie | 1.08x |
-| gemm 2048x24576x4096 | 4.6041 | 5.9432 | -- | 5.0004 | 4.6292 | 1.00x tie | 1.05x |
-| gemm 2048x4096x12288 | 2.3099 | 2.9459 | -- | 2.5596 | 2.2950 | 0.99x tie | 1.03x |
-| attention n4096 causal, GQA 4 | 3.0094 | 10.8671 | -- | -- | -- | 3.61x win | 3.65x |
-| attention n4096, GQA 4 | 4.6924 | 13.2199 | -- | -- | -- | 2.82x win | 2.75x |
-| rms_norm 1x4096* | 0.0024 | 0.0042 | 0.0026 | 0.0026 | 0.0025 | 1.04x win | 0.41x |
-| rms_norm 32x4096* | 0.0023 | 0.0044 | 0.0027 | 0.0027 | 0.0025 | 1.12x, a tie by noise | 0.47x |
-| rms_norm 2048x4096 | 0.0184 | 0.0263 | 0.0197 | 0.0193 | 0.0190 | 1.04x win | 0.70x |
-| rms_norm 8192x4096 | 0.1699 | 0.1771 | 0.1775 | 0.1744 | 0.1741 | 1.02x win | 0.92x |
-| fused add + rms_norm 1x4096* | 0.0032 | 0.0060 | 0.0026 | 0.0027 | 0.0029 | 0.83x loss (0.83-1.08x over five runs) | 0.37x |
-| fused add + rms_norm 32x4096* | 0.0025 | 0.0064 | 0.0029 | 0.0028 | 0.0030 | 1.11x, a tie by noise | 0.51x |
-| fused add + rms_norm 2048x4096 | 0.0362 | 0.0488 | 0.0396 | 0.0363 | 0.0358 | 0.99x tie | 0.78x |
-| fused add + rms_norm 8192x4096 | 0.3390 | 0.4547 | 0.3708 | 0.3280 | 0.3690 | 0.97x loss (1.02x tie in the other run) | 0.97x |
-| softmax 2048x4096 | 0.0187 | 0.0304 | 0.0573 | 0.0255 | 0.0191 | 1.02x tie | 0.63x |
-| softmax 8192x4096 | 0.1686 | 0.1755 | 0.2240 | 0.1725 | 0.1725 | 1.02x win | 0.93x |
+| 1024 x 1 | 1992 | 1.17x | 1.18x | 1.22x | 24.5 | 20.3 | 20.3 |
+| 1024 x 4 | 2781 | 1.08x | 1.11x | 1.20x | 26.2 | 22.4 | 22.2 |
+| 1024 x 16 | 7493 | 1.02x | 1.05x | 1.52x | 51.1 | 48.3 | 27.8 |
+| 1024 x 32 | 12174 | 0.99x | 1.09x | 1.47x | 61.7 | 52.2 | 32.7 |
+| 4096 x 1 | 3664 | 1.29x | 1.48x | 1.59x | 36.8 | 21.0 | 21.0 |
+| 4096 x 4 | 7180 | 0.98x | 1.25x | 1.44x | 38.5 | 24.6 | 24.8 |
+| 4096 x 16 | 26607 | 1.02x | 1.32x | 1.70x | 72.1 | 59.0 | 38.2 |
+| 4096 x 32 | 51762 | 1.00x | 1.40x | 1.75x | 112.2 | 71.2 | 51.5 |
 
-The GEMM and attention rows are [chapter 28](history/28-gemm-schedule.md)'s:
-without the `s_setprio` fence around each WMMA group, hk's schedule gets the
-interleave FlyDSL's hints ask for, and the GEMM ties FlyDSL at every shape.
-The paragraphs below are chapter 26's account of the gap that closed.
+hk is 1.01-1.39x TRITON_ATTN, almost all of it prefill: hk's paged prefill
+is 3.6-7.9x Triton's ([A3](#paged-prefill)). The linear-layer patch gains
+nothing at 1 and 4 requests, where vLLM 0.31 runs its own skinny GEMM
+(`wvSplitK`, M ≤ 5) and the routing table leaves it; at 16 and 32 requests
+it nearly halves the decode step.
 
-Chapter 18's GEMM win was against FlyDSL's bare 128x128x32 default (1.743 ms
-at 4096³) and Triton's seven tutorial configs. FlyDSL's dispatcher runs
-4096³ in 1.547 ms. FlyDSL's tile with each option taken away, beside hk's
-(`tools/hk-bench/gemm_vs_flydsl.py`), shows where the lead comes from:
-`sched_group_barrier` hints are worth 5-6% at every shape, and a per-workgroup
-rotation of the K start 5-12%. Bare, its kernel is 0.89-0.97x hk's.
-- hk can express the rotation (`gemm_kernel(stagger=)`), and it does not pay
-  in hk's schedule: 0.91-1.00x at ten of eleven shapes.
-- hk could not express the hints: `hk.arch` had a full `sched_barrier` but
-  no instruction-group interleave. Chapter 28 added
-  `hk.arch.sched_group_barrier`; with `s_setprio` gone, the hint added
-  nothing on top.
-- FlyDSL's four-wave 64x64 warp tile spilled in hk's `dot_tile` (281 VGPRs),
-  which kept its whole A slice live where FlyDSL streams one fragment.
-  Chapter 28's `gemm_kernel(stream_a=True)` streams A: 256 VGPRs and no
-  spill under ROCm 7.1, 3 spilled under 7.2.
-- FlyDSL's 256x256x32 tile fits hk (252 VGPRs) and is 0.77-0.88x.
-- n_split=2, now hk's default, was +0.4-2.6% at 15 of 16 shape-runs.
+**With chapter 38's decode kernel** ([chapter 38](history/38-rdna-losses.md);
+the venv after October 15, Triton 3.8.0 in both arms). `ab --json`, two
+rounds, the tree before chapter 38 and after it each against its own stock
+arm; 72 output tokens, 128 at 64 requests. Ratios are stock over the arm:
 
-The norm and softmax rows are [chapter 27](history/27-strips.md)'s: the ops
-run on register strips, every RDNA kernel reads its arguments at entry, and
-past the Infinity Cache the strip kernels cap their occupancy. The rest of
-this list is chapter 26's diagnosis of the tile kernels, which strips
-replaced; it stays because the tile kernels still run rows wider than 32768.
+| ctx x batch | hk, total before / after | hk, decode step before / after | hk+gemm, total before / after | hk+gemm, decode step before / after |
+|---|---|---|---|---|
+| 1024 x 16 | 1.042x / 1.060x | 1.027x / 1.063x | 1.544x / 1.587x | 1.788x / 1.904x |
+| 1024 x 32 | 1.080x / 1.096x | 1.131x / 1.183x | 1.500x / 1.539x | 1.787x / 1.946x |
+| 1024 x 64 | 1.108x / 1.126x | 1.215x / 1.246x | 1.498x / 1.530x | 1.715x / 1.786x |
+| 4096 x 16 | 1.359x / 1.373x | 1.197x / 1.227x | 1.798x / 1.837x | 1.836x / 1.949x |
+| 4096 x 32 | 1.417x / 1.434x | 1.418x / 1.472x | 1.829x / 1.862x | 1.964x / 2.051x |
 
-**The rows marked \* measured the launchers as much as the kernels.** A call
-that reaches the GPU 5-16 us after it went idle takes about 10 us longer,
-and the arms that launch in 5-8 us (hk's pybind entry, torch, FlyDSL) got
-10-20% of such calls, Triton and Inductor, at 21-28 us a launch, none.
-The scoreboard now queues each round's calls behind a GPU spin
-([chapter 32](history/32-measuring-the-measurements.md)). Out of the box,
-queued, one run, median of 7 rounds of 50 calls, us:
+Every row is a win past its band, before and after. The decode step is
+1.9-3.9 ms (4-9%) shorter after at every shape, prefill moved by at most
+1.1%, and the greedy outputs were identical to stock's in every run.
+
+#### FlyDSL's GEMM on the routes
+
+[Chapter 30](history/30-flydsl-routes-gate-contracts.md), re-measured in
+[chapter 31](history/31-remeasured.md); vLLM 0.31.0, torch 2.13.0+rocm7.2,
+FlyDSL 0.4.0. `hk+gemm` is the attention backend and the linear layers
+routed by the table without FlyDSL; `+FlyDSL` uses a table re-measured with
+FlyDSL installed, which adds FlyDSL rows where its GEMM, at the tile its
+dispatcher picks, beat the table's answer by 2%. Prefix caching and chunked
+prefill off, three rounds, arms alternating, best of each; every arm's
+greedy tokens matched stock's.
+
+Per call (`route_tune.py`), FlyDSL against the table's own answer at each M
+where one of its tiles divides M, as a time ratio (below 1 is FlyDSL
+faster); chapter 31's re-measured table:
+
+| M | qkv | o | gate_up | down |
+|---|---|---|---|---|
+| 64-256, median | 0.84x | 0.87x | 0.88x | 1.00x |
+| 272-1024, median | 1.22x | 1.17x | 1.42x | 1.28x |
+| above 1024, median | 1.02x | 1.005x | 1.02x | 0.997x |
+
+End to end, graph mode, 512-token prompts, 160 output tokens (chapter 30):
+
+| ctx x batch | total, stock ms | hk+gemm | +FlyDSL | decode, stock ms | hk+gemm | +FlyDSL |
+|---|---|---|---|---|---|---|
+| 512 x 96 | 22471.29 | 1.266x | 1.343x | 71.72 | 1.224x | 1.394x |
+| 512 x 128 | 29184.06 | 1.368x | 1.442x | 92.32 | 1.467x | 1.666x |
+
+FlyDSL pays where a step's M is one its tiles divide and it measured faster:
+decode at 96 and 128 requests, 12% a step, where hk's 128-row GEMM leaves the
+grid underfilled. Eager at 1-16 requests the two tables are within 0.7% at
+every decode step and 1.18-1.57x stock per request either way. After
+[chapter 28](history/28-gemm-schedule.md) made hk's GEMM 3% faster on vLLM's
+op, the shipped table routes FlyDSL at 41 points instead of 105. Against
+the table above, on the same tree: prefill 1.5-1.7% faster at 8192-token
+steps (gate_up on FlyDSL's 256x256 tile), 1.2% slower at a 1024-token step
+(rows dropped at M = 1024 that measured under the 2% bar per call), and
+decode at 96 and 128 requests 1.413x and 1.651x stock (chapter 30: 1.394x
+and 1.666x).
+
+#### A model no table had measured
+
+[Chapter 35](history/35-any-model.md); vLLM 0.31.0, torch 2.13.0+rocm7.2,
+FlyDSL 0.4.0 installed. Qwen2.5-7B-Instruct, bf16, whose linear shapes are
+in no shipped table. The `gemm` arm is `HK_VLLM_GEMM` with nothing else
+set, from an empty record directory: its first start measured the shapes
+at load within the default 60 s, its second the rest (43 s), its third
+nothing. Three rounds, arms alternating, best of each; greedy tokens
+identical to stock's at every shape. Qwen2.5's qkv projection has a bias,
+so its calls stay on vLLM's path.
+
+| mode, ctx x batch | total, stock ms | gemm | prefill | decode, stock ms | gemm |
+|---|---|---|---|---|---|
+| defaults, 1024 x 1 | 1740.8 | 1.039x | 1.317x | 21.12 | 1.005x |
+| defaults, 1024 x 4 | 2429.1 | 1.083x | 1.260x | 21.93 | 1.004x |
+| defaults, 1024 x 16 | 6165.6 | 1.318x | 1.284x | 35.63 | 1.383x |
+| defaults, 1024 x 32 | 10032.1 | 1.300x | 1.287x | 37.96 | 1.376x |
+| defaults, 4096 x 1 | 3118.4 | 1.065x | 1.229x | 29.86 | 1.000x |
+| defaults, 4096 x 4 | 6325.4 | 1.151x | 1.252x | 30.26 | 0.995x |
+| defaults, 4096 x 16 | 22332.5 | 1.205x | 1.267x | 47.91 | 1.283x |
+| defaults, 4096 x 32 | 42259.2 | 1.193x | 1.267x | 53.96 | 1.216x |
+| graph mode, 512 x 96, 160 tokens | 17588.6 | 1.173x | 1.295x | 42.75 | 1.015x |
+| graph mode, 512 x 128, 160 tokens | 24594.3 | 1.313x | 1.295x | 66.22 | 1.358x |
+
+At 1 and 4 requests decode is vLLM's own skinny GEMMs (M ≤ 5), which hk's
+GEMV does not beat. At 96 requests the measured routes keep three of the
+four shapes on vLLM's op, and the measuring at load does not time FlyDSL.
+Qwen3-8B, routed by the same code with nothing to measure, matched the
+shipped table within 0.4% per request at every shape.
+DeepSeek-R1-Distill-Llama-8B (three new shapes), vLLM's defaults, two
+rounds: 1.41x / 1.32x per request at 1024 x 16 / 32, 1.21x / 1.18x at 4096,
+1.03-1.14x at 1-4 requests; starts 60 s and 17 s longer, then nothing. Its
+greedy tokens matched at six shapes; at 1024 x 32 the first token's two
+leading logits are neighbouring bf16 values, and the arms pick opposite
+ones.
+
+#### 4-bit and MoE models
+
+**4-bit (AWQ)** ([4-bit weights](history/22-int4.md); the venv as built,
+triton-rocm 3.7.1). fp16, vLLM 0.31.0 under its defaults, 72 tokens, best
+of two rounds, `VLLM_USE_TRITON_AWQ=1` in both arms, so stock runs Triton's
+AWQ kernel. `HK_VLLM_INT4=1` gives hk's W4A16 kernel batches of up to 64
+tokens; prefill stays on vLLM's path (1.00x). Greedy tokens identical at
+every shape.
+
+| model, ctx x batch | total, stock ms | int4 | decode step, stock ms | int4 |
+|---|---|---|---|---|
+| Qwen3-8B-AWQ, 1024 x 1 | 4965 | 3.80x | 66.37 | 4.46x |
+| Qwen3-8B-AWQ, 1024 x 4 | 5710 | 2.74x | 66.49 | 4.33x |
+| Qwen3-8B-AWQ, 1024 x 16 | 9252 | 1.66x | 70.08 | 3.70x |
+| Qwen3-8B-AWQ, 1024 x 32 | 14421 | 1.30x | 82.48 | 2.27x |
+| Qwen3-8B-AWQ, 4096 x 1 | 6706 | 2.20x | 78.34 | 2.92x |
+| Qwen3-8B-AWQ, 4096 x 4 | 10408 | 1.56x | 79.72 | 2.87x |
+| Qwen3-8B-AWQ, 4096 x 16 | 28885 | 1.15x | 91.58 | 2.34x |
+| Qwen3-8B-AWQ, 4096 x 32 | 54765 | 1.07x | 136.04 | 1.57x |
+| Qwen3-14B-AWQ, 1024 x 1 | 8857 | 4.43x | 118.06 | 5.52x |
+| Qwen3-14B-AWQ, 1024 x 16 | 16853 | 1.69x | 122.00 | 4.71x |
+| Qwen3-14B-AWQ, 4096 x 1 | 11497 | 2.50x | 131.95 | 3.80x |
+| Qwen3-14B-AWQ, 4096 x 16 | 50210 | 1.16x | 145.80 | 2.87x |
+
+A stock AWQ decode step of 66 ms at one request, against 24.5 ms for the
+bf16 model, is the Triton AWQ kernel, which runs this card's 4-bit model
+slower than its 16-bit one.
+
+**MoE** ([MoE](history/21-moe.md); the venv as built). OLMoE-1B-7B, bf16,
+vLLM 0.31.0 under its defaults, 72 tokens, best of two rounds. `moe` is the
+MoE patch (hk's expert GEMM up to 256 tokens a step); `hk+moe` adds hk's
+attention. In that run decode attention was Triton's kernel on hk's cache at
+every batch, a routing chapter 20 later reverted above 8 requests; the 16-
+and 32-request `hk+moe` rows were not measured again. Greedy tokens
+identical to stock's.
+
+| ctx x batch | total, stock ms | moe | hk+moe | decode step, stock ms | moe | hk+moe |
+|---|---|---|---|---|---|---|
+| 1024 x 1 | 760 | 1.41x | 1.92x | 9.93 | 1.45x | 2.05x |
+| 1024 x 4 | 1021 | 1.28x | 1.57x | 12.14 | 1.35x | 1.75x |
+| 1024 x 16 | 2238 | 1.11x | 1.19x | 22.70 | 1.16x | 1.24x |
+| 1024 x 32 | 3368 | 1.04x | 1.17x | 29.46 | 1.06x | 1.23x |
+| 3072 x 1 | 1102 | 1.24x | 2.22x | 13.55 | 1.29x | 2.62x |
+| 3072 x 4 | 1876 | 1.18x | 1.67x | 18.62 | 1.27x | 2.03x |
+| 3072 x 16 | 5066 | 1.05x | 1.24x | 38.22 | 1.10x | 1.21x |
+| 3072 x 32 | 8676 | 1.02x | 1.25x | 55.83 | 1.04x | 1.26x |
+
+**The losing kernels never reach a request** ([chapter 38](history/38-rdna-losses.md);
+the venv after October 15). `ab`, graphs on, vLLM's defaults, each patch
+counting its calls:
+- OLMoE-1B-7B at 1024 and 3072 tokens, 1 and 16 requests: 960 MoE calls to
+  hk and 2,272 to Triton (every one above 256 tokens), every captured call
+  hk's. Prefill ties stock (0.999-1.004x), decode wins 1.09-1.38x, the
+  request 1.05-1.34x.
+- Qwen3-8B-AWQ at 1, 4 and 16 requests: 3,600 calls to hk (every captured
+  one); decode 3.84-4.60x, the request 1.68-3.88x, prefill a tie or a win
+  (1.005-1.023x).
+- Qwen2.5-7B-Instruct-GPTQ-Int4 at 1 and 4 requests: the int4 patch takes 0
+  calls (GPTQ stays on `gptq_gemm_rdna3`), and the request ties stock
+  (1.002-1.004x).
+
+#### SGLang 0.5.18 on gfx1100
+
+**Linear layers** ([SGLang](history/24-sglang.md); the SGLang venv).
+Qwen3-8B, bf16, eager with Triton attention. `HK_SGLANG_LINEAR=1` routes
+every unquantized linear by a table measured against SGLang's `F.linear`.
+Served (`launch_server`, then `bench_serving`: random ids, 512 tokens in,
+128 out, each server warmed first):
+
+| concurrency | output tok/s, stock | hk | x | TTFT ms, stock | hk | TPOT ms, stock | hk | x |
+|---|---|---|---|---|---|---|---|---|
+| 1 | 22.75 | 41.27 | 1.81 | 93.5 | 51.9 | 43.53 | 24.00 | 1.81 |
+| 8 | 159.52 | 270.65 | 1.70 | 534.6 | 431.7 | 46.08 | 26.14 | 1.76 |
+| 32 | 456.02 | 678.08 | 1.49 | 606.2 | 489.7 | 54.41 | 34.26 | 1.59 |
+
+In one process (`bench_one_batch`, 512 tokens in, 64 out; stock's warm runs):
+prefill 1.34x, 1.22x and 1.30x and the decode step 1.75x, 1.76x and 1.59x at
+batch 1, 8 and 32. With FlyDSL's rows in SGLang's table
+([chapter 32](history/32-measuring-the-measurements.md)), the decode step at
+32 requests is 0.4-0.6% shorter (34.23-34.25 against 34.37-34.46 ms per
+output token) and nothing changes measurably at 1 and 8. hk's linear and
+`F.linear` are equally far from fp64; in a greedy check two of three prompts
+matched stock over 48 tokens and the third split at a near-tie.
+
+**MoE** ([SGLang MoE](history/25-sglang-moe.md)). Stock SGLang does not run
+OLMoE-1B-7B on gfx1100: sgl_kernel's `topk_softmax` fails. So the baseline is
+`HK_SGLANG_MOE=topk`, the top-k in torch and SGLang's Triton expert GEMMs;
+the patched arm, `HK_SGLANG_MOE=1`, adds hk's GEMMs up to 256 tokens a step.
+Warm caches; greedy output identical over SGLang's three correctness prompts.
+
+| concurrency | output tok/s, Triton GEMMs | hk | x | mean TPOT ms, Triton | hk | x |
+|---|---|---|---|---|---|---|
+| 1 | 61.6 | 65.5 | 1.06 | 16.07 | 15.10 | 1.06 |
+| 8 | 345.6 | 457.2 | 1.32 | 22.15 | 16.55 | 1.34 |
+| 32 | 836.2 | 1057.6 | 1.26 | 35.82 | 27.92 | 1.28 |
+
+### A2. Kernels against the tuned field
+
+**The scoreboard** ([chapter 26](history/26-the-scoreboard-retuned.md), with
+[chapter 27](history/27-strips.md)'s norms and
+[chapter 28](history/28-gemm-schedule.md)'s GEMM; the scoreboard stack:
+torch 2.10.0+rocm7.2.4, Triton 3.6.0, FlyDSL 0.4.0.dev970).
+`tools/hk-bench/scoreboard.py` runs every way to compute each op in one
+process, each checked against fp32 first, in a profiler session per arm per
+round, rounds rotated, best round. Every DSL runs out of the box and tuned:
+hk's default schedule and its tuner's record; Triton's tutorial kernel and
+the same kernel autotuned over gfx1100's space (120 matmul configs;
+num_warps x waves_per_eu for the row kernels); FlyDSL's dispatcher and its
+autotuner forced to search. "Triton" and "FlyDSL" are the faster of each
+DSL's two arms. GPU ms; rows marked * are the best of 9 rounds of 50 calls,
+the rest the best of 5 of 10.
+
+| case | hk | torch | Inductor | Triton | FlyDSL | hk against the fastest other |
+|---|---|---|---|---|---|---|
+| gemm 4096x4096x4096 | 1.5229 | 1.9682 | -- | 1.6638 | 1.5423 | 1.01x tie |
+| gemm 2048x6144x4096 | 1.1285 | 1.5719 | -- | 1.2523 | 1.1325 | 1.00x tie |
+| gemm 2048x4096x4096 | 0.7785 | 0.9988 | -- | 0.8615 | 0.7721 | 0.99x tie |
+| gemm 2048x24576x4096 | 4.6041 | 5.9432 | -- | 5.0004 | 4.6292 | 1.00x tie |
+| gemm 2048x4096x12288 | 2.3099 | 2.9459 | -- | 2.5596 | 2.2950 | 0.99x tie |
+| attention n4096 causal, GQA 4 | 3.0094 | 10.8671 | -- | -- | -- | 3.61x win (torch 2.10) |
+| attention n4096, GQA 4 | 4.6924 | 13.2199 | -- | -- | -- | 2.82x win (torch 2.10) |
+| rms_norm 1x4096* | 0.0024 | 0.0042 | 0.0026 | 0.0026 | 0.0025 | 1.04x win |
+| rms_norm 32x4096* | 0.0023 | 0.0044 | 0.0027 | 0.0027 | 0.0025 | 1.12x, a tie by noise |
+| rms_norm 2048x4096 | 0.0184 | 0.0263 | 0.0197 | 0.0193 | 0.0190 | 1.04x win |
+| rms_norm 8192x4096 | 0.1699 | 0.1771 | 0.1775 | 0.1744 | 0.1741 | 1.02x win |
+| fused add + rms_norm 1x4096* | 0.0032 | 0.0060 | 0.0026 | 0.0027 | 0.0029 | 0.83x loss (0.83-1.08x over five runs) |
+| fused add + rms_norm 32x4096* | 0.0025 | 0.0064 | 0.0029 | 0.0028 | 0.0030 | 1.11x, a tie by noise |
+| fused add + rms_norm 2048x4096 | 0.0362 | 0.0488 | 0.0396 | 0.0363 | 0.0358 | 0.99x tie |
+| fused add + rms_norm 8192x4096 | 0.3390 | 0.4547 | 0.3708 | 0.3280 | 0.3690 | 0.97x loss (1.02x tie in the other run) |
+| softmax 2048x4096 | 0.0187 | 0.0304 | 0.0573 | 0.0255 | 0.0191 | 1.02x tie |
+| softmax 8192x4096 | 0.1686 | 0.1755 | 0.2240 | 0.1725 | 0.1725 | 1.02x win |
+
+**GEMM.** hk's bf16 GEMM runs 87.9-91.3 TFLOP/s at these shapes and ties
+FlyDSL at all five (from 0.95-0.98x in chapter 26), once the `s_setprio`
+around each WMMA group stopped fencing the scheduler (chapter 28). Against
+Triton tuned over gfx1100's space it is 1.09-1.11x, and against hipBLASLt
+1.28-1.39x (chapter 28). FlyDSL's earlier lead was its
+`sched_group_barrier` hints (5-6%) and a per-workgroup rotation of the K
+start (5-12%); hk can now express both, and without `s_setprio` neither
+adds anything to hk's schedule.
+
+**Attention.** FlyDSL's flash attention does not run on gfx11, which has no
+global-to-LDS load, and Triton has no tuned arm here, so the comparison is
+torch's SDPA (aotriton). torch 2.13's SDPA runs the causal n4096 case in
+3.24-3.27 ms where 2.10's took 10.83
+([chapter 30](history/30-flydsl-routes-gate-contracts.md)). Against torch
+2.13, in the performance gate, hk's attention is 1.24x causal and 1.05x
+non-causal since [chapter 38](history/38-rdna-losses.md) packed V's
+transpose (1.13x and 0.99x in the gate just before it; chapter 30 measured
+1.16x and 0.99x). The scoreboard's 3.61x and 2.82x are against torch 2.10.
+
+**Norms and softmax** run on register strips (chapter 27), each lane owning
+16-byte runs of a row. RMSNorm and softmax win or tie at every size, by
+4-19% at one and 32 rows, 2-4% at 2048 and 2% at 8192 rows at the HBM
+roof. The fused add + RMSNorm ties over the runs, with a loss at each end:
+at one row in one run of five (the clock state), and at 8192 rows in one of
+two, inside the 2.4-3.6% that buffer placement alone moves an 8192-row
+comparison. The small rows were then measured queued behind a spin
+(chapter 32; out of the box, the median of 7 rounds of 50 calls, us):
 
 | case | hk | Inductor | Triton | FlyDSL | torch |
 |---|---|---|---|---|---|
@@ -178,104 +398,101 @@ queued, one run, median of 7 rounds of 50 calls, us:
 | fused add + rms_norm 1x4096 | 2.12 | 2.14 | 2.20 | 2.64 | 7.16 |
 | fused add + rms_norm 32x4096 | 2.33 | 2.56 | 2.48 | 2.84 | 7.57 |
 
-Every arm's rounds sit within 1.1% of their median, and hk's kernels are
-the fastest at all four: over three queued runs, 1.01-1.06x the next by the
-median ratio. The tuned arms were not run queued.
+Every arm's rounds sit within 1.1% of their median, and hk's kernels are the
+fastest at all four: 1.01-1.06x the next over three queued runs. The tuned
+arms were not run queued.
 
-The norm losses chapter 26 measured, and why:
-- **1-32 rows** is the instruction stream. hk's folded RMSNorm is 846
-  instructions a warp, with 16 b128 loads, 8 b128 stores and 3 barriers.
-  Triton's, at its tuned 16 warps, is 221 instructions a wave, with 2 loads,
-  1 store and 2 barriers. A bare hk tile copy of one row takes 3.47 us, and
-  Triton's whole RMSNorm 2.69.
-- **2048 rows** (33 MB, Infinity-Cache resident): hk's register tiles have
-  WMMA's lane layouts. A 16-bit row tile holds each row twice, in lanes l and
-  l + 16, so every load and store moved each 32-byte run from both wave
-  halves. HipKittens' `HK_RT_HALF_SPLIT` now moves it once. On the folded
-  plans: rms_norm 27.17 to 24.72 us, the fused add 46.12 to 40.15; softmax,
-  switched to the bounded accesses, 29.99 to 23.22, ahead of tuned Triton's
-  25.73. The remaining gap was the absence of a register layout in which a
-  lane owns a contiguous run of one row, which is what Triton's blocked
-  layout and FlyDSL's tiled copies give their kernels. Chapter 27's strips
-  are that layout.
-- **8192 rows** is DRAM-bound, 3-9% behind. The unfolded plan's weight is a row
-  vector broadcast down a WMMA-shaped tile, read with 128 element loads a
-  lane.
+**The performance gate** (`tests/perf/baselines/gfx1100.json`) holds the
+same scoreboard's out-of-the-box arms on the vLLM 0.31 venv after October 15
+(torch 2.13.0+rocm7.2, Triton 3.8.0, FlyDSL 0.4.0). In its baseline as
+[chapter 31](history/31-remeasured.md) refreshed it, FlyDSL's dispatcher
+takes 1.00-1.03x hk's time on the GEMM, and on the 2048- and 8192-row norms
+and softmax each out-of-the-box arm takes 0.99-3.03x hk's time (Triton's
+tutorial kernels, not the tuned ones above; the 0.99x is FlyDSL's 2048-row
+fused add). [Chapter 38](history/38-rdna-losses.md) refreshed it again after
+the bf16 stores and the transpose changed: of 57 pairs the median moved
+0.0%, the norms and softmax -2.8% to +2.4%, attention against torch +6.2%
+non-causal and +10.1% causal.
 
-So on this card at these shapes, as of chapters 27 and 28: hk and FlyDSL
-tie the GEMM, hk wins the norms and softmax (the fused add ties) and
-attention, where neither other DSL has a gfx11 kernel (against torch 2.10's
-SDPA; against torch 2.13's, 1.16x causal and a tie non-causal); tuned Triton
-and hipBLASLt are behind both on the GEMM.
+**Triton's tutorials and the kernels beside a model**
+([rows by index](history/19-rows-by-index.md); LayerNorm backward from
+[chapter 38](history/38-rdna-losses.md)). Each checked against fp32 torch
+first (the dropout's mask also against Triton's, which it equals), all arms
+in one process, best round; the LayerNorm backward row is chapter 38's sweep
+of workgroup counts, the best per width, interleaved with the tutorial. ms:
 
-The performance gate's baseline (`tests/perf/baselines/gfx1100.json`,
-[chapter 30](history/30-flydsl-routes-gate-contracts.md), re-measured in
-[chapter 31](history/31-remeasured.md)) is the same scoreboard's
-out-of-the-box arms, six runs on the vLLM 0.31 venv: torch 2.13.0+rocm7.2,
-Triton 3.8.0, FlyDSL 0.4.0, hk with chapters 27 and 28. There FlyDSL's
-dispatcher takes 1.00-1.03x hk's time on the GEMM (0.97-0.98x before
-chapter 28). On the 2048- and 8192-row norms and softmax each
-out-of-the-box arm takes 0.99-3.03x hk's time (Triton's tutorial kernels,
-not the tuned ones above; the 0.99x is FlyDSL's 2048-row fused add). Attention changed with torch: 2.13's SDPA runs the causal n4096
-case in 3.24-3.27 ms where 2.10's took 10.83, so hk's attention is 1.16x
-torch causal and 0.99x non-causal on that torch, against 3.61x and 2.82x in
-the table above (chapter 26: 3.80x and 2.73x). The attention rows above are
-torch 2.10's.
-
-### Triton tutorials and the kernels beside a model
-
-[Rows by index](history/19-rows-by-index.md): `examples/07`-`10`. Each is
-checked against fp32 torch before it is timed (the dropout's mask also
-against Triton's, which it equals), all arms in one process, best round. ms.
-
-| kernel | shape | hk | Triton | torch | hk vs Triton |
+| kernel | shape | hk | Triton | torch | hk against Triton |
 |---|---|---|---|---|---|
 | dropout, p = 0.5 (tutorial 04) | 8192 x 4096 bf16 | 0.415 | 0.424 | 0.278 | 1.02x |
-| KV cache write, -1 slots skipped | 16 tokens, 1024 wide | 0.005 | 0.014 | 0.107 | 3.00x |
-| | 256 tokens | 0.005 | 0.014 | 0.110 | 2.88x |
-| | 4096 tokens | 0.012 | 0.014 | 0.146 | 1.18x |
-| LayerNorm backward (tutorial 05), 4096 rows | 1024 wide | 0.040 | 0.044 | 0.070 | 1.12x |
-| | 2048 | 0.065 | 0.060 | 0.110 | 0.92x |
-| | 4096 | 0.153 | 0.105 | 0.203 | 0.69x |
-| | 8192 | 0.534 | 0.354 | 0.564 | 0.66x |
-| embedding, 151936 x 4096 bf16, ids rotated past the cache | 1 token | 0.005 | 0.012 | 0.006 | 2.4x |
-| | 32 tokens | 0.005 | 0.012 | 0.006 | 2.4x |
-| | 4096 tokens | 0.090 | 0.084 | 0.083 | 0.93x |
+| KV cache write, -1 slots skipped | 16 / 256 / 4096 tokens, 1024 wide | 0.005 / 0.005 / 0.012 | 0.014 / 0.014 / 0.014 | 0.107 / 0.110 / 0.146 | 3.00x / 2.88x / 1.18x |
+| embedding, 151936 x 4096, ids rotated past the cache | 1 / 32 / 4096 tokens | 0.005 / 0.005 / 0.090 | 0.012 / 0.012 / 0.084 | 0.006 / 0.006 / 0.083 | 2.4x / 2.4x / 0.93x |
+| LayerNorm backward (tutorial 05) on strips, 4096 rows | 1024 / 2048 / 4096 / 8192 wide | 0.026 / 0.034 / 0.091 / 0.301 | 0.050 / 0.058 / 0.105 / 0.346 | -- | 1.90x / 1.69x / 1.15x / 1.15x |
 
 The dropout is bound by Philox's multiplies in both DSLs; torch's is 1.5x
-because it uses all four outputs of a Philox call. The LayerNorm backward
-holds a row in registers up to 2048 wide; wider, its 16-row tile reads the
-row twice, where Triton's one-row program holds it. The embedding at 4096
-tokens is the row layout's 16 random rows per load.
+faster than either, because it uses all four outputs of a Philox call. The
+embedding at 4096 tokens is the row layout's 16 random rows per load. The
+LayerNorm backward on strips reads a row of any width once; the 1024- and
+2048-wide cases fit the 96 MB cache, which is why they run past the card's
+HBM rate. The 16-row tile kernel it replaced is in the
+[appendix](#pre-strip-norms).
 
-## GEMM
+**Elementwise, quantize and RoPE.** The record has no scoreboard run of
+these on gfx1100, where the elementwise ops still run the tile kernels they
+were tuned on. What it has is against torch: at 8192x4096, against torch
+2.10's eager call ([chapter 16](history/16-validation-and-the-cross-warp-race.md)),
+add is 0.98x and exp 0.92x, SiLU-mul 1.57x, int8 quantize (4096x4096) 2.78x
+and NeoX RoPE (32 heads x 2048 x 128) 9.19x. Against `torch.compile`
+([Phases 1 and 2](history/01-phases-1-2.md)), RoPE at 128x1024x128 is 0.076
+against 0.107 ms, and SiLU-mul (8192x11008, 0.761 against 0.763) and
+quantize (16384x5120, 0.367 against 0.369) are level.
 
-### Against the handwritten C++ and rocBLAS
+**Rounding.** RDNA's bf16 stores round to nearest even, as torch's do
+([chapter 38](history/38-rdna-losses.md)): an add of random bf16 rows is now
+torch's bit for bit at every element (89.3% before, every difference an
+exact tie), at a cost within about 1%. The GEMM keeps ties away from zero,
+which had no tie to round and was 0.7% cheaper at 4096³.
 
-[Phase 3](history/02-phase-3-gemm.md). ROCm 7.2.4; same process, interleaved,
-bit-identity checked before timing (`tools/hk-bench/gemm_ab.py`). `hk.ops.matmul`
-and the handwritten `config<128,128,64,16,8,4,8,4>` compile to the same 209
-VGPRs, 0 scratch, 0 spill, 7 waves/SIMD.
+### A3. Kernels inside the engines
 
-| shape | variant | ms | TFLOPs | vs C++ |
-|---|---|---|---|---|
-| 4096x4096x4096 | hk (DSL) | 1.831 | 75.0 | 1.00x |
-| | C++ | 1.833 | 75.0 | 1.00x |
-| | rocBLAS | 1.975 | 69.6 | 0.93x |
-| 8192x8192x4096 | hk (DSL) | 7.055 | 77.9 | 1.00x |
-| | C++ | 7.047 | 78.0 | 1.00x |
-| | rocBLAS | 7.661 | 71.8 | 0.92x |
+Each kernel here is measured against the kernel the engine calls at the same
+shapes.
 
-A tie with the handwritten kernel, which was the gate. Autotune found one
-GEMM key worth changing, 4096x4096x4096, by +1.2%
-([Phase 5](history/04-phase-5-autotune.md)).
+#### Decode GEMV
 
-### Against hipBLASLt, at the shapes Qwen3-8B runs
+[A reduction across workgroups](history/11-cross-workgroup-reduction.md).
+GEMM milliseconds per decode step of Qwen3-8B, 36 layers plus the LM head,
+at least 1.5 GB of distinct weights per shape, every variant checked
+against fp32 (`tools/hk-bench/vllm_gemm.py --upstream-skinny`). "wvSplitK"
+is upstream vLLM's skinny GEMM, built standalone for gfx1100; it takes one
+to five tokens.
 
-[The linear layers](history/08-linear-layers.md). One process, variants
-interleaved, weights rotated through 3x the 96 MB Infinity Cache, every variant
-checked against fp32 before it is timed (`tools/hk-bench/vllm_gemm.py`). The
-kernel is the Phase 3 GEMM, unchanged. hk / `F.linear`:
+| tokens | hipBLASLt | rocBLAS | wvSplitK | hk decode | hk against hipBLASLt |
+|---|---|---|---|---|---|
+| 1 | 39.98 | 37.02 | 19.11 | 19.66 | 2.03x |
+| 2 | 39.68 | 37.57 | 19.87 | 19.69 | 2.01x |
+| 4 | 39.72 | 39.02 | 20.40 | 19.77 | 2.01x |
+| 8 | 39.50 | 40.86 | -- | 19.89 | 1.99x |
+| 16 | 41.00 | 41.75 | -- | 20.23 | 2.03x |
+| 24 | 39.74 | 43.93 | -- | 20.56 | 1.93x |
+| 32 | 40.48 | 46.81 | -- | 20.84 | 1.94x |
+
+At one token `wvSplitK` is ahead per step (6.9% on `down`); hk reads its
+matrices at 720-819 GB/s, against the 676-821 GB/s a plain read reaches. At
+33-64 tokens the kernel is register-bound: 28.6 ms against 42.2 installed,
+1.47x ([the decode kernel](history/09-decode-kernel.md)). Split-K across
+workgroups is correct and slower on every shape at every split, so the GEMV
+ships unsplit. vLLM 0.31 runs `wvSplitK` on gfx11 at M ≤ 5, and its table
+leaves those calls to it ([chapter 20](history/20-vllm-031.md)).
+SGLang's `F.linear` (torch 2.9.1's hipBLASLt) uses 38-44% of the memory
+bandwidth at decode; against it hk's GEMV is 1.18-2.30x on Qwen3-8B's
+layers at 1-64 tokens ([SGLang](history/24-sglang.md)).
+
+#### Prefill GEMM
+
+[The linear layers](history/08-linear-layers.md); the Phase 3 GEMM, before
+chapter 28's schedule. One process, weights rotated through 3x the cache,
+each variant checked against fp32 first. hk over `F.linear` (hipBLASLt) on
+Qwen3-8B's layers:
 
 | layer | N x K | M=1024 | M=4096 | M=16384 |
 |---|---|---|---|---|
@@ -284,49 +501,512 @@ kernel is the Phase 3 GEMM, unchanged. hk / `F.linear`:
 | gate_up | 24576 x 4096 | 1.11x | 1.16x | 1.23x |
 | down | 4096 x 12288 | 1.17x | 1.10x | 1.17x |
 
-All 36 layers' GEMMs for one forward step at M=4096: 838.5 ms on hipBLASLt,
-744.4 on hk, 1.13x. Below 1024 rows it is a comb, not a curve, and hk loses at
-M=192 on every layer and at M=256 on two:
+All 36 layers' GEMMs for one step at M = 4096 are 1.13x. Below 1024 rows the
+ratio is a comb, not a curve, with losses at M = 192 on every layer
+(0.71-0.95x) and at M = 256 on two (0.95x, 0.96x), which is why the patch
+routes by a measured table rather than a rule.
 
-| M | 128 | 192 | 256 | 384 | 512 | 768 |
+#### 4-bit GEMM (W4A16)
+
+[4-bit weights](history/22-int4.md). fp16, µs per call, hk against vLLM
+0.31's Triton AWQ kernel (what AWQ runs on ROCm), time over time:
+
+| shape | 1 token | 4 | 16 | 32 | 64 |
+|---|---|---|---|---|---|
+| qkv 6144 x 4096 | 70.4 / 31.0 (2.27x) | 70.9 / 31.2 (2.27x) | 82.6 / 31.7 (2.61x) | 75.2 / 50.7 (1.48x) | 137.8 / 74.9 (1.84x) |
+| o 4096 x 4096 | 53.8 / 24.4 (2.20x) | 53.9 / 24.2 (2.23x) | 54.8 / 24.0 (2.28x) | 56.6 / 38.3 (1.48x) | 95.6 / 53.3 (1.79x) |
+| gate_up 24576 x 4096 | 234.0 / 97.9 (2.39x) | 243.9 / 102.0 (2.39x) | 248.1 / 104.7 (2.37x) | 264.1 / 184.9 (1.43x) | 474.5 / 261.6 (1.81x) |
+| down 4096 x 12288 | 131.3 / 58.8 (2.23x) | 132.1 / 59.4 (2.22x) | 135.3 / 60.8 (2.23x) | 138.3 / 98.5 (1.40x) | 243.4 / 163.9 (1.49x) |
+
+Against `gptq_gemm_rdna3`, vLLM's HIP W4A16 kernel for gfx1100, which its
+GPTQ path selects, hk loses up to 4 tokens (0.69-0.90x; a skinny GEMV
+without WMMA's 15 padding rows) and wins from 8 (1.13-2.25x bf16, 1.30-1.82x
+fp16 at 64). hk's patch takes only AWQ layers, whose kernel is Triton's.
+
+#### MoE GEMM
+
+[MoE](history/21-moe.md); vLLM 0.31. Both GEMMs of one layer on vLLM's own
+sorted lists, vLLM's config and assignment, checked against each other
+first, eight routings rotating so the chosen experts are not left in the
+cache. µs per layer; hk on a sort redone at 16-row blocks:
+
+| tokens | OLMoE-1B-7B (64 experts, top 8): Triton | hk | x | Qwen3-30B-A3B (128, top 8): Triton | hk | x |
 |---|---|---|---|---|---|---|
-| qkv | 1.38 | 0.88 | 1.13 | 1.43 | 1.20 | 1.17 |
-| o | 1.15 | 0.75 | 0.95 | 1.11 | 1.24 | 1.17 |
-| gate_up | 1.56 | 0.95 | 1.21 | 1.18 | 1.19 | 1.09 |
-| down | 1.16 | 0.71 | 0.96 | 1.15 | 1.33 | 1.18 |
+| 1 | 385.7 | 139.1 | 2.77x | 263.2 | 110.8 | 2.37x |
+| 4 | 792.6 | 432.7 | 1.83x | 548.8 | 371.6 | 1.48x |
+| 16 | 1226.8 | 896.7 | 1.37x | 1182.5 | 1040.0 | 1.14x |
+| 64 | 1454.1 | 1078.1 | 1.35x | 1640.3 | 1516.9 | 1.08x |
+| 256 | 1703.1 | 1697.6 | 1.00x | 1955.1 | 1827.2 | 1.07x |
+| 512 | 1748.9 | 2608.9 | 0.67x | 2063.0 | 2378.9 | 0.87x |
+| 1024 | 2274.5 | 4349.3 | 0.52x | 2357.5 | 3649.3 | 0.65x |
+| 4096 | 6312.0 | 15415.0 | 0.41x | 5289.6 | 10938.4 | 0.48x |
 
-That comb is why the shipped patch routes by a measured table. Re-measured in
-a fresh process where the table and the old hand-written rule disagree, in GEMM
-milliseconds per step for 36 layers plus the LM head
-([routing table](history/14-routing-table.md)):
+The route takes up to 256 tokens, where hk streams the chosen experts at
+718-785 GB/s; above, the layer stays on Triton's `fused_moe`. In SGLang,
+against its Triton fused-MoE at its default configs, the layer is
+1.03-2.51x at 1-256 tokens and 0.61-1.01x at 512-2048
+([SGLang MoE](history/25-sglang-moe.md)).
 
-| M | engine | hand rule | table | table vs rule |
-|---|---|---|---|---|
-| 96 | 43.57 | 43.57 | 37.57 | 1.16x |
-| 128 | 53.80 | 53.80 | 40.10 | 1.34x |
-| 208 | 70.14 | 70.14 | 64.26 | 1.09x |
-| 256 | 70.97 | 70.97 | 64.53 | 1.10x |
-| 320 | 90.02 | 90.02 | 76.05 | 1.18x |
-| 448 | 119.87 | 119.87 | 101.36 | 1.18x |
-| 576 | 133.74 | 133.74 | 125.04 | 1.07x |
-| 784 | 180.39 | 180.39 | 167.86 | 1.07x |
-| 1216 | 250.02 | 235.30 | 236.51 | 0.995x |
-| 1728 | 342.98 | 329.55 | 336.65 | 0.979x |
+#### Paged prefill
 
-Out of sample the table never loses to the engine. The last two rows are what
-its 3% bar costs: there it loses to the hand rule by 0.5% and 2.1% of a step.
+[The decode step captured whole](history/17-the-decode-step-captured-whole.md).
+One launch for every prefill request in a step, K/V through the page table,
+against vLLM's Triton `unified_attention` on the same batches
+(`tools/hk-bench/paged_ab.py --prefill`), ms:
 
-## Attention forward
+| batch | Triton | hk | x |
+|---|---|---|---|
+| prompt 2048 | 4.47 | 0.87 | 5.1x |
+| prompt 8192 | 82.6 | 10.5 | 7.9x |
+| chunk 512 after 4096 | 4.69 | 0.79 | 5.9x |
+| 4 x 1024 after 1024 | 12.6 | 2.38 | 5.3x |
+| 8 x 3000 + 200 | 10.2 | 2.85 | 3.6x |
+| 16 decodes + chunk 512 | 3.03 | 0.72 | 4.2x |
 
-The three attention tables below were measured before Phase 6 found and fixed
-a biased bf16 conversion; the fix (round instead of truncate) costs +2.1% at
-head_dim 128 and +3.4% at 64 on attention, and nothing on the register count
-([Phase 6](history/05-phase-6-torch-ops.md)).
+#### Paged decode attention
 
-### Against the handwritten C++
+[Chapter 38](history/38-rdna-losses.md). On vLLM 0.31's cache (one tensor a
+layer, K and V side by side in each token's row), every layer's cache read
+cold, each arm timed as a CUDA graph's replay, ms a layer. Triton is
+`unified_attention` as TRITON_ATTN calls it (its 3-D kernel to 16 requests,
+2-D above), on hk's cache; on TRITON_ATTN's own cache it is no faster. Both
+Tritons are measured, each in a process of its own with hk's walk beside
+it: triton-rocm 3.7.1, which vLLM 0.31 is built for, and Triton 3.8.0,
+installed over it in the pod. "Before" is hk's walk before chapter 38;
+"now" packs V's transpose (a page's loop from about 3,350 instructions to
+1,425) and plans for 256 workgroups instead of 1,024.
+
+| ctx x batch | Triton 3.7.1 | Triton 3.8.0 | hk before | hk now | now against 3.7.1 | now against 3.8.0 |
+|---|---|---|---|---|---|---|
+| 1024 x 16 | 0.1254 | 0.1246 | 0.1782 | 0.1155 | 1.12x | 1.08x |
+| 1024 x 32 | 0.1838 | 0.2582 | 0.2791 | 0.1990 | 0.93x | 1.30x |
+| 1024 x 64 | 0.3530 | 0.4413 | 0.4618 | 0.3915 | 0.90x | 1.13x |
+| 4096 x 16 | 0.3777 | 0.3988 | 0.4656 | 0.3881 | 0.99x | 1.03x |
+| 4096 x 32 | 0.6907 | 0.9462 | 0.8281 | 0.7451 | 0.93x | 1.27x |
+| 4096 x 64 | 1.3467 | 1.6118 | 1.5493 | 1.4889 | 0.90x | 1.08x |
+
+At the capture sizes in between, against 3.7.1 / 3.8.0: 0.86-0.87x / 0.90x
+at 24 requests, 0.89x / 1.07-1.13x at 40, 1.01-1.02x / 1.02-1.07x at 48,
+0.95x / 0.96-1.03x at 56. hk's walk runs at 581-721 GB/s, Triton 3.7.1's
+2-D kernel at 730-810. At one and four requests hk's walk is 0.66-0.99x
+Triton's 3-D kernel under either Triton, and at eight they tie
+(0.97-1.05x), so up to 8 requests stay on Triton's kernel (on hk's cache). In a captured vLLM step Triton's kernel at
+17-22 requests took 1.93 ms a call, against 0.517 on the bench and hk's
+0.451, so the batches from 16 up stay on hk; why Triton's kernel slows in
+the captured step is open (chapter 20 saw the same under triton-rocm 3.7.1).
+
+### A4. Losses and limits
+
+Where hk loses on the W7900D, and what each loss costs a request:
+
+- **Paged decode attention**, kernel for kernel: 0.86-1.12x triton-rocm
+  3.7.1's kernel at 16-64 requests, trailing it by 5-14% at 24, 32, 40, 56
+  and 64 requests ([A3](#paged-decode-attention)). In the captured step hk's
+  walk is the faster, so it keeps those batches. Up to 8 requests Triton's
+  3-D kernel runs on hk's cache (hk's walk 0.66-0.99x at 1 and 4 requests).
+- **W4A16 at 1-4 tokens**: 0.69-0.90x `gptq_gemm_rdna3`. GPTQ checkpoints
+  stay on that kernel, so no request pays it (a tie end to end,
+  1.002-1.004x); closing it needs a dot-product GEMV instead of the WMMA
+  tile ([chapter 38](history/38-rdna-losses.md)).
+- **The MoE GEMM above 256 tokens**: 0.41-0.87x vLLM's `fused_moe` at
+  512-4096 tokens, and the layer 0.61-1.01x SGLang's at 512-2048. Those
+  calls stay on Triton, and prefill ties stock end to end.
+- **The decode GEMV at one token** is behind upstream vLLM's `wvSplitK`, and
+  vLLM 0.31 runs `wvSplitK` at M ≤ 5, so the linear patch ties stock's
+  decode step at 1-4 requests ([A1](#a-model-no-table-had-measured)).
+- **The prefill GEMM below 1024 rows** is a comb with losses (0.71-0.95x at
+  M = 192); the routing table sends those Ms to the engine. A 1024-token
+  prefill step was 1.2% slower after FlyDSL rows were dropped at M = 1024
+  ([FlyDSL's GEMM on the routes](#flydsls-gemm-on-the-routes)).
+- **Small kernels against torch**: the dropout is 1.02x Triton's but torch's
+  is 1.5x faster than both; the embedding at 4096 tokens is 0.93x Triton;
+  elementwise exp is 0.92x and add 0.98x torch 2.10's eager kernels, on the
+  tile kernels gfx1100 still runs ([A2](#a2-kernels-against-the-tuned-field)).
+- **The fused add + RMSNorm** lost at one row in one run of five (0.83x) and
+  at 8192 rows in one of two (0.97x); a tie otherwise.
+- **No norm or activation patch.** Inside vLLM's compiled graph the norms and
+  SiLU-mul are Inductor's, fused with their neighbours; the tile kernels of
+  the time lost to them by 44-64%, and the patches were dropped
+  ([appendix](#against-what-vllm-runs-under-torchcompile)). The strips have
+  not been measured inside vLLM's graph.
+- **The SDPA drop-in** takes head_dim 64 and 128 only; vision towers with
+  72 or 80 fall back to torch (0.95x and 0.97x, measured on torch 2.10;
+  [appendix](#vision-towers-on-the-call-vllms-vit-path-makes)).
+- **One card, one engine version.** Every number is from one W7900D. Since
+  October 15 the pod's vLLM venv imported Triton 3.8.0 in place of the
+  triton-rocm 3.7.1 vLLM 0.31 is built for; chapters 30-38's end-to-end
+  ratios ran against that stock ([the stacks](#the-stacks)).
+
+## Part B: CDNA4 (gfx950, one MI355X)
+
+Everything in this part was measured on one MI355X of a shared node. The
+engines are tuned for this card, so the baselines are stronger than on the
+W7900D: vLLM with aiter on, aiter's and CK's kernels, hipBLASLt.
+
+### B1. End to end in vLLM, aiter on
+
+[Chapter 42](history/42-mi355x-in-the-engine.md); the vLLM nightly image
+(vLLM 0.30.1rc1.dev558, ROCm 10, torch 2.12, aiter 0.1.23). With
+`VLLM_ROCM_USE_AITER=1`, aiter replaces the linear layers (its tuned GEMM:
+asm `hgemm_bf16`, Triton `gemm_a16w16`, a hipBLASLt solution, or `wvSplitK`
+up to 5 tokens), the fused add + RMSNorm and the MoE layers (CK's
+`kernel_moe_gemm`); attention stays ROCM_ATTN (Triton's prefill kernel and
+ll4mi for decode). `python -m hk.integration ab`: CUDA graphs and
+torch.compile, aiter on, block size 32 for every arm, 2048 tokens of
+context, 160 output tokens, 3 rounds; ratios are stock over the arm, the
+median of rounds. Greedy tokens identical to stock's. SGLang has not been
+measured on gfx950.
+
+| Qwen3-8B, bf16 | total x1 | x16 | x64 | prefill x16 | decode x16 | decode x64 |
+|---|---|---|---|---|---|---|
+| hk (attention backend) | 1.014 tie | **1.126** | **1.209** | 1.147 | 1.037 | 1.150 |
+| ROCM_AITER_FA (vLLM's own) | 0.986 tie | 1.093 | 1.147 | 1.142 | 0.997 | 1.016 |
+| hk + gemm, shipped table | 1.013 tie | 1.126 | 1.210 | 1.145 | 1.037 | 1.146 |
+| hk + gemm, aiter's points | 0.995 tie | **1.142** | **1.217** | 1.200 | 1.048 | 1.161 |
+
+hk's backend beats stock and vLLM's own aiter FA backend, by 1.055x in total
+and 1.13x in decode at 64 requests; its prefill matches aiter FA's, and its
+decode is chapter 39's kernel. The shipped linear table was measured against
+`F.linear`, and with it the gemm arm changes nothing. A second table, sending
+hk only the points where it beat aiter by 3% in the kernel bench
+([B3](#b3-kernels-inside-the-engine)), lifts prefill from 1.15x to 1.20x and
+the total by about 1% over the backend alone.
+
+| Qwen3-8B-AWQ, fp16 | total x1 | x16 | x64 | decode x1 | x16 | x64 |
+|---|---|---|---|---|---|---|
+| int4, up to 64 tokens | **1.850** | **1.351** | 0.922 loss | 1.890 | 1.529 | 0.856 |
+| int4, gfx950 routing (up to 16 tokens) | **1.865** | **1.351** | 1.020 | 1.916 | 1.530 | 1.037 |
+
+Stock vLLM here does not run Triton's `awq_gemm`: torch.compile's symbolic
+batch size sends `AutoAWQLinearMethod` down its dequantize branch at every
+batch, `awq_dequantize` plus a hipBLASLt GEMM. hk's kernel beats that only at
+1-16 tokens, so on gfx950 the patch now takes at most 16 tokens. The hk
+backend cannot run beside the int4 arm: it declares bf16 only, and vLLM
+serves an AWQ model in fp16.
+
+**Where the step's time goes**, `headroom --graphs`, aiter on, 2048 tokens of
+context; each family's share of a step, and in parentheses the share of its
+roofline it runs at:
+
+| model, step | ms | linear | attention | MoE | the rest |
+|---|---|---|---|---|---|
+| Qwen3-8B decode x1 | 3.67 | 72.7% (86%) | 10.1% (12%) | | 1.04 ms |
+| Qwen3-8B decode x16 | 4.97 | 58.2% (80%) | 24.4% (60%) | | 1.07 ms |
+| Qwen3-8B decode x64 | 8.46 | 40.9% (68%) | 47.6% (73%) | | 1.15 ms |
+| Qwen3-8B prefill 8 x 2048 | 216 | 69.1% (62%) | 18.0% (10%) | | 22.6 ms |
+| Qwen3-30B-A3B decode x1 | 4.11 | 21.1% | 13.5% | 49.8% | 1.17 ms |
+| Qwen3-30B-A3B decode x16 | 5.60 | 21.0% | 18.5% | 45.4% | 1.20 ms |
+| Qwen3-30B-A3B decode x64 | 7.87 | 16.1% | 36.1% | 37.3% | 1.25 ms |
+
+The linear layers run near the roofline at decode; the headroom left is
+prefill attention, at 10% of peak, and decode attention at one request,
+which is too short to fill the card.
+
+### B2. Kernels against the tuned field
+
+The `rocm/pytorch` stack (ROCm 7.2.3, torch 2.10, Triton 3.6.0, FlyDSL
+0.4.0). Every arm checked against fp32 first, then interleaved in one
+process.
+
+#### GEMM
+
+[Chapter 33](history/33-cdna-gemm.md), routed as in
+[chapter 41](history/41-cdna-leftovers.md). On gfx950 `hk.ops.gemm.matmul`
+routes every shape to one of hk's own kernels: HipKittens' CDNA4 schedule
+written in hk (`hk.ops.gemm_cdna`: copies into LDS left in flight, the
+pingpong), a four-warp kernel (`hk.ops.gemm_cdna_dp`), either with two-launch
+split-K, or the decode GEMV. bf16, C = A·Bᵀ, eager, rounds queued behind a
+spin, the median of 7, in three processes. TFLOP/s:
+
+| M = N = K | hk | HipKittens | hipBLASLt | FlyDSL `gemm_a16w16` | hk / best |
+|---|---|---|---|---|---|
+| 4096 | 1450-1461 | 1431-1444 | 1493-1506 | 1462-1473 | 0.97-0.98x |
+| 8192 | 1592-1594 | 1584-1589 | 1642-1650 | 1609-1618 | 0.97x |
+
+At Llama-3-8B's and Qwen3-8B's linear shapes (N x K of qkv, o, gate_up, down
+and lm_head; M from 1 to 8192; 122 points), hk's routed kernel, timed as
+one arm, against the best of hipBLASLt, FlyDSL and HipKittens, the median
+of three processes:
+
+| N x K | M=1 | 4 | 16 | 32 | 64 | 128 | 256 | 512 | 1024 | 2048 | 4096 | 8192 |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| 4096 x 4096 | 1.36 | 1.06 | 1.00 | 1.19 | 1.57 | 1.23 | 0.93 | 0.92 | 1.10 | 1.26 | 0.97 | 0.96 |
+| 6144 x 4096 | 1.11 | 1.15 | 1.03 | 1.10 | 1.26 | 0.93 | 0.97 | 1.00 | 0.93 | 0.95 | 0.99 | 0.95 |
+| 12288 x 4096 | 1.42 | 1.21 | 1.21 | 1.20 | 0.92 | 0.97 | 0.98 | 0.93 | 0.94 | 0.99 | 0.94 | 0.95 |
+| 14336 x 4096 | 1.16 | 1.04 | 1.03 | 1.02 | 0.91 | 1.00 | 1.17 | 1.20 | 0.97 | 0.96 | 0.99 | 0.95 |
+| 24576 x 4096 | 1.31 | 0.99 | 1.20 | 1.05 | 1.00 | 1.16 | 0.96 | 0.92 | 0.91 | 0.95 | 0.94 | 0.92 |
+| 28672 x 4096 | 1.02 | 1.08 | 1.01 | 1.12 | 0.95 | 1.10 | 0.95 | 0.95 | 0.98 | 1.00 | 0.93 | 0.93 |
+| 4096 x 12288 | 1.11 | 1.10 | 0.95 | 1.26 | 1.06 | 0.98 | 1.00 | 1.03 | 1.11 | 1.14 | 0.97 | 0.96 |
+| 4096 x 14336 | 1.06 | 1.03 | 1.06 | 1.14 | 1.00 | 0.96 | 1.13 | 1.05 | 1.10 | 1.12 | 0.96 | 0.95 |
+| 128256 x 4096 | 1.03 | 1.10 | 1.17 | 1.01 | 0.96 | 0.94 | 0.94 | 1.00 | 0.98 | 0.98 | 1.00 | 0.99 |
+| 151936 x 4096 | 1.03 | 0.99 | 0.99 | 0.96 | 0.91 | 1.05 | 0.96 | 1.11 | 1.11 | 0.98 | 1.00 | 1.01 |
+
+All 122 points are at 0.9x or better (chapter 33: 108). M = 1-4 runs at
+0.99-1.42x, M = 16-128 at 0.91-1.57x, M = 256-512 at 0.92-1.20x and
+M ≥ 1024 at 0.91-1.26x. The tightest is the unmerged gate/up at M = 64
+(0.911, 0.910, 0.890 over the three processes): 224 blocks of 64 x 64 on 256
+CUs. The small-M points stream the weights whole-line and non-temporal. At
+8192³, without its copies the kernel runs 15% faster, and with C's store
+switched off it is level with hipBLASLt (chapter 33).
+
+#### Attention forward
+
+[Chapter 34](history/34-cdna-attention.md). `hk.ops.attn_cdna` is
+HipKittens' CDNA4 GQA schedule written in hk; `hk.attention` and
+`hk.ops.sdpa` run it on gfx950. bf16, (B, H, N, D), TFLOP/s counted as
+4·B·H·N²·D (halved under causal); hk's output also checked against V = 1
+exactly; best of 7 rounds; HipKittens built with ROCm 7.1, hk with 7.2.3:
+
+| B, H, H_KV, N, D | causal | hk | HipKittens | FlyDSL | torch SDPA | hk / best | hk / SDPA |
+|---|---|---|---|---|---|---|---|
+| 16, 64, 8, 1024, 128 | no / yes | 1056 / 739 | 978 / 681 | 1055 / 746 | 574 / 256 | 1.00x / 0.99x | 1.84x / 2.89x |
+| 16, 64, 8, 4096, 128 | no / yes | 1230 / 1107 | 1233 / 1091 | 1247 / 1122 | 690 / 431 | 0.99x / 0.99x | 1.78x / 2.57x |
+| 16, 64, 8, 8192, 128 | no / yes | 1259 / 1209 | 1277 / 1202 | 1283 / 1226 | 773 / 497 | 0.98x / 0.99x | 1.63x / 2.43x |
+| 1, 32, 8, 4096, 128 | no / yes | 1164 / 1104 | 1157 / 902 | 1178 / 1024 | 653 / 353 | 0.99x / 1.08x | 1.78x / 3.13x |
+| 16, 64, 8, 4096, 64 | no / yes | 938 / 857 | 939 / 804 | 942 / 862 | 724 / 539 | 1.00x / 0.99x | 1.30x / 1.59x |
+
+Round-to-round spreads are 0.3-2.5%, and 6-16% for every arm at N = 1024
+and at one batch. hk's step is 2% slower than FlyDSL's, and its fixed cost a
+workgroup 10% lower.
+
+#### Norms and elementwise
+
+[Chapter 43](history/43-cdna-last-rows.md), after [chapter 37](history/37-cdna-rows.md)
+put the row kernels on wave64 strips and [chapter 41](history/41-cdna-leftovers.md)
+tuned their plans. `tools/hk-bench/scoreboard.py --only
+llm-norm,llm-quant,llm-pointwise --rotate-buffers`: rows 1, 32, 2048 and
+8192 x hidden 4096, 5120 and 8192 (intermediate 14336, 17408 and 28672 for
+SiLU-mul; heads of 128 for RoPE), bf16. Rounds queued behind a spin, the
+median of 7 rounds of 50 calls; each round every arm takes the next arm's
+output buffer, because at one row which buffer a kernel writes moves it
+0.1 us. The arms are torch 2.10 eager, Inductor (static shapes), Triton 3.6
+as written and autotuned, and FlyDSL 0.4.0's dispatcher and autotuner
+(norms and softmax; it has no standalone kernel for the rest). Each cell is
+hk's speed over the fastest other arm; a tie is within the larger of 2% and
+the two arms' noise. The first rotated run; the last column is chapter 41's
+run, which did not rotate the buffers.
+
+| op | 1-32 rows | 2048 rows | 8192 rows | verdicts | chapter 41 |
+|---|---|---|---|---|---|
+| rms_norm (weighted) | 1.00 | 1.02-1.14 | 1.00-1.02 | 7 tie, 5 win | 9 tie, 3 win |
+| rmsnorm | 1.00 | 1.03-1.07 | 1.00-1.01 | 9 tie, 3 win | 1 loss, 10 tie, 1 win |
+| layernorm | 1.00-1.05 | 1.02-1.22 | 0.99-1.02 | 5 tie, 7 win | 2 loss, 4 tie, 6 win |
+| fused add + RMSNorm | 0.99-1.00 | 0.99-1.01 | 1.00-1.01 | 12 tie | 3 loss, 8 tie, 1 win |
+| softmax | 0.99-1.00 | 0.99-1.04 | 1.02-1.04 | 9 tie, 3 win | 12 tie |
+| int8 quantize | 1.04-1.05 | 0.99-1.04 | 0.99-1.04 | 3 tie, 9 win | 1 loss, 2 tie, 9 win |
+| add | 0.99-1.01 | 1.00-1.04 | 1.00-1.01 | 11 tie, 1 win | 1 loss, 9 tie, 2 win |
+| mul | 0.99-1.01 | 1.00-1.05 | 1.00-1.01 | 11 tie, 1 win | 1 loss, 8 tie, 3 win |
+| exp | 0.98-1.02 | 1.04-1.06 | 1.01-1.02 | 1 loss, 8 tie, 3 win | 1 loss, 9 tie, 2 win |
+| SiLU-mul (gate/up halves in place) | 1.04-1.06 | 1.00-1.03 | 1.10-1.12 | 2 tie, 10 win | 3 tie, 9 win |
+| RoPE (`hk.ops.rotary`) | 1.03-1.06 | 0.99-1.05 | 0.98-1.01 | 4 tie, 8 win | 2 loss, 3 tie, 7 win |
+
+131 of 132 cases tie or win in this run (50 win, 81 tie). A second rotated
+run gave 128, and the same tree without rotation 126, with all 66 cases past
+32 rows a tie or a win (chapter 41: 120; its tree re-measured: 117;
+chapter 37: 99). At 1-32 rows every arm sits at the card's floor, an empty
+kernel's 3.80 us plus 0.05-0.1, and which arm gets the 0.1 follows its
+output buffer. Examples: the fused add + RMSNorm at 2048x8192 takes 19.17 us
+against tuned Triton's 19.38; at 8192x8192 rms_norm 37.2 us against tuned
+Triton's 38.1 and softmax 38.1 against FlyDSL's 39.7; SiLU-mul at
+8192x28672 226.1 against tuned Triton's 251.3. What still loses is in
+[B4](#b4-losses-and-no-headroom-findings).
+
+### B3. Kernels inside the engine
+
+The vLLM nightly image, against what vLLM runs on the MI355X at its shapes
+(`tools/hk-bench/engine_kernels_gfx950.py`, `paged_cdna.py`), each timed
+burst queued behind a sleep longer than its enqueue: aiter's GEMM costs about
+60 us of Python per call at M = 16, against a 12 us kernel.
+
+**Linear layers (Qwen3-8B), against aiter's tuned GEMMs**
+([chapter 42](history/42-mi355x-in-the-engine.md)), on chapter 41's GEMMs:
+- one request: gate_up 1.21x and the LM head 1.04x, but qkv, o and down
+  0.79-0.85x;
+- 16 requests: the LM head 1.17x, the rest 0.86-1.02x;
+- 64 requests: qkv, o and down 1.05-1.09x;
+- prefill: qkv and gate_up 1.04-1.05x at 16384 rows, down 1.13x at 2048.
+
+Before chapter 41, hk lost at every decode shape but two (0.69-0.93x). From
+these kernel times, sending only the winning shapes to hk would save about 7%
+of a one-request decode step and 1-2% elsewhere; end to end the 7% did not
+show ([B1](#b1-end-to-end-in-vllm-aiter-on)).
+
+**Prefill attention** at 8 x 2048 (chapter 42): Triton's prefill kernel,
+what ROCM_ATTN runs, takes 0.906 ms; hk's `attn_cdna` 0.364 ms (2.49x; 1.87x
+with the layout copies), HipKittens' GQA 0.318 ms and aiter's FA 0.319 ms.
+
+**Paged attention** ([chapter 39](history/39-cdna-paged.md)). On gfx950
+`hk.ops.paged` routes to `hk.ops.paged_cdna` (the split-KV decode and its
+merge) and `hk.ops.paged_prefill` to the paged form of `hk.ops.attn_cdna`.
+Qwen3-8B's attention (32/8 heads, D 128), bf16, us a layer. Each arm at its
+own cache layout holding the same K/V, checked against fp32 first, its calls
+rotating through caches past the 256 MB cache, captured in a CUDA graph and
+replayed, rounds interleaved, median of 7. aiter's gluon unified attention
+runs on hk's cache; ROCM_ATTN (vLLM's default on gfx950) and TRITON_ATTN on
+their own pages of 16.
+
+| decode, requests x context | hk | aiter gluon | ROCM_ATTN | TRITON_ATTN | hk / best | hk / ROCM_ATTN |
+|---|---|---|---|---|---|---|
+| 1 x 1024 | 9.1 | 15.5 | 9.4 | 9.1 | 1.00x | 1.03x |
+| 1 x 8192 | 16.1 | 12.2 | 12.8 | 31.0 | 0.76x | 0.80x |
+| 4 x 8192 | 28.2 | 27.3 | 30.7 | 42.5 | 0.97x | 1.09x |
+| 16 x 1024 | 17.3 | 17.4 | 18.3 | 22.7 | 1.01x | 1.05x |
+| 16 x 8192 | 88.7 | 89.9 | 99.0 | 131.8 | 1.01x | 1.12x |
+| 32 x 8192 | 171.4 | 166.1 | 194.7 | 301.5 | 0.97x | 1.14x |
+| 128 x 1024 | 84.0 | 85.0 | 104.4 | 118.4 | 1.01x | 1.24x |
+| 128 x 8192 | 659.2 | 644.6 | 725.8 | 898.1 | 0.98x | 1.10x |
+
+Over 40 decode shapes (1-128 requests, 512-8192 tokens): 0.90-1.05x the best
+alternative at 8-128 requests and 1.04-1.27x ROCM_ATTN there; at one or two
+requests 0.71-0.88x past 2048 tokens (the merge, and a lone wave's walk) and
+0.81-1.02x at 512-1024. SDPA over gathered pages is 5-13x slower than any.
+
+| prefill, cached prefix + new tokens | hk | aiter gluon | ROCM_ATTN | TRITON_ATTN | hk / best | hk / ROCM_ATTN |
+|---|---|---|---|---|---|---|
+| 0 + 2048 | 59.3 | 58.3 | 153.3 | 224.5 | 0.98x | 2.59x |
+| 4096 + 512 | 106.2 | 92.0 | 283.7 | 228.3 | 0.87x | 2.67x |
+| 4 x (2048 + 1024) | 171.8 | 192.6 | 600.6 | 920.8 | 1.12x | 3.50x |
+| 8 x (0 + 2048) | 297.9 | 327.0 | 889.6 | 1511.2 | 1.10x | 2.99x |
+| 0+300, 1000+77, 4000+1000, 64+2048 | 142.7 | 176.9 | 1908.3 | 683.9 | 1.24x | 13.4x |
+
+**Norms and elementwise, against aiter** (chapter 42): aiter's fused add +
+RMSNorm is 1.05-1.12x hk's; hk's RMSNorm is 0.74-1.05x aiter's, and its
+SiLU-mul 0.96-1.16x Inductor's.
+
+**MoE (Qwen3-30B-A3B), against aiter's fused_moe (CK)** (chapter 42): 37.7
+against hk's 40.2 us at one token, 148 against 222 at 16, 209 against 318 at
+64. At 2048 tokens hk's block_m 64 schedule fails to verify on gfx950 (the op
+needs 16x32 fragments where it is given 16x16).
+
+**4-bit GEMM**: `hk.ops.w4a16` runs on gfx950 on gfx1100's schedules, 2.3-4.0x
+vLLM's Triton AWQ kernel at 1-16 tokens and 1.5-2.3x at 32-64 (chapter 39).
+What the engine actually calls under torch.compile is a dequantize and a
+hipBLASLt GEMM, which hk beats only at 1-16 tokens
+([B1](#b1-end-to-end-in-vllm-aiter-on)).
+
+### B4. Losses and no-headroom findings
+
+Against aiter-on vLLM, hk's linear, norm and MoE kernels have little or
+nothing to give, and some kernels lose:
+
+- **The bf16 linear layers: about 1%.** hk's GEMMs are 0.79-1.21x aiter's
+  tuned GEMMs at Qwen3-8B's shapes. The shipped table changes nothing end to
+  end; a table of the points where hk wins adds about 1% over the attention
+  backend, all of it in prefill (1.15x to 1.20x). The one-request decode step
+  the kernel times promised 7% for was a tie (0.989x against the backend's
+  1.010x). What it would take: a decode GEMM that beats aiter at every shape,
+  and the one-request gap explained.
+- **Norms and elementwise: nothing in the engine.** hk's RMSNorm is
+  0.74-1.05x aiter's and aiter's fused add + RMSNorm 1.05-1.12x hk's;
+  together the family is about 1 ms of a step. Against the tuned field (B2)
+  what still loses moves from run to run: one- and 32-row cases at
+  0.978-0.979x, at the 3.80 us floor (exp 1x5120 at 3.88 us against torch's
+  3.80 in the first rotated run; the fused add at 32x4096 and mul and exp at
+  1x8192 in the second), RoPE at 8192x40 once (0.977x, 24.70 against 24.13
+  us; 0.983x and 0.985x in the other runs), and without buffer rotation six
+  one- and 32-row cases at 0.972-0.980x ([chapter 43](history/43-cdna-last-rows.md)).
+- **MoE: nothing.** hk's MoE GEMM is 0.66-0.94x CK's at 1-64 tokens, its
+  block_m 64 schedule does not verify on gfx950, and vLLM's MoE patch
+  rebinds the Triton experts, so with aiter's CK path on it routes nothing.
+- **Paged decode at one or two long requests**: 0.71-0.88x the best past
+  2048 tokens, and 0.81-1.02x at 512-1024; the prefill of one prompt after a
+  4096-token prefix is 0.87x aiter's.
+- **4-bit past 16 tokens**: hk's kernel loses to the dequantize-and-GEMM path
+  stock runs, so it routes only 1-16 tokens; at 64 requests the request is
+  1.020x, from a 0.922x loss before the routing changed.
+- **The GEMM at the squares** is 0.97-0.98x the best (hipBLASLt), and the
+  tightest routed point 0.91x; C's store and the copy path are the limits.
+- **Attention forward**: hk's step is 2% slower than FlyDSL's; at most
+  shapes it is 0.98-1.00x the best.
+- **Not measured**: SGLang on gfx950, fp16 in hk's attention backend (so it
+  cannot run with AWQ models), and gfx942 (no MI300X was available).
+
+## Appendix: superseded results
+
+Results that newer measurements replaced, kept because the chapters cite
+them. Each section says what replaced it. Do not quote these as current.
+
+### vLLM 0.16 end to end
+
+Superseded by vLLM 0.31 ([A1](#vllm-031-on-gfx1100)). Qwen3-8B, bf16, one
+W7900D, stock vLLM 0.16.1.dev0 choosing its own backends; arms alternate in
+separate processes, each its minimum over rounds; every arm produced stock's
+greedy tokens. vLLM 0.16 ran its skinny GEMMs on gfx9 only, so its stock
+decode step was 41.3 ms at 1024 x 1 against 0.31's 24.5.
+
+**Under vLLM's defaults, the decode captured whole**
+([chapter 17](history/17-the-decode-step-captured-whole.md)). CUDA graphs,
+prefix caching and chunked prefill on; 72 tokens, best of two rounds; `hk`
+the attention backend, `hk+gemm` with the linear layers:
+
+| ctx x batch | stock ms | hk | hk+gemm | step, stock ms | hk | hk+gemm |
+|---|---|---|---|---|---|---|
+| 1024 x 1 | 3206 | 1.007x | 1.85x | 41.32 | 0.999x | 1.94x |
+| 1024 x 4 | 4033 | 1.028x | 1.69x | 42.31 | 0.996x | 1.91x |
+| 1024 x 16 | 7628 | 1.065x | 1.48x | 46.32 | 0.989x | 1.74x |
+| 1024 x 32 | 13059 | 1.159x | 1.49x | 61.64 | 1.209x | 1.98x |
+| 4096 x 1 | 4448 | 1.116x | 1.81x | 42.21 | 0.999x | 1.91x |
+| 4096 x 4 | 9195 | 1.264x | 1.74x | 45.29 | 1.010x | 1.85x |
+| 4096 x 16 | 27923 | 1.379x | 1.67x | 56.20 | 0.997x | 1.52x |
+| 4096 x 32 | 55372 | 1.479x | 1.74x | 109.38 | 1.550x | 2.17x |
+
+**The linear-layer patch alone**
+([a reduction across workgroups](history/11-cross-workgroup-reduction.md)).
+Prefix caching and chunked prefill off; graph mode, 72 output tokens (128 at
+32 and 64 requests). Total 1.84x / 1.62x / 1.35x / 1.27x / 1.18x at 1024 x
+1 / 4 / 16 / 32 / 64, and 1.52x / 1.25x / 1.11x at 4096 x 1 / 4 / 16;
+prefill 1.06-1.17x; decode step 1.23-1.95x. Nothing lost at any shape, in any
+phase, in graph or eager mode.
+
+**The attention backend before the decode GEMV**
+([the linear layers](history/08-linear-layers.md)): it lost wherever the
+request was mostly decode (decode step 0.834-0.849x) and won where prefill
+dominated (1.293x total at 4096 x 16, 1.436x prefill), with both patches
+1.364x at 4096 x 16. Eager, the same measurement was 1.29x on the
+prefill-heavy shape and 0.87x at 1024 x 1
+([against the engine](history/07-against-the-engine.md)). After the decode
+GEMV ([the decode kernel](history/09-decode-kernel.md)), `gemm` alone was
+1.104-1.717x per request and the best patch where decode dominated;
+`hk+gemm` 1.297-1.476x, best on long-context prefill and wide decode.
+
+**Routing by the measured table** ([the routing table](history/14-routing-table.md)).
+In GEMM milliseconds per step for 36 layers plus the LM head, the measured
+table beat the old hand-written rule by 1.07-1.34x at M = 96-784 and lost to
+it by 0.5% and 2.1% at M = 1216 and 1728 (its 3% bar); out of sample it never
+lost to the engine. End to end at 512 x 96 / 128, graph mode: 1.12x / 1.15x
+stock per request with the table, against 1.07x with the rule.
+
+**Paged decode on vLLM 0.16's cache.** [Phase 7](history/06-phase-7-paged-decode.md):
+the backend's decode lost to vLLM's Triton attention everywhere but 1024 x
+32, 1.14-1.19x Triton's time per step after the KV split (1.92x before), a
+flat 7-9 ms that was the wrapper's torch ops. Captured whole, layer by layer
+([chapter 17](history/17-the-decode-step-captured-whole.md)), hk's kernel
+lost up to 8 requests (0.66-0.97x), won at 16 (1.02-1.04x) and was 2.6x at
+32, where Triton's backend leaves its 16-segment kernel. On vLLM 0.31 with
+triton-rocm 3.7.1 it was 0.83-0.95x at 16-64 requests
+([chapter 20](history/20-vllm-031.md)), before chapter 38's packed transpose.
+
+**Gate C of the MLIR move**: the GEMM patch in vLLM 0.16.1 serving Qwen3-8B
+(eager, context 1024, 72 tokens) was 1.820x / 1.338x stock at batch 1 / 16
+before the move and 1.824x / 1.340x after
+([the MLIR dialect](history/15-mlir-dialect.md)).
+
+**The vision tower** ([Phase 6](history/05-phase-6-torch-ops.md)). In vLLM
+0.16.1.dev0 serving `OpenGVLab/InternVL2-2B`, the SDPA patch reached the
+kernel (120 calls, 0 fallbacks over five requests); an end-to-end time cannot
+resolve it, since the tower is about 4 ms of a ±25%, 250 ms request.
+
+### torch 2.10's SDPA
+
+Superseded by torch 2.13, whose SDPA is 3.3x faster causal on the W7900D
+([A2](#a2-kernels-against-the-tuned-field)). These tables were also measured
+before Phase 6 fixed a biased bf16 conversion, which costs attention 2.1%
+at head_dim 128 and 3.4% at 64.
+
+#### Against the handwritten C++
 
 [Phase 4](history/03-phase-4-attention.md). Same process, interleaved, both
-kernels loaded at once (`hk/ops/_attn_ab.py`).
+kernels loaded at once.
 
 | shape | dsl ms | dsl TF | c++ ms | c++ TF | dsl/c++ |
 |---|---|---|---|---|---|
@@ -337,61 +1017,43 @@ kernels loaded at once (`hk/ops/_attn_ab.py`).
 | 480p/5s | 1100.228 | 64.9 | 1099.149 | 65.0 | 0.999x |
 | causal 8192 | 16.628 | 57.9 | 16.754 | 57.4 | 1.008x |
 
-A tie, ahead under causal. Against torch SDPA on the same chip that is
-2.9-3.2x, and 4.0x causal. The generated kernel runs at occupancy 6 against
-the handwritten kernel's 5 (224 VGPRs against 247). Autotune moved three
-head_dim-128 keys by +1.1% to +2.8% ([Phase 5](history/04-phase-5-autotune.md)).
+A tie with HipKittens' C++, ahead under causal, at occupancy 6 against the
+handwritten kernel's 5; 2.9-3.2x torch 2.10's SDPA, 4.0x causal.
 
-### Against aotriton, through each entry point
+#### Through each entry point
 
-[Phase 6](history/05-phase-6-torch-ops.md). Same process, interleaved,
-bit-identity checked before timing (`tools/hk-bench/sdpa_paths.py`); aotriton
-is the backend torch's own SDPA picks on this chip. `c` is causal.
+[Phase 6](history/05-phase-6-torch-ops.md), against aotriton, the backend
+torch 2.10's SDPA picks on this chip; bit-identity checked before timing.
+pybind, `torch.ops` and the SDPA drop-in run within 3% of each other;
+aotriton is 0.35x at 1x56x4096x128, 0.33x at 1x56x16384x128 and 0.24x at
+1x32x8192x128 causal. The drop-in costs 9.4-9.6 µs of host time a call
+against pybind's 3.3-3.8.
 
-| shape | path | ms | TF | host µs | vs pybind |
-|---|---|---|---|---|---|
-| 1x56x4096x128 | pybind | 7.875 | 61.1 | 3.7 | 1.00x |
-| | torch.ops | 7.857 | 61.2 | 3.5 | 1.00x |
-| | sdpa drop-in | 7.872 | 61.1 | 9.4 | 1.00x |
-| | aotriton | 22.612 | 21.3 | 11.5 | 0.35x |
-| 1x56x16384x128 | pybind | 120.204 | 64.0 | 3.8 | 1.00x |
-| | torch.ops | 120.449 | 63.9 | 3.1 | 1.00x |
-| | sdpa drop-in | 120.466 | 63.9 | 9.5 | 1.00x |
-| | aotriton | 368.805 | 20.9 | 11.7 | 0.33x |
-| 1x32x8192x128 c | pybind | 9.769 | 56.3 | 3.3 | 1.00x |
-| | torch.ops | 9.525 | 57.7 | 2.9 | 1.03x |
-| | sdpa drop-in | 9.599 | 57.3 | 9.6 | 1.02x |
-| | aotriton | 40.467 | 13.6 | 15.0 | 0.24x |
-
-### Vision towers, on the call vLLM's ViT path makes
+#### Vision towers, on the call vLLM's ViT path makes
 
 [Phase 6](history/05-phase-6-torch-ops.md). `(b, s, h, d)` permuted to
-`(b, h, s, d)`, so never contiguous, against aotriton. "vs fp32" is the error
-against an fp32 reference. head_dims 72 and 80 have no kernel and fall back to
-torch, and those two rows are losses.
+`(b, h, s, d)`, never contiguous, against aotriton:
 
-| tower | B,H,N,D | path | ms | vs fp32 | speedup |
-|---|---|---|---|---|---|
-| CLIP ViT-L/14-336 (LLaVA) | 1,16,577,64 | hk (kernel) | 0.0978 | 0.00369 | 1.69x |
-| | | torch | 0.1657 | 0.00185 | 1.00x |
-| InternViT-300M | 1,16,1025,64 | hk (kernel) | 0.1508 | 0.00243 | 2.49x |
-| | | torch | 0.3759 | 0.00105 | 1.00x |
-| SigLIP so400m | 1,16,729,72 | hk (back) | 0.1945 | 0.00128 | 0.95x |
-| | | torch | 0.1850 | 0.00128 | 1.00x |
-| Qwen2.5-VL ViT | 1,16,1024,80 | hk (back) | 0.3406 | 0.00113 | 0.97x |
-| | | torch | 0.3295 | 0.00113 | 1.00x |
+| tower | B,H,N,D | hk ms | torch ms | speedup |
+|---|---|---|---|---|
+| CLIP ViT-L/14-336 (LLaVA) | 1,16,577,64 | 0.0978 | 0.1657 | 1.69x |
+| InternViT-300M | 1,16,1025,64 | 0.1508 | 0.3759 | 2.49x |
+| SigLIP so400m | 1,16,729,72 | 0.1945 (falls back) | 0.1850 | 0.95x |
+| Qwen2.5-VL ViT | 1,16,1024,80 | 0.3406 (falls back) | 0.3295 | 0.97x |
 
-The error column is from before the bf16 rounding fix; after it, hk's error
-against fp32 is `1.00x` torch's at every N in the sweep, not 1.5-2.4x.
+head_dims 72 and 80 have no kernel and fall back to torch; those rows are
+losses.
 
-## Norms and elementwise
+### Pre-strip norms
 
-### Against `torch.compile`
+Superseded by the register-strip kernels of [chapter 27](history/27-strips.md)
+on gfx1100 ([A2](#a2-kernels-against-the-tuned-field)).
 
-[Phases 1 and 2](history/01-phases-1-2.md). Against `torch.compile` on a
-W7900D, 13 of 15 cases are faster and the other two (`quantize 16384x4096` and
-`layernorm 16384x5120`) land within 1% behind, which is inside the noise band
-and so reported as a tie. ms:
+#### Against `torch.compile`
+
+[Phases 1 and 2](history/01-phases-1-2.md). 13 of 15 cases faster and the
+other two (quantize 16384x4096 and layernorm 16384x5120) within 1% behind, a
+tie. ms:
 
 | case | hk | compile | eager |
 |---|---|---|---|
@@ -403,11 +1065,11 @@ and so reported as a tie. ms:
 | rope 128x1024x128 | 0.076 | 0.107 | 0.583 |
 | quantize 16384x5120 | 0.367 | 0.369 | 6.118 |
 
-### Against what vLLM runs under torch.compile
+#### Against what vLLM runs under torch.compile
 
-[Strided globals](history/12-strided-globals.md). In the mode vLLM ships, both
-ops come from Inductor, fused with their neighbours. Kernel time on Qwen3-8B
-shapes, one process:
+[Strided globals](history/12-strided-globals.md). In the mode vLLM ships,
+both ops come from Inductor, fused with their neighbours. Kernel time on
+Qwen3-8B shapes, one process:
 
 | op | shape | Inductor | hk |
 |---|---|---|---|
@@ -415,484 +1077,58 @@ shapes, one process:
 | RMSNorm | (4096, 4096) | 38.8 µs | 55.8 µs (hk unweighted) |
 | RMSNorm, q/k heads | (163840, 128) | 42.9 µs | 70.4 µs (hk unweighted) |
 
-A loss: the library's RMSNorm loses by 44-64% before it even has a weight to
-multiply, so neither patch was built. This is a different baseline from the
-`torch.compile` table above, which times each op standalone.
-
-## Decode GEMV
-
-### Per decode step
-
-[A reduction across workgroups](history/11-cross-workgroup-reduction.md). GEMM
-milliseconds per decode step, 36 layers plus the LM head
-(`tools/hk-bench/vllm_gemm.py --upstream-skinny`, >= 1.5 GB of distinct weights
-per shape, every variant gated against fp32). "upstream wvSplitK" is upstream
-vLLM's skinny GEMM, built standalone for gfx1100; it handles one to five
-tokens.
-
-| tokens | hipBLASLt | rocBLAS | upstream wvSplitK | hk decode | vs hipBLASLt |
-|---|---|---|---|---|---|
-| 1 | 39.98 | 37.02 | 19.11 | 19.66 | 2.03x |
-| 2 | 39.68 | 37.57 | 19.87 | 19.69 | 2.01x |
-| 4 | 39.72 | 39.02 | 20.40 | 19.77 | 2.01x |
-| 8 | 39.50 | 40.86 | -- | 19.89 | 1.99x |
-| 16 | 41.00 | 41.75 | -- | 20.23 | 2.03x |
-| 24 | 39.74 | 43.93 | -- | 20.56 | 1.93x |
-| 32 | 40.48 | 46.81 | -- | 20.84 | 1.94x |
-
-At one token upstream's `wvSplitK` is ahead per step. Per matrix it is level
-on `qkv`, 1.5-2.6% ahead on `o`, `gate_up` and the LM head, and 6.9% ahead on
-`down` (770 GB/s); hk reads `qkv` at 762 GB/s, `o` 724, `gate_up` 800, `down`
-720 and the LM head 819, against 676-821 GB/s that a plain read reaches
-(`hbm_probe.hip`). At two and four tokens hk is ahead per step. At 33-64
-tokens the kernel is register-bound: 28.6 ms against 42.2 installed, 1.47x
-([the decode kernel](history/09-decode-kernel.md)).
-
-### Split-K across workgroups: slower everywhere
-
-[A reduction across workgroups](history/11-cross-workgroup-reduction.md).
-`decode_gemm(splits=S)` is correct and slower on every shape at every split,
-M=1 and M=16 alike, so the GEMV ships unsplit. µs at M=1:
-
-| layer | splits 1 | splits 2 | splits 3 | splits 4 |
-|---|---|---|---|---|
-| qkv | 66.4 | 76.9 | -- | 81.8 |
-| o | 46.5 | 51.4 | -- | 55.0 |
-| gate_up | 252.4 | 271.2 | -- | 294.2 |
-| down | 139.5 | 144.3 | 153.6 | 146.9 |
-| lm_head | 1515.5 | 1663.0 | -- | 1768.4 |
-
-## Paged decode attention
-
-[Phase 7](history/06-phase-7-paged-decode.md). The vLLM attention backend's
-decode against vLLM's Triton attention: Qwen3-8B (36 layers, 32 query heads
-over 8 KV heads, head_dim 128), bf16, eager, three reps per endpoint; each
-point is the slope `(T(72) - T(8)) / 64`, which cancels prefill
-(`tools/hk-bench/vllm_sweep.py`). ms per decode step; "ratio" is
-`+planner` time over Triton time, so above 1 is hk *slower*.
-
-| ctx | batch | before | split | +planner | triton | ratio |
-|---|---|---|---|---|---|---|
-| 1024 | 1 | 54.43 | 48.60 | 49.16 | 42.01 | 1.17x |
-| 1024 | 4 | 54.60 | 51.66 | 51.10 | 42.83 | 1.19x |
-| 1024 | 16 | 57.65 | 57.65 | 54.46 | 46.54 | 1.17x |
-| 1024 | 32 | 59.23 | 59.68 | 59.59 | 61.53 | 0.97x |
-| 4096 | 1 | 82.68 | 51.10 | 50.67 | 42.97 | 1.18x |
-| 4096 | 4 | 83.09 | 61.65 | 53.51 | 45.97 | 1.16x |
-| 4096 | 8 | 83.86 | 71.20 | 58.06 | 49.13 | 1.18x |
-| 4096 | 16 | 91.74 | 91.29 | 64.54 | 56.78 | 1.14x |
-
-A loss everywhere except ctx 1024 batch 32. Before the KV split the worst case
-was 1.92x; the split brought it to 1.19x. Standalone, the kernel reaches 56% of
-the card's 864 GB/s at ctx 4096 batch 16 and 76% at ctx 16384 batch 32,
-against 1.9% before. The remaining gap is flat, a constant ~7-9 ms per step,
-which is the wrapper's small torch ops rather than the kernel.
-
-### Captured whole, layer by layer
-
-[The decode step captured whole](history/17-the-decode-step-captured-whole.md).
-The wrapper is gone: a cache write and the decode's own launches, captured in
-vLLM's decode graphs. Each arm walks 36 layers' caches per call, so K/V is
-read cold as a decode step reads it; a one-layer A/B rereads it from the
-Infinity Cache and hid the loss below (`tools/hk-bench/paged_ab.py --layers
-36`, graph clock, ms per layer). "hk kernel" is hk's split decode, walk and
-merge, without the cache write; "hk layer" is the backend as shipped, which
-below sixteen requests runs Triton's kernel on hk's cache.
-
-| ctx | batch | Triton layer | Triton attention | hk kernel | hk layer |
-|---|---|---|---|---|---|
-| 1024 | 1 | 0.0207 | 0.0174 | 0.0264 | 0.0214 |
-| 1024 | 4 | 0.0427 | 0.0392 | 0.0493 | 0.0431 |
-| 1024 | 8 | 0.0725 | 0.0687 | 0.0841 | 0.0730 |
-| 1024 | 16 | 0.1322 | 0.1284 | 0.1264 | 0.1328 |
-| 4096 | 1 | 0.0447 | 0.0412 | 0.0503 | 0.0452 |
-| 4096 | 4 | 0.1184 | 0.1151 | 0.1217 | 0.1157 |
-| 4096 | 8 | 0.2187 | 0.2149 | 0.2221 | 0.2128 |
-| 4096 | 16 | 0.4204 | 0.4166 | 0.4016 | 0.4080 |
-| 1024 | 32 | 0.5852 | 0.5832 | 0.2211 | 0.2302 |
-| 4096 | 32 | 2.0337 | 2.0301 | 0.7626 | 0.7696 |
-
-The 32-request rows walk 16 layers' caches, not 36, which is still four
-times the Infinity Cache at 1024 tokens. Above 16 requests Triton's backend
-leaves its 16-segment kernel for the unsplit one, and hk is 2.6x it.
-
-hk's kernel loses up to eight requests and wins from sixteen. The loss is in
-every launch: at 1024 tokens and one request the walk is 21.0 us to Triton's
-13.5, the merge 8.0 to its reduction's 3.1, and vLLM's C++ cache write
-through hk's view 4.1 to the Triton one's 2.6 (`tools/hk-bench/paged_kernels.py`).
-The kernel reaches 83-86% of the DRAM bandwidth where there is enough of it
-to stream.
-
-### On vLLM 0.31's cache, with V's transpose packed
-
-[Chapter 38](history/38-rdna-losses.md). Everything above was measured on
-vLLM 0.16's cache, K and V in two planes; vLLM 0.31 keeps K and V side by
-side in each token's row. `tools/hk-bench/paged_variants.py` measures there,
-every layer's cache cold, as a CUDA graph's replay, 9 rounds interleaved,
-ms a layer; Triton as TRITON_ATTN calls it (its 3-D kernel to 16 requests,
-2-D above), ratios Triton over the arm, each from its own run. "main" is
-the walk before chapter 38; "now" packs V's transpose (a page's loop from
-about 3,350 instructions to 1,425) and plans for 256 workgroups instead of
-1,024. The pod's venv has Triton 3.8.0 installed over the triton-rocm 3.7.1
-vLLM 0.31 is built for, and 3.8.0's kernel is up to 40% slower; both:
-
-| ctx x batch | Triton 3.7.1 | Triton 3.8.0 | main | now | now vs 3.7.1 | now vs 3.8.0 |
-|---|---|---|---|---|---|---|
-| 1024 x 16 | 0.1254 | 0.1246 | 0.1782 | 0.1155 | 1.12x | 1.08x |
-| 1024 x 32 | 0.1838 | 0.2582 | 0.2791 | 0.1990 | 0.93x | 1.30x |
-| 1024 x 64 | 0.3530 | 0.4413 | 0.4618 | 0.3915 | 0.90x | 1.13x |
-| 4096 x 16 | 0.3777 | 0.3988 | 0.4656 | 0.3881 | 0.99x | 1.03x |
-| 4096 x 32 | 0.6907 | 0.9462 | 0.8281 | 0.7451 | 0.93x | 1.27x |
-| 4096 x 64 | 1.3467 | 1.6118 | 1.5493 | 1.4889 | 0.90x | 1.08x |
-
-At the capture sizes in between, against 3.7.1 / 3.8.0: 0.86-0.87x / 0.90x
-at 24, 0.89x / 1.07-1.13x at 40, 1.01-1.02x / 1.02-1.07x at 48, 0.95x /
-0.96-1.03x at 56. At one and four requests
-Triton's 3-D kernel is 1.03-1.45x hk's walk and at eight they tie
-(0.97-1.01x), so up to 8 requests stay Triton's. In a captured vLLM step
-Triton's kernel at 17-22 requests took 1.93 ms a call against 0.517 on the
-bench, and hk's walk 0.451 ms, so the batches in between stay on hk
-(`HK_TRITON_DECODE_ALSO` hands them over, off by default).
-
-## Paged prefill
-
-[The decode step captured whole](history/17-the-decode-step-captured-whole.md).
-One launch for every prefill request in a step, K/V through the page table;
-against vLLM's `unified_attention` on the same batches (`tools/hk-bench/paged_ab.py
---prefill`, ms):
-
-| batch | Triton | hk | |
-|---|---|---|---|
-| prompt 2048 | 4.47 | 0.87 | 5.1x |
-| prompt 8192 | 82.6 | 10.5 | 7.9x |
-| chunk 512 after 4096 | 4.69 | 0.79 | 5.9x |
-| 4 x 1024 after 1024 | 12.6 | 2.38 | 5.3x |
-| 8 x 3000 + 200 | 10.2 | 2.85 | 3.6x |
-| 16 decodes + chunk 512 | 3.03 | 0.72 | 4.2x |
-
-## End to end in vLLM
-
-Qwen3-8B, bf16, one W7900D. The baseline (1.00x) is stock vLLM 0.16.1.dev0
-choosing its own backends; arms alternate in separate processes and each takes
-its minimum over rounds; every arm produced the same greedy tokens as stock.
-Ratios are stock time over patched time, so above 1 is hk faster. "Graph mode"
-is vLLM as it ships: torch.compile and CUDA graphs on.
-
-### Under vLLM's defaults, with the decode captured whole
-
-[The decode step captured whole](history/17-the-decode-step-captured-whole.md).
-vLLM's defaults: CUDA graphs, prefix caching and chunked prefill on. `hk` is
-the attention backend (hk's paged prefill, hk's decode from 16 requests and
-Triton's on hk's cache below), `hk+gemm` with the linear-layer patch as well.
-72 output tokens, best of two rounds; "step" is one decode step at the full
-batch. Greedy tokens identical to stock's.
-
-| ctx x batch | stock ms | hk ms | x | hk+gemm ms | x | step, stock ms | hk | x | hk+gemm | x |
-|---|---|---|---|---|---|---|---|---|---|---|
-| 1024 x 1 | 3206 | 3184 | 1.007x | 1730 | 1.85x | 41.32 | 41.35 | 0.999x | 21.29 | 1.94x |
-| 1024 x 4 | 4033 | 3924 | 1.028x | 2384 | 1.69x | 42.31 | 42.46 | 0.996x | 22.16 | 1.91x |
-| 1024 x 16 | 7628 | 7160 | 1.065x | 5150 | 1.48x | 46.32 | 46.81 | 0.989x | 26.57 | 1.74x |
-| 1024 x 32 | 13059 | 11264 | 1.159x | 8768 | 1.49x | 61.64 | 51.00 | 1.209x | 31.18 | 1.98x |
-| 4096 x 1 | 4448 | 3986 | 1.116x | 2458 | 1.81x | 42.21 | 42.24 | 0.999x | 22.16 | 1.91x |
-| 4096 x 4 | 9195 | 7274 | 1.264x | 5286 | 1.74x | 45.29 | 44.84 | 1.010x | 24.54 | 1.85x |
-| 4096 x 16 | 27923 | 20254 | 1.379x | 16738 | 1.67x | 56.20 | 56.36 | 0.997x | 36.92 | 1.52x |
-| 4096 x 32 | 55372 | 37439 | 1.479x | 31789 | 1.74x | 109.38 | 70.56 | 1.550x | 50.32 | 2.17x |
-
-### The linear-layer patch (`HK_VLLM_GEMM=1`)
-
-[A reduction across workgroups](history/11-cross-workgroup-reduction.md). Every
-unquantized linear runs on the decode GEMV (M <= 64) or the generated GEMM, and
-everything else is stock. Prefix caching and chunked prefill off. Graph mode,
-72 output tokens (128 at batch 32 and 64); `total` is the whole batch, `prefill`
-the same batch generating one token, `decode` one step at the full batch.
-
-| ctx x batch | total, stock ms | total, hk ms | x | prefill, stock ms | prefill, hk ms | x | decode, stock ms | decode, hk ms | x |
-|---|---|---|---|---|---|---|---|---|---|
-| 1024x1 | 3211.6 | 1750.2 | 1.84 | 273.9 | 243.0 | 1.13 | 41.37 | 21.23 | 1.95 |
-| 1024x4 | 4029.4 | 2489.2 | 1.62 | 1025.1 | 922.7 | 1.11 | 42.30 | 22.05 | 1.92 |
-| 1024x16 | 7551.4 | 5600.6 | 1.35 | 4291.5 | 3706.4 | 1.16 | 45.90 | 26.04 | 1.76 |
-| 1024x32 | 16346.1 | 12836.7 | 1.27 | 8616.1 | 7403.7 | 1.16 | 61.59 | 42.56 | 1.45 |
-| 1024x64 | 28382.1 | 24055.6 | 1.18 | 17341.0 | 14881.4 | 1.17 | 88.22 | 71.72 | 1.23 |
-| 4096x1 | 4452.9 | 2930.6 | 1.52 | 1446.3 | 1364.0 | 1.06 | 42.35 | 22.03 | 1.92 |
-| 4096x4 | 9056.0 | 7237.1 | 1.25 | 5929.3 | 5439.1 | 1.09 | 44.97 | 24.45 | 1.84 |
-| 4096x16 | 27523.8 | 24837.4 | 1.11 | 23860.2 | 21779.3 | 1.10 | 56.11 | 36.38 | 1.54 |
-
-Nothing loses, at any shape, in any phase, in graph or eager mode; graph and
-eager agree to within 2.5% for both arms. Batch 1 is a latency number,
-1.52-1.84x; the batches are throughput numbers, 1.10-1.35x at 16 requests and
-1.18-1.27x at 32-64.
-
-### The attention backend, and both patches together
-
-[The linear layers](history/08-linear-layers.md), graph mode, before the decode
-GEMV existed: `gemm` is the prefill GEMM patch alone, `hk` the attention
-backend alone, `hk+gemm` both. 72 output tokens; decode measured as the slope
-`(T(72) - T(24)) / 48`.
-
-| | stock ms | gemm | hk | hk+gemm |
-|---|---|---|---|---|
-| total, 1024 ctx x 1 | 3216.2 | 1.007x | 0.864x | 0.870x |
-| total, 1024 x 4 | 4035.1 | 1.024x | 0.887x | 0.904x |
-| total, 1024 x 16 | 7556.9 | 1.073x | 0.965x | 1.025x |
-| total, 4096 x 1 | 4452.6 | 1.016x | 0.973x | 0.993x |
-| total, 4096 x 4 | 9063.7 | 1.040x | 1.149x | 1.201x |
-| total, 4096 x 16 | 27517.9 | 1.044x | 1.293x | 1.364x |
-| prefill, 1024 x 1 | 273.8 | 1.111x | 1.064x | 1.192x |
-| prefill, 4096 x 16 | 23829.6 | 1.090x | 1.436x | 1.630x |
-| decode, 1024 x 1 | 41.46 | 0.998x | 0.849x | 0.848x |
-| decode, 1024 x 16 | 46.02 | 1.003x | 0.834x | 0.845x |
-| decode, 4096 x 1 | 42.33 | 0.998x | 0.840x | 0.842x |
-| decode, 4096 x 16 | 56.23 | 0.999x | 0.837x | 0.856x |
-
-The attention backend loses wherever the request is mostly decode, and wins
-where prefill dominates (its prefill runs on the dense kernel). The eager
-version of this measurement is 1.29x on the prefill-heavy shape and 0.87x at
-1024 x 1 ([Against the engine](history/07-against-the-engine.md)).
-
-[The decode kernel](history/09-decode-kernel.md), graph mode, after it: `gemm`
-is now the prefill route plus the decode GEMV for M <= 64.
-
-| | stock ms | gemm | hk+gemm |
-|---|---|---|---|
-| total, 1024 ctx x 1 | 3202.4 | 1.717x | 1.382x |
-| total, 1024 x 4 | 4035.5 | 1.552x | 1.309x |
-| total, 1024 x 16 | 7625.0 | 1.354x | 1.297x |
-| total, 4096 x 1 | 4440.6 | 1.457x | 1.436x |
-| total, 4096 x 4 | 9059.0 | 1.227x | 1.464x |
-| total, 4096 x 16 | 27588.0 | 1.104x | 1.476x |
-| decode, 1024 x 1 | 41.24 | 1.808x | 1.402x |
-| decode, 1024 x 16 | 46.99 | 1.807x | 1.417x |
-| decode, 4096 x 1 | 42.09 | 1.784x | 1.371x |
-| decode, 4096 x 16 | 57.18 | 1.580x | 1.281x |
-| total, 1024 x 32 (128 tokens) | 16512.7 | 1.267x | 1.370x |
-| total, 1024 x 64 (128 tokens) | 28509.3 | 1.162x | 1.362x |
-| decode, 1024 x 32 | 62.98 | 1.447x | 1.591x |
-| decode, 1024 x 64 | 89.22 | 1.195x | 1.668x |
-
-`gemm` alone is the best patch whenever decode dominates; `hk+gemm` is best on
-long-context prefill and on wide decode. At batch 1-16 the attention backend's
-decode is slower than stock's, which leaves decode at 0.75-0.81x of what `gemm`
-alone gets.
-
-### Routing by the measured table, at decode batch 96 and 128
-
-[The routing table](history/14-routing-table.md). Graph mode, 512-token
-prompts, 160 output tokens, one round. `hand rule` is the patch routed by the
-old hand-written rule, `table` by the measured table.
-
-| ctx x batch | total, stock ms | hand rule | x | table | x | decode, stock ms | hand rule | x | table | x |
-|---|---|---|---|---|---|---|---|---|---|---|
-| 512x96 | 27349.9 | 25561.4 | 1.07 | 24523.9 | 1.12 | 97.48 | 97.98 | 0.99 | 91.48 | 1.07 |
-| 512x128 | 37156.1 | 34813.6 | 1.07 | 32419.1 | 1.15 | 136.11 | 136.92 | 0.99 | 121.14 | 1.12 |
-
-### FlyDSL's GEMM on the routes
-
-[Chapter 30](history/30-flydsl-routes-gate-contracts.md). vLLM 0.31.0, torch
-2.13.0+rocm7.2, FlyDSL 0.4.0, Qwen3-8B, bf16. Prefix caching and chunked
-prefill off; three rounds, arms alternating, best of each. `hk+gemm` is the
-attention backend and the linear layers routed by the table shipped before
-(2026-10-14). `+FlyDSL` uses the same patches with the table re-measured with
-FlyDSL installed. Its own runs equal the old table's, but for one tie at
-gate_up M = 3; it adds FlyDSL rows where FlyDSL's GEMM, at the tile its
-dispatcher picks, beat the table's answer by 2%. Ratios are against stock.
-Every arm's greedy tokens matched stock's.
-
-Per call (`route_tune.py`, against the table's own answer at each M, where
-one of FlyDSL's tiles divides M):
-
-| M | qkv | o | gate_up | down |
-|---|---|---|---|---|
-| 64-256, median | 0.84x the time | 0.85x | 0.87x | 0.97x |
-| 272-1024, median | 1.19x | 1.14x | 1.33x | 1.22x |
-| above 1024, median | 0.98x | 0.98x | 0.99x | 0.975x |
-
-FlyDSL ran at 304 of the table's 740 (shape, M) points and was routed at
-105. Between 272 and 1024 rows most Ms leave it only 32- or 64-row tiles,
-and it loses.
-
-Eager, 72 output tokens:
-
-| ctx x batch | stock | hk+gemm | x | +FlyDSL | x | prefill, hk+gemm ms | +FlyDSL ms |
-|---|---|---|---|---|---|---|---|
-| 1024 x 1 | 2011.98 | 1686.58 | 1.193x | 1682.37 | 1.196x | 196.56 | 191.56 |
-| 1024 x 4 | 2820.60 | 2392.51 | 1.179x | 2381.10 | 1.185x | 727.52 | 721.03 |
-| 1024 x 16 | 7503.73 | 5020.04 | 1.495x | 5022.69 | 1.494x | 2934.70 | 2937.27 |
-| 4096 x 1 | 3645.15 | 2343.31 | 1.556x | 2339.26 | 1.558x | 795.19 | 786.91 |
-| 4096 x 4 | 7240.82 | 5069.63 | 1.428x | 5055.22 | 1.432x | 3183.78 | 3183.20 |
-| 4096 x 16 | 24676.60 | 15732.51 | 1.569x | 15747.82 | 1.567x | 12728.54 | 12745.88 |
-
-Decode steps at batch 1-16 are within 0.7% of each other. Graph mode (vLLM
-as it ships), 512-token prompts, 160 output tokens:
-
-| ctx x batch | total, stock ms | hk+gemm | x | +FlyDSL | x | decode, stock ms | hk+gemm | x | +FlyDSL | x |
-|---|---|---|---|---|---|---|---|---|---|---|
-| 512 x 96 | 22471.29 | 17750.13 | 1.266x | 16732.92 | 1.343x | 71.72 | 58.58 | 1.224x | 51.44 | 1.394x |
-| 512 x 128 | 29184.06 | 21325.82 | 1.368x | 20232.26 | 1.442x | 92.32 | 62.95 | 1.467x | 55.42 | 1.666x |
-
-Prefill there is unchanged (8543 against 8549 ms, 11412 against 11447).
-FlyDSL pays where a step's M is one of its tiles divides and one it was
-measured fastest at:
-- decode at 96 and 128 requests, 12% a step, where hk's 128-row GEMM
-  leaves the grid underfilled and FlyDSL runs 32- and 64-row tiles;
-- pure prefill steps of 1024 and 4096 tokens, 1.0-2.6% of prefill.
-
-Below 64 requests decode stays on hk's GEMV and vLLM's skinny GEMMs. A step
-mixing decodes into a prefill has an M no tile divides. FlyDSL ran in
-vLLM's captured decode graphs (2,052 captured launches a round).
-
-**Re-measured after chapter 28** ([chapter 31](history/31-remeasured.md)).
-hk's GEMM gained 3% on vLLM's op and FlyDSL's dispatcher did not, so the
-table shipped now routes FlyDSL at 41 points instead of 105. Per call,
-against the table's own answer:
-
-| M | qkv | o | gate_up | down |
-|---|---|---|---|---|
-| 64-256, median | 0.84x the time | 0.87x | 0.88x | 1.00x |
-| 272-1024, median | 1.22x | 1.17x | 1.42x | 1.28x |
-| above 1024, median | 1.02x | 1.005x | 1.02x | 0.997x |
-
-The decode rows route 96 and 128 requests as before. End to end, the
-shipped table against the one above, on the same tree, three rounds,
-greedy tokens matching stock's:
-
-| ctx x batch | prefill, previous table ms | shipped | total, previous ms | shipped | decode |
-|---|---|---|---|---|---|
-| 1024 x 1, eager | 188.65 | 190.94 (+1.2%) | 1678.40 | 1680.82 | within 0.7% |
-| 1024 x 4, eager | 710.85 | 708.58 (-0.3%) | 2373.18 | 2364.15 | |
-| 4096 x 1, eager | 776.68 | 773.35 (-0.4%) | 2322.72 | 2321.58 | |
-| 4096 x 4, eager | 3117.40 | 3063.70 (-1.7%) | 4990.75 | 4955.49 | |
-| 512 x 96, graph | 8367.64 | 8238.37 (-1.5%) | 16544.46 | 16523.99 | 51.18 / 51.66 ms |
-| 512 x 128, graph | 11214.53 | 11041.54 (-1.5%) | 20016.65 | 19982.60 | 56.08 / 56.16 ms |
-
-The 1.5-1.7% is a row the new table added, gate_up's 8192-token steps on
-FlyDSL's 256x256 tile. The 1.2% loss is the rows it dropped at M = 1024,
-which measured under the 2% bar per call. Against stock, decode at 96 and
-128 requests is 1.413x and 1.651x (chapter 30: 1.394x and 1.666x).
-
-### A model no table had measured
-
-[Chapter 35](history/35-any-model.md). vLLM 0.31.0, Qwen2.5-7B-Instruct,
-bf16, whose linear shapes are in no shipped table. The `gemm` arm is
-`HK_VLLM_GEMM` with nothing else set, from an empty record directory: its
-first start measured the shapes at load within the default 60 s, its second
-measured the rest (43 s), its third nothing. Three rounds, arms alternating,
-best of each; greedy tokens identical to stock's at every shape. Qwen2.5's
-qkv projection has a bias, so its calls stay on vLLM's path.
-
-vLLM's defaults (CUDA graphs, prefix caching, chunked prefill), 72 tokens:
-
-| ctx x batch | total, stock ms | gemm | x | prefill x | decode, stock ms | gemm | x |
-|---|---|---|---|---|---|---|---|
-| 1024 x 1 | 1740.8 | 1675.9 | 1.039x | 1.317x | 21.12 | 21.03 | 1.005x |
-| 1024 x 4 | 2429.1 | 2242.4 | 1.083x | 1.260x | 21.93 | 21.84 | 1.004x |
-| 1024 x 16 | 6165.6 | 4679.3 | 1.318x | 1.284x | 35.63 | 25.76 | 1.383x |
-| 1024 x 32 | 10032.1 | 7716.2 | 1.300x | 1.287x | 37.96 | 27.60 | 1.376x |
-| 4096 x 1 | 3118.4 | 2927.6 | 1.065x | 1.229x | 29.86 | 29.86 | 1.000x |
-| 4096 x 4 | 6325.4 | 5497.8 | 1.151x | 1.252x | 30.26 | 30.40 | 0.995x |
-| 4096 x 16 | 22332.5 | 18527.9 | 1.205x | 1.267x | 47.91 | 37.36 | 1.283x |
-| 4096 x 32 | 42259.2 | 35427.7 | 1.193x | 1.267x | 53.96 | 44.38 | 1.216x |
-
-Graph mode, 512-token prompts, 160 tokens:
-
-| ctx x batch | total, stock ms | gemm | x | prefill x | decode, stock ms | gemm | x |
-|---|---|---|---|---|---|---|---|
-| 512 x 96 | 17588.6 | 14997.9 | 1.173x | 1.295x | 42.75 | 42.10 | 1.015x |
-| 512 x 128 | 24594.3 | 18728.8 | 1.313x | 1.295x | 66.22 | 48.78 | 1.358x |
-
-At 1 and 4 requests decode is vLLM's own skinny GEMMs (M <= 5), which hk's
-GEMV does not beat. At 96 requests the measured routes keep three of the
-four shapes on vLLM's op, and the measuring at load does not time FlyDSL,
-whose small tiles made Qwen3-8B's step there 12% shorter. Qwen3-8B itself,
-routed by the same code with nothing to measure, matched the shipped table
-pinned, within 0.4% per request at every shape.
-
-DeepSeek-R1-Distill-Llama-8B (three new shapes), vLLM's defaults, two
-rounds: 1.41x / 1.32x per request at 1024 x 16 / 32, 1.21x / 1.18x at
-4096, 1.03-1.14x at 1-4 requests; decode steps 1.62x / 1.41x / 1.38x /
-1.20x at 16-32 requests. Starts 60 s and 17 s longer, then nothing. Its
-greedy tokens matched at six shapes; at 1024 x 32 the first token's two
-leading logits are neighbouring bf16 values, and the arms pick opposite
-ones.
-
-### The vision tower
-
-[Phase 6](history/05-phase-6-torch-ops.md). Inside vLLM 0.16.1.dev0 (ROCm
-7.2.1) serving `OpenGVLab/InternVL2-2B`, the SDPA patch reached the kernel: 120
-kernel calls, 0 fallbacks over five requests. An end-to-end time cannot resolve
-it: the spread is +-25% on a ~250 ms request of which the vision tower is
-~4 ms, so the tower's own number is the
-[vision-tower table](#vision-towers-on-the-call-vllms-vit-path-makes) above.
-
-## End to end in SGLang
-
-[SGLang](history/24-sglang.md). SGLang 0.5.18 with AMD-AIM/sglang-radeon
-0.1.5 and its prebuilt gfx1100 kernel, torch 2.9.1 on ROCm 7.2.1, Qwen3-8B in
-bf16. Eager with Triton attention, as sglang-radeon runs RDNA3, because HIP
-graph capture hangs there. `HK_SGLANG_LINEAR=1` routes every unquantized
-linear by the table measured against SGLang's F.linear.
-
-Served (`launch_server`, then `bench_serving`: random ids, 512 tokens in,
-128 out, each server warmed first):
-
-| concurrency | output tok/s, stock | hk | x | TTFT ms, stock | hk | TPOT ms, stock | hk | x |
-|---|---|---|---|---|---|---|---|---|
-| 1 | 22.75 | 41.27 | 1.81 | 93.5 | 51.9 | 43.53 | 24.00 | 1.81 |
-| 8 | 159.52 | 270.65 | 1.70 | 534.6 | 431.7 | 46.08 | 26.14 | 1.76 |
-| 32 | 456.02 | 678.08 | 1.49 | 606.2 | 489.7 | 54.41 | 34.26 | 1.59 |
-
-In one process (`bench_one_batch`, 512 tokens in, 64 out; stock's warm runs,
-since its first paid Triton's JIT):
-
-| batch | prefill, stock ms | hk | x | decode step, stock ms | hk | x |
-|---|---|---|---|---|---|---|
-| 1 | 147.3-148.0 | 110.2-110.3 | 1.34 | 44.24-44.28 | 25.06-25.64 | 1.75 |
-| 8 | 911.0-912.5 | 744.4-745.2 | 1.22 | 46.57-46.83 | 26.57-26.58 | 1.76 |
-| 32 | 3969-4117 | 3114-3120 | 1.30 | 54.81-55.06 | 34.51-34.63 | 1.59 |
-
-Routed by vLLM's table instead, batch 1 stays on F.linear (44.25 ms). hk's
-linear and F.linear are equally far from fp64. In a greedy check, two of three
-prompts matched stock over 48 tokens and the third split at a near-tie.
-
-**With FlyDSL's rows** ([chapter 32](history/32-measuring-the-measurements.md)).
-SGLang's table re-measured with FlyDSL installed beside it, served the same
-way (warmed with 32 requests at concurrency 32), each hk arm twice, ms per
-output token:
-
-| concurrency | stock | hk, previous table | hk, with FlyDSL rows |
-|---|---|---|---|
-| 1 | 43.29 | 23.55, 23.57 | 23.56, 23.54 |
-| 8 | 45.79 | 26.10, 26.15 | 26.14, 26.11 |
-| 32 | 54.34 | 34.37, 34.46 | 34.23, 34.25 |
-
-At 32 requests qkv's decode GEMM runs on FlyDSL's 32x32 tile, and the step
-is 0.4-0.6% shorter (output 687.3-687.7 tok/s against 684.3-685.7); at 1 and
-8 nothing changes measurably. The hk arms' greedy text was identical with
-and without the rows.
-
-### MoE: OLMoE-1B-7B
-
-[SGLang MoE](history/25-sglang-moe.md). Stock SGLang does not run it on
-gfx1100, because sgl_kernel's `topk_softmax` fails. So the baseline is
-`HK_SGLANG_MOE=topk`, which computes the top-k in torch and keeps SGLang's
-Triton expert GEMMs. The patched arm is `HK_SGLANG_MOE=1`, with hk's GEMMs up
-to 256 tokens a step. Both were measured after hk's launch got leaner, with
-warm caches.
-
-| concurrency | output tok/s, Triton GEMMs | hk | x | mean TTFT ms, Triton | hk | mean TPOT ms, Triton | hk | x |
-|---|---|---|---|---|---|---|---|---|
-| 1 | 61.6 | 65.5 | 1.06 | 36.4 | 34.5 | 16.07 | 15.10 | 1.06 |
-| 8 | 345.6 | 457.2 | 1.32 | 142.3 | 132.2 | 22.15 | 16.55 | 1.34 |
-| 32 | 836.2 | 1057.6 | 1.26 | 328.4 | 311.1 | 35.82 | 27.92 | 1.28 |
-
-These are mean TTFTs. The medians at concurrency 8 differ by 2.4x only
-because the two servers batched their prefills differently, and prefill
-runs Triton in both. Greedy output was identical over SGLang's three
-correctness prompts.
-
-## After the MLIR move
+A loss: the RMSNorm of the time lost by 44-64% before it had a weight to
+multiply, so neither patch was built.
+
+#### Against torch, at full size, after the cross-warp fix
+
+[Chapter 16](history/16-validation-and-the-cross-warp-race.md):
+`examples/validate.py` with PyTorch 2.10 (ROCm 7.2), hk against torch's eager
+call, interleaved in one process. The norms trailed torch's own fused kernels:
+rmsnorm 0.96x, layernorm 0.96x and softmax 0.88x at 8192x4096. On the strips,
+the scoreboard's torch column has hk ahead at every norm and softmax shape.
+The rows of that run that are still current (add, exp, SiLU-mul, quantize,
+RoPE) are in [A2](#a2-kernels-against-the-tuned-field); its GEMM (1.12x),
+decode GEMV (3.90-4.38x) and attention (2.76x, 3.94x causal) rows were
+against torch 2.10's eager calls.
+
+#### The tile kernels' diagnosis, and the LayerNorm backward on tiles
+
+[Chapter 26](history/26-the-scoreboard-retuned.md) found three causes for the
+tile norms' losses. At 1-32 rows it was the instruction stream (hk's folded
+RMSNorm 846 instructions a warp against Triton's 221). At 2048 rows a 16-bit
+row tile held each row twice, in WMMA's lane layouts; moving it once took
+rms_norm from 27.17 to 24.72 us and softmax from 29.99 to 23.22. At 8192 rows
+the unfolded plan was DRAM-bound and 3-9% behind. The tile kernels still run
+rows wider than 32768. [Rows by index](history/19-rows-by-index.md)'s
+LayerNorm backward on 16-row tiles was 1.12x / 0.92x / 0.69x / 0.66x the
+Triton tutorial at 1024 / 2048 / 4096 / 8192 wide (0.040, 0.065, 0.153 and
+0.534 ms), because past 2048 a tile read each row twice; the strips replaced
+it.
+
+### Chapter 18's scoreboard
+
+Superseded by [chapter 26](history/26-the-scoreboard-retuned.md), which tuned
+every baseline. [Chapter 18](history/18-the-scoreboard.md) measured hk's GEMM
+1.03-1.08x ahead (1.05x, 1.08x, 1.08x, 1.05x, 1.03x at the five shapes above)
+against FlyDSL's bare 128x128x32 default (1.743 ms at 4096³, where its
+dispatcher runs 1.547) and Triton's seven tutorial configs; FlyDSL's
+autotuner had never searched, and Triton's ranked cold calls. Its norms were
+0.37-0.97x the best other arm, and its attention 3.65x and 2.75x torch 2.10.
+
+### The handwritten GEMM and rocBLAS
+
+[Phase 3](history/02-phase-3-gemm.md); overtaken by hk's later schedules. ROCm
+7.2.4; same process, interleaved, bit-identity checked. `hk.ops.matmul` and
+the handwritten `config<128,128,64,16,8,4,8,4>` compile to the same 209
+VGPRs. At 4096³ both ran 75.0 TFLOP/s and rocBLAS 69.6 (0.93x); at
+8192x8192x4096 77.9 and 78.0, rocBLAS 71.8 (0.92x).
+
+### After the MLIR move
 
 [The IR as an MLIR dialect](history/15-mlir-dialect.md), Gate B: old and new
-kernels in one process, interleaved for 7 rounds, the old as control.
+kernels in one process, interleaved for 7 rounds, the old as control. A check
+that the move changed nothing, not a comparison.
 
 | kernel | shape | new / old |
 |---|---|---|
@@ -901,69 +1137,22 @@ kernels in one process, interleaved for 7 rounds, the old as control.
 | decode GEMV | M=1 N=4096, M=1 N=12288, M=4 N=4096 | 1.010x / 0.999x / 1.000x |
 | rmsnorm | 8192x4096, 8192x8192, 32768x1024 | 0.998x / 1.002x / 1.002x |
 
-Every gap is smaller than that row's own round-to-round spread. Gate C, the
-GEMM patch in vLLM 0.16.1 serving Qwen3-8B (eager, context 1024, 72 output
-tokens), from the tree before the move and after, each against stock:
+Every gap is smaller than that row's own round-to-round spread.
 
-| | before | after |
-|---|---|---|
-| total, batch 1 / 16 | 1.820x / 1.338x | 1.824x / 1.340x |
-| prefill | 1.125x / 1.160x | 1.125x / 1.160x |
-| decode per step | 1.928x / 1.735x | 1.933x / 1.746x |
+### The first CDNA pass
 
-## Against torch, at full size, after the cross-warp fix
+Superseded by hk's own CDNA kernels and wave64 strips
+([B2](#b2-kernels-against-the-tuned-field)). [Chapter 29](history/29-cdna.md);
+one MI355X, `rocm/pytorch` (ROCm 7.2.3, PyTorch 2.10), best of 5,
+interleaved in one process.
 
-[Typical kernels checked at full size](history/16-validation-and-the-cross-warp-race.md):
-`examples/validate.py` on the W7900D with PyTorch 2.10 (ROCm 7.2), every
-check passing, hk against torch's eager call, interleaved in one process.
+**Tiles planned for RDNA3**, the first run: vector add 0.61x `torch.add`,
+RMSNorm 0.58x `F.rms_norm` and softmax 0.51x `torch.softmax` (`hk.ops`'
+versions 0.72x and 0.76x); a GEMM through LDS correct at 4096³, 540 TFLOP/s,
+0.35x hipBLASLt (1530).
 
-| case | shape | hk vs torch |
-|---|---|---|
-| add / exp | 8192x4096 | 0.98x / 0.92x |
-| rmsnorm / layernorm / softmax | 8192x4096 | 0.96x / 0.96x / 0.88x |
-| silu_mul | 8192x4096 | 1.57x |
-| rope (NeoX) | 32 heads x 2048 x 128 | 9.19x |
-| quantize int8 | 4096x4096 | 2.78x |
-| gemm | 4096³ / M=2048 N=12288 K=4096 | 1.12x / 1.12x |
-| decode GEMV | M=1, N=4096 / N=12288, K=4096 | 4.38x / 3.90x |
-| attention | 1x32x4096x128, non-causal / causal | 2.76x / 3.94x |
-
-The norms trailed torch's own fused kernels by 4-12% on the tile kernels of
-the time; on chapter 27's strips the scoreboard's torch column has hk ahead
-at every norm and softmax shape (softmax 8192x4096: 0.1686 against 0.1755
-ms). Phase 2's "13 of 15 faster" was against `torch.compile`, a different
-baseline. Before the fix the
-norm and quantize rows were wrong at this size, not slow. The drain the fix
-added costs nothing measurable: 1.002x for rmsnorm, 1.010x for softmax, after
-against before.
-
-## CDNA, on one MI355X
-
-Everything above is gfx1100. This section is gfx950 (CDNA4, Instinct MI355X),
-measured on one GPU of a shared 8-GPU node, inside `rocm/pytorch` (ROCm 7.2.3,
-PyTorch 2.10). Contenders were interleaved in one process, best of 5, and each
-check is `max|got - want| / max|want|` against an fp32 torch reference. gfx942
-(MI300X) is compile-only: there is no part here. Source:
-[CDNA3 and CDNA4](history/29-cdna.md).
-
-### The first pass: correct, not yet tuned
-
-The elementwise and row kernels below ran with tiles planned for RDNA3.
-
-| kernel | shape | check | resources (gate) | hk vs baseline |
-|---|---|---|---|---|
-| `examples/01_vector_add.py` | 8192² bf16 | exact | 25 VGPR, 8 waves | 0.61x `torch.add` |
-| `examples/02_rmsnorm.py` | 8192x4096 | 2.9e-3 | 28 VGPR, 8 waves | 0.58x `F.rms_norm`; `hk.ops.norm.rmsnorm` 0.72x |
-| `examples/03_softmax.py` | 8192x4096 | 1.95e-3 | 37 VGPR, 8 waves | 0.51x `torch.softmax`; `hk.ops.norm.softmax` 0.76x |
-| MFMA GEMM, registers only (`tools/cdna-probes/mma_reg.py`) | up to 2048x2048x1024 | ≤ 6.3e-3 | 22 VGPR + 16 AGPR, 8 waves | -- |
-| GEMM through LDS (`tools/cdna-probes/gemm_lds.py`) | 4096³ | ≤ 5.7e-3, identical in 3 runs | 20 VGPR + 16 AGPR, 8 waves | 540 TFLOP/s, 0.35x hipBLASLt (1530) |
-
-### CDNA tiles for the elementwise and row kernels
-
-[CDNA3 and CDNA4, part 3](history/29-cdna.md#cdna-tiles-for-the-elementwise-and-row-kernels).
-`hk.ops` on the MI355X after the CDNA tiling (16x32 fragments, wider blocks),
-bf16, against torch 2.10's eager call, best of 5 x 50 launches, interleaved in
-one process, each checked first.
+**CDNA tiles for the elementwise and row kernels** (16x32 fragments, wider
+blocks), against torch 2.10's eager call:
 
 | op | 64x4096 | 2048x4096 | 8192x4096 | 16384x8192 |
 |---|---|---|---|---|
@@ -976,206 +1165,22 @@ one process, each checked first.
 | fused add + RMSNorm (in place) | 1.27x | 1.06x | 1.44x | 1.25x |
 | silu_mul | 1.48x | 1.82x | 1.76x | 1.28x |
 
-Before the CDNA tiling, at 8192x4096: add 0.58x (8192x8192), rmsnorm 0.70x,
-weighted RMSNorm 0.72x, layernorm 0.76x, softmax 0.80x, fused add + RMSNorm
-1.19x. At 16384x8192, where the row is folded, gfx1100's plan (8 warps a
-tile each) gave rmsnorm 0.89x, layernorm 0.82x and softmax 0.77x; the CDNA
-plan (2 warps, 4 tiles each) is the table's. Short tensors (2048 rows) still
-lose, the weighted RMSNorm most (0.61x); at 64 rows the losses are fixed
-launch latency.
+Before these tiles, at 8192x4096 the norms ran at 0.70-0.80x torch and the
+fused add + RMSNorm at 1.19x.
 
-### Strips: the rows against every arm, at LLM shapes
+**HipKittens' CDNA4 kernels as hk ops**
+([chapter 29, part 5](history/29-cdna.md#part-5-hipkittens-cdna4-kernels-behind-hks-engine-layer);
+[design/cdna-hipkittens-ops.md](design/cdna-hipkittens-ops.md)), best of 7
+rounds. HipKittens' GEMM (M and N multiples of 256) ran 0.53x / 0.63x /
+0.96x / 0.95x hipBLASLt at 1024³ / 2048³ / 4096³ / 8192³, 0.18-0.93x at
+Llama-3-8B and Qwen3-8B's M = 256-1024 and 0.91-0.96x at M ≥ 4096, and won
+4-27% only where hipBLASLt's heuristic picked a slow kernel; the gfx950 table
+routed it at 37 of 206 points. Its GQA forward ran 1.28-2.62x torch 2.10's
+SDPA and 0.92-1.00x FlyDSL's flash attention. hk's own GEMM and attention
+(B2) replaced both.
 
-[gfx950's rows](history/37-cdna-rows.md). `tools/hk-bench/scoreboard.py
---only llm-norm,llm-quant,llm-pointwise`: rows 1, 32, 2048, 8192 x hidden
-4096, 5120, 8192 (intermediate 14336, 17408, 28672 for silu_mul; heads of 128
-for RoPE), bf16. One process, every arm checked against fp32 first, rounds
-queued behind a GPU spin, median of 7 rounds of 50 calls. The arms are torch
-2.10 eager, Inductor (static shapes), Triton 3.6 as written and autotuned,
-and FlyDSL 0.4.0's dispatcher and autotuner (norms and softmax; it has no
-standalone kernel for the rest). The cells give hk's time over the fastest
-other arm's; a tie is within the larger of 2% and the two arms' noise. One
-run, after [gfx950's last rows](history/43-cdna-last-rows.md) (strip kernels
-on flat `__restrict__` arguments, preloaded past 32 MB moved, the 2048-row
-fused add a warp a row, RoPE's eight-byte runs at 40 heads), with
-`--rotate-buffers`: each round every arm takes the next arm's output buffer,
-because at one row which buffer a kernel writes moves it 0.1 us. The last
-column is [chapter 41](history/41-cdna-leftovers.md)'s run.
-
-| op | 1-32 rows | 2048 rows | 8192 rows | verdicts | chapter 41: verdicts |
-|---|---|---|---|---|---|
-| rms_norm | 1.00 | 1.02-1.14 | 1.00-1.02 | 7 tie, 5 win | 9 tie, 3 win |
-| rmsnorm | 1.00 | 1.03-1.07 | 1.00-1.01 | 9 tie, 3 win | 1 loss, 10 tie, 1 win |
-| layernorm | 1.00-1.05 | 1.02-1.22 | 0.99-1.02 | 5 tie, 7 win | 2 loss, 4 tie, 6 win |
-| fused add + RMSNorm | 0.99-1.00 | 0.99-1.01 | 1.00-1.01 | 12 tie | 3 loss, 8 tie, 1 win |
-| softmax | 0.99-1.00 | 0.99-1.04 | 1.02-1.04 | 9 tie, 3 win | 12 tie |
-| int8 quantize | 1.04-1.05 | 0.99-1.04 | 0.99-1.04 | 3 tie, 9 win | 1 loss, 2 tie, 9 win |
-| add | 0.99-1.01 | 1.00-1.04 | 1.00-1.01 | 11 tie, 1 win | 1 loss, 9 tie, 2 win |
-| mul | 0.99-1.01 | 1.00-1.05 | 1.00-1.01 | 11 tie, 1 win | 1 loss, 8 tie, 3 win |
-| exp | 0.98-1.02 | 1.04-1.06 | 1.01-1.02 | 1 loss, 8 tie, 3 win | 1 loss, 9 tie, 2 win |
-| silu_mul (gate/up halves in place) | 1.04-1.06 | 1.00-1.03 | 1.10-1.12 | 2 tie, 10 win | 3 tie, 9 win |
-| RoPE (`hk.ops.rotary`) | 1.03-1.06 | 0.99-1.05 | 0.98-1.01 | 4 tie, 8 win | 2 loss, 3 tie, 7 win |
-
-131 of 132 cases tie or win (chapter 41: 120; re-measured on its tree, 117);
-a second rotated run gave 128, its four losses three floor cases and RoPE at
-8192x40 (0.977x).
-Without rotation the same tree gives 126, every case past 32 rows a tie or
-a win and the six losses at 1-32 rows (0.97-0.98x).
-At 1-32 rows every arm sits at the card's floor, an empty kernel's 3.80 us
-plus 0.05-0.1. The one loss is there: exp 1x5120 at 0.979x (3.88 us against
-torch's 3.80), a case that was 1.015, 1.000, 0.997 and 0.979x in four runs.
-The fused add + RMSNorm at 2048x8192 takes 19.17 us against tuned Triton's
-19.38, RoPE at 8192x40 24.61 against 24.20. At 8192x8192 rms_norm takes 37.2
-us against tuned Triton's 38.1, softmax 38.1 against FlyDSL's 39.7;
-silu_mul at 8192x28672 226.1 against tuned Triton's 251.3.
-
-### GEMM: hk's own
-
-[gfx950's GEMM in hk](history/33-cdna-gemm.md). `hk.ops.gemm.matmul` on gfx950
-routes every shape to one of hk's own kernels: HipKittens' CDNA4 schedule
-written in hk (`hk.ops.gemm_cdna`: copies into LDS left in flight, the
-pingpong), a four-warp kernel (`hk.ops.gemm_cdna_dp`), either with two-launch
-split-K, or the decode GEMV. bf16, C = A·Bᵀ, eager, every arm
-checked against fp32 and interleaved in one process, rounds queued behind a
-GPU spin, median of 7; three processes (chapter 41):
-
-| M = N = K | hk | HipKittens | hipBLASLt | FlyDSL `gemm_a16w16` | hk / best |
-|---|---|---|---|---|---|
-| 4096 | 1450-1461 | 1431-1444 | 1493-1506 | 1462-1473 | 0.97-0.98x |
-| 8192 | 1592-1594 | 1584-1589 | 1642-1650 | 1609-1618 | 0.97x |
-
-At Llama-3-8B's and Qwen3-8B's linear shapes (N x K of qkv, o, gate_up, down
-and lm_head, M from 1 to 8192, 122 points), hk's routed kernel -- the shipped
-table's route, timed as one arm -- is at 0.9x or better of the best of
-hipBLASLt, FlyDSL and HipKittens at all 122 points, the median of three
-processes (chapter 33: 108).
-- M = 1-4 runs at 0.99-1.42x, M = 16-128 at 0.91-1.57x.
-- M = 256-512 runs at 0.92-1.20x, M ≥ 1024 at 0.91-1.26x.
-- The tightest is the unmerged gate/up at M = 64 (0.91x; one run of three
-  0.89): 224 blocks of 64 x 64 on 256 CUs.
-
-The small-M points stream the weights whole-line and non-temporal; the grid
-and the candidates are in [chapter 41](history/41-cdna-leftovers.md), what
-limited chapter 33's table in
-[that chapter](history/33-cdna-gemm.md#routed). Before this, `examples/04_gemm.py`
-(64x64 blocks, no pipelining) ran at 631 TFLOP/s at 4096³, 0.41x hipBLASLt.
-
-Where the time goes at 8192³ (hand-patched builds in one process): without
-its copies the kernel runs 15% faster, and with C's store switched off it is
-level with hipBLASLt. The store's cost follows its bytes, and the pattern is a
-fifth of it.
-
-Chapter 34's copy descriptor (scalar, its range free of the K column) made
-this GEMM 1.2% faster: 1470 against 1452 TFLOP/s at 4096³ and 1549 against
-1530 at 8192³, the two shims built in alternating processes.
-
-### Attention: hk's own
-
-[gfx950's attention in hk](history/34-cdna-attention.md). `hk.ops.attn_cdna`
-is HipKittens' CDNA4 GQA schedule written in hk; `hk.attention` and
-`hk.ops.sdpa` run it on gfx950. bf16, (B, H, N, D), TFLOP/s counted as
-4·B·H·N²·D (halved under causal). Every arm is checked against fp32 first
-(and hk's against V = 1, exactly), then interleaved in one process, best of 7
-rounds; HipKittens built with ROCm 7.1, hk with 7.2.3:
-
-| B, H, H_KV, N, D | causal | hk | HipKittens | FlyDSL | torch SDPA | hk / best | hk / SDPA |
-|---|---|---|---|---|---|---|---|
-| 16, 64, 8, 1024, 128 | no / yes | 1056 / 739 | 978 / 681 | 1055 / 746 | 574 / 256 | 1.00x / 0.99x | 1.84x / 2.89x |
-| 16, 64, 8, 4096, 128 | no / yes | 1230 / 1107 | 1233 / 1091 | 1247 / 1122 | 690 / 431 | 0.99x / 0.99x | 1.78x / 2.57x |
-| 16, 64, 8, 8192, 128 | no / yes | 1259 / 1209 | 1277 / 1202 | 1283 / 1226 | 773 / 497 | 0.98x / 0.99x | 1.63x / 2.43x |
-| 1, 32, 8, 4096, 128 | no / yes | 1164 / 1104 | 1157 / 902 | 1178 / 1024 | 653 / 353 | 0.99x / 1.08x | 1.78x / 3.13x |
-| 16, 64, 8, 4096, 64 | no / yes | 938 / 857 | 939 / 804 | 942 / 862 | 724 / 539 | 1.00x / 0.99x | 1.30x / 1.59x |
-
-Round-to-round spreads are 0.3-2.5%, 6-16% for every arm at N = 1024 and at
-one batch. What is left is per step: hk's step is 2% slower than FlyDSL's,
-and its fixed cost a workgroup 10% lower
-([the chapter](history/34-cdna-attention.md#where-it-stands)).
-
-### Paged attention: hk's own
-
-[gfx950's paged attention](history/39-cdna-paged.md). On gfx950 `hk.ops.paged`
-routes to `hk.ops.paged_cdna` (the split-KV decode and its merge) and
-`hk.ops.paged_prefill` to the paged form of `hk.ops.attn_cdna`. Measured
-against what vLLM runs on an MI355X, in the ROCm 10 vLLM image (vLLM
-0.30.1rc1, aiter 0.1.23, triton 3.8). Qwen3-8B's attention (32/8 heads, D
-128), bf16, us a layer; each arm at its own cache layout holding the same
-K/V, checked against fp32 first, its calls rotating through caches past
-the 256 MB Infinity Cache, captured in a CUDA graph and replayed, rounds
-interleaved, median of 7 (`tools/hk-bench/paged_cdna.py`). aiter's gluon
-unified attention runs on hk's cache, ROCM_ATTN (vLLM's default on gfx950)
-and TRITON_ATTN on their own pages of 16.
-
-Decode:
-
-| requests x context | hk | aiter gluon | ROCM_ATTN | TRITON_ATTN | hk / best | hk / ROCM_ATTN |
-|---|---|---|---|---|---|---|
-| 1 x 1024 | 9.1 | 15.5 | 9.4 | 9.1 | 1.00x | 1.03x |
-| 1 x 8192 | 16.1 | 12.2 | 12.8 | 31.0 | 0.76x | 0.80x |
-| 4 x 8192 | 28.2 | 27.3 | 30.7 | 42.5 | 0.97x | 1.09x |
-| 16 x 1024 | 17.3 | 17.4 | 18.3 | 22.7 | 1.01x | 1.05x |
-| 16 x 8192 | 88.7 | 89.9 | 99.0 | 131.8 | 1.01x | 1.12x |
-| 32 x 8192 | 171.4 | 166.1 | 194.7 | 301.5 | 0.97x | 1.14x |
-| 128 x 1024 | 84.0 | 85.0 | 104.4 | 118.4 | 1.01x | 1.24x |
-| 128 x 8192 | 659.2 | 644.6 | 725.8 | 898.1 | 0.98x | 1.10x |
-
-Over 40 shapes (1-128 requests, 512-8192 tokens): 0.90-1.05x the best
-alternative at 8-128 requests, 1.04-1.27x ROCM_ATTN there; at one to two
-requests 0.71-0.88x past 2048 tokens (the merge, and a lone wave's walk),
-0.81-1.02x at 512-1024. SDPA over gathered pages is 5-13x slower than any.
-
-Prefill (cached prefix + new tokens):
-
-| requests | hk | aiter gluon | ROCM_ATTN | TRITON_ATTN | hk / best | hk / ROCM_ATTN |
-|---|---|---|---|---|---|---|
-| 0 + 2048 | 59.3 | 58.3 | 153.3 | 224.5 | 0.98x | 2.59x |
-| 4096 + 512 | 106.2 | 92.0 | 283.7 | 228.3 | 0.87x | 2.67x |
-| 4 x (2048 + 1024) | 171.8 | 192.6 | 600.6 | 920.8 | 1.12x | 3.50x |
-| 8 x (0 + 2048) | 297.9 | 327.0 | 889.6 | 1511.2 | 1.10x | 2.99x |
-| 0+300, 1000+77, 4000+1000, 64+2048 | 142.7 | 176.9 | 1908.3 | 683.9 | 1.24x | 13.4x |
-
-The 4-bit decode GEMM (`hk.ops.w4a16`) runs on gfx950 too: 2.3-4.0x vLLM's
-Triton AWQ kernel at 1-16 tokens and 1.5-2.3x at 32-64, on gfx1100's
-schedules.
-
-### HipKittens' CDNA4 GEMM and GQA forward, as hk ops
-
-[CDNA3 and CDNA4, part 5](history/29-cdna.md#part-5-hipkittens-cdna4-kernels-behind-hks-engine-layer);
-method and every number in [design/cdna-hipkittens-ops.md](design/cdna-hipkittens-ops.md).
-`hk.ops.hipkittens` builds HipKittens' kernels verbatim through hk's cache and
-gate, and checks each build on the device first. Every arm is checked against
-fp32 first, then interleaved in one process, best of 7 rounds.
-
-GEMM, bf16, C = A·Bᵀ, TFLOP/s eager. HipKittens needs M and N to be multiples
-of 256.
-
-| M=N=K | HipKittens | hipBLASLt | rocBLAS | FlyDSL `gemm_a16w16` | HK / hipBLASLt |
-|---|---|---|---|---|---|
-| 1024 | 90 | 169 | 157 | 38 | 0.53x |
-| 2048 | 420 | 667 | 655 | 302 | 0.63x |
-| 4096 | 1432 | 1484 | 1502 | 1447 | 0.96x |
-| 8192 | 1539 | 1612 | 1614 | 1574 | 0.95x |
-
-At Llama-3-8B and Qwen3-8B's linear shapes, HipKittens trails hipBLASLt:
-- 0.18-0.93x at M = 256-1024, where a 256x256 tile per workgroup is too few
-  workgroups;
-- 0.91-0.96x at M ≥ 4096.
-
-It wins 4-27% only where hipBLASLt's heuristic picks a slow kernel. For
-example, at o_proj M = 2048 it runs 886 TFLOP/s against hipBLASLt's 708. The
-measured gfx950 route table (`routes_vllm_linear_gfx950.json`) sends those
-points, 37 of 206 and all at M ≥ 1792, to HipKittens. hk's own GEMM (above)
-now runs level with it at large M and ahead of it below M = 2048.
-
-GQA forward, bf16, TFLOP/s:
-
-| B, H, H_KV, N, D | causal | HipKittens | torch SDPA (aotriton flash) | FlyDSL flash | HK / SDPA | HK / FlyDSL |
-|---|---|---|---|---|---|---|
-| 16, 64, 8, 1024, 128 | no / yes | 966 / 663 | 570 / 253 | 1010 / 702 | 1.69x / 2.62x | 0.96x / 0.94x |
-| 16, 64, 8, 4096, 128 | no / yes | 1242 / 1092 | 690 / 432 | 1254 / 1120 | 1.80x / 2.53x | 0.99x / 0.98x |
-| 16, 64, 8, 8192, 128 | no / yes | 1283 / 1192 | 772 / 497 | 1277 / 1212 | 1.66x / 2.40x | 1.00x / 0.98x |
-| 1, 32, 8, 4096, 128 | no / yes | 1149 / 896 | 659 / 349 | 1145 / 974 | 1.74x / 2.57x | 1.00x / 0.92x |
-| 16, 64, 8, 4096, 64 | no / yes | 933 / 796 | 726 / 539 | 929 / 855 | 1.28x / 1.48x | 1.00x / 0.93x |
-
-aiter is not installable here: PyPI's `aiter` is an unrelated package, and
-`amd-aiter` is not published. The ROCm 10 vLLM image ships `amd-aiter`
-0.1.23, which the paged attention section above measures.
+**hk's own GEMM, earlier**: `examples/04_gemm.py` (64x64 blocks, no
+pipelining) ran 631 TFLOP/s at 4096³, 0.41x hipBLASLt; chapter 33's routed
+table had 108 of 122 linear points at 0.9x the best or better; the rows tied
+or won 99 of 132 cases in chapter 37 and 120 in chapter 41 (the last column
+in [B2](#norms-and-elementwise)).
