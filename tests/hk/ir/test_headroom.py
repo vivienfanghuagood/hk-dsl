@@ -201,7 +201,7 @@ def test_the_rank_is_the_upper_bound_times_a_ceiling():
 def test_the_record_applies_only_to_the_kernel_it_measured():
     ph = _phase({"kernel_unified_attention_2d": (1000.0, 36)})
     att = hr.rank({"decode": ph}, engine_name="vllm", arch="gfx1100")[0]
-    assert att["ratio"] == 0.83 and att["ceiling"] == 0.0 and "chapter 20" in att["ratio_source"]
+    assert att["ratio"] == 0.86 and att["ceiling"] == 0.0 and "chapter 38" in att["ratio_source"]
     assert hr.rank({"decode": ph}, engine_name="vllm", arch="gfx950")[0]["ratio"] is None
 
 

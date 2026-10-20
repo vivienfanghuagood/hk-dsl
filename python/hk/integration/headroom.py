@@ -227,9 +227,9 @@ RECORD: List[Tuple[str, str, Optional[str], str, float, float, str]] = [
     ("gfx1100", "attention", "prefill", r"unified_attention", 3.6, 7.9,
      "hk's paged prefill against TRITON_ATTN's unified_attention, per layer, "
      "vLLM 0.16 (chapter 17)"),
-    ("gfx1100", "attention", "decode", r"unified_attention", 0.83, 0.95,
-     "hk's paged decode against TRITON_ATTN's 2-D kernel at 16-64 requests, vLLM 0.31 "
-     "(chapter 20); routing those to it slowed the captured step"),
+    ("gfx1100", "attention", "decode", r"unified_attention", 0.86, 1.12,
+     "hk's paged decode against TRITON_ATTN's unified_attention on hk's cache at 16-64 "
+     "requests, vLLM 0.31 with triton-rocm 3.7.1 (chapter 38); 1.03-1.30x under Triton 3.8.0"),
     ("gfx1100", "moe", None, r"fused_moe", 1.0, 2.77,
      "hk's MoE GEMM against fused_moe, 1-256 tokens (chapter 21)"),
     ("gfx1100", "norm", None, r"^triton_", 1.02, 1.12,
