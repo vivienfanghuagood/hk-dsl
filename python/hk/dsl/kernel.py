@@ -124,6 +124,9 @@ class TracedKernel:
             self.lds_bytes = ir.IntegerAttr(k.attributes["hk.lds_bytes"]).value
             self.warnings = [ir.StringAttr(a).value
                              for a in ir.ArrayAttr(k.attributes["hk.warnings"])]
+            #: The kernel takes the globals' fields as scalar arguments, its
+            #: pointers __restrict__ (a noalias kernel on CDNA).
+            self.flat_args = "hk.noalias" in k.attributes
 
     @property
     def threads(self) -> int:
@@ -200,6 +203,8 @@ class Kernel:
         max_vgprs: Optional[int] = None,
         min_occupancy: Optional[int] = None,
         defines: Optional[Dict[str, Any]] = None,
+        noalias: bool = False,
+        preload: bool = False,
     ):
         self.fn = fn
         #: Preprocessor definitions ahead of the includes, for this kernel's
@@ -219,12 +224,21 @@ class Kernel:
         #: benchmark.
         self.max_vgprs = max_vgprs
         self.min_occupancy = min_occupancy
+        #: No tensor is written where another is read, except by the lane
+        #: that read it, after it did -- an in-place call is that. On CDNA the
+        #: kernel then takes its arguments flat, pointers __restrict__.
+        self.noalias = noalias
+        #: Preload the flat arguments into SGPRs at dispatch, where the target
+        #: can: 0.2 us more at the one-row floor, 0.2-0.3 us less on a
+        #: 2048-row call (docs/history/43), so a planner picks it per call.
+        self.preload = preload
         self.signature = inspect.signature(fn)
         self._tensors, self._defaults = self._split_params()
         self._ir_cache: Dict[Tuple, TracedKernel] = {}
         self._build_cache: Dict[Tuple, Any] = {}
         self._mod_cache: Dict[Tuple, Any] = {}
         self._spec_cache: Dict[Tuple, "Kernel"] = {}
+        self._preloaded: Optional["Kernel"] = None
         #: constexpr kwargs, exactly as a caller passed them, -> the bound
         #: pybind launcher. See __call__ for why this is keyed on the raw
         #: kwargs rather than on the resolved constexprs.
@@ -328,7 +342,7 @@ class Kernel:
         body = rewrite(self.fn)
         with B.tracing(t), ir.Location.unknown():
             mod, f, entry = begin_kernel(self.name, arch, self.warps, consts,
-                                         self._tensors)
+                                         self._tensors, noalias=self.noalias)
             t.module, t.func, t.entry = mod, f, entry
             args = {n: Global(a, ty, n)
                     for (n, ty), a in zip(self._tensors, entry.arguments)}
@@ -401,10 +415,32 @@ class Kernel:
                 self.source(**const_overrides),
                 traced.arch,
                 name=self.name,
+                extra_flags=self.build_flags(traced),
                 max_vgprs=self.max_vgprs,
                 min_occupancy=self.min_occupancy,
             )
         return self._build_cache[key]
+
+    def build_flags(self, traced: TracedKernel) -> Tuple[str, ...]:
+        """hipcc flags of this kernel's builds beyond the target's."""
+        from ..target import get_target  # noqa: PLC0415
+
+        if self.preload and traced.flat_args and get_target(traced.arch).kernarg_preload:
+            return ("-mllvm", "-amdgpu-kernarg-preload-count=16")
+        return ()
+
+    def preloaded(self) -> "Kernel":
+        """This kernel with `preload` set: its own builds, the same body."""
+        if self.preload:
+            return self
+        if self._preloaded is None:
+            self._preloaded = type(self)(
+                self.fn, arch=self._arch, warps=self.warps, grid=self.grid_fn,
+                name=self.name, max_vgprs=self.max_vgprs,
+                min_occupancy=self.min_occupancy, defines=self.defines,
+                noalias=self.noalias, preload=True)
+            self._preloaded._defaults = dict(self._defaults)
+        return self._preloaded
 
     def compile(self, **const_overrides: Any):
         """Generate, compile and load. Returns the loaded extension module."""
@@ -524,6 +560,7 @@ class Kernel:
                 self.fn, arch=self._arch, warps=self.warps, grid=self.grid_fn,
                 name=self.name, max_vgprs=self.max_vgprs,
                 min_occupancy=self.min_occupancy, defines=self.defines,
+                noalias=self.noalias, preload=self.preload,
             )
             k._defaults = dict(key)
             self._spec_cache[key] = k
@@ -536,14 +573,15 @@ class Kernel:
 def kernel(fn=None, *, arch: Optional[str] = None, warps: int = 1, grid=None,
            name: Optional[str] = None, max_vgprs: Optional[int] = None,
            min_occupancy: Optional[int] = None,
-           defines: Optional[Dict[str, Any]] = None):
+           defines: Optional[Dict[str, Any]] = None, noalias: bool = False,
+           preload: bool = False):
     """Mark a function as a tile kernel. See the module docstring for the
     parameter rules."""
 
     def wrap(f):
         return Kernel(f, arch=arch, warps=warps, grid=grid, name=name,
                       max_vgprs=max_vgprs, min_occupancy=min_occupancy,
-                      defines=defines)
+                      defines=defines, noalias=noalias, preload=preload)
 
     return wrap(fn) if fn is not None else wrap
 
