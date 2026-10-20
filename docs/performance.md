@@ -107,6 +107,15 @@ target: every kernel and every engine patch runs there.
 
 #### vLLM 0.31 on gfx1100
 
+**Pending re-validation.** Every vLLM table below names its stack. Chapters
+20-22 record triton-rocm 3.7.1, the Triton vLLM 0.31's torch 2.13.0+rocm7.2
+pins; the later ones (chapters 30-38) ran in a venv that
+imported Triton 3.8.0, stock arms included, and [chapter 38](history/38-rdna-losses.md)
+found 3.8.0's decode kernel up to 40% slower at 32-64 requests. Their stock
+arms may therefore have been slow, and a re-measurement on the matched
+triton-rocm 3.7.1 stack is pending; until it lands, read the Triton 3.8.0
+ratios as measured against that stock.
+
 Qwen3-8B, bf16, vLLM 0.31.0 under its defaults. Stock 0.31 picks
 `ROCM_ATTN` on gfx1100, whose custom paged-attention kernel refuses the card
 and falls back to a Triton kernel. hk's attention backend registers over
@@ -116,8 +125,8 @@ prefill; hk's decode walk from 16 requests, to which vLLM pads 9-15, and
 Triton's kernel on hk's cache up to 8); `hk+gemm` adds the linear-layer
 patch.
 
-**The patches against stock** ([chapter 20](history/20-vllm-031.md); the
-venv as built, triton-rocm 3.7.1). 72 output tokens, the best of two rounds,
+**The patches against stock** ([chapter 20](history/20-vllm-031.md); stack:
+vLLM 0.31.0, torch 2.13.0+rocm7.2, triton-rocm 3.7.1, as recorded). 72 output tokens, the best of two rounds,
 one process per arm; every arm's greedy tokens were identical to stock's.
 Total time per request batch, as a ratio to stock; then the decode step:
 
@@ -139,7 +148,7 @@ nothing at 1 and 4 requests, where vLLM 0.31 runs its own skinny GEMM
 it nearly halves the decode step.
 
 **With chapter 38's decode kernel** ([chapter 38](history/38-rdna-losses.md);
-the venv after October 15, Triton 3.8.0 in both arms). `ab --json`, two
+stack: vLLM 0.31.0, torch 2.13.0+rocm7.2, Triton 3.8.0 in both arms). `ab --json`, two
 rounds, the tree before chapter 38 and after it each against its own stock
 arm; 72 output tokens, 128 at 64 requests. Ratios are stock over the arm:
 
@@ -158,7 +167,7 @@ Every row is a win past its band, before and after. The decode step is
 #### FlyDSL's GEMM on the routes
 
 [Chapter 30](history/30-flydsl-routes-gate-contracts.md), re-measured in
-[chapter 31](history/31-remeasured.md); vLLM 0.31.0, torch 2.13.0+rocm7.2,
+[chapter 31](history/31-remeasured.md); stack: vLLM 0.31.0, torch 2.13.0+rocm7.2, Triton 3.8.0,
 FlyDSL 0.4.0. `hk+gemm` is the attention backend and the linear layers
 routed by the table without FlyDSL; `+FlyDSL` uses a table re-measured with
 FlyDSL installed, which adds FlyDSL rows where its GEMM, at the tile its
@@ -197,7 +206,7 @@ and 1.666x).
 
 #### A model no table had measured
 
-[Chapter 35](history/35-any-model.md); vLLM 0.31.0, torch 2.13.0+rocm7.2,
+[Chapter 35](history/35-any-model.md); stack: vLLM 0.31.0, torch 2.13.0+rocm7.2, Triton 3.8.0,
 FlyDSL 0.4.0 installed. Qwen2.5-7B-Instruct, bf16, whose linear shapes are
 in no shipped table. The `gemm` arm is `HK_VLLM_GEMM` with nothing else
 set, from an empty record directory: its first start measured the shapes
@@ -233,8 +242,8 @@ ones.
 
 #### 4-bit and MoE models
 
-**4-bit (AWQ)** ([4-bit weights](history/22-int4.md); the venv as built,
-triton-rocm 3.7.1). fp16, vLLM 0.31.0 under its defaults, 72 tokens, best
+**4-bit (AWQ)** ([4-bit weights](history/22-int4.md); stack:
+vLLM 0.31.0, torch 2.13.0+rocm7.2, triton-rocm 3.7.1, as recorded). fp16, vLLM 0.31.0 under its defaults, 72 tokens, best
 of two rounds, `VLLM_USE_TRITON_AWQ=1` in both arms, so stock runs Triton's
 AWQ kernel. `HK_VLLM_INT4=1` gives hk's W4A16 kernel batches of up to 64
 tokens; prefill stays on vLLM's path (1.00x). Greedy tokens identical at
@@ -259,7 +268,8 @@ A stock AWQ decode step of 66 ms at one request, against 24.5 ms for the
 bf16 model, is the Triton AWQ kernel, which runs this card's 4-bit model
 slower than its 16-bit one.
 
-**MoE** ([MoE](history/21-moe.md); the venv as built). OLMoE-1B-7B, bf16,
+**MoE** ([MoE](history/21-moe.md); stack: vLLM 0.31.0, torch 2.13.0+rocm7.2, triton-rocm 3.7.1, as
+recorded). OLMoE-1B-7B, bf16,
 vLLM 0.31.0 under its defaults, 72 tokens, best of two rounds. `moe` is the
 MoE patch (hk's expert GEMM up to 256 tokens a step); `hk+moe` adds hk's
 attention. In that run decode attention was Triton's kernel on hk's cache at
@@ -279,7 +289,7 @@ identical to stock's.
 | 3072 x 32 | 8676 | 1.02x | 1.25x | 55.83 | 1.04x | 1.26x |
 
 **The losing kernels never reach a request** ([chapter 38](history/38-rdna-losses.md);
-the venv after October 15). `ab`, graphs on, vLLM's defaults, each patch
+stack: vLLM 0.31.0, torch 2.13.0+rocm7.2, Triton 3.8.0). `ab`, graphs on, vLLM's defaults, each patch
 counting its calls:
 - OLMoE-1B-7B at 1024 and 3072 tokens, 1 and 16 requests: 960 MoE calls to
   hk and 2,272 to Triton (every one above 256 tokens), every captured call
@@ -635,7 +645,8 @@ Where hk loses on the W7900D, and what each loss costs a request:
 - **One card, one engine version.** Every number is from one W7900D. Since
   October 15 the pod's vLLM venv imported Triton 3.8.0 in place of the
   triton-rocm 3.7.1 vLLM 0.31 is built for; chapters 30-38's end-to-end
-  ratios ran against that stock ([the stacks](#the-stacks)).
+  ratios ran against that stock ([the stacks](#the-stacks)). A
+  re-validation on the matched triton-rocm 3.7.1 stack is pending.
 
 ## Part B: CDNA4 (gfx950, one MI355X)
 

@@ -38,6 +38,9 @@ method, the software stack of every measurement, and every loss.
   and hk's attention ([A1](docs/performance.md#4-bit-and-moe-models)).
 - **SGLang 0.5.18 with sglang-radeon, Qwen3-8B**: 1.49-1.81x the output
   throughput at concurrency 1-32 ([A1](docs/performance.md#sglang-0518-on-gfx1100)).
+- The Qwen2.5-7B ratios and the later vLLM tables ran with Triton 3.8.0 over
+  vLLM 0.31's triton-rocm 3.7.1; a re-validation on the matched stack is pending
+  ([A1](docs/performance.md#vllm-031-on-gfx1100)).
 - **Against tuned Triton, FlyDSL, hipBLASLt and torch**: the bf16 GEMM ties
   FlyDSL (0.99-1.01x), 1.09-1.11x tuned Triton, 1.28-1.39x hipBLASLt; RMSNorm
   and softmax 1.02-1.12x the fastest other; attention 1.24x causal and 1.05x
