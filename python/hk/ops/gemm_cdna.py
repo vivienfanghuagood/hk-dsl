@@ -104,7 +104,7 @@ def gemm_kernel(name: str, *, block_m: int = 256, block_n: int = 256,
            else hk.RT(fp32, reg_m, reg_n, "col"))
 
     @hk.func
-    def gemm(a, b, WGM, k0, k_count, out):
+    def gemm(a, b, WGM, k0, k_count, out, init=None):
         g = hk.group(warps)
         # Buffer u, half h of A is As[2u + h]: every index below is a Python
         # int, so each copy and read names its buffer.
@@ -193,6 +193,13 @@ def gemm_kernel(name: str, *, block_m: int = 256, block_n: int = 256,
         copy_a(0, 0, 0)
         copy_b(0, 0, 1)
         copy_a(0, 0, 1)
+        if init is not None:
+            # The accumulators start as C's tile of an operand (an epilogue's
+            # init_from), its loads in flight with the first tiles' copies.
+            for i in range(2):
+                for j in range(2):
+                    init(C[i][j], m0 + i * half_m + wr * reg_m,
+                         n0 + j * half_n + wc * reg_n)
         with hk.arch.pingpong(wr == 1):
             g.wait_for(Bs[0], As[0])
             hk.arch.barrier()
@@ -327,13 +334,19 @@ def gemm_kernel(name: str, *, block_m: int = 256, block_n: int = 256,
 
     def body(a: hk.Tensor[bf16], b: hk.Tensor[bf16], c: hk.Tensor[bf16], *,
              WGM: hk.Constexpr = wgm, **ops):
+        inited = (epilogue is not None and getattr(epilogue, "init", None)
+                  is not None and not transposed_c)
+
         def out(tile, r, col):
             if epilogue is None:
                 c[hk.elem_coord(0, 0, r, col)].store(tile, bounded=True)
             else:
-                epilogue.store(c, ops, tile, r, col)
+                epilogue.store(c, ops, tile, r, col, inited=inited)
 
-        gemm(a, b, WGM, 0, a.cols // k_step, out)
+        def init(tile, r, col):
+            epilogue.load_init(ops, tile, r, col)
+
+        gemm(a, b, WGM, 0, a.cols // k_step, out, init if inited else None)
 
     # splits > 1: K cut across workgroups, each share to an fp32 scratch
     # (splits, M, N), and hk.ops.gemm_cdna_dp.reduce_kernel adds them.

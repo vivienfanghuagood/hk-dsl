@@ -132,6 +132,7 @@ def gemm_kernel(name: str, *, block_m: int = 128, block_n: int = 128,
 
     st_a = hk.ST(bf16, block_m, k_step)
     st_b = hk.ST(bf16, block_n, k_step)
+    inited = epilogue is not None and getattr(epilogue, "init", None) is not None
 
     def body(a: hk.Tensor[bf16], b: hk.Tensor[bf16], c: hk.Tensor[bf16], *,
              WGM: hk.Constexpr = wgm, **ops):
@@ -338,6 +339,18 @@ def gemm_kernel(name: str, *, block_m: int = 128, block_n: int = 128,
         g.load(at(As, 0), a[a_coord(0)])
         g.load(at(Bs, 0), b[b_coord(0)])
         stage(1)
+        m_row = m_base + warp_row * reg_m
+        col_tile = (col * warp_cols + warp_col) * n_split
+        if inited:
+            # The accumulators start as C's tile of an operand (an
+            # epilogue's init_from), loaded behind tile 1's staging loads.
+            for s in range(n_split):
+                if stream_a:
+                    for i in range(frags):
+                        epilogue.load_init(ops, C_rows[i][s], m_row + 16 * i,
+                                           (col_tile + s) * split_n)
+                else:
+                    epilogue.load_init(ops, C_acc[s], m_row, (col_tile + s) * split_n)
         hk.arch.barrier()
 
         if lds_buffers == 2:
@@ -391,14 +404,11 @@ def gemm_kernel(name: str, *, block_m: int = 128, block_n: int = 128,
         dot_tile((n_tiles - 1) % lds_buffers)
 
         # Columns are in units of the chunk width; rows in elements.
-        m_row = m_base + warp_row * reg_m
-        col_tile = (col * warp_cols + warp_col) * n_split
-
         def put(tile, r, cc):
             if epilogue is None:
                 c[hk.elem_coord(0, 0, r, cc)].store(tile, bounded=True)
             else:
-                epilogue.store(c, ops, tile, r, cc)
+                epilogue.store(c, ops, tile, r, cc, inited=inited)
 
         for s in range(n_split):
             if stream_a:

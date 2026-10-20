@@ -73,6 +73,16 @@ ROW, COL, TILE, CONST = "row", "col", "tile", "const"
 #: is not bounded and a block of M past C's last row still loads its entries.
 COL_PAD = 256
 
+#: Rows of an accumulator an epilogue with a tile operand runs on at a time.
+BAND = 16
+
+#: Load 16-bit tile operands as 16-bit tiles, converting where used.
+NATIVE_TILE = False
+
+
+#: Schedule fields merged into every step's (a knob for measuring).
+OVERRIDE: Dict[str, Any] = {}
+
 _RESERVED = {"a", "b", "c", "ws", "cnt", "x", "w", "epilogue", "out", "out_dtype"}
 
 
@@ -96,12 +106,12 @@ def _kind(name: str, v, m: int, n: int) -> str:
     if not isinstance(v, torch.Tensor):
         return CONST
     s = tuple(v.shape)
+    if s == (m, n):
+        return TILE                 # (1, N) at M = 1 is C's shape: a tile
     if s in ((n,), (1, n)):
         return ROW
     if s == (m, 1):
         return COL
-    if s == (m, n):
-        return TILE
     raise ValueError(
         f"hk.templates.gemm: operand {name} is {s}; against C ({m}, {n}) it must "
         f"broadcast as torch would and be one of ({n},) or (1, {n}) -- one value "
@@ -121,6 +131,7 @@ class Context:
         self._ep, self._ops, self._ty = ep, ops, ty
         self._r, self._col, self._c, self._bounded = r, col, c, bounded
         self._loaded: Dict[str, Any] = {}
+        self._raw: Dict[str, Any] = {}
 
     @property
     def row(self):
@@ -145,6 +156,19 @@ class Context:
         """The accumulator tile's type."""
         return self._ty
 
+    def _prefetch(self, names):
+        """Load these tile operands now (the epilogue reads them later): as
+        16-bit tiles where they are 16-bit (NATIVE_TILE), half the
+        registers while they wait, converted where the epilogue reads them."""
+        for name in names:
+            ty, dt = self._ty, self._ep.dtypes[name]
+            if NATIVE_TILE and ty.layout != "strip" and dt.bits == 16:
+                nt = RegTileType(dt, ty.rows, ty.cols, ty.layout, ty.frag)
+                self._raw[name] = self._ops["ep_" + name].at[self._r, self._col].load(
+                    nt, bounded=self._bounded)
+            else:
+                getattr(self, name)
+
     def __getattr__(self, name: str):
         if name.startswith("_"):
             raise AttributeError(name)
@@ -165,9 +189,14 @@ class Context:
                 v = g.at[0, self._col].load(
                     hk.row_vec(ty), bounded=self._bounded if strip else False)
             elif kind == COL:
-                v = g.at[0, self._r].load(hk.col_vec(ty))
+                # (M, 1) with a row stride of 1: the vector's entries are
+                # consecutive from row r.
+                v = g.at[self._r, 0].load(hk.col_vec(ty))
             else:
-                v = g.at[self._r, self._col].load(ty, bounded=self._bounded)
+                if name in self._raw:
+                    v = self._raw.pop(name).to(ty.dtype)
+                else:
+                    v = g.at[self._r, self._col].load(ty, bounded=self._bounded)
             self._loaded[name] = v
         return self._loaded[name]
 
@@ -195,6 +224,13 @@ class Epilogue:
                             f"{getattr(fn, '__name__', fn)} takes {npar} "
                             f"positional parameters")
         self._takes_ctx = npar == 2
+        #: The tile operand the accumulator starts as (init_from), or None.
+        self.init = _INITS[fn][0] if fn in _INITS else None
+        if self.init is not None and kinds.get(self.init) != TILE:
+            raise ValueError(
+                f"the epilogue starts the accumulator as ctx.{self.init} "
+                f"(init_from), so gemm() needs {self.init}= an (M, N) tensor; "
+                f"it has {self.init} as {kinds.get(self.init, 'nothing')}")
         self.tensors = [n for n in sorted(kinds) if kinds[n] != CONST]
         self.params = [("ep_" + n, GlobalType(dtypes[n])) for n in self.tensors]
         self.consts = {"EP_COL0": 0}
@@ -209,30 +245,49 @@ class Epilogue:
         while _TAGS.setdefault(tag + ("" if i == 1 else f"_{i}"), self) is not self:
             i += 1
         self.tag = tag + ("" if i == 1 else f"_{i}")
-        self.has_tile = any(k == TILE for k in kinds.values())
 
-    def store(self, c, ops, tile, r, col, bounded=True):
-        """Traced where a kernel would store `tile` at (r, col) of C."""
+    def load_init(self, ops, tile, r, col):
+        """Traced where a kernel zeroes accumulator `tile` of C's (r, col):
+        load it from the init_from operand instead (rows past C's read 0).
+        A kernel that calls this passes inited=True to store()."""
+        ops["ep_" + self.init].at[r, col].load(tile.ty, bounded=True, into=tile)
+
+    def store(self, c, ops, tile, r, col, bounded=True, inited=False):
+        """Traced where a kernel would store `tile` at (r, col) of C. With
+        an init_from operand the kernel did not start the accumulator as
+        (inited=False), it is added here first."""
         ty = tile.ty
+        tiles = [n for n in self.tensors if self.kinds[n] == TILE
+                 and (n != self.init or not inited)]
         # A tile operand is as many registers as the accumulator: on a
         # pingpong quadrant (64x64 fp32, 64 a lane) beside the other live
-        # accumulators that spills. Sixteen rows at a time it is 16.
-        band = 16 if (self.has_tile and ty.layout != "strip" and ty.rows > 16
-                      and ty.rows % 16 == 0 and not ty.frag) else 0
-        if band:
-            for i in range(ty.rows // band):
-                self._one(c, ops, tile.subtile(band, i), r + band * i, col, bounded)
-        else:
-            self._one(c, ops, tile, r, col, bounded)
+        # accumulators that spills. A band of rows at a time it is a part.
+        band = BAND if (tiles and ty.layout != "strip" and ty.rows > BAND
+                        and ty.rows % BAND == 0 and not ty.frag) else 0
+        if not band:
+            self._one(c, ops, tile, r, col, bounded,
+                      Context(self, ops, ty, r, col, c, bounded), inited)
+            return
+        # Band i+1's tile operands are loaded before band i is computed and
+        # stored, so their latency hides under it rather than each band
+        # waiting out its own: 16 more registers, not the whole tile's.
+        nb = ty.rows // band
+        subs = [tile.subtile(band, i) for i in range(nb)]
+        ctxs = [Context(self, ops, subs[i].ty, r + band * i, col, c, bounded)
+                for i in range(nb)]
+        ctxs[0]._prefetch(tiles)
+        for i in range(nb):
+            if i + 1 < nb:
+                ctxs[i + 1]._prefetch(tiles)
+            self._one(c, ops, subs[i], r + band * i, col, bounded, ctxs[i], inited)
 
-    def _one(self, c, ops, tile, r, col, bounded):
+    def _one(self, c, ops, tile, r, col, bounded, ctx, inited):
         from ..dsl.rewrite import rewrite  # noqa: PLC0415
 
-        fn = rewrite(self.fn)
-        if self._takes_ctx:
-            got = fn(tile, Context(self, ops, tile.ty, r, col, c, bounded))
-        else:
-            got = fn(tile)
+        if self.init is not None and not inited:
+            tile += getattr(ctx, self.init)
+        fn = rewrite(_INITS[self.fn][1] if self.fn in _INITS else self.fn)
+        got = fn(tile, ctx) if self._takes_ctx else fn(tile)
         got = tile if got is None else got
         if not isinstance(got, hk.Tile) or (got.ty.rows, got.ty.cols, got.ty.layout) != (
                 tile.ty.rows, tile.ty.cols, tile.ty.layout):
@@ -249,6 +304,8 @@ def _fn_key(fn) -> str:
     code, and what its closure holds -- not its id()."""
     if fn in _CHAINS:
         return "chain(" + ",".join(_fn_key(f) for f in _CHAINS[fn]) + ")"
+    if fn in _INITS:
+        return f"init_from({_INITS[fn][0]}, {_fn_key(_INITS[fn][1])})"
     code = getattr(fn, "__code__", None)
     if code is None:
         return repr(fn)
@@ -295,35 +352,31 @@ def bind(fn: Callable, operands: Dict[str, Any], m: int, n: int,
     return ep
 
 
-def _tensors(ep: Epilogue, operands: Dict[str, Any], m: int):
-    """The operand tensors in the order the kernels take them, laid out as
-    the loads read them: a row vector (1, N), a column vector (1, M) padded
-    to whole blocks, a tile as it is (any row stride)."""
+def _preparer(ep: Epilogue, m: int):
+    """name -> what a call does to that operand before the kernels take it.
+    A row vector goes as it is ((N,) or (1, N): the load reads row 0); a
+    column vector (M, 1) needs a row stride of 1, and rows to the next
+    whole COL_PAD, since a vector load is not bounded; a tile needs a column
+    stride of 1 (any row stride)."""
     import torch  # noqa: PLC0415
 
-    out = []
-    for name in ep.tensors:
-        v = operands[name]
-        k = ep.kinds[name]
-        if k == ROW:
-            v = v.reshape(1, -1)
-        elif k == COL:
-            v = v.reshape(1, -1)
-            pad = -m % COL_PAD
-            if pad:
-                v = torch.nn.functional.pad(v, (0, pad))
-        if v.stride(-1) != 1:
+    pad = -m % COL_PAD
+
+    def col(v):
+        if v.stride(0) != 1:
             v = v.contiguous()
-        out.append(v)
-    return out
+        return torch.nn.functional.pad(v, (0, 0, 0, pad)) if pad else v
+
+    def other(v):
+        return v if v.stride(-1) == 1 else v.contiguous()
+
+    return [(name, col if ep.kinds[name] == COL else other) for name in ep.tensors]
 
 
 def _cols(ep: Epilogue, ts, lo: int, hi: int):
     """The operands of a launch on columns [lo, hi) of C."""
-    out = []
-    for name, t in zip(ep.tensors, ts):
-        out.append(t if ep.kinds[name] == COL else t[:, lo:hi])
-    return out
+    return [t if ep.kinds[name] == COL else t[..., lo:hi]
+            for name, t in zip(ep.tensors, ts)]
 
 
 # ---------------------------------------------------------------- plans
@@ -372,6 +425,8 @@ def _steps_cdna(name: str, m: int, n: int, k: int, lo: int) -> List[Step]:
     from ..ops import decode_gemm, gemm_cdna, gemm_cdna_dp  # noqa: PLC0415
 
     kind, sched = gemm_cdna.CANDIDATES[name]
+    if kind == "pp" and OVERRIDE:
+        sched = {**sched, **OVERRIDE}
     cols = (lo, lo + n)
     if kind == "decode":
         return [Step("decode", decode_gemm.schedule_for(m, k), cols, True, route=name)]
@@ -461,45 +516,72 @@ def kernel_for(step: Step, ep: Optional[Epilogue], arch: Optional[str] = None):
     return k
 
 
-def _col0(k, ep: Epilogue, lo: int, **consts) -> Dict[str, int]:
-    """EP_COL0 for a launch on columns lo.. of C, if the epilogue reads its
-    coordinates (a trace, cached, says whether it does)."""
-    if not lo:
-        return {}
-    k.trace(**consts)
-    return {"EP_COL0": lo} if ep.uses_coords else {}
+def prepare(steps: List[Step], ep: Epilogue, m: int, n: int, k: int,
+            dtype, device) -> Callable:
+    """A plan made ready to launch: every kernel traced (so EP_COL0 is
+    passed only to an epilogue that reads its coordinates), every scratch
+    made. Returns go(a, b, out, tensors) -> out, which does only the
+    launches and the column slices."""
+    import torch  # noqa: PLC0415
 
-
-def run(steps: List[Step], ep: Epilogue, a, b, out, operands) -> Any:
-    """Launch a plan."""
     from ..ops import decode_gemm, gemm_cdna, gemm_cdna_dp  # noqa: PLC0415
 
-    m = a.shape[0]
+    calls = []
     ws = None
     for st in steps:
         lo, hi = st.cols
-        whole = (lo, hi) == (0, out.shape[1])
-        bb = b if whole else b[lo:hi]
-        oo = out if whole else out[:, lo:hi]
-        ops = operands if whole else _cols(ep, operands, lo, hi)
+        whole = (lo, hi) == (0, n)
         if st.kernel == "reduce":
-            gemm_cdna_dp.reduce(ws, oo, epilogue=ep, operands=ops,
-                                **({"EP_COL0": lo} if lo and ep.uses_coords else {}))
+            kern, consts = gemm_cdna_dp.reduce_epilogue_kernel(st.sched["splits"],
+                                                               hi - lo, ep)
+            kern.trace(**consts)
+            if lo and ep.uses_coords:
+                consts = {**consts, "EP_COL0": lo}
+            calls.append((kern, (ws, "out"), consts, lo, hi, whole, True))
             continue
         if st.into == "scratch":
-            ws = gemm_cdna_dp.scratch_for(a.device, st.sched["splits"], m, hi - lo)
+            ws = gemm_cdna_dp.scratch_for(device, st.sched["splits"], m, hi - lo)
             mod = gemm_cdna if st.kernel == "pp" else gemm_cdna_dp
-            mod.kernel_for(st.sched)(a, bb, ws)
+            calls.append((mod.kernel_for(st.sched), ("a", "b", ws), {}, lo, hi, whole,
+                          False))
             continue
-        k = kernel_for(st, ep)
-        if st.kernel == "decode":
+        kern = kernel_for(st, ep)
+        kern.trace()
+        consts = {"EP_COL0": lo} if lo and ep.uses_coords else {}
+        extra = ()
+        if st.kernel == "decode" and st.sched["splits"] > 1:
             s = st.sched
-            extra = (decode_gemm.scratch_for(a.device, s["splits"], s["tokens"], hi - lo)
-                     if s["splits"] > 1 else ())
-            k(a, bb, oo, *extra, *ops, **_col0(k, ep, lo))
-        else:
-            k(a, bb, oo, *ops, **_col0(k, ep, lo))
-    return out
+            extra = decode_gemm.scratch_for(device, s["splits"], s["tokens"], hi - lo)
+        calls.append((kern, ("a", "b", "out", *extra), consts, lo, hi, whole, True))
+
+    decode = any(st.kernel == "decode" for st in steps)
+
+    if len(calls) == 1 and calls[0][5]:
+        kern, args, consts, *_ = calls[0]
+        extra = args[3:]
+
+        def go1(a, b, out, ts):
+            if decode and not a.is_contiguous():
+                a = a.contiguous()
+            kern(a, b, out, *extra, *ts, **consts)
+            return out
+
+        return go1
+
+    def go(a, b, out, ts):
+        if decode and not a.is_contiguous():
+            a = a.contiguous()
+        for kern, args, consts, lo, hi, whole, takes in calls:
+            bb = b if whole else b[lo:hi]
+            oo = out if whole else out[:, lo:hi]
+            vals = [x if not isinstance(x, str) else a if x == "a" else
+                    bb if x == "b" else oo for x in args]
+            if takes:
+                vals += ts if whole else _cols(ep, ts, lo, hi)
+            kern(*vals, **consts)
+        return out
+
+    return go
 
 
 # ---------------------------------------------------------------- the API
@@ -525,7 +607,78 @@ def _identity(acc):
     return acc
 
 
+def _check_out(dt: DType, arch: Optional[str] = None) -> None:
+    from ..target import current_arch  # noqa: PLC0415
+
+    arch = arch or current_arch()
+    if dt == i8 and arch != "gfx950":
+        raise TypeError(f"hk.templates.gemm: an int8 C is gfx950's; on {arch} "
+                        f"include/rdna3's tile store takes 16- and 32-bit "
+                        f"elements (store fp16/bf16 and quantize separately)")
+
+
+def kernels(m: int, n: int, k: int, *, epilogue=None, out_dtype=None,
+            arch: Optional[str] = None, **operands):
+    """The kernels gemm() would launch for an M x N x K call with these
+    operands, as [(step, kernel, constexprs)] -- for k.trace().dump(),
+    k.source(**constexprs), k.build(**constexprs), with no GPU. Operands
+    may be tensors on the "meta" device: only their shapes and dtypes
+    are read."""
+    from ..ops import gemm_cdna, gemm_cdna_dp  # noqa: PLC0415
+
+    tdt = _out_dtype(out_dtype)
+    _check_out(_hk_dtype(tdt), arch)
+    ep = bind(epilogue or _identity, operands, m, n, _hk_dtype(tdt))
+    out = []
+    for st in plan(m, n, k, arch=arch):
+        if st.kernel == "reduce":
+            kern, consts = gemm_cdna_dp.reduce_epilogue_kernel(
+                st.sched["splits"], st.cols[1] - st.cols[0], ep, arch=arch)
+        elif st.into == "scratch":
+            mod = gemm_cdna if st.kernel == "pp" else gemm_cdna_dp
+            kern, consts = mod.kernel_for(st.sched), {}
+        else:
+            kern, consts = kernel_for(st, ep, arch=arch), {}
+        out.append((st, kern, consts))
+    return out
+
+
+#: (epilogue, shapes, dtypes, device, operand signatures) -> a prepared
+#: launch. A call that hits it does the launches and nothing else: at a
+#: decode batch the GEMM is ~10 us, and every microsecond of Python in front
+#: of it is a tenth of a percent of the layer.
+_LAUNCH: Dict[Tuple, Any] = {}
+
+
+def _sig(item):
+    name, v = item
+    try:
+        return (name, v.shape, v.dtype, v.stride())
+    except AttributeError:
+        return (name, type(v), v)
+
+
 def _gemm(a, b, epilogue=None, out=None, out_dtype=None, **operands):
+    key = (epilogue, a.shape, b.shape, a.dtype, b.dtype,
+           out_dtype if out is None else (out.shape, out.dtype, out.stride()),
+           a.device, tuple(map(_sig, operands.items())))
+    try:
+        got = _LAUNCH[key]
+    except KeyError:
+        got = _LAUNCH[key] = _slow(a, b, epilogue, out, out_dtype, operands)
+    except TypeError:                       # an unhashable operand: say what
+        got = _slow(a, b, epilogue, out, out_dtype, operands)
+    go, shape, dtype, prep = got
+    if out is None:
+        import torch  # noqa: PLC0415
+
+        out = torch.empty(shape, device=a.device, dtype=dtype)
+    return go(a, b, out, [f(operands[name]) for name, f in prep])
+
+
+def _slow(a, b, epilogue, out, out_dtype, operands):
+    """Check a call and make its launch: (go, C's shape, C's dtype, the
+    operand preparers)."""
     import torch  # noqa: PLC0415
 
     if a.dim() != 2 or b.dim() != 2:
@@ -540,21 +693,17 @@ def _gemm(a, b, epilogue=None, out=None, out_dtype=None, **operands):
         raise TypeError(f"hk.templates.gemm: A and B are bf16, got {a.dtype} "
                         f"and {b.dtype}")
     tdt = out.dtype if out is not None else _out_dtype(out_dtype)
-    if out is None:
-        out = torch.empty((m, n), device=a.device, dtype=tdt)
-    elif tuple(out.shape) != (m, n) or out.stride(1) != 1:
+    if out is not None and (tuple(out.shape) != (m, n) or out.stride(1) != 1):
         raise ValueError(f"hk.templates.gemm: out is {tuple(out.shape)}, "
                          f"expected ({m}, {n}) with unit column stride")
     if epilogue is None and not operands and tdt == torch.bfloat16:
         from ..ops import gemm as rdna  # noqa: PLC0415
 
-        return rdna.matmul(a, b, out=out)
-    fn = epilogue or _identity
-    ep = bind(fn, operands, m, n, _hk_dtype(tdt))
-    if not a.is_contiguous():
-        a = a.contiguous()
-    steps = plan(m, n, k)
-    return run(steps, ep, a, b, out, _tensors(ep, operands, m))
+        return (lambda a, b, out, ts: rdna.matmul(a, b, out=out)), (m, n), tdt, []
+    _check_out(_hk_dtype(tdt))
+    ep = bind(epilogue or _identity, operands, m, n, _hk_dtype(tdt))
+    go = prepare(plan(m, n, k), ep, m, n, k, tdt, a.device)
+    return go, (m, n), tdt, _preparer(ep, m)
 
 
 # ---------------------------------------------------------------- ready-made
@@ -565,9 +714,35 @@ def bias(acc, ctx):
     return acc + ctx.bias
 
 
+#: GELU(tanh) is x * sigmoid(2u), u = sqrt(2/pi) (x + 0.044715 x^3), and
+#: sigmoid(2u) = 1 / (1 + 2^(x (A x^2 + B))): one exp2 and, since the
+#: denominator is at least 1, 1/d = rsqrt(d)^2 -- two native instructions
+#: where Tile.gelu()'s tanh form clamps, exponentiates and divides correctly
+#: rounded. On an MI355X that took the fused GELU from 9% of a 4096 x 24576
+#: x 4096 GEMM to 3%, at the same error against torch's in bf16.
+_GELU_B = -2.0 * 1.4426950408889634 * 0.7978845608028654
+_GELU_A = _GELU_B * 0.044715
+
+
+def gelu_tanh(x):
+    """GELU, tanh approximation, of a tile, in place; returns it. Equal to
+    F.gelu(x, approximate="tanh") to a few fp32 ulps, and about half the
+    instructions of Tile.gelu()."""
+    q = x * x
+    q *= _GELU_A
+    q += _GELU_B
+    q *= x
+    q.exp2_()
+    q += 1.0
+    q.rsqrt_()
+    x *= q
+    x *= q
+    return x
+
+
 def gelu(acc):
     """GELU, tanh approximation (F.gelu(..., approximate="tanh"))."""
-    return acc.gelu()
+    return gelu_tanh(acc)
 
 
 def silu(acc):
@@ -581,7 +756,8 @@ def relu(acc):
 
 def bias_gelu(acc, ctx):
     """gelu(acc + bias), tanh approximation."""
-    return (acc + ctx.bias).gelu()
+    acc += ctx.bias
+    return gelu_tanh(acc)
 
 
 def bias_silu(acc, ctx):
@@ -592,13 +768,19 @@ def bias_relu(acc, ctx):
     return (acc + ctx.bias).relu()
 
 
-def residual(acc, ctx):
-    """acc + residual, residual (M, N): an o_proj or down_proj's skip."""
-    return acc + ctx.residual
+def _residual(acc):
+    """acc + residual, residual (M, N): an o_proj or down_proj's skip -- the
+    accumulator starts as the residual (init_from)."""
+    return acc
 
 
-def bias_residual(acc, ctx):
-    return acc + ctx.bias + ctx.residual
+def _bias_residual(acc, ctx):
+    """acc + bias + residual, the accumulator starting as the residual."""
+    return acc + ctx.bias
+
+
+_residual.__name__ = "residual"
+_bias_residual.__name__ = "bias_residual"
 
 
 def scale(acc, ctx):
@@ -611,12 +793,21 @@ def scale(acc, ctx):
 def chain(*fns: Callable) -> Callable:
     """One epilogue that applies `fns` in order, each to what the last
     returned, all reading the same ctx."""
+    if any(f in _INITS for f in fns[1:]):
+        raise ValueError("chain: an init_from epilogue starts the accumulator, "
+                         "so it can only come first")
+    if fns and fns[0] in _INITS:
+        name, first = _INITS[fns[0]]
+        return init_from(name)(chain(first, *fns[1:]))
     takes = [len([p for p in inspect.signature(f).parameters.values()
                   if p.kind in (p.POSITIONAL_ONLY, p.POSITIONAL_OR_KEYWORD)]) == 2
              for f in fns]
 
     def chained(acc, ctx):
+        from ..dsl.rewrite import rewrite  # noqa: PLC0415
+
         for f, t in zip(fns, takes):
+            f = rewrite(f)
             got = f(acc, ctx) if t else f(acc)
             acc = acc if got is None else got
         return acc
@@ -630,8 +821,43 @@ def chain(*fns: Callable) -> Callable:
 
 _CHAINS: Dict[Callable, Tuple] = {}
 
+#: init_from's epilogues: wrapper -> (operand name, the user's function).
+_INITS: Dict[Callable, Tuple[str, Callable]] = {}
+
+
+def init_from(name: str) -> Callable:
+    """Decorator: the accumulator starts as the (M, N) operand `name`
+    instead of zero, so C = fn(name + A @ B^T, ctx) -- BLAS's beta * C with
+    beta 1. A kernel that can loads it into the accumulator before its K
+    loop, where the load hides under the first tiles' copies; one that
+    cannot (a split-K share, the decode GEMV) adds it before fn. gemm.residual
+    is init_from("residual") of the identity."""
+    if not isinstance(name, str) or not name.isidentifier():
+        raise TypeError(f"init_from takes an operand's name, not {name!r}")
+
+    def deco(fn):
+        n = len([p for p in inspect.signature(fn).parameters.values()
+                 if p.kind in (p.POSITIONAL_ONLY, p.POSITIONAL_OR_KEYWORD)])
+        if n == 1:
+            def wrapped(acc):
+                return fn(acc)
+        else:
+            def wrapped(acc, ctx):
+                return fn(acc, ctx)
+        wrapped.__name__ = getattr(fn, "__name__", "fn")
+        wrapped.__qualname__ = "init_from(%r)(%s)" % (name, getattr(fn, "__qualname__", "?"))
+        wrapped.__doc__ = getattr(fn, "__doc__", None)
+        _INITS[wrapped] = (name, fn)
+        return wrapped
+
+    return deco
+
+residual = init_from("residual")(_residual)
+bias_residual = init_from("residual")(_bias_residual)
+
 READY = {f.__name__: f for f in (bias, gelu, silu, relu, bias_gelu, bias_silu,
-                                 bias_relu, residual, bias_residual, scale)}
+                                 bias_relu, residual, bias_residual, scale,
+                                 gelu_tanh)}
 
 
 class _Gemm:
@@ -640,8 +866,10 @@ class _Gemm:
     call later. See the module docstring."""
 
     plan = staticmethod(plan)
+    kernels = staticmethod(kernels)
     kernel_for = staticmethod(kernel_for)
     chain = staticmethod(chain)
+    init_from = staticmethod(init_from)
     Context = Context
     Step = Step
 
@@ -682,5 +910,5 @@ class _CallableModule(types.ModuleType):
 
 sys.modules[__name__].__class__ = _CallableModule
 
-__all__ = ["gemm", "plan", "kernel_for", "run", "bind", "Step", "Context",
+__all__ = ["gemm", "plan", "kernels", "kernel_for", "prepare", "bind", "init_from", "Step", "Context",
            "Epilogue", "chain", "READY", *READY]

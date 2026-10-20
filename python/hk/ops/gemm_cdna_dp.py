@@ -68,7 +68,7 @@ def gemm_kernel(name: str, *, block_m: int = 128, block_n: int = 128,
     t_c = hk.RT(fp32, reg_m, reg_n, "col")
 
     @hk.func
-    def gemm(a, b, c, WGM, k0, k_tiles, finish):
+    def gemm(a, b, c, WGM, k0, k_tiles, finish, init=None):
         g = hk.group(warps)
         As = hk.lds.alloc(st_a, count=stages, name="As", shape=lds_shape)
         Bs = hk.lds.alloc(st_b, count=stages, name="Bs", shape=lds_shape)
@@ -174,6 +174,10 @@ def gemm_kernel(name: str, *, block_m: int = 128, block_n: int = 128,
 
         for t in range(stages):
             copy(t, t, pad=t > 0)
+        if init is not None:
+            # The accumulator starts as C's tile of an operand (an epilogue's
+            # init_from), its load in flight with the first tiles' copies.
+            init(C[0], m0 + wr * reg_m, n0 + wc * reg_n)
         g.wait_for(As[0], Bs[0])
         hk.arch.barrier()
         read_tile(0, 0)
@@ -206,13 +210,19 @@ def gemm_kernel(name: str, *, block_m: int = 128, block_n: int = 128,
 
     def body(a: hk.Tensor[bf16], b: hk.Tensor[bf16], c: hk.Tensor[bf16], *,
              WGM: hk.Constexpr = wgm, **ops):
+        inited = (epilogue is not None and getattr(epilogue, "init", None)
+                  is not None and pipelined)
+
         def finish(acc, r, col, blocks):
             if epilogue is None:
                 c[hk.elem_coord(0, 0, r, col)].store(acc, bounded=True)
             else:
-                epilogue.store(c, ops, acc, r, col)
+                epilogue.store(c, ops, acc, r, col, inited=inited)
 
-        gemm(a, b, c, WGM, 0, a.cols // k_step, finish)
+        def init(tile, r, col):
+            epilogue.load_init(ops, tile, r, col)
+
+        gemm(a, b, c, WGM, 0, a.cols // k_step, finish, init if inited else None)
 
     def body_split(a: hk.Tensor[bf16], b: hk.Tensor[bf16], ws: hk.Tensor[fp32], *,
                    WGM: hk.Constexpr = wgm):
@@ -350,24 +360,25 @@ def launch(sched: Dict[str, Any], a, b, out):
     return reduce(ws, out)
 
 
-def _reduce_epilogue(ws, out, tgt, epilogue, operands, consts):
-    """The reduction with hk.templates.gemm's epilogue on the sum: a row of
-    strips a grid row (the epilogue's coordinates are C's), up to four
-    chunks of runs a warp and four warps a workgroup."""
+def reduce_epilogue_kernel(splits: int, n: int, epilogue, arch: Optional[str] = None):
+    """(kernel, constexprs) of the reduction of `splits` shares of an N-wide
+    C with hk.templates.gemm's epilogue on the sum: a row of strips a grid
+    row (the epilogue's coordinates are C's, so never the flat view), up to
+    four chunks of runs a warp and four warps a workgroup."""
+    from ..target import current_arch, get_target  # noqa: PLC0415
+
+    tgt = get_target(arch or current_arch())
     if not tgt.strips:
         raise NotImplementedError(f"a split GEMM's epilogue runs on the strip "
                                   f"reduction, which {tgt.arch} has not got")
-    splits = ws.shape[0]
-    n = out.shape[1]
     run = 4 if n % (4 * tgt.wave) == 0 else 2
     cw = run * tgt.wave * max(1, min(4, n // (run * tgt.wave)))
     warps = max(1, min(4, n // cw))
     name = _epilogue.name(f"gemm_cdna_dp_sreduce_k{splits}_w{warps}", epilogue)
     if name not in _KERNELS:
-        _KERNELS[name] = strip_reduce_kernel(name, splits, warps, epilogue=epilogue)
-    _KERNELS[name](ws, out, *operands, CW=cw, RUN=run,
-                   EXACT=int(n % (warps * cw) == 0), **consts)
-    return out
+        _KERNELS[name] = strip_reduce_kernel(name, splits, warps, arch=arch,
+                                             epilogue=epilogue)
+    return _KERNELS[name], dict(CW=cw, RUN=run, EXACT=int(n % (warps * cw) == 0))
 
 
 def reduce(ws, out, strips=None, epilogue=None, operands=(), **consts):
@@ -384,7 +395,9 @@ def reduce(ws, out, strips=None, epilogue=None, operands=(), **consts):
     m, n = out.shape
     tgt = get_target(current_arch())
     if epilogue is not None:
-        return _reduce_epilogue(ws, out, tgt, epilogue, operands, consts)
+        k, kc = reduce_epilogue_kernel(splits, n, epilogue)
+        k(ws, out, *operands, **kc, **consts)
+        return out
     flat = out.is_contiguous()
     if strips is None:
         strips = tgt.strips and (flat or (out.stride(1) == 1 and n % (2 * tgt.wave) == 0))

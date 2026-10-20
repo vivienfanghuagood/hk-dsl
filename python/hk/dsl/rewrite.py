@@ -408,6 +408,11 @@ class _Rewriter:
 
 
 def _compile(fn) -> Optional[types.CodeType]:
+    if fn.__code__.co_name == "<lambda>":
+        # A lambda has no statements to rewrite, and its "source" is the
+        # line it is written on -- `"k": (lambda x: x * 2, ...),` -- which
+        # need not parse on its own.
+        return None
     try:
         src = textwrap.dedent(inspect.getsource(fn))
     except (OSError, TypeError) as e:
@@ -415,7 +420,10 @@ def _compile(fn) -> Optional[types.CodeType]:
         _UNREAD[code] = (f"{code.co_filename}, line {code.co_firstlineno}: "
                          f"{type(e).__name__}: {e}")
         return None
-    tree = ast.parse(src)
+    try:
+        tree = ast.parse(src)
+    except SyntaxError:
+        return None  # source that is not this function's alone
     fdef = next((n for n in tree.body if isinstance(n, (ast.FunctionDef,
                                                        ast.AsyncFunctionDef))), None)
     if fdef is None or fdef.name != fn.__code__.co_name:

@@ -33,6 +33,11 @@ import torch.nn.functional as F
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import hk  # noqa: E402
+
+# Every case compiles its own graph; past dynamo's default limit of 8 it
+# would quietly run the rest eagerly.
+torch._dynamo.config.recompile_limit = 1 << 20
+torch._dynamo.config.cache_size_limit = 1 << 20
 from _timing import burn_in  # noqa: E402
 
 #: (N, K) of each linear layer, unsharded.
@@ -111,6 +116,7 @@ def case(model, layer, m, epilogue, use_compile=True):
         "blas_plain": lambda: F.linear(x, w),
     }
     if use_compile:
+        torch._dynamo.reset()
         comp = torch.compile(eager, dynamic=False)
         comp(x, w)
         variants["compile"] = lambda: comp(x, w)
