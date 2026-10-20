@@ -71,7 +71,7 @@ every kernel.
 
 ### What it measured
 
-[CDNA, on one MI355X](../performance.md#cdna-on-one-mi355x) has the
+[CDNA, on one MI355X](../performance.md#the-first-cdna-pass) has the
 numbers. In short:
 - Vector add, RMSNorm and softmax are correct, at 0.51-0.61x torch with
   tiles planned for RDNA3.
@@ -289,7 +289,7 @@ To make this per target without touching RDNA output:
 - The row kernels take the 16x32 fragment for their fp32 tile, except where
   a row is folded onto the tile's rows.
 
-The numbers are in [performance](../performance.md#cdna-on-one-mi355x). In
+The numbers are in [performance](../performance.md#the-first-cdna-pass). In
 short, at 8192x4096 the norms went from 0.70-0.80x torch to 0.93-1.04x,
 fused add + RMSNorm from 1.19x to 1.44x, and `silu_mul` is 1.76x.
 

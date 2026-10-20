@@ -171,7 +171,8 @@ hk/codegen/     the module boundary around a translated kernel (scaffold.py)
 hk/runtime/     arch detection, hipcc + content-hash cache, the resource gate,
                 the code-object checker (cocheck.py), and the torch.ops
                 registration (torch_ext.py)
-hk/autotune/    schedule search: build the space, keep what passes the gate, time
+hk/autotune/    schedule search: build the space, keep what passes the gate, time;
+                and the linear routes' measurement (routes.py)
 hk/tuned/       the schedules that search picked, and the measured routing
                 tables, as shipped data
 hk/ops/         kernels written in the DSL, the SDPA drop-in (sdpa.py), and

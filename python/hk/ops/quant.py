@@ -31,7 +31,7 @@ from ..dsl.collective import cross_warp, fold_rows
 from ..dsl.values import as_vec
 from ..types import bf16, fp16, fp32, i8
 from .norm import (COLS, MAX_TPW, ROWS, WARP_COUNTS, _block_start, _ceil,
-                   _exact, _split, _view)
+                   _exact, _split, _view, strip_preloads)
 
 #: absmax of an all-zero row is zero, and 127/0 is an infinity that the
 #: saturating convertor would turn into 127 -- a row of zeros coming back as a
@@ -286,7 +286,8 @@ def _strip_quantize_kernel(name: str, dtype, warps: int):
         s[hk.elem_coord(0, 0, 0, row)].store_scalar(as_vec(amax, S, uniform=True))
 
     body.__name__ = name
-    return hk.kernel(body, warps=warps, grid=lambda p: (p.x.rows, 1, 1), name=name)
+    return hk.kernel(body, warps=warps, grid=lambda p: (p.x.rows, 1, 1), name=name,
+                     noalias=True)
 
 
 _DTYPES = {"bf16": bf16, "fp16": fp16, "fp32": fp32}
@@ -354,7 +355,9 @@ def _resolve_strip_q(dtype, cols: int, rows: int):
     """(kernel, CHUNKS, RUN, EXACT) on a strip, or None where quantize does
     not run on strips here or the row is too wide for one."""
     many = rows >= _STRIP_NARROW_ROWS
-    key = ("strip", dtype, cols, many)
+    # x in, one int8 a column and a scale a row out.
+    pre = strip_preloads(rows * cols * (getattr(dtype, "itemsize", 2) + 1) + 4 * rows)
+    key = ("strip", dtype, cols, many, pre)
     got = _QPLAN_CACHE.get(key, False)
     if got is False:
         from ..target import current_arch  # noqa: PLC0415
@@ -367,7 +370,8 @@ def _resolve_strip_q(dtype, cols: int, rows: int):
                            per_lane=16 if many else None)
             if p is not None:
                 warps, chunks, run, exact = p
-                got = (STRIP_KERNELS[f"strip_quantize_{suffix}_w{warps}"], chunks, run, exact)
+                k = STRIP_KERNELS[f"strip_quantize_{suffix}_w{warps}"]
+                got = (k.preloaded() if pre else k, chunks, run, exact)
         _QPLAN_CACHE[key] = got
     return got
 

@@ -138,7 +138,7 @@ def _strip_silu_mul_kernel(name: str, dtype, warps: int):
         o.at[row, c0].store(x, bounded=not EXACT)
 
     body.__name__ = name
-    return hk.kernel(body, warps=warps, name=name,
+    return hk.kernel(body, warps=warps, name=name, noalias=True,
                      grid=lambda p: (p.o.rows * hk.cdiv(p.o.cols, warps * p.CW), 1, 1))
 
 
@@ -196,32 +196,34 @@ def _rotary_kernel(name: str, dtype, warps: int, positions: bool):
                  H=32, D=128, RUN=2):
             build(x, cs, None, o, H, D, RUN)
     body.__name__ = name
-    return hk.kernel(body, warps=warps, name=name,
+    return hk.kernel(body, warps=warps, name=name, noalias=True,
                      grid=lambda p: (hk.cdiv(p.x.rows, p.H), 1, 1))
 
 
 def _rotary16_kernel(name: str, dtype, warps: int, positions: bool):
-    """_rotary_kernel with a lane's run eight bf16, one 16-byte access: x
-    viewed (T, H*D), a token one row, and a head of D columns 16 lanes of a
-    chunk (D/8 at D = 128, its halves eight lanes apart, one DPP row_ror:8
-    each, rotate_half). A workgroup is (token, group of WARPS*CH chunks),
-    warp w of it CH chunks of 512 columns -- four heads a chunk -- and
-    every head of a chunk turns by the same angles, so the factors are one
-    chunk of `[cos | cos]` and one of `[sin | sin]` read with a period of
-    D/2 out of the token's row of cs:
+    """_rotary_kernel with a lane's run RUN bf16 -- eight, one 16-byte
+    access, or four, eight bytes: x viewed (T, H*D), a token one row, and a
+    head of D columns D/RUN lanes of a chunk (at D = 128 and RUN 8, 16 lanes,
+    its halves eight apart, one DPP row_ror:8 each; at RUN 4, 32 lanes, a
+    v_permlane16_swap: rotate_half). A workgroup is (token, group of
+    WARPS*CH chunks), warp w of it CH chunks of 64*RUN columns -- four heads
+    a chunk at RUN 8, two at 4 -- and every head of a chunk turns by the same
+    angles, so the factors are one chunk of `[cos | cos]` and one of
+    `[sin | sin]` read with a period of D/2 out of the token's row of cs:
 
         out = x * cos + rotate_half(x) * sin
     """
-    def build(x, cs, pos, o, D, CH, RESERVE):
+    def build(x, cs, pos, o, D, CH, RESERVE, RUN):
         if RESERVE:
             hk.lds.reserve(RESERVE)
-        S = hk.RS(fp32, 1, 512, 8)
+        cw = 64 * RUN
+        S = hk.RS(fp32, 1, cw, RUN)
         t = hk.arch.block_idx.x
         prow = pos.at[0, t].load_scalar(invariant=True) if positions else t
         w = hk.arch.block_idx.y * warps + hk.arch.warp_id() if warps > 1 else hk.arch.block_idx.y
-        c0 = w * CH * 512
+        c0 = w * CH * cw
         # The token's heads first: they do not wait on the position.
-        vs = [x.at[t, c0 + j * 512].load(S) for j in range(CH)]
+        vs = [x.at[t, c0 + j * cw].load(S) for j in range(CH)]
         cosv = cs.at[prow, 0].load(S, period=D // 2)
         sinv = cs.at[prow, D // 2].load(S, period=D // 2)
         for j, v in enumerate(vs):
@@ -229,19 +231,19 @@ def _rotary16_kernel(name: str, dtype, warps: int, positions: bool):
             v *= cosv
             p *= sinv
             v += p
-            o.at[t, c0 + j * 512].store(v)
+            o.at[t, c0 + j * cw].store(v)
 
     if positions:
         def body(x: hk.Tensor[dtype], cs: hk.Tensor[fp32], pos: hk.Tensor[hk.i32],
-                 o: hk.Tensor[dtype], *, D=128, CH=1, RESERVE=0):
-            build(x, cs, pos, o, D, CH, RESERVE)
+                 o: hk.Tensor[dtype], *, D=128, CH=1, RESERVE=0, RUN=8):
+            build(x, cs, pos, o, D, CH, RESERVE, RUN)
     else:
         def body(x: hk.Tensor[dtype], cs: hk.Tensor[fp32], o: hk.Tensor[dtype], *,
-                 D=128, CH=1, RESERVE=0):
-            build(x, cs, None, o, D, CH, RESERVE)
+                 D=128, CH=1, RESERVE=0, RUN=8):
+            build(x, cs, None, o, D, CH, RESERVE, RUN)
     body.__name__ = name
-    return hk.kernel(body, warps=warps, name=name,
-                     grid=lambda p: (p.x.rows, p.x.cols // (warps * p.CH * 512), 1))
+    return hk.kernel(body, warps=warps, name=name, noalias=True,
+                     grid=lambda p: (p.x.rows, p.x.cols // (warps * p.CH * 64 * p.RUN), 1))
 
 
 def _rope_grid(p):
@@ -575,28 +577,37 @@ def _rotary_warps(heads: int) -> int:
 #:     8192x64      39.58    --         39.37 (w8)    52.07   39.71
 #:
 #: An LDS reserve capping the workgroups a CU (20-80 KB, Triton's picks
-#: carry waves_per_eu=2) moved none of them by more than 1%.
+#: carry waves_per_eu=2) moved none of them by more than 1%. Where a token's
+#: chunks do not split into 4, 8 or 16 warps (40 heads) the eight-byte run
+#: is faster: a workgroup of two warps a 512-column group, 24.72 us at
+#: 8192x40, 24.53 preloaded, against w1c1's 24.76-25.1 and Triton's 24.29.
+#: Every plan takes the preloaded twin past norm.STRIP_PRELOAD_PAST
+#: (8192x64 39.65 -> 39.33, 2048x64 10.44 -> 10.20; docs/history/43).
 ROTARY16_IN_CACHE = 64 << 20
 
 
 def _rotary16_plan(tokens: int, heads: int, d: int, nbytes: int):
-    """(warps, CH) for rotary16, or None where it does not run: a head of
-    128 or 256 columns (halves 8 or 16 lanes apart), whole chunks a token."""
+    """(warps, CH, RUN, preloaded) for rotary16, or None where it does not
+    run: a head of 128 or 256 columns (halves 8 or 16 lanes apart at RUN 8),
+    whole chunks a token."""
     from ..target import current_arch  # noqa: PLC0415
+    from .norm import strip_preloads  # noqa: PLC0415
 
     if current_arch() not in STRIP_ARCHS or d not in (128, 256) or nbytes != 2:
         return None
     chunks = heads * d // 512
     if heads * d % 512:
         return None
+    moved = 2 * tokens * heads * d * nbytes
+    pre = strip_preloads(moved)
     ch = 2 if chunks % 2 == 0 else 1
-    if 2 * tokens * heads * d * nbytes <= ROTARY16_IN_CACHE:
-        return 1, ch
-    # A token a workgroup of four or eight warps; 40 heads' five warps lost
-    # to ten one-warp workgroups a token (24.98 against 24.59 us at 8192).
+    if moved <= ROTARY16_IN_CACHE:
+        return 1, ch, 8, pre
     if chunks // ch in (4, 8, 16):
-        return chunks // ch, ch
-    return 1, 1
+        return chunks // ch, ch, 8, pre
+    if d == 128:
+        return 2, 1, 4, pre
+    return 1, 1, 8, pre
 
 
 def rotary(x, cos_sin, positions=None, out=None):
@@ -642,14 +653,15 @@ def rotary(x, cos_sin, positions=None, out=None):
         return out
     plan = _rotary16_plan(tokens, h, d, x.element_size())
     if plan is not None:
-        warps, ch = plan
+        warps, ch, run, pre = plan
         k = ROTARY16_KERNELS[f"rotary16_{_suffix_of(x)}_w{warps}"
                              + ("_pos" if positions is not None else "")]
+        k = k.preloaded() if pre else k
         xv, ov = x.view(tokens, h * d), out.view(tokens, h * d)
         if positions is not None:
-            k(xv, cos_sin, positions.view(1, tokens), ov, D=d, CH=ch)
+            k(xv, cos_sin, positions.view(1, tokens), ov, D=d, CH=ch, RUN=run)
         else:
-            k(xv, cos_sin, ov, D=d, CH=ch)
+            k(xv, cos_sin, ov, D=d, CH=ch, RUN=run)
         return out
     key = (x.dtype, h, positions is not None)
     k = _ROTARY_CACHE.get(key)
