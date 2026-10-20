@@ -33,12 +33,16 @@ from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 from .. import dsl as hk
 from ..dsl.collective import cross_warp
+from ..dsl.control import for_
 from ..dsl.values import Vec, as_vec
 from ..types import fp32, i32, i8
 from . import _common as C
 
 _NEG_INF = float("-inf")
-_IDENT = {"sum": 0.0, "max": _NEG_INF, "min": float("inf")}
+#: A running max's start in an online logsumexp: finite, so that a warp whose
+#: strips are all past the row's end rescales by exp(0), not exp(-inf + inf).
+_LOWEST = -3.0e38
+_IDENT = {"sum": 0.0, "max": _NEG_INF, "min": float("inf"), "lse": _NEG_INF}
 _COMBINE = {"sum": "add", "max": "max", "min": "min"}
 
 #: The kinds of hk.ops' strip plans a rowwise call can be planned like.
@@ -66,12 +70,17 @@ class _Ctx:
         self.count = 0                # reductions met in this hook call
         self.acc = None               # multi-pass: (op, per-warp partial)
         self.dry = False              # multi-pass: probing for the next reduction
+        self.used: List[str] = []     # the reductions the hook makes, in order
+        self.row = None               # the row this workgroup holds
+        self.sources: Dict[int, Any] = {}   # id(operand strip) -> its global
 
     def reduce(self, t, op: str) -> Vec:
         if not isinstance(t, hk.Tile):
             raise TypeError(f"row_{op} reduces a tile (a strip of the row), got {t!r}")
         j = self.count
         self.count += 1
+        if j == len(self.used):
+            self.used.append(op)
         if self.steps and j < len(self.known):
             return self.known[j]
         if self.dry:
@@ -81,10 +90,10 @@ class _Ctx:
             # fills it again with its own identity.
             t.right_fill_(self.tail, _IDENT[op])
         with C.tile_reductions_allowed():
+            if op == "lse":
+                return self._lse(t)
             part = getattr(t, op)(axis=1)
             if self.steps:
-                if self.acc is None:
-                    self.acc = (op, hk.full(hk.col_vec(self.S), _IDENT[op]))
                 acc = self.acc[1]
                 if op == "sum":
                     acc += part
@@ -97,10 +106,50 @@ class _Ctx:
         v = cross_warp(v, _COMBINE[op], self.warps, name=f"row_{op}")
         return as_vec(v, self.S, uniform=True)
 
+    def _lse(self, t) -> Vec:
+        """log(sum(exp(t))) of the row, online: a running max and a sum of
+        exponentials under it, rescaled when the max moves -- one pass over
+        a streamed row, one exp an element."""
+        if self.steps:
+            m, s = self.acc[1]
+            m_old = m.copy()
+            m.max_(t.max(axis=1))
+            a = m_old - m
+            a.exp_()
+            s *= a
+            p = t - m
+            p.exp_()
+            s += p.sum(axis=1)
+            raise _Stop()
+        m = t.max(axis=1).value()
+        m.maximum(_LOWEST, into=m)
+        p = t - m
+        p.exp_()
+        return self._combine_lse(m, p.sum(axis=1).value())
+
+    def _combine_lse(self, m, s) -> Vec:
+        g = cross_warp(m, "max", self.warps, name="row_lse_m")
+        a = m - g
+        a.exp_()
+        s *= a
+        s = cross_warp(s, "add", self.warps, name="row_lse_s")
+        s.log(into=s)
+        s += g
+        return as_vec(s, self.S, uniform=True)
+
+    def start_pass(self, op: str):
+        """The partial this pass folds into, before the loop that folds it."""
+        vt = hk.col_vec(self.S)
+        self.acc = (op, (hk.full(vt, _LOWEST), hk.zeros(vt)) if op == "lse"
+                    else hk.full(vt, _IDENT[op]))
+
     def finish_pass(self):
         op, acc = self.acc
-        v = cross_warp(acc, _COMBINE[op], self.warps, name=f"row_{op}")
-        self.known.append(as_vec(v, self.S, uniform=True))
+        if op == "lse":
+            self.known.append(self._combine_lse(*acc))
+        else:
+            v = cross_warp(acc, _COMBINE[op], self.warps, name=f"row_{op}")
+            self.known.append(as_vec(v, self.S, uniform=True))
         self.acc = None
 
 
@@ -131,6 +180,14 @@ def row_min(t) -> Vec:
     return _ctx("row_min").reduce(t, "min")
 
 
+def row_logsumexp(t) -> Vec:
+    """log(sum(exp(t))) of each row of `t`, the whole row, max-shifted so it
+    does not overflow. Online: a row too wide to hold is read once for it,
+    where row_max then row_sum(exp(t - max)) read it twice. Softmax is
+    `(x - row_logsumexp(x)).exp()`."""
+    return _ctx("row_logsumexp").reduce(t, "lse")
+
+
 def row_mean(t) -> Vec:
     """The mean of each row of `t`: row_sum(t) over the row's length."""
     c = _ctx("row_mean")
@@ -140,6 +197,21 @@ def row_mean(t) -> Vec:
 def row_length():
     """The row's length (a device int): what row_mean divides by."""
     return _ctx("row_length").n
+
+
+def pick(t, col) -> Vec:
+    """The element of operand `t` (a full operand as the hook received it)
+    at column `col` of this row -- a gather, as cross-entropy's target
+    logit: `pick(logits, label)`. `col` is a device int (a per-row int32 or
+    int64 operand) or an int, clamped into the row, so an ignored label
+    (-100) reads column 0 instead of memory before the row."""
+    c = _ctx("pick")
+    g = c.sources.get(id(t))
+    if g is None:
+        raise TypeError("pick(t, col): t must be one of the hook's full operands, as it "
+                        "received it (pick reads that operand's tensor at the column)")
+    col = hk.min(hk.max(col, 0), c.n - 1)
+    return g.at[c.row, col].load(hk.col_vec(c.S))
 
 
 # ---------------------------------------------------------------- plan
@@ -184,10 +256,11 @@ class Plan:
                 f"{'exact' if self.exact else 'bounded'}{cap}")
 
 
-#: Per-lane elements of a multi-pass step, and its warps: 16 warps of two
-#: 16-byte runs a lane.
-_STREAM_WARPS = 16
-_STREAM_PER_LANE = 16
+#: A multi-pass step: (warps, elements a lane). Measured on a cross-entropy
+#: (online logsumexp + pick) at 64-2048 x 151936 and 8192 x 32000 on an
+#: MI355X: 8 warps of 32 a lane 12.9/26.5/110.1/83.2 us, 16 of 16
+#: 13.8/26.9/107.5/95.9, 16 of 8 16.7/30.7/116.8/111.7.
+_STREAM = {"gfx950": (8, 32), "gfx1100": (16, 16)}
 
 
 def plan_for(arch: str, like: str, rows: int, cols: int, nbytes: int,
@@ -211,13 +284,20 @@ def plan_for(arch: str, like: str, rows: int, cols: int, nbytes: int,
     else:
         p = norm.strip_plan_for(like, nbytes, cols, rows, arch)
     override = dict(override or {})
+    if override.pop("stream", False):
+        p = None
+    if p is not None and not p[3] and p[1] * p[2] > 32 and cols > 8192:
+        # A wide ragged row held at more than 32 a lane (32000 columns: 56)
+        # streams faster: 13.7 against 13.1 us for an RMSNorm at 512x32000,
+        # 102.3 against 83.2 for a cross-entropy at 8192x32000 (MI355X).
+        p = None
     if p is not None and not override.get("steps"):
         warps, chunks, run, exact, reserve = p
         steps = 0
     else:
         run = norm.strip_run(cols, nbytes)
-        warps = _STREAM_WARPS
-        chunks = max(1, _STREAM_PER_LANE // run)
+        warps, per_lane = _STREAM.get(arch, (16, 16))
+        chunks = max(1, per_lane // run)
         reserve = 0
         steps = -(-cols // (warps * chunks * tgt.wave * run))
         exact = False
@@ -267,7 +347,7 @@ class Rowwise:
         self.name = name or C.kernel_name("rw", fn)
         self._arch = arch
         self.override = dict(plan or {})
-        bad = set(self.override) - {"warps", "chunks", "run", "steps", "reserve"}
+        bad = set(self.override) - {"warps", "chunks", "run", "steps", "reserve", "stream"}
         if bad:
             raise TypeError(f"plan= overrides warps, chunks, run, steps and reserve, "
                             f"not {sorted(bad)}")
@@ -275,6 +355,8 @@ class Rowwise:
         self._arity = C.hook_arity(fn)
         self._kernels: Dict[Tuple, Any] = {}
         self._calls: Dict[Tuple, Any] = {}
+        #: (operands, outputs, plan) whose build the resource gate refused.
+        self._refused: set = set()
 
     @property
     def arch(self) -> str:
@@ -307,6 +389,11 @@ class Rowwise:
         for i, (a, s) in enumerate(zip(args, shapes)):
             kind = (self.inputs[i].kind if self.inputs is not None
                     else C.classify(s, shape))
+            if str(a.dtype) == "torch.int64" and kind == "per_row":
+                # A label tensor as torch has it: read in place, as the low
+                # int32 word of each element.
+                ops.append(C.Operand(kind, i32, wide=True))
+                continue
             dt = C.hk_dtype(a)
             want = self.inputs[i].dtype if self.inputs is not None else None
             if want is not None and want is not dt:
@@ -333,9 +420,30 @@ class Rowwise:
             return "addrmsw"
         if any(o.kind == "full" and o.dtype is i8 for o in outs):
             return "quantize"
+        used = self._reductions(ops, outs)
+        if "max" in used or "lse" in used:
+            return "softmax"
         if any(o.kind == "per_col" for o in ops):
             return "rmsw"
+        if used.count("sum") >= 2:
+            return "layer"
         return "rms"
+
+    def _reductions(self, ops, outs) -> Tuple[str, ...]:
+        """The row reductions the hook makes, in order: from a trace of it
+        under a provisional plan (no compile), once per operand signature."""
+        key = ("used", self.arch, ops, outs)
+        got = self._kernels.get(key)
+        if got is None:
+            info: Dict[str, Any] = {}
+            k = _build(self.fn, ops, outs, 1, self.arch, f"{self.name}_probe",
+                       self.consts, info)
+            from ..target import get_target  # noqa: PLC0415
+
+            k.trace(T_CW=get_target(self.arch).wave * 8, T_RUN=8, T_EXACT=1, T_STEPS=0,
+                    T_RESERVE=0)
+            got = self._kernels[key] = info.get("used", ())
+        return got
 
     def plan(self, *args) -> Plan:
         """The plan a call with these operands (tensors or hk.templates.meta)
@@ -344,16 +452,36 @@ class Rowwise:
         return self._plan(ops, shape, outs)
 
     def _plan(self, ops, shape, outs) -> Plan:
+        from ..target import get_target  # noqa: PLC0415
+
+        if not get_target(self.arch).strips:
+            raise NotImplementedError(f"hk.templates.rowwise runs on register strips, "
+                                      f"which {self.arch} does not have (gfx1100 and "
+                                      f"gfx950 do)")
+        return next(p for p in self._candidates(ops, shape, outs)
+                    if (ops, outs, p) not in self._refused)
+
+    def _candidates(self, ops, shape, outs):
+        """The plan, then what a build the resource gate refuses (a spill)
+        steps down to: the same row over twice the warps, then a stream."""
         rows, cols = C.rows_cols(shape)
         nbytes = next(o.dtype for o in ops if o.kind == "full").bytes
-        return plan_for(self.arch, self._like(ops, outs), rows, cols, nbytes, self.override)
+        like = self._like(ops, outs)
+        p = plan_for(self.arch, like, rows, cols, nbytes, self.override)
+        yield p
+        if p.steps:
+            return
+        if p.warps * 2 <= 16 and p.chunks % 2 == 0:
+            yield plan_for(self.arch, like, rows, cols, nbytes,
+                           {**self.override, "warps": p.warps * 2, "chunks": p.chunks // 2})
+        yield plan_for(self.arch, like, rows, cols, nbytes, {**self.override, "stream": True})
 
     def _kernel(self, ops, outs, p: Plan):
         key = (p.arch, ops, outs, p.warps)
         k = self._kernels.get(key)
         if k is None:
             k = self._kernels[key] = _build(self.fn, ops, outs, p.warps, p.arch,
-                                            f"{self.name}_w{p.warps}", self.consts)
+                                            f"{self.name}_w{p.warps}", self.consts, {})
         return k
 
     def _consts(self, p: Plan, consts):
@@ -408,10 +536,21 @@ class Rowwise:
                         for s, d in zip(shapes_out, tdt)))
                 return got[0] if single else got
             return empty
-        k = self._kernel(ops, outs, p)
-        launch = k._launcher(**self._consts(p, consts))
-        arg_views = [C.view_fn(tuple(a.shape), rows, cols, o.kind) for a, o in zip(args, ops)]
-        meta = [(tuple(a.shape), tuple(a.stride()), C.hk_dtype(a).bytes) for a in args]
+        from ..runtime.resources import ResourceError  # noqa: PLC0415
+
+        while True:
+            k = self._kernel(ops, outs, p)
+            try:
+                launch = k._launcher(**self._consts(p, consts))
+                break
+            except ResourceError:
+                # The gate refused the build (it would spill): step down.
+                self._refused.add((ops, outs, p))
+                p = self._plan(ops, shape, outs)
+        arg_views = [C.view_fn(tuple(a.shape), rows, cols,
+                               "per_row_wide" if o.wide else o.kind) for a, o in zip(args, ops)]
+        meta = [(tuple(a.shape), tuple(a.stride()), 8 if o.wide else o.dtype.bytes)
+                for a, o in zip(args, ops)]
         given = None if out is None else (out if isinstance(out, (list, tuple)) else (out,))
         out_views = [C.view_fn(tuple(given[j].shape) if given else s, rows, cols,
                                "full" if o.kind == "full" else "per_row_out")
@@ -423,7 +562,7 @@ class Rowwise:
 
 
 def _trace(kw, spec):
-    fn, ops, outs, warps, name, user_consts, names = spec
+    fn, ops, outs, warps, name, user_consts, names, info = spec
     nin = len(ops)
     cw, run, exact = kw["T_CW"], kw["T_RUN"], kw["T_EXACT"]
     steps, reserve = kw["T_STEPS"], kw["T_RESERVE"]
@@ -440,6 +579,7 @@ def _trace(kw, spec):
     bounded = not exact
     ctx = _Ctx(S, warps, steps)
     ctx.n = n
+    ctx.row = row
 
     # The per-row operands once: a float as a column vector, an int32 (a
     # label) as a scalar.
@@ -447,6 +587,8 @@ def _trace(kw, spec):
     for i, (x, o) in enumerate(zip(xs, ops)):
         if o.kind in ("per_row", "scalar"):
             at = x.at[row if o.kind == "per_row" else 0, 0]
+            # An int64 label is read as its low int32 word (the host views it
+            # so): every label a vocabulary has, and -100.
             rowvals[i] = at.load_scalar() if o.dtype is i32 else at.load(hk.col_vec(S))
 
     def operands(c0):
@@ -454,6 +596,7 @@ def _trace(kw, spec):
         for i, (x, o) in enumerate(zip(xs, ops)):
             if o.kind == "full":
                 vals.append(x.at[row, c0].load(S, bounded=bounded))
+                ctx.sources[id(vals[-1])] = x
             elif o.kind == "per_col":
                 vals.append(x.at[0, c0].load(S, bounded=bounded))
             else:
@@ -461,7 +604,11 @@ def _trace(kw, spec):
         return vals
 
     def zeros():
-        return [rowvals[i] if i in rowvals else hk.zeros(S) for i in range(nin)]
+        vals = [rowvals[i] if i in rowvals else hk.zeros(S) for i in range(nin)]
+        for v, x, o in zip(vals, xs, ops):
+            if o.kind == "full":
+                ctx.sources[id(v)] = x
+        return vals
 
     def run_hook(vals):
         ctx.count = 0
@@ -507,6 +654,22 @@ def _trace(kw, spec):
         # the hook's end, every reduction is known: its per-row results are
         # stored, and a last pass writes the full outputs, if there are any.
         fulls = any(o.kind == "full" for o in outs)
+
+        def stream(step_fn):
+            # A loop the kernel runs: one step's strips live at a time.
+            def body(s):
+                c0 = (s * warps + w) * cw if warps > 1 else s * cw
+                ctx.tail = None if exact else n - c0
+                step_fn(c0)
+                return ()
+            for_(hk.range(steps), body, (), (), "step")
+
+        def fold(c0):
+            try:
+                run_hook(operands(c0))
+            except _Stop:
+                pass
+
         while True:
             ctx.dry = True
             try:
@@ -517,31 +680,25 @@ def _trace(kw, spec):
             if res is not None:
                 store(res, 0, False, True)
                 if fulls:
-                    for s in range(steps):
-                        c0 = (s * warps + w) * cw if warps > 1 else s * cw
-                        ctx.tail = None if exact else n - c0
-                        store(run_hook(operands(c0)), c0, True, False)
+                    stream(lambda c0: store(run_hook(operands(c0)), c0, True, False))
                 return
-            for s in range(steps):
-                c0 = (s * warps + w) * cw if warps > 1 else s * cw
-                ctx.tail = None if exact else n - c0
-                try:
-                    run_hook(operands(c0))
-                except _Stop:
-                    pass
+            ctx.start_pass(ctx.used[len(ctx.known)])
+            stream(fold)
             ctx.finish_pass()
             ctx.k += 1
     finally:
         _CTX.pop()
+        if info is not None:
+            info["used"] = tuple(ctx.used)
 
 
-def _build(fn, ops, outs, warps: int, arch: str, name: str, user_consts):
+def _build(fn, ops, outs, warps: int, arch: str, name: str, user_consts, info=None):
     """The strip kernel: workgroup i is row i, its warp w the columns
     [w*CW, +CW) (single pass) or [(s*WARPS + w)*CW, +CW) at step s."""
     nin = len(ops)
     names = [f"x{i}" for i in range(nin)] + [f"y{j}" for j in range(len(outs))]
     grid_of = next(n for n, o in zip(names, ops) if o.kind == "full")
-    spec = (fn, ops, outs, warps, name, user_consts, names)
+    spec = (fn, ops, outs, warps, name, user_consts, names, info)
 
     # No control flow of its own: hk's rewrite of `for`/`if`/`while` has
     # nothing to do here, and the schedule below is Python at trace time.
@@ -595,4 +752,4 @@ def rowwise(fn: Optional[Callable] = None, inputs: Optional[Sequence] = None,
 
 
 __all__ = ["rowwise", "Rowwise", "Plan", "plan_for", "row_sum", "row_max", "row_min",
-           "row_mean", "row_length", "LIKE"]
+           "row_mean", "row_logsumexp", "row_length", "pick", "LIKE"]

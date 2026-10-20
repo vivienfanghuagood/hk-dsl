@@ -1,6 +1,6 @@
 # Examples
 
-Eleven kernels written from scratch, in the order they introduce the language,
+Eleven kernels written from scratch, one file of kernels built from templates, in the order they introduce the language,
 and a script that checks the shipped kernels against torch. Each kernel
 example checks its result against an fp32 torch reference before it times
 anything, and times itself against the torch call it would replace and,
@@ -21,6 +21,7 @@ beside its model).
 | 9 | [`09_kv_scatter.py`](09_kv_scatter.py) | `cache.scatter(t, slots, at)`: rows to slots, a `-1` slot dropped by the buffer store |
 | 10 | [`10_layernorm_backward.py`](10_layernorm_backward.py) | a row reduction and a column reduction (`sum(axis=0)`) in one kernel, tiles held in registers across two passes, partial sums without a lock |
 | 11 | [`11_vllm_integration.py`](11_vllm_integration.py) | your kernel in vLLM: `register.op` with a reference and a route, `op.check`, `register.patch`, and the end-to-end A/B (`python -m hk.integration ab`) |
+| 12 | [`12_templates_rowwise.py`](12_templates_rowwise.py) | `hk.templates.elementwise` and `rowwise`: GELU-and-mul, RMSNorm, the fused add, softmax and a cross-entropy over 151936 columns, each the math of one element or one row; the template picks the plan per GPU ([the guide](../docs/templates/elementwise-rowwise.md)) |
 | | [`validate.py`](validate.py) | the shipped `hk.ops` kernels at typical LLM shapes: correctness, then speed against torch |
 
 ## Running

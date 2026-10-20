@@ -22,7 +22,9 @@ _TEMPLATES = {
     "row_max": "rowwise",
     "row_min": "rowwise",
     "row_mean": "rowwise",
+    "row_logsumexp": "rowwise",
     "row_length": "rowwise",
+    "pick": "rowwise",
     # The operand kinds the elementwise and rowwise templates take.
     "per_col": "_common",
     "per_row": "_common",

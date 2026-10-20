@@ -79,35 +79,32 @@ def plan_for(arch: str, rows: int, cols: int, flat: bool, moved: int, inputs: in
       - flat, gfx950: hk.ops.elementwise's STRIP_PLANS by the bytes moved
         (8 warps of one chunk; 2 of 8 for 24-64 MB of a two-input op; 2 of
         one past the cache);
-      - rows, gfx950: hk.ops.fused's silu_mul plan, one warp of one chunk a
-        workgroup, consecutive workgroups along a row;
-      - gfx1100: _GFX11_FLAT / _GFX11_ROWS below, measured for the
-        template.
+      - rows (and flat on gfx1100): hk.ops.fused.silu_strip_plan, silu_mul's
+        plan -- on gfx950 one warp of one chunk a workgroup, on gfx1100
+        eight, with an LDS reserve capping the workgroups a WGP holds once
+        a call moves more than the 96 MB Infinity Cache.
     `override` replaces any of warps / chunks / run."""
     from ..ops import elementwise as ew, fused  # noqa: PLC0415
     from ..ops.norm import strip_run  # noqa: PLC0415
 
     n = cols
     run = strip_run(n, nbytes) if n else 16 // nbytes
-    if arch == "gfx950":
-        warps, chunks = ew.flat_strip_plan(moved, inputs >= 2) if flat else fused.STRIP_PLAN
-    elif flat:
-        warps, chunks = _GFX11_FLAT
+    reserve = 0
+    if arch == "gfx950" and flat:
+        warps, chunks = ew.flat_strip_plan(moved, inputs >= 2)
     else:
-        warps, chunks = _GFX11_ROWS
+        got = fused.silu_strip_plan(arch, moved)
+        if got is None:
+            raise NotImplementedError(f"hk.templates.elementwise runs on register strips, "
+                                      f"which {arch} does not have (gfx1100 and gfx950 do)")
+        warps, chunks, reserve = got
     if override:
         warps = override.get("warps", warps)
         chunks = override.get("chunks", chunks)
         run = override.get("run", run)
-    reserve = (override or {}).get("reserve", 0)
+        reserve = override.get("reserve", reserve)
     p = Plan(arch, flat, warps, chunks, run, False, rows, cols, reserve)
     return replace(p, exact=cols % (warps * p.span) == 0)
-
-
-#: gfx1100's plans (warps, chunks a warp): measured for the template, see
-#: docs/templates/elementwise-rowwise.md.
-_GFX11_FLAT = (4, 1)
-_GFX11_ROWS = (4, 1)
 
 
 class Elementwise:
