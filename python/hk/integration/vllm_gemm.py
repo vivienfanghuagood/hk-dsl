@@ -147,7 +147,6 @@ def route_for(m: int, n: int, k: int, *, bf16: bool = True, bias: bool = False,
     paying a second pass over the output; no Qwen3 linear has one.
     """
     from ..ops import decode_gemm  # noqa: PLC0415
-    from ..ops import gemm as hk_gemm  # noqa: PLC0415
 
     if m < 1 or not bf16 or bias or not contiguous_weight:
         return "fallback"
@@ -159,7 +158,7 @@ def route_for(m: int, n: int, k: int, *, bf16: bool = True, bias: bool = False,
         if opt is not None and opt.variant(m, n, k) == var:
             return name
     path = table.lookup(m, n, k)
-    if path == "hk" and (n % hk_gemm.BLOCK_N or k % hk_gemm.K_STEP):
+    if path == "hk" and not _gemm_takes(n, k):
         return "fallback"
     if path == "hk_decode" and not decode_gemm.fits(m, n, k):
         return "fallback"
@@ -169,6 +168,21 @@ def route_for(m: int, n: int, k: int, *, bf16: bool = True, bias: bool = False,
         if not hipkittens.gemm_fits(m, n, k):
             return "fallback"
     return path if path in RUN_PATHS else "fallback"
+
+
+def _gemm_takes(n: int, k: int) -> bool:
+    """Whether the "hk" path's GEMM takes an N x K weight on this arch: on
+    gfx950 hk's own GEMMs (hk.ops.gemm_cdna, by its measured table), else
+    the generated RDNA GEMM."""
+    from ..target import current_arch  # noqa: PLC0415
+
+    if current_arch() == "gfx950":
+        from ..ops import gemm_cdna  # noqa: PLC0415
+
+        return not (n % gemm_cdna.BLOCK_N_MIN or k % gemm_cdna.K_STEP)
+    from ..ops import gemm as hk_gemm  # noqa: PLC0415
+
+    return not (n % hk_gemm.BLOCK_N or k % hk_gemm.K_STEP)
 
 
 def route(m: int, n: int, k: int, **how) -> bool:
@@ -193,6 +207,14 @@ def _arch_ok(device) -> bool:
         name = torch.cuda.get_device_properties(idx).gcnArchName or ""
         ok = _ARCH_OK[idx] = name.split(":")[0] == current_arch()
     return ok
+
+
+def _cdna(device) -> bool:
+    """Whether the "hk" path is hk's gfx950 GEMMs here (`_arch_ok` has
+    already said the device is the arch the kernels are built for)."""
+    from ..target import current_arch  # noqa: PLC0415
+
+    return current_arch() == "gfx950"
 
 
 def _op_for(m: int, n: int, k: int) -> Callable:
@@ -251,7 +273,11 @@ def linear(x, weight, bias=None):
     if path == "hipkittens":
         return _hipkittens(x, x2, weight, bias, m, n)
     out = torch.empty((m, n), device=x.device, dtype=x.dtype)
-    if path == "hk":
+    if path == "hk" and _cdna(x.device):
+        from ..ops import gemm_cdna  # noqa: PLC0415
+
+        gemm_cdna.matmul(x2, weight, out)
+    elif path == "hk":
         _op_for(m, n, k)(x2, weight, out)
     elif path in OPTIONAL:
         OPTIONAL[path].run(x2, weight, out)

@@ -76,6 +76,9 @@ OPT_GAIN = 0.02
 #: Weight bytes one timed pass streams: three times a W7900's 96 MB
 #: Infinity Cache. An MI355X's is 256 MB.
 ROTATE_BYTES = 3 * 96 * 2**20
+#: The clock `torch.cuda._sleep`'s cycles are counted at, high enough that a
+#: queued burst's spin outlasts its enqueue on any card here.
+SPIN_HZ = 2.4e9
 #: vLLM computes logits for the last token of each sequence only, so the LM
 #: head's M is a sequence count, never a prefill's token count.
 MAX_SEQS = 256
@@ -453,7 +456,15 @@ _OPS: Dict[Any, Any] = {}
 def _gemm_op(m, n, k):
     from ..ops import gemm as hk_gemm  # noqa: PLC0415
     from ..runtime.torch_ext import torch_op  # noqa: PLC0415
+    from ..target import current_arch  # noqa: PLC0415
 
+    if current_arch() == "gfx950":
+        # hk's gfx950 GEMMs, by their own measured table (hk.ops.gemm_cdna).
+        from ..ops import gemm_cdna  # noqa: PLC0415
+
+        if k % gemm_cdna.K_STEP or n % gemm_cdna.BLOCK_N_MIN:
+            return None
+        return gemm_cdna.matmul
     s = hk_gemm.schedule_for(m, n, k)
     if k % s["k_step"] or n % s["block_n"]:
         return None
@@ -488,12 +499,21 @@ def measure_points(n: int, k: int, ms: Sequence[int], *, engine: Callable,
                    rotate_bytes: int = ROTATE_BYTES, raw: bool = False,
                    deadline: Optional[float] = None, device=None,
                    log: Optional[Callable[[str], None]] = None,
-                   tag: str = "") -> Tuple[List[list], int, bool]:
+                   tag: str = "", queued: Optional[bool] = None
+                   ) -> Tuple[List[list], int, bool]:
     """Measure y = x @ W.T for W (n, k) at each M of `ms`, in order.
 
     Returns (points, how many were re-measured as close calls, whether every
     M was measured). With `deadline` (a time.monotonic() value), stops at the
     first M that starts after it; the points measured so far are kept.
+
+    `queued` holds each timed burst behind a GPU spin longer than its host
+    enqueue, so the calls run back to back as a captured step runs them and
+    no path is charged for its launch's host cost. Default: on for gfx950,
+    where vLLM's path is aiter's tuned GEMM, ~60 us of Python a call at
+    M = 16 against a 12 us kernel, which an unqueued burst times as the
+    kernel's (docs/history/42); off elsewhere, as the shipped tables were
+    measured.
     """
     import torch  # noqa: PLC0415
 
@@ -531,6 +551,11 @@ def measure_points(n: int, k: int, ms: Sequence[int], *, engine: Callable,
             variants["flydsl"] = lambda w: fly.run(x, w, out) or out
         return variants
 
+    if queued is None:
+        from ..target import current_arch  # noqa: PLC0415
+
+        queued = current_arch() == "gfx950"
+
     def one_set(m, names):
         """{path: [ms per round]} on activations of their own."""
         x = torch.randn(m, k, device=dev, dtype=torch.bfloat16, generator=g)
@@ -538,11 +563,21 @@ def measure_points(n: int, k: int, ms: Sequence[int], *, engine: Callable,
         ok = {p: c for p, c in variants_for(m, x, out).items() if p in names}
         per = {p: [] for p in ok}
         order = list(ok)
+        host = {}
+        if queued:
+            for name, call in ok.items():
+                t0 = time.perf_counter()
+                for w in ws:
+                    call(w)
+                host[name] = time.perf_counter() - t0
+                torch.cuda.synchronize()
         for r in range(rounds):
             for name in (order if r % 2 == 0 else order[::-1]):
                 call = ok[name]
                 call(ws[-1])
                 s, e = torch.cuda.Event(True), torch.cuda.Event(True)
+                if queued:
+                    torch.cuda._sleep(int((2 * host[name] + 5e-4) * SPIN_HZ))
                 s.record()
                 for w in ws:
                     call(w)
