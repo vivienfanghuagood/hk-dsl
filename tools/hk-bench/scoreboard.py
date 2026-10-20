@@ -749,7 +749,50 @@ def _is_spin(e):
     return "spin_kernel" in e.name
 
 
-def gpu_rounds(fns, rounds, calls, queue=True):
+def _arm_buffers(arms):
+    """The per-arm buffer dicts a case's runs read at call time -- `outs`,
+    `bufs`, `q`, `sc`: dicts keyed by arm name, found in the runs' closures."""
+    found, seen = [], set()
+
+    def visit(fn, depth):
+        for cell in getattr(fn, "__closure__", None) or ():
+            try:
+                v = cell.cell_contents
+            except ValueError:
+                continue
+            if isinstance(v, dict) and id(v) not in seen and len(set(v) & set(ARMS)) > 1:
+                seen.add(id(v))
+                found.append(v)
+            elif callable(v) and depth < 2:
+                visit(v, depth + 1)
+
+    for spec in arms.values():
+        if not isinstance(spec, str):
+            visit(spec[0], 0)
+    return found
+
+
+def buffer_rotation(arms, timed):
+    """rotate(r): before round r, each timed arm that owns a buffer takes the
+    one r arms along, so over the rounds every arm runs on the same buffers.
+
+    A one-row kernel's time moves 0.1 us (3.78-3.95) with where its output
+    sits, whichever kernel writes it; one buffer per arm for the whole run
+    turned that into a verdict (docs/history/43)."""
+    plan = []
+    for d in _arm_buffers(arms):
+        owners = [a for a in timed if a in d]
+        if len(owners) > 1:
+            plan.append((d, owners, dict(d)))
+
+    def rotate(r):
+        for d, owners, orig in plan:
+            for i, a in enumerate(owners):
+                d[a] = orig[owners[(i + r) % len(owners)]]
+    return rotate if plan else None
+
+
+def gpu_rounds(fns, rounds, calls, queue=True, rotate=None):
     """{arm: ([per-call GPU ms, one per round], [kernel records, per round])}.
 
     Each arm runs in a profiler session of its own, and its time is the sum
@@ -774,6 +817,8 @@ def gpu_rounds(fns, rounds, calls, queue=True):
     per = {a: ([], []) for a in fns}
     order = list(fns)
     for r in range(rounds):
+        if rotate:
+            rotate(r)
         k = r % len(order)
         for a in order[k:] + order[:k]:
             fns[a]()
@@ -788,6 +833,8 @@ def gpu_rounds(fns, rounds, calls, queue=True):
             total = sum(e.device_time_total for e in ks)
             per[a][0].append(total / 1e3 / calls if total else float("inf"))
             per[a][1].append(len(ks))
+    if rotate:
+        rotate(0)
     return per
 
 
@@ -890,6 +937,9 @@ def main() -> int:
                     help="an arm's time over the rounds it kept (_rounds.py)")
     ap.add_argument("--probe-ceilings", action="store_true",
                     help="time a copy and an add by footprint, and stop")
+    ap.add_argument("--rotate-buffers", action="store_true",
+                    help="each round, pass the arms' output buffers one arm along "
+                    "(buffer_rotation)")
     ap.add_argument("--no-queue", action="store_true",
                     help="launch each round's calls onto an idle GPU, as before "
                     "chapter 32 (gpu_rounds)")
@@ -925,7 +975,8 @@ def main() -> int:
     if args.probe_ceilings:
         return probe_ceilings(args.rounds, args.calls)
 
-    rules = {"stat": args.stat, "queued": not args.no_queue, "peak_flops": _rounds.PEAK_FLOPS,
+    rules = {"stat": args.stat, "queued": not args.no_queue,
+             "rotated_buffers": args.rotate_buffers, "peak_flops": _rounds.PEAK_FLOPS,
              "hbm_bytes_s": _rounds.HBM_BYTES_S, "ic_bytes": _rounds.IC_BYTES,
              "ic_bytes_s": _rounds.IC_BYTES_S, "margin": _rounds.MARGIN,
              "gap_floor": _rounds.GAP_FLOOR, "gap_k": _rounds.GAP_K}
@@ -965,7 +1016,8 @@ def main() -> int:
                     notes[a] = _why(e)
             os.environ.pop("FLYDSL_AUTOTUNE", None)
             floor = _rounds.floor_ms(work, unit, footprint)
-            t, raw = {}, (gpu_rounds(fns, args.rounds, args.calls, not args.no_queue)
+            rotate = buffer_rotation(arms, list(fns)) if args.rotate_buffers else None
+            t, raw = {}, (gpu_rounds(fns, args.rounds, args.calls, not args.no_queue, rotate)
                           if fns else {})
             for a, (ts, recs) in raw.items():
                 kept, rejected = _rounds.screen(ts, recs, floor)
