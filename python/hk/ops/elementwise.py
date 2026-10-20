@@ -116,7 +116,7 @@ def _strip_kernel(name: str, op: str, dtype, warps: int):
             o.at[0, c0].store(fn(x, y), bounded=not EXACT)
 
     body.__name__ = name
-    return hk.kernel(body, warps=warps, name=name,
+    return hk.kernel(body, warps=warps, name=name, noalias=True,
                      grid=lambda p: (hk.cdiv(p.o.cols, warps * p.CW), 1, 1))
 
 
@@ -154,7 +154,7 @@ def _strip_gs_kernel(name: str, op: str, dtype, warps: int):
                 o.at[0, c].store(fn(x, y), bounded=True)
 
     body.__name__ = name
-    return hk.kernel(body, warps=warps, name=name,
+    return hk.kernel(body, warps=warps, name=name, noalias=True,
                      grid=lambda p: (hk.cdiv(p.o.cols, warps * p.CW * p.STEP), 1, 1))
 
 
@@ -404,7 +404,7 @@ def _strip_plan(op: str, suffix: str, n: int, nbytes: int):
     got = _STRIP_PLANS.get(key, False)
     if got is False:
         from ..target import current_arch, get_target  # noqa: PLC0415
-        from .norm import strip_run  # noqa: PLC0415
+        from .norm import strip_preload, strip_run  # noqa: PLC0415
 
         got = None
         arch = current_arch()
@@ -413,8 +413,8 @@ def _strip_plan(op: str, suffix: str, n: int, nbytes: int):
             warps, chunks = flat_strip_plan(moved, op not in _UNARY_FN)
             run = strip_run(n, nbytes) if n else 16 // nbytes
             cw = chunks * get_target(arch).wave * run
-            got = (STRIP_KERNELS[f"strip_{op}_{suffix}_w{warps}"], cw, run,
-                   int(n % (warps * cw) == 0))
+            got = (strip_preload(STRIP_KERNELS[f"strip_{op}_{suffix}_w{warps}"], moved), cw,
+                   run, int(n % (warps * cw) == 0))
         _STRIP_PLANS[key] = got
     return got
 

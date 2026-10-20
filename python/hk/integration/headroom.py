@@ -154,8 +154,9 @@ FAMILIES: List[Tuple[str, str]] = [
 ]
 _FAMILY_RE = [(f, re.compile(p)) for f, p in FAMILIES]
 
-#: hk's kernels are `void <name>_kernel(const globals g)`.
-_HK_SIG = re.compile(r"_kernel\s*\(\s*(const\s+)?globals|_kernel7globals")
+#: hk's kernels are `void <name>_kernel(const globals g)`, or on CDNA
+#: `hk_flat::<name>_kernel(...)` (a noalias kernel's flat arguments).
+_HK_SIG = re.compile(r"_kernel\s*\(\s*(const\s+)?globals|_kernel7globals|hk_flat::|_ZN7hk_flat")
 #: Kernels of libraries a routing table of hk's may send calls to: FlyDSL's
 #: GEMM is `wmma_gemm_kernel_<n>` on RDNA3.
 _ROUTED = {"flydsl": re.compile(r"^wmma_gemm_kernel_\d|flydsl")}

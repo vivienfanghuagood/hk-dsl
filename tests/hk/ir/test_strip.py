@@ -275,15 +275,19 @@ def test_rotate_half_and_period_are_refused_where_they_cannot_be():
 
 def test_rotary_takes_the_16_byte_form_for_128_and_256_wide_heads(monkeypatch):
     """hk.ops.rotary's plan on gfx950: one warp of two chunks inside 64 MB,
-    a token a workgroup past it; a 64-wide head keeps the 4-byte kernel."""
+    a token a workgroup past it, two warps of eight-byte runs a 512-column
+    group where the token does not split into 4, 8 or 16 warps; preloaded
+    past 32 MB moved. A 64-wide head keeps the 4-byte kernel."""
     import hk.target as target
-    from hk.ops import fused
+    from hk.ops import fused, norm
 
     monkeypatch.setattr(target, "current_arch", lambda: "gfx950")
-    assert fused._rotary16_plan(2048, 64, 128, 2) == (1, 2)
-    assert fused._rotary16_plan(8192, 64, 128, 2) == (8, 2)
-    assert fused._rotary16_plan(8192, 40, 128, 2) == (1, 1)
-    assert fused._rotary16_plan(7, 8, 256, 2) == (1, 2)
+    monkeypatch.setattr(norm, "_PRELOAD_HERE", [norm.STRIP_PRELOAD_PAST["gfx950"]])
+    assert fused._rotary16_plan(2048, 64, 128, 2) == (1, 2, 8, True)
+    assert fused._rotary16_plan(2048, 32, 128, 2) == (1, 2, 8, False)
+    assert fused._rotary16_plan(8192, 64, 128, 2) == (8, 2, 8, True)
+    assert fused._rotary16_plan(8192, 40, 128, 2) == (2, 1, 4, True)
+    assert fused._rotary16_plan(7, 8, 256, 2) == (1, 2, 8, False)
     assert fused._rotary16_plan(5, 3, 64, 2) is None
     assert fused._rotary16_plan(4, 8, 128, 4) is None
     monkeypatch.setattr(target, "current_arch", lambda: "gfx1100")

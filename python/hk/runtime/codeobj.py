@@ -35,9 +35,9 @@ from .compile import CompileError
 # ---------------------------------------------------------------- the ELF
 
 
-def elf_symbol(data: bytes, name: str) -> bytes:
-    """The initialised bytes of symbol `name` in an ELF64 little-endian file.
-    Enough of ELF for one lookup, so reading a layout needs no dependency."""
+def _elf_symbols(data: bytes):
+    """(name, section headers, symbol's section index, value, size) for every
+    symbol of an ELF64 little-endian file."""
     if data[:4] != b"\x7fELF" or data[4] != 2 or data[5] != 1:
         raise CompileError("not an ELF64 little-endian code object")
     shoff, = struct.unpack_from("<Q", data, 0x28)
@@ -53,12 +53,29 @@ def elf_symbol(data: bytes, name: str) -> bytes:
             st_name, _, _, shndx, value, size = struct.unpack_from(
                 "<IBBHQQ", data, symoff + j * entsize)
             end = data.index(b"\0", strtab[4] + st_name)
-            if data[strtab[4] + st_name:end].decode() != name:
-                continue
-            sec = sections[shndx]
-            at = sec[4] + (value - sec[3])      # sh_offset + (value - sh_addr)
-            return data[at:at + size]
+            yield data[strtab[4] + st_name:end].decode(), sections, shndx, value, size
+
+
+def elf_symbol(data: bytes, name: str) -> bytes:
+    """The initialised bytes of symbol `name` in an ELF64 little-endian file.
+    Enough of ELF for one lookup, so reading a layout needs no dependency."""
+    for sym, sections, shndx, value, size in _elf_symbols(data):
+        if sym != name:
+            continue
+        sec = sections[shndx]
+        at = sec[4] + (value - sec[3])          # sh_offset + (value - sh_addr)
+        return data[at:at + size]
     raise CompileError(f"no symbol {name!r} in the code object")
+
+
+def elf_kernel(data: bytes, prefix: str) -> str:
+    """The one kernel whose symbol starts with `prefix`: its descriptor is
+    `<symbol>.kd`."""
+    got = {s[:-3] for s, *_ in _elf_symbols(data)
+           if s.startswith(prefix) and s.endswith(".kd")}
+    if len(got) != 1:
+        raise CompileError(f"{len(got)} kernels named {prefix}* in the code object")
+    return got.pop()
 
 
 # ---------------------------------------------------------------- HIP
@@ -149,6 +166,8 @@ class CodeObjectKernel:
         self.build = build
         self.image = Path(build.so_path).read_bytes()
         self.symbol = sc.kernel_symbol(ir)
+        if getattr(ir, "flat_args", False):
+            self.symbol = elf_kernel(self.image, self.symbol)
         self.tensors = [p.name for p in ir.tensors()]
         self.dtypes = [p.type.dtype.name for p in ir.tensors()]
         self.block = ir.threads
@@ -247,7 +266,9 @@ def load(kernel, **const_overrides) -> CodeObjectKernel:
     with_defines = getattr(kernel, "with_defines", None)
     if with_defines:
         src = with_defines(src)
+    flags = getattr(kernel, "build_flags", None)
     b = _compile.build(src, ir.arch, name=ir.name, kind="co",
+                       extra_flags=flags(ir) if flags else (),
                        max_vgprs=getattr(kernel, "max_vgprs", None),
                        min_occupancy=getattr(kernel, "min_occupancy", None))
     return CodeObjectKernel(ir, b)

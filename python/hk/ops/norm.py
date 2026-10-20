@@ -925,7 +925,7 @@ STRIP_MAX_PER_LANE = 64
 #: On wave64 the kinds that hold only the row may hold twice that where a
 #: plan asks for it: a row of 8192 in one wave, 128 a lane, as FlyDSL's
 #: tuned softmax does.
-STRIP_MAX_PER_LANE_WAVE64 = {"rms": 128, "layer": 128, "softmax": 128}
+STRIP_MAX_PER_LANE_WAVE64 = {"rms": 128, "layer": 128, "softmax": 128, "addrmsw": 128}
 
 #: Elements of a row a lane aims to hold: two 16-byte runs of bf16, one for
 #: the in-place fused add. Fewer a lane is more warps on the row. Measured
@@ -1005,6 +1005,7 @@ _STRIP_PER_LANE_AT = {
     ("softmax", 4096, "long"): (128, True), ("softmax", 5120, "long"): (128, True),
     ("addrmsw", 4096, "long"): (16, False), ("addrmsw", 5120, "long"): (8, False),
     ("addrmsw", 8192, "long"): (8, False),
+    ("addrmsw", 4096, "mid"): (64, True), ("addrmsw", 8192, "mid"): (128, True),
 }
 _STRIP_AT_ROWS, _STRIP_LONG_ROWS = 2048, 8192
 _STRIP_PER_LANE_ARCHS = ("gfx950",)
@@ -1194,7 +1195,8 @@ def _strip_kernel(name: str, dtype, kind: str, warps: int):
     body.__name__ = name
     # Ties to even for the residual, as _rms_weighted_kernel says why.
     defines = {"HK_BF16_ROUND": 2} if kind == "addrmsw" else None
-    return hk.kernel(body, warps=warps, grid=_strip_grid, name=name, defines=defines)
+    return hk.kernel(body, warps=warps, grid=_strip_grid, name=name, defines=defines,
+                     noalias=True)
 
 
 def _strip_grid(p):
@@ -1230,6 +1232,44 @@ def _reserve_here():
 
         _RESERVE_HERE.append(_STRIP_RESERVE_AT.get(current_arch()))
     return _RESERVE_HERE[0]
+
+
+#: Past this many bytes a call moves, a strip kernel launches as its
+#: preloaded twin (Kernel.preload: the flat arguments in SGPRs at dispatch).
+#: The twin costs the one-row floor 0.2 us; past the eight XCDs' 32 MB of L2
+#: it saved 0.1-0.4 us, at or under it it lost up to 0.26. MI355X, the
+#: planner's plan without and with, us, buffers rotated (docs/history/43):
+#:
+#:                          moves   without   preloaded
+#:     rms_norm 2048x4096    32 MB     5.40      5.66
+#:     rms_norm 2048x5120    40 MB     6.66      6.44
+#:     exp      2048x4096    32 MB     5.23      5.47
+#:     exp      2048x5120    40 MB     6.57      6.15
+#:     quantize 2048x4096    24 MB     4.77      4.93
+#:     quantize 2048x8192    48 MB     8.59      8.37
+#:     add      2048x4096    48 MB     7.30      6.95
+#:     layernorm 8192x4096  128 MB    20.04     19.79
+#:
+#: The fused add, which moves as much, gained nothing (0.997-1.005x), and
+#: keeps its plain build.
+STRIP_PRELOAD_PAST = {"gfx950": 32 << 20}
+_PRELOAD_HERE: list = []
+
+
+def strip_preloads(moved: int) -> bool:
+    """Whether a call moving `moved` bytes is past this target's
+    STRIP_PRELOAD_PAST."""
+    if not _PRELOAD_HERE:
+        from ..target import current_arch  # noqa: PLC0415
+
+        _PRELOAD_HERE.append(STRIP_PRELOAD_PAST.get(current_arch()))
+    past = _PRELOAD_HERE[0]
+    return past is not None and moved > past
+
+
+def strip_preload(k, moved: int):
+    """`k`, or its preloaded twin where `strip_preloads(moved)`."""
+    return k.preloaded() if strip_preloads(moved) else k
 
 
 _PER_LANE_HERE: list = []
@@ -1288,7 +1328,8 @@ def _resolve_strip(kind: str, dtype, cols: int, rows: int):
     nbytes = getattr(dtype, "itemsize", 2)
     cap = _reserve_here()
     streams, at = _strip_regime(kind, nbytes, cols, rows, cap, _per_lane_here())
-    key = ("strip", kind, dtype, cols, streams, at)
+    pre = kind != "addrmsw" and strip_preloads(rows * cols * nbytes * _STRIP_STREAMS.get(kind, 2))
+    key = ("strip", kind, dtype, cols, streams, at, pre)
     got = _PLAN_CACHE.get(key, False)
     if got is False:
         suffix = _TORCH_DTYPES.get(str(dtype))
@@ -1298,8 +1339,8 @@ def _resolve_strip(kind: str, dtype, cols: int, rows: int):
         got = None
         if p is not None:
             warps, chunks, run, exact = p
-            got = (STRIP_KERNELS[f"strip_{kind}_{suffix}_w{warps}"], chunks, run, exact,
-                   cap[1] if streams else 0)
+            k = STRIP_KERNELS[f"strip_{kind}_{suffix}_w{warps}"]
+            got = (k.preloaded() if pre else k, chunks, run, exact, cap[1] if streams else 0)
         _PLAN_CACHE[key] = got
     return got
 

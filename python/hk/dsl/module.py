@@ -60,9 +60,12 @@ def _const_attr(v):
     return ir.StringAttr.get(str(v))
 
 
-def begin_kernel(name: str, arch: str, warps: int, consts: dict, tensors):
+def begin_kernel(name: str, arch: str, warps: int, consts: dict, tensors,
+                 noalias: bool = False):
     """A module holding an empty kernel func: one argument per (name, type)
-    tensor, the hk.* attributes set. Returns (module, func, entry block)."""
+    tensor, the hk.* attributes set. Returns (module, func, entry block).
+    `noalias` is set only where it changes the kernel's arguments (wave64),
+    so an RDNA module is what it was."""
     mod = ir.Module.create()
     arg_types = [mlir_type(ty) for _, ty in tensors]
     arg_attrs = ir.ArrayAttr.get([
@@ -76,6 +79,10 @@ def begin_kernel(name: str, arch: str, warps: int, consts: dict, tensors):
             ir.IntegerType.get_signless(64), warps)
         f.attributes["hk.consts"] = ir.DictAttr.get(
             {k: _const_attr(v) for k, v in consts.items()})
+        from ..target import get_target  # noqa: PLC0415
+
+        if noalias and get_target(arch).wave == 64:
+            f.attributes["hk.noalias"] = ir.UnitAttr.get()
         entry = f.add_entry_block(arg_locs=[ir.Location.name(n) for n, _ in tensors])
     return mod, f, entry
 
