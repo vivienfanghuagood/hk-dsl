@@ -35,7 +35,9 @@ run elem   $G/test_elementwise.py $G/test_bounded.py $G/test_strided.py $G/test_
 run torch  $G/test_torch_op.py $G/test_engine.py $G/test_vllm_gemm.py $G/test_flydsl_gemm.py &
 wait
 rest=$(ls $G/test_*.py | grep -v -E "test_(gemm|autotune|attn|sdpa|decode_gemm|paged|load_scalar|phase2|target_rmsnorm|elementwise|bounded|strided|while|indexed|torch_op|engine|vllm_gemm|flydsl_gemm)\.py")
-run rest $rest
+run rest $rest &
+run dx   tests/dx &          # the DX suite (bench/dx): every task and solution on small shapes
+wait
 if [ "${HK_PERF_GATE:-0}" = 1 ]; then
     HK_GPU=$gpu scripts/perf_gate.sh "$out/perf" > "$out/perf.log" 2>&1
     echo "perf exit $?" >> "$out/status"
