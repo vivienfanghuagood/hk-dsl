@@ -14,6 +14,7 @@ one task per call: the GPU is shared). bench/dx/README.md has the protocol.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import datetime as _dt
 import json
 import math
@@ -23,6 +24,7 @@ import sys
 import tempfile
 import time
 import traceback
+import warnings
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -69,7 +71,74 @@ def _batch_ms(fn, n: int) -> float:
     return s.elapsed_time(e)
 
 
-def _graph_for(fn, n: int):
+@contextlib.contextmanager
+def _graph_launches():
+    """hk on RDNA: a kernel's pybind entry point launches on the null stream,
+    which a CUDA graph does not capture (docs/runtime.md, "The stream") -- the
+    graph would replay without it. While graphs are captured, switch hk to its
+    code-object launch (HK_LAUNCH=codeobj: the same device code, launched on
+    torch's current stream) by dropping the memoized launchers; both are put
+    back afterwards, so host_us is still timed on the default launch."""
+    try:
+        from hk.codegen.scaffold import takes_stream
+        from hk.dsl.kernel import Kernel
+        from hk.target import current_arch
+        native = takes_stream(current_arch())
+    except Exception:  # noqa: BLE001 -- no hk: nothing to switch
+        native = True
+    if native:
+        yield
+        return
+    import gc
+    kernels = [o for o in gc.get_objects() if isinstance(o, Kernel)]
+    saved = [(k, dict(k._launch_cache)) for k in kernels]
+    old = os.environ.get("HK_LAUNCH")
+    os.environ["HK_LAUNCH"] = "codeobj"
+    for k in kernels:
+        k._launch_cache.clear()
+    try:
+        yield
+    finally:
+        if old is None:
+            os.environ.pop("HK_LAUNCH", None)
+        else:
+            os.environ["HK_LAUNCH"] = old
+        for k, cache in saved:
+            k._launch_cache.clear()
+            k._launch_cache.update(cache)
+
+
+def _follows_inputs(g, fn, outs, ins) -> str:
+    """'' if replaying the graph recomputes from the inputs, else why not: the
+    float inputs are halved, the graph replayed and fn called eagerly, and the
+    two must agree. A launch the capture missed leaves its output stale."""
+    import torch
+    from bench.dx.common import as_tuple
+
+    floats = [t for t in ins.values() if isinstance(t, torch.Tensor) and t.is_floating_point()]
+    if not floats:
+        return ""
+    for t in floats:
+        t.mul_(0.5)
+    try:
+        g.replay()
+        _sync()
+        got = [o.clone() for o in as_tuple(outs)]
+        want = as_tuple(fn())
+        _sync()
+    finally:
+        for t in floats:
+            t.mul_(2.0)
+    for a, b in zip(got, want):
+        if not isinstance(a, torch.Tensor) or not a.is_floating_point():
+            continue
+        tol = 2e-2 * max(1.0, b.float().abs().max().item())
+        if not torch.allclose(a.float(), b.float(), rtol=2e-2, atol=tol):
+            return "the graph's replay does not follow its inputs (a launch was not captured)"
+    return ""
+
+
+def _graph_for(fn, n: int, ins=None, check_inputs: bool = True):
     """A CUDA graph of n back-to-back calls, or the reason there is none."""
     import torch
     try:
@@ -81,12 +150,21 @@ def _graph_for(fn, n: int):
         torch.cuda.current_stream().wait_stream(side)
         _sync()
         g = torch.cuda.CUDAGraph()
-        with torch.cuda.graph(g):
-            for _ in range(n):
-                fn()
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            with torch.cuda.graph(g):
+                for _ in range(n):
+                    outs = fn()
         _sync()
+        empty = [w for w in caught if "empty" in str(w.message).lower()]
+        if empty:
+            return None, f"empty graph: {str(empty[0].message)[:120]}"
         g.replay()
         _sync()
+        if check_inputs and ins is not None:
+            why = _follows_inputs(g, fn, outs, ins)
+            if why:
+                return None, why
         return g, ""
     except Exception as e:  # noqa: BLE001
         try:
@@ -128,10 +206,13 @@ def time_contenders(cands: List[Dict[str, Any]], rounds: int, batch_ms: float,
         c["n"] = int(min(2000, max(1, math.ceil(batch_ms / max(per, 1e-4)))))
         c["host"], c["dev"] = [], []
         c["graph"] = None
-        if graphs:
-            c["graph"], why = _graph_for(fn, c["n"])
-            if c["graph"] is None:
-                c["rec"]["graph_error"] = why
+    if graphs:
+        with _graph_launches():
+            for c in cands:
+                c["graph"], why = _graph_for(c["fn"], c["n"], c.get("ins"),
+                                             check_inputs=not c.get("mutable"))
+                if c["graph"] is None:
+                    c["rec"]["graph_error"] = why
     for r in range(rounds):
         order = cands[r % len(cands):] + cands[:r % len(cands)]
         for c in order:
@@ -218,7 +299,8 @@ def run_shape(task_id: str, task, shape: Dict[str, Any], sols, args, log) -> Lis
                 rec["status"] = "ok"
             del out
             if not args.check_only:
-                cands.append({"fn": fn, "rec": rec, "ins": ins})
+                cands.append({"fn": fn, "rec": rec, "ins": ins,
+                              "mutable": bool(getattr(task, "MUTABLE_INPUTS", ()))})
             log(f"    {sol.name:<24} {rec['status']:<6} first call {rec['first_call_s']:.2f}s  {rec.get('check', '')}")
         except torch.cuda.OutOfMemoryError as e:
             rec["status"], rec["error"] = "oom", _err(e)
