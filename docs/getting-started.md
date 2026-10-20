@@ -185,7 +185,7 @@ replaces, are in [integration](integration.md).
 * [The IR](ir.md): what `dump()` shows, the passes, the translation.
 * [The runtime](runtime.md): the cache, the gates, autotune, `torch.ops`.
 * [Integration](integration.md): running the kernels inside vLLM or SGLang.
-* [Performance](performance.md): what each kernel and patch measured, the
-  losses included.
+* [Performance](performance.md): what each kernel and patch measured, level
+  by level for RDNA3 and CDNA4, the losses included.
 * [CDNA3/4](design/cdna.md): what runs on an MI300X or MI355X, and what does
   not yet.
