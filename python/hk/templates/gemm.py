@@ -73,11 +73,15 @@ ROW, COL, TILE, CONST = "row", "col", "tile", "const"
 #: is not bounded and a block of M past C's last row still loads its entries.
 COL_PAD = 256
 
-#: Rows of an accumulator an epilogue with a tile operand runs on at a time.
-BAND = 16
+#: Rows of an accumulator an epilogue with a tile operand read at the store
+#: runs on at a time, the next band's operand loaded under this one's math:
+#: 32 measured best on an MI355X (16 waits more often, the whole 64-row
+#: quadrant spills beside the pingpong's other accumulators).
+BAND = 32
 
-#: Load 16-bit tile operands as 16-bit tiles, converting where used.
-NATIVE_TILE = False
+#: Load a 16-bit tile operand as a 16-bit tile, converted where it is used:
+#: half the registers while it is in flight.
+NATIVE_TILE = True
 
 
 #: Schedule fields merged into every step's (a knob for measuring).

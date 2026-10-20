@@ -60,11 +60,14 @@ def _cases(m, n, k):
         "coords": (mask_cols, {}, lambda c: torch.cat([c[:, :1000], c[:, 1000:] * 0], 1)),
         "chain": (T.chain(T.residual, T.relu), dict(residual=res),
                   lambda c: F.relu(c + res.float())),
+        # a tile read at the store (not init_from): loaded a band ahead
+        "tile_mul": (lambda acc, ctx: acc * ctx.gate, dict(gate=res),
+                     lambda c: c * res.float()),
     }
 
 
 NAMES = ["bias", "bias_gelu", "bias_silu", "residual", "bias_residual", "row_scale",
-         "number", "own_gelu", "coords", "chain"]
+         "number", "own_gelu", "coords", "chain", "tile_mul"]
 
 SHAPES = [(1, 4096, 4096), (33, 6144, 4096), (128, 4096, 4096), (200, 1408, 640),
           (1024, 4096, 4096), (2048, 12288, 4096), (4096, 4224, 1024)]
@@ -90,7 +93,7 @@ def _candidates():
 
 @pytest.mark.skipif(ARCH != "gfx950", reason="gfx950's route candidates")
 @pytest.mark.parametrize("cand", _candidates())
-@pytest.mark.parametrize("name", ["bias_gelu", "residual", "coords"])
+@pytest.mark.parametrize("name", ["bias_gelu", "residual", "coords", "tile_mul"])
 def test_every_gfx950_candidate_carries_the_epilogue(cand, name, monkeypatch):
     """Each candidate the route table can name, forced: the epilogue in its
     store, or in the reduction of its split, right against torch."""
