@@ -9,10 +9,17 @@ are copied to contiguous tensors in setup(), outside the timing."""
 import torch
 
 import hk
+from hk.target import current_arch
 
 KIND = "proxy"
 PROXY = "silu(gate)*up, not gelu: hk.ops has no GELU-and-mul"
 LABEL = "hk.ops.silu_mul (proxy: SiLU, not GELU)"
+
+
+def supports(x):
+    if x.shape[0] < 16 and current_arch() != "gfx950":
+        return f"hk.ops.silu_mul refuses fewer than 16 rows on {current_arch()} (M={x.shape[0]})"
+    return True
 
 
 def setup(x):

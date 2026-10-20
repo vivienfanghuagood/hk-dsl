@@ -25,13 +25,11 @@ collected and ranked here.
 
 ## The scoreboard, docs-only against the baselines
 
-Device time (a CUDA graph of the calls), geomean over the task's shapes,
-`x` = speedup against `torch.compile` (> 1 is faster). Per-shape tables:
-the result files.
-
-Speedups `x TC` against `torch.compile`; `x best baseline` against the fastest of
-torch eager, `torch.compile`, Triton and hk.ops at each shape (geomean);
-"fastest baseline at" counts the shapes each baseline won.
+Device time (a CUDA graph of the calls), geomean over the task's shapes;
+speedups (> 1 is faster) against `torch.compile` (`x TC`) and against the
+fastest of torch eager, `torch.compile`, Triton and hk.ops at each shape
+(`x best baseline`); "fastest baseline at" counts the shapes each baseline
+won. Per-shape tables: the result files. tests/dx passes on both GPUs.
 
 | task | docs-only solution | lines | gfx950: x TC (min-max) | x best baseline | hk.ops x TC | fastest baseline at (shapes) | gfx1100: x TC (min-max) | x best baseline | hk.ops x TC | fastest baseline at (shapes) |
 |---|---|---:|---|---:|---|---|---|---:|---|---|
