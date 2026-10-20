@@ -52,6 +52,11 @@ inline constexpr llvm::StringLiteral kArgName = "hk.name";
 inline constexpr llvm::StringLiteral kUnroll = "hk.unroll";
 inline constexpr llvm::StringLiteral kOpaque = "hk.opaque";
 inline constexpr llvm::StringLiteral kIvName = "hk.iv_name";
+/// No tensor argument is written where another is read, except by the lane
+/// that read it, after it did (an in-place call is that). On CDNA the kernel
+/// then takes the globals' fields as scalar arguments, its pointers
+/// __restrict__.
+inline constexpr llvm::StringLiteral kNoAlias = "hk.noalias";
 } // namespace attrs
 
 /// The value name an op or block argument carries: the outermost NameLoc of

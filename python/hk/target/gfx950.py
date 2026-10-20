@@ -70,6 +70,7 @@ GFX950 = Target(
     tile_shapes=True,
     extra_includes=('"hk/cdna.cuh"',),
     strips=True,
+    kernarg_preload=True,
 )
 
 #: The two numbers a result is reported against, for an MI355X: AMD's

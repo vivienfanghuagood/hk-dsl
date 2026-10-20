@@ -97,6 +97,9 @@ class Target:
     #: has them, and hk's include/hk/cdna.cuh has a wave64 port. A strip's
     #: chunk is `wave` lanes of one run each.
     strips: bool = False
+    #: Whether LLVM preloads kernel arguments into SGPRs at dispatch here
+    #: (-amdgpu-kernarg-preload-count; gfx940 and later): Kernel.preload.
+    kernarg_preload: bool = False
 
     # ---- derived ----
 
