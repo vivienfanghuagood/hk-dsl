@@ -63,30 +63,30 @@ one arch.
 | `moe.moe_gemm`, `w4a16.matmul`, `decode_gemm.matmul` | one code path | the same | none | -- |
 | `hipkittens.gemm_bf16`, `gqa_fwd` | `WrongArch` ("these kernels run on gfx950 only") | runs | availability, by design | -- |
 
-Measured (`tools/api_consistency.py`, max abs error against an fp32 torch
-reference, or the error raised):
+Measured (`tools/api_consistency.py` at this branch, so after the fixes;
+max abs error against an fp32 torch reference, or the error raised):
 
 | probe | gfx1100 (W7900D) | gfx950 (MI355X) |
 |---|---|---|
-| `matmul`, bf16 tie (1 + 2^-8) | pending* | 1.0 (to even) |
-| `matmul`, K = 0 | ValueError (after the fix)* | ValueError: K=0 must be a multiple of 64 |
-| `matmul`, `b = w.t()` (M 16 and 1024) | RuntimeError (the same message)* | RuntimeError: a non-contiguous tensor is taken only as a slice of its last axis |
-| `matmul`, K = 96 | ValueError: K=96 must be a multiple of 64* | ValueError: K=96 must be a multiple of 64 |
-| `attention`, n = 64, D = 128 | ValueError: n_q=64 is below one Q tile (192) of gfx1100's kernel* | 0.0079 |
-| `attention`, n = 256, D = 64 | pending* | 0.0140 |
-| `silu_mul`, strided halves of a (64, 8192) gate/up | ValueError: a must be contiguous* | 0.031 |
-| `silu_mul`, 8 x 100 | ValueError: a is 8x100 and silu_mul needs at least 16x64* | 0.0074 |
-| `add`, 100 x 1000 | ValueError: shape (100, 1000) does not tile* | 0.0156 |
-| `gelu` on bf16 | TypeError (the same message)* | TypeError: hk has no bf16 gelu kernel -- include/rdna3 implements it for fp32 only |
-| `gelu` on fp32, against the tanh / erf forms | pending* | 4.8e-7 / 4.7e-4 |
-| `quantize`, 8 x 100 | ValueError: hk quantize works on at least 16x64* | 0.0156 |
-| `rotary`, 16 tokens x 8 heads x 128 | NotImplementedError* | runs |
-| `rms_norm` 3 x 4096 / `rmsnorm` / `softmax` 3 x 100 / `layernorm` 16 x 65536 | pending* | 0.023 / 0.0078 / 0.00022 / 0.0155 |
-| `paged.KERNELS.get(128)` vs `[128]` (before the fix) | the same kernel | `paged_decode_d128` vs `paged_decode_d128_cdna` |
-| `paged.merge_kernel(128, 12)` | runs* | ValueError (the message above) |
+| `matmul`, bf16 tie (1 + 2^-8 in one row) | 1.0078125 (ties away from zero) | 1.0 (to even) |
+| `matmul`, K = 0 | ValueError: K=0 must be a multiple of 64 (before the fix: no check) | the same ValueError |
+| `matmul`, `b = w.t()` (M 16 and 1024) | RuntimeError: a non-contiguous tensor is taken only as a slice of its last axis | the same |
+| `matmul`, K = 96 | ValueError: K=96 must be a multiple of 64 | the same |
+| `attention`, n = 64, D = 128 | ValueError: n_q=64 is below one Q tile (192) of gfx1100's kernel (gfx950's takes any length) | 0.0079 |
+| `attention`, n = 256, D = 64 | 0.0117 | 0.0140 |
+| `silu_mul`, strided halves of a (64, 8192) gate/up | ValueError: a must be contiguous; call .contiguous() | 0.031 |
+| `silu_mul`, 8 x 100 | ValueError: a is 8x100 and silu_mul needs at least 16x64 | 0.0074 |
+| `add`, 100 x 1000 | ValueError: shape (100, 1000) (100000 elements) does not tile | 0.0156 |
+| `gelu` on bf16 | TypeError: hk has no bf16 gelu kernel -- include/rdna3 implements it for fp32 only | the same message |
+| `gelu` on fp32, against the tanh / erf forms | 4.8e-7 / 4.7e-4 | 4.8e-7 / 4.7e-4 |
+| `quantize`, 8 x 100 | ValueError: hk quantize works on at least 16x64, got 8x100 | 0.0156 |
+| `rotary`, 16 tokens x 8 heads x 128 | NotImplementedError: ... on gfx1100 use hk.ops.rope | runs |
+| `rms_norm` 3 x 4096 / `rmsnorm` / `softmax` 3 x 100 / `layernorm` 16 x 65536 | 0.023 / 0.0078 / 0.00047 / 0.0154 | 0.023 / 0.0078 / 0.00022 / 0.0155 |
+| `paged.KERNELS.get(128)` vs `[128]` | `paged_decode_d128` both | before the fix `paged_decode_d128` vs `paged_decode_d128_cdna`; now `_cdna` both |
+| `paged.merge_kernel(128, 12)` | `paged_merge_d128_s12` | ValueError (the message above) |
 
-\* From the code; the gfx1100 run is queued behind the GPU tier on the
-shared W7900D and replaces these when it lands.
+Every row-wise op that runs on both agrees with the reference to the same
+error; what differs is what each arch accepts.
 
 ## Fixed here
 

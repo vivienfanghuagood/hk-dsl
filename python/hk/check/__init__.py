@@ -800,6 +800,7 @@ def check(fn, reference: Optional[Callable] = None, inputs=None, *,
         mine = _clone(args)
         _fill_nan(mine, out_idx)
         rec = _Recorder(launch=True)
+        n_errors = len(report.errors)
         try:
             _sync()
             t0 = _time.perf_counter()
@@ -814,7 +815,7 @@ def check(fn, reference: Optional[Callable] = None, inputs=None, *,
             add_builds(rec.calls)
             continue
         add_builds(rec.calls)
-        if report.errors:
+        if len(report.errors) > n_errors:      # this case's kernels did not build
             continue
         got = [mine[i] for i in out_idx] if out_idx else _outputs_of(res)
         case["first_call_s"] = first
@@ -830,11 +831,8 @@ def check(fn, reference: Optional[Callable] = None, inputs=None, *,
                 case["correct"] = {"ok": all(o["ok"] for o in outs), "outputs": outs}
 
         # Baselines: built, checked, then timed with the subject.
-        contenders: Dict[str, Callable] = {}
-        if is_kernel:
-            contenders["hk"] = lambda f=fn, a=args, c=consts: f(*a, **c)
-        else:
-            contenders["hk"] = lambda f=fn, a=args, c=consts: f(*a, **c)
+        contenders: Dict[str, Callable] = {
+            "hk": lambda f=fn, a=args, c=consts: f(*a, **c)}
         others: Dict[str, Callable] = {}
         if reference is not None and "eager" in baselines:
             others["eager"] = reference
