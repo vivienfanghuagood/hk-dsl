@@ -57,7 +57,7 @@ import inspect
 import re
 import sys
 import types
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from .. import dsl as hk
