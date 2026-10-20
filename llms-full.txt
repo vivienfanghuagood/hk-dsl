@@ -695,12 +695,18 @@ facts that change a kernel's plan are in [hk.target](api/hk.target.md).
 - **First calls** include the build: hipcc (seconds) or the disk cache's
   load (milliseconds), and `torch.compile`'s compile. A kernel built in this
   process before `hk.check` ran reports its load, not its build.
-- **What it can see**: kernels launched through `Kernel.__call__`, which is
-  every `@hk.kernel` and every `hk.ops` op written in the DSL. The HipKittens
-  C++ kernels wrapped by `hk.ops.hipkittens` are launched otherwise and have
-  no build row. A function's no-GPU discovery runs it on CPU tensors, so a
-  function that needs a GPU tensor to decide what to launch is reported as
-  not discoverable; check its kernel directly.
+- **What it can see**: kernels launched through `Kernel.__call__`,
+  `Kernel._launcher` or built through `Kernel.build` during the call --
+  every `@hk.kernel`, every `hk.ops` op written in the DSL, and the
+  templates (checked against `hk.templates.rowwise` and
+  `hk.templates.gemm(epilogue=...)` on their branches: a rowwise RMSNorm's
+  two plans, a GEMM's split-K kernel, its reduction carrying the epilogue and
+  its pingpong). A launcher a template cached before `hk.check` ran is not
+  seen again: check in a fresh process. The HipKittens C++ kernels wrapped by
+  `hk.ops.hipkittens` are launched otherwise and have no build row. A
+  function's no-GPU discovery runs it on CPU tensors, so a function that
+  needs a GPU tensor to decide what to launch is reported as not
+  discoverable; check its kernel directly.
 - `hk.__version__` of a checkout is its last release's; the report's
   `versions` carries `hk_commit` where git can see the checkout.
 
@@ -2821,9 +2827,13 @@ row-wise and elementwise ops are being unified by the `hk.templates` work.
 - [`hk.ops.matmul`](#hkopsmatmul)
 - [`hk.ops.attention`](#hkopsattention)
 - [`hk.ops.sdpa.scaled_dot_product_attention`](#hkopssdpascaled_dot_product_attention)
-- [`hk.ops.paged.decode`](#hkopspageddecode)
+- [`hk.ops.paged.split_kernel`](#hkopspagedsplit_kernel)
+- [`hk.ops.paged.fused_kernel`](#hkopspagedfused_kernel)
+- [`hk.ops.paged.merge_kernel`](#hkopspagedmerge_kernel)
 - [`hk.ops.paged.plan_splits`](#hkopspagedplan_splits)
 - [`hk.ops.paged.merge_splits`](#hkopspagedmerge_splits)
+- [`hk.ops.paged_prefill.kernel_for`](#hkopspaged_prefillkernel_for)
+- [`hk.ops.paged_prefill.work_list`](#hkopspaged_prefillwork_list)
 - [`hk.ops.decode_gemm.matmul`](#hkopsdecode_gemmmatmul)
 - [`hk.ops.moe.moe_gemm`](#hkopsmoemoe_gemm)
 - [`hk.ops.moe.moe_align`](#hkopsmoemoe_align)
@@ -3157,14 +3167,63 @@ hk.ops.sdpa.scaled_dot_product_attention(query, key, value, attn_mask=None, drop
 Signature-identical to torch's, defaults included, so it can replace it by
 assignment. Anything the kernel does not cover is forwarded to torch.
 
-### `hk.ops.paged.decode`
+**Per architecture** ([audit](../dx/api-consistency.md)):
+
+| | gfx1100 (RDNA3) | gfx950 (CDNA4) |
+|---|---|---|
+| short sequences | torch's SDPA below n_q 192 or n_kv 32 (a silent fallback) | hk's kernel at any length |
+
+### `hk.ops.paged.split_kernel`
 
 ```python
-hk.ops.paged.decode(walk, merge, q, k_cache, v_cache, block_table, seq_lens, out, scratch, splits: int) -> None
+hk.ops.paged.split_kernel(head_dim: int, splits: int)
 ```
 
-The split decode's two launches, with whatever callables run them --
-Kernels for a bench, torch ops for an engine.
+The split decode's walk for (head_dim, splits): each split's
+partial output and its (max, sum) into the scratch `merge_kernel`
+combines. On gfx950, paged_cdna's (head_dim 64 or 128).
+
+**Per architecture** ([audit](../dx/api-consistency.md)):
+
+| | gfx1100 (RDNA3) | gfx950 (CDNA4) |
+|---|---|---|
+| head_dim | a multiple of 16 | 64 or 128 |
+| q and o | padded to 16 rows a group (unbounded loads) | any rows up to 16 (bounded) |
+
+### `hk.ops.paged.fused_kernel`
+
+```python
+hk.ops.paged.fused_kernel(head_dim: int, splits: int, ablate: tuple = (), defines: Optional[dict] = None)
+```
+
+*Changed after 0.4.0*: new parameter `defines`
+
+`defines` builds the walk with library knobs, for an A/B in one
+process (tools/hk-bench/paged_variants.py): HK_RDNA_XPOSE_WORDS=0 is the
+generic register transpose V took before the packed one.
+
+**Per architecture** ([audit](../dx/api-consistency.md)):
+
+| | gfx1100 (RDNA3) | gfx950 (CDNA4) |
+|---|---|---|
+| head_dim | a multiple of 16 | 64 or 128 |
+| `ablate=`, `defines=` | measurement variants | refused |
+
+### `hk.ops.paged.merge_kernel`
+
+```python
+hk.ops.paged.merge_kernel(head_dim: int, splits: int)
+```
+
+The kernel that combines `splits` partial outputs of the split decode
+into the answer. On gfx950, paged_cdna's: it reads splits eight at a
+time, so above 8 `splits` is a multiple of 8.
+
+**Per architecture** ([audit](../dx/api-consistency.md)):
+
+| | gfx1100 (RDNA3) | gfx950 (CDNA4) |
+|---|---|---|
+| splits | any count | a multiple of 8 above 8 |
 
 ### `hk.ops.paged.plan_splits`
 
@@ -3183,6 +3242,12 @@ This asks for enough splits to reach `TARGET_WORKGROUPS`, capped by the
 page count -- a split with no pages is pure overhead -- and by
 `MAX_SPLITS`.
 
+**Per architecture** ([audit](../dx/api-consistency.md)):
+
+| | gfx1100 (RDNA3) | gfx950 (CDNA4) |
+|---|---|---|
+| result | 1..32, used as it is | round to a power of two above 8 for the merge |
+
 ### `hk.ops.paged.merge_splits`
 
 ```python
@@ -3196,6 +3261,40 @@ tensor whose size is `splits` times the output, which is small next to the
 KV traffic the splits exist to parallelise. If it shows up in a profile it
 becomes a kernel; writing it as one first would be optimising a thing
 nobody has measured.
+
+### `hk.ops.paged_prefill.kernel_for`
+
+```python
+hk.ops.paged_prefill.kernel_for(head_dim: int, group: int, scale: Optional[float] = None)
+```
+
+The paged prefill for (head_dim, group, scale). On gfx1100 `group`
+(query heads a KV head) is compiled in and must match the tensors, and
+head_dim is a multiple of 32 up to 192. On gfx950 this is
+attn_cdna.paged_kernel_for: `group` is read off the shapes (the argument
+is ignored) and head_dim is 64 or 128.
+
+**Per architecture** ([audit](../dx/api-consistency.md)):
+
+| | gfx1100 (RDNA3) | gfx950 (CDNA4) |
+|---|---|---|
+| `group` | compiled in; must match the tensors | ignored (read off the shapes) |
+| head_dim | a multiple of 32 up to 192 | 64 or 128 |
+
+### `hk.ops.paged_prefill.work_list`
+
+```python
+hk.ops.paged_prefill.work_list(q_lens, device)
+```
+
+The (request, tile) entries for a batch's prefill requests: one per
+Q_TILE rows of each, ints on the host, one int32 copy to the device.
+
+**Per architecture** ([audit](../dx/api-consistency.md)):
+
+| | gfx1100 (RDNA3) | gfx950 (CDNA4) |
+|---|---|---|
+| query tile | 192 rows, in order | 256 rows, longest first |
 
 ### `hk.ops.decode_gemm.matmul`
 
@@ -3254,6 +3353,12 @@ the module docstring), `WrongArch` off gfx950, and `Unavailable` when the
 kernel did not build or failed its check under this hipcc. `out`, if
 given, must be a contiguous (M, N) bf16 tensor that aliases neither input.
 
+**Per architecture** ([audit](../dx/api-consistency.md)):
+
+| | gfx1100 (RDNA3) | gfx950 (CDNA4) |
+|---|---|---|
+| availability | `WrongArch` | runs |
+
 ### `hk.ops.hipkittens.gqa_fwd`
 
 ```python
@@ -3268,6 +3373,12 @@ natural-log log-sum-exp of each query row, (B, H, N) fp32. The first
 call at a new (H, H_KV, N, D, causal) compiles, and the first on each
 device checks the build (see the module docstring). Raises like
 `gemm_bf16`.
+
+**Per architecture** ([audit](../dx/api-consistency.md)):
+
+| | gfx1100 (RDNA3) | gfx950 (CDNA4) |
+|---|---|---|
+| availability | `WrongArch` | runs |
 
 
 <!-- docs/api/hk.templates.md -->

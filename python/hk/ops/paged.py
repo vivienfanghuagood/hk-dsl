@@ -355,6 +355,9 @@ _SPLIT: Dict[tuple, object] = {}
 
 
 def split_kernel(head_dim: int, splits: int):
+    """The split decode's walk for (head_dim, splits): each split's
+    partial output and its (max, sum) into the scratch `merge_kernel`
+    combines. On gfx950, paged_cdna's (head_dim 64 or 128)."""
     if _native_cdna():
         from . import paged_cdna  # noqa: PLC0415
 
@@ -686,6 +689,9 @@ _MERGE: Dict[tuple, object] = {}
 
 
 def merge_kernel(head_dim: int, splits: int):
+    """The kernel that combines `splits` partial outputs of the split decode
+    into the answer. On gfx950, paged_cdna's: it reads splits eight at a
+    time, so above 8 `splits` is a multiple of 8."""
     if _native_cdna():
         from . import paged_cdna  # noqa: PLC0415
 

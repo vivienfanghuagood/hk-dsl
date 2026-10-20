@@ -105,6 +105,27 @@ ARCH_RULES: Dict[str, List[Tuple[str, str, str]]] = {
 }
 
 
+ARCH_RULES.update({
+    "sdpa.scaled_dot_product_attention": [
+        ("short sequences", "torch's SDPA below n_q 192 or n_kv 32 (a silent fallback)",
+         "hk's kernel at any length")],
+    "paged.split_kernel": [("head_dim", "a multiple of 16", "64 or 128"),
+                           ("q and o", "padded to 16 rows a group (unbounded loads)",
+                            "any rows up to 16 (bounded)")],
+    "paged.fused_kernel": [("head_dim", "a multiple of 16", "64 or 128"),
+                           ("`ablate=`, `defines=`", "measurement variants", "refused")],
+    "paged.merge_kernel": [("splits", "any count", "a multiple of 8 above 8")],
+    "paged.plan_splits": [("result", "1..32, used as it is",
+                           "round to a power of two above 8 for the merge")],
+    "paged_prefill.kernel_for": [
+        ("`group`", "compiled in; must match the tensors", "ignored (read off the shapes)"),
+        ("head_dim", "a multiple of 32 up to 192", "64 or 128")],
+    "paged_prefill.work_list": [("query tile", "192 rows, in order", "256 rows, longest first")],
+    "hipkittens.gemm_bf16": [("availability", "`WrongArch`", "runs")],
+    "hipkittens.gqa_fwd": [("availability", "`WrongArch`", "runs")],
+})
+
+
 # ------------------------------------------------------------------ baseline
 
 
@@ -613,7 +634,9 @@ row-wise and elementwise ops are being unified by the `hk.templates` work.
 
 OPS_EXTRA = [
     ("hk.ops.sdpa", ["scaled_dot_product_attention"]),
-    ("hk.ops.paged", ["decode", "plan_splits", "merge_splits"]),
+    ("hk.ops.paged", ["split_kernel", "fused_kernel", "merge_kernel", "plan_splits",
+                      "merge_splits"]),
+    ("hk.ops.paged_prefill", ["kernel_for", "work_list"]),
     ("hk.ops.decode_gemm", ["matmul"]),
     ("hk.ops.moe", ["moe_gemm", "moe_align"]),
     ("hk.ops.w4a16", ["matmul"]),
@@ -666,7 +689,8 @@ def page_ops(since: Since) -> Page:
         for n in names:
             obj = getattr(mod, n)
             p.entry(f"{modname}.{n}", obj, display=f"{modname}.{n}",
-                    mark=_mark(since, modname, n, obj, f"{modname}.{n}"))
+                    mark=_mark(since, modname, n, obj, f"{modname}.{n}"),
+                    extra=arch_table(f"{modname.split('.')[-1]}.{n}"))
     return p
 
 

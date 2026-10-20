@@ -10,7 +10,7 @@ Generated from the code by `scripts/gen_api_docs.py`: every public name's signat
 - [`hk.lds`](hk.lds.md) -- 6 entries
 - [`hk.group`](hk.group.md) -- 2 entries
 - [`hk.collective`](hk.collective.md) -- 3 entries
-- [`hk.ops`: the shipped kernels](hk.ops.md) -- 32 entries
+- [`hk.ops`: the shipped kernels](hk.ops.md) -- 36 entries
 - [`hk.templates`](hk.templates.md) -- 3 entries
 - [`hk.check`](hk.check.md) -- 10 entries
 - [`hk.target`: the facts per architecture](hk.target.md) -- 3 entries

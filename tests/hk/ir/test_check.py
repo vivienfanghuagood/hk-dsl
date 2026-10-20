@@ -105,3 +105,20 @@ def test_cli_trace_only_json(capsys):
     code = main([f"{fixture}:gelu_mul", "--trace-only", "--json", "-", "--quiet"])
     out = json.loads(capsys.readouterr().out)
     assert code == 0 and out["builds"][0]["kernel"] == "gelu_mul"
+
+
+def test_cpu_discovery_through_a_kept_launcher():
+    """A template that keeps its own launch cache calls Kernel._launcher, not
+    Kernel.__call__ (hk.templates.elementwise/rowwise do): found too."""
+    pytest.importorskip("torch")
+    import hk
+
+    import check_fixture as fx
+
+    def fn(a, b):
+        o = a.new_empty(a.shape)
+        fx.gelu_mul._launcher()(a, b, o)
+        return o
+
+    r = hk.check(fn, fx.reference, fx.fn_inputs, gpu=False, build=False)
+    assert [b["kernel"] for b in r.builds] == ["gelu_mul"]

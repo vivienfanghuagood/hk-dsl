@@ -217,39 +217,55 @@ def versions() -> Dict[str, str]:
 
 class _Recorder:
     """Which kernels a call launches, with the constexprs it passes: every
-    `Kernel.__call__` while active. With `launch=False` nothing is launched,
-    which is how a function's kernels are found on a machine with no GPU
-    (its inputs then live on the CPU, and the outputs are garbage)."""
+    `Kernel.__call__`, every `Kernel._launcher` (what a template that keeps
+    its own launch cache calls) and every `Kernel.build` while active. With
+    `launch=False` nothing is launched, which is how a function's kernels are
+    found on a machine with no GPU (its inputs then live on the CPU, and the
+    outputs are garbage)."""
 
     def __init__(self, launch: bool = True):
         self.launch = launch
         self.calls: List[Tuple[Any, Dict[str, Any]]] = []
         self._seen: set = set()
 
+    def _note(self, k, overrides: Dict[str, Any]) -> None:
+        try:
+            key = (id(k), tuple(sorted(k._resolve_consts(overrides).items())))
+        except Exception:  # noqa: BLE001 -- an unhashable or unknown constexpr
+            key = (id(k), repr(sorted(overrides.items())))
+        if key not in self._seen:
+            self._seen.add(key)
+            self.calls.append((k, dict(overrides)))
+
     @contextlib.contextmanager
     def active(self):
         from ..dsl.kernel import Kernel  # noqa: PLC0415
 
-        orig = Kernel.__call__
+        orig_call, orig_launcher, orig_build = Kernel.__call__, Kernel._launcher, Kernel.build
         rec = self
 
         def call(k, *tensors, **overrides):
-            try:
-                key = (id(k), tuple(sorted(overrides.items())))
-            except TypeError:
-                key = (id(k), repr(sorted(overrides.items())))
-            if key not in rec._seen:
-                rec._seen.add(key)
-                rec.calls.append((k, dict(overrides)))
+            rec._note(k, overrides)
             if rec.launch:
-                return orig(k, *tensors, **overrides)
+                return orig_call(k, *tensors, **overrides)
             return None
 
-        Kernel.__call__ = call
+        def launcher(k, **overrides):
+            rec._note(k, overrides)
+            if rec.launch:
+                return orig_launcher(k, **overrides)
+            return lambda *tensors: None
+
+        def build(k, **overrides):
+            rec._note(k, overrides)
+            return orig_build(k, **overrides)
+
+        Kernel.__call__, Kernel._launcher, Kernel.build = call, launcher, build
         try:
             yield self
         finally:
-            Kernel.__call__ = orig
+            Kernel.__call__, Kernel._launcher, Kernel.build = (orig_call, orig_launcher,
+                                                                orig_build)
 
 
 def _is_kernel(fn) -> bool:
@@ -691,8 +707,8 @@ def check(fn, reference: Optional[Callable] = None, inputs=None, *,
     def add_builds(calls):
         for k, ov in calls:
             try:
-                key = (id(k), tuple(sorted(ov.items())))
-            except TypeError:
+                key = (id(k), tuple(sorted(k._resolve_consts(ov).items())))
+            except Exception:  # noqa: BLE001
                 key = (id(k), repr(ov))
             if key in seen_builds:
                 continue

@@ -271,11 +271,17 @@ facts that change a kernel's plan are in [hk.target](api/hk.target.md).
 - **First calls** include the build: hipcc (seconds) or the disk cache's
   load (milliseconds), and `torch.compile`'s compile. A kernel built in this
   process before `hk.check` ran reports its load, not its build.
-- **What it can see**: kernels launched through `Kernel.__call__`, which is
-  every `@hk.kernel` and every `hk.ops` op written in the DSL. The HipKittens
-  C++ kernels wrapped by `hk.ops.hipkittens` are launched otherwise and have
-  no build row. A function's no-GPU discovery runs it on CPU tensors, so a
-  function that needs a GPU tensor to decide what to launch is reported as
-  not discoverable; check its kernel directly.
+- **What it can see**: kernels launched through `Kernel.__call__`,
+  `Kernel._launcher` or built through `Kernel.build` during the call --
+  every `@hk.kernel`, every `hk.ops` op written in the DSL, and the
+  templates (checked against `hk.templates.rowwise` and
+  `hk.templates.gemm(epilogue=...)` on their branches: a rowwise RMSNorm's
+  two plans, a GEMM's split-K kernel, its reduction carrying the epilogue and
+  its pingpong). A launcher a template cached before `hk.check` ran is not
+  seen again: check in a fresh process. The HipKittens C++ kernels wrapped by
+  `hk.ops.hipkittens` are launched otherwise and have no build row. A
+  function's no-GPU discovery runs it on CPU tensors, so a function that
+  needs a GPU tensor to decide what to launch is reported as not
+  discoverable; check its kernel directly.
 - `hk.__version__` of a checkout is its last release's; the report's
   `versions` carries `hk_commit` where git can see the checkout.
