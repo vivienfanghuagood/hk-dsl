@@ -24,6 +24,7 @@ from typing import Any, Dict, Optional
 
 from .. import dsl as hk
 from ..types import bf16, fp32
+from . import _epilogue
 from .gemm_cdna import NUM_XCDS
 
 
@@ -33,8 +34,11 @@ def gemm_kernel(name: str, *, block_m: int = 128, block_n: int = 128,
                 setprio: bool = False, splits: int = 1, pipelined: bool = True,
                 lds_shape: Optional[str] = None, nt: str = "",
                 arch: Optional[str] = None,
-                max_vgprs: int = 256, min_occupancy: int = 1):
-    """`splits` > 1 also cuts K across workgroups: workgroup (b, s) sums the
+                max_vgprs: int = 256, min_occupancy: int = 1, epilogue=None):
+    """`epilogue` (hk.ops._epilogue) replaces C's store with
+    hk.templates.gemm's hook; with splits it goes on the reduction instead.
+
+    `splits` > 1 also cuts K across workgroups: workgroup (b, s) sums the
     s-th share of K and stores its fp32 partial to ws[s], (splits, M, N); a
     second kernel (reduce_kernel) adds the shares in order and stores C. Two
     launches, because ordering them inside one -- hk.arch.wg_arrive, as
@@ -201,9 +205,12 @@ def gemm_kernel(name: str, *, block_m: int = 128, block_n: int = 128,
         finish(C[0], m0 + wr * reg_m, n0 + wc * reg_n, blocks)
 
     def body(a: hk.Tensor[bf16], b: hk.Tensor[bf16], c: hk.Tensor[bf16], *,
-             WGM: hk.Constexpr = wgm):
+             WGM: hk.Constexpr = wgm, **ops):
         def finish(acc, r, col, blocks):
-            c[hk.elem_coord(0, 0, r, col)].store(acc, bounded=True)
+            if epilogue is None:
+                c[hk.elem_coord(0, 0, r, col)].store(acc, bounded=True)
+            else:
+                epilogue.store(c, ops, acc, r, col)
 
         gemm(a, b, c, WGM, 0, a.cols // k_step, finish)
 
@@ -217,7 +224,13 @@ def gemm_kernel(name: str, *, block_m: int = 128, block_n: int = 128,
 
         gemm(a, b, ws, WGM, s * per, per // k_step, finish)
 
-    fn = body if splits == 1 else body_split
+    if splits == 1:
+        fn = _epilogue.sign(body, epilogue)
+    elif epilogue is not None:
+        raise ValueError("a split kernel stores fp32 shares; its epilogue goes "
+                         "on the reduction (reduce)")
+    else:
+        fn = body_split
     fn.__name__ = name
 
     def _grid(p):
@@ -278,24 +291,34 @@ STRIP_REDUCE_WARPS, STRIP_REDUCE_CHUNKS = 4, 2
 
 
 def strip_reduce_kernel(name: str, splits: int, warps: int = STRIP_REDUCE_WARPS,
-                        arch: Optional[str] = None):
+                        arch: Optional[str] = None, epilogue=None):
     """reduce_kernel on strips: ws (splits, R, C) fp32 and c (R, C) bf16, a
     grid row a row of c, a lane's RUN fp32 of each share one load, the sum
     rounded to nearest even. A contiguous output is one row, M*N long.
     reduce_kernel's 16 x 128 tiles put 64 workgroups on a 128 x 4096 output:
     9.2 us to hipBLASLt's 4.4 for its own eight shares on an MI355X; this
-    puts 256 there, 4.3 us."""
+    puts 256 there, 4.3 us.
 
-    def body(ws: hk.Tensor[fp32], c: hk.Tensor[bf16], *, CW=512, RUN=4, EXACT=1):
+    `epilogue` (hk.ops._epilogue): hk.templates.gemm's hook, on the sum --
+    once, after every share is in, which is what makes a split-K GEMM right
+    for an epilogue that is not linear. Its coordinates are C's, so the
+    output is never the flat view."""
+
+    def body(ws: hk.Tensor[fp32], c: hk.Tensor[bf16], *, CW=512, RUN=4, EXACT=1,
+             **ops):
         r = hk.arch.block_idx.y
         c0 = (hk.arch.block_idx.x * warps + hk.arch.warp_id()) * CW
         s = hk.RS(fp32, 1, CW, RUN)
         total = ws.at[0, r, c0].load(s, bounded=not EXACT)
         for j in range(1, splits):
             total += ws.at[j, r, c0].load(s, bounded=not EXACT)
-        c.at[r, c0].store(total, bounded=not EXACT)
+        if epilogue is None:
+            c.at[r, c0].store(total, bounded=not EXACT)
+        else:
+            epilogue.store(c, ops, total, r, c0, bounded=not EXACT)
 
     body.__name__ = name
+    _epilogue.sign(body, epilogue)
     return hk.kernel(body, arch=arch, warps=warps, name=name,
                      grid=lambda p: (hk.cdiv(p.c.cols, warps * p.CW), p.c.rows, 1))
 
@@ -327,16 +350,41 @@ def launch(sched: Dict[str, Any], a, b, out):
     return reduce(ws, out)
 
 
-def reduce(ws, out, strips=None):
+def _reduce_epilogue(ws, out, tgt, epilogue, operands, consts):
+    """The reduction with hk.templates.gemm's epilogue on the sum: a row of
+    strips a grid row (the epilogue's coordinates are C's), up to four
+    chunks of runs a warp and four warps a workgroup."""
+    if not tgt.strips:
+        raise NotImplementedError(f"a split GEMM's epilogue runs on the strip "
+                                  f"reduction, which {tgt.arch} has not got")
+    splits = ws.shape[0]
+    n = out.shape[1]
+    run = 4 if n % (4 * tgt.wave) == 0 else 2
+    cw = run * tgt.wave * max(1, min(4, n // (run * tgt.wave)))
+    warps = max(1, min(4, n // cw))
+    name = _epilogue.name(f"gemm_cdna_dp_sreduce_k{splits}_w{warps}", epilogue)
+    if name not in _KERNELS:
+        _KERNELS[name] = strip_reduce_kernel(name, splits, warps, epilogue=epilogue)
+    _KERNELS[name](ws, out, *operands, CW=cw, RUN=run,
+                   EXACT=int(n % (warps * cw) == 0), **consts)
+    return out
+
+
+def reduce(ws, out, strips=None, epilogue=None, operands=(), **consts):
     """out = bf16 of the sum of ws's shares, in order: on strips where the
     target has them (strip_reduce_kernel) -- over the flat view if out is
     contiguous, else a row of strips a row, one warp a row of up to a
-    chunk of runs of two -- and on reduce_kernel's tiles otherwise."""
+    chunk of runs of two -- and on reduce_kernel's tiles otherwise.
+
+    With `epilogue` (hk.templates.gemm's), out = epilogue(sum) in its dtype,
+    the epilogue's tensors `operands` and constexprs `consts` passed on."""
     from ..target import current_arch, get_target  # noqa: PLC0415
 
     splits = ws.shape[0]
     m, n = out.shape
     tgt = get_target(current_arch())
+    if epilogue is not None:
+        return _reduce_epilogue(ws, out, tgt, epilogue, operands, consts)
     flat = out.is_contiguous()
     if strips is None:
         strips = tgt.strips and (flat or (out.stride(1) == 1 and n % (2 * tgt.wave) == 0))

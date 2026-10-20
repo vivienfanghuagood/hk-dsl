@@ -30,6 +30,7 @@ from typing import Any, Dict, Optional, Tuple
 
 from .. import dsl as hk
 from ..types import bf16, fp32, i32
+from . import _epilogue
 from ..target import current_arch, get_target
 
 
@@ -37,7 +38,7 @@ def decode_gemm_kernel(name: str, *, tokens: int = 1, slices: int = 4,
                        warps: int = 16, combine_depth: int = 0,
                        resident: int = 0, splits: int = 1,
                        max_vgprs: int = 256, min_occupancy: int = 1,
-                       arch: Optional[str] = None):
+                       arch: Optional[str] = None, epilogue=None):
     """`tokens` 16-row token tiles (M <= 16*tokens), `slices` 16-deep K slices
     per load, `warps` waves sharing each 16-row block of W.
 
@@ -60,6 +61,10 @@ def decode_gemm_kernel(name: str, *, tokens: int = 1, slices: int = 4,
     X and C have the batch's M rows, any M up to 16*tokens: the X loads and
     the store are predicated on rows. K must be a multiple of
     16*slices*warps*splits.
+
+    `epilogue` (hk.ops._epilogue) replaces C's store with hk.templates.gemm's
+    hook, on warp 0's combined 16*tokens x 16 tile -- with `splits`, in the
+    workgroup that arrives last, once the shares are summed.
     """
     m_rows = 16 * tokens
     kc = 16 * slices
@@ -114,14 +119,20 @@ def decode_gemm_kernel(name: str, *, tokens: int = 1, slices: int = 4,
         else:
             finish(out, n0)
 
-    def body(x: hk.Tensor[bf16], w: hk.Tensor[bf16], c: hk.Tensor[bf16]):
-        def finish(out, n0):
+    def put(c, ops, out, n0):
+        if epilogue is None:
             c[hk.elem_coord(0, 0, 0, n0)].store(out, bounded=True)
+        else:
+            epilogue.store(c, ops, out, 0, n0)
+
+    def body(x: hk.Tensor[bf16], w: hk.Tensor[bf16], c: hk.Tensor[bf16], **ops):
+        def finish(out, n0):
+            put(c, ops, out, n0)
 
         partial(x, w, 0, x.cols // (kc * warps), finish)
 
     def body_split(x: hk.Tensor[bf16], w: hk.Tensor[bf16], c: hk.Tensor[bf16],
-                   ws: hk.Tensor[fp32], cnt: hk.Tensor[i32]):
+                   ws: hk.Tensor[fp32], cnt: hk.Tensor[i32], **ops):
         s = hk.arch.block_idx.y
         per = x.cols // splits
 
@@ -138,9 +149,9 @@ def decode_gemm_kernel(name: str, *, tokens: int = 1, slices: int = 4,
                 total = hk.zeros(ty_out)
                 for j in range(splits):
                     total += ws[hk.elem_coord(0, j, 0, n0)].load(ty_out)
-                c[hk.elem_coord(0, 0, 0, n0)].store(total, bounded=True)
+                put(c, ops, total, n0)
 
-    fn = body if splits == 1 else body_split
+    fn = _epilogue.sign(body if splits == 1 else body_split, epilogue)
     fn.__name__ = name
 
     return hk.kernel(fn, arch=arch, warps=warps, name=name,

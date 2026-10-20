@@ -40,6 +40,7 @@ from typing import Any, Dict, Tuple
 
 from .. import autotune as _autotune
 from .. import dsl as hk
+from . import _epilogue
 from ..target import current_arch, get_target
 from ..types import bf16, fp32
 
@@ -75,7 +76,7 @@ def gemm_kernel(name: str, *, block_m: int = 128, block_n: int = 128,
                 warp_rows: int = 4, n_split: int = 4, wgm: int = 8,
                 write_pos: int = 2, lds_buffers: int = 1, stagger: int = 0,
                 stream_a: bool = False, setprio: bool = False, sched: int = 0,
-                max_vgprs: int = 256, min_occupancy: int = 1):
+                max_vgprs: int = 256, min_occupancy: int = 1, epilogue=None):
     """The default tiling is `big_config` from the C++: 128x128x64, 8 warps.
 
     The default LDS is one buffer, not the C++'s two. Two let the next
@@ -117,6 +118,9 @@ def gemm_kernel(name: str, *, block_m: int = 128, block_n: int = 128,
     reads and writes are inline asm, in no class, and stay where the code
     puts them). s_setprio ends a scheduling region, so a hint does not reach
     across one.
+
+    `epilogue` (hk.ops._epilogue) replaces C's store: hk.templates.gemm's
+    hook, applied to each accumulator where it would be stored.
     """
     d = _derive(block_m, block_n, k_step, dot_slice, warps, warp_rows, n_split)
     warp_cols, reg_m, reg_n = d["warp_cols"], d["reg_m"], d["reg_n"]
@@ -130,7 +134,7 @@ def gemm_kernel(name: str, *, block_m: int = 128, block_n: int = 128,
     st_b = hk.ST(bf16, block_n, k_step)
 
     def body(a: hk.Tensor[bf16], b: hk.Tensor[bf16], c: hk.Tensor[bf16], *,
-             WGM: hk.Constexpr = wgm):
+             WGM: hk.Constexpr = wgm, **ops):
         g = hk.group(warps)
 
         if lds_buffers == 2:
@@ -389,16 +393,22 @@ def gemm_kernel(name: str, *, block_m: int = 128, block_n: int = 128,
         # Columns are in units of the chunk width; rows in elements.
         m_row = m_base + warp_row * reg_m
         col_tile = (col * warp_cols + warp_col) * n_split
+
+        def put(tile, r, cc):
+            if epilogue is None:
+                c[hk.elem_coord(0, 0, r, cc)].store(tile, bounded=True)
+            else:
+                epilogue.store(c, ops, tile, r, cc)
+
         for s in range(n_split):
             if stream_a:
                 for i in range(frags):
-                    c[hk.elem_coord(0, 0, m_row + 16 * i, (col_tile + s) * split_n)].store(
-                        C_rows[i][s], bounded=True)
+                    put(C_rows[i][s], m_row + 16 * i, (col_tile + s) * split_n)
             else:
-                c[hk.elem_coord(0, 0, m_row, (col_tile + s) * split_n)].store(
-                    C_acc[s], bounded=True)
+                put(C_acc[s], m_row, (col_tile + s) * split_n)
 
     body.__name__ = name
+    _epilogue.sign(body, epilogue)
 
     def _grid(p):
         return (hk.cdiv(p.a.rows, block_m) * (p.b.rows // block_n), 1, 1)

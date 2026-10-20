@@ -26,7 +26,12 @@ def __getattr__(name):
     mod = _TEMPLATES.get(name)
     if mod is None:
         raise AttributeError(f"module 'hk.templates' has no attribute {name!r}")
-    return getattr(importlib.import_module(f"{__name__}.{mod}"), name)
+    value = getattr(importlib.import_module(f"{__name__}.{mod}"), name)
+    # Importing hk.templates.<mod> binds the package's attribute <mod> to the
+    # submodule; where the template and its module share a name, that would
+    # make the second `hk.templates.gemm` the module, not the template.
+    globals()[name] = value
+    return value
 
 
 def __dir__():

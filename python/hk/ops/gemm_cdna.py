@@ -51,6 +51,7 @@ from typing import Any, Dict, Optional
 
 from .. import dsl as hk
 from ..types import bf16, fp32
+from . import _epilogue
 
 #: An MI355X has eight XCDs; workgroups are dealt to them round robin.
 NUM_XCDS = 8
@@ -63,8 +64,12 @@ def gemm_kernel(name: str, *, block_m: int = 256, block_n: int = 256,
                 hipkittens_waits: bool = False, late_b: bool = True,
                 splits: int = 1, lds_shape: Optional[str] = None, nt: str = "",
                 arch: Optional[str] = None,
-                max_vgprs: int = 256, min_occupancy: int = 1):
+                max_vgprs: int = 256, min_occupancy: int = 1, epilogue=None):
     """HipKittens' tiling by default: 256x256x64, eight warps as 2 x 4.
+
+    `epilogue` (hk.ops._epilogue) replaces C's store with hk.templates.gemm's
+    hook; a split kernel (splits > 1) stores its fp32 shares as ever and the
+    hook goes on the reduction.
 
     `hipkittens_waits` puts HipKittens' own vmcnts back (all but three copies
     after the prologue and at the end of each iteration). hk-lds-pipeline
@@ -321,9 +326,12 @@ def gemm_kernel(name: str, *, block_m: int = 256, block_n: int = 256,
                     store(i, j)
 
     def body(a: hk.Tensor[bf16], b: hk.Tensor[bf16], c: hk.Tensor[bf16], *,
-             WGM: hk.Constexpr = wgm):
+             WGM: hk.Constexpr = wgm, **ops):
         def out(tile, r, col):
-            c[hk.elem_coord(0, 0, r, col)].store(tile, bounded=True)
+            if epilogue is None:
+                c[hk.elem_coord(0, 0, r, col)].store(tile, bounded=True)
+            else:
+                epilogue.store(c, ops, tile, r, col)
 
         gemm(a, b, WGM, 0, a.cols // k_step, out)
 
@@ -339,7 +347,13 @@ def gemm_kernel(name: str, *, block_m: int = 256, block_n: int = 256,
 
         gemm(a, b, WGM, s * per, per // k_step, out)
 
-    fn = body if splits == 1 else body_split
+    if splits == 1:
+        fn = _epilogue.sign(body, epilogue)
+    elif epilogue is not None:
+        raise ValueError("a split kernel stores fp32 shares; its epilogue goes "
+                         "on the reduction (gemm_cdna_dp.reduce)")
+    else:
+        fn = body_split
     fn.__name__ = name
 
     def _grid(p):
