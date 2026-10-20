@@ -63,7 +63,7 @@ The language: what `import hk` gives a kernel author. A kernel body is traced on
 ### `hk.kernel`
 
 ```python
-hk.kernel(fn=None, *, arch: Optional[str] = None, warps: int = 1, grid=None, name: Optional[str] = None, max_vgprs: Optional[int] = None, min_occupancy: Optional[int] = None, defines: Optional[Dict[str, Any]] = None)
+hk.kernel(fn=None, *, arch: Optional[str] = None, warps: int = 1, grid=None, name: Optional[str] = None, max_vgprs: Optional[int] = None, min_occupancy: Optional[int] = None, defines: Optional[Dict[str, Any]] = None, noalias: bool = False, preload: bool = False)
 ```
 
 Mark a function as a tile kernel. See the module docstring for the
@@ -81,7 +81,7 @@ and `while` rewritten like a kernel's.
 ### `hk.Kernel`
 
 ```python
-class hk.Kernel(fn: Callable, *, arch: Optional[str] = None, warps: int = 1, grid: Optional[Callable] = None, name: Optional[str] = None, max_vgprs: Optional[int] = None, min_occupancy: Optional[int] = None, defines: Optional[Dict[str, Any]] = None)
+class hk.Kernel(fn: Callable, *, arch: Optional[str] = None, warps: int = 1, grid: Optional[Callable] = None, name: Optional[str] = None, max_vgprs: Optional[int] = None, min_occupancy: Optional[int] = None, defines: Optional[Dict[str, Any]] = None, noalias: bool = False, preload: bool = False)
 ```
 
 A tile kernel. Call it to launch; `trace`, `source` and `build` stop
@@ -133,6 +133,26 @@ s_waitcnt. A spilling build raises rather than being returned.
 
 Needs hipcc but not a GPU, which is what makes the whole development
 loop runnable on a machine with no Radeon in it.
+
+#### `Kernel.build_flags`
+
+```python
+Kernel.build_flags(self, traced: TracedKernel) -> Tuple[str, ...]
+```
+
+*New after 0.4.0*
+
+hipcc flags of this kernel's builds beyond the target's.
+
+#### `Kernel.preloaded`
+
+```python
+Kernel.preloaded(self) -> Kernel
+```
+
+*New after 0.4.0*
+
+This kernel with `preload` set: its own builds, the same body.
 
 #### `Kernel.compile`
 

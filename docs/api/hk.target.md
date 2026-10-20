@@ -58,10 +58,10 @@ Look up a target by gfx name or by the GPU_TARGET name common.mk uses.
 ### `hk.target.Target`
 
 ```python
-class hk.target.Target(arch: str, gpu_target: str, kittens_define: str, wave: int, max_waves_per_simd: int, vgprs_per_simd: int, vgpr_granule: int, sgprs_per_wave: int, lds_per_workgroup: int, lds_pool_bytes: int, simds_per_lds_pool: int, mma: Dict[str, hk.target.base.MmaShape] = <factory>, has_global_to_lds_dma: bool = False, mma_operands_mirrored: bool = False, fast_smem_layouts: Tuple[str, ...] = ('row',), verified: bool = True, unified_agprs: bool = False, tile_shapes: bool = False, lgkmcnt_max: int = 63, extra_includes: Tuple[str, ...] = (), strips: bool = False) -> None
+class hk.target.Target(arch: str, gpu_target: str, kittens_define: str, wave: int, max_waves_per_simd: int, vgprs_per_simd: int, vgpr_granule: int, sgprs_per_wave: int, lds_per_workgroup: int, lds_pool_bytes: int, simds_per_lds_pool: int, mma: Dict[str, hk.target.base.MmaShape] = <factory>, has_global_to_lds_dma: bool = False, mma_operands_mirrored: bool = False, fast_smem_layouts: Tuple[str, ...] = ('row',), verified: bool = True, unified_agprs: bool = False, tile_shapes: bool = False, lgkmcnt_max: int = 63, extra_includes: Tuple[str, ...] = (), strips: bool = False, kernarg_preload: bool = False) -> None
 ```
 
-Target(arch: str, gpu_target: str, kittens_define: str, wave: int, max_waves_per_simd: int, vgprs_per_simd: int, vgpr_granule: int, sgprs_per_wave: int, lds_per_workgroup: int, lds_pool_bytes: int, simds_per_lds_pool: int, mma: Dict[str, hk.target.base.MmaShape] = <factory>, has_global_to_lds_dma: bool = False, mma_operands_mirrored: bool = False, fast_smem_layouts: Tuple[str, ...] = ('row',), verified: bool = True, unified_agprs: bool = False, tile_shapes: bool = False, lgkmcnt_max: int = 63, extra_includes: Tuple[str, ...] = (), strips: bool = False)
+Target(arch: str, gpu_target: str, kittens_define: str, wave: int, max_waves_per_simd: int, vgprs_per_simd: int, vgpr_granule: int, sgprs_per_wave: int, lds_per_workgroup: int, lds_pool_bytes: int, simds_per_lds_pool: int, mma: Dict[str, hk.target.base.MmaShape] = <factory>, has_global_to_lds_dma: bool = False, mma_operands_mirrored: bool = False, fast_smem_layouts: Tuple[str, ...] = ('row',), verified: bool = True, unified_agprs: bool = False, tile_shapes: bool = False, lgkmcnt_max: int = 63, extra_includes: Tuple[str, ...] = (), strips: bool = False, kernarg_preload: bool = False)
 
 #### `Target.vgpr_rounded`
 

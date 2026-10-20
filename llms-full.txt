@@ -784,7 +784,7 @@ The language: what `import hk` gives a kernel author. A kernel body is traced on
 ### `hk.kernel`
 
 ```python
-hk.kernel(fn=None, *, arch: Optional[str] = None, warps: int = 1, grid=None, name: Optional[str] = None, max_vgprs: Optional[int] = None, min_occupancy: Optional[int] = None, defines: Optional[Dict[str, Any]] = None)
+hk.kernel(fn=None, *, arch: Optional[str] = None, warps: int = 1, grid=None, name: Optional[str] = None, max_vgprs: Optional[int] = None, min_occupancy: Optional[int] = None, defines: Optional[Dict[str, Any]] = None, noalias: bool = False, preload: bool = False)
 ```
 
 Mark a function as a tile kernel. See the module docstring for the
@@ -802,7 +802,7 @@ and `while` rewritten like a kernel's.
 ### `hk.Kernel`
 
 ```python
-class hk.Kernel(fn: Callable, *, arch: Optional[str] = None, warps: int = 1, grid: Optional[Callable] = None, name: Optional[str] = None, max_vgprs: Optional[int] = None, min_occupancy: Optional[int] = None, defines: Optional[Dict[str, Any]] = None)
+class hk.Kernel(fn: Callable, *, arch: Optional[str] = None, warps: int = 1, grid: Optional[Callable] = None, name: Optional[str] = None, max_vgprs: Optional[int] = None, min_occupancy: Optional[int] = None, defines: Optional[Dict[str, Any]] = None, noalias: bool = False, preload: bool = False)
 ```
 
 A tile kernel. Call it to launch; `trace`, `source` and `build` stop
@@ -854,6 +854,26 @@ s_waitcnt. A spilling build raises rather than being returned.
 
 Needs hipcc but not a GPU, which is what makes the whole development
 loop runnable on a machine with no Radeon in it.
+
+#### `Kernel.build_flags`
+
+```python
+Kernel.build_flags(self, traced: TracedKernel) -> Tuple[str, ...]
+```
+
+*New after 0.4.0*
+
+hipcc flags of this kernel's builds beyond the target's.
+
+#### `Kernel.preloaded`
+
+```python
+Kernel.preloaded(self) -> Kernel
+```
+
+*New after 0.4.0*
+
+This kernel with `preload` set: its own builds, the same body.
 
 #### `Kernel.compile`
 
@@ -3800,10 +3820,10 @@ Look up a target by gfx name or by the GPU_TARGET name common.mk uses.
 ### `hk.target.Target`
 
 ```python
-class hk.target.Target(arch: str, gpu_target: str, kittens_define: str, wave: int, max_waves_per_simd: int, vgprs_per_simd: int, vgpr_granule: int, sgprs_per_wave: int, lds_per_workgroup: int, lds_pool_bytes: int, simds_per_lds_pool: int, mma: Dict[str, hk.target.base.MmaShape] = <factory>, has_global_to_lds_dma: bool = False, mma_operands_mirrored: bool = False, fast_smem_layouts: Tuple[str, ...] = ('row',), verified: bool = True, unified_agprs: bool = False, tile_shapes: bool = False, lgkmcnt_max: int = 63, extra_includes: Tuple[str, ...] = (), strips: bool = False) -> None
+class hk.target.Target(arch: str, gpu_target: str, kittens_define: str, wave: int, max_waves_per_simd: int, vgprs_per_simd: int, vgpr_granule: int, sgprs_per_wave: int, lds_per_workgroup: int, lds_pool_bytes: int, simds_per_lds_pool: int, mma: Dict[str, hk.target.base.MmaShape] = <factory>, has_global_to_lds_dma: bool = False, mma_operands_mirrored: bool = False, fast_smem_layouts: Tuple[str, ...] = ('row',), verified: bool = True, unified_agprs: bool = False, tile_shapes: bool = False, lgkmcnt_max: int = 63, extra_includes: Tuple[str, ...] = (), strips: bool = False, kernarg_preload: bool = False) -> None
 ```
 
-Target(arch: str, gpu_target: str, kittens_define: str, wave: int, max_waves_per_simd: int, vgprs_per_simd: int, vgpr_granule: int, sgprs_per_wave: int, lds_per_workgroup: int, lds_pool_bytes: int, simds_per_lds_pool: int, mma: Dict[str, hk.target.base.MmaShape] = <factory>, has_global_to_lds_dma: bool = False, mma_operands_mirrored: bool = False, fast_smem_layouts: Tuple[str, ...] = ('row',), verified: bool = True, unified_agprs: bool = False, tile_shapes: bool = False, lgkmcnt_max: int = 63, extra_includes: Tuple[str, ...] = (), strips: bool = False)
+Target(arch: str, gpu_target: str, kittens_define: str, wave: int, max_waves_per_simd: int, vgprs_per_simd: int, vgpr_granule: int, sgprs_per_wave: int, lds_per_workgroup: int, lds_pool_bytes: int, simds_per_lds_pool: int, mma: Dict[str, hk.target.base.MmaShape] = <factory>, has_global_to_lds_dma: bool = False, mma_operands_mirrored: bool = False, fast_smem_layouts: Tuple[str, ...] = ('row',), verified: bool = True, unified_agprs: bool = False, tile_shapes: bool = False, lgkmcnt_max: int = 63, extra_includes: Tuple[str, ...] = (), strips: bool = False, kernarg_preload: bool = False)
 
 #### `Target.vgpr_rounded`
 
