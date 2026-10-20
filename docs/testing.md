@@ -430,6 +430,12 @@ others, and four four hours later on `47b40aa`, after
   the largest change used 31% of its pair's tolerance (Inductor against the
   8192-row softmax, -2.2% of 7.2%).
 
+[Chapter 38](history/38-rdna-losses.md) refreshed it from four
+back-to-back runs on GPU 3, when RDNA's stores began rounding to even and
+V's transpose was packed (a new `kernels` hash, Triton 3.8.0 in the venv):
+57 gated pairs, tolerances 3.0-6.6%, the median pair moved 0.0%, attention
+against torch +6-10%, and a gate run after it passed.
+
 The previous baseline, measured on hk as of
 [chapter 26](history/26-the-scoreboard-retuned.md), was the one tested for
 firing. With hk's GEMM made slower on purpose (`k_step` 32 instead of 64 in

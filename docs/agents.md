@@ -72,8 +72,9 @@ The ratio comes from, in this order:
    `hk.autotune.routes`);
 3. **the record**: a ratio a chapter measured, cited, and only where the
    engine's largest kernel in the family is the one it was measured
-   against. hk's paged decode is 0.83-0.95x TRITON_ATTN's kernel (chapter
-   20), and that says nothing about stock 0.31's `kernel_paged_attention_2d`.
+   against. hk's paged decode is 0.86-1.12x TRITON_ATTN's kernel under
+   triton-rocm 3.7.1 at 16-64 requests ([chapter 38](history/38-rdna-losses.md)),
+   and that says nothing about stock 0.31's `kernel_paged_attention_2d`.
 
 With no ratio, the ceiling is the **roofline**'s, labelled "at most": for
 the linear layers each of the model's calls at max(FLOPs / peak, bytes /
@@ -166,11 +167,14 @@ exactly 1.0 whatever Q and K are (`tests/hk/gpu/test_attn.py`). A tolerance
 is where a wrong kernel hides; a half-ulp bias in a bf16 conversion passed
 all 31 of attention's tolerance cases while changing what a model said
 ([phase 6](history/05-phase-6-torch-ops.md)). Random inputs do not make an
-exact case even for an add: HipKittens rounds an fp32 tile to bf16 with
-ties away from zero and torch with ties to even, a sum of two bf16 values is
-an exact tie a fifth of the time, and the stub differs from torch at 10.7%
-of its elements, every one a tie ([chapter 36](history/36-the-agent-loop.md)).
-The stub's exact case is small integers, which need no rounding at all.
+exact case in general: a kernel's fp32 arithmetic need not be torch's, in
+order or in rounding. For the stub's add it happens to be: a sum of two bf16
+values is an exact tie a fifth of the time, HipKittens' stores rounded those
+ties away from zero where torch rounds them to even, and the stub differed
+from torch at 10.7% of its elements ([chapter 36](history/36-the-agent-loop.md));
+RDNA's stores now round to even and it agrees at every element
+([chapter 38](history/38-rdna-losses.md)). The stub's exact case is still
+small integers, which need no rounding at all.
 
 ## Prove it helps
 
@@ -282,6 +286,13 @@ Each of these has cost this project a wrong conclusion once.
   is 40% of a decode step at 16 x 4096 on vLLM 0.31's default backend,
   against 25% on TRITON_ATTN's. Profile the engine, backend, batch and
   context you serve, and say whether a share is of a step or a request.
+- **An opponent's version nobody checked.** A Triton 3.8.0 wheel was
+  installed over the triton-rocm 3.7.1 vLLM 0.31 is built for, and its
+  decode kernel is up to 40% slower; hk's walk read as 1.03-1.30x "Triton"
+  where it is 0.86-1.12x the Triton chapter 20 measured
+  ([chapter 38](history/38-rdna-losses.md)). Print `triton.__version__`
+  (and torch's, FlyDSL's) beside a ratio, and re-run the record's own tool
+  before calling a record wrong.
 - **A kernel test with only a tolerance.** Every new kernel needs a case
   with an exact answer (V = 1 for attention, small integers for an add);
   `new-op` writes one, and `check()` runs it first.

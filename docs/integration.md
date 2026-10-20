@@ -226,16 +226,20 @@ decodes first by the builder:
   (`unified_attention`, its 16-segment 3-D path), reading the head-major
   cache through the same transposed view. That is hk's decode losing, and it
   is recorded as such.
-* **Decode, sixteen requests and up**: `hk.ops.paged`'s split walk and its
-  merge, two launches, reading the engine's query and writing its output in
-  place. The split count is planned from the batch size and max_model_len
-  alone, so a graph captured on any batch is right for every replay. On
-  vLLM 0.31 Triton's 2-D kernel is 5-20% faster than the walk kernel for
-  kernel, but giving it these batches made the captured step slower (4096 x
-  16: 59.0 -> 74.2 ms), and the step is what is kept
-  ([vLLM 0.31](history/20-vllm-031.md)). Batches are padded to a capture
-  size first, so 9-15 requests run as 16, on hk.
+* **Decode, sixteen requests and up**: `hk.ops.paged`'s split walk and,
+  with more than one split, its merge, reading the engine's query and
+  writing its output in place. The split count is planned from the batch
+  size and max_model_len alone (about 256 workgroups), so a graph captured
+  on any batch is right for every replay. Kernel for kernel the walk is
+  0.86-1.12x triton-rocm 3.7.1's kernel at 16-64 requests (1.03-1.30x
+  Triton 3.8.0's at 16, 32 and 64), but in the captured step Triton's
+  kernel is the slower ([chapter 38](history/38-rdna-losses.md)).
+  Batches are padded to a capture size first, so 9-15 requests run as 16, on hk.
   `vllm_backend.TRITON_DECODE_MAX` is the boundary; 0 turns the routing off.
+  `HK_TRITON_DECODE_ALSO="17-24,49-56"` gives Triton further ranges of
+  batch sizes; off by default, because in the captured step Triton's
+  kernel at 17-22 requests took 1.93 ms a call against hk's 0.451, though
+  on the bench it is the faster at 24.
 * **Prefill**: `hk.ops.paged_prefill`, one launch for every prefill request
   in the step, reading K/V through the page table. A cached prefix or an
   earlier chunk is just context in front of the new tokens, so prefix caching
@@ -769,6 +773,7 @@ spelled:
 | `HK_SGLANG_ROUTES` | `sglang.py`, via `engine.shipped_table` | a routing table for SGLang's linear layers instead of the shipped one |
 | `HK_SGLANG_MOE` | `_sglang_plugin.py` | `1`: the torch top-k and hk's expert GEMMs; `topk`: the torch top-k alone |
 | `HK_SPLITS` | `ops/paged.py` | the decode backend's KV split: `auto` (default), `off`/`0`/`1`, or a count |
+| `HK_TRITON_DECODE_ALSO` | `vllm_backend.py` | decode batch sizes past `TRITON_DECODE_MAX` that run Triton's kernel on hk's cache, as ranges: `17-24,49-56` (default none) |
 | `HK_NORM_LAYOUT` | `ops/norm.py` | `strip` (default): the norms and softmax run on the strip kernel wherever a row fits one; `tile`: always on the tile kernels |
 | `HK_NORM_FOLD` | `ops/norm.py` | the tile kernels' plan for the weighted norms: `auto` (default), `on`, `off`. Reached only for rows too wide for a strip (over 32768 elements) or under `HK_NORM_LAYOUT=tile` |
 | `HK_HIPKITTENS_KERNELS` | `ops/hipkittens.py` | HipKittens' `kernels/cdna4` to build the wrapped CDNA4 kernels from (default: the submodule's) |

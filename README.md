@@ -191,18 +191,19 @@ ones replaced here.
 | GEMM, bf16, Qwen3-8B's linear shapes | 87.9-91.3 TFLOP/s: a tie with FlyDSL, 0.99-1.01x; 1.09-1.11x tuned Triton; 1.28-1.39x hipBLASLt | FlyDSL's dispatcher and autotuner; Triton autotuned; hipBLASLt | [the GEMM schedule](docs/history/28-gemm-schedule.md) |
 | RMSNorm, softmax, on register strips | 1.02-1.12x and 1.02x: a win or a tie at 1-8192 rows | the fastest of Triton and FlyDSL, each autotuned, and Inductor | [strips](docs/history/27-strips.md) |
 | fused add + RMSNorm, on register strips | a tie, 0.83-1.11x across runs | the same | [strips](docs/history/27-strips.md) |
-| attention forward, n4096, GQA 4 | 1.16x causal, 0.99x non-causal; a tie with HipKittens' C++ | torch 2.13's SDPA (3.3x faster than 2.10's, against which hk is 2.7-3.8x); FlyDSL has no attention on gfx11 | [chapter 30](docs/history/30-flydsl-routes-gate-contracts.md), [Phase 4](docs/history/03-phase-4-attention.md) |
-| dropout, KV cache write, LayerNorm backward | 1.02x; 1.18-3.00x; 1.12x at 1024 wide, *slower* (0.66-0.92x) at 2048-8192 | the Triton tutorial or a Triton row kernel | [rows by index](docs/history/19-rows-by-index.md) |
+| attention forward, n4096, GQA 4 | 1.24x causal, 1.05x non-causal ([chapter 38](docs/history/38-rdna-losses.md)'s packed transpose; 1.16x and 0.99x before) | torch 2.13's SDPA (3.3x faster than 2.10's, against which hk is 2.7-3.8x); FlyDSL has no attention on gfx11 | [chapter 30](docs/history/30-flydsl-routes-gate-contracts.md), [Phase 4](docs/history/03-phase-4-attention.md) |
+| dropout, KV cache write | 1.02x; 1.18-3.00x | the Triton tutorial or a Triton row kernel | [rows by index](docs/history/19-rows-by-index.md) |
+| LayerNorm backward, on register strips | 1.90x at 1024 wide, 1.69x at 2048, 1.15x at 4096 and 8192 | the Triton tutorial | [chapter 38](docs/history/38-rdna-losses.md) |
 
 **Kernels inside the engines**, against the kernel the engine runs:
 
 | kernel | result | against | source |
 |---|---|---|---|
 | decode GEMV, 1-32 tokens | 1.93-2.03x per step; upstream vLLM's `wvSplitK` is ahead at one token | hipBLASLt | [cross-workgroup reduction](docs/history/11-cross-workgroup-reduction.md) |
-| W4A16 decode GEMM (AWQ), fp16 | 1.40-2.61x; *slower* (0.69-0.90x) than `gptq_gemm_rdna3` at 1-4 tokens | vLLM 0.31's Triton AWQ kernel | [4-bit weights](docs/history/22-int4.md) |
+| W4A16 decode GEMM (AWQ), fp16 | 1.40-2.61x; *slower* (0.69-0.90x) than `gptq_gemm_rdna3` at 1-4 tokens, which keeps GPTQ checkpoints (end to end a tie, hk takes no call) | vLLM 0.31's Triton AWQ kernel | [4-bit weights](docs/history/22-int4.md), [chapter 38](docs/history/38-rdna-losses.md) |
 | MoE GEMM, bf16 | 1.00-2.77x at 1-256 tokens; *slower* above, where the layer stays on Triton | vLLM 0.31's Triton `fused_moe` | [MoE](docs/history/21-moe.md) |
 | paged prefill, cached prefixes and chunks included | 3.6-7.9x | vLLM's Triton `unified_attention` | [captured whole](docs/history/17-the-decode-step-captured-whole.md) |
-| paged decode attention | *slower*: 0.83-0.95x per layer at 16-64 requests; up to 8 requests the backend runs Triton's kernel on hk's cache | vLLM 0.31's Triton attention, captured | [vLLM 0.31](docs/history/20-vllm-031.md) |
+| paged decode attention | *slower* kernel for kernel at most batches: 0.86-1.12x per layer at 16-64 requests against triton-rocm 3.7.1 (1.03-1.30x at 16, 32 and 64 against Triton 3.8.0); in the captured step Triton's kernel is the slower, so 16 requests and up stay on hk; up to 8 the backend runs Triton's kernel on hk's cache | vLLM 0.31's Triton attention on hk's cache | [chapter 38](docs/history/38-rdna-losses.md) |
 
 ## Repository layout
 

@@ -43,6 +43,7 @@ rewritten); they stay because the chapters cite them.
 | kernel | result | against | verdict | source |
 |---|---|---|---|---|
 | vLLM 0.31 end to end, Qwen3-8B, attention backend / both patches | 1.05-1.48x / 1.20-1.75x per request; 1.01-1.39x TRITON_ATTN | stock vLLM 0.31.0 (ROCM_ATTN), and the TRITON_ATTN backend hk replaces | win at every shape; the gain over TRITON_ATTN is prefill | [vLLM 0.31](history/20-vllm-031.md) |
+| vLLM 0.31 end to end, Qwen3-8B, with chapter 38's decode, graphs on, 16-64 requests at 1024 and 4096 tokens | attention backend 1.06-1.43x per request, decode step 1.06-1.47x (before 1.04-1.42x and 1.03-1.42x); both patches 1.53-1.86x, decode step 1.79-2.05x (before 1.50-1.83x and 1.72-1.96x) | stock vLLM 0.31.0, each tree against its own stock arm | win at every shape; the decode step 4-9% shorter than before, outputs identical | [chapter 38](history/38-rdna-losses.md) |
 | vLLM 0.31 end to end, Qwen3-8B, linear routes with FlyDSL's GEMM rows | decode step 1.14x hk+gemm's at 96-128 requests (1.394x / 1.666x stock); prefill 0.9-2.5% faster at 1-4 requests; tie elsewhere. Re-measured after chapter 28, most prefill rows went: decode the same (1.413x / 1.651x stock), prefill 1.5-1.7% faster at 8192-token steps and 1.2% slower at a 1024-token one | the same patches routed by the table without FlyDSL rows; stock vLLM 0.31.0; the table before re-measuring | win where a step's M is one FlyDSL's tiles divide and it measured faster; otherwise unchanged | [chapter 30](history/30-flydsl-routes-gate-contracts.md), [chapter 31](history/31-remeasured.md) |
 | vLLM 0.31 end to end, Qwen2.5-7B-Instruct, a model no table had: linear patch measuring its shapes at load | 1.19-1.32x per request at 16-32 requests, 1.17x / 1.31x at 96 / 128, 1.04-1.15x at 1-4; decode step 1.22-1.38x at 16-32 and 128 requests, a tie at 1-4 and 96. First start 60 s longer (the budget), the second 43 s, then nothing | stock vLLM 0.31.0 | win per request at every shape; decode gains where a step has 6-64 or 128 rows | [chapter 35](history/35-any-model.md) |
 | vLLM 0.31 end to end, Qwen3-8B-AWQ, 4-bit patch | 1.07-3.80x per request; decode step 1.57-4.46x | stock vLLM 0.31.0, fp16, Triton AWQ | win at every shape | [4-bit weights](history/22-int4.md) |
@@ -57,8 +58,9 @@ rewritten); they stay because the chapters cite them.
 |---|---|---|---|---|
 | GEMM, bf16, Qwen3-8B's linear shapes | 87.9-91.3 TFLOP/s | FlyDSL's dispatcher and its autotuner; Triton autotuned over gfx1100's space; hipBLASLt | tie with FlyDSL at all five shapes, 0.99-1.01x (from 0.95-0.98x), once `s_setprio` stopped fencing the scheduler; win over tuned Triton 1.09-1.11x and hipBLASLt 1.28-1.39x | [the GEMM schedule](history/28-gemm-schedule.md) |
 | RMSNorm (weighted), fused add + RMSNorm, softmax, on register strips | RMSNorm 1.02-1.12x, softmax 1.02x, fused add 0.83-1.11x across runs | the fastest of Triton and FlyDSL, each autotuned, and Inductor | RMSNorm and softmax win or tie at 1-8192 rows; the fused add ties, with a loss at 1 row in one run of five (the clock) and at 8192 rows in one of two (buffer placement) | [strips](history/27-strips.md) |
-| attention forward, n4096 GQA 4, against torch 2.13 | 1.16x causal, 0.99x non-causal | torch 2.13.0+rocm7.2's SDPA, 3.3x faster than 2.10's causal | win causal, tie non-causal; the 2.8-4.0x elsewhere on this page is against an older torch (2.10 where recorded) | [chapter 30](history/30-flydsl-routes-gate-contracts.md) |
-| dropout, KV cache write, LayerNorm backward, embedding (`examples/07`-`10`) | dropout 1.02x; KV write 1.18-3.00x; LayerNorm backward 1.12x at 1024 wide, 0.66-0.92x wider; embedding 1.18-1.28x torch at 1-32 tokens, 0.93x Triton at 4096 | the Triton tutorial or a Triton row kernel; torch | win for dropout, the KV write and LayerNorm backward at 1024; loss where a 16-row tile cannot hold a 2048+ wide row, and for the embedding at 4096 tokens | [rows by index](history/19-rows-by-index.md) |
+| attention forward, n4096 GQA 4, against torch 2.13 | 1.24x causal, 1.05x non-causal (1.16x and 0.99x before V's transpose was packed) | torch 2.13.0+rocm7.2's SDPA, 3.3x faster than 2.10's causal | win; the 2.8-4.0x elsewhere on this page is against an older torch (2.10 where recorded) | [chapter 30](history/30-flydsl-routes-gate-contracts.md), [chapter 38](history/38-rdna-losses.md) |
+| dropout, KV cache write, embedding (`examples/07`-`09`) | dropout 1.02x; KV write 1.18-3.00x; embedding 1.18-1.28x torch at 1-32 tokens, 0.93x Triton at 4096 | the Triton tutorial or a Triton row kernel; torch | win for dropout and the KV write; loss for the embedding at 4096 tokens | [rows by index](history/19-rows-by-index.md) |
+| LayerNorm backward on register strips (`examples/10`), 4096 rows | 1.90x at 1024 wide, 1.69x at 2048, 1.15x at 4096 and 8192 (the 16-row tiles: 1.27x, 0.88x, 0.69x, 0.65x in the same runs) | the Triton tutorial 05 backward | win at every width; a strip holds a row of any width, read once | [chapter 38](history/38-rdna-losses.md) |
 
 ### Kernels against the kernel the engine runs
 
@@ -72,7 +74,8 @@ rewritten); they stay because the chapters cite them.
 | MoE GEMM (bf16), OLMoE and Qwen3-30B-A3B shapes | 1.00-2.77x at 1-256 tokens; 0.41-0.87x at 512-4096 | vLLM 0.31's Triton `fused_moe` kernel, its own config | win to 256 tokens, which the route takes; loss above, which stays on Triton | [MoE](history/21-moe.md) |
 | MoE layer (bf16) in SGLang, OLMoE and Qwen3-30B-A3B shapes | 1.03-2.51x at 1-256 tokens; 0.61-1.01x at 512-2048 | SGLang's Triton fused-MoE, its default configs | win to 256 tokens, which the route takes; above, it stays on Triton | [SGLang MoE](history/25-sglang-moe.md) |
 | paged prefill | 3.6-7.9x | vLLM's Triton `unified_attention` | win | [captured whole](history/17-the-decode-step-captured-whole.md) |
-| paged decode attention, vLLM 0.31 | 0.83-0.95x per layer at 16-64 requests | Triton's `unified_attention` on hk's cache, triton-rocm 3.7.1 | loss, kernel for kernel; yet routing 16+ requests to Triton slowed the captured step (4096 x 16: 59.0 -> 74.2 ms), so only up to 8 go there | [vLLM 0.31](history/20-vllm-031.md) |
+| paged decode attention, vLLM 0.31's cache | against triton-rocm 3.7.1 (vLLM 0.31's pin): 1.12x at 1024 x 16, 0.99x at 4096 x 16, 1.01-1.02x at 48, 0.86-0.95x at 24, 32, 40, 56 and 64; against Triton 3.8.0 (installed over it in the pod): 1.03-1.30x at 16, 32 and 64, 1.07-1.13x at 40, 1.02-1.07x at 48, 0.90x at 24, 0.96-1.03x at 56; hk 581-721 GB/s, Triton 3.7.1 730-810 | Triton's `unified_attention` on hk's cache as TRITON_ATTN calls it; on TRITON_ATTN's own cache it is no faster | loss against 3.7.1 at most batches, kernel for kernel; in the captured step Triton's kernel is the slower (1.93 ms a call against hk's 0.451 at 17-22 requests), so 16 requests and up stay on hk; up to 8 Triton's 3-D kernel runs on hk's cache | [chapter 38](history/38-rdna-losses.md) |
+| bf16 stores, RDNA | an add of random bf16 rows bit for bit torch's at every element (89.3% before, every difference a tie); norms and softmax a few ties a million closer; cost within about 1% | torch's round to nearest even | tie with torch where an output is a tie; the GEMM keeps ties away, 0.7% cheaper and no tie at 4096³ | [chapter 38](history/38-rdna-losses.md) |
 
 ### Earlier results, since replaced
 
@@ -83,6 +86,7 @@ rewritten); they stay because the chapters cite them.
 | norms, elementwise, RoPE, quantize | 13 of 15 cases faster | `torch.compile` | win; the other two are a tie | [Phases 1 and 2](history/01-phases-1-2.md) |
 | RMSNorm, SiLU-mul | slower | Inductor, at Qwen3-8B shapes | loss; the patches were dropped | [strided globals](history/12-strided-globals.md) |
 | paged decode attention | 0.66-0.97x per layer up to 8 requests, 1.02-1.04x at 16, 2.6x at 32 | vLLM's Triton attention, captured | loss below 16 requests, where the backend runs Triton's kernel on hk's cache | [captured whole](history/17-the-decode-step-captured-whole.md) |
+| paged decode attention, vLLM 0.31 | 0.83-0.95x per layer at 16-64 requests | Triton's `unified_attention` on hk's cache, triton-rocm 3.7.1 | loss, kernel for kernel; replaced: with V's transpose packed and the split plan re-measured, 0.86-1.12x the same Triton | [vLLM 0.31](history/20-vllm-031.md) |
 | vLLM end to end, linear-layer patch | 1.10-1.84x per request | stock vLLM 0.16.1.dev0 | win at every shape, in both modes | [cross-workgroup reduction](history/11-cross-workgroup-reduction.md) |
 | vLLM end to end under its defaults, attention backend / both patches | 1.007-1.48x / 1.48-1.85x per request | stock vLLM 0.16.1.dev0, CUDA graphs, prefix caching, chunked prefill | win at every shape | [captured whole](history/17-the-decode-step-captured-whole.md) |
 | shipped ops at 7-8B shapes (`examples/validate.py`) | GEMM 1.12x, decode GEMV 3.90-4.38x, attention 2.76x / 3.94x causal, quantize 2.78x; norms 0.88-0.96x | torch eager, PyTorch 2.10 | win, except norms and elementwise, 2-12% behind torch's own fused kernels | [validation](history/16-validation-and-the-cross-warp-race.md) |
@@ -518,6 +522,37 @@ every launch: at 1024 tokens and one request the walk is 21.0 us to Triton's
 through hk's view 4.1 to the Triton one's 2.6 (`tools/hk-bench/paged_kernels.py`).
 The kernel reaches 83-86% of the DRAM bandwidth where there is enough of it
 to stream.
+
+### On vLLM 0.31's cache, with V's transpose packed
+
+[Chapter 38](history/38-rdna-losses.md). Everything above was measured on
+vLLM 0.16's cache, K and V in two planes; vLLM 0.31 keeps K and V side by
+side in each token's row. `tools/hk-bench/paged_variants.py` measures there,
+every layer's cache cold, as a CUDA graph's replay, 9 rounds interleaved,
+ms a layer; Triton as TRITON_ATTN calls it (its 3-D kernel to 16 requests,
+2-D above), ratios Triton over the arm, each from its own run. "main" is
+the walk before chapter 38; "now" packs V's transpose (a page's loop from
+about 3,350 instructions to 1,425) and plans for 256 workgroups instead of
+1,024. The pod's venv has Triton 3.8.0 installed over the triton-rocm 3.7.1
+vLLM 0.31 is built for, and 3.8.0's kernel is up to 40% slower; both:
+
+| ctx x batch | Triton 3.7.1 | Triton 3.8.0 | main | now | now vs 3.7.1 | now vs 3.8.0 |
+|---|---|---|---|---|---|---|
+| 1024 x 16 | 0.1254 | 0.1246 | 0.1782 | 0.1155 | 1.12x | 1.08x |
+| 1024 x 32 | 0.1838 | 0.2582 | 0.2791 | 0.1990 | 0.93x | 1.30x |
+| 1024 x 64 | 0.3530 | 0.4413 | 0.4618 | 0.3915 | 0.90x | 1.13x |
+| 4096 x 16 | 0.3777 | 0.3988 | 0.4656 | 0.3881 | 0.99x | 1.03x |
+| 4096 x 32 | 0.6907 | 0.9462 | 0.8281 | 0.7451 | 0.93x | 1.27x |
+| 4096 x 64 | 1.3467 | 1.6118 | 1.5493 | 1.4889 | 0.90x | 1.08x |
+
+At the capture sizes in between, against 3.7.1 / 3.8.0: 0.86-0.87x / 0.90x
+at 24, 0.89x / 1.07-1.13x at 40, 1.01-1.02x / 1.02-1.07x at 48, 0.95x /
+0.96-1.03x at 56. At one and four requests
+Triton's 3-D kernel is 1.03-1.45x hk's walk and at eight they tie
+(0.97-1.01x), so up to 8 requests stay Triton's. In a captured vLLM step
+Triton's kernel at 17-22 requests took 1.93 ms a call against 0.517 on the
+bench, and hk's walk 0.451 ms, so the batches in between stay on hk
+(`HK_TRITON_DECODE_ALSO` hands them over, off by default).
 
 ## Paged prefill
 
