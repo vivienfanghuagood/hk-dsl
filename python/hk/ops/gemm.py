@@ -406,8 +406,14 @@ def gemm_kernel(name: str, *, block_m: int = 128, block_n: int = 128,
     if write_pos not in (0, 1, 2):
         raise ValueError(f"write_pos={write_pos} must be 0, 1 or 2")
 
+    # C's store rounds ties away from zero, not to even as the other stores
+    # do: a GEMM's fp32 output is a long sum of products, and at 4096^3 on
+    # random inputs none of its 16.8M elements was a tie, while rounding to
+    # even cost the call 0.7% (tools/hk-bench/bf16_store_round.py,
+    # docs/history/38-rdna-losses.md). CDNA ignores it.
     return hk.kernel(body, warps=warps, grid=_grid, name=name,
-                     max_vgprs=max_vgprs, min_occupancy=min_occupancy)
+                     max_vgprs=max_vgprs, min_occupancy=min_occupancy,
+                     defines={"HK_BF16_STORE_ROUND": 1})
 
 
 #: The tiling the C++ calls `big_config`, in one LDS buffer (see
