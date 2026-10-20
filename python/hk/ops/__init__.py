@@ -24,7 +24,8 @@ from .norm import fused_add_rms_norm, layernorm, rms_norm, rmsnorm, softmax
 from .quant import dequantize, quantize
 
 __all__ = [
-    "attn", "sdpa", "elementwise", "fused", "gemm", "decode_gemm", "norm", "quant",
+    "attn", "sdpa", "elementwise", "fused", "gemm", "decode_gemm", "norm", "paged",
+    "quant",
     "add", "sub", "mul", "maximum", "minimum",
     "exp", "relu", "gelu", "neg", "abs",
     "rmsnorm", "layernorm", "softmax", "rms_norm", "fused_add_rms_norm",

@@ -36,7 +36,9 @@ from .attn import _derive
 
 NEG_INF = float("-inf")
 
-#: Query rows a workgroup owns, and the KV step -- the cache's page.
+#: Query rows a gfx1100 workgroup owns (gfx950: attn_cdna.Q_TILE, 256; build
+#: the work list with `work_list`, which knows), and the KV step -- the
+#: cache's page.
 Q_TILE = 192
 KV_BLOCK = 32
 
@@ -215,6 +217,11 @@ def _native_cdna() -> bool:
 
 
 def kernel_for(head_dim: int, group: int, scale: Optional[float] = None):
+    """The paged prefill for (head_dim, group, scale). On gfx1100 `group`
+    (query heads a KV head) is compiled in and must match the tensors, and
+    head_dim is a multiple of 32 up to 192. On gfx950 this is
+    attn_cdna.paged_kernel_for: `group` is read off the shapes (the argument
+    is ignored) and head_dim is 64 or 128."""
     if _native_cdna():
         from . import attn_cdna  # noqa: PLC0415
 

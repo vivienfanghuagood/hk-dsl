@@ -27,8 +27,8 @@ dense kernel already uses.
 Its first form had no split across the KV axis -- one workgroup per (request,
 kv head), walking the whole sequence -- and that was most of the gap to
 Triton. `paged_decode_split_kernel` and `merge_splits` close it, with the
-split count planned per call (`plan_splits`). There is still no paged prefill:
-the backend serves prefill with the dense kernel. The measurements are in
+split count planned per call (`plan_splits`). The prefill half is
+hk.ops.paged_prefill. The measurements are in
 docs/history/06-phase-7-paged-decode.md.
 """
 
@@ -337,6 +337,11 @@ class _Kernels(dict):
 
             return paged_cdna.kernel_for(head_dim, 1, "plain")
         return dict.__getitem__(self, head_dim)
+
+    def get(self, head_dim, default=None):
+        """As `[]`, so gfx950 gets paged_cdna's kernel here too (dict.get
+        does not go through __getitem__)."""
+        return self[head_dim] if head_dim in self else default
 
 
 #: head_dim -> kernel. Nothing is traced or compiled at import.
@@ -753,6 +758,10 @@ MAX_SPLITS = 32
 
 def plan_splits(n_reqs: int, n_kv_heads: int, n_pages: int) -> int:
     """How many ways to cut the KV axis, given how empty the machine is.
+
+    On gfx950 the merge reads splits eight at a time, so above 8 a plan must
+    be a multiple of 8 there (vllm_backend.decode_splits rounds to a power of
+    two); gfx1100's merge takes any count.
 
     Without a split the grid is `n_reqs * n_kv_heads` one-warp workgroups.
     This asks for enough splits to reach `TARGET_WORKGROUPS`, capped by the
