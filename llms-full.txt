@@ -516,8 +516,10 @@ PASS
 Correct, fully occupied and half the speed of `torch.compile`: the tile
 kernel the first page of the docs teaches is the wrong shape for a streaming
 op on this card ([the goal](design/dx-goal.md) measured the same, 0.61x).
-`hk.ops.silu_mul`, the same pass on strips, measured 56.8 us and a tie with
-`torch.compile` in the same harness.
+Rewritten on register strips as the hint says -- the ten-line kernel in
+[llms.txt](../llms.txt) -- it measured 61.7 us, a tie with `torch.compile`
+(and 1.02x it on a W7900D); `hk.ops.silu_mul`, the tuned op for the same
+pass, 56.8 us.
 
 ## What it checks
 
@@ -1269,6 +1271,31 @@ fp8 is a WMMA operand only where the target has an fp8 matrix instruction (gfx12
 ## Device values
 
 What a kernel body computes with. They are made by loads, `hk.zeros` and friends, never constructed directly; their methods are the language. A method ending in `_` writes the value in place; `into=` names the value an operation writes.
+
+**Operators** (`n` a Python number, `a`, `b` values of the column's kind; a vector broadcasts against a tile along the axis it was reduced from):
+
+| operator | `Tile` | `Vec` | `Int` | `Bool` |
+|---|---|---|---|---|
+| `a + b` | yes | yes | yes |  |
+| `n + a` | yes | yes | yes |  |
+| `a - b` | yes | yes | yes |  |
+| `n - a` |  |  | yes |  |
+| `a * b` | yes | yes | yes |  |
+| `n * a` | yes | yes | yes |  |
+| `a / b` | yes | yes | refused |  |
+| `n / a` |  |  |  |  |
+| `a // b` | refused | refused | yes |  |
+| `a % b` | refused | refused | yes |  |
+| `-a` | yes | yes | yes |  |
+| `abs(a)` |  |  |  |  |
+| `a += b (also -= *= /=)` | yes | yes | yes (rebinds) |  |
+| `a @ b` | yes |  |  |  |
+| `a < b (<= > >= == !=)` |  |  | yes |  |
+| `a & b, a \| b, a ^ b` |  |  |  | yes |
+| `~a` |  |  |  | yes |
+| `v[:, None], v[None, :]` |  | yes |  |  |
+
+`acc += a @ b.T` is one matrix-core instruction into `acc` (the variant follows from the transposes); `t.sum(axis=1)` and friends are lazy reductions that `+=`, `max_` or `.value()` land.
 
 ### `hk.Tile`
 

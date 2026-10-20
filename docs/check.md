@@ -90,8 +90,10 @@ PASS
 Correct, fully occupied and half the speed of `torch.compile`: the tile
 kernel the first page of the docs teaches is the wrong shape for a streaming
 op on this card ([the goal](design/dx-goal.md) measured the same, 0.61x).
-`hk.ops.silu_mul`, the same pass on strips, measured 56.8 us and a tie with
-`torch.compile` in the same harness.
+Rewritten on register strips as the hint says -- the ten-line kernel in
+[llms.txt](../llms.txt) -- it measured 61.7 us, a tie with `torch.compile`
+(and 1.02x it on a W7900D); `hk.ops.silu_mul`, the tuned op for the same
+pass, 56.8 us.
 
 ## What it checks
 

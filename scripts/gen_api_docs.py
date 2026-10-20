@@ -485,6 +485,7 @@ def page_hk(since: Since) -> Page:
            "and friends, never constructed directly; their methods are the "
            "language. A method ending in `_` writes the value in place; `into=` "
            "names the value an operation writes.")
+    p.para(operator_table())
     for n in ["Tile", "Vec", "Global", "View", "SharedTile", "SharedVec", "Granules",
               "Int", "Bool", "Coord"]:
         obj = getattr(hk, n)
@@ -530,6 +531,54 @@ def page_hk(since: Since) -> Page:
         p.h2("Also exported")
         p.para(", ".join(f"`hk.{m}`" for m in missing))
     return p
+
+
+#: Python operators and the methods that implement them, in the order shown.
+OPERATORS = [
+    ("a + b", "__add__"), ("n + a", "__radd__"), ("a - b", "__sub__"),
+    ("n - a", "__rsub__"), ("a * b", "__mul__"), ("n * a", "__rmul__"),
+    ("a / b", "__truediv__"), ("n / a", "__rtruediv__"), ("a // b", "__floordiv__"),
+    ("a % b", "__mod__"), ("-a", "__neg__"), ("abs(a)", "__abs__"),
+    ("a += b (also -= *= /=)", "__iadd__"), ("a @ b", "__matmul__"),
+    ("a < b (<= > >= == !=)", "__lt__"), ("a & b, a | b, a ^ b", "__and__"),
+    ("~a", "__invert__"), ("v[:, None], v[None, :]", "__getitem__"),
+]
+
+
+def operator_table() -> str:
+    """Which operator each device value takes, read off the classes: a
+    method that raises (`//` on a tile) is "refused"."""
+    import hk
+
+    classes = [hk.Tile, hk.Vec, hk.Int, hk.Bool]
+    rows = ["**Operators** (`n` a Python number, `a`, `b` values of the column's "
+            "kind; a vector broadcasts against a tile along the axis it was "
+            "reduced from):", "",
+            "| operator | " + " | ".join(f"`{c.__name__}`" for c in classes) + " |",
+            "|---" * (len(classes) + 1) + "|"]
+    for text, dunder in OPERATORS:
+        cells = []
+        for c in classes:
+            fn = getattr(c, dunder, None)
+            own = fn is not None and any(dunder in k.__dict__ for k in c.__mro__
+                                         if k.__module__.startswith("hk"))
+            if not own:
+                rebinds = dunder == "__iadd__" and any(
+                    "__add__" in k.__dict__ for k in c.__mro__ if k.__module__.startswith("hk"))
+                cells.append("yes (rebinds)" if rebinds else "")
+                continue
+            try:
+                src = inspect.getsource(fn)
+            except (OSError, TypeError):
+                src = ""
+            refused = "_index_only" in src or ("raise" in src and "return" not in src)
+            cells.append("refused" if refused else "yes")
+        cell = text.replace("|", "\\|")       # a pipe inside a table cell
+        rows.append(f"| `{cell}` | " + " | ".join(cells) + " |")
+    rows += ["", "`acc += a @ b.T` is one matrix-core instruction into `acc` (the "
+             "variant follows from the transposes); `t.sum(axis=1)` and friends "
+             "are lazy reductions that `+=`, `max_` or `.value()` land."]
+    return "\n".join(rows)
 
 
 def _mark(since: Since, module: str, name: str, obj, public: str) -> str:

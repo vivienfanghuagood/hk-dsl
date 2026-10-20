@@ -541,6 +541,31 @@ fp8 is a WMMA operand only where the target has an fp8 matrix instruction (gfx12
 
 What a kernel body computes with. They are made by loads, `hk.zeros` and friends, never constructed directly; their methods are the language. A method ending in `_` writes the value in place; `into=` names the value an operation writes.
 
+**Operators** (`n` a Python number, `a`, `b` values of the column's kind; a vector broadcasts against a tile along the axis it was reduced from):
+
+| operator | `Tile` | `Vec` | `Int` | `Bool` |
+|---|---|---|---|---|
+| `a + b` | yes | yes | yes |  |
+| `n + a` | yes | yes | yes |  |
+| `a - b` | yes | yes | yes |  |
+| `n - a` |  |  | yes |  |
+| `a * b` | yes | yes | yes |  |
+| `n * a` | yes | yes | yes |  |
+| `a / b` | yes | yes | refused |  |
+| `n / a` |  |  |  |  |
+| `a // b` | refused | refused | yes |  |
+| `a % b` | refused | refused | yes |  |
+| `-a` | yes | yes | yes |  |
+| `abs(a)` |  |  |  |  |
+| `a += b (also -= *= /=)` | yes | yes | yes (rebinds) |  |
+| `a @ b` | yes |  |  |  |
+| `a < b (<= > >= == !=)` |  |  | yes |  |
+| `a & b, a \| b, a ^ b` |  |  |  | yes |
+| `~a` |  |  |  | yes |
+| `v[:, None], v[None, :]` |  | yes |  |  |
+
+`acc += a @ b.T` is one matrix-core instruction into `acc` (the variant follows from the transposes); `t.sum(axis=1)` and friends are lazy reductions that `+=`, `max_` or `.value()` land.
+
 ### `hk.Tile`
 
 A register tile: kittens::rt<T, rows, cols, layout>.
