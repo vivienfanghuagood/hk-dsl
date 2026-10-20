@@ -96,13 +96,13 @@ The longer argument is in [why this exists](docs/README.md#why-this-exists).
 On one MI355X, its row and pointwise kernels (the norms, softmax, int8
 quantize, add/mul/exp, SiLU-mul on a gate/up output, vLLM's RoPE) run on
 register strips. At rows 1-8192 x hidden 4096-8192, against the fastest of
-torch, Inductor, and Triton and FlyDSL each tuned, they tie or win 99 of 132
-cases and are 0.90-0.98x on the rest; SiLU-mul is 1.00-1.09x and RMSNorm at
-8192x8192 1.01x. Its own
-GEMM, HipKittens' CDNA4 schedule written in hk, runs 1453-1465 TFLOP/s at
-4096³ and 1566 at 8192³, 0.97-0.99x the best of hipBLASLt, FlyDSL and
-HipKittens. Routed with two more hk kernels, it is at 0.9x or better at 108
-of 122 Llama-3-8B and Qwen3-8B linear shapes, M from 1 to 8192. Its own flash
+torch, Inductor, and Triton and FlyDSL each tuned, they tie or win 120 of 132
+cases and are 0.95-0.98x on the rest; SiLU-mul is 1.00-1.11x and RMSNorm at
+8192x8192 1.02x. Its own
+GEMM, HipKittens' CDNA4 schedule written in hk, runs 1450-1461 TFLOP/s at
+4096³ and 1592-1594 at 8192³, 0.97-0.98x the best of hipBLASLt, FlyDSL and
+HipKittens. Routed with hk's other GEMM kernels, it is at 0.9x or better at
+all 122 Llama-3-8B and Qwen3-8B linear shapes, M from 1 to 8192. Its own flash
 attention forward (GQA, bf16, head dim 64 and 128, causal or not), HipKittens'
 CDNA4 schedule written in hk, runs 0.98-1.08x the best of HipKittens and FlyDSL
 at ten shapes and 1.30-3.13x torch SDPA; `hk.attention` and the SDPA drop-in run
@@ -113,7 +113,7 @@ tokens; its paged prefill is 1.10-1.24x aiter's at batches of prompts and
 chunks, and the vLLM backend runs on it. Status: [design/cdna.md](docs/design/cdna.md); record:
 [chapter 29](docs/history/29-cdna.md), [chapter 33](docs/history/33-cdna-gemm.md),
 [chapter 34](docs/history/34-cdna-attention.md), [chapter 37](docs/history/37-cdna-rows.md),
-[chapter 39](docs/history/39-cdna-paged.md); numbers:
+[chapter 39](docs/history/39-cdna-paged.md), [chapter 41](docs/history/41-cdna-leftovers.md); numbers:
 [performance](docs/performance.md#cdna-on-one-mi355x).
 
 ## Install

@@ -959,37 +959,37 @@ queued behind a GPU spin, median of 7 rounds of 50 calls. The arms are torch
 2.10 eager, Inductor (static shapes), Triton 3.6 as written and autotuned,
 and FlyDSL 0.4.0's dispatcher and autotuner (norms and softmax; it has no
 standalone kernel for the rest). The cells give hk's time over the fastest
-other arm's; a tie is within the larger of 2% and the two arms' noise. The
-norms come from one run and the rest from the run before it, with the same
-kernels (the later run was shared with another job from quantize on).
+other arm's; a tie is within the larger of 2% and the two arms' noise. One
+run, after [gfx950's leftovers](history/41-cdna-leftovers.md) (the 16-byte
+RoPE, per-lane norm targets, placement-proof elementwise plans); the last
+column is chapter 37's run.
 
-| op | 1-32 rows | 2048 rows | 8192 rows | verdicts | `35421a7`: 2048 / 8192 rows |
+| op | 1-32 rows | 2048 rows | 8192 rows | verdicts | chapter 37: verdicts |
 |---|---|---|---|---|---|
-| rms_norm | 0.99-1.01 | 0.96-1.04 | 0.98-1.01 | 1 loss, 9 tie, 2 win | 0.40-0.50 / 0.57-0.64 |
-| rmsnorm | 0.97-1.00 | 0.94-1.01 | 0.98-1.00 | 4 loss, 8 tie | 0.46-0.56 / 0.56-0.70 |
-| layernorm | 1.00-1.08 | 0.95-1.14 | 0.95-0.99 | 3 loss, 4 tie, 5 win | 0.51-0.56 / 0.53-0.66 |
-| fused add + RMSNorm | 0.99-1.02 | 0.95-1.01 | 0.98-1.00 | 3 loss, 8 tie, 1 win | 0.42-0.56 / 0.61-0.76 |
-| softmax | 0.98-1.00 | 0.95-0.97 | 0.98-1.01 | 4 loss, 8 tie | 0.48-0.57 / 0.54-0.64 |
-| int8 quantize | 1.06-1.09 | 0.98-1.04 | 0.98-1.02 | 2 loss, 2 tie, 8 win | 0.44-0.45 / 0.43-0.61 |
-| add | 0.98-1.04 | 0.90-0.97 | 0.97-1.00 | 5 loss, 6 tie, 1 win | 0.80-0.88 / 0.88-0.92 |
-| mul | 0.98-1.02 | 0.90-0.97 | 0.97-1.00 | 5 loss, 6 tie, 1 win | 0.80-0.88 / 0.88-0.92 |
-| exp | 0.97-1.00 | 0.99-1.05 | 0.99-1.00 | 2 loss, 9 tie, 1 win | 0.58-0.72 / 0.75-0.81 |
-| silu_mul (gate/up halves in place) | 1.05-1.08 | 1.00-1.04 | 1.08-1.09 | 2 tie, 10 win | 0.71-0.88 / 0.74-0.76 |
-| RoPE (`hk.ops.rotary`) | 1.04-1.09 | 0.94-1.03 | 0.96-0.99 | 4 loss, 1 tie, 7 win | no token-major op |
+| rms_norm | 0.99-1.02 | 1.01-1.09 | 1.00-1.02 | 9 tie, 3 win | 1 loss, 9 tie, 2 win |
+| rmsnorm | 0.97-1.01 | 1.02-1.04 | 0.99-1.00 | 1 loss, 10 tie, 1 win | 4 loss, 8 tie |
+| layernorm | 1.00-1.05 | 1.01-1.16 | 0.98-1.01 | 2 loss, 4 tie, 6 win | 3 loss, 4 tie, 5 win |
+| fused add + RMSNorm | 0.96-1.02 | 0.95-1.00 | 0.99-1.01 | 3 loss, 8 tie, 1 win | 3 loss, 8 tie, 1 win |
+| softmax | 0.99-1.00 | 0.98-0.99 | 0.99-1.01 | 12 tie | 4 loss, 8 tie |
+| int8 quantize | 1.03-1.05 | 0.98-1.03 | 0.98-1.02 | 1 loss, 2 tie, 9 win | 2 loss, 2 tie, 8 win |
+| add | 0.97-1.04 | 0.98-1.05 | 1.00 | 1 loss, 9 tie, 2 win | 5 loss, 6 tie, 1 win |
+| mul | 0.97-1.04 | 0.98-1.05 | 0.99-1.00 | 1 loss, 8 tie, 3 win | 5 loss, 6 tie, 1 win |
+| exp | 0.98-1.02 | 1.00-1.05 | 1.00 | 1 loss, 9 tie, 2 win | 2 loss, 9 tie, 1 win |
+| silu_mul (gate/up halves in place) | 1.03-1.05 | 1.00-1.01 | 1.08-1.11 | 3 tie, 9 win | 2 tie, 10 win |
+| RoPE (`hk.ops.rotary`) | 1.05-1.06 | 0.97-1.06 | 0.96-0.99 | 2 loss, 3 tie, 7 win | 4 loss, 1 tie, 7 win |
 
-99 of 132 cases tie or win. At 1-32 rows every arm sits at a 3.8-4.2 us
-floor. The 33 losses are 0.90-0.98x:
-- six at that floor (3.9 us to 3.8);
-- the 2048-row norms and softmax (0.94-0.97x);
-- four 8192-row norms (0.95-0.98x);
-- add and mul at 2048 rows, whose plans inside the cache move with where the
-  buffers sit (0.90-0.97x), and at 8192x8192 (0.97x);
-- RoPE at 40 and 64 heads, on 4-byte accesses (0.94-0.98x);
-- two quantize shapes (0.98x).
+120 of 132 cases tie or win (chapter 37: 99). At 1-32 rows every arm sits at
+a 3.8-4.2 us floor. The 12 losses are 0.95-0.98x:
+- five at that floor (3.90-3.97 us to 3.79-3.81);
+- fused add + RMSNorm at 2048x4096 and 2048x8192 (0.97, 0.95x; no per-lane
+  plan closes it);
+- layernorm at 8192x4096 and 8192x8192 (0.98x);
+- quantize at 2048x8192 (0.98x);
+- RoPE at 2048x64 and 8192x40 (0.97, 0.96x).
 
-Examples at 8192x8192: rms_norm 37.5 us against tuned Triton's 38.0 (66.3
-at `35421a7`), softmax 39.3 against FlyDSL's 39.7 (61.6). silu_mul at
-8192x28672 takes 228.2 us against tuned Triton's 248.7 (338.5).
+Examples at 8192x8192: rms_norm 37.5 us against tuned Triton's 38.1, softmax
+39.9 against FlyDSL's 39.7. silu_mul at 8192x28672 takes 225.7 us against
+tuned Triton's 250.3.
 
 ### GEMM: hk's own
 
@@ -998,25 +998,28 @@ routes every shape to one of hk's own kernels: HipKittens' CDNA4 schedule
 written in hk (`hk.ops.gemm_cdna`: copies into LDS left in flight, the
 pingpong), a four-warp kernel (`hk.ops.gemm_cdna_dp`), either with two-launch
 split-K, or the decode GEMV. bf16, C = A·Bᵀ, eager, every arm
-checked against fp32 and interleaved in one process, best of 5 rounds:
+checked against fp32 and interleaved in one process, rounds queued behind a
+GPU spin, median of 7; three processes (chapter 41):
 
 | M = N = K | hk | HipKittens | hipBLASLt | FlyDSL `gemm_a16w16` | hk / best |
 |---|---|---|---|---|---|
-| 4096 | 1453-1465 | 1435-1445 | 1474-1487 | 1428-1445 | 0.98-0.99x |
-| 8192 | 1566-1568 | 1571-1575 | 1613-1616 | 1582-1591 | 0.97x |
+| 4096 | 1450-1461 | 1431-1444 | 1493-1506 | 1462-1473 | 0.97-0.98x |
+| 8192 | 1592-1594 | 1584-1589 | 1642-1650 | 1609-1618 | 0.97x |
 
 At Llama-3-8B's and Qwen3-8B's linear shapes (N x K of qkv, o, gate_up, down
-and lm_head, M from 1 to 8192, 122 points), hk's routed kernel is at 0.9x
-or better of the best of hipBLASLt, FlyDSL and HipKittens at 108 points.
-- M ≥ 1024 runs at 0.91-1.15x.
-- M = 1-4 runs at 0.89-1.85x.
-- 13 of the 14 misses are at M = 32-512 (0.81-0.90): lm_head at M = 256
-  (0.81), N = 24576-28672 at M = 32-64 (0.83-0.88), down_proj at M = 128
-  (0.84), N = 6144-12288 at M = 256-512 (0.86-0.88). The 14th is 4 x 24576
-  (0.89), within the run-to-run spread.
+and lm_head, M from 1 to 8192, 122 points), hk's routed kernel -- the shipped
+table's route, timed as one arm -- is at 0.9x or better of the best of
+hipBLASLt, FlyDSL and HipKittens at all 122 points, the median of three
+processes (chapter 33: 108).
+- M = 1-4 runs at 0.99-1.42x, M = 16-128 at 0.91-1.57x.
+- M = 256-512 runs at 0.92-1.20x, M ≥ 1024 at 0.91-1.26x.
+- The tightest is the unmerged gate/up at M = 64 (0.91x; one run of three
+  0.89): 224 blocks of 64 x 64 on 256 CUs.
 
-The full grid and what limits it are in
-[the chapter](history/33-cdna-gemm.md#routed). Before this, `examples/04_gemm.py`
+The small-M points stream the weights whole-line and non-temporal; the grid
+and the candidates are in [chapter 41](history/41-cdna-leftovers.md), what
+limited chapter 33's table in
+[that chapter](history/33-cdna-gemm.md#routed). Before this, `examples/04_gemm.py`
 (64x64 blocks, no pipelining) ran at 631 TFLOP/s at 4096³, 0.41x hipBLASLt.
 
 Where the time goes at 8192³ (hand-patched builds in one process): without
