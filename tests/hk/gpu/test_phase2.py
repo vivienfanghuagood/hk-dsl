@@ -300,7 +300,7 @@ def test_silu_mul_needs_one_whole_tile_except_on_strips():
     from hk.target import current_arch
 
     a = _rand((8, 200), torch.float32)
-    if current_arch() in fused.STRIP_ARCHS:
+    if current_arch() in fused.SILU_STRIP_PLANS:
         _close(hk.ops.silu_mul(a, a), F.silu(a) * a, torch.float32)
         return
     with pytest.raises(ValueError, match="at least 16x64"):

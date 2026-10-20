@@ -33,6 +33,8 @@ class Operand:
 
     kind: str
     dtype: Optional[DType] = None
+    #: An int64 tensor read as its low int32 words (a per-row label).
+    wide: bool = False
 
     def __post_init__(self):
         if self.kind not in KINDS:
@@ -121,7 +123,8 @@ class Meta:
 
     def __init__(self, shape, dtype, stride=None):
         self.shape = tuple(int(s) for s in shape)
-        self.dtype = _dtype(dtype)
+        # int64 has no hk dtype; a per-row label tensor may be one.
+        self.dtype = "torch.int64" if str(dtype) in ("torch.int64", "int64") else _dtype(dtype)
         if stride is None:
             st, acc = [], 1
             for s in reversed(self.shape):
@@ -320,6 +323,11 @@ def view_fn(t_shape, rows: int, cols: int, kind: str, flat: bool = False):
         return lambda t: t.view(rows, 1)
     if kind == "per_row_out":
         return lambda t: t.view(1, rows)
+    if kind == "per_row_wide":
+        import torch  # noqa: PLC0415
+
+        i32_ = torch.int32
+        return lambda t: t.view(i32_).view(rows, 2)
     return lambda t: t.view(1, 1)
 
 

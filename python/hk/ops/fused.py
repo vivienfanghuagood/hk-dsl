@@ -123,7 +123,9 @@ def _strip_silu_mul_kernel(name: str, dtype, warps: int):
     output, read in place. Without EXACT the accesses are bounded: a run at
     or past the row's end is neither read nor written."""
     def body(a: hk.Tensor[dtype], b: hk.Tensor[dtype], o: hk.Tensor[dtype], *,
-             CW=512, RUN=8, EXACT=1):
+             CW=512, RUN=8, EXACT=1, RESERVE=0):
+        if RESERVE:
+            hk.lds.reserve(RESERVE)
         S = hk.RS(fp32, 1, CW, RUN)
         per_row = hk.cdiv(o.cols, warps * CW)
         i = hk.arch.block_idx.x
@@ -324,8 +326,8 @@ ROTARY_KERNELS = {f"rotary_{_s}_w{_w}" + ("_pos" if _p else ""): _rotary_kernel(
                   for _s, _dt in _DTYPES.items() for _w in ROTARY_WARPS
                   for _p in (False, True)}
 
-#: Where silu_mul runs on strips: gfx950, measured there (scoreboard.py
-#: --only llm-pointwise). gfx1100 keeps the tile kernel it was tuned on.
+#: Where the rotary kernels run on strips: gfx950 (swap_halves and
+#: rotate_half are the wave64 port's).
 STRIP_ARCHS = ("gfx950",)
 
 #: The strip plan, (warps, chunks a warp), as elementwise's: one warp, one
@@ -342,6 +344,31 @@ STRIP_ARCHS = ("gfx950",)
 #: "Rows first" is the grid this kernel had before workgroups walked along a
 #: row: consecutive workgroups a row (57 KB at 14336) apart.
 STRIP_PLAN = (1, 1)
+
+#: silu_mul's strip plan on each arch it runs on strips: (warps, chunks a
+#: warp), and (bytes, LDS reserve): past that many bytes moved, LDS reserved
+#: to cap the workgroups a WGP holds, as the norms do past the Infinity
+#: Cache. gfx1100 moved here from its 16x64 tile kernel, which refused the
+#: halves of a gate/up output and fewer than 16 rows; measured for
+#: hk.templates.elementwise on a W7900D (docs/templates/elementwise-rowwise.md),
+#: gelu-and-mul on halves, us:
+#:
+#:                    tile kernel   strips w4c1   w8c1   w8c1 + 48 KB   torch.compile
+#:     2048x14336        261.1         248.6      248.4      241.2         244.2
+#:     8192x14336        979.3         973.9      972.2      948.3         956.2
+SILU_STRIP_PLANS = {"gfx950": (STRIP_PLAN, None),
+                    "gfx1100": ((8, 1), (96 << 20, 48 << 10))}
+
+
+def silu_strip_plan(arch: str, moved: int):
+    """(warps, chunks a warp, LDS reserve) of silu_mul's strip kernel on
+    `arch` for a call that moves `moved` bytes, or None where silu_mul does
+    not run on strips. hk.templates.elementwise plans rows with it."""
+    got = SILU_STRIP_PLANS.get(arch)
+    if got is None:
+        return None
+    (warps, chunks), cap = got
+    return warps, chunks, (cap[1] if cap is not None and moved > cap[0] else 0)
 
 
 # ---------------------------------------------------------------- wrappers
@@ -471,7 +498,8 @@ def silu_mul(a, b, out=None):
     if out is None:
         import torch  # noqa: PLC0415  -- see norm._run
         out = torch.empty(a.shape, dtype=a.dtype, device=a.device)
-    plan = _strip_silu_plan(a.dtype, a.shape[-1] if a.dim() else 0)
+    cols = a.shape[-1] if a.dim() else 0
+    plan = _strip_silu_plan(a.dtype, cols, a.numel() // cols if cols else 0)
     if plan is not None:
         return _strip_silu_mul(plan, a, b, out)
     av, bv, ov = _as_2d(a, "a"), _as_2d(b, "b"), _as_2d(out, "out")
@@ -490,24 +518,29 @@ def silu_mul(a, b, out=None):
 _STRIP_PLANS: dict = {}
 
 
-def _strip_silu_plan(dtype, cols: int):
-    """(kernel, CW, RUN, EXACT) for silu_mul over rows of `cols` on strips,
-    or None where it does not run on strips here."""
-    key = (dtype, cols)
+def _strip_silu_plan(dtype, cols: int, rows: int):
+    """(kernel, CW, RUN, EXACT, RESERVE) for silu_mul over `rows` rows of
+    `cols` on strips, or None where it does not run on strips here."""
+    from ..target import current_arch  # noqa: PLC0415
+
+    arch = current_arch()
+    nbytes = getattr(dtype, "itemsize", 2)
+    plan = SILU_STRIP_PLANS.get(arch)
+    big = plan is not None and plan[1] is not None and 3 * rows * cols * nbytes > plan[1][0]
+    key = (dtype, cols, big)
     got = _STRIP_PLANS.get(key, False)
     if got is False:
-        from ..target import current_arch, get_target  # noqa: PLC0415
+        from ..target import get_target  # noqa: PLC0415
         from .norm import strip_run  # noqa: PLC0415
 
         got = None
-        arch = current_arch()
         suffix = _TORCH_DTYPES.get(str(dtype))
-        if arch in STRIP_ARCHS and suffix is not None and cols:
-            warps, chunks = STRIP_PLAN
+        if plan is not None and suffix is not None and cols:
+            warps, chunks, reserve = silu_strip_plan(arch, 3 * rows * cols * nbytes)
             run = strip_run(cols, _DTYPES[suffix].bytes)
             cw = chunks * get_target(arch).wave * run
             got = (STRIP_KERNELS[f"strip_silu_mul_{suffix}_w{warps}"], cw, run,
-                   int(cols % (warps * cw) == 0))
+                   int(cols % (warps * cw) == 0), reserve)
         _STRIP_PLANS[key] = got
     return got
 
@@ -530,7 +563,7 @@ def _rows_view(t, what: str):
 
 
 def _strip_silu_mul(plan, a, b, out):
-    k, cw, run, exact = plan
+    k, cw, run, exact, reserve = plan
     av, bv, ov = _rows_view(a, "a"), _rows_view(b, "b"), _rows_view(out, "out")
     if not ov.shape[0] or not ov.shape[1]:
         return out
@@ -540,7 +573,10 @@ def _strip_silu_mul(plan, a, b, out):
             # Each element is read and written by one lane, so exactly in
             # place is safe; a partial overlap is not.
             return out.copy_(silu_mul(a.clone(), b.clone()))
-    k(av, bv, ov, CW=cw, RUN=run, EXACT=exact)
+    if reserve:
+        k(av, bv, ov, CW=cw, RUN=run, EXACT=exact, RESERVE=reserve)
+    else:
+        k(av, bv, ov, CW=cw, RUN=run, EXACT=exact)
     return out
 
 
