@@ -19,6 +19,10 @@ from typing import Any, Optional, Tuple
 
 @dataclass(frozen=True)
 class DType:
+    """An element type: `hk.bf16`, `hk.fp16`, `hk.fp32`, `hk.i32`, `hk.i8`,
+    `hk.fp8e4m3`, `hk.fp8e5m2`. `name` is hk's spelling, `cpp` the
+    HipKittens one, `bits` and `bytes` its size."""
+
     name: str
     bits: int
     cpp: str  # the name include/rdna3 uses

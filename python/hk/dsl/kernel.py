@@ -127,11 +127,13 @@ class TracedKernel:
 
     @property
     def threads(self) -> int:
+        """warps x the target's wave: the workgroup's size."""
         from ..target import get_target  # noqa: PLC0415
 
         return self.warps * get_target(self.arch).wave
 
     def tensors(self) -> List[Param]:
+        """The tensor parameters, in order, with their types."""
         return list(self._tensors)
 
     def written_tensors(self) -> List[str]:
@@ -160,6 +162,8 @@ class TracedKernel:
         return [n for n in names if n in out]
 
     def cpp(self, includes) -> str:
+        """The kernel's HipKittens C++ body, with `includes`; `Kernel.source()`
+        is the whole translation unit."""
         return M.translate(self.module, includes)
 
     def dump(self) -> str:
@@ -229,6 +233,8 @@ class Kernel:
 
     @property
     def arch(self) -> str:
+        """The arch it builds for: `arch=` if given, else
+        `hk.target.current_arch()` ($HK_ARCH, else the GPU)."""
         if self._arch is None:
             from ..target import current_arch  # noqa: PLC0415
 

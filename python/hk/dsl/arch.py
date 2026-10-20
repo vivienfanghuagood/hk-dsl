@@ -55,6 +55,8 @@ def warp_id() -> Int:
 
 
 def lane_id() -> Int:
+    """This lane's index in its wave: 0..31 on gfx11, 0..63 on gfx950. Not
+    wave-uniform, so not a branch condition for a workgroup operation."""
     t = B.current()
     return Int(t.hoisted("lane_id", lambda: hkd.LaneIdOp(
         _i32(), loc=t.loc("lane_id")).result), ScalarType(i32))

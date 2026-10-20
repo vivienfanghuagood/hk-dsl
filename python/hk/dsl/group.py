@@ -25,6 +25,9 @@ from .values import SharedTile, Stage, View, as_int
 
 
 class Group:
+    """What `hk.group(warps)` returns: copies between global memory and LDS
+    done by `warps` warps together."""
+
     __slots__ = ("warps",)
 
     def __init__(self, warps: int):
@@ -34,6 +37,7 @@ class Group:
 
     @property
     def threads(self) -> int:
+        """warps x the wave of the kernel being traced (32 on RDNA, 64 on CDNA)."""
         # The wave of the kernel being traced: a group of W warps is 64 W
         # threads on CDNA, and a buffer sized for 32 W stages half the tile.
         t = B.current_or_none()
@@ -141,6 +145,9 @@ class Group:
 
 
 def group(warps: int) -> Group:
+    """The workgroup's `warps` warps acting together: `g = hk.group(8)`, then
+    `g.load`, `g.store`, `g.stage`/`g.commit`, `g.wait_for`. `warps` is the
+    kernel's `warps=` (or the part of it that copies)."""
     return Group(warps)
 
 

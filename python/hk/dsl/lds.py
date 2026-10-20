@@ -62,6 +62,8 @@ def shared_vec(vt: RegVecType, count: int = 1) -> SharedVecType:
 
 
 def alloc_vec(ty: SharedVecType, name: str = "svec") -> SharedVec:
+    """Reserve an LDS vector stack of type `ty` (`hk.lds.shared_vec(...)`
+    or `hk.SV`): what `hk.collective.cross_warp` combines through."""
     if not isinstance(ty, SharedVecType):
         raise TypeError(f"alloc_vec takes a SharedVecType, got {ty!r}")
     t = B.current()
