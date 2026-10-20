@@ -299,6 +299,26 @@ private:
       if (auto s = a.getShapeAttr())
         allocShape.insert({a.getResult(), s.getValue().str()});
     });
+    // include/cdna4's st_subtile points at the layout's subtile holding its
+    // first element and keeps no offset inside it: a window narrower than
+    // the layout's subtile (32 columns of st_16x64's 64) reads that
+    // subtile's first columns, whatever its index.
+    kernel.walk([&](SubtileOp o) {
+      auto a = sharedRoot(o.getSrc()).getDefiningOp<AllocSharedOp>();
+      if (!a || !a.getShapeAttr())
+        return;
+      StringRef shape = a.getShapeAttr().getValue();
+      unsigned r = shape == "st_32x32" ? 32 : 16, c = shape == "st_32x32" ? 32 : 64;
+      auto t = o.getResult().getType();
+      if (t.getRows() % r || t.getCols() % c) {
+        o.emitError() << "a " << t.getRows() << "x" << t.getCols()
+                      << " window of an LDS tile laid out as " << shape
+                      << " is not whole " << r << "x" << c
+                      << " subtiles of it, which is all include/cdna4's "
+                         "subtile addresses; read whole subtiles";
+        bad = true;
+      }
+    });
     std::map<Operation *, Operation *> by;
     kernel.walk([&](LoadSharedOp l) {
       auto dt = cast<RegTileType>(l.getDst() ? l.getDst().getType()

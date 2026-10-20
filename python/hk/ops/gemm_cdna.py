@@ -61,7 +61,8 @@ def gemm_kernel(name: str, *, block_m: int = 256, block_n: int = 256,
                 wgm: int = 8, xcd_chunk: int = 64, setprio: bool = True,
                 transposed_c: bool = False, early_store: bool = True,
                 hipkittens_waits: bool = False, late_b: bool = True,
-                splits: int = 1, arch: Optional[str] = None,
+                splits: int = 1, lds_shape: Optional[str] = None, nt: str = "",
+                arch: Optional[str] = None,
                 max_vgprs: int = 256, min_occupancy: int = 1):
     """HipKittens' tiling by default: 256x256x64, eight warps as 2 x 4.
 
@@ -102,8 +103,8 @@ def gemm_kernel(name: str, *, block_m: int = 256, block_n: int = 256,
         g = hk.group(warps)
         # Buffer u, half h of A is As[2u + h]: every index below is a Python
         # int, so each copy and read names its buffer.
-        As = hk.lds.alloc(st_a, count=4, name="As")
-        Bs = hk.lds.alloc(st_b, count=4, name="Bs")
+        As = hk.lds.alloc(st_a, count=4, name="As", shape=lds_shape)
+        Bs = hk.lds.alloc(st_b, count=4, name="Bs", shape=lds_shape)
         A = hk.zeros(t_a)
         B = [hk.zeros(t_b) for _ in range(2)]
         C = [[hk.zeros(t_c) for _ in range(2)] for _ in range(2)]
@@ -152,11 +153,11 @@ def gemm_kernel(name: str, *, block_m: int = 256, block_n: int = 256,
 
         def copy_a(t, u, h, pad=False):
             g.load(As[2 * u + h], a.at[m0 + h * half_m, k0 + t * k_step], wait=False,
-                   rows=limit(t, half_m, pad))
+                   rows=limit(t, half_m, pad), nontemporal="a" in nt)
 
         def copy_b(t, u, h, pad=False):
             g.load(Bs[2 * u + h], b.at[n0 + h * half_n, k0 + t * k_step], wait=False,
-                   rows=limit(t, half_n, pad))
+                   rows=limit(t, half_n, pad), nontemporal="b" in nt)
 
         def read_a(u, h):
             As[2 * u + h].subtile(reg_m, k_step, wr, 0).load(t_a, wait=False, into=A)
@@ -352,7 +353,7 @@ def gemm_kernel(name: str, *, block_m: int = 256, block_n: int = 256,
 DEFAULT: Dict[str, Any] = dict(block_m=256, block_n=256, k_step=64, warps_m=2,
                                warps_n=4, wgm=8, xcd_chunk=64, setprio=True,
                                transposed_c=False, early_store=True, late_b=True,
-                               splits=1)
+                               splits=1, lds_shape=None, nt="")
 
 
 def _sched_name(s: Dict[str, Any]) -> str:
@@ -360,7 +361,9 @@ def _sched_name(s: Dict[str, Any]) -> str:
             "_g{wgm}_x{xcd_chunk}").format(**s) + ("_sp" if s.get("setprio") else "") + (
                 "_ct" if s.get("transposed_c") else "") + ("_es" if s.get("early_store") else "") + (
                 "_lb" if s.get("late_b") else "") + (
-                f"_k{s['splits']}" if s.get("splits", 1) > 1 else "")
+                f"_k{s['splits']}" if s.get("splits", 1) > 1 else "") + (
+                f"_l{s['lds_shape']}" if s.get("lds_shape") else "") + (
+                f"_nt{s['nt']}" if s.get("nt") else "")
 
 
 _KERNELS: Dict[str, Any] = {}
@@ -413,6 +416,43 @@ CANDIDATES: Dict[str, Any] = {
     "dp64x64k8": ("dp", {"block_m": 64, "block_n": 64, "stages": 4, "xcd_chunk": 0, "splits": 8}),
     "pp128": ("pp", {"block_m": 128}),
     "decode": ("decode", {}),
+    # Blocks that put a whole number of workgroups on each of the 256 CUs
+    # where a power of two does not: 96 x 256 = 24576, 224 x 128 = 28672.
+    "dp64x96": ("dp", {"block_m": 64, "block_n": 96, "stages": 4, "xcd_chunk": 0}),
+    "dp128x96": ("dp", {"block_m": 128, "block_n": 96, "stages": 4, "xcd_chunk": 0}),
+    "dp128x224": ("dp", {"block_m": 128, "block_n": 224, "stages": 3, "xcd_chunk": 0}),
+    "dp128x64": ("dp", {"block_m": 128, "block_n": 64, "stages": 4, "xcd_chunk": 0}),
+    "dp128x0": ("dp", {"block_m": 128, "block_n": 128, "stages": 4, "xcd_chunk": 0}),
+    "dp128x0k4": ("dp", {"block_m": 128, "block_n": 128, "stages": 4, "xcd_chunk": 0,
+                         "splits": 4}),
+    "dp128k8": ("dp", {"block_m": 128, "block_n": 128, "stages": 4, "xcd_chunk": 0,
+                       "splits": 8}),
+    "dp64k128": ("dp", {"block_m": 64, "block_n": 128, "k_step": 128, "stages": 3,
+                        "xcd_chunk": 0}),
+    # Weights streamed: whole-line copies (st_16x64) past the caches (sc0 nt),
+    # 128-256 deep a K-tile -- what the paged decode's copies took.
+    "dp32x96nt": ("dp", {"block_m": 32, "block_n": 96, "k_step": 256, "stages": 2,
+                         "xcd_chunk": 0, "lds_shape": "16x64", "nt": "b"}),
+    "dp32x64nt": ("dp", {"block_m": 32, "block_n": 64, "k_step": 256, "stages": 2,
+                         "xcd_chunk": 0, "lds_shape": "16x64", "nt": "b"}),
+    "dp32nt": ("dp", {"block_m": 32, "block_n": 128, "k_step": 128, "stages": 3,
+                      "xcd_chunk": 0, "lds_shape": "16x64", "nt": "b"}),
+    "dp64nt": ("dp", {"block_m": 64, "block_n": 128, "k_step": 128, "stages": 3,
+                      "xcd_chunk": 0, "lds_shape": "16x64", "nt": "b"}),
+    "dp32x96ntk4": ("dp", {"block_m": 32, "block_n": 96, "k_step": 256, "stages": 2,
+                           "xcd_chunk": 0, "lds_shape": "16x64", "nt": "b", "splits": 4}),
+    # Two warps of 32 x 48: 256 blocks at N = 12288, one a CU, 5.7 TB/s at
+    # M = 32 against hipBLASLt's 4.8.
+    "dp32x48nt": ("dp", {"block_m": 32, "block_n": 48, "k_step": 128, "stages": 4,
+                         "warps_m": 2, "warps_n": 1, "xcd_chunk": 0, "lds_shape": "16x64",
+                         "nt": "b"}),
+    "ppnt": ("pp", {"lds_shape": "16x64", "nt": "b"}),
+    # The pingpong on the 256x256 blocks that fill whole waves of the CUs,
+    # the rest of N another candidate's: 2048 x 12288 is 384 blocks, a wave
+    # and a half, 0.915 to 0.983x hipBLASLt with the last 4096 columns as
+    # 128-row blocks.
+    "ppw": ("ppw", {"rem": "pp128"}),
+    "ppwd": ("ppw", {"rem": "dp128x0"}),
 }
 
 _ROUTES: Dict[str, Dict[int, str]] = {}
@@ -437,7 +477,9 @@ def fits(name: str, m: int, n: int, k: int) -> bool:
     """Whether candidate `name` takes the shape at all -- not whether it wins."""
     kind, sched = CANDIDATES[name]
     splits = sched.get("splits", 1)
-    if m < 1 or k % (K_STEP * splits) or n % BLOCK_N_MIN:
+    if m < 1 or k % (sched.get("k_step", K_STEP) * splits) or n % BLOCK_N_MIN:
+        return False
+    if kind == "dp" and n % sched.get("block_n", 128):
         return False
     # A split's fp32 shares are a scratch tensor per shape, kept: past a GiB
     # of it the shape has blocks enough not to need splitting.
@@ -447,7 +489,24 @@ def fits(name: str, m: int, n: int, k: int) -> bool:
         from . import decode_gemm  # noqa: PLC0415
 
         return decode_gemm.fits(m, n, k)
+    if kind == "ppw":
+        cut = wave_cut(m, n)
+        return 0 < cut < n and fits(sched["rem"], m, n - cut, k)
     return True
+
+
+#: CUs a wave of one-a-CU workgroups fills: an MI355X's.
+CUS = 256
+
+
+def wave_cut(m: int, n: int) -> int:
+    """The columns of N whose 256x256 blocks are whole waves of CUS
+    workgroups at M's block-rows: 0 where a wave takes more than N has."""
+    mb = -(-m // 256)
+    if mb > CUS:
+        return 0
+    per = CUS // mb
+    return (n // 256 // per) * per * 256
 
 
 def route(m: int, n: int, k: int) -> str:
@@ -468,6 +527,22 @@ def route(m: int, n: int, k: int) -> str:
     return "pp"
 
 
+#: The kernel for the pingpong's last 128 columns, by M. As one 128-wide
+#: pingpong block a 256 rows they are a handful of workgroups each walking
+#: all of K, 41-50 us at K = 4096 on an MI355X; split along K in small
+#: blocks, 8-20 us (M = 256-8192).
+TAIL: tuple = ((1024, "dp64x64k8"), (2048, "dp64x64k4"), (4096, "dp64k4"),
+               (None, "dp64x64"))
+
+
+def tail_for(m: int, k: int) -> str:
+    """The candidate for an M x 128 x K tail."""
+    for bound, name in TAIL:
+        if (bound is None or m <= bound) and fits(name, m, 128, k):
+            return name
+    return "pp128"
+
+
 def run(name: str, a, b, out):
     """Candidate `name` on (a, b) into out; the shape checks are matmul's."""
     kind, sched = CANDIDATES[name]
@@ -481,6 +556,11 @@ def run(name: str, a, b, out):
         return gemm_cdna_dp.launch(sched, a, b, out)
     m, k = a.shape
     n = b.shape[0]
+    if kind == "ppw":
+        cut = wave_cut(m, n)
+        run("pp", a, b[:cut], out[:, :cut])
+        run(sched["rem"], a, b[cut:], out[:, cut:])
+        return out
     if sched.get("splits", 1) > 1:
         from . import gemm_cdna_dp  # noqa: PLC0415
 
@@ -492,10 +572,10 @@ def run(name: str, a, b, out):
     wide = n - n % 256
     if n % 256 and wide:
         # A 128-wide block runs at two thirds of a 256-wide one, so only the
-        # last 128 columns take it: two launches into column slices of out,
+        # last 128 columns are apart: two launches into column slices of out,
         # which a strided global takes as they are (lm_head's 151936).
         kernel_for({**schedule_for(m, wide, k), **sched})(a, b[:wide], out[:, :wide])
-        kernel_for({**schedule_for(m, n - wide, k), **sched})(a, b[wide:], out[:, wide:])
+        run(tail_for(m, k), a, b[wide:], out[:, wide:])
         return out
     kernel_for({**schedule_for(m, n, k), **sched})(a, b, out)
     return out

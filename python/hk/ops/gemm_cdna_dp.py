@@ -31,6 +31,7 @@ def gemm_kernel(name: str, *, block_m: int = 128, block_n: int = 128,
                 k_step: int = 64, stages: int = 3, warps_m: int = 2,
                 warps_n: int = 2, wgm: int = 8, xcd_chunk: int = 32,
                 setprio: bool = False, splits: int = 1, pipelined: bool = True,
+                lds_shape: Optional[str] = None, nt: str = "",
                 arch: Optional[str] = None,
                 max_vgprs: int = 256, min_occupancy: int = 1):
     """`splits` > 1 also cuts K across workgroups: workgroup (b, s) sums the
@@ -49,21 +50,24 @@ def gemm_kernel(name: str, *, block_m: int = 128, block_n: int = 128,
         if rows * k_step * 2 % (16 * threads):
             raise ValueError(f"a {rows}x{k_step} tile of {what} is not a whole number "
                              f"of 16-byte copies for {threads} threads")
-    if k_step % 32 or stages < 2:
-        raise ValueError(f"k_step={k_step}, stages={stages}: 32-deep slices, two buffers or more")
-    slices = k_step // 32
+    # A slice is what one LDS read takes of a K-tile: 32 deep, or a whole
+    # 64-wide subtile of st_16x64, which addresses no narrower window.
+    sk = 64 if lds_shape == "16x64" else 32
+    if k_step % sk or stages < 2:
+        raise ValueError(f"k_step={k_step}, stages={stages}: {sk}-deep slices, two buffers or more")
+    slices = k_step // sk
 
     st_a = hk.ST(bf16, block_m, k_step)
     st_b = hk.ST(bf16, block_n, k_step)
-    t_a = hk.RT(bf16, reg_m, 32, "row")
-    t_b = hk.RT(bf16, reg_n, 32, "row")
+    t_a = hk.RT(bf16, reg_m, sk, "row")
+    t_b = hk.RT(bf16, reg_n, sk, "row")
     t_c = hk.RT(fp32, reg_m, reg_n, "col")
 
     @hk.func
     def gemm(a, b, c, WGM, k0, k_tiles, finish):
         g = hk.group(warps)
-        As = hk.lds.alloc(st_a, count=stages, name="As")
-        Bs = hk.lds.alloc(st_b, count=stages, name="Bs")
+        As = hk.lds.alloc(st_a, count=stages, name="As", shape=lds_shape)
+        Bs = hk.lds.alloc(st_b, count=stages, name="Bs", shape=lds_shape)
         A = [hk.zeros(t_a) for _ in range(2)]
         B = [hk.zeros(t_b) for _ in range(2)]
         C = [hk.zeros(t_c)]
@@ -100,14 +104,14 @@ def gemm_kernel(name: str, *, block_m: int = 128, block_n: int = 128,
 
         def copy(t, u, pad=True):
             g.load(As[u], a.at[m0, k0 + t * k_step], wait=False,
-                   rows=rows_left(t, block_m) if pad else None)
+                   rows=rows_left(t, block_m) if pad else None, nontemporal="a" in nt)
             g.load(Bs[u], b.at[n0, k0 + t * k_step], wait=False,
-                   rows=rows_left(t, block_n) if pad else None)
+                   rows=rows_left(t, block_n) if pad else None, nontemporal="b" in nt)
 
         def math(u):
             def read(s, slot):
-                As[u].subtile(reg_m, 32, wr, s).load(t_a, wait=False, into=A[slot])
-                Bs[u].subtile(reg_n, 32, wc, s).load(t_b, wait=False, into=B[slot])
+                As[u].subtile(reg_m, sk, wr, s).load(t_a, wait=False, into=A[slot])
+                Bs[u].subtile(reg_n, sk, wc, s).load(t_b, wait=False, into=B[slot])
 
             read(0, 0)
             for s in range(slices):
@@ -151,8 +155,8 @@ def gemm_kernel(name: str, *, block_m: int = 128, block_n: int = 128,
 
         def read_tile(u, q):
             for sl in range(slices):
-                As[u].subtile(reg_m, 32, wr, sl).load(t_a, wait=False, into=RA[q][sl])
-                Bs[u].subtile(reg_n, 32, wc, sl).load(t_b, wait=False, into=RB[q][sl])
+                As[u].subtile(reg_m, sk, wr, sl).load(t_a, wait=False, into=RA[q][sl])
+                Bs[u].subtile(reg_n, sk, wc, sl).load(t_b, wait=False, into=RB[q][sl])
 
         def mma(q, sl):
             if setprio:
@@ -225,14 +229,17 @@ def gemm_kernel(name: str, *, block_m: int = 128, block_n: int = 128,
 
 DEFAULT: Dict[str, Any] = dict(block_m=128, block_n=128, k_step=64, stages=3,
                                warps_m=2, warps_n=2, wgm=8, xcd_chunk=32,
-                               setprio=False, splits=1, pipelined=True)
+                               setprio=False, splits=1, pipelined=True,
+                               lds_shape=None, nt="")
 
 
 def _sched_name(s: Dict[str, Any]) -> str:
     return ("gemm_cdna_dp_{block_m}x{block_n}x{k_step}_s{stages}_w{warps_m}x{warps_n}"
             "_g{wgm}_x{xcd_chunk}").format(**s) + ("_sp" if s.get("setprio") else "") + (
                 "" if s.get("pipelined", True) else "_np") + (
-                f"_k{s['splits']}" if s.get("splits", 1) > 1 else "")
+                f"_k{s['splits']}" if s.get("splits", 1) > 1 else "") + (
+                f"_l{s['lds_shape']}" if s.get("lds_shape") else "") + (
+                f"_nt{s['nt']}" if s.get("nt") else "")
 
 
 _KERNELS: Dict[str, Any] = {}
@@ -264,6 +271,35 @@ def reduce_kernel(name: str, splits: int, arch: Optional[str] = None):
                      grid=lambda p: (p.c.cols // 128, hk.cdiv(p.c.rows, 64), 1))
 
 
+#: The strip reduce's plan for a contiguous output: four warps of two 16-byte
+#: chunks each, 2048 fp32 a workgroup, so a 128 x 4096 output is 256
+#: workgroups.
+STRIP_REDUCE_WARPS, STRIP_REDUCE_CHUNKS = 4, 2
+
+
+def strip_reduce_kernel(name: str, splits: int, warps: int = STRIP_REDUCE_WARPS,
+                        arch: Optional[str] = None):
+    """reduce_kernel on strips: ws (splits, R, C) fp32 and c (R, C) bf16, a
+    grid row a row of c, a lane's RUN fp32 of each share one load, the sum
+    rounded to nearest even. A contiguous output is one row, M*N long.
+    reduce_kernel's 16 x 128 tiles put 64 workgroups on a 128 x 4096 output:
+    9.2 us to hipBLASLt's 4.4 for its own eight shares on an MI355X; this
+    puts 256 there, 4.3 us."""
+
+    def body(ws: hk.Tensor[fp32], c: hk.Tensor[bf16], *, CW=512, RUN=4, EXACT=1):
+        r = hk.arch.block_idx.y
+        c0 = (hk.arch.block_idx.x * warps + hk.arch.warp_id()) * CW
+        s = hk.RS(fp32, 1, CW, RUN)
+        total = ws.at[0, r, c0].load(s, bounded=not EXACT)
+        for j in range(1, splits):
+            total += ws.at[j, r, c0].load(s, bounded=not EXACT)
+        c.at[r, c0].store(total, bounded=not EXACT)
+
+    body.__name__ = name
+    return hk.kernel(body, arch=arch, warps=warps, name=name,
+                     grid=lambda p: (hk.cdiv(p.c.cols, warps * p.CW), p.c.rows, 1))
+
+
 _SCRATCH: Dict[Any, Any] = {}
 
 
@@ -291,9 +327,32 @@ def launch(sched: Dict[str, Any], a, b, out):
     return reduce(ws, out)
 
 
-def reduce(ws, out):
-    """out = bf16 of the sum of ws's shares, in order (reduce_kernel)."""
+def reduce(ws, out, strips=None):
+    """out = bf16 of the sum of ws's shares, in order: on strips where the
+    target has them (strip_reduce_kernel) -- over the flat view if out is
+    contiguous, else a row of strips a row, one warp a row of up to a
+    chunk of runs of two -- and on reduce_kernel's tiles otherwise."""
+    from ..target import current_arch, get_target  # noqa: PLC0415
+
     splits = ws.shape[0]
+    m, n = out.shape
+    tgt = get_target(current_arch())
+    flat = out.is_contiguous()
+    if strips is None:
+        strips = tgt.strips and (flat or (out.stride(1) == 1 and n % (2 * tgt.wave) == 0))
+    if strips:
+        warps = STRIP_REDUCE_WARPS if flat else 1
+        name = f"gemm_cdna_dp_sreduce_k{splits}" + ("" if flat else "_w1")
+        if name not in _KERNELS:
+            _KERNELS[name] = strip_reduce_kernel(name, splits, warps)
+        if flat:
+            cw = STRIP_REDUCE_CHUNKS * tgt.wave * 4
+            _KERNELS[name](ws.view(splits, 1, m * n), out.view(1, m * n), CW=cw, RUN=4,
+                           EXACT=int(m * n % (warps * cw) == 0))
+        else:
+            cw = 2 * tgt.wave * max(1, min(4, n // (2 * tgt.wave)))
+            _KERNELS[name](ws, out, CW=cw, RUN=2, EXACT=int(n % cw == 0))
+        return out
     name = f"gemm_cdna_dp_reduce_k{splits}"
     if name not in _KERNELS:
         _KERNELS[name] = reduce_kernel(name, splits)

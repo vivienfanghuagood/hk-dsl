@@ -23,6 +23,14 @@ for mod in ("norm", "fused", "quant", "elementwise", "attn", "sdpa", "paged"):
     for table in ("KERNELS", "STRIP_KERNELS", "ROTARY_KERNELS", "ROTARY16_KERNELS"):
         jobs += [(f"{mod}.{n}", k) for n, k in sorted(getattr(m, table, {}).items())]
 from hk.ops import decode_gemm, gemm, paged  # noqa
+from hk.ops import gemm_cdna, gemm_cdna_dp  # noqa
+for n, (kind, sched) in sorted(gemm_cdna.CANDIDATES.items()):
+    if kind == "pp":
+        jobs.append((f"gemm_cdna.{n}", gemm_cdna.gemm_kernel(
+            "gemm_cdna_" + n, **{**gemm_cdna.DEFAULT, **sched})))
+    elif kind == "dp":
+        jobs.append((f"gemm_cdna.{n}", gemm_cdna_dp.gemm_kernel(
+            "gemm_cdna_" + n, **{**gemm_cdna_dp.DEFAULT, **sched})))
 jobs.append(("gemm.default", gemm.TUNER._kernel_for(gemm.DEFAULT)))
 jobs.append(("gemm.thin", gemm.TUNER._kernel_for(gemm.THIN)))
 jobs.append(("paged.decode", paged.paged_decode_kernel("rd_paged_decode")))

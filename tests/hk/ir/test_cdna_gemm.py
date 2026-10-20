@@ -252,3 +252,84 @@ def test_shapes_route_to_hk_kernels():
     # route to the pingpong, not to whatever an M either side of them took.
     assert gemm_cdna.route(4096, 4096, 4096) == "pp"
     assert gemm_cdna.route(8192, 8192, 8192) == "pp"
+
+
+# -- the streaming and balanced blocks ----------------------------------------
+
+
+def test_a_window_narrower_than_a_named_layout_is_refused():
+    """include/cdna4's st_subtile addresses whole subtiles of the layout: a
+    32-wide window of st_16x64 read its subtile's first 32 columns whatever
+    its index (the four-warp GEMM gave wrong answers with it)."""
+    def k(x: hk.Tensor[hk.bf16]):
+        s = hk.lds.alloc(hk.ST(hk.bf16, 64, 64), name="s", shape="16x64")
+        hk.group(1).load(s, x.at[0, 0])
+        hk.arch.barrier()
+        r = s.subtile(64, 32, 0, 1).load(hk.RT(hk.bf16, 64, 32, "row"))
+        x.at[0, 0] = r
+
+    with pytest.raises(Exception, match="is not whole 16x64 subtiles"):
+        scaffold.bare(hk.kernel(k, arch="gfx950", warps=1, grid=lambda p: (1, 1, 1)).trace())
+
+    def whole(x: hk.Tensor[hk.bf16]):
+        s = hk.lds.alloc(hk.ST(hk.bf16, 64, 128), name="s", shape="16x64")
+        hk.group(1).load(s, x.at[0, 0])
+        hk.arch.barrier()
+        x.at[0, 0] = s.subtile(64, 64, 0, 1).load(hk.RT(hk.bf16, 64, 64, "row"))
+
+    assert "st_shape::st_16x64>" in scaffold.bare(
+        hk.kernel(whole, arch="gfx950", warps=1, grid=lambda p: (1, 1, 1)).trace())
+
+
+def test_the_streaming_blocks_read_whole_lines_past_the_caches():
+    """dp32x96nt: st_16x64 allocations read 64 deep, and B -- the weights --
+    copied non-temporal; A, which every block of N reads again, is not."""
+    from hk.ops import gemm_cdna_dp
+
+    kind, sched = gemm_cdna.CANDIDATES["dp32x96nt"]
+    src = scaffold.bare(gemm_cdna_dp.gemm_kernel(
+        "g_nt", **{**gemm_cdna_dp.DEFAULT, **sched}, arch="gfx950").trace())
+    assert "st_shape::st_16x64>" in src and "st_16x32" not in src
+    assert re.search(r"group_load_async<4, true>\(\w+, g\.b,", src)
+    assert re.search(r"group_load_async<4>\(\w+, g\.a,", src)
+    assert "subtile_inplace<16, 64>" in src and "subtile_inplace<48, 64>" in src
+
+
+def test_blocks_take_the_n_they_divide():
+    assert gemm_cdna.fits("dp32x96nt", 32, 24576, 4096)
+    assert not gemm_cdna.fits("dp32x96nt", 32, 151936, 4096)    # 96 does not divide
+    assert not gemm_cdna.fits("dp32x96nt", 32, 24576, 4096 + 128)  # 256-deep K-tiles
+    assert gemm_cdna.fits("dp128x224", 256, 28672, 4096)
+    assert not gemm_cdna.fits("dp128x224", 256, 24576, 4096)
+
+
+def test_the_wave_split_cuts_at_whole_waves():
+    """2048 x 12288: eight block-rows, 32 blocks a row to a wave of 256 CUs,
+    so 8192 columns on the pingpong and 4096 apart; a shape whose N is less
+    than a wave has no split."""
+    assert gemm_cdna.wave_cut(2048, 12288) == 8192
+    assert gemm_cdna.fits("ppw", 2048, 12288, 4096)
+    assert gemm_cdna.wave_cut(256, 151936) == 131072
+    assert not gemm_cdna.fits("ppw", 2048, 4096, 4096)
+
+
+def test_the_pingpong_tail_is_split_along_k():
+    """N = 151936's last 128 columns: a split four-warp kernel by M, the
+    pingpong's own 128-wide block only where no split takes K."""
+    assert gemm_cdna.tail_for(256, 4096) == "dp64x64k8"
+    assert gemm_cdna.tail_for(2048, 4096) == "dp64x64k4"
+    assert gemm_cdna.tail_for(4096, 4096) == "dp64k4"
+    assert gemm_cdna.tail_for(8192, 4096) == "dp64x64"
+    assert gemm_cdna.tail_for(300, 1152) == "dp64x64"
+
+
+def test_the_split_reduce_is_on_strips():
+    """Each share a 16-byte fp32 run a lane, rounded once into bf16; a grid
+    row a row of the output."""
+    from hk.ops import gemm_cdna_dp
+
+    src = scaffold.bare(gemm_cdna_dp.strip_reduce_kernel("sr_t", 8, arch="gfx950").trace())
+    assert re.search(r"rs_fp32_1x512_r4 \w+;", src)
+    assert len(re.findall(r"kittens::load\(\w+, g\.ws, \w+\);", src)) == 8
+    assert len(re.findall(r"kittens::store\(g\.c, \w+, \w+\);", src)) == 1
+    assert "bid_y" in src

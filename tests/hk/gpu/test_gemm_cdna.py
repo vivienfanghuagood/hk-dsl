@@ -22,7 +22,13 @@ if current_arch() != "gfx950":
 from hk.ops import gemm_cdna  # noqa: E402
 
 SHAPES = [(1, 256, 128), (16, 384, 192), (100, 512, 640), (257, 640, 1152),
-          (513, 1024, 2048), (1000, 1536, 4096)]
+          (513, 1024, 2048), (1000, 1536, 4096),
+          # 96-wide blocks and 256-deep K-tiles, five of them (a pad tile).
+          (33, 1152, 1280),
+          # 224-wide blocks.
+          (130, 1792, 768),
+          # The pingpong's last 128 columns, split along K.
+          (300, 1408, 1024)]
 
 
 def _check(name, m, n, k):
@@ -43,6 +49,16 @@ def _check(name, m, n, k):
 @pytest.mark.parametrize("name", list(gemm_cdna.CANDIDATES))
 @pytest.mark.parametrize("m,n,k", SHAPES)
 def test_every_candidate_is_right(name, m, n, k):
+    _check(name, m, n, k)
+
+
+@pytest.mark.parametrize("name", ["ppw", "ppwd"])
+@pytest.mark.parametrize("m,n,k,cus", [(300, 1408, 1024, 2), (257, 1792, 640, 4)])
+def test_the_wave_split_is_right(name, m, n, k, cus, monkeypatch):
+    """Whole waves of 256x256 blocks and the rest of N apart; on two or four
+    CUs a test-sized N has both."""
+    monkeypatch.setattr(gemm_cdna, "CUS", cus)
+    assert 0 < gemm_cdna.wave_cut(m, n) < n
     _check(name, m, n, k)
 
 
