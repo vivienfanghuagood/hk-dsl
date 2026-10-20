@@ -77,8 +77,11 @@ COL_PAD = 256
 
 #: On gfx1100, batches of at most this many rows go to hk.ops.decode_gemm
 #: (with the epilogue) rather than the WMMA kernel's 16-row schedule, which
-#: is what hk.ops.matmul runs. 0: off, as hk.ops.matmul.
-RDNA_DECODE_MAX_M = 0
+#: is what hk.ops.matmul runs there -- and what hk's vLLM routes do. On a
+#: W7900D (rocm 7.2.4) it is 1.6-2.7x the WMMA kernel at M = 1-32 on
+#: Qwen3-8B's layers (w3 probe, docs/templates/gemm.md); at 33-64 rows its
+#: four token tiles leave no registers for an epilogue.
+RDNA_DECODE_MAX_M = 32
 
 #: Rows of an accumulator an epilogue with a tile operand read at the store
 #: runs on at a time, the next band's operand loaded under this one's math:
@@ -169,17 +172,25 @@ class Context:
         return self._ty
 
     def _prefetch(self, names):
-        """Load these tile operands now (the epilogue reads them later): as
-        16-bit tiles where they are 16-bit (NATIVE_TILE), half the
-        registers while they wait, converted where the epilogue reads them."""
+        """Load these operands now, at the point the context is made (the
+        epilogue reads them later): a 16-bit tile as a 16-bit tile
+        (NATIVE_TILE), half the registers while it waits, converted where
+        the epilogue reads it.
+
+        Only what is loaded here is kept: a value the epilogue loads itself
+        may be made inside a branch hk traces twice (the first time into a
+        scratch region it then discards), so holding on to it would hand
+        the second trace a value that no longer exists. A second ctx.x is a
+        second load, which the compiler folds."""
         for name in names:
             ty, dt = self._ty, self._ep.dtypes[name]
-            if NATIVE_TILE and ty.layout != "strip" and dt.bits == 16:
+            if (self._ep.kinds[name] == TILE and NATIVE_TILE
+                    and ty.layout != "strip" and dt.bits == 16):
                 nt = RegTileType(dt, ty.rows, ty.cols, ty.layout, ty.frag)
                 self._raw[name] = self._ops["ep_" + name].at[self._r, self._col].load(
                     nt, bounded=self._bounded)
             else:
-                getattr(self, name)
+                self._loaded[name] = self._load(name)
 
     def __getattr__(self, name: str):
         if name.startswith("_"):
@@ -193,24 +204,25 @@ class Context:
                 f"gemm(a, b, epilogue=..., {name}=tensor_or_number).")
         if kind == CONST:
             return ep.consts_by_name[name]
-        if name not in self._loaded:
-            g = self._ops["ep_" + name]
-            ty = self._ty
-            strip = ty.layout == "strip"
-            if kind == ROW:
-                v = g.at[0, self._col].load(
-                    hk.row_vec(ty), bounded=self._bounded if strip else False)
-            elif kind == COL:
-                # (M, 1) with a row stride of 1: the vector's entries are
-                # consecutive from row r.
-                v = g.at[self._r, 0].load(hk.col_vec(ty))
-            else:
-                if name in self._raw:
-                    v = self._raw.pop(name).to(ty.dtype)
-                else:
-                    v = g.at[self._r, self._col].load(ty, bounded=self._bounded)
-            self._loaded[name] = v
-        return self._loaded[name]
+        if name in self._loaded:
+            return self._loaded[name]
+        return self._load(name)
+
+    def _load(self, name: str):
+        kind = self._ep.kinds[name]
+        g = self._ops["ep_" + name]
+        ty = self._ty
+        strip = ty.layout == "strip"
+        if kind == ROW:
+            return g.at[0, self._col].load(
+                hk.row_vec(ty), bounded=self._bounded if strip else False)
+        if kind == COL:
+            # (M, 1) with a row stride of 1: the vector's entries are
+            # consecutive from row r.
+            return g.at[self._r, 0].load(hk.col_vec(ty))
+        if name in self._raw:
+            return self._raw[name].to(ty.dtype)
+        return g.at[self._r, self._col].load(ty, bounded=self._bounded)
 
 
 class Epilogue:
@@ -264,11 +276,24 @@ class Epilogue:
         A kernel that calls this passes inited=True to store()."""
         ops["ep_" + self.init].at[r, col].load(tile.ty, bounded=True, into=tile)
 
-    def store(self, c, ops, tile, r, col, bounded=True, inited=False):
+    def early(self, c, ops, ty, r, col, bounded=True) -> "Context":
+        """Load every operand for the tile of type `ty` at C's (r, col) now
+        (a tile operand as 16-bit if it is), for a store() later that passes
+        it as ctx= -- a kernel with a long loop and a small tile (the decode
+        GEMV) hides their latency under the loop."""
+        ctx = Context(self, ops, ty, r, col, c, bounded)
+        ctx._prefetch(self.tensors)
+        return ctx
+
+    def store(self, c, ops, tile, r, col, bounded=True, inited=False, ctx=None):
         """Traced where a kernel would store `tile` at (r, col) of C. With
         an init_from operand the kernel did not start the accumulator as
-        (inited=False), it is added here first."""
+        (inited=False), it is added here first. `ctx`: operands loaded
+        earlier (early())."""
         ty = tile.ty
+        if ctx is not None:
+            self._one(c, ops, tile, r, col, bounded, ctx, inited)
+            return
         tiles = [n for n in self.tensors if self.kinds[n] == TILE
                  and (n != self.init or not inited)]
         # A tile operand is as many registers as the accumulator: on a

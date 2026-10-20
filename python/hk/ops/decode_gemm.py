@@ -119,15 +119,25 @@ def decode_gemm_kernel(name: str, *, tokens: int = 1, slices: int = 4,
         else:
             finish(out, n0)
 
-    def put(c, ops, out, n0):
+    def put(c, ops, out, n0, pre=None):
         if epilogue is None:
             c[hk.elem_coord(0, 0, 0, n0)].store(out, bounded=True)
         else:
-            epilogue.store(c, ops, out, 0, n0)
+            epilogue.store(c, ops, out, 0, n0, ctx=pre)
+
+    def early(c, ops):
+        """The epilogue's operands for this workgroup's 16 columns, loaded
+        before the K loop: their latency hides under the weight stream
+        instead of following the warps' combine."""
+        if epilogue is None or not hasattr(epilogue, "early"):
+            return None
+        return epilogue.early(c, ops, ty_out, 0, hk.arch.block_idx.x * 16)
 
     def body(x: hk.Tensor[bf16], w: hk.Tensor[bf16], c: hk.Tensor[bf16], **ops):
+        pre = early(c, ops)
+
         def finish(out, n0):
-            put(c, ops, out, n0)
+            put(c, ops, out, n0, pre)
 
         partial(x, w, 0, x.cols // (kc * warps), finish)
 
@@ -135,6 +145,7 @@ def decode_gemm_kernel(name: str, *, tokens: int = 1, slices: int = 4,
                    ws: hk.Tensor[fp32], cnt: hk.Tensor[i32], **ops):
         s = hk.arch.block_idx.y
         per = x.cols // splits
+        pre = early(c, ops)
 
         def finish(out, n0):
             ws[hk.elem_coord(0, s, 0, n0)] = out
@@ -149,7 +160,7 @@ def decode_gemm_kernel(name: str, *, tokens: int = 1, slices: int = 4,
                 total = hk.zeros(ty_out)
                 for j in range(splits):
                     total += ws[hk.elem_coord(0, j, 0, n0)].load(ty_out)
-                put(c, ops, total, n0)
+                put(c, ops, total, n0, pre)
 
     fn = _epilogue.sign(body if splits == 1 else body_split, epilogue)
     fn.__name__ = name

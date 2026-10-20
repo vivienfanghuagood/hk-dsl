@@ -90,7 +90,12 @@ def test_the_routes_are_hk_ops_matmuls():
     s = T.plan(1024, 4096, 4096, arch="gfx1100")
     assert len(s) == 1 and s[0].kernel == "rdna" and s[0].epilogue
     assert s[0].sched == rdna.schedule_for(1024, 4096, 4096)
-    assert T.plan(8, 4096, 4096, arch="gfx1100")[0].sched == rdna.THIN
+    assert T.plan(48, 4096, 4096, arch="gfx1100")[0].sched == rdna.schedule_for(
+        48, 4096, 4096)
+    # Decode batches go to the GEMV on gfx1100 too, as hk's vLLM routes do
+    # (hk.ops.matmul itself runs THIN there): 1.6-2.7x it on a W7900D.
+    s = T.plan(8, 4096, 4096, arch="gfx1100")
+    assert [(x.kernel, x.epilogue) for x in s] == [("decode", True)]
 
 
 def test_a_wave_split_and_a_128_column_tail_each_carry_the_epilogue():
@@ -155,13 +160,15 @@ def test_init_from_loads_the_accumulator_before_the_k_loop():
         loads = [i for i, l in enumerate(ir.splitlines())
                  if re.search(r"hk.load .*%ep_residual", l)]
         assert loads and max(loads) < first_mma, (arch, step)
-    # The decode GEMV sums its warps' partials: the residual is added once,
-    # at the store.
+    # The decode GEMV sums its warps' partials, so the residual is added
+    # once, at the store -- loaded before the K loop (Epilogue.early), its
+    # latency under the weight stream.
     ir = T.kernel_for(_steps()[5][1], ep, arch="gfx950").trace().dump()
     lines = ir.splitlines()
     first_mma = min(i for i, l in enumerate(lines) if "hk.mma" in l)
-    assert all(i > first_mma for i, l in enumerate(lines)
-               if re.search(r"hk.load .*%ep_residual", l))
+    loads = [i for i, l in enumerate(lines) if re.search(r"hk.load .*%ep_residual", l)]
+    adds = [i for i, l in enumerate(lines) if re.search(r"hk.add ", l)]
+    assert loads and max(loads) < first_mma and max(adds) > first_mma
 
 
 def test_a_split_kernel_takes_no_epilogue():

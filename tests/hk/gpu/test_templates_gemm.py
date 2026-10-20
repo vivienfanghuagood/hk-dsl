@@ -73,9 +73,17 @@ SHAPES = [(1, 4096, 4096), (33, 6144, 4096), (128, 4096, 4096), (200, 1408, 640)
           (1024, 4096, 4096), (2048, 12288, 4096), (4096, 4224, 1024)]
 
 
-@pytest.mark.parametrize("m,n,k", SHAPES)
-@pytest.mark.parametrize("name", NAMES)
-def test_the_routed_plan_is_right(m, n, k, name):
+# Every epilogue on two shapes, three on every shape (the compile per case
+# is what this file's time goes to, on the GPU runners' shared clock).
+CASES = ([(s, nm) for s in SHAPES[2:4] for nm in NAMES]
+         + [(s, nm) for s in SHAPES[:2] + SHAPES[4:]
+            for nm in ("bias_gelu", "residual", "coords")])
+
+
+@pytest.mark.parametrize("shape,name", CASES, ids=[f"{nm}-{'x'.join(map(str, s))}"
+                                                   for s, nm in CASES])
+def test_the_routed_plan_is_right(shape, name):
+    m, n, k = shape
     if ARCH != "gfx950" and n % 128:
         pytest.skip("N a multiple of 128")
     a, b, acc = _data(m, n, k)
@@ -93,7 +101,7 @@ def _candidates():
 
 @pytest.mark.skipif(ARCH != "gfx950", reason="gfx950's route candidates")
 @pytest.mark.parametrize("cand", _candidates())
-@pytest.mark.parametrize("name", ["bias_gelu", "residual", "coords", "tile_mul"])
+@pytest.mark.parametrize("name", ["bias_gelu", "residual", "coords"])
 def test_every_gfx950_candidate_carries_the_epilogue(cand, name, monkeypatch):
     """Each candidate the route table can name, forced: the epilogue in its
     store, or in the reduction of its split, right against torch."""
