@@ -49,6 +49,8 @@ def parse(argv=None):
     p.add_argument("--json", help="write the scoreboard JSON here (and a .md beside it)")
     p.add_argument("--md", help="write the markdown table here (default: beside --json)")
     p.add_argument("--list", action="store_true", help="list tasks, shapes and solutions and exit")
+    p.add_argument("--merge", nargs="+", metavar="JSON",
+                   help="combine scoreboards of one GPU (e.g. one gfx1100 run per task) into --json")
     p.add_argument("--seed", type=int, default=0)
     return p.parse_args(argv)
 
@@ -90,7 +92,16 @@ def _graph_launches():
         yield
         return
     import gc
-    kernels = [o for o in gc.get_objects() if isinstance(o, Kernel)]
+
+    def is_kernel(o):
+        try:
+            return isinstance(o, Kernel)
+        except ReferenceError:  # a dead weakproxy
+            return False
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        kernels = [o for o in gc.get_objects() if is_kernel(o)]
     saved = [(k, dict(k._launch_cache)) for k in kernels]
     old = os.environ.get("HK_LAUNCH")
     os.environ["HK_LAUNCH"] = "codeobj"
@@ -418,7 +429,7 @@ def markdown(board: Dict[str, Any]) -> str:
     L = [f"# DX suite scoreboard: {m.get('gpu_product', '?')} ({m.get('gpu_arch', '?')}), {m['date']}", ""]
     L.append("| | |\n|---|---|")
     for k in ("gpu_product", "gpu", "gpu_arch", "cu", "gpu_mem_gb", "torch", "hip", "triton", "hk", "hk_arch",
-              "hk_commit", "python", "host", "visible_devices", "command"):
+              "hk_commit", "python", "host", "gpu_index", "visible_devices", "cold_cache", "command"):
         if k in m:
             L.append(f"| {k} | `{m[k]}` |")
     L += ["", "Speedups are `other / this` (> 1 is faster), on device time (a CUDA graph of the calls) "
@@ -461,6 +472,37 @@ def markdown(board: Dict[str, Any]) -> str:
     return "\n".join(L) + "\n"
 
 
+def merge(args) -> int:
+    """One scoreboard from several runs on the same GPU: the results
+    concatenated (a later file's (task, shape, solution) replaces an earlier
+    one's), the first file's versions, every file's command."""
+    boards = [json.loads(Path(p).read_text()) for p in args.merge]
+    archs = {b["meta"].get("gpu_arch") for b in boards}
+    if len(archs) != 1:
+        raise SystemExit(f"--merge: the files come from different GPUs: {archs}")
+    meta = dict(boards[0]["meta"])
+    meta["command"] = " ; ".join(b["meta"].get("command", "?") for b in boards)
+    meta["merged_from"] = [str(p) for p in args.merge]
+    commits = sorted({b["meta"].get("hk_commit") for b in boards})
+    meta["hk_commit"] = commits[0] if len(commits) == 1 else ", ".join(commits)
+    meta["date"] = max(b["meta"]["date"] for b in boards)
+    seen: Dict[tuple, Dict[str, Any]] = {}
+    for b in boards:
+        for r in b["results"]:
+            for k in [k for k in r if k.startswith(("x_", "best_baseline"))]:
+                del r[k]
+            seen[(r["task"], r["shape"], r["solution"])] = r
+    results = list(seen.values())
+    add_ratios(results)
+    board = {"meta": meta, "summary": summarize(results), "results": results,
+             "wall_s": sum(b.get("wall_s", 0) for b in boards)}
+    out = Path(args.json or "merged.json")
+    out.write_text(json.dumps(board, indent=1, default=str) + "\n")
+    (Path(args.md) if args.md else out.with_suffix(".md")).write_text(markdown(board))
+    print(f"[dx] merged {len(boards)} files, {len(results)} results -> {out}")
+    return 0
+
+
 # --------------------------------------------------------------------------- main
 
 def main(argv=None) -> int:
@@ -471,6 +513,8 @@ def main(argv=None) -> int:
             os.environ[var] = os.path.join(tmp, var.lower())
     from bench.dx import common
 
+    if args.merge:
+        return merge(args)
     if args.list:
         for tid in common.resolve_tasks(args.tasks):
             task = common.load_task(tid)

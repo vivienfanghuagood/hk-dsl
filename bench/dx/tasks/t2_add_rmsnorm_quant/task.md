@@ -49,10 +49,11 @@ Inputs: `x`, `residual` are `torch.randn` bf16; `weight` is `1 + 0.1*randn`.
 
 - `r`: within one bf16 ulp of the reference (`rtol=2**-8`, `atol=1e-6`).
 - `scale`: `rtol=1e-2` against the reference's fp32 scale, shape `(T, 1)`, float32.
-- `q`: int8, every element within 1.25 steps of `y / scale` for the solution's
-  own `scale` (`|q - y_ref / scale| <= 1.25`): exact rounding is within 0.5;
+- `q`: int8, every element within 2 steps of `y / scale` for the solution's
+  own `scale` (`|q - y_ref / scale| <= 2`): exact rounding is within 0.5;
   rounding the normed value to bf16 on the way, as vLLM's kernel does
-  (`x * rstd`, then `* weight`), adds up to 0.75 at |q| near 127.
+  (`x * rstd`, then `* weight`, each up to 2**-8 relative), and taking the
+  absmax over those rounded values add up to 1.5 at |q| near 127.
 
 ## What is measured
 

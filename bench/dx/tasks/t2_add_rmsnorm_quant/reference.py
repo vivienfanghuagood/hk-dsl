@@ -17,10 +17,11 @@ SHAPES = [
 QUICK = ("T16-H4096", "T37-H5120", "T8192-H4096")
 SMALL = [dict(name="small", T=16, H=1024), dict(name="small-ragged", T=5, H=4096)]
 MUTABLE_INPUTS = ("x", "residual")
-# Rounding (0.5 of a step) plus vLLM's two bf16 roundings of the normed value
-# (x * rstd, then * weight: 2 * 2**-9 of up to 127 steps) plus the scale's
-# absmax taken over those rounded values (another 2**-9): 1.25 steps.
-Q_STEPS = 1.25
+# Rounding (0.5 of a step), plus vLLM's two bf16 roundings of the normed value
+# (x * rstd, then * weight: each up to 2**-8 of 127 steps, 0.5 a step), plus
+# the scale's absmax taken over those rounded values (another 2**-8): 2 steps.
+# A kernel without the bf16 roundings is within 0.5.
+Q_STEPS = 2.0
 
 
 def make_inputs(shape, device="cuda", seed=0):

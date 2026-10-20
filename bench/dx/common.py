@@ -293,6 +293,7 @@ def versions() -> Dict[str, Any]:
             info["gpu_arch"].split(":")[0], p.name)
         info["gpu_mem_gb"] = round(p.total_memory / 2**30, 1)
         info["cu"] = p.multi_processor_count
+    info["gpu_index"] = os.environ.get("HK_DX_GPU")   # the machine's index, when a container hides it
     info["visible_devices"] = os.environ.get("HIP_VISIBLE_DEVICES") or os.environ.get(
         "ROCR_VISIBLE_DEVICES") or os.environ.get("CUDA_VISIBLE_DEVICES")
     return info
