@@ -39,6 +39,31 @@ NAMES = [
     ("_fwd_grouped_kernel_stage1", "attention"),
     ("_fwd_kernel_stage2", "attention"),
     ("_ZN7sgl_hip10activation18act_and_mul_kernelI14__hip_bfloat16TnPFT_RKS3_E", "activation"),
+    # vLLM on gfx950 with aiter on: aiter's tuned GEMMs (its Triton a16w16, asm
+    # hgemm, the mono-tile kernel), the skinny GEMMs, hipBLASLt; ROCM_ATTN's
+    # ll4mi decode and ROCM_AITER_FA's asm prefill; aiter's fused add + RMSNorm;
+    # CK's MoE GEMMs with aiter's sorting and vLLM's gating.
+    ("_gemm_a16_w16_kernel_BLOCK_SIZE_M_16_BLOCK_SIZE_N_16_BLOCK_SIZE_K_256_GROUP_SIZE_M_1"
+     "_NUM_KSPLIT_1_SPLITK_BLOCK_SIZE_4096_EVEN_K_1_EVEN_MN_1_cache_modifier", "linear"),
+    ("hgemm_bf16_t16x16x128x5_ks1_w1x1x1_gm4_bias0_lnt_pft_0.kd", "linear"),
+    ("_Z35gemm_a16w16_mono_tile_kernel_gfx950ILi256ELi256E", "linear"),
+    ("void wvSplitKrc_<__hip_bfloat16, 64, 16, 4, 8, 1, 16, 1, 1, 1>(int, int, int)", "linear"),
+    ("void wvSplitK_hf_sml_<__hip_bfloat16, 64, 2, 16, 8, 2, 1>(int, int, int)", "linear"),
+    ("void paged_attention_ll4mi_QKV_mfma16_kernel<__hip_bfloat16, __hip_bfloat16, "
+     "(vllm::Fp8KVCacheDataType)0, __hip_bfloat16, 32, 128, 256, false, 4>", "attention"),
+    ("void paged_attention_ll4mi_reduce_kernel<__hip_bfloat16, __hip_bfloat16, 128, 128, 256, 1>",
+     "attention"),
+    ("_ZN5aiter32fmha_fwd_hd128_bf16_causal_groupE.kd", "attention"),
+    ("_ZN5aiter24add_rmsnorm_quant_kernelIDF16bDF16bLi256ELi16ELb1ELb0ELb1ELi1EEEvPT0_PT_PfS4_S4"
+     "_S4_dbiiiiiiibb.kd", "norm"),
+    ("void vllm::reshape_and_cache_flash_kernel<__hip_bfloat16, __hip_bfloat16, "
+     "(vllm::Fp8KVCacheDataType)0>", "kv_write"),
+    ("_ZN2ck15kernel_moe_gemmINS_15GridwiseMoeGemmINS_13tensor_layout4gemm8RowMajorENS3_11Column"
+     "MajorE", "moe"),
+    ("_ZN2ck20kernel_moe_gemm_2ldsINS_15GridwiseMoeGemmINS_13tensor_layout4gemm8RowMajorE", "moe"),
+    ("void aiter::opus_moe_sorting_entry<aiter::MoeSortingKernel<aiter::MoeSortingProblemEx<int, "
+     "float, 2, true>>>", "moe"),
+    ("void vllm::moe::topkGatingSoftmax<bool _Accum, int, ELi128ELi8ELi32E, true, 0>", "moe"),
 ]
 
 
@@ -85,7 +110,30 @@ def test_the_rooflines_follow_from_the_model_and_the_step():
     pre = hr.floors(QWEN3, {"tokens_per_step": [8192], "requests_per_step": [2]}, "prefill",
                     batch=16, context=4096, arch="gfx1100")
     assert pre["attention"][0] == pytest.approx(2 * 36 * 2 * 32 * 4096 ** 2 * 128 / 122.6e12 * 1e3)
-    assert hr.floors(QWEN3, {}, "decode", batch=16, context=4096, arch="gfx950") == {}
+    assert hr.floors(QWEN3, {}, "decode", batch=16, context=4096, arch="gfx942") == {}
+
+
+def test_gfx950s_rooflines_are_the_measured_peaks():
+    peak, bw, how = hr.PEAKS["gfx950"]
+    assert (peak, bw) == (2.48e15, 6.6e12) and "peaks.hip" in how
+    dec = hr.floors(QWEN3, {}, "decode", batch=1, context=2048, arch="gfx950")
+    assert dec["attention"][0] == pytest.approx(2048 * 36 * 2 * 8 * 128 * 2 / 6.6e12 * 1e3)
+
+
+#: Qwen3-30B-A3B's: 48 layers, every MLP is 128 experts.
+QWEN3_MOE = {"hidden_size": 2048, "num_attention_heads": 32, "num_key_value_heads": 4,
+             "head_dim": 128, "intermediate_size": 6144, "moe_intermediate_size": 768,
+             "num_experts": 128, "num_experts_per_tok": 8, "mlp_only_layers": [],
+             "num_hidden_layers": 48, "vocab_size": 151936,
+             "architectures": ["Qwen3MoeForCausalLM"]}
+
+
+def test_an_moe_models_linear_floor_leaves_out_the_experts():
+    dec = hr.floors(QWEN3_MOE, {}, "decode", batch=1, context=2048, arch="gfx950")
+    # Attention's projections and the LM head; no dense MLP.
+    weights = 48 * (5120 * 2048 + 2048 * 4096) * 2 + 151936 * 2048 * 2
+    assert dec["linear"][0] == pytest.approx(weights / 6.6e12 * 1e3, rel=0.01)
+    assert "0 dense layer(s) of 48" in dec["linear"][1]
 
 
 def test_with_no_ratio_the_roofline_is_the_ceiling():

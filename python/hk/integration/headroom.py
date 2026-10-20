@@ -196,7 +196,9 @@ COVERAGE: Dict[str, dict] = {
     "attention": {"ops": ["hk.ops.attention", "hk.ops.paged_prefill", "hk.ops.paged"],
                   "patch": {"vllm": ("hk", "HK_VLLM_BACKEND=1")}},
     "moe": {"ops": ["hk.ops.moe"],
-            "patch": {"vllm": ("moe", "HK_VLLM_MOE=1"), "sglang": ("moe", "HK_SGLANG_MOE=1")}},
+            "patch": {"vllm": ("moe", "HK_VLLM_MOE=1"), "sglang": ("moe", "HK_SGLANG_MOE=1")},
+            "note": "vLLM's patch rebinds TritonExperts' kernel; with aiter on (CK's "
+                    "kernel_moe_gemm, aiter's moe_sorting) it routes nothing"},
     "norm": {"ops": ["hk.ops.rms_norm", "hk.ops.fused_add_rms_norm"], "patch": {},
              "note": "not patched: an opaque op would cost Inductor its fusions "
                      "(docs/integration.md#what-is-deliberately-not-patched)"},
@@ -327,6 +329,13 @@ def linear_ratio(routes: List[dict]) -> Optional[Tuple[float, str]]:
 PEAKS: Dict[str, Tuple[float, float, str]] = {
     "gfx1100": (122.6e12, 864e9, "the W7900D's bf16 WMMA peak and GDDR6, 384 bits at "
                                  "18 Gbps (tools/hk-bench/_rounds.py)"),
+    "gfx950": (2.48e15, 6.6e12, "the MI355X measured (tools/cdna-probes/peaks.hip): a "
+                                "register-only v_mfma_f32_32x32x16_bf16 loop on every CU, "
+                                "2471-2484 TFLOP/s sustained for 0.1 s at 2381-2396 MHz "
+                                "(the datasheet's 2516.6 at 2400); a read of 1 GiB "
+                                "buffers rotated past the 256 MB Infinity Cache, "
+                                "6.54-6.60 TB/s (a copy moves 5.7; the datasheet's HBM3E "
+                                "is 8.0)"),
 }
 
 
@@ -350,12 +359,24 @@ def floors(cfg: dict, phase: dict, ph: str, *, batch: int, context: int,
     layers = text["num_hidden_layers"]
     toks = int(statistics.median(phase.get("tokens_per_step") or [batch]))
     reqs = int(statistics.median(phase.get("requests_per_step") or [batch]))
+    # An MoE model's MLP is its experts, the moe family's: only its dense
+    # layers (DeepSeek's first few, Qwen3-MoE's mlp_only_layers) are linear.
+    # The experts get no floor: the bytes a step reads depend on how many
+    # experts its tokens pick, which the config does not say.
+    moe = text.get("num_experts") or text.get("num_local_experts") or \
+        text.get("n_routed_experts")
+    dense = (text.get("first_k_dense_replace") or len(text.get("mlp_only_layers") or ())
+             if moe else layers)
     lin = 0.0
     for name, n, k, calls in _routes.linear_shapes(cfg):
+        if name in ("gate_up", "down"):
+            calls = calls * dense // layers
         m = reqs if name == "lm_head" else toks
         lin += calls * max(2 * m * n * k / peak, (n * k + m * k + m * n) * 2 / bw)
     out = {"linear": (lin * 1e3, f"the model's linear calls at M={toks} (LM head {reqs}), "
-                                 f"each at max(FLOPs / peak, bytes / bandwidth)")}
+                                 f"each at max(FLOPs / peak, bytes / bandwidth)"
+                                 + (f"; the MLP in {dense} dense layer(s) of {layers}, "
+                                    f"the rest is experts" if moe else ""))}
     if ph == "decode":
         kv_bytes = reqs * context * layers * 2 * kv * hd * 2
         out["attention"] = (kv_bytes / bw * 1e3,
