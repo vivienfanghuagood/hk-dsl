@@ -410,7 +410,7 @@ def gemm_kernel(name: str, *, block_m: int = 128, block_n: int = 128,
             else:
                 epilogue.store(c, ops, tile, r, cc, inited=inited)
 
-        if epilogue is not None:
+        if epilogue is not None and getattr(epilogue, "store_work", True):
             # The epilogue starts after the last WMMA, not among them: left
             # to the scheduler, ROCm 7.1's hoisted a bias + GELU into the
             # final K-tile's math and took the kernel from 216 VGPRs to 264

@@ -256,6 +256,13 @@ class Epilogue:
                 f"(init_from), so gemm() needs {self.init}= an (M, N) tensor; "
                 f"it has {self.init} as {kinds.get(self.init, 'nothing')}")
         self.tensors = [n for n in sorted(kinds) if kinds[n] != CONST]
+        #: Whether anything is left to compute at the store: not for an
+        #: identity on an accumulator that started as its operand
+        #: (gemm.residual where the kernel can init_from), which a kernel
+        #: then need not fence off from its last MMAs.
+        inner = _INITS[fn][1] if fn in _INITS else fn
+        self.store_work = not (inner in _IDENTITIES and
+                               set(self.tensors) <= {self.init})
         self.params = [("ep_" + n, GlobalType(dtypes[n])) for n in self.tensors]
         self.consts = {"EP_COL0": 0}
         h = hashlib.sha1(repr((_fn_key(fn), sorted(kinds.items()),
@@ -362,6 +369,9 @@ def _fn_key(fn) -> str:
 
 
 _TAGS: Dict[str, "Epilogue"] = {}
+
+#: Epilogues that return acc unchanged (filled in once they are defined).
+_IDENTITIES: set = set()
 
 
 _EPILOGUES: Dict[Any, Epilogue] = {}
@@ -915,6 +925,7 @@ def init_from(name: str) -> Callable:
 
     return deco
 
+_IDENTITIES.update({_identity, _residual})
 residual = init_from("residual")(_residual)
 bias_residual = init_from("residual")(_bias_residual)
 
