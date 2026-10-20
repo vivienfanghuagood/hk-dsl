@@ -88,10 +88,10 @@ ARCH_RULES: Dict[str, List[Tuple[str, str, str]]] = {
     "matmul": [
         ("kernel", "hk.ops.gemm (WMMA), tuned per shape", "hk.ops.gemm_cdna (MFMA), "
                                                           "routed by M"),
-        ("shape", "K a multiple of the tuned k_step (64), N of 128",
+        ("shape", "K a multiple of the tuned k_step (64) and > 0, N of 128",
          "K a multiple of 64 and > 0, N of 128"),
-        ("layout", "contiguous operands", "contiguous, except that decode-sized M "
-                                          "(<= 32) copies non-contiguous ones"),
+        ("layout", "contiguous operands (a non-contiguous `b` is refused)",
+         "the same (a route to hk.ops.decode_gemm would copy it)"),
         ("numerics", "bf16 store rounds ties away from zero", "round to nearest even; "
                                                               "split-K sums fp32 shares"),
     ],
@@ -678,7 +678,9 @@ def page_templates(since: Since) -> Page:
     for n in sorted(T._TEMPLATES):
         modname = f"hk.templates.{T._TEMPLATES[n]}"
         try:
-            obj = getattr(T, n)
+            # From the module, not the package: importing hk.templates.gemm
+            # rebinds the package's `gemm` to the module.
+            obj = getattr(importlib.import_module(modname), n)
         except (ImportError, AttributeError) as e:
             p.lines.append(f"### `hk.templates.{n}`\n")
             p.toc.append((3, f"hk.templates.{n}", _anchor(f"hk.templates.{n}")))
@@ -725,11 +727,12 @@ def page_check(since: Since) -> Page:
             continue
         if "--help" in a.option_strings:
             continue
-        meta = "" if a.nargs == 0 else " " + (a.metavar or a.dest.upper())
+        meta = "" if a.nargs == 0 else " " + (
+            a.metavar or ("{" + ",".join(a.choices) + "}" if a.choices else a.dest.upper()))
         opt = ", ".join(f"`{o}{meta}`" for o in a.option_strings)
         dflt = (f" (default {a.default})" if a.default not in (None, False, [], "==SUPPRESS==")
                 and a.nargs != 0 else "")
-        rows.append(f"| {opt} | {(a.help or '').replace('|', '/')}{dflt} |")
+        rows.append(f"| {opt} | {(a.help or '').replace('|', chr(92) + '|')}{dflt} |")
     p.para("\n".join(rows))
     return p
 

@@ -306,6 +306,11 @@ hk.ops.matmul(a, b, out=None)
 
 A @ B.T for bf16, fp32 accumulate.
 
+On gfx950 this is hk.ops.gemm_cdna.matmul (MFMA, routed by M from a
+measured table): K must be a multiple of 64 there, and its bf16 store
+rounds to nearest even where this one rounds ties away from zero (the
+split-K routes sum fp32 shares, then round). docs/dx/api-consistency.md.
+
 `b` is (N, K), not (K, N). That is not an inconvenience to be hidden: it
 keeps both shared loads contiguous and makes `mma_ABt` the primitive, which
 is what puts both operand tiles in row layout and therefore on the
@@ -317,8 +322,8 @@ is a bigger cost than the GEMM saves.
 | | gfx1100 (RDNA3) | gfx950 (CDNA4) |
 |---|---|---|
 | kernel | hk.ops.gemm (WMMA), tuned per shape | hk.ops.gemm_cdna (MFMA), routed by M |
-| shape | K a multiple of the tuned k_step (64), N of 128 | K a multiple of 64 and > 0, N of 128 |
-| layout | contiguous operands | contiguous, except that decode-sized M (<= 32) copies non-contiguous ones |
+| shape | K a multiple of the tuned k_step (64) and > 0, N of 128 | K a multiple of 64 and > 0, N of 128 |
+| layout | contiguous operands (a non-contiguous `b` is refused) | the same (a route to hk.ops.decode_gemm would copy it) |
 | numerics | bf16 store rounds ties away from zero | round to nearest even; split-K sums fp32 shares |
 
 ### `hk.ops.attention`
@@ -338,7 +343,9 @@ because a silent fallback inside an explicit `hk.attention` call is how a
 Ragged N is fine in both directions: the last Q block backs up to end at
 n_q and recomputes the overlap (idempotent -- a query row's output depends
 on that row alone), and the last KV block backs up and masks the rows it
-does not own.
+does not own. So on gfx1100 n_q must be at least Q_TILE (192) and n_kv at
+least KV_BLOCK (32). On gfx950 this runs hk.ops.attn_cdna, whose loads
+are bounded: any non-empty length. head_dim is 64 or 128 on both.
 
 **Per architecture** ([audit](../dx/api-consistency.md)):
 
@@ -379,6 +386,10 @@ hk.ops.paged.plan_splits(n_reqs: int, n_kv_heads: int, n_pages: int) -> int
 ```
 
 How many ways to cut the KV axis, given how empty the machine is.
+
+On gfx950 the merge reads splits eight at a time, so above 8 a plan must
+be a multiple of 8 there (vllm_backend.decode_splits rounds to a power of
+two); gfx1100's merge takes any count.
 
 Without a split the grid is `n_reqs * n_kv_heads` one-warp workgroups.
 This asks for enough splits to reach `TARGET_WORKGROUPS`, capped by the

@@ -904,16 +904,21 @@ def hints(r: Report) -> List[str]:
     """Rules of thumb over a report, each naming the number it read and the
     page that says more. Heuristics, not verdicts: the timing is the verdict."""
     out: List[str] = []
+    # Occupancy is worth a hint where nothing was timed, or where the kernel
+    # lost: a GEMM's LDS-bound occupancy is its design, not its problem.
+    lost = any((c.get("time") or {}).get("vs", {}).get("compile", {}).get("verdict")
+               == "loss" for c in r.cases)
+    timed = any(c.get("time") for c in r.cases)
     for b in r.builds:
         for i in b.get("instantiations", []):
             occ, top = i.get("occupancy"), i.get("max_waves_per_simd")
-            if occ and top and occ * 2 <= top:
-                binding = "LDS" if (i.get("occupancy_by_lds") or top) <                     (i.get("occupancy_by_regs") or top) else "registers"
+            if occ and top and occ * 2 <= top and (lost or not timed):
+                by_lds = i.get("occupancy_by_lds") or top
+                by_regs = i.get("occupancy_by_regs") or top
+                binding = "LDS" if by_lds < by_regs else "registers"
                 out.append(f"{b['kernel']}: occupancy {occ}/{top}, bound by {binding}; "
                            f"a memory-bound kernel wants more waves (fewer live tiles, "
-                           f"fewer warps' LDS) -- docs/runtime.md#the-resource-gates")
-        for w in b.get("warnings", []):
-            out.append(f"{b['kernel']}: the passes warned: {w}")
+                           f"less LDS) -- docs/runtime.md#the-resource-gates")
     for c in r.cases:
         t = c.get("time")
         if not t:

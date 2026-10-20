@@ -257,21 +257,21 @@ Each card's ceilings, for the bandwidth and FLOP rates the summary prints (tools
 | `--no-eager` | do not time torch eager |
 | `--no-compile` | do not time torch.compile |
 | `--compile-mode COMPILE_MODE` | torch.compile mode, e.g. max-autotune-no-cudagraphs |
-| `--rtol RTOL` |  |
-| `--atol ATOL` | absolute atol (default: relative to max/ref/) |
+| `--rtol RTOL` | relative tolerance (default: the output dtype's, hk.check.TOLERANCES) |
+| `--atol ATOL` | absolute atol (default: relative to max\|ref\|) |
 | `--exact` | require bit equality |
-| `--ref-precision REF_PRECISION` |  (default fp32) |
+| `--ref-precision {fp32,native}` | run the reference on fp32 copies of 16-bit inputs, or as given (default fp32) |
 | `--no-time` | correctness only |
-| `--rounds ROUNDS` |  (default 15) |
-| `--warmup WARMUP` |  (default 3) |
-| `--batch-ms BATCH_MS` |  (default 1.0) |
+| `--rounds ROUNDS` | timing rounds, contenders rotated (default 15) |
+| `--warmup WARMUP` | untimed calls of each first (default 3) |
+| `--batch-ms BATCH_MS` | a round's burst of back-to-back calls fills this long (default 1.0) |
 | `--burn BURN` | seconds of clock warm-up (default 0.5) |
 | `--bytes BYTES` | bytes a call moves (for GB/s) |
 | `--flops FLOPS` | FLOPs a call does (for TFLOP/s) |
 | `--build-only` | no GPU work even if one is there |
 | `--trace-only` | no hipcc either |
 | `--arch ARCH` | build for this arch (comma list: one report each, built only where the GPU is another arch) |
-| `--dump DUMP` | print a raw kernel's IR or C++ and exit |
+| `--dump {ir,cpp}` | print a raw kernel's IR or C++ and exit |
 | `--json PATH` | write the report as JSON ('-' for stdout) |
-| `--seed SEED` |  |
+| `--seed SEED` | torch.manual_seed for the inputs |
 | `-q`, `--quiet` | no summary |

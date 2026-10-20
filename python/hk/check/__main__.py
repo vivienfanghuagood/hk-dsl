@@ -309,14 +309,17 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--no-eager", action="store_true", help="do not time torch eager")
     p.add_argument("--no-compile", action="store_true", help="do not time torch.compile")
     p.add_argument("--compile-mode", help="torch.compile mode, e.g. max-autotune-no-cudagraphs")
-    p.add_argument("--rtol", type=float)
+    p.add_argument("--rtol", type=float, help="relative tolerance (default: the "
+                                              "output dtype's, hk.check.TOLERANCES)")
     p.add_argument("--atol", type=float, help="absolute atol (default: relative to max|ref|)")
     p.add_argument("--exact", action="store_true", help="require bit equality")
-    p.add_argument("--ref-precision", choices=("fp32", "native"), default="fp32")
+    p.add_argument("--ref-precision", choices=("fp32", "native"), default="fp32",
+                   help="run the reference on fp32 copies of 16-bit inputs, or as given")
     p.add_argument("--no-time", action="store_true", help="correctness only")
-    p.add_argument("--rounds", type=int, default=15)
-    p.add_argument("--warmup", type=int, default=3)
-    p.add_argument("--batch-ms", type=float, default=1.0)
+    p.add_argument("--rounds", type=int, default=15, help="timing rounds, contenders rotated")
+    p.add_argument("--warmup", type=int, default=3, help="untimed calls of each first")
+    p.add_argument("--batch-ms", type=float, default=1.0,
+                   help="a round's burst of back-to-back calls fills this long")
     p.add_argument("--burn", type=float, default=0.5, help="seconds of clock warm-up")
     p.add_argument("--bytes", type=float, help="bytes a call moves (for GB/s)")
     p.add_argument("--flops", type=float, help="FLOPs a call does (for TFLOP/s)")
@@ -326,7 +329,7 @@ def build_parser() -> argparse.ArgumentParser:
                                   "built only where the GPU is another arch)")
     p.add_argument("--dump", choices=("ir", "cpp"), help="print a raw kernel's IR or C++ and exit")
     p.add_argument("--json", metavar="PATH", help="write the report as JSON ('-' for stdout)")
-    p.add_argument("--seed", type=int, default=0)
+    p.add_argument("--seed", type=int, default=0, help="torch.manual_seed for the inputs")
     p.add_argument("-q", "--quiet", action="store_true", help="no summary")
     return p
 

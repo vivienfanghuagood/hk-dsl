@@ -1483,7 +1483,9 @@ because a silent fallback inside an explicit `hk.attention` call is how a
 Ragged N is fine in both directions: the last Q block backs up to end at
 n_q and recomputes the overlap (idempotent -- a query row's output depends
 on that row alone), and the last KV block backs up and masks the rows it
-does not own.
+does not own. So on gfx1100 n_q must be at least Q_TILE (192) and n_kv at
+least KV_BLOCK (32). On gfx950 this runs hk.ops.attn_cdna, whose loads
+are bounded: any non-empty length. head_dim is 64 or 128 on both.
 
 **Per architecture** ([audit](../dx/api-consistency.md)):
 
