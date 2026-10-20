@@ -646,13 +646,27 @@ What was run, on the dev pod (`hfang-hk-vllm`, gfx1100), 2026-10-16:
 | tests passed | 19 of 19 | 18 of 19 | 8 of 8 |
 
 The supported versions are the ones measured end to end: **vLLM 0.31.0**
-(torch 2.13.0+rocm7.2, Python 3.12;
+(torch 2.13.0+rocm7.2, triton-rocm 3.7.1, Python 3.12;
 [vLLM 0.31](history/20-vllm-031.md), [MoE](history/21-moe.md),
-[4-bit](history/22-int4.md), [chapter 30](history/30-flydsl-routes-gate-contracts.md))
+[4-bit](history/22-int4.md), [chapter 30](history/30-flydsl-routes-gate-contracts.md),
+re-measured on that stack in [chapter 43](history/43-matched-stack.md))
 and **SGLang 0.5.18** with sglang-radeon 0.1.5 (torch 2.9.1, ROCm 7.2.1;
 [chapter 24](history/24-sglang.md), [chapter 25](history/25-sglang-moe.md)).
 vLLM 0.16.1 is the copy installed beside SGLang. Its contract holds except
 for AWQ, but nothing has been run end to end on it since the port to 0.31.
+
+Check which Triton the venv imports. vLLM 0.31's requirements include
+xgrammar, which requires `triton` with no version; triton-rocm, which
+torch 2.13.0+rocm7.2 pins, is a different distribution name, so installing
+them after torch puts PyPI's newest `triton` over triton-rocm's files in the
+same package. That is how the venv the record measured in from chapter 24
+to 38 came to import Triton 3.8.0 ([chapter 43](history/43-matched-stack.md)).
+`python -c "import triton; print(triton.__version__)"` should print 3.7.1;
+if it does not, `pip uninstall triton` and reinstall the triton-rocm 3.7.1
+wheel with `--no-deps --force-reinstall`. vLLM 0.31's own ROCm image builds
+yet another Triton, ROCm/triton's 3.8.x branch, and under 3.7.1 vLLM logs
+that its vendored `triton_kernels` (MXFP4 MoE) cannot be imported; nothing
+hk patches uses them.
 
 On 0.31, three of the backend's hooks are no longer read
 (`accept_output_buffer`, `get_kv_cache_shape`, the backend's
