@@ -135,6 +135,19 @@ def test_an_int8_quantizer_rounds_and_saturates():
     assert (got.float() - ref).abs().max().item() <= 1.0     # bf16 vs fp32 GEMM
 
 
+@pytest.mark.skipif(ARCH != "gfx950", reason="an fp8 C is gfx950's")
+def test_an_fp8_quantizer_rounds_and_saturates():
+    a, b, acc = _data(300, 4096, 1024)
+    s = torch.rand(4096, device="cuda") * 900          # some past 448
+    got = T(a, b, epilogue=T.scale, out_dtype=torch.float8_e4m3fn, scale=s)
+    assert got.dtype == torch.float8_e4m3fn
+    want = (acc * s).clamp(-448, 448)
+    big = want.abs() > 16
+    rel = ((got.float() - want).abs() / want.abs())[big]
+    assert rel.max().item() < 0.07                       # e4m3: 3 mantissa bits
+    assert got.float().abs().max().item() == 448.0
+
+
 def test_out_is_written_in_place_and_nothing_past_m():
     a, b, acc = _data(100, 4096, 1024)
     room = torch.full((108, 4096), 7.0, device="cuda", dtype=torch.bfloat16)

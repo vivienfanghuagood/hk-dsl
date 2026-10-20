@@ -61,7 +61,8 @@ from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from .. import dsl as hk
-from ..types import DType, GlobalType, RegTileType, bf16, fp16, fp32, i8
+from ..types import (DType, GlobalType, RegTileType, bf16, fp8e4m3, fp8e5m2, fp16,
+                     fp32, i8)
 
 # ---------------------------------------------------------------- operands
 
@@ -94,10 +95,11 @@ def _hk_dtype(t) -> DType:
     import torch  # noqa: PLC0415
 
     m = {torch.bfloat16: bf16, torch.float16: fp16, torch.float32: fp32,
-         torch.int8: i8}
+         torch.int8: i8, torch.float8_e4m3fn: fp8e4m3, torch.float8_e5m2: fp8e5m2}
     if t not in m:
         raise TypeError(f"hk.templates.gemm: {t} is not a dtype hk stores or "
-                        f"loads here (bf16, fp16, fp32, int8)")
+                        f"loads here (bf16, fp16, fp32, int8, float8_e4m3fn, "
+                        f"float8_e5m2)")
     return m[t]
 
 
@@ -598,10 +600,11 @@ def _out_dtype(out_dtype):
         return torch.bfloat16
     if isinstance(out_dtype, DType):
         rev = {bf16: torch.bfloat16, fp16: torch.float16, fp32: torch.float32,
-               i8: torch.int8}
+               i8: torch.int8, fp8e4m3: torch.float8_e4m3fn,
+               fp8e5m2: torch.float8_e5m2}
         if out_dtype not in rev:
             raise TypeError(f"hk.templates.gemm: out_dtype {out_dtype}; bf16, "
-                            f"fp16, fp32 or int8")
+                            f"fp16, fp32, int8 or fp8")
         return rev[out_dtype]
     _hk_dtype(out_dtype)
     return out_dtype
@@ -615,8 +618,8 @@ def _check_out(dt: DType, arch: Optional[str] = None) -> None:
     from ..target import current_arch  # noqa: PLC0415
 
     arch = arch or current_arch()
-    if dt == i8 and arch != "gfx950":
-        raise TypeError(f"hk.templates.gemm: an int8 C is gfx950's; on {arch} "
+    if dt.bits == 8 and arch != "gfx950":
+        raise TypeError(f"hk.templates.gemm: an {dt} C is gfx950's; on {arch} "
                         f"include/rdna3's tile store takes 16- and 32-bit "
                         f"elements (store fp16/bf16 and quantize separately)")
 
@@ -789,8 +792,9 @@ _bias_residual.__name__ = "bias_residual"
 
 def scale(acc, ctx):
     """acc * scale: a number, a per-channel (N,) or a per-row (M, 1) vector.
-    With out_dtype=torch.int8 this is a quantizer: the store rounds to
-    nearest even and saturates."""
+    With out_dtype=torch.int8 or torch.float8_e4m3fn (gfx950) this is a
+    quantizer: the store rounds to nearest even and saturates (fp8 at
+    +-448, where torch's cast gives NaN)."""
     return acc * ctx.scale
 
 
