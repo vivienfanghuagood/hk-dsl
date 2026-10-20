@@ -233,3 +233,69 @@ def test_swap_halves_takes_a_wave64_strip_of_one_or_an_even_number_of_chunks():
         o.at[0, 0].store(v.swap_halves())
     with pytest.raises(TypeError, match="neither one nor an even number"):
         _k950(_three, warps=1).trace()
+
+
+def _rot(x: hk.Tensor[hk.bf16], cs: hk.Tensor[hk.fp32], o: hk.Tensor[hk.bf16]):
+    S8 = hk.RS(hk.fp32, 1, 512, 8)
+    t = hk.arch.block_idx.x
+    v = x.at[t, 0].load(S8)
+    p = v.rotate_half(128)
+    p *= cs.at[t, 64].load(S8, period=64)
+    v *= cs.at[t, 0].load(S8, period=64)
+    v += p
+    o.at[t, 0].store(v)
+
+
+def test_rotate_half_and_a_period_load_are_ops_and_templates():
+    """A 128-column head at eight a lane: rotate_half's span in the op and
+    the template, and the angles a period of D/2 repeated along the chunk."""
+    k = _k950(_rot, warps=1)
+    asm = k.trace().module.operation.get_asm()
+    assert "hk.rotate_half" in asm and "span = 128" in asm and "period = 64" in asm
+    src = k.source()
+    assert "kittens::rotate_half<128>(" in src
+    assert src.count("kittens::load_period<64>(") == 2
+
+
+def test_rotate_half_and_period_are_refused_where_they_cannot_be():
+    with pytest.raises(TypeError, match="wave64 strip port"):
+        _kernel(_rot, warps=1).trace()
+
+    def _wide_span(x: hk.Tensor[hk.bf16], o: hk.Tensor[hk.bf16]):
+        v = x.at[0, 0].load(hk.RS(hk.fp32, 1, 512, 8))
+        o.at[0, 0].store(v.rotate_half(384))
+    with pytest.raises(TypeError, match="divides the strip's columns"):
+        _k950(_wide_span, warps=1).trace()
+
+    def _bounded(x: hk.Tensor[hk.bf16], o: hk.Tensor[hk.bf16]):
+        o.at[0, 0].store(x.at[0, 0].load(hk.RS(hk.fp32, 1, 512, 8), bounded=True, period=64))
+    with pytest.raises(TypeError, match="unbounded strip"):
+        _k950(_bounded, warps=1).trace()
+
+
+def test_rotary_takes_the_16_byte_form_for_128_and_256_wide_heads(monkeypatch):
+    """hk.ops.rotary's plan on gfx950: one warp of two chunks inside 64 MB,
+    a token a workgroup past it; a 64-wide head keeps the 4-byte kernel."""
+    import hk.target as target
+    from hk.ops import fused
+
+    monkeypatch.setattr(target, "current_arch", lambda: "gfx950")
+    assert fused._rotary16_plan(2048, 64, 128, 2) == (1, 2)
+    assert fused._rotary16_plan(8192, 64, 128, 2) == (8, 2)
+    assert fused._rotary16_plan(8192, 40, 128, 2) == (1, 1)
+    assert fused._rotary16_plan(7, 8, 256, 2) == (1, 2)
+    assert fused._rotary16_plan(5, 3, 64, 2) is None
+    assert fused._rotary16_plan(4, 8, 128, 4) is None
+    monkeypatch.setattr(target, "current_arch", lambda: "gfx1100")
+    assert fused._rotary16_plan(2048, 64, 128, 2) is None
+
+
+def test_the_16_byte_rope_reads_its_positions_through_the_scalar_cache(monkeypatch):
+    import hk.target as target
+    from hk.codegen import scaffold
+    from hk.ops import fused
+
+    monkeypatch.setattr(target, "_CURRENT", ["gfx950"])
+    src = scaffold.bare(fused._rotary16_kernel("rot16_t", hk.bf16, 1, True).trace())
+    assert "kittens::load_scalar_invariant(g.pos" in src
+    assert "kittens::rotate_half<128>(" in src

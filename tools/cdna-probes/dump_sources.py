@@ -20,7 +20,7 @@ from hk.codegen import scaffold  # noqa
 jobs = list(_catalog.kernels())
 for mod in ("norm", "fused", "quant", "elementwise", "attn", "sdpa", "paged"):
     m = importlib.import_module(f"hk.ops.{mod}")
-    for table in ("KERNELS", "STRIP_KERNELS", "ROTARY_KERNELS"):
+    for table in ("KERNELS", "STRIP_KERNELS", "ROTARY_KERNELS", "ROTARY16_KERNELS"):
         jobs += [(f"{mod}.{n}", k) for n, k in sorted(getattr(m, table, {}).items())]
 from hk.ops import decode_gemm, gemm, paged  # noqa
 jobs.append(("gemm.default", gemm.TUNER._kernel_for(gemm.DEFAULT)))

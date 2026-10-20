@@ -114,6 +114,18 @@ LogicalResult LoadOp::verify() {
   Type t = destType(getDst(), getResult());
   if (getBounded() && !isa<RegTileType>(t) && !isStrip(t))
     return emitOpError("bounded predicates tile rows; the destination is not a tile");
+  if (auto p = getPeriod()) {
+    auto s = dyn_cast<RegTileType>(t);
+    if (!s || !s.isStrip())
+      return emitOpError("period repeats a strip's columns; the destination is ")
+             << t;
+    if (getBounded())
+      return emitOpError("period reads `period` columns from idx.c, which the "
+                         "caller has bounded; drop `bounded`");
+    if (*p <= 0 || *p % s.getRun())
+      return emitOpError("period ")
+             << *p << " is not a positive number of whole runs of " << s.getRun();
+  }
   return checkStripAccess(*this, t, getIdx().getType(), getBounded(), false);
 }
 
@@ -501,6 +513,28 @@ LogicalResult SwapHalvesOp::verify() {
   if (t.getCols() % (2 * t.getRun()))
     return emitOpError("a strip row of ")
            << t.getCols() << " columns has no two halves of whole runs";
+  return success();
+}
+
+LogicalResult RotateHalfOp::verify() {
+  if (failed(verifyUnary(*this)))
+    return failure();
+  auto t = dyn_cast<RegTileType>(getSrc().getType());
+  if (!t || !t.isStrip())
+    return emitOpError("rotates the halves of a strip's segments; it takes a "
+                       "strip, not ")
+           << getSrc().getType();
+  int64_t span = getSpan(), run = t.getRun(), chunk = 64 * run;
+  if (span <= 0 || t.getCols() % span)
+    return emitOpError("a span of ")
+           << span << " does not divide the strip's " << t.getCols() << " columns";
+  int64_t lanes = span / (2 * run);
+  bool inChunk = span % (2 * run) == 0 && (lanes == 8 || lanes == 16 || lanes == 32);
+  bool chunks = span % (2 * chunk) == 0;
+  if (!inChunk && !chunks)
+    return emitOpError("a span of ")
+           << span << " at a run of " << run
+           << " puts its halves neither 8, 16 or 32 lanes nor whole chunks apart";
   return success();
 }
 

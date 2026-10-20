@@ -89,9 +89,14 @@ def HK_LoadOp : HK_Op<"load"> {
   let description = [{
     `bounded` predicates the tile on the global's rows: rows past the last
     read as zero and their memory is never touched.
+
+    `period` (strips, unbounded) reads column `idx.c + c % period` into a
+    strip's column c: a row of `period` values repeated along the strip, as
+    a 16-byte RoPE wants the one token's angles under each of its heads.
   }];
   let arguments = (ins Optional<HK_Elementwise>:$dst, HK_GlobalType:$src,
-                       HK_CoordType:$idx, UnitAttr:$bounded);
+                       HK_CoordType:$idx, UnitAttr:$bounded,
+                       OptionalAttr<I64Attr>:$period);
   let results = (outs Optional<HK_Elementwise>:$result);
   let assemblyFormat = [{
     $src `[` $idx `]` (`into` $dst^)? attr-dict `:` qualified(type($src)) `,` qualified(type($idx))
@@ -651,6 +656,15 @@ def HK_SwapHalvesOp : HK_UnaryMapOp<"swap_halves"> {
     rotate_half without its sign. Strips only, and a row of one chunk or of
     an even number of them: a register swap between chunks, or one lane
     exchange across the wave's halves.
+  }];
+}
+def HK_RotateHalfOp : HK_UnaryMapOp<"rotate_half", (ins I64Attr:$span)> {
+  let description = [{
+    NeoX's rotate_half on each `span`-column segment of a strip's rows: for
+    c in the segment's first half the result is -x[c + span/2], in its second
+    x[c - span/2]. Strips only. The halves are 8, 16 or 32 lanes apart -- a
+    DPP row_ror:8, a v_permlane16_swap or a v_permlane32_swap on gfx950 --
+    or whole chunks apart, a register swap; the sign is one XOR a value.
   }];
 }
 

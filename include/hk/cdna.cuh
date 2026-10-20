@@ -1925,6 +1925,58 @@ __device__ static inline void swap_halves(RS &dst, const RS &src) {
     }
 }
 
+/**
+ * @brief NeoX's rotate_half on each SPAN-column segment of every row:
+ * dst(r, c) = -src(r, c + SPAN/2) in a segment's first half and
+ * src(r, c - SPAN/2) in its second. Halves whole chunks apart swap
+ * registers; halves 8, 16 or 32 lanes apart exchange lanes -- DPP row_ror:8
+ * inside a 16-lane row, v_permlane16_swap, v_permlane32_swap (gfx950) -- and
+ * the first half's sign is one XOR a value.
+ */
+template<int SPAN, ducks::rs::all RS>
+__device__ static inline void rotate_half(RS &dst, const RS &src) {
+    using T = typename RS::T;
+    static_assert(RS::cols % SPAN == 0, "segments tile the row");
+    constexpr uint32_t SIGN = sizeof(T) == 4 ? 0x80000000u : 0x8000u;
+    if constexpr (SPAN % (2 * RS::span) == 0) {
+        constexpr int SEG = SPAN / RS::span, H = SEG / 2;
+        RS tmp;
+        detail::strip_each<RS>([&](int r, int j, int e) {
+            const int s = j % SEG;
+            tmp.data[r][j][e] = s < H
+                ? detail::hk_from_bits<T>(detail::hk_bits(src.data[r][j + H][e]) ^ SIGN)
+                : src.data[r][j - H][e];
+        });
+        dst = tmp;
+    } else {
+        constexpr int LANES = SPAN / (2 * RS::run);
+        static_assert(SPAN % (2 * RS::run) == 0 && (LANES == 8 || LANES == 16 || LANES == 32),
+                      "a segment's halves 8, 16 or 32 lanes apart, or whole chunks");
+        const int l = laneid();
+        const uint32_t sign = (l % (2 * LANES)) < LANES ? SIGN : 0u;
+        detail::strip_each<RS>([&](int r, int j, int e) {
+            const uint32_t u = detail::hk_bits(src.data[r][j][e]);
+            uint32_t p;
+#if defined(KITTENS_CDNA4)
+            if constexpr (LANES == 8) {
+                p = uint32_t(__builtin_amdgcn_mov_dpp(int(u), 0x128, 0xF, 0xF, true));
+            } else if constexpr (LANES == 16) {
+                // As swap_halves: the even row of each pair finds its
+                // partner's value in the second result, the odd row in the first.
+                const auto q = __builtin_amdgcn_permlane16_swap(u, u, false, true);
+                p = (l % 32) < 16 ? q[1] : q[0];
+            } else {
+                const auto q = __builtin_amdgcn_permlane32_swap(u, u, false, true);
+                p = l < 32 ? q[1] : q[0];
+            }
+#else
+            p = uint32_t(__shfl_xor(int(u), LANES, WARP_THREADS));
+#endif
+            dst.data[r][j][e] = detail::hk_from_bits<T>(p ^ sign);
+        });
+    }
+}
+
 /* ----------  reductions  ---------- */
 
 namespace detail {
@@ -2131,6 +2183,29 @@ __device__ inline static void load(RS &dst, const GL &src, const coord<> &idx) {
         for (int j = 0; j < RS::chunks; j++) {
             U run[RS::run];
             detail::strip_read(run, base + r * stride + j * RS::span);
+            #pragma unroll
+            for (int e = 0; e < RS::run; e++)
+                dst.data[r][j][e] = base_types::convertor<T, U>::convert(run[e]);
+        }
+    }
+}
+
+/** @brief load() of PERIOD columns repeated: strip column c is column
+ * idx.c + c % PERIOD of the row. Unbounded. */
+template<int PERIOD, ducks::rs::all RS, ducks::gl::all GL>
+__device__ inline static void load_period(RS &dst, const GL &src, const coord<> &idx) {
+    using T = typename RS::T;
+    using U = typename GL::dtype;
+    static_assert(PERIOD % RS::run == 0, "a period of whole runs");
+    const U *base = &src[idx];
+    const int lane0 = laneid() * RS::run;
+    const int stride = src.row_stride();
+    #pragma unroll
+    for (int r = 0; r < RS::rows; r++) {
+        #pragma unroll
+        for (int j = 0; j < RS::chunks; j++) {
+            U run[RS::run];
+            detail::strip_read(run, base + r * stride + (j * RS::span + lane0) % PERIOD);
             #pragma unroll
             for (int e = 0; e < RS::run; e++)
                 dst.data[r][j][e] = base_types::convertor<T, U>::convert(run[e]);

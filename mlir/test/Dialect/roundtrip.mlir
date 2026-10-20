@@ -85,3 +85,15 @@ func.func @strip_swap_halves(%s: !hk.rt<f32, 1x128, strip<2>>) {
   hk.swap_halves %h into %s : !hk.rt<f32, 1x128, strip<2>> into !hk.rt<f32, 1x128, strip<2>>
   return
 }
+
+// NeoX's rotate_half on 128-column heads of a run-of-8 strip, and the
+// angles a period of 64 columns repeated along it.
+// CHECK-LABEL: func.func @strip_rotate_half
+func.func @strip_rotate_half(%s: !hk.rt<f32, 1x512, strip<8>>, %g: !hk.gl<f32>,
+                             %idx: !hk.coord<element>) {
+  // CHECK: hk.rotate_half %{{.*}} {span = 128 : i64} : !hk.rt<f32, 1x512, strip<8>> -> !hk.rt<f32, 1x512, strip<8>>
+  %h = hk.rotate_half %s {span = 128 : i64} : !hk.rt<f32, 1x512, strip<8>> -> !hk.rt<f32, 1x512, strip<8>>
+  // CHECK: hk.load %{{.*}}[%{{.*}}] {period = 64 : i64} : !hk.gl<f32>, !hk.coord<element> -> !hk.rt<f32, 1x512, strip<8>>
+  %c = hk.load %g[%idx] {period = 64 : i64} : !hk.gl<f32>, !hk.coord<element> -> !hk.rt<f32, 1x512, strip<8>>
+  return
+}

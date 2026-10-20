@@ -100,7 +100,10 @@ def _ref_rotary(x, cs, positions):
 
 
 @pytest.mark.parametrize("t,h,d", [(1, 32, 128), (32, 40, 128), (2048, 64, 128), (7, 8, 256),
-                                   (5, 3, 64)])
+                                   (5, 3, 64),
+                                   # the 16-byte form past 64 MB: ten one-warp
+                                   # workgroups a token, and eight warps
+                                   (8192, 40, 128), (4096, 64, 128)])
 @pytest.mark.parametrize("pos", [False, True])
 def test_rotary(t, h, d, pos):
     x = torch.randn(t, h, d, device="cuda", dtype=BF16)

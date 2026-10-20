@@ -963,6 +963,8 @@ private:
         .Case([&](LoadOp o) {
           Value d = dest(o.getDst(), o.getResult());
           std::string fn = o.getBounded() ? "load_bounded" : "load";
+          if (auto p = o.getPeriod())
+            fn = "load_period<" + std::to_string(*p) + ">";
           w("kittens::" + fn + "(" + name(d) + ", " + name(o.getSrc()) + ", " +
             coordArg(o.getIdx(), cpp(d.getType())) + ");");
         })
@@ -1290,6 +1292,11 @@ private:
               DgeluOp, SqrtOp, RsqrtOp, SiluOp, StepOp, SwapHalvesOp>([&](auto o) {
           Value d = dest(o.getDst(), o.getResult());
           call(o->getName().stripDialect(), d, {name(o.getSrc())});
+        })
+        .Case([&](RotateHalfOp o) {
+          Value d = dest(o.getDst(), o.getResult());
+          call("rotate_half<" + std::to_string(o.getSpan()) + ">", d,
+               {name(o.getSrc())});
         })
         .Case<MmaABOp, MmaABtOp, MmaAtBOp, MmaAtBtOp>([&](auto o) {
           Value d = dest(o.getDst(), o.getResult());

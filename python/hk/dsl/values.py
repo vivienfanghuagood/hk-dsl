@@ -458,12 +458,16 @@ class View:
         self.tensor, self.idx = tensor, idx
 
     def load(self, tile, *, into: Optional["Value"] = None,
-             bounded=False):
+             bounded=False, period: Optional[int] = None):
         """Global -> register tile or vector. The element type converts on the
         way in, for free. `bounded=True` predicates rows past the global's
         last (they read zero and touch no memory); `bounded=n`, an int or a
         device Int, also predicates rows at or past `n` counted from the
-        tile's first -- for a tile whose rows end before the tensor's."""
+        tile's first -- for a tile whose rows end before the tensor's.
+
+        `period` (a strip, unbounded): column c of the strip reads column
+        c % period from the view's -- `period` values repeated along it, as
+        one token's angles under each of its heads."""
         if not isinstance(tile, (RegTileType, RegVecType)):
             raise TypeError(f"load destination type is {tile!r}, expected a "
                             f"tile or a vector type")
@@ -472,6 +476,19 @@ class View:
                 and not _is_strip(tile)):
             raise TypeError(f"load(bounded=...) predicates tile rows; {tile!r} "
                             f"is not a tile")
+        if period is not None:
+            if not _is_strip(tile) or bounded is not False:
+                raise TypeError(f"load(period=...) repeats an unbounded strip's "
+                                f"columns, not {tile!r}" +
+                                (" with bounded" if bounded is not False else ""))
+            if not isinstance(period, int) or period <= 0 or period % tile.run:
+                raise TypeError(f"load(period={period!r}): a positive number of "
+                                f"whole runs of {tile.run}")
+            from .._mlir import ir  # noqa: PLC0415
+
+            return _make(hkd.LoadOp, tile, (self.tensor.v, self.idx.v), into=into,
+                         name="ld", bounded=False,
+                         period=ir.IntegerAttr.get(ir.IntegerType.get_signless(64), period))
         if bounded is True or bounded is False:
             return _make(hkd.LoadOp, tile, (self.tensor.v, self.idx.v),
                          into=into, name="ld", bounded=bounded)
@@ -787,6 +804,28 @@ class _Elementwise(Value):
             raise TypeError(f"swap_halves of {ty!r}: {chunks} chunks a row, "
                             f"neither one nor an even number")
         return unary("swap_halves", self, into=into)
+
+    def rotate_half(self, span: int, *, into=None):
+        """NeoX's rotate_half on each `span`-column segment of a strip's rows:
+        [x1 | x2] -> [-x2 | x1], one head of `span` columns a segment. Its
+        halves must be 8, 16 or 32 lanes apart (a DPP row_ror:8, a
+        v_permlane16_swap, a v_permlane32_swap) or whole chunks apart.
+        Strips only, on the wave64 port (gfx950): a 128-column head at
+        eight bf16 a lane is 16 lanes, its halves eight apart."""
+        ty = self.ty
+        if not (isinstance(self, Tile) and _is_strip(ty)):
+            raise TypeError(f"rotate_half takes a strip, not {ty!r}")
+        tgt = get_target(_t().arch)
+        if not tgt.strips or tgt.wave != 64:
+            raise TypeError(f"rotate_half is in hk's wave64 strip port; this "
+                            f"kernel is for {_t().arch}")
+        if not isinstance(span, int) or span <= 0 or ty.cols % span:
+            raise TypeError(f"rotate_half(span={span!r}) of {ty!r}: a span "
+                            f"divides the strip's columns")
+        from .._mlir import ir  # noqa: PLC0415
+
+        return _make(hkd.RotateHalfOp, ty, (self.v,), into=into, name="rotate_half",
+                     span=ir.IntegerAttr.get(ir.IntegerType.get_signless(64), span))
 
     def exp_(self): return unary("exp", self, into=self)
     def exp2_(self): return unary("exp2", self, into=self)
