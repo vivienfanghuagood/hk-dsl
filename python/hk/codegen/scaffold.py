@@ -111,8 +111,15 @@ LAYOUT_SYMBOL = "hk_layout"
 def kernel_symbol(ir: "TracedKernel") -> str:
     """The kernel's symbol in the code object: `void <name>_kernel(const
     globals)`, Itanium-mangled. Top-level const is not part of a parameter's
-    mangling, so the parameter is plain `7globals`."""
+    mangling, so the parameter is plain `7globals`.
+
+    A flat kernel's (`TracedKernel.flat_args`) is `hk_flat::<name>_kernel`
+    and its parameters' mangling, which this does not spell: what is
+    returned is the symbol's prefix, which `codeobj` completes from the code
+    object's symbol table."""
     k = f"{ir.name}_kernel"
+    if getattr(ir, "flat_args", False):
+        return f"_ZN7hk_flat{len(k)}{k}E"
     return f"_Z{len(k)}{k}7globals"
 
 
@@ -133,6 +140,17 @@ def device(ir: "TracedKernel") -> str:
         gl = f"decltype(globals::{p.name})"
         rows.append(f"offsetof(globals, {p.name})")
         rows += [f"offsetof({gl}, {f})" for f in GL_FIELDS]
+    if getattr(ir, "flat_args", False):
+        # The kernel's parameters, laid out as the struct the translation
+        # emits beside it: every field's offset from the argument's start.
+        # Its size where the last parameter ends, not sizeof's: the kernel's
+        # explicit arguments have no tail padding.
+        last = ir.tensors()[-1].name
+        rows = [f"offsetof(hk_kernarg, hk_{last}_d) + sizeof(int)"]
+        for p in ir.tensors():
+            rows.append("0")
+            rows += [f"offsetof(hk_kernarg, hk_{p.name}{s})"
+                     for s in ("", "_b", "_d", "_r", "_c", "_rs")]
     return "\n".join([
         ir.cpp(_includes(ir)),
         "#include <cstddef>",
