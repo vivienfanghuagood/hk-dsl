@@ -4,12 +4,21 @@ route table hk.ops.gemm.matmul reads on gfx950.
 
 At every (N, K, M) of the grid, each of hk's candidate kernels that takes the
 shape is checked against fp32, then every arm is timed interleaved in one
-process (alternate rounds reversed, one pass streaming 3x the 256 MB
-Infinity Cache, best round). The table records, per point, the fastest hk
-candidate and every arm's TFLOP/s; the route is the fastest candidate.
+process: rounds rotate which arm goes first, a round of an arm is one pass
+streaming 3x the 256 MB Infinity Cache, queued behind a GPU spin so the host
+has launched the whole pass before the first call runs (scoreboard.py's
+queue, docs/history/32), and an arm's time is the median of its rounds. The
+table records, per point, the fastest hk candidate and every arm's TFLOP/s
+(median, best round and spread); the route is the fastest candidate.
 
     python3 tools/hk-bench/gemm_cdna_routes.py --out python/hk/tuned/routes_gemm_gfx950.json
     python3 tools/hk-bench/gemm_cdna_routes.py --only 4096x4096x4096 --no-write
+    python3 tools/hk-bench/gemm_cdna_routes.py --routed --json grid.json
+
+`--routed` times hk.ops.gemm_cdna.matmul -- the shipped table's route, one
+arm -- against the same baselines instead of every candidate: the check of
+a table in a process of its own, free of picking the best of many noisy
+candidates.
 
 The candidates are hk.ops.gemm_cdna.CANDIDATES. FlyDSL comes from $FLYDSL_ROOT
 plus an installed flydsl wheel (skipped if it does not import).
@@ -20,6 +29,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import statistics
 import sys
 import time
 from pathlib import Path
@@ -27,6 +37,23 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "python"))
 
 ROTATE_BYTES = 3 * 256 * 2**20
+#: The spin a round waits behind: long enough for the host to launch a pass
+#: (at most a few dozen calls of two launches each).
+QUEUE_MIN_US, QUEUE_US_PER_CALL = 5000, 300
+_SPIN = []
+
+
+def _spin(torch, us):
+    """torch's spin kernel for `us` microseconds, its clock calibrated once."""
+    if not _SPIN:
+        s, e = torch.cuda.Event(True), torch.cuda.Event(True)
+        torch.cuda.synchronize()
+        s.record()
+        torch.cuda._sleep(200_000)
+        e.record()
+        torch.cuda.synchronize()
+        _SPIN.append(200_000 / (s.elapsed_time(e) * 1e3))
+    torch.cuda._sleep(int(us * _SPIN[0]))
 #: (N, K) of Llama-3-8B and Qwen3-8B's linears, merged and unmerged, and the
 #: two lm_heads.
 NK = ((4096, 4096), (6144, 4096), (12288, 4096), (14336, 4096), (24576, 4096),
@@ -37,12 +64,15 @@ SQUARES = (4096, 8192)
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    ap.add_argument("--rounds", type=int, default=5)
+    ap.add_argument("--rounds", type=int, default=7)
     ap.add_argument("--m", default="", help="comma-separated M (default: the grid)")
     ap.add_argument("--only", default="", help="comma-separated MxNxK instead of the grid")
     ap.add_argument("--out", default="")
     ap.add_argument("--merge", default="", help="a table whose points the measured ones replace")
     ap.add_argument("--no-write", action="store_true")
+    ap.add_argument("--routed", action="store_true",
+                    help="time matmul's route as one arm instead of every candidate")
+    ap.add_argument("--json", default="", help="write the points (with --routed)")
     args = ap.parse_args()
 
     import torch
@@ -68,7 +98,8 @@ def main() -> int:
     dev = torch.device("cuda")
     meta = dict(device=torch.cuda.get_device_name(), torch=torch.__version__,
                 hip=torch.version.hip, hipcc=hkk.hipcc_version(),
-                date=time.strftime("%Y-%m-%d"), rounds=args.rounds)
+                date=time.strftime("%Y-%m-%d"), rounds=args.rounds, stat="median",
+                queued=True, routed=args.routed)
     print(json.dumps(meta), flush=True)
     points = []
     for (m, n, k) in pts:
@@ -81,9 +112,13 @@ def main() -> int:
         out = torch.empty(m, n, device=dev, dtype=torch.bfloat16)
         ref = x.float() @ ws[0].float().t()
         arms = {}
-        for name in gemm_cdna.CANDIDATES:
-            if gemm_cdna.fits(name, m, n, k):
-                arms["hk:" + name] = (lambda nm: (lambda i: gemm_cdna.run(nm, x, ws[i], out)))(name)
+        if args.routed:
+            route = gemm_cdna.route(m, n, k)
+            arms["hk:" + route] = lambda i: gemm_cdna.matmul(x, ws[i], out=out)
+        else:
+            for name in gemm_cdna.CANDIDATES:
+                if gemm_cdna.fits(name, m, n, k):
+                    arms["hk:" + name] = (lambda nm: (lambda i: gemm_cdna.run(nm, x, ws[i], out)))(name)
         arms["hipblaslt"] = lambda i: F.linear(x, ws[i])
         if fly is not None:
             arms["flydsl"] = lambda i: fly(x, ws[i].t(), out=out, layout="nt")
@@ -109,8 +144,13 @@ def main() -> int:
                 f(i)
         torch.cuda.synchronize()
         times = {a: [] for a in ok}
+        order = list(ok)
         for r in range(args.rounds):
-            for a in (list(ok) if r % 2 == 0 else list(ok)[::-1]):
+            j = r % len(order)
+            for a in order[j:] + order[:j]:
+                ok[a](0)
+                torch.cuda.synchronize()
+                _spin(torch, max(QUEUE_MIN_US, QUEUE_US_PER_CALL * copies))
                 e0, e1 = torch.cuda.Event(True), torch.cuda.Event(True)
                 e0.record()
                 for i in range(copies):
@@ -118,14 +158,17 @@ def main() -> int:
                 e1.record()
                 torch.cuda.synchronize()
                 times[a].append(e0.elapsed_time(e1) / copies)
-        tf = {a: fl / (min(t) * 1e-3) / 1e12 for a, t in times.items()}
-        spread = {a: (max(t) - min(t)) / min(t) for a, t in times.items()}
+        tf = {a: fl / (statistics.median(t) * 1e-3) / 1e12 for a, t in times.items()}
+        tf_best = {a: fl / (min(t) * 1e-3) / 1e12 for a, t in times.items()}
+        spread = {a: statistics.median(abs(v / statistics.median(t) - 1) for v in t)
+                  for a, t in times.items()}
         hk_arms = {a: v for a, v in tf.items() if a.startswith("hk:")}
         best = max(hk_arms, key=hk_arms.get) if hk_arms else None
         base = {a: v for a, v in tf.items() if not a.startswith("hk:")}
         top = max(base.values()) if base else 0.0
         rec = dict(m=m, n=n, k=k, tflops={a: round(v, 1) for a, v in tf.items()},
-                   spread={a: round(v, 3) for a, v in spread.items()},
+                   tflops_best={a: round(v, 1) for a, v in tf_best.items()},
+                   spread={a: round(v, 4) for a, v in spread.items()},
                    err={a: (round(e, 5) if isinstance(e, float) else e) for a, e in errs.items()},
                    best=best[3:] if best else None,
                    ratio=round(hk_arms[best] / top, 3) if best and top else None)
@@ -137,6 +180,11 @@ def main() -> int:
         gemm_cdna_dp._SCRATCH.clear()
         torch.cuda.empty_cache()
 
+    if args.routed:
+        if args.json:
+            Path(args.json).write_text(json.dumps(dict(meta=meta, points=points), indent=1) + "\n")
+            print(f"wrote {args.json}", flush=True)
+        return 0
     if args.merge:
         old = json.loads(Path(args.merge).read_text())
         fresh = {(p["m"], p["n"], p["k"]) for p in points}
