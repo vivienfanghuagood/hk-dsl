@@ -54,6 +54,16 @@ from .types import DTYPES
 
 __version__ = "0.4.0"
 
+
+def __getattr__(name):
+    """`hk.check` on first use: it is a tool, not part of the language, and
+    `import hk` stays as cheap as it was."""
+    if name == "check":
+        import importlib  # noqa: PLC0415
+
+        return importlib.import_module(".check", __name__)
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
 __all__ = [
     *_dsl_all,
     "DTYPES", "VerifyError", "CompileError", "ResourceError", "Build",
