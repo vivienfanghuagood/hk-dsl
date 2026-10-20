@@ -429,7 +429,7 @@ def markdown(board: Dict[str, Any]) -> str:
     L = [f"# DX suite scoreboard: {m.get('gpu_product', '?')} ({m.get('gpu_arch', '?')}), {m['date']}", ""]
     L.append("| | |\n|---|---|")
     for k in ("gpu_product", "gpu", "gpu_arch", "cu", "gpu_mem_gb", "torch", "hip", "triton", "hk", "hk_arch",
-              "hk_commit", "python", "host", "gpu_index", "visible_devices", "cold_cache", "command"):
+              "hk_commit", "python", "host", "gpu_index", "visible_devices", "hk_launch", "cold_cache", "command"):
         if k in m:
             L.append(f"| {k} | `{m[k]}` |")
     L += ["", "Speedups are `other / this` (> 1 is faster), on device time (a CUDA graph of the calls) "
@@ -531,7 +531,17 @@ def main(argv=None) -> int:
         print("no GPU visible", file=sys.stderr)
         return 2
     common.configure_torch_compile()
+    launch_note = None
+    if common.arch_short().startswith(("gfx11", "gfx12")) and "HK_LAUNCH" not in os.environ:
+        # RDNA's pybind entry point launches on the null stream, which neither
+        # torch's events nor a CUDA graph wait for (docs/runtime.md, "The
+        # stream"): batches would be timed as fast as they are queued. The
+        # code-object launch is the same device code on torch's stream, with
+        # a Python launch in front (a little more host time per call).
+        os.environ["HK_LAUNCH"] = "codeobj"
+        launch_note = "codeobj (set by the runner: RDNA's default launch is on the null stream)"
     meta = common.versions()
+    meta["hk_launch"] = launch_note or os.environ.get("HK_LAUNCH", "pybind")
     meta["date"] = _dt.datetime.now(_dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     meta["command"] = " ".join(["python3 -m bench.dx.run"] + (argv if argv is not None else sys.argv[1:]))
     meta["cold_cache"] = bool(args.cold_cache)
