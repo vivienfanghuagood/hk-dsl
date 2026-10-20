@@ -171,6 +171,14 @@ In Python every option is a keyword of `hk.check(fn, reference, inputs, ...)`
 ([the API](api/hk.check.md)); `cases=[...]` takes several input generators,
 and `report.raise_for_status()` makes it a test.
 
+**Tuning a constexpr**: `--sweep CW=512,1024,2048` (repeatable; every
+combination) builds, checks and times a raw kernel at each value beside the
+default, as `hk[CW=1024]`, and names the fastest (`best`). A value that does
+not build -- a strip width that is not whole chunks on this arch, a tile
+that spills -- is a note, not an error; a wrong one is reported and not
+timed. On an MI355X, llms.txt's strip kernel at 4096x14336: `CW=512` 61.3
+us, 1024 64.6, 2048 72.0 (`CW=256` is not a whole 64-lane chunk there).
+
 ## Reading the report
 
 `--json` writes (abridged; this is the run above):

@@ -34,7 +34,9 @@ Paths below are relative to the repository root.
    there means the kernel never wrote it); `instantiations` (spill must be 0;
    occupancy against `max_waves_per_simd`); `time.vs.compile` (the bar is
    `win` or `tie` at every shape); `of_dram_peak` and `hints`.
-5. **Iterate** on one thing at a time, re-running step 3. Check both
+5. **Iterate** on one thing at a time, re-running step 3. Make a plan
+   choice a constexpr and let `--sweep NAME=v1,v2,...` time every value
+   (each checked first) instead of editing and re-running. Check both
    architectures: `--arch gfx1100,gfx950` builds the one that is not in the
    machine; time on each GPU before calling it done.
 6. Keep the reference exact enough: never loosen `--rtol` to make a FAIL pass
