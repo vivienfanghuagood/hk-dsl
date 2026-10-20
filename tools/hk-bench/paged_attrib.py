@@ -89,10 +89,17 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--rounds", type=int, default=5)
     ap.add_argument("--reps", type=int, default=50)
+    ap.add_argument("--cases", default="",
+                    help="ctx:batch:s1/s2/..., comma separated; the first "
+                         "split count runs the ablations")
     args = ap.parse_args()
+    cases = CASES
+    if args.cases:
+        cases = tuple((int(c), int(b), tuple(int(s) for s in ss.split("/")))
+                      for c, b, ss in (x.split(":") for x in args.cases.split(",")))
 
     walks, merges = {}, {}
-    for _, _, splits in CASES:
+    for _, _, splits in cases:
         for s in splits:
             walks[(s, ())] = paged.fused_kernel(D, s)
             merges[s] = paged.merge_kernel(D, s)
@@ -104,7 +111,7 @@ def main() -> int:
     print(f"built {len(walks) + len(merges)} kernels", flush=True)
     burn_in()
 
-    for ctx, n, splits in CASES:
+    for ctx, n, splits in cases:
         q, kc, vc, table, lens = setup(n, ctx)
         out = torch.empty_like(q)
         fns = {}

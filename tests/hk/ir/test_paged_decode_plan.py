@@ -49,3 +49,17 @@ def test_the_merge_traces_a_warp_per_fragment(splits):
 def test_an_unknown_ablation_is_refused():
     with pytest.raises(ValueError, match="unknown ablation"):
         paged.paged_decode_fused_kernel("x", ablate=("nope",))
+
+
+def test_triton_takes_up_to_eight_and_the_ranges_it_is_given(monkeypatch):
+    assert [vllm_backend.triton_takes(n) for n in (1, 8, 9, 16, 24, 64)] == \
+        [True, True, False, False, False, False]
+    monkeypatch.setattr(vllm_backend, "TRITON_DECODE_ALSO", ((17, 24), (56, 56)))
+    assert [vllm_backend.triton_takes(n) for n in (16, 17, 24, 25, 55, 56, 64)] == \
+        [False, True, True, False, False, True, False]
+
+
+def test_the_split_plan_aims_for_256_workgroups():
+    # Qwen3-8B's 8 kv heads: 2 splits at 16 requests, 1 from 32 up.
+    assert [vllm_backend.decode_splits(n, HKV, PAGES) for n in (4, 8, 16, 24, 32, 64)] == \
+        [8, 4, 2, 2, 1, 1]

@@ -20,12 +20,12 @@ dims and vLLM's default `(2, num_blocks, block_size, num_kv_heads,
 head_size)` cannot yield a contiguous `(block_size, head_dim)` tile for one
 head. Having its own layout means every attention it serves is its own:
 
-* decode (`hk.ops.paged`): the paged walk and its merge, two launches a
-  layer, captured whole in vLLM's full decode graphs -- from sixteen
-  requests up. Below that Triton's kernel runs instead, on this backend's
-  cache (TRITON_DECODE_MAX). On vLLM 0.31 Triton's kernel is also faster at
-  16-64 requests kernel for kernel, but routing those to it made the
-  captured step slower, so they stay on hk;
+* decode (`hk.ops.paged`): the paged walk and, with more than one split,
+  its merge, captured whole in vLLM's full decode graphs -- from sixteen
+  requests up, where it is 0.86-1.12x triton-rocm 3.7.1's kernel on this
+  cache kernel for kernel (1.03-1.30x Triton 3.8.0's) and the faster of the
+  two in the captured step. Below that Triton's kernel runs instead, on
+  this backend's cache (TRITON_DECODE_MAX);
 * prefill (`hk.ops.paged_prefill`): one launch for every prefill request in
   the batch, cached prefixes and chunks included -- the new tokens' K/V are
   in the cache before either runs.
@@ -189,26 +189,27 @@ def decode(q, k_cache, v_cache, block_table, seq_lens, out, scratch,
 #: Pure-decode batches up to this many requests are run by vLLM's own Triton
 #: kernel, reading this backend's cache through a transposed view (it
 #: addresses K/V by stride; the output is bit-identical to the stock
-#: backend's). That is hk losing a kernel, recorded as such. Measured with
-#: every layer's cache cold, as a decode step reads them
-#: (tools/hk-bench/paged_ab.py --layers 36, graph clock, ms per layer,
-#: Triton on hk's cache / hk's walk and merge). On vLLM 0.16.1, where hk
-#: still took 16 requests up:
+#: backend's). That is hk losing a kernel, recorded as such. Measured on vLLM
+#: 0.31's cache -- one tensor a layer, K and V side by side -- with every
+#: layer's cache cold, as a CUDA graph's replay (tools/hk-bench/
+#: paged_variants.py, ms a layer, Triton 3.8.0 on hk's cache / hk's walk and
+#: merge at its planned split):
 #:
-#:     ctx 1024   n1 0.0174/0.0278   n4 0.0388/0.0509   n8 0.0685/0.0845   n16 0.1293/0.1228
-#:     ctx 4096   n1 0.0410/0.0527   n4 0.1109/0.1233   n8 0.2078/0.2219   n16 0.4018/0.3939
+#:     ctx 1024   n1 0.0163/0.0237   n4 0.0379/0.0430   n8 0.0641/0.0637
+#:                n16 0.1250/0.1121  n32 0.2600/0.1989  n64 0.4427/0.3922
+#:     ctx 4096   n1 0.0377/0.0438   n4 0.1115/0.1150   n8 0.1987/0.2041
+#:                n16 0.3995/0.3824  n32 0.9554/0.7447  n64 1.6196/1.4931
 #:
-#: On vLLM 0.31 (triton-rocm 3.7.1) Triton's 2-D kernel wins at every batch
-#: measured, kernel against kernel:
-#:
-#:     ctx 1024   n16 0.1201/0.1264   n32 0.1804/0.2166   n64 0.3505/0.3972
-#:     ctx 4096   n16 0.3738/0.4001   n32 0.6907/0.7587
-#:
-#: and yet giving it 16 and 32 requests made vLLM's captured decode step
-#: slower, not faster -- Qwen3-8B, 4096 x 16, 59.0 -> 74.2 ms a step, and
-#: 38.2 -> 52.0 with the linear-layer patch (docs/history/20-vllm-031.md).
-#: The two measurements disagree and why is not found; the step is what a
-#: server pays, so the boundary stays where the step was measured faster.
+#: hk's walk loses at one and four requests and ties at eight. Above, it
+#: wins against Triton 3.8.0 (the engines' pod) at 16, 32, 40, 48 and 64;
+#: triton-rocm 3.7.1, the Triton vLLM 0.31 is built for, runs its 2-D kernel
+#: at 730-810 GB/s, and against it hk's walk is 1.12x at 1024 x 16, level at
+#: 4096 x 16 and at 48, and 0.86-0.95x at 24-64 (docs/history/38). Yet in a
+#: captured step Triton's kernel is the slower: at 17-22 requests 1.93 ms a
+#: call against hk's 0.451 (3.8.0), and in chapter 20 (3.7.1) giving it 16
+#: and 32 requests made the step slower (4096 x 16, 59.0 -> 74.2 ms). Why
+#: the kernel is slower in the engine than on the bench is still open; the
+#: step is what a server pays, so batches above 8 stay on hk.
 #: 0 turns it off, and hk's walk takes every batch.
 TRITON_DECODE_MAX = 8
 
@@ -223,6 +224,26 @@ def _triton_decode_max() -> int:
     from ..target import current_arch  # noqa: PLC0415
 
     return 0 if current_arch() == "gfx950" else TRITON_DECODE_MAX
+
+
+#: Batch sizes past TRITON_DECODE_MAX that Triton's kernel also takes, as
+#: inclusive (lo, hi) ranges; `HK_TRITON_DECODE_ALSO="17-24,49-56"` sets them.
+#: vLLM pads a decode batch to a capture size, so a range ending at one is
+#: the batches that replay it. Off by default: the step measured slower with
+#: 17-24 on Triton (62.2 -> 111.6 ms at 24 x 4096, docs/history/38).
+TRITON_DECODE_ALSO: tuple = tuple(
+    tuple(int(v) for v in r.split("-")) if "-" in r else (int(r), int(r))
+    for r in __import__("os").environ.get("HK_TRITON_DECODE_ALSO", "").split(",")
+    if r.strip())
+
+
+def triton_takes(n: int) -> bool:
+    """Does a pure-decode batch of `n` requests go to Triton's kernel? Never
+    on gfx950 (see _triton_decode_max)."""
+    most = _triton_decode_max()
+    return n <= most or (most > 0 and any(lo <= n <= hi for lo, hi in
+                                          TRITON_DECODE_ALSO))
+
 
 #: Up to this many requests Triton runs its 3-D kernel (16 KV segments and a
 #: reduction); above, its 2-D one. The 3-D kernel's per-segment buffers are
@@ -283,8 +304,9 @@ def _kv_scales(layer, device):
 def triton_decode(q, k_cache, v_cache, block_table, seq_lens, query_start,
                   out, scale: float, max_seq_len: int, k_scale,
                   v_scale) -> bool:
-    """One decode of `q.shape[0]` <= TRITON_DECODE_MAX requests by Triton's
-    3-D kernel on hk's head-major cache. False if this vLLM has no kernel
+    """One decode of `q.shape[0]` requests (a batch `triton_takes`) by
+    Triton's kernel on hk's head-major cache: its 3-D kernel up to
+    TRITON_3D_MAX requests, its 2-D one above. False if this vLLM has no kernel
     with the arguments it needs, and nothing was launched."""
     got = _triton_decode()
     if got is None:
@@ -601,10 +623,10 @@ def _build():
                         n, layer=None):
             """Every request has exactly one token: the walk and its merge,
             which read the query and write the answer where vLLM keeps them
-            -- or, for up to TRITON_DECODE_MAX requests, Triton's kernel on
+            -- or, for a batch `triton_takes`, Triton's kernel on
             the same cache. No copy, no sync, nothing allocated past the
             first call."""
-            if n <= _triton_decode_max() and triton_decode(
+            if triton_takes(n) and triton_decode(
                     query[:n], k_cache, v_cache,
                     attn_metadata.block_table[:n], attn_metadata.seq_lens[:n],
                     attn_metadata.query_start_loc[:n + 1], output[:n],

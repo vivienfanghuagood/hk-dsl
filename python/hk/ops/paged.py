@@ -470,7 +470,8 @@ def paged_decode_fused_kernel(name: str, *, head_dim: int = 128,
                               splits: int = 1, kv_block: int = KV_BLOCK,
                               scale: Optional[float] = None,
                               max_vgprs: int = 256, min_occupancy: int = 1,
-                              ablate: tuple = ()):
+                              ablate: tuple = (),
+                              defines: Optional[dict] = None):
     """The decode a serving engine can capture: the engine's query in, and
     with one split the answer out; with more, `paged_merge_kernel` after it.
 
@@ -634,7 +635,8 @@ def paged_decode_fused_kernel(name: str, *, head_dim: int = 128,
     body.__name__ = name
     return hk.kernel(body, warps=1, name=name,
                      grid=lambda p: (splits, p.q.depth, p.q.batch),
-                     max_vgprs=max_vgprs, min_occupancy=min_occupancy)
+                     max_vgprs=max_vgprs, min_occupancy=min_occupancy,
+                     defines=defines)
 
 
 #: The fewest pages a split of the fused decode takes. Above 1 it trades the
@@ -651,20 +653,26 @@ MERGE_STEP = 8
 _FUSED: Dict[tuple, object] = {}
 
 
-def fused_kernel(head_dim: int, splits: int, ablate: tuple = ()):
+def fused_kernel(head_dim: int, splits: int, ablate: tuple = (),
+                 defines: Optional[dict] = None):
+    """`defines` builds the walk with library knobs, for an A/B in one
+    process (tools/hk-bench/paged_variants.py): HK_RDNA_XPOSE_WORDS=0 is the
+    generic register transpose V took before the packed one."""
     if _native_cdna():
-        if ablate:
-            raise ValueError("ablate= takes stages out of the RDNA walk; "
-                             "gfx950's decode is hk.ops.paged_cdna's")
+        if ablate or defines:
+            raise ValueError("ablate= and defines= build variants of the RDNA "
+                             "walk; gfx950's decode is hk.ops.paged_cdna's")
         from . import paged_cdna  # noqa: PLC0415
 
         return paged_cdna.kernel_for(head_dim, splits, "fused")
-    key = (head_dim, splits, tuple(sorted(ablate)))
+    dkey = tuple(sorted((defines or {}).items()))
+    key = (head_dim, splits, tuple(sorted(ablate)), dkey)
     if key not in _FUSED:
         tag = "".join(f"_no{a}" for a in key[2])
+        tag += "".join(f"_{k.lower()}{v}" for k, v in dkey)
         _FUSED[key] = paged_decode_fused_kernel(
             f"paged_decode_fused_d{head_dim}_s{splits}{tag}",
-            head_dim=head_dim, splits=splits, ablate=key[2])
+            head_dim=head_dim, splits=splits, ablate=key[2], defines=defines)
     return _FUSED[key]
 
 
@@ -708,27 +716,35 @@ def decode(walk, merge, q, k_cache, v_cache, block_table, seq_lens, out,
 
 
 #: Workgroups to aim for, measured rather than reasoned
-#: (tools/hk-bench/paged_splits.py, Qwen3-8B's shape on a W7900D: 8 kv heads,
-#: head_dim 128). Each column is a split count, each cell the kernel plus its
-#: merge in ms, and the last two are the achieved fraction of the card's
-#: 864 GB/s at the best split:
+#: (tools/hk-bench/paged_variants.py, Qwen3-8B's shape on a W7900D: 8 kv
+#: heads, head_dim 128, on vLLM 0.31's cache -- K and V side by side in one
+#: tensor -- with every layer's cache cold, as a CUDA graph's replay). Each
+#: column is a split count, each cell the walk plus its merge in ms a layer,
+#: and the last column `n_reqs * n_kv_heads * splits` at the best split:
 #:
-#:     ctx  batch     s1     s4    s16    s32   best   %HBM
-#:    1024      1  0.312  0.173  0.135  0.132     32     4%
-#:    1024     16  0.310  0.205  0.242  0.323      8    41%
-#:    4096      1  0.991  0.327  0.157  0.132     32    15%
-#:    4096     16  1.310  0.643  0.607  0.682      8    56%
-#:   16384      1  3.835  1.047  0.366  0.246     32    32%
-#:   16384     16  5.081  2.183  1.796  1.869      8    71%
-#:   16384     32  5.675  3.287  3.403  3.649      4    76%
+#:     ctx  batch     s1      s2      s4      s8     s16     s32   best  wgs
+#:    1024      1  0.0946  0.0520  0.0322  0.0237  0.0218  0.0237    16  128
+#:    1024      4  0.0976  0.0571  0.0451  0.0430  0.0517  0.0647     8  256
+#:    1024      8  0.1027  0.0805  0.0637  0.0817  0.1010  0.1110     4  256
+#:    1024     16  0.1360  0.1121  0.1220  0.1524  0.1699  0.1774     2  256
+#:    1024     32  0.1989  0.2157  0.2434  0.2693  0.2913  0.3052     1  256
+#:    1024     64  0.3922  0.4266  0.4552  0.4785  0.5115  0.5458     1  512
+#:    4096      1  0.3512  0.1852  0.1024  0.0593  0.0462  0.0438    32  256
+#:    4096      4  0.3589  0.1971  0.1410  0.1150  0.1251  0.1516     8  256
+#:    4096      8  0.3738  0.2615  0.2041  0.2177  0.2480  0.2646     4  256
+#:    4096     16  0.5023  0.3824  0.3981  0.4270  0.4511  0.4709     2  256
+#:    4096     32  0.7447  0.7679  0.7862  0.8167  0.8435  0.8781     1  256
+#:    4096     64  1.4931  1.4983  1.5329  1.5629  1.5998  1.6643     1  512
 #:
-#: The best split at every one of the fifteen points measured puts
-#: `n_reqs * n_kv_heads * splits` at about a thousand, so that is the target.
-#: The first version of this aimed for 96 -- two per WGP -- which is the right
-#: instinct for a workgroup of twelve warps and wrong by an order of magnitude
-#: for one of a single warp. At batch 16 it asked for one split, which is 128
-#: workgroups of one warp each walking 128 pages in series.
-TARGET_WORKGROUPS = 1024
+#: The best split at eleven of the twelve points puts about 256 one-warp
+#: workgroups on the card, one or two a SIMD; the twelfth is a single request,
+#: which vLLM's Triton kernel serves (vllm_backend.TRITON_DECODE_MAX). This
+#: was a thousand until V's transpose in registers was made packed
+#: (docs/history/38-rdna-losses.md): with a page's VALU work cut by 57%, more
+#: workgroups walking fewer pages each stopped paying for their merge reads
+#: and their own setup. At 16 requests and 4096 tokens a thousand was 0.427
+#: ms a layer and 256 is 0.382.
+TARGET_WORKGROUPS = 256
 
 #: Past this the merge's traffic grows faster than the split saves, and every
 #: value is a separate compile.
