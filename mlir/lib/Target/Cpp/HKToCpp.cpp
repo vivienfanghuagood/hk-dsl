@@ -21,6 +21,7 @@
 #include "llvm/ADT/TypeSwitch.h"
 
 #include <cmath>
+#include <iterator>
 #include <map>
 #include <set>
 #include <vector>
@@ -393,6 +394,31 @@ private:
     return "";
   }
 
+  /// A strided_gl's fields as the flat kernel takes them, each across every
+  /// tensor before the next: (parameter suffix, accessor). The pointers
+  /// first, then what addresses a row, so the first loads' operands are the
+  /// arguments LLVM preloads into SGPRs at dispatch.
+  static constexpr std::pair<const char *, const char *> kFlatFields[] = {
+      {"", "raw_ptr"},          {"_rs", "row_stride()"}, {"_r", "rows()"},
+      {"_c", "cols()"},         {"_b", "batch()"},       {"_d", "depth()"}};
+
+  /// CDNA with hk.noalias: the kernel takes the globals' fields, not the
+  /// struct. A struct argument is passed by reference into the kernarg
+  /// segment, which LLVM neither preloads nor lets the pointers in it be
+  /// __restrict__ (docs/history/43).
+  bool flatArgs() {
+    if (tgt->wave != 64 || !kernel->hasAttr(attrs::kNoAlias))
+      return false;
+    for (unsigned i = 0; i < kernel.getNumArguments(); ++i)
+      if (!isa<GlobalType>(kernel.getArgument(i).getType()))
+        return false;
+    return true;
+  }
+
+  std::string flatParam(unsigned i, unsigned field) {
+    return "hk_" + argName(kernel, i).str() + kFlatFields[field].first;
+  }
+
   void fail(Operation *op, const Twine &msg) {
     op->emitError(msg);
     bad = true;
@@ -673,9 +699,44 @@ private:
 
   LogicalResult kernelBody() {
     collectAliases();
-    w("__global__ __launch_bounds__(" + std::to_string(threads()) + ", 1)");
-    w("void " + kernelName().str() + "_kernel(const globals g) {");
-    indent = 1;
+    if (flatArgs()) {
+      unsigned n = kernel.getNumArguments();
+      std::vector<std::string> params, fields, gls;
+      for (unsigned f = 0; f < std::size(kFlatFields); ++f)
+        for (unsigned i = 0; i < n; ++i) {
+          std::string ty = "int ";
+          if (!f)
+            ty = dtypeCpp(cast<GlobalType>(kernel.getArgument(i).getType())
+                              .getElementType())
+                     .str() +
+                 " *";
+          params.push_back(ty + (f ? "" : "__restrict__ ") + flatParam(i, f));
+          fields.push_back(ty + flatParam(i, f) + ";");
+        }
+      for (unsigned i = 0; i < n; ++i)
+        gls.push_back("decltype(globals::" + argName(kernel, i).str() + ")(" +
+                      flatParam(i, 0) + ", " + flatParam(i, 4) + ", " +
+                      flatParam(i, 5) + ", " + flatParam(i, 2) + ", " +
+                      flatParam(i, 3) + ", " + flatParam(i, 1) + ")");
+      // The parameters as one struct, for a launcher that packs them by
+      // hand (scaffold.device's layout table).
+      w("struct hk_kernarg {");
+      indent = 1;
+      for (auto &f : fields)
+        w(f);
+      indent = 0;
+      w("};");
+      w();
+      w("namespace hk_flat {");
+      w("__global__ __launch_bounds__(" + std::to_string(threads()) + ", 1)");
+      w("void " + kernelName().str() + "_kernel(" + join(params) + ") {");
+      indent = 1;
+      w("const globals g{" + join(gls) + "};");
+    } else {
+      w("__global__ __launch_bounds__(" + std::to_string(threads()) + ", 1)");
+      w("void " + kernelName().str() + "_kernel(const globals g) {");
+      indent = 1;
+    }
     // RDNA: the arguments' scalar-cache lines all at once, rather than a cold
     // miss wherever LLVM sinks a late field's load (include/rdna3, util.cuh).
     if (tgt->wave == 32)
@@ -688,21 +749,32 @@ private:
     emitBlock(kernel.getBody().front());
     indent = 0;
     w("}");
+    if (flatArgs())
+      w("} // namespace hk_flat");
     w();
     return success();
   }
 
   void launch() {
     std::string n = kernelName().str();
+    std::string args = "g";
+    if (flatArgs()) {
+      n = "hk_flat::" + n;
+      std::vector<std::string> a;
+      for (auto &[suffix, field] : kFlatFields)
+        for (unsigned i = 0; i < kernel.getNumArguments(); ++i)
+          a.push_back("g." + argName(kernel, i).str() + "." + field);
+      args = join(a);
+    }
     w("static void launch_on(const globals &g, hipStream_t stream) {");
     indent = 1;
     if (ldsBytes()) {
       std::string lds = std::to_string(ldsBytes());
       w("hipFuncSetAttribute((void *)&" + n +
         "_kernel, hipFuncAttributeMaxDynamicSharedMemorySize, " + lds + ");");
-      w(n + "_kernel<<<g.grid(), g.block(), " + lds + ", stream>>>(g);");
+      w(n + "_kernel<<<g.grid(), g.block(), " + lds + ", stream>>>(" + args + ");");
     } else {
-      w(n + "_kernel<<<g.grid(), g.block(), 0, stream>>>(g);");
+      w(n + "_kernel<<<g.grid(), g.block(), 0, stream>>>(" + args + ");");
     }
     indent = 0;
     w("}");

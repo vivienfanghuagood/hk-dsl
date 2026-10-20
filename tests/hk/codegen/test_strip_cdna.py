@@ -26,7 +26,8 @@ from hk.target import gfx950  # noqa: E402
 
 def _for_950(k):
     return hk.kernel(k.fn, arch="gfx950", warps=k.warps, grid=k.grid_fn,
-                     name=k.name + "_950", defines=getattr(k, "defines", None))
+                     name=k.name + "_950", defines=getattr(k, "defines", None),
+                     noalias=k.noalias, preload=k.preload)
 
 
 #: (kernel, constexprs): each kind at its 4096-column bf16 plan, a bounded
@@ -57,19 +58,27 @@ def test_a_strip_kernel_builds_for_gfx950_without_spilling(k, consts):
     assert r.occ_by_reg >= 6, r.line()
 
 
-def _isa(k, **consts) -> str:
-    k = _for_950(k)
+def _asm(k, **consts) -> str:
+    """The whole assembly of `k` as gfx950 builds it, its own flags included."""
     with tempfile.TemporaryDirectory() as d:
         cpp, asm = Path(d) / "k.cpp", Path(d) / "k.s"
         cpp.write_text(k.source(scaffold="bare", **consts))
-        cmd = [hc.hipcc(), *[f for f in hc.flags(gfx950.GFX950, "probe")
+        cmd = [hc.hipcc(), *[f for f in hc.flags(gfx950.GFX950, "probe",
+                                                  k.build_flags(k.trace(**consts)))
                              if f not in ("-shared", "-fPIC",
                                           "-Rpass-analysis=kernel-resource-usage")],
                "--offload-device-only", "-S", str(cpp), "-o", str(asm)]
         r = subprocess.run(cmd, capture_output=True, text=True)
         assert r.returncode == 0, r.stderr[-2000:]
-        text = asm.read_text()
-    return text[text.index("_kernel7globals:"):text.index("s_endpgm")]
+        return asm.read_text()
+
+
+def _isa(k, **consts) -> str:
+    """The kernel's body, entry to s_endpgm: `<name>_kernel(const globals)`,
+    or a flat kernel's `hk_flat::<name>_kernel(...)`."""
+    text = _asm(_for_950(k), **consts)
+    at = re.search(r"^_Z\w*_kernel\w*:", text, re.M).start()
+    return text[at:text.index("s_endpgm", at)]
 
 
 @pytest.mark.hipcc
@@ -94,3 +103,15 @@ def test_rope_turns_the_halves_with_one_swap_a_dword():
     assert "v_permlane32_swap_b32" in text
     assert "ds_bpermute" not in text and "ds_swizzle" not in text
     assert re.findall(r"\bglobal_store_(\w+)", text) == ["dword"] * 4
+
+
+@pytest.mark.hipcc
+def test_the_preloaded_twin_has_its_pointers_in_sgprs_at_entry():
+    """A flat kernel's arguments are scalars, so LLVM can preload them: the
+    three pointers and two of the row strides of the pointwise add (16 user
+    SGPRs less the kernarg pointer), and none without the flag."""
+    k = _for_950(elementwise.STRIP_KERNELS["strip_add_bf16_w4"])
+    consts = dict(CW=512, RUN=8, EXACT=1)
+    pre = re.compile(r"\.amdhsa_user_sgpr_kernarg_preload_length (\d+)")
+    assert pre.search(_asm(k, **consts)).group(1) == "0"
+    assert int(pre.search(_asm(k.preloaded(), **consts)).group(1)) >= 6

@@ -87,6 +87,29 @@ def test_gfx950s_cap_starts_at_its_256_mb_cache(monkeypatch):
     assert norm._resolve_strip("addrmsw", dt, 4096, 8192)[4] == 53 << 10   # 4 streams
 
 
+def test_gfx950_preloads_a_strips_arguments_past_32_mb(monkeypatch):
+    """The preloaded twin (Kernel.preload) past norm.STRIP_PRELOAD_PAST:
+    2048x4096 rms_norm moves 32 MB and keeps the plain build (5.40 against
+    5.66 us), 2048x5120 takes it (6.66 -> 6.44); the fused add, which gained
+    nothing, never does, and at 2048 rows holds 64 a lane at 4096 columns
+    and 128 at 8192, one warp a row (19.17 us against tuned Triton's 19.40)."""
+    monkeypatch.setattr(norm, "_strips_here", lambda: True)
+    monkeypatch.setattr(norm, "_PLAN_CACHE", {})
+    monkeypatch.setattr(norm, "_RESERVE_HERE", [norm._STRIP_RESERVE_AT["gfx950"]])
+    monkeypatch.setattr(norm, "_PER_LANE_HERE", [norm._STRIP_PER_LANE_AT])
+    monkeypatch.setattr(norm, "_PRELOAD_HERE", [norm.STRIP_PRELOAD_PAST["gfx950"]])
+    monkeypatch.setattr(norm, "_wave", lambda: 64)
+    dt = _BF16()
+    plain = norm.STRIP_KERNELS["strip_rmsw_bf16_w4"]
+    assert norm._resolve_strip("rmsw", dt, 4096, 2048)[0] is plain
+    assert norm._resolve_strip("rmsw", dt, 5120, 2048)[0].preload
+    assert not norm._resolve_strip("rmsw", dt, 4096, 32)[0].preload
+    k, chunks, run, exact, _ = norm._resolve_strip("addrmsw", dt, 8192, 2048)
+    assert (k, chunks, run, exact) == (norm.STRIP_KERNELS["strip_addrmsw_bf16_w1"], 16, 8, 1)
+    assert norm._resolve_strip("addrmsw", dt, 4096, 2048)[:2] == (
+        norm.STRIP_KERNELS["strip_addrmsw_bf16_w1"], 8)
+
+
 def test_off_rdna3_the_norms_stay_on_the_tiles(monkeypatch):
     monkeypatch.setattr(norm, "_strips_here", lambda: False)
     monkeypatch.setattr(norm, "_PLAN_CACHE", {})

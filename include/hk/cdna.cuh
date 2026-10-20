@@ -106,7 +106,8 @@ template<typename _T> struct strided_gl {
     ducks::gl::runtime_dim batch_internal, depth_internal, rows_internal, cols_internal;
     int row_stride_internal;
 
-    __host__ inline strided_gl(T *data, size_t b, size_t d, size_t r, size_t c, int row_stride = -1)
+    __host__ __device__ inline strided_gl(T *data, size_t b, size_t d, size_t r, size_t c,
+                                          int row_stride = -1)
         : raw_ptr(data), batch_internal(b), depth_internal(d), rows_internal(r), cols_internal(c),
           row_stride_internal(row_stride < 0 ? int(c) : row_stride) {}
 

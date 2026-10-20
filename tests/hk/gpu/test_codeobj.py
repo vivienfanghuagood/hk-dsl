@@ -129,3 +129,29 @@ def test_a_wrong_dtype_is_refused_before_launch():
     x = torch.randn(64, 64, device="cuda", dtype=torch.float32)
     with pytest.raises(RuntimeError, match="bf16"):
         co(x, x, torch.empty_like(x))
+
+
+@pytest.mark.parametrize("preload", [False, True], ids=["flat", "preloaded"])
+def test_a_flat_kernel_launches_as_a_code_object(preload):
+    """A noalias strip kernel, flat arguments on CDNA (the struct on RDNA),
+    preloaded or not: the code object, packed by its layout table, writes
+    what the pybind module writes, a ragged row bounded."""
+    from hk.target import current_arch, get_target  # noqa: PLC0415
+
+    t = get_target(current_arch())
+    if not t.strips:
+        pytest.skip(f"no strips on {t.arch}")
+    k = elementwise.STRIP_KERNELS["strip_add_bf16_w4"]
+    k = k.preloaded() if preload else k
+    cw = t.wave * 8
+    co = codeobj.torch_op(k, name=f"co_test_strip_add_{int(preload)}", CW=cw, RUN=8,
+                          EXACT=0)
+    n = 4 * cw * 5 + 24
+    x = torch.randn(1, n, device="cuda", dtype=torch.bfloat16)
+    y = torch.randn_like(x)
+    a, b = torch.full_like(x, 7.0), torch.full_like(x, 7.0)
+    k(x, y, a, CW=cw, RUN=8, EXACT=0)
+    co(x, y, b)
+    torch.cuda.synchronize()
+    assert torch.equal(a, b)
+    assert torch.equal(a, (x.float() + y.float()).to(torch.bfloat16))
