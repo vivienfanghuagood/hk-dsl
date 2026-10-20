@@ -922,6 +922,10 @@ del _s, _dt, _k, _w, _n, _res
 #: 16 warps x 64 x 32 = 32768 elements and goes to the tile kernels' streaming
 #: plan.
 STRIP_MAX_PER_LANE = 64
+#: On wave64 the kinds that hold only the row may hold twice that where a
+#: plan asks for it: a row of 8192 in one wave, 128 a lane, as FlyDSL's
+#: tuned softmax does.
+STRIP_MAX_PER_LANE_WAVE64 = {"rms": 128, "layer": 128, "softmax": 128}
 
 #: Elements of a row a lane aims to hold: two 16-byte runs of bf16, one for
 #: the in-place fused add. Fewer a lane is more warps on the row. Measured
@@ -964,6 +968,46 @@ _STRIP_PER_LANE_DEFAULT = 16
 #:     layernorm 2048x5120    7.11      8.93 w3c4     6.86 w2c5  (the rule)
 #:     rms_norm  8192x8192   38.32     38.49 w4      38.77
 _STRIP_PER_LANE_WAVE64 = 32
+
+#: gfx950's measured per-lane targets by (kind, columns, rows band): the
+#: target, and whether a call past the cache keeps the occupancy cap. The
+#: bands are "short" (under _STRIP_AT_ROWS rows), "mid" and "long" (from
+#: _STRIP_LONG_ROWS). The best target
+#: follows the width more than the rows: 4096-5120 columns want more warps a
+#: row, 8192 fewer (a row in one or two waves, the cross-warp combine gone
+#: or halved); the fused add past the cache wants 8-16 a lane and no cap.
+#: Elsewhere the default and the cap. Measured on an MI355X in the
+#: scoreboard's own cases, every arm beside, bf16, us (the default, then the
+#: target taken, then the fastest other arm):
+#:
+#:                          default   taken          fastest other
+#:     rms_norm  2048x4096    5.73    16:  5.48      5.62 inductor
+#:     rms_norm  2048x8192   10.54    64: 10.28     10.97 triton_tuned
+#:     rmsnorm   2048x4096    5.81     8:  5.32      5.50 inductor
+#:     rmsnorm   2048x8192   10.86   128: 10.01     10.27 triton_tuned
+#:     layernorm 2048x8192   11.36   128: 10.47     10.70 triton_tuned
+#:     layernorm 8192x4096   20.63   128: 20.07     19.62 triton_tuned
+#:     softmax   2048x4096    6.41   128:  6.19      6.15 flydsl_tuned
+#:     softmax   8192x4096   21.07   128: 20.38     20.33 flydsl_tuned
+#:     softmax     32x4096    3.90   128:  3.87      3.81 flydsl
+#:     fused add 8192x8192   77.35    8 uncapped: 75.69   75.53 triton_tuned
+_STRIP_PER_LANE_AT = {
+    ("softmax", 4096, "short"): (128, True),
+    ("rmsw", 4096, "mid"): (16, True), ("rmsw", 5120, "mid"): (16, True),
+    ("rmsw", 8192, "mid"): (64, True),
+    ("rms", 4096, "mid"): (8, True), ("rms", 5120, "mid"): (16, True),
+    ("rms", 8192, "mid"): (128, True),
+    ("layer", 5120, "mid"): (128, True), ("layer", 8192, "mid"): (128, True),
+    ("softmax", 4096, "mid"): (128, True), ("softmax", 5120, "mid"): (128, True),
+    ("rmsw", 4096, "long"): (16, True), ("rmsw", 5120, "long"): (16, True),
+    ("rms", 4096, "long"): (8, True), ("rms", 5120, "long"): (16, True),
+    ("layer", 4096, "long"): (128, True), ("layer", 5120, "long"): (128, True),
+    ("softmax", 4096, "long"): (128, True), ("softmax", 5120, "long"): (128, True),
+    ("addrmsw", 4096, "long"): (16, False), ("addrmsw", 5120, "long"): (8, False),
+    ("addrmsw", 8192, "long"): (8, False),
+}
+_STRIP_AT_ROWS, _STRIP_LONG_ROWS = 2048, 8192
+_STRIP_PER_LANE_ARCHS = ("gfx950",)
 
 
 def _wave64_split(chunks: int, per: int, most: int):
@@ -1050,9 +1094,12 @@ def strip_plan(cols: int, kind: str, nbytes: int, wave: Optional[int] = None,
     span = wave * run
     chunks = _ceil(cols, span)
     if wave == 64:
+        most = STRIP_MAX_PER_LANE
+        if per_lane and per_lane > most:
+            most = STRIP_MAX_PER_LANE_WAVE64.get(kind, most)
         warps, per = _wave64_split(chunks, max(1, (per_lane or _STRIP_PER_LANE_WAVE64) // run),
-                                   STRIP_MAX_PER_LANE // run)
-        if per * run > STRIP_MAX_PER_LANE:
+                                   most // run)
+        if per * run > most:
             return None
         return warps, per, run, int(warps * per * span == cols)
     target = _STRIP_PER_LANE.get(kind, _STRIP_PER_LANE_DEFAULT)
@@ -1185,6 +1232,19 @@ def _reserve_here():
     return _RESERVE_HERE[0]
 
 
+_PER_LANE_HERE: list = []
+
+
+def _per_lane_here():
+    """_STRIP_PER_LANE_AT where it was measured, else nothing."""
+    if not _PER_LANE_HERE:
+        from ..target import current_arch  # noqa: PLC0415
+
+        _PER_LANE_HERE.append(_STRIP_PER_LANE_AT if current_arch() in _STRIP_PER_LANE_ARCHS
+                              else {})
+    return _PER_LANE_HERE[0]
+
+
 def _resolve_strip(kind: str, dtype, cols: int, rows: int):
     """(kernel, CHUNKS, RUN, EXACT, RESERVE), or None for a row too wide for a
     strip. RESERVE caps the workgroups a WGP (a CU on gfx950) holds when the
@@ -1192,13 +1252,19 @@ def _resolve_strip(kind: str, dtype, cols: int, rows: int):
     nbytes = getattr(dtype, "itemsize", 2)
     cap = _reserve_here()
     streams = cap is not None and rows * cols * nbytes * _STRIP_STREAMS.get(kind, 2) > cap[0]
-    key = ("strip", kind, dtype, cols, streams)
+    at, capped = None, True
+    if nbytes == 2:
+        band = ("short" if rows < _STRIP_AT_ROWS else
+                "long" if rows >= _STRIP_LONG_ROWS else "mid")
+        at, capped = _per_lane_here().get((kind, cols, band), (None, True))
+    streams = streams and capped
+    key = ("strip", kind, dtype, cols, streams, at)
     got = _PLAN_CACHE.get(key, False)
     if got is False:
         suffix = _TORCH_DTYPES.get(str(dtype))
         if suffix is None:
             raise TypeError(f"hk norms handle bf16/fp16/fp32, not {dtype}")
-        p = strip_plan(cols, kind, _DTYPES[suffix].bytes) if _strips_here() else None
+        p = strip_plan(cols, kind, _DTYPES[suffix].bytes, per_lane=at) if _strips_here() else None
         got = None
         if p is not None:
             warps, chunks, run, exact = p
