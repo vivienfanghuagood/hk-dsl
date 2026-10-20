@@ -11,8 +11,8 @@ entry points:
     take still runs vLLM's own path on vLLM's own tensors;
   * `apply` makes one call of the opaque custom op `hk_vllm::w4a16`. Inside
     it -- where the token count is a number, not a symbolic shape torch.compile
-    would guard on -- fp16 or bf16 batches of up to 64 tokens take hk's
-    kernel and the rest vLLM's path.
+    would guard on -- fp16 or bf16 batches of up to 64 tokens (16 on
+    gfx950) take hk's kernel and the rest vLLM's path.
 
 On ROCm vLLM's AWQ path is its Triton kernel (the C++ one is not built
 there, so VLLM_USE_TRITON_AWQ=1), and that kernel takes fp16 only: an AWQ
@@ -50,12 +50,27 @@ PATCH = engine.Op(
 STATS = PATCH.stats
 
 
+#: The most tokens hk's kernel takes, by arch. On gfx950 the batches past 16
+#: run a slower schedule of it, which loses to the dequantize and hipBLASLt
+#: GEMM vLLM's compiled graph runs there (docs/history/42).
+_HK_MAX_M = {"gfx950": 16}
+
+
+def _cdna() -> bool:
+    from ..target import current_arch  # noqa: PLC0415
+
+    return current_arch() == "gfx950"
+
+
 def _vllm_awq(x, qweight, scales, qzeros):
-    """AutoAWQLinearMethod.apply's own arithmetic, for the batches hk leaves."""
+    """AutoAWQLinearMethod.apply's own arithmetic, for the batches hk leaves.
+    Its `x.shape[0] >= 256` test sees torch.compile's symbolic size, which
+    takes the dequantize branch at every batch; on gfx950 that branch is also
+    the faster one at every batch, so it is the path here."""
     import torch  # noqa: PLC0415
     from vllm import _custom_ops as ops  # noqa: PLC0415
 
-    if x.shape[0] >= 256:
+    if x.shape[0] >= 256 or _cdna():
         return torch.matmul(x, ops.awq_dequantize(qweight, scales, qzeros, 0, 0, 0))
     return ops.awq_gemm(x, qweight, scales, qzeros, 8)
 
@@ -69,11 +84,17 @@ def w4a16(x, qweight, scales, qzeros, hk_qw, hk_s, hk_zs, group: int):
 
     m, k = x.shape
     if (x.dtype == hk_s.dtype and x.dtype in (torch.bfloat16, torch.float16)
-            and hk_w4.takes(m, hk_qw.shape[0], k, group)):
+            and m <= _max_m() and hk_w4.takes(m, hk_qw.shape[0], k, group)):
         PATCH.count("hk")
         return hk_w4.matmul(x, hk_qw, hk_s, hk_zs, group)
     PATCH.count("fallback")
     return _vllm_awq(x, qweight, scales, qzeros)
+
+
+def _max_m() -> int:
+    from ..target import current_arch  # noqa: PLC0415
+
+    return _HK_MAX_M.get(current_arch(), 64)
 
 
 def process_weights_after_loading(self, layer) -> None:
@@ -124,7 +145,7 @@ def apply_patch() -> str:
     _ORIG_PWAL, _ORIG_APPLY = cls.process_weights_after_loading, cls.apply
     cls.process_weights_after_loading = process_weights_after_loading
     cls.apply = apply
-    return (f"int4 -> hk for AWQ layers, 16-bit batches up to 64 tokens "
+    return (f"int4 -> hk for AWQ layers, 16-bit batches up to {_max_m()} tokens "
             f"(compile cache {_own_compile_cache('hk-int4')})")
 
 
