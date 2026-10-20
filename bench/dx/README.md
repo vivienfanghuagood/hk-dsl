@@ -39,8 +39,10 @@ hkx1100 ~/hk-dsl-dxsuite python3 -m bench.dx.run --tasks t1 --json bench/dx/resu
 Options: `--tasks`, `--solutions`, `--kinds`, `--shapes` (substring of shape
 names), `--quick`, `--small`, `--check-only`, `--rounds`, `--no-graphs`,
 `--cold-cache` (fresh hk / Inductor / Triton caches, so `first_call_s` is a cold
-compile), `--json OUT` (writes `OUT` and `OUT` with `.md`). Set `HK_DX_COMMIT`
-when the run cannot see the git checkout (the containers cannot).
+compile), `--json OUT` (writes `OUT` and `OUT` with `.md`), `--merge A.json B.json
+--json OUT` (one GPU's runs of different tasks in one scoreboard). Set
+`HK_DX_COMMIT` (and `HK_DX_GPU`) when the run cannot see the git checkout or the
+machine's GPU index (the containers cannot).
 
 ## The protocol
 
@@ -67,6 +69,14 @@ for each solution:
      captured, the reason is in `graph_error` and ratios fall back to host time.
    Inputs stay resident between calls (hot L2 / MALL), as they do inside a
    model's layer loop for the small shapes; the large shapes exceed the caches.
+   Every graph is checked before it is timed: an empty one, or one whose
+   replay does not follow its inputs (the float inputs halved, the graph
+   replayed and compared with an eager call), gets no `device_us`.
+   **On RDNA** hk's default launch (the pybind entry point) goes to the null
+   stream, which neither torch's events nor a CUDA graph wait for
+   (docs/runtime.md, "The stream"), so the runner sets `HK_LAUNCH=codeobj`
+   there: the same device code launched on torch's stream, with a Python
+   launch in front of it. The result files say so (`hk_launch`).
 4. **Ratios** are `other / this` (> 1 = faster): `x_tc` against `torch.compile`,
    `x_best` against the fastest *baseline* at that shape (torch eager,
    torch.compile, Triton, hk.ops), `x_hk_ops` against the hk.ops kernel where
