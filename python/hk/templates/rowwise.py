@@ -486,6 +486,7 @@ class Rowwise:
         moved = rows * cols * sum(o.dtype.bytes for o in ops + outs if o.kind == "full")
         like = self._like(ops, outs)
         p = plan_for(self.arch, like, rows, cols, nbytes, self.override, moved)
+        C.check_runs(self.name, p.arch, p.run, [o.dtype for o in outs if o.kind == "full"])
         yield p
         if p.steps:
             return

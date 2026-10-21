@@ -277,3 +277,13 @@ def test_a_per_row_output_of_k_values(arch):
     assert kern.source(**c).count("store_scalar") >= 2 * k
     with pytest.raises(ValueError, match="at least one"):
         T.per_row(hk.fp32, 0)
+
+
+def test_an_int8_output_of_odd_rows_is_refused_on_gfx1100_with_the_reason():
+    k = T.elementwise(lambda x: x * 100.0, outputs=hk.i8, arch="gfx1100")
+    with pytest.raises(ValueError, match="one byte"):
+        k.plan(T.meta((7, 13), B))
+    assert T.elementwise(lambda x: x * 100.0, outputs=hk.i8, arch="gfx950").plan(
+        T.meta((7, 13), B)).run == 1
+    assert quant.strip_plan_for(2, 13, 7, "gfx1100") is None
+    assert quant.strip_plan_for(2, 13, 7, "gfx950") is not None

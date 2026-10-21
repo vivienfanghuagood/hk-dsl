@@ -309,9 +309,11 @@ STRIP_KERNELS = {f"strip_quantize_{_s}_w{_w}": _strip_quantize_kernel(
                  for _s, _dt in _DTYPES.items() for _w in WARP_COUNTS}
 
 #: Where quantize runs on strips: gfx950, measured there (scoreboard.py
-#: --only llm-quant). gfx1100 keeps the tile plan above, which it was tuned
-#: on and which has not been measured against a strip there.
-STRIP_ARCHS = ("gfx950",)
+#: --only llm-quant), and gfx1100, where the tile plan above needed 16x64 and
+#: the strip measured 1.04-2.3x it (hk.templates.rowwise's quantize on this
+#: plan against hk.ops' tiles, W7900D, us: 2048x4096 15.9 / 34.0, 8192x4096
+#: 50.5 / 111.4, 8192x8192 278.5 / 290.0; docs/templates/elementwise-rowwise.md).
+STRIP_ARCHS = ("gfx950", "gfx1100")
 
 
 # ---------------------------------------------------------------- wrappers
@@ -359,9 +361,18 @@ def strip_plan_for(nbytes: int, cols: int, rows: int, arch=None):
     from ..target import current_arch, get_target  # noqa: PLC0415
     from .norm import strip_plan  # noqa: PLC0415
 
-    wave = get_target(arch or current_arch()).wave
-    return strip_plan(cols, "quantize", nbytes, wave=wave,
-                      per_lane=16 if rows >= _STRIP_NARROW_ROWS else None)
+    arch = arch or current_arch()
+    p = strip_plan(cols, "quantize", nbytes, wave=get_target(arch).wave,
+                   per_lane=16 if rows >= _STRIP_NARROW_ROWS else None)
+    if p is not None and p[2] < 2 and arch not in _ONE_BYTE_RUNS:
+        # An odd row length is a run of one element, one int8 byte, and
+        # include/rdna3's bounded strip store moves 2, 4, 8 or 16k bytes.
+        return None
+    return p
+
+
+#: Where a strip stores a run of one byte (hk's wave64 port, chapter 37).
+_ONE_BYTE_RUNS = ("gfx950",)
 
 
 def _resolve_strip_q(dtype, cols: int, rows: int):

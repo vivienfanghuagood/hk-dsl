@@ -248,6 +248,49 @@ def _rotary16_kernel(name: str, dtype, warps: int, positions: bool):
                      grid=lambda p: (p.x.rows, p.x.cols // (warps * p.CH * 64 * p.RUN), 1))
 
 
+def _rotary_halves_kernel(name: str, dtype, warps: int, positions: bool):
+    """vLLM's rotary_embedding on strips without a lane exchange, for a
+    target whose strips have no swap_halves (gfx1100): a head's halves are
+    two strips of D/2 columns read at 0 and D/2, and its angles the two
+    halves of the token's row of cs, [cos | sin]:
+
+        out1 = x1 * cos - x2 * sin,   out2 = x2 * cos + x1 * sin
+
+    One workgroup a token, warp w the heads w, w + WARPS, ...; every head's
+    loads before any store, so it runs in place (a lane writes only what it
+    read)."""
+    def build(x, cs, pos, o, H, D, RUN):
+        half = D // 2
+        S = hk.RS(fp32, 1, half, RUN)
+        t = hk.arch.block_idx.x
+        prow = pos.at[0, t].load_scalar(invariant=True) if positions else t
+        w = hk.arch.warp_id() if warps > 1 else 0
+        rows = [t * H + w + h * warps for h in range(H // warps)]
+        x1s = [x.at[row, 0].load(S) for row in rows]
+        x2s = [x.at[row, half].load(S) for row in rows]
+        c = cs.at[prow, 0].load(S)
+        sn = cs.at[prow, half].load(S)
+        for row, x1, x2 in zip(rows, x1s, x2s):
+            o1 = x1 * c
+            o1 -= x2 * sn
+            o2 = x2 * c
+            o2 += x1 * sn
+            o.at[row, 0].store(o1)
+            o.at[row, half].store(o2)
+
+    if positions:
+        def body(x: hk.Tensor[dtype], cs: hk.Tensor[fp32], pos: hk.Tensor[hk.i32],
+                 o: hk.Tensor[dtype], *, H=32, D=128, RUN=2):
+            build(x, cs, pos, o, H, D, RUN)
+    else:
+        def body(x: hk.Tensor[dtype], cs: hk.Tensor[fp32], o: hk.Tensor[dtype], *,
+                 H=32, D=128, RUN=2):
+            build(x, cs, None, o, H, D, RUN)
+    body.__name__ = name
+    return hk.kernel(body, warps=warps, name=name, noalias=True,
+                     grid=lambda p: (hk.cdiv(p.x.rows, p.H), 1, 1))
+
+
 def _rope_grid(p):
     # x is (bh, 1, seq, D); one workgroup per (half-head column block, row
     # block, bh). The column axis only covers D/2 because each workgroup
@@ -325,6 +368,11 @@ ROTARY_KERNELS = {f"rotary_{_s}_w{_w}" + ("_pos" if _p else ""): _rotary_kernel(
                       f"rotary_{_s}_w{_w}" + ("_pos" if _p else ""), _dt, _w, _p)
                   for _s, _dt in _DTYPES.items() for _w in ROTARY_WARPS
                   for _p in (False, True)}
+#: The rotary kernels of a target whose strips have no swap_halves (gfx1100).
+ROTARY_HALVES_KERNELS = {
+    f"rotary_halves_{_s}_w{_w}" + ("_pos" if _p else ""): _rotary_halves_kernel(
+        f"rotary_halves_{_s}_w{_w}" + ("_pos" if _p else ""), _dt, _w, _p)
+    for _s, _dt in _DTYPES.items() for _w in ROTARY_WARPS for _p in (False, True)}
 
 #: Where the rotary kernels run on strips: gfx950 (swap_halves and
 #: rotate_half are the wave64 port's).
@@ -498,6 +546,9 @@ def silu_mul(a, b, out=None):
     if out is None:
         import torch  # noqa: PLC0415  -- see norm._run
         out = torch.empty(a.shape, dtype=a.dtype, device=a.device)
+    elif out.shape != a.shape or out.dtype != a.dtype:
+        raise ValueError(f"silu_mul: out is {tuple(out.shape)}/{out.dtype}, expected "
+                         f"{tuple(a.shape)}/{a.dtype}")
     cols = a.shape[-1] if a.dim() else 0
     plan = _strip_silu_plan(a.dtype, cols, a.numel() // cols if cols else 0)
     if plan is not None:
@@ -656,21 +707,26 @@ def rotary(x, cos_sin, positions=None, out=None):
         out[..., :D/2] = x1 * cos - x2 * sin,  out[..., D/2:] = x2 * cos + x1 * sin
 
     In place when `out` is `x`. D is 64 * a power of two up to 16 (128 and
-    256 qualify). On strips, so gfx950 only for now."""
+    256 qualify) on gfx950, 64 * a power of two up to 8 on gfx1100. On
+    strips: gfx950 and gfx1100 (where a head's halves are two strips, there
+    being no lane exchange there)."""
     import torch  # noqa: PLC0415
 
-    from ..target import current_arch  # noqa: PLC0415
+    from ..target import current_arch, get_target  # noqa: PLC0415
 
-    if current_arch() not in STRIP_ARCHS:
-        raise NotImplementedError(f"hk.ops.rotary runs on strips' wave64 port "
-                                  f"(gfx950); on {current_arch()} use hk.ops.rope")
+    arch = current_arch()
+    halves = arch not in STRIP_ARCHS
+    if halves and not get_target(arch).strips:
+        raise NotImplementedError(f"hk.ops.rotary runs on register strips (gfx950, "
+                                  f"gfx1100); on {arch} use hk.ops.rope")
     if x.dim() < 2 or not x.is_contiguous():
         raise ValueError(f"rotary: x must be a contiguous (..., heads, D) tensor, "
                          f"got {tuple(x.shape)}")
     h, d = x.shape[-2], x.shape[-1]
     run = d // 64
-    if d % 64 or run not in (1, 2, 4, 8, 16):
-        raise ValueError(f"rotary: head dim {d} is not 64 x a power of two up to 16")
+    if d % 64 or run not in ((1, 2, 4, 8) if halves else (1, 2, 4, 8, 16)):
+        raise ValueError(f"rotary: head dim {d} is not 64 x a power of two up to "
+                         f"{8 if halves else 16} (on {arch})")
     if cos_sin.dim() != 2 or cos_sin.shape[1] != d or cos_sin.dtype != torch.float32 \
             or not cos_sin.is_contiguous():
         raise ValueError(f"rotary: cos_sin must be a contiguous float32 (P, {d}), got "
@@ -704,8 +760,12 @@ def rotary(x, cos_sin, positions=None, out=None):
     if k is None:
         suffix = _suffix_of(x)
         warps = _rotary_warps(h)
-        k = _ROTARY_CACHE[key] = ROTARY_KERNELS[
-            f"rotary_{suffix}_w{warps}" + ("_pos" if positions is not None else "")]
+        table, kind = (ROTARY_HALVES_KERNELS, "rotary_halves") if halves else             (ROTARY_KERNELS, "rotary")
+        k = _ROTARY_CACHE[key] = table[
+            f"{kind}_{suffix}_w{warps}" + ("_pos" if positions is not None else "")]
+    if halves:
+        # A half of D columns is one wave32 chunk of D/64 a lane.
+        run = d // 64
     xv, ov = x.view(tokens * h, d), out.view(tokens * h, d)
     if positions is not None:
         k(xv, cos_sin, positions.view(1, tokens), ov, H=h, D=d, RUN=run)

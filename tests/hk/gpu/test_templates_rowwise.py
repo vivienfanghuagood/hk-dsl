@@ -13,6 +13,7 @@ import torch.nn.functional as F  # noqa: E402
 
 import hk  # noqa: E402
 from hk import templates as T  # noqa: E402
+from hk.target import current_arch  # noqa: E402
 
 pytestmark = pytest.mark.gpu
 
@@ -102,6 +103,49 @@ def test_hk_ops_silu_mul_takes_the_halves_on_every_gpu(m, i):
     hk.ops.silu_mul(g, u, out)
     _close(out, want)
     assert torch.equal(out, silu_mul(g, u))       # the template's kernel, the same answer
+
+
+@pytest.mark.parametrize("shape", [(100, 1000), (7, 13), (3, 4097), (2048, 4096)])
+def test_hk_ops_elementwise_and_quantize_take_any_shape_on_every_gpu(shape):
+    """The same shapes on gfx1100 as on gfx950: strips with bounded tails
+    (gfx1100's tile kernels refused 100x1000 and fewer than 16 rows)."""
+    a = torch.randn(*shape, device="cuda", dtype=BF16)
+    b = torch.randn_like(a)
+    assert torch.equal(hk.ops.add(a, b), a + b)
+    assert torch.equal(hk.ops.mul(a, b), a * b)
+    _close(hk.ops.exp(a), a.float().exp(), rtol=1e-2, atol=1e-3)
+    if shape[-1] % 2 and current_arch() != "gfx950":
+        return  # an odd row into int8 is a one-byte run: gfx1100's tiles, >= 16x64
+    q, s = hk.ops.quantize(a)
+    amax = a.float().abs().amax(-1, keepdim=True).clamp_min(1e-12)
+    want = (a.float() * (127.0 / amax)).round().clamp(-128, 127)
+    assert (q.float() - want).abs().max().item() <= 1
+
+
+@pytest.mark.parametrize("tokens,heads,d", [(5, 8, 128), (64, 32, 128), (3, 4, 256), (7, 2, 64)])
+@pytest.mark.parametrize("with_positions", [False, True])
+def test_hk_ops_rotary_on_every_gpu(tokens, heads, d, with_positions):
+    """vLLM's rotary_embedding (NeoX), the same spelling on gfx1100 as on
+    gfx950: cos_sin rows of [cos | sin], optional int32 positions, in place."""
+    x = torch.randn(tokens, heads, d, device="cuda", dtype=BF16)
+    ang = torch.rand(tokens + 9, d // 2, device="cuda") * 6.28
+    cs = torch.cat((ang.cos(), ang.sin()), -1).contiguous()
+    pos = torch.randint(0, tokens + 9, (tokens,), device="cuda", dtype=torch.int32)
+    rows = pos.long() if with_positions else torch.arange(tokens, device="cuda")
+    c, s = cs[rows, : d // 2][:, None, :], cs[rows, d // 2:][:, None, :]
+    xf = x.float()
+    x1, x2 = xf[..., : d // 2], xf[..., d // 2:]
+    want = torch.cat((x1 * c - x2 * s, x2 * c + x1 * s), -1)
+    got = hk.ops.rotary(x, cs, pos if with_positions else None)
+    _close(got, want)
+    hk.ops.rotary(x, cs, pos if with_positions else None, out=x)
+    assert torch.equal(x, got)
+
+
+def test_silu_mul_checks_out():
+    a = torch.randn(4, 64, device="cuda", dtype=BF16)
+    with pytest.raises(ValueError, match="out is"):
+        hk.ops.silu_mul(a, a, torch.empty(4, 32, device="cuda", dtype=BF16))
 
 
 # ---------------------------------------------------------------- rowwise

@@ -228,6 +228,7 @@ class Elementwise:
             rows, cols = 1, n
         p = plan_for(self.arch, rows, cols, flat, moved, len(streamed),
                      min(streamed), {k: v for k, v in self.override.items() if k != "flat"})
+        C.check_runs(self.name, p.arch, p.run, outs)
         if not p.exact and max(streamed + [d.bytes for d in outs]) * n >= _MAX_BYTES:
             raise ValueError(f"{self.name}: {n} elements past 2 GiB with a ragged row; the "
                              f"bounded accesses address 2 GiB")

@@ -393,6 +393,17 @@ def _span_of(shape, stride) -> int:
     return 1 + sum((s - 1) * st for s, st in zip(shape, stride))
 
 
+def check_runs(name: str, arch: str, run: int, out_dtypes) -> None:
+    """include/rdna3's strip store moves runs of 2, 4, 8 or 16k bytes: an
+    int8 output of a row whose length is odd (a run of one) is refused on
+    gfx1100 with the reason, rather than by hipcc. hk's wave64 port (gfx950)
+    stores one-byte runs."""
+    if arch != "gfx950" and any(d.bytes * run < 2 for d in out_dtypes):
+        raise ValueError(f"{name}: an int8 output of rows of odd length is a run of one "
+                         f"byte a lane, which {arch}'s strip stores do not move (2, 4, 8 "
+                         f"or 16k bytes); pad the row to an even length")
+
+
 _ALLOW_REDUCE = [0]
 
 

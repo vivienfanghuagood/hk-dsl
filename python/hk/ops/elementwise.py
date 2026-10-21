@@ -6,10 +6,13 @@ about.
 
 The kernels are 2D. An elementwise op does not care about the shape, only about
 the element count, so the wrappers flatten to (rows, cols) and let the pybind
-layer left-pad that to the 4D global layout. What the kernels do *not* do yet is
-handle a partial tile: the tail block would read past the end of the tensor,
-which reads garbage rather than failing, so `_as_2d` refuses that shape instead
-of masking it. Bounds-checked tails come with the reductions in Phase 2.
+layer left-pad that to the 4D global layout. On gfx1100 and gfx950 the ops run
+on register strips over a flat (1, n) view, any size, a ragged tail read and
+written with bounded accesses (below 2 GiB). The 16x64 tile kernels below --
+the fallback past 2 GiB, and what other targets run -- do *not* handle a
+partial tile: the tail block would read past the end of the tensor, which
+reads garbage rather than failing, so `_as_2d` refuses that shape instead of
+masking it.
 """
 
 
@@ -102,13 +105,18 @@ def _strip_kernel(name: str, op: str, dtype, warps: int):
         return blk * CW
 
     if unary:
-        def body(a: hk.Tensor[dtype], o: hk.Tensor[dtype], *, CW=512, RUN=8, EXACT=1):
+        def body(a: hk.Tensor[dtype], o: hk.Tensor[dtype], *, CW=512, RUN=8, EXACT=1,
+                 RESERVE=0):
+            if RESERVE:
+                hk.lds.reserve(RESERVE)
             c0 = at(CW)
             x = a.at[0, c0].load(strip(a, CW, RUN), bounded=not EXACT)
             o.at[0, c0].store(fn(x), bounded=not EXACT)
     else:
         def body(a: hk.Tensor[dtype], b: hk.Tensor[dtype], o: hk.Tensor[dtype], *,
-                 CW=512, RUN=8, EXACT=1):
+                 CW=512, RUN=8, EXACT=1, RESERVE=0):
+            if RESERVE:
+                hk.lds.reserve(RESERVE)
             c0 = at(CW)
             S = strip(a, CW, RUN)
             x = a.at[0, c0].load(S, bounded=not EXACT)
@@ -206,9 +214,11 @@ STRIP_GS_KERNELS = {f"strip_gs_{_op}_{_s}_w{_w}": _strip_gs_kernel(
                     for _w in STRIP_WARPS}
 
 #: Where the elementwise ops run on strips: gfx950, measured there
-#: (scoreboard.py --only llm-pointwise). gfx1100 keeps the tile kernels it
-#: was tuned on.
-STRIP_ARCHS = ("gfx950",)
+#: (scoreboard.py --only llm-pointwise), and gfx1100, where the 16x64 tile
+#: kernels refused a shape that does not tile (100x1000) and strips take any
+#: size. gfx1100's plan is silu_mul's there (fused.silu_strip_plan: eight
+#: warps of one chunk, 48 KB of LDS past the Infinity Cache).
+STRIP_ARCHS = ("gfx950", "gfx1100")
 
 #: The strip plan, (warps, chunks a warp) -- a chunk is wave x RUN elements,
 #: one 16-byte access a lane: eight warps of one chunk, 4096 bf16 a
@@ -326,8 +336,8 @@ def _kernel_for(op: str, suffix: str):
     if k is None:
         have = sorted(s for s in _DTYPES if f"{op}_{s}" in KERNELS)
         raise TypeError(
-            f"hk has no {suffix} {op} kernel -- include/rdna3 implements it for "
-            f"{', '.join(have)} only. Cast the tensor first."
+            f"hk has no {suffix} {op} kernel -- HipKittens specialises {op} for "
+            f"{', '.join(have)} only, on every GPU. Cast the tensor first."
         )
     return k
 
@@ -360,8 +370,13 @@ def _apply(op: str, *tensors: Any, out=None):
         if not out.is_contiguous():
             raise ValueError("hk kernels take contiguous tensors; call .contiguous()")
         if n:
-            sk, cw, run, exact = plan
-            sk(*(t.view(1, n) for t in tensors), out.view(1, n), CW=cw, RUN=run, EXACT=exact)
+            sk, cw, run, exact, reserve = plan
+            if reserve:
+                sk(*(t.view(1, n) for t in tensors), out.view(1, n), CW=cw, RUN=run,
+                   EXACT=exact, RESERVE=reserve)
+            else:
+                sk(*(t.view(1, n) for t in tensors), out.view(1, n), CW=cw, RUN=run,
+                   EXACT=exact)
         return out
     choices = _col_choices(suffix)
     for cols in choices:
@@ -398,8 +413,8 @@ def flat_strip_plan(moved: int, binary: bool):
 
 
 def _strip_plan(op: str, suffix: str, n: int, nbytes: int):
-    """(kernel, CW, RUN, EXACT) for `op` over n elements on strips, or None
-    where the elementwise ops do not run on strips here."""
+    """(kernel, CW, RUN, EXACT, RESERVE) for `op` over n elements on strips,
+    or None where the elementwise ops do not run on strips here."""
     key = (op, suffix, n)
     got = _STRIP_PLANS.get(key, False)
     if got is False:
@@ -409,12 +424,18 @@ def _strip_plan(op: str, suffix: str, n: int, nbytes: int):
         got = None
         arch = current_arch()
         if arch in STRIP_ARCHS and n * nbytes < _STRIP_MAX_BYTES:
+            from .fused import silu_strip_plan  # noqa: PLC0415
+
             moved = n * nbytes * (2 if op in _UNARY_FN else 3)
-            warps, chunks = flat_strip_plan(moved, op not in _UNARY_FN)
+            reserve = 0
+            if arch == "gfx950":
+                warps, chunks = flat_strip_plan(moved, op not in _UNARY_FN)
+            else:
+                warps, chunks, reserve = silu_strip_plan(arch, moved)
             run = strip_run(n, nbytes) if n else 16 // nbytes
             cw = chunks * get_target(arch).wave * run
             got = (strip_preload(STRIP_KERNELS[f"strip_{op}_{suffix}_w{warps}"], moved), cw,
-                   run, int(n % (warps * cw) == 0))
+                   run, int(n % (warps * cw) == 0), reserve)
         _STRIP_PLANS[key] = got
     return got
 
