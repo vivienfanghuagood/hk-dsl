@@ -268,9 +268,10 @@ A register strip type: kittens::rs<T, rows, cols, run>.
 
 The layout for kernels that stream rows -- a norm, a softmax -- rather
 than feed WMMA: lane l owns, of every row, the runs of `run` contiguous
-columns starting at j*32*run + l*run, so a bf16 run of 8 is one 16-byte
-access and nothing is held twice. `cols` is a whole number of 32*run
-chunks. A strip loads and stores (element coordinates only, the element
+columns starting at j*wave*run + l*run (wave = 32 on gfx1100, 64 on
+gfx950; `hk.arch.target().wave`), so a bf16 run of 8 is one 16-byte
+access and nothing is held twice. `cols` is a whole number of wave*run
+chunks: 256 or 512 columns at run 8, so 512 fits both. A strip loads and stores (element coordinates only, the element
 type converting on the way), maps, reduces along rows (a butterfly that
 leaves the answer in every lane) and columns, broadcasts its col_vec and
 row_vec, and fills by column. Its row_vec has the strip's own column
@@ -821,7 +822,8 @@ Tile.step(self, *, into=None)
 ```
 
 1 where the element is positive, else 0: a comparison as a factor,
-`x * (r - p).step()` keeping where r > p. Tiles only.
+`x * (r - p).step()` keeping where r > p. Register tiles and
+strips, not vectors.
 
 #### `Tile.copy`
 
@@ -1065,7 +1067,8 @@ Vec.step(self, *, into=None)
 ```
 
 1 where the element is positive, else 0: a comparison as a factor,
-`x * (r - p).step()` keeping where r > p. Tiles only.
+`x * (r - p).step()` keeping where r > p. Register tiles and
+strips, not vectors.
 
 #### `Vec.copy`
 

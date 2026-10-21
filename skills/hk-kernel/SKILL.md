@@ -87,8 +87,13 @@ Paths below are relative to the repository root.
 - A spill is a build error, not a warning: fewer live tiles, smaller tiles.
 - `import hk` fixes the arch: set `HK_ARCH` before importing, or use
   `hk.check --arch`.
-- `hk.ops` argument rules differ by arch in places
-  ([docs/dx/api-consistency.md](../../docs/dx/api-consistency.md)).
+- `hk.ops` argument rules differ by arch in a few places (attention's
+  lengths, the paged kernels;
+  [docs/dx/api-consistency.md](../../docs/dx/api-consistency.md)); the row
+  and elementwise ops are alike on both.
+- On gfx1100 `k(...)` launches on the null stream: a CUDA graph does not
+  capture it. Time or capture it with `HK_LAUNCH=codeobj` set (or through
+  `hk.torch_op(k)`); `hk.check`'s eager timing is unaffected.
 - Names marked *New after 0.4.0* in
   [docs/api](../../docs/api/README.md) need hk-dsl 0.5.0 or a checkout
   (`hk.__version__` says which you have).

@@ -801,7 +801,8 @@ class _Elementwise(Value):
     def silu(self, *, into=None): return unary("silu", self, into=into)
     def step(self, *, into=None):
         """1 where the element is positive, else 0: a comparison as a factor,
-        `x * (r - p).step()` keeping where r > p. Tiles only."""
+        `x * (r - p).step()` keeping where r > p. Register tiles and
+        strips, not vectors."""
         if not isinstance(self, Tile):
             raise TypeError("step is defined on tiles, not on register vectors")
         return unary("step", self, into=into)

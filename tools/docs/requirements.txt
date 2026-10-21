@@ -1,0 +1,4 @@
+# The docs site (mkdocs.yml); .github/workflows/docs.yml installs these.
+mkdocs==1.6.1
+mkdocs-material==9.7.7
+pymdown-extensions==12.3

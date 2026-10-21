@@ -5,3 +5,6 @@ build/
 dist/
 # The MLIR bindings, built per interpreter by scripts/build_hk_mlir.sh.
 python/hk/_mlir/
+
+# mkdocs build (mkdocs.yml)
+/site/

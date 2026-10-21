@@ -1,8 +1,9 @@
 # Performance
 
-Every number on this page comes from the [development record](history/README.md),
-and each table names the chapter it was copied from; the chapter has the
-harness in `tools/hk-bench/`, the raw output and the caveats. The two GPU
+Every number on this page comes from the [development record](history/README.md)
+or, for the templates, from their own pages, and each table names where it
+was copied from; the source has the harness in
+`tools/hk-bench/`, the raw output and the caveats. The two GPU
 families are kept apart, because nothing measured on one says anything about
 the other: [Part A](#part-a-rdna3-gfx1100-one-w7900d) is RDNA3 (one Radeon PRO
 W7900D) and [Part B](#part-b-cdna4-gfx950-one-mi355x) is CDNA4 (one Instinct
@@ -17,6 +18,7 @@ is a time ratio.
 
 - [How the numbers are taken](#how-the-numbers-are-taken)
   - [The stacks](#the-stacks)
+- [Writing a kernel: the templates against torch.compile](#writing-a-kernel-the-templates-against-torchcompile)
 - [Part A: RDNA3 (gfx1100, one W7900D)](#part-a-rdna3-gfx1100-one-w7900d)
   - [A1. End to end, by engine](#a1-end-to-end-by-engine)
   - [A2. Kernels against the tuned field](#a2-kernels-against-the-tuned-field)
@@ -97,6 +99,54 @@ measured peaks 2.48 PFLOP/s of bf16 MFMA and 6.6 TB/s past the cache,
 |---|---|---|---|---|---|---|
 | `rocm/pytorch` image | 7.2.3 (hipcc 7.2.3; HipKittens' attention built with 7.1) | 2.10.0+rocm7.2.3 | 3.6.0 | 0.4.0 | -- | [chapters 29](history/29-cdna.md), [33](history/33-cdna-gemm.md), [34](history/34-cdna-attention.md), [37](history/37-cdna-rows.md), [41](history/41-cdna-leftovers.md), [43](history/43-cdna-last-rows.md): kernels against the tuned field |
 | vLLM nightly image `vllm/vllm-openai-rocm:nightly-rocm100-0cbac6cd` | 10 (HIP 7.15) | 2.12 | 3.8 | -- | vLLM 0.30.1rc1.dev558, aiter 0.1.23; aiter on (`VLLM_ROCM_USE_AITER=1`) end to end | [chapters 39](history/39-cdna-paged.md), [42](history/42-mi355x-in-the-engine.md): end to end, kernels against what the engine calls |
+
+## Writing a kernel: the templates against torch.compile
+
+What a kernel you write costs, rather than a kernel hk ships: the templates
+(`hk.templates`), which build a kernel from the math of an element, a row
+or a GEMM epilogue, against `torch.compile` of the same math. The tables are
+copied from the templates' own pages, which have the method, every shape and
+every miss; the DX suite ([bench/dx](../bench/dx/README.md)) is the harness
+for the task rows.
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="assets/templates-vs-torch-compile-dark.svg">
+  <img alt="Speedup of hk.templates over torch.compile per task, on a W7900D and an MI355X" src="assets/templates-vs-torch-compile.svg" width="760">
+</picture>
+
+**The DX suite's tasks, written with a template**
+([elementwise and rowwise, measured](templates/elementwise-rowwise.md#measured)).
+MI355X: device time, geomean over the task's shapes (min-max); W7900D:
+`--quick`, three shapes. The best baseline is the fastest of torch eager,
+`torch.compile`, Triton and the `hk.ops` kernels the task has.
+
+| task (template lines) | MI355X x torch.compile | MI355X x best baseline | W7900D x torch.compile | W7900D x best baseline |
+|---|---|---|---|---|
+| T1 gelu_tanh_and_mul (7) | 1.11 (1.03-1.63) | 1.00 | 1.03 (0.99-1.10) | 0.98 |
+| T2 add + RMSNorm + int8 (17) | 1.45 (1.05-1.83) | 1.21; 1.48 x hk.ops (two kernels) | 1.17 (1.04-1.30) | 1.10; 1.67 x hk.ops |
+| T3 cross-entropy, V up to 151936 (10) | 2.50 (1.24-3.43) | 1.76 | 1.58 (1.14-2.88) | 1.22 |
+| T8 router softmax + top-k (28) | 9.06 (6.90-13.55) | 1.11 | 7.37 (6.09-9.86) | 1.34 |
+
+The same T1 written by hand on 16x64 register tiles, as the first page of
+the docs used to teach, is 0.78x (0.54-1.28) `torch.compile` on the
+MI355X and 0.83x (0.71-0.92) on the W7900D; on register strips, 1.11x and
+1.07x ([the DX suite's findings](../bench/dx/FINDINGS.md)).
+
+**Against hk's tuned kernel for the same job**, the elementwise and rowwise
+templates are 0.98-1.03x on the MI355X (device time) and 0.92-1.02x on the
+W7900D (eager calls), across the shapes of its summary, 1-8192 rows
+([the summary table](templates/elementwise-rowwise.md#measured)).
+
+**A GEMM with a fused epilogue** -- bias + GELU(tanh), or a residual add --
+at Qwen3-8B's and Llama-3-8B's linear layers, M = 16-4096
+([GEMM template, measured](templates/gemm.md#what-it-costs-measured)):
+
+- MI355X, device time: within 5% of the plain `hk.ops.matmul` at 45 of 48
+  cases; faster than `torch.compile` at 46, level at two (down at M = 4096
+  with bias + GELU, 0.99x and 1.00x, where the plain GEMM is 3-4% behind
+  hipBLASLt).
+- W7900D, eager: within 5% of the plain kernel at all 48 (0.89-1.03x);
+  faster than `torch.compile` at all 48, geomean 1.69x.
 
 ## Part A: RDNA3 (gfx1100, one W7900D)
 
