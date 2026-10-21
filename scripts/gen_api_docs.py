@@ -865,7 +865,7 @@ def page_index(pages: List[Page]) -> Page:
              "Generated from the code by `scripts/gen_api_docs.py`: every public "
              "name's signature and docstring, and what is new or changed since the "
              f"hk-dsl {PYPI} wheel on PyPI (\"*New after {PYPI}*\": `pip install "
-             f"hk-dsl=={PYPI}` does not have it; install from a checkout, "
+             f"hk-dsl=={PYPI}` does not have it; 0.5.0 does, and a checkout, "
              "docs/building.md). For how the language is written, read "
              "[the language](../language.md) first.")
     for pg in pages:
