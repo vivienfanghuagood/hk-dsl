@@ -32,6 +32,8 @@ from dataclasses import dataclass, replace
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 from .. import dsl as hk
+from .._mlir import ir
+from ..dsl import builder as B
 from ..dsl.collective import cross_warp
 from ..dsl.control import for_
 from ..dsl.values import Vec, as_vec
@@ -73,12 +75,18 @@ class _Ctx:
         self.used: List[str] = []     # the reductions the hook makes, in order
         self.row = None               # the row this workgroup holds
         self.sources: Dict[int, Any] = {}   # id(operand strip) -> its global
+        self.mark = None              # single pass: the op before the first reduction
 
     def reduce(self, t, op: str) -> Vec:
         if not isinstance(t, hk.Tile):
             raise TypeError(f"row_{op} reduces a tile (a strip of the row), got {t!r}")
         j = self.count
         self.count += 1
+        if j == 0 and not self.steps:
+            # Where the row's first reduction begins: an output computed
+            # before it can be stored here (see _store_early).
+            ops = list(B.current().ip.block.operations)
+            self.mark = ops[-1] if ops else None
         if j == len(self.used):
             self.used.append(op)
         if self.steps and j < len(self.known):
@@ -287,16 +295,6 @@ def plan_for(arch: str, like: str, rows: int, cols: int, nbytes: int,
         p = None if p is None else (*p, 0)
     else:
         p = norm.strip_plan_for(like, nbytes, cols, rows, arch)
-        if like == "addrmsw" and p is not None and p[1] * p[2] > 32:
-            # hk.ops' fused add holds 64-128 a lane at 2048 rows (chapter 43)
-            # because it is in place and register-lean: the residual is
-            # stored before the reduction and the row rescaled in place. A
-            # hook keeps x + r live to the end as an output; there 32 a lane
-            # wins (MI355X, us, ops beside): 2048x4096 64 a lane 8.48, 32
-            # 7.98 (7.73); 2048x8192 128 a lane 23.37, 32 20.38 (19.49).
-            q = norm.strip_plan(cols, like, nbytes, wave=tgt.wave)
-            if q is not None:
-                p = (*q, p[4])
     override = dict(override or {})
     past = norm.STRIP_PRELOAD_PAST.get(arch)
     preload = like != "addrmsw" and past is not None and moved > past
@@ -649,7 +647,7 @@ def _trace(kw, spec):
                             f"template stores {len(ys)} output(s)")
         return res
 
-    def store(res, c0, full: bool, scalars: bool):
+    def store(res, c0, full: bool, scalars: bool, early=()):
         for j, (y, r, o) in enumerate(zip(ys, res, outs)):
             if o.kind == "full":
                 if not isinstance(r, hk.Tile):
@@ -657,7 +655,7 @@ def _trace(kw, spec):
                         f"{name}: output {j} is full and the hook returned {r!r}; "
                         f"a per-row result is declared outputs=(..., "
                         f"hk.templates.per_row(hk.fp32))")
-                if full:
+                if full and j not in early:
                     y.at[row, c0].store(r, bounded=bounded)
             elif scalars:
                 vals = list(r) if o.width > 1 and isinstance(r, (list, tuple)) else [r]
@@ -675,7 +673,9 @@ def _trace(kw, spec):
         if not steps:
             c0 = w * cw if warps > 1 else 0
             ctx.tail = None if exact else n - c0
-            store(run_hook(operands(c0)), c0, True, True)
+            res = run_hook(operands(c0))
+            early = _store_early(ctx, res, ys, outs, row, c0, bounded)
+            store(res, c0, True, True, early)
             return
         # Multi-pass. Before each pass, a dry run of the hook on zeros finds
         # the next reduction it needs (its ops are dead code); pass k then
@@ -719,6 +719,59 @@ def _trace(kw, spec):
         _CTX.pop()
         if info is not None:
             info["used"] = tuple(ctx.used)
+
+
+def _store_early(ctx, res, ys, outs, row, c0, bounded):
+    """Store, where the row's first reduction begins, each full output the
+    hook computed before it and did not write after: the fused add's
+    `x + r`. Stored at the end it is live across the reductions -- registers
+    an in-place kernel would have given back (2048x8192, MI355X: 23.4 us
+    against hk.ops' 19.5 at 128 a lane). Returns the outputs it stored."""
+    if ctx.mark is None:
+        return ()
+    t = B.current()
+    ops = list(t.entry.operations)
+
+    def index(op):
+        op = getattr(op, "operation", op)
+        for i, o in enumerate(ops):
+            if o.operation == op:
+                return i
+        return None
+
+    at = index(ctx.mark)
+    if at is None or at + 1 >= len(ops):
+        return ()
+    stored = []
+    for j, (y, r, o) in enumerate(zip(ys, res, outs)):
+        if o.kind != "full" or not isinstance(r, hk.Tile):
+            continue
+        owner = getattr(r.v, "owner", None)
+        d = None if owner is None else index(owner)
+        if d is None or d > at:
+            continue
+        if any(_writes(x, r.v) for x in ops[at + 1:]):
+            continue
+        with t.at(ir.InsertionPoint(ops[at + 1])):
+            y.at[row, c0].store(r, bounded=bounded)
+        stored.append(j)
+    return tuple(stored)
+
+
+def _writes(op, v) -> bool:
+    """Does `op` write the tile `v` in place (its `dst` operand)? Ops are
+    walked into their regions."""
+    try:
+        d = op.dst
+    except AttributeError:
+        d = None
+    if d is not None and d == v:
+        return True
+    for region in op.operation.regions:
+        for block in region.blocks:
+            if any(_writes(o, v) for o in block.operations):
+                return True
+    return False
 
 
 def _build(fn, ops, outs, warps: int, arch: str, name: str, user_consts, info=None):
