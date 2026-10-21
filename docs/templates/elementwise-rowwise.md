@@ -131,11 +131,35 @@ def add_rms_quant(x, r, w, *, EPS=1e-6):
 def cross_entropy(logits, label):                       # label: (rows,) int64 or int32
     loss = T.row_logsumexp(logits) - T.pick(logits, label)
     return loss * (label != -100).to_int()              # ignore_index -> 0
+
+def router(k):                                          # MoE routing: softmax, top-k, renormalise
+    @T.rowwise(outputs=(T.per_row(hk.i32, k), T.per_row(hk.fp32, k)))
+    def route(logits, col):                             # col: arange(E), fp32, made once
+        p = (logits - T.row_logsumexp(logits)).exp()
+        ids, ws = [], []
+        for _ in range(k):                              # a Python loop: unrolled while tracing
+            m = T.row_max(p)
+            i = T.row_min(col + (m - p).step() * 1e9)   # the first column holding the max
+            ids.append(i)
+            ws.append(m)
+            p = p - (1.0 - (col - i).abs().step()) * 2.0
+        s = ws[0]
+        for w in ws[1:]:
+            s = s + w
+        return ids, [w / s for w in ws]
+    return route
 ```
 
 A per-row int32 or int64 operand (a label) arrives as a device int; an int64
 tensor is read in place, as its low 32 bits (every vocabulary index, and
--100). A per-row float operand arrives as a column vector.
+-100). A per-row float operand arrives as a column vector. A per-row output
+of `k` values a row, `T.per_row(dtype, k)`, is a `(rows, k)` tensor, the hook
+returning a list of `k` row values for it.
+
+An output computed before the hook's first row reduction, and not written
+after it, is stored where that reduction begins (the fused add's `x + r`):
+held to the end it would stay live across the reductions, registers an
+in-place kernel gives back.
 
 As in `elementwise`, `t.sum(axis=1)` inside a hook is refused with the
 spelling that works.
@@ -230,7 +254,53 @@ in the machine.
 
 ## measured
 
-<!-- MEASURED -->
+Every number below was taken in one process per GPU, the arms interleaved
+(rounds rotate the order, each round queued behind a GPU spin, the median
+of 11 rounds of 30 calls), `.w2`-style harness kept on the branch's
+workstation; the hook is the one on this page, `hk.ops` is the tuned kernel
+for the same job, `torch.compile` is the default mode, `dynamic=False`, one
+compiled function per shape (and Dynamo's recompile limit raised: past it a
+compiled function silently falls back to eager). Ratios are `other / this`:
+above 1 the template is faster.
+
+- **MI355X (gfx950)**, rocm/pytorch 2.10.0+rocm7.2.3, Triton 3.6.0, hk 0.4.0
+  at this branch: **device time**, each arm's calls replayed from a CUDA
+  graph (the host's launch cost removed, as a serving engine's captured step
+  sees it).
+- **W7900D (gfx1100)**, torch 2.10.0+rocm7.2.4, Triton 3.6.0: **eager**
+  back-to-back calls, host overhead included. RDNA's launcher takes no
+  stream, so a CUDA graph does not capture an hk kernel there (a replay
+  times nothing); at 1-32 rows these numbers are the launch path, not the
+  kernel.
+
+Summary (rows 1-32 "small", 2048-8192 "large"; widths 4096/5120/8192, the
+gate/up ops at intermediate 4096 and 14336 on the halves of a `(M, 2I)`
+output):
+
+<!-- SUMMARY -->
+
+The DX suite ([bench/dx](../../bench/dx/README.md), W1's harness, the
+template solutions in `bench/dx/solutions/*/template.py`), gfx950, device
+time, geomean over the task's shapes (min-max):
+
+<!-- DX -->
+
+What misses the targets (>= 0.95x hk.ops, >= 1.0x torch.compile at large
+shapes), and why:
+
+<!-- MISSES -->
+
+<details><summary>Every case, gfx950 (device time, us)</summary>
+
+<!-- T950 -->
+
+</details>
+
+<details><summary>Every case, gfx1100 (eager, us)</summary>
+
+<!-- T1100 -->
+
+</details>
 
 ## limits
 
@@ -239,9 +309,17 @@ in the machine.
 - A hook is traced, not rewritten: a Python `if` on a device value inside
   it raises. Arithmetic selects (`(label != -100).to_int()`, `t.step()`)
   do what a branch would.
-- Elementwise runs of a ragged flat tensor whose length is odd are one
-  element (aligned accesses); a tensor past 2 GiB must divide the plan
-  exactly.
+- A row whose length is odd is read in runs of one element (aligned
+  accesses), and on gfx1100 such a row cannot go into an int8 output (a
+  one-byte run, which its strip store does not move): the template says so.
+  A tensor past 2 GiB must divide the plan exactly.
+- On gfx1100 a template kernel is launched on the null stream (RDNA's
+  launcher takes none), so a CUDA graph does not capture it; on gfx950 it
+  runs on torch's current stream and is captured.
+- Python overhead: a call builds a key of its tensors' shapes, strides and
+  dtypes and checks `out=` against the inputs. At the 1-32 row launch floor
+  that is 0.3-1 us more than an `hk.ops` call in eager mode (the kernels'
+  own times are equal; see the tables).
 - `pick` reads one element per row; it is a gather, not a lookup table.
 - A rowwise hook's per-row outputs are fp32 (or any dtype `store_scalar`
   takes); its full outputs any dtype.
