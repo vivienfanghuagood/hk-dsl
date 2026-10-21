@@ -35,6 +35,8 @@ class Operand:
     dtype: Optional[DType] = None
     #: An int64 tensor read as its low int32 words (a per-row label).
     wide: bool = False
+    #: Values a row of a per-row output holds: a (rows, width) tensor.
+    width: int = 1
 
     def __post_init__(self):
         if self.kind not in KINDS:
@@ -56,10 +58,14 @@ def per_col(dtype: Optional[DType] = None) -> Operand:
     return Operand("per_col", _dtype(dtype))
 
 
-def per_row(dtype: Optional[DType] = None) -> Operand:
+def per_row(dtype: Optional[DType] = None, width: int = 1) -> Operand:
     """One value per row, a (rows,) or (rows, 1) tensor: a token's scale, a
-    row's label. In a rowwise output, a per-row result (a scale, a loss)."""
-    return Operand("per_row", _dtype(dtype))
+    row's label. In a rowwise output, a per-row result (a scale, a loss);
+    `width` k makes it (rows, k), the hook returning k row values for it
+    (a top-k's ids and weights)."""
+    if width < 1:
+        raise ValueError(f"per_row(width={width}): at least one value a row")
+    return Operand("per_row", _dtype(dtype), width=int(width))
 
 
 def scalar(dtype: Optional[DType] = None) -> Operand:
@@ -323,6 +329,9 @@ def view_fn(t_shape, rows: int, cols: int, kind: str, flat: bool = False):
         return lambda t: t.view(rows, 1)
     if kind == "per_row_out":
         return lambda t: t.view(1, rows)
+    if kind.startswith("per_row_out_"):
+        k = int(kind[len("per_row_out_"):])
+        return lambda t: t.view(rows, k)
     if kind == "per_row_wide":
         import torch  # noqa: PLC0415
 

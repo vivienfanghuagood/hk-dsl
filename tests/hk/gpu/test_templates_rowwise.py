@@ -235,3 +235,31 @@ def test_a_long_row_writes_full_outputs_in_its_last_pass():
     y = softmax(x)
     _close(y, torch.softmax(x.float(), -1), atol=1e-6)
     _close(y.float().sum(-1), torch.ones(2, device="cuda"), atol=1e-2)
+
+
+@pytest.mark.parametrize("t,e,k", [(16, 8, 2), (33, 64, 8), (300, 128, 8)])
+def test_a_router_softmax_top_k(t, e, k):
+    @T.rowwise(outputs=(T.per_row(hk.i32, k), T.per_row(hk.fp32, k)))
+    def route(logits, col):
+        p = (logits - T.row_logsumexp(logits)).exp()
+        ids, ws = [], []
+        for _ in range(k):
+            m = T.row_max(p)
+            i = T.row_min(col + (m - p).step() * 1e9)
+            ids.append(i)
+            ws.append(m)
+            p = p - (1.0 - (col - i).abs().step()) * 2.0
+        s = ws[0]
+        for w in ws[1:]:
+            s = s + w
+        return ids, [w / s for w in ws]
+
+    logits = (2 * torch.randn(t, e, device="cuda")).to(BF16)
+    col = torch.arange(e, device="cuda", dtype=torch.float32)
+    ids, w = route(logits, col)
+    assert ids.shape == (t, k) and ids.dtype == torch.int32 and w.shape == (t, k)
+    p = torch.softmax(logits.float(), -1)
+    top = torch.topk(p, k, -1).values
+    got = p.gather(1, ids.long())
+    torch.testing.assert_close(got, top, rtol=0, atol=1e-6)
+    torch.testing.assert_close(w, got / got.sum(-1, keepdim=True), rtol=0, atol=1e-4)

@@ -26,6 +26,9 @@ from . import _common as C
 #: (hk.ops.elementwise._STRIP_MAX_BYTES).
 _MAX_BYTES = 1 << 31
 
+#: Elements from which contiguous operands are read as one flat row.
+_FLAT_MIN = 1 << 20
+
 
 @dataclass(frozen=True)
 class Plan:
@@ -214,7 +217,10 @@ class Elementwise:
         if out is not None:
             for o in (out if isinstance(out, (list, tuple)) else (out,)):
                 flat_ok = flat_ok and C.is_contiguous(tuple(o.shape), o.stride())
-        flat = self.override.get("flat", flat_ok) and flat_ok
+        # Flat only with enough of it: one row of 14336 flat is four
+        # workgroups of eight warps, where by rows it is 28 of one (gelu at
+        # 1x14336, MI355X: 2.38 us flat, 2.05 for silu_mul's rows plan).
+        flat = self.override.get("flat", flat_ok and rows * cols >= _FLAT_MIN) and flat_ok
         streamed = [o.dtype.bytes for o in ops if o.kind == "full"]
         n = rows * cols
         moved = n * (sum(streamed) + sum(d.bytes for d in outs))

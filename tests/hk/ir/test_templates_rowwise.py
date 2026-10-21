@@ -252,3 +252,28 @@ def test_a_row_value_broadcasts_on_either_side():
     k, c = f.kernel(T.meta((4, 4096), B))
     src = k.source(**c)
     assert "rs_fp32" in src
+
+
+@pytest.mark.parametrize("arch", ARCHS)
+def test_a_per_row_output_of_k_values(arch):
+    k = 4
+
+    @T.rowwise(arch=arch, outputs=(T.per_row(hk.i32, k), T.per_row(hk.fp32, k)))
+    def topk(logits, col):
+        p = (logits - T.row_logsumexp(logits)).exp()
+        ids, ws = [], []
+        for _ in range(k):
+            m = T.row_max(p)
+            i = T.row_min(col + (m - p).step() * 1e9)
+            ids.append(i)
+            ws.append(m)
+            p = p - (1.0 - (col - i).abs().step()) * 2.0
+        return ids, ws
+
+    args = (T.meta((16, 128), B), T.meta((128,), hk.fp32))
+    _, _, outs = topk._resolve(args)
+    assert [o.width for o in outs] == [k, k]
+    kern, c = topk.kernel(*args)
+    assert kern.source(**c).count("store_scalar") >= 2 * k
+    with pytest.raises(ValueError, match="at least one"):
+        T.per_row(hk.fp32, 0)

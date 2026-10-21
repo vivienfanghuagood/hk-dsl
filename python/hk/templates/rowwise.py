@@ -287,6 +287,16 @@ def plan_for(arch: str, like: str, rows: int, cols: int, nbytes: int,
         p = None if p is None else (*p, 0)
     else:
         p = norm.strip_plan_for(like, nbytes, cols, rows, arch)
+        if like == "addrmsw" and p is not None and p[1] * p[2] > 32:
+            # hk.ops' fused add holds 64-128 a lane at 2048 rows (chapter 43)
+            # because it is in place and register-lean: the residual is
+            # stored before the reduction and the row rescaled in place. A
+            # hook keeps x + r live to the end as an output; there 32 a lane
+            # wins (MI355X, us, ops beside): 2048x4096 64 a lane 8.48, 32
+            # 7.98 (7.73); 2048x8192 128 a lane 23.37, 32 20.38 (19.49).
+            q = norm.strip_plan(cols, like, nbytes, wave=tgt.wave)
+            if q is not None:
+                p = (*q, p[4])
     override = dict(override or {})
     past = norm.STRIP_PRELOAD_PAST.get(arch)
     preload = like != "addrmsw" and past is not None and moved > past
@@ -417,7 +427,7 @@ class Rowwise:
             ops.append(C.Operand(kind, dt))
         first = next(o.dtype for o in ops if o.kind == "full")
         outs = self.outputs or (C.Operand("full", first),)
-        outs = tuple(C.Operand(o.kind, o.dtype or first) for o in outs)
+        outs = tuple(replace(o, dtype=o.dtype or first) for o in outs)
         return tuple(ops), shape, outs
 
     def _like(self, ops, outs) -> str:
@@ -526,7 +536,8 @@ class Rowwise:
         rows, cols = p.rows, p.cols
         lead = shape[:-1]
         single = self._single
-        shapes_out = [shape if o.kind == "full" else lead for o in outs]
+        shapes_out = [shape if o.kind == "full" else
+                      (lead if o.width == 1 else (*lead, o.width)) for o in outs]
         if out is not None:
             given = out if isinstance(out, (list, tuple)) else (out,)
             if len(given) != len(outs):
@@ -565,7 +576,8 @@ class Rowwise:
                 for a, o in zip(args, ops)]
         given = None if out is None else (out if isinstance(out, (list, tuple)) else (out,))
         out_views = [C.view_fn(tuple(given[j].shape) if given else s, rows, cols,
-                               "full" if o.kind == "full" else "per_row_out")
+                               "full" if o.kind == "full" else
+                               ("per_row_out" if o.width == 1 else f"per_row_out_{o.width}"))
                      for j, (o, s) in enumerate(zip(outs, shapes_out))]
         out_meta = None if given is None else [
             (tuple(o.shape), tuple(o.stride()), C.hk_dtype(o).bytes) for o in given]
@@ -629,6 +641,8 @@ def _trace(kw, spec):
                 "hk.templates.row_{kind}(t); t.{kind}(axis=1) would reduce one "
                 "warp's share of the row"):
             res = fn(*vals, **hook)
+        if len(ys) == 1 and outs[0].width > 1:
+            res = (res,)                  # one output of several values a row
         res = res if isinstance(res, (tuple, list)) else (res,)
         if len(res) != len(ys):
             raise TypeError(f"{name}: the hook returned {len(res)} value(s), the "
@@ -646,12 +660,15 @@ def _trace(kw, spec):
                 if full:
                     y.at[row, c0].store(r, bounded=bounded)
             elif scalars:
-                if not isinstance(r, Vec):
-                    raise TypeError(f"{name}: output {j} is per_row and the hook "
-                                    f"returned {r!r}, not a row value")
+                vals = list(r) if o.width > 1 and isinstance(r, (list, tuple)) else [r]
+                if len(vals) != o.width or not all(isinstance(v, Vec) for v in vals):
+                    raise TypeError(f"{name}: output {j} is per_row with {o.width} value(s) "
+                                    f"a row and the hook returned {r!r}")
                 # One value a row, the same bits in every lane after the
                 # butterfly and the cross-warp combine: uniform.
-                y[hk.elem_coord(0, 0, 0, row)].store_scalar(as_vec(r, S, uniform=True))
+                for i, v in enumerate(vals):
+                    at = hk.elem_coord(0, 0, row, i) if o.width > 1 else                         hk.elem_coord(0, 0, 0, row)
+                    y[at].store_scalar(as_vec(v, S, uniform=True))
 
     _CTX.append(ctx)
     try:
