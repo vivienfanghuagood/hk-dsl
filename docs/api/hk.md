@@ -548,15 +548,15 @@ What a kernel body computes with. They are made by loads, `hk.zeros` and friends
 | `a + b` | yes | yes | yes |  |
 | `n + a` | yes | yes | yes |  |
 | `a - b` | yes | yes | yes |  |
-| `n - a` |  |  | yes |  |
+| `n - a` | yes | yes | yes |  |
 | `a * b` | yes | yes | yes |  |
 | `n * a` | yes | yes | yes |  |
 | `a / b` | yes | yes | refused |  |
-| `n / a` |  |  |  |  |
+| `n / a` | yes | yes |  |  |
 | `a // b` | refused | refused | yes |  |
 | `a % b` | refused | refused | yes |  |
 | `-a` | yes | yes | yes |  |
-| `abs(a)` |  |  |  |  |
+| `abs(a)` | yes | yes |  |  |
 | `a += b (also -= *= /=)` | yes | yes | yes (rebinds) |  |
 | `a @ b` | yes |  |  |  |
 | `a < b (<= > >= == !=)` |  |  | yes |  |

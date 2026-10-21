@@ -34,7 +34,7 @@ run phase2 $G/test_phase2.py $G/test_target_rmsnorm.py &
 run elem   $G/test_elementwise.py $G/test_bounded.py $G/test_strided.py $G/test_while.py $G/test_indexed.py &
 run torch  $G/test_torch_op.py $G/test_engine.py $G/test_vllm_gemm.py $G/test_flydsl_gemm.py &
 wait
-rest=$(ls $G/test_*.py | grep -v -E "test_(gemm|autotune|attn|sdpa|decode_gemm|paged|load_scalar|phase2|target_rmsnorm|elementwise|bounded|strided|while|indexed|torch_op|engine|vllm_gemm|flydsl_gemm)\.py")
+rest=$(ls $G/test_*.py | grep -v -E "test_(gemm|autotune|attn|sdpa|decode_gemm|paged|load_scalar|phase2|target_rmsnorm|elementwise|bounded|strided|while|indexed|torch_op|engine|vllm_gemm|flydsl_gemm|templates_[a-z]+)\.py")
 # Two processes: every kernel a test builds is a pybind module of its own,
 # each takes one of a process's 1024 pthread TSS keys, and one process ran
 # out ("could not initialize the TSS key") once gfx950's strips had
@@ -44,6 +44,11 @@ half=$(( ($# + 1) / 2 ))
 run rest "${@:1:$half}" &
 run rest2 "${@:$((half + 1))}" &
 run dx    tests/dx &          # the DX suite (bench/dx): every task and solution on small shapes
+# The templates build a kernel per plan they test, and each is a pybind
+# module holding one of the process's 1024 TSS keys: a process of their own each.
+for t in $G/test_templates_*.py; do
+    run "tmpl_$(basename "$t" .py | sed 's/^test_templates_//')" "$t" &
+done
 wait
 if [ "${HK_PERF_GATE:-0}" = 1 ]; then
     HK_GPU=$gpu scripts/perf_gate.sh "$out/perf" > "$out/perf.log" 2>&1

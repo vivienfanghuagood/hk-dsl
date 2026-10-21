@@ -123,7 +123,9 @@ def _strip_silu_mul_kernel(name: str, dtype, warps: int):
     output, read in place. Without EXACT the accesses are bounded: a run at
     or past the row's end is neither read nor written."""
     def body(a: hk.Tensor[dtype], b: hk.Tensor[dtype], o: hk.Tensor[dtype], *,
-             CW=512, RUN=8, EXACT=1):
+             CW=512, RUN=8, EXACT=1, RESERVE=0):
+        if RESERVE:
+            hk.lds.reserve(RESERVE)
         S = hk.RS(fp32, 1, CW, RUN)
         per_row = hk.cdiv(o.cols, warps * CW)
         i = hk.arch.block_idx.x
@@ -246,6 +248,49 @@ def _rotary16_kernel(name: str, dtype, warps: int, positions: bool):
                      grid=lambda p: (p.x.rows, p.x.cols // (warps * p.CH * 64 * p.RUN), 1))
 
 
+def _rotary_halves_kernel(name: str, dtype, warps: int, positions: bool):
+    """vLLM's rotary_embedding on strips without a lane exchange, for a
+    target whose strips have no swap_halves (gfx1100): a head's halves are
+    two strips of D/2 columns read at 0 and D/2, and its angles the two
+    halves of the token's row of cs, [cos | sin]:
+
+        out1 = x1 * cos - x2 * sin,   out2 = x2 * cos + x1 * sin
+
+    One workgroup a token, warp w the heads w, w + WARPS, ...; every head's
+    loads before any store, so it runs in place (a lane writes only what it
+    read)."""
+    def build(x, cs, pos, o, H, D, RUN):
+        half = D // 2
+        S = hk.RS(fp32, 1, half, RUN)
+        t = hk.arch.block_idx.x
+        prow = pos.at[0, t].load_scalar(invariant=True) if positions else t
+        w = hk.arch.warp_id() if warps > 1 else 0
+        rows = [t * H + w + h * warps for h in range(H // warps)]
+        x1s = [x.at[row, 0].load(S) for row in rows]
+        x2s = [x.at[row, half].load(S) for row in rows]
+        c = cs.at[prow, 0].load(S)
+        sn = cs.at[prow, half].load(S)
+        for row, x1, x2 in zip(rows, x1s, x2s):
+            o1 = x1 * c
+            o1 -= x2 * sn
+            o2 = x2 * c
+            o2 += x1 * sn
+            o.at[row, 0].store(o1)
+            o.at[row, half].store(o2)
+
+    if positions:
+        def body(x: hk.Tensor[dtype], cs: hk.Tensor[fp32], pos: hk.Tensor[hk.i32],
+                 o: hk.Tensor[dtype], *, H=32, D=128, RUN=2):
+            build(x, cs, pos, o, H, D, RUN)
+    else:
+        def body(x: hk.Tensor[dtype], cs: hk.Tensor[fp32], o: hk.Tensor[dtype], *,
+                 H=32, D=128, RUN=2):
+            build(x, cs, None, o, H, D, RUN)
+    body.__name__ = name
+    return hk.kernel(body, warps=warps, name=name, noalias=True,
+                     grid=lambda p: (hk.cdiv(p.x.rows, p.H), 1, 1))
+
+
 def _rope_grid(p):
     # x is (bh, 1, seq, D); one workgroup per (half-head column block, row
     # block, bh). The column axis only covers D/2 because each workgroup
@@ -323,9 +368,14 @@ ROTARY_KERNELS = {f"rotary_{_s}_w{_w}" + ("_pos" if _p else ""): _rotary_kernel(
                       f"rotary_{_s}_w{_w}" + ("_pos" if _p else ""), _dt, _w, _p)
                   for _s, _dt in _DTYPES.items() for _w in ROTARY_WARPS
                   for _p in (False, True)}
+#: The rotary kernels of a target whose strips have no swap_halves (gfx1100).
+ROTARY_HALVES_KERNELS = {
+    f"rotary_halves_{_s}_w{_w}" + ("_pos" if _p else ""): _rotary_halves_kernel(
+        f"rotary_halves_{_s}_w{_w}" + ("_pos" if _p else ""), _dt, _w, _p)
+    for _s, _dt in _DTYPES.items() for _w in ROTARY_WARPS for _p in (False, True)}
 
-#: Where silu_mul runs on strips: gfx950, measured there (scoreboard.py
-#: --only llm-pointwise). gfx1100 keeps the tile kernel it was tuned on.
+#: Where the rotary kernels run on strips: gfx950 (swap_halves and
+#: rotate_half are the wave64 port's).
 STRIP_ARCHS = ("gfx950",)
 
 #: The strip plan, (warps, chunks a warp), as elementwise's: one warp, one
@@ -342,6 +392,31 @@ STRIP_ARCHS = ("gfx950",)
 #: "Rows first" is the grid this kernel had before workgroups walked along a
 #: row: consecutive workgroups a row (57 KB at 14336) apart.
 STRIP_PLAN = (1, 1)
+
+#: silu_mul's strip plan on each arch it runs on strips: (warps, chunks a
+#: warp), and (bytes, LDS reserve): past that many bytes moved, LDS reserved
+#: to cap the workgroups a WGP holds, as the norms do past the Infinity
+#: Cache. gfx1100 moved here from its 16x64 tile kernel, which refused the
+#: halves of a gate/up output and fewer than 16 rows; measured for
+#: hk.templates.elementwise on a W7900D (docs/templates/elementwise-rowwise.md),
+#: gelu-and-mul on halves, us:
+#:
+#:                    tile kernel   strips w4c1   w8c1   w8c1 + 48 KB   torch.compile
+#:     2048x14336        261.1         248.6      248.4      241.2         244.2
+#:     8192x14336        979.3         973.9      972.2      948.3         956.2
+SILU_STRIP_PLANS = {"gfx950": (STRIP_PLAN, None),
+                    "gfx1100": ((8, 1), (96 << 20, 48 << 10))}
+
+
+def silu_strip_plan(arch: str, moved: int):
+    """(warps, chunks a warp, LDS reserve) of silu_mul's strip kernel on
+    `arch` for a call that moves `moved` bytes, or None where silu_mul does
+    not run on strips. hk.templates.elementwise plans rows with it."""
+    got = SILU_STRIP_PLANS.get(arch)
+    if got is None:
+        return None
+    (warps, chunks), cap = got
+    return warps, chunks, (cap[1] if cap is not None and moved > cap[0] else 0)
 
 
 # ---------------------------------------------------------------- wrappers
@@ -471,7 +546,11 @@ def silu_mul(a, b, out=None):
     if out is None:
         import torch  # noqa: PLC0415  -- see norm._run
         out = torch.empty(a.shape, dtype=a.dtype, device=a.device)
-    plan = _strip_silu_plan(a.dtype, a.shape[-1] if a.dim() else 0)
+    elif out.shape != a.shape or out.dtype != a.dtype:
+        raise ValueError(f"silu_mul: out is {tuple(out.shape)}/{out.dtype}, expected "
+                         f"{tuple(a.shape)}/{a.dtype}")
+    cols = a.shape[-1] if a.dim() else 0
+    plan = _strip_silu_plan(a.dtype, cols, a.numel() // cols if cols else 0)
     if plan is not None:
         return _strip_silu_mul(plan, a, b, out)
     av, bv, ov = _as_2d(a, "a"), _as_2d(b, "b"), _as_2d(out, "out")
@@ -490,24 +569,29 @@ def silu_mul(a, b, out=None):
 _STRIP_PLANS: dict = {}
 
 
-def _strip_silu_plan(dtype, cols: int):
-    """(kernel, CW, RUN, EXACT) for silu_mul over rows of `cols` on strips,
-    or None where it does not run on strips here."""
-    key = (dtype, cols)
+def _strip_silu_plan(dtype, cols: int, rows: int):
+    """(kernel, CW, RUN, EXACT, RESERVE) for silu_mul over `rows` rows of
+    `cols` on strips, or None where it does not run on strips here."""
+    from ..target import current_arch  # noqa: PLC0415
+
+    arch = current_arch()
+    nbytes = getattr(dtype, "itemsize", 2)
+    plan = SILU_STRIP_PLANS.get(arch)
+    big = plan is not None and plan[1] is not None and 3 * rows * cols * nbytes > plan[1][0]
+    key = (dtype, cols, big)
     got = _STRIP_PLANS.get(key, False)
     if got is False:
-        from ..target import current_arch, get_target  # noqa: PLC0415
+        from ..target import get_target  # noqa: PLC0415
         from .norm import strip_run  # noqa: PLC0415
 
         got = None
-        arch = current_arch()
         suffix = _TORCH_DTYPES.get(str(dtype))
-        if arch in STRIP_ARCHS and suffix is not None and cols:
-            warps, chunks = STRIP_PLAN
+        if plan is not None and suffix is not None and cols:
+            warps, chunks, reserve = silu_strip_plan(arch, 3 * rows * cols * nbytes)
             run = strip_run(cols, _DTYPES[suffix].bytes)
             cw = chunks * get_target(arch).wave * run
             got = (STRIP_KERNELS[f"strip_silu_mul_{suffix}_w{warps}"], cw, run,
-                   int(cols % (warps * cw) == 0))
+                   int(cols % (warps * cw) == 0), reserve)
         _STRIP_PLANS[key] = got
     return got
 
@@ -530,7 +614,7 @@ def _rows_view(t, what: str):
 
 
 def _strip_silu_mul(plan, a, b, out):
-    k, cw, run, exact = plan
+    k, cw, run, exact, reserve = plan
     av, bv, ov = _rows_view(a, "a"), _rows_view(b, "b"), _rows_view(out, "out")
     if not ov.shape[0] or not ov.shape[1]:
         return out
@@ -540,7 +624,10 @@ def _strip_silu_mul(plan, a, b, out):
             # Each element is read and written by one lane, so exactly in
             # place is safe; a partial overlap is not.
             return out.copy_(silu_mul(a.clone(), b.clone()))
-    k(av, bv, ov, CW=cw, RUN=run, EXACT=exact)
+    if reserve:
+        k(av, bv, ov, CW=cw, RUN=run, EXACT=exact, RESERVE=reserve)
+    else:
+        k(av, bv, ov, CW=cw, RUN=run, EXACT=exact)
     return out
 
 
@@ -620,21 +707,26 @@ def rotary(x, cos_sin, positions=None, out=None):
         out[..., :D/2] = x1 * cos - x2 * sin,  out[..., D/2:] = x2 * cos + x1 * sin
 
     In place when `out` is `x`. D is 64 * a power of two up to 16 (128 and
-    256 qualify). On strips, so gfx950 only for now."""
+    256 qualify) on gfx950, 64 * a power of two up to 8 on gfx1100. On
+    strips: gfx950 and gfx1100 (where a head's halves are two strips, there
+    being no lane exchange there)."""
     import torch  # noqa: PLC0415
 
-    from ..target import current_arch  # noqa: PLC0415
+    from ..target import current_arch, get_target  # noqa: PLC0415
 
-    if current_arch() not in STRIP_ARCHS:
-        raise NotImplementedError(f"hk.ops.rotary runs on strips' wave64 port "
-                                  f"(gfx950); on {current_arch()} use hk.ops.rope")
+    arch = current_arch()
+    halves = arch not in STRIP_ARCHS
+    if halves and not get_target(arch).strips:
+        raise NotImplementedError(f"hk.ops.rotary runs on register strips (gfx950, "
+                                  f"gfx1100); on {arch} use hk.ops.rope")
     if x.dim() < 2 or not x.is_contiguous():
         raise ValueError(f"rotary: x must be a contiguous (..., heads, D) tensor, "
                          f"got {tuple(x.shape)}")
     h, d = x.shape[-2], x.shape[-1]
     run = d // 64
-    if d % 64 or run not in (1, 2, 4, 8, 16):
-        raise ValueError(f"rotary: head dim {d} is not 64 x a power of two up to 16")
+    if d % 64 or run not in ((1, 2, 4, 8) if halves else (1, 2, 4, 8, 16)):
+        raise ValueError(f"rotary: head dim {d} is not 64 x a power of two up to "
+                         f"{8 if halves else 16} (on {arch})")
     if cos_sin.dim() != 2 or cos_sin.shape[1] != d or cos_sin.dtype != torch.float32 \
             or not cos_sin.is_contiguous():
         raise ValueError(f"rotary: cos_sin must be a contiguous float32 (P, {d}), got "
@@ -668,8 +760,12 @@ def rotary(x, cos_sin, positions=None, out=None):
     if k is None:
         suffix = _suffix_of(x)
         warps = _rotary_warps(h)
-        k = _ROTARY_CACHE[key] = ROTARY_KERNELS[
-            f"rotary_{suffix}_w{warps}" + ("_pos" if positions is not None else "")]
+        table, kind = (ROTARY_HALVES_KERNELS, "rotary_halves") if halves else             (ROTARY_KERNELS, "rotary")
+        k = _ROTARY_CACHE[key] = table[
+            f"{kind}_{suffix}_w{warps}" + ("_pos" if positions is not None else "")]
+    if halves:
+        # A half of D columns is one wave32 chunk of D/64 a lane.
+        run = d // 64
     xv, ov = x.view(tokens * h, d), out.view(tokens * h, d)
     if positions is not None:
         k(xv, cos_sin, positions.view(1, tokens), ov, H=h, D=d, RUN=run)

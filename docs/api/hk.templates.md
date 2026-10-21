@@ -13,11 +13,53 @@ docs/design/dx-goal.md says what they are for and how they are judged.
 Each template lives in its own module and is imported on first use, so the
 modules are independent of one another.
 
+- [`hk.templates.elementwise`](#hktemplateselementwise)
+- [`hk.templates.gemm`](#hktemplatesgemm)
+- [`hk.templates.meta`](#hktemplatesmeta)
+- [`hk.templates.per_col`](#hktemplatesper_col)
+- [`hk.templates.per_row`](#hktemplatesper_row)
+- [`hk.templates.pick`](#hktemplatespick)
+- [`hk.templates.row_length`](#hktemplatesrow_length)
+- [`hk.templates.row_logsumexp`](#hktemplatesrow_logsumexp)
+- [`hk.templates.row_max`](#hktemplatesrow_max)
+- [`hk.templates.row_mean`](#hktemplatesrow_mean)
+- [`hk.templates.row_min`](#hktemplatesrow_min)
+- [`hk.templates.row_sum`](#hktemplatesrow_sum)
+- [`hk.templates.rowwise`](#hktemplatesrowwise)
+- [`hk.templates.scalar`](#hktemplatesscalar)
+
 Each template has a guide in [docs/templates](../templates/).
 
 ### `hk.templates.elementwise`
 
-*Not in this checkout* (`hk.templates.rowwise` does not import: ModuleNotFoundError). It is being built on its own branch.
+```python
+hk.templates.elementwise(fn: Optional[Callable] = None, inputs: Optional[Sequence] = None, outputs: Any = None, *, name: Optional[str] = None, arch: Optional[str] = None, plan: Optional[Dict[str, int]] = None)
+```
+
+*New after 0.4.0* (the `hk.templates.elementwise` module is not in the 0.4.0 wheel)
+
+A pointwise kernel from `fn`, the math of one element.
+
+    gelu_and_mul = hk.templates.elementwise(lambda g, u: hk.math.gelu(g) * u)
+    y = gelu_and_mul(gate_up[:, :d], gate_up[:, d:])
+
+`fn` takes one tile per operand -- fp32 register strips; a load widens
+and a store rounds -- and returns a tile, or a tuple of them for several
+outputs. Its parameters with defaults are constexprs, overridable per
+call: `fn = lambda x, b, *, ALPHA=1.0: ...`, `k(x, b, ALPHA=0.5)`.
+
+`inputs`: the operands' kinds and dtypes, if you want them checked --
+a dtype is a full operand, `per_col(d)` one value per column (a bias),
+`per_row(d)` one per row, `scalar(d)` one value. Left out, they follow
+from the tensors by torch's broadcasting. `outputs`: the output dtype
+(the first full operand's by default), or a tuple of them. Operands may
+be any (rows, cols) view whose last axis is contiguous -- a slice of the
+last axis is read in place -- with any leading axes.
+
+The plan (layout, warps, the stretch a warp covers, the grid) is picked
+per architecture; `k.plan(*args)` shows it and `plan={"warps": ...,
+"chunks": ..., "run": ..., "flat": ...}` (or `k.with_plan(...)`)
+overrides it. Usable as a decorator: `@hk.templates.elementwise`.
 
 ### `hk.templates.gemm`
 
@@ -78,6 +120,156 @@ Ready-made epilogues are attributes of this function: `gemm.bias`,
 operand a number, a row or a column vector), and `gemm.chain(f, g, ...)`.
 docs/templates/gemm.md has the plans and the measurements.
 
+### `hk.templates.meta`
+
+```python
+hk.templates.meta(shape, dtype, stride=None) -> Meta
+```
+
+*New after 0.4.0* (the `hk.templates._common` module is not in the 0.4.0 wheel)
+
+A stand-in for a tensor of this shape, dtype and strides (contiguous
+if not given), for planning and building without a GPU.
+
+### `hk.templates.per_col`
+
+```python
+hk.templates.per_col(dtype: Optional[DType] = None) -> Operand
+```
+
+*New after 0.4.0* (the `hk.templates._common` module is not in the 0.4.0 wheel)
+
+One value per column, a (cols,) tensor: a weight or a bias, the same
+for every row (torch's broadcasting of a 1-D tensor).
+
+### `hk.templates.per_row`
+
+```python
+hk.templates.per_row(dtype: Optional[DType] = None, width: int = 1) -> Operand
+```
+
+*New after 0.4.0* (the `hk.templates._common` module is not in the 0.4.0 wheel)
+
+One value per row, a (rows,) or (rows, 1) tensor: a token's scale, a
+row's label. In a rowwise output, a per-row result (a scale, a loss);
+`width` k makes it (rows, k), the hook returning k row values for it
+(a top-k's ids and weights).
+
+### `hk.templates.pick`
+
+```python
+hk.templates.pick(t, col) -> Vec
+```
+
+*New after 0.4.0* (the `hk.templates.rowwise` module is not in the 0.4.0 wheel)
+
+The element of operand `t` (a full operand as the hook received it)
+at column `col` of this row -- a gather, as cross-entropy's target
+logit: `pick(logits, label)`. `col` is a device int (a per-row int32 or
+int64 operand) or an int, clamped into the row, so an ignored label
+(-100) reads column 0 instead of memory before the row.
+
+### `hk.templates.row_length`
+
+```python
+hk.templates.row_length()
+```
+
+*New after 0.4.0* (the `hk.templates.rowwise` module is not in the 0.4.0 wheel)
+
+The row's length (a device int): what row_mean divides by.
+
+### `hk.templates.row_logsumexp`
+
+```python
+hk.templates.row_logsumexp(t) -> Vec
+```
+
+*New after 0.4.0* (the `hk.templates.rowwise` module is not in the 0.4.0 wheel)
+
+log(sum(exp(t))) of each row of `t`, the whole row, max-shifted so it
+does not overflow. Online: a row too wide to hold is read once for it,
+where row_max then row_sum(exp(t - max)) read it twice. Softmax is
+`(x - row_logsumexp(x)).exp()`.
+
+### `hk.templates.row_max`
+
+```python
+hk.templates.row_max(t) -> Vec
+```
+
+*New after 0.4.0* (the `hk.templates.rowwise` module is not in the 0.4.0 wheel)
+
+The max of each row of `t`, the whole row.
+
+### `hk.templates.row_mean`
+
+```python
+hk.templates.row_mean(t) -> Vec
+```
+
+*New after 0.4.0* (the `hk.templates.rowwise` module is not in the 0.4.0 wheel)
+
+The mean of each row of `t`: row_sum(t) over the row's length.
+
+### `hk.templates.row_min`
+
+```python
+hk.templates.row_min(t) -> Vec
+```
+
+*New after 0.4.0* (the `hk.templates.rowwise` module is not in the 0.4.0 wheel)
+
+The min of each row of `t`, the whole row.
+
+### `hk.templates.row_sum`
+
+```python
+hk.templates.row_sum(t) -> Vec
+```
+
+*New after 0.4.0* (the `hk.templates.rowwise` module is not in the 0.4.0 wheel)
+
+The sum of each row of `t` -- the whole row, across every lane and
+warp that holds a part of it: one value per row, broadcast against the
+row's strips (`x - row_sum(x) / n`).
+
 ### `hk.templates.rowwise`
 
-*Not in this checkout* (`hk.templates.rowwise` does not import: ModuleNotFoundError). It is being built on its own branch.
+```python
+hk.templates.rowwise(fn: Optional[Callable] = None, inputs: Optional[Sequence] = None, outputs: Any = None, *, like: Optional[str] = None, name: Optional[str] = None, arch: Optional[str] = None, plan: Optional[Dict[str, int]] = None)
+```
+
+*New after 0.4.0* (the `hk.templates.rowwise` module is not in the 0.4.0 wheel)
+
+A kernel that reduces each row and maps it, from `fn`, the math of
+one row.
+
+    @hk.templates.rowwise
+    def rms_norm(x, w, *, EPS=1e-6):
+        return x * (hk.templates.row_mean(x * x) + EPS).rsqrt() * w
+
+`fn` takes one value per operand: a full or per-column operand as an
+fp32 strip of the row, a per-row float as a column vector, a per-row
+int32 as a scalar. `hk.templates.row_sum / row_max / row_min /
+row_mean` reduce the whole row. It returns a tile (a full output) or a
+column vector (a per-row output), or a tuple. Its parameters with
+defaults are constexprs, overridable per call (`k(x, w, EPS=1e-5)`).
+
+`inputs` / `outputs` as hk.templates.elementwise's, plus per-row
+outputs: `outputs=(hk.i8, hk.templates.per_row(hk.fp32))`. `like`
+names the hk.ops kernel whose measured plan to take ("rms", "rmsw",
+"addrmsw", "layer", "softmax", "quantize"); left out it follows from
+the operands. `plan={...}` / `k.with_plan(...)` overrides warps,
+chunks, run, steps (a multi-pass stream) and reserve; `k.plan(*args)`
+shows what a call runs.
+
+### `hk.templates.scalar`
+
+```python
+hk.templates.scalar(dtype: Optional[DType] = None) -> Operand
+```
+
+*New after 0.4.0* (the `hk.templates._common` module is not in the 0.4.0 wheel)
+
+One value for the whole tensor, a () or (1,) tensor on the device.

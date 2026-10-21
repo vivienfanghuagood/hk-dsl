@@ -309,9 +309,11 @@ STRIP_KERNELS = {f"strip_quantize_{_s}_w{_w}": _strip_quantize_kernel(
                  for _s, _dt in _DTYPES.items() for _w in WARP_COUNTS}
 
 #: Where quantize runs on strips: gfx950, measured there (scoreboard.py
-#: --only llm-quant). gfx1100 keeps the tile plan above, which it was tuned
-#: on and which has not been measured against a strip there.
-STRIP_ARCHS = ("gfx950",)
+#: --only llm-quant), and gfx1100, where the tile plan above needed 16x64 and
+#: the strip measured 1.04-2.3x it (hk.templates.rowwise's quantize on this
+#: plan against hk.ops' tiles, W7900D, us: 2048x4096 15.9 / 34.0, 8192x4096
+#: 50.5 / 111.4, 8192x8192 278.5 / 290.0; docs/templates/elementwise-rowwise.md).
+STRIP_ARCHS = ("gfx950", "gfx1100")
 
 
 # ---------------------------------------------------------------- wrappers
@@ -351,6 +353,28 @@ def _suffix(dtype, what: str) -> str:
 _STRIP_NARROW_ROWS = 4096
 
 
+def strip_plan_for(nbytes: int, cols: int, rows: int, arch=None):
+    """(WARPS, CHUNKS, RUN, EXACT) of the strip quantize over `rows` rows of
+    `cols` elements of `nbytes` each on `arch` (the current one if not
+    given), or None for a row too wide for a strip. No occupancy cap.
+    hk.templates.rowwise plans a per-row int8 quantization with it."""
+    from ..target import current_arch, get_target  # noqa: PLC0415
+    from .norm import strip_plan  # noqa: PLC0415
+
+    arch = arch or current_arch()
+    p = strip_plan(cols, "quantize", nbytes, wave=get_target(arch).wave,
+                   per_lane=16 if rows >= _STRIP_NARROW_ROWS else None)
+    if p is not None and p[2] < 2 and arch not in _ONE_BYTE_RUNS:
+        # An odd row length is a run of one element, one int8 byte, and
+        # include/rdna3's bounded strip store moves 2, 4, 8 or 16k bytes.
+        return None
+    return p
+
+
+#: Where a strip stores a run of one byte (hk's wave64 port, chapter 37).
+_ONE_BYTE_RUNS = ("gfx950",)
+
+
 def _resolve_strip_q(dtype, cols: int, rows: int):
     """(kernel, CHUNKS, RUN, EXACT) on a strip, or None where quantize does
     not run on strips here or the row is too wide for one."""
@@ -361,13 +385,12 @@ def _resolve_strip_q(dtype, cols: int, rows: int):
     got = _QPLAN_CACHE.get(key, False)
     if got is False:
         from ..target import current_arch  # noqa: PLC0415
-        from .norm import _DTYPES as _NDT, strip_plan  # noqa: PLC0415
+        from .norm import _DTYPES as _NDT  # noqa: PLC0415
 
         got = None
         suffix = _suffix(dtype, "quantize")
         if current_arch() in STRIP_ARCHS:
-            p = strip_plan(cols, "quantize", _NDT[suffix].bytes,
-                           per_lane=16 if many else None)
+            p = strip_plan_for(_NDT[suffix].bytes, cols, rows)
             if p is not None:
                 warps, chunks, run, exact = p
                 k = STRIP_KERNELS[f"strip_quantize_{suffix}_w{warps}"]

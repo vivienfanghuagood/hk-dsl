@@ -16,8 +16,20 @@ import importlib
 
 # name -> module that defines it; a module added here is all a new template needs.
 _TEMPLATES = {
-    "elementwise": "rowwise",
+    "elementwise": "elementwise",
     "rowwise": "rowwise",
+    "row_sum": "rowwise",
+    "row_max": "rowwise",
+    "row_min": "rowwise",
+    "row_mean": "rowwise",
+    "row_logsumexp": "rowwise",
+    "row_length": "rowwise",
+    "pick": "rowwise",
+    # The operand kinds the elementwise and rowwise templates take.
+    "per_col": "_common",
+    "per_row": "_common",
+    "scalar": "_common",
+    "meta": "_common",
     "gemm": "gemm",
 }
 
@@ -27,9 +39,9 @@ def __getattr__(name):
     if mod is None:
         raise AttributeError(f"module 'hk.templates' has no attribute {name!r}")
     value = getattr(importlib.import_module(f"{__name__}.{mod}"), name)
-    # Importing hk.templates.<mod> binds the package's attribute <mod> to the
-    # submodule; where the template and its module share a name, that would
-    # make the second `hk.templates.gemm` the module, not the template.
+    # Bound here, so the next lookup is an attribute: importing a module named
+    # like its template (rowwise.rowwise) has just bound the module itself to
+    # that name on this package, and the template must win.
     globals()[name] = value
     return value
 

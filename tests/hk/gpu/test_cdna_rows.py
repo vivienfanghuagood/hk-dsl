@@ -16,7 +16,7 @@ from hk.ops import elementwise, fused, quant  # noqa: E402
 from hk.target import current_arch  # noqa: E402
 
 pytestmark = [pytest.mark.gpu,
-              pytest.mark.skipif(current_arch() not in quant.STRIP_ARCHS,
+              pytest.mark.skipif(current_arch() != "gfx950",
                                  reason="the row and pointwise ops run on strips on gfx950")]
 
 BF16 = torch.bfloat16

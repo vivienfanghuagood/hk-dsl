@@ -265,7 +265,9 @@ without positions:
     out[..., :D/2] = x1 * cos - x2 * sin,  out[..., D/2:] = x2 * cos + x1 * sin
 
 In place when `out` is `x`. D is 64 * a power of two up to 16 (128 and
-256 qualify). On strips, so gfx950 only for now.
+256 qualify) on gfx950, 64 * a power of two up to 8 on gfx1100. On
+strips: gfx950 and gfx1100 (where a head's halves are two strips, there
+being no lane exchange there).
 
 **Per architecture** ([audit](../dx/api-consistency.md)):
 
