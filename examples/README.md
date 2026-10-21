@@ -21,6 +21,7 @@ beside its model).
 | 9 | [`09_kv_scatter.py`](09_kv_scatter.py) | `cache.scatter(t, slots, at)`: rows to slots, a `-1` slot dropped by the buffer store |
 | 10 | [`10_layernorm_backward.py`](10_layernorm_backward.py) | a row reduction and a column reduction (`sum(axis=0)`) in one kernel, tiles held in registers across two passes, partial sums without a lock |
 | 11 | [`11_vllm_integration.py`](11_vllm_integration.py) | your kernel in vLLM: `register.op` with a reference and a route, `op.check`, `register.patch`, and the end-to-end A/B (`python -m hk.integration ab`) |
+| 13 | [`13_templates_gemm.py`](13_templates_gemm.py) | `hk.templates.gemm`: linear + bias + GELU in one kernel -- your epilogue traced into the store of hk's tuned GEMM, on both GPUs ([docs/templates/gemm.md](../docs/templates/gemm.md)) |
 | | [`validate.py`](validate.py) | the shipped `hk.ops` kernels at typical LLM shapes: correctness, then speed against torch |
 
 ## Running

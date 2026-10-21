@@ -41,7 +41,7 @@ Four entry points, in increasing order of what they need:
   `k(*tensors)` a GPU
 """
 
-from . import autotune, codegen, compiler, dsl, ops, runtime, target
+from . import autotune, codegen, compiler, dsl, ops, runtime, target, templates
 from .dsl import *  # noqa: F401,F403 -- the language is the package
 from .dsl import __all__ as _dsl_all
 from .errors import VerifyError
@@ -68,7 +68,7 @@ __all__ = [
     *_dsl_all,
     "DTYPES", "VerifyError", "CompileError", "ResourceError", "Build",
     "get_target", "TARGETS", "detect_arch",
-    "autotune", "codegen", "compiler", "dsl", "ops", "runtime", "target",
+    "autotune", "codegen", "compiler", "dsl", "ops", "runtime", "target", "templates",
     "torch_op",
     # The one op promoted out of `hk.ops`: it is the drop-in a
     # framework reaches for, and `hk.attention` is what the SDPA
