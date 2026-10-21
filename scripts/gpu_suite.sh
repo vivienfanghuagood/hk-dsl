@@ -43,6 +43,7 @@ set -- $rest
 half=$(( ($# + 1) / 2 ))
 run rest "${@:1:$half}" &
 run rest2 "${@:$((half + 1))}" &
+run dx    tests/dx &          # the DX suite (bench/dx): every task and solution on small shapes
 wait
 if [ "${HK_PERF_GATE:-0}" = 1 ]; then
     HK_GPU=$gpu scripts/perf_gate.sh "$out/perf" > "$out/perf.log" 2>&1
