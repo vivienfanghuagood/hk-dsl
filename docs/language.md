@@ -115,7 +115,9 @@ a strip (`!hk.rt<f32, 1x1024, strip<8>>`, `kittens::rs`):
 - **Limits.** It is never an MMA operand or an LDS tile. It exists where
   `Target.strips` says: gfx1100 (include/rdna3) and gfx950 (hk's wave64
   port in `include/hk/cdna.cuh`); gfx1201 and gfx942 refuse it while
-  tracing.
+  tracing. The gfx950 port is newer than the 0.4.0 wheel on PyPI, which
+  refuses strips there: install from a checkout for them
+  ([what each version has](api/README.md)).
 
 ```python
 # WARPS and EPS are constexprs; row and warp come from hk.arch

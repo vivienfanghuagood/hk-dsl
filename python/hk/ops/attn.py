@@ -500,7 +500,8 @@ KERNELS = {t.name: t._kernel_for(DEFAULT) for t in TUNERS.values()}
 
 #: Head dims with a shipped tiling.
 HEAD_DIMS = (64, 128)
-#: Query rows one workgroup owns: `warps * q_block` of the default tiling. A
+#: Query rows one gfx1100 workgroup owns (gfx950's: attn_cdna.Q_TILE):
+#: `warps * q_block` of the default tiling. A
 #: shorter Q than this has no block to back up into, so it is rejected rather
 #: than read out of bounds.
 Q_TILE = 192
@@ -606,9 +607,11 @@ def _why(q, k, v, causal, *, require_contiguous: bool = True):
         # The last Q block backs up to end at n_q instead of predicating, and
         # there is nothing to back into below one tile. Decode wants a split-KV
         # kernel anyway, not this one with 191 masked rows.
-        return f"n_q={n_q} is below one Q tile ({Q_TILE})"
+        return (f"n_q={n_q} is below one Q tile ({Q_TILE}) of {current_arch()}'s "
+                f"kernel (gfx950's takes any length)")
     if n_kv < KV_BLOCK:
-        return f"n_kv={n_kv} is below one KV block ({KV_BLOCK})"
+        return (f"n_kv={n_kv} is below one KV block ({KV_BLOCK}) of "
+                f"{current_arch()}'s kernel (gfx950's takes any length)")
     return ""
 
 
@@ -625,7 +628,9 @@ def attention(q, k, v, *, causal: bool = False, scale: Optional[float] = None,
     Ragged N is fine in both directions: the last Q block backs up to end at
     n_q and recomputes the overlap (idempotent -- a query row's output depends
     on that row alone), and the last KV block backs up and masks the rows it
-    does not own.
+    does not own. So on gfx1100 n_q must be at least Q_TILE (192) and n_kv at
+    least KV_BLOCK (32). On gfx950 this runs hk.ops.attn_cdna, whose loads
+    are bounded: any non-empty length. head_dim is 64 or 128 on both.
     """
     import torch  # noqa: PLC0415 -- hk traces and compiles without torch
 

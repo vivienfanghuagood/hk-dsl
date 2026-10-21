@@ -26,7 +26,7 @@ and `seq_lens` are int32 -- on gfx950's matrix core:
 One warp a workgroup, a workgroup a (split, kv head, request): decode is a
 read of the cache, and the machine is filled by splitting the KV axis
 (hk.ops.paged.plan_splits), not by warps sharing a page. The splits merge
-in hk.ops.paged's merge kernel, which builds for gfx950 as it is.
+in this module's merge_kernel, which hk.ops.paged.merge_kernel routes to.
 """
 
 from __future__ import annotations
@@ -97,7 +97,8 @@ def decode_kernel(name: str, *, head_dim: int = 128, splits: int = 1,
     """
     D = head_dim
     if D not in HEAD_DIMS:
-        raise ValueError(f"head_dim={D}: have {HEAD_DIMS}")
+        raise ValueError(f"head_dim={D}: gfx950's paged decode has a schedule for "
+                         f"{HEAD_DIMS} only (gfx1100's takes multiples of 16)")
     if mode not in ("plain", "split", "fused"):
         raise ValueError(f"mode {mode!r}")
     if stages < 2:
@@ -291,7 +292,9 @@ def merge_kernel(name: str, *, head_dim: int = 128, splits: int = 8,
 
     chunk = min(MERGE_CHUNK, splits)
     if splits % chunk:
-        raise ValueError(f"splits={splits}: a whole number of {chunk}-split rounds")
+        raise ValueError(f"splits={splits}: a whole number of {chunk}-split rounds -- "
+                         f"gfx950's merge reads {chunk} splits at a time (gfx1100's "
+                         f"takes any count); round the plan to a power of two")
 
     def body(seq_lens: hk.Tensor[i32], out: hk.Tensor[bf16],
              o_part: hk.Tensor[bf16], ml_part: hk.Tensor[fp32]):

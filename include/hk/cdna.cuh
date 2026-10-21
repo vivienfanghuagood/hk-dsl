@@ -238,6 +238,15 @@ template<> __device__ inline float  rsqrt::op<float> (const float &x ) { return 
 template<> __device__ inline float2 rsqrt::op<float2>(const float2 &x) {
     return float2{__builtin_amdgcn_rsqf(x.x), __builtin_amdgcn_rsqf(x.y)};
 }
+/** @brief sqrt(x), one v_sqrt_f32, as include/rdna3's base_ops::sqrt: neither
+ *  CDNA tree has one, so `hk.math.sqrt` traced for gfx950 and failed in hipcc. */
+struct sqrt {
+    template<typename T> static __device__ inline T op(const T &x);
+};
+template<> __device__ inline float  sqrt::op<float> (const float &x ) { return __builtin_amdgcn_sqrtf(x); }
+template<> __device__ inline float2 sqrt::op<float2>(const float2 &x) {
+    return float2{__builtin_amdgcn_sqrtf(x.x), __builtin_amdgcn_sqrtf(x.y)};
+}
 /** @brief x * sigmoid(x), through the hardware exp2 and rcp. */
 struct silu {
     template<typename T> static __device__ inline T op(const T &x);
@@ -263,8 +272,10 @@ template<> __device__ inline float2 step::op<float2>(const float2 &x) {
 template<ducks::rt::all T> __device__ static inline void one(T &dst) { ones(dst); }
 template<ducks::rv::all T> __device__ static inline void one(T &dst) { ones(dst); }
 #endif
+template<ducks::rt::all T> __device__ static inline void sqrt (T &dst, const T &src) { unary_map<base_ops::sqrt,  T>(dst, src); }
+template<ducks::rv::all T> __device__ static inline void sqrt (T &dst, const T &src) { unary_op<base_ops::sqrt,  T>(dst, src); }
 template<ducks::rt::all T> __device__ static inline void rsqrt(T &dst, const T &src) { unary_map<base_ops::rsqrt, T>(dst, src); }
-template<ducks::rt::all T> __device__ static inline void silu (T &dst, const T &src) { unary_map<base_ops::silu,  T>(dst, src); }
+template<ducks::rt::all T> __device__ static inline void silu(T &dst, const T &src) { unary_map<base_ops::silu,  T>(dst, src); }
 template<ducks::rt::all T> __device__ static inline void step (T &dst, const T &src) { unary_map<base_ops::step,  T>(dst, src); }
 template<ducks::rv::all T> __device__ static inline void rsqrt(T &dst, const T &src) { unary_op<base_ops::rsqrt, T>(dst, src); }
 template<ducks::rv::all T> __device__ static inline void silu (T &dst, const T &src) { unary_op<base_ops::silu,  T>(dst, src); }
@@ -1841,6 +1852,7 @@ HK_STRIP_UNARY(abs,   abs)
 HK_STRIP_UNARY(relu,  relu)
 HK_STRIP_UNARY(gelu,  gelu)
 HK_STRIP_UNARY(dgelu, dgelu)
+HK_STRIP_UNARY(sqrt,  sqrt)
 HK_STRIP_UNARY(rsqrt, rsqrt)
 HK_STRIP_UNARY(silu,  silu)
 HK_STRIP_UNARY(step,  step)

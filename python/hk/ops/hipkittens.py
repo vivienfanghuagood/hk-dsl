@@ -1,8 +1,8 @@
 """HipKittens' own CDNA4 kernels as hk ops: the bf16 GEMM and GQA attention.
 
-hk's native GEMM and attention do not build for gfx950 yet
-(docs/design/cdna.md, 3.1). HipKittens ships hand-tuned MI355X kernels for
-both. This builds them, unmodified, through hk's compile cache and spill gate,
+hk's own gfx950 GEMM and attention are hk.ops.gemm_cdna and
+hk.ops.attn_cdna (hk.ops.matmul and hk.attention route to them); HipKittens
+ships hand-tuned MI355X kernels for both, which this wraps beside them. This builds them, unmodified, through hk's compile cache and spill gate,
 launches them on torch's stream, and puts them behind `engine.Op`:
 
 * `gemm_bf16(a, b)` is C = a @ b.T, with a (M, K) and b (N, K) both

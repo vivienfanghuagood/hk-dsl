@@ -107,6 +107,7 @@ def min(a, b):  # noqa: A001
 
 
 def max(a, b):  # noqa: A001
+    """Of ints, of device Ints, or elementwise of tiles and vectors."""
     if isinstance(a, (Tile, Vec)):
         return a.maximum(b)
     if _dyn(a, b):

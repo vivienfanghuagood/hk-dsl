@@ -1,0 +1,83 @@
+# hk-dsl
+
+> hk-dsl is a Python DSL for AMD GPU tile kernels. A kernel body is traced into an MLIR dialect, checked by passes (spills, LDS waits, layouts), translated to HipKittens C++ and compiled by the stock hipcc, for Radeon RDNA3 (gfx1100, W7900D) and Instinct CDNA4 (gfx950, MI355X). It ships tuned ops (`hk.ops`), templates with hooks (`hk.templates`), and a checker (`python -m hk.check`) that reports a kernel's resources, correctness against torch and speed against torch.compile in one command. MIT; `pip install hk-dsl` (0.4.0; the docs describe main, and mark what 0.4.0 lacks).
+
+Read in this order: this file, [the language](docs/language.md), [hk.check](docs/check.md), then the [API reference](docs/api/README.md) for the names you use. [llms-full.txt](llms-full.txt) is all of them in one file.
+
+## A kernel in ten lines
+
+```python
+import torch, torch.nn.functional as F, hk
+
+@hk.kernel(grid=lambda p: (p.o.rows * hk.cdiv(p.o.cols, p.CW), 1, 1))
+def gelu_mul(a: hk.Tensor[hk.bf16], b: hk.Tensor[hk.bf16], o: hk.Tensor[hk.bf16], *, CW=512):
+    S = hk.RS(hk.fp32, 1, CW, 8)                   # a register strip: one row, 8 bf16 (16 B) a lane
+    per_row = hk.cdiv(o.cols, CW)
+    row = hk.arch.block_idx.x // per_row
+    c0 = (hk.arch.block_idx.x - row * per_row) * CW
+    x = a.at[row, c0].load(S, bounded=True)        # bf16 -> fp32 on the load; past the end reads 0
+    x.gelu(into=x)                                 # hk.math.gelu: the tanh form, fp32 only
+    x *= b.at[row, c0].load(S, bounded=True)
+    o.at[row, c0].store(x, bounded=True)           # fp32 -> bf16 on the store
+```
+
+Save it in a file (the body must be source `inspect` can read), then:
+
+```bash
+python -m hk.check gelu_mul.py:gelu_mul --ref "F.gelu(a, approximate='tanh') * b" \
+    --inputs "bf16[4096,14336], bf16[4096,14336], bf16[4096,14336]" --json out.json
+```
+
+Measured with hk.check (torch 2.10, interleaved in one process): on an MI355X it ties torch.compile at 4096x14336 (61.7 vs 61.9 us) and is 3.7x it at 16x14336; on a W7900D 1.02x (500.4 vs 511.5 us) and 4.7x; ragged shapes (100x1000) run on both. The same op on 16x64 register tiles (`hk.RT`), as a first page usually teaches, is 0.54x torch.compile on the MI355X. Streaming kernels (elementwise, row-wise) go on strips (`hk.RS`); matrix-core kernels (GEMM, attention) on tiles (`hk.RT`) staged through LDS (`hk.ST`).
+
+## Docs
+
+- [The language](docs/language.md): kernels and constexprs, types (RT tiles, RS strips, ST LDS tiles, vectors), operators, memory, control flow, namespaces, errors, limits
+- [hk.check](docs/check.md): the loop -- build and resources without a GPU, correctness against a torch reference, interleaved timing against torch eager and torch.compile, `--json`
+- [Getting started](docs/getting-started.md): install, a first kernel, the four entry points (`trace`, `source`, `build`, call)
+- [The runtime](docs/runtime.md): the compile cache, the resource gates (a spill is an error), arch detection, `HK_ARCH`, warming the cache
+- [For agents: engine integration](docs/agents.md): `headroom`, `new-op`, `ab` for kernels inside vLLM/SGLang, and the numbers not to trust
+- [Cross-architecture API audit](docs/dx/api-consistency.md): where an op's arguments or behaviour differ between gfx1100 and gfx950
+- [Templates](docs/templates/): `hk.templates.elementwise`, `rowwise`, `gemm(epilogue=...)` -- start here when one fits
+- [The skill](skills/hk-kernel/SKILL.md): the loop for writing an hk kernel, as a Claude Code skill / Cursor rule
+
+## API reference (generated from the code)
+
+- [hk](docs/api/hk.md): `kernel`, `func`, `Tensor`, `Constexpr`, `RT`, `RS`, `ST`, `SV`, `col_vec`, `row_vec`, dtypes, `range`, `if_`, `cdiv`, `zeros`, `tile_coord`, `elem_coord`, `mma`, and the methods of `Tile`, `Vec`, `Global`, `View`, `SharedTile`
+- [hk.math](docs/api/hk.math.md): every elementwise function (exp, exp2, log, log2, abs, relu, gelu, dgelu, sqrt, rsqrt, silu, add, sub, mul, div, maximum, minimum) -- there is no tanh or sigmoid
+- [hk.arch](docs/api/hk.arch.md): block/warp/lane ids, `target()`, barriers, scheduling hints
+- [hk.lds](docs/api/hk.lds.md), [hk.group](docs/api/hk.group.md), [hk.collective](docs/api/hk.collective.md): LDS, workgroup copies, cross-warp reductions
+- [hk.ops](docs/api/hk.ops.md): the shipped kernels and their per-architecture argument rules
+- [hk.templates](docs/api/hk.templates.md): tuned kernels with a hook for your math
+- [hk.check](docs/api/hk.check.md): the checker's Python API and options
+- [hk.target](docs/api/hk.target.md): the facts per architecture (wave 32 vs 64, registers, LDS, strips, fragments)
+
+## Examples
+
+- [01_vector_add.py](examples/01_vector_add.py): the smallest complete kernel
+- [02_rmsnorm.py](examples/02_rmsnorm.py), [03_softmax.py](examples/03_softmax.py): row reductions, cross-warp combines
+- [04_gemm.py](examples/04_gemm.py), [05_attention.py](examples/05_attention.py): LDS staging, WMMA/MFMA, flash attention
+- [06_control_flow.py](examples/06_control_flow.py): runtime for/if/while
+- [07_dropout.py](examples/07_dropout.py) .. [10_layernorm_backward.py](examples/10_layernorm_backward.py): random numbers, gather/scatter, two-pass kernels
+- [examples/README.md](examples/README.md): all of them
+
+## Pitfalls
+
+- The docs describe main; `pip install hk-dsl` is 0.4.0. The API reference marks what is *New after 0.4.0*; on gfx950, 0.4.0 refuses register strips. Install from a checkout for those.
+- Positional kernel parameters are tensors (`hk.Tensor[dtype]`, 4-D `(batch, depth, rows, cols)`; a 2-D tensor is `(rows, cols)`). Constexprs are keyword-only with a default, baked into the source: a new value is a new compile.
+- The transcendental math (gelu, dgelu, sqrt, rsqrt, silu) is fp32-only: load 16-bit data into an fp32 tile or strip (the load converts) and store it back (the store converts). `hk.math.gelu` is `F.gelu(x, approximate="tanh")`, not the erf default.
+- A strip's columns are whole chunks of `wave x run` (32 x run on gfx1100, 64 x run on gfx950): `CW=512` with `run=8` fits both. Read the wave from `hk.arch.target().wave` when a plan depends on it.
+- A 16x64 tile kernel needs rows and columns that tile, or `bounded=True` loads (rows); strips take `bounded=True` for both.
+- A tile rebound inside a runtime loop is refused: update it in place (`+=`, `into=`). A workgroup operation (barrier, group copy) cannot sit inside a runtime branch.
+- A spilling build is an error (`hk.ResourceError`), not a warning: shrink tiles or live values. Read the occupancy `hk.check` reports; a memory-bound kernel wants it high.
+- `import hk` fixes the arch for the process (`$HK_ARCH`, else the GPU): set `HK_ARCH` before importing to build for another one, or use `python -m hk.check --arch gfx1100,gfx950`.
+- `hk.ops` arguments differ by architecture in places (e.g. `silu_mul` takes strided gate/up halves on gfx950, contiguous only on gfx1100): see the audit.
+- Time kernels in one process, interleaved, against `torch.compile` -- `hk.check` does. Across processes a kernel A/B manufactures 13-16% from nothing; a gap under 2-5% is noise until shown otherwise.
+
+## Optional
+
+- [The IR](docs/ir.md): the hk dialect, the passes and the C++ translation
+- [Integration](docs/integration.md): the vLLM and SGLang patches
+- [Performance](docs/performance.md): what each kernel measured, losses included
+- [CDNA3/4 design](docs/design/cdna.md): what runs on an MI300X / MI355X
+- [Development record](docs/history/README.md): how each number was taken
