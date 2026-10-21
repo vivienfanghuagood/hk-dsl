@@ -60,3 +60,14 @@ def test_a_rewritten_helper_inside_an_unreadable_body_is_not_blamed_on_it():
     with pytest.raises(TypeError, match="Combine conditions with &") as e:
         k.trace()
     assert "could not read the source" not in str(e.value)
+
+
+def test_a_lambda_in_the_middle_of_an_expression_runs_as_it_is():
+    """A lambda's source is the line it sits on, which need not parse on its
+    own (`"k": (lambda t: ..., 1),`); it has no statements to rewrite, so it
+    runs unrewritten instead of failing to parse."""
+    from hk.dsl.rewrite import rewrite
+
+    table = {"double": (lambda t: t * 2, 1), "other": (None, 2)}
+    f = table["double"][0]
+    assert rewrite(f) is f and f(3) == 6

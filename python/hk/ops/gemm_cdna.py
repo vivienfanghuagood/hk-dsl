@@ -51,6 +51,7 @@ from typing import Any, Dict, Optional
 
 from .. import dsl as hk
 from ..types import bf16, fp32
+from . import _epilogue
 
 #: An MI355X has eight XCDs; workgroups are dealt to them round robin.
 NUM_XCDS = 8
@@ -63,8 +64,12 @@ def gemm_kernel(name: str, *, block_m: int = 256, block_n: int = 256,
                 hipkittens_waits: bool = False, late_b: bool = True,
                 splits: int = 1, lds_shape: Optional[str] = None, nt: str = "",
                 arch: Optional[str] = None,
-                max_vgprs: int = 256, min_occupancy: int = 1):
+                max_vgprs: int = 256, min_occupancy: int = 1, epilogue=None):
     """HipKittens' tiling by default: 256x256x64, eight warps as 2 x 4.
+
+    `epilogue` (hk.ops._epilogue) replaces C's store with hk.templates.gemm's
+    hook; a split kernel (splits > 1) stores its fp32 shares as ever and the
+    hook goes on the reduction.
 
     `hipkittens_waits` puts HipKittens' own vmcnts back (all but three copies
     after the prologue and at the end of each iteration). hk-lds-pipeline
@@ -99,7 +104,7 @@ def gemm_kernel(name: str, *, block_m: int = 256, block_n: int = 256,
            else hk.RT(fp32, reg_m, reg_n, "col"))
 
     @hk.func
-    def gemm(a, b, WGM, k0, k_count, out):
+    def gemm(a, b, WGM, k0, k_count, out, init=None):
         g = hk.group(warps)
         # Buffer u, half h of A is As[2u + h]: every index below is a Python
         # int, so each copy and read names its buffer.
@@ -188,6 +193,13 @@ def gemm_kernel(name: str, *, block_m: int = 256, block_n: int = 256,
         copy_a(0, 0, 0)
         copy_b(0, 0, 1)
         copy_a(0, 0, 1)
+        if init is not None:
+            # The accumulators start as C's tile of an operand (an epilogue's
+            # init_from), its loads in flight with the first tiles' copies.
+            for i in range(2):
+                for j in range(2):
+                    init(C[i][j], m0 + i * half_m + wr * reg_m,
+                         n0 + j * half_n + wc * reg_n)
         with hk.arch.pingpong(wr == 1):
             g.wait_for(Bs[0], As[0])
             hk.arch.barrier()
@@ -321,11 +333,20 @@ def gemm_kernel(name: str, *, block_m: int = 256, block_n: int = 256,
                     store(i, j)
 
     def body(a: hk.Tensor[bf16], b: hk.Tensor[bf16], c: hk.Tensor[bf16], *,
-             WGM: hk.Constexpr = wgm):
-        def out(tile, r, col):
-            c[hk.elem_coord(0, 0, r, col)].store(tile, bounded=True)
+             WGM: hk.Constexpr = wgm, **ops):
+        inited = (epilogue is not None and getattr(epilogue, "init", None)
+                  is not None and not transposed_c)
 
-        gemm(a, b, WGM, 0, a.cols // k_step, out)
+        def out(tile, r, col):
+            if epilogue is None:
+                c[hk.elem_coord(0, 0, r, col)].store(tile, bounded=True)
+            else:
+                epilogue.store(c, ops, tile, r, col, inited=inited)
+
+        def init(tile, r, col):
+            epilogue.load_init(ops, tile, r, col)
+
+        gemm(a, b, WGM, 0, a.cols // k_step, out, init if inited else None)
 
     # splits > 1: K cut across workgroups, each share to an fp32 scratch
     # (splits, M, N), and hk.ops.gemm_cdna_dp.reduce_kernel adds them.
@@ -339,7 +360,13 @@ def gemm_kernel(name: str, *, block_m: int = 256, block_n: int = 256,
 
         gemm(a, b, WGM, s * per, per // k_step, out)
 
-    fn = body if splits == 1 else body_split
+    if splits == 1:
+        fn = _epilogue.sign(body, epilogue)
+    elif epilogue is not None:
+        raise ValueError("a split kernel stores fp32 shares; its epilogue goes "
+                         "on the reduction (gemm_cdna_dp.reduce)")
+    else:
+        fn = body_split
     fn.__name__ = name
 
     def _grid(p):

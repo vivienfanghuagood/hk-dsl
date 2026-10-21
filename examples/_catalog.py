@@ -34,7 +34,7 @@ def kernels() -> List[Tuple[str, object]]:
     kv = load("09_kv_scatter")
     lnb = load("10_layernorm_backward")
     vi = load("11_vllm_integration")
-    return [
+    return _templates() + [
         ("vector_add", add.add),
         ("rmsnorm", rms.rmsnorm_kernel()),
         ("rmsnorm_strip", rms.rmsnorm_strip_kernel()),
@@ -54,6 +54,24 @@ def kernels() -> List[Tuple[str, object]]:
     ]
 
 
+def _templates() -> List[Tuple[str, object]]:
+    """The kernel 13_templates_gemm's call launches that runs its epilogue --
+    planned from shapes alone (torch's meta tensors), so it needs torch but
+    no GPU; without torch there is nothing to list."""
+    try:
+        import torch
+    except ImportError:
+        return []
+    import hk
+
+    tg = load("13_templates_gemm")
+    bias = torch.empty(tg.N, dtype=torch.bfloat16, device="meta")
+    launches = hk.templates.gemm.kernels(tg.M, tg.N, tg.K, epilogue=tg.bias_gelu,
+                                         bias=bias)
+    return [("templates_gemm_bias_gelu",
+             next(k for st, k, consts in launches if st.epilogue and not consts))]
+
+
 #: The scripts a GPU run executes, each with the arguments it runs under.
 SCRIPTS = [
     ("01_vector_add.py",),
@@ -68,5 +86,6 @@ SCRIPTS = [
     ("09_kv_scatter.py",),
     ("10_layernorm_backward.py",),
     ("11_vllm_integration.py",),
+    ("13_templates_gemm.py",),
     ("validate.py", "--quick"),
 ]
