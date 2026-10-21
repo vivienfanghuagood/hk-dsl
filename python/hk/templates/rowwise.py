@@ -247,6 +247,9 @@ class Plan:
     #: Launch the preloaded twin, as hk.ops' strips do past 32 MB on gfx950
     #: (the fused add excepted).
     preload: bool = False
+    #: Rows a workgroup holds, a warp each, where a row is one warp's: a
+    #: router's 128 experts, a short softmax.
+    fold: int = 1
 
     @property
     def wave(self) -> int:
@@ -262,6 +265,11 @@ class Plan:
         how = (f"{self.steps} steps a pass" if self.steps else "held, read once")
         cap = f", {self.reserve >> 10} KB LDS reserved" if self.reserve else ""
         cap += ", preloaded" if self.preload else ""
+        if self.fold > 1:
+            return (f"{self.rows}x{self.cols} like {self.like} on {self.arch}: {self.fold} rows "
+                    f"a workgroup, a warp each, {self.chunks} chunk(s) of {self.wave}x"
+                    f"{self.run} ({self.chunks * self.run} a lane), held, read once, "
+                    f"{'exact' if self.exact else 'bounded'}{cap}")
         return (f"{self.rows}x{self.cols} like {self.like} on {self.arch}: one workgroup a "
                 f"row, {self.warps} warp(s) x {self.chunks} chunk(s) of {self.wave}x"
                 f"{self.run} ({self.chunks * self.run} a lane), {how}, "
@@ -273,6 +281,18 @@ class Plan:
 #: MI355X: 8 warps of 32 a lane 12.9/26.5/110.1/83.2 us, 16 of 16
 #: 13.8/26.9/107.5/95.9, 16 of 8 16.7/30.7/116.8/111.7.
 _STREAM = {"gfx950": (8, 32), "gfx1100": (16, 16)}
+
+
+#: Rows a workgroup takes when a row is one warp's: set from the router
+#: and narrow-softmax measurements (see the docs).
+_FOLD = {"gfx950": ((1024, 4),), "gfx1100": ((1024, 4),)}
+
+
+def _fold(arch: str, rows: int) -> int:
+    for least, fold in _FOLD.get(arch, ()):
+        if rows >= least:
+            return fold
+    return 1
 
 
 def plan_for(arch: str, like: str, rows: int, cols: int, nbytes: int,
@@ -317,6 +337,13 @@ def plan_for(arch: str, like: str, rows: int, cols: int, nbytes: int,
         reserve = 0
         steps = -(-cols // (warps * chunks * tgt.wave * run))
         exact = False
+    if not steps and warps == 1 and chunks == 1 and cols < tgt.wave * run:
+        # A row narrower than a chunk (a router's 8-128 experts): the run
+        # that spreads it over the most lanes, not the 16-byte one -- 2 of
+        # 8 bf16 a lane at 128 columns. A router, k = 8, 16384x128 on an
+        # MI355X: 31.0 us at runs of 8, 23.0 at 4, 18.6 at 2.
+        while run > 1 and tgt.wave * (run // 2) >= cols:
+            run //= 2
     warps = override.get("warps", warps)
     chunks = override.get("chunks", chunks)
     run = override.get("run", run)
@@ -331,7 +358,11 @@ def plan_for(arch: str, like: str, rows: int, cols: int, nbytes: int,
     if step < cols:
         raise ValueError(f"plan: {warps} warps of {plan.span} do not hold {cols} columns; "
                          f"give steps=")
-    return replace(plan, exact=step == cols)
+    fold = override.get("fold", _fold(arch, rows) if warps == 1 else 1)
+    if fold > 1 and warps != 1:
+        raise ValueError(f"plan: fold={fold} rows a workgroup takes a row of one warp, "
+                         f"not {warps}")
+    return replace(plan, exact=step == cols and rows % fold == 0, fold=fold)
 
 
 # ---------------------------------------------------------------- template
@@ -364,7 +395,7 @@ class Rowwise:
         self._arch = arch
         self.override = dict(plan or {})
         bad = set(self.override) - {"warps", "chunks", "run", "steps", "reserve", "stream",
-                                    "preload"}
+                                    "preload", "fold"}
         if bad:
             raise TypeError(f"plan= overrides warps, chunks, run, steps and reserve, "
                             f"not {sorted(bad)}")
@@ -458,7 +489,7 @@ class Rowwise:
             from ..target import get_target  # noqa: PLC0415
 
             k.trace(T_CW=get_target(self.arch).wave * 8, T_RUN=8, T_EXACT=1, T_STEPS=0,
-                    T_RESERVE=0)
+                    T_RESERVE=0, T_FOLD=1)
             got = self._kernels[key] = info.get("used", ())
         return got
 
@@ -498,11 +529,12 @@ class Rowwise:
                        moved)
 
     def _kernel(self, ops, outs, p: Plan):
-        key = (p.arch, ops, outs, p.warps)
+        kw = p.warps * p.fold
+        key = (p.arch, ops, outs, kw)
         k = self._kernels.get(key)
         if k is None:
-            k = self._kernels[key] = _build(self.fn, ops, outs, p.warps, p.arch,
-                                            f"{self.name}_w{p.warps}", self.consts, {})
+            k = self._kernels[key] = _build(self.fn, ops, outs, kw, p.arch,
+                                            f"{self.name}_w{kw}", self.consts, {})
         return k.preloaded() if p.preload else k
 
     def _consts(self, p: Plan, consts):
@@ -511,7 +543,7 @@ class Rowwise:
             raise TypeError(f"{self.name}: no constexpr {sorted(unknown)}; the hook "
                             f"takes {sorted(self.consts) or 'none'}")
         return {"T_CW": p.span, "T_RUN": p.run, "T_EXACT": int(p.exact),
-                "T_STEPS": p.steps, "T_RESERVE": p.reserve, **consts}
+                "T_STEPS": p.steps, "T_RESERVE": p.reserve, "T_FOLD": p.fold, **consts}
 
     def kernel(self, *args, **consts):
         """(hk.Kernel, constexprs) for these operands; trace/source/build
@@ -592,38 +624,49 @@ def _trace(kw, spec):
     hook = {k: kw[k] for k in user_consts}
     xs = [kw[n] for n in names[:nin]]
     ys = [kw[n] for n in names[nin:]]
+    fold = kw["T_FOLD"]
     if reserve:
         hk.lds.reserve(reserve)
     S = hk.RS(fp32, 1, cw, run)
-    row = hk.arch.block_idx.x
-    w = hk.arch.warp_id() if warps > 1 else 0
     ref = xs[next(i for i, o in enumerate(ops) if o.kind == "full")]
     n = ref.cols
     bounded = not exact
+    if fold > 1:
+        # A row a warp: no cross-warp combine; a warp past the last row
+        # reads zeros (bounded), stores nothing, and reads its per-row
+        # operands at the last row.
+        row = hk.arch.block_idx.x * fold + hk.arch.warp_id()
+        rowc = hk.min(row, ref.rows - 1)
+        warps, w = 1, 0
+    else:
+        row = rowc = hk.arch.block_idx.x
+        w = hk.arch.warp_id() if warps > 1 else 0
     ctx = _Ctx(S, warps, steps)
     ctx.n = n
-    ctx.row = row
+    ctx.row = rowc
 
     # The per-row operands once: a float as a column vector, an int32 (a
     # label) as a scalar.
     rowvals = {}
     for i, (x, o) in enumerate(zip(xs, ops)):
         if o.kind in ("per_row", "scalar"):
-            at = x.at[row if o.kind == "per_row" else 0, 0]
+            at = x.at[rowc if o.kind == "per_row" else 0, 0]
             # An int64 label is read as its low int32 word (the host views it
             # so): every label a vocabulary has, and -100.
             rowvals[i] = at.load_scalar() if o.dtype is i32 else at.load(hk.col_vec(S))
 
     def operands(c0):
-        vals = []
+        # The per-column operands (a weight) first: their loads then issue
+        # beside the row's instead of behind them, as hk.ops' norms order
+        # theirs.
+        vals = [x.at[0, c0].load(S, bounded=bounded) if o.kind == "per_col" else None
+                for x, o in zip(xs, ops)]
         for i, (x, o) in enumerate(zip(xs, ops)):
             if o.kind == "full":
-                vals.append(x.at[row, c0].load(S, bounded=bounded))
-                ctx.sources[id(vals[-1])] = x
-            elif o.kind == "per_col":
-                vals.append(x.at[0, c0].load(S, bounded=bounded))
-            else:
-                vals.append(rowvals[i])
+                vals[i] = x.at[row, c0].load(S, bounded=bounded)
+                ctx.sources[id(vals[i])] = x
+            elif o.kind != "per_col":
+                vals[i] = rowvals[i]
         return vals
 
     def zeros():
@@ -665,9 +708,16 @@ def _trace(kw, spec):
                                     f"a row and the hook returned {r!r}")
                 # One value a row, the same bits in every lane after the
                 # butterfly and the cross-warp combine: uniform.
-                for i, v in enumerate(vals):
-                    at = hk.elem_coord(0, 0, row, i) if o.width > 1 else                         hk.elem_coord(0, 0, 0, row)
-                    y[at].store_scalar(as_vec(v, S, uniform=True))
+                def put():
+                    for i, v in enumerate(vals):
+                        at = (hk.elem_coord(0, 0, row, i) if o.width > 1
+                              else hk.elem_coord(0, 0, 0, row))
+                        y[at].store_scalar(as_vec(v, S, uniform=True))
+                if fold > 1 and bounded:
+                    with hk.if_(row < ref.rows):
+                        put()
+                else:
+                    put()
 
     _CTX.append(ctx)
     try:
@@ -694,7 +744,7 @@ def _trace(kw, spec):
                 return ()
             for_(hk.range(steps), body, (), (), "step")
 
-        def fold(c0):
+        def fold_pass(c0):
             try:
                 run_hook(operands(c0))
             except _Stop:
@@ -713,7 +763,7 @@ def _trace(kw, spec):
                     stream(lambda c0: store(run_hook(operands(c0)), c0, True, False))
                 return
             ctx.start_pass(ctx.used[len(ctx.known)])
-            stream(fold)
+            stream(fold_pass)
             ctx.finish_pass()
             ctx.k += 1
     finally:
@@ -792,7 +842,7 @@ def _build(fn, ops, outs, warps: int, arch: str, name: str, user_consts, info=No
     body.__signature__ = C.signature(
         [(n, o.dtype) for n, o in zip(names, ops)] +
         [(n, o.dtype) for n, o in zip(names[nin:], outs)],
-        {"T_CW": 512, "T_RUN": 8, "T_EXACT": 1, "T_STEPS": 0, "T_RESERVE": 0,
+        {"T_CW": 512, "T_RUN": 8, "T_EXACT": 1, "T_STEPS": 0, "T_RESERVE": 0, "T_FOLD": 1,
          **user_consts})
     defines = None
     if sum(o.kind == "full" for o in ops) >= 2 and any(o.kind == "full" for o in outs):
@@ -803,7 +853,8 @@ def _build(fn, ops, outs, warps: int, arch: str, name: str, user_consts, info=No
     # reads another's output (a partial overlap is copied first), as hk.ops'
     # strips promise on CDNA.
     return hk.kernel(body, warps=warps, arch=arch, name=name, defines=defines,
-                     noalias=True, grid=lambda p: (getattr(p, grid_of).rows, 1, 1))
+                     noalias=True,
+                     grid=lambda p: (hk.cdiv(getattr(p, grid_of).rows, p.T_FOLD), 1, 1))
 
 
 def rowwise(fn: Optional[Callable] = None, inputs: Optional[Sequence] = None,
