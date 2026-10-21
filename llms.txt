@@ -71,7 +71,9 @@ Measured with hk.check (torch 2.10, interleaved in one process): on an MI355X it
 - A tile rebound inside a runtime loop is refused: update it in place (`+=`, `into=`). A workgroup operation (barrier, group copy) cannot sit inside a runtime branch.
 - A spilling build is an error (`hk.ResourceError`), not a warning: shrink tiles or live values. Read the occupancy `hk.check` reports; a memory-bound kernel wants it high.
 - `import hk` fixes the arch for the process (`$HK_ARCH`, else the GPU): set `HK_ARCH` before importing to build for another one, or use `python -m hk.check --arch gfx1100,gfx950`.
-- `hk.ops` arguments differ by architecture in places (e.g. `silu_mul` takes strided gate/up halves on gfx950, contiguous only on gfx1100): see the audit.
+- `hk.ops`' row and elementwise ops (`silu_mul` on a gate/up output's halves, `add` and the other elementwise ops, `quantize`, `rotary`, the norms) take the same arguments on both GPUs; where ops still differ (attention's lengths, the paged kernels): see the audit.
+- On gfx1100, `k(...)` launches on the null stream: eager calls time correctly, but a CUDA graph does not capture the kernel (a replay runs nothing) and another stream is not ordered against it. Set `HK_LAUNCH=codeobj` before the first call (or use `hk.torch_op(k)`) to launch on torch's current stream. gfx950 always uses torch's stream.
+- On gfx1100, a bf16 conversion in registers (`t.to(hk.bf16)`) rounds ties away from zero; stores round to nearest even. To match torch bit for bit after an in-register conversion, `@hk.kernel(..., defines={"HK_BF16_ROUND": 2})`.
 - Time kernels in one process, interleaved, against `torch.compile` -- `hk.check` does. Across processes a kernel A/B manufactures 13-16% from nothing; a gap under 2-5% is noise until shown otherwise.
 
 ## Optional

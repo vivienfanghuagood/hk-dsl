@@ -6,6 +6,12 @@ function, where its arguments, dtypes, layouts or behaviour differ between a
 Radeon W7900D (gfx1100, RDNA3, wave32) and an Instinct MI355X (gfx950, CDNA4,
 wave64), what was fixed, and what is left and for whom.
 
+**Since this audit,** the rows classed W2 were unified by the templates'
+work: `silu_mul`, the elementwise ops, `quantize` and `rotary` now run on
+strips with the same arguments on both GPUs
+([what changed](../templates/elementwise-rowwise.md#hkops-on-the-same-plans)).
+The table below is the audit as it was taken.
+
 - [How it was checked](#how-it-was-checked)
 - [The table](#the-table)
 - [Fixed here](#fixed-here)

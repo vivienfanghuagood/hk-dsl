@@ -61,9 +61,14 @@ process drift much less, though for microsecond kernels they still moved
 These are the shapes of the kernels, not the tuned versions. The GEMM is
 single-buffered and overlaps nothing but its two LDS reads; the attention
 reads K and V from global memory in every warp instead of sharing them
-through LDS. The kernels they are compared against -- `hk/ops/gemm.py` and
-`hk/ops/attn.py` -- are the next thing to read, and the history in
-[docs/history](../docs/history) says how they got that way. None of the
+through LDS; the vector add uses 16x64 register tiles, the matrix core's
+layout, where a streaming kernel is faster on register strips (02 shows both;
+[the language](../docs/language.md#register-strips)). For speed, start from
+a template: 12 and 13 are at the tuned kernels' speed, and
+[`hk.templates.gemm`](../docs/templates/gemm.md) is the tuned GEMM with your
+epilogue. The tuned kernels themselves are `hk.ops`
+([API](../docs/api/hk.ops.md)), and the history in
+[docs/history](../docs/history/README.md) says how they got that way. None of the
 examples handle a ragged last tile: rows and columns are multiples of the
 tile, and each example's docstring says which. `bounded=True` loads and
 stores are how the shipped kernels take the rest.

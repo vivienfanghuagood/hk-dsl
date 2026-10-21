@@ -38,6 +38,17 @@ RDNA targets' pybind entry point still launches on the null stream, as their
 generated source always has; their serving paths go through
 [`torch_op`](#torch-ops-and-the-sdpa-drop-in), which takes torch's stream.
 
+What that means on gfx1100 when you call `k(...)` yourself: eager calls on
+torch's default stream run and time correctly, but a CUDA graph does not
+capture the kernel (a replay runs nothing, and a timing of it measures
+nothing), and work on another stream is not ordered against it. Nothing
+reports either. To capture or time an hk kernel in a graph on gfx1100, or to
+run it on a stream of your own, set `HK_LAUNCH=codeobj` before its first
+call -- every `@hk.kernel`, and so every template, then launches its
+[device-only code object](#over-a-device-only-code-object) on torch's current
+stream -- or call it through `hk.torch_op(k)`. The DX suite's runner does the
+former on RDNA (`bench/dx/run.py`).
+
 A compiled `.so` is never overwritten in place: every build writes a new
 content-hashed path, because rebuilding a `.so` while a process has it mapped
 corrupts that process's view of the code (`python/hk/runtime/module.py`).

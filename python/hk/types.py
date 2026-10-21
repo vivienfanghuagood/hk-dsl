@@ -105,7 +105,8 @@ class RegTileType(Type):
 
     `layout="strip"` with a `run` is kittens::rs<T, rows, cols, run>: not a
     WMMA layout but the one a row kernel wants, each lane owning `run`
-    contiguous elements of a row per 32*run-column chunk -- one 16-byte access
+    contiguous elements of a row per wave*run-column chunk (wave 32 on gfx11,
+    64 on gfx950) -- one 16-byte access
     per lane for a bf16 run of 8, nothing replicated. Any number of rows;
     columns a whole number of chunks. See hk.RS.
     """
