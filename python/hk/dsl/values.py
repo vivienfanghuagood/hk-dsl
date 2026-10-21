@@ -28,7 +28,8 @@ from . import builder as B
 
 Scalar = Union[int, float, "Int"]
 
-#: Elementwise ops include/rdna3 specialises only for fp32. Asking for one it
+#: Elementwise ops the headers specialise only for fp32 (include/rdna3, and
+#: include/cdna4 with hk's include/hk/cdna.cuh). Asking for one it
 #: does not have is a link error at the end of a long compile, naming a
 #: template rather than the line that asked for it.
 _FP32_ONLY = ("gelu", "dgelu", "sqrt", "rsqrt", "silu", "step")
@@ -47,8 +48,8 @@ def _check_map_dtype(op: str, ty) -> None:
     want = ("fp32",) if op in _FP32_ONLY else _ALL_FLOAT
     if ty.dtype.name not in want:
         raise TypeError(
-            f"{op} has no {ty.dtype.name} implementation in include/rdna3 "
-            f"(it is specialised for {', '.join(want)}). Cast with "
+            f"{op} has no {ty.dtype.name} implementation: on every arch hk's "
+            f"headers specialise it for {', '.join(want)} only. Cast with "
             f"t.to(hk.fp32) first, or load into an fp32 tile -- the global "
             f"load converts for free. This is caught here because the "
             f"alternative is an undefined-symbol link error at the end of the "
@@ -116,6 +117,7 @@ class Value:
 
     @property
     def type(self):
+        """The value's hk type (`RegTileType`, `RegVecType`, ...)."""
         return self.ty
 
     def __repr__(self) -> str:
@@ -272,6 +274,7 @@ class Bool(Value):
         return self._logic("xor", True)
 
     def to_int(self) -> Int:
+        """1 where true, else 0, as an Int."""
         t = _t()
         return Int(arith.ExtUIOp(_i32(), self.v, loc=t.loc()).result,
                    ScalarType(i32))
@@ -335,10 +338,14 @@ def coord(b: Scalar = 0, d: Scalar = 0, r: Scalar = 0, c: Scalar = 0, *,
 
 
 def tile_coord(b: Scalar = 0, d: Scalar = 0, r: Scalar = 0, c: Scalar = 0) -> Coord:
+    """A (batch, depth, row, col) index in tiles: row r is rows
+    [r*R, (r+1)*R) for a load of an R-row tile. `x[hk.tile_coord(...)]`."""
     return coord(b, d, r, c, unit="tile")
 
 
 def elem_coord(b: Scalar = 0, d: Scalar = 0, r: Scalar = 0, c: Scalar = 0) -> Coord:
+    """A (batch, depth, row, col) index in elements: what `x.at[r, c]`
+    builds. Strips index only this way."""
     return coord(b, d, r, c, unit="element")
 
 
@@ -1173,6 +1180,8 @@ class Vec(_Elementwise):
 
 
 def zeros(ty, *, into=None):
+    """A register tile or vector of type `ty` filled with 0, or `into=` an
+    existing one: `acc = hk.zeros(hk.RT(hk.fp32, 16, 64))`."""
     name = "z" if isinstance(ty, RegTileType) else "zv"
     return _make(hkd.ZeroOp, ty, (), into=into, name=name)
 
@@ -1223,11 +1232,14 @@ def rand(ty, seed, offset, row_stride, *, into=None) -> "Tile":
 
 
 def full(ty, value: float, *, into=None):
+    """A register tile or vector of type `ty` filled with `value`."""
     name = "f" if isinstance(ty, RegTileType) else "fv"
     return _make(hkd.FullOp, ty, (float(value),), into=into, name=name)
 
 
 def neg_infty(ty, *, into=None):
+    """A register tile or vector of type `ty` filled with -inf: a running
+    max's start."""
     name = "ninf" if isinstance(ty, RegTileType) else "ninfv"
     return _make(hkd.NegInftyOp, ty, (), into=into, name=name)
 
@@ -1257,6 +1269,8 @@ def broadcast_row(ty: RegTileType, vec: Vec) -> Tile:
 
 
 def broadcast_col(ty: RegTileType, vec: Vec) -> Tile:
+    """A tile whose every column is vec[col]: element (r, c) is vec[c], for
+    a row_vec `vec` (one value per column)."""
     return _broadcast_fill(hkd.BroadcastColOp, ty, vec, "row")
 
 
@@ -1405,11 +1419,14 @@ class SharedVec(Value):
     __slots__ = ()
 
     def store(self, vec: Vec, index: Scalar = 0) -> None:
+        """Write a register vector into slot `index` of the stack (no
+        barrier: put one before another warp reads it)."""
         _strip_vec_lds(vec.ty)
         t = _t()
         hkd.StoreSharedVecOp(self.v, vec.v, as_int(index).v, loc=t.loc())
 
     def load(self, vt: RegVecType, index: Scalar = 0) -> Vec:
+        """Read slot `index` of the stack as a register vector of type `vt`."""
         _strip_vec_lds(vt)
         t = _t()
         return Vec(hkd.LoadSharedVecOp(mlir_type(vt), self.v, as_int(index).v,
@@ -1427,6 +1444,75 @@ class Stage(Value):
     """float4 buf[depth][calls]: the VGPR half of a global->LDS copy."""
 
     __slots__ = ("dst",)
+
+
+# ---------------------------------------------------------------- docstrings
+# The one-line methods' docstrings, set here rather than inline so the
+# methods stay one line each. docs/api/hk.md is generated from them
+# (scripts/gen_api_docs.py).
+
+def _doc(cls, name: str, text: str) -> None:
+    obj = cls.__dict__[name]
+    if isinstance(obj, property):  # a property copies its doc when made
+        setattr(cls, name, property(obj.fget, obj.fset, obj.fdel, text))
+    else:
+        obj.__doc__ = text
+
+
+for _n in ("exp", "exp2", "log", "log2", "abs", "relu", "gelu", "dgelu", "sqrt",
+           "rsqrt", "silu"):
+    _doc(_Elementwise, _n, f"`hk.math.{_n}` of this value: a new value, or "
+                           f"`into=` an existing one. See docs/api/hk.math.md for "
+                           f"the dtypes each takes.")
+for _n in ("exp", "exp2", "rsqrt"):
+    _doc(_Elementwise, _n + "_", f"`{_n}` in place: this value's registers.")
+_doc(_Elementwise, "maximum", "Elementwise max with `o` (a value of this type "
+                              "or a number); `hk.max(a, b)`.")
+_doc(_Elementwise, "minimum", "Elementwise min with `o` (a value of this type "
+                              "or a number); `hk.min(a, b)`.")
+_doc(_Elementwise, "copy", "A copy in new registers, or `into=` an existing value.")
+_doc(_Elementwise, "zero_", "Fill with 0, in place.")
+_doc(_Elementwise, "fill_", "Fill with `v`, in place.")
+_doc(_Elementwise, "neg_infty_", "Fill with -inf, in place.")
+for _n, _ax in (("sum", "sum"), ("max", "max"), ("min", "min"), ("prod", "product")):
+    _doc(Tile, _n, f"The {_ax} along `axis`: 1 (default) along each row, one "
+                   f"value per row (a col_vec); 0 along each column (a row_vec). "
+                   f"Lazy: `v = t.{_n}()` makes the vector, "
+                   + ("`acc += t.sum()` accumulates into one, " if _n == "sum" else "")
+                   + ("`m.max_(t.max())` folds into one (the online max), "
+                      if _n == "max" else "")
+                   + "and `.value(into=v)` writes an existing one.")
+_doc(Tile, "dtype", "The element dtype.")
+_doc(Tile, "T", "This tile transposed, as an MMA operand (`acc += a @ b.T`) or "
+                "for `.value()`, which makes the transposed tile.")
+for _n, _side in (("left_fill_", "columns < idx"), ("right_fill_", "columns >= idx"),
+                  ("upper_fill_", "rows < idx"), ("lower_fill_", "rows >= idx")):
+    _doc(Tile, _n, f"Set the elements in {_side} to `value` (default 0), in place "
+                   f"or `into=` a copy: the mask for a ragged last tile. `idx` may "
+                   f"be a device Int." + (" Strips take left_fill_ and right_fill_ "
+                                          "only." if _n in ("left_fill_", "right_fill_")
+                                          else " Not on strips."))
+_doc(Tile, "triu_", "Keep the upper triangle from diagonal `idx`, the rest set to "
+                    "`value` (default 0), in place. Not on strips.")
+_doc(Tile, "tril_", "Keep the lower triangle from diagonal `idx`, the rest set to "
+                    "`value` (default 0), in place. Not on strips.")
+_doc(Tile, "make_causal", "A square tile with the elements above the diagonal set "
+                          "to `value` (below it with `transposed=True`): the "
+                          "causal mask of a diagonal attention block. Not on strips.")
+_doc(Vec, "min_", "Fold `t.min(axis=...)` into this vector: the running min.")
+_doc(Global, "batch", "The tensor's extent along axis 0 of (batch, depth, rows, "
+                      "cols), a device Int.")
+_doc(Global, "depth", "The tensor's extent along axis 1, a device Int.")
+_doc(Global, "rows", "The tensor's rows (axis 2), a device Int. A 2-D tensor is "
+                     "(rows, cols).")
+_doc(Global, "cols", "The tensor's columns (axis 3), a device Int.")
+_doc(Global, "dtype", "The element dtype the parameter was annotated with.")
+_doc(Global, "at", "Element indexing: `x.at[r, c]` (or `[b, d, r, c]`) is a View "
+                   "at that element; a load reads the tile that starts there.")
+_doc(Global, "tile", "Tile indexing: `x.tile[r, c]` is a View at tile (r, c) of "
+                     "the tile type the load names.")
+_doc(Coord, "unit", "\"tile\" or \"element\".")
+del _n, _ax, _side
 
 
 __all__ = [

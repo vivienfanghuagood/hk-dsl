@@ -587,6 +587,11 @@ def schedule_for(m: int, n: int, k: int) -> Dict[str, Any]:
 def matmul(a, b, out=None):
     """A @ B.T for bf16, fp32 accumulate.
 
+    On gfx950 this is hk.ops.gemm_cdna.matmul (MFMA, routed by M from a
+    measured table): K must be a multiple of 64 there, and its bf16 store
+    rounds to nearest even where this one rounds ties away from zero (the
+    split-K routes sum fp32 shares, then round). docs/dx/api-consistency.md.
+
     `b` is (N, K), not (K, N). That is not an inconvenience to be hidden: it
     keeps both shared loads contiguous and makes `mma_ABt` the primitive, which
     is what puts both operand tiles in row layout and therefore on the
@@ -610,7 +615,8 @@ def matmul(a, b, out=None):
                          f"B is passed pre-transposed, so its second axis is K")
     if a.dtype != torch.bfloat16 or b.dtype != torch.bfloat16:
         raise TypeError(f"matmul: bf16 only for now, got {a.dtype} and {b.dtype}")
-    if k % k_step or n % block_n:
+    if k % k_step or n % block_n or k == 0:
+        # K = 0 as gfx950's refuses it: an empty reduction is not a launch.
         raise ValueError(
             f"matmul: K={k} must be a multiple of {k_step} and N={n} a multiple "
             f"of {block_n}. Only M may be ragged: rows of the last block past M "

@@ -116,7 +116,8 @@ def attn_kernel(name: str, *, head_dim: int = 128, causal: bool = False,
     """
     D = head_dim
     if D not in HEAD_DIMS:
-        raise ValueError(f"head_dim={D}: have {HEAD_DIMS}")
+        raise ValueError(f"head_dim={D}: gfx950's attention and paged prefill have "
+                         f"a schedule for {HEAD_DIMS} only")
     scale_l2e = (scale if scale is not None else D ** -0.5) * math.log2(math.e)
     half = KV_BLOCK // 2
     # MFMAs a phase issues: QK is (64 x D) . (D x 32) in 32x32x16 steps, PV

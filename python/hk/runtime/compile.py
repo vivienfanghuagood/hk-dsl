@@ -302,6 +302,9 @@ class Build:
     cached: bool
 
     def report(self) -> str:
+        """One line per instantiation: vgpr, occupancy, LDS, scratch, spills
+        (KernelResources.line). `python -m hk.check` reports the same with
+        the occupancy LDS allows."""
         return resources.report(self.kernels)
 
 

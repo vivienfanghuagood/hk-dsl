@@ -1,5 +1,15 @@
 # For agents: where to hit next, and whether it helped
 
+**Writing or tuning one kernel** rather than a model's step: start from
+[llms.txt](../llms.txt) (the map, the ten-line kernel, the pitfalls) and the
+[hk-kernel skill](../skills/hk-kernel/SKILL.md) (the loop), and check every
+edit with `python -m hk.check FILE.py:NAME --json out.json`
+([hk.check](check.md)): resources without a GPU, correctness against a torch
+reference, and timing against torch eager and `torch.compile` interleaved in
+one process, as this page's tools time an engine. The API reference,
+generated from the code, is [docs/api](api/README.md). What follows is the
+loop one level up: a kernel inside vLLM or SGLang.
+
 Three commands answer the two questions without a harness of your own:
 
 ```bash

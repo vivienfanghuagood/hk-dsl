@@ -51,8 +51,8 @@ def op_for(head_dim: int, causal: bool, scale: Optional[float] = None,
            n: int = 4096):
     """The `torch.ops.hk.*` entry for one (head_dim, causal, scale, length).
 
-    `n` only picks the tuned schedule, so it changes which kernel runs and
-    never what it computes. Memoised here as well as in `hk.torch_op` because
+    `n` only picks the tuned schedule (gfx1100's; gfx950's kernel has one),
+    so it changes which kernel runs and never what it computes. Memoised here as well as in `hk.torch_op` because
     this is on the launch path and `_kernel_for` is a couple of dict lookups
     that need not happen per call.
     """
