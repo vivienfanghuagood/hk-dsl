@@ -68,7 +68,7 @@ method, the software stack of every measurement, and every loss.
 ## Install
 
 **From PyPI**, for CPython 3.10 (glibc 2.35+) or 3.12 (glibc 2.38+) on Linux
-x86_64. The release is 0.4.0; it carries the HipKittens headers, so at run
+x86_64. The release is 0.5.0; it carries the HipKittens headers, so at run
 time only hipcc is needed, and torch (not a dependency) to launch:
 
 ```bash

@@ -89,6 +89,7 @@ Paths below are relative to the repository root.
   `hk.check --arch`.
 - `hk.ops` argument rules differ by arch in places
   ([docs/dx/api-consistency.md](../../docs/dx/api-consistency.md)).
-- `pip install hk-dsl` is 0.4.0; names marked *New after 0.4.0* in
-  [docs/api](../../docs/api/README.md) need a checkout.
+- Names marked *New after 0.4.0* in
+  [docs/api](../../docs/api/README.md) need hk-dsl 0.5.0 or a checkout
+  (`hk.__version__` says which you have).
 - Only same-process, interleaved timing counts; under ~2% is a tie.
