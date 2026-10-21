@@ -1543,3 +1543,7 @@ are bounded: any non-empty length. head_dim is 64 or 128 on both.
 ## Tools
 
 - `hk.check(fn, reference, inputs)`, `python -m hk.check`: correctness, resources and timing in one call: [hk.check](hk.check.md), [docs/check.md](../check.md).
+
+## Also exported
+
+`hk.templates`
