@@ -35,11 +35,10 @@ another interpreter, build one ([building](building.md#wheels)).
 It carries the HipKittens headers, the bindings and the shipped tuning
 records, so nothing else is needed at run time but hipcc.
 
-The release on PyPI is 0.4.0. It has CDNA, register strips, the GEMM
-schedule, SGLang's MoE patch and FlyDSL on the routes, which 0.3.1 lacked.
-This page describes main: the templates, `hk.check` and gfx950's register
-strips are newer than 0.4.0 (the [API reference](api/README.md) marks every
-such name), so for them install from source.
+The release on PyPI is 0.5.0. It has the templates (`hk.templates.elementwise`,
+`rowwise` and `gemm`), `hk.check`, the API reference in [docs/api](api/README.md),
+gfx950's register strips and the same `hk.ops` arguments on both GPUs, which
+0.4.0 lacked.
 
 **From source.** The backend is the `third_party/HipKittens` submodule, so
 clone with `--recursive` (or run `git submodule update --init`). The dialect

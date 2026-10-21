@@ -52,7 +52,7 @@ from .runtime.torch_ext import torch_op
 from .target import TARGETS, get_target
 from .types import DTYPES
 
-__version__ = "0.4.0"
+__version__ = "0.5.0"
 
 
 def __getattr__(name):

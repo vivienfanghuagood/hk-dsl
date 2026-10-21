@@ -15,7 +15,8 @@ beats `torch.compile`.
 
 ## Quick start
 
-With hk-dsl [installed](#install), save a file:
+`pip install hk-dsl` (ROCm's hipcc and a ROCm torch [besides](#install)), then
+save a file:
 
 ```python
 # my_kernels.py
@@ -135,9 +136,14 @@ slow operand layout, a copy racing a barrier ([the traps](docs/README.md#the-tra
 
 ## Install
 
-`pip install hk-dsl`, for CPython 3.10 or 3.12 on Linux x86_64, with ROCm's
-hipcc and a ROCm torch. The release is 0.4.0; the templates and `hk.check`
-are newer, so for them build from source:
+```bash
+pip install hk-dsl
+```
+
+For CPython 3.10 (glibc 2.35+) or 3.12 (glibc 2.38+) on Linux x86_64. The
+release is 0.5.0; it carries the HipKittens headers, so at run time only
+hipcc is needed, and a ROCm build of torch (not a dependency) to launch.
+From source, with the HipKittens submodule:
 
 ```bash
 git clone --recursive https://github.com/vivienfanghuagood/hk-dsl.git && cd hk-dsl
