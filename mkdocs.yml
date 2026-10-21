@@ -1,0 +1,100 @@
+# The documentation site: docs/ rendered by MkDocs Material.
+#   pip install -r tools/docs/requirements.txt && mkdocs serve    # http://127.0.0.1:8000
+#   mkdocs build                                                  # into site/
+# .github/workflows/docs.yml builds it on every push that touches the docs and
+# keeps the result as an artifact; publishing to GitHub Pages is off until the
+# repository enables Pages and sets the variable HK_DOCS_PAGES to "true".
+site_name: hk-dsl
+site_description: Fast AMD GPU kernels in a few lines of Python -- tile kernels for Radeon RDNA3 and Instinct CDNA4 on HipKittens
+site_url: https://vivienfanghuagood.github.io/hk-dsl/
+repo_url: https://github.com/vivienfanghuagood/hk-dsl
+repo_name: vivienfanghuagood/hk-dsl
+edit_uri: edit/main/docs/
+docs_dir: docs
+site_dir: site
+
+theme:
+  name: material
+  features:
+    - navigation.sections
+    - navigation.top
+    - navigation.indexes
+    - search.highlight
+    - content.code.copy
+    - toc.follow
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: blue grey
+      accent: blue
+      toggle: {icon: material/weather-night, name: Dark mode}
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: blue grey
+      accent: blue
+      toggle: {icon: material/weather-sunny, name: Light mode}
+
+# Links from docs/ to files outside it (llms.txt, examples/, bench/dx/, the
+# skill) point at the repository on GitHub; see the hook.
+hooks:
+  - tools/docs/mkdocs_hooks.py
+
+markdown_extensions:
+  - admonition
+  - attr_list
+  - md_in_html
+  - tables
+  - toc:
+      permalink: true
+  - pymdownx.details
+  - pymdownx.highlight
+  - pymdownx.superfences:
+      custom_fences:
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:pymdownx.superfences.fence_code_format
+
+validation:
+  links:
+    anchors: warn
+
+# The history chapters are reached from the record's index and from the pages
+# that cite them, not listed one by one.
+not_in_nav: |
+  /history/[0-9]*.md
+
+nav:
+  - Overview: README.md
+  - Getting started: getting-started.md
+  - Templates:
+      - Elementwise and rowwise: templates/elementwise-rowwise.md
+      - GEMM with an epilogue: templates/gemm.md
+  - hk.check: check.md
+  - The language: language.md
+  - API reference:
+      - api/README.md
+      - hk: api/hk.md
+      - hk.math: api/hk.math.md
+      - hk.arch: api/hk.arch.md
+      - hk.lds: api/hk.lds.md
+      - hk.group: api/hk.group.md
+      - hk.collective: api/hk.collective.md
+      - hk.templates: api/hk.templates.md
+      - hk.ops: api/hk.ops.md
+      - hk.check: api/hk.check.md
+      - hk.target: api/hk.target.md
+  - Performance: performance.md
+  - How it works:
+      - The IR: ir.md
+      - The runtime: runtime.md
+      - Building: building.md
+      - Testing: testing.md
+  - Serving engines:
+      - Integration: integration.md
+      - "For agents: kernels in an engine": agents.md
+  - Design:
+      - The DX goal: design/dx-goal.md
+      - CDNA3/4: design/cdna.md
+      - HipKittens on CDNA4: design/cdna-hipkittens-ops.md
+      - Cross-architecture API audit: dx/api-consistency.md
+  - Development record: history/README.md

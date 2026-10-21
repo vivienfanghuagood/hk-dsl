@@ -1,0 +1,50 @@
+name: Docs site
+
+# Builds docs/ into a static site with MkDocs Material (mkdocs.yml) on a hosted
+# runner -- no GPU, no hk build -- and keeps it as an artifact, so a change
+# that breaks the site shows here. Publishing to GitHub Pages is a separate
+# job that stays off until the repository enables Pages (Settings > Pages >
+# Source: GitHub Actions) and sets the repository variable HK_DOCS_PAGES to
+# "true".
+
+on:
+  push:
+    paths: ["docs/**", "mkdocs.yml", "tools/docs/**", ".github/workflows/docs.yml"]
+  pull_request:
+    paths: ["docs/**", "mkdocs.yml", "tools/docs/**", ".github/workflows/docs.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: docs-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -r tools/docs/requirements.txt
+      - run: mkdocs build
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+
+  deploy:
+    needs: build
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request' && vars.HK_DOCS_PAGES == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
