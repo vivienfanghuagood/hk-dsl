@@ -1,1 +1,2 @@
+# Text files are stored with LF line endings, whatever the editor wrote
 * text=auto eol=lf
