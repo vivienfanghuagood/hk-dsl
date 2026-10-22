@@ -47,8 +47,8 @@ from .space import Candidate
 
 #: Defaults: candidates compiled from the generated space (besides the seeds),
 #: per kind; rounds per rung; local-search moves per incumbent.
-POOL_PER_KIND = 12
-EXPLORE = 4
+POOL_PER_KIND = 16
+EXPLORE = 6
 RUNG_ROUNDS = (3, 6, 10)
 LOCAL_MOVES = 12
 LOCAL_ITERS = 6
@@ -76,6 +76,7 @@ class Result:
     wall_seconds: float = 0.0
     compile_seconds: float = 0.0
     load_seconds: float = 0.0
+    phases: Dict[str, float] = field(default_factory=dict)
     log: List[str] = field(default_factory=list)
     timed: Dict[str, Optional[float]] = field(default_factory=dict)
     refused: Dict[str, str] = field(default_factory=dict)
@@ -112,7 +113,8 @@ class Result:
         c = self.counts
         lines.append(f"  {c.get('pool', 0)} compiled of {c.get('legal', 0)} legal "
                      f"({c.get('generated', 0)} generated), {c.get('refused', 0)} refused by the "
-                     f"compile, {c.get('wrong', 0)} wrong, {c.get('timed', 0)} timed; "
+                     f"compile, {c.get('failed', 0)} at their first call, {c.get('wrong', 0)} "
+                     f"wrong, {c.get('timed', 0)} timed; "
                      f"{self.gpu_seconds:.1f} GPU-s, {self.wall_seconds:.0f} s wall "
                      f"({self.load_seconds:.0f} s loading)")
         if self.record:
@@ -134,7 +136,7 @@ class Result:
             counts=self.counts, gpu_seconds=round(self.gpu_seconds, 2),
             wall_seconds=round(self.wall_seconds, 1),
             compile_seconds=round(self.compile_seconds, 1),
-            load_seconds=round(self.load_seconds, 1), record=self.record,
+            load_seconds=round(self.load_seconds, 1), phases=self.phases, record=self.record,
             timed=self.timed,
             refused=dict(list(self.refused.items())[:40]))
 
@@ -270,7 +272,7 @@ class Search:
 
         # Check every candidate as its build lands; the route first.
         runners: Dict[Candidate, Callable] = {}
-        wrong = refused = 0
+        wrong = refused = failed = 0
         for c in pool:
             why = compiler.result(c)
             if why:
@@ -282,15 +284,17 @@ class Search:
                 self._load(bench, fn, res)
                 err = bench.check(fn)
             except Exception as e:  # noqa: BLE001 -- one bad candidate is one row
+                # Refused at its first call (a factory's own check that the
+                # schedule's check() let through), or it raised.
                 res.refused[c.label] = f"{type(e).__name__}: {str(e).splitlines()[0][:160]}"
-                wrong += 1
+                failed += 1
                 continue
             if not err < 2e-2:
                 res.refused[c.label] = f"wrong: relative error {err:.3g} against fp32"
                 wrong += 1
                 continue
             runners[c] = fn
-        res.counts.update(refused=refused, wrong=wrong)
+        res.counts.update(refused=refused, wrong=wrong, failed=failed)
         if cur not in runners:
             self._say(res, f"  the route {cur} itself did not run: "
                            f"{res.refused.get(cur.label, '?')}")
@@ -298,6 +302,7 @@ class Search:
             res.gpu_seconds = bench.gpu_seconds - gpu0
             return res
 
+        res.phases["check"] = round(bench.gpu_seconds - gpu0, 2)
         # Successive halving.
         alive = list(runners)
         times: Dict[Candidate, float] = {}
@@ -321,6 +326,7 @@ class Search:
                 break
         res.counts["timed"] = len(times)
 
+        res.phases["rungs"] = round(bench.gpu_seconds - gpu0 - sum(res.phases.values()), 2)
         # Local search around the best two, while it improves.
         tried = set(runners) | set(c for c in pool)
         for it in range(self.local_iters):
@@ -390,6 +396,7 @@ class Search:
         runner_up = others[1] if len(others) > 1 else None
         res.champion = champ
 
+        res.phases["local"] = round(bench.gpu_seconds - gpu0 - sum(res.phases.values()), 2)
         # Decide, then confirm, with the baselines in the same sets.
         arms: Dict[Any, Callable] = {cur: runners[cur]}
         if champ is not None:
@@ -430,6 +437,7 @@ class Search:
                 route_ratio=[_r(x) for x in stats.ratio_band(b, sets[cur], floor)])
         res.timed = {str(c): _r(t) for c, t in sorted(times.items(), key=lambda x: x[1])[:12]}
         res.gpu_seconds = bench.gpu_seconds - gpu0
+        res.phases["decide"] = round(res.gpu_seconds - sum(res.phases.values()), 2)
         res.wall_seconds = time.perf_counter() - t_wall
         res.compile_seconds = getattr(compiler, "cpu_seconds", 0.0)
         res.load_seconds = getattr(bench, "load_seconds", 0.0) - load0

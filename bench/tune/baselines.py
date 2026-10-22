@@ -48,6 +48,16 @@ def _tunableop(a, b, out):
     return F.linear(a, b)
 
 
+def reset() -> None:
+    """TunableOp off again. It is a process-wide switch: left on after a
+    scoring pass, every torch GEMM after it -- the next shape's fp32
+    reference, the tuner's F.linear -- would be tuned at its first call, on
+    the GPU budget of whatever runs next."""
+    if _TUNABLE["on"]:
+        torch.cuda.tunable.enable(False)
+        _TUNABLE["on"] = False
+
+
 def _setup_tunableop(path: str) -> None:
     t = torch.cuda.tunable
     t.set_filename(path)

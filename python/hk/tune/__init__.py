@@ -77,16 +77,32 @@ def _meta(arch: str) -> dict:
 
 
 def torch_baselines(names: Iterable[str] = ("torch",)) -> Dict[str, Callable]:
-    """Baselines hk.tune can time beside the search without extra packages:
-    "torch" is F.linear (hipBLASLt on ROCm)."""
+    """Baselines to time beside the decision, by name: "torch" is F.linear
+    (hipBLASLt on ROCm); the tuning benchmark's others (tunableop, aiter,
+    aiter_triton, flydsl, hipkittens, triton -- bench/tune/baselines.py) when
+    this runs from a checkout that has them. An unavailable one is skipped
+    with a message."""
     import torch.nn.functional as F  # noqa: N812,PLC0415
 
     out: Dict[str, Callable] = {}
+    rest = []
     for n in names:
         if n == "torch":
             out["torch"] = lambda a, b, o: F.linear(a, b)
         elif n:
-            raise ValueError(f"hk.tune: unknown baseline {n!r} (bench/tune/baselines.py has more)")
+            rest.append(n)
+    if rest:
+        try:
+            from bench.tune import baselines as more  # noqa: PLC0415
+        except ImportError:
+            raise ValueError(f"hk.tune: baselines {rest} need bench/tune (run from a "
+                             f"checkout of hk-dsl, with its root on sys.path)") from None
+        from ..target import current_arch  # noqa: PLC0415
+
+        got, why = more.available(current_arch(), rest)
+        for n, reason in why.items():
+            print(f"hk.tune: baseline {n} not timed: {reason}")
+        out.update(got)
     return out
 
 
@@ -164,7 +180,9 @@ def main(argv=None) -> int:
     ap.add_argument("--m", default="1,16,128,512,2048,8192", help="Ms for --model")
     ap.add_argument("--layers", default="", help="subset of qkv,o,gate_up,down,lm_head")
     ap.add_argument("--budget", type=float, default=BUDGET, help="GPU-seconds per shape")
-    ap.add_argument("--baselines", default="torch", help="comma list (torch) or '' for none")
+    ap.add_argument("--baselines", default="torch",
+                    help="comma list: torch, and from a checkout bench/tune's tunableop, "
+                         "aiter, aiter_triton, flydsl, hipkittens, triton; '' for none")
     ap.add_argument("--no-save", action="store_true", help="measure, but write no record")
     ap.add_argument("--json", default="", help="write every result here")
     ap.add_argument("-j", "--jobs", type=int, default=32, help="hipcc processes at once")

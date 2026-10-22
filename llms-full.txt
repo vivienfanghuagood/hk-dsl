@@ -5339,8 +5339,11 @@ hk.tune.torch_baselines(names: Iterable[str] = ('torch',)) -> Dict[str, Callable
 
 *New after 0.4.0* (the `hk.tune` module is not in the 0.4.0 wheel)
 
-Baselines hk.tune can time beside the search without extra packages:
-"torch" is F.linear (hipBLASLt on ROCm).
+Baselines to time beside the decision, by name: "torch" is F.linear
+(hipBLASLt on ROCm); the tuning benchmark's others (tunableop, aiter,
+aiter_triton, flydsl, hipkittens, triton -- bench/tune/baselines.py) when
+this runs from a checkout that has them. An unavailable one is skipped
+with a message.
 
 ## `hk.tune.search`
 
@@ -5350,7 +5353,7 @@ that the acceptance rule believes -- or to "the route stands".
 ### `hk.tune.search.Search`
 
 ```python
-class hk.tune.search.Search(space, *, budget: float = 60.0, min_gain: float = 0.01, k_noise: float = 2.0, pool_per_kind: int = 12, explore: int = 4, max_seeds: Optional[int] = None, rung_rounds: Sequence[int] = (3, 6, 10), local_moves: int = 12, local_iters: int = 6, decide_sets: int = 3, decide_rounds: int = 7, confirm_sets: int = 2, log: Optional[Callable[[str], None]] = None)
+class hk.tune.search.Search(space, *, budget: float = 60.0, min_gain: float = 0.01, k_noise: float = 2.0, pool_per_kind: int = 16, explore: int = 6, max_seeds: Optional[int] = None, rung_rounds: Sequence[int] = (3, 6, 10), local_moves: int = 12, local_iters: int = 6, decide_sets: int = 3, decide_rounds: int = 7, confirm_sets: int = 2, log: Optional[Callable[[str], None]] = None)
 ```
 
 *New after 0.4.0* (the `hk.tune.search` module is not in the 0.4.0 wheel)
@@ -5360,7 +5363,7 @@ One shape's search; see the module docstring.
 ### `hk.tune.search.Result`
 
 ```python
-class hk.tune.search.Result(m: int, n: int, k: int, arch: str, route: Candidate, champion: Optional[Candidate] = None, decision: Optional[stats.Decision] = None, route_ms: Optional[float] = None, ms: Optional[float] = None, baselines: Dict[str, Dict[str, Any]] = <factory>, counts: Dict[str, int] = <factory>, gpu_seconds: float = 0.0, wall_seconds: float = 0.0, compile_seconds: float = 0.0, load_seconds: float = 0.0, log: List[str] = <factory>, timed: Dict[str, Optional[float]] = <factory>, refused: Dict[str, str] = <factory>, record: str = '') -> None
+class hk.tune.search.Result(m: int, n: int, k: int, arch: str, route: Candidate, champion: Optional[Candidate] = None, decision: Optional[stats.Decision] = None, route_ms: Optional[float] = None, ms: Optional[float] = None, baselines: Dict[str, Dict[str, Any]] = <factory>, counts: Dict[str, int] = <factory>, gpu_seconds: float = 0.0, wall_seconds: float = 0.0, compile_seconds: float = 0.0, load_seconds: float = 0.0, phases: Dict[str, float] = <factory>, log: List[str] = <factory>, timed: Dict[str, Optional[float]] = <factory>, refused: Dict[str, str] = <factory>, record: str = '') -> None
 ```
 
 *New after 0.4.0* (the `hk.tune.search` module is not in the 0.4.0 wheel)

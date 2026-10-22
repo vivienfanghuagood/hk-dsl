@@ -80,6 +80,7 @@ def main(argv=None) -> int:
     for m, n, k in todo:
         t0 = time.time()
         row = dict(m=m, n=n, k=k, arch=arch, split=args.split, meta=meta)
+        B.reset()
         if not args.score_only:
             res = T.tune(m, n, k, budget=args.budget, compiler=comp,
                          baselines=T.torch_baselines(), log=lambda s: print(s, flush=True))
@@ -109,6 +110,7 @@ def main(argv=None) -> int:
             got = bench.time(ok, args.rounds)
             for a, ts in got.items():
                 sets[a].append(ts)
+        B.reset()
         med = {a: statistics.median(stats.summary(s, floor)[0] for s in v) for a, v in sets.items()}
         spread = {a: statistics.median(stats.summary(s, floor)[1] for s in v) for a, v in sets.items()}
         base = {a: t for a, t in med.items() if a.startswith("base:")}

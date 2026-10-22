@@ -177,6 +177,12 @@ class ScheduleSpace:
     #: values ({knob: [values]}): the RDNA GEMM's seed space holds its block
     #: and warp grid at the default, which leaves the model nothing to order.
     AXES = {
+        # K splits that are not powers of two: at 1024x4608x18432 the 256x256
+        # pingpong has 72 blocks, 144 with two shares and 288 with four --
+        # 1.1 waves of 256 CUs -- and 216 with three.
+        "pp": dict(splits=[1, 2, 3, 4, 6]),
+        "dp": dict(block_m=[16, 32, 64, 128, 256], block_n=[32, 64, 96, 128, 192, 224, 256],
+                   splits=[1, 2, 3, 4, 6, 8]),
         "rdna": dict(block_m=[32, 64, 128, 256], block_n=[64, 128, 256], k_step=[32, 64],
                      warps=[4, 8], warp_rows=[1, 2, 4, 8], n_split=[1, 2, 4],
                      lds_buffers=[1, 2], wgm=[8], write_pos=[2]),
