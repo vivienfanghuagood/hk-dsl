@@ -14,4 +14,5 @@ Generated from the code by `scripts/gen_api_docs.py`: every public name's signat
 - [`hk.templates`](hk.templates.md) -- 14 entries
 - [`hk.schedules`: schedules as data](hk.schedules.md) -- 19 entries
 - [`hk.check`](hk.check.md) -- 10 entries
+- [`hk.profile`](hk.profile.md) -- 22 entries
 - [`hk.target`: the facts per architecture](hk.target.md) -- 3 entries

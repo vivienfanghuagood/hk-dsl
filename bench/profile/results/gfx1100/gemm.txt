@@ -1,0 +1,20 @@
+hk.profile matmul  gfx1100 (AMD Radeon Graphics, 96 CUs)  hk 0.5.0  rocprofv3 1.1.0
+  call      bf16[4096,4096], bf16[4096,4096]  1546.59 us of kernels a call, 1 kernel(s)
+  sources   timing: rocprofv3 --kernel-trace; counters: unavailable (see notes); att: rocprofv3 --att (thread trace, one CU); isa: llvm-objdump of the code object
+  kernel gemm_bf16_128x128x64_w8r4_s2_d16_g8_p2_l1_kernel  1546.59 us ±0.2%
+    grid      1024 workgroups x 256 threads (8 waves), LDS 32768 B, 218 VGPR -> 3 a WGP (bound by registers); 7.111 rounds of 48 WGPs
+    roofline  137.4 GFLOP -> 88.87 TFLOP/s = 72% of the bf16 matrix peak; 101 MB -> 65.09 GB/s = 3% of the cache-resident rate; 8% of DRAM; 1365 FLOP/B past the L2 (DRAM ridge 141.9)
+    busy      matrix core 72% busy, occupancy 6 waves/SIMD (theoretical)
+    loop      0x25bc-0x2940, 130 instructions: 32 wmma, 2 valu, 9 salu, 8 vmem_load, 48 ds_read, 8 ds_write, 2 barrier, 1 branch, 2 other, 18 waitcnt (9 lgkm, 9 vmem); 92% of a wave's cycles
+    stalls    (main loop, thread trace) vmem_wait 79%, lgkm_wait 8%, matrix_core 7%, lds_issue 6%, vmem_issue 0%, scalar 0%
+    matrix    (thread trace, 1 SIMDs) busy 73%; idle with the waves at vmem_wait 17%, no_instruction 9%; idle by part main_loop 24%, prologue 2%, epilogue 1%
+    prologue  704 instructions: 456 valu, 2 valu_trans, 143 salu, 12 smem, 16 vmem_load, 8 ds_write, 1 barrier, 11 branch, 44 other, 11 waitcnt (7 lgkm, 2 other, 2 vmem); 6% of a wave's cycles
+    drain     196 instructions: 32 wmma, 76 valu, 13 salu, 1 smem, 15 vmem_store, 48 ds_read, 11 waitcnt (2 vmem, 9 lgkm); 1% of a wave's cycles
+    epilogue  292 instructions: 107 valu, 8 salu, 49 vmem_store, 1 nop, 127 other; 1% of a wave's cycles
+    verdict   compute-bound: matrix core 72% busy, 89 TFLOP/s = 72% of the bf16 peak; matrix core idle at vmem_wait 17%; tail: 7.11 rounds of 48 WGPs, the last fills 16/144 (11% idle); matrix core idle at no_instruction 9%
+  vs        hipblaslt takes 1.288x the time of matmul (interleaved in one process: 2086.6 vs 1612.5 us, band 3%); profiled calls: hipblaslt 1987.8 us vs matmul 1546.6 us (1.285x the time); matrix core idle after the main loop (drain + epilogue) 1.1% -> 1.4% of the kernel; matrix core busy 72% -> 57%; waves a SIMD 6 -> 4; workgroups 1,024 -> 1,849; loop instructions per matrix one 3.062 -> 4.056
+  hipblaslt: latency-bound (neither roof): 57% of the matrix peak, 2% of the cache-resident rate (past the L2); matrix core 57% busy; matrix core idle at vmem_wait 50%; tail: 9.63 rounds of 48 WGPs, the last fills 121/192 (4% idle)
+  note: the first counter pass read GRBM_GUI_ACTIVE = 0 for kernels that ran: the remaining counter passes were skipped
+  note: the hardware counters read zero here (GRBM_GUI_ACTIVE = 0 for kernels that ran): counter collection does not work on this machine, so they are ignored; timing, the thread trace and the ISA remain
+VERDICT compute-bound: matrix core 72% busy, 89 TFLOP/s = 72% of the bf16 peak; matrix core idle at vmem_wait 17%; tail: 7.11 rounds of 48 WGPs, the last fills 16/144 (11% idle); matrix core idle at no_instruction 9%
+  (27 s)

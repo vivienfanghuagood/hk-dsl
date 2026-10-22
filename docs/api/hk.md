@@ -2,7 +2,7 @@
 
 # `hk`: kernels, types, values
 
-The language: what `import hk` gives a kernel author. A kernel body is traced once per set of constexprs; [the language](../language.md) says how it is written, this page what each name is. The namespaces have pages of their own: [hk.math](hk.math.md), [hk.arch](hk.arch.md), [hk.lds](hk.lds.md), [hk.group](hk.group.md), [hk.collective](hk.collective.md); the shipped kernels are [hk.ops](hk.ops.md), the templates [hk.templates](hk.templates.md), the checker [hk.check](hk.check.md), the per-arch facts [hk.target](hk.target.md).
+The language: what `import hk` gives a kernel author. A kernel body is traced once per set of constexprs; [the language](../language.md) says how it is written, this page what each name is. The namespaces have pages of their own: [hk.math](hk.math.md), [hk.arch](hk.arch.md), [hk.lds](hk.lds.md), [hk.group](hk.group.md), [hk.collective](hk.collective.md); the shipped kernels are [hk.ops](hk.ops.md), the templates [hk.templates](hk.templates.md), the checker [hk.check](hk.check.md), the profiler [hk.profile](hk.profile.md), the per-arch facts [hk.target](hk.target.md).
 
 - [`hk.kernel`](#hkkernel)
 - [`hk.func`](#hkfunc)
@@ -1546,6 +1546,7 @@ are bounded: any non-empty length. head_dim is 64 or 128 on both.
 ## Tools
 
 - `hk.check(fn, reference, inputs)`, `python -m hk.check`: correctness, resources and timing in one call: [hk.check](hk.check.md), [docs/check.md](../check.md).
+- `hk.profile(fn, inputs)`, `python -m hk.profile`: why it runs at that speed -- counters, the thread trace, the main loop's instructions and a verdict: [hk.profile](hk.profile.md), [docs/profile.md](../profile.md).
 
 ## Also exported
 

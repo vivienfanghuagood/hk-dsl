@@ -1,0 +1,20 @@
+hk.profile matmul  gfx950 (AMD Radeon Graphics, 256 CUs)  hk 0.5.0  rocprofv3 1.1.0
+  call      bf16[2048,4096], bf16[16384,4096]  294.98 us of kernels a call, 1 kernel(s)
+  sources   timing: rocprofv3 --kernel-trace; counters: rocprofv3 --pmc, 5 passes; att: rocprofv3 --att (thread trace, one CU); isa: llvm-objdump of the code object
+  kernel gemm_cdna_dp_128x128x64_s4_w2x2_g8_x32_kernel  294.98 us ±0.1%
+    grid      2048 workgroups x 256 threads (4 waves), LDS 131072 B, 110 VGPR + 92 AGPR -> 1 a CU (bound by lds); 8.0 rounds of 256 CUs
+    roofline  274.9 GFLOP -> 931.86 TFLOP/s = 38% of the bf16 matrix peak; 873 MB past the L2 -> 2.96 TB/s = 32% of the cache-resident rate (4.0x the call's bytes); 315 FLOP/B past the L2 (DRAM ridge 375.76)
+    busy      matrix core 43% busy, 0.94 of 1 waves/SIMD achieved, CUs busy 94%, clock 2.04 GHz
+    waves     waiting on a dependency 15%, waiting to issue 43%, issuing 42%, waiting to issue LDS 6% of wave time (counters)
+    memory    LDS bank conflicts 0.0% of LDS cycles; L2 hit 81%; latency vmem 580, lds 61 cycles
+    loop      0x22d8-0x2e64, 439 instructions: 128 mfma, 76 valu, 116 salu, 32 vmem_lds, 64 ds_read, 4 barrier, 1 branch, 6 nop, 12 waitcnt (8 lgkm, 4 vmem); 87% of a wave's cycles
+    stalls    (main loop, thread trace) matrix_core 32%, vmem_issue 23%, lds_issue 13%, scalar 11%, valu 9%, lgkm_wait 6%
+    matrix    (thread trace, 4 SIMDs) busy 43%; idle with the waves at vmem_issue 21%, valu 8%, scalar 7%, lds_issue 6%, lgkm_wait 5%, barrier 4%; idle by part main_loop 46%, prologue 7%, drain 3%, epilogue 1%; no wave 0%
+    prologue  515 instructions: 191 valu, 2 valu_trans, 261 salu, 8 smem, 32 vmem_lds, 16 ds_read, 1 barrier, 1 branch, 3 waitcnt (2 lgkm, 1 vmem); 7% of a wave's cycles
+    drain     559 instructions: 128 mfma, 265 valu, 40 salu, 1 smem, 57 vmem_store, 48 ds_read, 4 barrier, 4 nop, 12 waitcnt (9 lgkm, 3 vmem); 5% of a wave's cycles
+    epilogue  290 instructions: 18 valu, 7 vmem_store, 264 nop, 1 other; 1% of a wave's cycles
+    verdict   latency-bound (neither roof): 38% of the matrix peak, 32% of the cache-resident rate (past the L2); matrix core 43% busy; issue-bound at 1 wave(s) a SIMD (lds): the matrix core idles 35% while its waves issue the loop's 2.4 other instructions per matrix one; matrix core idle before the main loop 7% (one workgroup a CU: not hidden); matrix core idle after the main loop 3% (one workgroup a CU: not hidden); L2 re-fetch: 4.0x the call's bytes cross it
+  vs        pp takes 0.590x the time of matmul (interleaved in one process: 181.8 vs 312.5 us, band 4%); profiled calls: pp 185.8 us vs matmul 295.0 us (0.630x the time); matrix core idle after the main loop (drain + epilogue) 3.2% -> 5.0% of the kernel; matrix core busy 43% -> 75%; matrix idle at VALU 8% -> 2%; VALU instructions 3.002e+07 -> 2.062e+07; waves a SIMD 1 -> 2; workgroups 2,048 -> 512; loop instructions per matrix one 2.43 -> 1.57; CUs busy 94% -> 88%
+  pp: compute-bound: matrix core 75% busy, 1479 TFLOP/s = 60% of the bf16 peak (77% of it at the 1.87 GHz measured); matrix core idle at barrier 9%; matrix core idle before the main loop 6% (one workgroup a CU: not hidden); matrix core idle at vmem_issue 5%; L2 re-fetch: 2.1x the call's bytes cross it
+VERDICT latency-bound (neither roof): 38% of the matrix peak, 32% of the cache-resident rate (past the L2); matrix core 43% busy; issue-bound at 1 wave(s) a SIMD (lds): the matrix core idles 35% while its waves issue the loop's 2.4 other instructions per matrix one; matrix core idle before the main loop 7% (one workgroup a CU: not hidden); matrix core idle after the main loop 3% (one workgroup a CU: not hidden); L2 re-fetch: 4.0x the call's bytes cross it
+  (48 s)

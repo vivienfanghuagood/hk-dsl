@@ -450,7 +450,8 @@ def page_hk(since: Since) -> Page:
              "[hk.lds](hk.lds.md), [hk.group](hk.group.md), "
              "[hk.collective](hk.collective.md); the shipped kernels are "
              "[hk.ops](hk.ops.md), the templates [hk.templates](hk.templates.md), "
-             "the checker [hk.check](hk.check.md), the per-arch facts "
+             "the checker [hk.check](hk.check.md), the profiler "
+             "[hk.profile](hk.profile.md), the per-arch facts "
              "[hk.target](hk.target.md).")
     groups = [
         ("Kernels", ["kernel", "func", "Kernel", "TracedKernel", "Tensor", "Constexpr"]),
@@ -523,7 +524,10 @@ def page_hk(since: Since) -> Page:
     p.h2("Tools")
     p.para("- `hk.check(fn, reference, inputs)`, `python -m hk.check`: correctness, "
            "resources and timing in one call: [hk.check](hk.check.md), "
-           "[docs/check.md](../check.md).")
+           "[docs/check.md](../check.md).\n"
+           "- `hk.profile(fn, inputs)`, `python -m hk.profile`: why it runs at that "
+           "speed -- counters, the thread trace, the main loop's instructions and a "
+           "verdict: [hk.profile](hk.profile.md), [docs/profile.md](../profile.md).")
     documented |= {"autotune", "codegen", "compiler", "dsl", "ops", "runtime", "target",
                    "__version__"}
     missing = sorted(set(hk.__all__) - documented)
@@ -874,6 +878,71 @@ TARGET_FIELDS = [
 ]
 
 
+def page_profile(since: Since) -> Page:
+    import hk.profile as P
+    from hk.profile import analyze as A
+    from hk.profile import counters as K
+    from hk.profile import isa as I
+
+    p = Page("hk.profile.md", "`hk.profile`",
+             "Why a kernel runs at the speed it does: rocprofv3's counters and thread "
+             "trace, the disassembled code object and a verdict; the guide, with the "
+             "JSON schema, is [docs/profile.md](../profile.md). `hk.profile(...)` is "
+             "`hk.profile.profile(...)`.")
+    for n in ["profile", "Profile", "replay", "compare", "call_verdict", "SCHEMA",
+              "COMPARED"]:
+        obj = getattr(P, n)
+        if isinstance(obj, (int, tuple)):
+            p.lines.append(f"### `hk.profile.{n}`\n")
+            p.toc.append((3, f"hk.profile.{n}", _anchor(f"hk.profile.{n}")))
+            p.lines.append(since.mark("hk.profile", n) + "\n" if since.mark("hk.profile", n)
+                           else "")
+            p.para("```python\n" + json.dumps(obj, indent=1, default=str) + "\n```")
+            continue
+        p.entry(f"hk.profile.{n}", obj, display=f"hk.profile.{n}",
+                mark=since.mark("hk.profile", n, obj))
+        if n == "Profile":
+            for mn, mv, _ in members(obj):
+                p.entry(f"hk.profile.Profile.{mn}", mv, display=f"Profile.{mn}", level=4,
+                        signature=not isinstance(mv, property))
+    p.h2("The parts")
+    for mod, names in ((A, ["kernel_report", "findings", "verdict", "grid_fit", "KINDS",
+                            "CEILINGS"]),
+                       (K, ["derive", "PASSES", "CANNOT"]),
+                       (I, ["analyze", "classify", "mma_flops", "code_object",
+                            "disassemble", "CLASSES"])):
+        short = mod.__name__
+        for n in names:
+            obj = getattr(mod, n)
+            if isinstance(obj, (dict, tuple)):
+                p.lines.append(f"### `{short}.{n}`\n")
+                p.toc.append((3, f"{short}.{n}", _anchor(f"{short}.{n}")))
+                p.para("```python\n" + json.dumps(obj, indent=1, default=str) + "\n```")
+                continue
+            p.entry(f"{short}.{n}", obj, display=f"{short}.{n}",
+                    mark=since.mark(short, n, obj))
+    p.h2("Command line")
+    from hk.profile.__main__ import build_parser  # noqa: PLC0415
+
+    p.para("`python -m hk.profile TARGET [options]`; `python -m hk.profile --help` "
+           "prints the forms TARGET and `--inputs` take.")
+    rows = ["| option | what |", "|---|---|"]
+    for a in build_parser()._actions:
+        if not a.option_strings:
+            rows.append(f"| `{a.dest}` | {a.help} |")
+            continue
+        if "--help" in a.option_strings:
+            continue
+        meta = "" if a.nargs == 0 else " " + (
+            a.metavar or ("{" + ",".join(a.choices) + "}" if a.choices else a.dest.upper()))
+        opt = ", ".join(f"`{o}{meta}`" for o in a.option_strings)
+        dflt = (f" (default {a.default})" if a.default not in (None, False, [], "==SUPPRESS==")
+                and a.nargs != 0 else "")
+        rows.append(f"| {opt} | {(a.help or '').replace('|', chr(92) + '|')}{dflt} |")
+    p.para("\n".join(rows))
+    return p
+
+
 def page_target(since: Since) -> Page:
     import hk.target as T
 
@@ -929,6 +998,7 @@ def build_pages() -> List[Page]:
     pages.append(page_templates(since))
     pages.append(page_schedules(since))
     pages.append(page_check(since))
+    pages.append(page_profile(since))
     pages.append(page_target(since))
     for pg in pages:
         _add_toc(pg)
