@@ -173,9 +173,23 @@ class ScheduleSpace:
                    self.cand(S.Decode.base_for(m, n, k, self.arch), "decode")]
         return [c for c in out if not self.check(c, m, n, k)]
 
+    #: Per family, axes the generated space takes beyond hk.schedules' seed
+    #: values ({knob: [values]}): the RDNA GEMM's seed space holds its block
+    #: and warp grid at the default, which leaves the model nothing to order.
+    AXES = {
+        "rdna": dict(block_m=[32, 64, 128, 256], block_n=[64, 128, 256], k_step=[32, 64],
+                     warps=[4, 8], warp_rows=[1, 2, 4, 8], n_split=[1, 2, 4],
+                     lds_buffers=[1, 2], wgm=[8], write_pos=[2]),
+    }
+
     def generate(self, m: int, n: int, k: int) -> List[Candidate]:
         S = self._S()
-        return [self.cand(s) for s in S.space(m, n, k, self.arch)]
+        out = []
+        for fam in S.families_for(self.arch):
+            ax = self.AXES.get(fam.family)
+            got = fam.space(m, n, k, self.arch, axes=ax) if ax else fam.space(m, n, k, self.arch)
+            out += [self.cand(s) for s in got]
+        return out
 
     def check(self, c: Candidate, m: int, n: int, k: int) -> str:
         try:

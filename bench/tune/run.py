@@ -121,11 +121,13 @@ def main(argv=None) -> int:
             if h in sets and "base:torch" in sets:
                 r = stats.ratio_band(sets["base:torch"], sets[h], floor)
                 score[h + "_vs_torch"] = [round(x, 4) for x in r]
-        name = hk_gemm.user_route(m, n, k) if arch != "gfx950" else None
         if arch == "gfx950":
             from hk.ops import gemm_cdna  # noqa: PLC0415
 
             name = gemm_cdna.route(m, n, k)
+        else:
+            u = hk_gemm.user_route(m, n, k)
+            name = u[0] if u else str(cur)
         row.update(route_before=str(cur), route_after=str(name), errors=errs,
                    ms={a: round(t, 6) for a, t in med.items()},
                    spread={a: round(s, 4) for a, s in spread.items()},

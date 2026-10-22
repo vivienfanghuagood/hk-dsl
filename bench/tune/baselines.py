@@ -9,8 +9,10 @@ fn(a, b, out) -> C for C = a @ b.T (b as (N, K), F.linear's layout).
                    (asm, hipBLASLt solutions, FlyDSL, Triton, skinny) where it
                    has the shape, else its default; gfx950, vLLM ROCm image
     aiter_triton   aiter's Triton gemm_a16w16 with aiter's per-arch configs
-    flydsl         FlyDSL's gfx950 GEMM (gemm_a16w16_gfx950, as aiter ships
-                   it), its default 256x256 half-tile-interleaved schedule
+    flydsl         FlyDSL's GEMM: on gfx950 gemm_a16w16_gfx950 as aiter ships
+                   it, its default 256x256 half-tile-interleaved schedule; on
+                   gfx1100 its RDNA3 GEMM at its dispatcher's tile
+                   (hk.integration.flydsl_gemm, FLYDSL_ROOT)
     hipkittens     HipKittens' CDNA4 GEMM (hk.ops.hipkittens), where it takes
                    the shape
     triton         a standard autotuned Triton matmul (bench/tune/triton_gemm)
@@ -79,12 +81,25 @@ def available(arch: str, want=ALL) -> Tuple[Dict[str, Callable], Dict[str, str]]
                 from aiter.ops.triton.gemm.basic.gemm_a16w16 import gemm_a16w16  # noqa: PLC0415
 
                 fns[name] = lambda a, b, out: gemm_a16w16(a, b, dtype=torch.bfloat16, y=out)
-            elif name == "flydsl":
-                if arch != "gfx950":
-                    raise RuntimeError("FlyDSL's gfx950 GEMM (the RDNA one is hk's route overlay)")
+            elif name == "flydsl" and arch == "gfx950":
                 from aiter.ops.flydsl.kernels.gemm_a16w16_gfx950 import gemm_a16w16 as fly  # noqa: PLC0415
 
                 fns[name] = lambda a, b, out: fly(a, b.t(), out=out, layout="nt")
+            elif name == "flydsl":
+                # FlyDSL's RDNA3 GEMM at the tile its dispatcher picks, as hk's
+                # route overlay calls it (hk.integration.flydsl_gemm).
+                if not os.environ.get("FLYDSL_ROOT") and os.path.isdir("/workspace/FlyDSL"):
+                    os.environ["FLYDSL_ROOT"] = "/workspace/FlyDSL"
+                from hk.integration import flydsl_gemm  # noqa: PLC0415
+
+                if not flydsl_gemm.available():
+                    raise RuntimeError("hk.integration.flydsl_gemm is not available here")
+
+                def fly_run(a, b, out, fg=flydsl_gemm):
+                    if fg.variant(a.shape[0], b.shape[0], a.shape[1]) is None:
+                        raise ValueError("no FlyDSL tile divides this shape")
+                    return fg.run(a, b, out)
+                fns[name] = fly_run
             elif name == "hipkittens":
                 if arch != "gfx950":
                     raise RuntimeError("HipKittens' GEMM here is CDNA4's")

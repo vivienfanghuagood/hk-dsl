@@ -32,18 +32,29 @@ TOL = 2e-2
 _SPIN_HZ: List[float] = []
 
 
-def _spin(torch, seconds: float) -> None:
-    """Hold the stream for `seconds` with torch's spin kernel (its clock
-    calibrated once)."""
+def spin_hz(torch) -> float:
+    """The clock torch.cuda._sleep counts in, cycles a second, measured once:
+    after a warm-up call (the first one loads its module, ~15 ms, which a
+    calibration that times it reads as a clock 100x too slow -- and a spin
+    100x too short, which queues nothing), the best of three 2M-cycle spins."""
     if not _SPIN_HZ:
-        s, e = torch.cuda.Event(True), torch.cuda.Event(True)
+        torch.cuda._sleep(1000)
         torch.cuda.synchronize()
-        s.record()
-        torch.cuda._sleep(200_000)
-        e.record()
-        torch.cuda.synchronize()
-        _SPIN_HZ.append(200_000 / (s.elapsed_time(e) * 1e-3))
-    torch.cuda._sleep(int(seconds * _SPIN_HZ[0]))
+        best = float("inf")
+        for _ in range(3):
+            s, e = torch.cuda.Event(True), torch.cuda.Event(True)
+            s.record()
+            torch.cuda._sleep(2_000_000)
+            e.record()
+            torch.cuda.synchronize()
+            best = min(best, s.elapsed_time(e))
+        _SPIN_HZ.append(2_000_000 / (best * 1e-3))
+    return _SPIN_HZ[0]
+
+
+def _spin(torch, seconds: float) -> None:
+    """Hold the stream for `seconds` with torch's spin kernel."""
+    torch.cuda._sleep(int(seconds * spin_hz(torch)))
 
 
 class GemmBench:
@@ -63,6 +74,7 @@ class GemmBench:
                    * k ** -0.5 for _ in range(self.copies)]
         self.out = torch.empty(m, n, device=self.dev, dtype=torch.bfloat16)
         self.gpu_seconds = 0.0
+        self.load_seconds = 0.0
         self.refresh()
         self._ref = None
 
@@ -79,6 +91,17 @@ class GemmBench:
             self._ref = [self.x[i:i + step].float() @ w32 for i in range(0, self.m, step)]
             self._scale = max(r.abs().max().item() for r in self._ref)
         return self._ref
+
+    def load(self, fn: Callable) -> float:
+        """The candidate's first call, synchronized: its modules loaded (and
+        anything the compiler did not build, compiled). CPU time, kept apart
+        from gpu_seconds; returns seconds."""
+        t0 = time.perf_counter()
+        fn(self.x, self.ws[0], self.out)
+        self.torch.cuda.synchronize()
+        dt = time.perf_counter() - t0
+        self.load_seconds += dt
+        return dt
 
     def check(self, fn: Callable) -> float:
         """Relative max error of fn(x, w, out) against fp32 (inf if it raised

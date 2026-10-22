@@ -53,6 +53,7 @@ def __getattr__(name):
 
 
 def parse_shape(s: str) -> Tuple[int, int, int]:
+    """"MxNxK" -> (M, N, K)."""
     m, n, k = (int(x) for x in s.lower().split("x"))
     return m, n, k
 

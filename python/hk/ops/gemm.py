@@ -576,20 +576,33 @@ def user_route(m: int, n: int, k: int):
     """(name, hk.schedules schedule) of this machine's hk.tune record for the
     shape on this RDNA arch -- an Rdna (this module's kernel) or a Decode
     (hk.ops.decode_gemm) -- if there is one and it takes the shape; else None."""
+    key = (m, n, k)
+    gen = _autotune.generation()
+    hit = _USER.get(key)
+    if hit is not None and hit[0] == gen:
+        return hit[1]
     from ..tune import records  # noqa: PLC0415
 
+    out = None
     u = records.user_route(current_arch(), m, n, k)
-    if u is None:
-        return None
-    try:
-        from .. import schedules  # noqa: PLC0415
+    if u is not None:
+        try:
+            from .. import schedules  # noqa: PLC0415
 
-        s = schedules.from_record(u[1], strict=False)
-    except (ValueError, TypeError, KeyError):
-        return None                     # an unreadable record costs speed, not a launch
-    if s.family not in ("rdna", "decode") or s.check(m, n, k, current_arch()):
-        return None
-    return u[0], s
+            s = schedules.from_record(u[1], strict=False)
+            if s.family in ("rdna", "decode") and not s.check(m, n, k, current_arch()):
+                out = (u[0], s)
+        except (ValueError, TypeError, KeyError):
+            out = None                  # an unreadable record costs speed, not a launch
+    if len(_USER) > 4096:
+        _USER.clear()
+    _USER[key] = (gen, out)
+    return out
+
+
+#: user_route's answers by shape, at the records generation they were made at
+#: (it is on matmul's launch path).
+_USER: Dict[tuple, tuple] = {}
 
 
 def schedule_for(m: int, n: int, k: int, user: bool = True) -> Dict[str, Any]:

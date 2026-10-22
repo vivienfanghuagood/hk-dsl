@@ -51,7 +51,7 @@ POOL_PER_KIND = 12
 EXPLORE = 4
 RUNG_ROUNDS = (3, 6, 10)
 LOCAL_MOVES = 12
-LOCAL_ITERS = 3
+LOCAL_ITERS = 6
 DECIDE_SETS, DECIDE_ROUNDS, CONFIRM_SETS = 3, 7, 2
 #: Host and spin overhead a timed round of an arm costs beside its calls, s.
 ROUND_OVERHEAD = 1.5e-3
@@ -75,6 +75,7 @@ class Result:
     gpu_seconds: float = 0.0
     wall_seconds: float = 0.0
     compile_seconds: float = 0.0
+    load_seconds: float = 0.0
     log: List[str] = field(default_factory=list)
     timed: Dict[str, Optional[float]] = field(default_factory=dict)
     refused: Dict[str, str] = field(default_factory=dict)
@@ -112,7 +113,8 @@ class Result:
         lines.append(f"  {c.get('pool', 0)} compiled of {c.get('legal', 0)} legal "
                      f"({c.get('generated', 0)} generated), {c.get('refused', 0)} refused by the "
                      f"compile, {c.get('wrong', 0)} wrong, {c.get('timed', 0)} timed; "
-                     f"{self.gpu_seconds:.1f} GPU-s, {self.wall_seconds:.0f} s wall")
+                     f"{self.gpu_seconds:.1f} GPU-s, {self.wall_seconds:.0f} s wall "
+                     f"({self.load_seconds:.0f} s loading)")
         if self.record:
             lines.append(f"  record: {self.record}")
         return "\n".join(lines)
@@ -131,7 +133,8 @@ class Result:
             accepted=str(acc), baselines=self.baselines, best_baseline=name,
             counts=self.counts, gpu_seconds=round(self.gpu_seconds, 2),
             wall_seconds=round(self.wall_seconds, 1),
-            compile_seconds=round(self.compile_seconds, 1), record=self.record,
+            compile_seconds=round(self.compile_seconds, 1),
+            load_seconds=round(self.load_seconds, 1), record=self.record,
             timed=self.timed,
             refused=dict(list(self.refused.items())[:40]))
 
@@ -149,7 +152,7 @@ class Search:
 
     def __init__(self, space, *, budget: float = 60.0, min_gain: float = stats.MIN_GAIN,
                  k_noise: float = stats.K_NOISE, pool_per_kind: int = POOL_PER_KIND,
-                 explore: int = EXPLORE,
+                 explore: int = EXPLORE, max_seeds: Optional[int] = None,
                  rung_rounds: Sequence[int] = RUNG_ROUNDS, local_moves: int = LOCAL_MOVES,
                  local_iters: int = LOCAL_ITERS, decide_sets: int = DECIDE_SETS,
                  decide_rounds: int = DECIDE_ROUNDS, confirm_sets: int = CONFIRM_SETS,
@@ -159,6 +162,7 @@ class Search:
         self.min_gain, self.k_noise = min_gain, k_noise
         self.pool_per_kind = pool_per_kind
         self.explore = explore
+        self.max_seeds = max_seeds
         self.rung_rounds = tuple(rung_rounds)
         self.local_moves, self.local_iters = local_moves, local_iters
         self.decide_sets, self.decide_rounds = decide_sets, decide_rounds
@@ -171,6 +175,18 @@ class Search:
         res.log.append(s)
         self._log(s)
 
+    def _load(self, bench, fn, res: Result) -> None:
+        """A candidate's first call, outside the GPU budget: loading its
+        modules is host work, and a kernel the compiler did not build (a
+        reduction's variant, a composite's tail) compiles here."""
+        load = getattr(bench, "load", None)
+        if load is None:
+            return
+        dt = load(fn)
+        res.counts["loaded"] = res.counts.get("loaded", 0) + 1
+        if dt > 2.0:
+            res.counts["compiled_late"] = res.counts.get("compiled_late", 0) + 1
+
     def _round_cost(self, bench, ms: float) -> float:
         return getattr(bench, "copies", 1) * ms * 1e-3 + ROUND_OVERHEAD
 
@@ -178,6 +194,8 @@ class Search:
         sp = self.space
         cur = res.route
         seeds = sp.seeds(m, n, k)
+        if self.max_seeds is not None:
+            seeds = seeds[:self.max_seeds]
         gen = sp.generate(m, n, k)
         res.counts["generated"] = len(gen)
         legal, est = [], {}
@@ -233,6 +251,7 @@ class Search:
         sp = self.space
         t_wall = time.perf_counter()
         gpu0 = bench.gpu_seconds
+        load0 = getattr(bench, "load_seconds", 0.0)
         res = Result(m, n, k, arch or sp.arch, sp.current(m, n, k))
         cur = res.route
         floor = stats.floor_ms(m, n, k, res.arch)
@@ -260,6 +279,7 @@ class Search:
                 continue
             try:
                 fn = sp.runner(c, m, n, k)
+                self._load(bench, fn, res)
                 err = bench.check(fn)
             except Exception as e:  # noqa: BLE001 -- one bad candidate is one row
                 res.refused[c.label] = f"{type(e).__name__}: {str(e).splitlines()[0][:160]}"
@@ -337,6 +357,7 @@ class Search:
                     continue
                 try:
                     fn = sp.runner(c, m, n, k)
+                    self._load(bench, fn, res)
                     err = bench.check(fn)
                 except Exception as e:  # noqa: BLE001
                     res.refused[c.label] = f"{type(e).__name__}: {str(e).splitlines()[0][:160]}"
@@ -411,6 +432,7 @@ class Search:
         res.gpu_seconds = bench.gpu_seconds - gpu0
         res.wall_seconds = time.perf_counter() - t_wall
         res.compile_seconds = getattr(compiler, "cpu_seconds", 0.0)
+        res.load_seconds = getattr(bench, "load_seconds", 0.0) - load0
         if res.decision:
             d = res.decision
             self._say(res, f"  decision: {champ} {d.verdict} {d.gain * 100:+.2f}% "

@@ -39,6 +39,8 @@ Coding agents: start from [llms.txt](../llms.txt) and the
 |---|---|
 | [hk.check](check.md) | the loop: build and resources without a GPU, correctness against a torch reference, interleaved timing against torch eager and `torch.compile`, `--json` |
 | [Performance](performance.md) | every measured result with its baseline, software stack and source chapter, RDNA3 and CDNA4 apart, end to end, kernel for kernel, and the losses |
+| [Tuning a GEMM: hk.tune](tune.md) | `python -m hk.tune MxNxK` or `--model`: search hk's GEMM schedules within a GPU-time budget, keep a winner only past the measured noise, as a record `hk.ops.matmul` reads |
+| [The tuning benchmark](../bench/tune/README.md) | hidden real-model GEMM shapes per GPU, every baseline (hipBLASLt, TunableOp, aiter, FlyDSL, HipKittens, Triton), the scoreboard before and after `hk.tune` |
 | [The DX suite](../bench/dx/README.md) | eight LLM kernel tasks with references and baselines on both GPUs, one command to a JSON scoreboard |
 | [What the DX suite found](../bench/dx/FINDINGS.md) | kernels written from the docs alone, and the doc gaps they hit, ranked |
 

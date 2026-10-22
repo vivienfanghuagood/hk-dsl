@@ -38,8 +38,7 @@ from typing import Any, Dict, Optional, Tuple
 
 __all__ = ["path", "load", "user_route", "save", "bucket", "forget"]
 
-_CACHE: Dict[str, Tuple[Tuple[float, int], dict]] = {}
-
+_CACHE: Dict[str, Tuple[int, dict]] = {}
 
 def bucket(m: int) -> int:
     """M rounded up to a power of two: the Ms one record answers."""
@@ -50,6 +49,7 @@ def bucket(m: int) -> int:
 
 
 def path(arch: str) -> Path:
+    """This machine's record file for `arch`: $HK_TUNE_DIR/routes_gemm_<arch>.json."""
     from ..autotune import records_dir  # noqa: PLC0415
 
     return records_dir() / f"routes_gemm_{arch}.json"
@@ -61,26 +61,25 @@ def _empty(arch: str) -> dict:
 
 def load(arch: str) -> dict:
     """This machine's records for `arch` (an empty table if none). Read once
-    per process and again only when the file changes or a tuner wrote."""
+    per process, again after a tuner in this process wrote (hk.autotune's
+    generation counter) or after `forget()`: the lookup is on the launch path
+    of every hk.ops.matmul, which has no syscall to spare -- a record written
+    by another process is seen by the next process, as the schedule records
+    are (hk.autotune.load_records)."""
     from ..autotune import generation  # noqa: PLC0415
 
-    try:
-        p = path(arch)
-        st = p.stat()
-        stamp = (st.st_mtime, generation())
-    except OSError:
-        return _empty(arch)
+    gen = generation()
     hit = _CACHE.get(arch)
-    if hit and hit[0] == stamp:
+    if hit and hit[0] == gen:
         return hit[1]
     try:
-        d = json.loads(p.read_text())
+        d = json.loads(path(arch).read_text())
         if not isinstance(d, dict) or not isinstance(d.get("routes"), dict):
             d = _empty(arch)
     except (OSError, ValueError):
-        # A corrupt record costs speed, never a launch.
+        # A missing or corrupt record costs speed, never a launch.
         d = _empty(arch)
-    _CACHE[arch] = (stamp, d)
+    _CACHE[arch] = (gen, d)
     return d
 
 
@@ -143,4 +142,8 @@ def save(arch: str, m: int, n: int, k: int, name: str, spec, point: Dict[str, An
 
 
 def forget() -> None:
+    """Drop the in-process copy (and every lookup made from it)."""
+    from ..autotune import forget_records  # noqa: PLC0415
+
     _CACHE.clear()
+    forget_records()
