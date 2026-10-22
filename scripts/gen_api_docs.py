@@ -779,12 +779,12 @@ def page_schedules(since: Since) -> Page:
     p.para("The guide is [docs/schedules.md](../schedules.md), the design "
            "[docs/design/schedules.md](../design/schedules.md).")
     for n in ["lookup", "space", "from_record", "from_candidate", "families_for",
-              "Illegal"]:
+              "lookup_attention", "space_attention", "Illegal"]:
         obj = getattr(S, n)
         p.entry(f"hk.schedules.{n}", obj, display=f"hk.schedules.{n}",
                 mark=_mark(since, "hk.schedules", n, obj, f"hk.schedules.{n}"),
                 signature=n != "Illegal")
-    for n in ["Schedule", "GemmSchedule", "Step"]:
+    for n in ["Schedule", "GemmSchedule", "AttnSchedule", "Step"]:
         obj = getattr(S, n)
         p.entry(f"hk.schedules.{n}", obj, display=f"hk.schedules.{n}",
                 mark=_mark(since, "hk.schedules", n, obj, f"hk.schedules.{n}"),
@@ -796,7 +796,7 @@ def page_schedules(since: Since) -> Page:
                 p.entry(f"hk.schedules.{n}.{mn}", mv, display=f"{n}.{mn}", level=4,
                         signature=not isinstance(mv, property))
     p.h2("The families")
-    for cls in (S.Rdna, S.Decode, S.PingPong, S.Dp, S.Columns):
+    for cls in (S.Rdna, S.Decode, S.PingPong, S.Dp, S.Columns, S.AttnRdna, S.AttnCdna):
         n = cls.__name__
         axes = cls.axes()
         rows = ""

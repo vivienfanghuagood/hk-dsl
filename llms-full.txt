@@ -4788,23 +4788,29 @@ the tuned records and route tables, and builds and launches its kernels.
 
 GEMM families (hk.schedules.gemm): Rdna (gfx1100's WMMA GEMM), Decode (the
 decode GEMV, both GPUs), PingPong and Dp (gfx950's two), and Columns (two
-schedules on column ranges of C). docs/schedules.md is the guide;
-docs/design/schedules.md the design.
+schedules on column ranges of C). Attention (hk.schedules.attention):
+AttnRdna and AttnCdna, the same protocol over (n, head_dim, causal).
+docs/schedules.md is the guide; docs/design/schedules.md the design.
 
 - [`hk.schedules.lookup`](#hkscheduleslookup)
 - [`hk.schedules.space`](#hkschedulesspace)
 - [`hk.schedules.from_record`](#hkschedulesfrom_record)
 - [`hk.schedules.from_candidate`](#hkschedulesfrom_candidate)
 - [`hk.schedules.families_for`](#hkschedulesfamilies_for)
+- [`hk.schedules.lookup_attention`](#hkscheduleslookup_attention)
+- [`hk.schedules.space_attention`](#hkschedulesspace_attention)
 - [`hk.schedules.Illegal`](#hkschedulesillegal)
 - [`hk.schedules.Schedule`](#hkschedulesschedule)
 - [`hk.schedules.GemmSchedule`](#hkschedulesgemmschedule)
+- [`hk.schedules.AttnSchedule`](#hkschedulesattnschedule)
 - [`hk.schedules.Step`](#hkschedulesstep)
 - [`hk.schedules.Rdna`](#hkschedulesrdna)
 - [`hk.schedules.Decode`](#hkschedulesdecode)
 - [`hk.schedules.PingPong`](#hkschedulespingpong)
 - [`hk.schedules.Dp`](#hkschedulesdp)
 - [`hk.schedules.Columns`](#hkschedulescolumns)
+- [`hk.schedules.AttnRdna`](#hkschedulesattnrdna)
+- [`hk.schedules.AttnCdna`](#hkschedulesattncdna)
 
 The guide is [docs/schedules.md](../schedules.md), the design [docs/design/schedules.md](../design/schedules.md).
 
@@ -4869,6 +4875,30 @@ hk.schedules.families_for(arch: str) -> List[type]
 *New after 0.4.0* (the `hk.schedules` module is not in the 0.4.0 wheel)
 
 The GEMM families that run on `arch`, the composite last.
+
+### `hk.schedules.lookup_attention`
+
+```python
+hk.schedules.lookup_attention(n: int, head_dim: int, causal: bool = False, arch: Optional[str] = None, *, scale: Optional[float] = None) -> AttnSchedule
+```
+
+*New after 0.4.0* (the `hk.schedules` module is not in the 0.4.0 wheel)
+
+The schedule hk.attention runs for `n` queries of `head_dim`: gfx950's
+kernel as attn_cdna ships it, gfx1100's at its tuner's record for the
+length (hk.ops.attn._tune_key) -- or, with a `scale` other than
+1/sqrt(head_dim), the default, as hk.ops.attn builds those.
+
+### `hk.schedules.space_attention`
+
+```python
+hk.schedules.space_attention(n: int, head_dim: int, arch: Optional[str] = None, *, causal: bool = False, around: Optional[AttnSchedule] = None, radius: int = 1, axes=None) -> Iterator[AttnSchedule]
+```
+
+*New after 0.4.0* (the `hk.schedules` module is not in the 0.4.0 wheel)
+
+Legal attention schedules for the problem on `arch` (see
+Schedule.space).
 
 ### `hk.schedules.Illegal`
 
@@ -5078,6 +5108,66 @@ C = A @ B.T with this schedule (every launch of the call); `b` is
 of an arch in `arches`. The schedule is checked first: an illegal
 one raises hk.schedules.Illegal with check()'s reasons.
 
+### `hk.schedules.AttnSchedule`
+
+*New after 0.4.0* (the `hk.schedules` module is not in the 0.4.0 wheel)
+
+What an attention schedule does: check a problem, build its kernel,
+run it. The problem is `n` (query rows; `n_kv` keys, default n),
+`head_dim` and `causal`.
+
+#### `AttnSchedule.check`
+
+```python
+AttnSchedule.check(self, n: int, head_dim: int, arch: Optional[str] = None, *, causal: bool = False, n_kv: Optional[int] = None, dtype: Any = 'bf16') -> List[str]
+```
+
+Why this schedule cannot run attention over `n` queries (and
+`n_kv` keys) of `head_dim` on `arch`: [] if it can.
+
+#### `AttnSchedule.check_kernel`
+
+```python
+AttnSchedule.check_kernel(self, arch: Optional[str] = None, *, head_dim: int = 128, causal: bool = False) -> List[str]
+```
+
+The kernel half of check(): whether it traces and builds.
+
+#### `AttnSchedule.kernel`
+
+```python
+AttnSchedule.kernel(self, head_dim: int = 128, causal: bool = False, scale: Optional[float] = None, *, arch: Optional[str] = None)
+```
+
+The hk.Kernel for this schedule and problem: q, k, v, o, all
+(B, H, N, D) bf16 (K and V may have fewer heads: GQA).
+
+#### `AttnSchedule.launch`
+
+```python
+AttnSchedule.launch(self, q, k, v, *, causal: bool = False, scale: Optional[float] = None, out=None)
+```
+
+Attention with this schedule: (B, H, N, D) bf16, contiguous; checked
+first (an illegal schedule raises hk.schedules.Illegal).
+
+#### `AttnSchedule.base_for_problem`
+
+```python
+AttnSchedule.base_for_problem(cls, n: int, head_dim: int, causal: bool, arch: str) -> AttnSchedule
+```
+
+The family's starting point for a problem: what hk ships for it.
+
+#### `AttnSchedule.space`
+
+```python
+AttnSchedule.space(cls, n: int, head_dim: int, arch: Optional[str] = None, *, causal: bool = False, around: "Optional['AttnSchedule']" = None, radius: int = 1, axes=None, legal: bool = True) -> "Iterator['AttnSchedule']"
+```
+
+The family's legal schedules for the problem (see
+Schedule.space for around, radius and axes).
+
 ### `hk.schedules.Step`
 
 ```python
@@ -5221,6 +5311,48 @@ on the rest (each its own launches). `cut` is a column count, "block"
 (N less N's remainder by the head's block_n: the pingpong's last 128
 columns of a 151936-wide lm_head), or "wave" (the columns whose
 256x256 blocks fill whole waves of the MI355X's CUs; route "ppw").
+
+### `hk.schedules.AttnRdna`
+
+*New after 0.4.0* (the `hk.schedules` module is not in the 0.4.0 wheel)
+
+gfx1100's flash attention (hk.ops.attn; history chapter 3): `warps`
+waves of `q_block` query rows each, the KV axis in `kv_block` steps, K
+staged and V transposed through LDS. q_block x warps is the query tile:
+a query shorter than it has no block to back up into.
+
+Family `attn_rdna`, on gfx1100.
+
+| knob | default | values searched | seed | what |
+|---|---|---|---|---|
+| `q_block` | `16` | `16` | - | query rows a wave owns (16: the kernel's operand tiles are one fragment) |
+| `kv_block` | `32` | `32`, `64` | - | the KV step: K/V rows a block |
+| `warps` | `12` | `8`, `12`, `16` | - | waves a workgroup (q_block x warps rows) |
+| `vt_d_chunk` | `16` | `16` | - | head-dim width of V^T a wave stages (16 only: wider needs a register subtile) |
+| `qk_tiles` | `2` | `1`, `2`, `3`, `4` | `1`, `2`, `3`, `4` | 16x16 LDS reads of K in flight before the wait that retires them |
+| `pv_tiles` | `2` | `1`, `2`, `3`, `4` | `1`, `2`, `3`, `4` | 16x16 LDS reads of V^T in flight before their wait |
+| `setprio` | `True` | `True`, `False` | - | s_setprio around each MMA group (kept: within noise) |
+| `max_vgprs` | `256` | - | - | (gate) build gate |
+| `min_occupancy` | `1` | - | - | (gate) build gate |
+
+### `hk.schedules.AttnCdna`
+
+*New after 0.4.0* (the `hk.schedules` module is not in the 0.4.0 wheel)
+
+gfx950's flash attention (hk.ops.attn_cdna; history chapter 34):
+HipKittens' CDNA4 GQA forward, eight warps of 32 query rows, 64-row KV
+blocks double-buffered by the DMA, two halves a barrier apart. The tile
+is fixed; the knobs are the schedule's choices around it.
+
+Family `attn_cdna`, on gfx950.
+
+| knob | default | values searched | seed | what |
+|---|---|---|---|---|
+| `lazy` | `8.0` | `0.0`, `4.0`, `8.0`, `12.0` | `0.0`, `8.0` | log2 headroom before O is rescaled (FlashAttention 4's threshold) |
+| `sched` | `True` | `True`, `False` | `True`, `False` | HipKittens' interleave of MFMAs with VALU and exp2 |
+| `setprio` | `True` | `True`, `False` | `True`, `False` | s_setprio around the PV phase |
+| `lpt` | `True` | `True`, `False` | - | causal: longest query blocks first |
+| `skip` | `True` | `True`, `False` | - | causal: drop the math of the last two steps past a warp's queries |
 
 
 <!-- docs/api/hk.check.md -->

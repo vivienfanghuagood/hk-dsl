@@ -186,6 +186,32 @@ batch (`combine_depth`) and the workgroups a WGP/CU holds (`resident`)
 Two schedules on column ranges of C: `head` on the first `cut` columns,
 `tail` on the rest; `cut` is a count, `"block"` or `"wave"`.
 
+## Attention
+
+The attention kernels follow the same protocol, over a problem that is a
+sequence length, a head dim and causal rather than M x N x K:
+
+```python
+s = S.lookup_attention(n, 128, causal=True, arch="gfx1100")   # what hk.attention runs
+s.check(n, 128, "gfx1100", causal=True)                         # [] or reasons
+for t in S.space_attention(n, 128, "gfx1100", causal=True, around=s): ...
+t.kernel(128, causal=True).source()
+out = t.launch(q, k, v, causal=True)                            # (B, H, N, D) bf16
+```
+
+`AttnRdna` (gfx1100, `hk.ops.attn`; [chapter 3](history/03-phase-4-attention.md)):
+the query block (`q_block` x `warps` rows; only 16-row blocks trace), the KV
+step (`kv_block`, 32 or 64; 64 at head_dim 128 spills), how many 16x16 LDS
+reads of K and V^T go in flight before their waits (`qk_tiles`, `pv_tiles`:
+what its tuner searches and the shipped `attn_fwd_d128*.json` records hold),
+and `setprio`. `AttnCdna` (gfx950, `hk.ops.attn_cdna`;
+[chapter 34](history/34-cdna-attention.md)): the tile is HipKittens'; the knobs
+are the schedule's choices around it -- the lazy rescale's headroom (`lazy`),
+the MFMA/VALU interleave (`sched`), `setprio`, and under causal the longest
+blocks first (`lpt`) and skipping the math past a warp's queries (`skip`).
+Every point of both spaces was built at head_dim 64 and 128, causal or not:
+`check` accepted 508, all of which built, and refused 9 that would have.
+
 ## Adding a knob
 
 A knob is one field on the family's class and the parameter of the kernel

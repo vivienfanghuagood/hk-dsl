@@ -69,3 +69,29 @@ def test_the_shipped_defaults_build_with_room():
         r = res.built[f"{s}@{a}"].kernels[0]
         used = r.vgpr if a == "gfx1100" else -(-r.vgpr // 4) * 4 + r.agpr
         assert _regs.predict(s, a)["vgpr"] >= used, (s, a, used)
+
+
+ATTN = [(S.AttnRdna, "gfx1100"), (S.AttnCdna, "gfx950")]
+
+
+@pytest.mark.parametrize("cls,arch", ATTN, ids=[c.family for c, _ in ATTN])
+def test_what_check_accepts_builds_attention(cls, arch):
+    """The attention families' spaces are small enough that the tool builds
+    them whole (sample-attn: 0 false accepts in 508); here a fixed few."""
+    rng = random.Random(zlib.crc32(cls.family.encode()))
+    ax = [a for a in cls.axes().values() if a.values]
+    acc, seen = [], set()
+    while len(acc) < N:
+        s = cls(**{a.name: rng.choice(a.values) for a in ax})
+        d, causal = rng.choice((64, 128)), rng.choice((False, True))
+        if (s, d, causal) in seen:
+            continue
+        seen.add((s, d, causal))
+        why = s.check_kernel(arch, head_dim=d, causal=causal)
+        if why:
+            assert all(isinstance(r, str) and len(r) > 10 for r in why), s
+            continue
+        acc.append((s, d, causal))
+    res = warm_cache([(f"{s} d{d} c{int(c)}", s._make(d, c, None, arch), {})
+                      for s, d, c in acc])
+    assert not res.errors, {k: str(e).splitlines()[0] for k, e in res.errors.items()}

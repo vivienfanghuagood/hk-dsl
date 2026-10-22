@@ -5,6 +5,7 @@ what check() accepts and refuses, and fit the register model check() uses.
     python3 tools/hk-bench/schedules_legality.py sample --out s.json --n 300 --seed 7
     python3 tools/hk-bench/schedules_legality.py eval s.json [more.json ...]
     python3 tools/hk-bench/schedules_legality.py fit s0.json s1.json ... --write
+    python3 tools/hk-bench/schedules_legality.py sample-attn --out a.json --all
 
 `sample` draws points uniformly from each family's full value product (every
 knob's `values`) on each arch it runs on, keeps the ones whose knob
@@ -116,6 +117,49 @@ def sample(args) -> int:
     return 0
 
 
+def sample_attention(args) -> int:
+    """sample, for the attention families: every point of each family's
+    full value product (they are small), at head_dim 64 and 128, causal or
+    not, each structurally legal one built."""
+    import itertools
+
+    import hk.schedules as S
+    from hk.runtime.warm import warm_cache
+
+    jobs, meta = [], {}
+    for cls in (S.AttnRdna, S.AttnCdna):
+        for arch in cls.arches:
+            ax = [a for a in cls.axes().values() if a.values]
+            for combo in itertools.product(*(a.values for a in ax)):
+                s = cls(**dict(zip((a.name for a in ax), combo)))
+                for d, causal in itertools.product((64, 128), (False, True)):
+                    if s._check_struct(arch, d) and not args.all:
+                        continue
+                    label = str(len(meta))
+                    meta[label] = dict(family=cls.family, arch=arch, head_dim=d,
+                                       causal=causal, rec=s.to_record(full=True))
+                    try:
+                        jobs.append((label, s._make(d, causal, None, arch), {}))
+                    except Exception as e:  # noqa: BLE001
+                        meta[label].update(status="factory", reason=f"{type(e).__name__}: {e}")
+    print(f"{len(jobs)} attention kernels to build", flush=True)
+    t0 = time.time()
+    res = warm_cache(jobs, workers=args.workers)
+    print(f"built {len(res.built)}, refused {len(res.errors)}, {time.time() - t0:.0f} s",
+          flush=True)
+    for label, b in res.built.items():
+        r = b.kernels[0]
+        meta[label].update(status="ok", vgpr=r.vgpr, agpr=r.agpr, sgpr=r.sgpr,
+                           occ=r.occ_by_reg or r.occupancy, scratch=r.scratch)
+    for label, e in res.errors.items():
+        m = RES_RE.search(str(e))
+        meta[label].update(status=type(e).__name__, reason=str(e).strip()[:400],
+                           vgpr=int(m.group(1)) if m else None)
+    Path(args.out).write_text(json.dumps(list(meta.values()), indent=0) + "\n")
+    print(f"wrote {args.out}")
+    return 0
+
+
 def _load(paths):
     rows = []
     for p in paths:
@@ -131,7 +175,11 @@ def evaluate(args) -> int:
     for p in _load(args.records):
         s = S.from_record(p["rec"])
         key = f"{p['family']}@{p['arch']}"
-        why = s.check_kernel(p["arch"])
+        if "head_dim" in p:
+            key += f" d{p['head_dim']}{' causal' if p['causal'] else ''}"
+            why = s.check_kernel(p["arch"], head_dim=p["head_dim"], causal=p["causal"])
+        else:
+            why = s.check_kernel(p["arch"])
         built = p["status"] == "ok"
         st[key]["n"] += 1
         if not why:
@@ -285,13 +333,18 @@ def main() -> int:
     a.add_argument("--seeds", action="store_true", help="add the seed spaces")
     a.add_argument("--families", nargs="*")
     a.add_argument("--workers", type=int, default=48)
+    a = sub.add_parser("sample-attn")
+    a.add_argument("--out", required=True)
+    a.add_argument("--all", action="store_true", help="build the refused points too")
+    a.add_argument("--workers", type=int, default=48)
     a = sub.add_parser("eval")
     a.add_argument("records", nargs="+")
     a = sub.add_parser("fit")
     a.add_argument("records", nargs="+")
     a.add_argument("--write", action="store_true")
     args = ap.parse_args()
-    return {"sample": sample, "eval": evaluate, "fit": fit}[args.cmd](args)
+    return {"sample": sample, "sample-attn": sample_attention, "eval": evaluate,
+            "fit": fit}[args.cmd](args)
 
 
 if __name__ == "__main__":

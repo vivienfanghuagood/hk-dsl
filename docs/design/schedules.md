@@ -174,7 +174,24 @@ their own. `hk.templates.gemm` builds its kernels through the schedule types
 (the C++ is identical, checked above); its plan without `schedule=` is the
 same function as before.
 
+## Attention
+
+`hk.schedules.attention`: `AttnRdna` (gfx1100) and `AttnCdna` (gfx950) under
+the same protocol (`AttnSchedule`). The problem is `(n, head_dim, causal)`
+(and `n_kv`), so check, space and lookup take it in place of M x N x K;
+`head_dim`, `causal` and `scale` are arguments of `kernel()` and `launch()`,
+not knobs, because they choose the problem, not how it is computed (and
+`hk.ops.attn` builds one kernel per combination already). `AttnRdna`'s
+records are the attention tuners' (`attn_fwd_d128*.json`), and its kernels'
+names are the tuners' (`attn_fwd_d128_vt_d_chunk16_qk_tiles1_pv_tiles2`),
+extended by any other knob off its default. Both spaces are small enough to
+build whole (`schedules_legality.py sample-attn`): at head_dim 64 and 128,
+causal or not, 508 accepted, all built; 9 refused that would have built.
+The round trip (`tests/hk/ir/test_schedules_attention.py`): what
+`hk.attention` launches at four lengths, both head dims, causal or not, with
+and without a scale, and gfx950's ablations, are the same names and C++.
+
 ## Not yet
 
-- Attention (`hk.ops.attn`, `attn_cdna`) under the same protocol.
 - fp8 / grouped GEMMs: new families, when their kernels exist.
+- The paged decode and prefill kernels under the protocol.

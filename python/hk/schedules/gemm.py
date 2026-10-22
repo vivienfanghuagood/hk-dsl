@@ -403,6 +403,13 @@ class Rdna(GemmSchedule):
                        f"it needs at least two")
         if self.stagger < 0 or self.sched < 0:
             why.append("stagger and sched are counts, not negative")
+        two = 2 * (self.block_m + self.block_n) * self.k_step * 2
+        if two > _lds_cap(arch):
+            # hk.ops.gemm's factory sizes its LDS check for two buffers
+            # whatever lds_buffers is (_derive), so it refuses these too.
+            why.append(f"{self.block_m}x{self.block_n}x{self.k_step}: the factory checks "
+                       f"two LDS buffers' {two} B against {arch}'s {_lds_cap(arch)}, "
+                       f"whatever lds_buffers is")
         threads = 32 * self.warps
         for what, rows in (("A", self.block_m), ("B", self.block_n)):
             if rows * self.k_step * 2 % (16 * threads):
