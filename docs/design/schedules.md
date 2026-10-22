@@ -104,30 +104,43 @@ raises it, as `launch()` and `templates.gemm(schedule=)` do.
    (`hk/schedules/_regs.py`): each family's live tiles -- accumulators,
    operands, staging, a combine's partials, a split's shares -- counted as
    the target lays them out, weighed by a per-(family, arch) linear model
-   that is the tightest upper envelope (linprog) of ~5,000 sampled builds,
+   that is the tightest upper envelope (linprog) of ~19,000 sampled builds,
    constrained to put every spill over the limit and every schedule hk ships
    under it. The limit is the workgroup's: a CU's SIMDs share its waves, so
    16 waves of wave64 have 128 VGPRs each on an MI355X (the decode GEMV's
    spills at 128), 8 have 256 (the pingpong never touches AGPRs), 4 have
    512 VGPRs + AGPRs; gfx1100 always 256. Structural rules the samples
    found: the pingpong's st_16x64 needs k_step % 64; gfx950's decode GEMV
-   even `slices`; dp with one warp, or two warps 60 copy-stages deep, spills
-   SGPRs.
+   even `slices`; dp with one warp, or with two and 20 copies a thread a
+   tile (12 at five stages), spills SGPRs; hk.ops.gemm's factory checks two
+   LDS buffers whatever `lds_buffers` is.
 4. **Shape** -- K and N against `k_step`/`block_n`/`splits`, M against the
    decode GEMV's token tiles, split-K's scratch limit; only M may be ragged.
 
 The kernel is generic in M, N and K, so "will it build" is `check_kernel`.
 
-**Measured** (`tools/hk-bench/schedules_legality.py`, hipcc 7.2.3, no GPU):
-1,500 points drawn uniformly from the four families' full value products
-on both arches (300 per family and arch), none of which the model was fitted
-to: 823 accepted, of which 1 did not build (a dp kernel spilling 1 VGPR):
-**0.12% false accepts**; 677 refused, every one with a reason, 90 of which
-would have built (the price of an upper bound). Per family: rdna 0/55,
-decode 0/234 (gfx1100) and 0/277 (gfx950), pp 0/137, dp 1/120. The
-CI-sized check is `tests/hk/codegen/test_schedules_legality.py` (it builds
-a fixed sample of accepted points on CI's hipcc 7.1); refit with the tool
-when the compiler moves.
+**Measured** (`tools/hk-bench/schedules_legality.py`, no GPU), on points
+the model was not fitted to: drawn uniformly from the families' full value
+products, and from the neighbourhoods (up to three knob changes) of every
+schedule hk ships -- where a tuner starts:
+
+| compiler | sampled | accepted | accepted that did not build | refused (with a reason) | refused that would have built |
+|---|---|---|---|---|---|
+| hipcc 7.2.3 (MI355X host), all four families, both arches | 2,628 | 1,633 | 0 | 995 | 204 |
+| hipcc 7.2.4 (the W7900D pod), rdna + decode | 1,045 | 680 | 0 | 365 | 100 |
+
+**0 false accepts in 2,313**; every refusal carries a reason; about one in
+nine points that would have built is refused (the price of an upper bound).
+Getting there took seven rounds of sample, fit, and evaluate on a fresh
+sample; the lessons are the rules above and two features of the model: the
+gfx1100 pod's compiler found accepts the MI355X host's had not, and the
+neighbourhoods of the shipped schedules found what uniform samples rarely
+reach (a 8x1 warp grid on gfx1100's default tile: 1.8% false accepts there
+before the model weighed an asymmetric warp tile). The fit's ~19,000 builds
+span both compilers. The CI-sized check is
+`tests/hk/codegen/test_schedules_legality.py` (a fixed sample of accepted
+points built on CI's hipcc 7.1); re-sample (`--around-shipped`) and refit
+with the tool when the compiler moves.
 
 `canonical()` folds knobs that do nothing at their value back to the
 default (one LDS buffer's `write_pos`, `late_b`'s HipKittens waits, a
@@ -174,7 +187,24 @@ their own. `hk.templates.gemm` builds its kernels through the schedule types
 (the C++ is identical, checked above); its plan without `schedule=` is the
 same function as before.
 
+## Attention
+
+`hk.schedules.attention`: `AttnRdna` (gfx1100) and `AttnCdna` (gfx950) under
+the same protocol (`AttnSchedule`). The problem is `(n, head_dim, causal)`
+(and `n_kv`), so check, space and lookup take it in place of M x N x K;
+`head_dim`, `causal` and `scale` are arguments of `kernel()` and `launch()`,
+not knobs, because they choose the problem, not how it is computed (and
+`hk.ops.attn` builds one kernel per combination already). `AttnRdna`'s
+records are the attention tuners' (`attn_fwd_d128*.json`), and its kernels'
+names are the tuners' (`attn_fwd_d128_vt_d_chunk16_qk_tiles1_pv_tiles2`),
+extended by any other knob off its default. Both spaces are small enough to
+build whole (`schedules_legality.py sample-attn`): at head_dim 64 and 128,
+causal or not, 508 accepted, all built; 9 refused that would have built.
+The round trip (`tests/hk/ir/test_schedules_attention.py`): what
+`hk.attention` launches at four lengths, both head dims, causal or not, with
+and without a scale, and gfx950's ablations, are the same names and C++.
+
 ## Not yet
 
-- Attention (`hk.ops.attn`, `attn_cdna`) under the same protocol.
 - fp8 / grouped GEMMs: new families, when their kernels exist.
+- The paged decode and prefill kernels under the protocol.

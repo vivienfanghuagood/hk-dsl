@@ -199,6 +199,15 @@ Small M follows the route as well: on gfx950 M <= 4 goes to the decode GEMV
 and 16-64 to the weight-streaming or split four-warp blocks, all with the
 epilogue; on gfx1100 M <= 32 goes to the decode GEMV, above.
 
+**Your own schedule.** `schedule=` (an `hk.schedules` GEMM schedule, or its
+record) replaces the plan: `hk.templates.gemm(x, w, epilogue=..., bias=b,
+schedule=S.Dp(block_m=64, splits=4))` runs that schedule's launches with the
+epilogue placed as above (in the reduction for split-K), after checking it
+can run the shape -- an illegal one raises with the reasons.
+`hk.schedules.lookup(M, N, K, op="template")` is the schedule the plan above
+picks; [Schedules](../schedules.md) is how to inspect one, walk the legal
+ones around it and pass it.
+
 ## What it costs: measured
 
 Measured interleaved in one process (`tools/hk-bench/gemm_epilogue.py

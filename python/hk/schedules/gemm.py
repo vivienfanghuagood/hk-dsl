@@ -403,6 +403,13 @@ class Rdna(GemmSchedule):
                        f"it needs at least two")
         if self.stagger < 0 or self.sched < 0:
             why.append("stagger and sched are counts, not negative")
+        two = 2 * (self.block_m + self.block_n) * self.k_step * 2
+        if two > _lds_cap(arch):
+            # hk.ops.gemm's factory sizes its LDS check for two buffers
+            # whatever lds_buffers is (_derive), so it refuses these too.
+            why.append(f"{self.block_m}x{self.block_n}x{self.k_step}: the factory checks "
+                       f"two LDS buffers' {two} B against {arch}'s {_lds_cap(arch)}, "
+                       f"whatever lds_buffers is")
         threads = 32 * self.warps
         for what, rows in (("A", self.block_m), ("B", self.block_n)):
             if rows * self.k_step * 2 % (16 * threads):
@@ -725,12 +732,12 @@ class Dp(GemmSchedule):
             return why
         threads = 64 * self.warps_m * self.warps_n
         copies = (self.block_m + self.block_n) * self.k_step * 2 // (16 * threads)
-        if threads == 128 and copies * self.stages >= 60 and (
-                self.splits > 1 or self.stages >= 5):
+        if threads == 128 and self.stages >= 3 and (
+                copies >= 20 or (self.stages >= 5 and copies >= 12)):
             why.append(f"dp with two warps, {copies} copies a thread a tile in "
-                       f"{self.stages} stages{' and split-K' if self.splits > 1 else ''}: "
-                       f"the copies' addresses spill SGPRs (sampled builds past 60 "
-                       f"copy-stages did); use four warps, fewer stages or a smaller k_step")
+                       f"{self.stages} stages: the copies' addresses spill SGPRs (28 of "
+                       f"64 such sampled builds did); use four warps, fewer stages or a "
+                       f"smaller k_step")
         reg_m, reg_n = self.block_m // self.warps_m, self.block_n // self.warps_n
         if (reg_m % 16 or reg_n % 16 or reg_m * self.warps_m != self.block_m
                 or reg_n * self.warps_n != self.block_n or not reg_m or not reg_n):
