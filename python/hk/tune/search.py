@@ -82,6 +82,7 @@ class Result:
     compile_seconds: float = 0.0
     load_seconds: float = 0.0
     phases: Dict[str, float] = field(default_factory=dict)
+    profile: Dict[str, Any] = field(default_factory=dict)
     log: List[str] = field(default_factory=list)
     timed: Dict[str, Optional[float]] = field(default_factory=dict)
     refused: Dict[str, str] = field(default_factory=dict)
@@ -142,6 +143,7 @@ class Result:
             wall_seconds=round(self.wall_seconds, 1),
             compile_seconds=round(self.compile_seconds, 1),
             load_seconds=round(self.load_seconds, 1), phases=self.phases, record=self.record,
+            profile=self.profile,
             timed=self.timed,
             refused=dict(list(self.refused.items())[:40]))
 

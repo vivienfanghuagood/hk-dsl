@@ -45,6 +45,10 @@ def main(argv=None) -> int:
 
     out = Path(args.out)
     (out / "records").mkdir(parents=True, exist_ok=True)
+    # hk's kernels launch through code objects in this process, as hk.tune
+    # launches its candidates: device time is the same, and a process that
+    # loads a pybind module a kernel runs out of TSS keys (docs/tune.md#limits).
+    os.environ.setdefault("HK_LAUNCH", "codeobj")
     os.environ["HK_TUNE_DIR"] = str((out / "records").resolve())
     os.environ.setdefault("HK_TUNE_TUNABLEOP_FILE", str((out / "tunableop_%d.csv").resolve()))
 

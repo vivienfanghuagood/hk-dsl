@@ -186,23 +186,47 @@ class Compiler:
         self.cpu_seconds = 0.0
 
     def submit(self, key, jobs) -> None:
+        """Trace `jobs` ([(label, kernel, constexprs)]) here and hand their
+        hipcc builds to the pool: the artifact the launch path will ask for,
+        a device-only code object under HK_LAUNCH=codeobj (what hk.tune
+        launches its candidates through, codeobj.load's build exactly), else
+        the pybind module."""
+        import os  # noqa: PLC0415
+
         from ..runtime.compile import build  # noqa: PLC0415
 
         if key in self.futures or key in self.errors:
             return
+        co = os.environ.get("HK_LAUNCH", "pybind") == "codeobj"
         futs = []
         for label, kernel, consts in jobs:
             try:
-                src = kernel.source("pybind", **consts)
+                if co:
+                    from ..codegen import scaffold as sc  # noqa: PLC0415
+
+                    ir = kernel.trace(**consts)
+                    src = sc.device(ir)
+                    wd = getattr(kernel, "with_defines", None)
+                    if wd:
+                        src = wd(src)
+                    bf = getattr(kernel, "build_flags", None)
+                    args = dict(name=ir.name, kind="co", extra_flags=bf(ir) if bf else (),
+                                max_vgprs=getattr(kernel, "max_vgprs", None),
+                                min_occupancy=getattr(kernel, "min_occupancy", None))
+                    arch = ir.arch
+                else:
+                    src = kernel.source("pybind", **consts)
+                    args = dict(name=kernel.name, max_vgprs=kernel.max_vgprs,
+                                min_occupancy=kernel.min_occupancy)
+                    arch = kernel.arch
             except BaseException as e:  # noqa: BLE001 -- a refusal is an answer
                 self.errors[key] = f"{type(e).__name__}: {str(e).strip().splitlines()[0][:200]}"
                 return
 
-            def one(src=src, kernel=kernel):
+            def one(src=src, arch=arch, args=args):
                 t0 = time.perf_counter()
                 try:
-                    return build(src, kernel.arch, name=kernel.name, max_vgprs=kernel.max_vgprs,
-                                 min_occupancy=kernel.min_occupancy)
+                    return build(src, arch, **args)
                 finally:
                     self.cpu_seconds += time.perf_counter() - t0
             futs.append(self.pool.submit(one))

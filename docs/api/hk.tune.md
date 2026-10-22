@@ -40,6 +40,7 @@ and the decode GEMV.
 - [`hk.tune.model_shapes`](#hktunemodel_shapes)
 - [`hk.tune.parse_shape`](#hktuneparse_shape)
 - [`hk.tune.torch_baselines`](#hktunetorch_baselines)
+- [`hk.tune.explain`](#hktuneexplain)
 - [`hk.tune.search.Search`](#hktunesearchsearch)
 - [`hk.tune.search.Result`](#hktunesearchresult)
 - [`hk.tune.stats.decide`](#hktunestatsdecide)
@@ -64,7 +65,7 @@ The guide is [docs/tune.md](../tune.md); the benchmark that judges it is [bench/
 ### `hk.tune.tune`
 
 ```python
-hk.tune.tune(m: int, n: int, k: int, *, budget: float = 60.0, save: bool = True, baselines: Optional[Dict[str, Callable]] = None, workers: int = 32, log: Optional[Callable[[str], None]] = <built-in function print>, arch: Optional[str] = None, compiler=None, **search)
+hk.tune.tune(m: int, n: int, k: int, *, budget: float = 60.0, save: bool = True, baselines: Optional[Dict[str, Callable]] = None, workers: int = 32, log: Optional[Callable[[str], None]] = <built-in function print>, arch: Optional[str] = None, compiler=None, profile: bool = False, **search)
 ```
 
 *New after 0.4.0* (the `hk.tune` module is not in the 0.4.0 wheel)
@@ -73,6 +74,11 @@ Tune one M x N x K bf16 GEMM (C = A @ B.T, B as (N, K)) on the current
 GPU; returns a `Result` (hk.tune.search). A win is written to this
 machine's records unless `save=False`. `baselines` ({name: fn(a, b, out)})
 are timed in the decision's sets; default F.linear.
+
+`profile=True` then runs hk.profile on what hk.ops.matmul now launches
+for the shape against hipBLASLt (F.linear) -- 30-70 s -- and keeps its
+verdict (`res.profile`): why the result is as fast as it is, and what
+the kernel would have to change to be faster.
 
 ### `hk.tune.tune_shapes`
 
@@ -120,6 +126,19 @@ aiter_triton, flydsl, hipkittens, triton -- bench/tune/baselines.py) when
 this runs from a checkout that has them. An unavailable one is skipped
 with a message.
 
+### `hk.tune.explain`
+
+```python
+hk.tune.explain(m: int, n: int, k: int, *, vs: str = 'torch.nn.functional:linear') -> dict
+```
+
+*New after 0.4.0* (the `hk.tune` module is not in the 0.4.0 wheel)
+
+hk.profile (docs/profile.md) on hk.ops.matmul at M x N x K -- the
+kernel this machine's records give the shape -- against `vs`:
+{"line": the verdict, "bound", "losses", "compare": the interleaved
+comparison's line}; {"error": ...} if the profiler cannot run here.
+
 ## `hk.tune.search`
 
 The search: from the current route, over the schedule space, to a winner
@@ -138,7 +157,7 @@ One shape's search; see the module docstring.
 ### `hk.tune.search.Result`
 
 ```python
-class hk.tune.search.Result(m: int, n: int, k: int, arch: str, route: Candidate, champion: Optional[Candidate] = None, decision: Optional[stats.Decision] = None, route_ms: Optional[float] = None, ms: Optional[float] = None, baselines: Dict[str, Dict[str, Any]] = <factory>, counts: Dict[str, int] = <factory>, gpu_seconds: float = 0.0, wall_seconds: float = 0.0, compile_seconds: float = 0.0, load_seconds: float = 0.0, phases: Dict[str, float] = <factory>, log: List[str] = <factory>, timed: Dict[str, Optional[float]] = <factory>, refused: Dict[str, str] = <factory>, record: str = '') -> None
+class hk.tune.search.Result(m: int, n: int, k: int, arch: str, route: Candidate, champion: Optional[Candidate] = None, decision: Optional[stats.Decision] = None, route_ms: Optional[float] = None, ms: Optional[float] = None, baselines: Dict[str, Dict[str, Any]] = <factory>, counts: Dict[str, int] = <factory>, gpu_seconds: float = 0.0, wall_seconds: float = 0.0, compile_seconds: float = 0.0, load_seconds: float = 0.0, phases: Dict[str, float] = <factory>, profile: Dict[str, Any] = <factory>, log: List[str] = <factory>, timed: Dict[str, Optional[float]] = <factory>, refused: Dict[str, str] = <factory>, record: str = '') -> None
 ```
 
 *New after 0.4.0* (the `hk.tune.search` module is not in the 0.4.0 wheel)

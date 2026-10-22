@@ -35,10 +35,12 @@ and the decode GEMV.
 from __future__ import annotations
 
 import json
+import os
 import time
 from typing import Callable, Dict, Iterable, List, Optional, Sequence, Tuple
 
-__all__ = ["tune", "tune_shapes", "model_shapes", "parse_shape", "Result", "BUDGET"]
+__all__ = ["tune", "tune_shapes", "model_shapes", "parse_shape", "explain", "Result",
+           "BUDGET"]
 
 #: GPU-seconds a shape's search may spend, by default.
 BUDGET = 60.0
@@ -109,11 +111,16 @@ def torch_baselines(names: Iterable[str] = ("torch",)) -> Dict[str, Callable]:
 def tune(m: int, n: int, k: int, *, budget: float = BUDGET, save: bool = True,
          baselines: Optional[Dict[str, Callable]] = None, workers: int = 32,
          log: Optional[Callable[[str], None]] = print, arch: Optional[str] = None,
-         compiler=None, **search):
+         compiler=None, profile: bool = False, **search):
     """Tune one M x N x K bf16 GEMM (C = A @ B.T, B as (N, K)) on the current
     GPU; returns a `Result` (hk.tune.search). A win is written to this
     machine's records unless `save=False`. `baselines` ({name: fn(a, b, out)})
-    are timed in the decision's sets; default F.linear."""
+    are timed in the decision's sets; default F.linear.
+
+    `profile=True` then runs hk.profile on what hk.ops.matmul now launches
+    for the shape against hipBLASLt (F.linear) -- 30-70 s -- and keeps its
+    verdict (`res.profile`): why the result is as fast as it is, and what
+    the kernel would have to change to be faster."""
     from ..target import current_arch  # noqa: PLC0415
     from . import records  # noqa: PLC0415
     from .measure import Compiler, GemmBench  # noqa: PLC0415
@@ -126,6 +133,14 @@ def tune(m: int, n: int, k: int, *, budget: float = BUDGET, save: bool = True,
         baselines = torch_baselines()
     own = compiler is None
     compiler = compiler or Compiler(workers)
+    # Candidates launch through device-only code objects (HK_LAUNCH=codeobj):
+    # a fifth of the compile, and no extension module a kernel -- a process
+    # that has loaded a few hundred of those runs out of thread-specific
+    # storage keys and aborts. Device code and device time are the same; the
+    # host launch is slower, which the queued timing does not see.
+    prev = os.environ.get("HK_LAUNCH")
+    if prev is None:
+        os.environ["HK_LAUNCH"] = "codeobj"
     bench = GemmBench(m, n, k, arch)
     try:
         res = Search(sp, budget=budget, log=log or (lambda s: None), **search).run(
@@ -134,14 +149,38 @@ def tune(m: int, n: int, k: int, *, budget: float = BUDGET, save: bool = True,
         bench.close()
         if own:
             compiler.close()
+        if prev is None:
+            os.environ.pop("HK_LAUNCH", None)
     if save and res.verdict == "win" and res.champion is not None:
         name = "u:" + res.champion.label
         point = {**res.as_dict(), **_meta(arch)}
         point.pop("refused", None)
         res.record = str(records.save(arch, m, n, k, name, sp.spec(res.champion), point))
+    if profile:
+        res.profile = explain(m, n, k)
     if log:
         log(res.summary())
+        if res.profile.get("line"):
+            log(f"  hk.profile: {res.profile['line']}")
     return res
+
+
+def explain(m: int, n: int, k: int, *, vs: str = "torch.nn.functional:linear") -> dict:
+    """hk.profile (docs/profile.md) on hk.ops.matmul at M x N x K -- the
+    kernel this machine's records give the shape -- against `vs`:
+    {"line": the verdict, "bound", "losses", "compare": the interleaved
+    comparison's line}; {"error": ...} if the profiler cannot run here."""
+    try:
+        from .. import profile as _profile  # noqa: PLC0415
+
+        p = _profile.profile("hk.ops:matmul", inputs=f"bf16[{m},{k}], bf16[{n},{k}]",
+                             vs={"hipblaslt": vs})
+        v = p.verdict or {}
+        cmp_ = (p.json() or {}).get("compare") or {}
+        return dict(line=v.get("line", ""), bound=v.get("bound"), losses=v.get("losses"),
+                    compare=cmp_.get("line", ""), ratio=cmp_.get("ratio"))
+    except Exception as e:  # noqa: BLE001 -- an explanation is optional
+        return dict(error=f"{type(e).__name__}: {e}")
 
 
 def tune_shapes(shapes: Sequence[Tuple[int, int, int]], **kw) -> List:
@@ -191,6 +230,8 @@ def _each_in_a_process(shapes, args, argv) -> List[dict]:
                    "--baselines", args.baselines, "-j", str(args.jobs), "--json", str(out)]
             if args.no_save:
                 cmd.append("--no-save")
+            if args.profile:
+                cmd.append("--profile")
             rc = subprocess.call(cmd)
             if rc == 0 and out.exists():
                 rows += json.loads(out.read_text())["results"]
@@ -217,6 +258,8 @@ def main(argv=None) -> int:
     ap.add_argument("--json", default="", help="write every result here")
     ap.add_argument("-j", "--jobs", type=int, default=32, help="hipcc processes at once")
     ap.add_argument("--list", action="store_true", help="this machine's records")
+    ap.add_argument("--profile", action="store_true",
+                    help="then explain each result with hk.profile against hipBLASLt (30-70 s)")
     ap.add_argument("--in-process", action="store_true",
                     help="tune several shapes in this one process (default: a process each)")
     ap.add_argument("--dry-run", action="store_true",
@@ -266,7 +309,7 @@ def main(argv=None) -> int:
         base = torch_baselines([b for b in args.baselines.split(",") if b])
         rows = [r.as_dict() for r in tune_shapes(shapes, budget=args.budget,
                                                  save=not args.no_save, baselines=base,
-                                                 workers=args.jobs)]
+                                                 workers=args.jobs, profile=args.profile)]
     if args.json:
         from pathlib import Path  # noqa: PLC0415
 

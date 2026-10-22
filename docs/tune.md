@@ -35,6 +35,12 @@ res.as_dict()         # everything, JSON-able
 `baselines={name: fn(a, b, out)}` adds arms the decision is timed beside
 (default: `F.linear`, hipBLASLt); the result then carries hk's ratio to each,
 with its band. `save=False` measures without writing a record.
+`--profile` (`profile=True`) then runs [hk.profile](profile.md) on what
+`hk.ops.matmul` now launches for the shape against hipBLASLt, 30-70 s, and
+prints its verdict: why the result is as fast as it is (an underfilled grid,
+an unhidden prologue, an issue-bound loop), which is where a kernel change
+would have to start once the search has nothing left (`hk.tune.explain(m, n,
+k)` alone does the same).
 
 ## Tune a model
 
