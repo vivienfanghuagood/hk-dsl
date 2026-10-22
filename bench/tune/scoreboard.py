@@ -1,8 +1,8 @@
 """The tuning benchmark's scoreboard: what bench/tune/run.py measured, per
 shape and in total, before (the current routes) and after (hk.tune's records).
 
-    python3 -m bench.tune.scoreboard DIR [--arch gfx950] [--split acceptance]
-                                     [--write bench/tune/results]
+    python3 -m bench.tune.scoreboard DIR [DIR...] [--arch gfx950] [--split acceptance]
+                                     [--explain] [--write bench/tune/results]
 
 The acceptance (docs/design/tuning-goal.md, T3), per GPU, on the held-out
 split: the share of shapes at >= 0.95x the best available baseline after
@@ -81,6 +81,67 @@ def summarize(rows, arch: str, split: str) -> dict:
         misses=[s for s in shapes if not s["reached"]])
 
 
+#: Dense bf16 peak FLOP/s, HBM bytes/s (datasheets), CUs.
+CARDS = {"gfx950": (2.5e15, 8.0e12, 256), "gfx1100": (122.6e12, 864e9, 96)}
+
+
+def explain(d: dict, records: str = "") -> None:
+    """A sentence per miss: how close the best baseline and hk are to the
+    card's compute and memory limits, and -- where hk imports -- the grid of
+    the schedule hk ran (workgroups against CUs: the wave quantization)."""
+    peak, bw, cus = CARDS.get(d["arch"], (None, None, None))
+    sched_of = None
+    if records:
+        import os  # noqa: PLC0415
+
+        os.environ["HK_TUNE_DIR"] = records
+        os.environ["HK_ARCH"] = d["arch"]
+        try:
+            import hk.schedules as S  # noqa: PLC0415
+
+            def sched_of(m, n, k):
+                return S.lookup(m, n, k, d["arch"])
+        except Exception:  # noqa: BLE001 -- explanation without the grid
+            sched_of = None
+    for s in d["misses"]:
+        m, n, k = s["m"], s["n"], s["k"]
+        flops, byts = 2.0 * m * n * k, 2.0 * (m * k + n * k + m * n)
+        tb, th = s["best_us"] * 1e-6, s["after_us"] * 1e-6
+        if not (peak and tb and th):
+            continue
+        parts = [f"best {flops / tb / 1e12:.0f} TFLOP/s, {byts / tb / 1e12:.2f} TB/s; "
+                 f"hk {flops / th / 1e12:.0f} TFLOP/s, {byts / th / 1e12:.2f} TB/s"]
+        if byts / tb > 0.6 * bw:
+            parts.append(f"memory-bound: the best baseline streams at {byts / tb / bw:.0%} of "
+                         f"HBM, hk at {byts / th / bw:.0%}")
+        elif flops / tb > 0.4 * peak:
+            parts.append(f"compute-bound: the best baseline at {flops / tb / peak:.0%} of the "
+                         f"bf16 peak, hk at {flops / th / peak:.0%}")
+        else:
+            parts.append("neither limit is near: latency, launch or occupancy")
+        if sched_of is not None:
+            try:
+                sc = sched_of(m, n, k)
+                grids = []
+                for st in sc.steps(m, n, k):
+                    bm, bn = st.sched.get("block_m"), st.sched.get("block_n")
+                    if st.kernel in ("pp", "dp", "rdna") and bm and bn:
+                        lo, hi = st.cols
+                        wgs = -(-m // bm) * -(-(hi - lo) // bn) * st.sched.get("splits", 1)
+                        grids.append(f"{st.kernel} {bm}x{bn}"
+                                     + (f" x{st.sched['splits']} K shares"
+                                        if st.sched.get("splits", 1) > 1 else "")
+                                     + f": {wgs} workgroups, {wgs / cus:.2f} of {cus} CUs")
+                    elif st.kernel == "decode":
+                        grids.append(f"decode GEMV ({n // 16 * st.sched.get('splits', 1)} "
+                                     f"workgroups)")
+                if grids:
+                    parts.append("hk ran " + "; ".join(grids))
+            except Exception:  # noqa: BLE001
+                pass
+        s["why"] = "; ".join(parts)
+
+
 def markdown(d: dict) -> str:
     b, a = d["before"], d["after"]
     meta = d.get("meta", {})
@@ -130,6 +191,12 @@ def markdown(d: dict) -> str:
     for s in d["shapes"]:
         lines.append(f"| {s['m']}x{s['n']}x{s['k']} | "
                      + " | ".join(str(s["baselines_us"].get(x, "-")) for x in names) + " |")
+    if d["misses"]:
+        lines += ["", f"Misses (under {d['target']}x the best baseline after tuning), and what "
+                      "the numbers say about why:", ""]
+        for s in d["misses"]:
+            lines.append(f"- **{s['m']}x{s['n']}x{s['k']}** ({s['after'][0]:.3f}x "
+                         f"{s['best_baseline']}): {s.get('why') or '-'}")
     wrong = [(s, s["wrong"]) for s in d["shapes"] if s["wrong"]]
     if wrong:
         lines += ["", "Arms dropped at a shape (wrong against fp32, or refused the shape):", ""]
@@ -141,20 +208,28 @@ def markdown(d: dict) -> str:
 
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    ap.add_argument("dir")
+    ap.add_argument("dir", nargs="+", help="result directories; a shape in a later one wins")
+    ap.add_argument("--explain", action="store_true",
+                    help="say why each miss misses (with hk importable: the grid hk ran)")
     ap.add_argument("--arch", default="")
     ap.add_argument("--split", default="acceptance")
     ap.add_argument("--write", default="", help="directory for <arch>-<date>.{json,md}")
     ap.add_argument("--name", default="", help="file stem (default <arch>-<date>)")
     args = ap.parse_args(argv)
-    d = Path(args.dir)
-    files = sorted(d.glob(f"{args.arch or '*'}-{args.split}.jsonl"))
-    if not files:
-        print(f"no {args.split} results in {d}")
+    by_arch = {}
+    for dd in args.dir:
+        for f in sorted(Path(dd).glob(f"{args.arch or '*'}-{args.split}.jsonl")):
+            by_arch.setdefault(f.name.split("-")[0], []).append(f)
+    if not by_arch:
+        print(f"no {args.split} results in {args.dir}")
         return 2
-    for f in files:
-        arch = f.name.split("-")[0]
-        s = summarize(load(f), arch, args.split)
+    for arch, files in by_arch.items():
+        rows = {}
+        for f in files:
+            rows.update({(r["m"], r["n"], r["k"]): r for r in load(f)})
+        s = summarize([rows[x] for x in sorted(rows)], arch, args.split)
+        if args.explain:
+            explain(s, str(Path(files[-1]).parent / "records"))
         md = markdown(s)
         print(md)
         if args.write:

@@ -203,9 +203,11 @@ class ScheduleSpace:
         # K splits that are not powers of two: at 1024x4608x18432 the 256x256
         # pingpong has 72 blocks, 144 with two shares and 288 with four --
         # 1.1 waves of 256 CUs -- and 216 with three.
-        "pp": dict(splits=[1, 2, 3, 4, 6]),
+        # And five or seven: K = 5120 is 80 64-deep tiles (5 divides it, 3
+        # does not), K = 7168 is 112 (7 does).
+        "pp": dict(splits=[1, 2, 3, 4, 5, 6, 7, 8]),
         "dp": dict(block_m=[16, 32, 64, 128, 256], block_n=[32, 64, 96, 128, 192, 224, 256],
-                   splits=[1, 2, 3, 4, 6, 8]),
+                   splits=[1, 2, 3, 4, 5, 6, 7, 8]),
         "rdna": dict(block_m=[32, 64, 128, 256], block_n=[64, 128, 256], k_step=[32, 64],
                      warps=[4, 8], warp_rows=[1, 2, 4, 8], n_split=[1, 2, 4],
                      lds_buffers=[1, 2], wgm=[8], write_pos=[2]),
@@ -246,6 +248,20 @@ class ScheduleSpace:
             got = list(S.space(m, n, k, self.arch, around=s0, radius=1))
         except Exception:  # noqa: BLE001
             got = []
+        # Steps along the generated axes' values where hk.schedules' own
+        # stop short (its K splits are powers of two).
+        for ax, vals in self.AXES.get(s0.family, {}).items():
+            v = getattr(s0, ax, None)
+            if v in vals:
+                i = vals.index(v)
+                for j in (i - 1, i + 1):
+                    if 0 <= j < len(vals):
+                        try:
+                            t = s0.replace(**{ax: vals[j]}).canonical()
+                        except (TypeError, ValueError):
+                            continue
+                        if t not in got and not t.check(m, n, k, self.arch):
+                            got.append(t)
         for move in self.COUPLED.get(s0.family, ()):
             try:
                 t = s0.replace(**move).canonical()
