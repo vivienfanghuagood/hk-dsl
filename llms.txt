@@ -34,6 +34,7 @@ Measured with hk.check (torch 2.10, interleaved in one process): on an MI355X it
 
 - [The language](docs/language.md): kernels and constexprs, types (RT tiles, RS strips, ST LDS tiles, vectors), operators, memory, control flow, namespaces, errors, limits
 - [hk.check](docs/check.md): the loop -- build and resources without a GPU, correctness against a torch reference, interleaved timing against torch eager and torch.compile, `--json`
+- [hk.profile](docs/profile.md): why it is slow -- rocprofv3 counters and a thread trace per kernel: % of the compute and memory roofline, matrix core busy, occupancy, the grid's tail, the stalls the main loop waits on, its instruction mix, and a verdict; `--json` for agents
 - [Getting started](docs/getting-started.md): install, a first kernel, the four entry points (`trace`, `source`, `build`, call)
 - [The runtime](docs/runtime.md): the compile cache, the resource gates (a spill is an error), arch detection, `HK_ARCH`, warming the cache
 - [For agents: engine integration](docs/agents.md): `headroom`, `new-op`, `ab` for kernels inside vLLM/SGLang, and the numbers not to trust
@@ -50,6 +51,7 @@ Measured with hk.check (torch 2.10, interleaved in one process): on an MI355X it
 - [hk.ops](docs/api/hk.ops.md): the shipped kernels and their per-architecture argument rules
 - [hk.templates](docs/api/hk.templates.md): tuned kernels with a hook for your math
 - [hk.check](docs/api/hk.check.md): the checker's Python API and options
+- [hk.profile](docs/api/hk.profile.md): the profiler's Python API, its parts and options
 - [hk.target](docs/api/hk.target.md): the facts per architecture (wave 32 vs 64, registers, LDS, strips, fragments)
 
 ## Examples

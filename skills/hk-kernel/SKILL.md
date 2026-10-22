@@ -42,6 +42,14 @@ Paths below are relative to the repository root.
 6. Keep the reference exact enough: never loosen `--rtol` to make a FAIL pass
    without knowing why the error is larger than torch eager's own (printed
    beside it).
+7. **When it is slower than it should be, profile it**: check -> profile ->
+   change -> check. `python -m hk.profile FILE.py:NAME --json prof.json`
+   (or `hk.check ... --profile`; [docs/profile.md](../../docs/profile.md))
+   names the bound (`verdict.bound`: memory, compute, latency) and the
+   losses with what each costs (`findings[].kind`/`cost`: `tail`,
+   `epilogue`, `issue_bound`, `stall` with its `reason`, `narrow_access`,
+   ...). Change the largest loss's cause, then re-check: the change is
+   accepted on hk.check's interleaved timing, not the profile's.
 
 ## Strips or tiles
 

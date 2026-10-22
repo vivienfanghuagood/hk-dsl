@@ -1,0 +1,2450 @@
+{
+ "schema": 1,
+ "tool": "hk.profile",
+ "name": "matmul",
+ "arch": "gfx950",
+ "device": "AMD Radeon Graphics",
+ "agent": {
+  "name": "gfx950",
+  "product": "AMD Radeon Graphics",
+  "cus": 256,
+  "simds": 1024,
+  "xcc": 8,
+  "ses": 32,
+  "simd_per_cu": 4,
+  "max_waves_per_simd": 8,
+  "max_waves_per_cu": 32,
+  "lds_kb": 160,
+  "max_clock_mhz": 2400,
+  "wave": 64
+ },
+ "versions": {
+  "python": "3.12.3",
+  "hk": "0.5.0",
+  "hk_src": "69e3db7913fc",
+  "torch": "2.10.0+rocm7.2.3.git1a270074",
+  "hip": "7.2.53211",
+  "triton": "3.6.0+rocm7.2.3.git4ed88892",
+  "rocprofv3": "1.1.0"
+ },
+ "call": {
+  "inputs": "bf16[2048,4096], bf16[16384,4096]",
+  "footprint_bytes": 218103808,
+  "kernels": 1,
+  "us": 294.68,
+  "iters": 20
+ },
+ "verdict": {
+  "line": "latency-bound (neither roof): 38% of the matrix peak, 33% of the cache-resident rate (past the L2); matrix core 43% busy; issue-bound at 1 wave(s) a SIMD (lds): the matrix core idles 34% while its waves issue the loop's 2.4 other instructions per matrix one; matrix core idle before the main loop 7% (one workgroup a CU: not hidden); matrix core idle after the main loop 4% (one workgroup a CU: not hidden); L2 re-fetch: 4.0x the call's bytes cross it",
+  "kernel": "gemm_cdna_dp_128x128x64_s4_w2x2_g8_x32_kernel(globals)",
+  "share": 1.0,
+  "bound": "latency_bound",
+  "losses": [
+   "issue_bound",
+   "prologue",
+   "epilogue"
+  ]
+ },
+ "kernels": [
+  {
+   "name": "gemm_cdna_dp_128x128x64_s4_w2x2_g8_x32_kernel(globals)",
+   "hk": true,
+   "launches_per_call": 1,
+   "time": {
+    "us": 294.68,
+    "min_us": 290.64,
+    "noise": 0.0016,
+    "samples": 20
+   },
+   "build": {
+    "kernel": "gemm_cdna_dp_128x128x64_s4_w2x2_g8_x32",
+    "consts": {},
+    "warps": 4,
+    "lds_bytes": 131072,
+    "source": "/ci/hk-cache/ae0084eaa2116ed53a9617fd743a1589/kernel.cpp",
+    "binary": "/ci/hk-cache/ae0084eaa2116ed53a9617fd743a1589/hk_gemm_cdna_dp_128x128x64_s4_w2x2_g8_x32_ae0084eaa211.cpython-312-x86_64-linux-gnu.so",
+    "resources": {
+     "name": "gemm_cdna_dp_128x128x64_s4_w2x2_g8_x32_kernel(globals)",
+     "vgpr": 110,
+     "agpr": 92,
+     "sgpr": 52,
+     "vgpr_charged": 208,
+     "lds": 0,
+     "scratch": 0,
+     "spill": 0,
+     "occupancy_by_regs": 2,
+     "occupancy_by_lds": 1,
+     "occupancy": 1,
+     "max_waves_per_simd": 8
+    }
+   },
+   "grid": {
+    "workgroups": 2048,
+    "threads_per_workgroup": 256,
+    "waves_per_workgroup": 4,
+    "lds_bytes": 131072,
+    "vgpr": 110,
+    "agpr": 92,
+    "slot": "CU",
+    "slots": 256,
+    "workgroups_per_slot": 1,
+    "bound_by": "lds",
+    "theoretical_waves_per_simd": 1,
+    "rounds": 8.0,
+    "idle_share": 0.0
+   },
+   "roofline": {
+    "flops": 274877906944.0,
+    "flops_source": "counters (SQ_INSTS_VALU_MFMA_MOPS_* x 512)",
+    "flop_s": 932806115627709.5,
+    "matrix_dtype": "bf16",
+    "of_compute_peak": 0.3761,
+    "compute_peak": 2480000000000000.0,
+    "clock_mhz": 2042.0,
+    "of_compute_peak_at_clock": 0.4421,
+    "bytes": 872523424.0,
+    "bytes_source": "counters: bytes past the L2, read + written",
+    "bytes_s": 2960933437627.7876,
+    "of_dram": 0.4486,
+    "of_cache": 0.3254,
+    "refetch": 4.0,
+    "memory_ceiling": "cache",
+    "of_memory_peak": 0.3254,
+    "memory_peak": 9100000000000.0,
+    "memory_bound_at": 0.7,
+    "intensity": 315.04,
+    "ridge": 375.76
+   },
+   "matrix_core": {
+    "busy": 0.433,
+    "source": "SQ_VALU_MFMA_BUSY_CYCLES / (cycles x SIMDs)"
+   },
+   "occupancy": {
+    "theoretical_waves_per_simd": 1,
+    "bound_by": "lds",
+    "achieved_waves_per_simd": 0.937,
+    "achieved_of_theoretical": 0.937,
+    "cu_busy": 0.937
+   },
+   "stalls": {
+    "counters": {
+     "dependency_wait": 0.15,
+     "issue_wait": 0.432,
+     "lds_issue_wait": 0.064,
+     "active": 0.418,
+     "active_valu": 0.207,
+     "active_vmem": 0.033,
+     "active_lds": 0.058,
+     "active_scalar": 0.116
+    },
+    "att": {
+     "cycles": 2004752,
+     "idle": 65532,
+     "by_reason": {
+      "matrix_core": {
+       "cycles": 657792,
+       "stall": 394660,
+       "share": 0.3281
+      },
+      "vmem_issue": {
+       "cycles": 452036,
+       "stall": 390568,
+       "share": 0.2255
+      },
+      "lds_issue": {
+       "cycles": 256772,
+       "stall": 132260,
+       "share": 0.1281
+      },
+      "scalar": {
+       "cycles": 223672,
+       "stall": 0,
+       "share": 0.1116
+      },
+      "valu": {
+       "cycles": 192776,
+       "stall": 46012,
+       "share": 0.0962
+      },
+      "lgkm_wait": {
+       "cycles": 120468,
+       "stall": 120468,
+       "share": 0.0601
+      },
+      "barrier": {
+       "cycles": 80116,
+       "stall": 80116,
+       "share": 0.04
+      },
+      "nop": {
+       "cycles": 11520,
+       "stall": 11520,
+       "share": 0.0057
+      },
+      "vmem_wait": {
+       "cycles": 7680,
+       "stall": 7680,
+       "share": 0.0038
+      },
+      "other": {
+       "cycles": 1920,
+       "stall": 0,
+       "share": 0.001
+      }
+     },
+     "region": "main loop"
+    },
+    "top": [
+     {
+      "reason": "matrix_core",
+      "share": 0.3281
+     },
+     {
+      "reason": "vmem_issue",
+      "share": 0.2255
+     },
+     {
+      "reason": "lds_issue",
+      "share": 0.1281
+     },
+     {
+      "reason": "scalar",
+      "share": 0.1116
+     }
+    ],
+    "matrix_idle": {
+     "simds": 4,
+     "span_cycles": 601980,
+     "busy": 0.4355,
+     "idle": {
+      "vmem_issue": 0.2002,
+      "valu": 0.0834,
+      "scalar": 0.0662,
+      "lds_issue": 0.0627,
+      "lgkm_wait": 0.054,
+      "no_instruction": 0.0377,
+      "barrier": 0.0375,
+      "other": 0.0068,
+      "nop": 0.0049,
+      "vmem_wait": 0.0034,
+      "matrix_core": 0.0028
+     },
+     "idle_by_region": {
+      "main_loop": 0.4515,
+      "prologue": 0.0723,
+      "drain": 0.0279,
+      "epilogue": 0.008
+     },
+     "idle_in": {
+      "prologue": {
+       "vmem_issue": 0.0314,
+       "scalar": 0.0143,
+       "valu": 0.0126,
+       "no_instruction": 0.0074,
+       "barrier": 0.0029,
+       "lds_issue": 0.002,
+       "lgkm_wait": 0.0016,
+       "vmem_wait": 0.0001,
+       "other": 0.0001
+      },
+      "main_loop": {
+       "vmem_issue": 0.1661,
+       "valu": 0.0583,
+       "lds_issue": 0.0574,
+       "scalar": 0.0513,
+       "lgkm_wait": 0.05,
+       "barrier": 0.0333,
+       "no_instruction": 0.0243,
+       "nop": 0.0048,
+       "vmem_wait": 0.0032,
+       "matrix_core": 0.002,
+       "other": 0.0008
+      },
+      "drain": {
+       "valu": 0.0115,
+       "no_instruction": 0.0054,
+       "lds_issue": 0.0034,
+       "lgkm_wait": 0.0024,
+       "vmem_issue": 0.0023,
+       "barrier": 0.0013,
+       "matrix_core": 0.0008,
+       "scalar": 0.0006,
+       "nop": 0.0002,
+       "vmem_wait": 0.0001
+      },
+      "epilogue": {
+       "other": 0.0059,
+       "valu": 0.001,
+       "no_instruction": 0.0006,
+       "vmem_issue": 0.0005
+      }
+     },
+     "no_wave": 0.0048,
+     "model": "one matrix pipe a SIMD serving its instructions in issue order, each for FLOPs/(the SIMD's peak FLOPs a cycle) cycles; an idle cycle split evenly over the SIMD's waves' current instruction"
+    }
+   },
+   "lds": {
+    "bank_conflict": 0.0,
+    "addr_conflict": 0.0,
+    "unaligned_stall": 0.0,
+    "instructions": 8388608
+   },
+   "cache": {
+    "l2_hit": 0.809,
+    "mall_hit": null,
+    "fetch_bytes": 805391872.0,
+    "write_bytes": 67131552.0
+   },
+   "latency_cycles": {
+    "vmem": 581.1,
+    "lds": 61.4
+   },
+   "instructions": {
+    "valu": 30015488,
+    "mfma": 16777216,
+    "salu": 16719872,
+    "lds": 8388608,
+    "smem": 73728,
+    "vmem_load": 4194304,
+    "vmem_store": 524288,
+    "branch": 131072
+   },
+   "instructions_per_wave": {
+    "valu": 3664.0,
+    "mfma": 2048.0,
+    "salu": 2041.0,
+    "lds": 1024.0,
+    "smem": 9.0,
+    "vmem_load": 512.0,
+    "vmem_store": 64.0,
+    "branch": 16.0
+   },
+   "clock_mhz": 2042.0,
+   "isa": {
+    "function": "_Z45gemm_cdna_dp_128x128x64_s4_w2x2_g8_x32_kernel7globals",
+    "instructions": 1803,
+    "total": {
+     "instructions": 1803,
+     "classes": {
+      "mfma": 256,
+      "valu": 550,
+      "valu_trans": 2,
+      "salu": 417,
+      "smem": 9,
+      "vmem_lds": 64,
+      "vmem_store": 64,
+      "ds_read": 128,
+      "waitcnt": 27,
+      "barrier": 9,
+      "branch": 2,
+      "nop": 274,
+      "other": 1
+     },
+     "waits": {
+      "lgkm": 19,
+      "vmem": 8
+     },
+     "mma_flops": 4194304,
+     "bytes_per_lane": {
+      "vmem_lds": {
+       "16": 64
+      },
+      "ds_read": {
+       "16": 128
+      },
+      "vmem_store": {
+       "2": 64
+      }
+     },
+     "per_matrix_instruction": 6.043
+    },
+    "loops": [
+     {
+      "start": "0x22d8",
+      "end": "0x2e64",
+      "instructions": 439,
+      "mix": {
+       "instructions": 439,
+       "classes": {
+        "mfma": 128,
+        "valu": 76,
+        "salu": 116,
+        "vmem_lds": 32,
+        "ds_read": 64,
+        "waitcnt": 12,
+        "barrier": 4,
+        "branch": 1,
+        "nop": 6
+       },
+       "waits": {
+        "lgkm": 8,
+        "vmem": 4
+       },
+       "mma_flops": 2097152,
+       "bytes_per_lane": {
+        "vmem_lds": {
+         "16": 32
+        },
+        "ds_read": {
+         "16": 64
+        }
+       },
+       "per_matrix_instruction": 2.43
+      },
+      "iterations": 480,
+      "cycles": 2004752
+     }
+    ],
+    "main_loop": {
+     "start": "0x22d8",
+     "end": "0x2e64",
+     "instructions": 439,
+     "mix": {
+      "instructions": 439,
+      "classes": {
+       "mfma": 128,
+       "valu": 76,
+       "salu": 116,
+       "vmem_lds": 32,
+       "ds_read": 64,
+       "waitcnt": 12,
+       "barrier": 4,
+       "branch": 1,
+       "nop": 6
+      },
+      "waits": {
+       "lgkm": 8,
+       "vmem": 4
+      },
+      "mma_flops": 2097152,
+      "bytes_per_lane": {
+       "vmem_lds": {
+        "16": 32
+       },
+       "ds_read": {
+        "16": 64
+       }
+      },
+      "per_matrix_instruction": 2.43
+     },
+     "iterations": 480,
+     "cycles": 2004752,
+     "which": 0,
+     "att": {
+      "total": {
+       "hits": 210720,
+       "latency": 2004752,
+       "stall": 1183284,
+       "idle": 65532
+      },
+      "by_class": {
+       "salu": {
+        "hits": 55680,
+        "latency": 223672,
+        "stall": 0,
+        "idle": 26112
+       },
+       "valu": {
+        "hits": 36480,
+        "latency": 192776,
+        "stall": 46012,
+        "idle": 8
+       },
+       "waitcnt:lgkm": {
+        "hits": 3840,
+        "latency": 120468,
+        "stall": 120468,
+        "idle": 0
+       },
+       "waitcnt:vmem": {
+        "hits": 1920,
+        "latency": 7680,
+        "stall": 7680,
+        "idle": 0
+       },
+       "barrier": {
+        "hits": 1920,
+        "latency": 80116,
+        "stall": 80116,
+        "idle": 0
+       },
+       "vmem_lds": {
+        "hits": 15360,
+        "latency": 452036,
+        "stall": 390568,
+        "idle": 39408
+       },
+       "mfma": {
+        "hits": 61440,
+        "latency": 657792,
+        "stall": 394660,
+        "idle": 4
+       },
+       "ds_read": {
+        "hits": 30720,
+        "latency": 256772,
+        "stall": 132260,
+        "idle": 0
+       },
+       "nop": {
+        "hits": 2880,
+        "latency": 11520,
+        "stall": 11520,
+        "idle": 0
+       },
+       "branch": {
+        "hits": 480,
+        "latency": 1920,
+        "stall": 0,
+        "idle": 0
+       }
+      }
+     },
+     "cycle_share": 0.8733
+    },
+    "prologue": {
+     "instructions": 515,
+     "mix": {
+      "instructions": 515,
+      "classes": {
+       "valu": 191,
+       "valu_trans": 2,
+       "salu": 261,
+       "smem": 8,
+       "vmem_lds": 32,
+       "ds_read": 16,
+       "waitcnt": 3,
+       "barrier": 1,
+       "branch": 1
+      },
+      "waits": {
+       "lgkm": 2,
+       "vmem": 1
+      },
+      "mma_flops": 0,
+      "bytes_per_lane": {
+       "vmem_lds": {
+        "16": 32
+       },
+       "ds_read": {
+        "16": 16
+       }
+      }
+     },
+     "start": "0x1700",
+     "att": {
+      "total": {
+       "hits": 16480,
+       "latency": 156324,
+       "stall": 90584,
+       "idle": 17708
+      },
+      "by_class": {
+       "salu": {
+        "hits": 8352,
+        "latency": 33432,
+        "stall": 0,
+        "idle": 7804
+       },
+       "smem": {
+        "hits": 256,
+        "latency": 1024,
+        "stall": 0,
+        "idle": 0
+       },
+       "waitcnt:lgkm": {
+        "hits": 64,
+        "latency": 3828,
+        "stall": 3828,
+        "idle": 0
+       },
+       "valu": {
+        "hits": 6112,
+        "latency": 29656,
+        "stall": 5160,
+        "idle": 2412
+       },
+       "valu_trans": {
+        "hits": 64,
+        "latency": 768,
+        "stall": 256,
+        "idle": 0
+       },
+       "vmem_lds": {
+        "hits": 1024,
+        "latency": 75552,
+        "stall": 71456,
+        "idle": 6348
+       },
+       "waitcnt:vmem": {
+        "hits": 32,
+        "latency": 128,
+        "stall": 128,
+        "idle": 0
+       },
+       "barrier": {
+        "hits": 32,
+        "latency": 7068,
+        "stall": 7068,
+        "idle": 0
+       },
+       "ds_read": {
+        "hits": 512,
+        "latency": 4740,
+        "stall": 2688,
+        "idle": 1016
+       },
+       "branch": {
+        "hits": 32,
+        "latency": 128,
+        "stall": 0,
+        "idle": 128
+       }
+      }
+     },
+     "cycle_share": 0.0681
+    },
+    "drain": {
+     "instructions": 559,
+     "mix": {
+      "instructions": 559,
+      "classes": {
+       "mfma": 128,
+       "valu": 265,
+       "salu": 40,
+       "smem": 1,
+       "vmem_store": 57,
+       "ds_read": 48,
+       "waitcnt": 12,
+       "barrier": 4,
+       "nop": 4
+      },
+      "waits": {
+       "lgkm": 9,
+       "vmem": 3
+      },
+      "mma_flops": 2097152,
+      "bytes_per_lane": {
+       "ds_read": {
+        "16": 48
+       },
+       "vmem_store": {
+        "2": 57
+       }
+      },
+      "per_matrix_instruction": 3.367
+     },
+     "start": "0x2e68",
+     "att": {
+      "total": {
+       "hits": 17888,
+       "latency": 116516,
+       "stall": 46416,
+       "idle": 15936
+      },
+      "by_class": {
+       "nop": {
+        "hits": 128,
+        "latency": 744,
+        "stall": 744,
+        "idle": 0
+       },
+       "valu": {
+        "hits": 8480,
+        "latency": 40064,
+        "stall": 5672,
+        "idle": 1028
+       },
+       "waitcnt:lgkm": {
+        "hits": 288,
+        "latency": 7164,
+        "stall": 7164,
+        "idle": 0
+       },
+       "salu": {
+        "hits": 1280,
+        "latency": 5120,
+        "stall": 0,
+        "idle": 1040
+       },
+       "mfma": {
+        "hits": 4096,
+        "latency": 37900,
+        "stall": 21012,
+        "idle": 632
+       },
+       "waitcnt:vmem": {
+        "hits": 96,
+        "latency": 776,
+        "stall": 776,
+        "idle": 0
+       },
+       "barrier": {
+        "hits": 128,
+        "latency": 3808,
+        "stall": 3808,
+        "idle": 0
+       },
+       "ds_read": {
+        "hits": 1536,
+        "latency": 12300,
+        "stall": 6156,
+        "idle": 2304
+       },
+       "smem": {
+        "hits": 32,
+        "latency": 128,
+        "stall": 0,
+        "idle": 0
+       },
+       "vmem_store": {
+        "hits": 1824,
+        "latency": 8512,
+        "stall": 1084,
+        "idle": 10932
+       }
+      }
+     },
+     "cycle_share": 0.0508
+    },
+    "epilogue": {
+     "instructions": 290,
+     "mix": {
+      "instructions": 290,
+      "classes": {
+       "valu": 18,
+       "vmem_store": 7,
+       "nop": 264,
+       "other": 1
+      },
+      "waits": {},
+      "mma_flops": 0,
+      "bytes_per_lane": {
+       "vmem_store": {
+        "2": 7
+       }
+      }
+     },
+     "start": "0x3e54",
+     "att": {
+      "total": {
+       "hits": 832,
+       "latency": 18104,
+       "stall": 500,
+       "idle": 1644
+      },
+      "by_class": {
+       "vmem_store": {
+        "hits": 224,
+        "latency": 1300,
+        "stall": 372,
+        "idle": 1644
+       },
+       "valu": {
+        "hits": 576,
+        "latency": 2440,
+        "stall": 128,
+        "idle": 0
+       },
+       "other": {
+        "hits": 32,
+        "latency": 14364,
+        "stall": 0,
+        "idle": 0
+       }
+      }
+     },
+     "cycle_share": 0.0079
+    },
+    "att": {
+     "total_cycles": 2295696,
+     "waves_traced": 32
+    },
+    "source": "code object (llvm-objdump)",
+    "matrix_dtype": "bf16",
+    "att_matrix_insts_per_wave": 2048.0,
+    "att_matrix_flops_per_wave": 33554432.0,
+    "matrix_idle": {
+     "simds": 4,
+     "span_cycles": 601980,
+     "busy": 0.4355,
+     "idle": {
+      "vmem_issue": 0.2002,
+      "valu": 0.0834,
+      "scalar": 0.0662,
+      "lds_issue": 0.0627,
+      "lgkm_wait": 0.054,
+      "no_instruction": 0.0377,
+      "barrier": 0.0375,
+      "other": 0.0068,
+      "nop": 0.0049,
+      "vmem_wait": 0.0034,
+      "matrix_core": 0.0028
+     },
+     "idle_by_region": {
+      "main_loop": 0.4515,
+      "prologue": 0.0723,
+      "drain": 0.0279,
+      "epilogue": 0.008
+     },
+     "idle_in": {
+      "prologue": {
+       "vmem_issue": 0.0314,
+       "scalar": 0.0143,
+       "valu": 0.0126,
+       "no_instruction": 0.0074,
+       "barrier": 0.0029,
+       "lds_issue": 0.002,
+       "lgkm_wait": 0.0016,
+       "vmem_wait": 0.0001,
+       "other": 0.0001
+      },
+      "main_loop": {
+       "vmem_issue": 0.1661,
+       "valu": 0.0583,
+       "lds_issue": 0.0574,
+       "scalar": 0.0513,
+       "lgkm_wait": 0.05,
+       "barrier": 0.0333,
+       "no_instruction": 0.0243,
+       "nop": 0.0048,
+       "vmem_wait": 0.0032,
+       "matrix_core": 0.002,
+       "other": 0.0008
+      },
+      "drain": {
+       "valu": 0.0115,
+       "no_instruction": 0.0054,
+       "lds_issue": 0.0034,
+       "lgkm_wait": 0.0024,
+       "vmem_issue": 0.0023,
+       "barrier": 0.0013,
+       "matrix_core": 0.0008,
+       "scalar": 0.0006,
+       "nop": 0.0002,
+       "vmem_wait": 0.0001
+      },
+      "epilogue": {
+       "other": 0.0059,
+       "valu": 0.001,
+       "no_instruction": 0.0006,
+       "vmem_issue": 0.0005
+      }
+     },
+     "no_wave": 0.0048,
+     "model": "one matrix pipe a SIMD serving its instructions in issue order, each for FLOPs/(the SIMD's peak FLOPs a cycle) cycles; an idle cycle split evenly over the SIMD's waves' current instruction"
+    }
+   },
+   "counters": {
+    "GRBM_GUI_ACTIVE": 4832223.0,
+    "LdsLatency": 61.42281,
+    "SQ_ACTIVE_INST_ANY": 60604416.0,
+    "SQ_ACTIVE_INST_LDS": 8388608.0,
+    "SQ_ACTIVE_INST_SCA": 16793600.0,
+    "SQ_ACTIVE_INST_VALU": 30031872.0,
+    "SQ_ACTIVE_INST_VMEM": 4718592.0,
+    "SQ_BUSY_CU_CYCLES": 144937922.0,
+    "SQ_IFETCH": 13410304.0,
+    "SQ_INSTS_BRANCH": 131072.0,
+    "SQ_INSTS_LDS": 8388608.0,
+    "SQ_INSTS_MFMA": 16777216.0,
+    "SQ_INSTS_SALU": 16719872.0,
+    "SQ_INSTS_SMEM": 73728.0,
+    "SQ_INSTS_VALU": 30015488.0,
+    "SQ_INSTS_VALU_MFMA_MOPS_BF16": 536870912.0,
+    "SQ_INSTS_VALU_MFMA_MOPS_F16": 0.0,
+    "SQ_INSTS_VALU_MFMA_MOPS_F32": 0.0,
+    "SQ_INSTS_VALU_MFMA_MOPS_F8": 0.0,
+    "SQ_INSTS_VMEM_RD": 4194304.0,
+    "SQ_INSTS_VMEM_WR": 524288.0,
+    "SQ_LDS_ADDR_CONFLICT": 0.0,
+    "SQ_LDS_BANK_CONFLICT": 0.0,
+    "SQ_LDS_IDX_ACTIVE": 33554432.0,
+    "SQ_LDS_UNALIGNED_STALL": 0.0,
+    "SQ_VALU_MFMA_BUSY_CYCLES": 268435456.0,
+    "SQ_WAIT_ANY": 21739647.0,
+    "SQ_WAIT_INST_ANY": 62637528.0,
+    "SQ_WAIT_INST_LDS": 9283747.0,
+    "SQ_WAVES": 8192.0,
+    "SQ_WAVE_CYCLES": 144937922.0,
+    "TCC_BUBBLE_sum": 127.0,
+    "TCC_EA0_RDREQ_DRAM_32B": 25168496.0,
+    "TCC_EA0_RDREQ_sum": 6292792.0,
+    "TCC_EA0_WRREQ_WRITE_DRAM_32B": 2097861.0,
+    "TCC_EA0_WRREQ_sum": 1049071.0,
+    "TCC_HIT_sum": 28893680.0,
+    "TCC_MISS_sum": 6816416.0,
+    "VmemLatency": 581.099462
+   },
+   "findings": [
+    {
+     "kind": "latency_bound",
+     "cost": null,
+     "text": "latency-bound (neither roof): 38% of the matrix peak, 33% of the cache-resident rate (past the L2)",
+     "evidence": {
+      "of_compute_peak": 0.3761,
+      "of_memory_peak": 0.3254
+     }
+    },
+    {
+     "kind": "issue_bound",
+     "cost": 0.3387,
+     "text": "issue-bound: 1 wave(s) a SIMD (bound by lds), and the main loop issues 2.4 other instructions per matrix one (32 vmem_lds, 64 ds_read, 76 valu, 116 salu against 128); the matrix core idles 34% of the kernel with its waves issuing them",
+     "evidence": {
+      "waves_per_simd": 1,
+      "bound_by": "lds",
+      "per_matrix_instruction": 2.43,
+      "matrix_idle_issuing": 0.3387
+     }
+    },
+    {
+     "kind": "stall",
+     "cost": 0.2002,
+     "reason": "vmem_issue",
+     "text": "the matrix core idles 20% of the kernel with its waves at vmem_issue (at buffer/global loads and stores: the address/data path is busy)",
+     "evidence": {
+      "reason": "vmem_issue",
+      "share": 0.2002,
+      "region": "matrix-idle cycles (traced CU)"
+     }
+    },
+    {
+     "kind": "stall",
+     "cost": 0.0834,
+     "reason": "valu",
+     "text": "the matrix core idles 8% of the kernel with its waves at valu (at vector ALU instructions (their dependencies, or the VALU busy))",
+     "evidence": {
+      "reason": "valu",
+      "share": 0.0834,
+      "region": "matrix-idle cycles (traced CU)"
+     }
+    },
+    {
+     "kind": "prologue",
+     "cost": 0.0723,
+     "text": "prologue: the matrix core idles 7% of the kernel while the waves are before the main loop (515 instructions: 193 VALU, 32 loads); at one workgroup a slot no other workgroup's main loop overlaps it, so it adds to the kernel's time",
+     "evidence": {
+      "cycle_share": 0.0681,
+      "matrix_idle_share": 0.0723,
+      "regions": [
+       "prologue"
+      ],
+      "valu": 193,
+      "stores": 0,
+      "loads": 32,
+      "workgroups_per_slot": 1
+     }
+    },
+    {
+     "kind": "stall",
+     "cost": 0.0662,
+     "reason": "scalar",
+     "text": "the matrix core idles 7% of the kernel with its waves at scalar (at scalar ALU and scalar-memory instructions)",
+     "evidence": {
+      "reason": "scalar",
+      "share": 0.0662,
+      "region": "matrix-idle cycles (traced CU)"
+     }
+    },
+    {
+     "kind": "stall",
+     "cost": 0.0627,
+     "reason": "lds_issue",
+     "text": "the matrix core idles 6% of the kernel with its waves at lds_issue (at ds_read/ds_write: the LDS queue or bandwidth (or bank conflicts))",
+     "evidence": {
+      "reason": "lds_issue",
+      "share": 0.0627,
+      "region": "matrix-idle cycles (traced CU)"
+     }
+    },
+    {
+     "kind": "epilogue",
+     "cost": 0.0359,
+     "text": "epilogue: the matrix core idles 4% of the kernel while the waves are after the main loop (drain + epilogue) (849 instructions: 283 VALU, 64 stores); at one workgroup a slot no other workgroup's main loop overlaps it, so it adds to the kernel's time",
+     "evidence": {
+      "cycle_share": 0.0587,
+      "matrix_idle_share": 0.0359,
+      "regions": [
+       "drain",
+       "epilogue"
+      ],
+      "valu": 283,
+      "stores": 64,
+      "loads": 0,
+      "workgroups_per_slot": 1
+     }
+    },
+    {
+     "kind": "l2_refetch",
+     "cost": null,
+     "short": "L2 re-fetch: 4.0x the call's bytes cross it",
+     "text": "the L2 re-fetches: 873 MB cross it, 4.0x the call's inputs and outputs (33% of the cache-resident rate): tiles shared by workgroups on different XCDs/L2s, or evicted before their reuse",
+     "evidence": {
+      "bytes": 872523424.0,
+      "refetch": 4.0,
+      "of_cache": 0.3254
+     }
+    }
+   ],
+   "verdict": {
+    "line": "latency-bound (neither roof): 38% of the matrix peak, 33% of the cache-resident rate (past the L2); matrix core 43% busy; issue-bound at 1 wave(s) a SIMD (lds): the matrix core idles 34% while its waves issue the loop's 2.4 other instructions per matrix one; matrix core idle before the main loop 7% (one workgroup a CU: not hidden); matrix core idle after the main loop 4% (one workgroup a CU: not hidden); L2 re-fetch: 4.0x the call's bytes cross it",
+    "bound": "latency_bound",
+    "losses": [
+     "issue_bound",
+     "prologue",
+     "epilogue"
+    ]
+   },
+   "share": 1.0,
+   "att_dir": "/tmp/hk-profile-t1y0u4g2/passes/att-0/ui_output_agent_53706_dispatch_4"
+  }
+ ],
+ "sources": {
+  "timing": "rocprofv3 --kernel-trace",
+  "counters": "rocprofv3 --pmc, 5 passes",
+  "att": "rocprofv3 --att (thread trace, one CU)",
+  "isa": "llvm-objdump of the code object"
+ },
+ "cannot": [
+  "MALL (Infinity Cache) hits: the L2's misses all count as requests to the fabric (TCC_EA0_RDREQ_DRAM = TCC_EA0_RDREQ); a MALL hit and an HBM read look alike, so `dram_bytes` is bytes past the L2",
+  "stall reasons by instruction: the counters give the share of wave time waiting for a dependency (s_waitcnt, barrier) or to issue, not which; the thread trace (att) attributes them per instruction on one CU"
+ ],
+ "ceilings": {
+  "matrix_flops": {
+   "bf16": 2480000000000000.0,
+   "fp16": 2480000000000000.0,
+   "fp8": 4960000000000000.0
+  },
+  "dram_bytes_s": 6600000000000.0,
+  "cache_bytes_s": 9100000000000.0,
+  "cache_bytes": 268435456,
+  "source": "MI355X measured (hk.integration.headroom.PEAKS: a register-only v_mfma bf16 loop on every CU, 2.47-2.48 PFLOP/s; a 1 GiB read past the 256 MB Infinity Cache, 6.54-6.60 TB/s); cache-resident 9.1 TB/s (hk.check.CARDS). fp8 is 2x bf16 (datasheet ratio, not measured)"
+ },
+ "passes": {
+  "timing": {
+   "ok": true,
+   "seconds": 6.4
+  },
+  "pmc-core": {
+   "ok": true,
+   "seconds": 3.4
+  },
+  "pmc-mix": {
+   "ok": true,
+   "seconds": 3.4
+  },
+  "pmc-wait": {
+   "ok": true,
+   "seconds": 3.3
+  },
+  "pmc-lds": {
+   "ok": true,
+   "seconds": 3.4
+  },
+  "pmc-latency": {
+   "ok": true,
+   "seconds": 3.7
+  },
+  "att-0": {
+   "ok": true,
+   "seconds": 3.3
+  }
+ },
+ "seconds": 70.5,
+ "notes": [],
+ "errors": [],
+ "compare": {
+  "a": "matmul",
+  "b": "hipblaslt",
+  "us": [
+   294.68,
+   181.86
+  ],
+  "ratio": 0.6171,
+  "kernels": [
+   "gemm_cdna_dp_128x128x64_s4_w2x2_g8_x32_kernel(globals)",
+   "Cijk_Alik_Bljk_BBS_BH_Bias_HA_S_SAV_UserArgs_MT256x256x64_MI16x16x1_CMS_SN_LDSB0_AFC0_AFEM1_AFEM1_ASEM1_CLR1_CADS0_DTLA1_DTLB1_DTVA0_DTVB0_EPS0_FDSI0_GRPM1_GRVWA8_GRVWB8_GSU0_GSUAMB_GLS0_ISA950_IU1_K1_LDSTI0_LBSPPA1024_LBSPPB1024_LBSPPM0_LPA16_LPB16_LPM0_LRVW8_LWPMn1_MIAV0_MIWT8_8_MO40_NTn1_NTA0_NTB0_NTC0_NTD4_NTM0_NEPBS0_NLCA1_NLCB1_ONLL1_PGR2_PLR1_PKA1_SIA3_SS1_SPO0_SRVW0_SSO0_SVW8_SK3_SKFTR0_SKXCCM0_TLDS1_ULSGRO0_USL1_UIOFGRO0_USFGRO0_VSn1_VWA8_VWB8_WSGRA0_WSGRB0_WS64_WG32_8_1"
+  ],
+  "metrics": {
+   "time.us": [
+    294.68,
+    181.86
+   ],
+   "roofline.of_compute_peak": [
+    0.3761,
+    0.6095
+   ],
+   "roofline.of_memory_peak": [
+    0.3254,
+    0.3144
+   ],
+   "roofline.clock_mhz": [
+    2042.0,
+    1833.0
+   ],
+   "matrix_core.busy": [
+    0.433,
+    0.777
+   ],
+   "occupancy.achieved_waves_per_simd": [
+    0.937,
+    0.891
+   ],
+   "occupancy.theoretical_waves_per_simd": [
+    1,
+    1
+   ],
+   "occupancy.cu_busy": [
+    0.937,
+    0.891
+   ],
+   "grid.workgroups": [
+    2048,
+    256
+   ],
+   "grid.waves_per_workgroup": [
+    4,
+    4
+   ],
+   "grid.workgroups_per_slot": [
+    1,
+    1
+   ],
+   "grid.rounds": [
+    8.0,
+    1.0
+   ],
+   "grid.lds_bytes": [
+    131072,
+    135168
+   ],
+   "isa.main_loop.instructions": [
+    439,
+    455
+   ],
+   "isa.main_loop.mix.per_matrix_instruction": [
+    2.43,
+    0.777
+   ],
+   "isa.main_loop.cycle_share": [
+    0.8733,
+    0.8774
+   ],
+   "isa.epilogue.cycle_share": [
+    0.0079,
+    0.0406
+   ],
+   "isa.drain.cycle_share": [
+    0.0508,
+    0.0321
+   ],
+   "isa.prologue.cycle_share": [
+    0.0681,
+    0.0499
+   ],
+   "instructions.valu": [
+    30015488,
+    19360768
+   ],
+   "instructions.mfma": [
+    16777216,
+    16807936
+   ],
+   "instructions.salu": [
+    16719872,
+    5816320
+   ],
+   "instructions.lds": [
+    8388608,
+    4231168
+   ],
+   "instructions.vmem_load": [
+    4194304,
+    2101248
+   ],
+   "instructions.vmem_store": [
+    524288,
+    65536
+   ],
+   "lds.bank_conflict": [
+    0.0,
+    0.0077
+   ],
+   "cache.l2_hit": [
+    0.809,
+    0.773
+   ],
+   "cache.fetch_bytes": [
+    805391872.0,
+    453188096.0
+   ],
+   "latency_cycles.vmem": [
+    581.1,
+    605.7
+   ],
+   "stalls.counters.dependency_wait": [
+    0.15,
+    0.068
+   ],
+   "stalls.counters.issue_wait": [
+    0.432,
+    0.508
+   ],
+   "stalls.matrix_idle.busy": [
+    0.4355,
+    0.7853
+   ],
+   "stalls.matrix_idle.idle_by_region.main_loop": [
+    0.4515,
+    0.0804
+   ],
+   "stalls.matrix_idle.idle_by_region.drain": [
+    0.0279,
+    0.006
+   ],
+   "stalls.matrix_idle.idle_by_region.epilogue": [
+    0.008,
+    0.0674
+   ],
+   "stalls.matrix_idle.idle_by_region.prologue": [
+    0.0723,
+    0.0601
+   ],
+   "stalls.matrix_idle.idle.barrier": [
+    0.0375,
+    0.008
+   ],
+   "stalls.matrix_idle.idle.lds_issue": [
+    0.0627,
+    0.0039
+   ],
+   "stalls.matrix_idle.idle.lgkm_wait": [
+    0.054,
+    0.0003
+   ],
+   "stalls.matrix_idle.idle.matrix_core": [
+    0.0028,
+    0.0721
+   ],
+   "stalls.matrix_idle.idle.no_instruction": [
+    0.0377,
+    0.0507
+   ],
+   "stalls.matrix_idle.idle.nop": [
+    0.0049,
+    0.001
+   ],
+   "stalls.matrix_idle.idle.other": [
+    0.0068,
+    0.0016
+   ],
+   "stalls.matrix_idle.idle.scalar": [
+    0.0662,
+    0.0363
+   ],
+   "stalls.matrix_idle.idle.valu": [
+    0.0834,
+    0.0372
+   ],
+   "stalls.matrix_idle.idle.vmem_issue": [
+    0.2002,
+    0.0027
+   ],
+   "stalls.matrix_idle.idle.vmem_lgkm_wait": [
+    null,
+    0.0
+   ],
+   "stalls.matrix_idle.idle.vmem_wait": [
+    0.0034,
+    0.0002
+   ],
+   "stalls.att.by_reason.barrier": [
+    0.04,
+    0.0348
+   ],
+   "stalls.att.by_reason.lds_issue": [
+    0.1281,
+    0.0998
+   ],
+   "stalls.att.by_reason.lgkm_wait": [
+    0.0601,
+    0.0036
+   ],
+   "stalls.att.by_reason.matrix_core": [
+    0.3281,
+    0.6448
+   ],
+   "stalls.att.by_reason.nop": [
+    0.0057,
+    null
+   ],
+   "stalls.att.by_reason.other": [
+    0.001,
+    0.0018
+   ],
+   "stalls.att.by_reason.scalar": [
+    0.1116,
+    0.0689
+   ],
+   "stalls.att.by_reason.valu": [
+    0.0962,
+    0.0054
+   ],
+   "stalls.att.by_reason.vmem_issue": [
+    0.2255,
+    0.1374
+   ],
+   "stalls.att.by_reason.vmem_wait": [
+    0.0038,
+    0.0036
+   ]
+  },
+  "line": "hipblaslt takes 0.576x the time of matmul (interleaved in one process: 176.7 vs 304.7 us, band 6%); profiled calls: hipblaslt 181.9 us vs matmul 294.7 us (0.617x the time); matrix core idle after the main loop (drain + epilogue) 3.6% -> 7.3% of the kernel; matrix core busy 43% -> 78%; matrix idle at VALU 8% -> 4%; VALU instructions 3.002e+07 -> 1.936e+07; workgroups 2,048 -> 256; loop instructions per matrix one 2.43 -> 0.777; CUs busy 94% -> 89%",
+  "b_report": {
+   "schema": 1,
+   "tool": "hk.profile",
+   "name": "hipblaslt",
+   "arch": "gfx950",
+   "device": "AMD Radeon Graphics",
+   "agent": {
+    "name": "gfx950",
+    "product": "AMD Radeon Graphics",
+    "cus": 256,
+    "simds": 1024,
+    "xcc": 8,
+    "ses": 32,
+    "simd_per_cu": 4,
+    "max_waves_per_simd": 8,
+    "max_waves_per_cu": 32,
+    "lds_kb": 160,
+    "max_clock_mhz": 2400,
+    "wave": 64
+   },
+   "versions": {
+    "python": "3.12.3",
+    "hk": "0.5.0",
+    "hk_src": "69e3db7913fc",
+    "torch": "2.10.0+rocm7.2.3.git1a270074",
+    "hip": "7.2.53211",
+    "triton": "3.6.0+rocm7.2.3.git4ed88892",
+    "rocprofv3": "1.1.0"
+   },
+   "call": {
+    "inputs": "bf16[2048,4096], bf16[16384,4096]",
+    "footprint_bytes": 218103808,
+    "kernels": 1,
+    "us": 181.86,
+    "iters": 20
+   },
+   "verdict": {
+    "line": "compute-bound: matrix core 78% busy, 1511 TFLOP/s = 61% of the bf16 peak (80% of it at the 1.83 GHz measured); matrix core idle after the main loop 7% (one workgroup a CU: not hidden); matrix core idle at matrix_core 7%; matrix core idle before the main loop 6% (one workgroup a CU: not hidden); L2 re-fetch: 2.4x the call's bytes cross it",
+    "kernel": "Cijk_Alik_Bljk_BBS_BH_Bias_HA_S_SAV_UserArgs_MT256x256x64_MI16x16x1_CMS_SN_LDSB0_AFC0_AFEM1_AFEM1_ASEM1_CLR1_CADS0_DTLA1_DTLB1_DTVA0_DTVB0_EPS0_FDSI0_GRPM1_GRVWA8_GRVWB8_GSU0_GSUAMB_GLS0_ISA950_IU1_K1_LDSTI0_LBSPPA1024_LBSPPB1024_LBSPPM0_LPA16_LPB16_LPM0_LRVW8_LWPMn1_MIAV0_MIWT8_8_MO40_NTn1_NTA0_NTB0_NTC0_NTD4_NTM0_NEPBS0_NLCA1_NLCB1_ONLL1_PGR2_PLR1_PKA1_SIA3_SS1_SPO0_SRVW0_SSO0_SVW8_SK3_SKFTR0_SKXCCM0_TLDS1_ULSGRO0_USL1_UIOFGRO0_USFGRO0_VSn1_VWA8_VWB8_WSGRA0_WSGRB0_WS64_WG32_8_1",
+    "share": 1.0,
+    "bound": "compute_bound",
+    "losses": [
+     "epilogue",
+     "stall",
+     "prologue",
+     "stall"
+    ]
+   },
+   "kernels": [
+    {
+     "name": "Cijk_Alik_Bljk_BBS_BH_Bias_HA_S_SAV_UserArgs_MT256x256x64_MI16x16x1_CMS_SN_LDSB0_AFC0_AFEM1_AFEM1_ASEM1_CLR1_CADS0_DTLA1_DTLB1_DTVA0_DTVB0_EPS0_FDSI0_GRPM1_GRVWA8_GRVWB8_GSU0_GSUAMB_GLS0_ISA950_IU1_K1_LDSTI0_LBSPPA1024_LBSPPB1024_LBSPPM0_LPA16_LPB16_LPM0_LRVW8_LWPMn1_MIAV0_MIWT8_8_MO40_NTn1_NTA0_NTB0_NTC0_NTD4_NTM0_NEPBS0_NLCA1_NLCB1_ONLL1_PGR2_PLR1_PKA1_SIA3_SS1_SPO0_SRVW0_SSO0_SVW8_SK3_SKFTR0_SKXCCM0_TLDS1_ULSGRO0_USL1_UIOFGRO0_USFGRO0_VSn1_VWA8_VWB8_WSGRA0_WSGRB0_WS64_WG32_8_1",
+     "hk": false,
+     "launches_per_call": 1,
+     "time": {
+      "us": 181.86,
+      "min_us": 180.08,
+      "noise": 0.003,
+      "samples": 20
+     },
+     "grid": {
+      "workgroups": 256,
+      "threads_per_workgroup": 256,
+      "waves_per_workgroup": 4,
+      "lds_bytes": 135168,
+      "vgpr": 256,
+      "agpr": 0,
+      "slot": "CU",
+      "slots": 256,
+      "workgroups_per_slot": 1,
+      "bound_by": "lds",
+      "theoretical_waves_per_simd": 1,
+      "rounds": 1.0,
+      "idle_share": 0.0
+     },
+     "roofline": {
+      "flops": 274877906944.0,
+      "flops_source": "counters (SQ_INSTS_VALU_MFMA_MOPS_* x 512)",
+      "flop_s": 1511489158875832.2,
+      "matrix_dtype": "bf16",
+      "of_compute_peak": 0.6095,
+      "compute_peak": 2480000000000000.0,
+      "clock_mhz": 1833.0,
+      "of_compute_peak_at_clock": 0.798,
+      "bytes": 520320384.0,
+      "bytes_source": "counters: bytes past the L2, read + written",
+      "bytes_s": 2861119790607.009,
+      "of_dram": 0.4335,
+      "of_cache": 0.3144,
+      "refetch": 2.39,
+      "memory_ceiling": "cache",
+      "of_memory_peak": 0.3144,
+      "memory_peak": 9100000000000.0,
+      "memory_bound_at": 0.7,
+      "intensity": 528.29,
+      "ridge": 375.76
+     },
+     "matrix_core": {
+      "busy": 0.777,
+      "source": "SQ_VALU_MFMA_BUSY_CYCLES / (cycles x SIMDs)"
+     },
+     "occupancy": {
+      "theoretical_waves_per_simd": 1,
+      "bound_by": "lds",
+      "achieved_waves_per_simd": 0.891,
+      "achieved_of_theoretical": 0.891,
+      "cu_busy": 0.891
+     },
+     "stalls": {
+      "counters": {
+       "dependency_wait": 0.068,
+       "issue_wait": 0.508,
+       "lds_issue_wait": 0.041,
+       "active": 0.422,
+       "active_valu": 0.253,
+       "active_vmem": 0.028,
+       "active_lds": 0.055,
+       "active_scalar": 0.076
+      },
+      "att": {
+       "cycles": 1103456,
+       "idle": 11488,
+       "by_reason": {
+        "matrix_core": {
+         "cycles": 711480,
+         "stall": 454344,
+         "share": 0.6448
+        },
+        "vmem_issue": {
+         "cycles": 151604,
+         "stall": 112528,
+         "share": 0.1374
+        },
+        "lds_issue": {
+         "cycles": 110104,
+         "stall": 46032,
+         "share": 0.0998
+        },
+        "scalar": {
+         "cycles": 75992,
+         "stall": 0,
+         "share": 0.0689
+        },
+        "barrier": {
+         "cycles": 38364,
+         "stall": 38364,
+         "share": 0.0348
+        },
+        "valu": {
+         "cycles": 5952,
+         "stall": 1984,
+         "share": 0.0054
+        },
+        "lgkm_wait": {
+         "cycles": 3968,
+         "stall": 3968,
+         "share": 0.0036
+        },
+        "vmem_wait": {
+         "cycles": 3968,
+         "stall": 3968,
+         "share": 0.0036
+        },
+        "other": {
+         "cycles": 2024,
+         "stall": 0,
+         "share": 0.0018
+        }
+       },
+       "region": "main loop"
+      },
+      "top": [
+       {
+        "reason": "matrix_core",
+        "share": 0.6448
+       },
+       {
+        "reason": "vmem_issue",
+        "share": 0.1374
+       },
+       {
+        "reason": "lds_issue",
+        "share": 0.0998
+       },
+       {
+        "reason": "scalar",
+        "share": 0.0689
+       }
+      ],
+      "matrix_idle": {
+       "simds": 4,
+       "span_cycles": 332560,
+       "busy": 0.7853,
+       "idle": {
+        "matrix_core": 0.0721,
+        "no_instruction": 0.0507,
+        "valu": 0.0372,
+        "scalar": 0.0363,
+        "barrier": 0.008,
+        "lds_issue": 0.0039,
+        "vmem_issue": 0.0027,
+        "other": 0.0016,
+        "nop": 0.001,
+        "lgkm_wait": 0.0003,
+        "vmem_wait": 0.0002,
+        "vmem_lgkm_wait": 0.0
+       },
+       "idle_by_region": {
+        "main_loop": 0.0804,
+        "epilogue": 0.0674,
+        "prologue": 0.0601,
+        "drain": 0.006,
+        "kernel": 0.0
+       },
+       "idle_in": {
+        "prologue": {
+         "scalar": 0.0312,
+         "no_instruction": 0.0126,
+         "valu": 0.0093,
+         "barrier": 0.0025,
+         "vmem_issue": 0.0019,
+         "lds_issue": 0.0014,
+         "other": 0.0011,
+         "nop": 0.0001,
+         "lgkm_wait": 0.0001,
+         "matrix_core": 0.0
+        },
+        "main_loop": {
+         "matrix_core": 0.0718,
+         "no_instruction": 0.0056,
+         "scalar": 0.0015,
+         "lds_issue": 0.0015,
+         "other": 0.0,
+         "vmem_issue": 0.0
+        },
+        "kernel": {
+         "other": 0.0
+        },
+        "drain": {
+         "barrier": 0.0055,
+         "matrix_core": 0.0003,
+         "no_instruction": 0.0001,
+         "scalar": 0.0,
+         "vmem_lgkm_wait": 0.0,
+         "lgkm_wait": 0.0,
+         "other": 0.0
+        },
+        "epilogue": {
+         "no_instruction": 0.0324,
+         "valu": 0.0279,
+         "scalar": 0.0036,
+         "lds_issue": 0.001,
+         "vmem_issue": 0.0008,
+         "nop": 0.0008,
+         "other": 0.0005,
+         "vmem_wait": 0.0002,
+         "lgkm_wait": 0.0002,
+         "barrier": 0.0001
+        }
+       },
+       "no_wave": 0.0007,
+       "model": "one matrix pipe a SIMD serving its instructions in issue order, each for FLOPs/(the SIMD's peak FLOPs a cycle) cycles; an idle cycle split evenly over the SIMD's waves' current instruction"
+      }
+     },
+     "lds": {
+      "bank_conflict": 0.0077,
+      "addr_conflict": 0.0,
+      "unaligned_stall": 0.0,
+      "instructions": 4231168
+     },
+     "cache": {
+      "l2_hit": 0.773,
+      "mall_hit": null,
+      "fetch_bytes": 453188096.0,
+      "write_bytes": 67132288.0
+     },
+     "latency_cycles": {
+      "vmem": 605.7,
+      "lds": 44.7
+     },
+     "instructions": {
+      "valu": 19360768,
+      "mfma": 16807936,
+      "salu": 5816320,
+      "lds": 4231168,
+      "smem": 8192,
+      "vmem_load": 2101248,
+      "vmem_store": 65536,
+      "branch": 216064
+     },
+     "instructions_per_wave": {
+      "valu": 18907.0,
+      "mfma": 16414.0,
+      "salu": 5680.0,
+      "lds": 4132.0,
+      "smem": 8.0,
+      "vmem_load": 2052.0,
+      "vmem_store": 64.0,
+      "branch": 211.0
+     },
+     "clock_mhz": 1833.0,
+     "isa": {
+      "function": "?",
+      "instructions": 2659,
+      "total": {
+       "instructions": 2659,
+       "classes": {
+        "mfma": 527,
+        "valu": 1142,
+        "valu_trans": 9,
+        "salu": 602,
+        "smem": 6,
+        "vmem_load": 2,
+        "vmem_lds": 64,
+        "vmem_store": 32,
+        "ds_read": 144,
+        "ds_write": 2,
+        "waitcnt": 32,
+        "barrier": 25,
+        "branch": 59,
+        "nop": 11,
+        "other": 2
+       },
+       "waits": {
+        "lgkm": 19,
+        "vmem": 11,
+        "vmem+lgkm": 2
+       },
+       "mma_flops": 8880128,
+       "bytes_per_lane": {
+        "vmem_lds": {
+         "16": 64
+        },
+        "ds_read": {
+         "16": 144
+        },
+        "vmem_load": {
+         "4": 2
+        },
+        "ds_write": {
+         "4": 2
+        },
+        "vmem_store": {
+         "16": 32
+        }
+       },
+       "per_matrix_instruction": 4.046
+      },
+      "loops": [
+       {
+        "start": "0x18dc6060",
+        "end": "0x18dc66d8",
+        "instructions": 225,
+        "mix": {
+         "instructions": 225,
+         "classes": {
+          "mfma": 128,
+          "valu": 2,
+          "salu": 38,
+          "vmem_lds": 16,
+          "ds_read": 32,
+          "waitcnt": 4,
+          "barrier": 4,
+          "branch": 1
+         },
+         "waits": {
+          "lgkm": 2,
+          "vmem": 2
+         },
+         "mma_flops": 2097152,
+         "bytes_per_lane": {
+          "ds_read": {
+           "16": 32
+          },
+          "vmem_lds": {
+           "16": 16
+          }
+         },
+         "per_matrix_instruction": 0.758
+        },
+        "iterations": 248,
+        "cycles": 551608
+       },
+       {
+        "start": "0x18dc6700",
+        "end": "0x18dc6d78",
+        "instructions": 225,
+        "mix": {
+         "instructions": 225,
+         "classes": {
+          "mfma": 128,
+          "valu": 2,
+          "salu": 38,
+          "vmem_lds": 16,
+          "ds_read": 32,
+          "waitcnt": 4,
+          "barrier": 4,
+          "branch": 1
+         },
+         "waits": {
+          "lgkm": 2,
+          "vmem": 2
+         },
+         "mma_flops": 2097152,
+         "bytes_per_lane": {
+          "ds_read": {
+           "16": 32
+          },
+          "vmem_lds": {
+           "16": 16
+          }
+         },
+         "per_matrix_instruction": 0.758
+        },
+        "iterations": 248,
+        "cycles": 551744
+       }
+      ],
+      "main_loop": {
+       "start": "0x18dc6060",
+       "end": "0x18dc6d78",
+       "instructions": 455,
+       "mix": {
+        "instructions": 455,
+        "classes": {
+         "mfma": 256,
+         "valu": 4,
+         "salu": 80,
+         "vmem_lds": 32,
+         "ds_read": 64,
+         "waitcnt": 8,
+         "barrier": 8,
+         "branch": 3
+        },
+        "waits": {
+         "lgkm": 4,
+         "vmem": 4
+        },
+        "mma_flops": 4194304,
+        "bytes_per_lane": {
+         "ds_read": {
+          "16": 64
+         },
+         "vmem_lds": {
+          "16": 32
+         }
+        },
+        "per_matrix_instruction": 0.777
+       },
+       "which": [
+        1,
+        0
+       ],
+       "merged_loops": 2,
+       "cycles": 1103456,
+       "att": {
+        "total": {
+         "hits": 111620,
+         "latency": 1103456,
+         "stall": 661188,
+         "idle": 11488
+        },
+        "by_class": {
+         "mfma": {
+          "hits": 63488,
+          "latency": 711480,
+          "stall": 454344,
+          "idle": 9456
+         },
+         "salu": {
+          "hits": 18864,
+          "latency": 75992,
+          "stall": 0,
+          "idle": 48
+         },
+         "ds_read": {
+          "hits": 15872,
+          "latency": 110104,
+          "stall": 46032,
+          "idle": 1984
+         },
+         "valu": {
+          "hits": 992,
+          "latency": 5952,
+          "stall": 1984,
+          "idle": 0
+         },
+         "waitcnt:lgkm": {
+          "hits": 992,
+          "latency": 3968,
+          "stall": 3968,
+          "idle": 0
+         },
+         "barrier": {
+          "hits": 1984,
+          "latency": 38364,
+          "stall": 38364,
+          "idle": 0
+         },
+         "vmem_lds": {
+          "hits": 7936,
+          "latency": 151604,
+          "stall": 112528,
+          "idle": 0
+         },
+         "waitcnt:vmem": {
+          "hits": 992,
+          "latency": 3968,
+          "stall": 3968,
+          "idle": 0
+         },
+         "branch": {
+          "hits": 500,
+          "latency": 2024,
+          "stall": 0,
+          "idle": 0
+         }
+        }
+       },
+       "cycle_share": 0.8774
+      },
+      "prologue": {
+       "instructions": 811,
+       "mix": {
+        "instructions": 811,
+        "classes": {
+         "mfma": 15,
+         "valu": 330,
+         "valu_trans": 9,
+         "salu": 351,
+         "smem": 4,
+         "vmem_lds": 32,
+         "ds_read": 16,
+         "waitcnt": 6,
+         "barrier": 5,
+         "branch": 35,
+         "nop": 7,
+         "other": 1
+        },
+        "waits": {
+         "lgkm": 5,
+         "vmem": 1
+        },
+        "mma_flops": 491520,
+        "bytes_per_lane": {
+         "vmem_lds": {
+          "16": 32
+         },
+         "ds_read": {
+          "16": 16
+         }
+        },
+        "per_matrix_instruction": 53.067
+       },
+       "start": "0x18dc4b00",
+       "att": {
+        "total": {
+         "hits": 5876,
+         "latency": 62812,
+         "stall": 39008,
+         "idle": 16812
+        },
+        "by_class": {
+         "nop": {
+          "hits": 48,
+          "latency": 192,
+          "stall": 192,
+          "idle": 5700
+         },
+         "salu": {
+          "hits": 2488,
+          "latency": 10148,
+          "stall": 0,
+          "idle": 5164
+         },
+         "branch": {
+          "hits": 212,
+          "latency": 888,
+          "stall": 0,
+          "idle": 4796
+         },
+         "smem": {
+          "hits": 16,
+          "latency": 64,
+          "stall": 0,
+          "idle": 0
+         },
+         "valu": {
+          "hits": 2460,
+          "latency": 11720,
+          "stall": 1880,
+          "idle": 1024
+         },
+         "valu_trans": {
+          "hits": 56,
+          "latency": 704,
+          "stall": 8,
+          "idle": 56
+         },
+         "waitcnt:lgkm": {
+          "hits": 36,
+          "latency": 692,
+          "stall": 692,
+          "idle": 0
+         },
+         "barrier": {
+          "hits": 40,
+          "latency": 1960,
+          "stall": 1960,
+          "idle": 72
+         },
+         "vmem_lds": {
+          "hits": 256,
+          "latency": 27868,
+          "stall": 26844,
+          "idle": 0
+         },
+         "mfma": {
+          "hits": 120,
+          "latency": 3616,
+          "stall": 3136,
+          "idle": 0
+         },
+         "waitcnt:vmem": {
+          "hits": 8,
+          "latency": 3228,
+          "stall": 3228,
+          "idle": 0
+         },
+         "ds_read": {
+          "hits": 128,
+          "latency": 1700,
+          "stall": 1068,
+          "idle": 0
+         },
+         "other": {
+          "hits": 8,
+          "latency": 32,
+          "stall": 0,
+          "idle": 0
+         }
+        }
+       },
+       "cycle_share": 0.0499
+      },
+      "drain": {
+       "instructions": 349,
+       "mix": {
+        "instructions": 349,
+        "classes": {
+         "mfma": 256,
+         "valu": 2,
+         "salu": 22,
+         "ds_read": 48,
+         "waitcnt": 10,
+         "barrier": 10,
+         "branch": 1
+        },
+        "waits": {
+         "vmem+lgkm": 2,
+         "lgkm": 4,
+         "vmem": 4
+        },
+        "mma_flops": 4194304,
+        "bytes_per_lane": {
+         "ds_read": {
+          "16": 48
+         }
+        },
+        "per_matrix_instruction": 0.363
+       },
+       "start": "0x18dc6d7c",
+       "att": {
+        "total": {
+         "hits": 2772,
+         "latency": 40336,
+         "stall": 29872,
+         "idle": 308
+        },
+        "by_class": {
+         "salu": {
+          "hits": 160,
+          "latency": 640,
+          "stall": 0,
+          "idle": 48
+         },
+         "branch": {
+          "hits": 4,
+          "latency": 32,
+          "stall": 0,
+          "idle": 0
+         },
+         "waitcnt:vmem+lgkm": {
+          "hits": 16,
+          "latency": 7324,
+          "stall": 7324,
+          "idle": 0
+         },
+         "barrier": {
+          "hits": 80,
+          "latency": 952,
+          "stall": 952,
+          "idle": 0
+         },
+         "mfma": {
+          "hits": 2048,
+          "latency": 27984,
+          "stall": 19792,
+          "idle": 196
+         },
+         "ds_read": {
+          "hits": 384,
+          "latency": 3052,
+          "stall": 1516,
+          "idle": 64
+         },
+         "valu": {
+          "hits": 16,
+          "latency": 96,
+          "stall": 32,
+          "idle": 0
+         },
+         "waitcnt:lgkm": {
+          "hits": 32,
+          "latency": 128,
+          "stall": 128,
+          "idle": 0
+         },
+         "waitcnt:vmem": {
+          "hits": 32,
+          "latency": 128,
+          "stall": 128,
+          "idle": 0
+         }
+        }
+       },
+       "cycle_share": 0.0321
+      },
+      "epilogue": {
+       "instructions": 1044,
+       "mix": {
+        "instructions": 1044,
+        "classes": {
+         "valu": 806,
+         "salu": 149,
+         "smem": 2,
+         "vmem_load": 2,
+         "vmem_store": 32,
+         "ds_read": 16,
+         "ds_write": 2,
+         "waitcnt": 8,
+         "barrier": 2,
+         "branch": 20,
+         "nop": 4,
+         "other": 1
+        },
+        "waits": {
+         "lgkm": 6,
+         "vmem": 2
+        },
+        "mma_flops": 0,
+        "bytes_per_lane": {
+         "vmem_load": {
+          "4": 2
+         },
+         "ds_write": {
+          "4": 2
+         },
+         "ds_read": {
+          "16": 16
+         },
+         "vmem_store": {
+          "16": 32
+         }
+        }
+       },
+       "start": "0x18dc77b4",
+       "att": {
+        "total": {
+         "hits": 8324,
+         "latency": 51044,
+         "stall": 13768,
+         "idle": 43040
+        },
+        "by_class": {
+         "salu": {
+          "hits": 1172,
+          "latency": 4688,
+          "stall": 0,
+          "idle": 21064
+         },
+         "branch": {
+          "hits": 156,
+          "latency": 684,
+          "stall": 0,
+          "idle": 640
+         },
+         "smem": {
+          "hits": 16,
+          "latency": 64,
+          "stall": 0,
+          "idle": 0
+         },
+         "valu": {
+          "hits": 6448,
+          "latency": 28568,
+          "stall": 2740,
+          "idle": 20156
+         },
+         "waitcnt:lgkm": {
+          "hits": 48,
+          "latency": 192,
+          "stall": 192,
+          "idle": 0
+         },
+         "vmem_load": {
+          "hits": 16,
+          "latency": 80,
+          "stall": 16,
+          "idle": 64
+         },
+         "barrier": {
+          "hits": 16,
+          "latency": 472,
+          "stall": 472,
+          "idle": 0
+         },
+         "waitcnt:vmem": {
+          "hits": 16,
+          "latency": 456,
+          "stall": 456,
+          "idle": 0
+         },
+         "ds_write": {
+          "hits": 16,
+          "latency": 128,
+          "stall": 0,
+          "idle": 60
+         },
+         "ds_read": {
+          "hits": 128,
+          "latency": 620,
+          "stall": 108,
+          "idle": 0
+         },
+         "vmem_store": {
+          "hits": 256,
+          "latency": 10684,
+          "stall": 9656,
+          "idle": 1056
+         },
+         "nop": {
+          "hits": 32,
+          "latency": 128,
+          "stall": 128,
+          "idle": 0
+         },
+         "other": {
+          "hits": 4,
+          "latency": 4280,
+          "stall": 0,
+          "idle": 0
+         }
+        }
+       },
+       "cycle_share": 0.0406
+      },
+      "att": {
+       "total_cycles": 1257648,
+       "waves_traced": 4
+      },
+      "source": "thread trace's disassembly",
+      "matrix_dtype": "bf16",
+      "att_matrix_insts_per_wave": 16414.0,
+      "att_matrix_flops_per_wave": 269418496.0,
+      "matrix_idle": {
+       "simds": 4,
+       "span_cycles": 332560,
+       "busy": 0.7853,
+       "idle": {
+        "matrix_core": 0.0721,
+        "no_instruction": 0.0507,
+        "valu": 0.0372,
+        "scalar": 0.0363,
+        "barrier": 0.008,
+        "lds_issue": 0.0039,
+        "vmem_issue": 0.0027,
+        "other": 0.0016,
+        "nop": 0.001,
+        "lgkm_wait": 0.0003,
+        "vmem_wait": 0.0002,
+        "vmem_lgkm_wait": 0.0
+       },
+       "idle_by_region": {
+        "main_loop": 0.0804,
+        "epilogue": 0.0674,
+        "prologue": 0.0601,
+        "drain": 0.006,
+        "kernel": 0.0
+       },
+       "idle_in": {
+        "prologue": {
+         "scalar": 0.0312,
+         "no_instruction": 0.0126,
+         "valu": 0.0093,
+         "barrier": 0.0025,
+         "vmem_issue": 0.0019,
+         "lds_issue": 0.0014,
+         "other": 0.0011,
+         "nop": 0.0001,
+         "lgkm_wait": 0.0001,
+         "matrix_core": 0.0
+        },
+        "main_loop": {
+         "matrix_core": 0.0718,
+         "no_instruction": 0.0056,
+         "scalar": 0.0015,
+         "lds_issue": 0.0015,
+         "other": 0.0,
+         "vmem_issue": 0.0
+        },
+        "kernel": {
+         "other": 0.0
+        },
+        "drain": {
+         "barrier": 0.0055,
+         "matrix_core": 0.0003,
+         "no_instruction": 0.0001,
+         "scalar": 0.0,
+         "vmem_lgkm_wait": 0.0,
+         "lgkm_wait": 0.0,
+         "other": 0.0
+        },
+        "epilogue": {
+         "no_instruction": 0.0324,
+         "valu": 0.0279,
+         "scalar": 0.0036,
+         "lds_issue": 0.001,
+         "vmem_issue": 0.0008,
+         "nop": 0.0008,
+         "other": 0.0005,
+         "vmem_wait": 0.0002,
+         "lgkm_wait": 0.0002,
+         "barrier": 0.0001
+        }
+       },
+       "no_wave": 0.0007,
+       "model": "one matrix pipe a SIMD serving its instructions in issue order, each for FLOPs/(the SIMD's peak FLOPs a cycle) cycles; an idle cycle split evenly over the SIMD's waves' current instruction"
+      }
+     },
+     "counters": {
+      "GRBM_GUI_ACTIVE": 2688229.0,
+      "LdsLatency": 44.723384,
+      "SQ_ACTIVE_INST_ANY": 32377856.0,
+      "SQ_ACTIVE_INST_LDS": 4235264.0,
+      "SQ_ACTIVE_INST_SCA": 5824512.0,
+      "SQ_ACTIVE_INST_VALU": 19391488.0,
+      "SQ_ACTIVE_INST_VMEM": 2166784.0,
+      "SQ_BUSY_CU_CYCLES": 76614774.0,
+      "SQ_IFETCH": 7554048.0,
+      "SQ_INSTS_BRANCH": 216064.0,
+      "SQ_INSTS_LDS": 4231168.0,
+      "SQ_INSTS_MFMA": 16807936.0,
+      "SQ_INSTS_SALU": 5816320.0,
+      "SQ_INSTS_SMEM": 8192.0,
+      "SQ_INSTS_VALU": 19360768.0,
+      "SQ_INSTS_VALU_MFMA_MOPS_BF16": 536870912.0,
+      "SQ_INSTS_VALU_MFMA_MOPS_F16": 0.0,
+      "SQ_INSTS_VALU_MFMA_MOPS_F32": 0.0,
+      "SQ_INSTS_VALU_MFMA_MOPS_F8": 0.0,
+      "SQ_INSTS_VMEM_RD": 2101248.0,
+      "SQ_INSTS_VMEM_WR": 65536.0,
+      "SQ_LDS_ADDR_CONFLICT": 0.0,
+      "SQ_LDS_BANK_CONFLICT": 131072.0,
+      "SQ_LDS_IDX_ACTIVE": 17047552.0,
+      "SQ_LDS_UNALIGNED_STALL": 0.0,
+      "SQ_VALU_MFMA_BUSY_CYCLES": 269418496.0,
+      "SQ_WAIT_ANY": 5247077.0,
+      "SQ_WAIT_INST_ANY": 38938069.0,
+      "SQ_WAIT_INST_LDS": 3165428.0,
+      "SQ_WAVES": 1024.0,
+      "SQ_WAVE_CYCLES": 76614774.0,
+      "TCC_BUBBLE_sum": 82.0,
+      "TCC_EA0_RDREQ_DRAM_32B": 14162128.0,
+      "TCC_EA0_RDREQ_sum": 3542120.0,
+      "TCC_EA0_WRREQ_WRITE_DRAM_32B": 2097884.0,
+      "TCC_EA0_WRREQ_sum": 1048942.0,
+      "TCC_HIT_sum": 13818264.0,
+      "TCC_MISS_sum": 4064840.0,
+      "VmemLatency": 605.66385
+     },
+     "findings": [
+      {
+       "kind": "compute_bound",
+       "cost": null,
+       "text": "compute-bound: matrix core 78% busy, 1511 TFLOP/s = 61% of the bf16 peak (80% of it at the 1.83 GHz measured)",
+       "evidence": {
+        "of_compute_peak": 0.6095,
+        "matrix_core_busy": 0.777,
+        "clock_mhz": 1833.0
+       }
+      },
+      {
+       "kind": "epilogue",
+       "cost": 0.0734,
+       "text": "epilogue: the matrix core idles 7% of the kernel while the waves are after the main loop (drain + epilogue) (1393 instructions: 808 VALU, 32 stores); at one workgroup a slot no other workgroup's main loop overlaps it, so it adds to the kernel's time",
+       "evidence": {
+        "cycle_share": 0.0727,
+        "matrix_idle_share": 0.0734,
+        "regions": [
+         "drain",
+         "epilogue"
+        ],
+        "valu": 808,
+        "stores": 32,
+        "loads": 2,
+        "workgroups_per_slot": 1
+       }
+      },
+      {
+       "kind": "stall",
+       "cost": 0.0721,
+       "reason": "matrix_core",
+       "text": "the matrix core idles 7% of the kernel with its waves at matrix_core (at MFMA/WMMA instructions: in a loop's cycles, issuing or waiting for the matrix pipe; in the matrix core's idle time, waiting for operands)",
+       "evidence": {
+        "reason": "matrix_core",
+        "share": 0.0721,
+        "region": "matrix-idle cycles (traced CU)"
+       }
+      },
+      {
+       "kind": "prologue",
+       "cost": 0.0601,
+       "text": "prologue: the matrix core idles 6% of the kernel while the waves are before the main loop (811 instructions: 339 VALU, 32 loads); at one workgroup a slot no other workgroup's main loop overlaps it, so it adds to the kernel's time",
+       "evidence": {
+        "cycle_share": 0.0499,
+        "matrix_idle_share": 0.0601,
+        "regions": [
+         "prologue"
+        ],
+        "valu": 339,
+        "stores": 0,
+        "loads": 32,
+        "workgroups_per_slot": 1
+       }
+      },
+      {
+       "kind": "stall",
+       "cost": 0.0507,
+       "reason": "no_instruction",
+       "text": "the matrix core idles 5% of the kernel with its waves at no_instruction (between instructions: none ready to issue (instruction fetch, a dependency the hardware tracks without an s_waitcnt))",
+       "evidence": {
+        "reason": "no_instruction",
+        "share": 0.0507,
+        "region": "matrix-idle cycles (traced CU)"
+       }
+      },
+      {
+       "kind": "l2_refetch",
+       "cost": null,
+       "short": "L2 re-fetch: 2.4x the call's bytes cross it",
+       "text": "the L2 re-fetches: 520 MB cross it, 2.4x the call's inputs and outputs (31% of the cache-resident rate): tiles shared by workgroups on different XCDs/L2s, or evicted before their reuse",
+       "evidence": {
+        "bytes": 520320384.0,
+        "refetch": 2.39,
+        "of_cache": 0.3144
+       }
+      }
+     ],
+     "verdict": {
+      "line": "compute-bound: matrix core 78% busy, 1511 TFLOP/s = 61% of the bf16 peak (80% of it at the 1.83 GHz measured); matrix core idle after the main loop 7% (one workgroup a CU: not hidden); matrix core idle at matrix_core 7%; matrix core idle before the main loop 6% (one workgroup a CU: not hidden); L2 re-fetch: 2.4x the call's bytes cross it",
+      "bound": "compute_bound",
+      "losses": [
+       "epilogue",
+       "stall",
+       "prologue",
+       "stall"
+      ]
+     },
+     "share": 1.0,
+     "att_dir": "/tmp/hk-profile-t1y0u4g2/vs/passes/att-0/ui_output_agent_51286_dispatch_5"
+    }
+   ],
+   "sources": {
+    "timing": "rocprofv3 --kernel-trace",
+    "counters": "rocprofv3 --pmc, 5 passes",
+    "att": "rocprofv3 --att (thread trace, one CU)",
+    "isa": "llvm-objdump of the code object"
+   },
+   "cannot": [
+    "MALL (Infinity Cache) hits: the L2's misses all count as requests to the fabric (TCC_EA0_RDREQ_DRAM = TCC_EA0_RDREQ); a MALL hit and an HBM read look alike, so `dram_bytes` is bytes past the L2",
+    "stall reasons by instruction: the counters give the share of wave time waiting for a dependency (s_waitcnt, barrier) or to issue, not which; the thread trace (att) attributes them per instruction on one CU"
+   ],
+   "ceilings": {
+    "matrix_flops": {
+     "bf16": 2480000000000000.0,
+     "fp16": 2480000000000000.0,
+     "fp8": 4960000000000000.0
+    },
+    "dram_bytes_s": 6600000000000.0,
+    "cache_bytes_s": 9100000000000.0,
+    "cache_bytes": 268435456,
+    "source": "MI355X measured (hk.integration.headroom.PEAKS: a register-only v_mfma bf16 loop on every CU, 2.47-2.48 PFLOP/s; a 1 GiB read past the 256 MB Infinity Cache, 6.54-6.60 TB/s); cache-resident 9.1 TB/s (hk.check.CARDS). fp8 is 2x bf16 (datasheet ratio, not measured)"
+   },
+   "passes": {
+    "timing": {
+     "ok": true,
+     "seconds": 5.3
+    },
+    "pmc-core": {
+     "ok": true,
+     "seconds": 5.2
+    },
+    "pmc-mix": {
+     "ok": true,
+     "seconds": 5.0
+    },
+    "pmc-wait": {
+     "ok": true,
+     "seconds": 5.1
+    },
+    "pmc-lds": {
+     "ok": true,
+     "seconds": 5.0
+    },
+    "pmc-latency": {
+     "ok": true,
+     "seconds": 5.0
+    },
+    "att-0": {
+     "ok": true,
+     "seconds": 7.1
+    }
+   },
+   "seconds": 38.0,
+   "notes": [],
+   "errors": []
+  },
+  "interleaved": {
+   "a_us": 304.75,
+   "b_us": 176.67,
+   "b_over_a_time": 0.5759,
+   "band": 0.0631,
+   "verdict_for_a": "loss",
+   "rounds": 15,
+   "how": "hk.check.interleave in one process: rounds of ~1 ms bursts, the contenders rotated; medians"
+  }
+ }
+}

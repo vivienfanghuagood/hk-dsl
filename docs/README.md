@@ -38,6 +38,7 @@ Coding agents: start from [llms.txt](../llms.txt) and the
 | page | |
 |---|---|
 | [hk.check](check.md) | the loop: build and resources without a GPU, correctness against a torch reference, interleaved timing against torch eager and `torch.compile`, `--json` |
+| [hk.profile](profile.md) | why it runs at that speed: rocprofv3's counters and thread trace per kernel -- the roofline, matrix core busy, occupancy, the grid's tail, where the waves wait, the main loop's instructions -- and a verdict, `--json` for agents |
 | [Performance](performance.md) | every measured result with its baseline, software stack and source chapter, RDNA3 and CDNA4 apart, end to end, kernel for kernel, and the losses |
 | [The DX suite](../bench/dx/README.md) | eight LLM kernel tasks with references and baselines on both GPUs, one command to a JSON scoreboard |
 | [What the DX suite found](../bench/dx/FINDINGS.md) | kernels written from the docs alone, and the doc gaps they hit, ranked |

@@ -1,0 +1,20 @@
+hk.profile gemm_plain  gfx950 (AMD Radeon Graphics, 256 CUs)  hk 0.5.0  rocprofv3 1.1.0
+  call      bf16[1024,4096], bf16[28672,4096], bf16[28672]  179.96 us of kernels a call, 1 kernel(s)
+  sources   timing: rocprofv3 --kernel-trace; counters: rocprofv3 --pmc, 5 passes; att: rocprofv3 --att (thread trace, one CU); isa: llvm-objdump of the code object
+  kernel gemm_cdna_256x256x64_w2x4_g8_x64_sp_es_lb_kernel  179.96 us ±0.3%
+    grid      448 workgroups x 512 threads (8 waves), LDS 131072 B, 234 VGPR -> 1 a CU (bound by registers and lds); 1.75 rounds of 256 CUs
+    roofline  240.5 GFLOP -> 1.34 PFLOP/s = 54% of the bf16 matrix peak; 1032 MB past the L2 -> 5.73 TB/s = 63% of the cache-resident rate (3.4x the call's bytes); DRAM at least 25% (the call's 302 MB once); 233 FLOP/B past the L2 (DRAM ridge 375.76)
+    busy      matrix core 65% busy, 1.59 of 2 waves/SIMD achieved, CUs busy 80%, clock 1.97 GHz
+    waves     waiting on a dependency 28%, waiting to issue 47%, issuing 26%, waiting to issue LDS 9% of wave time (counters)
+    memory    LDS bank conflicts 0.0% of LDS cycles; L2 hit 51%; latency vmem 893, lds 47 cycles
+    loop      0x2140-0x29a8, 329 instructions: 128 mfma, 8 valu, 70 salu, 16 vmem_lds, 48 ds_read, 16 barrier, 1 branch, 16 nop, 16 other, 10 waitcnt (8 lgkm, 2 vmem); 90% of a wave's cycles
+    stalls    (main loop, thread trace) matrix_core 39%, barrier 26%, vmem_issue 13%, lds_issue 12%, scalar 6%, valu 2%
+    matrix    (thread trace, 4 SIMDs) busy 72%; idle with the waves at barrier 12%, vmem_issue 8%, valu 2%, scalar 2%, no_instruction 1%, other 1%; idle by part main_loop 19%, prologue 5%, epilogue 2%, drain 2%; no wave 0%
+    prologue  591 instructions: 309 valu, 2 valu_trans, 244 salu, 8 smem, 14 vmem_lds, 3 barrier, 4 branch, 2 nop, 5 waitcnt (3 lgkm, 2 vmem); 4% of a wave's cycles
+    drain     530 instructions: 128 mfma, 197 valu, 56 salu, 1 smem, 2 vmem_lds, 64 vmem_store, 48 ds_read, 11 barrier, 3 nop, 11 other, 9 waitcnt (7 lgkm, 2 vmem); 4% of a wave's cycles
+    epilogue  525 instructions: 185 valu, 14 salu, 64 vmem_store, 2 barrier, 1 branch, 257 nop, 2 other; 2% of a wave's cycles
+    verdict   compute-bound: matrix core 65% busy, 1337 TFLOP/s = 54% of the bf16 peak (66% of it at the 1.97 GHz measured); tail: 1.75 rounds of 256 CUs, the last fills 192/256 (12% idle); matrix core idle at barrier 12%; matrix core idle at vmem_issue 8%; L2 re-fetch: 3.4x the call's bytes cross it
+  vs        bias_gelu takes 1.062x the time of gemm_plain (interleaved in one process: 199.0 vs 187.1 us, band 6%); profiled calls: bias_gelu 192.0 us vs gemm_plain 180.0 us (1.067x the time); matrix core idle after the main loop (drain + epilogue) 4.2% -> 9.9% of the kernel; matrix core busy 65% -> 60%; matrix idle at VALU 2% -> 6%; VALU instructions 1.804e+07 -> 2.222e+07
+  bias_gelu: compute-bound: matrix core 60% busy, 1253 TFLOP/s = 51% of the bf16 peak (62% of it at the 1.97 GHz measured); matrix core idle at barrier 13%; tail: 1.75 rounds of 256 CUs, the last fills 192/256 (12% idle); matrix core idle after the main loop 10% (one workgroup a CU: not hidden); L2 re-fetch: 3.4x the call's bytes cross it
+VERDICT compute-bound: matrix core 65% busy, 1337 TFLOP/s = 54% of the bf16 peak (66% of it at the 1.97 GHz measured); tail: 1.75 rounds of 256 CUs, the last fills 192/256 (12% idle); matrix core idle at barrier 12%; matrix core idle at vmem_issue 8%; L2 re-fetch: 3.4x the call's bytes cross it
+  (54 s)
