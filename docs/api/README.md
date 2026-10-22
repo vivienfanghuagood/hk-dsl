@@ -15,4 +15,5 @@ Generated from the code by `scripts/gen_api_docs.py`: every public name's signat
 - [`hk.schedules`: schedules as data](hk.schedules.md) -- 14 entries
 - [`hk.tune`: a GEMM schedule search](hk.tune.md) -- 24 entries
 - [`hk.check`](hk.check.md) -- 10 entries
+- [`hk.profile`](hk.profile.md) -- 22 entries
 - [`hk.target`: the facts per architecture](hk.target.md) -- 3 entries
