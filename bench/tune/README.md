@@ -97,5 +97,7 @@ tuner wrote. 2026-10-22, at `3e6a971`:
 hk.profile's verdicts (`--profiles`), are in the gfx950 file and
 [docs/tune.md](../../docs/tune.md#what-it-reached-2026-10-22).
 
-A process loads a few hundred hk kernel modules at most (thread-specific
-storage keys, docs/tune.md#limits); on gfx1100 run `run.py` two shapes a call.
+`run.py` launches hk's kernels through code objects (`HK_LAUNCH=codeobj`):
+a process loads a few hundred pybind modules at most (thread-specific storage
+keys, docs/tune.md#limits). The acceptance runs above were made before that,
+two (gfx1100) or three (gfx950) shapes a call.

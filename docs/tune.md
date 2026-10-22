@@ -241,13 +241,19 @@ two schedules are a tie -- but a stricter bar for shipping a record (as
   GEMMs can be told to do; the gfx950 misses above need a kernel (stream-K,
   a 192-wide macro tile, a pingpong that hides its prologue) before any
   search can reach them.
-- **A process loads a few hundred kernels at most.** Each hk extension module
-  takes thread-specific-storage keys, and a process has 1024; one gfx1100
-  search loads 100-300 candidates' modules, so `python -m hk.tune` tunes each
-  shape of a list in a process of its own (`--in-process` to override), and
-  `bench/tune/run.py` is run a few shapes a call. A process that runs out
-  aborts with "thread_specific_storage constructor: could not initialize the
-  TSS key".
+- **Candidates launch through code objects.** Every hk kernel loaded as a
+  pybind extension module takes thread-specific-storage keys, and a process
+  has 1024: a process that loads a few hundred aborts ("thread_specific_storage
+  constructor: could not initialize the TSS key") -- one gfx950 search in the
+  rocm/pytorch 7.2.3 image did, and two gfx1100 searches in one process. So the
+  search launches its candidates as device-only code objects
+  (`HK_LAUNCH=codeobj`, for the search only; `bench/tune/run.py` sets it for
+  its process): the same device code and device time, no module a kernel, a
+  fifth of the compile (a gfx1100 search went from ~60 s to 14-19 s of wall
+  clock). The acceptance numbers above were measured before this change
+  (`3e6a971`, pybind launches, two to three shapes a process); `python -m
+  hk.tune` with several shapes also runs each in a process of its own
+  (`--in-process` to override).
 - **Records are this machine's**: measured with its GPU, ROCm and hk, read in
   front of the shipped routes for that shape's M bucket. The gfx950 numbers
   above are ROCm 10's hipcc; a record made there is a correct kernel under
