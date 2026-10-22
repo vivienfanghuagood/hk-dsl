@@ -1,0 +1,241 @@
+{
+"schema": 1,
+"arch": "gfx1100",
+"agent": {
+"name": "gfx1100",
+"product": "AMD Radeon Graphics",
+"cus": 96,
+"simds": 192,
+"xcc": 1,
+"ses": 6,
+"simd_per_cu": 2,
+"max_waves_per_simd": 16,
+"max_waves_per_cu": 32,
+"lds_kb": 64,
+"max_clock_mhz": 1760,
+"wave": 32
+},
+"call_bytes": 352321536,
+"single": true,
+"versions": {
+"python": "3.12.3",
+"hk": "0.5.0",
+"hk_src": "69e3db7913fc",
+"torch": "2.10.0+rocm7.2.4.git3d3aa833",
+"hip": "7.2.53211",
+"triton": "3.6.0+rocm7.2.4.git4ed88892",
+"rocprofv3": "1.1.0"
+},
+"device": "AMD Radeon Graphics",
+"kernels": [
+{
+"rec": {
+"key": "0:gelu_mul_strips_kernel(globals)",
+"name": "gelu_mul_strips_kernel(globals)",
+"launches": 20,
+"durations_ns": [
+490122,
+490123,
+487522,
+490523,
+490602,
+488363,
+488682,
+487363,
+487242,
+487723,
+490282,
+489523,
+489722,
+486923,
+487802,
+487323,
+490722,
+487963,
+486963,
+488522
+],
+"median_ns": 488442.5,
+"noise": 0.0024,
+"grid": {
+"threads": 3670016,
+"workgroup": 32,
+"workgroups": 114688,
+"lds_bytes": 0,
+"scratch": 0,
+"vgpr": 104,
+"agpr": 0,
+"sgpr": 128
+},
+"counters": {},
+"counter_spread": {
+"SQ_WAVE_CYCLES": 0.0,
+"SQ_INSTS_VALU": 0.0,
+"GL2C_EA_RDREQ_64B_sum": 0.0,
+"GL2C_EA_RDREQ_32B_sum": 0.0,
+"SQ_BUSY_CYCLES": 0.0025,
+"SQ_INSTS_SMEM": 0.0,
+"GL2C_HIT_sum": 0.0,
+"SQ_WAVES": 0.0,
+"SQ_INSTS_SALU": 0.0,
+"SQ_INSTS_LDS": 0.0,
+"GL2C_MISS_sum": 0.0,
+"GRBM_GUI_ACTIVE": 0.0
+},
+"counter_pass_ns": {
+"core": 491002
+},
+"iters": 20
+},
+"build": {
+"kernel": "gelu_mul_strips",
+"consts": {},
+"arch": "gfx1100",
+"warps": 1,
+"threads": 32,
+"lds_bytes": 0,
+"binary": "/workspace/claude/hk-dsl-profile/cache/2e55a8748448d0b80cecb1152ea9692b/hk_gelu_mul_strips_2e55a8748448.cpython-312-x86_64-linux-gnu.so",
+"source": "/workspace/claude/hk-dsl-profile/cache/2e55a8748448d0b80cecb1152ea9692b/kernel.cpp",
+"instantiations": [
+{
+"name": "gelu_mul_strips_kernel(globals)",
+"vgpr": 102,
+"agpr": 0,
+"sgpr": 27,
+"vgpr_charged": 120,
+"lds": 0,
+"scratch": 0,
+"spill": 0,
+"occupancy_by_regs": 12,
+"occupancy_by_lds": 16,
+"occupancy": 12,
+"max_waves_per_simd": 16
+}
+]
+},
+"isa": {
+"function": "_Z22gelu_mul_strips_kernel7globals",
+"instructions": 737,
+"total": {
+"instructions": 737,
+"classes": {
+"valu": 414,
+"valu_trans": 33,
+"salu": 77,
+"smem": 12,
+"vmem_load": 4,
+"vmem_store": 2,
+"waitcnt": 10,
+"nop": 1,
+"other": 184
+},
+"waits": {
+"lgkm": 3,
+"other": 3,
+"vmem": 4
+},
+"mma_flops": 0,
+"bytes_per_lane": {
+"vmem_load": {
+"16": 4
+},
+"vmem_store": {
+"16": 2
+}
+}
+},
+"loops": [],
+"main_loop": null,
+"straight_line": {
+"att": {
+"total": {
+"hits": 335400,
+"latency": 23547976,
+"stall": 16428726,
+"idle": 651829
+},
+"by_class": {
+"other": {
+"hits": 3600,
+"latency": 6726850,
+"stall": 3600,
+"idle": 29565
+},
+"smem": {
+"hits": 7200,
+"latency": 28753,
+"stall": 21553,
+"idle": 15627
+},
+"salu": {
+"hits": 46200,
+"latency": 50134,
+"stall": 3934,
+"idle": 101644
+},
+"valu": {
+"hits": 248400,
+"latency": 367270,
+"stall": 118870,
+"idle": 441347
+},
+"waitcnt:lgkm": {
+"hits": 1800,
+"latency": 34353,
+"stall": 32553,
+"idle": 0
+},
+"valu_trans": {
+"hits": 19800,
+"latency": 85921,
+"stall": 6721,
+"idle": 12568
+},
+"waitcnt:other": {
+"hits": 1800,
+"latency": 27292,
+"stall": 25492,
+"idle": 0
+},
+"vmem_load": {
+"hits": 2400,
+"latency": 2400,
+"stall": 0,
+"idle": 42334
+},
+"waitcnt:vmem": {
+"hits": 2400,
+"latency": 16210744,
+"stall": 16208344,
+"idle": 0
+},
+"vmem_store": {
+"hits": 1200,
+"latency": 6000,
+"stall": 0,
+"idle": 8744
+},
+"nop": {
+"hits": 600,
+"latency": 8259,
+"stall": 7659,
+"idle": 0
+}
+}
+}
+},
+"att": {
+"total_cycles": 23547976,
+"waves_traced": 600
+},
+"source": "code object (llvm-objdump)",
+"matrix_dtype": null,
+"att_matrix_insts_per_wave": 0.0,
+"att_matrix_flops_per_wave": 0.0
+},
+"main": true,
+"flops": null,
+"bytes": null
+}
+]
+}

@@ -20,7 +20,7 @@
 "versions": {
 "python": "3.12.3",
 "hk": "0.5.0",
-"hk_src": "3594cc20dc6d",
+"hk_src": "69e3db7913fc",
 "torch": "2.10.0+rocm7.2.3.git1a270074",
 "hip": "7.2.53211",
 "triton": "3.6.0+rocm7.2.3.git4ed88892",
@@ -34,29 +34,29 @@
 "name": "gemm_cdna_256x256x64_w2x4_g8_x64_sp_es_lb_ep_bias_gelu_df9964ca_kernel(globals)",
 "launches": 20,
 "durations_ns": [
-190802,
-187321,
-188522,
-188842,
-188321,
-190042,
-190361,
-191162,
-189881,
-189962,
-189601,
-188362,
-189041,
-189362,
-189801,
-189002,
-189722,
-189281,
-189242,
-189401
+189278,
+190119,
+190439,
+193239,
+191558,
+190558,
+191238,
+193398,
+191998,
+192799,
+192039,
+191439,
+194079,
+192598,
+193518,
+193718,
+191678,
+191799,
+191919,
+192639
 ],
-"median_ns": 189381.5,
-"noise": 0.0027,
+"median_ns": 191958.5,
+"noise": 0.0041,
 "grid": {
 "threads": 229376,
 "workgroup": 512,
@@ -68,95 +68,149 @@
 "sgpr": 80
 },
 "counters": {
-"GRBM_GUI_ACTIVE": 3053688.0,
-"TCC_EA0_RDREQ_sum": 7607958.5,
-"TCC_EA0_RDREQ_DRAM_32B": 30427591.0,
-"SQ_BUSY_CU_CYCLES": 77493986.0,
-"SQ_INSTS_MFMA": 14680064.0,
+"SQ_BUSY_CU_CYCLES": 76156704.0,
 "SQ_INSTS_LDS": 5505024.0,
-"SQ_WAVE_CYCLES": 153893132.0,
+"TCC_EA0_WRREQ_WRITE_DRAM_32B": 1835283.0,
+"GRBM_GUI_ACTIVE": 2958386.0,
+"TCC_EA0_RDREQ_sum": 7609016.0,
+"TCC_EA0_WRREQ_sum": 917735.0,
+"SQ_WAVE_CYCLES": 151205619.0,
+"TCC_EA0_RDREQ_DRAM_32B": 30431834.0,
 "SQ_INSTS_VALU": 22220800.0,
-"TCC_EA0_WRREQ_WRITE_DRAM_32B": 1835414.5,
 "SQ_INSTS_SALU": 8909824.0,
+"SQ_INSTS_MFMA": 14680064.0,
 "SQ_WAVES": 3584.0,
-"TCC_EA0_WRREQ_sum": 917829.5,
-"SQ_INSTS_VALU_MFMA_MOPS_F16": 0.0,
-"SQ_INSTS_VMEM_WR": 458752.0,
-"SQ_INSTS_BRANCH": 125440.0,
-"SQ_INSTS_VALU_MFMA_MOPS_F8": 0.0,
 "SQ_INSTS_VMEM_RD": 1863680.0,
-"SQ_INSTS_SMEM": 35840.0,
-"TCC_BUBBLE_sum": 3.0,
-"SQ_INSTS_VALU_MFMA_MOPS_BF16": 469762048.0,
-"TCC_MISS_sum": 8068763.0,
+"TCC_MISS_sum": 8066985.0,
+"SQ_INSTS_BRANCH": 125440.0,
+"SQ_INSTS_VALU_MFMA_MOPS_F16": 0.0,
+"SQ_INSTS_VALU_MFMA_MOPS_F8": 0.0,
+"TCC_BUBBLE_sum": 19.0,
+"TCC_HIT_sum": 8492201.0,
 "SQ_VALU_MFMA_BUSY_CYCLES": 234881024.0,
-"TCC_HIT_sum": 8490407.0,
-"SQ_ACTIVE_INST_SCA": 8945664.0,
-"SQ_WAIT_ANY": 43938883.0,
+"SQ_INSTS_SMEM": 35840.0,
+"SQ_INSTS_VMEM_WR": 458752.0,
+"SQ_INSTS_VALU_MFMA_MOPS_BF16": 469762048.0,
+"SQ_WAIT_ANY": 44978772.0,
 "SQ_ACTIVE_INST_VALU": 23145472.0,
-"SQ_ACTIVE_INST_ANY": 41879040.0,
+"SQ_WAIT_INST_ANY": 68100441.0,
+"SQ_ACTIVE_INST_SCA": 8945664.0,
 "SQ_ACTIVE_INST_VMEM": 2293760.0,
-"SQ_WAIT_INST_ANY": 67138672.5,
-"SQ_ACTIVE_INST_MISC": 1960448.0,
 "SQ_ACTIVE_INST_LDS": 5505024.0,
-"SQ_IFETCH": 9062144.0,
-"SQ_LDS_ADDR_CONFLICT": 0.0,
-"SQ_INSTS_VALU_MFMA_MOPS_F32": 0.0,
+"SQ_ACTIVE_INST_ANY": 41879040.0,
 "SQ_LDS_UNALIGNED_STALL": 0.0,
-"SQ_LDS_BANK_CONFLICT": 0.0,
-"SQ_WAIT_INST_LDS": 12232108.5,
+"SQ_INSTS_VALU_MFMA_MOPS_F32": 0.0,
+"SQ_WAIT_INST_LDS": 12221302.0,
+"SQ_LDS_ADDR_CONFLICT": 0.0,
 "SQ_LDS_IDX_ACTIVE": 22020096.0,
-"VmemLatency": 896.9634015,
-"LdsLatency": 46.684252
+"SQ_IFETCH": 9062144.0,
+"SQ_LDS_BANK_CONFLICT": 0.0,
+"LdsLatency": 46.687608,
+"VmemLatency": 880.306971
 },
 "counter_spread": {
-"GRBM_GUI_ACTIVE": 0.0077,
-"TCC_EA0_RDREQ_sum": 0.0,
-"TCC_EA0_RDREQ_DRAM_32B": 0.0,
-"SQ_BUSY_CU_CYCLES": 0.0089,
-"SQ_INSTS_MFMA": 0.0,
+"SQ_BUSY_CU_CYCLES": 0.0001,
 "SQ_INSTS_LDS": 0.0,
-"SQ_WAVE_CYCLES": 0.009,
+"TCC_EA0_WRREQ_WRITE_DRAM_32B": 0.0001,
+"GRBM_GUI_ACTIVE": 0.0018,
+"TCC_EA0_RDREQ_sum": 0.0001,
+"TCC_EA0_WRREQ_sum": 0.0002,
+"SQ_WAVE_CYCLES": 0.0002,
+"TCC_EA0_RDREQ_DRAM_32B": 0.0001,
 "SQ_INSTS_VALU": 0.0,
-"TCC_EA0_WRREQ_WRITE_DRAM_32B": 0.0,
 "SQ_INSTS_SALU": 0.0,
+"SQ_INSTS_MFMA": 0.0,
 "SQ_WAVES": 0.0,
-"TCC_EA0_WRREQ_sum": 0.0,
-"SQ_INSTS_VALU_MFMA_MOPS_F16": 0.0,
-"SQ_INSTS_VMEM_WR": 0.0,
-"SQ_INSTS_BRANCH": 0.0,
-"SQ_INSTS_VALU_MFMA_MOPS_F8": 0.0,
 "SQ_INSTS_VMEM_RD": 0.0,
-"SQ_INSTS_SMEM": 0.0,
-"TCC_BUBBLE_sum": 1.0,
-"SQ_INSTS_VALU_MFMA_MOPS_BF16": 0.0,
-"TCC_MISS_sum": 0.0,
+"TCC_MISS_sum": 0.0001,
+"SQ_INSTS_BRANCH": 0.0,
+"SQ_INSTS_VALU_MFMA_MOPS_F16": 0.0,
+"SQ_INSTS_VALU_MFMA_MOPS_F8": 0.0,
+"TCC_BUBBLE_sum": 0.4737,
+"TCC_HIT_sum": 0.0001,
 "SQ_VALU_MFMA_BUSY_CYCLES": 0.0,
-"TCC_HIT_sum": 0.0,
-"SQ_ACTIVE_INST_SCA": 0.0,
-"SQ_WAIT_ANY": 0.0172,
+"SQ_INSTS_SMEM": 0.0,
+"SQ_INSTS_VMEM_WR": 0.0,
+"SQ_INSTS_VALU_MFMA_MOPS_BF16": 0.0,
+"SQ_WAIT_ANY": 0.0177,
 "SQ_ACTIVE_INST_VALU": 0.0,
-"SQ_ACTIVE_INST_ANY": 0.0,
+"SQ_WAIT_INST_ANY": 0.0066,
+"SQ_ACTIVE_INST_SCA": 0.0,
 "SQ_ACTIVE_INST_VMEM": 0.0,
-"SQ_WAIT_INST_ANY": 0.0111,
-"SQ_ACTIVE_INST_MISC": 0.0,
 "SQ_ACTIVE_INST_LDS": 0.0,
-"SQ_IFETCH": 0.0,
-"SQ_LDS_ADDR_CONFLICT": 0.0,
-"SQ_INSTS_VALU_MFMA_MOPS_F32": 0.0,
+"SQ_ACTIVE_INST_ANY": 0.0,
 "SQ_LDS_UNALIGNED_STALL": 0.0,
-"SQ_LDS_BANK_CONFLICT": 0.0,
+"SQ_INSTS_VALU_MFMA_MOPS_F32": 0.0,
 "SQ_WAIT_INST_LDS": 0.0001,
+"SQ_LDS_ADDR_CONFLICT": 0.0,
 "SQ_LDS_IDX_ACTIVE": 0.0,
-"VmemLatency": 0.0221,
-"LdsLatency": 0.0
+"SQ_IFETCH": 0.0,
+"SQ_LDS_BANK_CONFLICT": 0.0,
+"LdsLatency": 0.0002,
+"VmemLatency": 0.0634
+},
+"counters_by_pass": {
+"core": {
+"SQ_BUSY_CU_CYCLES": 76156704.0,
+"SQ_INSTS_LDS": 5505024.0,
+"TCC_EA0_WRREQ_WRITE_DRAM_32B": 1835283.0,
+"GRBM_GUI_ACTIVE": 2958386.0,
+"TCC_EA0_RDREQ_sum": 7609016.0,
+"TCC_EA0_WRREQ_sum": 917735.0,
+"SQ_WAVE_CYCLES": 151205619.0,
+"TCC_EA0_RDREQ_DRAM_32B": 30431834.0,
+"SQ_INSTS_VALU": 22220800.0,
+"SQ_INSTS_SALU": 8909824.0,
+"SQ_INSTS_MFMA": 14680064.0,
+"SQ_WAVES": 3584.0
+},
+"mix": {
+"SQ_INSTS_VMEM_RD": 1863680.0,
+"TCC_MISS_sum": 8066985.0,
+"SQ_INSTS_BRANCH": 125440.0,
+"GRBM_GUI_ACTIVE": 3037720.0,
+"SQ_INSTS_VALU_MFMA_MOPS_F16": 0.0,
+"SQ_INSTS_VALU_MFMA_MOPS_F8": 0.0,
+"TCC_BUBBLE_sum": 19.0,
+"TCC_HIT_sum": 8492201.0,
+"SQ_VALU_MFMA_BUSY_CYCLES": 234881024.0,
+"SQ_INSTS_SMEM": 35840.0,
+"SQ_INSTS_VMEM_WR": 458752.0,
+"SQ_INSTS_VALU_MFMA_MOPS_BF16": 469762048.0
+},
+"wait": {
+"SQ_WAIT_ANY": 44978772.0,
+"SQ_ACTIVE_INST_VALU": 23145472.0,
+"SQ_WAIT_INST_ANY": 68100441.0,
+"SQ_ACTIVE_INST_SCA": 8945664.0,
+"GRBM_GUI_ACTIVE": 2997951.0,
+"SQ_ACTIVE_INST_VMEM": 2293760.0,
+"SQ_WAVE_CYCLES": 154958253.0,
+"SQ_ACTIVE_INST_LDS": 5505024.0,
+"SQ_ACTIVE_INST_ANY": 41879040.0
+},
+"lds": {
+"SQ_LDS_UNALIGNED_STALL": 0.0,
+"SQ_INSTS_VALU_MFMA_MOPS_F32": 0.0,
+"GRBM_GUI_ACTIVE": 2979235.0,
+"SQ_WAIT_INST_LDS": 12221302.0,
+"SQ_LDS_ADDR_CONFLICT": 0.0,
+"SQ_WAVE_CYCLES": 151792069.0,
+"SQ_LDS_IDX_ACTIVE": 22020096.0,
+"SQ_IFETCH": 9062144.0,
+"SQ_LDS_BANK_CONFLICT": 0.0
+},
+"latency": {
+"LdsLatency": 46.687608,
+"VmemLatency": 880.306971
+}
 },
 "counter_pass_ns": {
-"core": 188902.0,
-"mix": 190701.5,
-"wait": 189481.0,
-"lds": 191602.0,
-"latency": 190121.5
+"core": 187599,
+"mix": 191039,
+"wait": 190359,
+"lds": 187999,
+"latency": 190839
 },
 "iters": 20
 },
@@ -263,7 +317,7 @@
 "per_matrix_instruction": 1.57
 },
 "iterations": 496,
-"cycles": 2486172
+"cycles": 2500068
 }
 ],
 "main_loop": {
@@ -300,32 +354,32 @@
 "per_matrix_instruction": 1.57
 },
 "iterations": 496,
-"cycles": 2486172,
+"cycles": 2500068,
 "which": 0,
 "att": {
 "total": {
 "hits": 163184,
-"latency": 2486172,
-"stall": 1893972,
-"idle": 46136
+"latency": 2500068,
+"stall": 1907672,
+"idle": 46124
 },
 "by_class": {
 "ds_read": {
 "hits": 23808,
-"latency": 304276,
-"stall": 203588,
-"idle": 31548
+"latency": 304444,
+"stall": 203796,
+"idle": 31572
 },
 "salu": {
 "hits": 34720,
-"latency": 144480,
-"stall": 256,
-"idle": 14568
+"latency": 144492,
+"stall": 264,
+"idle": 14532
 },
 "valu": {
 "hits": 3968,
-"latency": 44796,
-"stall": 27332,
+"latency": 44396,
+"stall": 26948,
 "idle": 0
 },
 "nop": {
@@ -336,20 +390,20 @@
 },
 "vmem_lds": {
 "hits": 7936,
-"latency": 307036,
-"stall": 275264,
+"latency": 303816,
+"stall": 272056,
 "idle": 0
 },
 "waitcnt:lgkm": {
 "hits": 3968,
-"latency": 16168,
-"stall": 16168,
+"latency": 16040,
+"stall": 16040,
 "idle": 0
 },
 "barrier": {
 "hits": 7936,
-"latency": 619732,
-"stall": 619732,
+"latency": 637656,
+"stall": 637656,
 "idle": 20
 },
 "other": {
@@ -360,14 +414,14 @@
 },
 "mfma": {
 "hits": 63488,
-"latency": 979900,
-"stall": 683832,
+"latency": 979496,
+"stall": 683168,
 "idle": 0
 },
 "waitcnt:vmem": {
 "hits": 992,
-"latency": 4312,
-"stall": 4312,
+"latency": 4256,
+"stall": 4256,
 "idle": 0
 },
 "branch": {
@@ -378,7 +432,7 @@
 }
 }
 },
-"cycle_share": 0.8502
+"cycle_share": 0.85
 },
 "prologue": {
 "instructions": 592,
@@ -410,46 +464,46 @@
 "att": {
 "total": {
 "hits": 9368,
-"latency": 116212,
-"stall": 79132,
-"idle": 12116
+"latency": 114432,
+"stall": 77352,
+"idle": 12168
 },
 "by_class": {
 "salu": {
 "hits": 3872,
-"latency": 21844,
-"stall": 6328,
-"idle": 10636
+"latency": 22240,
+"stall": 6724,
+"idle": 8140
 },
 "smem": {
 "hits": 144,
-"latency": 680,
-"stall": 104,
+"latency": 732,
+"stall": 152,
 "idle": 192
 },
 "waitcnt:lgkm": {
 "hits": 48,
-"latency": 3968,
-"stall": 3968,
+"latency": 2576,
+"stall": 2576,
 "idle": 0
 },
 "valu": {
 "hits": 4896,
-"latency": 30788,
-"stall": 11172,
-"idle": 348
+"latency": 30352,
+"stall": 10748,
+"idle": 2892
 },
 "valu_trans": {
 "hits": 32,
-"latency": 484,
-"stall": 228,
+"latency": 464,
+"stall": 208,
 "idle": 0
 },
 "vmem_lds": {
 "hits": 224,
-"latency": 17888,
-"stall": 16972,
-"idle": 892
+"latency": 19896,
+"stall": 18976,
+"idle": 896
 },
 "nop": {
 "hits": 32,
@@ -459,25 +513,25 @@
 },
 "branch": {
 "hits": 48,
-"latency": 200,
+"latency": 204,
 "stall": 0,
 "idle": 48
 },
 "barrier": {
 "hits": 40,
-"latency": 18696,
-"stall": 18696,
+"latency": 12420,
+"stall": 12420,
 "idle": 0
 },
 "waitcnt:vmem": {
 "hits": 32,
-"latency": 21536,
-"stall": 21536,
+"latency": 25420,
+"stall": 25420,
 "idle": 0
 }
 }
 },
-"cycle_share": 0.0397
+"cycle_share": 0.0389
 },
 "drain": {
 "instructions": 1128,
@@ -523,9 +577,9 @@
 "att": {
 "total": {
 "hits": 18048,
-"latency": 202628,
-"stall": 123612,
-"idle": 10644
+"latency": 206036,
+"stall": 127064,
+"idle": 10740
 },
 "by_class": {
 "smem": {
@@ -536,26 +590,26 @@
 },
 "salu": {
 "hits": 960,
-"latency": 3936,
+"latency": 3904,
 "stall": 0,
-"idle": 376
+"idle": 380
 },
 "valu": {
 "hits": 10480,
-"latency": 45836,
-"stall": 3716,
-"idle": 692
+"latency": 45756,
+"stall": 3616,
+"idle": 684
 },
 "ds_read": {
 "hits": 768,
-"latency": 10264,
-"stall": 7108,
-"idle": 972
+"latency": 10044,
+"stall": 6900,
+"idle": 976
 },
 "waitcnt:lgkm": {
 "hits": 112,
-"latency": 892,
-"stall": 892,
+"latency": 864,
+"stall": 864,
 "idle": 0
 },
 "nop": {
@@ -566,14 +620,14 @@
 },
 "vmem_lds": {
 "hits": 32,
-"latency": 160,
-"stall": 32,
+"latency": 144,
+"stall": 16,
 "idle": 0
 },
 "barrier": {
 "hits": 176,
-"latency": 75636,
-"stall": 75636,
+"latency": 78132,
+"stall": 78132,
 "idle": 0
 },
 "other": {
@@ -584,37 +638,37 @@
 },
 "mfma": {
 "hits": 2048,
-"latency": 32148,
-"stall": 22880,
+"latency": 32096,
+"stall": 22900,
 "idle": 0
 },
 "waitcnt:vmem": {
 "hits": 96,
-"latency": 11216,
-"stall": 11216,
+"latency": 12400,
+"stall": 12400,
 "idle": 0
 },
 "vmem_load": {
 "hits": 64,
-"latency": 952,
-"stall": 664,
-"idle": 192
+"latency": 964,
+"stall": 676,
+"idle": 188
 },
 "valu_trans": {
 "hits": 2048,
-"latency": 16076,
-"stall": 120,
-"idle": 24
+"latency": 16184,
+"stall": 176,
+"idle": 32
 },
 "vmem_store": {
 "hits": 1024,
-"latency": 4360,
-"stall": 260,
-"idle": 8388
+"latency": 4396,
+"stall": 296,
+"idle": 8480
 }
 }
 },
-"cycle_share": 0.0693
+"cycle_share": 0.0701
 },
 "epilogue": {
 "instructions": 1114,
@@ -649,27 +703,27 @@
 "att": {
 "total": {
 "hits": 13704,
-"latency": 119180,
-"stall": 52096,
-"idle": 8864
+"latency": 120564,
+"stall": 53128,
+"idle": 8948
 },
 "by_class": {
 "other": {
 "hits": 32,
-"latency": 4524,
+"latency": 4812,
 "stall": 64,
 "idle": 0
 },
 "salu": {
 "hits": 224,
-"latency": 996,
+"latency": 1008,
 "stall": 88,
 "idle": 0
 },
 "barrier": {
 "hits": 24,
-"latency": 20936,
-"stall": 20936,
+"latency": 20952,
+"stall": 20952,
 "idle": 0
 },
 "branch": {
@@ -680,33 +734,33 @@
 },
 "vmem_load": {
 "hits": 64,
-"latency": 808,
-"stall": 544,
+"latency": 880,
+"stall": 616,
 "idle": 124
 },
 "waitcnt:vmem": {
 "hits": 64,
-"latency": 6232,
-"stall": 6232,
+"latency": 6592,
+"stall": 6592,
 "idle": 0
 },
 "valu": {
 "hits": 10192,
-"latency": 51688,
-"stall": 10480,
-"idle": 440
+"latency": 52692,
+"stall": 11452,
+"idle": 480
 },
 "valu_trans": {
 "hits": 2048,
-"latency": 28484,
-"stall": 12632,
-"idle": 476
+"latency": 27988,
+"stall": 12152,
+"idle": 472
 },
 "vmem_store": {
 "hits": 1024,
-"latency": 5380,
-"stall": 1056,
-"idle": 7824
+"latency": 5508,
+"stall": 1148,
+"idle": 7872
 },
 "nop": {
 "hits": 16,
@@ -716,10 +770,10 @@
 }
 }
 },
-"cycle_share": 0.0408
+"cycle_share": 0.041
 },
 "att": {
-"total_cycles": 2924192,
+"total_cycles": 2941100,
 "waves_traced": 16
 },
 "source": "code object (llvm-objdump)",
@@ -728,29 +782,78 @@
 "att_matrix_flops_per_wave": 67108864.0,
 "matrix_idle": {
 "simds": 4,
-"span_cycles": 377860,
-"busy": 0.6938,
+"span_cycles": 379900,
+"busy": 0.69,
 "idle": {
-"barrier": 0.1234,
-"valu": 0.0615,
-"vmem_issue": 0.0562,
+"barrier": 0.1251,
+"valu": 0.0613,
+"vmem_issue": 0.0578,
 "scalar": 0.0153,
-"vmem_wait": 0.0125,
+"vmem_wait": 0.0143,
 "no_instruction": 0.0117,
-"other": 0.0082,
-"lds_issue": 0.0062,
-"lgkm_wait": 0.0059,
-"matrix_core": 0.004,
+"other": 0.0083,
+"lds_issue": 0.006,
+"lgkm_wait": 0.0054,
+"matrix_core": 0.0039,
 "nop": 0.0007
 },
 "idle_by_region": {
-"main_loop": 0.1663,
-"drain": 0.0496,
-"epilogue": 0.0479,
-"prologue": 0.0418
+"main_loop": 0.17,
+"drain": 0.0505,
+"epilogue": 0.0482,
+"prologue": 0.041
 },
-"no_wave": 0.0006,
-"model": "pipe busy FLOPs/(SIMD peak FLOPs a cycle) cycles from each matrix instruction's issue; idle cycles split evenly over the SIMD's waves' current instruction"
+"idle_in": {
+"prologue": {
+"valu": 0.0096,
+"vmem_wait": 0.0084,
+"scalar": 0.0075,
+"vmem_issue": 0.0065,
+"barrier": 0.0041,
+"no_instruction": 0.004,
+"lgkm_wait": 0.0008,
+"other": 0.0001,
+"nop": 0.0
+},
+"main_loop": {
+"barrier": 0.0931,
+"vmem_issue": 0.0472,
+"scalar": 0.0072,
+"lds_issue": 0.0059,
+"other": 0.0059,
+"lgkm_wait": 0.0044,
+"matrix_core": 0.0037,
+"valu": 0.0011,
+"no_instruction": 0.0008,
+"nop": 0.0005,
+"vmem_wait": 0.0001
+},
+"drain": {
+"barrier": 0.0224,
+"valu": 0.0192,
+"vmem_wait": 0.0033,
+"no_instruction": 0.0032,
+"vmem_issue": 0.0015,
+"scalar": 0.0002,
+"matrix_core": 0.0002,
+"lgkm_wait": 0.0001,
+"other": 0.0001,
+"lds_issue": 0.0001,
+"nop": 0.0001
+},
+"epilogue": {
+"valu": 0.0314,
+"barrier": 0.0055,
+"no_instruction": 0.0037,
+"vmem_wait": 0.0025,
+"vmem_issue": 0.0025,
+"other": 0.0022,
+"scalar": 0.0003,
+"nop": 0.0
+}
+},
+"no_wave": 0.0002,
+"model": "one matrix pipe a SIMD serving its instructions in issue order, each for FLOPs/(the SIMD's peak FLOPs a cycle) cycles; an idle cycle split evenly over the SIMD's waves' current instruction"
 }
 },
 "main": true,

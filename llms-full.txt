@@ -5335,6 +5335,7 @@ compiler's, from the build row, where hk built it).
  "l2_refetch",
  "narrow_access",
  "small",
+ "noisy",
  "spill"
 ]
 ```
@@ -5370,7 +5371,7 @@ compiler's, from the build row, where hk built it).
 ### `hk.profile.counters.derive`
 
 ```python
-hk.profile.counters.derive(arch: str, raw: Dict[str, float], agent: Dict[str, Any]) -> Dict[str, Any]
+hk.profile.counters.derive(arch: str, raw: Dict[str, float], agent: Dict[str, Any], by_pass: Optional[Dict[str, Dict[str, float]]] = None) -> Dict[str, Any]
 ```
 
 *New after 0.4.0* (the `hk.profile.counters` module is not in the 0.4.0 wheel)
@@ -5378,6 +5379,11 @@ hk.profile.counters.derive(arch: str, raw: Dict[str, float], agent: Dict[str, An
 {metric: value} from one kernel's raw counters (medians over the
 profiled dispatches) and the agent's facts (Cu_Count, Simd_Count,
 Num_Xcc). A metric whose counters are missing is absent.
+
+`by_pass` ({pass: {counter: value}}) keeps each ratio inside one pass:
+a share of cycles is taken against the GRBM_GUI_ACTIVE or
+SQ_WAVE_CYCLES counted with it, so one disturbed dispatch in one pass
+does not skew another pass's metrics.
 
 ### `hk.profile.counters.PASSES`
 
@@ -5422,20 +5428,21 @@ Num_Xcc). A metric whose counters are missing is absent.
    "wait",
    [
     "GRBM_GUI_ACTIVE",
+    "SQ_WAVE_CYCLES",
     "SQ_WAIT_ANY",
     "SQ_WAIT_INST_ANY",
     "SQ_ACTIVE_INST_ANY",
     "SQ_ACTIVE_INST_VALU",
     "SQ_ACTIVE_INST_VMEM",
     "SQ_ACTIVE_INST_LDS",
-    "SQ_ACTIVE_INST_SCA",
-    "SQ_ACTIVE_INST_MISC"
+    "SQ_ACTIVE_INST_SCA"
    ]
   ],
   [
    "lds",
    [
     "GRBM_GUI_ACTIVE",
+    "SQ_WAVE_CYCLES",
     "SQ_LDS_BANK_CONFLICT",
     "SQ_LDS_IDX_ACTIVE",
     "SQ_LDS_ADDR_CONFLICT",
@@ -5475,13 +5482,13 @@ Num_Xcc). A metric whose counters are missing is absent.
    "wait",
    [
     "GRBM_GUI_ACTIVE",
+    "SQ_WAVE_CYCLES",
     "SQ_WAIT_ANY",
     "SQ_WAIT_INST_ANY",
     "SQ_WAIT_INST_LDS",
     "SQ_INSTS_TEX_LOAD",
     "SQ_INSTS_TEX_STORE",
     "SQ_INSTS_FLAT",
-    "SQ_INST_CYCLES_VMEM",
     "GL2C_EA_RDREQ_96B_sum",
     "GL2C_EA_RDREQ_128B_sum",
     "GL2C_EA_WRREQ_64B_sum",

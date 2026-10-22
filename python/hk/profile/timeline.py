@@ -10,9 +10,11 @@ wave at all. That is the answer to "the matrix core is 65% busy: why not
 100%", per reason and per part of the kernel (prologue, main loop, drain,
 epilogue).
 
-A model, not a counter: the pipe occupancy per instruction is the peak
-rate's (exact for back-to-back MFMAs, which issue 16 cycles apart on gfx950
-at 16x16x32 bf16), and only the traced CU's SIMDs are seen.
+A model, not a counter: the pipe serves its instructions in order, each
+for the peak rate's cycles (exact for back-to-back MFMAs, which issue 16
+cycles apart on gfx950 at 16x16x32 bf16; gfx1100's trace stamps a WMMA when
+it is queued, often a cycle after the last, so the queue is what is
+modelled), and only the traced CU's SIMDs are seen.
 """
 
 from __future__ import annotations
@@ -54,6 +56,7 @@ def matrix_idle(waves: Sequence[Dict[str, Any]], *, arch: str,
     busy_total = 0
     idle: Dict[str, float] = {}
     idle_region: Dict[str, float] = {}
+    idle_both: Dict[Tuple[str, str], float] = {}
     no_wave = 0.0
     any_matrix = False
     for _key, ws in by_simd.items():
@@ -68,15 +71,21 @@ def matrix_idle(waves: Sequence[Dict[str, Any]], *, arch: str,
             for e in ins:
                 if is_matrix(e[4]):
                     any_matrix = True
-                    s = e[0] + (e[2] or 0)
-                    iv.append((s, s + max(1, pipe_cycles(e[4]))))
+                    iv.append((e[0] + (e[2] or 0), max(1, pipe_cycles(e[4]))))
+        # One matrix pipe a SIMD, serving its instructions in issue order: an
+        # instruction starts when it issues or when the one before it ends.
+        # (gfx11's trace records a WMMA when it is queued -- consecutive ones
+        # a cycle apart -- so the pipe's time is the queue's, not the issue's.)
         iv.sort()
         merged: List[List[int]] = []
-        for a, b in iv:
-            if merged and a <= merged[-1][1]:
-                merged[-1][1] = max(merged[-1][1], b)
+        end = None
+        for t, dur in iv:
+            start = t if end is None or t >= end else end
+            end = start + dur
+            if merged and start <= merged[-1][1]:
+                merged[-1][1] = end
             else:
-                merged.append([a, b])
+                merged.append([start, end])
         span = hi - lo
         span_total += span
         busy = sum(min(b, hi) - max(a, lo) for a, b in merged if b > lo and a < hi)
@@ -133,6 +142,7 @@ def matrix_idle(waves: Sequence[Dict[str, Any]], *, arch: str,
                 for reason, region in states:
                     idle[reason] = idle.get(reason, 0.0) + share
                     idle_region[region] = idle_region.get(region, 0.0) + share
+                    idle_both[(region, reason)] = idle_both.get((region, reason), 0.0) + share
     if not any_matrix or not span_total:
         return None
     return {
@@ -142,10 +152,13 @@ def matrix_idle(waves: Sequence[Dict[str, Any]], *, arch: str,
                  sorted(idle.items(), key=lambda kv: -kv[1])},
         "idle_by_region": {k: round(v / span_total, 4) for k, v in
                            sorted(idle_region.items(), key=lambda kv: -kv[1])},
+        "idle_in": {rg: {rs: round(v / span_total, 4) for (g2, rs), v in
+                         sorted(idle_both.items(), key=lambda kv: -kv[1]) if g2 == rg}
+                    for rg in idle_region},
         "no_wave": round(no_wave / span_total, 4),
-        "model": "pipe busy FLOPs/(SIMD peak FLOPs a cycle) cycles from each matrix "
-                 "instruction's issue; idle cycles split evenly over the SIMD's waves' "
-                 "current instruction",
+        "model": "one matrix pipe a SIMD serving its instructions in issue order, each "
+                 "for FLOPs/(the SIMD's peak FLOPs a cycle) cycles; an idle cycle split "
+                 "evenly over the SIMD's waves' current instruction",
     }
 
 

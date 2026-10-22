@@ -415,3 +415,26 @@ def test_cli_parses():
     a = build_parser().parse_args(["x.py:k", "--inputs", "bf16[16,64]", "--vs", "b=y.py:k",
                                    "--no-att", "--json", "-"])
     assert a.target == "x.py:k" and a.vs == "b=y.py:k" and a.no_att and a.json == "-"
+
+
+def test_gfx1100_without_counters():
+    """W7900D, hk.ops.matmul at 4096^3 against hipBLASLt, the counters
+    unavailable there: the verdict comes from the timing, the thread trace
+    and the ISA -- compute-bound at ~72% of the WMMA peak, the matrix pipe
+    of the traced SIMD busy about as much; hipBLASLt at 4 waves a SIMD with
+    more of its loop spent on other instructions."""
+    from hk.profile import replay
+
+    p = FIX / "gfx1100-gemm.json"
+    if not p.exists():
+        pytest.skip("fixture missing")
+    (hk_,) = replay(p)
+    (blas,) = replay(FIX / "gfx1100-gemm.vs-hipblaslt.json")
+    assert "counters" not in hk_
+    assert hk_["verdict"]["bound"] == "compute_bound"
+    assert hk_["matrix_core"]["source"].startswith("derived")
+    assert abs(hk_["stalls"]["matrix_idle"]["busy"] - hk_["matrix_core"]["busy"]) < 0.1
+    assert hk_["grid"]["slot"] == "WGP" and hk_["grid"]["slots"] == 48
+    assert blas["matrix_core"]["busy"] < hk_["matrix_core"]["busy"]
+    assert (blas["isa"]["main_loop"]["mix"]["per_matrix_instruction"]
+            > hk_["isa"]["main_loop"]["mix"]["per_matrix_instruction"])

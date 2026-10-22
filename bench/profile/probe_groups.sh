@@ -21,6 +21,7 @@ from hk.profile.counters import PASSES
 for name, cs in PASSES.get(sys.argv[1], []):
     print(name, " ".join(cs))
 EOF
+cd "$OUT"     # rocprofv3 leaves a .rocprofv3/ where it runs
 while read -r name cs; do
   rm -rf "$OUT/$name"
   if timeout -s KILL 90 rocprofv3 --pmc $cs --output-format csv -d "$OUT/$name" -o run -- python3 "$OUT/mm.py" > "$OUT/$name.log" 2>&1 \

@@ -746,7 +746,8 @@ def kernel_summary(k: Dict[str, Any]) -> List[str]:
         elif r.get("of_dram") is not None and not past:
             parts.append(f"{_pct(r['of_dram'])} of DRAM")
         if r.get("intensity") is not None:
-            parts.append(f"{r['intensity']:.0f} FLOP/B past the L2 (DRAM ridge {r.get('ridge')})")
+            parts.append(f"{r['intensity']:.0f} FLOP/B{' past the L2' if past else ''} "
+                         f"(DRAM ridge {r.get('ridge')})")
         L.append("    roofline  " + "; ".join(parts))
     mc = k.get("matrix_core") or {}
     occ = k.get("occupancy") or {}

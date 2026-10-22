@@ -209,7 +209,7 @@ def _spread(xs: List[float]) -> float:
 
 def collect(spec: Dict[str, Any], *, arch: str, workdir: Optional[str] = None,
             counters: bool = True, att: bool = True, att_kernels: int = 1,
-            iters: int = 20, counter_iters: int = 2, timeout: float = 180.0,
+            iters: int = 20, counter_iters: int = 3, timeout: float = 180.0,
             passes: Optional[List[Tuple[str, List[str]]]] = None,
             keep: bool = False, log=None) -> Dict[str, Any]:
     """Run the passes; return {"child", "agent", "kernels", "passes",
@@ -340,15 +340,28 @@ def collect(spec: Dict[str, Any], *, arch: str, workdir: Optional[str] = None,
                 k = by_key.get(key)
                 if k is None:
                     continue
+                here = k.setdefault("counters_by_pass", {}).setdefault(name, {})
                 for cname in {c for dd in ds for c in dd["_c"]}:
                     vals = [dd["_c"][cname] for dd in ds if cname in dd["_c"]]
-                    k["counters"][cname] = _median(vals)
+                    here[cname] = _median(vals)
+                    # The first pass to count a counter (GRBM_GUI_ACTIVE is in
+                    # every one) gives the merged value.
+                    k["counters"].setdefault(cname, here[cname])
                     if len(vals) > 1:
-                        k["counter_spread"][cname] = round(_spread(vals), 4)
+                        k["counter_spread"].setdefault(cname, round(_spread(vals), 4))
                 durs = [int(dd["End_Timestamp"]) - int(dd["Start_Timestamp"]) for dd in ds
                         if dd.get("End_Timestamp") and dd.get("Start_Timestamp")]
                 if durs:
                     k.setdefault("counter_pass_ns", {})[name] = _median(durs)
+            # Counters that read zero for kernels that ran (a W7900D pod):
+            # the other passes would read zero too.
+            grbm = [k["counters"].get("GRBM_GUI_ACTIVE") for k in res["kernels"]
+                    if "GRBM_GUI_ACTIVE" in k["counters"]]
+            if grbm and not any(grbm):
+                res["notes"].append("the first counter pass read GRBM_GUI_ACTIVE = 0 for "
+                                    "kernels that ran: the remaining counter passes were "
+                                    "skipped")
+                break
 
     # 3. the thread trace, on the slowest kernels.
     if att:

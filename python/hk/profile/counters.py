@@ -42,12 +42,12 @@ PASSES: Dict[str, List[Tuple[str, List[str]]]] = {
                  "SQ_VALU_MFMA_BUSY_CYCLES", "SQ_INSTS_VALU_MFMA_MOPS_BF16",
                  "SQ_INSTS_VALU_MFMA_MOPS_F16", "SQ_INSTS_VALU_MFMA_MOPS_F8",
                  "SQ_INSTS_BRANCH", "TCC_BUBBLE_sum", "TCC_HIT_sum", "TCC_MISS_sum"]),
-        ("wait", ["GRBM_GUI_ACTIVE", "SQ_WAIT_ANY", "SQ_WAIT_INST_ANY", "SQ_ACTIVE_INST_ANY",
-                  "SQ_ACTIVE_INST_VALU", "SQ_ACTIVE_INST_VMEM", "SQ_ACTIVE_INST_LDS",
-                  "SQ_ACTIVE_INST_SCA", "SQ_ACTIVE_INST_MISC"]),
-        ("lds", ["GRBM_GUI_ACTIVE", "SQ_LDS_BANK_CONFLICT", "SQ_LDS_IDX_ACTIVE",
-                 "SQ_LDS_ADDR_CONFLICT", "SQ_LDS_UNALIGNED_STALL", "SQ_WAIT_INST_LDS",
-                 "SQ_IFETCH", "SQ_INSTS_VALU_MFMA_MOPS_F32"]),
+        ("wait", ["GRBM_GUI_ACTIVE", "SQ_WAVE_CYCLES", "SQ_WAIT_ANY", "SQ_WAIT_INST_ANY",
+                  "SQ_ACTIVE_INST_ANY", "SQ_ACTIVE_INST_VALU", "SQ_ACTIVE_INST_VMEM",
+                  "SQ_ACTIVE_INST_LDS", "SQ_ACTIVE_INST_SCA"]),
+        ("lds", ["GRBM_GUI_ACTIVE", "SQ_WAVE_CYCLES", "SQ_LDS_BANK_CONFLICT",
+                 "SQ_LDS_IDX_ACTIVE", "SQ_LDS_ADDR_CONFLICT", "SQ_LDS_UNALIGNED_STALL",
+                 "SQ_WAIT_INST_LDS", "SQ_IFETCH", "SQ_INSTS_VALU_MFMA_MOPS_F32"]),
         ("latency", ["VmemLatency", "LdsLatency"]),
     ],
     "gfx1100": [
@@ -55,9 +55,9 @@ PASSES: Dict[str, List[Tuple[str, List[str]]]] = {
                   "SQ_INSTS_VALU", "SQ_INSTS_SALU", "SQ_INSTS_LDS", "SQ_INSTS_SMEM",
                   "GL2C_HIT_sum", "GL2C_MISS_sum", "GL2C_EA_RDREQ_32B_sum",
                   "GL2C_EA_RDREQ_64B_sum"]),
-        ("wait", ["GRBM_GUI_ACTIVE", "SQ_WAIT_ANY", "SQ_WAIT_INST_ANY", "SQ_WAIT_INST_LDS",
-                  "SQ_INSTS_TEX_LOAD", "SQ_INSTS_TEX_STORE", "SQ_INSTS_FLAT",
-                  "SQ_INST_CYCLES_VMEM", "GL2C_EA_RDREQ_96B_sum", "GL2C_EA_RDREQ_128B_sum",
+        ("wait", ["GRBM_GUI_ACTIVE", "SQ_WAVE_CYCLES", "SQ_WAIT_ANY", "SQ_WAIT_INST_ANY",
+                  "SQ_WAIT_INST_LDS", "SQ_INSTS_TEX_LOAD", "SQ_INSTS_TEX_STORE",
+                  "SQ_INSTS_FLAT", "GL2C_EA_RDREQ_96B_sum", "GL2C_EA_RDREQ_128B_sum",
                   "GL2C_EA_WRREQ_64B_sum", "GL2C_MC_WRREQ_sum"]),
         ("lds", ["GRBM_GUI_ACTIVE", "SQC_LDS_BANK_CONFLICT", "SQC_LDS_IDX_ACTIVE",
                  "TA_TA_BUSY_max"]),
@@ -109,11 +109,24 @@ def _r(x: Optional[float], n: int = 4) -> Optional[float]:
     return None if x is None else round(x, n)
 
 
-def derive(arch: str, raw: Dict[str, float], agent: Dict[str, Any]) -> Dict[str, Any]:
+def derive(arch: str, raw: Dict[str, float], agent: Dict[str, Any],
+           by_pass: Optional[Dict[str, Dict[str, float]]] = None) -> Dict[str, Any]:
     """{metric: value} from one kernel's raw counters (medians over the
     profiled dispatches) and the agent's facts (Cu_Count, Simd_Count,
-    Num_Xcc). A metric whose counters are missing is absent."""
+    Num_Xcc). A metric whose counters are missing is absent.
+
+    `by_pass` ({pass: {counter: value}}) keeps each ratio inside one pass:
+    a share of cycles is taken against the GRBM_GUI_ACTIVE or
+    SQ_WAVE_CYCLES counted with it, so one disturbed dispatch in one pass
+    does not skew another pass's metrics."""
     g = raw.get
+    dicts = [d for d in (by_pass or {}).values() if d]
+
+    def src(*names):
+        for d in dicts:
+            if all(d.get(n) is not None for n in names):
+                return d
+        return raw if all(raw.get(n) is not None for n in names) else None
     cus = float(agent.get("cus") or 0) or None
     simds = float(agent.get("simds") or 0) or None
     xcc = float(agent.get("xcc") or 1)
@@ -127,17 +140,28 @@ def derive(arch: str, raw: Dict[str, float], agent: Dict[str, Any]) -> Dict[str,
         v = g(name)
         return None if v is None else v * (4 if name in QUAD else 1)
 
+    def cyc(d):
+        v = d.get("GRBM_GUI_ACTIVE") if d else None
+        return v / xcc if v else None
+
+    d = src("GRBM_GUI_ACTIVE", "SQ_WAVE_CYCLES")
+    if d is not None:
+        cycles = cyc(d)
+        out["cycles"] = _r(cycles, 0)
     wave_cycles = q("SQ_WAVE_CYCLES")
     if g("SQ_WAVES") is not None:
         out["waves"] = int(g("SQ_WAVES"))
-    if wave_cycles and cycles and simds:
-        out["achieved_waves_per_simd"] = _r(wave_cycles / cycles / simds, 3)
-    if g("SQ_BUSY_CU_CYCLES") is not None and cycles and cus:
-        out["cu_busy"] = _r(g("SQ_BUSY_CU_CYCLES") / (cycles * cus), 3)
-    if g("SQ_BUSY_CYCLES") is not None and cycles and ses and arch.startswith("gfx11"):
-        out["se_busy"] = _r(g("SQ_BUSY_CYCLES") / (cycles * ses), 3)
-    if g("SQ_VALU_MFMA_BUSY_CYCLES") is not None and cycles and simds:
-        out["mfma_busy"] = _r(g("SQ_VALU_MFMA_BUSY_CYCLES") / (cycles * simds), 3)
+    if d is not None and cyc(d) and simds:
+        out["achieved_waves_per_simd"] = _r(d["SQ_WAVE_CYCLES"] * 4 / cyc(d) / simds, 3)
+    d = src("GRBM_GUI_ACTIVE", "SQ_BUSY_CU_CYCLES")
+    if d is not None and cyc(d) and cus:
+        out["cu_busy"] = _r(d["SQ_BUSY_CU_CYCLES"] / (cyc(d) * cus), 3)
+    d = src("GRBM_GUI_ACTIVE", "SQ_BUSY_CYCLES")
+    if d is not None and cyc(d) and ses and arch.startswith("gfx11"):
+        out["se_busy"] = _r(d["SQ_BUSY_CYCLES"] / (cyc(d) * ses), 3)
+    d = src("GRBM_GUI_ACTIVE", "SQ_VALU_MFMA_BUSY_CYCLES")
+    if d is not None and cyc(d) and simds:
+        out["mfma_busy"] = _r(d["SQ_VALU_MFMA_BUSY_CYCLES"] / (cyc(d) * simds), 3)
     mops = [g(n) for n in _MOPS if g(n) is not None]
     if mops:
         out["matrix_flops"] = sum(mops) * 512
@@ -185,9 +209,10 @@ def derive(arch: str, raw: Dict[str, float], agent: Dict[str, Any]) -> Dict[str,
                         ("active_lds", "SQ_ACTIVE_INST_LDS"),
                         ("active_scalar", "SQ_ACTIVE_INST_SCA"),
                         ("active_branch_msg", "SQ_ACTIVE_INST_MISC")):
-            v = q(name)
-            if v is not None:
-                sh[k] = _r(v / wave_cycles, 3)
+            d = src("SQ_WAVE_CYCLES", name)
+            if d is not None and d["SQ_WAVE_CYCLES"]:
+                # Both in quad-cycles: the ratio is unit-free.
+                sh[k] = _r(d[name] / d["SQ_WAVE_CYCLES"], 3)
         if sh:
             out["wave_time"] = sh
     bc = g("SQ_LDS_BANK_CONFLICT") if g("SQ_LDS_BANK_CONFLICT") is not None \

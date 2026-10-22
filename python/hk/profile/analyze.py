@@ -59,6 +59,7 @@ KINDS = (
     "narrow_access",      # global loads/stores under 16 B a lane in a kernel that waits
                           # on vector memory
     "small",              # a kernel too short for its launch and ramp
+    "noisy",              # the timed calls spread > 5%: the time is not to be trusted
     "spill",              # scratch in use
 )
 
@@ -236,7 +237,7 @@ def kernel_report(arch: str, agent: Dict[str, Any], rec: Dict[str, Any], *,
     """
     ceil = ceilings(arch)
     raw = rec.get("counters") or {}
-    m = _counters.derive(arch, raw, agent) if raw else {}
+    m = _counters.derive(arch, raw, agent, rec.get("counters_by_pass")) if raw else {}
     dur_ns = rec.get("median_ns") or 0
     dur_s = dur_ns * 1e-9
     out: Dict[str, Any] = {
@@ -256,8 +257,13 @@ def kernel_report(arch: str, agent: Dict[str, Any], rec: Dict[str, Any], *,
     if m.get("cycles") and dur_s:
         # The counter pass's own duration is what its cycles were counted in.
         cp = (rec.get("counter_pass_ns") or {}).get("core")
-        if cp:
-            m["clock_mhz"] = round(m["cycles"] / (cp * 1e-9) / 1e6, 0)
+        top = agent.get("max_clock_mhz") or 0
+        # GRBM_GUI_ACTIVE includes the dispatch's ramp: for a kernel of a few
+        # microseconds it overstates the cycles, so no clock is read there.
+        if cp and cp >= 50e3:
+            mhz = m["cycles"] / (cp * 1e-9) / 1e6
+            if not top or mhz <= top * 1.05:
+                m["clock_mhz"] = round(mhz, 0)
     # ---- roofline
     roof: Dict[str, Any] = {}
     fl = flops
@@ -439,8 +445,9 @@ def findings(arch: str, k: Dict[str, Any]) -> List[Dict[str, Any]]:
     mem = roof.get("of_memory_peak")
     comp = roof.get("of_compute_peak")
     dram_name = "HBM" if arch.startswith("gfx9") else "DRAM"
-    where = "the cache-resident rate (past the L2)" if roof.get("memory_ceiling") == "cache" \
-        else dram_name
+    past = "past the L2" in (roof.get("bytes_source") or "")
+    where = (f"the cache-resident rate{' (past the L2)' if past else ''}"
+             if roof.get("memory_ceiling") == "cache" else dram_name)
     if mem is not None and mem >= (roof.get("memory_bound_at") or MEMORY_BOUND):
         if roof.get("memory_ceiling") == "dram" and roof.get("dram_bytes_min"):
             text = (f"memory-bound: {_pct(mem)} of {dram_name} at least (the call's "
@@ -457,6 +464,7 @@ def findings(arch: str, k: Dict[str, Any]) -> List[Dict[str, Any]]:
                                  "dram_bytes_min": roof.get("dram_bytes_min")}})
     if roof.get("refetch"):
         out.append({"kind": "l2_refetch", "cost": None,
+                    "short": f"L2 re-fetch: {roof['refetch']:.1f}x the call's bytes cross it",
                     "text": f"the L2 re-fetches: {roof['bytes'] / 1e6:.0f} MB cross it, "
                             f"{roof['refetch']:.1f}x the call's inputs and outputs "
                             f"({_pct(roof.get('of_cache'))} of the cache-resident rate): tiles "
@@ -483,13 +491,15 @@ def findings(arch: str, k: Dict[str, Any]) -> List[Dict[str, Any]]:
     if g.get("rounds") is not None and idle:
         lr = g.get("last_round") or {}
         slot = g.get("slot", "CU")
-        if g["rounds"] < 1:
-            out.append({"kind": "underfilled", "cost": idle,
-                        "text": f"underfilled: {g['workgroups']} workgroups for "
-                                f"{lr.get('of')} {slot} slots ({g['slots']} {slot}s x "
-                                f"{g['workgroups_per_slot']}): {_pct(idle)} of the slots idle",
+        if g["rounds"] < 1 and g["workgroups"] < g["slots"]:
+            cu_idle = round(1 - g["workgroups"] / g["slots"], 4)
+            out.append({"kind": "underfilled", "cost": cu_idle,
+                        "text": f"underfilled: {g['workgroups']} workgroups for {g['slots']} "
+                                f"{slot}s: {_pct(cu_idle)} of the {slot}s have none",
                         "evidence": {k2: g.get(k2) for k2 in ("workgroups", "slots",
                                                               "workgroups_per_slot", "rounds")}})
+        elif g["rounds"] < 1:
+            pass        # every slot has work; fewer waves than fit is occupancy's to say
         elif g["rounds"] < 16 and idle >= 0.02:
             ev = {k2: g.get(k2) for k2 in ("workgroups", "slots", "workgroups_per_slot",
                                            "rounds", "idle_share")}
@@ -511,30 +521,45 @@ def findings(arch: str, k: Dict[str, Any]) -> List[Dict[str, Any]]:
     for part in ("epilogue", "prologue"):
         p = isa.get(part) or {}
         share = p.get("cycle_share")
-        idle_there = (mi or {}).get("idle_by_region", {}).get(part)
+        parts = [part]
+        if part == "epilogue" and isa.get("drain"):
+            # After the main loop: the drain (the last tiles' MFMAs and, with
+            # early stores, part of the epilogue's math) and the epilogue.
+            parts = ["drain", "epilogue"]
+            if share is not None and (isa["drain"].get("cycle_share") is not None):
+                share = round(share + isa["drain"]["cycle_share"], 4)
+        by_region = (mi or {}).get("idle_by_region", {})
+        idle_there = (round(sum(by_region.get(x, 0.0) for x in parts), 4)
+                      if mi else None)
         if (idle_there if idle_there is not None else share or 0) < 0.03:
             continue
-        cls = (p.get("mix") or {}).get("classes") or {}
+        cls: Dict[str, int] = {}
+        n_inst = 0
+        for x in parts:
+            n_inst += (isa.get(x) or {}).get("instructions") or 0
+            for c, v in (((isa.get(x) or {}).get("mix") or {}).get("classes") or {}).items():
+                cls[c] = cls.get(c, 0) + v
         valu = cls.get("valu", 0) + cls.get("valu_trans", 0)
         stores = cls.get("vmem_store", 0)
         loads = cls.get("vmem_load", 0) + cls.get("vmem_lds", 0)
-        what = (f"{p.get('instructions')} instructions: {valu} VALU, "
+        what = (f"{n_inst} instructions: {valu} VALU, "
                 + (f"{stores} stores" if part == "epilogue" else f"{loads} loads"))
+        where_ = ("after the main loop" + (" (drain + epilogue)" if len(parts) > 1 else "")
+                  if part == "epilogue" else "before the main loop")
         if idle_there is not None:
             text = (f"{part}: the matrix core idles {_pct(idle_there)} of the kernel while "
-                    f"the waves are {'past their last matrix instruction' if part == 'epilogue' else 'before the main loop'} ({what})")
+                    f"the waves are {where_} ({what})")
             cost = idle_there
         else:
-            text = (f"{part}: {_pct(share)} of a wave's cycles are "
-                    f"{'after' if part == 'epilogue' else 'before'} the main loop ({what})")
+            text = f"{part}: {_pct(share)} of a wave's cycles are {where_} ({what})"
             cost = share if not (per_slot and per_slot > 1) else share / per_slot
         if per_slot == 1:
             text += ("; at one workgroup a slot no other workgroup's main loop overlaps it, "
                      "so it adds to the kernel's time")
         out.append({"kind": part, "cost": round(cost, 4), "text": text,
                     "evidence": {"cycle_share": share, "matrix_idle_share": idle_there,
-                                 "valu": valu, "stores": stores, "loads": loads,
-                                 "workgroups_per_slot": per_slot}})
+                                 "regions": parts, "valu": valu, "stores": stores,
+                                 "loads": loads, "workgroups_per_slot": per_slot}})
     # Why the matrix core idles, by what the waves are at (timeline).
     if mi:
         for reason, v in list(mi["idle"].items())[:4]:
@@ -574,7 +599,11 @@ def findings(arch: str, k: Dict[str, Any]) -> List[Dict[str, Any]]:
     ml = isa.get("main_loop") or {}
     per = (ml.get("mix") or {}).get("per_matrix_instruction")
     if tw is not None and tw <= 2 and per is not None:
-        issue = sum(v for r, v in ((mi or {}).get("idle") or {}).items()
+        # The matrix core's idle time in the main loop with its waves issuing
+        # other instructions (an epilogue's VALU is the epilogue finding's).
+        in_loop = ((mi or {}).get("idle_in") or {}).get("main_loop")
+        src = in_loop if in_loop is not None else ((mi or {}).get("idle") or {})
+        issue = sum(v for r, v in src.items()
                     if r in ("vmem_issue", "lds_issue", "valu", "scalar", "nop", "other"))
         if (mi and issue >= 0.15) or (not mi and per >= 1.5 and tw <= 1):
             cls = (ml.get("mix") or {}).get("classes") or {}
@@ -609,6 +638,9 @@ def findings(arch: str, k: Dict[str, Any]) -> List[Dict[str, Any]]:
             f"{n} of {b} B" for b, n in sorted(w.items(), key=lambda kv: int(kv[0])))
             for c, w in narrow.items())
         out.append({"kind": "narrow_access", "cost": None,
+                    "short": "narrow global accesses (" + "; ".join(
+                        f"{c.replace('vmem_', '')}s " + "/".join(f"{b} B" for b in sorted(
+                            w, key=int)) for c, w in narrow.items()) + " a lane)",
                     "text": f"narrow global accesses: {desc} a lane, against 16 B "
                             f"(dwordx4) at most; the waves wait on vector memory "
                             f"{_pct(waits_mem)} of their cycles -- wider, contiguous runs "
@@ -619,6 +651,8 @@ def findings(arch: str, k: Dict[str, Any]) -> List[Dict[str, Any]]:
     aot = occ.get("achieved_of_theoretical")
     if aot is not None and aot < 0.7 and not idle:
         out.append({"kind": "occupancy", "cost": None,
+                    "short": f"occupancy {occ['achieved_waves_per_simd']:.1f} of "
+                             f"{occ['theoretical_waves_per_simd']} waves/SIMD",
                     "text": f"occupancy: {occ['achieved_waves_per_simd']:.2f} waves/SIMD "
                             f"achieved of {occ['theoretical_waves_per_simd']} the resources "
                             f"allow ({_pct(aot)})",
@@ -628,6 +662,15 @@ def findings(arch: str, k: Dict[str, Any]) -> List[Dict[str, Any]]:
         out.append({"kind": "lds_bank_conflict", "cost": None,
                     "text": f"LDS bank conflicts: {_pct(lbc)} of the LDS's active cycles",
                     "evidence": {"bank_conflict": lbc}})
+    noise = (k.get("time") or {}).get("noise")
+    if noise is not None and noise > 0.05:
+        out.append({"kind": "noisy", "cost": None,
+                    "short": f"timing noisy ({_pct(noise)} spread)",
+                    "text": f"the timing is noisy: the calls' spread is {_pct(noise)} of the "
+                            f"median (min {(k.get('time') or {}).get('min_us')} us): another "
+                            f"job on the GPU, or its clocks moving; re-run before trusting the "
+                            f"time",
+                    "evidence": {"noise": noise}})
     if us and us < 8:
         out.append({"kind": "small", "cost": None,
                     "text": f"{us:.1f} us: launch and ramp are a large part of a kernel this "
@@ -679,7 +722,8 @@ def verdict(arch: str, k: Dict[str, Any]) -> Dict[str, Any]:
                          f"{g.get('slot', 'CU')}s, the last fills {lr.get('workgroups')}/"
                          f"{lr.get('of')} ({_pct(f['cost'])} idle)")
         elif f["kind"] == "underfilled":
-            parts.append(f"underfilled: {_pct(f['cost'])} of the slots idle")
+            parts.append(f"underfilled: {_pct(f['cost'])} of the "
+                         f"{(k.get('grid') or {}).get('slot', 'CU')}s have no workgroup")
         elif f["kind"] == "issue_bound":
             ev = f["evidence"]
             parts.append(f"issue-bound at {ev['waves_per_simd']} wave(s) a SIMD ("
@@ -689,7 +733,9 @@ def verdict(arch: str, k: Dict[str, Any]) -> Dict[str, Any]:
         elif f["kind"] in ("epilogue", "prologue"):
             ev = f["evidence"]
             if ev.get("matrix_idle_share") is not None:
-                parts.append(f"matrix core idle in the {f['kind']} {_pct(ev['matrix_idle_share'])}"
+                where_ = ("after the main loop" if f["kind"] == "epilogue"
+                          else "before the main loop")
+                parts.append(f"matrix core idle {where_} {_pct(ev['matrix_idle_share'])}"
                              + (" (one workgroup a CU: not hidden)"
                                 if ev.get("workgroups_per_slot") == 1 else ""))
             else:
@@ -702,9 +748,10 @@ def verdict(arch: str, k: Dict[str, Any]) -> Dict[str, Any]:
             parts.append(f"waves at {f['evidence']['reason']} {_pct(f['evidence']['share'])} "
                          f"of their cycles ({f['evidence']['region']})")
     for f in fs:
-        if f["kind"] in ("narrow_access", "l2_refetch", "small", "spill", "lds_bank_conflict",
+        if f["kind"] in ("noisy", "narrow_access", "l2_refetch", "small", "spill",
+                         "lds_bank_conflict",
                          "occupancy") and len(parts) < 6:
-            parts.append(f["text"])
+            parts.append(f.get("short") or f["text"])
     return {"line": "; ".join(parts) if parts else "no verdict: nothing was measured",
             "bound": bound["kind"] if bound else None,
             "losses": [f["kind"] for f in losses]}
