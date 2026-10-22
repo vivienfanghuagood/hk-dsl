@@ -104,7 +104,7 @@ raises it, as `launch()` and `templates.gemm(schedule=)` do.
    (`hk/schedules/_regs.py`): each family's live tiles -- accumulators,
    operands, staging, a combine's partials, a split's shares -- counted as
    the target lays them out, weighed by a per-(family, arch) linear model
-   that is the tightest upper envelope (linprog) of ~5,000 sampled builds,
+   that is the tightest upper envelope (linprog) of ~8,500 sampled builds,
    constrained to put every spill over the limit and every schedule hk ships
    under it. The limit is the workgroup's: a CU's SIMDs share its waves, so
    16 waves of wave64 have 128 VGPRs each on an MI355X (the decode GEMV's
@@ -118,16 +118,25 @@ raises it, as `launch()` and `templates.gemm(schedule=)` do.
 
 The kernel is generic in M, N and K, so "will it build" is `check_kernel`.
 
-**Measured** (`tools/hk-bench/schedules_legality.py`, hipcc 7.2.3, no GPU):
-1,500 points drawn uniformly from the four families' full value products
-on both arches (300 per family and arch), none of which the model was fitted
-to: 823 accepted, of which 1 did not build (a dp kernel spilling 1 VGPR):
-**0.12% false accepts**; 677 refused, every one with a reason, 90 of which
-would have built (the price of an upper bound). Per family: rdna 0/55,
-decode 0/234 (gfx1100) and 0/277 (gfx950), pp 0/137, dp 1/120. The
-CI-sized check is `tests/hk/codegen/test_schedules_legality.py` (it builds
-a fixed sample of accepted points on CI's hipcc 7.1); refit with the tool
-when the compiler moves.
+**Measured** (`tools/hk-bench/schedules_legality.py`, no GPU), on points
+drawn uniformly from the families' full value products that the model was
+not fitted to:
+
+| compiler | sampled | accepted | accepted that did not build | refused (with a reason) | refused that would have built |
+|---|---|---|---|---|---|
+| hipcc 7.2.3 (MI355X host), all four families, both arches | 1,500 | 896 | 0 | 604 | 130 |
+| hipcc 7.2.4 (the W7900D pod), rdna + decode | 900 | 608 | 1 (an rdna spill of 4 VGPRs) | 292 | 92 |
+
+**1 false accept in 1,504 (0.07%)**; every refusal carries a reason; about
+one in eight points that would have built is refused (the price of an upper
+bound). Getting there took five rounds of sample, fit and evaluate on a
+fresh sample (0.6% -> 0.36% -> 0.12% -> 0); the gfx1100 pod's compiler then
+found two the MI355X host's had not, one of them `hk.ops.gemm`'s factory
+checking two LDS buffers' worth whatever `lds_buffers` is, now mirrored. The
+fit's ~8,500 builds span both compilers. The CI-sized check is
+`tests/hk/codegen/test_schedules_legality.py` (a fixed sample of accepted
+points built on CI's hipcc 7.1); re-sample and refit with the tool when the
+compiler moves.
 
 `canonical()` folds knobs that do nothing at their value back to the
 default (one LDS buffer's `write_pos`, `late_b`'s HipKittens waits, a
