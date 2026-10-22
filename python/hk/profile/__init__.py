@@ -248,6 +248,8 @@ def _isa_for(rec: Dict[str, Any], build: Optional[Dict[str, Any]], arch: str,
                          f"the thread trace's is used where there is one")
     if f is None and att_funcs:
         f = _pick_function(att_funcs, rec["name"])
+        if f is not None and f.name == "?":
+            f.name = rec["name"]
     if f is None:
         return None
     waves = att.get("waves") or 0
@@ -504,8 +506,10 @@ def _interleaved(spec: Dict[str, Any], other: str, work: Path, timeout: float) -
     s = dict(spec, mode="ab", vs_target=other, out=str(d / "child.json"))
     (d / "spec.json").write_text(_json.dumps(s))
     try:
+        from .run import child_env  # noqa: PLC0415
+
         subprocess.run([sys.executable, "-m", "hk.profile._child", str(d / "spec.json")],
-                       capture_output=True, text=True, timeout=timeout)
+                       capture_output=True, text=True, timeout=timeout, env=child_env())
         return _json.loads((d / "child.json").read_text())
     except Exception as e:  # noqa: BLE001
         return {"errors": [{"message": f"{type(e).__name__}: {e}"}]}
@@ -561,8 +565,10 @@ def _isa_only(prof: Profile, spec: Dict[str, Any], work: Path) -> None:
                     "isa": "llvm-objdump of the code object"}
     s = dict(spec, gpu=False, out=str(work / "child.json"))
     (work / "spec.json").write_text(_json.dumps(s))
+    from .run import child_env  # noqa: PLC0415
+
     proc = subprocess.run([sys.executable, "-m", "hk.profile._child", str(work / "spec.json")],
-                          capture_output=True, text=True)
+                          capture_output=True, text=True, env=child_env())
     try:
         child = _json.loads((work / "child.json").read_text())
     except (OSError, ValueError):

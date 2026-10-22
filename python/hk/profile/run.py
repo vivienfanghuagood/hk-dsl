@@ -77,6 +77,21 @@ def decoder_dir() -> Optional[str]:
     return None
 
 
+def child_env() -> Dict[str, str]:
+    """The environment of a profiled child: this process's, with the hk
+    package this process imported first on PYTHONPATH (a test or a script
+    may have put it on sys.path only) and the working directory after it
+    (the child runs in a pass's directory)."""
+    import hk  # noqa: PLC0415
+
+    env = dict(os.environ)
+    env.setdefault("PYTHONDONTWRITEBYTECODE", "1")
+    here = str(Path(hk.__file__).resolve().parents[1])
+    env["PYTHONPATH"] = os.pathsep.join(
+        p for p in [here, os.getcwd(), env.get("PYTHONPATH", "")] if p)
+    return env
+
+
 def _run(cmd: List[str], log: Path, timeout: float, env: Dict[str, str]) -> Tuple[bool, str]:
     """Run under a timeout in its own process group; kill the group on a
     fatal message in the log (rocprofv3 can hang after aborting the app).
@@ -225,11 +240,7 @@ def collect(spec: Dict[str, Any], *, arch: str, workdir: Optional[str] = None,
     own = workdir is None
     work = Path(workdir or tempfile.mkdtemp(prefix="hk-profile-"))
     work.mkdir(parents=True, exist_ok=True)
-    env = dict(os.environ)
-    env.setdefault("PYTHONDONTWRITEBYTECODE", "1")
-    # The child runs in the pass's directory: the caller's on its path.
-    env["PYTHONPATH"] = os.pathsep.join(p for p in [os.getcwd(), env.get("PYTHONPATH", "")]
-                                        if p)
+    env = child_env()
     py = sys.executable
 
     def say(msg):
@@ -444,4 +455,4 @@ def _finish(res, work: Path, own: bool, keep: bool):
     return res
 
 
-__all__ = ["collect", "rocprofv3", "decoder_dir"]
+__all__ = ["collect", "rocprofv3", "decoder_dir", "child_env"]

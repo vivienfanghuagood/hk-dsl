@@ -61,12 +61,16 @@ def test_a_kernel_is_timed_counted_and_judged(strip_profile):
 def test_the_cli_writes_json(tmp_path):
     if _rocprofv3() is None:
         pytest.skip("rocprofv3 is not installed")
+    import os
+
     out = tmp_path / "p.json"
+    env = dict(os.environ, PYTHONPATH=os.pathsep.join(
+        [str(HERE.parents[1] / "python"), os.environ.get("PYTHONPATH", "")]))
     proc = subprocess.run(
         [sys.executable, "-m", "hk.profile", f"{FIXTURE}:gelu_mul",
          "--inputs", "bf16[64,1024], bf16[64,1024], bf16[64,1024]",
          "--no-counters", "--no-att", "--iters", "3", "--json", str(out), "-q"],
-        capture_output=True, text=True, timeout=600)
+        capture_output=True, text=True, timeout=600, env=env)
     assert proc.returncode == 0, proc.stdout + proc.stderr
     doc = json.loads(out.read_text())
     assert doc["schema"] == 1 and doc["tool"] == "hk.profile"

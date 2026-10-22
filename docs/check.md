@@ -237,6 +237,7 @@ us, 1024 64.6, 2048 72.0 (`CW=256` is not a whole 64-lane chunk there).
 | `time.vs` | per baseline: `x` = baseline time / hk time (above 1 hk is faster), `band`, `verdict` |
 | `errors[]` | `{stage, type, message, where}`; stage is `trace`, `build`, `inputs`, `reference`, `run` or `time` |
 | `hints[]` | what to try next, read off the numbers (heuristics; the timing is the verdict) |
+| `profile` | with `--profile`: hk.profile's report of the first case (its JSON, [docs/profile.md](profile.md#the-json)) and its `summary` |
 
 ## Without a GPU, and the other GPU
 
