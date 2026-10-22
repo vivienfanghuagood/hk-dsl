@@ -27,7 +27,9 @@ beside its model).
 
 ## Running
 
-From a checkout with `hk._mlir` built (see [docs/getting-started.md](../docs/getting-started.md)):
+From a clone, with the release installed (`pip install hk-dsl`) -- or with this
+checkout's `hk._mlir` built, which the examples then use instead
+([building](../docs/building.md)):
 
 ```bash
 python3 examples/01_vector_add.py              # on the GPU: check against torch, then time
