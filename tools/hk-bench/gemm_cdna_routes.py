@@ -44,16 +44,27 @@ _SPIN = []
 
 
 def _spin(torch, us):
-    """torch's spin kernel for `us` microseconds, its clock calibrated once."""
+    """torch's spin kernel for `us` microseconds. Its clock is measured once,
+    after a warm-up call: the first call loads the spin kernel's module (1.3 ms
+    in the rocm/pytorch image, ~15 ms in vLLM's), which a calibration that
+    times it reads as a clock 16-100x too slow -- and every spin is then that
+    much too short, queues nothing, and the rounds time the host. The clock is
+    the best of three 2M-cycle spins (hk.tune.measure.spin_hz)."""
     if not _SPIN:
-        s, e = torch.cuda.Event(True), torch.cuda.Event(True)
+        torch.cuda._sleep(1000)
         torch.cuda.synchronize()
-        s.record()
-        torch.cuda._sleep(200_000)
-        e.record()
-        torch.cuda.synchronize()
-        _SPIN.append(200_000 / (s.elapsed_time(e) * 1e3))
+        best = float("inf")
+        for _ in range(3):
+            s, e = torch.cuda.Event(True), torch.cuda.Event(True)
+            s.record()
+            torch.cuda._sleep(2_000_000)
+            e.record()
+            torch.cuda.synchronize()
+            best = min(best, s.elapsed_time(e))
+        _SPIN.append(2_000_000 / (best * 1e3))
     torch.cuda._sleep(int(us * _SPIN[0]))
+
+
 #: (N, K) of Llama-3-8B and Qwen3-8B's linears, merged and unmerged, and the
 #: two lm_heads.
 NK = ((4096, 4096), (6144, 4096), (12288, 4096), (14336, 4096), (24576, 4096),
