@@ -19,6 +19,8 @@ that the acceptance rule believes -- or to "the route stands".
                 against the incumbents, repeated while they improve; when a
                 descent stops, up to RESTARTS more start from the fastest
                 point of a structure none has started from
+    playoff     the fastest few points ever timed, again, together, on fresh
+                activations: the champion and the runner-up
     decide      the champion against the route, interleaved in S sets of R
                 rounds on fresh activations each (hk.tune.stats.decide), then
                 confirmed on fresh sets measured after the decision
@@ -54,6 +56,7 @@ RUNG_ROUNDS = (3, 6, 10)
 LOCAL_MOVES = 12
 LOCAL_ITERS = 6
 RESTARTS = 2
+PLAYOFF = 5
 DECIDE_SETS, DECIDE_ROUNDS, CONFIRM_SETS = 3, 7, 2
 #: Host and spin overhead a timed round of an arm costs beside its calls, s.
 ROUND_OVERHEAD = 1.5e-3
@@ -159,6 +162,7 @@ class Search:
                  explore: int = EXPLORE, max_seeds: Optional[int] = None,
                  rung_rounds: Sequence[int] = RUNG_ROUNDS, local_moves: int = LOCAL_MOVES,
                  local_iters: int = LOCAL_ITERS, restarts: int = RESTARTS,
+                 playoff: int = PLAYOFF,
                  decide_sets: int = DECIDE_SETS,
                  decide_rounds: int = DECIDE_ROUNDS, confirm_sets: int = CONFIRM_SETS,
                  log: Optional[Callable[[str], None]] = None):
@@ -171,6 +175,7 @@ class Search:
         self.rung_rounds = tuple(rung_rounds)
         self.local_moves, self.local_iters = local_moves, local_iters
         self.restarts = restarts
+        self.playoff = playoff
         self.decide_sets, self.decide_rounds = decide_sets, decide_rounds
         self.confirm_sets = confirm_sets
         self._log = log or (lambda s: None)
@@ -421,12 +426,26 @@ class Search:
                            f"{_ms(times[chosen_tops[0]])}")
         res.counts["restarts"] = restarts
 
-        # The champion: the fastest of what is left that is not the route.
-        others = sorted((c for c in alive if c != cur), key=lambda c: times[c])
-        if not others:
-            others = sorted((c for c in times if c != cur), key=lambda c: times[c])
-        champ = others[0] if others else None
-        runner_up = others[1] if len(others) > 1 else None
+        # The champion: a playoff of the fastest PLAYOFF points ever timed
+        # (each time is from its own round, on its own activations; the
+        # rounds of a long search drift by a percent or two, which is the
+        # size of the differences at the top), with the route, on fresh
+        # activations.
+        best = sorted((c for c in times if c != cur and times[c] < float("inf")),
+                      key=lambda c: times[c])[:self.playoff]
+        if len(best) > 1:
+            rounds = self.rung_rounds[-1]
+            cost = (len(best) + 1) * rounds * self._round_cost(bench, times[best[0]])
+            if cost <= left() - reserve:
+                bench.refresh()
+                got = bench.time({c: runners[c] for c in best + [cur]}, rounds)
+                for c, ts in got.items():
+                    times[c] = stats.summary(ts, floor)[0] or float("inf")
+                best.sort(key=lambda c: times[c])
+                self._say(res, f"  playoff: {len(best)} x {rounds} rounds, "
+                               + ", ".join(f"{c} {_ms(times[c])}" for c in best[:3]))
+        champ = best[0] if best else None
+        runner_up = best[1] if len(best) > 1 else None
         res.champion = champ
 
         res.phases["local"] = round(bench.gpu_seconds - gpu0 - sum(res.phases.values()), 2)

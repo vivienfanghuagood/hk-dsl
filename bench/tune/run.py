@@ -72,6 +72,7 @@ def main(argv=None) -> int:
         todo = allshapes
     fns, missing = B.available(arch, [b for b in args.baselines.split(",") if b])
     meta = dict(T._meta(arch), versions=B.versions(), missing=missing,
+                commit=os.environ.get("HK_TUNE_SHA", ""),
                 sets=args.sets, rounds=args.rounds, budget=args.budget, split=args.split)
     print(json.dumps(meta), flush=True)
     sp = provider(arch)
