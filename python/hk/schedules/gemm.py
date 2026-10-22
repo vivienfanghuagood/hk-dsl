@@ -83,6 +83,12 @@ def _current() -> str:
     return current_arch()
 
 
+def _target_of(arch: str):
+    from ..target import get_target  # noqa: PLC0415
+
+    return get_target(arch)
+
+
 def _lds_cap(arch: str) -> int:
     from ..target import get_target  # noqa: PLC0415
 
@@ -166,21 +172,35 @@ class GemmSchedule(Schedule):
         an upper estimate), LDS bytes, waves per SIMD."""
         return _regs.predict(self, _arch(arch))
 
+    def _check_knobs(self, arch: str) -> List[str]:
+        return self._check_struct(arch) or self._check_resources(arch)
+
+    def _check_struct(self, arch: str) -> List[str]:
+        """The knobs' arithmetic, before any resource is predicted."""
+        return []
+
     def _check_resources(self, arch: str) -> List[str]:
         p = self.predict(arch)
         why = []
         cap = _lds_cap(arch)
         if p["lds"] > cap:
-            why.append(f"LDS: {p['lds']} B a workgroup; {arch} has {cap}")
+            why.append(f"LDS: {p['lds']} B a workgroup (as hk-lds-alloc places it, each "
+                       f"buffer aligned to its size); {arch} has {cap}")
+        simd = _target_of(arch).vgprs_per_simd
+        if p.get("estimate", 0) > simd:
+            why.append(f"registers: the register tiles alone are an estimated "
+                       f"{p['estimate']} VGPRs, more than the {simd} a SIMD has "
+                       f"(hk-check-budgets refuses it while tracing)")
         if p["vgpr"] is not None:
-            limit = min(self.max_vgprs, 256)
+            limit = p["limit"] if self.max_vgprs >= 256 else min(p["limit"], self.max_vgprs)
             if p["vgpr"] > limit:
-                why.append(f"registers: about {p['vgpr']} VGPRs predicted, over "
-                           f"{limit}{' (max_vgprs)' if self.max_vgprs < 256 else ''}: "
-                           f"it would spill, which the build refuses -- "
-                           f"{p.get('hint', 'shrink the tile')}")
+                what = "VGPRs" if arch != "gfx950" else "VGPRs + AGPRs"
+                why.append(f"registers: up to {p['vgpr']} {what} predicted, over the "
+                           f"{limit} a wave has{' (max_vgprs)' if limit < p['limit'] else ''}"
+                           f": it would spill, which the build refuses -- "
+                           f"{p['hint']}")
             elif self.min_occupancy > 1 and p["occupancy"] < self.min_occupancy:
-                why.append(f"occupancy: about {p['vgpr']} VGPRs predicted is "
+                why.append(f"occupancy: up to {p['vgpr']} registers predicted is "
                            f"{p['occupancy']} waves a SIMD, under min_occupancy="
                            f"{self.min_occupancy}")
         return why
@@ -350,7 +370,7 @@ class Rdna(GemmSchedule):
             k._arch = arch
         return k
 
-    def _check_knobs(self, arch: str) -> List[str]:
+    def _check_struct(self, arch: str) -> List[str]:
         why = []
         if self.warps < 1 or self.warps > 16:
             why.append(f"warps={self.warps}: 1 to 16 waves a workgroup")
@@ -388,9 +408,7 @@ class Rdna(GemmSchedule):
             if rows * self.k_step * 2 % (16 * threads):
                 why.append(f"a {rows}x{self.k_step} tile of {what} is not a whole number "
                            f"of 16-byte loads for {threads} lanes")
-        if why:
-            return why
-        return self._check_resources(arch)
+        return why
 
     def _check_shape(self, m, n, k, arch) -> List[str]:
         why = []
@@ -466,7 +484,7 @@ class Decode(GemmSchedule):
         return decode_gemm.decode_gemm_kernel(_epilogue.name(self._name(), epilogue),
                                               **self.knobs(), epilogue=epilogue, arch=arch)
 
-    def _check_knobs(self, arch: str) -> List[str]:
+    def _check_struct(self, arch: str) -> List[str]:
         from ..target import get_target  # noqa: PLC0415
 
         why = []
@@ -480,6 +498,9 @@ class Decode(GemmSchedule):
         if why:
             return why
         tgt = get_target(arch)
+        if tgt.wave == 64 and self.slices % 2:
+            why.append(f"slices={self.slices}: on {arch} a load is whole 32-deep MFMA "
+                       f"operands, so slices is even")
         part = 16 * self.tokens * 16 * 4
         if self.resident:
             if self.warps == 1:
@@ -491,9 +512,7 @@ class Decode(GemmSchedule):
                 if slots * part > tgt.lds_per_workgroup:
                     why.append(f"resident={self.resident} needs {slots * part} B of LDS a "
                                f"workgroup; one may hold {tgt.lds_per_workgroup}")
-        if why:
-            return why
-        return self._check_resources(arch)
+        return why
 
     def _check_shape(self, m, n, k, arch) -> List[str]:
         why = []
@@ -587,7 +606,7 @@ class PingPong(GemmSchedule):
         return gemm_cdna.gemm_kernel(_epilogue.name(self._name(), epilogue), **self.knobs(),
                                      epilogue=epilogue, arch=arch)
 
-    def _check_knobs(self, arch: str) -> List[str]:
+    def _check_struct(self, arch: str) -> List[str]:
         why = []
         if self.warps_m * self.warps_n != 8:
             why.append(f"the pingpong pairs two halves of four warps; warps_m x warps_n is "
@@ -605,8 +624,11 @@ class PingPong(GemmSchedule):
             if rows * self.k_step * 2 % (16 * 512):
                 why.append(f"half a block of {what} ({rows}x{self.k_step}) is not a whole "
                            f"number of 16-byte copies for 512 threads")
-        if self.lds_shape not in (None, "16x64", "32x32"):
-            why.append(f"lds_shape={self.lds_shape!r}: None, '16x64' or '32x32'")
+        if self.lds_shape not in (None, "16x64"):
+            why.append(f"lds_shape={self.lds_shape!r}: None or '16x64'")
+        elif self.lds_shape == "16x64" and self.k_step % 64:
+            why.append(f"lds_shape='16x64' with k_step={self.k_step}: st_16x64 is read "
+                       f"64 deep, so k_step is a multiple of 64")
         if self.nt not in _NT:
             why.append(f"nt={self.nt!r}: one of {_NT}")
         if self.hipkittens_waits and not self.late_b:
@@ -614,9 +636,7 @@ class PingPong(GemmSchedule):
                        "fourth memory phase reads Bs[2] while its copy is in flight")
         if self.splits < 1:
             why.append(f"splits={self.splits}: at least 1")
-        if why:
-            return why
-        return self._check_resources(arch)
+        return why
 
     def _check_shape(self, m, n, k, arch) -> List[str]:
         why = []
@@ -693,12 +713,24 @@ class Dp(GemmSchedule):
         return gemm_cdna_dp.gemm_kernel(_epilogue.name(self._name(), epilogue),
                                         **self.knobs(), epilogue=epilogue, arch=arch)
 
-    def _check_knobs(self, arch: str) -> List[str]:
+    def _check_struct(self, arch: str) -> List[str]:
         why = []
         if self.warps_m < 1 or self.warps_n < 1 or self.warps_m * self.warps_n > 16:
             why.append(f"warps {self.warps_m}x{self.warps_n}: 1 to 16 waves")
             return why
+        if self.warps_m * self.warps_n < 2:
+            why.append("dp with one warp: a one-wave workgroup issues every copy's "
+                       "addresses itself, and spilled in 9 of 14 sampled builds even "
+                       "at small tiles; use warps_m x warps_n of 2 or more")
+            return why
         threads = 64 * self.warps_m * self.warps_n
+        copies = (self.block_m + self.block_n) * self.k_step * 2 // (16 * threads)
+        if threads == 128 and copies * self.stages >= 60 and (
+                self.splits > 1 or self.stages >= 5):
+            why.append(f"dp with two warps, {copies} copies a thread a tile in "
+                       f"{self.stages} stages{' and split-K' if self.splits > 1 else ''}: "
+                       f"the copies' addresses spill SGPRs (sampled builds past 60 "
+                       f"copy-stages did); use four warps, fewer stages or a smaller k_step")
         reg_m, reg_n = self.block_m // self.warps_m, self.block_n // self.warps_n
         if (reg_m % 16 or reg_n % 16 or reg_m * self.warps_m != self.block_m
                 or reg_n * self.warps_n != self.block_n or not reg_m or not reg_n):
@@ -714,17 +746,15 @@ class Dp(GemmSchedule):
                        + (" (st_16x64 reads a whole 64-wide subtile)" if sk == 64 else ""))
         if self.stages < 2:
             why.append(f"stages={self.stages}: a ring of two buffers or more")
-        if self.lds_shape not in (None, "16x64", "32x32"):
-            why.append(f"lds_shape={self.lds_shape!r}: None, '16x64' or '32x32'")
+        if self.lds_shape not in (None, "16x64"):
+            why.append(f"lds_shape={self.lds_shape!r}: None or '16x64'")
         if self.nt not in _NT:
             why.append(f"nt={self.nt!r}: one of {_NT}")
         if self.splits < 1:
             why.append(f"splits={self.splits}: at least 1")
         if self.xcd_chunk < 0:
             why.append(f"xcd_chunk={self.xcd_chunk}: 0 (an eighth of the grid) or a count")
-        if why:
-            return why
-        return self._check_resources(arch)
+        return why
 
     def _check_shape(self, m, n, k, arch) -> List[str]:
         why = []
