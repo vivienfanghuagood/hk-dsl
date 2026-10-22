@@ -364,6 +364,13 @@ def profile(fn, inputs=None, *, consts: Optional[Dict[str, Any]] = None,
         _isa_only(prof, spec, work)
         prof.seconds = round(_time.time() - t0, 1)
         return prof
+    if _run.rocprofv3() is None:
+        prof.notes.append("rocprofv3 not found (ROCm's bin): the call was timed in-process "
+                          "and its kernels disassembled; per-kernel times, the counters and "
+                          "the thread trace need rocprofv3")
+        _isa_only(prof, spec, work, gpu=True)
+        prof.seconds = round(_time.time() - t0, 1)
+        return prof
     raw = _run.collect(spec, arch=arch, workdir=str(work / "passes"), counters=counters,
                        att=att, att_kernels=att_kernels, iters=iters, timeout=timeout,
                        keep=keep or bool(workdir), log=log)
@@ -557,13 +564,19 @@ def _rocprof_version() -> Optional[str]:
     return None
 
 
-def _isa_only(prof: Profile, spec: Dict[str, Any], work: Path) -> None:
-    """No GPU: find and build the kernels (as hk.check does), disassemble."""
+def _isa_only(prof: Profile, spec: Dict[str, Any], work: Path, *,
+              gpu: bool = False) -> None:
+    """No GPU: find and build the kernels (as hk.check does), disassemble.
+    With a GPU but no profiler (`gpu=True`): run the call, time it as
+    hk.check does, and disassemble what it launched."""
     import subprocess  # noqa: PLC0415
 
-    prof.sources = {"timing": "off (no GPU)", "counters": "off (no GPU)", "att": "off (no GPU)",
+    why = "no GPU" if not gpu else "no rocprofv3"
+    prof.sources = {"timing": f"off ({why})" if not gpu else
+                    "the whole call, hk.check.interleave (no profiler)",
+                    "counters": f"off ({why})", "att": f"off ({why})",
                     "isa": "llvm-objdump of the code object"}
-    s = dict(spec, gpu=False, out=str(work / "child.json"))
+    s = dict(spec, gpu=gpu, out=str(work / "child.json"), time_call=gpu, iters=1)
     (work / "spec.json").write_text(_json.dumps(s))
     from .run import child_env  # noqa: PLC0415
 
@@ -576,9 +589,15 @@ def _isa_only(prof: Profile, spec: Dict[str, Any], work: Path) -> None:
                             "message": (proc.stderr or proc.stdout)[-2000:]})
         return
     prof.errors.extend(child.get("errors", []))
-    prof.notes.append("no GPU: the kernels were built and disassembled; timing, counters and "
-                      "the thread trace need one")
-    for b in _hk_rows(child):
+    if not gpu:
+        prof.notes.append("no GPU: the kernels were built and disassembled; timing, counters "
+                          "and the thread trace need one")
+    else:
+        prof.call = {"inputs": child.get("inputs"), "us": round(child["call_ms"] * 1e3, 2)
+                     if child.get("call_ms") else None, "noise": child.get("call_noise"),
+                     "kernels": len(_hk_rows(child))}
+    rows = _hk_rows(child)
+    for b in rows:
         name = (b.get("instantiations") or [{}])[0].get("name") or f"{b['kernel']}_kernel"
         k: Dict[str, Any] = {"name": name, "hk": True, "build": {
             kk: b.get(kk) for kk in ("kernel", "consts", "warps", "lds_bytes", "source",
@@ -593,8 +612,16 @@ def _isa_only(prof: Profile, spec: Dict[str, Any], work: Path) -> None:
         except Exception as e:  # noqa: BLE001
             prof.notes.append(f"{b['kernel']}: no disassembly: {type(e).__name__}: {e}")
         k["findings"] = []
-        k["verdict"] = {"line": "built only (no GPU): see the ISA", "bound": None,
-                        "losses": []}
+        line = "built only (no GPU): see the ISA"
+        if gpu and len(rows) == 1 and child.get("call_ms"):
+            # One kernel: the call's time is the kernel's (and its launch).
+            k["time"] = {"us": round(child["call_ms"] * 1e3, 2), "noise": child.get(
+                "call_noise"), "source": "the call, timed in-process (no profiler)"}
+            line = (f"no profiler: {k['time']['us']} us a call; the counters and the thread "
+                    f"trace need rocprofv3 -- see the ISA")
+        elif gpu:
+            line = "no profiler: see the call's time and the ISA"
+        k["verdict"] = {"line": line, "bound": None, "losses": []}
         prof.kernels.append(k)
 
 

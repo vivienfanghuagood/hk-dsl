@@ -196,6 +196,14 @@ def main(path: str) -> int:
                 torch.cuda.synchronize()
                 _marker()
                 torch.cuda.synchronize()
+                if spec.get("time_call"):
+                    # No profiler: the call's time as hk.check takes it.
+                    import statistics  # noqa: PLC0415
+
+                    times, _ = hkc.interleave({"call": lambda: fn(*args, **consts)},
+                                              rounds=7, warmup=2, batch_ms=1.0)
+                    out["call_ms"] = statistics.median(times["call"])
+                    out["call_noise"] = hkc._spread(times["call"])
             out["kernels"] = _build_rows(rec.calls)
         out["iters"] = int(spec.get("iters", 5))
         out["target"] = spec.get("target")

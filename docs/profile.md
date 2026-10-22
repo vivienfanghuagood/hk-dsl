@@ -73,7 +73,12 @@ hk.check times. With no GPU, `--build-only` builds and disassembles. A pass
 takes 3-4 s on an MI355X (5-20 s in the W7900D pod); a GEMM's profile 25-35
 s, `--vs` about twice that. A pass that fails -- a counter group the part
 rejects, no decoder, a container without access, counters that read zero --
-is a note, and the report keeps what the other passes measured.
+is a note, and the report keeps what the other passes measured. Without
+`rocprofv3` at all the call is timed in-process (hk.check's `interleave`)
+and its kernels disassembled. In an agent's loop, `--no-counters` keeps
+the timing, the thread trace and the ISA -- the stall attribution and the
+matrix core's idle time -- in 6.5 s for the gate_up GEMM below (25 s with
+the counters).
 
 Every hk kernel's code object is in the compile cache (`HK_CACHE_DIR`):
 hk.profile takes it out of the build (`kernel.co`, or the offload bundle in

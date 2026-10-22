@@ -77,3 +77,19 @@ def test_the_cli_writes_json(tmp_path):
     (k,) = doc["kernels"]
     assert k["time"]["us"] > 0 and doc["verdict"]["line"]
     assert doc["sources"]["counters"] == "off"
+
+
+def test_without_rocprofv3_it_times_the_call_and_reads_the_code(monkeypatch):
+    """No profiler: the call timed in-process and its kernel disassembled,
+    with a note that says what is missing."""
+    import hk
+    import hk.profile.run as run
+
+    monkeypatch.setattr(run, "rocprofv3", lambda: None)
+    p = hk.profile(f"{FIXTURE}:gelu_mul_strip",
+                   "bf16[256,4096], bf16[256,4096], bf16[256,4096]")
+    assert p.ok, str(p)
+    (k,) = p.kernels
+    assert k["time"]["us"] > 0 and k["isa"]["total"]["classes"]["vmem_load"] >= 2
+    assert any("rocprofv3 not found" in n for n in p.notes)
+    assert p.sources["counters"].startswith("off")
