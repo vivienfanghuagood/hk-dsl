@@ -95,20 +95,39 @@ raises it, as `launch()` and `templates.gemm(schedule=)` do.
    thread, k_step against the MFMA/WMMA depth and the read slice, `stages`,
    `write_pos`, `stream_a`'s two fragments, `resident`'s LDS, the pingpong's
    eight warps, HipKittens' waits that hk-lds-pipeline refuses.
-3. **Resources** -- LDS is computed exactly from the allocations; VGPRs are
-   predicted (`hk/schedules/_regs.py`): the live tiles counted as the target
-   lays them out, plus a per-family overhead fitted to sampled builds and
-   held above every one of them. A prediction over 256 (or `max_vgprs`) is
-   refused as a spill, which the build would refuse anyway; under
-   `min_occupancy` likewise.
+3. **Resources** -- LDS as `hk-lds-alloc` lays it out (declaration order,
+   each buffer aligned to its own size when that is a power of two: a dp
+   ring of 16x64 A and 256x64 B tiles in four stages asks 256 KB, not the
+   136 KB its sizes add to); the register-tile estimate `hk-check-budgets`
+   refuses a kernel with while tracing (the dp kernel declares both register
+   sets); and the registers the build will need, predicted
+   (`hk/schedules/_regs.py`): each family's live tiles -- accumulators,
+   operands, staging, a combine's partials, a split's shares -- counted as
+   the target lays them out, weighed by a per-(family, arch) linear model
+   that is the tightest upper envelope (linprog) of ~5,000 sampled builds,
+   constrained to put every spill over the limit and every schedule hk ships
+   under it. The limit is the workgroup's: a CU's SIMDs share its waves, so
+   16 waves of wave64 have 128 VGPRs each on an MI355X (the decode GEMV's
+   spills at 128), 8 have 256 (the pingpong never touches AGPRs), 4 have
+   512 VGPRs + AGPRs; gfx1100 always 256. Structural rules the samples
+   found: the pingpong's st_16x64 needs k_step % 64; gfx950's decode GEMV
+   even `slices`; dp with one warp, or two warps 60 copy-stages deep, spills
+   SGPRs.
 4. **Shape** -- K and N against `k_step`/`block_n`/`splits`, M against the
    decode GEMV's token tiles, split-K's scratch limit; only M may be ragged.
 
 The kernel is generic in M, N and K, so "will it build" is `check_kernel`.
-The acceptance test (`tests/hk/codegen/test_schedules_legality.py`) samples
-each family's space on its arches, builds every point `check_kernel`
-accepts, and reports the false-accept rate (accepted but refused by the
-passes or the spill gate) and that every refused point has a reason.
+
+**Measured** (`tools/hk-bench/schedules_legality.py`, hipcc 7.2.3, no GPU):
+1,500 points drawn uniformly from the four families' full value products
+on both arches (300 per family and arch), none of which the model was fitted
+to: 823 accepted, of which 1 did not build (a dp kernel spilling 1 VGPR):
+**0.12% false accepts**; 677 refused, every one with a reason, 90 of which
+would have built (the price of an upper bound). Per family: rdna 0/55,
+decode 0/234 (gfx1100) and 0/277 (gfx950), pp 0/137, dp 1/120. The
+CI-sized check is `tests/hk/codegen/test_schedules_legality.py` (it builds
+a fixed sample of accepted points on CI's hipcc 7.1); refit with the tool
+when the compiler moves.
 
 `canonical()` folds knobs that do nothing at their value back to the
 default (one LDS buffer's `write_pos`, `late_b`'s HipKittens waits, a
@@ -122,10 +141,11 @@ default (one LDS buffer's `write_pos`, `late_b`'s HipKittens waits, a
   `[family, {knobs}]` and a bare knob dict given to a family's class, so
   `python/hk/tuned/gemm_bf16.json`'s `schedule` fields (`Rdna.from_record`)
   and `routes_gemm_gfx950.json`'s `candidates` load unchanged.
-- gfx1100: `hk.ops.gemm.DEFAULT` gained `stagger`, `stream_a`, `setprio`,
-  `sched` at the factory's defaults, so a tuned record can carry them (the
-  autotune lookup drops a record's keys the default lacks). Neither the names
-  nor the C++ change.
+- gfx1100: the tuner of `hk.ops.gemm` (`autotune.Tuner`, new `knobs=`)
+  reads `stagger`, `stream_a`, `setprio` and `sched` from a record besides
+  `DEFAULT`'s keys (it dropped them before), so a record can hold any `Rdna`
+  schedule. `DEFAULT` itself, the dict the launch path keys its kernels on,
+  is unchanged.
 - gfx950: a route table's `candidates` may now define names the code does
   not have; those are schedule records, taken exactly (`gemm_cdna`'s
   `extra_candidates()`), and `route()` / `run()` / `fits()` and
@@ -136,17 +156,23 @@ default (one LDS buffer's `write_pos`, `late_b`'s HipKittens waits, a
 
 ## Round trip
 
-`tests/hk/codegen/test_schedules_roundtrip.py`, no GPU: every
-`routes_gemm_gfx950.json` point, every candidate, every `gemm_bf16.json`
-record, the decode GEMV's schedules, the RDNA defaults, and
-`hk.templates.gemm`'s plans over a grid of shapes go through the new type
-(`lookup` / `from_candidate` / `from_record`, then `to_record` and back) and
-produce the same kernel names and byte-identical `k.source()` as the hk.ops
-code paths, with and without an epilogue, on both arches.
+`tests/hk/ir/test_schedules_roundtrip.py`, no GPU, no torch: every
+`routes_gemm_gfx950.json` point plus a grid of shapes (through
+`gemm_cdna.run` itself, its launches recorded on stand-in tensors), every
+gfx950 candidate, every `gemm_bf16.json` record and the RDNA defaults and
+space, the decode GEMV's schedules on both arches, and `hk.templates.gemm`'s
+plans with and without an epilogue go through the schedule types (`lookup`,
+`from_candidate`, `from_record`, and `to_record` back) and give the same
+launches, the same kernel names and byte-identical `k.source()` as the
+hk.ops paths. Checked once more against origin/main itself: the C++ of every
+kernel hk.ops.matmul and hk.templates.gemm launch over 1,136 (arch, shape,
+epilogue) cases hashes the same on main and on this branch.
 
-hk.ops.matmul's launch path is unchanged. `hk.templates.gemm` builds its
-kernels through the schedule types (the C++ is identical, checked above);
-its plan without `schedule=` is the same function as before.
+hk.ops.matmul's launch path is unchanged (its host-side dispatch measured
+1.21-1.28 us before and after); route tables may now name candidates of
+their own. `hk.templates.gemm` builds its kernels through the schedule types
+(the C++ is identical, checked above); its plan without `schedule=` is the
+same function as before.
 
 ## Not yet
 

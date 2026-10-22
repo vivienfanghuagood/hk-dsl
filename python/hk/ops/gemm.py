@@ -453,14 +453,13 @@ def gemm_kernel(name: str, *, block_m: int = 128, block_n: int = 128,
 #: shape-runs, M from 512 to 16384, by 0.4-2.6%; the one loss, -1.2% at
 #: 8192x24576x4096, is inside that run's 2.1% noise. Each gain is under the
 #: tuner's 1% bar on its own; together they are the default.
-#:
-#: stagger, stream_a, setprio and sched are here at gemm_kernel's own
-#: defaults so that a tuning record may set them (a record's knobs that the
-#: default lacks are dropped on read); none of them adds to the kernel's
-#: name or its C++ at that value (hk.schedules.Rdna is every knob).
 DEFAULT = dict(block_m=128, block_n=128, k_step=64, dot_slice=16, warps=8,
-               warp_rows=4, n_split=2, wgm=8, write_pos=2, lds_buffers=1,
-               stagger=0, stream_a=False, setprio=False, sched=0)
+               warp_rows=4, n_split=2, wgm=8, write_pos=2, lds_buffers=1)
+
+#: Knobs a tuning record may set beyond DEFAULT's (gemm_kernel's own, at
+#: their defaults when absent): with these, a record can hold any schedule
+#: hk.schedules.Rdna can, every knob that changes the C++.
+KNOBS = ("stagger", "stream_a", "setprio", "sched")
 
 #: What the tuner searches. Six axes and 96 points, chosen so that each one
 #: trades something real against something else rather than wandering:
@@ -537,7 +536,7 @@ def _bench_for(key: str):
 #: The tuner. Building it registers it, which is all `python3 -m hk.autotune`
 #: needs to find it.
 TUNER = _autotune.Tuner("gemm_bf16", _make, SPACE, DEFAULT,
-                        bench=_bench_for, keys=TUNE_KEYS)
+                        bench=_bench_for, keys=TUNE_KEYS, knobs=KNOBS)
 
 #: The default kernel, by name, for anything that wants it without going
 #: through the tuner -- cache warming, resource checks, the tests.
@@ -553,7 +552,7 @@ BLOCK_M, BLOCK_N, K_STEP = DEFAULT["block_m"], DEFAULT["block_n"], DEFAULT["k_st
 #: hk.ops.decode_gemm, laid out for the weight stream, is faster still. It
 #: keeps s_setprio, which DEFAULT drops: at M = 1-16 the two are within 1.2%,
 #: 0.5-1.2% its way at four of five shapes (tools/hk-bench/gemm_vs_flydsl.py).
-THIN = dict(DEFAULT, block_m=16, block_n=128, k_step=64, dot_slice=16, warps=4,
+THIN = dict(block_m=16, block_n=128, k_step=64, dot_slice=16, warps=4,
             warp_rows=1, n_split=2, wgm=8, write_pos=2, lds_buffers=2,
             setprio=True)
 
