@@ -19,13 +19,44 @@ do not.
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import os
+import re
 import sys
+import sysconfig
 from pathlib import Path
 from typing import Callable, Dict
 
-# Run from a checkout: the package is next to the examples.
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "python"))
+
+def _which_hk() -> None:
+    """The package next to the examples when its MLIR bindings are built for
+    this interpreter (a source build); otherwise the installed hk-dsl, so that
+    `pip install hk-dsl` and a fresh clone are enough to run the examples. With
+    neither, say how to get one instead of failing inside `import hk`."""
+    repo = Path(__file__).resolve().parents[1]
+    libs = repo / "python" / "hk" / "_mlir" / "_mlir_libs"
+    if list(libs.glob(f"_mlir.{sysconfig.get_config_var('SOABI')}.so")):
+        sys.path.insert(0, str(repo / "python"))
+        return
+    if importlib.util.find_spec("hk") is None:
+        sys.exit("hk-dsl is not installed, and this checkout's MLIR bindings (hk._mlir) are not\n"
+                 f"built for Python {sys.version_info[0]}.{sys.version_info[1]}. Either install the release,\n"
+                 "which the examples then use from this clone:\n\n"
+                 "    pip install hk-dsl\n\n"
+                 "or build this checkout (docs/building.md):\n\n"
+                 "    scripts/build_mlir.sh && scripts/build_hk_mlir.sh\n")
+    try:  # an installed release older than these examples may lack what they use
+        want = re.search(r'^version = "(.+?)"', (repo / "pyproject.toml").read_text(), re.M).group(1)
+        from importlib.metadata import version  # noqa: PLC0415
+        have = version("hk-dsl")
+    except Exception:  # noqa: BLE001 -- no pyproject or no metadata: nothing to compare
+        return
+    if have != want:
+        print(f"note: running against the installed hk-dsl {have}; these examples are from "
+              f"{want}. `pip install hk-dsl=={want}` if one fails.", file=sys.stderr)
+
+
+_which_hk()
 
 
 def parser(doc: str) -> argparse.ArgumentParser:

@@ -41,6 +41,15 @@ Four entry points, in increasing order of what they need:
   `k(*tensors)` a GPU
 """
 
+try:
+    from ._mlir import ir as _ir  # noqa: F401 -- the bindings every module below needs
+except ImportError as _e:
+    raise ImportError(
+        f"hk's MLIR bindings (hk._mlir) did not import ({_e}). This is a source checkout\n"
+        "whose bindings are not built for this Python. Either use the release -- `pip install\n"
+        "hk-dsl`, and do not put this checkout's python/ on sys.path -- or build them:\n"
+        "scripts/build_mlir.sh && scripts/build_hk_mlir.sh (docs/building.md).") from None
+
 from . import autotune, codegen, compiler, dsl, ops, runtime, target, templates
 from .dsl import *  # noqa: F401,F403 -- the language is the package
 from .dsl import __all__ as _dsl_all
