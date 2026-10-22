@@ -128,7 +128,7 @@ that the acceptance rule believes -- or to "the route stands".
 ### `hk.tune.search.Search`
 
 ```python
-class hk.tune.search.Search(space, *, budget: float = 60.0, min_gain: float = 0.01, k_noise: float = 2.0, pool_per_kind: int = 16, explore: int = 6, max_seeds: Optional[int] = None, rung_rounds: Sequence[int] = (3, 6, 10), local_moves: int = 12, local_iters: int = 6, restarts: int = 2, decide_sets: int = 3, decide_rounds: int = 7, confirm_sets: int = 2, log: Optional[Callable[[str], None]] = None)
+class hk.tune.search.Search(space, *, budget: float = 60.0, min_gain: float = 0.01, k_noise: float = 2.0, pool_per_kind: int = 16, explore: int = 6, max_seeds: Optional[int] = None, rung_rounds: Sequence[int] = (3, 6, 10), local_moves: int = 12, local_iters: int = 6, restarts: int = 2, playoff: int = 5, decide_sets: int = 3, decide_rounds: int = 7, confirm_sets: int = 2, log: Optional[Callable[[str], None]] = None)
 ```
 
 *New after 0.4.0* (the `hk.tune.search` module is not in the 0.4.0 wheel)
