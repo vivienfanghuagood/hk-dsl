@@ -484,6 +484,11 @@ CANDIDATES: Dict[str, Any] = {
 
 _ROUTES: Dict[str, Dict[int, str]] = {}
 
+#: Candidates a route table defines that CANDIDATES does not: name ->
+#: hk.schedules GemmSchedule, taken exactly as its record says (a tuner's
+#: schedules, `[family, {knobs}]` in the table's "candidates").
+_EXTRA: Dict[str, Any] = {}
+
 
 def _routes() -> Dict[str, Dict[int, str]]:
     """The measured table, NxK -> {M: candidate}, read once."""
@@ -494,32 +499,32 @@ def _routes() -> Dict[str, Dict[int, str]]:
         p = Path(__file__).resolve().parents[1] / "tuned" / "routes_gemm_gfx950.json"
         if p.exists():
             doc = json.loads(p.read_text())
+            extra = {nm: c for nm, c in doc.get("candidates", {}).items()
+                     if nm not in CANDIDATES}
+            if extra:
+                from .. import schedules  # noqa: PLC0415
+
+                for nm, c in extra.items():
+                    _EXTRA[nm] = schedules.from_record(c)
             for nk, by_m in doc.get("routes", {}).items():
-                _ROUTES[nk] = {int(m): c for m, c in by_m.items()}
+                _ROUTES[nk] = {int(m): c for m, c in by_m.items()
+                               if c in CANDIDATES or c in _EXTRA}
         _ROUTES.setdefault("", {})
     return _ROUTES
 
 
-#: Candidates a tuning record (hk.tune.records) named, by their "u:" names:
-#: [kind, schedule] as in CANDIDATES. Filled as route() meets them.
-USER_CANDIDATES: Dict[str, Any] = {}
-
-
-def candidate(name: str):
-    """(kind, schedule) of a candidate name: a shipped one (CANDIDATES) or one
-    a tuning record defined (USER_CANDIDATES)."""
-    if name in CANDIDATES:
-        return CANDIDATES[name]
-    return USER_CANDIDATES[name]
+def extra_candidates() -> Dict[str, Any]:
+    """The route table's own candidates (see _EXTRA)."""
+    _routes()
+    return _EXTRA
 
 
 def fits(name: str, m: int, n: int, k: int) -> bool:
     """Whether candidate `name` takes the shape at all -- not whether it wins."""
-    return fits_spec(*candidate(name), m, n, k)
-
-
-def fits_spec(kind: str, sched: Dict[str, Any], m: int, n: int, k: int) -> bool:
-    """fits() for a (kind, schedule) pair."""
+    if name not in CANDIDATES:
+        s = extra_candidates()[name]
+        return n % BLOCK_N_MIN == 0 and k % K_STEP == 0 and not s.check(m, n, k, "gfx950")
+    kind, sched = CANDIDATES[name]
     splits = sched.get("splits", 1)
     if m < 1 or k % (sched.get("k_step", K_STEP) * splits) or n % BLOCK_N_MIN:
         return False
@@ -532,12 +537,7 @@ def fits_spec(kind: str, sched: Dict[str, Any], m: int, n: int, k: int) -> bool:
     if kind == "decode":
         from . import decode_gemm  # noqa: PLC0415
 
-        if not decode_gemm.fits(m, n, k):
-            return False
-        if sched:
-            s = decode_gemm._settle({**decode_gemm.schedule_for(m, k), **sched})
-            return k % (16 * s["slices"] * s["warps"] * s["splits"]) == 0
-        return True
+        return decode_gemm.fits(m, n, k)
     if kind == "ppw":
         cut = wave_cut(m, n)
         return 0 < cut < n and fits(sched["rem"], m, n - cut, k)
@@ -558,19 +558,38 @@ def wave_cut(m: int, n: int) -> int:
     return (n // 256 // per) * per * 256
 
 
-def route(m: int, n: int, k: int, user: bool = True) -> str:
-    """The candidate for a shape: this machine's tuning record for its M
-    bucket (hk.tune.records; `user=False` skips it) if there is one and it
-    takes the shape; else the measured table's, at the nearest M it measured
-    for this N x K (on a log scale), if that candidate takes the shape; else
-    the rule the table's measurements mostly follow."""
-    if user:
-        from ..tune import records  # noqa: PLC0415
+def user_route(m: int, n: int, k: int) -> Optional[str]:
+    """This machine's hk.tune record for the shape's M bucket
+    (hk.tune.records), as a candidate name of _EXTRA, if there is one and it
+    takes the shape; else None."""
+    from ..tune import records  # noqa: PLC0415
 
-        u = records.user_route("gfx950", m, n, k)
-        if u is not None and fits_spec(u[1], u[2], m, n, k):
-            USER_CANDIDATES[u[0]] = (u[1], u[2])
-            return u[0]
+    u = records.user_route("gfx950", m, n, k)
+    if u is None:
+        return None
+    name, spec = u
+    s = _EXTRA.get(name)
+    if s is None or records.spec_of(s) != spec:
+        try:
+            from .. import schedules  # noqa: PLC0415
+
+            s = _EXTRA[name] = schedules.from_record(spec, strict=False)
+        except (ValueError, TypeError, KeyError):
+            return None                 # an unreadable record costs speed, not a launch
+    return name if not s.check(m, n, k, "gfx950") else None
+
+
+def route(m: int, n: int, k: int, user: bool = True) -> str:
+    """The candidate for a shape: this machine's hk.tune record for its M
+    bucket (`user=False` skips it) if there is one and it takes the shape;
+    else the measured table's, at the nearest M it measured for this N x K
+    (on a log scale), if that candidate takes the shape; else the rule the
+    table's measurements mostly follow."""
+    if user:
+        _routes()
+        name = user_route(m, n, k)
+        if name is not None:
+            return name
     by_m = _routes().get(f"{n}x{k}")
     if by_m:
         near = min(by_m, key=lambda x: (abs((x / m) if x > m else (m / x)), x))
@@ -603,16 +622,13 @@ def tail_for(m: int, k: int) -> str:
 
 def run(name: str, a, b, out):
     """Candidate `name` on (a, b) into out; the shape checks are matmul's."""
-    return run_spec(*candidate(name), a, b, out)
-
-
-def run_spec(kind: str, sched: Dict[str, Any], a, b, out):
-    """run() for a (kind, schedule) pair -- a shipped candidate's or one
-    hk.tune is measuring."""
+    if name not in CANDIDATES:
+        return extra_candidates()[name].launch(a, b, out)
+    kind, sched = CANDIDATES[name]
     if kind == "decode":
         from . import decode_gemm  # noqa: PLC0415
 
-        return decode_gemm.matmul(a, b, out=out, **sched)
+        return decode_gemm.matmul(a, b, out=out)
     if kind == "dp":
         from . import gemm_cdna_dp  # noqa: PLC0415
 
@@ -676,5 +692,4 @@ def matmul(a, b, out=None):
 
 
 __all__ = ["gemm_kernel", "kernel_for", "schedule_for", "matmul", "route", "run",
-           "run_spec", "candidate", "fits", "fits_spec", "CANDIDATES", "USER_CANDIDATES",
-           "DEFAULT", "K_STEP", "BLOCK_N_MIN"]
+           "fits", "CANDIDATES", "DEFAULT", "K_STEP", "BLOCK_N_MIN"]

@@ -6,15 +6,17 @@ records_dir`, beside the compile cache), in the format of the shipped gfx950
 table (`python/hk/tuned/routes_gemm_gfx950.json`):
 
     {"arch": "gfx950", "kind": "gemm",
-     "candidates": {"u:<label>": [kind, schedule], ...},
+     "candidates": {"u:<label>": {"family": "pp", <knob>: <value>, ...}, ...},
      "routes": {"<N>x<K>": {"<M>": "u:<label>", ...}, ...},
      "points": [{"m":..,"n":..,"k":.., "candidate":.., "verdict": "win", "gain":..,
                  "band": [lo, hi], "route": .., "route_ms":.., "ms":.., ...}, ...]}
 
-`candidates` are what `hk.ops.gemm_cdna.CANDIDATES` holds on gfx950 -- a
-kernel kind ("pp", "dp", "decode", "ppw"; on gfx1100 "rdna", "decode") and
-the schedule the module that owns it spells -- so a record is run by the same
-code a shipped route is.
+`candidates` are hk.schedules records (`Schedule.to_record()`: the family --
+"pp", "dp", "decode", "cols" on gfx950, "rdna", "decode" on gfx1100 -- and
+the knobs off its defaults), the form a route table's own candidates take
+(docs/design/schedules.md), so a tuned schedule runs through the code a
+shipped route runs through (gemm_cdna.run, hk.ops.gemm.matmul,
+hk.templates.gemm's plan).
 
 **Which M a record answers.** A tuned shape answers the Ms of its power-of-two
 bucket (`bucket`, as hk.ops.gemm's tuning key does), and only those: the
@@ -82,9 +84,12 @@ def load(arch: str) -> dict:
     return d
 
 
-def user_route(arch: str, m: int, n: int, k: int) -> Optional[Tuple[str, str, Dict[str, Any]]]:
-    """(name, kind, schedule) of this machine's tuned candidate for the shape,
-    or None: no record for (N, K) in M's bucket, or HK_AUTOTUNE=0."""
+def user_route(arch: str, m: int, n: int, k: int) -> Optional[Tuple[str, Any]]:
+    """(name, schedule record) of this machine's tuned candidate for the
+    shape, or None: no record for (N, K) in M's bucket, or HK_AUTOTUNE=0.
+    The record is hk.schedules' (`Schedule.to_record()`); whether it takes
+    the shape is the caller's check (hk.ops.gemm_cdna.user_route,
+    hk.ops.gemm.user_route)."""
     from ..autotune import enabled  # noqa: PLC0415
 
     if not enabled() or os.environ.get("HK_TUNE_RECORDS", "1") in ("0", "off", "no"):
@@ -98,8 +103,13 @@ def user_route(arch: str, m: int, n: int, k: int) -> Optional[Tuple[str, str, Di
         if bucket(int(ms)) == b:
             spec = d.get("candidates", {}).get(name)
             if spec:
-                return name, spec[0], dict(spec[1])
+                return name, spec
     return None
+
+
+def spec_of(schedule) -> Any:
+    """The record form of an hk.schedules schedule, as records store it."""
+    return json.loads(json.dumps(schedule.to_record()))
 
 
 def save(arch: str, m: int, n: int, k: int, name: str, spec, point: Dict[str, Any]) -> Path:
@@ -114,7 +124,7 @@ def save(arch: str, m: int, n: int, k: int, name: str, spec, point: Dict[str, An
             cur = _empty(arch)
     except (OSError, ValueError):
         cur = _empty(arch)
-    cur.setdefault("candidates", {})[name] = [spec[0], dict(spec[1])]
+    cur.setdefault("candidates", {})[name] = spec
     by_m = cur.setdefault("routes", {}).setdefault(f"{n}x{k}", {})
     for ms in [x for x in by_m if bucket(int(x)) == bucket(m)]:
         del by_m[ms]

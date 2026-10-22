@@ -453,8 +453,14 @@ def gemm_kernel(name: str, *, block_m: int = 128, block_n: int = 128,
 #: shape-runs, M from 512 to 16384, by 0.4-2.6%; the one loss, -1.2% at
 #: 8192x24576x4096, is inside that run's 2.1% noise. Each gain is under the
 #: tuner's 1% bar on its own; together they are the default.
+#:
+#: stagger, stream_a, setprio and sched are here at gemm_kernel's own
+#: defaults so that a tuning record may set them (a record's knobs that the
+#: default lacks are dropped on read); none of them adds to the kernel's
+#: name or its C++ at that value (hk.schedules.Rdna is every knob).
 DEFAULT = dict(block_m=128, block_n=128, k_step=64, dot_slice=16, warps=8,
-               warp_rows=4, n_split=2, wgm=8, write_pos=2, lds_buffers=1)
+               warp_rows=4, n_split=2, wgm=8, write_pos=2, lds_buffers=1,
+               stagger=0, stream_a=False, setprio=False, sched=0)
 
 #: What the tuner searches. Six axes and 96 points, chosen so that each one
 #: trades something real against something else rather than wandering:
@@ -547,7 +553,7 @@ BLOCK_M, BLOCK_N, K_STEP = DEFAULT["block_m"], DEFAULT["block_n"], DEFAULT["k_st
 #: hk.ops.decode_gemm, laid out for the weight stream, is faster still. It
 #: keeps s_setprio, which DEFAULT drops: at M = 1-16 the two are within 1.2%,
 #: 0.5-1.2% its way at four of five shapes (tools/hk-bench/gemm_vs_flydsl.py).
-THIN = dict(block_m=16, block_n=128, k_step=64, dot_slice=16, warps=4,
+THIN = dict(DEFAULT, block_m=16, block_n=128, k_step=64, dot_slice=16, warps=4,
             warp_rows=1, n_split=2, wgm=8, write_pos=2, lds_buffers=2,
             setprio=True)
 
@@ -567,26 +573,23 @@ def _bucket(m: int) -> int:
 
 
 def user_route(m: int, n: int, k: int):
-    """(name, kind, schedule) of this machine's hk.tune record for the shape on
-    this RDNA arch -- kind "rdna" (this module's kernel) or "decode"
+    """(name, hk.schedules schedule) of this machine's hk.tune record for the
+    shape on this RDNA arch -- an Rdna (this module's kernel) or a Decode
     (hk.ops.decode_gemm) -- if there is one and it takes the shape; else None."""
     from ..tune import records  # noqa: PLC0415
 
     u = records.user_route(current_arch(), m, n, k)
     if u is None:
         return None
-    name, kind, sched = u
-    if kind == "rdna":
-        s = {**DEFAULT, **sched}
-        return u if not (k % s["k_step"] or n % s["block_n"]) else None
-    if kind == "decode":
-        from . import decode_gemm  # noqa: PLC0415
+    try:
+        from .. import schedules  # noqa: PLC0415
 
-        if not decode_gemm.fits(m, n, k):
-            return None
-        s = decode_gemm._settle({**decode_gemm.schedule_for(m, k), **sched})
-        return u if k % (16 * s["slices"] * s["warps"] * s["splits"]) == 0 else None
-    return None
+        s = schedules.from_record(u[1], strict=False)
+    except (ValueError, TypeError, KeyError):
+        return None                     # an unreadable record costs speed, not a launch
+    if s.family not in ("rdna", "decode") or s.check(m, n, k, current_arch()):
+        return None
+    return u[0], s
 
 
 def schedule_for(m: int, n: int, k: int, user: bool = True) -> Dict[str, Any]:
@@ -603,8 +606,8 @@ def schedule_for(m: int, n: int, k: int, user: bool = True) -> Dict[str, Any]:
     """
     if user:
         u = user_route(m, n, k)
-        if u is not None and u[1] == "rdna":
-            return {**DEFAULT, **u[2]}
+        if u is not None and u[1].family == "rdna":
+            return {**DEFAULT, **u[1].legacy()}
     s = TUNER.schedule_for(f"{_bucket(m)}x{n}x{k}")
     if s == DEFAULT and m <= THIN["block_m"] and not (k % THIN["k_step"] or
                                                      n % THIN["block_n"]):
@@ -639,10 +642,8 @@ def matmul(a, b, out=None):
     m, k = a.shape
     n, kb = b.shape
     tuned = user_route(m, n, k) if kb == k else None
-    if tuned is not None and tuned[1] == "decode":
-        from . import decode_gemm  # noqa: PLC0415
-
-        return decode_gemm.matmul(a, b, out=out, **tuned[2])
+    if tuned is not None and tuned[1].family == "decode":
+        return tuned[1].launch(a, b, out)
     sched = schedule_for(m, n, k)
     block_m, block_n, k_step = sched["block_m"], sched["block_n"], sched["k_step"]
     if kb != k:

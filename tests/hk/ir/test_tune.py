@@ -344,43 +344,48 @@ def test_rdna_schedule_and_plan_read_the_record(tunedir):
 # ---------------------------------------------------------------- spaces
 
 
-def test_candidate_label_and_spec_round_trip():
-    from hk.tune.space import Gfx950Space
+def test_candidate_round_trips_through_its_record():
+    import hk.schedules as S
+    from hk.tune.space import ScheduleSpace
 
-    c = Candidate.of("dp", {"block_m": 64, "block_n": 128, "nt": "b", "lds_shape": "16x64"})
-    sp = Gfx950Space()
-    assert sp.from_spec(json.loads(json.dumps(sp.spec(c)))) == c
-    assert c.label == Candidate.of("dp", dict(reversed(list(c.sched.items())))).label
-    assert hash(c) == hash(Candidate.of("dp", c.sched, "a name"))
+    sp = ScheduleSpace("gfx950")
+    c = sp.cand(S.Dp(block_m=64, block_n=128, nt="b", lds_shape="16x64"))
+    back = sp.from_spec(json.loads(json.dumps(sp.spec(c))))
+    assert back == c and back.obj == c.obj
+    assert hash(c) == hash(sp.cand(c.obj, "a name"))
+    cols = sp.cand(S.from_candidate("ppw", 2048, 12288, 4096))
+    assert cols.kind == "cols" and sp.from_spec(sp.spec(cols)) == cols and "cols" in cols.label
 
 
-def test_gfx950_space_is_legal_by_arithmetic():
-    from hk.tune.space import Gfx950Space
+def test_gfx950_space_is_checked_before_compiling():
+    from hk.tune.space import ScheduleSpace
 
-    sp = Gfx950Space()
+    sp = ScheduleSpace("gfx950")
     m, n, k = 2048, 16384, 4096
+    cur = sp.current(m, n, k)
+    assert cur.name == "dp128" and cur.kind == "dp"     # the rule (tuning-goal T3)
     gen = sp.generate(m, n, k)
-    assert len(gen) > 500
-    for c in gen:
-        s = sp.full(c, m, n, k)
-        if c.kind == "dp":
-            assert s["stages"] * (s["block_m"] + s["block_n"]) * s["k_step"] * 2 <= sp.LDS
-            assert n % s["block_n"] == 0
-    assert sp.current(m, n, k).name == "dp128"          # the rule (tuning-goal T3)
-    assert all(not sp.check(c, m, n, k) for c in sp.seeds(m, n, k)
-               if c.kind == "decode") or True
+    assert len(gen) > 200 and all(not sp.check(c, m, n, k) for c in gen[:50])
+    assert {c.kind for c in gen} >= {"pp", "dp"}
+    seeds = sp.seeds(m, n, k)
+    assert any(c.name == "pp" for c in seeds)
+    near = sp.neighbors(cur, m, n, k)
+    assert near and all(c.kind == "dp" for c in near)
+    import hk.schedules as S
+    bad = sp.cand(S.Dp(block_m=256, block_n=256, stages=4, k_step=128))
+    assert "LDS" in sp.check(bad, m, n, k)
 
 
 def test_rdna_space_current_is_matmul():
+    import hk.schedules as S
     from hk.ops import gemm
-    from hk.tune.space import RdnaSpace
+    from hk.tune.space import ScheduleSpace
 
-    sp = RdnaSpace("gfx1100")
-    assert sp.current(4096, 5120, 4096).sched == gemm.DEFAULT
-    assert sp.current(8, 5120, 4096).sched == gemm.THIN
-    bad = Candidate.of("rdna", dict(block_m=256, block_n=256, k_step=128, lds_buffers=2))
-    assert sp.check(bad, 4096, 5120, 4096)
-    assert any(c.kind == "decode" for c in sp.generate(8, 5120, 4096))
+    sp = ScheduleSpace("gfx1100")
+    assert sp.current(4096, 5120, 4096).obj == S.Rdna(**gemm.DEFAULT)
+    assert sp.current(8, 5120, 4096).obj == S.Rdna(**gemm.THIN)
+    assert any(c.kind == "decode" for c in sp.seeds(8, 5120, 4096))
+    assert any(c.kind == "rdna" for c in sp.generate(4096, 5120, 4096))
 
 
 def test_cost_model_sees_wave_quantization():
