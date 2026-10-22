@@ -454,9 +454,7 @@ def findings(arch: str, k: Dict[str, Any]) -> List[Dict[str, Any]]:
                     f"{roof['dram_bytes_min'] / 1e6:.0f} MB in {us:.1f} us, "
                     f"{roof['dram_bytes_min'] / (us * 1e-6) / 1e12:.2f} TB/s)")
         else:
-            text = (f"memory-bound: {roof['bytes_s'] / 1e12:.2f} TB/s "
-                    + ("past the L2 " if "past the L2" in (roof.get("bytes_source") or "")
-                       else "") + f"= {_pct(mem)} of {where}")
+            text = f"memory-bound: {roof['bytes_s'] / 1e12:.2f} TB/s = {_pct(mem)} of {where}"
         out.append({"kind": "memory_bound", "cost": None, "text": text,
                     "evidence": {"of_memory_peak": mem, "memory_ceiling":
                                  roof.get("memory_ceiling"), "bytes": roof.get("bytes"),

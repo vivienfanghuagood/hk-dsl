@@ -842,7 +842,7 @@ def kernel_summary(k: Dict[str, Any]) -> List[str]:
                  + (f"; no wave {mi['no_wave'] * 100:.0f}%" if mi.get("no_wave") else ""))
     for part in ("prologue", "drain", "epilogue"):
         p = isa.get(part)
-        if p and ml:
+        if p and ml and p.get("instructions"):
             L.append(f"    {part:<9} {p['instructions']} instructions: {_mix_text(p['mix'])}"
                      + (f"; {_pct(p.get('cycle_share'))} of a wave's cycles"
                         if p.get("cycle_share") is not None else ""))
