@@ -39,6 +39,7 @@ Coding agents: start from [llms.txt](../llms.txt) and the
 | page | |
 |---|---|
 | [hk.check](check.md) | the loop: build and resources without a GPU, correctness against a torch reference, interleaved timing against torch eager and `torch.compile`, `--json` |
+| [hk.profile](profile.md) | why it runs at that speed: rocprofv3's counters and thread trace per kernel -- the roofline, matrix core busy, occupancy, the grid's tail, where the waves wait, the main loop's instructions -- and a verdict, `--json` for agents |
 | [Performance](performance.md) | every measured result with its baseline, software stack and source chapter, RDNA3 and CDNA4 apart, end to end, kernel for kernel, and the losses |
 | [Tuning a GEMM: hk.tune](tune.md) | `python -m hk.tune MxNxK` or `--model`: search hk's GEMM schedules within a GPU-time budget, keep a winner only past the measured noise, as a record `hk.ops.matmul` reads |
 | [The tuning benchmark](../bench/tune/README.md) | hidden real-model GEMM shapes per GPU, every baseline (hipBLASLt, TunableOp, aiter, FlyDSL, HipKittens, Triton), the scoreboard before and after `hk.tune` |
