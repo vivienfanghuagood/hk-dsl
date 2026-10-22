@@ -14,10 +14,11 @@ that the acceptance rule believes -- or to "the route stands".
                 rounds, the fastest third kept (and anything within its noise
                 of the cut, and the route), timed again for more rounds on
                 fresh activations, and so on
-    local       one-knob moves around the best two (swizzles, priorities,
-                stages, K split, the decode GEMV's knobs), compiled while the
-                rungs run, timed against the incumbents; repeated while they
-                improve and the budget lasts
+    local       one-knob moves (and coupled ones: the warp grid, streamed
+                weights with their LDS layout) around the best three, timed
+                against the incumbents, repeated while they improve; when a
+                descent stops, up to RESTARTS more start from the fastest
+                point of a structure none has started from
     decide      the champion against the route, interleaved in S sets of R
                 rounds on fresh activations each (hk.tune.stats.decide), then
                 confirmed on fresh sets measured after the decision
@@ -52,6 +53,7 @@ EXPLORE = 6
 RUNG_ROUNDS = (3, 6, 10)
 LOCAL_MOVES = 12
 LOCAL_ITERS = 6
+RESTARTS = 2
 DECIDE_SETS, DECIDE_ROUNDS, CONFIRM_SETS = 3, 7, 2
 #: Host and spin overhead a timed round of an arm costs beside its calls, s.
 ROUND_OVERHEAD = 1.5e-3
@@ -156,7 +158,8 @@ class Search:
                  k_noise: float = stats.K_NOISE, pool_per_kind: int = POOL_PER_KIND,
                  explore: int = EXPLORE, max_seeds: Optional[int] = None,
                  rung_rounds: Sequence[int] = RUNG_ROUNDS, local_moves: int = LOCAL_MOVES,
-                 local_iters: int = LOCAL_ITERS, decide_sets: int = DECIDE_SETS,
+                 local_iters: int = LOCAL_ITERS, restarts: int = RESTARTS,
+                 decide_sets: int = DECIDE_SETS,
                  decide_rounds: int = DECIDE_ROUNDS, confirm_sets: int = CONFIRM_SETS,
                  log: Optional[Callable[[str], None]] = None):
         self.space = space
@@ -167,6 +170,7 @@ class Search:
         self.max_seeds = max_seeds
         self.rung_rounds = tuple(rung_rounds)
         self.local_moves, self.local_iters = local_moves, local_iters
+        self.restarts = restarts
         self.decide_sets, self.decide_rounds = decide_sets, decide_rounds
         self.confirm_sets = confirm_sets
         self._log = log or (lambda s: None)
@@ -327,11 +331,23 @@ class Search:
         res.counts["timed"] = len(times)
 
         res.phases["rungs"] = round(bench.gpu_seconds - gpu0 - sum(res.phases.values()), 2)
-        # Local search around the best two, while it improves.
+        # Local search: one-knob (and coupled-knob) moves around the best
+        # three, while they improve; when a descent stops, another starts
+        # from the fastest point of a structure no descent has visited --
+        # one-knob moves stop in the first basin they find (at 1x5120x17920,
+        # 32x32 blocks with four K shares, where 16x64 blocks with
+        # streamed weights and eight shares were 8% faster).
         tried = set(runners) | set(c for c in pool)
-        for it in range(self.local_iters):
+        starts = set()
+        restarts = 0
+        chosen_tops: Optional[List[Candidate]] = None
+        it = 0
+        while it < self.local_iters + self.restarts:
+            it += 1
             ranked = [c for c in sorted(alive, key=lambda c: times[c])]
-            tops = ranked[:2]
+            tops = chosen_tops or ranked[:3]
+            chosen_tops = None
+            starts |= {sp.structure(t, m, n, k) for t in tops}
             moves: List[Candidate] = []
             for t in tops:
                 cands = [c for c in sp.neighbors(t, m, n, k) if c not in tried]
@@ -345,48 +361,65 @@ class Search:
                         legal.append(c)
                 legal.sort(key=lambda c: (sp.estimate(c, m, n, k), c.label))
                 moves += legal[:self.local_moves]
-            if not moves:
-                break
-            rounds = self.rung_rounds[min(1, len(self.rung_rounds) - 1)]
-            arms_n = len(moves) + 3
-            cost = arms_n * rounds * self._round_cost(bench, times[tops[0]])
-            if cost > left() - reserve:
-                self._say(res, f"  local {it}: {len(moves)} moves would pass the budget; stopping")
-                break
-            for c in moves:
-                compiler.submit(c, sp.jobs(c, m, n, k))
+            improved = False
             ok = []
-            for c in moves:
-                why = compiler.result(c)
-                if why:
-                    res.refused[c.label] = why
-                    continue
-                try:
-                    fn = sp.runner(c, m, n, k)
-                    self._load(bench, fn, res)
-                    err = bench.check(fn)
-                except Exception as e:  # noqa: BLE001
-                    res.refused[c.label] = f"{type(e).__name__}: {str(e).splitlines()[0][:160]}"
-                    continue
-                if not err < 2e-2:
-                    res.refused[c.label] = f"wrong: relative error {err:.3g} against fp32"
-                    continue
-                runners[c] = fn
-                ok.append(c)
-            if not ok:
+            if moves:
+                rounds = self.rung_rounds[min(1, len(self.rung_rounds) - 1)]
+                arms_n = len(moves) + 4
+                cost = arms_n * rounds * self._round_cost(bench, times[tops[0]])
+                if cost > left() - reserve:
+                    self._say(res, f"  local {it}: {len(moves)} moves would pass the budget; "
+                                   f"stopping")
+                    break
+                for c in moves:
+                    compiler.submit(c, sp.jobs(c, m, n, k))
+                for c in moves:
+                    why = compiler.result(c)
+                    if why:
+                        res.refused[c.label] = why
+                        continue
+                    try:
+                        fn = sp.runner(c, m, n, k)
+                        self._load(bench, fn, res)
+                        err = bench.check(fn)
+                    except Exception as e:  # noqa: BLE001
+                        res.refused[c.label] = f"{type(e).__name__}: {str(e).splitlines()[0][:160]}"
+                        continue
+                    if not err < 2e-2:
+                        res.refused[c.label] = f"wrong: relative error {err:.3g} against fp32"
+                        continue
+                    runners[c] = fn
+                    ok.append(c)
+            if ok:
+                inc = list(dict.fromkeys(ranked[:3] + tops + [cur]))
+                bench.refresh()
+                got = bench.time({c: runners[c] for c in inc + ok}, rounds)
+                for c, ts in got.items():
+                    times[c] = stats.summary(ts, floor)[0] or float("inf")
+                res.counts["timed"] = len(times)
+                new_best = min(got, key=lambda c: times[c])
+                self._say(res, f"  local {it}: {len(ok)} moves from "
+                               f"{', '.join(str(t) for t in tops)}, best {new_best} "
+                               f"{_ms(times[new_best])}")
+                alive = stats.halve(got, 4, protect=[cur], floor=floor)
+                improved = new_best in ok
+            if improved:
+                continue
+            # This descent has stopped: start another from the fastest point
+            # of a structure none has started from, if any is left.
+            if restarts >= self.restarts:
                 break
-            inc = list(dict.fromkeys(ranked[:3] + [cur]))
-            bench.refresh()
-            got = bench.time({c: runners[c] for c in inc + ok}, rounds)
-            for c, ts in got.items():
-                times[c] = stats.summary(ts, floor)[0] or float("inf")
-            res.counts["timed"] = len(times)
-            new_best = min(got, key=lambda c: times[c])
-            self._say(res, f"  local {it}: {len(ok)} moves timed, best {new_best} "
-                           f"{_ms(times[new_best])}")
-            alive = stats.halve(got, 4, protect=[cur], floor=floor)
-            if new_best not in ok:
+            fresh = sorted((c for c in times if c != cur and times[c] < float("inf")
+                            and sp.structure(c, m, n, k) not in starts),
+                           key=lambda c: times[c])
+            if not fresh:
                 break
+            restarts += 1
+            chosen_tops = fresh[:1]
+            alive = list(dict.fromkeys(alive + chosen_tops))
+            self._say(res, f"  restart {restarts} from {chosen_tops[0]} "
+                           f"{_ms(times[chosen_tops[0]])}")
+        res.counts["restarts"] = restarts
 
         # The champion: the fastest of what is left that is not the route.
         others = sorted((c for c in alive if c != cur), key=lambda c: times[c])

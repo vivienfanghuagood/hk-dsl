@@ -171,7 +171,30 @@ class ScheduleSpace:
             out = [self.cand(S.Rdna(**rdna.DEFAULT), "default"),
                    self.cand(S.Rdna(**rdna.THIN), "thin"),
                    self.cand(S.Decode.base_for(m, n, k, self.arch), "decode")]
+        out += self.recorded(m, n, k)
         return [c for c in out if not self.check(c, m, n, k)]
+
+    #: How many of this machine's tuned schedules (other shapes') join the
+    #: seeds, most recent first.
+    RECORDED = 16
+
+    def recorded(self, m: int, n: int, k: int) -> List[Candidate]:
+        """This machine's tuned schedules for other shapes (hk.tune.records):
+        what won next door is a better first guess than the model's, and it
+        is already compiled."""
+        from . import records  # noqa: PLC0415
+
+        S = self._S()
+        d = records.load(self.arch)
+        out = []
+        for name, spec in reversed(list(d.get("candidates", {}).items())):
+            try:
+                out.append(self.cand(S.from_record(spec, strict=False), name))
+            except (ValueError, TypeError, KeyError):
+                continue
+            if len(out) >= self.RECORDED:
+                break
+        return out
 
     #: Per family, axes the generated space takes beyond hk.schedules' seed
     #: values ({knob: [values]}): the RDNA GEMM's seed space holds its block
@@ -204,13 +227,33 @@ class ScheduleSpace:
             return f"{type(e).__name__}: {e}"
         return "; ".join(why)
 
+    #: Knobs that move together: one-knob steps cannot cross between their
+    #: combinations without passing through a worse (or illegal) point.
+    COUPLED = {
+        "dp": [dict(nt="b", lds_shape="16x64"), dict(nt="", lds_shape=None)]
+              + [dict(warps_m=a, warps_n=b) for a, b in
+                 ((1, 1), (1, 2), (2, 1), (2, 2), (1, 4), (4, 1), (2, 4), (4, 2))],
+        "pp": [dict(nt="b", lds_shape="16x64"), dict(nt="", lds_shape=None),
+               dict(warps_m=2, warps_n=4), dict(warps_m=4, warps_n=2)],
+        "rdna": [dict(warps=w, warp_rows=r) for w, r in
+                 ((4, 1), (4, 2), (4, 4), (8, 1), (8, 2), (8, 4), (8, 8))],
+    }
+
     def neighbors(self, c: Candidate, m: int, n: int, k: int) -> List[Candidate]:
         S = self._S()
+        s0 = c.obj
         try:
-            got = list(S.space(m, n, k, self.arch, around=c.obj, radius=1))
+            got = list(S.space(m, n, k, self.arch, around=s0, radius=1))
         except Exception:  # noqa: BLE001
-            return []
-        return [self.cand(s) for s in got if s != c.obj]
+            got = []
+        for move in self.COUPLED.get(s0.family, ()):
+            try:
+                t = s0.replace(**move).canonical()
+            except (TypeError, ValueError):
+                continue
+            if t not in got and not t.check(m, n, k, self.arch):
+                got.append(t)
+        return [self.cand(s) for s in got if s != s0]
 
     # -- the model's view
 

@@ -243,6 +243,20 @@ def test_search_local_moves_reach_past_the_pool():
     assert res.champion == Candidate.of("dp", {"id": 42})
 
 
+def test_search_restarts_out_of_a_basin():
+    """The best pool point's neighbourhood is a dead end; the winner sits
+    next to the fourth best, past the model's cut: a restart from the
+    fastest structure no descent started from finds it."""
+    truth = {i: 2.0 for i in range(40)}
+    truth.update({9: 0.96, 10: 0.95, 11: 0.96, 20: 0.97, 21: 0.85})
+    sp = FakeSpace(truth, model_error=0.0)
+    sp.err[21] = 50.0
+    res = Search(sp, budget=60, pool_per_kind=40, explore=0).run(
+        256, 4096, 4096, FakeBench(sp), FakeCompiler())
+    assert res.champion == Candidate.of("dp", {"id": 21})
+    assert res.counts["restarts"] >= 1
+
+
 def test_search_respects_the_budget():
     truth = {i: 1.0 + 0.01 * i for i in range(200)}
     res, bench = _run(truth, budget=2.0)
