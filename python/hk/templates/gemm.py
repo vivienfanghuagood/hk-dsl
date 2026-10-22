@@ -493,12 +493,13 @@ def _check(m: int, n: int, k: int, arch: str) -> None:
 def _steps_cdna(name: str, m: int, n: int, k: int, lo: int) -> List[Step]:
     from ..ops import decode_gemm, gemm_cdna, gemm_cdna_dp  # noqa: PLC0415
 
-    kind, sched = gemm_cdna.CANDIDATES[name]
+    kind, sched = gemm_cdna.candidate(name)
     if kind == "pp" and OVERRIDE:
         sched = {**sched, **OVERRIDE}
     cols = (lo, lo + n)
     if kind == "decode":
-        return [Step("decode", decode_gemm.schedule_for(m, k), cols, True, route=name)]
+        return [Step("decode", decode_gemm._settle({**decode_gemm.schedule_for(m, k), **sched}),
+                     cols, True, route=name)]
     if kind == "ppw":
         cut = gemm_cdna.wave_cut(m, n)
         return (_steps_cdna("pp", m, cut, k, lo)
@@ -534,6 +535,10 @@ def plan(m: int, n: int, k: int, arch: Optional[str] = None) -> List[Step]:
     from ..ops import decode_gemm  # noqa: PLC0415
     from ..ops import gemm as rdna  # noqa: PLC0415
 
+    tuned = rdna.user_route(m, n, k)
+    if tuned is not None and tuned[1] == "decode":
+        return [Step("decode", decode_gemm._settle({**decode_gemm.schedule_for(m, k),
+                                                    **tuned[2]}), (0, n), True, route=tuned[0])]
     if m <= RDNA_DECODE_MAX_M and decode_gemm.fits(m, n, k):
         return [Step("decode", decode_gemm.schedule_for(m, k), (0, n), True)]
     sched = rdna.schedule_for(m, n, k)

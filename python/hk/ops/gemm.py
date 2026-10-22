@@ -566,8 +566,34 @@ def _bucket(m: int) -> int:
     return b
 
 
-def schedule_for(m: int, n: int, k: int) -> Dict[str, Any]:
+def user_route(m: int, n: int, k: int):
+    """(name, kind, schedule) of this machine's hk.tune record for the shape on
+    this RDNA arch -- kind "rdna" (this module's kernel) or "decode"
+    (hk.ops.decode_gemm) -- if there is one and it takes the shape; else None."""
+    from ..tune import records  # noqa: PLC0415
+
+    u = records.user_route(current_arch(), m, n, k)
+    if u is None:
+        return None
+    name, kind, sched = u
+    if kind == "rdna":
+        s = {**DEFAULT, **sched}
+        return u if not (k % s["k_step"] or n % s["block_n"]) else None
+    if kind == "decode":
+        from . import decode_gemm  # noqa: PLC0415
+
+        if not decode_gemm.fits(m, n, k):
+            return None
+        s = decode_gemm._settle({**decode_gemm.schedule_for(m, k), **sched})
+        return u if k % (16 * s["slices"] * s["warps"] * s["splits"]) == 0 else None
+    return None
+
+
+def schedule_for(m: int, n: int, k: int, user: bool = True) -> Dict[str, Any]:
     """The tuned schedule for this shape, or the default.
+
+    This machine's hk.tune record for the shape comes first (`user=False`
+    skips it), then the gemm_bf16 tuner's records, then the default.
 
     The fallback is not belt and braces. A record is keyed on a bucketed M and
     an exact N and K, so a recorded schedule has tiled *a* shape in this
@@ -575,6 +601,10 @@ def schedule_for(m: int, n: int, k: int) -> Dict[str, Any]:
     default tiles fine -- into an exception two months later. A schedule that
     cannot tile the shape in front of it loses to the one that can.
     """
+    if user:
+        u = user_route(m, n, k)
+        if u is not None and u[1] == "rdna":
+            return {**DEFAULT, **u[2]}
     s = TUNER.schedule_for(f"{_bucket(m)}x{n}x{k}")
     if s == DEFAULT and m <= THIN["block_m"] and not (k % THIN["k_step"] or
                                                      n % THIN["block_n"]):
@@ -608,6 +638,11 @@ def matmul(a, b, out=None):
         raise ValueError(f"matmul: want 2D, got {a.dim()}D and {b.dim()}D")
     m, k = a.shape
     n, kb = b.shape
+    tuned = user_route(m, n, k) if kb == k else None
+    if tuned is not None and tuned[1] == "decode":
+        from . import decode_gemm  # noqa: PLC0415
+
+        return decode_gemm.matmul(a, b, out=out, **tuned[2])
     sched = schedule_for(m, n, k)
     block_m, block_n, k_step = sched["block_m"], sched["block_n"], sched["k_step"]
     if kb != k:
