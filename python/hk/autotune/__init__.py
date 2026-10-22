@@ -309,10 +309,15 @@ class Tuner:
                  schedules: Sequence[Dict[str, Any]],
                  default: Dict[str, Any], *,
                  bench: Optional[Callable[[str], Callable[[Any], float]]] = None,
-                 keys: Sequence[str] = (), register: bool = True):
+                 keys: Sequence[str] = (), register: bool = True,
+                 knobs: Sequence[str] = ()):
         if not schedules:
             raise ValueError(f"tuner {name}: empty space")
-        unknown = [k for s in schedules for k in s if k not in default]
+        #: What a record's schedule may set: the default's knobs, and
+        #: `knobs` -- factory parameters left out of the default (and so
+        #: out of the production lookup's dicts) at their own defaults.
+        self.knobs = frozenset(default) | frozenset(knobs)
+        unknown = [k for s in schedules for k in s if k not in self.knobs]
         if unknown:
             raise ValueError(
                 f"tuner {name}: schedule axes {sorted(set(unknown))} are not in "
@@ -391,7 +396,7 @@ class Tuner:
         # list is allowed to grow. Unknown keys are dropped rather than passed
         # on: an old record should fall back toward the default, not raise
         # TypeError inside a serving process.
-        sched = {k: v for k, v in rec["schedule"].items() if k in self.default}
+        sched = {k: v for k, v in rec["schedule"].items() if k in self.knobs}
         return {**self.default, **sched}
 
     def _kernel_for(self, schedule: Dict[str, Any]):
@@ -534,7 +539,7 @@ class Tuner:
         wanted = [dict(self.default)]
         for rec in load_records(self.name).values():
             s = {k: v for k, v in (rec.get("schedule") or {}).items()
-                 if k in self.default}
+                 if k in self.knobs}
             if s:
                 wanted.append({**self.default, **s})
         seen, jobs = set(), []
@@ -706,7 +711,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             note = "" if gain is None else f"  {gain * 100:+.2f}%"
             if live != {**t.default, **{k: v for k, v in
                                         (r.get("schedule") or {}).items()
-                                        if k in t.default}}:
+                                        if k in t.knobs}}:
                 note += "  (not applied)"
             print(f"    {key or '(default key)':<24}"
                   f"{label_of(r.get('schedule') or {})}  {ms}{note}")

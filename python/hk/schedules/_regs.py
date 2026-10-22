@@ -6,11 +6,11 @@ partial sums a combine or a split's reduction holds -- are counted the way
 the target lays them out (`features`), and a linear model per (family,
 arch) turns them into the registers the build reports: arch VGPRs on
 gfx1100, VGPRs plus AGPRs on gfx950 (whose compiler moves what does not fit
-in the 256 VGPRs into AGPRs before it spills). The coefficients are a least-
-squares fit to sampled builds and the offset is the largest under-prediction
-among them, so the model is an upper bound on every build it was fitted to
-(`MODEL`; refitted by tests/hk/codegen/test_schedules_legality.py's
-sampler). A prediction over the register file is refused as a spill.
+in the 256 VGPRs into AGPRs before it spills). The coefficients are an upper
+bound on every sampled build that fit, over the limit on every one that
+spilled (`MODEL`; tools/hk-bench/schedules_legality.py samples, scores and
+refits it). A prediction over the wave's share of the register file is
+refused as a spill.
 """
 
 from __future__ import annotations
@@ -28,8 +28,9 @@ MARGIN = 0.0
 
 #: (family@arch) -> {"coef": {feature: weight, "1": intercept}, "offset"}:
 #: the tightest linear upper envelope of the sampled builds' registers
-#: (min sum(pred - actual) subject to pred >= actual, by linprog), fitted on
-#: 2,600 builds under hipcc 7.2.3 (scripts in the legality test's docstring).
+#: (min sum(pred - actual) subject to pred >= actual, every spill over the
+#: limit, every shipped schedule under it; linprog), fitted on ~5,000 builds
+#: under hipcc 7.2.3 by tools/hk-bench/schedules_legality.py fit --write.
 MODEL: Dict[str, Dict[str, Any]] = {
     "decode@gfx1100": {"offset": MARGIN, "coef": {
         "acc": 3.0445, "batched": 0.4409, "combine": 0.7054, "one": 22.5714,
@@ -40,15 +41,15 @@ MODEL: Dict[str, Dict[str, Any]] = {
         "reduce": 0.4377, "reduce1": -0.2143, "split": -10.0075, "w": -0.1667, "x": 0.1667,
         "1": 34.6817}},
     "dp@gfx950": {"offset": MARGIN, "coef": {
-        "acc": 1.2763, "ops": 1.1619, "piped": -80.445, "split": 12.0, "1": 104.9789}},
+        "acc": 1.2864, "ops": 1.1553, "piped": -80.2524, "split": 9.8835, "1": 105.165}},
     "pp@gfx950": {"offset": MARGIN, "coef": {
         "a": 0.8438, "acc": 1.3281, "asym": -0.1562, "b": 1.1562, "early": -0.0,
         "late_b": -0.0, "lds16": 3.5, "nt": -0.0, "setprio": -4.0, "split": -0.0,
         "tc": -0.0, "1": 22.0}},
     "rdna@gfx1100": {"offset": MARGIN, "coef": {
-        "a": 2.0408, "acc": 1.0443, "b": 1.1019, "lds2": 1.0, "sched": 7.6576,
-        "setprio": -9.5922, "stagger": -1.9346, "staging": 2.726, "stream_a": -14.0869,
-        "1": 17.0139}},
+        "a": 1.7995, "acc": 1.0195, "b": 0.9609, "lds2": 1.0, "sched": 13.5833,
+        "setprio": -3.9375, "stagger": -1.8125, "staging": 2.5156, "stream_a": -15.0625,
+        "1": 24.7083}},
 }
 
 

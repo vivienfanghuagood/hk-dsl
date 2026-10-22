@@ -114,11 +114,26 @@ def test_records():
 
 def test_rdna_records_carry_every_code_knob():
     """A tuned record may set any knob that changes the C++: hk.ops.gemm's
-    DEFAULT has them all (the gates aside), at the factory's defaults."""
+    tuner reads them all (the gates aside), and its DEFAULT -- the dict the
+    launch path keys on -- is as it was."""
     code = {n for n, a in S.Rdna.axes().items() if not a.gate}
-    assert set(rdna.DEFAULT) == code
+    assert rdna.TUNER.knobs == code
     assert S.Rdna.from_record(rdna.DEFAULT) == S.Rdna()
+    assert S.Rdna().legacy() == rdna.DEFAULT
     assert S.Rdna(**rdna.THIN).legacy() == rdna.THIN
+    from hk import autotune
+
+    t = S.Rdna(block_m=64, setprio=True, sched=2)
+    rec = t.to_record()
+    rec.pop("family")
+    autotune.save_record("gemm_bf16", "64x6144x4096",
+                         {"arch": "gfx1100", "schedule": rec, "gain": 0.05})
+    try:
+        got = rdna.schedule_for(64, 6144, 4096)
+        assert S.Rdna.from_record(got) == t and got == t.legacy()
+    finally:
+        autotune._record_path("gemm_bf16").unlink()
+        autotune.forget_records()
 
 
 def test_columns():

@@ -270,7 +270,7 @@ def test_the_tuned_records_load():
     for key, r in recs.items():
         s = S.Rdna.from_record(r["schedule"], strict=False)
         assert s.legacy() == {**rdna.DEFAULT, **{k: v for k, v in r["schedule"].items()
-                                                 if k in rdna.DEFAULT}}, key
+                                                 if k in rdna.TUNER.knobs}}, key
     for sched in [rdna.DEFAULT, rdna.THIN] + rdna.SPACE:
         s = S.Rdna.from_record(sched)
         assert s.legacy() == {**rdna.DEFAULT, **sched}
