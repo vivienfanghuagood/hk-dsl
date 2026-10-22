@@ -732,12 +732,12 @@ class Dp(GemmSchedule):
             return why
         threads = 64 * self.warps_m * self.warps_n
         copies = (self.block_m + self.block_n) * self.k_step * 2 // (16 * threads)
-        if threads == 128 and copies * self.stages >= 60 and (
-                self.splits > 1 or self.stages >= 5):
+        if threads == 128 and self.stages >= 3 and (
+                copies >= 20 or (self.stages >= 5 and copies >= 12)):
             why.append(f"dp with two warps, {copies} copies a thread a tile in "
-                       f"{self.stages} stages{' and split-K' if self.splits > 1 else ''}: "
-                       f"the copies' addresses spill SGPRs (sampled builds past 60 "
-                       f"copy-stages did); use four warps, fewer stages or a smaller k_step")
+                       f"{self.stages} stages: the copies' addresses spill SGPRs (28 of "
+                       f"64 such sampled builds did); use four warps, fewer stages or a "
+                       f"smaller k_step")
         reg_m, reg_n = self.block_m // self.warps_m, self.block_n // self.warps_n
         if (reg_m % 16 or reg_n % 16 or reg_m * self.warps_m != self.block_m
                 or reg_n * self.warps_n != self.block_n or not reg_m or not reg_n):

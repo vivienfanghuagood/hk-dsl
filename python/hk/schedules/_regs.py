@@ -29,8 +29,8 @@ MARGIN = 0.0
 #: (family@arch) -> {"coef": {feature: weight, "1": intercept}, "offset"}:
 #: the tightest linear upper envelope of the sampled builds' registers
 #: (min sum(pred - actual) subject to pred >= actual, every spill over the
-#: limit, every shipped schedule under it; linprog), fitted on ~5,000 builds
-#: under hipcc 7.2.3 by tools/hk-bench/schedules_legality.py fit --write.
+#: limit, every shipped schedule under it; linprog), fitted on ~19,000 builds
+#: under hipcc 7.2.3 and 7.2.4 by tools/hk-bench/schedules_legality.py fit.
 MODEL: Dict[str, Dict[str, Any]] = {
     "decode@gfx1100": {"offset": MARGIN, "coef": {
         "acc": 2.9251, "batched": 0.4687, "combine": 0.7057, "one": 22.5826,
@@ -41,15 +41,15 @@ MODEL: Dict[str, Dict[str, Any]] = {
         "reduce": 0.4377, "reduce1": -0.2143, "split": -10.0075, "w": -0.1667, "x": 0.1667,
         "1": 34.6817}},
     "dp@gfx950": {"offset": MARGIN, "coef": {
-        "acc": 1.0952, "ops": 1.875, "piped": -68.1905, "split": -23.8571, "1": 83.6667}},
+        "acc": 1.0946, "ops": 1.9477, "piped": -63.6217, "split": -7.5816, "1": 60.4988}},
     "pp@gfx950": {"offset": MARGIN, "coef": {
-        "a": 0.8438, "acc": 1.3281, "asym": -0.1562, "b": 1.1562, "early": -0.0,
-        "late_b": -0.0, "lds16": 3.5, "nt": -0.0, "setprio": -4.0, "split": -0.0,
-        "tc": -0.0, "1": 22.0}},
+        "a": 0.8438, "acc": 1.3281, "asym": -0.1562, "b": 1.1563, "early": -0.0,
+        "late_b": 0.0, "lds16": 3.5, "nt": -0.0, "setprio": -4.0, "split": 0.0, "tc": 0.0,
+        "1": 22.0}},
     "rdna@gfx1100": {"offset": MARGIN, "coef": {
-        "a": 0.6805, "acc": 0.7818, "b": 0.68, "lds2": 9.5138, "sched": 18.6113,
-        "setprio": -2.0, "stagger": 12.6066, "staging": 3.1284, "stream_a": -9.7899,
-        "1": 48.3819}},
+        "a": 0.6972, "acc": 0.9218, "asym": 0.3945, "b": 0.7096, "lds2": 0.6036,
+        "sched": 21.0995, "setprio": -12.4063, "stagger": 24.0, "staging": 3.1168,
+        "stream_a": -2.1024, "1": 37.5921}},
 }
 
 
@@ -64,10 +64,10 @@ def features(s, arch: str) -> Dict[str, float]:
         cols = s.warps // s.warp_rows
         reg_m, reg_n = s.block_m // s.warp_rows, s.block_n // cols
         frags = 2 if s.stream_a else reg_m // 16
+        a = frags * (s.dot_slice // 16) * 8
+        b = (reg_n // 16) * (s.dot_slice // 16) * 8
         return dict(
-            acc=reg_m * reg_n * 4 / (4 * wave),
-            a=frags * (s.dot_slice // 16) * 8,
-            b=(reg_n // 16) * (s.dot_slice // 16) * 8,
+            acc=reg_m * reg_n * 4 / (4 * wave), a=a, b=b, asym=abs(a - b),
             staging=(s.block_m + s.block_n) * s.k_step * 2 / (wave * s.warps * 4),
             sched=float(s.sched > 0), stream_a=float(s.stream_a),
             lds2=float(s.lds_buffers == 2), stagger=float(s.stagger > 0),

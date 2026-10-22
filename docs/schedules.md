@@ -63,10 +63,10 @@ against `k_step`, `splits`, `block_n`; M against the decode GEMV's tiles).
 `hk.schedules.Illegal` (a `ValueError`, `.reasons`) instead; `launch()` and
 `hk.templates.gemm(schedule=)` call it.
 
-What it promises: a schedule it accepts traces and builds -- on 2,400
-sampled points the model had not seen, under both GPUs' compilers, 1 of
-1,504 accepted did not (0.07%).
-What it does not: that the schedule is fast. It refuses about one in eight of
+What it promises: a schedule it accepts traces and builds -- on 3,673
+points the model had not seen (uniform, and around every shipped schedule),
+under both GPUs' compilers, all 2,313 it accepted built.
+What it does not: that the schedule is fast. It refuses about one in nine of
 the points that would have built (the register model is an upper bound), so
 a point it refuses may be worth a `k.build()` if it is close to the limit
 (`predict()` says how close). Its occupancy is the upper bound's, so a

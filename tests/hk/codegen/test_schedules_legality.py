@@ -7,7 +7,7 @@ built (hipcc, no GPU) and must pass the passes and the resource gate --
 trace, no spill, no SGPR spill; each point it refuses carries a reason. The
 sample is small here (HK_SCHEDULES_SAMPLE points a family, default 6); the
 measured rates come from tools/hk-bench/schedules_legality.py on thousands
-of builds (docs/design/schedules.md: 1 false accept in 1,504 accepted, on
+of builds (docs/design/schedules.md: 0 false accepts in 2,313 accepted, on
 samples the register model was not fitted to, under both GPUs' hipcc).
 """
 

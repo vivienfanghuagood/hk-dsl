@@ -84,7 +84,20 @@ def sample(args) -> int:
         for arch in cls.arches:
             if args.families and cls.family not in args.families:
                 continue
-            pts = draw(cls, arch, args.n, rng, args.seeds)
+            pts = draw(cls, arch, args.n, rng, args.seeds) if args.n else []
+            if args.around_shipped:
+                have, near = set(pts), []
+                for s, a in shipped():
+                    if a != arch or type(s) is not cls:
+                        continue
+                    for t in s.neighbors(args.around_shipped):
+                        t = t.canonical()
+                        if t not in have and not t._check_struct(arch):
+                            have.add(t)
+                            near.append(t)
+                if args.max_around and len(near) > args.max_around:
+                    near = rng.sample(near, args.max_around)
+                pts += near
             print(f"{cls.family}@{arch}: {len(pts)} points", flush=True)
             points += [(cls.family, arch, s) for s in pts]
     jobs, meta = [], {}
@@ -331,6 +344,10 @@ def main() -> int:
     a.add_argument("--n", type=int, default=300, help="random points per family and arch")
     a.add_argument("--seed", type=int, default=0)
     a.add_argument("--seeds", action="store_true", help="add the seed spaces")
+    a.add_argument("--around-shipped", type=int, default=0, metavar="R",
+                   help="add every shipped schedule's neighbours within R knob changes")
+    a.add_argument("--max-around", type=int, default=0, metavar="K",
+                   help="with --around-shipped, a random K of them per family and arch")
     a.add_argument("--families", nargs="*")
     a.add_argument("--workers", type=int, default=48)
     a = sub.add_parser("sample-attn")
