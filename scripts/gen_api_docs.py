@@ -772,6 +772,49 @@ def page_templates(since: Since) -> Page:
     return p
 
 
+def page_schedules(since: Since) -> Page:
+    import hk.schedules as S
+
+    p = Page("hk.schedules.md", "`hk.schedules`: schedules as data", doc(S))
+    p.para("The guide is [docs/schedules.md](../schedules.md), the design "
+           "[docs/design/schedules.md](../design/schedules.md).")
+    for n in ["lookup", "space", "from_record", "from_candidate", "families_for",
+              "Illegal"]:
+        obj = getattr(S, n)
+        p.entry(f"hk.schedules.{n}", obj, display=f"hk.schedules.{n}",
+                mark=_mark(since, "hk.schedules", n, obj, f"hk.schedules.{n}"),
+                signature=n != "Illegal")
+    for n in ["Schedule", "GemmSchedule", "Step"]:
+        obj = getattr(S, n)
+        p.entry(f"hk.schedules.{n}", obj, display=f"hk.schedules.{n}",
+                mark=_mark(since, "hk.schedules", n, obj, f"hk.schedules.{n}"),
+                signature=n == "Step")
+        if n != "Step":
+            for mn, mv, owner in members(obj):
+                if owner != n:
+                    continue
+                p.entry(f"hk.schedules.{n}.{mn}", mv, display=f"{n}.{mn}", level=4,
+                        signature=not isinstance(mv, property))
+    p.h2("The families")
+    for cls in (S.Rdna, S.Decode, S.PingPong, S.Dp, S.Columns):
+        n = cls.__name__
+        axes = cls.axes()
+        rows = ""
+        if axes:
+            t = ["| knob | default | values searched | seed | what |", "|---|---|---|---|---|"]
+            for a in axes.values():
+                vals = ", ".join(f"`{v!r}`" for v in a.values) or "-"
+                seed = ", ".join(f"`{v!r}`" for v in a.seed) if a.seed else "-"
+                t.append(f"| `{a.name}` | `{a.default!r}` | {vals} | {seed} | "
+                         f"{'(gate) ' if a.gate else ''}{a.doc} |")
+            rows = (f"Family `{cls.family}`, on {', '.join(cls.arches)}.\n\n"
+                    + "\n".join(t))
+        p.entry(f"hk.schedules.{n}", cls, display=f"hk.schedules.{n}",
+                mark=_mark(since, "hk.schedules", n, cls, f"hk.schedules.{n}"),
+                signature=False, extra=rows)
+    return p
+
+
 def page_check(since: Since) -> Page:
     import hk.check as C
 
@@ -884,6 +927,7 @@ def build_pages() -> List[Page]:
     pages.append(page_module(since, "hk.dsl.collective", "hk.collective"))
     pages.append(page_ops(since))
     pages.append(page_templates(since))
+    pages.append(page_schedules(since))
     pages.append(page_check(since))
     pages.append(page_target(since))
     for pg in pages:

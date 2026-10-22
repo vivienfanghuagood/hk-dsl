@@ -4554,7 +4554,7 @@ overrides it. Usable as a decorator: `@hk.templates.elementwise`.
 ### `hk.templates.gemm`
 
 ```python
-hk.templates.gemm(a=None, b=None, *, epilogue=None, out=None, out_dtype=None, **operands)
+hk.templates.gemm(a=None, b=None, *, epilogue=None, out=None, out_dtype=None, schedule=None, **operands)
 ```
 
 *New after 0.4.0* (the `hk.templates.gemm` module is not in the 0.4.0 wheel)
@@ -4763,6 +4763,464 @@ hk.templates.scalar(dtype: Optional[DType] = None) -> Operand
 *New after 0.4.0* (the `hk.templates._common` module is not in the 0.4.0 wheel)
 
 One value for the whole tensor, a () or (1,) tensor on the device.
+
+
+<!-- docs/api/hk.schedules.md -->
+
+# `hk.schedules`: schedules as data
+
+hk.schedules: kernel schedules as data.
+
+A schedule is every knob of one kernel family, as a frozen dataclass: it
+says whether it can run a shape (check, with reasons, before compiling),
+enumerates its neighbours and its family's legal space, round-trips through
+the tuned records and route tables, and builds and launches its kernels.
+
+    import hk.schedules as S
+
+    s = S.lookup(4096, 4096, 4096, arch="gfx950")   # what hk.ops.matmul runs
+    s.check(2048, 16384, 4096, arch="gfx950")        # [] or the reasons
+    for t in S.space(2048, 16384, 4096, arch="gfx950", around=s):
+        ...                                          # t.kernel().build(), t.launch(a, b)
+    rec = s.to_record()                              # {"family": "pp", ...}
+    S.from_record(rec) == s
+    hk.templates.gemm(x, w, epilogue=hk.templates.gemm.bias, bias=b, schedule=s)
+
+GEMM families (hk.schedules.gemm): Rdna (gfx1100's WMMA GEMM), Decode (the
+decode GEMV, both GPUs), PingPong and Dp (gfx950's two), and Columns (two
+schedules on column ranges of C). docs/schedules.md is the guide;
+docs/design/schedules.md the design.
+
+- [`hk.schedules.lookup`](#hkscheduleslookup)
+- [`hk.schedules.space`](#hkschedulesspace)
+- [`hk.schedules.from_record`](#hkschedulesfrom_record)
+- [`hk.schedules.from_candidate`](#hkschedulesfrom_candidate)
+- [`hk.schedules.families_for`](#hkschedulesfamilies_for)
+- [`hk.schedules.Illegal`](#hkschedulesillegal)
+- [`hk.schedules.Schedule`](#hkschedulesschedule)
+- [`hk.schedules.GemmSchedule`](#hkschedulesgemmschedule)
+- [`hk.schedules.Step`](#hkschedulesstep)
+- [`hk.schedules.Rdna`](#hkschedulesrdna)
+- [`hk.schedules.Decode`](#hkschedulesdecode)
+- [`hk.schedules.PingPong`](#hkschedulespingpong)
+- [`hk.schedules.Dp`](#hkschedulesdp)
+- [`hk.schedules.Columns`](#hkschedulescolumns)
+
+The guide is [docs/schedules.md](../schedules.md), the design [docs/design/schedules.md](../design/schedules.md).
+
+### `hk.schedules.lookup`
+
+```python
+hk.schedules.lookup(m: int, n: int, k: int, arch: Optional[str] = None, *, op: str = 'matmul') -> GemmSchedule
+```
+
+*New after 0.4.0* (the `hk.schedules` module is not in the 0.4.0 wheel)
+
+The schedule hk runs today for C = A @ B.T at M x N x K on `arch`:
+op="matmul" what hk.ops.matmul launches (gfx950: gemm_cdna.route's
+candidate; gfx1100: hk.ops.gemm.schedule_for, the tuned records
+included), op="template" what hk.templates.gemm plans (on gfx1100 the
+decode GEMV for M <= 32).
+
+### `hk.schedules.space`
+
+```python
+hk.schedules.space(m: int, n: int, k: int, arch: Optional[str] = None, *, families=None, around: Optional[Schedule] = None, radius: int = 1, axes=None, legal: bool = True) -> Iterator[GemmSchedule]
+```
+
+*New after 0.4.0* (the `hk.schedules` module is not in the 0.4.0 wheel)
+
+Legal GEMM schedules for M x N x K on `arch`, family by family (see
+Schedule.space for `around`, `radius` and `axes`). `families` limits
+them: names ("dp", "pp", ...) or classes. With `around`, only that
+schedule's family (its neighbourhood).
+
+### `hk.schedules.from_record`
+
+```python
+hk.schedules.from_record(rec: Any, *, strict: bool = True, family_cls: Optional[type] = None) -> Schedule
+```
+
+*New after 0.4.0* (the `hk.schedules` module is not in the 0.4.0 wheel)
+
+A Schedule from any of its record forms (see Schedule.from_record).
+
+### `hk.schedules.from_candidate`
+
+```python
+hk.schedules.from_candidate(name: str, m: int, n: int, k: int) -> GemmSchedule
+```
+
+*New after 0.4.0* (the `hk.schedules` module is not in the 0.4.0 wheel)
+
+The schedule hk.ops.gemm_cdna's route candidate `name` runs at
+M x N x K -- exactly what gemm_cdna.run launches, as data: the
+pingpong's block resolved to the shape (gemm_cdna.schedule_for), its
+N tail (gemm_cdna.tail_for) and "ppw"'s wave cut as Columns, "decode" as
+decode_gemm.schedule_for's. A route table's own candidates (names the
+code does not have) are schedule records, taken as they are.
+
+### `hk.schedules.families_for`
+
+```python
+hk.schedules.families_for(arch: str) -> List[type]
+```
+
+*New after 0.4.0* (the `hk.schedules` module is not in the 0.4.0 wheel)
+
+The GEMM families that run on `arch`, the composite last.
+
+### `hk.schedules.Illegal`
+
+*New after 0.4.0* (the `hk.schedules` module is not in the 0.4.0 wheel)
+
+A schedule refused by check(): `reasons` lists why, one a line.
+
+### `hk.schedules.Schedule`
+
+*New after 0.4.0* (the `hk.schedules` module is not in the 0.4.0 wheel)
+
+A point in a kernel family's schedule space. Subclasses are frozen
+dataclasses whose fields are the knobs (see `knob`).
+
+#### `Schedule.axes`
+
+```python
+Schedule.axes(cls) -> Dict[str, Axis]
+```
+
+Every knob of the family, in declaration order.
+
+#### `Schedule.knobs`
+
+```python
+Schedule.knobs(self) -> Dict[str, Any]
+```
+
+{knob: value} for every knob.
+
+#### `Schedule.changed`
+
+```python
+Schedule.changed(self) -> Dict[str, Any]
+```
+
+The knobs that differ from the family's defaults.
+
+#### `Schedule.replace`
+
+```python
+Schedule.replace(self, **knobs: Any) -> Schedule
+```
+
+This schedule with some knobs changed.
+
+#### `Schedule.to_record`
+
+```python
+Schedule.to_record(self, *, full: bool = False) -> Dict[str, Any]
+```
+
+{"family": ..., knob: value, ...}: the knobs that differ from the
+defaults, or every knob with `full`. What from_record reads, and what
+a tuned record or route table stores.
+
+#### `Schedule.from_record`
+
+```python
+Schedule.from_record(cls, rec: Any, *, strict: bool = True) -> Schedule
+```
+
+A schedule from its record: {"family": f, knob: value, ...}, a
+route table's candidate [family, {knobs}], or {knobs} on a family's
+class. Knobs a record leaves out take the family's defaults. A knob
+the family does not have raises with `strict`, else is dropped (an
+old record should fall back toward the default, not fail a launch).
+
+#### `Schedule.check`
+
+```python
+Schedule.check(self, m: int, n: int, k: int, arch: Optional[str] = None, dtype: Any = 'bf16') -> List[str]
+```
+
+Why this schedule cannot run C = A @ B.T at M x N x K on `arch`,
+before anything is compiled: [] if it can. Every reason is a sentence
+an agent can act on.
+
+#### `Schedule.check_kernel`
+
+```python
+Schedule.check_kernel(self, arch: Optional[str] = None) -> List[str]
+```
+
+The shape-free half of check(): what decides whether the kernel
+traces and builds (warp grid, LDS, registers) -- a kernel is generic
+in M, N and K, so this is what `k.build()` answers.
+
+#### `Schedule.legal`
+
+```python
+Schedule.legal(self, m: int, n: int, k: int, arch: Optional[str] = None) -> bool
+```
+
+Whether check() has nothing against it.
+
+#### `Schedule.require`
+
+```python
+Schedule.require(self, m: int, n: int, k: int, arch: Optional[str] = None) -> Schedule
+```
+
+self, or Illegal (a ValueError) with check()'s reasons.
+
+#### `Schedule.neighbors`
+
+```python
+Schedule.neighbors(self, radius: int = 1, axes: Optional[Iterable[str]] = None) -> "Iterator['Schedule']"
+```
+
+Schedules that differ from this one in at most `radius` knobs, each
+moved one step along its axis' values -- this one first. `axes`
+limits which knobs move. Legality is not checked here (see space).
+
+#### `Schedule.base_for`
+
+```python
+Schedule.base_for(cls, m: int, n: int, k: int, arch: str) -> Schedule
+```
+
+The family's starting point at a shape: its defaults, or what the
+shipped tables pick where that is this family.
+
+#### `Schedule.space`
+
+```python
+Schedule.space(cls, m: int, n: int, k: int, arch: Optional[str] = None, *, around: "Optional['Schedule']" = None, radius: int = 1, axes: Optional[Mapping[str, Any]] = None, base: "Optional['Schedule']" = None, legal: bool = True) -> "Iterator['Schedule']"
+```
+
+The family's legal schedules for M x N x K on `arch`.
+
+By default the product of every knob's `seed` values, the other
+knobs at `base` (the family's base_for the shape). `axes` reshapes
+it: {knob: [values]} searches those values, {knob: "all"} the knob's
+full value list, {knob: value} pins it. `around=s` gives instead the
+neighbourhood of s: every schedule within `radius` knob changes of it
+(axes then names the knobs allowed to move, or gives their values).
+`legal=False` yields the refused points too (for testing check).
+
+#### `Schedule.canonical`
+
+```python
+Schedule.canonical(self) -> Schedule
+```
+
+The same kernel with knobs that do nothing at their value put
+back to the default (so a space holds each kernel once).
+
+### `hk.schedules.GemmSchedule`
+
+*New after 0.4.0* (the `hk.schedules` module is not in the 0.4.0 wheel)
+
+What every GEMM schedule does, beyond Schedule's protocol: the
+launches of a call (steps), its kernels, and running it.
+
+#### `GemmSchedule.steps`
+
+```python
+GemmSchedule.steps(self, m: int, n: int, k: int) -> List[Step]
+```
+
+The launches of a call at M x N x K, in order, with the one(s)
+that would carry an epilogue (hk.templates.gemm).
+
+#### `GemmSchedule.name (property)`
+
+The kernel's name: the schedule, spelled as hk.ops spells it.
+
+#### `GemmSchedule.kernel`
+
+```python
+GemmSchedule.kernel(self, *, epilogue=None, arch: Optional[str] = None)
+```
+
+The hk.Kernel this schedule builds (for a split-K schedule, the
+GEMM that writes the fp32 shares). `epilogue` is hk.templates.gemm's
+bound epilogue (hk.ops._epilogue); `arch` defaults to the current one.
+Traced on first use: .source() is its C++, .build() compiles it.
+
+#### `GemmSchedule.kernels`
+
+```python
+GemmSchedule.kernels(self, m: int, n: int, k: int, *, epilogue=None, arch: Optional[str] = None) -> List[Tuple[Step, Any, Dict[str, Any]]]
+```
+
+[(step, kernel, constexprs)] a call at M x N x K launches, with
+`epilogue` (hk.templates.gemm's) on the step that carries it: what
+k.source(**constexprs) / k.build(**constexprs) take, with no GPU.
+
+#### `GemmSchedule.predict`
+
+```python
+GemmSchedule.predict(self, arch: Optional[str] = None) -> Dict[str, Any]
+```
+
+What check() predicts the build will report: VGPRs (arch VGPRs;
+an upper estimate), LDS bytes, waves per SIMD.
+
+#### `GemmSchedule.launch`
+
+```python
+GemmSchedule.launch(self, a, b, out=None)
+```
+
+C = A @ B.T with this schedule (every launch of the call); `b` is
+(N, K). Returns `out`, made if not given (bf16 (M, N)). Needs a GPU
+of an arch in `arches`. The schedule is checked first: an illegal
+one raises hk.schedules.Illegal with check()'s reasons.
+
+### `hk.schedules.Step`
+
+```python
+class hk.schedules.Step(kernel: str, sched: Dict[str, Any], cols: Tuple[int, int], epilogue: bool, into: str = 'out', route: str = '', schedule: Any = None) -> None
+```
+
+*New after 0.4.0* (the `hk.schedules` module is not in the 0.4.0 wheel)
+
+One launch of a GEMM call.
+
+kernel    "rdna" (hk.ops.gemm), "pp" (gemm_cdna's pingpong), "dp"
+          (gemm_cdna_dp's four-warp blocks), "decode" (decode_gemm),
+          "reduce" (gemm_cdna_dp's strip reduction of split-K shares)
+sched     the kernel's schedule, as the module that owns it spells it
+cols      the columns [lo, hi) of C it covers
+epilogue  whether the epilogue runs in it
+into      "out" (C) or "scratch" (fp32 split-K shares)
+route     the candidate name the route table gave (gfx950)
+schedule  the hk.schedules object it came from (None for "reduce" and
+          for steps made by hand)
+
+## The families
+
+### `hk.schedules.Rdna`
+
+*New after 0.4.0* (the `hk.schedules` module is not in the 0.4.0 wheel)
+
+gfx1100's WMMA GEMM (hk.ops.gemm.gemm_kernel; history chapter 28):
+a block_m x block_n block of C per workgroup of `warps` waves in a
+warp_rows x (warps / warp_rows) grid, K in k_step tiles through LDS.
+
+Family `rdna`, on gfx1100.
+
+| knob | default | values searched | seed | what |
+|---|---|---|---|---|
+| `block_m` | `128` | `16`, `32`, `64`, `128`, `256` | `64`, `128` | rows of C a workgroup computes: LDS traffic per WMMA against the registers of a deeper K-tile |
+| `block_n` | `128` | `64`, `128`, `256` | - | columns of C a workgroup computes; N must be a multiple |
+| `k_step` | `64` | `16`, `32`, `64`, `128` | `32`, `64` | K a tile covers: global latency per barrier against LDS; K must be a multiple |
+| `dot_slice` | `16` | `16`, `32` | - | K a register operand covers per LDS read |
+| `warps` | `8` | `4`, `8` | - | waves a workgroup |
+| `warp_rows` | `4` | `1`, `2`, `4`, `8` | - | rows of the warp grid |
+| `n_split` | `2` | `1`, `2`, `4` | `2`, `4` | accumulators the warp tile's columns are cut into: register pressure against ds_read width |
+| `wgm` | `8` | `1`, `4`, `8`, `16` | `4`, `8`, `16` | L2 swizzle: block-rows walked together, how long a B panel stays resident |
+| `write_pos` | `2` | `0`, `1`, `2` | `1`, `2` | where the staging drain lands against the math (two LDS buffers) |
+| `lds_buffers` | `1` | `1`, `2` | `1`, `2` | 1: half the LDS, three workgroups a WGP, two barriers a tile; 2: one barrier, two workgroups |
+| `stagger` | `0` | `0`, `1`, `2` | - | workgroup w starts K at tile w*stagger (FlyDSL's; a loss here) |
+| `stream_a` | `False` | `False`, `True` | - | hold A one 16-row fragment at a time (FlyDSL's four-wave kernel) |
+| `setprio` | `False` | `False`, `True` | - | s_setprio around each WMMA group (off: 3.5-4.3% faster) |
+| `sched` | `0` | `0`, `1`, `2`, `4` | - | sched_group_barrier: one staging load then `sched` WMMAs |
+| `max_vgprs` | `256` | - | - | (gate) build gate: refuse a build over this many VGPRs |
+| `min_occupancy` | `1` | - | - | (gate) build gate: refuse a build under this many waves/SIMD |
+
+### `hk.schedules.Decode`
+
+*New after 0.4.0* (the `hk.schedules` module is not in the 0.4.0 wheel)
+
+The decode GEMV (hk.ops.decode_gemm; history chapter 9): W straight to
+registers, one 16-row block of W a workgroup, its K split across `warps`
+waves (and across `splits` workgroups), combined through LDS. M <= 16 x
+tokens. gfx1100's for M <= 32 in hk.templates.gemm; gfx950's "decode" route.
+
+Family `decode`, on gfx1100, gfx950.
+
+| knob | default | values searched | seed | what |
+|---|---|---|---|---|
+| `tokens` | `1` | `1`, `2`, `4` | - | 16-row token tiles: M <= 16 x tokens |
+| `slices` | `4` | `1`, `2`, `4`, `8` | `2`, `4` | 16-deep K slices a load: bytes in flight against registers |
+| `warps` | `16` | `1`, `2`, `4`, `8`, `16` | `4`, `8`, `16` | waves sharing a 16-row block of W: the waves that cover latency |
+| `combine_depth` | `0` | `0`, `2`, `4`, `8` | `0`, `4` | partials the combine reads before it waits (0: all) |
+| `resident` | `0` | `0`, `1`, `2`, `4` | `0`, `2` | cap on workgroups a WGP/CU holds, by sizing the combine's LDS |
+| `splits` | `1` | `1`, `2`, `4`, `8` | `1`, `2`, `4` | K cut across workgroups, the last to arrive sums the shares |
+| `max_vgprs` | `256` | - | - | (gate) build gate |
+| `min_occupancy` | `1` | - | - | (gate) build gate |
+
+### `hk.schedules.PingPong`
+
+*New after 0.4.0* (the `hk.schedules` module is not in the 0.4.0 wheel)
+
+gfx950's pingpong GEMM (hk.ops.gemm_cdna.gemm_kernel; history chapters
+33 and 41): HipKittens' 8-wave CDNA4 schedule, a block in four quadrants,
+two halves of the workgroup a barrier apart so one wave of every SIMD is
+at the matrix core while the other is at memory.
+
+Family `pp`, on gfx950.
+
+| knob | default | values searched | seed | what |
+|---|---|---|---|---|
+| `block_m` | `256` | `128`, `256` | `128`, `256` | rows of C a workgroup computes |
+| `block_n` | `256` | `128`, `256` | `128`, `256` | columns of C a workgroup computes; N must be a multiple |
+| `k_step` | `64` | `32`, `64`, `128` | - | K a tile covers |
+| `warps_m` | `2` | `1`, `2`, `4`, `8` | - | rows of the 8-warp grid |
+| `warps_n` | `4` | `1`, `2`, `4`, `8` | - | columns of the 8-warp grid |
+| `wgm` | `8` | `4`, `8`, `16` | - | L2 swizzle: block-rows walked together |
+| `xcd_chunk` | `64` | `16`, `32`, `64` | - | consecutive workgroups kept on one XCD |
+| `setprio` | `True` | `True`, `False` | - | raised priority around the MFMAs |
+| `transposed_c` | `False` | `False`, `True` | - | accumulate C^T: one 8-byte store a fragment (1.2% slower) |
+| `early_store` | `True` | `True`, `False` | - | store the first two quadrants as soon as they are final |
+| `hipkittens_waits` | `False` | - | - | HipKittens' hand-counted vmcnts (refused without late_b; a no-op with it) |
+| `late_b` | `True` | `True`, `False` | - | read the next tile's first B one phase later, after its wait |
+| `splits` | `1` | `1`, `2`, `4` | `1`, `2`, `4` | split-K: workgroups along K, fp32 shares then a reduction |
+| `lds_shape` | `None` | `None`, `'16x64'` | `None`, `'16x64'` | st_16x64 LDS layout: whole-line copies |
+| `nt` | `''` | `''`, `'b'` | `''`, `'b'` | nontemporal copies of A ('a') and/or B ('b'): stream past the caches |
+| `max_vgprs` | `256` | - | - | (gate) build gate |
+| `min_occupancy` | `1` | - | - | (gate) build gate |
+
+### `hk.schedules.Dp`
+
+*New after 0.4.0* (the `hk.schedules` module is not in the 0.4.0 wheel)
+
+gfx950's four-warp GEMM (hk.ops.gemm_cdna_dp.gemm_kernel; history
+chapter 41): smaller blocks for the shapes the pingpong has too few of,
+copies `stages - 1` K-tiles ahead in a ring of LDS buffers, one barrier
+a tile.
+
+Family `dp`, on gfx950.
+
+| knob | default | values searched | seed | what |
+|---|---|---|---|---|
+| `block_m` | `128` | `16`, `32`, `64`, `128`, `256` | `32`, `64`, `128` | rows of C a workgroup computes |
+| `block_n` | `128` | `32`, `48`, `64`, `96`, `128`, `224`, `256` | `64`, `96`, `128`, `224` | columns of C a workgroup computes; N must be a multiple |
+| `k_step` | `64` | `32`, `64`, `128`, `256` | `64`, `128` | K a tile covers |
+| `stages` | `3` | `2`, `3`, `4`, `5` | `2`, `3`, `4` | LDS buffers in the ring: copies stages-1 tiles ahead |
+| `warps_m` | `2` | `1`, `2`, `4` | - | rows of the warp grid |
+| `warps_n` | `2` | `1`, `2`, `4` | - | columns of the warp grid |
+| `wgm` | `8` | `4`, `8`, `16` | - | L2 swizzle: block-rows walked together |
+| `xcd_chunk` | `32` | `0`, `16`, `32`, `64` | `0` | consecutive workgroups kept on one XCD (0: an eighth of the grid) |
+| `setprio` | `False` | `False`, `True` | - | raised priority around the MFMAs |
+| `splits` | `1` | `1`, `2`, `4`, `8` | `1`, `2`, `4`, `8` | split-K: workgroups along K, fp32 shares then a reduction |
+| `pipelined` | `True` | `True`, `False` | - | read tile t+1's operands during tile t, into a second register set |
+| `lds_shape` | `None` | `None`, `'16x64'` | `None`, `'16x64'` | st_16x64 LDS layout: whole-line copies, 64-deep reads |
+| `nt` | `''` | `''`, `'b'` | `''`, `'b'` | nontemporal copies of A ('a') and/or B ('b'): stream past the caches |
+| `max_vgprs` | `256` | - | - | (gate) build gate |
+| `min_occupancy` | `1` | - | - | (gate) build gate |
+
+### `hk.schedules.Columns`
+
+*New after 0.4.0* (the `hk.schedules` module is not in the 0.4.0 wheel)
+
+Two schedules side by side: `head` on C's first `cut` columns, `tail`
+on the rest (each its own launches). `cut` is a column count, "block"
+(N less N's remainder by the head's block_n: the pingpong's last 128
+columns of a 151936-wide lm_head), or "wave" (the columns whose
+256x256 blocks fill whole waves of the MI355X's CUs; route "ppw").
 
 
 <!-- docs/api/hk.check.md -->

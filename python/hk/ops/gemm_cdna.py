@@ -484,6 +484,11 @@ CANDIDATES: Dict[str, Any] = {
 
 _ROUTES: Dict[str, Dict[int, str]] = {}
 
+#: Candidates a route table defines that CANDIDATES does not: name ->
+#: hk.schedules GemmSchedule, taken exactly as its record says (a tuner's
+#: schedules, `[family, {knobs}]` in the table's "candidates").
+_EXTRA: Dict[str, Any] = {}
+
 
 def _routes() -> Dict[str, Dict[int, str]]:
     """The measured table, NxK -> {M: candidate}, read once."""
@@ -494,14 +499,31 @@ def _routes() -> Dict[str, Dict[int, str]]:
         p = Path(__file__).resolve().parents[1] / "tuned" / "routes_gemm_gfx950.json"
         if p.exists():
             doc = json.loads(p.read_text())
+            extra = {nm: c for nm, c in doc.get("candidates", {}).items()
+                     if nm not in CANDIDATES}
+            if extra:
+                from .. import schedules  # noqa: PLC0415
+
+                for nm, c in extra.items():
+                    _EXTRA[nm] = schedules.from_record(c)
             for nk, by_m in doc.get("routes", {}).items():
-                _ROUTES[nk] = {int(m): c for m, c in by_m.items()}
+                _ROUTES[nk] = {int(m): c for m, c in by_m.items()
+                               if c in CANDIDATES or c in _EXTRA}
         _ROUTES.setdefault("", {})
     return _ROUTES
 
 
+def extra_candidates() -> Dict[str, Any]:
+    """The route table's own candidates (see _EXTRA)."""
+    _routes()
+    return _EXTRA
+
+
 def fits(name: str, m: int, n: int, k: int) -> bool:
     """Whether candidate `name` takes the shape at all -- not whether it wins."""
+    if name not in CANDIDATES:
+        s = extra_candidates()[name]
+        return n % BLOCK_N_MIN == 0 and k % K_STEP == 0 and not s.check(m, n, k, "gfx950")
     kind, sched = CANDIDATES[name]
     splits = sched.get("splits", 1)
     if m < 1 or k % (sched.get("k_step", K_STEP) * splits) or n % BLOCK_N_MIN:
@@ -572,6 +594,8 @@ def tail_for(m: int, k: int) -> str:
 
 def run(name: str, a, b, out):
     """Candidate `name` on (a, b) into out; the shape checks are matmul's."""
+    if name not in CANDIDATES:
+        return extra_candidates()[name].launch(a, b, out)
     kind, sched = CANDIDATES[name]
     if kind == "decode":
         from . import decode_gemm  # noqa: PLC0415
