@@ -1,0 +1,916 @@
+{
+ "arch": "gfx1100",
+ "split": "tuning",
+ "date": "2026-10-22",
+ "target": 0.95,
+ "share_target": 0.8,
+ "before": {
+  "share": 0.542,
+  "reached": 13,
+  "of": 24,
+  "median": 0.984,
+  "worst": 0.489,
+  "geomean": 0.912
+ },
+ "after": {
+  "share": 0.958,
+  "reached": 23,
+  "of": 24,
+  "median": 1.035,
+  "worst": 0.927,
+  "geomean": 1.046
+ },
+ "gpu_minutes_per_shape": {
+  "mean": 0.35,
+  "max": 1.02,
+  "total": 8.5
+ },
+ "wall_minutes_per_shape": {
+  "mean": 1.05,
+  "max": 4.09
+ },
+ "wins": 13,
+ "meta": {
+  "arch": "gfx1100",
+  "date": "2026-10-22",
+  "by": "hk.tune",
+  "device": "AMD Radeon Graphics",
+  "torch": "2.10.0+rocm7.2.4.git3d3aa833",
+  "hip": "7.2.53211",
+  "toolchain": "75554f3b5f5c6a8852adacb52ae63185",
+  "hipcc": "HIP version: 7.2.53211-97f5574fe2",
+  "versions": {
+   "torch": "2.10.0+rocm7.2.4.git3d3aa833",
+   "hip": "7.2.53211",
+   "triton": "3.6.0+rocm7.2.4.git4ed88892",
+   "flydsl": "0.4.0.dev970"
+  },
+  "missing": {},
+  "sets": 3,
+  "rounds": 7,
+  "budget": 60.0,
+  "split": "tuning"
+ },
+ "shapes": [
+  {
+   "m": 1,
+   "n": 4608,
+   "k": 2048,
+   "best_baseline": "tunableop",
+   "best_us": 29.25,
+   "before": [
+    0.4974,
+    0.4865,
+    0.4983
+   ],
+   "after": [
+    1.0211,
+    1.0198,
+    1.0216
+   ],
+   "before_us": 58.83,
+   "after_us": 28.65,
+   "route_before": "thin",
+   "route_after": "('u:decode:', Decode(tokens=1, slices=4, warps=16, combine_depth=0, resident=0, splits=1, max_vgprs=256, min_occupancy=1))",
+   "verdict": "win",
+   "gain": 1.06665,
+   "bar": 0.03037,
+   "tune_gpu_s": 1.18,
+   "tune_wall_s": 21.9,
+   "baselines_us": {
+    "torch": 69.77,
+    "tunableop": 29.25,
+    "triton": 63.44
+   },
+   "wrong": {
+    "base:flydsl": "ValueError: no FlyDSL tile divides this shape"
+   },
+   "reached": true
+  },
+  {
+   "m": 1,
+   "n": 5120,
+   "k": 3072,
+   "best_baseline": "tunableop",
+   "best_us": 49.06,
+   "before": [
+    0.4891,
+    0.4888,
+    0.4896
+   ],
+   "after": [
+    1.0204,
+    1.0188,
+    1.0227
+   ],
+   "before_us": 100.29,
+   "after_us": 48.09,
+   "route_before": "thin",
+   "route_after": "('u:decode:r2', Decode(tokens=1, slices=4, warps=16, combine_depth=0, resident=2, splits=1, max_vgprs=256, min_occupancy=1))",
+   "verdict": "win",
+   "gain": 0.89991,
+   "bar": 0.01125,
+   "tune_gpu_s": 1.82,
+   "tune_wall_s": 7.6,
+   "baselines_us": {
+    "torch": 126.38,
+    "tunableop": 49.06,
+    "triton": 85.55
+   },
+   "wrong": {
+    "base:flydsl": "ValueError: no FlyDSL tile divides this shape"
+   },
+   "reached": true
+  },
+  {
+   "m": 1,
+   "n": 73728,
+   "k": 4608,
+   "best_baseline": "triton",
+   "best_us": 897.88,
+   "before": [
+    0.8892,
+    0.8847,
+    0.8923
+   ],
+   "after": [
+    1.0639,
+    1.0632,
+    1.0646
+   ],
+   "before_us": 1008.96,
+   "after_us": 844.26,
+   "route_before": "thin",
+   "route_after": "('u:decode:cd2_r2_sl2_w8', Decode(tokens=1, slices=2, warps=8, combine_depth=2, resident=2, splits=1, max_vgprs=256, min_occupancy=1))",
+   "verdict": "win",
+   "gain": 0.1999,
+   "bar": 0.01641,
+   "tune_gpu_s": 2.62,
+   "tune_wall_s": 33.8,
+   "baselines_us": {
+    "torch": 1085.72,
+    "tunableop": 911.98,
+    "triton": 897.88
+   },
+   "wrong": {
+    "base:flydsl": "ValueError: no FlyDSL tile divides this shape"
+   },
+   "reached": true
+  },
+  {
+   "m": 16,
+   "n": 3072,
+   "k": 5120,
+   "best_baseline": "tunableop",
+   "best_us": 62.23,
+   "before": [
+    0.8913,
+    0.8887,
+    0.9263
+   ],
+   "after": [
+    1.2904,
+    1.2897,
+    1.2932
+   ],
+   "before_us": 69.82,
+   "after_us": 48.25,
+   "route_before": "thin",
+   "route_after": "('u:decode:r2', Decode(tokens=1, slices=4, warps=16, combine_depth=0, resident=2, splits=1, max_vgprs=256, min_occupancy=1))",
+   "verdict": "win",
+   "gain": 0.42603,
+   "bar": 0.06606,
+   "tune_gpu_s": 1.81,
+   "tune_wall_s": 2.0,
+   "baselines_us": {
+    "torch": 109.95,
+    "tunableop": 62.23,
+    "triton": 82.98
+   },
+   "wrong": {
+    "base:flydsl": "ValueError: no FlyDSL tile divides this shape"
+   },
+   "reached": true
+  },
+  {
+   "m": 16,
+   "n": 5120,
+   "k": 27648,
+   "best_baseline": "triton",
+   "best_us": 410.6,
+   "before": [
+    0.9313,
+    0.921,
+    0.9327
+   ],
+   "after": [
+    1.0323,
+    1.031,
+    1.0444
+   ],
+   "before_us": 443.46,
+   "after_us": 397.74,
+   "route_before": "thin",
+   "route_after": "('u:decode:cd2_r2_w8', Decode(tokens=1, slices=4, warps=8, combine_depth=2, resident=2, splits=1, max_vgprs=256, min_occupancy=1))",
+   "verdict": "win",
+   "gain": 0.12858,
+   "bar": 0.02023,
+   "tune_gpu_s": 1.5,
+   "tune_wall_s": 16.1,
+   "baselines_us": {
+    "torch": 755.9,
+    "tunableop": 425.52,
+    "triton": 410.6
+   },
+   "wrong": {
+    "base:flydsl": "ValueError: no FlyDSL tile divides this shape"
+   },
+   "reached": true
+  },
+  {
+   "m": 16,
+   "n": 18432,
+   "k": 4608,
+   "best_baseline": "tunableop",
+   "best_us": 244.92,
+   "before": [
+    0.7883,
+    0.7868,
+    0.7964
+   ],
+   "after": [
+    1.0724,
+    1.0686,
+    1.0751
+   ],
+   "before_us": 310.7,
+   "after_us": 228.3,
+   "route_before": "thin",
+   "route_after": "('u:decode:sl1', Decode(tokens=1, slices=1, warps=16, combine_depth=0, resident=0, splits=1, max_vgprs=256, min_occupancy=1))",
+   "verdict": "win",
+   "gain": 0.35076,
+   "bar": 0.02704,
+   "tune_gpu_s": 5.73,
+   "tune_wall_s": 12.9,
+   "baselines_us": {
+    "torch": 401.42,
+    "tunableop": 244.92,
+    "triton": 298.92
+   },
+   "wrong": {
+    "base:flydsl": "ValueError: no FlyDSL tile divides this shape"
+   },
+   "reached": true
+  },
+  {
+   "m": 128,
+   "n": 4608,
+   "k": 36864,
+   "best_baseline": "tunableop",
+   "best_us": 644.02,
+   "before": [
+    0.8668,
+    0.8626,
+    0.8691
+   ],
+   "after": [
+    0.927,
+    0.9252,
+    0.9299
+   ],
+   "before_us": 743.78,
+   "after_us": 693.34,
+   "route_before": "default",
+   "route_after": "('u:rdna:t1', Rdna(block_m=128, block_n=128, k_step=64, dot_slice=16, warps=8, warp_rows=4, n_split=2, wgm=8, write_pos=2, lds_buffers=1, stagger=1, stream_a=False, setprio=False, sched=0, max_vgprs=256, min_occupancy=1))",
+   "verdict": "win",
+   "gain": 0.07038,
+   "bar": 0.01184,
+   "tune_gpu_s": 2.26,
+   "tune_wall_s": 36.7,
+   "baselines_us": {
+    "torch": 1003.68,
+    "tunableop": 644.02,
+    "flydsl": 759.66,
+    "triton": 763.36
+   },
+   "wrong": {},
+   "reached": false,
+   "why": "best 68 TFLOP/s, 0.54 TB/s; hk 63 TFLOP/s, 0.51 TB/s; memory-bound: the best baseline streams at 63% of HBM, hk at 58%; hk ran rdna 128x128: 36 workgroups, 0.38 of 96 CUs"
+  },
+  {
+   "m": 128,
+   "n": 5120,
+   "k": 7168,
+   "best_baseline": "tunableop",
+   "best_us": 161.3,
+   "before": [
+    0.8627,
+    0.8626,
+    0.8659
+   ],
+   "after": [
+    1.124,
+    1.1237,
+    1.1266
+   ],
+   "before_us": 186.82,
+   "after_us": 143.4,
+   "route_before": "default",
+   "route_after": "('u:rdna:x64_t1_g4', Rdna(block_m=128, block_n=64, k_step=64, dot_slice=16, warps=8, warp_rows=4, n_split=2, wgm=4, write_pos=2, lds_buffers=1, stagger=1, stream_a=False, setprio=False, sched=0, max_vgprs=256, min_occupancy=1))",
+   "verdict": "win",
+   "gain": 0.30226,
+   "bar": 0.01123,
+   "tune_gpu_s": 7.1,
+   "tune_wall_s": 17.1,
+   "baselines_us": {
+    "torch": 303.26,
+    "tunableop": 161.3,
+    "flydsl": 222.22,
+    "triton": 205.11
+   },
+   "wrong": {},
+   "reached": true
+  },
+  {
+   "m": 512,
+   "n": 1536,
+   "k": 4096,
+   "best_baseline": "tunableop",
+   "best_us": 89.32,
+   "before": [
+    0.9346,
+    0.9338,
+    0.9384
+   ],
+   "after": [
+    1.0209,
+    1.0189,
+    1.0219
+   ],
+   "before_us": 95.47,
+   "after_us": 87.4,
+   "route_before": "default",
+   "route_after": "u:rdna:t1_g16",
+   "verdict": "win",
+   "gain": 0.10167,
+   "bar": 0.01,
+   "tune_gpu_s": 2.87,
+   "tune_wall_s": 24.8,
+   "baselines_us": {
+    "torch": 125.1,
+    "tunableop": 89.32,
+    "flydsl": 108.27,
+    "triton": 115.97
+   },
+   "wrong": {},
+   "reached": true
+  },
+  {
+   "m": 512,
+   "n": 2048,
+   "k": 2816,
+   "best_baseline": "tunableop",
+   "best_us": 88.64,
+   "before": [
+    0.8342,
+    0.8334,
+    0.8386
+   ],
+   "after": [
+    1.0717,
+    1.0697,
+    1.0794
+   ],
+   "before_us": 106.23,
+   "after_us": 82.69,
+   "route_before": "default",
+   "route_after": "u:rdna:x64_k32_i1_w4_g16",
+   "verdict": "win",
+   "gain": 0.28395,
+   "bar": 0.01,
+   "tune_gpu_s": 8.83,
+   "tune_wall_s": 89.6,
+   "baselines_us": {
+    "torch": 119.42,
+    "tunableop": 88.64,
+    "flydsl": 105.41,
+    "triton": 100.0
+   },
+   "wrong": {},
+   "reached": true
+  },
+  {
+   "m": 512,
+   "n": 4096,
+   "k": 512,
+   "best_baseline": "tunableop",
+   "best_us": 33.68,
+   "before": [
+    0.8618,
+    0.8604,
+    0.864
+   ],
+   "after": [
+    0.9922,
+    0.9919,
+    0.9927
+   ],
+   "before_us": 39.08,
+   "after_us": 33.93,
+   "route_before": "default",
+   "route_after": "u:rdna:k32_i1_t2_g1",
+   "verdict": "win",
+   "gain": 0.14597,
+   "bar": 0.01,
+   "tune_gpu_s": 4.23,
+   "tune_wall_s": 104.7,
+   "baselines_us": {
+    "torch": 66.33,
+    "tunableop": 33.68,
+    "flydsl": 40.14,
+    "triton": 53.42
+   },
+   "wrong": {},
+   "reached": true
+  },
+  {
+   "m": 512,
+   "n": 5120,
+   "k": 6912,
+   "best_baseline": "tunableop",
+   "best_us": 457.92,
+   "before": [
+    0.9504,
+    0.9479,
+    0.9522
+   ],
+   "after": [
+    1.0332,
+    1.0326,
+    1.0335
+   ],
+   "before_us": 481.95,
+   "after_us": 443.09,
+   "route_before": "default",
+   "route_after": "u:rdna:64_wr2",
+   "verdict": "win",
+   "gain": 0.07528,
+   "bar": 0.01,
+   "tune_gpu_s": 2.3,
+   "tune_wall_s": 19.4,
+   "baselines_us": {
+    "torch": 665.72,
+    "tunableop": 457.92,
+    "flydsl": 578.13,
+    "triton": 487.15
+   },
+   "wrong": {},
+   "reached": true
+  },
+  {
+   "m": 1024,
+   "n": 5120,
+   "k": 27648,
+   "best_baseline": "flydsl",
+   "best_us": 3540.16,
+   "before": [
+    1.0383,
+    1.0362,
+    1.0383
+   ],
+   "after": [
+    1.0458,
+    1.0317,
+    1.0535
+   ],
+   "before_us": 3409.54,
+   "after_us": 3392.8,
+   "route_before": "default",
+   "route_after": "default",
+   "verdict": "tie",
+   "gain": 0.00787,
+   "bar": 0.02378,
+   "tune_gpu_s": 38.43,
+   "tune_wall_s": 245.6,
+   "baselines_us": {
+    "torch": 5111.03,
+    "tunableop": 4403.32,
+    "flydsl": 3540.16,
+    "triton": 3717.42
+   },
+   "wrong": {},
+   "reached": true
+  },
+  {
+   "m": 2048,
+   "n": 4096,
+   "k": 3584,
+   "best_baseline": "flydsl",
+   "best_us": 730.24,
+   "before": [
+    1.0322,
+    1.0187,
+    1.0416
+   ],
+   "after": [
+    1.037,
+    1.0341,
+    1.042
+   ],
+   "before_us": 702.77,
+   "after_us": 701.48,
+   "route_before": "default",
+   "route_after": "default",
+   "verdict": "tie",
+   "gain": 0.00491,
+   "bar": 0.02992,
+   "tune_gpu_s": 18.35,
+   "tune_wall_s": 50.3,
+   "baselines_us": {
+    "torch": 921.24,
+    "tunableop": 825.74,
+    "flydsl": 730.24,
+    "triton": 786.79
+   },
+   "wrong": {},
+   "reached": true
+  },
+  {
+   "m": 2048,
+   "n": 5120,
+   "k": 1280,
+   "best_baseline": "flydsl",
+   "best_us": 339.63,
+   "before": [
+    1.0332,
+    1.0291,
+    1.0358
+   ],
+   "after": [
+    1.0349,
+    1.0328,
+    1.038
+   ],
+   "before_us": 328.94,
+   "after_us": 328.24,
+   "route_before": "default",
+   "route_after": "default",
+   "verdict": "tie",
+   "gain": 0.01441,
+   "bar": 0.01793,
+   "tune_gpu_s": 16.02,
+   "tune_wall_s": 80.5,
+   "baselines_us": {
+    "torch": 469.99,
+    "tunableop": 357.75,
+    "flydsl": 339.63,
+    "triton": 367.34
+   },
+   "wrong": {},
+   "reached": true
+  },
+  {
+   "m": 2048,
+   "n": 5120,
+   "k": 14336,
+   "best_baseline": "flydsl",
+   "best_us": 3625.0,
+   "before": [
+    1.0167,
+    1.0135,
+    1.0179
+   ],
+   "after": [
+    1.019,
+    1.0154,
+    1.0267
+   ],
+   "before_us": 3572.79,
+   "after_us": 3569.89,
+   "route_before": "default",
+   "route_after": "default",
+   "verdict": "tie",
+   "gain": -0.01252,
+   "bar": 0.02045,
+   "tune_gpu_s": 31.56,
+   "tune_wall_s": 34.5,
+   "baselines_us": {
+    "torch": 4948.65,
+    "tunableop": 4253.11,
+    "flydsl": 3625.0,
+    "triton": 3856.17
+   },
+   "wrong": {},
+   "reached": true
+  },
+  {
+   "m": 2048,
+   "n": 28672,
+   "k": 5120,
+   "best_baseline": "triton",
+   "best_us": 7307.69,
+   "before": [
+    1.0702,
+    1.0642,
+    1.0705
+   ],
+   "after": [
+    1.0618,
+    1.0581,
+    1.0701
+   ],
+   "before_us": 6863.94,
+   "after_us": 6882.22,
+   "route_before": "default",
+   "route_after": "default",
+   "verdict": "tie",
+   "gain": -0.01013,
+   "bar": 0.03696,
+   "tune_gpu_s": 60.96,
+   "tune_wall_s": 158.2,
+   "baselines_us": {
+    "torch": 8833.98,
+    "tunableop": 8328.14,
+    "flydsl": 7402.97,
+    "triton": 7307.69
+   },
+   "wrong": {},
+   "reached": true
+  },
+  {
+   "m": 2048,
+   "n": 35840,
+   "k": 5120,
+   "best_baseline": "flydsl",
+   "best_us": 9076.9,
+   "before": [
+    1.0594,
+    1.0531,
+    1.0627
+   ],
+   "after": [
+    1.0622,
+    1.0567,
+    1.0641
+   ],
+   "before_us": 8568.3,
+   "after_us": 8546.04,
+   "route_before": "default",
+   "route_after": "default",
+   "verdict": "tie",
+   "gain": 0.00957,
+   "bar": 0.02512,
+   "tune_gpu_s": 34.47,
+   "tune_wall_s": 69.6,
+   "baselines_us": {
+    "torch": 11347.99,
+    "tunableop": 10673.42,
+    "flydsl": 9076.9,
+    "triton": 9203.16
+   },
+   "wrong": {},
+   "reached": true
+  },
+  {
+   "m": 4096,
+   "n": 4096,
+   "k": 512,
+   "best_baseline": "flydsl",
+   "best_us": 231.97,
+   "before": [
+    1.0319,
+    1.0237,
+    1.0523
+   ],
+   "after": [
+    1.0541,
+    1.0495,
+    1.0757
+   ],
+   "before_us": 224.81,
+   "after_us": 219.69,
+   "route_before": "default",
+   "route_after": "u:rdna:k32_i1_t2_g1",
+   "verdict": "win",
+   "gain": 0.03229,
+   "bar": 0.02983,
+   "tune_gpu_s": 44.96,
+   "tune_wall_s": 154.2,
+   "baselines_us": {
+    "torch": 303.65,
+    "tunableop": 245.19,
+    "flydsl": 231.97,
+    "triton": 278.06
+   },
+   "wrong": {},
+   "reached": true
+  },
+  {
+   "m": 4096,
+   "n": 18432,
+   "k": 4608,
+   "best_baseline": "flydsl",
+   "best_us": 8224.77,
+   "before": [
+    1.0486,
+    1.0459,
+    1.0544
+   ],
+   "after": [
+    1.0347,
+    1.031,
+    1.0505
+   ],
+   "before_us": 7838.47,
+   "after_us": 7943.65,
+   "route_before": "default",
+   "route_after": "default",
+   "verdict": "tie",
+   "gain": -0.00324,
+   "bar": 0.01,
+   "tune_gpu_s": 58.48,
+   "tune_wall_s": 65.1,
+   "baselines_us": {
+    "torch": 10263.51,
+    "tunableop": 9700.13,
+    "flydsl": 8224.77,
+    "triton": 8494.3
+   },
+   "wrong": {},
+   "reached": true
+  },
+  {
+   "m": 8192,
+   "n": 1792,
+   "k": 5120,
+   "best_baseline": "flydsl",
+   "best_us": 1765.91,
+   "before": [
+    1.0343,
+    1.0324,
+    1.0367
+   ],
+   "after": [
+    1.0307,
+    1.0243,
+    1.0327
+   ],
+   "before_us": 1706.64,
+   "after_us": 1716.61,
+   "route_before": "default",
+   "route_after": "default",
+   "verdict": "tie",
+   "gain": 0.00371,
+   "bar": 0.02474,
+   "tune_gpu_s": 47.46,
+   "tune_wall_s": 97.0,
+   "baselines_us": {
+    "torch": 2206.64,
+    "tunableop": 1948.8,
+    "flydsl": 1765.91,
+    "triton": 1861.52
+   },
+   "wrong": {},
+   "reached": true
+  },
+  {
+   "m": 8192,
+   "n": 3072,
+   "k": 5120,
+   "best_baseline": "flydsl",
+   "best_us": 3003.39,
+   "before": [
+    1.0404,
+    1.0353,
+    1.0432
+   ],
+   "after": [
+    1.0333,
+    1.0254,
+    1.0407
+   ],
+   "before_us": 2883.56,
+   "after_us": 2906.6,
+   "route_before": "default",
+   "route_after": "default",
+   "verdict": "tie",
+   "gain": -0.004,
+   "bar": 0.01437,
+   "tune_gpu_s": 39.81,
+   "tune_wall_s": 56.1,
+   "baselines_us": {
+    "torch": 3716.25,
+    "tunableop": 3326.26,
+    "flydsl": 3003.39,
+    "triton": 3152.46
+   },
+   "wrong": {},
+   "reached": true
+  },
+  {
+   "m": 8192,
+   "n": 4608,
+   "k": 2048,
+   "best_baseline": "flydsl",
+   "best_us": 1770.67,
+   "before": [
+    1.0231,
+    1.022,
+    1.0232
+   ],
+   "after": [
+    1.0215,
+    1.0212,
+    1.022
+   ],
+   "before_us": 1732.54,
+   "after_us": 1733.92,
+   "route_before": "default",
+   "route_after": "default",
+   "verdict": "tie",
+   "gain": 0.00316,
+   "bar": 0.02084,
+   "tune_gpu_s": 29.6,
+   "tune_wall_s": 38.4,
+   "baselines_us": {
+    "torch": 2188.84,
+    "tunableop": 2084.91,
+    "flydsl": 1770.67,
+    "triton": 1925.93
+   },
+   "wrong": {},
+   "reached": true
+  },
+  {
+   "m": 8192,
+   "n": 5120,
+   "k": 4096,
+   "best_baseline": "flydsl",
+   "best_us": 4027.85,
+   "before": [
+    1.0607,
+    1.0585,
+    1.0647
+   ],
+   "after": [
+    1.0508,
+    1.0453,
+    1.0521
+   ],
+   "before_us": 3789.07,
+   "after_us": 3833.18,
+   "route_before": "default",
+   "route_after": "default",
+   "verdict": "tie",
+   "gain": -0.00562,
+   "bar": 0.01134,
+   "tune_gpu_s": 48.63,
+   "tune_wall_s": 79.7,
+   "baselines_us": {
+    "torch": 4843.71,
+    "tunableop": 4398.69,
+    "flydsl": 4027.85,
+    "triton": 4097.68
+   },
+   "wrong": {},
+   "reached": true
+  }
+ ],
+ "misses": [
+  {
+   "m": 128,
+   "n": 4608,
+   "k": 36864,
+   "best_baseline": "tunableop",
+   "best_us": 644.02,
+   "before": [
+    0.8668,
+    0.8626,
+    0.8691
+   ],
+   "after": [
+    0.927,
+    0.9252,
+    0.9299
+   ],
+   "before_us": 743.78,
+   "after_us": 693.34,
+   "route_before": "default",
+   "route_after": "('u:rdna:t1', Rdna(block_m=128, block_n=128, k_step=64, dot_slice=16, warps=8, warp_rows=4, n_split=2, wgm=8, write_pos=2, lds_buffers=1, stagger=1, stream_a=False, setprio=False, sched=0, max_vgprs=256, min_occupancy=1))",
+   "verdict": "win",
+   "gain": 0.07038,
+   "bar": 0.01184,
+   "tune_gpu_s": 2.26,
+   "tune_wall_s": 36.7,
+   "baselines_us": {
+    "torch": 1003.68,
+    "tunableop": 644.02,
+    "flydsl": 759.66,
+    "triton": 763.36
+   },
+   "wrong": {},
+   "reached": false,
+   "why": "best 68 TFLOP/s, 0.54 TB/s; hk 63 TFLOP/s, 0.51 TB/s; memory-bound: the best baseline streams at 63% of HBM, hk at 58%; hk ran rdna 128x128: 36 workgroups, 0.38 of 96 CUs"
+  }
+ ]
+}

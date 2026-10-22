@@ -80,6 +80,22 @@ before and after.
 
 ## Results
 
-`results/<arch>-<date>.{json,md}`; the acceptance split is what is reported
-(`docs/tune.md` summarizes). Development runs on the tuning split are kept
-beside them as `results/<arch>-<date>-tuning.*`.
+`results/<arch>-<date>.{json,md}` is the acceptance split, scored after
+tuning with the tuner frozen (`hk-dsl at` in each file names the commit);
+`results/<arch>-<date>-tuning.*` the development runs on the tuning split;
+`results/raw/` every scored line (`run.py`'s JSON lines) and the records the
+tuner wrote. 2026-10-22, at `3e6a971`:
+
+| | gfx950, before -> after | gfx1100, before -> after |
+|---|---|---|
+| shapes >= 0.95x the best baseline | 1/25 -> **15/25 (60%)** | 15/24 -> **24/24 (100%)** |
+| median ratio | 0.652 -> 0.963 | 1.010 -> 1.045 |
+| worst ratio | 0.242 -> 0.775 | 0.425 -> 0.951 |
+| GPU-minutes a shape | 0.08 | 0.31 |
+
+2048x16384x4096 on gfx950: 0.624x -> 1.004x hipBLASLt. The misses, with
+hk.profile's verdicts (`--profiles`), are in the gfx950 file and
+[docs/tune.md](../../docs/tune.md#what-it-reached-2026-10-22).
+
+A process loads a few hundred hk kernel modules at most (thread-specific
+storage keys, docs/tune.md#limits); on gfx1100 run `run.py` two shapes a call.

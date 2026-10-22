@@ -1,0 +1,1410 @@
+{
+ "arch": "gfx950",
+ "split": "acceptance",
+ "date": "2026-10-22",
+ "target": 0.95,
+ "share_target": 0.8,
+ "before": {
+  "share": 0.04,
+  "reached": 1,
+  "of": 25,
+  "median": 0.652,
+  "worst": 0.242,
+  "geomean": 0.651
+ },
+ "after": {
+  "share": 0.6,
+  "reached": 15,
+  "of": 25,
+  "median": 0.963,
+  "worst": 0.775,
+  "geomean": 0.947
+ },
+ "gpu_minutes_per_shape": {
+  "mean": 0.08,
+  "max": 0.21,
+  "total": 2.1
+ },
+ "wall_minutes_per_shape": {
+  "mean": 0.51,
+  "max": 1.26
+ },
+ "wins": 22,
+ "meta": {
+  "arch": "gfx950",
+  "date": "2026-10-22",
+  "by": "hk.tune",
+  "device": "AMD Instinct MI355X",
+  "torch": "2.12.0+rocm10.0.0",
+  "hip": "7.15.26333",
+  "toolchain": "1a4356139bbcbbb2909e107ee635d996",
+  "hipcc": "HIP version: 7.15.26333-0000000",
+  "versions": {
+   "torch": "2.12.0+rocm10.0.0",
+   "hip": "7.15.26333",
+   "triton": "3.8.0",
+   "aiter": "?",
+   "flydsl": "0.3.4.1",
+   "vllm": "0.32.1rc1.dev36+ge68efc685",
+   "amd-aiter": "0.1.25"
+  },
+  "missing": {},
+  "commit": "3e6a971",
+  "sets": 3,
+  "rounds": 7,
+  "budget": 60.0,
+  "split": "acceptance"
+ },
+ "shapes": [
+  {
+   "m": 1,
+   "n": 4608,
+   "k": 9216,
+   "best_baseline": "torch",
+   "best_us": 18.84,
+   "before": [
+    0.7533,
+    0.7528,
+    0.7545
+   ],
+   "after": [
+    1.0966,
+    1.0956,
+    1.0987
+   ],
+   "before_us": 25.0,
+   "after_us": 17.18,
+   "route_before": "decode",
+   "route_after": "u:dp:16_x32_l16x64_ntb_pl0_sp1_sk8_w1_g16_c0",
+   "verdict": "win",
+   "gain": 0.4444,
+   "bar": 0.02205,
+   "tune_gpu_s": 4.88,
+   "tune_wall_s": 49.6,
+   "baselines_us": {
+    "torch": 18.84,
+    "tunableop": 20.03,
+    "aiter": 20.05,
+    "aiter_triton": 24.47,
+    "flydsl": 144.4,
+    "triton": 52.95
+   },
+   "wrong": {
+    "base:hipkittens": "ValueError: M=1, N=4608: both must be multiples of 256; the kernel computes whole 256x256 tiles and its C store is unpredicated, so a partial tile would write past the end "
+   },
+   "reached": true
+  },
+  {
+   "m": 8,
+   "n": 3072,
+   "k": 8192,
+   "best_baseline": "tunableop",
+   "best_us": 12.12,
+   "before": [
+    0.7723,
+    0.772,
+    0.7748
+   ],
+   "after": [
+    0.9994,
+    0.9926,
+    1.0148
+   ],
+   "before_us": 15.69,
+   "after_us": 12.11,
+   "route_before": "decode",
+   "route_after": "u:dp:16_x96_l16x64_ntb_sk8_s4_w1_g16_c16",
+   "verdict": "win",
+   "gain": 0.27187,
+   "bar": 0.02478,
+   "tune_gpu_s": 2.51,
+   "tune_wall_s": 46.2,
+   "baselines_us": {
+    "torch": 15.04,
+    "tunableop": 12.12,
+    "aiter": 12.15,
+    "aiter_triton": 14.41,
+    "flydsl": 125.88,
+    "triton": 45.11
+   },
+   "wrong": {
+    "base:hipkittens": "ValueError: M=8, N=3072: both must be multiples of 256; the kernel computes whole 256x256 tiles and its C store is unpredicated, so a partial tile would write past the end "
+   },
+   "reached": true
+  },
+  {
+   "m": 8,
+   "n": 55296,
+   "k": 5120,
+   "best_baseline": "aiter",
+   "best_us": 84.54,
+   "before": [
+    0.7298,
+    0.7074,
+    0.7305
+   ],
+   "after": [
+    1.0074,
+    1.0019,
+    1.0103
+   ],
+   "before_us": 115.92,
+   "after_us": 83.82,
+   "route_before": "decode",
+   "route_after": "u:dp:16_x32_k128_l16x64_ntb_sp1_s5_w1_g4_c16",
+   "verdict": "win",
+   "gain": 0.39449,
+   "bar": 0.02568,
+   "tune_gpu_s": 2.49,
+   "tune_wall_s": 65.6,
+   "baselines_us": {
+    "torch": 84.64,
+    "tunableop": 84.9,
+    "aiter": 84.54,
+    "aiter_triton": 97.0,
+    "flydsl": 106.94,
+    "triton": 94.26
+   },
+   "wrong": {
+    "base:hipkittens": "ValueError: M=8, N=55296: both must be multiples of 256; the kernel computes whole 256x256 tiles and its C store is unpredicated, so a partial tile would write past the end"
+   },
+   "reached": true
+  },
+  {
+   "m": 16,
+   "n": 4096,
+   "k": 7168,
+   "best_baseline": "aiter_triton",
+   "best_us": 13.29,
+   "before": [
+    0.7774,
+    0.7772,
+    0.7777
+   ],
+   "after": [
+    1.0006,
+    0.9998,
+    1.0104
+   ],
+   "before_us": 17.09,
+   "after_us": 13.27,
+   "route_before": "decode",
+   "route_after": "u:dp:32_x64_l16x64_ntb_sk4_s4_w1_c0",
+   "verdict": "win",
+   "gain": 0.29746,
+   "bar": 0.02497,
+   "tune_gpu_s": 4.0,
+   "tune_wall_s": 34.7,
+   "baselines_us": {
+    "torch": 14.25,
+    "tunableop": 13.3,
+    "aiter": 13.34,
+    "aiter_triton": 13.29,
+    "flydsl": 113.39,
+    "triton": 41.45
+   },
+   "wrong": {
+    "base:hipkittens": "ValueError: M=16, N=4096: both must be multiples of 256; the kernel computes whole 256x256 tiles and its C store is unpredicated, so a partial tile would write past the end"
+   },
+   "reached": true
+  },
+  {
+   "m": 16,
+   "n": 5120,
+   "k": 5120,
+   "best_baseline": "aiter",
+   "best_us": 12.89,
+   "before": [
+    0.5772,
+    0.573,
+    0.5816
+   ],
+   "after": [
+    1.0654,
+    1.0267,
+    1.0683
+   ],
+   "before_us": 22.31,
+   "after_us": 12.12,
+   "route_before": "decode",
+   "route_after": "u:dp:16_x32_k128_l16x64_ntb_sp1_s5_w1_g4_c16",
+   "verdict": "win",
+   "gain": 0.798,
+   "bar": 0.02523,
+   "tune_gpu_s": 1.51,
+   "tune_wall_s": 20.0,
+   "baselines_us": {
+    "torch": 15.36,
+    "tunableop": 15.24,
+    "aiter": 12.89,
+    "aiter_triton": 13.82,
+    "flydsl": 84.39,
+    "triton": 30.6
+   },
+   "wrong": {
+    "base:hipkittens": "ValueError: M=16, N=5120: both must be multiples of 256; the kernel computes whole 256x256 tiles and its C store is unpredicated, so a partial tile would write past the end"
+   },
+   "reached": true
+  },
+  {
+   "m": 16,
+   "n": 7168,
+   "k": 8192,
+   "best_baseline": "aiter_triton",
+   "best_us": 21.76,
+   "before": [
+    0.6092,
+    0.6042,
+    0.6142
+   ],
+   "after": [
+    1.0337,
+    1.0323,
+    1.034
+   ],
+   "before_us": 35.65,
+   "after_us": 21.05,
+   "route_before": "decode",
+   "route_after": "u:dp:16_x32_k256_l16x64_ntb_sp1_s4_w1_g4_c0",
+   "verdict": "win",
+   "gain": 0.74873,
+   "bar": 0.03461,
+   "tune_gpu_s": 1.88,
+   "tune_wall_s": 46.1,
+   "baselines_us": {
+    "torch": 33.85,
+    "tunableop": 24.03,
+    "aiter": 23.87,
+    "aiter_triton": 21.76,
+    "flydsl": 127.11,
+    "triton": 47.11
+   },
+   "wrong": {
+    "base:hipkittens": "ValueError: M=16, N=7168: both must be multiples of 256; the kernel computes whole 256x256 tiles and its C store is unpredicated, so a partial tile would write past the end"
+   },
+   "reached": true
+  },
+  {
+   "m": 128,
+   "n": 4096,
+   "k": 512,
+   "best_baseline": "aiter",
+   "best_us": 3.61,
+   "before": [
+    0.6225,
+    0.6223,
+    0.6259
+   ],
+   "after": [
+    1.0,
+    0.9975,
+    1.0
+   ],
+   "before_us": 5.79,
+   "after_us": 3.61,
+   "route_before": "dp64",
+   "route_after": "u:dp:32_x64_s4_c16",
+   "verdict": "win",
+   "gain": 0.97845,
+   "bar": 0.01223,
+   "tune_gpu_s": 4.59,
+   "tune_wall_s": 34.3,
+   "baselines_us": {
+    "torch": 5.18,
+    "tunableop": 5.87,
+    "aiter": 3.61,
+    "aiter_triton": 4.01,
+    "flydsl": 14.47,
+    "triton": 4.7
+   },
+   "wrong": {
+    "base:hipkittens": "ValueError: M=128, N=4096: both must be multiples of 256; the kernel computes whole 256x256 tiles and its C store is unpredicated, so a partial tile would write past the en"
+   },
+   "reached": true
+  },
+  {
+   "m": 128,
+   "n": 4608,
+   "k": 36864,
+   "best_baseline": "tunableop",
+   "best_us": 69.71,
+   "before": [
+    0.2423,
+    0.2417,
+    0.2429
+   ],
+   "after": [
+    0.778,
+    0.7768,
+    0.7792
+   ],
+   "before_us": 287.75,
+   "after_us": 89.6,
+   "route_before": "dp64",
+   "route_after": "u:pp:128_x128_k128_l16x64_ntb_sp0_sk6_c16",
+   "verdict": "win",
+   "gain": 2.30934,
+   "bar": 0.01405,
+   "tune_gpu_s": 2.96,
+   "tune_wall_s": 75.4,
+   "baselines_us": {
+    "torch": 73.44,
+    "tunableop": 69.71,
+    "aiter": 69.91,
+    "aiter_triton": 161.6,
+    "flydsl": 575.15,
+    "triton": 248.07
+   },
+   "wrong": {
+    "base:hipkittens": "ValueError: M=128, N=4608: both must be multiples of 256; the kernel computes whole 256x256 tiles and its C store is unpredicated, so a partial tile would write past the en"
+   },
+   "reached": false,
+   "why": "best 624 TFLOP/s, 5.03 TB/s; hk 485 TFLOP/s, 3.91 TB/s; memory-bound: the best baseline streams at 63% of HBM, hk at 49%; hk ran pp 128x128 x6 K shares: 216 workgroups, 0.84 of 256 CUs",
+   "profile": "gemm_cdna_128x128x128_w2x4_g8_x16_es_lb_k6_l16x64_ntb_kernel (96% of the call): latency-bound (neither roof): 21% of the matrix peak, 55% of the cache-resident rate (past the L2); matrix core 20% busy; matrix core idle at barrier 36%; issue-bound at 2 wave(s) a SIMD (registers and lds): the matrix core idles 26% while its waves issue the loop's 2.7 other instructions per matrix one; underfilled: 16% of the CUs have no workgroup; LDS bank conflicts: 75% of the LDS's active cycles -- against hipblaslt: 0.820x the time, its kernel Cijk_Alik_Bljk_BBS_BH_Bias_HA_...MT192x128x128 stream-K"
+  },
+  {
+   "m": 128,
+   "n": 5120,
+   "k": 14336,
+   "best_baseline": "torch",
+   "best_us": 40.25,
+   "before": [
+    0.3506,
+    0.3501,
+    0.3506
+   ],
+   "after": [
+    0.9396,
+    0.9395,
+    0.9408
+   ],
+   "before_us": 114.87,
+   "after_us": 42.81,
+   "route_before": "dp64",
+   "route_after": "u:pp:128_l16x64_ntb_sk8_g16_c16",
+   "verdict": "win",
+   "gain": 1.68985,
+   "bar": 0.0136,
+   "tune_gpu_s": 2.0,
+   "tune_wall_s": 41.3,
+   "baselines_us": {
+    "torch": 40.25,
+    "tunableop": 43.39,
+    "aiter": 42.81,
+    "aiter_triton": 65.33,
+    "flydsl": 231.19,
+    "triton": 97.23
+   },
+   "wrong": {
+    "base:hipkittens": "ValueError: M=128, N=5120: both must be multiples of 256; the kernel computes whole 256x256 tiles and its C store is unpredicated, so a partial tile would write past the en"
+   },
+   "reached": false,
+   "why": "best 467 TFLOP/s, 3.77 TB/s; hk 439 TFLOP/s, 3.55 TB/s; neither limit is near: latency, launch or occupancy; hk ran pp 128x256 x8 K shares: 160 workgroups, 0.62 of 256 CUs",
+   "profile": "gemm_cdna_128x256x64_w2x4_g16_x16_sp_es_lb_k8_l16x64_ntb_... (90% of the call): latency-bound (neither roof): 18% of the matrix peak, 53% of the cache-resident rate (past the L2); matrix core 18% busy; underfilled: 38% of the CUs have no workgroup; matrix core idle at barrier 24%; issue-bound at 2 wave(s) a SIMD (registers and lds): the matrix core idles 18% while its waves issue the loop's 2.7 other instructions per matrix one; LDS bank conflicts: 75% of the LDS's active cycles -- against hipblaslt: 0.908x the time, its kernel Cijk_Alik_Bljk_BBS_BH_Bias_HA_...MT160x128x128 stream-K"
+  },
+  {
+   "m": 512,
+   "n": 4096,
+   "k": 7168,
+   "best_baseline": "aiter",
+   "best_us": 39.92,
+   "before": [
+    0.6997,
+    0.6967,
+    0.7001
+   ],
+   "after": [
+    0.9434,
+    0.9383,
+    0.9457
+   ],
+   "before_us": 57.11,
+   "after_us": 42.35,
+   "route_before": "dp64",
+   "route_after": "u:pp:x128_sk4_w4_x2_c32",
+   "verdict": "win",
+   "gain": 0.36851,
+   "bar": 0.01961,
+   "tune_gpu_s": 6.9,
+   "tune_wall_s": 35.5,
+   "baselines_us": {
+    "torch": 42.12,
+    "tunableop": 39.94,
+    "aiter": 39.92,
+    "aiter_triton": 46.08,
+    "flydsl": 130.19,
+    "hipkittens": 136.69,
+    "triton": 59.8
+   },
+   "wrong": {},
+   "reached": false,
+   "why": "best 753 TFLOP/s, 1.76 TB/s; hk 710 TFLOP/s, 1.66 TB/s; neither limit is near: latency, launch or occupancy; hk ran pp 256x128 x4 K shares: 256 workgroups, 1.00 of 256 CUs",
+   "profile": "gemm_cdna_256x128x64_w4x2_g8_x32_sp_es_lb_k4_kernel (85% of the call): latency-bound (neither roof): 32% of the matrix peak, 53% of the cache-resident rate (past the L2); matrix core 33% busy; matrix core idle at barrier 22%; matrix core idle after the main loop 11% (one workgroup a CU: not hidden); matrix core idle before the main loop 9% (one workgroup a CU: not hidden); occupancy 1.4 of 2 waves/SIMD -- against hipblaslt: 0.943x the time, its kernel Cijk_Alik_Bljk_BBS_BH_Bias_HA_...MT128x256x64 stream-K"
+  },
+  {
+   "m": 512,
+   "n": 7168,
+   "k": 8192,
+   "best_baseline": "torch",
+   "best_us": 67.77,
+   "before": [
+    0.6518,
+    0.6487,
+    0.6545
+   ],
+   "after": [
+    0.9931,
+    0.9881,
+    0.9936
+   ],
+   "before_us": 103.97,
+   "after_us": 68.29,
+   "route_before": "dp64",
+   "route_after": "u:dp:256_sk2_g4_c0",
+   "verdict": "win",
+   "gain": 0.55106,
+   "bar": 0.01642,
+   "tune_gpu_s": 1.76,
+   "tune_wall_s": 22.7,
+   "baselines_us": {
+    "torch": 67.77,
+    "tunableop": 71.03,
+    "aiter": 68.21,
+    "aiter_triton": 93.34,
+    "flydsl": 138.88,
+    "hipkittens": 141.78,
+    "triton": 111.53
+   },
+   "wrong": {},
+   "reached": true
+  },
+  {
+   "m": 512,
+   "n": 8192,
+   "k": 3584,
+   "best_baseline": "tunableop",
+   "best_us": 33.96,
+   "before": [
+    0.6374,
+    0.6319,
+    0.6387
+   ],
+   "after": [
+    0.8667,
+    0.8665,
+    0.8698
+   ],
+   "before_us": 53.39,
+   "after_us": 39.18,
+   "route_before": "dp64",
+   "route_after": "u:dp:pl0_s4_g4_c0",
+   "verdict": "win",
+   "gain": 0.36913,
+   "bar": 0.01,
+   "tune_gpu_s": 2.36,
+   "tune_wall_s": 15.2,
+   "baselines_us": {
+    "torch": 35.29,
+    "tunableop": 33.96,
+    "aiter": 42.84,
+    "aiter_triton": 47.41,
+    "flydsl": 70.41,
+    "hipkittens": 73.67,
+    "triton": 52.22
+   },
+   "wrong": {},
+   "reached": false,
+   "why": "best 885 TFLOP/s, 2.08 TB/s; hk 767 TFLOP/s, 1.81 TB/s; neither limit is near: latency, launch or occupancy; hk ran dp 128x128: 256 workgroups, 1.00 of 256 CUs",
+   "profile": "latency-bound (neither roof): 31% of the matrix peak, 27% of the cache-resident rate (past the L2); matrix core 32% busy; issue-bound at 1 wave(s) a SIMD (lds): the matrix core idles 32% while its waves issue the loop's 1.9 other instructions per matrix one; matrix core idle before the main loop 8% (one workgroup a CU: not hidden); matrix core idle at lgkm_wait 7% -- against hipblaslt: 0.887x the time, its kernel Cijk_Alik_Bljk_BBS_BH_Bias_HA_...MT128x128x128 stream-K"
+  },
+  {
+   "m": 1024,
+   "n": 5120,
+   "k": 14336,
+   "best_baseline": "aiter",
+   "best_us": 123.72,
+   "before": [
+    0.4641,
+    0.4624,
+    0.4654
+   ],
+   "after": [
+    0.7755,
+    0.7738,
+    0.7756
+   ],
+   "before_us": 266.56,
+   "after_us": 159.51,
+   "route_before": "dp128",
+   "route_after": "u:pp:es0_sk2_g4",
+   "verdict": "win",
+   "gain": 0.67972,
+   "bar": 0.01235,
+   "tune_gpu_s": 5.36,
+   "tune_wall_s": 29.8,
+   "baselines_us": {
+    "torch": 127.13,
+    "tunableop": 123.73,
+    "aiter": 123.72,
+    "aiter_triton": 315.57,
+    "flydsl": 256.11,
+    "hipkittens": 272.09,
+    "triton": 262.17
+   },
+   "wrong": {},
+   "reached": false,
+   "why": "best 1215 TFLOP/s, 1.51 TB/s; hk 942 TFLOP/s, 1.17 TB/s; compute-bound: the best baseline at 49% of the bf16 peak, hk at 38%; hk ran pp 256x256 x2 K shares: 160 workgroups, 0.62 of 256 CUs",
+   "profile": "gemm_cdna_256x256x64_w2x4_g4_x64_sp_lb_k2_kernel (94% of the call): latency-bound (neither roof): 45% of the matrix peak, 56% of the cache-resident rate (past the L2); matrix core 50% busy; underfilled: 38% of the CUs have no workgroup; matrix core idle at barrier 15%; matrix core idle at vmem_issue 8% -- against hipblaslt: 0.885x the time, its kernel Cijk_Alik_Bljk_BBS_BH_Bias_HA_...MT160x256x64 stream-K"
+  },
+  {
+   "m": 2048,
+   "n": 4096,
+   "k": 1024,
+   "best_baseline": "tunableop",
+   "best_us": 19.3,
+   "before": [
+    0.7813,
+    0.7713,
+    0.7926
+   ],
+   "after": [
+    0.9312,
+    0.9236,
+    0.9319
+   ],
+   "before_us": 24.62,
+   "after_us": 20.77,
+   "route_before": "dp128",
+   "route_after": "u:pp:x128_g4",
+   "verdict": "win",
+   "gain": 0.16546,
+   "bar": 0.01988,
+   "tune_gpu_s": 3.61,
+   "tune_wall_s": 20.7,
+   "baselines_us": {
+    "torch": 19.82,
+    "tunableop": 19.3,
+    "aiter": 19.57,
+    "aiter_triton": 35.66,
+    "flydsl": 27.13,
+    "hipkittens": 26.94,
+    "triton": 23.87
+   },
+   "wrong": {},
+   "reached": false,
+   "why": "best 890 TFLOP/s, 1.52 TB/s; hk 827 TFLOP/s, 1.41 TB/s; neither limit is near: latency, launch or occupancy; hk ran pp 256x128: 256 workgroups, 1.00 of 256 CUs",
+   "profile": "latency-bound (neither roof): 30% of the matrix peak, 28% of the cache-resident rate (past the L2); matrix core 29% busy; matrix core idle after the main loop 17% (one workgroup a CU: not hidden); matrix core idle before the main loop 15% (one workgroup a CU: not hidden); matrix core idle at barrier 15%; L2 re-fetch: 2.0x the call's bytes cross it -- against hipblaslt: 0.909x the time, its kernel Cijk_Alik_Bljk_BBS_BH_Bias_HA_...MT256x128x64 stream-K"
+  },
+  {
+   "m": 2048,
+   "n": 4608,
+   "k": 4096,
+   "best_baseline": "tunableop",
+   "best_us": 60.94,
+   "before": [
+    0.5664,
+    0.5651,
+    0.5698
+   ],
+   "after": [
+    0.788,
+    0.7857,
+    0.7927
+   ],
+   "before_us": 107.6,
+   "after_us": 77.34,
+   "route_before": "dp128",
+   "route_after": "u:pp:g4_c32",
+   "verdict": "win",
+   "gain": 0.40288,
+   "bar": 0.01382,
+   "tune_gpu_s": 4.51,
+   "tune_wall_s": 10.6,
+   "baselines_us": {
+    "torch": 68.88,
+    "tunableop": 60.94,
+    "aiter_triton": 103.36,
+    "flydsl": 77.27,
+    "hipkittens": 78.99,
+    "triton": 102.33
+   },
+   "wrong": {
+    "base:aiter": 3.239740622272731e+35
+   },
+   "reached": false,
+   "why": "best 1269 TFLOP/s, 1.20 TB/s; hk 1000 TFLOP/s, 0.95 TB/s; compute-bound: the best baseline at 51% of the bf16 peak, hk at 40%; hk ran pp 256x256: 144 workgroups, 0.56 of 256 CUs",
+   "profile": "latency-bound (neither roof): 39% of the matrix peak, 28% of the cache-resident rate (past the L2); matrix core 42% busy; underfilled: 44% of the CUs have no workgroup; matrix core idle after the main loop 6% (one workgroup a CU: not hidden); matrix core idle before the main loop 3% (one workgroup a CU: not hidden); L2 re-fetch: 2.8x the call's bytes cross it -- against hipblaslt: 0.854x the time, its kernel Cijk_Alik_Bljk_BBS_BH_Bias_HA_...MT144x256x64 stream-K"
+  },
+  {
+   "m": 2048,
+   "n": 7168,
+   "k": 8192,
+   "best_baseline": "tunableop",
+   "best_us": 164.38,
+   "before": [
+    0.6213,
+    0.6197,
+    0.6245
+   ],
+   "after": [
+    1.001,
+    0.994,
+    1.0038
+   ],
+   "before_us": 264.13,
+   "after_us": 164.65,
+   "route_before": "dp128",
+   "route_after": "u:pp:g4_c16",
+   "verdict": "win",
+   "gain": 0.58682,
+   "bar": 0.02512,
+   "tune_gpu_s": 5.65,
+   "tune_wall_s": 21.4,
+   "baselines_us": {
+    "torch": 173.7,
+    "tunableop": 164.38,
+    "aiter": 164.57,
+    "aiter_triton": 202.72,
+    "flydsl": 167.01,
+    "hipkittens": 169.69,
+    "triton": 212.13
+   },
+   "wrong": {},
+   "reached": true
+  },
+  {
+   "m": 2048,
+   "n": 8192,
+   "k": 3584,
+   "best_baseline": "tunableop",
+   "best_us": 84.03,
+   "before": [
+    0.614,
+    0.6114,
+    0.6217
+   ],
+   "after": [
+    0.9852,
+    0.9804,
+    0.9905
+   ],
+   "before_us": 136.86,
+   "after_us": 85.09,
+   "route_before": "dp128",
+   "route_after": "u:pp:g4_c32",
+   "verdict": "win",
+   "gain": 0.58081,
+   "bar": 0.04514,
+   "tune_gpu_s": 3.78,
+   "tune_wall_s": 24.1,
+   "baselines_us": {
+    "torch": 85.83,
+    "tunableop": 84.03,
+    "aiter": 86.57,
+    "aiter_triton": 106.13,
+    "flydsl": 86.06,
+    "hipkittens": 88.91,
+    "triton": 110.64
+   },
+   "wrong": {},
+   "reached": true
+  },
+  {
+   "m": 2048,
+   "n": 16384,
+   "k": 4096,
+   "best_baseline": "tunableop",
+   "best_us": 187.77,
+   "before": [
+    0.6205,
+    0.6203,
+    0.6253
+   ],
+   "after": [
+    0.9985,
+    0.9978,
+    1.004
+   ],
+   "before_us": 302.62,
+   "after_us": 187.93,
+   "route_before": "dp128",
+   "route_after": "u:pp:g4_c16",
+   "verdict": "win",
+   "gain": 0.59798,
+   "bar": 0.01561,
+   "tune_gpu_s": 3.03,
+   "tune_wall_s": 7.6,
+   "baselines_us": {
+    "torch": 188.5,
+    "tunableop": 187.77,
+    "aiter": 190.61,
+    "aiter_triton": 231.69,
+    "flydsl": 189.57,
+    "hipkittens": 198.86,
+    "triton": 238.47
+   },
+   "wrong": {},
+   "reached": true
+  },
+  {
+   "m": 2048,
+   "n": 55296,
+   "k": 5120,
+   "best_baseline": "tunableop",
+   "best_us": 771.86,
+   "before": [
+    0.5243,
+    0.5219,
+    0.5255
+   ],
+   "after": [
+    0.9632,
+    0.9609,
+    0.9653
+   ],
+   "before_us": 1472.3,
+   "after_us": 800.82,
+   "route_before": "dp128",
+   "route_after": "u:pp:g16_c32",
+   "verdict": "win",
+   "gain": 0.80757,
+   "bar": 0.01,
+   "tune_gpu_s": 8.67,
+   "tune_wall_s": 24.5,
+   "baselines_us": {
+    "torch": 793.38,
+    "tunableop": 771.86,
+    "aiter": 772.34,
+    "aiter_triton": 967.62,
+    "flydsl": 956.1,
+    "hipkittens": 821.42,
+    "triton": 1013.16
+   },
+   "wrong": {},
+   "reached": true
+  },
+  {
+   "m": 4096,
+   "n": 3072,
+   "k": 4096,
+   "best_baseline": "torch",
+   "best_us": 75.65,
+   "before": [
+    0.892,
+    0.878,
+    0.9009
+   ],
+   "after": [
+    0.8946,
+    0.8876,
+    0.8973
+   ],
+   "before_us": 85.28,
+   "after_us": 84.78,
+   "route_before": "pp",
+   "route_after": "pp",
+   "verdict": "tie",
+   "gain": 0.00715,
+   "bar": 0.019,
+   "tune_gpu_s": 5.77,
+   "tune_wall_s": 21.1,
+   "baselines_us": {
+    "torch": 75.65,
+    "tunableop": 75.82,
+    "aiter": 75.72,
+    "aiter_triton": 110.84,
+    "flydsl": 88.16,
+    "hipkittens": 87.73,
+    "triton": 115.12
+   },
+   "wrong": {},
+   "reached": false,
+   "why": "best 1363 TFLOP/s, 1.11 TB/s; hk 1216 TFLOP/s, 0.99 TB/s; compute-bound: the best baseline at 55% of the bf16 peak, hk at 49%; hk ran pp 256x256: 192 workgroups, 0.75 of 256 CUs",
+   "profile": "latency-bound (neither roof): 49% of the matrix peak, 33% of the cache-resident rate (past the L2); matrix core 55% busy; underfilled: 25% of the CUs have no workgroup; matrix core idle after the main loop 6% (one workgroup a CU: not hidden); matrix core idle before the main loop 4% (one workgroup a CU: not hidden); L2 re-fetch: 3.1x the call's bytes cross it -- against hipblaslt: 0.896x the time, its kernel Cijk_Alik_Bljk_BBS_BH_Bias_HA_...MT192x256x64 stream-K"
+  },
+  {
+   "m": 4096,
+   "n": 3072,
+   "k": 8192,
+   "best_baseline": "torch",
+   "best_us": 139.45,
+   "before": [
+    0.9068,
+    0.9033,
+    0.9119
+   ],
+   "after": [
+    0.9193,
+    0.9122,
+    0.9237
+   ],
+   "before_us": 154.09,
+   "after_us": 152.13,
+   "route_before": "pp",
+   "route_after": "pp",
+   "verdict": "tie",
+   "gain": 0.01059,
+   "bar": 0.02849,
+   "tune_gpu_s": 5.68,
+   "tune_wall_s": 11.3,
+   "baselines_us": {
+    "torch": 139.45,
+    "tunableop": 141.16,
+    "aiter": 141.26,
+    "aiter_triton": 195.07,
+    "flydsl": 155.77,
+    "hipkittens": 158.7,
+    "triton": 211.49
+   },
+   "wrong": {},
+   "reached": false,
+   "why": "best 1478 TFLOP/s, 1.02 TB/s; hk 1355 TFLOP/s, 0.94 TB/s; compute-bound: the best baseline at 59% of the bf16 peak, hk at 54%; hk ran pp 256x256: 192 workgroups, 0.75 of 256 CUs",
+   "profile": "compute-bound: matrix core 62% busy, 1310 TFLOP/s = 53% of the bf16 peak (61% of it at the 2.07 GHz measured); underfilled: 25% of the CUs have no workgroup; matrix core idle at barrier 5%; L2 re-fetch: 3.5x the call's bytes cross it -- against hipblaslt: 0.917x the time, its kernel Cijk_Alik_Bljk_BBS_BH_Bias_HA_...MT192x256x64 stream-K"
+  },
+  {
+   "m": 4096,
+   "n": 4608,
+   "k": 4096,
+   "best_baseline": "tunableop",
+   "best_us": 110.44,
+   "before": [
+    0.7085,
+    0.7073,
+    0.7096
+   ],
+   "after": [
+    0.8892,
+    0.8856,
+    0.8902
+   ],
+   "before_us": 155.88,
+   "after_us": 124.2,
+   "route_before": "pp",
+   "route_after": "u:cols:wave:pp:c32|dp:sk2_s4_x4",
+   "verdict": "win",
+   "gain": 0.26407,
+   "bar": 0.0115,
+   "tune_gpu_s": 12.77,
+   "tune_wall_s": 44.4,
+   "baselines_us": {
+    "torch": 115.28,
+    "tunableop": 110.44,
+    "aiter": 111.59,
+    "aiter_triton": 164.1,
+    "flydsl": 157.38,
+    "hipkittens": 158.63,
+    "triton": 176.24
+   },
+   "wrong": {},
+   "reached": false,
+   "why": "best 1400 TFLOP/s, 0.99 TB/s; hk 1245 TFLOP/s, 0.88 TB/s; compute-bound: the best baseline at 56% of the bf16 peak, hk at 50%; hk ran pp 256x256: 256 workgroups, 1.00 of 256 CUs; dp 128x128 x2 K shares: 256 workgroups, 1.00 of 256 CUs",
+   "profile": "gemm_cdna_256x256x64_w2x4_g8_x32_sp_es_lb_kernel (79% of the call): compute-bound: matrix core 69% busy, 1398 TFLOP/s = 56% of the bf16 peak (70% of it at the 1.92 GHz measured); matrix core idle after the main loop 8% (one workgroup a CU: not hidden); matrix core idle before the main loop 4% (one workgroup a CU: not hidden) -- against hipblaslt: 0.945x the time, its kernel Cijk_Alik_Bljk_BBS_BH_Bias_HA_...MT256x320x64 stream-K"
+  },
+  {
+   "m": 8192,
+   "n": 5120,
+   "k": 5120,
+   "best_baseline": "tunableop",
+   "best_us": 299.13,
+   "before": [
+    0.9463,
+    0.946,
+    0.9465
+   ],
+   "after": [
+    0.9623,
+    0.9619,
+    0.965
+   ],
+   "before_us": 316.03,
+   "after_us": 310.58,
+   "route_before": "pp",
+   "route_after": "u:cols:wave:pp:|pp:128_c32",
+   "verdict": "win",
+   "gain": 0.02352,
+   "bar": 0.02485,
+   "tune_gpu_s": 9.47,
+   "tune_wall_s": 19.9,
+   "baselines_us": {
+    "torch": 301.01,
+    "tunableop": 299.13,
+    "aiter": 301.09,
+    "aiter_triton": 361.39,
+    "flydsl": 328.33,
+    "hipkittens": 323.73,
+    "triton": 445.41
+   },
+   "wrong": {},
+   "reached": true
+  },
+  {
+   "m": 8192,
+   "n": 14336,
+   "k": 8192,
+   "best_baseline": "tunableop",
+   "best_us": 1220.6,
+   "before": [
+    0.9729,
+    0.9715,
+    0.974
+   ],
+   "after": [
+    0.9725,
+    0.9696,
+    0.976
+   ],
+   "before_us": 1254.57,
+   "after_us": 1255.17,
+   "route_before": "pp",
+   "route_after": "pp",
+   "verdict": "tie",
+   "gain": 0.00258,
+   "bar": 0.01996,
+   "tune_gpu_s": 11.05,
+   "tune_wall_s": 22.3,
+   "baselines_us": {
+    "torch": 1320.85,
+    "tunableop": 1220.6,
+    "aiter": 1233.56,
+    "aiter_triton": 1474.37,
+    "flydsl": 1276.82,
+    "hipkittens": 1268.84,
+    "triton": 1742.46
+   },
+   "wrong": {},
+   "reached": true
+  },
+  {
+   "m": 8192,
+   "n": 18432,
+   "k": 4608,
+   "best_baseline": "tunableop",
+   "best_us": 888.68,
+   "before": [
+    0.9272,
+    0.9264,
+    0.9313
+   ],
+   "after": [
+    0.9573,
+    0.9559,
+    0.9652
+   ],
+   "before_us": 957.91,
+   "after_us": 928.36,
+   "route_before": "pp",
+   "route_after": "u:pp:g4",
+   "verdict": "win",
+   "gain": 0.03558,
+   "bar": 0.01187,
+   "tune_gpu_s": 10.29,
+   "tune_wall_s": 16.3,
+   "baselines_us": {
+    "torch": 888.86,
+    "tunableop": 888.68,
+    "aiter": 893.72,
+    "aiter_triton": 1163.78,
+    "flydsl": 934.64,
+    "hipkittens": 967.38,
+    "triton": 1275.17
+   },
+   "wrong": {},
+   "reached": true
+  }
+ ],
+ "misses": [
+  {
+   "m": 128,
+   "n": 4608,
+   "k": 36864,
+   "best_baseline": "tunableop",
+   "best_us": 69.71,
+   "before": [
+    0.2423,
+    0.2417,
+    0.2429
+   ],
+   "after": [
+    0.778,
+    0.7768,
+    0.7792
+   ],
+   "before_us": 287.75,
+   "after_us": 89.6,
+   "route_before": "dp64",
+   "route_after": "u:pp:128_x128_k128_l16x64_ntb_sp0_sk6_c16",
+   "verdict": "win",
+   "gain": 2.30934,
+   "bar": 0.01405,
+   "tune_gpu_s": 2.96,
+   "tune_wall_s": 75.4,
+   "baselines_us": {
+    "torch": 73.44,
+    "tunableop": 69.71,
+    "aiter": 69.91,
+    "aiter_triton": 161.6,
+    "flydsl": 575.15,
+    "triton": 248.07
+   },
+   "wrong": {
+    "base:hipkittens": "ValueError: M=128, N=4608: both must be multiples of 256; the kernel computes whole 256x256 tiles and its C store is unpredicated, so a partial tile would write past the en"
+   },
+   "reached": false,
+   "why": "best 624 TFLOP/s, 5.03 TB/s; hk 485 TFLOP/s, 3.91 TB/s; memory-bound: the best baseline streams at 63% of HBM, hk at 49%; hk ran pp 128x128 x6 K shares: 216 workgroups, 0.84 of 256 CUs",
+   "profile": "gemm_cdna_128x128x128_w2x4_g8_x16_es_lb_k6_l16x64_ntb_kernel (96% of the call): latency-bound (neither roof): 21% of the matrix peak, 55% of the cache-resident rate (past the L2); matrix core 20% busy; matrix core idle at barrier 36%; issue-bound at 2 wave(s) a SIMD (registers and lds): the matrix core idles 26% while its waves issue the loop's 2.7 other instructions per matrix one; underfilled: 16% of the CUs have no workgroup; LDS bank conflicts: 75% of the LDS's active cycles -- against hipblaslt: 0.820x the time, its kernel Cijk_Alik_Bljk_BBS_BH_Bias_HA_...MT192x128x128 stream-K"
+  },
+  {
+   "m": 128,
+   "n": 5120,
+   "k": 14336,
+   "best_baseline": "torch",
+   "best_us": 40.25,
+   "before": [
+    0.3506,
+    0.3501,
+    0.3506
+   ],
+   "after": [
+    0.9396,
+    0.9395,
+    0.9408
+   ],
+   "before_us": 114.87,
+   "after_us": 42.81,
+   "route_before": "dp64",
+   "route_after": "u:pp:128_l16x64_ntb_sk8_g16_c16",
+   "verdict": "win",
+   "gain": 1.68985,
+   "bar": 0.0136,
+   "tune_gpu_s": 2.0,
+   "tune_wall_s": 41.3,
+   "baselines_us": {
+    "torch": 40.25,
+    "tunableop": 43.39,
+    "aiter": 42.81,
+    "aiter_triton": 65.33,
+    "flydsl": 231.19,
+    "triton": 97.23
+   },
+   "wrong": {
+    "base:hipkittens": "ValueError: M=128, N=5120: both must be multiples of 256; the kernel computes whole 256x256 tiles and its C store is unpredicated, so a partial tile would write past the en"
+   },
+   "reached": false,
+   "why": "best 467 TFLOP/s, 3.77 TB/s; hk 439 TFLOP/s, 3.55 TB/s; neither limit is near: latency, launch or occupancy; hk ran pp 128x256 x8 K shares: 160 workgroups, 0.62 of 256 CUs",
+   "profile": "gemm_cdna_128x256x64_w2x4_g16_x16_sp_es_lb_k8_l16x64_ntb_... (90% of the call): latency-bound (neither roof): 18% of the matrix peak, 53% of the cache-resident rate (past the L2); matrix core 18% busy; underfilled: 38% of the CUs have no workgroup; matrix core idle at barrier 24%; issue-bound at 2 wave(s) a SIMD (registers and lds): the matrix core idles 18% while its waves issue the loop's 2.7 other instructions per matrix one; LDS bank conflicts: 75% of the LDS's active cycles -- against hipblaslt: 0.908x the time, its kernel Cijk_Alik_Bljk_BBS_BH_Bias_HA_...MT160x128x128 stream-K"
+  },
+  {
+   "m": 512,
+   "n": 4096,
+   "k": 7168,
+   "best_baseline": "aiter",
+   "best_us": 39.92,
+   "before": [
+    0.6997,
+    0.6967,
+    0.7001
+   ],
+   "after": [
+    0.9434,
+    0.9383,
+    0.9457
+   ],
+   "before_us": 57.11,
+   "after_us": 42.35,
+   "route_before": "dp64",
+   "route_after": "u:pp:x128_sk4_w4_x2_c32",
+   "verdict": "win",
+   "gain": 0.36851,
+   "bar": 0.01961,
+   "tune_gpu_s": 6.9,
+   "tune_wall_s": 35.5,
+   "baselines_us": {
+    "torch": 42.12,
+    "tunableop": 39.94,
+    "aiter": 39.92,
+    "aiter_triton": 46.08,
+    "flydsl": 130.19,
+    "hipkittens": 136.69,
+    "triton": 59.8
+   },
+   "wrong": {},
+   "reached": false,
+   "why": "best 753 TFLOP/s, 1.76 TB/s; hk 710 TFLOP/s, 1.66 TB/s; neither limit is near: latency, launch or occupancy; hk ran pp 256x128 x4 K shares: 256 workgroups, 1.00 of 256 CUs",
+   "profile": "gemm_cdna_256x128x64_w4x2_g8_x32_sp_es_lb_k4_kernel (85% of the call): latency-bound (neither roof): 32% of the matrix peak, 53% of the cache-resident rate (past the L2); matrix core 33% busy; matrix core idle at barrier 22%; matrix core idle after the main loop 11% (one workgroup a CU: not hidden); matrix core idle before the main loop 9% (one workgroup a CU: not hidden); occupancy 1.4 of 2 waves/SIMD -- against hipblaslt: 0.943x the time, its kernel Cijk_Alik_Bljk_BBS_BH_Bias_HA_...MT128x256x64 stream-K"
+  },
+  {
+   "m": 512,
+   "n": 8192,
+   "k": 3584,
+   "best_baseline": "tunableop",
+   "best_us": 33.96,
+   "before": [
+    0.6374,
+    0.6319,
+    0.6387
+   ],
+   "after": [
+    0.8667,
+    0.8665,
+    0.8698
+   ],
+   "before_us": 53.39,
+   "after_us": 39.18,
+   "route_before": "dp64",
+   "route_after": "u:dp:pl0_s4_g4_c0",
+   "verdict": "win",
+   "gain": 0.36913,
+   "bar": 0.01,
+   "tune_gpu_s": 2.36,
+   "tune_wall_s": 15.2,
+   "baselines_us": {
+    "torch": 35.29,
+    "tunableop": 33.96,
+    "aiter": 42.84,
+    "aiter_triton": 47.41,
+    "flydsl": 70.41,
+    "hipkittens": 73.67,
+    "triton": 52.22
+   },
+   "wrong": {},
+   "reached": false,
+   "why": "best 885 TFLOP/s, 2.08 TB/s; hk 767 TFLOP/s, 1.81 TB/s; neither limit is near: latency, launch or occupancy; hk ran dp 128x128: 256 workgroups, 1.00 of 256 CUs",
+   "profile": "latency-bound (neither roof): 31% of the matrix peak, 27% of the cache-resident rate (past the L2); matrix core 32% busy; issue-bound at 1 wave(s) a SIMD (lds): the matrix core idles 32% while its waves issue the loop's 1.9 other instructions per matrix one; matrix core idle before the main loop 8% (one workgroup a CU: not hidden); matrix core idle at lgkm_wait 7% -- against hipblaslt: 0.887x the time, its kernel Cijk_Alik_Bljk_BBS_BH_Bias_HA_...MT128x128x128 stream-K"
+  },
+  {
+   "m": 1024,
+   "n": 5120,
+   "k": 14336,
+   "best_baseline": "aiter",
+   "best_us": 123.72,
+   "before": [
+    0.4641,
+    0.4624,
+    0.4654
+   ],
+   "after": [
+    0.7755,
+    0.7738,
+    0.7756
+   ],
+   "before_us": 266.56,
+   "after_us": 159.51,
+   "route_before": "dp128",
+   "route_after": "u:pp:es0_sk2_g4",
+   "verdict": "win",
+   "gain": 0.67972,
+   "bar": 0.01235,
+   "tune_gpu_s": 5.36,
+   "tune_wall_s": 29.8,
+   "baselines_us": {
+    "torch": 127.13,
+    "tunableop": 123.73,
+    "aiter": 123.72,
+    "aiter_triton": 315.57,
+    "flydsl": 256.11,
+    "hipkittens": 272.09,
+    "triton": 262.17
+   },
+   "wrong": {},
+   "reached": false,
+   "why": "best 1215 TFLOP/s, 1.51 TB/s; hk 942 TFLOP/s, 1.17 TB/s; compute-bound: the best baseline at 49% of the bf16 peak, hk at 38%; hk ran pp 256x256 x2 K shares: 160 workgroups, 0.62 of 256 CUs",
+   "profile": "gemm_cdna_256x256x64_w2x4_g4_x64_sp_lb_k2_kernel (94% of the call): latency-bound (neither roof): 45% of the matrix peak, 56% of the cache-resident rate (past the L2); matrix core 50% busy; underfilled: 38% of the CUs have no workgroup; matrix core idle at barrier 15%; matrix core idle at vmem_issue 8% -- against hipblaslt: 0.885x the time, its kernel Cijk_Alik_Bljk_BBS_BH_Bias_HA_...MT160x256x64 stream-K"
+  },
+  {
+   "m": 2048,
+   "n": 4096,
+   "k": 1024,
+   "best_baseline": "tunableop",
+   "best_us": 19.3,
+   "before": [
+    0.7813,
+    0.7713,
+    0.7926
+   ],
+   "after": [
+    0.9312,
+    0.9236,
+    0.9319
+   ],
+   "before_us": 24.62,
+   "after_us": 20.77,
+   "route_before": "dp128",
+   "route_after": "u:pp:x128_g4",
+   "verdict": "win",
+   "gain": 0.16546,
+   "bar": 0.01988,
+   "tune_gpu_s": 3.61,
+   "tune_wall_s": 20.7,
+   "baselines_us": {
+    "torch": 19.82,
+    "tunableop": 19.3,
+    "aiter": 19.57,
+    "aiter_triton": 35.66,
+    "flydsl": 27.13,
+    "hipkittens": 26.94,
+    "triton": 23.87
+   },
+   "wrong": {},
+   "reached": false,
+   "why": "best 890 TFLOP/s, 1.52 TB/s; hk 827 TFLOP/s, 1.41 TB/s; neither limit is near: latency, launch or occupancy; hk ran pp 256x128: 256 workgroups, 1.00 of 256 CUs",
+   "profile": "latency-bound (neither roof): 30% of the matrix peak, 28% of the cache-resident rate (past the L2); matrix core 29% busy; matrix core idle after the main loop 17% (one workgroup a CU: not hidden); matrix core idle before the main loop 15% (one workgroup a CU: not hidden); matrix core idle at barrier 15%; L2 re-fetch: 2.0x the call's bytes cross it -- against hipblaslt: 0.909x the time, its kernel Cijk_Alik_Bljk_BBS_BH_Bias_HA_...MT256x128x64 stream-K"
+  },
+  {
+   "m": 2048,
+   "n": 4608,
+   "k": 4096,
+   "best_baseline": "tunableop",
+   "best_us": 60.94,
+   "before": [
+    0.5664,
+    0.5651,
+    0.5698
+   ],
+   "after": [
+    0.788,
+    0.7857,
+    0.7927
+   ],
+   "before_us": 107.6,
+   "after_us": 77.34,
+   "route_before": "dp128",
+   "route_after": "u:pp:g4_c32",
+   "verdict": "win",
+   "gain": 0.40288,
+   "bar": 0.01382,
+   "tune_gpu_s": 4.51,
+   "tune_wall_s": 10.6,
+   "baselines_us": {
+    "torch": 68.88,
+    "tunableop": 60.94,
+    "aiter_triton": 103.36,
+    "flydsl": 77.27,
+    "hipkittens": 78.99,
+    "triton": 102.33
+   },
+   "wrong": {
+    "base:aiter": 3.239740622272731e+35
+   },
+   "reached": false,
+   "why": "best 1269 TFLOP/s, 1.20 TB/s; hk 1000 TFLOP/s, 0.95 TB/s; compute-bound: the best baseline at 51% of the bf16 peak, hk at 40%; hk ran pp 256x256: 144 workgroups, 0.56 of 256 CUs",
+   "profile": "latency-bound (neither roof): 39% of the matrix peak, 28% of the cache-resident rate (past the L2); matrix core 42% busy; underfilled: 44% of the CUs have no workgroup; matrix core idle after the main loop 6% (one workgroup a CU: not hidden); matrix core idle before the main loop 3% (one workgroup a CU: not hidden); L2 re-fetch: 2.8x the call's bytes cross it -- against hipblaslt: 0.854x the time, its kernel Cijk_Alik_Bljk_BBS_BH_Bias_HA_...MT144x256x64 stream-K"
+  },
+  {
+   "m": 4096,
+   "n": 3072,
+   "k": 4096,
+   "best_baseline": "torch",
+   "best_us": 75.65,
+   "before": [
+    0.892,
+    0.878,
+    0.9009
+   ],
+   "after": [
+    0.8946,
+    0.8876,
+    0.8973
+   ],
+   "before_us": 85.28,
+   "after_us": 84.78,
+   "route_before": "pp",
+   "route_after": "pp",
+   "verdict": "tie",
+   "gain": 0.00715,
+   "bar": 0.019,
+   "tune_gpu_s": 5.77,
+   "tune_wall_s": 21.1,
+   "baselines_us": {
+    "torch": 75.65,
+    "tunableop": 75.82,
+    "aiter": 75.72,
+    "aiter_triton": 110.84,
+    "flydsl": 88.16,
+    "hipkittens": 87.73,
+    "triton": 115.12
+   },
+   "wrong": {},
+   "reached": false,
+   "why": "best 1363 TFLOP/s, 1.11 TB/s; hk 1216 TFLOP/s, 0.99 TB/s; compute-bound: the best baseline at 55% of the bf16 peak, hk at 49%; hk ran pp 256x256: 192 workgroups, 0.75 of 256 CUs",
+   "profile": "latency-bound (neither roof): 49% of the matrix peak, 33% of the cache-resident rate (past the L2); matrix core 55% busy; underfilled: 25% of the CUs have no workgroup; matrix core idle after the main loop 6% (one workgroup a CU: not hidden); matrix core idle before the main loop 4% (one workgroup a CU: not hidden); L2 re-fetch: 3.1x the call's bytes cross it -- against hipblaslt: 0.896x the time, its kernel Cijk_Alik_Bljk_BBS_BH_Bias_HA_...MT192x256x64 stream-K"
+  },
+  {
+   "m": 4096,
+   "n": 3072,
+   "k": 8192,
+   "best_baseline": "torch",
+   "best_us": 139.45,
+   "before": [
+    0.9068,
+    0.9033,
+    0.9119
+   ],
+   "after": [
+    0.9193,
+    0.9122,
+    0.9237
+   ],
+   "before_us": 154.09,
+   "after_us": 152.13,
+   "route_before": "pp",
+   "route_after": "pp",
+   "verdict": "tie",
+   "gain": 0.01059,
+   "bar": 0.02849,
+   "tune_gpu_s": 5.68,
+   "tune_wall_s": 11.3,
+   "baselines_us": {
+    "torch": 139.45,
+    "tunableop": 141.16,
+    "aiter": 141.26,
+    "aiter_triton": 195.07,
+    "flydsl": 155.77,
+    "hipkittens": 158.7,
+    "triton": 211.49
+   },
+   "wrong": {},
+   "reached": false,
+   "why": "best 1478 TFLOP/s, 1.02 TB/s; hk 1355 TFLOP/s, 0.94 TB/s; compute-bound: the best baseline at 59% of the bf16 peak, hk at 54%; hk ran pp 256x256: 192 workgroups, 0.75 of 256 CUs",
+   "profile": "compute-bound: matrix core 62% busy, 1310 TFLOP/s = 53% of the bf16 peak (61% of it at the 2.07 GHz measured); underfilled: 25% of the CUs have no workgroup; matrix core idle at barrier 5%; L2 re-fetch: 3.5x the call's bytes cross it -- against hipblaslt: 0.917x the time, its kernel Cijk_Alik_Bljk_BBS_BH_Bias_HA_...MT192x256x64 stream-K"
+  },
+  {
+   "m": 4096,
+   "n": 4608,
+   "k": 4096,
+   "best_baseline": "tunableop",
+   "best_us": 110.44,
+   "before": [
+    0.7085,
+    0.7073,
+    0.7096
+   ],
+   "after": [
+    0.8892,
+    0.8856,
+    0.8902
+   ],
+   "before_us": 155.88,
+   "after_us": 124.2,
+   "route_before": "pp",
+   "route_after": "u:cols:wave:pp:c32|dp:sk2_s4_x4",
+   "verdict": "win",
+   "gain": 0.26407,
+   "bar": 0.0115,
+   "tune_gpu_s": 12.77,
+   "tune_wall_s": 44.4,
+   "baselines_us": {
+    "torch": 115.28,
+    "tunableop": 110.44,
+    "aiter": 111.59,
+    "aiter_triton": 164.1,
+    "flydsl": 157.38,
+    "hipkittens": 158.63,
+    "triton": 176.24
+   },
+   "wrong": {},
+   "reached": false,
+   "why": "best 1400 TFLOP/s, 0.99 TB/s; hk 1245 TFLOP/s, 0.88 TB/s; compute-bound: the best baseline at 56% of the bf16 peak, hk at 50%; hk ran pp 256x256: 256 workgroups, 1.00 of 256 CUs; dp 128x128 x2 K shares: 256 workgroups, 1.00 of 256 CUs",
+   "profile": "gemm_cdna_256x256x64_w2x4_g8_x32_sp_es_lb_kernel (79% of the call): compute-bound: matrix core 69% busy, 1398 TFLOP/s = 56% of the bf16 peak (70% of it at the 1.92 GHz measured); matrix core idle after the main loop 8% (one workgroup a CU: not hidden); matrix core idle before the main loop 4% (one workgroup a CU: not hidden) -- against hipblaslt: 0.945x the time, its kernel Cijk_Alik_Bljk_BBS_BH_Bias_HA_...MT256x320x64 stream-K"
+  }
+ ]
+}

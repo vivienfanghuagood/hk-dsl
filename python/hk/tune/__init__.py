@@ -170,6 +170,36 @@ def model_shapes(model: str, tp: int = 1, ms: Sequence[int] = (1, 16, 128, 512, 
     return out
 
 
+def _each_in_a_process(shapes, args, argv) -> List[dict]:
+    """Tune each shape in a child process of its own, and gather the results.
+
+    A search loads every candidate's kernel module, a few hundred a shape;
+    a process that has loaded several shapes' worth aborts on gfx1100 (each
+    hk extension module takes thread-specific-storage keys, and a process has
+    1024: "thread_specific_storage constructor: could not initialize the TSS
+    key"). The compile cache is shared, so a child rebuilds nothing."""
+    import subprocess  # noqa: PLC0415
+    import sys  # noqa: PLC0415
+    import tempfile  # noqa: PLC0415
+    from pathlib import Path  # noqa: PLC0415
+
+    rows = []
+    with tempfile.TemporaryDirectory() as tmp:
+        for i, (m, n, k) in enumerate(shapes):
+            out = Path(tmp) / f"{i}.json"
+            cmd = [sys.executable, "-m", "hk.tune", f"{m}x{n}x{k}", "--budget", str(args.budget),
+                   "--baselines", args.baselines, "-j", str(args.jobs), "--json", str(out)]
+            if args.no_save:
+                cmd.append("--no-save")
+            rc = subprocess.call(cmd)
+            if rc == 0 and out.exists():
+                rows += json.loads(out.read_text())["results"]
+            else:
+                print(f"hk.tune: {m}x{n}x{k} exited {rc}; its route stands")
+                rows.append(dict(m=m, n=n, k=k, verdict="none", error=f"exit {rc}"))
+    return rows
+
+
 def main(argv=None) -> int:
     import argparse  # noqa: PLC0415
 
@@ -187,6 +217,8 @@ def main(argv=None) -> int:
     ap.add_argument("--json", default="", help="write every result here")
     ap.add_argument("-j", "--jobs", type=int, default=32, help="hipcc processes at once")
     ap.add_argument("--list", action="store_true", help="this machine's records")
+    ap.add_argument("--in-process", action="store_true",
+                    help="tune several shapes in this one process (default: a process each)")
     ap.add_argument("--dry-run", action="store_true",
                     help="the space and the pool the search would compile, no GPU")
     args = ap.parse_args(argv)
@@ -228,17 +260,21 @@ def main(argv=None) -> int:
     if not torch.cuda.is_available():
         print("hk.tune: no GPU here; --dry-run shows the search without one")
         return 2
-    base = torch_baselines([b for b in args.baselines.split(",") if b])
-    results = tune_shapes(shapes, budget=args.budget, save=not args.no_save, baselines=base,
-                          workers=args.jobs)
+    if len(shapes) > 1 and not args.in_process:
+        rows = _each_in_a_process(shapes, args, argv)
+    else:
+        base = torch_baselines([b for b in args.baselines.split(",") if b])
+        rows = [r.as_dict() for r in tune_shapes(shapes, budget=args.budget,
+                                                 save=not args.no_save, baselines=base,
+                                                 workers=args.jobs)]
     if args.json:
         from pathlib import Path  # noqa: PLC0415
 
-        Path(args.json).write_text(json.dumps({"meta": _meta(arch),
-                                               "results": [r.as_dict() for r in results]},
+        Path(args.json).write_text(json.dumps({"meta": _meta(arch), "results": rows},
                                               indent=1) + "\n")
-    wins = sum(r.verdict == "win" for r in results)
-    gpu = sum(r.gpu_seconds for r in results)
+    wins = sum(r.get("verdict") == "win" for r in rows)
+    gpu = sum(r.get("gpu_seconds") or 0.0 for r in rows)
+    results = rows
     print(f"{len(results)} shape(s): {wins} win(s), the rest keep their route; "
           f"{gpu:.0f} GPU-s ({gpu / 60:.1f} GPU-min)")
     return 0
