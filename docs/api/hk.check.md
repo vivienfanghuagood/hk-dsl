@@ -18,7 +18,7 @@ Correctness, resources and timing of a kernel in one call; the guide is [docs/ch
 ### `hk.check.check`
 
 ```python
-hk.check.check(fn, reference: Optional[Callable] = None, inputs=None, *, cases: Optional[Sequence] = None, consts: Optional[Dict[str, Any]] = None, outputs: Optional[Sequence] = None, inplace: Optional[Sequence] = None, sweep: Optional[Dict[str, Sequence]] = None, baselines: Sequence[str] = ('eager', 'compile'), extra: Optional[Dict[str, Callable]] = None, rtol: Optional[float] = None, atol: Optional[float] = None, exact: bool = False, ref_precision: str = 'fp32', time: bool = True, rounds: int = 15, warmup: int = 3, batch_ms: float = 1.0, burn: float = 0.5, compile_mode: Optional[str] = None, bytes: Optional[float] = None, flops: Optional[float] = None, name: Optional[str] = None, gpu: Optional[bool] = None, build: bool = True, seed: int = 0) -> Report
+hk.check.check(fn, reference: Optional[Callable] = None, inputs=None, *, cases: Optional[Sequence] = None, consts: Optional[Dict[str, Any]] = None, outputs: Optional[Sequence] = None, inplace: Optional[Sequence] = None, sweep: Optional[Dict[str, Sequence]] = None, baselines: Sequence[str] = ('eager', 'compile'), extra: Optional[Dict[str, Callable]] = None, rtol: Optional[float] = None, atol: Optional[float] = None, exact: bool = False, ref_precision: str = 'fp32', time: bool = True, rounds: int = 15, warmup: int = 3, batch_ms: float = 1.0, burn: float = 0.5, compile_mode: Optional[str] = None, bytes: Optional[float] = None, flops: Optional[float] = None, name: Optional[str] = None, gpu: Optional[bool] = None, build: bool = True, seed: int = 0, profile: bool = False) -> Report
 ```
 
 *New after 0.4.0* (the `hk.check` module is not in the 0.4.0 wheel)
@@ -60,11 +60,15 @@ bytes, flops   work a call does, for the rates (default bytes: every
            input and output once)
 gpu        False forces build-only; None uses a GPU when one is there
 build      False skips hipcc (trace only)
+profile    also run hk.profile on the first case (counters, the thread
+           trace, the ISA and a verdict: docs/profile.md); its report is
+           `report.profile`. `fn` must be nameable (defined at a module's
+           top level); the inputs are passed as tensors
 
 ### `hk.check.Report`
 
 ```python
-class hk.check.Report(name: str, arch: str, mode: str, device: Optional[str] = None, versions: Dict[str, str] = <factory>, builds: List[Dict[str, Any]] = <factory>, cases: List[Dict[str, Any]] = <factory>, errors: List[Dict[str, str]] = <factory>, notes: List[str] = <factory>) -> None
+class hk.check.Report(name: str, arch: str, mode: str, device: Optional[str] = None, versions: Dict[str, str] = <factory>, builds: List[Dict[str, Any]] = <factory>, cases: List[Dict[str, Any]] = <factory>, errors: List[Dict[str, str]] = <factory>, notes: List[str] = <factory>, profile: Optional[Dict[str, Any]] = None) -> None
 ```
 
 *New after 0.4.0* (the `hk.check` module is not in the 0.4.0 wheel)
@@ -282,6 +286,7 @@ Each card's ceilings, for the bandwidth and FLOP rates the summary prints (tools
 | `--trace-only` | no hipcc either |
 | `--arch ARCH` | build for this arch (comma list: one report each, built only where the GPU is another arch) |
 | `--dump {ir,cpp}` | print a raw kernel's IR or C++ and exit |
+| `--profile` | then run hk.profile on the first case: counters, the thread trace, the main loop's instructions and a verdict (docs/profile.md) |
 | `--json PATH` | write the report as JSON ('-' for stdout) |
 | `--seed SEED` | torch.manual_seed for the inputs |
 | `-q`, `--quiet` | no summary |

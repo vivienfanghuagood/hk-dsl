@@ -1,0 +1,307 @@
+{
+"schema": 1,
+"arch": "gfx950",
+"agent": {
+"name": "gfx950",
+"product": "AMD Radeon Graphics",
+"cus": 256,
+"simds": 1024,
+"xcc": 8,
+"ses": 32,
+"simd_per_cu": 4,
+"max_waves_per_simd": 8,
+"max_waves_per_cu": 32,
+"lds_kb": 160,
+"max_clock_mhz": 2400,
+"wave": 64
+},
+"call_bytes": 352321536,
+"single": true,
+"versions": {
+"python": "3.12.3",
+"hk": "0.5.0",
+"hk_src": "ddcf5aa10460",
+"torch": "2.10.0+rocm7.2.3.git1a270074",
+"hip": "7.2.53211",
+"triton": "3.6.0+rocm7.2.3.git4ed88892",
+"rocprofv3": "1.1.0"
+},
+"device": "AMD Radeon Graphics",
+"kernels": [
+{
+"rec": {
+"key": "0:gelu_mul_strips_kernel(globals)",
+"name": "gelu_mul_strips_kernel(globals)",
+"launches": 20,
+"durations_ns": [
+62080,
+61521,
+62480,
+62681,
+62480,
+63201,
+62680,
+63240,
+65601,
+63000,
+62840,
+62920,
+62680,
+62681,
+63041,
+63080,
+65241,
+64000,
+63041,
+62841
+],
+"median_ns": 62880.5,
+"noise": 0.0032,
+"grid": {
+"threads": 7340032,
+"workgroup": 64,
+"workgroups": 114688,
+"lds_bytes": 0,
+"scratch": 0,
+"vgpr": 20,
+"agpr": 0,
+"sgpr": 32
+},
+"counters": {
+"SQ_INSTS_SALU": 8028160.0,
+"TCC_EA0_WRREQ_WRITE_DRAM_32B": 3670016.0,
+"TCC_EA0_RDREQ_DRAM_32B": 7340736.0,
+"SQ_INSTS_VALU": 26607616.0,
+"TCC_EA0_WRREQ_sum": 1835008.0,
+"TCC_EA0_RDREQ_sum": 1835360.0,
+"SQ_INSTS_MFMA": 0.0,
+"GRBM_GUI_ACTIVE": 1120208.0,
+"SQ_INSTS_LDS": 0.0,
+"SQ_WAVE_CYCLES": 213829401.5,
+"SQ_BUSY_CU_CYCLES": 29157124.0,
+"SQ_WAVES": 114688.0,
+"SQ_INSTS_VMEM_WR": 114688.0,
+"TCC_MISS_sum": 2752696.0,
+"SQ_INSTS_BRANCH": 0.0,
+"TCC_HIT_sum": 923520.0,
+"SQ_INSTS_VALU_MFMA_MOPS_F8": 0.0,
+"SQ_VALU_MFMA_BUSY_CYCLES": 0.0,
+"SQ_INSTS_SMEM": 1032192.0,
+"SQ_INSTS_VMEM_RD": 229376.0,
+"SQ_INSTS_VALU_MFMA_MOPS_BF16": 0.0,
+"TCC_BUBBLE_sum": 0.0,
+"SQ_INSTS_VALU_MFMA_MOPS_F16": 0.0,
+"SQ_ACTIVE_INST_LDS": 0.0,
+"SQ_ACTIVE_INST_ANY": 38076416.0,
+"SQ_ACTIVE_INST_VMEM": 344064.0,
+"SQ_WAIT_ANY": 88527454.5,
+"SQ_ACTIVE_INST_VALU": 28557312.0,
+"SQ_ACTIVE_INST_SCA": 9060352.0,
+"SQ_WAIT_INST_ANY": 86418151.0,
+"SQ_ACTIVE_INST_MISC": 114688.0,
+"SQ_IFETCH": 6881280.0,
+"SQ_WAIT_INST_LDS": 0.0,
+"SQ_LDS_UNALIGNED_STALL": 0.0,
+"SQ_LDS_BANK_CONFLICT": 0.0,
+"SQ_INSTS_VALU_MFMA_MOPS_F32": 0.0,
+"SQ_LDS_IDX_ACTIVE": 0.0,
+"SQ_LDS_ADDR_CONFLICT": 0.0,
+"LdsLatency": 0.0,
+"VmemLatency": 1319.8014090000001
+},
+"counter_spread": {
+"SQ_INSTS_SALU": 0.0,
+"TCC_EA0_WRREQ_WRITE_DRAM_32B": 0.0,
+"TCC_EA0_RDREQ_DRAM_32B": 0.0,
+"SQ_INSTS_VALU": 0.0,
+"TCC_EA0_WRREQ_sum": 0.0,
+"TCC_EA0_RDREQ_sum": 0.0,
+"SQ_INSTS_MFMA": 0.0,
+"GRBM_GUI_ACTIVE": 0.0003,
+"SQ_INSTS_LDS": 0.0,
+"SQ_WAVE_CYCLES": 0.0048,
+"SQ_BUSY_CU_CYCLES": 0.0058,
+"SQ_WAVES": 0.0,
+"SQ_INSTS_VMEM_WR": 0.0,
+"TCC_MISS_sum": 0.0,
+"SQ_INSTS_BRANCH": 0.0,
+"TCC_HIT_sum": 0.0,
+"SQ_INSTS_VALU_MFMA_MOPS_F8": 0.0,
+"SQ_VALU_MFMA_BUSY_CYCLES": 0.0,
+"SQ_INSTS_SMEM": 0.0,
+"SQ_INSTS_VMEM_RD": 0.0,
+"SQ_INSTS_VALU_MFMA_MOPS_BF16": 0.0,
+"TCC_BUBBLE_sum": 0.0,
+"SQ_INSTS_VALU_MFMA_MOPS_F16": 0.0,
+"SQ_ACTIVE_INST_LDS": 0.0,
+"SQ_ACTIVE_INST_ANY": 0.0,
+"SQ_ACTIVE_INST_VMEM": 0.0,
+"SQ_WAIT_ANY": 0.0083,
+"SQ_ACTIVE_INST_VALU": 0.0,
+"SQ_ACTIVE_INST_SCA": 0.0,
+"SQ_WAIT_INST_ANY": 0.0059,
+"SQ_ACTIVE_INST_MISC": 0.0,
+"SQ_IFETCH": 0.0,
+"SQ_WAIT_INST_LDS": 0.0,
+"SQ_LDS_UNALIGNED_STALL": 0.0,
+"SQ_LDS_BANK_CONFLICT": 0.0,
+"SQ_INSTS_VALU_MFMA_MOPS_F32": 0.0,
+"SQ_LDS_IDX_ACTIVE": 0.0,
+"SQ_LDS_ADDR_CONFLICT": 0.0,
+"LdsLatency": 0.0,
+"VmemLatency": 0.0185
+},
+"counter_pass_ns": {
+"core": 59861.0,
+"mix": 59460.5,
+"wait": 60380.0,
+"lds": 59841.0,
+"latency": 60401.0
+},
+"iters": 20
+},
+"build": {
+"kernel": "gelu_mul_strips",
+"consts": {},
+"arch": "gfx950",
+"warps": 1,
+"threads": 64,
+"lds_bytes": 0,
+"binary": "/ci/hk-cache/1fa85fcfa4f84bee42a63a21a5f44fa1/hk_gelu_mul_strips_1fa85fcfa4f8.cpython-312-x86_64-linux-gnu.so",
+"source": "/ci/hk-cache/1fa85fcfa4f84bee42a63a21a5f44fa1/kernel.cpp",
+"instantiations": [
+{
+"name": "gelu_mul_strips_kernel(globals)",
+"vgpr": 38,
+"agpr": 0,
+"sgpr": 28,
+"vgpr_charged": 40,
+"lds": 0,
+"scratch": 0,
+"spill": 0,
+"occupancy_by_regs": 8,
+"occupancy_by_lds": 8,
+"occupancy": 8,
+"max_waves_per_simd": 8
+}
+]
+},
+"isa": {
+"function": "_Z22gelu_mul_strips_kernel7globals",
+"instructions": 580,
+"total": {
+"instructions": 580,
+"classes": {
+"valu": 215,
+"valu_trans": 17,
+"salu": 70,
+"smem": 9,
+"vmem_load": 2,
+"vmem_store": 1,
+"waitcnt": 7,
+"nop": 258,
+"other": 1
+},
+"waits": {
+"lgkm": 5,
+"vmem": 2
+},
+"mma_flops": 0,
+"bytes_per_lane": {
+"vmem_load": {
+"16": 2
+},
+"vmem_store": {
+"16": 1
+}
+}
+},
+"loops": [],
+"main_loop": null,
+"straight_line": {
+"att": {
+"total": {
+"hits": 145027,
+"latency": 3350840,
+"stall": 2285208,
+"idle": 59220
+},
+"by_class": {
+"smem": {
+"hits": 4041,
+"latency": 52612,
+"stall": 36420,
+"idle": 19060
+},
+"waitcnt:lgkm": {
+"hits": 2245,
+"latency": 72244,
+"stall": 72244,
+"idle": 0
+},
+"salu": {
+"hits": 31430,
+"latency": 256544,
+"stall": 130676,
+"idle": 28728
+},
+"valu": {
+"hits": 96535,
+"latency": 814088,
+"stall": 427516,
+"idle": 648
+},
+"valu_trans": {
+"hits": 7633,
+"latency": 976552,
+"stall": 915704,
+"idle": 40
+},
+"nop": {
+"hits": 449,
+"latency": 1796,
+"stall": 1796,
+"idle": 0
+},
+"vmem_load": {
+"hits": 898,
+"latency": 3888,
+"stall": 132,
+"idle": 7156
+},
+"waitcnt:vmem": {
+"hits": 898,
+"latency": 700440,
+"stall": 700440,
+"idle": 0
+},
+"vmem_store": {
+"hits": 449,
+"latency": 2524,
+"stall": 280,
+"idle": 3588
+},
+"other": {
+"hits": 449,
+"latency": 470152,
+"stall": 0,
+"idle": 0
+}
+}
+}
+},
+"att": {
+"total_cycles": 3350840,
+"waves_traced": 449
+},
+"source": "code object (llvm-objdump)",
+"matrix_dtype": null,
+"att_matrix_insts_per_wave": 0.0,
+"att_matrix_flops_per_wave": 0.0
+},
+"main": true,
+"flops": null,
+"bytes": null
+}
+]
+}

@@ -114,6 +114,9 @@ class Report:
     cases: List[Dict[str, Any]] = field(default_factory=list)
     errors: List[Dict[str, str]] = field(default_factory=list)
     notes: List[str] = field(default_factory=list)
+    #: hk.profile's report of the same call (`check(..., profile=True)`,
+    #: `--profile`): why it runs at the speed it does. docs/profile.md.
+    profile: Optional[Dict[str, Any]] = None
 
     @property
     def status(self) -> str:
@@ -149,7 +152,7 @@ class Report:
                 "arch": self.arch, "mode": self.mode, "device": self.device,
                 "versions": self.versions, "builds": self.builds,
                 "cases": self.cases, "errors": self.errors, "notes": self.notes,
-                "hints": self.hints}
+                "hints": self.hints, **({"profile": self.profile} if self.profile else {})}
 
     def dumps(self, **kw) -> str:
         """`json()` as text."""
@@ -679,7 +682,7 @@ def check(fn, reference: Optional[Callable] = None, inputs=None, *,
           compile_mode: Optional[str] = None,
           bytes: Optional[float] = None, flops: Optional[float] = None,  # noqa: A002
           name: Optional[str] = None, gpu: Optional[bool] = None,
-          build: bool = True, seed: int = 0) -> Report:
+          build: bool = True, seed: int = 0, profile: bool = False) -> Report:
     """Check `fn` against `reference` on `inputs`; see the module docstring
     and docs/check.md.
 
@@ -717,6 +720,10 @@ def check(fn, reference: Optional[Callable] = None, inputs=None, *,
                input and output once)
     gpu        False forces build-only; None uses a GPU when one is there
     build      False skips hipcc (trace only)
+    profile    also run hk.profile on the first case (counters, the thread
+               trace, the ISA and a verdict: docs/profile.md); its report is
+               `report.profile`. `fn` must be nameable (defined at a module's
+               top level); the inputs are passed as tensors
     """
     from .. import target as _target  # noqa: PLC0415
 
@@ -995,7 +1002,27 @@ def check(fn, reference: Optional[Callable] = None, inputs=None, *,
                     f"{'cache' if in_cache else 'DRAM'} ceiling: the byte count "
                     f"overstates the traffic, or the kernel skipped work")
         case["time"] = tm
+    if profile and not report.errors:
+        _attach_profile(report, fn, all_cases[0], consts, seed)
     return report
+
+
+def _attach_profile(report: Report, fn, make, consts, seed: int) -> None:
+    """hk.profile of the first case, into report.profile (a note if it
+    cannot run)."""
+    try:
+        import torch  # noqa: PLC0415
+
+        from ..profile import profile as _profile  # noqa: PLC0415
+
+        torch.manual_seed(seed)
+        args = list(_as_tuple(_call_maker(make, "cuda"))) if make is not None else None
+        p = _profile(fn, args, consts=consts, name=report.name)
+        report.profile = p.json()
+        report.profile["summary"] = str(p)
+    except Exception as e:  # noqa: BLE001
+        report.notes.append(f"profile: {type(e).__name__}: "
+                            f"{str(e).splitlines()[0] if str(e) else ''}")
 
 
 # --------------------------------------------------------------- hints
@@ -1138,6 +1165,9 @@ def summary(r: Report) -> str:
         lines.append(f"  note: {n}")
     for h in r.hints:
         lines.append(f"  hint: {h}")
+    if r.profile:
+        lines.append("  profile:")
+        lines.extend("  " + ln for ln in (r.profile.get("summary") or "").splitlines())
     lines.append(r.status.upper())
     return "\n".join(lines)
 

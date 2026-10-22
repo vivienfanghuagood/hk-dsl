@@ -23,6 +23,7 @@ report.json()                                    # the JSON below, as a dict
 - [Reading the report](#reading-the-report)
 - [Without a GPU, and the other GPU](#without-a-gpu-and-the-other-gpu)
 - [Rules it keeps, and its limits](#rules-it-keeps-and-its-limits)
+- [Why it is slow: `--profile`](#why-it-is-slow---profile)
 
 ## The loop
 
@@ -301,3 +302,13 @@ facts that change a kernel's plan are in [hk.target](api/hk.target.md).
   `versions` carries `hk_commit` where git can see the checkout, and
   `hk_src` (a hash of the package's Python sources) everywhere, so two
   reports from the same code say so.
+
+## Why it is slow: `--profile`
+
+`hk.check` says how fast; [`hk.profile`](profile.md) says why. `--profile`
+(`profile=True` in Python) runs it on the first case after the check: per
+kernel the call launches, the roofline, how busy the matrix core was, the
+grid's rounds and tail, where the waves wait (the counters, and a thread
+trace of one CU), the main loop's instruction mix, and a verdict line. The
+report gains a `profile` key (hk.profile's JSON); the summary ends with its
+lines. On its own: `python -m hk.profile FILE.py:NAME --inputs ...`.
