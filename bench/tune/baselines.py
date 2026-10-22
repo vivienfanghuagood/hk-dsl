@@ -136,7 +136,8 @@ def versions() -> Dict[str, str]:
     for mod in ("triton", "aiter", "flydsl", "vllm"):
         try:
             m = __import__(mod)
-            out[mod] = getattr(m, "__version__", "?")
+            if getattr(m, "__version__", None):
+                out[mod] = m.__version__
         except Exception:  # noqa: BLE001
             pass
     try:

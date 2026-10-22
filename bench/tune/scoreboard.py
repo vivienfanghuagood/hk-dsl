@@ -85,7 +85,7 @@ def summarize(rows, arch: str, split: str) -> dict:
 CARDS = {"gfx950": (2.5e15, 8.0e12, 256), "gfx1100": (122.6e12, 864e9, 96)}
 
 
-def explain(d: dict, records: str = "") -> None:
+def explain(d: dict, records=None) -> None:
     """A sentence per miss: how close the best baseline and hk are to the
     card's compute and memory limits, and -- where hk imports -- the grid of
     the schedule hk ran (workgroups against CUs: the wave quantization)."""
@@ -94,12 +94,15 @@ def explain(d: dict, records: str = "") -> None:
     if records:
         import os  # noqa: PLC0415
 
-        os.environ["HK_TUNE_DIR"] = records
         os.environ["HK_ARCH"] = d["arch"]
         try:
             import hk.schedules as S  # noqa: PLC0415
+            from hk.tune import records as R  # noqa: PLC0415
 
             def sched_of(m, n, k):
+                # The records of the run that measured the shape.
+                os.environ["HK_TUNE_DIR"] = records[(m, n, k)]
+                R.forget()
                 return S.lookup(m, n, k, d["arch"])
         except Exception:  # noqa: BLE001 -- explanation without the grid
             sched_of = None
@@ -142,6 +145,31 @@ def explain(d: dict, records: str = "") -> None:
         s["why"] = "; ".join(parts)
 
 
+def attach_profiles(d: dict, pdir: str) -> None:
+    """hk.profile's verdicts (K2; `python -m hk.profile hk.ops:matmul --vs
+    hipblaslt=torch.nn.functional:linear --json DIR/<M>x<N>x<K>.json`) on
+    the misses: its one line, and its interleaved comparison."""
+    for s in d["misses"]:
+        f = Path(pdir) / f"{s['m']}x{s['n']}x{s['k']}.json"
+        if not f.exists():
+            continue
+        try:
+            p = json.loads(f.read_text())
+        except ValueError:
+            continue
+        line = (p.get("verdict") or {}).get("line", "")
+        cmp_ = p.get("compare") or {}
+        other = ""
+        if cmp_.get("ratio"):
+            ks = cmp_.get("kernels") or []
+            other = (f" -- against {cmp_.get('b')}: {cmp_['ratio']:.3f}x the time"
+                     + (f", its kernel {ks[1].split('_UserArgs')[0][:30]}..."
+                        f"{'MT' + ks[1].split('_MT')[1].split('_')[0] if '_MT' in ks[1] else ''}"
+                        f"{' stream-K' if '_SK' in ks[1] and '_SK0_' not in ks[1] else ''}"
+                        if len(ks) > 1 else ""))
+        s["profile"] = line + other
+
+
 def markdown(d: dict) -> str:
     b, a = d["before"], d["after"]
     meta = d.get("meta", {})
@@ -149,7 +177,8 @@ def markdown(d: dict) -> str:
     lines = [f"# hk.tune scoreboard: {d['arch']}, {d['split']} split, {d['date']}", "",
              f"Device {meta.get('device', '?')}; torch {v.get('torch', '?')}, HIP {v.get('hip', '?')}, "
              f"hipcc `{meta.get('hipcc', '?')}`; "
-             + ", ".join(f"{k} {x}" for k, x in v.items() if k not in ("torch", "hip")) + ".",
+             + ", ".join(f"{k} {x}" for k, x in v.items()
+                         if k not in ("torch", "hip") and x != "?") + ".",
              f"hk-dsl at `{meta.get('commit') or '?'}` (claude/tune). "
              f"Baselines missing: {meta.get('missing') or 'none'}. hk.tune budget "
              f"{meta.get('budget', '?')} GPU-s a shape; scoring {meta.get('sets', '?')} sets x "
@@ -197,6 +226,8 @@ def markdown(d: dict) -> str:
         for s in d["misses"]:
             lines.append(f"- **{s['m']}x{s['n']}x{s['k']}** ({s['after'][0]:.3f}x "
                          f"{s['best_baseline']}): {s.get('why') or '-'}")
+            if s.get("profile"):
+                lines.append(f"  - hk.profile: {s['profile']}")
     wrong = [(s, s["wrong"]) for s in d["shapes"] if s["wrong"]]
     if wrong:
         lines += ["", "Arms dropped at a shape (wrong against fp32, or refused the shape):", ""]
@@ -209,6 +240,8 @@ def markdown(d: dict) -> str:
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("dir", nargs="+", help="result directories; a shape in a later one wins")
+    ap.add_argument("--profiles", default="",
+                    help="a directory of hk.profile JSON reports, <M>x<N>x<K>.json, for the misses")
     ap.add_argument("--explain", action="store_true",
                     help="say why each miss misses (with hk importable: the grid hk ran)")
     ap.add_argument("--arch", default="")
@@ -224,12 +257,16 @@ def main(argv=None) -> int:
         print(f"no {args.split} results in {args.dir}")
         return 2
     for arch, files in by_arch.items():
-        rows = {}
+        rows, where = {}, {}
         for f in files:
-            rows.update({(r["m"], r["n"], r["k"]): r for r in load(f)})
+            for r in load(f):
+                rows[(r["m"], r["n"], r["k"])] = r
+                where[(r["m"], r["n"], r["k"])] = str(Path(f).resolve().parent / "records")
         s = summarize([rows[x] for x in sorted(rows)], arch, args.split)
         if args.explain:
-            explain(s, str(Path(files[-1]).parent / "records"))
+            explain(s, where)
+        if args.profiles:
+            attach_profiles(s, args.profiles)
         md = markdown(s)
         print(md)
         if args.write:
