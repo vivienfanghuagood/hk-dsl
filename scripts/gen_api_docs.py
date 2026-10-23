@@ -776,6 +776,76 @@ def page_templates(since: Since) -> Page:
     return p
 
 
+def page_schedules(since: Since) -> Page:
+    import hk.schedules as S
+
+    p = Page("hk.schedules.md", "`hk.schedules`: schedules as data", doc(S))
+    p.para("The guide is [docs/schedules.md](../schedules.md), the design "
+           "[docs/design/schedules.md](../design/schedules.md).")
+    for n in ["lookup", "space", "from_record", "from_candidate", "families_for",
+              "lookup_attention", "space_attention", "Illegal"]:
+        obj = getattr(S, n)
+        p.entry(f"hk.schedules.{n}", obj, display=f"hk.schedules.{n}",
+                mark=_mark(since, "hk.schedules", n, obj, f"hk.schedules.{n}"),
+                signature=n != "Illegal")
+    for n in ["Schedule", "GemmSchedule", "AttnSchedule", "Step"]:
+        obj = getattr(S, n)
+        p.entry(f"hk.schedules.{n}", obj, display=f"hk.schedules.{n}",
+                mark=_mark(since, "hk.schedules", n, obj, f"hk.schedules.{n}"),
+                signature=n == "Step")
+        if n != "Step":
+            for mn, mv, owner in members(obj):
+                if owner != n:
+                    continue
+                p.entry(f"hk.schedules.{n}.{mn}", mv, display=f"{n}.{mn}", level=4,
+                        signature=not isinstance(mv, property))
+    p.h2("The families")
+    for cls in (S.Rdna, S.Decode, S.PingPong, S.Dp, S.Columns, S.AttnRdna, S.AttnCdna):
+        n = cls.__name__
+        axes = cls.axes()
+        rows = ""
+        if axes:
+            t = ["| knob | default | values searched | seed | what |", "|---|---|---|---|---|"]
+            for a in axes.values():
+                vals = ", ".join(f"`{v!r}`" for v in a.values) or "-"
+                seed = ", ".join(f"`{v!r}`" for v in a.seed) if a.seed else "-"
+                t.append(f"| `{a.name}` | `{a.default!r}` | {vals} | {seed} | "
+                         f"{'(gate) ' if a.gate else ''}{a.doc} |")
+            rows = (f"Family `{cls.family}`, on {', '.join(cls.arches)}.\n\n"
+                    + "\n".join(t))
+        p.entry(f"hk.schedules.{n}", cls, display=f"hk.schedules.{n}",
+                mark=_mark(since, "hk.schedules", n, cls, f"hk.schedules.{n}"),
+                signature=False, extra=rows)
+    return p
+
+
+def page_tune(since: Since) -> Page:
+    import hk.tune as T
+    from hk.tune import cost, measure, records, search, space, stats
+
+    p = Page("hk.tune.md", "`hk.tune`: a GEMM schedule search", doc(T))
+    p.para("The guide is [docs/tune.md](../tune.md); the benchmark that judges it "
+           "is [bench/tune](../../bench/tune/README.md).")
+    for n in ["tune", "tune_shapes", "model_shapes", "parse_shape", "torch_baselines", "explain"]:
+        obj = getattr(T, n)
+        p.entry(f"hk.tune.{n}", obj, display=f"hk.tune.{n}",
+                mark=_mark(since, "hk.tune", n, obj, f"hk.tune.{n}"))
+    for mod, names in ((search, ["Search", "Result"]),
+                       (stats, ["decide", "confirm", "Decision", "halve", "summary"]),
+                       (records, ["user_route", "save", "load", "path", "bucket"]),
+                       (space, ["provider", "ScheduleSpace", "Candidate"]),
+                       (cost, ["estimate"]),
+                       (measure, ["GemmBench", "Compiler"])):
+        modname = mod.__name__
+        p.h2(f"`{modname}`")
+        p.para(doc(mod).split("\n\n")[0])
+        for n in names:
+            obj = getattr(mod, n)
+            p.entry(f"{modname}.{n}", obj, display=f"{modname}.{n}",
+                    mark=_mark(since, modname, n, obj, f"{modname}.{n}"))
+    return p
+
+
 def page_check(since: Since) -> Page:
     import hk.check as C
 
@@ -953,6 +1023,8 @@ def build_pages() -> List[Page]:
     pages.append(page_module(since, "hk.dsl.collective", "hk.collective"))
     pages.append(page_ops(since))
     pages.append(page_templates(since))
+    pages.append(page_schedules(since))
+    pages.append(page_tune(since))
     pages.append(page_check(since))
     pages.append(page_profile(since))
     pages.append(page_target(since))

@@ -1,0 +1,1623 @@
+{
+ "arch": "gfx950",
+ "split": "acceptance",
+ "date": "2026-10-23",
+ "target": 0.95,
+ "share_target": 0.8,
+ "before": {
+  "share": 0.0,
+  "reached": 0,
+  "of": 25,
+  "median": 0.697,
+  "worst": 0.244,
+  "geomean": 0.654
+ },
+ "after": {
+  "share": 0.52,
+  "reached": 13,
+  "of": 25,
+  "median": 0.95,
+  "worst": 0.773,
+  "geomean": 0.955
+ },
+ "routed": {
+  "share": 0.88,
+  "reached": 22,
+  "of": 25,
+  "median": 1.0,
+  "worst": 0.924,
+  "geomean": 1.0
+ },
+ "gpu_minutes_per_shape": {
+  "mean": 0.09,
+  "max": 0.22,
+  "total": 2.3
+ },
+ "wall_minutes_per_shape": {
+  "mean": 0.22,
+  "max": 0.38
+ },
+ "wins": 21,
+ "meta": {
+  "arch": "gfx950",
+  "date": "2026-10-22",
+  "by": "hk.tune",
+  "device": "AMD Instinct MI355X",
+  "torch": "2.12.0+rocm10.0.0",
+  "hip": "7.15.26333",
+  "toolchain": "1a4356139bbcbbb2909e107ee635d996",
+  "hipcc": "HIP version: 7.15.26333-0000000",
+  "versions": {
+   "torch": "2.12.0+rocm10.0.0",
+   "hip": "7.15.26333",
+   "triton": "3.8.0",
+   "flydsl": "0.3.4.1",
+   "vllm": "0.32.1rc1.dev36+ge68efc685",
+   "amd-aiter": "0.1.25"
+  },
+  "missing": {},
+  "commit": "f0dff9a",
+  "sets": 3,
+  "rounds": 7,
+  "budget": 60.0,
+  "split": "acceptance"
+ },
+ "shapes": [
+  {
+   "m": 1,
+   "n": 4608,
+   "k": 9216,
+   "best_baseline": "torch",
+   "best_us": 18.62,
+   "before": [
+    0.7483,
+    0.7476,
+    0.7512
+   ],
+   "after": [
+    1.0873,
+    1.0829,
+    1.0933
+   ],
+   "before_us": 24.86,
+   "after_us": 17.13,
+   "route_before": "decode",
+   "route_after": "u:dp:16_x32_l16x64_ntb_pl0_sp1_sk8_w1_g16_c16",
+   "verdict": "win",
+   "gain": 0.44188,
+   "bar": 0.02699,
+   "tune_gpu_s": 5.62,
+   "tune_wall_s": 20.5,
+   "baselines_us": {
+    "torch": 18.62,
+    "tunableop": 20.15,
+    "aiter": 20.17,
+    "aiter_triton": 24.55,
+    "flydsl": 144.36,
+    "triton": 52.92
+   },
+   "wrong": {
+    "base:hipkittens": "ValueError: M=1, N=4608: both must be multiples of 256; the kernel computes whole 256x256 tiles and its C store is unpredicated, so a partial tile would write past the end "
+   },
+   "reached": true,
+   "routed": [
+    1.0872
+   ],
+   "route_to_engine": false
+  },
+  {
+   "m": 8,
+   "n": 3072,
+   "k": 8192,
+   "best_baseline": "tunableop",
+   "best_us": 12.0,
+   "before": [
+    0.757,
+    0.7549,
+    0.7571
+   ],
+   "after": [
+    1.0031,
+    0.9928,
+    1.0033
+   ],
+   "before_us": 15.85,
+   "after_us": 11.96,
+   "route_before": "decode",
+   "route_after": "u:dp:16_x96_l16x64_ntb_sk8_s4_w1_c64",
+   "verdict": "win",
+   "gain": 0.32448,
+   "bar": 0.03897,
+   "tune_gpu_s": 3.79,
+   "tune_wall_s": 16.1,
+   "baselines_us": {
+    "torch": 15.14,
+    "tunableop": 12.0,
+    "aiter": 12.01,
+    "aiter_triton": 14.53,
+    "flydsl": 125.78,
+    "triton": 45.17
+   },
+   "wrong": {
+    "base:hipkittens": "ValueError: M=8, N=3072: both must be multiples of 256; the kernel computes whole 256x256 tiles and its C store is unpredicated, so a partial tile would write past the end "
+   },
+   "reached": true,
+   "routed": [
+    1.0029
+   ],
+   "route_to_engine": false
+  },
+  {
+   "m": 8,
+   "n": 55296,
+   "k": 5120,
+   "best_baseline": "aiter",
+   "best_us": 84.44,
+   "before": [
+    0.7261,
+    0.7033,
+    0.7266
+   ],
+   "after": [
+    1.0017,
+    0.9706,
+    1.0057
+   ],
+   "before_us": 116.32,
+   "after_us": 84.16,
+   "route_before": "decode",
+   "route_after": "u:dp:16_x32_k128_l16x64_ntb_sp1_s5_w1_c16",
+   "verdict": "win",
+   "gain": 0.39963,
+   "bar": 0.02295,
+   "tune_gpu_s": 2.74,
+   "tune_wall_s": 19.1,
+   "baselines_us": {
+    "torch": 84.58,
+    "tunableop": 84.64,
+    "aiter": 84.44,
+    "aiter_triton": 96.68,
+    "flydsl": 106.92,
+    "triton": 94.16
+   },
+   "wrong": {
+    "base:hipkittens": "ValueError: M=8, N=55296: both must be multiples of 256; the kernel computes whole 256x256 tiles and its C store is unpredicated, so a partial tile would write past the end"
+   },
+   "reached": true,
+   "routed": [
+    1.0033
+   ],
+   "route_to_engine": false
+  },
+  {
+   "m": 16,
+   "n": 4096,
+   "k": 7168,
+   "best_baseline": "aiter_triton",
+   "best_us": 12.53,
+   "before": [
+    0.7306,
+    0.7296,
+    0.7328
+   ],
+   "after": [
+    0.95,
+    0.9487,
+    0.9552
+   ],
+   "before_us": 17.15,
+   "after_us": 13.21,
+   "route_before": "decode",
+   "route_after": "u:dp:16_x64_l16x64_ntb_sk4_s4_w1_g16_c64",
+   "verdict": "win",
+   "gain": 0.32281,
+   "bar": 0.02394,
+   "tune_gpu_s": 5.85,
+   "tune_wall_s": 19.4,
+   "baselines_us": {
+    "torch": 14.26,
+    "tunableop": 14.22,
+    "aiter": 14.2,
+    "aiter_triton": 12.53,
+    "flydsl": 113.45,
+    "triton": 41.16
+   },
+   "wrong": {
+    "base:hipkittens": "ValueError: M=16, N=4096: both must be multiples of 256; the kernel computes whole 256x256 tiles and its C store is unpredicated, so a partial tile would write past the end"
+   },
+   "reached": true,
+   "routed": [
+    0.9484
+   ],
+   "route_to_engine": false
+  },
+  {
+   "m": 16,
+   "n": 5120,
+   "k": 5120,
+   "best_baseline": "aiter",
+   "best_us": 12.86,
+   "before": [
+    0.5753,
+    0.5729,
+    0.5777
+   ],
+   "after": [
+    1.0607,
+    1.0394,
+    1.0699
+   ],
+   "before_us": 22.36,
+   "after_us": 12.16,
+   "route_before": "decode",
+   "route_after": "u:dp:16_x32_k128_l16x64_ntb_s5_w1_g16_c64",
+   "verdict": "win",
+   "gain": 0.81067,
+   "bar": 0.0332,
+   "tune_gpu_s": 3.03,
+   "tune_wall_s": 16.0,
+   "baselines_us": {
+    "torch": 15.29,
+    "tunableop": 15.14,
+    "aiter": 12.86,
+    "aiter_triton": 13.81,
+    "flydsl": 84.32,
+    "triton": 30.35
+   },
+   "wrong": {
+    "base:hipkittens": "ValueError: M=16, N=5120: both must be multiples of 256; the kernel computes whole 256x256 tiles and its C store is unpredicated, so a partial tile would write past the end"
+   },
+   "reached": true,
+   "routed": [
+    1.0578
+   ],
+   "route_to_engine": false
+  },
+  {
+   "m": 16,
+   "n": 7168,
+   "k": 8192,
+   "best_baseline": "aiter_triton",
+   "best_us": 21.38,
+   "before": [
+    0.5967,
+    0.5966,
+    0.5984
+   ],
+   "after": [
+    1.0541,
+    1.0366,
+    1.0583
+   ],
+   "before_us": 35.82,
+   "after_us": 20.28,
+   "route_before": "decode",
+   "route_after": "u:dp:16_x32_k256_l16x64_ntb_sp1_s4_w1_c0",
+   "verdict": "win",
+   "gain": 0.75968,
+   "bar": 0.0247,
+   "tune_gpu_s": 2.35,
+   "tune_wall_s": 14.1,
+   "baselines_us": {
+    "torch": 33.96,
+    "tunableop": 26.49,
+    "aiter": 25.37,
+    "aiter_triton": 21.38,
+    "flydsl": 127.46,
+    "triton": 47.74
+   },
+   "wrong": {
+    "base:hipkittens": "ValueError: M=16, N=7168: both must be multiples of 256; the kernel computes whole 256x256 tiles and its C store is unpredicated, so a partial tile would write past the end"
+   },
+   "reached": true,
+   "routed": [
+    1.0541
+   ],
+   "route_to_engine": false
+  },
+  {
+   "m": 128,
+   "n": 4096,
+   "k": 512,
+   "best_baseline": "aiter",
+   "best_us": 4.01,
+   "before": [
+    0.6967,
+    0.6942,
+    0.6985
+   ],
+   "after": [
+    1.1145,
+    1.1142,
+    1.1216
+   ],
+   "before_us": 5.75,
+   "after_us": 3.59,
+   "route_before": "dp64",
+   "route_after": "u:dp:32_x64_s4_c16",
+   "verdict": "win",
+   "gain": 0.98138,
+   "bar": 0.01556,
+   "tune_gpu_s": 5.33,
+   "tune_wall_s": 14.8,
+   "baselines_us": {
+    "torch": 5.19,
+    "tunableop": 5.14,
+    "aiter": 4.01,
+    "aiter_triton": 4.03,
+    "flydsl": 14.46,
+    "triton": 4.72
+   },
+   "wrong": {
+    "base:hipkittens": "ValueError: M=128, N=4096: both must be multiples of 256; the kernel computes whole 256x256 tiles and its C store is unpredicated, so a partial tile would write past the en"
+   },
+   "reached": true,
+   "routed": [
+    1.1162
+   ],
+   "route_to_engine": false
+  },
+  {
+   "m": 128,
+   "n": 4608,
+   "k": 36864,
+   "best_baseline": "aiter",
+   "best_us": 69.73,
+   "before": [
+    0.2438,
+    0.2436,
+    0.2439
+   ],
+   "after": [
+    0.7732,
+    0.7696,
+    0.7736
+   ],
+   "before_us": 286.03,
+   "after_us": 90.25,
+   "route_before": "dp64",
+   "route_after": "u:dp:l16x64_ntb_sk6_g16",
+   "verdict": "win",
+   "gain": 2.17002,
+   "bar": 0.01348,
+   "tune_gpu_s": 2.25,
+   "tune_wall_s": 14.5,
+   "baselines_us": {
+    "torch": 73.12,
+    "tunableop": 69.75,
+    "aiter": 69.73,
+    "aiter_triton": 161.45,
+    "flydsl": 574.44,
+    "triton": 249.41
+   },
+   "wrong": {
+    "base:hipkittens": "ValueError: M=128, N=4608: both must be multiples of 256; the kernel computes whole 256x256 tiles and its C store is unpredicated, so a partial tile would write past the en"
+   },
+   "reached": false,
+   "routed": [
+    0.9537
+   ],
+   "route_to_engine": true,
+   "why": "best 624 TFLOP/s, 5.02 TB/s; hk 482 TFLOP/s, 3.88 TB/s; memory-bound: the best baseline streams at 63% of HBM, hk at 49%; hk ran dp 128x128 x6 K shares: 216 workgroups, 0.84 of 256 CUs"
+  },
+  {
+   "m": 128,
+   "n": 5120,
+   "k": 14336,
+   "best_baseline": "torch",
+   "best_us": 40.14,
+   "before": [
+    0.3512,
+    0.3507,
+    0.3513
+   ],
+   "after": [
+    0.9311,
+    0.9288,
+    0.9323
+   ],
+   "before_us": 114.29,
+   "after_us": 43.13,
+   "route_before": "dp64",
+   "route_after": "u:pp:128_l16x64_ntb_sk8_c32",
+   "verdict": "win",
+   "gain": 1.68525,
+   "bar": 0.01194,
+   "tune_gpu_s": 2.13,
+   "tune_wall_s": 9.9,
+   "baselines_us": {
+    "torch": 40.14,
+    "tunableop": 43.69,
+    "aiter": 42.8,
+    "aiter_triton": 65.23,
+    "flydsl": 230.57,
+    "triton": 97.13
+   },
+   "wrong": {
+    "base:hipkittens": "ValueError: M=128, N=5120: both must be multiples of 256; the kernel computes whole 256x256 tiles and its C store is unpredicated, so a partial tile would write past the en"
+   },
+   "reached": false,
+   "routed": [
+    1.0
+   ],
+   "route_to_engine": true,
+   "why": "best 468 TFLOP/s, 3.78 TB/s; hk 436 TFLOP/s, 3.52 TB/s; neither limit is near: latency, launch or occupancy; hk ran pp 128x256 x8 K shares: 160 workgroups, 0.62 of 256 CUs"
+  },
+  {
+   "m": 512,
+   "n": 4096,
+   "k": 7168,
+   "best_baseline": "torch",
+   "best_us": 41.58,
+   "before": [
+    0.7318,
+    0.7269,
+    0.7318
+   ],
+   "after": [
+    1.0179,
+    1.013,
+    1.0181
+   ],
+   "before_us": 57.01,
+   "after_us": 40.95,
+   "route_before": "dp64",
+   "route_after": "u:pp:x128_es0_sk4_g16_c32",
+   "verdict": "win",
+   "gain": 0.38759,
+   "bar": 0.02063,
+   "tune_gpu_s": 6.92,
+   "tune_wall_s": 16.6,
+   "baselines_us": {
+    "torch": 41.58,
+    "tunableop": 46.2,
+    "aiter": 46.07,
+    "aiter_triton": 45.55,
+    "flydsl": 129.72,
+    "hipkittens": 136.33,
+    "triton": 59.53
+   },
+   "wrong": {},
+   "reached": true,
+   "routed": [
+    1.0155
+   ],
+   "route_to_engine": false
+  },
+  {
+   "m": 512,
+   "n": 7168,
+   "k": 8192,
+   "best_baseline": "aiter",
+   "best_us": 68.41,
+   "before": [
+    0.6611,
+    0.6574,
+    0.6657
+   ],
+   "after": [
+    1.0627,
+    1.0555,
+    1.0663
+   ],
+   "before_us": 103.47,
+   "after_us": 64.52,
+   "route_before": "dp64",
+   "route_after": "u:pp:lb0_sk4",
+   "verdict": "win",
+   "gain": 0.59734,
+   "bar": 0.03121,
+   "tune_gpu_s": 2.24,
+   "tune_wall_s": 9.8,
+   "baselines_us": {
+    "torch": 68.45,
+    "tunableop": 71.12,
+    "aiter": 68.41,
+    "aiter_triton": 93.52,
+    "flydsl": 139.17,
+    "hipkittens": 141.61,
+    "triton": 111.09
+   },
+   "wrong": {},
+   "reached": true,
+   "routed": [
+    1.0602
+   ],
+   "route_to_engine": false
+  },
+  {
+   "m": 512,
+   "n": 8192,
+   "k": 3584,
+   "best_baseline": "torch",
+   "best_us": 35.35,
+   "before": [
+    0.6616,
+    0.6576,
+    0.671
+   ],
+   "after": [
+    0.9057,
+    0.8882,
+    0.9073
+   ],
+   "before_us": 53.43,
+   "after_us": 39.32,
+   "route_before": "dp64",
+   "route_after": "u:dp:pl0_s4_c0",
+   "verdict": "win",
+   "gain": 0.36341,
+   "bar": 0.01,
+   "tune_gpu_s": 2.31,
+   "tune_wall_s": 6.6,
+   "baselines_us": {
+    "torch": 35.35,
+    "tunableop": 36.02,
+    "aiter": 42.92,
+    "aiter_triton": 47.16,
+    "flydsl": 70.37,
+    "hipkittens": 73.88,
+    "triton": 52.29
+   },
+   "wrong": {},
+   "reached": false,
+   "routed": [
+    1.0
+   ],
+   "route_to_engine": true,
+   "why": "best 850 TFLOP/s, 2.00 TB/s; hk 765 TFLOP/s, 1.80 TB/s; neither limit is near: latency, launch or occupancy; hk ran dp 128x128: 256 workgroups, 1.00 of 256 CUs"
+  },
+  {
+   "m": 1024,
+   "n": 5120,
+   "k": 14336,
+   "best_baseline": "tunableop",
+   "best_us": 123.2,
+   "before": [
+    0.4602,
+    0.4593,
+    0.4616
+   ],
+   "after": [
+    0.7753,
+    0.7724,
+    0.7776
+   ],
+   "before_us": 267.57,
+   "after_us": 159.11,
+   "route_before": "dp128",
+   "route_after": "u:pp:sk2_g16",
+   "verdict": "win",
+   "gain": 0.68245,
+   "bar": 0.01971,
+   "tune_gpu_s": 5.29,
+   "tune_wall_s": 12.4,
+   "baselines_us": {
+    "torch": 126.91,
+    "tunableop": 123.2,
+    "aiter": 123.41,
+    "aiter_triton": 318.02,
+    "flydsl": 256.83,
+    "hipkittens": 272.4,
+    "triton": 262.3
+   },
+   "wrong": {},
+   "reached": false,
+   "routed": [
+    0.9707
+   ],
+   "route_to_engine": true,
+   "why": "best 1220 TFLOP/s, 1.51 TB/s; hk 945 TFLOP/s, 1.17 TB/s; compute-bound: the best baseline at 49% of the bf16 peak, hk at 38%; hk ran pp 256x256 x2 K shares: 160 workgroups, 0.62 of 256 CUs"
+  },
+  {
+   "m": 2048,
+   "n": 4096,
+   "k": 1024,
+   "best_baseline": "tunableop",
+   "best_us": 18.36,
+   "before": [
+    0.744,
+    0.7429,
+    0.747
+   ],
+   "after": [
+    0.886,
+    0.8837,
+    0.8872
+   ],
+   "before_us": 24.67,
+   "after_us": 20.77,
+   "route_before": "dp128",
+   "route_after": "u:pp:128_g4_c32",
+   "verdict": "win",
+   "gain": 0.18722,
+   "bar": 0.02552,
+   "tune_gpu_s": 4.38,
+   "tune_wall_s": 13.4,
+   "baselines_us": {
+    "torch": 19.86,
+    "tunableop": 18.36,
+    "aiter": 18.4,
+    "aiter_triton": 35.46,
+    "flydsl": 26.88,
+    "hipkittens": 26.96,
+    "triton": 23.63
+   },
+   "wrong": {},
+   "reached": false,
+   "routed": [
+    0.9244
+   ],
+   "route_to_engine": true,
+   "why": "best 936 TFLOP/s, 1.60 TB/s; hk 827 TFLOP/s, 1.41 TB/s; neither limit is near: latency, launch or occupancy; hk ran pp 128x256: 256 workgroups, 1.00 of 256 CUs"
+  },
+  {
+   "m": 2048,
+   "n": 4608,
+   "k": 4096,
+   "best_baseline": "torch",
+   "best_us": 69.28,
+   "before": [
+    0.6362,
+    0.6353,
+    0.6362
+   ],
+   "after": [
+    0.8972,
+    0.8906,
+    0.9029
+   ],
+   "before_us": 108.89,
+   "after_us": 77.22,
+   "route_before": "dp128",
+   "route_after": "u:pp:g4_c16",
+   "verdict": "win",
+   "gain": 0.422,
+   "bar": 0.0147,
+   "tune_gpu_s": 5.14,
+   "tune_wall_s": 11.0,
+   "baselines_us": {
+    "torch": 69.28,
+    "aiter_triton": 106.83,
+    "flydsl": 78.84,
+    "hipkittens": 80.1,
+    "triton": 102.38
+   },
+   "wrong": {
+    "base:tunableop": 6.183276387651955e+35,
+    "base:aiter": 3.8506631396155886e+35
+   },
+   "reached": false,
+   "routed": [
+    1.0
+   ],
+   "route_to_engine": true,
+   "why": "best 1116 TFLOP/s, 1.06 TB/s; hk 1001 TFLOP/s, 0.95 TB/s; compute-bound: the best baseline at 45% of the bf16 peak, hk at 40%; hk ran pp 256x256: 144 workgroups, 0.56 of 256 CUs"
+  },
+  {
+   "m": 2048,
+   "n": 7168,
+   "k": 8192,
+   "best_baseline": "aiter",
+   "best_us": 163.86,
+   "before": [
+    0.6239,
+    0.6225,
+    0.6295
+   ],
+   "after": [
+    0.9942,
+    0.9918,
+    0.9993
+   ],
+   "before_us": 262.64,
+   "after_us": 164.5,
+   "route_before": "dp128",
+   "route_after": "u:pp:g4_c32",
+   "verdict": "win",
+   "gain": 0.5672,
+   "bar": 0.03786,
+   "tune_gpu_s": 5.94,
+   "tune_wall_s": 11.6,
+   "baselines_us": {
+    "torch": 173.35,
+    "tunableop": 164.49,
+    "aiter": 163.86,
+    "aiter_triton": 205.7,
+    "flydsl": 165.5,
+    "hipkittens": 168.61,
+    "triton": 211.36
+   },
+   "wrong": {},
+   "reached": true,
+   "routed": [
+    0.9961
+   ],
+   "route_to_engine": false
+  },
+  {
+   "m": 2048,
+   "n": 8192,
+   "k": 3584,
+   "best_baseline": "tunableop",
+   "best_us": 83.85,
+   "before": [
+    0.6279,
+    0.6269,
+    0.6312
+   ],
+   "after": [
+    0.9904,
+    0.9862,
+    0.9933
+   ],
+   "before_us": 133.24,
+   "after_us": 84.66,
+   "route_before": "dp128",
+   "route_after": "u:pp:g4_c32",
+   "verdict": "win",
+   "gain": 0.56472,
+   "bar": 0.01688,
+   "tune_gpu_s": 3.23,
+   "tune_wall_s": 5.3,
+   "baselines_us": {
+    "torch": 84.01,
+    "tunableop": 83.85,
+    "aiter": 85.47,
+    "aiter_triton": 103.02,
+    "flydsl": 84.95,
+    "hipkittens": 88.0,
+    "triton": 105.54
+   },
+   "wrong": {},
+   "reached": true,
+   "routed": [
+    0.9981
+   ],
+   "route_to_engine": true
+  },
+  {
+   "m": 2048,
+   "n": 16384,
+   "k": 4096,
+   "best_baseline": "torch",
+   "best_us": 186.28,
+   "before": [
+    0.609,
+    0.6061,
+    0.6172
+   ],
+   "after": [
+    0.995,
+    0.9907,
+    0.9963
+   ],
+   "before_us": 305.89,
+   "after_us": 187.83,
+   "route_before": "dp128",
+   "route_after": "u:pp:g4",
+   "verdict": "win",
+   "gain": 0.60522,
+   "bar": 0.01161,
+   "tune_gpu_s": 3.13,
+   "tune_wall_s": 4.2,
+   "baselines_us": {
+    "torch": 186.28,
+    "tunableop": 190.79,
+    "aiter": 189.09,
+    "aiter_triton": 233.25,
+    "flydsl": 189.07,
+    "hipkittens": 201.45,
+    "triton": 241.43
+   },
+   "wrong": {},
+   "reached": true,
+   "routed": [
+    1.0
+   ],
+   "route_to_engine": true
+  },
+  {
+   "m": 2048,
+   "n": 55296,
+   "k": 5120,
+   "best_baseline": "aiter",
+   "best_us": 761.0,
+   "before": [
+    0.5166,
+    0.5159,
+    0.5183
+   ],
+   "after": [
+    0.9486,
+    0.9441,
+    0.9557
+   ],
+   "before_us": 1473.01,
+   "after_us": 802.22,
+   "route_before": "dp128",
+   "route_after": "u:pp:es0_c32",
+   "verdict": "win",
+   "gain": 0.79892,
+   "bar": 0.01226,
+   "tune_gpu_s": 8.3,
+   "tune_wall_s": 14.3,
+   "baselines_us": {
+    "torch": 793.78,
+    "tunableop": 761.28,
+    "aiter": 761.0,
+    "aiter_triton": 974.33,
+    "flydsl": 956.54,
+    "hipkittens": 825.9,
+    "triton": 1009.89
+   },
+   "wrong": {},
+   "reached": false,
+   "routed": [
+    0.9587
+   ],
+   "route_to_engine": true,
+   "why": "best 1524 TFLOP/s, 1.07 TB/s; hk 1446 TFLOP/s, 1.01 TB/s; compute-bound: the best baseline at 61% of the bf16 peak, hk at 58%; hk ran pp 256x256: 1728 workgroups, 6.75 of 256 CUs"
+  },
+  {
+   "m": 4096,
+   "n": 3072,
+   "k": 4096,
+   "best_baseline": "aiter",
+   "best_us": 76.12,
+   "before": [
+    0.8875,
+    0.8812,
+    0.8943
+   ],
+   "after": [
+    0.884,
+    0.8824,
+    0.8967
+   ],
+   "before_us": 85.9,
+   "after_us": 86.11,
+   "route_before": "pp",
+   "route_after": "pp",
+   "verdict": "tie",
+   "gain": -0.0121,
+   "bar": 0.02387,
+   "tune_gpu_s": 7.18,
+   "tune_wall_s": 11.5,
+   "baselines_us": {
+    "torch": 76.55,
+    "tunableop": 76.47,
+    "aiter": 76.12,
+    "aiter_triton": 110.68,
+    "flydsl": 87.96,
+    "hipkittens": 87.04,
+    "triton": 113.65
+   },
+   "wrong": {},
+   "reached": false,
+   "routed": [
+    0.9944
+   ],
+   "route_to_engine": true,
+   "why": "best 1354 TFLOP/s, 1.10 TB/s; hk 1197 TFLOP/s, 0.97 TB/s; compute-bound: the best baseline at 54% of the bf16 peak, hk at 48%; hk ran pp 256x256: 192 workgroups, 0.75 of 256 CUs"
+  },
+  {
+   "m": 4096,
+   "n": 3072,
+   "k": 8192,
+   "best_baseline": "torch",
+   "best_us": 140.33,
+   "before": [
+    0.9071,
+    0.903,
+    0.9143
+   ],
+   "after": [
+    0.9101,
+    0.9054,
+    0.9153
+   ],
+   "before_us": 154.7,
+   "after_us": 154.44,
+   "route_before": "pp",
+   "route_after": "pp",
+   "verdict": "tie",
+   "gain": 0.00674,
+   "bar": 0.01954,
+   "tune_gpu_s": 5.38,
+   "tune_wall_s": 8.6,
+   "baselines_us": {
+    "torch": 140.33,
+    "tunableop": 141.44,
+    "aiter": 140.65,
+    "aiter_triton": 195.69,
+    "flydsl": 157.61,
+    "hipkittens": 157.77,
+    "triton": 213.79
+   },
+   "wrong": {},
+   "reached": false,
+   "routed": [
+    1.0
+   ],
+   "route_to_engine": true,
+   "why": "best 1469 TFLOP/s, 1.02 TB/s; hk 1335 TFLOP/s, 0.92 TB/s; compute-bound: the best baseline at 59% of the bf16 peak, hk at 53%; hk ran pp 256x256: 192 workgroups, 0.75 of 256 CUs"
+  },
+  {
+   "m": 4096,
+   "n": 4608,
+   "k": 4096,
+   "best_baseline": "tunableop",
+   "best_us": 110.39,
+   "before": [
+    0.7122,
+    0.7094,
+    0.7166
+   ],
+   "after": [
+    0.8907,
+    0.8868,
+    0.8941
+   ],
+   "before_us": 155.34,
+   "after_us": 124.26,
+   "route_before": "pp",
+   "route_after": "u:cols:wave:pp:c32|dp:sk2_s4_x4_g16",
+   "verdict": "win",
+   "gain": 0.25503,
+   "bar": 0.01405,
+   "tune_gpu_s": 13.03,
+   "tune_wall_s": 22.5,
+   "baselines_us": {
+    "torch": 115.74,
+    "tunableop": 110.39,
+    "aiter": 110.54,
+    "aiter_triton": 163.93,
+    "flydsl": 155.98,
+    "hipkittens": 157.98,
+    "triton": 178.25
+   },
+   "wrong": {},
+   "reached": false,
+   "routed": [
+    0.9538
+   ],
+   "route_to_engine": true,
+   "why": "best 1401 TFLOP/s, 0.99 TB/s; hk 1244 TFLOP/s, 0.88 TB/s; compute-bound: the best baseline at 56% of the bf16 peak, hk at 50%; hk ran pp 256x256: 256 workgroups, 1.00 of 256 CUs; dp 128x128 x2 K shares: 256 workgroups, 1.00 of 256 CUs"
+  },
+  {
+   "m": 8192,
+   "n": 5120,
+   "k": 5120,
+   "best_baseline": "tunableop",
+   "best_us": 295.72,
+   "before": [
+    0.9345,
+    0.9337,
+    0.935
+   ],
+   "after": [
+    0.9347,
+    0.9329,
+    0.9348
+   ],
+   "before_us": 316.55,
+   "after_us": 316.74,
+   "route_before": "pp",
+   "route_after": "pp",
+   "verdict": "tie",
+   "gain": 0.01736,
+   "bar": 0.01923,
+   "tune_gpu_s": 9.57,
+   "tune_wall_s": 12.6,
+   "baselines_us": {
+    "torch": 300.18,
+    "tunableop": 295.72,
+    "aiter": 298.24,
+    "aiter_triton": 362.19,
+    "flydsl": 324.3,
+    "hipkittens": 320.44,
+    "triton": 440.89
+   },
+   "wrong": {},
+   "reached": false,
+   "routed": [
+    0.9851
+   ],
+   "route_to_engine": true,
+   "why": "best 1452 TFLOP/s, 0.74 TB/s; hk 1356 TFLOP/s, 0.70 TB/s; compute-bound: the best baseline at 58% of the bf16 peak, hk at 54%; hk ran pp 256x256: 640 workgroups, 2.50 of 256 CUs"
+  },
+  {
+   "m": 8192,
+   "n": 14336,
+   "k": 8192,
+   "best_baseline": "tunableop",
+   "best_us": 1191.68,
+   "before": [
+    0.9444,
+    0.9384,
+    0.9452
+   ],
+   "after": [
+    0.9474,
+    0.9467,
+    0.9491
+   ],
+   "before_us": 1263.91,
+   "after_us": 1257.69,
+   "route_before": "pp",
+   "route_after": "pp",
+   "verdict": "tie",
+   "gain": 0.01156,
+   "bar": 0.01402,
+   "tune_gpu_s": 10.39,
+   "tune_wall_s": 13.5,
+   "baselines_us": {
+    "torch": 1314.77,
+    "tunableop": 1191.68,
+    "aiter": 1230.23,
+    "aiter_triton": 1466.28,
+    "flydsl": 1263.64,
+    "hipkittens": 1272.44,
+    "triton": 1724.16
+   },
+   "wrong": {},
+   "reached": false,
+   "routed": [
+    0.9475
+   ],
+   "route_to_engine": false,
+   "why": "best 1615 TFLOP/s, 0.51 TB/s; hk 1530 TFLOP/s, 0.48 TB/s; compute-bound: the best baseline at 65% of the bf16 peak, hk at 61%; hk ran pp 256x256: 1792 workgroups, 7.00 of 256 CUs"
+  },
+  {
+   "m": 8192,
+   "n": 18432,
+   "k": 4608,
+   "best_baseline": "tunableop",
+   "best_us": 884.49,
+   "before": [
+    0.9205,
+    0.9193,
+    0.9233
+   ],
+   "after": [
+    0.9596,
+    0.9564,
+    0.962
+   ],
+   "before_us": 958.69,
+   "after_us": 921.56,
+   "route_before": "pp",
+   "route_after": "u:pp:g4",
+   "verdict": "win",
+   "gain": 0.03858,
+   "bar": 0.01072,
+   "tune_gpu_s": 10.44,
+   "tune_wall_s": 13.4,
+   "baselines_us": {
+    "torch": 888.16,
+    "tunableop": 884.49,
+    "aiter": 887.77,
+    "aiter_triton": 1160.62,
+    "flydsl": 922.76,
+    "hipkittens": 965.88,
+    "triton": 1260.1
+   },
+   "wrong": {},
+   "reached": true,
+   "routed": [
+    0.9959
+   ],
+   "route_to_engine": true
+  }
+ ],
+ "misses": [
+  {
+   "m": 128,
+   "n": 4608,
+   "k": 36864,
+   "best_baseline": "aiter",
+   "best_us": 69.73,
+   "before": [
+    0.2438,
+    0.2436,
+    0.2439
+   ],
+   "after": [
+    0.7732,
+    0.7696,
+    0.7736
+   ],
+   "before_us": 286.03,
+   "after_us": 90.25,
+   "route_before": "dp64",
+   "route_after": "u:dp:l16x64_ntb_sk6_g16",
+   "verdict": "win",
+   "gain": 2.17002,
+   "bar": 0.01348,
+   "tune_gpu_s": 2.25,
+   "tune_wall_s": 14.5,
+   "baselines_us": {
+    "torch": 73.12,
+    "tunableop": 69.75,
+    "aiter": 69.73,
+    "aiter_triton": 161.45,
+    "flydsl": 574.44,
+    "triton": 249.41
+   },
+   "wrong": {
+    "base:hipkittens": "ValueError: M=128, N=4608: both must be multiples of 256; the kernel computes whole 256x256 tiles and its C store is unpredicated, so a partial tile would write past the en"
+   },
+   "reached": false,
+   "routed": [
+    0.9537
+   ],
+   "route_to_engine": true,
+   "why": "best 624 TFLOP/s, 5.02 TB/s; hk 482 TFLOP/s, 3.88 TB/s; memory-bound: the best baseline streams at 63% of HBM, hk at 49%; hk ran dp 128x128 x6 K shares: 216 workgroups, 0.84 of 256 CUs"
+  },
+  {
+   "m": 128,
+   "n": 5120,
+   "k": 14336,
+   "best_baseline": "torch",
+   "best_us": 40.14,
+   "before": [
+    0.3512,
+    0.3507,
+    0.3513
+   ],
+   "after": [
+    0.9311,
+    0.9288,
+    0.9323
+   ],
+   "before_us": 114.29,
+   "after_us": 43.13,
+   "route_before": "dp64",
+   "route_after": "u:pp:128_l16x64_ntb_sk8_c32",
+   "verdict": "win",
+   "gain": 1.68525,
+   "bar": 0.01194,
+   "tune_gpu_s": 2.13,
+   "tune_wall_s": 9.9,
+   "baselines_us": {
+    "torch": 40.14,
+    "tunableop": 43.69,
+    "aiter": 42.8,
+    "aiter_triton": 65.23,
+    "flydsl": 230.57,
+    "triton": 97.13
+   },
+   "wrong": {
+    "base:hipkittens": "ValueError: M=128, N=5120: both must be multiples of 256; the kernel computes whole 256x256 tiles and its C store is unpredicated, so a partial tile would write past the en"
+   },
+   "reached": false,
+   "routed": [
+    1.0
+   ],
+   "route_to_engine": true,
+   "why": "best 468 TFLOP/s, 3.78 TB/s; hk 436 TFLOP/s, 3.52 TB/s; neither limit is near: latency, launch or occupancy; hk ran pp 128x256 x8 K shares: 160 workgroups, 0.62 of 256 CUs"
+  },
+  {
+   "m": 512,
+   "n": 8192,
+   "k": 3584,
+   "best_baseline": "torch",
+   "best_us": 35.35,
+   "before": [
+    0.6616,
+    0.6576,
+    0.671
+   ],
+   "after": [
+    0.9057,
+    0.8882,
+    0.9073
+   ],
+   "before_us": 53.43,
+   "after_us": 39.32,
+   "route_before": "dp64",
+   "route_after": "u:dp:pl0_s4_c0",
+   "verdict": "win",
+   "gain": 0.36341,
+   "bar": 0.01,
+   "tune_gpu_s": 2.31,
+   "tune_wall_s": 6.6,
+   "baselines_us": {
+    "torch": 35.35,
+    "tunableop": 36.02,
+    "aiter": 42.92,
+    "aiter_triton": 47.16,
+    "flydsl": 70.37,
+    "hipkittens": 73.88,
+    "triton": 52.29
+   },
+   "wrong": {},
+   "reached": false,
+   "routed": [
+    1.0
+   ],
+   "route_to_engine": true,
+   "why": "best 850 TFLOP/s, 2.00 TB/s; hk 765 TFLOP/s, 1.80 TB/s; neither limit is near: latency, launch or occupancy; hk ran dp 128x128: 256 workgroups, 1.00 of 256 CUs"
+  },
+  {
+   "m": 1024,
+   "n": 5120,
+   "k": 14336,
+   "best_baseline": "tunableop",
+   "best_us": 123.2,
+   "before": [
+    0.4602,
+    0.4593,
+    0.4616
+   ],
+   "after": [
+    0.7753,
+    0.7724,
+    0.7776
+   ],
+   "before_us": 267.57,
+   "after_us": 159.11,
+   "route_before": "dp128",
+   "route_after": "u:pp:sk2_g16",
+   "verdict": "win",
+   "gain": 0.68245,
+   "bar": 0.01971,
+   "tune_gpu_s": 5.29,
+   "tune_wall_s": 12.4,
+   "baselines_us": {
+    "torch": 126.91,
+    "tunableop": 123.2,
+    "aiter": 123.41,
+    "aiter_triton": 318.02,
+    "flydsl": 256.83,
+    "hipkittens": 272.4,
+    "triton": 262.3
+   },
+   "wrong": {},
+   "reached": false,
+   "routed": [
+    0.9707
+   ],
+   "route_to_engine": true,
+   "why": "best 1220 TFLOP/s, 1.51 TB/s; hk 945 TFLOP/s, 1.17 TB/s; compute-bound: the best baseline at 49% of the bf16 peak, hk at 38%; hk ran pp 256x256 x2 K shares: 160 workgroups, 0.62 of 256 CUs"
+  },
+  {
+   "m": 2048,
+   "n": 4096,
+   "k": 1024,
+   "best_baseline": "tunableop",
+   "best_us": 18.36,
+   "before": [
+    0.744,
+    0.7429,
+    0.747
+   ],
+   "after": [
+    0.886,
+    0.8837,
+    0.8872
+   ],
+   "before_us": 24.67,
+   "after_us": 20.77,
+   "route_before": "dp128",
+   "route_after": "u:pp:128_g4_c32",
+   "verdict": "win",
+   "gain": 0.18722,
+   "bar": 0.02552,
+   "tune_gpu_s": 4.38,
+   "tune_wall_s": 13.4,
+   "baselines_us": {
+    "torch": 19.86,
+    "tunableop": 18.36,
+    "aiter": 18.4,
+    "aiter_triton": 35.46,
+    "flydsl": 26.88,
+    "hipkittens": 26.96,
+    "triton": 23.63
+   },
+   "wrong": {},
+   "reached": false,
+   "routed": [
+    0.9244
+   ],
+   "route_to_engine": true,
+   "why": "best 936 TFLOP/s, 1.60 TB/s; hk 827 TFLOP/s, 1.41 TB/s; neither limit is near: latency, launch or occupancy; hk ran pp 128x256: 256 workgroups, 1.00 of 256 CUs"
+  },
+  {
+   "m": 2048,
+   "n": 4608,
+   "k": 4096,
+   "best_baseline": "torch",
+   "best_us": 69.28,
+   "before": [
+    0.6362,
+    0.6353,
+    0.6362
+   ],
+   "after": [
+    0.8972,
+    0.8906,
+    0.9029
+   ],
+   "before_us": 108.89,
+   "after_us": 77.22,
+   "route_before": "dp128",
+   "route_after": "u:pp:g4_c16",
+   "verdict": "win",
+   "gain": 0.422,
+   "bar": 0.0147,
+   "tune_gpu_s": 5.14,
+   "tune_wall_s": 11.0,
+   "baselines_us": {
+    "torch": 69.28,
+    "aiter_triton": 106.83,
+    "flydsl": 78.84,
+    "hipkittens": 80.1,
+    "triton": 102.38
+   },
+   "wrong": {
+    "base:tunableop": 6.183276387651955e+35,
+    "base:aiter": 3.8506631396155886e+35
+   },
+   "reached": false,
+   "routed": [
+    1.0
+   ],
+   "route_to_engine": true,
+   "why": "best 1116 TFLOP/s, 1.06 TB/s; hk 1001 TFLOP/s, 0.95 TB/s; compute-bound: the best baseline at 45% of the bf16 peak, hk at 40%; hk ran pp 256x256: 144 workgroups, 0.56 of 256 CUs"
+  },
+  {
+   "m": 2048,
+   "n": 55296,
+   "k": 5120,
+   "best_baseline": "aiter",
+   "best_us": 761.0,
+   "before": [
+    0.5166,
+    0.5159,
+    0.5183
+   ],
+   "after": [
+    0.9486,
+    0.9441,
+    0.9557
+   ],
+   "before_us": 1473.01,
+   "after_us": 802.22,
+   "route_before": "dp128",
+   "route_after": "u:pp:es0_c32",
+   "verdict": "win",
+   "gain": 0.79892,
+   "bar": 0.01226,
+   "tune_gpu_s": 8.3,
+   "tune_wall_s": 14.3,
+   "baselines_us": {
+    "torch": 793.78,
+    "tunableop": 761.28,
+    "aiter": 761.0,
+    "aiter_triton": 974.33,
+    "flydsl": 956.54,
+    "hipkittens": 825.9,
+    "triton": 1009.89
+   },
+   "wrong": {},
+   "reached": false,
+   "routed": [
+    0.9587
+   ],
+   "route_to_engine": true,
+   "why": "best 1524 TFLOP/s, 1.07 TB/s; hk 1446 TFLOP/s, 1.01 TB/s; compute-bound: the best baseline at 61% of the bf16 peak, hk at 58%; hk ran pp 256x256: 1728 workgroups, 6.75 of 256 CUs"
+  },
+  {
+   "m": 4096,
+   "n": 3072,
+   "k": 4096,
+   "best_baseline": "aiter",
+   "best_us": 76.12,
+   "before": [
+    0.8875,
+    0.8812,
+    0.8943
+   ],
+   "after": [
+    0.884,
+    0.8824,
+    0.8967
+   ],
+   "before_us": 85.9,
+   "after_us": 86.11,
+   "route_before": "pp",
+   "route_after": "pp",
+   "verdict": "tie",
+   "gain": -0.0121,
+   "bar": 0.02387,
+   "tune_gpu_s": 7.18,
+   "tune_wall_s": 11.5,
+   "baselines_us": {
+    "torch": 76.55,
+    "tunableop": 76.47,
+    "aiter": 76.12,
+    "aiter_triton": 110.68,
+    "flydsl": 87.96,
+    "hipkittens": 87.04,
+    "triton": 113.65
+   },
+   "wrong": {},
+   "reached": false,
+   "routed": [
+    0.9944
+   ],
+   "route_to_engine": true,
+   "why": "best 1354 TFLOP/s, 1.10 TB/s; hk 1197 TFLOP/s, 0.97 TB/s; compute-bound: the best baseline at 54% of the bf16 peak, hk at 48%; hk ran pp 256x256: 192 workgroups, 0.75 of 256 CUs"
+  },
+  {
+   "m": 4096,
+   "n": 3072,
+   "k": 8192,
+   "best_baseline": "torch",
+   "best_us": 140.33,
+   "before": [
+    0.9071,
+    0.903,
+    0.9143
+   ],
+   "after": [
+    0.9101,
+    0.9054,
+    0.9153
+   ],
+   "before_us": 154.7,
+   "after_us": 154.44,
+   "route_before": "pp",
+   "route_after": "pp",
+   "verdict": "tie",
+   "gain": 0.00674,
+   "bar": 0.01954,
+   "tune_gpu_s": 5.38,
+   "tune_wall_s": 8.6,
+   "baselines_us": {
+    "torch": 140.33,
+    "tunableop": 141.44,
+    "aiter": 140.65,
+    "aiter_triton": 195.69,
+    "flydsl": 157.61,
+    "hipkittens": 157.77,
+    "triton": 213.79
+   },
+   "wrong": {},
+   "reached": false,
+   "routed": [
+    1.0
+   ],
+   "route_to_engine": true,
+   "why": "best 1469 TFLOP/s, 1.02 TB/s; hk 1335 TFLOP/s, 0.92 TB/s; compute-bound: the best baseline at 59% of the bf16 peak, hk at 53%; hk ran pp 256x256: 192 workgroups, 0.75 of 256 CUs"
+  },
+  {
+   "m": 4096,
+   "n": 4608,
+   "k": 4096,
+   "best_baseline": "tunableop",
+   "best_us": 110.39,
+   "before": [
+    0.7122,
+    0.7094,
+    0.7166
+   ],
+   "after": [
+    0.8907,
+    0.8868,
+    0.8941
+   ],
+   "before_us": 155.34,
+   "after_us": 124.26,
+   "route_before": "pp",
+   "route_after": "u:cols:wave:pp:c32|dp:sk2_s4_x4_g16",
+   "verdict": "win",
+   "gain": 0.25503,
+   "bar": 0.01405,
+   "tune_gpu_s": 13.03,
+   "tune_wall_s": 22.5,
+   "baselines_us": {
+    "torch": 115.74,
+    "tunableop": 110.39,
+    "aiter": 110.54,
+    "aiter_triton": 163.93,
+    "flydsl": 155.98,
+    "hipkittens": 157.98,
+    "triton": 178.25
+   },
+   "wrong": {},
+   "reached": false,
+   "routed": [
+    0.9538
+   ],
+   "route_to_engine": true,
+   "why": "best 1401 TFLOP/s, 0.99 TB/s; hk 1244 TFLOP/s, 0.88 TB/s; compute-bound: the best baseline at 56% of the bf16 peak, hk at 50%; hk ran pp 256x256: 256 workgroups, 1.00 of 256 CUs; dp 128x128 x2 K shares: 256 workgroups, 1.00 of 256 CUs"
+  },
+  {
+   "m": 8192,
+   "n": 5120,
+   "k": 5120,
+   "best_baseline": "tunableop",
+   "best_us": 295.72,
+   "before": [
+    0.9345,
+    0.9337,
+    0.935
+   ],
+   "after": [
+    0.9347,
+    0.9329,
+    0.9348
+   ],
+   "before_us": 316.55,
+   "after_us": 316.74,
+   "route_before": "pp",
+   "route_after": "pp",
+   "verdict": "tie",
+   "gain": 0.01736,
+   "bar": 0.01923,
+   "tune_gpu_s": 9.57,
+   "tune_wall_s": 12.6,
+   "baselines_us": {
+    "torch": 300.18,
+    "tunableop": 295.72,
+    "aiter": 298.24,
+    "aiter_triton": 362.19,
+    "flydsl": 324.3,
+    "hipkittens": 320.44,
+    "triton": 440.89
+   },
+   "wrong": {},
+   "reached": false,
+   "routed": [
+    0.9851
+   ],
+   "route_to_engine": true,
+   "why": "best 1452 TFLOP/s, 0.74 TB/s; hk 1356 TFLOP/s, 0.70 TB/s; compute-bound: the best baseline at 58% of the bf16 peak, hk at 54%; hk ran pp 256x256: 640 workgroups, 2.50 of 256 CUs"
+  },
+  {
+   "m": 8192,
+   "n": 14336,
+   "k": 8192,
+   "best_baseline": "tunableop",
+   "best_us": 1191.68,
+   "before": [
+    0.9444,
+    0.9384,
+    0.9452
+   ],
+   "after": [
+    0.9474,
+    0.9467,
+    0.9491
+   ],
+   "before_us": 1263.91,
+   "after_us": 1257.69,
+   "route_before": "pp",
+   "route_after": "pp",
+   "verdict": "tie",
+   "gain": 0.01156,
+   "bar": 0.01402,
+   "tune_gpu_s": 10.39,
+   "tune_wall_s": 13.5,
+   "baselines_us": {
+    "torch": 1314.77,
+    "tunableop": 1191.68,
+    "aiter": 1230.23,
+    "aiter_triton": 1466.28,
+    "flydsl": 1263.64,
+    "hipkittens": 1272.44,
+    "triton": 1724.16
+   },
+   "wrong": {},
+   "reached": false,
+   "routed": [
+    0.9475
+   ],
+   "route_to_engine": false,
+   "why": "best 1615 TFLOP/s, 0.51 TB/s; hk 1530 TFLOP/s, 0.48 TB/s; compute-bound: the best baseline at 65% of the bf16 peak, hk at 61%; hk ran pp 256x256: 1792 workgroups, 7.00 of 256 CUs"
+  }
+ ]
+}

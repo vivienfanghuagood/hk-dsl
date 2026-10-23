@@ -484,6 +484,11 @@ CANDIDATES: Dict[str, Any] = {
 
 _ROUTES: Dict[str, Dict[int, str]] = {}
 
+#: Candidates a route table defines that CANDIDATES does not: name ->
+#: hk.schedules GemmSchedule, taken exactly as its record says (a tuner's
+#: schedules, `[family, {knobs}]` in the table's "candidates").
+_EXTRA: Dict[str, Any] = {}
+
 
 def _routes() -> Dict[str, Dict[int, str]]:
     """The measured table, NxK -> {M: candidate}, read once."""
@@ -494,14 +499,31 @@ def _routes() -> Dict[str, Dict[int, str]]:
         p = Path(__file__).resolve().parents[1] / "tuned" / "routes_gemm_gfx950.json"
         if p.exists():
             doc = json.loads(p.read_text())
+            extra = {nm: c for nm, c in doc.get("candidates", {}).items()
+                     if nm not in CANDIDATES}
+            if extra:
+                from .. import schedules  # noqa: PLC0415
+
+                for nm, c in extra.items():
+                    _EXTRA[nm] = schedules.from_record(c)
             for nk, by_m in doc.get("routes", {}).items():
-                _ROUTES[nk] = {int(m): c for m, c in by_m.items()}
+                _ROUTES[nk] = {int(m): c for m, c in by_m.items()
+                               if c in CANDIDATES or c in _EXTRA}
         _ROUTES.setdefault("", {})
     return _ROUTES
 
 
+def extra_candidates() -> Dict[str, Any]:
+    """The route table's own candidates (see _EXTRA)."""
+    _routes()
+    return _EXTRA
+
+
 def fits(name: str, m: int, n: int, k: int) -> bool:
     """Whether candidate `name` takes the shape at all -- not whether it wins."""
+    if name not in CANDIDATES:
+        s = extra_candidates()[name]
+        return n % BLOCK_N_MIN == 0 and k % K_STEP == 0 and not s.check(m, n, k, "gfx950")
     kind, sched = CANDIDATES[name]
     splits = sched.get("splits", 1)
     if m < 1 or k % (sched.get("k_step", K_STEP) * splits) or n % BLOCK_N_MIN:
@@ -536,10 +558,53 @@ def wave_cut(m: int, n: int) -> int:
     return (n // 256 // per) * per * 256
 
 
-def route(m: int, n: int, k: int) -> str:
-    """The candidate for a shape: the measured table's, at the nearest M it
-    measured for this N x K (on a log scale), if that candidate takes the
-    shape; else the rule the table's measurements mostly follow."""
+def user_route(m: int, n: int, k: int) -> Optional[str]:
+    """This machine's hk.tune record for the shape's M bucket
+    (hk.tune.records), as a candidate name of _EXTRA, if there is one and it
+    takes the shape; else None."""
+    from ..autotune import generation  # noqa: PLC0415
+
+    key = (m, n, k)
+    gen = generation()
+    hit = _USER.get(key)
+    if hit is not None and hit[0] == gen:
+        return hit[1]
+    from ..tune import records  # noqa: PLC0415
+
+    name = None
+    u = records.user_route("gfx950", m, n, k)
+    if u is not None:
+        try:
+            from .. import schedules  # noqa: PLC0415
+
+            s = schedules.from_record(u[1], strict=False)
+            if not s.check(m, n, k, "gfx950"):
+                name = u[0]
+                _EXTRA[name] = s
+        except (ValueError, TypeError, KeyError):
+            name = None                 # an unreadable record costs speed, not a launch
+    if len(_USER) > 4096:
+        _USER.clear()
+    _USER[key] = (gen, name)
+    return name
+
+
+#: user_route's answers, by shape, at the records generation they were made
+#: at: route() is on hk.ops.matmul's launch path.
+_USER: Dict[tuple, tuple] = {}
+
+
+def route(m: int, n: int, k: int, user: bool = True) -> str:
+    """The candidate for a shape: this machine's hk.tune record for its M
+    bucket (`user=False` skips it) if there is one and it takes the shape;
+    else the measured table's, at the nearest M it measured for this N x K
+    (on a log scale), if that candidate takes the shape; else the rule the
+    table's measurements mostly follow."""
+    if user:
+        _routes()
+        name = user_route(m, n, k)
+        if name is not None:
+            return name
     by_m = _routes().get(f"{n}x{k}")
     if by_m:
         near = min(by_m, key=lambda x: (abs((x / m) if x > m else (m / x)), x))
@@ -572,6 +637,8 @@ def tail_for(m: int, k: int) -> str:
 
 def run(name: str, a, b, out):
     """Candidate `name` on (a, b) into out; the shape checks are matmul's."""
+    if name not in CANDIDATES:
+        return extra_candidates()[name].launch(a, b, out)
     kind, sched = CANDIDATES[name]
     if kind == "decode":
         from . import decode_gemm  # noqa: PLC0415

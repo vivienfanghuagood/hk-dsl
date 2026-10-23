@@ -456,6 +456,11 @@ def gemm_kernel(name: str, *, block_m: int = 128, block_n: int = 128,
 DEFAULT = dict(block_m=128, block_n=128, k_step=64, dot_slice=16, warps=8,
                warp_rows=4, n_split=2, wgm=8, write_pos=2, lds_buffers=1)
 
+#: Knobs a tuning record may set beyond DEFAULT's (gemm_kernel's own, at
+#: their defaults when absent): with these, a record can hold any schedule
+#: hk.schedules.Rdna can, every knob that changes the C++.
+KNOBS = ("stagger", "stream_a", "setprio", "sched")
+
 #: What the tuner searches. Six axes and 96 points, chosen so that each one
 #: trades something real against something else rather than wandering:
 #:
@@ -531,7 +536,7 @@ def _bench_for(key: str):
 #: The tuner. Building it registers it, which is all `python3 -m hk.autotune`
 #: needs to find it.
 TUNER = _autotune.Tuner("gemm_bf16", _make, SPACE, DEFAULT,
-                        bench=_bench_for, keys=TUNE_KEYS)
+                        bench=_bench_for, keys=TUNE_KEYS, knobs=KNOBS)
 
 #: The default kernel, by name, for anything that wants it without going
 #: through the tuner -- cache warming, resource checks, the tests.
@@ -566,8 +571,44 @@ def _bucket(m: int) -> int:
     return b
 
 
-def schedule_for(m: int, n: int, k: int) -> Dict[str, Any]:
+def user_route(m: int, n: int, k: int):
+    """(name, hk.schedules schedule) of this machine's hk.tune record for the
+    shape on this RDNA arch -- an Rdna (this module's kernel) or a Decode
+    (hk.ops.decode_gemm) -- if there is one and it takes the shape; else None."""
+    key = (m, n, k)
+    gen = _autotune.generation()
+    hit = _USER.get(key)
+    if hit is not None and hit[0] == gen:
+        return hit[1]
+    from ..tune import records  # noqa: PLC0415
+
+    out = None
+    u = records.user_route(current_arch(), m, n, k)
+    if u is not None:
+        try:
+            from .. import schedules  # noqa: PLC0415
+
+            s = schedules.from_record(u[1], strict=False)
+            if s.family in ("rdna", "decode") and not s.check(m, n, k, current_arch()):
+                out = (u[0], s)
+        except (ValueError, TypeError, KeyError):
+            out = None                  # an unreadable record costs speed, not a launch
+    if len(_USER) > 4096:
+        _USER.clear()
+    _USER[key] = (gen, out)
+    return out
+
+
+#: user_route's answers by shape, at the records generation they were made at
+#: (it is on matmul's launch path).
+_USER: Dict[tuple, tuple] = {}
+
+
+def schedule_for(m: int, n: int, k: int, user: bool = True) -> Dict[str, Any]:
     """The tuned schedule for this shape, or the default.
+
+    This machine's hk.tune record for the shape comes first (`user=False`
+    skips it), then the gemm_bf16 tuner's records, then the default.
 
     The fallback is not belt and braces. A record is keyed on a bucketed M and
     an exact N and K, so a recorded schedule has tiled *a* shape in this
@@ -575,6 +616,10 @@ def schedule_for(m: int, n: int, k: int) -> Dict[str, Any]:
     default tiles fine -- into an exception two months later. A schedule that
     cannot tile the shape in front of it loses to the one that can.
     """
+    if user:
+        u = user_route(m, n, k)
+        if u is not None and u[1].family == "rdna":
+            return {**DEFAULT, **u[1].legacy()}
     s = TUNER.schedule_for(f"{_bucket(m)}x{n}x{k}")
     if s == DEFAULT and m <= THIN["block_m"] and not (k % THIN["k_step"] or
                                                      n % THIN["block_n"]):
@@ -608,6 +653,9 @@ def matmul(a, b, out=None):
         raise ValueError(f"matmul: want 2D, got {a.dim()}D and {b.dim()}D")
     m, k = a.shape
     n, kb = b.shape
+    tuned = user_route(m, n, k) if kb == k else None
+    if tuned is not None and tuned[1].family == "decode":
+        return tuned[1].launch(a, b, out)
     sched = schedule_for(m, n, k)
     block_m, block_n, k_step = sched["block_m"], sched["block_n"], sched["k_step"]
     if kb != k:

@@ -205,11 +205,13 @@ def decode(q, k_cache, v_cache, block_table, seq_lens, out, scratch,
 #: triton-rocm 3.7.1, the Triton vLLM 0.31 is built for, runs its 2-D kernel
 #: at 730-810 GB/s, and against it hk's walk is 1.12x at 1024 x 16, level at
 #: 4096 x 16 and at 48, and 0.86-0.95x at 24-64 (docs/history/38). Yet in a
-#: captured step Triton's kernel is the slower: at 17-22 requests 1.93 ms a
-#: call against hk's 0.451 (3.8.0), and in chapter 20 (3.7.1) giving it 16
-#: and 32 requests made the step slower (4096 x 16, 59.0 -> 74.2 ms). Why
-#: the kernel is slower in the engine than on the bench is still open; the
-#: step is what a server pays, so batches above 8 stay on hk.
+#: captured step Triton's kernel is the slower: at 15-22 requests 0.877 ms a
+#: call under triton-rocm 3.7.1 (1.93 under 3.8.0) against hk's 0.449, the
+#: step 6-51% longer at 16-64 requests. The bench is a compact cache; vLLM's
+#: is one allocation of 26.75 GiB, and from 2 GiB of allocation up Triton's
+#: 2-D kernel reads the same pages 2.5x slower while hk's walk does not
+#: (docs/history/44, tools/hk-bench/paged_alloc.py). So batches above 8 stay
+#: on hk.
 #: 0 turns it off, and hk's walk takes every batch.
 TRITON_DECODE_MAX = 8
 
