@@ -1,0 +1,949 @@
+{
+ "arch": "gfx950",
+ "candidates": {
+  "u:cols:wave:pp:g4|dp:pl0_sk2_s4_x4": {
+   "cut": "wave",
+   "family": "cols",
+   "head": {
+    "family": "pp",
+    "wgm": 4
+   },
+   "tail": {
+    "family": "dp",
+    "pipelined": false,
+    "splits": 2,
+    "stages": 4,
+    "warps_n": 4
+   }
+  },
+  "u:dp:16_x32_k128_l16x64_ntb_s5_w1_c16": {
+   "block_m": 16,
+   "block_n": 32,
+   "family": "dp",
+   "k_step": 128,
+   "lds_shape": "16x64",
+   "nt": "b",
+   "stages": 5,
+   "warps_m": 1,
+   "xcd_chunk": 16
+  },
+  "u:dp:16_x32_k256_l16x64_ntb_pl0_s4_w1_c0": {
+   "block_m": 16,
+   "block_n": 32,
+   "family": "dp",
+   "k_step": 256,
+   "lds_shape": "16x64",
+   "nt": "b",
+   "pipelined": false,
+   "stages": 4,
+   "warps_m": 1,
+   "xcd_chunk": 0
+  },
+  "u:dp:16_x32_l16x64_ntb_sk8_s4_w1_c0": {
+   "block_m": 16,
+   "block_n": 32,
+   "family": "dp",
+   "lds_shape": "16x64",
+   "nt": "b",
+   "splits": 8,
+   "stages": 4,
+   "warps_m": 1,
+   "xcd_chunk": 0
+  },
+  "u:dp:16_x64_l16x64_ntb_sk6_s4_w1_g4_c16": {
+   "block_m": 16,
+   "block_n": 64,
+   "family": "dp",
+   "lds_shape": "16x64",
+   "nt": "b",
+   "splits": 6,
+   "stages": 4,
+   "warps_m": 1,
+   "wgm": 4,
+   "xcd_chunk": 16
+  },
+  "u:dp:32_x64_l16x64_ntb_sk4_s4_c0": {
+   "block_m": 32,
+   "block_n": 64,
+   "family": "dp",
+   "lds_shape": "16x64",
+   "nt": "b",
+   "splits": 4,
+   "stages": 4,
+   "xcd_chunk": 0
+  },
+  "u:dp:32_x64_s4_c16": {
+   "block_m": 32,
+   "block_n": 64,
+   "family": "dp",
+   "stages": 4,
+   "xcd_chunk": 16
+  },
+  "u:dp:l16x64_ntb_sk6_s4_g16_c64": {
+   "family": "dp",
+   "lds_shape": "16x64",
+   "nt": "b",
+   "splits": 6,
+   "stages": 4,
+   "wgm": 16,
+   "xcd_chunk": 64
+  },
+  "u:dp:x256_sk8_w1_x4_g16_c0": {
+   "block_n": 256,
+   "family": "dp",
+   "splits": 8,
+   "warps_m": 1,
+   "warps_n": 4,
+   "wgm": 16,
+   "xcd_chunk": 0
+  },
+  "u:pp:128_x128_k128_str2": {
+   "block_m": 128,
+   "block_n": 128,
+   "family": "pp",
+   "k_step": 128,
+   "stream_k": 2
+  },
+  "u:pp:160_es0_w1_x8_g4_c16": {
+   "block_m": 160,
+   "early_store": false,
+   "family": "pp",
+   "warps_m": 1,
+   "warps_n": 8,
+   "wgm": 4,
+   "xcd_chunk": 16
+  },
+  "u:pp:192_es0_sk2_g4": {
+   "block_m": 192,
+   "early_store": false,
+   "family": "pp",
+   "splits": 2,
+   "wgm": 4
+  },
+  "u:pp:c16": {
+   "family": "pp",
+   "xcd_chunk": 16
+  },
+  "u:pp:g4": {
+   "family": "pp",
+   "wgm": 4
+  },
+  "u:pp:g4_c16": {
+   "family": "pp",
+   "wgm": 4,
+   "xcd_chunk": 16
+  },
+  "u:pp:g4_c32": {
+   "family": "pp",
+   "wgm": 4,
+   "xcd_chunk": 32
+  },
+  "u:pp:sk4_g4_c32": {
+   "family": "pp",
+   "splits": 4,
+   "wgm": 4,
+   "xcd_chunk": 32
+  },
+  "u:pp:x128_es0_sk4_w4_x2": {
+   "block_n": 128,
+   "early_store": false,
+   "family": "pp",
+   "splits": 4,
+   "warps_m": 4,
+   "warps_n": 2
+  },
+  "u:pp:x128_w4_x2_g4": {
+   "block_n": 128,
+   "family": "pp",
+   "warps_m": 4,
+   "warps_n": 2,
+   "wgm": 4
+  },
+  "u:pp:x192_w4_x2_g4_c32": {
+   "block_n": 192,
+   "family": "pp",
+   "warps_m": 4,
+   "warps_n": 2,
+   "wgm": 4,
+   "xcd_chunk": 32
+  }
+ },
+ "kind": "gemm",
+ "points": [
+  {
+   "accepted": "pp:g4",
+   "arch": "gfx950",
+   "baselines": {
+    "torch": {
+     "ms": 0.167824,
+     "ratio": [
+      1.055869,
+      1.048979,
+      1.059524
+     ],
+     "route_ratio": [
+      0.642631,
+      0.640224,
+      0.647558
+     ]
+    }
+   },
+   "best_baseline": "torch",
+   "by": "hk.tune",
+   "champion": "pp:g4",
+   "champion_spec": [
+    "pp",
+    {
+     "wgm": 4
+    }
+   ],
+   "compile_seconds": 34.5,
+   "counts": {
+    "failed": 0,
+    "generated": 1412,
+    "legal": 1416,
+    "loaded": 158,
+    "pool": 68,
+    "refused": 6,
+    "restarts": 2,
+    "timed": 158,
+    "wrong": 0
+   },
+   "date": "2026-10-23",
+   "decision": {
+    "band": [
+     1.6314,
+     1.6524
+    ],
+    "bar": 0.01697,
+    "gain": 0.63618,
+    "ratios": [
+     1.6524,
+     1.6314,
+     1.6323,
+     1.6362,
+     1.6439
+    ],
+    "sets": 5,
+    "sigma": 0.00848,
+    "verdict": "win"
+   },
+   "device": "AMD Instinct MI355X",
+   "gpu_seconds": 6.01,
+   "hip": "7.15.26333",
+   "hipcc": "HIP version: 7.15.26333-0000000",
+   "k": 8192,
+   "load_seconds": 1.0,
+   "m": 2048,
+   "ms": 0.159069,
+   "n": 7168,
+   "phases": {
+    "check": 0.69,
+    "decide": 1.81,
+    "local": 2.1,
+    "rungs": 1.41
+   },
+   "profile": {},
+   "record": "",
+   "route": "dp128",
+   "route_ms": 0.260333,
+   "route_spec": [
+    "dp",
+    {
+     "stages": 4
+    }
+   ],
+   "timed": {
+    "pp:es0": 0.163798,
+    "pp:es0_c32": 0.165021,
+    "pp:es0_g16": 0.164009,
+    "pp:es0_g4": 0.160409,
+    "pp:es0_lb0": 0.165452,
+    "pp:g4": 0.159181,
+    "pp:g4_c32": 0.159409,
+    "pp:lb0": 0.164864,
+    "pp:lb0_c32": 0.164035,
+    "pp:lb0_g16": 0.164541,
+    "pp:lb0_g4": 0.160341,
+    "pp:tc1_g4": 0.165972
+   },
+   "toolchain": "7338c483c5443ddfd826f41538ae559c",
+   "torch": "2.12.0+rocm10.0.0",
+   "verdict": "win",
+   "wall_seconds": 13.3
+  },
+  {
+   "accepted": "pp:g4_c32",
+   "arch": "gfx950",
+   "baselines": {
+    "torch": {
+     "ms": 0.08128,
+     "ratio": [
+      0.993509,
+      0.991417,
+      0.998879
+     ],
+     "route_ratio": [
+      0.627587,
+      0.622446,
+      0.630022
+     ]
+    }
+   },
+   "best_baseline": "torch",
+   "by": "hk.tune",
+   "champion": "pp:g4_c32",
+   "champion_spec": [
+    "pp",
+    {
+     "wgm": 4,
+     "xcd_chunk": 32
+    }
+   ],
+   "compile_seconds": 43.3,
+   "counts": {
+    "failed": 0,
+    "generated": 1498,
+    "legal": 1503,
+    "loaded": 168,
+    "pool": 63,
+    "refused": 2,
+    "restarts": 2,
+    "timed": 168,
+    "wrong": 0
+   },
+   "date": "2026-10-23",
+   "decision": {
+    "band": [
+     1.5765,
+     1.5988
+    ],
+    "bar": 0.01408,
+    "gain": 0.58269,
+    "ratios": [
+     1.5988,
+     1.5978,
+     1.5827,
+     1.5797,
+     1.5765
+    ],
+    "sets": 5,
+    "sigma": 0.00704,
+    "verdict": "win"
+   },
+   "device": "AMD Instinct MI355X",
+   "gpu_seconds": 4.1,
+   "hip": "7.15.26333",
+   "hipcc": "HIP version: 7.15.26333-0000000",
+   "k": 3584,
+   "load_seconds": 0.6,
+   "m": 2048,
+   "ms": 0.081835,
+   "n": 8192,
+   "phases": {
+    "check": 0.02,
+    "decide": 0.35,
+    "local": 2.22,
+    "rungs": 1.51
+   },
+   "profile": {},
+   "record": "",
+   "route": "dp128",
+   "route_ms": 0.129578,
+   "route_spec": [
+    "dp",
+    {
+     "stages": 4
+    }
+   ],
+   "timed": {
+    "pp:c16": 0.082132,
+    "pp:c32": 0.082336,
+    "pp:es0_c32": 0.082489,
+    "pp:es0_g4_c16": 0.082632,
+    "pp:es0_g4_c32": 0.082329,
+    "pp:g16_c32": 0.082366,
+    "pp:g4_c16": 0.082195,
+    "pp:g4_c32": 0.081605,
+    "pp:lb0_c32": 0.082503,
+    "pp:lb0_g4_c16": 0.082608,
+    "pp:lb0_g4_c32": 0.082386,
+    "u:pp:g4": 0.082575
+   },
+   "toolchain": "7338c483c5443ddfd826f41538ae559c",
+   "torch": "2.12.0+rocm10.0.0",
+   "verdict": "win",
+   "wall_seconds": 9.5
+  },
+  {
+   "accepted": "u:pp:g4_c32",
+   "arch": "gfx950",
+   "baselines": {
+    "torch": {
+     "ms": 0.182674,
+     "ratio": [
+      0.996514,
+      0.993746,
+      1.000803
+     ],
+     "route_ratio": [
+      0.607687,
+      0.604984,
+      0.613078
+     ]
+    }
+   },
+   "best_baseline": "torch",
+   "by": "hk.tune",
+   "champion": "u:pp:g4_c32",
+   "champion_spec": [
+    "pp",
+    {
+     "wgm": 4,
+     "xcd_chunk": 32
+    }
+   ],
+   "compile_seconds": 44.4,
+   "counts": {
+    "failed": 0,
+    "generated": 1284,
+    "legal": 1290,
+    "loaded": 122,
+    "pool": 66,
+    "refused": 3,
+    "restarts": 2,
+    "timed": 122,
+    "wrong": 0
+   },
+   "date": "2026-10-23",
+   "decision": {
+    "band": [
+     1.6296,
+     1.6444
+    ],
+    "bar": 0.02896,
+    "gain": 0.63985,
+    "ratios": [
+     1.6398,
+     1.6363,
+     1.6296,
+     1.6444,
+     1.6426
+    ],
+    "sets": 5,
+    "sigma": 0.01448,
+    "verdict": "win"
+   },
+   "device": "AMD Instinct MI355X",
+   "gpu_seconds": 3.17,
+   "hip": "7.15.26333",
+   "hipcc": "HIP version: 7.15.26333-0000000",
+   "k": 4096,
+   "load_seconds": 0.2,
+   "m": 2048,
+   "ms": 0.183381,
+   "n": 16384,
+   "phases": {
+    "check": 0.04,
+    "decide": 0.34,
+    "local": 1.26,
+    "rungs": 1.53
+   },
+   "profile": {},
+   "record": "",
+   "route": "dp128",
+   "route_ms": 0.300935,
+   "route_spec": [
+    "dp",
+    {
+     "stages": 4
+    }
+   ],
+   "timed": {
+    "pp:es0_g4": 0.183268,
+    "pp:es0_g4_c32": 0.184154,
+    "pp:es0_str1": 0.185714,
+    "pp:g4_c16": 0.181694,
+    "pp:lb0_g4": 0.184418,
+    "pp:lb0_g4_c32": 0.183171,
+    "pp:str1": 0.185214,
+    "pp:str1_c32": 0.185984,
+    "pp:str1_g16": 0.186138,
+    "pp:str2_g4": 0.185571,
+    "u:pp:g4": 0.181634,
+    "u:pp:g4_c32": 0.181248
+   },
+   "toolchain": "7338c483c5443ddfd826f41538ae559c",
+   "torch": "2.12.0+rocm10.0.0",
+   "verdict": "win",
+   "wall_seconds": 4.7
+  },
+  {
+   "accepted": "pp:c16",
+   "arch": "gfx950",
+   "baselines": {
+    "torch": {
+     "ms": 0.771544,
+     "ratio": [
+      0.972638,
+      0.968906,
+      0.975295
+     ],
+     "route_ratio": [
+      0.53311,
+      0.531889,
+      0.534078
+     ]
+    }
+   },
+   "best_baseline": "torch",
+   "by": "hk.tune",
+   "champion": "pp:c16",
+   "champion_spec": [
+    "pp",
+    {
+     "xcd_chunk": 16
+    }
+   ],
+   "compile_seconds": 8.8,
+   "counts": {
+    "failed": 0,
+    "generated": 956,
+    "legal": 963,
+    "loaded": 146,
+    "pool": 69,
+    "refused": 6,
+    "restarts": 2,
+    "timed": 146,
+    "wrong": 0
+   },
+   "date": "2026-10-23",
+   "decision": {
+    "band": [
+     1.8174,
+     1.8294
+    ],
+    "bar": 0.01,
+    "gain": 0.82377,
+    "ratios": [
+     1.8174,
+     1.8286,
+     1.8238,
+     1.8294,
+     1.8229
+    ],
+    "sets": 5,
+    "sigma": 0.00308,
+    "verdict": "win"
+   },
+   "device": "AMD Instinct MI355X",
+   "gpu_seconds": 7.9,
+   "hip": "7.15.26333",
+   "hipcc": "HIP version: 7.15.26333-0000000",
+   "k": 5120,
+   "load_seconds": 1.2,
+   "m": 2048,
+   "ms": 0.792485,
+   "n": 55296,
+   "phases": {
+    "check": 0.81,
+    "decide": 2.06,
+    "local": 2.76,
+    "rungs": 2.27
+   },
+   "profile": {},
+   "record": "",
+   "route": "dp128",
+   "route_ms": 1.446249,
+   "route_spec": [
+    "dp",
+    {
+     "stages": 4
+    }
+   ],
+   "timed": {
+    "pp:c16": 0.790744,
+    "pp:c32": 0.791694,
+    "pp:es0": 0.793884,
+    "pp:es0_g4": 0.795724,
+    "pp:es0_g4_c32": 0.797814,
+    "pp:g16_c32": 0.791324,
+    "pp:g4_c16": 0.794494,
+    "pp:lb0_c32": 0.795404,
+    "pp:lb0_g4": 0.794995,
+    "pp:lb0_g4_c32": 0.798414,
+    "u:pp:g4": 0.798675,
+    "u:pp:g4_c32": 0.793394
+   },
+   "toolchain": "7338c483c5443ddfd826f41538ae559c",
+   "torch": "2.12.0+rocm10.0.0",
+   "verdict": "win",
+   "wall_seconds": 14.0
+  },
+  {
+   "accepted": "pp:x192_w4_x2_g4_c32",
+   "arch": "gfx950",
+   "baselines": {
+    "torch": {
+     "ms": 0.073279,
+     "ratio": [
+      0.928296,
+      0.927668,
+      0.93898
+     ],
+     "route_ratio": [
+      0.866429,
+      0.864926,
+      0.890119
+     ]
+    }
+   },
+   "best_baseline": "torch",
+   "by": "hk.tune",
+   "champion": "pp:x192_w4_x2_g4_c32",
+   "champion_spec": [
+    "pp",
+    {
+     "block_n": 192,
+     "warps_m": 4,
+     "warps_n": 2,
+     "wgm": 4,
+     "xcd_chunk": 32
+    }
+   ],
+   "compile_seconds": 74.2,
+   "counts": {
+    "failed": 0,
+    "generated": 1772,
+    "legal": 1782,
+    "loaded": 210,
+    "pool": 75,
+    "refused": 7,
+    "restarts": 2,
+    "timed": 210,
+    "wrong": 0
+   },
+   "date": "2026-10-23",
+   "decision": {
+    "band": [
+     1.0422,
+     1.0763
+    ],
+    "bar": 0.03181,
+    "gain": 0.07239,
+    "ratios": [
+     1.0724,
+     1.0714,
+     1.0763,
+     1.0733,
+     1.0422
+    ],
+    "sets": 5,
+    "sigma": 0.01591,
+    "verdict": "win"
+   },
+   "device": "AMD Instinct MI355X",
+   "gpu_seconds": 9.4,
+   "hip": "7.15.26333",
+   "hipcc": "HIP version: 7.15.26333-0000000",
+   "k": 4096,
+   "load_seconds": 1.2,
+   "m": 4096,
+   "ms": 0.078724,
+   "n": 3072,
+   "phases": {
+    "check": 0.02,
+    "decide": 0.63,
+    "local": 5.72,
+    "rungs": 3.03
+   },
+   "profile": {},
+   "record": "",
+   "route": "pp",
+   "route_ms": 0.084567,
+   "route_spec": [
+    "pp",
+    {}
+   ],
+   "timed": {
+    "pp:x192_es0_str1_w4_x2": 0.078696,
+    "pp:x192_es0_str1_w4_x2_g4": 0.078643,
+    "pp:x192_es0_str1_w4_x2_g4_c16": 0.078486,
+    "pp:x192_es0_str1_w4_x2_g4_c32": 0.078674,
+    "pp:x192_es0_str2_w4_x2": 0.078604,
+    "pp:x192_es0_str2_w4_x2_g4_c32": 0.078574,
+    "pp:x192_str1_w4_x2_g4": 0.078455,
+    "pp:x192_str2_w4_x2": 0.078665,
+    "pp:x192_str2_w4_x2_g4": 0.078436,
+    "pp:x192_str2_w4_x2_g4_c16": 0.078617,
+    "pp:x192_w4_x2_g16": 0.078497,
+    "pp:x192_w4_x2_g4_c32": 0.077938
+   },
+   "toolchain": "7338c483c5443ddfd826f41538ae559c",
+   "torch": "2.12.0+rocm10.0.0",
+   "verdict": "win",
+   "wall_seconds": 19.2
+  },
+  {
+   "accepted": "cols:wave:pp:g4|dp:pl0_sk2_s4_x4",
+   "arch": "gfx950",
+   "baselines": {
+    "torch": {
+     "ms": 0.113312,
+     "ratio": [
+      0.919908,
+      0.90901,
+      0.925099
+     ],
+     "route_ratio": [
+      0.741652,
+      0.730613,
+      0.744335
+     ]
+    }
+   },
+   "best_baseline": "torch",
+   "by": "hk.tune",
+   "champion": "cols:wave:pp:g4|dp:pl0_sk2_s4_x4",
+   "champion_spec": [
+    "cols",
+    {
+     "cut": "wave",
+     "head": {
+      "family": "pp",
+      "wgm": 4
+     },
+     "tail": {
+      "family": "dp",
+      "pipelined": false,
+      "splits": 2,
+      "stages": 4,
+      "warps_n": 4
+     }
+    }
+   ],
+   "compile_seconds": 78.3,
+   "counts": {
+    "failed": 0,
+    "generated": 1776,
+    "legal": 1787,
+    "loaded": 297,
+    "pool": 80,
+    "refused": 8,
+    "restarts": 2,
+    "timed": 297,
+    "wrong": 0
+   },
+   "date": "2026-10-23",
+   "decision": {
+    "band": [
+     1.2212,
+     1.2593
+    ],
+    "bar": 0.04063,
+    "gain": 0.24371,
+    "ratios": [
+     1.2212,
+     1.2437,
+     1.2403,
+     1.2484,
+     1.2593
+    ],
+    "sets": 5,
+    "sigma": 0.02031,
+    "verdict": "win"
+   },
+   "device": "AMD Instinct MI355X",
+   "gpu_seconds": 15.83,
+   "hip": "7.15.26333",
+   "hipcc": "HIP version: 7.15.26333-0000000",
+   "k": 4096,
+   "load_seconds": 1.3,
+   "m": 4096,
+   "ms": 0.123177,
+   "n": 4608,
+   "phases": {
+    "check": 0.67,
+    "decide": 2.2,
+    "local": 9.74,
+    "rungs": 3.22
+   },
+   "profile": {},
+   "record": "",
+   "route": "pp",
+   "route_ms": 0.15283,
+   "route_spec": [
+    "pp",
+    {}
+   ],
+   "timed": {
+    "cols:wave:pp:es0_g4_c32|dp:sk2_s4_c0": 0.122046,
+    "cols:wave:pp:es0_g4|dp:sk2_s4_x4_c0": 0.121983,
+    "cols:wave:pp:g4_c32|dp:pl0_sk2_s4_c0": 0.122168,
+    "cols:wave:pp:g4_c32|dp:sk2_s4_c16": 0.122112,
+    "cols:wave:pp:g4_c32|dp:sk2_s4_g4_c0": 0.121929,
+    "cols:wave:pp:g4|dp:pl0_sk2_s4_c16": 0.121849,
+    "cols:wave:pp:g4|dp:pl0_sk2_s4_x4": 0.121988,
+    "cols:wave:pp:g4|dp:pl0_sk2_x4_c0": 0.121651,
+    "cols:wave:pp:g4|dp:sk2_s4": 0.121514,
+    "cols:wave:pp:g4|dp:sk2_s4_g4_c0": 0.121893,
+    "cols:wave:pp:g4|dp:sk2_s4_g4_c16": 0.121568,
+    "cols:wave:pp:g4|dp:sk2_s4_x4_c0": 0.122072
+   },
+   "toolchain": "7338c483c5443ddfd826f41538ae559c",
+   "torch": "2.12.0+rocm10.0.0",
+   "verdict": "win",
+   "wall_seconds": 27.6
+  },
+  {
+   "accepted": "pp:g4_c16",
+   "arch": "gfx950",
+   "baselines": {
+    "torch": {
+     "ms": 0.852653,
+     "ratio": [
+      0.944649,
+      0.938834,
+      0.959637
+     ],
+     "route_ratio": [
+      0.919837,
+      0.918176,
+      0.92364
+     ]
+    }
+   },
+   "best_baseline": "torch",
+   "by": "hk.tune",
+   "champion": "pp:g4_c16",
+   "champion_spec": [
+    "pp",
+    {
+     "wgm": 4,
+     "xcd_chunk": 16
+    }
+   ],
+   "compile_seconds": 8.9,
+   "counts": {
+    "failed": 0,
+    "generated": 542,
+    "legal": 550,
+    "loaded": 112,
+    "pool": 58,
+    "refused": 3,
+    "restarts": 2,
+    "timed": 112,
+    "wrong": 0
+   },
+   "date": "2026-10-23",
+   "decision": {
+    "band": [
+     1.0177,
+     1.039
+    ],
+    "bar": 0.02071,
+    "gain": 0.02883,
+    "ratios": [
+     1.039,
+     1.0291,
+     1.0177,
+     1.0288,
+     1.0251
+    ],
+    "sets": 5,
+    "sigma": 0.01036,
+    "verdict": "win"
+   },
+   "device": "AMD Instinct MI355X",
+   "gpu_seconds": 11.4,
+   "hip": "7.15.26333",
+   "hipcc": "HIP version: 7.15.26333-0000000",
+   "k": 4608,
+   "load_seconds": 1.0,
+   "m": 8192,
+   "ms": 0.902613,
+   "n": 18432,
+   "phases": {
+    "check": 0.83,
+    "decide": 2.43,
+    "local": 4.03,
+    "rungs": 4.11
+   },
+   "profile": {},
+   "record": "",
+   "route": "pp",
+   "route_ms": 0.928373,
+   "route_spec": [
+    "pp",
+    {}
+   ],
+   "timed": {
+    "pp:c32": 0.927558,
+    "pp:es0_c16": 0.927873,
+    "pp:es0_g4": 0.908921,
+    "pp:es0_g4_c32": 0.917365,
+    "pp:g4_c16": 0.904165,
+    "pp:lb0_c16": 0.925545,
+    "pp:lb0_g4": 0.925729,
+    "pp:lb0_g4_c32": 0.919793,
+    "pp:str2_g4": 0.912641,
+    "u:pp:c16": 0.928093,
+    "u:pp:g4": 0.905937,
+    "u:pp:g4_c32": 0.908977
+   },
+   "toolchain": "7338c483c5443ddfd826f41538ae559c",
+   "torch": "2.12.0+rocm10.0.0",
+   "verdict": "win",
+   "wall_seconds": 16.4
+  }
+ ],
+ "routes": {
+  "16384x4096": {
+   "2048": "u:pp:g4_c32"
+  },
+  "18432x4608": {
+   "8192": "u:pp:g4_c16"
+  },
+  "3072x4096": {
+   "4096": "u:pp:x192_w4_x2_g4_c32"
+  },
+  "3072x8192": {
+   "8": "u:dp:16_x32_l16x64_ntb_sk8_s4_w1_c0"
+  },
+  "4096x1024": {
+   "2048": "u:pp:x128_w4_x2_g4"
+  },
+  "4096x512": {
+   "128": "u:dp:32_x64_s4_c16"
+  },
+  "4096x7168": {
+   "16": "u:dp:32_x64_l16x64_ntb_sk4_s4_c0",
+   "512": "u:pp:x128_es0_sk4_w4_x2"
+  },
+  "4608x36864": {
+   "128": "u:dp:l16x64_ntb_sk6_s4_g16_c64"
+  },
+  "4608x4096": {
+   "4096": "u:cols:wave:pp:g4|dp:pl0_sk2_s4_x4"
+  },
+  "4608x9216": {
+   "1": "u:dp:16_x64_l16x64_ntb_sk6_s4_w1_g4_c16"
+  },
+  "5120x14336": {
+   "1024": "u:pp:192_es0_sk2_g4",
+   "128": "u:dp:x256_sk8_w1_x4_g16_c0"
+  },
+  "5120x5120": {
+   "16": "u:dp:16_x32_k128_l16x64_ntb_s5_w1_c16"
+  },
+  "55296x5120": {
+   "2048": "u:pp:c16"
+  },
+  "7168x8192": {
+   "2048": "u:pp:g4"
+  },
+  "8192x3584": {
+   "2048": "u:pp:g4_c32"
+  }
+ }
+}
