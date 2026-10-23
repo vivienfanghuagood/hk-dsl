@@ -232,14 +232,20 @@ decodes first by the builder:
   size and max_model_len alone (about 256 workgroups), so a graph captured
   on any batch is right for every replay. Kernel for kernel the walk is
   0.86-1.12x triton-rocm 3.7.1's kernel at 16-64 requests (1.03-1.30x
-  Triton 3.8.0's at 16, 32 and 64), but in the captured step Triton's
-  kernel is the slower ([chapter 38](history/38-rdna-losses.md)).
+  Triton 3.8.0's at 16, 32 and 64) on a compact cache, but in vLLM's
+  Triton's kernel is the slower: vLLM's cache is one allocation of 26.75
+  GiB, and from 2 GiB up Triton's 2-D kernel reads the same pages 2.5x
+  slower while hk's walk does not, which makes the walk 1.6-2.5x faster
+  than triton-rocm 3.7.1's kernel there and the step 6-51% shorter at
+  16-64 requests ([chapter 38](history/38-rdna-losses.md),
+  [chapter 44](history/44-matched-stack.md)).
   Batches are padded to a capture size first, so 9-15 requests run as 16, on hk.
   `vllm_backend.TRITON_DECODE_MAX` is the boundary; 0 turns the routing off.
   `HK_TRITON_DECODE_ALSO="17-24,49-56"` gives Triton further ranges of
   batch sizes; off by default, because in the captured step Triton's
-  kernel at 17-22 requests took 1.93 ms a call against hk's 0.451, though
-  on the bench it is the faster at 24.
+  kernel at 15-22 requests and 4096 tokens took 0.877 ms a call under
+  triton-rocm 3.7.1 (1.93 under Triton 3.8.0) against hk's 0.449, though on
+  a compact bench cache it is the faster at 24.
 * **Prefill**: `hk.ops.paged_prefill`, one launch for every prefill request
   in the step, reading K/V through the page table. A cached prefix or an
   earlier chunk is just context in front of the new tokens, so prefix caching

@@ -102,21 +102,25 @@ below was measured against what the engine runs:
   output throughput of SGLang's Triton GEMMs
   ([SGLang MoE](history/25-sglang-moe.md)).
 - **vLLM's 4-bit linear layers** run a Triton AWQ kernel on ROCm. hk's W4A16
-  GEMM is 1.40-2.61x faster, and Qwen3-14B-AWQ up to 4.43x per request
-  ([4-bit weights](history/22-int4.md)).
+  GEMM is 1.40-2.61x faster, and Qwen3-14B-AWQ up to 4.47x per request
+  ([4-bit weights](history/22-int4.md), re-measured in
+  [chapter 44](history/44-matched-stack.md)).
 - **vLLM's MoE** is Triton's `fused_moe`. hk's MoE GEMM is 1.00-2.77x up to
   256 tokens ([MoE](history/21-moe.md)).
 - **vLLM's prefill attention** is Triton's `unified_attention`. hk's paged
   prefill is 3.6-7.9x ([captured whole](history/17-the-decode-step-captured-whole.md)).
-  With hk's attention backend and its linear layers, Qwen3-8B is 1.20-1.75x
-  faster per request than stock vLLM 0.31 ([vLLM 0.31](history/20-vllm-031.md)).
+  With hk's attention backend and its linear layers, Qwen3-8B is 1.22-1.85x
+  faster per request than stock vLLM 0.31 at 1-32 requests (vLLM 0.31.0,
+  torch 2.13.0+rocm7.2, triton-rocm 3.7.1; [vLLM 0.31](history/20-vllm-031.md),
+  [the matched stack](history/44-matched-stack.md)).
 
 Each patch is turned on by an environment variable, sends each shape to the
 kernel that measured fastest for it, and keeps to the CUDA-graph contract
 ([integration](integration.md)). A model nobody tuned for gets its linear
 layers' routes measured at its first start: Qwen2.5-7B-Instruct, in no
-shipped table, is 1.17-1.32x faster per request at 16-128 requests
-([chapter 35](history/35-any-model.md)).
+shipped table, is 1.18-1.32x faster per request at 16-128 requests
+([chapter 35](history/35-any-model.md), re-measured on triton-rocm 3.7.1 in
+[chapter 44](history/44-matched-stack.md)).
 
 On an MI355X (gfx950) the engines are tuned for the card: with aiter on,
 vLLM's decode linear layers run at 68-86% of the roofline. There hk's

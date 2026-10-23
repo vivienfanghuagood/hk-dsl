@@ -83,13 +83,13 @@ Hollow: the same op by hand on 16x64 tiles, the slow way. The
 |---|---|---|
 | [templates](docs/templates/elementwise-rowwise.md#measured) against hk's tuned kernel for the same job | 0.92-1.02x | 0.98-1.03x |
 | [GEMM + epilogue](docs/templates/gemm.md#what-it-costs-measured) against `torch.compile` | faster at 48 of 48 layer shapes, geomean 1.69x | faster at 46 of 48, level at 2 |
-| vLLM, Qwen3-8B, per request against stock ([A1](docs/performance.md#vllm-031-on-gfx1100), [B1](docs/performance.md#b1-end-to-end-in-vllm-aiter-on)) | 1.20-1.75x at 1-32 requests | 1.13x at 16, 1.21x at 64 |
+| vLLM, Qwen3-8B, per request against stock ([A1](docs/performance.md#vllm-031-on-gfx1100), [B1](docs/performance.md#b1-end-to-end-in-vllm-aiter-on)) | 1.22-1.85x at 1-32 requests (vLLM 0.31.0, torch 2.13.0+rocm7.2, triton-rocm 3.7.1) | 1.13x at 16, 1.21x at 64 |
 | bf16 GEMM against the field ([A2](docs/performance.md#a2-kernels-against-the-tuned-field), [B2](docs/performance.md#b2-kernels-against-the-tuned-field)) | ties FlyDSL, 1.28-1.39x hipBLASLt | 0.9x or better of the best at all 122 LLM shapes |
 | where it loses ([A4](docs/performance.md#a4-losses-and-limits), [B4](docs/performance.md#b4-losses-and-no-headroom-findings)) | paged decode 0.86-1.12x Triton's | GEMMs 0.79-1.21x aiter's, norms 0.74-1.05x, MoE 0.66-0.94x CK's |
 
 One GPU of each; every comparison interleaved in one process.
-[Performance](docs/performance.md) has the method and every loss (later RDNA3
-vLLM tables await a re-run on a matched Triton).
+[Performance](docs/performance.md) has the method, the software stack of
+every table and every loss.
 
 ## The language, when you need control
 
