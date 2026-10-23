@@ -333,6 +333,10 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--arch", help="build for this arch (comma list: one report each, "
                                   "built only where the GPU is another arch)")
     p.add_argument("--dump", choices=("ir", "cpp"), help="print a raw kernel's IR or C++ and exit")
+    p.add_argument("--profile", action="store_true",
+                   help="then run hk.profile on the first case: counters, the thread "
+                        "trace, the main loop's instructions and a verdict "
+                        "(docs/profile.md)")
     p.add_argument("--json", metavar="PATH", help="write the report as JSON ('-' for stdout)")
     p.add_argument("--seed", type=int, default=0, help="torch.manual_seed for the inputs")
     p.add_argument("-q", "--quiet", action="store_true", help="no summary")
@@ -487,6 +491,20 @@ def main(argv: Optional[List[str]] = None) -> int:
         warmup=args.warmup, batch_ms=args.batch_ms, burn=args.burn,
         compile_mode=args.compile_mode, bytes=args.bytes, flops=args.flops,
         gpu=gpu, build=not args.trace_only, seed=args.seed, **cfg)
+    if args.profile and report.mode == "gpu" and not report.errors:
+        # The target as named on the command line: the profiled process
+        # resolves it the same way.
+        try:
+            import hk.profile as hp  # noqa: PLC0415
+
+            pr = hp.profile(args.target, args.inputs[0] if args.inputs else None,
+                            consts=consts, name=report.name)
+            report.profile = pr.json()
+            report.profile["summary"] = str(pr)
+        except Exception as e:  # noqa: BLE001
+            report.notes.append(f"profile: {type(e).__name__}: {e}")
+    elif args.profile:
+        report.notes.append("--profile needs the check to have run on a GPU")
     if args.json == "-":
         print(report.dumps())
         if not args.quiet:

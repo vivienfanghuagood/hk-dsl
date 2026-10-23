@@ -1,0 +1,16 @@
+hk.profile gelu_mul_tiles  gfx950 (AMD Radeon Graphics, 256 CUs)  hk 0.5.0  rocprofv3 1.1.0
+  call      bf16[4096,14336], bf16[4096,14336], bf16[4096,14336]  117.06 us of kernels a call, 1 kernel(s)
+  sources   timing: rocprofv3 --kernel-trace; counters: rocprofv3 --pmc, 5 passes; att: rocprofv3 --att (thread trace, one CU); isa: llvm-objdump of the code object
+  kernel gelu_mul_tiles_kernel  117.06 us ±0.8%
+    grid      57344 workgroups x 64 threads (1 waves), LDS 0 B, 35 VGPR -> 32 a CU (bound by waves and registers); 7.0 rounds of 256 CUs
+    roofline  352 MB past the L2 -> 3.01 TB/s = 33% of the cache-resident rate; DRAM at least 46% (the call's 352 MB once)
+    busy      5.11 of 8 waves/SIMD achieved, CUs busy 72%, clock 2.38 GHz
+    waves     waiting on a dependency 22%, waiting to issue 70%, issuing 8%, waiting to issue LDS 0% of wave time (counters)
+    memory    L2 hit 52%; latency vmem 2541, lds 0 cycles
+    code      no loop; 763 instructions: 404 valu, 32 valu_trans, 34 salu, 9 smem, 8 vmem_load, 4 vmem_store, 264 nop, 1 other, 7 waitcnt (2 lgkm, 5 vmem)
+    stalls    (whole kernel, thread trace) vmem_issue 69%, vmem_wait 11%, valu 11%, other 8%, scalar 1%, lgkm_wait 0%
+    verdict   latency-bound (neither roof): 46% of HBM; waves at vmem_issue 69% of their cycles (whole kernel); waves at vmem_wait 11% of their cycles (whole kernel); waves at valu 11% of their cycles (whole kernel); narrow global accesses (loads 8 B; stores 8 B a lane); occupancy 5.1 of 8 waves/SIMD
+  vs        strips takes 0.516x the time of gelu_mul_tiles (interleaved in one process: 62.1 vs 121.9 us, band 5%); profiled calls: strips 62.3 us vs gelu_mul_tiles 117.1 us (0.532x the time); VALU instructions 2.5e+07 -> 2.661e+07; workgroups 5.734e+04 -> 1.147e+05; CUs busy 72% -> 81%
+  strips: memory-bound: 86% of HBM at least (the call's 352 MB in 62.3 us, 5.66 TB/s); waves at valu 55% of their cycles (whole kernel); waves at vmem_wait 20% of their cycles (whole kernel); waves at other 14% of their cycles (whole kernel)
+VERDICT latency-bound (neither roof): 46% of HBM; waves at vmem_issue 69% of their cycles (whole kernel); waves at vmem_wait 11% of their cycles (whole kernel); waves at valu 11% of their cycles (whole kernel); narrow global accesses (loads 8 B; stores 8 B a lane); occupancy 5.1 of 8 waves/SIMD
+  (46 s)

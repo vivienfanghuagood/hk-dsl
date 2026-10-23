@@ -65,12 +65,12 @@ __version__ = "0.5.0"
 
 
 def __getattr__(name):
-    """`hk.check` on first use: it is a tool, not part of the language, and
+    """`hk.check` and `hk.profile` on first use: tools, not part of the language, and
     `import hk` stays as cheap as it was."""
-    if name == "check":
+    if name in ("check", "profile"):
         import importlib  # noqa: PLC0415
 
-        return importlib.import_module(".check", __name__)
+        return importlib.import_module("." + name, __name__)
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 __all__ = [

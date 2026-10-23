@@ -456,6 +456,11 @@ def gemm_kernel(name: str, *, block_m: int = 128, block_n: int = 128,
 DEFAULT = dict(block_m=128, block_n=128, k_step=64, dot_slice=16, warps=8,
                warp_rows=4, n_split=2, wgm=8, write_pos=2, lds_buffers=1)
 
+#: Knobs a tuning record may set beyond DEFAULT's (gemm_kernel's own, at
+#: their defaults when absent): with these, a record can hold any schedule
+#: hk.schedules.Rdna can, every knob that changes the C++.
+KNOBS = ("stagger", "stream_a", "setprio", "sched")
+
 #: What the tuner searches. Six axes and 96 points, chosen so that each one
 #: trades something real against something else rather than wandering:
 #:
@@ -531,7 +536,7 @@ def _bench_for(key: str):
 #: The tuner. Building it registers it, which is all `python3 -m hk.autotune`
 #: needs to find it.
 TUNER = _autotune.Tuner("gemm_bf16", _make, SPACE, DEFAULT,
-                        bench=_bench_for, keys=TUNE_KEYS)
+                        bench=_bench_for, keys=TUNE_KEYS, knobs=KNOBS)
 
 #: The default kernel, by name, for anything that wants it without going
 #: through the tuner -- cache warming, resource checks, the tests.

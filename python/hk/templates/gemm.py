@@ -57,11 +57,11 @@ import inspect
 import re
 import sys
 import types
-from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from .. import dsl as hk
 from ..runtime import ResourceError
+from ..schedules import gemm as _schedules_gemm
 from ..types import (DType, GlobalType, RegTileType, bf16, fp8e4m3, fp8e5m2, fp16,
                      fp32, i8)
 
@@ -97,7 +97,8 @@ NATIVE_TILE = True
 #: Schedule fields merged into every step's (a knob for measuring).
 OVERRIDE: Dict[str, Any] = {}
 
-_RESERVED = {"a", "b", "c", "ws", "cnt", "x", "w", "epilogue", "out", "out_dtype"}
+_RESERVED = {"a", "b", "c", "ws", "cnt", "x", "w", "epilogue", "out", "out_dtype",
+             "schedule"}
 
 
 def _hk_dtype(t) -> DType:
@@ -451,31 +452,9 @@ def _cols(ep: Epilogue, ts, lo: int, hi: int):
 # ---------------------------------------------------------------- plans
 
 
-@dataclass
-class Step:
-    """One launch of a plan.
-
-    kernel    "rdna" (hk.ops.gemm), "pp" (gemm_cdna's pingpong), "dp"
-              (gemm_cdna_dp's four-warp blocks), "decode" (decode_gemm),
-              "reduce" (gemm_cdna_dp's strip reduction of split-K shares)
-    sched     the kernel's schedule, as the module that owns it spells it
-    cols      the columns [lo, hi) of C it covers
-    epilogue  whether the epilogue runs in it
-    into      "out" (C) or "scratch" (fp32 split-K shares)
-    route     the candidate name the route table gave (gfx950)
-    """
-
-    kernel: str
-    sched: Dict[str, Any]
-    cols: Tuple[int, int]
-    epilogue: bool
-    into: str = "out"
-    route: str = ""
-
-    def __str__(self) -> str:
-        e = " +epilogue" if self.epilogue else ""
-        r = f" [{self.route}]" if self.route else ""
-        return f"{self.kernel}{r} cols {self.cols[0]}:{self.cols[1]} -> {self.into}{e}"
+#: One launch of a plan (kernel, sched, cols, epilogue, into, route,
+#: schedule): hk.schedules' Step, which hk.schedules' GEMM schedules make.
+Step = _schedules_gemm.Step
 
 
 def _check(m: int, n: int, k: int, arch: str) -> None:
@@ -493,6 +472,12 @@ def _check(m: int, n: int, k: int, arch: str) -> None:
 def _steps_cdna(name: str, m: int, n: int, k: int, lo: int) -> List[Step]:
     from ..ops import decode_gemm, gemm_cdna, gemm_cdna_dp  # noqa: PLC0415
 
+    if name not in gemm_cdna.CANDIDATES:
+        # A route table's own candidate: an hk.schedules record, as it is.
+        steps = gemm_cdna.extra_candidates()[name]._steps(m, n, k, lo)
+        for st in steps:
+            st.route = name
+        return steps
     kind, sched = gemm_cdna.CANDIDATES[name]
     if kind == "pp" and OVERRIDE:
         sched = {**sched, **OVERRIDE}
@@ -518,14 +503,23 @@ def _steps_cdna(name: str, m: int, n: int, k: int, lo: int) -> List[Step]:
     return [Step(kind, s, cols, True, route=name)]
 
 
-def plan(m: int, n: int, k: int, arch: Optional[str] = None) -> List[Step]:
+def plan(m: int, n: int, k: int, arch: Optional[str] = None, *,
+         schedule=None) -> List[Step]:
     """The launches gemm() makes for an M x N x K problem, in order, and the
     one(s) that carry the epilogue: hk.ops.matmul's kernels, with the store
     of every launch that writes C replaced, and split-K shares reduced by a
-    launch that runs the epilogue on the sum. Needs no GPU."""
+    launch that runs the epilogue on the sum. Needs no GPU.
+
+    `schedule` (an hk.schedules GEMM schedule, or its record) plans that
+    schedule's launches instead, after its check(): an illegal one raises
+    hk.schedules.Illegal (a ValueError) with the reasons."""
     from ..target import current_arch  # noqa: PLC0415
 
     arch = arch or current_arch()
+    if schedule is not None:
+        from .. import schedules  # noqa: PLC0415
+
+        return schedules.from_record(schedule).require(m, n, k, arch).steps(m, n, k)
     _check(m, n, k, arch)
     if arch == "gfx950":
         from ..ops import gemm_cdna  # noqa: PLC0415
@@ -551,40 +545,23 @@ _KERNELS: Dict[Tuple, Any] = {}
 
 def kernel_for(step: Step, ep: Optional[Epilogue], arch: Optional[str] = None):
     """The kernel a step launches, with the epilogue if the step carries it.
-    Traced and built on first use; `kernel_for(...).source()` is its C++."""
-    from ..ops import _epilogue, decode_gemm, gemm_cdna, gemm_cdna_dp  # noqa: PLC0415
-    from ..ops import gemm as rdna  # noqa: PLC0415
+    Traced and built on first use; `kernel_for(...).source()` is its C++.
+    Made by the step's hk.schedules schedule (from its kernel and sched if
+    the step was made by hand), which builds what hk.ops builds for it."""
+    from .. import schedules  # noqa: PLC0415
 
     e = ep if step.epilogue else None
     key = (step.kernel, tuple(sorted(step.sched.items())), e and e.tag, arch)
     got = _KERNELS.get(key)
     if got is not None:
         return got
-    s = step.sched
-    if step.kernel == "rdna":
-        s = {**rdna.DEFAULT, **s}
-        k = rdna.gemm_kernel(_epilogue.name(rdna._sched_name(s), e), **s, epilogue=e)
-        if arch:
-            k._arch = arch
-    elif step.kernel == "pp":
-        s = {**gemm_cdna.DEFAULT, **s}
-        k = gemm_cdna.gemm_kernel(_epilogue.name(gemm_cdna._sched_name(s), e), **s,
-                                  epilogue=e, arch=arch)
-    elif step.kernel == "dp":
-        s = {**gemm_cdna_dp.DEFAULT, **s}
-        k = gemm_cdna_dp.gemm_kernel(_epilogue.name(gemm_cdna_dp._sched_name(s), e),
-                                     **s, epilogue=e, arch=arch)
-    elif step.kernel == "decode":
-        s = dict(s)
-        nm = (f"decode_gemm_t{s['tokens']}_s{s['slices']}_w{s['warps']}"
-              f"_c{s['combine_depth']}_r{s['resident']}"
-              + (f"_k{s['splits']}" if s["splits"] > 1 else ""))
-        k = decode_gemm.decode_gemm_kernel(_epilogue.name(nm, e), **s, epilogue=e,
-                                           arch=arch)
-    else:
+    if step.kernel == "reduce":
         raise ValueError(f"no kernel for a {step.kernel} step; the reduction is "
                          f"gemm_cdna_dp.reduce")
-    _KERNELS[key] = k
+    s = step.schedule
+    if s is None:
+        s = schedules.family(step.kernel).from_record(step.sched)
+    k = _KERNELS[key] = s._make(e, arch)
     return k
 
 
@@ -712,19 +689,19 @@ def _check_out(dt: DType, arch: Optional[str] = None) -> None:
 
 
 def kernels(m: int, n: int, k: int, *, epilogue=None, out_dtype=None,
-            arch: Optional[str] = None, **operands):
+            arch: Optional[str] = None, schedule=None, **operands):
     """The kernels gemm() would launch for an M x N x K call with these
     operands, as [(step, kernel, constexprs)] -- for k.trace().dump(),
     k.source(**constexprs), k.build(**constexprs), with no GPU. Operands
     may be tensors on the "meta" device: only their shapes and dtypes
-    are read."""
+    are read. `schedule`: as gemm()'s."""
     from ..ops import gemm_cdna, gemm_cdna_dp  # noqa: PLC0415
 
     tdt = _out_dtype(out_dtype)
     _check_out(_hk_dtype(tdt), arch)
     ep = bind(epilogue or _identity, operands, m, n, _hk_dtype(tdt))
     out = []
-    for st in plan(m, n, k, arch=arch):
+    for st in plan(m, n, k, arch=arch, schedule=schedule):
         if st.kernel == "reduce":
             kern, consts = gemm_cdna_dp.reduce_epilogue_kernel(
                 st.sched["splits"], st.cols[1] - st.cols[0], ep, arch=arch, m=m)
@@ -752,16 +729,18 @@ def _sig(item):
         return (name, type(v), v)
 
 
-def _gemm(a, b, epilogue=None, out=None, out_dtype=None, **operands):
+def _gemm(a, b, epilogue=None, out=None, out_dtype=None, schedule=None, **operands):
     key = (epilogue, a.shape, b.shape, a.dtype, b.dtype,
            out_dtype if out is None else (out.shape, out.dtype, out.stride()),
            a.device, tuple(map(_sig, operands.items())))
+    if schedule is not None:
+        key += (_schedule_key(schedule),)
     try:
         got = _LAUNCH[key]
     except KeyError:
-        got = _LAUNCH[key] = _slow(a, b, epilogue, out, out_dtype, operands)
+        got = _LAUNCH[key] = _slow(a, b, epilogue, out, out_dtype, operands, schedule)
     except TypeError:                       # an unhashable operand: say what
-        got = _slow(a, b, epilogue, out, out_dtype, operands)
+        got = _slow(a, b, epilogue, out, out_dtype, operands, schedule)
     go, shape, dtype, prep = got
     if out is None:
         import torch  # noqa: PLC0415
@@ -770,7 +749,14 @@ def _gemm(a, b, epilogue=None, out=None, out_dtype=None, **operands):
     return go(a, b, out, [f(operands[name]) for name, f in prep])
 
 
-def _slow(a, b, epilogue, out, out_dtype, operands):
+def _schedule_key(schedule):
+    """A schedule, or its record (a dict, unhashable), as a cache key."""
+    from .. import schedules  # noqa: PLC0415
+
+    return schedules.from_record(schedule)
+
+
+def _slow(a, b, epilogue, out, out_dtype, operands, schedule=None):
     """Check a call and make its launch: (go, C's shape, C's dtype, the
     operand preparers)."""
     import torch  # noqa: PLC0415
@@ -790,13 +776,19 @@ def _slow(a, b, epilogue, out, out_dtype, operands):
     if out is not None and (tuple(out.shape) != (m, n) or out.stride(1) != 1):
         raise ValueError(f"hk.templates.gemm: out is {tuple(out.shape)}, "
                          f"expected ({m}, {n}) with unit column stride")
+    if schedule is not None:
+        from .. import schedules  # noqa: PLC0415
+
+        schedule = schedules.from_record(schedule).require(m, n, k)
     if epilogue is None and not operands and tdt == torch.bfloat16:
+        if schedule is not None:
+            return ((lambda a, b, out, ts: schedule.launch(a, b, out)), (m, n), tdt, [])
         from ..ops import gemm as rdna  # noqa: PLC0415
 
         return (lambda a, b, out, ts: rdna.matmul(a, b, out=out)), (m, n), tdt, []
     _check_out(_hk_dtype(tdt))
     ep = bind(epilogue or _identity, operands, m, n, _hk_dtype(tdt))
-    go = prepare(plan(m, n, k), ep, m, n, k, tdt, a.device)
+    go = prepare(plan(m, n, k, schedule=schedule), ep, m, n, k, tdt, a.device)
     return go, (m, n), tdt, _preparer(ep, m)
 
 
@@ -968,11 +960,11 @@ class _Gemm:
             setattr(self, name, f)
 
     def __call__(self, a=None, b=None, *, epilogue=None, out=None, out_dtype=None,
-                 **operands):
+                 schedule=None, **operands):
         if a is None and b is None:
             def bound(a, b, *, out=out, **more):
                 return _gemm(a, b, epilogue=epilogue, out=out, out_dtype=out_dtype,
-                             **{**operands, **more})
+                             schedule=schedule, **{**operands, **more})
 
             bound.__name__ = f"gemm[{getattr(epilogue, '__name__', 'plain')}]"
             return bound
@@ -980,7 +972,7 @@ class _Gemm:
             raise TypeError("hk.templates.gemm(a, b, ...) takes both A and B, or "
                             "neither (to bind the epilogue for later)")
         return _gemm(a, b, epilogue=epilogue, out=out, out_dtype=out_dtype,
-                     **operands)
+                     schedule=schedule, **operands)
 
     def __repr__(self) -> str:
         return "<hk.templates.gemm>"

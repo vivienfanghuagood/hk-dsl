@@ -64,7 +64,7 @@ overrides it. Usable as a decorator: `@hk.templates.elementwise`.
 ### `hk.templates.gemm`
 
 ```python
-hk.templates.gemm(a=None, b=None, *, epilogue=None, out=None, out_dtype=None, **operands)
+hk.templates.gemm(a=None, b=None, *, epilogue=None, out=None, out_dtype=None, schedule=None, **operands)
 ```
 
 *New after 0.4.0* (the `hk.templates.gemm` module is not in the 0.4.0 wheel)
