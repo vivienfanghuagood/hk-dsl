@@ -29,6 +29,9 @@ CEILING_MARGIN = 1.15
 #: Dense bf16 peaks, FLOP/s (the datasheets', as hk.tune.stats has them).
 PEAK_FLOPS = {"gfx950": 2.52e15, "gfx1100": 122.6e12}
 
+#: DRAM bandwidth, bytes/s (the datasheets', as hk.check.CARDS has them).
+PEAK_BW = {"gfx950": 8.0e12, "gfx1100": 864e9}
+
 #: The pass rule, per GPU, over the sealed shapes.
 PASS_GEOMEAN = 0.95      # geometric mean of the shapes' ratios
 PASS_MIN = 0.85          # no shape below this
@@ -39,6 +42,13 @@ def floor_ms(flop: float, arch: str) -> Optional[float]:
     """The shortest plausible time of one call, ms."""
     peak = PEAK_FLOPS.get(arch)
     return flop / (peak * CEILING_MARGIN) * 1e3 if peak else None
+
+
+def roofline_us(flop: float, nbytes: float, arch: str) -> Optional[float]:
+    """The datasheet roofline of one call, us: max(FLOPs / peak, bytes / DRAM BW)."""
+    if arch not in PEAK_FLOPS:
+        return None
+    return max(flop / PEAK_FLOPS[arch], nbytes / PEAK_BW[arch]) * 1e6
 
 
 def screen(times: Sequence[float], floor: Optional[float] = None) -> List[float]:

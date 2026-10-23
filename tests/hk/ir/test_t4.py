@@ -234,3 +234,14 @@ def test_markdown_renders():
                verdict={"sol:x": stats.verdict(_rows([1.0]))})
     md = score.markdown(doc)
     assert "PASS" in md and "| s |" in md and "1.000 (0.99-1.01)" in md
+
+
+def test_roofline_counts_only_experts_with_rows():
+    s = dict(E=4, N=256, K=128, top_k=1, tokens=8, skew=1.0)
+    nbytes = R.min_bytes(s, sizes=[0, 8, 0, 0])
+    assert nbytes == 2 * (8 * (128 + 256) + 1 * 256 * 128)
+    assert R.min_bytes(s, sizes=[2, 2, 2, 2]) - nbytes == 2 * 3 * 256 * 128
+    # A big GEMM is compute-bound, a one-row call bound by the weights' bytes.
+    assert stats.roofline_us(2.52e15, 1, "gfx950") == pytest.approx(1e6)
+    assert stats.roofline_us(1, 8.0e12, "gfx950") == pytest.approx(1e6)
+    assert stats.roofline_us(1, 1, "gfx942") is None

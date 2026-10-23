@@ -49,6 +49,14 @@ def weight_bytes(shape: Dict) -> int:
     return 2 * shape["E"] * shape["N"] * shape["K"]
 
 
+def min_bytes(shape: Dict, sizes=None) -> int:
+    """Bytes a call must move at least: x, out, and the weights of every
+    expert that has a row (for `sizes`, default the shape's routing at seed 1)."""
+    sizes = group_sizes(shape, 1) if sizes is None else sizes
+    used = sum(1 for c in sizes if c)
+    return 2 * (rows(shape) * (shape["K"] + shape["N"]) + used * shape["N"] * shape["K"])
+
+
 def validate(shape: Dict) -> None:
     """Raises ValueError for a shape outside the task's guarantees (task.md)."""
     missing = [k for k in KEYS if k not in shape]

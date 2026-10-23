@@ -365,12 +365,23 @@ def _us(ms) -> str:
     return "-" if ms is None else f"{ms * 1e3:.1f}"
 
 
+def _roof(shape: Dict, arch: str) -> Optional[float]:
+    try:
+        return stats.roofline_us(R.flops(shape), R.min_bytes(shape), arch)
+    except Exception:  # noqa: BLE001 -- a partial shape (the tests') has no roofline
+        return None
+
+
 def markdown(doc: Dict) -> str:
     meta = doc["meta"]
     lines = [f"# T4 score: {meta['arch']} ({meta['gpu']}), {meta['label']}", "",
              f"{meta['date']}; hk-dsl at {meta.get('commit') or '?'}; "
              f"{', '.join(f'{k} {v}' for k, v in meta['versions'].items())}; "
              f"{meta['sets']} sets x {meta['rounds']} rounds; shapes: {meta['shapes']}.", ""]
+    for m in meta.get("merged") or []:
+        lines.append(f"- merged: `{m['file']}` ({m['date']}, {m.get('commit') or '?'})")
+    if meta.get("merged"):
+        lines.append("")
     if meta.get("missing"):
         lines.append("Baselines not here: " + "; ".join(f"`{k}` ({v})" for k, v in meta["missing"].items()))
         lines.append("")
@@ -382,19 +393,23 @@ def markdown(doc: Dict) -> str:
                          f"min {v['min']}, {v['reached']}/{v['shapes']} shapes >= {v['target']} "
                          f"({v['why']}). Rule: {v['rule']}.")
     lines.append("")
-    arms = []
+    seen = []
     for r in doc["rows"]:
-        for a in r.get("ms", {}):
-            if a not in arms:
-                arms.append(a)
-    head = "| shape | E | N | K | rows | " + " | ".join(f"{a} us" for a in arms) + " | best | " + \
-        " | ".join(f"{s} ratio" for s in sols) + " |"
+        for a in list(r.get("ms", {})) + list(r.get("errors", {})):
+            if a not in seen:
+                seen.append(a)
+    rank = {"base": 0, "proxy": 1, "sol": 2}
+    arms = sorted(seen, key=lambda a: (rank.get(a.split(":")[0], 3), seen.index(a)))
+    def name(a):
+        return a[5:] if a.startswith("base:") else ("dense (proxy)" if a == "proxy:dense" else a)
+    head = ("| shape | E | N | K | rows | roofline | " + " | ".join(name(a) for a in arms)
+            + " | best | best/roofline | " + " | ".join(f"{s} ratio" for s in sols) + " |")
     lines += [head, "|" + "---|" * (head.count("|") - 1)]
     for r in doc["rows"]:
         sh = r["shape"]
         cells = []
         for a in arms:
-            if a in r.get("ms", {}) and r["ms"][a]:
+            if r.get("ms", {}).get(a):
                 cells.append(_us(r["ms"][a]))
             elif a in r.get("errors", {}):
                 cells.append("x")
@@ -411,8 +426,13 @@ def markdown(doc: Dict) -> str:
                 b = res.get("band") or [res["ratio"], res["ratio"]]
                 flag = "" if res.get("audit_ok") else " (audit)"
                 sc.append(f"{res['ratio']:.3f} ({b[0]:.2f}-{b[1]:.2f}){flag}")
+        roof = _roof(sh, meta["arch"])
+        best = r.get("best_baseline")
+        best_ms = r.get("ms", {}).get(best) if best else None
+        frac = f"{roof / (best_ms * 1e3):.2f}" if roof and best_ms else "-"
         lines.append(f"| {r['name']} | {sh['E']} | {sh['N']} | {sh['K']} | {r['rows']} | "
-                     + " | ".join(cells) + f" | {r.get('best_baseline') or '-'} | " + " | ".join(sc) + " |")
+                     f"{f'{roof:.1f}' if roof else '-'} | " + " | ".join(cells)
+                     + f" | {best.split(':', 1)[-1] if best else '-'} | {frac} | " + " | ".join(sc) + " |")
     errs = [(r["name"], a, e) for r in doc["rows"] for a, e in r.get("errors", {}).items()]
     if errs:
         lines += ["", "Arms not timed:", ""]
@@ -425,13 +445,17 @@ def markdown(doc: Dict) -> str:
             if "error" in a:
                 lines.append(f"- {n} `{s}`: {a['error']}")
             else:
+                fk = f" e.g. `{a['foreign'][0][:60]}`" if a.get("foreign") else ""
                 lines.append(f"- {n} `{s}`: {'ok' if a['ok'] else 'FAIL'}; hk {a['hk_us']} us "
                              f"({a['hk_share']:.0%}), torch {a['torch_us']} us, foreign "
-                             f"{a['foreign_us']} us {a['foreign'] if a['foreign'] else ''}")
+                             f"{a['foreign_us']} us{fk}")
     lines.append("")
-    lines.append("Times are per call, us, the median over sets of each set's median round; "
-                 "ratio = best baseline / solution (> 1: faster), median and range over sets; "
-                 "`x` = not timed (see above).")
+    lines.append("Times are per call, us: the median over sets of each set's median round. "
+                 "ratio = best baseline / solution (> 1: faster), the median and range over sets. "
+                 "`x` = not timed (see above). roofline = max(FLOPs / bf16 peak, bytes / DRAM "
+                 "bandwidth) at the datasheets' peaks, bytes = x + out + the weights of every expert "
+                 "with a row; best/roofline = the fraction of it the best baseline reaches. "
+                 "`dense` is a proxy (one expert's weights for all rows), not the task's math.")
     return "\n".join(lines) + "\n"
 
 
