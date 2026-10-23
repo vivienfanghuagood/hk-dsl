@@ -96,7 +96,7 @@ _ABBREV = {"block_m": "", "block_n": "x", "k_step": "k", "stages": "s", "warps_m
            "transposed_c": "tc", "slices": "sl", "warps": "w", "combine_depth": "cd",
            "resident": "r", "warp_rows": "wr", "n_split": "ns", "dot_slice": "d",
            "write_pos": "p", "lds_buffers": "b", "stream_a": "a", "sched": "i",
-           "stagger": "t", "tokens": "tk", "stream_k": "sk", "sk_grid": "skg"}
+           "stagger": "t", "tokens": "tk", "stream_k": "str", "sk_grid": "skg"}
 
 
 def _short_items(kind, items) -> str:
