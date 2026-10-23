@@ -1,0 +1,984 @@
+{
+ "arch": "gfx1100",
+ "split": "acceptance",
+ "date": "2026-10-23",
+ "target": 0.95,
+ "share_target": 0.8,
+ "before": {
+  "share": 0.625,
+  "reached": 15,
+  "of": 24,
+  "median": 0.995,
+  "worst": 0.428,
+  "geomean": 0.857
+ },
+ "after": {
+  "share": 1.0,
+  "reached": 24,
+  "of": 24,
+  "median": 1.036,
+  "worst": 0.951,
+  "geomean": 1.045
+ },
+ "routed": {
+  "share": 1.0,
+  "reached": 24,
+  "of": 24,
+  "median": 1.036,
+  "worst": 0.951,
+  "geomean": 1.045
+ },
+ "gpu_minutes_per_shape": {
+  "mean": 0.21,
+  "max": 0.71,
+  "total": 5.1
+ },
+ "wall_minutes_per_shape": {
+  "mean": 0.32,
+  "max": 0.76
+ },
+ "wins": 17,
+ "meta": {
+  "arch": "gfx1100",
+  "date": "2026-10-22",
+  "by": "hk.tune",
+  "device": "AMD Radeon Graphics",
+  "torch": "2.10.0+rocm7.2.4.git3d3aa833",
+  "hip": "7.2.53211",
+  "toolchain": "75554f3b5f5c6a8852adacb52ae63185",
+  "hipcc": "HIP version: 7.2.53211-97f5574fe2",
+  "versions": {
+   "torch": "2.10.0+rocm7.2.4.git3d3aa833",
+   "hip": "7.2.53211",
+   "triton": "3.6.0+rocm7.2.4.git4ed88892",
+   "flydsl": "0.4.0.dev970"
+  },
+  "missing": {},
+  "commit": "f0dff9a",
+  "sets": 3,
+  "rounds": 7,
+  "budget": 60.0,
+  "split": "acceptance"
+ },
+ "shapes": [
+  {
+   "m": 1,
+   "n": 4096,
+   "k": 1024,
+   "best_baseline": "tunableop",
+   "best_us": 16.53,
+   "before": [
+    0.4681,
+    0.4661,
+    0.4684
+   ],
+   "after": [
+    0.9797,
+    0.9765,
+    0.9801
+   ],
+   "before_us": 35.31,
+   "after_us": 16.9,
+   "route_before": "thin",
+   "route_after": "u:decode:r4",
+   "verdict": "win",
+   "gain": 1.09773,
+   "bar": 0.01529,
+   "tune_gpu_s": 1.93,
+   "tune_wall_s": 5.1,
+   "baselines_us": {
+    "torch": 49.72,
+    "tunableop": 16.53,
+    "triton": 33.91
+   },
+   "wrong": {
+    "base:flydsl": "ValueError: no FlyDSL tile divides this shape"
+   },
+   "reached": true,
+   "routed": [
+    0.9781
+   ],
+   "route_to_engine": false
+  },
+  {
+   "m": 1,
+   "n": 4608,
+   "k": 1024,
+   "best_baseline": "tunableop",
+   "best_us": 17.28,
+   "before": [
+    0.4279,
+    0.4249,
+    0.4281
+   ],
+   "after": [
+    0.9505,
+    0.9503,
+    0.9515
+   ],
+   "before_us": 40.36,
+   "after_us": 18.17,
+   "route_before": "thin",
+   "route_after": "u:decode:r4",
+   "verdict": "win",
+   "gain": 1.22487,
+   "bar": 0.03404,
+   "tune_gpu_s": 1.4,
+   "tune_wall_s": 2.7,
+   "baselines_us": {
+    "torch": 53.62,
+    "tunableop": 17.28,
+    "triton": 40.51
+   },
+   "wrong": {
+    "base:flydsl": "ValueError: no FlyDSL tile divides this shape"
+   },
+   "reached": true,
+   "routed": [
+    0.9508
+   ],
+   "route_to_engine": false
+  },
+  {
+   "m": 8,
+   "n": 3840,
+   "k": 5120,
+   "best_baseline": "tunableop",
+   "best_us": 66.55,
+   "before": [
+    0.7846,
+    0.778,
+    0.7864
+   ],
+   "after": [
+    1.1634,
+    1.1622,
+    1.1635
+   ],
+   "before_us": 84.89,
+   "after_us": 57.2,
+   "route_before": "thin",
+   "route_after": "u:decode:",
+   "verdict": "win",
+   "gain": 0.48712,
+   "bar": 0.0153,
+   "tune_gpu_s": 0.79,
+   "tune_wall_s": 0.8,
+   "baselines_us": {
+    "torch": 119.84,
+    "tunableop": 66.55,
+    "triton": 82.23
+   },
+   "wrong": {
+    "base:flydsl": "ValueError: no FlyDSL tile divides this shape"
+   },
+   "reached": true,
+   "routed": [
+    1.1635
+   ],
+   "route_to_engine": false
+  },
+  {
+   "m": 8,
+   "n": 4608,
+   "k": 18432,
+   "best_baseline": "tunableop",
+   "best_us": 260.04,
+   "before": [
+    0.8898,
+    0.8834,
+    0.8901
+   ],
+   "after": [
+    1.0695,
+    1.0655,
+    1.0719
+   ],
+   "before_us": 293.42,
+   "after_us": 243.66,
+   "route_before": "thin",
+   "route_after": "u:decode:cd2_r2",
+   "verdict": "win",
+   "gain": 0.22395,
+   "bar": 0.03387,
+   "tune_gpu_s": 1.42,
+   "tune_wall_s": 8.0,
+   "baselines_us": {
+    "torch": 362.12,
+    "tunableop": 260.04,
+    "triton": 267.14
+   },
+   "wrong": {
+    "base:flydsl": "ValueError: no FlyDSL tile divides this shape"
+   },
+   "reached": true,
+   "routed": [
+    1.0672
+   ],
+   "route_to_engine": false
+  },
+  {
+   "m": 16,
+   "n": 8192,
+   "k": 2048,
+   "best_baseline": "tunableop",
+   "best_us": 48.04,
+   "before": [
+    0.5041,
+    0.4878,
+    0.5079
+   ],
+   "after": [
+    0.9825,
+    0.9795,
+    0.9826
+   ],
+   "before_us": 95.16,
+   "after_us": 48.97,
+   "route_before": "thin",
+   "route_after": "u:decode:",
+   "verdict": "win",
+   "gain": 1.03443,
+   "bar": 0.03677,
+   "tune_gpu_s": 0.94,
+   "tune_wall_s": 3.7,
+   "baselines_us": {
+    "torch": 120.76,
+    "tunableop": 48.04,
+    "triton": 112.0
+   },
+   "wrong": {
+    "base:flydsl": "ValueError: no FlyDSL tile divides this shape"
+   },
+   "reached": true,
+   "routed": [
+    0.981
+   ],
+   "route_to_engine": false
+  },
+  {
+   "m": 16,
+   "n": 14336,
+   "k": 8192,
+   "best_baseline": "tunableop",
+   "best_us": 303.8,
+   "before": [
+    0.6855,
+    0.6807,
+    0.6869
+   ],
+   "after": [
+    0.9992,
+    0.9978,
+    0.9995
+   ],
+   "before_us": 443.5,
+   "after_us": 304.04,
+   "route_before": "thin",
+   "route_after": "u:decode:r2",
+   "verdict": "win",
+   "gain": 0.44407,
+   "bar": 0.01816,
+   "tune_gpu_s": 1.21,
+   "tune_wall_s": 2.6,
+   "baselines_us": {
+    "torch": 529.44,
+    "tunableop": 303.8,
+    "triton": 376.34
+   },
+   "wrong": {
+    "base:flydsl": "ValueError: no FlyDSL tile divides this shape"
+   },
+   "reached": true,
+   "routed": [
+    0.9992
+   ],
+   "route_to_engine": false
+  },
+  {
+   "m": 128,
+   "n": 7168,
+   "k": 8192,
+   "best_baseline": "tunableop",
+   "best_us": 210.92,
+   "before": [
+    0.6468,
+    0.6454,
+    0.6491
+   ],
+   "after": [
+    1.0394,
+    1.0389,
+    1.0408
+   ],
+   "before_us": 325.69,
+   "after_us": 202.67,
+   "route_before": "default",
+   "route_after": "u:rdna:64_x64_ns1_i1_t1_wr2_w4",
+   "verdict": "win",
+   "gain": 0.61753,
+   "bar": 0.01,
+   "tune_gpu_s": 3.92,
+   "tune_wall_s": 35.2,
+   "baselines_us": {
+    "torch": 445.63,
+    "tunableop": 210.92,
+    "flydsl": 244.32,
+    "triton": 299.46
+   },
+   "wrong": {},
+   "reached": true,
+   "routed": [
+    1.0407
+   ],
+   "route_to_engine": false
+  },
+  {
+   "m": 128,
+   "n": 7680,
+   "k": 5120,
+   "best_baseline": "tunableop",
+   "best_us": 144.4,
+   "before": [
+    0.6149,
+    0.6145,
+    0.6197
+   ],
+   "after": [
+    1.0762,
+    1.0751,
+    1.083
+   ],
+   "before_us": 234.37,
+   "after_us": 133.95,
+   "route_before": "default",
+   "route_after": "u:rdna:64_x64_ns1_i1_t1_wr2_w4_g16",
+   "verdict": "win",
+   "gain": 0.76107,
+   "bar": 0.01,
+   "tune_gpu_s": 1.68,
+   "tune_wall_s": 7.0,
+   "baselines_us": {
+    "torch": 311.88,
+    "tunableop": 144.4,
+    "flydsl": 208.17,
+    "triton": 222.2
+   },
+   "wrong": {},
+   "reached": true,
+   "routed": [
+    1.078
+   ],
+   "route_to_engine": false
+  },
+  {
+   "m": 512,
+   "n": 4608,
+   "k": 4096,
+   "best_baseline": "flydsl",
+   "best_us": 292.54,
+   "before": [
+    1.1105,
+    1.1053,
+    1.1152
+   ],
+   "after": [
+    1.2235,
+    1.2225,
+    1.2238
+   ],
+   "before_us": 263.43,
+   "after_us": 239.19,
+   "route_before": "default",
+   "route_after": "u:rdna:x64_i2_t1_g16",
+   "verdict": "win",
+   "gain": 0.11116,
+   "bar": 0.01382,
+   "tune_gpu_s": 4.31,
+   "tune_wall_s": 11.3,
+   "baselines_us": {
+    "torch": 411.75,
+    "tunableop": 300.05,
+    "flydsl": 292.54,
+    "triton": 311.76
+   },
+   "wrong": {},
+   "reached": true,
+   "routed": [
+    1.223
+   ],
+   "route_to_engine": false
+  },
+  {
+   "m": 512,
+   "n": 7168,
+   "k": 5120,
+   "best_baseline": "tunableop",
+   "best_us": 528.96,
+   "before": [
+    1.0602,
+    1.0511,
+    1.0667
+   ],
+   "after": [
+    1.1475,
+    1.1385,
+    1.1561
+   ],
+   "before_us": 498.92,
+   "after_us": 460.93,
+   "route_before": "default",
+   "route_after": "u:rdna:64_x64_ns1_i1_t1_wr2_w4",
+   "verdict": "win",
+   "gain": 0.0804,
+   "bar": 0.02126,
+   "tune_gpu_s": 7.1,
+   "tune_wall_s": 23.4,
+   "baselines_us": {
+    "torch": 744.17,
+    "tunableop": 528.96,
+    "flydsl": 598.28,
+    "triton": 546.44
+   },
+   "wrong": {},
+   "reached": true,
+   "routed": [
+    1.1476
+   ],
+   "route_to_engine": false
+  },
+  {
+   "m": 512,
+   "n": 8192,
+   "k": 3584,
+   "best_baseline": "flydsl",
+   "best_us": 386.17,
+   "before": [
+    1.0072,
+    1.005,
+    1.0075
+   ],
+   "after": [
+    1.0346,
+    1.0337,
+    1.0357
+   ],
+   "before_us": 384.0,
+   "after_us": 373.48,
+   "route_before": "default",
+   "route_after": "u:rdna:x64_i2_t1",
+   "verdict": "win",
+   "gain": 0.0233,
+   "bar": 0.01203,
+   "tune_gpu_s": 3.37,
+   "tune_wall_s": 5.2,
+   "baselines_us": {
+    "torch": 542.34,
+    "tunableop": 413.16,
+    "flydsl": 386.17,
+    "triton": 419.38
+   },
+   "wrong": {},
+   "reached": true,
+   "routed": [
+    1.034
+   ],
+   "route_to_engine": false
+  },
+  {
+   "m": 512,
+   "n": 8192,
+   "k": 7168,
+   "best_baseline": "flydsl",
+   "best_us": 763.71,
+   "before": [
+    0.9652,
+    0.9616,
+    0.9744
+   ],
+   "after": [
+    1.0288,
+    1.0264,
+    1.0326
+   ],
+   "before_us": 791.29,
+   "after_us": 741.14,
+   "route_before": "default",
+   "route_after": "u:rdna:x64_i2_t1",
+   "verdict": "win",
+   "gain": 0.05212,
+   "bar": 0.02616,
+   "tune_gpu_s": 3.89,
+   "tune_wall_s": 5.3,
+   "baselines_us": {
+    "torch": 1062.26,
+    "tunableop": 899.25,
+    "flydsl": 763.71,
+    "triton": 863.89
+   },
+   "wrong": {},
+   "reached": true,
+   "routed": [
+    1.0305
+   ],
+   "route_to_engine": false
+  },
+  {
+   "m": 1024,
+   "n": 4096,
+   "k": 1024,
+   "best_baseline": "flydsl",
+   "best_us": 120.31,
+   "before": [
+    0.8401,
+    0.8398,
+    0.8414
+   ],
+   "after": [
+    1.0581,
+    1.0577,
+    1.0582
+   ],
+   "before_us": 143.2,
+   "after_us": 113.7,
+   "route_before": "default",
+   "route_after": "u:rdna:x64_i2_t1_g16",
+   "verdict": "win",
+   "gain": 0.24456,
+   "bar": 0.01512,
+   "tune_gpu_s": 6.57,
+   "tune_wall_s": 10.4,
+   "baselines_us": {
+    "torch": 177.53,
+    "tunableop": 130.6,
+    "flydsl": 120.31,
+    "triton": 158.38
+   },
+   "wrong": {},
+   "reached": true,
+   "routed": [
+    1.0581
+   ],
+   "route_to_engine": false
+  },
+  {
+   "m": 1024,
+   "n": 6144,
+   "k": 5120,
+   "best_baseline": "flydsl",
+   "best_us": 740.27,
+   "before": [
+    0.9678,
+    0.9613,
+    0.972
+   ],
+   "after": [
+    1.0086,
+    0.9929,
+    1.0088
+   ],
+   "before_us": 762.08,
+   "after_us": 735.06,
+   "route_before": "default",
+   "route_after": "u:rdna:k32_ns1_t1_a1_wr2",
+   "verdict": "win",
+   "gain": 0.03136,
+   "bar": 0.01094,
+   "tune_gpu_s": 9.42,
+   "tune_wall_s": 26.8,
+   "baselines_us": {
+    "torch": 1017.8,
+    "tunableop": 937.3,
+    "flydsl": 740.27,
+    "triton": 864.06
+   },
+   "wrong": {},
+   "reached": true,
+   "routed": [
+    1.0071
+   ],
+   "route_to_engine": false
+  },
+  {
+   "m": 1024,
+   "n": 8192,
+   "k": 4608,
+   "best_baseline": "flydsl",
+   "best_us": 901.21,
+   "before": [
+    1.0155,
+    1.0139,
+    1.0157
+   ],
+   "after": [
+    1.0263,
+    1.0254,
+    1.0283
+   ],
+   "before_us": 888.87,
+   "after_us": 877.46,
+   "route_before": "default",
+   "route_after": "u:rdna:k32_i2_t1_g4",
+   "verdict": "win",
+   "gain": 0.01032,
+   "bar": 0.01,
+   "tune_gpu_s": 9.43,
+   "tune_wall_s": 27.2,
+   "baselines_us": {
+    "torch": 1156.83,
+    "tunableop": 1082.61,
+    "flydsl": 901.21,
+    "triton": 989.62
+   },
+   "wrong": {},
+   "reached": true,
+   "routed": [
+    1.0271
+   ],
+   "route_to_engine": false
+  },
+  {
+   "m": 2048,
+   "n": 2048,
+   "k": 4608,
+   "best_baseline": "flydsl",
+   "best_us": 490.94,
+   "before": [
+    1.0245,
+    1.0242,
+    1.0248
+   ],
+   "after": [
+    1.0652,
+    1.0652,
+    1.0667
+   ],
+   "before_us": 479.21,
+   "after_us": 460.89,
+   "route_before": "default",
+   "route_after": "u:rdna:x64_g16",
+   "verdict": "win",
+   "gain": 0.01751,
+   "bar": 0.01121,
+   "tune_gpu_s": 10.77,
+   "tune_wall_s": 14.3,
+   "baselines_us": {
+    "torch": 664.57,
+    "tunableop": 552.47,
+    "flydsl": 490.94,
+    "triton": 519.19
+   },
+   "wrong": {},
+   "reached": true,
+   "routed": [
+    1.0652
+   ],
+   "route_to_engine": false
+  },
+  {
+   "m": 2048,
+   "n": 5120,
+   "k": 2048,
+   "best_baseline": "flydsl",
+   "best_us": 503.48,
+   "before": [
+    0.9818,
+    0.9783,
+    0.9842
+   ],
+   "after": [
+    1.0126,
+    1.0063,
+    1.0141
+   ],
+   "before_us": 512.8,
+   "after_us": 497.7,
+   "route_before": "default",
+   "route_after": "u:rdna:k32_i2_t1_g4",
+   "verdict": "win",
+   "gain": 0.02937,
+   "bar": 0.01,
+   "tune_gpu_s": 9.38,
+   "tune_wall_s": 11.1,
+   "baselines_us": {
+    "torch": 716.69,
+    "tunableop": 611.29,
+    "flydsl": 503.48,
+    "triton": 601.74
+   },
+   "wrong": {},
+   "reached": true,
+   "routed": [
+    1.0116
+   ],
+   "route_to_engine": false
+  },
+  {
+   "m": 2048,
+   "n": 8192,
+   "k": 3584,
+   "best_baseline": "flydsl",
+   "best_us": 1395.15,
+   "before": [
+    1.0194,
+    1.0187,
+    1.0206
+   ],
+   "after": [
+    1.0195,
+    1.0157,
+    1.0213
+   ],
+   "before_us": 1368.61,
+   "after_us": 1368.41,
+   "route_before": "default",
+   "route_after": "default",
+   "verdict": "tie",
+   "gain": 0.02334,
+   "bar": 0.03167,
+   "tune_gpu_s": 12.33,
+   "tune_wall_s": 16.0,
+   "baselines_us": {
+    "torch": 1774.66,
+    "tunableop": 1568.76,
+    "flydsl": 1395.15,
+    "triton": 1495.38
+   },
+   "wrong": {},
+   "reached": true,
+   "routed": [
+    1.0195
+   ],
+   "route_to_engine": false
+  },
+  {
+   "m": 4096,
+   "n": 4096,
+   "k": 7168,
+   "best_baseline": "flydsl",
+   "best_us": 2822.13,
+   "before": [
+    1.0424,
+    1.0417,
+    1.0458
+   ],
+   "after": [
+    1.038,
+    1.0327,
+    1.0465
+   ],
+   "before_us": 2709.1,
+   "after_us": 2718.84,
+   "route_before": "default",
+   "route_after": "default",
+   "verdict": "tie",
+   "gain": -0.00264,
+   "bar": 0.0202,
+   "tune_gpu_s": 24.86,
+   "tune_wall_s": 28.7,
+   "baselines_us": {
+    "torch": 3415.87,
+    "tunableop": 3096.92,
+    "flydsl": 2822.13,
+    "triton": 2979.01
+   },
+   "wrong": {},
+   "reached": true,
+   "routed": [
+    1.038
+   ],
+   "route_to_engine": false
+  },
+  {
+   "m": 4096,
+   "n": 4608,
+   "k": 18432,
+   "best_baseline": "flydsl",
+   "best_us": 8065.01,
+   "before": [
+    1.0394,
+    1.0354,
+    1.0409
+   ],
+   "after": [
+    1.0197,
+    1.0183,
+    1.024
+   ],
+   "before_us": 7763.73,
+   "after_us": 7900.91,
+   "route_before": "default",
+   "route_after": "default",
+   "verdict": "tie",
+   "gain": -0.00501,
+   "bar": 0.01522,
+   "tune_gpu_s": 33.98,
+   "tune_wall_s": 36.4,
+   "baselines_us": {
+    "torch": 10115.12,
+    "tunableop": 10137.38,
+    "flydsl": 8065.01,
+    "triton": 8450.59
+   },
+   "wrong": {},
+   "reached": true,
+   "routed": [
+    1.0208
+   ],
+   "route_to_engine": false
+  },
+  {
+   "m": 4096,
+   "n": 13824,
+   "k": 5120,
+   "best_baseline": "triton",
+   "best_us": 7030.35,
+   "before": [
+    1.0591,
+    1.0538,
+    1.0594
+   ],
+   "after": [
+    1.0492,
+    1.0487,
+    1.051
+   ],
+   "before_us": 6655.2,
+   "after_us": 6703.87,
+   "route_before": "default",
+   "route_after": "default",
+   "verdict": "tie",
+   "gain": -0.00689,
+   "bar": 0.02711,
+   "tune_gpu_s": 38.73,
+   "tune_wall_s": 44.3,
+   "baselines_us": {
+    "torch": 8481.72,
+    "tunableop": 8319.97,
+    "flydsl": 7038.4,
+    "triton": 7030.35
+   },
+   "wrong": {},
+   "reached": true,
+   "routed": [
+    1.0487
+   ],
+   "route_to_engine": false
+  },
+  {
+   "m": 4096,
+   "n": 14336,
+   "k": 5120,
+   "best_baseline": "triton",
+   "best_us": 7291.42,
+   "before": [
+    1.0722,
+    1.0577,
+    1.0729
+   ],
+   "after": [
+    1.054,
+    1.0501,
+    1.058
+   ],
+   "before_us": 6810.56,
+   "after_us": 6909.24,
+   "route_before": "default",
+   "route_after": "default",
+   "verdict": "tie",
+   "gain": -0.00812,
+   "bar": 0.01655,
+   "tune_gpu_s": 35.86,
+   "tune_wall_s": 41.2,
+   "baselines_us": {
+    "torch": 8782.51,
+    "tunableop": 8662.51,
+    "flydsl": 7313.92,
+    "triton": 7291.42
+   },
+   "wrong": {},
+   "reached": true,
+   "routed": [
+    1.0553
+   ],
+   "route_to_engine": false
+  },
+  {
+   "m": 8192,
+   "n": 3584,
+   "k": 5120,
+   "best_baseline": "flydsl",
+   "best_us": 3520.85,
+   "before": [
+    1.0287,
+    1.0232,
+    1.0317
+   ],
+   "after": [
+    1.0185,
+    1.0139,
+    1.0242
+   ],
+   "before_us": 3430.82,
+   "after_us": 3451.83,
+   "route_before": "default",
+   "route_after": "default",
+   "verdict": "tie",
+   "gain": 0.00038,
+   "bar": 0.01395,
+   "tune_gpu_s": 42.51,
+   "tune_wall_s": 45.6,
+   "baselines_us": {
+    "torch": 4375.88,
+    "tunableop": 4057.6,
+    "flydsl": 3520.85,
+    "triton": 3702.88
+   },
+   "wrong": {},
+   "reached": true,
+   "routed": [
+    1.02
+   ],
+   "route_to_engine": false
+  },
+  {
+   "m": 8192,
+   "n": 5120,
+   "k": 2048,
+   "best_baseline": "flydsl",
+   "best_us": 2050.12,
+   "before": [
+    1.047,
+    1.0468,
+    1.0486
+   ],
+   "after": [
+    1.0465,
+    1.0441,
+    1.0479
+   ],
+   "before_us": 1958.18,
+   "after_us": 1961.11,
+   "route_before": "default",
+   "route_after": "default",
+   "verdict": "tie",
+   "gain": -0.00483,
+   "bar": 0.013,
+   "tune_gpu_s": 40.45,
+   "tune_wall_s": 41.6,
+   "baselines_us": {
+    "torch": 2472.24,
+    "tunableop": 2323.71,
+    "flydsl": 2050.12,
+    "triton": 2140.04
+   },
+   "wrong": {},
+   "reached": true,
+   "routed": [
+    1.0454
+   ],
+   "route_to_engine": false
+  }
+ ],
+ "misses": []
+}

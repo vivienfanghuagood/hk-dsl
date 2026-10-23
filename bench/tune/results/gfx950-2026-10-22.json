@@ -1,7 +1,7 @@
 {
  "arch": "gfx950",
  "split": "acceptance",
- "date": "2026-10-22",
+ "date": "2026-10-23",
  "target": 0.95,
  "share_target": 0.8,
  "before": {
@@ -19,6 +19,14 @@
   "median": 0.963,
   "worst": 0.775,
   "geomean": 0.947
+ },
+ "routed": {
+  "share": 0.88,
+  "reached": 22,
+  "of": 25,
+  "median": 0.999,
+  "worst": 0.885,
+  "geomean": 0.99
  },
  "gpu_minutes_per_shape": {
   "mean": 0.08,
@@ -92,7 +100,11 @@
    "wrong": {
     "base:hipkittens": "ValueError: M=1, N=4608: both must be multiples of 256; the kernel computes whole 256x256 tiles and its C store is unpredicated, so a partial tile would write past the end "
    },
-   "reached": true
+   "reached": true,
+   "routed": [
+    1.0964
+   ],
+   "route_to_engine": false
   },
   {
    "m": 8,
@@ -130,7 +142,11 @@
    "wrong": {
     "base:hipkittens": "ValueError: M=8, N=3072: both must be multiples of 256; the kernel computes whole 256x256 tiles and its C store is unpredicated, so a partial tile would write past the end "
    },
-   "reached": true
+   "reached": true,
+   "routed": [
+    1.0004
+   ],
+   "route_to_engine": false
   },
   {
    "m": 8,
@@ -168,7 +184,11 @@
    "wrong": {
     "base:hipkittens": "ValueError: M=8, N=55296: both must be multiples of 256; the kernel computes whole 256x256 tiles and its C store is unpredicated, so a partial tile would write past the end"
    },
-   "reached": true
+   "reached": true,
+   "routed": [
+    1.0086
+   ],
+   "route_to_engine": false
   },
   {
    "m": 16,
@@ -206,7 +226,11 @@
    "wrong": {
     "base:hipkittens": "ValueError: M=16, N=4096: both must be multiples of 256; the kernel computes whole 256x256 tiles and its C store is unpredicated, so a partial tile would write past the end"
    },
-   "reached": true
+   "reached": true,
+   "routed": [
+    1.0016
+   ],
+   "route_to_engine": false
   },
   {
    "m": 16,
@@ -244,7 +268,11 @@
    "wrong": {
     "base:hipkittens": "ValueError: M=16, N=5120: both must be multiples of 256; the kernel computes whole 256x256 tiles and its C store is unpredicated, so a partial tile would write past the end"
    },
-   "reached": true
+   "reached": true,
+   "routed": [
+    1.0638
+   ],
+   "route_to_engine": false
   },
   {
    "m": 16,
@@ -282,7 +310,11 @@
    "wrong": {
     "base:hipkittens": "ValueError: M=16, N=7168: both must be multiples of 256; the kernel computes whole 256x256 tiles and its C store is unpredicated, so a partial tile would write past the end"
    },
-   "reached": true
+   "reached": true,
+   "routed": [
+    1.0337
+   ],
+   "route_to_engine": false
   },
   {
    "m": 128,
@@ -320,7 +352,11 @@
    "wrong": {
     "base:hipkittens": "ValueError: M=128, N=4096: both must be multiples of 256; the kernel computes whole 256x256 tiles and its C store is unpredicated, so a partial tile would write past the en"
    },
-   "reached": true
+   "reached": true,
+   "routed": [
+    0.9992
+   ],
+   "route_to_engine": false
   },
   {
    "m": 128,
@@ -359,6 +395,10 @@
     "base:hipkittens": "ValueError: M=128, N=4608: both must be multiples of 256; the kernel computes whole 256x256 tiles and its C store is unpredicated, so a partial tile would write past the en"
    },
    "reached": false,
+   "routed": [
+    0.9492
+   ],
+   "route_to_engine": true,
    "why": "best 624 TFLOP/s, 5.03 TB/s; hk 485 TFLOP/s, 3.91 TB/s; memory-bound: the best baseline streams at 63% of HBM, hk at 49%; hk ran pp 128x128 x6 K shares: 216 workgroups, 0.84 of 256 CUs",
    "profile": "gemm_cdna_128x128x128_w2x4_g8_x16_es_lb_k6_l16x64_ntb_kernel (96% of the call): latency-bound (neither roof): 21% of the matrix peak, 55% of the cache-resident rate (past the L2); matrix core 20% busy; matrix core idle at barrier 36%; issue-bound at 2 wave(s) a SIMD (registers and lds): the matrix core idles 26% while its waves issue the loop's 2.7 other instructions per matrix one; underfilled: 16% of the CUs have no workgroup; LDS bank conflicts: 75% of the LDS's active cycles -- against hipblaslt: 0.820x the time, its kernel Cijk_Alik_Bljk_BBS_BH_Bias_HA_...MT192x128x128 stream-K"
   },
@@ -399,6 +439,10 @@
     "base:hipkittens": "ValueError: M=128, N=5120: both must be multiples of 256; the kernel computes whole 256x256 tiles and its C store is unpredicated, so a partial tile would write past the en"
    },
    "reached": false,
+   "routed": [
+    1.0
+   ],
+   "route_to_engine": true,
    "why": "best 467 TFLOP/s, 3.77 TB/s; hk 439 TFLOP/s, 3.55 TB/s; neither limit is near: latency, launch or occupancy; hk ran pp 128x256 x8 K shares: 160 workgroups, 0.62 of 256 CUs",
    "profile": "gemm_cdna_128x256x64_w2x4_g16_x16_sp_es_lb_k8_l16x64_ntb_... (90% of the call): latency-bound (neither roof): 18% of the matrix peak, 53% of the cache-resident rate (past the L2); matrix core 18% busy; underfilled: 38% of the CUs have no workgroup; matrix core idle at barrier 24%; issue-bound at 2 wave(s) a SIMD (registers and lds): the matrix core idles 18% while its waves issue the loop's 2.7 other instructions per matrix one; LDS bank conflicts: 75% of the LDS's active cycles -- against hipblaslt: 0.908x the time, its kernel Cijk_Alik_Bljk_BBS_BH_Bias_HA_...MT160x128x128 stream-K"
   },
@@ -438,6 +482,10 @@
    },
    "wrong": {},
    "reached": false,
+   "routed": [
+    0.9477
+   ],
+   "route_to_engine": true,
    "why": "best 753 TFLOP/s, 1.76 TB/s; hk 710 TFLOP/s, 1.66 TB/s; neither limit is near: latency, launch or occupancy; hk ran pp 256x128 x4 K shares: 256 workgroups, 1.00 of 256 CUs",
    "profile": "gemm_cdna_256x128x64_w4x2_g8_x32_sp_es_lb_k4_kernel (85% of the call): latency-bound (neither roof): 32% of the matrix peak, 53% of the cache-resident rate (past the L2); matrix core 33% busy; matrix core idle at barrier 22%; matrix core idle after the main loop 11% (one workgroup a CU: not hidden); matrix core idle before the main loop 9% (one workgroup a CU: not hidden); occupancy 1.4 of 2 waves/SIMD -- against hipblaslt: 0.943x the time, its kernel Cijk_Alik_Bljk_BBS_BH_Bias_HA_...MT128x256x64 stream-K"
   },
@@ -476,7 +524,11 @@
     "triton": 111.53
    },
    "wrong": {},
-   "reached": true
+   "reached": true,
+   "routed": [
+    1.0
+   ],
+   "route_to_engine": true
   },
   {
    "m": 512,
@@ -514,6 +566,10 @@
    },
    "wrong": {},
    "reached": false,
+   "routed": [
+    0.9623
+   ],
+   "route_to_engine": true,
    "why": "best 885 TFLOP/s, 2.08 TB/s; hk 767 TFLOP/s, 1.81 TB/s; neither limit is near: latency, launch or occupancy; hk ran dp 128x128: 256 workgroups, 1.00 of 256 CUs",
    "profile": "latency-bound (neither roof): 31% of the matrix peak, 27% of the cache-resident rate (past the L2); matrix core 32% busy; issue-bound at 1 wave(s) a SIMD (lds): the matrix core idles 32% while its waves issue the loop's 1.9 other instructions per matrix one; matrix core idle before the main loop 8% (one workgroup a CU: not hidden); matrix core idle at lgkm_wait 7% -- against hipblaslt: 0.887x the time, its kernel Cijk_Alik_Bljk_BBS_BH_Bias_HA_...MT128x128x128 stream-K"
   },
@@ -553,6 +609,10 @@
    },
    "wrong": {},
    "reached": false,
+   "routed": [
+    0.9732
+   ],
+   "route_to_engine": true,
    "why": "best 1215 TFLOP/s, 1.51 TB/s; hk 942 TFLOP/s, 1.17 TB/s; compute-bound: the best baseline at 49% of the bf16 peak, hk at 38%; hk ran pp 256x256 x2 K shares: 160 workgroups, 0.62 of 256 CUs",
    "profile": "gemm_cdna_256x256x64_w2x4_g4_x64_sp_lb_k2_kernel (94% of the call): latency-bound (neither roof): 45% of the matrix peak, 56% of the cache-resident rate (past the L2); matrix core 50% busy; underfilled: 38% of the CUs have no workgroup; matrix core idle at barrier 15%; matrix core idle at vmem_issue 8% -- against hipblaslt: 0.885x the time, its kernel Cijk_Alik_Bljk_BBS_BH_Bias_HA_...MT160x256x64 stream-K"
   },
@@ -592,6 +652,10 @@
    },
    "wrong": {},
    "reached": false,
+   "routed": [
+    0.9741
+   ],
+   "route_to_engine": true,
    "why": "best 890 TFLOP/s, 1.52 TB/s; hk 827 TFLOP/s, 1.41 TB/s; neither limit is near: latency, launch or occupancy; hk ran pp 256x128: 256 workgroups, 1.00 of 256 CUs",
    "profile": "latency-bound (neither roof): 30% of the matrix peak, 28% of the cache-resident rate (past the L2); matrix core 29% busy; matrix core idle after the main loop 17% (one workgroup a CU: not hidden); matrix core idle before the main loop 15% (one workgroup a CU: not hidden); matrix core idle at barrier 15%; L2 re-fetch: 2.0x the call's bytes cross it -- against hipblaslt: 0.909x the time, its kernel Cijk_Alik_Bljk_BBS_BH_Bias_HA_...MT256x128x64 stream-K"
   },
@@ -632,6 +696,10 @@
     "base:aiter": 3.239740622272731e+35
    },
    "reached": false,
+   "routed": [
+    0.8847
+   ],
+   "route_to_engine": true,
    "why": "best 1269 TFLOP/s, 1.20 TB/s; hk 1000 TFLOP/s, 0.95 TB/s; compute-bound: the best baseline at 51% of the bf16 peak, hk at 40%; hk ran pp 256x256: 144 workgroups, 0.56 of 256 CUs",
    "profile": "latency-bound (neither roof): 39% of the matrix peak, 28% of the cache-resident rate (past the L2); matrix core 42% busy; underfilled: 44% of the CUs have no workgroup; matrix core idle after the main loop 6% (one workgroup a CU: not hidden); matrix core idle before the main loop 3% (one workgroup a CU: not hidden); L2 re-fetch: 2.8x the call's bytes cross it -- against hipblaslt: 0.854x the time, its kernel Cijk_Alik_Bljk_BBS_BH_Bias_HA_...MT144x256x64 stream-K"
   },
@@ -670,7 +738,11 @@
     "triton": 212.13
    },
    "wrong": {},
-   "reached": true
+   "reached": true,
+   "routed": [
+    0.9984
+   ],
+   "route_to_engine": false
   },
   {
    "m": 2048,
@@ -707,7 +779,11 @@
     "triton": 110.64
    },
    "wrong": {},
-   "reached": true
+   "reached": true,
+   "routed": [
+    0.9876
+   ],
+   "route_to_engine": false
   },
   {
    "m": 2048,
@@ -744,7 +820,11 @@
     "triton": 238.47
    },
    "wrong": {},
-   "reached": true
+   "reached": true,
+   "routed": [
+    0.9992
+   ],
+   "route_to_engine": false
   },
   {
    "m": 2048,
@@ -781,7 +861,11 @@
     "triton": 1013.16
    },
    "wrong": {},
-   "reached": true
+   "reached": true,
+   "routed": [
+    0.9729
+   ],
+   "route_to_engine": true
   },
   {
    "m": 4096,
@@ -819,6 +903,10 @@
    },
    "wrong": {},
    "reached": false,
+   "routed": [
+    1.0
+   ],
+   "route_to_engine": true,
    "why": "best 1363 TFLOP/s, 1.11 TB/s; hk 1216 TFLOP/s, 0.99 TB/s; compute-bound: the best baseline at 55% of the bf16 peak, hk at 49%; hk ran pp 256x256: 192 workgroups, 0.75 of 256 CUs",
    "profile": "latency-bound (neither roof): 49% of the matrix peak, 33% of the cache-resident rate (past the L2); matrix core 55% busy; underfilled: 25% of the CUs have no workgroup; matrix core idle after the main loop 6% (one workgroup a CU: not hidden); matrix core idle before the main loop 4% (one workgroup a CU: not hidden); L2 re-fetch: 3.1x the call's bytes cross it -- against hipblaslt: 0.896x the time, its kernel Cijk_Alik_Bljk_BBS_BH_Bias_HA_...MT192x256x64 stream-K"
   },
@@ -858,6 +946,10 @@
    },
    "wrong": {},
    "reached": false,
+   "routed": [
+    1.0
+   ],
+   "route_to_engine": true,
    "why": "best 1478 TFLOP/s, 1.02 TB/s; hk 1355 TFLOP/s, 0.94 TB/s; compute-bound: the best baseline at 59% of the bf16 peak, hk at 54%; hk ran pp 256x256: 192 workgroups, 0.75 of 256 CUs",
    "profile": "compute-bound: matrix core 62% busy, 1310 TFLOP/s = 53% of the bf16 peak (61% of it at the 2.07 GHz measured); underfilled: 25% of the CUs have no workgroup; matrix core idle at barrier 5%; L2 re-fetch: 3.5x the call's bytes cross it -- against hipblaslt: 0.917x the time, its kernel Cijk_Alik_Bljk_BBS_BH_Bias_HA_...MT192x256x64 stream-K"
   },
@@ -897,6 +989,10 @@
    },
    "wrong": {},
    "reached": false,
+   "routed": [
+    0.958
+   ],
+   "route_to_engine": true,
    "why": "best 1400 TFLOP/s, 0.99 TB/s; hk 1245 TFLOP/s, 0.88 TB/s; compute-bound: the best baseline at 56% of the bf16 peak, hk at 50%; hk ran pp 256x256: 256 workgroups, 1.00 of 256 CUs; dp 128x128 x2 K shares: 256 workgroups, 1.00 of 256 CUs",
    "profile": "gemm_cdna_256x256x64_w2x4_g8_x32_sp_es_lb_kernel (79% of the call): compute-bound: matrix core 69% busy, 1398 TFLOP/s = 56% of the bf16 peak (70% of it at the 1.92 GHz measured); matrix core idle after the main loop 8% (one workgroup a CU: not hidden); matrix core idle before the main loop 4% (one workgroup a CU: not hidden) -- against hipblaslt: 0.945x the time, its kernel Cijk_Alik_Bljk_BBS_BH_Bias_HA_...MT256x320x64 stream-K"
   },
@@ -935,7 +1031,11 @@
     "triton": 445.41
    },
    "wrong": {},
-   "reached": true
+   "reached": true,
+   "routed": [
+    0.9937
+   ],
+   "route_to_engine": true
   },
   {
    "m": 8192,
@@ -972,7 +1072,11 @@
     "triton": 1742.46
    },
    "wrong": {},
-   "reached": true
+   "reached": true,
+   "routed": [
+    0.9725
+   ],
+   "route_to_engine": false
   },
   {
    "m": 8192,
@@ -1009,7 +1113,11 @@
     "triton": 1275.17
    },
    "wrong": {},
-   "reached": true
+   "reached": true,
+   "routed": [
+    0.9998
+   ],
+   "route_to_engine": true
   }
  ],
  "misses": [
@@ -1050,6 +1158,10 @@
     "base:hipkittens": "ValueError: M=128, N=4608: both must be multiples of 256; the kernel computes whole 256x256 tiles and its C store is unpredicated, so a partial tile would write past the en"
    },
    "reached": false,
+   "routed": [
+    0.9492
+   ],
+   "route_to_engine": true,
    "why": "best 624 TFLOP/s, 5.03 TB/s; hk 485 TFLOP/s, 3.91 TB/s; memory-bound: the best baseline streams at 63% of HBM, hk at 49%; hk ran pp 128x128 x6 K shares: 216 workgroups, 0.84 of 256 CUs",
    "profile": "gemm_cdna_128x128x128_w2x4_g8_x16_es_lb_k6_l16x64_ntb_kernel (96% of the call): latency-bound (neither roof): 21% of the matrix peak, 55% of the cache-resident rate (past the L2); matrix core 20% busy; matrix core idle at barrier 36%; issue-bound at 2 wave(s) a SIMD (registers and lds): the matrix core idles 26% while its waves issue the loop's 2.7 other instructions per matrix one; underfilled: 16% of the CUs have no workgroup; LDS bank conflicts: 75% of the LDS's active cycles -- against hipblaslt: 0.820x the time, its kernel Cijk_Alik_Bljk_BBS_BH_Bias_HA_...MT192x128x128 stream-K"
   },
@@ -1090,6 +1202,10 @@
     "base:hipkittens": "ValueError: M=128, N=5120: both must be multiples of 256; the kernel computes whole 256x256 tiles and its C store is unpredicated, so a partial tile would write past the en"
    },
    "reached": false,
+   "routed": [
+    1.0
+   ],
+   "route_to_engine": true,
    "why": "best 467 TFLOP/s, 3.77 TB/s; hk 439 TFLOP/s, 3.55 TB/s; neither limit is near: latency, launch or occupancy; hk ran pp 128x256 x8 K shares: 160 workgroups, 0.62 of 256 CUs",
    "profile": "gemm_cdna_128x256x64_w2x4_g16_x16_sp_es_lb_k8_l16x64_ntb_... (90% of the call): latency-bound (neither roof): 18% of the matrix peak, 53% of the cache-resident rate (past the L2); matrix core 18% busy; underfilled: 38% of the CUs have no workgroup; matrix core idle at barrier 24%; issue-bound at 2 wave(s) a SIMD (registers and lds): the matrix core idles 18% while its waves issue the loop's 2.7 other instructions per matrix one; LDS bank conflicts: 75% of the LDS's active cycles -- against hipblaslt: 0.908x the time, its kernel Cijk_Alik_Bljk_BBS_BH_Bias_HA_...MT160x128x128 stream-K"
   },
@@ -1129,6 +1245,10 @@
    },
    "wrong": {},
    "reached": false,
+   "routed": [
+    0.9477
+   ],
+   "route_to_engine": true,
    "why": "best 753 TFLOP/s, 1.76 TB/s; hk 710 TFLOP/s, 1.66 TB/s; neither limit is near: latency, launch or occupancy; hk ran pp 256x128 x4 K shares: 256 workgroups, 1.00 of 256 CUs",
    "profile": "gemm_cdna_256x128x64_w4x2_g8_x32_sp_es_lb_k4_kernel (85% of the call): latency-bound (neither roof): 32% of the matrix peak, 53% of the cache-resident rate (past the L2); matrix core 33% busy; matrix core idle at barrier 22%; matrix core idle after the main loop 11% (one workgroup a CU: not hidden); matrix core idle before the main loop 9% (one workgroup a CU: not hidden); occupancy 1.4 of 2 waves/SIMD -- against hipblaslt: 0.943x the time, its kernel Cijk_Alik_Bljk_BBS_BH_Bias_HA_...MT128x256x64 stream-K"
   },
@@ -1168,6 +1288,10 @@
    },
    "wrong": {},
    "reached": false,
+   "routed": [
+    0.9623
+   ],
+   "route_to_engine": true,
    "why": "best 885 TFLOP/s, 2.08 TB/s; hk 767 TFLOP/s, 1.81 TB/s; neither limit is near: latency, launch or occupancy; hk ran dp 128x128: 256 workgroups, 1.00 of 256 CUs",
    "profile": "latency-bound (neither roof): 31% of the matrix peak, 27% of the cache-resident rate (past the L2); matrix core 32% busy; issue-bound at 1 wave(s) a SIMD (lds): the matrix core idles 32% while its waves issue the loop's 1.9 other instructions per matrix one; matrix core idle before the main loop 8% (one workgroup a CU: not hidden); matrix core idle at lgkm_wait 7% -- against hipblaslt: 0.887x the time, its kernel Cijk_Alik_Bljk_BBS_BH_Bias_HA_...MT128x128x128 stream-K"
   },
@@ -1207,6 +1331,10 @@
    },
    "wrong": {},
    "reached": false,
+   "routed": [
+    0.9732
+   ],
+   "route_to_engine": true,
    "why": "best 1215 TFLOP/s, 1.51 TB/s; hk 942 TFLOP/s, 1.17 TB/s; compute-bound: the best baseline at 49% of the bf16 peak, hk at 38%; hk ran pp 256x256 x2 K shares: 160 workgroups, 0.62 of 256 CUs",
    "profile": "gemm_cdna_256x256x64_w2x4_g4_x64_sp_lb_k2_kernel (94% of the call): latency-bound (neither roof): 45% of the matrix peak, 56% of the cache-resident rate (past the L2); matrix core 50% busy; underfilled: 38% of the CUs have no workgroup; matrix core idle at barrier 15%; matrix core idle at vmem_issue 8% -- against hipblaslt: 0.885x the time, its kernel Cijk_Alik_Bljk_BBS_BH_Bias_HA_...MT160x256x64 stream-K"
   },
@@ -1246,6 +1374,10 @@
    },
    "wrong": {},
    "reached": false,
+   "routed": [
+    0.9741
+   ],
+   "route_to_engine": true,
    "why": "best 890 TFLOP/s, 1.52 TB/s; hk 827 TFLOP/s, 1.41 TB/s; neither limit is near: latency, launch or occupancy; hk ran pp 256x128: 256 workgroups, 1.00 of 256 CUs",
    "profile": "latency-bound (neither roof): 30% of the matrix peak, 28% of the cache-resident rate (past the L2); matrix core 29% busy; matrix core idle after the main loop 17% (one workgroup a CU: not hidden); matrix core idle before the main loop 15% (one workgroup a CU: not hidden); matrix core idle at barrier 15%; L2 re-fetch: 2.0x the call's bytes cross it -- against hipblaslt: 0.909x the time, its kernel Cijk_Alik_Bljk_BBS_BH_Bias_HA_...MT256x128x64 stream-K"
   },
@@ -1286,6 +1418,10 @@
     "base:aiter": 3.239740622272731e+35
    },
    "reached": false,
+   "routed": [
+    0.8847
+   ],
+   "route_to_engine": true,
    "why": "best 1269 TFLOP/s, 1.20 TB/s; hk 1000 TFLOP/s, 0.95 TB/s; compute-bound: the best baseline at 51% of the bf16 peak, hk at 40%; hk ran pp 256x256: 144 workgroups, 0.56 of 256 CUs",
    "profile": "latency-bound (neither roof): 39% of the matrix peak, 28% of the cache-resident rate (past the L2); matrix core 42% busy; underfilled: 44% of the CUs have no workgroup; matrix core idle after the main loop 6% (one workgroup a CU: not hidden); matrix core idle before the main loop 3% (one workgroup a CU: not hidden); L2 re-fetch: 2.8x the call's bytes cross it -- against hipblaslt: 0.854x the time, its kernel Cijk_Alik_Bljk_BBS_BH_Bias_HA_...MT144x256x64 stream-K"
   },
@@ -1325,6 +1461,10 @@
    },
    "wrong": {},
    "reached": false,
+   "routed": [
+    1.0
+   ],
+   "route_to_engine": true,
    "why": "best 1363 TFLOP/s, 1.11 TB/s; hk 1216 TFLOP/s, 0.99 TB/s; compute-bound: the best baseline at 55% of the bf16 peak, hk at 49%; hk ran pp 256x256: 192 workgroups, 0.75 of 256 CUs",
    "profile": "latency-bound (neither roof): 49% of the matrix peak, 33% of the cache-resident rate (past the L2); matrix core 55% busy; underfilled: 25% of the CUs have no workgroup; matrix core idle after the main loop 6% (one workgroup a CU: not hidden); matrix core idle before the main loop 4% (one workgroup a CU: not hidden); L2 re-fetch: 3.1x the call's bytes cross it -- against hipblaslt: 0.896x the time, its kernel Cijk_Alik_Bljk_BBS_BH_Bias_HA_...MT192x256x64 stream-K"
   },
@@ -1364,6 +1504,10 @@
    },
    "wrong": {},
    "reached": false,
+   "routed": [
+    1.0
+   ],
+   "route_to_engine": true,
    "why": "best 1478 TFLOP/s, 1.02 TB/s; hk 1355 TFLOP/s, 0.94 TB/s; compute-bound: the best baseline at 59% of the bf16 peak, hk at 54%; hk ran pp 256x256: 192 workgroups, 0.75 of 256 CUs",
    "profile": "compute-bound: matrix core 62% busy, 1310 TFLOP/s = 53% of the bf16 peak (61% of it at the 2.07 GHz measured); underfilled: 25% of the CUs have no workgroup; matrix core idle at barrier 5%; L2 re-fetch: 3.5x the call's bytes cross it -- against hipblaslt: 0.917x the time, its kernel Cijk_Alik_Bljk_BBS_BH_Bias_HA_...MT192x256x64 stream-K"
   },
@@ -1403,6 +1547,10 @@
    },
    "wrong": {},
    "reached": false,
+   "routed": [
+    0.958
+   ],
+   "route_to_engine": true,
    "why": "best 1400 TFLOP/s, 0.99 TB/s; hk 1245 TFLOP/s, 0.88 TB/s; compute-bound: the best baseline at 56% of the bf16 peak, hk at 50%; hk ran pp 256x256: 256 workgroups, 1.00 of 256 CUs; dp 128x128 x2 K shares: 256 workgroups, 1.00 of 256 CUs",
    "profile": "gemm_cdna_256x256x64_w2x4_g8_x32_sp_es_lb_kernel (79% of the call): compute-bound: matrix core 69% busy, 1398 TFLOP/s = 56% of the bf16 peak (70% of it at the 1.92 GHz measured); matrix core idle after the main loop 8% (one workgroup a CU: not hidden); matrix core idle before the main loop 4% (one workgroup a CU: not hidden) -- against hipblaslt: 0.945x the time, its kernel Cijk_Alik_Bljk_BBS_BH_Bias_HA_...MT256x320x64 stream-K"
   }

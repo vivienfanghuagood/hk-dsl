@@ -55,6 +55,18 @@ def summarize(rows, arch: str, split: str) -> dict:
             wrong={k: v for k, v in r.get("errors", {}).items()
                    if not (isinstance(v, (int, float)) and v < 2e-2)},
             reached=bool(a[0] and a[0] >= TARGET)))
+        # hk or a route to the engine's F.linear (hipBLASLt), where that is
+        # faster: what a route table that may fall back to the engine
+        # (hk.integration.engine.RouteTable) reaches. Medians over the sets.
+        sh = shapes[-1]
+        t_torch = r["ms"].get("base:torch")
+        if best and a[0] and t_torch and sh["after_us"]:
+            t_best = r["ms"]["base:" + best]
+            routed = t_best / min(sh["after_us"] * 1e-3, t_torch)
+            sh["routed"] = [round(routed, 4)]
+            sh["route_to_engine"] = t_torch < sh["after_us"] * 1e-3
+        else:
+            sh["routed"] = [None]
 
     def stats_of(key):
         xs = [s[key][0] for s in shapes if s[key][0]]
@@ -70,7 +82,7 @@ def summarize(rows, arch: str, split: str) -> dict:
     meta = rows[0].get("meta", {}) if rows else {}
     return dict(
         arch=arch, split=split, date=time.strftime("%Y-%m-%d"), target=TARGET, share_target=SHARE,
-        before=stats_of("before"), after=stats_of("after"),
+        before=stats_of("before"), after=stats_of("after"), routed=stats_of("routed"),
         gpu_minutes_per_shape=dict(mean=round(statistics.mean(gpu) / 60, 2) if gpu else None,
                                    max=round(max(gpu) / 60, 2) if gpu else None,
                                    total=round(sum(gpu) / 60, 1) if gpu else None),
@@ -191,6 +203,14 @@ def markdown(d: dict) -> str:
              f"| median ratio | {b.get('median')} | {a.get('median')} |",
              f"| worst ratio | {b.get('worst')} | {a.get('worst')} |",
              f"| geomean ratio | {b.get('geomean')} | {a.get('geomean')} |", "",
+             f"With a route to the engine's `F.linear` (hipBLASLt) where it is faster than hk's "
+             f"kernel -- what hk.integration's route tables do -- "
+             f"{d.get('routed', {}).get('reached')}/{d.get('routed', {}).get('of')} shapes reach "
+             f"{d['target']}x the best baseline (median {d.get('routed', {}).get('median')}, "
+             f"worst {d.get('routed', {}).get('worst')}); "
+             f"F.linear is the faster of the two at "
+             f"{sum(1 for s in d['shapes'] if s.get('route_to_engine'))}. "
+             f"The table's count is hk's own kernels.", "",
              f"Tuning cost: {d['gpu_minutes_per_shape']['mean']} GPU-min a shape on average, "
              f"{d['gpu_minutes_per_shape']['max']} at most, {d['gpu_minutes_per_shape']['total']} "
              f"in all; {d['wall_minutes_per_shape']['mean']} min of wall clock a shape (the "

@@ -81,23 +81,23 @@ before and after.
 ## Results
 
 `results/<arch>-<date>.{json,md}` is the acceptance split, scored after
-tuning with the tuner frozen (`hk-dsl at` in each file names the commit);
-`results/<arch>-<date>-tuning.*` the development runs on the tuning split;
-`results/raw/` every scored line (`run.py`'s JSON lines) and the records the
-tuner wrote. 2026-10-22, at `3e6a971`:
+tuning (`hk-dsl at` in each file names the commit): `2026-10-22` is run 1,
+with the tuner frozen at `3e6a971`; `2026-10-23` is run 2 at `f0dff9a`
+(K1's final legality, the code-object launch); `gfx950-rocm7.2.3-*` is run 2
+in the rocm/pytorch 7.2.3 image. `*-tuning.*` are the development runs on the
+tuning split; `raw/` every scored line and the records the tuner wrote.
 
-| | gfx950, before -> after | gfx1100, before -> after |
-|---|---|---|
-| shapes >= 0.95x the best baseline | 1/25 -> **15/25 (60%)** | 15/24 -> **24/24 (100%)** |
-| median ratio | 0.652 -> 0.963 | 1.010 -> 1.045 |
-| worst ratio | 0.242 -> 0.775 | 0.425 -> 0.951 |
-| GPU-minutes a shape | 0.08 | 0.31 |
+| | gfx950 run 2 | gfx950 run 1 | gfx950, ROCm 7.2.3 | gfx1100 run 2 |
+|---|---|---|---|---|
+| hk >= 0.95x the best baseline, before -> after | 0 -> **13/25** | 1 -> **15/25** | 3 -> **19/25** | 15 -> **24/24** |
+| hk, or a route to `F.linear` where faster | 22/25 | 22/25 | 22/25 | 24/24 |
+| median ratio after | 0.950 | 0.963 | 0.972 | 1.036 |
+| GPU-minutes a shape | 0.09 | 0.08 | 0.11 | 0.21 |
 
-2048x16384x4096 on gfx950: 0.624x -> 1.004x hipBLASLt. The misses, with
-hk.profile's verdicts (`--profiles`), are in the gfx950 file and
-[docs/tune.md](../../docs/tune.md#what-it-reached-2026-10-22).
+2048x16384x4096 on gfx950: 0.61x -> 0.995-1.004x hipBLASLt. The misses and
+why: [docs/tune.md](../../docs/tune.md#what-it-reached).
 
 `run.py` launches hk's kernels through code objects (`HK_LAUNCH=codeobj`):
-a process loads a few hundred pybind modules at most (thread-specific storage
-keys, docs/tune.md#limits). The acceptance runs above were made before that,
-two (gfx1100) or three (gfx950) shapes a call.
+a process loads a few hundred pybind modules at most (thread-specific
+storage keys, docs/tune.md#limits). Run 1 was made before that, two (gfx1100)
+or three (gfx950) shapes a call.

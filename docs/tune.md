@@ -167,71 +167,89 @@ each checked against fp32. The scoreboard is the share of shapes at >= 0.95x
 the fastest correct baseline, the median and worst ratio, and the GPU-minutes
 a shape, before and after.
 
-## What it reached (2026-10-22)
+## What it reached
 
-The acceptance split, tuned once at the default budget by the tuner as frozen
-at `3e6a971` (it was developed on the tuning split only; the acceptance
-shapes were not looked at until it was frozen), then scored against every
-baseline in one process. Full tables, every baseline's time and each miss's
-explanation: [bench/tune/results](../bench/tune/results/).
+The acceptance split, each shape tuned once at the default budget, then
+scored against every baseline in one process. The tuner was developed on the
+tuning split only and frozen before the acceptance shapes were looked at
+(`3e6a971`); run 2 is the same search at `f0dff9a`, after K1's final legality
+(main `783d1bd`) and the code-object launch. Full tables -- every baseline's
+time, each miss's numbers -- are in [bench/tune/results](../bench/tune/results/).
 
-| | MI355X (gfx950) | W7900D (gfx1100) |
-|---|---|---|
-| software | vLLM rocm100 image: ROCm 10 (HIP 7.15), torch 2.12, aiter 0.1.25, FlyDSL 0.3.4.1, Triton 3.8 | ROCm 7.2.4, torch 2.10, FlyDSL 0.4.0.dev, Triton 3.6 |
-| shapes >= 0.95x the best baseline, before | 1/25 (4%) | 15/24 (62%) |
-| **after `hk.tune`** | **15/25 (60%)** | **24/24 (100%)** |
-| median ratio, before -> after | 0.652 -> 0.963 | 1.010 -> 1.045 |
-| worst ratio, before -> after | 0.242 -> 0.775 | 0.425 -> 0.951 |
-| GPU-minutes a shape (mean / max) | 0.08 / 0.21 | 0.31 / 1.04 |
-| wall-clock minutes a shape (mean) | 0.51 | 0.91 |
-| shapes that got a record | 22/25 | 16/24 |
-
-(The tuning split, for comparison: gfx950 2/24 -> 13/24, median 0.677 ->
-0.959; gfx1100 13/24 -> 23/24, median 0.984 -> 1.035.)
+| | gfx950, run 2 (`f0dff9a`) | gfx950, run 1 (`3e6a971`) | gfx950, rocm/pytorch 7.2.3 | gfx1100, run 2 | gfx1100, run 1 |
+|---|---|---|---|---|---|
+| software | vLLM rocm100 image: ROCm 10 (HIP 7.15), torch 2.12, aiter 0.1.25, FlyDSL 0.3.4.1, Triton 3.8 | same | ROCm 7.2.3, torch 2.10, Triton 3.6 (no aiter, FlyDSL) | ROCm 7.2.4, torch 2.10, FlyDSL 0.4.0.dev, Triton 3.6 | same |
+| hk's kernels >= 0.95x the best baseline, before | 0/25 | 1/25 | 3/25 | 15/24 | 15/24 |
+| **after `hk.tune`** | **13/25 (52%)** | **15/25 (60%)** | **19/25 (76%)** | **24/24 (100%)** | **24/24 (100%)** |
+| hk, or a route to `F.linear` where faster | 22/25 (88%) | 22/25 (88%) | 22/25 (88%) | 24/24 | 24/24 |
+| median ratio, before -> after | 0.697 -> 0.950 | 0.652 -> 0.963 | 0.709 -> 0.972 | 0.995 -> 1.036 | 1.010 -> 1.045 |
+| worst ratio, before -> after | 0.244 -> 0.773 | 0.242 -> 0.775 | 0.252 -> 0.821 | 0.428 -> 0.951 | 0.425 -> 0.951 |
+| GPU-minutes a shape, mean / max | 0.09 / 0.22 | 0.08 / 0.21 | 0.11 / 0.29 | 0.21 / 0.71 | 0.31 / 1.04 |
+| wall-clock minutes a shape, mean | 0.22 | 0.51 | 0.23 | 0.32 | 0.91 |
 
 **The named target, 2048x16384x4096 on gfx950**: the route rule sends it to
-`dp128`, 0.624x hipBLASLt re-measured here (0.621x the best baseline,
-TunableOp's hipBLASLt; the 0.76x in tuning-goal.md is stale -- the lead's
-re-measurement in the rocm/pytorch image is 0.58x). `hk.tune` takes it to
-the 256x256 pingpong with a 4-block-row swizzle and 16-workgroup XCD chunks
-(`pp(wgm=4, xcd_chunk=16)`): **1.004x hipBLASLt** (band 0.998-1.008), 0.999x
-the best baseline, in 3.0 GPU-seconds.
+`dp128`, 0.61-0.62x hipBLASLt measured here (the 0.76x in tuning-goal.md is
+stale; the lead re-measured 0.58x). `hk.tune` takes it to the 256x256
+pingpong with a 4-block-row swizzle (`pp(wgm=4)`, with `xcd_chunk=16` in run
+1): **0.995-1.004x hipBLASLt** in the vLLM image (0.999x the best baseline in
+run 1), 0.981x hipBLASLt (0.978x TunableOp's) in rocm/pytorch 7.2.3, in 3 GPU-seconds.
 
-**Where it misses (gfx950, 10 of 25), and why.** Every miss is a kernel the
-space does not have, not a point the search did not find: around each of them
-dozens of schedules are within 1-2% of the winner. hk.profile (K2) on hk
-after against hipBLASLt says which:
+**Run to run.** Two independent searches land on hk times within 2% of each
+other at every gfx950 miss (most within 0.5%; the schedules sometimes differ by
+a swizzle). What moved the share from 15 to 13 is the baselines: TunableOp
+picks a hipBLASLt solution per session, and at 2048x4608x4096 its pick ran
+60.9 us in one session and 69.3 us (worse than plain `F.linear`) in the other;
+2048x4096x1024's best baseline was 5% faster in run 2, 8192x14336x8192's 2.4%.
+Six shapes sit within 3% of the 0.95 line in one run or the other, so the
+gfx950 share is 52-60% with this toolchain, 76% with ROCm 7.2.3's (where aiter
+and FlyDSL are not available and hk's kernels compile with 7.2.3's hipcc).
 
-- *underfilled grids* (5): 2048x4608x4096 runs 144 workgroups of the 256x256
-  pingpong (44% of the CUs idle; the 256x128 block is 288, 1.1 waves),
-  1024x5120x14336 160 with two K shares, 4096x3072x{4096,8192} 192,
-  128x5120x14336 160. The hipBLASLt kernels it was profiled against there
-  have macro tiles hk's GEMMs do not -- 144x256 at 2048x4608x4096, 160x256 at
-  1024x5120x14336, 160x128 at 128x5120x14336, 192x256 at 4096x3072x* -- and
-  Tensile's StreamK field set (SK5): a cut of the work the pingpong's whole
-  128/256-wide blocks and equal K shares cannot make;
-- *one workgroup a CU, prologue and epilogue not hidden* (3): 2048x4096x1024,
-  4096x4608x4096, 512x4096x7168 -- the matrix core idles 11-32% of the kernel
-  before and after the main loop, because a 128 KB-LDS pingpong workgroup
-  has no second one on its CU to overlap with (hipBLASLt there: 256x128,
-  256x320, 128x256 tiles);
-- *issue-bound at one or two waves a SIMD* (2): 512x8192x3584 (the dp ring at
-  one wave a SIMD, 1.9 other instructions per MFMA) and 128x4608x36864 (128x128
-  blocks with six K shares, 2.7 per MFMA, LDS bank conflicts in 75% of the
-  LDS's active cycles; hipBLASLt: 192x128x128).
+**Where gfx950 misses, and why** (run 2's 12; hk.profile, K2, on run 1's 10,
+against hipBLASLt; the explanations agree):
 
-On gfx1100 nothing misses: the decode GEMV (the THIN WMMA kernel is what
-`hk.ops.matmul` ran there at M <= 16) and smaller WMMA blocks with a K
-stagger take the decode and M = 128 shapes from 0.43-0.88x to 0.95-1.17x
-TunableOp's hipBLASLt; at prefill sizes hk was already ahead of FlyDSL, the
-best baseline there for M >= 512, and stays at 1.00-1.29x it.
+Not the search: around each miss dozens of schedules sit within 1-2% of the
+winner, and the two runs agree on hk's time. The misses are what hk's GEMM
+kernels can be told to do -- the *space* -- or a baseline at the roofline:
 
-**Does a small win reproduce?** Of the 72 wins across both GPUs and both
-splits, the 63 above 5% all reproduced in the scoring process (each at least
-half its tuning gain). Of the 9 under 5%, 8 reproduced (+1.6 to +5.2%); one,
-+1.2% at 8192x3584x5120 on gfx1100, measured -0.6% in scoring: a 1% bar is at
-the edge of what two measurement contexts agree on (docs/history/32 saw the
-same drift between sessions). Such a record costs nothing measurable -- the
+- **A grid the pingpong's blocks cannot fill** (space; 6):
+  2048x4608x4096 (144 workgroups of 256x256, 44% of the CUs idle; 256x128 is
+  288, 1.1 waves), 1024x5120x14336 (160, with two K shares), 128x5120x14336
+  (160), 4096x3072x{4096,8192} (192), 128x4608x36864 (216, issue-bound at two
+  waves a SIMD, LDS bank conflicts in 75% of its LDS cycles). The hipBLASLt
+  kernels they were profiled against have macro tiles hk's GEMMs do not --
+  144x256, 160x256, 160x128, 192x256, 192x128 -- and Tensile's StreamK field
+  set (SK5). **Missing for the next phase**: a stream-K (or data-parallel +
+  stream-K remainder) variant of the pingpong, and block_n/block_m of 144, 160,
+  192 (the pingpong takes 128 and 256 only; `Dp` takes 96 and 224 but runs at
+  one wave a SIMD at those sizes).
+- **One 128 KB-LDS workgroup a CU, prologue and epilogue not hidden** (space;
+  2): 2048x4096x1024 and 4096x4608x4096 -- the matrix core idles 12-32% of the
+  kernel before and after the main loop, with no second workgroup on the CU to
+  overlap. **Missing**: a persistent pingpong (each workgroup takes several
+  tiles, so the next tile's prologue runs under the last one's epilogue).
+- **An issue-bound ring** (space; 1): 512x8192x3584, the `Dp` ring at one
+  wave a SIMD (128 KB of LDS), 1.9 other instructions per MFMA.
+- **Compute-bound, 3-6% behind hipBLASLt** (baseline at its roofline; 3):
+  8192x5120x5120 (0.935), 8192x14336x8192 (0.947), 2048x55296x5120 (0.949) --
+  hk's pingpong at 54-61% of the bf16 peak against hipBLASLt's 58-65%, the
+  store of C being 5-8% of the pingpong (docs/history/33). Here routing to
+  hipBLASLt is the answer, which is what the "or a route" row counts: with
+  `F.linear` as a route where it is faster (as hk.integration's route tables
+  route to the engine), 22 of 25 shapes reach 0.95x in every run; the three
+  left are where TunableOp's or aiter's per-shape pick beats plain hipBLASLt
+  as well as hk.
+
+On gfx1100 nothing misses: the decode GEMV (`hk.ops.matmul` ran the THIN WMMA
+kernel at M <= 16) and smaller WMMA blocks take the decode and M = 128 shapes
+from 0.43-0.88x to 0.95-1.17x TunableOp's hipBLASLt; at M >= 512 hk was
+already ahead of FlyDSL, the best baseline there, and stays at 1.00-1.29x it.
+
+**Does a small win reproduce?** In run 1, of the 72 wins across both GPUs and
+both splits, the 63 above 5% all reproduced in the scoring process (each at
+least half its tuning gain); of the 9 under 5%, 8 did (+1.6 to +5.2%), and
+one, +1.2% at 8192x3584x5120 on gfx1100, measured -0.6% in scoring: a 1% bar
+is at the edge of what two measurement contexts agree on (docs/history/32 saw
+the same drift between sessions). Such a record costs nothing measurable -- the
 two schedules are a tie -- but a stricter bar for shipping a record (as
 `hk.autotune --ship` has) would leave it out.
 
@@ -250,8 +268,8 @@ two schedules are a tie -- but a stricter bar for shipping a record (as
   (`HK_LAUNCH=codeobj`, for the search only; `bench/tune/run.py` sets it for
   its process): the same device code and device time, no module a kernel, a
   fifth of the compile (a gfx1100 search went from ~60 s to 14-19 s of wall
-  clock). The acceptance numbers above were measured before this change
-  (`3e6a971`, pybind launches, two to three shapes a process); `python -m
+  clock; wall per shape fell 2-3x in run 2 above). Run 1 was measured before
+  this change (pybind launches, two to three shapes a process); `python -m
   hk.tune` with several shapes also runs each in a process of its own
   (`--in-process` to override).
 - **Records are this machine's**: measured with its GPU, ROCm and hk, read in
