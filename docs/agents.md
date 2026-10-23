@@ -302,7 +302,9 @@ Each of these has cost this project a wrong conclusion once.
   where it is 0.86-1.12x the Triton chapter 20 measured
   ([chapter 38](history/38-rdna-losses.md)). Print `triton.__version__`
   (and torch's, FlyDSL's) beside a ratio, and re-run the record's own tool
-  before calling a record wrong.
+  before calling a record wrong. In vLLM's venv, `python3 -m
+  hk.integration.stack` says whether the stack is the measured one, and
+  `ab` refuses to run when it is not.
 - **A kernel test with only a tolerance.** Every new kernel needs a case
   with an exact answer (V = 1 for attention, small integers for an add);
   `new-op` writes one, and `check()` runs it first.

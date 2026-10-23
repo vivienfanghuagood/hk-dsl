@@ -400,7 +400,7 @@ not gated, and is listed as such with its noise. The file records every
 run's ratio beside the tolerance it produced. To change a tolerance,
 re-measure the noise; editing the number by hand loosens the gate blindly.
 
-**What the shipped baseline measured.** hk with
+**What the first queued baseline measured.** hk with
 [chapter 32](history/32-measuring-the-measurements.md)'s scoreboard: queued
 rounds, timed by the median of the rounds kept. Ten runs on GPU 3 of the
 engines' pod (vLLM 0.31 venv: torch 2.13.0+rocm7.2, Triton 3.8.0, FlyDSL
@@ -435,6 +435,64 @@ back-to-back runs on GPU 3, when RDNA's stores began rounding to even and
 V's transpose was packed (a new `kernels` hash, Triton 3.8.0 in the venv):
 57 gated pairs, tolerances 3.0-6.6%, the median pair moved 0.0%, attention
 against torch +6-10%, and a gate run after it passed.
+
+**On the matched stack (2026-10-23).** Every baseline up to here was
+measured in a venv with PyPI's Triton 3.8.0 installed over the triton-rocm
+3.7.1 that torch 2.13.0+rocm7.2 pins ([chapter 44](history/44-matched-stack.md)).
+That venv is retired, and `/workspace/venv-vllm031` is now the matched venv
+(torch 2.13.0+rocm7.2, triton-rocm 3.7.1, FlyDSL 0.4.0;
+[integration](integration.md#supported-versions-and-the-contract-tests)).
+The shipped baseline was refreshed there: eight runs on W7900D GPU 0, in two
+blocks of four about 50 minutes apart. Each run was interleaved with a run
+of the retired venv, on the same hk tree (`0df64ae`, one `kernels` hash),
+with the arm order rotated. No round of the matched runs was rejected.
+- **The change is the stack, not hk.** The eight retired-venv runs, on
+  today's kernels, reproduce the old baseline. 55 of 57 pairs are within
+  tolerance, and the median change per arm is 0.3-0.8%. A check of those
+  runs against the old baseline exits 0 (with the note that hk's kernels
+  changed). The matched runs differ from them in the arms that run Triton
+  kernels. Against Triton the median ratio moves 3.2%: +2.3% to +3.6% on the
+  GEMMs, +10.9% and +6.3% on the one- and 32-row fused add, -3.5% on the
+  2048-row softmax. Against Inductor the median moves 1.2%. torch and
+  FlyDSL move by a median 0.1-0.2% (at most 1.2%). In other words,
+  triton-rocm 3.7.1's kernels are 2-4% slower than 3.8.0's on these GEMMs,
+  6-11% slower on the small fused adds, and 3.5% faster on the 2048-row
+  softmax. Checked against the old baseline, a matched run exits 1: a
+  REGRESSION at softmax 2048x4096 / triton (-3.2% to -3.3% against 3.0%),
+  7-8 pairs `better`, and the note that Triton changed from 3.8.0 to 3.7.1. The
+  exception on the retired side is Inductor against the 32-row RMSNorm,
+  1.23x against the old 1.04x, under 3.8.0 only: the other arms of that
+  case are within 0.5%, so the move is Inductor's kernel (built in a fresh
+  cache), not hk's.
+- **The new baseline**: 57 gated pairs, none left out. Tolerances are
+  3.0-13.7%, median 3.3%, and 25 pairs sit at the floor (the old baseline:
+  51 at the floor, 3.0-6.6%, from four back-to-back runs). The runs span an
+  hour, so the spread across runs counts for more: it sets the noise of 26
+  pairs, as in the first ten-run baseline (37 at the floor, up to 12.8%).
+  GEMM tolerances are 3.0-3.9% and attention's 3.0%. The widest are the
+  four arms of the 8192-row fused add, 9.3-13.7%. In one of the eight runs,
+  hk's kernel there took 0.3317 ms in all seven rounds, against 0.340-0.347
+  ms in the other fifteen runs of either venv. That is a per-process mode,
+  4% faster, and the gate now counts it as noise. A regression smaller
+  than about 9% in that one case would pass.
+- **Gate runs after the refresh**, `scripts/perf_gate.sh` in the matched
+  venv. The first exited 1 on two 32-row pairs: torch against the RMSNorm
+  (-4.6% of 4.0%) and Inductor against the fused add (-3.9% of 3.5%). In
+  that run every arm of the one- and 32-row cases took 0.15-0.25 us longer
+  a call (hk's 32-row RMSNorm 2.37 us, against 2.09-2.19 us in the eight
+  runs), the large cases did not move, and the scoreboard took 130 s
+  instead of 68 s. A run of the retired venv right after it was slowed the
+  same way. A fixed cost added to every call compresses small cases' ratios
+  towards 1, which a ratio does not cancel. GPU 0 was idle and the cause on
+  the node was not found. A plain scoreboard run 25 minutes later read the
+  usual times, and the gate run after it exited 0: all 57 pairs within
+  tolerance, the largest drop -0.8% (of 3.0-4.0%). If the gate fails on
+  the small cases alone, look at their absolute times before believing it.
+- **The gate now catches the drift.** A run in the retired venv, checked
+  against the new baseline, exits 1 with five regressions: Triton against
+  the one- and 32-row fused add (-9.6%, -6.2%), the 2048-row fused add and
+  two GEMMs. It also prints the note that Triton changed from 3.7.1 to
+  3.8.0.
 
 The previous baseline, measured on hk as of
 [chapter 26](history/26-the-scoreboard-retuned.md), was the one tested for
@@ -516,7 +574,8 @@ python3 -m pytest tests/hk/ir tests/hk/codegen -q
 python3 -m pytest tests/hk/gpu -q                       # gfx1100
 python3 examples/validate.py                            # gfx1100, full size
 python3 -m pytest tests/hk/engines -q                   # in each engine's venv
-HK_GPU=3 scripts/perf_gate.sh                           # alone on one GPU
+python3 -m hk.integration.stack                         # vLLM's venv: the measured stack?
+HK_GPU=3 scripts/perf_gate.sh                           # alone on one GPU, in vLLM's venv
 scripts/build_wheel.sh
 VLLM_ENABLE_V1_MULTIPROCESSING=0 HK_GPU_UTIL=0.85 python3 tools/hk-bench/vllm_e2e.py \
     --context 1024 --batch 1,16 --tokens 72 --short 24 --reps 3 --arms stock,gemm
