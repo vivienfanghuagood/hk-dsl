@@ -191,7 +191,7 @@ def enforce(where: str, default: str = "warn",
         raise StackMismatch(msg)
     if not _WARNED:
         _WARNED = True
-        print("\n" + "!" * 78 + "\n" + msg + "!" * 78, file=sys.stderr, flush=True)
+        print("\n" + "!" * 78 + "\n" + msg + "\n" + "!" * 78, file=sys.stderr, flush=True)
     return "STACK MISMATCH: " + "; ".join(problems)
 
 
