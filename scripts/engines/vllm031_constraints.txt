@@ -1,0 +1,10 @@
+# The vLLM 0.31 venv's stack, measured in docs/history/44-matched-stack.md: torch
+# 2.13.0+rocm7.2 and the Triton that torch pins, triton-rocm 3.7.1. vllm031_setup.sh
+# copies this into the venv and names it in the venv's pip.conf, so every `pip install`
+# there reads it. PyPI's `triton` (xgrammar requires it with no version) would be written
+# over triton-rocm's files in the same `triton` package: no version of it, or of
+# pytorch-triton-rocm, may be installed. Install xgrammar with --no-deps.
+torch==2.13.0+rocm7.2
+triton-rocm==3.7.1
+triton<0
+pytorch-triton-rocm<0
