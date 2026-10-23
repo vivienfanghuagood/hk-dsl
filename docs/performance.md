@@ -76,8 +76,9 @@ because breaking it once produced a plausible result that was wrong
 The software around a number moves it: torch 2.13's SDPA is 3.3x faster than
 2.10's on the W7900D, and a Triton 3.8.0 wheel installed over triton-rocm
 3.7.1 made vLLM's decode kernel up to 40% slower
-([chapter 38](history/38-rdna-losses.md)). Each table below names the stack it
-ran on, from these.
+([chapter 38](history/38-rdna-losses.md)), though stock vLLM's request only
+0-2.5% slower ([chapter 44](history/44-matched-stack.md)). Each table below
+names the stack it ran on, from these.
 
 **RDNA3: one Radeon PRO W7900D** (gfx1100; 864 GB/s of GDDR6, a 96 MB
 Infinity Cache).
@@ -86,6 +87,7 @@ Infinity Cache).
 |---|---|---|---|---|---|---|
 | vLLM 0.31 venv, as built | 7.2.1 | 2.13.0+rocm7.2 | triton-rocm 3.7.1 | -- | vLLM 0.31.0+rocm721, built from source | [chapters 20-22](history/20-vllm-031.md): vLLM 0.31 end to end, MoE, 4-bit |
 | the same venv, after October 15 | 7.2.1 | 2.13.0+rocm7.2 | Triton 3.8.0, installed over triton-rocm 3.7.1 | 0.4.0 | vLLM 0.31.0+rocm721 | chapters 30-38: FlyDSL routes, any model, `ab`, chapter 38's end to end; the performance gate's baseline |
+| the matched venv: a copy of it with triton-rocm 3.7.1 restored | 7.2.1 | 2.13.0+rocm7.2 | triton-rocm 3.7.1 | 0.4.0 | vLLM 0.31.0+rocm721 | [chapter 44](history/44-matched-stack.md): the vLLM 0.31 end-to-end record re-measured with hk 0.5.0's code |
 | SGLang venv | 7.2.1 | 2.9.1 (HIP 7.2.53211) | triton 3.5.1 | installed in chapter 32 | SGLang 0.5.18, sglang-radeon 0.1.5 | [chapters 24-25](history/24-sglang.md), 32 |
 | the scoreboard | 7.2.4 | 2.10.0+rocm7.2.4 | 3.6.0 | 0.4.0.dev970 | -- | [chapters 26-28](history/26-the-scoreboard-retuned.md): kernels against the tuned field |
 | vLLM 0.16 (superseded) | 7.2.1 | -- | -- | -- | vLLM 0.16.1.dev0 | chapters 07-17; [appendix](#vllm-016-end-to-end) |
@@ -157,14 +159,16 @@ target: every kernel and every engine patch runs there.
 
 #### vLLM 0.31 on gfx1100
 
-**Pending re-validation.** Every vLLM table below names its stack. Chapters
-20-22 record triton-rocm 3.7.1, the Triton vLLM 0.31's torch 2.13.0+rocm7.2
-pins; the later ones (chapters 30-38) ran in a venv that
-imported Triton 3.8.0, stock arms included, and [chapter 38](history/38-rdna-losses.md)
-found 3.8.0's decode kernel up to 40% slower at 32-64 requests. Their stock
-arms may therefore have been slow, and a re-measurement on the matched
-triton-rocm 3.7.1 stack is pending; until it lands, read the Triton 3.8.0
-ratios as measured against that stock.
+**Re-validated on the matched stack.** Every vLLM table below names its
+stack. Chapters 20-22 recorded triton-rocm 3.7.1, the Triton vLLM 0.31's
+torch 2.13.0+rocm7.2 pins; chapters 30-38 ran in a venv that imported
+Triton 3.8.0, stock arms included. [Chapter 44](history/44-matched-stack.md)
+re-measured the record on a copy of that venv with triton-rocm 3.7.1
+restored, with hk 0.5.0's code (c35a5e7): stock is chapter 20's stock to
+within 0.9% per request, no published ratio shrank, and interleaved in one
+run stock under 3.8.0 was 0-2.5% slower per request than under 3.7.1 (its
+prefill slower, its decode step 2-12% faster). The tables give the matched
+numbers first and the published ones beside them.
 
 Qwen3-8B, bf16, vLLM 0.31.0 under its defaults. Stock 0.31 picks
 `ROCM_ATTN` on gfx1100, whose custom paged-attention kernel refuses the card
@@ -175,27 +179,36 @@ prefill; hk's decode walk from 16 requests, to which vLLM pads 9-15, and
 Triton's kernel on hk's cache up to 8); `hk+gemm` adds the linear-layer
 patch.
 
-**The patches against stock** ([chapter 20](history/20-vllm-031.md); stack:
-vLLM 0.31.0, torch 2.13.0+rocm7.2, triton-rocm 3.7.1, as recorded). 72 output tokens, the best of two rounds,
-one process per arm; every arm's greedy tokens were identical to stock's.
-Total time per request batch, as a ratio to stock; then the decode step:
+**The patches against stock** ([chapter 44](history/44-matched-stack.md);
+stack: vLLM 0.31.0, torch 2.13.0+rocm7.2, triton-rocm 3.7.1, FlyDSL 0.4.0;
+hk c35a5e7). `ab --json`, vLLM's defaults, two rounds, the ratio the median
+over rounds of stock over the arm; 72 output tokens (128 at 64 requests);
+every arm's greedy tokens identical to stock's. Total time per request
+batch, as a ratio to stock; then the decode step; last, `hk+gemm` as
+[chapter 20](history/20-vllm-031.md) recorded it on triton-rocm 3.7.1 (the
+best of two rounds, hk of the time):
 
-| ctx x batch | stock ms | TRITON_ATTN | hk | hk+gemm | step, stock ms | hk ms | hk+gemm ms |
-|---|---|---|---|---|---|---|---|
-| 1024 x 1 | 1992 | 1.17x | 1.18x | 1.22x | 24.5 | 20.3 | 20.3 |
-| 1024 x 4 | 2781 | 1.08x | 1.11x | 1.20x | 26.2 | 22.4 | 22.2 |
-| 1024 x 16 | 7493 | 1.02x | 1.05x | 1.52x | 51.1 | 48.3 | 27.8 |
-| 1024 x 32 | 12174 | 0.99x | 1.09x | 1.47x | 61.7 | 52.2 | 32.7 |
-| 4096 x 1 | 3664 | 1.29x | 1.48x | 1.59x | 36.8 | 21.0 | 21.0 |
-| 4096 x 4 | 7180 | 0.98x | 1.25x | 1.44x | 38.5 | 24.6 | 24.8 |
-| 4096 x 16 | 26607 | 1.02x | 1.32x | 1.70x | 72.1 | 59.0 | 38.2 |
-| 4096 x 32 | 51762 | 1.00x | 1.40x | 1.75x | 112.2 | 71.2 | 51.5 |
+| ctx x batch | stock ms | TRITON_ATTN | hk | gemm | hk+gemm | step, stock ms | hk ms | hk+gemm ms | hk+gemm, chapter 20 |
+|---|---|---|---|---|---|---|---|---|---|
+| 1024 x 1 | 1990.5 | 1.169x | 1.181x | 1.030x | 1.223x | 24.53 | 20.31 | 20.26 | 1.22x |
+| 1024 x 4 | 2767.7 | 1.081x | 1.117x | 1.076x | 1.215x | 26.14 | 22.35 | 22.16 | 1.20x |
+| 1024 x 16 | 7460.5 | 1.021x | 1.068x | 1.462x | 1.609x | 50.84 | 46.60 | 25.61 | 1.52x |
+| 1024 x 32 | 12135.0 | 0.990x | 1.112x | 1.356x | 1.559x | 61.54 | 48.82 | 29.73 | 1.47x |
+| 1024 x 64 | 25421.3 | -- | 1.147x | 1.306x | 1.557x | 78.64 | 57.70 | 39.95 | -- |
+| 4096 x 1 | 3635.2 | 1.291x | 1.495x | 1.054x | 1.615x | 36.68 | 20.98 | 21.02 | 1.59x |
+| 4096 x 4 | 7113.9 | 0.984x | 1.252x | 1.140x | 1.482x | 38.19 | 24.81 | 24.76 | 1.44x |
+| 4096 x 16 | 26512.3 | 1.019x | 1.356x | 1.228x | 1.807x | 72.99 | 55.15 | 35.16 | 1.70x |
+| 4096 x 32 | 51720.5 | 1.009x | 1.430x | 1.190x | 1.855x | 113.50 | 69.30 | 49.35 | 1.75x |
 
-hk is 1.01-1.39x TRITON_ATTN, almost all of it prefill: hk's paged prefill
-is 3.6-7.9x Triton's ([A3](#paged-prefill)). The linear-layer patch gains
-nothing at 1 and 4 requests, where vLLM 0.31 runs its own skinny GEMM
-(`wvSplitK`, M ≤ 5) and the routing table leaves it; at 16 and 32 requests
-it nearly halves the decode step.
+Both patches: 1.22-1.85x per request at 1-32 requests (chapter 20:
+1.20-1.75x). Every hk, gemm and hk+gemm ratio is a win past its 2-2.3%
+band but the linear patch's decode step at 1 and 4 requests, a tie: there
+vLLM 0.31 runs its own skinny GEMM (`wvSplitK`, M ≤ 5) and the routing table
+leaves it; at 16-64 requests the patch alone makes the step 1.23-1.68x
+faster. hk is
+1.01-1.42x TRITON_ATTN per request (chapter 20: 1.01-1.39x), almost all of
+it prefill: hk's paged prefill is 3.6-7.9x Triton's ([A3](#paged-prefill)).
+Stock is within 0.9% of chapter 20's at every shape.
 
 **With chapter 38's decode kernel** ([chapter 38](history/38-rdna-losses.md);
 stack: vLLM 0.31.0, torch 2.13.0+rocm7.2, Triton 3.8.0 in both arms). `ab --json`, two
@@ -212,7 +225,10 @@ arm; 72 output tokens, 128 at 64 requests. Ratios are stock over the arm:
 
 Every row is a win past its band, before and after. The decode step is
 1.9-3.9 ms (4-9%) shorter after at every shape, prefill moved by at most
-1.1%, and the greedy outputs were identical to stock's in every run.
+1.1%, and the greedy outputs were identical to stock's in every run. On the
+matched stack (the table above), the same shapes measure hk 1.068-1.430x
+and hk+gemm 1.557-1.855x: within 1.8% of "after", 1.3-1.8% higher at 1024
+tokens and 0.4-1.6% lower at 4096.
 
 #### FlyDSL's GEMM on the routes
 
@@ -254,37 +270,53 @@ steps (gate_up on FlyDSL's 256x256 tile), 1.2% slower at a 1024-token step
 decode at 96 and 128 requests 1.413x and 1.651x stock (chapter 30: 1.394x
 and 1.666x).
 
+On the matched stack ([chapter 44](history/44-matched-stack.md): vLLM 0.31.0,
+torch 2.13.0+rocm7.2, triton-rocm 3.7.1, FlyDSL 0.4.0; hk c35a5e7, the shipped
+table; `ab`, two rounds, greedy tokens identical): graph mode at 512 x 96 /
+128, 160 tokens, hk+gemm is 1.441x / 1.483x stock per request (stock 22947.8 /
+29467.5 ms) and its decode step 1.588x / 1.728x (stock 75.07 / 94.98 ms).
+Stock there is 1-2% slower per request than chapter 30's under Triton 3.8.0,
+and 3-5% slower a decode step; the rest of the gain is hk's since (chapter
+38's decode walk). Eager at 1-16 requests, 1024 and 4096 tokens: 1.21-1.61x
+per request (chapter 30: 1.18-1.57x).
+
 #### A model no table had measured
 
-[Chapter 35](history/35-any-model.md); stack: vLLM 0.31.0, torch 2.13.0+rocm7.2, Triton 3.8.0,
-FlyDSL 0.4.0 installed. Qwen2.5-7B-Instruct, bf16, whose linear shapes are
-in no shipped table. The `gemm` arm is `HK_VLLM_GEMM` with nothing else
-set, from an empty record directory: its first start measured the shapes
-at load within the default 60 s, its second the rest (43 s), its third
-nothing. Three rounds, arms alternating, best of each; greedy tokens
-identical to stock's at every shape. Qwen2.5's qkv projection has a bias,
-so its calls stay on vLLM's path.
+[Chapter 35](history/35-any-model.md), re-measured in
+[chapter 44](history/44-matched-stack.md); stack: vLLM 0.31.0, torch
+2.13.0+rocm7.2, triton-rocm 3.7.1, FlyDSL 0.4.0 installed; hk c35a5e7.
+Qwen2.5-7B-Instruct, bf16, whose linear shapes are in no shipped table. The
+`gemm` arm is `HK_VLLM_GEMM` with nothing else set, from an empty record
+directory: its first start measures the shapes at load within the default
+60 s (chapter 35: its second start the rest, 43 s, its third nothing).
+`ab --json`, three rounds, the median over rounds; greedy tokens identical to
+stock's at every shape. Qwen2.5's qkv projection has a bias, so its calls
+stay on vLLM's path. Last column: chapter 35's ratios, measured against
+stock under Triton 3.8.0 (best of three rounds).
 
-| mode, ctx x batch | total, stock ms | gemm | prefill | decode, stock ms | gemm |
-|---|---|---|---|---|---|
-| defaults, 1024 x 1 | 1740.8 | 1.039x | 1.317x | 21.12 | 1.005x |
-| defaults, 1024 x 4 | 2429.1 | 1.083x | 1.260x | 21.93 | 1.004x |
-| defaults, 1024 x 16 | 6165.6 | 1.318x | 1.284x | 35.63 | 1.383x |
-| defaults, 1024 x 32 | 10032.1 | 1.300x | 1.287x | 37.96 | 1.376x |
-| defaults, 4096 x 1 | 3118.4 | 1.065x | 1.229x | 29.86 | 1.000x |
-| defaults, 4096 x 4 | 6325.4 | 1.151x | 1.252x | 30.26 | 0.995x |
-| defaults, 4096 x 16 | 22332.5 | 1.205x | 1.267x | 47.91 | 1.283x |
-| defaults, 4096 x 32 | 42259.2 | 1.193x | 1.267x | 53.96 | 1.216x |
-| graph mode, 512 x 96, 160 tokens | 17588.6 | 1.173x | 1.295x | 42.75 | 1.015x |
-| graph mode, 512 x 128, 160 tokens | 24594.3 | 1.313x | 1.295x | 66.22 | 1.358x |
+| mode, ctx x batch | total, stock ms | gemm | prefill | decode, stock ms | gemm | chapter 35: total / decode |
+|---|---|---|---|---|---|---|
+| defaults, 1024 x 1 | 1756.0 | 1.032x | 1.314x | 21.40 | 0.999x | 1.039x / 1.005x |
+| defaults, 1024 x 4 | 2463.5 | 1.077x | 1.265x | 22.41 | 0.994x | 1.083x / 1.004x |
+| defaults, 1024 x 16 | 6189.9 | 1.319x | 1.293x | 35.74 | 1.363x | 1.318x / 1.383x |
+| defaults, 1024 x 32 | 10093.8 | 1.306x | 1.301x | 37.99 | 1.346x | 1.300x / 1.376x |
+| defaults, 4096 x 1 | 3172.6 | 1.062x | 1.247x | 31.16 | 0.998x | 1.065x / 1.000x |
+| defaults, 4096 x 4 | 6345.4 | 1.156x | 1.274x | 31.99 | 0.998x | 1.151x / 0.995x |
+| defaults, 4096 x 16 | 22250.2 | 1.230x | 1.288x | 48.10 | 1.258x | 1.205x / 1.283x |
+| defaults, 4096 x 32 | 42347.0 | 1.213x | 1.304x | 54.81 | 1.221x | 1.193x / 1.216x |
+| graph mode, 512 x 96, 160 tokens | 17895.3 | 1.184x | 1.307x | 43.48 | 1.004x | 1.173x / 1.015x |
+| graph mode, 512 x 128, 160 tokens | 25030.5 | 1.319x | 1.308x | 68.68 | 1.359x | 1.313x / 1.358x |
+
+Per request 1.21-1.32x at 16-32 requests, 1.18x / 1.32x at 96 / 128 and
+1.03-1.16x at 1-4 (chapter 35: 1.19-1.32x, 1.17x / 1.31x, 1.04-1.15x).
 
 At 1 and 4 requests decode is vLLM's own skinny GEMMs (M ≤ 5), which hk's
 GEMV does not beat. At 96 requests the measured routes keep three of the
 four shapes on vLLM's op, and the measuring at load does not time FlyDSL.
 Qwen3-8B, routed by the same code with nothing to measure, matched the
 shipped table within 0.4% per request at every shape.
-DeepSeek-R1-Distill-Llama-8B (three new shapes), vLLM's defaults, two
-rounds: 1.41x / 1.32x per request at 1024 x 16 / 32, 1.21x / 1.18x at 4096,
+DeepSeek-R1-Distill-Llama-8B (three new shapes; chapter 35, Triton 3.8.0,
+not re-measured), vLLM's defaults, two rounds: 1.41x / 1.32x per request at 1024 x 16 / 32, 1.21x / 1.18x at 4096,
 1.03-1.14x at 1-4 requests; starts 60 s and 17 s longer, then nothing. Its
 greedy tokens matched at six shapes; at 1024 x 32 the first token's two
 leading logits are neighbouring bf16 values, and the arms pick opposite
@@ -292,51 +324,60 @@ ones.
 
 #### 4-bit and MoE models
 
-**4-bit (AWQ)** ([4-bit weights](history/22-int4.md); stack:
-vLLM 0.31.0, torch 2.13.0+rocm7.2, triton-rocm 3.7.1, as recorded). fp16, vLLM 0.31.0 under its defaults, 72 tokens, best
-of two rounds, `VLLM_USE_TRITON_AWQ=1` in both arms, so stock runs Triton's
-AWQ kernel. `HK_VLLM_INT4=1` gives hk's W4A16 kernel batches of up to 64
-tokens; prefill stays on vLLM's path (1.00x). Greedy tokens identical at
-every shape.
+**4-bit (AWQ)** ([4-bit weights](history/22-int4.md), re-measured in
+[chapter 44](history/44-matched-stack.md); stack: vLLM 0.31.0, torch
+2.13.0+rocm7.2, triton-rocm 3.7.1; hk c35a5e7). fp16, vLLM 0.31.0 under its
+defaults, 72 tokens, `ab --json`, two rounds, the median over rounds;
+`VLLM_USE_TRITON_AWQ=1` in both arms, so stock runs Triton's AWQ kernel.
+`HK_VLLM_INT4=1` gives hk's W4A16 kernel batches of up to 64 tokens; prefill
+stays on vLLM's path (0.991-1.017x, a tie at every shape). Greedy tokens
+identical at every shape. Chapter 22's columns: the same stack as recorded,
+best of two rounds.
 
-| model, ctx x batch | total, stock ms | int4 | decode step, stock ms | int4 |
-|---|---|---|---|---|
-| Qwen3-8B-AWQ, 1024 x 1 | 4965 | 3.80x | 66.37 | 4.46x |
-| Qwen3-8B-AWQ, 1024 x 4 | 5710 | 2.74x | 66.49 | 4.33x |
-| Qwen3-8B-AWQ, 1024 x 16 | 9252 | 1.66x | 70.08 | 3.70x |
-| Qwen3-8B-AWQ, 1024 x 32 | 14421 | 1.30x | 82.48 | 2.27x |
-| Qwen3-8B-AWQ, 4096 x 1 | 6706 | 2.20x | 78.34 | 2.92x |
-| Qwen3-8B-AWQ, 4096 x 4 | 10408 | 1.56x | 79.72 | 2.87x |
-| Qwen3-8B-AWQ, 4096 x 16 | 28885 | 1.15x | 91.58 | 2.34x |
-| Qwen3-8B-AWQ, 4096 x 32 | 54765 | 1.07x | 136.04 | 1.57x |
-| Qwen3-14B-AWQ, 1024 x 1 | 8857 | 4.43x | 118.06 | 5.52x |
-| Qwen3-14B-AWQ, 1024 x 16 | 16853 | 1.69x | 122.00 | 4.71x |
-| Qwen3-14B-AWQ, 4096 x 1 | 11497 | 2.50x | 131.95 | 3.80x |
-| Qwen3-14B-AWQ, 4096 x 16 | 50210 | 1.16x | 145.80 | 2.87x |
+| model, ctx x batch | total, stock ms | int4 | chapter 22 | decode step, stock ms | int4 | chapter 22 |
+|---|---|---|---|---|---|---|
+| Qwen3-8B-AWQ, 1024 x 1 | 4948.2 | 3.782x | 3.80x | 66.15 | 4.424x | 4.46x |
+| Qwen3-8B-AWQ, 1024 x 4 | 5696.7 | 2.764x | 2.74x | 66.33 | 4.351x | 4.33x |
+| Qwen3-8B-AWQ, 1024 x 16 | 9289.0 | 1.669x | 1.66x | 70.05 | 3.664x | 3.70x |
+| Qwen3-8B-AWQ, 1024 x 32 | 14538.8 | 1.299x | 1.30x | 81.54 | 2.345x | 2.27x |
+| Qwen3-8B-AWQ, 4096 x 1 | 6680.8 | 2.189x | 2.20x | 78.05 | 2.890x | 2.92x |
+| Qwen3-8B-AWQ, 4096 x 4 | 10411.2 | 1.547x | 1.56x | 78.50 | 2.909x | 2.87x |
+| Qwen3-8B-AWQ, 4096 x 16 | 29018.4 | 1.143x | 1.15x | 94.56 | 2.346x | 2.34x |
+| Qwen3-8B-AWQ, 4096 x 32 | 55096.5 | 1.067x | 1.07x | 132.71 | 1.528x | 1.57x |
+| Qwen3-14B-AWQ, 1024 x 1 | 8859.3 | 4.472x | 4.43x | 117.99 | 5.548x | 5.52x |
+| Qwen3-14B-AWQ, 1024 x 16 | 17075.5 | 1.694x | 1.69x | 122.90 | 4.819x | 4.71x |
+| Qwen3-14B-AWQ, 4096 x 1 | 11513.7 | 2.516x | 2.50x | 132.35 | 3.834x | 3.80x |
+| Qwen3-14B-AWQ, 4096 x 16 | 51077.2 | 1.157x | 1.16x | 147.83 | 3.087x | 2.87x |
 
 A stock AWQ decode step of 66 ms at one request, against 24.5 ms for the
 bf16 model, is the Triton AWQ kernel, which runs this card's 4-bit model
 slower than its 16-bit one.
 
-**MoE** ([MoE](history/21-moe.md); stack: vLLM 0.31.0, torch 2.13.0+rocm7.2, triton-rocm 3.7.1, as
-recorded). OLMoE-1B-7B, bf16,
-vLLM 0.31.0 under its defaults, 72 tokens, best of two rounds. `moe` is the
-MoE patch (hk's expert GEMM up to 256 tokens a step); `hk+moe` adds hk's
-attention. In that run decode attention was Triton's kernel on hk's cache at
-every batch, a routing chapter 20 later reverted above 8 requests; the 16-
-and 32-request `hk+moe` rows were not measured again. Greedy tokens
-identical to stock's.
+**MoE** ([MoE](history/21-moe.md), re-measured in
+[chapter 44](history/44-matched-stack.md); stack: vLLM 0.31.0, torch
+2.13.0+rocm7.2, triton-rocm 3.7.1; hk c35a5e7). OLMoE-1B-7B, bf16, vLLM 0.31.0
+under its defaults, 72 tokens, `ab --json`, two rounds, the median over
+rounds. `moe` is the MoE patch (hk's expert GEMM up to 256 tokens a step);
+`hk+moe` adds hk's attention, its decode routed as it ships (Triton's kernel
+on hk's cache up to 8 requests, hk's walk from 16). Greedy tokens identical
+to stock's. Chapter 21's columns (same stack, as recorded, best of two
+rounds) ran `hk+moe` with Triton's decode kernel at every batch, a routing
+chapter 20 later reverted above 8 requests, which is why its 16- and
+32-request `hk+moe` rows are lower.
 
-| ctx x batch | total, stock ms | moe | hk+moe | decode step, stock ms | moe | hk+moe |
-|---|---|---|---|---|---|---|
-| 1024 x 1 | 760 | 1.41x | 1.92x | 9.93 | 1.45x | 2.05x |
-| 1024 x 4 | 1021 | 1.28x | 1.57x | 12.14 | 1.35x | 1.75x |
-| 1024 x 16 | 2238 | 1.11x | 1.19x | 22.70 | 1.16x | 1.24x |
-| 1024 x 32 | 3368 | 1.04x | 1.17x | 29.46 | 1.06x | 1.23x |
-| 3072 x 1 | 1102 | 1.24x | 2.22x | 13.55 | 1.29x | 2.62x |
-| 3072 x 4 | 1876 | 1.18x | 1.67x | 18.62 | 1.27x | 2.03x |
-| 3072 x 16 | 5066 | 1.05x | 1.24x | 38.22 | 1.10x | 1.21x |
-| 3072 x 32 | 8676 | 1.02x | 1.25x | 55.83 | 1.04x | 1.26x |
+| ctx x batch | total, stock ms | moe | hk+moe | decode step, stock ms | moe | hk+moe | chapter 21: moe / hk+moe |
+|---|---|---|---|---|---|---|---|
+| 1024 x 1 | 762.2 | 1.409x | 1.929x | 9.96 | 1.454x | 2.067x | 1.41x / 1.92x |
+| 1024 x 4 | 1020.5 | 1.275x | 1.572x | 12.14 | 1.346x | 1.741x | 1.28x / 1.57x |
+| 1024 x 16 | 2235.8 | 1.107x | 1.388x | 22.69 | 1.151x | 1.571x | 1.11x / 1.19x |
+| 1024 x 32 | 3365.6 | 1.044x | 1.332x | 29.60 | 1.070x | 1.546x | 1.04x / 1.17x |
+| 3072 x 1 | 1104.7 | 1.251x | 2.234x | 13.60 | 1.297x | 2.632x | 1.24x / 2.22x |
+| 3072 x 4 | 1874.0 | 1.179x | 1.678x | 18.56 | 1.273x | 2.026x | 1.18x / 1.67x |
+| 3072 x 16 | 5065.3 | 1.050x | 1.533x | 38.69 | 1.099x | 1.892x | 1.05x / 1.24x |
+| 3072 x 32 | 8651.7 | 1.019x | 1.469x | 56.03 | 1.043x | 1.825x | 1.02x / 1.25x |
+
+Every ratio a win past its 2% band but `moe` per request at 3072 x 32, a tie;
+`moe`'s prefill ties stock (0.997-1.004x).
 
 **The losing kernels never reach a request** ([chapter 38](history/38-rdna-losses.md);
 stack: vLLM 0.31.0, torch 2.13.0+rocm7.2, Triton 3.8.0). `ab`, graphs on, vLLM's defaults, each patch
@@ -651,9 +692,16 @@ at 24 requests, 0.89x / 1.07-1.13x at 40, 1.01-1.02x / 1.02-1.07x at 48,
 2-D kernel at 730-810. At one and four requests hk's walk is 0.66-0.99x
 Triton's 3-D kernel under either Triton, and at eight they tie
 (0.97-1.05x), so up to 8 requests stay on Triton's kernel (on hk's cache). In a captured vLLM step Triton's kernel at
-17-22 requests took 1.93 ms a call, against 0.517 on the bench and hk's
-0.451, so the batches from 16 up stay on hk; why Triton's kernel slows in
-the captured step is open (chapter 20 saw the same under triton-rocm 3.7.1).
+15-22 requests and 4096 tokens took 0.877 ms a call under triton-rocm 3.7.1
+(1.93 under 3.8.0), against 0.4985 on the bench and hk's 0.449, so the
+batches from 16 up stay on hk: the step is 6-51% shorter on hk's walk at
+16-64 requests under 3.7.1 ([chapter 44](history/44-matched-stack.md)). The
+cause is vLLM's cache, one allocation of 26.75 GiB: from 2 GiB of allocation
+up Triton's 2-D kernel reads the same pages 2.5x slower under 3.7.1 (3.4x
+under 3.8.0) and hk's walk no slower, so in vLLM's allocation hk's walk is
+1.6-2.5x faster than 3.7.1's kernel at 16-64 requests
+(`tools/hk-bench/paged_alloc.py`). The table above is the compact case, as
+every bench tool before chapter 44 allocated it.
 
 ### A4. Losses and limits
 
@@ -692,11 +740,14 @@ Where hk loses on the W7900D, and what each loss costs a request:
 - **The SDPA drop-in** takes head_dim 64 and 128 only; vision towers with
   72 or 80 fall back to torch (0.95x and 0.97x, measured on torch 2.10;
   [appendix](#vision-towers-on-the-call-vllms-vit-path-makes)).
-- **One card, one engine version.** Every number is from one W7900D. Since
+- **One card, one engine version.** Every number is from one W7900D. From
   October 15 the pod's vLLM venv imported Triton 3.8.0 in place of the
-  triton-rocm 3.7.1 vLLM 0.31 is built for; chapters 30-38's end-to-end
-  ratios ran against that stock ([the stacks](#the-stacks)). A
-  re-validation on the matched triton-rocm 3.7.1 stack is pending.
+  triton-rocm 3.7.1 vLLM 0.31's torch pins; chapters 30-38's end-to-end
+  ratios ran against that stock ([the stacks](#the-stacks)).
+  [Chapter 44](history/44-matched-stack.md) re-measured the record on the
+  matched stack: no claim shrank, and stock under 3.8.0 was 0-2.5% slower
+  per request. The performance gate's gfx1100 baseline is still the 3.8.0
+  venv's.
 
 ## Part B: CDNA4 (gfx950, one MI355X)
 

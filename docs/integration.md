@@ -232,14 +232,20 @@ decodes first by the builder:
   size and max_model_len alone (about 256 workgroups), so a graph captured
   on any batch is right for every replay. Kernel for kernel the walk is
   0.86-1.12x triton-rocm 3.7.1's kernel at 16-64 requests (1.03-1.30x
-  Triton 3.8.0's at 16, 32 and 64), but in the captured step Triton's
-  kernel is the slower ([chapter 38](history/38-rdna-losses.md)).
+  Triton 3.8.0's at 16, 32 and 64) on a compact cache, but in vLLM's
+  Triton's kernel is the slower: vLLM's cache is one allocation of 26.75
+  GiB, and from 2 GiB up Triton's 2-D kernel reads the same pages 2.5x
+  slower while hk's walk does not, which makes the walk 1.6-2.5x faster
+  than triton-rocm 3.7.1's kernel there and the step 6-51% shorter at
+  16-64 requests ([chapter 38](history/38-rdna-losses.md),
+  [chapter 44](history/44-matched-stack.md)).
   Batches are padded to a capture size first, so 9-15 requests run as 16, on hk.
   `vllm_backend.TRITON_DECODE_MAX` is the boundary; 0 turns the routing off.
   `HK_TRITON_DECODE_ALSO="17-24,49-56"` gives Triton further ranges of
   batch sizes; off by default, because in the captured step Triton's
-  kernel at 17-22 requests took 1.93 ms a call against hk's 0.451, though
-  on the bench it is the faster at 24.
+  kernel at 15-22 requests and 4096 tokens took 0.877 ms a call under
+  triton-rocm 3.7.1 (1.93 under Triton 3.8.0) against hk's 0.449, though on
+  a compact bench cache it is the faster at 24.
 * **Prefill**: `hk.ops.paged_prefill`, one launch for every prefill request
   in the step, reading K/V through the page table. A cached prefix or an
   earlier chunk is just context in front of the new tokens, so prefix caching
@@ -646,13 +652,27 @@ What was run, on the dev pod (`hfang-hk-vllm`, gfx1100), 2026-10-16:
 | tests passed | 19 of 19 | 18 of 19 | 8 of 8 |
 
 The supported versions are the ones measured end to end: **vLLM 0.31.0**
-(torch 2.13.0+rocm7.2, Python 3.12;
+(torch 2.13.0+rocm7.2, triton-rocm 3.7.1, Python 3.12;
 [vLLM 0.31](history/20-vllm-031.md), [MoE](history/21-moe.md),
-[4-bit](history/22-int4.md), [chapter 30](history/30-flydsl-routes-gate-contracts.md))
+[4-bit](history/22-int4.md), [chapter 30](history/30-flydsl-routes-gate-contracts.md),
+re-measured on that stack in [chapter 44](history/44-matched-stack.md))
 and **SGLang 0.5.18** with sglang-radeon 0.1.5 (torch 2.9.1, ROCm 7.2.1;
 [chapter 24](history/24-sglang.md), [chapter 25](history/25-sglang-moe.md)).
 vLLM 0.16.1 is the copy installed beside SGLang. Its contract holds except
 for AWQ, but nothing has been run end to end on it since the port to 0.31.
+
+Check which Triton the venv imports. vLLM 0.31's requirements include
+xgrammar, which requires `triton` with no version; triton-rocm, which
+torch 2.13.0+rocm7.2 pins, is a different distribution name, so installing
+them after torch puts PyPI's newest `triton` over triton-rocm's files in the
+same package. That is how the venv the record measured in from chapter 24
+to 38 came to import Triton 3.8.0 ([chapter 44](history/44-matched-stack.md)).
+`python -c "import triton; print(triton.__version__)"` should print 3.7.1;
+if it does not, `pip uninstall triton` and reinstall the triton-rocm 3.7.1
+wheel with `--no-deps --force-reinstall`. vLLM 0.31's own ROCm image builds
+yet another Triton, ROCm/triton's 3.8.x branch, and under 3.7.1 vLLM logs
+that its vendored `triton_kernels` (MXFP4 MoE) cannot be imported; nothing
+hk patches uses them.
 
 On 0.31, three of the backend's hooks are no longer read
 (`accept_output_buffer`, `get_kv_cache_shape`, the backend's
