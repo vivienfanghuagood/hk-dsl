@@ -604,6 +604,8 @@ def prepare(steps: List[Step], ep: Epilogue, m: int, n: int, k: int,
         if st.kernel == "decode" and st.sched["splits"] > 1:
             s = st.sched
             extra = decode_gemm.scratch_for(device, s["splits"], s["tokens"], hi - lo)
+        elif st.kernel == "pp":
+            extra = gemm_cdna.sk_args(st.sched, device, m, hi - lo, k)
         kern = kernel_for(st, ep)
         try:
             kern.trace()

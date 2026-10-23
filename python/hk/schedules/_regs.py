@@ -81,7 +81,7 @@ def features(s, arch: str) -> Dict[str, float]:
                     asym=abs(a - b), split=float(s.splits > 1), tc=float(s.transposed_c),
                     late_b=float(s.late_b), setprio=float(s.setprio),
                     early=float(s.early_store), lds16=float(s.lds_shape == "16x64"),
-                    nt=float(bool(s.nt)))
+                    nt=float(bool(s.nt)), sk=float(getattr(s, "stream_k", False)))
     if f == "dp":
         reg_m, reg_n = s.block_m // s.warps_m, s.block_n // s.warps_n
         sk = 64 if s.lds_shape == "16x64" else 32
@@ -140,8 +140,9 @@ def lds(s, arch: str) -> int:
         return _place([s.lds_buffers * s.block_m * s.k_step * 2,
                        s.lds_buffers * s.block_n * s.k_step * 2])
     if f == "pp":
+        arrive = 16 if getattr(s, "stream_k", False) else 0     # wg_arrive's static LDS
         return _place([4 * (s.block_m // 2) * s.k_step * 2,
-                       4 * (s.block_n // 2) * s.k_step * 2])
+                       4 * (s.block_n // 2) * s.k_step * 2]) + arrive
     if f == "dp":
         return _place([s.stages * s.block_m * s.k_step * 2,
                        s.stages * s.block_n * s.k_step * 2])

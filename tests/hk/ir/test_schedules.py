@@ -55,6 +55,17 @@ def test_check_says_why():
     assert any("M=64 is more than" in w for w in S.Decode().check(64, 4096, 4096, "gfx1100"))
     assert any("bf16" in w for w in S.Dp().check(64, 4096, 4096, "gfx950", dtype="fp8e4m3"))
     assert any("GiB" in w for w in S.Dp(splits=8).check(65536, 65536, 4096, "gfx950"))
+    assert any("splits must be 1" in w for w in S.PingPong(stream_k=1, splits=2).check(
+        4096, 4096, 4096, "gfx950"))
+    assert any("2 x k_step" in w for w in S.PingPong(stream_k=1).check(
+        4096, 4096, 4160, "gfx950"))
+    assert any("XCDs" in w for w in S.PingPong(stream_k=2, sk_grid=100).check(
+        4096, 4096, 4096, "gfx950"))
+    assert any("transposed_c" in w for w in S.PingPong(stream_k=1, transposed_c=True).check(
+        4096, 4096, 4096, "gfx950"))
+    assert not S.PingPong(stream_k=2).check(4096, 5120, 4096, "gfx950")
+    # 192-wide blocks: a 96-row half is whole copies a warp, not a thread.
+    assert not S.PingPong(block_n=192, warps_m=4, warps_n=2).check(1024, 3072, 1024, "gfx950")
     with pytest.raises(S.Illegal) as e:
         S.Dp(block_n=96).require(4096, 4096, 4096, "gfx950")
     assert e.value.reasons == ["N=4096 is not a multiple of block_n=96"]

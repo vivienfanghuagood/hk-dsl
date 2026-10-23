@@ -96,7 +96,7 @@ _ABBREV = {"block_m": "", "block_n": "x", "k_step": "k", "stages": "s", "warps_m
            "transposed_c": "tc", "slices": "sl", "warps": "w", "combine_depth": "cd",
            "resident": "r", "warp_rows": "wr", "n_split": "ns", "dot_slice": "d",
            "write_pos": "p", "lds_buffers": "b", "stream_a": "a", "sched": "i",
-           "stagger": "t", "tokens": "tk"}
+           "stagger": "t", "tokens": "tk", "stream_k": "sk", "sk_grid": "skg"}
 
 
 def _short_items(kind, items) -> str:
@@ -205,7 +205,16 @@ class ScheduleSpace:
         # 1.1 waves of 256 CUs -- and 216 with three.
         # And five or seven: K = 5120 is 80 64-deep tiles (5 divides it, 3
         # does not), K = 7168 is 112 (7 does).
-        "pp": dict(splits=[1, 2, 3, 4, 5, 6, 7, 8]),
+        "pp": dict(splits=[1, 2, 3, 4, 5, 6, 7, 8],
+                   # Blocks that are not powers of two, with the warp grids
+                   # that give them whole fragments (check() refuses the
+                   # rest): 160 and 192 rows or columns fill 256 CUs where
+                   # 128 and 256 leave a part wave (3072 = 16 x 192,
+                   # 5120 = 32 x 160).
+                   block_m=[128, 160, 192, 256], block_n=[128, 160, 192, 256, 320],
+                   warps_m=[1, 2, 4, 8], warps_n=[1, 2, 4, 8],
+                   # Persistent: stream-K, and whole waves then stream-K.
+                   stream_k=[0, 1, 2]),
         "dp": dict(block_m=[16, 32, 64, 128, 256], block_n=[32, 64, 96, 128, 192, 224, 256],
                    splits=[1, 2, 3, 4, 5, 6, 7, 8]),
         "rdna": dict(block_m=[32, 64, 128, 256], block_n=[64, 128, 256], k_step=[32, 64],
@@ -236,7 +245,14 @@ class ScheduleSpace:
               + [dict(warps_m=a, warps_n=b) for a, b in
                  ((1, 1), (1, 2), (2, 1), (2, 2), (1, 4), (4, 1), (2, 4), (4, 2))],
         "pp": [dict(nt="b", lds_shape="16x64"), dict(nt="", lds_shape=None),
-               dict(warps_m=2, warps_n=4), dict(warps_m=4, warps_n=2)],
+               dict(warps_m=2, warps_n=4), dict(warps_m=4, warps_n=2),
+               dict(warps_m=8, warps_n=1), dict(warps_m=1, warps_n=8)]
+              # A block that needs another warp grid moves with it.
+              + [dict(block_n=bn, warps_m=wm, warps_n=wn)
+                 for bn, wm, wn in ((160, 8, 1), (192, 4, 2), (192, 8, 1), (320, 4, 2),
+                                    (128, 2, 4), (256, 2, 4))]
+              + [dict(block_m=bm, warps_m=wm, warps_n=wn)
+                 for bm, wm, wn in ((160, 1, 8), (192, 2, 4), (128, 2, 4), (256, 2, 4))],
         "rdna": [dict(warps=w, warp_rows=r) for w, r in
                  ((4, 1), (4, 2), (4, 4), (8, 1), (8, 2), (8, 4), (8, 8))],
     }
@@ -290,6 +306,8 @@ class ScheduleSpace:
             return ("cols", s.cut, self.structure(self.cand(s.tail), m, n, k))
         if s.family == "rdna":
             return ("rdna", s.block_m, s.block_n, s.lds_buffers)
+        if s.family == "pp":
+            return ("pp", s.block_m, s.block_n, s.splits, s.stream_k)
         return (s.family, s.block_m, s.block_n, s.splits)
 
     def preference(self, c: Candidate) -> tuple:

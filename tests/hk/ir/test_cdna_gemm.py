@@ -333,3 +333,64 @@ def test_the_split_reduce_is_on_strips():
     assert len(re.findall(r"kittens::load\(\w+, g\.ws, \w+\);", src)) == 8
     assert len(re.findall(r"kittens::store\(g\.c, \w+, \w+\);", src)) == 1
     assert "bid_y" in src
+
+
+# -- stream-K -----------------------------------------------------------------
+
+
+def _plan_segments(m, n, k, bm, bn, mode, grid=256):
+    flat, slots = gemm_cdna.sk_plan(m, n, k, bm, bn, 64, grid, mode, 8)
+    segs = []
+    for g in range(grid):
+        for r in range(flat[g], flat[g + 1], gemm_cdna.SK_REC):
+            segs.append((g, r, flat[r:r + gemm_cdna.SK_REC]))
+    return flat, slots, segs
+
+
+@pytest.mark.parametrize("m,n,k", [(4096, 1536, 4096), (1024, 5120, 7168), (512, 7680, 5120),
+                                   (128, 17920, 5120), (300, 3072, 2048), (64, 1024, 4096),
+                                   (4096, 5120, 17920)])
+@pytest.mark.parametrize("bm,bn", [(256, 256), (192, 256), (128, 256)])
+@pytest.mark.parametrize("mode", [1, 2])
+def test_a_stream_k_plan_covers_every_k_pair_once(m, n, k, bm, bn, mode):
+    """Every (block, K-pair) unit in exactly one segment; a cut block's
+    workgroups on one XCD (their shares meet in its L2), in consecutive
+    slots, each naming the same count; a whole block has no slot; and each
+    workgroup's first and last cut segments are the ones its fix-up fields
+    name."""
+    flat, slots, segs = _plan_segments(m, n, k, bm, bn, mode)
+    per = k // 128
+    seen, sharers = set(), {}
+    for g, r, (m0, n0, k0, kt, slot, t, nsh, first, bit) in segs:
+        for u in range(k0 // 128, k0 // 128 + kt // 2):
+            assert (m0, n0, u) not in seen
+            seen.add((m0, n0, u))
+        if slot < 0:
+            assert (k0, kt, nsh, bit) == (0, 2 * per, 1, 0)
+        else:
+            sharers.setdefault(t, []).append((g, slot, nsh, first))
+            assert flat[256 + 1 + (bit - 1) * 256 + g] == r
+    assert len(seen) == -(-m // bm) * (n // bn) * per
+    assert sum(len(s) for s in sharers.values()) == slots
+    for sh in sharers.values():
+        assert len({g % 8 for g, *_ in sh}) == 1
+        assert sorted(s for _, s, _, _ in sh) == list(range(sh[0][3], sh[0][3] + len(sh)))
+        assert all(c == len(sh) for _, _, c, _ in sh)
+
+
+def test_whole_waves_are_not_cut():
+    """Mode 2 deals the grid's whole waves of blocks whole and cuts only the
+    rest; mode 1 cuts every block. 16 x 20 blocks of 256 x 256 on 256
+    workgroups: one whole wave, 64 blocks left."""
+    _, slots1, segs1 = _plan_segments(4096, 5120, 4096, 256, 256, 1)
+    _, slots2, segs2 = _plan_segments(4096, 5120, 4096, 256, 256, 2)
+    assert sum(1 for *_, f in segs2 if f[4] < 0) == 256
+    assert all(f[4] >= 0 for *_, f in segs1 if f[3] < 2 * 32) and slots2 < slots1
+
+
+def test_a_stream_k_kernel_sums_shares_on_its_xcd():
+    """The persistent grid is sk_grid workgroups; the shares meet through
+    wg_arrive's XCD form (no device-wide fence) and are read back transposed."""
+    src = scaffold.bare(_gemm("g_sk1", stream_k=1).trace())
+    assert "wg_arrive_xcd(" in src and "__threadfence" not in src
+    assert "return dim3(256, 1, 1);" in src

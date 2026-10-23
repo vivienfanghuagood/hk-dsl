@@ -173,8 +173,16 @@ def HK_LoadScalarOp : HK_Op<"load_scalar"> {
 
 def HK_WgArriveOp : HK_Op<"wg_arrive"> {
   let summary = "count this workgroup's arrival; how many arrived before it";
+  let description = [{
+    Device-wide by default: fences make every global store issued before it
+    visible to the last arrival, wherever it runs. `xcd`: every workgroup
+    that arrives at this counter runs on one XCD of a gfx950 (shares its
+    L2) -- the stores are retired into the L2 and the last arrival's L1 is
+    invalidated, with no L2 writeback or invalidate, which a device-wide
+    fence costs every workgroup on the XCD.
+  }];
   let arguments = (ins HK_GlobalType:$counter, HK_CoordType:$idx,
-                       I32:$expected);
+                       I32:$expected, UnitAttr:$xcd);
   let results = (outs I32:$result);
   let assemblyFormat = [{
     $counter `[` $idx `]` `,` $expected attr-dict `:` qualified(type($counter)) `,`
@@ -464,8 +472,10 @@ def HK_GroupLoadOp : HK_Op<"group_load"> {
   }];
   let hasVerifier = 1;
   let extraClassDeclaration = [{
-    /// buffer_load ... lds a thread issues for the tile, 16 bytes a lane:
-    /// 0 when the tile is not a whole number of them per thread.
+    /// buffer_load ... lds every thread issues for the tile, 16 bytes a
+    /// lane: the fewest any warp does when the tile is not a whole number of
+    /// them per thread (the first warps then issue one more), 0 when it is
+    /// not a whole number per warp.
     int64_t dmaCalls();
   }];
 }

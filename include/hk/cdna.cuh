@@ -844,7 +844,15 @@ __device__ inline static void group_load_async_rows(ST &dst, const strided_gl<U>
     constexpr int PER_WARP = 16 * WARP_THREADS;
     constexpr int PER_CALL = PER_WARP * NW;
     constexpr int BYTES = ST::rows * ST::cols * int(sizeof(T));
-    static_assert(BYTES % PER_CALL == 0, "a whole number of copies per thread");
+    // Whole copies a warp: every warp issues FULL, and the first PART warps
+    // one more -- a 96-row half of a 192-wide block is 1.5 copies a thread
+    // for eight warps. hk-lds-pipeline counts FULL for every warp
+    // (GroupLoadOp::dmaCalls), so a wait behind such a copy is one copy
+    // stricter than it need be in the warps that issued the extra one, and
+    // exact in the others.
+    static_assert(BYTES % PER_WARP == 0, "a whole number of copies per warp");
+    constexpr int FULL = BYTES / PER_CALL;
+    constexpr int PART = (BYTES % PER_CALL) / PER_WARP;
     const auto unit = idx.template unit_coord<2, 3>();
     const int rs = int(src.template stride<2>());
     const detail::hk_i32x4 r = detail::hk_copy_srsrc(src, unit.b, unit.d, unit.r, unit.c, limit);
@@ -855,8 +863,7 @@ __device__ inline static void group_load_async_rows(ST &dst, const strided_gl<U>
     const int w = int(threadIdx.x / WARP_THREADS) % NW;
     const uint32_t lds = __builtin_amdgcn_readfirstlane(
         uint32_t(reinterpret_cast<uintptr_t>(&dst.data[0])) + w * PER_WARP);
-    #pragma unroll
-    for (int i = 0; i < BYTES / PER_CALL; i++) {
+    auto copy = [&](int i) {
         const int byte = lane * 16 + w * PER_WARP + i * PER_CALL;
         const int sub = byte / ST::underlying_subtile_bytes;
         const int in = byte % ST::underlying_subtile_bytes;
@@ -868,6 +875,14 @@ __device__ inline static void group_load_async_rows(ST &dst, const strided_gl<U>
                         (sub % ST::underlying_subtiles_per_row) * ST::underlying_subtile_cols;
         detail::hk_buf_ld_lds(r, (detail::hk_lds_ptr)(uintptr_t)(lds + i * PER_CALL), 16,
                               (row * rs + col) * int(sizeof(T)), 0, 0, NT ? 3 : 0);
+    };
+    #pragma unroll
+    for (int i = 0; i < FULL; i++)
+        copy(i);
+    if constexpr (PART > 0) {
+        // Wave-uniform: a scalar branch around the last copy.
+        if (__builtin_amdgcn_readfirstlane(w) < PART)
+            copy(FULL);
     }
 }
 
@@ -1445,6 +1460,36 @@ __device__ inline static int wg_arrive(const GL &cnt, const COORD &idx, int expe
     __syncthreads();
     const int arrived = __builtin_amdgcn_readfirstlane(arrived_before);
     __threadfence();
+    return arrived;
+}
+
+/**
+ * @brief wg_arrive for workgroups that share an L2: every workgroup that
+ * arrives at `cnt[idx]` runs on the same XCD of a gfx950. The global stores
+ * issued before the call are retired (the L1 writes through, so they are in
+ * the L2) and the last arrival invalidates its L1 before it reads them --
+ * no L2 writeback or invalidate, which a device-wide __threadfence costs
+ * every workgroup on the XCD (a stream-K GEMM whose every workgroup arrives
+ * once ran 5-50x slower with it). The counter's atomics are device-wide, so
+ * counters of different XCDs may share a cache line.
+ */
+template<ducks::gl::all GL, typename COORD=coord<>>
+__device__ inline static int wg_arrive_xcd(const GL &cnt, const COORD &idx, int expected) {
+    static_assert(std::is_same_v<typename GL::dtype, int>, "wg_arrive counts in an int32 tensor");
+    __shared__ int arrived_before;
+    __builtin_amdgcn_s_waitcnt(0x0F70);             // vmcnt(0): this wave's stores are in the L2
+    __syncthreads();
+    if (threadIdx.x == 0) {
+        int *p = (int *)&cnt[(idx.template unit_coord<-1, 3>())];
+        const int old = __hip_atomic_fetch_add(p, 1, __ATOMIC_RELAXED, __HIP_MEMORY_SCOPE_AGENT);
+        if (old == expected - 1)
+            __hip_atomic_store(p, 0, __ATOMIC_RELAXED, __HIP_MEMORY_SCOPE_AGENT);
+        arrived_before = old;
+    }
+    __syncthreads();
+    const int arrived = __builtin_amdgcn_readfirstlane(arrived_before);
+    if (arrived == expected - 1)
+        asm volatile("buffer_inv sc0" ::: "memory");  // this CU's L1: read the shares from the L2
     return arrived;
 }
 

@@ -180,10 +180,18 @@ def vm_wait(keep: int = 0) -> None:
     hkd.VmWaitOp(keep, loc=B.current().loc())
 
 
-def wg_arrive(counter, expected: Scalar) -> Int:
+def wg_arrive(counter, expected: Scalar, *, scope: str = "device") -> Int:
     """Count this workgroup's arrival at `counter` (an element view of an
     int32 global) and return how many arrived before it. The last to arrive
-    resets the counter. Contains barriers: every warp must reach it."""
+    resets the counter. Contains barriers: every warp must reach it.
+
+    `scope="xcd"`: every workgroup arriving at this counter runs on one XCD
+    of a gfx950 (block ids equal modulo 8: workgroups are dealt to the XCDs
+    round robin), so the stores before it need only reach the shared L2 --
+    no device-wide fence, which writes back and invalidates the L2 under
+    every other workgroup of the XCD. The caller guarantees the placement."""
+    if scope not in ("device", "xcd"):
+        raise TypeError(f"wg_arrive(scope={scope!r}): 'device' or 'xcd'")
     if not isinstance(counter, View):
         raise TypeError("wg_arrive takes a view of the counter: cnt.at[i]")
     if counter.idx.unit != "element":
@@ -193,7 +201,7 @@ def wg_arrive(counter, expected: Scalar) -> Int:
                         f"{counter.tensor.dtype.name}")
     t = B.current()
     return Int(hkd.WgArriveOp(_i32(), counter.tensor.v, counter.idx.v,
-                              as_int(expected).v,
+                              as_int(expected).v, xcd=True if scope == "xcd" else None,
                               loc=t.loc("arrived")).result, ScalarType(i32))
 
 

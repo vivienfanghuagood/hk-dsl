@@ -40,9 +40,9 @@ func.func @bad_tile(%t: !hk.rt<f32, 8x64, row>) {
 // -----
 
 func.func @async_too_small(%g: !hk.gl<bf16>, %i: !hk.coord<element>) {
-  %s = hk.alloc_shared : !hk.st<bf16, 32x64>
-  // expected-error@+1 {{async: the tile is not a whole number of 16-byte copies per thread}}
-  hk.group_load %g[%i] into %s {async, threads = 512 : i64} : !hk.gl<bf16>, !hk.coord<element> into !hk.st<bf16, 32x64>
+  %s = hk.alloc_shared : !hk.st<bf16, 16x16>
+  // expected-error@+1 {{async: the tile is not a whole number of 16-byte copies per warp}}
+  hk.group_load %g[%i] into %s {async, threads = 512 : i64} : !hk.gl<bf16>, !hk.coord<element> into !hk.st<bf16, 16x16>
   return
 }
 
