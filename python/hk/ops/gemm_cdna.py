@@ -558,10 +558,53 @@ def wave_cut(m: int, n: int) -> int:
     return (n // 256 // per) * per * 256
 
 
-def route(m: int, n: int, k: int) -> str:
-    """The candidate for a shape: the measured table's, at the nearest M it
-    measured for this N x K (on a log scale), if that candidate takes the
-    shape; else the rule the table's measurements mostly follow."""
+def user_route(m: int, n: int, k: int) -> Optional[str]:
+    """This machine's hk.tune record for the shape's M bucket
+    (hk.tune.records), as a candidate name of _EXTRA, if there is one and it
+    takes the shape; else None."""
+    from ..autotune import generation  # noqa: PLC0415
+
+    key = (m, n, k)
+    gen = generation()
+    hit = _USER.get(key)
+    if hit is not None and hit[0] == gen:
+        return hit[1]
+    from ..tune import records  # noqa: PLC0415
+
+    name = None
+    u = records.user_route("gfx950", m, n, k)
+    if u is not None:
+        try:
+            from .. import schedules  # noqa: PLC0415
+
+            s = schedules.from_record(u[1], strict=False)
+            if not s.check(m, n, k, "gfx950"):
+                name = u[0]
+                _EXTRA[name] = s
+        except (ValueError, TypeError, KeyError):
+            name = None                 # an unreadable record costs speed, not a launch
+    if len(_USER) > 4096:
+        _USER.clear()
+    _USER[key] = (gen, name)
+    return name
+
+
+#: user_route's answers, by shape, at the records generation they were made
+#: at: route() is on hk.ops.matmul's launch path.
+_USER: Dict[tuple, tuple] = {}
+
+
+def route(m: int, n: int, k: int, user: bool = True) -> str:
+    """The candidate for a shape: this machine's hk.tune record for its M
+    bucket (`user=False` skips it) if there is one and it takes the shape;
+    else the measured table's, at the nearest M it measured for this N x K
+    (on a log scale), if that candidate takes the shape; else the rule the
+    table's measurements mostly follow."""
+    if user:
+        _routes()
+        name = user_route(m, n, k)
+        if name is not None:
+            return name
     by_m = _routes().get(f"{n}x{k}")
     if by_m:
         near = min(by_m, key=lambda x: (abs((x / m) if x > m else (m / x)), x))

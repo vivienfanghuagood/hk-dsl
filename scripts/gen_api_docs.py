@@ -819,6 +819,33 @@ def page_schedules(since: Since) -> Page:
     return p
 
 
+def page_tune(since: Since) -> Page:
+    import hk.tune as T
+    from hk.tune import cost, measure, records, search, space, stats
+
+    p = Page("hk.tune.md", "`hk.tune`: a GEMM schedule search", doc(T))
+    p.para("The guide is [docs/tune.md](../tune.md); the benchmark that judges it "
+           "is [bench/tune](../../bench/tune/README.md).")
+    for n in ["tune", "tune_shapes", "model_shapes", "parse_shape", "torch_baselines", "explain"]:
+        obj = getattr(T, n)
+        p.entry(f"hk.tune.{n}", obj, display=f"hk.tune.{n}",
+                mark=_mark(since, "hk.tune", n, obj, f"hk.tune.{n}"))
+    for mod, names in ((search, ["Search", "Result"]),
+                       (stats, ["decide", "confirm", "Decision", "halve", "summary"]),
+                       (records, ["user_route", "save", "load", "path", "bucket"]),
+                       (space, ["provider", "ScheduleSpace", "Candidate"]),
+                       (cost, ["estimate"]),
+                       (measure, ["GemmBench", "Compiler"])):
+        modname = mod.__name__
+        p.h2(f"`{modname}`")
+        p.para(doc(mod).split("\n\n")[0])
+        for n in names:
+            obj = getattr(mod, n)
+            p.entry(f"{modname}.{n}", obj, display=f"{modname}.{n}",
+                    mark=_mark(since, modname, n, obj, f"{modname}.{n}"))
+    return p
+
+
 def page_check(since: Since) -> Page:
     import hk.check as C
 
@@ -997,6 +1024,7 @@ def build_pages() -> List[Page]:
     pages.append(page_ops(since))
     pages.append(page_templates(since))
     pages.append(page_schedules(since))
+    pages.append(page_tune(since))
     pages.append(page_check(since))
     pages.append(page_profile(since))
     pages.append(page_target(since))

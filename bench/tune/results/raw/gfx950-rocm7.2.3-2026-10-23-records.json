@@ -1,0 +1,2458 @@
+{
+ "arch": "gfx950",
+ "candidates": {
+  "u:cols:wave:pp:c32|dp:pl0_sk2_s4_x4_c16": {
+   "cut": "wave",
+   "family": "cols",
+   "head": {
+    "family": "pp",
+    "xcd_chunk": 32
+   },
+   "tail": {
+    "family": "dp",
+    "pipelined": false,
+    "splits": 2,
+    "stages": 4,
+    "warps_n": 4,
+    "xcd_chunk": 16
+   }
+  },
+  "u:dp:16_x32_k128_l16x64_ntb_pl0_s5_w1_g16_c16": {
+   "block_m": 16,
+   "block_n": 32,
+   "family": "dp",
+   "k_step": 128,
+   "lds_shape": "16x64",
+   "nt": "b",
+   "pipelined": false,
+   "stages": 5,
+   "warps_m": 1,
+   "wgm": 16,
+   "xcd_chunk": 16
+  },
+  "u:dp:16_x32_k128_l16x64_ntb_pl0_sp1_s5_w1_g16_c0": {
+   "block_m": 16,
+   "block_n": 32,
+   "family": "dp",
+   "k_step": 128,
+   "lds_shape": "16x64",
+   "nt": "b",
+   "pipelined": false,
+   "setprio": true,
+   "stages": 5,
+   "warps_m": 1,
+   "wgm": 16,
+   "xcd_chunk": 0
+  },
+  "u:dp:16_x32_k128_l16x64_ntb_sp1_s5_w1_g16_c16": {
+   "block_m": 16,
+   "block_n": 32,
+   "family": "dp",
+   "k_step": 128,
+   "lds_shape": "16x64",
+   "nt": "b",
+   "setprio": true,
+   "stages": 5,
+   "warps_m": 1,
+   "wgm": 16,
+   "xcd_chunk": 16
+  },
+  "u:dp:16_x64_l16x64_ntb_sk6_s4_w1_g4_c0": {
+   "block_m": 16,
+   "block_n": 64,
+   "family": "dp",
+   "lds_shape": "16x64",
+   "nt": "b",
+   "splits": 6,
+   "stages": 4,
+   "warps_m": 1,
+   "wgm": 4,
+   "xcd_chunk": 0
+  },
+  "u:dp:32_x48_l16x64_ntb_sk8_s4_x1_c0": {
+   "block_m": 32,
+   "block_n": 48,
+   "family": "dp",
+   "lds_shape": "16x64",
+   "nt": "b",
+   "splits": 8,
+   "stages": 4,
+   "warps_n": 1,
+   "xcd_chunk": 0
+  },
+  "u:dp:32_x64_k128_s4_g16": {
+   "block_m": 32,
+   "block_n": 64,
+   "family": "dp",
+   "k_step": 128,
+   "stages": 4,
+   "wgm": 16
+  },
+  "u:dp:32_x64_l16x64_ntb_sk4_s4_c16": {
+   "block_m": 32,
+   "block_n": 64,
+   "family": "dp",
+   "lds_shape": "16x64",
+   "nt": "b",
+   "splits": 4,
+   "stages": 4,
+   "xcd_chunk": 16
+  },
+  "u:dp:s4_g4": {
+   "family": "dp",
+   "stages": 4,
+   "wgm": 4
+  },
+  "u:dp:x192_l16x64_ntb_sk8_w1_x4_g4_c0": {
+   "block_n": 192,
+   "family": "dp",
+   "lds_shape": "16x64",
+   "nt": "b",
+   "splits": 8,
+   "warps_m": 1,
+   "warps_n": 4,
+   "wgm": 4,
+   "xcd_chunk": 0
+  },
+  "u:pp:128_g4_c32": {
+   "block_m": 128,
+   "family": "pp",
+   "wgm": 4,
+   "xcd_chunk": 32
+  },
+  "u:pp:128_l16x64_ntb_sk8_g16": {
+   "block_m": 128,
+   "family": "pp",
+   "lds_shape": "16x64",
+   "nt": "b",
+   "splits": 8,
+   "wgm": 16
+  },
+  "u:pp:g16_c32": {
+   "family": "pp",
+   "wgm": 16,
+   "xcd_chunk": 32
+  },
+  "u:pp:g4": {
+   "family": "pp",
+   "wgm": 4
+  },
+  "u:pp:g4_c16": {
+   "family": "pp",
+   "wgm": 4,
+   "xcd_chunk": 16
+  },
+  "u:pp:g4_c32": {
+   "family": "pp",
+   "wgm": 4,
+   "xcd_chunk": 32
+  },
+  "u:pp:lb0_sk4_g16": {
+   "family": "pp",
+   "late_b": false,
+   "splits": 4,
+   "wgm": 16
+  },
+  "u:pp:sk2_g4": {
+   "family": "pp",
+   "splits": 2,
+   "wgm": 4
+  },
+  "u:pp:x128_es0_sk4_g16_c32": {
+   "block_n": 128,
+   "early_store": false,
+   "family": "pp",
+   "splits": 4,
+   "wgm": 16,
+   "xcd_chunk": 32
+  }
+ },
+ "kind": "gemm",
+ "points": [
+  {
+   "accepted": "dp:16_x64_l16x64_ntb_sk6_s4_w1_g4_c0",
+   "arch": "gfx950",
+   "baselines": {
+    "torch": {
+     "ms": 0.020504,
+     "ratio": [
+      1.204657,
+      1.181271,
+      1.212391
+     ],
+     "route_ratio": [
+      0.822904,
+      0.819141,
+      0.82486
+     ]
+    }
+   },
+   "best_baseline": "torch",
+   "by": "hk.tune",
+   "champion": "dp:16_x64_l16x64_ntb_sk6_s4_w1_g4_c0",
+   "champion_spec": [
+    "dp",
+    {
+     "block_m": 16,
+     "block_n": 64,
+     "lds_shape": "16x64",
+     "nt": "b",
+     "splits": 6,
+     "stages": 4,
+     "warps_m": 1,
+     "wgm": 4,
+     "xcd_chunk": 0
+    }
+   ],
+   "compile_seconds": 61.4,
+   "counts": {
+    "failed": 0,
+    "generated": 2204,
+    "legal": 2211,
+    "loaded": 313,
+    "pool": 73,
+    "refused": 0,
+    "restarts": 1,
+    "timed": 312,
+    "wrong": 0
+   },
+   "date": "2026-10-22",
+   "decision": {
+    "band": [
+     1.4407,
+     1.4698
+    ],
+    "bar": 0.02802,
+    "gain": 0.46389,
+    "ratios": [
+     1.4698,
+     1.4639,
+     1.4678,
+     1.4421,
+     1.4407
+    ],
+    "sets": 5,
+    "sigma": 0.01401,
+    "verdict": "win"
+   },
+   "device": "AMD Radeon Graphics",
+   "gpu_seconds": 6.63,
+   "hip": "7.2.53211",
+   "hipcc": "HIP version: 7.2.53211-c2d9476115",
+   "k": 9216,
+   "load_seconds": 0.9,
+   "m": 1,
+   "ms": 0.017016,
+   "n": 4608,
+   "phases": {
+    "check": 0.97,
+    "decide": 2.79,
+    "local": 2.21,
+    "rungs": 0.66
+   },
+   "profile": {},
+   "record": "",
+   "route": "decode",
+   "route_ms": 0.02494,
+   "route_spec": [
+    "decode",
+    {
+     "resident": 2
+    }
+   ],
+   "timed": {
+    "dp:16_x64_l16x64_ntb_pl0_sk6_s4_w1_c0": 0.017254,
+    "dp:16_x64_l16x64_ntb_pl0_sk6_s4_w1_g4_c0": 0.017264,
+    "dp:16_x64_l16x64_ntb_sk6_s4_w1_c0": 0.017254,
+    "dp:16_x64_l16x64_ntb_sk6_s4_w1_c16": 0.017258,
+    "dp:16_x64_l16x64_ntb_sk6_s4_w1_g16_c0": 0.017248,
+    "dp:16_x64_l16x64_ntb_sk6_s4_w1_g4_c0": 0.016968,
+    "dp:16_x64_l16x64_ntb_sk6_s4_w1_g4_c16": 0.017258,
+    "dp:16_x64_l16x64_ntb_sp1_sk6_s4_w1_c0": 0.017258,
+    "dp:16_x64_l16x64_ntb_sp1_sk6_s4_w1_c16": 0.017298,
+    "dp:16_x64_l16x64_ntb_sp1_sk6_s4_w1_g16_c0": 0.017278,
+    "dp:16_x64_l16x64_ntb_sp1_sk6_s4_w1_g4_c0": 0.01726,
+    "dp:16_x64_l16x64_ntb_sp1_sk6_w1_g4_c0": 0.017288
+   },
+   "toolchain": "53cb6aa46cd2138ec60dc102ea9496f9",
+   "torch": "2.10.0+rocm7.2.3.git1a270074",
+   "verdict": "win",
+   "wall_seconds": 18.8
+  },
+  {
+   "accepted": "dp:32_x48_l16x64_ntb_sk8_s4_x1_c0",
+   "arch": "gfx950",
+   "baselines": {
+    "torch": {
+     "ms": 0.013223,
+     "ratio": [
+      1.087914,
+      1.079295,
+      1.092466
+     ],
+     "route_ratio": [
+      0.853612,
+      0.842489,
+      0.855362
+     ]
+    }
+   },
+   "best_baseline": "torch",
+   "by": "hk.tune",
+   "champion": "dp:32_x48_l16x64_ntb_sk8_s4_x1_c0",
+   "champion_spec": [
+    "dp",
+    {
+     "block_m": 32,
+     "block_n": 48,
+     "lds_shape": "16x64",
+     "nt": "b",
+     "splits": 8,
+     "stages": 4,
+     "warps_n": 1,
+     "xcd_chunk": 0
+    }
+   ],
+   "compile_seconds": 93.2,
+   "counts": {
+    "failed": 0,
+    "generated": 1500,
+    "legal": 1507,
+    "loaded": 244,
+    "pool": 66,
+    "refused": 0,
+    "restarts": 2,
+    "timed": 243,
+    "wrong": 0
+   },
+   "date": "2026-10-22",
+   "decision": {
+    "band": [
+     1.2695,
+     1.2886
+    ],
+    "bar": 0.01738,
+    "gain": 0.2772,
+    "ratios": [
+     1.2732,
+     1.2772,
+     1.2695,
+     1.2773,
+     1.2886
+    ],
+    "sets": 5,
+    "sigma": 0.00869,
+    "verdict": "win"
+   },
+   "device": "AMD Radeon Graphics",
+   "gpu_seconds": 3.26,
+   "hip": "7.2.53211",
+   "hipcc": "HIP version: 7.2.53211-c2d9476115",
+   "k": 8192,
+   "load_seconds": 0.6,
+   "m": 8,
+   "ms": 0.012143,
+   "n": 3072,
+   "phases": {
+    "check": 0.01,
+    "decide": 0.19,
+    "local": 2.27,
+    "rungs": 0.79
+   },
+   "profile": {},
+   "record": "",
+   "route": "decode",
+   "route_ms": 0.01549,
+   "route_spec": [
+    "decode",
+    {
+     "resident": 2
+    }
+   ],
+   "timed": {
+    "dp:16_x32_l16x64_ntb_sk8_s4_w1_c0": 0.012353,
+    "dp:16_x32_l16x64_ntb_sk8_s4_w1_g16_c0": 0.012343,
+    "dp:16_x32_l16x64_ntb_sk8_s4_w1_g4_c0": 0.012346,
+    "dp:16_x32_l16x64_ntb_sp1_sk8_s4_w1_c0": 0.012383,
+    "dp:16_x32_l16x64_ntb_sp1_sk8_s4_w1_g16_c0": 0.012361,
+    "dp:16_x32_l16x64_ntb_sp1_sk8_s4_w1_g4_c0": 0.012355,
+    "dp:32_x32_l16x64_ntb_sk8_s4_x1_c0": 0.012439,
+    "dp:32_x32_l16x64_ntb_sp1_sk8_s4_w1_c0": 0.012349,
+    "dp:32_x48_l16x64_ntb_sk8_s4_x1_c0": 0.012136,
+    "dp:32_x48_l16x64_ntb_sk8_s4_x1_c16": 0.012368,
+    "dp:32_x48_l16x64_ntb_sk8_s4_x1_g16_c0": 0.012435,
+    "dp:32_x48_l16x64_ntb_sk8_s4_x1_g4_c0": 0.012424
+   },
+   "toolchain": "53cb6aa46cd2138ec60dc102ea9496f9",
+   "torch": "2.10.0+rocm7.2.3.git1a270074",
+   "verdict": "win",
+   "wall_seconds": 11.5
+  },
+  {
+   "accepted": "dp:16_x32_k128_l16x64_ntb_pl0_s5_w1_g16_c16",
+   "arch": "gfx950",
+   "baselines": {
+    "torch": {
+     "ms": 0.08512,
+     "ratio": [
+      1.004014,
+      0.983614,
+      1.008766
+     ],
+     "route_ratio": [
+      0.71438,
+      0.713855,
+      0.717584
+     ]
+    }
+   },
+   "best_baseline": "torch",
+   "by": "hk.tune",
+   "champion": "dp:16_x32_k128_l16x64_ntb_pl0_s5_w1_g16_c16",
+   "champion_spec": [
+    "dp",
+    {
+     "block_m": 16,
+     "block_n": 32,
+     "k_step": 128,
+     "lds_shape": "16x64",
+     "nt": "b",
+     "pipelined": false,
+     "stages": 5,
+     "warps_m": 1,
+     "wgm": 16,
+     "xcd_chunk": 16
+    }
+   ],
+   "compile_seconds": 201.5,
+   "counts": {
+    "failed": 0,
+    "generated": 1844,
+    "legal": 1852,
+    "loaded": 305,
+    "pool": 78,
+    "refused": 0,
+    "restarts": 2,
+    "timed": 304,
+    "wrong": 0
+   },
+   "date": "2026-10-22",
+   "decision": {
+    "band": [
+     1.3776,
+     1.4084
+    ],
+    "bar": 0.03233,
+    "gain": 0.40316,
+    "ratios": [
+     1.4032,
+     1.4084,
+     1.4054,
+     1.4028,
+     1.3776
+    ],
+    "sets": 5,
+    "sigma": 0.01616,
+    "verdict": "win"
+   },
+   "device": "AMD Radeon Graphics",
+   "gpu_seconds": 2.5,
+   "hip": "7.2.53211",
+   "hipcc": "HIP version: 7.2.53211-c2d9476115",
+   "k": 5120,
+   "load_seconds": 1.0,
+   "m": 8,
+   "ms": 0.084701,
+   "n": 55296,
+   "phases": {
+    "check": 0.04,
+    "decide": 0.12,
+    "local": 1.63,
+    "rungs": 0.71
+   },
+   "profile": {},
+   "record": "",
+   "route": "decode",
+   "route_ms": 0.119041,
+   "route_spec": [
+    "decode",
+    {
+     "resident": 2
+    }
+   ],
+   "timed": {
+    "dp:16_x32_k128_l16x64_ntb_pl0_s5_w1_g16_c16": 0.084631,
+    "dp:16_x32_k128_l16x64_ntb_s4_w1_c16": 0.08484,
+    "dp:16_x32_k128_l16x64_ntb_s4_w1_g16": 0.08509,
+    "dp:16_x32_k128_l16x64_ntb_s4_w1_g16_c16": 0.084851,
+    "dp:16_x32_k128_l16x64_ntb_s4_w1_g4": 0.084791,
+    "dp:16_x32_k128_l16x64_ntb_s4_w1_g4_c16": 0.08498,
+    "dp:16_x32_k128_l16x64_ntb_s5_w1_g16": 0.0847,
+    "dp:16_x32_k128_l16x64_ntb_s5_w1_g16_c16": 0.08486,
+    "dp:16_x32_k128_l16x64_ntb_s5_w1_g4_c16": 0.084631,
+    "dp:16_x32_k128_l16x64_ntb_sp1_s4_w1_c16": 0.084801,
+    "dp:16_x32_k128_l16x64_ntb_sp1_s4_w1_g16": 0.08506,
+    "dp:16_x32_k128_l16x64_ntb_sp1_s4_w1_g16_c16": 0.084891
+   },
+   "toolchain": "53cb6aa46cd2138ec60dc102ea9496f9",
+   "torch": "2.10.0+rocm7.2.3.git1a270074",
+   "verdict": "win",
+   "wall_seconds": 15.9
+  },
+  {
+   "accepted": "dp:32_x64_l16x64_ntb_sk4_s4_c16",
+   "arch": "gfx950",
+   "baselines": {
+    "torch": {
+     "ms": 0.0142,
+     "ratio": [
+      1.074292,
+      1.066715,
+      1.084679
+     ],
+     "route_ratio": [
+      0.828193,
+      0.826585,
+      0.829991
+     ]
+    }
+   },
+   "best_baseline": "torch",
+   "by": "hk.tune",
+   "champion": "dp:32_x64_l16x64_ntb_sk4_s4_c16",
+   "champion_spec": [
+    "dp",
+    {
+     "block_m": 32,
+     "block_n": 64,
+     "lds_shape": "16x64",
+     "nt": "b",
+     "splits": 4,
+     "stages": 4,
+     "xcd_chunk": 16
+    }
+   ],
+   "compile_seconds": 66.4,
+   "counts": {
+    "failed": 0,
+    "generated": 1324,
+    "legal": 1329,
+    "loaded": 189,
+    "pool": 69,
+    "refused": 0,
+    "restarts": 2,
+    "timed": 188,
+    "wrong": 0
+   },
+   "date": "2026-10-22",
+   "decision": {
+    "band": [
+     1.2905,
+     1.308
+    ],
+    "bar": 0.02382,
+    "gain": 0.29617,
+    "ratios": [
+     1.2962,
+     1.3069,
+     1.2948,
+     1.2905,
+     1.308
+    ],
+    "sets": 5,
+    "sigma": 0.01191,
+    "verdict": "win"
+   },
+   "device": "AMD Radeon Graphics",
+   "gpu_seconds": 5.81,
+   "hip": "7.2.53211",
+   "hipcc": "HIP version: 7.2.53211-c2d9476115",
+   "k": 7168,
+   "load_seconds": 0.5,
+   "m": 16,
+   "ms": 0.013226,
+   "n": 4096,
+   "phases": {
+    "check": 0.92,
+    "decide": 2.85,
+    "local": 1.32,
+    "rungs": 0.72
+   },
+   "profile": {},
+   "record": "",
+   "route": "decode",
+   "route_ms": 0.017134,
+   "route_spec": [
+    "decode",
+    {
+     "resident": 2
+    }
+   ],
+   "timed": {
+    "dp:32_x32_l16x64_ntb_sk4_s4_c0": 0.013549,
+    "dp:32_x32_l16x64_ntb_sk4_s4_c16": 0.01333,
+    "dp:32_x32_l16x64_ntb_sk4_s4_g16_c0": 0.013563,
+    "dp:32_x32_l16x64_ntb_sk4_s4_g4_c0": 0.013554,
+    "dp:32_x32_l16x64_ntb_sp1_sk4_s4_c0": 0.013449,
+    "dp:32_x64_l16x64_ntb_sk4_s4_c0": 0.013403,
+    "dp:32_x64_l16x64_ntb_sk4_s4_c16": 0.013084,
+    "dp:32_x64_l16x64_ntb_sk4_s4_g16_c0": 0.013419,
+    "dp:32_x64_l16x64_ntb_sk4_s4_g4_c0": 0.013422,
+    "dp:32_x64_l16x64_ntb_sk4_s4_w1_c0": 0.013356,
+    "dp:32_x64_l16x64_ntb_sk4_s4_w1_x4_c0": 0.013347,
+    "dp:32_x64_l16x64_ntb_sk4_s4_x1_c0": 0.013426
+   },
+   "toolchain": "53cb6aa46cd2138ec60dc102ea9496f9",
+   "torch": "2.10.0+rocm7.2.3.git1a270074",
+   "verdict": "win",
+   "wall_seconds": 14.7
+  },
+  {
+   "accepted": "dp:16_x32_k128_l16x64_ntb_sp1_s5_w1_g16_c16",
+   "arch": "gfx950",
+   "baselines": {
+    "torch": {
+     "ms": 0.015335,
+     "ratio": [
+      1.230142,
+      1.2246,
+      1.247087
+     ],
+     "route_ratio": [
+      0.684675,
+      0.682547,
+      0.685264
+     ]
+    }
+   },
+   "best_baseline": "torch",
+   "by": "hk.tune",
+   "champion": "dp:16_x32_k128_l16x64_ntb_sp1_s5_w1_g16_c16",
+   "champion_spec": [
+    "dp",
+    {
+     "block_m": 16,
+     "block_n": 32,
+     "k_step": 128,
+     "lds_shape": "16x64",
+     "nt": "b",
+     "setprio": true,
+     "stages": 5,
+     "warps_m": 1,
+     "wgm": 16,
+     "xcd_chunk": 16
+    }
+   ],
+   "compile_seconds": 123.1,
+   "counts": {
+    "failed": 0,
+    "generated": 1324,
+    "legal": 1330,
+    "loaded": 226,
+    "pool": 70,
+    "refused": 0,
+    "restarts": 1,
+    "timed": 225,
+    "wrong": 0
+   },
+   "date": "2026-10-22",
+   "decision": {
+    "band": [
+     1.7926,
+     1.8225
+    ],
+    "bar": 0.02381,
+    "gain": 0.79668,
+    "ratios": [
+     1.7927,
+     1.8199,
+     1.7967,
+     1.8225,
+     1.7926
+    ],
+    "sets": 5,
+    "sigma": 0.01191,
+    "verdict": "win"
+   },
+   "device": "AMD Radeon Graphics",
+   "gpu_seconds": 2.67,
+   "hip": "7.2.53211",
+   "hipcc": "HIP version: 7.2.53211-c2d9476115",
+   "k": 5120,
+   "load_seconds": 0.6,
+   "m": 16,
+   "ms": 0.012493,
+   "n": 5120,
+   "phases": {
+    "check": 0.01,
+    "decide": 0.16,
+    "local": 1.68,
+    "rungs": 0.82
+   },
+   "profile": {},
+   "record": "",
+   "route": "decode",
+   "route_ms": 0.022445,
+   "route_spec": [
+    "decode",
+    {
+     "resident": 2
+    }
+   ],
+   "timed": {
+    "dp:16_x32_k128_l16x64_ntb_pl0_s5_w1_g4_c0": 0.012838,
+    "dp:16_x32_k128_l16x64_ntb_pl0_sp1_s5_w1_c0": 0.012823,
+    "dp:16_x32_k128_l16x64_ntb_pl0_sp1_s5_w1_g16_c0": 0.012824,
+    "dp:16_x32_k128_l16x64_ntb_s5_w1_c16": 0.012801,
+    "dp:16_x32_k128_l16x64_ntb_s5_w1_g16": 0.012834,
+    "dp:16_x32_k128_l16x64_ntb_s5_w1_g16_c16": 0.012831,
+    "dp:16_x32_k128_l16x64_ntb_s5_w1_g4": 0.01282,
+    "dp:16_x32_k128_l16x64_ntb_sp1_s5_w1_c16": 0.012833,
+    "dp:16_x32_k128_l16x64_ntb_sp1_s5_w1_g16": 0.012828,
+    "dp:16_x32_k128_l16x64_ntb_sp1_s5_w1_g16_c16": 0.012164,
+    "dp:16_x32_k128_l16x64_ntb_sp1_s5_w1_g4": 0.012844,
+    "dp:16_x32_k128_l16x64_ntb_sp1_s5_w1_g4_c16": 0.012836
+   },
+   "toolchain": "53cb6aa46cd2138ec60dc102ea9496f9",
+   "torch": "2.10.0+rocm7.2.3.git1a270074",
+   "verdict": "win",
+   "wall_seconds": 14.7
+  },
+  {
+   "accepted": "dp:16_x32_k128_l16x64_ntb_pl0_sp1_s5_w1_g16_c0",
+   "arch": "gfx950",
+   "baselines": {
+    "torch": {
+     "ms": 0.025989,
+     "ratio": [
+      1.263163,
+      1.243331,
+      1.264385
+     ],
+     "route_ratio": [
+      0.725762,
+      0.71995,
+      0.728601
+     ]
+    }
+   },
+   "best_baseline": "torch",
+   "by": "hk.tune",
+   "champion": "dp:16_x32_k128_l16x64_ntb_pl0_sp1_s5_w1_g16_c0",
+   "champion_spec": [
+    "dp",
+    {
+     "block_m": 16,
+     "block_n": 32,
+     "k_step": 128,
+     "lds_shape": "16x64",
+     "nt": "b",
+     "pipelined": false,
+     "setprio": true,
+     "stages": 5,
+     "warps_m": 1,
+     "wgm": 16,
+     "xcd_chunk": 0
+    }
+   ],
+   "compile_seconds": 143.6,
+   "counts": {
+    "failed": 0,
+    "generated": 1212,
+    "legal": 1219,
+    "loaded": 198,
+    "pool": 69,
+    "refused": 0,
+    "restarts": 2,
+    "timed": 197,
+    "wrong": 0
+   },
+   "date": "2026-10-22",
+   "decision": {
+    "band": [
+     1.727,
+     1.7517
+    ],
+    "bar": 0.02847,
+    "gain": 0.74033,
+    "ratios": [
+     1.7403,
+     1.7517,
+     1.7303,
+     1.7405,
+     1.727
+    ],
+    "sets": 5,
+    "sigma": 0.01423,
+    "verdict": "win"
+   },
+   "device": "AMD Radeon Graphics",
+   "gpu_seconds": 1.77,
+   "hip": "7.2.53211",
+   "hipcc": "HIP version: 7.2.53211-c2d9476115",
+   "k": 8192,
+   "load_seconds": 0.2,
+   "m": 16,
+   "ms": 0.020577,
+   "n": 7168,
+   "phases": {
+    "check": 0.02,
+    "decide": 0.13,
+    "local": 0.99,
+    "rungs": 0.63
+   },
+   "profile": {},
+   "record": "",
+   "route": "decode",
+   "route_ms": 0.035892,
+   "route_spec": [
+    "decode",
+    {
+     "resident": 2
+    }
+   ],
+   "timed": {
+    "dp:16_x32_k128_l16x64_ntb_pl0_s4_w1_c0": 0.021466,
+    "dp:16_x32_k128_l16x64_ntb_pl0_s5_w1_c0": 0.021,
+    "dp:16_x32_k128_l16x64_ntb_pl0_s5_w1_g16_c0": 0.021026,
+    "dp:16_x32_k128_l16x64_ntb_pl0_s5_w1_g4_c0": 0.020894,
+    "dp:16_x32_k128_l16x64_ntb_pl0_sp1_s4_w1_c0": 0.0215,
+    "dp:16_x32_k128_l16x64_ntb_pl0_sp1_s4_w1_g16_c0": 0.021412,
+    "dp:16_x32_k128_l16x64_ntb_pl0_sp1_s4_w1_g4_c0": 0.02142,
+    "dp:16_x32_k128_l16x64_ntb_pl0_sp1_s5_w1_c0": 0.02094,
+    "dp:16_x32_k128_l16x64_ntb_pl0_sp1_s5_w1_g16_c0": 0.020549,
+    "dp:16_x32_k128_l16x64_ntb_pl0_sp1_s5_w1_g4_c0": 0.020872,
+    "dp:16_x32_k128_l16x64_ntb_sp1_s4_w1_g16_c0": 0.021292,
+    "dp:16_x32_k128_l16x64_ntb_sp1_s5_w1_c0": 0.021389
+   },
+   "toolchain": "53cb6aa46cd2138ec60dc102ea9496f9",
+   "torch": "2.10.0+rocm7.2.3.git1a270074",
+   "verdict": "win",
+   "wall_seconds": 5.7
+  },
+  {
+   "accepted": "dp:32_x64_k128_s4_g16",
+   "arch": "gfx950",
+   "baselines": {
+    "torch": {
+     "ms": 0.005486,
+     "ratio": [
+      1.474465,
+      1.47271,
+      1.476134
+     ],
+     "route_ratio": [
+      0.900411,
+      0.898785,
+      0.900489
+     ]
+    }
+   },
+   "best_baseline": "torch",
+   "by": "hk.tune",
+   "champion": "dp:32_x64_k128_s4_g16",
+   "champion_spec": [
+    "dp",
+    {
+     "block_m": 32,
+     "block_n": 64,
+     "k_step": 128,
+     "stages": 4,
+     "wgm": 16
+    }
+   ],
+   "compile_seconds": 65.8,
+   "counts": {
+    "failed": 0,
+    "generated": 944,
+    "legal": 952,
+    "loaded": 245,
+    "pool": 65,
+    "refused": 0,
+    "restarts": 2,
+    "timed": 244,
+    "wrong": 0
+   },
+   "date": "2026-10-22",
+   "decision": {
+    "band": [
+     1.6371,
+     1.6404
+    ],
+    "bar": 0.01026,
+    "gain": 0.6383,
+    "ratios": [
+     1.6375,
+     1.6371,
+     1.6404,
+     1.6383,
+     1.6393
+    ],
+    "sets": 5,
+    "sigma": 0.00513,
+    "verdict": "win"
+   },
+   "device": "AMD Radeon Graphics",
+   "gpu_seconds": 7.61,
+   "hip": "7.2.53211",
+   "hipcc": "HIP version: 7.2.53211-c2d9476115",
+   "k": 512,
+   "load_seconds": 0.7,
+   "m": 128,
+   "ms": 0.00372,
+   "n": 4096,
+   "phases": {
+    "check": 0.96,
+    "decide": 2.89,
+    "local": 2.74,
+    "rungs": 1.02
+   },
+   "profile": {},
+   "record": "",
+   "route": "dp64",
+   "route_ms": 0.006097,
+   "route_spec": [
+    "dp",
+    {
+     "block_m": 64,
+     "xcd_chunk": 0
+    }
+   ],
+   "timed": {
+    "dp:32_x64_k128_s4": 0.003737,
+    "dp:32_x64_k128_s4_g16": 0.003712,
+    "dp:32_x64_k128_s4_g16_c16": 0.003736,
+    "dp:32_x64_k128_s4_g4": 0.003716,
+    "dp:32_x64_k128_s4_g4_c16": 0.003733,
+    "dp:32_x64_s4": 0.003744,
+    "dp:32_x64_s4_c16": 0.003742,
+    "dp:32_x64_s4_g16_c16": 0.003743,
+    "dp:32_x64_s4_g4": 0.003742,
+    "dp:32_x64_s4_g4_c16": 0.003738,
+    "dp:32_x64_s4_w1_x4_c16": 0.003741,
+    "dp:32_x64_s4_w1_x4_g4_c16": 0.003739
+   },
+   "toolchain": "53cb6aa46cd2138ec60dc102ea9496f9",
+   "torch": "2.10.0+rocm7.2.3.git1a270074",
+   "verdict": "win",
+   "wall_seconds": 20.0
+  },
+  {
+   "accepted": "dp:x192_l16x64_ntb_sk8_w1_x4_g4_c0",
+   "arch": "gfx950",
+   "baselines": {
+    "torch": {
+     "ms": 0.079387,
+     "ratio": [
+      0.985121,
+      0.982581,
+      0.98953
+     ],
+     "route_ratio": [
+      0.276505,
+      0.275431,
+      0.278277
+     ]
+    }
+   },
+   "best_baseline": "torch",
+   "by": "hk.tune",
+   "champion": "dp:x192_l16x64_ntb_sk8_w1_x4_g4_c0",
+   "champion_spec": [
+    "dp",
+    {
+     "block_n": 192,
+     "lds_shape": "16x64",
+     "nt": "b",
+     "splits": 8,
+     "warps_m": 1,
+     "warps_n": 4,
+     "wgm": 4,
+     "xcd_chunk": 0
+    }
+   ],
+   "compile_seconds": 142.2,
+   "counts": {
+    "failed": 0,
+    "generated": 2160,
+    "legal": 2174,
+    "loaded": 224,
+    "pool": 73,
+    "refused": 0,
+    "restarts": 2,
+    "timed": 223,
+    "wrong": 0
+   },
+   "date": "2026-10-22",
+   "decision": {
+    "band": [
+     3.553,
+     3.5787
+    ],
+    "bar": 0.01322,
+    "gain": 2.55956,
+    "ratios": [
+     3.5543,
+     3.5704,
+     3.553,
+     3.5596,
+     3.5787
+    ],
+    "sets": 5,
+    "sigma": 0.00661,
+    "verdict": "win"
+   },
+   "device": "AMD Radeon Graphics",
+   "gpu_seconds": 2.35,
+   "hip": "7.2.53211",
+   "hipcc": "HIP version: 7.2.53211-c2d9476115",
+   "k": 36864,
+   "load_seconds": 0.6,
+   "m": 128,
+   "ms": 0.080374,
+   "n": 4608,
+   "phases": {
+    "check": 0.02,
+    "decide": 0.17,
+    "local": 1.49,
+    "rungs": 0.67
+   },
+   "profile": {},
+   "record": "",
+   "route": "dp64",
+   "route_ms": 0.286469,
+   "route_spec": [
+    "dp",
+    {
+     "block_m": 64,
+     "xcd_chunk": 0
+    }
+   ],
+   "timed": {
+    "dp:x192_l16x64_ntb_sk8": 0.082794,
+    "dp:x192_l16x64_ntb_sk8_c16": 0.083474,
+    "dp:x192_l16x64_ntb_sk8_g16_c0": 0.08324,
+    "dp:x192_l16x64_ntb_sk8_g16_c16": 0.082554,
+    "dp:x192_l16x64_ntb_sk8_g4_c16": 0.082954,
+    "dp:x192_l16x64_ntb_sk8_w1_x4": 0.080761,
+    "dp:x192_l16x64_ntb_sk8_w1_x4_c0": 0.080774,
+    "dp:x192_l16x64_ntb_sk8_w1_x4_c16": 0.080794,
+    "dp:x192_l16x64_ntb_sk8_w1_x4_g16_c0": 0.080954,
+    "dp:x192_l16x64_ntb_sk8_w1_x4_g16_c16": 0.081107,
+    "dp:x192_l16x64_ntb_sk8_w1_x4_g4_c0": 0.080647,
+    "dp:x192_l16x64_ntb_sk8_w1_x4_g4_c16": 0.08146
+   },
+   "toolchain": "53cb6aa46cd2138ec60dc102ea9496f9",
+   "torch": "2.10.0+rocm7.2.3.git1a270074",
+   "verdict": "win",
+   "wall_seconds": 13.4
+  },
+  {
+   "accepted": "pp:128_l16x64_ntb_sk8_g16",
+   "arch": "gfx950",
+   "baselines": {
+    "torch": {
+     "ms": 0.039014,
+     "ratio": [
+      0.908263,
+      0.896404,
+      0.912572
+     ],
+     "route_ratio": [
+      0.3385,
+      0.336683,
+      0.340487
+     ]
+    }
+   },
+   "best_baseline": "torch",
+   "by": "hk.tune",
+   "champion": "pp:128_l16x64_ntb_sk8_g16",
+   "champion_spec": [
+    "pp",
+    {
+     "block_m": 128,
+     "lds_shape": "16x64",
+     "nt": "b",
+     "splits": 8,
+     "wgm": 16
+    }
+   ],
+   "compile_seconds": 151.3,
+   "counts": {
+    "failed": 0,
+    "generated": 1280,
+    "legal": 1289,
+    "loaded": 182,
+    "pool": 66,
+    "refused": 0,
+    "restarts": 2,
+    "timed": 181,
+    "wrong": 0
+   },
+   "date": "2026-10-22",
+   "decision": {
+    "band": [
+     2.6625,
+     2.6849
+    ],
+    "bar": 0.01209,
+    "gain": 1.67637,
+    "ratios": [
+     2.6802,
+     2.6849,
+     2.6686,
+     2.6625,
+     2.6764
+    ],
+    "sets": 5,
+    "sigma": 0.00604,
+    "verdict": "win"
+   },
+   "device": "AMD Radeon Graphics",
+   "gpu_seconds": 1.95,
+   "hip": "7.2.53211",
+   "hipcc": "HIP version: 7.2.53211-c2d9476115",
+   "k": 14336,
+   "load_seconds": 0.3,
+   "m": 128,
+   "ms": 0.043074,
+   "n": 5120,
+   "phases": {
+    "check": 0.01,
+    "decide": 0.18,
+    "local": 1.14,
+    "rungs": 0.62
+   },
+   "profile": {},
+   "record": "",
+   "route": "dp64",
+   "route_ms": 0.115267,
+   "route_spec": [
+    "dp",
+    {
+     "block_m": 64,
+     "xcd_chunk": 0
+    }
+   ],
+   "timed": {
+    "pp:128_es0_l16x64_ntb_sk8": 0.043857,
+    "pp:128_es0_l16x64_ntb_sk8_g16": 0.043787,
+    "pp:128_l16x64_ntb_sk8": 0.043497,
+    "pp:128_l16x64_ntb_sk8_c16": 0.043874,
+    "pp:128_l16x64_ntb_sk8_c32": 0.04343,
+    "pp:128_l16x64_ntb_sk8_g16": 0.043237,
+    "pp:128_l16x64_ntb_sk8_g16_c32": 0.043524,
+    "pp:128_l16x64_ntb_sk8_g4": 0.043634,
+    "pp:128_l16x64_ntb_sk8_g4_c32": 0.043874,
+    "pp:128_l16x64_ntb_sp0_sk8": 0.04372,
+    "pp:128_l16x64_ntb_sp0_sk8_c32": 0.043737,
+    "pp:128_l16x64_ntb_sp0_sk8_g16": 0.043777
+   },
+   "toolchain": "53cb6aa46cd2138ec60dc102ea9496f9",
+   "torch": "2.10.0+rocm7.2.3.git1a270074",
+   "verdict": "win",
+   "wall_seconds": 6.3
+  },
+  {
+   "accepted": "pp:x128_es0_sk4_g16_c32",
+   "arch": "gfx950",
+   "baselines": {
+    "torch": {
+     "ms": 0.041237,
+     "ratio": [
+      0.998202,
+      0.990625,
+      1.017147
+     ],
+     "route_ratio": [
+      0.725531,
+      0.722258,
+      0.737566
+     ]
+    }
+   },
+   "best_baseline": "torch",
+   "by": "hk.tune",
+   "champion": "pp:x128_es0_sk4_g16_c32",
+   "champion_spec": [
+    "pp",
+    {
+     "block_n": 128,
+     "early_store": false,
+     "splits": 4,
+     "wgm": 16,
+     "xcd_chunk": 32
+    }
+   ],
+   "compile_seconds": 128.7,
+   "counts": {
+    "failed": 0,
+    "generated": 1280,
+    "legal": 1290,
+    "loaded": 215,
+    "pool": 67,
+    "refused": 0,
+    "restarts": 2,
+    "timed": 215,
+    "wrong": 0
+   },
+   "date": "2026-10-22",
+   "decision": {
+    "band": [
+     1.3667,
+     1.3799
+    ],
+    "bar": 0.01182,
+    "gain": 0.37813,
+    "ratios": [
+     1.3781,
+     1.3791,
+     1.3667,
+     1.3799,
+     1.3694
+    ],
+    "sets": 5,
+    "sigma": 0.00591,
+    "verdict": "win"
+   },
+   "device": "AMD Radeon Graphics",
+   "gpu_seconds": 6.78,
+   "hip": "7.2.53211",
+   "hipcc": "HIP version: 7.2.53211-c2d9476115",
+   "k": 7168,
+   "load_seconds": 0.7,
+   "m": 512,
+   "ms": 0.041309,
+   "n": 4096,
+   "phases": {
+    "check": 0.86,
+    "decide": 2.65,
+    "local": 2.29,
+    "rungs": 0.98
+   },
+   "profile": {},
+   "record": "",
+   "route": "dp64",
+   "route_ms": 0.056649,
+   "route_spec": [
+    "dp",
+    {
+     "block_m": 64,
+     "xcd_chunk": 0
+    }
+   ],
+   "timed": {
+    "pp:x128_es0_sk4_c16": 0.040836,
+    "pp:x128_es0_sk4_g16": 0.041006,
+    "pp:x128_es0_sk4_g16_c32": 0.041022,
+    "pp:x128_es0_sk4_g4": 0.0411,
+    "pp:x128_es0_sk4_g4_c16": 0.040855,
+    "pp:x128_es0_sk4_g4_c32": 0.041033,
+    "pp:x128_es0_sp0_sk4": 0.040882,
+    "pp:x128_es0_sp0_sk4_c16": 0.041126,
+    "pp:x128_es0_sp0_sk4_c32": 0.041015,
+    "pp:x128_sk4_w4_x2_c32": 0.04111,
+    "pp:x128_sk4_w4_x2_g16": 0.040992,
+    "pp:x128_sk4_w4_x2_g4": 0.040897
+   },
+   "toolchain": "53cb6aa46cd2138ec60dc102ea9496f9",
+   "torch": "2.10.0+rocm7.2.3.git1a270074",
+   "verdict": "win",
+   "wall_seconds": 18.1
+  },
+  {
+   "accepted": "pp:lb0_sk4_g16",
+   "arch": "gfx950",
+   "baselines": {
+    "torch": {
+     "ms": 0.080075,
+     "ratio": [
+      1.243967,
+      1.233773,
+      1.252146
+     ],
+     "route_ratio": [
+      0.779885,
+      0.773618,
+      0.783623
+     ]
+    }
+   },
+   "best_baseline": "torch",
+   "by": "hk.tune",
+   "champion": "pp:lb0_sk4_g16",
+   "champion_spec": [
+    "pp",
+    {
+     "late_b": false,
+     "splits": 4,
+     "wgm": 16
+    }
+   ],
+   "compile_seconds": 231.7,
+   "counts": {
+    "failed": 0,
+    "generated": 1152,
+    "legal": 1163,
+    "loaded": 188,
+    "pool": 69,
+    "refused": 0,
+    "restarts": 2,
+    "timed": 188,
+    "wrong": 0
+   },
+   "date": "2026-10-22",
+   "decision": {
+    "band": [
+     1.5875,
+     1.6117
+    ],
+    "bar": 0.02251,
+    "gain": 0.59481,
+    "ratios": [
+     1.6117,
+     1.5981,
+     1.5875,
+     1.5932,
+     1.5948
+    ],
+    "sets": 5,
+    "sigma": 0.01125,
+    "verdict": "win"
+   },
+   "device": "AMD Radeon Graphics",
+   "gpu_seconds": 2.67,
+   "hip": "7.2.53211",
+   "hipcc": "HIP version: 7.2.53211-c2d9476115",
+   "k": 8192,
+   "load_seconds": 0.4,
+   "m": 512,
+   "ms": 0.064446,
+   "n": 7168,
+   "phases": {
+    "check": 0.02,
+    "decide": 0.21,
+    "local": 1.64,
+    "rungs": 0.8
+   },
+   "profile": {},
+   "record": "",
+   "route": "dp64",
+   "route_ms": 0.102995,
+   "route_spec": [
+    "dp",
+    {
+     "block_m": 64,
+     "xcd_chunk": 0
+    }
+   ],
+   "timed": {
+    "pp:es0_lb0_sk4": 0.064678,
+    "pp:es0_lb0_sk4_c32": 0.064735,
+    "pp:es0_lb0_sk4_g16": 0.064666,
+    "pp:es0_lb0_sk4_g4": 0.064818,
+    "pp:lb0_sk4": 0.064409,
+    "pp:lb0_sk4_c16": 0.064432,
+    "pp:lb0_sk4_g16": 0.064043,
+    "pp:lb0_sk4_g16_c32": 0.064352,
+    "pp:lb0_sk4_g4": 0.065766,
+    "pp:lb0_sk4_g4_c32": 0.064666,
+    "pp:sk4_g16_c32": 0.065429,
+    "pp:sp0_sk4_c32": 0.065775
+   },
+   "toolchain": "53cb6aa46cd2138ec60dc102ea9496f9",
+   "torch": "2.10.0+rocm7.2.3.git1a270074",
+   "verdict": "win",
+   "wall_seconds": 11.4
+  },
+  {
+   "accepted": "dp:s4_g4",
+   "arch": "gfx950",
+   "baselines": {
+    "torch": {
+     "ms": 0.043006,
+     "ratio": [
+      1.119912,
+      1.118733,
+      1.129404
+     ],
+     "route_ratio": [
+      0.826877,
+      0.823595,
+      0.829434
+     ]
+    }
+   },
+   "best_baseline": "torch",
+   "by": "hk.tune",
+   "champion": "dp:s4_g4",
+   "champion_spec": [
+    "dp",
+    {
+     "stages": 4,
+     "wgm": 4
+    }
+   ],
+   "compile_seconds": 330.7,
+   "counts": {
+    "failed": 0,
+    "generated": 1200,
+    "legal": 1212,
+    "loaded": 196,
+    "pool": 69,
+    "refused": 0,
+    "restarts": 2,
+    "timed": 196,
+    "wrong": 0
+   },
+   "date": "2026-10-22",
+   "decision": {
+    "band": [
+     1.3523,
+     1.3659
+    ],
+    "bar": 0.01,
+    "gain": 0.35428,
+    "ratios": [
+     1.3543,
+     1.3542,
+     1.3523,
+     1.3659,
+     1.3584
+    ],
+    "sets": 5,
+    "sigma": 0.00475,
+    "verdict": "win"
+   },
+   "device": "AMD Radeon Graphics",
+   "gpu_seconds": 2.78,
+   "hip": "7.2.53211",
+   "hipcc": "HIP version: 7.2.53211-c2d9476115",
+   "k": 3584,
+   "load_seconds": 0.4,
+   "m": 512,
+   "ms": 0.038406,
+   "n": 8192,
+   "phases": {
+    "check": 0.01,
+    "decide": 0.23,
+    "local": 1.57,
+    "rungs": 0.97
+   },
+   "profile": {},
+   "record": "",
+   "route": "dp64",
+   "route_ms": 0.052043,
+   "route_spec": [
+    "dp",
+    {
+     "block_m": 64,
+     "xcd_chunk": 0
+    }
+   ],
+   "timed": {
+    "dp:pl0_s4_c0": 0.038437,
+    "dp:pl0_s4_g4_c0": 0.038426,
+    "dp:pl0_s4_w1_x4_c0": 0.038437,
+    "dp:s4_c16": 0.038245,
+    "dp:s4_g16": 0.038443,
+    "dp:s4_g4": 0.038219,
+    "dp:s4_g4_c16": 0.03831,
+    "dp:s4_w1_x4": 0.03844,
+    "dp:s4_w1_x4_c16": 0.038435,
+    "dp:s4_w1_x4_g16_c16": 0.038407,
+    "dp:s4_w1_x4_g4": 0.038393,
+    "dp:s4_w1_x4_g4_c16": 0.03826
+   },
+   "toolchain": "53cb6aa46cd2138ec60dc102ea9496f9",
+   "torch": "2.10.0+rocm7.2.3.git1a270074",
+   "verdict": "win",
+   "wall_seconds": 10.4
+  },
+  {
+   "accepted": "pp:sk2_g4",
+   "arch": "gfx950",
+   "baselines": {
+    "torch": {
+     "ms": 0.134921,
+     "ratio": [
+      0.854718,
+      0.84476,
+      0.85953
+     ],
+     "route_ratio": [
+      0.507681,
+      0.503291,
+      0.51293
+     ]
+    }
+   },
+   "best_baseline": "torch",
+   "by": "hk.tune",
+   "champion": "pp:sk2_g4",
+   "champion_spec": [
+    "pp",
+    {
+     "splits": 2,
+     "wgm": 4
+    }
+   ],
+   "compile_seconds": 14.3,
+   "counts": {
+    "failed": 0,
+    "generated": 1280,
+    "legal": 1293,
+    "loaded": 127,
+    "pool": 73,
+    "refused": 0,
+    "restarts": 2,
+    "timed": 127,
+    "wrong": 0
+   },
+   "date": "2026-10-22",
+   "decision": {
+    "band": [
+     1.668,
+     1.6888
+    ],
+    "bar": 0.01817,
+    "gain": 0.67847,
+    "ratios": [
+     1.6785,
+     1.668,
+     1.6888,
+     1.6847,
+     1.6757
+    ],
+    "sets": 5,
+    "sigma": 0.00909,
+    "verdict": "win"
+   },
+   "device": "AMD Radeon Graphics",
+   "gpu_seconds": 6.5,
+   "hip": "7.2.53211",
+   "hipcc": "HIP version: 7.2.53211-c2d9476115",
+   "k": 14336,
+   "load_seconds": 0.3,
+   "m": 1024,
+   "ms": 0.158187,
+   "n": 5120,
+   "phases": {
+    "check": 0.97,
+    "decide": 2.92,
+    "local": 1.13,
+    "rungs": 1.48
+   },
+   "profile": {},
+   "record": "",
+   "route": "dp128",
+   "route_ms": 0.266342,
+   "route_spec": [
+    "dp",
+    {
+     "stages": 4
+    }
+   ],
+   "timed": {
+    "pp:es0_sk2": 0.158851,
+    "pp:lb0_sk2": 0.158798,
+    "pp:sk2_c32": 0.159851,
+    "pp:sk2_g16": 0.158344,
+    "pp:sk2_g4": 0.158114,
+    "pp:sk2_tc1": 0.162901,
+    "pp:sk8": 0.176651,
+    "pp:sk8_c32": 0.175818,
+    "pp:sk8_g16": 0.175721,
+    "pp:sk8_g4": 0.176011,
+    "pp:sp0_sk2": 0.160958,
+    "ppk2": 0.158778
+   },
+   "toolchain": "53cb6aa46cd2138ec60dc102ea9496f9",
+   "torch": "2.10.0+rocm7.2.3.git1a270074",
+   "verdict": "win",
+   "wall_seconds": 11.1
+  },
+  {
+   "accepted": "pp:128_g4_c32",
+   "arch": "gfx950",
+   "baselines": {
+    "torch": {
+     "ms": 0.02033,
+     "ratio": [
+      0.997138,
+      0.996647,
+      1.000902
+     ],
+     "route_ratio": [
+      0.815565,
+      0.814338,
+      0.817987
+     ]
+    }
+   },
+   "best_baseline": "torch",
+   "by": "hk.tune",
+   "champion": "pp:128_g4_c32",
+   "champion_spec": [
+    "pp",
+    {
+     "block_m": 128,
+     "wgm": 4,
+     "xcd_chunk": 32
+    }
+   ],
+   "compile_seconds": 66.2,
+   "counts": {
+    "failed": 0,
+    "generated": 1024,
+    "legal": 1038,
+    "loaded": 150,
+    "pool": 60,
+    "refused": 0,
+    "restarts": 2,
+    "timed": 150,
+    "wrong": 0
+   },
+   "date": "2026-10-22",
+   "decision": {
+    "band": [
+     1.2212,
+     1.2251
+    ],
+    "bar": 0.01979,
+    "gain": 0.22362,
+    "ratios": [
+     1.2251,
+     1.2212,
+     1.2241,
+     1.2236,
+     1.2226
+    ],
+    "sets": 5,
+    "sigma": 0.0099,
+    "verdict": "win"
+   },
+   "device": "AMD Radeon Graphics",
+   "gpu_seconds": 4.36,
+   "hip": "7.2.53211",
+   "hipcc": "HIP version: 7.2.53211-c2d9476115",
+   "k": 1024,
+   "load_seconds": 0.3,
+   "m": 2048,
+   "ms": 0.020386,
+   "n": 4096,
+   "phases": {
+    "check": 0.01,
+    "decide": 0.39,
+    "local": 2.32,
+    "rungs": 1.64
+   },
+   "profile": {},
+   "record": "",
+   "route": "dp128",
+   "route_ms": 0.024928,
+   "route_spec": [
+    "dp",
+    {
+     "stages": 4
+    }
+   ],
+   "timed": {
+    "pp128": 0.020859,
+    "pp:128_c32": 0.021255,
+    "pp:128_g16": 0.020862,
+    "pp:128_g4": 0.020877,
+    "pp:128_g4_c32": 0.020396,
+    "pp:x128": 0.020798,
+    "pp:x128_c32": 0.020543,
+    "pp:x128_es0": 0.02093,
+    "pp:x128_es0_g16": 0.021227,
+    "pp:x128_g16_c32": 0.020473,
+    "pp:x128_g4": 0.020411,
+    "pp:x128_sp0": 0.021274
+   },
+   "toolchain": "53cb6aa46cd2138ec60dc102ea9496f9",
+   "torch": "2.10.0+rocm7.2.3.git1a270074",
+   "verdict": "win",
+   "wall_seconds": 9.9
+  },
+  {
+   "accepted": "pp:g4_c16",
+   "arch": "gfx950",
+   "baselines": {
+    "torch": {
+     "ms": 0.067633,
+     "ratio": [
+      0.887242,
+      0.88523,
+      0.888905
+     ],
+     "route_ratio": [
+      0.616587,
+      0.61464,
+      0.618891
+     ]
+    }
+   },
+   "best_baseline": "torch",
+   "by": "hk.tune",
+   "champion": "pp:g4_c16",
+   "champion_spec": [
+    "pp",
+    {
+     "wgm": 4,
+     "xcd_chunk": 16
+    }
+   ],
+   "compile_seconds": 118.2,
+   "counts": {
+    "failed": 0,
+    "generated": 1440,
+    "legal": 1460,
+    "loaded": 164,
+    "pool": 79,
+    "refused": 0,
+    "restarts": 2,
+    "timed": 164,
+    "wrong": 0
+   },
+   "date": "2026-10-22",
+   "decision": {
+    "band": [
+     1.4304,
+     1.4462
+    ],
+    "bar": 0.01692,
+    "gain": 0.43767,
+    "ratios": [
+     1.4304,
+     1.4377,
+     1.4423,
+     1.4357,
+     1.4462
+    ],
+    "sets": 5,
+    "sigma": 0.00846,
+    "verdict": "win"
+   },
+   "device": "AMD Radeon Graphics",
+   "gpu_seconds": 5.82,
+   "hip": "7.2.53211",
+   "hipcc": "HIP version: 7.2.53211-c2d9476115",
+   "k": 4096,
+   "load_seconds": 0.2,
+   "m": 2048,
+   "ms": 0.076206,
+   "n": 4608,
+   "phases": {
+    "check": 0.03,
+    "decide": 0.46,
+    "local": 2.64,
+    "rungs": 2.69
+   },
+   "profile": {},
+   "record": "",
+   "route": "dp128",
+   "route_ms": 0.109681,
+   "route_spec": [
+    "dp",
+    {
+     "stages": 4
+    }
+   ],
+   "timed": {
+    "pp": 0.077819,
+    "pp:c16": 0.077889,
+    "pp:c32": 0.07783,
+    "pp:es0": 0.078229,
+    "pp:es0_g4": 0.077682,
+    "pp:es0_g4_c16": 0.076932,
+    "pp:es0_g4_c32": 0.077524,
+    "pp:g16": 0.077842,
+    "pp:g4": 0.077275,
+    "pp:g4_c16": 0.076214,
+    "pp:g4_c32": 0.077068,
+    "pp:lb0_g4_c16": 0.078143
+   },
+   "toolchain": "53cb6aa46cd2138ec60dc102ea9496f9",
+   "torch": "2.10.0+rocm7.2.3.git1a270074",
+   "verdict": "win",
+   "wall_seconds": 11.9
+  },
+  {
+   "accepted": "pp:g4_c32",
+   "arch": "gfx950",
+   "baselines": {
+    "torch": {
+     "ms": 0.172732,
+     "ratio": [
+      1.036945,
+      1.0337,
+      1.044459
+     ],
+     "route_ratio": [
+      0.631659,
+      0.604356,
+      0.647058
+     ]
+    }
+   },
+   "best_baseline": "torch",
+   "by": "hk.tune",
+   "champion": "pp:g4_c32",
+   "champion_spec": [
+    "pp",
+    {
+     "wgm": 4,
+     "xcd_chunk": 32
+    }
+   ],
+   "compile_seconds": 52.9,
+   "counts": {
+    "failed": 0,
+    "generated": 1152,
+    "legal": 1168,
+    "loaded": 195,
+    "pool": 74,
+    "refused": 0,
+    "restarts": 2,
+    "timed": 195,
+    "wrong": 0
+   },
+   "date": "2026-10-22",
+   "decision": {
+    "band": [
+     1.604,
+     1.7121
+    ],
+    "bar": 0.03704,
+    "gain": 0.65087,
+    "ratios": [
+     1.7121,
+     1.6535,
+     1.6509,
+     1.6053,
+     1.604
+    ],
+    "sets": 5,
+    "sigma": 0.01852,
+    "verdict": "win"
+   },
+   "device": "AMD Radeon Graphics",
+   "gpu_seconds": 8.5,
+   "hip": "7.2.53211",
+   "hipcc": "HIP version: 7.2.53211-c2d9476115",
+   "k": 8192,
+   "load_seconds": 0.6,
+   "m": 2048,
+   "ms": 0.166424,
+   "n": 7168,
+   "phases": {
+    "check": 0.97,
+    "decide": 3.02,
+    "local": 2.6,
+    "rungs": 1.91
+   },
+   "profile": {},
+   "record": "",
+   "route": "dp128",
+   "route_ms": 0.272933,
+   "route_spec": [
+    "dp",
+    {
+     "stages": 4
+    }
+   ],
+   "timed": {
+    "pp:es0_g4": 0.167104,
+    "pp:es0_g4_c16": 0.167175,
+    "pp:es0_g4_c32": 0.166635,
+    "pp:es0_lb0_g4": 0.166667,
+    "pp:es0_lb0_g4_c16": 0.166967,
+    "pp:es0_lb0_g4_c32": 0.166887,
+    "pp:g4": 0.16651,
+    "pp:g4_c32": 0.166564,
+    "pp:lb0_g4": 0.166861,
+    "pp:lb0_g4_c16": 0.167024,
+    "pp:lb0_g4_c32": 0.166838,
+    "u:pp:g4_c16": 0.166512
+   },
+   "toolchain": "53cb6aa46cd2138ec60dc102ea9496f9",
+   "torch": "2.10.0+rocm7.2.3.git1a270074",
+   "verdict": "win",
+   "wall_seconds": 16.8
+  },
+  {
+   "accepted": "u:pp:g4_c32",
+   "arch": "gfx950",
+   "baselines": {
+    "torch": {
+     "ms": 0.0832,
+     "ratio": [
+      0.979976,
+      0.978061,
+      0.982186
+     ],
+     "route_ratio": [
+      0.614763,
+      0.608885,
+      0.618028
+     ]
+    }
+   },
+   "best_baseline": "torch",
+   "by": "hk.tune",
+   "champion": "u:pp:g4_c32",
+   "champion_spec": [
+    "pp",
+    {
+     "wgm": 4,
+     "xcd_chunk": 32
+    }
+   ],
+   "compile_seconds": 60.7,
+   "counts": {
+    "failed": 0,
+    "generated": 1200,
+    "legal": 1217,
+    "loaded": 123,
+    "pool": 69,
+    "refused": 0,
+    "restarts": 2,
+    "timed": 123,
+    "wrong": 0
+   },
+   "date": "2026-10-22",
+   "decision": {
+    "band": [
+     1.5883,
+     1.6063
+    ],
+    "bar": 0.02613,
+    "gain": 0.59489,
+    "ratios": [
+     1.5983,
+     1.5892,
+     1.5883,
+     1.5949,
+     1.6063
+    ],
+    "sets": 5,
+    "sigma": 0.01306,
+    "verdict": "win"
+   },
+   "device": "AMD Radeon Graphics",
+   "gpu_seconds": 3.67,
+   "hip": "7.2.53211",
+   "hipcc": "HIP version: 7.2.53211-c2d9476115",
+   "k": 3584,
+   "load_seconds": 0.1,
+   "m": 2048,
+   "ms": 0.084901,
+   "n": 8192,
+   "phases": {
+    "check": 0.03,
+    "decide": 0.36,
+    "local": 1.31,
+    "rungs": 1.97
+   },
+   "profile": {},
+   "record": "",
+   "route": "dp128",
+   "route_ms": 0.135398,
+   "route_spec": [
+    "dp",
+    {
+     "stages": 4
+    }
+   ],
+   "timed": {
+    "pp:c16": 0.085825,
+    "pp:c32": 0.08496,
+    "pp:es0": 0.087355,
+    "pp:es0_g4_c16": 0.085483,
+    "pp:es0_g4_c32": 0.085736,
+    "pp:g16": 0.086552,
+    "pp:g4": 0.085469,
+    "pp:lb0": 0.08691,
+    "pp:lb0_g4_c16": 0.085902,
+    "pp:lb0_g4_c32": 0.085945,
+    "u:pp:g4_c16": 0.084926,
+    "u:pp:g4_c32": 0.084851
+   },
+   "toolchain": "53cb6aa46cd2138ec60dc102ea9496f9",
+   "torch": "2.10.0+rocm7.2.3.git1a270074",
+   "verdict": "win",
+   "wall_seconds": 5.9
+  },
+  {
+   "accepted": "pp:g4",
+   "arch": "gfx950",
+   "baselines": {
+    "torch": {
+     "ms": 0.184661,
+     "ratio": [
+      0.979875,
+      0.979145,
+      0.984139
+     ],
+     "route_ratio": [
+      0.611313,
+      0.610164,
+      0.618988
+     ]
+    }
+   },
+   "best_baseline": "torch",
+   "by": "hk.tune",
+   "champion": "pp:g4",
+   "champion_spec": [
+    "pp",
+    {
+     "wgm": 4
+    }
+   ],
+   "compile_seconds": 67.5,
+   "counts": {
+    "failed": 0,
+    "generated": 1024,
+    "legal": 1041,
+    "loaded": 133,
+    "pool": 71,
+    "refused": 0,
+    "restarts": 2,
+    "timed": 133,
+    "wrong": 0
+   },
+   "date": "2026-10-22",
+   "decision": {
+    "band": [
+     1.5899,
+     1.6047
+    ],
+    "bar": 0.02002,
+    "gain": 0.60205,
+    "ratios": [
+     1.5899,
+     1.602,
+     1.6047,
+     1.5996,
+     1.6047
+    ],
+    "sets": 5,
+    "sigma": 0.01001,
+    "verdict": "win"
+   },
+   "device": "AMD Radeon Graphics",
+   "gpu_seconds": 3.75,
+   "hip": "7.2.53211",
+   "hipcc": "HIP version: 7.2.53211-c2d9476115",
+   "k": 4096,
+   "load_seconds": 0.1,
+   "m": 2048,
+   "ms": 0.188248,
+   "n": 16384,
+   "phases": {
+    "check": 0.06,
+    "decide": 0.34,
+    "local": 1.43,
+    "rungs": 1.92
+   },
+   "profile": {},
+   "record": "",
+   "route": "dp128",
+   "route_ms": 0.301875,
+   "route_spec": [
+    "dp",
+    {
+     "stages": 4
+    }
+   ],
+   "timed": {
+    "pp": 0.192934,
+    "pp:c32": 0.191774,
+    "pp:es0_g4": 0.189741,
+    "pp:es0_g4_c16": 0.189898,
+    "pp:es0_g4_c32": 0.189744,
+    "pp:g16": 0.192688,
+    "pp:g4": 0.187924,
+    "pp:lb0_g4": 0.189891,
+    "pp:lb0_g4_c16": 0.189774,
+    "pp:lb0_g4_c32": 0.189651,
+    "u:pp:g4_c16": 0.188688,
+    "u:pp:g4_c32": 0.188511
+   },
+   "toolchain": "53cb6aa46cd2138ec60dc102ea9496f9",
+   "torch": "2.10.0+rocm7.2.3.git1a270074",
+   "verdict": "win",
+   "wall_seconds": 4.9
+  },
+  {
+   "accepted": "pp:g16_c32",
+   "arch": "gfx950",
+   "baselines": {
+    "torch": {
+     "ms": 0.795083,
+     "ratio": [
+      0.985958,
+      0.98539,
+      0.988004
+     ],
+     "route_ratio": [
+      0.549861,
+      0.545884,
+      0.551835
+     ]
+    }
+   },
+   "best_baseline": "torch",
+   "by": "hk.tune",
+   "champion": "pp:g16_c32",
+   "champion_spec": [
+    "pp",
+    {
+     "wgm": 16,
+     "xcd_chunk": 32
+    }
+   ],
+   "compile_seconds": 34.0,
+   "counts": {
+    "failed": 0,
+    "generated": 724,
+    "legal": 738,
+    "loaded": 177,
+    "pool": 62,
+    "refused": 0,
+    "restarts": 2,
+    "timed": 177,
+    "wrong": 0
+   },
+   "date": "2026-10-22",
+   "decision": {
+    "band": [
+     1.7892,
+     1.8051
+    ],
+    "bar": 0.01268,
+    "gain": 0.79213,
+    "ratios": [
+     1.7921,
+     1.794,
+     1.8051,
+     1.7892,
+     1.7904
+    ],
+    "sets": 5,
+    "sigma": 0.00634,
+    "verdict": "win"
+   },
+   "device": "AMD Radeon Graphics",
+   "gpu_seconds": 10.77,
+   "hip": "7.2.53211",
+   "hipcc": "HIP version: 7.2.53211-c2d9476115",
+   "k": 5120,
+   "load_seconds": 1.2,
+   "m": 2048,
+   "ms": 0.805823,
+   "n": 55296,
+   "phases": {
+    "check": 1.14,
+    "decide": 3.23,
+    "local": 3.91,
+    "rungs": 2.49
+   },
+   "profile": {},
+   "record": "",
+   "route": "dp128",
+   "route_ms": 1.444785,
+   "route_spec": [
+    "dp",
+    {
+     "stages": 4
+    }
+   ],
+   "timed": {
+    "pp:c16": 0.810282,
+    "pp:c32": 0.805663,
+    "pp:es0_c32": 0.809503,
+    "pp:es0_g16_c32": 0.810293,
+    "pp:g16": 0.809533,
+    "pp:g16_c32": 0.805643,
+    "pp:lb0_c32": 0.807493,
+    "pp:lb0_g16_c32": 0.805163,
+    "pp:lb0_g4": 0.808943,
+    "pp:lb0_g4_c32": 0.809673,
+    "u:pp:g4": 0.808643,
+    "u:pp:g4_c16": 0.811763
+   },
+   "toolchain": "53cb6aa46cd2138ec60dc102ea9496f9",
+   "torch": "2.10.0+rocm7.2.3.git1a270074",
+   "verdict": "win",
+   "wall_seconds": 17.5
+  },
+  {
+   "accepted": "cols:wave:pp:c32|dp:pl0_sk2_s4_x4_c16",
+   "arch": "gfx950",
+   "baselines": {
+    "torch": {
+     "ms": 0.134382,
+     "ratio": [
+      1.055932,
+      1.049358,
+      1.057809
+     ],
+     "route_ratio": [
+      0.84729,
+      0.841985,
+      0.856573
+     ]
+    }
+   },
+   "best_baseline": "torch",
+   "by": "hk.tune",
+   "champion": "cols:wave:pp:c32|dp:pl0_sk2_s4_x4_c16",
+   "champion_spec": [
+    "cols",
+    {
+     "cut": "wave",
+     "head": {
+      "family": "pp",
+      "xcd_chunk": 32
+     },
+     "tail": {
+      "family": "dp",
+      "pipelined": false,
+      "splits": 2,
+      "stages": 4,
+      "warps_n": 4,
+      "xcd_chunk": 16
+     }
+    }
+   ],
+   "compile_seconds": 72.0,
+   "counts": {
+    "failed": 0,
+    "generated": 1444,
+    "legal": 1466,
+    "loaded": 289,
+    "pool": 85,
+    "refused": 0,
+    "restarts": 2,
+    "timed": 289,
+    "wrong": 0
+   },
+   "date": "2026-10-22",
+   "decision": {
+    "band": [
+     1.2345,
+     1.2524
+    ],
+    "bar": 0.02252,
+    "gain": 0.24625,
+    "ratios": [
+     1.2462,
+     1.2524,
+     1.2345,
+     1.2349,
+     1.2475
+    ],
+    "sets": 5,
+    "sigma": 0.01126,
+    "verdict": "win"
+   },
+   "device": "AMD Radeon Graphics",
+   "gpu_seconds": 17.65,
+   "hip": "7.2.53211",
+   "hipcc": "HIP version: 7.2.53211-c2d9476115",
+   "k": 4096,
+   "load_seconds": 0.6,
+   "m": 4096,
+   "ms": 0.127264,
+   "n": 4608,
+   "phases": {
+    "check": 0.96,
+    "decide": 3.42,
+    "local": 8.98,
+    "rungs": 4.29
+   },
+   "profile": {},
+   "record": "",
+   "route": "pp",
+   "route_ms": 0.158603,
+   "route_spec": [
+    "pp",
+    {}
+   ],
+   "timed": {
+    "cols:wave:pp:c32|dp:pl0_sk2_s4_w1_x4_c16": 0.124886,
+    "cols:wave:pp:c32|dp:pl0_sk2_s4_w4_g4_c0": 0.12489,
+    "cols:wave:pp:c32|dp:sk2_s4_g4_c0": 0.124911,
+    "cols:wave:pp:c32|dp:sk2_s4_w1_x4_c16": 0.12504,
+    "cols:wave:pp:c32|dp:sk2_s4_w4_c16": 0.124881,
+    "cols:wave:pp:c32|dp:sk2_s4_w4_g4_c0": 0.124999,
+    "cols:wave:pp:c32|dp:sk2_s4_x4_g4_c0": 0.124936,
+    "cols:wave:pp:c32|dp:sp1_sk2_s4_w4_g4_c0": 0.124982,
+    "cols:wave:pp:c32|dp:sp1_sk2_s4_x4": 0.124963,
+    "cols:wave:pp:g4_c32|dp:sk2_s4_w4_g4_c0": 0.124744,
+    "cols:wave:pp:g4|dp:sk2_s4_w4_c0": 0.124984,
+    "cols:wave:pp:g4|dp:sk2_s4_x4_c0": 0.124989
+   },
+   "toolchain": "53cb6aa46cd2138ec60dc102ea9496f9",
+   "torch": "2.10.0+rocm7.2.3.git1a270074",
+   "verdict": "win",
+   "wall_seconds": 30.0
+  },
+  {
+   "accepted": "u:pp:g4",
+   "arch": "gfx950",
+   "baselines": {
+    "torch": {
+     "ms": 0.885693,
+     "ratio": [
+      0.954972,
+      0.953168,
+      0.959666
+     ],
+     "route_ratio": [
+      0.923026,
+      0.920389,
+      0.930335
+     ]
+    }
+   },
+   "best_baseline": "torch",
+   "by": "hk.tune",
+   "champion": "u:pp:g4",
+   "champion_spec": [
+    "pp",
+    {
+     "wgm": 4
+    }
+   ],
+   "compile_seconds": 0.3,
+   "counts": {
+    "failed": 0,
+    "generated": 360,
+    "legal": 372,
+    "loaded": 94,
+    "pool": 44,
+    "refused": 0,
+    "restarts": 2,
+    "timed": 94,
+    "wrong": 0
+   },
+   "date": "2026-10-22",
+   "decision": {
+    "band": [
+     1.0315,
+     1.0376
+    ],
+    "bar": 0.01581,
+    "gain": 0.03266,
+    "ratios": [
+     1.0315,
+     1.0327,
+     1.0376,
+     1.0321,
+     1.0351
+    ],
+    "sets": 5,
+    "sigma": 0.0079,
+    "verdict": "win"
+   },
+   "device": "AMD Radeon Graphics",
+   "gpu_seconds": 12.53,
+   "hip": "7.2.53211",
+   "hipcc": "HIP version: 7.2.53211-c2d9476115",
+   "k": 4608,
+   "load_seconds": 0.4,
+   "m": 8192,
+   "ms": 0.927741,
+   "n": 18432,
+   "phases": {
+    "check": 1.06,
+    "decide": 3.65,
+    "local": 3.99,
+    "rungs": 3.83
+   },
+   "profile": {},
+   "record": "",
+   "route": "pp",
+   "route_ms": 0.960277,
+   "route_spec": [
+    "pp",
+    {}
+   ],
+   "timed": {
+    "pp": 0.958137,
+    "pp:c16": 0.954845,
+    "pp:c32": 0.948325,
+    "pp:es0_g4": 0.932165,
+    "pp:es0_g4_c16": 0.932189,
+    "pp:es0_g4_c32": 0.931545,
+    "pp:lb0_g4": 0.934757,
+    "pp:lb0_g4_c16": 0.931097,
+    "pp:lb0_g4_c32": 0.929557,
+    "u:pp:g4": 0.924169,
+    "u:pp:g4_c16": 0.931369,
+    "u:pp:g4_c32": 0.928777
+   },
+   "toolchain": "53cb6aa46cd2138ec60dc102ea9496f9",
+   "torch": "2.10.0+rocm7.2.3.git1a270074",
+   "verdict": "win",
+   "wall_seconds": 15.1
+  }
+ ],
+ "routes": {
+  "16384x4096": {
+   "2048": "u:pp:g4"
+  },
+  "18432x4608": {
+   "8192": "u:pp:g4"
+  },
+  "3072x8192": {
+   "8": "u:dp:32_x48_l16x64_ntb_sk8_s4_x1_c0"
+  },
+  "4096x1024": {
+   "2048": "u:pp:128_g4_c32"
+  },
+  "4096x512": {
+   "128": "u:dp:32_x64_k128_s4_g16"
+  },
+  "4096x7168": {
+   "16": "u:dp:32_x64_l16x64_ntb_sk4_s4_c16",
+   "512": "u:pp:x128_es0_sk4_g16_c32"
+  },
+  "4608x36864": {
+   "128": "u:dp:x192_l16x64_ntb_sk8_w1_x4_g4_c0"
+  },
+  "4608x4096": {
+   "2048": "u:pp:g4_c16",
+   "4096": "u:cols:wave:pp:c32|dp:pl0_sk2_s4_x4_c16"
+  },
+  "4608x9216": {
+   "1": "u:dp:16_x64_l16x64_ntb_sk6_s4_w1_g4_c0"
+  },
+  "5120x14336": {
+   "1024": "u:pp:sk2_g4",
+   "128": "u:pp:128_l16x64_ntb_sk8_g16"
+  },
+  "5120x5120": {
+   "16": "u:dp:16_x32_k128_l16x64_ntb_sp1_s5_w1_g16_c16"
+  },
+  "55296x5120": {
+   "2048": "u:pp:g16_c32",
+   "8": "u:dp:16_x32_k128_l16x64_ntb_pl0_s5_w1_g16_c16"
+  },
+  "7168x8192": {
+   "16": "u:dp:16_x32_k128_l16x64_ntb_pl0_sp1_s5_w1_g16_c0",
+   "2048": "u:pp:g4_c32",
+   "512": "u:pp:lb0_sk4_g16"
+  },
+  "8192x3584": {
+   "2048": "u:pp:g4_c32",
+   "512": "u:dp:s4_g4"
+  }
+ }
+}
