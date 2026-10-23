@@ -33,6 +33,20 @@ def test_report_the_version_under_test(record_property):
     assert vllm.__version__
 
 
+def test_triton_is_the_one_this_vllm_was_measured_with(record_property):
+    # A Triton pip put over the pinned one (xgrammar's unversioned `triton`)
+    # passes every other test here and moves every Triton kernel's time:
+    # chapter 44. A vLLM with no measured stack is not held to one.
+    from hk.integration import stack
+
+    found = stack.installed()
+    record_property("triton", found["triton"])
+    if stack.MATCHED.get(stack.series(found["vllm"]) or "") is None:
+        pytest.skip(f"no measured stack for vLLM {found['vllm']}")
+    problems = stack.check(found)
+    assert not problems, stack.report(problems, "contract test", found)
+
+
 # ---------------------------------------------------------------- linear layers
 
 def test_dispatch_unquantized_gemm_takes_nothing_it_needs():

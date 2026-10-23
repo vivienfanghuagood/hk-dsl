@@ -37,10 +37,23 @@ def enabled() -> bool:
 def register() -> None:
     """The entry point vLLM calls. Never raises: a plugin that throws takes
     the engine's startup with it, and a kernel that did not get patched is a
-    slower server, not a broken one."""
+    slower server, not a broken one. The one exception is asked for:
+    `HK_STACK_CHECK=refuse` on a stack vLLM was not measured on."""
     if not enabled():
         return
     notes = []
+    # The stack first: a Triton other than the one this vLLM was measured
+    # with changes every Triton kernel's speed and nothing's correctness, so
+    # it is invisible unless something says so (hk.integration.stack). Warns
+    # by default; HK_STACK_CHECK=refuse makes it stop the engine.
+    from . import stack  # noqa: PLC0415
+
+    try:
+        notes.append(stack.enforce("vLLM plugin", default="warn"))
+    except stack.StackMismatch:
+        raise
+    except BaseException as e:  # noqa: BLE001
+        notes.append(f"stack not checked ({type(e).__name__}: {e})")
     # The decoder backend is a second opt-in, not something this one implies.
     # On ROCm it has to be registered *over* an existing enum member (see
     # vllm_backend.SLOT), and the member it overrides is the one ROCm picks by

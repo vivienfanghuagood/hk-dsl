@@ -216,6 +216,17 @@ def main(argv=None) -> int:
             Path(args.out).write_text(json.dumps(res, indent=2))
         return 0
 
+    # The stack, before an hour of engines: stock and every Triton arm move
+    # with the Triton, so a run on another one measures another baseline
+    # (hk.integration.stack). The children run under this same Python.
+    from . import stack
+
+    try:
+        print(stack.enforce("hk.integration ab", default="refuse"), flush=True)
+    except (stack.StackMismatch, ValueError) as e:
+        print(e, file=sys.stderr, flush=True)
+        return 2
+
     # Parent: one child per arm and round, because two backends cannot share
     # one engine and a backend chosen at construction cannot be swapped.
     base = [sys.executable, "-m", "hk.integration.ab", "--model", args.model,
@@ -324,7 +335,8 @@ def main(argv=None) -> int:
             "reps": args.reps, "arms": arms,
             "eager": os.environ.get("HK_EAGER", "1") == "1",
             "vllm_defaults": os.environ.get("HK_VLLM_DEFAULTS") == "1",
-            "failed": failed, "date": time.strftime("%Y-%m-%d %H:%M")}
+            "failed": failed, "date": time.strftime("%Y-%m-%d %H:%M"),
+            "stack": {k: v for k, v in stack.installed().items() if k != "python"}}
     if args.out:
         Path(args.out).write_text(json.dumps(
             {**best, "_startup": starts, "_rounds": rounds, "_tokens": toks,
