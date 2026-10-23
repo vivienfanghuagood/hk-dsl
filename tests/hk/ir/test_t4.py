@@ -245,3 +245,14 @@ def test_roofline_counts_only_experts_with_rows():
     assert stats.roofline_us(2.52e15, 1, "gfx950") == pytest.approx(1e6)
     assert stats.roofline_us(1, 8.0e12, "gfx950") == pytest.approx(1e6)
     assert stats.roofline_us(1, 1, "gfx942") is None
+
+
+def test_an_audit_retries_a_profile_that_lost_the_kernels():
+    hk_k = [dict(name="grouped_gemm_kernel(globals)", us=10.0)]
+    seq = iter([[], [], hk_k, hk_k])
+    a = score.audit_calls(lambda: next(seq))
+    assert a["ok"] and a["captures"] == 2
+    assert not score.audit_calls(lambda: [], tries=3)["ok"]
+    bad = [dict(name="Cijk_Alik_Bljk_BBS_BH", us=10.0)]
+    seq = iter([hk_k, bad])
+    assert not score.audit_calls(lambda: next(seq))["ok"]

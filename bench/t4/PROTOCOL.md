@@ -119,8 +119,18 @@ Tool calls = the transcript's tool_use count.
 After the stop, with the agent's session ended (the gfx1100 scoring copies the
 sealed shapes into the pod for the duration of the run):
 
+Score the submitted file in a **fresh checkout of the harness**, not in the
+agent's: the agent could edit anything in its checkout, `score.py` and
+`stats.py` included. The harness commit is the task commit, or a later one
+that changes only how faithfully the harness measures (say which in the
+record):
+
 ```bash
-S=$CK/bench/t4/solution.py
+HSHA=<the harness commit>
+SC=~/hk-t4score-$RUN
+~/hk-dx/t4/bin/t4-make-checkout $HSHA $SC
+cp ~/hk-dx/t4/runs/$RUN/submission/solution.py $SC/bench/t4/solution.py
+CK=$SC                                   # below, CK is the scoring checkout
 ~/hk-dx/t4/bin/t4seal gfx950 $CK --solution bench/t4/solution.py --label agent-$RUN-1 \
     --picks /t4sealed/results/triton_picks.json
 ~/hk-dx/t4/bin/t4seal gfx1100 $CK --solution bench/t4/solution.py --only 0:7 --label agent-$RUN-1a

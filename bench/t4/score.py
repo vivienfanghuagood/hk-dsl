@@ -132,6 +132,31 @@ def kernel_audit(kernels: List[Dict]) -> Dict:
                 kernels=len(kernels))
 
 
+#: Profiled calls an audit makes until one shows its kernels.
+AUDIT_TRIES = 5
+
+
+def audit_calls(profile_one, tries: int = AUDIT_TRIES) -> Dict:
+    """kernel_audit over up to `tries` profiled calls: torch.profiler on ROCm
+    sometimes records none of a call's kernels (on an MI355X, a lone kernel
+    in about a third of one-call profiles). The calls that recorded nothing
+    are retried; every call that recorded kernels must pass, and at least one
+    must have."""
+    seen = []
+    for _ in range(tries):
+        ks = profile_one()
+        if ks:
+            seen.append(kernel_audit(ks))
+            if not seen[-1]["ok"]:
+                break
+            if len(seen) == 2:
+                break
+    if not seen:
+        return dict(kernel_audit([]), captures=0)
+    bad = [x for x in seen if not x["ok"]]
+    return dict(bad[0] if bad else seen[0], captures=len(seen))
+
+
 def load_solution(path: str):
     p = Path(path).resolve()
     spec = importlib.util.spec_from_file_location(f"t4_solution_{p.stem}", p)
@@ -175,6 +200,9 @@ def _profile_call(torch, fn) -> List[Dict]:
     with profile(activities=[ProfilerActivity.CUDA]) as prof:
         fn()
         torch.cuda.synchronize()
+        # The ROCm tracer can lose a call's last kernel when the session
+        # stops right after it ends; host time after the sync keeps it.
+        time.sleep(0.005)
     out = []
     for ev in prof.events():
         if getattr(ev, "device_type", None) == DeviceType.CUDA:
@@ -317,8 +345,8 @@ def score_shape(torch, shape: Dict, arms: Dict[str, Callable], prepares: Dict[st
             if a not in ok:
                 continue
             try:
-                ks = _profile_call(torch, lambda a=a: ok[a](x, wp[a][0], offs, out))
-                audits[a] = kernel_audit(ks)
+                audits[a] = audit_calls(lambda a=a: _profile_call(
+                    torch, lambda: ok[a](x, wp[a][0], offs, out)))
             except Exception as ex:  # noqa: BLE001
                 audits[a] = dict(ok=False, error=f"{type(ex).__name__}: {str(ex)[:200]}")
         del x
