@@ -1405,13 +1405,20 @@ class MxScales(Value):
 def load_mx_scales(src: "Global", rows: int, kblocks: int, row0, kb0, *,
                    into: "MxScales" = None) -> MxScales:
     """Rows row0.. and 32-wide blocks kb0.. of an E8M0 scale tensor (uint8, one
-    byte a row and block: [R, K/32], the OCP MX layout) for an fp8 operand
-    tile of `rows` rows and `kblocks * 32` columns. gfx950 only."""
+    byte a row and block: [R, K/32], the OCP MX layout -- or packed, i32, as
+    hk.ops.mxfp8.pack_scales lays them out: one coalesced dword a lane per 64
+    rows and K step) for an fp8 operand tile of `rows` rows and `kblocks * 32`
+    columns. gfx950 only."""
     if not isinstance(src, Global):
         raise TypeError(f"load_mx_scales: src must be a tensor parameter, got {src!r}")
-    if src.dtype is not i8:
+    if src.dtype is i32:
+        if rows % 64 or kblocks % 4:
+            raise TypeError(f"load_mx_scales: packed (i32) scales come in 64-row groups "
+                            f"and 128-wide K steps; got {rows} rows, {kblocks} blocks")
+    elif src.dtype is not i8:
         raise TypeError(f"load_mx_scales: E8M0 scales are one byte each (an i8/uint8 "
-                        f"tensor), not {src.dtype.name}")
+                        f"tensor) or packed dwords (i32, hk.ops.mxfp8.pack_scales), "
+                        f"not {src.dtype.name}")
     if get_target(_t().arch).arch != "gfx950":
         raise TypeError(f"load_mx_scales: block-scaled MFMA is gfx950's; {_t().arch} has none")
     ty = MxScalesType(rows, kblocks)

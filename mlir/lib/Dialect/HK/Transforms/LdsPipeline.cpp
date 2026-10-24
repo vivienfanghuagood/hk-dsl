@@ -689,7 +689,9 @@ struct Walker {
         // issued before them keeps them in flight instead of retiring them.
         auto t = m.getResult() ? m.getResult().getType() : m.getDst().getType();
         auto mt = cast<MxScalesType>(t);
-        st.dma.push_back({Root{}, int64_t(mt.getRows() / 16) * (mt.getKblocks() / 4), op});
+        // Packed (i32) scales: one dword load per 64-row group and K step.
+        int64_t per = m.getSrc().getType().getElementType().isInteger(32) ? 64 : 16;
+        st.dma.push_back({Root{}, int64_t(mt.getRows() / per) * (mt.getKblocks() / 4), op});
         continue;
       }
       if (auto g = dyn_cast<GroupLoadOp>(op)) {

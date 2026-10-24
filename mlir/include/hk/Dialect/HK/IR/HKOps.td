@@ -840,7 +840,8 @@ def HK_LoadMxScalesOp : HK_Op<"load_mx_scales"> {
     Rows row0.. and 32-column blocks kb0.. of a scale tensor of one byte a
     row and block (uint8 [R, K/32], row-major, the OCP MX layout), into the
     per-lane registers `mma_ABt_mx` reads: base tile i's row (lane % 16) and
-    block (lane / 16) of each 128-wide K step.
+    block (lane / 16) of each 128-wide K step. An i32 source is the packed
+    layout (include/hk/cdna.cuh): one dword a lane per 64 rows and K step.
   }];
   let arguments = (ins Optional<HK_MxScalesType>:$dst, HK_GlobalType:$src, I32:$row0,
                        I32:$kb0);

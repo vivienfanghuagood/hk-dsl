@@ -14,7 +14,7 @@ step. M and N multiples of 128, K of 128.
 from __future__ import annotations
 
 from .. import dsl as hk
-from ..types import bf16, fp32, fp8e4m3, i8
+from ..types import bf16, fp32, fp8e4m3, i8, i32
 
 BM = BN = 128
 BK = 128
@@ -106,3 +106,173 @@ def gemm_pp(a, b, sa, sb, out=None, *, block_n: int = 256, **sched):
 def expand_block_scales(s, block_rows: int = 32):
     """A weight's 32x32-block E8M0 scales [N/32, K/32] as one row each [N, K/32]."""
     return s.repeat_interleave(block_rows, dim=0).contiguous()
+
+
+def pack_scales(s):
+    """E8M0 scales [R, K/32] (uint8, one a row and block) in the packed layout
+    hk.load_mx_scales reads from an i32 tensor: [ceil(R/64), K/128 * 64] int32,
+    row g, column st*64 + l the dword lane l takes for rows g*64.. and K step st
+    -- byte i the scale of row g*64 + i*16 + l%16, block st*4 + l//16. Rows past
+    R are unit scales (127). K a multiple of 128."""
+    import torch  # noqa: PLC0415
+
+    r, kb = s.shape
+    if kb % 4:
+        raise ValueError(f"pack_scales: K/32={kb} blocks, a multiple of 4 (K of 128)")
+    g = -(-r // 64)
+    if g * 64 != r:
+        s = torch.cat([s, s.new_full((g * 64 - r, kb), 127)])
+    t = s.view(torch.uint8).reshape(g, 4, 16, kb // 4, 4)      # [g, i, r16, st, kb4]
+    t = t.permute(0, 3, 4, 2, 1).contiguous()                  # [g, st, kb4, r16, i]
+    return t.view(g, kb // 4 * 64, 4).view(torch.int32).view(g, kb // 4 * 64)
+
+
+def mx4w_kernel(name: str = "mxfp8_4w", *, block_m: int = 256, block_n: int = 256,
+                stages: int = 2, wgm: int = 8, xcd_chunk: int = 32, setprio: bool = False):
+    """MXFP8 GEMM, four warps (2 x 2) of block_m/2 x block_n/2 each, so one
+    wave a SIMD and the whole register file a lane (VGPRs and AGPRs: the
+    accumulators of a 128 x 128 warp tile are 256 of them). K-tiles of 128 in
+    a ring of `stages` LDS buffers, `stages - 1` ahead; a warp's tile is four
+    quadrants, its operands read a half at a time under the previous
+    quadrant's MFMAs. Scales packed (`pack_scales`), one dword a lane per 64
+    rows and K-tile, loaded two K-tiles ahead. Takes (a, b, sa, sb, c): a (M,
+    K) and b (N, K) fp8 e4m3, sa / sb their packed scales, c (M, N) bf16; N a
+    multiple of block_n, K of 128."""
+    from .gemm_cdna import NUM_XCDS  # noqa: PLC0415
+
+    BKs = 128
+    qm, qn = block_m // 4, block_n // 4          # a quadrant of a warp's tile
+    if qm % 64 or qn % 64:
+        raise ValueError(f"{block_m}x{block_n}: quadrants of 64-row multiples (packed scales)")
+    st_a = hk.ST(fp8e4m3, block_m, BKs)
+    st_b = hk.ST(fp8e4m3, block_n, BKs)
+    t_a = hk.RT(fp8e4m3, qm, BKs, "row")
+    t_b = hk.RT(fp8e4m3, qn, BKs, "row")
+    t_c = hk.RT(fp32, qm, qn, "col")
+    body_len = stages * 2 // (2 if stages % 2 == 0 else 1)
+
+    def body(a: hk.Tensor[fp8e4m3], b: hk.Tensor[fp8e4m3], sa: hk.Tensor[i32],
+             sb: hk.Tensor[i32], c: hk.Tensor[bf16], *, WGM: hk.Constexpr = wgm):
+        g = hk.group(WARPS)
+        As = hk.lds.alloc(st_a, count=stages, name="As")
+        Bs = hk.lds.alloc(st_b, count=stages, name="Bs")
+        A = [hk.zeros(t_a) for _ in range(2)]
+        B = [hk.zeros(t_b) for _ in range(2)]
+        C = [[hk.zeros(t_c) for _ in range(2)] for _ in range(2)]
+
+        M = a.rows
+        m_blocks = hk.cdiv(M, block_m)
+        n_blocks = b.rows // block_n
+        blocks = m_blocks * n_blocks
+        wgid = hk.arch.block_idx.x
+        per_round = NUM_XCDS * xcd_chunk
+        limit = (blocks // per_round) * per_round
+        local = wgid // NUM_XCDS
+        moved = ((local // xcd_chunk) * per_round + (wgid % NUM_XCDS) * xcd_chunk
+                 + local % xcd_chunk)
+        stays = hk.min(hk.max(wgid - limit, 0), 1)
+        wgid = moved + stays * (wgid - moved)
+        per_group = WGM * n_blocks
+        first_m = (wgid // per_group) * WGM
+        group_m = hk.min(m_blocks - first_m, WGM)
+        m0 = (first_m + (wgid % per_group) % group_m) * block_m
+        n0 = ((wgid % per_group) // group_m) * block_n
+
+        wid = hk.arch.warp_id()
+        wr, wc = wid // 2, wid % 2
+        k_tiles = a.cols // BKs
+        n_tiles = body_len * hk.cdiv(k_tiles, body_len)
+
+        def rows_left(t, rows):
+            return (1 - hk.min(hk.max(t - k_tiles + 1, 0), 1)) * rows
+
+        def copy(t, u, pad=True):
+            g.load(As[u], a.at[m0, t * BKs], wait=False,
+                   rows=rows_left(t, block_m) if pad else None)
+            g.load(Bs[u], b.at[n0, t * BKs], wait=False,
+                   rows=rows_left(t, block_n) if pad else None)
+
+        S = [None, None]
+
+        def load_scales(q, t):
+            old = S[q]
+            S[q] = ([hk.load_mx_scales(sa, qm, 4, m0 + wr * 2 * qm + i * qm, t * 4,
+                                       into=old[0][i] if old else None) for i in range(2)],
+                    [hk.load_mx_scales(sb, qn, 4, n0 + wc * 2 * qn + j * qn, t * 4,
+                                       into=old[1][j] if old else None) for j in range(2)])
+
+        def read_a(u, i):
+            As[u].subtile(qm, BKs, 2 * wr + i, 0).load(t_a, wait=False, into=A[i])
+
+        def read_b(u, j):
+            Bs[u].subtile(qn, BKs, 2 * wc + j, 0).load(t_b, wait=False, into=B[j])
+
+        def mma(q, i, j):
+            if setprio:
+                hk.arch.setprio(1)
+            hk.mma_ABt_mx(A[i], B[j], C[i][j], S[q][0][i], S[q][1][j], into=C[i][j])
+            if setprio:
+                hk.arch.setprio(0)
+
+        # The prologue issues what the loop's steady state has in flight at
+        # each wait: a K-tile's copy, then the scales of the K-tile after it.
+        if stages != 2:
+            raise ValueError("stages=2: the prologue mirrors the loop's vm queue for two")
+        load_scales(0, 0)
+        copy(0, 0, pad=False)
+        load_scales(1, 1)
+
+        def k_tile(t, j, copies):
+            u, q = j % stages, j % 2
+            g.wait_for(As[u], Bs[u])
+            hk.arch.barrier()
+            if copies:
+                copy(t + stages - 1, (u + stages - 1) % stages)
+            read_a(u, 0)
+            read_b(u, 0)
+            hk.lds.wait_for(A[0], B[0])
+            mma(q, 0, 0)
+            read_b(u, 1)
+            hk.lds.wait_for(B[1])
+            mma(q, 0, 1)
+            read_a(u, 1)
+            hk.lds.wait_for(A[1])
+            mma(q, 1, 1)
+            mma(q, 1, 0)
+            load_scales(q, t + 2)
+
+        for t0 in range(0, n_tiles - body_len, body_len):
+            for j in range(body_len):
+                k_tile(t0 + j, j, True)
+        t0 = n_tiles - body_len
+        for j in range(body_len):
+            k_tile(t0 + j, j, j + stages - 1 < body_len)
+
+        for i in range(2):
+            for j in range(2):
+                c[hk.elem_coord(0, 0, m0 + wr * 2 * qm + i * qm, n0 + wc * 2 * qn + j * qn)].store(
+                    C[i][j], bounded=True)
+
+    body.__name__ = name
+    return hk.kernel(body, arch="gfx950", warps=WARPS, name=name, max_vgprs=512,
+                     grid=lambda p: (hk.cdiv(p.a.rows, block_m) * (p.b.rows // block_n), 1, 1))
+
+
+_MX4W = {}
+
+
+def gemm_4w(a, b, sa_packed, sb_packed, out=None, **sched):
+    """bf16 (M, N) = (sa . a)(sb . b)^T on mx4w_kernel; sa_packed / sb_packed
+    from pack_scales."""
+    import torch  # noqa: PLC0415
+
+    key = tuple(sorted(sched.items()))
+    kern = _MX4W.get(key)
+    if kern is None:
+        name = "mxfp8_4w" + "".join(f"_{k_}{v}" for k_, v in key)
+        kern = _MX4W[key] = mx4w_kernel(name, **sched)
+    m = a.shape[0]
+    if out is None:
+        out = torch.empty((m, b.shape[0]), device=a.device, dtype=torch.bfloat16)
+    kern(a, b, sa_packed, sb_packed, out)
+    return out

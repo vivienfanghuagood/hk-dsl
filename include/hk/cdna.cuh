@@ -1298,10 +1298,33 @@ template<int R, int KB> struct hk_mxs {
     uint32_t reg[regs][steps];
 };
 
-/** Scales of rows row0.. and blocks kb0.. of an E8M0 tensor [rows, K/32] (one byte each). */
+/**
+ * Scales of rows row0.. and blocks kb0.. of an E8M0 tensor: [rows, K/32] uint8
+ * (one byte each, the OCP MX layout), or the packed layout (int32): row g of
+ * [rows/64, K/128 * 64] holds, at column s*64 + l, the dword lane l takes for
+ * the 64 rows g*64.. and the 128-wide K step s -- byte i the scale of row
+ * g*64 + i*16 + l%16 and block s*4 + l/16 -- so a lane reads one dword per four
+ * base tiles and K step, coalesced (row0 % 64 == 0, kb0 % 4 == 0).
+ */
 template<int R, int KB, ducks::gl::all GL>
 __device__ inline static void load_mx_scales(hk_mxs<R, KB> &dst, const GL &src, int row0, int kb0) {
-    static_assert(sizeof(typename GL::dtype) == 1, "E8M0 scales are one byte");
+    static_assert(sizeof(typename GL::dtype) == 1 || sizeof(typename GL::dtype) == 4,
+                  "E8M0 scales: one byte each, or packed dwords");
+    if constexpr (sizeof(typename GL::dtype) == 4) {
+        using M = hk_mxs<R, KB>;
+        static_assert(R % 64 == 0, "packed scales: whole 64-row groups");
+        const int lane = laneid();
+        const uint32_t rs = uint32_t(src.template stride<2>()) * 4u;
+        const uint8_t *base = reinterpret_cast<const uint8_t *>(src.raw_ptr);
+        const detail::hk_i32x4 r = detail::hk_srsrc(base, uint64_t(src.template shape<2>()) * rs);
+        const uint32_t off0 = uint32_t(row0 / 64) * rs + uint32_t(kb0 / 4) * 256u + uint32_t(lane) * 4u;
+        #pragma unroll
+        for (int g = 0; g < M::regs; g++)
+            #pragma unroll
+            for (int s = 0; s < M::steps; s++)
+                dst.reg[g][s] = detail::hk_buf_ld32(r, off0 + uint32_t(g) * rs + uint32_t(s) * 256u, 0, 0);
+        return;
+    }
     using M = hk_mxs<R, KB>;
     const int lane = laneid();
     const uint32_t rs = uint32_t(src.template stride<2>());

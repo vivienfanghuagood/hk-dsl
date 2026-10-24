@@ -242,9 +242,16 @@ LogicalResult LoadMxScalesOp::verify() {
   if (failed(verifyDest(*this, getDst(), getResult())))
     return failure();
   auto et = getSrc().getType().getElementType();
+  if (et.isInteger(32)) {
+    auto t = cast<MxScalesType>(destType(getDst(), getResult()));
+    if (t.getRows() % 64)
+      return emitOpError("packed (i32) scales come in 64-row groups; ")
+             << t.getRows() << " rows";
+    return success();
+  }
   if (!et.isInteger(8))
     return emitOpError("reads E8M0 scales from a uint8 (i8) global, one byte a "
-                       "row and 32 columns");
+                       "row and 32 columns, or packed dwords (i32)");
   return success();
 }
 

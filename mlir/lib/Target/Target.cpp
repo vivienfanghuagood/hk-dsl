@@ -102,6 +102,8 @@ int TargetInfo::tileVgprs(unsigned bits, unsigned rows, unsigned cols) const {
   int elems = int(rows) * int(cols);
   if (bits == 16)
     return elems * s.operandVgprs / (s.m * s.k);
+  if (bits == 8)    // gfx950's fp8 operand: 16x128 in 8 VGPRs, unreplicated
+    return (elems + 4 * wave - 1) / (4 * wave);
   return elems * s.accumVgprs / (s.m * s.n);
 }
 
