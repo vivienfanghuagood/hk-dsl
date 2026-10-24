@@ -326,7 +326,8 @@ def stage1_ring_kernel(name: str, *, group_rows: int, mt: int = 4, pp: int = 4, 
 
 
 def stage2_kernel(name: str, *, group_rows: int, mt: int = 4, pp: int = 4, depth: int = 3,
-                  xcd: bool = True, warps: int = 4, pairs: bool = False, k: int = 0):
+                  xcd: bool = True, warps: int = 4, pairs: bool = False, k: int = 0,
+                  weighted: bool = False):
     """Stage 2 (K1): y = h_q . w2^T per sorted (token, expert) row -- h_q the MX FP8 stage-1 output,
     w2 AITER's shuffled MXFP4 down projection (shuffle_weight(is_guinterleave=True) without gate|up,
     shuffle_scale's 32-row layout) -- unweighted, bf16, in the sorted order; reduce() sums each
@@ -351,8 +352,10 @@ def stage2_kernel(name: str, *, group_rows: int, mt: int = 4, pp: int = 4, depth
     XGR = 1 << 24
     steps_static = k // KS
 
+    t_wv = hk.RT(fp32, TILE, R, "row")         # rows' weights: column 0 (the rest neighbours')
+
     def body(x: hk.Tensor[fp8e4m3], xs: hk.Tensor[i8], w: hk.Tensor[i8], ws: hk.Tensor[i8],
-             tiles: hk.Tensor[i32], y: hk.Tensor[bf16]):
+             tiles: hk.Tensor[i32], y: hk.Tensor[bf16], wv: hk.Tensor[fp32]):
         g = hk.group(warps)
         Xs = hk.lds.alloc(st_x, count=D, name="Xs")
         nblk = y.cols // (R * warps)
@@ -441,7 +444,12 @@ def stage2_kernel(name: str, *, group_rows: int, mt: int = 4, pp: int = 4, depth
             hk.arch.barrier()
             for i in range(mt):
                 if t0 + rnd * mt + i < t1:
-                    y[hk.elem_coord(0, 0, r0 + i * TILE, col0)].store(hk.transpose(Cs[i]))
+                    out = hk.transpose(Cs[i])
+                    if weighted:
+                        wt = wv[hk.elem_coord(0, 0, r0 + i * TILE, 0)].load(t_wv)
+                        wt.right_fill_(1, 0.0)
+                        out = out * wt.sum(axis=1)[:, None]
+                    y[hk.elem_coord(0, 0, r0 + i * TILE, col0)].store(out)
 
     body.__name__ = name
     return hk.kernel(body, arch="gfx950", warps=warps, name=name, max_vgprs=2048 // warps,
@@ -450,18 +458,20 @@ def stage2_kernel(name: str, *, group_rows: int, mt: int = 4, pp: int = 4, depth
 
 @functools.lru_cache(maxsize=None)
 def _stage2(group_rows: int, mt: int, pp: int, depth: int, warps: int = 4, pairs: bool = False,
-            k: int = 0):
+            k: int = 0, weighted: bool = False):
     return stage2_kernel(f"moe_a8w4_s2_gr{group_rows}_mt{mt}_pp{pp}_d{depth}_w{warps}"
-                         + (f"_p_k{k}" if pairs else ""), group_rows=group_rows, mt=mt, pp=pp,
-                         depth=depth, warps=warps, pairs=pairs, k=k)
+                         + (f"_p_k{k}" if pairs else "") + ("_wt" if weighted else ""),
+                         group_rows=group_rows, mt=mt, pp=pp, depth=depth, warps=warps,
+                         pairs=pairs, k=k, weighted=weighted)
 
 
 def stage2(hq, hs, w2, w2_scale, tiles, *, mt: int = 4, pp: int = 4, depth: int = 3, warps: int = 4,
-           pairs: bool = False):
+           pairs: bool = False, wrow=None):
     """y [P, D] bf16 (unweighted, sorted rows) for stage 1's h quantized by mx_quant (hq fp8 [P, I],
     hs uint8 [P, I/32]). w2 / w2_scale: AITER's shuffled uint8 views [E * D, I/2] and
     [E * D, ceil(I/256) * 8] (shuffle_scale pads K/32 to a multiple of 8). pairs: two-step scale
-    dwords (depth 2, mt even), hs then mxfp8.aiter_scales(hs) of 32-row-aligned rows; any K."""
+    dwords (depth 2, mt even), hs then mxfp8.aiter_scales(hs) of 32-row-aligned rows; any K.
+    wrow (row_weights): rows stored weighted, for reduce(weighted=False)."""
     import torch  # noqa: PLC0415
 
     e = tiles.numel() - 1
@@ -473,15 +483,17 @@ def stage2(hq, hs, w2, w2_scale, tiles, *, mt: int = 4, pp: int = 4, depth: int 
         raise ValueError(f"moe_a8w4.stage2: K={hq.shape[1]} not a multiple of the {128 * depth} the "
                          f"K loop is unrolled by (depth={depth})")
     y = torch.empty((hq.shape[0], d), device=hq.device, dtype=torch.bfloat16)
-    _stage2(d, mt, pp, depth, warps, pairs, hq.shape[1] if pairs else 0)(hq, hs.view(torch.int8), w2.view(torch.int8), w2_scale.view(torch.int8),
-                              tiles, y)
+    wt = wrow if wrow is not None else y.new_zeros((1, 1), dtype=torch.float32)
+    _stage2(d, mt, pp, depth, warps, pairs, hq.shape[1] if pairs else 0, wrow is not None)(
+        hq, hs.view(torch.int8), w2.view(torch.int8), w2_scale.view(torch.int8), tiles, y, wt)
     return y
 
 
-def reduce_kernel(name: str, *, cb: int = 128, topk: int = 6):
+def reduce_kernel(name: str, *, cb: int = 128, topk: int = 6, weighted: bool = True):
     """out [M, D] bf16: row t = sum over k < topk, in order, of w[r] * y[r], r = inv[k * M + t]
     (fp32), 16 tokens x `cb` columns a warp. inv: k-major [topk * M] int32, a (token, choice)'s
-    row of y; w: [P, 1] fp32, each row of y's routing weight (AITER's sorted_weights)."""
+    row of y; w: [P, 1] fp32, each row of y's routing weight (AITER's sorted_weights).
+    weighted=False: y's rows already carry their weights (stage2(wrow=)); w is not read."""
     import hk  # noqa: PLC0415
 
     ty_y = hk.RT(bf16, TILE, cb, "row")
@@ -495,10 +507,13 @@ def reduce_kernel(name: str, *, cb: int = 128, topk: int = 6):
         for k in range(topk):
             at = k * m + t0
             yt = y.gather(ty_y, inv, at, count=(k + 1) * m, col=c0)
-            # a row's weight is element 0 of its gathered row of the (P, 1) view
-            wt = w.gather(ty_w, inv, at, count=(k + 1) * m)
-            wt.right_fill_(1, 0.0)
-            acc += yt.to(fp32) * wt.sum(axis=1)[:, None]
+            if weighted:
+                # a row's weight is element 0 of its gathered row of the (P, 1) view
+                wt = w.gather(ty_w, inv, at, count=(k + 1) * m)
+                wt.right_fill_(1, 0.0)
+                acc += yt.to(fp32) * wt.sum(axis=1)[:, None]
+            else:
+                acc += yt.to(fp32)
         out[hk.elem_coord(0, 0, t0, c0)].store(acc, bounded=True)
 
     body.__name__ = name
@@ -507,8 +522,9 @@ def reduce_kernel(name: str, *, cb: int = 128, topk: int = 6):
 
 
 @functools.lru_cache(maxsize=None)
-def _reduce(cb: int, topk: int):
-    return reduce_kernel(f"moe_a8w4_reduce_cb{cb}_k{topk}", cb=cb, topk=topk)
+def _reduce(cb: int, topk: int, weighted: bool = True):
+    return reduce_kernel(f"moe_a8w4_reduce_cb{cb}_k{topk}" + ("" if weighted else "_u"), cb=cb,
+                         topk=topk, weighted=weighted)
 
 
 def inverse(pairs, m: int, topk: int):
@@ -528,9 +544,10 @@ def row_weights(pairs, weights):
     return (w * (pairs >= 0)).view(-1, 1)
 
 
-def reduce(y, pairs, weights, m: int, *, inv=None, wrow=None, cb: int = 0):
+def reduce(y, pairs, weights, m: int, *, inv=None, wrow=None, cb: int = 0, weighted: bool = True):
     """out [m, D] bf16 = sum over each token's topk choices k (in order) of weights[t, k] * y[row of
-    (t, k)], in fp32 -- an hk kernel (D a multiple of 4 * cb; cb 0: the widest of 128..16)."""
+    (t, k)], in fp32 -- an hk kernel (D a multiple of 4 * cb; cb 0: the widest of 128..16).
+    weighted=False: y from stage2(wrow=), its rows already weighted."""
     import torch  # noqa: PLC0415
 
     topk = weights.shape[1]
@@ -541,7 +558,7 @@ def reduce(y, pairs, weights, m: int, *, inv=None, wrow=None, cb: int = 0):
     inv = inverse(pairs, m, topk) if inv is None else inv
     wrow = row_weights(pairs, weights) if wrow is None else wrow
     out = torch.empty((m, d), device=y.device, dtype=torch.bfloat16)
-    _reduce(cb, topk)(y, inv.view(1, -1), wrow, out)
+    _reduce(cb, topk, weighted)(y, inv.view(1, -1), wrow, out)
     return out
 
 

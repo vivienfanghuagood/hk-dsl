@@ -117,6 +117,11 @@ def test_stage2_and_reduce_match_dequant(mt, pp, depth, I):
     ref = torch.zeros(T, D, device=dev)
     ref.index_add_(0, pairs[live].long() // topk, yr * wt.reshape(-1)[pairs[live].long()].unsqueeze(1))
     assert ((out.float() - ref).abs().max() / ref.abs().max()).item() < 1e-2
+    # the weights applied in stage 2's epilogue instead, reduce only summing
+    yw = M.stage2(hq, hs, M.aiter_layout_w2(w).to(dev), M.aiter_layout_w2_scale(ws).to(dev), tiles,
+                  mt=mt, pp=pp, depth=depth, wrow=M.row_weights(pairs, wt))
+    out_w = M.reduce(yw, pairs, wt, T, weighted=False)
+    assert ((out_w.float() - ref).abs().max() / ref.abs().max()).item() < 1e-2
     assert torch.equal(out, M.reduce(M.stage2(hq, hs, M.aiter_layout_w2(w).to(dev),
                                               M.aiter_layout_w2_scale(ws).to(dev), tiles, mt=mt,
                                               pp=pp, depth=depth), pairs, wt, T))
