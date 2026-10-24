@@ -48,7 +48,7 @@ _PATCHED = None
 
 
 def op_for(head_dim: int, causal: bool, scale: Optional[float] = None,
-           n: int = 4096):
+           n: int = 4096, bnhd: bool = False):
     """The `torch.ops.hk.*` entry for one (head_dim, causal, scale, length).
 
     `n` only picks the tuned schedule (gfx1100's; gfx950's kernel has one),
@@ -56,13 +56,13 @@ def op_for(head_dim: int, causal: bool, scale: Optional[float] = None,
     this is on the launch path and `_kernel_for` is a couple of dict lookups
     that need not happen per call.
     """
-    key = (head_dim, causal, scale, _attn._tune_key(n))
+    key = (head_dim, causal, scale, _attn._tune_key(n), bnhd)
     op = _OPS.get(key)
     if op is None:
         from ..runtime.torch_ext import torch_op  # noqa: PLC0415
 
         op = _OPS[key] = torch_op(
-            _attn._kernel_for(head_dim, causal, scale, n), ns=NAMESPACE
+            _attn._kernel_for(head_dim, causal, scale, n, bnhd=bnhd), ns=NAMESPACE
         )
     return op
 
@@ -162,7 +162,7 @@ def attention(q, k, v, *, causal: bool = False, scale: Optional[float] = None,
 #: So the drop-in counts. `hk.integration.vllm.probe()` reads this, and the
 #: vLLM verification reads it before and after a generate to prove which branch
 #: a real server took rather than inferring it from a stopwatch.
-STATS = {"kernel": 0, "fallback": 0}
+STATS = {"kernel": 0, "fallback": 0, "bnhd": 0}
 
 #: Shapes that fell back, with the reason, so a run that was slower than hoped
 #: can say which call it was. Bounded: a serving process must not grow a dict
@@ -172,7 +172,7 @@ _FALLBACK_CAP = 64
 
 
 def reset_stats() -> None:
-    STATS["kernel"] = STATS["fallback"] = 0
+    STATS["kernel"] = STATS["fallback"] = STATS["bnhd"] = 0
     FALLBACKS.clear()
     _VERDICTS.clear()
 
@@ -205,14 +205,38 @@ def scaled_dot_product_attention(query, key, value, attn_mask=None,
         if _VERBOSE and why not in _SEEN:
             _SEEN.add(why)
             print(f"hk sdpa: falling back to torch -- {why}")
-        return F.scaled_dot_product_attention(
+        # torch's own function: once `patch()` has run, the module attribute
+        # is this one, and calling it would recurse until Python gives up.
+        torch_sdpa = _PATCHED if _PATCHED is not None else F.scaled_dot_product_attention
+        return torch_sdpa(
             query, key, value, attn_mask=attn_mask, dropout_p=dropout_p,
             is_causal=is_causal, scale=scale, enable_gqa=enable_gqa)
     STATS["kernel"] += 1
+    if _bnhd_views(query, key, value):
+        # (B, H, N, D) views of (B, N, H, D) memory -- what an engine that
+        # projects into (B, N, H, D) and transposes for SDPA passes. The
+        # kernel reads that memory where it is (no copies in, none out) and
+        # the output is handed back as the same kind of view.
+        b, h, n, d = query.shape
+        out = torch.empty((b, n, h, d), device=query.device, dtype=query.dtype)
+        flat = [t.transpose(1, 2).reshape(t.shape[0], 1, t.shape[2], -1)
+                for t in (query, key, value, out.transpose(1, 2))]
+        op_for(d, bool(is_causal), scale, n, bnhd=True)(*flat)
+        STATS["bnhd"] += 1
+        return out.transpose(1, 2)
     q, k, v = query.contiguous(), key.contiguous(), value.contiguous()
     out = torch.empty_like(q)
     op_for(q.shape[-1], bool(is_causal), scale, q.shape[-2])(q, k, v, out)
     return out
+
+
+def _bnhd_views(*ts) -> bool:
+    """Whether every tensor is a (B, H, N, D) view of contiguous (B, N, H, D)
+    memory, on gfx1100 (gfx950's kernel has no such variant)."""
+    if _attn._native_cdna():
+        return False
+    return all(t.dim() == 4 and not t.is_contiguous() and t.transpose(1, 2).is_contiguous()
+               for t in ts)
 
 
 def warm(shapes: List[Tuple[int, bool, int]] = (), *,
