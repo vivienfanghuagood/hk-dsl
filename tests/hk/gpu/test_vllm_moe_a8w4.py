@@ -59,3 +59,21 @@ def test_patched_fused_moe_routes_and_agrees():
     err = ((out.float() - ref.float()).abs().max() / ref.float().abs().max()).item()
     assert err < 3e-2, err
     assert torch.isfinite(small).all()
+
+
+def test_the_patched_fused_moe_keeps_aiters_signature():
+    """vLLM passes gate_mode / quant_dtype_a only if inspect.signature(fused_moe) lists them;
+    a bare (*args, **kwargs) wrapper made it drop gate_mode, and AITER then read the interleaved
+    weights as separated ones (a4w4, wrong) on the fallback path too."""
+    import inspect
+
+    import aiter.fused_moe as afm
+
+    want = inspect.signature(afm.fused_moe).parameters
+    P.apply_patch()
+    try:
+        got = inspect.signature(afm.fused_moe).parameters
+    finally:
+        P.revert()
+    assert list(got) == list(want)
+    assert "gate_mode" in got

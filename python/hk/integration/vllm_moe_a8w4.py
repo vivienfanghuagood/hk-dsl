@@ -95,11 +95,14 @@ def moe(hidden, w1, w2, topk_weight, topk_ids, w1_scale, w2_scale, swiglu_limit:
 
 
 def fused_moe(hidden_states, w1, w2, topk_weight, topk_ids, *args, **kwargs):
-    """Stands in for aiter.fused_moe.fused_moe."""
-    names = ("expert_mask", "activation", "quant_type", "doweight_stage1", "w1_scale", "w2_scale",
-             "a1_scale", "a2_scale")
-    kw = dict(zip(names, args))
-    kw.update(kwargs)
+    """Stands in for aiter.fused_moe.fused_moe, with its signature (apply_patch): vLLM probes
+    that signature for `gate_mode` / `quant_dtype_a` and silently drops them when absent -- AITER
+    then reads interleaved weights as separated ones, in the stock path as well."""
+    import inspect  # noqa: PLC0415
+
+    kw = inspect.signature(_ORIG).bind(hidden_states, w1, w2, topk_weight, topk_ids, *args,
+                                       **kwargs).arguments
+    kw.update(kw.pop("kwargs", {}))
     if _takes(hidden_states, w1, kw):
         PATCH.count("hk")
         return moe(hidden_states, w1, w2, topk_weight, topk_ids, kw["w1_scale"], kw["w2_scale"],
@@ -124,6 +127,7 @@ def apply_patch() -> str:
     import aiter.fused_moe as afm  # noqa: PLC0415
 
     _ORIG = afm.fused_moe
+    fused_moe.__wrapped__ = _ORIG        # inspect.signature(fused_moe) is AITER's
     afm.fused_moe = fused_moe
     names = _common.rebind(("vllm", "aiter"), _ORIG, fused_moe)
     return (f"moe_a8w4 -> hk for AITER a8w4 MoE calls of M >= {MIN_M} "
