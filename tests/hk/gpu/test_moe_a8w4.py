@@ -19,8 +19,10 @@ from hk.ops import moe_a8w4 as M  # noqa: E402
 E2M1 = torch.tensor([0, .5, 1, 1.5, 2, 3, 4, 6, -0., -.5, -1, -1.5, -2, -3, -4, -6])
 
 
-@pytest.mark.parametrize("nb,mt,warps", [(4, 2, 4), (2, 1, 4), (4, 3, 2)])
-def test_stage1_matches_dequant(nb, mt, warps):
+@pytest.mark.parametrize("nb,mt,warps,lds,pp", [(4, 2, 4, False, 1), (2, 1, 4, False, 1),
+                                                (4, 3, 2, False, 1), (4, 2, 4, True, 1),
+                                                (4, 4, 4, True, 2), (4, 3, 4, True, 2)])
+def test_stage1_matches_dequant(nb, mt, warps, lds, pp):
     torch.manual_seed(0)
     E, I, K, T, topk, L = 6, 128, 512, 77, 2, 10.0
     dev = "cuda"
@@ -30,7 +32,7 @@ def test_stage1_matches_dequant(nb, mt, warps):
     ids = torch.stack([torch.randperm(E - 1)[:topk] for _ in range(T)]).to(dev)   # expert E-1 empty
     xq, xs, tiles, pairs = M.prepare(hidden, ids, E)
     h = M.stage1(xq, xs, M.aiter_layout_w13(w).to(dev), M.aiter_layout_w13_scale(ws, E).to(dev),
-                 tiles, inter=I, nb=nb, mt=mt, warps=warps, limit=L)
+                 tiles, inter=I, nb=nb, mt=mt, warps=warps, limit=L, lds=lds, pp=pp)
     b = w.long()
     wd = torch.stack([E2M1[b & 15], E2M1[b >> 4]], -1).reshape(E, 2 * I, K)
     wd = (wd * torch.pow(2.0, ws.float() - 127).view(E, 2 * I, K // 32).repeat_interleave(32, -1)).to(dev)
@@ -45,4 +47,4 @@ def test_stage1_matches_dequant(nb, mt, warps):
     assert err < 1e-2, err
     assert torch.equal(h[live], M.stage1(xq, xs, M.aiter_layout_w13(w).to(dev),
                                          M.aiter_layout_w13_scale(ws, E).to(dev), tiles, inter=I,
-                                         nb=nb, mt=mt, warps=warps, limit=L)[live])
+                                         nb=nb, mt=mt, warps=warps, limit=L, lds=lds, pp=pp)[live])

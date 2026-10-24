@@ -20,6 +20,7 @@ from __future__ import annotations
 import functools
 
 from ..types import bf16, fp8e4m3, fp32, i8, i32
+from .gemm_cdna import NUM_XCDS
 
 TILE = 16
 
@@ -73,6 +74,95 @@ def stage1_kernel(name: str, *, group_rows: int, nb: int = 4, mt: int = 2, warps
     body.__name__ = name
     return hk.kernel(body, arch="gfx950", warps=warps, name=name,
                      grid=lambda p: (p.h.cols // (16 * nb), p.tiles.cols - 1, 1))
+
+
+def stage1_lds_kernel(name: str, *, group_rows: int, mt: int = 4, pp: int = 2,
+                      limit: float = 10.0, xcd: bool = True):
+    """Stage 1, version 3 (K1 c4). Four warps; warp w owns `pp` (gate, up) pairs, so a workgroup
+    covers 64 * pp columns of h and an expert takes I / (64 pp) workgroups, each reading the
+    expert's token tiles once a round. A round is `mt` 16-token tiles; each 256-wide K step
+    (two scaled-MFMA chunks: one AITER scale dword a lane holds both) brings the round's tiles
+    into LDS once a workgroup by LDS-DMA, and a warp's FP4 weight fragments and scale dwords into
+    registers, one step ahead in a second set (the loop is unrolled by two; K % 512 == 0)."""
+    import hk  # noqa: PLC0415
+
+    GR = group_rows
+    warps = 4
+    lim = float(limit)
+    KS = 256
+    R = 32 * pp
+    st_x = hk.ST(fp8e4m3, TILE * mt, KS)
+    t_w = hk.RT(fp8e4m3, R, KS)
+    t_x = hk.RT(fp8e4m3, TILE * mt, KS)
+    t_c = hk.RT(fp32, R, TILE * mt, "col")
+
+    def body(x: hk.Tensor[fp8e4m3], xs: hk.Tensor[i8], w: hk.Tensor[i8], ws: hk.Tensor[i8],
+             tiles: hk.Tensor[i32], h: hk.Tensor[bf16]):
+        g = hk.group(warps)
+        Xs = hk.lds.alloc(st_x, count=2, name="Xs")
+        nblk = h.cols // (TILE * pp * warps)
+        wg = hk.arch.block_idx.x
+        if xcd:
+            # gfx950 deals workgroups to its XCDs round robin (id % 8); renumber so that an
+            # expert's column blocks share one XCD, and with it the L2 its token rows sit in
+            total = (tiles.cols - 1) * nblk
+            moved = (wg % NUM_XCDS) * (total // NUM_XCDS) + wg // NUM_XCDS
+            whole = 1 - hk.min(total % NUM_XCDS, 1)        # a permutation only for whole rounds
+            wg = whole * moved + (1 - whole) * wg
+        blk = wg % nblk
+        e = wg // nblk
+        t0 = tiles[hk.elem_coord(0, 0, 0, e)].load_scalar()
+        t1 = tiles[hk.elem_coord(0, 0, 0, e + 1)].load_scalar()
+        wid = hk.arch.warp_id()
+        col0 = (blk * warps + wid) * pp * TILE
+        row_w = e * GR + col0                              # this warp's first gate block
+        steps = x.cols // KS
+        C = hk.zeros(t_c)
+        X = hk.zeros(t_x)
+        W = [hk.zeros(t_w), hk.zeros(t_w)]
+        S = [hk.load_mx_scales(ws, R, KS // 32, row_w, 0, layout="aiter_gate_up", group_rows=GR)
+             for _ in range(2)]
+        SX = [hk.load_mx_scales(xs, TILE * mt, KS // 32, 0, 0) for _ in range(2)]
+
+        def fetch(kc, r0, slot):
+            g.load(Xs[slot], x.at[r0, kc * KS], wait=False)
+            hk.load_fp4_frags(t_w, w, row_w, kc * (KS // 128), group_rows=GR, gate_up=True,
+                              into=W[slot])
+            hk.load_mx_scales(ws, R, KS // 32, row_w, kc * (KS // 32), layout="aiter_gate_up",
+                              group_rows=GR, into=S[slot])
+            hk.load_mx_scales(xs, TILE * mt, KS // 32, r0, kc * (KS // 32), into=SX[slot])
+
+        def step(kc, cur, r0, prefetch=True):
+            g.wait_for(Xs[cur])
+            hk.arch.barrier()
+            if prefetch:
+                fetch(kc + 1, r0, 1 - cur)
+            Xs[cur].load(t_x, wait=False, into=X)
+            hk.lds.wait_for(X)
+            hk.mma_ABt_mx(W[cur], X, C, S[cur], SX[cur], a_fmt="fp4", into=C)
+            hk.arch.sched_barrier()
+
+        for rnd in range(hk.cdiv(t1 - t0, mt)):
+            r0 = (t0 + rnd * mt) * TILE
+            C.zero_()
+            fetch(0, r0, 0)
+            for kk in range(steps // 2 - 1):
+                step(2 * kk, 0, r0)
+                step(2 * kk + 1, 1, r0)
+            step(steps - 2, 0, r0)
+            step(steps - 1, 1, r0, prefetch=False)
+            hk.arch.barrier()
+            for j in range(pp):
+                gt = C.subtile(TILE, 2 * j).minimum(lim)
+                up = C.subtile(TILE, 2 * j + 1).maximum(-lim).minimum(lim)
+                hv = hk.transpose(gt.silu() * up)          # [16 * mt tokens, 16 columns]
+                for i in range(mt):
+                    if t0 + rnd * mt + i < t1:
+                        h[hk.elem_coord(0, 0, r0 + i * TILE, col0 + j * TILE)].store(hv.subtile(TILE, i))
+
+    body.__name__ = name
+    return hk.kernel(body, arch="gfx950", warps=warps, name=name, max_vgprs=512,
+                     grid=lambda p: ((p.h.cols // (TILE * pp * warps)) * (p.tiles.cols - 1), 1, 1))
 
 
 @functools.lru_cache(maxsize=None)
@@ -135,13 +225,19 @@ def mx_quant(x):
     return q.view(m, k), (e + 127).clamp(0, 254).to(torch.uint8)
 
 
+@functools.lru_cache(maxsize=None)
+def _stage1_lds(group_rows: int, mt: int, limit: float, pp: int, xcd: bool = True):
+    return stage1_lds_kernel(f"moe_a8w4_s1l_gr{group_rows}_mt{mt}_pp{pp}_x{int(xcd)}",
+                             group_rows=group_rows, mt=mt, pp=pp, limit=limit, xcd=xcd)
+
+
 def stage1(xq, xs, w13, w13_scale, tiles, *, inter: int, nb: int = 4, mt: int = 2, warps: int = 4,
-           limit: float = 10.0):
+           limit: float = 10.0, lds: bool = False, pp: int = 2, xcd: bool = True):
     """h [P, inter] bf16 for prepare()'s sorted rows. w13 / w13_scale: AITER's shuffled uint8 views
     [E * 2 * inter, K/2] and [E * 2 * inter, K/32]."""
     import torch  # noqa: PLC0415
 
     h = torch.empty((xq.shape[0], inter), device=xq.device, dtype=torch.bfloat16)
-    _stage1(2 * inter, nb, mt, warps, float(limit))(
-        xq, xs.view(torch.int8), w13.view(torch.int8), w13_scale.view(torch.int8), tiles, h)
+    k = _stage1_lds(2 * inter, mt, float(limit), pp, xcd) if lds else _stage1(2 * inter, nb, mt, warps, float(limit))
+    k(xq, xs.view(torch.int8), w13.view(torch.int8), w13_scale.view(torch.int8), tiles, h)
     return h

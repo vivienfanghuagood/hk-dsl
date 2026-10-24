@@ -1373,19 +1373,34 @@ __device__ inline static void load_mx_scales_aiter(hk_mxs<R, KB> &dst, const GL 
         #pragma unroll
         for (int s = 0; s < M::steps; s++)
             dst.reg[g][s] = 0x7F7F7F7Fu;
+    // One dword a lane holds a 32-row block's two 16-row halves for two consecutive K steps
+    // (an even step and the odd one after it). Each is loaded once: per 32-row block (row0 32-row
+    // aligned, base tiles in pairs) and K-step pair -- (R/32) * ceil(steps/2) loads, the count
+    // hk-lds-pipeline assumes. A tile of two or more steps must start on an even step (kb0 % 8).
+    static_assert(R % 32 == 0, "AITER scales: whole 32-row blocks");
+    constexpr int G = (M::steps + 1) / 2;
     #pragma unroll
-    for (int i = 0; i < M::tiles; i++) {
-        int n1, npack;
-        if constexpr (LAYOUT == 1) { n1 = lr / 16 + i / 2; npack = i % 2; }
-        else { const int rr = lr + 16 * i; n1 = rr / 32; npack = (rr / 16) % 2; }
+    for (int blk = 0; blk < M::tiles / 2; blk++) {
+        int n1;
+        if constexpr (LAYOUT == 1) n1 = lr / 16 + blk;
+        else n1 = lr / 32 + blk;
+        uint32_t d[G];
         #pragma unroll
-        for (int s = 0; s < M::steps; s++) {
-            const int st = kb0 / 4 + s, k1 = st / 2, kpack = st % 2;
-            const uint32_t off = ebase + ((uint32_t(n1) * k1n + uint32_t(k1)) * 64u + uint32_t(lane)) * 4u;
-            const uint32_t d = detail::hk_buf_ld32(r, off, 0, 0);
-            const uint32_t b = (d >> (8 * (kpack * 2 + npack))) & 0xFFu;
-            const int sh = 8 * (i % 4);
-            dst.reg[i / 4][s] = (dst.reg[i / 4][s] & ~(0xFFu << sh)) | (b << sh);
+        for (int g = 0; g < G; g++) {
+            const uint32_t k1 = uint32_t(kb0 / 8 + g);
+            const uint32_t off = ebase + ((uint32_t(n1) * k1n + k1) * 64u + uint32_t(lane)) * 4u;
+            d[g] = detail::hk_buf_ld32(r, off, 0, 0);
+        }
+        #pragma unroll
+        for (int half = 0; half < 2; half++) {
+            const int i = 2 * blk + half;
+            #pragma unroll
+            for (int s = 0; s < M::steps; s++) {
+                const int kpack = (kb0 / 4 + s) % 2;
+                const uint32_t b = (d[s / 2] >> (8 * (kpack * 2 + half))) & 0xFFu;
+                const int sh = 8 * (i % 4);
+                dst.reg[i / 4][s] = (dst.reg[i / 4][s] & ~(0xFFu << sh)) | (b << sh);
+            }
         }
     }
 }
