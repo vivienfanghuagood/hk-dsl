@@ -426,8 +426,9 @@ __device__ inline hk_i32x4 hk_srsrc(const void *base, uint64_t bytes) {
  */
 template<typename RT> struct hk_frag {
     using T = typename base_types::packing<typename RT::dtype>::unpacked_type;
-    static_assert(base_types::packing<typename RT::dtype>::num() == 2,
-                  "hk's CDNA memory ops take bf16, fp16 and fp32 register tiles");
+    static_assert(base_types::packing<typename RT::dtype>::num() == 2 ||
+                  (base_types::packing<typename RT::dtype>::num() == 4 && sizeof(T) == 1),
+                  "hk's CDNA memory ops take bf16, fp16, fp32 and fp8 register tiles");
     static constexpr bool row = std::is_same_v<typename RT::layout, ducks::rt_layout::row>;
 #if defined(KITTENS_CDNA4)
     static constexpr int R = RT::base_tile_rows, C = RT::base_tile_cols;
@@ -560,11 +561,19 @@ __device__ inline void hk_load_tile(RT &dst, const GL &src, const COORD &idx, in
                     U run[F::S];
                     hk_buf_load_bytes<F::S * sizeof(U)>(
                         r, ((i * F::R + c.x) * rs + j * F::C + c.y) * sizeof(U), run);
-                    #pragma unroll
-                    for (int s = 0; s < F::S; s++)
-                        hk_set(dst, i, j, k * F::S + s, base_types::convertor<T, U>::convert(run[s]));
+                    if constexpr (sizeof(T) == 1) {
+                        // fp8: a lane's run is S consecutive bytes of its
+                        // packed registers, in element order.
+                        static_assert(std::is_same_v<T, U>, "an fp8 tile loads from the same fp8 type");
+                        __builtin_memcpy((char *)&dst.tiles[i][j].data[0] + k * F::S, run, F::S);
+                    } else {
+                        #pragma unroll
+                        for (int s = 0; s < F::S; s++)
+                            hk_set(dst, i, j, k * F::S + s, base_types::convertor<T, U>::convert(run[s]));
+                    }
                 }
             } else {
+                static_assert(sizeof(T) != 1, "an fp8 register tile loads in the row layout");
                 // A run goes down a column: one element per row.
                 #pragma unroll
                 for (int e = 0; e < F::E; e++) {

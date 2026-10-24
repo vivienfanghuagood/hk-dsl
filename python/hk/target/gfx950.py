@@ -58,6 +58,9 @@ GFX950 = Target(
         # unmirrored; C/D is 16x16 fp32, 4 a lane. include/cdna4 mma.cuh.
         "bf16": MmaShape(m=16, n=16, k=32, operand_vgprs=4, accum_vgprs=4),
         "fp16": MmaShape(m=16, n=16, k=32, operand_vgprs=4, accum_vgprs=4),
+        # v_mfma_f32_16x16x128_f8f6f4 (include/cdna4 mfma1616128, the scaled
+        # MFMA at unit scales): fp8 e4m3 A and B are 16x128, 32 bytes a lane.
+        "fp8e4m3": MmaShape(m=16, n=16, k=128, operand_vgprs=8, accum_vgprs=4),
     },
 
     has_global_to_lds_dma=True,
