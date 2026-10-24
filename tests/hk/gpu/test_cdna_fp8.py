@@ -49,3 +49,21 @@ def test_mx_scaled_mma_matches_the_scaled_fp32_product():
     bf = b.float() * torch.pow(2.0, sb.float() - 127).repeat_interleave(32, dim=1)
     ref = af @ bf.T
     assert ((c - ref).abs().max() / ref.abs().max()).item() < 1e-4
+
+
+@pytest.mark.parametrize("m,n,k", [(256, 256, 512), (512, 384, 1280)])
+def test_the_mxfp8_gemm_matches_the_scaled_product(m, n, k):
+    from hk.ops import mxfp8
+
+    g = torch.Generator(device="cuda").manual_seed(m + n + k)
+    a = torch.randn(m, k, device="cuda", generator=g).to(torch.float8_e4m3fn)
+    b = torch.randn(n, k, device="cuda", generator=g).to(torch.float8_e4m3fn)
+    sa = torch.randint(124, 131, (m, k // 32), device="cuda", dtype=torch.uint8, generator=g)
+    blocks = torch.randint(124, 131, (n // 32, k // 32), device="cuda", dtype=torch.uint8,
+                           generator=g)
+    sb = mxfp8.expand_block_scales(blocks)
+    out = mxfp8.gemm(a, b, sa, sb)
+    af = a.float() * torch.pow(2.0, sa.float() - 127).repeat_interleave(32, dim=1)
+    bf = b.float() * torch.pow(2.0, sb.float() - 127).repeat_interleave(32, dim=1)
+    ref = af @ bf.T
+    assert ((out.float() - ref).abs().max() / ref.abs().max()).item() < 5e-3
