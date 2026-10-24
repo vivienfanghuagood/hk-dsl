@@ -90,11 +90,11 @@ def reference(x, wq, ws, group: int, bias=None):
 
 
 def _scale(acc, ctx):
-    return acc * ctx.xs * ctx.ws
+    return acc * ctx.x_scale * ctx.w_scale
 
 
 def _scale_bias(acc, ctx):
-    return acc * ctx.xs * ctx.ws + ctx.bias
+    return acc * ctx.x_scale * ctx.w_scale + ctx.bias
 
 
 @functools.lru_cache(maxsize=None)
@@ -107,7 +107,7 @@ def _kernel(with_bias: bool):
 
     fn = _scale_bias if with_bias else _scale
     # shapes only classify the operands: xs one value a row of C, ws (and bias) one a column
-    ops = {"xs": torch.empty(2, 1, device="meta"), "ws": torch.empty(3, device="meta")}
+    ops = {"x_scale": torch.empty(2, 1, device="meta"), "w_scale": torch.empty(3, device="meta")}
     if with_bias:
         ops["bias"] = torch.empty(3, dtype=torch.bfloat16, device="meta")
     ep = T.bind(fn, ops, 2, 3, bf16)
@@ -128,7 +128,7 @@ def linear(x, wq, ws, group: int, bias=None, out=None):
     kern, ep = _kernel(bias is not None)
     if out is None:
         out = torch.empty(m, n, device=x.device, dtype=torch.bfloat16)
-    tensors = {"xs": xs.view(m, 1), "ws": ws.view(n)}
+    tensors = {"x_scale": xs.view(m, 1), "w_scale": ws.view(n)}
     if bias is not None:
         tensors["bias"] = bias.view(n).to(torch.bfloat16)
     prep = dict(T._preparer(ep, m))
