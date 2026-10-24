@@ -118,3 +118,18 @@ def test_stage2_and_reduce_match_dequant(mt, pp, depth, I):
     assert torch.equal(out, M.reduce(M.stage2(hq, hs, M.aiter_layout_w2(w).to(dev),
                                               M.aiter_layout_w2_scale(ws).to(dev), tiles, mt=mt,
                                               pp=pp, depth=depth), pairs, wt, T))
+
+
+@pytest.mark.parametrize("m,d,topk", [(77, 512, 2), (200, 1024, 6), (16, 512, 6)])
+def test_reduce_matches_torch(m, d, topk):
+    """hk reduce: each token's topk rows of y, weighted, summed in order -- as torch's fp32 sum."""
+    torch.manual_seed(2)
+    E = 9
+    ids = torch.stack([torch.randperm(E)[:topk] for _ in range(m)]).cuda()
+    hidden = torch.randn(m, 64, device="cuda", dtype=torch.bfloat16)
+    _, _, tiles, pairs = M.prepare(hidden, ids, E)
+    y = torch.randn(pairs.numel(), d, device="cuda").to(torch.bfloat16)
+    wt = torch.rand(m, topk, device="cuda")
+    got = M.reduce(y, pairs, wt, m)
+    ref = M.reduce_torch(y, pairs, wt, m)
+    assert ((got.float() - ref.float()).abs().max() / ref.float().abs().max()).item() < 1e-2
