@@ -368,6 +368,99 @@ def weight_view(w13, group_rows: int):
     return b.reshape(rows, -1).view(torch.float8_e4m3fn)
 
 
+def stage1_direct_kernel(name: str, *, group_rows: int, k: int, mt: int = 4, pp: int = 4,
+                         depth: int = 3, limit: float = 10.0):
+    """Stage 1, version 6 (K1 c7): no LDS. Every operand is a register load -- the warp's FP4 weight
+    fragments, its scale dwords, and the round's token fragments (all four warps read the same
+    ones; L2 serves the repeats) -- so loads retire in order on vmcnt and the compiler's own waits
+    are exact (no copy wait retiring later loads, c5). The K loop is unrolled at trace time (k is
+    the hidden size, a build constant) over a ring of `depth` operand sets, step s+depth-1 issued
+    before step s's MFMAs: the schedule AITER's FlyDSL stage 1 has (no loop, loads far ahead)."""
+    import hk  # noqa: PLC0415
+
+    GR = group_rows
+    warps = 4
+    lim = float(limit)
+    KS = 128
+    R = 32 * pp
+    steps = k // KS
+    assert k % KS == 0 and steps >= depth
+    t_w = hk.RT(fp8e4m3, R, KS)
+    t_x = hk.RT(fp8e4m3, TILE * mt, KS)
+    t_c = hk.RT(fp32, R, TILE * mt, "col")
+    D = depth
+
+    def body(x: hk.Tensor[fp8e4m3], xs: hk.Tensor[i8], w: hk.Tensor[i8], ws: hk.Tensor[i8],
+             tiles: hk.Tensor[i32], units: hk.Tensor[i32], h: hk.Tensor[bf16]):
+        # one round a workgroup (AITER's shape: no loop for the unrolled K steps' addresses to be
+        # hoisted out of): units[u] = (expert, first tile) of round u, from units_for()
+        nblk = h.cols // (TILE * pp * warps)
+        wg = hk.arch.block_idx.x
+        blk = wg % nblk
+        u = wg // nblk
+        e = units[hk.elem_coord(0, 0, u, 0)].load_scalar()
+        tb = units[hk.elem_coord(0, 0, u, 1)].load_scalar()
+        t1 = tiles[hk.elem_coord(0, 0, 0, e + 1)].load_scalar()
+        t0 = tb
+        wid = hk.arch.warp_id()
+        col0 = (blk * warps + wid) * pp * TILE
+        row_w = e * GR + col0
+        C = hk.zeros(t_c)
+
+        def fetch(kc, r0, q, W, X, S, SX):
+            # each set is made by its first load (no zero fill: a tile only loads write and MFMAs
+            # read may live in AGPRs, as AITER keeps its weights), loaded into afterwards
+            W[q] = hk.load_fp4_frags(t_w, w, row_w, kc, group_rows=GR, gate_up=True, into=W[q])
+            S[q] = hk.load_mx_scales(ws, R, 4, row_w, kc * 4, layout="aiter_gate_up",
+                                     group_rows=GR, into=S[q])
+            X[q] = x[hk.elem_coord(0, 0, r0, kc * KS)].load(t_x, into=X[q])
+            SX[q] = hk.load_mx_scales(xs, TILE * mt, 4, r0, kc * 4, into=SX[q])
+
+        for rnd in range(1):
+            r0 = t0 * TILE
+            W, X, S, SX = [None] * D, [None] * D, [None] * D, [None] * D
+            for s in range(D - 1):
+                fetch(s, r0, s, W, X, S, SX)
+            for s in range(steps):
+                if s + D - 1 < steps:
+                    fetch(s + D - 1, r0, (s + D - 1) % D, W, X, S, SX)
+                q = s % D
+                hk.mma_ABt_mx(W[q], X[q], C, S[q], SX[q], a_fmt="fp4", into=C)
+                # keep each step's loads where the ring puts them: hoisted across the unrolled
+                # steps they hold every set at once (spills)
+                hk.arch.sched_barrier()
+            for j in range(pp):
+                gt = C.subtile(TILE, 2 * j).minimum(lim)
+                up = C.subtile(TILE, 2 * j + 1).maximum(-lim).minimum(lim)
+                hv = hk.transpose(gt.silu() * up)
+                for i in range(mt):
+                    if t0 + i < t1:
+                        h[hk.elem_coord(0, 0, r0 + i * TILE, col0 + j * TILE)].store(hv.subtile(TILE, i))
+
+    body.__name__ = name
+    return hk.kernel(body, arch="gfx950", warps=warps, name=name, max_vgprs=512,
+                     grid=lambda p: ((p.h.cols // (TILE * pp * warps)) * p.units.rows, 1, 1))
+
+
+def units_for(tiles, mt: int):
+    """[n, 2] int32 (expert, first tile) for every round of `mt` 16-row tiles of every expert."""
+    import torch  # noqa: PLC0415
+
+    t = tiles.view(-1).long()
+    n = (t[1:] - t[:-1] + mt - 1) // mt
+    e = torch.repeat_interleave(torch.arange(n.numel(), device=t.device), n)
+    first = torch.repeat_interleave(t[:-1], n)
+    start = torch.repeat_interleave(torch.cumsum(n, 0) - n, n)
+    r = torch.arange(e.numel(), device=t.device) - start
+    return torch.stack([e, first + r * mt], 1).to(torch.int32).view(1, 1, -1, 2)
+
+
+@functools.lru_cache(maxsize=None)
+def _stage1_direct(group_rows: int, k: int, mt: int, pp: int, depth: int, limit: float):
+    return stage1_direct_kernel(f"moe_a8w4_s1x_gr{group_rows}_k{k}_mt{mt}_pp{pp}_d{depth}",
+                                group_rows=group_rows, k=k, mt=mt, pp=pp, depth=depth, limit=limit)
+
+
 @functools.lru_cache(maxsize=None)
 def _stage1_ring(group_rows: int, mt: int, pp: int, depth: int, limit: float):
     return stage1_ring_kernel(f"moe_a8w4_s1r_gr{group_rows}_mt{mt}_pp{pp}_d{depth}",
@@ -442,12 +535,17 @@ def _stage1_lds(group_rows: int, mt: int, limit: float, pp: int, xcd: bool = Tru
 
 def stage1(xq, xs, w13, w13_scale, tiles, *, inter: int, nb: int = 4, mt: int = 2, warps: int = 4,
            limit: float = 10.0, lds: bool = False, pp: int = 2, xcd: bool = True, depth: int = 0,
-           dma: bool = False):
+           dma: bool = False, direct: bool = False):
     """h [P, inter] bf16 for prepare()'s sorted rows. w13 / w13_scale: AITER's shuffled uint8 views
     [E * 2 * inter, K/2] and [E * 2 * inter, K/32]."""
     import torch  # noqa: PLC0415
 
     h = torch.empty((xq.shape[0], inter), device=xq.device, dtype=torch.bfloat16)
+    if direct:
+        _stage1_direct(2 * inter, xq.shape[1], mt, pp, depth or 3, float(limit))(
+            xq, xs.view(torch.int8), w13.view(torch.int8), w13_scale.view(torch.int8), tiles,
+            units_for(tiles, mt), h)
+        return h
     if dma:
         _stage1_dma(2 * inter, mt, pp, depth or 4, float(limit))(
             xq, xs.view(torch.int8), weight_view(w13, 2 * inter), w13_scale.view(torch.int8), tiles, h)

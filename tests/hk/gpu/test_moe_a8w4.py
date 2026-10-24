@@ -23,7 +23,8 @@ E2M1 = torch.tensor([0, .5, 1, 1.5, 2, 3, 4, 6, -0., -.5, -1, -1.5, -2, -3, -4, 
                                                       (4, 3, 2, False, 1, 0), (4, 2, 4, True, 1, 0),
                                                       (4, 4, 4, True, 2, 0), (4, 3, 4, True, 2, 0),
                                                       (4, 3, 4, True, 2, 4), (4, 4, 4, True, 1, 2),
-                                                      (4, 4, 4, "dma", 2, 4), (4, 3, 4, "dma", 2, 2)])
+                                                      (4, 4, 4, "dma", 2, 4), (4, 3, 4, "dma", 2, 2),
+                                                      (4, 4, 4, "direct", 2, 3), (4, 3, 4, "direct", 1, 2)])
 def test_stage1_matches_dequant(nb, mt, warps, lds, pp, depth):
     torch.manual_seed(0)
     E, I, K, T, topk, L = 6, 128, 512, 77, 2, 10.0
@@ -34,7 +35,7 @@ def test_stage1_matches_dequant(nb, mt, warps, lds, pp, depth):
     ids = torch.stack([torch.randperm(E - 1)[:topk] for _ in range(T)]).to(dev)   # expert E-1 empty
     xq, xs, tiles, pairs = M.prepare(hidden, ids, E)
     h = M.stage1(xq, xs, M.aiter_layout_w13(w).to(dev), M.aiter_layout_w13_scale(ws, E).to(dev),
-                 tiles, inter=I, nb=nb, mt=mt, warps=warps, limit=L, lds=bool(lds), pp=pp, depth=depth, dma=lds == "dma")
+                 tiles, inter=I, nb=nb, mt=mt, warps=warps, limit=L, lds=bool(lds), pp=pp, depth=depth, dma=lds == "dma", direct=lds == "direct")
     b = w.long()
     wd = torch.stack([E2M1[b & 15], E2M1[b >> 4]], -1).reshape(E, 2 * I, K)
     wd = (wd * torch.pow(2.0, ws.float() - 127).view(E, 2 * I, K // 32).repeat_interleave(32, -1)).to(dev)
@@ -49,4 +50,4 @@ def test_stage1_matches_dequant(nb, mt, warps, lds, pp, depth):
     assert err < 1e-2, err
     assert torch.equal(h[live], M.stage1(xq, xs, M.aiter_layout_w13(w).to(dev),
                                          M.aiter_layout_w13_scale(ws, E).to(dev), tiles, inter=I,
-                                         nb=nb, mt=mt, warps=warps, limit=L, lds=bool(lds), pp=pp, depth=depth, dma=lds == "dma")[live])
+                                         nb=nb, mt=mt, warps=warps, limit=L, lds=bool(lds), pp=pp, depth=depth, dma=lds == "dma", direct=lds == "direct")[live])
