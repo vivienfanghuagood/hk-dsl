@@ -25,15 +25,22 @@ from the Hub (33 GB: transformer 14.2, text encoder 17.5, VAE 1.4).
 - **SGLang 0.5.18 has no native Qwen-Image 2.1 pipeline**: it logs "no
   native sglang support" and falls back to diffusers, at **78.9 / 80.3 /
   80.4 s** an image. That is not the path anyone serves.
-- **SGLang main (79701a2, 2026-10-24) has the native pipeline, and it does
-  not run on ROCm.** The DiT asks `current_platform.is_cuda()`, which is
-  true on ROCm, and then calls fused Triton/CUDA kernels (`qknorm_complex_rope`
-  among them) whose validators require `torch.version.hip is None`; every
-  request fails with "invalid input for qknorm_complex_rope". A post-import
-  hook that sets the module's `_is_cuda` to False on HIP
-  (`bench/e2e/qwen_image/rocm_fix_sitecustomize.py`) sends it down the torch
-  paths. Every arm below has it; it is a fix SGLang needs upstream, not part
-  of hk's result.
+- **SGLang main (79701a2, 2026-10-24) has the native pipeline**, and with
+  sglang-radeon 0.1.5 installed every request failed with "invalid input for
+  qknorm_complex_rope": the DiT asks `current_platform.is_cuda()`, got True,
+  and called fused Triton/CUDA kernels whose validators require
+  `torch.version.hip is None`. **The True came from sglang-radeon, not from
+  SGLang.** Its `h3_denoise_platform_gate` shim, written to let MiniMax-H3's
+  denoise loop past a CUDA-or-MPS check, rebinds `is_cuda` on the *global*
+  platform object, so every `is_cuda()`-gated CUDA path in SGLang is taken on
+  gfx1100. (E2 found the same shim behind a silent MiniMax-H3 hang: a VAE
+  Triton kernel with inline PTX killed the worker at compile time.)
+  `bench/e2e/qwen_image/rocm_fix_sitecustomize.py` replaces that shim with a
+  narrow one -- a platform proxy that says CUDA to the H3 denoising module
+  alone -- and with only that, SGLang main's own ROCm platform sends the DiT
+  down its torch paths: 42.22 s, the same as the arms below. (The arms below
+  were measured with an earlier hook that set the Qwen module's `_is_cuda`
+  to False instead; same paths, same time.) The fix belongs in sglang-radeon.
 - Stock, so fixed: **42.20 / 42.24 / 42.26 s** (warm-up 44.9 s), 26.7 GB peak.
 
 ## Where the time goes

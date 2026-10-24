@@ -619,8 +619,10 @@ Each patched process prints, as it exits, how many calls took hk's kernels.
 Measured on Qwen-Image 2.1, 1024^2, 30 steps, one W7900D: 42.2 s stock, 34.8 s
 with the attention patch, 28.2 s with both (1.50x; attention reads SGLang's
 (B, N, H, D) views in place), images visually identical
-([chapter 46](history/46-qwen-image-on-rdna3.md)). SGLang main's native Qwen-Image
-2.1 pipeline needs a ROCm fix of its own first (the chapter has it).
+([chapter 46](history/46-qwen-image-on-rdna3.md)). With sglang-radeon 0.1.5 installed,
+its `h3_denoise_platform_gate` shim must be narrowed first (it makes the global
+platform claim CUDA, and SGLang then picks CUDA-only kernels on gfx1100); the
+chapter has the hook.
 
 ## Ahead-of-time builds
 
