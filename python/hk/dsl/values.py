@@ -448,18 +448,25 @@ class Global(Value):
                      into=into, name="gat")
 
     def scatter(self, value: "Tile", ids: "Global", at, *, count=None,
-                col=0, sort_topk: int = 0) -> None:
+                col=0, sort_topk: int = 0, add: bool = False) -> None:
         """Rows by index: tile row r goes to row `ids[at + r]`, from column
         `col`; an index outside the tensor, or a position at or past
         `count`, writes nothing. Two rows naming one row race. `sort_topk`
         > 0: `ids` are AITER's MoE sort ids (token | choice << 24) and this
         tensor is [sort_topk * M, ...] choice-major -- row r goes to row
-        choice * M + token, and padding (token >= M) nowhere."""
+        choice * M + token, and padding (token >= M) nowhere.
+
+        `add=True` adds the rows atomically instead (an fp32 or bf16 global;
+        bf16 adds element pairs, gfx950's global_atomic_pk_add_bf16). With
+        `sort_topk` the tensor is then [M, ...] and every choice of a token
+        adds into its row: the top-k reduce, in no fixed order -- the result
+        varies run to run by the rounding of the adds."""
         value = _vec_of(value)
         if not isinstance(value, Tile):
             raise TypeError(f"scatter stores a tile, not {value!r}")
         ops = self._indexed("scatter", value.ty, ids, at, count, col)
-        hkd.ScatterRowsOp(self.v, value.v, *ops, sort_topk=int(sort_topk), loc=_t().loc())
+        hkd.ScatterRowsOp(self.v, value.v, *ops, sort_topk=int(sort_topk), add=bool(add),
+                          loc=_t().loc())
 
 
 class View:

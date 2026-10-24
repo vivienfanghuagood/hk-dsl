@@ -190,6 +190,13 @@ LogicalResult GatherRowsOp::verify() {
 }
 
 LogicalResult ScatterRowsOp::verify() {
+  if (getAdd()) {
+    Type d = getDst().getType().getElementType();
+    if (!d.isF32() && !d.isBF16())
+      return emitOpError("adds rows into an fp32 or bf16 global");
+    if (failed(noStrip(*this, getValue().getType())))
+      return failure();
+  }
   return checkIndexedRows(*this, getValue().getType(), getIdx().getType());
 }
 

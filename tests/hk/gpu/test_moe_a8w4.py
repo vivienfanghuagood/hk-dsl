@@ -260,6 +260,18 @@ def test_sorted_stages_match_dequant(mt, pp1, pp2, depth, pers, I):
     out = M.reduce(y2, None, wt, T, inv=M.identity(T, topk, dev), wrow=sw.view(-1, 1),
                    weighted=False)
     assert torch.equal(out, M.reduce(y2, None, wt, T, dense=True))
+    # the top-k sum by bf16 atomics in the scatter (AITER's way): the same up to the adds' rounding
+    if pers:
+        with pytest.raises(ValueError, match="counts twice"):
+            M.stage2_sorted(hq, mxfp8.aiter_scales(hs), M.aiter_layout_w2(w2).to(dev),
+                            M.aiter_layout_w2_scale(w2s).to(dev), sid, se, nv, sw, T, topk, E,
+                            mt=mt, pp=pp2, persistent=pers, atomic=True)
+        return
+    ya = M.stage2_sorted(hq, mxfp8.aiter_scales(hs), M.aiter_layout_w2(w2).to(dev),
+                         M.aiter_layout_w2_scale(w2s).to(dev), sid, se, nv, sw, T, topk, E,
+                         mt=mt, pp=pp2, depth=depth, persistent=pers, atomic=True)
+    assert ya.shape == out.shape
+    assert ((ya.float() - out.float()).abs().max() / out.float().abs().max()).item() < 1e-2
     b2 = w2.long()
     w2d = torch.stack([E2M1[b2 & 15], E2M1[b2 >> 4]], -1).reshape(E, D, I)
     w2d = (w2d * torch.pow(2.0, w2s.float() - 127).view(E, D, I // 32).repeat_interleave(32, -1)).to(dev)

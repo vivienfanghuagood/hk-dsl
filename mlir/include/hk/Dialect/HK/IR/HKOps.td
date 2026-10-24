@@ -229,10 +229,15 @@ def HK_ScatterRowsOp : HK_Op<"scatter_rows"> {
     `sort_topk` > 0: idx holds AITER's MoE sort ids (token | choice << 24) and
     dst is [sort_topk * M, ...], choice-major: row r goes to row choice * M +
     token, and nowhere for a token >= M (the sort's padding).
+    `add`: the rows are added into dst atomically instead of stored (fp32 or
+    bf16 dst; bf16 adds pairs with global_atomic_pk_add_bf16 on gfx950); with
+    sort_topk, dst is [M, ...] and row r goes to its token -- the top-k sum
+    done by the scatter, in no fixed order.
   }];
   let arguments = (ins HK_GlobalType:$dst, HK_RegTileType:$value,
                        HK_GlobalType:$idx, I32:$at, I32:$count, I32:$col,
-                       DefaultValuedAttr<I64Attr, "0">:$sort_topk);
+                       DefaultValuedAttr<I64Attr, "0">:$sort_topk,
+                       DefaultValuedAttr<BoolAttr, "false">:$add);
   let assemblyFormat = [{
     $value `,` $dst `[` $idx `[` $at `,` $count `]` `,` $col `]` attr-dict `:`
     qualified(type($value)) `,` qualified(type($dst)) `,` qualified(type($idx))

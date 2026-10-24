@@ -1559,8 +1559,11 @@ __device__ inline static void load_fp4_frags(RT &dst, const GL &src, int row0, i
     const int e = row0 / GR, lr = row0 % GR;
     // A resource per expert, based in 64 bits: all experts' weights pass 4 GB (DeepSeek-V4.1's
     // 384 x 4608 x 2560 B gate/up at TP1 is 4.5 GB), past a 32-bit offset and num_records.
-    const uint8_t *base = reinterpret_cast<const uint8_t *>(src.raw_ptr) + uint64_t(e) * GR * kbytes;
-    const detail::hk_i32x4 r = detail::hk_srsrc(base, uint64_t(GR) * kbytes);
+    // An expert past the tensor (a padded unit's id) gets an empty range: its loads read zero,
+    // as the one whole-tensor resource's bounds check made them before.
+    const bool in = e >= 0 && uint64_t(e + 1) * GR <= uint64_t(src.template shape<2>());
+    const uint8_t *base = reinterpret_cast<const uint8_t *>(src.raw_ptr) + (in ? uint64_t(e) * GR * kbytes : 0);
+    const detail::hk_i32x4 r = detail::hk_srsrc(base, in ? uint64_t(GR) * kbytes : 0);
     const uint32_t k0n = kbytes / 64u;
     #pragma unroll
     for (int i = 0; i < RT::height; i++)
@@ -2022,15 +2025,56 @@ __device__ inline static void load_gather(RT &dst, const GL &src, const IL &idx,
  * position at or past `count`, writes nothing. Two tile rows naming one row
  * race; which lands is unspecified.
  */
-template<int TOPK = 0, ducks::rt::all RT, ducks::gl::all GL, ducks::gl::all IL>
+template<int TOPK = 0, int ADD = 0, ducks::rt::all RT, ducks::gl::all GL, ducks::gl::all IL>
 __device__ inline static void store_scatter(const GL &dst, const RT &src, const IL &idx,
                                             int at, int count, int col) {
     // TOPK > 0: idx holds AITER's MoE sort ids (token | choice << 24) and dst is [TOPK * M, ..]
-    // choice-major: the row is choice * M + token, nothing for a token >= M (padding)
+    // choice-major: the row is choice * M + token, nothing for a token >= M (padding).
+    // ADD: the rows are added atomically (fp32, or bf16 pairs); with TOPK, dst is [M, ..] and the
+    // row is the token's -- the top-k sum in whatever order the adds land.
     using F = detail::hk_frag<RT>;
     using T = typename F::T;
     using U = typename GL::dtype;
     static_assert(F::row, "scatter stores row-layout tiles");
+    if constexpr (ADD) {
+        static_assert(std::is_same_v<U, float> || (std::is_same_v<U, bf16> && F::S % 2 == 0),
+                      "scatter-add: an fp32 global, or bf16 with even runs");
+        typedef __bf16 hk_bf16x2 __attribute__((ext_vector_type(2)));
+        const int nrows = int(dst.template shape<2>());
+        const uint64_t row_elems = uint64_t(dst.template stride<2>());
+        U *base = reinterpret_cast<U *>(dst.raw_ptr);
+        const int lane = laneid();
+        #pragma unroll
+        for (int i = 0; i < RT::height; i++) {
+            int g = detail::hk_gather_index<F::R>(idx, at, count, i, 1);
+            if constexpr (TOPK > 0) g = (g < 0 || (g & 0xFFFFFF) >= nrows) ? -1 : (g & 0xFFFFFF);
+            if (g < 0 || g >= nrows) continue;
+            U *row = base + uint64_t(g) * row_elems + col;
+            #pragma unroll
+            for (int j = 0; j < RT::width; j++) {
+                #pragma unroll
+                for (int k = 0; k < F::K; k++) {
+                    const int cy = detail::hk_frag_coord<RT>(k * F::S, lane).y;
+                    U *p = row + j * F::C + cy;
+                    if constexpr (std::is_same_v<U, float>) {
+                        #pragma unroll
+                        for (int s = 0; s < F::S; s++)
+                            __hip_atomic_fetch_add(p + s, float(detail::hk_get(src, i, j, k * F::S + s)),
+                                                   __ATOMIC_RELAXED, __HIP_MEMORY_SCOPE_AGENT);
+                    } else {
+                        #pragma unroll
+                        for (int s = 0; s < F::S; s += 2) {
+                            const hk_bf16x2 v = {__bf16(float(detail::hk_get(src, i, j, k * F::S + s))),
+                                                 __bf16(float(detail::hk_get(src, i, j, k * F::S + s + 1)))};
+                            __builtin_amdgcn_global_atomic_fadd_v2bf16(
+                                (__attribute__((address_space(1))) hk_bf16x2 *)(p + s), v);
+                        }
+                    }
+                }
+            }
+        }
+        return;
+    }
     uint32_t oob; int nrows;
     const detail::hk_i32x4 r = detail::hk_whole_srsrc(dst, oob, nrows);
     const uint32_t row_bytes = uint32_t(dst.template stride<2>()) * sizeof(U);

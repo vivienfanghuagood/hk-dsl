@@ -1174,7 +1174,9 @@ private:
         })
         .Case([&](ScatterRowsOp o) {
           w("kittens::store_scatter" +
-            (o.getSortTopk() ? "<" + std::to_string(o.getSortTopk()) + ">" : std::string()) +
+            (o.getSortTopk() || o.getAdd()
+                 ? "<" + std::to_string(o.getSortTopk()) + (o.getAdd() ? ", 1>" : ">")
+                 : std::string()) +
             "(" + name(o.getDst()) + ", " +
             name(o.getValue()) + ", " + name(o.getIdx()) + ", " +
             name(o.getAt()) + ", " + name(o.getCount()) + ", " +
