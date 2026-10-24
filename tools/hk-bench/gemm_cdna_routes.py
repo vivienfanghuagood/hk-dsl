@@ -40,20 +40,18 @@ ROTATE_BYTES = 3 * 256 * 2**20
 #: The spin a round waits behind: long enough for the host to launch a pass
 #: (at most a few dozen calls of two launches each).
 QUEUE_MIN_US, QUEUE_US_PER_CALL = 5000, 300
-_SPIN = []
 
 
 def _spin(torch, us):
-    """torch's spin kernel for `us` microseconds, its clock calibrated once."""
-    if not _SPIN:
-        s, e = torch.cuda.Event(True), torch.cuda.Event(True)
-        torch.cuda.synchronize()
-        s.record()
-        torch.cuda._sleep(200_000)
-        e.record()
-        torch.cuda.synchronize()
-        _SPIN.append(200_000 / (s.elapsed_time(e) * 1e3))
-    torch.cuda._sleep(int(us * _SPIN[0]))
+    """torch's spin kernel for `us` microseconds, on hk.tune.measure's clock:
+    measured once, after a warm-up call. The first call loads the spin
+    kernel's module (1.3 ms in the rocm/pytorch image, ~15 ms in vLLM's); a
+    calibration that times it reads a clock 16-100x too slow, every spin is
+    that much too short, queues nothing, and the rounds time the host."""
+    from hk.tune.measure import spin_hz  # noqa: PLC0415
+    torch.cuda._sleep(int(us * 1e-6 * spin_hz(torch)))
+
+
 #: (N, K) of Llama-3-8B and Qwen3-8B's linears, merged and unmerged, and the
 #: two lm_heads.
 NK = ((4096, 4096), (6144, 4096), (12288, 4096), (14336, 4096), (24576, 4096),

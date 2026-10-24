@@ -728,21 +728,15 @@ def _kernels(prof):
 #: behind 40 us a call, hk's one-row rounds still varied by 1.5x.
 QUEUE_US_PER_CALL = 1000
 QUEUE_MIN_US = 10000
-_SPIN = []
 
 
 def _spin(us):
-    """torch's spin kernel for `us` microseconds, its clock calibrated on
-    first use (on gfx1100 it counts 100 MHz)."""
-    if not _SPIN:
-        s, e = torch.cuda.Event(True), torch.cuda.Event(True)
-        torch.cuda.synchronize()
-        s.record()
-        torch.cuda._sleep(200_000)
-        e.record()
-        torch.cuda.synchronize()
-        _SPIN.append(200_000 / (s.elapsed_time(e) * 1e3))
-    torch.cuda._sleep(int(us * _SPIN[0]))
+    """torch's spin kernel for `us` microseconds (on gfx1100 it counts
+    100 MHz), on hk.tune.measure's clock: measured after a warm-up call, since
+    timing the first one -- which loads the kernel's module -- reads a clock
+    16-100x too slow and makes every spin that much too short."""
+    from hk.tune.measure import spin_hz  # noqa: PLC0415
+    torch.cuda._sleep(int(us * 1e-6 * spin_hz(torch)))
 
 
 def _is_spin(e):
