@@ -721,6 +721,135 @@ def _sorted_ring(stage: int, name: str, *, group_rows: int, mt: int, pp: int, k:
                      grid=lambda p: (p.seids.cols * (p.out.cols // (TILE * pp * warps)), 1, 1))
 
 
+def _sorted_s2_persistent(name: str, *, group_rows: int, mt: int, pp: int, k: int, topk: int = 6,
+                          warps: int = 4, grid: int = 768):
+    """Stage 2 on AITER's sort (as _sorted_ring) as a persistent kernel: workgroup w takes units
+    (block, column block) w, w + G, ... of the live ones, and issues the next unit's first K step
+    (its x tile, weights and scales) before the current unit's epilogue, so the next unit's
+    loads land under the stores. Stage 2 is short (K 1152: 9 steps, no loop) and latency-bound
+    (K1 c20 profile): every workgroup used to begin with a cold pipeline. A unit's step s uses
+    ring slot (s + ps) % 2 and scale set (s // 2 + pq) % 2; the next unit's offsets follow so
+    that its first step lands in the slot and set this one is done with, and repeat every two
+    units -- two units a loop iteration. K static."""
+    import hk  # noqa: PLC0415
+
+    GR = group_rows
+    KS = 128
+    BM = TILE * mt
+    R = TILE * pp
+    steps = k // KS
+    if mt % 2 or k % KS or steps < 2 or grid % NUM_XCDS:
+        raise ValueError(f"_sorted_s2_persistent: an even mt, K a multiple of 128, a grid of whole "
+                         f"XCDs (mt={mt}, K={k}, grid={grid})")
+    st_x = hk.ST(fp8e4m3, BM, KS)
+    t_w = hk.RT(fp8e4m3, R, KS)
+    t_x1 = hk.RT(fp8e4m3, TILE, KS)
+    t_c1 = hk.RT(fp32, R, TILE, "col")
+    t_wv = hk.RT(fp32, TILE, R, "row")
+    XGR = 1 << 24
+
+    def body(x: hk.Tensor[fp8e4m3], xs: hk.Tensor[i8], w: hk.Tensor[i8], ws: hk.Tensor[i8],
+             sids: hk.Tensor[i32], seids: hk.Tensor[i32], nv: hk.Tensor[i32], wv: hk.Tensor[fp32],
+             out: hk.Tensor[bf16], *, G: hk.Constexpr = grid):
+        g = hk.group(warps)
+        Xs = hk.lds.alloc(st_x, count=2, name="Xs")
+        nblk = out.cols // (R * warps)
+        wg = hk.arch.block_idx.x
+        wid = hk.arch.warp_id()
+        valid = nv[hk.elem_coord(0, 0, 0, 0)].load_scalar()
+        units = hk.cdiv(valid, BM) * nblk
+        # Each XCD (workgroups x, x + 8, ...) takes a contiguous chunk of the units, so a block's
+        # column blocks -- which share its x tile -- run under one L2.
+        GX = G // NUM_XCDS
+        xcd = wg % NUM_XCDS
+        local = wg // NUM_XCDS
+        chunk = hk.cdiv(units, NUM_XCDS)
+        first = xcd * chunk
+        span = hk.max(hk.min(chunk, units - first), 0)
+        mine = hk.cdiv(hk.max(span - local, 0), GX)      # this workgroup's units
+        last = first + hk.max(span - 1, 0)
+
+        def unit(i):
+            """(r0, row_w, col0) of this workgroup's i-th unit (a live one: past the end it is
+            the chunk's last unit, whose loads are then made and not used)."""
+            u = hk.min(first + local + i * GX, last)
+            b = u // nblk
+            blk = u % nblk
+            e = seids[hk.elem_coord(0, 0, 0, b)].load_scalar()
+            col0 = (blk * warps + wid) * R
+            return b * BM, e * GR + col0, col0
+
+        Cs = [hk.zeros(t_c1) for _ in range(mt)]
+        X1 = hk.zeros(t_x1)
+        W = [hk.zeros(t_w) for _ in range(2)]
+        S = [hk.load_mx_scales(ws, R, 8, 0, 0, layout="aiter", group_rows=GR) for _ in range(2)]
+        SX = [hk.load_mx_scales(xs, BM, 8, 0, 0, layout="aiter", group_rows=XGR) for _ in range(2)]
+
+        def fetch(kc, slot, sset, r0, row_w):
+            g.load(Xs[slot], x.at[r0, kc * KS], wait=False)
+            hk.load_fp4_frags(t_w, w, row_w, kc, group_rows=GR, gate_up=False, into=W[slot])
+            if sset is not None:
+                hk.load_mx_scales(ws, R, 8, row_w, kc * 4, layout="aiter", group_rows=GR,
+                                  into=S[sset])
+                hk.load_mx_scales(xs, BM, 8, r0, kc * 4, layout="aiter", group_rows=XGR,
+                                  into=SX[sset])
+
+        NP = (steps + 1) // 2                 # scale pairs a unit
+        nxt_off = lambda ps, pq: ((ps + steps) % 2, (pq + NP) % 2)   # noqa: E731
+
+        def run(ps, pq, cur_u, nxt_u):
+            """One unit, its step s in ring slot (s + ps) % 2 and scale set (s // 2 + pq) % 2."""
+            r0, row_w, col0 = cur_u
+            for c_ in Cs:
+                c_.zero_()
+            for kc in range(steps):
+                slot = (kc + ps) % 2
+                g.wait_for(Xs[slot], exact=True)
+                hk.arch.barrier()
+                if kc + 1 < steps:
+                    fetch(kc + 1, (kc + 1 + ps) % 2,
+                          ((kc + 1) // 2 + pq) % 2 if (kc + 1) % 2 == 0 else None, r0, row_w)
+                else:
+                    # the next unit's first step, into the slot and set this one is done with
+                    qs, qq = nxt_off(ps, pq)
+                    fetch(0, qs, qq, nxt_u[0], nxt_u[1])
+                ss, par = (kc // 2 + pq) % 2, kc % 2
+                for ti in range(mt):
+                    Xs[slot].subtile(TILE, KS, ti, 0).load(t_x1, wait=False, into=X1)
+                    hk.lds.wait_for(X1)
+                    hk.mma_ABt_mx(W[slot], X1, Cs[ti], S[ss], SX[ss], a_fmt="fp4",
+                                  sa_at=(0, par), sb_at=(ti, par), into=Cs[ti])
+                hk.arch.sched_barrier()
+            for i in range(mt):
+                o = hk.transpose(Cs[i])
+                wt = wv[hk.elem_coord(0, 0, r0 + i * TILE, 0)].load(t_wv)
+                wt.right_fill_(1, 0.0)
+                o = o * wt.sum(axis=1)[:, None]
+                out.scatter(o, sids, r0 + i * TILE, col=col0, sort_topk=topk)
+
+        u0 = unit(0)
+        fetch(0, 0, 0, u0[0], u0[1])
+        b_off = nxt_off(0, 0)                 # unit b's offsets; two units later they are (0, 0)
+        for it in hk.range(hk.cdiv(mine, 2)):
+            ua = unit(2 * it)
+            ub = unit(2 * it + 1)
+            run(0, 0, ua, ub)
+            # unit b unconditionally: past the end it is the last live unit again, recomputed
+            # and stored with the same values (no branch around the workgroup's copies)
+            run(b_off[0], b_off[1], ub, unit(2 * it + 2))
+        g.wait_for(Xs[0], Xs[1])          # the last unit's dangling first-step copy
+
+    body.__name__ = name
+    return hk.kernel(body, arch="gfx950", warps=warps, name=name, max_vgprs=2048 // warps,
+                     grid=lambda p: (p.G, 1, 1))
+
+
+@functools.lru_cache(maxsize=None)
+def _sorted_persistent(group_rows: int, mt: int, pp: int, k: int, topk: int, grid: int):
+    return _sorted_s2_persistent(f"moe_a8w4_s2p_gr{group_rows}_mt{mt}_pp{pp}_k{k}_t{topk}_g{grid}",
+                                 group_rows=group_rows, mt=mt, pp=pp, k=k, topk=topk, grid=grid)
+
+
 @functools.lru_cache(maxsize=None)
 def _sorted(stage: int, group_rows: int, mt: int, pp: int, k: int, limit: float, topk: int,
             depth: int = 2, warps: int = 4):
@@ -751,7 +880,7 @@ def stage1_sorted(xq_tok, xs_sorted, w13, w13_scale, sorted_ids, sorted_expert_i
 
 def stage2_sorted(hq, hs_sorted, w2, w2_scale, sorted_ids, sorted_expert_ids, num_valid,
                   sorted_weights, m: int, topk: int, n_experts: int, *, mt: int, pp: int = 4,
-                  depth: int = 2, warps: int = 4):
+                  depth: int = 2, warps: int = 4, persistent: int = 0):
     """y2 [topk * m, D] bf16, choice-major: row choice * m + token = weight * (h_q . w2^T) of that
     pair (hq [P, I] FP8 and hs_sorted its 32-row-layout scales, both in sorted order).
     reduce(y2, ..., inv=identity(m, topk), weighted=False) sums it."""
@@ -761,6 +890,12 @@ def stage2_sorted(hq, hs_sorted, w2, w2_scale, sorted_ids, sorted_expert_ids, nu
     if d % (TILE * pp * warps):
         raise ValueError(f"moe_a8w4.stage2_sorted: D={d} not a multiple of {TILE * pp * warps}")
     y2 = torch.empty((topk * m, d), device=hq.device, dtype=torch.bfloat16)   # every pair is one row
+    if persistent:      # `persistent` workgroups looping over the units (_sorted_s2_persistent)
+        _sorted_persistent(d, mt, pp, hq.shape[1], topk, persistent)(
+            hq, hs_sorted.view(torch.int8), w2.view(torch.int8), w2_scale.view(torch.int8),
+            sorted_ids.view(1, -1), sorted_expert_ids.view(1, -1), num_valid.view(1, -1),
+            sorted_weights.view(-1, 1).float(), y2)
+        return y2
     _sorted(2, d, mt, pp, hq.shape[1], 10.0, topk, depth, warps)(
         hq, hs_sorted.view(torch.int8), w2.view(torch.int8), w2_scale.view(torch.int8),
         sorted_ids.view(1, -1), sorted_expert_ids.view(1, -1), num_valid.view(1, -1),

@@ -208,8 +208,10 @@ def _aiter_like_sort(ids, n_experts, bm):
     return sid, se, nv
 
 
-@pytest.mark.parametrize("mt,pp1,pp2,depth", [(2, 3, 4, 2), (4, 3, 2, 2), (6, 3, 4, 2), (4, 3, 4, 3)])
-def test_sorted_stages_match_dequant(mt, pp1, pp2, depth):
+@pytest.mark.parametrize("mt,pp1,pp2,depth,pers", [(2, 3, 4, 2, 0), (4, 3, 2, 2, 0), (6, 3, 4, 2, 0),
+                                                   (4, 3, 4, 3, 0), (4, 3, 4, 2, 8), (2, 3, 2, 2, 16),
+                                                   (6, 3, 4, 2, 64)])
+def test_sorted_stages_match_dequant(mt, pp1, pp2, depth, pers):
     """stage1_sorted / stage2_sorted on AITER-style sort metadata, x gathered in the kernel, y2
     scattered choice-major and summed by reduce: the dequantized MoE."""
     from hk.ops import mxfp8
@@ -252,7 +254,7 @@ def test_sorted_stages_match_dequant(mt, pp1, pp2, depth):
     sw[:nvalid][lv] = wt[tok[:nvalid][lv], (sid[:nvalid][lv] >> 24).long()]
     y2 = M.stage2_sorted(hq, mxfp8.aiter_scales(hs), M.aiter_layout_w2(w2).to(dev),
                          M.aiter_layout_w2_scale(w2s).to(dev), sid, se, nv, sw, T, topk, E,
-                         mt=mt, pp=pp2, depth=depth)
+                         mt=mt, pp=pp2, depth=depth, persistent=pers)
     out = M.reduce(y2, None, wt, T, inv=M.identity(T, topk, dev), wrow=sw.view(-1, 1),
                    weighted=False)
     assert torch.equal(out, M.reduce(y2, None, wt, T, dense=True))
