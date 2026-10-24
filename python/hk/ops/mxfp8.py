@@ -13,6 +13,8 @@ step. M and N multiples of 128, K of 128.
 
 from __future__ import annotations
 
+import math
+
 from .. import dsl as hk
 from ..types import bf16, fp32, fp8e4m3, i8, i32
 
@@ -128,7 +130,8 @@ def pack_scales(s):
 
 
 def mx4w_kernel(name: str = "mxfp8_4w", *, block_m: int = 256, block_n: int = 256,
-                stages: int = 2, wgm: int = 8, xcd_chunk: int = 32, setprio: bool = False):
+                stages: int = 2, wgm: int = 8, xcd_chunk: int = 32, setprio: bool = False,
+                split_m: int = 2, split_n: int = 2, scale_ahead: int = 2):
     """MXFP8 GEMM, four warps (2 x 2) of block_m/2 x block_n/2 each, so one
     wave a SIMD and the whole register file a lane (VGPRs and AGPRs: the
     accumulators of a 128 x 128 warp tile are 256 of them). K-tiles of 128 in
@@ -137,28 +140,38 @@ def mx4w_kernel(name: str = "mxfp8_4w", *, block_m: int = 256, block_n: int = 25
     quadrant's MFMAs. Scales packed (`pack_scales`), one dword a lane per 64
     rows and K-tile, loaded two K-tiles ahead. Takes (a, b, sa, sb, c): a (M,
     K) and b (N, K) fp8 e4m3, sa / sb their packed scales, c (M, N) bf16; N a
-    multiple of block_n, K of 128."""
+    multiple of block_n, K of 128. `split_m` x `split_n`: the parts of a warp's
+    tile (1 or 2 each way), each a multiple of 64 rows of A and of B."""
     from .gemm_cdna import NUM_XCDS  # noqa: PLC0415
 
     BKs = 128
-    qm, qn = block_m // 4, block_n // 4          # a quadrant of a warp's tile
-    if qm % 64 or qn % 64:
-        raise ValueError(f"{block_m}x{block_n}: quadrants of 64-row multiples (packed scales)")
+    qm, qn = block_m // 2 // split_m, block_n // 2 // split_n   # a part of a warp's tile
+    if split_m not in (1, 2) or split_n not in (1, 2) or qm % 64 or qn % 64:
+        raise ValueError(f"{block_m}x{block_n} split {split_m}x{split_n}: parts of "
+                         f"64-row multiples (packed scales)")
+    # Parts in an order where each shares an operand with the one before.
+    order = [p for p in ((0, 0), (0, 1), (1, 1), (1, 0)) if p[0] < split_m and p[1] < split_n]
     st_a = hk.ST(fp8e4m3, block_m, BKs)
     st_b = hk.ST(fp8e4m3, block_n, BKs)
     t_a = hk.RT(fp8e4m3, qm, BKs, "row")
     t_b = hk.RT(fp8e4m3, qn, BKs, "row")
     t_c = hk.RT(fp32, qm, qn, "col")
-    body_len = stages * 2 // (2 if stages % 2 == 0 else 1)
+    # scale_ahead + 1 scale sets, a K-tile's loaded scale_ahead K-tiles
+    # ahead, so the body is a whole number of both the LDS ring and the
+    # scale rotation.
+    if scale_ahead not in (1, 2):
+        raise ValueError(f"scale_ahead={scale_ahead}: 1 or 2")
+    nsets = scale_ahead + 1
+    body_len = stages * nsets // math.gcd(stages, nsets)
 
     def body(a: hk.Tensor[fp8e4m3], b: hk.Tensor[fp8e4m3], sa: hk.Tensor[i32],
              sb: hk.Tensor[i32], c: hk.Tensor[bf16], *, WGM: hk.Constexpr = wgm):
         g = hk.group(WARPS)
         As = hk.lds.alloc(st_a, count=stages, name="As")
         Bs = hk.lds.alloc(st_b, count=stages, name="Bs")
-        A = [hk.zeros(t_a) for _ in range(2)]
-        B = [hk.zeros(t_b) for _ in range(2)]
-        C = [[hk.zeros(t_c) for _ in range(2)] for _ in range(2)]
+        A = [hk.zeros(t_a) for _ in range(split_m)]
+        B = [hk.zeros(t_b) for _ in range(split_n)]
+        C = [[hk.zeros(t_c) for _ in range(split_n)] for _ in range(split_m)]
 
         M = a.rows
         m_blocks = hk.cdiv(M, block_m)
@@ -192,20 +205,20 @@ def mx4w_kernel(name: str = "mxfp8_4w", *, block_m: int = 256, block_n: int = 25
             g.load(Bs[u], b.at[n0, t * BKs], wait=False,
                    rows=rows_left(t, block_n) if pad else None)
 
-        S = [None, None]
+        S = [None] * nsets
 
         def load_scales(q, t):
             old = S[q]
-            S[q] = ([hk.load_mx_scales(sa, qm, 4, m0 + wr * 2 * qm + i * qm, t * 4,
-                                       into=old[0][i] if old else None) for i in range(2)],
-                    [hk.load_mx_scales(sb, qn, 4, n0 + wc * 2 * qn + j * qn, t * 4,
-                                       into=old[1][j] if old else None) for j in range(2)])
+            S[q] = ([hk.load_mx_scales(sa, qm, 4, m0 + (wr * split_m + i) * qm, t * 4,
+                                       into=old[0][i] if old else None) for i in range(split_m)],
+                    [hk.load_mx_scales(sb, qn, 4, n0 + (wc * split_n + j) * qn, t * 4,
+                                       into=old[1][j] if old else None) for j in range(split_n)])
 
         def read_a(u, i):
-            As[u].subtile(qm, BKs, 2 * wr + i, 0).load(t_a, wait=False, into=A[i])
+            As[u].subtile(qm, BKs, split_m * wr + i, 0).load(t_a, wait=False, into=A[i])
 
         def read_b(u, j):
-            Bs[u].subtile(qn, BKs, 2 * wc + j, 0).load(t_b, wait=False, into=B[j])
+            Bs[u].subtile(qn, BKs, split_n * wc + j, 0).load(t_b, wait=False, into=B[j])
 
         def mma(q, i, j):
             if setprio:
@@ -214,32 +227,38 @@ def mx4w_kernel(name: str = "mxfp8_4w", *, block_m: int = 256, block_n: int = 25
             if setprio:
                 hk.arch.setprio(0)
 
-        # The prologue issues what the loop's steady state has in flight at
-        # each wait: a K-tile's copy, then the scales of the K-tile after it.
+        # A K-tile's copy is the last vector load before the wait for it: the
+        # scales go out before it. Loads into LDS and into registers do not
+        # retire in issue order on gfx950 -- a vmcnt that was to leave only
+        # the scales issued after a copy in flight let some of the copy's
+        # loads through instead (results that varied run to run).
         if stages != 2:
             raise ValueError("stages=2: the prologue mirrors the loop's vm queue for two")
-        load_scales(0, 0)
+        # (The last set is made here too, for the loop to load into; its
+        # load is repeated by the first K-tile.)
+        for q in range(nsets):
+            load_scales(q, q)
         copy(0, 0, pad=False)
-        load_scales(1, 1)
 
         def k_tile(t, j, copies):
-            u, q = j % stages, j % 2
+            u, q = j % stages, j % nsets
             g.wait_for(As[u], Bs[u])
             hk.arch.barrier()
+            load_scales((j + scale_ahead) % nsets, t + scale_ahead)
             if copies:
                 copy(t + stages - 1, (u + stages - 1) % stages)
-            read_a(u, 0)
-            read_b(u, 0)
-            hk.lds.wait_for(A[0], B[0])
-            mma(q, 0, 0)
-            read_b(u, 1)
-            hk.lds.wait_for(B[1])
-            mma(q, 0, 1)
-            read_a(u, 1)
-            hk.lds.wait_for(A[1])
-            mma(q, 1, 1)
-            mma(q, 1, 0)
-            load_scales(q, t + 2)
+            have = set()
+            for i, jj in order:
+                new = [x for x in (("a", i), ("b", jj)) if x not in have]
+                for kind, idx in new:
+                    (read_a if kind == "a" else read_b)(u, idx)
+                    have.add((kind, idx))
+                if new:
+                    hk.lds.wait_for(*[A[idx] if kind == "a" else B[idx] for kind, idx in new])
+                mma(q, i, jj)
+            # Keep each K-tile's MFMAs in it: sunk past the next K-tile's reads
+            # they hold two sets of operands live (spills at 128 x 256).
+            hk.arch.sched_barrier()
 
         for t0 in range(0, n_tiles - body_len, body_len):
             for j in range(body_len):
@@ -248,10 +267,10 @@ def mx4w_kernel(name: str = "mxfp8_4w", *, block_m: int = 256, block_n: int = 25
         for j in range(body_len):
             k_tile(t0 + j, j, j + stages - 1 < body_len)
 
-        for i in range(2):
-            for j in range(2):
-                c[hk.elem_coord(0, 0, m0 + wr * 2 * qm + i * qm, n0 + wc * 2 * qn + j * qn)].store(
-                    C[i][j], bounded=True)
+        for i in range(split_m):
+            for j in range(split_n):
+                c[hk.elem_coord(0, 0, m0 + (wr * split_m + i) * qm,
+                                n0 + (wc * split_n + j) * qn)].store(C[i][j], bounded=True)
 
     body.__name__ = name
     return hk.kernel(body, arch="gfx950", warps=WARPS, name=name, max_vgprs=512,
