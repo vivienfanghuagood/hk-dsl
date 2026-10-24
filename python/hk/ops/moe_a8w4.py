@@ -291,6 +291,144 @@ def stage1_ring_kernel(name: str, *, group_rows: int, mt: int = 4, pp: int = 4, 
                      grid=lambda p: ((p.h.cols // (TILE * pp * warps)) * (p.tiles.cols - 1), 1, 1))
 
 
+def stage2_kernel(name: str, *, group_rows: int, mt: int = 4, pp: int = 4, depth: int = 3,
+                  xcd: bool = True):
+    """Stage 2 (K1): y = h_q . w2^T per sorted (token, expert) row -- h_q the MX FP8 stage-1 output,
+    w2 AITER's shuffled MXFP4 down projection (shuffle_weight(is_guinterleave=True) without gate|up,
+    shuffle_scale's 32-row layout) -- unweighted, bf16, in the sorted order; reduce() sums each
+    token's topk rows with their weights (deterministic, unlike AITER's atomics). The xsplit ring
+    of stage1_ring_kernel: warp = 16 * pp output columns (w2 rows), the round's mt token tiles
+    through LDS, `depth` operand sets; K % (128 * depth) == 0."""
+    import hk  # noqa: PLC0415
+
+    GR = group_rows
+    warps = 4
+    KS = 128
+    R = TILE * pp
+    st_x = hk.ST(fp8e4m3, TILE * mt, KS)
+    t_w = hk.RT(fp8e4m3, R, KS)
+    t_x1 = hk.RT(fp8e4m3, TILE, KS)
+    t_c1 = hk.RT(fp32, R, TILE, "col")
+    D = depth
+
+    def body(x: hk.Tensor[fp8e4m3], xs: hk.Tensor[i8], w: hk.Tensor[i8], ws: hk.Tensor[i8],
+             tiles: hk.Tensor[i32], y: hk.Tensor[bf16]):
+        g = hk.group(warps)
+        Xs = hk.lds.alloc(st_x, count=D, name="Xs")
+        nblk = y.cols // (R * warps)
+        wg = hk.arch.block_idx.x
+        if xcd:
+            total = (tiles.cols - 1) * nblk
+            moved = (wg % NUM_XCDS) * (total // NUM_XCDS) + wg // NUM_XCDS
+            whole = 1 - hk.min(total % NUM_XCDS, 1)
+            wg = whole * moved + (1 - whole) * wg
+        blk = wg % nblk
+        e = wg // nblk
+        t0 = tiles[hk.elem_coord(0, 0, 0, e)].load_scalar()
+        t1 = tiles[hk.elem_coord(0, 0, 0, e + 1)].load_scalar()
+        wid = hk.arch.warp_id()
+        col0 = (blk * warps + wid) * R
+        row_w = e * GR + col0
+        steps = x.cols // KS
+        Cs = [hk.zeros(t_c1) for _ in range(mt)]
+        X1 = hk.zeros(t_x1)
+        W = [hk.zeros(t_w) for _ in range(D)]
+        S = [hk.load_mx_scales(ws, R, 4, row_w, 0, layout="aiter", group_rows=GR) for _ in range(D)]
+        SX = [[hk.load_mx_scales(xs, TILE, 4, 0, 0, loose=True) for _ in range(mt)] for _ in range(D)]
+
+        def fetch(kc, r0, slot):
+            g.load(Xs[slot], x.at[r0, kc * KS], wait=False)
+            hk.load_fp4_frags(t_w, w, row_w, kc, group_rows=GR, gate_up=False, into=W[slot])
+            hk.load_mx_scales(ws, R, 4, row_w, kc * 4, layout="aiter", group_rows=GR, into=S[slot])
+            for ti in range(mt):
+                hk.load_mx_scales(xs, TILE, 4, r0 + ti * TILE, kc * 4, into=SX[slot][ti], loose=True)
+
+        def step(kc, cur, r0, prefetch=True):
+            g.wait_for(Xs[cur], exact=True)
+            hk.arch.barrier()
+            if prefetch:
+                fetch(kc + D - 1, r0, (cur + D - 1) % D)
+            for ti in range(mt):
+                Xs[cur].subtile(TILE, KS, ti, 0).load(t_x1, wait=False, into=X1)
+                hk.lds.wait_for(X1)
+                hk.mma_ABt_mx(W[cur], X1, Cs[ti], S[cur], SX[cur][ti], a_fmt="fp4", into=Cs[ti])
+            hk.arch.sched_barrier()
+
+        for rnd in range(hk.cdiv(t1 - t0, mt)):
+            r0 = (t0 + rnd * mt) * TILE
+            for c_ in Cs:
+                c_.zero_()
+            for k in range(D - 1):
+                fetch(k, r0, k)
+            for kk in range(steps // D - 1):
+                for u in range(D):
+                    step(kk * D + u, u, r0)
+            last = steps - D
+            for u in range(D):
+                step(last + u, u, r0, prefetch=u == 0)
+            hk.arch.barrier()
+            for i in range(mt):
+                if t0 + rnd * mt + i < t1:
+                    y[hk.elem_coord(0, 0, r0 + i * TILE, col0)].store(hk.transpose(Cs[i]))
+
+    body.__name__ = name
+    return hk.kernel(body, arch="gfx950", warps=warps, name=name, max_vgprs=512,
+                     grid=lambda p: ((p.y.cols // (R * warps)) * (p.tiles.cols - 1), 1, 1))
+
+
+@functools.lru_cache(maxsize=None)
+def _stage2(group_rows: int, mt: int, pp: int, depth: int):
+    return stage2_kernel(f"moe_a8w4_s2_gr{group_rows}_mt{mt}_pp{pp}_d{depth}", group_rows=group_rows,
+                         mt=mt, pp=pp, depth=depth)
+
+
+def stage2(hq, hs, w2, w2_scale, tiles, *, mt: int = 4, pp: int = 4, depth: int = 3):
+    """y [P, D] bf16 (unweighted, sorted rows) for stage 1's h quantized by mx_quant (hq fp8 [P, I],
+    hs uint8 [P, I/32]). w2 / w2_scale: AITER's shuffled uint8 views [E * D, I/2] and
+    [E * D, ceil(I/256) * 8] (shuffle_scale pads K/32 to a multiple of 8)."""
+    import torch  # noqa: PLC0415
+
+    e = tiles.numel() - 1
+    d = w2.shape[0] // e
+    if d % (TILE * pp * 4):
+        raise ValueError(f"moe_a8w4.stage2: D={d} not a multiple of the {TILE * pp * 4} columns a "
+                         f"workgroup writes (pp={pp})")
+    if hq.shape[1] % (128 * depth):
+        raise ValueError(f"moe_a8w4.stage2: K={hq.shape[1]} not a multiple of the {128 * depth} the "
+                         f"K loop is unrolled by (depth={depth})")
+    y = torch.empty((hq.shape[0], d), device=hq.device, dtype=torch.bfloat16)
+    _stage2(d, mt, pp, depth)(hq, hs.view(torch.int8), w2.view(torch.int8), w2_scale.view(torch.int8),
+                              tiles, y)
+    return y
+
+
+def reduce(y, pairs, weights, m: int):
+    """out [m, D] bf16 = sum over each token's topk choices k (in order) of weights[t, k] * y[row of
+    (t, k)], in fp32 (torch here)."""
+    import torch  # noqa: PLC0415
+
+    topk = weights.shape[1]
+    live = pairs >= 0
+    inv = torch.empty(m * topk, dtype=torch.long, device=y.device)
+    inv[pairs[live].long()] = torch.nonzero(live).view(-1)
+    g = y.index_select(0, inv).view(m, topk, -1).float()
+    return (g * weights.float().unsqueeze(-1)).sum(1).to(torch.bfloat16)
+
+
+def aiter_layout_w2(w):
+    """[E, D, I/2] uint8 -> AITER's gfx950 w2 layout (shuffle_weight is_guinterleave, no gate|up),
+    as a [E * D, I/2] view. For tests."""
+    e, n, kp = w.shape
+    return w.view(e, n // 16, 16, kp // 64, 4, 16).permute(0, 1, 3, 4, 2, 5).contiguous().view(e * n, kp)
+
+
+def aiter_layout_w2_scale(s):
+    """[E * D, I/32] uint8 E8M0 -> AITER's shuffle_scale layout (32-row blocks, K/32 padded to 8)."""
+    from .mxfp8 import aiter_scales  # noqa: PLC0415
+
+    return aiter_scales(s)
+
+
 def stage1_dma_kernel(name: str, *, group_rows: int, mt: int = 4, pp: int = 4, depth: int = 4,
                       limit: float = 10.0):
     """Stage 1, version 5 (K1 c6): the weights through LDS too. Every in-flight load of the K loop
@@ -569,13 +707,17 @@ def aiter_layout_w13_scale(s, e: int):
 
 
 def mx_quant(x):
-    """Rows of x to FP8 e4m3 with an E8M0 scale per 32 (OCP MX: scale 2^(floor(log2 amax) - 8))."""
+    """Rows of x to FP8 e4m3 with an E8M0 scale per 32: 2^e, e = ceil(log2(amax / 448)) -- AITER's
+    rule (the block max lands at <= 448, never clamped). OCP's floor(log2 amax) - 8 clamps blocks
+    whose amax mantissa is >= 1.75 to 448: up to 12% error on the block max, and 5% max-rel apart
+    from AITER end to end."""
     import torch  # noqa: PLC0415
 
     m, k = x.shape
     v = x.float().view(m, k // 32, 32)
     amax = v.abs().amax(-1).clamp_min(2.0 ** -126)
     e = torch.floor(torch.log2(amax)) - 8
+    e = e + (amax > 448.0 * torch.pow(2.0, e)).float()          # exact ceil(log2(amax / 448))
     q = (v / torch.pow(2.0, e)[..., None]).clamp(-448, 448).to(torch.float8_e4m3fn)
     return q.view(m, k), (e + 127).clamp(0, 254).to(torch.uint8)
 

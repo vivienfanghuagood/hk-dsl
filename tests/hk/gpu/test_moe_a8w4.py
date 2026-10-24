@@ -87,3 +87,34 @@ def test_stage1_refuses_k_remainder():
     ws = torch.zeros((256, 20), device="cuda", dtype=torch.uint8)
     with pytest.raises(ValueError, match="K=640"):
         M.stage1(xq, xs, w, ws, tiles, inter=128, mt=2, lds=True, pp=2, depth=3, exact=True, xsplit=True)
+
+
+@pytest.mark.parametrize("mt,pp,depth,I", [(4, 4, 3, 384), (2, 2, 3, 384), (5, 4, 2, 512)])
+def test_stage2_and_reduce_match_dequant(mt, pp, depth, I):
+    """Stage 2 (h_q . w2^T, AITER's w2 layouts) then the weighted topk sum, against torch dequant."""
+    torch.manual_seed(1)
+    E, D, T, topk = 6, 256, 77, 2
+    dev = "cuda"
+    w = torch.randint(0, 256, (E, D, I // 2), dtype=torch.uint8)
+    ws = torch.randint(122, 132, (E * D, I // 32), dtype=torch.uint8)
+    hidden = torch.randn(T, I, device=dev, dtype=torch.bfloat16)
+    ids = torch.stack([torch.randperm(E - 1)[:topk] for _ in range(T)]).to(dev)
+    wt = torch.rand(T, topk, device=dev)
+    hq, hs, tiles, pairs = M.prepare(hidden, ids, E)      # stands in for stage 1's quantized h
+    y = M.stage2(hq, hs, M.aiter_layout_w2(w).to(dev), M.aiter_layout_w2_scale(ws).to(dev), tiles,
+                 mt=mt, pp=pp, depth=depth)
+    out = M.reduce(y, pairs, wt, T)
+    b = w.long()
+    wd = torch.stack([E2M1[b & 15], E2M1[b >> 4]], -1).reshape(E, D, I)
+    wd = (wd * torch.pow(2.0, ws.float() - 127).view(E, D, I // 32).repeat_interleave(32, -1)).to(dev)
+    xd = hq.float() * torch.pow(2.0, hs.float() - 127).repeat_interleave(32, 1)
+    live = pairs >= 0
+    ex = ids.reshape(-1)[pairs.clamp_min(0).long()]
+    yr = torch.einsum("pk,pnk->pn", xd[live], wd[ex[live]])
+    assert ((y[live].float() - yr).abs().max() / yr.abs().max()).item() < 1e-2
+    ref = torch.zeros(T, D, device=dev)
+    ref.index_add_(0, pairs[live].long() // topk, yr * wt.reshape(-1)[pairs[live].long()].unsqueeze(1))
+    assert ((out.float() - ref).abs().max() / ref.abs().max()).item() < 1e-2
+    assert torch.equal(out, M.reduce(M.stage2(hq, hs, M.aiter_layout_w2(w).to(dev),
+                                              M.aiter_layout_w2_scale(ws).to(dev), tiles, mt=mt,
+                                              pp=pp, depth=depth), pairs, wt, T))
