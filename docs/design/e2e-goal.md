@@ -81,8 +81,96 @@ written as a replayable loop ([docs/e2e-loop.md](../e2e-loop.md)) so a
 developer's harness can do the next one.
 
 K1 and K2 share the scaled-MFMA path hk already has (FP8 operands, E8M0
-scales, bit-identical to vLLM, but at 6-20% of peak: the matrix unit is 16%
-busy). Raising that main loop is the first step of both.
+scales, bit-identical to vLLM). Winnable, measured: gfx950's scaled MFMA runs
+at 4.5-4.7 PF/s register-only and hipBLASLt's plain FP8 GEMM at 3.14 PF/s
+(8192^3), while every MX GEMM is at 1.25-2.2 PF/s -- the MX penalty is
+software. K2 status (branch `claude/cdna-fp8`): a four-wave form (`mx4w`,
+accumulators in AGPRs, packed scales, a three-stage ring) at 2.2-2.3 PF/s on
+the largest projection, 1.46-1.54x vLLM, ~1.1x FlyDSL; small grids and short
+K still lose.
+
+### Testbed kernels (owner, 2026-10-24)
+
+Two kernels the owner chose to test the DSL on something unfamiliar, from
+the MiniMax-H3 / Qwen-Image DiT on a W7900D, recorded by the same criteria:
+
+| id | kernel | reference / baseline | what the hardware offers |
+|---|---|---|---|
+| **T-CR** | ConvRot INT8 W8A8 GEMM: the online rotation, per-group scales, INT8 GEMM on `v_wmma_i32_16x16x16_iu8`, as a third `SGLANG_DIFFUSION_CONVROT_INT8_BACKEND` (both existing ones are CUDA-only); H3's own convrot int8 checkpoint | SGLang's two CUDA backends (semantics); on gfx1100, hipBLASLt `torch._int_mm` and the bf16 path | gfx1100's int8 WMMA runs at the fp16 rate (measured 96 vs 101 TOP/s register-only; iu4 193): no compute gain. hipBLASLt int8 62.7 / 75.9 TOP/s against bf16 FlyDSL / hk ~88 TF/s at H3 / Qwen shapes. The gain on offer is bytes: int8 halves the DiT, which H3 streams from host RAM every step -- measured before anything is claimed |
+| **T-SA** | SageAttention INT8: Q, K int8 with smooth-K, PV in fp16 (gfx1100 has no fp8) | SageAttention's Triton kernel, if it runs on gfx1100 (checked first); else the fp16 kernels of K3 | the same: int8 QK^T is not faster than fp16 on RDNA3, so the kernel can at best save bytes and registers; on par with K3 is the realistic ceiling, and its value here is as a DSL testbed |
+
+## How the kernels are built: one task workspace each (KDA-style)
+
+Owner, 2026-10-24: a lead agent iterating by hand cannot tell, when it fails,
+whether the harness or the DSL is at fault. Each kernel above is therefore a
+task in a fixed, recorded workflow -- NVlabs' Kernel Design Agents
+(github.com/NVlabs/kda), whose method is hardware-agnostic, ported to AMD and
+hk.
+
+**Layout.** The reusable flow in `~/hk-dx/kda/_flow/` (prompt, record tools,
+skills' sources); one workspace a task in `~/hk-dx/kda/<task>/`:
+
+    task.json         definition + workloads + baselines (FlashInfer-Trace-like): op signature,
+                      dtypes/layouts, the shapes with their weights in the model, reference
+                      callable, tolerance or "bitwise", baselines to beat
+    docs/contract.md  objective, correctness, target, allowed approaches, validation command,
+                      evaluation command, promotion criteria
+    docs/draft.md     baseline + how it is validated, risks, candidate directions ranked by
+                      expected value and risk, first steps, the exact commands, the evidence
+                      that promotes / revises / rejects a candidate -- before any code
+    docs/plan.md      the draft made executable
+    candidates.jsonl  one line a candidate: name, parent, change, why, status
+                      (proposed/built/correct/promoted/rejected), failure class, evidence paths
+    benchmark.csv     every measured number: candidate, shape, arm, us, TF/s, % peak, run id
+    profile/          hk.profile / rocprofv3 reports per candidate
+    runs/ outputs/    raw logs
+    .claude/skills/   the task's skills (never installed globally)
+
+**One round** = one candidate: edit -> build (spill gate, ISA dump) ->
+validate (bitwise or tolerance against the reference, **and N repeated runs
+compared with each other** -- K2's race passed a single check) -> evaluate
+(in one process, interleaved against every baseline, weights rotated past the
+LLC) -> profile (hk.profile verdict) -> record. Every failed round is
+classified: `dsl` (hk cannot express it), `codegen` (hk's passes / C++ /
+hipcc produce something wrong or slow), `harness` (the workflow's tools
+mislead or miss), `algorithm` (the idea itself), `env` (machine, driver,
+cluster).
+
+**Reused parts.** `hk.check` (correctness against a reference),
+`hk.tune.measure` (interleaved, LLC-rotated timing), `hk.profile` (counters,
+thread trace, ISA mix, verdict, JSON), `hk.schedules` (knobs as data), T4's
+harness (sealed shapes, an audit that the submitted kernel actually ran, a
+GPU ledger), the GPU locks and helpers. New: `kda_record.py` (schema-checked
+appends to candidates.jsonl / benchmark.csv), `kda_validate.py` (repeat-run
+determinism on top of hk.check).
+
+**Skills (AMD versions of KDA's three).** `hk-kernelwiki`: gfx950 / gfx1100
+hard limits (VGPR granule 24 on gfx11, 512 regs with AGPRs at one wave a
+SIMD on gfx950, LDS 64 / 160 KB, WMMA / MFMA rates measured), HipKittens
+idioms, and the pitfalls already paid for (a VGPR spill corrupts silently;
+`s_waitcnt` does not hold a WMMA back; narrowing stores go bytewise; gfx11's
+`__syncthreads` flushes L0; register and LDS loads retire out of order on
+vmcnt). `hk-profile-report`: reading hk.profile / rocprofv3 output into a
+next step (replaces ncu-report-skill). `kda-loop`: draft -> plan -> one
+candidate a round -> record (replaces humanize).
+
+**The controlled experiment** (answers "harness or DSL?"). T-SA (or T-CR if
+SageAttention's Triton kernel does not run on gfx1100): the same task
+contract, the same workflow and skills, the same agent (a fresh
+claude-opus-5-5 headless session, as T4) and budget (8 h wall, 3 GPU-h on one
+W7900D), two arms -- **hk-dsl** and **Triton** (the control language with a
+gfx1100 backend). The reference is a black-box oracle in both (its source is
+not given; the transcript is audited as T4's is). Compared: rounds to the
+first correct candidate, best interleaved speed against the reference at the
+contract's shapes, and the distribution of failure classes. Both arms stuck
+in the same class -> the workflow or harness; only the hk arm stuck -> the
+DSL. A second run with the arms' order swapped on fresh sessions guards
+against one lucky run.
+
+K2's race is the first task run through the flow (recorded after the fact:
+what was tried, and that the bug was a `codegen` failure in hk-lds-pipeline
+found only by a repeat-run check the harness did not have -- a `harness`
+gap too).
 
 ## Paused
 
@@ -101,7 +189,12 @@ busy). Raising that main loop is the first step of both.
 
 - Qwen-Image 2.1, 1024^2, 30 steps, one W7900D: 42.2 s -> 28.2 s (1.50x),
   hk attention + GEMM via `hk.integration sglang-diffusion` (PR #21,
-  [chapter 46](../history/46-qwen-image-on-rdna3.md)).
+  [chapter 46](../history/46-qwen-image-on-rdna3.md)) -- on upstream SGLang
+  main. **In the production image** (sglang-radeon@sha256:e9c8365e, SGLang
+  main of 2026-09-22, `sglang serve` with the production flags, timed over
+  HTTP): stock 50.25 s -> hk 29.0 s, 1.73x on one card; the weights'
+  revisions 790c926 (production) and d26bb61 differ only in README.md. The
+  four-card number is being measured.
 - MiniMax-H3 4 s clip: denoise 1.43x with hk attention, the request 1.15x
   (median of three interleaved runs; the VAE decode stage is noisy).
 - DeepSeek-V4.1-Flash: the profiling path in vLLM's AMD package (dummy
