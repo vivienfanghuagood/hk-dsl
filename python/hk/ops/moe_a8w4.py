@@ -564,9 +564,9 @@ def reduce(y, pairs, weights, m: int, *, inv=None, wrow=None, cb: int = 0, weigh
     if d % (4 * cb):
         raise ValueError(f"moe_a8w4.reduce: D={d} not a multiple of {4 * cb}")
     if dense:
-        weighted = False
-        inv = identity(m, topk, y.device) if inv is None else inv
-        wrow = y.new_zeros((1, 1), dtype=torch.float32) if wrow is None else wrow
+        # contiguous choice-major rows: torch's sum (fp32 accumulation, one rounding, fixed
+        # order) streams them at 5.5 TB/s where the gather kernel reaches 3.4 (K1 c20)
+        return y.view(topk, m, -1).sum(0)
     inv = inverse(pairs, m, topk) if inv is None else inv
     wrow = row_weights(pairs, weights) if wrow is None else wrow
     out = torch.empty((m, d), device=y.device, dtype=torch.bfloat16)
