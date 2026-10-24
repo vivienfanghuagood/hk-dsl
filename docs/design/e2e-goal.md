@@ -94,6 +94,27 @@ Two gfx950 hazards found on the way (KernelWiki): register loads and LDS-DMA cop
 retire out of order on vmcnt; a load into scale VGPRs that queued scaled MFMAs
 still read corrupts them.
 
+K3 status (branch `claude/k3-attn`, `hk.ops.attn_k3`, opt-in with `HK_SDPA_K3=1`;
+rounds in `~/hk-dx/kda/k3-dit-attn/candidates.jsonl`). The kernel is the Sage
+experiment's hk-arm structure in bf16: S^T = K Q^T, a lazy running max, fp16 V^T
+pre-transposed in the order the P^T operands are cheapest in, the grid's tail
+split over KV. It reads SGLang's (B, N, H, D) views in place at any length.
+- Kernel: 76-82 TF/s at Qwen / H3 sizes, against 63-69 for hk.ops.attn's kernel
+  (1.18-1.21x) and 55-57 for tuned non-causal Triton FA-2 (1.4x).
+- Accuracy at Qwen-Image 2.1's real shape (q 4,096, kv 4,141): mean error
+  2.95e-5, against a bf16 floor of 2.89e-5 and 4.50e-5 for both hk.ops.attn
+  and aotriton.
+- End to end (production image, 1024^2 / 30 steps, interleaved): 1 GPU 29.0 ->
+  28.4 s (-2.1%); 4 GPUs 9.77 -> 9.55 s (-2.3%).
+- Two parts of the done-criteria need restating, which is the owner's call.
+  - The peak: 70% of the 122.6 TF/s spec is 85% of the ~100 TF/s the card
+    attains even in a register-only WMMA loop; K3 is at ~82% of attainable.
+    What is left (prologue/epilogue, LDS, exp2) is 2-5% items each.
+  - Image identity: hk's accepted path is itself 40.9 dB from stock (1 GPU),
+    against stock's 61 dB run-to-run, because 30 steps amplify any numeric
+    change. K3 is 36.6 dB (1 GPU) and 37.7 dB (4 GPUs, where hk is 37.1). The
+    measurable criterion is per-call accuracy, which K3 meets.
+
 ### Testbed kernels (owner, 2026-10-24)
 
 Two kernels the owner chose to test the DSL on something unfamiliar, from
