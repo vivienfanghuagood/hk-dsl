@@ -1,0 +1,156 @@
+"""vLLM's block-scaled MXFP8 linear layers on hk's MXFP8 GEMM (`HK_VLLM_MXFP8=1`, gfx950).
+
+DeepSeek-V4/V4.1 checkpoints carry 32x32 weight-scale blocks; on gfx950 vLLM serves them with
+`RocmDotScaledMxfp8LinearKernel`, whose `apply_weights` quantizes the activation
+(`mxfp8_e4m3_quantize`) and calls `rocm_mxfp8_block32_gemm`. The patch wraps that class's two
+entry points, as `vllm_int4` does AWQ's:
+
+  * `process_weights_after_loading` runs vLLM's, then lays the weight's block scales out the two
+    ways hk's kernels read them beside vLLM's (per row: AITER's 32-row layout for the eight-warp
+    kernel, packed dwords for the four-warp one) -- a few MB a model;
+  * `apply_weights` quantizes as vLLM does and makes one call of the opaque op
+    `hk_vllm::mxfp8_block32`. Inside it -- where M is a number -- the shapes K2 measured hk
+    faster on (k2-mxfp8-gemm c15: 1.00-1.48x the best of vLLM, FlyDSL and hipBLASLt,
+    bit-identical to vLLM's kernel at all 18 points) take hk's schedule, the rest vLLM's kernel.
+
+The activation's scales are packed per call (`mxfp8.pack_scales`, a small permute).
+
+    HK_PATCH_VLLM=1 HK_VLLM_MXFP8=1 vllm serve <a DeepSeek-V4.1 MXFP8 checkpoint>
+"""
+
+from __future__ import annotations
+
+from typing import Callable, Optional
+
+from . import _common, engine
+
+_ORIG_PWAL: Optional[Callable] = None
+_ORIG_APPLY: Optional[Callable] = None
+
+#: (N, K) of DeepSeek-V4.1-Flash's prefill projections (TP2), measured in k2-mxfp8-gemm.
+MEASURED = {(1792, 5120), (2304, 5120), (5120, 1152), (5120, 4096), (16384, 1280), (12800, 6144)}
+#: The smallest M measured; below it vLLM's kernel runs.
+MIN_M = 2048
+
+#: Four-warp schedules where they won (k2-mxfp8-gemm c15): small N at M 2048.
+_SMALL_N = {1792: dict(block_m=128, block_n=128, split_m=1, split_n=1, stages=3),
+            2304: dict(block_m=128, split_m=1, stages=3)}
+
+
+def _fake(x, xs, w, ws, hk_wa, hk_wp, out_dtype):
+    return x.new_empty((x.shape[0], w.shape[0]), dtype=out_dtype)
+
+
+PATCH = engine.Op(
+    "hk_vllm::mxfp8_block32",
+    "mxfp8_block32(Tensor x, Tensor xs, Tensor w, Tensor ws, Tensor hk_wa, Tensor hk_wp, "
+    "ScalarType out_dtype) -> Tensor",
+    _fake, paths=("hk", "fallback"), graph="safe")
+
+STATS = PATCH.stats
+
+
+def schedule(m: int, n: int, k: int):
+    """("8w" | "4w", sched) for a shape hk takes, else None."""
+    if m < MIN_M or (n, k) not in MEASURED or n % 256 or k % 128:
+        return None
+    if m < 5120 and n in _SMALL_N:
+        return "4w", _SMALL_N[n]
+    return "8w", {}
+
+
+def mxfp8_block32(x, xs, w, ws, hk_wa, hk_wp, out_dtype):
+    """x @ w.T for MXFP8 x (scales xs [M, K/32]) and a 32x32 block-scaled w: hk's schedule
+    where it was measured faster, vLLM's kernel otherwise."""
+    import torch  # noqa: PLC0415
+
+    from ..ops import mxfp8  # noqa: PLC0415
+
+    m, k = x.shape
+    n = w.shape[0]
+    plan = schedule(m, n, k) if out_dtype == torch.bfloat16 and hk_wa.numel() else None
+    if plan is not None:
+        kind, sched = plan
+        xp = mxfp8.pack_scales(xs)
+        PATCH.count("hk")
+        if kind == "8w":
+            return mxfp8.gemm_8w_tail(x, w, xp, hk_wa, hk_wp, **sched)
+        return mxfp8.gemm_4w(x, w, xp, hk_wp, **sched)
+    PATCH.count("fallback")
+    from vllm.model_executor.kernels.linear.mxfp8.rocm_block32_gemm import (  # noqa: PLC0415
+        rocm_mxfp8_block32_gemm)
+
+    return rocm_mxfp8_block32_gemm(x, xs, w, ws, out_dtype)
+
+
+def process_weights_after_loading(self, layer) -> None:
+    """vLLM's, then hk's two layouts of a block-scaled weight's scales beside vLLM's."""
+    import torch  # noqa: PLC0415
+
+    from ..ops import mxfp8  # noqa: PLC0415
+
+    _ORIG_PWAL(self, layer)
+    w, ws = layer.weight, layer.weight_scale
+    n, k = w.shape
+    if ws.shape[0] == n or w.element_size() != 1 or n % 256 or k % 128:
+        return                       # not the block-scaled path, or a shape hk does not take
+    rows = mxfp8.expand_block_scales(ws.data.view(torch.uint8))[:n]
+    layer.hk_wa = torch.nn.Parameter(mxfp8.aiter_scales(rows), requires_grad=False)
+    layer.hk_wp = torch.nn.Parameter(mxfp8.pack_scales(rows), requires_grad=False)
+
+
+def apply_weights(self, layer, x, bias=None):
+    if not hasattr(layer, "hk_wa"):
+        return _ORIG_APPLY(self, layer, x, bias)
+    from vllm.model_executor.layers.quantization.utils.mxfp8_utils import (  # noqa: PLC0415
+        mxfp8_e4m3_quantize)
+
+    x2d = x.reshape(-1, x.shape[-1])
+    x_q, x_scale = mxfp8_e4m3_quantize(x2d)
+    out = PATCH(x_q, x_scale, layer.weight, layer.weight_scale, layer.hk_wa, layer.hk_wp, x.dtype)
+    out = out.reshape(*x.shape[:-1], layer.weight.shape[0])
+    if bias is not None:
+        out = out + bias
+    return out
+
+
+def _cls():
+    from vllm.model_executor.kernels.linear.mxfp8 import rocm_native  # noqa: PLC0415
+
+    return rocm_native.RocmDotScaledMxfp8LinearKernel
+
+
+def apply_patch() -> str:
+    """Route vLLM's block-scaled MXFP8 linear layers. Returns what happened, in one line."""
+    global _ORIG_PWAL, _ORIG_APPLY
+    if not _common.importable("vllm"):
+        return "vllm is not importable; mxfp8 not patched"
+    if _ORIG_APPLY is not None:
+        return "mxfp8: already patched"
+    from ..target import current_arch  # noqa: PLC0415
+
+    if current_arch() != "gfx950":
+        return f"mxfp8: not patched -- gfx950's scaled MFMA, not {current_arch()}"
+    from .vllm_gemm import _own_compile_cache  # noqa: PLC0415
+
+    PATCH.define(mxfp8_block32)
+    cls = _cls()
+    _ORIG_PWAL, _ORIG_APPLY = cls.process_weights_after_loading, cls.apply_weights
+    cls.process_weights_after_loading = process_weights_after_loading
+    cls.apply_weights = apply_weights
+    return (f"mxfp8 -> hk for block-scaled layers of {len(MEASURED)} measured (N, K) at M >= "
+            f"{MIN_M} (compile cache {_own_compile_cache('hk-mxfp8')})")
+
+
+def revert() -> str:
+    global _ORIG_PWAL, _ORIG_APPLY
+    if _ORIG_APPLY is None:
+        return "mxfp8: not patched"
+    cls = _cls()
+    cls.process_weights_after_loading, cls.apply_weights = _ORIG_PWAL, _ORIG_APPLY
+    _ORIG_PWAL = _ORIG_APPLY = None
+    return "mxfp8 -> vllm"
+
+
+def status() -> str:
+    return "not patched" if _ORIG_APPLY is None else PATCH.summary()

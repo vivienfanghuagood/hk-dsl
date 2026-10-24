@@ -86,6 +86,14 @@ def register() -> None:
             notes.append(vllm_int4.apply_patch())
         except BaseException as e:  # noqa: BLE001
             notes.append(f"int4 not patched ({type(e).__name__}: {e})")
+    # Block-scaled MXFP8 layers (DeepSeek-V4.1 on gfx950) likewise.
+    if os.environ.get("HK_VLLM_MXFP8", "0") not in ("0", "", "off", "no"):
+        try:
+            from . import vllm_mxfp8  # noqa: PLC0415
+
+            notes.append(vllm_mxfp8.apply_patch())
+        except BaseException as e:  # noqa: BLE001
+            notes.append(f"mxfp8 not patched ({type(e).__name__}: {e})")
     # MoE layers likewise: every bf16 expert GEMM changes kernels.
     if os.environ.get("HK_VLLM_MOE", "0") not in ("0", "", "off", "no"):
         try:
