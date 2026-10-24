@@ -38,6 +38,8 @@ from __future__ import annotations
 
 import os
 import sys
+import threading
+import time
 import sysconfig
 from pathlib import Path
 from typing import List
@@ -253,11 +255,33 @@ def apply() -> str:
     if "linear" in parts:
         notes.append(apply_linear())
     if not getattr(apply, "_done", False):
-        # The worker that ran the DiT says, as it exits, which branch it took.
-        atexit.register(lambda: print(f"[hk] sglang-diffusion: {stats()} (pid {os.getpid()})",
-                                      flush=True))
+        # Each process says which branch it took: as it exits, and -- because the worker that
+        # runs the DiT is torn down without running atexit (its counters were never seen) --
+        # from a daemon thread whenever they changed, at most every HK_SGLD_REPORT_S seconds.
+        atexit.register(_report, True)
+        threading.Thread(target=_reporter, name="hk-sgld-report", daemon=True).start()
         apply._done = True
     return "; ".join(notes) or f"nothing ({ENV} names neither attn nor linear)"
+
+
+_LAST = [None]
+
+
+def _report(force: bool = False) -> None:
+    s = stats()
+    if force or s != _LAST[0]:
+        _LAST[0] = s
+        print(f"[hk] sglang-diffusion: {s} (pid {os.getpid()})", flush=True)
+
+
+def _reporter() -> None:
+    period = float(os.environ.get("HK_SGLD_REPORT_S", "60"))
+    while True:
+        time.sleep(period)
+        try:
+            _report()
+        except Exception:  # noqa: BLE001 -- a report must never take the worker down
+            pass
 
 
 def stats() -> str:

@@ -615,7 +615,11 @@ process imports the SDPA backend. Two patches:
   `sglang.multimodal_gen.runtime.layers.linear` to `hk.ops.matmul` for bf16
   projections without bias and with at least `MIN_M` (1024) rows.
 
-Each patched process prints, as it exits, how many calls took hk's kernels.
+Each patched process prints how many calls took hk's kernels: whenever the
+counts changed, at most every `HK_SGLD_REPORT_S` seconds (60), and as it
+exits. The worker that runs the DiT is torn down without running `atexit`,
+so the line printed at exit is the parent's, whose counts stay 0; read the
+worker's lines (their pid differs).
 Measured on Qwen-Image 2.1, 1024^2, 30 steps, one W7900D: 42.2 s stock, 34.8 s
 with the attention patch, 28.2 s with both (1.50x; attention reads SGLang's
 (B, N, H, D) views in place), images visually identical
