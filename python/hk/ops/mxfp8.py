@@ -627,3 +627,23 @@ def gemm_4w_tail(a, b, sa_packed, sb_packed, out=None, *, n1=None, tail=None, **
     gemm_4w(a, b[n1:], sa_packed, sb_packed[n1 // 64:], out[:, n1:], **tail)
     return out
 
+
+
+def gemm_8w_tail(a, b, sa_packed, sb_aiter, sb_packed, out=None, *, n1=None, tail=None, **sched):
+    """gemm_8w with the grid's last, partial wave recut as gemm_4w_tail does: columns [0, n1) on
+    gemm_8w (whole waves), the rest on gemm_4w's 128 x 128 blocks (packed B scales: sb_packed).
+    Bit-identical to gemm_8w."""
+    import torch  # noqa: PLC0415
+
+    m, n = a.shape[0], b.shape[0]
+    if out is None:
+        out = torch.empty((m, n), device=a.device, dtype=torch.bfloat16)
+    if n1 is None:
+        n1 = tail_split(m, n)
+    if not n1 or n1 >= n:
+        return gemm_8w(a, b, sa_packed, sb_aiter, out, **sched)
+    tail = dict(tail or {"block_m": 128, "block_n": 128, "split_m": 1, "split_n": 1, "stages": 3,
+                         "rolled": True})
+    gemm_8w(a, b[:n1], sa_packed, sb_aiter[:n1], out[:, :n1], **sched)
+    gemm_4w(a, b[n1:], sa_packed, sb_packed[n1 // 64:], out[:, n1:], **tail)
+    return out
