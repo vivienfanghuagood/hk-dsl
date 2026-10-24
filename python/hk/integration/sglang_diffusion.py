@@ -100,7 +100,7 @@ LINEAR_HOME = "sglang.multimodal_gen.runtime.layers.linear"
 #: Below this many rows a projection keeps the engine's GEMM: hk's gfx1100 GEMM
 #: was measured at 1.27-1.28x hipBLASLt on Qwen-Image 2.1's DiT projections at
 #: M = 4096 (1024^2 images) and not at small M, where the text prefix and the
-#: modulation projections run.
+#: modulation projections run. Above it each shape is timed once (`_measure`).
 MIN_M = 1024
 
 LINEAR_STATS = {"hk": 0, "engine": 0}
@@ -135,9 +135,60 @@ def _hk_linear(x, weight, bias):
     s = gemm.schedule_for(m, n, k)
     if k % s["k_step"] or n % s["block_n"]:
         return None
+    op = _gemm_op(s)
+    key = (_bucket(m), n, k)
+    if key not in DECISIONS:
+        DECISIONS[key] = _measure(op, a, weight)
+        if os.environ.get("HK_SGLD_LOG", "0") not in _OFF:
+            print(f"[hk] sglang-diffusion linear {m}x{n}x{k}: {DECISIONS[key][1]}", flush=True)
+    if not DECISIONS[key][0]:
+        return None
     out = torch.empty((m, n), device=x.device, dtype=torch.bfloat16)
-    _gemm_op(s)(a, weight, out)
+    op(a, weight, out)
     return out.view(*x.shape[:-1], n)
+
+
+#: (M bucket, N, K) -> (take hk's GEMM?, why), decided the first time a shape
+#: is seen in this process.
+DECISIONS = {}
+
+#: hk must beat the engine by this much at a shape to take it: the decision is
+#: a few timed calls, and a near-tie is not worth a different kernel.
+MARGIN = 1.03
+
+
+def _bucket(m: int) -> int:
+    b = 1
+    while b < m:
+        b *= 2
+    return b
+
+
+def _measure(op, a, weight):
+    """Time hk's GEMM against F.linear on this call's own operands, interleaved,
+    best of 5 each after a warm-up, on the current stream. hk's gfx1100 GEMM
+    won at Qwen-Image's DiT shapes (1.27x), and with every M >= 1024 projection
+    patched MiniMax-H3's decode stage was 35% slower: a shape decides for itself."""
+    import torch  # noqa: PLC0415
+    import torch.nn.functional as F  # noqa: PLC0415,N812
+
+    out = torch.empty((a.shape[0], weight.shape[0]), device=a.device, dtype=torch.bfloat16)
+    arms = {"hk": lambda: op(a, weight, out), "engine": lambda: F.linear(a, weight)}
+    for f in arms.values():
+        f()
+    best = {name: float("inf") for name in arms}
+    for _ in range(5):
+        for name, f in arms.items():
+            e0, e1 = torch.cuda.Event(True), torch.cuda.Event(True)
+            e0.record()
+            f()
+            e1.record()
+            e1.synchronize()
+            best[name] = min(best[name], e0.elapsed_time(e1))
+    ratio = best["engine"] / best["hk"]
+    take = ratio >= MARGIN
+    return take, (f"{'hk' if take else 'engine'} (engine {best['engine'] * 1e3:.0f} us, "
+                  f"hk {best['hk'] * 1e3:.0f} us, {ratio:.2f}x)")
 
 
 _OPS = {}
