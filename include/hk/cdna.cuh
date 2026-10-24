@@ -408,6 +408,15 @@ __device__ void hk_buf_st128(__uint128_t, hk_i32x4, uint32_t, uint32_t, uint32_t
  * RMSNorm, a readfirstlane/saveexec loop per load).
  */
 __device__ inline hk_i32x4 hk_srsrc(const void *base, uint64_t bytes) {
+#ifdef HK_SRSRC_DIRECT
+    // the four words built straight from uniform scalars (no struct round trip), so the backend
+    // keeps the descriptor in SGPRs across a loop instead of a VGPR copy it readfirstlanes per use
+    const uint64_t p = reinterpret_cast<uint64_t>(base);
+    const uint32_t range = bytes > 0xFFFFFFFFull ? 0xFFFFFFFFu : uint32_t(bytes);
+    return hk_i32x4{int(__builtin_amdgcn_readfirstlane(uint32_t(p))),
+                    int(__builtin_amdgcn_readfirstlane(uint32_t(p >> 32))),
+                    int(__builtin_amdgcn_readfirstlane(range)), 0x00020000};
+#endif
     struct { uint64_t ptr; uint32_t range; uint32_t config; } d{
         reinterpret_cast<uint64_t>(base),
         bytes > 0xFFFFFFFFull ? 0xFFFFFFFFu : uint32_t(bytes), 0x00020000u};

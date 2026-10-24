@@ -132,7 +132,7 @@ def pack_scales(s):
 def mx4w_kernel(name: str = "mxfp8_4w", *, block_m: int = 256, block_n: int = 256,
                 stages: int = 2, wgm: int = 8, xcd_chunk: int = 32, setprio: bool = False,
                 split_m: int = 2, split_n: int = 2, scale_ahead: int = 2,
-                ilv: int = 0, rolled: bool = False, dbg: str = ""):
+                ilv: int = 0, rolled: bool = False, dbg: str = "", defines: str = ""):
     """MXFP8 GEMM, four warps (2 x 2) of block_m/2 x block_n/2 each, so one
     wave a SIMD and the whole register file a lane (VGPRs and AGPRs: the
     accumulators of a 128 x 128 warp tile are 256 of them). K-tiles of 128 in
@@ -342,6 +342,7 @@ def mx4w_kernel(name: str = "mxfp8_4w", *, block_m: int = 256, block_n: int = 25
 
     body.__name__ = name
     return hk.kernel(body, arch="gfx950", warps=WARPS, name=name, max_vgprs=512,
+                     defines={d: 1 for d in defines.split(",") if d},
                      grid=lambda p: (hk.cdiv(p.a.rows, block_m) * (p.b.rows // block_n), 1, 1))
 
 
@@ -555,3 +556,42 @@ def gemm_4w(a, b, sa_packed, sb_packed, out=None, **sched):
         out = torch.empty((m, b.shape[0]), device=a.device, dtype=torch.bfloat16)
     kern(a, b, sa_packed, sb_packed, out)
     return out
+
+
+def tail_split(m: int, n: int, cus: int = 256, block_m: int = 256, block_n: int = 256,
+               tail_block: int = 128):
+    """The column split that ends the main kernel's grid on a whole wave: N1, the largest multiple
+    of block_n with ceil(m / block_m) * N1 / block_n a multiple of `cus`, the rest (N - N1 columns)
+    left to a second launch of tail_block-square blocks. None when there is no such N1 or the
+    rest is not a whole number of tail blocks."""
+    mb = -(-m // block_m)
+    if (mb * (n // block_n)) % cus == 0:
+        return None                                  # already whole waves
+    for n1 in range(n - block_n, 0, -block_n):
+        if (mb * (n1 // block_n)) % cus == 0 and (n - n1) % tail_block == 0:
+            tail_tiles = -(-m // tail_block) * ((n - n1) // tail_block)
+            # the rest must be one wave of tail blocks: more, and the small blocks' lower
+            # efficiency costs more than the partial wave it removes (8192 x 16384: 0.96x)
+            return n1 if tail_tiles <= cus else None
+    return None
+
+
+def gemm_4w_tail(a, b, sa_packed, sb_packed, out=None, *, n1=None, tail=None, **sched):
+    """gemm_4w with the grid's last, partial wave recut: columns [0, n1) on `sched` (whole waves),
+    columns [n1, N) on `tail` (smaller blocks: one wave across all CUs). Every output element is
+    still one workgroup's full-K sum in the same order -- bit-identical to gemm_4w."""
+    import torch  # noqa: PLC0415
+
+    m, n = a.shape[0], b.shape[0]
+    if out is None:
+        out = torch.empty((m, n), device=a.device, dtype=torch.bfloat16)
+    if n1 is None:
+        n1 = tail_split(m, n, block_m=sched.get("block_m", 256), block_n=sched.get("block_n", 256))
+    if not n1 or n1 >= n:
+        return gemm_4w(a, b, sa_packed, sb_packed, out, **sched)
+    tail = dict(tail or {"block_m": 128, "block_n": 128, "split_m": 1, "split_n": 1, "stages": 3,
+                         "rolled": True})
+    gemm_4w(a, b[:n1], sa_packed, sb_packed[: n1 // 64], out[:, :n1], **sched)
+    gemm_4w(a, b[n1:], sa_packed, sb_packed[n1 // 64:], out[:, n1:], **tail)
+    return out
+
