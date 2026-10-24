@@ -469,47 +469,40 @@ def mx4p_kernel(name: str = "mxfp8_4p", *, block_m: int = 256, block_n: int = 25
                     c[hk.elem_coord(0, 0, m0 + a_row(i), n0 + b_row(j))].store(C[i][j], bounded=True)
                     C[i][j].zero_()
 
-        # grid_size <= blocks (gemm_4p specializes it), so every workgroup has a block.
-        # Three cursors walk the stream -- the K-tile computed, the one whose scales
-        # load (one ahead), the one copied (stages-1 ahead) -- each a (block, k,
-        # m0, n0) moved on by an add; a block's origin (divisions) only at its start.
+        def prologue(m0, n0):
+            load_scales(0, m0, n0, 0)
+            load_scales(1, m0, n0, 1)
+            for t in range(stages - 1):
+                for kind, h in PIECES:
+                    piece(m0, n0, t, t, kind, h)
+
+        # grid_size <= blocks (gemm_4p specializes it), so every workgroup has a
+        # block. Blocks are an outer loop and K-tiles an inner one (a store
+        # inside the K-tile loop made the compiler permute the accumulators every
+        # K-tile); the next block's scales and first copies go out before this
+        # block's store, so the store and the refill overlap.
         m0, n0 = origin(0)
-        load_scales(0, m0, n0, 0)
-        load_scales(1, m0, n0, 1)
-        for t in range(stages - 1):
-            for kind, h in PIECES:
-                piece(m0, n0, t, t, kind, h)
-        bt, kt, m0t, n0t = 0, 0, m0, n0
-        bs, ks, m0s, n0s = 0, 1, m0, n0
-        bc, kc, m0c, n0c = 0, stages - 1, m0, n0
-        rot = 0
-        for s in range(0, n_steps - (stages - 1)):
-            step(rot % stages, (rot + stages - 1) % stages, (m0c, n0c, kc), (m0s, n0s, ks))
-            hand_over()
-            if kt == k_tiles - 1:
-                finish_block(m0t, n0t)
-            rot = (rot + 1) % stages
-            kt = kt + 1
-            if kt == k_tiles:
-                kt = 0
-                bt = bt + 1
-                m0t, n0t = origin(bt)
-            ks = ks + 1
-            if ks == k_tiles:
-                ks = 0
-                bs = bs + 1
-                m0s, n0s = origin(bs)
-            kc = kc + 1
-            if kc == k_tiles:
-                kc = 0
-                bc = bc + 1
-                m0c, n0c = origin(bc)
-        for d in range(stages - 1):
-            last = d == stages - 2
-            step((rot + d) % stages, None, None, None if last else (m0t, n0t, kt + d + 1))
-            if not last:
+        prologue(m0, n0)
+        for bi in range(0, mine):
+            rot = 0
+            for kk in range(0, k_tiles - (stages - 1)):
+                step(rot % stages, (rot + stages - 1) % stages, (m0, n0, kk + stages - 1),
+                     (m0, n0, kk + 1))
                 hand_over()
-        finish_block(m0t, n0t)
+                rot = (rot + 1) % stages
+            for d in range(stages - 1):
+                last = d == stages - 2
+                step((rot + d) % stages, None, None,
+                     None if last else (m0, n0, k_tiles - (stages - 1) + d + 1))
+                if not last:
+                    hand_over()
+            # The last block refills with itself (clamped): wasted copies, no branch.
+            nm0, nn0 = origin(hk.min(bi + 1, mine - 1))
+            hk.arch.barrier()
+            prologue(nm0, nn0)
+            finish_block(m0, n0)
+            m0, n0 = nm0, nn0
+        hk.arch.vm_wait(0)
 
     body.__name__ = name
     return hk.kernel(body, arch="gfx950", warps=WARPS, name=name, max_vgprs=512,
