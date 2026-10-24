@@ -98,8 +98,14 @@ def attn_kernel(name: str, *, head_dim: int = 128, q_block: int = 16,
                 kv_block: int = 32, warps: int = 12, vt_d_chunk: int = 16,
                 qk_tiles: int = 2, pv_tiles: int = 2, causal: bool = False,
                 scale: Optional[float] = None, setprio: bool = True,
-                max_vgprs: int = 256, min_occupancy: int = 1):
+                max_vgprs: int = 256, min_occupancy: int = 1, bnhd: bool = False):
     """The default tiling is the C++'s, which its sweep.sh picked.
+
+    `bnhd`: q, k, v and o are (B, 1, N, H * head_dim) -- the (B, N, H, D)
+    memory a projection writes, which SDPA callers hand over as a transposed
+    view -- and a head's rows are read at a column offset of head * head_dim
+    instead of being copied into (B, H, N, D) first. Same schedule, same
+    instructions in the loops; only the addresses differ.
 
     `qk_tiles`/`pv_tiles` are how many 16x16 LDS reads go in flight before the
     wait that retires them. They are not a tile shape here the way they are in
@@ -180,7 +186,15 @@ def attn_kernel(name: str, *, head_dim: int = 128, q_block: int = 16,
         # GQA is an addressing change and nothing else: the grid is over *query*
         # heads and several of them read the same K/V head. One scalar divide,
         # hoisted; when the head counts match it is a divide by 1.
-        head_kv = head // (q.depth // k.depth)
+        if bnhd:
+            head_kv = head // ((q.cols // head_dim) // (k.cols // head_dim))
+        else:
+            head_kv = head // (q.depth // k.depth)
+
+        def at(t, h, row, col):
+            if bnhd:
+                return t[hk.elem_coord(b, 0, row, h * head_dim + col)]
+            return t[hk.elem_coord(b, h, row, col)]
 
         # Q remainder by backing the last block up, not by predicating it. Each
         # query row's output depends on nothing but that row, so the overlap is
@@ -190,7 +204,7 @@ def attn_kernel(name: str, *, head_dim: int = 128, q_block: int = 16,
         wid = hk.arch.warp_id()
         q_row = q_tile_start + wid * q_block
 
-        q_r = [q[hk.elem_coord(b, head, q_row, 16 * kk)].load(ty_q)
+        q_r = [at(q, head, q_row, 16 * kk).load(ty_q)
                for kk in range(d_frags)]
 
         o_c = [hk.zeros(ty_o) for _ in range(d_frags)]
@@ -237,11 +251,11 @@ def attn_kernel(name: str, *, head_dim: int = 128, q_block: int = 16,
 
         def load_kv(kv_start):
             """Issue a block's global reads. Waits for nothing."""
-            g.stage(buf_k, k[hk.elem_coord(b, head_kv, kv_start, 0)])
+            g.stage(buf_k, at(k, head_kv, kv_start, 0))
             if stages_v:
                 for w in range(v_bands):
-                    v[hk.elem_coord(b, head_kv, kv_start + 16 * w,
-                                    c_chunk * vt_d_chunk)].load(ty_v, into=v_rows[w])
+                    at(v, head_kv, kv_start + 16 * w,
+                       c_chunk * vt_d_chunk).load(ty_v, into=v_rows[w])
 
         def commit_kv():
             """Land them: K straight into LDS, V transposed."""
@@ -398,12 +412,14 @@ def attn_kernel(name: str, *, head_dim: int = 128, q_block: int = 16,
         # col fragment as a [q, d] row fragment *is* the transpose.
         for i, c in enumerate(o_c):
             c /= l_run
-            o[hk.elem_coord(b, head, q_row, 16 * i)] = hk.transpose(c)
+            ot = hk.transpose(c)
+            at(o, head, q_row, 16 * i).store(ot)
 
     body.__name__ = name
 
     def _grid(p):
-        return (hk.cdiv(p.q.rows, q_tile), p.q.depth, p.q.batch)
+        heads = p.q.cols // head_dim if bnhd else p.q.depth
+        return (hk.cdiv(p.q.rows, q_tile), heads, p.q.batch)
 
     return hk.kernel(body, warps=warps, grid=_grid, name=name,
                      max_vgprs=max_vgprs, min_occupancy=min_occupancy)
@@ -475,8 +491,8 @@ def _bench_for(head_dim: int, causal: bool):
     return for_key
 
 
-def _tuner(head_dim: int, causal: bool) -> _autotune.Tuner:
-    base = f"attn_fwd_d{head_dim}{'_causal' if causal else ''}"
+def _tuner(head_dim: int, causal: bool, bnhd: bool = False) -> _autotune.Tuner:
+    base = f"attn_fwd{'_bnhd' if bnhd else ''}_d{head_dim}{'_causal' if causal else ''}"
 
     def make(**sched):
         # The default schedule keeps the bare name. That is not cosmetic: it is
@@ -484,7 +500,7 @@ def _tuner(head_dim: int, causal: bool) -> _autotune.Tuner:
         # and in the four-row table this kernel is judged by, and a tuner that
         # renamed it would invalidate all of them on the day it was added.
         name = base if sched == DEFAULT else f"{base}_{_autotune.label_of(sched)}"
-        return attn_kernel(name, head_dim=head_dim, causal=causal, **sched)
+        return attn_kernel(name, head_dim=head_dim, causal=causal, bnhd=bnhd, **sched)
 
     return _autotune.Tuner(base, make, SPACE, DEFAULT,
                            bench=_bench_for(head_dim, causal), keys=TUNE_KEYS)
@@ -493,6 +509,11 @@ def _tuner(head_dim: int, causal: bool) -> _autotune.Tuner:
 #: different kernels, and a space that contained them would be a space most of
 #: whose points answer a question nobody asked.
 TUNERS = {(d, c): _tuner(d, c) for d in (128, 64) for c in (False, True)}
+
+#: The same kernels reading (B, N, H, D) memory in place (`attn_kernel(bnhd=True)`).
+#: Their own tuners, so their records never stand in for the (B, H, N, D) ones;
+#: with none, they run the default schedule.
+TUNERS_BNHD = {(d, c): _tuner(d, c, bnhd=True) for d in (128, 64) for c in (False, True)}
 
 #: The shapes H3 runs, at the default schedule. Nothing here is traced or
 #: compiled at import: `attn_kernel` only builds a Kernel object.
@@ -534,7 +555,7 @@ def _native_cdna() -> bool:
 
 
 def _kernel_for(head_dim: int, causal: bool, scale: Optional[float],
-                n: int = 4096):
+                n: int = 4096, bnhd: bool = False):
     """The compiled kernel for one (head_dim, causal, scale).
 
     `scale` is a trace-time constant (see `attn_kernel`), so a non-default one
@@ -543,19 +564,21 @@ def _kernel_for(head_dim: int, causal: bool, scale: Optional[float],
     on-disk compile cache hit on the second run instead of the second call.
     """
     if _native_cdna():
+        if bnhd:
+            raise ValueError("bnhd: gfx1100's kernel only")
         from . import attn_cdna  # noqa: PLC0415
 
         return attn_cdna.kernel_for(head_dim, causal, scale)
     suffix = "_causal" if causal else ""
     if scale is None or scale == head_dim ** -0.5:
-        return TUNERS[(head_dim, causal)].kernel(_tune_key(n))
+        return (TUNERS_BNHD if bnhd else TUNERS)[(head_dim, causal)].kernel(_tune_key(n))
     import struct  # noqa: PLC0415 -- only on the non-default path
     bits = struct.unpack("<Q", struct.pack("<d", float(scale)))[0]
-    name = f"attn_fwd_d{head_dim}{suffix}_s{bits:016x}"
+    name = f"attn_fwd{'_bnhd' if bnhd else ''}_d{head_dim}{suffix}_s{bits:016x}"
     k = _SCALED.get(name)
     if k is None:
         k = _SCALED[name] = attn_kernel(name, head_dim=head_dim, causal=causal,
-                                        scale=float(scale))
+                                        scale=float(scale), bnhd=bnhd)
     return k
 
 

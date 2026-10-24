@@ -597,6 +597,33 @@ sglang-radeon runs it ([chapter 24](history/24-sglang.md)).
   bites with `--attention-backend torch_native` and in the vision encoders
   of multimodal models.
 
+## SGLang-Diffusion (text to image and video)
+
+```bash
+python -m hk.integration sglang-diffusion install    # once per environment
+HK_SGLD=1 python my_generate.py                      # attention and GEMM; =attn or =linear for one
+python -m hk.integration sglang-diffusion status
+```
+
+SGLang-Diffusion (`sglang.multimodal_gen`) runs the DiT in worker processes
+and loads no plugins there, so `install` writes `hk_sgld.pth` and the boot it
+imports into site-packages; with `HK_SGLD` set, the boot patches whichever
+process imports the SDPA backend. Two patches:
+- **attention**: `hk.ops.sdpa.patch()` behind the `torch_sdpa` backend (the
+  only one that runs on RDNA3); masked and odd-head-dim calls go to torch;
+- **linear**: `UnquantizedLinearMethod.apply` of
+  `sglang.multimodal_gen.runtime.layers.linear` to `hk.ops.matmul` for bf16
+  projections without bias and with at least `MIN_M` (1024) rows.
+
+Each patched process prints, as it exits, how many calls took hk's kernels.
+Measured on Qwen-Image 2.1, 1024^2, 30 steps, one W7900D: 42.2 s stock, 34.8 s
+with the attention patch, 28.2 s with both (1.50x; attention reads SGLang's
+(B, N, H, D) views in place), images visually identical
+([chapter 46](history/46-qwen-image-on-rdna3.md)). With sglang-radeon 0.1.5 installed,
+its `h3_denoise_platform_gate` shim must be narrowed first (it makes the global
+platform claim CUDA, and SGLang then picks CUDA-only kernels on gfx1100); the
+chapter has the hook.
+
 ## Ahead-of-time builds
 
 `python3 -m hk.integration --warm -j 32` fills the cache for the torch half

@@ -1,0 +1,26 @@
+{
+ "args": {
+  "out": "/workspace/e1/native-hk3",
+  "model": "/workspace/hf/hub/models--Qwen--Qwen-Image-2.1/snapshots/d26bb61231c349cf6b7896fa83353113880e1ba3",
+  "runs": 3,
+  "steps": 30,
+  "size": 1024,
+  "backend": "torch_sdpa",
+  "seed": 42
+ },
+ "load_s": 41.97233923152089,
+ "walls": [
+  28.11885543912649,
+  28.226774448528886,
+  28.311316821724176
+ ],
+ "median": 28.226774448528886,
+ "torch": "2.9.1+gitff65f5b",
+ "hip": "7.2.53211-e1a6bc5663",
+ "env": {
+  "SGLANG_USE_AITER": "0",
+  "MIOPEN_FIND_MODE": "FAST",
+  "HIP_VISIBLE_DEVICES": "0",
+  "HK_SGLD": "1"
+ }
+}
