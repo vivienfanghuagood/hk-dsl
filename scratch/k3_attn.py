@@ -94,11 +94,12 @@ class PairPKernel(_dsl.Kernel):
 # ---------------------------------------------------------------- V^T
 
 
-def vt_kernel(name: str, warps: int = 2):
+def vt_kernel(name: str, warps: int = 2, bnhd: bool = False):
     """V^T for the attention: vt [B, H, 128, N] fp16 from bf16 V, with the columns of every 32-row
     pair in kda::pair_p's order (the 16 even kv rows, then the 16 odd). A WMMA against the identity
     (bf16 V . I in fp32, exact) lands V in the accumulator layout, stored transposed and narrowed
-    to fp16 (the hk arm's vt_kernel, bf16 in)."""
+    to fp16 (the hk arm's vt_kernel, bf16 in). v: [B, H, N/2, 2*128] (BHND, row pairs side by side),
+    or with bnhd [B, 1, N/2, 2*H*128] ((B, N, H, D) memory read in place)."""
     ta = hk.RT(bf16, 16, 16, "row")
     te = hk.RT(bf16, 16, 16, "col")
     tacc = hk.RT(fp32, 64, 16, "col")
@@ -112,14 +113,18 @@ def vt_kernel(name: str, warps: int = 2):
             acc = hk.zeros(tacc)
             for pr in range(2):
                 for par in range(2):
-                    x = v[hk.elem_coord(b, h, (row + 32 * pr) // 2, HEAD_DIM * par + 16 * dd)].load(ta)
+                    if bnhd:
+                        hd = v.cols // 2
+                        x = v[hk.elem_coord(b, 0, (row + 32 * pr) // 2, hd * par + HEAD_DIM * h + 16 * dd)].load(ta)
+                    else:
+                        x = v[hk.elem_coord(b, h, (row + 32 * pr) // 2, HEAD_DIM * par + 16 * dd)].load(ta)
                     sub = acc.subtile(16, 2 * pr + par)
                     sub += x @ e
             vt[hk.elem_coord(b, h, 16 * dd, row)].store(hk.transpose(acc))
 
     body.__name__ = name
     return hk.kernel(body, warps=warps, name=name,
-                     grid=lambda p: (hk.cdiv(p.v.rows * 2, 64 * warps), p.v.depth, p.v.batch))
+                     grid=lambda p: (hk.cdiv(p.vt.cols, 64 * warps), p.vt.depth, p.vt.batch))
 
 
 # ---------------------------------------------------------------- attention
@@ -127,10 +132,11 @@ def vt_kernel(name: str, warps: int = 2):
 
 def attn_kernel(name: str, *, kv_block: int = 32, warps: int = 8, qk_tiles: int = 2,
                 pv_tiles: int = 2, setprio: bool = True, max_vgprs: int = 256, stages: int = 1,
-                lazy: float = 0.0, _ablate: str = ""):
+                lazy: float = 0.0, bnhd: bool = False, _ablate: str = ""):
     """One workgroup a work unit (a 128-row Q block, or a KV part of one for the grid's tail).
     q: [1, 1, R, 128] bf16 (R = B*H*N rows); k: [1, G, N_kv, 128] bf16; v: [1, G, 128, N_kv] fp16
     V^T (banded); o: [1, 1, R, 128] bf16; wp/wu/op/ml as the hk arm's (split plan, partials).
+    bnhd: q, k, o are [B, 1, N, H*128] -- (B, N, H, D) memory read and written in place.
     stages=2: two KV blocks in flight in registers (the loop unrolled by two over the buffer's slots,
     a part's block count rounded up to even), so a block's commit waits only for its own loads.
     lazy > 0: keep the running max stale until a row's block max exceeds it by more than `lazy`
@@ -186,8 +192,17 @@ def attn_kernel(name: str, *, kv_block: int = 32, warps: int = 8, qk_tiles: int 
         kb_hi = hk.min(kb_lo + per, kv_total)
 
         wid = hk.arch.warp_id()
-        q_row = blk * q_tile + wid * q_block
-        q_r = [q[hk.elem_coord(0, 0, q_row, 16 * kk)].load(ty_q) for kk in range(d_frags)]
+        if bnhd:
+            heads = q.cols // head_dim
+            bb = head // heads
+            col0 = (head % heads) * head_dim
+            q_row = (blk % nqb) * q_tile + wid * q_block
+            kb_b, kb_h = bb, 0
+        else:
+            bb, col0 = 0, 0
+            q_row = blk * q_tile + wid * q_block
+            kb_b, kb_h = 0, head
+        q_r = [q[hk.elem_coord(bb, 0, q_row, col0 + 16 * kk)].load(ty_q) for kk in range(d_frags)]
 
         o_c = [hk.zeros(ty_o) for _ in range(d_frags)]
         m_run = hk.neg_infty(ty_vec)
@@ -195,7 +210,7 @@ def attn_kernel(name: str, *, kv_block: int = 32, warps: int = 8, qk_tiles: int 
 
         def load_kv(kb, slot=0):
             kv0 = hk.min(kb, kb_hi - 1) * kv_block
-            g.stage(buf_k, k[hk.elem_coord(0, head, kv0, 0)], slot)
+            g.stage(buf_k, k[hk.elem_coord(kb_b, kb_h, kv0, col0)], slot)
             g.stage(buf_vt, v[hk.elem_coord(0, head, 0, kv0)], slot)
 
         def commit_kv(slot=0):
@@ -285,14 +300,14 @@ def attn_kernel(name: str, *, kv_block: int = 32, warps: int = 8, qk_tiles: int 
         if is_s == 0:
             for i, c in enumerate(o_c):
                 c /= l_run
-                o[hk.elem_coord(0, 0, q_row, 16 * i)].store(hk.transpose(c))
+                o[hk.elem_coord(bb, 0, q_row, col0 + 16 * i)].store(hk.transpose(c))
 
     body.__name__ = name
     return PairPKernel(body, n_pair_sites=stages * (kv_frags // 2), warps=warps, name=name,
                        grid=lambda p: (p.wu.cols, 1, 1), max_vgprs=max_vgprs, min_occupancy=1)
 
 
-def combine_kernel(name: str, warps: int = 8):
+def combine_kernel(name: str, warps: int = 8, bnhd: bool = False):
     t = hk.RT(fp32, 16, HEAD_DIM)
     vc = hk.col_vec(t)
 
@@ -302,7 +317,16 @@ def combine_kernel(name: str, warps: int = 8):
         parts = wp[hk.elem_coord(0, 0, 0, 1)].load_scalar(invariant=True)
         tb = hk.arch.block_idx.x
         wid = hk.arch.warp_id()
-        row = (n_full + tb) * (16 * warps) + wid * 16
+        if bnhd:
+            nqb = wp[hk.elem_coord(0, 0, 0, 2)].load_scalar(invariant=True)
+            heads = o.cols // HEAD_DIM
+            blk = n_full + tb
+            head = blk // nqb
+            ob, col0 = head // heads, (head % heads) * HEAD_DIM
+            row = (blk % nqb) * (16 * warps) + wid * 16
+        else:
+            ob, col0 = 0, 0
+            row = (n_full + tb) * (16 * warps) + wid * 16
         base = tb * parts * (16 * warps) + wid * 16
         m = hk.neg_infty(vc)
         for p in range(parts):
@@ -321,15 +345,18 @@ def combine_kernel(name: str, warps: int = 8):
             x *= w
             acc += x
         acc /= l
-        o[hk.elem_coord(0, 0, row, 0)] = acc
+        o[hk.elem_coord(ob, 0, row, col0)] = acc
 
     body.__name__ = name
     return hk.kernel(body, warps=warps, name=name, grid=lambda p: (p.wc.cols, 1, 1))
 
 
 VT = vt_kernel("k3_vt")
-ATTN = attn_kernel("k3_attn")
+ATTN = attn_kernel("k3_attn", lazy=8.0)
 COMBINE = combine_kernel("k3_combine")
+VT_BNHD = vt_kernel("k3_vt_bnhd", bnhd=True)
+ATTN_BNHD = attn_kernel("k3_attn_bnhd", lazy=8.0, bnhd=True)
+COMBINE_BNHD = combine_kernel("k3_combine_bnhd", bnhd=True)
 _EYE = {}
 _PLANS = {}
 _CO = {}
@@ -374,28 +401,47 @@ def _plan_tensors(nblk, nqb, dev):
     return pl
 
 
+def is_bnhd(*ts) -> bool:
+    """(B, H, N, D) views of contiguous (B, N, H, D) memory: what SGLang-Diffusion hands SDPA."""
+    return all(t.dim() == 4 and not t.is_contiguous() and t.transpose(1, 2).is_contiguous() for t in ts)
+
+
 def attention(q, k, v, *, attn=None):
-    """Non-causal attention, q, k, v [B, H, N, 128] bf16 (N, N_kv multiples of 128) -> o bf16."""
+    """Non-causal attention, q, k, v [B, H, N, 128] bf16 (N, N_kv multiples of 128) -> o bf16.
+    BHND-contiguous inputs, or (B, H, N, D) views of (B, N, H, D) memory, read in place (the
+    output is then the same kind of view)."""
     import torch
 
-    attn = attn or ATTN
     b, h, n, d = q.shape
     n_kv = k.shape[2]
     assert d == HEAD_DIM and n % Q_BLK == 0 and n_kv % 128 == 0, (q.shape, k.shape)
-    q, k, v = q.contiguous(), k.contiguous(), v.contiguous()
+    bnhd = is_bnhd(q, k, v)
+    if not bnhd:
+        q, k, v = q.contiguous(), k.contiguous(), v.contiguous()
+    attn = attn or (ATTN_BNHD if bnhd else ATTN)
     dev = q.device
     g = b * h
-    vt = torch.empty((1, g, d, n_kv), device=dev, dtype=torch.float16)
+    vt = torch.empty((b, h, d, n_kv), device=dev, dtype=torch.float16)
     eye = _EYE.get(dev)
     if eye is None:
         eye = _EYE[dev] = torch.eye(16, device=dev, dtype=torch.bfloat16).view(1, 1, 16, 16)
-    _launch(VT, v.view(1, g, n_kv // 2, 2 * d), eye, vt)
-    o = torch.empty((1, 1, g * n, d), device=dev, dtype=torch.bfloat16)
     wp, wu, wc, n_split, parts = _plan_tensors(g * n // Q_BLK, n // Q_BLK, dev)
     su = max(n_split * parts, 1) * Q_BLK
     op = torch.empty((1, 1, su, d), device=dev, dtype=torch.float32)
     ml = torch.empty((1, 1, 2, su), device=dev, dtype=torch.float32)
-    _launch(attn, q.view(1, 1, g * n, d), k.view(1, g, n_kv, d), vt, o, wp, wu, op, ml)
+    vt_g = vt.view(1, g, d, n_kv)
+    if bnhd:
+        out = torch.empty((b, n, h, d), device=dev, dtype=torch.bfloat16)
+        qf, kf, vf = (t.transpose(1, 2).reshape(b, 1, t.shape[2], h * d) for t in (q, k, v))
+        o = out.view(b, 1, n, h * d)
+        _launch(VT_BNHD, vf.view(b, 1, n_kv // 2, 2 * h * d), eye, vt)
+        _launch(attn, qf, kf, vt_g, o, wp, wu, op, ml)
+        if n_split:
+            _launch(COMBINE_BNHD, op, ml, wp, wc, o)
+        return out.transpose(1, 2)
+    _launch(VT, v.view(b, h, n_kv // 2, 2 * d), eye, vt)
+    o = torch.empty((1, 1, g * n, d), device=dev, dtype=torch.bfloat16)
+    _launch(attn, q.view(1, 1, g * n, d), k.view(1, g, n_kv, d), vt_g, o, wp, wu, op, ml)
     if n_split:
         _launch(COMBINE, op, ml, wp, wc, o)
     return o.view(b, h, n, d)

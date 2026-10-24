@@ -22,16 +22,27 @@ def ref(q, k, v):
     return torch.nn.functional.scaled_dot_product_attention(q.float(), k.float(), v.float())
 
 
+BNHD = False
+
+
+def make(shape):
+    if BNHD:   # (B, H, N, D) views of (B, N, H, D) memory, as SGLang-Diffusion passes them
+        b, h, n, d = shape
+        return tuple(torch.randn((b, n, h, d), device="cuda", dtype=torch.bfloat16).transpose(1, 2)
+                     for _ in range(3))
+    return tuple(torch.randn(shape, device="cuda", dtype=torch.bfloat16) for _ in range(3))
+
+
 def check(name, shape):
     torch.manual_seed(0)
-    q, k, v = (torch.randn(shape, device="cuda", dtype=torch.bfloat16) for _ in range(3))
+    q, k, v = make(shape)
     o = k3_attn.attention(q, k, v)
     torch.cuda.synchronize()
     r = ref(q, k, v)
     err = ((o.float() - r).abs().max() / r.abs().max()).item()
     outs = [k3_attn.attention(q, k, v).clone() for _ in range(5)]
     det = all(torch.equal(outs[0], x) for x in outs[1:]) and torch.equal(outs[0], o)
-    ones = k3_attn.attention(q, k, torch.ones_like(v))
+    ones = k3_attn.attention(q, k, torch.ones_like(v))   # ones_like keeps v's strides
     ones_ok = bool((ones == 1).all().item())
     nan = bool(torch.isnan(o).any().item())
     ok = err <= 1e-2 and det and ones_ok and not nan
@@ -40,16 +51,29 @@ def check(name, shape):
     return ok
 
 
+def triton_strided(tf, q, k, v):
+    """triton_fa's kernel on q, k, v as given (its wrapper would copy BNHD views; the kernel
+    takes strides), output in q's layout."""
+    import triton
+
+    b, h, n, d = q.shape
+    o = torch.empty_like(q)
+    grid = lambda META: (triton.cdiv(n, META["BLOCK_M"]), b * h)  # noqa: E731
+    tf._attn_fwd[grid](q, k, v, o, *q.stride()[:3], *k.stride()[:3], *v.stride()[:3], *o.stride()[:3],
+                       h, n, d ** -0.5, HEAD_DIM=d, IS_CAUSAL=False)
+    return o
+
+
 def timeit(shape, trials=7, iters=10):
     import hk.ops.sdpa as S
     import triton_fa
 
     b, h, n, d = shape
-    q, k, v = (torch.randn(shape, device="cuda", dtype=torch.bfloat16) for _ in range(3))
+    q, k, v = make(shape)
     flops = 4 * b * h * n * n * d
     fns = {"k3": lambda: k3_attn.attention(q, k, v),
-           "hk": lambda: S.attention(q, k, v),
-           "triton": lambda: triton_fa.triton_attention(q, k, v, causal=False)}
+           "hk": lambda: S.scaled_dot_product_attention(q, k, v),   # BNHD views: its in-place path
+           "triton": lambda: triton_strided(triton_fa, q, k, v)}
     for f in fns.values():
         f(); f()
     torch.cuda.synchronize()
@@ -75,7 +99,11 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--time", action="store_true")
     ap.add_argument("--shapes", nargs="*", default=["small", "odd", "qwen", "h3"])
+    ap.add_argument("--bnhd", action="store_true")
     a = ap.parse_args()
+    global BNHD
+    BNHD = a.bnhd
+    print("layout", "BNHD views" if BNHD else "BHND contiguous", flush=True)
     ok = all([check(s, SHAPES[s]) for s in a.shapes])
     if a.time and ok:
         for s in a.shapes:
