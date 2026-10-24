@@ -493,14 +493,17 @@ def units_for(tiles, mt: int):
     return torch.stack([e, first + r * mt], 1).to(torch.int32).view(1, 1, -1, 2)
 
 
-def ring_round(rows: int, n_experts: int):
+def ring_round(rows: int, n_experts: int, k: int):
     """(mt, depth) of the xsplit ring kernel for P sorted rows over E experts (host values, no sync).
-    An expert's tiles are cut into the fewest rounds of at most 6 tiles, as even as possible; a round
-    is never under 2 tiles. Measured on MI355X, Kimi K3 shapes, M 640..16384 (K1 c9)."""
+    An expert's average t tiles are cut into the fewest rounds of at most 7 tiles, as even as
+    possible; a round is never under 2 tiles. Depth 2 (K % 256 == 0; deeper rings measured no
+    better). Measured on MI355X, Kimi K3 shapes (pp 3), uniform routing, M 640..16384 (K1 c9):
+    one round an expert where it fits beats smaller rounds by up to 1.2x."""
+    if k % 256:
+        raise ValueError(f"moe_a8w4.ring_round: K={k}, a multiple of 256")
     t = rows / TILE / max(n_experts, 1)
-    r = max(1, math.ceil(t / 6))
-    mt = min(6, max(2, math.ceil(t / r)))
-    return mt, (3 if mt >= 5 else 2)
+    r = max(1, math.ceil(t / 7))
+    return min(7, max(2, math.ceil(t / r))), 2
 
 
 @functools.lru_cache(maxsize=None)
@@ -589,15 +592,25 @@ def stage1(xq, xs, w13, w13_scale, tiles, *, inter: int, nb: int = 4, mt: int = 
            dma: bool = False, direct: bool = False, exact: bool = False, xsplit: bool = False,
            auto: bool = False):
     """h [P, inter] bf16 for prepare()'s sorted rows. w13 / w13_scale: AITER's shuffled uint8 views
-    [E * 2 * inter, K/2] and [E * 2 * inter, K/32]. auto: the xsplit ring kernel (exact waits, pp 4
-    where inter allows) with ring_round()'s round size; mt, depth, pp and the mode flags are then
+    [E * 2 * inter, K/2] and [E * 2 * inter, K/32]. auto: the xsplit ring kernel (exact waits, the
+    widest pp of 4, 3, 2, 1 whose 64 * pp columns divide inter) with ring_round()'s round size; mt, depth, pp and the mode flags are then
     ignored."""
     import torch  # noqa: PLC0415
 
     if auto:
-        mt, depth = ring_round(xq.shape[0], tiles.numel() - 1)
-        pp = next(p for p in (4, 2, 1) if inter % (TILE * p * 4) == 0)
+        mt, depth = ring_round(xq.shape[0], tiles.numel() - 1, xq.shape[1])
+        pp = next(p for p in (4, 3, 2, 1) if inter % (TILE * p * 4) == 0)
         exact, xsplit, dma, direct = True, True, False, False
+    cols = 16 * nb if not (lds or depth or dma or direct) else TILE * pp * 4
+    if inter % cols:
+        # the grids are inter // cols column blocks: the rest would never be written
+        raise ValueError(f"moe_a8w4.stage1: inter={inter} not a multiple of the {cols} columns "
+                         f"a workgroup writes (pp={pp}, nb={nb})")
+    # the K loops are unrolled by depth (ring, dma) or two 256-wide steps (lds), with no remainder
+    unroll = 0 if direct or not (lds or depth or dma) else 128 * (depth or 4) if (dma or depth) else 512
+    if unroll and xq.shape[1] % unroll or dma and (depth or 4) % 2:
+        raise ValueError(f"moe_a8w4.stage1: K={xq.shape[1]} not a multiple of the {unroll} the K loop "
+                         f"is unrolled by (depth={depth}{', even for dma' if dma else ''})")
 
     h = torch.empty((xq.shape[0], inter), device=xq.device, dtype=torch.bfloat16)
     if direct:
