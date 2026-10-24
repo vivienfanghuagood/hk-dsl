@@ -31,6 +31,11 @@ _ORIG_APPLY: Optional[Callable] = None
 MEASURED = {(1792, 5120), (2304, 5120), (5120, 1152), (5120, 4096), (16384, 1280), (12800, 6144)}
 #: The smallest M measured; below it vLLM's kernel runs.
 MIN_M = 2048
+#: Route hk-able calls to hk (True) or leave every call to vLLM (False): an in-process A/B.
+ENABLED = True
+#: Take any (N, K) of whole 256 x 128 tiles at M >= MIN_M on the eight-warp kernel, not only the
+#: measured TP2 shapes (HK_MXFP8_ANY=1; e.g. a TP1 run, whose projections are other shapes).
+ANY = __import__("os").environ.get("HK_MXFP8_ANY", "0") not in ("0", "", "off", "no")
 
 #: Four-warp schedules where they won (k2-mxfp8-gemm c15): small N at M 2048.
 _SMALL_N = {1792: dict(block_m=128, block_n=128, split_m=1, split_n=1, stages=3),
@@ -52,7 +57,7 @@ STATS = PATCH.stats
 
 def schedule(m: int, n: int, k: int):
     """("8w" | "4w", sched) for a shape hk takes, else None."""
-    if m < MIN_M or (n, k) not in MEASURED or n % 256 or k % 128:
+    if not ENABLED or m < MIN_M or n % 256 or k % 128 or ((n, k) not in MEASURED and not ANY):
         return None
     if m < 5120 and n in _SMALL_N:
         return "4w", _SMALL_N[n]
