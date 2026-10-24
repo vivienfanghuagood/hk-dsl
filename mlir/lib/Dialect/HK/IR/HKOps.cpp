@@ -252,6 +252,33 @@ LogicalResult LoadMxScalesOp::verify() {
   if (!et.isInteger(8))
     return emitOpError("reads E8M0 scales from a uint8 (i8) global, one byte a "
                        "row and 32 columns, or packed dwords (i32)");
+  if (getLayout() < 0 || getLayout() > 2)
+    return emitOpError("layout is 0 (OCP), 1 (AITER gate|up) or 2 (AITER); got ")
+           << getLayout();
+  if (getLayout()) {
+    auto t = cast<MxScalesType>(destType(getDst(), getResult()));
+    if (getGroupRows() <= 0 || getGroupRows() % 32)
+      return emitOpError("AITER scales need group_rows, a positive multiple of 32");
+    if (getLayout() == 1 && t.getRows() % 32)
+      return emitOpError("a gate|up tile is whole (gate, up) block pairs: 32-row multiples");
+  }
+  return success();
+}
+
+LogicalResult LoadFp4FragsOp::verify() {
+  if (failed(verifyDest(*this, getDst(), getResult())))
+    return failure();
+  auto t = cast<RegTileType>(destType(getDst(), getResult()));
+  if (!isa<Float8E4M3FNType>(t.getElementType()) || t.getColLayout() || t.isStrip())
+    return emitOpError("fills an fp8 e4m3 row-layout tile (the FP4 operand's container)");
+  if (t.getRows() % 16 || t.getCols() % 128)
+    return emitOpError("whole 16x128 fragments");
+  if (getGateUp() && t.getRows() % 32)
+    return emitOpError("a gate|up tile is whole (gate, up) block pairs: 32-row multiples");
+  if (getGroupRows() <= 0 || getGroupRows() % 32)
+    return emitOpError("group_rows is a positive multiple of 32");
+  if (!getSrc().getType().getElementType().isInteger(8))
+    return emitOpError("reads packed FP4 bytes from a uint8 (i8) global");
   return success();
 }
 
@@ -270,6 +297,8 @@ LogicalResult MmaABtMxOp::verify() {
     if (!isa<Float8E4M3FNType>(t.getElementType()) || t.getColLayout() ||
         t.isStrip())
       return emitOpError("A and B are fp8 e4m3 row-layout tiles, not ") << t;
+  if (getBFmt() != 0 && getBFmt() != 4)
+    return emitOpError("b_fmt is 0 (fp8 e4m3) or 4 (fp4 e2m1); got ") << getBFmt();
   if (!c.getElementType().isF32() || !c.getColLayout() || c != d)
     return emitOpError("accumulates into an fp32 col-layout tile, the result's type");
   if (a.getCols() != b.getCols() || a.getCols() % 128)

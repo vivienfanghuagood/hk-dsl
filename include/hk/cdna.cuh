@@ -1348,23 +1348,106 @@ __device__ inline static void load_mx_scales(hk_mxs<R, KB> &dst, const GL &src, 
         }
 }
 
+/**
+ * AITER's shuffled MoE weight scales (gfx950, shuffle_scale(is_guinterleave=True)), uint8
+ * [E * GR, K/32]: per expert, dwords at ((n1 * K/256 + k1) * 64 + lane) * 4 whose bytes are
+ * (kpack, npack) = (K step parity, 16-row half): for LAYOUT 1 (gate|up weights) npack is gate or
+ * up of 16-row block n1, for LAYOUT 2 the half of 32-row block n1. Tile base tile i (rows row0 +
+ * 16 i, or with LAYOUT 1 gate/up of block row0/16 + i/2) and step s go to byte i % 4 of reg[i/4][s].
+ * One dword load per base tile and step (the vmcnt count LdsPipeline assumes for byte scales).
+ */
+template<int LAYOUT, int GR, int R, int KB, ducks::gl::all GL>
+__device__ inline static void load_mx_scales_aiter(hk_mxs<R, KB> &dst, const GL &src, int row0, int kb0) {
+    static_assert(sizeof(typename GL::dtype) == 1, "AITER scales: one byte each");
+    static_assert(LAYOUT == 1 || LAYOUT == 2, "AITER layouts 1 (gate|up) and 2");
+    using M = hk_mxs<R, KB>;
+    const int lane = laneid();
+    const uint32_t kb = uint32_t(src.template stride<2>());          // K/32 bytes a row
+    const uint8_t *base = reinterpret_cast<const uint8_t *>(src.raw_ptr);
+    const detail::hk_i32x4 r = detail::hk_srsrc(base, uint64_t(src.template shape<2>()) * kb);
+    const int e = row0 / GR, lr = row0 % GR;
+    const uint32_t k1n = kb / 8u;
+    const uint32_t ebase = uint32_t(e) * uint32_t(GR) * kb;
+    #pragma unroll
+    for (int g = 0; g < M::regs; g++)
+        #pragma unroll
+        for (int s = 0; s < M::steps; s++)
+            dst.reg[g][s] = 0x7F7F7F7Fu;
+    #pragma unroll
+    for (int i = 0; i < M::tiles; i++) {
+        int n1, npack;
+        if constexpr (LAYOUT == 1) { n1 = lr / 16 + i / 2; npack = i % 2; }
+        else { const int rr = lr + 16 * i; n1 = rr / 32; npack = (rr / 16) % 2; }
+        #pragma unroll
+        for (int s = 0; s < M::steps; s++) {
+            const int st = kb0 / 4 + s, k1 = st / 2, kpack = st % 2;
+            const uint32_t off = ebase + ((uint32_t(n1) * k1n + uint32_t(k1)) * 64u + uint32_t(lane)) * 4u;
+            const uint32_t d = detail::hk_buf_ld32(r, off, 0, 0);
+            const uint32_t b = (d >> (8 * (kpack * 2 + npack))) & 0xFFu;
+            const int sh = 8 * (i % 4);
+            dst.reg[i / 4][s] = (dst.reg[i / 4][s] & ~(0xFFu << sh)) | (b << sh);
+        }
+    }
+}
+
+/**
+ * AITER's shuffled MXFP4 MoE weights (gfx950, shuffle_weight(is_guinterleave=True)), uint8
+ * [E * GR, K/2]: per expert, 1 KB chunks [16-row block][(gate|up)][K/128 step], each one 16x128
+ * FP4 operand in lane order (16 bytes a lane at lane * 16). Fragment (i, s) of the fp8-typed
+ * container gets the chunk in its first four dwords (the upper four are never written: an FP4
+ * operand reads four registers). GU: base tiles alternate gate and up of block row0/16 + i/2.
+ */
+template<int GU, int GR, ducks::rt::row_layout RT, ducks::gl::all GL>
+__device__ inline static void load_fp4_frags(RT &dst, const GL &src, int row0, int kc0) {
+    static_assert(std::is_same_v<typename RT::T, fp8e4m3> && RT::base_tile_rows == 16 &&
+                  RT::base_tile_cols == 128, "fp8 e4m3 16x128 fragments (the FP4 container)");
+    static_assert(sizeof(typename GL::dtype) == 1, "packed FP4 bytes");
+    const int lane = laneid();
+    const uint32_t kbytes = uint32_t(src.template stride<2>());      // K/2 bytes a row
+    const uint8_t *base = reinterpret_cast<const uint8_t *>(src.raw_ptr);
+    const detail::hk_i32x4 r = detail::hk_srsrc(base, uint64_t(src.template shape<2>()) * kbytes);
+    const int e = row0 / GR, lr = row0 % GR;
+    const uint32_t k0n = kbytes / 64u;
+    const uint32_t ebase = uint32_t(e) * uint32_t(GR) * kbytes;
+    #pragma unroll
+    for (int i = 0; i < RT::height; i++)
+        #pragma unroll
+        for (int s = 0; s < RT::width; s++) {
+            uint32_t chunk;
+            if constexpr (GU) chunk = (uint32_t(lr / 16 + i / 2) * 2u + uint32_t(i % 2)) * k0n + uint32_t(kc0 + s);
+            else chunk = uint32_t(lr / 16 + i) * k0n + uint32_t(kc0 + s);
+            const uint32_t off = ebase + chunk * 1024u + uint32_t(lane) * 16u;
+            const __uint128_t v = detail::hk_buf_ld128(r, off, 0, 0);
+            __builtin_memcpy(&dst.tiles[i][s].data[0], &v, 16);
+        }
+}
+
 namespace detail {
-template<int OA, int OB>
+template<int OA, int OB, int BF = 0>
 __device__ inline void hk_mfma_mx(float (&d)[4], const uint32_t (&a)[8], const uint32_t (&b)[8],
                                   uint32_t sa, uint32_t sb) {
     typedef __attribute__((__vector_size__(8 * sizeof(int)))) int intx8_t;
+    typedef __attribute__((__vector_size__(4 * sizeof(int)))) int intx4_t;
     typedef __attribute__((__vector_size__(4 * sizeof(float)))) float floatx4_t;
-    *(floatx4_t *)d = __builtin_amdgcn_mfma_scale_f32_16x16x128_f8f6f4(
-        *(const intx8_t *)a, *(const intx8_t *)b, *(floatx4_t *)d, 0, 0, OA, sa, OB, sb);
+    if constexpr (BF == 4) {
+        // FP4 B: four registers; the upper half of the operand is left undefined, not zeroed
+        const intx4_t lo = *(const intx4_t *)b;
+        const intx8_t b8 = __builtin_shufflevector(lo, lo, 0, 1, 2, 3, -1, -1, -1, -1);
+        *(floatx4_t *)d = __builtin_amdgcn_mfma_scale_f32_16x16x128_f8f6f4(
+            *(const intx8_t *)a, b8, *(floatx4_t *)d, 0, 4, OA, sa, OB, sb);
+    } else {
+        *(floatx4_t *)d = __builtin_amdgcn_mfma_scale_f32_16x16x128_f8f6f4(
+            *(const intx8_t *)a, *(const intx8_t *)b, *(floatx4_t *)d, 0, 0, OA, sa, OB, sb);
+    }
 }
-template<int OA>
+template<int OA, int BF = 0>
 __device__ inline void hk_mfma_mx_b(int ob, float (&d)[4], const uint32_t (&a)[8],
                                     const uint32_t (&b)[8], uint32_t sa, uint32_t sb) {
     switch (ob) {
-        case 0: hk_mfma_mx<OA, 0>(d, a, b, sa, sb); break;
-        case 1: hk_mfma_mx<OA, 1>(d, a, b, sa, sb); break;
-        case 2: hk_mfma_mx<OA, 2>(d, a, b, sa, sb); break;
-        default: hk_mfma_mx<OA, 3>(d, a, b, sa, sb); break;
+        case 0: hk_mfma_mx<OA, 0, BF>(d, a, b, sa, sb); break;
+        case 1: hk_mfma_mx<OA, 1, BF>(d, a, b, sa, sb); break;
+        case 2: hk_mfma_mx<OA, 2, BF>(d, a, b, sa, sb); break;
+        default: hk_mfma_mx<OA, 3, BF>(d, a, b, sa, sb); break;
     }
 }
 }  // namespace detail
@@ -1375,7 +1458,7 @@ __device__ inline void hk_mfma_mx_b(int ob, float (&d)[4], const uint32_t (&a)[8
  * The opsel immediates are each base tile's index mod 4; the loops unroll, so
  * the switches fold.
  */
-template<ducks::rt::col_layout D, ducks::rt::all A, ducks::rt::all B, ducks::rt::col_layout C,
+template<int BF = 0, ducks::rt::col_layout D, ducks::rt::all A, ducks::rt::all B, ducks::rt::col_layout C,
          int RA, int RB, int KB>
 __device__ static inline void mma_ABt_mx(D &d, const A &a, const B &b, const C &c,
                                          const hk_mxs<RA, KB> &sa, const hk_mxs<RB, KB> &sb) {
@@ -1399,10 +1482,10 @@ __device__ static inline void mma_ABt_mx(D &d, const A &a, const B &b, const C &
                 const uint32_t(&rb)[8] = *reinterpret_cast<const uint32_t(*)[8]>(&b.tiles[m][k].data[0]);
                 const uint32_t s_a = sa.reg[n / 4][k], s_b = sb.reg[m / 4][k];
                 switch (n % 4) {
-                    case 0: detail::hk_mfma_mx_b<0>(m % 4, acc, ra, rb, s_a, s_b); break;
-                    case 1: detail::hk_mfma_mx_b<1>(m % 4, acc, ra, rb, s_a, s_b); break;
-                    case 2: detail::hk_mfma_mx_b<2>(m % 4, acc, ra, rb, s_a, s_b); break;
-                    default: detail::hk_mfma_mx_b<3>(m % 4, acc, ra, rb, s_a, s_b); break;
+                    case 0: detail::hk_mfma_mx_b<0, BF>(m % 4, acc, ra, rb, s_a, s_b); break;
+                    case 1: detail::hk_mfma_mx_b<1, BF>(m % 4, acc, ra, rb, s_a, s_b); break;
+                    case 2: detail::hk_mfma_mx_b<2, BF>(m % 4, acc, ra, rb, s_a, s_b); break;
+                    default: detail::hk_mfma_mx_b<3, BF>(m % 4, acc, ra, rb, s_a, s_b); break;
                 }
             }
             __builtin_memcpy(&d.tiles[n][m].data[0], acc, sizeof(acc));

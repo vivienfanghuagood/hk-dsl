@@ -73,7 +73,7 @@ def mx_mma_kernel(K=256, name="mx_mma_t"):
 def test_mx_scales_and_the_scaled_mma_reach_the_cpp():
     src = scaffold.bare(mx_mma_kernel().trace())
     assert "kittens::hk_mxs<16, 8>" in src and "kittens::hk_mxs<32, 8>" in src
-    assert "kittens::load_mx_scales(" in src and "kittens::mma_ABt_mx(" in src
+    assert "kittens::load_mx_scales(" in src and "kittens::mma_ABt_mx<0>(" in src
 
 
 def test_mx_shapes_are_checked_while_tracing():

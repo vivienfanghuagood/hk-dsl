@@ -1402,13 +1402,32 @@ class MxScales(Value):
     __slots__ = ()
 
 
+_MX_LAYOUTS = {"ocp": 0, "aiter_gate_up": 1, "aiter": 2}
+
+
 def load_mx_scales(src: "Global", rows: int, kblocks: int, row0, kb0, *,
-                   into: "MxScales" = None) -> MxScales:
+                   into: "MxScales" = None, layout: str = "ocp",
+                   group_rows: int = 0) -> MxScales:
     """Rows row0.. and 32-wide blocks kb0.. of an E8M0 scale tensor (uint8, one
     byte a row and block: [R, K/32], the OCP MX layout -- or packed, i32, as
     hk.ops.mxfp8.pack_scales lays them out: one coalesced dword a lane per 64
     rows and K step) for an fp8 operand tile of `rows` rows and `kblocks * 32`
-    columns. gfx950 only."""
+    columns. gfx950 only.
+
+    `layout="aiter_gate_up"` / `"aiter"`: AITER's shuffled MoE weight scales
+    (uint8 [E * group_rows, K/32], `shuffle_scale(is_guinterleave=True)`, with
+    and without gate_up) -- the scales of a `load_fp4_frags` tile of the same
+    rows: row0 the tile's first row in [E * group_rows], base tiles alternating
+    gate and up with "aiter_gate_up"."""
+    if layout not in _MX_LAYOUTS:
+        raise TypeError(f"load_mx_scales: layout is one of {sorted(_MX_LAYOUTS)}, not {layout!r}")
+    lay = _MX_LAYOUTS[layout]
+    if lay and (src.dtype is not i8 or group_rows <= 0 or group_rows % 32
+                or (lay == 1 and rows % 32) or kblocks % 4):
+        raise TypeError(f"load_mx_scales: AITER scales are uint8, need group_rows (a "
+                        f"multiple of 32), 128-wide K steps, and with gate|up whole "
+                        f"(gate, up) 32-row pairs; got {src.dtype.name}, group_rows "
+                        f"{group_rows}, {rows} rows, {kblocks} blocks")
     if not isinstance(src, Global):
         raise TypeError(f"load_mx_scales: src must be a tensor parameter, got {src!r}")
     if src.dtype is i32:
@@ -1427,10 +1446,10 @@ def load_mx_scales(src: "Global", rows: int, kblocks: int, row0, kb0, *,
         if not isinstance(into, MxScales) or into.ty != ty:
             raise TypeError(f"load_mx_scales: into is {into!r}, the result is {ty}")
         hkd.LoadMxScalesOp(None, src.v, as_int(row0).v, as_int(kb0).v, dst=into.v,
-                           loc=t.loc("mxs"))
+                           layout=lay, group_rows=group_rows, loc=t.loc("mxs"))
         return into
     op = hkd.LoadMxScalesOp(mlir_type(ty), src.v, as_int(row0).v, as_int(kb0).v,
-                            loc=t.loc("mxs"))
+                            layout=lay, group_rows=group_rows, loc=t.loc("mxs"))
     return MxScales(op.result, ty)
 
 
@@ -1442,7 +1461,34 @@ def copy_mx_scales(dst: "MxScales", src: "MxScales") -> None:
     hkd.MxScalesCopyOp(dst.v, src.v, loc=_t().loc("mxs_copy"))
 
 
-def mma_ABt_mx(a: Tile, b: Tile, acc: Tile, sa: MxScales, sb: MxScales, *, into=None) -> Tile:
+def load_fp4_frags(ty, src: "Global", row0, kc0, *, group_rows: int, gate_up: bool = False,
+                   into=None) -> "Tile":
+    """Rows row0.. and 128-wide K steps kc0.. of AITER's shuffled MXFP4 MoE weights (gfx950,
+    `shuffle_weight(is_guinterleave=True)`; src uint8 [E * group_rows, K/2], the packed bytes)
+    as the B operand of `mma_ABt_mx(..., b_fmt="fp4")`. `ty` is an fp8 e4m3 row tile of 16x128
+    fragments -- the container: each fragment's first four dwords hold the FP4 operand, the rest
+    stay undefined. With `gate_up` (a stage-1 gate|up weight) the base tiles alternate the gate
+    and up halves of 16-row block (row0 % group_rows) // 16 + i // 2, so gate column j and up
+    column j of the product land in the same lanes."""
+    if (not isinstance(ty, RegTileType) or ty.dtype is not fp8e4m3 or ty.layout != "row"
+            or ty.rows % 16 or ty.cols % 128):
+        raise TypeError(f"load_fp4_frags: an fp8 e4m3 row tile of 16x128 fragments, not {ty!r}")
+    if gate_up and ty.rows % 32:
+        raise TypeError(f"load_fp4_frags: a gate|up tile is whole (gate, up) 32-row pairs; "
+                        f"{ty.rows} rows")
+    if not isinstance(src, Global) or src.dtype is not i8:
+        raise TypeError(f"load_fp4_frags: src is the packed FP4 bytes, a uint8 tensor, not {src!r}")
+    if group_rows <= 0 or group_rows % 32:
+        raise TypeError(f"load_fp4_frags: group_rows (rows an expert) is a multiple of 32, "
+                        f"got {group_rows}")
+    if get_target(_t().arch).arch != "gfx950":
+        raise TypeError(f"load_fp4_frags: block-scaled MFMA is gfx950's; {_t().arch} has none")
+    return _make(hkd.LoadFp4FragsOp, ty, (src.v, as_int(row0).v, as_int(kc0).v),
+                 into=into, name="w4f", gate_up=int(bool(gate_up)), group_rows=group_rows)
+
+
+def mma_ABt_mx(a: Tile, b: Tile, acc: Tile, sa: MxScales, sb: MxScales, *, into=None,
+               b_fmt: str = "fp8") -> Tile:
     """acc + (sa . A)(sb . B)^T on gfx950's v_mfma_scale_f32_16x16x128_f8f6f4:
     A (M, K) and B (N, K) fp8 e4m3 row tiles, K a multiple of 128; sa and sb
     their E8M0 scales (`load_mx_scales`), element (r, k) of A counting as
@@ -1462,7 +1508,10 @@ def mma_ABt_mx(a: Tile, b: Tile, acc: Tile, sa: MxScales, sb: MxScales, *, into=
     ty = RegTileType(fp32, a.ty.rows, b.ty.rows, "col")
     if (acc.ty.rows, acc.ty.cols) != (ty.rows, ty.cols):
         raise TypeError(f"mma_ABt_mx: acc is {acc.ty}, expected {a.ty.rows}x{b.ty.rows}")
-    return _make(hkd.MmaABtMxOp, acc.ty, (a.v, b.v, acc.v, sa.v, sb.v), into=into, name="mx")
+    if b_fmt not in ("fp8", "fp4"):
+        raise TypeError(f"mma_ABt_mx: b_fmt is 'fp8' or 'fp4', not {b_fmt!r}")
+    return _make(hkd.MmaABtMxOp, acc.ty, (a.v, b.v, acc.v, sa.v, sb.v), into=into, name="mx",
+                 b_fmt=4 if b_fmt == "fp4" else 0)
 
 
 class Granules(Value):

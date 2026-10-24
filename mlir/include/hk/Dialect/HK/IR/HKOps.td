@@ -842,9 +842,15 @@ def HK_LoadMxScalesOp : HK_Op<"load_mx_scales"> {
     per-lane registers `mma_ABt_mx` reads: base tile i's row (lane % 16) and
     block (lane / 16) of each 128-wide K step. An i32 source is the packed
     layout (include/hk/cdna.cuh): one dword a lane per 64 rows and K step.
+    `layout` 1 and 2 read AITER's shuffled MoE weight scales (uint8, [E *
+    group_rows, K/32]; gfx950 `shuffle_scale(is_guinterleave=True)`): 1 for a
+    gate|up stage-1 weight (the tile's 16-row base tiles alternate gate and
+    up block row0's), 2 for a plain one. row0 is the tile's first row in
+    [E * group_rows].
   }];
   let arguments = (ins Optional<HK_MxScalesType>:$dst, HK_GlobalType:$src, I32:$row0,
-                       I32:$kb0);
+                       I32:$kb0, DefaultValuedAttr<I64Attr, "0">:$layout,
+                       DefaultValuedAttr<I64Attr, "0">:$group_rows);
   let results = (outs Optional<HK_MxScalesType>:$result);
   let assemblyFormat = [{
     $src `[` $row0 `,` $kb0 `]` (`into` $dst^)? attr-dict `:` qualified(type($src))
@@ -866,15 +872,41 @@ def HK_MmaABtMxOp : HK_Op<"mma_ABt_mx"> {
     A and B are fp8 e4m3 row-layout tiles (16x128 fragments), C the fp32
     accumulator; sa and sb their E8M0 block scales (`load_mx_scales`):
     element (r, k) of A counts as A[r][k] * 2^(sa[r][k / 32] - 127).
+    `b_fmt` 4: B is FP4 e2m1 (`load_fp4_frags`: the first four dwords of each
+    fragment), and A must hold, in each 128-wide K step, x[16g, 16g+16) and
+    x[64+16g, 64+16g+16) in lane group g (the FP4 operand's K order).
   }];
   let arguments = (ins Optional<HK_RegTileType>:$dst, HK_RegTileType:$a,
                        HK_RegTileType:$b, HK_RegTileType:$c,
-                       HK_MxScalesType:$sa, HK_MxScalesType:$sb);
+                       HK_MxScalesType:$sa, HK_MxScalesType:$sb,
+                       DefaultValuedAttr<I64Attr, "0">:$b_fmt);
   let results = (outs Optional<HK_RegTileType>:$result);
   let assemblyFormat = [{
     $a `,` $b `,` $c `scales` $sa `,` $sb (`into` $dst^)? attr-dict `:` qualified(type($a)) `,`
     qualified(type($b)) `,` qualified(type($c)) `,` qualified(type($sa)) `,` qualified(type($sb))
     (`into` qualified(type($dst))^)? (`->` qualified(type($result))^)?
+  }];
+  let hasVerifier = 1;
+}
+
+def HK_LoadFp4FragsOp : HK_Op<"load_fp4_frags"> {
+  let summary = "AITER-shuffled MXFP4 weight fragments -> an mma_ABt_mx B operand (b_fmt 4)";
+  let description = [{
+    AITER's gfx950 MoE weight layout (`shuffle_weight(is_guinterleave=True)`):
+    per expert, 1 KB chunks each one 16x128 FP4 operand in MFMA lane order
+    (lane l = 16 * kgroup + row, 16 bytes). Fragment (i, s) of the fp8-typed
+    container tile gets, in its first four dwords, the chunk of 16-row block
+    i and 128-wide K step kc0 + s; with gate_up, base tiles alternate the
+    gate and up halves of block (row0 % group_rows) / 16 + i / 2. src is
+    uint8 [E * group_rows, K/2]; row0 the tile's first row in it.
+  }];
+  let arguments = (ins Optional<HK_RegTileType>:$dst, HK_GlobalType:$src, I32:$row0,
+                       I32:$kc0, I64Attr:$gate_up, I64Attr:$group_rows);
+  let results = (outs Optional<HK_RegTileType>:$result);
+  let assemblyFormat = [{
+    $src `[` $row0 `,` $kc0 `]` `gate_up` $gate_up `group_rows` $group_rows (`into` $dst^)?
+    attr-dict `:` qualified(type($src)) (`into` qualified(type($dst))^)?
+    (`->` qualified(type($result))^)?
   }];
   let hasVerifier = 1;
 }

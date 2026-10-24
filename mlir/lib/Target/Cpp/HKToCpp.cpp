@@ -1127,17 +1127,28 @@ private:
         })
         .Case([&](LoadMxScalesOp o) {
           Value d = dest(o.getDst(), o.getResult());
-          call("load_mx_scales", d,
-               {name(o.getSrc()), name(o.getRow0()), name(o.getKb0())});
+          if (o.getLayout())
+            w("kittens::load_mx_scales_aiter<" + std::to_string(o.getLayout()) + ", " +
+              std::to_string(o.getGroupRows()) + ">(" + name(d) + ", " + name(o.getSrc()) +
+              ", " + name(o.getRow0()) + ", " + name(o.getKb0()) + ");");
+          else
+            call("load_mx_scales", d,
+                 {name(o.getSrc()), name(o.getRow0()), name(o.getKb0())});
+        })
+        .Case([&](LoadFp4FragsOp o) {
+          Value d = dest(o.getDst(), o.getResult());
+          w("kittens::load_fp4_frags<" + std::to_string(o.getGateUp()) + ", " +
+            std::to_string(o.getGroupRows()) + ">(" + name(d) + ", " + name(o.getSrc()) +
+            ", " + name(o.getRow0()) + ", " + name(o.getKc0()) + ");");
         })
         .Case([&](MxScalesCopyOp o) {
           w(name(o.getDst()) + " = " + name(o.getSrc()) + ";");
         })
         .Case([&](MmaABtMxOp o) {
           Value d = dest(o.getDst(), o.getResult());
-          call("mma_ABt_mx", d,
-               {name(o.getA()), name(o.getB()), name(o.getC()), name(o.getSa()),
-                name(o.getSb())});
+          w("kittens::mma_ABt_mx<" + std::to_string(o.getBFmt()) + ">(" + name(d) + ", " +
+            name(o.getA()) + ", " + name(o.getB()) + ", " + name(o.getC()) + ", " +
+            name(o.getSa()) + ", " + name(o.getSb()) + ");");
         })
         .Case([&](LoadW4Op o) {
           Value d = dest(o.getDst(), o.getResult());
