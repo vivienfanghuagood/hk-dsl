@@ -1,0 +1,5 @@
+# Installed with --no-deps. xgrammar's own requirements include `triton` with no
+# version, which would put PyPI's Triton over triton-rocm 3.7.1 (vllm031_setup.sh).
+compressed-tensors==0.17.0
+xgrammar==0.2.7
+depyf==0.20.0

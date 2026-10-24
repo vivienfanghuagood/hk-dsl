@@ -86,8 +86,8 @@ Infinity Cache).
 | stack | ROCm | torch | Triton | FlyDSL | engine | used by |
 |---|---|---|---|---|---|---|
 | vLLM 0.31 venv, as built | 7.2.1 | 2.13.0+rocm7.2 | triton-rocm 3.7.1 | -- | vLLM 0.31.0+rocm721, built from source | [chapters 20-22](history/20-vllm-031.md): vLLM 0.31 end to end, MoE, 4-bit |
-| the same venv, after October 15 | 7.2.1 | 2.13.0+rocm7.2 | Triton 3.8.0, installed over triton-rocm 3.7.1 | 0.4.0 | vLLM 0.31.0+rocm721 | chapters 30-38: FlyDSL routes, any model, `ab`, chapter 38's end to end; the performance gate's baseline |
-| the matched venv: a copy of it with triton-rocm 3.7.1 restored | 7.2.1 | 2.13.0+rocm7.2 | triton-rocm 3.7.1 | 0.4.0 | vLLM 0.31.0+rocm721 | [chapter 44](history/44-matched-stack.md): the vLLM 0.31 end-to-end record re-measured with hk 0.5.0's code |
+| the same venv, after October 15 (retired October 23) | 7.2.1 | 2.13.0+rocm7.2 | Triton 3.8.0, installed over triton-rocm 3.7.1 | 0.4.0 | vLLM 0.31.0+rocm721 | chapters 30-38: FlyDSL routes, any model, `ab`, chapter 38's end to end; the performance gate's baselines up to October 20 |
+| the matched venv: a copy of it with triton-rocm 3.7.1 restored; `/workspace/venv-vllm031` since October 23 | 7.2.1 | 2.13.0+rocm7.2 | triton-rocm 3.7.1, pinned | 0.4.0 | vLLM 0.31.0+rocm721 | [chapter 44](history/44-matched-stack.md): the vLLM 0.31 end-to-end record re-measured with hk 0.5.0's code; the performance gate's baseline since October 23 ([testing](testing.md#the-performance-gate)) |
 | SGLang venv | 7.2.1 | 2.9.1 (HIP 7.2.53211) | triton 3.5.1 | installed in chapter 32 | SGLang 0.5.18, sglang-radeon 0.1.5 | [chapters 24-25](history/24-sglang.md), 32 |
 | the scoreboard | 7.2.4 | 2.10.0+rocm7.2.4 | 3.6.0 | 0.4.0.dev970 | -- | [chapters 26-28](history/26-the-scoreboard-retuned.md): kernels against the tuned field |
 | vLLM 0.16 (superseded) | 7.2.1 | -- | -- | -- | vLLM 0.16.1.dev0 | chapters 07-17; [appendix](#vllm-016-end-to-end) |
@@ -513,7 +513,14 @@ tutorial kernels, not the tuned ones above; the 0.99x is FlyDSL's 2048-row
 fused add). [Chapter 38](history/38-rdna-losses.md) refreshed it again after
 the bf16 stores and the transpose changed: of 57 pairs the median moved
 0.0%, the norms and softmax -2.8% to +2.4%, attention against torch +6.2%
-non-causal and +10.1% causal.
+non-causal and +10.1% causal. Since October 23 it holds them on the matched
+venv (triton-rocm 3.7.1): eight runs, interleaved with eight in the retired
+venv on the same hk. The Triton arm's ratios moved by a median 3.2% against
+the 3.8.0 runs: hk's lead over Triton grew on the GEMMs (1.10-1.15x, from
+1.07-1.11x) and on the one- and 32-row fused add (1.15x and 1.13x, from
+1.03x and 1.06x), and shrank on the 2048-row softmax (1.38x, from 1.43x).
+torch's and FlyDSL's ratios moved by a median 0.1-0.2%
+([testing](testing.md#the-performance-gate)).
 
 **Triton's tutorials and the kernels beside a model**
 ([rows by index](history/19-rows-by-index.md); LayerNorm backward from
@@ -746,8 +753,8 @@ Where hk loses on the W7900D, and what each loss costs a request:
   ratios ran against that stock ([the stacks](#the-stacks)).
   [Chapter 44](history/44-matched-stack.md) re-measured the record on the
   matched stack: no claim shrank, and stock under 3.8.0 was 0-2.5% slower
-  per request. The performance gate's gfx1100 baseline is still the 3.8.0
-  venv's.
+  per request. On October 23 the 3.8.0 venv was retired, the matched one
+  pinned, and the performance gate's gfx1100 baseline refreshed on it.
 
 ## Part B: CDNA4 (gfx950, one MI355X)
 

@@ -661,18 +661,42 @@ and **SGLang 0.5.18** with sglang-radeon 0.1.5 (torch 2.9.1, ROCm 7.2.1;
 vLLM 0.16.1 is the copy installed beside SGLang. Its contract holds except
 for AWQ, but nothing has been run end to end on it since the port to 0.31.
 
-Check which Triton the venv imports. vLLM 0.31's requirements include
-xgrammar, which requires `triton` with no version; triton-rocm, which
-torch 2.13.0+rocm7.2 pins, is a different distribution name, so installing
-them after torch puts PyPI's newest `triton` over triton-rocm's files in the
-same package. That is how the venv the record measured in from chapter 24
-to 38 came to import Triton 3.8.0 ([chapter 44](history/44-matched-stack.md)).
-`python -c "import triton; print(triton.__version__)"` should print 3.7.1;
-if it does not, `pip uninstall triton` and reinstall the triton-rocm 3.7.1
-wheel with `--no-deps --force-reinstall`. vLLM 0.31's own ROCm image builds
-yet another Triton, ROCm/triton's 3.8.x branch, and under 3.7.1 vLLM logs
-that its vendored `triton_kernels` (MXFP4 MoE) cannot be imported; nothing
-hk patches uses them.
+**The Triton is part of the stack, and hk checks it.** vLLM 0.31's
+requirements include xgrammar, which requires `triton` with no version;
+triton-rocm, which torch 2.13.0+rocm7.2 pins, is a different distribution
+name, so installing them after torch puts PyPI's newest `triton` over
+triton-rocm's files in the same package. That is how the venv the record
+measured in from chapter 24 to 38 came to import Triton 3.8.0
+([chapter 44](history/44-matched-stack.md)): Triton's decode kernel up to
+1.9x slower in vLLM's allocation, stock's request 0-2.5% slower, and no
+error anywhere. So:
+- `python3 -m hk.integration.stack` prints the vLLM, torch and Triton the
+  venv has and exits 1 when they are not the measured stack (`hk.integration.stack.MATCHED`:
+  for vLLM 0.31, torch 2.13.0+rocm7.2 and triton-rocm 3.7.1), or when two
+  distributions install the `triton` package -- the overwrite's signature.
+  It prints the commands that restore it: uninstall `triton`, then
+  reinstall triton-rocm 3.7.1 with `--no-deps --force-reinstall`.
+- `python -m hk.integration ab` refuses to run (exit 2) on a mismatched
+  stack, and records the versions in its `--json` meta. The vLLM plugin
+  (`HK_PATCH_VLLM=1`) prints the mismatch to stderr, framed, once a process,
+  and carries on. `HK_STACK_CHECK` overrides either: `refuse`, `warn`, `off`.
+- `tests/hk/engines/test_vllm_contract.py` fails in a venv whose Triton is
+  not the one its vLLM was measured with.
+- `scripts/engines/vllm031_setup.sh` builds the venv with the pin: after
+  vLLM's requirements it removes whatever `triton` they brought and
+  reinstalls the triton-rocm 3.7.1 wheel by its sha256, then checks the
+  versions and stops if they are wrong.
+
+A vLLM the table does not list is not checked: its stack has not been
+measured. vLLM 0.31's own ROCm image builds yet another Triton, ROCm/triton's
+3.8.x branch, and under 3.7.1 vLLM logs that its vendored `triton_kernels`
+(MXFP4 MoE) cannot be imported; nothing hk patches uses them.
+
+On the dev pod, `/workspace/venv-vllm031` is the matched venv: since
+2026-10-23 it is a symlink to `/workspace/venv-vllm031-tri371`, and the
+venv that had Triton 3.8.0 is kept, unused, as
+`/workspace/venv-vllm031.retired-triton380-20261023`
+(`/workspace/README-venvs.txt` in the pod).
 
 On 0.31, three of the backend's hooks are no longer read
 (`accept_output_buffer`, `get_kv_cache_shape`, the backend's
@@ -800,6 +824,7 @@ spelled:
 | `HK_VLLM_DEFAULTS` | `ab.py` | `1`: the A/B builds vLLM with prefix caching and chunked prefill on, as vLLM ships |
 | `HK_EAGER` | `ab.py` | `1` (default): the A/B runs vLLM eager; `0`: with CUDA graphs |
 | `HK_GPU_UTIL` | `ab.py` | the A/B's `gpu_memory_utilization` (default 0.90) |
+| `HK_STACK_CHECK` | `stack.py`, from `ab.py` and `_vllm_plugin.py` | what to do when vLLM's Triton or torch is not the stack it was measured on: `refuse` (`ab`'s default: exit 2), `warn` (the plugin's default: print to stderr and carry on), `off` |
 
 `HK_PATCH_VLLM`, `HK_VLLM_BACKEND`, `HK_VLLM_GEMM`, `HK_VLLM_MOE`,
 `HK_VLLM_INT4`, `HK_SGLANG_LINEAR` and `HK_SGLANG_MOE` are off when unset or
