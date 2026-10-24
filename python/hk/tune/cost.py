@@ -12,6 +12,9 @@ what can be known without a GPU:
   * **tile efficiency** -- operand bytes per MFMA fall as a block grows
     (bm * bn / (bm + bn));
   * **split-K** -- more workgroups for an fp32 round trip and a second launch;
+  * **stream-K** -- no part wave, for a slower main loop (the runs of an XCD
+    are at different K, so its L2 serves them less) and the cut blocks'
+    fp32 shares;
   * **the memory floor** -- every weight byte is read once, which is the
     whole story at decode sizes.
 
@@ -30,6 +33,10 @@ CARDS = {
     "gfx950": dict(cus=256, peak=2.3e15, bw=6.5e12, lds=163840, launch=3e-6, c0=40.0),
     "gfx1100": dict(cus=96, peak=1.0e14, bw=8.0e11, lds=65536, launch=4e-6, c0=20.0),
 }
+
+
+#: Stream-K's main loop against the data-parallel one's, per block.
+SK_SLOW = 1.3
 
 
 def _tile_eff(bm: int, bn: int, c0: float) -> float:
@@ -59,7 +66,13 @@ def estimate(kind: str, s: Dict[str, Any], m: int, n: int, k: int, arch: str) ->
     wgs = mb * nb * splits
     if kind == "pp":
         conc = 1
-        eff = 1.0
+        # A warp's accumulator: operand rows a warp reads per element fall
+        # as it grows; 64 x 32 (the 256 x 256 block, 2 x 4 warps) is the
+        # reference. 16 x 80 (256 x 160 on 8 x 1) measured 0.76 of it.
+        wm, wn = s.get("warps_m", 2), s.get("warps_n", 4)
+        rm, rn = max(bm // 2 // wm, 1), max(bn // 2 // wn, 1)
+        r = rm * rn / (rm + rn)
+        eff = (r / (r + 20.0)) / ((64 * 32 / 96) / (64 * 32 / 96 + 20.0))
     elif kind == "dp":
         lds = s.get("stages", 3) * (bm + bn) * s.get("k_step", 64) * 2
         conc = max(1, min(4, c["lds"] // max(lds, 1)))
@@ -75,11 +88,25 @@ def estimate(kind: str, s: Dict[str, Any], m: int, n: int, k: int, arch: str) ->
     wg_flops = 2.0 * bm * bn * (k / splits)
     t_wave = conc * wg_flops / (per_cu * _tile_eff(bm, bn, c["c0"]) * eff)
     t_compute = waves * t_wave
+    sk = s.get("stream_k", 0) if kind == "pp" else 0
+    shares = 0
+    if sk:
+        blocks = mb * nb
+        whole = (blocks // slots) * slots if sk == 2 else 0
+        cut = blocks - whole
+        # The cut blocks' K spread evenly over every CU, at SK_SLOW the
+        # rate (measured 1.2-1.5x on the tuning split), and each run's
+        # second block a prologue and a share more.
+        t_compute = (whole // slots) * t_wave + (cut / slots) * t_wave * SK_SLOW
+        if cut:
+            t_compute += t_wave * min(1.0, 4.0 / max(k // 128, 1))
+            shares = min(cut * 2, 2 * slots)
     # A is read once per column block, B once per row block, through L2: count
     # the re-reads at an eighth.
     traffic = bytes_once + (m * k * 2 * (nb - 1) + n * k * 2 * (mb - 1)) / 8
     if splits > 1:
         traffic += m * n * 4 * splits * 2
+    traffic += shares * bm * bn * 4 * 2
     t_mem = traffic / c["bw"]
     launches = 1 + (splits > 1)
     return max(t_compute, t_mem) + launches * c["launch"]

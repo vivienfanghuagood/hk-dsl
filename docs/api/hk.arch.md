@@ -138,12 +138,20 @@ hk.arch.vm_wait(keep: int = 0) -> None
 ### `hk.arch.wg_arrive`
 
 ```python
-hk.arch.wg_arrive(counter, expected: Scalar) -> Int
+hk.arch.wg_arrive(counter, expected: Scalar, *, scope: str = 'device') -> Int
 ```
+
+*Changed after 0.4.0*: new parameter `scope`
 
 Count this workgroup's arrival at `counter` (an element view of an
 int32 global) and return how many arrived before it. The last to arrive
 resets the counter. Contains barriers: every warp must reach it.
+
+`scope="xcd"`: every workgroup arriving at this counter runs on one XCD
+of a gfx950 (block ids equal modulo 8: workgroups are dealt to the XCDs
+round robin), so the stores before it need only reach the shared L2 --
+no device-wide fence, which writes back and invalidates the L2 under
+every other workgroup of the XCD. The caller guarantees the placement.
 
 ### `hk.arch.target`
 

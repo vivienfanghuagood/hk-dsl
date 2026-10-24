@@ -18,6 +18,7 @@
 #include "mlir/Tools/mlir-translate/Translation.h"
 #include "llvm/ADT/MapVector.h"
 #include "llvm/ADT/StringMap.h"
+#include "llvm/ADT/StringSet.h"
 #include "llvm/ADT/TypeSwitch.h"
 
 #include <cmath>
@@ -441,9 +442,26 @@ private:
   /// the C++ call a value the same thing.
   void assignNames() {
     llvm::StringMap<int> counts;
+    // A frontend name that is a C++ keyword (the `&` of two flags is named
+    // "and", an alternative token) gets a trailing underscore.
+    static const llvm::StringSet<> keywords = {
+        "and", "and_eq", "bitand", "bitor", "compl", "not", "not_eq", "or",
+        "or_eq", "xor", "xor_eq", "int", "float", "double", "char", "bool",
+        "long", "short", "signed", "unsigned", "void", "auto", "const", "if",
+        "else", "for", "while", "do", "return", "switch", "case", "default",
+        "break", "continue", "goto", "new", "delete", "this", "true", "false",
+        "template", "typename", "class", "struct", "union", "enum", "static",
+        "inline", "operator", "sizeof", "typedef", "namespace", "using",
+        "register", "volatile", "extern", "asm", "try", "catch", "throw",
+        "public", "private", "protected", "friend", "virtual", "mutable",
+        "explicit", "export", "nullptr", "constexpr", "decltype", "noexcept",
+        "concept", "requires", "alignas", "alignof", "static_assert",
+        "thread_local", "co_await", "co_return", "co_yield", "consteval",
+        "constinit", "char8_t", "char16_t", "char32_t", "wchar_t"};
     auto bind = [&](Value v, StringRef base) {
-      int n = counts[base]++;
-      names[v] = n == 0 ? base.str() : (base + Twine(n)).str();
+      std::string b = keywords.contains(base) ? (base + "_").str() : base.str();
+      int n = counts[b]++;
+      names[v] = n == 0 ? b : b + std::to_string(n);
     };
     kernel.getBody().walk<WalkOrder::PreOrder>([&](Operation *op) {
       if (op == kernel.getOperation())
@@ -1092,7 +1110,8 @@ private:
             name(o.getSrc()) + ", " + name(o.getIdx()) + ");");
         })
         .Case([&](WgArriveOp o) {
-          w("const int " + name(o.getResult()) + " = kittens::wg_arrive(" +
+          w("const int " + name(o.getResult()) + " = kittens::wg_arrive" +
+            (o.getXcd() ? "_xcd(" : "(") +
             name(o.getCounter()) + ", " + name(o.getIdx()) + ", " +
             name(o.getExpected()) + ");");
         })

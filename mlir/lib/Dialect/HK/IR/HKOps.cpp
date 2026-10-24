@@ -321,22 +321,32 @@ LogicalResult LdsWaitForOp::verify() {
   return success();
 }
 
+/// The async copy is gfx950's: 64-lane waves, 16 bytes a lane an issue.
+static constexpr int64_t kDmaPerWarp = 16 * 64;
+
+static int64_t groupLoadBytes(GroupLoadOp op) {
+  auto t = op.getDst().getType();
+  return int64_t(t.getRows()) * t.getCols() *
+         (dtypeBits(t.getElementType()) / 8);
+}
+
 int64_t GroupLoadOp::dmaCalls() {
-  auto t = getDst().getType();
-  int64_t bytes = int64_t(t.getRows()) * t.getCols() *
-                  (dtypeBits(t.getElementType()) / 8);
-  int64_t perCall = 16 * getThreads();
-  if (bytes < perCall || bytes % perCall)
+  // Every warp issues bytes / (16 * threads) copies and, when that is not
+  // whole, the first warps one more (hk/cdna.cuh): the fewest any warp
+  // issues is what a wait behind the copy may assume of every warp.
+  int64_t bytes = groupLoadBytes(*this);
+  if (bytes < kDmaPerWarp || bytes % kDmaPerWarp)
     return 0;
-  return bytes / perCall;
+  return bytes / (16 * getThreads());
 }
 
 LogicalResult GroupLoadOp::verify() {
   if (getDst().getType().getCount() != 1)
     return emitOpError("copies into a stack of LDS tiles; index it");
-  if (getAsync() && !dmaCalls())
+  int64_t bytes = groupLoadBytes(*this);
+  if (getAsync() && (bytes < kDmaPerWarp || bytes % kDmaPerWarp))
     return emitOpError("async: the tile is not a whole number of 16-byte "
-                       "copies per thread");
+                       "copies per warp");
   if (getRows() && !getAsync())
     return emitOpError("rows: a row limit is the async copy's, whose "
                        "descriptor it narrows");

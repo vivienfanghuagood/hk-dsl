@@ -265,6 +265,10 @@ def _runner(s: GemmSchedule, m: int, n: int, k: int, device):
             if st.sched["splits"] > 1:
                 extra = decode_gemm.scratch_for(device, st.sched["splits"],
                                                 st.sched["tokens"], hi - lo)
+        elif st.kernel == "pp":
+            from ..ops import gemm_cdna  # noqa: PLC0415
+
+            extra = gemm_cdna.sk_args(st.sched, device, m, hi - lo, k)
         calls.append(("out", lo, hi, whole, (kern, extra)))
 
     if len(calls) == 1 and calls[0][3]:
@@ -567,10 +571,12 @@ class PingPong(GemmSchedule):
     family: ClassVar[str] = "pp"
     arches: ClassVar[Tuple[str, ...]] = ("gfx950",)
 
-    block_m: int = knob(256, values=(128, 256), seed=(128, 256),
-                        doc="rows of C a workgroup computes")
-    block_n: int = knob(256, values=(128, 256), seed=(128, 256),
-                        doc="columns of C a workgroup computes; N must be a multiple")
+    block_m: int = knob(256, values=(128, 160, 192, 256, 320), seed=(128, 256),
+                        doc="rows of C a workgroup computes: a half is whole 16-row "
+                            "fragments for each warp row (160: warps_m=1, 192/320: 1 or 2)")
+    block_n: int = knob(256, values=(128, 160, 192, 256, 320), seed=(128, 256),
+                        doc="columns of C a workgroup computes; N must be a multiple "
+                            "(160: warps_n=1, 192/320: 1 or 2)")
     k_step: int = knob(64, values=(32, 64, 128), doc="K a tile covers")
     warps_m: int = knob(2, values=(1, 2, 4, 8), doc="rows of the 8-warp grid")
     warps_n: int = knob(4, values=(1, 2, 4, 8), doc="columns of the 8-warp grid")
@@ -591,6 +597,13 @@ class PingPong(GemmSchedule):
                                     doc="st_16x64 LDS layout: whole-line copies")
     nt: str = knob("", values=("", "b"), seed=("", "b"),
                    doc="nontemporal copies of A ('a') and/or B ('b'): stream past the caches")
+    stream_k: int = knob(0, values=(0, 1, 2), seed=(0, 1, 2),
+                         doc="persistent: sk_grid workgroups run a plan of (block, K "
+                             "range) segments -- 1 every block's K cut into equal runs "
+                             "(stream-K), 2 whole waves of blocks then the rest cut; a cut "
+                             "block summed in fp32 by its last workgroup")
+    sk_grid: int = knob(256, values=(256,),
+                        doc="stream-K's workgroups: one a CU of an MI355X")
     max_vgprs: int = knob(256, gate=True, doc="build gate")
     min_occupancy: int = knob(1, gate=True, doc="build gate")
 
@@ -628,9 +641,12 @@ class PingPong(GemmSchedule):
         if self.k_step % 32 or self.k_step < 32:
             why.append(f"k_step={self.k_step}: a multiple of 32 (the MFMA's K)")
         for what, rows in (("A", half_m), ("B", half_n)):
-            if rows * self.k_step * 2 % (16 * 512):
+            # Whole copies a warp: a half that is not whole copies a thread
+            # (96 x 64 is 1.5 for 512 threads) has its first warps copy the
+            # rest (hk/cdna.cuh's group_load_async).
+            if rows * self.k_step * 2 % (16 * 64):
                 why.append(f"half a block of {what} ({rows}x{self.k_step}) is not a whole "
-                           f"number of 16-byte copies for 512 threads")
+                           f"number of 16-byte copies for a 64-lane warp")
         if self.lds_shape not in (None, "16x64"):
             why.append(f"lds_shape={self.lds_shape!r}: None or '16x64'")
         elif self.lds_shape == "16x64" and self.k_step % 64:
@@ -643,6 +659,19 @@ class PingPong(GemmSchedule):
                        "fourth memory phase reads Bs[2] while its copy is in flight")
         if self.splits < 1:
             why.append(f"splits={self.splits}: at least 1")
+        if self.stream_k not in (0, 1, 2):
+            why.append(f"stream_k={self.stream_k!r}: 0 (off), 1 (stream-K) or 2 (whole "
+                       f"waves, then stream-K)")
+        if self.stream_k:
+            if self.splits != 1:
+                why.append(f"stream_k with splits={self.splits}: stream-K cuts K itself "
+                           f"(fp32 shares summed in the kernel); splits must be 1")
+            if self.transposed_c:
+                why.append("stream_k with transposed_c: a cut block's shares are stored "
+                           "and summed in the untransposed accumulators' layout")
+            if self.sk_grid < 8 or self.sk_grid % 8:
+                why.append(f"sk_grid={self.sk_grid}: a whole number of workgroups for each "
+                           f"of the 8 XCDs")
         return why
 
     def _check_shape(self, m, n, k, arch) -> List[str]:
@@ -653,14 +682,26 @@ class PingPong(GemmSchedule):
         if n % self.block_n:
             why.append(f"N={n} is not a multiple of block_n={self.block_n} (a tail of N "
                        f"is a Columns schedule)")
+        if self.stream_k:
+            if k % (2 * self.k_step):
+                why.append(f"stream_k with K={k}: its unit of work is a pair of K-tiles, "
+                           f"so K is a multiple of 2 x k_step = {2 * self.k_step}")
+            units = -(-m // self.block_m) * (n // max(self.block_n, 1)) * (
+                k // (2 * self.k_step))
+            if (units + 1) * self.sk_grid >= 2**31:
+                why.append(f"stream_k at {m}x{n}x{k}: {units} units x sk_grid="
+                           f"{self.sk_grid} overflows the kernel's 32-bit arithmetic")
         why += _scratch_ok(self.splits, m, n)
         return why
 
     def canonical(self) -> "PingPong":
-        if self.hipkittens_waits and self.late_b:
+        s = self
+        if s.hipkittens_waits and s.late_b:
             # late_b's waits are HipKittens' own: the same kernel.
-            return dataclasses.replace(self, hipkittens_waits=False)
-        return self
+            s = dataclasses.replace(s, hipkittens_waits=False)
+        if not s.stream_k and s.sk_grid != 256:
+            s = dataclasses.replace(s, sk_grid=256)
+        return s
 
     @classmethod
     def base_for(cls, m, n, k, arch):

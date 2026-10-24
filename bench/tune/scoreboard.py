@@ -191,7 +191,7 @@ def markdown(d: dict) -> str:
              f"hipcc `{meta.get('hipcc', '?')}`; "
              + ", ".join(f"{k} {x}" for k, x in v.items()
                          if k not in ("torch", "hip") and x != "?") + ".",
-             f"hk-dsl at `{meta.get('commit') or '?'}` (claude/tune). "
+             f"hk-dsl at `{meta.get('commit') or '?'}`. "
              f"Baselines missing: {meta.get('missing') or 'none'}. hk.tune budget "
              f"{meta.get('budget', '?')} GPU-s a shape; scoring {meta.get('sets', '?')} sets x "
              f"{meta.get('rounds', '?')} rounds, interleaved, queued, weights rotated past the "

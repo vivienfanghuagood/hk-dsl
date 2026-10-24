@@ -127,18 +127,25 @@ struct VerifyPass : public mlir::hk::impl::HKVerifyBase<VerifyPass> {
     if (div.wasInterrupted())
       return signalPassFailure();
 
-    // hk.pingpong: in the kernel's own block, so the pair cannot nest or sit
-    // in a loop the halves leave at different times, and on a condition
-    // every lane of a warp agrees on -- a warp split by it would wait at a
-    // barrier with half its lanes.
+    // hk.pingpong: in the kernel's own block or the body of a for loop
+    // (nested in nothing else), so the pair cannot nest or sit in a branch
+    // or a while loop the halves leave at different times -- a for loop's
+    // bounds are the same in every warp, as its barriers already require --
+    // and on a condition every lane of a warp agrees on: a warp split by it
+    // would wait at a barrier with half its lanes.
     WalkResult pp = f.walk([&](Operation *op) {
       if (!isa<PingPongBeginOp, PingPongEndOp>(op))
         return WalkResult::advance();
-      if (op->getBlock() != &f.getBody().front()) {
-        op->emitError() << "hk.pingpong is inside a loop or a branch. It "
-                           "splits the workgroup's barriers for everything "
-                           "between its two ends, so both have to be in the "
-                           "kernel's own body."
+      bool placed = true;
+      for (Operation *p = op->getParentOp(); p && p != f.getOperation();
+           p = p->getParentOp())
+        if (!isa<scf::ForOp>(p))
+          placed = false;
+      if (!placed) {
+        op->emitError() << "hk.pingpong is inside a branch or a while loop. "
+                           "It splits the workgroup's barriers for "
+                           "everything between its two ends, so both have to "
+                           "be in the kernel's own body or a for loop's."
                         << atLoc(op);
         return WalkResult::interrupt();
       }

@@ -218,10 +218,13 @@ kernels can be told to do -- the *space* -- or a baseline at the roofline:
   waves a SIMD, LDS bank conflicts in 75% of its LDS cycles). The hipBLASLt
   kernels they were profiled against have macro tiles hk's GEMMs do not --
   144x256, 160x256, 160x128, 192x256, 192x128 -- and Tensile's StreamK field
-  set (SK5). **Missing for the next phase**: a stream-K (or data-parallel +
-  stream-K remainder) variant of the pingpong, and block_n/block_m of 144, 160,
-  192 (the pingpong takes 128 and 256 only; `Dp` takes 96 and 224 but runs at
-  one wave a SIMD at those sizes).
+  set (SK5). **Since added** ([chapter 45](history/45-wide-blocks-and-stream-k.md)):
+  `PingPong` blocks of 160, 192 and 320 and a persistent stream-K form
+  (`stream_k=1|2`), both in the space. They make hk 4-12% faster at
+  1024x5120x14336, 4096x3072x4096, 2048x4608x4096 and 2048x4096x1024, but the
+  acceptance count stays at 13/25: stream-K's fp32 shares cost about what the
+  part wave did, and the gap that is left is the pingpong's main loop (1.56
+  instructions a matrix instruction against hipBLASLt's 0.58).
 - **One 128 KB-LDS workgroup a CU, prologue and epilogue not hidden** (space;
   2): 2048x4096x1024 and 4096x4608x4096 -- the matrix core idles 12-32% of the
   kernel before and after the main loop, with no second workgroup on the CU to

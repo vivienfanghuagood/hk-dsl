@@ -371,6 +371,20 @@ def test_candidate_round_trips_through_its_record():
     assert cols.kind == "cols" and sp.from_spec(sp.spec(cols)) == cols and "cols" in cols.label
 
 
+def test_every_knob_has_its_own_short_name():
+    """A record's name is its key in the routes file: two schedules that
+    differ in one knob must not share it (splits=2 and stream_k=2 once did)."""
+    import hk.schedules as S
+    from hk.tune.space import _ABBREV, _short
+
+    for cls in (S.PingPong, S.Dp):
+        names = [_ABBREV.get(k, k) for k in cls.axes()]
+        # Keys that are only ever written by position (block_n's and
+        # warps_n's "x") are the one exception the format has always had.
+        assert len(names) - len(set(names)) <= 1, cls
+    assert _short(S.PingPong(splits=2)) != _short(S.PingPong(stream_k=2))
+
+
 def test_gfx950_space_is_checked_before_compiling():
     from hk.tune.space import ScheduleSpace
 

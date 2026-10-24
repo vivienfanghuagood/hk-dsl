@@ -50,7 +50,7 @@ from __future__ import annotations
 from typing import Any, Dict, Optional
 
 from .. import dsl as hk
-from ..types import bf16, fp32
+from ..types import bf16, fp32, i32
 from . import _epilogue
 
 #: An MI355X has eight XCDs; workgroups are dealt to them round robin.
@@ -63,6 +63,7 @@ def gemm_kernel(name: str, *, block_m: int = 256, block_n: int = 256,
                 transposed_c: bool = False, early_store: bool = True,
                 hipkittens_waits: bool = False, late_b: bool = True,
                 splits: int = 1, lds_shape: Optional[str] = None, nt: str = "",
+                stream_k: int = 0, sk_grid: int = 256,
                 arch: Optional[str] = None,
                 max_vgprs: int = 256, min_occupancy: int = 1, epilogue=None):
     """HipKittens' tiling by default: 256x256x64, eight warps as 2 x 4.
@@ -70,6 +71,16 @@ def gemm_kernel(name: str, *, block_m: int = 256, block_n: int = 256,
     `epilogue` (hk.ops._epilogue) replaces C's store with hk.templates.gemm's
     hook; a split kernel (splits > 1) stores its fp32 shares as ever and the
     hook goes on the reduction.
+
+    `stream_k` makes it persistent: `sk_grid` workgroups (one a CU), each
+    running the segments -- a block and a range of its K -- that sk_plan
+    gives it (SK_MODES: 1 cuts every block's K into equal runs, stream-K
+    proper; 2 deals whole blocks round robin for the grid's whole waves and
+    cuts only the rest). A grid of fewer blocks than CUs, or a part wave,
+    keeps every CU busy; a block whose K is cut is summed in fp32 by the
+    last of its workgroups to finish, in a fixed order, and only then stored
+    (epilogue included). Takes (a, b, c, ws, cnt, plan) -- sk_scratch's and
+    sk_plan's -- and K a multiple of 2 * k_step.
 
     `hipkittens_waits` puts HipKittens' own vmcnts back (all but three copies
     after the prologue and at the end of each iteration). hk-lds-pipeline
@@ -102,59 +113,28 @@ def gemm_kernel(name: str, *, block_m: int = 256, block_n: int = 256,
     # measurement.
     t_c = (hk.RT(fp32, reg_n, reg_m, "col") if transposed_c
            else hk.RT(fp32, reg_m, reg_n, "col"))
+    # A stream-K share is stored transposed (see gemm_sk).
+    t_ct = hk.RT(fp32, reg_n, reg_m, "row")
 
     @hk.func
-    def gemm(a, b, WGM, k0, k_count, out, init=None):
-        g = hk.group(warps)
-        # Buffer u, half h of A is As[2u + h]: every index below is a Python
-        # int, so each copy and read names its buffer.
-        As = hk.lds.alloc(st_a, count=4, name="As", shape=lds_shape)
-        Bs = hk.lds.alloc(st_b, count=4, name="Bs", shape=lds_shape)
-        A = hk.zeros(t_a)
-        B = [hk.zeros(t_b) for _ in range(2)]
-        C = [[hk.zeros(t_c) for _ in range(2)] for _ in range(2)]
-
-        M = a.rows
-        m_blocks = hk.cdiv(M, block_m)
-        n_blocks = b.rows // block_n
-        blocks = m_blocks * n_blocks
-
-        # Workgroups go to the XCDs round robin; renumber them so a chunk of
-        # consecutive ids shares an XCD and its L2 (HipKittens'
-        # chiplet_transform_chunked). Ids past the last whole round stay.
-        wgid = hk.arch.block_idx.x
-        per_round = NUM_XCDS * xcd_chunk
-        limit = (blocks // per_round) * per_round
-        local = wgid // NUM_XCDS
-        moved = ((local // xcd_chunk) * per_round + (wgid % NUM_XCDS) * xcd_chunk
-                 + local % xcd_chunk)
-        stays = hk.min(hk.max(wgid - limit, 0), 1)      # 1 past the last round
-        wgid = moved + stays * (wgid - moved)
-        # Then WGM block-rows at a time, so a group's B panel stays in L2.
-        per_group = WGM * n_blocks
-        first_m = (wgid // per_group) * WGM
-        group_m = hk.min(m_blocks - first_m, WGM)
-        row = first_m + (wgid % per_group) % group_m
-        col = (wgid % per_group) // group_m
-        m0 = row * block_m
-        n0 = col * block_n
-
-        wid = hk.arch.warp_id()
-        wr = wid // warps_n
-        wc = wid % warps_n
-
+    def tile(g, As, Bs, A, B, C, a, b, m0, n0, wr, wc, k0, k_count, out, init=None,
+             stores=True, even=False):
+        """One block of C: the copies, the pingpong over k_count K-tiles from
+        k0, and (`stores`) C's store through `out`. The accumulators C are
+        the caller's, zeroed or initialized. `even`: k_count is even, so no
+        K-tile is a pad and no copy needs a row limit."""
         # The loop takes K-tiles in pairs. An odd count gets one more, past K,
         # copied with a row limit of 0: it reads zeros and its MFMAs add
         # nothing. The limit narrows the descriptor and moves no address --
         # moving the tile's row instead put the 64-bit address arithmetic of
         # every copy back in the loop, 60 VALU an iteration, 7% slower.
-        n_tiles = 2 * hk.cdiv(k_count, 2)
+        n_tiles = k_count if even else 2 * hk.cdiv(k_count, 2)
         k_tiles = k_count
 
         # Only the copies of a pair's second tile can be the pad: they take
         # the limit, and the rest no arithmetic at all.
         def limit(t, rows, pad):
-            return (1 - hk.min(hk.max(t - k_tiles + 1, 0), 1)) * rows if pad else None
+            return (1 - hk.min(hk.max(t - k_tiles + 1, 0), 1)) * rows if pad and not even else None
 
         def copy_a(t, u, h, pad=False):
             g.load(As[2 * u + h], a.at[m0 + h * half_m, k0 + t * k_step], wait=False,
@@ -177,8 +157,9 @@ def gemm_kernel(name: str, *, block_m: int = 256, block_n: int = 256,
                 C[i][j] += A @ B[j].T
 
         def store(i, j):
-            tile = hk.transpose(C[i][j]) if transposed_c else C[i][j]
-            out(tile, m0 + i * half_m + wr * reg_m, n0 + j * half_n + wc * reg_n)
+            if stores:
+                tc = hk.transpose(C[i][j]) if transposed_c else C[i][j]
+                out(tc, m0 + i * half_m + wr * reg_m, n0 + j * half_n + wc * reg_n)
 
         def math(i, j):
             if setprio:
@@ -200,7 +181,10 @@ def gemm_kernel(name: str, *, block_m: int = 256, block_n: int = 256,
                 for j in range(2):
                     init(C[i][j], m0 + i * half_m + wr * reg_m,
                          n0 + j * half_n + wc * reg_n)
-        with hk.arch.pingpong(wr == 1):
+        # The two halves are warps 0-3 and 4-7: a SIMD holds waves w and
+        # w + 4, so each SIMD has one wave of each. On a 2 x 4 grid that is
+        # warp row 1 (HipKittens' test, kept as it is written there).
+        with hk.arch.pingpong(wr == 1 if warps_m == 2 else hk.arch.warp_id() // 4 == 1):
             g.wait_for(Bs[0], As[0])
             hk.arch.barrier()
             copy_b(1, 1, 0, pad=True)
@@ -332,6 +316,134 @@ def gemm_kernel(name: str, *, block_m: int = 256, block_n: int = 256,
                 if not (early_store and i == 0):
                     store(i, j)
 
+    def alloc(warps_):
+        g = hk.group(warps_)
+        # Buffer u, half h of A is As[2u + h]: every index below is a Python
+        # int, so each copy and read names its buffer.
+        As = hk.lds.alloc(st_a, count=4, name="As", shape=lds_shape)
+        Bs = hk.lds.alloc(st_b, count=4, name="Bs", shape=lds_shape)
+        A = hk.zeros(t_a)
+        B = [hk.zeros(t_b) for _ in range(2)]
+        C = [[hk.zeros(t_c) for _ in range(2)] for _ in range(2)]
+        return g, As, Bs, A, B, C
+
+    def tile_of(t, m_blocks, n_blocks, WGM):
+        """Block t of the grid, WGM block-rows at a time, so a group's B
+        panel stays in L2: (row, col)."""
+        per_group = WGM * n_blocks
+        first_m = (t // per_group) * WGM
+        group_m = hk.min(m_blocks - first_m, WGM)
+        row = first_m + (t % per_group) % group_m
+        col = (t % per_group) // group_m
+        return row, col
+
+    @hk.func
+    def gemm(a, b, WGM, k0, k_count, out, init=None):
+        g, As, Bs, A, B, C = alloc(warps)
+
+        M = a.rows
+        m_blocks = hk.cdiv(M, block_m)
+        n_blocks = b.rows // block_n
+        blocks = m_blocks * n_blocks
+
+        # Workgroups go to the XCDs round robin; renumber them so a chunk of
+        # consecutive ids shares an XCD and its L2 (HipKittens'
+        # chiplet_transform_chunked). Ids past the last whole round stay.
+        wgid = hk.arch.block_idx.x
+        per_round = NUM_XCDS * xcd_chunk
+        limit = (blocks // per_round) * per_round
+        local = wgid // NUM_XCDS
+        moved = ((local // xcd_chunk) * per_round + (wgid % NUM_XCDS) * xcd_chunk
+                 + local % xcd_chunk)
+        stays = hk.min(hk.max(wgid - limit, 0), 1)      # 1 past the last round
+        wgid = moved + stays * (wgid - moved)
+        # Then WGM block-rows at a time, so a group's B panel stays in L2.
+        row, col = tile_of(wgid, m_blocks, n_blocks, WGM)
+        m0 = row * block_m
+        n0 = col * block_n
+
+        wid = hk.arch.warp_id()
+        wr = wid // warps_n
+        wc = wid % warps_n
+        tile(g, As, Bs, A, B, C, a, b, m0, n0, wr, wc, k0, k_count, out, init)
+
+    @hk.func
+    def gemm_sk(a, b, ws, cnt, plan, out):
+        """The persistent form: workgroup g runs the segments sk_plan gave it
+        -- a block and a range of its K -- in order. A segment that is a
+        whole block is stored as it is finished. A block whose K is cut
+        between workgroups is stored by each as an fp32 share, and the last
+        to finish its share (hk.arch.wg_arrive) adds the shares, in the
+        plan's order, after its own last segment: the main loop's registers
+        are free then, and the last share of a block is in practice the last
+        thing a workgroup does. The plan is read with scalar loads, so the
+        loop carries an index, not the arithmetic that made it."""
+        g, As, Bs, A, B, C = alloc(warps)
+        wid = hk.arch.warp_id()
+        wr = wid // warps_n
+        wc = wid % warps_n
+
+        def field(r, f):
+            return plan[hk.elem_coord(0, 0, 0, r + f)].load_scalar(invariant=True)
+
+        def coords(i, j):
+            return i * half_m + wr * reg_m, j * half_n + wc * reg_n
+
+        def store_all(m0, n0):
+            for i in range(2):
+                for j in range(2):
+                    r, cc = coords(i, j)
+                    out(hk.transpose(C[i][j]) if transposed_c else C[i][j], m0 + r, n0 + cc)
+
+        wgid = hk.arch.block_idx.x
+        start = field(wgid, 0)
+        segs = (field(wgid, 1) - start) // SK_REC
+        # Which cut blocks it sums, being the last to finish their shares:
+        # a workgroup's cut segments are at most its first and its last
+        # stream-K one (bits 0 and 1; plan fields 8, and the records named
+        # after the offsets).
+        fixes = 0
+        for s in range(segs):
+            r0 = start + s * SK_REC
+            m0 = field(r0, 0)
+            n0 = field(r0, 1)
+            for i in range(2):
+                for j in range(2):
+                    C[i][j].zero_()
+            tile(g, As, Bs, A, B, C, a, b, m0, n0, wr, wc, field(r0, 2),
+                 field(r0, 3), out, stores=False, even=True)
+            slot = field(r0, 4)
+            if slot < 0:
+                store_all(m0, n0)
+            else:
+                # Transposed: an accumulator's four rows a lane are one
+                # 16-byte run of a share stored (column, row).
+                for i in range(2):
+                    for j in range(2):
+                        r, cc = coords(i, j)
+                        ws[hk.elem_coord(0, slot, cc, r)].store(hk.transpose(C[i][j]))
+                n_sh = field(r0, 6)
+                arrived = hk.arch.wg_arrive(cnt[hk.elem_coord(0, 0, 0, field(r0, 5))], n_sh,
+                                            scope="xcd")
+                if arrived == n_sh - 1:
+                    fixes = fixes + field(r0, 8)
+
+        for bit in (1, 2):
+            if (fixes // bit) % 2 == 1:
+                r0 = field(wgid, bit * sk_grid + 1)
+                first_slot = field(r0, 7)
+                n_sh = field(r0, 6)
+                # A quadrant at a time, the shares in the plan's order (the
+                # same sum whichever workgroup is last): one share live
+                # beside the accumulators.
+                for i in range(2):
+                    for j in range(2):
+                        C[i][j].zero_()
+                        r, cc = coords(i, j)
+                        for sl in range(first_slot, first_slot + n_sh):
+                            C[i][j] += hk.transpose(ws[hk.elem_coord(0, sl, cc, r)].load(t_ct))
+                store_all(field(r0, 0), field(r0, 1))
+
     def body(a: hk.Tensor[bf16], b: hk.Tensor[bf16], c: hk.Tensor[bf16], *,
              WGM: hk.Constexpr = wgm, **ops):
         inited = (epilogue is not None and getattr(epilogue, "init", None)
@@ -360,7 +472,33 @@ def gemm_kernel(name: str, *, block_m: int = 256, block_n: int = 256,
 
         gemm(a, b, WGM, s * per, per // k_step, out)
 
-    if splits == 1:
+    # stream_k: sk_grid workgroups, each running the segments sk_plan gave
+    # it; ws holds the fp32 shares of cut blocks (sk_scratch), cnt a counter
+    # a block, zero between launches (the last arrival resets it). The
+    # epilogue runs once, on a block's whole sum.
+    def body_sk(a: hk.Tensor[bf16], b: hk.Tensor[bf16], c: hk.Tensor[bf16],
+                ws: hk.Tensor[fp32], cnt: hk.Tensor[i32], plan: hk.Tensor[i32], *,
+                SKG: hk.Constexpr = sk_grid, **ops):
+        def out(t, r, col):
+            if epilogue is None:
+                c[hk.elem_coord(0, 0, r, col)].store(t, bounded=True)
+            else:
+                epilogue.store(c, ops, t, r, col, inited=False)
+
+        gemm_sk(a, b, ws, cnt, plan, out)
+
+    if stream_k:
+        if splits != 1:
+            raise ValueError("stream_k cuts K itself; splits must be 1")
+        if transposed_c:
+            raise ValueError("stream_k: a cut block's shares are stored and summed in "
+                             "the untransposed accumulators' layout; transposed_c must be False")
+        if sk_grid % NUM_XCDS:
+            raise ValueError(f"sk_grid={sk_grid}: a whole number of workgroups an XCD")
+        if stream_k not in SK_MODES:
+            raise ValueError(f"stream_k={stream_k!r}: one of {sorted(SK_MODES)}")
+        fn = _epilogue.sign(body_sk, epilogue)
+    elif splits == 1:
         fn = _epilogue.sign(body, epilogue)
     elif epilogue is not None:
         raise ValueError("a split kernel stores fp32 shares; its epilogue goes "
@@ -370,6 +508,8 @@ def gemm_kernel(name: str, *, block_m: int = 256, block_n: int = 256,
     fn.__name__ = name
 
     def _grid(p):
+        if stream_k:
+            return (p.SKG, 1, 1)
         return (hk.cdiv(p.a.rows, block_m) * (p.b.rows // block_n), splits, 1)
 
     return hk.kernel(fn, arch=arch, warps=warps, grid=_grid, name=name,
@@ -390,7 +530,8 @@ def _sched_name(s: Dict[str, Any]) -> str:
                 "_lb" if s.get("late_b") else "") + (
                 f"_k{s['splits']}" if s.get("splits", 1) > 1 else "") + (
                 f"_l{s['lds_shape']}" if s.get("lds_shape") else "") + (
-                f"_nt{s['nt']}" if s.get("nt") else "")
+                f"_nt{s['nt']}" if s.get("nt") else "") + (
+                f"_sk{s.get('sk_grid', 256)}" if s.get("stream_k") else "")
 
 
 _KERNELS: Dict[str, Any] = {}
@@ -402,6 +543,142 @@ def kernel_for(sched: Dict[str, Any]):
     if name not in _KERNELS:
         _KERNELS[name] = gemm_kernel(name, **s)
     return _KERNELS[name]
+
+
+#: stream_k's partitions of a grid among its sk_grid workgroups: 1 cuts
+#: every block's K into equal runs (stream-K proper), 2 deals whole blocks
+#: round robin for the grid's whole waves and cuts only the remainder.
+SK_MODES = {1: "sk", 2: "dp+sk"}
+
+#: Ints a segment of a stream-K plan takes: m0, n0, k0 (elements), K-tiles,
+#: share slot (-1: a whole block, stored as is), block, shares of the block,
+#: the block's first slot, and its bit (1: the workgroup's first cut
+#: segment, 2: its last).
+SK_REC = 9
+
+
+def sk_plan(m: int, n: int, k: int, block_m: int, block_n: int, k_step: int,
+            sk_grid: int, mode: int, wgm: int):
+    """A stream-K launch's plan, as a list of ints: sk_grid + 1 offsets (the
+    segments of workgroup g are records offsets[g] .. offsets[g + 1]), the
+    record of each workgroup's first cut segment and of its last (sk_grid
+    each, -1: none), then SK_REC ints a segment; and the number of share
+    slots it uses.
+
+    Blocks are numbered as the data-parallel pingpong numbers them (WGM
+    block-rows at a time). Mode 2 first deals the grid's whole waves of
+    blocks round robin, whole. The blocks left are cut: each XCD takes a
+    contiguous eighth of them, whole, and its sk_grid / 8 workgroups split
+    those blocks' K-pairs into equal runs -- so every workgroup sharing a
+    cut block runs on one XCD and the shares meet in its L2 (wg_arrive
+    scope="xcd"), and the blocks an XCD works on are neighbours. A cut
+    block's shares take consecutive slots in run order; the last run to
+    finish sums them in that order. Workgroup g runs on XCD g % 8."""
+    mb, nb = -(-m // block_m), n // block_n
+    blocks = mb * nb
+    per = k // (2 * k_step)                    # units a block: K-tile pairs
+    per_x = sk_grid // NUM_XCDS
+
+    def origin(t):
+        per_group = wgm * nb
+        first_m = (t // per_group) * wgm
+        group_m = min(mb - first_m, wgm)
+        return ((first_m + (t % per_group) % group_m) * block_m,
+                ((t % per_group) // group_m) * block_n)
+
+    segs = [[] for _ in range(sk_grid)]        # by workgroup: (block, unit lo, unit hi)
+    whole = (blocks // sk_grid) * sk_grid if mode == 2 else 0
+    for t in range(whole):
+        # Consecutive blocks to one XCD's workgroups, a wave at a time.
+        i = t % sk_grid
+        segs[(i % per_x) * NUM_XCDS + i // per_x].append((t, 0, per))
+    rest = blocks - whole
+    nsk = [0] * sk_grid                        # by workgroup: its stream-K segments
+    for x in range(NUM_XCDS):
+        b0, b1 = whole + x * rest // NUM_XCDS, whole + (x + 1) * rest // NUM_XCDS
+        units = (b1 - b0) * per
+        for j in range(per_x):
+            lo, hi = j * units // per_x, (j + 1) * units // per_x
+            u = lo
+            while u < hi:
+                t = u // per
+                end = min(hi, (t + 1) * per)
+                segs[j * NUM_XCDS + x].append((b0 + t, u - t * per, end - t * per))
+                nsk[j * NUM_XCDS + x] += 1
+                u = end
+    # A run's cut segments in reverse: the head of its last block first, so
+    # every run of an XCD starts its stream-K work at K = 0 and they read
+    # the same K-tiles of A and B together (in run order, each started at
+    # its own K and an XCD's L2 kept almost nothing for its neighbours: a
+    # 1024x5120x7168 GEMM in 128x256 blocks took 114 us, head first 89.5).
+    segs = [ss[:len(ss) - nsk[g]] + ss[len(ss) - nsk[g]:][::-1] for g, ss in enumerate(segs)]
+    # Shares: a cut block's workgroups in run order, consecutive slots.
+    sharers: Dict[int, list] = {}
+    for x in range(NUM_XCDS):
+        for j in range(per_x):
+            g = j * NUM_XCDS + x
+            for t, ulo, uhi in segs[g]:
+                if uhi - ulo < per:
+                    sharers.setdefault(t, []).append(g)
+    first_slot, slots = {}, 0
+    for t in sorted(sharers):
+        first_slot[t] = slots
+        slots += len(sharers[t])
+    recs, cuts = [], []
+    for g, ss in enumerate(segs):
+        cut = [i for i, (t, _, _) in enumerate(ss) if t in sharers]
+        if len(cut) > 2 or (len(cut) == 2 and any(t in sharers for t, _, _ in ss[cut[0] + 1:cut[1]])):
+            raise AssertionError(f"workgroup {g}: cut segments {cut}")
+        bit = {i: 1 + (i != cut[0]) for i in cut}
+        cuts.append(cut)
+        out = []
+        for i, (t, ulo, uhi) in enumerate(ss):
+            m0, n0 = origin(t)
+            if t in sharers:
+                sh = sharers[t]
+                out += [m0, n0, ulo * 2 * k_step, (uhi - ulo) * 2,
+                        first_slot[t] + sh.index(g), t, len(sh), first_slot[t], bit[i]]
+            else:
+                out += [m0, n0, 0, 2 * per, -1, t, 1, -1, 0]
+        recs.append(out)
+    offsets, at = [], 3 * sk_grid + 1
+    for r in recs:
+        offsets.append(at)
+        at += len(r)
+    offsets.append(at)
+    fix = [[-1] * sk_grid, [-1] * sk_grid]
+    for g, cut in enumerate(cuts):
+        for i in cut:
+            fix[1 + (i != cut[0]) - 1][g] = offsets[g] + i * SK_REC
+    return offsets + fix[0] + fix[1] + [x for r in recs for x in r], slots
+
+
+_SK: Dict[Any, Any] = {}
+
+
+def sk_args(sched: Dict[str, Any], device, m: int, n: int, k: int):
+    """The extra arguments (ws, cnt, plan) of a schedule's launch at
+    M x N x K: () unless it is stream-K. Made once per shape and shared by
+    every launch (launches on one stream run in order; the last arrival at
+    a block resets its counter, so cnt is zero again when the next launch
+    starts)."""
+    mode = sched.get("stream_k", 0)
+    if not mode:
+        return ()
+    import torch  # noqa: PLC0415
+
+    s = {**DEFAULT, **sched}
+    bm, bn, ks, grid = s["block_m"], s["block_n"], s["k_step"], s.get("sk_grid", 256)
+    key = (str(device), m, n, k, bm, bn, ks, grid, mode, s["wgm"])
+    got = _SK.get(key)
+    if got is None:
+        flat, slots = sk_plan(m, n, k, bm, bn, ks, grid, mode, s["wgm"])
+        blocks = -(-m // bm) * (n // bn)
+        got = _SK[key] = (
+            torch.empty((max(slots, 1), bn, bm), device=device, dtype=torch.float32),
+            torch.zeros((max(blocks, 1),), device=device, dtype=torch.int32),
+            torch.tensor(flat, device=device, dtype=torch.int32))
+    return got
 
 
 #: What every schedule takes: K whole 64-wide tiles (an odd count is padded

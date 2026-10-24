@@ -488,8 +488,8 @@ Family `pp`, on gfx950.
 
 | knob | default | values searched | seed | what |
 |---|---|---|---|---|
-| `block_m` | `256` | `128`, `256` | `128`, `256` | rows of C a workgroup computes |
-| `block_n` | `256` | `128`, `256` | `128`, `256` | columns of C a workgroup computes; N must be a multiple |
+| `block_m` | `256` | `128`, `160`, `192`, `256`, `320` | `128`, `256` | rows of C a workgroup computes: a half is whole 16-row fragments for each warp row (160: warps_m=1, 192/320: 1 or 2) |
+| `block_n` | `256` | `128`, `160`, `192`, `256`, `320` | `128`, `256` | columns of C a workgroup computes; N must be a multiple (160: warps_n=1, 192/320: 1 or 2) |
 | `k_step` | `64` | `32`, `64`, `128` | - | K a tile covers |
 | `warps_m` | `2` | `1`, `2`, `4`, `8` | - | rows of the 8-warp grid |
 | `warps_n` | `4` | `1`, `2`, `4`, `8` | - | columns of the 8-warp grid |
@@ -503,6 +503,8 @@ Family `pp`, on gfx950.
 | `splits` | `1` | `1`, `2`, `4` | `1`, `2`, `4` | split-K: workgroups along K, fp32 shares then a reduction |
 | `lds_shape` | `None` | `None`, `'16x64'` | `None`, `'16x64'` | st_16x64 LDS layout: whole-line copies |
 | `nt` | `''` | `''`, `'b'` | `''`, `'b'` | nontemporal copies of A ('a') and/or B ('b'): stream past the caches |
+| `stream_k` | `0` | `0`, `1`, `2` | `0`, `1`, `2` | persistent: sk_grid workgroups run a plan of (block, K range) segments -- 1 every block's K cut into equal runs (stream-K), 2 whole waves of blocks then the rest cut; a cut block summed in fp32 by its last workgroup |
+| `sk_grid` | `256` | `256` | - | stream-K's workgroups: one a CU of an MI355X |
 | `max_vgprs` | `256` | - | - | (gate) build gate |
 | `min_occupancy` | `1` | - | - | (gate) build gate |
 
