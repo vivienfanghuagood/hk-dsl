@@ -84,10 +84,15 @@ K1 and K2 share the scaled-MFMA path hk already has (FP8 operands, E8M0
 scales, bit-identical to vLLM). Winnable, measured: gfx950's scaled MFMA runs
 at 4.5-4.7 PF/s register-only and hipBLASLt's plain FP8 GEMM at 3.14 PF/s
 (8192^3), while every MX GEMM is at 1.25-2.2 PF/s -- the MX penalty is
-software. K2 status (branch `claude/cdna-fp8`): a four-wave form (`mx4w`,
-accumulators in AGPRs, packed scales, a three-stage ring) at 2.2-2.3 PF/s on
-the largest projection, 1.46-1.54x vLLM, ~1.1x FlyDSL; small grids and short
-K still lose.
+software. K2 status (branch `claude/cdna-fp8`, rounds in
+`~/hk-dx/kda/k2-mxfp8-gemm/candidates.jsonl`): a four-wave form (`mx4w`,
+accumulators in AGPRs, packed scales) with a one-K-tile loop body (hk-lds-pipeline
+now names ring-indexed LDS buffers, so the body no longer has to unroll over the
+ring) at 2.43 PF/s at 8192^3; against the best baseline at the 18 prefill points
+(FlyDSL at 13 of them) 0.85-1.27x, geomean ~1.06x -- the 1.2x target is not met.
+Two gfx950 hazards found on the way (KernelWiki): register loads and LDS-DMA copies
+retire out of order on vmcnt; a load into scale VGPRs that queued scaled MFMAs
+still read corrupts them.
 
 ### Testbed kernels (owner, 2026-10-24)
 
@@ -96,8 +101,23 @@ the MiniMax-H3 / Qwen-Image DiT on a W7900D, recorded by the same criteria:
 
 | id | kernel | reference / baseline | what the hardware offers |
 |---|---|---|---|
-| **T-CR** | ConvRot INT8 W8A8 GEMM: the online rotation, per-group scales, INT8 GEMM on `v_wmma_i32_16x16x16_iu8`, as a third `SGLANG_DIFFUSION_CONVROT_INT8_BACKEND` (both existing ones are CUDA-only); H3's own convrot int8 checkpoint | SGLang's two CUDA backends (semantics); on gfx1100, hipBLASLt `torch._int_mm` and the bf16 path | gfx1100's int8 WMMA runs at the fp16 rate (measured 96 vs 101 TOP/s register-only; iu4 193): no compute gain. hipBLASLt int8 62.7 / 75.9 TOP/s against bf16 FlyDSL / hk ~88 TF/s at H3 / Qwen shapes. The gain on offer is bytes: int8 halves the DiT, which H3 streams from host RAM every step -- measured before anything is claimed |
+| **T-CR** | ConvRot INT8 W8A8 GEMM: the online rotation, per-group scales, INT8 GEMM on `v_wmma_i32_16x16x16_iu8`, as a third `SGLANG_DIFFUSION_CONVROT_INT8_BACKEND` (both existing ones are CUDA-only); H3 quantized online from its bf16 checkpoint (the official repo ships no int8; community ComfyUI ConvRot files exist) | SGLang's two CUDA backends (semantics); on gfx1100, hipBLASLt `torch._int_mm` and the bf16 path | gfx1100's int8 WMMA runs at the fp16 rate (measured 96 vs 101 TOP/s register-only; iu4 193): no compute gain. hipBLASLt int8 62.7 / 75.9 TOP/s against bf16 FlyDSL / hk ~88 TF/s at H3 / Qwen shapes. The gain on offer is bytes: int8 halves the DiT, which H3 streams from host RAM every step -- measured before anything is claimed |
 | **T-SA** | SageAttention INT8: Q, K int8 with smooth-K, PV in fp16 (gfx1100 has no fp8) | SageAttention 1.0.6's Triton kernel: its default `num_stages=4` crashes Triton's AMD stream pipeliner on gfx1100; with 1 it runs at 49 TF/s-equivalent (Triton 3.6; 40 in 3.5) at Qwen's shape, max-rel 1.9e-2 vs fp32 -- against hk's fp16 attention at 62-70 TF/s | the same: int8 QK^T is not faster than fp16 on RDNA3, so the kernel can at best save bytes and registers; on par with K3 is the realistic ceiling, and its value here is as a DSL testbed |
+
+Status (2026-10-24, evening):
+- **T-CR**: the first round was a `dsl` failure -- hk's RDNA3 layer was built on
+  the false premise that gfx1100 has no int8 WMMA. Branch `claude/rdna3-int8`
+  adds i8 register tiles and the iu8 WMMA (and fixes a latent `st<int8>` swizzle
+  bug in HipKittens); the tuned bf16 GEMM schedule on int8 operands is bit-exact
+  and 87.7-93.2 TOP/s (hipBLASLt int8 68.7-83.7). The whole ConvRot linear
+  (rotation, per-row quant, int8 GEMM, dequant epilogue) is 1.18x hk's bf16 GEMM
+  at H3's 14720x21504x5376 and at parity at Qwen's shapes. The `hk` backend is in
+  `hk.integration.sglang_diffusion`; H3 end to end is being measured.
+- **T-SA**: the controlled experiment's Triton arm finished in 29 minutes:
+  correct at round 1, final 1.48x the reference and 1.15x hk's bf16 attention
+  (82 TF/s-equivalent, INT8 QK^T on the iu8 WMMA). The hk arm met the same
+  `dsl` wall at round 0 (no int8 tile) and is still running under the contract
+  that forbids changing hk.
 
 ## How the kernels are built: one task workspace each (KDA-style)
 
