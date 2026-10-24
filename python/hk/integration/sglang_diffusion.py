@@ -222,9 +222,11 @@ def apply_linear() -> str:
         return "linear: already patched"
     orig = cls.apply
 
-    @torch.compiler.disable
     def apply(self, layer, x, bias=None, *args, **kwargs):
-        if not args and not kwargs:
+        # Inside a torch.compile region the engine's GEMM stays: a disabled
+        # wrapper would break the graph at every projection (MiniMax-H3's
+        # decoder: 22 s slower an request with this method merely wrapped).
+        if not args and not kwargs and not torch.compiler.is_compiling():
             y = _hk_linear(x, layer.weight, bias)
             if y is not None:
                 LINEAR_STATS["hk"] += 1
