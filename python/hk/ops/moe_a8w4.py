@@ -723,25 +723,27 @@ def _sorted_ring(stage: int, name: str, *, group_rows: int, mt: int, pp: int, k:
 
 @functools.lru_cache(maxsize=None)
 def _sorted(stage: int, group_rows: int, mt: int, pp: int, k: int, limit: float, topk: int,
-            depth: int = 2):
+            depth: int = 2, warps: int = 4):
     return _sorted_ring(stage, f"moe_a8w4_s{stage}s_gr{group_rows}_mt{mt}_pp{pp}_k{k}_t{topk}"
-                        + (f"_d{depth}" if depth != 2 else ""), group_rows=group_rows, mt=mt,
-                        pp=pp, k=k, limit=limit, topk=topk, depth=depth)
+                        + (f"_d{depth}" if depth != 2 else "") + (f"_w{warps}" if warps != 4 else ""),
+                        group_rows=group_rows, mt=mt, pp=pp, k=k, limit=limit, topk=topk,
+                        depth=depth, warps=warps)
 
 
 def stage1_sorted(xq_tok, xs_sorted, w13, w13_scale, sorted_ids, sorted_expert_ids, num_valid, *,
-                  inter: int, mt: int, pp: int = 3, limit: float = 10.0, depth: int = 2):
+                  inter: int, mt: int, pp: int = 3, limit: float = 10.0, depth: int = 2,
+                  warps: int = 4):
     """h [len(sorted_ids), inter] bf16 in AITER's sorted order (moe_sorting with block_size
     16 * mt): xq_tok [M, K] FP8 in token order and xs_sorted its sorted 32-row-layout scales
     (aiter's fused_dynamic_mxfp8_quant_moe_sort). See _sorted_ring."""
     import torch  # noqa: PLC0415
 
-    if inter % (TILE * pp * 4):
-        raise ValueError(f"moe_a8w4.stage1_sorted: inter={inter} not a multiple of {TILE * pp * 4}")
+    if inter % (TILE * pp * warps):
+        raise ValueError(f"moe_a8w4.stage1_sorted: inter={inter} not a multiple of {TILE * pp * warps}")
     p = sorted_ids.numel()
     h = torch.empty((p, inter), device=xq_tok.device, dtype=torch.bfloat16)
     dummy = h.new_zeros((1, 1), dtype=torch.float32)
-    _sorted(1, 2 * inter, mt, pp, xq_tok.shape[1], float(limit), 6, depth)(
+    _sorted(1, 2 * inter, mt, pp, xq_tok.shape[1], float(limit), 6, depth, warps)(
         xq_tok, xs_sorted.view(torch.int8), w13.view(torch.int8), w13_scale.view(torch.int8),
         sorted_ids.view(1, -1), sorted_expert_ids.view(1, -1), num_valid.view(1, -1), dummy, h)
     return h
@@ -749,17 +751,17 @@ def stage1_sorted(xq_tok, xs_sorted, w13, w13_scale, sorted_ids, sorted_expert_i
 
 def stage2_sorted(hq, hs_sorted, w2, w2_scale, sorted_ids, sorted_expert_ids, num_valid,
                   sorted_weights, m: int, topk: int, n_experts: int, *, mt: int, pp: int = 4,
-                  depth: int = 2):
+                  depth: int = 2, warps: int = 4):
     """y2 [topk * m, D] bf16, choice-major: row choice * m + token = weight * (h_q . w2^T) of that
     pair (hq [P, I] FP8 and hs_sorted its 32-row-layout scales, both in sorted order).
     reduce(y2, ..., inv=identity(m, topk), weighted=False) sums it."""
     import torch  # noqa: PLC0415
 
     d = w2.shape[0] // n_experts
-    if d % (TILE * pp * 4):
-        raise ValueError(f"moe_a8w4.stage2_sorted: D={d} not a multiple of {TILE * pp * 4}")
+    if d % (TILE * pp * warps):
+        raise ValueError(f"moe_a8w4.stage2_sorted: D={d} not a multiple of {TILE * pp * warps}")
     y2 = torch.empty((topk * m, d), device=hq.device, dtype=torch.bfloat16)   # every pair is one row
-    _sorted(2, d, mt, pp, hq.shape[1], 10.0, topk, depth)(
+    _sorted(2, d, mt, pp, hq.shape[1], 10.0, topk, depth, warps)(
         hq, hs_sorted.view(torch.int8), w2.view(torch.int8), w2_scale.view(torch.int8),
         sorted_ids.view(1, -1), sorted_expert_ids.view(1, -1), num_valid.view(1, -1),
         sorted_weights.view(-1, 1).float(), y2)
