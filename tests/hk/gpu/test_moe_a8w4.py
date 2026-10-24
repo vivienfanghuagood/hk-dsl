@@ -133,3 +133,25 @@ def test_reduce_matches_torch(m, d, topk):
     got = M.reduce(y, pairs, wt, m)
     ref = M.reduce_torch(y, pairs, wt, m)
     assert ((got.float() - ref.float()).abs().max() / ref.float().abs().max()).item() < 1e-2
+
+
+@pytest.mark.parametrize("mt,pp,I", [(2, 3, 192), (4, 3, 192), (6, 2, 128)])
+def test_stage1_pairs_matches_per_step_scales(mt, pp, I):
+    """pairs: both scales as two-step 32-row dwords, read once per two K steps -- bit for bit the
+    per-step kernel on the same (32-row aligned) rows."""
+    from hk.ops import mxfp8
+
+    torch.manual_seed(3)
+    E, K, T, topk = 6, 1024, 91, 2
+    w = torch.randint(0, 256, (E, 2 * I, K // 2), dtype=torch.uint8)
+    ws = torch.randint(118, 136, (E * 2 * I, K // 32), dtype=torch.uint8)
+    hidden = torch.randn(T, K, device="cuda", dtype=torch.bfloat16) * 3
+    ids = torch.stack([torch.randperm(E - 1)[:topk] for _ in range(T)]).cuda()
+    xq, xs, tiles, pairs = M.prepare(hidden, ids, E, align=32)
+    assert xq.shape[0] % 32 == 0 and bool((tiles.view(-1) % 2 == 0).all())
+    wl, wsl = M.aiter_layout_w13(w).cuda(), M.aiter_layout_w13_scale(ws, E).cuda()
+    kw = dict(inter=I, mt=mt, lds=True, pp=pp, depth=2, exact=True, xsplit=True)
+    ref = M.stage1(xq, xs, wl, wsl, tiles, **kw)
+    got = M.stage1(xq, mxfp8.aiter_scales(xs), wl, wsl, tiles, pairs=True, **kw)
+    live = pairs >= 0
+    assert torch.equal(got[live], ref[live])

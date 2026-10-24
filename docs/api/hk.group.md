@@ -55,7 +55,7 @@ half-line runs of a 16x32 tile it fetched lines twice (4.8 against
 #### `Group.wait_for`
 
 ```python
-Group.wait_for(self, *tiles: SharedTile) -> None
+Group.wait_for(self, *tiles: SharedTile, exact: bool = False) -> None
 ```
 
 *New after 0.4.0*

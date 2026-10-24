@@ -1152,8 +1152,12 @@ private:
         })
         .Case([&](MmaABtMxOp o) {
           Value d = dest(o.getDst(), o.getResult());
+          std::string offs;
+          if (o.getSaTile() || o.getSaStep() || o.getSbTile() || o.getSbStep())
+            offs = ", " + std::to_string(o.getSaTile()) + ", " + std::to_string(o.getSaStep()) +
+                   ", " + std::to_string(o.getSbTile()) + ", " + std::to_string(o.getSbStep());
           w("kittens::mma_ABt_mx<" + std::to_string(o.getAFmt()) + ", " +
-            std::to_string(o.getBFmt()) + ">(" + name(d) + ", " +
+            std::to_string(o.getBFmt()) + offs + ">(" + name(d) + ", " +
             name(o.getA()) + ", " + name(o.getB()) + ", " + name(o.getC()) + ", " +
             name(o.getSa()) + ", " + name(o.getSb()) + ");");
         })

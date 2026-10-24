@@ -1563,10 +1563,14 @@ __device__ inline void hk_mfma_mx_b(int ob, float (&d)[4], const uint32_t (&a)[8
  * The opsel immediates are each base tile's index mod 4; the loops unroll, so
  * the switches fold.
  */
-template<int AF = 0, int BF = 0, ducks::rt::col_layout D, ducks::rt::all A, ducks::rt::all B, ducks::rt::col_layout C,
-         int RA, int RB, int KB, int FA, int FB>
+template<int AF = 0, int BF = 0, int ATO = 0, int ASO = 0, int BTO = 0, int BSO = 0,
+         ducks::rt::col_layout D, ducks::rt::all A, ducks::rt::all B, ducks::rt::col_layout C,
+         int RA, int RB, int KBA, int KBB, int FA, int FB>
 __device__ static inline void mma_ABt_mx(D &d, const A &a, const B &b, const C &c,
-                                         const hk_mxs<RA, KB, FA> &sa, const hk_mxs<RB, KB, FB> &sb) {
+                                         const hk_mxs<RA, KBA, FA> &sa, const hk_mxs<RB, KBB, FB> &sb) {
+    // ATO / ASO (BTO / BSO): A's base tile i and K step s use sa's tile i + ATO and step s + ASO
+    constexpr bool exact_a = RA == A::rows && KBA * 32 == A::cols && !ATO && !ASO,
+                   exact_b = RB == B::rows && KBB * 32 == B::cols && !BTO && !BSO;
     static_assert(std::is_same_v<typename A::T, fp8e4m3> && std::is_same_v<typename B::T, fp8e4m3>,
                   "fp8 e4m3 operands");
     static_assert(std::is_same_v<typename D::T, float> && std::is_same_v<typename C::T, float>,
@@ -1574,7 +1578,11 @@ __device__ static inline void mma_ABt_mx(D &d, const A &a, const B &b, const C &
     static_assert(A::base_tile_rows == 16 && A::base_tile_cols == 128 &&
                   B::base_tile_rows == 16 && B::base_tile_cols == 128, "16x128 operand fragments");
     static_assert(D::rows == A::rows && D::cols == B::rows && A::cols == B::cols &&
-                  A::rows == RA && B::rows == RB && A::cols == KB * 32, "mma_ABt_mx shapes");
+                  (exact_a ? A::rows == RA && A::cols == KBA * 32
+                           : RA >= A::rows + 16 * ATO && KBA * 32 >= A::cols + 128 * ASO) &&
+                  (exact_b ? B::rows == RB && B::cols == KBB * 32
+                           : RB >= B::rows + 16 * BTO && KBB * 32 >= B::cols + 128 * BSO),
+                  "mma_ABt_mx shapes");
     #pragma unroll
     for (int n = 0; n < D::height; n++) {
         #pragma unroll
@@ -1585,9 +1593,9 @@ __device__ static inline void mma_ABt_mx(D &d, const A &a, const B &b, const C &
             for (int k = 0; k < A::width; k++) {
                 const uint32_t(&ra)[8] = *reinterpret_cast<const uint32_t(*)[8]>(&a.tiles[n][k].data[0]);
                 const uint32_t(&rb)[8] = *reinterpret_cast<const uint32_t(*)[8]>(&b.tiles[m][k].data[0]);
-                const uint32_t s_a = sa.word(n, k), s_b = sb.word(m, k);
-                const int ob = hk_mxs<RB, KB, FB>::sel(m, k);
-                switch (hk_mxs<RA, KB, FA>::sel(n, k)) {
+                const uint32_t s_a = sa.word(n + ATO, k + ASO), s_b = sb.word(m + BTO, k + BSO);
+                const int ob = hk_mxs<RB, KBB, FB>::sel(m + BTO, k + BSO);
+                switch (hk_mxs<RA, KBA, FA>::sel(n + ATO, k + ASO)) {
                     case 0: detail::hk_mfma_mx_b<0, AF, BF>(ob, acc, ra, rb, s_a, s_b); break;
                     case 1: detail::hk_mfma_mx_b<1, AF, BF>(ob, acc, ra, rb, s_a, s_b); break;
                     case 2: detail::hk_mfma_mx_b<2, AF, BF>(ob, acc, ra, rb, s_a, s_b); break;

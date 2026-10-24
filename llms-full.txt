@@ -3301,7 +3301,7 @@ are bounded: any non-empty length. head_dim is 64 or 128 on both.
 
 ## Also exported
 
-`hk.load_mx_scales`, `hk.mma_ABt_mx`, `hk.templates`
+`hk.copy_mx_scales`, `hk.load_fp4_frags`, `hk.load_fp4_frags_lds`, `hk.load_mx_scales`, `hk.mma_ABt_mx`, `hk.templates`
 
 
 <!-- docs/api/hk.math.md -->
@@ -3691,7 +3691,8 @@ as 16x32 row operands, "32x32" for 32x16 stride-4 col ones. A DMA copy
 into it reads each row in 128- or 64-byte runs instead of 64 or 32 (the
 paged decode's copies: 6.15 to 6.9 TB/s with `nontemporal`), and its
 reads may conflict on banks more; a read of another fragment is
-refused.
+refused. "16x128" (byte tiles): what an fp8 16x128 operand read would pick,
+named for an allocation only `load_fp4_frags_lds` reads.
 
 ### `hk.lds.alloc_vec`
 
@@ -3804,7 +3805,7 @@ half-line runs of a 16x32 tile it fetched lines twice (4.8 against
 #### `Group.wait_for`
 
 ```python
-Group.wait_for(self, *tiles: SharedTile) -> None
+Group.wait_for(self, *tiles: SharedTile, exact: bool = False) -> None
 ```
 
 *New after 0.4.0*

@@ -168,14 +168,17 @@ def stage1_lds_kernel(name: str, *, group_rows: int, mt: int = 4, pp: int = 2,
 
 def stage1_ring_kernel(name: str, *, group_rows: int, mt: int = 4, pp: int = 4, depth: int = 4,
                        limit: float = 10.0, xcd: bool = True, exact: bool = False,
-                       xsplit: bool = False, warps: int = 4):
+                       xsplit: bool = False, warps: int = 4, pairs: bool = False):
     """Stage 1, version 4 (K1 c5): stage1_lds_kernel's workgroup (warp = pp (gate, up) pairs, the
     round's mt token tiles shared through LDS), with 128-wide K steps and `depth` operand sets
     (registers for the warp's weights and scales, LDS slots for the tiles): step k+depth-1's
     operands are issued at step k, so a load has depth-1 steps of MFMAs to land under -- for the
     registers two 256-wide sets took. The loop is unrolled by `depth`; K % (128 * depth) == 0.
     `warps` 8: two waves a SIMD (256 registers each), the round's tiles shared by twice the
-    columns."""
+    columns. `pairs` (xsplit, depth 2, mt even): both scales as AITER's 32-row two-step dwords --
+    xs then in mxfp8.aiter_scales' layout of the sorted rows, each expert's run 32-row aligned --
+    loaded once per two K steps (1.5 + 1.5 loads a step at mt 6, pp 3, instead of 6 + 3: the
+    byte loads filled the vector-memory issue queue, K1 c15); the loop body is four steps."""
     import hk  # noqa: PLC0415
 
     GR = group_rows
@@ -191,6 +194,10 @@ def stage1_ring_kernel(name: str, *, group_rows: int, mt: int = 4, pp: int = 4, 
     # xsplit: the round's token tiles read from LDS and multiplied one at a time, into an
     # accumulator each -- one token fragment live instead of mt (registers for bigger rounds)
     D = depth
+    if pairs and not (xsplit and D == 2 and mt % 2 == 0):
+        raise ValueError("stage1_ring_kernel(pairs=True): xsplit, depth 2 and an even mt")
+    B = 4 if pairs else D                      # steps a loop body: the scale sets' period with D
+    XGR = 1 << 24                              # xs in the 32-row layout of the whole matrix
 
     def body(x: hk.Tensor[fp8e4m3], xs: hk.Tensor[i8], w: hk.Tensor[i8], ws: hk.Tensor[i8],
              tiles: hk.Tensor[i32], h: hk.Tensor[bf16]):
@@ -218,17 +225,33 @@ def stage1_ring_kernel(name: str, *, group_rows: int, mt: int = 4, pp: int = 4, 
             C = hk.zeros(t_c)
             X = hk.zeros(t_x)
         W = [hk.zeros(t_w) for _ in range(D)]
-        S = [hk.load_mx_scales(ws, R, 4, row_w, 0, layout="aiter_gate_up", group_rows=GR)
-             for _ in range(D)]
-        if xsplit:
+        if pairs:
+            # two sets: the pair of steps being multiplied and the next pair
+            S = [hk.load_mx_scales(ws, R, 8, row_w, 0, layout="aiter_gate_up", group_rows=GR)
+                 for _ in range(2)]
+            SX = [hk.load_mx_scales(xs, TILE * mt, 8, 0, 0, layout="aiter", group_rows=XGR)
+                  for _ in range(2)]
+        else:
+            S = [hk.load_mx_scales(ws, R, 4, row_w, 0, layout="aiter_gate_up", group_rows=GR)
+                 for _ in range(D)]
+        if pairs:
+            pass
+        elif xsplit:
             SX = [[hk.load_mx_scales(xs, TILE, 4, 0, 0, loose=True) for _ in range(mt)]
                   for _ in range(D)]
         else:
             SX = [hk.load_mx_scales(xs, TILE * mt, 4, 0, 0, loose=True) for _ in range(D)]
 
-        def fetch(kc, r0, slot):
+        def fetch(kc, r0, slot, sset=None):
             g.load(Xs[slot], x.at[r0, kc * KS], wait=False)
             hk.load_fp4_frags(t_w, w, row_w, kc, group_rows=GR, gate_up=True, into=W[slot])
+            if pairs:
+                if sset is not None:            # kc even: the scales of steps kc and kc + 1
+                    hk.load_mx_scales(ws, R, 8, row_w, kc * 4, layout="aiter_gate_up",
+                                      group_rows=GR, into=S[sset])
+                    hk.load_mx_scales(xs, TILE * mt, 8, r0, kc * 4, layout="aiter",
+                                      group_rows=XGR, into=SX[sset])
+                return
             hk.load_mx_scales(ws, R, 4, row_w, kc * 4, layout="aiter_gate_up", group_rows=GR,
                               into=S[slot])
             if xsplit:
@@ -238,12 +261,22 @@ def stage1_ring_kernel(name: str, *, group_rows: int, mt: int = 4, pp: int = 4, 
             else:
                 hk.load_mx_scales(xs, TILE * mt, 4, r0, kc * 4, into=SX[slot], loose=True)
 
-        def step(kc, cur, r0, prefetch=True):
+        def step(kc, u, r0, prefetch=True):
+            cur = u % D
             g.wait_for(Xs[cur], exact=exact)
             hk.arch.barrier()
             if prefetch:
-                fetch(kc + D - 1, r0, (cur + D - 1) % D)
-            if xsplit:
+                nu = u + D - 1                  # the body position of the step fetched
+                fetch(kc + D - 1, r0, nu % D,
+                      sset=(nu // 2) % 2 if pairs and nu % 2 == 0 else None)
+            if pairs:
+                ss, par = (u // 2) % 2, u % 2
+                for ti in range(mt):
+                    Xs[cur].subtile(TILE, KS, ti, 0).load(t_x1, wait=False, into=X1)
+                    hk.lds.wait_for(X1)
+                    hk.mma_ABt_mx(W[cur], X1, Cs[ti], S[ss], SX[ss], a_fmt="fp4",
+                                  sa_at=(0, par), sb_at=(ti, par), into=Cs[ti])
+            elif xsplit:
                 for ti in range(mt):
                     Xs[cur].subtile(TILE, KS, ti, 0).load(t_x1, wait=False, into=X1)
                     hk.lds.wait_for(X1)
@@ -262,13 +295,13 @@ def stage1_ring_kernel(name: str, *, group_rows: int, mt: int = 4, pp: int = 4, 
             else:
                 C.zero_()
             for k in range(D - 1):
-                fetch(k, r0, k)
-            for kk in range(steps // D - 1):
-                for u in range(D):
-                    step(kk * D + u, u, r0)
-            last = steps - D
-            for u in range(D):
-                step(last + u, u, r0, prefetch=u == 0)
+                fetch(k, r0, k, sset=0 if pairs and k == 0 else None)
+            for kk in range(steps // B - 1):
+                for u in range(B):
+                    step(kk * B + u, u, r0)
+            last = steps - B
+            for u in range(B):
+                step(last + u, u, r0, prefetch=u < B - (D - 1))
             hk.arch.barrier()
             if xsplit:
                 for i in range(mt):
@@ -718,11 +751,12 @@ def _stage1_direct(group_rows: int, k: int, mt: int, pp: int, depth: int, limit:
 
 @functools.lru_cache(maxsize=None)
 def _stage1_ring(group_rows: int, mt: int, pp: int, depth: int, limit: float, exact: bool = False,
-                 xsplit: bool = False, warps: int = 4):
+                 xsplit: bool = False, warps: int = 4, pairs: bool = False):
     return stage1_ring_kernel(f"moe_a8w4_s1r_gr{group_rows}_mt{mt}_pp{pp}_d{depth}_e{int(exact)}"
-                              f"_x{int(xsplit)}" + (f"_w{warps}" if warps != 4 else ""),
+                              f"_x{int(xsplit)}" + (f"_w{warps}" if warps != 4 else "")
+                              + ("_p" if pairs else ""),
                               group_rows=group_rows, mt=mt, pp=pp, depth=depth,
-                              limit=limit, exact=exact, xsplit=xsplit, warps=warps)
+                              limit=limit, exact=exact, xsplit=xsplit, warps=warps, pairs=pairs)
 
 
 @functools.lru_cache(maxsize=None)
@@ -731,17 +765,18 @@ def _stage1(group_rows: int, nb: int, mt: int, warps: int, limit: float):
                          nb=nb, mt=mt, warps=warps, limit=limit)
 
 
-def prepare(hidden, topk_ids, n_experts: int):
+def prepare(hidden, topk_ids, n_experts: int, align: int = TILE):
     """The sort and MX FP8 quant a stage 1 reads (torch; AITER fuses this into one kernel):
     (x fp8 [P, K], xs uint8 [P, K/32], tiles int32 [1, 1, 1, E + 1], pairs int32 [P] (token * topk +
-    choice, -1 padding)). P = the experts' pair counts, each padded to whole 16-row tiles."""
+    choice, -1 padding)). P = the experts' pair counts, each padded to whole 16-row tiles (`align`
+    rows: 32 for stage1(pairs=True))."""
     import torch  # noqa: PLC0415
 
     m, topk = topk_ids.shape
     flat = topk_ids.reshape(-1).long()
     order = torch.argsort(flat, stable=True)
     counts = torch.bincount(flat, minlength=n_experts)
-    ntile = (counts + TILE - 1) // TILE
+    ntile = (counts + align - 1) // align * (align // TILE)
     tiles = torch.zeros(n_experts + 1, dtype=torch.int64, device=hidden.device)
     tiles[1:] = torch.cumsum(ntile, 0)
     p = int(tiles[-1]) * TILE
@@ -799,11 +834,13 @@ def _stage1_lds(group_rows: int, mt: int, limit: float, pp: int, xcd: bool = Tru
 def stage1(xq, xs, w13, w13_scale, tiles, *, inter: int, nb: int = 4, mt: int = 2, warps: int = 4,
            limit: float = 10.0, lds: bool = False, pp: int = 2, xcd: bool = True, depth: int = 0,
            dma: bool = False, direct: bool = False, exact: bool = False, xsplit: bool = False,
-           auto: bool = False, rows: int = 0, ring_warps: int = 4):
+           auto: bool = False, rows: int = 0, ring_warps: int = 4, pairs: bool = False):
     """h [P, inter] bf16 for prepare()'s sorted rows. w13 / w13_scale: AITER's shuffled uint8 views
     [E * 2 * inter, K/2] and [E * 2 * inter, K/32]. auto: the xsplit ring kernel (exact waits, the
     widest pp of 4, 3, 2, 1 whose 64 * pp columns divide inter) with ring_round()'s round size; mt, depth, pp and the mode flags are then
     ignored. rows: the sorted rows in use when xq is longer (a sort's upper bound), for the round.
+    pairs: the ring kernel reading both scales as two-step 32-row dwords -- xs must then be
+    mxfp8.aiter_scales(xs) of rows sorted with each expert's run 32-row aligned (prepare(align=32)).
     """
     import torch  # noqa: PLC0415
 
@@ -818,6 +855,7 @@ def stage1(xq, xs, w13, w13_scale, tiles, *, inter: int, nb: int = 4, mt: int = 
                          f"a workgroup writes (pp={pp}, nb={nb})")
     # the K loops are unrolled by depth (ring, dma) or two 256-wide steps (lds), with no remainder
     unroll = 0 if direct or not (lds or depth or dma) else 128 * (depth or 4) if (dma or depth) else 512
+    unroll = 512 if pairs else unroll                 # a four-step body
     if unroll and xq.shape[1] % unroll or dma and (depth or 4) % 2:
         raise ValueError(f"moe_a8w4.stage1: K={xq.shape[1]} not a multiple of the {unroll} the K loop "
                          f"is unrolled by (depth={depth}{', even for dma' if dma else ''})")
@@ -833,7 +871,7 @@ def stage1(xq, xs, w13, w13_scale, tiles, *, inter: int, nb: int = 4, mt: int = 
             xq, xs.view(torch.int8), weight_view(w13, 2 * inter), w13_scale.view(torch.int8), tiles, h)
         return h
     if depth:
-        k = _stage1_ring(2 * inter, mt, pp, depth, float(limit), exact, xsplit, ring_warps)
+        k = _stage1_ring(2 * inter, mt, pp, depth, float(limit), exact, xsplit, ring_warps, pairs)
     else:
         k = _stage1_lds(2 * inter, mt, float(limit), pp, xcd, exact) if lds else _stage1(2 * inter, nb, mt, warps, float(limit))
     k(xq, xs.view(torch.int8), w13.view(torch.int8), w13_scale.view(torch.int8), tiles, h)

@@ -1509,11 +1509,15 @@ def load_fp4_frags_lds(ty, src: "SharedTile", row0, chunk0, *, into=None) -> "Ti
 
 
 def mma_ABt_mx(a: Tile, b: Tile, acc: Tile, sa: MxScales, sb: MxScales, *, into=None,
-               a_fmt: str = "fp8", b_fmt: str = "fp8") -> Tile:
+               a_fmt: str = "fp8", b_fmt: str = "fp8", sa_at=(0, 0), sb_at=(0, 0)) -> Tile:
     """acc + (sa . A)(sb . B)^T on gfx950's v_mfma_scale_f32_16x16x128_f8f6f4:
     A (M, K) and B (N, K) fp8 e4m3 row tiles, K a multiple of 128; sa and sb
     their E8M0 scales (`load_mx_scales`), element (r, k) of A counting as
-    A[r][k] * 2^(sa[r][k // 32] - 127); acc an fp32 col tile (M, N)."""
+    A[r][k] * 2^(sa[r][k // 32] - 127); acc an fp32 col tile (M, N).
+    `sa_at` / `sb_at` = (tile, step): the scales may cover more than the
+    operand -- its 16-row base tile i and 128-wide step s take the scales' tile
+    i + tile and step s + step (e.g. a 32-row block's two-step AITER dwords,
+    loaded once, feeding two token tiles over two steps)."""
     for v, what in ((a, "A"), (b, "B")):
         if not isinstance(v, Tile) or v.ty.dtype is not fp8e4m3 or v.ty.layout != "row":
             raise TypeError(f"mma_ABt_mx: {what} is an fp8 e4m3 row-layout tile, got {v!r}")
@@ -1522,10 +1526,15 @@ def mma_ABt_mx(a: Tile, b: Tile, acc: Tile, sa: MxScales, sb: MxScales, *, into=
     if a.ty.cols != b.ty.cols or a.ty.cols % 128:
         raise TypeError(f"mma_ABt_mx: A and B share K, a multiple of 128; got "
                         f"{a.ty.cols} and {b.ty.cols}")
-    for s, v, what in ((sa, a, "sa"), (sb, b, "sb")):
-        if not isinstance(s, MxScales) or (s.ty.rows, s.ty.kblocks) != (v.ty.rows, v.ty.cols // 32):
+    for s, v, what, (ti, st) in ((sa, a, "sa", sa_at), (sb, b, "sb", sb_at)):
+        ti, st = int(ti), int(st)
+        if not isinstance(s, MxScales) or ti < 0 or st < 0:
+            raise TypeError(f"mma_ABt_mx: {what} is MxScales and its offsets >= 0, got {s!r} at "
+                            f"{(ti, st)}")
+        ok = s.ty.rows >= v.ty.rows + 16 * ti and s.ty.kblocks * 32 >= v.ty.cols + 128 * st
+        if not ok:
             raise TypeError(f"mma_ABt_mx: {what} holds the scales of a {v.ty.rows}x"
-                            f"{v.ty.cols} operand, got {s!r}")
+                            f"{v.ty.cols} operand (from tile {ti}, step {st}), got {s!r}")
     ty = RegTileType(fp32, a.ty.rows, b.ty.rows, "col")
     if (acc.ty.rows, acc.ty.cols) != (ty.rows, ty.cols):
         raise TypeError(f"mma_ABt_mx: acc is {acc.ty}, expected {a.ty.rows}x{b.ty.rows}")
@@ -1533,7 +1542,9 @@ def mma_ABt_mx(a: Tile, b: Tile, acc: Tile, sa: MxScales, sb: MxScales, *, into=
         if f not in ("fp8", "fp4"):
             raise TypeError(f"mma_ABt_mx: {what} is 'fp8' or 'fp4', not {f!r}")
     return _make(hkd.MmaABtMxOp, acc.ty, (a.v, b.v, acc.v, sa.v, sb.v), into=into, name="mx",
-                 a_fmt=4 if a_fmt == "fp4" else 0, b_fmt=4 if b_fmt == "fp4" else 0)
+                 a_fmt=4 if a_fmt == "fp4" else 0, b_fmt=4 if b_fmt == "fp4" else 0,
+                 sa_tile=int(sa_at[0]), sa_step=int(sa_at[1]), sb_tile=int(sb_at[0]),
+                 sb_step=int(sb_at[1]))
 
 
 class Granules(Value):

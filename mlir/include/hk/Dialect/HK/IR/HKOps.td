@@ -880,12 +880,20 @@ def HK_MmaABtMxOp : HK_Op<"mma_ABt_mx"> {
     four dwords of each fragment; its lane group g holds K [32g, 32g+32) of a
     128-wide step, where an FP8 operand's holds [16g, 16g+16) and [64+16g,
     64+16g+16) -- HipKittens' rt_16x128 order).
+    `sa_tile` / `sa_step` (and sb's): sa may hold more than A's scales -- A's
+    base tile i and K step s use sa's base tile i + sa_tile and step s +
+    sa_step (one load of a 32-row block's two-step dwords feeding two tiles
+    and two steps).
   }];
   let arguments = (ins Optional<HK_RegTileType>:$dst, HK_RegTileType:$a,
                        HK_RegTileType:$b, HK_RegTileType:$c,
                        HK_MxScalesType:$sa, HK_MxScalesType:$sb,
                        DefaultValuedAttr<I64Attr, "0">:$a_fmt,
-                       DefaultValuedAttr<I64Attr, "0">:$b_fmt);
+                       DefaultValuedAttr<I64Attr, "0">:$b_fmt,
+                       DefaultValuedAttr<I64Attr, "0">:$sa_tile,
+                       DefaultValuedAttr<I64Attr, "0">:$sa_step,
+                       DefaultValuedAttr<I64Attr, "0">:$sb_tile,
+                       DefaultValuedAttr<I64Attr, "0">:$sb_step);
   let results = (outs Optional<HK_RegTileType>:$result);
   let assemblyFormat = [{
     $a `,` $b `,` $c `scales` $sa `,` $sb (`into` $dst^)? attr-dict `:` qualified(type($a)) `,`

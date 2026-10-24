@@ -320,12 +320,20 @@ LogicalResult MmaABtMxOp::verify() {
   if (c.getRows() != a.getRows() || c.getCols() != b.getRows())
     return emitOpError("C is A's rows x B's rows");
   MxScalesType sa = getSa().getType(), sb = getSb().getType();
-  if (sa.getRows() != a.getRows() || sa.getKblocks() * 32 != a.getCols())
+  // with offsets the scales may cover more: the operand's tiles and steps from the offsets on
+  auto covers = [](MxScalesType s, RegTileType t, int64_t tile, int64_t step) {
+    if (tile < 0 || step < 0)
+      return false;
+    return s.getRows() >= t.getRows() + 16 * tile && s.getKblocks() * 32 >= t.getCols() + 128 * step;
+  };
+  if (!covers(sa, a, getSaTile(), getSaStep()))
     return emitOpError("sa holds A's ") << a.getRows() << " rows and "
-                                        << a.getCols() / 32 << " blocks";
-  if (sb.getRows() != b.getRows() || sb.getKblocks() * 32 != b.getCols())
+                                        << a.getCols() / 32 << " blocks (from tile "
+                                        << getSaTile() << ", step " << getSaStep() << ")";
+  if (!covers(sb, b, getSbTile(), getSbStep()))
     return emitOpError("sb holds B's ") << b.getRows() << " rows and "
-                                        << b.getCols() / 32 << " blocks";
+                                        << b.getCols() / 32 << " blocks (from tile "
+                                        << getSbTile() << ", step " << getSbStep() << ")";
   return success();
 }
 
