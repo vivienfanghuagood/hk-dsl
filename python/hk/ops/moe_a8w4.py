@@ -601,11 +601,13 @@ def aiter_layout_w2_scale(s):
 
 
 def _sorted_ring(stage: int, name: str, *, group_rows: int, mt: int, pp: int, k: int,
-                 limit: float = 10.0, topk: int = 6, warps: int = 4, xcd: bool = True):
+                 limit: float = 10.0, topk: int = 6, warps: int = 4, xcd: bool = True,
+                 depth: int = 2):
     """Stage 1 or 2 on AITER's own MoE sort (moe_sorting with block_size 16 * mt): a round is one
     sorted block -- its expert sorted_expert_ids[b], its rows sorted_ids[b * BM ..] -- so nothing
     is decoded or gathered on the host. The xsplit ring with two-step 32-row scale dwords (pairs),
-    depth 2, any K (`k`, static: a four-step body and a tail).
+    `depth` 2 or 3 (operands issued depth - 1 steps ahead; two scale sets suffice up to 3), any K
+    (`k`, static: a body of lcm(depth, 4) steps and a static tail).
 
     Stage 1 takes x in token order (FP8, AITER's fused_dynamic_mxfp8_quant_moe_sort) and gathers
     a block's rows with the LDS DMA itself; its scales are that function's sorted output (the
@@ -621,8 +623,11 @@ def _sorted_ring(stage: int, name: str, *, group_rows: int, mt: int, pp: int, k:
     R = (32 if stage == 1 else TILE) * pp
     lim = float(limit)
     steps = k // KS
-    if mt % 2 or k % KS or steps < 4:
-        raise ValueError(f"_sorted_ring: an even mt and K a multiple of 128, >= 512 (mt={mt}, K={k})")
+    if mt % 2 or k % KS or steps < 4 or depth not in (2, 3):
+        raise ValueError(f"_sorted_ring: an even mt, K a multiple of 128, >= 512, depth 2 or 3 "
+                         f"(mt={mt}, K={k}, depth={depth})")
+    D = depth
+    BODY = 4 * D // math.gcd(4, D)             # ring slots and scale sets both periodic in it
     st_x = hk.ST(fp8e4m3, BM, KS)
     t_w = hk.RT(fp8e4m3, R, KS)
     t_x1 = hk.RT(fp8e4m3, TILE, KS)
@@ -635,7 +640,7 @@ def _sorted_ring(stage: int, name: str, *, group_rows: int, mt: int, pp: int, k:
              sids: hk.Tensor[i32], seids: hk.Tensor[i32], nv: hk.Tensor[i32], wv: hk.Tensor[fp32],
              out: hk.Tensor[bf16]):
         g = hk.group(warps)
-        Xs = hk.lds.alloc(st_x, count=2, name="Xs")
+        Xs = hk.lds.alloc(st_x, count=D, name="Xs")
         nblk = out.cols // (TILE * pp * warps)
         wg = hk.arch.block_idx.x
         if xcd:
@@ -654,7 +659,7 @@ def _sorted_ring(stage: int, name: str, *, group_rows: int, mt: int, pp: int, k:
         row_w = e * GR + col0
         Cs = [hk.zeros(t_c1) for _ in range(mt)]
         X1 = hk.zeros(t_x1)
-        W = [hk.zeros(t_w) for _ in range(2)]
+        W = [hk.zeros(t_w) for _ in range(D)]
         S = [hk.load_mx_scales(ws, R, 8, row_w, 0, layout=lay, group_rows=GR) for _ in range(2)]
         SX = [hk.load_mx_scales(xs, BM, 8, 0, 0, layout="aiter", group_rows=XGR) for _ in range(2)]
 
@@ -670,12 +675,12 @@ def _sorted_ring(stage: int, name: str, *, group_rows: int, mt: int, pp: int, k:
                                   into=SX[sset])
 
         def step(kc, u, prefetch=True):
-            cur = u % 2
+            cur = u % D
             g.wait_for(Xs[cur], exact=True)
             hk.arch.barrier()
             if prefetch:
-                nu = u + 1
-                fetch(kc + 1, nu % 2, sset=(nu // 2) % 2 if nu % 2 == 0 else None)
+                nu = u + D - 1
+                fetch(kc + D - 1, nu % D, sset=(nu // 2) % 2 if nu % 2 == 0 else None)
             ss, par = (u // 2) % 2, u % 2
             for ti in range(mt):
                 Xs[cur].subtile(TILE, KS, ti, 0).load(t_x1, wait=False, into=X1)
@@ -687,14 +692,15 @@ def _sorted_ring(stage: int, name: str, *, group_rows: int, mt: int, pp: int, k:
         for _ in range(live):
             if stage == 1:
                 g.gather_prep(sids, r0, BM)      # the block's rows, in LDS: no vmcnt wait in the loop
-            fetch(0, 0, sset=0)
-            tail = 4 + steps % 4
-            for kk in hk.range((steps - tail) // 4):        # a run-time loop: K is static here
-                for u in range(4):
-                    step(kk * 4 + u, u)
+            for k0 in range(D - 1):
+                fetch(k0, k0, sset=(k0 // 2) % 2 if k0 % 2 == 0 else None)
+            tail = BODY + steps % BODY if steps >= 2 * BODY else steps
+            for kk in hk.range((steps - tail) // BODY):     # a run-time loop: K is static here
+                for u in range(BODY):
+                    step(kk * BODY + u, u)
             base = steps - tail
             for jj in range(tail):
-                step(base + jj, jj % 4, prefetch=jj < tail - 1)
+                step(base + jj, (base + jj) % BODY, prefetch=base + jj + D - 1 < steps)
             hk.arch.barrier()
             for i in range(mt):
                 if stage == 1:
@@ -716,13 +722,15 @@ def _sorted_ring(stage: int, name: str, *, group_rows: int, mt: int, pp: int, k:
 
 
 @functools.lru_cache(maxsize=None)
-def _sorted(stage: int, group_rows: int, mt: int, pp: int, k: int, limit: float, topk: int):
-    return _sorted_ring(stage, f"moe_a8w4_s{stage}s_gr{group_rows}_mt{mt}_pp{pp}_k{k}_t{topk}",
-                        group_rows=group_rows, mt=mt, pp=pp, k=k, limit=limit, topk=topk)
+def _sorted(stage: int, group_rows: int, mt: int, pp: int, k: int, limit: float, topk: int,
+            depth: int = 2):
+    return _sorted_ring(stage, f"moe_a8w4_s{stage}s_gr{group_rows}_mt{mt}_pp{pp}_k{k}_t{topk}"
+                        + (f"_d{depth}" if depth != 2 else ""), group_rows=group_rows, mt=mt,
+                        pp=pp, k=k, limit=limit, topk=topk, depth=depth)
 
 
 def stage1_sorted(xq_tok, xs_sorted, w13, w13_scale, sorted_ids, sorted_expert_ids, num_valid, *,
-                  inter: int, mt: int, pp: int = 3, limit: float = 10.0):
+                  inter: int, mt: int, pp: int = 3, limit: float = 10.0, depth: int = 2):
     """h [len(sorted_ids), inter] bf16 in AITER's sorted order (moe_sorting with block_size
     16 * mt): xq_tok [M, K] FP8 in token order and xs_sorted its sorted 32-row-layout scales
     (aiter's fused_dynamic_mxfp8_quant_moe_sort). See _sorted_ring."""
@@ -733,14 +741,15 @@ def stage1_sorted(xq_tok, xs_sorted, w13, w13_scale, sorted_ids, sorted_expert_i
     p = sorted_ids.numel()
     h = torch.empty((p, inter), device=xq_tok.device, dtype=torch.bfloat16)
     dummy = h.new_zeros((1, 1), dtype=torch.float32)
-    _sorted(1, 2 * inter, mt, pp, xq_tok.shape[1], float(limit), 6)(
+    _sorted(1, 2 * inter, mt, pp, xq_tok.shape[1], float(limit), 6, depth)(
         xq_tok, xs_sorted.view(torch.int8), w13.view(torch.int8), w13_scale.view(torch.int8),
         sorted_ids.view(1, -1), sorted_expert_ids.view(1, -1), num_valid.view(1, -1), dummy, h)
     return h
 
 
 def stage2_sorted(hq, hs_sorted, w2, w2_scale, sorted_ids, sorted_expert_ids, num_valid,
-                  sorted_weights, m: int, topk: int, n_experts: int, *, mt: int, pp: int = 4):
+                  sorted_weights, m: int, topk: int, n_experts: int, *, mt: int, pp: int = 4,
+                  depth: int = 2):
     """y2 [topk * m, D] bf16, choice-major: row choice * m + token = weight * (h_q . w2^T) of that
     pair (hq [P, I] FP8 and hs_sorted its 32-row-layout scales, both in sorted order).
     reduce(y2, ..., inv=identity(m, topk), weighted=False) sums it."""
@@ -750,7 +759,7 @@ def stage2_sorted(hq, hs_sorted, w2, w2_scale, sorted_ids, sorted_expert_ids, nu
     if d % (TILE * pp * 4):
         raise ValueError(f"moe_a8w4.stage2_sorted: D={d} not a multiple of {TILE * pp * 4}")
     y2 = torch.empty((topk * m, d), device=hq.device, dtype=torch.bfloat16)   # every pair is one row
-    _sorted(2, d, mt, pp, hq.shape[1], 10.0, topk)(
+    _sorted(2, d, mt, pp, hq.shape[1], 10.0, topk, depth)(
         hq, hs_sorted.view(torch.int8), w2.view(torch.int8), w2_scale.view(torch.int8),
         sorted_ids.view(1, -1), sorted_expert_ids.view(1, -1), num_valid.view(1, -1),
         sorted_weights.view(-1, 1).float(), y2)
