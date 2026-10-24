@@ -131,7 +131,8 @@ def pack_scales(s):
 
 def mx4w_kernel(name: str = "mxfp8_4w", *, block_m: int = 256, block_n: int = 256,
                 stages: int = 2, wgm: int = 8, xcd_chunk: int = 32, setprio: bool = False,
-                split_m: int = 2, split_n: int = 2, scale_ahead: int = 2):
+                split_m: int = 2, split_n: int = 2, scale_ahead: int = 2,
+                ilv: int = 0, dbg: str = ""):
     """MXFP8 GEMM, four warps (2 x 2) of block_m/2 x block_n/2 each, so one
     wave a SIMD and the whole register file a lane (VGPRs and AGPRs: the
     accumulators of a 128 x 128 warp tile are 256 of them). K-tiles of 128 in
@@ -151,8 +152,17 @@ def mx4w_kernel(name: str = "mxfp8_4w", *, block_m: int = 256, block_n: int = 25
                          f"64-row multiples (packed scales)")
     # Parts in an order where each shares an operand with the one before.
     order = [p for p in ((0, 0), (0, 1), (1, 1), (1, 0)) if p[0] < split_m and p[1] < split_n]
-    st_a = hk.ST(fp8e4m3, block_m, BKs)
-    st_b = hk.ST(fp8e4m3, block_n, BKs)
+    # A and B are staged as two halves of rows each (A's half h of buffer u
+    # is As[2u + h]), so a K-tile's copy goes out in four pieces, one after
+    # each part's reads, under that part's MFMAs (`ilv` > 0: the scheduler is
+    # asked for `ilv` MFMAs between two of a piece's loads).
+    # An operand split one way only (split 1) is one piece: both its warps'
+    # rows would straddle the halves.
+    ha, hb = split_m, split_n                              # pieces of A and of B
+    st_a = hk.ST(fp8e4m3, block_m // ha, BKs)
+    st_b = hk.ST(fp8e4m3, block_n // hb, BKs)
+    loads_a = block_m // ha * BKs // (WARPS * 64 * 16)     # 16-byte copies a lane, a piece
+    loads_b = block_n // hb * BKs // (WARPS * 64 * 16)
     t_a = hk.RT(fp8e4m3, qm, BKs, "row")
     t_b = hk.RT(fp8e4m3, qn, BKs, "row")
     t_c = hk.RT(fp32, qm, qn, "col")
@@ -167,8 +177,8 @@ def mx4w_kernel(name: str = "mxfp8_4w", *, block_m: int = 256, block_n: int = 25
     def body(a: hk.Tensor[fp8e4m3], b: hk.Tensor[fp8e4m3], sa: hk.Tensor[i32],
              sb: hk.Tensor[i32], c: hk.Tensor[bf16], *, WGM: hk.Constexpr = wgm):
         g = hk.group(WARPS)
-        As = hk.lds.alloc(st_a, count=stages, name="As")
-        Bs = hk.lds.alloc(st_b, count=stages, name="Bs")
+        As = hk.lds.alloc(st_a, count=ha * stages, name="As")
+        Bs = hk.lds.alloc(st_b, count=hb * stages, name="Bs")
         A = [hk.zeros(t_a) for _ in range(split_m)]
         B = [hk.zeros(t_b) for _ in range(split_n)]
         C = [[hk.zeros(t_c) for _ in range(split_n)] for _ in range(split_m)]
@@ -199,26 +209,43 @@ def mx4w_kernel(name: str = "mxfp8_4w", *, block_m: int = 256, block_n: int = 25
         def rows_left(t, rows):
             return (1 - hk.min(hk.max(t - k_tiles + 1, 0), 1)) * rows
 
+        def piece(t, u, kind, h, pad=True):
+            if kind == "a":
+                g.load(As[ha * u + h], a.at[m0 + h * (block_m // ha), t * BKs], wait=False,
+                       rows=rows_left(t, block_m // ha) if pad else None)
+            else:
+                g.load(Bs[hb * u + h], b.at[n0 + h * (block_n // hb), t * BKs], wait=False,
+                       rows=rows_left(t, block_n // hb) if pad else None)
+
+        PIECES = [p for p in (("a", 0), ("b", 0), ("a", 1), ("b", 1))
+                  if p[1] < (ha if p[0] == "a" else hb)]
+
         def copy(t, u, pad=True):
-            g.load(As[u], a.at[m0, t * BKs], wait=False,
-                   rows=rows_left(t, block_m) if pad else None)
-            g.load(Bs[u], b.at[n0, t * BKs], wait=False,
-                   rows=rows_left(t, block_n) if pad else None)
+            for kind, h in PIECES:
+                piece(t, u, kind, h, pad)
+
+        # Rows of A in part i of warp wr (B alike): i * (block_m / split_m) +
+        # wr * qm -- piece i's rows wr * qm.. .
+        def a_row(i):
+            return i * (block_m // split_m) + wr * qm
+
+        def b_row(j):
+            return j * (block_n // split_n) + wc * qn
 
         S = [None] * nsets
 
         def load_scales(q, t):
             old = S[q]
-            S[q] = ([hk.load_mx_scales(sa, qm, 4, m0 + (wr * split_m + i) * qm, t * 4,
+            S[q] = ([hk.load_mx_scales(sa, qm, 4, m0 + a_row(i), t * 4,
                                        into=old[0][i] if old else None) for i in range(split_m)],
-                    [hk.load_mx_scales(sb, qn, 4, n0 + (wc * split_n + j) * qn, t * 4,
+                    [hk.load_mx_scales(sb, qn, 4, n0 + b_row(j), t * 4,
                                        into=old[1][j] if old else None) for j in range(split_n)])
 
-        def read_a(u, i):
-            As[u].subtile(qm, BKs, split_m * wr + i, 0).load(t_a, wait=False, into=A[i])
+        def read_a(u, i):             # part i is piece i (or the one piece), row wr * qm
+            As[ha * u + i].subtile(qm, BKs, wr, 0).load(t_a, wait=False, into=A[i])
 
         def read_b(u, j):
-            Bs[u].subtile(qn, BKs, split_n * wc + j, 0).load(t_b, wait=False, into=B[j])
+            Bs[hb * u + j].subtile(qn, BKs, wc, 0).load(t_b, wait=False, into=B[j])
 
         def mma(q, i, j):
             if setprio:
@@ -242,20 +269,29 @@ def mx4w_kernel(name: str = "mxfp8_4w", *, block_m: int = 256, block_n: int = 25
 
         def k_tile(t, j, copies):
             u, q = j % stages, j % nsets
-            g.wait_for(As[u], Bs[u])
+            g.wait_for(*[As[ha * u + h] for h in range(ha)], *[Bs[hb * u + h] for h in range(hb)])
             hk.arch.barrier()
             load_scales((j + scale_ahead) % nsets, t + scale_ahead)
-            if copies:
-                copy(t + stages - 1, (u + stages - 1) % stages)
+            nxt, un = t + stages - 1, (u + stages - 1) % stages
             have = set()
-            for i, jj in order:
+            for p, (i, jj) in enumerate(order):
                 new = [x for x in (("a", i), ("b", jj)) if x not in have]
                 for kind, idx in new:
                     (read_a if kind == "a" else read_b)(u, idx)
                     have.add((kind, idx))
+                mine = [PIECES[k] for k in range(len(PIECES)) if k % len(order) == p] if copies else []
+                for kind, h in mine:
+                    piece(nxt, un, kind, h)
                 if new:
                     hk.lds.wait_for(*[A[idx] if kind == "a" else B[idx] for kind, idx in new])
                 mma(q, i, jj)
+                if ilv and mine:
+                    n_vm = sum(loads_a if kind == "a" else loads_b for kind, _ in mine)
+                    for _ in range(n_vm):
+                        hk.arch.sched_group_barrier("mma", ilv, p + 1)
+                        hk.arch.sched_group_barrier("vmem", 1, p + 1)
+                if "sbpart" in dbg:
+                    hk.arch.sched_barrier()
             # Keep each K-tile's MFMAs in it: sunk past the next K-tile's reads
             # they hold two sets of operands live (spills at 128 x 256).
             hk.arch.sched_barrier()
@@ -269,8 +305,7 @@ def mx4w_kernel(name: str = "mxfp8_4w", *, block_m: int = 256, block_n: int = 25
 
         for i in range(split_m):
             for j in range(split_n):
-                c[hk.elem_coord(0, 0, m0 + (wr * split_m + i) * qm,
-                                n0 + (wc * split_n + j) * qn)].store(C[i][j], bounded=True)
+                c[hk.elem_coord(0, 0, m0 + a_row(i), n0 + b_row(j))].store(C[i][j], bounded=True)
 
     body.__name__ = name
     return hk.kernel(body, arch="gfx950", warps=WARPS, name=name, max_vgprs=512,
