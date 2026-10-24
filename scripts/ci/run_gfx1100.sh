@@ -14,6 +14,7 @@ JUMP=${HK_CI_JUMP:-0004}
 PROXY=${HK_CI_PROXY:-gh-test.anruicloud.com}
 DIR=${HK_CI_POD_DIR:-/workspace/gha}       # the pod's checkout, build, cache and runs
 GPUS=${HK_CI_POD_GPUS:-6}                  # tried first; then GPU 0 (pod_run.sh)
+NODE_LOCKS=${HK_CI_NODE_LOCKS:-1}          # 0: the pod's GPUs are its own (scripts/ci/k8s/)
 SHA=$GITHUB_SHA
 KEY=$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT
 R=$DIR/runs/$KEY
@@ -29,7 +30,7 @@ IP=$(ssh -o BatchMode=yes "$JUMP" "getent ahostsv4 $PROXY | head -1 | cut -d' ' 
 { echo "mkdir -p $DIR"
   echo "base64 -d > $DIR/pod_run.sh <<'B64'"; base64 -w0 "$HERE/pod_run.sh"; echo; echo "B64"
   echo "base64 -d > $DIR/summarize.py <<'B64'"; base64 -w0 "$HERE/summarize.py"; echo; echo "B64"
-  echo "HK_CI_POD_DIR=$DIR HK_CI_POD_GPUS='$GPUS' nohup setsid bash $DIR/pod_run.sh $SHA $IP $KEY >/dev/null 2>&1 < /dev/null &"
+  echo "HK_CI_POD_DIR=$DIR HK_CI_POD_GPUS='$GPUS' HK_CI_NODE_LOCKS=$NODE_LOCKS nohup setsid bash $DIR/pod_run.sh $SHA $IP $KEY >/dev/null 2>&1 < /dev/null &"
 } | pod || { echo "::error::cannot start the run in $POD"; exit 1; }
 echo "started on $POD (run $KEY)"
 
