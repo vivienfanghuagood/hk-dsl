@@ -132,7 +132,8 @@ def pack_scales(s):
 def mx4w_kernel(name: str = "mxfp8_4w", *, block_m: int = 256, block_n: int = 256,
                 stages: int = 2, wgm: int = 8, xcd_chunk: int = 32, setprio: bool = False,
                 split_m: int = 2, split_n: int = 2, scale_ahead: int = 2,
-                ilv: int = 0, rolled: bool = False, dbg: str = "", defines: str = ""):
+                ilv: int = 0, rolled: bool = False, dbg: str = "", defines: str = "",
+                exact: bool = False):
     """MXFP8 GEMM, four warps (2 x 2) of block_m/2 x block_n/2 each, so one
     wave a SIMD and the whole register file a lane (VGPRs and AGPRs: the
     accumulators of a 128 x 128 warp tile are 256 of them). K-tiles of 128 in
@@ -278,7 +279,7 @@ def mx4w_kernel(name: str = "mxfp8_4w", *, block_m: int = 256, block_n: int = 25
             if u is None:
                 u, q = j % stages, j % nsets
                 un, qn_ = (u + stages - 1) % stages, (j + scale_ahead) % nsets
-            g.wait_for(*[As[h][u] for h in range(ha)], *[Bs[h][u] for h in range(hb)])
+            g.wait_for(*[As[h][u] for h in range(ha)], *[Bs[h][u] for h in range(hb)], exact=exact)
             hk.arch.barrier()
             if scales:
                 load_scales(qn_, t + scale_ahead)
