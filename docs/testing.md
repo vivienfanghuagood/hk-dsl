@@ -242,11 +242,15 @@ recompiles the kernels takes about 25 minutes on gfx950 and 32 on gfx1100.
 
 **GPUs and locks.** The MI355X are shared with whoever else is measuring on
 the workstation; the idle test is the only claim, as it is for the CDNA
-work. In the pod, a run takes GPU 5, 6 or 7 under
-`/workspace/gha/gpuN.lock` when one is idle, and otherwise GPU 0 under
-`/workspace/ci/gpu0.lock`; it never touches GPU 3, where the performance
-gate runs. A manual benchmark on GPU 0 should hold that lock too
-(`flock /workspace/ci/gpu0.lock <command>`), so that neither times the
+work. In the pod, a run takes GPU 6 when it is idle, and otherwise GPU 0,
+each under the node-level lock of the physical card,
+`/workspace/locks/gpu/<PCI address>.lock` (0000:c3:00.0 and 0000:03:00.0);
+it never touches GPU 3, where the performance gate runs. The lock directory
+is one directory on the node that every pod seeing these cards mounts at
+`/workspace/locks` -- every pod on the node is privileged and sees all eight
+GPUs, so a lock inside one pod is invisible to the others -- and a run
+without it refuses to start. A manual benchmark takes the same lock
+(`/workspace/locks/bin/gpulock IDX -- <command>`), so that neither times the
 other. The minutes in a result count from when the GPU was taken.
 
 **Required checks.** main's branch protection requires `gfx950` and

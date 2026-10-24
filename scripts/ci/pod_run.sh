@@ -6,18 +6,23 @@
 # Everything lives in $HK_CI_POD_DIR (default /workspace/gha): the clone,
 # fetched through the gh-test proxy at the address the caller resolved, the
 # dialect's build, the compile cache and runs/KEY. The GPU: an idle one of
-# $HK_CI_POD_GPUS (default 5 6 7), each under $HK_CI_POD_DIR/gpuN.lock;
-# failing that, GPU 0 under /workspace/ci/gpu0.lock, the lock everything that
-# times GPU 0 holds. Nothing outside those and this process's environment is
-# changed.
+# $HK_CI_POD_GPUS (default 6), failing that GPU 0, each under the node-level
+# lock of its physical card: /workspace/locks/gpu/<PCI address>.lock, one
+# directory every pod on the node mounts, so a run here and a benchmark in
+# another pod that sees the same cards cannot both take one (a lock inside
+# this pod alone is invisible to them). Without that directory the run
+# refuses to start rather than run unlocked. GPUs 5 and 7 left the default:
+# the node allocates them to other users' serving pods. Nothing outside the
+# locks and this process's environment is changed.
 set -uo pipefail
 SHA=$1; IP=$2; KEY=$3
 [[ $SHA =~ ^[0-9a-f]{40}$ && $IP =~ ^[0-9.]+$ && $KEY =~ ^[0-9-]+$ ]] || exit 2
 CI=${HK_CI_POD_DIR:-/workspace/gha}
-GPUS=${HK_CI_POD_GPUS:-5 6 7}
+GPUS=${HK_CI_POD_GPUS:-6}
+LOCKS=/workspace/locks
 RUN=$CI/runs/$KEY
 SRC=$CI/hk-dsl
-mkdir -p "$RUN" /workspace/ci
+mkdir -p "$RUN"
 exec >"$RUN/driver.log" 2>&1
 echo $$ >"$RUN/pid"
 export PATH=/opt/venv/bin:$PATH GIT_TERMINAL_PROMPT=0 GIT_CONFIG_COUNT=2
@@ -50,17 +55,25 @@ idle() {
     mem=$(grep -o "VRAM%): [0-9]*" <<<"$out" | grep -o "[0-9]*$")
     [ "${use:-100}" -le 10 ] && [ "${mem:-100}" -le 3 ]
 }
+[ -f "$LOCKS/NODE_LOCKS" ] || fail "no node-level GPU lock directory at $LOCKS"
+lock_of() {     # the node-level lock file of this pod's GPU $1
+    local pci
+    pci=$(rocm-smi -d "$1" --showbus 2>/dev/null | grep -o "PCI Bus: [0-9A-Fa-f:.]*" | head -1 | awk '{print tolower($3)}')
+    [ -n "$pci" ] && echo "$LOCKS/gpu/$pci.lock"
+}
 GPU=
 for i in $(seq 120); do
-    for g in $GPUS; do
-        exec 9>"$CI/gpu$g.lock"
-        if flock -n 9 && idle "$g"; then GPU=$g; break 2; fi
+    for g in $GPUS 0; do
+        lk=$(lock_of "$g") || continue
+        exec 9>>"$lk"
+        if flock -n 9 && idle "$g"; then
+            GPU=$g
+            echo "pod=$(hostname) pid=$$ since=$(date -u +%FT%TZ) gpu_index=$g cmd=CI run $KEY ($SHA)" > "${lk%.lock}.owner"
+            break 2
+        fi
         exec 9>&-
     done
-    exec 9>/workspace/ci/gpu0.lock
-    if flock -n 9 && idle 0; then GPU=0; break; fi
-    exec 9>&-
-    echo "$(date -u +%T) no idle GPU among $GPUS or 0; waiting"
+    echo "$(date -u +%T) no idle GPU among $GPUS 0; waiting"
     sleep 60
 done
 [ -n "$GPU" ] || fail "no idle GPU for two hours"
