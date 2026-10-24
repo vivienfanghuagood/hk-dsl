@@ -97,7 +97,7 @@ the MiniMax-H3 / Qwen-Image DiT on a W7900D, recorded by the same criteria:
 | id | kernel | reference / baseline | what the hardware offers |
 |---|---|---|---|
 | **T-CR** | ConvRot INT8 W8A8 GEMM: the online rotation, per-group scales, INT8 GEMM on `v_wmma_i32_16x16x16_iu8`, as a third `SGLANG_DIFFUSION_CONVROT_INT8_BACKEND` (both existing ones are CUDA-only); H3's own convrot int8 checkpoint | SGLang's two CUDA backends (semantics); on gfx1100, hipBLASLt `torch._int_mm` and the bf16 path | gfx1100's int8 WMMA runs at the fp16 rate (measured 96 vs 101 TOP/s register-only; iu4 193): no compute gain. hipBLASLt int8 62.7 / 75.9 TOP/s against bf16 FlyDSL / hk ~88 TF/s at H3 / Qwen shapes. The gain on offer is bytes: int8 halves the DiT, which H3 streams from host RAM every step -- measured before anything is claimed |
-| **T-SA** | SageAttention INT8: Q, K int8 with smooth-K, PV in fp16 (gfx1100 has no fp8) | SageAttention's Triton kernel, if it runs on gfx1100 (checked first); else the fp16 kernels of K3 | the same: int8 QK^T is not faster than fp16 on RDNA3, so the kernel can at best save bytes and registers; on par with K3 is the realistic ceiling, and its value here is as a DSL testbed |
+| **T-SA** | SageAttention INT8: Q, K int8 with smooth-K, PV in fp16 (gfx1100 has no fp8) | SageAttention 1.0.6's Triton kernel: its default `num_stages=4` crashes Triton's AMD stream pipeliner on gfx1100; with 1 it runs at 49 TF/s-equivalent (Triton 3.6; 40 in 3.5) at Qwen's shape, max-rel 1.9e-2 vs fp32 -- against hk's fp16 attention at 62-70 TF/s | the same: int8 QK^T is not faster than fp16 on RDNA3, so the kernel can at best save bytes and registers; on par with K3 is the realistic ceiling, and its value here is as a DSL testbed |
 
 ## How the kernels are built: one task workspace each (KDA-style)
 
@@ -193,8 +193,9 @@ gap too).
   main. **In the production image** (sglang-radeon@sha256:e9c8365e, SGLang
   main of 2026-09-22, `sglang serve` with the production flags, timed over
   HTTP): stock 50.25 s -> hk 29.0 s, 1.73x on one card; the weights'
-  revisions 790c926 (production) and d26bb61 differ only in README.md. The
-  four-card number is being measured.
+  revisions 790c926 (production) and d26bb61 differ only in README.md. Four
+  cards (`--num-gpus 4`, the production deployment): stock 17.75-17.94 s ->
+  hk 9.67-9.89 s, **1.81x**.
 - MiniMax-H3 4 s clip: denoise 1.43x with hk attention, the request 1.15x
   (median of three interleaved runs; the VAE decode stage is noisy).
 - DeepSeek-V4.1-Flash: the profiling path in vLLM's AMD package (dummy
