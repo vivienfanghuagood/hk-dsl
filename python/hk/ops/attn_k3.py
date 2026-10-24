@@ -379,21 +379,20 @@ def _kernels():
 
 
 def plan(nblk: int, device) -> tuple:
-    """(n_full, parts, n_split): the Q blocks that do not fill the last wave split over KV into
-    `parts` (2..4) units each, when that fills it better. A wave is 3 workgroups a WGP: the
-    attention kernel's 208 VGPRs leave room for 6 of its waves a SIMD (torch's
+    """(n_full, parts, n_split): the Q blocks past the last whole wave are split over KV into
+    three units each. Swept on a W7900D (scratch/k3_plansweep.py): splitting is worth 10% on a
+    small grid (8 heads, 256 blocks: the 4-GPU Ulysses shape) and within 2% either way on large
+    ones; three parts was best or near it everywhere. A wave counts 4 workgroups a WGP below two
+    such waves and 3 above (the attention kernel's VGPRs fit 3 resident; torch's
     multi_processor_count is the WGP count on gfx1100)."""
-    import os  # noqa: PLC0415
-
     import torch  # noqa: PLC0415
 
     wgps = torch.cuda.get_device_properties(device).multi_processor_count
-    slots = int(os.environ.get("HK_K3_WG_PER_WGP", "3")) * wgps
+    slots = (4 if nblk < 8 * wgps else 3) * wgps
     rem = nblk % slots
-    parts = min(slots // rem, 4) if rem else 1
-    if parts < 2:
+    if not rem:
         return nblk, 1, 0
-    return nblk - rem, parts, rem
+    return nblk - rem, 3, rem
 
 
 def _launch(kern, *tensors):
