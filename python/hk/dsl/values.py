@@ -1488,7 +1488,7 @@ def load_fp4_frags(ty, src: "Global", row0, kc0, *, group_rows: int, gate_up: bo
 
 
 def mma_ABt_mx(a: Tile, b: Tile, acc: Tile, sa: MxScales, sb: MxScales, *, into=None,
-               b_fmt: str = "fp8") -> Tile:
+               a_fmt: str = "fp8", b_fmt: str = "fp8") -> Tile:
     """acc + (sa . A)(sb . B)^T on gfx950's v_mfma_scale_f32_16x16x128_f8f6f4:
     A (M, K) and B (N, K) fp8 e4m3 row tiles, K a multiple of 128; sa and sb
     their E8M0 scales (`load_mx_scales`), element (r, k) of A counting as
@@ -1508,10 +1508,11 @@ def mma_ABt_mx(a: Tile, b: Tile, acc: Tile, sa: MxScales, sb: MxScales, *, into=
     ty = RegTileType(fp32, a.ty.rows, b.ty.rows, "col")
     if (acc.ty.rows, acc.ty.cols) != (ty.rows, ty.cols):
         raise TypeError(f"mma_ABt_mx: acc is {acc.ty}, expected {a.ty.rows}x{b.ty.rows}")
-    if b_fmt not in ("fp8", "fp4"):
-        raise TypeError(f"mma_ABt_mx: b_fmt is 'fp8' or 'fp4', not {b_fmt!r}")
+    for f, what in ((a_fmt, "a_fmt"), (b_fmt, "b_fmt")):
+        if f not in ("fp8", "fp4"):
+            raise TypeError(f"mma_ABt_mx: {what} is 'fp8' or 'fp4', not {f!r}")
     return _make(hkd.MmaABtMxOp, acc.ty, (a.v, b.v, acc.v, sa.v, sb.v), into=into, name="mx",
-                 b_fmt=4 if b_fmt == "fp4" else 0)
+                 a_fmt=4 if a_fmt == "fp4" else 0, b_fmt=4 if b_fmt == "fp4" else 0)
 
 
 class Granules(Value):

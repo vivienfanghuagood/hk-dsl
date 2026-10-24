@@ -1423,31 +1423,33 @@ __device__ inline static void load_fp4_frags(RT &dst, const GL &src, int row0, i
 }
 
 namespace detail {
-template<int OA, int OB, int BF = 0>
-__device__ inline void hk_mfma_mx(float (&d)[4], const uint32_t (&a)[8], const uint32_t (&b)[8],
-                                  uint32_t sa, uint32_t sb) {
+template<int F>
+__device__ inline auto hk_mx_operand(const uint32_t (&r)[8]) {
     typedef __attribute__((__vector_size__(8 * sizeof(int)))) int intx8_t;
     typedef __attribute__((__vector_size__(4 * sizeof(int)))) int intx4_t;
-    typedef __attribute__((__vector_size__(4 * sizeof(float)))) float floatx4_t;
-    if constexpr (BF == 4) {
-        // FP4 B: four registers; the upper half of the operand is left undefined, not zeroed
-        const intx4_t lo = *(const intx4_t *)b;
-        const intx8_t b8 = __builtin_shufflevector(lo, lo, 0, 1, 2, 3, -1, -1, -1, -1);
-        *(floatx4_t *)d = __builtin_amdgcn_mfma_scale_f32_16x16x128_f8f6f4(
-            *(const intx8_t *)a, b8, *(floatx4_t *)d, 0, 4, OA, sa, OB, sb);
+    if constexpr (F == 4) {
+        // FP4: four registers; the operand's upper half is left undefined, not zeroed
+        const intx4_t lo = *(const intx4_t *)r;
+        return intx8_t(__builtin_shufflevector(lo, lo, 0, 1, 2, 3, -1, -1, -1, -1));
     } else {
-        *(floatx4_t *)d = __builtin_amdgcn_mfma_scale_f32_16x16x128_f8f6f4(
-            *(const intx8_t *)a, *(const intx8_t *)b, *(floatx4_t *)d, 0, 0, OA, sa, OB, sb);
+        return *(const intx8_t *)r;
     }
 }
-template<int OA, int BF = 0>
+template<int OA, int OB, int AF = 0, int BF = 0>
+__device__ inline void hk_mfma_mx(float (&d)[4], const uint32_t (&a)[8], const uint32_t (&b)[8],
+                                  uint32_t sa, uint32_t sb) {
+    typedef __attribute__((__vector_size__(4 * sizeof(float)))) float floatx4_t;
+    *(floatx4_t *)d = __builtin_amdgcn_mfma_scale_f32_16x16x128_f8f6f4(
+        hk_mx_operand<AF>(a), hk_mx_operand<BF>(b), *(floatx4_t *)d, AF, BF, OA, sa, OB, sb);
+}
+template<int OA, int AF = 0, int BF = 0>
 __device__ inline void hk_mfma_mx_b(int ob, float (&d)[4], const uint32_t (&a)[8],
                                     const uint32_t (&b)[8], uint32_t sa, uint32_t sb) {
     switch (ob) {
-        case 0: hk_mfma_mx<OA, 0, BF>(d, a, b, sa, sb); break;
-        case 1: hk_mfma_mx<OA, 1, BF>(d, a, b, sa, sb); break;
-        case 2: hk_mfma_mx<OA, 2, BF>(d, a, b, sa, sb); break;
-        default: hk_mfma_mx<OA, 3, BF>(d, a, b, sa, sb); break;
+        case 0: hk_mfma_mx<OA, 0, AF, BF>(d, a, b, sa, sb); break;
+        case 1: hk_mfma_mx<OA, 1, AF, BF>(d, a, b, sa, sb); break;
+        case 2: hk_mfma_mx<OA, 2, AF, BF>(d, a, b, sa, sb); break;
+        default: hk_mfma_mx<OA, 3, AF, BF>(d, a, b, sa, sb); break;
     }
 }
 }  // namespace detail
@@ -1458,7 +1460,7 @@ __device__ inline void hk_mfma_mx_b(int ob, float (&d)[4], const uint32_t (&a)[8
  * The opsel immediates are each base tile's index mod 4; the loops unroll, so
  * the switches fold.
  */
-template<int BF = 0, ducks::rt::col_layout D, ducks::rt::all A, ducks::rt::all B, ducks::rt::col_layout C,
+template<int AF = 0, int BF = 0, ducks::rt::col_layout D, ducks::rt::all A, ducks::rt::all B, ducks::rt::col_layout C,
          int RA, int RB, int KB>
 __device__ static inline void mma_ABt_mx(D &d, const A &a, const B &b, const C &c,
                                          const hk_mxs<RA, KB> &sa, const hk_mxs<RB, KB> &sb) {
@@ -1482,10 +1484,10 @@ __device__ static inline void mma_ABt_mx(D &d, const A &a, const B &b, const C &
                 const uint32_t(&rb)[8] = *reinterpret_cast<const uint32_t(*)[8]>(&b.tiles[m][k].data[0]);
                 const uint32_t s_a = sa.reg[n / 4][k], s_b = sb.reg[m / 4][k];
                 switch (n % 4) {
-                    case 0: detail::hk_mfma_mx_b<0, BF>(m % 4, acc, ra, rb, s_a, s_b); break;
-                    case 1: detail::hk_mfma_mx_b<1, BF>(m % 4, acc, ra, rb, s_a, s_b); break;
-                    case 2: detail::hk_mfma_mx_b<2, BF>(m % 4, acc, ra, rb, s_a, s_b); break;
-                    default: detail::hk_mfma_mx_b<3, BF>(m % 4, acc, ra, rb, s_a, s_b); break;
+                    case 0: detail::hk_mfma_mx_b<0, AF, BF>(m % 4, acc, ra, rb, s_a, s_b); break;
+                    case 1: detail::hk_mfma_mx_b<1, AF, BF>(m % 4, acc, ra, rb, s_a, s_b); break;
+                    case 2: detail::hk_mfma_mx_b<2, AF, BF>(m % 4, acc, ra, rb, s_a, s_b); break;
+                    default: detail::hk_mfma_mx_b<3, AF, BF>(m % 4, acc, ra, rb, s_a, s_b); break;
                 }
             }
             __builtin_memcpy(&d.tiles[n][m].data[0], acc, sizeof(acc));

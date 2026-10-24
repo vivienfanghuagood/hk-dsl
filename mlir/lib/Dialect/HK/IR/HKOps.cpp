@@ -297,8 +297,8 @@ LogicalResult MmaABtMxOp::verify() {
     if (!isa<Float8E4M3FNType>(t.getElementType()) || t.getColLayout() ||
         t.isStrip())
       return emitOpError("A and B are fp8 e4m3 row-layout tiles, not ") << t;
-  if (getBFmt() != 0 && getBFmt() != 4)
-    return emitOpError("b_fmt is 0 (fp8 e4m3) or 4 (fp4 e2m1); got ") << getBFmt();
+  if ((getAFmt() != 0 && getAFmt() != 4) || (getBFmt() != 0 && getBFmt() != 4))
+    return emitOpError("a_fmt and b_fmt are 0 (fp8 e4m3) or 4 (fp4 e2m1)");
   if (!c.getElementType().isF32() || !c.getColLayout() || c != d)
     return emitOpError("accumulates into an fp32 col-layout tile, the result's type");
   if (a.getCols() != b.getCols() || a.getCols() % 128)

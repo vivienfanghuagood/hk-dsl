@@ -872,13 +872,15 @@ def HK_MmaABtMxOp : HK_Op<"mma_ABt_mx"> {
     A and B are fp8 e4m3 row-layout tiles (16x128 fragments), C the fp32
     accumulator; sa and sb their E8M0 block scales (`load_mx_scales`):
     element (r, k) of A counts as A[r][k] * 2^(sa[r][k / 32] - 127).
-    `b_fmt` 4: B is FP4 e2m1 (`load_fp4_frags`: the first four dwords of each
-    fragment), and A must hold, in each 128-wide K step, x[16g, 16g+16) and
-    x[64+16g, 64+16g+16) in lane group g (the FP4 operand's K order).
+    `a_fmt` / `b_fmt` 4: that operand is FP4 e2m1 (`load_fp4_frags`: the first
+    four dwords of each fragment; its lane group g holds K [32g, 32g+32) of a
+    128-wide step, where an FP8 operand's holds [16g, 16g+16) and [64+16g,
+    64+16g+16) -- HipKittens' rt_16x128 order).
   }];
   let arguments = (ins Optional<HK_RegTileType>:$dst, HK_RegTileType:$a,
                        HK_RegTileType:$b, HK_RegTileType:$c,
                        HK_MxScalesType:$sa, HK_MxScalesType:$sb,
+                       DefaultValuedAttr<I64Attr, "0">:$a_fmt,
                        DefaultValuedAttr<I64Attr, "0">:$b_fmt);
   let results = (outs Optional<HK_RegTileType>:$result);
   let assemblyFormat = [{
