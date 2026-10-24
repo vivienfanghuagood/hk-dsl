@@ -853,7 +853,8 @@ template<int NW, bool NT = false, ducks::st::all ST, typename U, ducks::coord::t
 __device__ inline static void group_load_async_rows(ST &dst, const strided_gl<U> &src, const COORD &idx,
                                                     int limit) {
     using T = typename ST::dtype;
-    static_assert(sizeof(T) == sizeof(U) && sizeof(T) == 2, "16-bit tiles of the global's own dtype");
+    static_assert(sizeof(T) == sizeof(U) && (sizeof(T) == 2 || sizeof(T) == 1),
+                  "16-bit or fp8 tiles of the global's own dtype");
     static_assert(ST::underlying_subtile_bytes_per_thread == 16, "the 16-byte DMA needs a 16-byte lane run");
     constexpr int PER_WARP = 16 * WARP_THREADS;
     constexpr int PER_CALL = PER_WARP * NW;

@@ -220,8 +220,17 @@ bool live(const std::optional<Scope> &issued, const Scope &scope) {
 /// The count has to be exact or low, never high: a load counted high makes
 /// every wait issued while it is in flight too shallow.
 int64_t cdnaLdsReads(const TargetInfo &t, RegTileType rt, SharedTileType st) {
-  if (dtypeBits(rt.getElementType()) != 16 ||
-      rt.getElementType() != st.getElementType())
+  if (rt.getElementType() != st.getElementType())
+    return 0;
+  if (dtypeBits(rt.getElementType()) == 8) {
+    // include/cdna4's fp8 16x128 row fragment: two runs of 16 bytes a lane,
+    // one ds_read_b128 each (shared_to_register.cuh, stride 16).
+    if (t.arch == "gfx950" && !rt.getColLayout() && rt.fragR() == 16 &&
+        rt.fragC() == 128 && !rt.getFragStride())
+      return 2 * int64_t(rt.getRows() / 16) * (rt.getCols() / 128);
+    return 0;
+  }
+  if (dtypeBits(rt.getElementType()) != 16)
     return 0;
   int64_t frags = int64_t(rt.getRows() / rt.fragR()) * (rt.getCols() / rt.fragC());
   bool col = rt.getColLayout();

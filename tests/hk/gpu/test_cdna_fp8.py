@@ -14,12 +14,20 @@ if current_arch() != "gfx950":
 pytestmark = pytest.mark.gpu
 
 
-def test_fp8_mma_matches_fp32():
-    import sys
+def _ir():
+    """The kernels tests/hk/ir/test_cdna_fp8.py traces (same file name, so by path)."""
+    import importlib.util
     from pathlib import Path
 
-    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "ir"))
-    from test_cdna_fp8 import fp8_mma_kernel
+    p = Path(__file__).resolve().parents[1] / "ir" / "test_cdna_fp8.py"
+    spec = importlib.util.spec_from_file_location("ir_test_cdna_fp8", p)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def test_fp8_mma_matches_fp32():
+    fp8_mma_kernel = _ir().fp8_mma_kernel
 
     g = torch.Generator(device="cuda").manual_seed(0)
     a = (torch.randn(64, 128, device="cuda", generator=g) * 2).to(torch.float8_e4m3fn)
@@ -31,11 +39,7 @@ def test_fp8_mma_matches_fp32():
 
 
 def test_mx_scaled_mma_matches_the_scaled_fp32_product():
-    import sys
-    from pathlib import Path
-
-    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "ir"))
-    from test_cdna_fp8 import mx_mma_kernel
+    mx_mma_kernel = _ir().mx_mma_kernel
 
     g = torch.Generator(device="cuda").manual_seed(1)
     M, N, K = 64, 32, 256
@@ -63,6 +67,24 @@ def test_the_mxfp8_gemm_matches_the_scaled_product(m, n, k):
                            generator=g)
     sb = mxfp8.expand_block_scales(blocks)
     out = mxfp8.gemm(a, b, sa, sb)
+    af = a.float() * torch.pow(2.0, sa.float() - 127).repeat_interleave(32, dim=1)
+    bf = b.float() * torch.pow(2.0, sb.float() - 127).repeat_interleave(32, dim=1)
+    ref = af @ bf.T
+    assert ((out.float() - ref).abs().max() / ref.abs().max()).item() < 5e-3
+
+
+@pytest.mark.parametrize("m,n,k,bm,bn", [(300, 512, 1152, 128, 256), (512, 256, 1280, 256, 128)])
+def test_the_mx_pingpong_matches_the_scaled_product(m, n, k, bm, bn):
+    """gemm_cdna's pingpong with fp8 operands and per-K-tile scales: a ragged
+    M and an odd count of 128-wide K-tiles (the pad tile)."""
+    from hk.ops import mxfp8
+
+    g = torch.Generator(device="cuda").manual_seed(m + k)
+    a = torch.randn(m, k, device="cuda", generator=g).to(torch.float8_e4m3fn)
+    b = torch.randn(n, k, device="cuda", generator=g).to(torch.float8_e4m3fn)
+    sa = torch.randint(124, 131, (m, k // 32), device="cuda", dtype=torch.uint8, generator=g)
+    sb = torch.randint(124, 131, (n, k // 32), device="cuda", dtype=torch.uint8, generator=g)
+    out = mxfp8.gemm_pp(a, b, sa, sb, block_n=bn, block_m=bm)
     af = a.float() * torch.pow(2.0, sa.float() - 127).repeat_interleave(32, dim=1)
     bf = b.float() * torch.pow(2.0, sb.float() - 127).repeat_interleave(32, dim=1)
     ref = af @ bf.T

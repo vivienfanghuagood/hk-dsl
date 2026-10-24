@@ -1378,7 +1378,14 @@ def lds_loads(tile: RegTileType, src: SharedTileType, arch: str = "gfx1100") -> 
     On a wave64 (CDNA) target the count depends on the matrix-core fragment,
     which hk-fragments assigns after tracing, so this only says whether the
     pair is asynchronous at all; hk-lds-pipeline sets the real count."""
-    if src.dtype != tile.dtype or tile.dtype.bits != 16:
+    if src.dtype != tile.dtype:
+        return 0
+    if tile.dtype.bits == 8:
+        # gfx950's fp8 operand (16x128 row fragments): two ds_read_b128 each;
+        # hk-lds-pipeline sets the count.
+        return ((tile.rows // 16) * (tile.cols // 128) * 2
+                if get_target(arch).arch == "gfx950" and tile.layout == "row" else 0)
+    if tile.dtype.bits != 16:
         return 0
     if get_target(arch).wave == 64:
         if tile.layout == "col" and get_target(arch).arch == "gfx942":

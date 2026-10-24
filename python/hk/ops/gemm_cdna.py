@@ -50,7 +50,7 @@ from __future__ import annotations
 from typing import Any, Dict, Optional
 
 from .. import dsl as hk
-from ..types import bf16, fp32, i32
+from ..types import bf16, fp32, fp8e4m3, i8, i32
 from . import _epilogue
 
 #: An MI355X has eight XCDs; workgroups are dealt to them round robin.
@@ -63,7 +63,7 @@ def gemm_kernel(name: str, *, block_m: int = 256, block_n: int = 256,
                 transposed_c: bool = False, early_store: bool = True,
                 hipkittens_waits: bool = False, late_b: bool = True,
                 splits: int = 1, lds_shape: Optional[str] = None, nt: str = "",
-                stream_k: int = 0, sk_grid: int = 256,
+                stream_k: int = 0, sk_grid: int = 256, mx: bool = False,
                 arch: Optional[str] = None,
                 max_vgprs: int = 256, min_occupancy: int = 1, epilogue=None):
     """HipKittens' tiling by default: 256x256x64, eight warps as 2 x 4.
@@ -82,6 +82,13 @@ def gemm_kernel(name: str, *, block_m: int = 256, block_n: int = 256,
     (epilogue included). Takes (a, b, c, ws, cnt, plan) -- sk_scratch's and
     sk_plan's -- and K a multiple of 2 * k_step.
 
+    `mx`: the operands are fp8 e4m3 with OCP MX block scales -- the kernel
+    takes (a, b, sa, sb, c), sa (M, K/32) and sb (N, K/32) uint8 E8M0 -- and
+    every MFMA is gfx950's scaled one (hk.mma_ABt_mx); k_step is 128. Each
+    K-tile's scales are read from global as its first reads are issued; they
+    are not part of hk-lds-pipeline's count, which only makes its vm waits
+    stricter (an extra load in flight can only make a wait retire more).
+
     `hipkittens_waits` puts HipKittens' own vmcnts back (all but three copies
     after the prologue and at the end of each iteration). hk-lds-pipeline
     refuses them -- the fourth memory phase reads Bs[2] with its copy still in
@@ -98,11 +105,15 @@ def gemm_kernel(name: str, *, block_m: int = 256, block_n: int = 256,
                          f"does not give whole 16-row accumulators")
     if k_step % 32:
         raise ValueError(f"k_step={k_step}: the MFMA's operand is 32 deep")
+    if mx and (k_step != 128 or splits != 1 or stream_k or transposed_c or epilogue is not None):
+        raise ValueError("mx: k_step 128 (the scaled MFMA's K), no splits, stream-K, "
+                         "transposed C or epilogue yet")
+    op_t = fp8e4m3 if mx else bf16
 
-    st_a = hk.ST(bf16, half_m, k_step)
-    st_b = hk.ST(bf16, half_n, k_step)
-    t_a = hk.RT(bf16, reg_m, k_step, "row")
-    t_b = hk.RT(bf16, reg_n, k_step, "row")
+    st_a = hk.ST(op_t, half_m, k_step)
+    st_b = hk.ST(op_t, half_n, k_step)
+    t_a = hk.RT(op_t, reg_m, k_step, "row")
+    t_b = hk.RT(op_t, reg_n, k_step, "row")
     # The MFMA's accumulator holds four consecutive rows of one column in a
     # lane, so storing C from it is one 2-byte store per element.
     # `transposed_c` accumulates Cᵀ = B·Aᵀ instead, whose four values are
@@ -118,7 +129,7 @@ def gemm_kernel(name: str, *, block_m: int = 256, block_n: int = 256,
 
     @hk.func
     def tile(g, As, Bs, A, B, C, a, b, m0, n0, wr, wc, k0, k_count, out, init=None,
-             stores=True, even=False):
+             stores=True, even=False, mxs=None):
         """One block of C: the copies, the pingpong over k_count K-tiles from
         k0, and (`stores`) C's store through `out`. The accumulators C are
         the caller's, zeroed or initialized. `even`: k_count is even, so no
@@ -150,8 +161,22 @@ def gemm_kernel(name: str, *, block_m: int = 256, block_n: int = 256,
         def read_b(u, h, s):
             Bs[2 * u + h].subtile(reg_n, k_step, wc, 0).load(t_b, wait=False, into=B[s])
 
+        # mx: the scales of the K-tile being multiplied, (A halves, B halves).
+        cur = {}
+
+        def scales(t):
+            if mxs is not None:
+                sa, sb = mxs
+                kb = (k0 + t * k_step) // 32
+                cur["a"] = [hk.load_mx_scales(sa, reg_m, k_step // 32,
+                                              m0 + i * half_m + wr * reg_m, kb) for i in range(2)]
+                cur["b"] = [hk.load_mx_scales(sb, reg_n, k_step // 32,
+                                              n0 + j * half_n + wc * reg_n, kb) for j in range(2)]
+
         def mma(i, j):
-            if transposed_c:
+            if mxs is not None:
+                hk.mma_ABt_mx(A, B[j], C[i][j], cur["a"][i], cur["b"][j], into=C[i][j])
+            elif transposed_c:
                 C[i][j] += B[j] @ A.T
             else:
                 C[i][j] += A @ B[j].T
@@ -197,6 +222,7 @@ def gemm_kernel(name: str, *, block_m: int = 256, block_n: int = 256,
 
             for t in range(0, n_tiles - 2, 2):
                 # K-tile t, buffer 0.
+                scales(t)
                 read_b(0, 0, 0)
                 read_a(0, 0)
                 copy_a(t + 1, 1, 1)
@@ -227,6 +253,7 @@ def gemm_kernel(name: str, *, block_m: int = 256, block_n: int = 256,
                 math(1, 1)
 
                 # K-tile t + 1, buffer 1.
+                scales(t + 1)
                 if late_b:
                     read_b(1, 0, 0)
                 read_a(1, 0)
@@ -260,6 +287,7 @@ def gemm_kernel(name: str, *, block_m: int = 256, block_n: int = 256,
 
             # The last two K-tiles: nothing left to copy but A's second half.
             t = n_tiles - 2
+            scales(t)
             read_b(0, 0, 0)
             read_a(0, 0)
             copy_a(t + 1, 1, 1, pad=True)
@@ -284,6 +312,7 @@ def gemm_kernel(name: str, *, block_m: int = 256, block_n: int = 256,
                 hk.arch.setprio(0)
             hk.arch.barrier()
 
+            scales(t + 1)
             read_b(1, 0, 0)
             read_a(1, 0)
             g.wait_for(As[3])
@@ -338,7 +367,7 @@ def gemm_kernel(name: str, *, block_m: int = 256, block_n: int = 256,
         return row, col
 
     @hk.func
-    def gemm(a, b, WGM, k0, k_count, out, init=None):
+    def gemm(a, b, WGM, k0, k_count, out, init=None, mxs=None):
         g, As, Bs, A, B, C = alloc(warps)
 
         M = a.rows
@@ -365,7 +394,7 @@ def gemm_kernel(name: str, *, block_m: int = 256, block_n: int = 256,
         wid = hk.arch.warp_id()
         wr = wid // warps_n
         wc = wid % warps_n
-        tile(g, As, Bs, A, B, C, a, b, m0, n0, wr, wc, k0, k_count, out, init)
+        tile(g, As, Bs, A, B, C, a, b, m0, n0, wr, wc, k0, k_count, out, init, mxs=mxs)
 
     @hk.func
     def gemm_sk(a, b, ws, cnt, plan, out):
@@ -487,7 +516,17 @@ def gemm_kernel(name: str, *, block_m: int = 256, block_n: int = 256,
 
         gemm_sk(a, b, ws, cnt, plan, out)
 
-    if stream_k:
+    # mx: fp8 operands and their E8M0 scales.
+    def body_mx(a: hk.Tensor[fp8e4m3], b: hk.Tensor[fp8e4m3], sa: hk.Tensor[i8],
+                sb: hk.Tensor[i8], c: hk.Tensor[bf16], *, WGM: hk.Constexpr = wgm):
+        def out(tile, r, col):
+            c[hk.elem_coord(0, 0, r, col)].store(tile, bounded=True)
+
+        gemm(a, b, WGM, 0, a.cols // k_step, out, None, (sa, sb))
+
+    if mx:
+        fn = body_mx
+    elif stream_k:
         if splits != 1:
             raise ValueError("stream_k cuts K itself; splits must be 1")
         if transposed_c:

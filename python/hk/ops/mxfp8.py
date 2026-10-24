@@ -76,6 +76,33 @@ def gemm(a, b, sa, sb, out=None):
     return out
 
 
+_PP = {}
+
+
+def gemm_pp(a, b, sa, sb, out=None, *, block_n: int = 256, **sched):
+    """The same product on gfx950's pingpong (hk.ops.gemm_cdna, mx=True):
+    256 x block_n blocks of eight warps, K-tiles of 128 double-buffered
+    through LDS. N a multiple of block_n, K of 128; any M."""
+    import torch  # noqa: PLC0415
+
+    from . import gemm_cdna  # noqa: PLC0415
+
+    m, k = a.shape
+    n = b.shape[0]
+    if n % block_n or k % 128:
+        raise ValueError(f"mxfp8.gemm_pp: N={n} a multiple of {block_n}, K={k} of 128")
+    key = (block_n, tuple(sorted(sched.items())))
+    kern = _PP.get(key)
+    if kern is None:
+        name = "mxfp8_pp_" + "_".join([str(block_n)] + [f"{k_}{v}" for k_, v in key[1]])
+        kern = _PP[key] = gemm_cdna.gemm_kernel(name, mx=True, k_step=128,
+                                                block_n=block_n, arch="gfx950", **sched)
+    if out is None:
+        out = torch.empty((m, n), device=a.device, dtype=torch.bfloat16)
+    kern(a, b, sa.view(torch.int8), sb.view(torch.int8), out)
+    return out
+
+
 def expand_block_scales(s, block_rows: int = 32):
     """A weight's 32x32-block E8M0 scales [N/32, K/32] as one row each [N, K/32]."""
     return s.repeat_interleave(block_rows, dim=0).contiguous()
