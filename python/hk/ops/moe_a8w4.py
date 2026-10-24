@@ -18,6 +18,7 @@ expert, each expert's run padded to whole 16-row tiles; activations already MX F
 from __future__ import annotations
 
 import functools
+import math
 
 from ..types import bf16, fp8e4m3, fp32, i8, i32
 from .gemm_cdna import NUM_XCDS
@@ -166,7 +167,8 @@ def stage1_lds_kernel(name: str, *, group_rows: int, mt: int = 4, pp: int = 2,
 
 
 def stage1_ring_kernel(name: str, *, group_rows: int, mt: int = 4, pp: int = 4, depth: int = 4,
-                       limit: float = 10.0, xcd: bool = True, exact: bool = False):
+                       limit: float = 10.0, xcd: bool = True, exact: bool = False,
+                       xsplit: bool = False):
     """Stage 1, version 4 (K1 c5): stage1_lds_kernel's workgroup (warp = pp (gate, up) pairs, the
     round's mt token tiles shared through LDS), with 128-wide K steps and `depth` operand sets
     (registers for the warp's weights and scales, LDS slots for the tiles): step k+depth-1's
@@ -183,6 +185,10 @@ def stage1_ring_kernel(name: str, *, group_rows: int, mt: int = 4, pp: int = 4, 
     t_w = hk.RT(fp8e4m3, R, KS)
     t_x = hk.RT(fp8e4m3, TILE * mt, KS)
     t_c = hk.RT(fp32, R, TILE * mt, "col")
+    t_x1 = hk.RT(fp8e4m3, TILE, KS)
+    t_c1 = hk.RT(fp32, R, TILE, "col")
+    # xsplit: the round's token tiles read from LDS and multiplied one at a time, into an
+    # accumulator each -- one token fragment live instead of mt (registers for bigger rounds)
     D = depth
 
     def body(x: hk.Tensor[fp8e4m3], xs: hk.Tensor[i8], w: hk.Tensor[i8], ws: hk.Tensor[i8],
@@ -204,33 +210,56 @@ def stage1_ring_kernel(name: str, *, group_rows: int, mt: int = 4, pp: int = 4, 
         col0 = (blk * warps + wid) * pp * TILE
         row_w = e * GR + col0
         steps = x.cols // KS
-        C = hk.zeros(t_c)
-        X = hk.zeros(t_x)
+        if xsplit:
+            Cs = [hk.zeros(t_c1) for _ in range(mt)]
+            X1 = hk.zeros(t_x1)
+        else:
+            C = hk.zeros(t_c)
+            X = hk.zeros(t_x)
         W = [hk.zeros(t_w) for _ in range(D)]
         S = [hk.load_mx_scales(ws, R, 4, row_w, 0, layout="aiter_gate_up", group_rows=GR)
              for _ in range(D)]
-        SX = [hk.load_mx_scales(xs, TILE * mt, 4, 0, 0, loose=True) for _ in range(D)]
+        if xsplit:
+            SX = [[hk.load_mx_scales(xs, TILE, 4, 0, 0, loose=True) for _ in range(mt)]
+                  for _ in range(D)]
+        else:
+            SX = [hk.load_mx_scales(xs, TILE * mt, 4, 0, 0, loose=True) for _ in range(D)]
 
         def fetch(kc, r0, slot):
             g.load(Xs[slot], x.at[r0, kc * KS], wait=False)
             hk.load_fp4_frags(t_w, w, row_w, kc, group_rows=GR, gate_up=True, into=W[slot])
             hk.load_mx_scales(ws, R, 4, row_w, kc * 4, layout="aiter_gate_up", group_rows=GR,
                               into=S[slot])
-            hk.load_mx_scales(xs, TILE * mt, 4, r0, kc * 4, into=SX[slot], loose=True)
+            if xsplit:
+                for ti in range(mt):
+                    hk.load_mx_scales(xs, TILE, 4, r0 + ti * TILE, kc * 4, into=SX[slot][ti],
+                                      loose=True)
+            else:
+                hk.load_mx_scales(xs, TILE * mt, 4, r0, kc * 4, into=SX[slot], loose=True)
 
         def step(kc, cur, r0, prefetch=True):
             g.wait_for(Xs[cur], exact=exact)
             hk.arch.barrier()
             if prefetch:
                 fetch(kc + D - 1, r0, (cur + D - 1) % D)
-            Xs[cur].load(t_x, wait=False, into=X)
-            hk.lds.wait_for(X)
-            hk.mma_ABt_mx(W[cur], X, C, S[cur], SX[cur], a_fmt="fp4", into=C)
+            if xsplit:
+                for ti in range(mt):
+                    Xs[cur].subtile(TILE, KS, ti, 0).load(t_x1, wait=False, into=X1)
+                    hk.lds.wait_for(X1)
+                    hk.mma_ABt_mx(W[cur], X1, Cs[ti], S[cur], SX[cur][ti], a_fmt="fp4", into=Cs[ti])
+            else:
+                Xs[cur].load(t_x, wait=False, into=X)
+                hk.lds.wait_for(X)
+                hk.mma_ABt_mx(W[cur], X, C, S[cur], SX[cur], a_fmt="fp4", into=C)
             hk.arch.sched_barrier()
 
         for rnd in range(hk.cdiv(t1 - t0, mt)):
             r0 = (t0 + rnd * mt) * TILE
-            C.zero_()
+            if xsplit:
+                for c_ in Cs:
+                    c_.zero_()
+            else:
+                C.zero_()
             for k in range(D - 1):
                 fetch(k, r0, k)
             for kk in range(steps // D - 1):
@@ -240,13 +269,22 @@ def stage1_ring_kernel(name: str, *, group_rows: int, mt: int = 4, pp: int = 4, 
             for u in range(D):
                 step(last + u, u, r0, prefetch=u == 0)
             hk.arch.barrier()
-            for j in range(pp):
-                gt = C.subtile(TILE, 2 * j).minimum(lim)
-                up = C.subtile(TILE, 2 * j + 1).maximum(-lim).minimum(lim)
-                hv = hk.transpose(gt.silu() * up)
+            if xsplit:
                 for i in range(mt):
                     if t0 + rnd * mt + i < t1:
-                        h[hk.elem_coord(0, 0, r0 + i * TILE, col0 + j * TILE)].store(hv.subtile(TILE, i))
+                        for j in range(pp):
+                            gt = Cs[i].subtile(TILE, 2 * j).minimum(lim)
+                            up = Cs[i].subtile(TILE, 2 * j + 1).maximum(-lim).minimum(lim)
+                            h[hk.elem_coord(0, 0, r0 + i * TILE, col0 + j * TILE)].store(
+                                hk.transpose(gt.silu() * up))
+            else:
+                for j in range(pp):
+                    gt = C.subtile(TILE, 2 * j).minimum(lim)
+                    up = C.subtile(TILE, 2 * j + 1).maximum(-lim).minimum(lim)
+                    hv = hk.transpose(gt.silu() * up)
+                    for i in range(mt):
+                        if t0 + rnd * mt + i < t1:
+                            h[hk.elem_coord(0, 0, r0 + i * TILE, col0 + j * TILE)].store(hv.subtile(TILE, i))
 
     body.__name__ = name
     return hk.kernel(body, arch="gfx950", warps=warps, name=name, max_vgprs=512,
@@ -455,6 +493,16 @@ def units_for(tiles, mt: int):
     return torch.stack([e, first + r * mt], 1).to(torch.int32).view(1, 1, -1, 2)
 
 
+def ring_round(rows: int, n_experts: int):
+    """(mt, depth) of the xsplit ring kernel for P sorted rows over E experts (host values, no sync).
+    An expert's tiles are cut into the fewest rounds of at most 6 tiles, as even as possible; a round
+    is never under 2 tiles. Measured on MI355X, Kimi K3 shapes, M 640..16384 (K1 c9)."""
+    t = rows / TILE / max(n_experts, 1)
+    r = max(1, math.ceil(t / 6))
+    mt = min(6, max(2, math.ceil(t / r)))
+    return mt, (3 if mt >= 5 else 2)
+
+
 @functools.lru_cache(maxsize=None)
 def _stage1_direct(group_rows: int, k: int, mt: int, pp: int, depth: int, limit: float):
     return stage1_direct_kernel(f"moe_a8w4_s1x_gr{group_rows}_k{k}_mt{mt}_pp{pp}_d{depth}",
@@ -462,10 +510,11 @@ def _stage1_direct(group_rows: int, k: int, mt: int, pp: int, depth: int, limit:
 
 
 @functools.lru_cache(maxsize=None)
-def _stage1_ring(group_rows: int, mt: int, pp: int, depth: int, limit: float, exact: bool = False):
-    return stage1_ring_kernel(f"moe_a8w4_s1r_gr{group_rows}_mt{mt}_pp{pp}_d{depth}_e{int(exact)}",
-                              group_rows=group_rows, mt=mt, pp=pp, depth=depth, limit=limit,
-                              exact=exact)
+def _stage1_ring(group_rows: int, mt: int, pp: int, depth: int, limit: float, exact: bool = False,
+                 xsplit: bool = False):
+    return stage1_ring_kernel(f"moe_a8w4_s1r_gr{group_rows}_mt{mt}_pp{pp}_d{depth}_e{int(exact)}"
+                              f"_x{int(xsplit)}", group_rows=group_rows, mt=mt, pp=pp, depth=depth,
+                              limit=limit, exact=exact, xsplit=xsplit)
 
 
 @functools.lru_cache(maxsize=None)
@@ -537,10 +586,18 @@ def _stage1_lds(group_rows: int, mt: int, limit: float, pp: int, xcd: bool = Tru
 
 def stage1(xq, xs, w13, w13_scale, tiles, *, inter: int, nb: int = 4, mt: int = 2, warps: int = 4,
            limit: float = 10.0, lds: bool = False, pp: int = 2, xcd: bool = True, depth: int = 0,
-           dma: bool = False, direct: bool = False, exact: bool = False):
+           dma: bool = False, direct: bool = False, exact: bool = False, xsplit: bool = False,
+           auto: bool = False):
     """h [P, inter] bf16 for prepare()'s sorted rows. w13 / w13_scale: AITER's shuffled uint8 views
-    [E * 2 * inter, K/2] and [E * 2 * inter, K/32]."""
+    [E * 2 * inter, K/2] and [E * 2 * inter, K/32]. auto: the xsplit ring kernel (exact waits, pp 4
+    where inter allows) with ring_round()'s round size; mt, depth, pp and the mode flags are then
+    ignored."""
     import torch  # noqa: PLC0415
+
+    if auto:
+        mt, depth = ring_round(xq.shape[0], tiles.numel() - 1)
+        pp = next(p for p in (4, 2, 1) if inter % (TILE * p * 4) == 0)
+        exact, xsplit, dma, direct = True, True, False, False
 
     h = torch.empty((xq.shape[0], inter), device=xq.device, dtype=torch.bfloat16)
     if direct:
@@ -553,7 +610,7 @@ def stage1(xq, xs, w13, w13_scale, tiles, *, inter: int, nb: int = 4, mt: int = 
             xq, xs.view(torch.int8), weight_view(w13, 2 * inter), w13_scale.view(torch.int8), tiles, h)
         return h
     if depth:
-        k = _stage1_ring(2 * inter, mt, pp, depth, float(limit), exact)
+        k = _stage1_ring(2 * inter, mt, pp, depth, float(limit), exact, xsplit)
     else:
         k = _stage1_lds(2 * inter, mt, float(limit), pp, xcd, exact) if lds else _stage1(2 * inter, nb, mt, warps, float(limit))
     k(xq, xs.view(torch.int8), w13.view(torch.int8), w13_scale.view(torch.int8), tiles, h)
