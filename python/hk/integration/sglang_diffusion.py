@@ -135,7 +135,28 @@ def _hk_linear(x, weight, bias):
     s = gemm.schedule_for(m, n, k)
     if k % s["k_step"] or n % s["block_n"]:
         return None
-    return gemm.matmul(a, weight).view(*x.shape[:-1], n)
+    out = torch.empty((m, n), device=x.device, dtype=torch.bfloat16)
+    _gemm_op(s)(a, weight, out)
+    return out.view(*x.shape[:-1], n)
+
+
+_OPS = {}
+
+
+def _gemm_op(sched):
+    """hk's gfx1100 GEMM for `sched` as a torch op: it launches on torch's
+    current stream. hk.ops.matmul's pybind launch goes to the null stream,
+    which waits for every other stream -- under SGLang-Diffusion's layer-wise
+    offload that serialised the weight prefetch behind each GEMM and made
+    MiniMax-H3's denoise loop slower with the GEMM patch than without it."""
+    from ..ops import gemm  # noqa: PLC0415
+    from ..runtime.torch_ext import torch_op  # noqa: PLC0415
+
+    kern = gemm.TUNER._kernel_for(sched)
+    op = _OPS.get(kern.name)
+    if op is None:
+        op = _OPS[kern.name] = torch_op(kern, ns="hk_sgld")
+    return op
 
 
 def apply_linear() -> str:
