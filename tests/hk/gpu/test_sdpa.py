@@ -131,6 +131,22 @@ def test_patch_and_unpatch_round_trip():
     assert not sdpa.patched()
 
 
+def test_a_patched_call_that_falls_back_reaches_torch_not_itself():
+    """Once patched, F.scaled_dot_product_attention *is* the drop-in: a call
+    it hands back (here a mask) must go to torch's function, not recurse
+    through the module attribute -- SGLang-Diffusion's masked text-prefix
+    attention hit exactly that."""
+    q, k, v = _qkv(n=256)
+    mask = torch.ones(256, 256, dtype=torch.bool, device="cuda").tril()
+    ref = F.scaled_dot_product_attention(q.float(), k.float(), v.float(), attn_mask=mask)
+    sdpa.patch()
+    try:
+        got = F.scaled_dot_product_attention(q, k, v, attn_mask=mask)
+    finally:
+        sdpa.unpatch()
+    torch.testing.assert_close(got.float(), ref, **TOL)
+
+
 def test_the_op_behind_it_is_a_torch_custom_op():
     # Which is what makes it capturable and traceable; see test_torch_op.py.
     op = sdpa.op_for(128, False, None, 1024)

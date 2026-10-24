@@ -205,7 +205,10 @@ def scaled_dot_product_attention(query, key, value, attn_mask=None,
         if _VERBOSE and why not in _SEEN:
             _SEEN.add(why)
             print(f"hk sdpa: falling back to torch -- {why}")
-        return F.scaled_dot_product_attention(
+        # torch's own function: once `patch()` has run, the module attribute
+        # is this one, and calling it would recurse until Python gives up.
+        torch_sdpa = _PATCHED if _PATCHED is not None else F.scaled_dot_product_attention
+        return torch_sdpa(
             query, key, value, attn_mask=attn_mask, dropout_p=dropout_p,
             is_causal=is_causal, scale=scale, enable_gqa=enable_gqa)
     STATS["kernel"] += 1
