@@ -223,9 +223,8 @@ def apply_linear() -> str:
     orig = cls.apply
 
     def apply(self, layer, x, bias=None, *args, **kwargs):
-        # Inside a torch.compile region the engine's GEMM stays: a disabled
-        # wrapper would break the graph at every projection (MiniMax-H3's
-        # decoder: 22 s slower an request with this method merely wrapped).
+        # Inside a torch.compile region the engine's GEMM stays: a
+        # compiler-disabled wrapper would break the graph at every projection.
         if not args and not kwargs and not torch.compiler.is_compiling():
             y = _hk_linear(x, layer.weight, bias)
             if y is not None:

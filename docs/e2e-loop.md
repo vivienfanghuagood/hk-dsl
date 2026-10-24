@@ -88,11 +88,11 @@ The second profile shows what the first one hid. With hk's attention in,
 copies grew: the engine passes transposed views and the kernel wanted
 contiguous tensors. A kernel variant that reads the engine's layout in place
 (`attn_kernel(bnhd=True)`) removed them -- 29.1 -> 28.2 s, the same image to
-the byte. Then measure the whole request again, stage by stage: a patch can cost
-time where its kernel never runs. hk's GEMM patch, written first with
-`@torch.compiler.disable` on the engine's linear method, broke every compiled
-region at every projection and made MiniMax-H3's decoder 22 s slower without
-running a single hk GEMM there. And let each shape decide for itself:
+the byte. Then measure the whole request again, and more than once: under
+MiniMax-H3's layer-wise offload, where each denoise step streams the DiT from
+host memory, the same arm varied by 20% between batches on a shared node --
+more than some of the effects being measured. Interleave the arms, one
+request each, and repeat. And let each shape decide for itself:
 `sglang_diffusion` times hk's GEMM against the engine's once per (M bucket,
 N, K) on the call's own operands and keeps the faster (`HK_SGLD_LOG=1`).
 
