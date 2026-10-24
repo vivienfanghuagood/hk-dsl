@@ -65,6 +65,8 @@ def test_ring_round():
     got = [M.ring_round(p, 384, 5120) for p in (6240, 15024, 27552, 52208, 101264)]
     assert got == [(2, 2), (3, 2), (5, 2), (5, 2), (6, 2)]
     assert M.ring_round(0, 384, 5120) == (2, 2)
+    got = [M.ring_round(p, 384, 5120, pairs=True) for p in (6240, 15024, 27552, 52208, 101264)]
+    assert got == [(2, 2), (4, 2), (6, 2), (6, 2), (6, 2)]
 
 
 def test_stage1_refuses_partial_grid():
@@ -153,5 +155,26 @@ def test_stage1_pairs_matches_per_step_scales(mt, pp, I):
     kw = dict(inter=I, mt=mt, lds=True, pp=pp, depth=2, exact=True, xsplit=True)
     ref = M.stage1(xq, xs, wl, wsl, tiles, **kw)
     got = M.stage1(xq, mxfp8.aiter_scales(xs), wl, wsl, tiles, pairs=True, **kw)
+    live = pairs >= 0
+    assert torch.equal(got[live], ref[live])
+
+
+@pytest.mark.parametrize("mt,pp,I", [(2, 4, 1152), (4, 2, 640), (6, 4, 512)])
+def test_stage2_pairs_matches_per_step_scales(mt, pp, I):
+    """stage2(pairs=True), K steps not a multiple of four (1152: 9) included: bit for bit the
+    per-step kernel on the same 32-row aligned rows."""
+    from hk.ops import mxfp8
+
+    torch.manual_seed(4)
+    E, D, T, topk = 6, 256, 77, 2
+    w = torch.randint(0, 256, (E, D, I // 2), dtype=torch.uint8)
+    ws = torch.randint(118, 136, (E * D, I // 32), dtype=torch.uint8)
+    hidden = torch.randn(T, I, device="cuda", dtype=torch.bfloat16)
+    ids = torch.stack([torch.randperm(E - 1)[:topk] for _ in range(T)]).cuda()
+    hq, hs, tiles, pairs = M.prepare(hidden, ids, E, align=32)
+    wl, wsl = M.aiter_layout_w2(w).cuda(), M.aiter_layout_w2_scale(ws).cuda()
+    steps = I // 128
+    ref = M.stage2(hq, hs, wl, wsl, tiles, mt=mt, pp=pp, depth=next(d for d in (2, 3, 5) if steps % d == 0))
+    got = M.stage2(hq, mxfp8.aiter_scales(hs), wl, wsl, tiles, mt=mt, pp=pp, depth=2, pairs=True)
     live = pairs >= 0
     assert torch.equal(got[live], ref[live])

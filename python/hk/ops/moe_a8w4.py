@@ -326,13 +326,15 @@ def stage1_ring_kernel(name: str, *, group_rows: int, mt: int = 4, pp: int = 4, 
 
 
 def stage2_kernel(name: str, *, group_rows: int, mt: int = 4, pp: int = 4, depth: int = 3,
-                  xcd: bool = True, warps: int = 4):
+                  xcd: bool = True, warps: int = 4, pairs: bool = False, k: int = 0):
     """Stage 2 (K1): y = h_q . w2^T per sorted (token, expert) row -- h_q the MX FP8 stage-1 output,
     w2 AITER's shuffled MXFP4 down projection (shuffle_weight(is_guinterleave=True) without gate|up,
     shuffle_scale's 32-row layout) -- unweighted, bf16, in the sorted order; reduce() sums each
     token's topk rows with their weights (deterministic, unlike AITER's atomics). The xsplit ring
     of stage1_ring_kernel: warp = 16 * pp output columns (w2 rows), the round's mt token tiles
-    through LDS, `depth` operand sets; K % (128 * depth) == 0."""
+    through LDS, `depth` operand sets; K % (128 * depth) == 0. `pairs` (depth 2, mt even): both
+    scales as 32-row two-step dwords as stage1_ring_kernel's -- xs then mxfp8.aiter_scales of
+    32-row-aligned rows -- with any number of K steps (a four-step body and a static tail)."""
     import hk  # noqa: PLC0415
 
     GR = group_rows
@@ -343,6 +345,11 @@ def stage2_kernel(name: str, *, group_rows: int, mt: int = 4, pp: int = 4, depth
     t_x1 = hk.RT(fp8e4m3, TILE, KS)
     t_c1 = hk.RT(fp32, R, TILE, "col")
     D = depth
+    if pairs and not (D == 2 and mt % 2 == 0 and k % KS == 0 and k >= 4 * KS):
+        raise ValueError("stage2_kernel(pairs=True): depth 2, an even mt and K (k=, a multiple of "
+                         "128, at least 512: the loop is laid out for it)")
+    XGR = 1 << 24
+    steps_static = k // KS
 
     def body(x: hk.Tensor[fp8e4m3], xs: hk.Tensor[i8], w: hk.Tensor[i8], ws: hk.Tensor[i8],
              tiles: hk.Tensor[i32], y: hk.Tensor[bf16]):
@@ -366,25 +373,46 @@ def stage2_kernel(name: str, *, group_rows: int, mt: int = 4, pp: int = 4, depth
         Cs = [hk.zeros(t_c1) for _ in range(mt)]
         X1 = hk.zeros(t_x1)
         W = [hk.zeros(t_w) for _ in range(D)]
-        S = [hk.load_mx_scales(ws, R, 4, row_w, 0, layout="aiter", group_rows=GR) for _ in range(D)]
-        SX = [[hk.load_mx_scales(xs, TILE, 4, 0, 0, loose=True) for _ in range(mt)] for _ in range(D)]
+        if pairs:
+            S = [hk.load_mx_scales(ws, R, 8, row_w, 0, layout="aiter", group_rows=GR)
+                 for _ in range(2)]
+            SX = [hk.load_mx_scales(xs, TILE * mt, 8, 0, 0, layout="aiter", group_rows=XGR)
+                  for _ in range(2)]
+        else:
+            S = [hk.load_mx_scales(ws, R, 4, row_w, 0, layout="aiter", group_rows=GR) for _ in range(D)]
+            SX = [[hk.load_mx_scales(xs, TILE, 4, 0, 0, loose=True) for _ in range(mt)]
+                  for _ in range(D)]
 
-        def fetch(kc, r0, slot):
+        def fetch(kc, r0, slot, sset=None):
             g.load(Xs[slot], x.at[r0, kc * KS], wait=False)
             hk.load_fp4_frags(t_w, w, row_w, kc, group_rows=GR, gate_up=False, into=W[slot])
+            if pairs:
+                if sset is not None:            # kc even: the scales of steps kc and kc + 1
+                    hk.load_mx_scales(ws, R, 8, row_w, kc * 4, layout="aiter", group_rows=GR,
+                                      into=S[sset])
+                    hk.load_mx_scales(xs, TILE * mt, 8, r0, kc * 4, layout="aiter",
+                                      group_rows=XGR, into=SX[sset])
+                return
             hk.load_mx_scales(ws, R, 4, row_w, kc * 4, layout="aiter", group_rows=GR, into=S[slot])
             for ti in range(mt):
                 hk.load_mx_scales(xs, TILE, 4, r0 + ti * TILE, kc * 4, into=SX[slot][ti], loose=True)
 
-        def step(kc, cur, r0, prefetch=True):
+        def step(kc, u, r0, prefetch=True):
+            cur = u % D
             g.wait_for(Xs[cur], exact=True)
             hk.arch.barrier()
             if prefetch:
-                fetch(kc + D - 1, r0, (cur + D - 1) % D)
+                nu = u + D - 1
+                fetch(kc + D - 1, r0, nu % D, sset=(nu // 2) % 2 if pairs and nu % 2 == 0 else None)
             for ti in range(mt):
                 Xs[cur].subtile(TILE, KS, ti, 0).load(t_x1, wait=False, into=X1)
                 hk.lds.wait_for(X1)
-                hk.mma_ABt_mx(W[cur], X1, Cs[ti], S[cur], SX[cur][ti], a_fmt="fp4", into=Cs[ti])
+                if pairs:
+                    ss, par = (u // 2) % 2, u % 2
+                    hk.mma_ABt_mx(W[cur], X1, Cs[ti], S[ss], SX[ss], a_fmt="fp4",
+                                  sa_at=(0, par), sb_at=(ti, par), into=Cs[ti])
+                else:
+                    hk.mma_ABt_mx(W[cur], X1, Cs[ti], S[cur], SX[cur][ti], a_fmt="fp4", into=Cs[ti])
             hk.arch.sched_barrier()
 
         for rnd in range(hk.cdiv(t1 - t0, mt)):
@@ -392,13 +420,24 @@ def stage2_kernel(name: str, *, group_rows: int, mt: int = 4, pp: int = 4, depth
             for c_ in Cs:
                 c_.zero_()
             for k in range(D - 1):
-                fetch(k, r0, k)
-            for kk in range(steps // D - 1):
+                fetch(k, r0, k, sset=0 if pairs and k == 0 else None)
+            if pairs:
+                # a four-step body (the scale sets' period), then the last 4 + steps % 4 steps
+                # unrolled: any step count (K 1152 is 9)
+                tail = 4 + steps_static % 4
+                for kk in range((steps_static - tail) // 4):
+                    for u in range(4):
+                        step(kk * 4 + u, u, r0)
+                base = steps_static - tail
+                for jj in range(tail):
+                    step(base + jj, jj % 4, r0, prefetch=jj < tail - 1)
+            else:
+                for kk in range(steps // D - 1):
+                    for u in range(D):
+                        step(kk * D + u, u, r0)
+                last = steps - D
                 for u in range(D):
-                    step(kk * D + u, u, r0)
-            last = steps - D
-            for u in range(D):
-                step(last + u, u, r0, prefetch=u == 0)
+                    step(last + u, u, r0, prefetch=u == 0)
             hk.arch.barrier()
             for i in range(mt):
                 if t0 + rnd * mt + i < t1:
@@ -410,15 +449,19 @@ def stage2_kernel(name: str, *, group_rows: int, mt: int = 4, pp: int = 4, depth
 
 
 @functools.lru_cache(maxsize=None)
-def _stage2(group_rows: int, mt: int, pp: int, depth: int, warps: int = 4):
-    return stage2_kernel(f"moe_a8w4_s2_gr{group_rows}_mt{mt}_pp{pp}_d{depth}_w{warps}",
-                         group_rows=group_rows, mt=mt, pp=pp, depth=depth, warps=warps)
+def _stage2(group_rows: int, mt: int, pp: int, depth: int, warps: int = 4, pairs: bool = False,
+            k: int = 0):
+    return stage2_kernel(f"moe_a8w4_s2_gr{group_rows}_mt{mt}_pp{pp}_d{depth}_w{warps}"
+                         + (f"_p_k{k}" if pairs else ""), group_rows=group_rows, mt=mt, pp=pp,
+                         depth=depth, warps=warps, pairs=pairs, k=k)
 
 
-def stage2(hq, hs, w2, w2_scale, tiles, *, mt: int = 4, pp: int = 4, depth: int = 3, warps: int = 4):
+def stage2(hq, hs, w2, w2_scale, tiles, *, mt: int = 4, pp: int = 4, depth: int = 3, warps: int = 4,
+           pairs: bool = False):
     """y [P, D] bf16 (unweighted, sorted rows) for stage 1's h quantized by mx_quant (hq fp8 [P, I],
     hs uint8 [P, I/32]). w2 / w2_scale: AITER's shuffled uint8 views [E * D, I/2] and
-    [E * D, ceil(I/256) * 8] (shuffle_scale pads K/32 to a multiple of 8)."""
+    [E * D, ceil(I/256) * 8] (shuffle_scale pads K/32 to a multiple of 8). pairs: two-step scale
+    dwords (depth 2, mt even), hs then mxfp8.aiter_scales(hs) of 32-row-aligned rows; any K."""
     import torch  # noqa: PLC0415
 
     e = tiles.numel() - 1
@@ -426,11 +469,11 @@ def stage2(hq, hs, w2, w2_scale, tiles, *, mt: int = 4, pp: int = 4, depth: int 
     if d % (TILE * pp * warps):
         raise ValueError(f"moe_a8w4.stage2: D={d} not a multiple of the {TILE * pp * warps} columns a "
                          f"workgroup writes (pp={pp})")
-    if hq.shape[1] % (128 * depth):
+    if hq.shape[1] % (128 * (1 if pairs else depth)):
         raise ValueError(f"moe_a8w4.stage2: K={hq.shape[1]} not a multiple of the {128 * depth} the "
                          f"K loop is unrolled by (depth={depth})")
     y = torch.empty((hq.shape[0], d), device=hq.device, dtype=torch.bfloat16)
-    _stage2(d, mt, pp, depth, warps)(hq, hs.view(torch.int8), w2.view(torch.int8), w2_scale.view(torch.int8),
+    _stage2(d, mt, pp, depth, warps, pairs, hq.shape[1] if pairs else 0)(hq, hs.view(torch.int8), w2.view(torch.int8), w2_scale.view(torch.int8),
                               tiles, y)
     return y
 
@@ -730,7 +773,7 @@ def units_for(tiles, mt: int):
     return torch.stack([e, first + r * mt], 1).to(torch.int32).view(1, 1, -1, 2)
 
 
-def ring_round(rows: int, n_experts: int, k: int):
+def ring_round(rows: int, n_experts: int, k: int, pairs: bool = False):
     """(mt, depth) of the xsplit ring kernel for P sorted rows over E experts (host values, no sync).
     An expert's average t tiles are cut into the fewest rounds of at most 7 tiles, as even as
     possible; a round is never under 2 tiles. Depth 2 (K % 256 == 0; deeper rings measured no
@@ -739,6 +782,9 @@ def ring_round(rows: int, n_experts: int, k: int):
     if k % 256:
         raise ValueError(f"moe_a8w4.ring_round: K={k}, a multiple of 256")
     t = rows / TILE / max(n_experts, 1)
+    if pairs:                          # even rounds of at most 6 (8 spills); K1 c16
+        r = max(1, math.ceil(t / 6))
+        return min(6, max(2, 2 * math.ceil(t / r / 2))), 2
     r = max(1, math.ceil(t / 7))
     return min(7, max(2, math.ceil(t / r))), 2
 
@@ -845,7 +891,7 @@ def stage1(xq, xs, w13, w13_scale, tiles, *, inter: int, nb: int = 4, mt: int = 
     import torch  # noqa: PLC0415
 
     if auto:
-        mt, depth = ring_round(rows or xq.shape[0], tiles.numel() - 1, xq.shape[1])
+        mt, depth = ring_round(rows or xq.shape[0], tiles.numel() - 1, xq.shape[1], pairs)
         pp = next(p for p in (4, 3, 2, 1) if inter % (TILE * p * ring_warps) == 0)
         exact, xsplit, dma, direct = True, True, False, False
     cols = 16 * nb if not (lds or depth or dma or direct) else TILE * pp * (ring_warps if depth and not (dma or direct) else 4)
