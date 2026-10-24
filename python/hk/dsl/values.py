@@ -1487,6 +1487,19 @@ def load_fp4_frags(ty, src: "Global", row0, kc0, *, group_rows: int, gate_up: bo
                  into=into, name="w4f", gate_up=int(bool(gate_up)), group_rows=group_rows)
 
 
+def load_fp4_frags_lds(ty, src: "SharedTile", row0, chunk0, *, into=None) -> "Tile":
+    """load_fp4_frags from an LDS tile of raw AITER weight bytes (fp8-typed, a row a 16-row block
+    with gate|up rows interleaved, 1 KB a 128-wide K step: the [E * N/16 * 2, K/2 * 16] view of the
+    weights, brought in by a group load). Fragment (i, s) is row row0 + i, chunk chunk0 + s."""
+    if (not isinstance(ty, RegTileType) or ty.dtype is not fp8e4m3 or ty.layout != "row"
+            or ty.rows % 16 or ty.cols % 128):
+        raise TypeError(f"load_fp4_frags_lds: an fp8 e4m3 row tile of 16x128 fragments, not {ty!r}")
+    if not isinstance(src, SharedTile) or src.ty.dtype is not fp8e4m3 or src.ty.cols % 1024:
+        raise TypeError(f"load_fp4_frags_lds: an fp8-typed LDS tile of whole 1 KB rows, not {src!r}")
+    return _make(hkd.LoadFp4FragsLdsOp, ty, (src.v, as_int(row0).v, as_int(chunk0).v),
+                 into=into, name="w4l")
+
+
 def mma_ABt_mx(a: Tile, b: Tile, acc: Tile, sa: MxScales, sb: MxScales, *, into=None,
                a_fmt: str = "fp8", b_fmt: str = "fp8") -> Tile:
     """acc + (sa . A)(sb . B)^T on gfx950's v_mfma_scale_f32_16x16x128_f8f6f4:

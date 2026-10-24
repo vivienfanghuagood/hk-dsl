@@ -253,6 +253,121 @@ def stage1_ring_kernel(name: str, *, group_rows: int, mt: int = 4, pp: int = 4, 
                      grid=lambda p: ((p.h.cols // (TILE * pp * warps)) * (p.tiles.cols - 1), 1, 1))
 
 
+def stage1_dma_kernel(name: str, *, group_rows: int, mt: int = 4, pp: int = 4, depth: int = 4,
+                      limit: float = 10.0):
+    """Stage 1, version 5 (K1 c6): the weights through LDS too. Every in-flight load of the K loop
+    is then an LDS-DMA copy -- the weights' 1 KB chunks (AITER's layout viewed [E * N/16 * 2,
+    K/2 * 16]: a workgroup's rows are contiguous) and the round's token tiles -- issued depth-1
+    128-wide steps ahead, with exact waits. Only the two scale sets are register loads, one step
+    ahead and issued before the step's copies, so the copy waits that also retire them retire
+    nothing early. Loop unrolled by `depth` (even); K % (128 * depth) == 0."""
+    import hk  # noqa: PLC0415
+
+    GR = group_rows
+    warps = 4
+    lim = float(limit)
+    KS = 128
+    R = 32 * pp
+    RW = 2 * pp * warps                                     # weight rows (16-row block halves) a workgroup
+    st_x = hk.ST(fp8e4m3, TILE * mt, KS)
+    st_w = hk.ST(fp8e4m3, RW, 1024)
+    t_w = hk.RT(fp8e4m3, R, KS)
+    t_x = hk.RT(fp8e4m3, TILE * mt, KS)
+    t_c = hk.RT(fp32, R, TILE * mt, "col")
+    D = depth
+    assert D % 2 == 0 and pp >= 2, "an even depth; pp >= 2 (16-row LDS weight tiles)"
+
+    def body(x: hk.Tensor[fp8e4m3], xs: hk.Tensor[i8], wv: hk.Tensor[fp8e4m3], ws: hk.Tensor[i8],
+             tiles: hk.Tensor[i32], h: hk.Tensor[bf16]):
+        g = hk.group(warps)
+        Xs = hk.lds.alloc(st_x, count=D, name="Xs")
+        Ws = hk.lds.alloc(st_w, count=D, name="Ws", shape="16x128")
+        nblk = h.cols // (TILE * pp * warps)
+        wg = hk.arch.block_idx.x
+        total = (tiles.cols - 1) * nblk
+        moved = (wg % NUM_XCDS) * (total // NUM_XCDS) + wg // NUM_XCDS
+        whole = 1 - hk.min(total % NUM_XCDS, 1)
+        wg = whole * moved + (1 - whole) * wg
+        blk = wg % nblk
+        e = wg // nblk
+        t0 = tiles[hk.elem_coord(0, 0, 0, e)].load_scalar()
+        t1 = tiles[hk.elem_coord(0, 0, 0, e + 1)].load_scalar()
+        wid = hk.arch.warp_id()
+        col0 = (blk * warps + wid) * pp * TILE
+        row_w = e * GR + col0                              # the warp's first gate row (scales)
+        wrow0 = e * (GR // TILE) + blk * RW                # the workgroup's first weight-view row
+        steps = x.cols // KS
+        C = hk.zeros(t_c)
+        X = hk.zeros(t_x)
+        W = hk.zeros(t_w)
+        S = [hk.load_mx_scales(ws, R, 4, row_w, 0, layout="aiter_gate_up", group_rows=GR)
+             for _ in range(2)]
+        SX = [hk.load_mx_scales(xs, TILE * mt, 4, 0, 0) for _ in range(2)]
+
+        def scales(kc, r0, q):
+            hk.load_mx_scales(ws, R, 4, row_w, kc * 4, layout="aiter_gate_up", group_rows=GR,
+                              into=S[q])
+            hk.load_mx_scales(xs, TILE * mt, 4, r0, kc * 4, into=SX[q])
+
+        def copies(kc, r0, slot):
+            g.load(Ws[slot], wv.at[wrow0, kc * 1024], wait=False)
+            g.load(Xs[slot], x.at[r0, kc * KS], wait=False)
+
+        def step(kc, u, r0, more_scales=True, more_copies=True):
+            g.wait_for(Ws[u], Xs[u])
+            hk.arch.barrier()
+            if more_scales:
+                scales(kc + 1, r0, (u + 1) % 2)
+            if more_copies:
+                copies(kc + D - 1, r0, (u + D - 1) % D)
+            hk.load_fp4_frags_lds(t_w, Ws[u], wid * 2 * pp, 0, into=W)
+            Xs[u].load(t_x, wait=False, into=X)
+            hk.lds.wait_for(X)
+            hk.mma_ABt_mx(W, X, C, S[u % 2], SX[u % 2], a_fmt="fp4", into=C)
+            hk.arch.sched_barrier()
+
+        for rnd in range(hk.cdiv(t1 - t0, mt)):
+            r0 = (t0 + rnd * mt) * TILE
+            C.zero_()
+            scales(0, r0, 0)
+            for k in range(D - 1):
+                copies(k, r0, k)
+            for kk in range(steps // D - 1):
+                for u in range(D):
+                    step(kk * D + u, u, r0)
+            last = steps - D
+            for u in range(D):
+                step(last + u, u, r0, more_scales=u < D - 1, more_copies=u == 0)
+            hk.arch.barrier()
+            for j in range(pp):
+                gt = C.subtile(TILE, 2 * j).minimum(lim)
+                up = C.subtile(TILE, 2 * j + 1).maximum(-lim).minimum(lim)
+                hv = hk.transpose(gt.silu() * up)
+                for i in range(mt):
+                    if t0 + rnd * mt + i < t1:
+                        h[hk.elem_coord(0, 0, r0 + i * TILE, col0 + j * TILE)].store(hv.subtile(TILE, i))
+
+    body.__name__ = name
+    return hk.kernel(body, arch="gfx950", warps=warps, name=name, max_vgprs=512,
+                     grid=lambda p: ((p.h.cols // (TILE * pp * warps)) * (p.tiles.cols - 1), 1, 1))
+
+
+@functools.lru_cache(maxsize=None)
+def _stage1_dma(group_rows: int, mt: int, pp: int, depth: int, limit: float):
+    return stage1_dma_kernel(f"moe_a8w4_s1d_gr{group_rows}_mt{mt}_pp{pp}_d{depth}",
+                             group_rows=group_rows, mt=mt, pp=pp, depth=depth, limit=limit)
+
+
+def weight_view(w13, group_rows: int):
+    """AITER's shuffled w13 bytes as stage1_dma_kernel reads them: fp8-typed [E * GR/16, K/2 * 16],
+    a row a (expert, 16-row block, gate|up) and 1 KB a 128-wide K step (a view, no copy)."""
+    import torch  # noqa: PLC0415
+
+    b = w13.view(torch.uint8)
+    rows = b.shape[0] // 16
+    return b.reshape(rows, -1).view(torch.float8_e4m3fn)
+
+
 @functools.lru_cache(maxsize=None)
 def _stage1_ring(group_rows: int, mt: int, pp: int, depth: int, limit: float):
     return stage1_ring_kernel(f"moe_a8w4_s1r_gr{group_rows}_mt{mt}_pp{pp}_d{depth}",
@@ -326,12 +441,17 @@ def _stage1_lds(group_rows: int, mt: int, limit: float, pp: int, xcd: bool = Tru
 
 
 def stage1(xq, xs, w13, w13_scale, tiles, *, inter: int, nb: int = 4, mt: int = 2, warps: int = 4,
-           limit: float = 10.0, lds: bool = False, pp: int = 2, xcd: bool = True, depth: int = 0):
+           limit: float = 10.0, lds: bool = False, pp: int = 2, xcd: bool = True, depth: int = 0,
+           dma: bool = False):
     """h [P, inter] bf16 for prepare()'s sorted rows. w13 / w13_scale: AITER's shuffled uint8 views
     [E * 2 * inter, K/2] and [E * 2 * inter, K/32]."""
     import torch  # noqa: PLC0415
 
     h = torch.empty((xq.shape[0], inter), device=xq.device, dtype=torch.bfloat16)
+    if dma:
+        _stage1_dma(2 * inter, mt, pp, depth or 4, float(limit))(
+            xq, xs.view(torch.int8), weight_view(w13, 2 * inter), w13_scale.view(torch.int8), tiles, h)
+        return h
     if depth:
         k = _stage1_ring(2 * inter, mt, pp, depth, float(limit))
     else:

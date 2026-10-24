@@ -913,6 +913,26 @@ def HK_LoadFp4FragsOp : HK_Op<"load_fp4_frags"> {
   let hasVerifier = 1;
 }
 
+def HK_LoadFp4FragsLdsOp : HK_Op<"load_fp4_frags_lds"> {
+  let summary = "FP4 operand fragments from an LDS tile of AITER-shuffled weight bytes";
+  let description = [{
+    The LDS side of load_fp4_frags: src is an fp8-typed tile of raw weight bytes, a row a
+    (expert, 16-row block, gate|up) and 1 KB a 128-wide K step (the [E * N/16 * 2, K/2 * 16]
+    view of AITER's layout, copied in by a group load). Fragment (i, s) of the container gets row
+    row0 + i, 1 KB chunk chunk0 + s, 16 bytes a lane at lane * 16 -- with gate|up rows
+    interleaved, base tiles alternate gate and up as load_fp4_frags(gate_up) does. Plain loads:
+    the compiler waits for them.
+  }];
+  let arguments = (ins Optional<HK_RegTileType>:$dst, HK_SharedTileType:$src, I32:$row0,
+                       I32:$chunk0);
+  let results = (outs Optional<HK_RegTileType>:$result);
+  let assemblyFormat = [{
+    $src `[` $row0 `,` $chunk0 `]` (`into` $dst^)? attr-dict `:` qualified(type($src))
+    (`into` qualified(type($dst))^)? (`->` qualified(type($result))^)?
+  }];
+  let hasVerifier = 1;
+}
+
 def HK_MmaABOp : HK_MmaOp<"mma_AB">;
 def HK_MmaABtOp : HK_MmaOp<"mma_ABt">;
 def HK_MmaAtBOp : HK_MmaOp<"mma_AtB">;

@@ -1437,6 +1437,34 @@ __device__ inline static void load_fp4_frags(RT &dst, const GL &src, int row0, i
         }
 }
 
+/**
+ * load_fp4_frags from LDS: src an fp8-typed shared tile of raw AITER weight bytes, a row a 16-row
+ * block (gate|up interleaved) and 1 KB a 128-wide K step. Fragment (i, s) <- row row0 + i, chunk
+ * chunk0 + s, lane * 16: a 16-byte run, which the tile's swizzle keeps whole, read at the place
+ * the swizzle (an involution) puts logical (row, col). Plain loads; the compiler waits for them.
+ */
+template<ducks::rt::row_layout RT, ducks::st::all ST>
+__device__ inline static void load_fp4_frags_lds(RT &dst, const ST &src, int row0, int chunk0) {
+    static_assert(std::is_same_v<typename RT::T, fp8e4m3> && RT::base_tile_rows == 16 &&
+                  RT::base_tile_cols == 128, "fp8 e4m3 16x128 fragments (the FP4 container)");
+    static_assert(sizeof(typename ST::dtype) == 1 && ST::underlying_subtile_bytes_per_thread == 16,
+                  "a byte tile whose swizzle keeps 16-byte runs");
+    const int lane = laneid();
+    const char *base = reinterpret_cast<const char *>(&src.data[0]);
+    #pragma unroll
+    for (int i = 0; i < RT::height; i++)
+        #pragma unroll
+        for (int s = 0; s < RT::width; s++) {
+            const int r = row0 + i, c = (chunk0 + s) * 1024 + lane * 16;
+            const int sub = (r / ST::underlying_subtile_rows) * ST::underlying_subtiles_per_row +
+                            c / ST::underlying_subtile_cols;
+            const uint32_t off = uint32_t(sub) * ST::underlying_subtile_bytes +
+                                 ST::swizzle({r % ST::underlying_subtile_rows, c % ST::underlying_subtile_cols});
+            const __uint128_t v = *reinterpret_cast<const __uint128_t *>(base + off);
+            __builtin_memcpy(&dst.tiles[i][s].data[0], &v, 16);
+        }
+}
+
 namespace detail {
 template<int F>
 __device__ inline auto hk_mx_operand(const uint32_t (&r)[8]) {

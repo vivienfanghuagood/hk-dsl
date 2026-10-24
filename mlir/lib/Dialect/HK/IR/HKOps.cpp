@@ -265,6 +265,19 @@ LogicalResult LoadMxScalesOp::verify() {
   return success();
 }
 
+LogicalResult LoadFp4FragsLdsOp::verify() {
+  if (failed(verifyDest(*this, getDst(), getResult())))
+    return failure();
+  auto t = cast<RegTileType>(destType(getDst(), getResult()));
+  if (!isa<Float8E4M3FNType>(t.getElementType()) || t.getColLayout() || t.isStrip() ||
+      t.getRows() % 16 || t.getCols() % 128)
+    return emitOpError("fills an fp8 e4m3 row tile of 16x128 fragments (the FP4 container)");
+  auto st = getSrc().getType();
+  if (!isa<Float8E4M3FNType>(st.getElementType()) || st.getCols() % 1024)
+    return emitOpError("reads an fp8-typed LDS tile of whole 1 KB chunks a row");
+  return success();
+}
+
 LogicalResult LoadFp4FragsOp::verify() {
   if (failed(verifyDest(*this, getDst(), getResult())))
     return failure();

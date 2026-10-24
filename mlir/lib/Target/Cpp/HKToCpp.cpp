@@ -1135,6 +1135,11 @@ private:
             call("load_mx_scales", d,
                  {name(o.getSrc()), name(o.getRow0()), name(o.getKb0())});
         })
+        .Case([&](LoadFp4FragsLdsOp o) {
+          Value d = dest(o.getDst(), o.getResult());
+          w("kittens::load_fp4_frags_lds(" + name(d) + ", " + name(o.getSrc()) + ", " +
+            name(o.getRow0()) + ", " + name(o.getChunk0()) + ");");
+        })
         .Case([&](LoadFp4FragsOp o) {
           Value d = dest(o.getDst(), o.getResult());
           w("kittens::load_fp4_frags<" + std::to_string(o.getGateUp()) + ", " +

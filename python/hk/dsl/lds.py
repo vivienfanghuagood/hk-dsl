@@ -15,7 +15,7 @@ __all__ = ["alloc", "alloc_vec", "shared_vec", "reserve", "wait_for", "lds_loads
 
 #: Layouts an allocation may name (gfx950): include/cdna4's st_shapes that
 #: also serve a read of the fragment that would otherwise pick another.
-SHAPES = ("16x64", "32x32")
+SHAPES = ("16x64", "32x32", "16x128")
 
 
 def alloc(tile: SharedTileType, name: str = "smem",
@@ -30,7 +30,8 @@ def alloc(tile: SharedTileType, name: str = "smem",
     into it reads each row in 128- or 64-byte runs instead of 64 or 32 (the
     paged decode's copies: 6.15 to 6.9 TB/s with `nontemporal`), and its
     reads may conflict on banks more; a read of another fragment is
-    refused."""
+    refused. "16x128" (byte tiles): what an fp8 16x128 operand read would pick,
+    named for an allocation only `load_fp4_frags_lds` reads."""
     if count is not None:
         tile = SharedTileType(tile.dtype, tile.rows, tile.cols, count)
     t = B.current()
