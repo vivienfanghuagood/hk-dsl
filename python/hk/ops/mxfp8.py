@@ -254,18 +254,15 @@ def mx4w_kernel(name: str = "mxfp8_4w", *, block_m: int = 256, block_n: int = 25
             if setprio:
                 hk.arch.setprio(0)
 
-        # A K-tile's copy is the last vector load before the wait for it: the
-        # scales go out before it. Loads into LDS and into registers do not
-        # retire in issue order on gfx950 -- a vmcnt that was to leave only
-        # the scales issued after a copy in flight let some of the copy's
-        # loads through instead (results that varied run to run).
-        if stages != 2:
-            raise ValueError("stages=2: the prologue mirrors the loop's vm queue for two")
-        # (The last set is made here too, for the loop to load into; its
-        # load is repeated by the first K-tile.)
+        # Scales go out before a K-tile's copy (hk-lds-pipeline never counts
+        # loads into registers as the ones a vmcnt leaves in flight: they
+        # retire out of order with copies into LDS on gfx950). The last set
+        # is made here too, for the loop to load into; its load is repeated
+        # by the first K-tile.
         for q in range(nsets):
             load_scales(q, q)
-        copy(0, 0, pad=False)
+        for t in range(stages - 1):
+            copy(t, t, pad=t > 0)
 
         def k_tile(t, j, copies):
             u, q = j % stages, j % nsets

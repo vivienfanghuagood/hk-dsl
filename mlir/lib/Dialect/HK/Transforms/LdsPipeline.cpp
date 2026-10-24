@@ -567,9 +567,15 @@ struct Walker {
       }
       cut = std::max(cut, last);
     }
+    // Only copies into LDS issued after the cut may stay in flight: loads
+    // into registers (E8M0 scales, rootless entries) retire out of order with
+    // them on gfx950 -- a vmcnt that counted scales issued after a copy as
+    // the ones left in flight let the copy's own last loads through instead,
+    // and a K-loop read them before they landed (results varying run to run).
     int64_t n = 0;
     for (size_t j = cut + 1; j < st.dma.size(); ++j)
-      n += st.dma[j].count;
+      if (st.dma[j].root.alloc)
+        n += st.dma[j].count;
     for (int j = 0; j <= cut; ++j)
       State::stamp(st.landed, st.dma[j].root, st.now);
     st.dma.erase(st.dma.begin(), st.dma.begin() + (cut + 1));
