@@ -25,12 +25,13 @@ G=tests/hk/gpu
 # The groups, longest first (measured on gfx1100 with a cold compile cache): the dispatcher
 # below starts them in this order as slots free up.
 labels=(); files=()
-group() { labels+=("$1"); shift; files+=("$*"); }
+group() { labels+=("$1"); shift; files+=("$(IFS='|'; echo "$*")"); }  # pytest args, |-joined
 group gemm   $G/test_gemm.py $G/test_autotune.py
 group attn   $G/test_attn.py $G/test_sdpa.py
 group torch  $G/test_torch_op.py $G/test_engine.py $G/test_vllm_gemm.py $G/test_flydsl_gemm.py
 group decode $G/test_decode_gemm.py $G/test_paged.py $G/test_load_scalar.py
-group phase2 $G/test_phase2.py $G/test_target_rmsnorm.py
+group phase2 $G/test_phase2.py $G/test_target_rmsnorm.py -k norm      # the cold critical path: halved
+group phase2b $G/test_phase2.py -k "not norm"
 group elem   $G/test_elementwise.py $G/test_bounded.py $G/test_strided.py $G/test_while.py $G/test_indexed.py
 rest=$(ls $G/test_*.py | grep -v -E "test_(gemm|autotune|attn|sdpa|decode_gemm|paged|load_scalar|phase2|target_rmsnorm|elementwise|bounded|strided|while|indexed|torch_op|engine|vllm_gemm|flydsl_gemm|templates_[a-z]+)\.py")
 # Every kernel a test builds is a pybind module of its own, each takes one of a process's 1024
@@ -69,8 +70,8 @@ for ((i = 0; i < ${#labels[@]}; i++)); do
         [ $slot -ge 0 ] && break
         wait -n 2>/dev/null || sleep 1
     done
-    # shellcheck disable=SC2086
-    run "$slot" "${labels[$i]}" ${files[$i]} &
+    IFS='|' read -ra args <<< "${files[$i]}"
+    run "$slot" "${labels[$i]}" "${args[@]}" &
     pid[$slot]=$!
 done
 wait
