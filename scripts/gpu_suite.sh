@@ -36,9 +36,10 @@ group elem   $G/test_elementwise.py $G/test_bounded.py $G/test_strided.py $G/tes
 rest=$(ls $G/test_*.py | grep -v -E "test_(gemm|autotune|attn|sdpa|decode_gemm|paged|load_scalar|phase2|target_rmsnorm|elementwise|bounded|strided|while|indexed|torch_op|engine|vllm_gemm|flydsl_gemm|templates_[a-z]+)\.py")
 # Every kernel a test builds is a pybind module of its own, each takes one of a process's 1024
 # pthread TSS keys, and one process ran out ("could not initialize the TSS key") once gfx950's
-# strips had preloaded twins: the rest in one process per GPU-slot-sized share, at least two.
+# strips had preloaded twins: the rest in contiguous shares, two on one GPU and two a GPU on
+# several (four shares on four GPUs left one of 12 min, the cold run's critical path).
 set -- $rest
-nrest=$(( ${#gpus[@]} > 2 ? ${#gpus[@]} : 2 ))
+nrest=$(( ${#gpus[@]} > 1 ? 2 * ${#gpus[@]} : 2 ))
 chunk=$(( ($# + nrest - 1) / nrest ))      # contiguous shares: two of them are the old halves
 for ((i = 0; i < nrest; i++)); do
     share=("${@:$((i * chunk + 1)):$chunk}")
