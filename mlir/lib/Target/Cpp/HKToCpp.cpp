@@ -1126,7 +1126,7 @@ private:
             name(o.getDiv()) + ");");
         })
         .Case([&](LoadMxScalesOp o) {
-          Value d = dest(Value(), o.getResult());
+          Value d = dest(o.getDst(), o.getResult());
           call("load_mx_scales", d,
                {name(o.getSrc()), name(o.getRow0()), name(o.getKb0())});
         })

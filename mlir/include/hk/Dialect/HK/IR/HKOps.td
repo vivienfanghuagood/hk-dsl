@@ -842,10 +842,12 @@ def HK_LoadMxScalesOp : HK_Op<"load_mx_scales"> {
     per-lane registers `mma_ABt_mx` reads: base tile i's row (lane % 16) and
     block (lane / 16) of each 128-wide K step.
   }];
-  let arguments = (ins HK_GlobalType:$src, I32:$row0, I32:$kb0);
-  let results = (outs HK_MxScalesType:$result);
+  let arguments = (ins Optional<HK_MxScalesType>:$dst, HK_GlobalType:$src, I32:$row0,
+                       I32:$kb0);
+  let results = (outs Optional<HK_MxScalesType>:$result);
   let assemblyFormat = [{
-    $src `[` $row0 `,` $kb0 `]` attr-dict `:` qualified(type($src)) `->` qualified(type($result))
+    $src `[` $row0 `,` $kb0 `]` (`into` $dst^)? attr-dict `:` qualified(type($src))
+    (`into` qualified(type($dst))^)? (`->` qualified(type($result))^)?
   }];
   let hasVerifier = 1;
 }

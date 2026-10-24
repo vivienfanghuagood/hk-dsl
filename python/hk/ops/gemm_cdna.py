@@ -161,17 +161,28 @@ def gemm_kernel(name: str, *, block_m: int = 256, block_n: int = 256,
         def read_b(u, h, s):
             Bs[2 * u + h].subtile(reg_n, k_step, wc, 0).load(t_b, wait=False, into=B[s])
 
-        # mx: the scales of the K-tile being multiplied, (A halves, B halves).
+        # mx: two sets of scales, (A halves, B halves): set u holds the
+        # K-tile buffer u is multiplying. Each set is reloaded, for the
+        # K-tile two ahead, as soon as its last MFMA has issued -- a whole
+        # K-tile of MFMAs before it is read.
+        S = [None, None]
         cur = {}
 
-        def scales(t):
+        def load_scales(u, t):
+            if mxs is None:
+                return
+            sa, sb = mxs
+            kb = (k0 + t * k_step) // 32
+            old = S[u]
+            S[u] = (
+                [hk.load_mx_scales(sa, reg_m, k_step // 32, m0 + i * half_m + wr * reg_m,
+                                   kb, into=old[0][i] if old else None) for i in range(2)],
+                [hk.load_mx_scales(sb, reg_n, k_step // 32, n0 + j * half_n + wc * reg_n,
+                                   kb, into=old[1][j] if old else None) for j in range(2)])
+
+        def scales(u):
             if mxs is not None:
-                sa, sb = mxs
-                kb = (k0 + t * k_step) // 32
-                cur["a"] = [hk.load_mx_scales(sa, reg_m, k_step // 32,
-                                              m0 + i * half_m + wr * reg_m, kb) for i in range(2)]
-                cur["b"] = [hk.load_mx_scales(sb, reg_n, k_step // 32,
-                                              n0 + j * half_n + wc * reg_n, kb) for j in range(2)]
+                cur["a"], cur["b"] = S[u]
 
         def mma(i, j):
             if mxs is not None:
@@ -199,6 +210,8 @@ def gemm_kernel(name: str, *, block_m: int = 256, block_n: int = 256,
         copy_a(0, 0, 0)
         copy_b(0, 0, 1)
         copy_a(0, 0, 1)
+        load_scales(0, 0)
+        load_scales(1, 1)
         if init is not None:
             # The accumulators start as C's tile of an operand (an epilogue's
             # init_from), its loads in flight with the first tiles' copies.
@@ -222,7 +235,7 @@ def gemm_kernel(name: str, *, block_m: int = 256, block_n: int = 256,
 
             for t in range(0, n_tiles - 2, 2):
                 # K-tile t, buffer 0.
-                scales(t)
+                scales(0)
                 read_b(0, 0, 0)
                 read_a(0, 0)
                 copy_a(t + 1, 1, 1)
@@ -251,9 +264,10 @@ def gemm_kernel(name: str, *, block_m: int = 256, block_n: int = 256,
                 g.wait_for(As[3])
                 hk.arch.barrier()
                 math(1, 1)
+                load_scales(0, t + 2)
 
                 # K-tile t + 1, buffer 1.
-                scales(t + 1)
+                scales(1)
                 if late_b:
                     read_b(1, 0, 0)
                 read_a(1, 0)
@@ -284,10 +298,11 @@ def gemm_kernel(name: str, *, block_m: int = 256, block_n: int = 256,
                 g.wait_for(As[1] if hipkittens_waits or late_b else Bs[2])
                 hk.arch.barrier()
                 math(1, 1)
+                load_scales(1, t + 3)
 
             # The last two K-tiles: nothing left to copy but A's second half.
             t = n_tiles - 2
-            scales(t)
+            scales(0)
             read_b(0, 0, 0)
             read_a(0, 0)
             copy_a(t + 1, 1, 1, pad=True)
@@ -312,7 +327,7 @@ def gemm_kernel(name: str, *, block_m: int = 256, block_n: int = 256,
                 hk.arch.setprio(0)
             hk.arch.barrier()
 
-            scales(t + 1)
+            scales(1)
             read_b(1, 0, 0)
             read_a(1, 0)
             g.wait_for(As[3])

@@ -1402,7 +1402,8 @@ class MxScales(Value):
     __slots__ = ()
 
 
-def load_mx_scales(src: "Global", rows: int, kblocks: int, row0, kb0) -> MxScales:
+def load_mx_scales(src: "Global", rows: int, kblocks: int, row0, kb0, *,
+                   into: "MxScales" = None) -> MxScales:
     """Rows row0.. and 32-wide blocks kb0.. of an E8M0 scale tensor (uint8, one
     byte a row and block: [R, K/32], the OCP MX layout) for an fp8 operand
     tile of `rows` rows and `kblocks * 32` columns. gfx950 only."""
@@ -1415,6 +1416,12 @@ def load_mx_scales(src: "Global", rows: int, kblocks: int, row0, kb0) -> MxScale
         raise TypeError(f"load_mx_scales: block-scaled MFMA is gfx950's; {_t().arch} has none")
     ty = MxScalesType(rows, kblocks)
     t = _t()
+    if into is not None:
+        if not isinstance(into, MxScales) or into.ty != ty:
+            raise TypeError(f"load_mx_scales: into is {into!r}, the result is {ty}")
+        hkd.LoadMxScalesOp(None, src.v, as_int(row0).v, as_int(kb0).v, dst=into.v,
+                           loc=t.loc("mxs"))
+        return into
     op = hkd.LoadMxScalesOp(mlir_type(ty), src.v, as_int(row0).v, as_int(kb0).v,
                             loc=t.loc("mxs"))
     return MxScales(op.result, ty)

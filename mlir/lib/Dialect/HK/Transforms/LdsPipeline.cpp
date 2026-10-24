@@ -682,6 +682,16 @@ struct Walker {
         st.now.region = nullptr;
         continue;
       }
+      if (auto m = dyn_cast<LoadMxScalesOp>(op)) {
+        // Byte loads of E8M0 scales: on vmcnt with the copies, one per 16-row
+        // base tile and 128-wide K step. They land in registers the compiler
+        // waits for itself; here they only count, so that a wait for a copy
+        // issued before them keeps them in flight instead of retiring them.
+        auto t = m.getResult() ? m.getResult().getType() : m.getDst().getType();
+        auto mt = cast<MxScalesType>(t);
+        st.dma.push_back({Root{}, int64_t(mt.getRows() / 16) * (mt.getKblocks() / 4), op});
+        continue;
+      }
       if (auto g = dyn_cast<GroupLoadOp>(op)) {
         groupLoad(g, st);
         continue;
@@ -805,6 +815,8 @@ struct LdsPipelinePass : public mlir::hk::impl::HKLdsPipelineBase<LdsPipelinePas
                        "is missing.";
       return signalPassFailure();
     }
+    // Scale loads (no buffer) land in registers the compiler waits for.
+    llvm::erase_if(fin.dma, [](const Dma &d) { return !d.root.alloc; });
     if (!fin.dma.empty()) {
       f.emitError() << "the kernel ends with a copy into "
                     << Walker::bufName(fin.dma.front().root)

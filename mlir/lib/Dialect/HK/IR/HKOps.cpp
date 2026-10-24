@@ -239,6 +239,8 @@ LogicalResult LoadW4Op::verify() {
 }
 
 LogicalResult LoadMxScalesOp::verify() {
+  if (failed(verifyDest(*this, getDst(), getResult())))
+    return failure();
   auto et = getSrc().getType().getElementType();
   if (!et.isInteger(8))
     return emitOpError("reads E8M0 scales from a uint8 (i8) global, one byte a "
