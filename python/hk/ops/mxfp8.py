@@ -103,6 +103,8 @@ def gemm_pp(a, b, sa, sb, out=None, *, block_n: int = 256, **sched):
         out = torch.empty((m, n), device=a.device, dtype=torch.bfloat16)
     if sched.get("mx_scales") == "direct":
         kern(a, b, sa, sb.view(torch.int8), out)
+    elif sched.get("mx_scales") == "direct32" and sa.dtype == torch.int32:
+        raise ValueError("gemm_pp(mx_scales='direct32'): sa in aiter_scales' layout (uint8)")
     else:
         kern(a, b, sa.view(torch.int8), sb.view(torch.int8), out)
     return out
@@ -110,8 +112,10 @@ def gemm_pp(a, b, sa, sb, out=None, *, block_n: int = 256, **sched):
 
 def gemm_8w(a, b, sa_packed, sb_aiter, out=None, *, block_n: int = 256, **sched):
     """gemm_pp with scales that need no VALU (gemm_cdna mx_scales="direct"): eight warps,
-    HipKittens' pingpong; sa_packed = pack_scales(sa), sb_aiter = aiter_scales(sb)."""
-    return gemm_pp(a, b, sa_packed, sb_aiter, out, block_n=block_n, mx_scales="direct", **sched)
+    HipKittens' pingpong; sa_packed = pack_scales(sa), sb_aiter = aiter_scales(sb). With
+    block_m=128 sa_packed is aiter_scales(sa) instead (mx_scales="direct32")."""
+    mode = "direct32" if sched.get("block_m", 256) == 128 else "direct"
+    return gemm_pp(a, b, sa_packed, sb_aiter, out, block_n=block_n, mx_scales=mode, **sched)
 
 
 def aiter_scales(s):

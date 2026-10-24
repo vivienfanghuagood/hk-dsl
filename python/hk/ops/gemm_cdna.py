@@ -94,7 +94,8 @@ def gemm_kernel(name: str, *, block_m: int = 256, block_n: int = 256,
     (hk.ops.mxfp8.aiter_scales, uint8: a warp's 32 B rows are one 16-bit load a
     lane and K-tile); both land as the MFMA reads them, no VALU between load
     and MFMA (the "ocp" byte scales are inserted into dwords, which waits for
-    each load as soon as it is issued). Needs warps_m x warps_n = 2 x 4.
+    each load as soon as it is issued). `mx_scales="direct32"`: both in AITER's
+    32-row layout (sa uint8 too), for warp tiles of 32 A rows (128-row blocks).
 
     `hipkittens_waits` puts HipKittens' own vmcnts back (all but three copies
     after the prologue and at the end of each iteration). hk-lds-pipeline
@@ -112,10 +113,11 @@ def gemm_kernel(name: str, *, block_m: int = 256, block_n: int = 256,
                          f"does not give whole 16-row accumulators")
     if k_step % 32:
         raise ValueError(f"k_step={k_step}: the MFMA's operand is 32 deep")
-    if mx_scales not in ("ocp", "direct"):
-        raise ValueError(f"mx_scales={mx_scales!r}: 'ocp' or 'direct'")
-    if mx and mx_scales == "direct" and (reg_m % 64 or reg_n % 32):
-        raise ValueError(f"mx_scales='direct': warp tiles of 64-row A and 32-row B multiples; "
+    if mx_scales not in ("ocp", "direct", "direct32"):
+        raise ValueError(f"mx_scales={mx_scales!r}: 'ocp', 'direct' or 'direct32'")
+    if mx and mx_scales != "ocp" and (reg_m % (64 if mx_scales == "direct" else 32) or reg_n % 32):
+        raise ValueError(f"mx_scales={mx_scales!r}: warp tiles of "
+                         f"{64 if mx_scales == 'direct' else 32}-row A and 32-row B multiples; "
                          f"got {reg_m} x {reg_n}")
     if mx and (k_step != 128 or splits != 1 or stream_k or transposed_c or epilogue is not None):
         raise ValueError("mx: k_step 128 (the scaled MFMA's K), no splits, stream-K, "
@@ -186,10 +188,11 @@ def gemm_kernel(name: str, *, block_m: int = 256, block_n: int = 256,
             sa, sb = mxs
             kb = (k0 + t * k_step) // 32
             old = S[u]
-            bkw = dict(layout="aiter", group_rows=DIRECT_GR) if mx_scales == "direct" else {}
+            bkw = dict(layout="aiter", group_rows=DIRECT_GR) if mx_scales != "ocp" else {}
+            akw = bkw if mx_scales == "direct32" else {}
             S[u] = (
                 [hk.load_mx_scales(sa, reg_m, k_step // 32, m0 + i * half_m + wr * reg_m,
-                                   kb, into=old[0][i] if old else None) for i in range(2)],
+                                   kb, into=old[0][i] if old else None, **akw) for i in range(2)],
                 [hk.load_mx_scales(sb, reg_n, k_step // 32, n0 + j * half_n + wc * reg_n,
                                    kb, into=old[1][j] if old else None, **bkw) for j in range(2)])
 
@@ -560,7 +563,7 @@ def gemm_kernel(name: str, *, block_m: int = 256, block_n: int = 256,
         gemm(a, b, WGM, 0, a.cols // k_step, out, None, (sa, sb))
 
     if mx:
-        fn = body_mxd if mx_scales == "direct" else body_mx
+        fn = {"direct": body_mxd, "direct32": body_mx}.get(mx_scales, body_mx)
     elif stream_k:
         if splits != 1:
             raise ValueError("stream_k cuts K itself; splits must be 1")

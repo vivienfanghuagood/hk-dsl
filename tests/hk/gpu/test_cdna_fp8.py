@@ -110,3 +110,20 @@ def test_the_mx_pingpong_direct_scales_match_the_ocp_ones(m, n, k):
     bf = b.float() * torch.pow(2.0, sb.float() - 127).repeat_interleave(32, dim=1)
     full = af @ bf.T
     assert ((out.float() - full).abs().max() / full.abs().max()).item() < 5e-3
+
+
+@pytest.mark.parametrize("m,n,k", [(300, 512, 1152), (128, 256, 1280)])
+def test_the_mx_pingpong_128_row_blocks_match_the_four_warp_kernel(m, n, k):
+    """gemm_8w(block_m=128): both operands' scales in AITER's 32-row layout ("direct32")."""
+    from hk.ops import mxfp8
+
+    g = torch.Generator(device="cuda").manual_seed(m + n + k + 1)
+    a = torch.randn(m, k, device="cuda", generator=g).to(torch.float8_e4m3fn)
+    b = torch.randn(n, k, device="cuda", generator=g).to(torch.float8_e4m3fn)
+    sa = torch.randint(118, 137, (m, k // 32), device="cuda", dtype=torch.uint8, generator=g)
+    sb = torch.randint(118, 137, (n, k // 32), device="cuda", dtype=torch.uint8, generator=g)
+    ref = mxfp8.gemm_4w(a, b, mxfp8.pack_scales(sa), mxfp8.pack_scales(sb), rolled=True)
+    pad = -m % 32
+    sa32 = torch.cat([sa, sa.new_full((pad, k // 32), 127)]) if pad else sa
+    out = mxfp8.gemm_8w(a, b, mxfp8.aiter_scales(sa32), mxfp8.aiter_scales(sb), block_m=128)
+    assert torch.equal(out, ref)
