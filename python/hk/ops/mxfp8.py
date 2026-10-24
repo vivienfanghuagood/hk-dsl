@@ -481,6 +481,13 @@ def mx4p_kernel(name: str = "mxfp8_4p", *, block_m: int = 256, block_n: int = 25
         # inside the K-tile loop made the compiler permute the accumulators every
         # K-tile); the next block's scales and first copies go out before this
         # block's store, so the store and the refill overlap.
+        # The block is stored before the next one's scales and first copies go
+        # out: issued under the last MFMAs (refill first) the scale loads landed
+        # in VGPRs those still-queued scaled MFMAs had yet to read -- a 32-column
+        # strip a block came out wrong (NaN), and nothing in the compiler waits
+        # for it. Storing first reads every accumulator, which waits for the
+        # MFMAs. (Moving the loads to the other scale set did not help: the
+        # register allocator gives both sets the same VGPRs across the copy.)
         m0, n0 = origin(0)
         prologue(m0, n0)
         for bi in range(0, mine):
@@ -499,8 +506,8 @@ def mx4p_kernel(name: str = "mxfp8_4p", *, block_m: int = 256, block_n: int = 25
             # The last block refills with itself (clamped): wasted copies, no branch.
             nm0, nn0 = origin(hk.min(bi + 1, mine - 1))
             hk.arch.barrier()
-            prologue(nm0, nn0)
             finish_block(m0, n0)
+            prologue(nm0, nn0)
             m0, n0 = nm0, nn0
         hk.arch.vm_wait(0)
 
