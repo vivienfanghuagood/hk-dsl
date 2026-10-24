@@ -844,6 +844,130 @@ def _sorted_s2_persistent(name: str, *, group_rows: int, mt: int, pp: int, k: in
                      grid=lambda p: (p.G, 1, 1))
 
 
+def _sorted_s1_grid(name: str, *, group_rows: int, mt: int, pp: int, k: int, tr: int = 2,
+                    tc: int = 2, limit: float = 10.0, xcd: bool = True):
+    """Stage 1 on AITER's sort with a tr x tc warp grid (K1 c27): warp (r, c) multiplies the
+    c-th of tc column groups (2 * pp 16-row weight blocks each) against the r-th of tr token
+    groups (mt / tr tiles). Both operands come through LDS by DMA -- the block's gathered x rows
+    and the workgroup's weight chunks (stage1_dma_kernel's 1 KB rows) -- and each is read by
+    the tc (x) or tr (weights) warps that share it: a GEMM tile, both operands reused, instead of
+    _sorted_ring's 1 x 4 (weights in registers, x read by all four warps). Depth 2, two-step
+    scale dwords, any K (static). pp even (16-row LDS weight tiles), mt / tr even.
+
+    Measured 1.35-1.5x slower than _sorted_ring (K1 c27): the 1 KB weight chunks sit in LDS in
+    the st_16x128 swizzle, built for fp8 operand reads; load_fp4_frags_lds's 16-byte-a-lane
+    reads hit 38% bank conflicts there, and the weight DMA fills the vector-memory issue queue.
+    Kept for the day an unswizzled byte-chunk LDS layout exists."""
+    import hk  # noqa: PLC0415
+
+    GR = group_rows
+    KS = 128
+    warps = tr * tc
+    BM = TILE * mt
+    HM = mt // tr                                  # token tiles a warp
+    R = 32 * pp
+    RW = 2 * pp * tc                               # 16-row weight blocks a workgroup
+    lim = float(limit)
+    steps = k // KS
+    if mt % tr or HM % 2 or k % KS or steps < 4 or (RW % 16):
+        raise ValueError(f"_sorted_s1_grid: mt/tr even, 2*pp*tc a multiple of 16, K a multiple "
+                         f"of 128, >= 512 (mt={mt}, tr={tr}, pp={pp}, tc={tc}, K={k})")
+    st_x = hk.ST(fp8e4m3, BM, KS)
+    st_w = hk.ST(fp8e4m3, RW, 1024)
+    t_w = hk.RT(fp8e4m3, R, KS)
+    t_x1 = hk.RT(fp8e4m3, TILE, KS)
+    t_c1 = hk.RT(fp32, R, TILE, "col")
+    XGR = 1 << 24
+
+    def body(x: hk.Tensor[fp8e4m3], xs: hk.Tensor[i8], wv: hk.Tensor[fp8e4m3], ws: hk.Tensor[i8],
+             sids: hk.Tensor[i32], seids: hk.Tensor[i32], nv: hk.Tensor[i32], h: hk.Tensor[bf16]):
+        g = hk.group(warps)
+        Xs = hk.lds.alloc(st_x, count=2, name="Xs")
+        Ws = hk.lds.alloc(st_w, count=2, name="Ws", shape="16x128")
+        nblk = h.cols // (TILE * pp * tc)
+        wg = hk.arch.block_idx.x
+        if xcd:
+            total = seids.cols * nblk
+            moved = (wg % NUM_XCDS) * (total // NUM_XCDS) + wg // NUM_XCDS
+            whole = 1 - hk.min(total % NUM_XCDS, 1)
+            wg = whole * moved + (1 - whole) * wg
+        blk = wg % nblk
+        b = wg // nblk
+        e = seids[hk.elem_coord(0, 0, 0, b)].load_scalar()
+        valid = nv[hk.elem_coord(0, 0, 0, 0)].load_scalar()
+        live = hk.min(hk.max(valid - b * BM, 0), 1)
+        r0 = b * BM
+        wid = hk.arch.warp_id()
+        rg = wid // tc
+        c = wid % tc
+        col0 = (blk * tc + c) * pp * TILE
+        row_w = e * GR + col0
+        wrow0 = e * (GR // TILE) + blk * RW
+        rh = r0 + rg * HM * TILE
+        Cs = [hk.zeros(t_c1) for _ in range(HM)]
+        X1 = hk.zeros(t_x1)
+        W = hk.zeros(t_w)
+        S = [hk.load_mx_scales(ws, R, 8, row_w, 0, layout="aiter_gate_up", group_rows=GR)
+             for _ in range(2)]
+        SX = [hk.load_mx_scales(xs, HM * TILE, 8, 0, 0, layout="aiter", group_rows=XGR)
+              for _ in range(2)]
+
+        def fetch(kc, slot, sset=None):
+            g.load(Ws[slot], wv.at[wrow0, kc * 1024], wait=False)
+            g.load(Xs[slot], x.at[0, kc * KS], wait=False, gather=(sids, r0), staged=BM)
+            if sset is not None:
+                hk.load_mx_scales(ws, R, 8, row_w, kc * 4, layout="aiter_gate_up", group_rows=GR,
+                                  into=S[sset])
+                hk.load_mx_scales(xs, HM * TILE, 8, rh, kc * 4, layout="aiter", group_rows=XGR,
+                                  into=SX[sset])
+
+        def step(kc, u, prefetch=True):
+            cur = u % 2
+            g.wait_for(Ws[cur], Xs[cur], exact=True)
+            hk.arch.barrier()
+            if prefetch:
+                nu = u + 1
+                fetch(kc + 1, nu % 2, sset=(nu // 2) % 2 if nu % 2 == 0 else None)
+            ss, par = (u // 2) % 2, u % 2
+            hk.load_fp4_frags_lds(t_w, Ws[cur], c * 2 * pp, 0, into=W)
+            for ti in range(HM):
+                Xs[cur].subtile(TILE, KS, rg * HM + ti, 0).load(t_x1, wait=False, into=X1)
+                hk.lds.wait_for(X1)
+                hk.mma_ABt_mx(W, X1, Cs[ti], S[ss], SX[ss], a_fmt="fp4",
+                              sa_at=(0, par), sb_at=(ti, par), into=Cs[ti])
+            hk.arch.sched_barrier()
+
+        for _ in range(live):
+            g.gather_prep(sids, r0, BM)
+            fetch(0, 0, sset=0)
+            tail = 4 + steps % 4 if steps >= 8 else steps
+            for kk in hk.range((steps - tail) // 4):
+                for u in range(4):
+                    step(kk * 4 + u, u)
+            base = steps - tail
+            for jj in range(tail):
+                step(base + jj, (base + jj) % 4, prefetch=base + jj + 1 < steps)
+            hk.arch.barrier()
+            for i in range(HM):
+                for j in range(pp):
+                    gt = Cs[i].subtile(TILE, 2 * j).minimum(lim)
+                    up = Cs[i].subtile(TILE, 2 * j + 1).maximum(-lim).minimum(lim)
+                    h[hk.elem_coord(0, 0, rh + i * TILE, col0 + j * TILE)].store(
+                        hk.transpose(gt.silu() * up))
+
+    body.__name__ = name
+    return hk.kernel(body, arch="gfx950", warps=warps, name=name, max_vgprs=2048 // warps,
+                     grid=lambda p: (p.seids.cols * (p.h.cols // (TILE * pp * tc)), 1, 1))
+
+
+@functools.lru_cache(maxsize=None)
+def _sorted_grid(group_rows: int, mt: int, pp: int, k: int, limit: float, tr: int, tc: int,
+                 xcd: bool = True):
+    return _sorted_s1_grid(f"moe_a8w4_s1g_gr{group_rows}_mt{mt}_pp{pp}_k{k}_{tr}x{tc}"
+                           + ("" if xcd else "_nx"), group_rows=group_rows, mt=mt, pp=pp, k=k,
+                           limit=limit, tr=tr, tc=tc, xcd=xcd)
+
+
 @functools.lru_cache(maxsize=None)
 def _sorted_persistent(group_rows: int, mt: int, pp: int, k: int, topk: int, grid: int):
     return _sorted_s2_persistent(f"moe_a8w4_s2p_gr{group_rows}_mt{mt}_pp{pp}_k{k}_t{topk}_g{grid}",
@@ -861,16 +985,27 @@ def _sorted(stage: int, group_rows: int, mt: int, pp: int, k: int, limit: float,
 
 def stage1_sorted(xq_tok, xs_sorted, w13, w13_scale, sorted_ids, sorted_expert_ids, num_valid, *,
                   inter: int, mt: int, pp: int = 3, limit: float = 10.0, depth: int = 2,
-                  warps: int = 4):
+                  warps: int = 4, grid=None):
     """h [len(sorted_ids), inter] bf16 in AITER's sorted order (moe_sorting with block_size
     16 * mt): xq_tok [M, K] FP8 in token order and xs_sorted its sorted 32-row-layout scales
     (aiter's fused_dynamic_mxfp8_quant_moe_sort). See _sorted_ring."""
     import torch  # noqa: PLC0415
 
-    if inter % (TILE * pp * warps):
+    if grid is None and inter % (TILE * pp * warps):
         raise ValueError(f"moe_a8w4.stage1_sorted: inter={inter} not a multiple of {TILE * pp * warps}")
     p = sorted_ids.numel()
     h = torch.empty((p, inter), device=xq_tok.device, dtype=torch.bfloat16)
+    if grid is not None:          # (tr, tc): the warp-grid kernel, both operands through LDS
+        tr, tc = grid[:2]
+        xcd = len(grid) < 3 or bool(grid[2])
+        if inter % (TILE * pp * tc):
+            raise ValueError(f"moe_a8w4.stage1_sorted: inter={inter} not a multiple of "
+                             f"{TILE * pp * tc}")
+        _sorted_grid(2 * inter, mt, pp, xq_tok.shape[1], float(limit), tr, tc, xcd)(
+            xq_tok, xs_sorted.view(torch.int8), weight_view(w13, 2 * inter),
+            w13_scale.view(torch.int8), sorted_ids.view(1, -1), sorted_expert_ids.view(1, -1),
+            num_valid.view(1, -1), h)
+        return h
     dummy = h.new_zeros((1, 1), dtype=torch.float32)
     _sorted(1, 2 * inter, mt, pp, xq_tok.shape[1], float(limit), 6, depth, warps)(
         xq_tok, xs_sorted.view(torch.int8), w13.view(torch.int8), w13_scale.view(torch.int8),

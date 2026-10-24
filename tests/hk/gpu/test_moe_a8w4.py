@@ -266,3 +266,31 @@ def test_sorted_stages_match_dequant(mt, pp1, pp2, depth, pers):
     ref = torch.zeros(T, D, device=dev)
     ref.index_add_(0, tok[:nvalid][lv], yr)
     assert ((out.float() - ref).abs().max() / ref.abs().max()).item() < 1e-2
+
+
+
+@pytest.mark.parametrize("mt,pp,grid", [(4, 4, (2, 2)), (8, 2, (2, 4))])
+def test_stage1_warp_grid_matches_ring(mt, pp, grid):
+    """stage1_sorted(grid=(tr, tc)): both operands through LDS on a warp grid -- bit for bit the
+    four-warp sorted kernel on the same rows."""
+    from hk.ops import mxfp8
+
+    torch.manual_seed(6)
+    E, I, K, T, topk = 6, 1024, 512, 77, 2
+    dev = "cuda"
+    w1 = torch.randint(0, 256, (E, 2 * I, K // 2), dtype=torch.uint8)
+    w1s = torch.randint(122, 132, (E * 2 * I, K // 32), dtype=torch.uint8)
+    hidden = torch.randn(T, K, device=dev, dtype=torch.bfloat16)
+    ids = torch.stack([torch.randperm(E - 1)[:topk] for _ in range(T)]).to(dev)
+    sid, se, nv = _aiter_like_sort(ids, E, 16 * mt)
+    xq, xs = M.mx_quant(hidden)
+    tok = (sid & 0xFFFFFF).long()
+    xs_sorted = torch.full((sid.numel(), K // 32), 127, dtype=torch.uint8, device=dev)
+    live = tok < T
+    xs_sorted[live] = xs[tok[live]]
+    args = (xq, mxfp8.aiter_scales(xs_sorted), M.aiter_layout_w13(w1).to(dev),
+            M.aiter_layout_w13_scale(w1s, E).to(dev), sid, se, nv)
+    ref = M.stage1_sorted(*args, inter=I, mt=mt, pp=2)
+    got = M.stage1_sorted(*args, inter=I, mt=mt, pp=pp, grid=grid)
+    n = int(nv[0])
+    assert torch.equal(got[:n][live[:n]], ref[:n][live[:n]])
