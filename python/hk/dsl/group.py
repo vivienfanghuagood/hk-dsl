@@ -93,7 +93,7 @@ class Group:
                         async_=not wait, nontemporal=bool(nontemporal),
                         loc=t.loc())
 
-    def wait_for(self, *tiles: SharedTile) -> None:
+    def wait_for(self, *tiles: SharedTile, exact: bool = False) -> None:
         """`s_waitcnt vmcnt(n)`: this warp's share of the asynchronous copies
         into `tiles` has landed, `n` derived by hk-lds-pipeline. The other
         warps' shares are visible only after a barrier (two inside an
@@ -103,7 +103,12 @@ class Group:
         for x in tiles:
             if not isinstance(x, SharedTile):
                 raise TypeError(f"g.wait_for operand is {x!r}, expected an LDS tile")
-        hkd.GroupWaitForOp([x.v for x in tiles], loc=B.current().loc())
+        op = hkd.GroupWaitForOp([x.v for x in tiles], loc=B.current().loc())
+        if exact:
+            # keep the tracked register loads issued after the copies in flight (in-order vmcnt)
+            from .._mlir import ir  # noqa: PLC0415
+
+            op.attributes["exact"] = ir.UnitAttr.get()
 
     def store(self, dst: View, src: SharedTile) -> None:
         """LDS -> global, by the whole group."""

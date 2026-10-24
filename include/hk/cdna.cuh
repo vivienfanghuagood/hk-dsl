@@ -1292,10 +1292,25 @@ __device__ static inline void mma_ABt(D &d, const A &a, const B &b, const C &c) 
  * i*16 + l%16 and block s*4 + l/16, as byte i%4 of reg[i/4][s] -- the byte an
  * MFMA of base tile i selects with opsel = i%4.
  */
-template<int R, int KB> struct hk_mxs {
+template<int R, int KB, int F = 0> struct hk_mxs {
     static_assert(R % 16 == 0 && KB % 4 == 0, "16-row base tiles, 128-wide K steps");
+    static_assert(F >= 0 && F <= 2 && (F != 2 || R % 32 == 0), "fmt 0, 1, 2 (2: 32-row blocks)");
     static constexpr int tiles = R / 16, steps = KB / 4, regs = (tiles + 3) / 4;
-    uint32_t reg[regs][steps];
+    // F 0 packed: base tile i, step s -> byte i % 4 of reg[i / 4][s]
+    // F 1 loose: reg[i][s], byte 0          F 2 AITER raw: reg[i / 2][s / 2], byte (s % 2) * 2 + i % 2
+    static constexpr int D0 = F == 0 ? regs : F == 1 ? tiles : tiles / 2;
+    static constexpr int D1 = F == 2 ? (steps + 1) / 2 : steps;
+    uint32_t reg[D0][D1];
+    __device__ __forceinline__ uint32_t word(int i, int s) const {
+        if constexpr (F == 0) return reg[i / 4][s];
+        else if constexpr (F == 1) return reg[i][s];
+        else return reg[i / 2][s / 2];
+    }
+    // F 2 with one K step: a 16-bit load of that step's (gate, up) bytes -- byte i % 2 -- so the
+    // step's parity is an address, not a select; with more steps the tile starts on an even step
+    static constexpr int sel(int i, int s) {
+        return F == 0 ? i % 4 : F == 1 ? 0 : (steps == 1 ? i % 2 : (s % 2) * 2 + i % 2);
+    }
 };
 
 /**
@@ -1306,10 +1321,26 @@ template<int R, int KB> struct hk_mxs {
  * g*64 + i*16 + l%16 and block s*4 + l/16 -- so a lane reads one dword per four
  * base tiles and K step, coalesced (row0 % 64 == 0, kb0 % 4 == 0).
  */
-template<int R, int KB, ducks::gl::all GL>
-__device__ inline static void load_mx_scales(hk_mxs<R, KB> &dst, const GL &src, int row0, int kb0) {
+template<int R, int KB, int F, ducks::gl::all GL>
+__device__ inline static void load_mx_scales(hk_mxs<R, KB, F> &dst, const GL &src, int row0, int kb0) {
     static_assert(sizeof(typename GL::dtype) == 1 || sizeof(typename GL::dtype) == 4,
                   "E8M0 scales: one byte each, or packed dwords");
+    if constexpr (F == 1) {
+        // loose: the byte load lands in its own register as it is (zero-extended, byte 0)
+        static_assert(sizeof(typename GL::dtype) == 1, "loose scales: the byte layout");
+        const int lane = laneid();
+        const uint32_t rs = uint32_t(src.template stride<2>());
+        const uint8_t *base = reinterpret_cast<const uint8_t *>(src.raw_ptr);
+        const detail::hk_i32x4 r = detail::hk_srsrc(base, uint64_t(src.template shape<2>()) * rs);
+        #pragma unroll
+        for (int i = 0; i < R / 16; i++)
+            #pragma unroll
+            for (int s = 0; s < KB / 4; s++)
+                dst.reg[i][s] = detail::hk_buf_ld8(r, uint32_t(row0 + i * 16 + lane % 16) * rs +
+                                                          uint32_t(kb0 + s * 4 + lane / 16), 0, 0);
+        return;
+    } else {
+    static_assert(F == 0, "packed scales are fmt 0");
     if constexpr (sizeof(typename GL::dtype) == 4) {
         using M = hk_mxs<R, KB>;
         static_assert(R % 64 == 0, "packed scales: whole 64-row groups");
@@ -1346,6 +1377,7 @@ __device__ inline static void load_mx_scales(hk_mxs<R, KB> &dst, const GL &src, 
             const int sh = 8 * (i % 4);
             dst.reg[i / 4][s] = (dst.reg[i / 4][s] & ~(0xFFu << sh)) | (b << sh);
         }
+    }
 }
 
 /**
@@ -1356,11 +1388,11 @@ __device__ inline static void load_mx_scales(hk_mxs<R, KB> &dst, const GL &src, 
  * 16 i, or with LAYOUT 1 gate/up of block row0/16 + i/2) and step s go to byte i % 4 of reg[i/4][s].
  * One dword load per base tile and step (the vmcnt count LdsPipeline assumes for byte scales).
  */
-template<int LAYOUT, int GR, int R, int KB, ducks::gl::all GL>
-__device__ inline static void load_mx_scales_aiter(hk_mxs<R, KB> &dst, const GL &src, int row0, int kb0) {
+template<int LAYOUT, int GR, int R, int KB, int F, ducks::gl::all GL>
+__device__ inline static void load_mx_scales_aiter(hk_mxs<R, KB, F> &dst, const GL &src, int row0, int kb0) {
     static_assert(sizeof(typename GL::dtype) == 1, "AITER scales: one byte each");
     static_assert(LAYOUT == 1 || LAYOUT == 2, "AITER layouts 1 (gate|up) and 2");
-    using M = hk_mxs<R, KB>;
+    using M = hk_mxs<R, KB, F>;
     const int lane = laneid();
     const uint32_t kb = uint32_t(src.template stride<2>());          // K/32 bytes a row
     const uint8_t *base = reinterpret_cast<const uint8_t *>(src.raw_ptr);
@@ -1368,11 +1400,13 @@ __device__ inline static void load_mx_scales_aiter(hk_mxs<R, KB> &dst, const GL 
     const int e = row0 / GR, lr = row0 % GR;
     const uint32_t k1n = kb / 8u;
     const uint32_t ebase = uint32_t(e) * uint32_t(GR) * kb;
-    #pragma unroll
-    for (int g = 0; g < M::regs; g++)
+    if constexpr (F == 0) {
         #pragma unroll
-        for (int s = 0; s < M::steps; s++)
-            dst.reg[g][s] = 0x7F7F7F7Fu;
+        for (int g = 0; g < M::regs; g++)
+            #pragma unroll
+            for (int s = 0; s < M::steps; s++)
+                dst.reg[g][s] = 0x7F7F7F7Fu;
+    }
     // One dword a lane holds a 32-row block's two 16-row halves for two consecutive K steps
     // (an even step and the odd one after it). Each is loaded once: per 32-row block (row0 32-row
     // aligned, base tiles in pairs) and K-step pair -- (R/32) * ceil(steps/2) loads, the count
@@ -1384,6 +1418,14 @@ __device__ inline static void load_mx_scales_aiter(hk_mxs<R, KB> &dst, const GL 
         int n1;
         if constexpr (LAYOUT == 1) n1 = lr / 16 + blk;
         else n1 = lr / 32 + blk;
+        if constexpr (F == 2 && M::steps == 1) {
+            // raw, one step: the step's (gate, up) bytes by a 16-bit load (sel = i % 2)
+            const int st = kb0 / 4, kpack = st % 2;
+            const uint32_t off = ebase + ((uint32_t(n1) * k1n + uint32_t(st / 2)) * 64u +
+                                          uint32_t(lane)) * 4u + uint32_t(kpack) * 2u;
+            dst.reg[blk][0] = detail::hk_buf_ld16(r, off, 0, 0);
+            continue;
+        }
         uint32_t d[G];
         #pragma unroll
         for (int g = 0; g < G; g++) {
@@ -1391,15 +1433,24 @@ __device__ inline static void load_mx_scales_aiter(hk_mxs<R, KB> &dst, const GL 
             const uint32_t off = ebase + ((uint32_t(n1) * k1n + k1) * 64u + uint32_t(lane)) * 4u;
             d[g] = detail::hk_buf_ld32(r, off, 0, 0);
         }
-        #pragma unroll
-        for (int half = 0; half < 2; half++) {
-            const int i = 2 * blk + half;
+        if constexpr (F == 2) {
+            // raw, several steps (the tile starts on an even step): the dwords as loaded
             #pragma unroll
-            for (int s = 0; s < M::steps; s++) {
-                const int kpack = (kb0 / 4 + s) % 2;
-                const uint32_t b = (d[s / 2] >> (8 * (kpack * 2 + half))) & 0xFFu;
-                const int sh = 8 * (i % 4);
-                dst.reg[i / 4][s] = (dst.reg[i / 4][s] & ~(0xFFu << sh)) | (b << sh);
+            for (int g = 0; g < G; g++)
+                dst.reg[blk][g] = d[g];
+            continue;
+        }
+        if constexpr (F == 0) {
+            #pragma unroll
+            for (int half = 0; half < 2; half++) {
+                const int i = 2 * blk + half;
+                #pragma unroll
+                for (int s = 0; s < M::steps; s++) {
+                    const int kpack = (kb0 / 4 + s) % 2;
+                    const uint32_t b = (d[s / 2] >> (8 * (kpack * 2 + half))) & 0xFFu;
+                    const int sh = 8 * (i % 4);
+                    dst.reg[i / 4][s] = (dst.reg[i / 4][s] & ~(0xFFu << sh)) | (b << sh);
+                }
             }
         }
     }
@@ -1504,9 +1555,9 @@ __device__ inline void hk_mfma_mx_b(int ob, float (&d)[4], const uint32_t (&a)[8
  * the switches fold.
  */
 template<int AF = 0, int BF = 0, ducks::rt::col_layout D, ducks::rt::all A, ducks::rt::all B, ducks::rt::col_layout C,
-         int RA, int RB, int KB>
+         int RA, int RB, int KB, int FA, int FB>
 __device__ static inline void mma_ABt_mx(D &d, const A &a, const B &b, const C &c,
-                                         const hk_mxs<RA, KB> &sa, const hk_mxs<RB, KB> &sb) {
+                                         const hk_mxs<RA, KB, FA> &sa, const hk_mxs<RB, KB, FB> &sb) {
     static_assert(std::is_same_v<typename A::T, fp8e4m3> && std::is_same_v<typename B::T, fp8e4m3>,
                   "fp8 e4m3 operands");
     static_assert(std::is_same_v<typename D::T, float> && std::is_same_v<typename C::T, float>,
@@ -1525,12 +1576,13 @@ __device__ static inline void mma_ABt_mx(D &d, const A &a, const B &b, const C &
             for (int k = 0; k < A::width; k++) {
                 const uint32_t(&ra)[8] = *reinterpret_cast<const uint32_t(*)[8]>(&a.tiles[n][k].data[0]);
                 const uint32_t(&rb)[8] = *reinterpret_cast<const uint32_t(*)[8]>(&b.tiles[m][k].data[0]);
-                const uint32_t s_a = sa.reg[n / 4][k], s_b = sb.reg[m / 4][k];
-                switch (n % 4) {
-                    case 0: detail::hk_mfma_mx_b<0, AF, BF>(m % 4, acc, ra, rb, s_a, s_b); break;
-                    case 1: detail::hk_mfma_mx_b<1, AF, BF>(m % 4, acc, ra, rb, s_a, s_b); break;
-                    case 2: detail::hk_mfma_mx_b<2, AF, BF>(m % 4, acc, ra, rb, s_a, s_b); break;
-                    default: detail::hk_mfma_mx_b<3, AF, BF>(m % 4, acc, ra, rb, s_a, s_b); break;
+                const uint32_t s_a = sa.word(n, k), s_b = sb.word(m, k);
+                const int ob = hk_mxs<RB, KB, FB>::sel(m, k);
+                switch (hk_mxs<RA, KB, FA>::sel(n, k)) {
+                    case 0: detail::hk_mfma_mx_b<0, AF, BF>(ob, acc, ra, rb, s_a, s_b); break;
+                    case 1: detail::hk_mfma_mx_b<1, AF, BF>(ob, acc, ra, rb, s_a, s_b); break;
+                    case 2: detail::hk_mfma_mx_b<2, AF, BF>(ob, acc, ra, rb, s_a, s_b); break;
+                    default: detail::hk_mfma_mx_b<3, AF, BF>(ob, acc, ra, rb, s_a, s_b); break;
                 }
             }
             __builtin_memcpy(&d.tiles[n][m].data[0], acc, sizeof(acc));

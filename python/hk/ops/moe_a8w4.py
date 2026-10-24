@@ -77,7 +77,7 @@ def stage1_kernel(name: str, *, group_rows: int, nb: int = 4, mt: int = 2, warps
 
 
 def stage1_lds_kernel(name: str, *, group_rows: int, mt: int = 4, pp: int = 2,
-                      limit: float = 10.0, xcd: bool = True):
+                      limit: float = 10.0, xcd: bool = True, exact: bool = False):
     """Stage 1, version 3 (K1 c4). Four warps; warp w owns `pp` (gate, up) pairs, so a workgroup
     covers 64 * pp columns of h and an expert takes I / (64 pp) workgroups, each reading the
     expert's token tiles once a round. A round is `mt` 16-token tiles; each 256-wide K step
@@ -122,7 +122,7 @@ def stage1_lds_kernel(name: str, *, group_rows: int, mt: int = 4, pp: int = 2,
         W = [hk.zeros(t_w), hk.zeros(t_w)]
         S = [hk.load_mx_scales(ws, R, KS // 32, row_w, 0, layout="aiter_gate_up", group_rows=GR)
              for _ in range(2)]
-        SX = [hk.load_mx_scales(xs, TILE * mt, KS // 32, 0, 0) for _ in range(2)]
+        SX = [hk.load_mx_scales(xs, TILE * mt, KS // 32, 0, 0, loose=True) for _ in range(2)]
 
         def fetch(kc, r0, slot):
             g.load(Xs[slot], x.at[r0, kc * KS], wait=False)
@@ -130,10 +130,10 @@ def stage1_lds_kernel(name: str, *, group_rows: int, mt: int = 4, pp: int = 2,
                               into=W[slot])
             hk.load_mx_scales(ws, R, KS // 32, row_w, kc * (KS // 32), layout="aiter_gate_up",
                               group_rows=GR, into=S[slot])
-            hk.load_mx_scales(xs, TILE * mt, KS // 32, r0, kc * (KS // 32), into=SX[slot])
+            hk.load_mx_scales(xs, TILE * mt, KS // 32, r0, kc * (KS // 32), into=SX[slot], loose=True)
 
         def step(kc, cur, r0, prefetch=True):
-            g.wait_for(Xs[cur])
+            g.wait_for(Xs[cur], exact=exact)
             hk.arch.barrier()
             if prefetch:
                 fetch(kc + 1, r0, 1 - cur)
@@ -166,7 +166,7 @@ def stage1_lds_kernel(name: str, *, group_rows: int, mt: int = 4, pp: int = 2,
 
 
 def stage1_ring_kernel(name: str, *, group_rows: int, mt: int = 4, pp: int = 4, depth: int = 4,
-                       limit: float = 10.0, xcd: bool = True):
+                       limit: float = 10.0, xcd: bool = True, exact: bool = False):
     """Stage 1, version 4 (K1 c5): stage1_lds_kernel's workgroup (warp = pp (gate, up) pairs, the
     round's mt token tiles shared through LDS), with 128-wide K steps and `depth` operand sets
     (registers for the warp's weights and scales, LDS slots for the tiles): step k+depth-1's
@@ -209,17 +209,17 @@ def stage1_ring_kernel(name: str, *, group_rows: int, mt: int = 4, pp: int = 4, 
         W = [hk.zeros(t_w) for _ in range(D)]
         S = [hk.load_mx_scales(ws, R, 4, row_w, 0, layout="aiter_gate_up", group_rows=GR)
              for _ in range(D)]
-        SX = [hk.load_mx_scales(xs, TILE * mt, 4, 0, 0) for _ in range(D)]
+        SX = [hk.load_mx_scales(xs, TILE * mt, 4, 0, 0, loose=True) for _ in range(D)]
 
         def fetch(kc, r0, slot):
             g.load(Xs[slot], x.at[r0, kc * KS], wait=False)
             hk.load_fp4_frags(t_w, w, row_w, kc, group_rows=GR, gate_up=True, into=W[slot])
             hk.load_mx_scales(ws, R, 4, row_w, kc * 4, layout="aiter_gate_up", group_rows=GR,
                               into=S[slot])
-            hk.load_mx_scales(xs, TILE * mt, 4, r0, kc * 4, into=SX[slot])
+            hk.load_mx_scales(xs, TILE * mt, 4, r0, kc * 4, into=SX[slot], loose=True)
 
         def step(kc, cur, r0, prefetch=True):
-            g.wait_for(Xs[cur])
+            g.wait_for(Xs[cur], exact=exact)
             hk.arch.barrier()
             if prefetch:
                 fetch(kc + D - 1, r0, (cur + D - 1) % D)
@@ -302,12 +302,12 @@ def stage1_dma_kernel(name: str, *, group_rows: int, mt: int = 4, pp: int = 4, d
         W = hk.zeros(t_w)
         S = [hk.load_mx_scales(ws, R, 4, row_w, 0, layout="aiter_gate_up", group_rows=GR)
              for _ in range(2)]
-        SX = [hk.load_mx_scales(xs, TILE * mt, 4, 0, 0) for _ in range(2)]
+        SX = [hk.load_mx_scales(xs, TILE * mt, 4, 0, 0, loose=True) for _ in range(2)]
 
         def scales(kc, r0, q):
             hk.load_mx_scales(ws, R, 4, row_w, kc * 4, layout="aiter_gate_up", group_rows=GR,
                               into=S[q])
-            hk.load_mx_scales(xs, TILE * mt, 4, r0, kc * 4, into=SX[q])
+            hk.load_mx_scales(xs, TILE * mt, 4, r0, kc * 4, into=SX[q], loose=True)
 
         def copies(kc, r0, slot):
             g.load(Ws[slot], wv.at[wrow0, kc * 1024], wait=False)
@@ -414,7 +414,7 @@ def stage1_direct_kernel(name: str, *, group_rows: int, k: int, mt: int = 4, pp:
             S[q] = hk.load_mx_scales(ws, R, 4, row_w, kc * 4, layout="aiter_gate_up",
                                      group_rows=GR, into=S[q])
             X[q] = x[hk.elem_coord(0, 0, r0, kc * KS)].load(t_x, into=X[q])
-            SX[q] = hk.load_mx_scales(xs, TILE * mt, 4, r0, kc * 4, into=SX[q])
+            SX[q] = hk.load_mx_scales(xs, TILE * mt, 4, r0, kc * 4, into=SX[q], loose=True)
 
         for rnd in range(1):
             r0 = t0 * TILE
@@ -462,9 +462,10 @@ def _stage1_direct(group_rows: int, k: int, mt: int, pp: int, depth: int, limit:
 
 
 @functools.lru_cache(maxsize=None)
-def _stage1_ring(group_rows: int, mt: int, pp: int, depth: int, limit: float):
-    return stage1_ring_kernel(f"moe_a8w4_s1r_gr{group_rows}_mt{mt}_pp{pp}_d{depth}",
-                              group_rows=group_rows, mt=mt, pp=pp, depth=depth, limit=limit)
+def _stage1_ring(group_rows: int, mt: int, pp: int, depth: int, limit: float, exact: bool = False):
+    return stage1_ring_kernel(f"moe_a8w4_s1r_gr{group_rows}_mt{mt}_pp{pp}_d{depth}_e{int(exact)}",
+                              group_rows=group_rows, mt=mt, pp=pp, depth=depth, limit=limit,
+                              exact=exact)
 
 
 @functools.lru_cache(maxsize=None)
@@ -528,14 +529,15 @@ def mx_quant(x):
 
 
 @functools.lru_cache(maxsize=None)
-def _stage1_lds(group_rows: int, mt: int, limit: float, pp: int, xcd: bool = True):
-    return stage1_lds_kernel(f"moe_a8w4_s1l_gr{group_rows}_mt{mt}_pp{pp}_x{int(xcd)}",
-                             group_rows=group_rows, mt=mt, pp=pp, limit=limit, xcd=xcd)
+def _stage1_lds(group_rows: int, mt: int, limit: float, pp: int, xcd: bool = True,
+                exact: bool = False):
+    return stage1_lds_kernel(f"moe_a8w4_s1l_gr{group_rows}_mt{mt}_pp{pp}_x{int(xcd)}_e{int(exact)}",
+                             group_rows=group_rows, mt=mt, pp=pp, limit=limit, xcd=xcd, exact=exact)
 
 
 def stage1(xq, xs, w13, w13_scale, tiles, *, inter: int, nb: int = 4, mt: int = 2, warps: int = 4,
            limit: float = 10.0, lds: bool = False, pp: int = 2, xcd: bool = True, depth: int = 0,
-           dma: bool = False, direct: bool = False):
+           dma: bool = False, direct: bool = False, exact: bool = False):
     """h [P, inter] bf16 for prepare()'s sorted rows. w13 / w13_scale: AITER's shuffled uint8 views
     [E * 2 * inter, K/2] and [E * 2 * inter, K/32]."""
     import torch  # noqa: PLC0415
@@ -551,8 +553,8 @@ def stage1(xq, xs, w13, w13_scale, tiles, *, inter: int, nb: int = 4, mt: int = 
             xq, xs.view(torch.int8), weight_view(w13, 2 * inter), w13_scale.view(torch.int8), tiles, h)
         return h
     if depth:
-        k = _stage1_ring(2 * inter, mt, pp, depth, float(limit))
+        k = _stage1_ring(2 * inter, mt, pp, depth, float(limit), exact)
     else:
-        k = _stage1_lds(2 * inter, mt, float(limit), pp, xcd) if lds else _stage1(2 * inter, nb, mt, warps, float(limit))
+        k = _stage1_lds(2 * inter, mt, float(limit), pp, xcd, exact) if lds else _stage1(2 * inter, nb, mt, warps, float(limit))
     k(xq, xs.view(torch.int8), w13.view(torch.int8), w13_scale.view(torch.int8), tiles, h)
     return h

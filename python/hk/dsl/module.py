@@ -44,7 +44,7 @@ def mlir_type(t: Type) -> ir.Type:
         s = (f"!hk.stage<{e(t.tile.dtype)}, {t.tile.rows}x{t.tile.cols}, "
              f"{t.threads}{d}>")
     elif isinstance(t, MxScalesType):
-        s = f"!hk.mxs<{t.rows}, {t.kblocks}>"
+        s = f"!hk.mxs<{t.rows}, {t.kblocks}" + (f", {t.fmt}" if t.fmt else "") + ">"
     elif isinstance(t, ScalarType):
         s = M.element(t.dtype.name)
     else:

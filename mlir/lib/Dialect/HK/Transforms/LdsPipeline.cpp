@@ -647,9 +647,14 @@ struct Walker {
     // them on gfx950 -- a vmcnt that counted scales issued after a copy as
     // the ones left in flight let the copy's own last loads through instead,
     // and a K-loop read them before they landed (results varying run to run).
+    // `exact` (opt-in): count the tracked register loads after the cut too. A probe with
+    // controls (probes/vmcnt_order.hip) found LDS-DMA and register loads retiring in issue
+    // order on gfx950; the K2 race this rule was made for is better explained by the scale
+    // register hazard. Only loads whose instruction counts the headers fix are tracked: an
+    // untracked load makes the wait stricter, never looser.
     int64_t n = 0;
     for (size_t j = cut + 1; j < st.dma.size(); ++j)
-      if (st.dma[j].root.alloc)
+      if (st.dma[j].root.alloc || op.getExact())
         n += st.dma[j].count;
     for (int j = 0; j <= cut; ++j)
       State::stamp(st.landed, st.dma[j].root, st.now);
@@ -822,6 +827,12 @@ struct Walker {
       if (isa<PingPongEndOp>(op)) {
         barrier(op, false, st, /*counted=*/false);
         st.now.region = nullptr;
+        continue;
+      }
+      if (auto f = dyn_cast<LoadFp4FragsOp>(op)) {
+        // one 16-byte buffer load per 16x128 fragment (include/hk/cdna.cuh load_fp4_frags)
+        auto t = cast<RegTileType>(f.getResult() ? f.getResult().getType() : f.getDst().getType());
+        st.dma.push_back({Root{}, int64_t(t.getRows() / 16) * (t.getCols() / 128), op});
         continue;
       }
       if (auto m = dyn_cast<LoadMxScalesOp>(op)) {

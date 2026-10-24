@@ -288,10 +288,13 @@ class MxScalesType(Type):
 
     rows: int
     kblocks: int
+    fmt: int = 0          # 0 packed, 1 loose (a register a tile and step), 2 AITER raw dwords
 
     def __post_init__(self):
         if self.rows <= 0 or self.rows % 16:
             raise ValueError(f"mx scales: {self.rows} rows is not a whole number of 16-row tiles")
+        if self.fmt not in (0, 1, 2) or (self.fmt == 2 and self.rows % 32):
+            raise ValueError(f"mx scales: fmt {self.fmt} (0, 1, or 2 on 32-row multiples)")
         if self.kblocks <= 0 or self.kblocks % 4:
             raise ValueError(f"mx scales: {self.kblocks} blocks of 32 is not a whole number "
                              f"of 128-wide K steps")

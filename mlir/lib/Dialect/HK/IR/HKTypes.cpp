@@ -352,7 +352,11 @@ unsigned GranulesType::getSwizzleBytes() const {
 }
 
 LogicalResult MxScalesType::verify(function_ref<InFlightDiagnostic()> emitError,
-                                   unsigned rows, unsigned kblocks) {
+                                   unsigned rows, unsigned kblocks, unsigned fmt) {
+  if (fmt > 2)
+    return emitError() << "mx scales: fmt is 0 (packed), 1 (loose) or 2 (AITER raw)";
+  if (fmt == 2 && rows % 32)
+    return emitError() << "mx scales: AITER raw dwords cover 32-row blocks";
   if (rows == 0 || rows % 16)
     return emitError() << "mx scales: " << rows
                        << " rows is not a whole number of 16-row base tiles";

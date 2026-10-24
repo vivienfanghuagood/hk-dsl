@@ -487,10 +487,14 @@ def HK_GroupWaitForOp : HK_Op<"group_wait_for"> {
     never written by hand. It retires this warp's share only: the other
     warps' shares are visible after a barrier (two inside an hk.pingpong,
     where half the workgroup runs a barrier behind the other), and the pass
-    refuses a read of the tile before that.
+    refuses a read of the tile before that. `exact`: n also counts the
+    register loads the pass tracks (E8M0 scales, FP4 fragments) issued after
+    the copy, so they stay in flight -- vmcnt retires LDS-DMA copies and
+    register loads in issue order on gfx950 (probes/vmcnt_order.hip); without
+    it they are retired with the copy (a stricter wait).
   }];
   let arguments = (ins Variadic<HK_SharedTileType>:$tiles,
-                       OptionalAttr<I64Attr>:$n);
+                       OptionalAttr<I64Attr>:$n, UnitAttr:$exact);
   let assemblyFormat = "$tiles attr-dict `:` qualified(type($tiles))";
   let hasVerifier = 1;
 }

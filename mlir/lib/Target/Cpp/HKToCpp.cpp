@@ -95,7 +95,8 @@ std::string rawCpp(Type t) {
     return "float4";
   if (auto m = dyn_cast<MxScalesType>(t))
     return "kittens::hk_mxs<" + std::to_string(m.getRows()) + ", " +
-           std::to_string(m.getKblocks()) + ">";
+           std::to_string(m.getKblocks()) +
+           (m.getFmt() ? ", " + std::to_string(m.getFmt()) : std::string()) + ">";
   if (t.isIntOrFloat())
     return dtypeCpp(t).str();
   return "/*?*/";

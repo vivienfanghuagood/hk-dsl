@@ -1407,7 +1407,7 @@ _MX_LAYOUTS = {"ocp": 0, "aiter_gate_up": 1, "aiter": 2}
 
 def load_mx_scales(src: "Global", rows: int, kblocks: int, row0, kb0, *,
                    into: "MxScales" = None, layout: str = "ocp",
-                   group_rows: int = 0) -> MxScales:
+                   group_rows: int = 0, loose: bool = False) -> MxScales:
     """Rows row0.. and 32-wide blocks kb0.. of an E8M0 scale tensor (uint8, one
     byte a row and block: [R, K/32], the OCP MX layout -- or packed, i32, as
     hk.ops.mxfp8.pack_scales lays them out: one coalesced dword a lane per 64
@@ -1418,7 +1418,13 @@ def load_mx_scales(src: "Global", rows: int, kblocks: int, row0, kb0, *,
     (uint8 [E * group_rows, K/32], `shuffle_scale(is_guinterleave=True)`, with
     and without gate_up) -- the scales of a `load_fp4_frags` tile of the same
     rows: row0 the tile's first row in [E * group_rows], base tiles alternating
-    gate and up with "aiter_gate_up"."""
+    gate and up with "aiter_gate_up". AITER scales are kept as loaded (fmt 2:
+    the MFMA's opsel picks the byte; kb0 a multiple of 8 when kblocks > 4).
+    `loose` (byte scales): a register a 16-row tile and K step, the byte as
+    loaded (fmt 1). Both leave nothing for the VALU to do with a loaded
+    scale, so its wait sits at the MFMA instead of right after the load --
+    the packed form's byte insertion waited there, draining every load
+    issued before it (K1 c8)."""
     if layout not in _MX_LAYOUTS:
         raise TypeError(f"load_mx_scales: layout is one of {sorted(_MX_LAYOUTS)}, not {layout!r}")
     lay = _MX_LAYOUTS[layout]
@@ -1440,7 +1446,9 @@ def load_mx_scales(src: "Global", rows: int, kblocks: int, row0, kb0, *,
                         f"not {src.dtype.name}")
     if get_target(_t().arch).arch != "gfx950":
         raise TypeError(f"load_mx_scales: block-scaled MFMA is gfx950's; {_t().arch} has none")
-    ty = MxScalesType(rows, kblocks)
+    if loose and (lay or src.dtype is not i8):
+        raise TypeError("load_mx_scales(loose=True): byte (OCP) scales only")
+    ty = MxScalesType(rows, kblocks, 2 if lay else (1 if loose else 0))
     t = _t()
     if into is not None:
         if not isinstance(into, MxScales) or into.ty != ty:
@@ -1515,7 +1523,7 @@ def mma_ABt_mx(a: Tile, b: Tile, acc: Tile, sa: MxScales, sb: MxScales, *, into=
         raise TypeError(f"mma_ABt_mx: A and B share K, a multiple of 128; got "
                         f"{a.ty.cols} and {b.ty.cols}")
     for s, v, what in ((sa, a, "sa"), (sb, b, "sb")):
-        if not isinstance(s, MxScales) or s.ty != MxScalesType(v.ty.rows, v.ty.cols // 32):
+        if not isinstance(s, MxScales) or (s.ty.rows, s.ty.kblocks) != (v.ty.rows, v.ty.cols // 32):
             raise TypeError(f"mma_ABt_mx: {what} holds the scales of a {v.ty.rows}x"
                             f"{v.ty.cols} operand, got {s!r}")
     ty = RegTileType(fp32, a.ty.rows, b.ty.rows, "col")

@@ -239,9 +239,16 @@ def HK_MxScalesType : HK_Type<"MxScales", "mxs"> {
     32-bit register, the byte picked by an immediate: four 16-row base tiles
     share a register. So the type holds rows/16 x kblocks/4 bytes a lane, in
     ceil(rows/64) x kblocks/4 registers.
+      `fmt` how the bytes sit (include/hk/cdna.cuh hk_mxs): 0 packed, four base
+    tiles to a register (the default); 1 loose, a register a base tile and K
+    step, the scale in byte 0 (a byte load lands in it as it is); 2 AITER's
+    raw dwords, one per 32-row block and pair of K steps, the MFMA's opsel
+    picking the byte. 1 and 2 need no VALU on a loaded scale, so a load's
+    wait can sit at the MFMA that reads it.
   }];
-  let parameters = (ins "unsigned":$rows, "unsigned":$kblocks);
-  let assemblyFormat = "`<` $rows `,` $kblocks `>`";
+  let parameters = (ins "unsigned":$rows, "unsigned":$kblocks,
+                        DefaultValuedParameter<"unsigned", "0">:$fmt);
+  let assemblyFormat = "`<` $rows `,` $kblocks (`,` $fmt^)? `>`";
   let genVerifyDecl = 1;
 }
 
