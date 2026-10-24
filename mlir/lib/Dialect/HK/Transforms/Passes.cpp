@@ -180,6 +180,12 @@ struct VerifyPass : public mlir::hk::impl::HKVerifyBase<VerifyPass> {
     WalkResult dt = f.walk([&](Operation *op) {
       auto check = [&](Value v) {
         auto t = dyn_cast<RegTileType>(v.getType());
+        if (t && t.getElementType().isInteger(8) && !tgt->hasMma("i8")) {
+          op->emitError() << nameOf(v) << " is an i8 register tile, and "
+                          << archOf(f) << " has no int8 matrix instruction hk "
+                          << "uses; load it into an fp32 tile instead." << atLoc(op);
+          return false;
+        }
         if (!t || !isFp8(t.getElementType()) ||
             tgt->hasMma(dtypeName(t.getElementType())))
           return true;

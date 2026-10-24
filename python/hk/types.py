@@ -40,10 +40,10 @@ bf16 = DType("bf16", 16, "bf16", "float")
 fp16 = DType("fp16", 16, "half", "float")
 fp32 = DType("fp32", 32, "float", "float")
 i32 = DType("i32", 32, "int", "int")
-#: A storage type only. gfx1100 has no int8 WMMA and include/rdna3 has no
-#: rt<int8>, so `hk.GL[i8]` is legal and `hk.rt(i8, ...)` is not -- an int8
-#: tensor is something you quantize into and dequantize out of, and the
-#: arithmetic in between happens in fp32.
+#: int8: a storage type, and on gfx1100 a WMMA operand -- v_wmma_i32_16x16x16_iu8
+#: runs at the f16 rate with the f16 layout (this used to say gfx1100 had no
+#: int8 WMMA; it does). An i8 register tile is a row-layout operand loaded from
+#: an i8 shared tile; its products accumulate into an i32 tile.
 i8 = DType("i8", 8, "int8", "int")
 #: The two OCP fp8 formats, as WMMA operands. Only gfx1201 has an fp8 WMMA
 #: (v_wmma_f32_16x16x16_{fp8,bf8}_{fp8,bf8}); on gfx1100 these are storage
@@ -156,7 +156,7 @@ class RegTileType(Type):
                         f"{', '.join(map(str, STRIDED_FRAGS))}")
         # fp8 is let through here and judged per kernel by the hk-verify pass, which
         # knows the target: gfx1201 has fp8 WMMA tiles, gfx1100 has none.
-        if self.dtype.bits < 16 and self.dtype not in FP8:
+        if self.dtype.bits < 16 and self.dtype not in FP8 and self.dtype.name != "i8":
             raise TypeError(
                 f"there is no {self.dtype} register tile. include/rdna3 defines "
                 f"rt_base only for 16- and 32-bit elements -- gfx1100 has no "
