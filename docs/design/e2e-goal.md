@@ -113,11 +113,14 @@ Status (2026-10-24, evening):
   (rotation, per-row quant, int8 GEMM, dequant epilogue) is 1.18x hk's bf16 GEMM
   at H3's 14720x21504x5376 and at parity at Qwen's shapes. The `hk` backend is in
   `hk.integration.sglang_diffusion`; H3 end to end is being measured.
-- **T-SA**: the controlled experiment's Triton arm finished in 29 minutes:
-  correct at round 1, final 1.48x the reference and 1.15x hk's bf16 attention
-  (82 TF/s-equivalent, INT8 QK^T on the iu8 WMMA). The hk arm met the same
-  `dsl` wall at round 0 (no int8 tile) and is still running under the contract
-  that forbids changing hk.
+- **T-SA, the controlled experiment** (`~/hk-dx/kda/runs/sage-experiment-report.md`):
+  both arms correct at round 1 and at the same speed in the end -- hk 1.50x the
+  reference, Triton 1.48x (both ~1.15x hk's bf16 attention) -- but the hk arm took
+  77 minutes and $12.8 against Triton's 29 minutes and $3.2, and got there only by
+  injecting two C++ helpers into hk's generated source, because hk refused int8
+  tiles. Verdict for this kernel: the workflow and harness held; the DSL's gap
+  was decisive (now closed on `claude/rdna3-int8`; a rerun of the hk arm there is
+  the obvious next experiment).
 
 ## How the kernels are built: one task workspace each (KDA-style)
 
