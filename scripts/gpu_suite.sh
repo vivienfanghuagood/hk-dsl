@@ -38,9 +38,9 @@ rest=$(ls $G/test_*.py | grep -v -E "test_(gemm|autotune|attn|sdpa|decode_gemm|p
 # strips had preloaded twins: the rest in one process per GPU-slot-sized share, at least two.
 set -- $rest
 nrest=$(( ${#gpus[@]} > 2 ? ${#gpus[@]} : 2 ))
+chunk=$(( ($# + nrest - 1) / nrest ))      # contiguous shares: two of them are the old halves
 for ((i = 0; i < nrest; i++)); do
-    share=()
-    for ((j = i + 1; j <= $#; j += nrest)); do share+=("${!j}"); done
+    share=("${@:$((i * chunk + 1)):$chunk}")
     [ ${#share[@]} -gt 0 ] && group "rest$([ $i -gt 0 ] && echo $((i + 1)))" "${share[@]}"
 done
 group dx tests/dx            # the DX suite (bench/dx): every task and solution on small shapes
