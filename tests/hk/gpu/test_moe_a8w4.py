@@ -183,3 +183,84 @@ def test_stage2_pairs_matches_per_step_scales(mt, pp, I):
     got = M.stage2(hq, mxfp8.aiter_scales(hs), wl, wsl, tiles, mt=mt, pp=pp, depth=2, pairs=True)
     live = pairs >= 0
     assert torch.equal(got[live], ref[live])
+
+
+def _aiter_like_sort(ids, n_experts, bm):
+    """AITER moe_sorting's outputs, in torch: sorted ids (token | choice << 24, padding token = M),
+    per-block experts, num_valid -- each expert's pairs in token order, padded to bm rows."""
+    m, topk = ids.shape
+    flat = ids.reshape(-1).long()
+    rows, eids = [], []
+    for e in range(n_experts):
+        p = torch.nonzero(flat == e).view(-1)
+        if p.numel() == 0:
+            continue
+        v = ((p // topk) | ((p % topk) << 24)).to(torch.int32)
+        pad = -v.numel() % bm
+        v = torch.cat([v, torch.full((pad,), m, dtype=torch.int32, device=ids.device)])
+        rows.append(v)
+        eids += [e] * (v.numel() // bm)
+    sid = torch.cat(rows)
+    nvalid = sid.numel()
+    sid = torch.cat([sid, torch.full((2 * bm,), m, dtype=torch.int32, device=ids.device)])  # slack
+    se = torch.tensor(eids + [0, 0], dtype=torch.int32, device=ids.device)
+    nv = torch.tensor([nvalid, m], dtype=torch.int32, device=ids.device)
+    return sid, se, nv
+
+
+@pytest.mark.parametrize("mt,pp1,pp2", [(2, 3, 4), (4, 3, 2), (6, 3, 4)])
+def test_sorted_stages_match_dequant(mt, pp1, pp2):
+    """stage1_sorted / stage2_sorted on AITER-style sort metadata, x gathered in the kernel, y2
+    scattered choice-major and summed by reduce: the dequantized MoE."""
+    from hk.ops import mxfp8
+
+    torch.manual_seed(5)
+    E, I, K, D, T, topk, L = 6, 768, 512, 256, 77, 2, 10.0
+    dev = "cuda"
+    w1 = torch.randint(0, 256, (E, 2 * I, K // 2), dtype=torch.uint8)
+    w1s = torch.randint(122, 132, (E * 2 * I, K // 32), dtype=torch.uint8)
+    w2 = torch.randint(0, 256, (E, D, I // 2), dtype=torch.uint8)
+    w2s = torch.randint(122, 132, (E * D, I // 32), dtype=torch.uint8)
+    hidden = torch.randn(T, K, device=dev, dtype=torch.bfloat16)
+    ids = torch.stack([torch.randperm(E - 1)[:topk] for _ in range(T)]).to(dev)
+    wt = torch.rand(T, topk, device=dev)
+    sid, se, nv = _aiter_like_sort(ids, E, 16 * mt)
+    xq, xs = M.mx_quant(hidden)
+    tok = (sid & 0xFFFFFF).long()
+    xs_sorted = torch.full((sid.numel(), K // 32), 127, dtype=torch.uint8, device=dev)
+    live = tok < T
+    xs_sorted[live] = xs[tok[live]]
+    h = M.stage1_sorted(xq, mxfp8.aiter_scales(xs_sorted), M.aiter_layout_w13(w1).to(dev),
+                        M.aiter_layout_w13_scale(w1s, E).to(dev), sid, se, nv, inter=I, mt=mt,
+                        pp=pp1, limit=L)
+    # reference stage 1 on the same rows
+    b = w1.long()
+    w1d = torch.stack([E2M1[b & 15], E2M1[b >> 4]], -1).reshape(E, 2 * I, K)
+    w1d = (w1d * torch.pow(2.0, w1s.float() - 127).view(E, 2 * I, K // 32).repeat_interleave(32, -1)).to(dev)
+    xd = xq.float() * torch.pow(2.0, xs.float() - 127).repeat_interleave(32, 1)
+    nvalid = int(nv[0])
+    blk_e = se.long().repeat_interleave(16 * mt)[:nvalid]
+    lv = live[:nvalid]
+    gu = torch.einsum("pk,pnk->pn", xd[tok[:nvalid][lv]], w1d[blk_e[lv]])
+    g, u = gu[:, :I].clamp(max=L), gu[:, I:].clamp(-L, L)
+    href = g * torch.sigmoid(g) * u
+    got = h[:nvalid][lv].float()
+    assert ((got - href).abs().max() / href.abs().max()).item() < 1e-2
+    # stage 2 + reduce
+    hq, hs = M.mx_quant(h)
+    sw = torch.zeros(sid.numel(), device=dev)
+    sw[:nvalid][lv] = wt[tok[:nvalid][lv], (sid[:nvalid][lv] >> 24).long()]
+    y2 = M.stage2_sorted(hq, mxfp8.aiter_scales(hs), M.aiter_layout_w2(w2).to(dev),
+                         M.aiter_layout_w2_scale(w2s).to(dev), sid, se, nv, sw, T, topk, E,
+                         mt=mt, pp=pp2)
+    out = M.reduce(y2, None, wt, T, inv=M.identity(T, topk, dev), wrow=sw.view(-1, 1),
+                   weighted=False)
+    assert torch.equal(out, M.reduce(y2, None, wt, T, dense=True))
+    b2 = w2.long()
+    w2d = torch.stack([E2M1[b2 & 15], E2M1[b2 >> 4]], -1).reshape(E, D, I)
+    w2d = (w2d * torch.pow(2.0, w2s.float() - 127).view(E, D, I // 32).repeat_interleave(32, -1)).to(dev)
+    hd = hq.float() * torch.pow(2.0, hs.float() - 127).repeat_interleave(32, 1)
+    yr = torch.einsum("pk,pnk->pn", hd[:nvalid][lv], w2d[blk_e[lv]]) * sw[:nvalid][lv, None]
+    ref = torch.zeros(T, D, device=dev)
+    ref.index_add_(0, tok[:nvalid][lv], yr)
+    assert ((out.float() - ref).abs().max() / ref.abs().max()).item() < 1e-2

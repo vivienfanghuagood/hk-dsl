@@ -489,11 +489,14 @@ def stage2(hq, hs, w2, w2_scale, tiles, *, mt: int = 4, pp: int = 4, depth: int 
     return y
 
 
-def reduce_kernel(name: str, *, cb: int = 128, topk: int = 6, weighted: bool = True):
+def reduce_kernel(name: str, *, cb: int = 128, topk: int = 6, weighted: bool = True,
+                  dense: bool = False):
     """out [M, D] bf16: row t = sum over k < topk, in order, of w[r] * y[r], r = inv[k * M + t]
     (fp32), 16 tokens x `cb` columns a warp. inv: k-major [topk * M] int32, a (token, choice)'s
     row of y; w: [P, 1] fp32, each row of y's routing weight (AITER's sorted_weights).
-    weighted=False: y's rows already carry their weights (stage2(wrow=)); w is not read."""
+    weighted=False: y's rows already carry their weights (stage2(wrow=)); w is not read.
+    dense: y is stage2_sorted's [topk * M, D], choice-major -- row k * M + t read by a plain
+    load (inv is not read)."""
     import hk  # noqa: PLC0415
 
     ty_y = hk.RT(bf16, TILE, cb, "row")
@@ -506,7 +509,10 @@ def reduce_kernel(name: str, *, cb: int = 128, topk: int = 6, weighted: bool = T
         acc = hk.zeros(hk.RT(fp32, TILE, cb, "row"))
         for k in range(topk):
             at = k * m + t0
-            yt = y.gather(ty_y, inv, at, count=(k + 1) * m, col=c0)
+            if dense:
+                yt = y[hk.elem_coord(0, 0, at, c0)].load(ty_y, bounded=(k + 1) * m - at)
+            else:
+                yt = y.gather(ty_y, inv, at, count=(k + 1) * m, col=c0)
             if weighted:
                 # a row's weight is element 0 of its gathered row of the (P, 1) view
                 wt = w.gather(ty_w, inv, at, count=(k + 1) * m)
@@ -522,9 +528,9 @@ def reduce_kernel(name: str, *, cb: int = 128, topk: int = 6, weighted: bool = T
 
 
 @functools.lru_cache(maxsize=None)
-def _reduce(cb: int, topk: int, weighted: bool = True):
-    return reduce_kernel(f"moe_a8w4_reduce_cb{cb}_k{topk}" + ("" if weighted else "_u"), cb=cb,
-                         topk=topk, weighted=weighted)
+def _reduce(cb: int, topk: int, weighted: bool = True, dense: bool = False):
+    return reduce_kernel(f"moe_a8w4_reduce_cb{cb}_k{topk}" + ("" if weighted else "_u")
+                         + ("_d" if dense else ""), cb=cb, topk=topk, weighted=weighted, dense=dense)
 
 
 def inverse(pairs, m: int, topk: int):
@@ -544,10 +550,12 @@ def row_weights(pairs, weights):
     return (w * (pairs >= 0)).view(-1, 1)
 
 
-def reduce(y, pairs, weights, m: int, *, inv=None, wrow=None, cb: int = 0, weighted: bool = True):
+def reduce(y, pairs, weights, m: int, *, inv=None, wrow=None, cb: int = 0, weighted: bool = True,
+           dense: bool = False):
     """out [m, D] bf16 = sum over each token's topk choices k (in order) of weights[t, k] * y[row of
     (t, k)], in fp32 -- an hk kernel (D a multiple of 4 * cb; cb 0: the widest of 128..16).
-    weighted=False: y from stage2(wrow=), its rows already weighted."""
+    weighted=False: y from stage2(wrow=), its rows already weighted. dense: y is
+    stage2_sorted's choice-major y2 (weighted=False implied; pairs/inv unused)."""
     import torch  # noqa: PLC0415
 
     topk = weights.shape[1]
@@ -555,10 +563,14 @@ def reduce(y, pairs, weights, m: int, *, inv=None, wrow=None, cb: int = 0, weigh
     cb = cb or next((c for c in (128, 64, 32, 16) if d % (4 * c) == 0), 128)
     if d % (4 * cb):
         raise ValueError(f"moe_a8w4.reduce: D={d} not a multiple of {4 * cb}")
+    if dense:
+        weighted = False
+        inv = identity(m, topk, y.device) if inv is None else inv
+        wrow = y.new_zeros((1, 1), dtype=torch.float32) if wrow is None else wrow
     inv = inverse(pairs, m, topk) if inv is None else inv
     wrow = row_weights(pairs, weights) if wrow is None else wrow
     out = torch.empty((m, d), device=y.device, dtype=torch.bfloat16)
-    _reduce(cb, topk, weighted)(y, inv.view(1, -1), wrow, out)
+    _reduce(cb, topk, weighted, dense)(y, inv.view(1, -1), wrow, out)
     return out
 
 
@@ -586,6 +598,176 @@ def aiter_layout_w2_scale(s):
     from .mxfp8 import aiter_scales  # noqa: PLC0415
 
     return aiter_scales(s)
+
+
+def _sorted_ring(stage: int, name: str, *, group_rows: int, mt: int, pp: int, k: int,
+                 limit: float = 10.0, topk: int = 6, warps: int = 4, xcd: bool = True):
+    """Stage 1 or 2 on AITER's own MoE sort (moe_sorting with block_size 16 * mt): a round is one
+    sorted block -- its expert sorted_expert_ids[b], its rows sorted_ids[b * BM ..] -- so nothing
+    is decoded or gathered on the host. The xsplit ring with two-step 32-row scale dwords (pairs),
+    depth 2, any K (`k`, static: a four-step body and a tail).
+
+    Stage 1 takes x in token order (FP8, AITER's fused_dynamic_mxfp8_quant_moe_sort) and gathers
+    a block's rows with the LDS DMA itself; its scales are that function's sorted output (the
+    layout of mxfp8.aiter_scales). h comes out in sorted order, a whole block at a time.
+    Stage 2 takes h quantized in sorted order and stores each row, weighted by its sorted
+    routing weight, to y2 [topk * M, D] at choice * M + token (padding nowhere); reduce() over an
+    identity index then only sums. Blocks past num_valid_ids run no K loop."""
+    import hk  # noqa: PLC0415
+
+    GR = group_rows
+    KS = 128
+    BM = TILE * mt
+    R = (32 if stage == 1 else TILE) * pp
+    lim = float(limit)
+    steps = k // KS
+    if mt % 2 or k % KS or steps < 4:
+        raise ValueError(f"_sorted_ring: an even mt and K a multiple of 128, >= 512 (mt={mt}, K={k})")
+    st_x = hk.ST(fp8e4m3, BM, KS)
+    t_w = hk.RT(fp8e4m3, R, KS)
+    t_x1 = hk.RT(fp8e4m3, TILE, KS)
+    t_c1 = hk.RT(fp32, R, TILE, "col")
+    t_wv = hk.RT(fp32, TILE, R, "row")
+    XGR = 1 << 24
+    lay = "aiter_gate_up" if stage == 1 else "aiter"
+
+    def body(x: hk.Tensor[fp8e4m3], xs: hk.Tensor[i8], w: hk.Tensor[i8], ws: hk.Tensor[i8],
+             sids: hk.Tensor[i32], seids: hk.Tensor[i32], nv: hk.Tensor[i32], wv: hk.Tensor[fp32],
+             out: hk.Tensor[bf16]):
+        g = hk.group(warps)
+        Xs = hk.lds.alloc(st_x, count=2, name="Xs")
+        nblk = out.cols // (TILE * pp * warps)
+        wg = hk.arch.block_idx.x
+        if xcd:
+            total = seids.cols * nblk
+            moved = (wg % NUM_XCDS) * (total // NUM_XCDS) + wg // NUM_XCDS
+            whole = 1 - hk.min(total % NUM_XCDS, 1)
+            wg = whole * moved + (1 - whole) * wg
+        blk = wg % nblk
+        b = wg // nblk
+        e = seids[hk.elem_coord(0, 0, 0, b)].load_scalar()
+        valid = nv[hk.elem_coord(0, 0, 0, 0)].load_scalar()
+        live = hk.min(hk.max(valid - b * BM, 0), 1)
+        r0 = b * BM
+        wid = hk.arch.warp_id()
+        col0 = (blk * warps + wid) * pp * TILE
+        row_w = e * GR + col0
+        Cs = [hk.zeros(t_c1) for _ in range(mt)]
+        X1 = hk.zeros(t_x1)
+        W = [hk.zeros(t_w) for _ in range(2)]
+        S = [hk.load_mx_scales(ws, R, 8, row_w, 0, layout=lay, group_rows=GR) for _ in range(2)]
+        SX = [hk.load_mx_scales(xs, BM, 8, 0, 0, layout="aiter", group_rows=XGR) for _ in range(2)]
+
+        def fetch(kc, slot, sset=None):
+            if stage == 1:
+                g.load(Xs[slot], x.at[0, kc * KS], wait=False, gather=(sids, r0), staged=BM)
+            else:
+                g.load(Xs[slot], x.at[r0, kc * KS], wait=False)
+            hk.load_fp4_frags(t_w, w, row_w, kc, group_rows=GR, gate_up=stage == 1, into=W[slot])
+            if sset is not None:
+                hk.load_mx_scales(ws, R, 8, row_w, kc * 4, layout=lay, group_rows=GR, into=S[sset])
+                hk.load_mx_scales(xs, BM, 8, r0, kc * 4, layout="aiter", group_rows=XGR,
+                                  into=SX[sset])
+
+        def step(kc, u, prefetch=True):
+            cur = u % 2
+            g.wait_for(Xs[cur], exact=True)
+            hk.arch.barrier()
+            if prefetch:
+                nu = u + 1
+                fetch(kc + 1, nu % 2, sset=(nu // 2) % 2 if nu % 2 == 0 else None)
+            ss, par = (u // 2) % 2, u % 2
+            for ti in range(mt):
+                Xs[cur].subtile(TILE, KS, ti, 0).load(t_x1, wait=False, into=X1)
+                hk.lds.wait_for(X1)
+                hk.mma_ABt_mx(W[cur], X1, Cs[ti], S[ss], SX[ss], a_fmt="fp4",
+                              sa_at=(0, par), sb_at=(ti, par), into=Cs[ti])
+            hk.arch.sched_barrier()
+
+        for _ in range(live):
+            if stage == 1:
+                g.gather_prep(sids, r0, BM)      # the block's rows, in LDS: no vmcnt wait in the loop
+            fetch(0, 0, sset=0)
+            tail = 4 + steps % 4
+            for kk in hk.range((steps - tail) // 4):        # a run-time loop: K is static here
+                for u in range(4):
+                    step(kk * 4 + u, u)
+            base = steps - tail
+            for jj in range(tail):
+                step(base + jj, jj % 4, prefetch=jj < tail - 1)
+            hk.arch.barrier()
+            for i in range(mt):
+                if stage == 1:
+                    for j in range(pp):
+                        gt = Cs[i].subtile(TILE, 2 * j).minimum(lim)
+                        up = Cs[i].subtile(TILE, 2 * j + 1).maximum(-lim).minimum(lim)
+                        out[hk.elem_coord(0, 0, r0 + i * TILE, col0 + j * TILE)].store(
+                            hk.transpose(gt.silu() * up))
+                else:
+                    o = hk.transpose(Cs[i])
+                    wt = wv[hk.elem_coord(0, 0, r0 + i * TILE, 0)].load(t_wv)
+                    wt.right_fill_(1, 0.0)
+                    o = o * wt.sum(axis=1)[:, None]
+                    out.scatter(o, sids, r0 + i * TILE, col=col0, sort_topk=topk)
+
+    body.__name__ = name
+    return hk.kernel(body, arch="gfx950", warps=warps, name=name, max_vgprs=2048 // warps,
+                     grid=lambda p: (p.seids.cols * (p.out.cols // (TILE * pp * warps)), 1, 1))
+
+
+@functools.lru_cache(maxsize=None)
+def _sorted(stage: int, group_rows: int, mt: int, pp: int, k: int, limit: float, topk: int):
+    return _sorted_ring(stage, f"moe_a8w4_s{stage}s_gr{group_rows}_mt{mt}_pp{pp}_k{k}_t{topk}",
+                        group_rows=group_rows, mt=mt, pp=pp, k=k, limit=limit, topk=topk)
+
+
+def stage1_sorted(xq_tok, xs_sorted, w13, w13_scale, sorted_ids, sorted_expert_ids, num_valid, *,
+                  inter: int, mt: int, pp: int = 3, limit: float = 10.0):
+    """h [len(sorted_ids), inter] bf16 in AITER's sorted order (moe_sorting with block_size
+    16 * mt): xq_tok [M, K] FP8 in token order and xs_sorted its sorted 32-row-layout scales
+    (aiter's fused_dynamic_mxfp8_quant_moe_sort). See _sorted_ring."""
+    import torch  # noqa: PLC0415
+
+    if inter % (TILE * pp * 4):
+        raise ValueError(f"moe_a8w4.stage1_sorted: inter={inter} not a multiple of {TILE * pp * 4}")
+    p = sorted_ids.numel()
+    h = torch.empty((p, inter), device=xq_tok.device, dtype=torch.bfloat16)
+    dummy = h.new_zeros((1, 1), dtype=torch.float32)
+    _sorted(1, 2 * inter, mt, pp, xq_tok.shape[1], float(limit), 6)(
+        xq_tok, xs_sorted.view(torch.int8), w13.view(torch.int8), w13_scale.view(torch.int8),
+        sorted_ids.view(1, -1), sorted_expert_ids.view(1, -1), num_valid.view(1, -1), dummy, h)
+    return h
+
+
+def stage2_sorted(hq, hs_sorted, w2, w2_scale, sorted_ids, sorted_expert_ids, num_valid,
+                  sorted_weights, m: int, topk: int, n_experts: int, *, mt: int, pp: int = 4):
+    """y2 [topk * m, D] bf16, choice-major: row choice * m + token = weight * (h_q . w2^T) of that
+    pair (hq [P, I] FP8 and hs_sorted its 32-row-layout scales, both in sorted order).
+    reduce(y2, ..., inv=identity(m, topk), weighted=False) sums it."""
+    import torch  # noqa: PLC0415
+
+    d = w2.shape[0] // n_experts
+    if d % (TILE * pp * 4):
+        raise ValueError(f"moe_a8w4.stage2_sorted: D={d} not a multiple of {TILE * pp * 4}")
+    y2 = torch.empty((topk * m, d), device=hq.device, dtype=torch.bfloat16)   # every pair is one row
+    _sorted(2, d, mt, pp, hq.shape[1], 10.0, topk)(
+        hq, hs_sorted.view(torch.int8), w2.view(torch.int8), w2_scale.view(torch.int8),
+        sorted_ids.view(1, -1), sorted_expert_ids.view(1, -1), num_valid.view(1, -1),
+        sorted_weights.view(-1, 1).float(), y2)
+    return y2
+
+
+_IDENT = {}
+
+
+def identity(m: int, topk: int, device):
+    """The k-major identity index list reduce() takes for stage2_sorted's y2 (cached)."""
+    import torch  # noqa: PLC0415
+
+    key = (m, topk, str(device))
+    if key not in _IDENT:
+        _IDENT[key] = torch.arange(m * topk, dtype=torch.int32, device=device)
+    return _IDENT[key]
 
 
 def stage1_dma_kernel(name: str, *, group_rows: int, mt: int = 4, pp: int = 4, depth: int = 4,

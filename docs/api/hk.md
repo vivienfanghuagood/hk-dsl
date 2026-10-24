@@ -1210,12 +1210,17 @@ row: a MoE's top-k, whose sorted list counts (token, choice) pairs.
 #### `Global.scatter`
 
 ```python
-Global.scatter(self, value: Tile, ids: Global, at, *, count=None, col=0) -> None
+Global.scatter(self, value: Tile, ids: Global, at, *, count=None, col=0, sort_topk: int = 0) -> None
 ```
+
+*Changed after 0.4.0*: new parameter `sort_topk`
 
 Rows by index: tile row r goes to row `ids[at + r]`, from column
 `col`; an index outside the tensor, or a position at or past
-`count`, writes nothing. Two rows naming one row race.
+`count`, writes nothing. Two rows naming one row race. `sort_topk`
+> 0: `ids` are AITER's MoE sort ids (token | choice << 24) and this
+tensor is [sort_topk * M, ...] choice-major -- row r goes to row
+choice * M + token, and padding (token >= M) nowhere.
 
 #### `Global.type (property)`
 

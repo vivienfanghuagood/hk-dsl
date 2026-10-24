@@ -451,6 +451,13 @@ LogicalResult GroupLoadOp::verify() {
                        "descriptor it narrows");
   if (getNontemporal() && !getAsync())
     return emitOpError("nontemporal: the cache policy is the async copy's");
+  if (bool(getGatherIds()) != bool(getGatherAt()))
+    return emitOpError("gather: the index list and the position in it, both");
+  if (getGatherIds() && (!getAsync() || getRows()))
+    return emitOpError("gather: an async copy's rows by index (no row limit: an index past the "
+                       "tensor reads zero)");
+  if (getGatherIds() && !getGatherIds().getType().getElementType().isInteger(32))
+    return emitOpError("gather: the index list is int32");
   return success();
 }
 

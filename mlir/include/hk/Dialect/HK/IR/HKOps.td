@@ -212,10 +212,27 @@ def HK_GatherRowsOp : HK_Op<"gather_rows"> {
   let hasVerifier = 1;
 }
 
+def HK_GatherPrepOp : HK_Op<"gather_prep"> {
+  let summary = "stage a gathered copy's source rows in LDS (ids[at..at+rows) & 0xFFFFFF), barrier";
+  let description = [{
+    The workgroup reads `rows` sort ids from `ids` at `at` into a static LDS
+    array, masks them to rows (AITER's token | choice << 24), and passes a
+    barrier; hk.group_load with gather_staged = rows reads them from there.
+  }];
+  let arguments = (ins HK_GlobalType:$ids, I32:$at, I64Attr:$rows);
+  let assemblyFormat = "$ids `[` $at `]` attr-dict `:` qualified(type($ids))";
+}
+
 def HK_ScatterRowsOp : HK_Op<"scatter_rows"> {
   let summary = "row-layout register tile -> global, row r to row idx[at + r]";
+  let description = [{
+    `sort_topk` > 0: idx holds AITER's MoE sort ids (token | choice << 24) and
+    dst is [sort_topk * M, ...], choice-major: row r goes to row choice * M +
+    token, and nowhere for a token >= M (the sort's padding).
+  }];
   let arguments = (ins HK_GlobalType:$dst, HK_RegTileType:$value,
-                       HK_GlobalType:$idx, I32:$at, I32:$count, I32:$col);
+                       HK_GlobalType:$idx, I32:$at, I32:$count, I32:$col,
+                       DefaultValuedAttr<I64Attr, "0">:$sort_topk);
   let assemblyFormat = [{
     $value `,` $dst `[` $idx `[` $at `,` $count `]` `,` $col `]` attr-dict `:`
     qualified(type($value)) `,` qualified(type($dst)) `,` qualified(type($idx))
@@ -448,7 +465,7 @@ def HK_VmWaitOp : HK_Op<"vm_wait"> {
   let assemblyFormat = "$keep attr-dict";
 }
 
-def HK_GroupLoadOp : HK_Op<"group_load"> {
+def HK_GroupLoadOp : HK_Op<"group_load", [AttrSizedOperandSegments]> {
   let summary = "global -> LDS by the whole workgroup, issued and waited unless `async`";
   let description = [{
     `async` (gfx950): the copy is the DMA, buffer_load ... lds, issued and
@@ -461,13 +478,21 @@ def HK_GroupLoadOp : HK_Op<"group_load"> {
     rows past it read zero, as past the tensor's last row.
     `nontemporal` (async only): the copy reads past the caches' keeping
     (sc0 nt), for data read once.
+    `gather_ids` / `gather_at` (async only): the tile's rows come by index --
+    row r is the source's row `gather_ids[gather_at + r] & 0xFFFFFF` (AITER's
+    MoE sort ids, token | choice << 24; its padding names a row past the
+    tensor's end and reads zero); `idx` gives the column, its row is ignored.
+    `gather_staged` N > 0: the rows were staged in LDS by hk.gather_prep (N
+    rows): read from there, on lgkmcnt -- not from the index list, on vmcnt.
   }];
   let arguments = (ins HK_SharedTileType:$dst, HK_GlobalType:$src,
                        HK_CoordType:$idx, Optional<I32>:$rows,
+                       Optional<HK_GlobalType>:$gather_ids, Optional<I32>:$gather_at,
                        I64Attr:$threads, UnitAttr:$async,
-                       UnitAttr:$nontemporal);
+                       UnitAttr:$nontemporal, DefaultValuedAttr<I64Attr, "0">:$gather_staged);
   let assemblyFormat = [{
-    $src `[` $idx `]` (`rows` $rows^)? `into` $dst attr-dict `:` qualified(type($src)) `,`
+    $src `[` $idx `]` (`rows` $rows^)? (`gather` $gather_ids^ `[` $gather_at `]` `:` qualified(type($gather_ids)))?
+    `into` $dst attr-dict `:` qualified(type($src)) `,`
     qualified(type($idx)) `into` qualified(type($dst))
   }];
   let hasVerifier = 1;

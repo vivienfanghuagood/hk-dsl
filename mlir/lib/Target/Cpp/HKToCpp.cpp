@@ -1168,8 +1168,14 @@ private:
             name(o.getZs()) + ", " + name(o.getN0()) + ", " + name(o.getK0()) +
             ");");
         })
+        .Case([&](GatherPrepOp o) {
+          w("kittens::gather_prep<" + std::to_string(o.getRows()) + ">(" + name(o.getIds()) +
+            ", " + name(o.getAt()) + ");");
+        })
         .Case([&](ScatterRowsOp o) {
-          w("kittens::store_scatter(" + name(o.getDst()) + ", " +
+          w("kittens::store_scatter" +
+            (o.getSortTopk() ? "<" + std::to_string(o.getSortTopk()) + ">" : std::string()) +
+            "(" + name(o.getDst()) + ", " +
             name(o.getValue()) + ", " + name(o.getIdx()) + ", " +
             name(o.getAt()) + ", " + name(o.getCount()) + ", " +
             name(o.getCol()) + ");");
@@ -1333,6 +1339,14 @@ private:
           w("kittens::vm_wait<" + std::to_string(o.getKeep()) + ">();");
         })
         .Case([&](GroupLoadOp o) {
+          if (o.getAsync() && o.getGatherIds()) {
+            w("kittens::group_load_async_gather<" + std::to_string(o.getThreads() / tgt->wave) +
+              ", " + std::to_string(o.getGatherStaged()) +
+              ">(" + name(o.getDst()) + ", " + name(o.getSrc()) + ", " +
+              coordArg(o.getIdx(), tileCpp(o.getDst().getType())) + ", " +
+              name(o.getGatherIds()) + ", " + name(o.getGatherAt()) + ");");
+            return;
+          }
           if (o.getAsync()) {
             // hk/cdna.cuh: gfx950's DMA, left in flight on vmcnt until the
             // hk.group_wait_for hk-lds-pipeline counted.

@@ -910,6 +910,83 @@ __device__ inline static void group_load_async_rows(ST &dst, const strided_gl<U>
     }
 }
 
+/**
+ * group_load_async with the tile's rows by index: row r of the tile is the source's row
+ * ids[at + r] & 0xFFFFFF (AITER's MoE sort: token | choice << 24, padding = the token count, a
+ * row past the tensor that reads zero); idx gives the column. Same copies, offsets and lanes
+ * as group_load_async -- only a lane's row changes, so hk-lds-pipeline counts it the same.
+ */
+namespace detail {
+template<int N> __device__ inline int *hk_gather_rows_lds() {
+    __shared__ int rows[N];
+    return rows;
+}
+}  // namespace detail
+
+/**
+ * Stage the source rows of a gathered copy in LDS: rows[r] = ids[at + r] & 0xFFFFFF for r < N,
+ * read once by the whole workgroup, then a barrier. A gathered copy reading its rows from
+ * there (group_load_async_gather<NW, N>) waits on lgkmcnt for them, not on vmcnt -- a global
+ * load of a lane's row index would be a vmcnt wait, which retires every load in flight before
+ * it (in order on gfx950): the whole prefetch.
+ */
+template<int N, ducks::gl::all IL>
+__device__ inline static void gather_prep(const IL &ids, int at) {
+    int *rows = detail::hk_gather_rows_lds<N>();
+    const int *idp = reinterpret_cast<const int *>(ids.raw_ptr) + at;
+    for (int r = int(threadIdx.x); r < N; r += int(blockDim.x))
+        rows[r] = idp[r] & 0xFFFFFF;
+    __syncthreads();
+}
+
+template<int NW, int N = 0, ducks::st::all ST, typename U, ducks::coord::tile COORD, ducks::gl::all IL>
+__device__ inline static void group_load_async_gather(ST &dst, const strided_gl<U> &src,
+                                                      const COORD &idx, const IL &ids, int at) {
+    using T = typename ST::dtype;
+    static_assert(sizeof(T) == sizeof(U) && (sizeof(T) == 2 || sizeof(T) == 1),
+                  "16-bit or fp8 tiles of the global's own dtype");
+    static_assert(ST::underlying_subtile_bytes_per_thread == 16, "the 16-byte DMA needs a 16-byte lane run");
+    static_assert(sizeof(typename IL::dtype) == 4, "int32 row indices");
+    constexpr int PER_WARP = 16 * WARP_THREADS;
+    constexpr int PER_CALL = PER_WARP * NW;
+    constexpr int BYTES = ST::rows * ST::cols * int(sizeof(T));
+    static_assert(BYTES % PER_WARP == 0, "a whole number of copies per warp");
+    constexpr int FULL = BYTES / PER_CALL;
+    constexpr int PART = (BYTES % PER_CALL) / PER_WARP;
+    const auto unit = idx.template unit_coord<2, 3>();
+    const int rs = int(src.template stride<2>());
+    // the whole slab from row 0 and the tile's column: an index past the last row reads zero
+    const detail::hk_i32x4 r = detail::hk_copy_srsrc(src, unit.b, unit.d, 0, unit.c, 0x7FFFFFFF);
+    const int *idp = reinterpret_cast<const int *>(ids.raw_ptr) + at;
+    const int lane = laneid();
+    const int w = int(threadIdx.x / WARP_THREADS) % NW;
+    const uint32_t lds = __builtin_amdgcn_readfirstlane(
+        uint32_t(reinterpret_cast<uintptr_t>(&dst.data[0])) + w * PER_WARP);
+    auto copy = [&](int i) {
+        const int byte = lane * 16 + w * PER_WARP + i * PER_CALL;
+        const int sub = byte / ST::underlying_subtile_bytes;
+        const int in = byte % ST::underlying_subtile_bytes;
+        const uint32_t sw = ST::swizzle({in / ST::underlying_subtile_row_bytes,
+                                         (in % ST::underlying_subtile_row_bytes) / int(sizeof(T))});
+        const int row = int(sw) / ST::underlying_subtile_row_bytes +
+                        (sub / ST::underlying_subtiles_per_row) * ST::underlying_subtile_rows;
+        const int col = (int(sw) % ST::underlying_subtile_row_bytes) / int(sizeof(T)) +
+                        (sub % ST::underlying_subtiles_per_row) * ST::underlying_subtile_cols;
+        int src_row;
+        if constexpr (N > 0) src_row = detail::hk_gather_rows_lds<N>()[row];   // gather_prep's
+        else src_row = idp[row] & 0xFFFFFF;
+        detail::hk_buf_ld_lds(r, (detail::hk_lds_ptr)(uintptr_t)(lds + i * PER_CALL), 16,
+                              (src_row * rs + col) * int(sizeof(T)), 0, 0, 0);
+    };
+    #pragma unroll
+    for (int i = 0; i < FULL; i++)
+        copy(i);
+    if constexpr (PART > 0) {
+        if (__builtin_amdgcn_readfirstlane(w) < PART)
+            copy(FULL);
+    }
+}
+
 template<int NW, bool NT = false, ducks::st::all ST, typename U, ducks::coord::tile COORD>
 __device__ inline static void group_load_async(ST &dst, const strided_gl<U> &src, const COORD &idx) {
     group_load_async_rows<NW, NT>(dst, src, idx, 0x7FFFFFFF);
@@ -1944,9 +2021,11 @@ __device__ inline static void load_gather(RT &dst, const GL &src, const IL &idx,
  * position at or past `count`, writes nothing. Two tile rows naming one row
  * race; which lands is unspecified.
  */
-template<ducks::rt::all RT, ducks::gl::all GL, ducks::gl::all IL>
+template<int TOPK = 0, ducks::rt::all RT, ducks::gl::all GL, ducks::gl::all IL>
 __device__ inline static void store_scatter(const GL &dst, const RT &src, const IL &idx,
                                             int at, int count, int col) {
+    // TOPK > 0: idx holds AITER's MoE sort ids (token | choice << 24) and dst is [TOPK * M, ..]
+    // choice-major: the row is choice * M + token, nothing for a token >= M (padding)
     using F = detail::hk_frag<RT>;
     using T = typename F::T;
     using U = typename GL::dtype;
@@ -1957,7 +2036,11 @@ __device__ inline static void store_scatter(const GL &dst, const RT &src, const 
     const int lane = laneid();
     #pragma unroll
     for (int i = 0; i < RT::height; i++) {
-        const int g = detail::hk_gather_index<F::R>(idx, at, count, i, 1);
+        int g = detail::hk_gather_index<F::R>(idx, at, count, i, 1);
+        if constexpr (TOPK > 0) {
+            const int m = nrows / TOPK, tok = g & 0xFFFFFF;
+            g = (g < 0 || tok >= m) ? -1 : (g >> 24) * m + tok;
+        }
         const bool in = g >= 0 && g < nrows;
         const uint32_t row_off = in ? uint32_t(g) * row_bytes + uint32_t(col) * sizeof(U) : oob;
         #pragma unroll
