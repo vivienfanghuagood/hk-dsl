@@ -18,7 +18,7 @@ from hk.integration import vllm_moe_a8w4 as P  # noqa: E402
 
 
 def _inputs(m, e=384, inter=1152, k=5120, topk=6, seed=0):
-    # DeepSeek-V4.1-Flash's TP2 shapes: AITER has tuned kernels for them (others JIT-build CK)
+    # DeepSeek-V4.1-Flash's shapes (inter 1152 at TP2, 2304 at TP1): AITER has kernels for them
     from aiter.ops.shuffle import shuffle_scale, shuffle_weight
 
     g = torch.Generator(device="cuda").manual_seed(seed)
@@ -38,11 +38,12 @@ def _inputs(m, e=384, inter=1152, k=5120, topk=6, seed=0):
     return x, w1s, w2s, wt, ids, sc1, sc2
 
 
-def test_patched_fused_moe_routes_and_agrees():
+@pytest.mark.parametrize("inter", [1152, 2304], ids=["tp2", "tp1"])
+def test_patched_fused_moe_routes_and_agrees(inter):
     import aiter.fused_moe as afm
     from aiter import ActivationType, QuantType
 
-    x, w1, w2, wt, ids, s1, s2 = _inputs(2048)
+    x, w1, w2, wt, ids, s1, s2 = _inputs(2048, inter=inter)
     kw = dict(expert_mask=None, activation=ActivationType.Silu, quant_type=QuantType.per_1x32,
               doweight_stage1=False, w1_scale=s1, w2_scale=s2, swiglu_limit=10.0,
               gate_mode="interleave")

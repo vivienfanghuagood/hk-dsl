@@ -208,16 +208,18 @@ def _aiter_like_sort(ids, n_experts, bm):
     return sid, se, nv
 
 
-@pytest.mark.parametrize("mt,pp1,pp2,depth,pers", [(2, 3, 4, 2, 0), (4, 3, 2, 2, 0), (6, 3, 4, 2, 0),
-                                                   (4, 3, 4, 3, 0), (4, 3, 4, 2, 8), (2, 3, 2, 2, 16),
-                                                   (6, 3, 4, 2, 64)])
-def test_sorted_stages_match_dequant(mt, pp1, pp2, depth, pers):
+@pytest.mark.parametrize("mt,pp1,pp2,depth,pers,I", [(2, 3, 4, 2, 0, 768), (4, 3, 2, 2, 0, 768),
+                                                     (6, 3, 4, 2, 0, 768), (4, 3, 4, 3, 0, 768),
+                                                     (4, 3, 4, 2, 8, 768), (2, 3, 2, 2, 16, 768),
+                                                     (6, 3, 4, 2, 64, 768),
+                                                     (4, 3, 4, 2, 0, 1152), (4, 3, 4, 2, 0, 2304)])
+def test_sorted_stages_match_dequant(mt, pp1, pp2, depth, pers, I):
     """stage1_sorted / stage2_sorted on AITER-style sort metadata, x gathered in the kernel, y2
     scattered choice-major and summed by reduce: the dequantized MoE."""
     from hk.ops import mxfp8
 
     torch.manual_seed(5)
-    E, I, K, D, T, topk, L = 6, 768, 512, 256, 77, 2, 10.0
+    E, K, D, T, topk, L = 6, 512, 256, 77, 2, 10.0
     dev = "cuda"
     w1 = torch.randint(0, 256, (E, 2 * I, K // 2), dtype=torch.uint8)
     w1s = torch.randint(122, 132, (E * 2 * I, K // 32), dtype=torch.uint8)

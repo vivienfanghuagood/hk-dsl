@@ -1556,11 +1556,12 @@ __device__ inline static void load_fp4_frags(RT &dst, const GL &src, int row0, i
     static_assert(sizeof(typename GL::dtype) == 1, "packed FP4 bytes");
     const int lane = laneid();
     const uint32_t kbytes = uint32_t(src.template stride<2>());      // K/2 bytes a row
-    const uint8_t *base = reinterpret_cast<const uint8_t *>(src.raw_ptr);
-    const detail::hk_i32x4 r = detail::hk_srsrc(base, uint64_t(src.template shape<2>()) * kbytes);
     const int e = row0 / GR, lr = row0 % GR;
+    // A resource per expert, based in 64 bits: all experts' weights pass 4 GB (DeepSeek-V4.1's
+    // 384 x 4608 x 2560 B gate/up at TP1 is 4.5 GB), past a 32-bit offset and num_records.
+    const uint8_t *base = reinterpret_cast<const uint8_t *>(src.raw_ptr) + uint64_t(e) * GR * kbytes;
+    const detail::hk_i32x4 r = detail::hk_srsrc(base, uint64_t(GR) * kbytes);
     const uint32_t k0n = kbytes / 64u;
-    const uint32_t ebase = uint32_t(e) * uint32_t(GR) * kbytes;
     #pragma unroll
     for (int i = 0; i < RT::height; i++)
         #pragma unroll
@@ -1568,7 +1569,7 @@ __device__ inline static void load_fp4_frags(RT &dst, const GL &src, int row0, i
             uint32_t chunk;
             if constexpr (GU) chunk = (uint32_t(lr / 16 + i / 2) * 2u + uint32_t(i % 2)) * k0n + uint32_t(kc0 + s);
             else chunk = uint32_t(lr / 16 + i) * k0n + uint32_t(kc0 + s);
-            const uint32_t off = ebase + chunk * 1024u + uint32_t(lane) * 16u;
+            const uint32_t off = chunk * 1024u + uint32_t(lane) * 16u;
             const __uint128_t v = detail::hk_buf_ld128(r, off, 0, 0);
             __builtin_memcpy(&dst.tiles[i][s].data[0], &v, 16);
         }
