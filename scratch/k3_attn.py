@@ -126,10 +126,16 @@ def vt_kernel(name: str, warps: int = 2):
 
 
 def attn_kernel(name: str, *, kv_block: int = 32, warps: int = 8, qk_tiles: int = 2,
-                pv_tiles: int = 2, setprio: bool = True, max_vgprs: int = 256):
+                pv_tiles: int = 2, setprio: bool = True, max_vgprs: int = 256, stages: int = 1,
+                lazy: float = 0.0, _ablate: str = ""):
     """One workgroup a work unit (a 128-row Q block, or a KV part of one for the grid's tail).
     q: [1, 1, R, 128] bf16 (R = B*H*N rows); k: [1, G, N_kv, 128] bf16; v: [1, G, 128, N_kv] fp16
-    V^T (banded); o: [1, 1, R, 128] bf16; wp/wu/op/ml as the hk arm's (split plan, partials)."""
+    V^T (banded); o: [1, 1, R, 128] bf16; wp/wu/op/ml as the hk arm's (split plan, partials).
+    stages=2: two KV blocks in flight in registers (the loop unrolled by two over the buffer's slots,
+    a part's block count rounded up to even), so a block's commit waits only for its own loads.
+    lazy > 0: keep the running max stale until a row's block max exceeds it by more than `lazy`
+    (log2 units): P <= 2^lazy (fp16-safe for lazy <= 15), and the rescale of O and l -- 64 + 8
+    multiplies a lane -- runs on a handful of blocks instead of every block where some max moved."""
     head_dim = HEAD_DIM
     q_block = 16
     q_tile = q_block * warps
@@ -138,6 +144,9 @@ def attn_kernel(name: str, *, kv_block: int = 32, warps: int = 8, qk_tiles: int 
     kv_frags = kv_block // 16
     assert kv_block % (16 * qk_tiles) == 0 and d_frags % pv_tiles == 0 and kv_block % 32 == 0
     scale_l2e = head_dim ** -0.5 * math.log2(math.e)
+    assert stages in (1, 2)
+    # global loads a lane issues for one KV block (16 B each), K and V^T
+    lane_loads = 2 * (kv_block * head_dim * 2) // (warps * 32 * 16)
 
     st_k = hk.ST(bf16, kv_block, head_dim)
     st_vt = hk.ST(fp16, head_dim, kv_block)
@@ -153,8 +162,8 @@ def attn_kernel(name: str, *, kv_block: int = 32, warps: int = 8, qk_tiles: int 
         g = hk.group(warps)
         k_s = hk.lds.alloc(st_k, name="k_s")
         vt_s = hk.lds.alloc(st_vt, name="vt_s")
-        buf_k = g.stage_buffer(k_s, name="buf_k")
-        buf_vt = g.stage_buffer(vt_s, name="buf_vt")
+        buf_k = g.stage_buffer(k_s, depth=stages, name="buf_k")
+        buf_vt = g.stage_buffer(vt_s, depth=stages, name="buf_vt")
         gr_k = k_s.granules(name="gr_k")
         gr_vt = vt_s.granules(name="gr_vt")
 
@@ -171,6 +180,8 @@ def attn_kernel(name: str, *, kv_block: int = 32, warps: int = 8, qk_tiles: int 
         n_kv = k.rows
         kv_total = n_kv // kv_block
         per = hk.cdiv(kv_total, 1 + (parts - 1) * is_s)
+        if stages == 2:
+            per = 2 * hk.cdiv(per, 2)
         kb_lo = part * per
         kb_hi = hk.min(kb_lo + per, kv_total)
 
@@ -182,72 +193,88 @@ def attn_kernel(name: str, *, kv_block: int = 32, warps: int = 8, qk_tiles: int 
         m_run = hk.neg_infty(ty_vec)
         l_run = hk.zeros(ty_vec)
 
-        def load_kv(kb):
+        def load_kv(kb, slot=0):
             kv0 = hk.min(kb, kb_hi - 1) * kv_block
-            g.stage(buf_k, k[hk.elem_coord(0, head, kv0, 0)])
-            g.stage(buf_vt, v[hk.elem_coord(0, head, 0, kv0)])
+            g.stage(buf_k, k[hk.elem_coord(0, head, kv0, 0)], slot)
+            g.stage(buf_vt, v[hk.elem_coord(0, head, 0, kv0)], slot)
 
-        def commit_kv():
-            hk.arch.vm_wait(0)
-            g.commit(k_s, buf_k)
-            g.commit(vt_s, buf_vt)
+        def commit_kv(slot=0):
+            # the other slot's loads (issued after this one's) may stay in flight
+            hk.arch.vm_wait(lane_loads * (stages - 1))
+            g.commit(k_s, buf_k, slot)
+            g.commit(vt_s, buf_vt, slot)
 
-        load_kv(kb_lo)
+        for sl in range(stages):
+            load_kv(kb_lo + sl, sl)
 
-        for i_kb in range(kb_hi - kb_lo):
-            kb = kb_lo + i_kb
-            hk.arch.barrier()
-            commit_kv()
-            hk.arch.barrier(drain=True)
-            load_kv(kb + 1)
+        for i_kb in range((kb_hi - kb_lo) // stages):
+            for half in range(stages):
+                kb = kb_lo + i_kb * stages + half
+                hk.arch.barrier()
+                commit_kv(half)
+                hk.arch.barrier(drain=True)
+                load_kv(kb + stages, half)
 
-            with hk.scope():
-                s_w = hk.zeros(ty_sw)
-                s_f = [s_w.subtile(16, n) for n in range(kv_frags)]
-                for kk in range(d_frags):
-                    for n0 in range(0, kv_frags, qk_tiles):
-                        k_win = [gr_k.load_frag(n0 + i, kk, ty_k) for i in range(qk_tiles)]
-                        hk.lds.wait_for(*k_win)
-                        if setprio:
-                            hk.arch.setprio(1)
-                        for i in range(qk_tiles):
-                            s_f[n0 + i] += k_win[i] @ q_r[kk].T
-                        if setprio:
-                            hk.arch.setprio(0)
-
-                # log2 units: y = S * c, c = sm_scale * log2e; p = exp2(S * c - m)
-                m_old = m_run.copy()
-                m_f = s_f[0].max(axis=0).value()
-                for n in range(1, kv_frags):
-                    m_f.max_(s_f[n].max(axis=0))
-                m_f *= scale_l2e
-                m_run.max_(m_f)
-                for n in range(kv_frags):
-                    s_f[n] *= scale_l2e
-                    s_f[n] -= m_run
-                    s_f[n].exp2_()
-                if m_run.any_ne(m_old):
-                    alpha = (m_old - m_run).exp2()
-                    l_run *= alpha
-                    for c in o_c:
-                        c *= alpha
-                for n in range(kv_frags):
-                    l_run += s_f[n].sum(axis=0)
-
-                for j in range(kv_frags // 2):
-                    p_pair = s_w.subtile(32, j).to(fp16)
-                    for par in range(2):
-                        p_cvt = p_pair.subtile(16, par)
-                        for g0 in range(0, d_frags, pv_tiles):
-                            v_win = [gr_vt.load_frag(g0 + i, 2 * j + par, ty_vr)
-                                     for i in range(pv_tiles)]
-                            hk.lds.wait_for(*v_win)
+                with hk.scope():
+                    k_win, v_win = [], []
+                    s_w = hk.zeros(ty_sw)
+                    s_f = [s_w.subtile(16, n) for n in range(kv_frags)]
+                    for kk in range(d_frags):
+                        for n0 in range(0, kv_frags, qk_tiles):
+                            if not ("kread" in _ablate and kk % 2):   # timing-only ablation: wrong
+                                k_win[:] = [gr_k.load_frag(n0 + i, kk, ty_k) for i in range(qk_tiles)]
+                                hk.lds.wait_for(*k_win)
                             if setprio:
                                 hk.arch.setprio(1)
-                            for i in range(pv_tiles):
-                                o_c[g0 + i] += v_win[i] @ p_cvt
+                            for i in range(qk_tiles):
+                                s_f[n0 + i] += k_win[i] @ q_r[kk].T
                             if setprio:
                                 hk.arch.setprio(0)
+
+                    # log2 units: y = S * c, c = sm_scale * log2e; p = exp2(S * c - m)
+                    m_old = m_run.copy()
+                    m_f = s_f[0].max(axis=0).value()
+                    for n in range(1, kv_frags):
+                        m_f.max_(s_f[n].max(axis=0))
+                    m_f *= scale_l2e
+                    if lazy:
+                        if m_f.any_above(m_run, lazy):
+                            m_run.max_(m_f)
+                            alpha = (m_old - m_run).exp2()
+                            l_run *= alpha
+                            for c in o_c:
+                                c *= alpha
+                    else:
+                        m_run.max_(m_f)
+                    for n in range(kv_frags):
+                        s_f[n] *= scale_l2e
+                        s_f[n] -= m_run
+                        if "noexp" not in _ablate:
+                            s_f[n].exp2_()
+                    if not lazy:
+                        if m_run.any_ne(m_old):
+                            alpha = (m_old - m_run).exp2()
+                            l_run *= alpha
+                            for c in o_c:
+                                c *= alpha
+                    for n in range(kv_frags):
+                        l_run += s_f[n].sum(axis=0)
+
+                    for j in range(kv_frags // 2):
+                        p_pair = s_w.subtile(32, j).to(fp16)
+                        for par in range(2):
+                            p_cvt = p_pair.subtile(16, par)
+                            for g0 in range(0, d_frags, pv_tiles):
+                                if not ("vread" in _ablate and g0 % (2 * pv_tiles)):
+                                    v_win[:] = [gr_vt.load_frag(g0 + i, 2 * j + par, ty_vr)
+                                                for i in range(pv_tiles)]
+                                    hk.lds.wait_for(*v_win)
+                                if setprio:
+                                    hk.arch.setprio(1)
+                                for i in range(pv_tiles):
+                                    o_c[g0 + i] += v_win[i] @ p_cvt
+                                if setprio:
+                                    hk.arch.setprio(0)
 
         if is_s > 0:
             p_row = t * q_tile + wid * q_block
@@ -261,7 +288,7 @@ def attn_kernel(name: str, *, kv_block: int = 32, warps: int = 8, qk_tiles: int 
                 o[hk.elem_coord(0, 0, q_row, 16 * i)].store(hk.transpose(c))
 
     body.__name__ = name
-    return PairPKernel(body, n_pair_sites=kv_frags // 2, warps=warps, name=name,
+    return PairPKernel(body, n_pair_sites=stages * (kv_frags // 2), warps=warps, name=name,
                        grid=lambda p: (p.wu.cols, 1, 1), max_vgprs=max_vgprs, min_occupancy=1)
 
 
