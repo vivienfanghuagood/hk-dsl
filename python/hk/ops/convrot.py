@@ -45,6 +45,21 @@ def _hadamard(group: int, device: str):
     return (m / n ** 0.5).to(device=device, dtype=torch.bfloat16)
 
 
+#: hk's GEMM wants N a multiple of 128 (and K of 64): a smaller group rotates as a block-diagonal
+#: H of this width, the same transform group by group.
+_MIN_BLOCK = 128
+
+
+@functools.lru_cache(maxsize=None)
+def _hadamard_block(group: int, device: str):
+    """blockdiag(H / sqrt(group), ...) of width max(group, 128), bf16."""
+    import torch  # noqa: PLC0415
+
+    h = _hadamard(group, device)
+    width = max(group, _MIN_BLOCK)
+    return torch.block_diag(*([h] * (width // group))) if width > group else h
+
+
 def rotate(x, group: int):
     """Every `group`-wide slice of x's rows times H / sqrt(group), in fp32."""
     from ..templates.gemm import gemm  # noqa: PLC0415  -- templates import ops
@@ -54,9 +69,13 @@ def rotate(x, group: int):
     k = x.shape[-1]
     if k % group:
         raise ValueError(f"convrot: K={k} is not a multiple of the group {group}")
-    rows = x.reshape(-1, group)
-    h = _hadamard(group, str(x.device))
-    # (rows, g) @ H^T; H is symmetric
+    width = max(group, _MIN_BLOCK)
+    h = _hadamard_block(group, str(x.device))
+    if k % width:
+        # a row narrower than one block: torch, still exact for these +-1/sqrt(g) entries
+        return (x.reshape(-1, group).float() @ _hadamard(group, str(x.device)).float()).view(*x.shape)
+    rows = x.reshape(-1, width)
+    # (rows, w) @ H^T; H (and so the block diagonal) is symmetric
     return gemm(rows, h, out_dtype=torch.float32).view(*x.shape)
 
 
