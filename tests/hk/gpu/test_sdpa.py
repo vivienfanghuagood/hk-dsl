@@ -227,3 +227,24 @@ def test_the_fallback_record_is_bounded():
         sdpa.scaled_dot_product_attention(q, k, v)
     assert len(sdpa.FALLBACKS) == sdpa._FALLBACK_CAP
     assert sdpa.STATS["fallback"] == sdpa._FALLBACK_CAP + 20
+
+
+@pytest.mark.parametrize("h,h_kv,n,causal", [(32, 32, 4160, False), (8, 2, 1000, False),
+                                              (8, 8, 1024, True)])
+def test_a_bnhd_view_runs_in_place_and_matches_torch(h, h_kv, n, causal):
+    """(B, H, N, D) views of (B, N, H, D) memory -- SGLang-Diffusion's DiT
+    hands its projections over this way -- run on the bnhd kernel without a
+    copy, and the output comes back as the same kind of view."""
+    if sdpa._attn._native_cdna():
+        pytest.skip("gfx1100's kernel")
+    g = torch.Generator(device="cuda").manual_seed(n + h)
+    q = torch.randn(1, n, h, 128, device="cuda", dtype=torch.bfloat16, generator=g).transpose(1, 2)
+    k = torch.randn(1, n, h_kv, 128, device="cuda", dtype=torch.bfloat16, generator=g).transpose(1, 2)
+    v = torch.randn(1, n, h_kv, 128, device="cuda", dtype=torch.bfloat16, generator=g).transpose(1, 2)
+    before = sdpa.STATS["bnhd"]
+    got = sdpa.scaled_dot_product_attention(q, k, v, is_causal=causal, enable_gqa=h != h_kv)
+    assert sdpa.STATS["bnhd"] == before + 1
+    assert not got.is_contiguous() and got.transpose(1, 2).is_contiguous()
+    ref = F.scaled_dot_product_attention(q.float(), k.float(), v.float(), is_causal=causal,
+                                         enable_gqa=h != h_kv)
+    torch.testing.assert_close(got.float(), ref, **TOL)
