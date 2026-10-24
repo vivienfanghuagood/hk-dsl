@@ -167,6 +167,9 @@ Status (2026-10-24, evening):
 
 ## How the kernels are built: one task workspace each (KDA-style)
 
+**Every new kernel is a KDA task** (owner, 2026-10-24): the workflow, the failure classes and
+the cross-task failure table that orders DSL work are in [kda.md](kda.md).
+
 Owner, 2026-10-24: a lead agent iterating by hand cannot tell, when it fails,
 whether the harness or the DSL is at fault. Each kernel above is therefore a
 task in a fixed, recorded workflow -- NVlabs' Kernel Design Agents
