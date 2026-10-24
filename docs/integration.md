@@ -617,7 +617,8 @@ process imports the SDPA backend. Two patches:
 
 Each patched process prints, as it exits, how many calls took hk's kernels.
 Measured on Qwen-Image 2.1, 1024^2, 30 steps, one W7900D: 42.2 s stock, 34.8 s
-with the attention patch, 29.1 s with both (1.45x), images visually identical
+with the attention patch, 28.2 s with both (1.50x; attention reads SGLang's
+(B, N, H, D) views in place), images visually identical
 ([chapter 46](history/46-qwen-image-on-rdna3.md)). SGLang main's native Qwen-Image
 2.1 pipeline needs a ROCm fix of its own first (the chapter has it).
 

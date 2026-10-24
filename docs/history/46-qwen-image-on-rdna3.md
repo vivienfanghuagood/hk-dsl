@@ -1,4 +1,4 @@
-# Qwen-Image 2.1 on a W7900D: hk's attention and GEMM inside SGLang-Diffusion, 1.45x a 1024^2 image
+# Qwen-Image 2.1 on a W7900D: hk's attention and GEMM inside SGLang-Diffusion, 1.50x a 1024^2 image
 
 > Part of the [development record](README.md), in the order the work happened. Paths, API names and numbers are those of the time.
 
@@ -9,8 +9,9 @@ aiter is CDNA's, FlashAttention 3 Hopper's). This chapter measures Qwen-Image
 2.1 there, puts hk's attention and then hk's GEMM behind SGLang-Diffusion
 without touching SGLang's tree, and checks the image.
 
-The answer: a 1024 x 1024, 30-step image takes **42.2 s stock and 29.1 s with
-both patches, 1.45x** (attention alone 34.8 s, 1.21x), on one W7900D. hk's
+The answer: a 1024 x 1024, 30-step image takes **42.2 s stock and 28.2 s with
+both patches, 1.50x** (attention alone 34.8 s, 1.21x; both with the
+copies still in, 29.1 s), on one W7900D. hk's
 attention runs a DiT call in 4.4 ms where torch's (AOTriton's `attn_fwd`)
 takes 13.6 ms, and hk's GEMM is 1.27-1.28x hipBLASLt at all four DiT
 projection shapes. The image is visually the same, and closer to an fp32-
@@ -102,6 +103,28 @@ and leaves the rest to the engine. 26,883 calls took hk's GEMM, 896 the
 engine's (the text prefix and the timestep/modulation projections).
 **29.06 / 29.16 / 29.25 s, 1.45x stock.**
 
+## Attention in place
+
+SGLang hands the drop-in `.transpose(1, 2)` views of (B, N, H, D) memory,
+and the kernel took contiguous (B, H, N, D): q, k, v and the output were
+copied every call (+2.2 s over two images). `hk.ops.attn.attn_kernel` gains
+`bnhd=True`: the operands are passed as (B, 1, N, H x D) and a head's rows are
+read at a column offset of head x head_dim. Five address expressions and the
+grid change; the loops are the same instructions (227 VGPRs, no scratch,
+occupancy 6, as before), and the default kernels' C++ is byte-identical to
+what it was. The drop-in takes that path whenever every operand is such a
+view and hands the output back as one. **28.12 / 28.23 / 28.31 s** (from
+29.1), and the image is bit-identical to the copying path's.
+
+## Is the GEMM at its ceiling?
+
+`python -m hk.tune` on the four DiT shapes, 120 GPU-s each: no winner. The
+shipped route is the best of 215 legal schedules at every shape (the closest
+challenger, `rdna:ns1` at 4096x24576x4096, a tie at +3.1% against a 3.6%
+bar), at 1.255-1.270x hipBLASLt in the tuner's own interleaved rounds. What
+is left for the GEMM is the kernel, not the schedule: 85-90 TF/s of the
+W7900D's 122.6.
+
 ## The image
 
 Every arm is deterministic: two images of the same arm are identical to the
@@ -118,19 +141,20 @@ ran stock with torch's math SDPA (fp32 softmax, 127.2 s an image):
 | hk attention + GEMM | 1.37 | 38.4 dB | 1.9% |
 
 The patched images sit inside the stock path's own distance from the
-reference, and closer to it.
+reference, and closer to it. (The in-place attention's image is the same
+bytes as the copying path's.)
 
 ## What is left
 
-At 29.1 s, by the stock profile's proportions and the two speedups: GEMM is
+At 28.2 s, by the stock profile's proportions and the speedups: GEMM is
 about two thirds of an image (hk's 85-90 TF/s against the W7900D's 122.6 TF/s
-bf16 peak), then attention (4.4 ms a call, ~4.2 s an image), the copies the
-layout costs (~1.1 s), and ~2 s of elementwise work that SGLang fuses on
-CUDA (RMSNorm + complex RoPE, LayerNorm + modulation, SiLU-mul) and runs as
-separate torch kernels here. The next steps that follow: an attention kernel
-that reads SGLang's (B, N, H, D) layout in place; hk's rowwise templates for
-the norm/RoPE/modulation fusions the CUDA path has; and the same two patches
-on MiniMax-H3 (E2), whose DiT is twice the size and streamed from host RAM.
+bf16 peak, at the best schedule hk.tune finds), then attention (4.4 ms a
+call, ~4.2 s an image) and ~2 s of elementwise work that SGLang fuses on CUDA
+(RMSNorm + complex RoPE, LayerNorm + modulation, SiLU-mul) and runs as
+separate torch kernels here. The next steps that follow: hk's rowwise
+templates for the norm/RoPE/modulation fusions the CUDA path has, and the
+same patches on MiniMax-H3 (E2), whose DiT is twice the size and streamed
+from host RAM.
 
 ## How it was run
 
@@ -148,5 +172,5 @@ env HIP_VISIBLE_DEVICES=0 PYTHONPATH=<rocm fix>:<hk>/python [HK_SGLD=1] \
 
 Results: `bench/e2e/qwen_image/*.json` (base-sdpa: SGLang 0.5.18's diffusers
 fallback; native-sdpa: stock; native-hk: attention only, at 82f2472, when
-`HK_SGLD=1` meant the attention patch alone; native-hk2: both; native-math:
+`HK_SGLD=1` meant the attention patch alone; native-hk2: both, attention copying; native-hk3: both, attention in place; native-math:
 torch's math SDPA).

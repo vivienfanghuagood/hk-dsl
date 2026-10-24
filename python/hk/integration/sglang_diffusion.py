@@ -193,7 +193,8 @@ def stats() -> str:
 
     s = sdpa.STATS
     fb = "; ".join(f"{shape} {why}" for (shape, _), why in list(sdpa.FALLBACKS.items())[:4])
-    return (f"attention: hk {s['kernel']}, torch {s['fallback']}" + (f" ({fb})" if fb else "")
+    return (f"attention: hk {s['kernel']} ({s.get('bnhd', 0)} in place), torch {s['fallback']}"
+            + (f" ({fb})" if fb else "")
             + f"; linear: hk {LINEAR_STATS['hk']}, engine {LINEAR_STATS['engine']}")
 
 
