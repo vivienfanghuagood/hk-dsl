@@ -432,6 +432,11 @@ template<typename RT> struct hk_frag {
     static constexpr bool row = std::is_same_v<typename RT::layout, ducks::rt_layout::row>;
 #if defined(KITTENS_CDNA4)
     static constexpr int R = RT::base_tile_rows, C = RT::base_tile_cols;
+    // fp8 (16x128) is include/cdna4's rt_16x128: lane l holds row l%16 and
+    // two runs of 16 along K, at 16(l/16) and 64 + 16(l/16) -- the operand
+    // layout of v_mfma_scale_f32_16x16x128_f8f6f4, which applies its block
+    // scales by K position, not by which lane holds the data (measured: a
+    // lane holding one contiguous 32-wide block scaled the wrong blocks).
     static constexpr int S = RT::base_tile_stride, K = RT::base_tile_num_strides;
     static constexpr int G = RT::base_tile_elements_per_stride_group;
 #else
@@ -1277,6 +1282,110 @@ __device__ static inline void mma_ABt(D &d, const A &a, const B &b, const C &c) 
         }
     }
 }
+
+#if defined(KITTENS_CDNA4)
+/**
+ * E8M0 block scales of an fp8 operand tile of R rows and KB 32-wide blocks,
+ * in the lanes v_mfma_scale_f32_16x16x128_f8f6f4 reads them from: lane l
+ * holds, for 16-row base tile i and 128-wide K step s, the scale of row
+ * i*16 + l%16 and block s*4 + l/16, as byte i%4 of reg[i/4][s] -- the byte an
+ * MFMA of base tile i selects with opsel = i%4.
+ */
+template<int R, int KB> struct hk_mxs {
+    static_assert(R % 16 == 0 && KB % 4 == 0, "16-row base tiles, 128-wide K steps");
+    static constexpr int tiles = R / 16, steps = KB / 4, regs = (tiles + 3) / 4;
+    uint32_t reg[regs][steps];
+};
+
+/** Scales of rows row0.. and blocks kb0.. of an E8M0 tensor [rows, K/32] (one byte each). */
+template<int R, int KB, ducks::gl::all GL>
+__device__ inline static void load_mx_scales(hk_mxs<R, KB> &dst, const GL &src, int row0, int kb0) {
+    static_assert(sizeof(typename GL::dtype) == 1, "E8M0 scales are one byte");
+    using M = hk_mxs<R, KB>;
+    const int lane = laneid();
+    const uint32_t rs = uint32_t(src.template stride<2>());
+    const uint8_t *base = reinterpret_cast<const uint8_t *>(src.raw_ptr);
+    const uint64_t bytes = uint64_t(src.template shape<2>()) * rs;
+    const detail::hk_i32x4 r = detail::hk_srsrc(base, bytes);
+    #pragma unroll
+    for (int g = 0; g < M::regs; g++)
+        #pragma unroll
+        for (int s = 0; s < M::steps; s++)
+            dst.reg[g][s] = 0x7F7F7F7Fu;              // unit scales past the last base tile
+    #pragma unroll
+    for (int i = 0; i < M::tiles; i++)
+        #pragma unroll
+        for (int s = 0; s < M::steps; s++) {
+            const uint32_t off = uint32_t(row0 + i * 16 + lane % 16) * rs +
+                                 uint32_t(kb0 + s * 4 + lane / 16);
+            const uint32_t b = detail::hk_buf_ld8(r, off, 0, 0);
+            const int sh = 8 * (i % 4);
+            dst.reg[i / 4][s] = (dst.reg[i / 4][s] & ~(0xFFu << sh)) | (b << sh);
+        }
+}
+
+namespace detail {
+template<int OA, int OB>
+__device__ inline void hk_mfma_mx(float (&d)[4], const uint32_t (&a)[8], const uint32_t (&b)[8],
+                                  uint32_t sa, uint32_t sb) {
+    typedef __attribute__((__vector_size__(8 * sizeof(int)))) int intx8_t;
+    typedef __attribute__((__vector_size__(4 * sizeof(float)))) float floatx4_t;
+    *(floatx4_t *)d = __builtin_amdgcn_mfma_scale_f32_16x16x128_f8f6f4(
+        *(const intx8_t *)a, *(const intx8_t *)b, *(floatx4_t *)d, 0, 0, OA, sa, OB, sb);
+}
+template<int OA>
+__device__ inline void hk_mfma_mx_b(int ob, float (&d)[4], const uint32_t (&a)[8],
+                                    const uint32_t (&b)[8], uint32_t sa, uint32_t sb) {
+    switch (ob) {
+        case 0: hk_mfma_mx<OA, 0>(d, a, b, sa, sb); break;
+        case 1: hk_mfma_mx<OA, 1>(d, a, b, sa, sb); break;
+        case 2: hk_mfma_mx<OA, 2>(d, a, b, sa, sb); break;
+        default: hk_mfma_mx<OA, 3>(d, a, b, sa, sb); break;
+    }
+}
+}  // namespace detail
+
+/**
+ * d = c + (sa . A)(sb . B)^T: A and B fp8 e4m3 row tiles of 16x128 fragments,
+ * C/D fp32 16x16 col accumulators, one scaled MFMA per base tile and K step.
+ * The opsel immediates are each base tile's index mod 4; the loops unroll, so
+ * the switches fold.
+ */
+template<ducks::rt::col_layout D, ducks::rt::all A, ducks::rt::all B, ducks::rt::col_layout C,
+         int RA, int RB, int KB>
+__device__ static inline void mma_ABt_mx(D &d, const A &a, const B &b, const C &c,
+                                         const hk_mxs<RA, KB> &sa, const hk_mxs<RB, KB> &sb) {
+    static_assert(std::is_same_v<typename A::T, fp8e4m3> && std::is_same_v<typename B::T, fp8e4m3>,
+                  "fp8 e4m3 operands");
+    static_assert(std::is_same_v<typename D::T, float> && std::is_same_v<typename C::T, float>,
+                  "fp32 accumulator");
+    static_assert(A::base_tile_rows == 16 && A::base_tile_cols == 128 &&
+                  B::base_tile_rows == 16 && B::base_tile_cols == 128, "16x128 operand fragments");
+    static_assert(D::rows == A::rows && D::cols == B::rows && A::cols == B::cols &&
+                  A::rows == RA && B::rows == RB && A::cols == KB * 32, "mma_ABt_mx shapes");
+    #pragma unroll
+    for (int n = 0; n < D::height; n++) {
+        #pragma unroll
+        for (int m = 0; m < D::width; m++) {
+            float acc[4];
+            __builtin_memcpy(acc, &c.tiles[n][m].data[0], sizeof(acc));
+            #pragma unroll
+            for (int k = 0; k < A::width; k++) {
+                const uint32_t(&ra)[8] = *reinterpret_cast<const uint32_t(*)[8]>(&a.tiles[n][k].data[0]);
+                const uint32_t(&rb)[8] = *reinterpret_cast<const uint32_t(*)[8]>(&b.tiles[m][k].data[0]);
+                const uint32_t s_a = sa.reg[n / 4][k], s_b = sb.reg[m / 4][k];
+                switch (n % 4) {
+                    case 0: detail::hk_mfma_mx_b<0>(m % 4, acc, ra, rb, s_a, s_b); break;
+                    case 1: detail::hk_mfma_mx_b<1>(m % 4, acc, ra, rb, s_a, s_b); break;
+                    case 2: detail::hk_mfma_mx_b<2>(m % 4, acc, ra, rb, s_a, s_b); break;
+                    default: detail::hk_mfma_mx_b<3>(m % 4, acc, ra, rb, s_a, s_b); break;
+                }
+            }
+            __builtin_memcpy(&d.tiles[n][m].data[0], acc, sizeof(acc));
+        }
+    }
+}
+#endif
 
 template<int G, ducks::rt::all RT, ducks::gl::all QL, ducks::gl::all SL>
 __device__ inline static void load_w4(RT &dst, const QL &qw, const SL &s, const SL &zs,

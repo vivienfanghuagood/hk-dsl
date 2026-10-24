@@ -229,6 +229,22 @@ def HK_StageType : HK_Type<"Stage", "stage"> {
   }];
 }
 
+def HK_MxScalesType : HK_Type<"MxScales", "mxs"> {
+  let summary = "E8M0 block scales of an fp8 mma operand, in the lanes that use them";
+  let description = [{
+    `!hk.mxs<64, 8>`: the scales of a 64-row operand tile 8 x 32 = 256 wide
+    along the reduction, one E8M0 byte a row and 32 columns (OCP MX). gfx950's
+    v_mfma_scale_f32_16x16x128_f8f6f4 takes, in each lane, the scale of that
+    lane's row (lane % 16) and 32-column block (lane / 16) as one byte of a
+    32-bit register, the byte picked by an immediate: four 16-row base tiles
+    share a register. So the type holds rows/16 x kblocks/4 bytes a lane, in
+    ceil(rows/64) x kblocks/4 registers.
+  }];
+  let parameters = (ins "unsigned":$rows, "unsigned":$kblocks);
+  let assemblyFormat = "`<` $rows `,` $kblocks `>`";
+  let genVerifyDecl = 1;
+}
+
 def HK_AnyTile : AnyTypeOf<[HK_RegTileType]>;
 def HK_Elementwise : AnyTypeOf<[HK_RegTileType, HK_RegVecType],
                                "register tile or vector">;

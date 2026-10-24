@@ -93,6 +93,9 @@ std::string rawCpp(Type t) {
     return "kittens::lds_granules<" + rawCpp(g.getTile()) + ">";
   if (isa<StageType>(t))
     return "float4";
+  if (auto m = dyn_cast<MxScalesType>(t))
+    return "kittens::hk_mxs<" + std::to_string(m.getRows()) + ", " +
+           std::to_string(m.getKblocks()) + ">";
   if (t.isIntOrFloat())
     return dtypeCpp(t).str();
   return "/*?*/";
@@ -1121,6 +1124,17 @@ private:
             ", " + name(o.getIdx()) + ", " + name(o.getAt()) + ", " +
             name(o.getCount()) + ", " + name(o.getCol()) + ", " +
             name(o.getDiv()) + ");");
+        })
+        .Case([&](LoadMxScalesOp o) {
+          Value d = dest(Value(), o.getResult());
+          call("load_mx_scales", d,
+               {name(o.getSrc()), name(o.getRow0()), name(o.getKb0())});
+        })
+        .Case([&](MmaABtMxOp o) {
+          Value d = dest(o.getDst(), o.getResult());
+          call("mma_ABt_mx", d,
+               {name(o.getA()), name(o.getB()), name(o.getC()), name(o.getSa()),
+                name(o.getSb())});
         })
         .Case([&](LoadW4Op o) {
           Value d = dest(o.getDst(), o.getResult());

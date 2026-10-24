@@ -351,6 +351,17 @@ unsigned GranulesType::getSwizzleBytes() const {
   return width % 4 == 0 ? 128 : width % 2 == 0 ? 64 : 32;
 }
 
+LogicalResult MxScalesType::verify(function_ref<InFlightDiagnostic()> emitError,
+                                   unsigned rows, unsigned kblocks) {
+  if (rows == 0 || rows % 16)
+    return emitError() << "mx scales: " << rows
+                       << " rows is not a whole number of 16-row base tiles";
+  if (kblocks == 0 || kblocks % 4)
+    return emitError() << "mx scales: " << kblocks
+                       << " blocks of 32 is not a whole number of 128-wide K steps";
+  return success();
+}
+
 LogicalResult GranulesType::verify(function_ref<InFlightDiagnostic()> emitError,
                                    Type et, unsigned rows, unsigned cols) {
   if (dtypeBits(et) != 16)

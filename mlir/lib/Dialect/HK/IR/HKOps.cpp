@@ -238,6 +238,40 @@ LogicalResult LoadW4Op::verify() {
   return success();
 }
 
+LogicalResult LoadMxScalesOp::verify() {
+  auto et = getSrc().getType().getElementType();
+  if (!et.isInteger(8))
+    return emitOpError("reads E8M0 scales from a uint8 (i8) global, one byte a "
+                       "row and 32 columns");
+  return success();
+}
+
+LogicalResult MmaABtMxOp::verify() {
+  if (failed(verifyDest(*this, getDst(), getResult())))
+    return failure();
+  auto d = cast<RegTileType>(destType(getDst(), getResult()));
+  RegTileType a = getA().getType(), b = getB().getType(), c = getC().getType();
+  for (RegTileType t : {a, b})
+    if (!isa<Float8E4M3FNType>(t.getElementType()) || t.getColLayout() ||
+        t.isStrip())
+      return emitOpError("A and B are fp8 e4m3 row-layout tiles, not ") << t;
+  if (!c.getElementType().isF32() || !c.getColLayout() || c != d)
+    return emitOpError("accumulates into an fp32 col-layout tile, the result's type");
+  if (a.getCols() != b.getCols() || a.getCols() % 128)
+    return emitOpError("A and B share K, a multiple of 128; got ")
+           << a.getCols() << " and " << b.getCols();
+  if (c.getRows() != a.getRows() || c.getCols() != b.getRows())
+    return emitOpError("C is A's rows x B's rows");
+  MxScalesType sa = getSa().getType(), sb = getSb().getType();
+  if (sa.getRows() != a.getRows() || sa.getKblocks() * 32 != a.getCols())
+    return emitOpError("sa holds A's ") << a.getRows() << " rows and "
+                                        << a.getCols() / 32 << " blocks";
+  if (sb.getRows() != b.getRows() || sb.getKblocks() * 32 != b.getCols())
+    return emitOpError("sb holds B's ") << b.getRows() << " rows and "
+                                        << b.getCols() / 32 << " blocks";
+  return success();
+}
+
 //===----------------------------------------------------------------------===//
 // LDS
 //===----------------------------------------------------------------------===//

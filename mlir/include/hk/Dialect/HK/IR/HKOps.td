@@ -834,6 +834,41 @@ class HK_MmaOp<string mnemonic> : HK_Op<mnemonic> {
   let hasVerifier = 1;
 }
 
+def HK_LoadMxScalesOp : HK_Op<"load_mx_scales"> {
+  let summary = "E8M0 scales [rows, K/32] (uint8) -> the lanes of an mma operand that use them";
+  let description = [{
+    Rows row0.. and 32-column blocks kb0.. of a scale tensor of one byte a
+    row and block (uint8 [R, K/32], row-major, the OCP MX layout), into the
+    per-lane registers `mma_ABt_mx` reads: base tile i's row (lane % 16) and
+    block (lane / 16) of each 128-wide K step.
+  }];
+  let arguments = (ins HK_GlobalType:$src, I32:$row0, I32:$kb0);
+  let results = (outs HK_MxScalesType:$result);
+  let assemblyFormat = [{
+    $src `[` $row0 `,` $kb0 `]` attr-dict `:` qualified(type($src)) `->` qualified(type($result))
+  }];
+  let hasVerifier = 1;
+}
+
+def HK_MmaABtMxOp : HK_Op<"mma_ABt_mx"> {
+  let summary = "acc + (sa . A) x (sb . B)^T on gfx950's scaled f8f6f4 MFMA";
+  let description = [{
+    A and B are fp8 e4m3 row-layout tiles (16x128 fragments), C the fp32
+    accumulator; sa and sb their E8M0 block scales (`load_mx_scales`):
+    element (r, k) of A counts as A[r][k] * 2^(sa[r][k / 32] - 127).
+  }];
+  let arguments = (ins Optional<HK_RegTileType>:$dst, HK_RegTileType:$a,
+                       HK_RegTileType:$b, HK_RegTileType:$c,
+                       HK_MxScalesType:$sa, HK_MxScalesType:$sb);
+  let results = (outs Optional<HK_RegTileType>:$result);
+  let assemblyFormat = [{
+    $a `,` $b `,` $c `scales` $sa `,` $sb (`into` $dst^)? attr-dict `:` qualified(type($a)) `,`
+    qualified(type($b)) `,` qualified(type($c)) `,` qualified(type($sa)) `,` qualified(type($sb))
+    (`into` qualified(type($dst))^)? (`->` qualified(type($result))^)?
+  }];
+  let hasVerifier = 1;
+}
+
 def HK_MmaABOp : HK_MmaOp<"mma_AB">;
 def HK_MmaABtOp : HK_MmaOp<"mma_ABt">;
 def HK_MmaAtBOp : HK_MmaOp<"mma_AtB">;

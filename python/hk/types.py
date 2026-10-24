@@ -281,6 +281,23 @@ class SharedTileType(Type):
 
 
 @dataclass(frozen=True)
+class MxScalesType(Type):
+    """E8M0 block scales of an fp8 mma operand of `rows` rows and `kblocks`
+    32-wide blocks along the reduction, held in the lanes gfx950's scaled
+    MFMA reads them from (`kittens::hk_mxs<rows, kblocks>`)."""
+
+    rows: int
+    kblocks: int
+
+    def __post_init__(self):
+        if self.rows <= 0 or self.rows % 16:
+            raise ValueError(f"mx scales: {self.rows} rows is not a whole number of 16-row tiles")
+        if self.kblocks <= 0 or self.kblocks % 4:
+            raise ValueError(f"mx scales: {self.kblocks} blocks of 32 is not a whole number "
+                             f"of 128-wide K steps")
+
+
+@dataclass(frozen=True)
 class GranuleSetType(Type):
     """The per-lane LDS addresses of one shared tile, factored.
 

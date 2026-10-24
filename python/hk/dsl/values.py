@@ -20,8 +20,9 @@ from .._mlir import ir
 from .._mlir.dialects import arith, hk as hkd
 from .module import mlir_type
 from ..types import (
-    FP8, CoordType, DType, GlobalType, GranuleSetType, RegTileType, RegVecType,
-    ScalarType, SharedTileType, SharedVecType, StageBufferType, fp32, i32,
+    FP8, CoordType, DType, GlobalType, GranuleSetType, MxScalesType, RegTileType,
+    RegVecType, ScalarType, SharedTileType, SharedVecType, StageBufferType, fp32, i32,
+    fp8e4m3, i8,
 )
 from ..target import get_target
 from . import builder as B
@@ -144,6 +145,8 @@ def wrap(v: ir.Value, ty) -> "Value":
         return Global(v, ty)
     if isinstance(ty, ScalarType):
         return Int(v, ty)
+    if isinstance(ty, MxScalesType):
+        return MxScales(v, ty)
     raise TypeError(f"no DSL value for {ty!r}")
 
 
@@ -1383,6 +1386,54 @@ def lds_loads(tile: RegTileType, src: SharedTileType, arch: str = "gfx1100") -> 
         return (tile.rows // 16) * (tile.cols // 16)
     ok = tile.layout == "row"
     return (tile.rows // 16) * (tile.cols // 16) * 2 if ok else 0
+
+
+class MxScales(Value):
+    """E8M0 block scales of an fp8 operand tile, in the lanes the scaled MFMA
+    reads them from (`load_mx_scales`)."""
+
+    __slots__ = ()
+
+
+def load_mx_scales(src: "Global", rows: int, kblocks: int, row0, kb0) -> MxScales:
+    """Rows row0.. and 32-wide blocks kb0.. of an E8M0 scale tensor (uint8, one
+    byte a row and block: [R, K/32], the OCP MX layout) for an fp8 operand
+    tile of `rows` rows and `kblocks * 32` columns. gfx950 only."""
+    if not isinstance(src, Global):
+        raise TypeError(f"load_mx_scales: src must be a tensor parameter, got {src!r}")
+    if src.dtype is not i8:
+        raise TypeError(f"load_mx_scales: E8M0 scales are one byte each (an i8/uint8 "
+                        f"tensor), not {src.dtype.name}")
+    if get_target(_t().arch).arch != "gfx950":
+        raise TypeError(f"load_mx_scales: block-scaled MFMA is gfx950's; {_t().arch} has none")
+    ty = MxScalesType(rows, kblocks)
+    t = _t()
+    op = hkd.LoadMxScalesOp(mlir_type(ty), src.v, as_int(row0).v, as_int(kb0).v,
+                            loc=t.loc("mxs"))
+    return MxScales(op.result, ty)
+
+
+def mma_ABt_mx(a: Tile, b: Tile, acc: Tile, sa: MxScales, sb: MxScales, *, into=None) -> Tile:
+    """acc + (sa . A)(sb . B)^T on gfx950's v_mfma_scale_f32_16x16x128_f8f6f4:
+    A (M, K) and B (N, K) fp8 e4m3 row tiles, K a multiple of 128; sa and sb
+    their E8M0 scales (`load_mx_scales`), element (r, k) of A counting as
+    A[r][k] * 2^(sa[r][k // 32] - 127); acc an fp32 col tile (M, N)."""
+    for v, what in ((a, "A"), (b, "B")):
+        if not isinstance(v, Tile) or v.ty.dtype is not fp8e4m3 or v.ty.layout != "row":
+            raise TypeError(f"mma_ABt_mx: {what} is an fp8 e4m3 row-layout tile, got {v!r}")
+    if not isinstance(acc, Tile) or acc.ty.dtype != fp32 or acc.ty.layout != "col":
+        raise TypeError(f"mma_ABt_mx: the accumulator is an fp32 col tile, got {acc!r}")
+    if a.ty.cols != b.ty.cols or a.ty.cols % 128:
+        raise TypeError(f"mma_ABt_mx: A and B share K, a multiple of 128; got "
+                        f"{a.ty.cols} and {b.ty.cols}")
+    for s, v, what in ((sa, a, "sa"), (sb, b, "sb")):
+        if not isinstance(s, MxScales) or s.ty != MxScalesType(v.ty.rows, v.ty.cols // 32):
+            raise TypeError(f"mma_ABt_mx: {what} holds the scales of a {v.ty.rows}x"
+                            f"{v.ty.cols} operand, got {s!r}")
+    ty = RegTileType(fp32, a.ty.rows, b.ty.rows, "col")
+    if (acc.ty.rows, acc.ty.cols) != (ty.rows, ty.cols):
+        raise TypeError(f"mma_ABt_mx: acc is {acc.ty}, expected {a.ty.rows}x{b.ty.rows}")
+    return _make(hkd.MmaABtMxOp, acc.ty, (a.v, b.v, acc.v, sa.v, sb.v), into=into, name="mx")
 
 
 class Granules(Value):

@@ -166,7 +166,7 @@ struct FragmentsPass : public mlir::hk::impl::HKFragmentsBase<FragmentsPass> {
     // that reaches an operand through a cast or transpose still arrives.
     auto seed = [&](Operation *op) {
       llvm::TypeSwitch<Operation *>(op)
-          .Case<MmaABOp, MmaABtOp, MmaAtBOp, MmaAtBtOp>([&](auto o) {
+          .Case<MmaABOp, MmaABtOp, MmaAtBOp, MmaAtBtOp, MmaABtMxOp>([&](auto o) {
             RegTileType c = tile(o.getC());
             auto fc = as.current(c);
             bool big = fc && fc->r == 32 && fc->c == 32;
