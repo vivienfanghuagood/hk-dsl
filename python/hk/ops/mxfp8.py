@@ -132,7 +132,7 @@ def pack_scales(s):
 def mx4w_kernel(name: str = "mxfp8_4w", *, block_m: int = 256, block_n: int = 256,
                 stages: int = 2, wgm: int = 8, xcd_chunk: int = 32, setprio: bool = False,
                 split_m: int = 2, split_n: int = 2, scale_ahead: int = 2,
-                ilv: int = 0, dbg: str = ""):
+                ilv: int = 0, rolled: bool = False, dbg: str = ""):
     """MXFP8 GEMM, four warps (2 x 2) of block_m/2 x block_n/2 each, so one
     wave a SIMD and the whole register file a lane (VGPRs and AGPRs: the
     accumulators of a 128 x 128 warp tile are 256 of them). K-tiles of 128 in
@@ -169,6 +169,8 @@ def mx4w_kernel(name: str = "mxfp8_4w", *, block_m: int = 256, block_n: int = 25
     # scale_ahead + 1 scale sets, a K-tile's loaded scale_ahead K-tiles
     # ahead, so the body is a whole number of both the LDS ring and the
     # scale rotation.
+    if rolled:
+        scale_ahead = 1             # two sets: the current K-tile's and the next one's
     if scale_ahead not in (1, 2):
         raise ValueError(f"scale_ahead={scale_ahead}: 1 or 2")
     nsets = scale_ahead + 1
@@ -177,8 +179,10 @@ def mx4w_kernel(name: str = "mxfp8_4w", *, block_m: int = 256, block_n: int = 25
     def body(a: hk.Tensor[fp8e4m3], b: hk.Tensor[fp8e4m3], sa: hk.Tensor[i32],
              sb: hk.Tensor[i32], c: hk.Tensor[bf16], *, WGM: hk.Constexpr = wgm):
         g = hk.group(WARPS)
-        As = hk.lds.alloc(st_a, count=ha * stages, name="As")
-        Bs = hk.lds.alloc(st_b, count=hb * stages, name="Bs")
+        # One ring of `stages` buffers a piece: a buffer index is then the
+        # ring position alone, which `rolled` makes a runtime (rot + r) % stages.
+        As = [hk.lds.alloc(st_a, count=stages, name=f"As{h}") for h in range(ha)]
+        Bs = [hk.lds.alloc(st_b, count=stages, name=f"Bs{h}") for h in range(hb)]
         A = [hk.zeros(t_a) for _ in range(split_m)]
         B = [hk.zeros(t_b) for _ in range(split_n)]
         C = [[hk.zeros(t_c) for _ in range(split_n)] for _ in range(split_m)]
@@ -211,10 +215,10 @@ def mx4w_kernel(name: str = "mxfp8_4w", *, block_m: int = 256, block_n: int = 25
 
         def piece(t, u, kind, h, pad=True):
             if kind == "a":
-                g.load(As[ha * u + h], a.at[m0 + h * (block_m // ha), t * BKs], wait=False,
+                g.load(As[h][u], a.at[m0 + h * (block_m // ha), t * BKs], wait=False,
                        rows=rows_left(t, block_m // ha) if pad else None)
             else:
-                g.load(Bs[hb * u + h], b.at[n0 + h * (block_n // hb), t * BKs], wait=False,
+                g.load(Bs[h][u], b.at[n0 + h * (block_n // hb), t * BKs], wait=False,
                        rows=rows_left(t, block_n // hb) if pad else None)
 
         PIECES = [p for p in (("a", 0), ("b", 0), ("a", 1), ("b", 1))
@@ -242,10 +246,10 @@ def mx4w_kernel(name: str = "mxfp8_4w", *, block_m: int = 256, block_n: int = 25
                                        into=old[1][j] if old else None) for j in range(split_n)])
 
         def read_a(u, i):             # part i is piece i (or the one piece), row wr * qm
-            As[ha * u + i].subtile(qm, BKs, wr, 0).load(t_a, wait=False, into=A[i])
+            As[i][u].subtile(qm, BKs, wr, 0).load(t_a, wait=False, into=A[i])
 
         def read_b(u, j):
-            Bs[hb * u + j].subtile(qn, BKs, wc, 0).load(t_b, wait=False, into=B[j])
+            Bs[j][u].subtile(qn, BKs, wc, 0).load(t_b, wait=False, into=B[j])
 
         def mma(q, i, j):
             if setprio:
@@ -259,17 +263,26 @@ def mx4w_kernel(name: str = "mxfp8_4w", *, block_m: int = 256, block_n: int = 25
         # retire out of order with copies into LDS on gfx950). The last set
         # is made here too, for the loop to load into; its load is repeated
         # by the first K-tile.
-        for q in range(nsets):
-            load_scales(q, q)
-        for t in range(stages - 1):
-            copy(t, t, pad=t > 0)
+        if rolled:
+            load_scales(0, 0)
+            load_scales(1, 1)          # made here for the loop to load into
+            for t in range(stages - 1):
+                copy(t, t, pad=False)
+        else:
+            for q in range(nsets):
+                load_scales(q, q)
+            for t in range(stages - 1):
+                copy(t, t, pad=t > 0)
 
-        def k_tile(t, j, copies):
-            u, q = j % stages, j % nsets
-            g.wait_for(*[As[ha * u + h] for h in range(ha)], *[Bs[hb * u + h] for h in range(hb)])
+        def k_tile(t, j, copies, u=None, un=None, q=None, qn_=None, scales=True):
+            if u is None:
+                u, q = j % stages, j % nsets
+                un, qn_ = (u + stages - 1) % stages, (j + scale_ahead) % nsets
+            g.wait_for(*[As[h][u] for h in range(ha)], *[Bs[h][u] for h in range(hb)])
             hk.arch.barrier()
-            load_scales((j + scale_ahead) % nsets, t + scale_ahead)
-            nxt, un = t + stages - 1, (u + stages - 1) % stages
+            if scales:
+                load_scales(qn_, t + scale_ahead)
+            nxt = t + stages - 1
             have = set()
             for p, (i, jj) in enumerate(order):
                 new = [x for x in (("a", i), ("b", jj)) if x not in have]
@@ -293,12 +306,35 @@ def mx4w_kernel(name: str = "mxfp8_4w", *, block_m: int = 256, block_n: int = 25
             # they hold two sets of operands live (spills at 128 x 256).
             hk.arch.sched_barrier()
 
-        for t0 in range(0, n_tiles - body_len, body_len):
+        if not rolled:
+            for t0 in range(0, n_tiles - body_len, body_len):
+                for j in range(body_len):
+                    k_tile(t0 + j, j, True)
+            t0 = n_tiles - body_len
             for j in range(body_len):
-                k_tile(t0 + j, j, True)
-        t0 = n_tiles - body_len
-        for j in range(body_len):
-            k_tile(t0 + j, j, j + stages - 1 < body_len)
+                k_tile(t0 + j, j, j + stages - 1 < body_len)
+        else:
+            # One K-tile a loop iteration: the ring's roles rotate at run time
+            # (rot), the scales of the K-tile after this one go into set 1 and
+            # are copied into set 0 at the end. A two-K-tile body made the
+            # compiler permute the 256 AGPR accumulators at the loop edge.
+            rot = 0
+            for t in range(0, k_tiles - (stages - 1)):
+                k_tile(t, 0, True, u=rot % stages, un=(rot + stages - 1) % stages, q=0, qn_=1)
+                for i in range(split_m):
+                    hk.copy_mx_scales(S[0][0][i], S[1][0][i])
+                for jj in range(split_n):
+                    hk.copy_mx_scales(S[0][1][jj], S[1][1][jj])
+                rot = (rot + 1) % stages
+            for d in range(stages - 1):
+                last = d == stages - 2
+                k_tile(k_tiles - (stages - 1) + d, 0, False, u=(rot + d) % stages, un=None,
+                       q=0, qn_=1, scales=not last)
+                if not last:
+                    for i in range(split_m):
+                        hk.copy_mx_scales(S[0][0][i], S[1][0][i])
+                    for jj in range(split_n):
+                        hk.copy_mx_scales(S[0][1][jj], S[1][1][jj])
 
         for i in range(split_m):
             for j in range(split_n):

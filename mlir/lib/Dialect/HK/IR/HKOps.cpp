@@ -255,6 +255,12 @@ LogicalResult LoadMxScalesOp::verify() {
   return success();
 }
 
+LogicalResult MxScalesCopyOp::verify() {
+  if (getDst().getType() != getSrc().getType())
+    return emitOpError("copies scales of one shape: ") << getSrc().getType() << " into " << getDst().getType();
+  return success();
+}
+
 LogicalResult MmaABtMxOp::verify() {
   if (failed(verifyDest(*this, getDst(), getResult())))
     return failure();

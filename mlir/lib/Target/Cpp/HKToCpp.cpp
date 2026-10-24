@@ -1130,6 +1130,9 @@ private:
           call("load_mx_scales", d,
                {name(o.getSrc()), name(o.getRow0()), name(o.getKb0())});
         })
+        .Case([&](MxScalesCopyOp o) {
+          w(name(o.getDst()) + " = " + name(o.getSrc()) + ";");
+        })
         .Case([&](MmaABtMxOp o) {
           Value d = dest(o.getDst(), o.getResult());
           call("mma_ABt_mx", d,

@@ -1434,6 +1434,14 @@ def load_mx_scales(src: "Global", rows: int, kblocks: int, row0, kb0, *,
     return MxScales(op.result, ty)
 
 
+def copy_mx_scales(dst: "MxScales", src: "MxScales") -> None:
+    """dst = src: E8M0 scales copied register to register -- how a one-stage
+    loop body hands the next K-tile's prefetched scales to the current set."""
+    if not isinstance(dst, MxScales) or not isinstance(src, MxScales) or dst.ty != src.ty:
+        raise TypeError(f"copy_mx_scales: two MxScales of one shape, got {dst!r} and {src!r}")
+    hkd.MxScalesCopyOp(dst.v, src.v, loc=_t().loc("mxs_copy"))
+
+
 def mma_ABt_mx(a: Tile, b: Tile, acc: Tile, sa: MxScales, sb: MxScales, *, into=None) -> Tile:
     """acc + (sa . A)(sb . B)^T on gfx950's v_mfma_scale_f32_16x16x128_f8f6f4:
     A (M, K) and B (N, K) fp8 e4m3 row tiles, K a multiple of 128; sa and sb

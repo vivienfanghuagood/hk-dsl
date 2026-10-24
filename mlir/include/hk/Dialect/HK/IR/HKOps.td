@@ -853,6 +853,13 @@ def HK_LoadMxScalesOp : HK_Op<"load_mx_scales"> {
   let hasVerifier = 1;
 }
 
+def HK_MxScalesCopyOp : HK_Op<"mx_scales_copy"> {
+  let summary = "dst = src, a register copy of E8M0 scales (a one-stage loop's rotation)";
+  let arguments = (ins HK_MxScalesType:$dst, HK_MxScalesType:$src);
+  let assemblyFormat = "$src `into` $dst attr-dict `:` qualified(type($src)) `,` qualified(type($dst))";
+  let hasVerifier = 1;
+}
+
 def HK_MmaABtMxOp : HK_Op<"mma_ABt_mx"> {
   let summary = "acc + (sa . A) x (sb . B)^T on gfx950's scaled f8f6f4 MFMA";
   let description = [{
