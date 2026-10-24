@@ -345,6 +345,171 @@ def mx4w_kernel(name: str = "mxfp8_4w", *, block_m: int = 256, block_n: int = 25
                      grid=lambda p: (hk.cdiv(p.a.rows, block_m) * (p.b.rows // block_n), 1, 1))
 
 
+def mx4p_kernel(name: str = "mxfp8_4p", *, block_m: int = 256, block_n: int = 256,
+                stages: int = 2, wgm: int = 8, split_m: int = 2, split_n: int = 2,
+                grid_size: int = 256):
+    """mx4w made persistent: `grid_size` workgroups (one a CU), workgroup w
+    takes blocks w, w + grid_size, ... and runs their K-tiles as one stream,
+    so the ring's prologue for the next block is issued under the current
+    block's last K-tiles and the store of a finished block sits between two
+    K-tiles instead of ending the workgroup. One K-tile a loop iteration
+    (the ring rotates at run time, as mx4w's rolled form). Same arguments and
+    results as mx4w_kernel."""
+    BKs = 128
+    qm, qn = block_m // 2 // split_m, block_n // 2 // split_n
+    if split_m not in (1, 2) or split_n not in (1, 2) or qm % 64 or qn % 64:
+        raise ValueError(f"{block_m}x{block_n} split {split_m}x{split_n}: parts of 64-row multiples")
+    order = [p for p in ((0, 0), (0, 1), (1, 1), (1, 0)) if p[0] < split_m and p[1] < split_n]
+    ha, hb = split_m, split_n
+    st_a = hk.ST(fp8e4m3, block_m // ha, BKs)
+    st_b = hk.ST(fp8e4m3, block_n // hb, BKs)
+    t_a = hk.RT(fp8e4m3, qm, BKs, "row")
+    t_b = hk.RT(fp8e4m3, qn, BKs, "row")
+    t_c = hk.RT(fp32, qm, qn, "col")
+
+    def body(a: hk.Tensor[fp8e4m3], b: hk.Tensor[fp8e4m3], sa: hk.Tensor[i32],
+             sb: hk.Tensor[i32], c: hk.Tensor[bf16], *, WGM: hk.Constexpr = wgm):
+        g = hk.group(WARPS)
+        As = [hk.lds.alloc(st_a, count=stages, name=f"As{h}") for h in range(ha)]
+        Bs = [hk.lds.alloc(st_b, count=stages, name=f"Bs{h}") for h in range(hb)]
+        A = [hk.zeros(t_a) for _ in range(split_m)]
+        B = [hk.zeros(t_b) for _ in range(split_n)]
+        C = [[hk.zeros(t_c) for _ in range(split_n)] for _ in range(split_m)]
+
+        M = a.rows
+        m_blocks = hk.cdiv(M, block_m)
+        n_blocks = b.rows // block_n
+        blocks = m_blocks * n_blocks
+        wg = hk.arch.block_idx.x
+        wid = hk.arch.warp_id()
+        wr, wc = wid // 2, wid % 2
+        k_tiles = a.cols // BKs
+        G = hk.min(blocks, grid_size)
+        mine = (blocks - wg + G - 1) // G                     # blocks this workgroup runs
+        n_steps = mine * k_tiles
+
+        def origin(i):
+            """(m0, n0) of this workgroup's i-th block, WGM block-rows a group."""
+            t = wg + i * G
+            per_group = WGM * n_blocks
+            first_m = (t // per_group) * WGM
+            group_m = hk.min(m_blocks - first_m, WGM)
+            return ((first_m + (t % per_group) % group_m) * block_m,
+                    ((t % per_group) // group_m) * block_n)
+
+        def a_row(i):
+            return i * (block_m // split_m) + wr * qm
+
+        def b_row(j):
+            return j * (block_n // split_n) + wc * qn
+
+        PIECES = [p for p in (("a", 0), ("b", 0), ("a", 1), ("b", 1))
+                  if p[1] < (ha if p[0] == "a" else hb)]
+
+        def piece(s, u, kind, h):
+            m0, n0 = origin(s // k_tiles)
+            k0 = (s % k_tiles) * BKs
+            if kind == "a":
+                g.load(As[h][u], a.at[m0 + h * (block_m // ha), k0], wait=False)
+            else:
+                g.load(Bs[h][u], b.at[n0 + h * (block_n // hb), k0], wait=False)
+
+        S = [None, None]
+
+        def load_scales(q, s):
+            m0, n0 = origin(s // k_tiles)
+            kb = (s % k_tiles) * 4
+            old = S[q]
+            S[q] = ([hk.load_mx_scales(sa, qm, 4, m0 + a_row(i), kb,
+                                       into=old[0][i] if old else None) for i in range(split_m)],
+                    [hk.load_mx_scales(sb, qn, 4, n0 + b_row(j), kb,
+                                       into=old[1][j] if old else None) for j in range(split_n)])
+
+        def hand_over():
+            for i in range(split_m):
+                hk.copy_mx_scales(S[0][0][i], S[1][0][i])
+            for jj in range(split_n):
+                hk.copy_mx_scales(S[0][1][jj], S[1][1][jj])
+
+        def step(s, u, un, copies, next_scales):
+            g.wait_for(*[As[h][u] for h in range(ha)], *[Bs[h][u] for h in range(hb)])
+            hk.arch.barrier()
+            if next_scales:
+                load_scales(1, s + 1)
+            have = set()
+            for p, (i, jj) in enumerate(order):
+                new = [x for x in (("a", i), ("b", jj)) if x not in have]
+                for kind, idx in new:
+                    if kind == "a":
+                        As[idx][u].subtile(qm, BKs, wr, 0).load(t_a, wait=False, into=A[idx])
+                    else:
+                        Bs[idx][u].subtile(qn, BKs, wc, 0).load(t_b, wait=False, into=B[idx])
+                    have.add((kind, idx))
+                if copies:
+                    for k in range(len(PIECES)):
+                        if k % len(order) == p:
+                            piece(s + stages - 1, un, *PIECES[k])
+                if new:
+                    hk.lds.wait_for(*[A[idx] if kind == "a" else B[idx] for kind, idx in new])
+                hk.mma_ABt_mx(A[i], B[jj], C[i][jj], S[0][0][i], S[0][1][jj], into=C[i][jj])
+            hk.arch.sched_barrier()
+
+        def finish_block(s):
+            m0, n0 = origin(s // k_tiles)
+            for i in range(split_m):
+                for j in range(split_n):
+                    c[hk.elem_coord(0, 0, m0 + a_row(i), n0 + b_row(j))].store(C[i][j], bounded=True)
+                    C[i][j].zero_()
+
+        def run():
+            load_scales(0, 0)
+            load_scales(1, 1)
+            for t in range(stages - 1):
+                for kind, h in PIECES:
+                    piece(t, t, kind, h)
+
+        # grid_size <= blocks (gemm_4p specializes it), so every workgroup has one.
+        run()
+        rot = 0
+        for s in range(0, n_steps - (stages - 1)):
+            step(s, rot % stages, (rot + stages - 1) % stages, True, True)
+            hand_over()
+            if s % k_tiles == k_tiles - 1:
+                finish_block(s)
+            rot = (rot + 1) % stages
+        for d in range(stages - 1):
+            last = d == stages - 2
+            step(n_steps - (stages - 1) + d, (rot + d) % stages, None, False, not last)
+            if not last:
+                hand_over()
+        finish_block(n_steps - 1)
+
+    body.__name__ = name
+    return hk.kernel(body, arch="gfx950", warps=WARPS, name=name, max_vgprs=512,
+                     grid=lambda p: (grid_size, 1, 1))
+
+
+_MX4P = {}
+
+
+def gemm_4p(a, b, sa_packed, sb_packed, out=None, **sched):
+    """bf16 (M, N) = (sa . a)(sb . b)^T on mx4p_kernel (persistent)."""
+    import torch  # noqa: PLC0415
+
+    bm, bn = sched.get("block_m", 256), sched.get("block_n", 256)
+    blocks = -(-a.shape[0] // bm) * (b.shape[0] // bn)
+    sched = dict(sched, grid_size=min(sched.get("grid_size", 256), blocks))
+    key = tuple(sorted(sched.items()))
+    kern = _MX4P.get(key)
+    if kern is None:
+        name = "mxfp8_4p" + "".join(f"_{k_}{v}" for k_, v in key)
+        kern = _MX4P[key] = mx4p_kernel(name, **sched)
+    if out is None:
+        out = torch.empty((a.shape[0], b.shape[0]), device=a.device, dtype=torch.bfloat16)
+    kern(a, b, sa_packed, sb_packed, out)
+    return out
+
+
 _MX4W = {}
 
 
