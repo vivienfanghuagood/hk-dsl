@@ -6,6 +6,7 @@
     python3 -m hk.integration tune --model M    # measure M's linear routes (hk.integration.tune)
     python3 -m hk.integration headroom --model M  # where a step's time goes (hk.integration.headroom)
     python3 -m hk.integration new-op NAME       # a new op on the rails (hk.integration.newop)
+    python3 -m hk.integration sglang-diffusion install   # hk attention in SGLang-Diffusion (HK_SGLD=1)
 
 `--warm` is the half of "no JIT on the serving path" that `hk.autotune --aot`
 does not cover. The two fill different cache entries: a torch registration is
@@ -54,6 +55,10 @@ def main(argv=None) -> int:
         from .tune import main as tune_main  # noqa: PLC0415
 
         return tune_main(argv[1:])
+    if argv[:1] == ["sglang-diffusion"]:
+        from .sglang_diffusion import main as sgld_main  # noqa: PLC0415
+
+        return sgld_main(argv[1:])
     if argv[:1] == ["headroom"]:
         from .headroom import main as headroom_main  # noqa: PLC0415
 
