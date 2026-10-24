@@ -64,7 +64,7 @@ def gemm_kernel(name: str, *, block_m: int = 256, block_n: int = 256,
                 hipkittens_waits: bool = False, late_b: bool = True,
                 splits: int = 1, lds_shape: Optional[str] = None, nt: str = "",
                 stream_k: int = 0, sk_grid: int = 256, mx: bool = False,
-                arch: Optional[str] = None,
+                mx_scales: str = "ocp", arch: Optional[str] = None,
                 max_vgprs: int = 256, min_occupancy: int = 1, epilogue=None):
     """HipKittens' tiling by default: 256x256x64, eight warps as 2 x 4.
 
@@ -89,6 +89,13 @@ def gemm_kernel(name: str, *, block_m: int = 256, block_n: int = 256,
     are not part of hk-lds-pipeline's count, which only makes its vm waits
     stricter (an extra load in flight can only make a wait retire more).
 
+    `mx_scales="direct"`: sa packed (hk.ops.mxfp8.pack_scales, int32: a warp's
+    64 A rows are one dword a lane and K-tile) and sb in AITER's 32-row layout
+    (hk.ops.mxfp8.aiter_scales, uint8: a warp's 32 B rows are one 16-bit load a
+    lane and K-tile); both land as the MFMA reads them, no VALU between load
+    and MFMA (the "ocp" byte scales are inserted into dwords, which waits for
+    each load as soon as it is issued). Needs warps_m x warps_n = 2 x 4.
+
     `hipkittens_waits` puts HipKittens' own vmcnts back (all but three copies
     after the prologue and at the end of each iteration). hk-lds-pipeline
     refuses them -- the fourth memory phase reads Bs[2] with its copy still in
@@ -105,6 +112,11 @@ def gemm_kernel(name: str, *, block_m: int = 256, block_n: int = 256,
                          f"does not give whole 16-row accumulators")
     if k_step % 32:
         raise ValueError(f"k_step={k_step}: the MFMA's operand is 32 deep")
+    if mx_scales not in ("ocp", "direct"):
+        raise ValueError(f"mx_scales={mx_scales!r}: 'ocp' or 'direct'")
+    if mx and mx_scales == "direct" and (reg_m % 64 or reg_n % 32):
+        raise ValueError(f"mx_scales='direct': warp tiles of 64-row A and 32-row B multiples; "
+                         f"got {reg_m} x {reg_n}")
     if mx and (k_step != 128 or splits != 1 or stream_k or transposed_c or epilogue is not None):
         raise ValueError("mx: k_step 128 (the scaled MFMA's K), no splits, stream-K, "
                          "transposed C or epilogue yet")
@@ -174,11 +186,12 @@ def gemm_kernel(name: str, *, block_m: int = 256, block_n: int = 256,
             sa, sb = mxs
             kb = (k0 + t * k_step) // 32
             old = S[u]
+            bkw = dict(layout="aiter", group_rows=DIRECT_GR) if mx_scales == "direct" else {}
             S[u] = (
                 [hk.load_mx_scales(sa, reg_m, k_step // 32, m0 + i * half_m + wr * reg_m,
                                    kb, into=old[0][i] if old else None) for i in range(2)],
                 [hk.load_mx_scales(sb, reg_n, k_step // 32, n0 + j * half_n + wc * reg_n,
-                                   kb, into=old[1][j] if old else None) for j in range(2)])
+                                   kb, into=old[1][j] if old else None, **bkw) for j in range(2)])
 
         def scales(u):
             if mxs is not None:
@@ -539,8 +552,15 @@ def gemm_kernel(name: str, *, block_m: int = 256, block_n: int = 256,
 
         gemm(a, b, WGM, 0, a.cols // k_step, out, None, (sa, sb))
 
+    def body_mxd(a: hk.Tensor[fp8e4m3], b: hk.Tensor[fp8e4m3], sa: hk.Tensor[i32],
+                 sb: hk.Tensor[i8], c: hk.Tensor[bf16], *, WGM: hk.Constexpr = wgm):
+        def out(tile, r, col):
+            c[hk.elem_coord(0, 0, r, col)].store(tile, bounded=True)
+
+        gemm(a, b, WGM, 0, a.cols // k_step, out, None, (sa, sb))
+
     if mx:
-        fn = body_mx
+        fn = body_mxd if mx_scales == "direct" else body_mx
     elif stream_k:
         if splits != 1:
             raise ValueError("stream_k cuts K itself; splits must be 1")
@@ -568,6 +588,11 @@ def gemm_kernel(name: str, *, block_m: int = 256, block_n: int = 256,
 
     return hk.kernel(fn, arch=arch, warps=warps, grid=_grid, name=name,
                      max_vgprs=max_vgprs, min_occupancy=min_occupancy)
+
+
+#: group_rows of mx_scales="direct"'s B scales: one "expert" larger than any N, so AITER's
+#: per-expert layout is the whole matrix's.
+DIRECT_GR = 1 << 24
 
 
 #: HipKittens' tiling.

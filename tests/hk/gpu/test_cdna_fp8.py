@@ -89,3 +89,24 @@ def test_the_mx_pingpong_matches_the_scaled_product(m, n, k, bm, bn):
     bf = b.float() * torch.pow(2.0, sb.float() - 127).repeat_interleave(32, dim=1)
     ref = af @ bf.T
     assert ((out.float() - ref).abs().max() / ref.abs().max()).item() < 5e-3
+
+
+@pytest.mark.parametrize("m,n,k", [(300, 512, 1152), (512, 256, 1280), (256, 768, 512)])
+def test_the_mx_pingpong_direct_scales_match_the_ocp_ones(m, n, k):
+    """mx_scales="direct" (packed A, AITER-layout B: no VALU on a loaded scale) computes what the
+    four-warp mx4w kernel does, bit for bit -- ragged M, an odd K-tile count (B's scales padded).
+    (The byte-scale pingpong spills at 256 x 256.)"""
+    from hk.ops import mxfp8
+
+    g = torch.Generator(device="cuda").manual_seed(m + n + k)
+    a = torch.randn(m, k, device="cuda", generator=g).to(torch.float8_e4m3fn)
+    b = torch.randn(n, k, device="cuda", generator=g).to(torch.float8_e4m3fn)
+    sa = torch.randint(118, 137, (m, k // 32), device="cuda", dtype=torch.uint8, generator=g)
+    sb = torch.randint(118, 137, (n, k // 32), device="cuda", dtype=torch.uint8, generator=g)
+    ref = mxfp8.gemm_4w(a, b, mxfp8.pack_scales(sa), mxfp8.pack_scales(sb), rolled=True)
+    out = mxfp8.gemm_8w(a, b, mxfp8.pack_scales(sa), mxfp8.aiter_scales(sb))
+    assert torch.equal(out, ref)
+    af = a.float() * torch.pow(2.0, sa.float() - 127).repeat_interleave(32, dim=1)
+    bf = b.float() * torch.pow(2.0, sb.float() - 127).repeat_interleave(32, dim=1)
+    full = af @ bf.T
+    assert ((out.float() - full).abs().max() / full.abs().max()).item() < 5e-3

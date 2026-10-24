@@ -101,8 +101,35 @@ def gemm_pp(a, b, sa, sb, out=None, *, block_n: int = 256, **sched):
                                                 block_n=block_n, arch="gfx950", **sched)
     if out is None:
         out = torch.empty((m, n), device=a.device, dtype=torch.bfloat16)
-    kern(a, b, sa.view(torch.int8), sb.view(torch.int8), out)
+    if sched.get("mx_scales") == "direct":
+        kern(a, b, sa, sb.view(torch.int8), out)
+    else:
+        kern(a, b, sa.view(torch.int8), sb.view(torch.int8), out)
     return out
+
+
+def gemm_8w(a, b, sa_packed, sb_aiter, out=None, *, block_n: int = 256, **sched):
+    """gemm_pp with scales that need no VALU (gemm_cdna mx_scales="direct"): eight warps,
+    HipKittens' pingpong; sa_packed = pack_scales(sa), sb_aiter = aiter_scales(sb)."""
+    return gemm_pp(a, b, sa_packed, sb_aiter, out, block_n=block_n, mx_scales="direct", **sched)
+
+
+def aiter_scales(s):
+    """E8M0 scales [R, K/32] (uint8) in AITER's 32-row layout (shuffle_scale without gate|up;
+    hk.load_mx_scales(layout="aiter")): for 32-row block n1 and 256-wide K pair k1, dword
+    (n1 * K/256 + k1) * 64 + l holds, as byte kpack * 2 + h, the scale of row n1 * 32 + h * 16 +
+    l % 16 and block k1 * 8 + kpack * 4 + l // 16. R a multiple of 32; K is padded with unit
+    scales to a multiple of 256."""
+    import torch  # noqa: PLC0415
+
+    r, kb = s.shape
+    if r % 32 or kb % 4:
+        raise ValueError(f"aiter_scales: rows {r} a multiple of 32, K/32={kb} of 4 (K of 128)")
+    if kb % 8:
+        s = torch.cat([s, s.new_full((r, 8 - kb % 8), 127)], 1)
+        kb = s.shape[1]
+    x = s.view(r // 32, 2, 16, kb // 8, 2, 4)                  # [n1, h, r16, k1, kpack, kb4]
+    return x.permute(0, 3, 5, 2, 4, 1).contiguous().view(r, kb)
 
 
 def expand_block_scales(s, block_rows: int = 32):
