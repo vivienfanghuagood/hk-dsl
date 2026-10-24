@@ -115,6 +115,28 @@ split over KV. It reads SGLang's (B, N, H, D) views in place at any length.
     change. K3 is 36.6 dB (1 GPU) and 37.7 dB (4 GPUs, where hk is 37.1). The
     measurable criterion is per-call accuracy, which K3 meets.
 
+### Owner decisions (2026-10-24, late)
+
+- **K1 correctness.** Measured against an exact fp32 reference (bf16 activations,
+  dequantized FP4 weights, no activation quantization) on sampled tokens, hk's max-rel
+  error may exceed AITER's own error on the same tokens by at most 1e-2. Equivalently,
+  hk's max-rel against aiter.fused_moe may be up to 3e-2. The original <= 1e-2 against
+  AITER cannot be met by anything that does not copy AITER's internal numerics: at most
+  M AITER switches to a stage-1 kernel that writes FP8 h itself, and hk and AITER then
+  differ by 2.0-2.7e-2, while both sit 4-5% from the exact reference.
+- **K3 criterion.** Per-call accuracy, not image identity. K3 meets it (mean error 2.95e-5
+  against a bf16 floor of 2.89e-5 at Qwen's real shape).
+- **T-CR (ConvRot).** Image drift is not a goal. The project's object is the kernel; no
+  further work goes into ConvRot's image quality.
+- **Direction on CDNA.** K1 and K2 must turn into a visible end-to-end gain for
+  DeepSeek-V4.1-Flash in vLLM (prefill TTFT), not stop at kernel ratios. In order:
+  (a) K1 to >= 1.3x along the directions in `~/hk-dx/kda/k1-moe-a8w4/docs/`;
+  (b) K1 and K2 wired into vLLM through `hk.integration` with a TTFT A/B;
+  (c) if two free MI355X are not available, a single-GPU form (fewer layers, or TP1 with
+  dummy weights) for at least a layer- or model-level end-to-end number -- never on
+  another user's GPU allocations.
+  W7900D work (K3, T-CR) stays where it is.
+
 ### Testbed kernels (owner, 2026-10-24)
 
 Two kernels the owner chose to test the DSL on something unfamiliar, from
