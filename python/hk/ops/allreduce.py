@@ -85,12 +85,99 @@ def _kernel(nwg: int, G: int):
     return allreduce2
 
 
+@functools.lru_cache(maxsize=None)
+def _kernel_int8(nwg: int, G: int):
+    """The INT8 codec (`codec="int8"`): what crosses the link is int8 per 32-element group (a row of
+    the flat view) with an fp32 scale (absmax / 127), as quickreduce's INT8 mode carries. The partials
+    are quantized for the reduce-scatter and the sum again for the all-gather; both ranks take
+    dequant(quant(sum)) -- the owner rank too -- so the replicas stay bitwise equal."""
+    assert G % 4 == 0
+    T32 = hk.RT(hk.fp32, 16, 32)
+    TF = hk.RT(hk.fp32, 16, 32)       # 64 int8 rows = 4 bf16 tiles' codes, as bits
+    vt = hk.col_vec(T32)
+    Q = G // 4
+
+    @hk.kernel(arch="gfx950", warps=WARPS, name=f"allreduce2_int8_nwg{nwg}_g{G}",
+               grid=lambda p: (nwg, 1, 1), resident=True)
+    def allreduce2_int8(x_b: hk.Tensor[hk.bf16], y_b: hk.Tensor[hk.bf16],
+                        tx_q: hk.Tensor[hk.i8], tx_f: hk.Tensor[hk.fp32],
+                        rs_q: hk.Tensor[hk.i8, "system"], rs_s: hk.Tensor[hk.fp32, "system"],
+                        rs_peer_f: hk.Tensor[hk.fp32, "system"], rs_s_peer: hk.Tensor[hk.fp32, "system"],
+                        ag_q: hk.Tensor[hk.i8, "system"], ag_s: hk.Tensor[hk.fp32, "system"],
+                        ag_peer_f: hk.Tensor[hk.fp32, "system"], ag_s_peer: hk.Tensor[hk.fp32, "system"],
+                        fl_mine: hk.Tensor[i32, "system"], fl_peer: hk.Tensor[i32, "system"],
+                        ctl: hk.Tensor[i32, "device"], err: hk.Tensor[i32],
+                        *, RANK: int = 0, NT: int = 4):
+        w = hk.arch.block_idx.x
+        group = w * WARPS + hk.arch.warp_id()
+        step = nwg * WARPS * G
+        e = ctl.at[0].load_scalar(invariant=True) + 1
+        mine0 = RANK * NT
+        peer0 = (1 - RANK) * NT
+
+        def quantize(v, t, s_peer):
+            # v: fp32 tile of 16 groups of 32 -> int8 codes in the local staging, scales to the peer;
+            # returns the scales
+            amax = hk.zeros(vt)
+            amax.max_(v.abs().max(axis=1))
+            amax.maximum(1e-12, into=amax)
+            scale = amax * (1.0 / 127.0)
+            s_peer[hk.elem_coord(0, 0, 0, 16 * t)] = scale
+            v *= hk.full(vt, 127.0) / amax
+            tx_q[hk.tile_coord(0, 0, t, 0)] = v          # round + clamp in the store
+            return scale
+
+        def ship(t, peer_f):
+            hk.arch.vm_wait(0)                           # this warp's codes are in the staging
+            ts = [tx_f[hk.tile_coord(0, 0, t // 4 + g, 0)].load(TF) for g in hk.range_constexpr(Q)]
+            for g in hk.range_constexpr(Q):
+                peer_f[hk.tile_coord(0, 0, t // 4 + g, 0)] = ts[g]
+
+        def dequant(q, s, t):
+            v = q[hk.tile_coord(0, 0, t, 0)].load(T32)
+            v *= s[hk.elem_coord(0, 0, 0, 16 * t)].load(vt)
+            return v
+
+        # 1. my partial of the peer's half, quantized -> the peer's rs
+        for t in hk.range(group * G, NT, step):
+            for g in hk.range_constexpr(G):
+                quantize(x_b[hk.tile_coord(0, 0, peer0 + t + g, 0)].load(T32), t + g, rs_s_peer)
+            ship(t, rs_peer_f)
+        hk.comm.signal(fl_peer.at[FLAG_STRIDE * w], e)
+        # 2. mine + the peer's (dequantized) -> quantized once more; my y is its dequantization
+        hk.comm.wait(fl_mine.at[FLAG_STRIDE * w], e, timeout_s=2.0, error=err.at[0])
+        for t in hk.range(group * G, NT, step):
+            scales = []
+            for g in hk.range_constexpr(G):
+                s = x_b[hk.tile_coord(0, 0, mine0 + t + g, 0)].load(T32) + dequant(rs_q, rs_s, t + g)
+                scales.append(quantize(s, t + g, ag_s_peer))
+            ship(t, ag_peer_f)                           # (its vm_wait also covers the codes read back)
+            for g in hk.range_constexpr(G):
+                v = tx_q[hk.tile_coord(0, 0, t + g, 0)].load(T32)
+                v *= scales[g]
+                y_b[hk.tile_coord(0, 0, mine0 + t + g, 0)] = v   # what the peer computes from them
+        hk.comm.signal(fl_peer.at[FLAG_STRIDE * (nwg + w)], e)
+        hk.comm.wait(fl_mine.at[FLAG_STRIDE * (nwg + w)], e, timeout_s=2.0, error=err.at[0])
+        # 3. the peer's half: dequantize its codes
+        for t in hk.range(group * G, NT, step):
+            for g in hk.range_constexpr(G):
+                y_b[hk.tile_coord(0, 0, peer0 + t + g, 0)] = dequant(ag_q, ag_s, t + g)
+        arrived = hk.comm.arrive(ctl.at[16], 1)
+        if arrived == nwg - 1:
+            if hk.arch.warp_id() == 0:
+                ctl.at[16].atomic_add_scalar(-nwg)
+                ctl.at[0].atomic_max_scalar(e)
+
+    return allreduce2_int8
+
+
 class AllReduce:
     """The two-rank exact bf16 all-reduce (module docstring). Collective to construct: every rank of
     `group` (a torch.distributed group of size 2; a gloo group is enough, it only exchanges IPC
     handles) constructs it, in the same order. `max_numel`: the largest tensor it will reduce."""
 
-    def __init__(self, group, max_numel: int, *, workgroups: int = 32, device=None):
+    def __init__(self, group, max_numel: int, *, workgroups: int = 32, codec: str = "exact",
+                 device=None):
         import torch
         import torch.distributed as dist
 
@@ -98,6 +185,12 @@ class AllReduce:
 
         if dist.get_world_size(group) != 2:
             raise ValueError("hk.ops.allreduce.AllReduce reduces across exactly two ranks (TP2)")
+        if codec not in ("exact", "int8"):
+            raise ValueError(f"AllReduce(codec={codec!r}): \"exact\" or \"int8\"")
+        self.codec = codec
+        if codec == "int8":
+            self._init_int8(group, max_numel, workgroups, device)
+            return
         self.rank = dist.get_rank(group)
         self.max_tiles = -(-max_numel // (2 * TILE_ELEMS)) * 2        # even: two halves
         self.workgroups = workgroups
@@ -123,8 +216,56 @@ class AllReduce:
         self._y = y_m
         self._calls = 0
 
-    def _plan(self, nt: int):
-        for G in (8, 4, 2):
+    def _init_int8(self, group, max_numel, workgroups, device):
+        import torch
+        import torch.distributed as dist
+
+        from ..runtime import SymmetricBuffer
+
+        self.rank = dist.get_rank(group)
+        self.max_tiles = -(-max_numel // (8 * TILE_ELEMS)) * 8      # all tiles; a multiple of 4 a half
+        self.workgroups = workgroups
+        rows = self.max_tiles // 2 * 16                           # rows of 32 in a half
+        q, sc = rows * 32, rows * 4
+        fl = 2 * workgroups * FLAG_STRIDE * 4
+        self.buf = SymmetricBuffer(2 * (q + sc) + fl, group, device=device)
+        dev = self.buf.device
+        self.ctl = torch.zeros(64, dtype=torch.int32, device=dev)
+        self.err = torch.zeros(1, dtype=torch.int32, device=dev)
+        peer = 1 - self.rank
+        f32 = lambda t: t.view(torch.float32).view(-1, 32)          # noqa: E731
+        L, P = self.buf.local, (lambda *a, **k: self.buf.peer(peer, *a, **k))
+        rs_q, rs_s = L(torch.int8, (rows, 32)), L(torch.float32, (rows,), offset=q)
+        ag_q, ag_s = L(torch.int8, (rows, 32), offset=q + sc), L(torch.float32, (rows,), offset=2 * q + sc)
+        self._tx = torch.zeros(rows, 32, dtype=torch.int8, device=dev)
+        self._args8 = (self._tx, f32(self._tx),
+                       rs_q, rs_s, f32(P(torch.int8, (rows, 32))), P(torch.float32, (rows,), offset=q),
+                       ag_q, ag_s, f32(P(torch.int8, (rows, 32), offset=q + sc)),
+                       P(torch.float32, (rows,), offset=2 * q + sc),
+                       L(torch.int32, (fl // 4,), offset=2 * (q + sc)),
+                       P(torch.int32, (fl // 4,), offset=2 * (q + sc)), self.ctl, self.err)
+        self._calls = 0
+
+    def _call_int8(self, x, out):
+        import torch
+
+        n = x.numel()
+        if n % (8 * TILE_ELEMS):
+            raise ValueError(f"AllReduce(int8): {n} elements; a multiple of {8 * TILE_ELEMS}")
+        nt = n // (2 * TILE_ELEMS)
+        if 2 * nt > self.max_tiles:
+            raise ValueError(f"AllReduce: {n} elements, more than max_numel")
+        plan = self._plan(nt, Gs=(8, 4))
+        if plan is None:
+            raise ValueError(f"AllReduce(int8): {n} elements do not split into workgroups")
+        nwg, G = plan
+        y = out if out is not None else torch.empty_like(x)
+        _kernel_int8(nwg, G)(x.view(-1, 32), y.view(-1, 32), *self._args8, RANK=self.rank, NT=nt)
+        self._calls += 1
+        return y
+
+    def _plan(self, nt: int, Gs=(8, 4, 2)):
+        for G in Gs:
             if nt % G == 0 and (nt // 2) % (G // 2) == 0:
                 for nwg in (self.workgroups, 32, 16, 8, 4, 2, 1):
                     if nwg <= self.workgroups and nt % (nwg * WARPS * G) == 0:
@@ -136,6 +277,8 @@ class AllReduce:
 
         if x.dtype != torch.bfloat16 or not x.is_contiguous():
             raise TypeError("AllReduce takes a contiguous bf16 tensor")
+        if self.codec == "int8":
+            return self._call_int8(x, out)
         n = x.numel()
         if n % (2 * TILE_ELEMS):
             raise ValueError(f"AllReduce: {n} elements; a multiple of {2 * TILE_ELEMS} (two halves of "
