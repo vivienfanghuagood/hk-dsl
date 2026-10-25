@@ -219,7 +219,7 @@ def test_sorted_stages_match_dequant(mt, pp1, pp2, depth, pers, I):
     from hk.ops import mxfp8
 
     torch.manual_seed(5)
-    E, K, D, T, topk, L = 6, 512, 256, 77, 2, 10.0
+    E, K, D, T, topk, L = 6, 512, 512, 77, 2, 10.0
     dev = "cuda"
     w1 = torch.randint(0, 256, (E, 2 * I, K // 2), dtype=torch.uint8)
     w1s = torch.randint(122, 132, (E * 2 * I, K // 32), dtype=torch.uint8)
@@ -270,6 +270,12 @@ def test_sorted_stages_match_dequant(mt, pp1, pp2, depth, pers, I):
                          mt=mt, pp=pp2, depth=depth, persistent=pers)
     out = M.reduce(y2, None, wt, T, inv=M.identity(T, topk, dev), wrow=sw.view(-1, 1),
                    weighted=False)
+    if not pers and I % 384 == 0 and D % (16 * pp2 * 4 * 2) == 0:
+        # h resident in LDS, two column tiles a workgroup: the same rows, bit for bit
+        yr = M.stage2_sorted(hq, mxfp8.aiter_scales(hs), M.aiter_layout_w2(w2).to(dev),
+                             M.aiter_layout_w2_scale(w2s).to(dev), sid, se, nv, sw, T, topk, E,
+                             mt=mt, pp=pp2, resident=2)
+        assert torch.equal(yr, y2)
     assert torch.equal(out, M.reduce(y2, None, wt, T, dense=True))
     # the top-k sum by bf16 atomics in the scatter (AITER's way): the same up to the adds' rounding
     if pers:

@@ -980,6 +980,123 @@ def _sorted_grid(group_rows: int, mt: int, pp: int, k: int, limit: float, tr: in
                            limit=limit, tr=tr, tc=tc, xcd=xcd)
 
 
+def _sorted_s2_resident(name: str, *, group_rows: int, mt: int, pp: int, k: int, topk: int = 6,
+                        warps: int = 4, nt: int = 4):
+    """Stage 2 with the sorted block's h resident in LDS: a workgroup loads its BM rows of h
+    (all K/128 steps, BM x K bytes) once, then runs `nt` column tiles of TILE * pp * warps
+    output columns over them, streaming only the expert's weights -- h is read once a workgroup,
+    not once a column tile. Weights are prefetched two steps ahead (three register slots; K/128
+    must be a multiple of 3, as DeepSeek-V4.1's 1152 and 2304 are) through the tile boundary, so
+    the next tile's first steps load under this tile's last MFMAs and its epilogue. The weight
+    scale pairs use three sets (the last pair its own) so the next tile's first pair never
+    overwrites a set the current tile's MFMAs may still read. Rows go out as _sorted_ring's
+    stage 2 (choice-major y2, weighted)."""
+    import hk  # noqa: PLC0415
+
+    GR = group_rows
+    KS = 128
+    BM = TILE * mt
+    R = TILE * pp
+    steps = k // KS
+    D = 3
+    if mt % 2 or k % KS or steps % D or steps < 2 * D:
+        raise ValueError(f"_sorted_s2_resident: an even mt, K/128 a multiple of 3 and >= 6 "
+                         f"(mt={mt}, K={k})")
+    NCW = TILE * pp * warps                    # columns a tile
+    npair = -(-steps // 2)
+    st_x = hk.ST(fp8e4m3, BM, KS)
+    t_w = hk.RT(fp8e4m3, R, KS)
+    t_x1 = hk.RT(fp8e4m3, TILE, KS)
+    t_c1 = hk.RT(fp32, R, TILE, "col")
+    t_wv = hk.RT(fp32, TILE, R, "row")
+    XGR = 1 << 24
+
+    def sset(p):                               # weight-scale set of K pair p
+        return 2 if p == npair - 1 else p % 2
+
+    def body(x: hk.Tensor[fp8e4m3], xs: hk.Tensor[i8], w: hk.Tensor[i8], ws: hk.Tensor[i8],
+             sids: hk.Tensor[i32], seids: hk.Tensor[i32], nv: hk.Tensor[i32], wv: hk.Tensor[fp32],
+             out: hk.Tensor[bf16]):
+        g = hk.group(warps)
+        Hres = hk.lds.alloc(st_x, count=steps, name="Hres")
+        nblk = out.cols // (NCW * nt)
+        wg = hk.arch.block_idx.x
+        total = seids.cols * nblk
+        moved = (wg % NUM_XCDS) * (total // NUM_XCDS) + wg // NUM_XCDS
+        whole = 1 - hk.min(total % NUM_XCDS, 1)
+        wg = whole * moved + (1 - whole) * wg
+        blk = wg % nblk
+        b = wg // nblk
+        e = seids[hk.elem_coord(0, 0, 0, b)].load_scalar()
+        valid = nv[hk.elem_coord(0, 0, 0, 0)].load_scalar()
+        live = hk.min(hk.max(valid - b * BM, 0), 1)
+        r0 = b * BM
+        wid = hk.arch.warp_id()
+        col0 = blk * NCW * nt + wid * R
+        Cs = [hk.zeros(t_c1) for _ in range(mt)]
+        X1 = hk.zeros(t_x1)
+        W = [hk.zeros(t_w) for _ in range(D)]
+        S = [hk.load_mx_scales(ws, R, 8, e * GR + col0, 0, layout="aiter", group_rows=GR)
+             for _ in range(3)]
+
+        for _ in range(live):
+            for kc in range(steps):                # the block's h, every K step, once
+                g.load(Hres[kc], x.at[r0, kc * KS], wait=False)
+            SX = [hk.load_mx_scales(xs, BM, 8, r0, p * 8, layout="aiter", group_rows=XGR)
+                  for p in range(npair)]
+            row_w = e * GR + col0
+
+            def fetch(t, rw):                      # weight step t (and its scale pair) of rows rw
+                hk.load_fp4_frags(t_w, w, rw, t, group_rows=GR, into=W[t % D])
+                if t % 2 == 0:
+                    hk.load_mx_scales(ws, R, 8, rw, t * 4, layout="aiter", group_rows=GR,
+                                      into=S[sset(t // 2)])
+
+            for t in range(D - 1):
+                fetch(t, row_w)
+            for kc in range(steps):
+                g.wait_for(Hres[kc], exact=True)
+            hk.arch.barrier()
+            def step(kc, rw):                      # K step kc of the tile at rows rw
+                t = kc + D - 1
+                if t < steps:
+                    fetch(t, rw)
+                else:                              # the next tile's first steps, under this one
+                    fetch(t - steps, rw + NCW)
+                p, par = kc // 2, kc % 2
+                for ti in range(mt):
+                    Hres[kc].subtile(TILE, KS, ti, 0).load(t_x1, wait=False, into=X1)
+                    hk.lds.wait_for(X1)
+                    hk.mma_ABt_mx(W[kc % D], X1, Cs[ti], S[sset(p)], SX[p], a_fmt="fp4",
+                                  sa_at=(0, par), sb_at=(ti, par), into=Cs[ti])
+                hk.arch.sched_barrier()
+
+            def store(c0):                         # the tile's rows out, weighted; acc to zero
+                for i in range(mt):
+                    o = hk.transpose(Cs[i])
+                    wt = wv[hk.elem_coord(0, 0, r0 + i * TILE, 0)].load(t_wv)
+                    wt.right_fill_(1, 0.0)
+                    o = o * wt.sum(axis=1)[:, None]
+                    out.scatter(o, sids, r0 + i * TILE, col=c0, sort_topk=topk)
+                    Cs[i].zero_()
+
+            for n in hk.range(nt):
+                for kc in range(steps):
+                    step(kc, row_w + n * NCW)
+                store(col0 + n * NCW)
+            hk.arch.barrier()          # (the verifier sees `live` as a loop: Hres reloads at its top)
+
+    body.__name__ = name
+    return hk.kernel(body, arch="gfx950", warps=warps, name=name, max_vgprs=2048 // warps,
+                     grid=lambda p: (p.seids.cols * (p.out.cols // (TILE * pp * warps * nt)), 1, 1))
+
+
+@functools.lru_cache(maxsize=None)
+def _sorted_resident(group_rows: int, mt: int, pp: int, k: int, topk: int, nt: int):
+    return _sorted_s2_resident(f"moe_a8w4_s2r_gr{group_rows}_mt{mt}_pp{pp}_k{k}_t{topk}_n{nt}",
+                               group_rows=group_rows, mt=mt, pp=pp, k=k, topk=topk, nt=nt)
+
+
 @functools.lru_cache(maxsize=None)
 def _sorted_persistent(group_rows: int, mt: int, pp: int, k: int, topk: int, grid: int,
                        atomic: bool = False):
@@ -1047,7 +1164,8 @@ def stage1_sorted(xq_tok, xs_sorted, w13, w13_scale, sorted_ids, sorted_expert_i
 
 def stage2_sorted(hq, hs_sorted, w2, w2_scale, sorted_ids, sorted_expert_ids, num_valid,
                   sorted_weights, m: int, topk: int, n_experts: int, *, mt: int, pp: int = 4,
-                  depth: int = 2, warps: int = 4, persistent: int = 0, atomic: bool = False):
+                  depth: int = 2, warps: int = 4, persistent: int = 0, atomic: bool = False,
+                  resident: int = 0):
     """y2 [topk * m, D] bf16, choice-major: row choice * m + token = weight * (h_q . w2^T) of that
     pair (hq [P, I] FP8 and hs_sorted its 32-row-layout scales, both in sorted order).
     reduce(y2, ..., inv=identity(m, topk), weighted=False) sums it.
@@ -1067,6 +1185,15 @@ def stage2_sorted(hq, hs_sorted, w2, w2_scale, sorted_ids, sorted_expert_ids, nu
         y2 = torch.zeros((m, d), device=hq.device, dtype=torch.bfloat16)
     else:
         y2 = torch.empty((topk * m, d), device=hq.device, dtype=torch.bfloat16)   # a row a pair
+    if resident:        # h resident in LDS, `resident` column tiles a workgroup (_sorted_s2_resident)
+        if atomic or persistent or d % (TILE * pp * warps * resident):
+            raise ValueError(f"moe_a8w4.stage2_sorted(resident={resident}): D={d} a multiple of "
+                             f"{TILE * pp * warps * resident}, without atomic / persistent")
+        _sorted_resident(d, mt, pp, hq.shape[1], topk, resident)(
+            hq, hs_sorted.view(torch.int8), w2.view(torch.int8), w2_scale.view(torch.int8),
+            sorted_ids.view(1, -1), sorted_expert_ids.view(1, -1), num_valid.view(1, -1),
+            sorted_weights.view(-1, 1).float(), y2)
+        return y2
     if persistent:      # `persistent` workgroups looping over the units (_sorted_s2_persistent)
         _sorted_persistent(d, mt, pp, hq.shape[1], topk, persistent, atomic)(
             hq, hs_sorted.view(torch.int8), w2.view(torch.int8), w2_scale.view(torch.int8),

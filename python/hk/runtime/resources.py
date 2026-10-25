@@ -65,7 +65,10 @@ class KernelResources:
 
     @property
     def spills(self) -> bool:
-        return bool(self.scratch or self.vgpr_spill or self.sgpr_spill)
+        # An SGPR spill with ScratchSize 0 went to VGPR lanes (v_writelane / v_readlane): no
+        # memory traffic, nothing for a hand-placed s_waitcnt to reorder against -- not a spill
+        # in the sense that makes a kernel wrong. SGPR spills to scratch show up as scratch.
+        return bool(self.scratch or self.vgpr_spill)
 
     def line(self) -> str:
         vg = str(self.vgpr)
