@@ -983,10 +983,11 @@ def HK_MxQuantStoreOp : HK_Op<"mx_quant_store"> {
     plain LDS reads -- write it, then barrier, before this) and computes the group's E8M0
     exponent exactly as AITER's per_1x32 FP8 quant does: e = ceil(log2(amax / 448)) from
     amax's bits. It writes the 32 FP8 values (x * 2^-e, round to nearest even) to
-    q[row0 + row, col0 + 32 g ..] and the byte e + 127 to s in AITER's 32-row two-step
-    layout (hk.mx.aiter_scales of q's [R, K/32], K/32 padded to 8) -- the layout
-    stage-2 / mma_ABt_mx(layout="aiter") reads. Rows past q's are skipped; pad scale bytes are
-    not written.
+    q[row0 + row, col0 + 32 g ..] and the byte e + 127 to s: a uint8 s gets AITER's 32-row
+    two-step layout (hk.mx.aiter_scales of q's [R, K/32], K/32 padded to 8) -- the layout
+    stage-2 / mma_ABt_mx(layout="aiter") reads; an int32 s the packed layout load_mx_scales
+    reads (hk.mx.pack_scales). Rows past q's are skipped (with an int32 s their scale bytes get
+    the unit scale, 127); AITER's pad scale bytes are not written.
   }];
   let arguments = (ins HK_SharedTileType:$src, HK_GlobalType:$q, HK_GlobalType:$s,
                        I32:$row0, I32:$col0);

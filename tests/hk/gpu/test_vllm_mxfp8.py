@@ -34,7 +34,7 @@ def test_patched_layer_matches_vllm(m, n, k):
         torch.randint(120, 135, (n // 32, k // 32), device="cuda", dtype=torch.uint8, generator=g),
         requires_grad=False)
     P._ORIG_PWAL = lambda self, layer: None
-    P.PATCH.define(P.mxfp8_block32)
+    P.PATCH.define(P.mxfp8_linear)
     P.process_weights_after_loading(None, layer)
     x = torch.randn(m, k, device="cuda", generator=g).to(torch.bfloat16)
     from vllm.model_executor.layers.quantization.utils.mxfp8_utils import mxfp8_e4m3_quantize

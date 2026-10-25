@@ -1556,15 +1556,18 @@ def mx_quant_store(src: "SharedTile", q: "Global", s: "Global", row0, col0) -> N
     to an MXFP8 consumer without a separate quant pass. Every thread of the workgroup takes
     (row, 32-column group) pairs of `src` (bf16 or fp32: store it, then barrier, first). For each
     group it computes AITER's E8M0 exponent exactly, e = ceil(log2(amax / 448)) from amax's bits.
-    It writes the FP8 e4m3 values to q[row0 + r, col0 + 32 g ..] and the scale byte to `s` in
-    AITER's 32-row layout (hk.mx.aiter_scales of q's [R, K/32], K/32 padded to 8). The
-    result is bit-identical to hk.mx.quant followed by hk.mx.aiter_scales."""
+    It writes the FP8 e4m3 values to q[row0 + r, col0 + 32 g ..] and the scale byte to `s`:
+    a uint8 `s` gets AITER's 32-row layout (hk.mx.aiter_scales of q's [R, K/32], K/32 padded to
+    8), an int32 `s` the packed layout hk.load_mx_scales reads ([ceil(R/64), K/128 * 64],
+    hk.mx.pack_scales; rows past q's last get the unit scale, as pack_scales pads them). The
+    result is bit-identical to hk.mx.quant followed by hk.mx.aiter_scales or hk.mx.pack_scales."""
     if not isinstance(src, SharedTile) or src.ty.dtype not in (bf16, fp32) or src.ty.cols % 32:
         raise TypeError(f"mx_quant_store: a bf16 or fp32 LDS tile of 32-column groups, not {src!r}")
     if not isinstance(q, Global) or q.dtype is not fp8e4m3:
         raise TypeError(f"mx_quant_store: q is an fp8 e4m3 tensor, not {q!r}")
-    if not isinstance(s, Global) or s.dtype is not i8:
-        raise TypeError(f"mx_quant_store: s holds E8M0 bytes, a uint8 tensor, not {s!r}")
+    if not isinstance(s, Global) or s.dtype not in (i8, i32):
+        raise TypeError(f"mx_quant_store: s holds E8M0 bytes, a uint8 tensor (AITER's 32-row "
+                        f"layout) or an int32 one (packed), not {s!r}")
     if get_target(_t().arch).arch != "gfx950":
         raise TypeError(f"mx_quant_store: FP8 e4m3 conversion is gfx950's here, not {_t().arch}")
     hkd.MxQuantStoreOp(src.v, q.v, s.v, as_int(row0).v, as_int(col0).v, loc=_t().loc("mxq"))

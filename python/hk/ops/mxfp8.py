@@ -612,3 +612,62 @@ def gemm_8w_tail(a, b, sa_packed, sb_aiter, sb_packed, out=None, *, n1=None, tai
     gemm_8w(a, b[:n1], sa_packed, sb_aiter[:n1], out[:, :n1], **sched)
     gemm_4w(a, b[n1:], sa_packed, sb_packed[n1 // 64:], out[:, n1:], **tail)
     return out
+
+
+# -- activation quant: bf16 x -> FP8 e4m3 x + E8M0 scales in the layout the GEMM reads --------
+
+QUANT_ROWS, QUANT_COLS = 64, 128
+
+
+def quant_kernel(packed: bool = True):
+    """bf16 x [M, K] -> (FP8 e4m3 q [M, K], scales): 64 x 128 blocks through LDS into
+    hk.mx_quant_store. `packed`: int32 scales in hk.mx.pack_scales' layout (rows past M at the unit
+    scale), else uint8 in hk.mx.aiter_scales' 32-row layout. Bit for bit hk.mx.quant (AITER's
+    per_1x32 rule, which vLLM's mxfp8_e4m3_quantize also follows) and then that layout: one launch
+    where vLLM's route took a quant and a pack."""
+    st = hk.ST(bf16, QUANT_ROWS, QUANT_COLS)
+    S = i32 if packed else i8
+
+    def mx_quant(x: hk.Tensor[bf16], q: hk.Tensor[fp8e4m3], s: hk.Tensor[S]):
+        S  # noqa: B018 -- named in the body: an annotation resolves only through a free variable
+        g = hk.group(4)
+        Xs = hk.lds.alloc(st, name="Xs")
+        r0 = hk.arch.block_idx.y * QUANT_ROWS
+        c0 = hk.arch.block_idx.x * QUANT_COLS
+        g.load(Xs, x.at[r0, c0])
+        hk.arch.barrier()
+        hk.mx_quant_store(Xs, q, s, r0, c0)
+
+    name = "mxfp8_quant_" + ("packed" if packed else "aiter")
+    mx_quant.__name__ = name
+    return hk.kernel(mx_quant, arch="gfx950", warps=4, name=name,
+                     grid=lambda p: (p.x.cols // QUANT_COLS, hk.cdiv(p.x.rows, QUANT_ROWS), 1))
+
+
+_QUANT = {}
+
+
+def quant(x, packed: bool = True):
+    """(q, scales) for bf16 x [M, K], K a multiple of 128: scales packed ([ceil(M/64), K/128 * 64]
+    int32, hk.mx.pack_scales of hk.mx.quant's) or in AITER's 32-row layout (uint8, M a multiple
+    of 32)."""
+    import torch  # noqa: PLC0415
+
+    m, k = x.shape
+    if k % QUANT_COLS:
+        raise ValueError(f"mxfp8.quant: K={k}, a multiple of {QUANT_COLS}")
+    q = torch.empty((m, k), device=x.device, dtype=torch.float8_e4m3fn)
+    if packed:
+        s = torch.empty((-(-m // 64), k // 128 * 64), device=x.device, dtype=torch.int32)
+    else:
+        if m % 32:
+            raise ValueError(f"mxfp8.quant(packed=False): M={m}, a multiple of 32")
+        kb = k // 32 + (-(k // 32)) % 8
+        # the kernel writes every scale of x's own blocks; AITER's K pad (to 8 blocks) is unit scales
+        s = (torch.empty if kb == k // 32 else torch.full)(
+            *(((m, kb),) if kb == k // 32 else ((m, kb), 127)), device=x.device, dtype=torch.uint8)
+    kern = _QUANT.get(packed)
+    if kern is None:
+        kern = _QUANT[packed] = quant_kernel(packed)
+    kern(x, q, s.view(torch.int32) if packed else s.view(torch.int8))
+    return q, s
