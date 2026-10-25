@@ -1209,6 +1209,11 @@ private:
           w("kittens::signal<" + std::to_string(o.getAux()) + ">(" + name(o.getDst()) + ", " +
             name(o.getIdx()) + ", " + name(o.getValue()) + ");");
         })
+        .Case([&](ArriveOp o) {
+          w("const int " + name(o.getResult()) + " = kittens::arrive<" +
+            std::to_string(o.getAux()) + ">(" + name(o.getDst()) + ", " + name(o.getIdx()) +
+            ", " + name(o.getValue()) + ");");
+        })
         .Case([&](WaitOp o) {
           std::string err = "nullptr";
           if (o.getErr())

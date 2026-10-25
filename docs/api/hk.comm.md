@@ -24,13 +24,19 @@ The protocol, the one the litmus suite found correct in every placement:
 passes a barrier and stores the flag from one thread; `wait` polls with the
 scope and s_sleep backoff, and turns a hang into an error after `timeout_s`.
 
+- [`hk.comm.signal`](#hkcommsignal)
+- [`hk.comm.arrive`](#hkcommarrive)
+- [`hk.comm.wait`](#hkcommwait)
+- [`hk.comm.barrier`](#hkcommbarrier)
+- [`hk.comm.REALTIME_HZ`](#hkcommrealtime_hz)
+
 ### `hk.comm.signal`
 
 ```python
 hk.comm.signal(view, value) -> None
 ```
 
-*New after 0.4.0* (the `hk.dsl.comm` module is not in the 0.4.0 wheel)
+*New after 0.5.0* (the `hk.dsl.comm` module is not in the 0.5.0 wheel)
 
 Publish `value` into the int32 element `view` (a scoped tensor's): every
 store this workgroup issued before it is acknowledged first, then one
@@ -38,13 +44,26 @@ thread stores the flag with the tensor's scope. What it announces must have
 gone to scoped tensors (their stores carry the scope; a plain store would
 sit in this XCD's L2). Contains a barrier: every warp must reach it.
 
+### `hk.comm.arrive`
+
+```python
+hk.comm.arrive(view, value=1) -> Int
+```
+
+*New after 0.5.0* (the `hk.dsl.comm` module is not in the 0.5.0 wheel)
+
+As `signal`, but one thread *adds* `value` to the int32 element `view`
+(a scoped tensor's) with an atomic of the tensor's scope; returns the
+element's value before the add (wave-uniform). Every store this workgroup
+issued before it is acknowledged first. Contains a barrier.
+
 ### `hk.comm.wait`
 
 ```python
 hk.comm.wait(view, value, *, cmp: str = '>=', timeout_s: float = 2.0, error: Optional[View] = None) -> Int
 ```
 
-*New after 0.4.0* (the `hk.dsl.comm` module is not in the 0.4.0 wheel)
+*New after 0.5.0* (the `hk.dsl.comm` module is not in the 0.5.0 wheel)
 
 Poll the int32 element `view` (a scoped tensor's) until it is `>=` (signed)
 or `==` `value`; return the value seen (wave-uniform). Every warp polls,
@@ -53,8 +72,23 @@ up: with `error` (an int32 element, e.g. err.at[0]) lane 0 ORs 1 into it
 and the value seen is returned -- check it on the host; without, the
 kernel traps, so a lost signal is an error rather than a hang.
 
+### `hk.comm.barrier`
+
+```python
+hk.comm.barrier(view, target, *, timeout_s: float = 2.0, error: Optional[View] = None) -> Int
+```
+
+*New after 0.5.0* (the `hk.dsl.comm` module is not in the 0.5.0 wheel)
+
+Every workgroup that reaches it adds 1 to the int32 element `view` and
+waits until it is >= `target` -- with an epoch, target = epoch x the number
+of arrivals, so the counter never needs resetting. With a "device" counter
+it is a grid barrier (the kernel must be `resident=True`: every workgroup on
+the GPU at once), with a "system" one a barrier across GPUs. The stores
+before it are visible after it to accesses of the same scope.
+
 ### `hk.comm.REALTIME_HZ`
 
-*New after 0.4.0* (the `hk.dsl.comm` module is not in the 0.4.0 wheel)
+*New after 0.5.0* (the `hk.dsl.comm` module is not in the 0.5.0 wheel)
 
 s_memrealtime runs at 100 MHz on gfx9 (not the shader clock: clock64() on gfx1100 is 20 bits and wraps, KernelWiki gfx1100-device-flags-unreliable).
