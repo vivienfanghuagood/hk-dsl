@@ -620,7 +620,8 @@ QUANT_ROWS, QUANT_COLS = 64, 128
 
 
 def quant_kernel(packed: bool = True):
-    """bf16 x [M, K] -> (FP8 e4m3 q [M, K], scales): 64 x 128 blocks through LDS into
+    """bf16 x [M, K] -> (FP8 e4m3 q [M, K], scales): 64 x 128 blocks through LDS (the last one
+    stops at row M) into
     hk.mx_quant_store. `packed`: int32 scales in hk.mx.pack_scales' layout (rows past M at the unit
     scale), else uint8 in hk.mx.aiter_scales' 32-row layout. Bit for bit hk.mx.quant (AITER's
     per_1x32 rule, which vLLM's mxfp8_e4m3_quantize also follows) and then that layout: one launch
@@ -634,7 +635,11 @@ def quant_kernel(packed: bool = True):
         Xs = hk.lds.alloc(st, name="Xs")
         r0 = hk.arch.block_idx.y * QUANT_ROWS
         c0 = hk.arch.block_idx.x * QUANT_COLS
-        g.load(Xs, x.at[r0, c0])
+        # The last row block stops at x's last row; the rest of the tile reads zero. A whole-tile
+        # copy read up to 63 rows past x, which faults where x ends its allocator segment (B1's
+        # combined arm). mx_quant_store neither stores those rows nor reads them for the scales.
+        g.load(Xs, x.at[r0, c0], wait=False, rows=hk.min(x.rows - r0, QUANT_ROWS))
+        g.wait_for(Xs)
         hk.arch.barrier()
         hk.mx_quant_store(Xs, q, s, r0, c0)
 
