@@ -9,6 +9,11 @@
 #   /ci/src    the checkout          /ci/run   the run's directory
 #   /ci/mlir   the MLIR install, read-only
 set -uo pipefail
+# No core dumps: a faulting or killed GPU process writes host cores of its whole address space
+# (100+ GB for vLLM) and ROCr GPU cores (gpucore.PID in the working directory) to a shared disk.
+# ROCr honours RLIMIT_CORE and also HSA_DISABLE_COREDUMP_ON_EXCEPTION (ROCm 7.2.3 and 10).
+ulimit -c 0
+export HSA_DISABLE_COREDUMP_ON_EXCEPTION=1
 SHA=$1
 GPU=$2
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
