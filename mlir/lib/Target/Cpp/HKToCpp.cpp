@@ -93,6 +93,10 @@ std::string rawCpp(Type t) {
     return "kittens::lds_granules<" + rawCpp(g.getTile()) + ">";
   if (isa<StageType>(t))
     return "float4";
+  if (auto m = dyn_cast<MxScalesType>(t))
+    return "kittens::hk_mxs<" + std::to_string(m.getRows()) + ", " +
+           std::to_string(m.getKblocks()) +
+           (m.getFmt() ? ", " + std::to_string(m.getFmt()) : std::string()) + ">";
   if (t.isIntOrFloat())
     return dtypeCpp(t).str();
   return "/*?*/";
@@ -320,6 +324,11 @@ private:
                          "subtile addresses; read whole subtiles";
         bad = true;
       }
+    });
+    // An allocation only load_fp4_frags_lds reads holds raw bytes in 1 KB chunks: what an fp8
+    // 16x128 operand read would pick (an unnamed byte tile has no include/cdna4 layout at all).
+    kernel.walk([&](LoadFp4FragsLdsOp l) {
+      allocShape.insert({sharedRoot(l.getSrc()), "st_16x128"});
     });
     std::map<Operation *, Operation *> by;
     kernel.walk([&](LoadSharedOp l) {
@@ -1121,6 +1130,45 @@ private:
             ", " + name(o.getIdx()) + ", " + name(o.getAt()) + ", " +
             name(o.getCount()) + ", " + name(o.getCol()) + ", " +
             name(o.getDiv()) + ");");
+        })
+        .Case([&](LoadMxScalesOp o) {
+          Value d = dest(o.getDst(), o.getResult());
+          if (o.getLayout())
+            w("kittens::load_mx_scales_aiter<" + std::to_string(o.getLayout()) + ", " +
+              std::to_string(o.getGroupRows()) + ">(" + name(d) + ", " + name(o.getSrc()) +
+              ", " + name(o.getRow0()) + ", " + name(o.getKb0()) + ");");
+          else
+            call("load_mx_scales", d,
+                 {name(o.getSrc()), name(o.getRow0()), name(o.getKb0())});
+        })
+        .Case([&](MxQuantStoreOp o) {
+          w("kittens::mx_quant_store(" + name(o.getQ()) + ", " + name(o.getS()) + ", " +
+            name(o.getSrc()) + ", " + name(o.getRow0()) + ", " + name(o.getCol0()) + ");");
+        })
+        .Case([&](LoadFp4FragsLdsOp o) {
+          Value d = dest(o.getDst(), o.getResult());
+          w("kittens::load_fp4_frags_lds(" + name(d) + ", " + name(o.getSrc()) + ", " +
+            name(o.getRow0()) + ", " + name(o.getChunk0()) + ");");
+        })
+        .Case([&](LoadFp4FragsOp o) {
+          Value d = dest(o.getDst(), o.getResult());
+          w("kittens::load_fp4_frags<" + std::to_string(o.getGateUp()) + ", " +
+            std::to_string(o.getGroupRows()) + ">(" + name(d) + ", " + name(o.getSrc()) +
+            ", " + name(o.getRow0()) + ", " + name(o.getKc0()) + ");");
+        })
+        .Case([&](MxScalesCopyOp o) {
+          w(name(o.getDst()) + " = " + name(o.getSrc()) + ";");
+        })
+        .Case([&](MmaABtMxOp o) {
+          Value d = dest(o.getDst(), o.getResult());
+          std::string offs;
+          if (o.getSaTile() || o.getSaStep() || o.getSbTile() || o.getSbStep())
+            offs = ", " + std::to_string(o.getSaTile()) + ", " + std::to_string(o.getSaStep()) +
+                   ", " + std::to_string(o.getSbTile()) + ", " + std::to_string(o.getSbStep());
+          w("kittens::mma_ABt_mx<" + std::to_string(o.getAFmt()) + ", " +
+            std::to_string(o.getBFmt()) + offs + ">(" + name(d) + ", " +
+            name(o.getA()) + ", " + name(o.getB()) + ", " + name(o.getC()) + ", " +
+            name(o.getSa()) + ", " + name(o.getSb()) + ");");
         })
         .Case([&](LoadW4Op o) {
           Value d = dest(o.getDst(), o.getResult());

@@ -829,6 +829,31 @@ struct Walker {
         st.now.region = nullptr;
         continue;
       }
+      if (auto f = dyn_cast<LoadFp4FragsOp>(op)) {
+        // one 16-byte buffer load per 16x128 fragment (include/hk/cdna.cuh load_fp4_frags)
+        auto t = cast<RegTileType>(f.getResult() ? f.getResult().getType() : f.getDst().getType());
+        st.dma.push_back({Root{}, int64_t(t.getRows() / 16) * (t.getCols() / 128), op});
+        continue;
+      }
+      if (auto m = dyn_cast<LoadMxScalesOp>(op)) {
+        // Byte loads of E8M0 scales: on vmcnt with the copies, one per 16-row
+        // base tile and 128-wide K step. They land in registers the compiler
+        // waits for itself; here they only count, so that a wait for a copy
+        // issued before them keeps them in flight instead of retiring them.
+        auto t = m.getResult() ? m.getResult().getType() : m.getDst().getType();
+        auto mt = cast<MxScalesType>(t);
+        // Packed (i32) scales: one dword load per 64-row group and K step. AITER's shuffled
+        // layouts (layout 1, 2): one dword per 32-row block and pair of K steps.
+        int64_t n;
+        if (m.getLayout())
+          n = int64_t(mt.getRows() / 32) * ((mt.getKblocks() / 4 + 1) / 2);
+        else {
+          int64_t per = m.getSrc().getType().getElementType().isInteger(32) ? 64 : 16;
+          n = int64_t(mt.getRows() / per) * (mt.getKblocks() / 4);
+        }
+        st.dma.push_back({Root{}, n, op});
+        continue;
+      }
       if (auto g = dyn_cast<GroupLoadOp>(op)) {
         groupLoad(g, st);
         continue;
@@ -952,6 +977,8 @@ struct LdsPipelinePass : public mlir::hk::impl::HKLdsPipelineBase<LdsPipelinePas
                        "is missing.";
       return signalPassFailure();
     }
+    // Scale loads (no buffer) land in registers the compiler waits for.
+    llvm::erase_if(fin.dma, [](const Dma &d) { return !d.root.alloc; });
     if (!fin.dma.empty()) {
       f.emitError() << "the kernel ends with a copy into "
                     << Walker::bufName(fin.dma.front().root)

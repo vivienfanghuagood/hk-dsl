@@ -7,8 +7,8 @@ from .._mlir import ir
 from .._mlir.dialects import arith, func, hk as hkd
 from ..compiler import mlir as M
 from ..types import (
-    CoordType, GlobalType, GranuleSetType, RegTileType, RegVecType, ScalarType,
-    SharedTileType, SharedVecType, StageBufferType, Type,
+    CoordType, GlobalType, GranuleSetType, MxScalesType, RegTileType, RegVecType,
+    ScalarType, SharedTileType, SharedVecType, StageBufferType, Type,
 )
 from . import host
 
@@ -43,6 +43,8 @@ def mlir_type(t: Type) -> ir.Type:
         d = f", {t.depth}" if t.depth != 1 else ""
         s = (f"!hk.stage<{e(t.tile.dtype)}, {t.tile.rows}x{t.tile.cols}, "
              f"{t.threads}{d}>")
+    elif isinstance(t, MxScalesType):
+        s = f"!hk.mxs<{t.rows}, {t.kblocks}" + (f", {t.fmt}" if t.fmt else "") + ">"
     elif isinstance(t, ScalarType):
         s = M.element(t.dtype.name)
     else:

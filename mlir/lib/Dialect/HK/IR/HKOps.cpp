@@ -238,6 +238,118 @@ LogicalResult LoadW4Op::verify() {
   return success();
 }
 
+LogicalResult LoadMxScalesOp::verify() {
+  if (failed(verifyDest(*this, getDst(), getResult())))
+    return failure();
+  auto et = getSrc().getType().getElementType();
+  if (et.isInteger(32)) {
+    auto t = cast<MxScalesType>(destType(getDst(), getResult()));
+    if (t.getRows() % 64)
+      return emitOpError("packed (i32) scales come in 64-row groups; ")
+             << t.getRows() << " rows";
+    return success();
+  }
+  if (!et.isInteger(8))
+    return emitOpError("reads E8M0 scales from a uint8 (i8) global, one byte a "
+                       "row and 32 columns, or packed dwords (i32)");
+  if (getLayout() < 0 || getLayout() > 2)
+    return emitOpError("layout is 0 (OCP), 1 (AITER gate|up) or 2 (AITER); got ")
+           << getLayout();
+  if (getLayout()) {
+    auto t = cast<MxScalesType>(destType(getDst(), getResult()));
+    if (getGroupRows() <= 0 || getGroupRows() % 32)
+      return emitOpError("AITER scales need group_rows, a positive multiple of 32");
+    if (getLayout() == 1 && t.getRows() % 32)
+      return emitOpError("a gate|up tile is whole (gate, up) block pairs: 32-row multiples");
+  }
+  return success();
+}
+
+LogicalResult MxQuantStoreOp::verify() {
+  auto st = getSrc().getType();
+  if (!st.getElementType().isBF16() && !st.getElementType().isF32())
+    return emitOpError("quantizes a bf16 or fp32 LDS tile");
+  if (st.getCols() % 32)
+    return emitOpError("whole 32-column groups a row");
+  if (!isa<Float8E4M3FNType>(getQ().getType().getElementType()))
+    return emitOpError("stores FP8 e4m3 values");
+  if (!getS().getType().getElementType().isInteger(8))
+    return emitOpError("stores E8M0 scale bytes into a uint8 (i8) global");
+  return success();
+}
+
+LogicalResult LoadFp4FragsLdsOp::verify() {
+  if (failed(verifyDest(*this, getDst(), getResult())))
+    return failure();
+  auto t = cast<RegTileType>(destType(getDst(), getResult()));
+  if (!isa<Float8E4M3FNType>(t.getElementType()) || t.getColLayout() || t.isStrip() ||
+      t.getRows() % 16 || t.getCols() % 128)
+    return emitOpError("fills an fp8 e4m3 row tile of 16x128 fragments (the FP4 container)");
+  auto st = getSrc().getType();
+  if (!isa<Float8E4M3FNType>(st.getElementType()) || st.getCols() % 1024)
+    return emitOpError("reads an fp8-typed LDS tile of whole 1 KB chunks a row");
+  return success();
+}
+
+LogicalResult LoadFp4FragsOp::verify() {
+  if (failed(verifyDest(*this, getDst(), getResult())))
+    return failure();
+  auto t = cast<RegTileType>(destType(getDst(), getResult()));
+  if (!isa<Float8E4M3FNType>(t.getElementType()) || t.getColLayout() || t.isStrip())
+    return emitOpError("fills an fp8 e4m3 row-layout tile (the FP4 operand's container)");
+  if (t.getRows() % 16 || t.getCols() % 128)
+    return emitOpError("whole 16x128 fragments");
+  if (getGateUp() && t.getRows() % 32)
+    return emitOpError("a gate|up tile is whole (gate, up) block pairs: 32-row multiples");
+  if (getGroupRows() <= 0 || getGroupRows() % 32)
+    return emitOpError("group_rows is a positive multiple of 32");
+  if (!getSrc().getType().getElementType().isInteger(8))
+    return emitOpError("reads packed FP4 bytes from a uint8 (i8) global");
+  return success();
+}
+
+LogicalResult MxScalesCopyOp::verify() {
+  if (getDst().getType() != getSrc().getType())
+    return emitOpError("copies scales of one shape: ") << getSrc().getType() << " into " << getDst().getType();
+  return success();
+}
+
+LogicalResult MmaABtMxOp::verify() {
+  if (failed(verifyDest(*this, getDst(), getResult())))
+    return failure();
+  auto d = cast<RegTileType>(destType(getDst(), getResult()));
+  RegTileType a = getA().getType(), b = getB().getType(), c = getC().getType();
+  for (RegTileType t : {a, b})
+    if (!isa<Float8E4M3FNType>(t.getElementType()) || t.getColLayout() ||
+        t.isStrip())
+      return emitOpError("A and B are fp8 e4m3 row-layout tiles, not ") << t;
+  if ((getAFmt() != 0 && getAFmt() != 4) || (getBFmt() != 0 && getBFmt() != 4))
+    return emitOpError("a_fmt and b_fmt are 0 (fp8 e4m3) or 4 (fp4 e2m1)");
+  if (!c.getElementType().isF32() || !c.getColLayout() || c != d)
+    return emitOpError("accumulates into an fp32 col-layout tile, the result's type");
+  if (a.getCols() != b.getCols() || a.getCols() % 128)
+    return emitOpError("A and B share K, a multiple of 128; got ")
+           << a.getCols() << " and " << b.getCols();
+  if (c.getRows() != a.getRows() || c.getCols() != b.getRows())
+    return emitOpError("C is A's rows x B's rows");
+  MxScalesType sa = getSa().getType(), sb = getSb().getType();
+  // with offsets the scales may cover more: the operand's tiles and steps from the offsets on
+  auto covers = [](MxScalesType s, RegTileType t, int64_t tile, int64_t step) {
+    if (tile < 0 || step < 0)
+      return false;
+    return s.getRows() >= t.getRows() + 16 * tile && s.getKblocks() * 32 >= t.getCols() + 128 * step;
+  };
+  if (!covers(sa, a, getSaTile(), getSaStep()))
+    return emitOpError("sa holds A's ") << a.getRows() << " rows and "
+                                        << a.getCols() / 32 << " blocks (from tile "
+                                        << getSaTile() << ", step " << getSaStep() << ")";
+  if (!covers(sb, b, getSbTile(), getSbStep()))
+    return emitOpError("sb holds B's ") << b.getRows() << " rows and "
+                                        << b.getCols() / 32 << " blocks (from tile "
+                                        << getSbTile() << ", step " << getSbStep() << ")";
+  return success();
+}
+
 //===----------------------------------------------------------------------===//
 // LDS
 //===----------------------------------------------------------------------===//
