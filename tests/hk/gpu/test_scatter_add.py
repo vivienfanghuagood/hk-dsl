@@ -99,3 +99,49 @@ def test_an_lds_tile_adds_into_each_tokens_row():
     _lds_kernel()(x, ids.view(1, -1), out)
     want = _want(x, ids, True, torch.float32)
     assert ((out.float() - want).abs().max() / want.abs().max()).item() < 2e-2
+
+
+def _sink_probe():
+    import importlib.util
+    from pathlib import Path
+
+    path = Path(__file__).resolve().parents[3] / "tools" / "cdna-probes" / "mfma_scale_sink.py"
+    spec = importlib.util.spec_from_file_location("hk_mfma_scale_sink", path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def _sink_case(probe, steps, pinned, seed=4):
+    g = torch.Generator(device="cuda").manual_seed(seed)
+    K, n, rows, m, topk = 128 * steps, 32, probe.ROWS, 40, probe.TOPK
+    w = torch.randint(0, 256, (1, n, K // 2), device="cuda", dtype=torch.uint8, generator=g)
+    ws = torch.randint(124, 131, (n, K // 32), device="cuda", dtype=torch.uint8, generator=g)
+    x = (torch.randn(rows, K, device="cuda", generator=g) * 2).to(torch.float8_e4m3fn)
+    xs = torch.randint(124, 131, (rows, K // 32), device="cuda", dtype=torch.uint8, generator=g)
+    # 64 rows: 36 (token, choice) pairs and 28 padding rows (token m), shuffled together
+    pairs = torch.randperm(m * topk, device="cuda", generator=g)[:36].int()
+    ids = torch.cat([(pairs // topk) | ((pairs % topk) << 24),
+                     torch.full((rows - 36,), m, device="cuda", dtype=torch.int32)])
+    ids = ids[torch.randperm(rows, device="cuda", generator=g)]
+    out = torch.zeros(m, n, device="cuda", dtype=torch.bfloat16)
+    probe.kernel(steps, pinned)(hk.mx.aiter_fp4_weights(w, False).view(torch.int8),
+                                hk.mx.aiter_scales(ws).view(torch.int8), x, xs.view(torch.int8),
+                                ids.view(1, -1), out)
+    wd = hk.mx.fp4_values(w[0]) * torch.pow(2.0, ws.float() - 127).repeat_interleave(32, -1)
+    c = hk.mx.dequant(x, xs) @ wd.T
+    tok = (ids & 0xFFFFFF).long()
+    live = tok < m
+    want = torch.zeros(m, n, device="cuda")
+    want.index_add_(0, tok[live], c[live])
+    return ((out.float() - want).abs().max() / want.abs().max()).item()
+
+
+@pytest.mark.parametrize("steps", [2, 6])
+def test_a_scaled_mfma_tile_adds_its_valid_rows(steps):
+    """K1's stage-2 shape: FP4 weights times 16-row fp8 tiles, each scatter-added. roc-7.2.3
+    sinks the unpinned MFMAs into the scatter's per-row `if`. This kernel survives that, because
+    its operands are complete before the `if`. K1's did not: its operand copies went in too, and
+    stage 2 was 0.28 off. tests/hk/codegen/test_mfma_scale_sink.py catches the sink itself;
+    this test checks the values."""
+    assert _sink_case(_sink_probe(), steps, pinned=True) < 2e-2

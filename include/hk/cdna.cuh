@@ -486,6 +486,29 @@ __device__ inline int hk_lane_opaque() {
     return lane;
 }
 
+/** `t`, its values fixed here: an empty asm takes every element, so what computed them (an
+ * MFMA, the VALU after it) stays above this point. For a primitive that consumes a tile only
+ * inside a lane-divergent `if`: roc-7.2.3's MachineSink moves V_MFMA_SCALE (not the plain
+ * MFMAs) into the one block that uses its result, and the copies that assemble its operands
+ * (an FP4 fragment out of AGPRs) go with it. They then run under the `if`'s partial EXEC and
+ * leave the masked lanes' operand registers stale; the MFMA reads all 64 lanes, so even the
+ * valid rows come out wrong (K1's scatter-add stage 2 was 0.28 off). No instruction of its
+ * own; the tile is live before the `if`, as the stores need it. */
+template<typename RT> __device__ inline RT hk_pinned(const RT &t) {
+    RT p = t;
+#ifndef HK_UNPINNED     // tests/hk/codegen/test_mfma_scale_sink.py builds without the pin
+    constexpr int N = sizeof(p.tiles[0][0].data) / sizeof(p.tiles[0][0].data[0]);
+    #pragma unroll
+    for (int i = 0; i < RT::height; i++)
+        #pragma unroll
+        for (int j = 0; j < RT::width; j++)
+            #pragma unroll
+            for (int k = 0; k < N; k++)
+                asm volatile("" : "+v"(p.tiles[i][j].data[k].x), "+v"(p.tiles[i][j].data[k].y));
+#endif
+    return p;
+}
+
 template<typename RT> __device__ inline auto hk_get(const RT &t, int i, int j, int e) {
     return (e & 1) ? t.tiles[i][j].data[e >> 1].y : t.tiles[i][j].data[e >> 1].x;
 }
@@ -2108,6 +2131,8 @@ __device__ inline static void store_scatter(const GL &dst, const RT &src, const 
     if constexpr (ADD) {
         static_assert(std::is_same_v<U, float> || (std::is_same_v<U, bf16> && F::S % 2 == 0),
                       "scatter-add: an fp32 global, or bf16 with even runs");
+        // the adds sit in a per-row `if`: the tile's values are computed before it (hk_pinned)
+        const RT tv = detail::hk_pinned(src);
         typedef __bf16 hk_bf16x2 __attribute__((ext_vector_type(2)));
         const int nrows = int(dst.template shape<2>());
         const uint64_t row_elems = uint64_t(dst.template stride<2>());
@@ -2128,13 +2153,13 @@ __device__ inline static void store_scatter(const GL &dst, const RT &src, const 
                     if constexpr (std::is_same_v<U, float>) {
                         #pragma unroll
                         for (int s = 0; s < F::S; s++)
-                            __hip_atomic_fetch_add(p + s, float(detail::hk_get(src, i, j, k * F::S + s)),
+                            __hip_atomic_fetch_add(p + s, float(detail::hk_get(tv, i, j, k * F::S + s)),
                                                    __ATOMIC_RELAXED, __HIP_MEMORY_SCOPE_AGENT);
                     } else {
                         #pragma unroll
                         for (int s = 0; s < F::S; s += 2) {
-                            const hk_bf16x2 v = {__bf16(float(detail::hk_get(src, i, j, k * F::S + s))),
-                                                 __bf16(float(detail::hk_get(src, i, j, k * F::S + s + 1)))};
+                            const hk_bf16x2 v = {__bf16(float(detail::hk_get(tv, i, j, k * F::S + s))),
+                                                 __bf16(float(detail::hk_get(tv, i, j, k * F::S + s + 1)))};
                             __builtin_amdgcn_global_atomic_fadd_v2bf16(
                                 (__attribute__((address_space(1))) hk_bf16x2 *)(p + s), v);
                         }

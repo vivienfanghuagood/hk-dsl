@@ -19,6 +19,15 @@ same rules:
   inline asm, which is what the bind after hk's waits is for. Measured on
   gfx950 (tools/cdna-probes/bind_hazard.py): with the bind removed, LLVM
   hoists the MFMAs above the waits and every configuration returns NaN.
+* **EXEC** (a warning). An MFMA inside a lane-divergent `if` (an
+  `s_and_saveexec` region). The MFMA reads every lane's operands, and whatever
+  was computed beside it in that block ran only in the active lanes. That is
+  wrong unless the condition is uniform when it runs. hk's attention kernels
+  branch on a VGPR-laundered constant (`c4_live`), which is uniform at run
+  time and is reported here too. roc-7.2.3 sinks V_MFMA_SCALE into a
+  scatter-add's per-row `if` when only that block uses the result
+  (tests/hk/codegen/test_mfma_scale_sink.py). K1 lost its operand copies to
+  this, and its stage 2 came out 0.28 off.
 
 The wait scan is a linear walk of each kernel's instructions, done twice so
 a load at the bottom of a loop that is consumed at its top is seen. It
@@ -73,7 +82,8 @@ class Kernel:
     occupancy: Optional[int] = None
     hazards: List[str] = field(default_factory=list)
     #: Reads of a load's register by the next instruction's address: the old
-    #: value, by issue order. A warning, not a failure.
+    #: value, by issue order; and MFMAs under a partial EXEC (exec_hazards).
+    #: Warnings, not failures.
     warnings: List[str] = field(default_factory=list)
 
     @property
@@ -287,6 +297,34 @@ def wait_hazards(insts: Sequence[Inst], arch: str = "", limit: int = 50,
     return w.found
 
 
+def exec_hazards(insts: Sequence[Inst], limit: int = 50) -> List[str]:
+    """MFMAs issued under a partial EXEC: between an `s_and_saveexec` that opens a
+    lane-divergent `if` and the `s_or exec, exec, ..` that closes it.
+
+    The MFMA reads all 64 lanes' operands; an operand computed in the same block (a copy out of
+    AGPRs, a conversion) was written in the active lanes only, so the rest are stale and the
+    product is wrong for every row (K1's scatter-add stage 2 on gfx950: 0.28 off). No source
+    puts an MFMA there. A compiler sinks it into the only block that uses its result:
+    roc-7.2.3's MachineSink does that to V_MFMA_SCALE, ROCm 10's does not. Reported whether or
+    not an operand happens to be computed there. The scan counts regions linearly, so divergent
+    loops (closed by an `s_or` with no `s_and_saveexec`) are not seen. A warning: the scan
+    cannot tell a condition that is uniform at run time (hk's `_live` branches) from a
+    per-lane one."""
+    found: List[str] = []
+    depth, opened = 0, ""
+    for ins in insts:
+        m = ins.mnem
+        if m.startswith("s_and_saveexec"):
+            depth += 1
+            opened = ins.text
+        elif m in ("s_or_b64", "s_or_b32") and ins.ops[:2] in (["exec", "exec"],
+                                                             ["exec_lo", "exec_lo"]):
+            depth = max(depth - 1, 0)
+        elif depth and m.startswith("v_mfma") and len(found) < limit:
+            found.append(f"{ins.text}   <- under a partial EXEC: {opened}")
+    return found
+
+
 def disassemble(co: Path) -> Dict[str, List[Inst]]:
     """Per function symbol, its instructions with their addresses."""
     out = subprocess.run([_tool("llvm-objdump"), "-d", str(co)],
@@ -312,7 +350,9 @@ def check(co: Path) -> List[Kernel]:
     ks = resources(co)
     code = disassemble(co)
     for name, k in ks.items():
-        k.hazards = wait_hazards(code.get(name, []), k.arch, benign=k.warnings)
+        insts = code.get(name, [])
+        k.hazards = wait_hazards(insts, k.arch, benign=k.warnings)
+        k.warnings.extend(exec_hazards(insts))
     return list(ks.values())
 
 
