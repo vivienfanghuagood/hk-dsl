@@ -49,20 +49,77 @@ using Scope = SmallVector<Operation *, 4>;
 /// buffer of a stack, the constant index. A runtime index is -1: the
 /// cross-warp checks below cannot tell which buffer that is, and leave it to
 /// the rules that do not need to know.
+///
+/// A ring index -- `(base + rel) mod count`, with `base` a runtime value such
+/// as a loop-carried rotation -- names a buffer relative to `base`: two of
+/// them with the same base are the same buffer iff their offsets agree, which
+/// is what lets a loop body of ONE stage index its ring at run time (the
+/// buffer roles rotate each iteration) and still be checked. At the loop's
+/// back edge the offsets shift by the rotation's step (see walk()).
 struct Root {
   Operation *alloc = nullptr;
   int64_t index = -1;
-  bool known() const { return alloc && index >= 0; }
+  Value ring = {};   ///< the base of a ring index, else null
+  int64_t rel = 0;   ///< the offset from it, in [0, count)
+  bool known() const { return alloc && (index >= 0 || ring); }
   bool operator==(const Root &o) const {
-    return alloc == o.alloc && index == o.index;
+    return alloc == o.alloc && index == o.index && ring == o.ring && rel == o.rel;
   }
   /// Whether two buffers may overlap: the same allocation, and the same
   /// buffer of it or one nobody can name.
   bool overlaps(const Root &o) const {
-    return alloc && alloc == o.alloc &&
-           (index < 0 || o.index < 0 || index == o.index);
+    if (!alloc || alloc != o.alloc)
+      return false;
+    if (ring && o.ring && ring == o.ring)
+      return rel == o.rel;
+    if (ring || o.ring)
+      return true;
+    return index < 0 || o.index < 0 || index == o.index;
   }
 };
+
+std::optional<int64_t> constOf(Value v) {
+  if (auto c = v.getDefiningOp<arith::ConstantOp>())
+    if (auto i = dyn_cast<IntegerAttr>(c.getValue()))
+      return i.getInt();
+  return std::nullopt;
+}
+
+/// `(base + rel) mod count` for an index `v` of a `count`-buffer stack: the
+/// forms hk's `x % n` and `x + c` trace to. Null base if it is not one.
+std::pair<Value, int64_t> ringOf(Value v, int64_t count) {
+  Operation *def = v.getDefiningOp();
+  if (!def || !isa<arith::RemSIOp, arith::RemUIOp>(def))
+    return {};
+  if (constOf(def->getOperand(1)) != count)
+    return {};
+  Value x = def->getOperand(0);
+  int64_t rel = 0;
+  // Peel constant additions and subtractions: rot + stages - 1 traces to
+  // (rot + 2) - 1.
+  while (true) {
+    if (auto add = x.getDefiningOp<arith::AddIOp>()) {
+      if (auto c = constOf(add.getRhs())) {
+        rel += *c;
+        x = add.getLhs();
+        continue;
+      }
+      if (auto c = constOf(add.getLhs())) {
+        rel += *c;
+        x = add.getRhs();
+        continue;
+      }
+    }
+    if (auto sub = x.getDefiningOp<arith::SubIOp>())
+      if (auto c = constOf(sub.getRhs())) {
+        rel -= *c;
+        x = sub.getLhs();
+        continue;
+      }
+    break;
+  }
+  return {x, ((rel % count) + count) % count};
+}
 
 Root rootOf(Value v) {
   int64_t index = 0;
@@ -73,10 +130,15 @@ Root rootOf(Value v) {
       v = g.getSrc();
     } else if (auto a = dyn_cast<SharedAtOp>(def)) {
       index = -1;
-      if (auto c = a.getIndex().getDefiningOp<arith::ConstantOp>())
-        if (auto i = dyn_cast<IntegerAttr>(c.getValue()))
-          index = i.getInt();
+      if (auto c = constOf(a.getIndex()))
+        index = *c;
       v = a.getBuf();
+      if (index < 0)
+        if (auto alloc = v.getDefiningOp<AllocSharedOp>()) {
+          auto [base, rel] = ringOf(a.getIndex(), alloc.getResult().getType().getCount());
+          if (base)
+            return {alloc, -1, base, rel};
+        }
     } else if (isa<AllocSharedOp>(def)) {
       return {def, index};
     } else {
@@ -168,6 +230,18 @@ struct State {
     }
     queue.clear();
   }
+  /// Rewrite every buffer name this state holds (a ring's back edge).
+  template <typename F> void remapRoots(F f) {
+    for (auto &e : queue)
+      e.src = f(e.src);
+    for (auto &d : dma)
+      d.root = f(d.root);
+    for (auto *list : {&landed, &readsDone, &crossedDone})
+      for (auto &kv : *list)
+        kv.first = f(kv.first);
+    for (auto &kv : copiedBy)
+      kv.first = f(kv.first);
+  }
   /// vmcnt(0): every async copy this warp issued has landed.
   void retireAllDma() {
     for (auto &d : dma)
@@ -220,8 +294,17 @@ bool live(const std::optional<Scope> &issued, const Scope &scope) {
 /// The count has to be exact or low, never high: a load counted high makes
 /// every wait issued while it is in flight too shallow.
 int64_t cdnaLdsReads(const TargetInfo &t, RegTileType rt, SharedTileType st) {
-  if (dtypeBits(rt.getElementType()) != 16 ||
-      rt.getElementType() != st.getElementType())
+  if (rt.getElementType() != st.getElementType())
+    return 0;
+  if (dtypeBits(rt.getElementType()) == 8) {
+    // include/cdna4's fp8 16x128 row fragment: two runs of 16 bytes a lane,
+    // one ds_read_b128 each (shared_to_register.cuh, stride 16).
+    if (t.arch == "gfx950" && !rt.getColLayout() && rt.fragR() == 16 &&
+        rt.fragC() == 128 && !rt.getFragStride())
+      return 2 * int64_t(rt.getRows() / 16) * (rt.getCols() / 128);
+    return 0;
+  }
+  if (dtypeBits(rt.getElementType()) != 16)
     return 0;
   int64_t frags = int64_t(rt.getRows() / rt.fragR()) * (rt.getCols() / rt.fragC());
   bool col = rt.getColLayout();
@@ -415,7 +498,8 @@ struct Walker {
     auto a = cast<AllocSharedOp>(r.alloc);
     std::string n = valueNameOf(a->getLoc()).str();
     if (a.getResult().getType().getCount() != 1)
-      n += "[" + (r.index < 0 ? std::string("?") : std::to_string(r.index)) +
+      n += "[" + (r.ring ? "ring+" + std::to_string(r.rel)
+                         : r.index < 0 ? std::string("?") : std::to_string(r.index)) +
            "]";
     return n;
   }
@@ -558,9 +642,20 @@ struct Walker {
       }
       cut = std::max(cut, last);
     }
+    // Only copies into LDS issued after the cut may stay in flight: loads
+    // into registers (E8M0 scales, rootless entries) retire out of order with
+    // them on gfx950 -- a vmcnt that counted scales issued after a copy as
+    // the ones left in flight let the copy's own last loads through instead,
+    // and a K-loop read them before they landed (results varying run to run).
+    // `exact` (opt-in): count the tracked register loads after the cut too. A probe with
+    // controls (probes/vmcnt_order.hip) found LDS-DMA and register loads retiring in issue
+    // order on gfx950; the K2 race this rule was made for is better explained by the scale
+    // register hazard. Only loads whose instruction counts the headers fix are tracked: an
+    // untracked load makes the wait stricter, never looser.
     int64_t n = 0;
     for (size_t j = cut + 1; j < st.dma.size(); ++j)
-      n += st.dma[j].count;
+      if (st.dma[j].root.alloc || op.getExact())
+        n += st.dma[j].count;
     for (int j = 0; j <= cut; ++j)
       State::stamp(st.landed, st.dma[j].root, st.now);
     st.dma.erase(st.dma.begin(), st.dma.begin() + (cut + 1));
@@ -643,8 +738,69 @@ struct Walker {
         continue;
       }
       if (auto forOp = dyn_cast<scf::ForOp>(op)) {
+        // Rings rotated by a loop-carried value: base B starts at a constant
+        // r and is yielded as (B + k) mod n. Buffers named by constants on
+        // the way in become ring names relative to B; at the back edge an
+        // offset c becomes c - k (B moved on by k); on the way out they are
+        // named relative to the loop's result.
+        struct Rot { Value arg, result; int64_t init, step, count; };
+        SmallVector<Rot> rots;
+        auto yield = cast<scf::YieldOp>(forOp.getBody()->getTerminator());
+        for (auto [i, arg] : llvm::enumerate(forOp.getRegionIterArgs())) {
+          auto init = constOf(forOp.getInitArgs()[i]);
+          Value y = yield.getOperand(i);
+          Operation *rem = y.getDefiningOp();
+          if (!init || !rem || !isa<arith::RemSIOp, arith::RemUIOp>(rem))
+            continue;
+          auto n = constOf(rem->getOperand(1));
+          if (!n || *n <= 0)
+            continue;
+          auto [base, k] = ringOf(y, *n);
+          if (base != arg)
+            continue;
+          rots.push_back({arg, forOp.getResult(i), *init, k, *n});
+        }
+        // Which allocations each rotation indexes (its count must match).
+        SmallVector<std::pair<Operation *, size_t>> ringed;
+        forOp.getBody()->walk([&](SharedAtOp a) {
+          Root r = rootOf(a.getResult());
+          for (auto [j, rot] : llvm::enumerate(rots))
+            if (r.ring == rot.arg)
+              ringed.push_back({r.alloc, j});
+        });
+        auto entering = [&](Root r) {
+          for (auto &[alloc, j] : ringed)
+            if (r.alloc == alloc && r.index >= 0)
+              return Root{alloc, -1, rots[j].arg,
+                          ((r.index - rots[j].init) % rots[j].count + rots[j].count) % rots[j].count};
+          return r;
+        };
+        auto backEdge = [&](Value to) {
+          return [&, to](Root r) {
+            for (auto &rot : rots)
+              if (r.ring == rot.arg) {
+                r.rel = ((r.rel - rot.step) % rot.count + rot.count) % rot.count;
+                if (to)
+                  r.ring = rot.result;
+              }
+            return r;
+          };
+        };
+        if (!rots.empty())
+          st.remapRoots(entering);
         State first = walk(*forOp.getBody(), st, scope);
+        if (!rots.empty())
+          first.remapRoots(backEdge(Value()));
         st = walk(*forOp.getBody(), std::move(first), scope);
+        if (!rots.empty())
+          st.remapRoots([&](Root r) {
+            for (auto &rot : rots)
+              if (r.ring == rot.arg) {
+                r.rel = ((r.rel - rot.step) % rot.count + rot.count) % rot.count;
+                r.ring = rot.result;
+              }
+            return r;
+          });
         continue;
       }
       if (auto wl = dyn_cast<scf::WhileOp>(op)) {

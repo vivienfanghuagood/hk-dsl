@@ -212,6 +212,17 @@ def HK_GatherRowsOp : HK_Op<"gather_rows"> {
   let hasVerifier = 1;
 }
 
+def HK_GatherPrepOp : HK_Op<"gather_prep"> {
+  let summary = "stage a gathered copy's source rows in LDS (ids[at..at+rows) & 0xFFFFFF), barrier";
+  let description = [{
+    The workgroup reads `rows` sort ids from `ids` at `at` into a static LDS
+    array, masks them to rows (AITER's token | choice << 24), and passes a
+    barrier; hk.group_load with gather_staged = rows reads them from there.
+  }];
+  let arguments = (ins HK_GlobalType:$ids, I32:$at, I64Attr:$rows);
+  let assemblyFormat = "$ids `[` $at `]` attr-dict `:` qualified(type($ids))";
+}
+
 def HK_ScatterRowsOp : HK_Op<"scatter_rows"> {
   let summary = "row-layout register tile -> global, row r to row idx[at + r]";
   let arguments = (ins HK_GlobalType:$dst, HK_RegTileType:$value,
@@ -448,7 +459,7 @@ def HK_VmWaitOp : HK_Op<"vm_wait"> {
   let assemblyFormat = "$keep attr-dict";
 }
 
-def HK_GroupLoadOp : HK_Op<"group_load"> {
+def HK_GroupLoadOp : HK_Op<"group_load", [AttrSizedOperandSegments]> {
   let summary = "global -> LDS by the whole workgroup, issued and waited unless `async`";
   let description = [{
     `async` (gfx950): the copy is the DMA, buffer_load ... lds, issued and
@@ -461,13 +472,21 @@ def HK_GroupLoadOp : HK_Op<"group_load"> {
     rows past it read zero, as past the tensor's last row.
     `nontemporal` (async only): the copy reads past the caches' keeping
     (sc0 nt), for data read once.
+    `gather_ids` / `gather_at` (async only): the tile's rows come by index --
+    row r is the source's row `gather_ids[gather_at + r] & 0xFFFFFF` (AITER's
+    MoE sort ids, token | choice << 24; its padding names a row past the
+    tensor's end and reads zero); `idx` gives the column, its row is ignored.
+    `gather_staged` N > 0: the rows were staged in LDS by hk.gather_prep (N
+    rows): read from there, on lgkmcnt -- not from the index list, on vmcnt.
   }];
   let arguments = (ins HK_SharedTileType:$dst, HK_GlobalType:$src,
                        HK_CoordType:$idx, Optional<I32>:$rows,
+                       Optional<HK_GlobalType>:$gather_ids, Optional<I32>:$gather_at,
                        I64Attr:$threads, UnitAttr:$async,
-                       UnitAttr:$nontemporal);
+                       UnitAttr:$nontemporal, DefaultValuedAttr<I64Attr, "0">:$gather_staged);
   let assemblyFormat = [{
-    $src `[` $idx `]` (`rows` $rows^)? `into` $dst attr-dict `:` qualified(type($src)) `,`
+    $src `[` $idx `]` (`rows` $rows^)? (`gather` $gather_ids^ `[` $gather_at `]` `:` qualified(type($gather_ids)))?
+    `into` $dst attr-dict `:` qualified(type($src)) `,`
     qualified(type($idx)) `into` qualified(type($dst))
   }];
   let hasVerifier = 1;
@@ -487,10 +506,14 @@ def HK_GroupWaitForOp : HK_Op<"group_wait_for"> {
     never written by hand. It retires this warp's share only: the other
     warps' shares are visible after a barrier (two inside an hk.pingpong,
     where half the workgroup runs a barrier behind the other), and the pass
-    refuses a read of the tile before that.
+    refuses a read of the tile before that. `exact`: n also counts the
+    register loads the pass tracks (E8M0 scales, FP4 fragments) issued after
+    the copy, so they stay in flight -- vmcnt retires LDS-DMA copies and
+    register loads in issue order on gfx950 (probes/vmcnt_order.hip); without
+    it they are retired with the copy (a stricter wait).
   }];
   let arguments = (ins Variadic<HK_SharedTileType>:$tiles,
-                       OptionalAttr<I64Attr>:$n);
+                       OptionalAttr<I64Attr>:$n, UnitAttr:$exact);
   let assemblyFormat = "$tiles attr-dict `:` qualified(type($tiles))";
   let hasVerifier = 1;
 }
@@ -778,6 +801,7 @@ def HK_MakeCausalTOp : HK_UnaryMapOp<"make_causal_t", (ins F64Attr:$value)>;
 //===----------------------------------------------------------------------===//
 
 def HK_CastOp : HK_UnaryMapOp<"cast">;
+def HK_BitcastOp : HK_UnaryMapOp<"bitcast">;
 def HK_TransposeOp : HK_UnaryMapOp<"transpose">;
 def HK_TransposeSepOp : HK_UnaryMapOp<"transpose_sep">;
 

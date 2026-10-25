@@ -1129,6 +1129,10 @@ private:
             name(o.getZs()) + ", " + name(o.getN0()) + ", " + name(o.getK0()) +
             ");");
         })
+        .Case([&](GatherPrepOp o) {
+          w("kittens::gather_prep<" + std::to_string(o.getRows()) + ">(" + name(o.getIds()) +
+            ", " + name(o.getAt()) + ");");
+        })
         .Case([&](ScatterRowsOp o) {
           w("kittens::store_scatter(" + name(o.getDst()) + ", " +
             name(o.getValue()) + ", " + name(o.getIdx()) + ", " +
@@ -1294,6 +1298,14 @@ private:
           w("kittens::vm_wait<" + std::to_string(o.getKeep()) + ">();");
         })
         .Case([&](GroupLoadOp o) {
+          if (o.getAsync() && o.getGatherIds()) {
+            w("kittens::group_load_async_gather<" + std::to_string(o.getThreads() / tgt->wave) +
+              ", " + std::to_string(o.getGatherStaged()) +
+              ">(" + name(o.getDst()) + ", " + name(o.getSrc()) + ", " +
+              coordArg(o.getIdx(), tileCpp(o.getDst().getType())) + ", " +
+              name(o.getGatherIds()) + ", " + name(o.getGatherAt()) + ");");
+            return;
+          }
           if (o.getAsync()) {
             // hk/cdna.cuh: gfx950's DMA, left in flight on vmcnt until the
             // hk.group_wait_for hk-lds-pipeline counted.
@@ -1417,6 +1429,12 @@ private:
         .Case([&](CastOp o) {
           Value d = dest(o.getDst(), o.getResult());
           call("copy", d, {name(o.getSrc())});
+        })
+        .Case([&](BitcastOp o) {
+          // the same registers read as another type of the same width: no instruction
+          Value d = dest(o.getDst(), o.getResult());
+          w("static_assert(sizeof(" + name(d) + ") == sizeof(" + name(o.getSrc()) + "));");
+          w("__builtin_memcpy(&" + name(d) + ", &" + name(o.getSrc()) + ", sizeof(" + name(d) + "));");
         })
         // reductions and broadcasts
         .Case<RowMaxOp, RowMinOp, RowSumOp, RowProdOp, ColMaxOp, ColMinOp,

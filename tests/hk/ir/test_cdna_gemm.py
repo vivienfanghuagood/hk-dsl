@@ -394,3 +394,81 @@ def test_a_stream_k_kernel_sums_shares_on_its_xcd():
     src = scaffold.bare(_gemm("g_sk1", stream_k=1).trace())
     assert "wg_arrive_xcd(" in src and "__threadfence" not in src
     assert "return dim3(256, 1, 1);" in src
+
+
+# -- fp8 copies, ring-indexed stacks, register loads among copies, gathered rows -----------
+
+
+FST = hk.ST(hk.fp8e4m3, 64, 128)
+
+
+def test_an_fp8_tile_is_copied_asynchronously_and_its_vmcnt_derived():
+    """64x128 fp8 over 256 threads: 8 KB, two 16-byte copies a thread."""
+    def k(a: hk.Tensor[hk.fp8e4m3]):
+        g = hk.group(4)
+        Xs = hk.lds.alloc(FST, count=2, name="Xs")
+        g.load(Xs[0], a.at[0, 0], wait=False)
+        g.load(Xs[1], a.at[0, 128], wait=False)
+        g.wait_for(Xs[0])
+        g.wait_for(Xs[1])
+
+    src = scaffold.bare(hk.kernel(k, arch="gfx950", warps=4, grid=lambda p: (1, 1, 1)).trace())
+    assert src.count("kittens::group_load_async<4>(") == 2
+    assert _waits(src) == [2, 0]
+
+
+def test_register_loads_issued_after_a_copy_are_not_counted_as_still_in_flight():
+    """vmcnt retires in order. A register load issued after the copy is younger, so waiting for
+    the copy is vmcnt(n) with n the copies issued after it -- counting the register load too
+    would let the copy's own last loads through."""
+    def k(a: hk.Tensor[hk.fp8e4m3], b: hk.Tensor[hk.fp8e4m3]):
+        g = hk.group(4)
+        Xs = hk.lds.alloc(FST, count=2, name="Xs")
+        g.load(Xs[0], a.at[0, 0], wait=False)
+        t = b[hk.elem_coord(0, 0, 0, 0)].load(hk.RT(hk.fp8e4m3, 16, 128))
+        g.wait_for(Xs[0])
+        hk.arch.barrier()
+        b[hk.elem_coord(0, 0, 0, 0)].store(t)
+
+    src = scaffold.bare(hk.kernel(k, arch="gfx950", warps=4, grid=lambda p: (1, 1, 1)).trace())
+    assert _waits(src) == [0]
+
+
+def test_a_ring_indexed_stack_is_tracked_relative_to_its_base():
+    """Xs[(rot + c) % count] with rot carried around a run-time loop: the pass names the buffer
+    by its offset from the ring's base. Three buffers, two copies ahead: waiting for Xs[i % 3] leaves the younger
+    copy into Xs[(i + 1) % 3] (two 16-byte copies a thread) in flight."""
+    def k(a: hk.Tensor[hk.fp8e4m3]):
+        g = hk.group(4)
+        Xs = hk.lds.alloc(FST, count=3, name="Xs")
+        g.load(Xs[0], a.at[0, 0], wait=False)
+        g.load(Xs[1], a.at[0, 128], wait=False)
+        rot = 0
+        for i in range(a.cols // 128 - 2):     # a.cols is a device value: a run-time loop
+            g.wait_for(Xs[rot % 3])
+            hk.arch.barrier()
+            g.load(Xs[(rot + 2) % 3], a.at[0, (i + 2) * 128], wait=False)
+            Xs[rot % 3].subtile(16, 128, 0, 0).load(hk.RT(hk.fp8e4m3, 16, 128))
+            rot = (rot + 1) % 3
+        g.wait_for(Xs[rot % 3])                # the last two copies
+        g.wait_for(Xs[(rot + 1) % 3])
+
+    src = scaffold.bare(hk.kernel(k, arch="gfx950", warps=4, grid=lambda p: (1, 1, 1)).trace())
+    assert _waits(src) == [2, 2, 0]
+
+
+def test_gathered_rows_staged_in_lds_cost_no_vmcnt_wait_in_the_loop():
+    """g.load(gather=(ids, at), staged=N) reads its row indices from LDS (g.gather_prep):
+    a per-lane global index load would sit in the vmcnt queue and drain the prefetch."""
+    def k(a: hk.Tensor[hk.fp8e4m3], ids: hk.Tensor[hk.i32]):
+        g = hk.group(4)
+        Xs = hk.lds.alloc(FST, count=2, name="Xs")
+        g.gather_prep(ids, 0, 64)
+        g.load(Xs[0], a.at[0, 0], wait=False, gather=(ids, 0), staged=64)
+        g.load(Xs[1], a.at[0, 128], wait=False, gather=(ids, 0), staged=64)
+        g.wait_for(Xs[0])
+        g.wait_for(Xs[1])
+
+    src = scaffold.bare(hk.kernel(k, arch="gfx950", warps=4, grid=lambda p: (1, 1, 1)).trace())
+    assert src.count("group_load_async_gather") == 2
+    assert _waits(src) == [2, 0]

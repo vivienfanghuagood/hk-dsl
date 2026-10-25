@@ -352,6 +352,13 @@ LogicalResult GroupLoadOp::verify() {
                        "descriptor it narrows");
   if (getNontemporal() && !getAsync())
     return emitOpError("nontemporal: the cache policy is the async copy's");
+  if (bool(getGatherIds()) != bool(getGatherAt()))
+    return emitOpError("gather: the index list and the position in it, both");
+  if (getGatherIds() && (!getAsync() || getRows()))
+    return emitOpError("gather: an async copy's rows by index (no row limit: an index past the "
+                       "tensor reads zero)");
+  if (getGatherIds() && !getGatherIds().getType().getElementType().isInteger(32))
+    return emitOpError("gather: the index list is int32");
   return success();
 }
 
@@ -718,6 +725,23 @@ LogicalResult CastOp::verify() {
       src.fragS() != dst.fragS())
     return emitOpError() << "a cast keeps the fragment: " << src << " into "
                          << dst << " is a relayout across lanes, not a cast";
+  return success();
+}
+
+LogicalResult BitcastOp::verify() {
+  if (failed(verifyDest(*this, getDst(), getResult())))
+    return failure();
+  auto src = dyn_cast<RegTileType>(getSrc().getType());
+  auto dst = dyn_cast<RegTileType>(destType(getDst(), getResult()));
+  if (!src || !dst)
+    return emitOpError("reinterprets register tiles");
+  if (src.getRows() != dst.getRows() || src.getCols() != dst.getCols() ||
+      src.getColLayout() != dst.getColLayout() || src.getRun() != dst.getRun() ||
+      src.fragR() != dst.fragR() || src.fragC() != dst.fragC() || src.fragS() != dst.fragS())
+    return emitOpError("a bitcast keeps shape, layout and fragment");
+  if (src.getElementType().getIntOrFloatBitWidth() != dst.getElementType().getIntOrFloatBitWidth())
+    return emitOpError() << "a bitcast keeps the element width: " << src.getElementType()
+                         << " into " << dst.getElementType() << " is a conversion (.to)";
   return success();
 }
 

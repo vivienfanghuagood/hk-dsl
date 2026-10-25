@@ -170,6 +170,8 @@ class Target:
             return (rows // 16) * (cols // 16) * 8
         if dtype_bits == 16:
             return rows * cols * shape.operand_vgprs // (shape.m * shape.k)
+        if dtype_bits == 8:     # an 8-bit operand (gfx950's fp8 16x128): four a register, unreplicated
+            return -(-rows * cols // (4 * self.wave))
         return rows * cols * shape.accum_vgprs // (shape.m * shape.n)
 
     def occupancy_achieved(self, vgprs: int, lds_bytes: int, waves_per_workgroup: int) -> int:

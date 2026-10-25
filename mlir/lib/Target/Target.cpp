@@ -28,6 +28,9 @@ const std::pair<llvm::StringRef, MmaShape> kMma942[] = {
 const std::pair<llvm::StringRef, MmaShape> kMma950[] = {
     {"bf16", {16, 16, 32, 4, 4}},
     {"fp16", {16, 16, 32, 4, 4}},
+    // v_mfma_f32_16x16x128_f8f6f4 with fp8 e4m3 operands (the scaled MFMA
+    // at unit scales): A and B 16x128, 32 bytes a lane; C/D 16x16 fp32.
+    {"fp8e4m3", {16, 16, 128, 8, 4}},
 };
 const llvm::StringRef kRowOnly[] = {"row"};
 const llvm::StringRef kRowCol[] = {"row", "col"};
@@ -99,6 +102,8 @@ int TargetInfo::tileVgprs(unsigned bits, unsigned rows, unsigned cols) const {
   int elems = int(rows) * int(cols);
   if (bits == 16)
     return elems * s.operandVgprs / (s.m * s.k);
+  if (bits == 8)    // gfx950's fp8 operand: 16x128 in 8 VGPRs, unreplicated
+    return (elems + 4 * wave - 1) / (4 * wave);
   return elems * s.accumVgprs / (s.m * s.n);
 }
 

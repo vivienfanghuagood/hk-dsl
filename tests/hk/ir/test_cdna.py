@@ -105,6 +105,9 @@ def test_tile_prices_follow_the_fragment():
     assert t.tile_vgprs(16, 16, 16) == 2      # 256 bf16 over 64 lanes
     assert t.tile_vgprs(16, 16, 64) == 8
     assert t.tile_vgprs(32, 16, 16) == 4      # the 16x16 fp32 accumulator
+    # an fp8 16x128 operand is 8 VGPRs, not priced as fp32 (experiment 2's hk arm: a register
+    # prefetch refused at an estimated 576 VGPRs where ~200 were needed)
+    assert t.tile_vgprs(8, 16, 128) == 8 and t.tile_vgprs(8, 128, 256) == 128
     g = get_target("gfx942")
     assert (g.tile_vgprs(16, 32, 32), g.tile_vgprs(32, 32, 16)) == (8, 8)
     # Unchanged where the fragment is 16x16x16 with mirrored operands.
@@ -337,3 +340,13 @@ def test_a_fragment_on_a_target_without_tile_shapes_is_refused():
 
     with pytest.raises(Exception, match="no fragment shape"):
         k.trace()
+
+
+def test_a_bitcast_keeps_the_element_width():
+    import pytest as _pytest
+
+    def k(x: hk.Tensor[hk.fp32], y: hk.Tensor[hk.bf16]):
+        y.at[0, 0] = x.at[0, 0].load(hk.RT(hk.fp32, 16, 64)).bitcast(hk.bf16)
+
+    with _pytest.raises(TypeError, match="keeps the element width"):
+        hk.kernel(k, arch="gfx950", grid=lambda p: (1, 1, 1)).trace()

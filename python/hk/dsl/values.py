@@ -887,6 +887,18 @@ class Tile(_Elementwise):
                          run=self.ty.run)
         return _make(hkd.CastOp, ty, (self.v,), into=into, name="cvt")
 
+    def bitcast(self, dtype: DType, *, into=None) -> "Tile":
+        """The same registers read as another element type of the same width (fp32 <-> i32,
+        bf16 <-> fp16 ...): no instruction, unlike `.to`. E.g. an i32 accumulator started at the
+        bits of 1.5 * 2^23 read as fp32 is 1.5 * 2^23 + S exactly for |S| < 2^22 -- the int ->
+        float convert of an iu8 product, folded away (experiment 1's c7 needed a C++ rewrite)."""
+        if dtype.bits != self.ty.dtype.bits:
+            raise TypeError(f"bitcast keeps the element width: {self.ty.dtype.name} is "
+                            f"{self.ty.dtype.bits} bits, {dtype.name} {dtype.bits}; use .to()")
+        ty = RegTileType(dtype, self.ty.rows, self.ty.cols, self.ty.layout, self.ty.frag,
+                         run=self.ty.run)
+        return _make(hkd.BitcastOp, ty, (self.v,), into=into, name="bc")
+
     @property
     def T(self) -> "Transposed":
         return Transposed(self)
@@ -1375,7 +1387,14 @@ def lds_loads(tile: RegTileType, src: SharedTileType, arch: str = "gfx1100") -> 
     On a wave64 (CDNA) target the count depends on the matrix-core fragment,
     which hk-fragments assigns after tracing, so this only says whether the
     pair is asynchronous at all; hk-lds-pipeline sets the real count."""
-    if src.dtype != tile.dtype or tile.dtype.bits != 16:
+    if src.dtype != tile.dtype:
+        return 0
+    if tile.dtype.bits == 8:
+        # gfx950's fp8 operand (16x128 row fragments): two ds_read_b128 each;
+        # hk-lds-pipeline sets the count.
+        return ((tile.rows // 16) * (tile.cols // 128) * 2
+                if get_target(arch).arch == "gfx950" and tile.layout == "row" else 0)
+    if tile.dtype.bits != 16:
         return 0
     if get_target(arch).wave == 64:
         if tile.layout == "col" and get_target(arch).arch == "gfx942":

@@ -33,10 +33,10 @@ warps x the wave of the kernel being traced (32 on RDNA, 64 on CDNA).
 #### `Group.load`
 
 ```python
-Group.load(self, dst: SharedTile, src: View, *, wait: bool = True, rows=None, nontemporal: bool = False) -> None
+Group.load(self, dst: SharedTile, src: View, *, wait: bool = True, rows=None, nontemporal: bool = False, gather=None, staged: int = 0) -> None
 ```
 
-*Changed after 0.4.0*: new parameters `wait`, `rows`, `nontemporal`
+*Changed after 0.4.0*: new parameters `wait`, `rows`, `nontemporal`, `gather`, `staged`
 
 Global -> LDS by the whole group, issued and waited.
 
@@ -50,12 +50,31 @@ the tensor's last row does: rows past it read zero. `nontemporal`
 (with wait=False) reads past the caches' keeping, sc0 nt, for data
 read once -- in runs of a whole line it streams faster; in the
 half-line runs of a 16x32 tile it fetched lines twice (4.8 against
-6.15 TB/s in the paged decode).
+6.15 TB/s in the paged decode). `gather=(ids, at)` (with wait=False):
+the tile's rows come by index, row r being the source's row
+`ids[at + r] & 0xFFFFFF` -- AITER's MoE sort ids (token | choice << 24;
+its padding is a row past the tensor, which reads zero); `src`'s
+coordinate gives the column. `staged=N`: the rows were staged in LDS
+by `g.gather_prep(ids, at, N)` (same ids and at) -- read from there, so
+a lane's row costs no vmcnt wait (which, in order, would retire the
+whole prefetch).
+
+#### `Group.gather_prep`
+
+```python
+Group.gather_prep(self, ids, at, rows: int) -> None
+```
+
+*New after 0.4.0*
+
+Stage `rows` source rows of a gathered copy in LDS -- `ids[at + r] &
+0xFFFFFF` -- and pass a barrier (every warp must call it). A
+`g.load(..., gather=(ids, at), staged=rows)` then reads them there.
 
 #### `Group.wait_for`
 
 ```python
-Group.wait_for(self, *tiles: SharedTile) -> None
+Group.wait_for(self, *tiles: SharedTile, exact: bool = False) -> None
 ```
 
 *New after 0.4.0*
