@@ -6717,7 +6717,7 @@ RDNA.md, kernel comments and a notebook, and they drifted.
 | AGPRs charged with the VGPRs (`unified_agprs`) | `False` | `False` | `True` | `True` |
 | largest lgkmcnt (`lgkmcnt_max`) | `63` | `63` | `15` | `15` |
 | measured on the part (`verified`) | `True` | `False` | `False` | `True` |
-| matrix instructions (`mma`) | bf16 16x16x16, fp16 16x16x16 | bf16 16x16x16, fp16 16x16x16, fp8e4m3 16x16x16, fp8e5m2 16x16x16 | bf16 16x16x16, fp16 16x16x16 | bf16 16x16x32, fp16 16x16x32, fp8e4m3 16x16x128 |
+| matrix instructions (`mma`) | bf16 16x16x16, fp16 16x16x16, i8 16x16x16 | bf16 16x16x16, fp16 16x16x16, fp8e4m3 16x16x16, fp8e5m2 16x16x16 | bf16 16x16x16, fp16 16x16x16 | bf16 16x16x32, fp16 16x16x32, fp8e4m3 16x16x128 |
 
 gfx1100 (W7900D) and gfx950 (MI355X) run; gfx1201 and gfx942 are compile-only. `hk.arch.target()` is this record inside a kernel being traced, `hk.target.current_arch()` the arch a kernel that names none builds for (`$HK_ARCH`, else the GPU).
 

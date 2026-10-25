@@ -36,13 +36,14 @@ the operand tiles are both row-layout and therefore both on the ds_read_b128
 fast path.
 """
 
+import inspect
 from typing import Any, Dict, Tuple
 
 from .. import autotune as _autotune
 from .. import dsl as hk
 from . import _epilogue
 from ..target import current_arch, get_target
-from ..types import bf16, fp32
+from ..types import bf16, fp32, i8, i32
 
 
 def _derive(block_m: int, block_n: int, k_step: int, dot_slice: int,
@@ -76,8 +77,14 @@ def gemm_kernel(name: str, *, block_m: int = 128, block_n: int = 128,
                 warp_rows: int = 4, n_split: int = 4, wgm: int = 8,
                 write_pos: int = 2, lds_buffers: int = 1, stagger: int = 0,
                 stream_a: bool = False, setprio: bool = False, sched: int = 0,
-                max_vgprs: int = 256, min_occupancy: int = 1, epilogue=None):
+                max_vgprs: int = 256, min_occupancy: int = 1, epilogue=None,
+                op_dtype=bf16):
     """The default tiling is `big_config` from the C++: 128x128x64, 8 warps.
+
+    `op_dtype=hk.i8`: A and B are int8 and the WMMA is v_wmma_i32_16x16x16_iu8
+    (the f16 rate on gfx1100: half the operand bytes, not more throughput);
+    the accumulators are i32, stored to an i32 C without an epilogue, or
+    converted to fp32 for one (a W8A8 dequant: acc * x_scale * w_scale).
 
     The default LDS is one buffer, not the C++'s two. Two let the next
     K-tile be written while this one is read, one barrier a tile; but a
@@ -130,9 +137,14 @@ def gemm_kernel(name: str, *, block_m: int = 128, block_n: int = 128,
         raise ValueError(f"stream_a streams a {reg_m}-row warp tile by 16-row "
                          f"fragments; it needs at least two")
 
-    st_a = hk.ST(bf16, block_m, k_step)
-    st_b = hk.ST(bf16, block_n, k_step)
+    if op_dtype not in (bf16, i8):
+        raise ValueError(f"op_dtype={op_dtype}: bf16 or i8")
+    acc_t = i32 if op_dtype is i8 else fp32
+    st_a = hk.ST(op_dtype, block_m, k_step)
+    st_b = hk.ST(op_dtype, block_n, k_step)
     inited = epilogue is not None and getattr(epilogue, "init", None) is not None
+    if inited and op_dtype is i8:
+        raise ValueError("an i8 GEMM's accumulators are i32: no init_from epilogue")
 
     def body(a: hk.Tensor[bf16], b: hk.Tensor[bf16], c: hk.Tensor[bf16], *,
              WGM: hk.Constexpr = wgm, **ops):
@@ -150,15 +162,15 @@ def gemm_kernel(name: str, *, block_m: int = 128, block_n: int = 128,
         buf_a = g.stage_buffer(As, name="buf_a")
         buf_b = g.stage_buffer(Bs, name="buf_b")
 
-        B_tile = [hk.zeros(hk.RT(bf16, split_n, dot_slice, "row"))
+        B_tile = [hk.zeros(hk.RT(op_dtype, split_n, dot_slice, "row"))
                   for _ in range(n_split)]
         if stream_a:
-            A_frag = [hk.zeros(hk.RT(bf16, 16, dot_slice, "row")) for _ in range(2)]
-            C_rows = [[hk.zeros(hk.RT(fp32, 16, split_n, "col"))
+            A_frag = [hk.zeros(hk.RT(op_dtype, 16, dot_slice, "row")) for _ in range(2)]
+            C_rows = [[hk.zeros(hk.RT(acc_t, 16, split_n, "col"))
                        for _ in range(n_split)] for _ in range(frags)]
         else:
-            A_tile = hk.zeros(hk.RT(bf16, reg_m, dot_slice, "row"))
-            C_acc = [hk.zeros(hk.RT(fp32, reg_m, split_n, "col"))
+            A_tile = hk.zeros(hk.RT(op_dtype, reg_m, dot_slice, "row"))
+            C_acc = [hk.zeros(hk.RT(acc_t, reg_m, split_n, "col"))
                      for _ in range(n_split)]
 
         M = a.rows
@@ -405,6 +417,8 @@ def gemm_kernel(name: str, *, block_m: int = 128, block_n: int = 128,
 
         # Columns are in units of the chunk width; rows in elements.
         def put(tile, r, cc):
+            if epilogue is not None and op_dtype is i8:
+                tile = tile.to(fp32)
             if epilogue is None:
                 c[hk.elem_coord(0, 0, r, cc)].store(tile, bounded=True)
             else:
@@ -424,6 +438,12 @@ def gemm_kernel(name: str, *, block_m: int = 128, block_n: int = 128,
                 put(C_acc[s], m_row, (col_tile + s) * split_n)
 
     body.__name__ = name
+    if op_dtype is i8:
+        # i8 operands; C i32 (raw accumulators) unless an epilogue retypes it
+        body.__annotations__.update(a=hk.Tensor[i8], b=hk.Tensor[i8], c=hk.Tensor[i32])
+        body.__signature__ = inspect.signature(body).replace(parameters=[
+            p.replace(annotation=body.__annotations__[p.name]) if p.name in ("a", "b", "c") else p
+            for p in inspect.signature(body).parameters.values()])
     _epilogue.sign(body, epilogue)
 
     def _grid(p):

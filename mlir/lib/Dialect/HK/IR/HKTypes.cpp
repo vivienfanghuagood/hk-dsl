@@ -173,10 +173,10 @@ LogicalResult RegTileType::verify(function_ref<InFlightDiagnostic()> emitError,
   if (!knownDtype(et))
     return emitError() << "register tile of " << et
                        << ": not an element type include/rdna3 has";
-  if (dtypeBits(et) < 16 && !isFp8(et))
+  if (dtypeBits(et) < 16 && !isFp8(et) && !et.isInteger(8))
     return emitError() << "there is no " << dtypeName(et)
                        << " register tile: rt_base exists only for 16- and "
-                          "32-bit elements (and fp8 on gfx1201)";
+                          "32-bit elements (fp8 on gfx1201, i8 operands on gfx1100)";
   if (failed(checkExtent(emitError, "register tile", "rows", rows)) ||
       failed(checkExtent(emitError, "register tile", "cols", cols)))
     return failure();

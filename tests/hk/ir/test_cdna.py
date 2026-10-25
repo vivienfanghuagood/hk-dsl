@@ -112,6 +112,8 @@ def test_tile_prices_follow_the_fragment():
     assert (g.tile_vgprs(16, 32, 32), g.tile_vgprs(32, 32, 16)) == (8, 8)
     # Unchanged where the fragment is 16x16x16 with mirrored operands.
     assert get_target("gfx1100").tile_vgprs(16, 16, 16) == 8
+    # gfx1100's i8 operand: 16 bytes a lane, mirrored halves -- 4 VGPRs a 16x16 base tile
+    assert get_target("gfx1100").tile_vgprs(8, 16, 16) == 4
 
 
 def _mma(arch):

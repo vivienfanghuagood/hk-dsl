@@ -43,6 +43,10 @@ GFX1100 = Target(
         # it is why the GEMM cannot grow past a 128x128 block.
         "bf16": MmaShape(m=16, n=16, k=16, operand_vgprs=8, accum_vgprs=8),
         "fp16": MmaShape(m=16, n=16, k=16, operand_vgprs=8, accum_vgprs=8),
+        # v_wmma_i32_16x16x16_iu8: 16 bytes a lane (4 VGPRs), mirrored halves,
+        # i32 accumulator in the f32 layout. Same rate as f16 (measured 96 vs
+        # 101 TOP/s register-only): it saves bytes, not cycles.
+        "i8": MmaShape(m=16, n=16, k=16, operand_vgprs=4, accum_vgprs=8),
     },
 
     # (3) vmem-to-lds-load-insts is absent on gfx11. There is no global->LDS

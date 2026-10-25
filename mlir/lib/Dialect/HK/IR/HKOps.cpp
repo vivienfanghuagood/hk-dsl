@@ -1012,11 +1012,17 @@ static LogicalResult verifyMma(OpT op, MmaSpec s) {
     if (failed(noStrip(op, t)))
       return failure();
   bool fp8 = isFp8(a.getElementType()) && isFp8(b.getElementType());
+  bool i8 = a.getElementType().isInteger(8) && b.getElementType().isInteger(8);
   if (a.getElementType() != b.getElementType() && !fp8)
     return op.emitOpError("takes one operand type, not a mixed pair");
-  if (!fp8 && dtypeBits(a.getElementType()) != 16)
-    return op.emitOpError("takes bf16 or fp16 operands (fp8 on gfx1201)");
-  if (!c.getElementType().isF32() || !c.getColLayout())
+  if (!fp8 && !i8 && dtypeBits(a.getElementType()) != 16)
+    return op.emitOpError("takes bf16 or fp16 operands (fp8 on gfx1201, i8 on gfx1100)");
+  if (i8) {
+    if (!c.getElementType().isInteger(32) || !c.getColLayout())
+      return op.emitOpError("i8 x i8 accumulates into a col-layout i32 tile");
+    if (s.aCol || s.bCol)
+      return op.emitOpError("i8 operands are row-layout: C += A @ B.T only");
+  } else if (!c.getElementType().isF32() || !c.getColLayout())
     return op.emitOpError("accumulates into a col-layout fp32 tile");
   if (a.getColLayout() != s.aCol || b.getColLayout() != s.bCol)
     return op.emitOpError("operand layouts do not match this variant");

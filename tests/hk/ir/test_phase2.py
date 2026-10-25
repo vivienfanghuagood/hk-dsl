@@ -234,13 +234,14 @@ def test_there_is_no_rounding_division_on_a_tile():
 # -- dtypes -------------------------------------------------------------------
 
 
-def test_int8_is_a_global_type_and_not_a_register_type():
-    """gfx1100 has no int8 WMMA and no packed int8 ALU, so rt<int8> would be a
-    template error at the end of a 30 s compile. Refuse it at trace time with
-    the reason."""
+def test_int8_is_a_global_type_and_a_register_type():
+    """gfx1100 has an int8 WMMA (v_wmma_i32_16x16x16_iu8, at the fp16 rate):
+    rt<int8> operand tiles are real, as are int8 globals. (This test used to
+    hold the opposite, from the premise -- false -- that RDNA3 has no int8
+    WMMA.)"""
     assert hk.Tensor[i8]
-    with pytest.raises(TypeError, match="no i8 register tile"):
-        hk.RT(i8, 16, 64)
+    t = hk.RT(i8, 16, 64)
+    assert t.dtype is i8 and (t.rows, t.cols) == (16, 64)
 
 
 def test_a_load_from_an_int8_global_lands_in_a_float_tile():
