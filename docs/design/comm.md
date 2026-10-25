@@ -80,7 +80,19 @@ no shader instruction invalidates it, so a scoped tensor there is a trace-time e
   GPUs' links with remote writes only (push-push) gives 153 GB/s a direction for a TP2
   exchange (2.7x); pulling from the relays only 120 -- remote reads lose to writes.
 
+## The NVIDIA designs, in hk.comm
+
+Each pattern is a test in `tests/hk/gpu/test_comm.py` that runs on two MI355X.
+
+| design (NVIDIA) | in hk | test |
+|---|---|---|
+| tile-level signals: a producer flags each tile as it lands, a consumer waits per tile, in its own order (TileLink, Flux, ParallelKittens) | scoped tile stores into a peer's `SymmetricBuffer`, `signal` per tile, `wait` per tile | `test_tile_signals_through_a_double_buffered_symmetric_buffer`: 8 x 8 workgroups, 64 tiles x 40 rounds, consumed in reverse order |
+| double-buffered symmetric memory with flow control | buffer parity = round % 2; the consumer `arrive`s a round on a counter in the producer's memory, and the producer `wait`s for round r - 2 before reusing the buffer | the same test |
+| persistent kernel + task queue + dependencies (Hazy's interpreter, MPK) | `resident=True`, `claim` from a queue in a `while` loop, per-layer counters with `wait` / `arrive` | `test_a_work_queue_hands_every_task_out_once`, `test_a_persistent_task_graph_respects_its_dependencies` |
+| grid / cross-GPU barrier | `barrier` on a "device" / "system" counter with an epoch'd target | `test_a_grid_barrier_orders_every_workgroup`, the barrier in the two-GPU test |
+
 ## Next
 
+- Per-XCD signal aggregation (`xcd_id` + a two-level arrive), measured against a flat one.
 - Tagged mailboxes (value, epoch in one 8 B store), and per-tile signals from a GEMM epilogue
   (store the tile to a peer, count it) -- the TP2 prefill GEMM + all-reduce overlap.

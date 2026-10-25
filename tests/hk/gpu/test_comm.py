@@ -366,3 +366,87 @@ def test_message_passing_between_gpus_through_symmetric_memory():
     assert got["r"][1] == 0, f"{got['r'][1]} of {rounds} rounds read stale data"
     # the barrier across GPUs: every round each rank saw the peer's value of that round
     assert got["m0"] == (0, 0) and got["m1"] == (0, 0), got
+
+
+# ---------------------------------------------------------------- patterns (two GPUs)
+# Tile-level signals with a double-buffered symmetric buffer and flow control -- the TileLink / Flux
+# shape: rank 0's workgroups produce tiles round after round into rank 1's buffer (parity r % 2),
+# flag each tile; rank 1 consumes them in the reverse order, tile by tile as their flags arrive, and
+# acks each round on a counter in rank 0's memory, so rank 0 reuses a buffer only two rounds later.
+
+TT = 64          # tiles a round
+TR = 40          # rounds
+TF = hk.RT(hk.fp32, 16, 32)
+
+
+def _pattern_kernels():
+    def producer(src: hk.Tensor[hk.fp32], buf: hk.Tensor[hk.fp32, "system"], flags: hk.Tensor[i32, "system"],
+                 ack: hk.Tensor[i32, "system"], err: hk.Tensor[i32]):
+        w = hk.arch.block_idx.x
+        for r in hk.range(1, TR + 1):
+            if r > 2:      # the consumer is done with round r - 2, whose buffer this one reuses
+                hk.comm.wait(ack.at[0], (r - 2) * 8, timeout_s=2.0, error=err.at[0])
+            for t in hk.range(w, TT, 8):
+                buf[hk.tile_coord(0, 0, (r % 2) * TT + t, 0)] = src[hk.tile_coord(0, 0, (r % 4) * TT + t, 0)].load(TF)
+                hk.comm.signal(flags.at[16 * ((r % 2) * TT + t)], r)       # this tile, now
+
+    def consumer(buf: hk.Tensor[hk.fp32, "system"], flags: hk.Tensor[i32, "system"],
+                 ack: hk.Tensor[i32, "system"], out: hk.Tensor[hk.fp32], err: hk.Tensor[i32]):
+        w = hk.arch.block_idx.x
+        for r in hk.range(1, TR + 1):
+            for t0 in hk.range(w, TT, 8):
+                t = TT - 1 - t0                                   # the reverse order
+                hk.comm.wait(flags.at[16 * ((r % 2) * TT + t)], r, timeout_s=2.0, error=err.at[0])
+                out[hk.tile_coord(0, 0, (r - 1) * TT + t, 0)] = buf[hk.tile_coord(0, 0, (r % 2) * TT + t, 0)].load(TF)
+            hk.comm.arrive(ack.at[0], 1)
+
+    return (hk.kernel(producer, warps=1, name="comm_tile_producer", grid=lambda p: (8, 1, 1), resident=True),
+            hk.kernel(consumer, warps=1, name="comm_tile_consumer", grid=lambda p: (8, 1, 1), resident=True))
+
+
+def _pattern_rank(rank, port, q):
+    import torch.distributed as dist
+
+    from hk.runtime import SymmetricBuffer
+
+    os.environ.update(MASTER_ADDR="127.0.0.1", MASTER_PORT=str(port))
+    torch.cuda.set_device(rank)
+    dist.init_process_group("gloo", rank=rank, world_size=2)
+    try:
+        nb = 2 * TT * 16 * 32 * 4
+        sym = SymmetricBuffer(nb + 2 * TT * 64 + 4096, None)
+        buf = sym.peer(1, torch.float32, (2 * TT * 16, 32))
+        flags = sym.peer(1, torch.int32, (2 * TT * 16,), offset=nb)
+        ack = sym.peer(0, torch.int32, (16,), offset=nb + 2 * TT * 64)
+        err = torch.zeros(1, dtype=torch.int32, device="cuda")
+        g = torch.Generator(device="cuda").manual_seed(5)
+        src = torch.randn(4 * TT * 16, 32, device="cuda", generator=g)   # round r sends block r % 4
+        prod, cons = _pattern_kernels()
+        dist.barrier()
+        if rank == 0:
+            prod(src, buf, flags, ack, err)
+            torch.cuda.synchronize()
+            q.put(("p", int(err[0]), 0))
+        else:
+            out = torch.zeros(TR * TT * 16, 32, device="cuda")
+            cons(buf, flags, ack, out, err)
+            torch.cuda.synchronize()
+            want = torch.cat([src[(r % 4) * TT * 16:(r % 4 + 1) * TT * 16] for r in range(1, TR + 1)])
+            q.put(("c", int(err[0]), int((out != want).any(dim=1).sum())))
+        dist.barrier()
+        sym.close()
+    finally:
+        dist.destroy_process_group()
+
+
+@pytest.mark.skipif(os.environ.get("HK_ARCH") != "gfx950", reason="hk.comm is gfx950's")
+def test_tile_signals_through_a_double_buffered_symmetric_buffer():
+    if torch.cuda.device_count() < 2:
+        pytest.skip("needs two GPUs")
+    import torch.multiprocessing as mp
+
+    q = mp.get_context("spawn").Queue()
+    mp.spawn(_pattern_rank, args=(29563, q), nprocs=2)
+    got = {k: (e, n) for k, e, n in (q.get(timeout=60) for _ in range(2))}
+    assert got["p"][0] == 0 and got["c"][0] == 0, f"a wait timed out: {got}"
+    assert got["c"][1] == 0, f"{got['c'][1]} rows of {TR} rounds read the wrong tile"
