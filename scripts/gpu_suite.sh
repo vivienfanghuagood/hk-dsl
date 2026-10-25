@@ -33,7 +33,8 @@ group decode $G/test_decode_gemm.py $G/test_paged.py $G/test_load_scalar.py
 group phase2 $G/test_phase2.py $G/test_target_rmsnorm.py -k norm      # the cold critical path: halved
 group phase2b $G/test_phase2.py -k "not norm"
 group elem   $G/test_elementwise.py $G/test_bounded.py $G/test_strided.py $G/test_while.py $G/test_indexed.py
-rest=$(ls $G/test_*.py | grep -v -E "test_(gemm|autotune|attn|sdpa|decode_gemm|paged|load_scalar|phase2|target_rmsnorm|elementwise|bounded|strided|while|indexed|torch_op|engine|vllm_gemm|flydsl_gemm|templates_[a-z]+)\.py")
+group moe    $G/test_moe_a8w4.py $G/test_vllm_moe_a8w4.py     # 69 kernels: TSS keys, below
+rest=$(ls $G/test_*.py | grep -v -E "test_(gemm|autotune|attn|sdpa|decode_gemm|paged|load_scalar|phase2|target_rmsnorm|elementwise|bounded|strided|while|indexed|torch_op|engine|vllm_gemm|flydsl_gemm|moe_a8w4|vllm_moe_a8w4|templates_[a-z]+)\.py")
 # Every kernel a test builds is a pybind module of its own, each takes one of a process's 1024
 # pthread TSS keys, and one process ran out ("could not initialize the TSS key") once gfx950's
 # strips had preloaded twins: the rest in contiguous shares, two on one GPU and two a GPU on
@@ -60,7 +61,9 @@ run() {  # run <slot> <label> <test files...>
     { echo "gpu=$g"
       HIP_VISIBLE_DEVICES=$g timeout --signal=KILL 5400 python3 -m pytest -q -p no:cacheprovider "$@"
     } > "$out/$label.log" 2>&1
-    echo "$label exit $?" >> "$out/status"
+    local rc=$?
+    [ $rc = 5 ] && rc=0     # pytest's "no tests ran": every file of the group skips on this arch
+    echo "$label exit $rc" >> "$out/status"
 }
 for ((i = 0; i < ${#labels[@]}; i++)); do
     while true; do      # the first free slot, waiting for a group to finish if none is
