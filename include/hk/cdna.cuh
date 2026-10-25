@@ -1571,8 +1571,11 @@ __device__ inline static void load_mx_scales_aiter(hk_mxs<R, KB, F> &dst, const 
  * is past 1.75), so the scale and every value match hk.mx.quant bit for bit. Every
  * thread of the workgroup takes (row, 32-column group) pairs: 32 plain LDS reads in 16-byte runs,
  * one 32-byte store of the FP8 row piece, one byte of scale at its place in AITER's 32-row layout
- * (hk.mx.aiter_scales: dword (n1 * K1 + k1) * 64 + kb4 * 16 + r16, byte kpack * 2 + h). The caller
- * has written src and passed a barrier.
+ * (hk.mx.aiter_scales: dword (n1 * K1 + k1) * 64 + kb4 * 16 + r16, byte kpack * 2 + h) -- or, when
+ * `s` is an int32 tensor, in the packed layout load_mx_scales reads (hk.mx.pack_scales: row R/64,
+ * dword st * 64 + (b % 4) * 16 + R % 16, byte (R % 64) / 16, for block b = st * 4 + b % 4), where
+ * rows past q's last get the unit scale (127), as pack_scales pads them. The caller has written
+ * src and passed a barrier.
  */
 template<ducks::st::all ST, ducks::gl::all GLQ, ducks::gl::all GLS>
 __device__ inline static void mx_quant_store(const GLQ &q, const GLS &s, const ST &src, int row0, int col0) {
@@ -1590,9 +1593,17 @@ __device__ inline static void mx_quant_store(const GLQ &q, const GLS &s, const S
     uint8_t *qp = reinterpret_cast<uint8_t *>(q.raw_ptr);
     uint8_t *sp = reinterpret_cast<uint8_t *>(s.raw_ptr);
     const int nthreads = int(blockDim.x), tid = int(threadIdx.x);
+    constexpr bool PACKED = sizeof(typename GLS::dtype) == 4;
+    const uint64_t sdw = PACKED ? uint64_t(s.template stride<2>()) : 0;   // dwords a 64-row group
     for (int p = tid; p < ST::rows * G; p += nthreads) {
         const int r = p / G, g = p % G, R = row0 + r;
-        if (R >= rows) continue;
+        if (R >= rows) {
+            if constexpr (PACKED) {
+                const int b = col0 / 32 + g;
+                sp[((uint64_t(R / 64) * sdw + (b / 4) * 64 + (b % 4) * 16 + R % 16) * 4) + (R % 64) / 16] = 127;
+            }
+            continue;
+        }
         float v[32];
         #pragma unroll
         for (int u = 0; u < 32 / RUN; u++) {
@@ -1629,8 +1640,13 @@ __device__ inline static void mx_quant_store(const GLQ &q, const GLS &s, const S
         reinterpret_cast<__uint128_t *>(qrow)[0] = *reinterpret_cast<const __uint128_t *>(&packed[0]);
         reinterpret_cast<__uint128_t *>(qrow)[1] = *reinterpret_cast<const __uint128_t *>(&packed[4]);
         const int b = col0 / 32 + g;
-        const int n1 = R / 32, h = (R % 32) / 16, r16 = R % 16, k1 = b / 8, kpack = (b % 8) / 4, kb4 = b % 4;
-        sp[((((uint64_t(n1) * k1n + k1) * 4 + kb4) * 16 + r16) * 2 + kpack) * 2 + h] = uint8_t(byte);
+        if constexpr (PACKED) {
+            sp[((uint64_t(R / 64) * sdw + (b / 4) * 64 + (b % 4) * 16 + R % 16) * 4) + (R % 64) / 16] =
+                uint8_t(byte);
+        } else {
+            const int n1 = R / 32, h = (R % 32) / 16, r16 = R % 16, k1 = b / 8, kpack = (b % 8) / 4, kb4 = b % 4;
+            sp[((((uint64_t(n1) * k1n + k1) * 4 + kb4) * 16 + r16) * 2 + kpack) * 2 + h] = uint8_t(byte);
+        }
     }
 }
 

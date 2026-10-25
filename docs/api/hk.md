@@ -622,9 +622,11 @@ MX-quantize an LDS tile's rows and store them -- the epilogue that hands a GEMM'
 to an MXFP8 consumer without a separate quant pass. Every thread of the workgroup takes
 (row, 32-column group) pairs of `src` (bf16 or fp32: store it, then barrier, first). For each
 group it computes AITER's E8M0 exponent exactly, e = ceil(log2(amax / 448)) from amax's bits.
-It writes the FP8 e4m3 values to q[row0 + r, col0 + 32 g ..] and the scale byte to `s` in
-AITER's 32-row layout (hk.mx.aiter_scales of q's [R, K/32], K/32 padded to 8). The
-result is bit-identical to hk.mx.quant followed by hk.mx.aiter_scales.
+It writes the FP8 e4m3 values to q[row0 + r, col0 + 32 g ..] and the scale byte to `s`:
+a uint8 `s` gets AITER's 32-row layout (hk.mx.aiter_scales of q's [R, K/32], K/32 padded to
+8), an int32 `s` the packed layout hk.load_mx_scales reads ([ceil(R/64), K/128 * 64],
+hk.mx.pack_scales; rows past q's last get the unit scale, as pack_scales pads them). The
+result is bit-identical to hk.mx.quant followed by hk.mx.aiter_scales or hk.mx.pack_scales.
 
 ## Dtypes
 

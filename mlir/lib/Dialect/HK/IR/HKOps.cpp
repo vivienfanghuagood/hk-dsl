@@ -291,8 +291,10 @@ LogicalResult MxQuantStoreOp::verify() {
     return emitOpError("whole 32-column groups a row");
   if (!isa<Float8E4M3FNType>(getQ().getType().getElementType()))
     return emitOpError("stores FP8 e4m3 values");
-  if (!getS().getType().getElementType().isInteger(8))
-    return emitOpError("stores E8M0 scale bytes into a uint8 (i8) global");
+  if (!getS().getType().getElementType().isInteger(8) &&
+      !getS().getType().getElementType().isInteger(32))
+    return emitOpError("stores E8M0 scale bytes into a uint8 (i8) global (AITER's 32-row "
+                       "layout) or an int32 one (the packed layout)");
   return success();
 }
 
