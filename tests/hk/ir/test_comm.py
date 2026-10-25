@@ -176,3 +176,11 @@ def test_xcd_id_reads_the_hardware_and_is_gfx9s():
     assert "kittens::xcd_id()" in _kernel(body, "comm_xcd_id").source()
     with pytest.raises(TypeError, match="XCD"):
         _kernel(body, "comm_xcd_id_rdna", arch="gfx1100").trace()
+
+
+def test_xcd_barrier_arrives_twice_and_waits_once():
+    def body(cnt: hk.Tensor[i32, "device"], *, N: int = 64):
+        hk.comm.xcd_barrier(cnt, 1, N)
+    src = _kernel(body, "comm_xcd_barrier").source()
+    assert src.count("kittens::arrive<16>(g.cnt, ") == 2 and src.count("kittens::wait<16, 0>(") == 1
+    assert "kittens::xcd_id()" in src

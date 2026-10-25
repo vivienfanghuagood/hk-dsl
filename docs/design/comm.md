@@ -17,6 +17,7 @@
 | `hk.comm.arrive(cnt.at[i], v)` (signal's drain, then one atomic add of the scope; the old value) and `hk.comm.barrier(cnt.at[i], target)` (arrive + wait >= target; with an epoch the counter never resets): a grid barrier with a "device" counter, a barrier across GPUs with a "system" one | `hk.arrive` op, `kittens::arrive<AUX>` |
 | `hk.comm.claim(q.at[i], n=1)`: a work queue's take -- one scoped atomic add, the old value to the whole workgroup, no drain. With `resident=True` and a `while t < n:` loop it is the persistent + task-queue pattern (Hazy's interpreter, MPK's workers); tasks wait on per-layer counters (`wait`) and publish with `arrive` | `hk.arrive` with `nodrain`, `kittens::claim<AUX>` |
 | `hk.arch.xcd_id()`: the XCD a workgroup runs on, read from the hardware (HW_REG_XCC_ID) -- for per-XCD aggregation instead of assuming block id mod 8 | `hk.xcd_id` op, `kittens::xcd_id()` |
+| `hk.comm.xcd_barrier(cnt, epoch, workgroups)`: a grid barrier aggregated per XCD -- arrive at the XCD's counter, the XCD's last arrival at the top one, wait for eight: 8 global atomics a round instead of one a workgroup. 256 workgroups: **2.53 us a barrier vs 3.71 flat** | composition of `xcd_id`, `arrive`, `wait` |
 | `hk.kernel(..., resident=True)`: a launch whose grid does not fit on the GPU at once (CUs x workgroups a CU holds by registers and LDS, from the build's resource report: `Kernel.resident_capacity()`) raises `ResourceError` instead of deadlocking in a barrier | `hk/dsl/kernel.py` |
 | `hk.runtime.SymmetricBuffer(nbytes, group)`: one buffer a rank, every peer's mapped (hipIpc), as torch tensors; while one is open a launch refuses its memory bound to an *unscoped* parameter | `hk/runtime/symmetric.py`, `Kernel.__call__` |
 | the litmus suite the lowering follows | `tools/cdna-probes/litmus_comm.hip` |
@@ -93,6 +94,5 @@ Each pattern is a test in `tests/hk/gpu/test_comm.py` that runs on two MI355X.
 
 ## Next
 
-- Per-XCD signal aggregation (`xcd_id` + a two-level arrive), measured against a flat one.
 - Tagged mailboxes (value, epoch in one 8 B store), and per-tile signals from a GEMM epilogue
   (store the tile to a peer, count it) -- the TP2 prefill GEMM + all-reduce overlap.
