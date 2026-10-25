@@ -41,6 +41,13 @@ def _t():
     return B.current()
 
 
+def _i64(v: int):
+    """An i64 attribute (an op's integer attribute: a scoped access's aux)."""
+    from .._mlir import ir  # noqa: PLC0415
+
+    return ir.IntegerAttr.get(ir.IntegerType.get_signless(64), int(v))
+
+
 def _i32():
     return ir.IntegerType.get_signless(32)
 
@@ -490,6 +497,29 @@ class Global(Value):
                           loc=_t().loc())
 
 
+#: A scoped tensor's cache-policy bits on gfx950: SC1 (device scope) or
+#: SC0|SC1 (system scope). Measured (KernelWiki gfx950-cross-gpu-memory-model):
+#: without them a store stays in this XCD's L2 and a load re-reads a stale line.
+SCOPE_AUX = {"": 0, "device": 16, "system": 17}
+
+
+def scope_aux(tensor: "Global", what: str, tile=None) -> int:
+    """The aux field of an access to `tensor` (0 for an unscoped one); checks
+    that the access can carry it."""
+    scope = getattr(tensor.ty, "scope", "")
+    if not scope:
+        return 0
+    arch = _t().arch
+    if get_target(arch).arch != "gfx950":
+        raise TypeError(f"{what} through a {scope}-scoped tensor: scoped accesses are gfx950's "
+                        f"(on {arch} a peer's writes stay stale in the L2 and no instruction "
+                        f"invalidates it -- KernelWiki gfx1100-peer-write-l2-stale)")
+    if tile is not None and not (isinstance(tile, RegTileType) and not _is_strip(tile)):
+        raise TypeError(f"{what} through a {scope}-scoped tensor moves register tiles, not "
+                        f"{tile!r}")
+    return SCOPE_AUX[scope]
+
+
 class View:
     """A global at a coordinate: what a load reads and a store writes."""
 
@@ -530,6 +560,13 @@ class View:
             return _make(hkd.LoadOp, tile, (self.tensor.v, self.idx.v), into=into,
                          name="ld", bounded=False,
                          period=ir.IntegerAttr.get(ir.IntegerType.get_signless(64), period))
+        aux = scope_aux(self.tensor, "load", tile)
+        if aux:
+            if bounded is not True and bounded is not False:
+                raise TypeError("load(bounded=n) through a scoped tensor: not supported; "
+                                "scoped loads are bounded by the tensor's rows")
+            return _make(hkd.LoadOp, tile, (self.tensor.v, self.idx.v), into=into, name="ld",
+                         bounded=bounded, aux=_i64(aux))
         if bounded is True or bounded is False:
             return _make(hkd.LoadOp, tile, (self.tensor.v, self.idx.v),
                          into=into, name="ld", bounded=bounded)
@@ -549,7 +586,14 @@ class View:
             raise TypeError("store(bounded=...) predicates tile rows; the "
                             "value is not a tile")
         t = _t()
-        if bounded is True or bounded is False:
+        aux = scope_aux(self.tensor, "store", value.ty)
+        if aux:
+            if bounded is not True and bounded is not False:
+                raise TypeError("store(bounded=n) through a scoped tensor: not supported; "
+                                "scoped stores are bounded by the tensor's rows")
+            hkd.StoreOp(self.tensor.v, value.v, self.idx.v, bounded=bounded, aux=_i64(aux),
+                        loc=t.loc())
+        elif bounded is True or bounded is False:
             hkd.StoreOp(self.tensor.v, value.v, self.idx.v, bounded=bounded,
                         loc=t.loc())
         else:
@@ -623,8 +667,9 @@ class View:
         if self.tensor.dtype is not i32:
             raise TypeError(f"atomic_{kind}_scalar works on an int32 global, "
                             f"not {self.tensor.dtype.name}")
+        aux = scope_aux(self.tensor, f"atomic_{kind}_scalar")
         op = hkd.AtomicScalarOp(_i32(), self.tensor.v, self.idx.v,
-                                as_int(value).v, kind, loc=_t().loc("old"))
+                                as_int(value).v, kind, aux=_i64(aux), loc=_t().loc("old"))
         return Int(op.result, ScalarType(i32))
 
     def atomic_add_scalar(self, value) -> Int:

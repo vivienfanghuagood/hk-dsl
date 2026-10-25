@@ -241,9 +241,13 @@ struct LdsAllocPass : public mlir::hk::impl::HKLdsAllocBase<LdsAllocPass> {
         place(v, v.getResult().getType().getNumBytes());
     }
     int64_t arrivals = 0;
-    f.walk([&](WgArriveOp) { ++arrivals; });
+    f.walk([&](Operation *op) {
+      if (isa<WgArriveOp, ArriveOp>(op))
+        ++arrivals;
+    });
     f->setAttr(attrs::kLdsBytes, b.getI64IntegerAttr(offset));
-    // kittens::wg_arrive declares one `__shared__ int` per instantiation;
+    // kittens::wg_arrive and kittens::arrive declare one `__shared__ int` per
+    // instantiation (counted per op: an upper bound);
     // 16 B is what the static segment rounds it to.
     f->setAttr(attrs::kLdsStatic, b.getI64IntegerAttr(16 * arrivals));
   }
