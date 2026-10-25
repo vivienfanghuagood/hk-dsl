@@ -96,5 +96,6 @@ nav:
       - The DX goal: design/dx-goal.md
       - CDNA3/4: design/cdna.md
       - HipKittens on CDNA4: design/cdna-hipkittens-ops.md
+      - Serving readiness: design/serving-readiness.md
       - Cross-architecture API audit: dx/api-consistency.md
   - Development record: history/README.md

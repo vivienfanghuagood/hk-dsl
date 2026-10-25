@@ -80,6 +80,7 @@ Coding agents: start from [llms.txt](../llms.txt) and the
 | [Schedules as data](design/schedules.md) | `hk.schedules`' design: one type per kernel family, legality and how it was measured, the record formats, the byte-identical round trip |
 | [CDNA3/4](design/cdna.md) | what is RDNA3-only, what HipKittens offers on gfx942/gfx950, and what runs on an MI355X |
 | [HipKittens on CDNA4](design/cdna-hipkittens-ops.md) | HipKittens' gfx950 GEMM and GQA forward as hk ops: constraints, measurements, the route table |
+| [Serving readiness](design/serving-readiness.md) | what 0.6 still lacks before hk is on by default in an LLM deployment: DSL capabilities and kernel validation apart, with evidence, cost and priority, and the minimum deployable set |
 | [Development record](history/README.md) | the chronological record, chapter by chapter, negative results included |
 
 ## Why this exists
