@@ -50,7 +50,7 @@ except ImportError as _e:
         "hk-dsl`, and do not put this checkout's python/ on sys.path -- or build them:\n"
         "scripts/build_mlir.sh && scripts/build_hk_mlir.sh (docs/building.md).") from None
 
-from . import autotune, codegen, compiler, dsl, ops, runtime, target, templates
+from . import autotune, codegen, compiler, dsl, mx, ops, runtime, target, templates
 from .dsl import *  # noqa: F401,F403 -- the language is the package
 from .dsl import __all__ as _dsl_all
 from .errors import VerifyError
@@ -77,7 +77,7 @@ __all__ = [
     *_dsl_all,
     "DTYPES", "VerifyError", "CompileError", "ResourceError", "Build",
     "get_target", "TARGETS", "detect_arch",
-    "autotune", "codegen", "compiler", "dsl", "ops", "runtime", "target", "templates",
+    "autotune", "codegen", "compiler", "dsl", "mx", "ops", "runtime", "target", "templates",
     "torch_op",
     # The one op promoted out of `hk.ops`: it is the drop-in a
     # framework reaches for, and `hk.attention` is what the SDPA

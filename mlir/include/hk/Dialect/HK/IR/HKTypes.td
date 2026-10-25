@@ -229,6 +229,29 @@ def HK_StageType : HK_Type<"Stage", "stage"> {
   }];
 }
 
+def HK_MxScalesType : HK_Type<"MxScales", "mxs"> {
+  let summary = "E8M0 block scales of an fp8 mma operand, in the lanes that use them";
+  let description = [{
+    `!hk.mxs<64, 8>`: the scales of a 64-row operand tile 8 x 32 = 256 wide
+    along the reduction, one E8M0 byte a row and 32 columns (OCP MX). gfx950's
+    v_mfma_scale_f32_16x16x128_f8f6f4 takes, in each lane, the scale of that
+    lane's row (lane % 16) and 32-column block (lane / 16) as one byte of a
+    32-bit register, the byte picked by an immediate: four 16-row base tiles
+    share a register. So the type holds rows/16 x kblocks/4 bytes a lane, in
+    ceil(rows/64) x kblocks/4 registers.
+      `fmt` how the bytes sit (include/hk/cdna.cuh hk_mxs): 0 packed, four base
+    tiles to a register (the default); 1 loose, a register a base tile and K
+    step, the scale in byte 0 (a byte load lands in it as it is); 2 AITER's
+    raw dwords, one per 32-row block and pair of K steps, the MFMA's opsel
+    picking the byte. 1 and 2 need no VALU on a loaded scale, so a load's
+    wait can sit at the MFMA that reads it.
+  }];
+  let parameters = (ins "unsigned":$rows, "unsigned":$kblocks,
+                        DefaultValuedParameter<"unsigned", "0">:$fmt);
+  let assemblyFormat = "`<` $rows `,` $kblocks (`,` $fmt^)? `>`";
+  let genVerifyDecl = 1;
+}
+
 def HK_AnyTile : AnyTypeOf<[HK_RegTileType]>;
 def HK_Elementwise : AnyTypeOf<[HK_RegTileType, HK_RegVecType],
                                "register tile or vector">;

@@ -29,7 +29,8 @@ as 16x32 row operands, "32x32" for 32x16 stride-4 col ones. A DMA copy
 into it reads each row in 128- or 64-byte runs instead of 64 or 32 (the
 paged decode's copies: 6.15 to 6.9 TB/s with `nontemporal`), and its
 reads may conflict on banks more; a read of another fragment is
-refused.
+refused. "16x128" (byte tiles): what an fp8 16x128 operand read would pick,
+named for an allocation only `load_fp4_frags_lds` reads.
 
 ### `hk.lds.alloc_vec`
 
