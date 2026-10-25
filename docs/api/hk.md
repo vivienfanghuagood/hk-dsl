@@ -1210,10 +1210,10 @@ row: a MoE's top-k, whose sorted list counts (token, choice) pairs.
 #### `Global.scatter`
 
 ```python
-Global.scatter(self, value: Tile, ids: Global, at, *, count=None, col=0, sort_topk: int = 0) -> None
+Global.scatter(self, value: Tile, ids: Global, at, *, count=None, col=0, sort_topk: int = 0, add: bool = False) -> None
 ```
 
-*Changed after 0.4.0*: new parameter `sort_topk`
+*Changed after 0.4.0*: new parameters `sort_topk`, `add`
 
 Rows by index: tile row r goes to row `ids[at + r]`, from column
 `col`; an index outside the tensor, or a position at or past
@@ -1221,6 +1221,12 @@ Rows by index: tile row r goes to row `ids[at + r]`, from column
 > 0: `ids` are AITER's MoE sort ids (token | choice << 24) and this
 tensor is [sort_topk * M, ...] choice-major -- row r goes to row
 choice * M + token, and padding (token >= M) nowhere.
+
+`add=True` adds the rows atomically instead (an fp32 or bf16 global;
+bf16 adds element pairs, gfx950's global_atomic_pk_add_bf16). With
+`sort_topk` the tensor is then [M, ...] and every choice of a token
+adds into its row: the top-k reduce, in no fixed order -- the result
+varies run to run by the rounding of the adds.
 
 #### `Global.type (property)`
 
@@ -1555,4 +1561,4 @@ are bounded: any non-empty length. head_dim is 64 or 128 on both.
 
 ## Also exported
 
-`hk.copy_mx_scales`, `hk.load_fp4_frags`, `hk.load_fp4_frags_lds`, `hk.load_mx_scales`, `hk.mma_ABt_mx`, `hk.templates`
+`hk.copy_mx_scales`, `hk.load_fp4_frags`, `hk.load_fp4_frags_lds`, `hk.load_mx_scales`, `hk.mma_ABt_mx`, `hk.mx_quant_store`, `hk.templates`
