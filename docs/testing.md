@@ -219,6 +219,15 @@ main's required checks:
   no node lock. Fallback: the dev pod `hfang-hk-rdna3-b`'s GPU 6 under the
   node lock (the job's `runs-on` back to `gfx1100`, its `env` removed).
 
+A third job, **`gfx950-vllm`**, runs the DeepSeek-V4.1 routes' tests and the engine contract
+(`tests/hk/gpu/test_engine_contract.py`) in the vLLM deployment image
+(`vllm/vllm-openai-rocm:nightly-rocm100-…`, ROCm 10). That image's compiler is not
+`rocm/pytorch`'s, and the difference has mattered three times: #35, #39, and a dp128x224 spill.
+It uses the gfx950 runner, with its own dialect build and kernel cache (`$HOME/gha/x950v/ci`),
+and runs the files in `HK_CI_TESTS` as one group instead of the whole suite. It is not a
+required check unless the owner makes it one. `HK_CI_GPUS` restricts any gfx950 job to the
+cards listed.
+
 Each job has a self-hosted runner of its own on the workstation:
 `smci355-gfx950` and `smci355-gfx1100-x4`, labelled `self-hosted, hk-gpu,
 gfx950` and `self-hosted, hk-gpu, gfx1100-x4`; `smci355-gfx1100` (`gfx1100`,

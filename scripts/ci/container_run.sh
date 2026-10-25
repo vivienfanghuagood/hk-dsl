@@ -1,7 +1,8 @@
 #!/bin/bash
-# Inside rocm/pytorch (run_gfx950.sh): build hk._mlir for this image's CPython
-# against the cp310 MLIR install, then run the GPU tier for gfx950 on the one
-# GPU the container sees. The MLIR C++ libraries do not depend on the
+# Inside rocm/pytorch (run_gfx950.sh) -- or the vLLM deployment image, as tier
+# gfx950-vllm -- build hk._mlir for this image's CPython against the cp310 MLIR
+# install, then run the GPU tier for gfx950 on the one GPU the container sees:
+# all of it (scripts/gpu_suite.sh), or the test files in HK_CI_TESTS. The MLIR C++ libraries do not depend on the
 # interpreter; the core Python extension is compiled here from MLIR's
 # installed sources.
 #   /ci        CI's own directory: hk-build-cp312, pylib, hk-cache, home
@@ -11,13 +12,17 @@ set -uo pipefail
 SHA=$1
 GPU=$2
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+TIER=${HK_CI_TIER:-gfx950}
 DEVICE="MI355X (gfx950), GPU $GPU"
 export HOME=/ci/home PYTHONPATH=/ci/pylib PATH=/ci/pylib/bin:$PATH
+# JIT caches under /ci/home: the vLLM image's aiter puts FlyDSL's in its package directory, which
+# the CI user cannot write (PermissionError on the first MoE call)
+export FLYDSL_RUNTIME_CACHE_DIR=/ci/home/flydsl-cache TRITON_CACHE_DIR=/ci/home/triton-cache
 mkdir -p "$HOME"
 
 fail() {
     echo "error: $*"
-    python3 "$HERE/summarize.py" --error "$*" --sha "$SHA" --tier gfx950 --device "$DEVICE" --out /ci/run
+    python3 "$HERE/summarize.py" --error "$*" --sha "$SHA" --tier "$TIER" --device "$DEVICE" --out /ci/run
     exit 1
 }
 
@@ -34,5 +39,14 @@ fail() {
     || fail "the dialect did not build (build.log)"
 
 export HK_ARCH=gfx950 HK_CACHE_DIR=/ci/hk-cache
-HK_GPU=0 scripts/gpu_suite.sh /ci/run/gpu
-python3 "$HERE/summarize.py" /ci/run/gpu --sha "$SHA" --tier gfx950 --device "$DEVICE" --out /ci/run
+if [ -n "${HK_CI_TESTS:-}" ]; then
+    # one group, in gpu_suite.sh's output format (a log and a status line)
+    mkdir -p /ci/run/gpu
+    { echo "gpu=0"; PYTHONPATH="python:$PYTHONPATH" HIP_VISIBLE_DEVICES=0 timeout --signal=KILL 5400 \
+          python3 -m pytest -q -p no:cacheprovider $HK_CI_TESTS; } > "/ci/run/gpu/$TIER.log" 2>&1
+    rc=$?; [ $rc = 5 ] && rc=0
+    printf '%s exit %s\ndone\n' "$TIER" "$rc" > /ci/run/gpu/status
+else
+    HK_GPU=0 scripts/gpu_suite.sh /ci/run/gpu
+fi
+python3 "$HERE/summarize.py" /ci/run/gpu --sha "$SHA" --tier "$TIER" --device "$DEVICE" --out /ci/run

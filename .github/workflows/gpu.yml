@@ -40,6 +40,38 @@ jobs:
           path: gha-report/
           if-no-files-found: ignore
 
+  gfx950-vllm:
+    # The deployment image: the vLLM nightly the DeepSeek-V4.1 routes were measured on (ROCm 10,
+    # hipcc clang 23), whose compiler has differed from rocm/pytorch's three times (#35, #39, a
+    # dp128x224 spill). The routes' tests and the engine contract (docs/design/serving-readiness.md,
+    # A7 / A9), not the whole tier; its own dialect build and kernel cache.
+    runs-on: [self-hosted, hk-gpu, gfx950]
+    timeout-minutes: 90
+    concurrency:
+      group: gpu-gfx950-vllm-${{ github.ref }}
+      cancel-in-progress: false
+    env:
+      HK_CI_TIER: gfx950-vllm
+      HK_CI_IMAGE: vllm/vllm-openai-rocm:nightly-rocm100-e68efc685ab1e6f1eda004ced7157e3ca411da2f
+      HK_CI_TESTS: >-
+        tests/hk/gpu/test_engine_contract.py tests/hk/gpu/test_vllm_mxfp8.py
+        tests/hk/gpu/test_vllm_moe_a8w4.py tests/hk/gpu/test_mxfp8_quant.py
+        tests/hk/gpu/test_mxfp8_gemm.py tests/hk/gpu/test_moe_a8w4.py
+        tests/hk/gpu/test_cdna_mx_ops.py tests/hk/gpu/test_scatter_add.py
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          persist-credentials: false
+      - name: The DeepSeek-V4.1 routes in the vLLM image on an MI355X
+        run: HK_CI_DIR=$HOME/gha/x950v/ci scripts/ci/run_gfx950.sh
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: gfx950-vllm-report
+          path: gha-report/
+          if-no-files-found: ignore
+
   gfx1100:
     # The runner labelled gfx1100-x4 relays to pod hfang-hk-ci-0044
     # (scripts/ci/k8s/gfx1100-ci-0044.yaml): four W7900D the device plugin
