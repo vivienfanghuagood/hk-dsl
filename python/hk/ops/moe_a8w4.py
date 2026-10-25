@@ -602,7 +602,7 @@ def aiter_layout_w2_scale(s):
 
 def _sorted_ring(stage: int, name: str, *, group_rows: int, mt: int, pp: int, k: int,
                  limit: float = 10.0, topk: int = 6, warps: int = 4, xcd: bool = True,
-                 depth: int = 2, atomic: bool = False, mxq: bool = False):
+                 depth: int = 2, mxq: bool = False):
     """Stage 1 or 2 on AITER's own MoE sort (moe_sorting with block_size 16 * mt): a round is one
     sorted block -- its expert sorted_expert_ids[b], its rows sorted_ids[b * BM ..] -- so nothing
     is decoded or gathered on the host. The xsplit ring with two-step 32-row scale dwords (pairs),
@@ -723,7 +723,7 @@ def _sorted_ring(stage: int, name: str, *, group_rows: int, mt: int, pp: int, k:
                     wt = wv[hk.elem_coord(0, 0, r0 + i * TILE, 0)].load(t_wv)
                     wt.right_fill_(1, 0.0)
                     o = o * wt.sum(axis=1)[:, None]
-                    out.scatter(o, sids, r0 + i * TILE, col=col0, sort_topk=topk, add=atomic)
+                    out.scatter(o, sids, r0 + i * TILE, col=col0, sort_topk=topk)
             if mxq:
                 hk.arch.barrier()
                 hk.mx_quant_store(Hs, out, sq, r0, blk * TILE * pp * warps)
@@ -734,7 +734,7 @@ def _sorted_ring(stage: int, name: str, *, group_rows: int, mt: int, pp: int, k:
 
 
 def _sorted_s2_persistent(name: str, *, group_rows: int, mt: int, pp: int, k: int, topk: int = 6,
-                          warps: int = 4, grid: int = 768, atomic: bool = False):
+                          warps: int = 4, grid: int = 768):
     """Stage 2 on AITER's sort (as _sorted_ring) as a persistent kernel: workgroup w takes units
     (block, column block) w, w + G, ... of the live ones, and issues the next unit's first K step
     (its x tile, weights and scales) before the current unit's epilogue, so the next unit's
@@ -837,7 +837,7 @@ def _sorted_s2_persistent(name: str, *, group_rows: int, mt: int, pp: int, k: in
                 wt = wv[hk.elem_coord(0, 0, r0 + i * TILE, 0)].load(t_wv)
                 wt.right_fill_(1, 0.0)
                 o = o * wt.sum(axis=1)[:, None]
-                out.scatter(o, sids, r0 + i * TILE, col=col0, sort_topk=topk, add=atomic)
+                out.scatter(o, sids, r0 + i * TILE, col=col0, sort_topk=topk)
 
         u0 = unit(0)
         fetch(0, 0, 0, u0[0], u0[1])
@@ -981,7 +981,7 @@ def _sorted_grid(group_rows: int, mt: int, pp: int, k: int, limit: float, tr: in
 
 
 def _sorted_s2_resident(name: str, *, group_rows: int, mt: int, pp: int, k: int, topk: int = 6,
-                        warps: int = 4, nt: int = 4, atomic: bool = False):
+                        warps: int = 4, nt: int = 4):
     """Stage 2 with the sorted block's h resident in LDS: a workgroup loads its BM rows of h
     (all K/128 steps, BM x K bytes) once, then runs `nt` column tiles of TILE * pp * warps
     output columns over them, streaming only the expert's weights -- h is read once a workgroup,
@@ -990,9 +990,7 @@ def _sorted_s2_resident(name: str, *, group_rows: int, mt: int, pp: int, k: int,
     the next tile's first steps load under this tile's last MFMAs and its epilogue. The weight
     scale pairs use three sets (the last pair its own) so the next tile's first pair never
     overwrites a set the current tile's MFMAs may still read. Rows go out as _sorted_ring's
-    stage 2 (choice-major y2, weighted) -- or, `atomic`, added into [M, D] per token through a warp's
-    LDS tile (Global.scatter_add_lds: lanes on consecutive column pairs of a row), the top-k sum
-    done by the stores, in no fixed order."""
+    stage 2 (choice-major y2, weighted)."""
     import hk  # noqa: PLC0415
 
     GR = group_rows
@@ -1021,8 +1019,6 @@ def _sorted_s2_resident(name: str, *, group_rows: int, mt: int, pp: int, k: int,
              out: hk.Tensor[bf16]):
         g = hk.group(warps)
         Hres = hk.lds.alloc(st_x, count=steps, name="Hres")
-        if atomic:
-            Ws = hk.lds.alloc(hk.ST(bf16, TILE, R), count=warps, name="Ws")
         nblk = out.cols // (NCW * nt)
         wg = hk.arch.block_idx.x
         total = seids.cols * nblk
@@ -1081,11 +1077,7 @@ def _sorted_s2_resident(name: str, *, group_rows: int, mt: int, pp: int, k: int,
                     wt = wv[hk.elem_coord(0, 0, r0 + i * TILE, 0)].load(t_wv)
                     wt.right_fill_(1, 0.0)
                     o = o * wt.sum(axis=1)[:, None]
-                    if atomic:
-                        Ws[wid].store(o.to(bf16))
-                        out.scatter_add_lds(Ws[wid], sids, r0 + i * TILE, col=c0, sort_topk=topk)
-                    else:
-                        out.scatter(o, sids, r0 + i * TILE, col=c0, sort_topk=topk)
+                    out.scatter(o, sids, r0 + i * TILE, col=c0, sort_topk=topk)
                     Cs[i].zero_()
 
             for n in hk.range(nt):
@@ -1100,31 +1092,25 @@ def _sorted_s2_resident(name: str, *, group_rows: int, mt: int, pp: int, k: int,
 
 
 @functools.lru_cache(maxsize=None)
-def _sorted_resident(group_rows: int, mt: int, pp: int, k: int, topk: int, nt: int,
-                     atomic: bool = False):
-    return _sorted_s2_resident(f"moe_a8w4_s2r_gr{group_rows}_mt{mt}_pp{pp}_k{k}_t{topk}_n{nt}"
-                               + ("_add" if atomic else ""),
-                               group_rows=group_rows, mt=mt, pp=pp, k=k, topk=topk, nt=nt,
-                               atomic=atomic)
+def _sorted_resident(group_rows: int, mt: int, pp: int, k: int, topk: int, nt: int):
+    return _sorted_s2_resident(f"moe_a8w4_s2r_gr{group_rows}_mt{mt}_pp{pp}_k{k}_t{topk}_n{nt}",
+                               group_rows=group_rows, mt=mt, pp=pp, k=k, topk=topk, nt=nt)
 
 
 @functools.lru_cache(maxsize=None)
-def _sorted_persistent(group_rows: int, mt: int, pp: int, k: int, topk: int, grid: int,
-                       atomic: bool = False):
-    return _sorted_s2_persistent(f"moe_a8w4_s2p_gr{group_rows}_mt{mt}_pp{pp}_k{k}_t{topk}_g{grid}"
-                                 + ("_add" if atomic else ""),
-                                 group_rows=group_rows, mt=mt, pp=pp, k=k, topk=topk, grid=grid,
-                                 atomic=atomic)
+def _sorted_persistent(group_rows: int, mt: int, pp: int, k: int, topk: int, grid: int):
+    return _sorted_s2_persistent(f"moe_a8w4_s2p_gr{group_rows}_mt{mt}_pp{pp}_k{k}_t{topk}_g{grid}",
+                                 group_rows=group_rows, mt=mt, pp=pp, k=k, topk=topk, grid=grid)
 
 
 @functools.lru_cache(maxsize=None)
 def _sorted(stage: int, group_rows: int, mt: int, pp: int, k: int, limit: float, topk: int,
-            depth: int = 2, warps: int = 4, atomic: bool = False, mxq: bool = False):
+            depth: int = 2, warps: int = 4, mxq: bool = False):
     return _sorted_ring(stage, f"moe_a8w4_s{stage}s_gr{group_rows}_mt{mt}_pp{pp}_k{k}_t{topk}"
                         + (f"_d{depth}" if depth != 2 else "") + (f"_w{warps}" if warps != 4 else "")
-                        + ("_add" if atomic else "") + ("_mxq" if mxq else ""),
+                        + ("_mxq" if mxq else ""),
                         group_rows=group_rows, mt=mt, pp=pp, k=k, limit=limit, topk=topk,
-                        depth=depth, warps=warps, atomic=atomic, mxq=mxq)
+                        depth=depth, warps=warps, mxq=mxq)
 
 
 def stage1_sorted(xq_tok, xs_sorted, w13, w13_scale, sorted_ids, sorted_expert_ids, num_valid, *,
@@ -1175,43 +1161,34 @@ def stage1_sorted(xq_tok, xs_sorted, w13, w13_scale, sorted_ids, sorted_expert_i
 
 def stage2_sorted(hq, hs_sorted, w2, w2_scale, sorted_ids, sorted_expert_ids, num_valid,
                   sorted_weights, m: int, topk: int, n_experts: int, *, mt: int, pp: int = 4,
-                  depth: int = 2, warps: int = 4, persistent: int = 0, atomic: bool = False,
-                  resident: int = 0):
+                  depth: int = 2, warps: int = 4, persistent: int = 0, resident: int = 0):
     """y2 [topk * m, D] bf16, choice-major: row choice * m + token = weight * (h_q . w2^T) of that
     pair (hq [P, I] FP8 and hs_sorted its 32-row-layout scales, both in sorted order).
-    reduce(y2, ..., inv=identity(m, topk), weighted=False) sums it.
-
-    atomic=True: the weighted rows are added into [m, D] bf16 with packed bf16 atomics, as AITER's
-    stage 2 does -- the top-k sum done by the stores, NOT deterministic (the order of the adds,
-    hence their rounding, varies run to run)."""
+    reduce(y2, ..., inv=identity(m, topk), weighted=False) sums it. (The top-k sum by atomics in
+    the epilogue, AITER's way, was measured and dropped: a bf16 atomic reduce is >= 0.8 ms at 16k
+    tokens, 4x this sum -- K1 c29 / c33.)"""
     import torch  # noqa: PLC0415
 
     d = w2.shape[0] // n_experts
     if d % (TILE * pp * warps):
         raise ValueError(f"moe_a8w4.stage2_sorted: D={d} not a multiple of {TILE * pp * warps}")
-    if atomic and persistent:
-        raise ValueError("moe_a8w4.stage2_sorted: atomic with persistent -- the persistent kernel "
-                         "repeats a unit to even out its loop, and an add, unlike a store, counts twice")
-    if atomic:
-        y2 = torch.zeros((m, d), device=hq.device, dtype=torch.bfloat16)
-    else:
-        y2 = torch.empty((topk * m, d), device=hq.device, dtype=torch.bfloat16)   # a row a pair
+    y2 = torch.empty((topk * m, d), device=hq.device, dtype=torch.bfloat16)   # a row a pair
     if resident:        # h resident in LDS, `resident` column tiles a workgroup (_sorted_s2_resident)
         if persistent or d % (TILE * pp * warps * resident):
             raise ValueError(f"moe_a8w4.stage2_sorted(resident={resident}): D={d} a multiple of "
                              f"{TILE * pp * warps * resident}, without persistent")
-        _sorted_resident(d, mt, pp, hq.shape[1], topk, resident, atomic)(
+        _sorted_resident(d, mt, pp, hq.shape[1], topk, resident)(
             hq, hs_sorted.view(torch.int8), w2.view(torch.int8), w2_scale.view(torch.int8),
             sorted_ids.view(1, -1), sorted_expert_ids.view(1, -1), num_valid.view(1, -1),
             sorted_weights.view(-1, 1).float(), y2)
         return y2
     if persistent:      # `persistent` workgroups looping over the units (_sorted_s2_persistent)
-        _sorted_persistent(d, mt, pp, hq.shape[1], topk, persistent, atomic)(
+        _sorted_persistent(d, mt, pp, hq.shape[1], topk, persistent)(
             hq, hs_sorted.view(torch.int8), w2.view(torch.int8), w2_scale.view(torch.int8),
             sorted_ids.view(1, -1), sorted_expert_ids.view(1, -1), num_valid.view(1, -1),
             sorted_weights.view(-1, 1).float(), y2)
         return y2
-    _sorted(2, d, mt, pp, hq.shape[1], 10.0, topk, depth, warps, atomic)(
+    _sorted(2, d, mt, pp, hq.shape[1], 10.0, topk, depth, warps)(
         hq, hs_sorted.view(torch.int8), w2.view(torch.int8), w2_scale.view(torch.int8),
         sorted_ids.view(1, -1), sorted_expert_ids.view(1, -1), num_valid.view(1, -1),
         sorted_weights.view(-1, 1).float(), y2, y2.view(torch.int8)[:1, :1])
