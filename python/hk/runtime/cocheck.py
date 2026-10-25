@@ -261,6 +261,11 @@ class _Walker:
                 vmem = [(d - dst, l) for d, l in vmem]
         if _LDS_LOAD.match(mnem) and ops:
             lds = lds + [(_regs(ops[0]), ins.text)]
+        elif mnem.startswith("ds_"):
+            # every LDS op takes its place in lgkmcnt's order, stores and atomics too. Left out,
+            # a compiler's lgkmcnt(11) after a run of LDS stores read as leaving eleven loads in
+            # flight (a false alarm on every RDNA GEMM that stages through LDS).
+            lds = lds + [(set(), ins.text)]
         elif _VMEM_LOAD.match(mnem) and ops and re.search(r"\blds\b", rest):
             # gfx950's DMA into LDS writes no register but takes its place in
             # vmcnt's order: without it, a load into registers issued before

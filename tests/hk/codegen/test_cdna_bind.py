@@ -20,6 +20,7 @@ pytest.importorskip("hk._mlir")
 from hk.codegen import scaffold  # noqa: E402
 from hk.runtime import cocheck  # noqa: E402
 from hk.runtime import compile as hc  # noqa: E402
+from hk.runtime.resources import ResourceError  # noqa: E402
 
 PROBE = Path(__file__).resolve().parents[3] / "tools" / "cdna-probes" / "bind_hazard.py"
 
@@ -32,10 +33,15 @@ def _probe():
 
 
 @pytest.mark.parametrize("bk,nb", [(32, 2), (64, 4)])
-def test_without_the_bind_mfmas_read_registers_the_lds_has_not_filled(bk, nb):
+def test_without_the_bind_mfmas_read_registers_the_lds_has_not_filled(bk, nb, monkeypatch):
     bh = _probe()
     tr = bh.gemm_steps(bk, nb).trace()
     src = scaffold.device(tr)
+    # build's wait gate refuses the unbound kernel outright ...
+    with pytest.raises(ResourceError, match="LDS load is\\s+still filling"):
+        hc.build(bh.unbound(src), "gfx950", name=f"{tr.name}_unbound_gated", kind="co")
+    # ... and with the gate off (for looking at it), the checker says why
+    monkeypatch.setenv("HK_WAIT_GATE", "0")
     found = {}
     for variant, s in (("bound", src), ("unbound", bh.unbound(src))):
         b = hc.build(s, "gfx950", name=f"{tr.name}_{variant}", kind="co")
