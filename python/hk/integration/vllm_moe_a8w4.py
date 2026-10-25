@@ -6,7 +6,7 @@ swiglu limit. vLLM imports that function inside its op at every call, so the pat
 attribute itself. A call hk takes keeps AITER's own sort and fused quant-sort (`moe_sorting`,
 `fused_dynamic_mxfp8_quant_moe_sort`). Then:
 - hk's stage 1 (`moe_a8w4.stage1_sorted`) gathers each block's rows itself;
-- the intermediate is quantized again by AITER's fused quant;
+- its epilogue MX-quantizes the intermediate itself (`hk.mx_quant_store`, AITER's rule);
 - hk's stage 2 (`stage2_sorted`) stores each weighted row by its (choice, token);
 - the top-k sum is a plain sum over choices, deterministic, unlike AITER's atomics.
 Everything else goes to AITER unchanged: decode sizes (M < `HK_MOE_A8W4_MIN_M`, default 2048),
@@ -22,7 +22,7 @@ compiled graph calls the same op either way).
 from __future__ import annotations
 
 import os
-from typing import Callable, Dict, Optional
+from typing import Callable, Optional
 
 from . import engine
 
@@ -35,7 +35,6 @@ MT = int(os.environ.get("HK_MOE_A8W4_MT", "4"))
 
 PATCH = engine.Patch("hk_vllm::moe_a8w4", paths=("hk", "fallback"))   # capture: always AITER
 STATS = PATCH.stats
-_IDENT: Dict = {}
 
 
 def _takes(hidden, w1, kw) -> bool:
@@ -80,15 +79,9 @@ def moe(hidden, w1, w2, topk_weight, topk_ids, w1_scale, w2_scale, swiglu_limit:
     xq, xs = fused_dynamic_mxfp8_quant_moe_sort(hidden, sid, nv, m, topk, bm)
     w13 = w1.view(torch.uint8).view(-1, w1.shape[-1])
     w2b = w2.view(torch.uint8).view(-1, w2.shape[-1])
-    h = M.stage1_sorted(xq, xs.view(torch.uint8), w13, w1_scale.view(torch.uint8), sid, se, nv,
-                        inter=inter, mt=MT, pp=3, limit=float(swiglu_limit or 0.0) or 1e30)
-    p = h.shape[0]
-    key = (p, bm, h.device)
-    if key not in _IDENT:
-        _IDENT[key] = (torch.arange(p, dtype=torch.int32, device=h.device),
-                       torch.tensor([p, p], dtype=torch.int32, device=h.device))
-    ii, nn = _IDENT[key]
-    hq, hs = fused_dynamic_mxfp8_quant_moe_sort(h, ii, nn, p, 1, bm)
+    hq, hs = M.stage1_sorted(xq, xs.view(torch.uint8), w13, w1_scale.view(torch.uint8), sid, se, nv,
+                             inter=inter, mt=MT, pp=3, limit=float(swiglu_limit or 0.0) or 1e30,
+                             mxq=True)     # h MX-quantized by stage 1's epilogue (K1 c31)
     y2 = M.stage2_sorted(hq, hs.view(torch.uint8), w2b, w2_scale.view(torch.uint8), sid, se, nv,
                          sw, m, topk, e, mt=MT, pp=4)
     return y2.view(topk, m, -1).sum(0)
