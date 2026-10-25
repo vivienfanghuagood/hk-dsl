@@ -156,6 +156,7 @@ _REG = re.compile(r"\b([va])(?:\[(\d+):(\d+)\]|(\d+)(?!\d))")
 _LDS_LOAD = re.compile(r"^ds_(read|load|bpermute|permute|swizzle)|^ds_\w*_rtn_")
 _VMEM_LOAD = re.compile(r"^(buffer|global|flat|scratch)_load")
 _STORE = re.compile(r"^(buffer|global|flat|scratch)_store|^ds_(write|store)")
+_VMEM_ATOMIC = re.compile(r"^(buffer|global|flat)_atomic")
 
 
 def _regs(operand: str) -> Set[Tuple[str, int]]:
@@ -229,7 +230,9 @@ class _Walker:
             return lds, vmem
         if mnem.startswith("s_"):
             return lds, vmem
-        store = bool(_STORE.match(mnem))
+        atomic_ret = bool(_VMEM_ATOMIC.match(mnem) and re.search(r"\b(glc|sc0)\b", rest))
+        # an atomic without a return reads all its operands, as a store does
+        store = bool(_STORE.match(mnem)) or bool(_VMEM_ATOMIC.match(mnem) and not atomic_ret)
         srcs: Set = set()
         for o in (ops if store else ops[1:]):
             srcs |= _regs(o)
@@ -265,6 +268,12 @@ class _Walker:
             vmem = vmem + [(set(), ins.text)]
         elif _VMEM_LOAD.match(mnem) and ops:
             vmem = vmem + [(_regs(ops[0]), ins.text)]
+        elif _VMEM_ATOMIC.match(mnem) and ops:
+            # an atomic takes a place in vmcnt's order; one that returns (glc / sc0) also
+            # writes its first operand. Left out, the compiler's vmcnt(n) after a run of
+            # atomics read as too weak a wait (a false alarm on every scatter-add).
+            if atomic_ret or self.stores_in_vmcnt:
+                vmem = vmem + [(_regs(ops[0]) if atomic_ret else set(), ins.text)]
         elif self.stores_in_vmcnt and mnem.startswith(("buffer_store", "global_store",
                                                        "flat_store", "scratch_store")):
             vmem = vmem + [(set(), ins.text)]
@@ -373,6 +382,33 @@ def unbundle(host: Path, outdir: Path) -> List[Path]:
                         f"--targets={tgt}", f"--input={fat}", f"--output={o}"], check=True)
         outs.append(o)
     return outs
+
+
+def lds_copy_hazards(binary: Path, bundled: bool = True) -> List[str]:
+    """What hk.runtime.compile.build refuses: an instruction that reads a register an LDS load
+    is still filling, before the s_waitcnt that retires the load, as 'reader  <- load'.
+
+    hk's LDS reads are inline asm, and LLVM takes an asm output as ready when the asm ends. hk
+    places the lgkmcnt wait itself and binds the fragment after it, so nothing computes on it
+    early. But under register pressure the compiler may copy the destination right after the
+    read, before hk's wait: a v_mov to assemble an operand tuple, or a v_accvgpr_write to park it
+    in an AGPR. The copy then holds whatever the registers had, and the kernel is silently wrong
+    with ScratchSize 0. Measured under ROCm 10 (hipcc 23):
+    - an MXFP8 GEMM with byte scales, 128x256 at K=1152, was 0.83 off;
+    - hk.ops.gemm_cdna_dp's 128x256 setprio split-K configurations hold 24 such copies.
+    Only loads from LDS count: vector-memory loads here are the compiler's own, and it waits for
+    them (a report on one is this linear walk crossing a path that did not run). `bundled`: a host
+    .so carrying a HIP fat binary, else one code object."""
+    with tempfile.TemporaryDirectory(prefix="hk-cocheck-") as d:
+        cos = unbundle(binary, Path(d)) if bundled else [binary]
+        found: List[str] = []
+        for co in cos:
+            code = disassemble(co)
+            for name, k in resources(co).items():
+                for h in wait_hazards(code.get(name, []), k.arch):
+                    if "<- ds_" in h:
+                        found.append(f"{name}: {h}")
+        return found
 
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
