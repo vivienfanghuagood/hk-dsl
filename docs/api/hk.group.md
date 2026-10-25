@@ -38,7 +38,10 @@ Group.load(self, dst: SharedTile, src: View, *, wait: bool = True, rows=None, no
 
 *Changed after 0.5.0*: new parameters `gather`, `staged`
 
-Global -> LDS by the whole group, issued and waited.
+Global -> LDS by the whole group, issued and waited. Rows of the
+tile past the tensor's last read zero and touch no memory, on every
+target (gfx950's copy used to span the tile's whole rows: a last,
+partial tile read past the tensor).
 
 `wait=False` (gfx950) issues the DMA, buffer_load ... lds, and returns
 with it in flight: name the tile in `g.wait_for` and put a barrier
@@ -90,7 +93,8 @@ hk.arch.pingpong), and the pass refuses a read before that.
 Group.store(self, dst: View, src: SharedTile) -> None
 ```
 
-LDS -> global, by the whole group.
+LDS -> global, by the whole group. Rows of the tile past the
+tensor's last are not written.
 
 #### `Group.stage_buffer`
 

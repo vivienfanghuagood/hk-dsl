@@ -113,6 +113,19 @@ The GPU tier also covers the integration layer: `torch.compile(fullgraph=True)`,
 CUDA-graph capture and replay, and the strided-ViT-input contract in both
 directions.
 
+And memory safety at ragged shapes (`tests/hk/gpu/test_fenced.py`, group
+`fence`): a read past a tensor's end leaves the results bit-exact -- it lands in
+the caching allocator's neighbour -- until the tensor ends a segment, and then it
+is a memory fault some runs and not others (mxfp8.quant in vLLM, #47). There,
+every allocation of a child process comes from `fence_alloc.cpp`, a
+`CUDAPluggableAllocator` over HIP VMM that ends each one flush against an
+unmapped granule, so any access past any tensor faults at once, on every run, on
+gfx950 and gfx1100. One child per op family (`_fence.fenced_cases`), every
+route at M (or the sequence) 1, a tile - 1, a tile + 1, odd and the
+DeepSeek-V4.1 shapes; `HK_FENCE_EACH=1` runs a child per case and reports every
+one that fails. A new op, or a route that takes a new ragged dimension, gets
+cases there.
+
 ## Examples, and checks at full size
 
 Every kernel in [`examples/`](../examples) is held at three tiers, through

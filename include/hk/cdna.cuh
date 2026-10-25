@@ -1235,6 +1235,130 @@ __device__ inline static void group_load_async(ST &dst, const strided_gl<U> &src
     group_load_async_rows<NW, NT>(dst, src, idx, limit);
 }
 
+/**
+ * @brief The synchronous group copy (hk's `g.load(dst, src)`), bounded at the
+ * tensor's last row: include/cdna4's group load, whose descriptor spans the
+ * tile's whole rows from its first -- so a last, partial tile read up to
+ * ST::rows - 1 rows past the tensor (mxfp8.quant's fault in vLLM, PR #47:
+ * past an allocation's end, a memory fault; before it, the neighbour's bytes).
+ * The same copies, lanes and offsets; only the descriptor's range ends at the
+ * tensor's last row of this (batch, depth), so those rows read zero, as the
+ * asynchronous copy's and every register load's do. Measured on mxfp8.gemm,
+ * the one shipped kernel with this copy: outputs bit for bit the same, time
+ * within 0.6% (three interleaved rounds). The caller waits (HKToCpp emits
+ * vm_wait<0> and lds_wait<0> after it).
+ */
+template<int NW, ducks::st::all ST, typename U, ducks::coord::tile COORD>
+__device__ inline static void group_load_sync(ST &dst, const strided_gl<U> &src, const COORD &idx) {
+    using T = typename ST::dtype;
+    constexpr int N_THREADS = NW * WARP_THREADS;
+    constexpr int bytes_per_thread = ST::underlying_subtile_bytes_per_thread;
+    constexpr int bytes_per_warp = bytes_per_thread * WARP_THREADS;
+    constexpr int memcpy_per_tile = ST::rows * ST::cols * sizeof(T) / (bytes_per_thread * N_THREADS);
+    constexpr int calls = memcpy_per_tile + (memcpy_per_tile * (bytes_per_thread * N_THREADS) !=
+                                             ST::rows * ST::cols * sizeof(T));
+    constexpr int leftover_warps = (ST::rows * ST::cols * sizeof(T) -
+                                    memcpy_per_tile * (bytes_per_thread * N_THREADS)) /
+                                   bytes_per_thread / WARP_THREADS;
+    static_assert(ST::rows * ST::cols * sizeof(T) >= bytes_per_warp, "shared tile must be at least 1024 bytes");
+    const int laneid = kittens::laneid();
+    const int warpid = kittens::warpid() % NW;
+    const int row_stride = src.template stride<2>();
+    const coord<> unit_coord = idx.template unit_coord<2, 3>();
+    // The asynchronous copy's descriptor at the tile's first row, column 0, ending at the
+    // tensor's last row of this (batch, depth) or the tile's, whichever comes first; the tile's
+    // column is the copies' scalar offset. A K loop moves only that, so the descriptor is
+    // computed once, outside it. Its inputs and words are read from lane 0: the coordinates
+    // are wave-uniform but LLVM cannot always prove it, and a descriptor it cannot prove
+    // uniform is a waterfall loop around every copy (measured: mxfp8.gemm at occupancy 2).
+    const detail::hk_i32x4 r = detail::hk_copy_srsrc(
+        src, __builtin_amdgcn_readfirstlane(unit_coord.b), __builtin_amdgcn_readfirstlane(unit_coord.d),
+        __builtin_amdgcn_readfirstlane(unit_coord.r), 0, ST::rows);
+    const i32x4 srsrc{__builtin_amdgcn_readfirstlane(r.x), __builtin_amdgcn_readfirstlane(r.y),
+                      __builtin_amdgcn_readfirstlane(r.z), __builtin_amdgcn_readfirstlane(r.w)};
+    const int col0 = __builtin_amdgcn_readfirstlane(unit_coord.c * int(sizeof(T)));
+    const uintptr_t lds_base = reinterpret_cast<uintptr_t>(&dst.data[0]) + (warpid * bytes_per_warp);
+    #pragma unroll
+    for (int i = 0; i < calls; i++) {
+        if (i == memcpy_per_tile && warpid >= leftover_warps)
+            break;
+        const int lane_byte_offset = (laneid * bytes_per_thread) + (warpid * bytes_per_warp) +
+                                     (i * NW * bytes_per_warp);
+        const int subtile_id = lane_byte_offset / ST::underlying_subtile_bytes;
+        const int subtile_row = subtile_id / ST::underlying_subtiles_per_row;
+        const int subtile_col = subtile_id % ST::underlying_subtiles_per_row;
+        const int subtile_lane_byte_offset = lane_byte_offset % ST::underlying_subtile_bytes;
+        const int row = subtile_lane_byte_offset / ST::underlying_subtile_row_bytes;
+        const int col = (subtile_lane_byte_offset % ST::underlying_subtile_row_bytes) / sizeof(T);
+        const uint32_t swizzled_shared_byte_offset = dst.swizzle({row, col});
+        const int swizzled_global_row = (swizzled_shared_byte_offset / ST::underlying_subtile_row_bytes) +
+                                        subtile_row * ST::underlying_subtile_rows;
+        const int swizzled_global_col = (swizzled_shared_byte_offset % ST::underlying_subtile_row_bytes) / sizeof(T) +
+                                        subtile_col * ST::underlying_subtile_cols;
+        const uint32_t swizzled_global_byte_offset = (swizzled_global_row * row_stride + swizzled_global_col) * sizeof(T);
+        llvm_amdgcn_raw_buffer_load_lds(srsrc, (as3_uint32_ptr)(lds_base + (i * NW * bytes_per_warp)),
+                                        bytes_per_thread, swizzled_global_byte_offset, col0, 0,
+                                        static_cast<int>(coherency::cache_all));
+    }
+}
+
+/**
+ * @brief The group store (hk's `g.store(dst, src)`), predicated on the
+ * tensor's rows: include/cdna4's store writes every row of the tile, so a
+ * last, partial tile wrote past the tensor -- into the neighbour's memory,
+ * silently. Rows past the tensor's last are not written; the rest is that
+ * store's code.
+ */
+template<int NW, ducks::st::all ST, typename U, ducks::coord::tile COORD>
+__device__ inline static void group_store_bounded(const strided_gl<U> &dst, const ST &src, const COORD &idx) {
+    using T = typename ST::dtype;
+    static_assert(std::is_same_v<T, U>, "T and U must be the same type");
+    constexpr int N_THREADS = NW * WARP_THREADS;
+    constexpr int bytes_per_thread = ST::underlying_subtile_bytes_per_thread;
+    constexpr int elems_per_thread = bytes_per_thread / sizeof(T);
+    constexpr int bytes_per_warp = bytes_per_thread * WARP_THREADS;
+    constexpr int memcpy_per_tile = ST::rows * ST::cols * sizeof(T) / (bytes_per_thread * N_THREADS);
+    constexpr int num_warps = NW;
+    const int laneid = kittens::laneid();
+    const int warpid = kittens::warpid() % num_warps;
+    const int row_stride = dst.template stride<2>();
+    coord<> unit_coord = idx.template unit_coord<2, 3>();
+    const int valid = dst.rows() - unit_coord.r;
+    uintptr_t dst_ptr = reinterpret_cast<uintptr_t>(&dst[unit_coord]);
+    uintptr_t src_ptr = reinterpret_cast<uintptr_t>(&src.data[0]);
+    auto copy = [&](int lane_byte_offset) {
+        const int subtile_id = lane_byte_offset / ST::underlying_subtile_bytes;
+        const int subtile_row = subtile_id / ST::underlying_subtiles_per_row;
+        const int subtile_col = subtile_id % ST::underlying_subtiles_per_row;
+        const int subtile_lane_byte_offset = lane_byte_offset % ST::underlying_subtile_bytes;
+        const int row = subtile_lane_byte_offset / ST::underlying_subtile_row_bytes;
+        const int col = (subtile_lane_byte_offset % ST::underlying_subtile_row_bytes) / sizeof(T);
+        const uint32_t swizzled_shared_byte_offset = src.swizzle({row, col});
+        const int swizzled_global_row = (swizzled_shared_byte_offset / ST::underlying_subtile_row_bytes) +
+                                        subtile_row * ST::underlying_subtile_rows;
+        const int swizzled_global_col = (swizzled_shared_byte_offset % ST::underlying_subtile_row_bytes) / sizeof(T) +
+                                        subtile_col * ST::underlying_subtile_cols;
+        if (swizzled_global_row >= valid)
+            return;
+        U *dst_elem_ptr = (U *)(dst_ptr + (swizzled_global_row * row_stride + swizzled_global_col) * sizeof(T));
+        T *src_elem_ptr = (T *)(src_ptr + lane_byte_offset);
+        #pragma unroll
+        for (int j = 0; j < elems_per_thread; j++)
+            dst_elem_ptr[j] = src_elem_ptr[j];
+    };
+    if constexpr (memcpy_per_tile > 0) {
+        #pragma unroll
+        for (int i = 0; i < memcpy_per_tile; i++)
+            copy((laneid * bytes_per_thread) + (warpid * bytes_per_warp) + (i * num_warps * bytes_per_warp));
+    }
+    if constexpr (memcpy_per_tile * (bytes_per_thread * N_THREADS) != ST::rows * ST::cols * sizeof(T)) {
+        constexpr int leftover_bytes = ST::rows * ST::cols * sizeof(T) - memcpy_per_tile * (bytes_per_thread * N_THREADS);
+        constexpr int leftover_warps = leftover_bytes / bytes_per_thread / WARP_THREADS;
+        if (warpid < leftover_warps)
+            copy((laneid * bytes_per_thread) + (warpid * bytes_per_warp) + (memcpy_per_tile * num_warps * bytes_per_warp));
+    }
+}
+
 /*
  * Row masks of a col-layout tile that leave nothing loop-invariant per
  * element. include/cdna4's lower_fill and triu compute each element's row as
@@ -2080,6 +2204,22 @@ template<int AUX, typename U> __device__ inline void hk_st_aux(U *p, U v) {
     }
 }
 }  // namespace detail
+
+#if defined(KITTENS_CDNA3)
+/*
+ * The group copies on gfx942: include/cdna3's, unbounded -- a last, partial
+ * tile reads and writes past the tensor there (gfx950's are bounded above).
+ * Not changed without a gfx942 to test it on.
+ */
+template<int NW, ducks::st::all ST, typename U, ducks::coord::tile COORD>
+__device__ inline static void group_load_sync(ST &dst, const strided_gl<U> &src, const COORD &idx) {
+    group<NW>::load(dst, src, idx);
+}
+template<int NW, ducks::st::all ST, typename U, ducks::coord::tile COORD>
+__device__ inline static void group_store_bounded(const strided_gl<U> &dst, const ST &src, const COORD &idx) {
+    group<NW>::store(dst, src, idx);
+}
+#endif
 
 #if defined(KITTENS_CDNA3)
 /*

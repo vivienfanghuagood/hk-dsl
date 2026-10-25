@@ -55,7 +55,10 @@ class Group:
 
     def load(self, dst: SharedTile, src: View, *, wait: bool = True,
              rows=None, nontemporal: bool = False, gather=None, staged: int = 0) -> None:
-        """Global -> LDS by the whole group, issued and waited.
+        """Global -> LDS by the whole group, issued and waited. Rows of the
+        tile past the tensor's last read zero and touch no memory, on every
+        target (gfx950's copy used to span the tile's whole rows: a last,
+        partial tile read past the tensor).
 
         `wait=False` (gfx950) issues the DMA, buffer_load ... lds, and returns
         with it in flight: name the tile in `g.wait_for` and put a barrier
@@ -135,7 +138,8 @@ class Group:
             op.attributes["exact"] = ir.UnitAttr.get()
 
     def store(self, dst: View, src: SharedTile) -> None:
-        """LDS -> global, by the whole group."""
+        """LDS -> global, by the whole group. Rows of the tile past the
+        tensor's last are not written."""
         self._one(src, "group store source")
         hkd.GroupStoreOp(dst.tensor.v, src.v, dst.idx.v, self.threads,
                          loc=B.current().loc())
