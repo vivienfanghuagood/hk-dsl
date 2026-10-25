@@ -116,6 +116,16 @@ static LogicalResult verifyAux(Operation *op, int64_t aux) {
   return success();
 }
 
+/// What a scoped access moves: a register tile (hk_load_tile / hk_store_tile carry the bits), or a
+/// register vector of a 32-bit global (each element a relaxed atomic of the scope); not a strip.
+static bool scopedAccessOk(Type value, Type globalElement, bool period) {
+  if (period || isStrip(value))
+    return false;
+  if (isa<RegTileType>(value))
+    return true;
+  return isa<RegVecType>(value) && globalElement.getIntOrFloatBitWidth() == 32;
+}
+
 LogicalResult LoadOp::verify() {
   if (failed(verifyDest(*this, getDst(), getResult())))
     return failure();
@@ -136,8 +146,9 @@ LogicalResult LoadOp::verify() {
   }
   if (failed(verifyAux(*this, getAux())))
     return failure();
-  if (getAux() && (!isa<RegTileType>(t) || isStrip(t) || getPeriod()))
-    return emitOpError("a scoped load (aux) reads a register tile");
+  if (getAux() && !scopedAccessOk(t, getSrc().getType().getElementType(), getPeriod().has_value()))
+    return emitOpError("a scoped load (aux) reads a register tile, or a register vector of 32-bit "
+                       "elements");
   return checkStripAccess(*this, t, getIdx().getType(), getBounded(), false);
 }
 
@@ -147,8 +158,9 @@ LogicalResult StoreOp::verify() {
     return emitOpError("bounded predicates tile rows; the value is not a tile");
   if (failed(verifyAux(*this, getAux())))
     return failure();
-  if (getAux() && (!isa<RegTileType>(t) || isStrip(t)))
-    return emitOpError("a scoped store (aux) writes a register tile");
+  if (getAux() && !scopedAccessOk(t, getDst().getType().getElementType(), false))
+    return emitOpError("a scoped store (aux) writes a register tile, or a register vector of 32-bit "
+                       "elements");
   return checkStripAccess(*this, t, getIdx().getType(), getBounded(), true);
 }
 
@@ -241,8 +253,9 @@ LogicalResult AtomicScalarOp::verify() {
     return emitOpError("takes an element coordinate");
   if (!getDst().getType().getElementType().isInteger(32))
     return emitOpError("works on an int32 global");
-  if (getKind() != "add" && getKind() != "max")
-    return emitOpError("kind is \"add\" or \"max\"");
+  static const char *kinds[] = {"add", "max", "min", "or", "and", "xor", "exch"};
+  if (llvm::none_of(kinds, [&](const char *k) { return getKind() == k; }))
+    return emitOpError("kind is add, max, min, or, and, xor or exch");
   return verifyAux(*this, getAux());
 }
 

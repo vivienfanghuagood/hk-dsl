@@ -514,9 +514,14 @@ def scope_aux(tensor: "Global", what: str, tile=None) -> int:
         raise TypeError(f"{what} through a {scope}-scoped tensor: scoped accesses are gfx950's "
                         f"(on {arch} a peer's writes stay stale in the L2 and no instruction "
                         f"invalidates it -- KernelWiki gfx1100-peer-write-l2-stale)")
-    if tile is not None and not (isinstance(tile, RegTileType) and not _is_strip(tile)):
-        raise TypeError(f"{what} through a {scope}-scoped tensor moves register tiles, not "
-                        f"{tile!r}")
+    if tile is not None:
+        ok = isinstance(tile, RegTileType) and not _is_strip(tile)
+        ok = ok or (isinstance(tile, RegVecType) and tensor.dtype.bits == 32
+                    and tile.kind == "col" and tile.tile.layout == "row")
+        if not ok:
+            raise TypeError(f"{what} through a {scope}-scoped tensor moves register tiles, or "
+                            f"col_vecs of a row tile with a 32-bit tensor (a per-row scale), not "
+                            f"{tile!r} with {tensor.dtype.name}")
     return SCOPE_AUX[scope]
 
 
@@ -680,6 +685,27 @@ class View:
     def atomic_max_scalar(self, value) -> Int:
         """One int32 atomic max per warp; the value before it."""
         return self._atomic_scalar("max", value)
+
+    def atomic_min_scalar(self, value) -> Int:
+        """One int32 atomic min per warp; the value before it."""
+        return self._atomic_scalar("min", value)
+
+    def atomic_or_scalar(self, value) -> Int:
+        """One int32 atomic or per warp; the value before it (a set of flags: bit w = workgroup w)."""
+        return self._atomic_scalar("or", value)
+
+    def atomic_and_scalar(self, value) -> Int:
+        """One int32 atomic and per warp; the value before it."""
+        return self._atomic_scalar("and", value)
+
+    def atomic_xor_scalar(self, value) -> Int:
+        """One int32 atomic xor per warp; the value before it."""
+        return self._atomic_scalar("xor", value)
+
+    def atomic_exch_scalar(self, value) -> Int:
+        """One int32 atomic exchange per warp: stores `value`, returns the value before it (a
+        lock's take, a slot's claim). W warps that call it exchange W times."""
+        return self._atomic_scalar("exch", value)
 
 
 # ---------------------------------------------------------------- tiles

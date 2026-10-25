@@ -108,6 +108,15 @@ Type plainOf(Type t) {
   return t;
 }
 
+/// hk.atomic_scalar's kind as kittens::atomic_scalar's op code.
+static std::string atomicKindCode(StringRef kind) {
+  static const char *kinds[] = {"add", "max", "min", "or", "and", "xor", "exch"};
+  for (int i = 0; i < 7; ++i)
+    if (kind == kinds[i])
+      return std::to_string(i);
+  return "0";
+}
+
 /// What makes two types one alias: the C++ they spell. An rv's identity is
 /// (element, length, kind, layout), not the tile it carries; a strip's
 /// col_vec is rs_cv<T, rows> and its row_vec rs<T, 1, cols, run>.
@@ -1229,13 +1238,13 @@ private:
             w("const int " + name(o.getResult()) + " = kittens::atomic_scalar_scoped<" +
               std::to_string(o.getAux()) + ">(" + name(o.getDst()) + ", " + name(o.getIdx()) +
               ", " + name(o.getValue()) + ", " +
-              std::string(o.getKind() == "max" ? "1" : "0") + ");");
+              atomicKindCode(o.getKind()) + ");");
             return;
           }
           w("const int " + name(o.getResult()) + " = kittens::atomic_scalar(" +
             name(o.getDst()) + ", " + name(o.getIdx()) + ", " +
             name(o.getValue()) + ", " +
-            std::string(o.getKind() == "max" ? "1" : "0") + ");");
+            atomicKindCode(o.getKind()) + ");");
         })
         .Case([&](PhiloxOp o) {
           Value d = dest(o.getDst(), o.getResult());
