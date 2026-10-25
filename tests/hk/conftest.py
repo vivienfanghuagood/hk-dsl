@@ -76,7 +76,33 @@ def _gpu_arch() -> str:
         return ""
 
 
+def pytest_addoption(parser):
+    parser.addoption(
+        "--hk-shard", default="",
+        help="I/N: run only the tests whose node id hashes to shard I of N (0-based) -- CI's "
+             "codegen tier split across runners. The hash is stable, so a shard compiles the "
+             "same kernels every run and its own compile cache stays warm.")
+
+
+def _shard(config, items):
+    spec = config.getoption("--hk-shard")
+    if not spec:
+        return
+    i, n = (int(x) for x in spec.split("/"))
+    if not 0 <= i < n:
+        raise pytest.UsageError(f"--hk-shard {spec}: I in [0, N)")
+    import zlib
+
+    keep, drop = [], []
+    for item in items:
+        (keep if zlib.crc32(item.nodeid.encode()) % n == i else drop).append(item)
+    if drop:
+        config.hook.pytest_deselected(items=drop)
+        items[:] = keep
+
+
 def pytest_collection_modifyitems(config, items):
+    _shard(config, items)
     no_hipcc = pytest.mark.skip(reason="no working hipcc on this machine")
     no_gpu = pytest.mark.skip(reason="no GPU (or no torch) on this machine")
     gpu_arch = _gpu_arch() if HAVE_GPU else ""

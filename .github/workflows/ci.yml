@@ -27,9 +27,18 @@ env:
 
 jobs:
   tiers:
-    name: IR and codegen tiers
+    # The codegen tier compiles every kernel it tests, and a branch that edits a header those
+    # kernels include compiles them cold: 40-56 min on one 4-core runner (main, warm: 5). So
+    # it is split by a stable hash of the test id over ten runners (tests/hk/conftest.py
+    # --hk-shard), each with its own compile cache; the IR tier runs on the "ir" leg.
+    # Cold (PR #32, every key new): six shards took 8-20 minutes a job, setup 2.5 of them.
+    name: ${{ matrix.shard == 'ir' && 'IR tier' || format('codegen tier ({0}/10)', matrix.shard) }}
     runs-on: ubuntu-22.04
-    timeout-minutes: 60
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [ir, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
     steps:
       - uses: actions/checkout@v4
         with:
@@ -47,6 +56,7 @@ jobs:
       # hip-dev pulls in hipcc, rocm-llvm and the HIP runtime it links
       # against; the device libraries are the bitcode every kernel links.
       - name: hipcc (ROCm ${{ env.ROCM_VERSION }})
+        if: matrix.shard != 'ir'
         run: |
           sudo mkdir -p /etc/apt/keyrings
           wget -qO - https://repo.radeon.com/rocm/rocm.gpg.key \
@@ -72,16 +82,23 @@ jobs:
       # Keys are content hashes inside the cache, so a stale cache costs
       # recompiles, never a wrong kernel; the key only decides what to save.
       - name: hk's compile cache
+        if: matrix.shard != 'ir'
         uses: actions/cache@v4
         with:
           path: ~/.cache/hk
-          key: hk-cache-rocm${{ env.ROCM_VERSION }}-${{ hashFiles('include/**', 'python/hk/**/*.py', 'third_party/HipKittens/include/**') }}
-          restore-keys: hk-cache-rocm${{ env.ROCM_VERSION }}-
+          key: hk-cache-rocm${{ env.ROCM_VERSION }}-s${{ matrix.shard }}of10-${{ hashFiles('include/**', 'python/hk/**/*.py', 'third_party/HipKittens/include/**') }}
+          restore-keys: |
+            hk-cache-rocm${{ env.ROCM_VERSION }}-s${{ matrix.shard }}of10-
+            hk-cache-rocm${{ env.ROCM_VERSION }}-
 
       # tests/hk/engines skips here (no vLLM, no SGLang); it runs in the
       # engines' venvs on the dev pod (docs/testing.md).
       - name: IR tier
+        if: matrix.shard == 'ir'
         run: PYTHONPATH=python /usr/bin/python3 -m pytest -q -p no:cacheprovider -m "not gpu" tests/hk/ir tests/hk/engines
 
       - name: codegen tier
-        run: PYTHONPATH=python /usr/bin/python3 -m pytest -q -p no:cacheprovider -n auto tests/hk/codegen
+        if: matrix.shard != 'ir'
+        run: >
+          PYTHONPATH=python /usr/bin/python3 -m pytest -q -p no:cacheprovider -n auto
+          --hk-shard ${{ matrix.shard }}/10 tests/hk/codegen
