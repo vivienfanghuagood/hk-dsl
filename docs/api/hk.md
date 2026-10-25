@@ -615,6 +615,19 @@ Tile.to(self, dtype: DType, *, into=None) -> Tile
 
 Change the element type, keeping shape and layout (kittens::copy).
 
+#### `Tile.bitcast`
+
+```python
+Tile.bitcast(self, dtype: DType, *, into=None) -> Tile
+```
+
+*New after 0.4.0*
+
+The same registers read as another element type of the same width (fp32 <-> i32,
+bf16 <-> fp16 ...): no instruction, unlike `.to`. E.g. an i32 accumulator started at the
+bits of 1.5 * 2^23 read as fp32 is 1.5 * 2^23 + S exactly for |S| < 2^22 -- the int ->
+float convert of an iu8 product, folded away (experiment 1's c7 needed a C++ rewrite).
+
 #### `Tile.T (property)`
 
 This tile transposed, as an MMA operand (`acc += a @ b.T`) or for `.value()`, which makes the transposed tile.

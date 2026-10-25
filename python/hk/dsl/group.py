@@ -54,7 +54,7 @@ class Group:
             raise TypeError(f"{what} is {dst.ty}, a stack; index it: As[tic]")
 
     def load(self, dst: SharedTile, src: View, *, wait: bool = True,
-             rows=None, nontemporal: bool = False) -> None:
+             rows=None, nontemporal: bool = False, gather=None, staged: int = 0) -> None:
         """Global -> LDS by the whole group, issued and waited.
 
         `wait=False` (gfx950) issues the DMA, buffer_load ... lds, and returns
@@ -67,7 +67,14 @@ class Group:
         (with wait=False) reads past the caches' keeping, sc0 nt, for data
         read once -- in runs of a whole line it streams faster; in the
         half-line runs of a 16x32 tile it fetched lines twice (4.8 against
-        6.15 TB/s in the paged decode)."""
+        6.15 TB/s in the paged decode). `gather=(ids, at)` (with wait=False):
+        the tile's rows come by index, row r being the source's row
+        `ids[at + r] & 0xFFFFFF` -- AITER's MoE sort ids (token | choice << 24;
+        its padding is a row past the tensor, which reads zero); `src`'s
+        coordinate gives the column. `staged=N`: the rows were staged in LDS
+        by `g.gather_prep(ids, at, N)` (same ids and at) -- read from there, so
+        a lane's row costs no vmcnt wait (which, in order, would retire the
+        whole prefetch)."""
         self._one(dst, "group load destination")
         t = B.current()
         if rows is not None and wait:
@@ -88,12 +95,29 @@ class Group:
                     "g.load(wait=False) into a subtile: the copy lays out a "
                     "whole LDS tile. Copy into the allocation, or one buffer "
                     "of a stack.")
+        if gather is not None and (wait or rows is not None):
+            raise TypeError("g.load(gather=...) is the asynchronous copy's (wait=False), "
+                            "without a row limit")
+        gids, gat = (None, None) if gather is None else gather
+        if gids is not None and (not hasattr(gids, "dtype") or gids.dtype.name != "i32"):
+            raise TypeError(f"g.load(gather=(ids, at)): ids is an int32 tensor, got {gids!r}")
         hkd.GroupLoadOp(dst.v, src.tensor.v, src.idx.v, self.threads,
                         rows=None if rows is None else as_int(rows).v,
+                        gather_ids=None if gids is None else gids.v,
+                        gather_at=None if gat is None else as_int(gat).v,
+                        gather_staged=int(staged),
                         async_=not wait, nontemporal=bool(nontemporal),
                         loc=t.loc())
 
-    def wait_for(self, *tiles: SharedTile) -> None:
+    def gather_prep(self, ids, at, rows: int) -> None:
+        """Stage `rows` source rows of a gathered copy in LDS -- `ids[at + r] &
+        0xFFFFFF` -- and pass a barrier (every warp must call it). A
+        `g.load(..., gather=(ids, at), staged=rows)` then reads them there."""
+        if not hasattr(ids, "dtype") or ids.dtype.name != "i32":
+            raise TypeError(f"gather_prep: ids is an int32 tensor, got {ids!r}")
+        hkd.GatherPrepOp(ids.v, as_int(at).v, int(rows), loc=B.current().loc())
+
+    def wait_for(self, *tiles: SharedTile, exact: bool = False) -> None:
         """`s_waitcnt vmcnt(n)`: this warp's share of the asynchronous copies
         into `tiles` has landed, `n` derived by hk-lds-pipeline. The other
         warps' shares are visible only after a barrier (two inside an
@@ -103,7 +127,12 @@ class Group:
         for x in tiles:
             if not isinstance(x, SharedTile):
                 raise TypeError(f"g.wait_for operand is {x!r}, expected an LDS tile")
-        hkd.GroupWaitForOp([x.v for x in tiles], loc=B.current().loc())
+        op = hkd.GroupWaitForOp([x.v for x in tiles], loc=B.current().loc())
+        if exact:
+            # keep the tracked register loads issued after the copies in flight (in-order vmcnt)
+            from .._mlir import ir  # noqa: PLC0415
+
+            op.attributes["exact"] = ir.UnitAttr.get()
 
     def store(self, dst: View, src: SharedTile) -> None:
         """LDS -> global, by the whole group."""

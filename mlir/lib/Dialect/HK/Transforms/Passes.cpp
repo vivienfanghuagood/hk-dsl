@@ -100,7 +100,7 @@ struct VerifyPass : public mlir::hk::impl::HKVerifyBase<VerifyPass> {
     // debug and trivial to rule out.
     WalkResult div = f.walk([&](Operation *op) {
       if (!isa<BarrierOp, StageLoadOp, StageCommitOp, GroupLoadOp,
-               GroupStoreOp>(op))
+               GroupStoreOp, GatherPrepOp>(op))
         return WalkResult::advance();
       if (op->getParentOfType<scf::IfOp>()) {
         op->emitError() << opcodeOf(op)

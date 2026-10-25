@@ -176,6 +176,18 @@ struct FragmentsPass : public mlir::hk::impl::HKFragmentsBase<FragmentsPass> {
                 s = fv->s;
             for (Value v : {o.getA(), o.getB()}) {
               RegTileType t = tile(v);
+              if (dtypeBits(t.getElementType()) == 8) {
+                // fp8 operands: one 16x128 (row) / 128x16 (col) fragment, the
+                // f8f6f4 MFMA's; there is no 32x32 or strided form here.
+                unsigned k8 = 0;
+                for (auto &e : tgt->mma)
+                  if (e.first == dtypeName(t.getElementType()))
+                    k8 = e.second.k;
+                if (!k8)
+                  continue;
+                as.assign(t, t.getColLayout() ? Frag{k8, 16} : Frag{16, k8}, op);
+                continue;
+              }
               if (dtypeBits(t.getElementType()) != 16)
                 continue;
               Frag want = t.getColLayout() ? (big ? Frag{16, 32} : Frag{k, 16})
@@ -194,7 +206,7 @@ struct FragmentsPass : public mlir::hk::impl::HKFragmentsBase<FragmentsPass> {
       f.walk([&](Operation *op) { seed(op); });
       f.walk([&](Operation *op) {
         llvm::TypeSwitch<Operation *>(op)
-            .Case([&](CastOp o) {
+            .Case<CastOp, BitcastOp>([&](auto o) {
               as.tie(tile(o.getSrc()), tile(dest(o)), op);
             })
             .Case([&](RegSubtileOp o) {

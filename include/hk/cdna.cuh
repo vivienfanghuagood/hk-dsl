@@ -408,6 +408,15 @@ __device__ void hk_buf_st128(__uint128_t, hk_i32x4, uint32_t, uint32_t, uint32_t
  * RMSNorm, a readfirstlane/saveexec loop per load).
  */
 __device__ inline hk_i32x4 hk_srsrc(const void *base, uint64_t bytes) {
+#ifdef HK_SRSRC_DIRECT
+    // the four words built straight from uniform scalars (no struct round trip), so the backend
+    // keeps the descriptor in SGPRs across a loop instead of a VGPR copy it readfirstlanes per use
+    const uint64_t p = reinterpret_cast<uint64_t>(base);
+    const uint32_t range = bytes > 0xFFFFFFFFull ? 0xFFFFFFFFu : uint32_t(bytes);
+    return hk_i32x4{int(__builtin_amdgcn_readfirstlane(uint32_t(p))),
+                    int(__builtin_amdgcn_readfirstlane(uint32_t(p >> 32))),
+                    int(__builtin_amdgcn_readfirstlane(range)), 0x00020000};
+#endif
     struct { uint64_t ptr; uint32_t range; uint32_t config; } d{
         reinterpret_cast<uint64_t>(base),
         bytes > 0xFFFFFFFFull ? 0xFFFFFFFFu : uint32_t(bytes), 0x00020000u};
@@ -426,11 +435,17 @@ __device__ inline hk_i32x4 hk_srsrc(const void *base, uint64_t bytes) {
  */
 template<typename RT> struct hk_frag {
     using T = typename base_types::packing<typename RT::dtype>::unpacked_type;
-    static_assert(base_types::packing<typename RT::dtype>::num() == 2,
-                  "hk's CDNA memory ops take bf16, fp16 and fp32 register tiles");
+    static_assert(base_types::packing<typename RT::dtype>::num() == 2 ||
+                  (base_types::packing<typename RT::dtype>::num() == 4 && sizeof(T) == 1),
+                  "hk's CDNA memory ops take bf16, fp16, fp32 and fp8 register tiles");
     static constexpr bool row = std::is_same_v<typename RT::layout, ducks::rt_layout::row>;
 #if defined(KITTENS_CDNA4)
     static constexpr int R = RT::base_tile_rows, C = RT::base_tile_cols;
+    // fp8 (16x128) is include/cdna4's rt_16x128: lane l holds row l%16 and
+    // two runs of 16 along K, at 16(l/16) and 64 + 16(l/16) -- the operand
+    // layout of v_mfma_scale_f32_16x16x128_f8f6f4, which applies its block
+    // scales by K position, not by which lane holds the data (measured: a
+    // lane holding one contiguous 32-wide block scaled the wrong blocks).
     static constexpr int S = RT::base_tile_stride, K = RT::base_tile_num_strides;
     static constexpr int G = RT::base_tile_elements_per_stride_group;
 #else
@@ -560,11 +575,19 @@ __device__ inline void hk_load_tile(RT &dst, const GL &src, const COORD &idx, in
                     U run[F::S];
                     hk_buf_load_bytes<F::S * sizeof(U)>(
                         r, ((i * F::R + c.x) * rs + j * F::C + c.y) * sizeof(U), run);
-                    #pragma unroll
-                    for (int s = 0; s < F::S; s++)
-                        hk_set(dst, i, j, k * F::S + s, base_types::convertor<T, U>::convert(run[s]));
+                    if constexpr (sizeof(T) == 1) {
+                        // fp8: a lane's run is S consecutive bytes of its
+                        // packed registers, in element order.
+                        static_assert(std::is_same_v<T, U>, "an fp8 tile loads from the same fp8 type");
+                        __builtin_memcpy((char *)&dst.tiles[i][j].data[0] + k * F::S, run, F::S);
+                    } else {
+                        #pragma unroll
+                        for (int s = 0; s < F::S; s++)
+                            hk_set(dst, i, j, k * F::S + s, base_types::convertor<T, U>::convert(run[s]));
+                    }
                 }
             } else {
+                static_assert(sizeof(T) != 1, "an fp8 register tile loads in the row layout");
                 // A run goes down a column: one element per row.
                 #pragma unroll
                 for (int e = 0; e < F::E; e++) {
@@ -839,7 +862,8 @@ template<int NW, bool NT = false, ducks::st::all ST, typename U, ducks::coord::t
 __device__ inline static void group_load_async_rows(ST &dst, const strided_gl<U> &src, const COORD &idx,
                                                     int limit) {
     using T = typename ST::dtype;
-    static_assert(sizeof(T) == sizeof(U) && sizeof(T) == 2, "16-bit tiles of the global's own dtype");
+    static_assert(sizeof(T) == sizeof(U) && (sizeof(T) == 2 || sizeof(T) == 1),
+                  "16-bit or fp8 tiles of the global's own dtype");
     static_assert(ST::underlying_subtile_bytes_per_thread == 16, "the 16-byte DMA needs a 16-byte lane run");
     constexpr int PER_WARP = 16 * WARP_THREADS;
     constexpr int PER_CALL = PER_WARP * NW;
@@ -881,6 +905,83 @@ __device__ inline static void group_load_async_rows(ST &dst, const strided_gl<U>
         copy(i);
     if constexpr (PART > 0) {
         // Wave-uniform: a scalar branch around the last copy.
+        if (__builtin_amdgcn_readfirstlane(w) < PART)
+            copy(FULL);
+    }
+}
+
+/**
+ * group_load_async with the tile's rows by index: row r of the tile is the source's row
+ * ids[at + r] & 0xFFFFFF (AITER's MoE sort: token | choice << 24, padding = the token count, a
+ * row past the tensor that reads zero); idx gives the column. Same copies, offsets and lanes
+ * as group_load_async -- only a lane's row changes, so hk-lds-pipeline counts it the same.
+ */
+namespace detail {
+template<int N> __device__ inline int *hk_gather_rows_lds() {
+    __shared__ int rows[N];
+    return rows;
+}
+}  // namespace detail
+
+/**
+ * Stage the source rows of a gathered copy in LDS: rows[r] = ids[at + r] & 0xFFFFFF for r < N,
+ * read once by the whole workgroup, then a barrier. A gathered copy reading its rows from
+ * there (group_load_async_gather<NW, N>) waits on lgkmcnt for them, not on vmcnt -- a global
+ * load of a lane's row index would be a vmcnt wait, which retires every load in flight before
+ * it (in order on gfx950): the whole prefetch.
+ */
+template<int N, ducks::gl::all IL>
+__device__ inline static void gather_prep(const IL &ids, int at) {
+    int *rows = detail::hk_gather_rows_lds<N>();
+    const int *idp = reinterpret_cast<const int *>(ids.raw_ptr) + at;
+    for (int r = int(threadIdx.x); r < N; r += int(blockDim.x))
+        rows[r] = idp[r] & 0xFFFFFF;
+    __syncthreads();
+}
+
+template<int NW, int N = 0, ducks::st::all ST, typename U, ducks::coord::tile COORD, ducks::gl::all IL>
+__device__ inline static void group_load_async_gather(ST &dst, const strided_gl<U> &src,
+                                                      const COORD &idx, const IL &ids, int at) {
+    using T = typename ST::dtype;
+    static_assert(sizeof(T) == sizeof(U) && (sizeof(T) == 2 || sizeof(T) == 1),
+                  "16-bit or fp8 tiles of the global's own dtype");
+    static_assert(ST::underlying_subtile_bytes_per_thread == 16, "the 16-byte DMA needs a 16-byte lane run");
+    static_assert(sizeof(typename IL::dtype) == 4, "int32 row indices");
+    constexpr int PER_WARP = 16 * WARP_THREADS;
+    constexpr int PER_CALL = PER_WARP * NW;
+    constexpr int BYTES = ST::rows * ST::cols * int(sizeof(T));
+    static_assert(BYTES % PER_WARP == 0, "a whole number of copies per warp");
+    constexpr int FULL = BYTES / PER_CALL;
+    constexpr int PART = (BYTES % PER_CALL) / PER_WARP;
+    const auto unit = idx.template unit_coord<2, 3>();
+    const int rs = int(src.template stride<2>());
+    // the whole slab from row 0 and the tile's column: an index past the last row reads zero
+    const detail::hk_i32x4 r = detail::hk_copy_srsrc(src, unit.b, unit.d, 0, unit.c, 0x7FFFFFFF);
+    const int *idp = reinterpret_cast<const int *>(ids.raw_ptr) + at;
+    const int lane = laneid();
+    const int w = int(threadIdx.x / WARP_THREADS) % NW;
+    const uint32_t lds = __builtin_amdgcn_readfirstlane(
+        uint32_t(reinterpret_cast<uintptr_t>(&dst.data[0])) + w * PER_WARP);
+    auto copy = [&](int i) {
+        const int byte = lane * 16 + w * PER_WARP + i * PER_CALL;
+        const int sub = byte / ST::underlying_subtile_bytes;
+        const int in = byte % ST::underlying_subtile_bytes;
+        const uint32_t sw = ST::swizzle({in / ST::underlying_subtile_row_bytes,
+                                         (in % ST::underlying_subtile_row_bytes) / int(sizeof(T))});
+        const int row = int(sw) / ST::underlying_subtile_row_bytes +
+                        (sub / ST::underlying_subtiles_per_row) * ST::underlying_subtile_rows;
+        const int col = (int(sw) % ST::underlying_subtile_row_bytes) / int(sizeof(T)) +
+                        (sub % ST::underlying_subtiles_per_row) * ST::underlying_subtile_cols;
+        int src_row;
+        if constexpr (N > 0) src_row = detail::hk_gather_rows_lds<N>()[row];   // gather_prep's
+        else src_row = idp[row] & 0xFFFFFF;
+        detail::hk_buf_ld_lds(r, (detail::hk_lds_ptr)(uintptr_t)(lds + i * PER_CALL), 16,
+                              (src_row * rs + col) * int(sizeof(T)), 0, 0, 0);
+    };
+    #pragma unroll
+    for (int i = 0; i < FULL; i++)
+        copy(i);
+    if constexpr (PART > 0) {
         if (__builtin_amdgcn_readfirstlane(w) < PART)
             copy(FULL);
     }
