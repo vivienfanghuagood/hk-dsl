@@ -17,8 +17,6 @@ hk.lds: shared memory -- allocation, and the wait that retires reads.
 hk.lds.alloc(tile: SharedTileType, name: str = 'smem', count: Optional[int] = None, *, shape: Optional[str] = None) -> SharedTile
 ```
 
-*Changed after 0.4.0*: new parameter `shape`
-
 Reserve an LDS tile, or `count` of them in one size-aligned block (the
 two buffers of a pair must differ in one address bit for the XOR swap).
 Offsets and the 64 KB check come from the hk-lds-alloc pass.

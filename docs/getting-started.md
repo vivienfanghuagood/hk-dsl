@@ -35,10 +35,11 @@ another interpreter, build one ([building](building.md#wheels)).
 It carries the HipKittens headers, the bindings and the shipped tuning
 records, so nothing else is needed at run time but hipcc.
 
-The release on PyPI is 0.5.0. It has the templates (`hk.templates.elementwise`,
-`rowwise` and `gemm`), `hk.check`, the API reference in [docs/api](api/README.md),
-gfx950's register strips and the same `hk.ops` arguments on both GPUs, which
-0.4.0 lacked.
+The release on PyPI is 0.6.0. It has gfx950's fp8 data path (async fp8 copies into
+LDS, register-load waits, ring buffers, gather), MX/FP4 block-scaled MMA and
+`hk.mx`, scatter and scatter-add, `Tile.bitcast`, gfx1100's int8 WMMA, and the
+K1 (MoE a8w4) / K2 (MXFP8 GEMM) kernels with their opt-in vLLM routes, which
+0.5.0 lacked.
 
 **From source.** The backend is the `third_party/HipKittens` submodule, so
 clone with `--recursive` (or run `git submodule update --init`). The dialect

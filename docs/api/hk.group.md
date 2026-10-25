@@ -36,7 +36,7 @@ warps x the wave of the kernel being traced (32 on RDNA, 64 on CDNA).
 Group.load(self, dst: SharedTile, src: View, *, wait: bool = True, rows=None, nontemporal: bool = False, gather=None, staged: int = 0) -> None
 ```
 
-*Changed after 0.4.0*: new parameters `wait`, `rows`, `nontemporal`, `gather`, `staged`
+*Changed after 0.5.0*: new parameters `gather`, `staged`
 
 Global -> LDS by the whole group, issued and waited.
 
@@ -65,7 +65,7 @@ whole prefetch).
 Group.gather_prep(self, ids, at, rows: int) -> None
 ```
 
-*New after 0.4.0*
+*New after 0.5.0*
 
 Stage `rows` source rows of a gathered copy in LDS -- `ids[at + r] &
 0xFFFFFF` -- and pass a barrier (every warp must call it). A
@@ -77,7 +77,7 @@ Stage `rows` source rows of a gathered copy in LDS -- `ids[at + r] &
 Group.wait_for(self, *tiles: SharedTile, exact: bool = False) -> None
 ```
 
-*New after 0.4.0*
+*Changed after 0.5.0*: new parameter `exact`
 
 `s_waitcnt vmcnt(n)`: this warp's share of the asynchronous copies
 into `tiles` has landed, `n` derived by hk-lds-pipeline. The other

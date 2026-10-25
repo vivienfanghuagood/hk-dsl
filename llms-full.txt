@@ -142,9 +142,8 @@ a strip (`!hk.rt<f32, 1x1024, strip<8>>`, `kittens::rs`):
 - **Limits.** It is never an MMA operand or an LDS tile. It exists where
   `Target.strips` says: gfx1100 (include/rdna3) and gfx950 (hk's wave64
   port in `include/hk/cdna.cuh`); gfx1201 and gfx942 refuse it while
-  tracing. The gfx950 port is newer than the 0.4.0 wheel on PyPI, which
-  refuses strips there: install from a checkout for them
-  ([what each version has](api/README.md)).
+  tracing. The gfx950 port arrived in 0.5.0; the 0.4.0 wheel refuses strips
+  there ([what each version has](api/README.md)).
 
 ```python
 # WARPS and EPS are constexprs; row and warp come from hk.arch
@@ -1789,6 +1788,12 @@ The language: what `import hk` gives a kernel author. A kernel body is traced on
 - [`hk.coord`](#hkcoord)
 - [`hk.tile_coord`](#hktile_coord)
 - [`hk.elem_coord`](#hkelem_coord)
+- [`hk.load_mx_scales`](#hkload_mx_scales)
+- [`hk.copy_mx_scales`](#hkcopy_mx_scales)
+- [`hk.mma_ABt_mx`](#hkmma_abt_mx)
+- [`hk.load_fp4_frags`](#hkload_fp4_frags)
+- [`hk.load_fp4_frags_lds`](#hkload_fp4_frags_lds)
+- [`hk.mx_quant_store`](#hkmx_quant_store)
 - [`hk.Tile`](#hktile)
 - [`hk.Vec`](#hkvec)
 - [`hk.Global`](#hkglobal)
@@ -1891,8 +1896,6 @@ loop runnable on a machine with no Radeon in it.
 Kernel.build_flags(self, traced: TracedKernel) -> Tuple[str, ...]
 ```
 
-*New after 0.4.0*
-
 hipcc flags of this kernel's builds beyond the target's.
 
 #### `Kernel.preloaded`
@@ -1900,8 +1903,6 @@ hipcc flags of this kernel's builds beyond the target's.
 ```python
 Kernel.preloaded(self) -> Kernel
 ```
-
-*New after 0.4.0*
 
 This kernel with `preload` set: its own builds, the same body.
 
@@ -2003,6 +2004,8 @@ constexpr when it is annotated so.
 hk.RT(dtype: DType, rows: int, cols: int, layout: str = 'row', frag=None) -> RegTileType
 ```
 
+*Changed after 0.5.0*: int8 register tiles build on gfx1100 (the iu8 WMMA: C(i32) += A(i8) @ B(i8).T) after 0.5.0; the 0.5.0 wheel refuses an i8 register tile.
+
 A register tile type: kittens::rt<T, rows, cols, layout>. `frag`,
 (rows, cols), names the matrix-core fragment where it is not 16x16; left
 out, the hk-fragments pass sets it on the operand tiles that need one.
@@ -2012,8 +2015,6 @@ out, the hk-fragments pass sets it on the operand tiles that need one.
 ```python
 hk.RS(dtype: DType, rows: int, cols: int, run: int = 8) -> RegTileType
 ```
-
-*Changed after 0.4.0*: Register strips build for gfx950 (hk's wave64 port, include/hk/cdna.cuh) after 0.4.0; the 0.4.0 wheel refuses them there (gfx1100 had them).
 
 A register strip type: kittens::rs<T, rows, cols, run>.
 
@@ -2275,6 +2276,106 @@ hk.elem_coord(b: Scalar = 0, d: Scalar = 0, r: Scalar = 0, c: Scalar = 0) -> Coo
 A (batch, depth, row, col) index in elements: what `x.at[r, c]`
 builds. Strips index only this way.
 
+## MX and FP4 (gfx950)
+
+### `hk.load_mx_scales`
+
+```python
+hk.load_mx_scales(src: Global, rows: int, kblocks: int, row0, kb0, *, into: MxScales = None, layout: str = 'ocp', group_rows: int = 0, loose: bool = False) -> MxScales
+```
+
+*New after 0.5.0*
+
+Rows row0.. and 32-wide blocks kb0.. of an E8M0 scale tensor (uint8, one
+byte a row and block: [R, K/32], the OCP MX layout -- or packed, i32, as
+hk.mx.pack_scales lays them out: one coalesced dword a lane per 64
+rows and K step) for an fp8 operand tile of `rows` rows and `kblocks * 32`
+columns. gfx950 only.
+
+`layout="aiter_gate_up"` / `"aiter"`: AITER's shuffled MoE weight scales
+(uint8 [E * group_rows, K/32], `shuffle_scale(is_guinterleave=True)`, with
+and without gate_up) -- the scales of a `load_fp4_frags` tile of the same
+rows: row0 the tile's first row in [E * group_rows], base tiles alternating
+gate and up with "aiter_gate_up". AITER scales are kept as loaded (fmt 2:
+the MFMA's opsel picks the byte; kb0 a multiple of 8 when kblocks > 4).
+`loose` (byte scales): a register a 16-row tile and K step, the byte as
+loaded (fmt 1). Both leave nothing for the VALU to do with a loaded
+scale, so its wait sits at the MFMA instead of right after the load --
+the packed form's byte insertion waited there, draining every load
+issued before it (K1 c8).
+
+### `hk.copy_mx_scales`
+
+```python
+hk.copy_mx_scales(dst: MxScales, src: MxScales) -> None
+```
+
+*New after 0.5.0*
+
+dst = src: E8M0 scales copied register to register -- how a one-stage
+loop body hands the next K-tile's prefetched scales to the current set.
+
+### `hk.mma_ABt_mx`
+
+```python
+hk.mma_ABt_mx(a: Tile, b: Tile, acc: Tile, sa: MxScales, sb: MxScales, *, into=None, a_fmt: str = 'fp8', b_fmt: str = 'fp8', sa_at=(0, 0), sb_at=(0, 0)) -> Tile
+```
+
+*New after 0.5.0*
+
+acc + (sa . A)(sb . B)^T on gfx950's v_mfma_scale_f32_16x16x128_f8f6f4:
+A (M, K) and B (N, K) fp8 e4m3 row tiles, K a multiple of 128; sa and sb
+their E8M0 scales (`load_mx_scales`), element (r, k) of A counting as
+A[r][k] * 2^(sa[r][k // 32] - 127); acc an fp32 col tile (M, N).
+`sa_at` / `sb_at` = (tile, step): the scales may cover more than the
+operand -- its 16-row base tile i and 128-wide step s take the scales' tile
+i + tile and step s + step (e.g. a 32-row block's two-step AITER dwords,
+loaded once, feeding two token tiles over two steps).
+
+### `hk.load_fp4_frags`
+
+```python
+hk.load_fp4_frags(ty, src: Global, row0, kc0, *, group_rows: int, gate_up: bool = False, into=None) -> Tile
+```
+
+*New after 0.5.0*
+
+Rows row0.. and 128-wide K steps kc0.. of AITER's shuffled MXFP4 MoE weights (gfx950,
+`shuffle_weight(is_guinterleave=True)`; src uint8 [E * group_rows, K/2], the packed bytes)
+as the B operand of `mma_ABt_mx(..., b_fmt="fp4")`. `ty` is an fp8 e4m3 row tile of 16x128
+fragments -- the container: each fragment's first four dwords hold the FP4 operand, the rest
+stay undefined. With `gate_up` (a stage-1 gate|up weight) the base tiles alternate the gate
+and up halves of 16-row block (row0 % group_rows) // 16 + i // 2, so gate column j and up
+column j of the product land in the same lanes.
+
+### `hk.load_fp4_frags_lds`
+
+```python
+hk.load_fp4_frags_lds(ty, src: SharedTile, row0, chunk0, *, into=None) -> Tile
+```
+
+*New after 0.5.0*
+
+load_fp4_frags from an LDS tile of raw AITER weight bytes (fp8-typed, a row a 16-row block
+with gate|up rows interleaved, 1 KB a 128-wide K step: the [E * N/16 * 2, K/2 * 16] view of the
+weights, brought in by a group load). Fragment (i, s) is row row0 + i, chunk chunk0 + s.
+
+### `hk.mx_quant_store`
+
+```python
+hk.mx_quant_store(src: SharedTile, q: Global, s: Global, row0, col0) -> None
+```
+
+*New after 0.5.0*
+
+MX-quantize an LDS tile's rows and store them -- the epilogue that hands a GEMM's output
+to an MXFP8 consumer without a separate quant pass. Every thread of the workgroup takes
+(row, 32-column group) pairs of `src` (bf16 or fp32: store it, then barrier, first). For each
+group it computes AITER's E8M0 exponent exactly, e = ceil(log2(amax / 448)) from amax's bits.
+It writes the FP8 e4m3 values to q[row0 + r, col0 + 32 g ..] and the scale byte to `s` in
+AITER's 32-row layout (hk.mx.aiter_scales of q's [R, K/32], K/32 padded to 8). The
+result is bit-identical to hk.mx.quant followed by hk.mx.aiter_scales.
+
 ## Dtypes
 
 | name | bits | C++ | kind |
@@ -2287,7 +2388,7 @@ builds. Strips index only this way.
 | `hk.fp8e4m3` | 8 | `fp8e4m3` | float |
 | `hk.fp8e5m2` | 8 | `fp8e5m2` | float |
 
-fp8 is a WMMA operand only where the target has an fp8 matrix instruction (gfx1201); i8 is a storage type (quantize into it, dequantize out of it). `hk.DTYPES` maps the names to these.
+fp8 is a matrix operand where the target has an fp8 matrix instruction: gfx950's MFMA (plain, and block-scaled through `hk.mma_ABt_mx`, whose A may also be FP4) and gfx1201's WMMA. i8 is a WMMA operand on gfx1100 (`v_wmma_i32_16x16x16_iu8`, an i32 accumulator) and a storage type elsewhere. `hk.mx` has the MX scale layouts and torch references. `hk.DTYPES` maps the names to these.
 
 ## Device values
 
@@ -2372,7 +2473,7 @@ Change the element type, keeping shape and layout (kittens::copy).
 Tile.bitcast(self, dtype: DType, *, into=None) -> Tile
 ```
 
-*New after 0.4.0*
+*New after 0.5.0*
 
 The same registers read as another element type of the same width (fp32 <-> i32,
 bf16 <-> fp16 ...): no instruction, unlike `.to`. E.g. an i32 accumulator started at the
@@ -2437,8 +2538,6 @@ Keep the lower triangle from diagonal `idx`, the rest set to `value` (default 0)
 Tile.as_operand(self, dtype: Optional[DType] = None, *, into=None) -> Tile
 ```
 
-*New after 0.4.0*
-
 This accumulator's registers read as an MFMA operand: no data
 moves across lanes (gfx950).
 
@@ -2458,8 +2557,6 @@ as it is.
 ```python
 Tile.subtile(self, rows: int, index: int) -> Tile
 ```
-
-*New after 0.4.0*
 
 Rows [index*rows, (index+1)*rows) of this tile, as a tile of
 `rows` rows that is the same registers: an op writing into it writes
@@ -2603,8 +2700,6 @@ A copy in new registers, or `into=` an existing value.
 Tile.swap_halves(self, *, into=None)
 ```
 
-*New after 0.4.0*
-
 A strip with each row's two halves exchanged: column c takes
 column (c + cols/2) mod cols -- RoPE's rotate_half without the sign.
 Strips only, on the wave64 port (gfx950), and a row of one chunk (a
@@ -2616,8 +2711,6 @@ chunks (a register swap).
 ```python
 Tile.rotate_half(self, span: int, *, into=None)
 ```
-
-*New after 0.4.0*
 
 NeoX's rotate_half on each `span`-column segment of a strip's rows:
 [x1 | x2] -> [-x2 | x1], one head of `span` columns a segment. Its
@@ -2712,8 +2805,6 @@ Wave-level: did any entry differ from `other`. A uniform branch.
 ```python
 Vec.any_above(self, other: Vec, threshold: float) -> Int
 ```
-
-*New after 0.4.0*
 
 Wave-level: did any entry exceed `other`'s by more than
 `threshold`. A uniform branch. The online softmax's lazy rescale:
@@ -2848,8 +2939,6 @@ A copy in new registers, or `into=` an existing value.
 Vec.swap_halves(self, *, into=None)
 ```
 
-*New after 0.4.0*
-
 A strip with each row's two halves exchanged: column c takes
 column (c + cols/2) mod cols -- RoPE's rotate_half without the sign.
 Strips only, on the wave64 port (gfx950), and a row of one chunk (a
@@ -2861,8 +2950,6 @@ chunks (a register swap).
 ```python
 Vec.rotate_half(self, span: int, *, into=None)
 ```
-
-*New after 0.4.0*
 
 NeoX's rotate_half on each `span`-column segment of a strip's rows:
 [x1 | x2] -> [-x2 | x1], one head of `span` columns a segment. Its
@@ -2977,7 +3064,7 @@ row: a MoE's top-k, whose sorted list counts (token, choice) pairs.
 Global.scatter_add_lds(self, src: SharedTile, ids: Global, at, *, count=None, col=0, sort_topk: int = 0) -> None
 ```
 
-*New after 0.4.0*
+*New after 0.5.0*
 
 A warp's own bf16 LDS tile added into this bf16 tensor's rows by index, atomically:
 row r of `src` into row `ids[at + r]` (with `sort_topk`, AITER sort ids: the token's
@@ -2995,7 +3082,7 @@ fixed order.
 Global.scatter(self, value: Tile, ids: Global, at, *, count=None, col=0, sort_topk: int = 0, add: bool = False) -> None
 ```
 
-*Changed after 0.4.0*: new parameters `sort_topk`, `add`
+*Changed after 0.5.0*: new parameters `sort_topk`, `add`
 
 Rows by index: tile row r goes to row `ids[at + r]`, from column
 `col`; an index outside the tensor, or a position at or past
@@ -3024,8 +3111,6 @@ A global at a coordinate: what a load reads and a store writes.
 View.load(self, tile, *, into: "Optional['Value']" = None, bounded=False, period: Optional[int] = None)
 ```
 
-*Changed after 0.4.0*: new parameter `period`
-
 Global -> register tile or vector. The element type converts on the
 way in, for free. `bounded=True` predicates rows past the global's
 last (they read zero and touch no memory); `bounded=n`, an int or a
@@ -3050,8 +3135,6 @@ drops rows past the global's last, `n` also rows at or past `n`.
 ```python
 View.load_scalar(self, *, invariant: bool = False) -> Int
 ```
-
-*Changed after 0.4.0*: new parameter `invariant`
 
 One int32 element -> a wave-uniform scalar (a page index, a length).
 
@@ -3343,7 +3426,7 @@ are bounded: any non-empty length. head_dim is 64 or 128 on both.
 
 ## Also exported
 
-`hk.copy_mx_scales`, `hk.load_fp4_frags`, `hk.load_fp4_frags_lds`, `hk.load_mx_scales`, `hk.mma_ABt_mx`, `hk.mx`, `hk.mx_quant_store`, `hk.templates`
+`hk.mx`, `hk.templates`
 
 
 <!-- docs/api/hk.math.md -->
@@ -3624,8 +3707,6 @@ The instruction classes of __builtin_amdgcn_sched_barrier and sched_group_barrie
 hk.arch.pingpong(behind) -> Iterator[None]
 ```
 
-*New after 0.4.0*
-
 Run the warps where `behind` holds one barrier behind the rest.
 
 On entry those warps wait at one extra s_barrier; on exit the others do,
@@ -3647,8 +3728,6 @@ two barriers later, not one.
 ```python
 hk.arch.pin(*values) -> None
 ```
-
-*New after 0.4.0*
 
 Keep these register tiles' and vectors' values here: what computes
 them stays above this point and what reads them below. No instruction.
@@ -3679,7 +3758,7 @@ hk.arch.vm_wait(keep: int = 0) -> None
 hk.arch.wg_arrive(counter, expected: Scalar, *, scope: str = 'device') -> Int
 ```
 
-*Changed after 0.4.0*: new parameter `scope`
+*Changed after 0.5.0*: new parameter `scope`
 
 Count this workgroup's arrival at `counter` (an element view of an
 int32 global) and return how many arrived before it. The last to arrive
@@ -3720,8 +3799,6 @@ hk.lds: shared memory -- allocation, and the wait that retires reads.
 ```python
 hk.lds.alloc(tile: SharedTileType, name: str = 'smem', count: Optional[int] = None, *, shape: Optional[str] = None) -> SharedTile
 ```
-
-*Changed after 0.4.0*: new parameter `shape`
 
 Reserve an LDS tile, or `count` of them in one size-aligned block (the
 two buffers of a pair must differ in one address bit for the XOR swap).
@@ -3828,7 +3905,7 @@ warps x the wave of the kernel being traced (32 on RDNA, 64 on CDNA).
 Group.load(self, dst: SharedTile, src: View, *, wait: bool = True, rows=None, nontemporal: bool = False, gather=None, staged: int = 0) -> None
 ```
 
-*Changed after 0.4.0*: new parameters `wait`, `rows`, `nontemporal`, `gather`, `staged`
+*Changed after 0.5.0*: new parameters `gather`, `staged`
 
 Global -> LDS by the whole group, issued and waited.
 
@@ -3857,7 +3934,7 @@ whole prefetch).
 Group.gather_prep(self, ids, at, rows: int) -> None
 ```
 
-*New after 0.4.0*
+*New after 0.5.0*
 
 Stage `rows` source rows of a gathered copy in LDS -- `ids[at + r] &
 0xFFFFFF` -- and pass a barrier (every warp must call it). A
@@ -3869,7 +3946,7 @@ Stage `rows` source rows of a gathered copy in LDS -- `ids[at + r] &
 Group.wait_for(self, *tiles: SharedTile, exact: bool = False) -> None
 ```
 
-*New after 0.4.0*
+*Changed after 0.5.0*: new parameter `exact`
 
 `s_waitcnt vmcnt(n)`: this warp's share of the asynchronous copies
 into `tiles` has landed, `n` derived by hk-lds-pipeline. The other
@@ -4004,7 +4081,7 @@ row-wise and elementwise ops are being unified by the `hk.templates` work.
 
 ## Elementwise
 
-*Changed after 0.4.0*: on gfx950 these run on register strips and take any size. `hk.ops.gelu` is the tanh form, like `hk.math.gelu`.
+On gfx950 these run on register strips and take any size. `hk.ops.gelu` is the tanh form, like `hk.math.gelu`.
 
 **Per architecture, every op below** ([audit](../dx/api-consistency.md)):
 
@@ -4168,8 +4245,6 @@ Softmax over the last axis, max-shifted.
 hk.ops.silu_mul(a, b, out=None)
 ```
 
-*Changed after 0.4.0*: Runs on strips on gfx950, taking the two halves of a gate/up output as strided views, after 0.4.0.
-
 silu(a) * b -- the second half of SwiGLU, with the gate already split.
 
 torch's equivalent is `F.silu(a) * b`; this does it in one pass, so the
@@ -4207,8 +4282,6 @@ error says so rather than silently producing a rotation by the wrong angle.
 ```python
 hk.ops.rotary(x, cos_sin, positions=None, out=None)
 ```
-
-*New after 0.4.0*
 
 vLLM's rotary_embedding, NeoX (half-split) style, token-major:
 `x` is (..., heads, D) with the tokens on the leading axes, `cos_sin` is
@@ -4365,8 +4438,6 @@ combines. On gfx950, paged_cdna's (head_dim 64 or 128).
 hk.ops.paged.fused_kernel(head_dim: int, splits: int, ablate: tuple = (), defines: Optional[dict] = None)
 ```
 
-*Changed after 0.4.0*: new parameter `defines`
-
 `defines` builds the walk with library knobs, for an A/B in one
 process (tools/hk-bench/paged_variants.py): HK_RDNA_XPOSE_WORDS=0 is the
 generic register transpose V took before the packed one.
@@ -4476,8 +4547,6 @@ Q_TILE rows of each, ints on the host, one int32 copy to the device.
 ```python
 hk.ops.decode_gemm.matmul(x, w, out=None, **override)
 ```
-
-*Changed after 0.4.0*: new parameter `out`
 
 x @ w.T for a decode batch. `w` is (N, K), as in `gemm.matmul`; `out`,
 if given, is the (M, N) bf16 tensor to write.
@@ -4618,8 +4687,6 @@ Each template has a guide in [docs/templates](../templates/).
 hk.templates.elementwise(fn: Optional[Callable] = None, inputs: Optional[Sequence] = None, outputs: Any = None, *, name: Optional[str] = None, arch: Optional[str] = None, plan: Optional[Dict[str, int]] = None)
 ```
 
-*New after 0.4.0* (the `hk.templates.elementwise` module is not in the 0.4.0 wheel)
-
 A pointwise kernel from `fn`, the math of one element.
 
     gelu_and_mul = hk.templates.elementwise(lambda g, u: hk.math.gelu(g) * u)
@@ -4648,8 +4715,6 @@ overrides it. Usable as a decorator: `@hk.templates.elementwise`.
 ```python
 hk.templates.gemm(a=None, b=None, *, epilogue=None, out=None, out_dtype=None, schedule=None, **operands)
 ```
-
-*New after 0.4.0* (the `hk.templates.gemm` module is not in the 0.4.0 wheel)
 
 hk.templates.gemm: a tuned GEMM whose store is yours.
 
@@ -4708,8 +4773,6 @@ docs/templates/gemm.md has the plans and the measurements.
 hk.templates.meta(shape, dtype, stride=None) -> Meta
 ```
 
-*New after 0.4.0* (the `hk.templates._common` module is not in the 0.4.0 wheel)
-
 A stand-in for a tensor of this shape, dtype and strides (contiguous
 if not given), for planning and building without a GPU.
 
@@ -4719,8 +4782,6 @@ if not given), for planning and building without a GPU.
 hk.templates.per_col(dtype: Optional[DType] = None) -> Operand
 ```
 
-*New after 0.4.0* (the `hk.templates._common` module is not in the 0.4.0 wheel)
-
 One value per column, a (cols,) tensor: a weight or a bias, the same
 for every row (torch's broadcasting of a 1-D tensor).
 
@@ -4729,8 +4790,6 @@ for every row (torch's broadcasting of a 1-D tensor).
 ```python
 hk.templates.per_row(dtype: Optional[DType] = None, width: int = 1) -> Operand
 ```
-
-*New after 0.4.0* (the `hk.templates._common` module is not in the 0.4.0 wheel)
 
 One value per row, a (rows,) or (rows, 1) tensor: a token's scale, a
 row's label. In a rowwise output, a per-row result (a scale, a loss);
@@ -4742,8 +4801,6 @@ row's label. In a rowwise output, a per-row result (a scale, a loss);
 ```python
 hk.templates.pick(t, col) -> Vec
 ```
-
-*New after 0.4.0* (the `hk.templates.rowwise` module is not in the 0.4.0 wheel)
 
 The element of operand `t` (a full operand as the hook received it)
 at column `col` of this row -- a gather, as cross-entropy's target
@@ -4757,8 +4814,6 @@ int64 operand) or an int, clamped into the row, so an ignored label
 hk.templates.row_length()
 ```
 
-*New after 0.4.0* (the `hk.templates.rowwise` module is not in the 0.4.0 wheel)
-
 The row's length (a device int): what row_mean divides by.
 
 ### `hk.templates.row_logsumexp`
@@ -4766,8 +4821,6 @@ The row's length (a device int): what row_mean divides by.
 ```python
 hk.templates.row_logsumexp(t) -> Vec
 ```
-
-*New after 0.4.0* (the `hk.templates.rowwise` module is not in the 0.4.0 wheel)
 
 log(sum(exp(t))) of each row of `t`, the whole row, max-shifted so it
 does not overflow. Online: a row too wide to hold is read once for it,
@@ -4780,8 +4833,6 @@ where row_max then row_sum(exp(t - max)) read it twice. Softmax is
 hk.templates.row_max(t) -> Vec
 ```
 
-*New after 0.4.0* (the `hk.templates.rowwise` module is not in the 0.4.0 wheel)
-
 The max of each row of `t`, the whole row.
 
 ### `hk.templates.row_mean`
@@ -4789,8 +4840,6 @@ The max of each row of `t`, the whole row.
 ```python
 hk.templates.row_mean(t) -> Vec
 ```
-
-*New after 0.4.0* (the `hk.templates.rowwise` module is not in the 0.4.0 wheel)
 
 The mean of each row of `t`: row_sum(t) over the row's length.
 
@@ -4800,8 +4849,6 @@ The mean of each row of `t`: row_sum(t) over the row's length.
 hk.templates.row_min(t) -> Vec
 ```
 
-*New after 0.4.0* (the `hk.templates.rowwise` module is not in the 0.4.0 wheel)
-
 The min of each row of `t`, the whole row.
 
 ### `hk.templates.row_sum`
@@ -4809,8 +4856,6 @@ The min of each row of `t`, the whole row.
 ```python
 hk.templates.row_sum(t) -> Vec
 ```
-
-*New after 0.4.0* (the `hk.templates.rowwise` module is not in the 0.4.0 wheel)
 
 The sum of each row of `t` -- the whole row, across every lane and
 warp that holds a part of it: one value per row, broadcast against the
@@ -4821,8 +4866,6 @@ row's strips (`x - row_sum(x) / n`).
 ```python
 hk.templates.rowwise(fn: Optional[Callable] = None, inputs: Optional[Sequence] = None, outputs: Any = None, *, like: Optional[str] = None, name: Optional[str] = None, arch: Optional[str] = None, plan: Optional[Dict[str, int]] = None)
 ```
-
-*New after 0.4.0* (the `hk.templates.rowwise` module is not in the 0.4.0 wheel)
 
 A kernel that reduces each row and maps it, from `fn`, the math of
 one row.
@@ -4851,8 +4894,6 @@ shows what a call runs.
 ```python
 hk.templates.scalar(dtype: Optional[DType] = None) -> Operand
 ```
-
-*New after 0.4.0* (the `hk.templates._common` module is not in the 0.4.0 wheel)
 
 One value for the whole tensor, a () or (1,) tensor on the device.
 
@@ -4912,7 +4953,7 @@ The guide is [docs/schedules.md](../schedules.md), the design [docs/design/sched
 hk.schedules.lookup(m: int, n: int, k: int, arch: Optional[str] = None, *, op: str = 'matmul') -> GemmSchedule
 ```
 
-*New after 0.4.0* (the `hk.schedules` module is not in the 0.4.0 wheel)
+*New after 0.5.0* (the `hk.schedules` module is not in the 0.5.0 wheel)
 
 The schedule hk runs today for C = A @ B.T at M x N x K on `arch`:
 op="matmul" what hk.ops.matmul launches (gfx950: gemm_cdna.route's
@@ -4926,7 +4967,7 @@ decode GEMV for M <= 32).
 hk.schedules.space(m: int, n: int, k: int, arch: Optional[str] = None, *, families=None, around: Optional[Schedule] = None, radius: int = 1, axes=None, legal: bool = True) -> Iterator[GemmSchedule]
 ```
 
-*New after 0.4.0* (the `hk.schedules` module is not in the 0.4.0 wheel)
+*New after 0.5.0* (the `hk.schedules` module is not in the 0.5.0 wheel)
 
 Legal GEMM schedules for M x N x K on `arch`, family by family (see
 Schedule.space for `around`, `radius` and `axes`). `families` limits
@@ -4939,7 +4980,7 @@ schedule's family (its neighbourhood).
 hk.schedules.from_record(rec: Any, *, strict: bool = True, family_cls: Optional[type] = None) -> Schedule
 ```
 
-*New after 0.4.0* (the `hk.schedules` module is not in the 0.4.0 wheel)
+*New after 0.5.0* (the `hk.schedules` module is not in the 0.5.0 wheel)
 
 A Schedule from any of its record forms (see Schedule.from_record).
 
@@ -4949,7 +4990,7 @@ A Schedule from any of its record forms (see Schedule.from_record).
 hk.schedules.from_candidate(name: str, m: int, n: int, k: int) -> GemmSchedule
 ```
 
-*New after 0.4.0* (the `hk.schedules` module is not in the 0.4.0 wheel)
+*New after 0.5.0* (the `hk.schedules` module is not in the 0.5.0 wheel)
 
 The schedule hk.ops.gemm_cdna's route candidate `name` runs at
 M x N x K -- exactly what gemm_cdna.run launches, as data: the
@@ -4964,7 +5005,7 @@ code does not have) are schedule records, taken as they are.
 hk.schedules.families_for(arch: str) -> List[type]
 ```
 
-*New after 0.4.0* (the `hk.schedules` module is not in the 0.4.0 wheel)
+*New after 0.5.0* (the `hk.schedules` module is not in the 0.5.0 wheel)
 
 The GEMM families that run on `arch`, the composite last.
 
@@ -4974,7 +5015,7 @@ The GEMM families that run on `arch`, the composite last.
 hk.schedules.lookup_attention(n: int, head_dim: int, causal: bool = False, arch: Optional[str] = None, *, scale: Optional[float] = None) -> AttnSchedule
 ```
 
-*New after 0.4.0* (the `hk.schedules` module is not in the 0.4.0 wheel)
+*New after 0.5.0* (the `hk.schedules` module is not in the 0.5.0 wheel)
 
 The schedule hk.attention runs for `n` queries of `head_dim`: gfx950's
 kernel as attn_cdna ships it, gfx1100's at its tuner's record for the
@@ -4987,20 +5028,20 @@ length (hk.ops.attn._tune_key) -- or, with a `scale` other than
 hk.schedules.space_attention(n: int, head_dim: int, arch: Optional[str] = None, *, causal: bool = False, around: Optional[AttnSchedule] = None, radius: int = 1, axes=None) -> Iterator[AttnSchedule]
 ```
 
-*New after 0.4.0* (the `hk.schedules` module is not in the 0.4.0 wheel)
+*New after 0.5.0* (the `hk.schedules` module is not in the 0.5.0 wheel)
 
 Legal attention schedules for the problem on `arch` (see
 Schedule.space).
 
 ### `hk.schedules.Illegal`
 
-*New after 0.4.0* (the `hk.schedules` module is not in the 0.4.0 wheel)
+*New after 0.5.0* (the `hk.schedules` module is not in the 0.5.0 wheel)
 
 A schedule refused by check(): `reasons` lists why, one a line.
 
 ### `hk.schedules.Schedule`
 
-*New after 0.4.0* (the `hk.schedules` module is not in the 0.4.0 wheel)
+*New after 0.5.0* (the `hk.schedules` module is not in the 0.5.0 wheel)
 
 A point in a kernel family's schedule space. Subclasses are frozen
 dataclasses whose fields are the knobs (see `knob`).
@@ -5141,7 +5182,7 @@ back to the default (so a space holds each kernel once).
 
 ### `hk.schedules.GemmSchedule`
 
-*New after 0.4.0* (the `hk.schedules` module is not in the 0.4.0 wheel)
+*New after 0.5.0* (the `hk.schedules` module is not in the 0.5.0 wheel)
 
 What every GEMM schedule does, beyond Schedule's protocol: the
 launches of a call (steps), its kernels, and running it.
@@ -5202,7 +5243,7 @@ one raises hk.schedules.Illegal with check()'s reasons.
 
 ### `hk.schedules.AttnSchedule`
 
-*New after 0.4.0* (the `hk.schedules` module is not in the 0.4.0 wheel)
+*New after 0.5.0* (the `hk.schedules` module is not in the 0.5.0 wheel)
 
 What an attention schedule does: check a problem, build its kernel,
 run it. The problem is `n` (query rows; `n_kv` keys, default n),
@@ -5266,7 +5307,7 @@ Schedule.space for around, radius and axes).
 class hk.schedules.Step(kernel: str, sched: Dict[str, Any], cols: Tuple[int, int], epilogue: bool, into: str = 'out', route: str = '', schedule: Any = None) -> None
 ```
 
-*New after 0.4.0* (the `hk.schedules` module is not in the 0.4.0 wheel)
+*New after 0.5.0* (the `hk.schedules` module is not in the 0.5.0 wheel)
 
 One launch of a GEMM call.
 
@@ -5285,7 +5326,7 @@ schedule  the hk.schedules object it came from (None for "reduce" and
 
 ### `hk.schedules.Rdna`
 
-*New after 0.4.0* (the `hk.schedules` module is not in the 0.4.0 wheel)
+*New after 0.5.0* (the `hk.schedules` module is not in the 0.5.0 wheel)
 
 gfx1100's WMMA GEMM (hk.ops.gemm.gemm_kernel; history chapter 28):
 a block_m x block_n block of C per workgroup of `warps` waves in a
@@ -5314,7 +5355,7 @@ Family `rdna`, on gfx1100.
 
 ### `hk.schedules.Decode`
 
-*New after 0.4.0* (the `hk.schedules` module is not in the 0.4.0 wheel)
+*New after 0.5.0* (the `hk.schedules` module is not in the 0.5.0 wheel)
 
 The decode GEMV (hk.ops.decode_gemm; history chapter 9): W straight to
 registers, one 16-row block of W a workgroup, its K split across `warps`
@@ -5336,7 +5377,7 @@ Family `decode`, on gfx1100, gfx950.
 
 ### `hk.schedules.PingPong`
 
-*New after 0.4.0* (the `hk.schedules` module is not in the 0.4.0 wheel)
+*New after 0.5.0* (the `hk.schedules` module is not in the 0.5.0 wheel)
 
 gfx950's pingpong GEMM (hk.ops.gemm_cdna.gemm_kernel; history chapters
 33 and 41): HipKittens' 8-wave CDNA4 schedule, a block in four quadrants,
@@ -5369,7 +5410,7 @@ Family `pp`, on gfx950.
 
 ### `hk.schedules.Dp`
 
-*New after 0.4.0* (the `hk.schedules` module is not in the 0.4.0 wheel)
+*New after 0.5.0* (the `hk.schedules` module is not in the 0.5.0 wheel)
 
 gfx950's four-warp GEMM (hk.ops.gemm_cdna_dp.gemm_kernel; history
 chapter 41): smaller blocks for the shapes the pingpong has too few of,
@@ -5398,7 +5439,7 @@ Family `dp`, on gfx950.
 
 ### `hk.schedules.Columns`
 
-*New after 0.4.0* (the `hk.schedules` module is not in the 0.4.0 wheel)
+*New after 0.5.0* (the `hk.schedules` module is not in the 0.5.0 wheel)
 
 Two schedules side by side: `head` on C's first `cut` columns, `tail`
 on the rest (each its own launches). `cut` is a column count, "block"
@@ -5408,7 +5449,7 @@ columns of a 151936-wide lm_head), or "wave" (the columns whose
 
 ### `hk.schedules.AttnRdna`
 
-*New after 0.4.0* (the `hk.schedules` module is not in the 0.4.0 wheel)
+*New after 0.5.0* (the `hk.schedules` module is not in the 0.5.0 wheel)
 
 gfx1100's flash attention (hk.ops.attn; history chapter 3): `warps`
 waves of `q_block` query rows each, the KV axis in `kv_block` steps, K
@@ -5431,7 +5472,7 @@ Family `attn_rdna`, on gfx1100.
 
 ### `hk.schedules.AttnCdna`
 
-*New after 0.4.0* (the `hk.schedules` module is not in the 0.4.0 wheel)
+*New after 0.5.0* (the `hk.schedules` module is not in the 0.5.0 wheel)
 
 gfx950's flash attention (hk.ops.attn_cdna; history chapter 34):
 HipKittens' CDNA4 GQA forward, eight warps of 32 query rows, 64-row KV
@@ -5519,7 +5560,7 @@ The guide is [docs/tune.md](../tune.md); the benchmark that judges it is [bench/
 hk.tune.tune(m: int, n: int, k: int, *, budget: float = 60.0, save: bool = True, baselines: Optional[Dict[str, Callable]] = None, workers: int = 32, log: Optional[Callable[[str], None]] = <built-in function print>, arch: Optional[str] = None, compiler=None, profile: bool = False, **search)
 ```
 
-*New after 0.4.0* (the `hk.tune` module is not in the 0.4.0 wheel)
+*New after 0.5.0* (the `hk.tune` module is not in the 0.5.0 wheel)
 
 Tune one M x N x K bf16 GEMM (C = A @ B.T, B as (N, K)) on the current
 GPU; returns a `Result` (hk.tune.search). A win is written to this
@@ -5537,7 +5578,7 @@ the kernel would have to change to be faster.
 hk.tune.tune_shapes(shapes: Sequence[Tuple[int, int, int]], **kw) -> List
 ```
 
-*New after 0.4.0* (the `hk.tune` module is not in the 0.4.0 wheel)
+*New after 0.5.0* (the `hk.tune` module is not in the 0.5.0 wheel)
 
 tune() each shape in turn, one compiler for all of them (kernels shared
 between shapes compile once).
@@ -5548,7 +5589,7 @@ between shapes compile once).
 hk.tune.model_shapes(model: str, tp: int = 1, ms: Sequence[int] = (1, 16, 128, 512, 2048, 8192), layers: str = '') -> List[Tuple[int, int, int]]
 ```
 
-*New after 0.4.0* (the `hk.tune` module is not in the 0.4.0 wheel)
+*New after 0.5.0* (the `hk.tune` module is not in the 0.5.0 wheel)
 
 (M, N, K) of a model's linear layers (qkv, o, gate_up, down; and the LM
 head where asked) at tensor-parallel size `tp`, at each M of `ms`.
@@ -5559,7 +5600,7 @@ head where asked) at tensor-parallel size `tp`, at each M of `ms`.
 hk.tune.parse_shape(s: str) -> Tuple[int, int, int]
 ```
 
-*New after 0.4.0* (the `hk.tune` module is not in the 0.4.0 wheel)
+*New after 0.5.0* (the `hk.tune` module is not in the 0.5.0 wheel)
 
 "MxNxK" -> (M, N, K).
 
@@ -5569,7 +5610,7 @@ hk.tune.parse_shape(s: str) -> Tuple[int, int, int]
 hk.tune.torch_baselines(names: Iterable[str] = ('torch',)) -> Dict[str, Callable]
 ```
 
-*New after 0.4.0* (the `hk.tune` module is not in the 0.4.0 wheel)
+*New after 0.5.0* (the `hk.tune` module is not in the 0.5.0 wheel)
 
 Baselines to time beside the decision, by name: "torch" is F.linear
 (hipBLASLt on ROCm); the tuning benchmark's others (tunableop, aiter,
@@ -5583,7 +5624,7 @@ with a message.
 hk.tune.explain(m: int, n: int, k: int, *, vs: str = 'torch.nn.functional:linear') -> dict
 ```
 
-*New after 0.4.0* (the `hk.tune` module is not in the 0.4.0 wheel)
+*New after 0.5.0* (the `hk.tune` module is not in the 0.5.0 wheel)
 
 hk.profile (docs/profile.md) on hk.ops.matmul at M x N x K -- the
 kernel this machine's records give the shape -- against `vs`:
@@ -5601,7 +5642,7 @@ that the acceptance rule believes -- or to "the route stands".
 class hk.tune.search.Search(space, *, budget: float = 60.0, min_gain: float = 0.01, k_noise: float = 2.0, pool_per_kind: int = 16, explore: int = 6, max_seeds: Optional[int] = None, rung_rounds: Sequence[int] = (3, 6, 10), local_moves: int = 12, local_iters: int = 6, restarts: int = 2, playoff: int = 5, decide_sets: int = 3, decide_rounds: int = 7, confirm_sets: int = 2, log: Optional[Callable[[str], None]] = None)
 ```
 
-*New after 0.4.0* (the `hk.tune.search` module is not in the 0.4.0 wheel)
+*New after 0.5.0* (the `hk.tune.search` module is not in the 0.5.0 wheel)
 
 One shape's search; see the module docstring.
 
@@ -5611,7 +5652,7 @@ One shape's search; see the module docstring.
 class hk.tune.search.Result(m: int, n: int, k: int, arch: str, route: Candidate, champion: Optional[Candidate] = None, decision: Optional[stats.Decision] = None, route_ms: Optional[float] = None, ms: Optional[float] = None, baselines: Dict[str, Dict[str, Any]] = <factory>, counts: Dict[str, int] = <factory>, gpu_seconds: float = 0.0, wall_seconds: float = 0.0, compile_seconds: float = 0.0, load_seconds: float = 0.0, phases: Dict[str, float] = <factory>, profile: Dict[str, Any] = <factory>, log: List[str] = <factory>, timed: Dict[str, Optional[float]] = <factory>, refused: Dict[str, str] = <factory>, record: str = '') -> None
 ```
 
-*New after 0.4.0* (the `hk.tune.search` module is not in the 0.4.0 wheel)
+*New after 0.5.0* (the `hk.tune.search` module is not in the 0.5.0 wheel)
 
 What one tuning run found and what it cost.
 
@@ -5625,7 +5666,7 @@ What a timing means: the statistics and the acceptance rule of `hk.tune`.
 hk.tune.stats.decide(route_sets: Sequence[Sequence[float]], cand_sets: Sequence[Sequence[float]], *, min_gain: float = 0.01, k_noise: float = 2.0, floor: Optional[float] = None) -> Decision
 ```
 
-*New after 0.4.0* (the `hk.tune.stats` module is not in the 0.4.0 wheel)
+*New after 0.5.0* (the `hk.tune.stats` module is not in the 0.5.0 wheel)
 
 Whether the candidate beats the route, from S sets of rounds timed
 interleaved (route_sets[s] and cand_sets[s] in the same rounds).
@@ -5636,7 +5677,7 @@ interleaved (route_sets[s] and cand_sets[s] in the same rounds).
 hk.tune.stats.confirm(first: Decision, again: Decision) -> Decision
 ```
 
-*New after 0.4.0* (the `hk.tune.stats` module is not in the 0.4.0 wheel)
+*New after 0.5.0* (the `hk.tune.stats` module is not in the 0.5.0 wheel)
 
 A win only if the decision and its confirmation both say so; the
 numbers are pooled over both.
@@ -5647,7 +5688,7 @@ numbers are pooled over both.
 class hk.tune.stats.Decision(verdict: str, gain: float, sigma: float, bar: float, band: List[float] = <factory>, ratios: List[float] = <factory>, sets: int = 0) -> None
 ```
 
-*New after 0.4.0* (the `hk.tune.stats` module is not in the 0.4.0 wheel)
+*New after 0.5.0* (the `hk.tune.stats` module is not in the 0.5.0 wheel)
 
 A candidate against the route it would replace, over sets.
 
@@ -5657,7 +5698,7 @@ A candidate against the route it would replace, over sets.
 hk.tune.stats.halve(scores: Dict[Hashable, Sequence[float]], keep: int, protect: Iterable[Hashable] = (), floor: Optional[float] = None) -> List[Hashable]
 ```
 
-*New after 0.4.0* (the `hk.tune.stats` module is not in the 0.4.0 wheel)
+*New after 0.5.0* (the `hk.tune.stats` module is not in the 0.5.0 wheel)
 
 Successive halving's cut: the `keep` fastest by median, plus every
 protected arm (the route), in rank order. An arm within its own noise of
@@ -5671,7 +5712,7 @@ have told apart.
 hk.tune.stats.summary(times: Sequence[float], floor: Optional[float] = None)
 ```
 
-*New after 0.4.0* (the `hk.tune.stats` module is not in the 0.4.0 wheel)
+*New after 0.5.0* (the `hk.tune.stats` module is not in the 0.5.0 wheel)
 
 (median ms, spread, rounds kept) of one arm's rounds; median None if
 no round counts.
@@ -5687,7 +5728,7 @@ hk.templates.gemm make in front of their own routes.
 hk.tune.records.user_route(arch: str, m: int, n: int, k: int) -> Optional[Tuple[str, Any]]
 ```
 
-*New after 0.4.0* (the `hk.tune.records` module is not in the 0.4.0 wheel)
+*New after 0.5.0* (the `hk.tune.records` module is not in the 0.5.0 wheel)
 
 (name, schedule record) of this machine's tuned candidate for the
 shape, or None: no record for (N, K) in M's bucket, or HK_AUTOTUNE=0.
@@ -5701,7 +5742,7 @@ hk.ops.gemm.user_route).
 hk.tune.records.save(arch: str, m: int, n: int, k: int, name: str, spec, point: Dict[str, Any]) -> Path
 ```
 
-*New after 0.4.0* (the `hk.tune.records` module is not in the 0.4.0 wheel)
+*New after 0.5.0* (the `hk.tune.records` module is not in the 0.5.0 wheel)
 
 Write one tuned shape: its candidate, its route and its measurement.
 Atomic; replaces an earlier route for the same (N, K) and M bucket.
@@ -5712,7 +5753,7 @@ Atomic; replaces an earlier route for the same (N, K) and M bucket.
 hk.tune.records.load(arch: str) -> dict
 ```
 
-*New after 0.4.0* (the `hk.tune.records` module is not in the 0.4.0 wheel)
+*New after 0.5.0* (the `hk.tune.records` module is not in the 0.5.0 wheel)
 
 This machine's records for `arch` (an empty table if none). Read once
 per process, again after a tuner in this process wrote (hk.autotune's
@@ -5727,7 +5768,7 @@ are (hk.autotune.load_records).
 hk.tune.records.path(arch: str) -> Path
 ```
 
-*New after 0.4.0* (the `hk.tune.records` module is not in the 0.4.0 wheel)
+*New after 0.5.0* (the `hk.tune.records` module is not in the 0.5.0 wheel)
 
 This machine's record file for `arch`: $HK_TUNE_DIR/routes_gemm_<arch>.json.
 
@@ -5737,7 +5778,7 @@ This machine's record file for `arch`: $HK_TUNE_DIR/routes_gemm_<arch>.json.
 hk.tune.records.bucket(m: int) -> int
 ```
 
-*New after 0.4.0* (the `hk.tune.records` module is not in the 0.4.0 wheel)
+*New after 0.5.0* (the `hk.tune.records` module is not in the 0.5.0 wheel)
 
 M rounded up to a power of two: the Ms one record answers.
 
@@ -5752,7 +5793,7 @@ over hk.schedules (K1: one Schedule type per GEMM kernel family).
 hk.tune.space.provider(arch: str) -> ScheduleSpace
 ```
 
-*New after 0.4.0* (the `hk.tune.space` module is not in the 0.4.0 wheel)
+*New after 0.5.0* (the `hk.tune.space` module is not in the 0.5.0 wheel)
 
 The space provider for an arch.
 
@@ -5762,7 +5803,7 @@ The space provider for an arch.
 class hk.tune.space.ScheduleSpace(arch: str)
 ```
 
-*New after 0.4.0* (the `hk.tune.space` module is not in the 0.4.0 wheel)
+*New after 0.5.0* (the `hk.tune.space` module is not in the 0.5.0 wheel)
 
 hk's GEMMs on one arch, as hk.schedules spells them.
 
@@ -5772,7 +5813,7 @@ hk's GEMMs on one arch, as hk.schedules spells them.
 class hk.tune.space.Candidate(kind: str, items: Tuple[Tuple[str, Any], ...], name: str = '', obj: Any = None) -> None
 ```
 
-*New after 0.4.0* (the `hk.tune.space` module is not in the 0.4.0 wheel)
+*New after 0.5.0* (the `hk.tune.space` module is not in the 0.5.0 wheel)
 
 One point: a kernel family and its record (the knobs off the
 family's defaults); `obj` is the hk.schedules object, `name` the shipped
@@ -5789,7 +5830,7 @@ compiles and times candidates in, never a decision.
 hk.tune.cost.estimate(kind: str, s: Dict[str, Any], m: int, n: int, k: int, arch: str) -> float
 ```
 
-*New after 0.4.0* (the `hk.tune.cost` module is not in the 0.4.0 wheel)
+*New after 0.5.0* (the `hk.tune.cost` module is not in the 0.5.0 wheel)
 
 Seconds, roughly, for candidate (kind, full schedule) at M x N x K.
 
@@ -5803,7 +5844,7 @@ Timing GEMM candidates on the GPU, the way the project times them.
 class hk.tune.measure.GemmBench(m: int, n: int, k: int, arch: str, *, seed: int = 0, rotate_bytes: Optional[int] = None, device=None)
 ```
 
-*New after 0.4.0* (the `hk.tune.measure` module is not in the 0.4.0 wheel)
+*New after 0.5.0* (the `hk.tune.measure` module is not in the 0.5.0 wheel)
 
 One M x N x K problem on the current GPU.
 
@@ -5813,7 +5854,7 @@ One M x N x K problem on the current GPU.
 class hk.tune.measure.Compiler(workers: int = 32)
 ```
 
-*New after 0.4.0* (the `hk.tune.measure` module is not in the 0.4.0 wheel)
+*New after 0.5.0* (the `hk.tune.measure` module is not in the 0.5.0 wheel)
 
 Builds candidates' kernels on the CPU, `workers` hipcc processes at a
 time, while the GPU times something else.
@@ -5846,7 +5887,7 @@ Correctness, resources and timing of a kernel in one call; the guide is [docs/ch
 hk.check.check(fn, reference: Optional[Callable] = None, inputs=None, *, cases: Optional[Sequence] = None, consts: Optional[Dict[str, Any]] = None, outputs: Optional[Sequence] = None, inplace: Optional[Sequence] = None, sweep: Optional[Dict[str, Sequence]] = None, baselines: Sequence[str] = ('eager', 'compile'), extra: Optional[Dict[str, Callable]] = None, rtol: Optional[float] = None, atol: Optional[float] = None, exact: bool = False, ref_precision: str = 'fp32', time: bool = True, rounds: int = 15, warmup: int = 3, batch_ms: float = 1.0, burn: float = 0.5, compile_mode: Optional[str] = None, bytes: Optional[float] = None, flops: Optional[float] = None, name: Optional[str] = None, gpu: Optional[bool] = None, build: bool = True, seed: int = 0, profile: bool = False) -> Report
 ```
 
-*New after 0.4.0* (the `hk.check` module is not in the 0.4.0 wheel)
+*Changed after 0.5.0*: new parameter `profile`
 
 Check `fn` against `reference` on `inputs`; see the module docstring
 and docs/check.md.
@@ -5895,8 +5936,6 @@ profile    also run hk.profile on the first case (counters, the thread
 ```python
 class hk.check.Report(name: str, arch: str, mode: str, device: Optional[str] = None, versions: Dict[str, str] = <factory>, builds: List[Dict[str, Any]] = <factory>, cases: List[Dict[str, Any]] = <factory>, errors: List[Dict[str, str]] = <factory>, notes: List[str] = <factory>, profile: Optional[Dict[str, Any]] = None) -> None
 ```
-
-*New after 0.4.0* (the `hk.check` module is not in the 0.4.0 wheel)
 
 What `hk.check` found. `str(report)` is the human summary,
 `report.json()` the same as a dict (`SCHEMA`), `report.ok` whether every
@@ -5951,8 +5990,6 @@ test: `hk.check(k, ref, make).raise_for_status()`.
 hk.check.compare(got, want, *, rtol=None, atol=None, exact=False) -> Dict[str, Any]
 ```
 
-*New after 0.4.0* (the `hk.check` module is not in the 0.4.0 wheel)
-
 One output against its reference. `want` may be any dtype (the fp32
 reference); the tolerance is for `got`'s dtype.
 
@@ -5962,8 +5999,6 @@ reference); the tolerance is for `got`'s dtype.
 hk.check.tolerance(dtype, rtol=None, atol=None, scale: float = 1.0) -> Tuple[float, float]
 ```
 
-*New after 0.4.0* (the `hk.check` module is not in the 0.4.0 wheel)
-
 (rtol, absolute atol) for comparing an output of `dtype` against a
 reference whose largest magnitude is `scale`.
 
@@ -5972,8 +6007,6 @@ reference whose largest magnitude is `scale`.
 ```python
 hk.check.interleave(thunks: Dict[str, Callable[[], Any]], *, rounds: int = 15, warmup: int = 3, batch_ms: float = 1.0) -> Tuple[Dict[str, List[float]], Dict[str, int]]
 ```
-
-*New after 0.4.0* (the `hk.check` module is not in the 0.4.0 wheel)
 
 {name: thunk} -> ({name: ms a call, one per round}, {name: calls a
 burst}). Every round runs every contender once, the order rotated round
@@ -5987,8 +6020,6 @@ and the event resolution.
 hk.check.verdict(ratio: float, band: float) -> str
 ```
 
-*New after 0.4.0* (the `hk.check` module is not in the 0.4.0 wheel)
-
 win / loss past the band, tie inside it, noise when the band is too
 wide to tell (docs/agents.md, `ab`'s rules).
 
@@ -5997,8 +6028,6 @@ wide to tell (docs/agents.md, `ab`'s rules).
 ```python
 hk.check.versions() -> Dict[str, str]
 ```
-
-*New after 0.4.0* (the `hk.check` module is not in the 0.4.0 wheel)
 
 hk's version (and the checkout's commit), torch's, HIP's, Triton's,
 Python's: what a number needs beside it to mean anything.
@@ -6009,13 +6038,10 @@ Python's: what a number needs beside it to mean anything.
 hk.check.describe(args) -> str
 ```
 
-*New after 0.4.0* (the `hk.check` module is not in the 0.4.0 wheel)
-
 "bf16[4096,14336], fp32[64]": what a case's inputs are.
 
 ### `hk.check.TOLERANCES`
 
-*New after 0.4.0* (the `hk.check` module is not in the 0.4.0 wheel)
 
 Output dtype -> (rtol, atol as a fraction of max|reference|). An element passes when |got - want| <= atol * max|want| + rtol * |want|. About two units in the last place for the 16-bit types: a kernel that computes in fp32 and rounds once is within one of the fp32 reference, and torch eager, which rounds every intermediate, typically within two.
 
@@ -6058,7 +6084,6 @@ Output dtype -> (rtol, atol as a fraction of max|reference|). An element passes 
 
 ### `hk.check.CARDS`
 
-*New after 0.4.0* (the `hk.check` module is not in the 0.4.0 wheel)
 
 Each card's ceilings, for the bandwidth and FLOP rates the summary prints (tools/hk-bench/_rounds.py's CARDS, where each is sourced): DRAM bytes/s, the fastest cache-resident bytes/s measured, the cache's size, bf16 FLOP/s.
 
@@ -6152,7 +6177,7 @@ Why a kernel runs at the speed it does: rocprofv3's counters and thread trace, t
 hk.profile.profile(fn, inputs=None, *, consts: Optional[Dict[str, Any]] = None, name: Optional[str] = None, vs: Optional[Union[str, Dict[str, Any]]] = None, counters: bool = True, att: bool = True, att_kernels: int = 1, iters: int = 20, gap_ms: float = 2.0, timeout: float = 180.0, flops: Optional[float] = None, bytes: Optional[float] = None, shape: Optional[Sequence[int]] = None, workdir: Optional[str] = None, keep: bool = False, gpu: Optional[bool] = None, record: Optional[str] = None, log: Optional[Callable[[str], None]] = None) -> Profile
 ```
 
-*New after 0.4.0* (the `hk.profile` module is not in the 0.4.0 wheel)
+*New after 0.5.0* (the `hk.profile` module is not in the 0.5.0 wheel)
 
 Profile the kernels `fn(*inputs)` launches; see the module docstring
 and docs/profile.md.
@@ -6185,7 +6210,7 @@ record    write the raw material (per kernel: the profiler's record
 class hk.profile.Profile(name: str, arch: str, device: Optional[str] = None, agent: Dict[str, Any] = <factory>, versions: Dict[str, str] = <factory>, call: Dict[str, Any] = <factory>, kernels: List[Dict[str, Any]] = <factory>, sources: Dict[str, str] = <factory>, passes: Dict[str, Any] = <factory>, notes: List[str] = <factory>, errors: List[Dict[str, str]] = <factory>, compare: Optional[Dict[str, Any]] = None, seconds: Optional[float] = None) -> None
 ```
 
-*New after 0.4.0* (the `hk.profile` module is not in the 0.4.0 wheel)
+*New after 0.5.0* (the `hk.profile` module is not in the 0.5.0 wheel)
 
 What `hk.profile` found. `str(p)` is the human summary, `p.json()`
 the dict (SCHEMA), `p.verdict` the call's one-line verdict.
@@ -6222,7 +6247,7 @@ Profile.dumps(self, **kw) -> str
 hk.profile.replay(path) -> List[Dict[str, Any]]
 ```
 
-*New after 0.4.0* (the `hk.profile` module is not in the 0.4.0 wheel)
+*New after 0.5.0* (the `hk.profile` module is not in the 0.5.0 wheel)
 
 The per-kernel reports of a `record=` file, recomputed from its raw
 measurements -- no GPU, no profiler: how the verdict logic is tested
@@ -6234,7 +6259,7 @@ and how a change to it is checked against past runs.
 hk.profile.compare(a: Profile, b: Profile) -> Dict[str, Any]
 ```
 
-*New after 0.4.0* (the `hk.profile` module is not in the 0.4.0 wheel)
+*New after 0.5.0* (the `hk.profile` module is not in the 0.5.0 wheel)
 
 `b` against `a`: the calls' times, and their slowest kernels' metrics
 side by side with a sentence on what differs.
@@ -6245,14 +6270,14 @@ side by side with a sentence on what differs.
 hk.profile.call_verdict(kernels: List[Dict[str, Any]]) -> Dict[str, Any]
 ```
 
-*New after 0.4.0* (the `hk.profile` module is not in the 0.4.0 wheel)
+*New after 0.5.0* (the `hk.profile` module is not in the 0.5.0 wheel)
 
 The call's verdict: its slowest kernel's, with that kernel's share of
 the call's kernel time.
 
 ### `hk.profile.SCHEMA`
 
-*New after 0.4.0* (the `hk.profile` module is not in the 0.4.0 wheel)
+*New after 0.5.0* (the `hk.profile` module is not in the 0.5.0 wheel)
 
 ```python
 1
@@ -6260,7 +6285,7 @@ the call's kernel time.
 
 ### `hk.profile.COMPARED`
 
-*New after 0.4.0* (the `hk.profile` module is not in the 0.4.0 wheel)
+*New after 0.5.0* (the `hk.profile` module is not in the 0.5.0 wheel)
 
 ```python
 [
@@ -6311,7 +6336,7 @@ the call's kernel time.
 hk.profile.analyze.kernel_report(arch: str, agent: Dict[str, Any], rec: Dict[str, Any], *, build: Optional[Dict[str, Any]] = None, isa: Optional[Dict[str, Any]] = None, call_bytes: Optional[float] = None, flops: Optional[float] = None, bytes_: Optional[float] = None, single: bool = False) -> Dict[str, Any]
 ```
 
-*New after 0.4.0* (the `hk.profile.analyze` module is not in the 0.4.0 wheel)
+*New after 0.5.0* (the `hk.profile.analyze` module is not in the 0.5.0 wheel)
 
 The per-kernel JSON (docs/profile.md#the-json): time, grid, roofline,
 matrix core, occupancy, stalls, LDS, caches, ISA, findings, verdict.
@@ -6333,7 +6358,7 @@ single   the call launches only this kernel (call_bytes is then its bytes
 hk.profile.analyze.findings(arch: str, k: Dict[str, Any]) -> List[Dict[str, Any]]
 ```
 
-*New after 0.4.0* (the `hk.profile.analyze` module is not in the 0.4.0 wheel)
+*New after 0.5.0* (the `hk.profile.analyze` module is not in the 0.5.0 wheel)
 
 What the numbers say, each {kind, cost, text, evidence}: `cost` is
 the share of the kernel's time the finding accounts for, where it can be
@@ -6345,7 +6370,7 @@ estimated (None where it is a bound, not a loss). Sorted by cost.
 hk.profile.analyze.verdict(arch: str, k: Dict[str, Any]) -> Dict[str, Any]
 ```
 
-*New after 0.4.0* (the `hk.profile.analyze` module is not in the 0.4.0 wheel)
+*New after 0.5.0* (the `hk.profile.analyze` module is not in the 0.5.0 wheel)
 
 The one line: what bounds the kernel, then what it loses, largest
 first -- {line, bound, losses: [kind...]}.
@@ -6356,7 +6381,7 @@ first -- {line, bound, losses: [kind...]}.
 hk.profile.analyze.grid_fit(arch: str, agent: Dict[str, Any], grid: Dict[str, Any], build: Optional[Dict[str, Any]] = None) -> Dict[str, Any]
 ```
 
-*New after 0.4.0* (the `hk.profile.analyze` module is not in the 0.4.0 wheel)
+*New after 0.5.0* (the `hk.profile.analyze` module is not in the 0.5.0 wheel)
 
 How the workgroups fill the GPU: workgroups a slot (a CU on CDNA, a
 WGP -- the LDS pool -- on RDNA) holds at once and what binds it, the
@@ -6420,7 +6445,7 @@ compiler's, from the build row, where hk built it).
 hk.profile.counters.derive(arch: str, raw: Dict[str, float], agent: Dict[str, Any], by_pass: Optional[Dict[str, Dict[str, float]]] = None) -> Dict[str, Any]
 ```
 
-*New after 0.4.0* (the `hk.profile.counters` module is not in the 0.4.0 wheel)
+*New after 0.5.0* (the `hk.profile.counters` module is not in the 0.5.0 wheel)
 
 {metric: value} from one kernel's raw counters (medians over the
 profiled dispatches) and the agent's facts (Cu_Count, Simd_Count,
@@ -6583,7 +6608,7 @@ does not skew another pass's metrics.
 hk.profile.isa.analyze(f: Function, *, att: Optional[Dict[int, Dict[str, int]]] = None, waves_traced: Optional[int] = None) -> Dict[str, Any]
 ```
 
-*New after 0.4.0* (the `hk.profile.isa` module is not in the 0.4.0 wheel)
+*New after 0.5.0* (the `hk.profile.isa` module is not in the 0.5.0 wheel)
 
 One kernel's ISA summary (the JSON's `isa`): the whole kernel's mix,
 the loops and the main one, the prologue before it and the epilogue
@@ -6595,7 +6620,7 @@ after it, and with a thread trace the cycles each part took.
 hk.profile.isa.classify(mnemonic: str, operands: str = '') -> str
 ```
 
-*New after 0.4.0* (the `hk.profile.isa` module is not in the 0.4.0 wheel)
+*New after 0.5.0* (the `hk.profile.isa` module is not in the 0.5.0 wheel)
 
 The class (`CLASSES`) of one instruction, from its mnemonic (and, for
 a buffer load, whether it writes LDS).
@@ -6606,7 +6631,7 @@ a buffer load, whether it writes LDS).
 hk.profile.isa.mma_flops(mnemonic: str, wave: int = 64) -> int
 ```
 
-*New after 0.4.0* (the `hk.profile.isa` module is not in the 0.4.0 wheel)
+*New after 0.5.0* (the `hk.profile.isa` module is not in the 0.5.0 wheel)
 
 FLOPs (multiply + add, so 2 a product) one wave's matrix instruction
 does: 2*M*N*K from its name (v_mfma_f32_16x16x32_bf16 -> 16384,
@@ -6620,7 +6645,7 @@ their block count.
 hk.profile.isa.code_object(path, arch: Optional[str] = None) -> bytes
 ```
 
-*New after 0.4.0* (the `hk.profile.isa` module is not in the 0.4.0 wheel)
+*New after 0.5.0* (the `hk.profile.isa` module is not in the 0.5.0 wheel)
 
 The AMDGPU code object hk built at `path`: a device-only `.co` as it
 is, or the one embedded in a host `.so`'s `.hip_fatbin`.
@@ -6631,7 +6656,7 @@ is, or the one embedded in a host `.so`'s `.hip_fatbin`.
 hk.profile.isa.disassemble(co: bytes, arch: str) -> List[Function]
 ```
 
-*New after 0.4.0* (the `hk.profile.isa` module is not in the 0.4.0 wheel)
+*New after 0.5.0* (the `hk.profile.isa` module is not in the 0.5.0 wheel)
 
 The kernels in a code object, disassembled (needs llvm-objdump).
 
