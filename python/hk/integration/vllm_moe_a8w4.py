@@ -10,7 +10,7 @@ attribute itself. A call hk takes keeps AITER's own sort and fused quant-sort (`
 - hk's stage 2 (`stage2_sorted`, the block's h resident in LDS) stores each weighted row by its
   (choice, token);
 - the top-k sum is a plain sum over choices, deterministic, unlike AITER's atomics.
-Everything else goes to AITER unchanged: decode sizes (M < `HK_MOE_A8W4_MIN_M`, default 2048),
+Everything else goes to AITER unchanged: M < `HK_MOE_A8W4_MIN_M` (default 8192, see MIN_M),
 CUDA-graph capture, other activations, quant types or gate modes, expert masks, biases, shared
 experts.
 
@@ -30,7 +30,11 @@ from . import engine
 _ORIG: Optional[Callable] = None
 #: Route hk-able calls to hk (True) or leave every call to AITER (False).
 ENABLED = True
-MIN_M = int(os.environ.get("HK_MOE_A8W4_MIN_M", "2048"))
+#: The smallest M hk takes: where it wins. Against AITER on DSV4.1's TP2 shapes (K1, c32-c34):
+#: 1.18x at 8192, 1.15-1.16x at 16384, 1.06-1.08x at 5120, and 0.90x at 2048. At small M both
+#: are bound by streaming every expert's weights (2.26 GB); AITER is within 10% of that floor,
+#: and hk re-reads x across its column blocks. So the route starts at 8192.
+MIN_M = int(os.environ.get("HK_MOE_A8W4_MIN_M", "8192"))
 #: Token tiles a block (moe_sorting's block_size / 16): K1 c18-c23 measured 4 best.
 MT = int(os.environ.get("HK_MOE_A8W4_MT", "4"))
 
