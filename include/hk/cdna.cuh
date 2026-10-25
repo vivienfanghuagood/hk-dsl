@@ -758,6 +758,21 @@ __device__ inline static void store_bounded(const GL &dst, const RT &src, const 
     detail::hk_store_tile(dst, src, idx, limit);
 }
 
+namespace detail {
+/// hk.atomic_scalar's ops by code: 0 add, 1 max, 2 min, 3 or, 4 and, 5 xor, 6 exch (relaxed, at SCOPE).
+template<int SCOPE> __device__ inline int hk_atomic_op(int *p, int v, int op) {
+    switch (op) {
+    case 1: return __hip_atomic_fetch_max(p, v, __ATOMIC_RELAXED, SCOPE);
+    case 2: return __hip_atomic_fetch_min(p, v, __ATOMIC_RELAXED, SCOPE);
+    case 3: return __hip_atomic_fetch_or(p, v, __ATOMIC_RELAXED, SCOPE);
+    case 4: return __hip_atomic_fetch_and(p, v, __ATOMIC_RELAXED, SCOPE);
+    case 5: return __hip_atomic_fetch_xor(p, v, __ATOMIC_RELAXED, SCOPE);
+    case 6: return __hip_atomic_exchange(p, v, __ATOMIC_RELAXED, SCOPE);
+    default: return __hip_atomic_fetch_add(p, v, __ATOMIC_RELAXED, SCOPE);
+    }
+}
+}  // namespace detail
+
 /* ------------------------------------------------------------------------
  * Scoped accesses and signals (hk.comm): hand-offs between XCDs and GPUs.
  *
@@ -871,12 +886,8 @@ __device__ inline static int atomic_scalar_scoped(const GL &dst, const COORD &id
     int old = 0;
     if (laneid() == 0) {
         int *p = (int *)&dst[(idx.template unit_coord<-1, 3>())];
-        if constexpr (AUX == 17)
-            old = op == 0 ? __hip_atomic_fetch_add(p, v, __ATOMIC_RELAXED, __HIP_MEMORY_SCOPE_SYSTEM)
-                          : __hip_atomic_fetch_max(p, v, __ATOMIC_RELAXED, __HIP_MEMORY_SCOPE_SYSTEM);
-        else
-            old = op == 0 ? __hip_atomic_fetch_add(p, v, __ATOMIC_RELAXED, __HIP_MEMORY_SCOPE_AGENT)
-                          : __hip_atomic_fetch_max(p, v, __ATOMIC_RELAXED, __HIP_MEMORY_SCOPE_AGENT);
+        old = AUX == 17 ? detail::hk_atomic_op<__HIP_MEMORY_SCOPE_SYSTEM>(p, v, op)
+                        : detail::hk_atomic_op<__HIP_MEMORY_SCOPE_AGENT>(p, v, op);
     }
     return __builtin_amdgcn_readfirstlane(old);
 }
@@ -1970,6 +1981,27 @@ __device__ inline static void load_w4(RT &dst, const QL &qw, const SL &s, const 
 }
 #endif
 
+namespace detail {
+/// An element access with the cache-policy scope AUX (16 device, 17 system): a relaxed atomic of that
+/// scope, which LLVM's memory model lowers to the SC1 / SC0|SC1 load or store (32-bit elements).
+template<int AUX, typename U> __device__ inline U hk_ld_aux(const U *p) {
+    if constexpr (AUX == 0) return *p;
+    else {
+        static_assert(sizeof(U) == 4, "a scoped vector access moves 32-bit elements");
+        return __hip_atomic_load(p, __ATOMIC_RELAXED,
+                                 AUX == 17 ? __HIP_MEMORY_SCOPE_SYSTEM : __HIP_MEMORY_SCOPE_AGENT);
+    }
+}
+template<int AUX, typename U> __device__ inline void hk_st_aux(U *p, U v) {
+    if constexpr (AUX == 0) *p = v;
+    else {
+        static_assert(sizeof(U) == 4, "a scoped vector access moves 32-bit elements");
+        __hip_atomic_store(p, v, __ATOMIC_RELAXED,
+                           AUX == 17 ? __HIP_MEMORY_SCOPE_SYSTEM : __HIP_MEMORY_SCOPE_AGENT);
+    }
+}
+}  // namespace detail
+
 #if defined(KITTENS_CDNA3)
 /*
  * Register vectors <-> global and shared memory, on include/cdna3.
@@ -1984,7 +2016,7 @@ __device__ inline static void load_w4(RT &dst, const QL &qw, const SL &s, const 
  * ortho vector one entry at 16w + l%16; a naive one 64w + l.
  */
 namespace detail {
-template<typename RV, typename U> __device__ inline void hk_rv_load(RV &dst, const U *p) {
+template<typename RV, typename U, int AUX = 0> __device__ inline void hk_rv_load(RV &dst, const U *p) {
     using T = typename base_types::packing<typename RV::dtype>::unpacked_type;
     const int lane = laneid();
     #pragma unroll
@@ -1993,19 +2025,19 @@ template<typename RV, typename U> __device__ inline void hk_rv_load(RV &dst, con
             #pragma unroll
             for (int k = 0; k < RV::inner_dim; k++) {
                 const int c = 16 * w + 4 * (lane / 16) + 2 * k;
-                dst.data[w][k].x = base_types::convertor<T, U>::convert(p[c]);
-                dst.data[w][k].y = base_types::convertor<T, U>::convert(p[c + 1]);
+                dst.data[w][k].x = base_types::convertor<T, U>::convert(hk_ld_aux<AUX>(p + c));
+                dst.data[w][k].y = base_types::convertor<T, U>::convert(hk_ld_aux<AUX>(p + c + 1));
             }
         } else if constexpr (std::is_same_v<typename RV::layout, ortho_l>) {
-            dst.data[w][0] = base_types::convertor<T, U>::convert(p[16 * w + lane % 16]);
+            dst.data[w][0] = base_types::convertor<T, U>::convert(hk_ld_aux<AUX>(p + 16 * w + lane % 16));
         } else {
             const int i = 64 * w + lane;
-            if (i < RV::length) dst.data[w][0] = base_types::convertor<T, U>::convert(p[i]);
+            if (i < RV::length) dst.data[w][0] = base_types::convertor<T, U>::convert(hk_ld_aux<AUX>(p + i));
         }
     }
 }
 /// One lane of each group holding an entry writes it.
-template<typename RV, typename U> __device__ inline void hk_rv_store(U *p, const RV &src) {
+template<typename RV, typename U, int AUX = 0> __device__ inline void hk_rv_store(U *p, const RV &src) {
     using T = typename base_types::packing<typename RV::dtype>::unpacked_type;
     const int lane = laneid();
     #pragma unroll
@@ -2015,15 +2047,15 @@ template<typename RV, typename U> __device__ inline void hk_rv_store(U *p, const
                 #pragma unroll
                 for (int k = 0; k < RV::inner_dim; k++) {
                     const int c = 16 * w + 4 * (lane / 16) + 2 * k;
-                    p[c]     = hk_cvt<U, T>(src.data[w][k].x);
-                    p[c + 1] = hk_cvt<U, T>(src.data[w][k].y);
+                    hk_st_aux<AUX>(p + c, hk_cvt<U, T>(src.data[w][k].x));
+                    hk_st_aux<AUX>(p + c + 1, hk_cvt<U, T>(src.data[w][k].y));
                 }
             }
         } else if constexpr (std::is_same_v<typename RV::layout, ortho_l>) {
-            if (lane < 16) p[16 * w + lane] = hk_cvt<U, T>(src.data[w][0]);
+            if (lane < 16) hk_st_aux<AUX>(p + 16 * w + lane, hk_cvt<U, T>(src.data[w][0]));
         } else {
             const int i = 64 * w + lane;
-            if (i < RV::length) p[i] = hk_cvt<U, T>(src.data[w][0]);
+            if (i < RV::length) hk_st_aux<AUX>(p + i, hk_cvt<U, T>(src.data[w][0]));
         }
     }
 }
@@ -2037,6 +2069,15 @@ template<ducks::rv::all RV, typename U, ducks::coord::vec COORD=coord<RV>>
 __device__ inline static void store(const strided_gl<U> &dst, const RV &src, const COORD &idx) {
     detail::hk_rv_store((U *)&dst[(idx.template unit_coord<-1, 3>())], src);
 }
+/** @brief load() / store() of a register vector with the access scope AUX (hk.comm; 32-bit elements). */
+template<int AUX, ducks::rv::all RV, typename U, ducks::coord::vec COORD=coord<RV>>
+__device__ inline static void load_scoped(RV &dst, const strided_gl<U> &src, const COORD &idx) {
+    detail::hk_rv_load<RV, U, AUX>(dst, (const U *)&src[(idx.template unit_coord<-1, 3>())]);
+}
+template<int AUX, ducks::rv::all RV, typename U, ducks::coord::vec COORD=coord<RV>>
+__device__ inline static void store_scoped(const strided_gl<U> &dst, const RV &src, const COORD &idx) {
+    detail::hk_rv_store<RV, U, AUX>((U *)&dst[(idx.template unit_coord<-1, 3>())], src);
+}
 template<ducks::rv::all RV, typename U, size_t N>
 __device__ inline static void load(RV &dst, const sv<U, N> &src) {
     static_assert(N == RV::length, "vector lengths differ");
@@ -2046,6 +2087,37 @@ template<ducks::rv::all RV, typename U, size_t N>
 __device__ inline static void store(sv<U, N> &dst, const RV &src) {
     static_assert(N == RV::length, "vector lengths differ");
     detail::hk_rv_store(&dst.data[0], src);
+}
+#endif
+
+#if defined(KITTENS_CDNA4)
+/**
+ * @brief load() / store() of a register vector with the access scope AUX (hk.comm; 32-bit elements),
+ * on HipKittens' CDNA4 vector layouts: ortho (a row tile's col_vec: lane l holds entry l % reductions of
+ * each block of `reductions`) -- what a per-row scale is. The addresses are HipKittens' own load/store.
+ */
+template<int AUX, ducks::rv::all RV, typename GL, ducks::coord::vec COORD=coord<RV>>
+__device__ inline static void load_scoped(RV &dst, const GL &src, const COORD &idx) {
+    using U = typename GL::dtype;
+    using T = typename base_types::packing<typename RV::dtype>::unpacked_type;
+    static_assert(std::is_same_v<typename RV::layout, ortho_l>, "a scoped vector is a col_vec of a row tile (ortho)");
+    const U *p = (const U *)&src[(idx.template unit_coord<-1, 3>())];
+    const int lane = laneid();
+    #pragma unroll
+    for (int w = 0; w < RV::outer_dim; w++)
+        dst[w][0] = base_types::convertor<T, U>::convert(detail::hk_ld_aux<AUX>(p + w * RV::reductions + lane % RV::reductions));
+}
+template<int AUX, ducks::rv::all RV, typename GL, ducks::coord::vec COORD=coord<RV>>
+__device__ inline static void store_scoped(const GL &dst, const RV &src, const COORD &idx) {
+    using U = typename GL::dtype;
+    using T = typename base_types::packing<typename RV::dtype>::unpacked_type;
+    static_assert(std::is_same_v<typename RV::layout, ortho_l>, "a scoped vector is a col_vec of a row tile (ortho)");
+    U *p = (U *)&dst[(idx.template unit_coord<-1, 3>())];
+    const int lane = laneid();
+    #pragma unroll
+    for (int w = 0; w < RV::outer_dim; w++)
+        if (lane < RV::reductions)   // the entries are replicated over the lanes; one writer each
+            detail::hk_st_aux<AUX>(p + w * RV::reductions + lane, detail::hk_cvt<U, T>(src[w][0]));
 }
 #endif
 
@@ -2180,7 +2252,7 @@ __device__ inline static int atomic_scalar(const GL &dst, const COORD &idx, int 
     int old = 0;
     if (laneid() == 0) {
         int *p = (int *)&dst[(idx.template unit_coord<-1, 3>())];
-        old = op == 0 ? atomicAdd(p, v) : atomicMax(p, v);
+        old = detail::hk_atomic_op<__HIP_MEMORY_SCOPE_AGENT>(p, v, op);
     }
     return __builtin_amdgcn_readfirstlane(old);
 }

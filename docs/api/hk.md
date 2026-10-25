@@ -1450,6 +1450,57 @@ View.atomic_max_scalar(self, value) -> Int
 
 One int32 atomic max per warp; the value before it.
 
+#### `View.atomic_min_scalar`
+
+```python
+View.atomic_min_scalar(self, value) -> Int
+```
+
+*New after 0.5.0*
+
+One int32 atomic min per warp; the value before it.
+
+#### `View.atomic_or_scalar`
+
+```python
+View.atomic_or_scalar(self, value) -> Int
+```
+
+*New after 0.5.0*
+
+One int32 atomic or per warp; the value before it (a set of flags: bit w = workgroup w).
+
+#### `View.atomic_and_scalar`
+
+```python
+View.atomic_and_scalar(self, value) -> Int
+```
+
+*New after 0.5.0*
+
+One int32 atomic and per warp; the value before it.
+
+#### `View.atomic_xor_scalar`
+
+```python
+View.atomic_xor_scalar(self, value) -> Int
+```
+
+*New after 0.5.0*
+
+One int32 atomic xor per warp; the value before it.
+
+#### `View.atomic_exch_scalar`
+
+```python
+View.atomic_exch_scalar(self, value) -> Int
+```
+
+*New after 0.5.0*
+
+One int32 atomic exchange per warp: stores `value`, returns the value before it (a
+lock's take, a slot's claim). W warps that call it exchange W times.
+
 ### `hk.SharedTile`
 
 An LDS tile, or a stack of them (`As[i]` picks one).

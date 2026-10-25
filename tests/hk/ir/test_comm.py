@@ -81,12 +81,30 @@ def test_scoped_accesses_are_gfx950s():
         _kernel(body, "comm_rdna", arch="gfx1100").trace()
 
 
-def test_a_scoped_tensor_moves_register_tiles():
+def test_a_scoped_tensor_moves_tiles_and_32_bit_vectors():
     def body(peer: hk.Tensor[hk.fp32, "system"], x: hk.Tensor[hk.fp32]):
-        v = x[hk.tile_coord(0, 0, 0, 0)].load(hk.col_vec(hk.RT(hk.fp32, 16, 64)))
-        peer[hk.tile_coord(0, 0, 0, 0)] = v
-    with pytest.raises(TypeError, match="register tiles"):
-        _kernel(body, "comm_vec").trace()
+        v = x[hk.elem_coord(0, 0, 0, 0)].load(hk.col_vec(hk.RT(hk.fp32, 16, 64)))
+        peer[hk.elem_coord(0, 0, 0, 0)] = v
+        x[hk.elem_coord(0, 0, 0, 16)] = peer[hk.elem_coord(0, 0, 0, 32)].load(hk.col_vec(hk.RT(hk.fp32, 16, 64)))
+    src = _kernel(body, "comm_vec").source()
+    assert "kittens::store_scoped<17>(g.peer, " in src and "kittens::load_scoped<17>(" in src
+
+    def body16(peer: hk.Tensor[hk.bf16, "system"], x: hk.Tensor[hk.bf16]):
+        v = x[hk.elem_coord(0, 0, 0, 0)].load(hk.col_vec(hk.RT(hk.fp32, 16, 64)))
+        peer[hk.elem_coord(0, 0, 0, 0)] = v
+    with pytest.raises(TypeError, match="32-bit"):
+        _kernel(body16, "comm_vec16").trace()
+
+
+def test_scoped_and_plain_atomics_have_every_fetch_op():
+    def body(cnt: hk.Tensor[i32, "system"], loc: hk.Tensor[i32]):
+        for i, f in enumerate(("add", "max", "min", "or", "and", "xor", "exch")):
+            getattr(cnt.at[i], f"atomic_{f}_scalar")(1)
+            getattr(loc.at[i], f"atomic_{f}_scalar")(1)
+    src = _kernel(body, "comm_fetch_ops").source()
+    for code in range(7):
+        assert f"kittens::atomic_scalar_scoped<17>(g.cnt, " in src
+        assert src.count(f", {code});") >= 2, code
 
 
 def test_scoped_atomics_carry_the_scope():
