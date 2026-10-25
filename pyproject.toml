@@ -6,13 +6,14 @@ build-backend = "setuptools.build_meta"
 name = "hk-dsl"
 version = "0.5.0"
 description = "AMD GPU kernels in Python (RDNA3/4, CDNA3/4) over an MLIR dialect, generating HipKittens C++"
-readme = "README.md"
 requires-python = ">=3.9"
 license = { text = "MIT" }
 # numpy and typing_extensions are what the MLIR Python bindings import.
 dependencies = ["pybind11>=2.10", "numpy", "typing_extensions"]
+# The description is README.md with its relative links made absolute at the
+# release's tag, so they work on the package index: see setup.py.
+dynamic = ["readme"]
 
-# The README's links are relative, which resolve nowhere on a package index.
 [project.urls]
 Homepage = "https://github.com/vivienfanghuagood/hk-dsl"
 Documentation = "https://github.com/vivienfanghuagood/hk-dsl/tree/main/docs"
