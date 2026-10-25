@@ -148,6 +148,66 @@ def test_a_resident_grid_that_cannot_fit_is_refused():
         k(torch.zeros(cap + 1, dtype=torch.int32, device="cuda"), N=cap + 1)
 
 
+@pytest.mark.skipif(os.environ.get("HK_ARCH") != "gfx950", reason="hk.comm is gfx950's")
+def test_every_fetch_op_is_atomic_across_workgroups():
+    def body(cnt: hk.Tensor[i32, "device"], old: hk.Tensor[i32], bits: hk.Tensor[i32]):
+        w = hk.arch.block_idx.x
+        cnt.at[0].atomic_add_scalar(1)
+        cnt.at[16].atomic_max_scalar(w)
+        cnt.at[32].atomic_min_scalar(w)
+        cnt.at[48].atomic_or_scalar(bits.at[w].load_scalar())             # 1 << (w % 31)
+        cnt.at[64].atomic_and_scalar(bits.at[256 + w].load_scalar())      # ~(1 << (w % 31))
+        cnt.at[80].atomic_xor_scalar(w)
+        old.at[w].atomic_max_scalar(cnt.at[96].atomic_exch_scalar(w))
+    k = hk.kernel(body, warps=1, name="comm_fetch_ops_gpu", grid=lambda p: (p.old.cols, 1, 1))
+    n = 256
+    cnt = torch.zeros(128, dtype=torch.int32, device="cuda")
+    cnt[32] = 1 << 30; cnt[64] = -1; cnt[96] = -7
+    old = torch.full((n,), -100, dtype=torch.int32, device="cuda")
+    b = [1 << (w % 31) for w in range(n)]
+    bits = torch.tensor(b + [~x for x in b], dtype=torch.int32, device="cuda")
+    k(cnt, old, bits)
+    torch.cuda.synchronize()
+    xor = 0
+    for w in range(n):
+        xor ^= w
+    assert int(cnt[0]) == n and int(cnt[16]) == n - 1 and int(cnt[32]) == 0
+    assert int(cnt[48]) == (1 << 31) - 1 and int(cnt[64]) == ~((1 << 31) - 1) and int(cnt[80]) == xor
+    # exchange: the values handed back are the initial one and every workgroup's but the last
+    got = sorted(old.tolist() + [int(cnt[96])])
+    assert got == sorted([-7] + list(range(n)))
+
+
+@pytest.mark.skipif(os.environ.get("HK_ARCH") != "gfx950", reason="hk.comm is gfx950's")
+def test_a_scoped_vector_crosses_xcds():
+    vt = hk.col_vec(hk.RT(hk.fp32, 16, 32))
+
+    def body(src: hk.Tensor[hk.fp32], data: hk.Tensor[hk.fp32, "device"], alias: hk.Tensor[hk.fp32],
+             sync: hk.Tensor[i32, "device"], out: hk.Tensor[hk.fp32], junk: hk.Tensor[hk.fp32],
+             *, ROUNDS: int = 1000):
+        if hk.arch.block_idx.x == 0:
+            for r in hk.range(1, ROUNDS + 1):
+                hk.comm.wait(sync.at[ACK], r - 1, timeout_s=1.0)
+                data[hk.elem_coord(0, 0, 0, 0)] = src[hk.elem_coord(0, 0, 0, 16 * (r % SLOTS))].load(vt)
+                hk.comm.signal(sync.at[0], r)
+        if hk.arch.block_idx.x == 1:
+            for r in hk.range(1, ROUNDS + 1):
+                junk[hk.elem_coord(0, 0, 0, 0)] = alias[hk.elem_coord(0, 0, 0, 0)].load(vt)
+                hk.comm.wait(sync.at[0], r, timeout_s=1.0)
+                out[hk.elem_coord(0, 0, 0, 16 * (r - 1))] = data[hk.elem_coord(0, 0, 0, 0)].load(vt)
+                hk.comm.signal(sync.at[ACK], r)
+    k = hk.kernel(body, warps=1, name="comm_xcd_vec", grid=lambda p: (16, 1, 1))
+    rounds = 1000
+    src = torch.arange(SLOTS * 16, dtype=torch.float32, device="cuda")
+    data = torch.zeros(16, dtype=torch.float32, device="cuda")
+    sync = torch.zeros(128, dtype=torch.int32, device="cuda")
+    out = torch.zeros(rounds * 16, dtype=torch.float32, device="cuda")
+    k(src, data, data, sync, out, torch.zeros_like(data), ROUNDS=rounds)
+    torch.cuda.synchronize()
+    want = torch.cat([src[16 * (r % SLOTS):16 * (r % SLOTS) + 16] for r in range(1, rounds + 1)])
+    assert torch.equal(out, want)
+
+
 # ---------------------------------------------------------------- two GPUs
 
 def _gpu_kernels():
