@@ -1207,6 +1207,24 @@ all of `ids`), reads zeros -- the padding a MoE sort fills its index
 list with costs no branch. `div` is how many index values name one
 row: a MoE's top-k, whose sorted list counts (token, choice) pairs.
 
+#### `Global.scatter_add_lds`
+
+```python
+Global.scatter_add_lds(self, src: SharedTile, ids: Global, at, *, count=None, col=0, sort_topk: int = 0) -> None
+```
+
+*New after 0.4.0*
+
+A warp's own bf16 LDS tile added into this bf16 tensor's rows by index, atomically:
+row r of `src` into row `ids[at + r]` (with `sort_topk`, AITER sort ids: the token's
+row of an [M, ...] tensor; padding nowhere) from column `col`. Lanes take consecutive
+column pairs of one row (gfx950's packed bf16 atomic), so an instruction covers a few
+rows of contiguous bytes: 310 G pk-adds/s on an MI355X, where `scatter(add=True)` from
+a register tile (16 rows of 16 bytes an instruction) gets 85. Even so, a bf16 atomic
+reduce is bounded by that rate -- 0.8 ms for DeepSeek-V4.1's top-6 at 16k tokens, 4x a
+plain sum pass (K1 c33). Store the tile with `src.store(...)` first; the sum is in no
+fixed order.
+
 #### `Global.scatter`
 
 ```python

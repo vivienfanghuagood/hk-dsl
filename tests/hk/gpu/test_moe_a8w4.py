@@ -276,6 +276,11 @@ def test_sorted_stages_match_dequant(mt, pp1, pp2, depth, pers, I):
                              M.aiter_layout_w2_scale(w2s).to(dev), sid, se, nv, sw, T, topk, E,
                              mt=mt, pp=pp2, resident=2)
         assert torch.equal(yr, y2)
+        # and with the top-k sum by row-contiguous bf16 atomics from a warp's LDS tile
+        yra = M.stage2_sorted(hq, mxfp8.aiter_scales(hs), M.aiter_layout_w2(w2).to(dev),
+                              M.aiter_layout_w2_scale(w2s).to(dev), sid, se, nv, sw, T, topk, E,
+                              mt=mt, pp=pp2, resident=2, atomic=True)
+        assert ((yra.float() - out.float()).abs().max() / out.float().abs().max()).item() < 1e-2
     assert torch.equal(out, M.reduce(y2, None, wt, T, dense=True))
     # the top-k sum by bf16 atomics in the scatter (AITER's way): the same up to the adds' rounding
     if pers:

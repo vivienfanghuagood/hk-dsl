@@ -1186,6 +1186,11 @@ private:
             name(o.getAt()) + ", " + name(o.getCount()) + ", " +
             name(o.getCol()) + ");");
         })
+        .Case([&](ScatterAddLdsOp o) {
+          w("kittens::scatter_add_lds<" + std::to_string(o.getSortTopk()) + ">(" +
+            name(o.getDst()) + ", " + name(o.getSrc()) + ", " + name(o.getIdx()) + ", " +
+            name(o.getAt()) + ", " + name(o.getCount()) + ", " + name(o.getCol()) + ");");
+        })
         .Case([&](AtomicAddOp o) {
           w("kittens::atomic_add(" + name(o.getDst()) + ", " +
             name(o.getValue()) + ", " +

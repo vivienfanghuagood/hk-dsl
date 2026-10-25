@@ -245,6 +245,26 @@ def HK_ScatterRowsOp : HK_Op<"scatter_rows"> {
   let hasVerifier = 1;
 }
 
+def HK_ScatterAddLdsOp : HK_Op<"scatter_add_lds"> {
+  let summary = "a warp's LDS tile added into global rows by index, atomically, row-contiguous";
+  let description = [{
+    The atomic twin of scatter_rows for an epilogue: src (bf16, a warp's own LDS tile, written
+    by that warp) row r is added into dst row idx[at + r] from column `col` with gfx950's
+    packed bf16 atomic add. Lanes take consecutive column pairs of one row, so one instruction
+    covers 64 / (cols / 2) rows of 4 * (cols / 2) contiguous bytes each -- a register tile's
+    own layout would touch 16 rows of 16 bytes. sort_topk > 0: idx holds AITER's MoE sort ids
+    (token | choice << 24) and the row is the token's (dst [M, ...]), padding (token >= M)
+    nowhere. Positions at or past `count` add nothing. The sum is in no fixed order.
+  }];
+  let arguments = (ins HK_GlobalType:$dst, HK_SharedTileType:$src, HK_GlobalType:$idx,
+                       I32:$at, I32:$count, I32:$col, DefaultValuedAttr<I64Attr, "0">:$sort_topk);
+  let assemblyFormat = [{
+    $src `,` $dst `[` $idx `[` $at `,` $count `]` `,` $col `]` attr-dict `:`
+    qualified(type($src)) `,` qualified(type($dst)) `,` qualified(type($idx))
+  }];
+  let hasVerifier = 1;
+}
+
 def HK_AtomicAddOp : HK_Op<"atomic_add"> {
   let summary = "add an fp32 register tile into a float global, atomically";
   let arguments = (ins HK_GlobalType:$dst, HK_RegTileType:$value,
