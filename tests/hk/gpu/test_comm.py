@@ -473,3 +473,141 @@ def test_tile_signals_through_a_double_buffered_symmetric_buffer():
     got = {k: (e, n) for k, e, n in (q.get(timeout=60) for _ in range(2))}
     assert got["p"][0] == 0 and got["c"][0] == 0, f"a wait timed out: {got}"
     assert got["c"][1] == 0, f"{got['c'][1]} rows of {TR} rounds read the wrong tile"
+
+
+# ---------------------------------------------------------------- tagged mailboxes
+# post / take: a one-int32 message as ONE 8-byte store (value, tag). A ping-pong of R rounds: one side
+# posts round r's value with tag r, the other takes it and posts value + 1 back with tag r; the slot is
+# reused only after its message was taken (the reply is the ack).
+
+@hk.func
+def _pingpong(a, b, out, err, side, rounds):
+    # side 0 posts into `b` and takes from `a`; side 1 takes from `b` and posts into `a`
+    if side == 0:
+        for r in hk.range(1, rounds + 1):
+            hk.comm.post(b.at[0], 3 * r, r)
+            v = hk.comm.take(a.at[0], r, timeout_s=2.0, error=err.at[0])
+            out.at[r - 1].atomic_max_scalar(v)
+    if side == 1:
+        for r in hk.range(1, rounds + 1):
+            v = hk.comm.take(b.at[0], r, timeout_s=2.0, error=err.at[0])
+            hk.comm.post(a.at[0], v + 1, r)
+            out.at[rounds + r - 1].atomic_max_scalar(v)
+
+
+def _pingpong_xcd_kernel():
+    def body(a: hk.Tensor[i32, "device"], b: hk.Tensor[i32, "device"], out: hk.Tensor[i32],
+             err: hk.Tensor[i32], *, ROUNDS: int = 2000):
+        _pingpong(a, b, out, err, hk.arch.block_idx.x, ROUNDS)    # workgroups 0 and 1
+    # 16 workgroups: 0 and 1 are dealt to different XCDs (round robin over 8)
+    return hk.kernel(body, warps=1, name="comm_mailbox_xcd", grid=lambda p: (16, 1, 1))
+
+
+def _pingpong_gpu_kernel():
+    def body(a: hk.Tensor[i32, "system"], b: hk.Tensor[i32, "system"], out: hk.Tensor[i32],
+             err: hk.Tensor[i32], *, SIDE: int = 0, ROUNDS: int = 2000):
+        _pingpong(a, b, out, err, SIDE, ROUNDS)
+    return hk.kernel(body, warps=1, name="comm_mailbox_gpu", grid=lambda p: (1, 1, 1))
+
+
+def _flag_pingpong_kernel():
+    # the same ping-pong through the data + signal / wait protocol (a 16 x 64 bf16 tile and a flag),
+    # for the latency comparison: side 0 stores into `db` and flags `fb`, side 1 answers into `da`
+    def body(da: hk.Tensor[hk.bf16, "system"], db: hk.Tensor[hk.bf16, "system"],
+             fa: hk.Tensor[i32, "system"], fb: hk.Tensor[i32, "system"], err: hk.Tensor[i32],
+             *, SIDE: int = 0, ROUNDS: int = 2000):
+        at0 = hk.tile_coord(0, 0, 0, 0)
+        if SIDE == 0:
+            for r in hk.range(1, ROUNDS + 1):
+                db[at0] = da[at0].load(T)
+                hk.comm.signal(fb.at[0], r)
+                hk.comm.wait(fa.at[0], r, timeout_s=2.0, error=err.at[0])
+        if SIDE == 1:
+            for r in hk.range(1, ROUNDS + 1):
+                hk.comm.wait(fb.at[0], r, timeout_s=2.0, error=err.at[0])
+                da[at0] = db[at0].load(T)
+                hk.comm.signal(fa.at[0], r)
+    return hk.kernel(body, warps=1, name="comm_flag_pingpong", grid=lambda p: (1, 1, 1))
+
+
+def _pingpong_want(rounds):
+    r = torch.arange(1, rounds + 1, dtype=torch.int32, device="cuda")
+    return torch.cat([3 * r + 1, 3 * r])     # side 0 got the replies, side 1 the posts
+
+
+@pytest.mark.skipif(os.environ.get("HK_ARCH") != "gfx950", reason="hk.comm is gfx950's")
+def test_tagged_mailboxes_ping_pong_between_xcds():
+    rounds = 2000
+    # the two boxes a cache line apart
+    box = torch.zeros(128, dtype=torch.int32, device="cuda")
+    out = torch.full((2 * rounds,), -1, dtype=torch.int32, device="cuda")
+    err = torch.zeros(1, dtype=torch.int32, device="cuda")
+    _pingpong_xcd_kernel()(box[:64], box[64:], out, err, ROUNDS=rounds)
+    torch.cuda.synchronize()
+    assert int(err[0]) == 0
+    assert int((out != _pingpong_want(rounds)).sum()) == 0
+
+
+def _mailbox_rank(rank, port, rounds, q):
+    import torch.distributed as dist
+
+    from hk.runtime import SymmetricBuffer
+
+    os.environ.update(MASTER_ADDR="127.0.0.1", MASTER_PORT=str(port))
+    torch.cuda.set_device(rank)
+    dist.init_process_group("gloo", rank=rank, world_size=2)
+    try:
+        buf = SymmetricBuffer(64 * 1024, None)
+        # each rank's box: 64 ints at offset 0 of its own buffer
+        mine = buf.local(torch.int32, (64,), offset=0)
+        theirs = buf.peer(1 - rank, torch.int32, (64,), offset=0)
+        out = torch.full((2 * rounds,), -1, dtype=torch.int32, device="cuda")
+        err = torch.zeros(1, dtype=torch.int32, device="cuda")
+        k = _pingpong_gpu_kernel()
+        # rank 0 is side 0 (posts into the peer's box, takes from its own), rank 1 side 1
+        a, b = (mine, theirs) if rank == 0 else (theirs, mine)
+        k(a, b, out, err, SIDE=rank, ROUNDS=rounds)     # compile (ROUNDS is a constant) and warm up
+        torch.cuda.synchronize(); dist.barrier()
+        mine.zero_(); out.fill_(-1); torch.cuda.synchronize(); dist.barrier()
+        e0, e1 = torch.cuda.Event(True), torch.cuda.Event(True)
+        e0.record()
+        k(a, b, out, err, SIDE=rank, ROUNDS=rounds)
+        e1.record(); e1.synchronize()
+        half = _pingpong_want(rounds)[:rounds] if rank == 0 else _pingpong_want(rounds)[rounds:]
+        got = out[:rounds] if rank == 0 else out[rounds:]
+        us_box = e0.elapsed_time(e1) * 1e3 / rounds
+        # the data + flag protocol: tiles at 16 KiB, flags at 32 KiB of each rank's buffer
+        d_mine = buf.local(torch.bfloat16, (1, 1, 16, 64), offset=16 * 1024)
+        d_theirs = buf.peer(1 - rank, torch.bfloat16, (1, 1, 16, 64), offset=16 * 1024)
+        f_mine = buf.local(torch.int32, (64,), offset=32 * 1024)
+        f_theirs = buf.peer(1 - rank, torch.int32, (64,), offset=32 * 1024)
+        da, db, fa, fb = (d_mine, d_theirs, f_mine, f_theirs) if rank == 0 else (d_theirs, d_mine, f_theirs, f_mine)
+        kf = _flag_pingpong_kernel()
+        e2 = torch.zeros(1, dtype=torch.int32, device="cuda")
+        kf(da, db, fa, fb, e2, SIDE=rank, ROUNDS=rounds)
+        torch.cuda.synchronize(); dist.barrier()
+        f_mine.zero_(); torch.cuda.synchronize(); dist.barrier()
+        e0.record()
+        kf(da, db, fa, fb, e2, SIDE=rank, ROUNDS=rounds)
+        e1.record(); e1.synchronize()
+        us_flag = e0.elapsed_time(e1) * 1e3 / rounds
+        q.put((rank, int(err[0]) | int(e2[0]), int((got != half).sum()), us_box, us_flag))
+        dist.barrier()
+        buf.close()
+    finally:
+        dist.destroy_process_group()
+
+
+@pytest.mark.skipif(os.environ.get("HK_ARCH") != "gfx950", reason="hk.comm is gfx950's")
+def test_tagged_mailboxes_ping_pong_between_gpus():
+    if torch.cuda.device_count() < 2:
+        pytest.skip("needs two GPUs")
+    import torch.multiprocessing as mp
+
+    rounds = 2000
+    q = mp.get_context("spawn").Queue()
+    mp.spawn(_mailbox_rank, args=(29565, rounds, q), nprocs=2)
+    got = {k: (e, bad, us, usf) for k, e, bad, us, usf in (q.get(timeout=60) for _ in range(2))}
+    assert got[0][0] == 0 and got[1][0] == 0, f"a take or wait timed out: {got}"
+    assert got[0][1] == 0 and got[1][1] == 0, f"messages lost or torn: {got}"
+    print(f"round trip between GPUs: mailbox {got[0][2]:.2f} us, data tile + signal/wait {got[0][3]:.2f} us")

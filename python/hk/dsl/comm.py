@@ -19,6 +19,11 @@ The protocol, the one the litmus suite found correct in every placement:
 `signal` waits for this workgroup's stores to be acknowledged (vmcnt(0)),
 passes a barrier and stores the flag from one thread; `wait` polls with the
 scope and s_sleep backoff, and turns a hang into an error after `timeout_s`.
+
+A message that is one int32 needs neither: `post` stores (value, tag) as one
+8-byte store and `take` polls for the tag and returns the value -- one link
+crossing instead of data, drain, flag and a dependent read (8 B stores never
+tore over xGMI in the litmus suite).
 """
 
 from __future__ import annotations
@@ -32,6 +37,20 @@ from .values import Int, View, _i32, _i64, _t, as_int, scope_aux
 #: s_memrealtime runs at 100 MHz on gfx9 (not the shader clock: clock64() on
 #: gfx1100 is 20 bits and wraps, KernelWiki gfx1100-device-flags-unreliable).
 REALTIME_HZ = 100_000_000
+
+
+def _error(error, what: str):
+    if error is None:
+        return None, None
+    if not isinstance(error, View) or error.idx.unit != "element" or error.tensor.dtype is not i32:
+        raise TypeError(f"hk.comm.{what}(error=...) takes an int32 element view: err.at[0]")
+    return error.tensor.v, error.idx.v
+
+
+def _ticks(timeout_s: float, what: str) -> int:
+    if timeout_s < 0:
+        raise TypeError(f"hk.comm.{what}(timeout_s={timeout_s!r}): seconds >= 0")
+    return int(round(timeout_s * REALTIME_HZ))
 
 
 def _flag(view, what: str) -> int:
@@ -139,18 +158,40 @@ def wait(view, value, *, cmp: str = ">=", timeout_s: float = 2.0,
     aux = _flag(view, "wait")
     if cmp not in (">=", "=="):
         raise TypeError(f"hk.comm.wait(cmp={cmp!r}): \">=\" or \"==\"")
-    if timeout_s < 0:
-        raise TypeError(f"hk.comm.wait(timeout_s={timeout_s!r}): seconds >= 0")
-    ticks = int(round(timeout_s * REALTIME_HZ))
-    err = err_idx = None
-    if error is not None:
-        if not isinstance(error, View) or error.idx.unit != "element" or error.tensor.dtype is not i32:
-            raise TypeError("hk.comm.wait(error=...) takes an int32 element view: err.at[0]")
-        err, err_idx = error.tensor.v, error.idx.v
+    ticks = _ticks(timeout_s, "wait")
+    err, err_idx = _error(error, "wait")
     op = hkd.WaitOp(_i32(), view.tensor.v, view.idx.v, as_int(value).v,
                     "ge" if cmp == ">=" else "eq", _i64(ticks), _i64(aux),
                     err=err, err_idx=err_idx, loc=_t().loc("seen"))
     return Int(op.result, ScalarType(i32))
 
 
-__all__ = ["signal", "arrive", "claim", "wait", "barrier", "xcd_barrier", "REALTIME_HZ"]
+def post(view, value, tag) -> None:
+    """Post a tagged message: one thread stores `value` into the int32 element `view` (a scoped
+    tensor's) and `tag` into the next element, as ONE 8-byte store of the tensor's scope. The two
+    elements are the message's slot: start it at an even element of an 8-byte aligned tensor (the
+    kernel traps on a misaligned slot -- the store could tear). No drain and no barrier: the value
+    travels with its tag, so `take` sees both or neither; it orders nothing else, so a message
+    about *other* data is still `signal`'s job. A slot holds one message: the writer reuses it after
+    the reader has taken it (an ack), or posts round r into slot r % S with tag r.
+
+        hk.comm.post(box.at[0], count, r)        # writer
+        n = hk.comm.take(box.at[0], r)           # reader: the count of round r
+    """
+    aux = _flag(view, "post")
+    hkd.PostOp(view.tensor.v, view.idx.v, as_int(value).v, as_int(tag).v, _i64(aux), loc=_t().loc())
+
+
+def take(view, tag, *, timeout_s: float = 2.0, error: Optional[View] = None) -> Int:
+    """Take a tagged message: poll the slot `post` writes at the int32 element `view` (a scoped
+    tensor's) -- one 8-byte load of the tensor's scope a poll, s_sleep between -- until its tag
+    is `tag`, and return its value (wave-uniform). Every warp polls. Timeout and `error` as
+    `wait`."""
+    aux = _flag(view, "take")
+    err, err_idx = _error(error, "take")
+    op = hkd.TakeOp(_i32(), view.tensor.v, view.idx.v, as_int(tag).v, _i64(_ticks(timeout_s, "take")),
+                    _i64(aux), err=err, err_idx=err_idx, loc=_t().loc("taken"))
+    return Int(op.result, ScalarType(i32))
+
+
+__all__ = ["signal", "arrive", "claim", "wait", "barrier", "xcd_barrier", "post", "take", "REALTIME_HZ"]

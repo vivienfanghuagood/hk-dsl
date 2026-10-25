@@ -301,6 +301,36 @@ LogicalResult WaitOp::verify() {
   return verifyAux(*this, getAux());
 }
 
+LogicalResult PostOp::verify() {
+  if (!getIdx().getType().getElement())
+    return emitOpError("takes an element coordinate");
+  if (!getDst().getType().getElementType().isInteger(32))
+    return emitOpError("a mailbox is int32 elements");
+  if (!getAux())
+    return emitOpError("a post has a scope: aux 16 (device) or 17 (system)");
+  return verifyAux(*this, getAux());
+}
+
+LogicalResult TakeOp::verify() {
+  if (!getIdx().getType().getElement())
+    return emitOpError("takes an element coordinate");
+  if (!getSrc().getType().getElementType().isInteger(32))
+    return emitOpError("a mailbox is int32 elements");
+  if (!getAux())
+    return emitOpError("a take has a scope: aux 16 (device) or 17 (system)");
+  if (getTimeout() < 0)
+    return emitOpError("timeout is a tick count >= 0");
+  if (bool(getErr()) != bool(getErrIdx()))
+    return emitOpError("err and its element come together");
+  if (getErr()) {
+    if (!getErr().getType().getElementType().isInteger(32))
+      return emitOpError("err is an int32 element");
+    if (!getErrIdx().getType().getElement())
+      return emitOpError("err takes an element coordinate");
+  }
+  return verifyAux(*this, getAux());
+}
+
 LogicalResult PhiloxOp::verify() {
   if (failed(verifyDest(*this, getDst(), getResult())))
     return failure();

@@ -4143,12 +4143,19 @@ The protocol, the one the litmus suite found correct in every placement:
 passes a barrier and stores the flag from one thread; `wait` polls with the
 scope and s_sleep backoff, and turns a hang into an error after `timeout_s`.
 
+A message that is one int32 needs neither: `post` stores (value, tag) as one
+8-byte store and `take` polls for the tag and returns the value -- one link
+crossing instead of data, drain, flag and a dependent read (8 B stores never
+tore over xGMI in the litmus suite).
+
 - [`hk.comm.signal`](#hkcommsignal)
 - [`hk.comm.arrive`](#hkcommarrive)
 - [`hk.comm.claim`](#hkcommclaim)
 - [`hk.comm.wait`](#hkcommwait)
 - [`hk.comm.barrier`](#hkcommbarrier)
 - [`hk.comm.xcd_barrier`](#hkcommxcd_barrier)
+- [`hk.comm.post`](#hkcommpost)
+- [`hk.comm.take`](#hkcommtake)
 - [`hk.comm.REALTIME_HZ`](#hkcommrealtime_hz)
 
 ### `hk.comm.signal`
@@ -4243,6 +4250,38 @@ MI355X, 256 workgroups: 2.53 us a barrier against 3.71 flat. `cnt`: a "device"-s
 of at least 144 elements, zero at the first round; `epoch`: 1, 2, ... a round. The grid must be
 `resident=True` with `workgroups` a multiple of 8, spread evenly over the XCDs (as the hardware
 deals a resident grid: round robin) -- if not, the barrier times out into `error`.
+
+### `hk.comm.post`
+
+```python
+hk.comm.post(view, value, tag) -> None
+```
+
+*New after 0.5.0* (the `hk.dsl.comm` module is not in the 0.5.0 wheel)
+
+Post a tagged message: one thread stores `value` into the int32 element `view` (a scoped
+tensor's) and `tag` into the next element, as ONE 8-byte store of the tensor's scope. The two
+elements are the message's slot: start it at an even element of an 8-byte aligned tensor (the
+kernel traps on a misaligned slot -- the store could tear). No drain and no barrier: the value
+travels with its tag, so `take` sees both or neither; it orders nothing else, so a message
+about *other* data is still `signal`'s job. A slot holds one message: the writer reuses it after
+the reader has taken it (an ack), or posts round r into slot r % S with tag r.
+
+    hk.comm.post(box.at[0], count, r)        # writer
+    n = hk.comm.take(box.at[0], r)           # reader: the count of round r
+
+### `hk.comm.take`
+
+```python
+hk.comm.take(view, tag, *, timeout_s: float = 2.0, error: Optional[View] = None) -> Int
+```
+
+*New after 0.5.0* (the `hk.dsl.comm` module is not in the 0.5.0 wheel)
+
+Take a tagged message: poll the slot `post` writes at the int32 element `view` (a scoped
+tensor's) -- one 8-byte load of the tensor's scope a poll, s_sleep between -- until its tag
+is `tag`, and return its value (wave-uniform). Every warp polls. Timeout and `error` as
+`wait`.
 
 ### `hk.comm.REALTIME_HZ`
 
