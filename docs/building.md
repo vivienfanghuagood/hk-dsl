@@ -105,8 +105,19 @@ toolchain. It runs by hand with `gh workflow run pypi.yml -f tag=vX.Y.Z`, and
 on every published release once the repository variable `PYPI_PUBLISH` is
 `true`. It uses the `PYPI_API_TOKEN` secret of the `pypi` environment, or PyPI
 trusted publishing when that secret is not set. The repository has neither
-yet. 0.3.1, the first version on PyPI, and 0.4.0 were uploaded by hand with
+yet. 0.3.1, the first version on PyPI, through 0.6.0 were uploaded by hand with
 twine from the same manylinux wheels.
+
+**Known issue: the workflow cannot upload yet.** Run for v0.6.0 (run
+40186344465), it downloaded the release's wheels and then PyPI refused the
+exchange: "no corresponding publisher (Publisher with matching claims was not
+found)". The claims it presented were repository `vivienfanghuagood/hk-dsl`,
+workflow `.github/workflows/pypi.yml`, environment `pypi`. Fixing it is the
+PyPI project owner's step, on pypi.org: hk-dsl, Settings, Publishing, add a
+GitHub trusted publisher with those three values (or put a `PYPI_API_TOKEN`
+secret in the repository's `pypi` environment). Until then a release goes up
+with twine from the manylinux assets, after checking their sha256 against the
+GitHub release.
 
 `pyproject.toml` and `hk.__version__` say the last release's version until
 the next release raises both, so a wheel built from main between releases
@@ -126,7 +137,9 @@ What is in the wheel (`scripts/build_wheel.sh`, `pyproject.toml`):
 
 `OUT` changes the output directory (default `dist/`), and `ISOLATION=0`
 builds with the interpreter's own setuptools (>= 64), for a machine without an
-index to fetch one from. The package's dependencies are `pybind11>=2.10`,
+index to fetch one from. An older setuptools does not fail. Ubuntu 22.04's
+system 59.6 ignores `[project]` and builds `UNKNOWN-0.0.0-*.whl`, so build the
+cp310 wheel from a venv with a current setuptools. The package's dependencies are `pybind11>=2.10`,
 `numpy` and `typing_extensions`. torch is deliberately not one: hk traces and
 compiles without it, only launching needs it, and on a ROCm machine it is
 already installed by something with strong opinions about which build. The
