@@ -179,12 +179,14 @@ and pull request, on GitHub's `ubuntu-22.04` runner:
   skips there: the runner has neither vLLM nor SGLang.
 - **hipcc is installed from AMD's apt repository**, as `hip-dev` and
   `rocm-device-libs` of ROCm 7.1, about 2.3 GB.
-- **The codegen tier runs** (`tests/hk/codegen`), under pytest-xdist, split
-  over six runners by a stable hash of the test id
-  (`pytest --hk-shard I/6`, tests/hk/conftest.py); the IR tier runs on the
-  first. Each shard keeps its own compile cache in `actions/cache`, falling
-  back to any shard's, and a run restores the branch's, its base branch's or
-  `main`'s.
+- **The codegen tier runs** (`tests/hk/codegen`), under pytest-xdist.
+  - It is split over ten runners by a stable hash of the test id
+    (`pytest --hk-shard I/10`, tests/hk/conftest.py); the IR tier is an eleventh leg of
+    its own.
+  - Each shard keeps its own compile cache in `actions/cache`, falling back to any shard's.
+    A run restores the branch's cache, its base branch's, or `main`'s.
+  - Cold, six shards took 8-20 minutes a job (2.5 of setup, 2 of IR tier on the first);
+    hence ten, with the IR tier apart.
   - **What goes cold:** a kernel's cache key is hipcc plus the headers its own
     target includes (`runtime.compile.target_headers_fingerprint`: kittens.cuh,
     pyutils/, the arch tree, extra_includes). An edit to `include/hk/cdna.cuh`
