@@ -342,6 +342,20 @@ def test_a_fragment_on_a_target_without_tile_shapes_is_refused():
         k.trace()
 
 
+def test_the_spill_gate_refuses_memory_spills_not_sgpr_lane_spills():
+    """An SGPR spill with ScratchSize 0 went to VGPR lanes (v_writelane): no memory traffic,
+    nothing a hand-placed s_waitcnt can reorder against. A VGPR spill, or any scratch, is a wrong
+    answer and is refused (K1 c32: a per-expert buffer resource spilled 8 SGPRs to lanes)."""
+    import pytest as _pytest
+
+    from hk.runtime.resources import KernelResources, ResourceError, gate
+
+    gate([KernelResources(name="k", mangled="k", vgpr=180, sgpr=104, sgpr_spill=8)])
+    for bad in (dict(sgpr_spill=8, scratch=16), dict(vgpr_spill=2, scratch=8), dict(scratch=4)):
+        with _pytest.raises(ResourceError, match="ScratchSize"):
+            gate([KernelResources(name="k", mangled="k", vgpr=180, **bad)])
+
+
 def test_a_bitcast_keeps_the_element_width():
     import pytest as _pytest
 

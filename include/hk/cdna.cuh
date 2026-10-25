@@ -2094,20 +2094,67 @@ __device__ inline static void load_gather(RT &dst, const GL &src, const IL &idx,
  * position at or past `count`, writes nothing. Two tile rows naming one row
  * race; which lands is unspecified.
  */
-template<ducks::rt::all RT, ducks::gl::all GL, ducks::gl::all IL>
+template<int TOPK = 0, int ADD = 0, ducks::rt::all RT, ducks::gl::all GL, ducks::gl::all IL>
 __device__ inline static void store_scatter(const GL &dst, const RT &src, const IL &idx,
                                             int at, int count, int col) {
+    // TOPK > 0: idx holds AITER's MoE sort ids (token | choice << 24) and dst is [TOPK * M, ..]
+    // choice-major: the row is choice * M + token, nothing for a token >= M (padding).
+    // ADD: the rows are added atomically (fp32, or bf16 pairs); with TOPK, dst is [M, ..] and the
+    // row is the token's -- the top-k sum in whatever order the adds land.
     using F = detail::hk_frag<RT>;
     using T = typename F::T;
     using U = typename GL::dtype;
     static_assert(F::row, "scatter stores row-layout tiles");
+    if constexpr (ADD) {
+        static_assert(std::is_same_v<U, float> || (std::is_same_v<U, bf16> && F::S % 2 == 0),
+                      "scatter-add: an fp32 global, or bf16 with even runs");
+        typedef __bf16 hk_bf16x2 __attribute__((ext_vector_type(2)));
+        const int nrows = int(dst.template shape<2>());
+        const uint64_t row_elems = uint64_t(dst.template stride<2>());
+        U *base = reinterpret_cast<U *>(dst.raw_ptr);
+        const int lane = laneid();
+        #pragma unroll
+        for (int i = 0; i < RT::height; i++) {
+            int g = detail::hk_gather_index<F::R>(idx, at, count, i, 1);
+            if constexpr (TOPK > 0) g = (g < 0 || (g & 0xFFFFFF) >= nrows) ? -1 : (g & 0xFFFFFF);
+            if (g < 0 || g >= nrows) continue;
+            U *row = base + uint64_t(g) * row_elems + col;
+            #pragma unroll
+            for (int j = 0; j < RT::width; j++) {
+                #pragma unroll
+                for (int k = 0; k < F::K; k++) {
+                    const int cy = detail::hk_frag_coord<RT>(k * F::S, lane).y;
+                    U *p = row + j * F::C + cy;
+                    if constexpr (std::is_same_v<U, float>) {
+                        #pragma unroll
+                        for (int s = 0; s < F::S; s++)
+                            __hip_atomic_fetch_add(p + s, float(detail::hk_get(src, i, j, k * F::S + s)),
+                                                   __ATOMIC_RELAXED, __HIP_MEMORY_SCOPE_AGENT);
+                    } else {
+                        #pragma unroll
+                        for (int s = 0; s < F::S; s += 2) {
+                            const hk_bf16x2 v = {__bf16(float(detail::hk_get(src, i, j, k * F::S + s))),
+                                                 __bf16(float(detail::hk_get(src, i, j, k * F::S + s + 1)))};
+                            __builtin_amdgcn_global_atomic_fadd_v2bf16(
+                                (__attribute__((address_space(1))) hk_bf16x2 *)(p + s), v);
+                        }
+                    }
+                }
+            }
+        }
+        return;
+    }
     uint32_t oob; int nrows;
     const detail::hk_i32x4 r = detail::hk_whole_srsrc(dst, oob, nrows);
     const uint32_t row_bytes = uint32_t(dst.template stride<2>()) * sizeof(U);
     const int lane = laneid();
     #pragma unroll
     for (int i = 0; i < RT::height; i++) {
-        const int g = detail::hk_gather_index<F::R>(idx, at, count, i, 1);
+        int g = detail::hk_gather_index<F::R>(idx, at, count, i, 1);
+        if constexpr (TOPK > 0) {
+            const int m = nrows / TOPK, tok = g & 0xFFFFFF;
+            g = (g < 0 || tok >= m) ? -1 : (g >> 24) * m + tok;
+        }
         const bool in = g >= 0 && g < nrows;
         const uint32_t row_off = in ? uint32_t(g) * row_bytes + uint32_t(col) * sizeof(U) : oob;
         #pragma unroll
@@ -2123,6 +2170,45 @@ __device__ inline static void store_scatter(const GL &dst, const RT &src, const 
                     r, in ? row_off + uint32_t(j * F::C + cy) * sizeof(U) : oob, run);
             }
         }
+    }
+}
+
+/**
+ * scatter_add_lds: a warp's own bf16 LDS tile added into dst rows by index with gfx950's packed
+ * bf16 atomic, lanes on consecutive column pairs of one row (LPR = cols / 2 lanes a row, 64 / LPR
+ * rows a pass). The tile was written by this warp through inline-asm ds_writes the compiler does
+ * not see, hence the lgkmcnt(0) first. TOPK > 0: AITER sort ids, the token's row of [M, ..].
+ */
+template<int TOPK = 0, ducks::st::all ST, ducks::gl::all GL, ducks::gl::all IL>
+__device__ inline static void scatter_add_lds(const GL &dst, const ST &src, const IL &idx,
+                                              int at, int count, int col) {
+    static_assert(std::is_same_v<typename ST::dtype, bf16> && std::is_same_v<typename GL::dtype, bf16>,
+                  "a bf16 LDS tile into a bf16 global");
+    constexpr int LPR = ST::cols / 2, RPP = 64 / LPR;
+    static_assert(ST::cols % 2 == 0 && 64 % LPR == 0 && ST::rows % RPP == 0, "whole lane groups");
+    static_assert(ST::underlying_subtile_bytes_per_thread >= 4, "pairs inside a swizzle run");
+    typedef __bf16 hk_bf16x2 __attribute__((ext_vector_type(2)));
+    asm volatile("s_waitcnt lgkmcnt(0)" ::: "memory");
+    const char *base = reinterpret_cast<const char *>(&src.data[0]);
+    const int *ids = reinterpret_cast<const int *>(idx.raw_ptr);
+    const int nrows = int(dst.template shape<2>());
+    const uint64_t row_elems = uint64_t(dst.template stride<2>());
+    bf16 *out = reinterpret_cast<bf16 *>(dst.raw_ptr);
+    const int lane = laneid(), c = (lane % LPR) * 2;
+    #pragma unroll
+    for (int r0 = 0; r0 < ST::rows; r0 += RPP) {
+        const int r = r0 + lane / LPR, pos = at + r;
+        int g = pos < count ? ids[pos] : -1;
+        if constexpr (TOPK > 0) g = (g < 0 || (g & 0xFFFFFF) >= nrows) ? -1 : (g & 0xFFFFFF);
+        const int sub = (r / ST::underlying_subtile_rows) * ST::underlying_subtiles_per_row +
+                        c / ST::underlying_subtile_cols;
+        const uint32_t off = uint32_t(sub) * ST::underlying_subtile_bytes +
+                             ST::swizzle({r % ST::underlying_subtile_rows, c % ST::underlying_subtile_cols});
+        hk_bf16x2 v;
+        __builtin_memcpy(&v, base + off, 4);
+        if (g >= 0 && g < nrows)
+            __builtin_amdgcn_global_atomic_fadd_v2bf16(
+                (__attribute__((address_space(1))) hk_bf16x2 *)(out + uint64_t(g) * row_elems + col + c), v);
     }
 }
 
