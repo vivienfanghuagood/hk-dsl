@@ -50,7 +50,7 @@ from __future__ import annotations
 from typing import Any, Dict, Optional
 
 from .. import dsl as hk
-from ..types import bf16, fp32, i32
+from ..types import bf16, fp32, fp8e4m3, i8, i32
 from . import _epilogue
 
 #: An MI355X has eight XCDs; workgroups are dealt to them round robin.
@@ -63,8 +63,8 @@ def gemm_kernel(name: str, *, block_m: int = 256, block_n: int = 256,
                 transposed_c: bool = False, early_store: bool = True,
                 hipkittens_waits: bool = False, late_b: bool = True,
                 splits: int = 1, lds_shape: Optional[str] = None, nt: str = "",
-                stream_k: int = 0, sk_grid: int = 256,
-                arch: Optional[str] = None,
+                stream_k: int = 0, sk_grid: int = 256, mx: bool = False,
+                mx_scales: str = "ocp", arch: Optional[str] = None,
                 max_vgprs: int = 256, min_occupancy: int = 1, epilogue=None):
     """HipKittens' tiling by default: 256x256x64, eight warps as 2 x 4.
 
@@ -82,6 +82,21 @@ def gemm_kernel(name: str, *, block_m: int = 256, block_n: int = 256,
     (epilogue included). Takes (a, b, c, ws, cnt, plan) -- sk_scratch's and
     sk_plan's -- and K a multiple of 2 * k_step.
 
+    `mx`: the operands are fp8 e4m3 with OCP MX block scales -- the kernel
+    takes (a, b, sa, sb, c), sa (M, K/32) and sb (N, K/32) uint8 E8M0 -- and
+    every MFMA is gfx950's scaled one (hk.mma_ABt_mx); k_step is 128. Each
+    K-tile's scales are read from global as its first reads are issued; they
+    are not part of hk-lds-pipeline's count, which only makes its vm waits
+    stricter (an extra load in flight can only make a wait retire more).
+
+    `mx_scales="direct"`: sa packed (hk.ops.mxfp8.pack_scales, int32: a warp's
+    64 A rows are one dword a lane and K-tile) and sb in AITER's 32-row layout
+    (hk.ops.mxfp8.aiter_scales, uint8: a warp's 32 B rows are one 16-bit load a
+    lane and K-tile); both land as the MFMA reads them, no VALU between load
+    and MFMA (the "ocp" byte scales are inserted into dwords, which waits for
+    each load as soon as it is issued). `mx_scales="direct32"`: both in AITER's
+    32-row layout (sa uint8 too), for warp tiles of 32 A rows (128-row blocks).
+
     `hipkittens_waits` puts HipKittens' own vmcnts back (all but three copies
     after the prologue and at the end of each iteration). hk-lds-pipeline
     refuses them -- the fourth memory phase reads Bs[2] with its copy still in
@@ -98,11 +113,21 @@ def gemm_kernel(name: str, *, block_m: int = 256, block_n: int = 256,
                          f"does not give whole 16-row accumulators")
     if k_step % 32:
         raise ValueError(f"k_step={k_step}: the MFMA's operand is 32 deep")
+    if mx_scales not in ("ocp", "direct", "direct32"):
+        raise ValueError(f"mx_scales={mx_scales!r}: 'ocp', 'direct' or 'direct32'")
+    if mx and mx_scales != "ocp" and (reg_m % (64 if mx_scales == "direct" else 32) or reg_n % 32):
+        raise ValueError(f"mx_scales={mx_scales!r}: warp tiles of "
+                         f"{64 if mx_scales == 'direct' else 32}-row A and 32-row B multiples; "
+                         f"got {reg_m} x {reg_n}")
+    if mx and (k_step != 128 or splits != 1 or stream_k or transposed_c or epilogue is not None):
+        raise ValueError("mx: k_step 128 (the scaled MFMA's K), no splits, stream-K, "
+                         "transposed C or epilogue yet")
+    op_t = fp8e4m3 if mx else bf16
 
-    st_a = hk.ST(bf16, half_m, k_step)
-    st_b = hk.ST(bf16, half_n, k_step)
-    t_a = hk.RT(bf16, reg_m, k_step, "row")
-    t_b = hk.RT(bf16, reg_n, k_step, "row")
+    st_a = hk.ST(op_t, half_m, k_step)
+    st_b = hk.ST(op_t, half_n, k_step)
+    t_a = hk.RT(op_t, reg_m, k_step, "row")
+    t_b = hk.RT(op_t, reg_n, k_step, "row")
     # The MFMA's accumulator holds four consecutive rows of one column in a
     # lane, so storing C from it is one 2-byte store per element.
     # `transposed_c` accumulates Cᵀ = B·Aᵀ instead, whose four values are
@@ -118,7 +143,7 @@ def gemm_kernel(name: str, *, block_m: int = 256, block_n: int = 256,
 
     @hk.func
     def tile(g, As, Bs, A, B, C, a, b, m0, n0, wr, wc, k0, k_count, out, init=None,
-             stores=True, even=False):
+             stores=True, even=False, mxs=None):
         """One block of C: the copies, the pingpong over k_count K-tiles from
         k0, and (`stores`) C's store through `out`. The accumulators C are
         the caller's, zeroed or initialized. `even`: k_count is even, so no
@@ -150,8 +175,35 @@ def gemm_kernel(name: str, *, block_m: int = 256, block_n: int = 256,
         def read_b(u, h, s):
             Bs[2 * u + h].subtile(reg_n, k_step, wc, 0).load(t_b, wait=False, into=B[s])
 
+        # mx: two sets of scales, (A halves, B halves): set u holds the
+        # K-tile buffer u is multiplying. Each set is reloaded, for the
+        # K-tile two ahead, as soon as its last MFMA has issued -- a whole
+        # K-tile of MFMAs before it is read.
+        S = [None, None]
+        cur = {}
+
+        def load_scales(u, t):
+            if mxs is None:
+                return
+            sa, sb = mxs
+            kb = (k0 + t * k_step) // 32
+            old = S[u]
+            bkw = dict(layout="aiter", group_rows=DIRECT_GR) if mx_scales != "ocp" else {}
+            akw = bkw if mx_scales == "direct32" else {}
+            S[u] = (
+                [hk.load_mx_scales(sa, reg_m, k_step // 32, m0 + i * half_m + wr * reg_m,
+                                   kb, into=old[0][i] if old else None, **akw) for i in range(2)],
+                [hk.load_mx_scales(sb, reg_n, k_step // 32, n0 + j * half_n + wc * reg_n,
+                                   kb, into=old[1][j] if old else None, **bkw) for j in range(2)])
+
+        def scales(u):
+            if mxs is not None:
+                cur["a"], cur["b"] = S[u]
+
         def mma(i, j):
-            if transposed_c:
+            if mxs is not None:
+                hk.mma_ABt_mx(A, B[j], C[i][j], cur["a"][i], cur["b"][j], into=C[i][j])
+            elif transposed_c:
                 C[i][j] += B[j] @ A.T
             else:
                 C[i][j] += A @ B[j].T
@@ -174,6 +226,8 @@ def gemm_kernel(name: str, *, block_m: int = 256, block_n: int = 256,
         copy_a(0, 0, 0)
         copy_b(0, 0, 1)
         copy_a(0, 0, 1)
+        load_scales(0, 0)
+        load_scales(1, 1)
         if init is not None:
             # The accumulators start as C's tile of an operand (an epilogue's
             # init_from), its loads in flight with the first tiles' copies.
@@ -197,6 +251,7 @@ def gemm_kernel(name: str, *, block_m: int = 256, block_n: int = 256,
 
             for t in range(0, n_tiles - 2, 2):
                 # K-tile t, buffer 0.
+                scales(0)
                 read_b(0, 0, 0)
                 read_a(0, 0)
                 copy_a(t + 1, 1, 1)
@@ -225,8 +280,10 @@ def gemm_kernel(name: str, *, block_m: int = 256, block_n: int = 256,
                 g.wait_for(As[3])
                 hk.arch.barrier()
                 math(1, 1)
+                load_scales(0, t + 2)
 
                 # K-tile t + 1, buffer 1.
+                scales(1)
                 if late_b:
                     read_b(1, 0, 0)
                 read_a(1, 0)
@@ -257,9 +314,11 @@ def gemm_kernel(name: str, *, block_m: int = 256, block_n: int = 256,
                 g.wait_for(As[1] if hipkittens_waits or late_b else Bs[2])
                 hk.arch.barrier()
                 math(1, 1)
+                load_scales(1, t + 3)
 
             # The last two K-tiles: nothing left to copy but A's second half.
             t = n_tiles - 2
+            scales(0)
             read_b(0, 0, 0)
             read_a(0, 0)
             copy_a(t + 1, 1, 1, pad=True)
@@ -284,6 +343,7 @@ def gemm_kernel(name: str, *, block_m: int = 256, block_n: int = 256,
                 hk.arch.setprio(0)
             hk.arch.barrier()
 
+            scales(1)
             read_b(1, 0, 0)
             read_a(1, 0)
             g.wait_for(As[3])
@@ -338,7 +398,7 @@ def gemm_kernel(name: str, *, block_m: int = 256, block_n: int = 256,
         return row, col
 
     @hk.func
-    def gemm(a, b, WGM, k0, k_count, out, init=None):
+    def gemm(a, b, WGM, k0, k_count, out, init=None, mxs=None):
         g, As, Bs, A, B, C = alloc(warps)
 
         M = a.rows
@@ -365,7 +425,7 @@ def gemm_kernel(name: str, *, block_m: int = 256, block_n: int = 256,
         wid = hk.arch.warp_id()
         wr = wid // warps_n
         wc = wid % warps_n
-        tile(g, As, Bs, A, B, C, a, b, m0, n0, wr, wc, k0, k_count, out, init)
+        tile(g, As, Bs, A, B, C, a, b, m0, n0, wr, wc, k0, k_count, out, init, mxs=mxs)
 
     @hk.func
     def gemm_sk(a, b, ws, cnt, plan, out):
@@ -487,7 +547,24 @@ def gemm_kernel(name: str, *, block_m: int = 256, block_n: int = 256,
 
         gemm_sk(a, b, ws, cnt, plan, out)
 
-    if stream_k:
+    # mx: fp8 operands and their E8M0 scales.
+    def body_mx(a: hk.Tensor[fp8e4m3], b: hk.Tensor[fp8e4m3], sa: hk.Tensor[i8],
+                sb: hk.Tensor[i8], c: hk.Tensor[bf16], *, WGM: hk.Constexpr = wgm):
+        def out(tile, r, col):
+            c[hk.elem_coord(0, 0, r, col)].store(tile, bounded=True)
+
+        gemm(a, b, WGM, 0, a.cols // k_step, out, None, (sa, sb))
+
+    def body_mxd(a: hk.Tensor[fp8e4m3], b: hk.Tensor[fp8e4m3], sa: hk.Tensor[i32],
+                 sb: hk.Tensor[i8], c: hk.Tensor[bf16], *, WGM: hk.Constexpr = wgm):
+        def out(tile, r, col):
+            c[hk.elem_coord(0, 0, r, col)].store(tile, bounded=True)
+
+        gemm(a, b, WGM, 0, a.cols // k_step, out, None, (sa, sb))
+
+    if mx:
+        fn = {"direct": body_mxd, "direct32": body_mx}.get(mx_scales, body_mx)
+    elif stream_k:
         if splits != 1:
             raise ValueError("stream_k cuts K itself; splits must be 1")
         if transposed_c:
@@ -514,6 +591,11 @@ def gemm_kernel(name: str, *, block_m: int = 256, block_n: int = 256,
 
     return hk.kernel(fn, arch=arch, warps=warps, grid=_grid, name=name,
                      max_vgprs=max_vgprs, min_occupancy=min_occupancy)
+
+
+#: group_rows of mx_scales="direct"'s B scales: one "expert" larger than any N, so AITER's
+#: per-expert layout is the whole matrix's.
+DIRECT_GR = 1 << 24
 
 
 #: HipKittens' tiling.
