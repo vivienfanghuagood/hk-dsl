@@ -11,6 +11,7 @@ namespace {
 const std::pair<llvm::StringRef, MmaShape> kMma1100[] = {
     {"bf16", {16, 16, 16, 8, 8}},
     {"fp16", {16, 16, 16, 8, 8}},
+    {"i8", {16, 16, 16, 4, 8}},
 };
 // gfx1201: written, not verified. See python/hk/target/gfx1201.py.
 const std::pair<llvm::StringRef, MmaShape> kMma1201[] = {
@@ -102,8 +103,14 @@ int TargetInfo::tileVgprs(unsigned bits, unsigned rows, unsigned cols) const {
   int elems = int(rows) * int(cols);
   if (bits == 16)
     return elems * s.operandVgprs / (s.m * s.k);
-  if (bits == 8)    // gfx950's fp8 operand: 16x128 in 8 VGPRs, unreplicated
+  if (bits == 8) {
+    // An 8-bit operand: gfx1100's i8 16x16 fragment is 4 VGPRs (mirrored
+    // halves); gfx950's fp8 16x128 one is 8, unreplicated.
+    for (auto &[name, m] : mma)
+      if (name == "i8")
+        return elems * m.operandVgprs / (m.m * m.k);
     return (elems + 4 * wave - 1) / (4 * wave);
+  }
   return elems * s.accumVgprs / (s.m * s.n);
 }
 

@@ -170,6 +170,9 @@ class Target:
             return (rows // 16) * (cols // 16) * 8
         if dtype_bits == 16:
             return rows * cols * shape.operand_vgprs // (shape.m * shape.k)
+        if dtype_bits == 8 and "i8" in self.mma:    # gfx1100's iu8 operand: 4 VGPRs, mirrored
+            s8 = self.mma["i8"]
+            return rows * cols * s8.operand_vgprs // (s8.m * s8.k)
         if dtype_bits == 8:     # an 8-bit operand (gfx950's fp8 16x128): four a register, unreplicated
             return -(-rows * cols // (4 * self.wave))
         return rows * cols * shape.accum_vgprs // (shape.m * shape.n)

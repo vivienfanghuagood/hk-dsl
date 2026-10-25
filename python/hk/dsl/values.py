@@ -1096,10 +1096,20 @@ def mma(variant: str, a: Tile, b: Tile, acc: Tile, *, into=None) -> Tile:
                         f"has none -- gfx1201 (RDNA4) does. On {arch} keep fp8 "
                         f"as a storage type and dequantize to bf16 before the "
                         f"mma.")
-    if not fp8 and a.ty.dtype.bits != 16:
+    int8 = a.ty.dtype.name == "i8" and b.ty.dtype.name == "i8"
+    if int8:
+        if "i8" not in get_target(arch).mma:
+            raise TypeError(f"{variant}: i8 operands need an int8 matrix instruction "
+                            f"hk uses, and {arch} has none in hk (gfx1100 does).")
+        if variant != "mma_ABt":
+            raise TypeError(f"{variant}: i8 operands are row-layout -- C += A @ B.T only")
+        if acc.ty.dtype != i32 or acc.ty.layout != "col":
+            raise TypeError(f"{variant}: i8 x i8 accumulates into a col-layout i32 "
+                            f"tile, not {acc.ty}.")
+    elif not fp8 and a.ty.dtype.bits != 16:
         raise TypeError(f"{variant}: operands are {a.ty.dtype}; WMMA takes bf16 "
-                        f"or fp16 (fp8 on gfx1201).")
-    if acc.ty.dtype != fp32 or acc.ty.layout != "col":
+                        f"or fp16 (fp8 on gfx1201, i8 on gfx1100).")
+    if not int8 and (acc.ty.dtype != fp32 or acc.ty.layout != "col"):
         raise TypeError(f"{variant}: the accumulator is {acc.ty}; WMMA "
                         f"accumulates into a col-layout fp32 tile.")
     for v, want, what in ((a, spec[0], "A"), (b, spec[1], "B")):
@@ -1123,8 +1133,8 @@ def mma(variant: str, a: Tile, b: Tile, acc: Tile, *, into=None) -> Tile:
     if big and get_target(arch).wave != 64:
         raise TypeError(f"{variant}: a 32x32-fragment accumulator is gfx950's "
                         f"32x32x16 MFMA; {arch} has none")
-    ty = RegTileType(fp32, getattr(a.ty, spec[2]), getattr(b.ty, spec[3]), "col",
-                     (32, 32) if big else None)
+    ty = RegTileType(i32 if int8 else fp32, getattr(a.ty, spec[2]), getattr(b.ty, spec[3]),
+                     "col", (32, 32) if big else None)
     if acc.ty != ty:
         raise TypeError(f"{variant}: A {a.ty} times B {b.ty} is {ty}, but the "
                         f"accumulator is {acc.ty}.")
@@ -1423,6 +1433,9 @@ def lds_loads(tile: RegTileType, src: SharedTileType, arch: str = "gfx1100") -> 
     pair is asynchronous at all; hk-lds-pipeline sets the real count."""
     if src.dtype != tile.dtype:
         return 0
+    if tile.dtype.name == "i8" and get_target(arch).wave == 32:
+        # an int8 operand row is 16 bytes: one ds_read_b128 a base tile
+        return (tile.rows // 16) * (tile.cols // 16) if tile.layout == "row" else 0
     if tile.dtype.bits == 8:
         # gfx950's fp8 operand (16x128 row fragments): two ds_read_b128 each;
         # hk-lds-pipeline sets the count.
