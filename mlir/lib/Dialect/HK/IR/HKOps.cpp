@@ -190,7 +190,25 @@ LogicalResult GatherRowsOp::verify() {
 }
 
 LogicalResult ScatterRowsOp::verify() {
+  if (getAdd()) {
+    Type d = getDst().getType().getElementType();
+    if (!d.isF32() && !d.isBF16())
+      return emitOpError("adds rows into an fp32 or bf16 global");
+    if (failed(noStrip(*this, getValue().getType())))
+      return failure();
+  }
   return checkIndexedRows(*this, getValue().getType(), getIdx().getType());
+}
+
+LogicalResult ScatterAddLdsOp::verify() {
+  auto st = getSrc().getType();
+  if (!st.getElementType().isBF16() || !getDst().getType().getElementType().isBF16())
+    return emitOpError("adds a bf16 LDS tile into a bf16 global");
+  if (st.getCols() % 2 || 64 % (st.getCols() / 2) || st.getRows() % (64 / (st.getCols() / 2)))
+    return emitOpError("a tile whose rows split into whole lane groups (cols / 2 divides 64)");
+  if (!getIdx().getType().getElementType().isInteger(32))
+    return emitOpError("takes its row indices from an int32 global");
+  return success();
 }
 
 LogicalResult AtomicAddOp::verify() {

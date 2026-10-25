@@ -447,16 +447,47 @@ class Global(Value):
                      (self.v, idx, at_v, n_v, as_int(div).v, col_v),
                      into=into, name="gat")
 
+    def scatter_add_lds(self, src: "SharedTile", ids: "Global", at, *, count=None, col=0,
+                        sort_topk: int = 0) -> None:
+        """A warp's own bf16 LDS tile added into this bf16 tensor's rows by index, atomically:
+        row r of `src` into row `ids[at + r]` (with `sort_topk`, AITER sort ids: the token's
+        row of an [M, ...] tensor; padding nowhere) from column `col`. Lanes take consecutive
+        column pairs of one row (gfx950's packed bf16 atomic), so an instruction covers a few
+        rows of contiguous bytes: 310 G pk-adds/s on an MI355X, where `scatter(add=True)` from
+        a register tile (16 rows of 16 bytes an instruction) gets 85. Even so, a bf16 atomic
+        reduce is bounded by that rate -- 0.8 ms for DeepSeek-V4.1's top-6 at 16k tokens, 4x a
+        plain sum pass (K1 c33). Store the tile with `src.store(...)` first; the sum is in no
+        fixed order."""
+        if not isinstance(src, SharedTile) or src.ty.dtype is not bf16 or self.dtype is not bf16:
+            raise TypeError(f"scatter_add_lds: a bf16 LDS tile into a bf16 global, not {src!r}")
+        if not isinstance(ids, Global) or ids.dtype is not i32:
+            raise TypeError(f"scatter_add_lds takes its row indices from an int32 global, not {ids!r}")
+        if get_target(_t().arch).arch != "gfx950":
+            raise TypeError(f"scatter_add_lds: packed bf16 atomics are gfx950's here, not {_t().arch}")
+        n = ids.cols if count is None else count
+        hkd.ScatterAddLdsOp(self.v, src.v, ids.v, as_int(at).v, as_int(n).v, as_int(col).v,
+                            sort_topk=int(sort_topk), loc=_t().loc())
+
     def scatter(self, value: "Tile", ids: "Global", at, *, count=None,
-                col=0) -> None:
+                col=0, sort_topk: int = 0, add: bool = False) -> None:
         """Rows by index: tile row r goes to row `ids[at + r]`, from column
         `col`; an index outside the tensor, or a position at or past
-        `count`, writes nothing. Two rows naming one row race."""
+        `count`, writes nothing. Two rows naming one row race. `sort_topk`
+        > 0: `ids` are AITER's MoE sort ids (token | choice << 24) and this
+        tensor is [sort_topk * M, ...] choice-major -- row r goes to row
+        choice * M + token, and padding (token >= M) nowhere.
+
+        `add=True` adds the rows atomically instead (an fp32 or bf16 global;
+        bf16 adds element pairs, gfx950's global_atomic_pk_add_bf16). With
+        `sort_topk` the tensor is then [M, ...] and every choice of a token
+        adds into its row: the top-k reduce, in no fixed order -- the result
+        varies run to run by the rounding of the adds."""
         value = _vec_of(value)
         if not isinstance(value, Tile):
             raise TypeError(f"scatter stores a tile, not {value!r}")
         ops = self._indexed("scatter", value.ty, ids, at, count, col)
-        hkd.ScatterRowsOp(self.v, value.v, *ops, loc=_t().loc())
+        hkd.ScatterRowsOp(self.v, value.v, *ops, sort_topk=int(sort_topk), add=bool(add),
+                          loc=_t().loc())
 
 
 class View:
