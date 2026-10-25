@@ -48,7 +48,7 @@ for i in $(seq 60); do GPU=$(pick) && break; echo "no idle MI355X; waiting ($i)"
 echo "GPU $GPU (${RENDER[$GPU]})"
 
 touch "$RUN/started"    # minutes count from here, not from the wait
-docker run --rm --name "$NAME" --user "$(id -u):$(id -g)" \
+docker run --rm --ulimit core=0 -e HSA_DISABLE_COREDUMP_ON_EXCEPTION=1 --name "$NAME" --user "$(id -u):$(id -g)" \
     --device /dev/kfd --device "/dev/dri/${RENDER[$GPU]}" \
     --group-add 44 --group-add 109 --ipc=host \
     -e HOME=/ci/home -e USER="$(id -un)" -e LOGNAME="$(id -un)" \
