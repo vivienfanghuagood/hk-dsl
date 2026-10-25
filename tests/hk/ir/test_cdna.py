@@ -364,3 +364,35 @@ def test_a_bitcast_keeps_the_element_width():
 
     with _pytest.raises(TypeError, match="keeps the element width"):
         hk.kernel(k, arch="gfx950", grid=lambda p: (1, 1, 1)).trace()
+
+
+def test_a_kernels_cache_key_moves_only_with_the_headers_its_target_includes(tmp_path, monkeypatch):
+    """The compile cache keys a kernel on hipcc + the headers of its own target: kittens.cuh,
+    pyutils/, its arch tree and extra_includes. An edit to the CDNA shim leaves an RDNA kernel's
+    key alone, and an edit to rdna3/ leaves a CDNA one's (a branch touching include/hk/cdna.cuh
+    compiled CI's whole codegen tier cold)."""
+    from hk.runtime import compile as C
+
+    hk_dir, kit = tmp_path / "include", tmp_path / "kittens"
+    (hk_dir / "hk").mkdir(parents=True)
+    for sub in ("cdna4", "rdna3", "pyutils"):
+        (kit / sub).mkdir(parents=True)
+        (kit / sub / "a.cuh").write_text(sub)
+    (kit / "kittens.cuh").write_text("k")
+    (hk_dir / "hk" / "cdna.cuh").write_text("shim 1")
+    monkeypatch.setattr(C, "include_dirs", lambda: [hk_dir, kit])
+    monkeypatch.setattr(C, "_hipcc_version", lambda: "hipcc x")
+    monkeypatch.setattr(C, "hipcc", lambda: "/fake/hipcc")
+
+    def fps():
+        C._toolchain_cache.clear()
+        return (C.target_headers_fingerprint(get_target("gfx950")),
+                C.target_headers_fingerprint(get_target("gfx1100")))
+
+    c0, r0 = fps()
+    (hk_dir / "hk" / "cdna.cuh").write_text("shim 2")
+    c1, r1 = fps()
+    assert c1 != c0 and r1 == r0
+    (kit / "rdna3" / "a.cuh").write_text("rdna3 edited")
+    c2, r2 = fps()
+    assert c2 == c1 and r2 != r1

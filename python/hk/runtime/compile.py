@@ -225,6 +225,43 @@ def toolchain_fingerprint() -> str:
     return fp
 
 
+#: The HipKittens tree each -DKITTENS_* define selects (include/kittens.cuh).
+_ARCH_TREE = {"KITTENS_CDNA3": "cdna3", "KITTENS_CDNA4": "cdna4", "KITTENS_CDNA5": "cdna5",
+              "KITTENS_RDNA3": "rdna3", "KITTENS_RDNA4": "rdna4"}
+
+
+def target_headers_fingerprint(target: Target) -> str:
+    """hipcc's version + only the headers a kernel of `target` can include: kittens.cuh,
+    pyutils/, the one arch tree its -DKITTENS_* define selects, and its extra_includes
+    (hk/cdna.cuh for CDNA). A change to the CDNA shim then recompiles CDNA kernels and leaves
+    every RDNA one cached, and the other way round -- toolchain_fingerprint() moved every
+    kernel's key on any header, so a branch touching include/hk/cdna.cuh compiled the whole
+    codegen tier cold (40-56 min on CI against main's 5). A HipKittens tree of a layout this
+    does not know is hashed whole. Cached per process and target."""
+    key = ("target-headers", hipcc(), target.arch)
+    if key in _toolchain_cache:
+        return _toolchain_cache[key]
+    tree = _ARCH_TREE.get(getattr(target, "kittens_define", ""), "")
+    extra = [e.strip('"<>') for e in getattr(target, "extra_includes", ())]
+    h = hashlib.sha256(_hipcc_version().encode())
+    for d in include_dirs():     # what generated C++ includes: kittens.cuh + extra_includes
+        if (d / "kittens.cuh").exists():
+            if tree and (d / tree).is_dir():
+                h.update((d / "kittens.cuh").read_bytes())
+                for sub in ("pyutils", tree):
+                    if (d / sub).is_dir():
+                        h.update(_tree_hash(d / sub).encode())
+            else:                  # a layout this does not know: all of it
+                h.update(_tree_hash(d).encode())
+        for e in extra:
+            if (d / e).is_file():
+                h.update(e.encode())
+                h.update((d / e).read_bytes())
+    fp = h.hexdigest()[:32]
+    _toolchain_cache[key] = fp
+    return fp
+
+
 #: Stand-in for the module name while keying. The real name is derived from the
 #: key, so it cannot be an input to it; it also cannot change the generated code
 #: in any way that matters, since it only names the pybind entry point.
@@ -258,7 +295,7 @@ def cache_key(source: str, target: Target, extra: Sequence[str] = (),
     hidden.
     """
     h = hashlib.sha256()
-    h.update(toolchain_fingerprint().encode())
+    h.update(target_headers_fingerprint(target).encode())
     h.update(dialect_version().encode())
     fl = (flags(target, _KEY_MODULE, extra) if kind == "so"
           else codeobj_flags(target, extra))

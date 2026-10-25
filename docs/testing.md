@@ -179,13 +179,20 @@ and pull request, on GitHub's `ubuntu-22.04` runner:
   skips there: the runner has neither vLLM nor SGLang.
 - **hipcc is installed from AMD's apt repository**, as `hip-dev` and
   `rocm-device-libs` of ROCm 7.1, about 2.3 GB.
-- **The codegen tier runs** (`tests/hk/codegen`), under pytest-xdist. hk's
-  compile cache survives between runs in `actions/cache` (about 100 MB).
-  Cold, the tier took 19-30 minutes on the runner's four cores, and 4
-  minutes on 8 workers in a clean Ubuntu 22.04 container. Warm, it took 10
-  seconds, and the whole run 3 minutes. The first run on a new branch is
-  cold, because `actions/cache` does not hand one branch's cache to another;
-  pull requests read `main`'s.
+- **The codegen tier runs** (`tests/hk/codegen`), under pytest-xdist, split
+  over six runners by a stable hash of the test id
+  (`pytest --hk-shard I/6`, tests/hk/conftest.py); the IR tier runs on the
+  first. Each shard keeps its own compile cache in `actions/cache`, falling
+  back to any shard's, and a run restores the branch's, its base branch's or
+  `main`'s.
+  - **What goes cold:** a kernel's cache key is hipcc plus the headers its own
+    target includes (`runtime.compile.target_headers_fingerprint`: kittens.cuh,
+    pyutils/, the arch tree, extra_includes). An edit to `include/hk/cdna.cuh`
+    recompiles the CDNA kernels and leaves the RDNA ones cached.
+  - **Before both changes:** every header was in every key, and a branch
+    touching the CDNA shim compiled the whole tier cold on one 4-core runner,
+    40-56 minutes against `main`'s warm 5 (PRs #28-#31).
+  - **Warm,** the tier takes about 10 seconds a shard.
 
 A new MLIR, or a CPython other than the runner's, needs a new archive. Build
 it with `scripts/build_mlir.sh`, pack the install tree with LLVM's and MLIR's
