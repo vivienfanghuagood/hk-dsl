@@ -15,6 +15,8 @@
 | scalar atomics with every fetch-op: `atomic_{add,max,min,or,and,xor,exch}_scalar` (one a warp, the value before it), plain or through a scoped tensor at its scope (relaxed atomics of that scope) | `hk.atomic_scalar` kinds, `kittens::atomic_scalar{,_scoped}` |
 | scoped col_vecs: a row tile's `hk.col_vec` loaded from / stored to a 32-bit scoped tensor (a per-row scale next to its tile); each element a relaxed atomic of the scope, i.e. the SC1 / SC0\|SC1 access | `aux` on `hk.load` / `hk.store` of a vector, `kittens::{load,store}_scoped` (CDNA4 ortho layout) |
 | `hk.comm.arrive(cnt.at[i], v)` (signal's drain, then one atomic add of the scope; the old value) and `hk.comm.barrier(cnt.at[i], target)` (arrive + wait >= target; with an epoch the counter never resets): a grid barrier with a "device" counter, a barrier across GPUs with a "system" one | `hk.arrive` op, `kittens::arrive<AUX>` |
+| `hk.comm.claim(q.at[i], n=1)`: a work queue's take -- one scoped atomic add, the old value to the whole workgroup, no drain. With `resident=True` and a `while t < n:` loop it is the persistent + task-queue pattern (Hazy's interpreter, MPK's workers); tasks wait on per-layer counters (`wait`) and publish with `arrive` | `hk.arrive` with `nodrain`, `kittens::claim<AUX>` |
+| `hk.arch.xcd_id()`: the XCD a workgroup runs on, read from the hardware (HW_REG_XCC_ID) -- for per-XCD aggregation instead of assuming block id mod 8 | `hk.xcd_id` op, `kittens::xcd_id()` |
 | `hk.kernel(..., resident=True)`: a launch whose grid does not fit on the GPU at once (CUs x workgroups a CU holds by registers and LDS, from the build's resource report: `Kernel.resident_capacity()`) raises `ResourceError` instead of deadlocking in a barrier | `hk/dsl/kernel.py` |
 | `hk.runtime.SymmetricBuffer(nbytes, group)`: one buffer a rank, every peer's mapped (hipIpc), as torch tensors; while one is open a launch refuses its memory bound to an *unscoped* parameter | `hk/runtime/symmetric.py`, `Kernel.__call__` |
 | the litmus suite the lowering follows | `tools/cdna-probes/litmus_comm.hip` |
@@ -63,6 +65,10 @@ no shader instruction invalidates it, so a scoped tensor there is a trace-time e
 
 ## Measured
 
+- A work queue: 64 resident workgroups take 20000 tasks by `claim`, each exactly once, every
+  workgroup some. A task graph of 16 layers x 64 tasks from one queue, each task waiting on its
+  layer's predecessor counter: every last-layer value correct. `xcd_id` over 256 workgroups:
+  eight dies, 32 workgroups each.
 - A grid barrier over 64 workgroups, 50 rounds, each reading its neighbour's value of the round:
   all correct; the full resident capacity meets at one barrier, one more workgroup is refused. A
   barrier across the two GPUs, 200 rounds: every round each rank read the peer's value of it.

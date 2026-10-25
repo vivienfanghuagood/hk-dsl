@@ -26,6 +26,7 @@ scope and s_sleep backoff, and turns a hang into an error after `timeout_s`.
 
 - [`hk.comm.signal`](#hkcommsignal)
 - [`hk.comm.arrive`](#hkcommarrive)
+- [`hk.comm.claim`](#hkcommclaim)
 - [`hk.comm.wait`](#hkcommwait)
 - [`hk.comm.barrier`](#hkcommbarrier)
 - [`hk.comm.REALTIME_HZ`](#hkcommrealtime_hz)
@@ -56,6 +57,26 @@ As `signal`, but one thread *adds* `value` to the int32 element `view`
 (a scoped tensor's) with an atomic of the tensor's scope; returns the
 element's value before the add (wave-uniform). Every store this workgroup
 issued before it is acknowledged first. Contains a barrier.
+
+### `hk.comm.claim`
+
+```python
+hk.comm.claim(view, value=1) -> Int
+```
+
+*New after 0.5.0* (the `hk.dsl.comm` module is not in the 0.5.0 wheel)
+
+A work queue's take: one thread adds `value` to the int32 element `view` (a scoped
+tensor's) with an atomic of its scope and the workgroup gets the value before the add -- a
+distinct one for every claim. No drain: what this workgroup stored before is not ordered by it
+(use `signal` / `arrive` for that). In a persistent kernel:
+
+    t = hk.comm.claim(q.at[0])
+    while t < n:
+        ...task t...
+        t = hk.comm.claim(q.at[0])
+
+Contains barriers: every warp must reach it.
 
 ### `hk.comm.wait`
 

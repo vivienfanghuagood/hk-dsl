@@ -849,6 +849,32 @@ __device__ inline static int arrive(const GL &cnt, const COORD &idx, int v) {
 }
 
 /**
+ * @brief Claim: thread 0 adds `v` to the int32 element with an atomic of scope AUX -- no drain, the
+ * workgroup's own stores are not ordered before it -- and every lane gets the value before the add.
+ * A work queue's take: `t = claim(next, 1)` hands each workgroup a distinct task. Contains a barrier.
+ */
+template<int AUX, ducks::gl::all GL, typename COORD>
+__device__ inline static int claim(const GL &cnt, const COORD &idx, int v) {
+    static_assert(std::is_same_v<typename GL::dtype, int>, "a counter is an int32 element");
+    __shared__ int hk_claim_old;
+    if (threadIdx.x == 0) {
+        int *p = (int *)&cnt[(idx.template unit_coord<-1, 3>())];
+        hk_claim_old = AUX == 17 ? __hip_atomic_fetch_add(p, v, __ATOMIC_RELAXED, __HIP_MEMORY_SCOPE_SYSTEM)
+                                 : __hip_atomic_fetch_add(p, v, __ATOMIC_RELAXED, __HIP_MEMORY_SCOPE_AGENT);
+    }
+    __builtin_amdgcn_s_barrier();
+    asm volatile("" ::: "memory");
+    const int old = __builtin_amdgcn_readfirstlane(hk_claim_old);
+    __builtin_amdgcn_s_barrier();      // the slot is reused by the next claim
+    return old;
+}
+
+/** @brief The XCD (accelerator complex die) this wave runs on: HW_REG_XCC_ID[3:0] (gfx940+). */
+__device__ inline static int xcd_id() {
+    return __builtin_amdgcn_s_getreg((3 << 11) | (0 << 6) | 20) & 0xF;
+}
+
+/**
  * @brief Wait until the int32 element at `idx` compares with `v` (CMP 0:
  * >= as int32, 1: ==), polling with scope AUX and s_sleep between polls;
  * returns the value seen. Every wave polls (the value is uniform). After

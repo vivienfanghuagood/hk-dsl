@@ -208,6 +208,67 @@ def test_a_scoped_vector_crosses_xcds():
     assert torch.equal(out, want)
 
 
+@pytest.mark.skipif(os.environ.get("HK_ARCH") != "gfx950", reason="hk.comm is gfx950's")
+def test_a_work_queue_hands_every_task_out_once():
+    def body(q: hk.Tensor[i32, "device"], done: hk.Tensor[i32], who: hk.Tensor[i32], *, N: int = 1):
+        t = hk.comm.claim(q.at[0])
+        while t < N:
+            done.at[t].atomic_add_scalar(1)
+            who.at[t].atomic_max_scalar(hk.arch.block_idx.x)
+            t = hk.comm.claim(q.at[0])
+    k = hk.kernel(body, warps=1, name="comm_queue", grid=lambda p: (64, 1, 1), resident=True)
+    n = 20000
+    q = torch.zeros(16, dtype=torch.int32, device="cuda")
+    done = torch.zeros(n, dtype=torch.int32, device="cuda")
+    who = torch.full((n,), -1, dtype=torch.int32, device="cuda")
+    k(q, done, who, N=n)
+    torch.cuda.synchronize()
+    assert bool((done == 1).all())
+    assert len(set(who.tolist())) == 64          # every workgroup took some
+
+
+@pytest.mark.skipif(os.environ.get("HK_ARCH") != "gfx950", reason="hk.comm is gfx950's")
+def test_a_persistent_task_graph_respects_its_dependencies():
+    # L layers of K tasks, all taken from one queue; task (l, k) waits for layer l-1 to be done,
+    # reads its neighbour's value and adds one: every value of the last layer must be L
+    def body(q: hk.Tensor[i32, "device"], val: hk.Tensor[i32, "device"], cnt: hk.Tensor[i32, "device"],
+             err: hk.Tensor[i32], *, K: int = 64, L: int = 16):
+        t = hk.comm.claim(q.at[0])
+        while t < K * L:
+            l = t // K
+            kk = t % K
+            if l > 0:
+                hk.comm.wait(cnt.at[16 * (l - 1)], K, timeout_s=1.0, error=err.at[0])
+                prev = val.at[(l - 1) * K + (kk + 1) % K].atomic_max_scalar(0)
+                val.at[t].atomic_max_scalar(prev + 1)
+            else:
+                val.at[t].atomic_max_scalar(1)
+            hk.comm.arrive(cnt.at[16 * l], 1)
+            t = hk.comm.claim(q.at[0])
+    k = hk.kernel(body, warps=1, name="comm_task_graph", grid=lambda p: (32, 1, 1), resident=True)
+    K, L = 64, 16
+    q = torch.zeros(16, dtype=torch.int32, device="cuda")
+    val = torch.zeros(K * L, dtype=torch.int32, device="cuda")
+    cnt = torch.zeros(16 * L, dtype=torch.int32, device="cuda")
+    err = torch.zeros(1, dtype=torch.int32, device="cuda")
+    k(q, val, cnt, err, K=K, L=L)
+    torch.cuda.synchronize()
+    assert int(err[0]) == 0
+    assert val.view(L, K)[-1].tolist() == [L] * K
+
+
+@pytest.mark.skipif(os.environ.get("HK_ARCH") != "gfx950", reason="hk.comm is gfx950's")
+def test_xcd_id_names_eight_dies():
+    def body(out: hk.Tensor[i32]):
+        out.at[hk.arch.block_idx.x].atomic_max_scalar(hk.arch.xcd_id())
+    k = hk.kernel(body, warps=1, name="comm_xcd_ids", grid=lambda p: (p.out.cols, 1, 1))
+    out = torch.full((256,), -1, dtype=torch.int32, device="cuda")
+    k(out)
+    torch.cuda.synchronize()
+    ids = out.tolist()
+    assert set(ids) == set(range(8)) and all(ids.count(x) == 32 for x in range(8))
+
+
 # ---------------------------------------------------------------- two GPUs
 
 def _gpu_kernels():

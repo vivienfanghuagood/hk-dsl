@@ -72,6 +72,24 @@ def arrive(view, value=1) -> Int:
     return Int(op.result, ScalarType(i32))
 
 
+def claim(view, value=1) -> Int:
+    """A work queue's take: one thread adds `value` to the int32 element `view` (a scoped
+    tensor's) with an atomic of its scope and the workgroup gets the value before the add -- a
+    distinct one for every claim. No drain: what this workgroup stored before is not ordered by it
+    (use `signal` / `arrive` for that). In a persistent kernel:
+
+        t = hk.comm.claim(q.at[0])
+        while t < n:
+            ...task t...
+            t = hk.comm.claim(q.at[0])
+
+    Contains barriers: every warp must reach it."""
+    aux = _flag(view, "claim")
+    op = hkd.ArriveOp(_i32(), view.tensor.v, view.idx.v, as_int(value).v, _i64(aux), nodrain=True,
+                      loc=_t().loc("claimed"))
+    return Int(op.result, ScalarType(i32))
+
+
 def barrier(view, target, *, timeout_s: float = 2.0, error: Optional[View] = None) -> Int:
     """Every workgroup that reaches it adds 1 to the int32 element `view` and
     waits until it is >= `target` -- with an epoch, target = epoch x the number
@@ -108,4 +126,4 @@ def wait(view, value, *, cmp: str = ">=", timeout_s: float = 2.0,
     return Int(op.result, ScalarType(i32))
 
 
-__all__ = ["signal", "arrive", "wait", "barrier", "REALTIME_HZ"]
+__all__ = ["signal", "arrive", "claim", "wait", "barrier", "REALTIME_HZ"]

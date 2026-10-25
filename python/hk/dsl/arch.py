@@ -54,6 +54,17 @@ def warp_id() -> Int:
         _i32(), loc=t.loc("warp_id")).result), ScalarType(i32))
 
 
+def xcd_id() -> Int:
+    """The XCD this workgroup runs on, 0..7 on a gfx950 (read from the hardware: s_getreg
+    HW_REG_XCC_ID), wave-uniform. Workgroups are dealt to the XCDs round robin, so it is usually
+    block id mod 8 -- but a kernel that relies on sharing an XCD's L2 should ask, not assume."""
+    t = B.current()
+    if not t.arch.startswith("gfx9"):
+        raise TypeError(f"hk.arch.xcd_id() is gfx94x/gfx950's (XCDs); {t.arch} has none")
+    return Int(t.hoisted("xcd_id", lambda: hkd.XcdIdOp(_i32(), loc=t.loc("xcd")).result),
+               ScalarType(i32))
+
+
 def lane_id() -> Int:
     """This lane's index in its wave: 0..31 on gfx11, 0..63 on gfx950. Not
     wave-uniform, so not a branch condition for a workgroup operation."""
@@ -205,6 +216,6 @@ def wg_arrive(counter, expected: Scalar, *, scope: str = "device") -> Int:
                               loc=t.loc("arrived")).result, ScalarType(i32))
 
 
-__all__ = ["block_idx", "warp_id", "lane_id", "barrier", "sched_barrier",
+__all__ = ["block_idx", "warp_id", "lane_id", "xcd_id", "barrier", "sched_barrier",
            "sched_group_barrier", "SCHED_CLASSES", "pingpong", "pin", "setprio",
            "vm_wait", "wg_arrive"]

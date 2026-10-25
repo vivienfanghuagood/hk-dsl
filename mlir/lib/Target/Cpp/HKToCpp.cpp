@@ -1043,6 +1043,9 @@ private:
           w("const int " + name(o.getResult()) +
             " = kittens::warpid_uniform();");
         })
+        .Case([&](XcdIdOp o) {
+          w("const int " + name(o.getResult()) + " = kittens::xcd_id();");
+        })
         .Case([&](LaneIdOp o) {
           w("const int " + name(o.getResult()) + " = kittens::laneid();");
         })
@@ -1219,7 +1222,8 @@ private:
             name(o.getIdx()) + ", " + name(o.getValue()) + ");");
         })
         .Case([&](ArriveOp o) {
-          w("const int " + name(o.getResult()) + " = kittens::arrive<" +
+          w("const int " + name(o.getResult()) + " = kittens::" +
+            std::string(o.getNodrain() ? "claim" : "arrive") + "<" +
             std::to_string(o.getAux()) + ">(" + name(o.getDst()) + ", " + name(o.getIdx()) +
             ", " + name(o.getValue()) + ");");
         })
