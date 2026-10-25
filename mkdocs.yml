@@ -79,6 +79,7 @@ nav:
       - hk.lds: api/hk.lds.md
       - hk.group: api/hk.group.md
       - hk.collective: api/hk.collective.md
+      - hk.comm: api/hk.comm.md
       - hk.templates: api/hk.templates.md
       - hk.ops: api/hk.ops.md
       - hk.check: api/hk.check.md
@@ -96,5 +97,6 @@ nav:
       - The DX goal: design/dx-goal.md
       - CDNA3/4: design/cdna.md
       - HipKittens on CDNA4: design/cdna-hipkittens-ops.md
+      - hk.comm (XCDs and GPUs): design/comm.md
       - Cross-architecture API audit: dx/api-consistency.md
   - Development record: history/README.md

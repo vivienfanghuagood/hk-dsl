@@ -448,7 +448,7 @@ def page_hk(since: Since) -> Page:
              "how it is written, this page what each name is. The namespaces have "
              "pages of their own: [hk.math](hk.math.md), [hk.arch](hk.arch.md), "
              "[hk.lds](hk.lds.md), [hk.group](hk.group.md), "
-             "[hk.collective](hk.collective.md); the shipped kernels are "
+             "[hk.collective](hk.collective.md), [hk.comm](hk.comm.md); the shipped kernels are "
              "[hk.ops](hk.ops.md), the templates [hk.templates](hk.templates.md), "
              "the checker [hk.check](hk.check.md), the profiler "
              "[hk.profile](hk.profile.md), the per-arch facts "
@@ -506,9 +506,9 @@ def page_hk(since: Since) -> Page:
                     signature=not isinstance(mv, property))
     p.h2("Namespaces")
     p.para("\n".join(f"- [`hk.{n}`](hk.{n}.md)" for n in
-                     ("arch", "lds", "math", "group", "collective"))
+                     ("arch", "lds", "math", "group", "collective", "comm"))
            + "\n- `hk.Group`: what `hk.group(n)` returns, on [hk.group](hk.group.md)")
-    documented |= {"arch", "lds", "math", "group", "collective", "Group"}
+    documented |= {"arch", "lds", "math", "group", "collective", "comm", "Group"}
     p.h2("Runtime, errors and the rest")
     for n in ["VerifyError", "CompileError", "ResourceError", "Build", "get_target",
               "TARGETS", "detect_arch", "torch_op", "attention"]:
@@ -1026,6 +1026,7 @@ def build_pages() -> List[Page]:
     pages.append(page_module(since, "hk.dsl.lds", "hk.lds"))
     pages.append(page_module(since, "hk.dsl.group", "hk.group"))
     pages.append(page_module(since, "hk.dsl.collective", "hk.collective"))
+    pages.append(page_module(since, "hk.dsl.comm", "hk.comm"))
     pages.append(page_ops(since))
     pages.append(page_templates(since))
     pages.append(page_schedules(since))

@@ -29,6 +29,7 @@ from .._mlir import ir
 from .._mlir.dialects import func as func_d
 from ..compiler import mlir as M
 from ..errors import VerifyError
+from ..runtime import symmetric as _symmetric
 from ..types import DType, GlobalType, Param, ScalarType, fp32, i32
 from . import builder as B
 from . import host
@@ -51,12 +52,23 @@ def _const_dtype(value: Any) -> DType:
 
 
 class Tensor:
-    """The annotation for a tensor parameter: `x: hk.Tensor[hk.bf16]`."""
+    """The annotation for a tensor parameter: `x: hk.Tensor[hk.bf16]`.
 
-    def __class_getitem__(cls, dtype: DType) -> GlobalType:
+    `hk.Tensor[hk.bf16, "system"]` (or "device") is a *scoped* tensor: memory
+    another GPU ("system") or another XCD of this GPU ("device") reads or
+    writes while the kernel runs -- a peer's buffer, a mailbox. Every load,
+    store and atomic through it carries the scope, and hk.comm.signal /
+    hk.comm.wait take only scoped tensors (see hk.comm for why the scope is
+    the tensor's and not the access's)."""
+
+    def __class_getitem__(cls, spec) -> GlobalType:
+        dtype, scope = (spec if isinstance(spec, tuple) else (spec, ""))
         if not isinstance(dtype, DType):
             raise TypeError(f"hk.Tensor[...] takes a dtype, got {dtype!r}")
-        return GlobalType(dtype)
+        if scope not in ("", "device", "system"):
+            raise TypeError(f"hk.Tensor[dtype, scope]: scope is \"device\" or \"system\", "
+                            f"not {scope!r}")
+        return GlobalType(dtype, scope)
 
 
 class Constexpr:
@@ -147,9 +159,13 @@ class TracedKernel:
         out = set()
 
         def visit(op):
+            if op.name == "hk.wait" and len(op.operands) > 3:   # its err element
+                for i, a in enumerate(args):
+                    if a == op.operands[3]:
+                        out.add(names[i])
             if op.name in ("hk.store", "hk.store_rows", "hk.store_scalar",
                            "hk.group_store", "hk.scatter_rows",
-                           "hk.atomic_add", "hk.atomic_scalar"):
+                           "hk.atomic_add", "hk.atomic_scalar", "hk.signal"):
                 dst = op.operands[0]
                 for i, a in enumerate(args):
                     if a == dst:
@@ -479,6 +495,8 @@ class Kernel:
             raise TypeError(
                 f"{self.name}() takes {len(names)} tensors {names}, got {len(tensors)}"
             )
+        if _symmetric._RANGES:   # symmetric memory is open: it must bind to scoped parameters
+            _symmetric.check_bindings(self.name, self._tensors, tensors)
         try:
             launch = self._launch_cache[tuple(const_overrides.items())]
         except (KeyError, TypeError):
