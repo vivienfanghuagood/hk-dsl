@@ -167,8 +167,11 @@ generated file as it is: `scoreboard.py --cases DIR/NAME.py`.
 
 ## CI
 
-`.github/workflows/ci.yml` runs the two tiers that need no GPU on every push
-and pull request, on GitHub's `ubuntu-22.04` runner:
+`.github/workflows/ci.yml` runs the two tiers that need no GPU on pushes to
+main and on pull requests, on GitHub's `ubuntu-22.04` runner. A branch is
+tested through its pull request (open a draft one, or
+`gh workflow run ci.yml --ref BRANCH`), so it is not run twice; a newer push
+cancels a PR's run in progress, but main's runs always finish:
 - **MLIR is prebuilt.** It downloads MLIR 23.1.3, installed by
   `scripts/build_mlir.sh` for that runner's CPython 3.10, from the
   `ci-mlir-23.1.3` release (0.9 GB). Building LLVM on the runner would take
