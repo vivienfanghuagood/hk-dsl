@@ -7,8 +7,9 @@
 *Exact*: every element is the fp32 sum of the two ranks' values rounded once to bf16 -- bitwise the
 same on both ranks, and as accurate as a bf16 result can be (RCCL rounds in bf16 along its ring).
 *Push-only*: every byte over the link is a remote store (remote loads lose to stores on the link).
-*Few workgroups* (`workgroups`, default up to 32): it runs beside compute on another stream and hides
-behind it, where quickreduce and RCCL do not (docs/design/comm.md).
+*Few workgroups* (`workgroups`, default up to 32). Running it on a second stream beside a GEMM
+hides little (measured <= 32%: the GEMM, sized for every CU, loses a wave, and a resident kernel whose
+workgroups cannot all start stalls both ranks); overlap needs the comm inside the compute kernel.
 
 Two-shot. Rank r owns half r of the tiles (16x32 bf16 = 1 KiB of the flat buffer). Workgroup w, warp q
 take tiles in groups of G:
