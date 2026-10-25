@@ -7,7 +7,8 @@ attribute itself. A call hk takes keeps AITER's own sort and fused quant-sort (`
 `fused_dynamic_mxfp8_quant_moe_sort`). Then:
 - hk's stage 1 (`moe_a8w4.stage1_sorted`) gathers each block's rows itself;
 - its epilogue MX-quantizes the intermediate itself (`hk.mx_quant_store`, AITER's rule);
-- hk's stage 2 (`stage2_sorted`) stores each weighted row by its (choice, token);
+- hk's stage 2 (`stage2_sorted`, the block's h resident in LDS) stores each weighted row by its
+  (choice, token);
 - the top-k sum is a plain sum over choices, deterministic, unlike AITER's atomics.
 Everything else goes to AITER unchanged: decode sizes (M < `HK_MOE_A8W4_MIN_M`, default 2048),
 CUDA-graph capture, other activations, quant types or gate modes, expert masks, biases, shared
@@ -82,8 +83,12 @@ def moe(hidden, w1, w2, topk_weight, topk_ids, w1_scale, w2_scale, swiglu_limit:
     hq, hs = M.stage1_sorted(xq, xs.view(torch.uint8), w13, w1_scale.view(torch.uint8), sid, se, nv,
                              inter=inter, mt=MT, pp=3, limit=float(swiglu_limit or 0.0) or 1e30,
                              mxq=True)     # h MX-quantized by stage 1's epilogue (K1 c31)
+    d = w2.shape[1]
+    # h resident in LDS (K1 c32) while a block's h (16 * MT rows x inter bytes) leaves room for two
+    # workgroups a CU: TP2's inter 1152 (1.05-1.07x faster stage 2), not TP1's 2304 (one a CU, slower)
+    res = 5 if inter % 384 == 0 and d % (256 * 5) == 0 and 16 * MT * inter <= 80 * 1024 else 0
     y2 = M.stage2_sorted(hq, hs.view(torch.uint8), w2b, w2_scale.view(torch.uint8), sid, se, nv,
-                         sw, m, topk, e, mt=MT, pp=4)
+                         sw, m, topk, e, mt=MT, pp=4, resident=res)
     return y2.view(topk, m, -1).sum(0)
 
 
