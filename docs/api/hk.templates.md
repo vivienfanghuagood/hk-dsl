@@ -36,8 +36,6 @@ Each template has a guide in [docs/templates](../templates/).
 hk.templates.elementwise(fn: Optional[Callable] = None, inputs: Optional[Sequence] = None, outputs: Any = None, *, name: Optional[str] = None, arch: Optional[str] = None, plan: Optional[Dict[str, int]] = None)
 ```
 
-*New after 0.4.0* (the `hk.templates.elementwise` module is not in the 0.4.0 wheel)
-
 A pointwise kernel from `fn`, the math of one element.
 
     gelu_and_mul = hk.templates.elementwise(lambda g, u: hk.math.gelu(g) * u)
@@ -66,8 +64,6 @@ overrides it. Usable as a decorator: `@hk.templates.elementwise`.
 ```python
 hk.templates.gemm(a=None, b=None, *, epilogue=None, out=None, out_dtype=None, schedule=None, **operands)
 ```
-
-*New after 0.4.0* (the `hk.templates.gemm` module is not in the 0.4.0 wheel)
 
 hk.templates.gemm: a tuned GEMM whose store is yours.
 
@@ -126,8 +122,6 @@ docs/templates/gemm.md has the plans and the measurements.
 hk.templates.meta(shape, dtype, stride=None) -> Meta
 ```
 
-*New after 0.4.0* (the `hk.templates._common` module is not in the 0.4.0 wheel)
-
 A stand-in for a tensor of this shape, dtype and strides (contiguous
 if not given), for planning and building without a GPU.
 
@@ -137,8 +131,6 @@ if not given), for planning and building without a GPU.
 hk.templates.per_col(dtype: Optional[DType] = None) -> Operand
 ```
 
-*New after 0.4.0* (the `hk.templates._common` module is not in the 0.4.0 wheel)
-
 One value per column, a (cols,) tensor: a weight or a bias, the same
 for every row (torch's broadcasting of a 1-D tensor).
 
@@ -147,8 +139,6 @@ for every row (torch's broadcasting of a 1-D tensor).
 ```python
 hk.templates.per_row(dtype: Optional[DType] = None, width: int = 1) -> Operand
 ```
-
-*New after 0.4.0* (the `hk.templates._common` module is not in the 0.4.0 wheel)
 
 One value per row, a (rows,) or (rows, 1) tensor: a token's scale, a
 row's label. In a rowwise output, a per-row result (a scale, a loss);
@@ -160,8 +150,6 @@ row's label. In a rowwise output, a per-row result (a scale, a loss);
 ```python
 hk.templates.pick(t, col) -> Vec
 ```
-
-*New after 0.4.0* (the `hk.templates.rowwise` module is not in the 0.4.0 wheel)
 
 The element of operand `t` (a full operand as the hook received it)
 at column `col` of this row -- a gather, as cross-entropy's target
@@ -175,8 +163,6 @@ int64 operand) or an int, clamped into the row, so an ignored label
 hk.templates.row_length()
 ```
 
-*New after 0.4.0* (the `hk.templates.rowwise` module is not in the 0.4.0 wheel)
-
 The row's length (a device int): what row_mean divides by.
 
 ### `hk.templates.row_logsumexp`
@@ -184,8 +170,6 @@ The row's length (a device int): what row_mean divides by.
 ```python
 hk.templates.row_logsumexp(t) -> Vec
 ```
-
-*New after 0.4.0* (the `hk.templates.rowwise` module is not in the 0.4.0 wheel)
 
 log(sum(exp(t))) of each row of `t`, the whole row, max-shifted so it
 does not overflow. Online: a row too wide to hold is read once for it,
@@ -198,8 +182,6 @@ where row_max then row_sum(exp(t - max)) read it twice. Softmax is
 hk.templates.row_max(t) -> Vec
 ```
 
-*New after 0.4.0* (the `hk.templates.rowwise` module is not in the 0.4.0 wheel)
-
 The max of each row of `t`, the whole row.
 
 ### `hk.templates.row_mean`
@@ -207,8 +189,6 @@ The max of each row of `t`, the whole row.
 ```python
 hk.templates.row_mean(t) -> Vec
 ```
-
-*New after 0.4.0* (the `hk.templates.rowwise` module is not in the 0.4.0 wheel)
 
 The mean of each row of `t`: row_sum(t) over the row's length.
 
@@ -218,8 +198,6 @@ The mean of each row of `t`: row_sum(t) over the row's length.
 hk.templates.row_min(t) -> Vec
 ```
 
-*New after 0.4.0* (the `hk.templates.rowwise` module is not in the 0.4.0 wheel)
-
 The min of each row of `t`, the whole row.
 
 ### `hk.templates.row_sum`
@@ -227,8 +205,6 @@ The min of each row of `t`, the whole row.
 ```python
 hk.templates.row_sum(t) -> Vec
 ```
-
-*New after 0.4.0* (the `hk.templates.rowwise` module is not in the 0.4.0 wheel)
 
 The sum of each row of `t` -- the whole row, across every lane and
 warp that holds a part of it: one value per row, broadcast against the
@@ -239,8 +215,6 @@ row's strips (`x - row_sum(x) / n`).
 ```python
 hk.templates.rowwise(fn: Optional[Callable] = None, inputs: Optional[Sequence] = None, outputs: Any = None, *, like: Optional[str] = None, name: Optional[str] = None, arch: Optional[str] = None, plan: Optional[Dict[str, int]] = None)
 ```
-
-*New after 0.4.0* (the `hk.templates.rowwise` module is not in the 0.4.0 wheel)
 
 A kernel that reduces each row and maps it, from `fn`, the math of
 one row.
@@ -269,7 +243,5 @@ shows what a call runs.
 ```python
 hk.templates.scalar(dtype: Optional[DType] = None) -> Operand
 ```
-
-*New after 0.4.0* (the `hk.templates._common` module is not in the 0.4.0 wheel)
 
 One value for the whole tensor, a () or (1,) tensor on the device.

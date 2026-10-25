@@ -34,13 +34,12 @@ def test_every_documented_name_has_a_docstring():
 
 
 def test_since_marks_against_the_pypi_wheel():
-    text = (REPO / "docs" / "api" / "hk.ops.md").read_text()
-    section = text.split("### `hk.ops.rotary`", 1)[1].split("###", 1)[0]
-    assert "New after 0.4.0" in section          # not in the 0.4.0 wheel
-    section = text.split("### `hk.ops.silu_mul`", 1)[1].split("###", 1)[0]
-    assert "New after 0.4.0" not in section      # in it, same parameters
     hk_md = (REPO / "docs" / "api" / "hk.md").read_text()
-    assert "Register strips build for gfx950" in hk_md
+    section = hk_md.split("### `hk.mma_ABt_mx`", 1)[1].split("###", 1)[0]
+    assert "New after 0.5.0" in section          # not in the 0.5.0 wheel
+    section = hk_md.split("### `hk.mma`", 1)[1].split("###", 1)[0]
+    assert "after 0.5.0" not in section          # in it, same parameters
+    assert "int8 register tiles build on gfx1100" in hk_md
 
 
 def test_math_page_says_what_gelu_is():

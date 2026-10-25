@@ -68,7 +68,7 @@ The guide is [docs/tune.md](../tune.md); the benchmark that judges it is [bench/
 hk.tune.tune(m: int, n: int, k: int, *, budget: float = 60.0, save: bool = True, baselines: Optional[Dict[str, Callable]] = None, workers: int = 32, log: Optional[Callable[[str], None]] = <built-in function print>, arch: Optional[str] = None, compiler=None, profile: bool = False, **search)
 ```
 
-*New after 0.4.0* (the `hk.tune` module is not in the 0.4.0 wheel)
+*New after 0.5.0* (the `hk.tune` module is not in the 0.5.0 wheel)
 
 Tune one M x N x K bf16 GEMM (C = A @ B.T, B as (N, K)) on the current
 GPU; returns a `Result` (hk.tune.search). A win is written to this
@@ -86,7 +86,7 @@ the kernel would have to change to be faster.
 hk.tune.tune_shapes(shapes: Sequence[Tuple[int, int, int]], **kw) -> List
 ```
 
-*New after 0.4.0* (the `hk.tune` module is not in the 0.4.0 wheel)
+*New after 0.5.0* (the `hk.tune` module is not in the 0.5.0 wheel)
 
 tune() each shape in turn, one compiler for all of them (kernels shared
 between shapes compile once).
@@ -97,7 +97,7 @@ between shapes compile once).
 hk.tune.model_shapes(model: str, tp: int = 1, ms: Sequence[int] = (1, 16, 128, 512, 2048, 8192), layers: str = '') -> List[Tuple[int, int, int]]
 ```
 
-*New after 0.4.0* (the `hk.tune` module is not in the 0.4.0 wheel)
+*New after 0.5.0* (the `hk.tune` module is not in the 0.5.0 wheel)
 
 (M, N, K) of a model's linear layers (qkv, o, gate_up, down; and the LM
 head where asked) at tensor-parallel size `tp`, at each M of `ms`.
@@ -108,7 +108,7 @@ head where asked) at tensor-parallel size `tp`, at each M of `ms`.
 hk.tune.parse_shape(s: str) -> Tuple[int, int, int]
 ```
 
-*New after 0.4.0* (the `hk.tune` module is not in the 0.4.0 wheel)
+*New after 0.5.0* (the `hk.tune` module is not in the 0.5.0 wheel)
 
 "MxNxK" -> (M, N, K).
 
@@ -118,7 +118,7 @@ hk.tune.parse_shape(s: str) -> Tuple[int, int, int]
 hk.tune.torch_baselines(names: Iterable[str] = ('torch',)) -> Dict[str, Callable]
 ```
 
-*New after 0.4.0* (the `hk.tune` module is not in the 0.4.0 wheel)
+*New after 0.5.0* (the `hk.tune` module is not in the 0.5.0 wheel)
 
 Baselines to time beside the decision, by name: "torch" is F.linear
 (hipBLASLt on ROCm); the tuning benchmark's others (tunableop, aiter,
@@ -132,7 +132,7 @@ with a message.
 hk.tune.explain(m: int, n: int, k: int, *, vs: str = 'torch.nn.functional:linear') -> dict
 ```
 
-*New after 0.4.0* (the `hk.tune` module is not in the 0.4.0 wheel)
+*New after 0.5.0* (the `hk.tune` module is not in the 0.5.0 wheel)
 
 hk.profile (docs/profile.md) on hk.ops.matmul at M x N x K -- the
 kernel this machine's records give the shape -- against `vs`:
@@ -150,7 +150,7 @@ that the acceptance rule believes -- or to "the route stands".
 class hk.tune.search.Search(space, *, budget: float = 60.0, min_gain: float = 0.01, k_noise: float = 2.0, pool_per_kind: int = 16, explore: int = 6, max_seeds: Optional[int] = None, rung_rounds: Sequence[int] = (3, 6, 10), local_moves: int = 12, local_iters: int = 6, restarts: int = 2, playoff: int = 5, decide_sets: int = 3, decide_rounds: int = 7, confirm_sets: int = 2, log: Optional[Callable[[str], None]] = None)
 ```
 
-*New after 0.4.0* (the `hk.tune.search` module is not in the 0.4.0 wheel)
+*New after 0.5.0* (the `hk.tune.search` module is not in the 0.5.0 wheel)
 
 One shape's search; see the module docstring.
 
@@ -160,7 +160,7 @@ One shape's search; see the module docstring.
 class hk.tune.search.Result(m: int, n: int, k: int, arch: str, route: Candidate, champion: Optional[Candidate] = None, decision: Optional[stats.Decision] = None, route_ms: Optional[float] = None, ms: Optional[float] = None, baselines: Dict[str, Dict[str, Any]] = <factory>, counts: Dict[str, int] = <factory>, gpu_seconds: float = 0.0, wall_seconds: float = 0.0, compile_seconds: float = 0.0, load_seconds: float = 0.0, phases: Dict[str, float] = <factory>, profile: Dict[str, Any] = <factory>, log: List[str] = <factory>, timed: Dict[str, Optional[float]] = <factory>, refused: Dict[str, str] = <factory>, record: str = '') -> None
 ```
 
-*New after 0.4.0* (the `hk.tune.search` module is not in the 0.4.0 wheel)
+*New after 0.5.0* (the `hk.tune.search` module is not in the 0.5.0 wheel)
 
 What one tuning run found and what it cost.
 
@@ -174,7 +174,7 @@ What a timing means: the statistics and the acceptance rule of `hk.tune`.
 hk.tune.stats.decide(route_sets: Sequence[Sequence[float]], cand_sets: Sequence[Sequence[float]], *, min_gain: float = 0.01, k_noise: float = 2.0, floor: Optional[float] = None) -> Decision
 ```
 
-*New after 0.4.0* (the `hk.tune.stats` module is not in the 0.4.0 wheel)
+*New after 0.5.0* (the `hk.tune.stats` module is not in the 0.5.0 wheel)
 
 Whether the candidate beats the route, from S sets of rounds timed
 interleaved (route_sets[s] and cand_sets[s] in the same rounds).
@@ -185,7 +185,7 @@ interleaved (route_sets[s] and cand_sets[s] in the same rounds).
 hk.tune.stats.confirm(first: Decision, again: Decision) -> Decision
 ```
 
-*New after 0.4.0* (the `hk.tune.stats` module is not in the 0.4.0 wheel)
+*New after 0.5.0* (the `hk.tune.stats` module is not in the 0.5.0 wheel)
 
 A win only if the decision and its confirmation both say so; the
 numbers are pooled over both.
@@ -196,7 +196,7 @@ numbers are pooled over both.
 class hk.tune.stats.Decision(verdict: str, gain: float, sigma: float, bar: float, band: List[float] = <factory>, ratios: List[float] = <factory>, sets: int = 0) -> None
 ```
 
-*New after 0.4.0* (the `hk.tune.stats` module is not in the 0.4.0 wheel)
+*New after 0.5.0* (the `hk.tune.stats` module is not in the 0.5.0 wheel)
 
 A candidate against the route it would replace, over sets.
 
@@ -206,7 +206,7 @@ A candidate against the route it would replace, over sets.
 hk.tune.stats.halve(scores: Dict[Hashable, Sequence[float]], keep: int, protect: Iterable[Hashable] = (), floor: Optional[float] = None) -> List[Hashable]
 ```
 
-*New after 0.4.0* (the `hk.tune.stats` module is not in the 0.4.0 wheel)
+*New after 0.5.0* (the `hk.tune.stats` module is not in the 0.5.0 wheel)
 
 Successive halving's cut: the `keep` fastest by median, plus every
 protected arm (the route), in rank order. An arm within its own noise of
@@ -220,7 +220,7 @@ have told apart.
 hk.tune.stats.summary(times: Sequence[float], floor: Optional[float] = None)
 ```
 
-*New after 0.4.0* (the `hk.tune.stats` module is not in the 0.4.0 wheel)
+*New after 0.5.0* (the `hk.tune.stats` module is not in the 0.5.0 wheel)
 
 (median ms, spread, rounds kept) of one arm's rounds; median None if
 no round counts.
@@ -236,7 +236,7 @@ hk.templates.gemm make in front of their own routes.
 hk.tune.records.user_route(arch: str, m: int, n: int, k: int) -> Optional[Tuple[str, Any]]
 ```
 
-*New after 0.4.0* (the `hk.tune.records` module is not in the 0.4.0 wheel)
+*New after 0.5.0* (the `hk.tune.records` module is not in the 0.5.0 wheel)
 
 (name, schedule record) of this machine's tuned candidate for the
 shape, or None: no record for (N, K) in M's bucket, or HK_AUTOTUNE=0.
@@ -250,7 +250,7 @@ hk.ops.gemm.user_route).
 hk.tune.records.save(arch: str, m: int, n: int, k: int, name: str, spec, point: Dict[str, Any]) -> Path
 ```
 
-*New after 0.4.0* (the `hk.tune.records` module is not in the 0.4.0 wheel)
+*New after 0.5.0* (the `hk.tune.records` module is not in the 0.5.0 wheel)
 
 Write one tuned shape: its candidate, its route and its measurement.
 Atomic; replaces an earlier route for the same (N, K) and M bucket.
@@ -261,7 +261,7 @@ Atomic; replaces an earlier route for the same (N, K) and M bucket.
 hk.tune.records.load(arch: str) -> dict
 ```
 
-*New after 0.4.0* (the `hk.tune.records` module is not in the 0.4.0 wheel)
+*New after 0.5.0* (the `hk.tune.records` module is not in the 0.5.0 wheel)
 
 This machine's records for `arch` (an empty table if none). Read once
 per process, again after a tuner in this process wrote (hk.autotune's
@@ -276,7 +276,7 @@ are (hk.autotune.load_records).
 hk.tune.records.path(arch: str) -> Path
 ```
 
-*New after 0.4.0* (the `hk.tune.records` module is not in the 0.4.0 wheel)
+*New after 0.5.0* (the `hk.tune.records` module is not in the 0.5.0 wheel)
 
 This machine's record file for `arch`: $HK_TUNE_DIR/routes_gemm_<arch>.json.
 
@@ -286,7 +286,7 @@ This machine's record file for `arch`: $HK_TUNE_DIR/routes_gemm_<arch>.json.
 hk.tune.records.bucket(m: int) -> int
 ```
 
-*New after 0.4.0* (the `hk.tune.records` module is not in the 0.4.0 wheel)
+*New after 0.5.0* (the `hk.tune.records` module is not in the 0.5.0 wheel)
 
 M rounded up to a power of two: the Ms one record answers.
 
@@ -301,7 +301,7 @@ over hk.schedules (K1: one Schedule type per GEMM kernel family).
 hk.tune.space.provider(arch: str) -> ScheduleSpace
 ```
 
-*New after 0.4.0* (the `hk.tune.space` module is not in the 0.4.0 wheel)
+*New after 0.5.0* (the `hk.tune.space` module is not in the 0.5.0 wheel)
 
 The space provider for an arch.
 
@@ -311,7 +311,7 @@ The space provider for an arch.
 class hk.tune.space.ScheduleSpace(arch: str)
 ```
 
-*New after 0.4.0* (the `hk.tune.space` module is not in the 0.4.0 wheel)
+*New after 0.5.0* (the `hk.tune.space` module is not in the 0.5.0 wheel)
 
 hk's GEMMs on one arch, as hk.schedules spells them.
 
@@ -321,7 +321,7 @@ hk's GEMMs on one arch, as hk.schedules spells them.
 class hk.tune.space.Candidate(kind: str, items: Tuple[Tuple[str, Any], ...], name: str = '', obj: Any = None) -> None
 ```
 
-*New after 0.4.0* (the `hk.tune.space` module is not in the 0.4.0 wheel)
+*New after 0.5.0* (the `hk.tune.space` module is not in the 0.5.0 wheel)
 
 One point: a kernel family and its record (the knobs off the
 family's defaults); `obj` is the hk.schedules object, `name` the shipped
@@ -338,7 +338,7 @@ compiles and times candidates in, never a decision.
 hk.tune.cost.estimate(kind: str, s: Dict[str, Any], m: int, n: int, k: int, arch: str) -> float
 ```
 
-*New after 0.4.0* (the `hk.tune.cost` module is not in the 0.4.0 wheel)
+*New after 0.5.0* (the `hk.tune.cost` module is not in the 0.5.0 wheel)
 
 Seconds, roughly, for candidate (kind, full schedule) at M x N x K.
 
@@ -352,7 +352,7 @@ Timing GEMM candidates on the GPU, the way the project times them.
 class hk.tune.measure.GemmBench(m: int, n: int, k: int, arch: str, *, seed: int = 0, rotate_bytes: Optional[int] = None, device=None)
 ```
 
-*New after 0.4.0* (the `hk.tune.measure` module is not in the 0.4.0 wheel)
+*New after 0.5.0* (the `hk.tune.measure` module is not in the 0.5.0 wheel)
 
 One M x N x K problem on the current GPU.
 
@@ -362,7 +362,7 @@ One M x N x K problem on the current GPU.
 class hk.tune.measure.Compiler(workers: int = 32)
 ```
 
-*New after 0.4.0* (the `hk.tune.measure` module is not in the 0.4.0 wheel)
+*New after 0.5.0* (the `hk.tune.measure` module is not in the 0.5.0 wheel)
 
 Builds candidates' kernels on the CPU, `workers` hipcc processes at a
 time, while the GPU times something else.

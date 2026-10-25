@@ -2,9 +2,9 @@
 
 # API reference
 
-Generated from the code by `scripts/gen_api_docs.py`: every public name's signature and docstring, and what is new or changed since the hk-dsl 0.4.0 wheel on PyPI ("*New after 0.4.0*": `pip install hk-dsl==0.4.0` does not have it; 0.5.0 does, and a checkout, docs/building.md). For how the language is written, read [the language](../language.md) first.
+Generated from the code by `scripts/gen_api_docs.py`: every public name's signature and docstring, and what is new or changed since the hk-dsl 0.5.0 wheel on PyPI ("*New after 0.5.0*": `pip install hk-dsl==0.5.0` does not have it; 0.6.0 does, and a checkout, docs/building.md). For how the language is written, read [the language](../language.md) first.
 
-- [`hk`: kernels, types, values](hk.md) -- 53 entries
+- [`hk`: kernels, types, values](hk.md) -- 59 entries
 - [`hk.math`](hk.math.md) -- 17 entries
 - [`hk.arch`](hk.arch.md) -- 13 entries
 - [`hk.lds`](hk.lds.md) -- 6 entries

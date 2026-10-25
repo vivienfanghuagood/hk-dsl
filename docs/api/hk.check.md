@@ -21,7 +21,7 @@ Correctness, resources and timing of a kernel in one call; the guide is [docs/ch
 hk.check.check(fn, reference: Optional[Callable] = None, inputs=None, *, cases: Optional[Sequence] = None, consts: Optional[Dict[str, Any]] = None, outputs: Optional[Sequence] = None, inplace: Optional[Sequence] = None, sweep: Optional[Dict[str, Sequence]] = None, baselines: Sequence[str] = ('eager', 'compile'), extra: Optional[Dict[str, Callable]] = None, rtol: Optional[float] = None, atol: Optional[float] = None, exact: bool = False, ref_precision: str = 'fp32', time: bool = True, rounds: int = 15, warmup: int = 3, batch_ms: float = 1.0, burn: float = 0.5, compile_mode: Optional[str] = None, bytes: Optional[float] = None, flops: Optional[float] = None, name: Optional[str] = None, gpu: Optional[bool] = None, build: bool = True, seed: int = 0, profile: bool = False) -> Report
 ```
 
-*New after 0.4.0* (the `hk.check` module is not in the 0.4.0 wheel)
+*Changed after 0.5.0*: new parameter `profile`
 
 Check `fn` against `reference` on `inputs`; see the module docstring
 and docs/check.md.
@@ -70,8 +70,6 @@ profile    also run hk.profile on the first case (counters, the thread
 ```python
 class hk.check.Report(name: str, arch: str, mode: str, device: Optional[str] = None, versions: Dict[str, str] = <factory>, builds: List[Dict[str, Any]] = <factory>, cases: List[Dict[str, Any]] = <factory>, errors: List[Dict[str, str]] = <factory>, notes: List[str] = <factory>, profile: Optional[Dict[str, Any]] = None) -> None
 ```
-
-*New after 0.4.0* (the `hk.check` module is not in the 0.4.0 wheel)
 
 What `hk.check` found. `str(report)` is the human summary,
 `report.json()` the same as a dict (`SCHEMA`), `report.ok` whether every
@@ -126,8 +124,6 @@ test: `hk.check(k, ref, make).raise_for_status()`.
 hk.check.compare(got, want, *, rtol=None, atol=None, exact=False) -> Dict[str, Any]
 ```
 
-*New after 0.4.0* (the `hk.check` module is not in the 0.4.0 wheel)
-
 One output against its reference. `want` may be any dtype (the fp32
 reference); the tolerance is for `got`'s dtype.
 
@@ -137,8 +133,6 @@ reference); the tolerance is for `got`'s dtype.
 hk.check.tolerance(dtype, rtol=None, atol=None, scale: float = 1.0) -> Tuple[float, float]
 ```
 
-*New after 0.4.0* (the `hk.check` module is not in the 0.4.0 wheel)
-
 (rtol, absolute atol) for comparing an output of `dtype` against a
 reference whose largest magnitude is `scale`.
 
@@ -147,8 +141,6 @@ reference whose largest magnitude is `scale`.
 ```python
 hk.check.interleave(thunks: Dict[str, Callable[[], Any]], *, rounds: int = 15, warmup: int = 3, batch_ms: float = 1.0) -> Tuple[Dict[str, List[float]], Dict[str, int]]
 ```
-
-*New after 0.4.0* (the `hk.check` module is not in the 0.4.0 wheel)
 
 {name: thunk} -> ({name: ms a call, one per round}, {name: calls a
 burst}). Every round runs every contender once, the order rotated round
@@ -162,8 +154,6 @@ and the event resolution.
 hk.check.verdict(ratio: float, band: float) -> str
 ```
 
-*New after 0.4.0* (the `hk.check` module is not in the 0.4.0 wheel)
-
 win / loss past the band, tie inside it, noise when the band is too
 wide to tell (docs/agents.md, `ab`'s rules).
 
@@ -172,8 +162,6 @@ wide to tell (docs/agents.md, `ab`'s rules).
 ```python
 hk.check.versions() -> Dict[str, str]
 ```
-
-*New after 0.4.0* (the `hk.check` module is not in the 0.4.0 wheel)
 
 hk's version (and the checkout's commit), torch's, HIP's, Triton's,
 Python's: what a number needs beside it to mean anything.
@@ -184,13 +172,10 @@ Python's: what a number needs beside it to mean anything.
 hk.check.describe(args) -> str
 ```
 
-*New after 0.4.0* (the `hk.check` module is not in the 0.4.0 wheel)
-
 "bf16[4096,14336], fp32[64]": what a case's inputs are.
 
 ### `hk.check.TOLERANCES`
 
-*New after 0.4.0* (the `hk.check` module is not in the 0.4.0 wheel)
 
 Output dtype -> (rtol, atol as a fraction of max|reference|). An element passes when |got - want| <= atol * max|want| + rtol * |want|. About two units in the last place for the 16-bit types: a kernel that computes in fp32 and rounds once is within one of the fp32 reference, and torch eager, which rounds every intermediate, typically within two.
 
@@ -233,7 +218,6 @@ Output dtype -> (rtol, atol as a fraction of max|reference|). An element passes 
 
 ### `hk.check.CARDS`
 
-*New after 0.4.0* (the `hk.check` module is not in the 0.4.0 wheel)
 
 Each card's ceilings, for the bandwidth and FLOP rates the summary prints (tools/hk-bench/_rounds.py's CARDS, where each is sourced): DRAM bytes/s, the fastest cache-resident bytes/s measured, the cache's size, bf16 FLOP/s.
 

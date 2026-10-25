@@ -86,8 +86,6 @@ The instruction classes of __builtin_amdgcn_sched_barrier and sched_group_barrie
 hk.arch.pingpong(behind) -> Iterator[None]
 ```
 
-*New after 0.4.0*
-
 Run the warps where `behind` holds one barrier behind the rest.
 
 On entry those warps wait at one extra s_barrier; on exit the others do,
@@ -109,8 +107,6 @@ two barriers later, not one.
 ```python
 hk.arch.pin(*values) -> None
 ```
-
-*New after 0.4.0*
 
 Keep these register tiles' and vectors' values here: what computes
 them stays above this point and what reads them below. No instruction.
@@ -141,7 +137,7 @@ hk.arch.vm_wait(keep: int = 0) -> None
 hk.arch.wg_arrive(counter, expected: Scalar, *, scope: str = 'device') -> Int
 ```
 
-*Changed after 0.4.0*: new parameter `scope`
+*Changed after 0.5.0*: new parameter `scope`
 
 Count this workgroup's arrival at `counter` (an element view of an
 int32 global) and return how many arrived before it. The last to arrive

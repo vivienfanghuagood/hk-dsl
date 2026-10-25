@@ -50,7 +50,7 @@ row-wise and elementwise ops are being unified by the `hk.templates` work.
 
 ## Elementwise
 
-*Changed after 0.4.0*: on gfx950 these run on register strips and take any size. `hk.ops.gelu` is the tanh form, like `hk.math.gelu`.
+On gfx950 these run on register strips and take any size. `hk.ops.gelu` is the tanh form, like `hk.math.gelu`.
 
 **Per architecture, every op below** ([audit](../dx/api-consistency.md)):
 
@@ -214,8 +214,6 @@ Softmax over the last axis, max-shifted.
 hk.ops.silu_mul(a, b, out=None)
 ```
 
-*Changed after 0.4.0*: Runs on strips on gfx950, taking the two halves of a gate/up output as strided views, after 0.4.0.
-
 silu(a) * b -- the second half of SwiGLU, with the gate already split.
 
 torch's equivalent is `F.silu(a) * b`; this does it in one pass, so the
@@ -253,8 +251,6 @@ error says so rather than silently producing a rotation by the wrong angle.
 ```python
 hk.ops.rotary(x, cos_sin, positions=None, out=None)
 ```
-
-*New after 0.4.0*
 
 vLLM's rotary_embedding, NeoX (half-split) style, token-major:
 `x` is (..., heads, D) with the tokens on the leading axes, `cos_sin` is
@@ -411,8 +407,6 @@ combines. On gfx950, paged_cdna's (head_dim 64 or 128).
 hk.ops.paged.fused_kernel(head_dim: int, splits: int, ablate: tuple = (), defines: Optional[dict] = None)
 ```
 
-*Changed after 0.4.0*: new parameter `defines`
-
 `defines` builds the walk with library knobs, for an A/B in one
 process (tools/hk-bench/paged_variants.py): HK_RDNA_XPOSE_WORDS=0 is the
 generic register transpose V took before the packed one.
@@ -522,8 +516,6 @@ Q_TILE rows of each, ints on the host, one int32 copy to the device.
 ```python
 hk.ops.decode_gemm.matmul(x, w, out=None, **override)
 ```
-
-*Changed after 0.4.0*: new parameter `out`
 
 x @ w.T for a decode batch. `w` is (N, K), as in `gemm.matmul`; `out`,
 if given, is the (M, N) bf16 tensor to write.
