@@ -133,6 +133,29 @@ def test_a_grid_barrier_orders_every_workgroup():
 
 
 @pytest.mark.skipif(os.environ.get("HK_ARCH") != "gfx950", reason="hk.comm is gfx950's")
+def test_an_xcd_aggregated_barrier_orders_every_workgroup():
+    def body(slots: hk.Tensor[i32, "device"], cnt: hk.Tensor[i32, "device"], out: hk.Tensor[i32],
+             err: hk.Tensor[i32], *, NWG: int = 256, ROUNDS: int = 50):
+        w = hk.arch.block_idx.x
+        for r in hk.range(1, ROUNDS + 1):
+            slots.at[16 * w].atomic_max_scalar(r * 1000 + w)
+            hk.comm.xcd_barrier(cnt, 2 * r - 1, NWG, timeout_s=1.0, error=err.at[0])
+            out.at[(r - 1) * NWG + w].atomic_max_scalar(slots.at[16 * ((w + 1) % NWG)].atomic_max_scalar(0))
+            hk.comm.xcd_barrier(cnt, 2 * r, NWG, timeout_s=1.0, error=err.at[0])
+    k = hk.kernel(body, warps=1, name="comm_xcd_barrier_gpu", grid=lambda p: (256, 1, 1), resident=True)
+    nwg, rounds = 256, 50
+    slots = torch.zeros(16 * nwg, dtype=torch.int32, device="cuda")
+    cnt = torch.zeros(16 * 9, dtype=torch.int32, device="cuda")
+    out = torch.full((rounds * nwg,), -1, dtype=torch.int32, device="cuda")
+    err = torch.zeros(1, dtype=torch.int32, device="cuda")
+    k(slots, cnt, out, err, NWG=nwg, ROUNDS=rounds)
+    torch.cuda.synchronize()
+    want = torch.tensor([r * 1000 + (w + 1) % nwg for r in range(1, rounds + 1) for w in range(nwg)],
+                        dtype=torch.int32, device="cuda")
+    assert int(err[0]) == 0 and torch.equal(out, want)
+
+
+@pytest.mark.skipif(os.environ.get("HK_ARCH") != "gfx950", reason="hk.comm is gfx950's")
 def test_a_resident_grid_that_cannot_fit_is_refused():
     def body(cnt: hk.Tensor[i32, "device"], *, N: int = 1):
         hk.comm.barrier(cnt.at[0], N, timeout_s=0.1)
@@ -206,6 +229,67 @@ def test_a_scoped_vector_crosses_xcds():
     torch.cuda.synchronize()
     want = torch.cat([src[16 * (r % SLOTS):16 * (r % SLOTS) + 16] for r in range(1, rounds + 1)])
     assert torch.equal(out, want)
+
+
+@pytest.mark.skipif(os.environ.get("HK_ARCH") != "gfx950", reason="hk.comm is gfx950's")
+def test_a_work_queue_hands_every_task_out_once():
+    def body(q: hk.Tensor[i32, "device"], done: hk.Tensor[i32], who: hk.Tensor[i32], *, N: int = 1):
+        t = hk.comm.claim(q.at[0])
+        while t < N:
+            done.at[t].atomic_add_scalar(1)
+            who.at[t].atomic_max_scalar(hk.arch.block_idx.x)
+            t = hk.comm.claim(q.at[0])
+    k = hk.kernel(body, warps=1, name="comm_queue", grid=lambda p: (64, 1, 1), resident=True)
+    n = 20000
+    q = torch.zeros(16, dtype=torch.int32, device="cuda")
+    done = torch.zeros(n, dtype=torch.int32, device="cuda")
+    who = torch.full((n,), -1, dtype=torch.int32, device="cuda")
+    k(q, done, who, N=n)
+    torch.cuda.synchronize()
+    assert bool((done == 1).all())
+    assert len(set(who.tolist())) == 64          # every workgroup took some
+
+
+@pytest.mark.skipif(os.environ.get("HK_ARCH") != "gfx950", reason="hk.comm is gfx950's")
+def test_a_persistent_task_graph_respects_its_dependencies():
+    # L layers of K tasks, all taken from one queue; task (l, k) waits for layer l-1 to be done,
+    # reads its neighbour's value and adds one: every value of the last layer must be L
+    def body(q: hk.Tensor[i32, "device"], val: hk.Tensor[i32, "device"], cnt: hk.Tensor[i32, "device"],
+             err: hk.Tensor[i32], *, K: int = 64, L: int = 16):
+        t = hk.comm.claim(q.at[0])
+        while t < K * L:
+            l = t // K
+            kk = t % K
+            if l > 0:
+                hk.comm.wait(cnt.at[16 * (l - 1)], K, timeout_s=1.0, error=err.at[0])
+                prev = val.at[(l - 1) * K + (kk + 1) % K].atomic_max_scalar(0)
+                val.at[t].atomic_max_scalar(prev + 1)
+            else:
+                val.at[t].atomic_max_scalar(1)
+            hk.comm.arrive(cnt.at[16 * l], 1)
+            t = hk.comm.claim(q.at[0])
+    k = hk.kernel(body, warps=1, name="comm_task_graph", grid=lambda p: (32, 1, 1), resident=True)
+    K, L = 64, 16
+    q = torch.zeros(16, dtype=torch.int32, device="cuda")
+    val = torch.zeros(K * L, dtype=torch.int32, device="cuda")
+    cnt = torch.zeros(16 * L, dtype=torch.int32, device="cuda")
+    err = torch.zeros(1, dtype=torch.int32, device="cuda")
+    k(q, val, cnt, err, K=K, L=L)
+    torch.cuda.synchronize()
+    assert int(err[0]) == 0
+    assert val.view(L, K)[-1].tolist() == [L] * K
+
+
+@pytest.mark.skipif(os.environ.get("HK_ARCH") != "gfx950", reason="hk.comm is gfx950's")
+def test_xcd_id_names_eight_dies():
+    def body(out: hk.Tensor[i32]):
+        out.at[hk.arch.block_idx.x].atomic_max_scalar(hk.arch.xcd_id())
+    k = hk.kernel(body, warps=1, name="comm_xcd_ids", grid=lambda p: (p.out.cols, 1, 1))
+    out = torch.full((256,), -1, dtype=torch.int32, device="cuda")
+    k(out)
+    torch.cuda.synchronize()
+    ids = out.tolist()
+    assert set(ids) == set(range(8)) and all(ids.count(x) == 32 for x in range(8))
 
 
 # ---------------------------------------------------------------- two GPUs
@@ -305,3 +389,87 @@ def test_message_passing_between_gpus_through_symmetric_memory():
     assert got["r"][1] == 0, f"{got['r'][1]} of {rounds} rounds read stale data"
     # the barrier across GPUs: every round each rank saw the peer's value of that round
     assert got["m0"] == (0, 0) and got["m1"] == (0, 0), got
+
+
+# ---------------------------------------------------------------- patterns (two GPUs)
+# Tile-level signals with a double-buffered symmetric buffer and flow control -- the TileLink / Flux
+# shape: rank 0's workgroups produce tiles round after round into rank 1's buffer (parity r % 2),
+# flag each tile; rank 1 consumes them in the reverse order, tile by tile as their flags arrive, and
+# acks each round on a counter in rank 0's memory, so rank 0 reuses a buffer only two rounds later.
+
+TT = 64          # tiles a round
+TR = 40          # rounds
+TF = hk.RT(hk.fp32, 16, 32)
+
+
+def _pattern_kernels():
+    def producer(src: hk.Tensor[hk.fp32], buf: hk.Tensor[hk.fp32, "system"], flags: hk.Tensor[i32, "system"],
+                 ack: hk.Tensor[i32, "system"], err: hk.Tensor[i32]):
+        w = hk.arch.block_idx.x
+        for r in hk.range(1, TR + 1):
+            if r > 2:      # the consumer is done with round r - 2, whose buffer this one reuses
+                hk.comm.wait(ack.at[0], (r - 2) * 8, timeout_s=2.0, error=err.at[0])
+            for t in hk.range(w, TT, 8):
+                buf[hk.tile_coord(0, 0, (r % 2) * TT + t, 0)] = src[hk.tile_coord(0, 0, (r % 4) * TT + t, 0)].load(TF)
+                hk.comm.signal(flags.at[16 * ((r % 2) * TT + t)], r)       # this tile, now
+
+    def consumer(buf: hk.Tensor[hk.fp32, "system"], flags: hk.Tensor[i32, "system"],
+                 ack: hk.Tensor[i32, "system"], out: hk.Tensor[hk.fp32], err: hk.Tensor[i32]):
+        w = hk.arch.block_idx.x
+        for r in hk.range(1, TR + 1):
+            for t0 in hk.range(w, TT, 8):
+                t = TT - 1 - t0                                   # the reverse order
+                hk.comm.wait(flags.at[16 * ((r % 2) * TT + t)], r, timeout_s=2.0, error=err.at[0])
+                out[hk.tile_coord(0, 0, (r - 1) * TT + t, 0)] = buf[hk.tile_coord(0, 0, (r % 2) * TT + t, 0)].load(TF)
+            hk.comm.arrive(ack.at[0], 1)
+
+    return (hk.kernel(producer, warps=1, name="comm_tile_producer", grid=lambda p: (8, 1, 1), resident=True),
+            hk.kernel(consumer, warps=1, name="comm_tile_consumer", grid=lambda p: (8, 1, 1), resident=True))
+
+
+def _pattern_rank(rank, port, q):
+    import torch.distributed as dist
+
+    from hk.runtime import SymmetricBuffer
+
+    os.environ.update(MASTER_ADDR="127.0.0.1", MASTER_PORT=str(port))
+    torch.cuda.set_device(rank)
+    dist.init_process_group("gloo", rank=rank, world_size=2)
+    try:
+        nb = 2 * TT * 16 * 32 * 4
+        sym = SymmetricBuffer(nb + 2 * TT * 64 + 4096, None)
+        buf = sym.peer(1, torch.float32, (2 * TT * 16, 32))
+        flags = sym.peer(1, torch.int32, (2 * TT * 16,), offset=nb)
+        ack = sym.peer(0, torch.int32, (16,), offset=nb + 2 * TT * 64)
+        err = torch.zeros(1, dtype=torch.int32, device="cuda")
+        g = torch.Generator(device="cuda").manual_seed(5)
+        src = torch.randn(4 * TT * 16, 32, device="cuda", generator=g)   # round r sends block r % 4
+        prod, cons = _pattern_kernels()
+        dist.barrier()
+        if rank == 0:
+            prod(src, buf, flags, ack, err)
+            torch.cuda.synchronize()
+            q.put(("p", int(err[0]), 0))
+        else:
+            out = torch.zeros(TR * TT * 16, 32, device="cuda")
+            cons(buf, flags, ack, out, err)
+            torch.cuda.synchronize()
+            want = torch.cat([src[(r % 4) * TT * 16:(r % 4 + 1) * TT * 16] for r in range(1, TR + 1)])
+            q.put(("c", int(err[0]), int((out != want).any(dim=1).sum())))
+        dist.barrier()
+        sym.close()
+    finally:
+        dist.destroy_process_group()
+
+
+@pytest.mark.skipif(os.environ.get("HK_ARCH") != "gfx950", reason="hk.comm is gfx950's")
+def test_tile_signals_through_a_double_buffered_symmetric_buffer():
+    if torch.cuda.device_count() < 2:
+        pytest.skip("needs two GPUs")
+    import torch.multiprocessing as mp
+
+    q = mp.get_context("spawn").Queue()
+    mp.spawn(_pattern_rank, args=(29563, q), nprocs=2)
+    got = {k: (e, n) for k, e, n in (q.get(timeout=60) for _ in range(2))}
+    assert got["p"][0] == 0 and got["c"][0] == 0, f"a wait timed out: {got}"
+    assert got["c"][1] == 0, f"{got['c'][1]} rows of {TR} rounds read the wrong tile"

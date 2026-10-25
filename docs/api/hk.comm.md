@@ -26,8 +26,10 @@ scope and s_sleep backoff, and turns a hang into an error after `timeout_s`.
 
 - [`hk.comm.signal`](#hkcommsignal)
 - [`hk.comm.arrive`](#hkcommarrive)
+- [`hk.comm.claim`](#hkcommclaim)
 - [`hk.comm.wait`](#hkcommwait)
 - [`hk.comm.barrier`](#hkcommbarrier)
+- [`hk.comm.xcd_barrier`](#hkcommxcd_barrier)
 - [`hk.comm.REALTIME_HZ`](#hkcommrealtime_hz)
 
 ### `hk.comm.signal`
@@ -56,6 +58,26 @@ As `signal`, but one thread *adds* `value` to the int32 element `view`
 (a scoped tensor's) with an atomic of the tensor's scope; returns the
 element's value before the add (wave-uniform). Every store this workgroup
 issued before it is acknowledged first. Contains a barrier.
+
+### `hk.comm.claim`
+
+```python
+hk.comm.claim(view, value=1) -> Int
+```
+
+*New after 0.5.0* (the `hk.dsl.comm` module is not in the 0.5.0 wheel)
+
+A work queue's take: one thread adds `value` to the int32 element `view` (a scoped
+tensor's) with an atomic of its scope and the workgroup gets the value before the add -- a
+distinct one for every claim. No drain: what this workgroup stored before is not ordered by it
+(use `signal` / `arrive` for that). In a persistent kernel:
+
+    t = hk.comm.claim(q.at[0])
+    while t < n:
+        ...task t...
+        t = hk.comm.claim(q.at[0])
+
+Contains barriers: every warp must reach it.
 
 ### `hk.comm.wait`
 
@@ -86,6 +108,22 @@ of arrivals, so the counter never needs resetting. With a "device" counter
 it is a grid barrier (the kernel must be `resident=True`: every workgroup on
 the GPU at once), with a "system" one a barrier across GPUs. The stores
 before it are visible after it to accesses of the same scope.
+
+### `hk.comm.xcd_barrier`
+
+```python
+hk.comm.xcd_barrier(cnt, epoch, workgroups: int, *, timeout_s: float = 2.0, error: Optional[View] = None) -> Int
+```
+
+*New after 0.5.0* (the `hk.dsl.comm` module is not in the 0.5.0 wheel)
+
+A grid barrier aggregated per XCD: each workgroup arrives at its XCD's counter
+(`cnt.at[16 * (1 + hk.arch.xcd_id())]`), the last of each XCD at the top one (`cnt.at[0]`), and
+everyone waits for the eight -- 8 global atomics a round instead of `workgroups`. Measured on an
+MI355X, 256 workgroups: 2.53 us a barrier against 3.71 flat. `cnt`: a "device"-scoped int32 tensor
+of at least 144 elements, zero at the first round; `epoch`: 1, 2, ... a round. The grid must be
+`resident=True` with `workgroups` a multiple of 8, spread evenly over the XCDs (as the hardware
+deals a resident grid: round robin) -- if not, the barrier times out into `error`.
 
 ### `hk.comm.REALTIME_HZ`
 

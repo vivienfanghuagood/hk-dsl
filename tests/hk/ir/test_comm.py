@@ -160,3 +160,27 @@ def test_resident_is_a_kernel_option_that_survives_specialization():
     body.__name__ = "comm_resident"
     k = hk.kernel(body, arch="gfx950", warps=1, grid=lambda p: (4, 1, 1), resident=True)
     assert k.resident and k.specialize(N=4).resident and k.preloaded().resident
+
+
+def test_claim_is_an_arrival_without_the_drain():
+    def body(q: hk.Tensor[i32, "device"], out: hk.Tensor[i32]):
+        t = hk.comm.claim(q.at[0])
+        out.at[0].atomic_max_scalar(t)
+    src = _kernel(body, "comm_claim").source()
+    assert "kittens::claim<16>(g.q, " in src and "kittens::arrive<" not in src
+
+
+def test_xcd_id_reads_the_hardware_and_is_gfx9s():
+    def body(out: hk.Tensor[i32]):
+        out.at[0].atomic_max_scalar(hk.arch.xcd_id())
+    assert "kittens::xcd_id()" in _kernel(body, "comm_xcd_id").source()
+    with pytest.raises(TypeError, match="XCD"):
+        _kernel(body, "comm_xcd_id_rdna", arch="gfx1100").trace()
+
+
+def test_xcd_barrier_arrives_twice_and_waits_once():
+    def body(cnt: hk.Tensor[i32, "device"], *, N: int = 64):
+        hk.comm.xcd_barrier(cnt, 1, N)
+    src = _kernel(body, "comm_xcd_barrier").source()
+    assert src.count("kittens::arrive<16>(g.cnt, ") == 2 and src.count("kittens::wait<16, 0>(") == 1
+    assert "kittens::xcd_id()" in src

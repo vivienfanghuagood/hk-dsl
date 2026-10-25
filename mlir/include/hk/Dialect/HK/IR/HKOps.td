@@ -37,6 +37,12 @@ def HK_WarpIdOp : HK_Op<"warp_id", [Pure]> {
   let assemblyFormat = "attr-dict";
 }
 
+def HK_XcdIdOp : HK_Op<"xcd_id", [Pure]> {
+  let summary = "the XCD this workgroup runs on (gfx950: s_getreg HW_REG_XCC_ID), 0..7";
+  let results = (outs I32:$result);
+  let assemblyFormat = "attr-dict";
+}
+
 def HK_LaneIdOp : HK_Op<"lane_id", [Pure]> {
   let summary = "kittens::laneid()";
   let results = (outs I32:$result);
@@ -325,7 +331,8 @@ def HK_ArriveOp : HK_Op<"arrive"> {
     every workgroup (of one grid, or of every rank) arrives at: hk.comm.barrier.
     Contains a barrier.
   }];
-  let arguments = (ins HK_GlobalType:$dst, HK_CoordType:$idx, I32:$value, I64Attr:$aux);
+  let arguments = (ins HK_GlobalType:$dst, HK_CoordType:$idx, I32:$value, I64Attr:$aux,
+                       UnitAttr:$nodrain);
   let results = (outs I32:$result);
   let assemblyFormat = [{
     $value `,` $dst `[` $idx `]` attr-dict `:` qualified(type($dst)) `,` qualified(type($idx))

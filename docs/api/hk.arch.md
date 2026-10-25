@@ -8,6 +8,7 @@ instructions that order and schedule them.
 - [`hk.arch.block_idx`](#hkarchblock_idx)
 - [`hk.arch.warp_id`](#hkarchwarp_id)
 - [`hk.arch.lane_id`](#hkarchlane_id)
+- [`hk.arch.xcd_id`](#hkarchxcd_id)
 - [`hk.arch.barrier`](#hkarchbarrier)
 - [`hk.arch.sched_barrier`](#hkarchsched_barrier)
 - [`hk.arch.sched_group_barrier`](#hkarchsched_group_barrier)
@@ -43,6 +44,18 @@ hk.arch.lane_id() -> Int
 
 This lane's index in its wave: 0..31 on gfx11, 0..63 on gfx950. Not
 wave-uniform, so not a branch condition for a workgroup operation.
+
+### `hk.arch.xcd_id`
+
+```python
+hk.arch.xcd_id() -> Int
+```
+
+*New after 0.5.0*
+
+The XCD this workgroup runs on, 0..7 on a gfx950 (read from the hardware: s_getreg
+HW_REG_XCC_ID), wave-uniform. Workgroups are dealt to the XCDs round robin, so it is usually
+block id mod 8 -- but a kernel that relies on sharing an XCD's L2 should ask, not assume.
 
 ### `hk.arch.barrier`
 
