@@ -1,21 +1,28 @@
 name: CI
 
-# The two tiers that need no GPU, on every push and pull request: the hk
+# The two tiers that need no GPU, on pushes to main and on pull requests: the hk
 # dialect built against a prebuilt MLIR, then the IR tier (no hipcc) and the
 # codegen tier (hipcc, no GPU). The GPU tier runs on self-hosted runners, on
 # pushes to main only (gpu.yml; docs/testing.md#the-gpu-tier).
 
+# Pushes run only on main. A branch is tested through its pull request, so a
+# branch with an open PR no longer runs every tier twice (push + pull_request),
+# and work-in-progress pushes without a PR do not run (or fail) at all: open a
+# (draft) PR, or dispatch the workflow on the branch, to test one.
 on:
   push:
+    branches: [main]
   pull_request:
   workflow_dispatch:
 
 permissions:
   contents: read
 
+# A newer push to a PR supersedes the run in progress; main's runs are never
+# cancelled, so every commit on main ends with a result.
 concurrency:
   group: ci-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 env:
   # MLIR 23.1.3 as scripts/build_mlir.sh installs it, for CPython 3.10 on
