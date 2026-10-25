@@ -2,6 +2,7 @@
 
     python3 -m hk.integration --status          # what is importable, what is patched
     python3 -m hk.integration --warm -j 32      # build the torch ops ahead of time
+    python3 -m hk.integration warm-routes --tp 2  # build the DeepSeek-V4.1 routes' kernels (hk.integration.warm_routes)
     python3 -m hk.integration ab --arms user    # end-to-end A/B in vLLM (hk.integration.ab)
     python3 -m hk.integration tune --model M    # measure M's linear routes (hk.integration.tune)
     python3 -m hk.integration headroom --model M  # where a step's time goes (hk.integration.headroom)
@@ -63,6 +64,10 @@ def main(argv=None) -> int:
         from .headroom import main as headroom_main  # noqa: PLC0415
 
         return headroom_main(argv[1:])
+    if argv[:1] == ["warm-routes"]:
+        from .warm_routes import main as warm_routes_main  # noqa: PLC0415
+
+        return warm_routes_main(argv[1:])
     if argv[:1] == ["new-op"]:
         from .newop import main as newop_main  # noqa: PLC0415
 
