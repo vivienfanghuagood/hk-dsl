@@ -1430,10 +1430,19 @@ private:
               (o.getRows() ? ", " + name(o.getRows()) : std::string()) + ");");
             return;
           }
-          std::string g = "kittens::group<" +
-                          std::to_string(o.getThreads() / tgt->wave) + ">::";
-          w(g + "load(" + name(o.getDst()) + ", " + name(o.getSrc()) + ", " +
-            coordArg(o.getIdx(), tileCpp(o.getDst().getType())) + ");");
+          std::string nw = std::to_string(o.getThreads() / tgt->wave);
+          // CDNA: hk/cdna.cuh's copy, its descriptor ending at the tensor's
+          // last row; include/cdna4's spans the tile's whole rows, so a last,
+          // partial tile read past the tensor (mxfp8.quant's fault, #47).
+          // include/rdna3's group load is bounded already.
+          if (tgt->wave == 64)
+            w("kittens::group_load_sync<" + nw + ">(" + name(o.getDst()) + ", " +
+              name(o.getSrc()) + ", " +
+              coordArg(o.getIdx(), tileCpp(o.getDst().getType())) + ");");
+          else
+            w("kittens::group<" + nw + ">::load(" + name(o.getDst()) + ", " +
+              name(o.getSrc()) + ", " +
+              coordArg(o.getIdx(), tileCpp(o.getDst().getType())) + ");");
           // include/cdna4's group load is buffer_load ... lds, a DMA that
           // counts on vmcnt and returns in flight; gfx90a+ has a back-off
           // barrier, so the compiler puts no wait before the s_barrier that
@@ -1448,9 +1457,13 @@ private:
           }
         })
         .Case([&](GroupStoreOp o) {
-          std::string g = "kittens::group<" +
-                          std::to_string(o.getThreads() / tgt->wave) + ">::";
-          w(g + "store(" + name(o.getDst()) + ", " + name(o.getSrc()) + ", " +
+          // CDNA: hk/cdna.cuh's store, rows past the tensor's last dropped;
+          // include/cdna4's wrote the whole tile, past the tensor.
+          std::string nw = std::to_string(o.getThreads() / tgt->wave);
+          std::string fn = tgt->wave == 64
+                               ? "kittens::group_store_bounded<" + nw + ">"
+                               : "kittens::group<" + nw + ">::store";
+          w(fn + "(" + name(o.getDst()) + ", " + name(o.getSrc()) + ", " +
             coordArg(o.getIdx(), tileCpp(o.getSrc().getType())) + ");");
         })
         .Case([&](GroupWaitForOp o) {

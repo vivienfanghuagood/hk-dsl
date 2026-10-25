@@ -172,8 +172,39 @@ def test_cdna_waits_for_the_lds_reads_the_library_does_not():
 
 def test_cdna_waits_for_the_global_to_lds_dma_before_the_barrier():
     src = _lds_gemm("gfx950")
-    i = src.index("kittens::group<2>::load(As")
+    i = src.index("kittens::group_load_sync<2>(As")
     assert src.index("kittens::vm_wait<0>();", i) < src.index("__builtin_amdgcn_s_barrier", i)
+
+
+def _group_copy(arch):
+    st = hk.ST(hk.bf16, 64, 128)
+
+    @hk.kernel(arch=arch, warps=4, grid=lambda p: (1, 1, 1))
+    def group_copy(x: hk.Tensor[hk.bf16], y: hk.Tensor[hk.bf16]):
+        g = hk.group(4)
+        Xs = hk.lds.alloc(st, name="Xs")
+        g.load(Xs, x.at[0, 0])
+        hk.arch.barrier()
+        g.store(y.at[0, 0], Xs)
+
+    return scaffold.bare(group_copy.trace())
+
+
+@pytest.mark.parametrize("arch", CDNA)
+def test_cdna_group_copies_are_hks_bounded_ones(arch):
+    """include/cdna4's group load spans the tile's whole rows and its store writes them all:
+    a last, partial tile went past the tensor (mxfp8.quant's fault, #47). hk/cdna.cuh's stop
+    at the tensor's last row (gfx942's forward to the library's: no gfx942 to test on)."""
+    src = _group_copy(arch)
+    assert "kittens::group_load_sync<4>(Xs, g.x, " in src
+    assert "kittens::group_store_bounded<4>(g.y, Xs, " in src
+    assert "group<4>::load" not in src and "group<4>::store" not in src
+
+
+def test_rdna_group_copies_are_the_librarys_bounded_ones():
+    src = _group_copy("gfx1100")
+    assert "kittens::group<4>::load(Xs, g.x, " in src
+    assert "kittens::group<4>::store(g.y, Xs, " in src
 
 
 def test_gfx950_shared_tiles_take_the_fragment_of_what_is_read_out_of_them():
