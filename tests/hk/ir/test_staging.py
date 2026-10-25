@@ -292,11 +292,13 @@ def test_a_barrier_with_reads_of_an_unnamed_buffer_in_flight_is_refused_too():
     """The mirror hazard, and the one that is easier to talk yourself out of:
     the reads have landed *somewhere*, just not yet in registers, and the
     buffer they came from is about to be overwritten by another warp. When
-    the buffer is picked by a runtime index the pass cannot tell which writes
-    touch it, so the reads have to land before the barrier."""
+    the buffer is picked by a runtime index the pass cannot name -- not a
+    ring index `(base + c) % count`, which it tracks relative to its base --
+    it cannot tell which writes touch it, so the reads have to land before
+    the barrier."""
     def racy(a: hk.Tensor[bf16]):
         s = hk.lds.alloc(hk.ST(bf16, 128, 32), count=2, name="s")
-        s[a.rows % 2].subtile(32, 16, 0, 0).load(hk.RT(bf16, 32, 16, "row"), wait=False)
+        s[hk.min(a.rows, 1)].subtile(32, 16, 0, 0).load(hk.RT(bf16, 32, 16, "row"), wait=False)
         hk.arch.barrier()
 
     with pytest.raises(VerifyError, match="ds_reads still in flight"):
