@@ -113,6 +113,7 @@ def _parts(value: str):
     if v in _OFF:
         return set()
     if v in ("1", "on", "yes", "all"):
+        # convrot is opt-in: HK_SGLD=attn,linear,convrot (it acts only on --quantization convrot_int8)
         return {"attn", "linear"}
     return {p.strip() for p in v.split(",") if p.strip()}
 
@@ -240,9 +241,116 @@ def apply_linear() -> str:
     return f"linear -> hk.ops.matmul at M >= {MIN_M} ({LINEAR_HOME}.UnquantizedLinearMethod.apply)"
 
 
+#: SGLang-Diffusion's ConvRot INT8 config: both of its backends are CUDA-only.
+CONVROT_HOME = "sglang.multimodal_gen.runtime.layers.quantization.configs.convrot_int8_config"
+CONVROT_BACKEND = "hk"
+CONVROT_GROUPS = (16, 64, 256)
+CONVROT_STATS = {"hk": 0, "fallback": 0}
+
+
+def apply_convrot() -> str:
+    """A third convrot_int8 backend, "hk" (SGLANG_DIFFUSION_CONVROT_INT8_BACKEND=hk,
+    and what "auto" picks on ROCm): hk.ops.convrot's W8A8 linear, for online
+    (a bf16 checkpoint quantized at load) and serialized ConvRot checkpoints.
+    Only takes effect when the run asks for --quantization convrot_int8."""
+    import importlib  # noqa: PLC0415
+
+    import torch  # noqa: PLC0415
+
+    if not torch.version.hip:
+        return "convrot: not ROCm, left alone"
+    mod = importlib.import_module(CONVROT_HOME)
+    if getattr(mod, "_hk", False):
+        return "convrot: already patched"
+    linear_mod = importlib.import_module(LINEAR_HOME)
+    LinearMethodBase = linear_mod.LinearMethodBase
+    Unquantized = linear_mod.UnquantizedLinearMethod
+    from torch.nn.parameter import Parameter  # noqa: PLC0415
+
+    from ..ops import convrot  # noqa: PLC0415
+
+    class HkConvRotInt8LinearMethod(LinearMethodBase):
+        """convrot_int8 on hk: weights rotated and quantized once (or loaded so),
+        activations rotated, quantized and multiplied by hk's int8 GEMM."""
+
+        def __init__(self, quant_config, *, group_size, is_checkpoint_serialized):
+            self.quant_config = quant_config
+            self.group_size = group_size
+            self.is_checkpoint_serialized = is_checkpoint_serialized
+
+        def create_weights(self, layer, input_size_per_partition, output_partition_sizes,
+                           input_size, output_size, params_dtype, **extra_weight_attrs):
+            if input_size_per_partition % self.group_size:
+                raise ValueError(f"convrot_int8 (hk): input size {input_size_per_partition} "
+                                 f"is not a multiple of the group {self.group_size}")
+            Unquantized.create_weights(
+                self, layer, input_size_per_partition, output_partition_sizes, input_size,
+                output_size, torch.int8 if self.is_checkpoint_serialized else params_dtype,
+                **extra_weight_attrs)
+            if self.is_checkpoint_serialized:
+                from sglang.multimodal_gen.runtime.utils.weight_attrs import set_weight_attrs  # noqa: PLC0415
+
+                scale = Parameter(torch.empty(sum(output_partition_sizes), 1, dtype=torch.float32),
+                                  requires_grad=False)
+                set_weight_attrs(scale, {"output_dim": 0})
+                set_weight_attrs(scale, extra_weight_attrs)
+                layer.register_parameter("weight_scale", scale)
+
+        def process_weights_after_loading(self, layer):
+            w = layer.weight.data
+            if self.is_checkpoint_serialized:
+                self.quant_config.note_loaded()
+                return
+            if w.dtype == torch.int8:
+                return
+            home = w.device
+            q, sc = convrot.prepare_weight(w.to("cuda", torch.bfloat16), self.group_size)
+            layer.weight = Parameter(q.to(home), requires_grad=False)
+            layer.register_parameter("weight_scale", Parameter(sc.view(-1, 1).to(home),
+                                                               requires_grad=False))
+            self.quant_config.note_quantized(w.numel() * w.element_size())
+
+        def apply(self, layer, x, bias=None):
+            dt = x.dtype
+            xb = x if dt == torch.bfloat16 else x.to(torch.bfloat16)
+            w, ws = layer.weight, layer.weight_scale.view(-1)
+            if w.shape[0] % 128 == 0 and w.shape[1] % 64 == 0:
+                CONVROT_STATS["hk"] += 1
+                y = convrot.linear(xb, w, ws, self.group_size, bias=bias)
+            else:
+                CONVROT_STATS["fallback"] += 1
+                y = convrot.reference(xb, w, ws, self.group_size, bias=bias)
+            return y if y.dtype == dt else y.to(dt)
+
+    mod.BACKENDS = tuple(mod.BACKENDS) + (CONVROT_BACKEND,)
+    mod.BACKEND_GROUP_SIZES[CONVROT_BACKEND] = CONVROT_GROUPS
+    cls = mod.ConvRotInt8Config
+    resolve0, select0 = cls.resolve_backend, cls._select
+
+    def resolve_backend(self, group_size=None):
+        g = self.group_size if group_size is None else group_size
+        if self.backend in ("auto", CONVROT_BACKEND):
+            return CONVROT_BACKEND if g in CONVROT_GROUPS else None
+        return resolve0(self, group_size)
+
+    def _select(self, *, prefix, backend, group_size, serialized):
+        if backend != CONVROT_BACKEND:
+            return select0(self, prefix=prefix, backend=backend, group_size=group_size,
+                           serialized=serialized)
+        self.selected.append(prefix)
+        by = self.selected_by_backend
+        (by.setdefault(backend, []) if isinstance(by, dict) else by[backend]).append(prefix)
+        return HkConvRotInt8LinearMethod(self, group_size=group_size,
+                                         is_checkpoint_serialized=serialized)
+
+    cls.resolve_backend, cls._select = resolve_backend, _select
+    mod._hk = True
+    return f"convrot_int8 -> backend 'hk' (hk.ops.convrot; group {CONVROT_GROUPS})"
+
+
 def apply() -> str:
-    """Apply what HK_SGLD names: "1" both, or a comma list of "attn" and
-    "linear". Idempotent."""
+    """Apply what HK_SGLD names: "1" all, or a comma list of "attn", "linear"
+    and "convrot". Idempotent."""
     import atexit  # noqa: PLC0415
 
     parts = _parts(os.environ.get(ENV, "1"))
@@ -254,6 +362,11 @@ def apply() -> str:
         notes.append("F.scaled_dot_product_attention -> hk.ops.sdpa (torch_sdpa backend)")
     if "linear" in parts:
         notes.append(apply_linear())
+    if "convrot" in parts:
+        try:
+            notes.append(apply_convrot())
+        except ImportError as e:   # an SGLang without convrot_int8
+            notes.append(f"convrot: not available ({e})")
     if not getattr(apply, "_done", False):
         # Each process says which branch it took: as it exits, and -- because the worker that
         # runs the DiT is torn down without running atexit (its counters were never seen) --
@@ -292,7 +405,8 @@ def stats() -> str:
     fb = "; ".join(f"{shape} {why}" for (shape, _), why in list(sdpa.FALLBACKS.items())[:4])
     return (f"attention: hk {s['kernel']} ({s.get('bnhd', 0)} in place), torch {s['fallback']}"
             + (f" ({fb})" if fb else "")
-            + f"; linear: hk {LINEAR_STATS['hk']}, engine {LINEAR_STATS['engine']}")
+            + f"; linear: hk {LINEAR_STATS['hk']}, engine {LINEAR_STATS['engine']}"
+            + f"; convrot: hk {CONVROT_STATS['hk']}, fallback {CONVROT_STATS['fallback']}")
 
 
 def site_dir() -> Path:
