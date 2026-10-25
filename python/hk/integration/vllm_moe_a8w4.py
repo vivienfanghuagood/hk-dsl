@@ -42,6 +42,16 @@ PATCH = engine.Patch("hk_vllm::moe_a8w4", paths=("hk", "fallback"))   # capture:
 STATS = PATCH.stats
 
 
+#: aiter.fused_moe.fused_moe's parameters this route reads by name (_takes, fused_moe). A
+#: nightly that renames or drops one would silently send every call to AITER -- or, as a bare
+#: (*args, **kwargs) wrapper once did with gate_mode, change the stock path too.
+#: tests/hk/gpu/test_engine_contract.py holds the installed AITER to it.
+AITER_PARAMS = ("activation", "quant_type", "doweight_stage1", "gate_mode", "expert_mask",
+                "a1_scale", "a2_scale", "num_local_tokens", "bias1", "bias2", "shared_w1",
+                "shared_w2", "quant_dtype_a", "hidden_pad", "intermediate_pad", "w1_scale",
+                "w2_scale", "swiglu_limit")
+
+
 def _takes(hidden, w1, kw) -> bool:
     import torch  # noqa: PLC0415
     from aiter import ActivationType, QuantType  # noqa: PLC0415
