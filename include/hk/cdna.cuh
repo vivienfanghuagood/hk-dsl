@@ -1543,6 +1543,75 @@ __device__ inline static void load_mx_scales_aiter(hk_mxs<R, KB, F> &dst, const 
 }
 
 /**
+ * MX-quantize an LDS tile's rows (bf16 or fp32) into FP8 e4m3 + E8M0, AITER's per_1x32 rule:
+ * e = ceil(log2(amax / 448)), from amax's bits (floor(log2 amax) - 8, plus one when the mantissa
+ * is past 1.75), so the scale and every value match hk.ops.moe_a8w4.mx_quant bit for bit. Every
+ * thread of the workgroup takes (row, 32-column group) pairs: 32 plain LDS reads in 16-byte runs,
+ * one 32-byte store of the FP8 row piece, one byte of scale at its place in AITER's 32-row layout
+ * (mxfp8.aiter_scales: dword (n1 * K1 + k1) * 64 + kb4 * 16 + r16, byte kpack * 2 + h). The caller
+ * has written src and passed a barrier.
+ */
+template<ducks::st::all ST, ducks::gl::all GLQ, ducks::gl::all GLS>
+__device__ inline static void mx_quant_store(const GLQ &q, const GLS &s, const ST &src, int row0, int col0) {
+    using T = typename ST::dtype;
+    static_assert(std::is_same_v<T, bf16> || std::is_same_v<T, float>, "a bf16 or fp32 LDS tile");
+    static_assert(ST::cols % 32 == 0, "32-column groups");
+    // elements a contiguous LDS run: the swizzle keeps bytes_per_thread together
+    constexpr int G = ST::cols / 32, RB = ST::underlying_subtile_bytes_per_thread, RUN = RB / sizeof(T);
+    static_assert(RUN >= 1 && 32 % RUN == 0 && ST::underlying_subtile_cols % RUN == 0,
+                  "whole runs inside a swizzle row");
+    const char *base = reinterpret_cast<const char *>(&src.data[0]);
+    const int rows = int(q.template shape<2>()), qcols = int(q.template shape<3>());
+    const uint64_t qstride = uint64_t(q.template stride<2>());
+    const int k1n = ((qcols / 32 + 7) / 8);                        // 256-wide K pairs a scale row
+    uint8_t *qp = reinterpret_cast<uint8_t *>(q.raw_ptr);
+    uint8_t *sp = reinterpret_cast<uint8_t *>(s.raw_ptr);
+    const int nthreads = int(blockDim.x), tid = int(threadIdx.x);
+    for (int p = tid; p < ST::rows * G; p += nthreads) {
+        const int r = p / G, g = p % G, R = row0 + r;
+        if (R >= rows) continue;
+        float v[32];
+        #pragma unroll
+        for (int u = 0; u < 32 / RUN; u++) {
+            const int c = g * 32 + u * RUN;
+            const int sub = (r / ST::underlying_subtile_rows) * ST::underlying_subtiles_per_row +
+                            c / ST::underlying_subtile_cols;
+            const uint32_t off = uint32_t(sub) * ST::underlying_subtile_bytes +
+                                 ST::swizzle({r % ST::underlying_subtile_rows, c % ST::underlying_subtile_cols});
+            T run[RUN];
+            __builtin_memcpy(run, base + off, RB);
+            #pragma unroll
+            for (int e = 0; e < RUN; e++) v[u * RUN + e] = float(run[e]);
+        }
+        float amax = 0.f;
+        #pragma unroll
+        for (int e = 0; e < 32; e++) amax = fmaxf(amax, fabsf(v[e]));
+        amax = fmaxf(amax, 1.1754943508222875e-38f);                 // clamp_min(2^-126)
+        const uint32_t ab = __float_as_uint(amax);
+        int byte = int(ab >> 23) - 8 + ((ab & 0x7FFFFFu) > 0x600000u ? 1 : 0);   // e + 127
+        byte = byte < 0 ? 0 : (byte > 254 ? 254 : byte);
+        const float inv = byte < 254 ? __uint_as_float(uint32_t(254 - byte) << 23)   // 2^-e
+                                     : ldexpf(1.f, 127 - byte);
+        uint32_t packed[8];
+        #pragma unroll
+        for (int d = 0; d < 8; d++) {
+            float a[4];
+            #pragma unroll
+            for (int e = 0; e < 4; e++) a[e] = fminf(fmaxf(v[d * 4 + e] * inv, -448.f), 448.f);
+            int w = __builtin_amdgcn_cvt_pk_fp8_f32(a[0], a[1], 0, false);
+            w = __builtin_amdgcn_cvt_pk_fp8_f32(a[2], a[3], w, true);
+            packed[d] = uint32_t(w);
+        }
+        uint8_t *qrow = qp + uint64_t(R) * qstride + uint64_t(col0 + g * 32);
+        reinterpret_cast<__uint128_t *>(qrow)[0] = *reinterpret_cast<const __uint128_t *>(&packed[0]);
+        reinterpret_cast<__uint128_t *>(qrow)[1] = *reinterpret_cast<const __uint128_t *>(&packed[4]);
+        const int b = col0 / 32 + g;
+        const int n1 = R / 32, h = (R % 32) / 16, r16 = R % 16, k1 = b / 8, kpack = (b % 8) / 4, kb4 = b % 4;
+        sp[((((uint64_t(n1) * k1n + k1) * 4 + kb4) * 16 + r16) * 2 + kpack) * 2 + h] = uint8_t(byte);
+    }
+}
+
+/**
  * AITER's shuffled MXFP4 MoE weights (gfx950, shuffle_weight(is_guinterleave=True)), uint8
  * [E * GR, K/2]: per expert, 1 KB chunks [16-row block][(gate|up)][K/128 step], each one 16x128
  * FP4 operand in lane order (16 bytes a lane at lane * 16). Fragment (i, s) of the fp8-typed

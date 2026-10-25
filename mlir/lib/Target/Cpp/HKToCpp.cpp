@@ -1136,6 +1136,10 @@ private:
             call("load_mx_scales", d,
                  {name(o.getSrc()), name(o.getRow0()), name(o.getKb0())});
         })
+        .Case([&](MxQuantStoreOp o) {
+          w("kittens::mx_quant_store(" + name(o.getQ()) + ", " + name(o.getS()) + ", " +
+            name(o.getSrc()) + ", " + name(o.getRow0()) + ", " + name(o.getCol0()) + ");");
+        })
         .Case([&](LoadFp4FragsLdsOp o) {
           Value d = dest(o.getDst(), o.getResult());
           w("kittens::load_fp4_frags_lds(" + name(d) + ", " + name(o.getSrc()) + ", " +

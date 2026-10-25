@@ -602,7 +602,7 @@ def aiter_layout_w2_scale(s):
 
 def _sorted_ring(stage: int, name: str, *, group_rows: int, mt: int, pp: int, k: int,
                  limit: float = 10.0, topk: int = 6, warps: int = 4, xcd: bool = True,
-                 depth: int = 2, atomic: bool = False):
+                 depth: int = 2, atomic: bool = False, mxq: bool = False):
     """Stage 1 or 2 on AITER's own MoE sort (moe_sorting with block_size 16 * mt): a round is one
     sorted block -- its expert sorted_expert_ids[b], its rows sorted_ids[b * BM ..] -- so nothing
     is decoded or gathered on the host. The xsplit ring with two-step 32-row scale dwords (pairs),
@@ -636,11 +636,16 @@ def _sorted_ring(stage: int, name: str, *, group_rows: int, mt: int, pp: int, k:
     XGR = 1 << 24
     lay = "aiter_gate_up" if stage == 1 else "aiter"
 
+    OUT = fp8e4m3 if mxq else bf16      # mxq: out is h's FP8 values and sq its E8M0 bytes
+
     def body(x: hk.Tensor[fp8e4m3], xs: hk.Tensor[i8], w: hk.Tensor[i8], ws: hk.Tensor[i8],
              sids: hk.Tensor[i32], seids: hk.Tensor[i32], nv: hk.Tensor[i32], wv: hk.Tensor[fp32],
-             out: hk.Tensor[bf16]):
+             out: hk.Tensor[OUT], sq: hk.Tensor[i8]):
+        OUT  # noqa: B018 -- named in the body: an annotation resolves only through a free variable
         g = hk.group(warps)
         Xs = hk.lds.alloc(st_x, count=D, name="Xs")
+        if mxq:     # stage 1's h, a workgroup's whole block, for the MX-quantizing store
+            Hs = hk.lds.alloc(hk.ST(bf16, BM, TILE * pp * warps), name="Hs")
         nblk = out.cols // (TILE * pp * warps)
         wg = hk.arch.block_idx.x
         if xcd:
@@ -707,14 +712,21 @@ def _sorted_ring(stage: int, name: str, *, group_rows: int, mt: int, pp: int, k:
                     for j in range(pp):
                         gt = Cs[i].subtile(TILE, 2 * j).minimum(lim)
                         up = Cs[i].subtile(TILE, 2 * j + 1).maximum(-lim).minimum(lim)
-                        out[hk.elem_coord(0, 0, r0 + i * TILE, col0 + j * TILE)].store(
-                            hk.transpose(gt.silu() * up))
+                        if mxq:
+                            Hs.subtile(TILE, TILE, i, wid * pp + j).store(
+                                hk.transpose(gt.silu() * up).to(bf16))
+                        else:
+                            out[hk.elem_coord(0, 0, r0 + i * TILE, col0 + j * TILE)].store(
+                                hk.transpose(gt.silu() * up))
                 else:
                     o = hk.transpose(Cs[i])
                     wt = wv[hk.elem_coord(0, 0, r0 + i * TILE, 0)].load(t_wv)
                     wt.right_fill_(1, 0.0)
                     o = o * wt.sum(axis=1)[:, None]
                     out.scatter(o, sids, r0 + i * TILE, col=col0, sort_topk=topk, add=atomic)
+            if mxq:
+                hk.arch.barrier()
+                hk.mx_quant_store(Hs, out, sq, r0, blk * TILE * pp * warps)
 
     body.__name__ = name
     return hk.kernel(body, arch="gfx950", warps=warps, name=name, max_vgprs=2048 // warps,
@@ -979,20 +991,24 @@ def _sorted_persistent(group_rows: int, mt: int, pp: int, k: int, topk: int, gri
 
 @functools.lru_cache(maxsize=None)
 def _sorted(stage: int, group_rows: int, mt: int, pp: int, k: int, limit: float, topk: int,
-            depth: int = 2, warps: int = 4, atomic: bool = False):
+            depth: int = 2, warps: int = 4, atomic: bool = False, mxq: bool = False):
     return _sorted_ring(stage, f"moe_a8w4_s{stage}s_gr{group_rows}_mt{mt}_pp{pp}_k{k}_t{topk}"
                         + (f"_d{depth}" if depth != 2 else "") + (f"_w{warps}" if warps != 4 else "")
-                        + ("_add" if atomic else ""),
+                        + ("_add" if atomic else "") + ("_mxq" if mxq else ""),
                         group_rows=group_rows, mt=mt, pp=pp, k=k, limit=limit, topk=topk,
-                        depth=depth, warps=warps, atomic=atomic)
+                        depth=depth, warps=warps, atomic=atomic, mxq=mxq)
 
 
 def stage1_sorted(xq_tok, xs_sorted, w13, w13_scale, sorted_ids, sorted_expert_ids, num_valid, *,
                   inter: int, mt: int, pp: int = 3, limit: float = 10.0, depth: int = 2,
-                  warps: int = 4, grid=None):
+                  warps: int = 4, grid=None, mxq: bool = False):
     """h [len(sorted_ids), inter] bf16 in AITER's sorted order (moe_sorting with block_size
     16 * mt): xq_tok [M, K] FP8 in token order and xs_sorted its sorted 32-row-layout scales
-    (aiter's fused_dynamic_mxfp8_quant_moe_sort). See _sorted_ring."""
+    (aiter's fused_dynamic_mxfp8_quant_moe_sort). See _sorted_ring.
+
+    mxq=True: (hq, hs) instead -- h MX-quantized by the kernel's epilogue (hk.mx_quant_store):
+    hq [P, inter] FP8 e4m3 and hs [P, K/32 padded to 8] E8M0 in AITER's 32-row layout, what
+    stage2_sorted reads; bit-identical to mx_quant(h) + mxfp8.aiter_scales (pad bytes unset)."""
     import torch  # noqa: PLC0415
 
     if grid is None and inter % (TILE * pp * warps):
@@ -1011,9 +1027,21 @@ def stage1_sorted(xq_tok, xs_sorted, w13, w13_scale, sorted_ids, sorted_expert_i
             num_valid.view(1, -1), h)
         return h
     dummy = h.new_zeros((1, 1), dtype=torch.float32)
+    if mxq:
+        if p % 32:
+            raise ValueError(f"moe_a8w4.stage1_sorted(mxq): {p} sorted rows, not whole 32-row "
+                             f"scale blocks")
+        hq = torch.empty((p, inter), device=xq_tok.device, dtype=torch.float8_e4m3fn)
+        hs = torch.empty((p, -(-inter // 256) * 8), device=xq_tok.device, dtype=torch.uint8)
+        _sorted(1, 2 * inter, mt, pp, xq_tok.shape[1], float(limit), 6, depth, warps, mxq=True)(
+            xq_tok, xs_sorted.view(torch.int8), w13.view(torch.int8), w13_scale.view(torch.int8),
+            sorted_ids.view(1, -1), sorted_expert_ids.view(1, -1), num_valid.view(1, -1), dummy,
+            hq, hs.view(torch.int8))
+        return hq, hs
     _sorted(1, 2 * inter, mt, pp, xq_tok.shape[1], float(limit), 6, depth, warps)(
         xq_tok, xs_sorted.view(torch.int8), w13.view(torch.int8), w13_scale.view(torch.int8),
-        sorted_ids.view(1, -1), sorted_expert_ids.view(1, -1), num_valid.view(1, -1), dummy, h)
+        sorted_ids.view(1, -1), sorted_expert_ids.view(1, -1), num_valid.view(1, -1), dummy, h,
+        dummy.view(torch.int8))
     return h
 
 
@@ -1048,7 +1076,7 @@ def stage2_sorted(hq, hs_sorted, w2, w2_scale, sorted_ids, sorted_expert_ids, nu
     _sorted(2, d, mt, pp, hq.shape[1], 10.0, topk, depth, warps, atomic)(
         hq, hs_sorted.view(torch.int8), w2.view(torch.int8), w2_scale.view(torch.int8),
         sorted_ids.view(1, -1), sorted_expert_ids.view(1, -1), num_valid.view(1, -1),
-        sorted_weights.view(-1, 1).float(), y2)
+        sorted_weights.view(-1, 1).float(), y2, y2.view(torch.int8)[:1, :1])
     return y2
 
 

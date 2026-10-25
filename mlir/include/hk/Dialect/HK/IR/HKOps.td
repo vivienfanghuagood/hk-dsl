@@ -955,6 +955,27 @@ def HK_LoadFp4FragsOp : HK_Op<"load_fp4_frags"> {
   let hasVerifier = 1;
 }
 
+def HK_MxQuantStoreOp : HK_Op<"mx_quant_store"> {
+  let summary = "an LDS tile's rows to FP8 e4m3 + E8M0 scales (AITER's MX rule), stored";
+  let description = [{
+    Every thread of the workgroup takes (row, 32-column group) pairs of src (bf16 or fp32,
+    plain LDS reads -- write it, then barrier, before this) and computes the group's E8M0
+    exponent exactly as AITER's per_1x32 FP8 quant does: e = ceil(log2(amax / 448)) from
+    amax's bits. It writes the 32 FP8 values (x * 2^-e, round to nearest even) to
+    q[row0 + row, col0 + 32 g ..] and the byte e + 127 to s in AITER's 32-row two-step
+    layout (hk.ops.mxfp8.aiter_scales of q's [R, K/32], K/32 padded to 8) -- the layout
+    stage-2 / mma_ABt_mx(layout="aiter") reads. Rows past q's are skipped; pad scale bytes are
+    not written.
+  }];
+  let arguments = (ins HK_SharedTileType:$src, HK_GlobalType:$q, HK_GlobalType:$s,
+                       I32:$row0, I32:$col0);
+  let assemblyFormat = [{
+    $src `,` $q `,` $s `[` $row0 `,` $col0 `]` attr-dict `:` qualified(type($src)) `,`
+    qualified(type($q)) `,` qualified(type($s))
+  }];
+  let hasVerifier = 1;
+}
+
 def HK_LoadFp4FragsLdsOp : HK_Op<"load_fp4_frags_lds"> {
   let summary = "FP4 operand fragments from an LDS tile of AITER-shuffled weight bytes";
   let description = [{

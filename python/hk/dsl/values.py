@@ -22,7 +22,7 @@ from .module import mlir_type
 from ..types import (
     FP8, CoordType, DType, GlobalType, GranuleSetType, MxScalesType, RegTileType,
     RegVecType, ScalarType, SharedTileType, SharedVecType, StageBufferType, fp32, i32,
-    fp8e4m3, i8,
+    fp8e4m3, i8, bf16,
 )
 from ..target import get_target
 from . import builder as B
@@ -1503,6 +1503,25 @@ def load_fp4_frags(ty, src: "Global", row0, kc0, *, group_rows: int, gate_up: bo
         raise TypeError(f"load_fp4_frags: block-scaled MFMA is gfx950's; {_t().arch} has none")
     return _make(hkd.LoadFp4FragsOp, ty, (src.v, as_int(row0).v, as_int(kc0).v),
                  into=into, name="w4f", gate_up=int(bool(gate_up)), group_rows=group_rows)
+
+
+def mx_quant_store(src: "SharedTile", q: "Global", s: "Global", row0, col0) -> None:
+    """MX-quantize an LDS tile's rows and store them -- the epilogue that hands a GEMM's output
+    to an MXFP8 consumer without a separate quant pass. Every thread of the workgroup takes
+    (row, 32-column group) pairs of `src` (bf16 or fp32: store it, then barrier, first). For each
+    group it computes AITER's E8M0 exponent exactly, e = ceil(log2(amax / 448)) from amax's bits.
+    It writes the FP8 e4m3 values to q[row0 + r, col0 + 32 g ..] and the scale byte to `s` in
+    AITER's 32-row layout (hk.ops.mxfp8.aiter_scales of q's [R, K/32], K/32 padded to 8). The
+    result is bit-identical to hk.ops.moe_a8w4.mx_quant followed by aiter_scales."""
+    if not isinstance(src, SharedTile) or src.ty.dtype not in (bf16, fp32) or src.ty.cols % 32:
+        raise TypeError(f"mx_quant_store: a bf16 or fp32 LDS tile of 32-column groups, not {src!r}")
+    if not isinstance(q, Global) or q.dtype is not fp8e4m3:
+        raise TypeError(f"mx_quant_store: q is an fp8 e4m3 tensor, not {q!r}")
+    if not isinstance(s, Global) or s.dtype is not i8:
+        raise TypeError(f"mx_quant_store: s holds E8M0 bytes, a uint8 tensor, not {s!r}")
+    if get_target(_t().arch).arch != "gfx950":
+        raise TypeError(f"mx_quant_store: FP8 e4m3 conversion is gfx950's here, not {_t().arch}")
+    hkd.MxQuantStoreOp(src.v, q.v, s.v, as_int(row0).v, as_int(col0).v, loc=_t().loc("mxq"))
 
 
 def load_fp4_frags_lds(ty, src: "SharedTile", row0, chunk0, *, into=None) -> "Tile":

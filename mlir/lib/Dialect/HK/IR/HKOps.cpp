@@ -272,6 +272,19 @@ LogicalResult LoadMxScalesOp::verify() {
   return success();
 }
 
+LogicalResult MxQuantStoreOp::verify() {
+  auto st = getSrc().getType();
+  if (!st.getElementType().isBF16() && !st.getElementType().isF32())
+    return emitOpError("quantizes a bf16 or fp32 LDS tile");
+  if (st.getCols() % 32)
+    return emitOpError("whole 32-column groups a row");
+  if (!isa<Float8E4M3FNType>(getQ().getType().getElementType()))
+    return emitOpError("stores FP8 e4m3 values");
+  if (!getS().getType().getElementType().isInteger(8))
+    return emitOpError("stores E8M0 scale bytes into a uint8 (i8) global");
+  return success();
+}
+
 LogicalResult LoadFp4FragsLdsOp::verify() {
   if (failed(verifyDest(*this, getDst(), getResult())))
     return failure();

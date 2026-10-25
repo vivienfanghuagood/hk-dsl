@@ -250,6 +250,17 @@ def test_sorted_stages_match_dequant(mt, pp1, pp2, depth, pers, I):
     href = g * torch.sigmoid(g) * u
     got = h[:nvalid][lv].float()
     assert ((got - href).abs().max() / href.abs().max()).item() < 1e-2
+    # the MX-quantizing epilogue: bit for bit mx_quant(h) in AITER's scale layout
+    hq_e, hs_e = M.stage1_sorted(xq, mxfp8.aiter_scales(xs_sorted), M.aiter_layout_w13(w1).to(dev),
+                                 M.aiter_layout_w13_scale(w1s, E).to(dev), sid, se, nv, inter=I,
+                                 mt=mt, pp=pp1, limit=L, depth=depth, mxq=True)
+    q_ref, s_ref = M.mx_quant(h)
+    # rows past the sort's valid count belong to no block that runs: unspecified, as h's are
+    assert torch.equal(hq_e[:nvalid].view(torch.uint8), q_ref[:nvalid].view(torch.uint8))
+    mark = torch.zeros_like(s_ref)
+    mark[:nvalid] = 1
+    real = mxfp8.aiter_scales(mark) == 1                 # valid rows' bytes; pads are not written
+    assert torch.equal(hs_e[real], mxfp8.aiter_scales(s_ref)[real])
     # stage 2 + reduce
     hq, hs = M.mx_quant(h)
     sw = torch.zeros(sid.numel(), device=dev)
