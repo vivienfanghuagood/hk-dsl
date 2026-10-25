@@ -3301,7 +3301,7 @@ are bounded: any non-empty length. head_dim is 64 or 128 on both.
 
 ## Also exported
 
-`hk.load_mx_scales`, `hk.mma_ABt_mx`, `hk.templates`
+`hk.copy_mx_scales`, `hk.load_mx_scales`, `hk.mma_ABt_mx`, `hk.templates`
 
 
 <!-- docs/api/hk.math.md -->
