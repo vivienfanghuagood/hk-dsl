@@ -1,4 +1,4 @@
-"""hipcc, with a content-addressed cache and a spill gate.
+"""hipcc, with a content-addressed cache, a spill gate and a wait gate.
 
 A hipcc invocation for a real kernel costs 20-40 s, which is too slow to pay on
 every import and far too slow to pay inside an autotune sweep. So the compiled
@@ -345,6 +345,34 @@ class Build:
         return resources.report(self.kernels)
 
 
+_WAIT_MARK = "WAITS"
+
+
+def _wait_gate(binary: Path, kind: str) -> bool:
+    """Refuse a binary whose code reads registers an LDS load is still filling (cocheck's
+    lds_copy_hazards): the compiler copied an inline-asm ds_read's destination before hk's
+    wait, and the kernel is wrong though nothing spilled. HK_WAIT_GATE=0 turns it off, for
+    looking at such a kernel, never for running one. Returns whether it checked (a cache
+    entry is marked checked only then)."""
+    if os.environ.get("HK_WAIT_GATE", "1") in ("0", "off", "no"):
+        return False
+    from . import cocheck  # noqa: PLC0415
+
+    found = cocheck.lds_copy_hazards(binary, bundled=(kind == "so"))
+    if found:
+        shown = "\n".join(f"  {h}" for h in found[:6])
+        more = f"\n  ... {len(found) - 6} more" if len(found) > 6 else ""
+        raise ResourceError(
+            f"generated kernel rejected: {len(found)} read(s) of registers an LDS load is "
+            f"still filling, before the wait that retires it:\n{shown}{more}\n"
+            "The compiler copied the destination of hk's inline-asm LDS read (to build an "
+            "operand tuple, or into an AGPR under register pressure) ahead of hk's lgkmcnt "
+            "wait, so the copy holds stale data. A kernel like this is not slow, it is wrong. "
+            "Lower the register pressure: a smaller tile, fewer values live across the "
+            "K loop, fewer stages.")
+    return True
+
+
 def _load_cached(d: Path, target: Target) -> Optional[Build]:
     so = (next(d.glob("*.so"), None) or next(d.glob("*.*.so"), None)
           or ((d / CODEOBJ) if (d / CODEOBJ).exists() else None))
@@ -386,7 +414,9 @@ def build(
     `kind` "so" is an importable extension (pybind or torch registration),
     "co" a device-only code object for hk.runtime.codeobj -- same cache, same
     gate. Raises ResourceError, and leaves nothing importable behind, if any
-    instantiation spills.
+    instantiation spills, or if its code reads registers an LDS load is still
+    filling (the wait gate, `_wait_gate`; a cache entry from before the gate is
+    checked on its first hit).
     """
     if kind not in ("so", "co"):
         raise ValueError(f"build kind {kind!r}; 'so' or 'co'")
@@ -412,6 +442,12 @@ def build(
                 max_vgprs=max_vgprs,
                 min_occupancy=min_occupancy,
             )
+        if not (out / _WAIT_MARK).exists() and _wait_gate(hit.so_path, kind):
+            # built before the wait gate, or with it off: checked once, then marked
+            try:
+                (out / _WAIT_MARK).write_text("lds copies checked\n")
+            except OSError:
+                pass
         return hit
 
     module_name = f"hk_{name}_{key[:12]}"
@@ -449,11 +485,14 @@ def build(
                 max_vgprs=max_vgprs,
                 min_occupancy=min_occupancy,
             )
+            checked = _wait_gate(tmp / so_name, kind)
         except ResourceError as e:
             raise ResourceError(
                 f"{e}\n\nGenerated source kept at {_keep(tmp, key)}"
             ) from None
 
+        if checked:
+            (tmp / _WAIT_MARK).write_text("lds copies checked\n")
         (tmp / "OK").write_text(module_name)
         try:
             os.rename(tmp, out)
