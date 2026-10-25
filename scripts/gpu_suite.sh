@@ -61,7 +61,9 @@ run() {  # run <slot> <label> <test files...>
     { echo "gpu=$g"
       HIP_VISIBLE_DEVICES=$g timeout --signal=KILL 5400 python3 -m pytest -q -p no:cacheprovider "$@"
     } > "$out/$label.log" 2>&1
-    echo "$label exit $?" >> "$out/status"
+    local rc=$?
+    [ $rc = 5 ] && rc=0     # pytest's "no tests ran": every file of the group skips on this arch
+    echo "$label exit $rc" >> "$out/status"
 }
 for ((i = 0; i < ${#labels[@]}; i++)); do
     while true; do      # the first free slot, waiting for a group to finish if none is
