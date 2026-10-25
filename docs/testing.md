@@ -200,12 +200,17 @@ main it runs on two GPUs, as `.github/workflows/gpu.yml`, whose two jobs are
 main's required checks:
 - **`gfx950`**: one MI355X of the workstation, the lowest-numbered one that
   is idle when the job starts, in `rocm/pytorch`.
-- **`gfx1100`**: a W7900D of the dev pod `hfang-hk-rdna3-b`, an idle one of
-  GPUs 5-7, else GPU 0.
+- **`gfx1100`**: the four W7900D of the CI pod `hfang-hk-ci-0044` on node
+  wx-ms-w7900d-0044 (`scripts/ci/k8s/gfx1100-ci-0044.yaml`), the suite's
+  groups sharded over them. The pod requests `amd.com/gpu: 4` and is not
+  privileged: the device plugin hands it those four cards alone, so it needs
+  no node lock. Fallback: the dev pod `hfang-hk-rdna3-b`'s GPU 6 under the
+  node lock (the job's `runs-on` back to `gfx1100`, its `env` removed).
 
 Each job has a self-hosted runner of its own on the workstation:
-`smci355-gfx950` and `smci355-gfx1100`, labelled `self-hosted, hk-gpu,
-gfx950` and `self-hosted, hk-gpu, gfx1100`. Both are ephemeral: registered
+`smci355-gfx950` and `smci355-gfx1100-x4`, labelled `self-hosted, hk-gpu,
+gfx950` and `self-hosted, hk-gpu, gfx1100-x4`; `smci355-gfx1100` (`gfx1100`,
+the dev pod) stays registered as the fallback. Both are ephemeral: registered
 for one job, then registered again. A job's page has its counts as an
 annotation and, in its summary, each group's result and the failing tests.
 Its artifact (`gfx950-report`, `gfx1100-report`) holds `result.json`,
@@ -219,7 +224,9 @@ not add a `pull_request` or `pull_request_target` trigger. One run per arch
 and ref at a time: a push waits for the run in progress, and replaces a push
 that was waiting, so commits pushed close together are tested at the last.
 With a warm compile cache the suite takes a minute or two; a change that
-recompiles the kernels takes about 25 minutes on gfx950 and 32 on gfx1100.
+recompiles the kernels takes about 25 minutes on gfx950, and on gfx1100 32 on
+the dev pod's single GPU (see the CI pod's numbers in the pull request that
+moved it).
 
 **What the jobs run** (`scripts/ci/`, from the job's checkout):
 - **`run_gfx950.sh`** picks the GPU (under 10% use and 3% VRAM; it waits up
@@ -268,6 +275,15 @@ request, so:
 - the owner's pushes, the agents' among them, go through, and GitHub
   records each as a bypass. For them the checks are a record on each commit
   of main, after the fact, not a gate in front of it.
+
+**The CI pod.** `kubectl apply -f scripts/ci/k8s/gfx1100-ci-0044.yaml` (from
+the jump host) makes it and its 200 GiB node-local PVC, mounted at
+`/workspace`. Once, the PVC is given what the image lacks, copied from the
+dev pod: `/workspace/llvm/install-cp312` (the MLIR install the dialect builds
+against), `/workspace/FlyDSL`, and in `/workspace/pyextra` the pip packages
+flydsl, nanobind, lit and cmake (`pod_run.sh` puts it on `PYTHONPATH` and
+`PATH`). Everything else -- clone, dialect build, compile cache, runs -- is
+`/workspace/gha`, as on the dev pod.
 
 **Where things live.** Host state is kept out of the checkout:
 - `~/gha`: the runners (`runner-gfx950`, `runner-gfx1100`), `supervise.sh`,

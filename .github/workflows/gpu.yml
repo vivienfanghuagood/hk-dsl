@@ -1,10 +1,11 @@
 name: GPU tier
 
-# The GPU tier (scripts/gpu_suite.sh) on two self-hosted runners on the MI355X
+# The GPU tier (scripts/gpu_suite.sh) on self-hosted runners on the MI355X
 # workstation (scripts/ci/, docs/testing.md#the-gpu-tier): gfx950 on one of its
-# idle MI355X, gfx1100 relayed to a W7900D of the dev pod. On pushes to main
-# and by hand only. Never add pull_request or pull_request_target: the
-# repository is public, and a fork's code must never reach these machines.
+# idle MI355X, gfx1100 relayed to the CI pod on node 0044 and sharded over its
+# four W7900D. On pushes to main and by hand only. Never add pull_request or
+# pull_request_target: the repository is public, and a fork's code must never
+# reach these machines.
 
 on:
   push:
@@ -40,16 +41,25 @@ jobs:
           if-no-files-found: ignore
 
   gfx1100:
-    runs-on: [self-hosted, hk-gpu, gfx1100]
+    # The runner labelled gfx1100-x4 relays to pod hfang-hk-ci-0044
+    # (scripts/ci/k8s/gfx1100-ci-0044.yaml): four W7900D the device plugin
+    # gave that pod alone, so no node lock, and the suite's groups sharded
+    # over all four. Fallback: runs-on [self-hosted, hk-gpu, gfx1100] and no
+    # env -- the dev pod's single GPU 6 under the node lock.
+    runs-on: [self-hosted, hk-gpu, gfx1100-x4]
     timeout-minutes: 180
     concurrency:
       group: gpu-gfx1100-${{ github.ref }}
       cancel-in-progress: false
+    env:
+      HK_CI_POD: hfang-hk-ci-0044
+      HK_CI_POD_GPUS: "0 1 2 3"
+      HK_CI_NODE_LOCKS: "0"
     steps:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
-      - name: GPU tier on a W7900D of the dev pod
+      - name: GPU tier on four W7900D of the CI pod (sharded)
         run: scripts/ci/run_gfx1100.sh
       - uses: actions/upload-artifact@v4
         if: always()
