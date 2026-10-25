@@ -56,20 +56,20 @@ symptom.
 writes the result to `~/hk-dx/kda/_flow/failure-summary.md`. Regenerate it whenever a task
 finishes and copy the table here.
 
-As of 2026-10-25 00:3xZ (experiment 2 still running):
+As of 2026-10-25 01:0xZ (both experiments finished):
 
 | task | rounds | dsl | codegen | harness | algorithm | env | correctness |
 |---|---|---|---|---|---|---|---|
 | convrot-int8-gemm (T-CR) | 4 | 1 | 0 | 0 | 0 | 0 | 0 |
-| k1-moe-a8w4 | 37 | 3 | 3 | 1 | 12 | 0 | 1 |
+| k1-moe-a8w4 | 38 | 3 | 3 | 1 | 13 | 0 | 1 |
 | k2-mxfp8-gemm | 21 | 0 | 3 | 0 | 5 | 0 | 0 |
 | k3-dit-attn | 6 | 0 | 0 | 0 | 2 | 0 | 0 |
-| experiment 2, hk arm (K2 MXFP8, running) | 8 | 2 | 1 | 0 | 3 | 0 | 0 |
-| experiment 2, Triton arm (running) | 17 | 0 | 6 | 0 | 5 | 0 | 0 |
+| experiment 2, hk arm (K2 MXFP8, from main) | 13 | 2 | 1 | 0 | 5 | 0 | 0 |
+| experiment 2, Triton arm (K2 MXFP8) | 19 | 0 | 7 | 0 | 5 | 0 | 0 |
 | experiment 1, hk arm (T-SA) | 25 | 2 | 2 | 0 | 6 | 1 | 0 |
 | experiment 1, Triton arm (T-SA) | 10 | 1 | 2 | 0 | 2 | 0 | 0 |
 | experiment 1 rerun, hk arm on rdna3-int8 (T-SA) | 15 | 3 | 1 | 0 | 6 | 0 | 0 |
-| **all** | 143 | **12** | **18** | **1** | **41** | **1** | **1** |
+| **all** | 151 | **12** | **19** | **1** | **44** | **1** | **1** |
 
 ## The named gaps so far
 
@@ -90,6 +90,12 @@ branch named in the row.
 | spill gate refused SGPR -> VGPR-lane spills (ScratchSize 0) | codegen (tooling) | K1 c32 | fixed, `claude/k1-moe` |
 | stale docs/api after a new API turned branch CI red (8 + 4 + 4 runs) | harness (tooling) | owner, 2026-10-25 | pre-commit hook (gen_api_docs --check) on every ~/hk-dsl worktree; kda_record `--repo` |
 | loop-rewriter liveness errors point at the loop, not the cause | dsl (front end) | T-SA rerun | open |
+| fp8 (1-byte) tiles in `group_load_async` / LDS-DMA on **main** | dsl | experiment 2 hk arm: the ceiling (0.86x vs Triton 1.12x) | on the K2 branches, **not on main**: top CDNA item |
+| a synchronous `g.load` drains vmcnt and lgkmcnt to 0 | dsl / codegen | experiment 2 hk arm (1900 of 4550 cycles a K-tile) | open |
+| `tileVgprs` prices fp8 tiles as fp32 (4x) | codegen (estimate) | experiment 2 hk arm (576 estimated vs ~200) | open |
+| pingpong halves on disjoint LDS regions not expressible to hk-lds-pipeline | dsl | experiment 2 hk arm | open |
+| control of LLVM's AGPR allocation (`amdgpu-agpr-alloc`) | codegen | experiment 2 Triton arm +9%; K1 c30's copies | open: a cheap hk experiment |
+| the validator reuses one weight per shape (stale weight-cache bugs pass) | harness | experiment 2, both arms | open |
 
 ## How the table chooses DSL work
 
