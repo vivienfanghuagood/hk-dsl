@@ -184,7 +184,7 @@ def test_a_permuted_vit_input_computes_the_right_answer():
     want = F.scaled_dot_product_attention(q, k, v, scale=64 ** -0.5)
     # On gfx1100 the permuted memory is read in place (the bnhd kernel).
     in_place = 0 if sdpa._attn._native_cdna() else 1
-    assert sdpa.STATS == {"kernel": 1, "fallback": 0, "bnhd": in_place}
+    assert sdpa.STATS == {"kernel": 1, "fallback": 0, "bnhd": in_place, "k3": 0}
     torch.testing.assert_close(got, want, **TOL)
 
 
@@ -206,7 +206,7 @@ def test_a_call_that_falls_back_does_not_copy_anything_first(monkeypatch):
     got = sdpa.scaled_dot_product_attention(q, k, v, scale=72 ** -0.5)
     monkeypatch.undo()
 
-    assert sdpa.STATS == {"kernel": 0, "fallback": 1, "bnhd": 0}
+    assert sdpa.STATS == {"kernel": 0, "fallback": 1, "bnhd": 0, "k3": 0}
     assert calls == [], f"copied {calls} on the way to falling back"
     torch.testing.assert_close(
         got, F.scaled_dot_product_attention(q, k, v, scale=72 ** -0.5))

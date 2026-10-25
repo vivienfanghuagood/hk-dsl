@@ -403,8 +403,10 @@ def stats() -> str:
 
     s = sdpa.STATS
     fb = "; ".join(f"{shape} {why}" for (shape, _), why in list(sdpa.FALLBACKS.items())[:4])
-    return (f"attention: hk {s['kernel']} ({s.get('bnhd', 0)} in place), torch {s['fallback']}"
+    return (f"attention: hk {s['kernel']} ({s.get('bnhd', 0)} in place, {s.get('k3', 0)} on attn_k3), "
+            f"torch {s['fallback']}"
             + (f" ({fb})" if fb else "")
+            + (f"; attn_k3 shapes {dict(list(sdpa.K3_SHAPES.items())[:4])}" if sdpa.K3_SHAPES else "")
             + f"; linear: hk {LINEAR_STATS['hk']}, engine {LINEAR_STATS['engine']}"
             + f"; convrot: hk {CONVROT_STATS['hk']}, fallback {CONVROT_STATS['fallback']}")
 

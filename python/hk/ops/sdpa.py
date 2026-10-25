@@ -42,6 +42,10 @@ __all__ = [
 NAMESPACE = "hk"
 
 _VERBOSE = os.environ.get("HK_SDPA_VERBOSE", "") not in ("", "0")
+#: gfx1100's non-causal head_dim-128 calls on hk.ops.attn_k3 (the DiT kernel, K3) rather than
+#: hk.ops.attn's. Off by default until it is promoted.
+_K3 = os.environ.get("HK_SDPA_K3", "") not in ("", "0")
+_K3_FITS: Dict[Tuple, bool] = {}
 _SEEN = set()
 _OPS = {}
 _PATCHED = None
@@ -162,7 +166,10 @@ def attention(q, k, v, *, causal: bool = False, scale: Optional[float] = None,
 #: So the drop-in counts. `hk.integration.vllm.probe()` reads this, and the
 #: vLLM verification reads it before and after a generate to prove which branch
 #: a real server took rather than inferring it from a stopwatch.
-STATS = {"kernel": 0, "fallback": 0, "bnhd": 0}
+STATS = {"kernel": 0, "fallback": 0, "bnhd": 0, "k3": 0}
+
+#: (q shape, k shape) -> calls, of the calls hk.ops.attn_k3 took (the first 16 shapes).
+K3_SHAPES: Dict[Tuple, int] = {}
 
 #: Shapes that fell back, with the reason, so a run that was slower than hoped
 #: can say which call it was. Bounded: a serving process must not grow a dict
@@ -212,6 +219,16 @@ def scaled_dot_product_attention(query, key, value, attn_mask=None,
             query, key, value, attn_mask=attn_mask, dropout_p=dropout_p,
             is_causal=is_causal, scale=scale, enable_gqa=enable_gqa)
     STATS["kernel"] += 1
+    if _K3 and not is_causal and _k3_fits(query, key, value, scale):
+        from . import attn_k3  # noqa: PLC0415
+
+        STATS["k3"] += 1
+        shp = (tuple(query.shape), tuple(key.shape))
+        if shp in K3_SHAPES or len(K3_SHAPES) < 16:
+            K3_SHAPES[shp] = K3_SHAPES.get(shp, 0) + 1
+        if attn_k3.is_bnhd(query, key, value):
+            STATS["bnhd"] += 1
+        return attn_k3.attention(query, key, value)
     if _bnhd_views(query, key, value):
         # (B, H, N, D) views of (B, N, H, D) memory -- what an engine that
         # projects into (B, N, H, D) and transposes for SDPA passes. The
@@ -228,6 +245,18 @@ def scaled_dot_product_attention(query, key, value, attn_mask=None,
     out = torch.empty_like(q)
     op_for(q.shape[-1], bool(is_causal), scale, q.shape[-2])(q, k, v, out)
     return out
+
+
+def _k3_fits(q, k, v, scale) -> bool:
+    key = (q.shape, k.shape, v.shape, q.stride(), k.stride(), v.stride(), q.dtype, scale)
+    got = _K3_FITS.get(key)
+    if got is None:
+        from . import attn_k3  # noqa: PLC0415
+
+        got = not _attn._native_cdna() and attn_k3.why(q, k, v, False, scale) == ""
+        if len(_K3_FITS) < _VERDICT_CAP:
+            _K3_FITS[key] = got
+    return got
 
 
 def _bnhd_views(*ts) -> bool:
