@@ -184,3 +184,40 @@ def test_xcd_barrier_arrives_twice_and_waits_once():
     src = _kernel(body, "comm_xcd_barrier").source()
     assert src.count("kittens::arrive<16>(g.cnt, ") == 2 and src.count("kittens::wait<16, 0>(") == 1
     assert "kittens::xcd_id()" in src
+
+
+def _mailbox():
+    def body(box: hk.Tensor[i32, "system"], err: hk.Tensor[i32]):
+        hk.comm.post(box.at[0], 41, 1)
+        v = hk.comm.take(box.at[2], 1, timeout_s=0.5, error=err.at[0])
+        hk.comm.post(box.at[4], v + 1, 2)
+    return _kernel(body, "comm_mailbox")
+
+
+def test_post_and_take_emit_one_tagged_slot():
+    src = _mailbox().source()
+    assert "kittens::post<17>(g.box, " in src
+    assert "kittens::take<17>(g.box, " in src and "50000000LL" in src and "&g.err[" in src
+
+
+def test_take_without_error_traps():
+    def body(box: hk.Tensor[i32, "device"]):
+        hk.comm.take(box.at[0], 7, timeout_s=0)
+    src = _kernel(body, "comm_take_trap").source()
+    assert "kittens::take<16>(g.box, " in src and ", 0LL, nullptr)" in src
+
+
+def test_a_post_writes_its_box_and_a_take_its_error_element():
+    assert set(_mailbox().trace().written_tensors()) == {"box", "err"}
+
+
+def test_a_mailbox_must_be_scoped_int32():
+    def plain(box: hk.Tensor[i32]):
+        hk.comm.post(box.at[0], 1, 1)
+    with pytest.raises(TypeError, match="unscoped"):
+        _kernel(plain, "comm_post_plain").source()
+
+    def floaty(box: hk.Tensor[hk.fp32, "system"]):
+        hk.comm.take(box.at[0], 1)
+    with pytest.raises(TypeError, match="int32"):
+        _kernel(floaty, "comm_take_f32").source()

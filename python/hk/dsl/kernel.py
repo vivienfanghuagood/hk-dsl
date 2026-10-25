@@ -159,13 +159,13 @@ class TracedKernel:
         out = set()
 
         def visit(op):
-            if op.name == "hk.wait" and len(op.operands) > 3:   # its err element
+            if op.name in ("hk.wait", "hk.take") and len(op.operands) > 3:   # its err element
                 for i, a in enumerate(args):
                     if a == op.operands[3]:
                         out.add(names[i])
             if op.name in ("hk.store", "hk.store_rows", "hk.store_scalar",
                            "hk.group_store", "hk.scatter_rows",
-                           "hk.atomic_add", "hk.atomic_scalar", "hk.signal", "hk.arrive"):
+                           "hk.atomic_add", "hk.atomic_scalar", "hk.signal", "hk.arrive", "hk.post"):
                 dst = op.operands[0]
                 for i, a in enumerate(args):
                     if a == dst:

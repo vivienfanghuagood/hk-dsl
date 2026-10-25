@@ -46,7 +46,20 @@ launch by `SymmetricBuffer`'s binding check.
 
 Not seen but not relied on: data then flag both sc0|sc1 with no vmcnt(0) between (0 failures);
 `signal` keeps the wait. 8 B and 16 B stores never tore over the link (~60 M loads each), so a
-(value, tag) pair in one store is a safe mailbox (dsv41_mono's idiom) -- not yet exposed.
+(value, tag) pair in one store is a safe mailbox (dsv41_mono's idiom): `post` / `take`.
+
+## Tagged mailboxes
+
+A message that is one int32 -- a count, a task id, a token's expert, a partial scalar -- does not
+need the data + flag protocol. `hk.comm.post(box.at[i], value, tag)` stores (value, tag) into
+elements i, i + 1 as ONE 8-byte store with the tensor's scope; `hk.comm.take(box.at[i], tag)`
+polls that slot with one 8-byte load a poll until the tag matches and returns the value. The value
+cannot arrive without its tag. So the writer skips the drain (`s_waitcnt vmcnt(0)`: a link round
+trip before the flag may go), and the reader skips the dependent data load after the flag. The
+slot must be 8-byte aligned (an even element of a tensor that starts aligned); `post` / `take`
+trap on a misaligned slot, because the store could tear. A slot holds one message: reuse it after
+the reader has taken it (its reply or an ack), or post round r into slot r % S with tag r. A
+mailbox orders nothing else; a message about other data is still `signal`'s.
 
 ## Lowering
 
@@ -76,6 +89,11 @@ no shader instruction invalidates it, so a scoped tensor there is a trace-time e
 - Message passing in hk, 2000 rounds: two XCDs, 0 stale; two GPUs through `SymmetricBuffer`,
   0 stale, no timeout; the same kernel re-reading through a plain alias (the negative control
   the test asserts): 2000 of 2000 rounds stale.
+- Tagged mailboxes, one MI355X pair, the GPU tests' ping-pong kernels timed over 4000 rounds: a
+  round trip between GPUs is **1.51 us** with `post` / `take` and 3.40 us with a 16 x 64 tile +
+  `signal` / `wait` (2.25x); between two XCDs of one GPU 1.37 us (the two-GPU test prints its own
+  2000-round figures with `pytest -s`). 2000-round
+  ping-pongs between XCDs and between GPUs: every value right, no timeout.
 - Links (phase 0): 59-61 GB/s a direction between a pair, from one workgroup of remote stores;
   remote loads need ~16 workgroups; a flag round trip 1.5-1.9 us. Relaying through two more
   GPUs' links with remote writes only (push-push) gives 153 GB/s a direction for a TP2
@@ -91,8 +109,9 @@ Each pattern is a test in `tests/hk/gpu/test_comm.py` that runs on two MI355X.
 | double-buffered symmetric memory with flow control | buffer parity = round % 2; the consumer `arrive`s a round on a counter in the producer's memory, and the producer `wait`s for round r - 2 before reusing the buffer | the same test |
 | persistent kernel + task queue + dependencies (Hazy's interpreter, MPK) | `resident=True`, `claim` from a queue in a `while` loop, per-layer counters with `wait` / `arrive` | `test_a_work_queue_hands_every_task_out_once`, `test_a_persistent_task_graph_respects_its_dependencies` |
 | grid / cross-GPU barrier | `barrier` on a "device" / "system" counter with an epoch'd target | `test_a_grid_barrier_orders_every_workgroup`, the barrier in the two-GPU test |
+| tagged mailboxes: a scalar message with its epoch in one store (NVSHMEM signal ops with a value, dsv41_mono's peer mailboxes) | `post` / `take` | `test_tagged_mailboxes_ping_pong_between_xcds`, `..._between_gpus` |
 
 ## Next
 
-- Tagged mailboxes (value, epoch in one 8 B store), and per-tile signals from a GEMM epilogue
-  (store the tile to a peer, count it) -- the TP2 prefill GEMM + all-reduce overlap.
+- Per-tile signals from a GEMM epilogue (store the tile to a peer, count it).
+- Wider mailboxes (three int32 values and a tag in one 16-byte store; 16 B stores never tore either).

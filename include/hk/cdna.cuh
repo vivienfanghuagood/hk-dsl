@@ -905,6 +905,59 @@ __device__ inline static int wait(const GL &flag, const COORD &idx, int v, long 
     return seen;
 }
 
+namespace detail {
+/** The 8-byte slot of a mailbox (int32 elements idx, idx + 1); a slot off 8-byte alignment could tear: trap. */
+template<ducks::gl::all GL, typename COORD>
+__device__ inline int *hk_mailbox_slot(const GL &box, const COORD &idx) {
+    static_assert(std::is_same_v<typename GL::dtype, int>, "a mailbox is int32 elements");
+    int *p = (int *)&box[(idx.template unit_coord<-1, 3>())];
+    if (reinterpret_cast<uintptr_t>(p) & 7) __builtin_trap();
+    return p;
+}
+}  // namespace detail
+
+/**
+ * @brief Post a tagged message: thread 0 stores (`v`, `tag`) into the 8-byte slot at the int32
+ * element `idx` (elements idx and idx + 1, 8-byte aligned) as ONE store of scope AUX. The value
+ * travels with its tag, so the writer needs no drain and the reader no separate flag and data
+ * read (8 B stores never tore over xGMI: KernelWiki gfx950-cross-gpu-memory-model). It orders
+ * nothing else: data the reader needs besides the value still goes through signal(). No barrier.
+ */
+template<int AUX, ducks::gl::all GL, typename COORD>
+__device__ inline static void post(const GL &box, const COORD &idx, int v, int tag) {
+    if (threadIdx.x == 0) {
+        int *p = detail::hk_mailbox_slot(box, idx);
+        detail::hk_buf_st64(uint64_t(uint32_t(v)) | (uint64_t(uint32_t(tag)) << 32), detail::hk_srsrc(p, 8), 0, 0, AUX);
+    }
+}
+
+/**
+ * @brief Take a tagged message: poll the 8-byte slot at `idx` with scope AUX (one 8-byte load a
+ * poll, s_sleep between) until its tag is `tag`; returns its value (wave-uniform). Every wave
+ * polls. Timeout and `err` as wait().
+ */
+template<int AUX, ducks::gl::all GL, typename COORD>
+__device__ inline static int take(const GL &box, const COORD &idx, int tag, long long timeout,
+                                  int *err = nullptr) {
+    const int *p = detail::hk_mailbox_slot(box, idx);
+    const long long t0 = __builtin_amdgcn_s_memrealtime();
+    uint64_t m;
+    while (true) {
+        m = detail::hk_buf_ld64(detail::hk_srsrc(p, 8), 0, 0, AUX);
+        if (__builtin_amdgcn_readfirstlane(int(uint32_t(m >> 32))) == tag) break;
+        if (timeout && __builtin_amdgcn_s_memrealtime() - t0 > timeout) {
+            if (err) {
+                if (laneid() == 0) __hip_atomic_fetch_or(err, 1, __ATOMIC_RELAXED, __HIP_MEMORY_SCOPE_SYSTEM);
+                break;
+            }
+            __builtin_trap();
+        }
+        __builtin_amdgcn_s_sleep(1);
+        asm volatile("" ::: "memory");   // the poll is re-issued: never hoisted out of the loop
+    }
+    return __builtin_amdgcn_readfirstlane(int(uint32_t(m)));
+}
+
 /** @brief atomic_scalar at scope AUX (16: device, 17: system): one per warp, the value before it. */
 template<int AUX, ducks::gl::all GL, typename COORD>
 __device__ inline static int atomic_scalar_scoped(const GL &dst, const COORD &idx, int v, int op) {

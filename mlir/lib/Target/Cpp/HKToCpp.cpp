@@ -1237,6 +1237,19 @@ private:
             ">(" + name(o.getSrc()) + ", " + name(o.getIdx()) + ", " + name(o.getValue()) +
             ", " + std::to_string(o.getTimeout()) + "LL, " + err + ");");
         })
+        .Case([&](PostOp o) {
+          w("kittens::post<" + std::to_string(o.getAux()) + ">(" + name(o.getDst()) + ", " +
+            name(o.getIdx()) + ", " + name(o.getValue()) + ", " + name(o.getTag()) + ");");
+        })
+        .Case([&](TakeOp o) {
+          std::string err = "nullptr";
+          if (o.getErr())
+            err = "(int *)&" + name(o.getErr()) + "[(" + name(o.getErrIdx()) +
+                  ").template unit_coord<-1, 3>()]";
+          w("const int " + name(o.getResult()) + " = kittens::take<" +
+            std::to_string(o.getAux()) + ">(" + name(o.getSrc()) + ", " + name(o.getIdx()) + ", " +
+            name(o.getTag()) + ", " + std::to_string(o.getTimeout()) + "LL, " + err + ");");
+        })
         .Case([&](AtomicScalarOp o) {
           if (o.getAux()) {
             w("const int " + name(o.getResult()) + " = kittens::atomic_scalar_scoped<" +

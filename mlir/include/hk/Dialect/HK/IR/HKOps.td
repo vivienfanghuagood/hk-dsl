@@ -360,6 +360,41 @@ def HK_WaitOp : HK_Op<"wait", [AttrSizedOperandSegments]> {
   let hasVerifier = 1;
 }
 
+def HK_PostOp : HK_Op<"post"> {
+  let summary = "a tagged message: (value, tag) into an 8-byte slot, one scoped store";
+  let description = [{
+    Thread 0 stores `value` into the int32 element at `idx` and `tag` into
+    the next one as one 8-byte store with the cache-policy bits `aux` (16
+    device, 17 system scope); the slot must be 8-byte aligned (it traps if
+    not). No drain and no barrier: the value travels with its tag. hk.take
+    reads it.
+  }];
+  let arguments = (ins HK_GlobalType:$dst, HK_CoordType:$idx, I32:$value, I32:$tag,
+                       I64Attr:$aux);
+  let assemblyFormat = [{
+    $value `,` $tag `,` $dst `[` $idx `]` attr-dict `:` qualified(type($dst)) `,` qualified(type($idx))
+  }];
+  let hasVerifier = 1;
+}
+
+def HK_TakeOp : HK_Op<"take", [AttrSizedOperandSegments]> {
+  let summary = "poll an 8-byte slot until its tag is `tag`; its value";
+  let description = [{
+    Every wave polls the slot hk.post writes (one 8-byte load of scope
+    `aux` a poll, s_sleep between) until the tag word equals `tag`, and
+    returns the value word, wave-uniform. Timeout and `err` as hk.wait.
+  }];
+  let arguments = (ins HK_GlobalType:$src, HK_CoordType:$idx, I32:$tag,
+                       Optional<HK_GlobalType>:$err, Optional<HK_CoordType>:$err_idx,
+                       I64Attr:$timeout, I64Attr:$aux);
+  let results = (outs I32:$result);
+  let assemblyFormat = [{
+    $src `[` $idx `]` `,` $tag (`err` $err^ `[` $err_idx `]`)? attr-dict `:`
+    qualified(type($src)) `,` qualified(type($idx)) (`,` qualified(type($err))^ `,` qualified(type($err_idx)))?
+  }];
+  let hasVerifier = 1;
+}
+
 def HK_PhiloxOp : HK_Op<"philox_uniform"> {
   let summary = "uniform [0, 1) draws into an fp32 tile, as Triton's tl.rand";
   let description = [{
