@@ -517,46 +517,48 @@ template<typename RT, typename V> __device__ inline void hk_set(RT &t, int i, in
     else       t.tiles[i][j].data[e >> 1].x = v;
 }
 
-template<typename U> __device__ inline U hk_buf_load_elem(hk_i32x4 r, uint32_t off) {
+// AUX: the access's cache-policy bits (gfx950: SC0 1, NT 2, SC1 16; {SC1,SC0} = its scope) -- 0 but for
+// the scoped accesses of hk.comm (kittens::load_scoped / store_scoped).
+template<typename U, int AUX = 0> __device__ inline U hk_buf_load_elem(hk_i32x4 r, uint32_t off) {
     U v;
-    if constexpr (sizeof(U) == 1) { const uint8_t  x = hk_buf_ld8 (r, off, 0, 0); __builtin_memcpy(&v, &x, 1); }
-    else if constexpr (sizeof(U) == 2) { const uint16_t x = hk_buf_ld16(r, off, 0, 0); __builtin_memcpy(&v, &x, 2); }
-    else { static_assert(sizeof(U) == 4, "8-, 16- or 32-bit elements"); const uint32_t x = hk_buf_ld32(r, off, 0, 0); __builtin_memcpy(&v, &x, 4); }
+    if constexpr (sizeof(U) == 1) { const uint8_t  x = hk_buf_ld8 (r, off, 0, AUX); __builtin_memcpy(&v, &x, 1); }
+    else if constexpr (sizeof(U) == 2) { const uint16_t x = hk_buf_ld16(r, off, 0, AUX); __builtin_memcpy(&v, &x, 2); }
+    else { static_assert(sizeof(U) == 4, "8-, 16- or 32-bit elements"); const uint32_t x = hk_buf_ld32(r, off, 0, AUX); __builtin_memcpy(&v, &x, 4); }
     return v;
 }
-template<typename U> __device__ inline void hk_buf_store_elem(hk_i32x4 r, uint32_t off, U v) {
-    if constexpr (sizeof(U) == 1) { uint8_t  x; __builtin_memcpy(&x, &v, 1); hk_buf_st8 (x, r, off, 0, 0); }
-    else if constexpr (sizeof(U) == 2) { uint16_t x; __builtin_memcpy(&x, &v, 2); hk_buf_st16(x, r, off, 0, 0); }
-    else { static_assert(sizeof(U) == 4, "8-, 16- or 32-bit elements"); uint32_t x; __builtin_memcpy(&x, &v, 4); hk_buf_st32(x, r, off, 0, 0); }
+template<typename U, int AUX = 0> __device__ inline void hk_buf_store_elem(hk_i32x4 r, uint32_t off, U v) {
+    if constexpr (sizeof(U) == 1) { uint8_t  x; __builtin_memcpy(&x, &v, 1); hk_buf_st8 (x, r, off, 0, AUX); }
+    else if constexpr (sizeof(U) == 2) { uint16_t x; __builtin_memcpy(&x, &v, 2); hk_buf_st16(x, r, off, 0, AUX); }
+    else { static_assert(sizeof(U) == 4, "8-, 16- or 32-bit elements"); uint32_t x; __builtin_memcpy(&x, &v, 4); hk_buf_st32(x, r, off, 0, AUX); }
 }
 
 /** `N` contiguous bytes at `off`, in the widest accesses that tile them. */
-template<int N> __device__ inline void hk_buf_load_bytes(hk_i32x4 r, uint32_t off, void *dst) {
+template<int N, int AUX = 0> __device__ inline void hk_buf_load_bytes(hk_i32x4 r, uint32_t off, void *dst) {
     if constexpr (N % 16 == 0) {
         #pragma unroll
         for (int q = 0; q < N / 16; q++) {
-            const __uint128_t x = hk_buf_ld128(r, off + 16 * q, 0, 0);
+            const __uint128_t x = hk_buf_ld128(r, off + 16 * q, 0, AUX);
             __builtin_memcpy((char *)dst + 16 * q, &x, 16);
         }
     }
-    else if constexpr (N == 8) { const uint64_t x = hk_buf_ld64(r, off, 0, 0); __builtin_memcpy(dst, &x, 8); }
-    else if constexpr (N == 4) { const uint32_t x = hk_buf_ld32(r, off, 0, 0); __builtin_memcpy(dst, &x, 4); }
-    else if constexpr (N == 2) { const uint16_t x = hk_buf_ld16(r, off, 0, 0); __builtin_memcpy(dst, &x, 2); }
-    else if constexpr (N == 1) { const uint8_t x = hk_buf_ld8(r, off, 0, 0); __builtin_memcpy(dst, &x, 1); }
+    else if constexpr (N == 8) { const uint64_t x = hk_buf_ld64(r, off, 0, AUX); __builtin_memcpy(dst, &x, 8); }
+    else if constexpr (N == 4) { const uint32_t x = hk_buf_ld32(r, off, 0, AUX); __builtin_memcpy(dst, &x, 4); }
+    else if constexpr (N == 2) { const uint16_t x = hk_buf_ld16(r, off, 0, AUX); __builtin_memcpy(dst, &x, 2); }
+    else if constexpr (N == 1) { const uint8_t x = hk_buf_ld8(r, off, 0, AUX); __builtin_memcpy(dst, &x, 1); }
     else static_assert(N == 16, "a run of 1, 2, 4, 8 or a multiple of 16 bytes");
 }
-template<int N> __device__ inline void hk_buf_store_bytes(hk_i32x4 r, uint32_t off, const void *src) {
+template<int N, int AUX = 0> __device__ inline void hk_buf_store_bytes(hk_i32x4 r, uint32_t off, const void *src) {
     if constexpr (N % 16 == 0) {
         #pragma unroll
         for (int q = 0; q < N / 16; q++) {
             __uint128_t x; __builtin_memcpy(&x, (const char *)src + 16 * q, 16);
-            hk_buf_st128(x, r, off + 16 * q, 0, 0);
+            hk_buf_st128(x, r, off + 16 * q, 0, AUX);
         }
     }
-    else if constexpr (N == 8) { uint64_t x; __builtin_memcpy(&x, src, 8); hk_buf_st64(x, r, off, 0, 0); }
-    else if constexpr (N == 4) { uint32_t x; __builtin_memcpy(&x, src, 4); hk_buf_st32(x, r, off, 0, 0); }
-    else if constexpr (N == 2) { uint16_t x; __builtin_memcpy(&x, src, 2); hk_buf_st16(x, r, off, 0, 0); }
-    else if constexpr (N == 1) { uint8_t x; __builtin_memcpy(&x, src, 1); hk_buf_st8(x, r, off, 0, 0); }
+    else if constexpr (N == 8) { uint64_t x; __builtin_memcpy(&x, src, 8); hk_buf_st64(x, r, off, 0, AUX); }
+    else if constexpr (N == 4) { uint32_t x; __builtin_memcpy(&x, src, 4); hk_buf_st32(x, r, off, 0, AUX); }
+    else if constexpr (N == 2) { uint16_t x; __builtin_memcpy(&x, src, 2); hk_buf_st16(x, r, off, 0, AUX); }
+    else if constexpr (N == 1) { uint8_t x; __builtin_memcpy(&x, src, 1); hk_buf_st8(x, r, off, 0, AUX); }
     else static_assert(N == 16, "a run of 1, 2, 4, 8 or a multiple of 16 bytes");
 }
 
@@ -576,7 +578,7 @@ __device__ inline hk_i32x4 hk_tile_srsrc(const GL &g, const C4 &unit, const void
     return hk_srsrc(base, uint64_t(valid) * g.template stride<2>() * sizeof(typename GL::dtype));
 }
 
-template<typename RT, typename GL, typename COORD>
+template<typename RT, typename GL, typename COORD, int AUX = 0>
 __device__ inline void hk_load_tile(RT &dst, const GL &src, const COORD &idx, int limit) {
     using F = hk_frag<RT>;
     using T = typename F::T;
@@ -596,7 +598,7 @@ __device__ inline void hk_load_tile(RT &dst, const GL &src, const COORD &idx, in
                 for (int k = 0; k < F::K; k++) {
                     const int2 c = hk_frag_coord<RT>(k * F::S, lane);
                     U run[F::S];
-                    hk_buf_load_bytes<F::S * sizeof(U)>(
+                    hk_buf_load_bytes<F::S * sizeof(U), AUX>(
                         r, ((i * F::R + c.x) * rs + j * F::C + c.y) * sizeof(U), run);
                     if constexpr (sizeof(T) == 1) {
                         // fp8: a lane's run is S consecutive bytes of its
@@ -615,7 +617,7 @@ __device__ inline void hk_load_tile(RT &dst, const GL &src, const COORD &idx, in
                 #pragma unroll
                 for (int e = 0; e < F::E; e++) {
                     const int2 c = hk_frag_coord<RT>(e, lane);
-                    hk_set(dst, i, j, e, base_types::convertor<T, U>::convert(hk_buf_load_elem<U>(
+                    hk_set(dst, i, j, e, base_types::convertor<T, U>::convert(hk_buf_load_elem<U, AUX>(
                         r, ((i * F::R + c.x) * rs + j * F::C + c.y) * sizeof(U))));
                 }
             }
@@ -623,7 +625,7 @@ __device__ inline void hk_load_tile(RT &dst, const GL &src, const COORD &idx, in
     }
 }
 
-template<typename RT, typename GL, typename COORD>
+template<typename RT, typename GL, typename COORD, int AUX = 0>
 __device__ inline void hk_store_tile(const GL &dst, const RT &src, const COORD &idx, int limit) {
     using F = hk_frag<RT>;
     using T = typename F::T;
@@ -670,7 +672,7 @@ __device__ inline void hk_store_tile(const GL &dst, const RT &src, const COORD &
                 #pragma unroll
                 for (int g = 0; g < 2; g++) {
                     uint32_t chunk[4] = {w[2 * g][0], w[2 * g][1], w[2 * g + 1][0], w[2 * g + 1][1]};
-                    hk_buf_store_bytes<16>(
+                    hk_buf_store_bytes<16, AUX>(
                         r, (row * rs + uint32_t(j * 32 + 8 * half + 16 * g)) * sizeof(U), chunk);
                 }
             }
@@ -703,14 +705,14 @@ __device__ inline void hk_store_tile(const GL &dst, const RT &src, const COORD &
                         for (int s = 0; s < F::S; s++)
                             run[s] = hk_cvt<U, T>(hk_get(src, i, j, k * F::S + s));
                     }
-                    hk_buf_store_bytes<F::S * sizeof(U)>(
+                    hk_buf_store_bytes<F::S * sizeof(U), AUX>(
                         r, ((i * F::R + c.x) * rs + j * F::C + c.y) * sizeof(U), run);
                 }
             } else {
                 #pragma unroll
                 for (int e = 0; e < F::E; e++) {
                     const int2 c = hk_frag_coord<RT>(e, lane);
-                    hk_buf_store_elem<U>(r, ((i * F::R + c.x) * rs + j * F::C + c.y) * sizeof(U),
+                    hk_buf_store_elem<U, AUX>(r, ((i * F::R + c.x) * rs + j * F::C + c.y) * sizeof(U),
                                          hk_cvt<U, T>(hk_get(src, i, j, e)));
                 }
             }
@@ -754,6 +756,107 @@ template<ducks::rt::all RT, ducks::gl::all GL, ducks::coord::tile COORD=coord<RT
 __device__ inline static void store_bounded(const GL &dst, const RT &src, const COORD &idx,
                                             int limit = RT::rows) {
     detail::hk_store_tile(dst, src, idx, limit);
+}
+
+/* ------------------------------------------------------------------------
+ * Scoped accesses and signals (hk.comm): hand-offs between XCDs and GPUs.
+ *
+ * AUX is the cache-policy field of every access: 16 (SC1, device scope) or
+ * 17 (SC0|SC1, system scope). What is correct on gfx950 was measured by the
+ * litmus suite (KernelWiki pitfalls/gfx950-cross-gpu-memory-model.md):
+ *   writer: data stored with AUX, s_waitcnt vmcnt(0), flag stored with AUX;
+ *   reader: flag polled with AUX, data loaded with AUX.
+ * Plain data stores stay in the writer's L2 and plain loads re-read stale
+ * L1/L2 lines (also on uncached memory), so every access to memory another
+ * agent touches carries AUX -- which is why hk.comm puts the scope on the
+ * tensor and not on the access.
+ * ---------------------------------------------------------------------- */
+
+/** @brief store() of a register tile with the access scope AUX (rows past the tensor's last dropped). */
+template<int AUX, ducks::rt::all RT, typename GL, ducks::coord::tile COORD=coord<RT>>
+__device__ inline static void store_scoped(const GL &dst, const RT &src, const COORD &idx,
+                                           int limit = RT::rows) {
+    detail::hk_store_tile<RT, GL, COORD, AUX>(dst, src, idx, limit);
+}
+/** @brief load() of a register tile with the access scope AUX (rows past the tensor's last read zero). */
+template<int AUX, ducks::rt::all RT, typename GL, ducks::coord::tile COORD=coord<RT>>
+__device__ inline static void load_scoped(RT &dst, const GL &src, const COORD &idx,
+                                          int limit = RT::rows) {
+    detail::hk_load_tile<RT, GL, COORD, AUX>(dst, src, idx, limit);
+}
+
+namespace detail {
+template<int AUX> __device__ inline uint32_t hk_scoped_ld32(const int *p) {
+    return hk_buf_ld32(hk_srsrc(p, 4), 0, 0, AUX);
+}
+template<int AUX> __device__ inline void hk_scoped_st32(int *p, uint32_t v) {
+    hk_buf_st32(v, hk_srsrc(p, 4), 0, 0, AUX);
+}
+}  // namespace detail
+
+/**
+ * @brief Publish: every store this workgroup issued before it is complete
+ * (each wave waits for its stores' acknowledgements: vmcnt(0)), then thread 0
+ * stores `v` into the int32 element at `idx` with scope AUX. The data a
+ * reader expects after the signal must have been stored with the same (or a
+ * wider) scope -- stores to a scoped tensor are. Contains a barrier.
+ */
+template<int AUX, ducks::gl::all GL, typename COORD>
+__device__ inline static void signal(const GL &flag, const COORD &idx, int v) {
+    static_assert(std::is_same_v<typename GL::dtype, int>, "a signal is an int32 element");
+    asm volatile("s_waitcnt vmcnt(0)" ::: "memory");   // this wave's stores are acknowledged
+    __builtin_amdgcn_s_barrier();
+    asm volatile("" ::: "memory");
+    if (threadIdx.x == 0)
+        detail::hk_scoped_st32<AUX>((int *)&flag[(idx.template unit_coord<-1, 3>())], uint32_t(v));
+}
+
+/**
+ * @brief Wait until the int32 element at `idx` compares with `v` (CMP 0:
+ * >= as int32, 1: ==), polling with scope AUX and s_sleep between polls;
+ * returns the value seen. Every wave polls (the value is uniform). After
+ * `timeout` ticks of the 100 MHz s_memrealtime clock (0: never) it stops:
+ * with `err` set, lane 0 of the wave ORs 1 into *err (system scope) and the
+ * value seen is returned; without, the kernel traps -- a hang becomes an error.
+ */
+template<int AUX, int CMP, ducks::gl::all GL, typename COORD>
+__device__ inline static int wait(const GL &flag, const COORD &idx, int v, long long timeout,
+                                  int *err = nullptr) {
+    static_assert(std::is_same_v<typename GL::dtype, int>, "a signal is an int32 element");
+    const int *p = (const int *)&flag[(idx.template unit_coord<-1, 3>())];
+    const long long t0 = __builtin_amdgcn_s_memrealtime();
+    int seen;
+    while (true) {
+        seen = __builtin_amdgcn_readfirstlane(int(detail::hk_scoped_ld32<AUX>(p)));
+        if (CMP == 0 ? seen >= v : seen == v) break;
+        if (timeout && __builtin_amdgcn_s_memrealtime() - t0 > timeout) {
+            if (err) {
+                if (laneid() == 0) __hip_atomic_fetch_or(err, 1, __ATOMIC_RELAXED, __HIP_MEMORY_SCOPE_SYSTEM);
+                break;
+            }
+            __builtin_trap();
+        }
+        __builtin_amdgcn_s_sleep(1);
+        asm volatile("" ::: "memory");   // the poll is re-issued: never hoisted out of the loop
+    }
+    return seen;
+}
+
+/** @brief atomic_scalar at scope AUX (16: device, 17: system): one per warp, the value before it. */
+template<int AUX, ducks::gl::all GL, typename COORD>
+__device__ inline static int atomic_scalar_scoped(const GL &dst, const COORD &idx, int v, int op) {
+    static_assert(std::is_same_v<typename GL::dtype, int>, "atomic_scalar works on int32");
+    int old = 0;
+    if (laneid() == 0) {
+        int *p = (int *)&dst[(idx.template unit_coord<-1, 3>())];
+        if constexpr (AUX == 17)
+            old = op == 0 ? __hip_atomic_fetch_add(p, v, __ATOMIC_RELAXED, __HIP_MEMORY_SCOPE_SYSTEM)
+                          : __hip_atomic_fetch_max(p, v, __ATOMIC_RELAXED, __HIP_MEMORY_SCOPE_SYSTEM);
+        else
+            old = op == 0 ? __hip_atomic_fetch_add(p, v, __ATOMIC_RELAXED, __HIP_MEMORY_SCOPE_AGENT)
+                          : __hip_atomic_fetch_max(p, v, __ATOMIC_RELAXED, __HIP_MEMORY_SCOPE_AGENT);
+    }
+    return __builtin_amdgcn_readfirstlane(old);
 }
 
 /*

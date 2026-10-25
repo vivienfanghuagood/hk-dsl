@@ -1084,11 +1084,15 @@ private:
           std::string fn = o.getBounded() ? "load_bounded" : "load";
           if (auto p = o.getPeriod())
             fn = "load_period<" + std::to_string(*p) + ">";
+          if (o.getAux())
+            fn = "load_scoped<" + std::to_string(o.getAux()) + ">";
           w("kittens::" + fn + "(" + name(d) + ", " + name(o.getSrc()) + ", " +
             coordArg(o.getIdx(), cpp(d.getType())) + ");");
         })
         .Case([&](StoreOp o) {
           std::string fn = o.getBounded() ? "store_bounded" : "store";
+          if (o.getAux())
+            fn = "store_scoped<" + std::to_string(o.getAux()) + ">";
           w("kittens::" + fn + "(" + name(o.getDst()) + ", " +
             name(o.getValue()) + ", " +
             coordArg(o.getIdx(), cpp(o.getValue().getType())) + ");");
@@ -1201,7 +1205,28 @@ private:
             name(o.getValue()) + ", " +
             coordArg(o.getIdx(), cpp(o.getValue().getType())) + ");");
         })
+        .Case([&](SignalOp o) {
+          w("kittens::signal<" + std::to_string(o.getAux()) + ">(" + name(o.getDst()) + ", " +
+            name(o.getIdx()) + ", " + name(o.getValue()) + ");");
+        })
+        .Case([&](WaitOp o) {
+          std::string err = "nullptr";
+          if (o.getErr())
+            err = "(int *)&" + name(o.getErr()) + "[(" + name(o.getErrIdx()) +
+                  ").template unit_coord<-1, 3>()]";
+          w("const int " + name(o.getResult()) + " = kittens::wait<" +
+            std::to_string(o.getAux()) + ", " + std::string(o.getCmp() == "eq" ? "1" : "0") +
+            ">(" + name(o.getSrc()) + ", " + name(o.getIdx()) + ", " + name(o.getValue()) +
+            ", " + std::to_string(o.getTimeout()) + "LL, " + err + ");");
+        })
         .Case([&](AtomicScalarOp o) {
+          if (o.getAux()) {
+            w("const int " + name(o.getResult()) + " = kittens::atomic_scalar_scoped<" +
+              std::to_string(o.getAux()) + ">(" + name(o.getDst()) + ", " + name(o.getIdx()) +
+              ", " + name(o.getValue()) + ", " +
+              std::string(o.getKind() == "max" ? "1" : "0") + ");");
+            return;
+          }
           w("const int " + name(o.getResult()) + " = kittens::atomic_scalar(" +
             name(o.getDst()) + ", " + name(o.getIdx()) + ", " +
             name(o.getValue()) + ", " +

@@ -2,7 +2,7 @@
 
 # `hk`: kernels, types, values
 
-The language: what `import hk` gives a kernel author. A kernel body is traced once per set of constexprs; [the language](../language.md) says how it is written, this page what each name is. The namespaces have pages of their own: [hk.math](hk.math.md), [hk.arch](hk.arch.md), [hk.lds](hk.lds.md), [hk.group](hk.group.md), [hk.collective](hk.collective.md); the shipped kernels are [hk.ops](hk.ops.md), the templates [hk.templates](hk.templates.md), the checker [hk.check](hk.check.md), the profiler [hk.profile](hk.profile.md), the per-arch facts [hk.target](hk.target.md).
+The language: what `import hk` gives a kernel author. A kernel body is traced once per set of constexprs; [the language](../language.md) says how it is written, this page what each name is. The namespaces have pages of their own: [hk.math](hk.math.md), [hk.arch](hk.arch.md), [hk.lds](hk.lds.md), [hk.group](hk.group.md), [hk.collective](hk.collective.md), [hk.comm](hk.comm.md); the shipped kernels are [hk.ops](hk.ops.md), the templates [hk.templates](hk.templates.md), the checker [hk.check](hk.check.md), the profiler [hk.profile](hk.profile.md), the per-arch facts [hk.target](hk.target.md).
 
 - [`hk.kernel`](#hkkernel)
 - [`hk.func`](#hkfunc)
@@ -237,6 +237,13 @@ translation's own naming, so the two cannot disagree.
 ### `hk.Tensor`
 
 The annotation for a tensor parameter: `x: hk.Tensor[hk.bf16]`.
+
+`hk.Tensor[hk.bf16, "system"]` (or "device") is a *scoped* tensor: memory
+another GPU ("system") or another XCD of this GPU ("device") reads or
+writes while the kernel runs -- a peer's buffer, a mailbox. Every load,
+store and atomic through it carries the scope, and hk.comm.signal /
+hk.comm.wait take only scoped tensors (see hk.comm for why the scope is
+the tensor's and not the access's).
 
 ### `hk.Constexpr`
 
@@ -1568,6 +1575,7 @@ The value's hk type (`RegTileType`, `RegVecType`, ...).
 - [`hk.math`](hk.math.md)
 - [`hk.group`](hk.group.md)
 - [`hk.collective`](hk.collective.md)
+- [`hk.comm`](hk.comm.md)
 - `hk.Group`: what `hk.group(n)` returns, on [hk.group](hk.group.md)
 
 ## Runtime, errors and the rest

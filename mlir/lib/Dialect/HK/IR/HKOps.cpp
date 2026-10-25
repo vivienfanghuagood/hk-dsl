@@ -108,6 +108,14 @@ static LogicalResult checkStripAccess(Operation *op, Type t, CoordType idx,
   return success();
 }
 
+/// The cache-policy field of a scoped access: 0 (none), 16 (SC1: device
+/// scope) or 17 (SC0|SC1: system scope) -- the two hk.comm uses on gfx950.
+static LogicalResult verifyAux(Operation *op, int64_t aux) {
+  if (aux != 0 && aux != 16 && aux != 17)
+    return op->emitOpError("aux ") << aux << " is 0, 16 (device scope) or 17 (system scope)";
+  return success();
+}
+
 LogicalResult LoadOp::verify() {
   if (failed(verifyDest(*this, getDst(), getResult())))
     return failure();
@@ -126,6 +134,10 @@ LogicalResult LoadOp::verify() {
       return emitOpError("period ")
              << *p << " is not a positive number of whole runs of " << s.getRun();
   }
+  if (failed(verifyAux(*this, getAux())))
+    return failure();
+  if (getAux() && (!isa<RegTileType>(t) || isStrip(t) || getPeriod()))
+    return emitOpError("a scoped load (aux) reads a register tile");
   return checkStripAccess(*this, t, getIdx().getType(), getBounded(), false);
 }
 
@@ -133,6 +145,10 @@ LogicalResult StoreOp::verify() {
   Type t = getValue().getType();
   if (getBounded() && !isa<RegTileType>(t) && !isStrip(t))
     return emitOpError("bounded predicates tile rows; the value is not a tile");
+  if (failed(verifyAux(*this, getAux())))
+    return failure();
+  if (getAux() && (!isa<RegTileType>(t) || isStrip(t)))
+    return emitOpError("a scoped store (aux) writes a register tile");
   return checkStripAccess(*this, t, getIdx().getType(), getBounded(), true);
 }
 
@@ -227,7 +243,39 @@ LogicalResult AtomicScalarOp::verify() {
     return emitOpError("works on an int32 global");
   if (getKind() != "add" && getKind() != "max")
     return emitOpError("kind is \"add\" or \"max\"");
-  return success();
+  return verifyAux(*this, getAux());
+}
+
+LogicalResult SignalOp::verify() {
+  if (!getIdx().getType().getElement())
+    return emitOpError("takes an element coordinate");
+  if (!getDst().getType().getElementType().isInteger(32))
+    return emitOpError("signals an int32 element");
+  if (!getAux())
+    return emitOpError("a signal has a scope: aux 16 (device) or 17 (system)");
+  return verifyAux(*this, getAux());
+}
+
+LogicalResult WaitOp::verify() {
+  if (!getIdx().getType().getElement())
+    return emitOpError("takes an element coordinate");
+  if (!getSrc().getType().getElementType().isInteger(32))
+    return emitOpError("polls an int32 element");
+  if (getCmp() != "ge" && getCmp() != "eq")
+    return emitOpError("cmp is \"ge\" or \"eq\"");
+  if (!getAux())
+    return emitOpError("a wait has a scope: aux 16 (device) or 17 (system)");
+  if (getTimeout() < 0)
+    return emitOpError("timeout is a tick count >= 0");
+  if (bool(getErr()) != bool(getErrIdx()))
+    return emitOpError("err and its element come together");
+  if (getErr()) {
+    if (!getErr().getType().getElementType().isInteger(32))
+      return emitOpError("err is an int32 element");
+    if (!getErrIdx().getType().getElement())
+      return emitOpError("err takes an element coordinate");
+  }
+  return verifyAux(*this, getAux());
 }
 
 LogicalResult PhiloxOp::verify() {

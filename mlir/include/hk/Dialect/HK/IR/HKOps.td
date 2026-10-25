@@ -93,10 +93,15 @@ def HK_LoadOp : HK_Op<"load"> {
     `period` (strips, unbounded) reads column `idx.c + c % period` into a
     strip's column c: a row of `period` values repeated along the strip, as
     a 16-byte RoPE wants the one token's angles under each of its heads.
+
+    `aux` (register tiles): the loads' cache-policy bits -- 16 device scope,
+    17 system scope (gfx950): a scoped tensor's data, which another XCD or
+    GPU writes (hk.comm).
   }];
   let arguments = (ins Optional<HK_Elementwise>:$dst, HK_GlobalType:$src,
                        HK_CoordType:$idx, UnitAttr:$bounded,
-                       OptionalAttr<I64Attr>:$period);
+                       OptionalAttr<I64Attr>:$period,
+                       DefaultValuedAttr<I64Attr, "0">:$aux);
   let results = (outs Optional<HK_Elementwise>:$result);
   let assemblyFormat = [{
     $src `[` $idx `]` (`into` $dst^)? attr-dict `:` qualified(type($src)) `,` qualified(type($idx))
@@ -107,8 +112,14 @@ def HK_LoadOp : HK_Op<"load"> {
 
 def HK_StoreOp : HK_Op<"store"> {
   let summary = "register tile or vector -> global";
+  let description = [{
+    `aux` (register tiles): the stores' cache-policy bits -- 16 device
+    scope, 17 system scope (gfx950): data another XCD or GPU reads after an
+    hk.signal (hk.comm). A plain store stays in this XCD's L2.
+  }];
   let arguments = (ins HK_GlobalType:$dst, HK_Elementwise:$value,
-                       HK_CoordType:$idx, UnitAttr:$bounded);
+                       HK_CoordType:$idx, UnitAttr:$bounded,
+                       DefaultValuedAttr<I64Attr, "0">:$aux);
   let assemblyFormat = [{
     $value `,` $dst `[` $idx `]` attr-dict `:` qualified(type($value)) `,` qualified(type($dst)) `,`
     qualified(type($idx))
@@ -279,11 +290,48 @@ def HK_AtomicAddOp : HK_Op<"atomic_add"> {
 def HK_AtomicScalarOp : HK_Op<"atomic_scalar"> {
   let summary = "one int32 atomic (add or max) per warp; the value before it";
   let arguments = (ins HK_GlobalType:$dst, HK_CoordType:$idx, I32:$value,
-                       StrAttr:$kind);
+                       StrAttr:$kind, DefaultValuedAttr<I64Attr, "0">:$aux);
   let results = (outs I32:$result);
   let assemblyFormat = [{
     $kind $dst `[` $idx `]` `,` $value attr-dict `:` qualified(type($dst)) `,`
     qualified(type($idx))
+  }];
+  let hasVerifier = 1;
+}
+
+def HK_SignalOp : HK_Op<"signal"> {
+  let summary = "publish: the workgroup's stores complete, then one int32 element := value";
+  let description = [{
+    Every wave waits for its stores' acknowledgements (vmcnt(0)), the
+    workgroup passes a barrier, and thread 0 stores `value` with the
+    cache-policy bits `aux` (16 device scope, 17 system scope, gfx950). The
+    data it announces must have been stored with that scope -- every store
+    to a scoped tensor is (hk.comm). Contains a barrier.
+  }];
+  let arguments = (ins HK_GlobalType:$dst, HK_CoordType:$idx, I32:$value,
+                       I64Attr:$aux);
+  let assemblyFormat = [{
+    $value `,` $dst `[` $idx `]` attr-dict `:` qualified(type($dst)) `,` qualified(type($idx))
+  }];
+  let hasVerifier = 1;
+}
+
+def HK_WaitOp : HK_Op<"wait", [AttrSizedOperandSegments]> {
+  let summary = "poll one int32 element until it compares with value; the value seen";
+  let description = [{
+    Every wave polls with the cache-policy bits `aux` (16 device, 17 system
+    scope) and s_sleep between polls; `cmp` is "ge" (signed >=) or "eq".
+    After `timeout` ticks of the 100 MHz s_memrealtime clock (0: never) it
+    gives up: with `err` (an int32 element) lane 0 ORs 1 into it and the
+    value seen is returned; without, the kernel traps.
+  }];
+  let arguments = (ins HK_GlobalType:$src, HK_CoordType:$idx, I32:$value,
+                       Optional<HK_GlobalType>:$err, Optional<HK_CoordType>:$err_idx,
+                       StrAttr:$cmp, I64Attr:$timeout, I64Attr:$aux);
+  let results = (outs I32:$result);
+  let assemblyFormat = [{
+    $cmp $src `[` $idx `]` `,` $value (`err` $err^ `[` $err_idx `]`)? attr-dict `:`
+    qualified(type($src)) `,` qualified(type($idx)) (`,` qualified(type($err))^ `,` qualified(type($err_idx)))?
   }];
   let hasVerifier = 1;
 }

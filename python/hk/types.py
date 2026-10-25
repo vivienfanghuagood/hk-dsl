@@ -570,9 +570,13 @@ class GlobalType(Type):
     are left-padded with 1 by the pybind layer, matching pyutils.cuh."""
 
     dtype: DType
+    #: "" (this workgroup's XCD only), "device" (other XCDs of this GPU read or
+    #: write it while the kernel runs) or "system" (other GPUs do): every access
+    #: through the tensor then carries that scope (hk.comm).
+    scope: str = ""
 
     def __repr__(self) -> str:
-        return f"gl<{self.dtype}>"
+        return f"gl<{self.dtype}{', ' + self.scope if self.scope else ''}>"
 
     def cpp(self) -> str:
         return f"kittens::gl<{self.dtype.cpp}, -1, -1, -1, -1>"
