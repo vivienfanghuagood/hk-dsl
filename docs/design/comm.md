@@ -12,6 +12,8 @@
 | scoped tensors: `hk.Tensor[dtype, "device" \| "system"]`; every load, store and atomic through one carries the scope's cache-policy bits | `hk/types.py` (`GlobalType.scope`), `hk/dsl/values.py` (`scope_aux`), `aux` on `hk.load` / `hk.store` / `hk.atomic_scalar` |
 | `hk.comm.signal(flag.at[i], v)`: this workgroup's stores acknowledged (vmcnt(0)), a barrier, one thread stores the flag with the scope | `hk.signal` op, `kittens::signal<AUX>` |
 | `hk.comm.wait(flag.at[i], v, cmp=">=", timeout_s=2, error=None)`: every wave polls with the scope and `s_sleep`; after the timeout an error element is set, or the kernel traps | `hk.wait` op, `kittens::wait<AUX, CMP>` |
+| `hk.comm.arrive(cnt.at[i], v)` (signal's drain, then one atomic add of the scope; the old value) and `hk.comm.barrier(cnt.at[i], target)` (arrive + wait >= target; with an epoch the counter never resets): a grid barrier with a "device" counter, a barrier across GPUs with a "system" one | `hk.arrive` op, `kittens::arrive<AUX>` |
+| `hk.kernel(..., resident=True)`: a launch whose grid does not fit on the GPU at once (CUs x workgroups a CU holds by registers and LDS, from the build's resource report: `Kernel.resident_capacity()`) raises `ResourceError` instead of deadlocking in a barrier | `hk/dsl/kernel.py` |
 | `hk.runtime.SymmetricBuffer(nbytes, group)`: one buffer a rank, every peer's mapped (hipIpc), as torch tensors; while one is open a launch refuses its memory bound to an *unscoped* parameter | `hk/runtime/symmetric.py`, `Kernel.__call__` |
 | the litmus suite the lowering follows | `tools/cdna-probes/litmus_comm.hip` |
 | tests: IR (what is emitted, what is refused); GPU: message passing between two XCDs and between two GPUs through symmetric memory, the negative control, a lost signal as an error | `tests/hk/ir/test_comm.py`, `tests/hk/gpu/test_comm.py` |
@@ -59,6 +61,9 @@ no shader instruction invalidates it, so a scoped tensor there is a trace-time e
 
 ## Measured
 
+- A grid barrier over 64 workgroups, 50 rounds, each reading its neighbour's value of the round:
+  all correct; the full resident capacity meets at one barrier, one more workgroup is refused. A
+  barrier across the two GPUs, 200 rounds: every round each rank read the peer's value of it.
 - Message passing in hk, 2000 rounds: two XCDs, 0 stale; two GPUs through `SymmetricBuffer`,
   0 stale, no timeout; the same kernel re-reading through a plain alias (the negative control
   the test asserts): 2000 of 2000 rounds stale.
@@ -69,7 +74,5 @@ no shader instruction invalidates it, so a scoped tensor there is a trace-time e
 
 ## Next
 
-- Persistent-grid residency: refuse a launch whose grid is not all resident, so a spin in it
-  cannot deadlock; an epoch'd grid barrier.
 - Tagged mailboxes (value, epoch in one 8 B store), and per-tile signals from a GEMM epilogue
   (store the tile to a peer, count it) -- the TP2 prefill GEMM + all-reduce overlap.

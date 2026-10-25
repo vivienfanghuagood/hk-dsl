@@ -812,6 +812,28 @@ __device__ inline static void signal(const GL &flag, const COORD &idx, int v) {
 }
 
 /**
+ * @brief Arrive: as signal(), but thread 0 adds `v` to the int32 element with
+ * an atomic of scope AUX; returns the element's value before the add in every
+ * lane. Contains a barrier.
+ */
+template<int AUX, ducks::gl::all GL, typename COORD>
+__device__ inline static int arrive(const GL &cnt, const COORD &idx, int v) {
+    static_assert(std::is_same_v<typename GL::dtype, int>, "a counter is an int32 element");
+    __shared__ int hk_arrive_old;
+    asm volatile("s_waitcnt vmcnt(0)" ::: "memory");   // this wave's stores are acknowledged
+    __builtin_amdgcn_s_barrier();
+    asm volatile("" ::: "memory");
+    if (threadIdx.x == 0) {
+        int *p = (int *)&cnt[(idx.template unit_coord<-1, 3>())];
+        hk_arrive_old = AUX == 17 ? __hip_atomic_fetch_add(p, v, __ATOMIC_RELAXED, __HIP_MEMORY_SCOPE_SYSTEM)
+                                  : __hip_atomic_fetch_add(p, v, __ATOMIC_RELAXED, __HIP_MEMORY_SCOPE_AGENT);
+    }
+    __builtin_amdgcn_s_barrier();
+    asm volatile("" ::: "memory");
+    return __builtin_amdgcn_readfirstlane(hk_arrive_old);
+}
+
+/**
  * @brief Wait until the int32 element at `idx` compares with `v` (CMP 0:
  * >= as int32, 1: ==), polling with scope AUX and s_sleep between polls;
  * returns the value seen. Every wave polls (the value is uniform). After

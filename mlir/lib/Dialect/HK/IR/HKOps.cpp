@@ -256,6 +256,16 @@ LogicalResult SignalOp::verify() {
   return verifyAux(*this, getAux());
 }
 
+LogicalResult ArriveOp::verify() {
+  if (!getIdx().getType().getElement())
+    return emitOpError("takes an element coordinate");
+  if (!getDst().getType().getElementType().isInteger(32))
+    return emitOpError("counts in an int32 element");
+  if (!getAux())
+    return emitOpError("an arrival has a scope: aux 16 (device) or 17 (system)");
+  return verifyAux(*this, getAux());
+}
+
 LogicalResult WaitOp::verify() {
   if (!getIdx().getType().getElement())
     return emitOpError("takes an element coordinate");

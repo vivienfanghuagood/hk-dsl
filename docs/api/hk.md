@@ -69,11 +69,13 @@ The language: what `import hk` gives a kernel author. A kernel body is traced on
 ### `hk.kernel`
 
 ```python
-hk.kernel(fn=None, *, arch: Optional[str] = None, warps: int = 1, grid=None, name: Optional[str] = None, max_vgprs: Optional[int] = None, min_occupancy: Optional[int] = None, defines: Optional[Dict[str, Any]] = None, noalias: bool = False, preload: bool = False)
+hk.kernel(fn=None, *, arch: Optional[str] = None, warps: int = 1, grid=None, name: Optional[str] = None, max_vgprs: Optional[int] = None, min_occupancy: Optional[int] = None, defines: Optional[Dict[str, Any]] = None, noalias: bool = False, preload: bool = False, resident: bool = False)
 ```
 
 Mark a function as a tile kernel. See the module docstring for the
-parameter rules.
+parameter rules. `resident=True`: every workgroup must be on the GPU at
+once (a kernel that waits on its own workgroups); a launch that cannot be
+is refused with ResourceError rather than deadlocking.
 
 ### `hk.func`
 
@@ -87,7 +89,7 @@ and `while` rewritten like a kernel's.
 ### `hk.Kernel`
 
 ```python
-class hk.Kernel(fn: Callable, *, arch: Optional[str] = None, warps: int = 1, grid: Optional[Callable] = None, name: Optional[str] = None, max_vgprs: Optional[int] = None, min_occupancy: Optional[int] = None, defines: Optional[Dict[str, Any]] = None, noalias: bool = False, preload: bool = False)
+class hk.Kernel(fn: Callable, *, arch: Optional[str] = None, warps: int = 1, grid: Optional[Callable] = None, name: Optional[str] = None, max_vgprs: Optional[int] = None, min_occupancy: Optional[int] = None, defines: Optional[Dict[str, Any]] = None, noalias: bool = False, preload: bool = False, resident: bool = False)
 ```
 
 A tile kernel. Call it to launch; `trace`, `source` and `build` stop
@@ -163,6 +165,18 @@ Kernel.compile(self, **const_overrides: Any)
 ```
 
 Generate, compile and load. Returns the loaded extension module.
+
+#### `Kernel.resident_capacity`
+
+```python
+Kernel.resident_capacity(self, **const_overrides: Any) -> int
+```
+
+*New after 0.5.0*
+
+How many workgroups of this kernel the current GPU holds at once:
+its CUs times the workgroups a CU fits by registers and by LDS (the
+smaller), from the build's own resource report.
 
 #### `Kernel.specialize`
 

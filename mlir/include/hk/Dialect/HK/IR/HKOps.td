@@ -316,6 +316,23 @@ def HK_SignalOp : HK_Op<"signal"> {
   let hasVerifier = 1;
 }
 
+def HK_ArriveOp : HK_Op<"arrive"> {
+  let summary = "the workgroup's stores complete, then one atomic add of value; the value before it";
+  let description = [{
+    As hk.signal, but thread 0 adds `value` to the int32 element with an
+    atomic of scope `aux` (16 device, 17 system) instead of storing it; the
+    element's value before the add, wave-uniform, in every lane. A counter
+    every workgroup (of one grid, or of every rank) arrives at: hk.comm.barrier.
+    Contains a barrier.
+  }];
+  let arguments = (ins HK_GlobalType:$dst, HK_CoordType:$idx, I32:$value, I64Attr:$aux);
+  let results = (outs I32:$result);
+  let assemblyFormat = [{
+    $value `,` $dst `[` $idx `]` attr-dict `:` qualified(type($dst)) `,` qualified(type($idx))
+  }];
+  let hasVerifier = 1;
+}
+
 def HK_WaitOp : HK_Op<"wait", [AttrSizedOperandSegments]> {
   let summary = "poll one int32 element until it compares with value; the value seen";
   let description = [{

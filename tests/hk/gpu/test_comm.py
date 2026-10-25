@@ -102,6 +102,52 @@ def test_a_lost_signal_is_an_error_not_a_hang():
     assert int(err[0]) == 1 and int(seen[0]) == 100
 
 
+def _grid_barrier_kernel():
+    def body(slots: hk.Tensor[i32, "device"], cnt: hk.Tensor[i32, "device"], out: hk.Tensor[i32],
+             err: hk.Tensor[i32], *, NWG: int = 64, ROUNDS: int = 50):
+        w = hk.arch.block_idx.x
+        for r in hk.range(1, ROUNDS + 1):
+            # round r: workgroup w publishes r * 1000 + w, every workgroup meets, then reads its
+            # right neighbour's -- which only the barrier makes visible
+            slots.at[16 * w].atomic_max_scalar(r * 1000 + w)
+            hk.comm.barrier(cnt.at[0], r * NWG, timeout_s=1.0, error=err.at[0])
+            v = slots.at[16 * ((w + 1) % NWG)].atomic_max_scalar(0)
+            out.at[(r - 1) * NWG + w].atomic_max_scalar(v)
+            hk.comm.barrier(cnt.at[64], r * NWG, timeout_s=1.0, error=err.at[0])
+    return hk.kernel(body, warps=1, name="comm_grid_barrier", grid=lambda p: (64, 1, 1), resident=True)
+
+
+@pytest.mark.skipif(os.environ.get("HK_ARCH") != "gfx950", reason="hk.comm is gfx950's")
+def test_a_grid_barrier_orders_every_workgroup():
+    k = _grid_barrier_kernel()
+    nwg, rounds = 64, 50
+    slots = torch.zeros(16 * nwg, dtype=torch.int32, device="cuda")
+    cnt = torch.zeros(128, dtype=torch.int32, device="cuda")
+    out = torch.full((rounds * nwg,), -1, dtype=torch.int32, device="cuda")
+    err = torch.zeros(1, dtype=torch.int32, device="cuda")
+    k(slots, cnt, out, err, NWG=nwg, ROUNDS=rounds)
+    torch.cuda.synchronize()
+    want = torch.tensor([r * 1000 + (w + 1) % nwg for r in range(1, rounds + 1) for w in range(nwg)],
+                        dtype=torch.int32, device="cuda")
+    assert int(err[0]) == 0 and torch.equal(out, want)
+
+
+@pytest.mark.skipif(os.environ.get("HK_ARCH") != "gfx950", reason="hk.comm is gfx950's")
+def test_a_resident_grid_that_cannot_fit_is_refused():
+    def body(cnt: hk.Tensor[i32, "device"], *, N: int = 1):
+        hk.comm.barrier(cnt.at[0], N, timeout_s=0.1)
+    k = hk.kernel(body, warps=4, name="comm_resident_cap", grid=lambda p: (p.cnt.cols, 1, 1),
+                  resident=True)
+    cap = k.resident_capacity()
+    assert 256 <= cap <= 256 * 32           # an MI355X: 256 CUs
+    ok = torch.zeros(cap, dtype=torch.int32, device="cuda")
+    k(ok, N=cap)                             # the whole capacity meets
+    torch.cuda.synchronize()
+    assert int(ok[0]) == cap
+    with pytest.raises(hk.ResourceError, match="deadlock"):
+        k(torch.zeros(cap + 1, dtype=torch.int32, device="cuda"), N=cap + 1)
+
+
 # ---------------------------------------------------------------- two GPUs
 
 def _gpu_kernels():
@@ -123,9 +169,21 @@ def _gpu_kernels():
             out[hk.tile_coord(r - 1, 0, 0, 0)] = data[at0].load(T)
             hk.comm.signal(ack.at[0], r)
 
+    def meet(mine: hk.Tensor[i32, "system"], theirs: hk.Tensor[i32, "system"],
+             cnt: hk.Tensor[i32, "system"], out: hk.Tensor[i32], err: hk.Tensor[i32],
+             *, RANK: int = 0, ROUNDS: int = 200):
+        # a barrier across the two GPUs: each round, publish into the peer's slot, meet on the
+        # counter (on rank 0's memory), read what the peer published into mine
+        for r in hk.range(1, ROUNDS + 1):
+            theirs.at[0].atomic_max_scalar(r * 10 + RANK)
+            hk.comm.barrier(cnt.at[0], 2 * r, timeout_s=2.0, error=err.at[0])
+            out.at[r - 1].atomic_max_scalar(mine.at[0].atomic_max_scalar(0))
+            hk.comm.barrier(cnt.at[64], 2 * r, timeout_s=2.0, error=err.at[0])
+
     w = hk.kernel(writer, warps=1, name="comm_gpu_writer", grid=lambda p: (1, 1, 1))
     r = hk.kernel(reader, warps=1, name="comm_gpu_reader", grid=lambda p: (1, 1, 1))
-    return w, r
+    m = hk.kernel(meet, warps=1, name="comm_gpu_meet", grid=lambda p: (1, 1, 1))
+    return w, r, m
 
 
 def _two_gpu_rank(rank, port, rounds, q):
@@ -139,7 +197,7 @@ def _two_gpu_rank(rank, port, rounds, q):
     try:
         # rank 1's buffer: [data tile | flag line]; rank 0's: [ack line]
         buf = SymmetricBuffer(64 * 1024, None)
-        w, r = _gpu_kernels()
+        w, r, m = _gpu_kernels()
         err = torch.zeros(1, dtype=torch.int32, device="cuda")
         data = buf.peer(1, torch.bfloat16, (1, 1, 16, 64))
         flag = buf.peer(1, torch.int32, (64,), offset=32 * 1024)
@@ -156,6 +214,17 @@ def _two_gpu_rank(rank, port, rounds, q):
             torch.cuda.synchronize()
             q.put(("r", int(err[0]), _stale_rounds(out, _src(), rounds)))
         dist.barrier()
+        # the cross-GPU barrier: slots at 40 KiB of each rank's buffer, the counter on rank 0's
+        mine = buf.local(torch.int32, (64,), offset=40 * 1024)
+        theirs = buf.peer(1 - rank, torch.int32, (64,), offset=40 * 1024)
+        cnt = buf.peer(0, torch.int32, (128,), offset=44 * 1024)
+        out = torch.full((200,), -1, dtype=torch.int32, device="cuda")
+        err.zero_(); dist.barrier()
+        m(mine, theirs, cnt, out, err, RANK=rank, ROUNDS=200)
+        torch.cuda.synchronize()
+        want = torch.tensor([r_ * 10 + (1 - rank) for r_ in range(1, 201)], dtype=torch.int32, device="cuda")
+        q.put((f"m{rank}", int(err[0]), int((out != want).sum())))
+        dist.barrier()
         buf.close()
     finally:
         dist.destroy_process_group()
@@ -171,6 +240,8 @@ def test_message_passing_between_gpus_through_symmetric_memory():
     ctx = mp.get_context("spawn")
     q = ctx.Queue()
     mp.spawn(_two_gpu_rank, args=(29561, rounds, q), nprocs=2)
-    got = {k: (e, s) for k, e, s in (q.get(timeout=60) for _ in range(2))}
+    got = {k: (e, s) for k, e, s in (q.get(timeout=60) for _ in range(4))}
     assert got["w"][0] == 0 and got["r"][0] == 0, f"a wait timed out: {got}"
     assert got["r"][1] == 0, f"{got['r'][1]} of {rounds} rounds read stale data"
+    # the barrier across GPUs: every round each rank saw the peer's value of that round
+    assert got["m0"] == (0, 0) and got["m1"] == (0, 0), got

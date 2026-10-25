@@ -165,7 +165,7 @@ class TracedKernel:
                         out.add(names[i])
             if op.name in ("hk.store", "hk.store_rows", "hk.store_scalar",
                            "hk.group_store", "hk.scatter_rows",
-                           "hk.atomic_add", "hk.atomic_scalar", "hk.signal"):
+                           "hk.atomic_add", "hk.atomic_scalar", "hk.signal", "hk.arrive"):
                 dst = op.operands[0]
                 for i, a in enumerate(args):
                     if a == dst:
@@ -221,6 +221,7 @@ class Kernel:
         defines: Optional[Dict[str, Any]] = None,
         noalias: bool = False,
         preload: bool = False,
+        resident: bool = False,
     ):
         self.fn = fn
         #: Preprocessor definitions ahead of the includes, for this kernel's
@@ -248,6 +249,12 @@ class Kernel:
         #: can: 0.2 us more at the one-row floor, 0.2-0.3 us less on a
         #: 2048-row call (docs/history/43), so a planner picks it per call.
         self.preload = preload
+        #: Every workgroup of the grid must be on the GPU at once: the kernel
+        #: spins on work other workgroups do (hk.comm.wait, hk.comm.barrier),
+        #: and a workgroup waiting for one that cannot start until it exits
+        #: deadlocks. A launch whose grid exceeds what fits (the CUs times the
+        #: workgroups a CU holds by registers and LDS) is refused.
+        self.resident = resident
         self.signature = inspect.signature(fn)
         self._tensors, self._defaults = self._split_params()
         self._ir_cache: Dict[Tuple, TracedKernel] = {}
@@ -454,7 +461,7 @@ class Kernel:
                 self.fn, arch=self._arch, warps=self.warps, grid=self.grid_fn,
                 name=self.name, max_vgprs=self.max_vgprs,
                 min_occupancy=self.min_occupancy, defines=self.defines,
-                noalias=self.noalias, preload=True)
+                noalias=self.noalias, preload=True, resident=self.resident)
             self._preloaded._defaults = dict(self._defaults)
         return self._preloaded
 
@@ -510,6 +517,54 @@ class Kernel:
         return launch(*tensors)
 
     def _launcher(self, **const_overrides: Any):
+        launch = self._launcher_raw(**const_overrides)
+        if not self.resident:
+            return launch
+        cap = self.resident_capacity(**const_overrides)
+        traced = self.trace(**const_overrides)
+        names = [n for n, _ in self._tensors]
+
+        def checked(*tensors):
+            ext = {n: (1,) * (4 - t.dim()) + tuple(t.shape) for n, t in zip(names, tensors)}
+            g = [x if isinstance(x, int) else x.value(ext) for x in traced.grid]
+            n = g[0] * g[1] * g[2]
+            if n > cap:
+                from ..runtime.resources import ResourceError  # noqa: PLC0415
+
+                raise ResourceError(
+                    f"{self.name}: resident=True but its grid {tuple(g)} is {n} workgroups and "
+                    f"at most {cap} fit on the GPU at once (resident_capacity()): some would wait "
+                    f"for others that cannot start -- a deadlock. Launch fewer.")
+            return launch(*tensors)
+
+        return checked
+
+    def resident_capacity(self, **const_overrides: Any) -> int:
+        """How many workgroups of this kernel the current GPU holds at once:
+        its CUs times the workgroups a CU fits by registers and by LDS (the
+        smaller), from the build's own resource report."""
+        import torch  # noqa: PLC0415
+
+        from ..target import get_target  # noqa: PLC0415
+
+        traced = self.trace(**const_overrides)
+        tgt = get_target(traced.arch)
+        b = self.build(**const_overrides)
+        mine = [k for k in b.kernels if traced.name in k.name or traced.name in k.mangled] or b.kernels
+        if not mine:
+            from ..runtime.resources import ResourceError  # noqa: PLC0415
+
+            raise ResourceError(f"{self.name}: resident=True needs the build's resource report "
+                                f"(registers, LDS) to bound the grid, and {b.log_path} has none")
+        k = mine[0]
+        by_reg = tgt.occupancy(tgt.charged_vgprs(k.vgpr, k.agpr))
+        by_lds = tgt.occupancy_by_lds(k.lds, self.warps)
+        waves_per_simd = max(0, min(by_reg, by_lds))
+        per_cu = (waves_per_simd * tgt.simds_per_lds_pool) // self.warps
+        cus = torch.cuda.get_device_properties(torch.cuda.current_device()).multi_processor_count
+        return per_cu * cus
+
+    def _launcher_raw(self, **const_overrides: Any):
         """The pybind entry point, or with HK_LAUNCH=codeobj a launch of the
         device-only code object on torch's current stream: a fifth of the
         compile, for a Python launch in front of every call.
@@ -578,7 +633,7 @@ class Kernel:
                 self.fn, arch=self._arch, warps=self.warps, grid=self.grid_fn,
                 name=self.name, max_vgprs=self.max_vgprs,
                 min_occupancy=self.min_occupancy, defines=self.defines,
-                noalias=self.noalias, preload=self.preload,
+                noalias=self.noalias, preload=self.preload, resident=self.resident,
             )
             k._defaults = dict(key)
             self._spec_cache[key] = k
@@ -592,14 +647,17 @@ def kernel(fn=None, *, arch: Optional[str] = None, warps: int = 1, grid=None,
            name: Optional[str] = None, max_vgprs: Optional[int] = None,
            min_occupancy: Optional[int] = None,
            defines: Optional[Dict[str, Any]] = None, noalias: bool = False,
-           preload: bool = False):
+           preload: bool = False, resident: bool = False):
     """Mark a function as a tile kernel. See the module docstring for the
-    parameter rules."""
+    parameter rules. `resident=True`: every workgroup must be on the GPU at
+    once (a kernel that waits on its own workgroups); a launch that cannot be
+    is refused with ResourceError rather than deadlocking."""
 
     def wrap(f):
         return Kernel(f, arch=arch, warps=warps, grid=grid, name=name,
                       max_vgprs=max_vgprs, min_occupancy=min_occupancy,
-                      defines=defines, noalias=noalias, preload=preload)
+                      defines=defines, noalias=noalias, preload=preload,
+                      resident=resident)
 
     return wrap(fn) if fn is not None else wrap
 

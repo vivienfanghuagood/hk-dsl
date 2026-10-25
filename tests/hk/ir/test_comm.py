@@ -114,3 +114,31 @@ def test_symmetric_memory_must_bind_to_scoped_parameters(monkeypatch):
     symmetric.check_bindings("k", params, [Fake(0x5000), Fake(0x1800)])   # fine
     with pytest.raises(TypeError, match="unscoped"):
         symmetric.check_bindings("k", params, [Fake(0x1800), Fake(0x1800)])
+
+
+def test_arrive_and_barrier_emit_an_atomic_arrival_then_a_wait():
+    def body(cnt: hk.Tensor[i32, "device"], out: hk.Tensor[i32]):
+        old = hk.comm.arrive(cnt.at[0], 2)
+        out.at[0].atomic_max_scalar(old)
+        hk.comm.barrier(cnt.at[16], 4, timeout_s=0.1)
+    k = _kernel(body, "comm_arrive")
+    src = k.source()
+    assert "kittens::arrive<16>(g.cnt, " in src
+    assert src.count("kittens::arrive<16>") == 2 and "kittens::wait<16, 0>(g.cnt, " in src
+    # each arrival's __shared__ slot is in the static LDS count
+    assert "hk.lds_static = 32 : i64" in k.trace().dump()
+
+
+def test_an_unscoped_counter_is_refused():
+    def body(cnt: hk.Tensor[i32]):
+        hk.comm.barrier(cnt.at[0], 1)
+    with pytest.raises(TypeError, match="unscoped"):
+        _kernel(body, "comm_plain_barrier").trace()
+
+
+def test_resident_is_a_kernel_option_that_survives_specialization():
+    def body(cnt: hk.Tensor[i32, "device"], *, N: int = 1):
+        hk.comm.barrier(cnt.at[0], N)
+    body.__name__ = "comm_resident"
+    k = hk.kernel(body, arch="gfx950", warps=1, grid=lambda p: (4, 1, 1), resident=True)
+    assert k.resident and k.specialize(N=4).resident and k.preloaded().resident

@@ -61,6 +61,28 @@ def signal(view, value) -> None:
     hkd.SignalOp(view.tensor.v, view.idx.v, as_int(value).v, _i64(aux), loc=_t().loc())
 
 
+def arrive(view, value=1) -> Int:
+    """As `signal`, but one thread *adds* `value` to the int32 element `view`
+    (a scoped tensor's) with an atomic of the tensor's scope; returns the
+    element's value before the add (wave-uniform). Every store this workgroup
+    issued before it is acknowledged first. Contains a barrier."""
+    aux = _flag(view, "arrive")
+    op = hkd.ArriveOp(_i32(), view.tensor.v, view.idx.v, as_int(value).v, _i64(aux),
+                      loc=_t().loc("arrived"))
+    return Int(op.result, ScalarType(i32))
+
+
+def barrier(view, target, *, timeout_s: float = 2.0, error: Optional[View] = None) -> Int:
+    """Every workgroup that reaches it adds 1 to the int32 element `view` and
+    waits until it is >= `target` -- with an epoch, target = epoch x the number
+    of arrivals, so the counter never needs resetting. With a "device" counter
+    it is a grid barrier (the kernel must be `resident=True`: every workgroup on
+    the GPU at once), with a "system" one a barrier across GPUs. The stores
+    before it are visible after it to accesses of the same scope."""
+    arrive(view, 1)
+    return wait(view, target, timeout_s=timeout_s, error=error)
+
+
 def wait(view, value, *, cmp: str = ">=", timeout_s: float = 2.0,
          error: Optional[View] = None) -> Int:
     """Poll the int32 element `view` (a scoped tensor's) until it is `>=` (signed)
@@ -86,4 +108,4 @@ def wait(view, value, *, cmp: str = ">=", timeout_s: float = 2.0,
     return Int(op.result, ScalarType(i32))
 
 
-__all__ = ["signal", "wait", "REALTIME_HZ"]
+__all__ = ["signal", "arrive", "wait", "barrier", "REALTIME_HZ"]
