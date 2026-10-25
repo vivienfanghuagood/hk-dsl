@@ -56,17 +56,39 @@ symptom.
 writes the result to `~/hk-dx/kda/_flow/failure-summary.md`. Regenerate it whenever a task
 finishes and copy the table here.
 
-As of 2026-10-24:
+As of 2026-10-25 00:3xZ (experiment 2 still running):
 
 | task | rounds | dsl | codegen | harness | algorithm | env | correctness |
 |---|---|---|---|---|---|---|---|
 | convrot-int8-gemm (T-CR) | 4 | 1 | 0 | 0 | 0 | 0 | 0 |
-| k1-moe-a8w4 | 31 | 1 | 2 | 0 | 12 | 0 | 1 |
+| k1-moe-a8w4 | 37 | 3 | 3 | 1 | 12 | 0 | 1 |
 | k2-mxfp8-gemm | 21 | 0 | 3 | 0 | 5 | 0 | 0 |
 | k3-dit-attn | 6 | 0 | 0 | 0 | 2 | 0 | 0 |
+| experiment 2, hk arm (K2 MXFP8, running) | 8 | 2 | 1 | 0 | 3 | 0 | 0 |
+| experiment 2, Triton arm (running) | 17 | 0 | 6 | 0 | 5 | 0 | 0 |
 | experiment 1, hk arm (T-SA) | 25 | 2 | 2 | 0 | 6 | 1 | 0 |
 | experiment 1, Triton arm (T-SA) | 10 | 1 | 2 | 0 | 2 | 0 | 0 |
-| **all** | 97 | **5** | **9** | **0** | **27** | **1** | **1** |
+| experiment 1 rerun, hk arm on rdna3-int8 (T-SA) | 15 | 3 | 1 | 0 | 6 | 0 | 0 |
+| **all** | 143 | **12** | **18** | **1** | **41** | **1** | **1** |
+
+## The named gaps so far
+
+Each row is a `dsl` or `codegen` record with its evidence. "Added" means hk has it now, on the
+branch named in the row.
+
+| gap | class | found in | status |
+|---|---|---|---|
+| int8 register tiles / iu8 WMMA refused on gfx1100 | dsl | T-SA run 1 (blocked: C++ rewrite) | added, `claude/rdna3-int8` |
+| i8 tile loaded global -> registers is silently wrong on gfx1100 | dsl (correctness) | T-SA rerun c0 | **open**: fix HipKittens rdna3 global_to_register, or refuse the load |
+| register-tile bitcast (i32 <-> fp32) | dsl | T-SA rerun c7 (C++ rewrite) | open |
+| paired-lane accumulator -> operand exchange (P^T) | dsl | T-SA run 1 and rerun c2 (C++ rewrite) | open |
+| `granules()` only for 2-byte LDS tiles; no fp32 scalar load | dsl | T-SA rerun | open |
+| scattered atomic row add (top-k reduce in the epilogue) | dsl | K1 c29 | added, `claude/k1-moe` (`Global.scatter(add=True)`) |
+| row-contiguous lanes for atomics: an epilogue re-layout through LDS | dsl | K1 c29 (atomics 1.4x slower without it) | open |
+| MX-quantizing epilogue store (exact E8M0, fp8 pack, 32-row scale layout) | dsl | K1 structural conclusion, c31 | added as one fused op (`hk.mx_quant_store`); the general primitives (floor/ceil, bit ops on tiles, byte scatter) are still missing |
+| AGPR operand placement | codegen | K1 c30 | not needed: LLVM already puts the weights in AGPRs. Its residue is addresses parked in AGPRs (~200 copies / 192 MFMA) |
+| spill gate refused SGPR -> VGPR-lane spills (ScratchSize 0) | codegen (tooling) | K1 c32 | fixed, `claude/k1-moe` |
+| loop-rewriter liveness errors point at the loop, not the cause | dsl (front end) | T-SA rerun | open |
 
 ## How the table chooses DSL work
 
