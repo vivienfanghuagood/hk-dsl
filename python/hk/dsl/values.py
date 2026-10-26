@@ -90,7 +90,7 @@ def _strip_access(what: str, ty, idx: "Coord", bounded) -> None:
     tgt = get_target(arch)
     if not tgt.strips:
         raise TypeError(f"{what} of {ty!r}: strips (kittens::rs) are in "
-                        f"include/rdna3 and hk's wave64 port for gfx950, and "
+                        f"include/rdna3, include/rdna4 and hk's wave64 port for gfx950, and "
                         f"this kernel is for {arch}")
     strip = ty.tile if isinstance(ty, RegVecType) else ty
     if strip.cols % (tgt.wave * strip.run):
@@ -1236,7 +1236,7 @@ def mma(variant: str, a: Tile, b: Tile, acc: Tile, *, into=None) -> Tile:
     if int8:
         if "i8" not in get_target(arch).mma:
             raise TypeError(f"{variant}: i8 operands need an int8 matrix instruction "
-                            f"hk uses, and {arch} has none in hk (gfx1100 does).")
+                            f"hk uses, and {arch} has none in hk (gfx1100 and gfx1201 do).")
         if variant != "mma_ABt":
             raise TypeError(f"{variant}: i8 operands are row-layout -- C += A @ B.T only")
         if acc.ty.dtype != i32 or acc.ty.layout != "col":
@@ -1244,7 +1244,7 @@ def mma(variant: str, a: Tile, b: Tile, acc: Tile, *, into=None) -> Tile:
                             f"tile, not {acc.ty}.")
     elif not fp8 and a.ty.dtype.bits != 16:
         raise TypeError(f"{variant}: operands are {a.ty.dtype}; WMMA takes bf16 "
-                        f"or fp16 (fp8 on gfx1201, i8 on gfx1100).")
+                        f"or fp16 (fp8 on gfx1201, i8 on gfx1100 and gfx1201).")
     if not int8 and (acc.ty.dtype != fp32 or acc.ty.layout != "col"):
         raise TypeError(f"{variant}: the accumulator is {acc.ty}; WMMA "
                         f"accumulates into a col-layout fp32 tile.")
@@ -1569,9 +1569,18 @@ def lds_loads(tile: RegTileType, src: SharedTileType, arch: str = "gfx1100") -> 
     pair is asynchronous at all; hk-lds-pipeline sets the real count."""
     if src.dtype != tile.dtype:
         return 0
-    if tile.dtype.name == "i8" and get_target(arch).wave == 32:
-        # an int8 operand row is 16 bytes: one ds_read_b128 a base tile
-        return (tile.rows // 16) * (tile.cols // 16) if tile.layout == "row" else 0
+    tgt = get_target(arch)
+    if tgt.wave == 32:
+        # A row-layout operand reads its lane's share of each base tile with
+        # 16-byte ds_read_b128s, or one 8-byte read when the share is 8 bytes
+        # (include/rdna{3,4} tile/shared_to_register.cuh). gfx1100's 16-bit
+        # operand is mirrored, 32 bytes a lane: two; its int8 one, 16: one.
+        # gfx1201 splits K between the halves: 16 bytes for bf16, 8 for fp8
+        # and int8, one read each.
+        shape = tgt.mma.get(tile.dtype.name)
+        if shape is None or tile.layout != "row":
+            return 0
+        return (tile.rows // 16) * (tile.cols // 16) * max(1, shape.operand_vgprs * 4 // 16)
     if tile.dtype.bits == 8:
         # gfx950's fp8 operand (16x128 row fragments): two ds_read_b128 each;
         # hk-lds-pipeline sets the count.
@@ -1579,12 +1588,9 @@ def lds_loads(tile: RegTileType, src: SharedTileType, arch: str = "gfx1100") -> 
                 if get_target(arch).arch == "gfx950" and tile.layout == "row" else 0)
     if tile.dtype.bits != 16:
         return 0
-    if get_target(arch).wave == 64:
-        if tile.layout == "col" and get_target(arch).arch == "gfx942":
-            return 0                    # ordinary loads the compiler waits for
-        return (tile.rows // 16) * (tile.cols // 16)
-    ok = tile.layout == "row"
-    return (tile.rows // 16) * (tile.cols // 16) * 2 if ok else 0
+    if tile.layout == "col" and tgt.arch == "gfx942":
+        return 0                        # ordinary loads the compiler waits for
+    return (tile.rows // 16) * (tile.cols // 16)
 
 
 class MxScales(Value):

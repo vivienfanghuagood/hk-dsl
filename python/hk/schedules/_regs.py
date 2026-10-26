@@ -18,8 +18,8 @@ from __future__ import annotations
 from typing import Any, Dict
 
 #: Registers a wave may hold before the build spills: arch VGPRs on
-#: gfx1100; VGPRs + AGPRs on gfx950.
-LIMIT = {"gfx1100": 256, "gfx950": 512}
+#: gfx1100 and gfx1201; VGPRs + AGPRs on gfx950.
+LIMIT = {"gfx1100": 256, "gfx1201": 256, "gfx950": 512}
 
 #: VGPRs added to every prediction for what the fit has not seen: another
 #: hipcc (CI's is 7.1, the fit's 7.2.3), knobs combined in ways the samples
@@ -36,6 +36,13 @@ MODEL: Dict[str, Dict[str, Any]] = {
         "acc": 2.9251, "batched": 0.4687, "combine": 0.7057, "one": 22.5826,
         "reduce": 0.4648, "reduce1": 0.0469, "split": -31.7445, "w": 2.3901, "x": -0.3901,
         "1": 50.2621}},
+    # gfx1201: 1,249 builds under hipcc 7.2.3 (987 fit, 262 spilled). Infeasible as a hard
+    # envelope -- the shipped 4-token schedule builds at 255 of 256 beside points with its
+    # features that built at 256 and spilled (`resident` is not a feature) -- so three
+    # spills are left to the build's gate (schedules_legality.py fit, the soft stage).
+    "decode@gfx1201": {"offset": MARGIN, "coef": {
+        "acc": 4.042, "batched": 0.0391, "combine": 0.2724, "one": 3.75, "reduce": 0.026,
+        "reduce1": 0.0, "split": -0.6667, "w": 4.5238, "x": -1.131, "1": 117.8992}},
     "decode@gfx950": {"offset": MARGIN, "coef": {
         "acc": 3.5988, "batched": 0.2655, "combine": 0.3571, "one": 3.1429,
         "reduce": 0.4377, "reduce1": -0.2143, "split": -10.0075, "w": -0.1667, "x": 0.1667,
@@ -46,6 +53,13 @@ MODEL: Dict[str, Dict[str, Any]] = {
         "a": 0.8438, "acc": 1.3281, "asym": -0.1562, "b": 1.1563, "early": -0.0,
         "late_b": 0.0, "lds16": 3.5, "nt": -0.0, "setprio": -4.0, "split": 0.0, "tc": 0.0,
         "1": 22.0}},
+    # gfx1201: fitted on 1,941 builds under hipcc 7.2.3 (1,545 fit, 396 spilled); a looser
+    # envelope than gfx1100's -- it refuses 603 of the points that built -- so a first
+    # model, to be refitted with the gfx1201 GEMM's own tuning.
+    "rdna@gfx1201": {"offset": MARGIN, "coef": {
+        "a": 0.5686, "acc": 0.8802, "asym": 0.3156, "b": 0.6212, "lds2": -1.5, "sched": 0.5741,
+        "setprio": -9.0556, "stagger": 118.9246, "staging": 1.2083, "stream_a": -7.2778,
+        "1": 85.7407}},
     "rdna@gfx1100": {"offset": MARGIN, "coef": {
         "a": 0.6972, "acc": 0.9218, "asym": 0.3945, "b": 0.7096, "lds2": 0.6036,
         "sched": 21.0995, "setprio": -12.4063, "stagger": 24.0, "staging": 3.1168,
@@ -58,14 +72,17 @@ def features(s, arch: str) -> Dict[str, float]:
     features for knobs that change the code around them."""
     from ..target import get_target  # noqa: PLC0415
 
-    wave = get_target(arch).wave
+    tgt = get_target(arch)
+    wave = tgt.wave
     f = s.family
     if f == "rdna":
         cols = s.warps // s.warp_rows
         reg_m, reg_n = s.block_m // s.warp_rows, s.block_n // cols
         frags = 2 if s.stream_a else reg_m // 16
-        a = frags * (s.dot_slice // 16) * 8
-        b = (reg_n // 16) * (s.dot_slice // 16) * 8
+        # VGPRs a 16x16 bf16 operand fragment: 8 on gfx1100 (mirrored), 4 on gfx1201
+        op = tgt.mma["bf16"].operand_vgprs
+        a = frags * (s.dot_slice // 16) * op
+        b = (reg_n // 16) * (s.dot_slice // 16) * op
         return dict(
             acc=reg_m * reg_n * 4 / (4 * wave), a=a, b=b, asym=abs(a - b),
             staging=(s.block_m + s.block_n) * s.k_step * 2 / (wave * s.warps * 4),

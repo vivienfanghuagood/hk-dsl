@@ -404,8 +404,11 @@ STRIP_PLAN = (1, 1)
 #:                    tile kernel   strips w4c1   w8c1   w8c1 + 48 KB   torch.compile
 #:     2048x14336        261.1         248.6      248.4      241.2         244.2
 #:     8192x14336        979.3         973.9      972.2      948.3         956.2
+#: gfx1201: gfx1100's plan, its LDS cap moved to the R9700's 64 MB Infinity
+#: Cache. Not measured there yet.
 SILU_STRIP_PLANS = {"gfx950": (STRIP_PLAN, None),
-                    "gfx1100": ((8, 1), (96 << 20, 48 << 10))}
+                    "gfx1100": ((8, 1), (96 << 20, 48 << 10)),
+                    "gfx1201": ((8, 1), (64 << 20, 48 << 10))}
 
 
 def silu_strip_plan(arch: str, moved: int):

@@ -544,8 +544,9 @@ spelling that works:
   counts in `lds_bytes`. The old front end behaved the same way.
 * MLIR is built from source (23.1.3). Wheels are Linux x86_64 only, one
   CPython each.
-* gfx1201 and gfx942 are compile-only, and have no register strips (so no
-  templates). On gfx950 strips build, and its GEMM and attention are
+* gfx942 is compile-only, and has no register strips (so no templates).
+  gfx1201 runs the GPU tier on an R9700 with gfx1100's plans and schedules,
+  none of them tuned there yet ([chapter 47](history/47-gfx1201-on-hardware.md)). On gfx950 strips build, and its GEMM and attention are
   kernels of hk's own (`hk.ops.gemm_cdna`, `hk.ops.attn_cdna`,
   [chapters 33](history/33-cdna-gemm.md) and [34](history/34-cdna-attention.md)),
   with HipKittens' CDNA4 kernels also wrapped as hk ops

@@ -310,7 +310,7 @@ class Rdna(GemmSchedule):
     warp_rows x (warps / warp_rows) grid, K in k_step tiles through LDS."""
 
     family: ClassVar[str] = "rdna"
-    arches: ClassVar[Tuple[str, ...]] = ("gfx1100",)
+    arches: ClassVar[Tuple[str, ...]] = ("gfx1100", "gfx1201")
 
     block_m: int = knob(128, values=(16, 32, 64, 128, 256), seed=(64, 128),
                         doc="rows of C a workgroup computes: LDS traffic per WMMA "
@@ -455,7 +455,7 @@ class Decode(GemmSchedule):
     tokens. gfx1100's for M <= 32 in hk.templates.gemm; gfx950's "decode" route."""
 
     family: ClassVar[str] = "decode"
-    arches: ClassVar[Tuple[str, ...]] = ("gfx1100", "gfx950")
+    arches: ClassVar[Tuple[str, ...]] = ("gfx1100", "gfx1201", "gfx950")
 
     tokens: int = knob(1, values=(1, 2, 4), doc="16-row token tiles: M <= 16 x tokens")
     slices: int = knob(4, values=(1, 2, 4, 8), seed=(2, 4),
@@ -840,7 +840,7 @@ class Columns(GemmSchedule):
     256x256 blocks fill whole waves of the MI355X's CUs; route "ppw")."""
 
     family: ClassVar[str] = "cols"
-    arches: ClassVar[Tuple[str, ...]] = ("gfx950", "gfx1100")
+    arches: ClassVar[Tuple[str, ...]] = ("gfx950", "gfx1100", "gfx1201")
 
     head: Any = None
     tail: Any = None

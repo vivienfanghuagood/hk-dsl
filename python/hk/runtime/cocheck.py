@@ -198,6 +198,40 @@ def _branch_target(ins: Inst, next_addr: int) -> Optional[int]:
     return next_addr + 4 * int(m.group(1))
 
 
+def _wait_keeps(mnem: str, rest: str) -> Tuple[Optional[int], Optional[int]]:
+    """How many LDS and vector-memory loads a wait leaves in flight; None for a
+    counter it does not wait on.
+
+    gfx9-11 spell one s_waitcnt with named fields, `lgkmcnt(n)` and `vmcnt(n)`.
+    gfx12 splits the counters into their own instructions, an immediate each
+    (`s_wait_dscnt 0x3`, `s_wait_loadcnt 0x0`), plus two combined forms whose
+    immediate packs loadcnt or storecnt in bits 13:8 and dscnt in bits 5:0
+    (`s_wait_loadcnt_dscnt 0x302`: three loads, two LDS ops). The immediates
+    are hex; reading `0x3` as its leading digit would make every wait a full
+    drain and hide every hazard behind it."""
+    lds = vmem = None
+    m = re.search(r"lgkmcnt\((\d+)\)", rest)
+    if m:
+        lds = int(m.group(1))
+    m = re.search(r"vmcnt\((\d+)\)", rest)
+    if m:
+        vmem = int(m.group(1))
+    imm = rest.strip().split(None, 1)[0].rstrip(",") if rest.strip() else ""
+    try:
+        v = int(imm, 0)
+    except ValueError:
+        return lds, vmem
+    if mnem == "s_wait_dscnt":
+        lds = v
+    elif mnem == "s_wait_loadcnt":
+        vmem = v
+    elif mnem == "s_wait_loadcnt_dscnt":
+        vmem, lds = (v >> 8) & 0x3F, v & 0x3F
+    elif mnem == "s_wait_storecnt_dscnt":
+        lds = v & 0x3F
+    return lds, vmem
+
+
 class _Walker:
     """Loads in flight, as two in-order queues, and the reads that beat them."""
 
@@ -219,15 +253,11 @@ class _Walker:
         if mnem == "s_endpgm":
             return [], []
         if mnem.startswith("s_wait"):
-            for kind, q in (("lgkmcnt", 0), ("dscnt", 0), ("vmcnt", 1), ("loadcnt", 1)):
-                m = re.search(rf"{kind}\((\d+)\)", rest) or (
-                    re.match(r"(\d+)", rest.strip()) if mnem == f"s_wait_{kind}" else None)
-                if m:
-                    keep = int(m.group(1))
-                    if q == 0:
-                        lds = lds[len(lds) - keep:] if keep else []
-                    else:
-                        vmem = vmem[len(vmem) - keep:] if keep else []
+            keep_lds, keep_vmem = _wait_keeps(mnem, rest)
+            if keep_lds is not None:
+                lds = lds[len(lds) - keep_lds:] if keep_lds else []
+            if keep_vmem is not None:
+                vmem = vmem[len(vmem) - keep_vmem:] if keep_vmem else []
             return lds, vmem
         if mnem.startswith("s_"):
             return lds, vmem

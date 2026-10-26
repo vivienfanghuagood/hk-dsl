@@ -161,9 +161,9 @@ def test_a_strip_fills_by_column_only():
 
 
 def test_a_strip_is_refused_where_no_tree_has_one():
-    k = hk.kernel(_rms, arch="gfx1201", warps=2, name="rms_gfx12",
+    k = hk.kernel(_rms, arch="gfx942", warps=2, name="rms_gfx942",
                   grid=lambda p: (p.x.rows, 1, 1))
-    with pytest.raises(TypeError, match="include/rdna3 and hk's wave64 port"):
+    with pytest.raises(TypeError, match="include/rdna4 and hk's wave64 port"):
         k.trace()
 
 

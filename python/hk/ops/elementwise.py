@@ -217,8 +217,9 @@ STRIP_GS_KERNELS = {f"strip_gs_{_op}_{_s}_w{_w}": _strip_gs_kernel(
 #: (scoreboard.py --only llm-pointwise), and gfx1100, where the 16x64 tile
 #: kernels refused a shape that does not tile (100x1000) and strips take any
 #: size. gfx1100's plan is silu_mul's there (fused.silu_strip_plan: eight
-#: warps of one chunk, 48 KB of LDS past the Infinity Cache).
-STRIP_ARCHS = ("gfx950", "gfx1100")
+#: warps of one chunk, 48 KB of LDS past the Infinity Cache). gfx1201 runs
+#: gfx1100's plan, for the same any-size reason; not measured there yet.
+STRIP_ARCHS = ("gfx950", "gfx1100", "gfx1201")
 
 #: The strip plan, (warps, chunks a warp) -- a chunk is wave x RUN elements,
 #: one 16-byte access a lane: eight warps of one chunk, 4096 bf16 a

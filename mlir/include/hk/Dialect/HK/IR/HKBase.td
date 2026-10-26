@@ -17,7 +17,7 @@ def HK_Dialect : Dialect {
     prove the choice is legal.
 
     A kernel names its target in `hk.arch`: gfx1100 (RDNA3, wave32 WMMA, the
-    primary target), gfx1201 (RDNA4, compile-only), gfx942 (CDNA3, wave64
+    primary target), gfx1201 (RDNA4, run on an R9700), gfx942 (CDNA3, wave64
     MFMA, compile-only) or gfx950 (CDNA4, run on an MI355X). The facts the
     verifiers and passes check against are in hk/Target/Target.h.
 

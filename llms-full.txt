@@ -552,8 +552,9 @@ spelling that works:
   counts in `lds_bytes`. The old front end behaved the same way.
 * MLIR is built from source (23.1.3). Wheels are Linux x86_64 only, one
   CPython each.
-* gfx1201 and gfx942 are compile-only, and have no register strips (so no
-  templates). On gfx950 strips build, and its GEMM and attention are
+* gfx942 is compile-only, and has no register strips (so no templates).
+  gfx1201 runs the GPU tier on an R9700 with gfx1100's plans and schedules,
+  none of them tuned there yet ([chapter 47](history/47-gfx1201-on-hardware.md)). On gfx950 strips build, and its GEMM and attention are
   kernels of hk's own (`hk.ops.gemm_cdna`, `hk.ops.attn_cdna`,
   [chapters 33](history/33-cdna-gemm.md) and [34](history/34-cdna-attention.md)),
   with HipKittens' CDNA4 kernels also wrapped as hk ops
@@ -6047,7 +6048,7 @@ gfx1100's WMMA GEMM (hk.ops.gemm.gemm_kernel; history chapter 28):
 a block_m x block_n block of C per workgroup of `warps` waves in a
 warp_rows x (warps / warp_rows) grid, K in k_step tiles through LDS.
 
-Family `rdna`, on gfx1100.
+Family `rdna`, on gfx1100, gfx1201.
 
 | knob | default | values searched | seed | what |
 |---|---|---|---|---|
@@ -6075,7 +6076,7 @@ registers, one 16-row block of W a workgroup, its K split across `warps`
 waves (and across `splits` workgroups), combined through LDS. M <= 16 x
 tokens. gfx1100's for M <= 32 in hk.templates.gemm; gfx950's "decode" route.
 
-Family `decode`, on gfx1100, gfx950.
+Family `decode`, on gfx1100, gfx1201, gfx950.
 
 | knob | default | values searched | seed | what |
 |---|---|---|---|---|
@@ -6161,7 +6162,7 @@ waves of `q_block` query rows each, the KV axis in `kv_block` steps, K
 staged and V transposed through LDS. q_block x warps is the query tile:
 a query shorter than it has no block to back up into.
 
-Family `attn_rdna`, on gfx1100.
+Family `attn_rdna`, on gfx1100, gfx1201.
 
 | knob | default | values searched | seed | what |
 |---|---|---|---|---|
@@ -7356,17 +7357,17 @@ RDNA.md, kernel comments and a notebook, and they drifted.
 | VGPRs a SIMD (`vgprs_per_simd`) | `1536` | `1536` | `512` | `512` |
 | VGPR allocation granule (`vgpr_granule`) | `24` | `24` | `8` | `8` |
 | LDS a workgroup may take (bytes) (`lds_per_workgroup`) | `65536` | `65536` | `65536` | `160000` |
-| LDS shared by a pool (bytes) (`lds_pool_bytes`) | `131072` | `65536` | `65536` | `163840` |
+| LDS shared by a pool (bytes) (`lds_pool_bytes`) | `131072` | `131072` | `65536` | `163840` |
 | SIMDs sharing that pool (`simds_per_lds_pool`) | `4` | `4` | `4` | `4` |
-| register strips (`hk.RS`) (`strips`) | `True` | `False` | `False` | `True` |
+| register strips (`hk.RS`) (`strips`) | `True` | `True` | `False` | `True` |
 | tiles take a fragment shape (`frag=`) (`tile_shapes`) | `False` | `False` | `False` | `True` |
 | global -> LDS DMA (`g.load(..., wait=False)`) (`has_global_to_lds_dma`) | `False` | `False` | `True` | `True` |
 | AGPRs charged with the VGPRs (`unified_agprs`) | `False` | `False` | `True` | `True` |
 | largest lgkmcnt (`lgkmcnt_max`) | `63` | `63` | `15` | `15` |
-| measured on the part (`verified`) | `True` | `False` | `False` | `True` |
-| matrix instructions (`mma`) | bf16 16x16x16, fp16 16x16x16, i8 16x16x16 | bf16 16x16x16, fp16 16x16x16, fp8e4m3 16x16x16, fp8e5m2 16x16x16 | bf16 16x16x16, fp16 16x16x16 | bf16 16x16x32, fp16 16x16x32, fp8e4m3 16x16x128 |
+| measured on the part (`verified`) | `True` | `True` | `False` | `True` |
+| matrix instructions (`mma`) | bf16 16x16x16, fp16 16x16x16, i8 16x16x16 | bf16 16x16x16, fp16 16x16x16, i8 16x16x16, fp8e4m3 16x16x16, fp8e5m2 16x16x16 | bf16 16x16x16, fp16 16x16x16 | bf16 16x16x32, fp16 16x16x32, fp8e4m3 16x16x128 |
 
-gfx1100 (W7900D) and gfx950 (MI355X) run; gfx1201 and gfx942 are compile-only. `hk.arch.target()` is this record inside a kernel being traced, `hk.target.current_arch()` the arch a kernel that names none builds for (`$HK_ARCH`, else the GPU).
+gfx1100 (W7900D), gfx950 (MI355X) and gfx1201 (R9700) run; gfx942 is compile-only. `hk.arch.target()` is this record inside a kernel being traced, `hk.target.current_arch()` the arch a kernel that names none builds for (`$HK_ARCH`, else the GPU).
 
 ### `hk.target.current_arch`
 

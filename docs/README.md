@@ -237,8 +237,9 @@ the resource gate ([runtime](runtime.md#the-resource-gates)), the passes
 
 - **One GPU of each kind.** Every number is from one W7900D or one MI355X.
   The engine results are mostly the W7900D's; on the MI355X only vLLM has
-  been measured end to end, and gfx1201 and gfx942 have only been compiled
-  for ([CDNA3/4](design/cdna.md)).
+  been measured end to end; gfx1201 runs the GPU tier on an R9700 with
+  nothing tuned there yet ([chapter 47](history/47-gfx1201-on-hardware.md)), and gfx942
+  has only been compiled for ([CDNA3/4](design/cdna.md)).
 - **Some kernels lose.** On the W7900D, paged decode attention is 0.86-1.12x
   Triton's kernel at 16-64 requests (triton-rocm 3.7.1), yet stays on hk's,
   because in the captured step Triton's kernel is the slower; the MoE GEMM
