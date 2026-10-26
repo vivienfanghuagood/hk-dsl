@@ -115,7 +115,7 @@ seconds each, in every worker. Run `python3 -m hk.integration warm-routes`
 first compile in each process prints one line:
 
 ```
-[hk] JIT: compiling kernel '...' on first use (pid N): the vLLM plugin's routes were not pre-warmed into ..., so this call waits for hipcc (seconds a kernel, in every worker). Run python3 -m hk.integration warm-routes (and --warm for attention), with the server's HK_CACHE_DIR before starting the server.
+[hk] JIT: compiling kernel '...' on first use (pid N): the vLLM plugin's routes were not pre-warmed into ..., so this call waits for hipcc (seconds a kernel, in every worker). Run python3 -m hk.integration warm-routes (and --warm for attention) with the server's HK_CACHE_DIR before starting the server.
 ```
 
 ## The patches

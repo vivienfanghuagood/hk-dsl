@@ -405,8 +405,7 @@ _JIT_NOTICE: List[str] = []
 _JIT_SAID: List[bool] = []
 
 #: What the notice tells a server to run first.
-WARM_HINT = ("python3 -m hk.integration warm-routes (and --warm for attention), "
-             "with the server's HK_CACHE_DIR")
+WARM_HINT = "python3 -m hk.integration warm-routes (and --warm for attention)"
 
 
 def arm_jit_notice(what: str) -> None:
@@ -421,8 +420,8 @@ def _jit_notice(name: str) -> None:
         _JIT_SAID.append(True)
         print(f"[hk] JIT: compiling kernel {name!r} on first use (pid {os.getpid()}): the "
               f"{_JIT_NOTICE[0]}'s routes were not pre-warmed into {cache_dir()}, so this call "
-              f"waits for hipcc (seconds a kernel, in every worker). Run {WARM_HINT} before "
-              f"starting the server.", file=sys.stderr, flush=True)
+              f"waits for hipcc (seconds a kernel, in every worker). Run {WARM_HINT} with the "
+              f"server's HK_CACHE_DIR before starting the server.", file=sys.stderr, flush=True)
 
 
 def build(

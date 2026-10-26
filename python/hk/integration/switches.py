@@ -140,16 +140,22 @@ def disabled(env: Optional[Mapping[str, str]] = None) -> bool:
     return bool(v) and not is_off(v)
 
 
-def arch() -> Optional[str]:
-    """The GPU's arch, or None without one: a route's default never assumes a GPU."""
-    try:
-        from ..runtime.arch import detect  # noqa: PLC0415
-        from ..target import _ALIASES  # noqa: PLC0415
+_ARCH: List[Optional[str]] = []
 
-        a = detect()
-    except Exception:  # noqa: BLE001 -- no GPU stack: nothing is validated here
-        return None
-    return _ALIASES.get(a, a) if a else None
+
+def arch() -> Optional[str]:
+    """The GPU's arch, or None without one: a route's default never assumes a GPU.
+    hk.runtime.arch.detect(): HK_ARCH, then the KFD topology in sysfs (no HIP context)."""
+    if not _ARCH:
+        try:
+            from ..runtime.arch import detect  # noqa: PLC0415
+            from ..target import _ALIASES  # noqa: PLC0415
+
+            a = detect()
+            _ARCH.append(_ALIASES.get(a, a) if a else None)
+        except Exception:  # noqa: BLE001 -- no GPU stack: nothing is validated here
+            _ARCH.append(None)
+    return _ARCH[0]
 
 
 def decide(name: str, env: Optional[Mapping[str, str]] = None,

@@ -62,6 +62,13 @@ python3 -m hk.integration --status     # every route on or off, and which rule d
   boot, which needs `HK_SGLD=1`. Run `install` again for the default.
 - **Fixed:** several routes in one vLLM no longer nest its compile cache root
   (`.../vllm/hk-int4+mxfp8`, the same in every process).
+- **Fixed: GPU detection in images that list several build archs.** The vLLM
+  ROCm image sets `PYTORCH_ROCM_ARCH=gfx90a;gfx942;gfx950;...`. Without
+  `HK_ARCH`, hk took the list's first entry, so an MI355X was gfx90a, and hk
+  then built for gfx1100 and left the gfx950 routes unpatched.
+  `hk.runtime.arch.detect()` now reads the GPU from the KFD topology in sysfs,
+  which creates no HIP context. It uses a list variable only as the last
+  resort; `HK_ARCH`, or a variable naming exactly one arch, still wins.
 
 **Fixes since 0.6.0**
 - **`mxfp8.quant` read past the activation's last row** (#47). At M % 64 != 0

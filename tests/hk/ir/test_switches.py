@@ -358,3 +358,54 @@ def test_the_plugin_arms_the_jit_notice(plugin, monkeypatch):
     monkeypatch.setattr(C, "_JIT_NOTICE", [])
     _vllm_plugin.register()
     assert C._JIT_NOTICE == ["vLLM plugin"]
+
+
+# -- which GPU: the defaults depend on it ------------------------------------------------------
+
+
+@pytest.fixture
+def no_arch_env(monkeypatch):
+    from hk.runtime import arch as A
+
+    for v in ("HK_ARCH", "HCC_AMDGPU_TARGET", "PYTORCH_ROCM_ARCH"):
+        monkeypatch.delenv(v, raising=False)
+    A.detect.cache_clear()
+    yield monkeypatch, A
+    A.detect.cache_clear()
+
+
+def _kfd(tmp_path, versions):
+    for i, v in enumerate(versions):
+        d = tmp_path / str(i)
+        d.mkdir()
+        (d / "properties").write_text(f"cpu_cores_count 0\ngfx_target_version {v}\nsimd_count 4\n")
+    return str(tmp_path)
+
+
+@pytest.mark.parametrize("versions,want", [((0, 90500, 90500), "gfx950"), ((0, 110000), "gfx1100"),
+                                           ((90402,), "gfx942"), ((120001,), "gfx1201"),
+                                           ((90010,), "gfx90a"), ((0,), None)])
+def test_the_gpu_is_read_from_sysfs_without_a_hip_context(no_arch_env, tmp_path, versions, want):
+    mp, A = no_arch_env
+    mp.setattr(A, "KFD_NODES", _kfd(tmp_path, versions))
+    assert A._from_kfd() == want
+
+
+def test_a_build_arch_list_is_not_the_gpu(no_arch_env, tmp_path):
+    # The vLLM ROCm image sets PYTORCH_ROCM_ARCH=gfx90a;gfx942;gfx950;...: an MI355X was gfx90a
+    # to hk (and hk built for gfx1100), so hk's routes were never on by default there.
+    mp, A = no_arch_env
+    mp.setenv("PYTORCH_ROCM_ARCH", "gfx90a;gfx942;gfx950;gfx1100")
+    mp.setattr(A, "KFD_NODES", _kfd(tmp_path, (0, 90500)))
+    mp.setattr(A, "_from_torch", lambda: None)
+    mp.setattr(A, "_from_rocminfo", lambda: None)
+    assert A.detect() == "gfx950"
+    A.detect.cache_clear()
+    mp.setattr(A, "KFD_NODES", str(tmp_path / "absent"))
+    assert A.detect() == "gfx90a"                  # no GPU found: the list is the last resort
+    A.detect.cache_clear()
+    mp.setenv("PYTORCH_ROCM_ARCH", "gfx950")       # one entry names the GPU, as before
+    assert A.detect() == "gfx950"
+    A.detect.cache_clear()
+    mp.setenv("HK_ARCH", "gfx1100")                # HK_ARCH beats everything
+    assert A.detect() == "gfx1100"
