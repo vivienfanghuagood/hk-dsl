@@ -1,0 +1,15 @@
+# Allowed hits of scripts/check_public_hygiene.py: PATH-GLOB  REGEX (the whole matched text).
+# Each entry is a generic path, not a machine's or a person's; say why.
+
+# The default LLVM/MLIR and dialect build root of scripts/build_mlir.sh and build_hk_mlir.sh,
+# overridable (HK_LLVM_ROOT), and the docs that state it: a name of the project's, not a user's.
+scripts/build_mlir.sh       /dev/shm/hk-llvm
+scripts/build_hk_mlir.sh    /dev/shm/hk-llvm
+docs/*.md                   /dev/shm/hk-llvm
+docs/design/*.md            /dev/shm/hk-llvm
+
+# root's cache directory inside the vLLM container, as vLLM logged it.
+docs/history/20-vllm-031.md /root/\.cache/vllm/hk-linear
+
+# A made-up HOME in a unit test of the cache path.
+tests/hk/ir/test_vllm_gemm.py   /home/u

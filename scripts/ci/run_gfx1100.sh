@@ -1,12 +1,16 @@
 #!/bin/bash
 # GPU CI, gfx1100, as a self-hosted Actions job (.github/workflows/gpu.yml):
-# the commit on a W7900D of the dev pod, through `ssh $HK_CI_JUMP` and
-# `kubectl exec`. The pod fetches the commit itself, through the gh-test
-# proxy: its DNS resolves no GitHub name and github.com is blocked by name, so
-# git is pointed at the address resolved here. This side installs pod_run.sh
-# and summarize.py from the checkout, starts the pod's run detached, follows
-# its log and brings back its result. No code from the repository runs on the
-# jump host.
+# the commit on the W7900D of a pod, through `ssh $HK_CI_JUMP` and
+# `kubectl exec`. The pod fetches the commit itself, through a GitHub proxy
+# ($HK_CI_PROXY): its DNS resolves no GitHub name and github.com is blocked by
+# name, so git is pointed at the address resolved here. This side installs
+# pod_run.sh and summarize.py from the checkout, starts the pod's run detached,
+# follows its log and brings back its result. No code from the repository runs
+# on the jump host.
+# The jump host, the pod and the proxy are the runner's configuration, not the
+# repository's: HK_CI_JUMP, HK_CI_POD and HK_CI_PROXY come from the runner's .env
+# (docs/testing.md, "Where things live") and have no default. The job log is
+# public: they are masked in it, and this script does not print them.
 set -uo pipefail
 # A runner's listener started by `cmd &` from a non-interactive shell ignores SIGINT and SIGQUIT
 # (SigIgn in /proc/PID/status; the workstation's did, 2026-10-26), every job inherits that, and
@@ -14,9 +18,14 @@ set -uo pipefail
 # again, the same process, with the signals at their defaults.
 [ -n "${HK_CI_SIGNALS:-}" ] || HK_CI_SIGNALS=default exec env --default-signal=INT,QUIT,HUP,TERM "${BASH_SOURCE[0]}" "$@"
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
-POD=${HK_CI_POD:-hfang-hk-rdna3-b}
-JUMP=${HK_CI_JUMP:-0004}
-PROXY=${HK_CI_PROXY:-gh-test.anruicloud.com}
+for v in HK_CI_JUMP HK_CI_POD HK_CI_PROXY; do
+    [ -n "${!v:-}" ] || { echo "::error::$v is not set (the runner's .env; docs/testing.md)"; exit 1; }
+done
+POD=$HK_CI_POD
+JUMP=$HK_CI_JUMP
+PROXY=$HK_CI_PROXY
+[[ $POD =~ ^[A-Za-z0-9._-]+$ && $PROXY =~ ^[A-Za-z0-9.-]+$ ]] || { echo "::error::bad HK_CI_POD or HK_CI_PROXY"; exit 1; }
+echo "::add-mask::$POD"; echo "::add-mask::$PROXY"
 DIR=${HK_CI_POD_DIR:-/workspace/gha}       # the pod's checkout, build, cache and runs
 GPUS=${HK_CI_POD_GPUS:-6}                  # tried first; then GPU 0 (pod_run.sh)
 NODE_LOCKS=${HK_CI_NODE_LOCKS:-1}          # 0: the pod's GPUs are its own (scripts/ci/k8s/)
@@ -53,13 +62,14 @@ trap 'stop; exit 129' HUP
 trap 'stop' EXIT
 
 IP=$(ssh -o BatchMode=yes "$JUMP" "getent ahostsv4 $PROXY | head -1 | cut -d' ' -f1" {REAP}>&-)
-[[ $IP =~ ^[0-9.]+$ ]] || { echo "::error::cannot resolve $PROXY on $JUMP"; exit 1; }
+[[ $IP =~ ^[0-9.]+$ ]] || { echo "::error::cannot resolve the proxy (HK_CI_PROXY) on the jump host (HK_CI_JUMP)"; exit 1; }
+echo "::add-mask::$IP"
 { echo "mkdir -p $DIR"
   echo "base64 -d > $DIR/pod_run.sh <<'B64'"; base64 -w0 "$HERE/pod_run.sh"; echo; echo "B64"
   echo "base64 -d > $DIR/summarize.py <<'B64'"; base64 -w0 "$HERE/summarize.py"; echo; echo "B64"
-  echo "HK_CI_POD_DIR=$DIR HK_CI_POD_GPUS='$GPUS' HK_CI_NODE_LOCKS=$NODE_LOCKS nohup setsid bash $DIR/pod_run.sh $SHA $IP $KEY >/dev/null 2>&1 < /dev/null &"
-} | pod || { echo "::error::cannot start the run in $POD"; exit 1; }
-echo "started on $POD (run $KEY)"
+  echo "HK_CI_POD_DIR=$DIR HK_CI_POD_GPUS='$GPUS' HK_CI_NODE_LOCKS=$NODE_LOCKS HK_CI_PROXY=$PROXY nohup setsid bash $DIR/pod_run.sh $SHA $IP $KEY >/dev/null 2>&1 < /dev/null &"
+} | pod || { echo "::error::cannot start the run in the pod (HK_CI_POD)"; exit 1; }
+echo "started in the pod (run $KEY)"
 
 seen=0
 for i in $(seq 360); do     # 3 hours

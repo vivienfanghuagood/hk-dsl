@@ -16,7 +16,7 @@ set -u
 if [ "${1:-}" = --on-eof ]; then
     shift
     while IFS= read -r line; do [ "$line" = done ] && exit 0; done
-    echo "$(date -u +%FT%TZ) the job's script is gone without finishing: cancel.sh $*"
+    echo "$(date -u +%FT%TZ) the job's script is gone without finishing: cancel.sh $1"   # not $*: the log is public
     EOF_=1
 fi
 case ${1:-} in

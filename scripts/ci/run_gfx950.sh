@@ -43,7 +43,8 @@ RUN=$STATE/runs/$TIER/$KEY
 OUT=$GITHUB_WORKSPACE/gha-report
 declare -A RENDER=([0]=renderD136 [1]=renderD152 [2]=renderD144 [3]=renderD128
                    [4]=renderD168 [5]=renderD184 [6]=renderD176 [7]=renderD160)
-[ -d "$MLIR/lib/cmake/mlir" ] || { echo "::error::no MLIR install at $MLIR (HK_CI_MLIR)"; exit 1; }
+# The job log is public: it names no host path (the runner's .env has them).
+[ -d "$MLIR/lib/cmake/mlir" ] || { echo "::error::no MLIR install at HK_CI_MLIR"; exit 1; }
 mkdir -p "$RUN" "$OUT" "$CIDIR" "$LOCKS"
 NAME=hk-gha-$TIER-$KEY
 RUNNER=${RUNNER_NAME:-manual}
@@ -130,7 +131,7 @@ for i in $(seq 60); do
     sleep 60 >/dev/null 2>&1 & wait $!     # a trap runs at once, not after the sleep
 done
 [ -n "$GPU" ] || { echo "::error::no idle MI355X for an hour"; exit 1; }
-echo "holding $LOCKS/gfx950-gpu$GPU.lock"
+echo "holding gfx950-gpu$GPU.lock (HK_CI_LOCKS)"
 echo "GPU $GPU (${RENDER[$GPU]})"
 
 # The reaper holds the lock too; its stdin's write end is REAP, which only this script holds.

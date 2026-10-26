@@ -81,8 +81,8 @@ def main() -> int:
 
     fly = None
     try:
-        root = os.environ.get("FLYDSL_ROOT", "/home/hfang/hk-local/FlyDSL")
-        if root not in sys.path:
+        root = os.environ.get("FLYDSL_ROOT", "")   # FlyDSL's source tree; unset: an installed one
+        if root and root not in sys.path:
             sys.path.append(root)
         from kernels.gemm.gemm_a16w16_gfx950 import gemm_a16w16 as fly
     except Exception as e:  # noqa: BLE001

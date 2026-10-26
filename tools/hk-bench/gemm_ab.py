@@ -4,7 +4,7 @@ The other two thirds -- ScratchSize 0, no spill, the same occupancy -- fall out
 of the build and are checked on a machine with no GPU at all. This one does
 not, and it is the one with a measurement discipline attached.
 
-Same process, interleaved bursts. On wx-ms-w7900d-0043 a cross-process A/B once
+Same process, interleaved bursts. On one W7900D node a cross-process A/B once
 manufactured a 13-16% difference out of nothing, and the two kernels here are
 close enough that such a difference would be the entire result. `_timing.py`
 explains why the burst is 8 and not 1.

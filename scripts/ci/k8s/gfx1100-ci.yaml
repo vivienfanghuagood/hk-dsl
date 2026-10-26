@@ -1,0 +1,66 @@
+# The gfx1100 GPU tier's pod: four W7900D of one node, requested from the scheduler
+# (amd.com/gpu: 4) and handed over by the AMD device plugin -- only those four render nodes and
+# /dev/kfd are in the container. Not privileged: no other pod can be given these cards, and this
+# one sees no others, so the run needs no node-level lock (pod_run.sh with HK_CI_NODE_LOCKS=0).
+# CI's state (clone, dialect build, compile cache, runs) and its tools (the MLIR install, FlyDSL)
+# live on the PVC at /workspace, so a pod restart keeps them.
+#
+# A template: the pod's name, its node and the node-local storage class are the cluster's, not
+# the repository's. From the jump host, with them set:
+#   HK_CI_POD=<pod-name> HK_CI_NODE=<node-name> HK_CI_STORAGE_CLASS=<node-local-class> \
+#     envsubst '$HK_CI_POD $HK_CI_NODE $HK_CI_STORAGE_CLASS' < gfx1100-ci.yaml | kubectl apply -f -
+# HK_CI_POD is also the gfx1100-x4 runner's (its .env).
+#
+# Bootstrapping the PVC once (MLIR install, FlyDSL, the extra pip packages): docs/testing.md.
+# No credentials here: the job's runner lives on the MI355X workstation and reaches the pod
+# with `ssh $HK_CI_JUMP kubectl exec`; the pod fetches commits through the GitHub proxy itself.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: ${HK_CI_POD}
+  namespace: default
+spec:
+  accessModes: [ReadWriteOnce]
+  storageClassName: ${HK_CI_STORAGE_CLASS}   # node-local: binds to the pod's node
+  resources:
+    requests:
+      storage: 200Gi
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: ${HK_CI_POD}
+  namespace: default
+  labels:
+    app: ${HK_CI_POD}
+spec:
+  nodeSelector:
+    kubernetes.io/hostname: ${HK_CI_NODE}
+  restartPolicy: Always
+  containers:
+    - name: ci
+      image: docker.io/rocm/pytorch:rocm7.2.4_ubuntu24.04_py3.12_pytorch_release_2.10.0
+      imagePullPolicy: IfNotPresent
+      command: ["sleep", "infinity"]
+      resources:
+        requests:
+          amd.com/gpu: 4
+          cpu: "32"
+          memory: 96Gi
+        limits:
+          amd.com/gpu: 4
+          cpu: "32"
+          memory: 128Gi
+      volumeMounts:
+        - name: work
+          mountPath: /workspace
+        - name: dshm
+          mountPath: /dev/shm
+  volumes:
+    - name: work
+      persistentVolumeClaim:
+        claimName: ${HK_CI_POD}
+    - name: dshm
+      emptyDir:
+        medium: Memory
+        sizeLimit: 16Gi

@@ -1,7 +1,7 @@
 """The timing loop every sweep in this directory uses, and why it is this one.
 
 `/kernel-ab-bench` says: one process, interleaved, because absolute numbers
-drift between processes -- on wx-ms-w7900d-0043 that drift once manufactured a
+drift between processes -- on one W7900D node that drift once manufactured a
 13-16% difference out of nothing. That much is settled. What was not settled
 is how *finely* to interleave, and the obvious answer turned out to be wrong.
 

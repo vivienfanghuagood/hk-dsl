@@ -49,7 +49,7 @@ AXES = ("x", "y", "z")
 DEFAULT_XCDS = {"gfx950": 8, "gfx942": 8}
 
 #: The policy's thresholds, measured on gfx950's attention (PR #55,
-#: ~/hk-dx/research/2511.02132 report §5): cluster from five KV streams an
+#: the 2511.02132 study's report, §5): cluster from five KV streams an
 #: XCD; for non-uniform work (a trip count that depends on the grid), not
 #: below twelve rounds of workgroups an XCD.
 MIN_STREAMS = 5

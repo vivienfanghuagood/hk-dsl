@@ -3,7 +3,7 @@
   "python": "3.12.3",
   "torch": "2.10.0+rocm7.2.4.git3d3aa833",
   "hip": "7.2.53211",
-  "host": "hfang-hk-rdna3-b",
+  "host": "<dev-pod>",
   "triton": "3.6.0+rocm7.2.4.git4ed88892",
   "hk": "0.4.0",
   "hk_arch": "gfx1100",
@@ -21,14 +21,14 @@
   "cold_cache": false,
   "protocol": "correctness first (wrong = not timed); per shape all correct contenders interleaved in one process, rotating order, median of rounds; host_us = back-to-back eager calls, device_us = CUDA-graph replay of the same calls; inputs stay resident (hot L2/MALL) across calls",
   "merged_from": [
-   "/home/hfang/hk-dx-w1/out/f1100-t1.json",
-   "/home/hfang/hk-dx-w1/out/f1100-t2.json",
-   "/home/hfang/hk-dx-w1/out/f1100-t3.json",
-   "/home/hfang/hk-dx-w1/out/f1100-t4.json",
-   "/home/hfang/hk-dx-w1/out/f1100-t5.json",
-   "/home/hfang/hk-dx-w1/out/f1100-t6.json",
-   "/home/hfang/hk-dx-w1/out/f1100-t7.json",
-   "/home/hfang/hk-dx-w1/out/f1100-t8.json"
+   "<workdir>/out/f1100-t1.json",
+   "<workdir>/out/f1100-t2.json",
+   "<workdir>/out/f1100-t3.json",
+   "<workdir>/out/f1100-t4.json",
+   "<workdir>/out/f1100-t5.json",
+   "<workdir>/out/f1100-t6.json",
+   "<workdir>/out/f1100-t7.json",
+   "<workdir>/out/f1100-t8.json"
   ]
  },
  "summary": [

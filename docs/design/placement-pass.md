@@ -7,7 +7,7 @@ Status: built (M0-M2, PRs #63 and #65). Attention, the bf16 GEMMs, K2 (`mxfp8`),
 The user's view is [placement.md](../placement.md); the API is
 [hk.placement](../api/hk.placement.md). This page is how it works and why it is built this way.
 The evidence is the attention experiment of 2026-10-26 (PR #55), described in
-`~/hk-dx/research/2511.02132/report.md` §5-6.
+`<workspace>/research/2511.02132/report.md` §5-6.
 
 - [The problem](#the-problem)
 - [1. Analysis: who shares what](#1-analysis-who-shares-what)
@@ -268,7 +268,7 @@ A failure prints `FAILED <how many grid points ran twice and never>` and exits 1
 ## 7. What was migrated, and what it measured
 
 MI355X, one process, the old and new kernels interleaved, `rocm-smi` snapshots around each run
-(`~/hk-dx/research/2511.02132/runs/m1-ab*`, `m2-ab*`):
+(`<workspace>/research/2511.02132/runs/m1-ab*`, `m2-ab*`):
 
 | kernel | before | after | outputs | new / old |
 |---|---|---|---|---|

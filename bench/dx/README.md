@@ -32,8 +32,8 @@ python3 -m bench.dx.run --small                      # the test's tiny shapes, c
 On the workstation (bench/dx needs the worktree's `hk._mlir`, which the helpers build):
 
 ```bash
-hkx950 ~/hk-dsl-dxsuite 5 python3 -m bench.dx.run --json bench/dx/results/gfx950-DATE.json
-hkx1100 ~/hk-dsl-dxsuite python3 -m bench.dx.run --tasks t1 --json bench/dx/results/x.json   # one task per call
+hkx950 <checkout> 5 python3 -m bench.dx.run --json bench/dx/results/gfx950-DATE.json
+hkx1100 <checkout> python3 -m bench.dx.run --tasks t1 --json bench/dx/results/x.json   # one task per call
 ```
 
 Options: `--tasks`, `--solutions`, `--kinds`, `--shapes` (substring of shape

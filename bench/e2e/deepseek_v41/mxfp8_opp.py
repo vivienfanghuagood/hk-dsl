@@ -3,7 +3,7 @@ every gfx950 baseline in the vLLM image -- vLLM's rocm_mxfp8_block32_gemm (Trito
 engine runs), FlyDSL's gfx950 MX bmm (aiter), hipBLASLt MX through torch._scaled_mm -- and hk's, as
 TF/s and % of the 5.03 PF/s dense fp8 peak. Interleaved, CUDA events, weights rotated past the LLC.
 
-    hkx950v ~/hk-dsl-fp8 GPU python3 bench/e2e/deepseek_v41/mxfp8_opp.py [M ...]
+    hkx950v <checkout> GPU python3 bench/e2e/deepseek_v41/mxfp8_opp.py [M ...]
 """
 import statistics, sys, torch
 

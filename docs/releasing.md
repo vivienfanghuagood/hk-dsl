@@ -100,6 +100,18 @@ check again.
   `tests/hk/gpu/test_example_runs.py` pass on the release head, on gfx950
   and gfx1100; a new feature that has an example is in
   [`examples/README.md`](../examples/README.md).
+- [ ] **Grep for internal IPs, host names and user paths finds nothing
+  outside the allowlist.** The repository is public:
+  `python3 scripts/check_public_hygiene.py --patterns <site-patterns>`
+  passes, where `<site-patterns>` is the maintainers' local file of the
+  site's own names (hosts, pods, nodes, proxies, logins, workspace paths),
+  which is never committed. Without it the script checks only the generic
+  rules (private IPv4, `/home/<user>`, `/root/`, `/dev/shm/<name>`,
+  internal domains), as the IR tier does on every PR. A hit is replaced by a
+  placeholder or an environment variable, or, if it is generic, added to
+  `scripts/public_hygiene_allow.txt` with the reason. Anything sensitive
+  that ever reached main is still in git history: rotate it, do not just
+  remove it.
 
 ## After the release
 

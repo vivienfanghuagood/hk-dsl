@@ -779,7 +779,7 @@ HIP_VISIBLE_DEVICES=3 python3 -m pytest tests/hk/engines -q        # SGLang's
 SGLang reads the GPU's arch while importing its kernels, so its file needs a
 GPU visible, though nothing is launched.
 
-What was run, on the dev pod (`hfang-hk-vllm`, gfx1100), 2026-10-16:
+What was run, on the dev pod (the vLLM pod, gfx1100), 2026-10-16:
 
 | patch | vLLM 0.31.0+rocm721 | vLLM 0.16.1 | SGLang 0.5.18 |
 |---|---|---|---|

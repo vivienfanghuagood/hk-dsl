@@ -7,7 +7,7 @@ It also explains how the record decides which DSL capability gets built next.
 
 ## A task
 
-A task is one workspace: `~/hk-dx/kda/<task>/`, made by `_flow/new_task.sh`.
+A task is one workspace: `<workspace>/kda/<task>/`, made by `_flow/new_task.sh`.
 
 ```
 docs/contract.md   objective, correctness, target, allowed approaches, validation command,
@@ -51,13 +51,13 @@ symptom.
 
 ## The cross-task table
 
-`~/hk-dx/kda/_flow/tools/failure_table.py --write` regenerates it from every task's
+`<workspace>/kda/_flow/tools/failure_table.py --write` regenerates it from every task's
 `candidates.jsonl`, and from the controlled experiments' arms (`~/kda-<exp>-<arm>/kda`). It
-writes the result to `~/hk-dx/kda/_flow/failure-summary.md`. Regenerate it whenever a task
+writes the result to `<workspace>/kda/_flow/failure-summary.md`. Regenerate it whenever a task
 finishes and copy the table here.
 
 As of 2026-10-26 (`failure_table.py` after both experiments' reruns from main and the megakernel
-tasks; the experiments' arms are `~/kda-<exp>-<arm>/kda`, their reports `~/hk-dx/kda/runs/`):
+tasks; the experiments' arms are `~/kda-<exp>-<arm>/kda`, their reports `<workspace>/kda/runs/`):
 
 | task | rounds | dsl | codegen | harness | algorithm | env | correctness |
 |---|---|---|---|---|---|---|---|
@@ -106,7 +106,7 @@ Each row is a `dsl` or `codegen` record with its evidence, and its status in mai
 | control of LLVM's AGPR allocation (`amdgpu-agpr-alloc`) | codegen | experiment 2 Triton arm +9%; K1 c30's copies | open: a cheap hk experiment |
 | the validator reuses one weight per shape (stale weight-cache bugs pass) | harness | experiment 2, both arms | open |
 
-Found by the reruns from main (`~/hk-dx/kda/runs/validation-reruns-report.md`, 2026-10-25):
+Found by the reruns from main (`<workspace>/kda/runs/validation-reruns-report.md`, 2026-10-25):
 
 | gap | class | found in | status |
 |---|---|---|---|
@@ -114,7 +114,7 @@ Found by the reruns from main (`~/hk-dx/kda/runs/validation-reruns-report.md`, 2
 | the 4-wave kernel and the persistent pingpong spill at K = 1152 / 1280 (accumulators displaced while addresses sit in AGPRs); the spill gate refuses them rightly, but hk has no allocation lever beyond the program's shape | codegen | experiment 2 rerun | open |
 | a 128x256 schedule with `loose` A scales at K = 1152 not bit-identical (max-rel 0.78, no spill) | correctness (open lead) | experiment 2 rerun | cause found: the compiler copied an inline-asm `ds_read`'s destination registers before hk's wait; main refuses such kernels at build time (#39, the wait gate) |
 | HipKittens' LDS allocator hands out generic pointers, so converting LDS stores become `flat_store_b16`, unordered against the inline-asm `ds_read` (a real race that passed 10 bitwise repeats) | codegen | experiment 1 rerun 2 | open; harness lesson: bitwise repeats do not prove LDS ordering |
-| rocprofv3 counters read zero on node 0043 (GRBM_GUI_ACTIVE = 0) | env | experiment 1 rerun 2 | open |
+| rocprofv3 counters read zero on one W7900D node (GRBM_GUI_ACTIVE = 0) | env | experiment 1 rerun 2 | open |
 
 ## How the table chooses DSL work
 
@@ -126,7 +126,7 @@ follows:
 2. **How often it recurs across tasks.** This counts recurring `codegen` classes too, such as
    register pressure from operands the DSL cannot place.
 3. **The core kernels' remaining targets.** For example, the K1 structural conclusion
-   (`~/hk-dx/kda/k1-moe-a8w4/docs/structural-conclusion.md`) asks for an MX-quantizing epilogue
+   (`<workspace>/kda/k1-moe-a8w4/docs/structural-conclusion.md`) asks for an MX-quantizing epilogue
    store and explicit AGPR operand placement.
 
 `algorithm` failures are the normal cost of search and drive nothing in the DSL. A

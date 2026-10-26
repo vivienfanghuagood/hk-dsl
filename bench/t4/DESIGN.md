@@ -139,7 +139,7 @@ pass in two scoring runs started at least an hour apart.
 Fourteen shapes per GPU, from seven MoE models that are not among the public
 six (two cases a model, each one of its expert GEMMs at a batch size,
 the routings from a master seed fixed before any solution existed), drawn by `shapes.py` within task.md's
-guarantees. They live in `~/hk-dx/t4/sealed/` on the MI355X workstation and
+guarantees. They live in `<workspace>/t4/sealed/` on the MI355X workstation (PROTOCOL.md's `$DX`) and
 are read only through `$HK_T4_SEALED`; every baseline was run and checked on
 them before the task commit (PROTOCOL.md, section 8). Publishing a scored run
 reveals them, and the set is then spent.

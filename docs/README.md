@@ -88,6 +88,13 @@ Coding agents: start from [llms.txt](../llms.txt) and the
 | [Workgroup placement](design/placement-pass.md) | which XCD runs which workgroup, as a pass: the analysis, the rewrite, the `"auto"` policy and the measurements behind it |
 | [Development record](history/README.md) | the chronological record, chapter by chapter, negative results included |
 
+In these pages, a path under `<workspace>/` is in the maintainers' working
+directory on the development machines, outside the repository (reports,
+task workspaces, raw data); `<dev-pod>`, `<vllm-pod>`, `<ci-pod>`,
+`<jump-host>` and `<prefix>` stand for the names of the machines, pods and
+runners the work ran on, which belong to their configuration, not to this
+public repository.
+
 ## Why this exists
 
 Fast tile kernels for AMD GPUs can be written: HipKittens' C++ reaches the
