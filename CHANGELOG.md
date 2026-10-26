@@ -103,6 +103,31 @@ hk's GPU tier passing on a Radeon AI PRO R9700 (914 passed, 0 failed;
 - No engine route is validated on gfx1201, so none is on by default there, and
   nothing is tuned there yet (its tables are gfx1100's).
 
+**K1 (MoE a8w4) on gfx950, measured for this release** on the release's code
+(after #85): real DeepSeek-V4.1-Flash weights, two layers, real, gate-only and
+uniform routing, weights rotated past the caches, interleaved rounds in one
+process; hk deterministic and within AITER's own error against an exact fp32
+MoE everywhere.
+
+| M | hk / AITER (tuned FlyDSL) | K1 now / K1 at #65 | K1 now / K1 before #65 |
+|---|---|---|---|
+| 64 | 0.77-0.84x | 1.26-1.45x | 1.12-1.20x |
+| 128-512 | 0.74-0.85x | 1.05-1.30x | 1.04-1.31x |
+| 2048 | 0.97-0.99x | 1.08-1.15x | |
+| 4096 | 1.13-1.20x | 1.10-1.12x | |
+| 8192 (routed) | 1.27-1.35x | 1.09-1.12x | 1.08-1.12x |
+| 16384 (routed) | 1.16-1.23x | 1.04-1.06x | |
+
+(The "K1 at #65" figures at M 2048, 4096 and 16384 compare each commit in its
+own process, each normalised by its own in-process AITER; the other columns are
+one process. The two methods agree within about 3%.)
+
+- vLLM's K1 route takes M >= 8192, where hk wins at 12 of 12 points (before
+  #85: 1.11-1.23x). Below that the route leaves the MoE to AITER, so decode in
+  production is AITER's either way.
+- At decode M (64-512) hk's K1 is still slower than AITER's tuned FlyDSL
+  kernels, 0.74-0.85x, up from 0.53-0.78x at #65.
+
 **Build gates**
 - **The spill gate passes a scratch frame the code never touches** (#68). A
   kernel with ScratchSize > 0 and no VGPR spill builds when its code object has
@@ -114,12 +139,14 @@ hk's GPU tier passing on a Radeon AI PRO R9700 (914 passed, 0 failed;
   that cannot be read are still refused.
 
 **Fixes**
-- **K1 MoE a8w4 at decode M ran 11% slower after #65** (#85; M 64: 0.89x of before, found by the MI355X
-  scoreboard). The sorted kernels' grids are sized for the most sorted blocks a launch can have,
-  and #65's `Placement.chunked(0, "spread")` dealt contiguous ranges of the whole grid, so the
-  live blocks (235 of 390 at M 64) landed on the first five XCDs. They now renumber in the body
-  over the live blocks only (`hk.placement.renumber(..., live=)`, new). Against main before
-  #65, K1 is 1.04-1.33x at every M from 64 to 16384, and bitwise the same.
+- **K1 MoE a8w4 at decode M ran slower after #65** (#85; M 64: 0.82-0.89x of
+  K1 before #65, found by the MI355X scoreboard). The sorted kernels' grids are
+  sized for the most sorted blocks a launch can have, and #65's
+  `Placement.chunked(0, "spread")` dealt contiguous ranges of the whole grid, so
+  the live blocks (235 of 390 at M 64) landed on the first five XCDs. They now
+  renumber in the body over the live blocks only
+  (`hk.placement.renumber(..., live=)`, new). Outputs are bitwise the same, and
+  every M got faster (numbers in *K1 on gfx950* below).
 - **gfx950: fp32 register tiles through LDS were FLAT loads and stores**
   (#59). `store(st<float>, rt<float>)` / `load(rt<float>, st<float>)` addressed
   the tile through a generic pointer, so every access was FLAT: slower to
@@ -224,7 +251,10 @@ hk's GPU tier passing on a Radeon AI PRO R9700 (914 passed, 0 failed;
 - gfx1100's default launch goes to the null stream, so a CUDA graph does not
   capture it. `HK_LAUNCH=codeobj` launches on torch's current stream.
 - Under the vLLM image's hipcc (ROCm 10), `gemm_cdna`'s `dp128x224` candidate
-  at 130x1792x768 spills and is refused. rocm/pytorch 7.2.3 builds it.
+  spills and the spill gate refuses it (rocm/pytorch 7.2.3 builds it). There,
+  `hk.ops.gemm.matmul`'s gfx950 route picks it for N 28672 / 14336, K 4096 at
+  M 192-512 and raises `ResourceError` instead of falling back. vLLM's linear
+  route (`HK_VLLM_GEMM`) is off on gfx950, so no default route reaches it.
 - gfx1201 runs hk's GPU tier on a dev box, not in CI's required tiers; no
   route is validated or on by default there and nothing is tuned. gfx942 is
   compile-only.
