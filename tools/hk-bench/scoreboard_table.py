@@ -46,7 +46,7 @@ def main() -> int:
             verdict = f"{v['ratio']:.2f}x {v['verdict']}" if v else "--"
             print(f"| {r['case']} | {hk} | {best} | {verdict} |")
         return 0
-    cols = ("hk", "torch", "inductor", "triton", "triton_tuned", "flydsl", "flydsl_tuned")
+    cols = ("hk", "torch", "inductor", "triton", "triton_tuned", "flydsl", "flydsl_tuned", "aiter")
     if args.md:
         print("| case | " + " | ".join(cols) + " | best other | hk / best |")
         print("|---" * (len(cols) + 3) + "|")

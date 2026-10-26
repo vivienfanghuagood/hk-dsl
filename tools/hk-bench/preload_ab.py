@@ -22,7 +22,7 @@ from _timing import burn_in  # noqa: E402
 
 from hk.dsl.kernel import Kernel  # noqa: E402
 
-OTHERS = ("torch", "inductor", "triton", "triton_tuned", "flydsl", "flydsl_tuned")
+OTHERS = ("torch", "inductor", "triton", "triton_tuned", "flydsl", "flydsl_tuned", "aiter")
 _PRE = [None]
 _call = Kernel.__call__
 

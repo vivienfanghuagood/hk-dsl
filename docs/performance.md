@@ -1045,22 +1045,33 @@ nothing to give, and some kernels lose:
 ## Part C: RDNA4 (gfx1201, one Radeon AI PRO R9700)
 
 One R9700 of a shared box, rocm/pytorch rocm7.2.3 (torch 2.10.0, hipBLASLt and
-rocBLAS of ROCm 7.2.3, triton 3.6.0; no FlyDSL). Nothing here is tuned for
-gfx1201: hk runs gfx1100's plans and schedules
+rocBLAS of ROCm 7.2.3, triton 3.6.0), FlyDSL 0.4.0 and AITER (ffd08f2) beside
+it. Nothing here is tuned for gfx1201: hk runs gfx1100's plans and schedules
 ([chapter 48](history/48-gfx1201-ceilings-and-first-scoreboard.md)).
 
 The card: bf16 WMMA 197 TFLOP/s (twice gfx1100's a CU), fp8 372, iu8 374
 TOP/s; an add 1.81 TB/s inside the 64 MB Infinity Cache, 0.62 TB/s past it.
 
-| out of the box, against the best other arm | ratio |
+What AMD's stacks have for it: FlyDSL one bf16/f16 GEMM (untuned) plus its
+arch-free norms and softmax, and no attention -- its generic kernel aborts
+LLVM on gfx12; AITER a FlyDSL attention written for gfx1201 (no GQA), its HIP
+norms, and for a GEMM `F.linear`.
+
+| scoreboard, every arm in one process | hk | torch | Triton | FlyDSL | AITER | hk vs best |
+|---|---|---|---|---|---|---|
+| GEMM 4096³, ms | **0.986** | 1.502 | 1.050 | 1.207 | 1.500 | 1.06x |
+| GEMM, five 2048-4096-row Llama/Qwen shapes | **best** | | | 0.80-0.85x hk | = torch | 1.03-1.07x |
+| attention n4096 GQA 4 causal, ms | 1.707 | 5.825 | -- | aborts | **1.410** | **0.83x** |
+| attention n4096 GQA 4 full, ms | 2.778 | 5.294 | -- | aborts | **2.702** | **0.97x** |
+| rms_norm 1 / 32 / 2048 / 8192 rows | | | | | | 1.03x / 1.25x / 0.96x / tie |
+| fused add + rms_norm 1 / 32 / 2048 rows | | | | | | 1.07x / 1.30x / tie |
+| fused add + rms_norm 8192 rows, us | 482 | 571 | **446** | 451 | **446** | **0.93x** |
+| softmax 2048 / 8192 rows | | | | | | tie / tie |
+
+| GEMM against the BLAS libraries directly | ratio |
 |---|---|
-| GEMM, five 2048-4096-row Llama/Qwen shapes, vs hipBLASLt and Triton (tuned) | 1.06-1.08x (144 TFLOP/s at 4096³) |
-| GEMM in the linear layer's layout (NT) vs rocBLAS / hipBLASLt, 16-8192 rows | 1.05-2.9x |
+| the linear layer's layout (NT) vs rocBLAS / hipBLASLt, 16-8192 rows | 1.05-2.9x |
 | the same libraries free to pick a layout (a transposed weight) | ties from 1024 rows; 0.57-0.88x below 256 |
-| attention n4096 GQA 4, causal / full, vs AOTriton | 3.33x / 1.87x |
-| softmax 2048 / 8192 rows; RMSNorm 1-8192 rows | 1.19x / tie; tie to 1.07x |
-| fused add + RMSNorm 1 / 2048 rows | 1.09x / 1.02x |
-| fused add + RMSNorm 32 / 8192 rows (losses) | 0.88x (Inductor) / 0.93x (tuned Triton) |
 
 ## Appendix: superseded results
 
