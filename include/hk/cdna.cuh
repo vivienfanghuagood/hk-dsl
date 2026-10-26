@@ -1168,6 +1168,10 @@ template<int N> __device__ inline int *hk_gather_rows_lds() {
     __shared__ int rows[N];
     return rows;
 }
+template<int N> __device__ inline int *hk_scatter_ids_lds() {
+    __shared__ int ids[N];
+    return ids;
+}
 }  // namespace detail
 
 /**
@@ -1177,12 +1181,14 @@ template<int N> __device__ inline int *hk_gather_rows_lds() {
  * load of a lane's row index would be a vmcnt wait, which retires every load in flight before
  * it (in order on gfx950): the whole prefetch.
  */
-template<int N, ducks::gl::all IL>
+template<int N, int RAW = 0, ducks::gl::all IL>
 __device__ inline static void gather_prep(const IL &ids, int at) {
-    int *rows = detail::hk_gather_rows_lds<N>();
+    // RAW: the ids themselves, for a scatter's rows (store_scatter<.., STAGED = N>), in their
+    // own array: ids[at + r] at [r]; `at` a multiple of N (the scatter indexes it pos % N)
+    int *rows = RAW ? detail::hk_scatter_ids_lds<N>() : detail::hk_gather_rows_lds<N>();
     const int *idp = reinterpret_cast<const int *>(ids.raw_ptr) + at;
     for (int r = int(threadIdx.x); r < N; r += int(blockDim.x))
-        rows[r] = idp[r] & 0xFFFFFF;
+        rows[r] = RAW ? idp[r] : idp[r] & 0xFFFFFF;
     __syncthreads();
 }
 
@@ -2511,6 +2517,17 @@ __device__ inline int hk_gather_index(const IL &idx, int at, int count, int i, i
     const int v = idx.raw_ptr[pos];
     return div == 1 ? v : v / div;
 }
+/// A scatter's index: from the LDS copy gather_prep<STAGED, 1> made (an lgkmcnt wait), or global
+/// (a vmcnt wait, which on gfx950 retires every vector-memory op issued before it, in order).
+template<int R, int STAGED, typename IL>
+__device__ inline int hk_scatter_index(const IL &idx, int at, int count, int i) {
+    if constexpr (STAGED > 0) {
+        const int pos = at + R * i + laneid() % R;
+        return pos >= count ? -1 : hk_scatter_ids_lds<STAGED>()[pos % STAGED];
+    } else {
+        return hk_gather_index<R>(idx, at, count, i, 1);
+    }
+}
 }  // namespace detail
 
 /**
@@ -2558,9 +2575,13 @@ __device__ inline static void load_gather(RT &dst, const GL &src, const IL &idx,
  * position at or past `count`, writes nothing. Two tile rows naming one row
  * race; which lands is unspecified.
  */
-template<int TOPK = 0, int ADD = 0, ducks::rt::all RT, ducks::gl::all GL, ducks::gl::all IL>
+template<int TOPK = 0, int ADD = 0, int STAGED = 0, ducks::rt::all RT, ducks::gl::all GL,
+         ducks::gl::all IL>
 __device__ inline static void store_scatter(const GL &dst, const RT &src, const IL &idx,
                                             int at, int count, int col) {
+    // STAGED > 0: the ids were staged in LDS by gather_prep<STAGED, 1>(idx, at0) (at0 a multiple
+    // of STAGED, covering every position stored here): no global index load, so no vmcnt wait
+    // that would drain the loads and stores in flight (K1 k1-prefill c36).
     // TOPK > 0: idx holds AITER's MoE sort ids (token | choice << 24) and dst is [TOPK * M, ..]
     // choice-major: the row is choice * M + token, nothing for a token >= M (padding).
     // ADD: the rows are added atomically (fp32, or bf16 pairs); with TOPK, dst is [M, ..] and the
@@ -2581,7 +2602,7 @@ __device__ inline static void store_scatter(const GL &dst, const RT &src, const 
         const int lane = laneid();
         #pragma unroll
         for (int i = 0; i < RT::height; i++) {
-            int g = detail::hk_gather_index<F::R>(idx, at, count, i, 1);
+            int g = detail::hk_scatter_index<F::R, STAGED>(idx, at, count, i);
             if constexpr (TOPK > 0) g = (g < 0 || (g & 0xFFFFFF) >= nrows) ? -1 : (g & 0xFFFFFF);
             if (g < 0 || g >= nrows) continue;
             U *row = base + uint64_t(g) * row_elems + col;
@@ -2627,7 +2648,7 @@ __device__ inline static void store_scatter(const GL &dst, const RT &src, const 
         const uint32_t start = uint32_t(16 * (q4 & 1) + 8 * (q4 >> 1));
         #pragma unroll
         for (int i = 0; i < RT::height; i++) {
-            int g = detail::hk_gather_index<F::R>(idx, at, count, i, 1);
+            int g = detail::hk_scatter_index<F::R, STAGED>(idx, at, count, i);
             if constexpr (TOPK > 0) {
                 const int m = nrows / TOPK, tok = g & 0xFFFFFF;
                 g = (g < 0 || tok >= m) ? -1 : (g >> 24) * m + tok;
@@ -2658,7 +2679,7 @@ __device__ inline static void store_scatter(const GL &dst, const RT &src, const 
 #endif
     #pragma unroll
     for (int i = 0; i < RT::height; i++) {
-        int g = detail::hk_gather_index<F::R>(idx, at, count, i, 1);
+        int g = detail::hk_scatter_index<F::R, STAGED>(idx, at, count, i);
         if constexpr (TOPK > 0) {
             const int m = nrows / TOPK, tok = g & 0xFFFFFF;
             g = (g < 0 || tok >= m) ? -1 : (g >> 24) * m + tok;

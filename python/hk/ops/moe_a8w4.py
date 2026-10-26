@@ -1030,6 +1030,15 @@ def _sorted_s2_resident(name: str, *, group_rows: int, mt: int, pp: int, k: int,
              for _ in range(3)]
 
         for _ in range(live):
+            # the block's scatter ids into LDS and its rows' routing weights into registers, once
+            # for all nt column tiles: loaded in the epilogue, each was a vmcnt wait that drained
+            # the next tile's weight prefetch and this tile's stores (k1-prefill c36)
+            g.gather_prep(sids, r0, BM, raw=True)
+            wsum = []
+            for i in range(mt):
+                wt = wv[hk.elem_coord(0, 0, r0 + i * TILE, 0)].load(t_wv)
+                wt.right_fill_(1, 0.0)
+                wsum.append(wt.sum(axis=1))
             for kc in range(steps):                # the block's h, every K step, once
                 g.load(Hres[kc], x.at[r0, kc * KS], wait=False)
             SX = [hk.load_mx_scales(xs, BM, 8, r0, p * 8, layout="aiter", group_rows=XGR)
@@ -1063,11 +1072,8 @@ def _sorted_s2_resident(name: str, *, group_rows: int, mt: int, pp: int, k: int,
 
             def store(c0):                         # the tile's rows out, weighted; acc to zero
                 for i in range(mt):
-                    o = hk.transpose(Cs[i])
-                    wt = wv[hk.elem_coord(0, 0, r0 + i * TILE, 0)].load(t_wv)
-                    wt.right_fill_(1, 0.0)
-                    o = o * wt.sum(axis=1)[:, None]
-                    out.scatter(o, sids, r0 + i * TILE, col=c0, sort_topk=topk)
+                    o = hk.transpose(Cs[i]) * wsum[i][:, None]
+                    out.scatter(o, sids, r0 + i * TILE, col=c0, sort_topk=topk, staged=BM)
                     Cs[i].zero_()
 
             for n in hk.range(nt):

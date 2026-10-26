@@ -1195,12 +1195,15 @@ private:
             ");");
         })
         .Case([&](GatherPrepOp o) {
-          w("kittens::gather_prep<" + std::to_string(o.getRows()) + ">(" + name(o.getIds()) +
-            ", " + name(o.getAt()) + ");");
+          w("kittens::gather_prep<" + std::to_string(o.getRows()) + (o.getRaw() ? ", 1" : "") +
+            ">(" + name(o.getIds()) + ", " + name(o.getAt()) + ");");
         })
         .Case([&](ScatterRowsOp o) {
           w("kittens::store_scatter" +
-            (o.getSortTopk() || o.getAdd()
+            (o.getStaged()
+                 ? "<" + std::to_string(o.getSortTopk()) + (o.getAdd() ? ", 1, " : ", 0, ") +
+                       std::to_string(o.getStaged()) + ">"
+             : o.getSortTopk() || o.getAdd()
                  ? "<" + std::to_string(o.getSortTopk()) + (o.getAdd() ? ", 1>" : ">")
                  : std::string()) +
             "(" + name(o.getDst()) + ", " +

@@ -218,6 +218,8 @@ LogicalResult GatherRowsOp::verify() {
 }
 
 LogicalResult ScatterRowsOp::verify() {
+  if (getStaged() < 0)
+    return emitOpError("staged is the staged id count (> 0), or 0");
   if (getAdd()) {
     Type d = getDst().getType().getElementType();
     if (!d.isF32() && !d.isBF16())

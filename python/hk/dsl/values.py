@@ -558,7 +558,7 @@ class Global(Value):
                             sort_topk=int(sort_topk), loc=_t().loc())
 
     def scatter(self, value: "Tile", ids: "Global", at, *, count=None,
-                col=0, sort_topk: int = 0, add: bool = False) -> None:
+                col=0, sort_topk: int = 0, add: bool = False, staged: int = 0) -> None:
         """Rows by index: tile row r goes to row `ids[at + r]`, from column
         `col`; an index outside the tensor, or a position at or past
         `count`, writes nothing. Two rows naming one row race. `sort_topk`
@@ -570,13 +570,22 @@ class Global(Value):
         bf16 adds element pairs, gfx950's global_atomic_pk_add_bf16). With
         `sort_topk` the tensor is then [M, ...] and every choice of a token
         adds into its row: the top-k reduce, in no fixed order -- the result
-        varies run to run by the rounding of the adds."""
+        varies run to run by the rounding of the adds.
+
+        `staged=N`: the ids were staged in LDS by `g.gather_prep(ids, at0, N,
+        raw=True)`, `at0` a multiple of N and [at0, at0 + N) covering every row
+        stored here -- the scatter reads them there. A global index load is a
+        vmcnt wait, which on gfx950 retires every load and store issued before
+        it, in order: in an epilogue between K loops, the next loop's whole
+        prefetch and this epilogue's own earlier stores (K1 k1-prefill c36)."""
         value = _vec_of(value)
+        if staged and get_target(_t().arch).arch != "gfx950":
+            raise TypeError(f"scatter(staged=...): gfx950's LDS-staged ids, not {_t().arch}")
         if not isinstance(value, Tile):
             raise TypeError(f"scatter stores a tile, not {value!r}")
         ops = self._indexed("scatter", value.ty, ids, at, count, col)
         hkd.ScatterRowsOp(self.v, value.v, *ops, sort_topk=int(sort_topk), add=bool(add),
-                          loc=_t().loc())
+                          staged=int(staged), loc=_t().loc())
 
 
 #: A scoped tensor's cache-policy bits on gfx950: SC1 (device scope) or

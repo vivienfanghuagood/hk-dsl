@@ -1545,8 +1545,10 @@ fixed order.
 #### `Global.scatter`
 
 ```python
-Global.scatter(self, value: Tile, ids: Global, at, *, count=None, col=0, sort_topk: int = 0, add: bool = False) -> None
+Global.scatter(self, value: Tile, ids: Global, at, *, count=None, col=0, sort_topk: int = 0, add: bool = False, staged: int = 0) -> None
 ```
+
+*Changed after 0.7.0*: new parameter `staged`
 
 Rows by index: tile row r goes to row `ids[at + r]`, from column
 `col`; an index outside the tensor, or a position at or past
@@ -1560,6 +1562,13 @@ bf16 adds element pairs, gfx950's global_atomic_pk_add_bf16). With
 `sort_topk` the tensor is then [M, ...] and every choice of a token
 adds into its row: the top-k reduce, in no fixed order -- the result
 varies run to run by the rounding of the adds.
+
+`staged=N`: the ids were staged in LDS by `g.gather_prep(ids, at0, N,
+raw=True)`, `at0` a multiple of N and [at0, at0 + N) covering every row
+stored here -- the scatter reads them there. A global index load is a
+vmcnt wait, which on gfx950 retires every load and store issued before
+it, in order: in an epilogue between K loops, the next loop's whole
+prefetch and this epilogue's own earlier stores (K1 k1-prefill c36).
 
 #### `Global.type (property)`
 
