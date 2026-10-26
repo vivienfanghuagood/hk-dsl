@@ -766,9 +766,19 @@ def _scale_ab_bias(acc, ctx):
 #:     32x4096x14336         45.6              83.8                    93.6
 #:     64x14336x4096        110.4              99.2                   136.1
 #:
-#: At 64 rows the tiled kernel is ahead again. (W fits the 64 MB Infinity
-#: Cache across back-to-back calls here, so the rates are a cache's; the
-#: ratios are between kernels reading the same W the same way.)
+#: At 64 rows the tiled kernel is ahead again. W fits the 64 MB Infinity
+#: Cache across back-to-back calls there, so those are a cache's rates. Read
+#: the way a decode step reads it -- six copies of W rotated, from GDDR6,
+#: profiler kernel time with the scales applied (fp8_decode3.py), us:
+#:
+#:     M x N x K         decode s8 w8   FlyDSL's fp8 GEMM   hipBLASLt
+#:     32x14336x4096        100.3            110.3            165.4
+#:     32x4096x4096          31.3             45.7             42.9
+#:     32x4096x14336         98.6            147.5            121.6
+#:     1x14336x4096          95.2              --             158.5
+#:
+#: 585-617 GB/s on the 56 MiB layers, against 0.62 TB/s measured past the
+#: cache. (Cache-resident, FlyDSL's 32-row kernel is ahead at 32x14336.)
 FP8_DECODE_M = 32
 FP8_DECODE = dict(slices=8, warps=8, combine_depth=0, resident=0, splits=1)
 

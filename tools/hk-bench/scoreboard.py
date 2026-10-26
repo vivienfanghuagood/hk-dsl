@@ -495,20 +495,46 @@ def softmax_case(m, tune, n=4096):
     return f"softmax {m}x{n}", 2 * m * n * 2, "byte", ref, arms, None
 
 
+#: Rows up to which an fp8 case is a decode step: its cost is reading W, and
+#: W comes from GDDR6 the way a model's layers stream it, not from the
+#: Infinity Cache the previous call left it in.
+FP8_DECODE_ROWS = 32
+
+
+def _rotating(copies):
+    """A callable returning the next of `copies` on each call."""
+    i = [0]
+
+    def nxt():
+        i[0] = (i[0] + 1) % len(copies)
+        return copies[i[0]]
+    return nxt
+
+
 def fp8_case(m, n, k, tune):
     """An fp8 linear layer, W8A8 with a scale a token and a scale a channel:
-    bf16 (A @ B^T) * scale_a * scale_b. gfx1201 (an fp8 WMMA) only."""
+    bf16 (A @ B^T) * scale_a * scale_b. gfx1201 (an fp8 WMMA) only.
+
+    At decode sizes (M <= FP8_DECODE_ROWS) every arm cycles through identical
+    copies of W -- twice the Infinity Cache's worth -- so each call reads W
+    from GDDR6. A W read back to back from the cache made a 32-row decode
+    kernel look 1.2x faster than another that is 1.1x slower streaming it
+    (tools/rdna4-probes/fp8_decode3.py)."""
     f8 = torch.float8_e4m3fn
     a = (torch.randn(m, k, device="cuda") * 0.5).to(f8)
     b = (torch.randn(n, k, device="cuda") * 0.5).to(f8)
+    copies = 1
+    if m <= FP8_DECODE_ROWS:
+        copies = max(2, -(-2 * _rounds.IC_BYTES // (n * k)))
+    bw = [b] + [b.clone() for _ in range(copies - 1)]
     sa = torch.rand(m, 1, device="cuda") + 0.5
     sb = torch.rand(n, device="cuda") + 0.5
     ref = (a.float() @ b.float().T) * sa * sb
     outs = {x: torch.empty(m, n, device="cuda", dtype=BF16) for x in ARMS}
     res = {}
     arms = {
-        "torch": (lambda: res.__setitem__("torch", torch._scaled_mm(
-            a, b.T, scale_a=sa, scale_b=sb.view(1, n), out_dtype=BF16)),
+        "torch": (lambda nb=_rotating(bw): res.__setitem__("torch", torch._scaled_mm(
+            a, nb().T, scale_a=sa, scale_b=sb.view(1, n), out_dtype=BF16)),
                   lambda: res["torch"],
                   {"level": "library", "space": "hipBLASLt's heuristic (rowwise scales)",
                    "candidates": None}),
@@ -518,7 +544,8 @@ def fp8_case(m, n, k, tune):
     }
     try:
         from hk.ops.gemm import _fp8_block_m, scaled_mm
-        arms["hk"] = (lambda: scaled_mm(a, b, sa, sb, out=outs["hk"]), lambda: outs["hk"],
+        arms["hk"] = (lambda nb=_rotating(bw): scaled_mm(a, nb(), sa, sb, out=outs["hk"]),
+                      lambda: outs["hk"],
                       {"level": "default", "space": "FP8_DEFAULT by M", "candidates": 1,
                        "chosen": f"block_m {_fp8_block_m(m)}"})
     except Exception as e:                         # noqa: BLE001
@@ -527,11 +554,12 @@ def fp8_case(m, n, k, tune):
         from kernels.gemm.rdna_fp8_preshuffle_gemm import compile_fp8_gemm, preshuffle_b_fp8
         launch = compile_fp8_gemm(M=m, N=n, K=k)
         # B preshuffled once, as a weight is at load; A is read raw.
-        bs = preshuffle_b_fp8(b.T.contiguous()).view(torch.float32).contiguous()
+        bs0 = preshuffle_b_fp8(b.T.contiguous()).view(torch.float32).contiguous()
+        bs = _rotating([bs0] + [bs0.clone() for _ in range(copies - 1)])
         av = a.view(torch.float32)
         sa1, sb1 = sa.view(m).contiguous(), sb.contiguous()
         s = torch.cuda.current_stream()
-        arms["flydsl"] = (lambda: launch(outs["flydsl"], av, bs, sa1, sb1, s), lambda: outs["flydsl"],
+        arms["flydsl"] = (lambda: launch(outs["flydsl"], av, bs(), sa1, sb1, s), lambda: outs["flydsl"],
                           {"level": "default", "space": "compile_fp8_gemm's defaults "
                            "(tuned for 32x8192x6144), B preshuffled outside the timing",
                            "candidates": 1})
@@ -540,14 +568,15 @@ def fp8_case(m, n, k, tune):
     arms["flydsl_tuned"] = "FlyDSL has no tuner for its gfx12 fp8 GEMM"
     try:
         import aiter
-        arms["aiter"] = (lambda: res.__setitem__("aiter", aiter.gemm_a8w8(
-            a, b, sa, sb.view(1, n), None, BF16)), lambda: res["aiter"],
+        arms["aiter"] = (lambda nb=_rotating(bw): res.__setitem__("aiter", aiter.gemm_a8w8(
+            a, nb(), sa, sb.view(1, n), None, BF16)), lambda: res["aiter"],
                          {"level": "library", "space": "aiter.gemm_a8w8 (on gfx1201 its Triton "
                           "kernel: the CK one has no gfx12 build)", "candidates": None})
     except Exception as e:                         # noqa: BLE001
         arms["aiter"] = _why(e)
     # "flop8": screened against the fp8 WMMA peak, not bf16's (_rounds).
-    return f"fp8 {m}x{n}x{k}", 2 * m * n * k, "flop8", ref, arms, None
+    name = f"fp8 {m}x{n}x{k}" + (f" W x{copies}" if copies > 1 else "")
+    return name, 2 * m * n * k, "flop8", ref, arms, None
 
 
 def int8_case(m, n, k, tune):

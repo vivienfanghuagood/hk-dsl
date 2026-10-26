@@ -16,6 +16,7 @@ descriptor, `mma_gate.hip` and friends the library on top).
 | `fp8_small_m.py` | `scaled_mm`'s kernel at 256 and 128 rows a block against `torch._scaled_mm` with per-token x per-channel scales, M 1-4096: where `FP8_SMALL_M` comes from. |
 | `fp8_decode.py` | hk.ops.decode_gemm's kernel with fp8 operands over its schedules, against `scaled_mm`'s tiled kernel and FlyDSL's RDNA4 fp8 GEMM, M 1-64: the source of `FP8_DECODE` / `FP8_DECODE_M`. |
 | `i8_sweep.py` | The fp8 sweep with iu8 operands against `torch._int_mm`: the same point (256x128x64) wins, 217 TOP/s at 4096³ against 215. |
+| `fp8_decode3.py` | The fp8 decode kernels with W read from GDDR6 (six copies rotated past the Infinity Cache), profiler time: hk 585-617 GB/s, ahead of FlyDSL's 32-row kernel, which is ahead only when W stays in the cache. |
 | `vgpr_sweep.sh ARCH LO HI` | A kernel clobbering v0..v(N-1) for each N, and LLVM's VGPRs / Occupancy remark: the allocation granule (24 on gfx1201: 216 -> 7 waves, 217 -> 6, 241 -> 5). Compile only. |
 
 ```bash
