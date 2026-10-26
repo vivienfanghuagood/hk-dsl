@@ -3053,10 +3053,11 @@ __device__ static inline void post_elems(const GL &box, const V &val, const I &i
 }
 /** @brief hk post_elems(runs=True): a lane's run as consecutive pairs from idx of its first element, in
  * stores of up to 16 bytes (two pairs) -- masked by that first index. */
-template<int AUX, ducks::gl::all GL, ducks::rs::all V, ducks::rs::all I>
+template<int AUX, bool BF16, ducks::gl::all GL, ducks::rs::all V, ducks::rs::all I>
 __device__ static inline void post_elems_runs(const GL &box, const V &val, const I &idx, int tag) {
     static_assert(std::is_same_v<typename GL::dtype, int>, "a mailbox is int32 pairs");
-    static_assert(V::run % 2 == 0, "runs of whole 16-byte pairs of pairs");
+    constexpr int PER = BF16 ? 4 : 2;           // values a 16-byte store carries (two pairs)
+    static_assert(V::run % PER == 0, "runs of whole 16-byte pairs of pairs");
     const detail::hk_i32x4 r = detail::hk_elems_srsrc(box);
     #pragma unroll
     for (int a = 0; a < V::rows; a++)
@@ -3064,19 +3065,27 @@ __device__ static inline void post_elems_runs(const GL &box, const V &val, const
         for (int j = 0; j < V::chunks; j++) {
             const int k = idx.data[a][j][0];
             #pragma unroll
-            for (int e = 0; e < V::run; e += 2) {
-                uint32_t w[4] = {detail::hk_bits(val.data[a][j][e]), uint32_t(tag),
-                                 detail::hk_bits(val.data[a][j][e + 1]), uint32_t(tag)};
-                detail::hk_buf_store_bytes<16, AUX>(r, k < 0 ? 0xFFFFFFFFu : uint32_t(k + e) * 8u, w);
+            for (int e = 0; e < V::run; e += PER) {
+                uint32_t w[4];
+                if constexpr (BF16) {          // two bf16 a pair, the first in the low half (the values' top halves)
+                    w[0] = (detail::hk_bits(val.data[a][j][e]) >> 16) | (detail::hk_bits(val.data[a][j][e + 1]) & 0xFFFF0000u);
+                    w[2] = (detail::hk_bits(val.data[a][j][e + 2]) >> 16) | (detail::hk_bits(val.data[a][j][e + 3]) & 0xFFFF0000u);
+                } else {
+                    w[0] = detail::hk_bits(val.data[a][j][e]);
+                    w[2] = detail::hk_bits(val.data[a][j][e + 1]);
+                }
+                w[1] = w[3] = uint32_t(tag);
+                detail::hk_buf_store_bytes<16, AUX>(r, k < 0 ? 0xFFFFFFFFu : uint32_t(k + e / (PER / 2)) * 8u, w);
             }
         }
 }
 /** @brief hk take_elems(runs=True): a lane's run from consecutive pairs from idx of its first element, in
  * loads of 16 bytes (two pairs); all polled together. */
-template<int AUX, ducks::rs::all D, ducks::gl::all GL, ducks::rs::all I>
+template<int AUX, bool BF16, ducks::rs::all D, ducks::gl::all GL, ducks::rs::all I>
 __device__ static inline void take_elems_runs(D &dst, const GL &box, const I &idx, int tag, long long timeout) {
     static_assert(std::is_same_v<typename GL::dtype, int>, "a mailbox is int32 pairs");
-    static_assert(D::run % 2 == 0, "runs of whole 16-byte pairs of pairs");
+    constexpr int PER = BF16 ? 4 : 2;
+    static_assert(D::run % PER == 0, "runs of whole 16-byte pairs of pairs");
     const detail::hk_i32x4 r = detail::hk_elems_srsrc(box);
     if (!detail::hk_any_live(idx)) {
         detail::strip_each<D>([&](int a, int j, int e) { dst.data[a][j][e] = typename D::T(0); });
@@ -3091,12 +3100,19 @@ __device__ static inline void take_elems_runs(D &dst, const GL &box, const I &id
             for (int j = 0; j < D::chunks; j++) {
                 const int k = idx.data[a][j][0];
                 #pragma unroll
-                for (int e = 0; e < D::run; e += 2) {
+                for (int e = 0; e < D::run; e += PER) {
                     uint32_t w[4];
-                    detail::hk_buf_load_bytes<16, AUX>(r, k < 0 ? 0xFFFFFFFFu : uint32_t(k + e) * 8u, w);
+                    detail::hk_buf_load_bytes<16, AUX>(r, k < 0 ? 0xFFFFFFFFu : uint32_t(k + e / (PER / 2)) * 8u, w);
                     ready &= (k < 0) | ((int(w[1]) == tag) & (int(w[3]) == tag));
-                    dst.data[a][j][e] = detail::hk_from_bits<typename D::T>(w[0]);
-                    dst.data[a][j][e + 1] = detail::hk_from_bits<typename D::T>(w[2]);
+                    if constexpr (BF16) {
+                        dst.data[a][j][e]     = detail::hk_from_bits<typename D::T>(w[0] << 16);
+                        dst.data[a][j][e + 1] = detail::hk_from_bits<typename D::T>(w[0] & 0xFFFF0000u);
+                        dst.data[a][j][e + 2] = detail::hk_from_bits<typename D::T>(w[2] << 16);
+                        dst.data[a][j][e + 3] = detail::hk_from_bits<typename D::T>(w[2] & 0xFFFF0000u);
+                    } else {
+                        dst.data[a][j][e] = detail::hk_from_bits<typename D::T>(w[0]);
+                        dst.data[a][j][e + 1] = detail::hk_from_bits<typename D::T>(w[2]);
+                    }
                 }
             }
         if (__all(ready)) break;

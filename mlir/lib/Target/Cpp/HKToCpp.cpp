@@ -1567,12 +1567,14 @@ private:
             name(o.getB()) + ", " + name(o.getAcc()) + ");");
         })
         .Case([&](PostElemsOp o) {
-          w(std::string("kittens::post_elems") + (o.getRuns() ? "_runs" : "") + "<" + std::to_string(o.getAux()) + ">(" + name(o.getDst()) + ", " +
+          w(std::string("kittens::post_elems") + (o.getRuns() ? "_runs" : "") + "<" + std::to_string(o.getAux()) +
+            (o.getRuns() ? (o.getBf16() ? ", true" : ", false") : "") + ">(" + name(o.getDst()) + ", " +
             name(o.getVal()) + ", " + name(o.getIdx()) + ", " + name(o.getTag()) + ");");
         })
         .Case([&](TakeElemsOp o) {
           Value d = dest(Value(), o.getResult());
-          w(std::string("kittens::take_elems") + (o.getRuns() ? "_runs" : "") + "<" + std::to_string(o.getAux()) + ">(" + name(d) + ", " +
+          w(std::string("kittens::take_elems") + (o.getRuns() ? "_runs" : "") + "<" + std::to_string(o.getAux()) +
+            (o.getRuns() ? (o.getBf16() ? ", true" : ", false") : "") + ">(" + name(d) + ", " +
             name(o.getSrc()) + ", " + name(o.getIdx()) + ", " + name(o.getTag()) + ", " +
             std::to_string(o.getTimeout()) + "LL);");
         })

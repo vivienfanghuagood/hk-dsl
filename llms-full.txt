@@ -3424,7 +3424,7 @@ bytes), masked by that first index -- 8 fp8 values in one 8-byte store, not eigh
 #### `Global.post_elems`
 
 ```python
-Global.post_elems(self, val: Tile, idx: Tile, tag, *, runs: bool = False) -> None
+Global.post_elems(self, val: Tile, idx: Tile, tag, *, runs: bool = False, bf16: bool = False) -> None
 ```
 
 *New after 0.7.0*
@@ -3438,7 +3438,7 @@ other side, one poll (dsv41_mono's Mailbox; hk.comm.post for one scalar).
 #### `Global.take_elems`
 
 ```python
-Global.take_elems(self, idx: Tile, tag, dtype: Optional[DType] = None, *, timeout_s: float = 2.0, runs: bool = False) -> Tile
+Global.take_elems(self, idx: Tile, tag, dtype: Optional[DType] = None, *, timeout_s: float = 2.0, runs: bool = False, bf16: bool = False) -> Tile
 ```
 
 *New after 0.7.0*
