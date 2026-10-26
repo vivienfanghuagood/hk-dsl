@@ -72,9 +72,10 @@ ROUTES: Dict[str, Route] = {r.name: r for r in (
     _R("vllm_moe_a8w4", "vllm", "HK_VLLM_MOE_A8W4", True, ("gfx950",),
        "K1: AITER a8w4 MoE (DeepSeek-V4.1) at M >= 2560",
        "error vs fp32 at or below AITER's; real-weight GSM8K / ARC within stock's noise (B1)"),
-    _R("vllm_int4", "vllm", "HK_VLLM_INT4", True, ("gfx1100", "gfx950"),
+    _R("vllm_int4", "vllm", "HK_VLLM_INT4", True, ("gfx1100", "gfx950", "gfx1201"),
        "AWQ 4-bit linear layers on hk's decode GEMM",
-       "greedy tokens identical to stock's, Qwen3-8B/14B-AWQ (history 22, 42)"),
+       "greedy tokens identical to stock's, Qwen3-8B/14B-AWQ (history 22, 42); gfx1201: "
+       "Qwen3-8B-AWQ tokens identical, counts equal round for round, decode 2.5-4.5x (history 50)"),
     _R("vllm_gemm", "vllm", "HK_VLLM_GEMM", True, ("gfx1100", "gfx1201"),
        "unquantized linear layers by the measured route table, plus tuning at load",
        "gfx1100: greedy tokens identical to stock's, or a bf16 near-tie (history 35). "

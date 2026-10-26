@@ -83,3 +83,23 @@ exactly that -- the shipped table and an empty records directory, a fresh
 install: the first two engines measured the missing shapes at load (60 s, then
 7), tokens identical, counts equal round to round, prefill 1.11-1.14x, total
 1.01-1.10x.
+
+## AWQ and MoE
+
+The two other routes gfx1100 validated, on the models it validated them with
+(downloaded for this, into our own directory), the same Gate C under graphs:
+
+| | `vllm_int4`, Qwen3-8B-AWQ | `vllm_moe`, OLMoE-1B-7B-0125-Instruct |
+|---|---|---|
+| greedy tokens, 4 shapes | 72/72 identical | 72/72 identical |
+| routing counts, round to round | equal | equal |
+| prefill | tie | tie |
+| decode, batch 1 | **3.2-4.5x** | 1.10x at 2048 (1024: noise) |
+| decode, batch 16 | **2.5-3.7x** | **0.90-0.93x** |
+| total | 1.22-2.94x | 1.09x at 2048x1; **0.93-0.96x** at batch 16 |
+
+The AWQ route replaces this vLLM's own AWQ path, whose decode on gfx1201 is
+2.5-4.5x slower than hk's decode GEMV reading the same 4-bit weights; it is on by
+default on gfx1201. The MoE route is right but loses at 16 tokens a step --
+it runs gfx1100's MoE GEMM schedule, untuned here -- so it stays off on gfx1201
+until it does not. (OLMoE takes 4096 tokens, so its contexts are 1024 and 2048.)
