@@ -3014,6 +3014,23 @@ __device__ inline uint32_t hk_elem_off(int k, uint32_t size) {
     return k < 0 ? 0xFFFFFFFFu : uint32_t(k) * size;     // past the range: reads 0, stores nothing
 }
 }  // namespace detail
+/** @brief hk lane_gather: element (r, c) of lane l = the same run element of lane lanes(r, c). */
+template<ducks::rs::all D, ducks::rs::all I>
+__device__ static inline void lane_gather(D &dst, const D &src, const I &lanes) {
+    detail::strip_each<D>([&](int r, int j, int e) {
+        const int v = __builtin_amdgcn_ds_bpermute(lanes.data[r][j][e] * 4,
+                                                   int(detail::hk_bits(src.data[r][j][e])));
+        dst.data[r][j][e] = detail::hk_from_bits<typename D::T>(uint32_t(v));
+    });
+}
+/** @brief hk mfma_strip f32_16x16x4: acc (4 a lane) += A B^T, lane l holding A[l%16][l/16], B[l%16][l/16]. */
+template<ducks::rs::all D, ducks::rs::all A, ducks::rs::all B>
+__device__ static inline void mfma_strip_f32_16x16x4(D &dst, const A &a, const B &b, const D &acc) {
+    typedef float v4f __attribute__((ext_vector_type(4)));
+    v4f c = {acc.data[0][0][0], acc.data[0][0][1], acc.data[0][0][2], acc.data[0][0][3]};
+    c = __builtin_amdgcn_mfma_f32_16x16x4f32(a.data[0][0][0], b.data[0][0][0], c, 0, 0, 0);
+    dst.data[0][0][0] = c[0]; dst.data[0][0][1] = c[1]; dst.data[0][0][2] = c[2]; dst.data[0][0][3] = c[3];
+}
 /** @brief hk.iota: element (r, c) = c, the column a lane's run element sits in. */
 template<ducks::rs::all D>
 __device__ static inline void iota(D &dst) {

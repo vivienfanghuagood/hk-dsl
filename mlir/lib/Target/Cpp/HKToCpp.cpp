@@ -1556,6 +1556,15 @@ private:
           Value d = dest(o.getDst(), o.getResult());
           call("copy", d, {name(o.getSrc())});
         })
+        .Case([&](LaneGatherOp o) {
+          Value d = dest(Value(), o.getResult());
+          w("kittens::lane_gather(" + name(d) + ", " + name(o.getSrc()) + ", " + name(o.getLanes()) + ");");
+        })
+        .Case([&](MfmaStripOp o) {
+          Value d = dest(Value(), o.getResult());
+          w("kittens::mfma_strip_f32_16x16x4(" + name(d) + ", " + name(o.getA()) + ", " +
+            name(o.getB()) + ", " + name(o.getAcc()) + ");");
+        })
         .Case([&](IotaOp o) {
           Value d = dest(Value(), o.getResult());
           w("kittens::iota(" + name(d) + ");");
