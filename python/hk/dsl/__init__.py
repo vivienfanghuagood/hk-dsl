@@ -35,7 +35,7 @@ from .kernel import Constexpr, Kernel, TracedKernel, Tensor, func, kernel
 from .values import (  # noqa: F401
     Bool, Coord, Global, Granules, Int, SharedTile, SharedVec, Tile, Value,
     Vec, View, as_vec, broadcast_col, broadcast_row, coord, elem_coord, full,
-    copy_mx_scales, load_fp4_frags, load_fp4_frags_lds, mx_quant_store, load_mx_scales, load_w4, mma, mma_ABt_mx, neg_infty, rand, tile_coord, transpose, transpose_sep, zeros,
+    copy_mx_scales, load_fp4_frags, load_fp4_frags_lds, map_cpp, mx_quant_store, load_mx_scales, load_w4, mma, mma_ABt_mx, neg_infty, rand, tile_coord, transpose, transpose_sep, zeros,
 )
 from .values import scalar_op as _scalar_op
 
@@ -123,7 +123,7 @@ __all__ = [
     "arch", "lds", "math", "collective", "comm", "group", "Group",
     "range", "range_constexpr", "if_", "scope",
     "cdiv", "min", "max", "zeros", "full", "neg_infty", "rand", "load_w4", "load_mx_scales", "load_fp4_frags", "load_fp4_frags_lds", "mx_quant_store", "copy_mx_scales", "mma_ABt_mx", "transpose",
-    "transpose_sep", "broadcast_row", "broadcast_col", "as_vec", "mma",
+    "transpose_sep", "broadcast_row", "broadcast_col", "as_vec", "mma", "map_cpp",
     "coord", "tile_coord", "elem_coord",
     "Int", "Bool", "Tile", "Vec", "Global", "View", "SharedTile", "SharedVec",
     "Granules", "Coord",

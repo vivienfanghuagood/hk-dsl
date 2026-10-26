@@ -473,7 +473,8 @@ template<typename RT> __device__ inline int2 hk_frag_coord(int e, int lane) {
  * v_cvt_pk_bf16_f32 on gfx950.
  */
 template<typename U, typename T> __device__ inline U hk_cvt(const T &v) {
-    if constexpr (std::is_same_v<U, bf16> && std::is_same_v<T, float>) return __float2bfloat16(v);
+    if constexpr (std::is_same_v<U, T>) return v;
+    else if constexpr (std::is_same_v<U, bf16> && std::is_same_v<T, float>) return __float2bfloat16(v);
     else return base_types::convertor<U, T>::convert(v);
 }
 
@@ -2965,6 +2966,20 @@ HK_STRIP_BINARY(div, div)
 HK_STRIP_BINARY(max, max)
 HK_STRIP_BINARY(min, min)
 #undef HK_STRIP_BINARY
+
+namespace detail {
+template<typename A> __device__ inline auto hk_lane_arg(const A &a, int r, int j, int e) {
+    if constexpr (ducks::rs::all<A>) return a.data[r][j][e];
+    else return a;
+}
+}  // namespace detail
+/** @brief hk.map_cpp: dst's element (r, c) = f(each strip argument's element (r, c), or the scalar). */
+template<ducks::rs::all D, typename F, typename... A>
+__device__ static inline void map_cpp(D &dst, F &&f, const A &... a) {
+    detail::strip_each<D>([&](int r, int j, int e) {
+        dst.data[r][j][e] = static_cast<typename D::T>(f(detail::hk_lane_arg(a, r, j, e)...));
+    });
+}
 
 /** @brief Copy a strip or a per-row vector, converting the element type. */
 template<ducks::rs::all D, ducks::rs::all S>

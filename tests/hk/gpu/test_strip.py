@@ -129,3 +129,37 @@ def test_a_bounded_store_leaves_the_rest_of_the_tensor_alone():
     k(x, view)
     torch.testing.assert_close(big[:3, :200 * W], x + 1.0)
     assert (big[:3, 200 * W:] == -5.0).all() and (big[3:] == -5.0).all()
+
+
+# ---------------------------------------------------------------- hk.map_cpp (gfx950)
+
+@pytest.mark.skipif(_target().wave != 64, reason="hk.map_cpp is gfx950's")
+def test_map_cpp_computes_bits_fmas_and_takes_scalars():
+    S = hk.RS(hk.fp32, 1, 512, 8)
+
+    def mapped(x: hk.Tensor[hk.fp32], y: hk.Tensor[hk.fp32], n: hk.Tensor[hk.i32],
+               e: hk.Tensor[hk.i32], f: hk.Tensor[hk.fp32]):
+        row = hk.arch.block_idx.x
+        a = x.at[row, 0].load(S)
+        b = y.at[row, 0].load(S)
+        k = n.at[0].load_scalar()
+        # the biased exponent of the smallest power of two >= |a|, plus a device scalar
+        ce = hk.map_cpp("((__builtin_bit_cast(int, __builtin_fabsf(x0)) >> 23) & 0xFF)"
+                        " + ((__builtin_bit_cast(int, x0) & 0x7FFFFF) != 0) + x1", a, k, dtype=hk.i32)
+        e.at[row, 0].store(ce)
+        f.at[row, 0].store(hk.map_cpp("__builtin_fmaf(x0, x1, x0)", a, b))
+
+    k = hk.kernel(mapped, warps=1, name="map_cpp_bits", grid=lambda p: (p.x.rows, 1, 1))
+    g = torch.Generator(device="cpu").manual_seed(3)
+    x = torch.randn(64, 512, generator=g) * torch.exp(torch.randn(64, 512, generator=g) * 4)
+    y = torch.randn(64, 512, generator=g)
+    n = torch.tensor([5], dtype=torch.int32)
+    e = torch.zeros(64, 512, dtype=torch.int32, device="cuda")
+    f = torch.zeros(64, 512, device="cuda")
+    k(x.cuda(), y.cuda(), n.cuda(), e, f)
+    torch.cuda.synchronize()
+    bits = x.abs().view(torch.int32)
+    want_e = ((bits >> 23) & 0xFF) + ((x.view(torch.int32) & 0x7FFFFF) != 0).int() + 5
+    assert torch.equal(e.cpu(), want_e)
+    want_f = (x.double() * y.double() + x.double()).float()   # one rounding of the exact a*b + a
+    assert torch.equal(f.cpu().view(torch.int32), want_f.view(torch.int32))
