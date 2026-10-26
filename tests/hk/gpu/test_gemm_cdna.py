@@ -64,8 +64,8 @@ def test_the_wave_split_is_right(name, m, n, k, cus, monkeypatch):
 
 def test_a_kernel_the_spill_gate_refuses_falls_back(monkeypatch, capfd):
     """ROCm 10's hipcc spills dp128x224 (13 VGPRs, 44 B/lane) and the spill gate
-    refuses it; matmul at a shape the table routes there raised (scoreboard-mi355x
-    repro). Here the gate is made to see that spill whatever this hipcc builds: the
+    refuses it; matmul at a shape the table routes there raised (the MI355X
+    scoreboard's repro). Here the gate is made to see that spill whatever this hipcc builds: the
     candidate is refused, never launched, and the call is the next candidate's, right."""
     from hk.ops import gemm_cdna_dp
     from hk.runtime import resources

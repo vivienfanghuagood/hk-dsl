@@ -38,7 +38,7 @@ MEASURED = {(1792, 5120), (2304, 5120), (5120, 1152), (5120, 4096), (16384, 1280
 MIN_M = 2048
 #: (N, K) whose smallest M is not MIN_M: where the eight-warp kernel the route picks for them
 #: ("8w", whole 256 x 256 blocks) was measured faster than vLLM's, FlyDSL's, AITER Triton's and
-#: hipBLASLt's kernels, route level with the activation quant (MI355X scoreboard, route-tune-a),
+#: hipBLASLt's kernels, route level with the activation quant (the MI355X scoreboard's harness),
 #: bit-identical to vLLM's at every M:
 #: - (4096, 1280), indexer wq_b: 1.08-1.20x from 2825 to 4096, 1.06-1.17x above. At 2048 (128
 #:   blocks on 256 CUs) FlyDSL's bmm is faster (0.81x), so not from MIN_M. 2304-2824 were
