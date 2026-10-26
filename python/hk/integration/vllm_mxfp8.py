@@ -40,10 +40,12 @@ MIN_M = 2048
 #: ("8w", whole 256 x 256 blocks) was measured faster than vLLM's, FlyDSL's, AITER Triton's and
 #: hipBLASLt's kernels, route level with the activation quant (MI355X scoreboard, route-tune-a),
 #: bit-identical to vLLM's at every M:
-#: - (4096, 1280), indexer wq_b: 1.06-1.18x from 2825, where its 12 x 16 blocks fill 192 of the
-#:   256 CUs; at 2048 (128 blocks) FlyDSL's bmm is faster (0.82x), so not from MIN_M.
-#: - (12800, 6144), engram wkv: 1.42x at 1024 (400 blocks; hipBLASLt's is the best there), 1.32x
-#:   at 1536. Below 1024 hk's lead shrinks to 1.04x (512) and is gone at 64.
+#: - (4096, 1280), indexer wq_b: 1.08-1.20x from 2825 to 4096, 1.06-1.17x above. At 2048 (128
+#:   blocks on 256 CUs) FlyDSL's bmm is faster (0.81x), so not from MIN_M. 2304-2824 were
+#:   1.12-1.19x as well: the bound could come down to 2304, not yet checked end to end.
+#: - (12800, 6144), engram wkv: 1.39x at 1024 (hipBLASLt the best there), 1.75-1.79x at 1025,
+#:   1.29x at 1536, 1.39x at 2047. Below it: 1.38-1.45x at 768-1023 (likewise a candidate for
+#:   a lower bound), 1.02x at 512, a loss at 64.
 MIN_M_NK = {(4096, 1280): 2825, (12800, 6144): 1024}
 #: Route hk-able calls to hk (True) or leave every call to vLLM (False): an in-process A/B.
 ENABLED = True
