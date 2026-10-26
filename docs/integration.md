@@ -643,7 +643,7 @@ keep their own counters.
 
 ## SGLang
 
-Launched with the plugin as in [turning them on](#turning-them-on), or patched
+Launched with the plugin as in [on by default](#on-by-default-and-turning-it-off), or patched
 in-process:
 
 ```python

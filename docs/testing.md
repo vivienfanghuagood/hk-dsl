@@ -196,7 +196,10 @@ cancels a PR's run in progress, but main's runs always finish:
 - **The dialect is built.** `scripts/build_hk_mlir.sh` builds it against
   that MLIR in about 20 seconds.
 - **The IR tier runs** (`tests/hk/ir`), with `tests/hk/engines`, which
-  skips there: the runner has neither vLLM nor SGLang.
+  skips there: the runner has neither vLLM nor SGLang. The same leg builds
+  the cp310 wheel, retags it manylinux and runs
+  `scripts/check_wheel_glibc.py` on it: no wheel may need a newer glibc than
+  its tag ([building](building.md#wheels)).
 - **hipcc is installed from AMD's apt repository**, as `hip-dev` and
   `rocm-device-libs` of ROCm 7.1, about 2.3 GB.
 - **The codegen tier runs** (`tests/hk/codegen`), under pytest-xdist.

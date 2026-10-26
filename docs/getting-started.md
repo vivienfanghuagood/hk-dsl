@@ -19,16 +19,34 @@ From nothing to a kernel that is right and at least as fast as
 You need Linux x86_64 and ROCm's hipcc to compile; a Radeon (gfx1100, RDNA3)
 or an Instinct MI355X (gfx950, CDNA4; see [CDNA](design/cdna.md) for what runs
 there) and torch to launch. torch is not a dependency of the package — install the
-ROCm build you already use.
+ROCm build you already use. hk finds hipcc on `PATH` (or `HK_HIPCC`, and the
+HIP headers under `ROCM_PATH`, [the runtime](runtime.md#environment-variables)).
+The GPU tests run with ROCm 7.2 (7.2.4 on gfx1100, 7.2.3 on gfx950) and, on
+gfx950, also with the ROCm 10 of vLLM's ROCm image; the no-GPU CI compiles with
+ROCm 7.1's hipcc ([testing](testing.md#ci)).
 
-**From PyPI**, for CPython 3.10 (glibc 2.35+) or 3.12 (glibc 2.38+):
+**From PyPI**, for CPython 3.10 or 3.12 on glibc 2.35 or newer (Ubuntu 22.04
+and later):
 
 ```bash
 pip install hk-dsl
 ```
 
 A wheel is built per Python interpreter, because it carries the MLIR bindings
-for one CPython. The same wheels are attached to each
+for one CPython. 0.7.0 has three on PyPI:
+
+| wheel | glibc |
+|---|---|
+| `hk_dsl-0.7.0-cp310-cp310-manylinux_2_35_x86_64.whl` | 2.35+ |
+| `hk_dsl-0.7.0-cp312-cp312-manylinux_2_35_x86_64.whl` | 2.35+ |
+| `hk_dsl-0.7.0-cp312-cp312-manylinux_2_38_x86_64.whl` | 2.38+ |
+
+pip takes the cp312 `manylinux_2_38` wheel where glibc is 2.38 or newer and
+the `manylinux_2_35` one elsewhere, as in vLLM's ROCm images (Ubuntu 22.04);
+the two are the same package, built on Ubuntu 24.04 and 22.04. From the next
+release on, cp312 is a single `manylinux_2_35` wheel, as cp310 is: both are
+built on glibc 2.35, and each wheel's glibc is checked against its tag
+([building](building.md#wheels)). The same wheels are attached to each
 [GitHub release](https://github.com/vivienfanghuagood/hk-dsl/releases). For
 another interpreter, build one ([building](building.md#wheels)).
 
@@ -40,7 +58,9 @@ by default (`HK_DISABLE=1` turns them off, [integration](integration.md#on-by-de
 and it has `hk.comm` (hand-offs between gfx950's XCDs and between GPUs), a
 stated row-reduction order for strips, K2's fused activation quant, and bounded
 synchronous `g.load` / `g.store` on gfx950, which 0.6.0 lacked
-([changelog](../CHANGELOG.md)).
+([changelog](../CHANGELOG.md)). Main also has workgroup placement
+(`hk.kernel(placement=)`), which no release has yet: the API reference marks
+such names *New after 0.7.0*.
 
 **From source.** The backend is the `third_party/HipKittens` submodule, so
 clone with `--recursive` (or run `git submodule update --init`). The dialect
@@ -273,7 +293,9 @@ tiers and what each catches are in [testing](testing.md).
 from the smallest complete one to flash attention, Triton's tutorials and
 the row kernels a serving engine runs; a kernel taken into vLLM end to end
 (`11_vllm_integration.py`); two files of template kernels
-(`12_templates_rowwise.py`, `13_templates_gemm.py`); and `validate.py`,
+(`12_templates_rowwise.py`, `13_templates_gemm.py`); two about gfx950's
+XCDs, a task graph on `hk.comm` (`14_task_graph.py`) and workgroup placement
+(`15_placement.py`); and `validate.py`,
 which checks the shipped `hk.ops` kernels against torch. Each kernel example
 checks itself against torch and then times itself:
 

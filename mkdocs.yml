@@ -44,8 +44,11 @@ markdown_extensions:
   - attr_list
   - md_in_html
   - tables
+  # GitHub's heading ids (each hyphen kept: `--profile` -> `---profile`), so
+  # one link works on GitHub and on the site.
   - toc:
       permalink: true
+      slugify: !!python/object/apply:pymdownx.slugs.slugify {kwds: {case: lower}}
   - pymdownx.details
   - pymdownx.highlight
   - pymdownx.superfences:
@@ -70,6 +73,9 @@ nav:
       - Elementwise and rowwise: templates/elementwise-rowwise.md
       - GEMM with an epilogue: templates/gemm.md
   - hk.check: check.md
+  - "hk.profile: why it is slow": profile.md
+  - Schedules: schedules.md
+  - "Tuning a GEMM: hk.tune": tune.md
   - The language: language.md
   - API reference:
       - api/README.md
@@ -82,7 +88,10 @@ nav:
       - hk.comm: api/hk.comm.md
       - hk.templates: api/hk.templates.md
       - hk.ops: api/hk.ops.md
+      - hk.schedules: api/hk.schedules.md
+      - hk.tune: api/hk.tune.md
       - hk.check: api/hk.check.md
+      - hk.profile: api/hk.profile.md
       - hk.target: api/hk.target.md
   - Performance: performance.md
   - How it works:
@@ -90,15 +99,19 @@ nav:
       - The runtime: runtime.md
       - Building: building.md
       - Testing: testing.md
+      - Releasing: releasing.md
   - Serving engines:
       - Integration: integration.md
+      - "The end-to-end loop: a model, measured and patched": e2e-loop.md
       - "For agents: kernels in an engine": agents.md
   - Design:
       - The DX goal: design/dx-goal.md
+      - Schedules as data: design/schedules.md
+      - Tuning goal: design/tuning-goal.md
       - CDNA3/4: design/cdna.md
       - HipKittens on CDNA4: design/cdna-hipkittens-ops.md
       - Serving readiness: design/serving-readiness.md
       - hk.comm (XCDs and GPUs): design/comm.md
-      - Workgroup placement (design): design/placement-pass.md
+      - Workgroup placement: design/placement-pass.md
       - Cross-architecture API audit: dx/api-consistency.md
   - Development record: history/README.md

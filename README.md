@@ -115,6 +115,13 @@ print(gelu_mul.build().report())    # hipcc and the resource gate -- no GPU
 It ties `torch.compile` on an MI355X ([check](docs/check.md#the-loop)).
 More: [the language](docs/language.md), [examples](examples/README.md).
 
+On gfx950 a kernel can also hand work between workgroups, XCDs and GPUs:
+`hk.comm` has scoped tensors, signal / wait with a timeout instead of a hang,
+work queues, grid barriers, tagged mailboxes and symmetric memory across
+GPUs, each lowered to what a memory-model litmus suite found correct
+([hk.comm](docs/language.md#between-workgroups-xcds-and-gpus-hkcomm-gfx950),
+[design](docs/design/comm.md), [a task graph](examples/14_task_graph.py)).
+
 ```mermaid
 flowchart LR
     A["kernel body<br/>or template hook"] -->|trace| B["hk MLIR dialect"]
@@ -136,10 +143,15 @@ slow operand layout, a copy racing a barrier ([the traps](docs/README.md#the-tra
 
 ## Install
 
-`pip install hk-dsl`, for CPython 3.10 (glibc 2.35+) or 3.12 (glibc 2.38+) on
-Linux x86_64. The release is 0.7.0; it carries the HipKittens headers, so at
-run time only hipcc is needed, and a ROCm build of torch (not a dependency)
-to launch. From source, with the HipKittens submodule:
+`pip install hk-dsl`, for CPython 3.10 or 3.12 on Linux x86_64 with glibc
+2.35 or newer (Ubuntu 22.04 and later). The release is 0.7.0: one
+`manylinux_2_35` wheel for cp310, and for cp312 a `manylinux_2_35` and a
+`manylinux_2_38` wheel, of which pip picks the newest your glibc takes; from
+the next release cp312 is one `manylinux_2_35` wheel too. A
+wheel carries the HipKittens headers, so at run time it needs ROCm's hipcc
+(on `PATH`, or `HK_HIPCC`; tested with ROCm 7.2 and the ROCm 10 of vLLM's
+image) and, to launch, a ROCm build of torch (not a dependency). From
+source, with the HipKittens submodule:
 
 ```bash
 git clone --recursive https://github.com/vivienfanghuagood/hk-dsl.git && cd hk-dsl

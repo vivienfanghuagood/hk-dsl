@@ -2,15 +2,15 @@
 
 # API reference
 
-Generated from the code by `scripts/gen_api_docs.py`: every public name's signature and docstring, and what is new or changed since the hk-dsl 0.6.0 wheel on PyPI ("*New after 0.6.0*": `pip install hk-dsl==0.6.0` does not have it; 0.7.0 does, and a checkout, docs/building.md). For how the language is written, read [the language](../language.md) first.
+Generated from the code by `scripts/gen_api_docs.py`: every public name's signature and docstring, and what is new or changed since the hk-dsl 0.7.0 wheel on PyPI ("*New after 0.7.0*": `pip install hk-dsl==0.7.0` does not have it; no release has it yet, only a checkout of main, docs/building.md). For how the language is written, read [the language](../language.md) first.
 
-- [`hk`: kernels, types, values](hk.md) -- 59 entries
+- [`hk`: kernels, types, values](hk.md) -- 61 entries
 - [`hk.math`](hk.math.md) -- 17 entries
 - [`hk.arch`](hk.arch.md) -- 15 entries
 - [`hk.lds`](hk.lds.md) -- 6 entries
 - [`hk.group`](hk.group.md) -- 2 entries
 - [`hk.collective`](hk.collective.md) -- 3 entries
-- [`hk.comm`](hk.comm.md) -- 9 entries
+- [`hk.comm`](hk.comm.md) -- 10 entries
 - [`hk.ops`: the shipped kernels](hk.ops.md) -- 36 entries
 - [`hk.templates`](hk.templates.md) -- 14 entries
 - [`hk.schedules`: schedules as data](hk.schedules.md) -- 19 entries

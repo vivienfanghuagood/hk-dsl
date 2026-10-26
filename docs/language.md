@@ -19,6 +19,8 @@ in [the API reference](api/README.md).
 - [Memory](#memory)
 - [Rows by index, atomics, random numbers](#rows-by-index-atomics-random-numbers)
 - [Control flow](#control-flow)
+- [Between workgroups, XCDs and GPUs: `hk.comm` (gfx950)](#between-workgroups-xcds-and-gpus-hkcomm-gfx950)
+- [Which XCD runs a workgroup: placement](#which-xcd-runs-a-workgroup-placement)
 - [Namespaces](#namespaces)
 - [`@hk.func`](#hkfunc)
 - [Errors and locations](#errors-and-locations)
@@ -47,7 +49,9 @@ def row_sumsq(x: hk.Tensor[hk.bf16], o: hk.Tensor[hk.fp32]):
 ```
 
 `@hk.kernel` takes `warps`, `grid`, and optionally `arch`, `name`,
-`max_vgprs`, `min_occupancy` and `defines` (`python/hk/dsl/kernel.py`).
+`max_vgprs`, `min_occupancy`, `defines`, `resident` and `placement`
+(`python/hk/dsl/kernel.py`; the last two are
+[below](#between-workgroups-xcds-and-gpus-hkcomm-gfx950)).
 `defines` is a dict emitted as `#define KEY value` lines ahead of the
 generated C++, for the knobs of the headers it includes. The one a kernel
 most often needs is `defines={"HK_BF16_ROUND": 2}` on gfx1100: there a
@@ -122,7 +126,8 @@ a strip (`!hk.rt<f32, 1x1024, strip<8>>`, `kittens::rs`):
   converts its element type on the way. `bounded=True` reads zero past the
   tensor's last row and column, and writes nothing there.
 - **Operations.** It maps, reduces along rows (a butterfly that leaves the
-  answer in every lane) and along columns, broadcasts its `col_vec` and
+  answer in every lane; on gfx950 in an order you can state, below) and
+  along columns, broadcasts its `col_vec` and
   `row_vec`, and fills by column (`right_fill_`, `left_fill_`). On gfx950,
   `swap_halves()` exchanges each row's two halves (column c takes column
   `(c + cols/2) % cols`, RoPE's rotate_half without the sign): a register
@@ -144,6 +149,28 @@ v = x.at[row, warp * 512].load(S)           # 16 bytes a lane of bf16, twice on 
 sq = hk.collective.cross_warp((v * v).sum(axis=1), "add", WARPS)
 v *= (sq / x.cols + EPS).rsqrt()
 o.at[row, warp * 512].store(v)
+```
+
+**A stated row-reduction order (gfx950).** A result that must match another
+kernel's bit for bit -- a norm's sum of squares against vLLM's or aiter's --
+needs the order of the additions, not only their set.
+`t.sum(axis=1, lanes="seq" | "tree", xor=(32, 16, 8, 4, 2, 1))`, and the same
+for `max`, `min` and `prod`, states it:
+- a lane's own values are combined left to right (`"seq"`) or as a balanced
+  tree (`"tree"`), then the lanes over the given xor offsets in that order,
+  each of 1, 2, 4, 8, 16 and 32 once;
+- the strip's values are summed as they are: `(x * y).sum(...)` adds the
+  rounded products, and the compiler does not fuse them into the sum (#57);
+- `x.sum(axis=1, lanes="seq", xor=..., times=y)` is the fused form:
+  `s = fma(x0, y0, r(x1 * y1))`, then `s = fma(xi, yi, s)`, then the xor
+  sums. That is what a compiled `s += a * b` loop computes, and what
+  dsv41_mono's and aiter's norms do for their sum of squares (`times=x`).
+
+Without the arguments nothing changes (a tree, then 1 .. 32). They are
+refused on wave32 targets, on columns and on WMMA tiles.
+
+```python
+sq = v.sum(axis=1, lanes="seq", xor=(32, 16, 8, 4, 2, 1), times=v)   # aiter's order
 ```
 
 `hk.ops.norm`'s RMSNorm, fused add + RMSNorm, LayerNorm and softmax run on
@@ -203,10 +230,19 @@ can be bounded by rows, `x[idx].load(ty, bounded=True)` and
 row read zeros and drop the stores past it, with no branch
 ([row-predicated loads and stores](history/10-row-predicated.md)); a strip
 is bounded by rows and columns alike (`x.at[r, c].load(S, bounded=True)`).
+A workgroup's synchronous copy, `g.load(tile, view)` / `g.store(view, tile)`,
+is bounded by rows without asking on gfx1100 and on gfx950: rows past the
+tensor's last read zero and are not written. On gfx950 that holds from 0.7.0
+(#49); 0.6.0's read up to a tile's rows past the tensor there and its
+`g.store` overwrote them. gfx942's copies are still unbounded.
 
 LDS offsets and every `lgkmcnt` are derived by the passes, which also prove
 that every asynchronously loaded tile is waited for before it is read: see
-[`hk-lds-alloc` and `hk-lds-pipeline`](ir.md#passes).
+[`hk-lds-alloc` and `hk-lds-pipeline`](ir.md#passes). An `hk.lds.alloc`
+inside a runtime `if` counts toward the launch's LDS (the two arms start at
+the same offset, the larger continues); one inside a runtime `for` or `while`
+is refused, so allocate it before the loop. Before 0.7.0 both lay past the
+LDS the launch requested: reads returned 0, writes were dropped (#56).
 [`examples/04_gemm.py`](../examples/04_gemm.py) stages through LDS with a
 derived wait.
 
@@ -342,10 +378,85 @@ shows `for`, `if` and `while` on device values, carried scalars, and the
 `scf` and C++ they become. What control flow cannot do is under
 [limits](#limits).
 
+## Between workgroups, XCDs and GPUs: `hk.comm` (gfx950)
+
+A persistent kernel, a task queue, a hand-off of a tile from one XCD or GPU
+to another: on gfx950 a plain store stays in the writer's XCD's L2, and a
+plain re-read on the reader's side can be stale even after the flag it
+waited for arrived. `hk.comm` lowers each hand-off to what a memory-model
+litmus suite found correct ([the design and the measurements](design/comm.md)):
+- **The scope belongs to the tensor.** `hk.Tensor[dtype, "device"]` (between
+  the XCDs of one GPU) or `hk.Tensor[dtype, "system"]` (between GPUs): every
+  load, store and scalar atomic through it carries the scope's cache-policy
+  bits, since both sides of a hand-off need them.
+- **Signals.** `hk.comm.signal(view, value)` drains, barriers and stores one
+  scoped flag; `hk.comm.wait(view, value, timeout_s=, error=)` polls it, and
+  a timeout sets the `error` element (or traps) instead of hanging.
+  `hk.comm.arrive` / `hk.comm.barrier` are an epoch'd grid barrier,
+  `hk.comm.xcd_barrier` one with one global atomic per XCD a round.
+- **Work queues.** `hk.comm.claim(view)` takes the next task (one scoped
+  atomic add, no drain); every scalar fetch-op (`atomic_min_scalar`,
+  `_or_`, `_and_`, `_xor_`, `_exch_` beside `_add_` and `_max_`) works
+  plain or scoped.
+- **Mailboxes.** `hk.comm.post(view, value, tag)` / `hk.comm.take(view, tag)`
+  send one int32 and its tag in one 8-byte scoped store: a 1.51 us round
+  trip between two MI355X. A mailbox orders nothing else.
+- **Residency.** A grid that waits on its own workgroups must all be on the
+  GPU at once: `hk.kernel(..., resident=True)` refuses a launch that cannot
+  be, with `ResourceError`, instead of deadlocking
+  (`Kernel.resident_capacity()`).
+- **Between GPUs.** `hk.runtime.SymmetricBuffer` is one buffer per rank
+  with every peer's mapped; while one is open, a launch refuses it bound to
+  an unscoped parameter.
+
+```python
+@hk.kernel(warps=1, grid=lambda p: (64, 1, 1), resident=True)
+def drain(q: hk.Tensor[hk.i32, "device"], done: hk.Tensor[hk.i32], *, N: int = 1):
+    t = hk.comm.claim(q.at[0])               # the next task, once each
+    while t < N:
+        done.at[t].atomic_add_scalar(1)
+        t = hk.comm.claim(q.at[0])
+```
+
+Every name is in [the API reference](api/hk.comm.md);
+[`examples/14_task_graph.py`](../examples/14_task_graph.py) is a persistent
+task graph with dependencies, and `hk.arch.xcd_id()` says which XCD ran each
+task. What hk.comm still lacks against the NVIDIA megakernel designs is its
+[roadmap](design/comm.md#roadmap).
+
+## Which XCD runs a workgroup: placement
+
+A gfx950 deals workgroup `w` to the XCD of `w % 8`, and each XCD has its own
+4 MB L2. Workgroups that read the same bytes -- attention's K and V of one KV
+head, a GEMM's panels -- fetch them once per XCD that reads them, and
+numbered the wrong way each L2 holds many unrelated streams at once.
+`hk.kernel(placement=...)` renumbers the grid at kernel entry; what each
+workgroup computes is unchanged, so outputs are bitwise the same:
+- `placement=hk.Placement.cluster()`: one sharing cluster an XCD at a time,
+  the key found by the analysis (`hk.placement.analyze`), or named with
+  `key=(hk.Digit.of("z"), hk.Digit.of("y"))` where it is read from memory;
+- `hk.Placement.chunked(chunk, tail)`: `block_idx.x` alone, in rounds of
+  `chunk` consecutive ids an XCD (a GEMM's split-K `y` untouched);
+- `placement="auto"`: the cluster placement where the policy
+  (`hk.placement.choose`) takes it -- not for order-dependent or resident
+  kernels, from five KV streams an XCD, not for non-uniform work under twelve
+  rounds an XCD. `k.placement_choice(*args)` says what it decided and why.
+
+On a part with one L2 (gfx1100, `hk.arch.xcd_count() == 1`) every placement
+is the identity. `python -m hk.check FILE.py:NAME --placement --inputs ...`
+checks that a launch covers its grid exactly once
+([check](check.md#which-xcd-runs-which-workgroup---placement)). gfx950's
+attention takes the cluster placement by measurement: 1.05-1.18x at 128 KV
+heads, 8K-128K tokens (#55). The design and its evidence are in
+[workgroup placement](design/placement-pass.md);
+[`examples/15_placement.py`](../examples/15_placement.py) shows it on a kernel
+of your own. Not in 0.7.0: placement is on main only.
+
 ## Namespaces
 
 * **The rest has namespaces**:
-  - `hk.arch`: block, warp and lane ids, `target()` (the target being traced
+  - `hk.arch`: block, warp and lane ids, `xcd_id()` and `xcd_count()`
+    (gfx950's XCDs), `target()` (the target being traced
     for, for a body whose tiling depends on it), `barrier(drain=False)`,
     `pingpong(behind)`, `sched_barrier`, `sched_group_barrier` and
     `SCHED_CLASSES`, `setprio`, `pin`, `vm_wait`, `wg_arrive`;
@@ -358,7 +469,9 @@ shows `for`, `if` and `while` on device values, carried scalars, and the
     [the catalogue](api/hk.math.md);
   - `hk.group(n)`: workgroup loads (`wait=False` on gfx950) and their
     `wait_for`, stores, and the staging pipeline;
-  - `hk.collective`: `cross_warp`, `fold_rows`.
+  - `hk.collective`: `cross_warp`, `fold_rows`;
+  - `hk.comm` (gfx950): scoped hand-offs between workgroups, XCDs and GPUs
+    ([above](#between-workgroups-xcds-and-gpus-hkcomm-gfx950)).
 
 **Scheduling hints.** `hk.arch.sched_group_barrier(classes, size,
 sync_id=0)` asks the compiler's scheduler for `size` instructions of

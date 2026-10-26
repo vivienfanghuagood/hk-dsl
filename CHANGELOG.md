@@ -4,6 +4,89 @@ Release notes for each version are also on its
 [GitHub release](https://github.com/vivienfanghuagood/hk-dsl/releases).
 The next version's notes collect here until it is released.
 
+## Unreleased
+
+What is on main after 0.7.0. `pip install hk-dsl` (0.7.0) does not have it;
+the API reference marks these names *New after 0.7.0*.
+
+**Workgroup placement as a pass** (#63, gfx950; design in
+[docs/design/placement-pass.md](docs/design/placement-pass.md), #62).
+Which XCD runs which workgroup, as one mechanism instead of hand-written
+remaps:
+- `hk.kernel(placement=None | "auto" | hk.Placement)`. `hk.Placement.cluster()`
+  runs one sharing cluster an XCD at a time, its key found by the analysis
+  (`hk.placement.analyze`: each global read's sharing key over the grid axes)
+  or named with `hk.Digit`s; `hk.Placement.chunked(chunk, tail)` renumbers
+  `block_idx.x` alone. `"auto"` launches the cluster placement where
+  `hk.placement.choose` takes it: not for order-dependent or resident
+  kernels, from five KV streams an XCD, and not for non-uniform work under
+  twelve rounds an XCD (thresholds measured in #55). `Kernel.placed()` and
+  `Kernel.placement_choice()` give the placed kernel and the decision.
+- Outputs are bitwise the unplaced kernel's. `attn_cdna`'s `mapping="spatial"`
+  (#55) is now `hk.Placement.cluster()`, and `gemm_cdna` / `gemm_cdna_dp`
+  take `Placement.chunked` instead of their inline remaps: 11 GEMM shapes
+  bitwise, new/old 0.997-1.007; 15 attention points bitwise, 0.993-1.003 of
+  #55's hand-written numbering.
+- `hk.arch.xcd_count()`: KFD's `num_xcc` (MI350P / DPX: 4, MI300A: 6), the
+  arch's default otherwise, `HK_XCDS` to override. With 1 (gfx1100) every
+  placement is the identity.
+- `python -m hk.check FILE.py:NAME --placement --inputs ...` checks that a
+  launch's placement covers its grid exactly once, evaluating the decode the
+  kernel's own emitted ops compute ([check](docs/check.md#which-xcd-runs-which-workgroup---placement)).
+
+**Fixes**
+- **gfx950: fp32 register tiles through LDS were FLAT loads and stores**
+  (#59). `store(st<float>, rt<float>)` / `load(rt<float>, st<float>)` addressed
+  the tile through a generic pointer, so every access was FLAT: slower to
+  issue than `ds_read` / `ds_write`, and counted in vmcnt as well as lgkmcnt,
+  so each wait for an LDS value also waited for every global load in flight.
+  They are `ds_read` / `ds_write` now. Results are unchanged; affected are the
+  cross-warp combines of fp32 partials (`hk.ops.decode_gemm`, `w4a16`, `moe`)
+  and user kernels that move fp32 tiles through LDS on gfx950.
+
+**Wheels** (#66)
+- From the next release, cp312 is one `manylinux_2_35` wheel, built on glibc
+  2.35 in vLLM's ROCm image, like cp310: through 0.7.0 cp312 was built on
+  Ubuntu 24.04 and needed glibc 2.38, so `pip install hk-dsl` found no cp312
+  wheel in vLLM's ROCm images until 0.7.0's extra `manylinux_2_35` wheel.
+- `scripts/check_wheel_glibc.py` fails a wheel that needs a newer glibc (or
+  GLIBCXX / CXXABI, with auditwheel) than its manylinux tag; CI's IR leg
+  builds the cp310 wheel and runs it.
+- Reproducible wheels: no build path in the binaries (`-ffile-prefix-map`,
+  RUNPATH `$ORIGIN` at link time), entry times from `SOURCE_DATE_EPOCH`
+  (the last commit's), fixed modes; the same commit builds byte-identical
+  wheels ([building](docs/building.md#reproducible-wheels)).
+
+**Docs**
+- The API reference marks names against the 0.7.0 wheel (it marked them
+  against 0.6.0, so `placement=` and `hk.arch.xcd_count` read as if 0.7.0 had
+  them), and documents `hk.Placement`, `hk.Digit` and
+  `hk.runtime.SymmetricBuffer`.
+- [The language](docs/language.md) gains `hk.comm`, workgroup placement, the
+  stated strip-reduction order (#52, #57), the bounded group copies on gfx950
+  (#49) and LDS allocated in a runtime branch (#56).
+- The docs site builds with `mkdocs build --strict` in CI: every page is in
+  the nav (hk.profile, schedules, hk.tune and the end-to-end loop were not),
+  heading ids follow GitHub's (so `#which-xcd-runs-which-workgroup---placement`
+  resolves on both), and the links #54 broke (`#turning-them-on`) point at
+  `#on-by-default-and-turning-it-off`.
+- The install pages state 0.7.0's three wheels and that CPython 3.12 needs
+  glibc 2.35, not 2.38; [the runtime](docs/runtime.md#which-gpu) has the arch
+  detection order 0.7.0 introduced.
+- [Releasing](docs/releasing.md): the release steps, and the documentation
+  sync that must pass before a tag.
+- Examples [14](examples/README.md) (an hk.comm task graph, gfx950) and
+  [15](examples/README.md) (workgroup placement).
+
+**CI and tests**
+- Several gfx950 runners in parallel, each with its own GPUs and state, and
+  GPU locks shared with manual measurements (#60,
+  [testing](docs/testing.md#several-gfx950-runners)).
+- A cancelled GPU job no longer leaves its container on the GPU (#69,
+  [testing](docs/testing.md#the-gpu-tier)).
+- Tests of gfx1100's measured data are pinned to gfx1100
+  (`@pytest.mark.arch`, #64).
+
 ## 0.7.0
 
 hk-dsl 0.7.0: hk is on by default in vLLM and SGLang, for the routes validated
@@ -14,12 +97,20 @@ at a partial last tile overwrites the memory after the tensor, and LDS
 allocated inside a runtime branch reads back as 0. No shipped op or route was
 affected by either.
 
-On PyPI: `pip install hk-dsl` (CPython 3.10 on glibc 2.35+, 3.12 on glibc
-2.38+, Linux x86_64). The wheels on the GitHub release are the same files; the
-manylinux copies are the ones on PyPI. Each carries the MLIR bindings for its
-interpreter and the HipKittens headers, so at run time only hipcc is needed.
+On PyPI: `pip install hk-dsl` (CPython 3.10 or 3.12 on glibc 2.35+, Linux
+x86_64). Three wheels: cp310 `manylinux_2_35`, and cp312 both
+`manylinux_2_35` and `manylinux_2_38`; pip picks the newest tag the system's
+glibc takes. The cp312 `manylinux_2_35` wheel was added on release day, for
+glibc 2.35 systems such as vLLM's ROCm images (Ubuntu 22.04), where the
+`manylinux_2_38` one does not install. The wheels on the GitHub release are
+the same files; the manylinux copies are the ones on PyPI. Each carries the
+MLIR bindings for its interpreter and the HipKittens headers, so at run time
+only hipcc is needed (and a ROCm build of torch to launch).
 
-    pip install hk_dsl-0.7.0-cp312-cp312-manylinux_2_38_x86_64.whl
+    pip install hk_dsl-0.7.0-cp312-cp312-manylinux_2_35_x86_64.whl
+
+(This paragraph first said "3.12 on glibc 2.38+", as do 0.7.0's PyPI page and
+the GitHub release notes; the `manylinux_2_35` cp312 wheel makes 2.35 enough.)
 
 **hk is on by default** (#54). With hk-dsl installed, its vLLM and SGLang
 plugins (and the SGLang-Diffusion boot) apply every route that was validated

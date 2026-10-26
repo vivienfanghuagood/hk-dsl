@@ -314,7 +314,7 @@ Each of these has cost this project a wrong conclusion once.
   time one arm per profiler session.
 - **A patch that routed nothing.** It times like stock: the first vLLM V1
   run reported 1.001x with the patch applied in a process the model never
-  ran in ([integration](integration.md#turning-them-on)). `ab` prints each
+  ran in ([integration](integration.md#on-by-default-and-turning-it-off)). `ab` prints each
   patch's counters; `headroom` says whether a family's kernels are hk's.
 - **A round faster than the card.** An 8192x4096 RMSNorm "ran" at 1.38 TB/s
   on 864 GB/s of GDDR6 ([chapter 32](history/32-measuring-the-measurements.md)):

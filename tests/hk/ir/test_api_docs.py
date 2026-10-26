@@ -35,15 +35,22 @@ def test_every_documented_name_has_a_docstring():
 
 def test_since_marks_against_the_pypi_wheel():
     arch_md = (REPO / "docs" / "api" / "hk.arch.md").read_text()
+    section = arch_md.split("### `hk.arch.xcd_count`", 1)[1].split("###", 1)[0]
+    assert "New after 0.7.0" in section          # not in the 0.7.0 wheel (#63)
     section = arch_md.split("### `hk.arch.xcd_id`", 1)[1].split("###", 1)[0]
-    assert "New after 0.6.0" in section          # not in the 0.6.0 wheel
+    assert "after 0.7.0" not in section          # in it (#48)
     hk_md = (REPO / "docs" / "api" / "hk.md").read_text()
+    section = hk_md.split("### `hk.kernel`", 1)[1].split("###", 1)[0]
+    assert "*Changed after 0.7.0*: new parameter `placement`" in section   # resident= was in 0.7.0
     section = hk_md.split("### `hk.mma_ABt_mx`", 1)[1].split("###", 1)[0]
-    assert "after 0.6.0" not in section          # in it, same parameters
+    assert "after 0.7.0" not in section          # in it, same parameters
+    section = hk_md.split("### `hk.Placement`", 1)[1].split("###", 1)[0]
+    assert "New after 0.7.0" in section
     group_md = (REPO / "docs" / "api" / "hk.group.md").read_text()
     section = group_md.split("#### `Group.wait_for`", 1)[1].split("###", 1)[0]
-    assert "after 0.6.0" not in section          # *tiles, exact: unchanged, not reordered
-    assert "a synchronous `g.load` stops at the tensor's last row" in group_md
+    assert "after 0.7.0" not in section          # *tiles, exact: unchanged, not reordered
+    index = (REPO / "docs" / "api" / "README.md").read_text()
+    assert "no release has it yet, only a checkout of main" in index
 
 
 def test_math_page_says_what_gelu_is():

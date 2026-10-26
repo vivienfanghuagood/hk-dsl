@@ -23,8 +23,6 @@ copies, synchronous and staged through registers.
 class hk.group.Group(warps: int)
 ```
 
-*Changed after 0.6.0*: on gfx950 a synchronous `g.load` stops at the tensor's last row and `g.store` writes no row past it, after 0.6.0. In the 0.6.0 wheel, at a partial last tile, the load read up to a tile's rows past the tensor and the store silently overwrote them (#49).
-
 What `hk.group(warps)` returns: copies between global memory and LDS
 done by `warps` warps together.
 

@@ -35,6 +35,8 @@ def kernels() -> List[Tuple[str, object]]:
     lnb = load("10_layernorm_backward")
     vi = load("11_vllm_integration")
     tr = load("12_templates_rowwise")
+    tg = load("14_task_graph")
+    pl = load("15_placement")
     return _templates() + [
         ("vector_add", add.add),
         ("rmsnorm", rms.rmsnorm_kernel()),
@@ -52,6 +54,9 @@ def kernels() -> List[Tuple[str, object]]:
         ("ln_bwd_dx_held", lnb.ln_bwd_dx_kernel(*lnb.plan(2048))),
         ("ln_bwd_dwdb", lnb.ln_bwd_dwdb),
         ("silu_mul_vllm", vi.silu_mul),
+        ("task_graph", tg.task_graph),
+        ("shared_sum", pl.shared_sum),
+        ("shared_sum_placed", pl.shared_sum_placed),
         *(("templates_" + n, k) for n, k in tr.kernels()),
     ]
 
@@ -90,5 +95,7 @@ SCRIPTS = [
     ("11_vllm_integration.py",),
     ("12_templates_rowwise.py",),
     ("13_templates_gemm.py",),
+    ("14_task_graph.py",),
+    ("15_placement.py",),
     ("validate.py", "--quick"),
 ]

@@ -30,7 +30,7 @@ jobs:
         with:
           python-version: "3.12"
       - run: pip install -r tools/docs/requirements.txt
-      - run: mkdocs build
+      - run: mkdocs build --strict   # a broken link, anchor or nav entry fails the PR
       - uses: actions/upload-pages-artifact@v3
         with:
           path: site

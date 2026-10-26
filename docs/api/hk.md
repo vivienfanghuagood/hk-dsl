@@ -44,6 +44,8 @@ The language: what `import hk` gives a kernel author. A kernel body is traced on
 - [`hk.load_fp4_frags`](#hkload_fp4_frags)
 - [`hk.load_fp4_frags_lds`](#hkload_fp4_frags_lds)
 - [`hk.mx_quant_store`](#hkmx_quant_store)
+- [`hk.Placement`](#hkplacement)
+- [`hk.Digit`](#hkdigit)
 - [`hk.Tile`](#hktile)
 - [`hk.Vec`](#hkvec)
 - [`hk.Global`](#hkglobal)
@@ -72,7 +74,7 @@ The language: what `import hk` gives a kernel author. A kernel body is traced on
 hk.kernel(fn=None, *, arch: Optional[str] = None, warps: int = 1, grid=None, name: Optional[str] = None, max_vgprs: Optional[int] = None, min_occupancy: Optional[int] = None, defines: Optional[Dict[str, Any]] = None, noalias: bool = False, preload: bool = False, resident: bool = False, placement=None)
 ```
 
-*Changed after 0.6.0*: new parameters `resident`, `placement`
+*Changed after 0.7.0*: new parameter `placement`
 
 Mark a function as a tile kernel. See the module docstring for the
 parameter rules. `resident=True`: every workgroup must be on the GPU at
@@ -176,7 +178,7 @@ Generate, compile and load. Returns the loaded extension module.
 Kernel.placed(self, placement=None) -> Kernel
 ```
 
-*New after 0.6.0*
+*New after 0.7.0*
 
 This kernel with `placement` (default: the analysis's cluster
 placement) installed: its own name (a suffix for the placement),
@@ -188,7 +190,7 @@ traces and builds, the same body.
 Kernel.placement_choice(self, *tensors: Any, **const_overrides: Any)
 ```
 
-*New after 0.6.0*
+*New after 0.7.0*
 
 hk.dsl.placement.choose for these tensors: whether
 placement="auto" launches the cluster placement, and why.
@@ -198,8 +200,6 @@ placement="auto" launches the cluster placement, and why.
 ```python
 Kernel.resident_capacity(self, **const_overrides: Any) -> int
 ```
-
-*New after 0.6.0*
 
 How many workgroups of this kernel the current GPU holds at once:
 its CUs times the workgroups a CU fits by registers and by LDS (the
@@ -662,6 +662,40 @@ a uint8 `s` gets AITER's 32-row layout (hk.mx.aiter_scales of q's [R, K/32], K/3
 hk.mx.pack_scales; rows past q's last get the unit scale, as pack_scales pads them). The
 result is bit-identical to hk.mx.quant followed by hk.mx.aiter_scales or hk.mx.pack_scales.
 
+## Workgroup placement (multi-XCD GPUs)
+
+Which XCD runs which workgroup: `hk.kernel(placement=...)` takes None (the hardware's order), `"auto"` (the cluster placement where the policy takes it) or an `hk.Placement`. Outputs are bitwise the unplaced kernel's; only the order changes. On a part with one L2 (gfx1100) every placement is the identity. `hk.arch.xcd_count()` is the XCD count it deals over, `Kernel.placed()` / `Kernel.placement_choice()` the placed kernel and the policy's decision, `hk.placement.analyze` / `hk.placement.choose` the analysis and the policy, `python -m hk.check --placement` checks a launch covers its grid exactly once ([check](../check.md#which-xcd-runs-which-workgroup---placement), [design](../design/placement-pass.md)).
+
+### `hk.Placement`
+
+*New after 0.7.0*
+
+How a kernel's workgroups are numbered.
+
+Placement.cluster()            one sharing cluster an XCD at a time; the key from
+                               `analyze` (the dominant read's), or `key=` digits
+                               the analysis cannot see (an index read from memory)
+Placement.chunked(chunk, tail) block_idx.x only, within each (y, z) slice and
+                               with the grid as it is: rounds of `xcds * chunk`
+                               consecutive ids an XCD (a GEMM's xcd_chunk, whose
+                               y is the split-K share); chunk="even" is an
+                               eighth of the axis an XCD
+Placement.none()               the identity
+
+`tail` is what happens past the last whole round: "stay" (in round-robin
+order, what the hand-written GEMM remaps did) or "spread" (dealt as
+contiguous ranges, balanced to one). chunk 0 is contiguous ranges outright.
+
+### `hk.Digit`
+
+*New after 0.7.0*
+
+A grid axis whole (`kind` "whole"), or one digit of it: `axis // radix`
+("div") or `axis % radix` ("mod"). `radix` is a host expression of the
+tensors' extents and the constexprs.
+
+Made with `hk.Digit.of(axis, kind="whole", radix=None)`: `hk.Digit.of("z")`, `hk.Digit.of("x", "mod", 8)`. A `Placement.cluster(key=...)` names its sharing key with these where the analysis cannot see it (an index read from memory).
+
 ## Dtypes
 
 | name | bits | C++ | kind |
@@ -719,8 +753,6 @@ The element dtype.
 Tile.sum(self, axis: int = 1, *, lanes: Optional[str] = None, xor: Optional[Sequence[int]] = None, times: "Optional['Tile']" = None) -> Reduction
 ```
 
-*Changed after 0.6.0*: new parameters `lanes`, `xor`, `times`
-
 The sum along `axis`: 1 (default) along each row, one value per row (a col_vec); 0 along each column (a row_vec). Lazy: `v = t.sum()` makes the vector, `acc += t.sum()` accumulates into one, and `.value(into=v)` writes an existing one.
 
 #### `Tile.max`
@@ -728,8 +760,6 @@ The sum along `axis`: 1 (default) along each row, one value per row (a col_vec);
 ```python
 Tile.max(self, axis: int = 1, *, lanes: Optional[str] = None, xor: Optional[Sequence[int]] = None) -> Reduction
 ```
-
-*Changed after 0.6.0*: new parameters `lanes`, `xor`
 
 The max along `axis`: 1 (default) along each row, one value per row (a col_vec); 0 along each column (a row_vec). Lazy: `v = t.max()` makes the vector, `m.max_(t.max())` folds into one (the online max), and `.value(into=v)` writes an existing one.
 
@@ -739,8 +769,6 @@ The max along `axis`: 1 (default) along each row, one value per row (a col_vec);
 Tile.min(self, axis: int = 1, *, lanes: Optional[str] = None, xor: Optional[Sequence[int]] = None) -> Reduction
 ```
 
-*Changed after 0.6.0*: new parameters `lanes`, `xor`
-
 The min along `axis`: 1 (default) along each row, one value per row (a col_vec); 0 along each column (a row_vec). Lazy: `v = t.min()` makes the vector, and `.value(into=v)` writes an existing one.
 
 #### `Tile.prod`
@@ -748,8 +776,6 @@ The min along `axis`: 1 (default) along each row, one value per row (a col_vec);
 ```python
 Tile.prod(self, axis: int = 1, *, lanes: Optional[str] = None, xor: Optional[Sequence[int]] = None) -> Reduction
 ```
-
-*Changed after 0.6.0*: new parameters `lanes`, `xor`
 
 The product along `axis`: 1 (default) along each row, one value per row (a col_vec); 0 along each column (a row_vec). Lazy: `v = t.prod()` makes the vector, and `.value(into=v)` writes an existing one.
 
@@ -1471,8 +1497,6 @@ One int32 atomic max per warp; the value before it.
 View.atomic_min_scalar(self, value) -> Int
 ```
 
-*New after 0.6.0*
-
 One int32 atomic min per warp; the value before it.
 
 #### `View.atomic_or_scalar`
@@ -1480,8 +1504,6 @@ One int32 atomic min per warp; the value before it.
 ```python
 View.atomic_or_scalar(self, value) -> Int
 ```
-
-*New after 0.6.0*
 
 One int32 atomic or per warp; the value before it (a set of flags: bit w = workgroup w).
 
@@ -1491,8 +1513,6 @@ One int32 atomic or per warp; the value before it (a set of flags: bit w = workg
 View.atomic_and_scalar(self, value) -> Int
 ```
 
-*New after 0.6.0*
-
 One int32 atomic and per warp; the value before it.
 
 #### `View.atomic_xor_scalar`
@@ -1501,8 +1521,6 @@ One int32 atomic and per warp; the value before it.
 View.atomic_xor_scalar(self, value) -> Int
 ```
 
-*New after 0.6.0*
-
 One int32 atomic xor per warp; the value before it.
 
 #### `View.atomic_exch_scalar`
@@ -1510,8 +1528,6 @@ One int32 atomic xor per warp; the value before it.
 ```python
 View.atomic_exch_scalar(self, value) -> Int
 ```
-
-*New after 0.6.0*
 
 One int32 atomic exchange per warp: stores `value`, returns the value before it (a
 lock's take, a slot's claim). W warps that call it exchange W times.
@@ -1766,4 +1782,4 @@ are bounded: any non-empty length. head_dim is 64 or 128 on both.
 
 ## Also exported
 
-`hk.Digit`, `hk.Placement`, `hk.mx`, `hk.placement`, `hk.templates`
+`hk.mx`, `hk.templates`

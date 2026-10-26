@@ -2,7 +2,8 @@
 
 > Part of the [development record](README.md), in the order the work happened. Paths, API names and numbers are those of the time.
 
-The end-to-end goal ([design/e2e-goal.md](../design/e2e-goal.md), E1) starts
+The end-to-end goal (E1 of `design/e2e-goal.md`, a design note never merged to
+main; [the end-to-end loop](../e2e-loop.md) is its outcome) starts
 with the model that most needs it: a text-to-image DiT on RDNA3, where
 SGLang-Diffusion has exactly one attention backend that runs (`torch_sdpa`:
 aiter is CDNA's, FlashAttention 3 Hopper's). This chapter measures Qwen-Image
