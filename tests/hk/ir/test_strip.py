@@ -369,7 +369,7 @@ def _mapped():
 def test_map_cpp_emits_the_expression_as_a_lambda():
     src = _mapped().source()
     assert "kittens::map_cpp(" in src
-    assert "[&](const auto x0) { return ((__builtin_bit_cast(int, x0) >> 23) & 0xFF); }" in src
+    assert "[&](const auto x0) { _Pragma(\"clang fp contract(off)\") return ((__builtin_bit_cast(int, x0) >> 23) & 0xFF); }" in src
 
 
 @pytest.mark.parametrize("expr", ["x0; x0", "{x0}", "  "])
