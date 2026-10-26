@@ -55,8 +55,8 @@ The release on PyPI is 0.8.0. hk is on by default in vLLM and SGLang for the
 routes validated on your GPU (`HK_DISABLE=1` turns them all off, `HK_<ROUTE>=0`
 one of them, [integration](integration.md#on-by-default-and-turning-it-off)).
 0.8.0 adds workgroup placement as a pass (`hk.kernel(placement=)`),
-`hk.map_cpp` and i32 strips, strip ops for megakernel roles, and gfx1201
-(RDNA4) on hardware, which 0.7.0 lacked; the API reference marks such names
+`hk.map_cpp` and i32 strips, strip ops and element exchange for megakernel
+roles, and gfx1201 (RDNA4) on hardware, which 0.7.0 lacked; the API reference marks such names
 *New after 0.7.0* ([changelog](../CHANGELOG.md)).
 
 **From source.** The backend is the `third_party/HipKittens` submodule, so

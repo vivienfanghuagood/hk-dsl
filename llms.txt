@@ -65,7 +65,7 @@ Measured with hk.check (torch 2.10, interleaved in one process): on an MI355X it
 
 ## Pitfalls
 
-- The docs describe main; `pip install hk-dsl` is 0.8.0 (check `hk.__version__`). The API reference marks what is *New after 0.7.0*: in 0.8.0, not in 0.7.0 (workgroup placement: `hk.kernel(placement=)`, `hk.Placement`, `hk.arch.xcd_count`; `hk.map_cpp`; the strip ops). 0.6.0's synchronous `g.load` / `g.store` on gfx950 read and write past a partial last tile; 0.7.0's do not.
+- The docs describe main; `pip install hk-dsl` is 0.8.0 (check `hk.__version__`). The API reference marks what is *New after 0.7.0*: in 0.8.0, not in 0.7.0 (workgroup placement: `hk.kernel(placement=)`, `hk.Placement`, `hk.arch.xcd_count`; `hk.map_cpp`; the strip ops and element exchange). 0.6.0's synchronous `g.load` / `g.store` on gfx950 read and write past a partial last tile; 0.7.0's do not.
 - Positional kernel parameters are tensors (`hk.Tensor[dtype]`, 4-D `(batch, depth, rows, cols)`; a 2-D tensor is `(rows, cols)`). Constexprs are keyword-only with a default, baked into the source: a new value is a new compile.
 - The transcendental math (gelu, dgelu, sqrt, rsqrt, silu) is fp32-only: load 16-bit data into an fp32 tile or strip (the load converts) and store it back (the store converts). `hk.math.gelu` is `F.gelu(x, approximate="tanh")`, not the erf default.
 - A strip's columns are whole chunks of `wave x run` (32 x run on gfx1100, 64 x run on gfx950): `CW=512` with `run=8` fits both. Read the wave from `hk.arch.target().wave` when a plan depends on it.

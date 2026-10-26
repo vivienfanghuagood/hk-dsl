@@ -7,7 +7,7 @@ The next version's notes collect here until it is released.
 ## 0.8.0
 
 hk-dsl 0.8.0: workgroup placement as a compiler pass on gfx950; `hk.map_cpp`,
-i32 strips and the strip ops a megakernel's roles need; gfx1201 (RDNA4) on
+i32 strips, and the strip ops and element exchange a megakernel's roles need; gfx1201 (RDNA4) on
 hardware; and reproducible wheels, one `manylinux_2_35` wheel per interpreter.
 hk stays on by default in vLLM and SGLang for the routes validated on your GPU:
 `HK_DISABLE=1` turns every route off, `HK_<ROUTE>=0` one of them
@@ -85,6 +85,23 @@ rank):
 - `Tile.lane_gather(lanes)` (`ds_bpermute` of each element), and
   `hk.mfma_strip("f32_16x16x4", a, b, acc)`, one raw MFMA on strip registers
   for reproducing another kernel's MFMA bit for bit.
+
+**Element exchange for megakernel hand-offs** (#73, gfx950), also from K1 in
+hk:
+- `Global.post_elems(val, idx, tag, runs=, bf16=)` / `take_elems(idx, tag,
+  runs=, bf16=, timeout_s=)`: tagged mailbox pairs, each value and its tag in
+  one 8-byte scoped store, as `hk.comm.post` / `take` per element. `runs=True`
+  moves a lane's run as 16-byte pairs of pairs; `bf16=True` packs two bf16 a
+  pair (values must already be bf16; refused without `runs`). A wave with no
+  live pair polls nothing, and a timeout traps.
+- `SharedTile.load_elems` / `store_elems`: an fp32 LDS tile addressed element
+  by element, with `ds` operations (not FLAT, which would also count in vmcnt).
+- Scoped `load_elems` / `store_elems`; `store_elems(runs=True)`, one store a
+  run, fp32 to e4m3 packed four at a time; scoped register-tile loads take
+  `bounded=n`.
+- `hk.uniform(cond)` / `hk.if_(..., uniform=True)`: a branch declared
+  workgroup-uniform may hold barriers, which is a persistent kernel's role
+  dispatch; a divergent enclosing branch is still refused.
 
 **gfx1201 (RDNA4) on hardware** (#70, #71). gfx1201 goes from compile-only to
 hk's GPU tier passing on a Radeon AI PRO R9700 (914 passed, 0 failed;
