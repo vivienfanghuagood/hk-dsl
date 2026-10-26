@@ -153,8 +153,8 @@ The gain is clock, not bandwidth. At 128 heads and 32K, the bytes past the L2s d
 |---|---|---|
 | bf16 GEMM (`gemm_cdna`, `gemm_cdna_dp`; split-K, ragged M) | 11 | 0.997-1.007 (the same order) |
 | K2, MXFP8 GEMM (`mxfp8` as vLLM routes it) | the 18 DeepSeek-V4.1 points | 0.992-1.011 (the same order) |
-| K1, MoE a8w4, M where the old remap applied (stage-1 grid a multiple of 8) | M 8192, 11000, 12411, 16384 | 1.0005-1.0012 |
-| **K1, M where the old remap fell back to the hardware's order** | M 9500, 10000, 14000, 15001 | **1.19-1.24** |
+| K1, MoE a8w4 (live sorted blocks dealt over every XCD), against main before #65 | M 64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384 | **1.04-1.15** |
+| **K1, M where the old remap fell back to the hardware's order** | M 10000 (and 9500, 14000, 15001 under #65's first form: 1.19-1.24) | **1.33** |
 
 The K1 gain does not show under vLLM's default chunked prefill. Its 8192-token chunks give the
 route M = 8192, where the old remap already applied. It shows with a larger
@@ -165,6 +165,10 @@ route M = 8192, where the old remap already applied. It shows with a larger
 - **The analysis sees addresses built from the block ids by `+ - * // %` with constants and tensor
   extents.** A key that goes through memory (`load_scalar`, gathers, a block table) is flagged as
   a heuristic. For those, give the key: `Placement.cluster(key=...)`.
+- **A grid larger than its work.** A grid sized for the most work a launch can have (a MoE's
+  sorted blocks, padded per expert) has a dead tail. Contiguous ranges over the whole grid put
+  the live prefix on the first XCDs only: K1 at M 64 ran at 0.89x until its kernels renumbered
+  over the live count instead, with `hk.placement.renumber(w, total, live=...)` in the body.
 - **Contiguous ranges balance unit counts, not work.** Where units differ in cost (causal
   attention, MoE experts of different sizes) and each XCD has few rounds, the clustered order can
   end on long units (−10% at 40 KV heads, 8K, causal). "auto" avoids that case. A fixed placement

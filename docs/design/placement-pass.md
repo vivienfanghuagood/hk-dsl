@@ -257,6 +257,15 @@ A failure prints `FAILED <how many grid points ran twice and never>` and exits 1
     each virtual block id.
   - `moe_a8w4`'s persistent stage 2 takes its XCD's units from `hk.placement.xcd_range(xcd,
     units)`: contiguous, balanced to one.
+  - `moe_a8w4`'s sorted kernels (the vLLM route's stage 1 and stage 2) size their grid for the
+    most sorted blocks a launch can have. Only the first `cdiv(num_valid, BM)` blocks are live,
+    and the rest exit at once. At decode M that is about 60% of the grid (M 64: 235 of 390
+    blocks). They renumber in the body: `hk.placement.renumber(wg, total, live=...)` places
+    `[0, live)` among themselves and leaves the rest alone, so the live blocks are dealt over
+    every XCD.
+    - A grid placement over all of `[0, total)` (#65's `chunked(0, "spread")`) handed the live
+      prefix to the first XCDs' ranges and left the others idle. At M 64 that was 0.89x of the
+      hardware's order (found by the MI355X scoreboard); `live=` fixed it.
   - The stream-K plan (host Python) reads `xcd_count`.
 - **Megakernel queues** (comm roadmap R5): push a task to the queue of the XCD its sharing key maps
   to, drain one cluster before the next, and steal whole clusters. These are library rules, not
@@ -275,7 +284,7 @@ MI355X, one process, the old and new kernels interleaved, `rocm-smi` snapshots a
 | `attn_cdna` spatial | hand-written `_spatial` (PR #55) | `Placement.cluster()` (dense), explicit key (paged) | bitwise, 15 points | 0.993-1.003 against PR #55's |
 | `gemm_cdna`, `gemm_cdna_dp` | inline chunked remaps | `Placement.chunked(xcd_chunk \| "even", "stay")` | bitwise, 11 shapes | 0.997-1.007 |
 | `mxfp8` (K2) | inline chunked remaps | `chunked`, `renumber` | bitwise, 18 DSV4.1 points | 0.992-1.011 |
-| `moe_a8w4` (K1) | contiguous eighths, identity if the grid % 8 ≠ 0 | `chunked(0, "spread")`, `xcd_range` | bitwise | 1.0005-1.0012 where the old remap applied (M 8192, 11000, 12411, 16384); **1.19-1.24** where it did not (M 9500, 10000, 14000, 15001) |
+| `moe_a8w4` (K1) | contiguous eighths, identity if the grid % 8 ≠ 0 | sorted kernels: `renumber(live=)` in the body (live sorted blocks only); tile-list kernels `chunked(0, "spread")`; persistent `xcd_range` | bitwise | against main before #65, M 64-16384: **1.04-1.33x** at every M (M 64 1.14, M 2048 1.15, M 8192 1.09, M 10000 1.33). #65's first form, `chunked(0, "spread")` over the whole grid, was 0.89x at M 64 |
 | stream-K plan | `NUM_XCDS` | `xcd_count` | same plan on 8 XCDs | — |
 
 The default attention kernel's generated C++ is byte-identical before and after.

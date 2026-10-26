@@ -59,6 +59,12 @@ remaps:
   refused, so integer arithmetic is written in `hk.map_cpp`.
 
 **Fixes**
+- **K1 MoE a8w4 at decode M ran 11% slower after #65** (M 64: 0.89x of before, found by the MI355X
+  scoreboard). The sorted kernels' grids are sized for the most sorted blocks a launch can have,
+  and #65's `Placement.chunked(0, "spread")` dealt contiguous ranges of the whole grid, so the
+  live blocks (235 of 390 at M 64) landed on the first five XCDs. They now renumber in the body
+  over the live blocks only (`hk.placement.renumber(..., live=)`, new). Against main before
+  #65, K1 is 1.04-1.33x at every M from 64 to 16384, and bitwise the same.
 - **gfx950: fp32 register tiles through LDS were FLAT loads and stores**
   (#59). `store(st<float>, rt<float>)` / `load(rt<float>, st<float>)` addressed
   the tile through a generic pointer, so every access was FLAT: slower to
