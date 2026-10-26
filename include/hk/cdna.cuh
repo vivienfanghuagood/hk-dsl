@@ -2023,8 +2023,12 @@ __device__ inline static void load_fp4_frags(RT &dst, const GL &src, int row0, i
     // 384 x 4608 x 2560 B gate/up at TP1 is 4.5 GB), past a 32-bit offset and num_records.
     // An expert past the tensor (a padded unit's id) gets an empty range: its loads read zero,
     // as the one whole-tensor resource's bounds check made them before.
-    const bool in = e >= 0 && uint64_t(e + 1) * GR <= uint64_t(src.template shape<2>());
-    const uint8_t *base = reinterpret_cast<const uint8_t *>(src.raw_ptr) + (in ? uint64_t(e) * GR * kbytes : 0);
+    // 32-bit, branch-free (a select): the 64-bit compare of (e + 1) * GR with the row count became
+    // two scalar branches at every call, i.e. every K step (K1 k1-prefill c38)
+    const uint32_t ne = uint32_t(src.template shape<2>()) / uint32_t(GR);
+    const bool in = uint32_t(e) < ne;
+    const uint64_t eoff = uint64_t(in ? uint32_t(e) : 0u) * (uint64_t(GR) * kbytes);
+    const uint8_t *base = reinterpret_cast<const uint8_t *>(src.raw_ptr) + eoff;
     const detail::hk_i32x4 r = detail::hk_srsrc(base, in ? uint64_t(GR) * kbytes : 0);
     const uint32_t k0n = kbytes / 64u;
     #pragma unroll
