@@ -22,11 +22,31 @@ OUT=$GITHUB_WORKSPACE/gha-report
 mkdir -p "$OUT"
 # Run the script on stdin in the pod.
 pod() { ssh -o BatchMode=yes -o ServerAliveInterval=30 "$JUMP" "kubectl exec -i $POD -- bash -s" ; }
-cancel() { echo "kill -- -\$(cat $R/pid) 2>/dev/null; true" | pod; exit 130; }
-trap cancel INT TERM
+
+# Cancellation (docs/testing.md, "Cancelled jobs and orphan containers"): the runner sends SIGINT,
+# then SIGTERM, to the step's shell alone -- gpu.yml execs this script, so that is this script --
+# and 10 s later SIGKILLs every process the job left. Unless the pod's run has finished, the trap
+# kills it (pod_run.sh's whole session: the suite's pytest runs under timeout, in a process group
+# of its own); after a SIGKILL, the reaper (cancel.sh --on-eof) does.
+STARTED= DONE= REAP=
+stop() {
+    trap - INT TERM HUP EXIT
+    if [ -n "$STARTED" ] && [ -z "$DONE" ]; then
+        echo "cancelled: killing the pod's run $KEY"
+        "$HERE/cancel.sh" pod "$JUMP" "$POD" "$R" || return
+    fi
+    [ -n "$REAP" ] && echo done >&"$REAP"
+}
+trap 'stop; exit 130' INT
+trap 'stop; exit 143' TERM
+trap 'stop; exit 129' HUP
+trap 'stop' EXIT
 
 IP=$(ssh -o BatchMode=yes "$JUMP" "getent ahostsv4 $PROXY | head -1 | cut -d' ' -f1")
 [[ $IP =~ ^[0-9.]+$ ]] || { echo "::error::cannot resolve $PROXY on $JUMP"; exit 1; }
+exec {REAP}> >(exec env RUNNER_TRACKING_ID=0 setsid "$HERE/cancel.sh" --on-eof pod "$JUMP" "$POD" "$R" \
+               >>"$OUT/reaper.log" 2>&1)
+STARTED=1
 { echo "mkdir -p $DIR"
   echo "base64 -d > $DIR/pod_run.sh <<'B64'"; base64 -w0 "$HERE/pod_run.sh"; echo; echo "B64"
   echo "base64 -d > $DIR/summarize.py <<'B64'"; base64 -w0 "$HERE/summarize.py"; echo; echo "B64"
@@ -36,13 +56,13 @@ echo "started on $POD (run $KEY)"
 
 seen=0
 for i in $(seq 360); do     # 3 hours
-    sleep 30
+    sleep 30 & wait $!     # a trap runs at once, not after the sleep
     st=$(echo "cd $R 2>/dev/null || { echo missing 0; exit; }; [ -f result.json ] && s=done || s=running; echo \$s \$(wc -l < driver.log)" | pod 2>/dev/null)
     n=$(awk '{print $2}' <<<"$st")
     if [[ ${n:-0} =~ ^[0-9]+$ ]] && [ "$n" -gt "$seen" ]; then
         echo "sed -n '$((seen + 1)),${n}p' $R/driver.log" | pod 2>/dev/null; seen=$n
     fi
-    [[ $st == done* ]] && break
+    [[ $st == done* ]] && { DONE=1; break; }
 done
 echo "cd $R && tar -cf - result.json report.txt build.log driver.log 2>/dev/null" | pod | tar -xf - -C "$OUT"
 [ -f "$OUT/result.json" ] || { echo "::error::no result from the pod"; exit 1; }
