@@ -794,13 +794,26 @@ Tile.max(self, axis: int = 1, *, lanes: Optional[str] = None, xor: Optional[Sequ
 
 The max along `axis`: 1 (default) along each row, one value per row (a col_vec); 0 along each column (a row_vec). Lazy: `v = t.max()` makes the vector, `m.max_(t.max())` folds into one (the online max), and `.value(into=v)` writes an existing one.
 
+#### `Tile.lane_gather`
+
+```python
+Tile.lane_gather(self, lanes: Tile) -> Tile
+```
+
+*New after 0.7.0*
+
+Each element from another lane (gfx950): element (r, c) of lane l is the same run element
+of lane `lanes[r, c]` (an i32 strip of this strip's shape, 0..63) -- ds_bpermute, one an
+element. A lane group's small-matrix work (a 4x4 Sinkhorn's row and column sums) without
+LDS. 32-bit elements.
+
 #### `Tile.group_max`
 
 ```python
 Tile.group_max(self, cols: int, *, lanes: str = 'seq', xor: Optional[Sequence[int]] = None) -> Tile
 ```
 
-*New after 0.5.0*
+*New after 0.7.0*
 
 A strip's rows reduced over groups of `cols` columns (a lane group's runs: an MX group is
 32 columns of a run-8 strip), the group's max in every element. `lanes` and `xor` state the
@@ -812,7 +825,7 @@ order, as for `sum(axis=1, ...)`; the offsets are 1 .. cols / run / 2. gfx950.
 Tile.group_min(self, cols: int, *, lanes: str = 'seq', xor: Optional[Sequence[int]] = None) -> Tile
 ```
 
-*New after 0.5.0*
+*New after 0.7.0*
 
 As `group_max`, the minimum.
 
@@ -822,7 +835,7 @@ As `group_max`, the minimum.
 Tile.group_sum(self, cols: int, *, lanes: str = 'seq', xor: Optional[Sequence[int]] = None) -> Tile
 ```
 
-*New after 0.5.0*
+*New after 0.7.0*
 
 As `group_max`, the sum, in the stated order.
 
@@ -1432,7 +1445,7 @@ Tile indexing: `x.tile[r, c]` is a View at tile (r, c) of the tile type the load
 Global.load_elems(self, idx: Tile, dtype: Optional[DType] = None) -> Tile
 ```
 
-*New after 0.5.0*
+*New after 0.7.0*
 
 Element by element at computed indices (gfx950): element (r, c) of the result is element
 `idx[r, c]` of this tensor, counted flat (rows over batch and depth, at the row stride),
@@ -1446,7 +1459,7 @@ zero or past the tensor reads 0 -- a table lookup with a fallback, a key table's
 Global.store_elems(self, val: Tile, idx: Tile) -> None
 ```
 
-*New after 0.5.0*
+*New after 0.7.0*
 
 Element by element at computed indices (gfx950): element (r, c) of `val` (an fp32 or
 i32 strip), converted to this tensor's type, to element `idx[r, c]` (flat, as
@@ -1872,4 +1885,4 @@ are bounded: any non-empty length. head_dim is 64 or 128 on both.
 
 ## Also exported
 
-`hk.mx`, `hk.templates`
+`hk.iota`, `hk.mfma_strip`, `hk.mx`, `hk.templates`
