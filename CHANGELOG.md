@@ -114,7 +114,7 @@ hk's GPU tier passing on a Radeon AI PRO R9700 (914 passed, 0 failed;
   that cannot be read are still refused.
 
 **Fixes**
-- **K1 MoE a8w4 at decode M ran 11% slower after #65** (M 64: 0.89x of before, found by the MI355X
+- **K1 MoE a8w4 at decode M ran 11% slower after #65** (#85; M 64: 0.89x of before, found by the MI355X
   scoreboard). The sorted kernels' grids are sized for the most sorted blocks a launch can have,
   and #65's `Placement.chunked(0, "spread")` dealt contiguous ranges of the whole grid, so the
   live blocks (235 of 390 at M 64) landed on the first five XCDs. They now renumber in the body
