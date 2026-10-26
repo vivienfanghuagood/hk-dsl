@@ -455,7 +455,7 @@ class Global(Value):
         aux = scope_aux(self, "load_elems") if getattr(self.ty, "scope", "") else 0
         return wrap(hkd.LoadElemsOp(mlir_type(ty), self.v, idx.v, aux=_i64(aux), loc=t.loc("elems")).result, ty)
 
-    def store_elems(self, val: "Tile", idx: "Tile", *, runs: bool = False) -> None:
+    def store_elems(self, val: "Tile", idx: "Tile", *, runs: bool = False, row=None) -> None:
         """Element by element at computed indices (gfx950): element (r, c) of `val` (an fp32 or
         i32 strip), converted to this tensor's type, to element `idx[r, c]` (flat, as
         load_elems). An index below zero or past the tensor writes nothing: -1 masks an element
@@ -463,7 +463,11 @@ class Global(Value):
 
         `runs=True`: the kernel says each lane's run goes to consecutive elements from its first
         element's index, aligned to the run's bytes; the run is one store (1, 2, 4, 8 or 16 k
-        bytes), masked by that first index -- 8 fp8 values in one 8-byte store, not eight."""
+        bytes), masked by that first index -- 8 fp8 values in one 8-byte store, not eight.
+
+        `row` (a device Int): the indices count from that row, whose base is formed in 64 bits and
+        whose range is the one row -- a tensor past a 32-bit offset (a paged cache of many GB)
+        addressed a row (block) at a time."""
         if getattr(idx.ty, "run", None) is None or idx.ty.dtype.name != "i32":
             raise TypeError(f"store_elems takes an i32 strip of indices, not {idx.ty}")
         if runs:
@@ -472,7 +476,8 @@ class Global(Value):
                 raise TypeError(f"store_elems(runs=True): a run of {nb} bytes; 1, 2, 4, 8 or 16 k")
         t = _t()
         aux = scope_aux(self, "store_elems") if getattr(self.ty, "scope", "") else 0
-        hkd.StoreElemsOp(self.v, val.v, idx.v, aux=_i64(aux), runs=bool(runs), loc=t.loc())
+        hkd.StoreElemsOp(self.v, val.v, idx.v, aux=_i64(aux), runs=bool(runs),
+                         row=None if row is None else as_int(row).v, loc=t.loc())
 
     def post_elems(self, val: "Tile", idx: "Tile", tag, *, runs: bool = False, bf16: bool = False) -> None:
         """Tagged mailbox pairs, an element at a time (gfx950): element (r, c) of `val` (fp32 or i32

@@ -1390,7 +1390,7 @@ zero or past the tensor reads 0 -- a table lookup with a fallback, a key table's
 #### `Global.store_elems`
 
 ```python
-Global.store_elems(self, val: Tile, idx: Tile, *, runs: bool = False) -> None
+Global.store_elems(self, val: Tile, idx: Tile, *, runs: bool = False, row=None) -> None
 ```
 
 *New after 0.5.0*
@@ -1403,6 +1403,10 @@ out. Two elements to one index race.
 `runs=True`: the kernel says each lane's run goes to consecutive elements from its first
 element's index, aligned to the run's bytes; the run is one store (1, 2, 4, 8 or 16 k
 bytes), masked by that first index -- 8 fp8 values in one 8-byte store, not eight.
+
+`row` (a device Int): the indices count from that row, whose base is formed in 64 bits and
+whose range is the one row -- a tensor past a 32-bit offset (a paged cache of many GB)
+addressed a row (block) at a time.
 
 #### `Global.post_elems`
 

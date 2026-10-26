@@ -1597,7 +1597,7 @@ private:
         .Case([&](StoreElemsOp o) {
           w(std::string("kittens::store_elems") + (o.getRuns() ? "_runs" : "") + "<" +
             std::to_string(o.getAux()) + ">(" + name(o.getDst()) + ", " + name(o.getVal()) + ", " +
-            name(o.getIdx()) + ");");
+            name(o.getIdx()) + (o.getRow() ? ", " + name(o.getRow()) : std::string()) + ");");
         })
         .Case([&](GroupReduceOp o) {
           Value d = dest(Value(), o.getResult());

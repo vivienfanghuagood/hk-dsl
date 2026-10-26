@@ -955,12 +955,15 @@ def HK_StoreElemsOp : HK_Op<"store_elems"> {
     below zero or past the tensor writes nothing -- a mask is an index of -1.
     Two elements to one index race. `runs`: each lane's run goes to the
     consecutive elements from its first element's index (the kernel says so),
-    as one store of the run's bytes, masked by that first index.
+    as one store of the run's bytes, masked by that first index. `row`: the
+    indices count from row `row` of `dst` (its base is formed in 64 bits, the
+    range is that one row): a tensor far past a 32-bit offset, addressed a row
+    at a time.
   }];
   let arguments = (ins HK_GlobalType:$dst, HK_RegTileType:$val, HK_RegTileType:$idx, DefaultValuedAttr<I64Attr, "0">:$aux,
-                       UnitAttr:$runs);
+                       UnitAttr:$runs, Optional<I32>:$row);
   let assemblyFormat = [{
-    $val `,` $dst `[` $idx `]` attr-dict `:` qualified(type($val)) `,` qualified(type($dst)) `,` qualified(type($idx))
+    $val `,` $dst `[` $idx `]` (`row` $row^)? attr-dict `:` qualified(type($val)) `,` qualified(type($dst)) `,` qualified(type($idx))
   }];
   let hasVerifier = 1;
 }

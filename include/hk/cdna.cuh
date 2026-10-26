@@ -3189,10 +3189,31 @@ __device__ static inline void load_elems(D &dst, const GL &src, const I &idx) {
 }
 /** @brief hk.store_elems(runs=True): each lane's run to the consecutive elements from idx of its first
  * element, as one store of the run's bytes (masked by that index). */
+namespace detail {
+/** One row of the tensor as the buffer: the base formed in 64 bits (a tensor may span far past a
+ *  32-bit offset), the range that row. */
+template<ducks::gl::all GL> __device__ inline hk_i32x4 hk_elems_srsrc_row(const GL &g, int row) {
+    using U = typename GL::dtype;
+    const uint64_t rs = uint64_t(g.row_stride()) * sizeof(U);
+    return hk_srsrc(reinterpret_cast<const char *>(g.raw_ptr) + uint64_t(uint32_t(row)) * rs, rs);
+}
+}  // namespace detail
+template<int AUX = 0, ducks::gl::all GL, ducks::rs::all V, ducks::rs::all I>
+__device__ static inline void store_elems_runs(const GL &dst, const V &val, const I &idx,
+                                               const detail::hk_i32x4 r);
 template<int AUX = 0, ducks::gl::all GL, ducks::rs::all V, ducks::rs::all I>
 __device__ static inline void store_elems_runs(const GL &dst, const V &val, const I &idx) {
+    store_elems_runs<AUX>(dst, val, idx, detail::hk_elems_srsrc(dst));
+}
+/** @brief store_elems_runs, the indices counting from row `row` (hk_elems_srsrc_row). */
+template<int AUX = 0, ducks::gl::all GL, ducks::rs::all V, ducks::rs::all I>
+__device__ static inline void store_elems_runs(const GL &dst, const V &val, const I &idx, int row) {
+    store_elems_runs<AUX>(dst, val, idx, detail::hk_elems_srsrc_row(dst, row));
+}
+template<int AUX, ducks::gl::all GL, ducks::rs::all V, ducks::rs::all I>
+__device__ static inline void store_elems_runs(const GL &dst, const V &val, const I &idx,
+                                               const detail::hk_i32x4 r) {
     using U = typename GL::dtype;
-    const detail::hk_i32x4 r = detail::hk_elems_srsrc(dst);
     #pragma unroll
     for (int a = 0; a < V::rows; a++) {
         #pragma unroll
@@ -3220,9 +3241,21 @@ __device__ static inline void store_elems_runs(const GL &dst, const V &val, cons
 }
 /** @brief hk.store_elems: val's element (r, c) to dst's element idx(r, c), flat; out of range: none. */
 template<int AUX = 0, ducks::gl::all GL, ducks::rs::all V, ducks::rs::all I>
+__device__ static inline void store_elems(const GL &dst, const V &val, const I &idx,
+                                          const detail::hk_i32x4 r);
+template<int AUX = 0, ducks::gl::all GL, ducks::rs::all V, ducks::rs::all I>
 __device__ static inline void store_elems(const GL &dst, const V &val, const I &idx) {
+    store_elems<AUX>(dst, val, idx, detail::hk_elems_srsrc(dst));
+}
+/** @brief store_elems, the indices counting from row `row` (hk_elems_srsrc_row). */
+template<int AUX = 0, ducks::gl::all GL, ducks::rs::all V, ducks::rs::all I>
+__device__ static inline void store_elems(const GL &dst, const V &val, const I &idx, int row) {
+    store_elems<AUX>(dst, val, idx, detail::hk_elems_srsrc_row(dst, row));
+}
+template<int AUX, ducks::gl::all GL, ducks::rs::all V, ducks::rs::all I>
+__device__ static inline void store_elems(const GL &dst, const V &val, const I &idx,
+                                          const detail::hk_i32x4 r) {
     using U = typename GL::dtype;
-    const detail::hk_i32x4 r = detail::hk_elems_srsrc(dst);
     detail::strip_each<V>([&](int a, int j, int e) {
         detail::hk_buf_store_elem<U, AUX>(r, detail::hk_elem_off(idx.data[a][j][e], sizeof(U)),
                                           detail::hk_cvt<U, typename V::T>(val.data[a][j][e]));
