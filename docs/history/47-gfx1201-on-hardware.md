@@ -19,10 +19,10 @@ and schedule is gfx1100's, and no engine route is on.
 
 ## The box
 
-amd-G7466-M6: 2x EPYC 9334, 503 GB, eight R9700 (PCI 03/23/43/63/83/a3/c3/e3),
+2x EPYC 9334, 503 GB, eight R9700 (PCI 03/23/43/63/83/a3/c3/e3),
 ROCm 7.2.3 on the host, `rocm/pytorch:rocm7.2.3_ubuntu24.04_py3.12_pytorch_release_2.10.0`
 for everything that runs (the gfx950 CI's image; torch 2.10.0 sees gfx1201).
-A dozen people use it, most of them as `amd`, and one user's service holds
+A dozen people use it, and one user's service holds
 GPU 0. None of them takes our locks, so every GPU run here goes through
 `scripts/ci/gfx1201/hkr9`: our lock of the card, then a check that no process
 of anyone's holds it, then a container that sees that one card with core dumps
