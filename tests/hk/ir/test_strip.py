@@ -510,3 +510,22 @@ def test_mfma_strip_is_one_kind_in_its_lane_layout():
         o.at[0, 0].store(hk.mfma_strip("f32_32x32x2", x, x, o.at[0, 0].load(hk.RS(hk.fp32, 1, 256, 4))))
     with pytest.raises(ValueError, match="one kind"):
         _src950(kind)
+
+
+def test_mailbox_elems_want_a_scoped_tensor_and_bf16_runs():
+    def unscoped(x: hk.Tensor[hk.fp32], box: hk.Tensor[hk.i32]):
+        box.post_elems(x.at[0, 0].load(S64), hk.iota(S64), 1)
+    with pytest.raises(TypeError, match="unscoped"):
+        _src950(unscoped)
+
+    def bf(x: hk.Tensor[hk.fp32], box: hk.Tensor[hk.i32, "device"]):
+        box.post_elems(x.at[0, 0].load(S64), hk.iota(S64), 1, bf16=True)
+    with pytest.raises(TypeError, match="runs=True"):
+        _src950(bf)
+
+    def ok(x: hk.Tensor[hk.fp32], box: hk.Tensor[hk.i32, "device"], o: hk.Tensor[hk.fp32]):
+        c = hk.iota(S64)
+        box.post_elems(x.at[0, 0].load(S64), c, 1, runs=True, bf16=True)
+        o.at[0, 0].store(box.take_elems(c, 1, runs=True, bf16=True))
+    src = _src950(ok)
+    assert "post_elems_runs<" in src and "take_elems_runs<" in src
