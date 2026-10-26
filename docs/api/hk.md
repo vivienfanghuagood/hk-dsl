@@ -703,32 +703,40 @@ The element dtype.
 #### `Tile.sum`
 
 ```python
-Tile.sum(self, axis: int = 1) -> Reduction
+Tile.sum(self, axis: int = 1, *, lanes: Optional[str] = None, xor: Optional[Sequence[int]] = None) -> Reduction
 ```
+
+*Changed after 0.5.0*: new parameters `lanes`, `xor`
 
 The sum along `axis`: 1 (default) along each row, one value per row (a col_vec); 0 along each column (a row_vec). Lazy: `v = t.sum()` makes the vector, `acc += t.sum()` accumulates into one, and `.value(into=v)` writes an existing one.
 
 #### `Tile.max`
 
 ```python
-Tile.max(self, axis: int = 1) -> Reduction
+Tile.max(self, axis: int = 1, *, lanes: Optional[str] = None, xor: Optional[Sequence[int]] = None) -> Reduction
 ```
+
+*Changed after 0.5.0*: new parameters `lanes`, `xor`
 
 The max along `axis`: 1 (default) along each row, one value per row (a col_vec); 0 along each column (a row_vec). Lazy: `v = t.max()` makes the vector, `m.max_(t.max())` folds into one (the online max), and `.value(into=v)` writes an existing one.
 
 #### `Tile.min`
 
 ```python
-Tile.min(self, axis: int = 1) -> Reduction
+Tile.min(self, axis: int = 1, *, lanes: Optional[str] = None, xor: Optional[Sequence[int]] = None) -> Reduction
 ```
+
+*Changed after 0.5.0*: new parameters `lanes`, `xor`
 
 The min along `axis`: 1 (default) along each row, one value per row (a col_vec); 0 along each column (a row_vec). Lazy: `v = t.min()` makes the vector, and `.value(into=v)` writes an existing one.
 
 #### `Tile.prod`
 
 ```python
-Tile.prod(self, axis: int = 1) -> Reduction
+Tile.prod(self, axis: int = 1, *, lanes: Optional[str] = None, xor: Optional[Sequence[int]] = None) -> Reduction
 ```
+
+*Changed after 0.5.0*: new parameters `lanes`, `xor`
 
 The product along `axis`: 1 (default) along each row, one value per row (a col_vec); 0 along each column (a row_vec). Lazy: `v = t.prod()` makes the vector, and `.value(into=v)` writes an existing one.
 

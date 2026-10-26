@@ -809,10 +809,10 @@ def broadcast(op: str, t: "Tile", v: "Vec", *, into=None) -> "Tile":
 class Reduction:
     """`t.sum(axis=1)` before it lands: a vector `+=` folds it in place."""
 
-    __slots__ = ("kind", "axis", "src")
+    __slots__ = ("kind", "axis", "src", "order")
 
-    def __init__(self, kind: str, axis: str, src: "Tile"):
-        self.kind, self.axis, self.src = kind, axis, src
+    def __init__(self, kind: str, axis: str, src: "Tile", order: Optional[str] = None):
+        self.kind, self.axis, self.src, self.order = kind, axis, src, order
 
     @property
     def op(self) -> str:
@@ -829,8 +829,9 @@ class Reduction:
             raise TypeError(f"{self.op}: into is {into.ty}, but reducing "
                             f"{self.src.ty} gives {self.vtype}. A vector's "
                             f"layout is tied to the tile it came off.")
+        extra = {} if self.order is None else {"order": self.order}
         return _make(_REDUCE[(self.kind, self.axis)], self.vtype, (self.src.v,),
-                     into=into, name=self.op, accumulate=bool(accumulate))
+                     into=into, name=self.op, accumulate=bool(accumulate), **extra)
 
     def __getattr__(self, name):
         # Anything else a vector does: materialize, then do it.
@@ -843,6 +844,28 @@ class Reduction:
     def __mul__(self, o): return self.value() * o
     def __truediv__(self, o): return self.value() / o
     def __getitem__(self, key): return self.value()[key]
+
+
+def _reduce_order(t: "Tile", kind: str, axis: int, lanes, xor) -> str:
+    """The order attribute of a stated reduction order: "seq|tree:o1,o2,..."."""
+    if axis != 1 or getattr(t.ty, "run", None) is None:
+        raise TypeError(f"{kind}(lanes=, xor=): an order is for the rows of a strip "
+                        f"(hk.RS), not {t.ty} along axis {axis}: a WMMA tile's reduction "
+                        f"order is its layout's")
+    from .arch import target  # noqa: PLC0415
+
+    if target().wave != 64:
+        raise TypeError(f"{kind}(lanes=, xor=): a stated order is gfx950's (a wave of 64 "
+                        f"lanes), not {target().arch}'s")
+    lanes = "tree" if lanes is None else lanes
+    if lanes not in ("seq", "tree"):
+        raise ValueError(f"{kind}(lanes={lanes!r}): \"seq\" (a lane's values left to right) "
+                         f"or \"tree\"")
+    xor = (1, 2, 4, 8, 16, 32) if xor is None else tuple(int(o) for o in xor)
+    if sorted(xor) != [1, 2, 4, 8, 16, 32]:
+        raise ValueError(f"{kind}(xor={xor}): every offset of a 64-lane wave, 1 2 4 8 16 32, "
+                         f"once each")
+    return f"{lanes}:" + ",".join(str(o) for o in xor)
 
 
 def _vec_of(x) -> "Vec":
@@ -981,10 +1004,34 @@ class Tile(_Elementwise):
                              f"or 0 (along each column), got {axis}")
         return Reduction(kind, "row" if axis == 1 else "col", self)
 
-    def sum(self, axis: int = 1) -> Reduction: return self._reduce("sum", axis)
-    def max(self, axis: int = 1) -> Reduction: return self._reduce("max", axis)
-    def min(self, axis: int = 1) -> Reduction: return self._reduce("min", axis)
-    def prod(self, axis: int = 1) -> Reduction: return self._reduce("prod", axis)
+    def _ordered(self, kind: str, axis: int, lanes, xor) -> Reduction:
+        # _reduce keeps its (kind, axis) signature: the templates wrap it to refuse reductions
+        r = self._reduce(kind, axis)
+        if lanes is not None or xor is not None:
+            r.order = _reduce_order(self, kind, axis, lanes, xor)
+        return r
+
+    def sum(self, axis: int = 1, *, lanes: Optional[str] = None,
+            xor: Optional[Sequence[int]] = None) -> Reduction:
+        """Sum along each row (axis=1) or column. On a strip's rows, `lanes` and `xor` state the
+        order -- a lane's own values "seq" (left to right) or "tree" (balanced), then the lanes
+        combined over the xor offsets `xor` in that order, each of 1 2 4 8 16 32 once -- for a
+        result that must match another kernel bit for bit: dsv41_mono's and aiter's norms are
+        `lanes="seq", xor=(32, 16, 8, 4, 2, 1)`. Unstated, the order is hk's (a tree, then
+        1 .. 32). gfx950 only."""
+        return self._ordered("sum", axis, lanes, xor)
+
+    def max(self, axis: int = 1, *, lanes: Optional[str] = None,
+            xor: Optional[Sequence[int]] = None) -> Reduction:
+        return self._ordered("max", axis, lanes, xor)
+
+    def min(self, axis: int = 1, *, lanes: Optional[str] = None,
+            xor: Optional[Sequence[int]] = None) -> Reduction:
+        return self._ordered("min", axis, lanes, xor)
+
+    def prod(self, axis: int = 1, *, lanes: Optional[str] = None,
+             xor: Optional[Sequence[int]] = None) -> Reduction:
+        return self._ordered("prod", axis, lanes, xor)
 
     def to(self, dtype: DType, *, into=None) -> "Tile":
         """Change the element type, keeping shape and layout (kittens::copy)."""

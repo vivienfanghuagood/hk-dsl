@@ -2854,6 +2854,34 @@ __device__ inline T strip_butterfly(T v) {
     return hk_swap_op<op, 2>(v);
 }
 
+/// op of v and the value lane ^ OFF holds, with the exact partner at every offset: DPP inside a
+/// 16-lane row (row_shr / row_shl with bank masks for 8 and 4, quad_perm for 2 and 1 -- the
+/// partners dsv41_mono's xshfl takes), the swaps across rows. strip_butterfly's mirrors are the
+/// xor partners only when the lanes below agree, i.e. in ascending order; a descending order
+/// needs these.
+template<typename op, int OFF, typename T> __device__ inline T hk_xor_op(const T &v) {
+    static_assert(OFF == 1 || OFF == 2 || OFF == 4 || OFF == 8 || OFF == 16 || OFF == 32,
+                  "an xor offset is a power of two below 64");
+    if constexpr (OFF >= 16) {
+        return hk_swap_op<op, OFF / 16>(v);
+    } else {
+        const int x = int(hk_bits(v));
+        int y;
+        if constexpr (OFF == 8) {
+            y = __builtin_amdgcn_update_dpp(x, x, 0x118, 0xF, 0xC, false);   // row_shr:8, lanes 8..15
+            y = __builtin_amdgcn_update_dpp(y, x, 0x108, 0xF, 0x3, false);   // row_shl:8, lanes 0..7
+        } else if constexpr (OFF == 4) {
+            y = __builtin_amdgcn_update_dpp(x, x, 0x114, 0xF, 0xA, false);   // row_shr:4
+            y = __builtin_amdgcn_update_dpp(y, x, 0x104, 0xF, 0x5, false);   // row_shl:4
+        } else if constexpr (OFF == 2) {
+            y = __builtin_amdgcn_update_dpp(x, x, 0x4E, 0xF, 0xF, false);    // quad_perm [2,3,0,1]
+        } else {
+            y = __builtin_amdgcn_update_dpp(x, x, 0xB1, 0xF, 0xF, false);    // quad_perm [1,0,3,2]
+        }
+        return op::template op<T>(v, hk_from_bits<T>(uint32_t(y)));
+    }
+}
+
 template<typename RS, typename F>
 __device__ inline void strip_each(F &&f) {
     #pragma unroll
@@ -3089,6 +3117,37 @@ __device__ inline void strip_row_reduce(CV &dst, const RS &src, const CV &acc) {
     }
 }
 
+/// strip_row_reduce in a stated order: a lane's own values left to right (SEQ) or as the balanced
+/// tree, then the lanes combined over the xor offsets OFFS in that order. The order is the
+/// numerical contract when a result must match another kernel bit for bit (dsv41_mono's and
+/// aiter's norms: sequential, then 32, 16, 8, 4, 2, 1).
+template<typename op, bool reset, bool SEQ, int... OFFS, ducks::rs::cv CV, ducks::rs::all RS>
+__device__ inline void strip_row_reduce_ordered(CV &dst, const RS &src, const CV &acc) {
+    static_assert(CV::length == RS::rows, "one value per row of the strip");
+    using T = typename RS::T;
+    constexpr int N = RS::chunks * RS::run;
+    #pragma unroll
+    for (int r = 0; r < RS::rows; r++) {
+        T a[N];
+        #pragma unroll
+        for (int j = 0; j < RS::chunks; j++) {
+            #pragma unroll
+            for (int e = 0; e < RS::run; e++) a[j*RS::run + e] = src.data[r][j][e];
+        }
+        T v;
+        if constexpr (SEQ) {
+            v = a[0];
+            #pragma unroll
+            for (int i = 1; i < N; i++) v = op::template op<T>(v, a[i]);
+        } else {
+            v = strip_tree<op>(a);
+        }
+        ((v = hk_xor_op<op, OFFS>(v)), ...);
+        if constexpr (reset) dst.data[r][0] = v;
+        else                 dst.data[r][0] = op::template op<T>(acc.data[r][0], v);
+    }
+}
+
 template<typename op, bool reset, ducks::rs::all RV, ducks::rs::all RS>
 __device__ inline void strip_col_reduce(RV &dst, const RS &src, const RV &acc) {
     static_assert(RV::rows == 1 && RV::cols == RS::cols && RV::run == RS::run,
@@ -3126,6 +3185,21 @@ HK_STRIP_REDUCE(col_max,  max, col, all)
 HK_STRIP_REDUCE(col_min,  min, col, all)
 HK_STRIP_REDUCE(col_prod, mul, col, all)
 #undef HK_STRIP_REDUCE
+
+#define HK_STRIP_REDUCE_ORDERED(name, opname)                                       \
+    template<int SEQ, int... OFFS, ducks::rs::cv V, ducks::rs::all RS>                \
+    __device__ static inline void name##_ordered(V &dst, const RS &src) {            \
+        detail::strip_row_reduce_ordered<base_ops::opname, true, bool(SEQ), OFFS...>(dst, src, dst); \
+    }                                                                              \
+    template<int SEQ, int... OFFS, ducks::rs::cv V, ducks::rs::all RS>                \
+    __device__ static inline void name##_ordered(V &dst, const RS &src, const V &acc) { \
+        detail::strip_row_reduce_ordered<base_ops::opname, false, bool(SEQ), OFFS...>(dst, src, acc); \
+    }
+HK_STRIP_REDUCE_ORDERED(row_sum,  sum)
+HK_STRIP_REDUCE_ORDERED(row_max,  max)
+HK_STRIP_REDUCE_ORDERED(row_min,  min)
+HK_STRIP_REDUCE_ORDERED(row_prod, mul)
+#undef HK_STRIP_REDUCE_ORDERED
 
 /* ----------  broadcasts  ---------- */
 
