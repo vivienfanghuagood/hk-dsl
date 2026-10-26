@@ -64,7 +64,11 @@ stood at the move (990 no-GPU tests, 386 on the GPU).
   `mlir/test/Target`, each file driven by its `RUN:` line through `hk-opt`,
   `hk-translate` and `FileCheck` ([the tools](ir.md#hk-opt-and-hk-translate)).
 * **ir** — `python3 -m pytest tests/hk/ir -q`. Needs `hk._mlir`; no compiler,
-  no GPU, no torch.
+  no GPU, no torch. `HK_ARCH=gfx1201` runs it for RDNA4. A test of one arch's
+  measured data -- a shipped routing table, a tuned record, gfx1100's LDS pool
+  or Infinity Cache -- carries `@pytest.mark.arch("gfx1100")` and runs as
+  gfx1100 whatever the tier was started with; it says nothing about the other
+  arch.
 * **codegen** — `python3 -m pytest tests/hk/codegen -q`. Needs hipcc, no GPU;
   generates and compiles, never launches. Skipped, with that reason, when
   there is no working hipcc.

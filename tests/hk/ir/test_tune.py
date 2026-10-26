@@ -341,6 +341,7 @@ def test_gfx950_record_that_does_not_fit_is_ignored(tunedir):
     assert gemm_cdna.route(2048, 16384, 4096) == gemm_cdna.route(2048, 16384, 4096, user=False)
 
 
+@pytest.mark.arch("gfx1100")  # a gfx1100 record
 def test_rdna_schedule_and_plan_read_the_record(tunedir):
     from hk.ops import gemm
     from hk.templates import gemm as tg

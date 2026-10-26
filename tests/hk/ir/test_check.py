@@ -124,6 +124,7 @@ def test_cpu_discovery_through_a_kept_launcher():
     assert [b["kernel"] for b in r.builds] == ["gelu_mul"]
 
 
+@pytest.mark.arch("gfx1100")  # gfx1100's strip chunk
 def test_sweep_drops_a_variant_that_does_not_trace():
     import hk
 

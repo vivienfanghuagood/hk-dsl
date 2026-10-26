@@ -39,6 +39,7 @@ def test_a_k_no_split_divides_is_refused():
     assert not decode_gemm.fits(1, 4100, 4096)
 
 
+@pytest.mark.arch("gfx1100")  # gfx1100's 128 KB WGP pool
 def test_resident_sizes_the_lds_so_exactly_that_many_fit():
     import re
 
@@ -52,6 +53,7 @@ def test_resident_sizes_the_lds_so_exactly_that_many_fit():
         assert pool // lds == resident
 
 
+@pytest.mark.arch("gfx1100")  # gfx1100's 128 KB WGP pool
 def test_a_cap_one_workgroup_cannot_hold_is_refused():
     with pytest.raises(ValueError, match="resident=1"):
         decode_gemm.decode_gemm_kernel("dg_r1", warps=16, resident=1)
