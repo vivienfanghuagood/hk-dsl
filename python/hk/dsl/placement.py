@@ -339,15 +339,31 @@ class _DslOps:
         return _max(a, b)
 
 
-def renumber(w, total, *, chunk: Union[int, str, Any] = 0, tail: str = "spread"):
+def renumber(w, total, *, chunk: Union[int, str, Any] = 0, tail: str = "spread", live=None):
     """`place` inside a kernel body, on device ints: the logical unit of id
     `w` of `total` as the XCDs of the GPU being traced for deal them. For a
     persistent kernel, whose units are not workgroups (a workgroup's i-th
     virtual id is w + i * grid): what Placement.chunked / cluster install at
-    entry for a grid."""
+    entry for a grid.
+
+    `live`: only units [0, live) do work, the rest exit at once -- a grid sized
+    for the most work a launch can have (a MoE's sorted blocks padded per
+    expert), with the count known at run time. Ids [0, live) are then placed
+    among themselves and the rest stay: the live units are dealt over every
+    XCD. Placing all of [0, total) would hand them to the first XCDs' ranges
+    and leave the others idle (K1 at M = 64: 18-20% slower)."""
     from . import builder as B  # noqa: PLC0415
 
-    return place(_DslOps(), w, total, xcd_count(B.current().arch), chunk, tail)
+    o, x = _DslOps(), xcd_count(B.current().arch)
+    if live is None:
+        return place(o, w, total, x, chunk, tail)
+    return _place_live(o, w, live, x, chunk, tail)
+
+
+def _place_live(o, w, live, xcds, chunk=0, tail="spread"):
+    """`place` over [0, live) for ids below `live`; the identity above."""
+    inside = o.min(o.max(o.sub(live, w), o.c(0)), o.c(1))       # 1 below `live`
+    return o.add(w, o.mul(inside, o.sub(place(o, w, live, xcds, chunk, tail), w)))
 
 
 def xcd_range(d, total):

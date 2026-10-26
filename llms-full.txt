@@ -4791,7 +4791,7 @@ DPX partition says 4, an MI300A 6), else the arch's default.
 ### `hk.placement.renumber`
 
 ```python
-hk.placement.renumber(w, total, *, chunk: Union[int, str, Any] = 0, tail: str = 'spread')
+hk.placement.renumber(w, total, *, chunk: Union[int, str, Any] = 0, tail: str = 'spread', live=None)
 ```
 
 *New after 0.7.0* (the `hk.dsl.placement` module is not in the 0.7.0 wheel)
@@ -4801,6 +4801,13 @@ hk.placement.renumber(w, total, *, chunk: Union[int, str, Any] = 0, tail: str = 
 persistent kernel, whose units are not workgroups (a workgroup's i-th
 virtual id is w + i * grid): what Placement.chunked / cluster install at
 entry for a grid.
+
+`live`: only units [0, live) do work, the rest exit at once -- a grid sized
+for the most work a launch can have (a MoE's sorted blocks padded per
+expert), with the count known at run time. Ids [0, live) are then placed
+among themselves and the rest stay: the live units are dealt over every
+XCD. Placing all of [0, total) would hand them to the first XCDs' ranges
+and leave the others idle (K1 at M = 64: 18-20% slower).
 
 ### `hk.placement.xcd_range`
 

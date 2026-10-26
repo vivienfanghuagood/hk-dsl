@@ -639,11 +639,16 @@ def _sorted_ring(stage: int, name: str, *, group_rows: int, mt: int, pp: int, k:
         if mxq:     # stage 1's h, a workgroup's whole block, for the MX-quantizing store
             Hs = hk.lds.alloc(hk.ST(bf16, BM, TILE * pp * warps), name="Hs")
         nblk = out.cols // (TILE * pp * warps)
+        # The grid is sized for the most sorted blocks a launch can have; only the first
+        # cdiv(valid, BM) are live. Those are dealt over every XCD in contiguous ranges, a
+        # block's column blocks on one XCD (hk.dsl.placement.renumber's `live`).
+        valid = nv[hk.elem_coord(0, 0, 0, 0)].load_scalar()
         wg = hk.arch.block_idx.x
+        if xcd:
+            wg = hk.placement.renumber(wg, seids.cols * nblk, live=hk.cdiv(valid, BM) * nblk)
         blk = wg % nblk
         b = wg // nblk
         e = seids[hk.elem_coord(0, 0, 0, b)].load_scalar()
-        valid = nv[hk.elem_coord(0, 0, 0, 0)].load_scalar()
         live = hk.min(hk.max(valid - b * BM, 0), 1)
         r0 = b * BM
         wid = hk.arch.warp_id()
@@ -717,8 +722,7 @@ def _sorted_ring(stage: int, name: str, *, group_rows: int, mt: int, pp: int, k:
 
     body.__name__ = name
     return hk.kernel(body, arch="gfx950", warps=warps, name=name, max_vgprs=2048 // warps,
-                     grid=lambda p: (p.seids.cols * (p.out.cols // (TILE * pp * warps)), 1, 1),
-                     placement=_XCD_PLACEMENT if xcd else None)
+                     grid=lambda p: (p.seids.cols * (p.out.cols // (TILE * pp * warps)), 1, 1))
 
 
 def _sorted_s2_persistent(name: str, *, group_rows: int, mt: int, pp: int, k: int, topk: int = 6,
@@ -883,11 +887,16 @@ def _sorted_s1_grid(name: str, *, group_rows: int, mt: int, pp: int, k: int, tr:
         Xs = hk.lds.alloc(st_x, count=2, name="Xs")
         Ws = hk.lds.alloc(st_w, count=2, name="Ws", shape="16x128")
         nblk = h.cols // (TILE * pp * tc)
+        # The grid is sized for the most sorted blocks a launch can have; only the first
+        # cdiv(valid, BM) are live. Those are dealt over every XCD in contiguous ranges, a
+        # block's column blocks on one XCD (hk.dsl.placement.renumber's `live`).
+        valid = nv[hk.elem_coord(0, 0, 0, 0)].load_scalar()
         wg = hk.arch.block_idx.x
+        if xcd:
+            wg = hk.placement.renumber(wg, seids.cols * nblk, live=hk.cdiv(valid, BM) * nblk)
         blk = wg % nblk
         b = wg // nblk
         e = seids[hk.elem_coord(0, 0, 0, b)].load_scalar()
-        valid = nv[hk.elem_coord(0, 0, 0, 0)].load_scalar()
         live = hk.min(hk.max(valid - b * BM, 0), 1)
         r0 = b * BM
         wid = hk.arch.warp_id()
@@ -950,8 +959,7 @@ def _sorted_s1_grid(name: str, *, group_rows: int, mt: int, pp: int, k: int, tr:
 
     body.__name__ = name
     return hk.kernel(body, arch="gfx950", warps=warps, name=name, max_vgprs=2048 // warps,
-                     grid=lambda p: (p.seids.cols * (p.h.cols // (TILE * pp * tc)), 1, 1),
-                     placement=_XCD_PLACEMENT if xcd else None)
+                     grid=lambda p: (p.seids.cols * (p.h.cols // (TILE * pp * tc)), 1, 1))
 
 
 @functools.lru_cache(maxsize=None)
@@ -1002,11 +1010,15 @@ def _sorted_s2_resident(name: str, *, group_rows: int, mt: int, pp: int, k: int,
         g = hk.group(warps)
         Hres = hk.lds.alloc(st_x, count=steps, name="Hres")
         nblk = out.cols // (NCW * nt)
-        wg = hk.arch.block_idx.x
+        # The grid is sized for the most sorted blocks a launch can have; only the first
+        # cdiv(valid, BM) are live. Those are dealt over every XCD in contiguous ranges, a
+        # block's column blocks on one XCD (hk.dsl.placement.renumber's `live`).
+        valid = nv[hk.elem_coord(0, 0, 0, 0)].load_scalar()
+        wg = hk.placement.renumber(hk.arch.block_idx.x, seids.cols * nblk,
+                                   live=hk.cdiv(valid, BM) * nblk)
         blk = wg % nblk
         b = wg // nblk
         e = seids[hk.elem_coord(0, 0, 0, b)].load_scalar()
-        valid = nv[hk.elem_coord(0, 0, 0, 0)].load_scalar()
         live = hk.min(hk.max(valid - b * BM, 0), 1)
         r0 = b * BM
         wid = hk.arch.warp_id()
@@ -1066,8 +1078,7 @@ def _sorted_s2_resident(name: str, *, group_rows: int, mt: int, pp: int, k: int,
 
     body.__name__ = name
     return hk.kernel(body, arch="gfx950", warps=warps, name=name, max_vgprs=2048 // warps,
-                     grid=lambda p: (p.seids.cols * (p.out.cols // (TILE * pp * warps * nt)), 1, 1),
-                     placement=_XCD_PLACEMENT)
+                     grid=lambda p: (p.seids.cols * (p.out.cols // (TILE * pp * warps * nt)), 1, 1))
 
 
 @functools.lru_cache(maxsize=None)

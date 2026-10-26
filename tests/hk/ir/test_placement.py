@@ -330,21 +330,40 @@ def test_xcd_range_deals_every_unit_once_balanced():
             assert max(n for _, n in ranges) - min(n for _, n in ranges) <= 1
 
 
-def test_moe_sorted_kernels_renumber_contiguously_for_every_total():
-    """moe_a8w4's grid kernels: contiguous ranges an XCD -- what the hand-written remap did
-    where total % 8 == 0, and now also where it fell back to the identity."""
+def test_a_live_prefix_is_dealt_over_every_xcd():
+    """renumber(live=): ids [0, live) placed among themselves, the rest unchanged -- a
+    bijection for every total and live, the live units in balanced contiguous ranges over
+    all the XCDs. Placing all of [0, total) instead puts a short live prefix on the first
+    XCDs only (K1 at decode M: 1470 live of 2340 units on 5 of 8 XCDs)."""
+    o = P._IntOps()
+    for xcds in (1, 4, 8):
+        for total in (0, 7, 64, 390 * 6, 1152 * 6):
+            for live in sorted({0, 1, total // 3, total // 2, total - 1, total} - {-1}):
+                if live > total or live < 0:
+                    continue
+                got = [P._place_live(o, w, live, xcds) for w in range(total)]
+                assert sorted(got) == list(range(total)), (xcds, total, live)
+                assert got[live:] == list(range(live, total))
+                if live >= xcds:
+                    on = {w % xcds for w in range(total) if got[w] < live}
+                    assert on == set(range(xcds)), (xcds, total, live)
+    # the old way (all of [0, total)) leaves XCDs without live work
+    total, live = 390 * 6, 245 * 6
+    busy = {w % 8 for w in range(total) if P.place_host(w, total, 8) < live}
+    assert len(busy) < 8
+
+
+def test_moe_sorted_kernels_place_their_live_blocks_in_the_body():
+    """The sorted MoE kernels' grids are sized for the most blocks a launch can have; they
+    renumber in the body over the live ones (num_valid / BM), not by a grid placement."""
+    from hk.codegen import scaffold
     from hk.ops import moe_a8w4 as Mo
 
-    k = Mo._sorted_ring(1, "pl_moe_s1", group_rows=2304, mt=4, pp=3, k=5120, warps=4)
-    tr = k.trace()
-    assert tr.plan is not None and tr.plan.kind == "chunked"
-    dec = P.emitted_decode(tr.module, tr.name)
-    for blocks in (1152, 1153, 1322, 1920):
-        e = {n: (1, 1, 1, 1) for n, _ in k._tensors}
-        e["seids"], e["out"] = (1, 1, 1, blocks), (1, 1, blocks * 64, 1152)
-        total = blocks * 6
-        assert [dec(w, 0, 0, e)[0] for w in range(total)] == \
-            [P.place_host(w, total, 8) for w in range(total)]
+    for k in (Mo._sorted_ring(1, "pl_moe_s1", group_rows=2304, mt=4, pp=3, k=5120, warps=4),
+              Mo._sorted_s2_resident("pl_moe_s2", group_rows=5120, mt=4, pp=4, k=1152)):
+        tr = k.trace()
+        assert tr.plan is None
+        assert "pl_wg" not in scaffold.bare(tr)      # no entry decode: the body renumbers
 
 
 def test_mx4w_renumbers_as_before():
