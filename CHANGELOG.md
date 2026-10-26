@@ -41,8 +41,9 @@ python3 -m hk.integration --status     # every route on or off, and which rule d
   | gfx1100 | SGLang-Diffusion | DiT attention (`HK_SGLD_ATTN`); DiT linear (`HK_SGLD_LINEAR`) |
   | gfx1100 | `hk.ops.sdpa` | K3 DiT attention (`HK_SDPA_K3`) |
 
-  On a GPU a route was not validated on, it stays off: vLLM's linear, MoE and
-  encoder SDPA on gfx950, and every route on gfx942 and gfx1201.
+  On a GPU a route was not validated on, it stays off: the gfx1100 routes on
+  gfx950 (vLLM's linear, MoE and encoder SDPA among them), and every route on
+  gfx942 and gfx1201.
 - **Stays opt-in:**
   - **ConvRot INT8** (`HK_SGLD_CONVROT=1`, or `HK_SGLD=attn,linear,convrot`):
     it is lossy by design (PSNR 30.4 dB from bf16), a model-level choice and
@@ -127,8 +128,10 @@ python3 -m hk.integration --status     # every route on or off, and which rule d
 - **`mxfp8.quant` read up to 63 rows past the activation** (#47). At
   M % 64 != 0, K2's fused quant (#41, after 0.6.0) copied whole 64-row tiles of
   x. When x ended an allocator segment, that read took a GPU memory fault in
-  vLLM with `HK_VLLM_MXFP8` on (3 of 3 real-weight DeepSeek-V4.1 runs with K1
-  and K2 on). It only ever affected main after 0.6.0; the released 0.6.0 does
+  vLLM with `HK_VLLM_MXFP8` on: the first three real-weight DeepSeek-V4.1 runs
+  with K1 and K2 on faulted, and since it depends on the allocator's layout,
+  later runs of the same arm completed. It only ever affected main after
+  0.6.0; the released 0.6.0 does
   not contain `mxfp8.quant`. The last block's copy now stops at row M, with the
   output unchanged: 48 of 48 ragged-M cases are bitwise equal to vLLM's quant +
   GEMM. The end-fenced allocator test (`test_fenced.py`, which #49 extended)
@@ -150,9 +153,10 @@ The memory model is in [docs/design/comm.md](docs/design/comm.md).
     that cannot all be resident raises `ResourceError` instead of deadlocking;
   - `hk.runtime.SymmetricBuffer`: one buffer per rank with every peer's mapped;
     while one is open, a launch refuses it bound to an unscoped parameter.
-- **Every scalar fetch-op, and scoped col_vecs** (#45): `atomic_min`, `_or`,
-  `_and`, `_xor` and `_exch_scalar` beside `atomic_add` / `atomic_max`, plain
-  or at a scoped tensor's scope; a row tile's 32-bit `col_vec` loaded from or
+- **Every scalar fetch-op, and scoped col_vecs** (#45): `View.atomic_min_scalar`,
+  `atomic_or_scalar`, `atomic_and_scalar`, `atomic_xor_scalar` and
+  `atomic_exch_scalar` beside `atomic_add_scalar` / `atomic_max_scalar`, each
+  returning the old value, plain or at a scoped tensor's scope; a row tile's 32-bit `col_vec` loaded from or
   stored to a scoped tensor (a per-row scale next to its tile).
 - **Work queues and per-XCD aggregation** (#48): `hk.comm.claim` (a work
   queue's take: one scoped atomic add, no drain) for persistent kernels and
@@ -219,7 +223,7 @@ The memory model is in [docs/design/comm.md](docs/design/comm.md).
   ROCm's default decoder attention for every model, and it raises rather than
   falls back on sliding windows, sinks, softcap, an fp8 KV cache, fp16 and
   other head sizes. It was validated on Qwen3-8B only, and on gfx950 it is
-  slower at one request (0.71-0.88x).
+  slower at one request on long contexts (0.71-0.88x).
 - **SGLang-Diffusion installs made before 0.7.0 stay opt-in** until
   `python3 -m hk.integration sglang-diffusion install` is run again.
 - gfx1100's paged decode at `splits=1` leaves a zero-length (padded)
