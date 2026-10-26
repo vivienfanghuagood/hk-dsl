@@ -820,6 +820,39 @@ def HK_SqrtOp : HK_UnaryMapOp<"sqrt">;
 def HK_RsqrtOp : HK_UnaryMapOp<"rsqrt">;
 def HK_SiluOp : HK_UnaryMapOp<"silu">;
 def HK_StepOp : HK_UnaryMapOp<"step">;
+def HK_LaneGatherOp : HK_Op<"lane_gather"> {
+  let summary = "each element taken from another lane's same element (gfx950)";
+  let description = [{
+    Element (r, c) of lane l of the result is the same run element of lane
+    `src[r, c]` (an i32 strip of the operand's shape, lanes 0..63 of the
+    wave): ds_bpermute, one an element. The small-matrix work of a lane
+    group -- a 4x4 Sinkhorn's row and column sums -- without LDS.
+  }];
+  let arguments = (ins HK_RegTileType:$src, HK_RegTileType:$lanes);
+  let results = (outs HK_RegTileType:$result);
+  let assemblyFormat = [{
+    $src `,` $lanes attr-dict `:` qualified(type($src)) `,` qualified(type($lanes)) `->` qualified(type($result))
+  }];
+  let hasVerifier = 1;
+}
+
+def HK_MfmaStripOp : HK_Op<"mfma_strip"> {
+  let summary = "one raw MFMA on strip registers (gfx950)";
+  let description = [{
+    `kind` "f32_16x16x4": acc (a run-4 strip of 64 x 4: lane l's 4 values
+    are C rows 4 (l / 16) + i, column l % 16) += A B^T over K = 4, lane l
+    holding A[l % 16][l / 16] and B[l % 16][l / 16] (run-1 strips of 64):
+    v_mfma_f32_16x16x4_f32 exactly, for a result that must match another
+    kernel's fp32 MFMA bit for bit.
+  }];
+  let arguments = (ins HK_RegTileType:$a, HK_RegTileType:$b, HK_RegTileType:$acc, StrAttr:$kind);
+  let results = (outs HK_RegTileType:$result);
+  let assemblyFormat = [{
+    $kind $a `,` $b `,` $acc attr-dict `:` qualified(type($a)) `,` qualified(type($b)) `,` qualified(type($acc)) `->` qualified(type($result))
+  }];
+  let hasVerifier = 1;
+}
+
 def HK_IotaOp : HK_Op<"iota"> {
   let summary = "an i32 strip whose element (r, c) is c (gfx950)";
   let description = [{

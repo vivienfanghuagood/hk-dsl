@@ -2470,6 +2470,19 @@ Tile.max(self, axis: int = 1, *, lanes: Optional[str] = None, xor: Optional[Sequ
 
 The max along `axis`: 1 (default) along each row, one value per row (a col_vec); 0 along each column (a row_vec). Lazy: `v = t.max()` makes the vector, `m.max_(t.max())` folds into one (the online max), and `.value(into=v)` writes an existing one.
 
+#### `Tile.lane_gather`
+
+```python
+Tile.lane_gather(self, lanes: Tile) -> Tile
+```
+
+*New after 0.5.0*
+
+Each element from another lane (gfx950): element (r, c) of lane l is the same run element
+of lane `lanes[r, c]` (an i32 strip of this strip's shape, 0..63) -- ds_bpermute, one an
+element. A lane group's small-matrix work (a 4x4 Sinkhorn's row and column sums) without
+LDS. 32-bit elements.
+
 #### `Tile.group_max`
 
 ```python
@@ -3568,7 +3581,7 @@ are bounded: any non-empty length. head_dim is 64 or 128 on both.
 
 ## Also exported
 
-`hk.iota`, `hk.map_cpp`, `hk.mx`, `hk.templates`
+`hk.iota`, `hk.map_cpp`, `hk.mfma_strip`, `hk.mx`, `hk.templates`
 
 
 <!-- docs/api/hk.math.md -->

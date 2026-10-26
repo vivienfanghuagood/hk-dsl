@@ -1071,6 +1071,16 @@ class Tile(_Elementwise):
                                f"{lanes}:" + ",".join(str(o) for o in offs), loc=t.loc(f"group_{kind}"))
         return wrap(op.result, self.ty)
 
+    def lane_gather(self, lanes: "Tile") -> "Tile":
+        """Each element from another lane (gfx950): element (r, c) of lane l is the same run element
+        of lane `lanes[r, c]` (an i32 strip of this strip's shape, 0..63) -- ds_bpermute, one an
+        element. A lane group's small-matrix work (a 4x4 Sinkhorn's row and column sums) without
+        LDS. 32-bit elements."""
+        if getattr(self.ty, "run", None) is None or getattr(lanes.ty, "run", None) is None:
+            raise TypeError(f"lane_gather takes strips, not {self.ty} / {lanes.ty}")
+        t = _t()
+        return wrap(hkd.LaneGatherOp(mlir_type(self.ty), self.v, lanes.v, loc=t.loc("lg")).result, self.ty)
+
     def group_max(self, cols: int, *, lanes: str = "seq", xor: Optional[Sequence[int]] = None) -> "Tile":
         """A strip's rows reduced over groups of `cols` columns (a lane group's runs: an MX group is
         32 columns of a run-8 strip), the group's max in every element. `lanes` and `xor` state the
@@ -2014,4 +2024,14 @@ def iota(ty) -> Tile:
     ty = RegTileType(i32, ty.rows, ty.cols, ty.layout, ty.frag, run=ty.run)
     t = _t()
     return wrap(hkd.IotaOp(mlir_type(ty), loc=t.loc("iota")).result, ty)
+
+
+def mfma_strip(kind: str, a: Tile, b: Tile, acc: Tile) -> Tile:
+    """One raw MFMA on strip registers (gfx950), for a result that must match another kernel's
+    MFMA bit for bit. "f32_16x16x4": `acc` (hk.RS(fp32, 1, 256, 4): lane l's four values are C
+    rows 4 (l // 16) + i, column l % 16) + A B^T over K = 4, where lane l of `a` and `b`
+    (hk.RS(fp32, 1, 64, 1)) holds A[l % 16][l // 16] and B[l % 16][l // 16] --
+    v_mfma_f32_16x16x4_f32, nothing reordered. Returns the new accumulator."""
+    t = _t()
+    return wrap(hkd.MfmaStripOp(mlir_type(acc.ty), a.v, b.v, acc.v, kind, loc=t.loc("mfma")).result, acc.ty)
 

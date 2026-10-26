@@ -767,6 +767,39 @@ static LogicalResult verifyElems(Operation *op, Type valT, Type idxT) {
   return success();
 }
 
+LogicalResult LaneGatherOp::verify() {
+  auto s = dyn_cast<RegTileType>(getSrc().getType());
+  auto l = dyn_cast<RegTileType>(getLanes().getType());
+  if (!s || !s.isStrip() || !l || !l.isStrip() || !l.getElementType().isInteger(32))
+    return emitOpError("gathers a strip's elements by an i32 strip of lanes");
+  if (l.getRows() != s.getRows() || l.getCols() != s.getCols() || l.getRun() != s.getRun())
+    return emitOpError("lanes have the operand's shape and run");
+  if (getResult().getType() != getSrc().getType())
+    return emitOpError("gives a strip of its operand's type");
+  if (s.getElementType().getIntOrFloatBitWidth() != 32)
+    return emitOpError("gathers 32-bit elements");
+  return success();
+}
+
+LogicalResult MfmaStripOp::verify() {
+  if (getKind() != "f32_16x16x4")
+    return emitOpError("kind is f32_16x16x4");
+  auto a = dyn_cast<RegTileType>(getA().getType());
+  auto b = dyn_cast<RegTileType>(getB().getType());
+  auto c = dyn_cast<RegTileType>(getAcc().getType());
+  auto one = [](RegTileType t, int cols, int run) {
+    return t && t.isStrip() && t.getElementType().isF32() && t.getRows() == 1 &&
+           t.getCols() == cols && t.getRun() == run;
+  };
+  if (!one(a, 64, 1) || !one(b, 64, 1))
+    return emitOpError("A and B are fp32 strips of 1 x 64, run 1: a value a lane");
+  if (!one(c, 256, 4))
+    return emitOpError("acc is an fp32 strip of 1 x 256, run 4: four values a lane");
+  if (getResult().getType() != getAcc().getType())
+    return emitOpError("gives acc's type");
+  return success();
+}
+
 LogicalResult IotaOp::verify() {
   auto t = dyn_cast<RegTileType>(getResult().getType());
   if (!t || !t.isStrip() || !t.getElementType().isInteger(32))
