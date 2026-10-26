@@ -19,6 +19,11 @@
 # scripts/build_mlir.sh installs it for CPython 3.10, the ci-mlir-23.1.3
 # release's asset unpacked; container_run.sh builds the dialect against it.
 set -uo pipefail
+# A runner's listener started by `cmd &` from a non-interactive shell ignores SIGINT and SIGQUIT
+# (SigIgn in /proc/PID/status; the workstation's did, 2026-10-26), every job inherits that, and
+# bash silently cannot trap a signal ignored on entry -- the runner's cancel is a SIGINT. So start
+# again, the same process, with the signals at their defaults.
+[ -n "${HK_CI_SIGNALS:-}" ] || HK_CI_SIGNALS=default exec env --default-signal=INT,QUIT,HUP,TERM "${BASH_SOURCE[0]}" "$@"
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 # Defaults are under the user's home from the passwd entry, not $HOME: a runner runs its jobs with
 # HOME=~/gha/runner-<name>/home (supervise.sh; docs/testing.md, "Each runner has its own HOME").
@@ -44,8 +49,8 @@ NAME=hk-gha-$TIER-$KEY
 RUNNER=${RUNNER_NAME:-manual}
 
 # Cancellation (docs/testing.md, "Cancelled jobs and orphan containers"). The runner sends SIGINT,
-# then SIGTERM, to the step's shell alone -- gpu.yml execs this script, so that is this script --
-# and 10 s later SIGKILLs every process the job left. The container belongs to dockerd and
+# then SIGTERM 7.5 s later, to the step's shell alone -- gpu.yml execs this script, so that is this
+# script -- SIGKILLs it 2.5 s after that, and then every process the job left. The container belongs to dockerd and
 # survives all of that unless killed by name: the trap does it, and, for a SIGKILL, the reaper
 # (cancel.sh --on-eof) does. Either holds the GPU's lock until the container is gone.
 DPID= REAP=
@@ -53,6 +58,7 @@ stop() {
     trap - INT TERM HUP EXIT
     if [ -n "$DPID" ]; then     # cancelled while the container runs
         echo "cancelled: killing container $NAME"
+        disown "$DPID" 2>/dev/null     # no "Killed docker run ..." in the log
         kill -KILL "$DPID" 2>/dev/null     # its client can no longer start it
     fi
     "$HERE/cancel.sh" container "$NAME" && [ -n "$REAP" ] && echo done >&"$REAP"
@@ -121,7 +127,7 @@ GPU=
 for i in $(seq 60); do
     pick && break
     echo "no idle, unlocked MI355X among ${HK_CI_GPUS:-0-7}; waiting ($i)"
-    sleep 60 & wait $!     # a trap runs at once, not after the sleep
+    sleep 60 >/dev/null 2>&1 & wait $!     # a trap runs at once, not after the sleep
 done
 [ -n "$GPU" ] || { echo "::error::no idle MI355X for an hour"; exit 1; }
 echo "holding $LOCKS/gfx950-gpu$GPU.lock"

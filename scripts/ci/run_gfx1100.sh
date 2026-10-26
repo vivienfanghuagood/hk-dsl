@@ -8,6 +8,11 @@
 # its log and brings back its result. No code from the repository runs on the
 # jump host.
 set -uo pipefail
+# A runner's listener started by `cmd &` from a non-interactive shell ignores SIGINT and SIGQUIT
+# (SigIgn in /proc/PID/status; the workstation's did, 2026-10-26), every job inherits that, and
+# bash silently cannot trap a signal ignored on entry -- the runner's cancel is a SIGINT. So start
+# again, the same process, with the signals at their defaults.
+[ -n "${HK_CI_SIGNALS:-}" ] || HK_CI_SIGNALS=default exec env --default-signal=INT,QUIT,HUP,TERM "${BASH_SOURCE[0]}" "$@"
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 POD=${HK_CI_POD:-hfang-hk-rdna3-b}
 JUMP=${HK_CI_JUMP:-0004}
@@ -58,7 +63,7 @@ echo "started on $POD (run $KEY)"
 
 seen=0
 for i in $(seq 360); do     # 3 hours
-    sleep 30 {REAP}>&- & wait $!     # a trap runs at once, not after the sleep
+    sleep 30 >/dev/null 2>&1 {REAP}>&- & wait $!     # a trap runs at once, not after the sleep
     st=$(echo "cd $R 2>/dev/null || { echo missing 0; exit; }; [ -f result.json ] && s=done || s=running; echo \$s \$(wc -l < driver.log)" | pod 2>/dev/null)
     n=$(awk '{print $2}' <<<"$st")
     if [[ ${n:-0} =~ ^[0-9]+$ ]] && [ "$n" -gt "$seen" ]; then

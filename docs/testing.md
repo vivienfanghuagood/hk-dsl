@@ -320,7 +320,11 @@ twice. Now:
 - the steps `exec` their script, which is then the step's shell. Its trap
   (INT, TERM, HUP and EXIT; `scripts/ci/cancel.sh`) kills its own container
   by name and waits until it is gone, holding the lock until then: about a
-  second;
+  second. The script first re-executes itself (same process) with
+  `env --default-signal`: the workstation's listeners, started by `cmd &`
+  from a non-interactive shell, ignore SIGINT and SIGQUIT (`SigIgn` in
+  `/proc/PID/status`), their jobs inherit that, and bash cannot trap a
+  signal ignored on entry;
 - a reaper, `cancel.sh --on-eof`, started outside the runner's process
   tracking (`RUNNER_TRACKING_ID=0`) and holding the lock too, waits on a
   pipe only the script writes to; if the script dies without saying done (a
