@@ -123,6 +123,7 @@ def test_records():
     assert hash(c) == hash(S.from_record(c.to_record()))
 
 
+@pytest.mark.arch("gfx1100")  # a gfx1100 record
 def test_rdna_records_carry_every_code_knob():
     """A tuned record may set any knob that changes the C++: hk.ops.gemm's
     tuner reads them all (the gates aside), and its DEFAULT -- the dict the

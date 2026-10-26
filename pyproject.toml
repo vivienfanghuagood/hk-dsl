@@ -77,4 +77,5 @@ testpaths = ["tests/hk"]
 markers = [
     "gpu: requires a Radeon GPU and torch",
     "hipcc: requires a working hipcc (but no GPU)",
+    "arch(name): run with hk.target.current_arch() pinned to name (tests/hk/conftest.py)",
 ]

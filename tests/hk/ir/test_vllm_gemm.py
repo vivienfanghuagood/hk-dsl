@@ -14,6 +14,9 @@ import pytest
 
 from hk.integration import engine, vllm_gemm
 
+# The table under test is the one measured on gfx1100.
+pytestmark = pytest.mark.arch("gfx1100")
+
 QKV, O, GATE_UP, DOWN, LM_HEAD = ((6144, 4096), (4096, 4096), (24576, 4096),
                                   (4096, 12288), (151936, 4096))
 SHAPES = (QKV, O, GATE_UP, DOWN, LM_HEAD)

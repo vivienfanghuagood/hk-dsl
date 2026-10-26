@@ -121,6 +121,26 @@ def pytest_collection_modifyitems(config, items):
                 item.add_marker(wrong_gpu)
 
 
+@pytest.fixture(autouse=True)
+def _pinned_arch(request, monkeypatch):
+    """`@pytest.mark.arch("gfx1100")`: the test runs as if HK_ARCH said so, whatever the tier
+    was started with. For tests of one arch's measured data -- a shipped routing table, a tuned
+    schedule, an LDS pool -- which say nothing about the arch the rest of the tier is built for
+    (HK_ARCH=gfx1201 runs the IR tier for gfx1201, and those tables are gfx1100's)."""
+    m = request.node.get_closest_marker("arch")
+    if m is None:
+        yield
+        return
+    import hk.target as target
+    from hk.runtime import arch as rt_arch
+
+    monkeypatch.setenv("HK_ARCH", m.args[0])
+    monkeypatch.setattr(target, "_CURRENT", [m.args[0]])
+    rt_arch.detect.cache_clear()
+    yield
+    rt_arch.detect.cache_clear()
+
+
 @pytest.fixture(scope="session")
 def hk():
     import hk as _hk

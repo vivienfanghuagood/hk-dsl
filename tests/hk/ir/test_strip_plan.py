@@ -58,6 +58,7 @@ class _BF16:
         return "torch.bfloat16"
 
 
+@pytest.mark.arch("gfx1100")  # gfx1100's 96 MB Infinity Cache
 def test_the_occupancy_cap_starts_past_the_infinity_cache(monkeypatch):
     """48 KB of LDS reserved -- two workgroups a WGP -- only when a call moves
     more than the 96 MB the cache holds: in it the cap costs (18.4 -> 22.3 us

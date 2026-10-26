@@ -11,6 +11,9 @@ import pytest
 from hk.integration import engine, vllm_gemm
 from hk.integration import sglang as hks
 
+# SGLang reuses vLLM's linear table, the one measured on gfx1100.
+pytestmark = pytest.mark.arch("gfx1100")
+
 QKV = (6144, 4096)
 HOME = "sglang.srt.layers.quantization.unquant"
 

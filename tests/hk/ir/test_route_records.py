@@ -11,6 +11,9 @@ import pytest
 from hk.autotune import routes as R
 from hk.integration import engine, vllm_autotune, vllm_gemm
 
+# This machine's records and the shipped table, both gfx1100's.
+pytestmark = pytest.mark.arch("gfx1100")
+
 QKV = (6144, 4096)                         # Qwen3-8B's, in the shipped table
 NEW = (4608, 3584)                         # Qwen2.5-7B's qkv: in no table
 
