@@ -12,6 +12,7 @@
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/Support/raw_ostream.h"
 
+#include <functional>
 #include <set>
 
 namespace mlir::hk {
@@ -233,13 +234,55 @@ struct LdsAllocPass : public mlir::hk::impl::HKLdsAllocBase<LdsAllocPass> {
       op->setAttr("nbytes", b.getI64IntegerAttr(size));
       offset += size;
     };
-    // Top-level allocations only, in declaration order.
-    for (Operation &op : f.getBody().front()) {
-      if (auto a = dyn_cast<AllocSharedOp>(op))
-        place(a, a.getResult().getType().getNumBytes());
-      else if (auto v = dyn_cast<AllocSharedVecOp>(op))
-        place(v, v.getResult().getType().getNumBytes());
-    }
+    // Every allocation, in program order -- those inside a branch too. The
+    // C++ allocator bumps at run time along the path taken, so a branch's
+    // tiles start where the path's earlier allocations end. Counting only the
+    // kernel's own block (as this pass once did) put them past the end of
+    // the LDS the launch asks for: their reads returned 0 and their writes
+    // were dropped, with no error.
+    //
+    // The two arms of an hk.if_ start from the same offset and the larger
+    // end continues: a path takes one arm. The placement rounds up at least
+    // as much as the allocator's (16 B), and rounding up is monotone, so the
+    // result bounds every path. An allocation inside a runtime loop would
+    // take new LDS every iteration: refused.
+    bool bad = false;
+    std::function<void(Region &)> walk = [&](Region &r) {
+      for (Block &blk : r)
+        for (Operation &op : blk) {
+          if (bad)
+            return;
+          if (auto a = dyn_cast<AllocSharedOp>(op)) {
+            place(a, a.getResult().getType().getNumBytes());
+          } else if (auto v = dyn_cast<AllocSharedVecOp>(op)) {
+            place(v, v.getResult().getType().getNumBytes());
+          } else if (auto i = dyn_cast<scf::IfOp>(op)) {
+            int64_t start = offset;
+            walk(i.getThenRegion());
+            int64_t thenEnd = offset;
+            offset = start;
+            walk(i.getElseRegion());
+            offset = std::max(offset, thenEnd);
+          } else if (isa<scf::ForOp, scf::WhileOp>(op)) {
+            WalkResult w = op.walk([&](Operation *in) {
+              if (!isa<AllocSharedOp, AllocSharedVecOp>(in))
+                return WalkResult::advance();
+              in->emitError() << "an LDS allocation inside a runtime loop takes new LDS "
+                                 "every iteration and runs past the launch's: allocate it "
+                                 "before the loop"
+                              << atLoc(in);
+              return WalkResult::interrupt();
+            });
+            bad = w.wasInterrupted();
+          } else {
+            for (Region &inner : op.getRegions())
+              walk(inner);
+          }
+        }
+    };
+    walk(f.getBody());
+    if (bad)
+      return signalPassFailure();
     int64_t arrivals = 0;
     f.walk([&](Operation *op) {
       if (isa<WgArriveOp, ArriveOp>(op))

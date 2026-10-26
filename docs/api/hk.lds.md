@@ -19,7 +19,9 @@ hk.lds.alloc(tile: SharedTileType, name: str = 'smem', count: Optional[int] = No
 
 Reserve an LDS tile, or `count` of them in one size-aligned block (the
 two buffers of a pair must differ in one address bit for the XOR swap).
-Offsets and the 64 KB check come from the hk-lds-alloc pass.
+Offsets and the 64 KB check come from the hk-lds-alloc pass. An allocation
+inside a runtime branch is part of the launch's LDS (the two arms of an `if`
+start at the same offset); one inside a runtime loop is refused.
 
 `shape` (gfx950) lays the allocation out as include/cdna4's st_<shape>
 rather than the layout its reads' fragment picks: "16x64" for tiles read
