@@ -8,6 +8,29 @@ family) spread the work across kernels where the best AMD library is already
 near the hardware's limit. This version picks the kernels where hk can win
 something that matters, from measurements, and pauses the rest.
 
+**Where it stands (2026-10-26).** All three core kernels and the T-CR testbed are in main. The
+measurements, decisions and status notes below are dated records from 2026-10-24/25; for the
+current state of each route see [integration](../integration.md#on-by-default-and-turning-it-off)
+and [serving readiness](serving-readiness.md).
+- **K1** (MoE a8w4): `hk.ops.moe_a8w4` and vLLM's a8w4 route (#34). It runs 1.15-1.18x AITER at
+  M >= 8192 and takes only those M (`MIN_M`), so the 1.3x target below was not reached. It is
+  deterministic, and its max-rel against exact fp32 is within the owner's criterion.
+- **K2** (MXFP8 GEMM): `hk.ops.mxfp8` with `gemm_cdna`'s MX mode and vLLM's MXFP8 linear route
+  (#33), plus the activation's quant fused in (#41). It takes six measured (N, K) at M >= 2048
+  and is bit-identical to vLLM's kernel: 1.00-1.48x on the 18 measured points (serving readiness,
+  B4), and vLLM's route 1.01-1.58x with the fused quant (#41).
+- **End to end**, K1 and K2 together give TP2 TTFT 1.05-1.06x at 8k-16k prompt tokens on two
+  MI355X. With real weights, GSM8K and ARC are within stock's run-to-run spread (serving
+  readiness, B1/B2).
+- **K3** (DiT attention): `hk.ops.attn_k3` (#24), opt-in at first.
+- **Default-on (#54):** K1, K2 and K3 are on by default on the GPU each was validated on (K1/K2
+  gfx950, K3 gfx1100). `HK_DISABLE=1` turns hk off.
+- **T-CR** (ConvRot INT8): int8 on gfx1100 (#31) and the ConvRot linear (#26), opt-in: lossy by
+  design. MiniMax-H3's denoise is 1.17-1.22x bf16's.
+- **T-SA** ran again from main: the hk arm no longer leaves the DSL ([kda.md](kda.md)).
+- Decode on CDNA (the `dsv41_mono` row below) became its own track, the megakernel work
+  (serving readiness, A1; [comm.md](comm.md)).
+
 ## How a kernel is chosen
 
 A kernel is worth hk's effort only if all three hold, each measured, not
@@ -32,7 +55,7 @@ ROCm 10 image) on MI355X, TP2, dummy weights, batch 8 x 1,024 tokens, with
 torch-profiler traces (shapes recorded) and rocprofv3 DRAM counters; and
 SGLang-Diffusion on one W7900D. Peaks: MI355X 5.03 PF/s dense FP8 (MXFP8),
 2.5 PF/s BF16, 8.0 TB/s HBM; W7900D 122.6 TF/s BF16 WMMA. The MXFP8
-baselines: `bench/e2e/deepseek_v41/mxfp8_opp.py` (branch `claude/cdna-fp8`).
+baselines: `bench/e2e/deepseek_v41/mxfp8_opp.py`.
 
 ### MI355X, DeepSeek-V4.1-Flash, prefill (TTFT; chunked, M = rows a step)
 
@@ -84,18 +107,19 @@ K1 and K2 share the scaled-MFMA path hk already has (FP8 operands, E8M0
 scales, bit-identical to vLLM). Winnable, measured: gfx950's scaled MFMA runs
 at 4.5-4.7 PF/s register-only and hipBLASLt's plain FP8 GEMM at 3.14 PF/s
 (8192^3), while every MX GEMM is at 1.25-2.2 PF/s -- the MX penalty is
-software. K2 status (branch `claude/cdna-fp8`, rounds in
-`~/hk-dx/kda/k2-mxfp8-gemm/candidates.jsonl`): a four-wave form (`mx4w`,
+software. K2 status as of 2026-10-24 (then on a branch; in main since #33 and #41, see above;
+rounds in `~/hk-dx/kda/k2-mxfp8-gemm/candidates.jsonl`): a four-wave form (`mx4w`,
 accumulators in AGPRs, packed scales) with a one-K-tile loop body (hk-lds-pipeline
 now names ring-indexed LDS buffers, so the body no longer has to unroll over the
 ring) at 2.43 PF/s at 8192^3; against the best baseline at the 18 prefill points
 (FlyDSL at 13 of them) 0.85-1.27x, geomean ~1.06x -- the 1.2x target is not met.
-Two gfx950 hazards found on the way (KernelWiki): register loads and LDS-DMA copies
-retire out of order on vmcnt; a load into scale VGPRs that queued scaled MFMAs
-still read corrupts them.
+One gfx950 hazard found on the way (KernelWiki): a load into scale VGPRs that queued scaled
+MFMAs still read corrupts them. A second one suspected at the time, register loads and LDS-DMA
+copies retiring out of order on vmcnt, was refuted the same evening by a controlled
+micro-benchmark (`~/hk-dx/kda/_flow/probes/vmcnt_order.hip`): they retire in issue order.
 
-K3 status (branch `claude/k3-attn`, `hk.ops.attn_k3`, opt-in with `HK_SDPA_K3=1`;
-rounds in `~/hk-dx/kda/k3-dit-attn/candidates.jsonl`). The kernel is the Sage
+K3 status as of 2026-10-24 (`hk.ops.attn_k3`, then opt-in with `HK_SDPA_K3=1`; in main since
+#24 and on by default on gfx1100 since #54; rounds in `~/hk-dx/kda/k3-dit-attn/candidates.jsonl`). The kernel is the Sage
 experiment's hk-arm structure in bf16: S^T = K Q^T, a lazy running max, fp16 V^T
 pre-transposed in the order the P^T operands are cheapest in, the grid's tail
 split over KV. It reads SGLang's (B, N, H, D) views in place at any length.
@@ -147,23 +171,26 @@ the MiniMax-H3 / Qwen-Image DiT on a W7900D, recorded by the same criteria:
 | **T-CR** | ConvRot INT8 W8A8 GEMM: the online rotation, per-group scales, INT8 GEMM on `v_wmma_i32_16x16x16_iu8`, as a third `SGLANG_DIFFUSION_CONVROT_INT8_BACKEND` (both existing ones are CUDA-only); H3 quantized online from its bf16 checkpoint (the official repo ships no int8; community ComfyUI ConvRot files exist) | SGLang's two CUDA backends (semantics); on gfx1100, hipBLASLt `torch._int_mm` and the bf16 path | gfx1100's int8 WMMA runs at the fp16 rate (measured 96 vs 101 TOP/s register-only; iu4 193): no compute gain. hipBLASLt int8 62.7 / 75.9 TOP/s against bf16 FlyDSL / hk ~88 TF/s at H3 / Qwen shapes. The gain on offer is bytes: int8 halves the DiT, which H3 streams from host RAM every step -- measured before anything is claimed |
 | **T-SA** | SageAttention INT8: Q, K int8 with smooth-K, PV in fp16 (gfx1100 has no fp8) | SageAttention 1.0.6's Triton kernel: its default `num_stages=4` crashes Triton's AMD stream pipeliner on gfx1100; with 1 it runs at 49 TF/s-equivalent (Triton 3.6; 40 in 3.5) at Qwen's shape, max-rel 1.9e-2 vs fp32 -- against hk's fp16 attention at 62-70 TF/s | the same: int8 QK^T is not faster than fp16 on RDNA3, so the kernel can at best save bytes and registers; on par with K3 is the realistic ceiling, and its value here is as a DSL testbed |
 
-Status (2026-10-24, evening):
+Status (2026-10-24, evening; both have since landed, see the top of this page):
 - **T-CR**: the first round was a `dsl` failure -- hk's RDNA3 layer was built on
-  the false premise that gfx1100 has no int8 WMMA. Branch `claude/rdna3-int8`
+  the false premise that gfx1100 has no int8 WMMA. Branch `claude/rdna3-int8` (#31 in main)
   adds i8 register tiles and the iu8 WMMA (and fixes a latent `st<int8>` swizzle
   bug in HipKittens); the tuned bf16 GEMM schedule on int8 operands is bit-exact
   and 87.7-93.2 TOP/s (hipBLASLt int8 68.7-83.7). The whole ConvRot linear
   (rotation, per-row quant, int8 GEMM, dequant epilogue) is 1.18x hk's bf16 GEMM
   at H3's 14720x21504x5376 and at parity at Qwen's shapes. The `hk` backend is in
-  `hk.integration.sglang_diffusion`; H3 end to end is being measured.
+  `hk.integration.sglang_diffusion` (#26); H3 end to end, measured after this note: denoise
+  1.17-1.22x bf16's.
 - **T-SA, the controlled experiment** (`~/hk-dx/kda/runs/sage-experiment-report.md`):
   both arms correct at round 1 and at the same speed in the end -- hk 1.50x the
   reference, Triton 1.48x (both ~1.15x hk's bf16 attention) -- but the hk arm took
   77 minutes and $12.8 against Triton's 29 minutes and $3.2, and got there only by
   injecting two C++ helpers into hk's generated source, because hk refused int8
   tiles. Verdict for this kernel: the workflow and harness held; the DSL's gap
-  was decisive (now closed on `claude/rdna3-int8`; a rerun of the hk arm there is
-  the obvious next experiment).
+  was decisive. It is closed in main (#31). The hk arm was rerun twice: on `claude/rdna3-int8`
+  it reached 1.52x but still wrote two C++ helpers; from main (`3fd779f`) it reached 1.505x with
+  no C++ outside the DSL, correct at round 1, in 68 minutes for $11.0. The rerun reports are in
+  `~/hk-dx/kda/runs/`; the remaining gaps are in [kda.md](kda.md).
 
 ## How the kernels are built: one task workspace each (KDA-style)
 
@@ -218,8 +245,7 @@ hard limits (VGPR granule 24 on gfx11, 512 regs with AGPRs at one wave a
 SIMD on gfx950, LDS 64 / 160 KB, WMMA / MFMA rates measured), HipKittens
 idioms, and the pitfalls already paid for (a VGPR spill corrupts silently;
 `s_waitcnt` does not hold a WMMA back; narrowing stores go bytewise; gfx11's
-`__syncthreads` flushes L0; register and LDS loads retire out of order on
-vmcnt). `hk-profile-report`: reading hk.profile / rocprofv3 output into a
+`__syncthreads` flushes L0; a refill of a queued scaled MFMA's scale VGPRs corrupts it). `hk-profile-report`: reading hk.profile / rocprofv3 output into a
 next step (replaces ncu-report-skill). `kda-loop`: draft -> plan -> one
 candidate a round -> record (replaces humanize).
 
@@ -269,7 +295,7 @@ gap too).
   (median of three interleaved runs; the VAE decode stage is noisy).
 - DeepSeek-V4.1-Flash: the profiling path in vLLM's AMD package (dummy
   weights, TP2, traces with shapes, DRAM counters), the tables above; an
-  MXFP8 GEMM in hk bit-identical to vLLM's (branch `claude/cdna-fp8`).
+  MXFP8 GEMM in hk bit-identical to vLLM's (then a branch; #33 in main).
 
 ## Not in scope
 

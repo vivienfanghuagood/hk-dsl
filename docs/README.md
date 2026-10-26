@@ -77,7 +77,8 @@ Coding agents: start from [llms.txt](../llms.txt) and the
 | page | |
 |---|---|
 | [The end-to-end loop](e2e-loop.md) | from "this model is slow" to "my engine runs hk's kernel": measure, attribute, check at the model's shapes, patch without editing the engine, check the output, profile again -- with Qwen-Image 2.1 on a W7900D (1.50x) as the worked example |
-| [The end-to-end goal](design/e2e-goal.md) | after the tuning goal: a few kernels that are hot, under-optimised by every AMD library, and winnable -- chosen from measured opportunity tables -- and the KDA-style task workflow they are built in |
+| [The end-to-end goal](design/e2e-goal.md) | after the tuning goal: a few kernels that are hot, under-optimised by every AMD library, and winnable -- chosen from measured opportunity tables -- and where they stand (K1, K2, K3 in main, on by default) |
+| [KDA](design/kda.md) | the default way a new kernel is built: one task workspace, a record per round with one failure class, and the cross-task failure table that orders DSL work |
 | [The DX goal](design/dx-goal.md) | the goal the templates, `hk.check` and these docs serve, and its acceptance criteria |
 | [Schedules as data](design/schedules.md) | `hk.schedules`' design: one type per kernel family, legality and how it was measured, the record formats, the byte-identical round trip |
 | [CDNA3/4](design/cdna.md) | what is RDNA3-only, what HipKittens offers on gfx942/gfx950, and what runs on an MI355X |
