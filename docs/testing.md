@@ -330,9 +330,9 @@ flydsl, nanobind, lit and cmake (`pod_run.sh` puts it on `PYTHONPATH` and
 `/workspace/gha`, as on the dev pod.
 
 **Where things live.** Host state is kept out of the checkout:
-- `~/gha`: the runners (`runner-<name>`), `supervise.sh`, which keeps each
-  registered, and its logs (`logs/<name>.log`; the runners' own are in
-  `runner-*/_diag`);
+- `~/gha`: the runners (`runner-<name>`, each with its own `HOME`,
+  `runner-<name>/home`), `supervise.sh`, which keeps each registered, and its
+  logs (`logs/<name>.log`; the runners' own are in `runner-*/_diag`);
 - a gfx950 runner's state directory, `HK_CI_STATE` (`~/gha` for
   `smci355-gfx950`, `~/gha/state-gfx950-b` for `smci355-gfx950-b`):
   - `runs/<tier>/RUN_ID-ATTEMPT`: a run's directory;
@@ -353,7 +353,35 @@ the runner may use (default all eight), `HK_CI_LOCKS` is the lock directory,
 pod's side. A job inherits its runner's environment: set them in the
 runner's `.env` (`~/gha/runner-<name>/.env`, one `NAME=value` per line, no
 comments), which the listener reads when it starts, so a change applies from
-the runner's next job.
+the runner's next job. Every runner's `.env` sets them explicitly rather than
+leaving them to defaults under `$HOME`, which is not the user's home (below).
+
+**Each runner has its own `HOME`.** A runner's listener, and so every job it
+runs, has `HOME=~/gha/runner-<name>/home`: `supervise.sh` starts `run.sh` with
+it and the runner's `.env` sets it too. `actions/checkout` writes global git
+config -- for the submodules, the job's token as
+`http.https://github.com/.extraheader` and two `url.*.insteadOf` -- into a
+temporary home it makes from a copy of `$HOME/.gitconfig`. The copy is made
+with `@actions/io`'s `cp`, which recreates a symlink as a symlink, so with a
+symlinked `.gitconfig` the token lands in the target, and that happened once
+(2026-10-26: a runner `HOME` with `.gitconfig` linked to the user's put the
+token in `~/.gitconfig` for five minutes; every `git push` on the workstation
+got 403, and the other runners' checkouts, copying it, failed with
+"Duplicate header: Authorization"). So CI never works in the user's home, and
+nothing of it is linked into a runner's: no `.gitconfig`, no gh credentials
+(`supervise.sh`'s own `gh` calls keep the real `HOME`, where gh's login is).
+What the jobs need from the user's home they get without it:
+- docker: the socket, through the docker group; `~/.docker/config.json`
+  holds only registry logins, and the images the jobs run are local (a
+  missing one is pulled anonymously);
+- ssh to the jump host (`run_gfx1100.sh`): OpenSSH takes `~/.ssh` (config and
+  keys) from the passwd entry, not `$HOME`, so nothing is copied;
+- paths: `HK_CI_STATE`, `HK_CI_MLIR` and `HK_CI_LOCKS` in the `.env`.
+A gfx950 runner's `home/gha` is a symlink to its state directory, for branches
+older than per-runner state, whose `gfx950-vllm` job set
+`HK_CI_DIR=$HOME/gha/x950v/ci` (`runner-gfx950/home/gha -> ~/gha`,
+`runner-gfx950-b/home/gha -> ~/gha/state-gfx950-b`); it can go once no such
+branch is run any more.
 
 **Starting and stopping the runners.** After a reboot, start them from an
 SSH login: the workstation grants the docker, render and video groups
@@ -400,22 +428,16 @@ and ref at a time still holds: `concurrency` in `gpu.yml`). Each one has:
 
 ```
 LANG=en_US.UTF-8
+HOME=/home/hfang/gha/runner-gfx950-b/home
 HK_CI_GPUS=3 4
 HK_CI_STATE=/home/hfang/gha/state-gfx950-b
 HK_CI_MLIR=/home/hfang/hk-ci/mlir/install-cp310
 HK_CI_LOCKS=/home/hfang/hk-dx/locks
-HOME=/home/hfang/gha/state-gfx950-b/home
 ```
 
-`HOME` is there for branches older than per-runner state: their
-`gfx950-vllm` job set `HK_CI_DIR=$HOME/gha/x950v/ci`, so `HOME` points at a
-directory whose `gha` is a symlink to the state directory (`home/gha -> ..`).
-Drop it once no such branch is run any more. Link nothing else of the real
-home into it, `.gitconfig` least of all: `actions/checkout` copies
-`$HOME/.gitconfig` to a temporary home as a symlink if it is one, and its
-`git config --global` (the job's token as an `extraheader`, for the
-submodules) then lands in the real file, where every later `git push` on the
-workstation sends that token instead of the user's credentials.
+`smci355-gfx950`'s is the same with `runner-gfx950/home`, `HK_CI_GPUS=1 2`
+and `HK_CI_STATE=/home/hfang/gha`; the gfx1100 runners' set only `LANG` and
+`HOME`.
 
 **Adding one** (here `gfx950-c` on GPU 5, say):
 
@@ -423,10 +445,10 @@ workstation sends that token instead of the user's credentials.
 cd ~/gha && df -h ~                        # the CI directories are ~13 GB
 mkdir runner-gfx950-c && cp -a runner-gfx950/{bin,externals,config.sh,env.sh,run.sh,safe_sleep.sh,run-helper.sh.template,.path} runner-gfx950-c/
 cp runner-gfx950-c/run-helper.sh.template runner-gfx950-c/run-helper.sh
-S=~/gha/state-gfx950-c; mkdir -p $S/runs $S/home && ln -s .. $S/home/gha
+S=~/gha/state-gfx950-c; mkdir -p $S/runs runner-gfx950-c/home && ln -s $S runner-gfx950-c/home/gha
 cp -a x950 x950v $S/                       # warm: the first run does not recompile every kernel
-printf '%s\n' LANG=en_US.UTF-8 'HK_CI_GPUS=5' HK_CI_STATE=$S HK_CI_MLIR=$HOME/hk-ci/mlir/install-cp310 \
-    HK_CI_LOCKS=$HOME/hk-dx/locks HOME=$S/home > runner-gfx950-c/.env
+printf '%s\n' LANG=en_US.UTF-8 HOME=$HOME/gha/runner-gfx950-c/home 'HK_CI_GPUS=5' HK_CI_STATE=$S \
+    HK_CI_MLIR=$HOME/hk-ci/mlir/install-cp310 HK_CI_LOCKS=$HOME/hk-dx/locks > runner-gfx950-c/.env
 nohup setsid ./supervise.sh gfx950-c gfx950,gfx950-c >> logs/gfx950-c.log 2>&1 < /dev/null &
 ```
 
