@@ -103,3 +103,17 @@ The AWQ route replaces this vLLM's own AWQ path, whose decode on gfx1201 is
 default on gfx1201. The MoE route is right but loses at 16 tokens a step --
 it runs gfx1100's MoE GEMM schedule, untuned here -- so it stays off on gfx1201
 until it does not. (OLMoE takes 4096 tokens, so its contexts are 1024 and 2048.)
+
+The vision encoder's SDPA route (`vllm_sdpa`) was not taken that far.
+`tools/hk-bench/vllm_verify.py --unit`, which times the drop-in as a call
+(wall time), has it at 0.57x this image's torch SDPA at CLIP ViT-L's
+1x16x577x64 and 0.88x at InternViT's 1025. The kernel is not the reason: by
+the profiler's kernel records it is 1.10x torch's at 577 and 1.40x at 1025
+(`tools/rdna4-probes/sdpa_overhead.py`), and `hk.attention` on contiguous
+tensors costs its kernel time a call. The drop-in's own Python -- the checks,
+the (B, N, H, D) views, the dispatch -- adds about 14 us a call, which a 29 us
+kernel run eagerly cannot hide. The route stays off on gfx1201 until that is
+trimmed and it wins as a call. (This torch's SDPA is not the rocm/pytorch 2.10 one
+either: at n4096 GQA 4 d128 it takes 2.99 ms causal, AOTriton there 5.8; hk's
+is 2.13x it causal and 1.50x full in this image, with chapter 49's tiling by
+compiler.)
