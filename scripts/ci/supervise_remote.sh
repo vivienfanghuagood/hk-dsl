@@ -31,10 +31,13 @@ r() { ssh -o BatchMode=yes -o ConnectTimeout=20 -o ServerAliveInterval=30 "$HOST
 LISTENER="^$RDIR/bin/Runner\\.Listener"
 alive() { r "pgrep -u \$(id -u) -f '$LISTENER' >/dev/null"; }
 
+up=0          # whether this loop has seen the listener of its last registration running
 while ! stopped; do
     alive; a=$?
-    if [ $a = 0 ]; then sleep 30; continue; fi           # a round from before a restart, still running
+    if [ $a = 0 ]; then up=1; sleep 15; continue; fi    # running (or waiting for a job)
     if [ $a != 1 ]; then log "$HOST unreachable"; sleep 60; continue; fi
+    [ $up = 1 ] && log "listener exited"
+    up=0
     TOKEN=$(gh api -X POST "repos/$REPO/actions/runners/registration-token" --jq .token) \
         || { log "token failed"; sleep 60; continue; }
     printf '%s\n' "$TOKEN" | r "cd '$RDIR' && rm -f .runner .credentials .credentials_rsaparams &&
@@ -48,21 +51,17 @@ while ! stopped; do
     # holding ssh's stdout, and ssh would wait for the job to end.
     r "cd '$RDIR' && HOME='$RDIR/home' setsid -f nohup ./run.sh >> '$RDIR/run.log' 2>&1 < /dev/null" \
         || { log "run.sh did not start"; sleep 60; continue; }
-    log "registered amd-g7466-$NAME ($LABELS) on $HOST, waiting for a job"
-    sleep 15
-    while :; do
-        if stopped; then
-            log "stop requested"
-            r "pkill -TERM -u \$(id -u) -f '$LISTENER'"
-            for _ in $(seq 30); do alive; [ $? = 1 ] && break; sleep 2; done
-            break
-        fi
-        alive; a=$?
-        [ $a = 1 ] && { log "listener exited"; break; }
-        sleep 15
-    done
-    sleep 5
+    # run-helper.sh takes a few seconds to start the listener: wait for it, so the next pass
+    # does not take "not yet" for "exited".
+    for _ in $(seq 30); do alive && { up=1; break; }; sleep 2; done
+    [ $up = 1 ] && log "registered amd-g7466-$NAME ($LABELS) on $HOST, waiting for a job" \
+                || log "registered amd-g7466-$NAME, but its listener did not start ($RDIR/run.log there)"
 done
+log "stop requested"
+alive && {
+    r "pkill -TERM -u \$(id -u) -f '$LISTENER'"
+    for _ in $(seq 30); do alive; [ $? = 1 ] && break; sleep 2; done
+}
 TOKEN=$(gh api -X POST "repos/$REPO/actions/runners/remove-token" --jq .token 2>/dev/null) &&
     printf '%s\n' "$TOKEN" | r "cd '$RDIR' && [ -f .runner ] && read -r T &&
         HOME='$RDIR/home' ./config.sh remove --token \"\$T\" > /dev/null 2>&1"
