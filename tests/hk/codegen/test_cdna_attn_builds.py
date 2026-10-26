@@ -34,9 +34,10 @@ def _objdump() -> str:
 
 @pytest.mark.parametrize("d", attn_cdna.HEAD_DIMS)
 @pytest.mark.parametrize("causal", [False, True])
-def test_it_builds_within_two_waves_and_its_copies_are_counted(d, causal):
-    k = attn_cdna.attn_kernel(f"attn_build_d{d}_{int(causal)}", head_dim=d, causal=causal,
-                              arch="gfx950")
+@pytest.mark.parametrize("mapping", attn_cdna.MAPPINGS)
+def test_it_builds_within_two_waves_and_its_copies_are_counted(d, causal, mapping):
+    k = attn_cdna.attn_kernel(f"attn_build_d{d}_{int(causal)}_{mapping}", head_dim=d,
+                              causal=causal, mapping=mapping, arch="gfx950")
     tr = k.trace()
     src = scaffold.device(tr)
     copies = src.count("kittens::group_load_async<8>(")

@@ -62,7 +62,7 @@ _PATCHED = None
 
 
 def op_for(head_dim: int, causal: bool, scale: Optional[float] = None,
-           n: int = 4096, bnhd: bool = False):
+           n: int = 4096, bnhd: bool = False, mapping: str = "block_first"):
     """The `torch.ops.hk.*` entry for one (head_dim, causal, scale, length).
 
     `n` only picks the tuned schedule (gfx1100's; gfx950's kernel has one),
@@ -70,13 +70,14 @@ def op_for(head_dim: int, causal: bool, scale: Optional[float] = None,
     this is on the launch path and `_kernel_for` is a couple of dict lookups
     that need not happen per call.
     """
-    key = (head_dim, causal, scale, _attn._tune_key(n), bnhd)
+    key = (head_dim, causal, scale, _attn._tune_key(n), bnhd, mapping)
     op = _OPS.get(key)
     if op is None:
         from ..runtime.torch_ext import torch_op  # noqa: PLC0415
 
         op = _OPS[key] = torch_op(
-            _attn._kernel_for(head_dim, causal, scale, n, bnhd=bnhd), ns=NAMESPACE
+            _attn._kernel_for(head_dim, causal, scale, n, bnhd=bnhd, mapping=mapping),
+            ns=NAMESPACE
         )
     return op
 
@@ -164,7 +165,8 @@ def attention(q, k, v, *, causal: bool = False, scale: Optional[float] = None,
     elif out.shape != q.shape or out.dtype != q.dtype or not out.is_contiguous():
         raise ValueError(f"hk sdpa: out is {tuple(out.shape)}/{out.dtype}, "
                          f"expected a contiguous {tuple(q.shape)}/{q.dtype}")
-    op_for(q.shape[-1], causal, scale, q.shape[-2])(q, k, v, out)
+    op_for(q.shape[-1], causal, scale, q.shape[-2],
+           mapping=_attn._mapping(q, k, causal))(q, k, v, out)
     return out
 
 
@@ -255,7 +257,8 @@ def scaled_dot_product_attention(query, key, value, attn_mask=None,
         return out.transpose(1, 2)
     q, k, v = query.contiguous(), key.contiguous(), value.contiguous()
     out = torch.empty_like(q)
-    op_for(q.shape[-1], bool(is_causal), scale, q.shape[-2])(q, k, v, out)
+    op_for(q.shape[-1], bool(is_causal), scale, q.shape[-2],
+           mapping=_attn._mapping(q, k, bool(is_causal)))(q, k, v, out)
     return out
 
 

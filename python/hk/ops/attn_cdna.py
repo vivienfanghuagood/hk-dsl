@@ -50,6 +50,15 @@ Where this differs from HipKittens' kernel:
     block count gets one fully masked block, so the walk is whole steps.
   * **(B, H, N, D)**, contiguous rows of one head, where HipKittens takes
     (B, N, H, D).
+  * **`mapping="spatial"`** (arXiv 2511.02132; AITER's remap_workgroup_spatial).
+    The default grid deals a query block of every head before the next block
+    (HipKittens' numbering), so each XCD holds H_KV / 8 KV heads' streams at
+    once; with many KV heads and long sequences they drift apart and the
+    XCD's 4 MB L2 stops serving one workgroup's K/V to the next. "spatial"
+    gives each XCD a contiguous run of (batch, KV head) clusters, one cluster
+    at a time, so the workgroups resident on an XCD read one K/V stream. Each
+    workgroup still computes the same tile the same way: the output is
+    bitwise the default's.
 """
 
 from __future__ import annotations
@@ -59,6 +68,7 @@ from typing import Any, Dict, Optional
 
 from .. import dsl as hk
 from ..types import bf16, fp32, i32
+from .gemm_cdna import NUM_XCDS
 
 NEG_INF = float("-inf")
 
@@ -71,6 +81,52 @@ KV_BLOCK = 64
 PAGE = 32
 #: Head dims with a schedule.
 HEAD_DIMS = (64, 128)
+#: Workgroup numberings: HipKittens' (a query block of every head, then the
+#: next block), and one (batch, KV head) cluster an XCD at a time.
+MAPPINGS = ("block_first", "spatial")
+
+
+#: Workgroups an XCD of an MI355X holds at once: one a CU (8 warps, 232
+#: VGPRs), 32 CUs an XCD.
+RESIDENT_PER_XCD = 32
+
+
+def mapping_for(batch: int, h_kv: int, n_q: int, causal: bool) -> str:
+    """The numbering hk.ops.attn routes a call to, from an MI355X sweep (tools/hk-bench/
+    attn_mapping.py; 2026-10-26). "spatial" where the default would hold five or more KV
+    streams on an XCD at once (h_kv >= 40: +2-5% at 40 KV heads, +5-8% at 64, +10-18% at
+    128, N 8K-128K; the gain is mostly clock -- 1.43 against 1.64 GHz at 128 heads, 32K --
+    since 15x fewer bytes cross the L2s). Not for a causal grid with fewer than twelve
+    rounds of workgroups an XCD: an XCD's last cluster then ends on its longest tile, where
+    the default ends on short ones (-10% at 40 KV heads, N 8K; -2% at 10 rounds). Below
+    five streams the two are within 2% (GQA's eight KV heads are one an XCD already)."""
+    if -(-h_kv // NUM_XCDS) < 5:
+        return "block_first"
+    rounds = batch * h_kv * -(-n_q // Q_TILE) / (NUM_XCDS * RESIDENT_PER_XCD)
+    if causal and rounds < 12:
+        return "block_first"
+    return "spatial"
+
+
+def _spatial(w, batch, h_kv, group, n_t):
+    """(batch, KV head, query head, query tile) of workgroup `w` in a flat
+    grid of batch * h_kv * group * n_t, under the spatial numbering.
+
+    Workgroups are dealt to the XCDs round robin (w % 8), so XCD d runs w =
+    d, d + 8, ... in that order; it gets one contiguous range of the logical
+    units (the first total % 8 XCDs one unit more), a bijection for any total.
+    Units are numbered cluster-major -- (batch, KV head), then the query tile,
+    then the query head in the KV head's group -- so an XCD walks one
+    cluster's tiles before the next, block-first inside a GQA group."""
+    total = batch * h_kv * group * n_t
+    die = w % NUM_XCDS
+    base = total // NUM_XCDS
+    u = die * base + hk.min(die, total % NUM_XCDS) + w // NUM_XCDS
+    per = group * n_t
+    cluster = u // per
+    r = u % per
+    head_kv = cluster % h_kv
+    return cluster // h_kv, head_kv, head_kv * group + r % group, r // group
 
 
 def _pairs(n_mma: int, groups, sync_id: int) -> None:
@@ -92,7 +148,7 @@ def attn_kernel(name: str, *, head_dim: int = 128, causal: bool = False,
                 scale: Optional[float] = None, setprio: bool = True,
                 lazy: float = 8.0, sched: bool = True, lpt: bool = True,
                 skip: bool = True, _nomask: bool = False, paged: bool = False,
-                arch: Optional[str] = None):
+                mapping: str = "block_first", arch: Optional[str] = None):
     """`lazy`: the running max is taken as stale until a block's max exceeds
     it by more than this (log2 units), so P stays below 2^lazy and O is
     rescaled only when the max really moves (FlashAttention 4's threshold,
@@ -113,8 +169,16 @@ def attn_kernel(name: str, *, head_dim: int = 128, causal: bool = False,
     last q_len of its sequence, causal from the cached prefix on. A 64-row
     KV block is two pages, each its own copy and LDS buffer, read into the
     two 32-row halves of the block's registers.
+
+    `mapping`: the workgroup numbering (MAPPINGS; the module's docstring).
+    "spatial" launches a flat grid and decodes (batch, head, query tile) from
+    the workgroup id; paged, a cluster is (KV head, the work list in order),
+    whose requests are contiguous runs of it.
     """
     D = head_dim
+    if mapping not in MAPPINGS:
+        raise ValueError(f"mapping={mapping!r}: one of {MAPPINGS}")
+    spatial = mapping == "spatial"
     if D not in HEAD_DIMS:
         raise ValueError(f"head_dim={D}: gfx950's attention and paged prefill have "
                          f"a schedule for {HEAD_DIMS} only")
@@ -146,20 +210,28 @@ def attn_kernel(name: str, *, head_dim: int = 128, causal: bool = False,
 
         if not paged:
             n_q, n_kv = q.rows, k.rows
-            b = hk.arch.block_idx.z
-        x = hk.arch.block_idx.x
-        # GQA: workgroup x of a query block takes KV head x % H_KV, so
-        # consecutive workgroups -- dealt round robin to the XCDs -- read
-        # different KV heads, and the query heads that share one KV head land
-        # on one XCD and share its L2 (HipKittens' numbering).
+            if not spatial:
+                b = hk.arch.block_idx.z
+        if not spatial:
+            x = hk.arch.block_idx.x
         h_kv = k.depth
         group = (q.cols // D if paged else q.depth) // h_kv
-        head_kv = x % h_kv
-        head = head_kv * group + x // h_kv
+        if spatial:
+            n_t = tiles.rows if paged else hk.cdiv(n_q, Q_TILE)
+            b, head_kv, head, t_ = _spatial(hk.arch.block_idx.x, 1 if paged else q.batch,
+                                            h_kv, group, n_t)
+        else:
+            # GQA: workgroup x of a query block takes KV head x % H_KV, so
+            # consecutive workgroups -- dealt round robin to the XCDs -- read
+            # different KV heads, and the query heads that share one KV head land
+            # on one XCD and share its L2 (HipKittens' numbering).
+            head_kv = x % h_kv
+            head = head_kv * group + x // h_kv
         if paged:
             # A work list entry: the request and its query tile. Query i of
             # the request's new tokens sits at position ctx + i.
-            t_ = hk.arch.block_idx.y
+            if not spatial:
+                t_ = hk.arch.block_idx.y
             req = tiles[hk.elem_coord(0, 0, t_, 0)].load_scalar(invariant=True)
             qb = tiles[hk.elem_coord(0, 0, t_, 1)].load_scalar(invariant=True)
             tok0 = q_start[hk.elem_coord(0, 0, 0, req)].load_scalar(invariant=True)
@@ -168,7 +240,7 @@ def attn_kernel(name: str, *, head_dim: int = 128, causal: bool = False,
             ctx = seq_len - n_q
             last_col = block_table.cols - 1
         else:
-            qb = hk.arch.block_idx.y
+            qb = t_ if spatial else hk.arch.block_idx.y
             if causal and lpt:
                 qb = hk.cdiv(n_q, Q_TILE) - 1 - qb
             ctx = 0
@@ -487,6 +559,8 @@ def attn_kernel(name: str, *, head_dim: int = 128, causal: bool = False,
             walk(q, k_cache, v_cache, o, block_table, seq_lens, q_start, tiles)
 
         def _grid(p):
+            if spatial:
+                return (p.o.cols // D * p.tiles.rows, 1, 1)
             return (p.o.cols // D, p.tiles.rows, 1)
     else:
         def body(q: hk.Tensor[bf16], k: hk.Tensor[bf16], v: hk.Tensor[bf16],
@@ -494,6 +568,8 @@ def attn_kernel(name: str, *, head_dim: int = 128, causal: bool = False,
             walk(q, k, v, o, None, None, None, None)
 
         def _grid(p):
+            if spatial:
+                return (p.q.depth * hk.cdiv(p.q.rows, Q_TILE) * p.q.batch, 1, 1)
             return (p.q.depth, hk.cdiv(p.q.rows, Q_TILE), p.q.batch)
 
     body.__name__ = name
@@ -522,21 +598,25 @@ def kernel_for(head_dim: int, causal: bool, scale: Optional[float] = None, **opt
     return _KERNELS[key]
 
 
-def paged_kernel_for(head_dim: int, scale: Optional[float] = None):
-    """The paged prefill (attn_kernel's `paged`) for (head_dim, scale), built
-    once: hk.ops.paged_prefill's kernel on gfx950."""
+def paged_kernel_for(head_dim: int, scale: Optional[float] = None,
+                     mapping: str = "block_first"):
+    """The paged prefill (attn_kernel's `paged`) for (head_dim, scale,
+    mapping), built once: hk.ops.paged_prefill's kernel on gfx950."""
     if scale is not None and scale == head_dim ** -0.5:
         scale = None
-    key = ("paged", head_dim, scale)
+    key = ("paged", head_dim, scale, mapping)
     if key not in _KERNELS:
         name = f"paged_prefill_d{head_dim}_cdna"
         if scale is not None:
             import struct  # noqa: PLC0415
             name += f"_s{struct.unpack('<Q', struct.pack('<d', float(scale)))[0]:016x}"
+        if mapping != "block_first":
+            name += f"_{mapping}"
         _KERNELS[key] = attn_kernel(name, head_dim=head_dim, causal=True,
-                                    scale=scale, paged=True)
+                                    scale=scale, paged=True, mapping=mapping)
     return _KERNELS[key]
 
 
-__all__ = ["attn_kernel", "kernel_for", "paged_kernel_for", "HEAD_DIMS", "Q_TILE",
+__all__ = ["attn_kernel", "kernel_for", "paged_kernel_for", "mapping_for", "HEAD_DIMS", "MAPPINGS",
+           "Q_TILE",
            "KV_BLOCK", "PAGE"]

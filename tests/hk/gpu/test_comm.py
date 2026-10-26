@@ -292,6 +292,35 @@ def test_xcd_id_names_eight_dies():
     assert set(ids) == set(range(8)) and all(ids.count(x) == 32 for x in range(8))
 
 
+@pytest.mark.skipif(os.environ.get("HK_ARCH") != "gfx950", reason="hk.comm is gfx950's")
+def test_workgroups_are_dealt_to_the_xcds_by_id_mod_8_in_every_wave():
+    """The XCD-aware numberings in hk.ops (gemm_cdna's and mxfp8's xcd_chunk, moe_a8w4's
+    contiguous eighths, attn_cdna's mapping="spatial") and hk.comm.xcd_barrier's placement
+    rely on one dispatch policy: workgroup w runs on the XCD of w % 8, in every wave of a grid
+    many times the GPU, whatever order workgroups finish in (which XCD w = 0 lands on may vary;
+    the classes may not). A driver or firmware that dealt chunks of 2, or refilled whichever XCD
+    frees first, would leave every result right and every one of those kernels slower -- this
+    is where it shows. 64Ki one-wave workgroups (eight times what fits at once), each spinning
+    a pseudo-random time so they finish out of order, record hk.arch.xcd_id()."""
+    def body(out: hk.Tensor[i32], sink: hk.Tensor[i32]):
+        w = hk.arch.block_idx.x
+        acc = w
+        for i in hk.range(0, (w * 37 + 11) % 97 * 16):
+            acc = acc * 3 + i
+        sink.at[w % 64].atomic_max_scalar(acc % 2)
+        out.at[w].atomic_max_scalar(hk.arch.xcd_id())
+    n = 1 << 16
+    k = hk.kernel(body, warps=1, name="comm_xcd_dispatch", grid=lambda p: (p.out.cols, 1, 1))
+    out = torch.full((n,), -1, dtype=torch.int32, device="cuda")
+    sink = torch.zeros(64, dtype=torch.int32, device="cuda")
+    k(out, sink)
+    torch.cuda.synchronize()
+    ids = out.view(-1, 8).cpu()
+    assert sorted(ids[0].tolist()) == list(range(8)), ids[0].tolist()
+    bad = (ids != ids[0]).any(dim=1).nonzero().flatten().tolist()
+    assert not bad, f"rows of 8 workgroups not on the first row's XCDs: {bad[:8]} ({len(bad)})"
+
+
 # ---------------------------------------------------------------- two GPUs
 
 def _gpu_kernels():

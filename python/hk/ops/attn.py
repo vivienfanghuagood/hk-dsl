@@ -554,21 +554,38 @@ def _native_cdna() -> bool:
     return current_arch() == "gfx950"
 
 
+def _mapping(q, k, causal: bool) -> str:
+    """gfx950's workgroup numbering for this call (attn_cdna.mapping_for); the
+    one numbering gfx1100's kernel has otherwise."""
+    if not _native_cdna():
+        return "block_first"
+    from . import attn_cdna  # noqa: PLC0415
+
+    return attn_cdna.mapping_for(q.shape[0], k.shape[1], q.shape[-2], causal)
+
+
 def _kernel_for(head_dim: int, causal: bool, scale: Optional[float],
-                n: int = 4096, bnhd: bool = False):
+                n: int = 4096, bnhd: bool = False, mapping: str = "block_first"):
     """The compiled kernel for one (head_dim, causal, scale).
 
     `scale` is a trace-time constant (see `attn_kernel`), so a non-default one
     is a different kernel. Keying the name on the float's bit pattern rather
     than a counter keeps it stable across processes, which is what lets the
     on-disk compile cache hit on the second run instead of the second call.
+
+    `mapping` is gfx950's workgroup numbering (attn_cdna.MAPPINGS, picked by
+    `_mapping`); it never changes what the kernel computes.
     """
     if _native_cdna():
         if bnhd:
             raise ValueError("bnhd: gfx1100's kernel only")
         from . import attn_cdna  # noqa: PLC0415
 
+        if mapping != "block_first":
+            return attn_cdna.kernel_for(head_dim, causal, scale, mapping=mapping)
         return attn_cdna.kernel_for(head_dim, causal, scale)
+    if mapping != "block_first":
+        raise ValueError(f"mapping={mapping!r}: gfx950's kernel only")
     suffix = "_causal" if causal else ""
     if scale is None or scale == head_dim ** -0.5:
         return (TUNERS_BNHD if bnhd else TUNERS)[(head_dim, causal)].kernel(_tune_key(n))
@@ -665,7 +682,8 @@ def attention(q, k, v, *, causal: bool = False, scale: Optional[float] = None,
     elif out.shape != q.shape or out.dtype != q.dtype or not out.is_contiguous():
         raise ValueError(f"hk.attention: out is {tuple(out.shape)}/{out.dtype}, "
                          f"expected a contiguous {tuple(q.shape)}/{q.dtype}")
-    _kernel_for(q.shape[-1], causal, scale, q.shape[-2])(q, k, v, out)
+    _kernel_for(q.shape[-1], causal, scale, q.shape[-2],
+                mapping=_mapping(q, k, causal))(q, k, v, out)
     return out
 
 
