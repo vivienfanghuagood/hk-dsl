@@ -154,6 +154,9 @@ R9700 vLLM image's clang 23, where 64 is 16-20% slower. A shorter Q keeps gfx110
   `C10_HIP_API`, which only the older headers define; with those (rocm/pytorch's
   torch 2.10, the vLLM 0.31 venv's 2.13, the gfx950 images) it builds the same
   code as before.
+- **The LDS wait check refused a correct kernel** (#87). `hk.runtime.cocheck`'s scan walked the code in
+  address order and carried a block's in-flight LDS loads past an unconditional `s_branch` into a block
+  that code never reaches. It now follows branches: a forward branch carries its states to its target.
 
 **CI and tests**
 - A fourth GPU-tier job, `gfx1201`, on a shared RDNA4 box (Radeon AI PRO R9700), with an
