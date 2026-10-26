@@ -441,19 +441,29 @@ class Global(Value):
         n = ids.cols if count is None else count
         return (ids.v, as_int(at).v, as_int(n).v, as_int(col).v)
 
-    def load_elems(self, idx: "Tile", dtype: Optional[DType] = None, *, row=None) -> "Tile":
+    def load_elems(self, idx: "Tile", dtype: Optional[DType] = None, *, runs: bool = False,
+                   row=None) -> "Tile":
         """Element by element at computed indices (gfx950): element (r, c) of the result is element
         `idx[r, c]` of this tensor, counted flat (rows over batch and depth, at the row stride),
         converted to `dtype` (fp32 or i32; default fp32, i32 for an i32 tensor). An index below
         zero or past the tensor reads 0 -- a table lookup with a fallback, a key table's slots.
-        `idx` is an i32 strip (hk.map_cpp computes one)."""
+        `idx` is an i32 strip (hk.map_cpp computes one).
+
+        `runs=True`: the kernel says each lane's run comes from consecutive elements from its first
+        element's index, aligned to the run's bytes; the run is one load (1, 2, 4, 8 or 16 k bytes),
+        read as 0 if that first index is out of range -- a lane's 4 fp32 in one 16-byte load, not
+        four gathered ones. `row`: as store_elems."""
         if getattr(idx.ty, "run", None) is None or idx.ty.dtype.name != "i32":
             raise TypeError(f"load_elems takes an i32 strip of indices, not {idx.ty}")
+        if runs:
+            nb = idx.ty.run * self.dtype.bits // 8
+            if nb not in (1, 2, 4, 8) and nb % 16:
+                raise TypeError(f"load_elems(runs=True): a run of {nb} bytes; 1, 2, 4, 8 or 16 k")
         dtype = (i32 if self.dtype is i32 else fp32) if dtype is None else dtype
         ty = RegTileType(dtype, idx.ty.rows, idx.ty.cols, idx.ty.layout, idx.ty.frag, run=idx.ty.run)
         t = _t()
         aux = scope_aux(self, "load_elems") if getattr(self.ty, "scope", "") else 0
-        return wrap(hkd.LoadElemsOp(mlir_type(ty), self.v, idx.v, aux=_i64(aux),
+        return wrap(hkd.LoadElemsOp(mlir_type(ty), self.v, idx.v, aux=_i64(aux), runs=bool(runs),
                                     row=None if row is None else as_int(row).v, loc=t.loc("elems")).result, ty)
 
     def store_elems(self, val: "Tile", idx: "Tile", *, runs: bool = False, row=None) -> None:
@@ -1611,18 +1621,25 @@ class SharedTile(Value):
         return SharedTile(hkd.SharedAtOp(mlir_type(ty), self.v, as_int(i).v,
                                          loc=t.loc("sb")).result, ty)
 
-    def load_elems(self, idx: "Tile", dtype: Optional[DType] = None) -> "Tile":
+    def load_elems(self, idx: "Tile", dtype: Optional[DType] = None, *, runs: bool = False) -> "Tile":
         """Element by element from this fp32 LDS tile (gfx950): element (r, c) of the result is
         element `idx[r, c]` (row-major, through the tile's swizzle) -- fp32, or its bits as i32 with
         dtype=hk.i32; below zero or past the tile, 0. A CTA's own exchange between warps without a
         round trip to global memory (whose drain would also wait out every load in flight). Another
-        warp's writes need hk.arch.barrier(drain=True) between."""
+        warp's writes need hk.arch.barrier(drain=True) between.
+
+        `runs=True`: the kernel says each lane's run (a multiple of 4) is consecutive elements from
+        16-byte-aligned indices; each 4 is one 16-byte read (b32 reads of a lane's 4 consecutive
+        elements conflict 4 ways across the wave). Index flat into a tile 16 columns wide: a wider
+        one lays every 16th element a subtile (1 KB) on, on the same banks."""
         if getattr(idx.ty, "run", None) is None or idx.ty.dtype.name != "i32":
             raise TypeError(f"load_elems takes an i32 strip of indices, not {idx.ty}")
+        if runs and idx.ty.run % 4:
+            raise TypeError(f"load_elems(runs=True): runs of 4 elements, not {idx.ty.run}")
         dtype = fp32 if dtype is None else dtype
         ty = RegTileType(dtype, idx.ty.rows, idx.ty.cols, idx.ty.layout, idx.ty.frag, run=idx.ty.run)
         t = _t()
-        return wrap(hkd.LdsLoadElemsOp(mlir_type(ty), self.v, idx.v, loc=t.loc("ldse")).result, ty)
+        return wrap(hkd.LdsLoadElemsOp(mlir_type(ty), self.v, idx.v, runs=bool(runs), loc=t.loc("ldse")).result, ty)
 
     def store_elems(self, val: "Tile", idx: "Tile") -> None:
         """Element by element into this fp32 LDS tile (gfx950): val's element (r, c) (fp32, or i32

@@ -3147,16 +3147,63 @@ __device__ static inline void take_elems(D &dst, const GL &box, const I &idx, in
         asm volatile("" ::: "memory");   // re-issued every round
     }
 }
+/** @brief (experiment) s_memrealtime as an ordered point: the memory clobber keeps loads and stores on their
+ * side of it, so a timeline of these is in program order. The low 32 bits as a float's bits; x is unused. */
+__device__ inline float hk_stamp_now(int x) {
+    long long t;
+    asm volatile("s_memrealtime %0\n\ts_waitcnt lgkmcnt(0)" : "=s"(t) :: "memory");
+    return __builtin_bit_cast(float, int(t) + 0 * x);
+}
+/** @brief (experiment) one scalar load from every 64-byte line of a kernel's argument block, held to here: a
+ * later first use of a tensor finds its pointer and shape in the scalar cache. Returns x. */
+template<typename G>
+__device__ inline int hk_touch_args(const G &g, int x) {
+    const int *p = reinterpret_cast<const int *>(&g);
+#pragma unroll
+    for (int i = 0; i < int(sizeof(G) / 4); i += 16) {
+        int v = __builtin_amdgcn_readfirstlane(p[i]);
+        asm volatile("" :: "s"(v));
+    }
+    return x;
+}
 /** @brief hk lds_load_elems: dst(r, c) = src's element idx(r, c) (row-major, through its swizzle; OOB -> 0). */
 template<ducks::rs::all D, typename ST, ducks::rs::all I>
 __device__ static inline void lds_load_elems(D &dst, ST &src, const I &idx) {
     constexpr int N = ST::rows * ST::cols;
     detail::strip_each<D>([&](int a, int j, int e) {
+        // branch-free: an index out of range reads element 0 and keeps 0. A guarded read put each in its
+        // own exec-masked block, and the strip's reads went one at a time, each waiting out its latency.
         const int k = idx.data[a][j][e];
-        float v = 0.f;
-        if (k >= 0 && k < N) v = *detail::hk_st_elem(src, k / ST::cols, k % ST::cols);
-        dst.data[a][j][e] = detail::hk_from_bits<typename D::T>(detail::hk_bits(v));
+        const bool in = uint32_t(k) < uint32_t(N);
+        const int kk = in ? k : 0;
+        const float v = *detail::hk_st_elem(src, kk / ST::cols, kk % ST::cols);
+        dst.data[a][j][e] = detail::hk_from_bits<typename D::T>(detail::hk_bits(in ? v : 0.f));
     });
+}
+/** @brief hk lds_load_elems(runs=True): each lane's run 4 elements at a time, one 16-byte read from each
+ * 16-byte-aligned index (OOB -> 0). A 16x16 subtile's 16 columns are contiguous, so an aligned 4 is too. */
+template<ducks::rs::all D, typename ST, ducks::rs::all I>
+__device__ static inline void lds_load_elems_runs(D &dst, ST &src, const I &idx) {
+    static_assert(D::run % 4 == 0, "runs of 4");
+    constexpr int N = ST::rows * ST::cols;
+    typedef float hk_f4 __attribute__((ext_vector_type(4)));
+    typedef __attribute__((address_space(3))) hk_f4 hk_lds_f4;
+    #pragma unroll
+    for (int a = 0; a < D::rows; a++) {
+        #pragma unroll
+        for (int j = 0; j < D::chunks; j++) {
+            #pragma unroll
+            for (int q = 0; q < D::run / 4; q++) {
+                const int k = idx.data[a][j][4 * q];
+                const bool in = uint32_t(k) < uint32_t(N);
+                const int kk = in ? k : 0;
+                const hk_f4 v = *(hk_lds_f4 *)detail::hk_st_elem(src, kk / ST::cols, kk % ST::cols);
+                #pragma unroll
+                for (int e = 0; e < 4; e++)
+                    dst.data[a][j][4 * q + e] = detail::hk_from_bits<typename D::T>(detail::hk_bits(in ? v[e] : 0.f));
+            }
+        }
+    }
 }
 /** @brief hk lds_store_elems: val(r, c)'s bits to dst's element idx(r, c) (row-major; OOB: none). */
 template<typename ST, ducks::rs::all V, ducks::rs::all I>
@@ -3256,6 +3303,31 @@ __device__ static inline void load_elems(D &dst, const GL &src, const I &idx, in
         dst.data[a][j][e] = detail::hk_cvt<typename D::T, U>(
             detail::hk_buf_load_elem<U, AUX>(r, detail::hk_elem_off(idx.data[a][j][e], sizeof(U))));
     });
+}
+/** @brief hk.load_elems(runs=True): each lane's run from the consecutive elements from idx of its first
+ * element, as one load of the run's bytes; a first index out of range reads the run as 0. */
+template<int AUX = 0, ducks::rs::all D, ducks::gl::all GL, ducks::rs::all I>
+__device__ static inline void load_elems_runs(D &dst, const GL &src, const I &idx, const detail::hk_i32x4 r) {
+    using U = typename GL::dtype;
+    #pragma unroll
+    for (int a = 0; a < D::rows; a++) {
+        #pragma unroll
+        for (int j = 0; j < D::chunks; j++) {
+            U run[D::run];
+            detail::hk_buf_load_bytes<D::run * sizeof(U), AUX>(r, detail::hk_elem_off(idx.data[a][j][0], sizeof(U)), run);
+            #pragma unroll
+            for (int e = 0; e < D::run; e++) dst.data[a][j][e] = detail::hk_cvt<typename D::T, U>(run[e]);
+        }
+    }
+}
+template<int AUX = 0, ducks::rs::all D, ducks::gl::all GL, ducks::rs::all I>
+__device__ static inline void load_elems_runs(D &dst, const GL &src, const I &idx) {
+    load_elems_runs<AUX>(dst, src, idx, detail::hk_elems_srsrc(src));
+}
+/** @brief load_elems_runs, the indices counting from row `row` (hk_elems_srsrc_row). */
+template<int AUX = 0, ducks::rs::all D, ducks::gl::all GL, ducks::rs::all I>
+__device__ static inline void load_elems_runs(D &dst, const GL &src, const I &idx, int row) {
+    load_elems_runs<AUX>(dst, src, idx, detail::hk_elems_srsrc_row(src, row));
 }
 /** @brief store_elems, the indices counting from row `row` (hk_elems_srsrc_row). */
 template<int AUX = 0, ducks::gl::all GL, ducks::rs::all V, ducks::rs::all I>

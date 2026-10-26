@@ -1580,7 +1580,8 @@ private:
         })
         .Case([&](LdsLoadElemsOp o) {
           Value d = dest(Value(), o.getResult());
-          w("kittens::lds_load_elems(" + name(d) + ", " + name(o.getSrc()) + ", " + name(o.getIdx()) + ");");
+          w(std::string("kittens::lds_load_elems") + (o.getRuns() ? "_runs" : "") + "(" + name(d) + ", " +
+            name(o.getSrc()) + ", " + name(o.getIdx()) + ");");
         })
         .Case([&](LdsStoreElemsOp o) {
           w("kittens::lds_store_elems(" + name(o.getDst()) + ", " + name(o.getVal()) + ", " + name(o.getIdx()) + ");");
@@ -1591,7 +1592,7 @@ private:
         })
         .Case([&](LoadElemsOp o) {
           Value d = dest(Value(), o.getResult());
-          w("kittens::load_elems<" + std::to_string(o.getAux()) + ">(" + name(d) + ", " +
+          w(std::string("kittens::load_elems") + (o.getRuns() ? "_runs" : "") + "<" + std::to_string(o.getAux()) + ">(" + name(d) + ", " +
             name(o.getSrc()) + ", " + name(o.getIdx()) +
             (o.getRow() ? ", " + name(o.getRow()) : std::string()) + ");");
         })
