@@ -1882,3 +1882,54 @@ __all__ = [
     "full", "neg_infty", "rand", "load_w4", "transpose", "transpose_sep", "broadcast_row",
     "broadcast_col", "as_vec", "lds_loads", "wrap",
 ]
+
+
+def map_cpp(expr: str, *args, dtype: Optional[DType] = None, name: str = "map") -> Tile:
+    """An elementwise C++ expression over strips (gfx950): element (r, c) of the result is `expr`
+    with `x0`, `x1`, ... bound to element (r, c) of each strip argument -- or to the argument
+    itself for an `Int` -- converted to `dtype` (default: the first strip's).
+
+    For what the operators cannot say and a kernel must reproduce bit for bit: bit manipulation,
+    a fused multiply-add, one particular instruction. E.g. the biased exponent of the smallest
+    power of two >= x::
+
+        e = hk.map_cpp("((__builtin_bit_cast(int, x0) >> 23) & 0xFF)"
+                       " + ((__builtin_bit_cast(int, x0) & 0x7FFFFF) != 0)", x, dtype=hk.i32)
+
+    The strips have one shape and run; strips and result are fp32 or i32 (convert a 16-bit strip
+    with `.to` first). The expression is one C++ expression, compiled as written: no `;` or
+    braces, and the compiler, not hk, checks it."""
+    from .arch import target  # noqa: PLC0415
+
+    if target().wave != 64:
+        raise TypeError(f"hk.map_cpp is gfx950's (its strips), not {target().arch}'s")
+    if not isinstance(expr, str) or not expr.strip() or any(ch in expr for ch in ";{}"):
+        raise ValueError(f"hk.map_cpp: one C++ expression, no ';' or braces, got {expr!r}")
+    strips = [a for a in args if isinstance(a, Tile)]
+    if not strips:
+        raise TypeError("hk.map_cpp needs at least one strip argument (its shape is the result's)")
+    s0 = strips[0].ty
+    if getattr(s0, "run", None) is None:
+        raise TypeError(f"hk.map_cpp maps strips (hk.RS), not {s0}")
+    dtype = s0.dtype if dtype is None else dtype
+    if dtype.name not in ("fp32", "i32"):
+        raise TypeError(f"hk.map_cpp makes an fp32 or i32 strip, not {dtype.name}")
+    ops = []
+    for i, a in enumerate(args):
+        if isinstance(a, Tile):
+            if (a.ty.rows, a.ty.cols, getattr(a.ty, "run", None)) != (s0.rows, s0.cols, s0.run):
+                raise TypeError(f"hk.map_cpp: x{i} is {a.ty}, every strip has {s0}'s shape and run")
+            if a.ty.dtype.name not in ("fp32", "i32"):
+                raise TypeError(f"hk.map_cpp: x{i} is {a.ty.dtype.name}; strip arguments are fp32 "
+                                f"or i32 (convert with .to)")
+            ops.append(a.v)
+        elif isinstance(a, Int):
+            ops.append(a.v)
+        else:
+            raise TypeError(f"hk.map_cpp: x{i} is {a!r}: a strip or an hk.Int; a Python number "
+                            f"belongs in the expression itself")
+    ty = RegTileType(dtype, s0.rows, s0.cols, s0.layout, s0.frag, run=s0.run)
+    t = _t()
+    op = hkd.MapCppOp(mlir_type(ty), ops, expr, loc=t.loc(name))
+    return wrap(op.result, ty)
+

@@ -820,6 +820,27 @@ def HK_SqrtOp : HK_UnaryMapOp<"sqrt">;
 def HK_RsqrtOp : HK_UnaryMapOp<"rsqrt">;
 def HK_SiluOp : HK_UnaryMapOp<"silu">;
 def HK_StepOp : HK_UnaryMapOp<"step">;
+def HK_MapCppOp : HK_Op<"map_cpp"> {
+  let summary = "an elementwise C++ expression over strips (gfx950)";
+  let description = [{
+    Element (r, c) of the result is `expr` evaluated with `x0`, `x1`, ...
+    bound to element (r, c) of each strip argument, or to the argument
+    itself for an i32 / f32 scalar, converted to the result's element
+    type. The strips have the result's shape and run; strips and result
+    are fp32 or i32. The expression is one C++ expression (no `;`,
+    braces), compiled as written: bit manipulation, fused multiply-adds,
+    the hardware's own instructions (`__builtin_amdgcn_*`) -- what a
+    kernel must reproduce from another bit for bit.
+  }];
+  let arguments = (ins Variadic<AnyTypeOf<[HK_RegTileType, I32, F32]>>:$args,
+                       StrAttr:$expr);
+  let results = (outs HK_RegTileType:$result);
+  let assemblyFormat = [{
+    $expr `(` $args `)` attr-dict `:` functional-type($args, $result)
+  }];
+  let hasVerifier = 1;
+}
+
 def HK_SwapHalvesOp : HK_UnaryMapOp<"swap_halves"> {
   let description = [{
     A strip's rows with their two halves exchanged: element (r, c) of the

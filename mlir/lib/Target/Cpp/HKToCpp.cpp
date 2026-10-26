@@ -1556,6 +1556,20 @@ private:
           Value d = dest(o.getDst(), o.getResult());
           call("copy", d, {name(o.getSrc())});
         })
+        .Case([&](MapCppOp o) {
+          // element (r, c) = (T)(expr) with x0.. the arguments' elements (or scalars)
+          Value d = dest(Value(), o.getResult());
+          std::vector<std::string> params, args{name(d)};
+          for (auto [i, a] : llvm::enumerate(o.getArgs())) {
+            params.push_back("const auto x" + std::to_string(i));
+            args.push_back(name(a));
+          }
+          w("kittens::map_cpp(" + args[0] + ", [&](" + join(params) + ") { return (" +
+            o.getExpr().str() + "); }" +
+            (args.size() > 1 ? ", " + join(std::vector<std::string>(args.begin() + 1, args.end()))
+                             : std::string()) +
+            ");");
+        })
         .Case([&](BitcastOp o) {
           // the same registers read as another type of the same width: no instruction
           Value d = dest(o.getDst(), o.getResult());

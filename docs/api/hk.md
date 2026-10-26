@@ -1759,4 +1759,4 @@ are bounded: any non-empty length. head_dim is 64 or 128 on both.
 
 ## Also exported
 
-`hk.mx`, `hk.templates`
+`hk.map_cpp`, `hk.mx`, `hk.templates`
