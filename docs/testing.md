@@ -269,9 +269,9 @@ moved it).
 
 **What the jobs run** (`scripts/ci/`, from the job's checkout):
 - **`run_gfx950.sh`** picks the GPU among its runner's `HK_CI_GPUS` (the
-  first whose lock it can take at once and that is under 10% use and 3% VRAM;
-  it waits up to an hour for one), holds that GPU's lock until the container
-  exits, and starts `rocm/pytorch` with that GPU's render node,
+  first whose lock it can take at once, that is under 10% use and 3% VRAM,
+  and whose render node no `hk-gha-*` container has; it waits up to an hour for one), holds that
+  GPU's lock until the container is gone, and starts `rocm/pytorch` with that GPU's render node,
   the checkout, the run's directory, CI's own directory, and the MLIR
   install read-only; nothing else of `$HOME`. In it, **`container_run.sh`**
   builds the dialect for the image's CPython 3.12 against MLIR 23.1.3's cp310
@@ -307,6 +307,40 @@ GPUs, so a lock inside one pod is invisible to the others -- and a run
 without it refuses to start. A manual benchmark takes the same lock
 (`/workspace/locks/bin/gpulock IDX -- <command>`), so that neither times the
 other.
+
+**Cancelled jobs and orphan containers.** On a cancel (or a job's timeout)
+the runner sends SIGINT to the step's shell alone, SIGTERM 7.5 s later, and
+2.5 s after that SIGKILLs the shell; at the job's end it SIGKILLs every
+process the job left ("Cleaning up orphan processes"). Until 2026-10-26 the
+step's shell ran `run_gfx950.sh` as a child, which saw no signal and was
+SIGKILLed with its docker client; the container, which belongs to dockerd,
+kept running, the GPU's lock went with the killed processes, and the
+runner's next job took the "idle" card -- two containers on one GPU, seen
+twice. Now:
+- the steps `exec` their script, which is then the step's shell. Its trap
+  (INT, TERM, HUP and EXIT; `scripts/ci/cancel.sh`) kills its own container
+  by name and waits until it is gone, holding the lock until then: about a
+  second. The script first re-executes itself (same process) with
+  `env --default-signal`: the workstation's listeners, started by `cmd &`
+  from a non-interactive shell, ignore SIGINT and SIGQUIT (`SigIgn` in
+  `/proc/PID/status`), their jobs inherit that, and bash cannot trap a
+  signal ignored on entry;
+- a reaper, `cancel.sh --on-eof`, started outside the runner's process
+  tracking (`RUNNER_TRACKING_ID=0`) and holding the lock too, waits on a
+  pipe only the script writes to; if the script dies without saying done (a
+  SIGKILL), it kills the container, and the lock goes when it exits, after;
+- each container is labelled `hk-gha.runner`, `hk-gha.run`, `hk-gha.attempt`
+  and `hk-gha.started`. A job starts by sweeping its runner's `hk-gha-*`
+  containers: one whose run attempt GitHub reports completed is killed (the
+  job's `GITHUB_TOKEN`, `actions: read`); queued or in progress, it is kept;
+  with GitHub unreachable, it is killed only once older than 120 minutes;
+- `pick()` counts a GPU as busy while any running `hk-gha-*` container,
+  any runner's, has its render node.
+The gfx1100 job's reaper does the same for the pod's run: unless the run has
+finished, the script's trap exits without telling it "done" (a round trip to
+the pod takes 3-4 s, too long for the trap), and it kills `pod_run.sh`'s
+whole session in the pod (the suite's pytest runs under `timeout`, in a
+process group of its own, which the old `kill -- -PGID` missed).
 
 **Required checks.** main's branch protection requires `gfx950` and
 `gfx1100` from GitHub Actions, not up to date with main (`strict: false`),

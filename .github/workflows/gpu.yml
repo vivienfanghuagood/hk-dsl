@@ -7,6 +7,10 @@ name: GPU tier
 # pull_request_target: the repository is public, and a fork's code must never
 # reach these machines.
 
+# The GPU steps exec their script (`exec scripts/ci/...`): on cancel or timeout the runner signals
+# the step's shell alone, so the script must be that shell to see it and kill its container or pod
+# run (docs/testing.md, "Cancelled jobs and orphan containers").
+
 on:
   push:
     branches: [main]
@@ -14,6 +18,7 @@ on:
 
 permissions:
   contents: read
+  actions: read     # run_gfx950.sh asks whether an orphan container's run is still in progress
 
 jobs:
   # The job names are main's required checks; renaming one is a change to
@@ -34,7 +39,9 @@ jobs:
           submodules: recursive
           persist-credentials: false
       - name: GPU tier on an MI355X
-        run: scripts/ci/run_gfx950.sh
+        run: exec scripts/ci/run_gfx950.sh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -69,7 +76,9 @@ jobs:
           submodules: recursive
           persist-credentials: false
       - name: The DeepSeek-V4.1 routes in the vLLM image on an MI355X
-        run: scripts/ci/run_gfx950.sh
+        run: exec scripts/ci/run_gfx950.sh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -97,7 +106,7 @@ jobs:
         with:
           persist-credentials: false
       - name: GPU tier on four W7900D of the CI pod (sharded)
-        run: scripts/ci/run_gfx1100.sh
+        run: exec scripts/ci/run_gfx1100.sh
       - uses: actions/upload-artifact@v4
         if: always()
         with:
