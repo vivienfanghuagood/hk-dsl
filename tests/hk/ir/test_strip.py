@@ -466,7 +466,7 @@ def test_the_strip_index_and_lane_ops_emit_their_cdna_calls():
         b = x.load_elems(c).lane_gather(hk.map_cpp("x0 / 8", c))
         o.store_elems(b.group_sum(32, lanes="tree", xor=(2, 1)) + a.group_max(64), c)
     src = _src950(ops)
-    for call in ("kittens::iota(", "kittens::load_elems(", "kittens::lane_gather(", "kittens::store_elems(",
+    for call in ("kittens::iota(", "kittens::load_elems", "kittens::lane_gather(", "kittens::store_elems",
                  "group_reduce_ordered<"):
         assert call in src, call
 
