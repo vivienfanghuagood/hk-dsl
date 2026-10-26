@@ -76,6 +76,7 @@ nav:
   - "hk.profile: why it is slow": profile.md
   - Schedules: schedules.md
   - "Tuning a GEMM: hk.tune": tune.md
+  - Workgroup placement: placement.md
   - The language: language.md
   - API reference:
       - api/README.md
@@ -86,6 +87,7 @@ nav:
       - hk.group: api/hk.group.md
       - hk.collective: api/hk.collective.md
       - hk.comm: api/hk.comm.md
+      - hk.placement: api/hk.placement.md
       - hk.templates: api/hk.templates.md
       - hk.ops: api/hk.ops.md
       - hk.schedules: api/hk.schedules.md

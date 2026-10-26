@@ -50,12 +50,9 @@ from __future__ import annotations
 from typing import Any, Dict, Optional
 
 from .. import dsl as hk
+from ..dsl import placement as _pl
 from ..types import bf16, fp32, fp8e4m3, i8, i32
 from . import _epilogue
-
-#: An MI355X has eight XCDs; workgroups are dealt to them round robin.
-NUM_XCDS = 8
-
 
 def gemm_kernel(name: str, *, block_m: int = 256, block_n: int = 256,
                 k_step: int = 64, warps_m: int = 2, warps_n: int = 4,
@@ -563,7 +560,7 @@ def gemm_kernel(name: str, *, block_m: int = 256, block_n: int = 256,
         if transposed_c:
             raise ValueError("stream_k: a cut block's shares are stored and summed in "
                              "the untransposed accumulators' layout; transposed_c must be False")
-        if sk_grid % NUM_XCDS:
+        if sk_grid % _pl.xcd_count("gfx950"):
             raise ValueError(f"sk_grid={sk_grid}: a whole number of workgroups an XCD")
         if stream_k not in SK_MODES:
             raise ValueError(f"stream_k={stream_k!r}: one of {sorted(SK_MODES)}")
@@ -651,11 +648,12 @@ def sk_plan(m: int, n: int, k: int, block_m: int, block_n: int, k_step: int,
     cut block runs on one XCD and the shares meet in its L2 (wg_arrive
     scope="xcd"), and the blocks an XCD works on are neighbours. A cut
     block's shares take consecutive slots in run order; the last run to
-    finish sums them in that order. Workgroup g runs on XCD g % 8."""
+    finish sums them in that order. Workgroup g runs on XCD g % xcds (hk.dsl.placement)."""
+    xcds = _pl.xcd_count("gfx950")
     mb, nb = -(-m // block_m), n // block_n
     blocks = mb * nb
     per = k // (2 * k_step)                    # units a block: K-tile pairs
-    per_x = sk_grid // NUM_XCDS
+    per_x = sk_grid // xcds
 
     def origin(t):
         per_group = wgm * nb
@@ -669,11 +667,11 @@ def sk_plan(m: int, n: int, k: int, block_m: int, block_n: int, k_step: int,
     for t in range(whole):
         # Consecutive blocks to one XCD's workgroups, a wave at a time.
         i = t % sk_grid
-        segs[(i % per_x) * NUM_XCDS + i // per_x].append((t, 0, per))
+        segs[(i % per_x) * xcds + i // per_x].append((t, 0, per))
     rest = blocks - whole
     nsk = [0] * sk_grid                        # by workgroup: its stream-K segments
-    for x in range(NUM_XCDS):
-        b0, b1 = whole + x * rest // NUM_XCDS, whole + (x + 1) * rest // NUM_XCDS
+    for x in range(xcds):
+        b0, b1 = whole + x * rest // xcds, whole + (x + 1) * rest // xcds
         units = (b1 - b0) * per
         for j in range(per_x):
             lo, hi = j * units // per_x, (j + 1) * units // per_x
@@ -681,8 +679,8 @@ def sk_plan(m: int, n: int, k: int, block_m: int, block_n: int, k_step: int,
             while u < hi:
                 t = u // per
                 end = min(hi, (t + 1) * per)
-                segs[j * NUM_XCDS + x].append((b0 + t, u - t * per, end - t * per))
-                nsk[j * NUM_XCDS + x] += 1
+                segs[j * xcds + x].append((b0 + t, u - t * per, end - t * per))
+                nsk[j * xcds + x] += 1
                 u = end
     # A run's cut segments in reverse: the head of its last block first, so
     # every run of an XCD starts its stream-K work at K = 0 and they read
@@ -692,9 +690,9 @@ def sk_plan(m: int, n: int, k: int, block_m: int, block_n: int, k_step: int,
     segs = [ss[:len(ss) - nsk[g]] + ss[len(ss) - nsk[g]:][::-1] for g, ss in enumerate(segs)]
     # Shares: a cut block's workgroups in run order, consecutive slots.
     sharers: Dict[int, list] = {}
-    for x in range(NUM_XCDS):
+    for x in range(xcds):
         for j in range(per_x):
-            g = j * NUM_XCDS + x
+            g = j * xcds + x
             for t, ulo, uhi in segs[g]:
                 if uhi - ulo < per:
                     sharers.setdefault(t, []).append(g)

@@ -70,7 +70,6 @@ from typing import Any, Dict, Optional
 
 from .. import dsl as hk
 from ..dsl import placement as _pl
-from ..dsl.host import HostDim
 from ..types import bf16, fp32, i32
 
 NEG_INF = float("-inf")
@@ -182,7 +181,7 @@ def attn_kernel(name: str, *, head_dim: int = 128, causal: bool = False,
     placement = None
     if mapping == "spatial":
         placement = _pl.Placement.cluster(
-            key=(_pl.Digit.of("x", "mod", HostDim("k_cache", "depth")),) if paged else None)
+            key=(_pl.Digit.of("x", "mod", "k_cache.depth"),) if paged else None)
     if D not in HEAD_DIMS:
         raise ValueError(f"head_dim={D}: gfx950's attention and paged prefill have "
                          f"a schedule for {HEAD_DIMS} only")

@@ -293,6 +293,13 @@ def test_hk_check_placement_on_a_raw_kernel(tmp_path):
     assert "a bijection over 270 workgroups" in r.stdout
 
 
+def test_a_radix_spelled_tensor_dim_is_that_extent():
+    d = hk.Digit.of("x", "mod", "k.depth")
+    assert repr(d) == "x % g.k.depth()" and d == hk.Digit.of("x", "mod", "k.depth")
+    with pytest.raises(ValueError, match="tensor.dim"):
+        hk.Digit.of("x", "mod", "k.heads")
+
+
 def test_placement_values_are_checked():
     with pytest.raises(ValueError):
         hk.Placement("cluster", tail="anywhere")
@@ -308,3 +315,48 @@ def test_the_suffix_names_the_placement():
     assert hk.Placement.chunked("even").suffix(4) == "_x4chEs".replace("E", "e")
     assert hk.Placement.none().suffix(8) == ""
     assert list(itertools.islice(iter(P.AXES), 3)) == ["x", "y", "z"]
+
+
+# -- M2: the MoE and MXFP8 kernels on it -----------------------------------------------
+
+
+def test_xcd_range_deals_every_unit_once_balanced():
+    o = P._IntOps()
+    for xcds in (1, 2, 4, 6, 8):
+        for total in TOTALS:
+            ranges = [P._xcd_range(o, d, total, xcds) for d in range(xcds)]
+            units = [u for first, n in ranges for u in range(first, first + n)]
+            assert units == list(range(total)), (xcds, total)
+            assert max(n for _, n in ranges) - min(n for _, n in ranges) <= 1
+
+
+def test_moe_sorted_kernels_renumber_contiguously_for_every_total():
+    """moe_a8w4's grid kernels: contiguous ranges an XCD -- what the hand-written remap did
+    where total % 8 == 0, and now also where it fell back to the identity."""
+    from hk.ops import moe_a8w4 as Mo
+
+    k = Mo._sorted_ring(1, "pl_moe_s1", group_rows=2304, mt=4, pp=3, k=5120, warps=4)
+    tr = k.trace()
+    assert tr.plan is not None and tr.plan.kind == "chunked"
+    dec = P.emitted_decode(tr.module, tr.name)
+    for blocks in (1152, 1153, 1322, 1920):
+        e = {n: (1, 1, 1, 1) for n, _ in k._tensors}
+        e["seids"], e["out"] = (1, 1, 1, blocks), (1, 1, blocks * 64, 1152)
+        total = blocks * 6
+        assert [dec(w, 0, 0, e)[0] for w in range(total)] == \
+            [P.place_host(w, total, 8) for w in range(total)]
+
+
+def test_mx4w_renumbers_as_before():
+    from hk.ops import mxfp8
+
+    k = mxfp8.mx4w_kernel("pl_mx4w")
+    tr = k.trace()
+    dec = P.emitted_decode(tr.module, tr.name)
+    for m, n in ((8192, 5120), (1000, 4096), (256, 7168)):
+        e = {nm: (1, 1, 1, 1) for nm, _ in k._tensors}
+        e["a"], e["b"] = (1, 1, m, 4096), (1, 1, n, 4096)
+        total = tr.logical_grid[0].value(e)
+        assert total == -(-m // 256) * (n // 256)
+        assert [dec(w, 0, 0, e)[0] for w in range(total)] == \
+            [P.place_host(w, total, 8, 32, "stay") for w in range(total)]

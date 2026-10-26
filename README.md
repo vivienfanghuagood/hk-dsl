@@ -195,6 +195,7 @@ GPU that is not in the machine).
 [Getting started](docs/getting-started.md) ·
 [templates](docs/templates/elementwise-rowwise.md) ·
 [hk.check](docs/check.md) · [the language](docs/language.md) ·
+[workgroup placement](docs/placement.md) ·
 [API](docs/api/README.md) · [performance](docs/performance.md) ·
 [everything, and why hk-dsl exists](docs/README.md) ·
 [changelog](CHANGELOG.md)
