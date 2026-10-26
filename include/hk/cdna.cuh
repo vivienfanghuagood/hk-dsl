@@ -3051,6 +3051,60 @@ __device__ static inline void post_elems(const GL &box, const V &val, const I &i
                             detail::hk_elem_off(k, 8), 0, AUX);
     });
 }
+/** @brief hk post_elems(runs=True): a lane's run as consecutive pairs from idx of its first element, in
+ * stores of up to 16 bytes (two pairs) -- masked by that first index. */
+template<int AUX, ducks::gl::all GL, ducks::rs::all V, ducks::rs::all I>
+__device__ static inline void post_elems_runs(const GL &box, const V &val, const I &idx, int tag) {
+    static_assert(std::is_same_v<typename GL::dtype, int>, "a mailbox is int32 pairs");
+    static_assert(V::run % 2 == 0, "runs of whole 16-byte pairs of pairs");
+    const detail::hk_i32x4 r = detail::hk_elems_srsrc(box);
+    #pragma unroll
+    for (int a = 0; a < V::rows; a++)
+        #pragma unroll
+        for (int j = 0; j < V::chunks; j++) {
+            const int k = idx.data[a][j][0];
+            #pragma unroll
+            for (int e = 0; e < V::run; e += 2) {
+                uint32_t w[4] = {detail::hk_bits(val.data[a][j][e]), uint32_t(tag),
+                                 detail::hk_bits(val.data[a][j][e + 1]), uint32_t(tag)};
+                detail::hk_buf_store_bytes<16, AUX>(r, k < 0 ? 0xFFFFFFFFu : uint32_t(k + e) * 8u, w);
+            }
+        }
+}
+/** @brief hk take_elems(runs=True): a lane's run from consecutive pairs from idx of its first element, in
+ * loads of 16 bytes (two pairs); all polled together. */
+template<int AUX, ducks::rs::all D, ducks::gl::all GL, ducks::rs::all I>
+__device__ static inline void take_elems_runs(D &dst, const GL &box, const I &idx, int tag, long long timeout) {
+    static_assert(std::is_same_v<typename GL::dtype, int>, "a mailbox is int32 pairs");
+    static_assert(D::run % 2 == 0, "runs of whole 16-byte pairs of pairs");
+    const detail::hk_i32x4 r = detail::hk_elems_srsrc(box);
+    if (!detail::hk_any_live(idx)) {
+        detail::strip_each<D>([&](int a, int j, int e) { dst.data[a][j][e] = typename D::T(0); });
+        return;
+    }
+    const long long t0 = __builtin_amdgcn_s_memrealtime();
+    while (true) {
+        bool ready = true;
+        #pragma unroll
+        for (int a = 0; a < D::rows; a++)
+            #pragma unroll
+            for (int j = 0; j < D::chunks; j++) {
+                const int k = idx.data[a][j][0];
+                #pragma unroll
+                for (int e = 0; e < D::run; e += 2) {
+                    uint32_t w[4];
+                    detail::hk_buf_load_bytes<16, AUX>(r, k < 0 ? 0xFFFFFFFFu : uint32_t(k + e) * 8u, w);
+                    ready &= (k < 0) | ((int(w[1]) == tag) & (int(w[3]) == tag));
+                    dst.data[a][j][e] = detail::hk_from_bits<typename D::T>(w[0]);
+                    dst.data[a][j][e + 1] = detail::hk_from_bits<typename D::T>(w[2]);
+                }
+            }
+        if (__all(ready)) break;
+        if (timeout && __builtin_amdgcn_s_memrealtime() - t0 > timeout) __builtin_trap();
+        __builtin_amdgcn_s_sleep(1);
+        asm volatile("" ::: "memory");
+    }
+}
 /** @brief hk take_elems: dst(r, c) = value of pair idx(r, c) once its tag is `tag` (all polled together). */
 template<int AUX, ducks::rs::all D, ducks::gl::all GL, ducks::rs::all I>
 __device__ static inline void take_elems(D &dst, const GL &box, const I &idx, int tag, long long timeout) {

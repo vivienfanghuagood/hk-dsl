@@ -479,7 +479,7 @@ class Global(Value):
         aux = scope_aux(self, "store_elems") if getattr(self.ty, "scope", "") else 0
         hkd.StoreElemsOp(self.v, val.v, idx.v, aux=_i64(aux), runs=bool(runs), loc=t.loc())
 
-    def post_elems(self, val: "Tile", idx: "Tile", tag) -> None:
+    def post_elems(self, val: "Tile", idx: "Tile", tag, *, runs: bool = False) -> None:
         """Tagged mailbox pairs, an element at a time (gfx950): element (r, c) of `val` (fp32 or i32
         strip) and `tag` go to pair `idx[r, c]` of this scoped int32 tensor (int32 elements 2 i,
         2 i + 1) as one 8-byte store of its scope; an index below zero posts nothing. No drain --
@@ -490,10 +490,10 @@ class Global(Value):
                             f"read is hk.Tensor[hk.i32, \"device\"] (\"system\": other GPUs)")
         aux = scope_aux(self, "post_elems")
         t = _t()
-        hkd.PostElemsOp(self.v, val.v, idx.v, as_int(tag).v, _i64(aux), loc=t.loc())
+        hkd.PostElemsOp(self.v, val.v, idx.v, as_int(tag).v, _i64(aux), runs=bool(runs), loc=t.loc())
 
     def take_elems(self, idx: "Tile", tag, dtype: Optional[DType] = None, *,
-                   timeout_s: float = 2.0) -> "Tile":
+                   timeout_s: float = 2.0, runs: bool = False) -> "Tile":
         """The other side of post_elems: element (r, c) is the value of pair `idx[r, c]` once its tag
         is `tag`; every element's pair is loaded with the tensor's scope, and all are re-loaded
         (s_sleep between) while any is stale. An index below zero is ready at 0. `dtype`: fp32
@@ -507,9 +507,11 @@ class Global(Value):
         ty = RegTileType(dtype, idx.ty.rows, idx.ty.cols, idx.ty.layout, idx.ty.frag, run=idx.ty.run)
         t = _t()
         from .comm import REALTIME_HZ  # noqa: PLC0415
+        if runs and idx.ty.run % 2:
+            raise TypeError(f"take_elems(runs=True): runs of pairs of pairs, not run {idx.ty.run}")
         return wrap(hkd.TakeElemsOp(mlir_type(ty), self.v, idx.v, as_int(tag).v,
                                     _i64(int(round(timeout_s * REALTIME_HZ))), _i64(aux),
-                                    loc=t.loc("taken")).result, ty)
+                                    runs=bool(runs), loc=t.loc("taken")).result, ty)
 
     def gather(self, tile, ids: "Global", at, *, count=None, col=0, div=1,
                into=None) -> "Tile":

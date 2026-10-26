@@ -863,7 +863,8 @@ def HK_PostElemsOp : HK_Op<"post_elems"> {
     nothing. No drain: the value travels with its tag (hk.comm.post, an
     element at a time).
   }];
-  let arguments = (ins HK_GlobalType:$dst, HK_RegTileType:$val, HK_RegTileType:$idx, I32:$tag, I64Attr:$aux);
+  let arguments = (ins HK_GlobalType:$dst, HK_RegTileType:$val, HK_RegTileType:$idx, I32:$tag, I64Attr:$aux,
+                       UnitAttr:$runs);
   let assemblyFormat = [{
     $val `,` $tag `,` $dst `[` $idx `]` attr-dict `:` qualified(type($val)) `,` qualified(type($dst)) `,` qualified(type($idx))
   }];
@@ -879,7 +880,8 @@ def HK_TakeElemsOp : HK_Op<"take_elems"> {
     is ready at 0. After `timeout` ticks of the 100 MHz clock the kernel
     traps (0: never).
   }];
-  let arguments = (ins HK_GlobalType:$src, HK_RegTileType:$idx, I32:$tag, I64Attr:$timeout, I64Attr:$aux);
+  let arguments = (ins HK_GlobalType:$src, HK_RegTileType:$idx, I32:$tag, I64Attr:$timeout, I64Attr:$aux,
+                       UnitAttr:$runs);
   let results = (outs HK_RegTileType:$result);
   let assemblyFormat = [{
     $src `[` $idx `]` `,` $tag attr-dict `:` qualified(type($src)) `,` qualified(type($idx)) `->` qualified(type($result))
