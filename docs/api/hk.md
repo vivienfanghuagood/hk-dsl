@@ -1818,4 +1818,4 @@ are bounded: any non-empty length. head_dim is 64 or 128 on both.
 
 ## Also exported
 
-`hk.map_cpp`, `hk.mx`, `hk.templates`
+`hk.iota`, `hk.map_cpp`, `hk.mx`, `hk.templates`

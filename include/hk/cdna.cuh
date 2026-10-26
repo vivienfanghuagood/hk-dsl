@@ -3008,6 +3008,14 @@ __device__ inline uint32_t hk_elem_off(int k, uint32_t size) {
     return k < 0 ? 0xFFFFFFFFu : uint32_t(k) * size;     // past the range: reads 0, stores nothing
 }
 }  // namespace detail
+/** @brief hk.iota: element (r, c) = c, the column a lane's run element sits in. */
+template<ducks::rs::all D>
+__device__ static inline void iota(D &dst) {
+    const int lane = laneid();
+    detail::strip_each<D>([&](int r, int j, int e) {
+        dst.data[r][j][e] = typename D::T(j * 64 * D::run + lane * D::run + e);
+    });
+}
 /** @brief hk.load_elems: dst's element (r, c) = src's element idx(r, c), flat; out of range -> 0. */
 template<ducks::rs::all D, ducks::gl::all GL, ducks::rs::all I>
 __device__ static inline void load_elems(D &dst, const GL &src, const I &idx) {

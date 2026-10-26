@@ -1556,6 +1556,10 @@ private:
           Value d = dest(o.getDst(), o.getResult());
           call("copy", d, {name(o.getSrc())});
         })
+        .Case([&](IotaOp o) {
+          Value d = dest(Value(), o.getResult());
+          w("kittens::iota(" + name(d) + ");");
+        })
         .Case([&](LoadElemsOp o) {
           Value d = dest(Value(), o.getResult());
           w("kittens::load_elems(" + name(d) + ", " + name(o.getSrc()) + ", " + name(o.getIdx()) + ");");
