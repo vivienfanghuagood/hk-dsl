@@ -984,11 +984,16 @@ __device__ inline static int atomic_scalar_scoped(const GL &dst, const COORD &id
  * templates, so an fp32 pair picks these.
  */
 namespace detail {
-template<typename ST> __device__ inline float *hk_st_elem(ST &s, int r, int c) {
+/// An LDS pointer, not a generic one: through a generic pointer the compiler emits FLAT loads and
+/// stores, which count in vmcnt too -- every wait for an LDS value then also waits for the global
+/// loads in flight (a megakernel's weight prefetch) -- and issue slower than ds_read / ds_write.
+typedef __attribute__((address_space(3))) float hk_lds_float;
+template<typename ST> __device__ inline hk_lds_float *hk_st_elem(ST &s, int r, int c) {
     const int sub = (r / ST::underlying_subtile_rows) * ST::underlying_subtiles_per_row +
                     c / ST::underlying_subtile_cols;
     const uint32_t off = ST::swizzle({r % ST::underlying_subtile_rows, c % ST::underlying_subtile_cols});
-    return (float *)((char *)&s.data[0] + sub * ST::underlying_subtile_bytes + off);
+    typedef __attribute__((address_space(3))) char lds_char;
+    return (hk_lds_float *)((lds_char *)&s.data[0] + sub * ST::underlying_subtile_bytes + off);
 }
 }  // namespace detail
 
