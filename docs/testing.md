@@ -331,7 +331,8 @@ flydsl, nanobind, lit and cmake (`pod_run.sh` puts it on `PYTHONPATH` and
 
 **Where things live.** Host state is kept out of the checkout:
 - `~/gha`: the runners (`runner-<name>`, each with its own `HOME`,
-  `runner-<name>/home`), `supervise.sh`, which keeps each registered, and its
+  `runner-<name>/home`), `supervise.sh` (installed from
+  `scripts/ci/supervise.sh`), which keeps each registered, and its
   logs (`logs/<name>.log`; the runners' own are in `runner-*/_diag`);
 - a gfx950 runner's state directory, `HK_CI_STATE` (`~/gha` for
   `smci355-gfx950`, `~/gha/state-gfx950-b` for `smci355-gfx950-b`):
@@ -376,7 +377,9 @@ What the jobs need from the user's home they get without it:
   missing one is pulled anonymously);
 - ssh to the jump host (`run_gfx1100.sh`): OpenSSH takes `~/.ssh` (config and
   keys) from the passwd entry, not `$HOME`, so nothing is copied;
-- paths: `HK_CI_STATE`, `HK_CI_MLIR` and `HK_CI_LOCKS` in the `.env`.
+- paths: `HK_CI_STATE`, `HK_CI_MLIR` and `HK_CI_LOCKS` in the `.env`; unset,
+  `run_gfx950.sh` takes their defaults under the user's home from the passwd
+  entry, not under `$HOME`.
 A gfx950 runner's `home/gha` is a symlink to its state directory, for branches
 older than per-runner state, whose `gfx950-vllm` job set
 `HK_CI_DIR=$HOME/gha/x950v/ci` (`runner-gfx950/home/gha -> ~/gha`,
@@ -387,7 +390,9 @@ branch is run any more.
 SSH login: the workstation grants the docker, render and video groups
 through `pam_group`, to login sessions only, and a runner started from cron
 or a service could not start the gfx950 container. `supervise.sh NAME
-[LABELS]` keeps runner `smci355-NAME` (directory `runner-NAME`) registered
+[LABELS]` (`scripts/ci/supervise.sh`; install it with `install` to a
+temporary name and `mv` it over `~/gha/supervise.sh`, never by editing in
+place: a running loop reads its script as it goes) keeps runner `smci355-NAME` (directory `runner-NAME`) registered
 with labels `hk-gpu,LABELS` (default `hk-gpu,NAME`).
 
 ```bash

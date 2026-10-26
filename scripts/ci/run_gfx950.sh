@@ -3,7 +3,7 @@
 # checked-out commit on the lowest-numbered idle MI355X of the workstation, in
 # rocm/pytorch. The container sees that one GPU (its render node), the
 # checkout, the run's directory, CI's build directory, pip packages and
-# compile cache, and the MLIR install, read-only; nothing else of $HOME.
+# compile cache, and the MLIR install, read-only; nothing else of the user's home.
 #
 # Host state is kept out of the checkout, under $HK_CI_STATE (default ~/gha), one per runner
 # instance when several run gfx950 jobs at once (docs/testing.md, "Several gfx950 runners"):
@@ -18,14 +18,17 @@
 # release's asset unpacked; container_run.sh builds the dialect against it.
 set -uo pipefail
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
-STATE=${HK_CI_STATE:-$HOME/gha}
-MLIR=${HK_CI_MLIR:-$HOME/hk-ci/mlir/install-cp310}
+# Defaults are under the user's home from the passwd entry, not $HOME: a runner runs its jobs with
+# HOME=~/gha/runner-<name>/home (supervise.sh; docs/testing.md, "Each runner has its own HOME").
+USERHOME=$(getent passwd "$(id -un)" | cut -d: -f6)
+STATE=${HK_CI_STATE:-$USERHOME/gha}
+MLIR=${HK_CI_MLIR:-$USERHOME/hk-ci/mlir/install-cp310}
 IMAGE=${HK_CI_IMAGE:-rocm/pytorch:rocm7.2.3_ubuntu24.04_py3.12_pytorch_release_2.10.0}
 # Another image (the vLLM deployment one, gpu.yml's gfx950-vllm) keeps its own build of the
 # dialect and its own kernel cache: its CPython and glibc are not rocm/pytorch's. Two jobs never
 # share one: an instance's jobs run one at a time, and each instance has its own HK_CI_STATE.
 CIDIR=${HK_CI_DIR:-$STATE/${HK_CI_DIRNAME:-x950}/ci}
-LOCKS=${HK_CI_LOCKS:-$HOME/.cache/hk-gpu-locks}
+LOCKS=${HK_CI_LOCKS:-$USERHOME/.cache/hk-gpu-locks}
 TIER=${HK_CI_TIER:-gfx950}
 SHA=$GITHUB_SHA
 KEY=$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT
