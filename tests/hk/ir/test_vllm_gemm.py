@@ -197,6 +197,19 @@ def test_the_patched_engine_compiles_into_a_cache_of_its_own(monkeypatch, given,
     assert os.environ["VLLM_CACHE_ROOT"] == want
 
 
+def test_several_routes_share_one_cache_named_for_all_of_them_in_every_process(monkeypatch):
+    # hk is on by default, so one engine applies several routes, in any order; and a worker
+    # inherits the root its parent set and applies them again. Neither may nest the path.
+    monkeypatch.setenv("VLLM_CACHE_ROOT", "/data/vllm")
+    for name in ("hk-int4", "hk-mxfp8", "hk-int4", "hk-mxfp8"):    # parent, then a worker
+        got = vllm_gemm._own_compile_cache(name)
+    assert got == os.environ["VLLM_CACHE_ROOT"] == "/data/vllm/hk-int4+mxfp8"
+    monkeypatch.setenv("VLLM_CACHE_ROOT", "/data/vllm")
+    for name in ("hk-mxfp8", "hk-int4"):
+        got = vllm_gemm._own_compile_cache(name)
+    assert got == "/data/vllm/hk-int4+mxfp8"
+
+
 def test_apply_without_vllm_reports_rather_than_raises():
     from hk.integration import _common
 

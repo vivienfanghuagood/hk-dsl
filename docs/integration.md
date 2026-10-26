@@ -1,14 +1,17 @@
 # Using hk inside vLLM and SGLang
 
 `hk.integration` patches a running vLLM or SGLang so that some of its calls
-run on generated kernels. Every patch is opt-in, reports what it took and what
-it left alone, and falls back to what the engine would have run for any call
-it cannot serve. The code is `python/hk/integration/`; its module docstrings
+run on generated kernels. **hk is on by default**: installed, its engine
+plugins apply every route validated with real weights on your GPU
+([on by default](#on-by-default-and-turning-it-off)); `HK_DISABLE=1` turns
+all of it off. Every patch reports what it took and what it left alone, and
+falls back to what the engine would have run for any call it cannot serve. The code is `python/hk/integration/`; its module docstrings
 and the [development record](history/README.md) are the source for this page,
 and what each patch measured is in [performance](performance.md).
 
+- [On by default, and turning it off](#on-by-default-and-turning-it-off)
 - [The patches](#the-patches)
-- [Turning them on](#turning-them-on)
+- [The plugins](#the-plugins)
 - [The SDPA patch: vision towers](#the-sdpa-patch-vision-towers)
 - [The decoder attention backend](#the-decoder-attention-backend)
 - [The linear-layer patch](#the-linear-layer-patch)
@@ -25,23 +28,116 @@ and what each patch measured is in [performance](performance.md).
 - [Your own kernel, in four steps](#your-own-kernel-in-four-steps)
 - [Environment variables](#environment-variables)
 
+## On by default, and turning it off
+
+In hk's toolchain hk is on by default. Turning it off is for comparison
+experiments. When vLLM or SGLang loads hk's plugin, the plugin applies every
+**route** (one patch of one engine) that is on in `hk.integration.switches`.
+A route is on by default only if it meets two conditions:
+- it was validated with real weights on that GPU;
+- its outputs were bit-identical to the engine's, or its error was within
+  the engine's own run-to-run noise.
+
+Lossy routes stay off, and so do routes without that evidence.
+`python3 -m hk.integration --status` prints every route, whether it is on,
+and which rule decided.
+
+| route | switch | default | evidence |
+|---|---|---|---|
+| K2, MXFP8 linear (DeepSeek-V4.1), M >= 2048 | `HK_VLLM_MXFP8` | **on, gfx950** | bit-identical to vLLM's kernel; real weights, GSM8K 94.69% vs stock 94.24-94.39%, with K1 ARC 96.76% vs 96.93-97.10% (McNemar p >= 0.175; [serving readiness](design/serving-readiness.md) B1) |
+| K1, MoE a8w4 (DeepSeek-V4.1), M >= 8192 (`MIN_M`) | `HK_VLLM_MOE_A8W4` | **on, gfx950** | error vs fp32 3.5-6.3e-3 against AITER's 0.97-2.1e-2 on real layers; GSM8K 94.92% (B1) |
+| AWQ 4-bit linear | `HK_VLLM_INT4` | **on, gfx1100 and gfx950** | greedy tokens identical to stock's, Qwen3-8B/14B-AWQ ([22](history/22-int4.md), [42](history/42-mi355x-in-the-engine.md)) |
+| unquantized linear (+ tuning at load) | `HK_VLLM_GEMM` | **on, gfx1100** | tokens identical, or a bf16 near-tie ([35](history/35-any-model.md)); on gfx950 it was measured to change nothing against aiter ([42](history/42-mi355x-in-the-engine.md)), so it stays off there |
+| bf16 MoE GEMMs | `HK_VLLM_MOE` | **on, gfx1100** | OLMoE tokens identical ([21](history/21-moe.md)); with aiter on gfx950 it routes nothing |
+| encoder SDPA (`--mm-encoder-attn-backend TORCH_SDPA`) | `HK_VLLM_SDPA` | **on, gfx1100** | InternVL2-2B inside the spread of vLLM's own backends ([05](history/05-phase-6-torch-ops.md)) |
+| SGLang linear | `HK_SGLANG_LINEAR` | **on, gfx1100** | Qwen3-8B up to a bf16 near-tie; error equal to F.linear's ([24](history/24-sglang.md)) |
+| SGLang MoE (and the gfx1100 top-k fix) | `HK_SGLANG_MOE` | **on, gfx1100** | OLMoE tokens identical ([25](history/25-sglang-moe.md)) |
+| SGLang-Diffusion attention | `HK_SGLD_ATTN` | **on, gfx1100** | Qwen-Image 2.1, 42.1 dB from stock and closer to an fp32 reference than stock ([46](history/46-qwen-image-on-rdna3.md)) |
+| SGLang-Diffusion linear | `HK_SGLD_LINEAR` | **on, gfx1100** | 40.0 dB from stock, closer to fp32 than stock ([46](history/46-qwen-image-on-rdna3.md)) |
+| K3, DiT attention in `hk.ops.sdpa` | `HK_SDPA_K3` | **on, gfx1100** | per-call error 2.95e-5 against the current path's 4.50e-5 (#24) |
+| decoder attention backend | `HK_VLLM_BACKEND` | off | replaces ROCm's default decoder attention for every model, and raises rather than falls back on sliding windows, sinks, softcap, an fp8 KV cache, fp16 or other head sizes; validated on Qwen3-8B only |
+| ConvRot INT8 (`--quantization convrot_int8`) | `HK_SGLD_CONVROT`, or `HK_SGLD=...,convrot` | **off: opt-in** | lossy by design (PSNR 30.4 dB from bf16, visible drift): a model-level choice, not a toolchain default |
+| MXFP8 at any (N, K) | `HK_MXFP8_ANY` | off | a mode of K2; no real-weight run |
+
+On a GPU a route was not validated on (gfx942, gfx1201), it is off unless you
+turn it on.
+
+**Turning it off.** The first rule that applies decides:
+
+1. `HK_DISABLE=1` turns every route off, in every engine. Nothing overrides it.
+2. An engine's own switch at `0` turns off all of that engine's routes:
+   `HK_PATCH_VLLM=0`, `HK_PATCH_SGLANG=0` or `HK_SGLD=0`.
+3. A route's own switch decides that route: `HK_VLLM_MXFP8=0` turns K2 off, and
+   `=1` turns on a default-off route, or a route on a GPU it was not validated on.
+4. The legacy opt-ins still mean what they meant. `HK_SGLD=attn,linear,convrot`
+   turns on exactly the parts it names, and `HK_SGLD=1` turns on attention
+   and linear. `HK_PATCH_VLLM=1` turns on the encoder SDPA patch.
+   `HK_SGLANG_MOE=topk` replaces only the top-k. `HK_VLLM_BACKEND=<slot>`
+   names the slot.
+5. Otherwise the default in the table applies.
+
+A value of `0`, `off`, `no` or `false` is off. An empty value counts as unset.
+
+```bash
+vllm serve <model>                       # hk on: the default routes
+HK_DISABLE=1 vllm serve <model>          # stock vLLM: the plugin patches nothing
+HK_VLLM_MOE_A8W4=0 vllm serve <model>    # every default route but K1
+```
+
+**Comparison scripts must say stock.** Leaving the variables unset no longer
+means stock, so an A/B's stock arm sets `HK_DISABLE=1`. `python -m
+hk.integration ab`, `headroom` and `tools/hk-bench/` set it themselves, and
+apply each arm's patches explicitly.
+
+**The engine contract, at startup.** Before it patches anything, a plugin
+checks every route it is about to apply against the installed engine
+(`hk.integration.contract`). It checks that each patched or fallback entry
+point still exists, with the parameters the route uses: the MXFP8 kernel
+class's two methods, `aiter.fused_moe.fused_moe`'s parameters, the AWQ
+methods, and so on. If any contract is broken, for example by a vLLM or AITER
+other than the one measured, the plugin patches **nothing** in that engine.
+It prints one line to stderr, and the engine runs stock:
+
+```
+[hk] WARNING: vllm: engine contract FAILED -- hk patched NOTHING in this engine, it runs stock (vllm 0.x; routes measured on vllm 0.32.1rc1.dev36+ge68efc685): vllm_moe_a8w4: aiter.fused_moe.fused_moe lost ['gate_mode']. ...
+```
+
+It is all or nothing per engine, not per route. The routes in one engine patch
+different entry points, but one broken contract means the engine is not the
+build they were measured on. A half-patched engine was never measured, and
+nobody chose it. A route that raises while it is being applied gets the same
+treatment: the plugin undoes the routes already applied and prints the same
+kind of line.
+
+**The first JIT compile says so.** A route's kernels compile on first use,
+seconds each, in every worker. Run `python3 -m hk.integration warm-routes`
+(and `--warm`) with the server's `HK_CACHE_DIR` first. If you do not, the
+first compile in each process prints one line:
+
+```
+[hk] JIT: compiling kernel '...' on first use (pid N): the vLLM plugin's routes were not pre-warmed into ..., so this call waits for hipcc (seconds a kernel, in every worker). Run python3 -m hk.integration warm-routes (and --warm for attention), with the server's HK_CACHE_DIR before starting the server.
+```
+
 ## The patches
 
-| patch | module | what it replaces | how it is turned on |
+| patch | module | what it replaces | switch (default) |
 |---|---|---|---|
-| SDPA drop-in | `vllm.py`, `sglang.py`, `_common.py` | `F.scaled_dot_product_attention`, rebound by identity | `HK_PATCH_VLLM=1` (vLLM); `apply()` in-process |
-| decoder attention backend | `vllm_backend.py` | vLLM's `TRITON_ATTN` backend slot | `HK_PATCH_VLLM=1 HK_VLLM_BACKEND=1` |
-| linear layers | `vllm_gemm.py` | `dispatch_unquantized_gemm`, rebound by identity | `HK_PATCH_VLLM=1 HK_VLLM_GEMM=1` |
-| MoE GEMMs | `vllm_moe.py` | `invoke_fused_moe_triton_kernel` and `try_get_optimal_moe_config`, rebound by identity | `HK_PATCH_VLLM=1 HK_VLLM_MOE=1` |
-| AWQ linear layers | `vllm_int4.py` | `AutoAWQLinearMethod.process_weights_after_loading` and `.apply` | `HK_PATCH_VLLM=1 HK_VLLM_INT4=1` |
-| your kernels | `register.py` | whatever `register.patch` names | `HK_PATCH_VLLM=1 HK_VLLM_USER=<modules or files>` |
-| SGLang linear layers | `sglang.py`, `_sglang_plugin.py` | `UnquantizedLinearMethod.apply` | `HK_SGLANG_LINEAR=1` (SGLang); `apply_linear()` in-process |
-| SGLang MoE layers | `sglang_moe.py`, `_sglang_plugin.py` | `topk_softmax`, `invoke_fused_moe_kernel` and `try_get_optimal_moe_config`, rebound by identity | `HK_SGLANG_MOE=1`, or `=topk` for the routing alone |
+| SDPA drop-in | `vllm.py`, `sglang.py`, `_common.py` | `F.scaled_dot_product_attention`, rebound by identity | `HK_VLLM_SDPA` (on, gfx1100); `apply()` in-process |
+| decoder attention backend | `vllm_backend.py` | vLLM's `TRITON_ATTN` backend slot | `HK_VLLM_BACKEND=1` (off) |
+| linear layers | `vllm_gemm.py` | `dispatch_unquantized_gemm`, rebound by identity | `HK_VLLM_GEMM` (on, gfx1100) |
+| MoE GEMMs | `vllm_moe.py` | `invoke_fused_moe_triton_kernel` and `try_get_optimal_moe_config`, rebound by identity | `HK_VLLM_MOE` (on, gfx1100) |
+| AWQ linear layers | `vllm_int4.py` | `AutoAWQLinearMethod.process_weights_after_loading` and `.apply` | `HK_VLLM_INT4` (on) |
+| MXFP8 linear layers (K2) | `vllm_mxfp8.py` | `RocmDotScaledMxfp8LinearKernel.process_weights_after_loading` and `.apply_weights` | `HK_VLLM_MXFP8` (on, gfx950) |
+| MXFP4 MoE, a8w4 (K1) | `vllm_moe_a8w4.py` | `aiter.fused_moe.fused_moe`, with its signature | `HK_VLLM_MOE_A8W4` (on, gfx950) |
+| your kernels | `register.py` | whatever `register.patch` names | `HK_VLLM_USER=<modules or files>` |
+| SGLang linear layers | `sglang.py`, `_sglang_plugin.py` | `UnquantizedLinearMethod.apply` | `HK_SGLANG_LINEAR` (on, gfx1100); `apply_linear()` in-process |
+| SGLang MoE layers | `sglang_moe.py`, `_sglang_plugin.py` | `topk_softmax`, `invoke_fused_moe_kernel` and `try_get_optimal_moe_config`, rebound by identity | `HK_SGLANG_MOE` (on, gfx1100), or `=topk` for the routing alone |
+| SGLang-Diffusion attention, linear, ConvRot | `sglang_diffusion.py` | see [SGLang-Diffusion](#sglang-diffusion-text-to-image-and-video) | `HK_SGLD_ATTN`, `HK_SGLD_LINEAR` (on, gfx1100), `HK_SGLD_CONVROT` (off) |
 
 `engine.py` is what every patch but the two SDPA rebinds shares: the custom
 op, the counters, the routing table and the CUDA-graph contract.
 
-## Turning them on
+## The plugins
 
 **In vLLM, through its plugin entry point.** The package registers
 `hk_attention = "hk.integration._vllm_plugin:register"` under
@@ -53,35 +149,36 @@ op, the counters, the routing table and the CUDA-graph contract.
   end-to-end run reported `{'kernel': 0, 'fallback': 0}` with byte-identical
   answers and a plausible-looking 1.001x. Production therefore needs the
   `vllm.general_plugins` entry point (`hk/integration/_vllm_plugin.py`), which
-  vLLM loads in the driver *and* every worker; it is opt-in on
-  `HK_PATCH_VLLM=1`, because installing a kernel library must not silently
-  change the numerics of every vLLM on the machine.
+  vLLM loads in the driver *and* every worker. It applies the routes that
+  are on ([on by default](#on-by-default-and-turning-it-off)), after
+  checking their engine contract.
 
-With `HK_PATCH_VLLM=1` the plugin applies the SDPA patch. The decoder
-backend, the linear layers and the MoE layers are each a further opt-in,
-because each replaces kernels a server was already running: `HK_VLLM_BACKEND`
-registers over the slot ROCm picks by default, `HK_VLLM_GEMM` changes every
-unquantized GEMM in the model, and `HK_VLLM_MOE` every bf16 expert GEMM up
-to 256 tokens a step. A variable is off when unset or `0`, `off`, `no` or empty
-(`python/hk/integration/_vllm_plugin.py`). The invocations, as the module
-docstrings give them:
+The decoder backend stays off by default: it registers over the slot ROCm
+picks by default, so it replaces the decoder attention of every model.
+The invocations, as the module docstrings give them:
 
 ```bash
-# the vision tower's attention (SDPA drop-in)
-HK_PATCH_VLLM=1 vllm serve OpenGVLab/InternVL2-2B --mm-encoder-attn-backend TORCH_SDPA
+# the vision tower's attention (SDPA drop-in; on by default on gfx1100)
+vllm serve OpenGVLab/InternVL2-2B --mm-encoder-attn-backend TORCH_SDPA
 
-# the linear layers
-HK_PATCH_VLLM=1 HK_VLLM_GEMM=1 vllm serve Qwen/Qwen3-8B
+# the linear and MoE layers: on by default on gfx1100
+vllm serve Qwen/Qwen3-8B
+vllm serve allenai/OLMoE-1B-7B-0125-Instruct
 
-# the MoE layers
-HK_PATCH_VLLM=1 HK_VLLM_MOE=1 vllm serve allenai/OLMoE-1B-7B-0125-Instruct
+# K1 and K2: on by default on gfx950 (warm their kernels first)
+HK_CACHE_DIR=/cache/hk python3 -m hk.integration warm-routes --tp 2
+HK_CACHE_DIR=/cache/hk vllm serve <DeepSeek-V4.1-Flash> --tensor-parallel-size 2
 
-# the decoder attention backend, with vLLM's defaults: CUDA graphs, prefix
-# caching and chunked prefill all on
-HK_PATCH_VLLM=1 HK_VLLM_BACKEND=1 vllm serve <model> --attention-backend TRITON_ATTN
+# the decoder attention backend (opt-in), with vLLM's defaults: CUDA graphs,
+# prefix caching and chunked prefill all on
+HK_VLLM_BACKEND=1 vllm serve <model> --attention-backend TRITON_ATTN
+
+# stock vLLM, for comparison
+HK_DISABLE=1 vllm serve <model>
 ```
 
-The plugin prints one `[hk] ...` line per process saying what each patch did.
+The plugin prints one `[hk] ...` line per process. The line names the routes
+that are on and why, and what each patch did.
 The end-to-end measurements build the engine with
 `attention_backend="TRITON_ATTN"` for the backend arm and vLLM's defaults
 otherwise (`HK_VLLM_DEFAULTS=1`, read by `python -m hk.integration ab`,
@@ -91,16 +188,16 @@ size, 32).
 **In SGLang, through its plugin entry point.** The package also registers
 `hk = "hk.integration._sglang_plugin:register"` under `sglang.srt.plugins`.
 SGLang loads it in the launcher and in every scheduler process, which is where
-its model runs. It prints the same `[hk] ...` line per process. Each patch is
-opt-in on its own switch: `HK_SGLANG_LINEAR=1` for the linear layers and
-`HK_SGLANG_MOE=1` for the MoE layers.
+its model runs. It prints the same `[hk] ...` line per process. Both routes
+are on by default on gfx1100. `HK_SGLANG_LINEAR=0` or `HK_SGLANG_MOE=0`
+turns one off, and `HK_DISABLE=1` turns both off.
 
 ```bash
-HK_SGLANG_LINEAR=1 python -m sglang.launch_server --model-path Qwen/Qwen3-8B \
+python -m sglang.launch_server --model-path Qwen/Qwen3-8B \
     --attention-backend triton --disable-cuda-graph
-HK_SGLANG_MOE=1 python -m sglang.launch_server \
-    --model-path allenai/OLMoE-1B-7B-0125-Instruct \
+python -m sglang.launch_server --model-path allenai/OLMoE-1B-7B-0125-Instruct \
     --attention-backend triton --disable-cuda-graph
+HK_DISABLE=1 python -m sglang.launch_server ...       # stock SGLang
 ```
 
 If `SGLANG_PLUGINS` is set, it has to name `hk` for SGLang to load it.
@@ -122,7 +219,7 @@ the record were run with `VLLM_ENABLE_V1_MULTIPROCESSING=0`.
 `revert()` and `status()` do what they say. From the shell:
 
 ```
-python3 -m hk.integration --status          # what is importable, what is patched
+python3 -m hk.integration --status          # every route on or off and why; what is patched
 python3 -m hk.integration --patch           # apply every available patch and report
 python3 -m hk.integration --warm -j 32      # build the torch ops ahead of time
 python3 -m hk.integration headroom ...      # a step's device time by kernel family, against what hk has
@@ -275,8 +372,8 @@ path is gated on gfx9 ([the linear layers](history/08-linear-layers.md)).
 vLLM 0.31 runs those skinny GEMMs on gfx11 too, at M ≤ 5. The routing table
 is measured against whichever path the installed vLLM takes
 ([vLLM 0.31](history/20-vllm-031.md)).
-`hk/integration/vllm_gemm.py` installs the replacement, behind its own opt-in
-(`HK_PATCH_VLLM=1 HK_VLLM_GEMM=1`). It rebinds `dispatch_unquantized_gemm` by
+`hk/integration/vllm_gemm.py` installs the replacement, on its own switch
+(`HK_VLLM_GEMM`, on by default on gfx1100). It rebinds `dispatch_unquantized_gemm` by
 identity in every vLLM module that imported it, and what that returns calls a
 single opaque custom op, `hk_vllm::linear`, with a fake implementation. Under
 vLLM's torch.compile the token count is symbolic, so branching on it inside
@@ -601,19 +698,28 @@ sglang-radeon runs it ([chapter 24](history/24-sglang.md)).
 
 ```bash
 python -m hk.integration sglang-diffusion install    # once per environment
-HK_SGLD=1 python my_generate.py                      # attention and GEMM; =attn or =linear for one
+python my_generate.py                                # attention and GEMM: on by default (gfx1100)
+HK_SGLD_LINEAR=0 python my_generate.py               # attention only (HK_SGLD_ATTN=0: GEMM only)
+HK_DISABLE=1 python my_generate.py                   # stock
 python -m hk.integration sglang-diffusion status
 ```
 
 SGLang-Diffusion (`sglang.multimodal_gen`) runs the DiT in worker processes
-and loads no plugins there, so `install` writes `hk_sgld.pth` and the boot it
-imports into site-packages; with `HK_SGLD` set, the boot patches whichever
-process imports the SDPA backend. Two patches:
+and loads no plugins there. So `install` writes `hk_sgld.pth`, and the boot it
+imports, into site-packages. Unless `HK_DISABLE=1` or `HK_SGLD=0`, the boot
+patches whichever process imports the SDPA backend. It checks the engine
+contract first, as the plugins do. An install made before hk was on by
+default keeps the old boot, which needs `HK_SGLD=1`; run `install` again
+(`status` says so). Two patches are on by default:
 - **attention**: `hk.ops.sdpa.patch()` behind the `torch_sdpa` backend (the
   only one that runs on RDNA3); masked and odd-head-dim calls go to torch;
 - **linear**: `UnquantizedLinearMethod.apply` of
   `sglang.multimodal_gen.runtime.layers.linear` to `hk.ops.matmul` for bf16
   projections without bias and with at least `MIN_M` (1024) rows.
+
+The third, ConvRot INT8 (hk's `convrot_int8` backend, for `--quantization
+convrot_int8`), **stays opt-in**: it is lossy by design.
+`HK_SGLD=attn,linear,convrot` or `HK_SGLD_CONVROT=1` turns it on.
 
 Each patched process prints how many calls took hk's kernels: whenever the
 counts changed, at most every `HK_SGLD_REPORT_S` seconds (60), and as it
@@ -643,6 +749,11 @@ built for pybind does not cover it, since the artifacts differ. Run it and
 Every patch rebinds engine internals by name, so an engine release can break
 one without an error: the rebind finds nothing, a stand-in forwards
 arguments into the wrong slots, or a backend hook becomes dead code.
+At startup each plugin runs `hk.integration.contract.check` on the routes it
+is about to apply, and leaves the engine stock if one is broken
+([on by default](#on-by-default-and-turning-it-off)).
+`tests/hk/gpu/test_engine_contract.py` runs that check, and a simulated AITER
+mismatch, in the vLLM image (the gfx950-vllm GPU tier).
 `tests/hk/engines/` checks each patched symbol against the engine installed,
 and is skipped where the engine is not importable (CI, a laptop):
 - **the signature a stand-in forwards to**, parameter for parameter and
@@ -709,7 +820,7 @@ error anywhere. So:
   reinstall triton-rocm 3.7.1 with `--no-deps --force-reinstall`.
 - `python -m hk.integration ab` refuses to run (exit 2) on a mismatched
   stack, and records the versions in its `--json` meta. The vLLM plugin
-  (`HK_PATCH_VLLM=1`) prints the mismatch to stderr, framed, once a process,
+  prints the mismatch to stderr, framed, once a process,
   and carries on. `HK_STACK_CHECK` overrides either: `refuse`, `warn`, `off`.
 - `tests/hk/engines/test_vllm_contract.py` fails in a venv whose Triton is
   not the one its vLLM was measured with.
@@ -803,7 +914,7 @@ to the plugin, which imports it there:
 HK_VLLM_USER=examples/11_vllm_integration.py \
     python -m hk.integration ab --model Qwen/Qwen3-8B --arms user \
     --context 1024 --batch 1,16 --short 16 --tokens 48
-HK_PATCH_VLLM=1 HK_VLLM_USER=my_kernels.py vllm serve Qwen/Qwen3-8B
+HK_VLLM_USER=my_kernels.py vllm serve Qwen/Qwen3-8B
 ```
 
 `ab` runs stock and your arm alternately in fresh engines. It prints total,
@@ -831,12 +942,17 @@ spelled:
 
 | variable | read by | effect |
 |---|---|---|
-| `HK_PATCH_VLLM` | `_vllm_plugin.py` | the consent: without it the plugin does nothing. With it, the SDPA patch is applied |
-| `HK_VLLM_BACKEND` | `_vllm_plugin.py` | register the decoder attention backend; a value other than `1`/`on`/`yes`/`true` names the slot |
+| `HK_DISABLE` | `switches.py`, every plugin, the SGLang-Diffusion boot, `ops/sdpa.py` | `1`: every route off, in every engine; beats every other switch |
+| `HK_PATCH_VLLM` | `switches.py`, `_vllm_plugin.py` | `0`: every vLLM route off (and `HK_VLLM_USER`). `1`: also the encoder SDPA patch, as it always applied |
+| `HK_VLLM_SDPA` | `switches.py` | the encoder SDPA patch (default on, gfx1100) |
+| `HK_VLLM_BACKEND` | `_vllm_plugin.py` | register the decoder attention backend (default off); a value other than `1`/`on`/`yes`/`true` names the slot |
 | `HK_VLLM_BACKEND_SLOT` | `vllm_backend.py` | the `AttentionBackendEnum` member to register over (default `TRITON_ATTN`) |
-| `HK_VLLM_GEMM` | `_vllm_plugin.py` | route the unquantized linear layers |
-| `HK_VLLM_MOE` | `_vllm_plugin.py` | route the bf16 MoE GEMMs up to 256 tokens a step |
-| `HK_VLLM_INT4` | `_vllm_plugin.py` | route AWQ linear layers' fp16/bf16 batches up to 64 tokens |
+| `HK_VLLM_GEMM` | `_vllm_plugin.py` | route the unquantized linear layers (default on, gfx1100) |
+| `HK_VLLM_MOE` | `_vllm_plugin.py` | route the bf16 MoE GEMMs up to 256 tokens a step (default on, gfx1100) |
+| `HK_VLLM_INT4` | `_vllm_plugin.py` | route AWQ linear layers' fp16/bf16 batches up to 64 tokens (default on) |
+| `HK_VLLM_MXFP8` | `_vllm_plugin.py` | K2: block-scaled MXFP8 linear layers at M >= 2048 (default on, gfx950) |
+| `HK_MXFP8_ANY` | `vllm_mxfp8.py` | `1`: K2 takes any (N, K) of whole tiles, not only the measured TP2 shapes (default off) |
+| `HK_VLLM_MOE_A8W4` | `_vllm_plugin.py` | K1: AITER a8w4 MoE at M >= `HK_MOE_A8W4_MIN_M` (8192) (default on, gfx950) |
 | `HK_VLLM_USER` | `_vllm_plugin.py` | comma-separated modules or `.py` files to import in vLLM's process: your `register.op` / `register.patch` calls |
 | `HK_VLLM_ROUTES` | `vllm_gemm.py`, via `engine.shipped_table` | a routing table to use instead of the shipped one and this machine's records; nothing is measured at load against it |
 | `HK_AUTOTUNE_BUDGET` | `vllm_autotune.py` | seconds the linear patch may spend at load measuring the model's shapes no table has (default 60); `0` measures nothing, `inf` without a limit |
@@ -844,9 +960,14 @@ spelled:
 | `HK_TUNE_DIR` | `hk.autotune` | where this machine's records go (default `$HK_CACHE_DIR/autotune`): `routes_<engine>_linear_<arch>.json` for routes |
 | `HK_FLYDSL` | `flydsl_gemm.py` | `0`/`off`/`no`/`false`: never take a table's FlyDSL rows, even with FlyDSL installed |
 | `FLYDSL_ROOT` | `flydsl_gemm.py` | a FlyDSL checkout whose `kernels/` package matches the installed `flydsl`, appended to `sys.path`; where another `kernels` is installed, imported from beside it |
-| `HK_SGLANG_LINEAR` | `_sglang_plugin.py` | route SGLang's unquantized linear layers |
+| `HK_PATCH_SGLANG` | `switches.py` | `0`: every SGLang route off |
+| `HK_SGLANG_LINEAR` | `_sglang_plugin.py` | route SGLang's unquantized linear layers (default on, gfx1100) |
 | `HK_SGLANG_ROUTES` | `sglang.py`, via `engine.shipped_table` | a routing table for SGLang's linear layers instead of the shipped one |
-| `HK_SGLANG_MOE` | `_sglang_plugin.py` | `1`: the torch top-k and hk's expert GEMMs; `topk`: the torch top-k alone |
+| `HK_SGLANG_MOE` | `_sglang_plugin.py` | `1` (default on, gfx1100): the torch top-k and hk's expert GEMMs; `topk`: the torch top-k alone |
+| `HK_SGLD` | `sglang_diffusion.py` and its boot | `0`: every SGLang-Diffusion route off; a list (`attn,linear,convrot`) names exactly the parts; `1`: attention and linear |
+| `HK_SGLD_ATTN`, `HK_SGLD_LINEAR` | `switches.py` | SGLang-Diffusion's attention and linear (default on, gfx1100) |
+| `HK_SGLD_CONVROT` | `switches.py` | ConvRot INT8, lossy (default off: opt-in) |
+| `HK_SDPA_K3` | `ops/sdpa.py` | K3: `hk.ops.sdpa`'s non-causal head_dim-128 calls on `attn_k3` (default on, gfx1100) |
 | `HK_SPLITS` | `ops/paged.py` | the decode backend's KV split: `auto` (default), `off`/`0`/`1`, or a count |
 | `HK_TRITON_DECODE_ALSO` | `vllm_backend.py` | decode batch sizes past `TRITON_DECODE_MAX` that run Triton's kernel on hk's cache, as ranges: `17-24,49-56` (default none) |
 | `HK_NORM_LAYOUT` | `ops/norm.py` | `strip` (default): the norms and softmax run on the strip kernel wherever a row fits one; `tile`: always on the tile kernels |
@@ -857,8 +978,8 @@ spelled:
 | `HK_GPU_UTIL` | `ab.py` | the A/B's `gpu_memory_utilization` (default 0.90) |
 | `HK_STACK_CHECK` | `stack.py`, from `ab.py` and `_vllm_plugin.py` | what to do when vLLM's Triton or torch is not the stack it was measured on: `refuse` (`ab`'s default: exit 2), `warn` (the plugin's default: print to stderr and carry on), `off` |
 
-`HK_PATCH_VLLM`, `HK_VLLM_BACKEND`, `HK_VLLM_GEMM`, `HK_VLLM_MOE`,
-`HK_VLLM_INT4`, `HK_SGLANG_LINEAR` and `HK_SGLANG_MOE` are off when unset or
-`0`, `off`, `no` or empty. The benchmark harnesses in `tools/hk-bench/` read
+A route's switch is off at `0`, `off`, `no` or `false`. Unset or empty, the
+route's default applies. The precedence is in
+[on by default](#on-by-default-and-turning-it-off). The benchmark harnesses in `tools/hk-bench/` read
 more; those are theirs, not the library's. The runtime's own variables are in
 [the runtime](runtime.md#environment-variables).

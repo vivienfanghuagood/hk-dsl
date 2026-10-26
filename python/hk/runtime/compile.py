@@ -397,6 +397,34 @@ def _load_cached(d: Path, target: Target) -> Optional[Build]:
     )
 
 
+#: Armed by an engine plugin that applied routes (`arm_jit_notice`): the first kernel this
+#: process has to compile then says so, once, with the command that would have built it ahead
+#: of time. A JIT compile on the serving path is seconds a kernel in every worker; a request
+#: that waits for one looks like a hang. [hint] while armed, [] otherwise.
+_JIT_NOTICE: List[str] = []
+_JIT_SAID: List[bool] = []
+
+#: What the notice tells a server to run first.
+WARM_HINT = ("python3 -m hk.integration warm-routes (and --warm for attention), "
+             "with the server's HK_CACHE_DIR")
+
+
+def arm_jit_notice(what: str) -> None:
+    """Make this process's first JIT compile print one line saying it is compiling, and how
+    to pre-build (WARM_HINT). `what` names who armed it ("vLLM plugin")."""
+    if not _JIT_NOTICE:
+        _JIT_NOTICE.append(what)
+
+
+def _jit_notice(name: str) -> None:
+    if _JIT_NOTICE and not _JIT_SAID:
+        _JIT_SAID.append(True)
+        print(f"[hk] JIT: compiling kernel {name!r} on first use (pid {os.getpid()}): the "
+              f"{_JIT_NOTICE[0]}'s routes were not pre-warmed into {cache_dir()}, so this call "
+              f"waits for hipcc (seconds a kernel, in every worker). Run {WARM_HINT} before "
+              f"starting the server.", file=sys.stderr, flush=True)
+
+
 def build(
     source: str,
     arch: str,
@@ -452,6 +480,7 @@ def build(
 
     module_name = f"hk_{name}_{key[:12]}"
     so_name = module_name + ext_suffix() if kind == "so" else CODEOBJ
+    _jit_notice(name)
 
     # Build in a scratch directory and move into place, so a killed or failing
     # compile never leaves a half-written .so that the next run would import.

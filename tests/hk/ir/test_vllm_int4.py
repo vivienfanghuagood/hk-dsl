@@ -26,10 +26,12 @@ def test_apply_without_vllm_reports_rather_than_raises():
     assert vllm_int4.status() == "not patched"
 
 
-def test_the_plugin_opts_in_by_environment(monkeypatch):
-    from hk.integration import _vllm_plugin
+def test_the_plugin_applies_it_when_asked(monkeypatch):
+    from hk.integration import _vllm_plugin, contract
 
     seen = []
+    monkeypatch.delenv("HK_DISABLE", raising=False)
+    monkeypatch.setattr(contract, "check", lambda routes: [])   # no vLLM here
     monkeypatch.setenv("HK_PATCH_VLLM", "1")
     monkeypatch.setenv("HK_VLLM_INT4", "1")
     monkeypatch.setattr(vllm_int4, "apply_patch", lambda: seen.append("int4") or "int4: test")

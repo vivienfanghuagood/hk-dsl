@@ -87,21 +87,37 @@ def test_the_shipped_table_gives_every_decode_batch_to_hk(fake_sglang, monkeypat
     assert {vllm_gemm.route_for(m, *nk) for m in (1, 2, 3, 8, 32, 64)} == {"hk_decode"}
 
 
-def test_the_plugin_does_nothing_unless_asked(fake_sglang, monkeypatch, capsys):
+def test_the_plugin_patches_by_default(fake_sglang, monkeypatch, capsys):
     from hk.integration import _sglang_plugin
 
-    monkeypatch.delenv("HK_SGLANG_LINEAR", raising=False)
-    monkeypatch.delenv("HK_SGLANG_MOE", raising=False)
+    for e in ("HK_DISABLE", "HK_SGLANG_LINEAR", "HK_PATCH_SGLANG"):
+        monkeypatch.delenv(e, raising=False)
+    monkeypatch.setenv("HK_SGLANG_MOE", "0")          # its contract needs SGLang's MoE modules
+    orig = Unquantized.apply
+    _sglang_plugin.register()
+    assert Unquantized.apply is not orig
+    assert "linear -> hk" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("env", [{"HK_DISABLE": "1"}, {"HK_SGLANG_LINEAR": "0"},
+                                 {"HK_PATCH_SGLANG": "0", "HK_SGLANG_LINEAR": "1"}])
+def test_the_plugin_does_nothing_when_turned_off(fake_sglang, monkeypatch, env):
+    from hk.integration import _sglang_plugin
+
+    monkeypatch.setenv("HK_SGLANG_MOE", "0")
+    for k, v in env.items():
+        monkeypatch.setenv(k, v)
     orig = Unquantized.apply
     _sglang_plugin.register()
     assert Unquantized.apply is orig
-    assert capsys.readouterr().out == ""
 
 
 def test_the_plugin_patches_when_asked_and_never_raises(fake_sglang, monkeypatch, capsys):
     from hk.integration import _sglang_plugin
 
+    monkeypatch.delenv("HK_DISABLE", raising=False)
     monkeypatch.setenv("HK_SGLANG_LINEAR", "1")
+    monkeypatch.setenv("HK_SGLANG_MOE", "0")
     _sglang_plugin.register()
     assert "linear -> hk" in capsys.readouterr().out
 
@@ -110,5 +126,8 @@ def test_the_plugin_patches_when_asked_and_never_raises(fake_sglang, monkeypatch
 
     hks.revert()
     monkeypatch.setattr(hks, "apply_linear", boom)
+    orig = Unquantized.apply
     _sglang_plugin.register()
-    assert "linear not patched (RuntimeError: no table)" in capsys.readouterr().out
+    err = capsys.readouterr().err.strip().splitlines()
+    assert len(err) == 1 and "sglang_linear raised RuntimeError: no table" in err[0]
+    assert "patched NOTHING" in err[0] and Unquantized.apply is orig

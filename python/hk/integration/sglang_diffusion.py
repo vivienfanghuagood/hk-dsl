@@ -1,10 +1,16 @@
 """SGLang-Diffusion (`sglang.multimodal_gen`): hk's attention behind its `torch_sdpa` backend.
 
     python3 -m hk.integration sglang-diffusion install     # once, into this Python's site-packages
-    HK_SGLD=1 python3 my_generate.py                       # every process of the run, workers too
-    HK_SGLD=attn python3 my_generate.py                    # attention only (or linear only)
+    python3 my_generate.py                                 # hk on, in every process, workers too
+    HK_DISABLE=1 python3 my_generate.py                    # stock: nothing patched
+    HK_SGLD_LINEAR=0 python3 my_generate.py                # attention only (HK_SGLD_ATTN=0: linear only)
+    HK_SGLD=attn,linear,convrot python3 my_generate.py     # exactly these (convrot is opt-in)
     python3 -m hk.integration sglang-diffusion status
     python3 -m hk.integration sglang-diffusion uninstall
+
+**On by default** once installed, on the GPU it was validated on (gfx1100): attention and
+linear (`hk.integration.switches`). ConvRot INT8 is lossy and stays opt-in. An install made
+before hk was on by default keeps its old boot, which needs HK_SGLD=1; run `install` again.
 
 On RDNA3, `torch_sdpa` is the only attention backend SGLang-Diffusion has
 (aiter is CDNA's, FlashAttention 3 Hopper's), and every DiT layer's attention
@@ -27,8 +33,8 @@ in worker processes it spawns, and unlike SGLang's LLM engine it loads no
 plugins there: a patch made in the process that built `DiffGenerator` never
 reaches them. `install` writes two files into site-packages -- a one-line
 `hk_sgld.pth` and the module it imports, `hk_sgld_boot` -- so every
-interpreter of that environment runs the boot, which costs one environment
-lookup unless `HK_SGLD` is set. With it set, the boot registers an import
+interpreter of that environment runs the boot, which costs two environment
+lookups. Unless HK_DISABLE=1 or HK_SGLD=0, the boot registers an import
 hook on SGLang-Diffusion's SDPA backend module, and applies the patch the
 moment a process (parent or worker) imports it. hk itself is imported then,
 not at interpreter start. Nothing in SGLang's tree is modified.
@@ -50,16 +56,20 @@ TARGET = "sglang.multimodal_gen.runtime.layers.attention.backends.sdpa"
 
 ENV = "HK_SGLD"
 _OFF = ("0", "", "off", "no")
+_LINEAR_ORIG = []
 
 _BOOT = '''"""Installed by `python -m hk.integration sglang-diffusion install` (hk-dsl).
 
-With HK_SGLD set, applies hk.integration.sglang_diffusion when a process
-imports SGLang-Diffusion's SDPA backend; otherwise does nothing.
+Unless HK_DISABLE=1 or HK_SGLD=0, applies hk.integration.sglang_diffusion when a
+process imports SGLang-Diffusion's SDPA backend (hk is on by default).
 """
 import os
 import sys
 
-if os.environ.get("HK_SGLD", "0") not in ("0", "", "off", "no"):
+_OFF = ("0", "off", "no", "false")
+_D = os.environ.get("HK_DISABLE", "").strip().lower()
+_S = os.environ.get("HK_SGLD", "").strip().lower()
+if not (_D and _D not in _OFF) and _S not in _OFF:
     import importlib.abc
     import importlib.util
 
@@ -106,16 +116,6 @@ LINEAR_HOME = "sglang.multimodal_gen.runtime.layers.linear"
 MIN_M = 1024
 
 LINEAR_STATS = {"hk": 0, "engine": 0}
-
-
-def _parts(value: str):
-    v = value.strip().lower()
-    if v in _OFF:
-        return set()
-    if v in ("1", "on", "yes", "all"):
-        # convrot is opt-in: HK_SGLD=attn,linear,convrot (it acts only on --quantization convrot_int8)
-        return {"attn", "linear"}
-    return {p.strip() for p in v.split(",") if p.strip()}
 
 
 def _hk_linear(x, weight, bias):
@@ -238,6 +238,7 @@ def apply_linear() -> str:
 
     apply._hk = True
     cls.apply = apply
+    _LINEAR_ORIG[:] = [(cls, orig)]
     return f"linear -> hk.ops.matmul at M >= {MIN_M} ({LINEAR_HOME}.UnquantizedLinearMethod.apply)"
 
 
@@ -348,25 +349,62 @@ def apply_convrot() -> str:
     return f"convrot_int8 -> backend 'hk' (hk.ops.convrot; group {CONVROT_GROUPS})"
 
 
+def revert_linear() -> str:
+    if not _LINEAR_ORIG:
+        return "linear: not patched"
+    cls, orig = _LINEAR_ORIG.pop()
+    cls.apply = orig
+    return "linear -> engine"
+
+
 def apply() -> str:
-    """Apply what HK_SGLD names: "1" all, or a comma list of "attn", "linear"
-    and "convrot". Idempotent."""
+    """Apply the SGLang-Diffusion routes hk.integration.switches has on: attention and linear
+    by default on gfx1100; convrot only when asked for (HK_SGLD=...,convrot or HK_SGLD_CONVROT=1).
+    Checks their engine contract first and patches nothing if one is broken. Idempotent."""
     import atexit  # noqa: PLC0415
 
-    parts = _parts(os.environ.get(ENV, "1"))
-    notes = []
-    if "attn" in parts:
-        from ..ops import sdpa  # noqa: PLC0415
+    from . import contract, switches  # noqa: PLC0415
 
-        sdpa.patch()
-        notes.append("F.scaled_dot_product_attention -> hk.ops.sdpa (torch_sdpa backend)")
-    if "linear" in parts:
-        notes.append(apply_linear())
-    if "convrot" in parts:
-        try:
-            notes.append(apply_convrot())
-        except ImportError as e:   # an SGLang without convrot_int8
-            notes.append(f"convrot: not available ({e})")
+    if switches.disabled():
+        return f"off ({switches.DISABLE}=1), stock"
+    routes = switches.on("sglang_diffusion")
+    if not routes:
+        return f"no route on ({switches.decide('sgld_attn').why}), stock"
+    problems = contract.check(routes)
+    if problems:
+        contract.refuse("sglang_diffusion", problems)
+        return "engine contract failed: nothing patched, stock"
+    notes, undo, current = [], [], ""
+    try:
+        if "sgld_attn" in routes:
+            current = "sgld_attn"
+            from ..ops import sdpa  # noqa: PLC0415
+
+            sdpa.patch()
+            undo.append(sdpa.unpatch)
+            notes.append("F.scaled_dot_product_attention -> hk.ops.sdpa (torch_sdpa backend)")
+        if "sgld_linear" in routes:
+            current = "sgld_linear"
+            notes.append(apply_linear())
+            undo.append(revert_linear)
+        if "sgld_convrot" in routes:
+            current = "sgld_convrot"
+            try:
+                notes.append(apply_convrot())
+            except ImportError as e:   # an SGLang without convrot_int8
+                notes.append(f"convrot: not available ({e})")
+    except BaseException as e:  # noqa: BLE001 -- never half-patched: undo what was applied
+        for f in reversed(undo):
+            try:
+                f()
+            except BaseException:  # noqa: BLE001,S110
+                pass
+        contract.refuse("sglang_diffusion", [f"{current} raised {type(e).__name__}: {e}"],
+                        contract.RAISED)
+        return "a route failed to apply: nothing patched, stock"
+    from ..runtime.compile import arm_jit_notice  # noqa: PLC0415
+
+    arm_jit_notice("SGLang-Diffusion patch")
     if not getattr(apply, "_done", False):
         # Each process says which branch it took: as it exits, and -- because the worker that
         # runs the DiT is torn down without running atexit (its counters were never seen) --
@@ -374,7 +412,8 @@ def apply() -> str:
         atexit.register(_report, True)
         threading.Thread(target=_reporter, name="hk-sgld-report", daemon=True).start()
         apply._done = True
-    return "; ".join(notes) or f"nothing ({ENV} names neither attn nor linear)"
+    on = ", ".join(f"{n} ({d.why})" for n, d in routes.items())
+    return f"routes on: {on}; " + "; ".join(notes)
 
 
 _LAST = [None]
@@ -438,9 +477,14 @@ def uninstall(target: Path = None) -> List[Path]:
 def status() -> str:
     d = site_dir()
     installed = (d / "hk_sgld.pth").exists() and (d / "hk_sgld_boot.py").exists()
-    on = os.environ.get(ENV, "0") not in _OFF
-    return (f"sglang-diffusion: {'installed' if installed else 'not installed'} in {d}; "
-            f"{ENV}={'on' if on else 'off'}")
+    stale = installed and "HK_DISABLE" not in (d / "hk_sgld_boot.py").read_text()
+    from . import switches  # noqa: PLC0415
+
+    on = {r.name: switches.decide(r.name) for r in switches.routes("sglang_diffusion")}
+    return (f"sglang-diffusion: {'installed' if installed else 'not installed'} in {d}"
+            + ("; the installed boot is from before hk was on by default (it needs HK_SGLD=1): "
+               "run install again" if stale else "") + "; "
+            + ", ".join(f"{n} {'on' if x.on else 'off'} ({x.why})" for n, x in on.items()))
 
 
 def main(argv=None) -> int:
@@ -454,7 +498,8 @@ def main(argv=None) -> int:
     if a.action == "install":
         for p in install(a.target):
             print(f"wrote {p}")
-        print(f"set {ENV}=1 in the environment of the run to apply it")
+        print("hk is on by default in every process of this environment; "
+              "HK_DISABLE=1 (or HK_SGLD=0) turns it off for a run")
     elif a.action == "uninstall":
         gone = uninstall(a.target)
         print("\n".join(f"removed {p}" for p in gone) or "nothing installed")

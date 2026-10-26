@@ -155,10 +155,12 @@ def test_apply_topk_leaves_the_gemms_alone(fake_sglang):
 
 @pytest.mark.parametrize("value,want", [("1", "apply"), ("topk", "apply_topk")])
 def test_the_plugin_opts_in_by_environment(monkeypatch, capsys, value, want):
-    from hk.integration import _sglang_plugin
+    from hk.integration import _sglang_plugin, contract
 
     seen = []
-    monkeypatch.delenv("HK_SGLANG_LINEAR", raising=False)
+    monkeypatch.delenv("HK_DISABLE", raising=False)
+    monkeypatch.setenv("HK_SGLANG_LINEAR", "0")
+    monkeypatch.setattr(contract, "check", lambda routes: [])   # no SGLang here
     monkeypatch.setenv("HK_SGLANG_MOE", value)
     monkeypatch.setattr(sglang_moe, "apply", lambda: seen.append("apply") or "moe: test")
     monkeypatch.setattr(sglang_moe, "apply_topk",

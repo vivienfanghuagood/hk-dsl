@@ -16,6 +16,13 @@ Main is `6a9e2c0`: 0.6.0 plus K2's fused quant (#41). Measurements are on an MI3
 under the vLLM nightly image (`nightly-rocm100-e68efc685ab1`, ROCm 10, hipcc clang 23) unless
 noted.
 
+**Update, after this page (owner decision 2026-10-26).** B1 (GSM8K and ARC on real weights)
+and B2/B3 (a serving A/B on real weights) passed for K1 and K2. A9 and A3 landed in #44. hk is now
+**on by default**: every route validated with real weights is on, and ConvRot stays opt-in.
+`HK_DISABLE=1` turns all of it off. At startup, the A9 contract check leaves an engine entirely
+stock if it fails. See [integration](../integration.md#on-by-default-and-turning-it-off). The
+rest of this page is the audit as it was written.
+
 ## What 0.6 is today, in one paragraph
 
 On gfx950, hk ships two prefill kernels for DeepSeek-V4.1-Flash behind opt-in vLLM routes.

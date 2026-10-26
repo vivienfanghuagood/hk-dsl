@@ -43,8 +43,18 @@ NAMESPACE = "hk"
 
 _VERBOSE = os.environ.get("HK_SDPA_VERBOSE", "") not in ("", "0")
 #: gfx1100's non-causal head_dim-128 calls on hk.ops.attn_k3 (the DiT kernel, K3) rather than
-#: hk.ops.attn's. Off by default until it is promoted.
-_K3 = os.environ.get("HK_SDPA_K3", "") not in ("", "0")
+#: hk.ops.attn's. On by default on gfx1100 (route `sdpa_k3` of hk.integration.switches);
+#: HK_SDPA_K3=0 or HK_DISABLE=1 turns it off. Decided once, at the first call (None until then).
+_K3: Optional[bool] = None
+
+
+def _k3_on() -> bool:
+    global _K3
+    if _K3 is None:
+        from ..integration import switches  # noqa: PLC0415
+
+        _K3 = switches.enabled("sdpa_k3")
+    return _K3
 _K3_FITS: Dict[Tuple, bool] = {}
 _SEEN = set()
 _OPS = {}
@@ -219,7 +229,7 @@ def scaled_dot_product_attention(query, key, value, attn_mask=None,
             query, key, value, attn_mask=attn_mask, dropout_p=dropout_p,
             is_causal=is_causal, scale=scale, enable_gqa=enable_gqa)
     STATS["kernel"] += 1
-    if _K3 and not is_causal and _k3_fits(query, key, value, scale):
+    if not is_causal and _k3_on() and _k3_fits(query, key, value, scale):
         from . import attn_k3  # noqa: PLC0415
 
         STATS["k3"] += 1

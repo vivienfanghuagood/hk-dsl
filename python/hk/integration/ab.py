@@ -50,6 +50,9 @@ def apply_arm(backend: str, routes: str = ""):
     # The patches below go into this process. An engine core in a process
     # of its own would import vLLM afresh and run unpatched, timing like stock.
     os.environ.setdefault("VLLM_ENABLE_V1_MULTIPROCESSING", "0")
+    # hk is on by default: an installed hk-dsl's vLLM plugin would apply its default routes
+    # to every arm, stock included. The arm alone decides what is patched here.
+    os.environ["HK_DISABLE"] = "1"
     backend, _, table = backend.partition("@")
     if table:
         named = dict(kv.split("=", 1) for kv in routes.split(",") if kv)
