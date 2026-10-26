@@ -16,8 +16,8 @@ from hk.ops import norm
 from hk.target import current_arch, get_target
 
 pytestmark = pytest.mark.skipif(
-    get_target(current_arch()).kittens_define != "KITTENS_RDNA3",
-    reason="strips are include/rdna3's")
+    get_target(current_arch()).kittens_define not in ("KITTENS_RDNA3", "KITTENS_RDNA4"),
+    reason="these strips are include/rdna3's and include/rdna4's")
 
 #: (kernel, CHUNKS, RUN, EXACT): each kind at the 4096-column bf16 plan, the
 #: bounded form at a ragged width, and an fp32 one.

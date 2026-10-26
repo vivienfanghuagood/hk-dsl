@@ -103,7 +103,7 @@ def plan_for(arch: str, rows: int, cols: int, flat: bool, moved: int, inputs: in
         got = fused.silu_strip_plan(arch, moved)
         if got is None:
             raise NotImplementedError(f"hk.templates.elementwise runs on register strips, "
-                                      f"which {arch} does not have (gfx1100 and gfx950 do)")
+                                      f"which {arch} does not have (gfx1100, gfx1201 and gfx950 do)")
         warps, chunks, reserve = got
     if override:
         warps = override.get("warps", warps)

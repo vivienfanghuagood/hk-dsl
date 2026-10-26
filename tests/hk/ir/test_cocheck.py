@@ -83,3 +83,33 @@ def test_copies_into_lds_count_on_vmcnt():
     read = "v_and_b32_e32 v59, 0xffff0000, v31"
     assert not wait_hazards(_code(q, dma, dma, "s_waitcnt vmcnt(2)", read), arch="gfx950")
     assert wait_hazards(_code(q, dma, dma, "s_waitcnt vmcnt(3)", read), arch="gfx950")
+
+
+WMMA12 = "v_wmma_f32_16x16x16_bf16 v[16:23], v[0:3], v[4:7], v[16:23]"
+
+
+def test_gfx12_split_waits_are_read_as_counts():
+    """gfx12 spells each counter as its own instruction with a hex immediate
+    (s_wait_dscnt 0x1), not lgkmcnt(1) -- read as a leading digit, 0x1 was a
+    full drain, and the hazard behind it was invisible."""
+    two = ("ds_load_b128 v[0:3], v8", "ds_load_b128 v[4:7], v8 offset:512")
+    assert wait_hazards(_code(*two, "s_wait_dscnt 0x1", WMMA12), arch="gfx1201")
+    assert not wait_hazards(_code(*two, "s_wait_dscnt 0x0", WMMA12), arch="gfx1201")
+    assert not wait_hazards(_code(*two, "s_wait_dscnt 0x1", "v_mov_b32 v9, v0"), arch="gfx1201")
+    loads = ("global_load_b128 v[0:3], v8, s[0:1]", "global_load_b128 v[4:7], v8, s[0:1] offset:16")
+    assert wait_hazards(_code(*loads, "s_wait_loadcnt 0x1", WMMA12), arch="gfx1201")
+    assert not wait_hazards(_code(*loads, "s_wait_loadcnt 0x0", WMMA12), arch="gfx1201")
+
+
+def test_gfx12_combined_wait_packs_loadcnt_over_dscnt():
+    """s_wait_loadcnt_dscnt: loadcnt in bits 13:8, dscnt in bits 5:0."""
+    code = ("global_load_b128 v[24:27], v8, s[0:1]", "ds_load_b128 v[0:3], v8",
+            "ds_load_b128 v[4:7], v8 offset:512")
+    # one LDS read left in flight (v[4:7]), no global load: the WMMA reads v[0:7]
+    assert wait_hazards(_code(*code, "s_wait_loadcnt_dscnt 0x1", WMMA12), arch="gfx1201")
+    assert not wait_hazards(_code(*code, "s_wait_loadcnt_dscnt 0x100", WMMA12), arch="gfx1201")
+    # the global load left in flight: reading it is the hazard, the LDS reads are retired
+    assert wait_hazards(_code(*code, "s_wait_loadcnt_dscnt 0x100", "v_mov_b32 v9, v24"),
+                        arch="gfx1201")
+    assert not wait_hazards(_code(*code, "s_wait_loadcnt_dscnt 0x0", "v_mov_b32 v9, v24"),
+                            arch="gfx1201")

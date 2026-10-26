@@ -24,9 +24,15 @@ def test_it_traces_and_translates(name, kernel):
 
 
 def test_the_gemm_waits_step_down():
+    """The second half of B is still in flight at the first wait: a 16 x 32
+    bf16 tile, two ds_read_b128 a base tile on gfx1100 (each half-wave holds
+    the whole K run, mirrored) and one on gfx1201 (the halves split it)."""
+    from hk.target import current_arch, get_target
+
     gemm = dict(KERNELS)["gemm"]
     counts = re.findall(r"hk\.lds_wait_for [^{]*\{n = (\d+)", gemm.trace().dump())
-    assert counts == ["4", "0"]
+    reads = max(1, get_target(current_arch()).mma["bf16"].operand_vgprs * 4 // 16)
+    assert counts == [str(2 * reads), "0"]
 
 
 def test_the_attention_rescale_is_a_runtime_branch():

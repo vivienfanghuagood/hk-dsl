@@ -13,10 +13,11 @@ const std::pair<llvm::StringRef, MmaShape> kMma1100[] = {
     {"fp16", {16, 16, 16, 8, 8}},
     {"i8", {16, 16, 16, 4, 8}},
 };
-// gfx1201: written, not verified. See python/hk/target/gfx1201.py.
+// gfx1201: measured on a Radeon AI PRO R9700. See python/hk/target/gfx1201.py.
 const std::pair<llvm::StringRef, MmaShape> kMma1201[] = {
     {"bf16", {16, 16, 16, 4, 8}},
     {"fp16", {16, 16, 16, 4, 8}},
+    {"i8", {16, 16, 16, 2, 8}},
     {"fp8e4m3", {16, 16, 16, 2, 8}},
     {"fp8e5m2", {16, 16, 16, 2, 8}},
 };
@@ -38,8 +39,8 @@ const llvm::StringRef kRowCol[] = {"row", "col"};
 
 const TargetInfo kGfx1100{"gfx1100", 32, 16, 1536, 24, 106, 65536, 131072, 4,
                           kMma1100, kRowOnly, true, 63};
-const TargetInfo kGfx1201{"gfx1201", 32, 16, 1536, 24, 106, 65536, 65536, 4,
-                          kMma1201, kRowOnly, false, 63};
+const TargetInfo kGfx1201{"gfx1201", 32, 16, 1536, 24, 106, 65536, 131072, 4,
+                          kMma1201, kRowOnly, true, 63};
 const TargetInfo kGfx942{"gfx942", 64, 8, 512, 8, 102, 65536, 65536, 4,
                          kMma942, kRowOnly, false, 15};
 const TargetInfo kGfx950{"gfx950", 64, 8, 512, 8, 102, 160000, 163840, 4,

@@ -313,7 +313,8 @@ STRIP_KERNELS = {f"strip_quantize_{_s}_w{_w}": _strip_quantize_kernel(
 #: the strip measured 1.04-2.3x it (hk.templates.rowwise's quantize on this
 #: plan against hk.ops' tiles, W7900D, us: 2048x4096 15.9 / 34.0, 8192x4096
 #: 50.5 / 111.4, 8192x8192 278.5 / 290.0; docs/templates/elementwise-rowwise.md).
-STRIP_ARCHS = ("gfx950", "gfx1100")
+#: gfx1201 runs gfx1100's plan; not measured there yet.
+STRIP_ARCHS = ("gfx950", "gfx1100", "gfx1201")
 
 
 # ---------------------------------------------------------------- wrappers

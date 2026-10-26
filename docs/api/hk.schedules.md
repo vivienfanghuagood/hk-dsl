@@ -406,7 +406,7 @@ gfx1100's WMMA GEMM (hk.ops.gemm.gemm_kernel; history chapter 28):
 a block_m x block_n block of C per workgroup of `warps` waves in a
 warp_rows x (warps / warp_rows) grid, K in k_step tiles through LDS.
 
-Family `rdna`, on gfx1100.
+Family `rdna`, on gfx1100, gfx1201.
 
 | knob | default | values searched | seed | what |
 |---|---|---|---|---|
@@ -434,7 +434,7 @@ registers, one 16-row block of W a workgroup, its K split across `warps`
 waves (and across `splits` workgroups), combined through LDS. M <= 16 x
 tokens. gfx1100's for M <= 32 in hk.templates.gemm; gfx950's "decode" route.
 
-Family `decode`, on gfx1100, gfx950.
+Family `decode`, on gfx1100, gfx1201, gfx950.
 
 | knob | default | values searched | seed | what |
 |---|---|---|---|---|
@@ -520,7 +520,7 @@ waves of `q_block` query rows each, the KV axis in `kv_block` steps, K
 staged and V transposed through LDS. q_block x warps is the query tile:
 a query shorter than it has no block to back up into.
 
-Family `attn_rdna`, on gfx1100.
+Family `attn_rdna`, on gfx1100, gfx1201.
 
 | knob | default | values searched | seed | what |
 |---|---|---|---|---|

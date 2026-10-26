@@ -1,16 +1,10 @@
-"""gfx1201 -- RDNA4, RX 9070 / W9000-class.
+"""gfx1201 -- RDNA4, Radeon AI PRO R9700 / RX 9070.
 
-READ THIS AS "WRITTEN, NOT VERIFIED." No gfx12 part was available. The mma
-shape is read out of builtin signatures; the register file and LDS sizes are
-carried over from gfx11 because nothing contradicted them. The VGPR allocation
-granule in particular has NOT been measured here -- on gfx1100 it turned out to
-be 24 rather than the 8 everyone assumes, and that was only discovered by
-compiling a sweep and diffing against LLVM's occupancy remark.
-
-`verified=False` makes hk-check-budgets report budget violations as warnings rather
-than hard errors on this target. A wrong hard limit is worse than no limit.
-Before trusting anything here, run tools/rdna-probes on the hardware and the
-granule sweep in /kernel-resource-check.
+Measured on a Radeon AI PRO R9700 (64 CU, ROCm 7.2.3) or read out of the
+compiler, each number saying which. The fragment layouts are in HipKittens'
+include/rdna4/common/util.cuh, measured with tools/rdna-probes/wmma_layout.hip
+and held by tests/unit/rdna4 (every mma, fp8 and int8 included, passes on the
+part).
 """
 
 from .base import MmaShape, Target
@@ -24,35 +18,56 @@ GFX1201 = Target(
     max_waves_per_simd=16,
 
     vgprs_per_simd=1536,
-    vgpr_granule=24,  # UNVERIFIED -- carried over from gfx1100, not measured.
+    # Read off LLVM's Occupancy remark over a sweep of 1..256 VGPRs: 216 buys 7
+    # waves/SIMD and 217 buys 6; 240 buys 6 and 241 buys 5. A granule of 8 would
+    # give 6 up to 256. Same as gfx1100.
+    vgpr_granule=24,
     sgprs_per_wave=106,
 
+    # The compiler refuses a 65540-byte __shared__ array for gfx1201.
     lds_per_workgroup=65536,
-    lds_pool_bytes=65536,
+    # A WGP (2 CUs, 4 SIMD32) shares 128 KB, as on gfx1100. Measured by the
+    # number of one-wave workgroups resident at once (rdna4 probes, lds_pool):
+    # 64 at 48, 56 or 64 KB each (two a WGP, of 32 WGPs), 96 at 40 KB, 128 at
+    # 32 KB, 160 at 24 KB -- 4 MB over 32 WGPs at every size.
+    lds_pool_bytes=131072,
     simds_per_lds_pool=4,
 
     mma={
-        # gfx12 splits K between the wave halves instead of mirroring: an
-        # operand is v8bf16, 4 VGPRs, and lane l holds k = 8*(l/16) .. +7 of
-        # row l%16. Half the operand registers of gfx11 for the same tile --
-        # that is the point of RDNA4 for this library. It also makes
-        # accumulator<->operand conversion *more* expensive, not less, because
-        # neither half holds everything and both directions must cross.
+        # gfx12 splits K between the wave halves instead of mirroring: a 16-bit
+        # operand is v8bf16, 4 VGPRs, and lane l holds k = 8*(l/16) .. +7 of row
+        # l%16. Half the operand registers of gfx11 for the same tile. The f32
+        # accumulator puts rows 8..15 in the upper half (gfx11 interleaved
+        # them), so an accumulator and the operand of its layout hold the same
+        # elements in the same lanes: converting one into the other moves
+        # nothing across lanes.
         "bf16": MmaShape(m=16, n=16, k=16, operand_vgprs=4, accum_vgprs=8),
         "fp16": MmaShape(m=16, n=16, k=16, operand_vgprs=4, accum_vgprs=8),
-        # v_wmma_f32_16x16x16_{fp8,bf8}_{fp8,bf8}_w32_gfx12: a 16x16 fp8
-        # operand is 256 B over 32 lanes, unmirrored -- 2 VGPRs. Read out of
-        # the builtin signatures in include/rdna4 mma.cuh, not measured.
+        # v_wmma_i32_16x16x16_iu8 (gfx12 form): 8 bytes a lane, 2 VGPRs, the
+        # same split as fp8; i32 accumulator in the f32 layout.
+        "i8": MmaShape(m=16, n=16, k=16, operand_vgprs=2, accum_vgprs=8),
+        # v_wmma_f32_16x16x16_{fp8,bf8}_{fp8,bf8}: a 16x16 fp8 operand is
+        # 256 B over 32 lanes, unmirrored -- 2 VGPRs. OCP e4m3fn / e5m2.
         "fp8e4m3": MmaShape(m=16, n=16, k=16, operand_vgprs=2, accum_vgprs=8),
         "fp8e5m2": MmaShape(m=16, n=16, k=16, operand_vgprs=2, accum_vgprs=8),
     },
 
-    # Absent on gfx12 as well as gfx11.
+    # vmem-to-lds-load-insts is absent on gfx12 as on gfx11.
     has_global_to_lds_dma=False,
 
     mma_operands_mirrored=False,
 
+    # A row-layout operand reads its lane's 8 contiguous elements with one
+    # ds_load_b128 (one ds_load_b64 for fp8 and int8); a col-layout one is
+    # strided and goes element by element.
     fast_smem_layouts=("row",),
 
-    verified=False,
+    # include/rdna4 has the register strips (types/register/rs.cuh), which do
+    # not depend on the WMMA layout.
+    strips=True,
 )
+
+#: The compiler can hoist a WMMA above an s_wait_dscnt because the wait
+#: carries no register dependence, as on gfx1100 (gfx1100.py). include/rdna4's
+#: lds_wait_for binds the fragments after every wait.
+LDS_WAIT_NEEDS_FRAGMENT_BIND = True

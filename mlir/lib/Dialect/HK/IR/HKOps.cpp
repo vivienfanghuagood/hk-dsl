@@ -1178,7 +1178,7 @@ static LogicalResult verifyMma(OpT op, MmaSpec s) {
   if (a.getElementType() != b.getElementType() && !fp8)
     return op.emitOpError("takes one operand type, not a mixed pair");
   if (!fp8 && !i8 && dtypeBits(a.getElementType()) != 16)
-    return op.emitOpError("takes bf16 or fp16 operands (fp8 on gfx1201, i8 on gfx1100)");
+    return op.emitOpError("takes bf16 or fp16 operands (fp8 on gfx1201, i8 on gfx1100 and gfx1201)");
   if (i8) {
     if (!c.getElementType().isInteger(32) || !c.getColLayout())
       return op.emitOpError("i8 x i8 accumulates into a col-layout i32 tile");

@@ -20,17 +20,17 @@ RDNA.md, kernel comments and a notebook, and they drifted.
 | VGPRs a SIMD (`vgprs_per_simd`) | `1536` | `1536` | `512` | `512` |
 | VGPR allocation granule (`vgpr_granule`) | `24` | `24` | `8` | `8` |
 | LDS a workgroup may take (bytes) (`lds_per_workgroup`) | `65536` | `65536` | `65536` | `160000` |
-| LDS shared by a pool (bytes) (`lds_pool_bytes`) | `131072` | `65536` | `65536` | `163840` |
+| LDS shared by a pool (bytes) (`lds_pool_bytes`) | `131072` | `131072` | `65536` | `163840` |
 | SIMDs sharing that pool (`simds_per_lds_pool`) | `4` | `4` | `4` | `4` |
-| register strips (`hk.RS`) (`strips`) | `True` | `False` | `False` | `True` |
+| register strips (`hk.RS`) (`strips`) | `True` | `True` | `False` | `True` |
 | tiles take a fragment shape (`frag=`) (`tile_shapes`) | `False` | `False` | `False` | `True` |
 | global -> LDS DMA (`g.load(..., wait=False)`) (`has_global_to_lds_dma`) | `False` | `False` | `True` | `True` |
 | AGPRs charged with the VGPRs (`unified_agprs`) | `False` | `False` | `True` | `True` |
 | largest lgkmcnt (`lgkmcnt_max`) | `63` | `63` | `15` | `15` |
-| measured on the part (`verified`) | `True` | `False` | `False` | `True` |
-| matrix instructions (`mma`) | bf16 16x16x16, fp16 16x16x16, i8 16x16x16 | bf16 16x16x16, fp16 16x16x16, fp8e4m3 16x16x16, fp8e5m2 16x16x16 | bf16 16x16x16, fp16 16x16x16 | bf16 16x16x32, fp16 16x16x32, fp8e4m3 16x16x128 |
+| measured on the part (`verified`) | `True` | `True` | `False` | `True` |
+| matrix instructions (`mma`) | bf16 16x16x16, fp16 16x16x16, i8 16x16x16 | bf16 16x16x16, fp16 16x16x16, i8 16x16x16, fp8e4m3 16x16x16, fp8e5m2 16x16x16 | bf16 16x16x16, fp16 16x16x16 | bf16 16x16x32, fp16 16x16x32, fp8e4m3 16x16x128 |
 
-gfx1100 (W7900D) and gfx950 (MI355X) run; gfx1201 and gfx942 are compile-only. `hk.arch.target()` is this record inside a kernel being traced, `hk.target.current_arch()` the arch a kernel that names none builds for (`$HK_ARCH`, else the GPU).
+gfx1100 (W7900D), gfx950 (MI355X) and gfx1201 (R9700) run; gfx942 is compile-only. `hk.arch.target()` is this record inside a kernel being traced, `hk.target.current_arch()` the arch a kernel that names none builds for (`$HK_ARCH`, else the GPU).
 
 ### `hk.target.current_arch`
 

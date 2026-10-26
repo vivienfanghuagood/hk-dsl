@@ -1023,7 +1023,7 @@ def page_target(since: Since) -> Page:
         ", ".join(f"{k} {m.m}x{m.n}x{m.k}" for k, m in T.TARGETS[a].mma.items()) or "-"
         for a in archs) + " |")
     p.para("\n".join(rows))
-    p.para("gfx1100 (W7900D) and gfx950 (MI355X) run; gfx1201 and gfx942 are compile-only. "
+    p.para("gfx1100 (W7900D), gfx950 (MI355X) and gfx1201 (R9700) run; gfx942 is compile-only. "
            "`hk.arch.target()` is this record inside a kernel being traced, "
            "`hk.target.current_arch()` the arch a kernel that names none builds for "
            "(`$HK_ARCH`, else the GPU).")

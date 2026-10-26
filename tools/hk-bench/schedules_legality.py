@@ -84,6 +84,8 @@ def sample(args) -> int:
         for arch in cls.arches:
             if args.families and cls.family not in args.families:
                 continue
+            if args.arches and arch not in args.arches:
+                continue
             pts = draw(cls, arch, args.n, rng, args.seeds) if args.n else []
             if args.around_shipped:
                 have, near = set(pts), []
@@ -239,7 +241,7 @@ def shipped():
         else:
             out.add((s, arch))
 
-    for arch in ("gfx1100", "gfx950"):
+    for arch in ("gfx1100", "gfx1201", "gfx950"):
         for n, k in nk:
             for m in ms:
                 for op in ("matmul", "template"):
@@ -253,9 +255,10 @@ def shipped():
                 if gemm_cdna.fits(name, m, n, k):
                     walk(S.from_candidate(name, m, n, k), "gfx950")
     for sch in [rdna.DEFAULT, rdna.THIN] + rdna.SPACE:
-        out.add((S.Rdna(**sch), "gfx1100"))
+        for arch in ("gfx1100", "gfx1201"):
+            out.add((S.Rdna(**sch), arch))
     for t, sc in decode_gemm.SCHEDULES.items():
-        for arch in ("gfx1100", "gfx950"):
+        for arch in ("gfx1100", "gfx1201", "gfx950"):
             out.add((S.Decode(tokens=t, **sc), arch))
     return out
 
@@ -306,10 +309,69 @@ def fit(args) -> int:
             b.append(np.array([_regs.limit(s, key[1]) - 0.5 for s in must[key]]))
         r = linprog(X.sum(axis=0), A_ub=np.vstack(A), b_ub=np.concatenate(b),
                     bounds=[(None, None)] * X.shape[1], method="highs")
+        if not r.success and must[key]:
+            # A schedule that ships at the very edge (gfx1201's 4-token decode GEMV builds at
+            # 255 of 256) next to a point with its features that built at 256: hold the
+            # shipped ones to the limit itself rather than half a register under it, and
+            # take the solver's rounding off the intercept, so ceil() still says the limit.
+            Mf = np.array([vec(_regs.features(s, key[1])) for s in must[key]])
+            lim = np.array([_regs.limit(s, key[1]) for s in must[key]], dtype=float)
+            b[-1] = lim
+            r = linprog(X.sum(axis=0), A_ub=np.vstack(A), b_ub=np.concatenate(b),
+                        bounds=[(None, None)] * X.shape[1], method="highs")
+            if r.success:
+                over = float((Mf @ r.x - lim).max())
+                if over > -1e-6:
+                    r.x[-1] -= over + 1e-6
+                print(f"{key}: shipped schedules held to the limit, not half a register under")
+        if not r.success:
+            # Built points at the very edge of the register file can share their features
+            # with a spill, or with a schedule that ships (a knob the features do not see),
+            # and make the hard problem infeasible. Then the spill and the shipped-schedule
+            # constraints each get a slack, priced far above any register -- a shipped
+            # schedule's a thousand times a spill's, so a spill is given up first -- and the
+            # build's spill gate refuses what the model misses.
+            soft = [np.array([vec(r_[0]) for r_ in sp]) * -1.0] if sp else []
+            soft_b = [-np.array([r_[3] + 1.0 for r_ in sp])] if sp else []
+            if must[key]:
+                soft.append(np.array([vec(_regs.features(s, key[1])) for s in must[key]]))
+                soft_b.append(np.array([float(_regs.limit(s, key[1])) for s in must[key]]))
+            S_ = np.vstack(soft)
+            ns, nv = S_.shape[0], X.shape[1]
+            A2 = np.vstack([np.hstack([-X, np.zeros((len(ok), ns))]),
+                            np.hstack([S_, -np.eye(ns)])])
+            b2 = np.concatenate([-y] + soft_b)
+            cost = np.concatenate([X.sum(axis=0), np.full(len(sp), 1e4),
+                                   np.full(ns - len(sp), 1e7)])
+            r = linprog(cost, A_ub=A2, b_ub=b2,
+                        bounds=[(None, None)] * nv + [(0, None)] * ns, method="highs")
+            if r.success:
+                given = r.x[nv:] > 1e-6
+                print(f"{key}: infeasible as stated; {int(given[:len(sp)].sum())} of {len(sp)} "
+                      f"spills and {int(given[len(sp):].sum())} of {len(must[key])} shipped "
+                      f"schedules given up")
+                r.x = r.x[:nv]
+                if must[key]:
+                    Mf = np.array([vec(_regs.features(s, key[1])) for s in must[key]])
+                    lim = np.array([_regs.limit(s, key[1]) for s in must[key]], dtype=float)
+                    over = Mf @ r.x - lim
+                    over = float(over[over < 1.0].max()) if (over < 1.0).any() else -1.0
+                    if over > -1e-6:          # the solver's rounding, not a schedule given up
+                        r.x[-1] -= over + 1e-6
         if not r.success:
             print(f"{key}: {r.message}; MODEL left as it is")
             continue
         c = {n: round(float(v), 4) for n, v in zip(names + ["1"], r.x)}
+        if must[key]:
+            # The rounding to four places can put a shipped schedule held to the limit a
+            # hair over it, which ceil() turns into a register: take it off the intercept.
+            cv = np.array([c[n] for n in names + ["1"]])
+            Mf = np.array([vec(_regs.features(s, key[1])) for s in must[key]])
+            lim = np.array([_regs.limit(s, key[1]) for s in must[key]], dtype=float)
+            over = Mf @ cv - lim
+            near = over[(over > 0) & (over < 1.0)]
+            if near.size:
+                c["1"] = float(np.floor((c["1"] - near.max()) * 1e4) / 1e4)
         fr = sum(1 for f, _, _, lim in ok if np.dot(vec(f), r.x) > lim)
         print(f"{key[0]}@{key[1]}: {len(ok)} built, {len(sp)} spilled; refuses {fr} "
               f"that built")
@@ -349,6 +411,7 @@ def main() -> int:
     a.add_argument("--max-around", type=int, default=0, metavar="K",
                    help="with --around-shipped, a random K of them per family and arch")
     a.add_argument("--families", nargs="*")
+    a.add_argument("--arches", nargs="*", help="only these archs (default: every arch a family runs on)")
     a.add_argument("--workers", type=int, default=48)
     a = sub.add_parser("sample-attn")
     a.add_argument("--out", required=True)

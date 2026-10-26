@@ -1056,7 +1056,10 @@ _STRIP_RESERVE = 48 << 10
 #: Inside the cache it costs, as on gfx11: 8192x4096 rmsnorm 20.13 uncapped,
 #: 22.63 at 53 KB. 8192x8192's in and out are exactly the cache's 256 MiB,
 #: so the cap starts at the cache's size rather than past it.
+#: gfx1201: gfx1100's reserve, past the R9700's 64 MB Infinity Cache; not
+#: measured there yet.
 _STRIP_RESERVE_AT = {"gfx1100": (_STRIP_CACHE_BYTES, _STRIP_RESERVE),
+                     "gfx1201": (64 << 20, _STRIP_RESERVE),
                      "gfx950": ((256 << 20) - 1, 53 << 10)}
 
 #: Row operands each kind reads or writes once: the bytes a call moves are
@@ -1215,7 +1218,7 @@ del _s, _dt, _k, _w, _n
 
 
 def _strips_here() -> bool:
-    """Strips are include/rdna3's and hk's wave64 port's (Target.strips); on
+    """Strips are include/rdna3's, include/rdna4's and hk's wave64 port's (Target.strips); on
     any other target the tile kernels run."""
     from ..target import current_arch, get_target  # noqa: PLC0415
 

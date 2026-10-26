@@ -182,7 +182,7 @@ class AttnRdna(AttnSchedule):
     a query shorter than it has no block to back up into."""
 
     family: ClassVar[str] = "attn_rdna"
-    arches: ClassVar[Tuple[str, ...]] = ("gfx1100",)
+    arches: ClassVar[Tuple[str, ...]] = ("gfx1100", "gfx1201")
 
     q_block: int = knob(16, values=(16,), doc="query rows a wave owns (16: the kernel's "
                                              "operand tiles are one fragment)")

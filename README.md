@@ -139,7 +139,8 @@ slow operand layout, a copy racing a barrier ([the traps](docs/README.md#the-tra
 |---|---|---|
 | Radeon PRO W7900 / W7900D, RX 7900 | gfx1100, RDNA3 | primary: every kernel, template and engine patch |
 | Instinct MI355X | gfx950, CDNA4 | every kernel and template; vLLM end to end ([CDNA](docs/design/cdna.md)) |
-| Radeon RX 9070 / Instinct MI300X | gfx1201 / gfx942 | compile-only, no templates |
+| Radeon AI PRO R9700, RX 9070 | gfx1201, RDNA4 | the GPU tier runs ([chapter 47](docs/history/47-gfx1201-on-hardware.md)); no engine route validated, nothing tuned yet |
+| Instinct MI300X | gfx942, CDNA3 | compile-only, no templates |
 
 ## Install
 

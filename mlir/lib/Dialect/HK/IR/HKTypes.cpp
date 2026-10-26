@@ -176,7 +176,7 @@ LogicalResult RegTileType::verify(function_ref<InFlightDiagnostic()> emitError,
   if (dtypeBits(et) < 16 && !isFp8(et) && !et.isInteger(8))
     return emitError() << "there is no " << dtypeName(et)
                        << " register tile: rt_base exists only for 16- and "
-                          "32-bit elements (fp8 on gfx1201, i8 operands on gfx1100)";
+                          "32-bit elements (fp8 on gfx1201, i8 operands on gfx1100 and gfx1201)";
   if (failed(checkExtent(emitError, "register tile", "rows", rows)) ||
       failed(checkExtent(emitError, "register tile", "cols", cols)))
     return failure();

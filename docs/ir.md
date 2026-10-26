@@ -136,7 +136,7 @@ occupancy 6 needs ≤240 registers, not ≤256.
 | target | file | status |
 |---|---|---|
 | gfx1100, RDNA3 | `gfx1100.py` | probed and measured on a W7900D |
-| gfx1201, RDNA4 | `gfx1201.py` | a 64 KB LDS pool; the VGPR granule carried over from gfx1100, not measured, so the target is `verified=False` and budget violations are warnings ([gfx1201](history/13-gfx1201.md)) |
+| gfx1201, RDNA4 | `gfx1201.py` | probed and measured on a Radeon AI PRO R9700: the fragment layouts, a 128 KB WGP LDS pool, the granule 24 from LLVM's remark ([chapter 47](history/47-gfx1201-on-hardware.md)) |
 | gfx942, CDNA3 | `gfx942.py` | modelled from the compiler, not run |
 | gfx950, CDNA4 | `gfx950.py` | modelled from the compiler, timed on an MI355X ([chapter 29](history/29-cdna.md)) |
 

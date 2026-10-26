@@ -76,8 +76,8 @@ def test_a_residual_add_is_torchs_bit_for_bit(rows):
 def test_a_strip_store_rounds_to_even():
     from hk.target import current_arch, get_target
 
-    if get_target(current_arch()).kittens_define != "KITTENS_RDNA3":
-        pytest.skip("strips are include/rdna3's")
+    if get_target(current_arch()).kittens_define not in ("KITTENS_RDNA3", "KITTENS_RDNA4"):
+        pytest.skip("these strips are include/rdna3's and include/rdna4's")
     S = hk.RS(hk.fp32, 1, 256, 8)
 
     @hk.kernel(warps=1, grid=lambda p: (p.o.rows, 1, 1))

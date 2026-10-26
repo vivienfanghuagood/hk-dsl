@@ -280,12 +280,12 @@ class Plan:
 #: (online logsumexp + pick) at 64-2048 x 151936 and 8192 x 32000 on an
 #: MI355X: 8 warps of 32 a lane 12.9/26.5/110.1/83.2 us, 16 of 16
 #: 13.8/26.9/107.5/95.9, 16 of 8 16.7/30.7/116.8/111.7.
-_STREAM = {"gfx950": (8, 32), "gfx1100": (16, 16)}
+_STREAM = {"gfx950": (8, 32), "gfx1100": (16, 16), "gfx1201": (16, 16)}
 
 
 #: Rows a workgroup takes when a row is one warp's: set from the router
 #: and narrow-softmax measurements (see the docs).
-_FOLD = {"gfx950": ((1024, 4),), "gfx1100": ((1024, 4),)}
+_FOLD = {"gfx950": ((1024, 4),), "gfx1100": ((1024, 4),), "gfx1201": ((1024, 4),)}
 
 
 def _fold(arch: str, rows: int) -> int:
@@ -309,7 +309,7 @@ def plan_for(arch: str, like: str, rows: int, cols: int, nbytes: int,
     tgt = get_target(arch)
     if not tgt.strips:
         raise NotImplementedError(f"hk.templates.rowwise runs on register strips, which "
-                                  f"{arch} does not have (gfx1100 and gfx950 do)")
+                                  f"{arch} does not have (gfx1100, gfx1201 and gfx950 do)")
     if like == "quantize":
         p = quant.strip_plan_for(nbytes, cols, rows, arch)
         p = None if p is None else (*p, 0)
