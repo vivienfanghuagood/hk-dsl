@@ -357,3 +357,35 @@ def test_a_stated_order_is_for_a_strips_rows_on_gfx950():
         o.at[0, 0] = v.sum(axis=1, lanes="seq", xor=(16, 8, 4, 2, 1, 32))
     with pytest.raises(TypeError, match="gfx950"):
         hk.kernel(wave32, arch="gfx1100", warps=1, name="w32", grid=lambda p: (1, 1, 1)).source()
+
+
+def _fused(lanes="seq", times_ty=S64, acc=False):
+    def fused_sum(x: hk.Tensor[hk.fp32], y: hk.Tensor[hk.fp32], o: hk.Tensor[hk.fp32]):
+        row = hk.arch.block_idx.x
+        v = x.at[row, 0].load(S64)
+        u = y.at[row, 0].load(times_ty)
+        w = hk.zeros(S64)
+        if acc:
+            w += 1.0
+        w += v.sum(axis=1, lanes=lanes, xor=(32, 16, 8, 4, 2, 1), times=u)
+        o.at[row, 0].store(w)
+    return hk.kernel(fused_sum, arch="gfx950", warps=1, name="fused_sum",
+                     grid=lambda p: (p.x.rows, 1, 1))
+
+
+def test_times_emits_the_fused_sum_of_products():
+    src = _fused().source()
+    assert "kittens::row_sum_times_ordered<1, 32, 16, 8, 4, 2, 1>(" in src
+
+
+def test_times_needs_a_seq_order_and_the_same_strip():
+    with pytest.raises(ValueError, match="seq"):
+        _fused(lanes="tree").source()
+    with pytest.raises(TypeError, match="same type"):
+        _fused(times_ty=hk.RS(hk.fp32, 1, 256, 4)).source()
+
+
+def test_the_ordered_sum_keeps_a_products_rounding():
+    # the summands are laundered so that HIP's contraction cannot fuse a product into the sum
+    src = _ordered().source()
+    assert "kittens::row_sum_ordered<1, 32, 16, 8, 4, 2, 1>(" in src

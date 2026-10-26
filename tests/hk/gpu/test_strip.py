@@ -185,3 +185,69 @@ def test_a_stated_order_is_bit_for_bit_that_order(lanes, xor):
     if (lanes, xor) == ("seq", (32, 16, 8, 4, 2, 1)):
         # hk's own order groups differently: the test can tell orders apart
         assert not torch.equal(_emulate(x, "tree", (1, 2, 4, 8, 16, 32)), want)
+
+
+def _fma(a, b, c):
+    """fp32 fma: the exact product of two floats fits a double, the sum rounds once there and
+    once to float (double rounding cannot change the result's float rounding here: the double
+    keeps 29 extra bits)."""
+    return (a.double() * b.double() + c.double()).float()
+
+
+def _emulate_dot(x, y, run, fused, xor=(32, 16, 8, 4, 2, 1)):
+    rows = x.shape[0]
+    a, b = x.view(rows, 64, run), y.view(rows, 64, run)
+    if not fused:                                   # rounded products, left to right
+        p = a * b
+        s = p[:, :, 0].clone()
+        for i in range(1, run):
+            s = s + p[:, :, i]
+    elif run == 1:
+        s = a[:, :, 0] * b[:, :, 0]
+    else:                                           # LLVM's contraction of a compiled loop
+        s = _fma(a[:, :, 0], b[:, :, 0], a[:, :, 1] * b[:, :, 1])
+        for i in range(2, run):
+            s = _fma(a[:, :, i], b[:, :, i], s)
+    lane = torch.arange(64)
+    for o in xor:
+        s = s + s[:, lane ^ o]
+    return s
+
+
+@pytest.mark.skipif(_target().wave != 64, reason="a stated order is gfx950's")
+@pytest.mark.parametrize("run", [1, 2, 8])
+def test_a_sum_of_products_in_a_stated_order(run):
+    # (x * y).sum(lanes="seq") adds rounded products; sum(times=y) fuses them the way a compiled
+    # loop does (dsv41_mono's sums of squares); each is bit for bit its emulation and not the other
+    S = hk.RS(hk.fp32, 1, 64 * run, run)
+    XOR = (32, 16, 8, 4, 2, 1)
+
+    def dots(x: hk.Tensor[hk.fp32], y: hk.Tensor[hk.fp32], o: hk.Tensor[hk.fp32],
+             f: hk.Tensor[hk.fp32]):
+        row = hk.arch.block_idx.x
+        a = x.at[row, 0].load(S)
+        b = y.at[row, 0].load(S)
+        w = hk.zeros(S)
+        w += (a * b).sum(axis=1, lanes="seq", xor=XOR)
+        o.at[row, 0].store(w)
+        v = hk.zeros(S)
+        v += a.sum(axis=1, lanes="seq", xor=XOR, times=b)
+        f.at[row, 0].store(v)
+
+    k = hk.kernel(dots, warps=1, name=f"dots_{run}", grid=lambda p: (p.x.rows, 1, 1))
+    g = torch.Generator(device="cpu").manual_seed(run)
+    x = (torch.randn(512, 64 * run, generator=g) * torch.exp(torch.randn(512, 64 * run, generator=g) * 2)).float()
+    y = x.clone() if run != 2 else torch.randn(512, 64 * run, generator=g)     # squares, and a dot
+    o = torch.zeros(512, 64 * run, device="cuda")
+    f = torch.zeros(512, 64 * run, device="cuda")
+    k(x.cuda(), y.cuda(), o, f)
+    torch.cuda.synchronize()
+    plain, fused = _emulate_dot(x, y, run, False), _emulate_dot(x, y, run, True)
+    got_o = o.cpu().view(512, 64, run)[:, :, 0]
+    got_f = f.cpu().view(512, 64, run)[:, :, 0]
+    assert torch.equal(got_o.view(torch.int32), plain.view(torch.int32)), \
+        f"rounded products: {int((got_o != plain).sum())} of {got_o.numel()} lanes differ"
+    assert torch.equal(got_f.view(torch.int32), fused.view(torch.int32)), \
+        f"fused: {int((got_f != fused).sum())} of {got_f.numel()} lanes differ"
+    if run > 1:
+        assert not torch.equal(plain, fused)        # the inputs tell the two apart

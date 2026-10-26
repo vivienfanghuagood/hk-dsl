@@ -1567,6 +1567,8 @@ private:
               ColSumOp, ColProdOp>([&](auto o) {
           Value d = dest(o.getDst(), o.getResult());
           std::vector<std::string> args{name(o.getSrc())};
+          if (o.getTimes())
+            args.push_back(name(o.getTimes()));
           if (o.getAccumulate())
             args.push_back(name(d));
           if (auto order = o.getOrder()) {
@@ -1579,8 +1581,8 @@ private:
               tmpl += ", " + p.str();
             std::vector<std::string> all{name(d)};
             all.insert(all.end(), args.begin(), args.end());
-            w("kittens::" + o->getName().stripDialect().str() + "_ordered<" + tmpl + ">(" +
-              join(all) + ");");
+            w("kittens::" + o->getName().stripDialect().str() + (o.getTimes() ? "_times" : "") +
+              "_ordered<" + tmpl + ">(" + join(all) + ");");
             return;
           }
           call(o->getName().stripDialect(), d, args);

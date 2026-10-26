@@ -842,6 +842,16 @@ static LogicalResult verifyReduce(OpT op, bool colKind) {
       return op.emitOpError("order \"") << *order
              << "\": every offset 1 2 4 8 16 32 once (a wave of 64 lanes)";
   }
+  if (Value times = op.getTimes()) {
+    if (op->getName().stripDialect() != "row_sum")
+      return op.emitOpError("times is a row_sum's: the sum of src * times");
+    if (!op.getOrder() || !op.getOrder()->starts_with("seq:"))
+      return op.emitOpError("times needs a \"seq\" order: its products are fused into the "
+                            "running sum left to right");
+    if (times.getType() != op.getSrc().getType())
+      return op.emitOpError("times is ") << times.getType() << ", not the source's "
+                                          << op.getSrc().getType();
+  }
   return success();
 }
 

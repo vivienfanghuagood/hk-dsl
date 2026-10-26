@@ -3117,10 +3117,19 @@ __device__ inline void strip_row_reduce(CV &dst, const RS &src, const CV &acc) {
     }
 }
 
+/// A value the compiler can no longer see the making of: a product that feeds an add stays a
+/// rounded product. HIP compiles with contraction on, and LLVM fuses `p = x * y; s + p` into one
+/// fma -- across hk's ops, since they are inlined -- which would make an ordered sum of a product
+/// another order (its first two summands fused as fma(x0, y0, x1 * y1), then fma(xi, yi, s)).
+template<typename T> __device__ inline void hk_opaque(T &v) {
+    if constexpr (sizeof(T) == 4) asm volatile("" : "+v"(v));
+}
+
 /// strip_row_reduce in a stated order: a lane's own values left to right (SEQ) or as the balanced
 /// tree, then the lanes combined over the xor offsets OFFS in that order. The order is the
 /// numerical contract when a result must match another kernel bit for bit (dsv41_mono's and
-/// aiter's norms: sequential, then 32, 16, 8, 4, 2, 1).
+/// aiter's norms: sequential, then 32, 16, 8, 4, 2, 1). The values are the strip's as they are:
+/// a product's rounding is not fused into the sum (strip_row_dot_ordered is the fused form).
 template<typename op, bool reset, bool SEQ, int... OFFS, ducks::rs::cv CV, ducks::rs::all RS>
 __device__ inline void strip_row_reduce_ordered(CV &dst, const RS &src, const CV &acc) {
     static_assert(CV::length == RS::rows, "one value per row of the strip");
@@ -3132,7 +3141,10 @@ __device__ inline void strip_row_reduce_ordered(CV &dst, const RS &src, const CV
         #pragma unroll
         for (int j = 0; j < RS::chunks; j++) {
             #pragma unroll
-            for (int e = 0; e < RS::run; e++) a[j*RS::run + e] = src.data[r][j][e];
+            for (int e = 0; e < RS::run; e++) {
+                a[j*RS::run + e] = src.data[r][j][e];
+                hk_opaque(a[j*RS::run + e]);
+            }
         }
         T v;
         if constexpr (SEQ) {
@@ -3145,6 +3157,46 @@ __device__ inline void strip_row_reduce_ordered(CV &dst, const RS &src, const CV
         ((v = hk_xor_op<op, OFFS>(v)), ...);
         if constexpr (reset) dst.data[r][0] = v;
         else                 dst.data[r][0] = op::template op<T>(acc.data[r][0], v);
+    }
+}
+
+/// The sum of a row's products src * times, the lane's own products fused into one running fma
+/// the way LLVM contracts a compiled `s = a0 * b0 + a1 * b1; s += ai * bi` loop -- the second
+/// product rounded and the first fused onto it, then each next one fused: s = fma(a0, b0, r(a1
+/// b1)), s = fma(ai, bi, s) (a single product: r(a0 b0)) -- then the lanes summed over the xor
+/// offsets OFFS in that order. dsv41_mono's sums of squares (q / kv norms) are this.
+template<bool reset, int... OFFS, ducks::rs::cv CV, ducks::rs::all RS>
+__device__ inline void strip_row_dot_ordered(CV &dst, const RS &src, const RS &times, const CV &acc) {
+    _Pragma("clang fp contract(off)")
+    static_assert(CV::length == RS::rows, "one value per row of the strip");
+    using T = typename RS::T;
+    static_assert(std::is_same_v<T, float>, "a fused sum of products is fp32's");
+    constexpr int N = RS::chunks * RS::run;
+    #pragma unroll
+    for (int r = 0; r < RS::rows; r++) {
+        T a[N], b[N];
+        #pragma unroll
+        for (int j = 0; j < RS::chunks; j++) {
+            #pragma unroll
+            for (int e = 0; e < RS::run; e++) {
+                a[j*RS::run + e] = src.data[r][j][e];
+                b[j*RS::run + e] = times.data[r][j][e];
+            }
+        }
+        T v;
+        if constexpr (N == 1) {
+            v = a[0] * b[0];
+        } else {
+            T p1 = a[1] * b[1];
+            hk_opaque(p1);
+            v = __builtin_fmaf(a[0], b[0], p1);
+            #pragma unroll
+            for (int i = 2; i < N; i++) v = __builtin_fmaf(a[i], b[i], v);
+        }
+        hk_opaque(v);
+        ((v = hk_xor_op<base_ops::sum, OFFS>(v)), ...);
+        if constexpr (reset) dst.data[r][0] = v;
+        else                 dst.data[r][0] = acc.data[r][0] + v;
     }
 }
 
@@ -3196,6 +3248,17 @@ HK_STRIP_REDUCE(col_prod, mul, col, all)
         detail::strip_row_reduce_ordered<base_ops::opname, false, bool(SEQ), OFFS...>(dst, src, acc); \
     }
 HK_STRIP_REDUCE_ORDERED(row_sum,  sum)
+/// row_sum_ordered of src * times with each product fused into the running sum: detail::strip_row_dot_ordered
+template<int SEQ, int... OFFS, ducks::rs::cv V, ducks::rs::all RS>
+__device__ static inline void row_sum_times_ordered(V &dst, const RS &src, const RS &times) {
+    static_assert(SEQ, "a fused sum of products is left to right");
+    detail::strip_row_dot_ordered<true, OFFS...>(dst, src, times, dst);
+}
+template<int SEQ, int... OFFS, ducks::rs::cv V, ducks::rs::all RS>
+__device__ static inline void row_sum_times_ordered(V &dst, const RS &src, const RS &times, const V &acc) {
+    static_assert(SEQ, "a fused sum of products is left to right");
+    detail::strip_row_dot_ordered<false, OFFS...>(dst, src, times, acc);
+}
 HK_STRIP_REDUCE_ORDERED(row_max,  max)
 HK_STRIP_REDUCE_ORDERED(row_min,  min)
 HK_STRIP_REDUCE_ORDERED(row_prod, mul)

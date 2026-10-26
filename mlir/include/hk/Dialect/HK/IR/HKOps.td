@@ -843,7 +843,7 @@ def HK_RotateHalfOp : HK_UnaryMapOp<"rotate_half", (ins I64Attr:$span)> {
 // Reductions and broadcasts
 //===----------------------------------------------------------------------===//
 
-class HK_ReduceOp<string mnemonic> : HK_Op<mnemonic> {
+class HK_ReduceOp<string mnemonic> : HK_Op<mnemonic, [AttrSizedOperandSegments]> {
   let summary = mnemonic # ": reduce a tile to one value per row or column";
   let description = [{
     `row_*` reduces along each row and gives one value per row -- a column
@@ -852,12 +852,17 @@ class HK_ReduceOp<string mnemonic> : HK_Op<mnemonic> {
     own values left to right or as a balanced tree, then the lanes combined
     over the xor offsets o1, o2, ... in that order (each of 1 2 4 8 16 32
     once) -- for a result that must match another kernel bit for bit.
+    `times` (row_sum with a "seq" order only): the sum of src * times, each
+    product fused into the running sum the way LLVM contracts a compiled
+    loop: s = fma(a0, b0, a1 * b1), then s = fma(ai, bi, s).
   }];
   let arguments = (ins Optional<HK_RegVecType>:$dst, HK_RegTileType:$src,
+                       Optional<HK_RegTileType>:$times,
                        UnitAttr:$accumulate, OptionalAttr<StrAttr>:$order);
   let results = (outs Optional<HK_RegVecType>:$result);
   let assemblyFormat = [{
-    $src (`into` $dst^)? attr-dict `:` qualified(type($src)) (`into` qualified(type($dst))^)?
+    $src (`times` $times^)? (`into` $dst^)? attr-dict `:` qualified(type($src))
+    (`times` qualified(type($times))^)? (`into` qualified(type($dst))^)?
     (`->` qualified(type($result))^)?
   }];
   let hasVerifier = 1;
