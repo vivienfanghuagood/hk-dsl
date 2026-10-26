@@ -43,12 +43,12 @@ def test_a_post_reaches_the_take_with_its_tag(runs, bf16):
     k = _hand_off(runs, bf16)
     g = torch.Generator(device="cpu").manual_seed(9)
     x = torch.randn(1, 512, generator=g)
-    if bf16:
-        x = x.bfloat16().float()             # bf16 pairs carry the top halves: values already bf16
     box = torch.zeros(2 * 512, dtype=torch.int32, device="cuda")
     o = torch.full((1, 512), -3.0, device="cuda")
     for tag in (5, 6):                       # a second round over the first one's pairs
         x_ = x * tag
+        if bf16:
+            x_ = x_.bfloat16().float()       # bf16 pairs carry the top halves: values already bf16
         k(x_.cuda(), box, torch.tensor([tag], dtype=torch.int32, device="cuda"), o)
         torch.cuda.synchronize()
         want = x_.clone()

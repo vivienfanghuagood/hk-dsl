@@ -539,7 +539,8 @@ template<int N, int AUX = 0> __device__ inline void hk_buf_load_bytes(hk_i32x4 r
     if constexpr (N % 16 == 0) {
         #pragma unroll
         for (int q = 0; q < N / 16; q++) {
-            const __uint128_t x = hk_buf_ld128(r, off + 16 * q, 0, AUX);
+            // a masked run (off ~0) stays past the range: off + 16 q would wrap to the tensor's start
+            const __uint128_t x = hk_buf_ld128(r, off == ~0u ? ~0u : off + 16 * q, 0, AUX);
             __builtin_memcpy((char *)dst + 16 * q, &x, 16);
         }
     }
@@ -554,7 +555,7 @@ template<int N, int AUX = 0> __device__ inline void hk_buf_store_bytes(hk_i32x4 
         #pragma unroll
         for (int q = 0; q < N / 16; q++) {
             __uint128_t x; __builtin_memcpy(&x, (const char *)src + 16 * q, 16);
-            hk_buf_st128(x, r, off + 16 * q, 0, AUX);
+            hk_buf_st128(x, r, off == ~0u ? ~0u : off + 16 * q, 0, AUX);   // (as the load)
         }
     }
     else if constexpr (N == 8) { uint64_t x; __builtin_memcpy(&x, src, 8); hk_buf_st64(x, r, off, 0, AUX); }
