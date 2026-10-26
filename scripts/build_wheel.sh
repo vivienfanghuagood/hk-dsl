@@ -11,12 +11,24 @@
 # installs and then fails at import, so this refuses to build one. ISOLATION=0
 # builds with the interpreter's own setuptools (>= 64), for a machine without
 # an index to fetch one from.
+#
+# Reproducible: the zip's timestamps are SOURCE_DATE_EPOCH, by default the
+# checkout's last commit time, and its file modes do not depend on the umask
+# or on how the checkout was made. With hk._mlir from scripts/build_hk_mlir.sh
+# and the same toolchain, the same commit gives the same wheel, byte for byte
+# (docs/building.md, "Reproducible wheels").
 set -euo pipefail
+umask 022
 
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
 PYTHON="${PYTHON:-$(command -v python3)}"
 ISOLATION="${ISOLATION:-1}"
 OUT="${OUT:-$REPO/dist}"
+# the wheel's timestamps (wheel and setuptools read it); without git, the time now
+if [ -z "${SOURCE_DATE_EPOCH:-}" ]; then
+    SOURCE_DATE_EPOCH="$(git -C "$REPO" log -1 --format=%ct 2>/dev/null || true)"
+fi
+if [ -n "$SOURCE_DATE_EPOCH" ]; then export SOURCE_DATE_EPOCH; else unset SOURCE_DATE_EPOCH; fi
 SOABI="$("$PYTHON" -c 'import sysconfig; print(sysconfig.get_config_var("SOABI"))')"
 
 libs="$REPO/python/hk/_mlir/_mlir_libs"
@@ -46,6 +58,9 @@ find "$stage" -name __pycache__ -type d -prune -exec rm -rf {} +
 # libHKPythonCAPI.so -> .so.23.1 is a link-time name; the loader asks for the
 # versioned file, and a wheel would carry the symlink as a second 34 MB copy.
 find "$stage/python/hk/_mlir" -type l -delete
+# The wheel records each file's mode, and a checkout made under umask 077 has
+# 0600 files: every file is 0644, or 0755 if it was executable.
+chmod -R u=rwX,go=rX "$stage"
 
 flags=(--no-deps -w "$OUT")
 [ "$ISOLATION" = 1 ] || flags+=(--no-build-isolation)

@@ -150,6 +150,73 @@ is set ([integration](integration.md#turning-them-on)).
 Wheels are Linux x86_64 only, one CPython each, and are built by hand today
 on the machines that have the toolchain.
 
+### Reproducible wheels
+
+The same commit, built with the same toolchain, gives the same wheel byte for
+byte, wherever the checkout and the build directory are. 0.7.0's rc and tag
+wheels, built from the same tree, did not: the cp310 build ran in a `mktemp -d`
+directory, whose name ended up in two `__FILE__` strings in
+`libHKPythonCAPI.so` and, through the linker's hash, in the GNU build-id of
+four libraries. The zip layer differed too: every entry's timestamp was the
+build time.
+
+What makes a build reproducible, and where it is done:
+
+* **Paths.** `mlir/CMakeLists.txt` compiles with `-ffile-prefix-map` for the
+  checkout (`/hk/src`), the build directory (`/hk/build`), the MLIR install
+  (`/hk/mlir`) and nanobind (`/hk/nanobind`), each both as given and with
+  symlinks resolved, so neither assertion messages (`__FILE__`) nor debug info
+  name a build-machine path. The configure output lists the maps (`-- hk:
+  -ffile-prefix-map=...`). `-DHK_REPRODUCIBLE_PATHS=OFF` turns them off.
+  Arguments to `scripts/build_hk_mlir.sh` go to the cmake configure, so extra
+  flags need no edit: `scripts/build_hk_mlir.sh -DCMAKE_CXX_FLAGS=...`
+  (`CFLAGS` and `CXXFLAGS` in the environment work too, on a fresh build
+  directory).
+* **Timestamps.** `scripts/build_wheel.sh` sets `SOURCE_DATE_EPOCH` to the
+  checkout's last commit time unless it is already set, and wheel uses it for
+  every zip entry. `scripts/manylinux_tag.sh` rewrites `RECORD`, which takes
+  the same `SOURCE_DATE_EPOCH`, so export it for that step too. Without git
+  (a worktree mounted into a container, whose `.git` names a host path) the
+  script cannot find the commit: pass `SOURCE_DATE_EPOCH` in.
+* **File modes.** The wheel records each file's mode, and a checkout made under
+  `umask 077` has 0600 files. `build_wheel.sh` makes every staged file 0644, or
+  0755 if it was executable, and builds under `umask 022`.
+* **Order.** wheel writes the entries sorted by path and `RECORD` in the same
+  order, so neither depends on the file system. The wheel carries no bytecode
+  (`__pycache__` is dropped from the stage, and setuptools compiles none).
+
+What stays fixed by the toolchain rather than by hk, and so has to be the same
+for two builds to match:
+
+* the compiler and linker, whose versions are in each library's `.comment`
+  (GCC 11.4 on Ubuntu 22.04 for cp310, 13.3 in rocm/pytorch 7.2.3 for cp312),
+  and the system headers, named as they are (`/usr/include/c++/11/...`);
+* the MLIR install. Its static libraries carry the paths of its own build,
+  `/dev/shm/hk-llvm/...` for the CI's MLIR 23.1.3, in about 300 assertion
+  strings. They are the same for every hk build against that install, and only
+  a rebuild of MLIR (with LLVM's `-DLLVM_USE_RELATIVE_PATHS_IN_FILES=ON`)
+  removes them;
+* nanobind's and setuptools' and wheel's versions. RPATH is `$ORIGIN` already.
+
+A release build that checks itself: build twice, from two worktrees of the tag
+in different directories with different build directories, and compare.
+
+```bash
+SOURCE_DATE_EPOCH=$(git log -1 --format=%ct vX.Y.Z); export SOURCE_DATE_EPOCH
+# ... scripts/build_hk_mlir.sh + scripts/build_wheel.sh + scripts/manylinux_tag.sh, twice ...
+sha256sum a/*.whl b/*.whl                       # equal pairs: done
+python3 -c 'import sys, zipfile; a, b = (zipfile.ZipFile(p) for p in sys.argv[1:]); \
+  print([n for n in a.namelist() if a.read(n) != b.read(n)])' a/X.whl b/X.whl
+```
+
+If the sha256s differ, the second line names the files that do. For a `.so`,
+`readelf -n` shows whether the build-id differs and `strings -a | grep /`
+finds a path that leaked; for the zip layer, compare `ZipInfo.date_time` and
+`external_attr`. The maintainers' release script (`release-build.sh`, not in
+this repository) does all of this, builds cp310 on the host and cp312 in
+rocm/pytorch 7.2.3, and writes `SHA256SUMS`; a rebuild of the same tag checks
+against it with `sha256sum -c SHA256SUMS`.
+
 ## Using a checkout without a wheel
 
 With `hk._mlir` built, put `python/` on `PYTHONPATH` — which is what
