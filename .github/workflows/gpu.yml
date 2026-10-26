@@ -131,7 +131,7 @@ jobs:
           submodules: recursive
           persist-credentials: false
       - name: GPU tier on a Radeon AI PRO R9700 (gfx1201)
-        run: scripts/ci/run_gfx1201.sh
+        run: exec scripts/ci/run_gfx1201.sh
       - uses: actions/upload-artifact@v4
         if: always()
         with:

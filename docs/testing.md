@@ -565,8 +565,15 @@ container that sees that one card, with core dumps off (`--ulimit core=0`,
 over 90% full). `auto` takes the first idle card of a list, waiting up to an
 hour. The job (`scripts/ci/run_gfx1201.sh`) takes one card of `HK_CI_GPUS`,
 which leaves out GPU 0 (another user's service holds it most of the time), and
-records what else ran on the card while the suite did: `gpusnap.log` in the
-artifact, a snapshot at the start and every five minutes. Copies of `hkr9`,
+whose render node no `hk-gha-*` container has, and records what else ran on
+the card while the suite did: `gpusnap.log` in the artifact, a snapshot at the
+start and every five minutes, each holder with its container. A cancel is
+handled as on the gfx950 job ("Cancelled jobs and orphan containers"): the
+step `exec`s the script, which re-executes itself with default signals, kills
+its container from its trap, and leaves a reaper holding the card's lock for
+a SIGKILL. The orphan sweep needs no GitHub token here: the runner is the
+box's only one and runs one job at a time, so any `hk-gha-*` container
+labelled with its name is an orphan. Copies of `hkr9`,
 `gpulock.sh` and `gpusnap` for people are installed in
 `/home/amd/hfang-hk/locks/bin/`; CI uses the checkout's.
 
