@@ -3221,21 +3221,63 @@ template<ducks::rs::all D, typename ST, ducks::rs::all I>
 __device__ static inline void lds_load_elems(D &dst, ST &src, const I &idx) {
     constexpr int N = ST::rows * ST::cols;
     detail::strip_each<D>([&](int a, int j, int e) {
+        // branch-free: an index out of range reads element 0 and keeps 0. A guarded read put each in its
+        // own exec-masked block, and the strip's reads went one at a time, each waiting out its latency.
         const int k = idx.data[a][j][e];
-        float v = 0.f;
-        if (k >= 0 && k < N) v = *detail::hk_st_elem(src, k / ST::cols, k % ST::cols);
-        dst.data[a][j][e] = detail::hk_from_bits<typename D::T>(detail::hk_bits(v));
+        const bool in = uint32_t(k) < uint32_t(N);
+        const int kk = in ? k : 0;
+        const float v = *detail::hk_st_elem(src, kk / ST::cols, kk % ST::cols);
+        dst.data[a][j][e] = detail::hk_from_bits<typename D::T>(detail::hk_bits(in ? v : 0.f));
     });
 }
-/** @brief hk lds_store_elems: val(r, c)'s bits to dst's element idx(r, c) (row-major; OOB: none). */
+/** @brief hk lds_load_elems(runs=True): each lane's run 4 elements at a time, one 16-byte read from each
+ * 16-byte-aligned index (OOB -> 0). A 16x16 subtile's 16 columns are contiguous, so an aligned 4 is too. */
+template<ducks::rs::all D, typename ST, ducks::rs::all I>
+__device__ static inline void lds_load_elems_runs(D &dst, ST &src, const I &idx) {
+    static_assert(D::run % 4 == 0, "runs of 4");
+    constexpr int N = ST::rows * ST::cols;
+    typedef float hk_f4 __attribute__((ext_vector_type(4)));
+    typedef __attribute__((address_space(3))) hk_f4 hk_lds_f4;
+    #pragma unroll
+    for (int a = 0; a < D::rows; a++) {
+        #pragma unroll
+        for (int j = 0; j < D::chunks; j++) {
+            #pragma unroll
+            for (int q = 0; q < D::run / 4; q++) {
+                const int k = idx.data[a][j][4 * q];
+                const bool in = uint32_t(k) < uint32_t(N);
+                const int kk = in ? k : 0;
+                const hk_f4 v = *(hk_lds_f4 *)detail::hk_st_elem(src, kk / ST::cols, kk % ST::cols);
+                #pragma unroll
+                for (int e = 0; e < 4; e++)
+                    dst.data[a][j][4 * q + e] = detail::hk_from_bits<typename D::T>(detail::hk_bits(in ? v[e] : 0.f));
+            }
+        }
+    }
+}
+/** @brief hk lds_store_elems: val(r, c)'s bits to dst's element idx(r, c) (row-major; OOB: none). A bf16
+ * tile takes the value (fp32) rounded to bf16 -- an MMA operand built element by element. */
 template<typename ST, ducks::rs::all V, ducks::rs::all I>
 __device__ static inline void lds_store_elems(ST &dst, const V &val, const I &idx) {
     constexpr int N = ST::rows * ST::cols;
     detail::strip_each<V>([&](int a, int j, int e) {
         const int k = idx.data[a][j][e];
-        if (k >= 0 && k < N)
-            *detail::hk_st_elem(dst, k / ST::cols, k % ST::cols) =
-                detail::hk_from_bits<float>(detail::hk_bits(val.data[a][j][e]));
+        if (k >= 0 && k < N) {
+            const float v = detail::hk_from_bits<float>(detail::hk_bits(val.data[a][j][e]));
+            if constexpr (std::is_same_v<typename ST::dtype, bf16>) {
+                const int r = k / ST::cols, c = k % ST::cols;
+                const int sub = (r / ST::underlying_subtile_rows) * ST::underlying_subtiles_per_row +
+                                c / ST::underlying_subtile_cols;
+                const uint32_t off = ST::swizzle({r % ST::underlying_subtile_rows, c % ST::underlying_subtile_cols});
+                typedef __attribute__((address_space(3))) char lds_char;
+                typedef __attribute__((address_space(3))) uint16_t lds_u16;
+                const bf16 h = detail::hk_cvt<bf16, float>(v);
+                *(lds_u16 *)((lds_char *)&dst.data[0] + sub * ST::underlying_subtile_bytes + off) =
+                    __builtin_bit_cast(uint16_t, h);
+            } else {
+                *detail::hk_st_elem(dst, k / ST::cols, k % ST::cols) = v;
+            }
+        }
     });
 }
 /** @brief hk.iota: element (r, c) = c, the column a lane's run element sits in. */
@@ -3258,10 +3300,31 @@ __device__ static inline void load_elems(D &dst, const GL &src, const I &idx) {
 }
 /** @brief hk.store_elems(runs=True): each lane's run to the consecutive elements from idx of its first
  * element, as one store of the run's bytes (masked by that index). */
+namespace detail {
+/** One row of the tensor as the buffer: the base formed in 64 bits (a tensor may span far past a
+ *  32-bit offset), the range that row. */
+template<ducks::gl::all GL> __device__ inline hk_i32x4 hk_elems_srsrc_row(const GL &g, int row) {
+    using U = typename GL::dtype;
+    const uint64_t rs = uint64_t(g.row_stride()) * sizeof(U);
+    return hk_srsrc(reinterpret_cast<const char *>(g.raw_ptr) + uint64_t(uint32_t(row)) * rs, rs);
+}
+}  // namespace detail
+template<int AUX = 0, ducks::gl::all GL, ducks::rs::all V, ducks::rs::all I>
+__device__ static inline void store_elems_runs(const GL &dst, const V &val, const I &idx,
+                                               const detail::hk_i32x4 r);
 template<int AUX = 0, ducks::gl::all GL, ducks::rs::all V, ducks::rs::all I>
 __device__ static inline void store_elems_runs(const GL &dst, const V &val, const I &idx) {
+    store_elems_runs<AUX>(dst, val, idx, detail::hk_elems_srsrc(dst));
+}
+/** @brief store_elems_runs, the indices counting from row `row` (hk_elems_srsrc_row). */
+template<int AUX = 0, ducks::gl::all GL, ducks::rs::all V, ducks::rs::all I>
+__device__ static inline void store_elems_runs(const GL &dst, const V &val, const I &idx, int row) {
+    store_elems_runs<AUX>(dst, val, idx, detail::hk_elems_srsrc_row(dst, row));
+}
+template<int AUX, ducks::gl::all GL, ducks::rs::all V, ducks::rs::all I>
+__device__ static inline void store_elems_runs(const GL &dst, const V &val, const I &idx,
+                                               const detail::hk_i32x4 r) {
     using U = typename GL::dtype;
-    const detail::hk_i32x4 r = detail::hk_elems_srsrc(dst);
     #pragma unroll
     for (int a = 0; a < V::rows; a++) {
         #pragma unroll
@@ -3289,9 +3352,56 @@ __device__ static inline void store_elems_runs(const GL &dst, const V &val, cons
 }
 /** @brief hk.store_elems: val's element (r, c) to dst's element idx(r, c), flat; out of range: none. */
 template<int AUX = 0, ducks::gl::all GL, ducks::rs::all V, ducks::rs::all I>
+__device__ static inline void store_elems(const GL &dst, const V &val, const I &idx,
+                                          const detail::hk_i32x4 r);
+template<int AUX = 0, ducks::gl::all GL, ducks::rs::all V, ducks::rs::all I>
 __device__ static inline void store_elems(const GL &dst, const V &val, const I &idx) {
+    store_elems<AUX>(dst, val, idx, detail::hk_elems_srsrc(dst));
+}
+/** @brief load_elems, the indices counting from row `row` (hk_elems_srsrc_row). */
+template<int AUX = 0, ducks::rs::all D, ducks::gl::all GL, ducks::rs::all I>
+__device__ static inline void load_elems(D &dst, const GL &src, const I &idx, int row) {
     using U = typename GL::dtype;
-    const detail::hk_i32x4 r = detail::hk_elems_srsrc(dst);
+    const detail::hk_i32x4 r = detail::hk_elems_srsrc_row(src, row);
+    detail::strip_each<D>([&](int a, int j, int e) {
+        dst.data[a][j][e] = detail::hk_cvt<typename D::T, U>(
+            detail::hk_buf_load_elem<U, AUX>(r, detail::hk_elem_off(idx.data[a][j][e], sizeof(U))));
+    });
+}
+/** @brief hk.load_elems(runs=True): each lane's run from the consecutive elements from idx of its first
+ * element, as one load of the run's bytes; a first index out of range reads the run as 0. */
+template<int AUX = 0, ducks::rs::all D, ducks::gl::all GL, ducks::rs::all I>
+__device__ static inline void load_elems_runs(D &dst, const GL &src, const I &idx, const detail::hk_i32x4 r) {
+    using U = typename GL::dtype;
+    #pragma unroll
+    for (int a = 0; a < D::rows; a++) {
+        #pragma unroll
+        for (int j = 0; j < D::chunks; j++) {
+            U run[D::run];
+            detail::hk_buf_load_bytes<D::run * sizeof(U), AUX>(r, detail::hk_elem_off(idx.data[a][j][0], sizeof(U)), run);
+            #pragma unroll
+            for (int e = 0; e < D::run; e++) dst.data[a][j][e] = detail::hk_cvt<typename D::T, U>(run[e]);
+        }
+    }
+}
+template<int AUX = 0, ducks::rs::all D, ducks::gl::all GL, ducks::rs::all I>
+__device__ static inline void load_elems_runs(D &dst, const GL &src, const I &idx) {
+    load_elems_runs<AUX>(dst, src, idx, detail::hk_elems_srsrc(src));
+}
+/** @brief load_elems_runs, the indices counting from row `row` (hk_elems_srsrc_row). */
+template<int AUX = 0, ducks::rs::all D, ducks::gl::all GL, ducks::rs::all I>
+__device__ static inline void load_elems_runs(D &dst, const GL &src, const I &idx, int row) {
+    load_elems_runs<AUX>(dst, src, idx, detail::hk_elems_srsrc_row(src, row));
+}
+/** @brief store_elems, the indices counting from row `row` (hk_elems_srsrc_row). */
+template<int AUX = 0, ducks::gl::all GL, ducks::rs::all V, ducks::rs::all I>
+__device__ static inline void store_elems(const GL &dst, const V &val, const I &idx, int row) {
+    store_elems<AUX>(dst, val, idx, detail::hk_elems_srsrc_row(dst, row));
+}
+template<int AUX, ducks::gl::all GL, ducks::rs::all V, ducks::rs::all I>
+__device__ static inline void store_elems(const GL &dst, const V &val, const I &idx,
+                                          const detail::hk_i32x4 r) {
+    using U = typename GL::dtype;
     detail::strip_each<V>([&](int a, int j, int e) {
         detail::hk_buf_store_elem<U, AUX>(r, detail::hk_elem_off(idx.data[a][j][e], sizeof(U)),
                                           detail::hk_cvt<U, typename V::T>(val.data[a][j][e]));

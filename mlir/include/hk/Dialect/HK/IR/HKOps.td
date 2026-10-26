@@ -903,9 +903,12 @@ def HK_LdsLoadElemsOp : HK_Op<"lds_load_elems"> {
     idx[r, c] of `src`, counted row-major (r * cols + c) through the tile's
     own swizzle; an index below zero or past the tile reads 0. Plain LDS
     reads the compiler waits for itself; another warp's writes need a
-    drained barrier between.
+    drained barrier between. `runs`: each lane's run (a multiple of 4) is
+    read 4 elements at a time from the consecutive elements at its
+    16-byte-aligned indices, one 16-byte read each, 0 where that index is
+    out of range.
   }];
-  let arguments = (ins HK_SharedTileType:$src, HK_RegTileType:$idx);
+  let arguments = (ins HK_SharedTileType:$src, HK_RegTileType:$idx, UnitAttr:$runs);
   let results = (outs HK_RegTileType:$result);
   let assemblyFormat = [{
     $src `[` $idx `]` attr-dict `:` qualified(type($src)) `,` qualified(type($idx)) `->` qualified(type($result))
@@ -944,12 +947,17 @@ def HK_LoadElemsOp : HK_Op<"load_elems"> {
     Element (r, c) of the result is element `idx[r, c]` of `src`, counted
     flat over the tensor (rows over batch and depth, at the row stride) and
     converted to the result's type; an index below zero or past the tensor
-    reads 0. `idx` is an i32 strip of the result's shape and run.
+    reads 0. `idx` is an i32 strip of the result's shape and run. `runs`: each
+    lane's run is read from the consecutive elements from its first element's
+    index (the kernel says so), as one load of the run's bytes; a first index
+    out of range reads the run as 0. `row`: the indices count from row `row`
+    (its base formed in 64 bits), as for hk.store_elems.
   }];
-  let arguments = (ins HK_GlobalType:$src, HK_RegTileType:$idx, DefaultValuedAttr<I64Attr, "0">:$aux);
+  let arguments = (ins HK_GlobalType:$src, HK_RegTileType:$idx, DefaultValuedAttr<I64Attr, "0">:$aux,
+                       UnitAttr:$runs, Optional<I32>:$row);
   let results = (outs HK_RegTileType:$result);
   let assemblyFormat = [{
-    $src `[` $idx `]` attr-dict `:` qualified(type($src)) `,` qualified(type($idx)) `->` qualified(type($result))
+    $src `[` $idx `]` (`row` $row^)? attr-dict `:` qualified(type($src)) `,` qualified(type($idx)) `->` qualified(type($result))
   }];
   let hasVerifier = 1;
 }
@@ -962,12 +970,15 @@ def HK_StoreElemsOp : HK_Op<"store_elems"> {
     below zero or past the tensor writes nothing -- a mask is an index of -1.
     Two elements to one index race. `runs`: each lane's run goes to the
     consecutive elements from its first element's index (the kernel says so),
-    as one store of the run's bytes, masked by that first index.
+    as one store of the run's bytes, masked by that first index. `row`: the
+    indices count from row `row` of `dst` (its base is formed in 64 bits, the
+    range is that one row): a tensor far past a 32-bit offset, addressed a row
+    at a time.
   }];
   let arguments = (ins HK_GlobalType:$dst, HK_RegTileType:$val, HK_RegTileType:$idx, DefaultValuedAttr<I64Attr, "0">:$aux,
-                       UnitAttr:$runs);
+                       UnitAttr:$runs, Optional<I32>:$row);
   let assemblyFormat = [{
-    $val `,` $dst `[` $idx `]` attr-dict `:` qualified(type($val)) `,` qualified(type($dst)) `,` qualified(type($idx))
+    $val `,` $dst `[` $idx `]` (`row` $row^)? attr-dict `:` qualified(type($val)) `,` qualified(type($dst)) `,` qualified(type($idx))
   }];
   let hasVerifier = 1;
 }

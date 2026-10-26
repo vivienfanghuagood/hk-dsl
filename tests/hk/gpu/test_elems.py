@@ -1,7 +1,8 @@
 """Element-wise exchange on gfx950: tagged mailbox pairs between CTAs (Global.post_elems /
 take_elems, one element a pair or runs of pairs of pairs, bf16 two a pair), an fp32 LDS tile
 addressed element by element (SharedTile.load_elems / store_elems), and store_elems(runs=True)
--- the hand-offs of DeepSeek-V4.1's K1 in hk."""
+-- the hand-offs of DeepSeek-V4.1's K1 in hk. Then the forms its index chain needed: load_elems(runs=True)
+(global and LDS), indices from a row past 4 GB (row=), and a bf16 LDS tile built element by element."""
 
 from __future__ import annotations
 
@@ -105,3 +106,99 @@ def test_store_elems_runs_is_one_store_a_run_and_packs_fp8():
     want8 = runs.to(torch.float8_e4m3fn).view(torch.uint8).clone()
     want8[58] = 0
     assert torch.equal(o8.cpu().view(torch.uint8).view(64, 8), want8)
+
+
+R = hk.RS(hk.fp32, 1, 256, 4)
+
+
+@pytest.mark.parametrize("dt", [torch.float32, torch.bfloat16])
+def test_load_elems_runs_is_one_load_a_run(dt):
+    """Run r of a lane's strip from run slot 63 - r (8 or 4 elements apart); run 5's first index is
+    out of range, so the whole run reads 0."""
+    S8 = S if dt == torch.float32 else hk.RS(hk.fp32, 1, 512, 8)
+    hdt = hk.fp32 if dt == torch.float32 else hk.bf16
+
+    def body(x: hk.Tensor[hdt], o: hk.Tensor[hk.fp32]):
+        c = hk.iota(S8)
+        o.at[0, 0].store(x.load_elems(hk.map_cpp("(x0 / 8) == 5 ? 4096 : (63 - x0 / 8) * 8", c), runs=True))
+
+    k = hk.kernel(body, warps=1, name=f"load_runs_{hdt.name}", grid=lambda p: (1, 1, 1))
+    x = torch.randn(1, 512, generator=torch.Generator(device="cpu").manual_seed(12)).to(dt)
+    o = torch.full((1, 512), -1.0, device="cuda")
+    k(x.cuda(), o)
+    torch.cuda.synchronize()
+    want = x.float().view(64, 8).flip(0).clone()
+    want[5] = 0.0
+    assert torch.equal(o.cpu().view(64, 8), want)
+
+
+def test_row_indices_reach_past_4gb():
+    """store_elems / load_elems(row=r) count from row r, whose base is formed in 64 bits: a row 4.7 GB
+    into the tensor, where a 32-bit offset (or a descriptor sized by the whole tensor) wraps."""
+    rows, cols = 1_200_000, 1024                                  # 4.9 GB of fp32
+    if torch.cuda.mem_get_info()[0] < rows * cols * 4 + (1 << 30):
+        pytest.skip("needs 6 GB free")
+
+    def body(x: hk.Tensor[hk.fp32], big: hk.Tensor[hk.fp32], rr: hk.Tensor[i32], o: hk.Tensor[hk.fp32]):
+        c = hk.iota(S)
+        r = rr.at[0].load_scalar()
+        big.store_elems(x.at[0, 0].load(S), hk.map_cpp("x0 + 256", c), runs=True, row=r)
+        o.at[0, 0].store(big.load_elems(hk.map_cpp("x0 + 256", c), runs=True, row=r))
+
+    k = hk.kernel(body, warps=1, name="rows_past_4g", grid=lambda p: (1, 1, 1))
+    big = torch.zeros(rows, cols, device="cuda")
+    r = 1_150_000
+    x = torch.randn(1, 512, generator=torch.Generator(device="cpu").manual_seed(13))
+    o = torch.zeros(1, 512, device="cuda")
+    k(x.cuda(), big, torch.tensor([r], dtype=torch.int32, device="cuda"), o)
+    torch.cuda.synchronize()
+    assert torch.equal(big[r, 256:768].cpu(), x[0])
+    assert torch.equal(o.cpu(), x)
+    assert int((big[:, :256] != 0).sum()) == 0 and int((big[r - 1] != 0).sum()) == 0
+    del big
+
+
+def test_lds_load_elems_runs_reads_16_bytes_a_four():
+    st = hk.ST(hk.fp32, 64, 16)                                   # 16 columns: flat indices are linear
+
+    def body(x: hk.Tensor[hk.fp32], o: hk.Tensor[hk.fp32]):
+        s = hk.lds.alloc(st, name="s")
+        c = hk.iota(S)
+        s.store_elems(x.at[0, 0].load(S), c)
+        s.store_elems(x.at[0, 512].load(S), hk.map_cpp("x0 + 512", c))
+        hk.arch.barrier(drain=True)
+        q = hk.iota(R)
+        # run r (4 elements) from run slot 255 - r; run 9's first index is past the tile: 0
+        o.at[0, 0].store(s.load_elems(hk.map_cpp("(x0 / 4) == 9 ? 1024 : (255 - x0 / 4) * 4", q), runs=True))
+
+    k = hk.kernel(body, warps=1, name="lds_load_runs", grid=lambda p: (1, 1, 1))
+    x = torch.randn(1, 1024, generator=torch.Generator(device="cpu").manual_seed(14))
+    o = torch.full((1, 1024), -1.0, device="cuda")
+    k(x.cuda(), o)
+    torch.cuda.synchronize()
+    want = x.view(256, 4).flip(0).clone()
+    want[9] = 0.0
+    assert torch.equal(o.cpu()[0, :1024].view(256, 4), want)
+
+
+def test_a_bf16_lds_tile_built_element_by_element_is_an_mma_operand():
+    """SharedTile.store_elems into a bf16 tile rounds to nearest even; the tile then loads as a
+    register tile (an MMA operand) like any other."""
+    st = hk.ST(hk.bf16, 16, 32)
+    T = hk.RT(hk.bf16, 16, 32, "row")
+
+    def body(x: hk.Tensor[hk.fp32], o: hk.Tensor[hk.bf16]):
+        s = hk.lds.alloc(st, name="s")
+        c = hk.iota(S)
+        s.store_elems(x.at[0, 0].load(S), hk.map_cpp("x0 % 13 == 0 ? -1 : x0", c))   # masked: untouched
+        hk.arch.barrier(drain=True)
+        o.at[0, 0].store(s.load(T))
+
+    k = hk.kernel(body, warps=1, name="bf16_lds_elems", grid=lambda p: (1, 1, 1))
+    x = torch.randn(1, 512, generator=torch.Generator(device="cpu").manual_seed(15)) * 3
+    o = torch.zeros(16, 32, dtype=torch.bfloat16, device="cuda")
+    k(x.cuda(), o)
+    torch.cuda.synchronize()
+    got = o.cpu().view(-1)
+    live = torch.arange(512) % 13 != 0
+    assert torch.equal(got[live], x[0][live].bfloat16())

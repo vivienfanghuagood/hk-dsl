@@ -529,3 +529,41 @@ def test_mailbox_elems_want_a_scoped_tensor_and_bf16_runs():
         o.at[0, 0].store(box.take_elems(c, 1, runs=True, bf16=True))
     src = _src950(ok)
     assert "post_elems_runs<" in src and "take_elems_runs<" in src
+
+
+def test_elems_take_runs_and_a_row_and_lds_runs_want_fours():
+    S4 = hk.RS(hk.fp32, 1, 256, 4)
+
+    def ok(x: hk.Tensor[hk.fp32], r: hk.Tensor[hk.i32], o: hk.Tensor[hk.fp32]):
+        c = hk.iota(S4)
+        row = r.at[0].load_scalar()
+        v = x.load_elems(c, runs=True) + x.load_elems(c, runs=True, row=row) + x.load_elems(c, row=row)
+        s = hk.lds.alloc(hk.ST(hk.fp32, 64, 16), name="s")
+        s.store_elems(v, c)
+        o.store_elems(s.load_elems(c, runs=True), c, runs=True, row=row)
+    src = _src950(ok)
+    assert "kittens::load_elems_runs<0>(" in src and "kittens::lds_load_elems_runs(" in src
+    assert "kittens::load_elems_runs<0>(elems1, g.x, iota, scalar);" in src    # the row, a 4th argument
+    assert "kittens::load_elems<0>(elems2, g.x, iota, scalar);" in src
+    assert "kittens::store_elems_runs<0>(g.o, ldse, iota, scalar);" in src
+
+    def lds2(x: hk.Tensor[hk.fp32], o: hk.Tensor[hk.fp32]):
+        c = hk.iota(hk.RS(hk.fp32, 1, 128, 2))
+        s = hk.lds.alloc(hk.ST(hk.fp32, 16, 16), name="s")
+        o.at[0, 0].store(s.load_elems(c, runs=True))
+    with pytest.raises(TypeError, match="runs of 4"):
+        _src950(lds2)
+
+
+def test_a_bf16_lds_tile_takes_element_stores_not_loads():
+    def st(x: hk.Tensor[hk.fp32], o: hk.Tensor[hk.bf16]):
+        s = hk.lds.alloc(hk.ST(hk.bf16, 16, 32), name="s")
+        s.store_elems(x.at[0, 0].load(S64), hk.iota(S64))
+        o.at[0, 0].store(s.load(hk.RT(hk.bf16, 16, 32, "row")))
+    assert "kittens::lds_store_elems(" in _src950(st)
+
+    def ld(x: hk.Tensor[hk.fp32], o: hk.Tensor[hk.fp32]):
+        s = hk.lds.alloc(hk.ST(hk.bf16, 16, 32), name="s")
+        o.at[0, 0].store(s.load_elems(hk.iota(S64)))
+    with pytest.raises(Exception, match="fp32 LDS tile"):
+        _src950(ld)
