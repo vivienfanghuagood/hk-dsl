@@ -819,6 +819,29 @@ static LogicalResult verifyReduce(OpT op, bool colKind) {
                             << ", not " << got;
   if (op.getAccumulate() && !op.getDst())
     return op.emitOpError("accumulate needs a destination to fold into");
+  if (auto order = op.getOrder()) {
+    if (!colKind)
+      return op.emitOpError("an order is for row reductions");
+    if (!src.isStrip())
+      return op.emitOpError("an order is for strips: a WMMA tile's reduction "
+                            "order is its layout's");
+    auto [lanes, offs] = order->split(':');
+    if (lanes != "seq" && lanes != "tree")
+      return op.emitOpError("order \"") << *order << "\": the lane part is seq or tree";
+    SmallVector<StringRef> parts;
+    offs.split(parts, ',');
+    unsigned seen = 0;
+    for (StringRef p : parts) {
+      unsigned v = 0;
+      if (p.getAsInteger(10, v) || v == 0 || v > 32 || (v & (v - 1)) || (seen & v))
+        return op.emitOpError("order \"") << *order
+               << "\": the offsets are 1 2 4 8 16 32, each once";
+      seen |= v;
+    }
+    if (seen != 63)
+      return op.emitOpError("order \"") << *order
+             << "\": every offset 1 2 4 8 16 32 once (a wave of 64 lanes)";
+  }
   return success();
 }
 
