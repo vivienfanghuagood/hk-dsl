@@ -38,7 +38,7 @@ def decode_gemm_kernel(name: str, *, tokens: int = 1, slices: int = 4,
                        warps: int = 16, combine_depth: int = 0,
                        resident: int = 0, splits: int = 1,
                        max_vgprs: int = 256, min_occupancy: int = 1,
-                       arch: Optional[str] = None, epilogue=None):
+                       arch: Optional[str] = None, epilogue=None, op_dtype=bf16):
     """`tokens` 16-row token tiles (M <= 16*tokens), `slices` 16-deep K slices
     per load, `warps` waves sharing each 16-row block of W.
 
@@ -70,8 +70,10 @@ def decode_gemm_kernel(name: str, *, tokens: int = 1, slices: int = 4,
     kc = 16 * slices
     tgt = get_target(arch or current_arch())
 
-    ty_w = hk.RT(bf16, 16, kc, "row")
-    ty_x = hk.RT(bf16, m_rows, kc, "row")
+    if op_dtype is not bf16 and (op_dtype.name not in tgt.mma or tgt.wave != 32):
+        raise ValueError(f"op_dtype={op_dtype}: {tgt.arch} has no such WMMA")
+    ty_w = hk.RT(op_dtype, 16, kc, "row")
+    ty_x = hk.RT(op_dtype, m_rows, kc, "row")
     ty_acc = hk.RT(fp32, 16, m_rows, "col")      # C^T: W rows x tokens
     ty_out = hk.RT(fp32, m_rows, 16, "row")      # its transpose
     st_part = hk.ST(fp32, m_rows, 16)
@@ -133,7 +135,7 @@ def decode_gemm_kernel(name: str, *, tokens: int = 1, slices: int = 4,
             return None
         return epilogue.early(c, ops, ty_out, 0, hk.arch.block_idx.x * 16)
 
-    def body(x: hk.Tensor[bf16], w: hk.Tensor[bf16], c: hk.Tensor[bf16], **ops):
+    def body(x: hk.Tensor[op_dtype], w: hk.Tensor[op_dtype], c: hk.Tensor[bf16], **ops):
         pre = early(c, ops)
 
         def finish(out, n0):
@@ -141,7 +143,7 @@ def decode_gemm_kernel(name: str, *, tokens: int = 1, slices: int = 4,
 
         partial(x, w, 0, x.cols // (kc * warps), finish)
 
-    def body_split(x: hk.Tensor[bf16], w: hk.Tensor[bf16], c: hk.Tensor[bf16],
+    def body_split(x: hk.Tensor[op_dtype], w: hk.Tensor[op_dtype], c: hk.Tensor[bf16],
                    ws: hk.Tensor[fp32], cnt: hk.Tensor[i32], **ops):
         s = hk.arch.block_idx.y
         per = x.cols // splits

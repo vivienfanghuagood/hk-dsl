@@ -753,8 +753,27 @@ def _scale_ab_bias(acc, ctx):
     return acc * ctx.scale_a * ctx.scale_b + ctx.bias
 
 
-@functools.lru_cache(maxsize=None)
-def _scaled_kernel(op: str, with_bias: bool, block_m: int):
+#: Up to this many rows, hk.ops.decode_gemm's kernel with fp8 operands: W
+#: streamed straight into registers, no LDS, a 16-row block of W a
+#: workgroup and K split over its warps -- the shape of a decode step, where
+#: reading W is the whole cost. Swept on the R9700 (slices 2/4/8, warps 8/16,
+#: resident 0/2; tools/rdna4-probes/fp8_decode.py), us, no scales:
+#:
+#:     M x N x K         decode s8 w8   scaled_mm's 128-row tile   FlyDSL's fp8 GEMM
+#:     1x4096x4096           15.4              37.4                     --
+#:     32x4096x4096          19.2              37.8                    64.5
+#:     32x14336x4096         48.1              89.2                    63.5
+#:     32x4096x14336         45.6              83.8                    93.6
+#:     64x14336x4096        110.4              99.2                   136.1
+#:
+#: At 64 rows the tiled kernel is ahead again. (W fits the 64 MB Infinity
+#: Cache across back-to-back calls here, so the rates are a cache's; the
+#: ratios are between kernels reading the same W the same way.)
+FP8_DECODE_M = 32
+FP8_DECODE = dict(slices=8, warps=8, combine_depth=0, resident=0, splits=1)
+
+
+def _scale_epilogue(with_bias: bool):
     import torch  # noqa: PLC0415
 
     # The module, not the package's `gemm` (the template object of that name).
@@ -765,9 +784,29 @@ def _scaled_kernel(op: str, with_bias: bool, block_m: int):
     ops = {"scale_a": torch.empty(2, 1, device="meta"), "scale_b": torch.empty(3, device="meta")}
     if with_bias:
         ops["bias"] = torch.empty(3, dtype=torch.bfloat16, device="meta")
-    ep = bind(_scale_ab_bias if with_bias else _scale_ab, ops, 2, 3, bf16)
+    return bind(_scale_ab_bias if with_bias else _scale_ab, ops, 2, 3, bf16)
+
+
+@functools.lru_cache(maxsize=None)
+def _scaled_kernel(op: str, with_bias: bool, block_m: int):
+    ep = _scale_epilogue(with_bias)
     return gemm_kernel(f"scaled_mm_{op}_{'bias' if with_bias else 'nobias'}_m{block_m}",
                        op_dtype=DTYPES[op], epilogue=ep, **dict(FP8_DEFAULT, block_m=block_m)), ep
+
+
+@functools.lru_cache(maxsize=None)
+def _scaled_decode_kernel(op: str, with_bias: bool, tokens: int):
+    from . import decode_gemm  # noqa: PLC0415
+
+    ep = _scale_epilogue(with_bias)
+    return decode_gemm.decode_gemm_kernel(
+        f"scaled_mm_decode_{op}_{'bias' if with_bias else 'nobias'}_t{tokens}",
+        tokens=tokens, op_dtype=DTYPES[op], epilogue=ep, **FP8_DECODE), ep
+
+
+def _fp8_decodes(m: int, n: int, k: int) -> bool:
+    return m <= FP8_DECODE_M and n % 16 == 0 and not k % (
+        16 * FP8_DECODE["slices"] * FP8_DECODE["warps"])
 
 
 def _fp8_block_m(m: int) -> int:
@@ -783,6 +822,8 @@ def scaled_mm(a, b, scale_a, scale_b, *, bias=None, out=None):
     `scale_a` is one value or one a row of A ((M,) or (M, 1)); `scale_b` one
     value or one a row of B ((N,) or (1, N)) -- per-tensor or per-token x
     per-channel, the two forms vLLM's fp8 linear layers use. `bias` is (N,).
+    Up to FP8_DECODE_M rows, with K a multiple of 1024, it runs
+    hk.ops.decode_gemm's kernel instead of the tiled one.
     gfx1201 only: gfx1100 has no fp8 WMMA, and gfx950's fp8 GEMMs are
     hk.ops.gemm_cdna's.
     """
@@ -819,7 +860,12 @@ def scaled_mm(a, b, scale_a, scale_b, *, bias=None, out=None):
                              f"{length}")
         return t.reshape(length)
 
-    kern, ep = _scaled_kernel(op, bias is not None, _fp8_block_m(m))
+    if _fp8_decodes(m, n, k):
+        from .decode_gemm import tokens_for  # noqa: PLC0415
+
+        kern, ep = _scaled_decode_kernel(op, bias is not None, tokens_for(m))
+    else:
+        kern, ep = _scaled_kernel(op, bias is not None, _fp8_block_m(m))
     if out is None:
         out = torch.empty(m, n, device=a.device, dtype=torch.bfloat16)
     elif out.shape != (m, n) or out.dtype != torch.bfloat16:
