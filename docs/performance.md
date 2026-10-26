@@ -6,8 +6,9 @@ was copied from; the source has the harness in
 `tools/hk-bench/`, the raw output and the caveats. The two GPU
 families are kept apart, because nothing measured on one says anything about
 the other: [Part A](#part-a-rdna3-gfx1100-one-w7900d) is RDNA3 (one Radeon PRO
-W7900D) and [Part B](#part-b-cdna4-gfx950-one-mi355x) is CDNA4 (one Instinct
-MI355X). Each part goes level by level: end to end in each engine, kernels
+W7900D), [Part B](#part-b-cdna4-gfx950-one-mi355x) is CDNA4 (one Instinct
+MI355X) and [Part C](#part-c-rdna4-gfx1201-one-radeon-ai-pro-r9700) is RDNA4 (one
+Radeon AI PRO R9700). Each part goes level by level: end to end in each engine, kernels
 against the tuned field, kernels inside the engines against what the engine
 calls, and the losses. Results that newer ones replaced are in
 [the appendix](#appendix-superseded-results).
@@ -29,6 +30,7 @@ is a time ratio.
   - [B2. Kernels against the tuned field](#b2-kernels-against-the-tuned-field)
   - [B3. Kernels inside the engine](#b3-kernels-inside-the-engine)
   - [B4. Losses and no-headroom findings](#b4-losses-and-no-headroom-findings)
+- [Part C: RDNA4 (gfx1201, one Radeon AI PRO R9700)](#part-c-rdna4-gfx1201-one-radeon-ai-pro-r9700)
 - [Appendix: superseded results](#appendix-superseded-results)
 
 ## How the numbers are taken
@@ -1039,6 +1041,26 @@ nothing to give, and some kernels lose:
   shapes it is 0.98-1.00x the best.
 - **Not measured**: SGLang on gfx950, fp16 in hk's attention backend (so it
   cannot run with AWQ models), and gfx942 (no MI300X was available).
+
+## Part C: RDNA4 (gfx1201, one Radeon AI PRO R9700)
+
+One R9700 of a shared box, rocm/pytorch rocm7.2.3 (torch 2.10.0, hipBLASLt and
+rocBLAS of ROCm 7.2.3, triton 3.6.0; no FlyDSL). Nothing here is tuned for
+gfx1201: hk runs gfx1100's plans and schedules
+([chapter 48](history/48-gfx1201-ceilings-and-first-scoreboard.md)).
+
+The card: bf16 WMMA 197 TFLOP/s (twice gfx1100's a CU), fp8 372, iu8 374
+TOP/s; an add 1.81 TB/s inside the 64 MB Infinity Cache, 0.62 TB/s past it.
+
+| out of the box, against the best other arm | ratio |
+|---|---|
+| GEMM, five 2048-4096-row Llama/Qwen shapes, vs hipBLASLt and Triton (tuned) | 1.06-1.08x (144 TFLOP/s at 4096³) |
+| GEMM in the linear layer's layout (NT) vs rocBLAS / hipBLASLt, 16-8192 rows | 1.05-2.9x |
+| the same libraries free to pick a layout (a transposed weight) | ties from 1024 rows; 0.57-0.88x below 256 |
+| attention n4096 GQA 4, causal / full, vs AOTriton | 3.33x / 1.87x |
+| softmax 2048 / 8192 rows; RMSNorm 1-8192 rows | 1.19x / tie; tie to 1.07x |
+| fused add + RMSNorm 1 / 2048 rows | 1.09x / 1.02x |
+| fused add + RMSNorm 32 / 8192 rows (losses) | 0.88x (Inductor) / 0.93x (tuned Triton) |
 
 ## Appendix: superseded results
 

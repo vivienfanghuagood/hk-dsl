@@ -330,6 +330,10 @@ def linear_ratio(routes: List[dict]) -> Optional[Tuple[float, str]]:
 PEAKS: Dict[str, Tuple[float, float, str]] = {
     "gfx1100": (122.6e12, 864e9, "the W7900D's bf16 WMMA peak and GDDR6, 384 bits at "
                                  "18 Gbps (tools/hk-bench/_rounds.py)"),
+    "gfx1201": (197e12, 640e9, "the R9700 measured: back-to-back bf16 WMMAs on every CU, "
+                               "197.1 TFLOP/s (the datasheet's 191 is at the boost clock); "
+                               "GDDR6 at 20 Gbps x 256 bits (a copy past the 64 MB "
+                               "Infinity Cache moves 0.62 TB/s)"),
     "gfx950": (2.48e15, 6.6e12, "the MI355X measured (tools/cdna-probes/peaks.hip): a "
                                 "register-only v_mfma_f32_32x32x16_bf16 loop on every CU, "
                                 "2471-2484 TFLOP/s sustained for 0.1 s at 2381-2396 MHz "

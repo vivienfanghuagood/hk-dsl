@@ -32,6 +32,8 @@ from typing import Any, Dict
 CARDS = {
     "gfx950": dict(cus=256, peak=2.3e15, bw=6.5e12, lds=163840, launch=3e-6, c0=40.0),
     "gfx1100": dict(cus=96, peak=1.0e14, bw=8.0e11, lds=65536, launch=4e-6, c0=20.0),
+    # the R9700: 197 TFLOP/s measured, 0.62 TB/s past the cache; c0 is gfx1100's, not fitted
+    "gfx1201": dict(cus=64, peak=1.97e14, bw=6.2e11, lds=65536, launch=4e-6, c0=20.0),
 }
 
 

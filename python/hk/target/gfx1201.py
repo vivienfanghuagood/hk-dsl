@@ -67,6 +67,17 @@ GFX1201 = Target(
     strips=True,
 )
 
+#: Measured on a Radeon AI PRO R9700, for reporting a result as a percentage of
+#: what the part can do: back-to-back WMMAs, no memory, on every CU (bf16 and
+#: fp16 ~197-199 TFLOP/s, fp8 372, iu8 374 TOP/s -- twice gfx1100's a CU), and
+#: a copy past the 64 MB Infinity Cache (GDDR6's 640 GB/s datasheet).
+CEILINGS = {
+    "wmma_bf16_tflops": 197.1,
+    "wmma_fp8_tflops": 371.8,
+    "wmma_i8_tops": 373.8,
+    "hbm_gbps": 620.0,
+}
+
 #: The compiler can hoist a WMMA above an s_wait_dscnt because the wait
 #: carries no register dependence, as on gfx1100 (gfx1100.py). include/rdna4's
 #: lds_wait_for binds the fragments after every wait.

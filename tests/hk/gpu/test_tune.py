@@ -23,8 +23,8 @@ from hk.tune import records  # noqa: E402
 pytestmark = pytest.mark.gpu
 
 ARCH = current_arch()
-if ARCH not in ("gfx950", "gfx1100"):
-    pytest.skip(f"hk.tune's GEMM spaces are gfx950's and gfx1100's, not {ARCH}",
+if ARCH not in ("gfx950", "gfx1100", "gfx1201"):
+    pytest.skip(f"hk.tune's GEMM spaces are gfx950's, gfx1100's and gfx1201's, not {ARCH}",
                 allow_module_level=True)
 
 

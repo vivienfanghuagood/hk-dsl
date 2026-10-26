@@ -35,7 +35,7 @@ K_NOISE = 2.0
 #: Headroom over the card's peak before a round is "faster than the card".
 CEILING_MARGIN = 1.15
 #: Dense bf16 peaks, FLOP/s (the datasheets'; tools/hk-bench/_rounds.CARDS).
-PEAK_FLOPS = {"gfx950": 2.52e15, "gfx1100": 122.6e12}
+PEAK_FLOPS = {"gfx950": 2.52e15, "gfx1100": 122.6e12, "gfx1201": 197e12}
 
 
 def median(xs: Sequence[float]) -> float:

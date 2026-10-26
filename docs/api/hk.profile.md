@@ -262,6 +262,18 @@ compiler's, from the build row, where hk built it).
   "cache_bytes": 268435456,
   "source": "MI355X measured (hk.integration.headroom.PEAKS: a register-only v_mfma bf16 loop on every CU, 2.47-2.48 PFLOP/s; a 1 GiB read past the 256 MB Infinity Cache, 6.54-6.60 TB/s); cache-resident 9.1 TB/s (hk.check.CARDS). fp8 is 2x bf16 (datasheet ratio, not measured)"
  },
+ "gfx1201": {
+  "matrix_flops": {
+   "bf16": 197000000000000.0,
+   "fp16": 198500000000000.0,
+   "fp8": 372000000000000.0,
+   "i8": 374000000000000.0
+  },
+  "dram_bytes_s": 640000000000.0,
+  "cache_bytes_s": 1810000000000.0,
+  "cache_bytes": 67108864,
+  "source": "Radeon AI PRO R9700 measured: back-to-back WMMAs on every CU (bf16 197.1, fp16 198.5, fp8 371.8 TFLOP/s, iu8 373.8 TOP/s); GDDR6 20 Gbps x 256 bits (0.62 TB/s reached past the 64 MB cache); the fastest cache-resident rate measured, an add at 48 MB, 1.81 TB/s (hk.check.CARDS)"
+ },
  "gfx1100": {
   "matrix_flops": {
    "bf16": 122600000000000.0,

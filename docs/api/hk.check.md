@@ -227,6 +227,12 @@ Each card's ceilings, for the bandwidth and FLOP rates the summary prints (tools
   "cache_bytes": 100663296,
   "bf16_flops": 122600000000000.0
  },
+ "gfx1201": {
+  "dram_bytes_s": 640000000000.0,
+  "cache_bytes_s": 1810000000000.0,
+  "cache_bytes": 67108864,
+  "bf16_flops": 197000000000000.0
+ },
  "gfx950": {
   "dram_bytes_s": 8000000000000.0,
   "cache_bytes_s": 9100000000000.0,

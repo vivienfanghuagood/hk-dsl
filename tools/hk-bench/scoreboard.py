@@ -859,9 +859,11 @@ def probe_ceilings(rounds, calls):
         # On gfx950 copy_ is a DMA memcpy, which leaves no kernel record:
         # a one-input elementwise kernel moves the same bytes. And an
         # in-place add there, a += b, three tensors' bytes over a footprint
-        # of two: what the in-place fused add does.
+        # of two: what the in-place fused add does. gfx1201's copy_ (ROCm
+        # 7.2.3) is a DMA too, so the neg stands in wherever copy_ left none.
         wide = _rounds.IC_BYTES > 128 * 2**20
-        copy = (lambda: torch.neg(x, out=y)) if wide else (lambda: y.copy_(x))
+        dma = not gpu_rounds({"copy": lambda: y.copy_(x)}, 1, 1)["copy"][1][0]
+        copy = (lambda: torch.neg(x, out=y)) if wide or dma else (lambda: y.copy_(x))
         fns = {"copy": copy, "add": lambda: torch.add(a, b, out=c)}
         if wide:
             p, q = (torch.randn(fp // 4, device="cuda", dtype=BF16) for _ in range(2))

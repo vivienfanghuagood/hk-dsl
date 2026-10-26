@@ -24,7 +24,7 @@ import time
 from typing import Callable, Dict, List, Optional
 
 #: Bytes of weights one pass streams: three times the arch's Infinity Cache.
-ROTATE = {"gfx950": 3 * 256 * 2**20, "gfx1100": 3 * 96 * 2**20}
+ROTATE = {"gfx950": 3 * 256 * 2**20, "gfx1100": 3 * 96 * 2**20, "gfx1201": 3 * 64 * 2**20}
 MAX_COPIES = 48
 #: Relative max error a candidate may have against fp32 (the route tools').
 TOL = 2e-2
