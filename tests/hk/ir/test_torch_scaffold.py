@@ -73,7 +73,11 @@ def test_the_registration_uses_a_fragment_not_a_whole_namespace():
 
 def test_the_launch_is_on_torchs_stream():
     src = scaffold.torch_library(_add.trace())
-    assert "launch_on(g, c10::hip::getCurrentHIPStream());" in src
+    assert "launch_on(g, hk_stream());" in src
+    # hk_stream is torch's current stream under either spelling of its ROCm
+    # headers: c10::hip's (hipified the old way) or c10::cuda's (TheRock).
+    assert "return c10::hip::getCurrentHIPStream();" in src
+    assert "return c10::cuda::getCurrentCUDAStream();" in src
     # ... and never the no-stream form, which is the default stream.
     assert "launch(g)" not in src
 
