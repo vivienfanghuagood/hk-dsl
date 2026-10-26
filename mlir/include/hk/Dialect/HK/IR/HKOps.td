@@ -848,9 +848,13 @@ class HK_ReduceOp<string mnemonic> : HK_Op<mnemonic> {
   let description = [{
     `row_*` reduces along each row and gives one value per row -- a column
     vector. `accumulate` folds into `dst` instead of overwriting it.
+    `order` (row reductions of strips only), "seq|tree:o1,o2,...": a lane's
+    own values left to right or as a balanced tree, then the lanes combined
+    over the xor offsets o1, o2, ... in that order (each of 1 2 4 8 16 32
+    once) -- for a result that must match another kernel bit for bit.
   }];
   let arguments = (ins Optional<HK_RegVecType>:$dst, HK_RegTileType:$src,
-                       UnitAttr:$accumulate);
+                       UnitAttr:$accumulate, OptionalAttr<StrAttr>:$order);
   let results = (outs Optional<HK_RegVecType>:$result);
   let assemblyFormat = [{
     $src (`into` $dst^)? attr-dict `:` qualified(type($src)) (`into` qualified(type($dst))^)?

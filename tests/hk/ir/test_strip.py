@@ -303,3 +303,57 @@ def test_the_16_byte_rope_reads_its_positions_through_the_scalar_cache(monkeypat
     src = scaffold.bare(fused._rotary16_kernel("rot16_t", hk.bf16, 1, True).trace())
     assert "kittens::load_scalar_invariant(g.pos" in src
     assert "kittens::rotate_half<128>(" in src
+
+
+# ---------------------------------------------------------------- a stated reduction order
+
+S64 = hk.RS(hk.fp32, 1, 512, 8)
+
+
+def _ordered(lanes="seq", xor=(32, 16, 8, 4, 2, 1)):
+    def ordered_sum(x: hk.Tensor[hk.fp32], o: hk.Tensor[hk.fp32]):
+        row = hk.arch.block_idx.x
+        v = x.at[row, 0].load(S64)
+        s = (v * v).sum(axis=1, lanes=lanes, xor=xor)
+        w = hk.zeros(S64)
+        w += s                                  # the row's sum in every column
+        o.at[row, 0].store(w)
+    return hk.kernel(ordered_sum, arch="gfx950", warps=1, name="ordered_sum",
+                     grid=lambda p: (p.x.rows, 1, 1))
+
+
+def test_a_stated_order_emits_the_ordered_reduction():
+    src = _ordered().source()
+    assert "kittens::row_sum_ordered<1, 32, 16, 8, 4, 2, 1>(" in src
+    assert "kittens::row_sum_ordered<0, 1, 2, 4, 8, 16, 32>(" in _ordered("tree", (1, 2, 4, 8, 16, 32)).source()
+
+
+def test_an_unstated_order_is_hks_own():
+    def plain(x: hk.Tensor[hk.fp32], o: hk.Tensor[hk.fp32]):
+        v = x.at[hk.arch.block_idx.x, 0].load(S64)
+        w = hk.zeros(S64)
+        w += v.sum(axis=1)
+        o.at[hk.arch.block_idx.x, 0].store(w)
+    src = hk.kernel(plain, arch="gfx950", warps=1, name="plain_sum", grid=lambda p: (1, 1, 1)).source()
+    assert "kittens::row_sum(" in src and "_ordered" not in src
+
+
+@pytest.mark.parametrize("xor, lanes", [((32, 16, 8, 4, 2), "seq"), ((1, 1, 2, 4, 8, 16), "seq"),
+                                        ((32, 16, 8, 4, 2, 1), "left")])
+def test_a_stated_order_names_every_offset_once(xor, lanes):
+    with pytest.raises((ValueError, TypeError)):
+        _ordered(lanes, xor).source()
+
+
+def test_a_stated_order_is_for_a_strips_rows_on_gfx950():
+    def cols(x: hk.Tensor[hk.fp32], o: hk.Tensor[hk.fp32]):
+        v = x.at[0, 0].load(S64)
+        o.at[0, 0].store(v.sum(axis=0, lanes="seq"))
+    with pytest.raises(TypeError, match="rows of a strip"):
+        hk.kernel(cols, arch="gfx950", warps=1, name="cols", grid=lambda p: (1, 1, 1)).source()
+
+    def wave32(x: hk.Tensor[hk.fp32], o: hk.Tensor[hk.fp32]):
+        v = x.at[0, 0].load(hk.RS(hk.fp32, 1, 256))
+        o.at[0, 0] = v.sum(axis=1, lanes="seq", xor=(16, 8, 4, 2, 1, 32))
+    with pytest.raises(TypeError, match="gfx950"):
+        hk.kernel(wave32, arch="gfx1100", warps=1, name="w32", grid=lambda p: (1, 1, 1)).source()

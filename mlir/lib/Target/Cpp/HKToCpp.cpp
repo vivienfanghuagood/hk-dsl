@@ -1556,6 +1556,20 @@ private:
           std::vector<std::string> args{name(o.getSrc())};
           if (o.getAccumulate())
             args.push_back(name(d));
+          if (auto order = o.getOrder()) {
+            // row_sum_ordered<SEQ, offsets...>: verified "seq|tree:o1,o2,..."
+            auto [lanes, offs] = order->split(':');
+            std::string tmpl = lanes == "seq" ? "1" : "0";
+            SmallVector<StringRef> parts;
+            offs.split(parts, ',');
+            for (StringRef p : parts)
+              tmpl += ", " + p.str();
+            std::vector<std::string> all{name(d)};
+            all.insert(all.end(), args.begin(), args.end());
+            w("kittens::" + o->getName().stripDialect().str() + "_ordered<" + tmpl + ">(" +
+              join(all) + ");");
+            return;
+          }
           call(o->getName().stripDialect(), d, args);
         })
         .Case<AddRowOp, SubRowOp, MulRowOp, DivRowOp, AddColOp, SubColOp,
