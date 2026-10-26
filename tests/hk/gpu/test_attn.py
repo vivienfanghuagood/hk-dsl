@@ -19,6 +19,8 @@ one, so every causal shape here is square and the two agree.
 
 from __future__ import annotations
 
+import os
+
 import pytest
 
 torch = pytest.importorskip("torch")
@@ -259,3 +261,33 @@ def test_equal_scores_give_the_mean_of_v():
     rel = ((got - want).abs() / want.abs().clamp_min(1e-6)).max().item()
     # One bf16 ulp of the output, which is the floor for anything writing bf16.
     assert rel < 2 ** -7, f"relative error {rel:.3e}"
+
+
+@pytest.mark.skipif(os.environ.get("HK_ARCH") != "gfx950", reason="attn_cdna's numbering")
+@pytest.mark.parametrize("b, h, h_kv, n, causal", [
+    (1, 40, 40, 4097, False), (2, 48, 48, 2048, False), (1, 64, 64, 5000, True),
+    (1, 40, 8, 4096, False), (3, 24, 3, 777, True), (1, 9, 9, 300, False)])
+def test_the_spatial_numbering_is_bitwise_the_default_s(b, h, h_kv, n, causal):
+    """attn_cdna's mapping="spatial" runs the same tiles in another order: every output
+    bit the same as the default numbering's, ragged N, batch, GQA and head counts that
+    are not multiples of 8 included."""
+    from hk.ops import attn_cdna
+
+    q, k, v = _qkv(b, h, n, h_kv=h_kv)
+    outs = []
+    for mapping in attn_cdna.MAPPINGS:
+        o = torch.full_like(q, 7.0)
+        opts = {} if mapping == "block_first" else {"mapping": mapping}
+        attn_cdna.kernel_for(D_HEAD, causal, **opts)(q, k, v, o)
+        outs.append(o)
+    assert torch.equal(outs[0], outs[1])
+
+
+@pytest.mark.skipif(os.environ.get("HK_ARCH") != "gfx950", reason="attn_cdna's numbering")
+def test_a_call_routed_to_the_spatial_numbering_is_right():
+    """40 KV heads, non-causal: attn_cdna.mapping_for picks "spatial"; hk.attention's
+    answer against fp32 SDPA."""
+    from hk.ops import attn_cdna
+
+    assert attn_cdna.mapping_for(1, 40, 2048, False) == "spatial"
+    _run(1, 40, 2048)

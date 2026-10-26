@@ -186,3 +186,87 @@ def test_hk_attention_routes_to_it_on_gfx950(monkeypatch):
     assert attn._kernel_for(64, True, None).name == "attn_fwd_d64_causal_cdna"
     monkeypatch.setattr(target, "current_arch", lambda: "gfx1100")
     assert not attn._kernel_for(64, True, None).name.endswith("_cdna")
+
+
+# -- the spatial numbering ----------------------------------------------------
+
+
+@pytest.mark.parametrize("batch,h,h_kv,n_t", [
+    (1, 128, 128, 128), (2, 40, 40, 17), (1, 64, 8, 32), (4, 8, 1, 64), (1, 28, 4, 9),
+    (3, 24, 24, 5), (1, 8, 8, 1), (1, 2, 1, 3)])
+def test_the_spatial_numbering_is_a_bijection_one_cluster_an_xcd_at_a_time(batch, h, h_kv, n_t):
+    """Every (batch, head, query tile) once, whatever the total's remainder
+    mod 8; each XCD's workgroups (w = d, d + 8, ...) a contiguous run of
+    clusters in order, so its resident ones read as few K/V streams as the
+    split allows; the XCDs' loads differ by at most one."""
+    group = h // h_kv
+    total = batch * h * n_t
+    got = [attn_cdna._spatial(w, batch, h_kv, group, n_t) for w in range(total)]
+    assert {(b, hd, t) for b, _, hd, t in got} == {
+        (b, hd, t) for b in range(batch) for hd in range(h) for t in range(n_t)}
+    assert all(hd // group == kv for _, kv, hd, _ in got)
+    loads = [len(range(d, total, 8)) for d in range(8)]
+    assert max(loads) - min(loads) <= 1
+    for d in range(8):
+        clusters = [(got[w][0], got[w][1]) for w in range(d, total, 8)]
+        # a cluster is entered once and left for good
+        runs = [c for i, c in enumerate(clusters) if i == 0 or c != clusters[i - 1]]
+        assert len(runs) == len(set(runs))
+
+
+@pytest.mark.parametrize("d", attn_cdna.HEAD_DIMS)
+@pytest.mark.parametrize("causal", [False, True])
+def test_the_spatial_kernel_is_the_same_kernel_on_a_flat_grid(d, causal):
+    """Only the numbering differs: the same copies and masks, one more name."""
+    base = scaffold.bare(attn_cdna.attn_kernel(f"attn_t_bf_{d}_{int(causal)}", head_dim=d,
+                                               causal=causal, arch="gfx950").trace())
+    sp = attn_cdna.attn_kernel(f"attn_t_sp_{d}_{int(causal)}", head_dim=d, causal=causal,
+                               mapping="spatial", arch="gfx950")
+    src = scaffold.bare(sp.trace())
+    for op in ("kittens::group_load_async<8>(", "kittens::triu(", "kittens::lower_fill(",
+               "__builtin_amdgcn_s_barrier()"):
+        assert src.count(op) == base.count(op), op
+    assert "blockIdx.z" in base and "blockIdx.z" not in src
+
+
+def test_the_spatial_paged_prefill_traces_and_is_its_own_kernel():
+    a = attn_cdna.paged_kernel_for(128)
+    b = attn_cdna.paged_kernel_for(128, mapping="spatial")
+    assert a is not b and b.name == "paged_prefill_d128_cdna_spatial"
+    assert b is attn_cdna.paged_kernel_for(128, mapping="spatial")
+    attn_cdna.attn_kernel("paged_t_sp", causal=True, paged=True, mapping="spatial",
+                          arch="gfx950").trace()
+
+
+def test_an_unknown_mapping_is_refused():
+    with pytest.raises(ValueError, match="mapping"):
+        attn_cdna.attn_kernel("attn_t_bad", mapping="head_first", arch="gfx950")
+
+
+def test_the_route_picks_spatial_where_it_was_measured_to_win():
+    """attn_cdna.mapping_for against the MI355X sweep (tools/hk-bench/attn_mapping.py):
+    block-first where it holds at most two KV streams an XCD (GQA-8, 16 KV heads) and for
+    short causal grids; spatial from five streams an XCD on."""
+    m = attn_cdna.mapping_for
+    assert m(1, 8, 32768, False) == m(1, 8, 32768, True) == "block_first"
+    assert m(8, 1, 32768, True) == "block_first"
+    assert m(1, 16, 131072, False) == "block_first"
+    assert m(1, 40, 8192, False) == "spatial"
+    assert m(1, 40, 8192, True) == "block_first"        # -10% measured
+    assert m(2, 40, 8192, True) == "block_first"        # -2% measured (10 rounds)
+    assert m(1, 64, 8192, True) == "block_first"        # -2% measured
+    assert m(1, 48, 16384, True) == m(1, 96, 8192, True) == "spatial"   # +1.5%, +1.9%
+    assert m(1, 64, 8192, False) == m(1, 128, 8192, True) == "spatial"
+
+
+def test_hk_attention_routes_by_the_mapping_on_gfx950(monkeypatch):
+    from hk import target
+    from hk.ops import attn
+
+    monkeypatch.setattr(target, "current_arch", lambda: "gfx950")
+    assert attn._kernel_for(128, False, None, mapping="spatial").name == \
+        "attn_fwd_d128_cdna_mappingspatial"
+    assert attn._kernel_for(128, False, None).name == "attn_fwd_d128_cdna"
+    monkeypatch.setattr(target, "current_arch", lambda: "gfx1100")
+    with pytest.raises(ValueError, match="gfx950"):
+        attn._kernel_for(128, False, None, mapping="spatial")

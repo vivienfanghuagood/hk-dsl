@@ -12,6 +12,8 @@ not this one's), and rows that belong to no prefill (left untouched).
 
 from __future__ import annotations
 
+import os
+
 import pytest
 
 torch = pytest.importorskip("torch")
@@ -121,3 +123,26 @@ def test_every_gqa_group(group):
 def test_head_dim_64():
     got, want, _ = _run([(70, 250)], head_dim=64)
     assert _rel(got, want) < 2e-2
+
+
+@pytest.mark.skipif(os.environ.get("HK_ARCH") != "gfx950", reason="attn_cdna's numbering")
+@pytest.mark.parametrize("h_kv,group", [(40, 1), (8, 4), (3, 2)])
+def test_the_spatial_numbering_is_bitwise_the_default_s(h_kv, group):
+    """attn_cdna's mapping="spatial" runs the same tiles in another order: every output
+    bit the same as the default numbering's, on a ragged batch with cached prefixes."""
+    from hk.ops import attn_cdna
+
+    reqs = [(64, 100), (300, 50), (0, 600), (33, 1)]
+    q, k_cache, v_cache, table, lens, q_start = _case(reqs, h_kv=h_kv, group=group)
+    n_tok, h, d = q.shape
+    tiles = pp.work_list([(r, reqs[r][1]) for r in range(len(reqs))], q.device)
+    outs = []
+    for mapping in attn_cdna.MAPPINGS:
+        out = torch.full_like(q, 7.0)
+        attn_cdna.paged_kernel_for(d, mapping=mapping)(
+            q.view(n_tok, h * d), k_cache, v_cache, table, lens, q_start, tiles,
+            out.view(n_tok, h * d))
+        outs.append(out)
+    assert torch.equal(outs[0], outs[1])
+    want = _reference(q, k_cache, v_cache, table, lens, q_start, group)
+    assert _rel(outs[1], want) < 2e-2
