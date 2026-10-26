@@ -139,10 +139,11 @@ def HK_LoadRowsOp : HK_Op<"load_rows"> {
     `load ... bounded` with a runtime limit as well as the global's: a tile
     whose rows end before the tensor's -- a query tile of one request running
     into the next request's tokens -- reads zeros past `rows` and never
-    touches that memory. `rows` counts from the tile's first row.
+    touches that memory. `rows` counts from the tile's first row. `aux`: a
+    scoped tensor's access bits, as for hk.load.
   }];
   let arguments = (ins Optional<HK_RegTileType>:$dst, HK_GlobalType:$src,
-                       HK_CoordType:$idx, I32:$rows);
+                       HK_CoordType:$idx, I32:$rows, DefaultValuedAttr<I64Attr, "0">:$aux);
   let results = (outs Optional<HK_RegTileType>:$result);
   let assemblyFormat = [{
     $src `[` $idx `]` `rows` $rows (`into` $dst^)? attr-dict `:` qualified(type($src)) `,`
@@ -950,9 +951,12 @@ def HK_StoreElemsOp : HK_Op<"store_elems"> {
     Element (r, c) of `val`, converted to the tensor's type, is written to
     element `idx[r, c]` of `dst` (counted as for hk.load_elems); an index
     below zero or past the tensor writes nothing -- a mask is an index of -1.
-    Two elements to one index race.
+    Two elements to one index race. `runs`: each lane's run goes to the
+    consecutive elements from its first element's index (the kernel says so),
+    as one store of the run's bytes, masked by that first index.
   }];
-  let arguments = (ins HK_GlobalType:$dst, HK_RegTileType:$val, HK_RegTileType:$idx, DefaultValuedAttr<I64Attr, "0">:$aux);
+  let arguments = (ins HK_GlobalType:$dst, HK_RegTileType:$val, HK_RegTileType:$idx, DefaultValuedAttr<I64Attr, "0">:$aux,
+                       UnitAttr:$runs);
   let assemblyFormat = [{
     $val `,` $dst `[` $idx `]` attr-dict `:` qualified(type($val)) `,` qualified(type($dst)) `,` qualified(type($idx))
   }];

@@ -1456,7 +1456,7 @@ zero or past the tensor reads 0 -- a table lookup with a fallback, a key table's
 #### `Global.store_elems`
 
 ```python
-Global.store_elems(self, val: Tile, idx: Tile) -> None
+Global.store_elems(self, val: Tile, idx: Tile, *, runs: bool = False) -> None
 ```
 
 *New after 0.7.0*
@@ -1466,13 +1466,17 @@ i32 strip), converted to this tensor's type, to element `idx[r, c]` (flat, as
 load_elems). An index below zero or past the tensor writes nothing: -1 masks an element
 out. Two elements to one index race.
 
+`runs=True`: the kernel says each lane's run goes to consecutive elements from its first
+element's index, aligned to the run's bytes; the run is one store (1, 2, 4, 8 or 16 k
+bytes), masked by that first index -- 8 fp8 values in one 8-byte store, not eight.
+
 #### `Global.post_elems`
 
 ```python
 Global.post_elems(self, val: Tile, idx: Tile, tag) -> None
 ```
 
-*New after 0.5.0*
+*New after 0.7.0*
 
 Tagged mailbox pairs, an element at a time (gfx950): element (r, c) of `val` (fp32 or i32
 strip) and `tag` go to pair `idx[r, c]` of this scoped int32 tensor (int32 elements 2 i,
@@ -1486,7 +1490,7 @@ other side, one poll (dsv41_mono's Mailbox; hk.comm.post for one scalar).
 Global.take_elems(self, idx: Tile, tag, dtype: Optional[DType] = None, *, timeout_s: float = 2.0) -> Tile
 ```
 
-*New after 0.5.0*
+*New after 0.7.0*
 
 The other side of post_elems: element (r, c) is the value of pair `idx[r, c]` once its tag
 is `tag`; every element's pair is loaded with the tensor's scope, and all are re-loaded
@@ -1673,7 +1677,7 @@ An LDS tile, or a stack of them (`As[i]` picks one).
 SharedTile.load_elems(self, idx: Tile, dtype: Optional[DType] = None) -> Tile
 ```
 
-*New after 0.5.0*
+*New after 0.7.0*
 
 Element by element from this fp32 LDS tile (gfx950): element (r, c) of the result is
 element `idx[r, c]` (row-major, through the tile's swizzle) -- fp32, or its bits as i32 with
@@ -1687,7 +1691,7 @@ warp's writes need hk.arch.barrier(drain=True) between.
 SharedTile.store_elems(self, val: Tile, idx: Tile) -> None
 ```
 
-*New after 0.5.0*
+*New after 0.7.0*
 
 Element by element into this fp32 LDS tile (gfx950): val's element (r, c) (fp32, or i32
 bits) to element `idx[r, c]` (row-major); below zero or past the tile, nothing. Before
