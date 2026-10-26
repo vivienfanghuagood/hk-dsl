@@ -5134,6 +5134,7 @@ row-wise and elementwise ops are being unified by the `hk.templates` work.
 - [`hk.ops.dequantize`](#hkopsdequantize)
 - [`hk.ops.matmul`](#hkopsmatmul)
 - [`hk.ops.attention`](#hkopsattention)
+- [`hk.ops.scaled_mm`](#hkopsscaled_mm)
 - [`hk.ops.sdpa.scaled_dot_product_attention`](#hkopssdpascaled_dot_product_attention)
 - [`hk.ops.paged.split_kernel`](#hkopspagedsplit_kernel)
 - [`hk.ops.paged.fused_kernel`](#hkopspagedfused_kernel)
@@ -5463,6 +5464,27 @@ are bounded: any non-empty length. head_dim is 64 or 128 on both.
 | shape | n_q >= 192 (one Q tile) and n_kv >= 32 (one KV block) | any non-empty length |
 | head_dim | 64 or 128 | 64 or 128 |
 | numerics | dense online softmax | lazily rescaled softmax (threshold 8): same math, different bits |
+
+## Also exported
+
+### `hk.ops.scaled_mm`
+
+```python
+hk.ops.scaled_mm(a, b, scale_a, scale_b, *, bias=None, out=None)
+```
+
+*New after 0.7.0*
+
+bf16 (A @ B.T) * scale_a * scale_b (+ bias), fp8 operands, fp32
+accumulate: torch._scaled_mm's product with hk.ops.matmul's layout.
+
+`a` is (M, K) and `b` (N, K), both float8_e4m3fn or both float8_e5m2 (OCP;
+the WMMA is v_wmma_f32_16x16x16_fp8_fp8 or bf8_bf8, twice the bf16 rate).
+`scale_a` is one value or one a row of A ((M,) or (M, 1)); `scale_b` one
+value or one a row of B ((N,) or (1, N)) -- per-tensor or per-token x
+per-channel, the two forms vLLM's fp8 linear layers use. `bias` is (N,).
+gfx1201 only: gfx1100 has no fp8 WMMA, and gfx950's fp8 GEMMs are
+hk.ops.gemm_cdna's.
 
 ## In the submodules
 

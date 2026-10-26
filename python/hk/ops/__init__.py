@@ -19,7 +19,7 @@ from .elementwise import (
     sub,
 )
 from .fused import rope, rotary, silu_mul
-from .gemm import matmul
+from .gemm import matmul, scaled_mm
 from .norm import fused_add_rms_norm, layernorm, rms_norm, rmsnorm, softmax
 from .quant import dequantize, quantize
 
@@ -31,6 +31,6 @@ __all__ = [
     "rmsnorm", "layernorm", "softmax", "rms_norm", "fused_add_rms_norm",
     "silu_mul", "rope", "rotary",
     "quantize", "dequantize",
-    "matmul",
+    "matmul", "scaled_mm",
     "attention",
 ]
