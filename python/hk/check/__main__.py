@@ -333,6 +333,10 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--arch", help="build for this arch (comma list: one report each, "
                                   "built only where the GPU is another arch)")
     p.add_argument("--dump", choices=("ir", "cpp"), help="print a raw kernel's IR or C++ and exit")
+    p.add_argument("--placement", action="store_true",
+                   help="check that every launched kernel's workgroup placement "
+                        "(hk.dsl.placement) covers its grid exactly once, at these inputs, "
+                        "and exit (a raw kernel needs no GPU)")
     p.add_argument("--profile", action="store_true",
                    help="then run hk.profile on the first case: counters, the thread "
                         "trace, the main loop's instructions and a verdict "
@@ -405,6 +409,44 @@ def _multi_arch(args, argv: List[str]) -> int:
     return code
 
 
+def _placement(fn, cfg, args, consts, mod) -> int:
+    """--placement: hk.dsl.placement.check_kernel for every kernel a case
+    launches -- a raw kernel on its inputs' shapes (no GPU: the inputs are
+    made on the CPU), a function by recording what it launches (GPU)."""
+    import hk  # noqa: PLC0415
+    from hk import check as hkc  # noqa: PLC0415
+    from hk.dsl import placement as P  # noqa: PLC0415
+
+    cases = [make_inputs(s) for s in args.inputs] if args.inputs else \
+        [cfg.get("inputs") or getattr(mod, "inputs", None)]
+    raw = isinstance(fn, hk.Kernel)
+    bad = 0
+    for i, case in enumerate(cases):
+        if case is None:
+            raise SystemExit("hk.check --placement: no inputs; pass --inputs")
+        if raw and getattr(case, "spec", None):
+            # Only the shapes matter: no tensors made, so no torch needed.
+            launches = [(fn, tuple(tuple(it["shape"]) for it in parse_spec(case.spec)
+                                   if "shape" in it), consts)]
+        elif raw:
+            tensors = hkc._call_maker(case, "cpu")
+            tensors = tensors if isinstance(tensors, (list, tuple)) else [tensors]
+            launches = [(fn, tuple(tuple(t.shape) for t in tensors), consts)]
+        else:
+            tensors = hkc._call_maker(case, "cuda")
+            tensors = tensors if isinstance(tensors, (list, tuple)) else [tensors]
+            with P.recording() as launches:
+                fn(*tensors, **consts)
+        for k, shapes, kc in launches:
+            try:
+                for line in P.check_kernel(k, shapes, kc):
+                    print(f"case {i}: {line}")
+            except AssertionError as e:
+                bad += 1
+                print(f"case {i}: FAILED {e}")
+    return 1 if bad else 0
+
+
 def main(argv: Optional[List[str]] = None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
     args = build_parser().parse_args(argv)
@@ -435,6 +477,9 @@ def main(argv: Optional[List[str]] = None) -> int:
             raise SystemExit("hk.check: --dump needs an @hk.kernel target")
         print(fn.trace(**consts).dump() if args.dump == "ir" else fn.source(**consts))
         return 0
+
+    if args.placement:
+        return _placement(fn, cfg, args, consts, mod)
 
     outputs = cfg.pop("outputs", None)
     if args.outputs:

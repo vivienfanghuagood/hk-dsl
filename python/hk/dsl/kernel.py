@@ -113,13 +113,26 @@ def verify_error(e: Exception) -> VerifyError:
     return VerifyError(msg)
 
 
+#: hk.dsl.placement.recording(): the launches (kernel, tensor shapes,
+#: constexprs) made while it is open, for checks that need to know which
+#: kernels a function launches. None (the usual case) costs one test a launch.
+_RECORDING: Optional[List] = None
+
+
 class TracedKernel:
     """One specialization of a kernel, traced and lowered: its hk module and
     what the module boundary needs to know about it."""
 
     def __init__(self, name: str, arch: str, warps: int, consts: Dict[str, Any],
-                 tensors: List, module: ir.Module, grid: Tuple = ()):
+                 tensors: List, module: ir.Module, grid: Tuple = (),
+                 analysis=None, plan=None, logical_grid: Tuple = ()):
         self.name = name
+        #: hk.dsl.placement: what the analysis found (hk.kernel(placement=...)
+        #: only), the plan the rewrite installed (None: the identity), and the
+        #: grid as the body numbers it (before the rewrite flattened it).
+        self.analysis = analysis
+        self.plan = plan
+        self.logical_grid = tuple(logical_grid) or tuple(grid)
         self.arch = arch
         self.warps = warps
         self.consts = consts
@@ -222,6 +235,7 @@ class Kernel:
         noalias: bool = False,
         preload: bool = False,
         resident: bool = False,
+        placement=None,
     ):
         self.fn = fn
         #: Preprocessor definitions ahead of the includes, for this kernel's
@@ -255,6 +269,19 @@ class Kernel:
         #: deadlocks. A launch whose grid exceeds what fits (the CUs times the
         #: workgroups a CU holds by registers and LDS) is refused.
         self.resident = resident
+        #: Which XCD runs which workgroup (hk.dsl.placement): None (as the
+        #: hardware deals them), an hk.Placement (always), or "auto" (the
+        #: analysis's cluster placement where hk.dsl.placement.choose takes it,
+        #: per launch geometry). Outputs are the same either way.
+        if placement is not None and placement != "auto":
+            from .placement import Placement  # noqa: PLC0415
+
+            if not isinstance(placement, Placement):
+                raise TypeError(f"{self.name if name else fn.__name__}: placement= is None, "
+                                f"'auto' or an hk.Placement, got {placement!r}")
+        self.placement = placement
+        self._placed: Optional["Kernel"] = None
+        self._choices: Dict[Tuple, Any] = {}
         self.signature = inspect.signature(fn)
         self._tensors, self._defaults = self._split_params()
         self._ir_cache: Dict[Tuple, TracedKernel] = {}
@@ -374,6 +401,16 @@ class Kernel:
                 func_d.ReturnOp([], loc=ir.Location.unknown())
             grid = self._trace_grid(consts)
             build_grid(mod, self.name, self._tensors, grid)
+        logical, analysis, plan = grid, None, None
+        if self.placement is not None:
+            from . import placement as P  # noqa: PLC0415
+
+            with M.context():
+                analysis = P.analyze(mod, self.name)
+                if isinstance(self.placement, P.Placement):
+                    plan = P.make_plan(self.placement, analysis, P.xcd_count(arch))
+                    if plan is not None:
+                        grid = P.rewrite(mod, self.name, self._tensors, grid, plan)
         try:
             with M.context():
                 mod.operation.verify()
@@ -382,7 +419,7 @@ class Kernel:
             raise verify_error(e) from None
         traced = self._ir_cache[key] = TracedKernel(
             self.name, arch, self.warps, dict(consts), list(self._tensors), mod,
-            grid)
+            grid, analysis=analysis, plan=plan, logical_grid=logical)
         return traced
 
     def _trace_grid(self, consts: Dict[str, Any]):
@@ -461,7 +498,8 @@ class Kernel:
                 self.fn, arch=self._arch, warps=self.warps, grid=self.grid_fn,
                 name=self.name, max_vgprs=self.max_vgprs,
                 min_occupancy=self.min_occupancy, defines=self.defines,
-                noalias=self.noalias, preload=True, resident=self.resident)
+                noalias=self.noalias, preload=True, resident=self.resident,
+                placement=self.placement)
             self._preloaded._defaults = dict(self._defaults)
         return self._preloaded
 
@@ -504,6 +542,12 @@ class Kernel:
             )
         if _symmetric._RANGES:   # symmetric memory is open: it must bind to scoped parameters
             _symmetric.check_bindings(self.name, self._tensors, tensors)
+        if _RECORDING is not None:
+            _RECORDING.append((self, tuple(tuple(t.shape) for t in tensors), dict(const_overrides)))
+        if self.placement == "auto":
+            k = self._auto_pick(tensors, const_overrides)
+            if k is not self:
+                return k(*tensors, **const_overrides)
         try:
             launch = self._launch_cache[tuple(const_overrides.items())]
         except (KeyError, TypeError):
@@ -538,6 +582,64 @@ class Kernel:
             return launch(*tensors)
 
         return checked
+
+    def placed(self, placement=None) -> "Kernel":
+        """This kernel with `placement` (default: the analysis's cluster
+        placement) installed: its own name (a suffix for the placement),
+        traces and builds, the same body."""
+        from . import placement as P  # noqa: PLC0415
+
+        pl = placement or P.Placement.cluster()
+        if placement is None and self._placed is not None:
+            return self._placed
+        k = type(self)(
+            self.fn, arch=self._arch, warps=self.warps, grid=self.grid_fn,
+            name=self.name + pl.suffix(P.xcd_count(self.arch)), max_vgprs=self.max_vgprs,
+            min_occupancy=self.min_occupancy, defines=self.defines, noalias=self.noalias,
+            preload=self.preload, resident=self.resident, placement=pl)
+        k._defaults = dict(self._defaults)
+        if placement is None:
+            self._placed = k
+        return k
+
+    def placement_choice(self, *tensors: Any, **const_overrides: Any):
+        """hk.dsl.placement.choose for these tensors: whether
+        placement="auto" launches the cluster placement, and why."""
+        from . import placement as P  # noqa: PLC0415
+
+        if self.resident:
+            return P.Choice(False, "resident=True: its workgroups wait on each other")
+        traced = self.trace(**const_overrides)
+        an = traced.analysis
+        if an is None:
+            from .placement import analyze  # noqa: PLC0415
+
+            with M.context():
+                an = analyze(traced.module, traced.name)
+        xcds = P.xcd_count(traced.arch)
+        names = [n for n, _ in self._tensors]
+        ext = {n: (1,) * (4 - t.dim()) + tuple(t.shape) for n, t in zip(names, tensors)}
+        grid = tuple(x if isinstance(x, int) else x.value(ext) for x in traced.logical_grid)
+        plan = None
+        if an.kind == "cluster" and not an.order_dependent and xcds > 1:
+            plan = P.make_plan(P.Placement.cluster(), an, xcds)
+        radii = {r.emit(): r.value(ext) for _, r in (plan.radii if plan else ())}
+        per_xcd = 1
+        if plan is not None:
+            ck = ("resident",) + tuple(sorted(const_overrides.items()))
+            if ck not in self._choices:
+                self._choices[ck] = max(1, self.resident_capacity(**const_overrides) // xcds)
+            per_xcd = self._choices[ck]
+        return P.choose(an, plan, grid, radii, xcds, per_xcd)
+
+    def _auto_pick(self, tensors, const_overrides) -> "Kernel":
+        key = (tuple(tuple(t.shape) for t in tensors), tuple(const_overrides.items()))
+        k = self._choices.get(key)
+        if k is None:
+            k = self.placed() if self.placement_choice(*tensors, **const_overrides).placed \
+                else self
+            self._choices[key] = k
+        return k
 
     def resident_capacity(self, **const_overrides: Any) -> int:
         """How many workgroups of this kernel the current GPU holds at once:
@@ -634,6 +736,7 @@ class Kernel:
                 name=self.name, max_vgprs=self.max_vgprs,
                 min_occupancy=self.min_occupancy, defines=self.defines,
                 noalias=self.noalias, preload=self.preload, resident=self.resident,
+                placement=self.placement,
             )
             k._defaults = dict(key)
             self._spec_cache[key] = k
@@ -647,17 +750,19 @@ def kernel(fn=None, *, arch: Optional[str] = None, warps: int = 1, grid=None,
            name: Optional[str] = None, max_vgprs: Optional[int] = None,
            min_occupancy: Optional[int] = None,
            defines: Optional[Dict[str, Any]] = None, noalias: bool = False,
-           preload: bool = False, resident: bool = False):
+           preload: bool = False, resident: bool = False, placement=None):
     """Mark a function as a tile kernel. See the module docstring for the
     parameter rules. `resident=True`: every workgroup must be on the GPU at
     once (a kernel that waits on its own workgroups); a launch that cannot be
-    is refused with ResourceError rather than deadlocking."""
+    is refused with ResourceError rather than deadlocking. `placement`: which
+    XCD runs which workgroup -- None, "auto" or an hk.Placement
+    (hk.dsl.placement, docs/design/placement-pass.md)."""
 
     def wrap(f):
         return Kernel(f, arch=arch, warps=warps, grid=grid, name=name,
                       max_vgprs=max_vgprs, min_occupancy=min_occupancy,
                       defines=defines, noalias=noalias, preload=preload,
-                      resident=resident)
+                      resident=resident, placement=placement)
 
     return wrap(fn) if fn is not None else wrap
 

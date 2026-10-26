@@ -24,6 +24,7 @@ report.json()                                    # the JSON below, as a dict
 - [Without a GPU, and the other GPU](#without-a-gpu-and-the-other-gpu)
 - [Rules it keeps, and its limits](#rules-it-keeps-and-its-limits)
 - [Why it is slow: `--profile`](#why-it-is-slow---profile)
+- [Which XCD runs which workgroup: `--placement`](#which-xcd-runs-which-workgroup---placement)
 
 ## The loop
 
@@ -313,3 +314,23 @@ grid's rounds and tail, where the waves wait (the counters, and a thread
 trace of one CU), the main loop's instruction mix, and a verdict line. The
 report gains a `profile` key (hk.profile's JSON); the summary ends with its
 lines. On its own: `python -m hk.profile FILE.py:NAME --inputs ...`.
+
+## Which XCD runs which workgroup: `--placement`
+
+A kernel with an `hk.Placement` (or `placement="auto"`, or an op whose kernels
+have one) runs its workgroups in another order than the hardware deals them
+(hk.dsl.placement, [design](design/placement-pass.md)). That order must still
+run every grid point exactly once. `--placement` checks it at the given inputs
+and exits: it evaluates the decode the kernel's own emitted ops compute, for
+every workgroup id of the launch, and reports the order it installs.
+
+```bash
+python -m hk.check my_kernel.py:kernel --placement --inputs "i32[2,1,1,45]"
+# case 0: kernel: a bijection over 270 workgroups, grid (45, 3, 2), order (z, y, x), 8 XCDs
+```
+
+A raw `@hk.kernel` needs no GPU (its inputs are made on the CPU; only their
+shapes matter). A function is run on the GPU, and every hk kernel it launches
+is checked (`hk.dsl.placement.recording`). For `placement="auto"` both the
+kernel and its cluster placement are checked.
+

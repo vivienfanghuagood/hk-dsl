@@ -188,30 +188,60 @@ def test_hk_attention_routes_to_it_on_gfx950(monkeypatch):
     assert not attn._kernel_for(64, True, None).name.endswith("_cdna")
 
 
-# -- the spatial numbering ----------------------------------------------------
+# -- the spatial numbering (installed by hk.dsl.placement) --------------------
 
 
-@pytest.mark.parametrize("batch,h,h_kv,n_t", [
-    (1, 128, 128, 128), (2, 40, 40, 17), (1, 64, 8, 32), (4, 8, 1, 64), (1, 28, 4, 9),
-    (3, 24, 24, 5), (1, 8, 8, 1), (1, 2, 1, 3)])
-def test_the_spatial_numbering_is_a_bijection_one_cluster_an_xcd_at_a_time(batch, h, h_kv, n_t):
-    """Every (batch, head, query tile) once, whatever the total's remainder
-    mod 8; each XCD's workgroups (w = d, d + 8, ...) a contiguous run of
-    clusters in order, so its resident ones read as few K/V streams as the
-    split allows; the XCDs' loads differ by at most one."""
-    group = h // h_kv
-    total = batch * h * n_t
-    got = [attn_cdna._spatial(w, batch, h_kv, group, n_t) for w in range(total)]
-    assert {(b, hd, t) for b, _, hd, t in got} == {
-        (b, hd, t) for b in range(batch) for hd in range(h) for t in range(n_t)}
-    assert all(hd // group == kv for _, kv, hd, _ in got)
-    loads = [len(range(d, total, 8)) for d in range(8)]
-    assert max(loads) - min(loads) <= 1
-    for d in range(8):
-        clusters = [(got[w][0], got[w][1]) for w in range(d, total, 8)]
-        # a cluster is entered once and left for good
-        runs = [c for i, c in enumerate(clusters) if i == 0 or c != clusters[i - 1]]
-        assert len(runs) == len(set(runs))
+def _spatial_55(w, batch, h_kv, group, n_t):
+    """PR #55's hand-written spatial numbering, the oracle the placement pass
+    must reproduce: XCD d (w % 8) one contiguous range of cluster-major units,
+    (batch, KV head), then the query tile, then the query head in the group."""
+    total = batch * h_kv * group * n_t
+    die, base = w % 8, total // 8
+    u = die * base + min(die, total % 8) + w // 8
+    cluster, r = divmod(u, group * n_t)
+    head_kv = cluster % h_kv
+    return cluster // h_kv, head_kv * group + r % group, r // group
+
+
+@pytest.mark.parametrize("causal", [False, True])
+@pytest.mark.parametrize("batch,h,h_kv,n", [
+    (1, 128, 128, 32768), (2, 40, 40, 4300), (1, 64, 8, 8192), (4, 8, 1, 16384),
+    (1, 28, 4, 2304), (3, 24, 24, 1280), (1, 8, 8, 256), (1, 2, 1, 768)])
+def test_mapping_spatial_is_pr55_s_numbering(batch, h, h_kv, n, causal):
+    """The decode the spatial kernel computes (evaluated from its emitted ops)
+    is, workgroup by workgroup, the one PR #55 wrote by hand -- and so covers
+    every (batch, head, query tile) once, one cluster an XCD at a time."""
+    from hk.dsl import placement as P
+
+    tr = attn_cdna.attn_kernel(f"attn_t_map_{int(causal)}", causal=causal, mapping="spatial",
+                               arch="gfx950").trace()
+    ext = {"q": (batch, h, n, 128), "k": (batch, h_kv, n, 128), "v": (batch, h_kv, n, 128),
+           "o": (batch, h, n, 128)}
+    total = P.check_emitted(tr, ext)
+    dec = P.emitted_decode(tr.module, tr.name)
+    group, n_t = h // h_kv, -(-n // attn_cdna.Q_TILE)
+    for w in range(total):
+        x, y, z = dec(w, 0, 0, ext)
+        assert (z, (x % h_kv) * group + x // h_kv, y) == _spatial_55(w, batch, h_kv, group, n_t)
+
+
+@pytest.mark.parametrize("n_tiles", [1, 7, 40])
+def test_the_spatial_paged_prefill_is_pr55_s_numbering(n_tiles):
+    from hk.dsl import placement as P
+
+    tr = attn_cdna.attn_kernel("paged_t_map", causal=True, paged=True, mapping="spatial",
+                               arch="gfx950").trace()
+    h, h_kv = 32, 8
+    ext = {"q": (1, 1, 4096, h * 128), "k_cache": (64, h_kv, 32, 128),
+           "v_cache": (64, h_kv, 32, 128), "block_table": (1, 1, 4, 64),
+           "seq_lens": (1, 1, 1, 4), "q_start": (1, 1, 1, 5), "tiles": (1, 1, n_tiles, 2),
+           "o": (1, 1, 4096, h * 128)}
+    total = P.check_emitted(tr, ext)
+    dec = P.emitted_decode(tr.module, tr.name)
+    for w in range(total):
+        x, y, _ = dec(w, 0, 0, ext)
+        _, head, t = _spatial_55(w, 1, h_kv, h // h_kv, n_tiles)
+        assert ((x % h_kv) * (h // h_kv) + x // h_kv, y) == (head, t)
 
 
 @pytest.mark.parametrize("d", attn_cdna.HEAD_DIMS)
@@ -244,19 +274,20 @@ def test_an_unknown_mapping_is_refused():
 
 
 def test_the_route_picks_spatial_where_it_was_measured_to_win():
-    """attn_cdna.mapping_for against the MI355X sweep (tools/hk-bench/attn_mapping.py):
-    block-first where it holds at most two KV streams an XCD (GQA-8, 16 KV heads) and for
-    short causal grids; spatial from five streams an XCD on."""
+    """attn_cdna.mapping_for -- hk.dsl.placement.choose on the kernel's own analysis --
+    against the MI355X sweep (tools/hk-bench/attn_mapping.py): block-first where it holds
+    at most two KV streams an XCD (GQA-8, 16 KV heads) and for short causal grids;
+    spatial from five streams an XCD on."""
     m = attn_cdna.mapping_for
-    assert m(1, 8, 32768, False) == m(1, 8, 32768, True) == "block_first"
-    assert m(8, 1, 32768, True) == "block_first"
-    assert m(1, 16, 131072, False) == "block_first"
-    assert m(1, 40, 8192, False) == "spatial"
-    assert m(1, 40, 8192, True) == "block_first"        # -10% measured
-    assert m(2, 40, 8192, True) == "block_first"        # -2% measured (10 rounds)
-    assert m(1, 64, 8192, True) == "block_first"        # -2% measured
-    assert m(1, 48, 16384, True) == m(1, 96, 8192, True) == "spatial"   # +1.5%, +1.9%
-    assert m(1, 64, 8192, False) == m(1, 128, 8192, True) == "spatial"
+    assert m(1, 64, 8, 32768, False) == m(1, 64, 8, 32768, True) == "block_first"
+    assert m(8, 8, 1, 32768, True) == "block_first"
+    assert m(1, 16, 16, 131072, False) == "block_first"
+    assert m(1, 40, 40, 8192, False) == "spatial"
+    assert m(1, 40, 40, 8192, True) == "block_first"        # -10% measured
+    assert m(2, 40, 40, 8192, True) == "block_first"        # -2% measured (10 rounds)
+    assert m(1, 64, 64, 8192, True) == "block_first"        # -2% measured
+    assert m(1, 48, 48, 16384, True) == m(1, 96, 96, 8192, True) == "spatial"   # +1.5%, +1.9%
+    assert m(1, 64, 64, 8192, False) == m(1, 128, 128, 8192, True) == "spatial"
 
 
 def test_hk_attention_routes_by_the_mapping_on_gfx950(monkeypatch):

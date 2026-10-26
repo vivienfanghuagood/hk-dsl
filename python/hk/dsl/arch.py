@@ -65,6 +65,15 @@ def xcd_id() -> Int:
                ScalarType(i32))
 
 
+def xcd_count() -> int:
+    """XCDs (L2 domains) of the GPU this kernel is traced for, a constant: 8 on an MI355X,
+    4 on an MI350P or a DPX partition, 1 on a part with one L2 (KFD's num_xcc, else the arch's
+    default; HK_XCDS overrides). What hk.dsl.placement deals workgroups over."""
+    from .placement import xcd_count as _count  # noqa: PLC0415
+
+    return _count(B.current().arch)
+
+
 def lane_id() -> Int:
     """This lane's index in its wave: 0..31 on gfx11, 0..63 on gfx950. Not
     wave-uniform, so not a branch condition for a workgroup operation."""
@@ -216,6 +225,6 @@ def wg_arrive(counter, expected: Scalar, *, scope: str = "device") -> Int:
                               loc=t.loc("arrived")).result, ScalarType(i32))
 
 
-__all__ = ["block_idx", "warp_id", "lane_id", "xcd_id", "barrier", "sched_barrier",
+__all__ = ["block_idx", "warp_id", "lane_id", "xcd_id", "xcd_count", "barrier", "sched_barrier",
            "sched_group_barrier", "SCHED_CLASSES", "pingpong", "pin", "setprio",
            "vm_wait", "wg_arrive"]

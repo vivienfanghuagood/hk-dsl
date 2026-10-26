@@ -1,7 +1,10 @@
 # Design: workgroup placement as a pass (`hk-placement`)
 
-Status: design; the owner decided on 2026-10-26 to build it, in the milestones of "Merging with
-what exists" below (M0+M1 first, then M2), one PR on the latest main each. The evidence is the
+Status: M0 and M1 implemented (`hk.dsl.placement`; attention and the bf16 GEMMs on it); M2
+(K1, K2, stream-K) next. The owner decided on 2026-10-26 to build it, in the milestones of
+"Merging with what exists" below, one PR on the latest main each. As built, `Placement.chunked`
+renumbers block_idx.x alone, in place (a GEMM's y is its split-K share), and a cluster
+placement flattens the grid. The evidence is the
 attention experiment of 2026-10-26 (PR #55), described in
 `~/hk-dx/research/2511.02132/report.md` §5.
 

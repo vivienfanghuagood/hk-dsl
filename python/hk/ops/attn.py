@@ -561,7 +561,7 @@ def _mapping(q, k, causal: bool) -> str:
         return "block_first"
     from . import attn_cdna  # noqa: PLC0415
 
-    return attn_cdna.mapping_for(q.shape[0], k.shape[1], q.shape[-2], causal)
+    return attn_cdna.mapping_for(q.shape[0], q.shape[1], k.shape[1], q.shape[-2], causal)
 
 
 def _kernel_for(head_dim: int, causal: bool, scale: Optional[float],

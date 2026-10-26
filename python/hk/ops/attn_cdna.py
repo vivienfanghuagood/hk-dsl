@@ -56,8 +56,10 @@ Where this differs from HipKittens' kernel:
     once; with many KV heads and long sequences they drift apart and the
     XCD's 4 MB L2 stops serving one workgroup's K/V to the next. "spatial"
     gives each XCD a contiguous run of (batch, KV head) clusters, one cluster
-    at a time, so the workgroups resident on an XCD read one K/V stream. Each
-    workgroup still computes the same tile the same way: the output is
+    at a time, so the workgroups resident on an XCD read one K/V stream.
+    The kernel is the same: hk.dsl.placement finds the cluster key, (batch,
+    KV head), in the traced loads and installs the numbering at entry; each
+    workgroup still computes the same tile the same way, so the output is
     bitwise the default's.
 """
 
@@ -67,8 +69,9 @@ import math
 from typing import Any, Dict, Optional
 
 from .. import dsl as hk
+from ..dsl import placement as _pl
+from ..dsl.host import HostDim
 from ..types import bf16, fp32, i32
-from .gemm_cdna import NUM_XCDS
 
 NEG_INF = float("-inf")
 
@@ -91,42 +94,38 @@ MAPPINGS = ("block_first", "spatial")
 RESIDENT_PER_XCD = 32
 
 
-def mapping_for(batch: int, h_kv: int, n_q: int, causal: bool) -> str:
-    """The numbering hk.ops.attn routes a call to, from an MI355X sweep (tools/hk-bench/
-    attn_mapping.py; 2026-10-26). "spatial" where the default would hold five or more KV
-    streams on an XCD at once (h_kv >= 40: +2-5% at 40 KV heads, +5-8% at 64, +10-18% at
-    128, N 8K-128K; the gain is mostly clock -- 1.43 against 1.64 GHz at 128 heads, 32K --
-    since 15x fewer bytes cross the L2s). Not for a causal grid with fewer than twelve
-    rounds of workgroups an XCD: an XCD's last cluster then ends on its longest tile, where
-    the default ends on short ones (-10% at 40 KV heads, N 8K; -2% at 10 rounds). Below
-    five streams the two are within 2% (GQA's eight KV heads are one an XCD already)."""
-    if -(-h_kv // NUM_XCDS) < 5:
-        return "block_first"
-    rounds = batch * h_kv * -(-n_q // Q_TILE) / (NUM_XCDS * RESIDENT_PER_XCD)
-    if causal and rounds < 12:
-        return "block_first"
-    return "spatial"
+def mapping_for(batch: int, h: int, h_kv: int, n_q: int, causal: bool,
+                resident_per_xcd: int = RESIDENT_PER_XCD) -> str:
+    """The numbering hk.ops.attn routes a call to: hk.dsl.placement.choose on
+    the dense kernel's own analysis (its cluster key, its non-uniform walk under
+    causal) at this grid -- "spatial" where the default would hold five or more
+    KV streams on an XCD at once, except a causal grid with fewer than twelve
+    rounds of workgroups an XCD. The thresholds are the ones an MI355X sweep
+    measured on this kernel (tools/hk-bench/attn_mapping.py, 2026-10-26): +2-5% at
+    40 KV heads, +5-8% at 64, +10-18% at 128 (N 8K-128K), the gain mostly clock;
+    -10% for a short causal grid, whose last cluster ends on its longest tile."""
+    xcds = _pl.xcd_count("gfx950")
+    an = _analysis(causal)
+    plan = _pl.make_plan(_pl.Placement.cluster(), an, xcds) if an.kind == "cluster" else None
+    grid = (h, -(-n_q // Q_TILE), batch)
+    c = _pl.choose(an, plan, grid, {"g.k.depth()": h_kv}, xcds, resident_per_xcd)
+    return "spatial" if c.placed else "block_first"
 
 
-def _spatial(w, batch, h_kv, group, n_t):
-    """(batch, KV head, query head, query tile) of workgroup `w` in a flat
-    grid of batch * h_kv * group * n_t, under the spatial numbering.
+_ANALYSES: Dict[bool, Any] = {}
 
-    Workgroups are dealt to the XCDs round robin (w % 8), so XCD d runs w =
-    d, d + 8, ... in that order; it gets one contiguous range of the logical
-    units (the first total % 8 XCDs one unit more), a bijection for any total.
-    Units are numbered cluster-major -- (batch, KV head), then the query tile,
-    then the query head in the KV head's group -- so an XCD walks one
-    cluster's tiles before the next, block-first inside a GQA group."""
-    total = batch * h_kv * group * n_t
-    die = w % NUM_XCDS
-    base = total // NUM_XCDS
-    u = die * base + hk.min(die, total % NUM_XCDS) + w // NUM_XCDS
-    per = group * n_t
-    cluster = u // per
-    r = u % per
-    head_kv = cluster % h_kv
-    return cluster // h_kv, head_kv, head_kv * group + r % group, r // group
+
+def _analysis(causal: bool):
+    """hk.dsl.placement.analyze of the dense kernel (head_dim 128; the key and
+    the walk do not depend on it), once a process."""
+    if causal not in _ANALYSES:
+        from ..compiler import mlir as M  # noqa: PLC0415
+
+        tr = attn_kernel(f"attn_fwd_analysis_{int(causal)}", causal=causal,
+                         arch="gfx950").trace()
+        with M.context():
+            _ANALYSES[causal] = _pl.analyze(tr.module, tr.name)
+    return _ANALYSES[causal]
 
 
 def _pairs(n_mma: int, groups, sync_id: int) -> None:
@@ -170,15 +169,20 @@ def attn_kernel(name: str, *, head_dim: int = 128, causal: bool = False,
     KV block is two pages, each its own copy and LDS buffer, read into the
     two 32-row halves of the block's registers.
 
-    `mapping`: the workgroup numbering (MAPPINGS; the module's docstring).
-    "spatial" launches a flat grid and decodes (batch, head, query tile) from
-    the workgroup id; paged, a cluster is (KV head, the work list in order),
-    whose requests are contiguous runs of it.
+    `mapping`: the workgroup numbering (MAPPINGS; the module's docstring),
+    installed by hk.dsl.placement: "spatial" is hk.Placement.cluster() -- the
+    analysis's key (batch, KV head) -- and, paged, the key KV head given
+    explicitly (a page's address goes through the block table, which the
+    analysis cannot see through), so a cluster is (KV head, the work list in
+    order), whose requests are contiguous runs of it.
     """
     D = head_dim
     if mapping not in MAPPINGS:
         raise ValueError(f"mapping={mapping!r}: one of {MAPPINGS}")
-    spatial = mapping == "spatial"
+    placement = None
+    if mapping == "spatial":
+        placement = _pl.Placement.cluster(
+            key=(_pl.Digit.of("x", "mod", HostDim("k_cache", "depth")),) if paged else None)
     if D not in HEAD_DIMS:
         raise ValueError(f"head_dim={D}: gfx950's attention and paged prefill have "
                          f"a schedule for {HEAD_DIMS} only")
@@ -210,28 +214,20 @@ def attn_kernel(name: str, *, head_dim: int = 128, causal: bool = False,
 
         if not paged:
             n_q, n_kv = q.rows, k.rows
-            if not spatial:
-                b = hk.arch.block_idx.z
-        if not spatial:
-            x = hk.arch.block_idx.x
+            b = hk.arch.block_idx.z
+        x = hk.arch.block_idx.x
+        # GQA: workgroup x of a query block takes KV head x % H_KV, so
+        # consecutive workgroups -- dealt round robin to the XCDs -- read
+        # different KV heads, and the query heads that share one KV head land
+        # on one XCD and share its L2 (HipKittens' numbering).
         h_kv = k.depth
         group = (q.cols // D if paged else q.depth) // h_kv
-        if spatial:
-            n_t = tiles.rows if paged else hk.cdiv(n_q, Q_TILE)
-            b, head_kv, head, t_ = _spatial(hk.arch.block_idx.x, 1 if paged else q.batch,
-                                            h_kv, group, n_t)
-        else:
-            # GQA: workgroup x of a query block takes KV head x % H_KV, so
-            # consecutive workgroups -- dealt round robin to the XCDs -- read
-            # different KV heads, and the query heads that share one KV head land
-            # on one XCD and share its L2 (HipKittens' numbering).
-            head_kv = x % h_kv
-            head = head_kv * group + x // h_kv
+        head_kv = x % h_kv
+        head = head_kv * group + x // h_kv
         if paged:
             # A work list entry: the request and its query tile. Query i of
             # the request's new tokens sits at position ctx + i.
-            if not spatial:
-                t_ = hk.arch.block_idx.y
+            t_ = hk.arch.block_idx.y
             req = tiles[hk.elem_coord(0, 0, t_, 0)].load_scalar(invariant=True)
             qb = tiles[hk.elem_coord(0, 0, t_, 1)].load_scalar(invariant=True)
             tok0 = q_start[hk.elem_coord(0, 0, 0, req)].load_scalar(invariant=True)
@@ -240,7 +236,7 @@ def attn_kernel(name: str, *, head_dim: int = 128, causal: bool = False,
             ctx = seq_len - n_q
             last_col = block_table.cols - 1
         else:
-            qb = t_ if spatial else hk.arch.block_idx.y
+            qb = hk.arch.block_idx.y
             if causal and lpt:
                 qb = hk.cdiv(n_q, Q_TILE) - 1 - qb
             ctx = 0
@@ -559,8 +555,6 @@ def attn_kernel(name: str, *, head_dim: int = 128, causal: bool = False,
             walk(q, k_cache, v_cache, o, block_table, seq_lens, q_start, tiles)
 
         def _grid(p):
-            if spatial:
-                return (p.o.cols // D * p.tiles.rows, 1, 1)
             return (p.o.cols // D, p.tiles.rows, 1)
     else:
         def body(q: hk.Tensor[bf16], k: hk.Tensor[bf16], v: hk.Tensor[bf16],
@@ -568,12 +562,10 @@ def attn_kernel(name: str, *, head_dim: int = 128, causal: bool = False,
             walk(q, k, v, o, None, None, None, None)
 
         def _grid(p):
-            if spatial:
-                return (p.q.depth * hk.cdiv(p.q.rows, Q_TILE) * p.q.batch, 1, 1)
             return (p.q.depth, hk.cdiv(p.q.rows, Q_TILE), p.q.batch)
 
     body.__name__ = name
-    return hk.kernel(body, arch=arch, warps=WARPS, grid=_grid, name=name)
+    return hk.kernel(body, arch=arch, warps=WARPS, grid=_grid, name=name, placement=placement)
 
 
 _KERNELS: Dict[Any, Any] = {}

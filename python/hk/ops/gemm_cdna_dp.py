@@ -25,7 +25,6 @@ from typing import Any, Dict, Optional
 from .. import dsl as hk
 from ..types import bf16, fp32
 from . import _epilogue
-from .gemm_cdna import NUM_XCDS
 
 
 def gemm_kernel(name: str, *, block_m: int = 128, block_n: int = 128,
@@ -80,18 +79,12 @@ def gemm_kernel(name: str, *, block_m: int = 128, block_n: int = 128,
         m_blocks = hk.cdiv(M, block_m)
         n_blocks = b.rows // block_n
         blocks = m_blocks * n_blocks
+        # block_idx.x is already renumbered, chunks of consecutive ids an XCD
+        # (hk.Placement.chunked, installed by hk.dsl.placement). xcd_chunk 0:
+        # an eighth of the grid, so each XCD gets one contiguous run of the WGM
+        # order and the blocks that share a B tile share an L2 -- below 8 x 32
+        # blocks a fixed chunk of 32 renumbers nothing.
         wgid = hk.arch.block_idx.x
-        # xcd_chunk 0: an eighth of the grid, so each XCD gets one contiguous
-        # run of the WGM order and the blocks that share a B tile share an L2
-        # -- below 8 x 32 blocks a fixed chunk of 32 renumbers nothing.
-        chunk = hk.max(blocks // NUM_XCDS, 1) if xcd_chunk == 0 else xcd_chunk
-        per_round = NUM_XCDS * chunk
-        limit = (blocks // per_round) * per_round
-        local = wgid // NUM_XCDS
-        moved = ((local // chunk) * per_round + (wgid % NUM_XCDS) * chunk
-                 + local % chunk)
-        stays = hk.min(hk.max(wgid - limit, 0), 1)
-        wgid = moved + stays * (wgid - moved)
         per_group = WGM * n_blocks
         first_m = (wgid // per_group) * WGM
         group_m = hk.min(m_blocks - first_m, WGM)
@@ -246,8 +239,9 @@ def gemm_kernel(name: str, *, block_m: int = 128, block_n: int = 128,
     def _grid(p):
         return (hk.cdiv(p.a.rows, block_m) * (p.b.rows // block_n), splits, 1)
 
+    placement = hk.Placement.chunked("even" if xcd_chunk == 0 else xcd_chunk, "stay")
     return hk.kernel(fn, arch=arch, warps=warps, grid=_grid, name=name,
-                     max_vgprs=max_vgprs, min_occupancy=min_occupancy)
+                     max_vgprs=max_vgprs, min_occupancy=min_occupancy, placement=placement)
 
 
 DEFAULT: Dict[str, Any] = dict(block_m=128, block_n=128, k_step=64, stages=3,

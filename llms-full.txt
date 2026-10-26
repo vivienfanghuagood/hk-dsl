@@ -478,6 +478,7 @@ report.json()                                    # the JSON below, as a dict
 - [Without a GPU, and the other GPU](#without-a-gpu-and-the-other-gpu)
 - [Rules it keeps, and its limits](#rules-it-keeps-and-its-limits)
 - [Why it is slow: `--profile`](#why-it-is-slow---profile)
+- [Which XCD runs which workgroup: `--placement`](#which-xcd-runs-which-workgroup---placement)
 
 ## The loop
 
@@ -767,6 +768,25 @@ grid's rounds and tail, where the waves wait (the counters, and a thread
 trace of one CU), the main loop's instruction mix, and a verdict line. The
 report gains a `profile` key (hk.profile's JSON); the summary ends with its
 lines. On its own: `python -m hk.profile FILE.py:NAME --inputs ...`.
+
+## Which XCD runs which workgroup: `--placement`
+
+A kernel with an `hk.Placement` (or `placement="auto"`, or an op whose kernels
+have one) runs its workgroups in another order than the hardware deals them
+(hk.dsl.placement, [design](design/placement-pass.md)). That order must still
+run every grid point exactly once. `--placement` checks it at the given inputs
+and exits: it evaluates the decode the kernel's own emitted ops compute, for
+every workgroup id of the launch, and reports the order it installs.
+
+```bash
+python -m hk.check my_kernel.py:kernel --placement --inputs "i32[2,1,1,45]"
+# case 0: kernel: a bijection over 270 workgroups, grid (45, 3, 2), order (z, y, x), 8 XCDs
+```
+
+A raw `@hk.kernel` needs no GPU (its inputs are made on the CPU; only their
+shapes matter). A function is run on the GPU, and every hk kernel it launches
+is checked (`hk.dsl.placement.recording`). For `placement="auto"` both the
+kernel and its cluster placement are checked.
 
 
 <!-- docs/templates/elementwise-rowwise.md -->
@@ -1819,15 +1839,17 @@ The language: what `import hk` gives a kernel author. A kernel body is traced on
 ### `hk.kernel`
 
 ```python
-hk.kernel(fn=None, *, arch: Optional[str] = None, warps: int = 1, grid=None, name: Optional[str] = None, max_vgprs: Optional[int] = None, min_occupancy: Optional[int] = None, defines: Optional[Dict[str, Any]] = None, noalias: bool = False, preload: bool = False, resident: bool = False)
+hk.kernel(fn=None, *, arch: Optional[str] = None, warps: int = 1, grid=None, name: Optional[str] = None, max_vgprs: Optional[int] = None, min_occupancy: Optional[int] = None, defines: Optional[Dict[str, Any]] = None, noalias: bool = False, preload: bool = False, resident: bool = False, placement=None)
 ```
 
-*Changed after 0.6.0*: new parameter `resident`
+*Changed after 0.6.0*: new parameters `resident`, `placement`
 
 Mark a function as a tile kernel. See the module docstring for the
 parameter rules. `resident=True`: every workgroup must be on the GPU at
 once (a kernel that waits on its own workgroups); a launch that cannot be
-is refused with ResourceError rather than deadlocking.
+is refused with ResourceError rather than deadlocking. `placement`: which
+XCD runs which workgroup -- None, "auto" or an hk.Placement
+(hk.dsl.placement, docs/design/placement-pass.md).
 
 ### `hk.func`
 
@@ -1841,7 +1863,7 @@ and `while` rewritten like a kernel's.
 ### `hk.Kernel`
 
 ```python
-class hk.Kernel(fn: Callable, *, arch: Optional[str] = None, warps: int = 1, grid: Optional[Callable] = None, name: Optional[str] = None, max_vgprs: Optional[int] = None, min_occupancy: Optional[int] = None, defines: Optional[Dict[str, Any]] = None, noalias: bool = False, preload: bool = False, resident: bool = False)
+class hk.Kernel(fn: Callable, *, arch: Optional[str] = None, warps: int = 1, grid: Optional[Callable] = None, name: Optional[str] = None, max_vgprs: Optional[int] = None, min_occupancy: Optional[int] = None, defines: Optional[Dict[str, Any]] = None, noalias: bool = False, preload: bool = False, resident: bool = False, placement=None)
 ```
 
 A tile kernel. Call it to launch; `trace`, `source` and `build` stop
@@ -1918,6 +1940,29 @@ Kernel.compile(self, **const_overrides: Any)
 
 Generate, compile and load. Returns the loaded extension module.
 
+#### `Kernel.placed`
+
+```python
+Kernel.placed(self, placement=None) -> Kernel
+```
+
+*New after 0.6.0*
+
+This kernel with `placement` (default: the analysis's cluster
+placement) installed: its own name (a suffix for the placement),
+traces and builds, the same body.
+
+#### `Kernel.placement_choice`
+
+```python
+Kernel.placement_choice(self, *tensors: Any, **const_overrides: Any)
+```
+
+*New after 0.6.0*
+
+hk.dsl.placement.choose for these tensors: whether
+placement="auto" launches the cluster placement, and why.
+
 #### `Kernel.resident_capacity`
 
 ```python
@@ -1955,7 +2000,7 @@ something that will call it many times.
 ### `hk.TracedKernel`
 
 ```python
-class hk.TracedKernel(name: str, arch: str, warps: int, consts: Dict[str, Any], tensors: List, module: ir.Module, grid: Tuple = ())
+class hk.TracedKernel(name: str, arch: str, warps: int, consts: Dict[str, Any], tensors: List, module: ir.Module, grid: Tuple = (), analysis=None, plan=None, logical_grid: Tuple = ())
 ```
 
 One specialization of a kernel, traced and lowered: its hk module and
@@ -3491,7 +3536,7 @@ are bounded: any non-empty length. head_dim is 64 or 128 on both.
 
 ## Also exported
 
-`hk.mx`, `hk.templates`
+`hk.Digit`, `hk.Placement`, `hk.mx`, `hk.placement`, `hk.templates`
 
 
 <!-- docs/api/hk.math.md -->
@@ -3695,6 +3740,7 @@ instructions that order and schedule them.
 - [`hk.arch.warp_id`](#hkarchwarp_id)
 - [`hk.arch.lane_id`](#hkarchlane_id)
 - [`hk.arch.xcd_id`](#hkarchxcd_id)
+- [`hk.arch.xcd_count`](#hkarchxcd_count)
 - [`hk.arch.barrier`](#hkarchbarrier)
 - [`hk.arch.sched_barrier`](#hkarchsched_barrier)
 - [`hk.arch.sched_group_barrier`](#hkarchsched_group_barrier)
@@ -3742,6 +3788,18 @@ hk.arch.xcd_id() -> Int
 The XCD this workgroup runs on, 0..7 on a gfx950 (read from the hardware: s_getreg
 HW_REG_XCC_ID), wave-uniform. Workgroups are dealt to the XCDs round robin, so it is usually
 block id mod 8 -- but a kernel that relies on sharing an XCD's L2 should ask, not assume.
+
+### `hk.arch.xcd_count`
+
+```python
+hk.arch.xcd_count() -> int
+```
+
+*New after 0.6.0*
+
+XCDs (L2 domains) of the GPU this kernel is traced for, a constant: 8 on an MI355X,
+4 on an MI350P or a DPX partition, 1 on a part with one L2 (KFD's num_xcc, else the arch's
+default; HK_XCDS overrides). What hk.dsl.placement deals workgroups over.
 
 ### `hk.arch.barrier`
 
@@ -6301,6 +6359,7 @@ Each card's ceilings, for the bandwidth and FLOP rates the summary prints (tools
 | `--trace-only` | no hipcc either |
 | `--arch ARCH` | build for this arch (comma list: one report each, built only where the GPU is another arch) |
 | `--dump {ir,cpp}` | print a raw kernel's IR or C++ and exit |
+| `--placement` | check that every launched kernel's workgroup placement (hk.dsl.placement) covers its grid exactly once, at these inputs, and exit (a raw kernel needs no GPU) |
 | `--profile` | then run hk.profile on the first case: counters, the thread trace, the main loop's instructions and a verdict (docs/profile.md) |
 | `--json PATH` | write the report as JSON ('-' for stdout) |
 | `--seed SEED` | torch.manual_seed for the inputs |
