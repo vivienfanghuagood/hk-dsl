@@ -11,6 +11,7 @@ import pytest
 
 torch = pytest.importorskip("torch")
 import torch.nn.functional as F  # noqa: E402,N812
+from torch.nn.attention import SDPBackend, sdpa_kernel  # noqa: E402
 
 from hk.ops import sdpa  # noqa: E402
 
@@ -18,17 +19,34 @@ pytestmark = pytest.mark.skipif(
     not torch.cuda.is_available(), reason="needs a Radeon"
 )
 
-# bf16 attention accumulates in fp32 and rounds once at the end; torch's
-# reference does the same, so what is left is the softmax's own ordering.
+# The kernel against exact (fp32) attention: P is rounded to bf16 for the
+# second MMA and the output once at the end. Over 1000 seeds of every case of
+# test_it_matches_torch on gfx950 the worst error is 0.015 (d128 causal) and
+# the worst |error| / (atol + rtol |ref|) 0.48 (d64 causal): half of this.
 TOL = dict(rtol=2e-2, atol=2e-2)
 
 
-def _qkv(b=1, h=8, n=1024, d=128, h_kv=None, dtype=torch.bfloat16):
+def _qkv(b=1, h=8, n=1024, d=128, h_kv=None, dtype=torch.bfloat16, seed=0):
+    g = torch.Generator(device="cuda").manual_seed(seed)
     hk_ = h if h_kv is None else h_kv
-    q = torch.randn(b, h, n, d, device="cuda", dtype=dtype)
-    k = torch.randn(b, hk_, n, d, device="cuda", dtype=dtype)
-    v = torch.randn(b, hk_, n, d, device="cuda", dtype=dtype)
+    q = torch.randn(b, h, n, d, device="cuda", dtype=dtype, generator=g)
+    k = torch.randn(b, hk_, n, d, device="cuda", dtype=dtype, generator=g)
+    v = torch.randn(b, hk_, n, d, device="cuda", dtype=dtype, generator=g)
     return q, k, v
+
+
+def _ref(q, k, v, **kw):
+    """The answer: SDPA in fp32 on torch's math backend, never one of its fused
+    kernels. In the vLLM image (torch 2.12, ROCm 10) AOTriton's bf16 flash
+    forward is not a reference on gfx950: with another process on the GPU it
+    returns whole 128-row tiles wrong, by up to 0.3, and different ones every
+    call (the 739 mismatches of a d64 run on a shared MI355X were torch's)."""
+    with sdpa_kernel(SDPBackend.MATH):
+        return F.scaled_dot_product_attention(q.float(), k.float(), v.float(), **kw)
+
+
+def _close(got, want, **tol):
+    torch.testing.assert_close(got.float(), want.float(), **(tol or TOL))
 
 
 @pytest.mark.parametrize(
@@ -44,30 +62,28 @@ def _qkv(b=1, h=8, n=1024, d=128, h_kv=None, dtype=torch.bfloat16):
 )
 def test_it_matches_torch(b, h, n, d, h_kv, causal):
     q, k, v = _qkv(b, h, n, d, h_kv)
-    want = F.scaled_dot_product_attention(q, k, v, is_causal=causal,
-                                          enable_gqa=h_kv is not None)
+    want = _ref(q, k, v, is_causal=causal, enable_gqa=h_kv is not None)
     got = sdpa.scaled_dot_product_attention(q, k, v, is_causal=causal,
                                             enable_gqa=h_kv is not None)
-    torch.testing.assert_close(got, want, **TOL)
+    _close(got, want)
 
 
 def test_a_non_default_scale_matches_torch():
     q, k, v = _qkv()
-    want = F.scaled_dot_product_attention(q, k, v, scale=0.05)
+    want = _ref(q, k, v, scale=0.05)
     got = sdpa.scaled_dot_product_attention(q, k, v, scale=0.05)
-    torch.testing.assert_close(got, want, **TOL)
+    _close(got, want)
 
 
 def test_a_transposed_input_is_copied_not_refused():
     # The layout a framework actually produces: (B, N, H, D) viewed and
     # transposed, so q is not contiguous.
     b, n, h, d = 1, 1024, 8, 128
-    x = torch.randn(b, n, 3 * h * d, device="cuda", dtype=torch.bfloat16)
+    g = torch.Generator(device="cuda").manual_seed(0)
+    x = torch.randn(b, n, 3 * h * d, device="cuda", dtype=torch.bfloat16, generator=g)
     q, k, v = (t.view(b, n, h, d).transpose(1, 2) for t in x.chunk(3, dim=-1))
     assert not q.is_contiguous()
-    torch.testing.assert_close(
-        sdpa.scaled_dot_product_attention(q, k, v),
-        F.scaled_dot_product_attention(q, k, v), **TOL)
+    _close(sdpa.scaled_dot_product_attention(q, k, v), _ref(q, k, v))
 
 
 @pytest.mark.parametrize(
@@ -86,25 +102,25 @@ def test_calls_the_kernel_cannot_take_go_to_torch(kwargs, reason):
     # And it still answers: dropout_p is 0 at eval, so compare the masked case
     # only -- a dropout call is not deterministic to compare against.
     if "attn_mask" in kwargs:
-        torch.testing.assert_close(
-            sdpa.scaled_dot_product_attention(q, k, v, **kwargs),
-            F.scaled_dot_product_attention(q, k, v, **kwargs), **TOL)
+        with sdpa_kernel(SDPBackend.MATH):    # torch answers it: see _ref
+            got = sdpa.scaled_dot_product_attention(q, k, v, **kwargs)
+        _close(got, _ref(q, k, v, **kwargs))
 
 
 def test_fp16_goes_to_torch_and_is_still_correct():
     q, k, v = _qkv(dtype=torch.float16)
     assert "bf16 only" in sdpa.why_unsupported(q, k, v)
-    torch.testing.assert_close(
-        sdpa.scaled_dot_product_attention(q, k, v),
-        F.scaled_dot_product_attention(q, k, v), rtol=2e-3, atol=2e-3)
+    with sdpa_kernel(SDPBackend.MATH):        # torch answers it: see _ref
+        got = sdpa.scaled_dot_product_attention(q, k, v)
+    _close(got, _ref(q, k, v), rtol=2e-3, atol=2e-3)
 
 
 def test_an_unsupported_head_dim_goes_to_torch():
     q, k, v = _qkv(d=96)
     assert "head_dim 96" in sdpa.why_unsupported(q, k, v)
-    torch.testing.assert_close(
-        sdpa.scaled_dot_product_attention(q, k, v),
-        F.scaled_dot_product_attention(q, k, v), **TOL)
+    with sdpa_kernel(SDPBackend.MATH):        # torch answers it: see _ref
+        got = sdpa.scaled_dot_product_attention(q, k, v)
+    _close(got, _ref(q, k, v))
 
 
 def test_the_strict_entry_point_raises_instead_of_falling_back():
@@ -123,8 +139,7 @@ def test_patch_and_unpatch_round_trip():
         sdpa.patch()  # idempotent: must not capture itself as the original
         q, k, v = _qkv()
         got = F.scaled_dot_product_attention(q, k, v)
-        want = original(q, k, v)
-        torch.testing.assert_close(got, want, **TOL)
+        _close(got, _ref(q, k, v))
     finally:
         sdpa.unpatch()
     assert F.scaled_dot_product_attention is original
@@ -138,13 +153,14 @@ def test_a_patched_call_that_falls_back_reaches_torch_not_itself():
     attention hit exactly that."""
     q, k, v = _qkv(n=256)
     mask = torch.ones(256, 256, dtype=torch.bool, device="cuda").tril()
-    ref = F.scaled_dot_product_attention(q.float(), k.float(), v.float(), attn_mask=mask)
+    ref = _ref(q, k, v, attn_mask=mask)
     sdpa.patch()
     try:
-        got = F.scaled_dot_product_attention(q, k, v, attn_mask=mask)
+        with sdpa_kernel(SDPBackend.MATH):    # torch answers it: see _ref
+            got = F.scaled_dot_product_attention(q, k, v, attn_mask=mask)
     finally:
         sdpa.unpatch()
-    torch.testing.assert_close(got.float(), ref, **TOL)
+    _close(got, ref)
 
 
 def test_the_op_behind_it_is_a_torch_custom_op():
@@ -181,11 +197,11 @@ def test_a_permuted_vit_input_computes_the_right_answer():
     q, k, v = _vit_qkv()
     sdpa.reset_stats()
     got = sdpa.scaled_dot_product_attention(q, k, v, scale=64 ** -0.5)
-    want = F.scaled_dot_product_attention(q, k, v, scale=64 ** -0.5)
+    want = _ref(q, k, v, scale=64 ** -0.5)
     # On gfx1100 the permuted memory is read in place (the bnhd kernel).
     in_place = 0 if sdpa._attn._native_cdna() else 1
     assert sdpa.STATS == {"kernel": 1, "fallback": 0, "bnhd": in_place, "k3": 0}
-    torch.testing.assert_close(got, want, **TOL)
+    _close(got, want)
 
 
 def test_a_call_that_falls_back_does_not_copy_anything_first(monkeypatch):
@@ -203,13 +219,13 @@ def test_a_call_that_falls_back_does_not_copy_anything_first(monkeypatch):
 
     monkeypatch.setattr(torch.Tensor, "contiguous", counting)
     sdpa.reset_stats()
-    got = sdpa.scaled_dot_product_attention(q, k, v, scale=72 ** -0.5)
+    with sdpa_kernel(SDPBackend.MATH):        # torch answers it: see _ref
+        got = sdpa.scaled_dot_product_attention(q, k, v, scale=72 ** -0.5)
     monkeypatch.undo()
 
     assert sdpa.STATS == {"kernel": 0, "fallback": 1, "bnhd": 0, "k3": 0}
     assert calls == [], f"copied {calls} on the way to falling back"
-    torch.testing.assert_close(
-        got, F.scaled_dot_product_attention(q, k, v, scale=72 ** -0.5))
+    _close(got, _ref(q, k, v, scale=72 ** -0.5))
 
 
 def test_the_fallback_records_why():
@@ -247,6 +263,4 @@ def test_a_bnhd_view_runs_in_place_and_matches_torch(h, h_kv, n, causal):
     got = sdpa.scaled_dot_product_attention(q, k, v, is_causal=causal, enable_gqa=h != h_kv)
     assert sdpa.STATS["bnhd"] == before + 1
     assert not got.is_contiguous() and got.transpose(1, 2).is_contiguous()
-    ref = F.scaled_dot_product_attention(q.float(), k.float(), v.float(), is_causal=causal,
-                                         enable_gqa=h != h_kv)
-    torch.testing.assert_close(got.float(), ref, **TOL)
+    _close(got, _ref(q, k, v, is_causal=causal, enable_gqa=h != h_kv))
