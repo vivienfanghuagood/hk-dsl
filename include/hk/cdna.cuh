@@ -3205,15 +3205,29 @@ __device__ static inline void lds_load_elems_runs(D &dst, ST &src, const I &idx)
         }
     }
 }
-/** @brief hk lds_store_elems: val(r, c)'s bits to dst's element idx(r, c) (row-major; OOB: none). */
+/** @brief hk lds_store_elems: val(r, c)'s bits to dst's element idx(r, c) (row-major; OOB: none). A bf16
+ * tile takes the value (fp32) rounded to bf16 -- an MMA operand built element by element. */
 template<typename ST, ducks::rs::all V, ducks::rs::all I>
 __device__ static inline void lds_store_elems(ST &dst, const V &val, const I &idx) {
     constexpr int N = ST::rows * ST::cols;
     detail::strip_each<V>([&](int a, int j, int e) {
         const int k = idx.data[a][j][e];
-        if (k >= 0 && k < N)
-            *detail::hk_st_elem(dst, k / ST::cols, k % ST::cols) =
-                detail::hk_from_bits<float>(detail::hk_bits(val.data[a][j][e]));
+        if (k >= 0 && k < N) {
+            const float v = detail::hk_from_bits<float>(detail::hk_bits(val.data[a][j][e]));
+            if constexpr (std::is_same_v<typename ST::dtype, bf16>) {
+                const int r = k / ST::cols, c = k % ST::cols;
+                const int sub = (r / ST::underlying_subtile_rows) * ST::underlying_subtiles_per_row +
+                                c / ST::underlying_subtile_cols;
+                const uint32_t off = ST::swizzle({r % ST::underlying_subtile_rows, c % ST::underlying_subtile_cols});
+                typedef __attribute__((address_space(3))) char lds_char;
+                typedef __attribute__((address_space(3))) uint16_t lds_u16;
+                const bf16 h = detail::hk_cvt<bf16, float>(v);
+                *(lds_u16 *)((lds_char *)&dst.data[0] + sub * ST::underlying_subtile_bytes + off) =
+                    __builtin_bit_cast(uint16_t, h);
+            } else {
+                *detail::hk_st_elem(dst, k / ST::cols, k % ST::cols) = v;
+            }
+        }
     });
 }
 /** @brief hk.iota: element (r, c) = c, the column a lane's run element sits in. */

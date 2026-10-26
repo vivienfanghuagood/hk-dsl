@@ -1644,7 +1644,9 @@ class SharedTile(Value):
     def store_elems(self, val: "Tile", idx: "Tile") -> None:
         """Element by element into this fp32 LDS tile (gfx950): val's element (r, c) (fp32, or i32
         bits) to element `idx[r, c]` (row-major); below zero or past the tile, nothing. Before
-        another warp reads it: hk.arch.barrier(drain=True)."""
+        another warp reads it: hk.arch.barrier(drain=True). A bf16 tile takes the fp32 value
+        rounded to bf16 (round to nearest even) -- an MMA operand built element by element, read
+        back with `.load` / `.subtile(...).load`."""
         if getattr(idx.ty, "run", None) is None or idx.ty.dtype.name != "i32":
             raise TypeError(f"store_elems takes an i32 strip of indices, not {idx.ty}")
         t = _t()

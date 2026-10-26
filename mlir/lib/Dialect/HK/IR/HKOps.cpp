@@ -832,6 +832,10 @@ LogicalResult LdsLoadElemsOp::verify() {
 }
 
 LogicalResult LdsStoreElemsOp::verify() {
+  // stores also take a bf16 tile (the value rounded): an MMA operand built element by element
+  auto s = cast<SharedTileType>(getDst().getType());
+  if (s.getElementType().isBF16() && s.getCount() == 1)
+    return verifyElems(*this, getVal().getType(), getIdx().getType());
   return verifyLdsElems(*this, getDst().getType(), getVal().getType(), getIdx().getType());
 }
 
