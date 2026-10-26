@@ -28,10 +28,11 @@ from ..types import (  # noqa: F401
     SharedVecType as _SV,
 )
 from . import host as _host
-from . import arch, collective, comm, lds, math  # noqa: F401
+from . import arch, collective, comm, lds, math, placement  # noqa: F401
 from .control import if_, range, range_constexpr, scope  # noqa: A004
 from .group import Group, group
 from .kernel import Constexpr, Kernel, TracedKernel, Tensor, func, kernel
+from .placement import Digit, Placement
 from .values import (  # noqa: F401
     Bool, Coord, Global, Granules, Int, SharedTile, SharedVec, Tile, Value,
     Vec, View, as_vec, broadcast_col, broadcast_row, coord, elem_coord, full,
@@ -120,7 +121,8 @@ __all__ = [
     "kernel", "func", "Kernel", "TracedKernel", "Tensor", "Constexpr",
     "RT", "RS", "ST", "SV", "col_vec", "row_vec", "DType",
     "bf16", "fp16", "fp32", "i32", "i8", "fp8e4m3", "fp8e5m2",
-    "arch", "lds", "math", "collective", "comm", "group", "Group",
+    "arch", "lds", "math", "collective", "comm", "placement", "Placement", "Digit", "group",
+    "Group",
     "range", "range_constexpr", "if_", "scope",
     "cdiv", "min", "max", "zeros", "full", "neg_infty", "rand", "load_w4", "load_mx_scales", "load_fp4_frags", "load_fp4_frags_lds", "mx_quant_store", "copy_mx_scales", "mma_ABt_mx", "transpose",
     "transpose_sep", "broadcast_row", "broadcast_col", "as_vec", "mma",

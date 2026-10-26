@@ -268,6 +268,7 @@ Each card's ceilings, for the bandwidth and FLOP rates the summary prints (tools
 | `--trace-only` | no hipcc either |
 | `--arch ARCH` | build for this arch (comma list: one report each, built only where the GPU is another arch) |
 | `--dump {ir,cpp}` | print a raw kernel's IR or C++ and exit |
+| `--placement` | check that every launched kernel's workgroup placement (hk.dsl.placement) covers its grid exactly once, at these inputs, and exit (a raw kernel needs no GPU) |
 | `--profile` | then run hk.profile on the first case: counters, the thread trace, the main loop's instructions and a verdict (docs/profile.md) |
 | `--json PATH` | write the report as JSON ('-' for stdout) |
 | `--seed SEED` | torch.manual_seed for the inputs |

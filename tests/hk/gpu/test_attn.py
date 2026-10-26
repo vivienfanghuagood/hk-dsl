@@ -289,5 +289,5 @@ def test_a_call_routed_to_the_spatial_numbering_is_right():
     answer against fp32 SDPA."""
     from hk.ops import attn_cdna
 
-    assert attn_cdna.mapping_for(1, 40, 2048, False) == "spatial"
+    assert attn_cdna.mapping_for(1, 40, 40, 2048, False) == "spatial"
     _run(1, 40, 2048)

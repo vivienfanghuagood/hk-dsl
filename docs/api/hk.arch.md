@@ -9,6 +9,7 @@ instructions that order and schedule them.
 - [`hk.arch.warp_id`](#hkarchwarp_id)
 - [`hk.arch.lane_id`](#hkarchlane_id)
 - [`hk.arch.xcd_id`](#hkarchxcd_id)
+- [`hk.arch.xcd_count`](#hkarchxcd_count)
 - [`hk.arch.barrier`](#hkarchbarrier)
 - [`hk.arch.sched_barrier`](#hkarchsched_barrier)
 - [`hk.arch.sched_group_barrier`](#hkarchsched_group_barrier)
@@ -56,6 +57,18 @@ hk.arch.xcd_id() -> Int
 The XCD this workgroup runs on, 0..7 on a gfx950 (read from the hardware: s_getreg
 HW_REG_XCC_ID), wave-uniform. Workgroups are dealt to the XCDs round robin, so it is usually
 block id mod 8 -- but a kernel that relies on sharing an XCD's L2 should ask, not assume.
+
+### `hk.arch.xcd_count`
+
+```python
+hk.arch.xcd_count() -> int
+```
+
+*New after 0.6.0*
+
+XCDs (L2 domains) of the GPU this kernel is traced for, a constant: 8 on an MI355X,
+4 on an MI350P or a DPX partition, 1 on a part with one L2 (KFD's num_xcc, else the arch's
+default; HK_XCDS overrides). What hk.dsl.placement deals workgroups over.
 
 ### `hk.arch.barrier`
 

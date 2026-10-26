@@ -69,15 +69,17 @@ The language: what `import hk` gives a kernel author. A kernel body is traced on
 ### `hk.kernel`
 
 ```python
-hk.kernel(fn=None, *, arch: Optional[str] = None, warps: int = 1, grid=None, name: Optional[str] = None, max_vgprs: Optional[int] = None, min_occupancy: Optional[int] = None, defines: Optional[Dict[str, Any]] = None, noalias: bool = False, preload: bool = False, resident: bool = False)
+hk.kernel(fn=None, *, arch: Optional[str] = None, warps: int = 1, grid=None, name: Optional[str] = None, max_vgprs: Optional[int] = None, min_occupancy: Optional[int] = None, defines: Optional[Dict[str, Any]] = None, noalias: bool = False, preload: bool = False, resident: bool = False, placement=None)
 ```
 
-*Changed after 0.6.0*: new parameter `resident`
+*Changed after 0.6.0*: new parameters `resident`, `placement`
 
 Mark a function as a tile kernel. See the module docstring for the
 parameter rules. `resident=True`: every workgroup must be on the GPU at
 once (a kernel that waits on its own workgroups); a launch that cannot be
-is refused with ResourceError rather than deadlocking.
+is refused with ResourceError rather than deadlocking. `placement`: which
+XCD runs which workgroup -- None, "auto" or an hk.Placement
+(hk.dsl.placement, docs/design/placement-pass.md).
 
 ### `hk.func`
 
@@ -91,7 +93,7 @@ and `while` rewritten like a kernel's.
 ### `hk.Kernel`
 
 ```python
-class hk.Kernel(fn: Callable, *, arch: Optional[str] = None, warps: int = 1, grid: Optional[Callable] = None, name: Optional[str] = None, max_vgprs: Optional[int] = None, min_occupancy: Optional[int] = None, defines: Optional[Dict[str, Any]] = None, noalias: bool = False, preload: bool = False, resident: bool = False)
+class hk.Kernel(fn: Callable, *, arch: Optional[str] = None, warps: int = 1, grid: Optional[Callable] = None, name: Optional[str] = None, max_vgprs: Optional[int] = None, min_occupancy: Optional[int] = None, defines: Optional[Dict[str, Any]] = None, noalias: bool = False, preload: bool = False, resident: bool = False, placement=None)
 ```
 
 A tile kernel. Call it to launch; `trace`, `source` and `build` stop
@@ -168,6 +170,29 @@ Kernel.compile(self, **const_overrides: Any)
 
 Generate, compile and load. Returns the loaded extension module.
 
+#### `Kernel.placed`
+
+```python
+Kernel.placed(self, placement=None) -> Kernel
+```
+
+*New after 0.6.0*
+
+This kernel with `placement` (default: the analysis's cluster
+placement) installed: its own name (a suffix for the placement),
+traces and builds, the same body.
+
+#### `Kernel.placement_choice`
+
+```python
+Kernel.placement_choice(self, *tensors: Any, **const_overrides: Any)
+```
+
+*New after 0.6.0*
+
+hk.dsl.placement.choose for these tensors: whether
+placement="auto" launches the cluster placement, and why.
+
 #### `Kernel.resident_capacity`
 
 ```python
@@ -205,7 +230,7 @@ something that will call it many times.
 ### `hk.TracedKernel`
 
 ```python
-class hk.TracedKernel(name: str, arch: str, warps: int, consts: Dict[str, Any], tensors: List, module: ir.Module, grid: Tuple = ())
+class hk.TracedKernel(name: str, arch: str, warps: int, consts: Dict[str, Any], tensors: List, module: ir.Module, grid: Tuple = (), analysis=None, plan=None, logical_grid: Tuple = ())
 ```
 
 One specialization of a kernel, traced and lowered: its hk module and
@@ -1741,4 +1766,4 @@ are bounded: any non-empty length. head_dim is 64 or 128 on both.
 
 ## Also exported
 
-`hk.mx`, `hk.templates`
+`hk.Digit`, `hk.Placement`, `hk.mx`, `hk.placement`, `hk.templates`

@@ -404,19 +404,12 @@ def gemm_kernel(name: str, *, block_m: int = 256, block_n: int = 256,
         M = a.rows
         m_blocks = hk.cdiv(M, block_m)
         n_blocks = b.rows // block_n
-        blocks = m_blocks * n_blocks
 
-        # Workgroups go to the XCDs round robin; renumber them so a chunk of
-        # consecutive ids shares an XCD and its L2 (HipKittens'
-        # chiplet_transform_chunked). Ids past the last whole round stay.
+        # block_idx.x is already renumbered so a chunk of consecutive ids
+        # shares an XCD and its L2 (HipKittens' chiplet_transform_chunked):
+        # hk.Placement.chunked(xcd_chunk), installed by hk.dsl.placement.
+        # Ids past the last whole round stay.
         wgid = hk.arch.block_idx.x
-        per_round = NUM_XCDS * xcd_chunk
-        limit = (blocks // per_round) * per_round
-        local = wgid // NUM_XCDS
-        moved = ((local // xcd_chunk) * per_round + (wgid % NUM_XCDS) * xcd_chunk
-                 + local % xcd_chunk)
-        stays = hk.min(hk.max(wgid - limit, 0), 1)      # 1 past the last round
-        wgid = moved + stays * (wgid - moved)
         # Then WGM block-rows at a time, so a group's B panel stays in L2.
         row, col = tile_of(wgid, m_blocks, n_blocks, WGM)
         m0 = row * block_m
@@ -589,8 +582,11 @@ def gemm_kernel(name: str, *, block_m: int = 256, block_n: int = 256,
             return (p.SKG, 1, 1)
         return (hk.cdiv(p.a.rows, block_m) * (p.b.rows // block_n), splits, 1)
 
+    # The XCD-aware numbering of block_idx.x (not for stream-K, whose
+    # workgroups take their plan's segments).
+    placement = None if stream_k else hk.Placement.chunked(xcd_chunk, "stay")
     return hk.kernel(fn, arch=arch, warps=warps, grid=_grid, name=name,
-                     max_vgprs=max_vgprs, min_occupancy=min_occupancy)
+                     max_vgprs=max_vgprs, min_occupancy=min_occupancy, placement=placement)
 
 
 #: group_rows of mx_scales="direct"'s B scales: one "expert" larger than any N, so AITER's
