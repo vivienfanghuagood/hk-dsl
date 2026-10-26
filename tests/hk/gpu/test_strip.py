@@ -129,3 +129,59 @@ def test_a_bounded_store_leaves_the_rest_of_the_tensor_alone():
     k(x, view)
     torch.testing.assert_close(big[:3, :200 * W], x + 1.0)
     assert (big[:3, 200 * W:] == -5.0).all() and (big[3:] == -5.0).all()
+
+
+# ---------------------------------------------------------------- a stated reduction order (gfx950)
+
+def _emulate(x, lanes, xor):
+    """The ordered row sum on the host, in fp32 step by step: lane l holds columns 8 l .. 8 l + 7 of
+    the row (one 512-column chunk, run 8); its values left to right ("seq") or as hk's balanced
+    tree, then op with lane l ^ o for each o of `xor` in order."""
+    rows = x.shape[0]
+    a = x.view(rows, 64, 8).clone()
+    if lanes == "seq":
+        p = a[:, :, 0].clone()
+        for i in range(1, 8):
+            p = p + a[:, :, i]
+    else:
+        n = 8
+        while n > 1:
+            h = (n + 1) // 2
+            for i in range(n - h):
+                a[:, :, i] = a[:, :, i] + a[:, :, i + h]
+            n = h
+        p = a[:, :, 0].clone()
+    lane = torch.arange(64)
+    for o in xor:
+        p = p + p[:, lane ^ o]
+    return p                                           # [rows, 64]: every lane's final value
+
+
+@pytest.mark.skipif(_target().wave != 64, reason="a stated order is gfx950's")
+@pytest.mark.parametrize("lanes, xor", [("seq", (32, 16, 8, 4, 2, 1)), ("tree", (32, 16, 8, 4, 2, 1)),
+                                         ("seq", (1, 2, 4, 8, 16, 32)), ("seq", (8, 1, 32, 2, 16, 4))])
+def test_a_stated_order_is_bit_for_bit_that_order(lanes, xor):
+    S = hk.RS(hk.fp32, 1, 512, 8)
+
+    def ordered(x: hk.Tensor[hk.fp32], o: hk.Tensor[hk.fp32]):
+        row = hk.arch.block_idx.x
+        v = x.at[row, 0].load(S)
+        w = hk.zeros(S)
+        w += v.sum(axis=1, lanes=lanes, xor=xor)
+        o.at[row, 0].store(w)
+
+    k = hk.kernel(ordered, warps=1, name=f"ordered_{lanes}_{'_'.join(map(str, xor))}",
+                  grid=lambda p: (p.x.rows, 1, 1))
+    g = torch.Generator(device="cpu").manual_seed(7)
+    # a wide dynamic range, so that the grouping shows in the low bits
+    x = (torch.randn(256, 512, generator=g) * torch.exp(torch.randn(256, 512, generator=g) * 3)).float()
+    o = torch.zeros(256, 512, device="cuda")
+    k(x.cuda(), o)
+    torch.cuda.synchronize()
+    want = _emulate(x, lanes, xor)                     # every lane ends with its own final value
+    got = o.cpu().view(256, 64, 8)[:, :, 0]
+    assert torch.equal(got.view(torch.int32), want.view(torch.int32)), \
+        f"{int((got != want).sum())} of {got.numel()} lanes differ"
+    if (lanes, xor) == ("seq", (32, 16, 8, 4, 2, 1)):
+        # hk's own order groups differently: the test can tell orders apart
+        assert not torch.equal(_emulate(x, "tree", (1, 2, 4, 8, 16, 32)), want)
