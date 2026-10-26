@@ -457,17 +457,71 @@ class Global(Value):
         dtype = (i32 if self.dtype is i32 else fp32) if dtype is None else dtype
         ty = RegTileType(dtype, idx.ty.rows, idx.ty.cols, idx.ty.layout, idx.ty.frag, run=idx.ty.run)
         t = _t()
-        return wrap(hkd.LoadElemsOp(mlir_type(ty), self.v, idx.v, loc=t.loc("elems")).result, ty)
+        aux = scope_aux(self, "load_elems") if getattr(self.ty, "scope", "") else 0
+        return wrap(hkd.LoadElemsOp(mlir_type(ty), self.v, idx.v, aux=_i64(aux), loc=t.loc("elems")).result, ty)
 
-    def store_elems(self, val: "Tile", idx: "Tile") -> None:
+    def store_elems(self, val: "Tile", idx: "Tile", *, runs: bool = False) -> None:
         """Element by element at computed indices (gfx950): element (r, c) of `val` (an fp32 or
         i32 strip), converted to this tensor's type, to element `idx[r, c]` (flat, as
         load_elems). An index below zero or past the tensor writes nothing: -1 masks an element
-        out. Two elements to one index race."""
+        out. Two elements to one index race.
+
+        `runs=True`: the kernel says each lane's run goes to consecutive elements from its first
+        element's index, aligned to the run's bytes; the run is one store (1, 2, 4, 8 or 16 k
+        bytes), masked by that first index -- 8 fp8 values in one 8-byte store, not eight."""
         if not _is_strip_tile(idx.ty) or idx.ty.dtype.name != "i32":
             raise TypeError(f"store_elems takes an i32 strip of indices, not {idx.ty}")
+        if runs:
+            nb = idx.ty.run * self.dtype.bits // 8
+            if nb not in (1, 2, 4, 8) and nb % 16:
+                raise TypeError(f"store_elems(runs=True): a run of {nb} bytes; 1, 2, 4, 8 or 16 k")
         t = _t()
-        hkd.StoreElemsOp(self.v, val.v, idx.v, loc=t.loc())
+        aux = scope_aux(self, "store_elems") if getattr(self.ty, "scope", "") else 0
+        hkd.StoreElemsOp(self.v, val.v, idx.v, aux=_i64(aux), runs=bool(runs), loc=t.loc())
+
+    def post_elems(self, val: "Tile", idx: "Tile", tag, *, runs: bool = False, bf16: bool = False) -> None:
+        """Tagged mailbox pairs, an element at a time (gfx950): element (r, c) of `val` (fp32 or i32
+        strip) and `tag` go to pair `idx[r, c]` of this scoped int32 tensor (int32 elements 2 i,
+        2 i + 1) as one 8-byte store of its scope; an index below zero posts nothing. No drain --
+        the value travels with its tag -- so a hand-off between CTAs is one store and, on the
+        other side, one poll (dsv41_mono's Mailbox; hk.comm.post for one scalar).
+
+        `runs=True`: each lane's run goes to consecutive pairs from its first element's index (the
+        lane's other indices are not read), two pairs a 16-byte store; the run is a whole number of
+        pairs of pairs. `bf16=True` (with runs): two values a pair, as bf16 -- the TOP HALVES of the
+        fp32 values, so they must already be bf16 values (rounded by the caller); the pairs from a
+        run's first index are then run / 2."""
+        if bf16 and not runs:
+            raise TypeError("post_elems(bf16=True) is a layout of runs: runs=True as well")
+        if not getattr(self.ty, "scope", ""):
+            raise TypeError(f"post_elems on {self.name!r}, an unscoped tensor: a mailbox other CTAs "
+                            f"read is hk.Tensor[hk.i32, \"device\"] (\"system\": other GPUs)")
+        aux = scope_aux(self, "post_elems")
+        t = _t()
+        hkd.PostElemsOp(self.v, val.v, idx.v, as_int(tag).v, _i64(aux), runs=bool(runs), bf16=bool(bf16), loc=t.loc())
+
+    def take_elems(self, idx: "Tile", tag, dtype: Optional[DType] = None, *,
+                   timeout_s: float = 2.0, runs: bool = False, bf16: bool = False) -> "Tile":
+        """The other side of post_elems: element (r, c) is the value of pair `idx[r, c]` once its tag
+        is `tag`; every element's pair is loaded with the tensor's scope, and all are re-loaded
+        (s_sleep between) while any is stale. An index below zero is ready at 0. `dtype`: fp32
+        (default) or i32. After `timeout_s` the kernel traps (0: never) -- a lost post is an error,
+        not a hang. `runs=True` / `bf16=True`: the layout post_elems wrote with them."""
+        if bf16 and not runs:
+            raise TypeError("take_elems(bf16=True) is a layout of runs: runs=True as well")
+        if not getattr(self.ty, "scope", ""):
+            raise TypeError(f"take_elems on {self.name!r}, an unscoped tensor: a mailbox other CTAs "
+                            f"read is hk.Tensor[hk.i32, \"device\"] (\"system\": other GPUs)")
+        aux = scope_aux(self, "take_elems")
+        dtype = fp32 if dtype is None else dtype
+        ty = RegTileType(dtype, idx.ty.rows, idx.ty.cols, idx.ty.layout, idx.ty.frag, run=idx.ty.run)
+        t = _t()
+        from .comm import REALTIME_HZ  # noqa: PLC0415
+        if runs and idx.ty.run % 2:
+            raise TypeError(f"take_elems(runs=True): runs of pairs of pairs, not run {idx.ty.run}")
+        return wrap(hkd.TakeElemsOp(mlir_type(ty), self.v, idx.v, as_int(tag).v,
+                                    _i64(int(round(timeout_s * REALTIME_HZ))), _i64(aux),
+                                    runs=bool(runs), bf16=bool(bf16), loc=t.loc("taken")).result, ty)
 
     def gather(self, tile, ids: "Global", at, *, count=None, col=0, div=1,
                into=None) -> "Tile":
@@ -596,8 +650,10 @@ class View:
         aux = scope_aux(self.tensor, "load", tile)
         if aux:
             if bounded is not True and bounded is not False:
-                raise TypeError("load(bounded=n) through a scoped tensor: not supported; "
-                                "scoped loads are bounded by the tensor's rows")
+                if not isinstance(tile, RegTileType) or _is_strip(tile):
+                    raise TypeError("load(bounded=n) through a scoped tensor: register tiles only")
+                return _make(hkd.LoadRowsOp, tile, (self.tensor.v, self.idx.v, as_int(bounded).v),
+                             into=into, name="ld", aux=_i64(aux))
             return _make(hkd.LoadOp, tile, (self.tensor.v, self.idx.v), into=into, name="ld",
                          bounded=bounded, aux=_i64(aux))
         if bounded is True or bounded is False:
@@ -1581,6 +1637,28 @@ class SharedTile(Value):
         ty = self.ty.element()
         return SharedTile(hkd.SharedAtOp(mlir_type(ty), self.v, as_int(i).v,
                                          loc=t.loc("sb")).result, ty)
+
+    def load_elems(self, idx: "Tile", dtype: Optional[DType] = None) -> "Tile":
+        """Element by element from this fp32 LDS tile (gfx950): element (r, c) of the result is
+        element `idx[r, c]` (row-major, through the tile's swizzle) -- fp32, or its bits as i32 with
+        dtype=hk.i32; below zero or past the tile, 0. A CTA's own exchange between warps without a
+        round trip to global memory (whose drain would also wait out every load in flight). Another
+        warp's writes need hk.arch.barrier(drain=True) between."""
+        if not _is_strip_tile(idx.ty) or idx.ty.dtype.name != "i32":
+            raise TypeError(f"load_elems takes an i32 strip of indices, not {idx.ty}")
+        dtype = fp32 if dtype is None else dtype
+        ty = RegTileType(dtype, idx.ty.rows, idx.ty.cols, idx.ty.layout, idx.ty.frag, run=idx.ty.run)
+        t = _t()
+        return wrap(hkd.LdsLoadElemsOp(mlir_type(ty), self.v, idx.v, loc=t.loc("ldse")).result, ty)
+
+    def store_elems(self, val: "Tile", idx: "Tile") -> None:
+        """Element by element into this fp32 LDS tile (gfx950): val's element (r, c) (fp32, or i32
+        bits) to element `idx[r, c]` (row-major); below zero or past the tile, nothing. Before
+        another warp reads it: hk.arch.barrier(drain=True)."""
+        if not _is_strip_tile(idx.ty) or idx.ty.dtype.name != "i32":
+            raise TypeError(f"store_elems takes an i32 strip of indices, not {idx.ty}")
+        t = _t()
+        hkd.LdsStoreElemsOp(self.v, val.v, idx.v, loc=t.loc())
 
     def subtile(self, rows: int, cols: int, row: Scalar = 0,
                 col: Scalar = 0) -> "SharedTile":

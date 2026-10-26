@@ -1111,7 +1111,8 @@ private:
         })
         .Case([&](LoadRowsOp o) {
           Value d = dest(o.getDst(), o.getResult());
-          w("kittens::load_bounded(" + name(d) + ", " + name(o.getSrc()) +
+          std::string fn = o.getAux() ? "load_scoped<" + std::to_string(o.getAux()) + ">" : "load_bounded";
+          w("kittens::" + fn + "(" + name(d) + ", " + name(o.getSrc()) +
             ", " + coordArg(o.getIdx(), cpp(d.getType())) + ", " +
             name(o.getRows()) + ");");
         })
@@ -1565,16 +1566,37 @@ private:
           w("kittens::mfma_strip_f32_16x16x4(" + name(d) + ", " + name(o.getA()) + ", " +
             name(o.getB()) + ", " + name(o.getAcc()) + ");");
         })
+        .Case([&](PostElemsOp o) {
+          w(std::string("kittens::post_elems") + (o.getRuns() ? "_runs" : "") + "<" + std::to_string(o.getAux()) +
+            (o.getRuns() ? (o.getBf16() ? ", true" : ", false") : "") + ">(" + name(o.getDst()) + ", " +
+            name(o.getVal()) + ", " + name(o.getIdx()) + ", " + name(o.getTag()) + ");");
+        })
+        .Case([&](TakeElemsOp o) {
+          Value d = dest(Value(), o.getResult());
+          w(std::string("kittens::take_elems") + (o.getRuns() ? "_runs" : "") + "<" + std::to_string(o.getAux()) +
+            (o.getRuns() ? (o.getBf16() ? ", true" : ", false") : "") + ">(" + name(d) + ", " +
+            name(o.getSrc()) + ", " + name(o.getIdx()) + ", " + name(o.getTag()) + ", " +
+            std::to_string(o.getTimeout()) + "LL);");
+        })
+        .Case([&](LdsLoadElemsOp o) {
+          Value d = dest(Value(), o.getResult());
+          w("kittens::lds_load_elems(" + name(d) + ", " + name(o.getSrc()) + ", " + name(o.getIdx()) + ");");
+        })
+        .Case([&](LdsStoreElemsOp o) {
+          w("kittens::lds_store_elems(" + name(o.getDst()) + ", " + name(o.getVal()) + ", " + name(o.getIdx()) + ");");
+        })
         .Case([&](IotaOp o) {
           Value d = dest(Value(), o.getResult());
           w("kittens::iota(" + name(d) + ");");
         })
         .Case([&](LoadElemsOp o) {
           Value d = dest(Value(), o.getResult());
-          w("kittens::load_elems(" + name(d) + ", " + name(o.getSrc()) + ", " + name(o.getIdx()) + ");");
+          w("kittens::load_elems<" + std::to_string(o.getAux()) + ">(" + name(d) + ", " +
+            name(o.getSrc()) + ", " + name(o.getIdx()) + ");");
         })
         .Case([&](StoreElemsOp o) {
-          w("kittens::store_elems(" + name(o.getDst()) + ", " + name(o.getVal()) + ", " +
+          w(std::string("kittens::store_elems") + (o.getRuns() ? "_runs" : "") + "<" +
+            std::to_string(o.getAux()) + ">(" + name(o.getDst()) + ", " + name(o.getVal()) + ", " +
             name(o.getIdx()) + ");");
         })
         .Case([&](GroupReduceOp o) {

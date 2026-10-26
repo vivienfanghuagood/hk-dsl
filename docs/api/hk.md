@@ -396,14 +396,18 @@ A loop unrolled at trace time; its bounds must be Python ints.
 ### `hk.if_`
 
 ```python
-hk.if_(cond, *, opaque: bool = False) -> Iterator[None]
+hk.if_(cond, *, opaque: bool = False, uniform: bool = False) -> Iterator[None]
 ```
+
+*Changed after 0.7.0*: new parameter `uniform`
 
 A region that runs only where `cond` holds.
 
 `opaque=True` hides the condition from the optimizer (an empty asm that
 claims to modify it), so the branch survives even when it folds to a
-constant -- the tool for keeping two live sets apart.
+constant -- the tool for keeping two live sets apart. `uniform=True`
+declares the condition the same in every warp (see `hk.uniform`): the
+region may then hold barriers.
 
 ### `hk.scope`
 
@@ -1456,7 +1460,7 @@ zero or past the tensor reads 0 -- a table lookup with a fallback, a key table's
 #### `Global.store_elems`
 
 ```python
-Global.store_elems(self, val: Tile, idx: Tile) -> None
+Global.store_elems(self, val: Tile, idx: Tile, *, runs: bool = False) -> None
 ```
 
 *New after 0.7.0*
@@ -1465,6 +1469,44 @@ Element by element at computed indices (gfx950): element (r, c) of `val` (an fp3
 i32 strip), converted to this tensor's type, to element `idx[r, c]` (flat, as
 load_elems). An index below zero or past the tensor writes nothing: -1 masks an element
 out. Two elements to one index race.
+
+`runs=True`: the kernel says each lane's run goes to consecutive elements from its first
+element's index, aligned to the run's bytes; the run is one store (1, 2, 4, 8 or 16 k
+bytes), masked by that first index -- 8 fp8 values in one 8-byte store, not eight.
+
+#### `Global.post_elems`
+
+```python
+Global.post_elems(self, val: Tile, idx: Tile, tag, *, runs: bool = False, bf16: bool = False) -> None
+```
+
+*New after 0.7.0*
+
+Tagged mailbox pairs, an element at a time (gfx950): element (r, c) of `val` (fp32 or i32
+strip) and `tag` go to pair `idx[r, c]` of this scoped int32 tensor (int32 elements 2 i,
+2 i + 1) as one 8-byte store of its scope; an index below zero posts nothing. No drain --
+the value travels with its tag -- so a hand-off between CTAs is one store and, on the
+other side, one poll (dsv41_mono's Mailbox; hk.comm.post for one scalar).
+
+`runs=True`: each lane's run goes to consecutive pairs from its first element's index (the
+lane's other indices are not read), two pairs a 16-byte store; the run is a whole number of
+pairs of pairs. `bf16=True` (with runs): two values a pair, as bf16 -- the TOP HALVES of the
+fp32 values, so they must already be bf16 values (rounded by the caller); the pairs from a
+run's first index are then run / 2.
+
+#### `Global.take_elems`
+
+```python
+Global.take_elems(self, idx: Tile, tag, dtype: Optional[DType] = None, *, timeout_s: float = 2.0, runs: bool = False, bf16: bool = False) -> Tile
+```
+
+*New after 0.7.0*
+
+The other side of post_elems: element (r, c) is the value of pair `idx[r, c]` once its tag
+is `tag`; every element's pair is loaded with the tensor's scope, and all are re-loaded
+(s_sleep between) while any is stale. An index below zero is ready at 0. `dtype`: fp32
+(default) or i32. After `timeout_s` the kernel traps (0: never) -- a lost post is an error,
+not a hang. `runs=True` / `bf16=True`: the layout post_elems wrote with them.
 
 #### `Global.gather`
 
@@ -1638,6 +1680,32 @@ lock's take, a slot's claim). W warps that call it exchange W times.
 ### `hk.SharedTile`
 
 An LDS tile, or a stack of them (`As[i]` picks one).
+
+#### `SharedTile.load_elems`
+
+```python
+SharedTile.load_elems(self, idx: Tile, dtype: Optional[DType] = None) -> Tile
+```
+
+*New after 0.7.0*
+
+Element by element from this fp32 LDS tile (gfx950): element (r, c) of the result is
+element `idx[r, c]` (row-major, through the tile's swizzle) -- fp32, or its bits as i32 with
+dtype=hk.i32; below zero or past the tile, 0. A CTA's own exchange between warps without a
+round trip to global memory (whose drain would also wait out every load in flight). Another
+warp's writes need hk.arch.barrier(drain=True) between.
+
+#### `SharedTile.store_elems`
+
+```python
+SharedTile.store_elems(self, val: Tile, idx: Tile) -> None
+```
+
+*New after 0.7.0*
+
+Element by element into this fp32 LDS tile (gfx950): val's element (r, c) (fp32, or i32
+bits) to element `idx[r, c]` (row-major); below zero or past the tile, nothing. Before
+another warp reads it: hk.arch.barrier(drain=True).
 
 #### `SharedTile.subtile`
 
@@ -1885,4 +1953,4 @@ are bounded: any non-empty length. head_dim is 64 or 128 on both.
 
 ## Also exported
 
-`hk.iota`, `hk.mfma_strip`, `hk.mx`, `hk.templates`
+`hk.iota`, `hk.mfma_strip`, `hk.mx`, `hk.templates`, `hk.uniform`

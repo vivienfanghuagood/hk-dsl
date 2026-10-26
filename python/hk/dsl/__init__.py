@@ -29,7 +29,7 @@ from ..types import (  # noqa: F401
 )
 from . import host as _host
 from . import arch, collective, comm, lds, math, placement  # noqa: F401
-from .control import if_, range, range_constexpr, scope  # noqa: A004
+from .control import if_, range, range_constexpr, scope, uniform  # noqa: A004
 from .group import Group, group
 from .kernel import Constexpr, Kernel, TracedKernel, Tensor, func, kernel
 from .placement import Digit, Placement
@@ -123,7 +123,7 @@ __all__ = [
     "bf16", "fp16", "fp32", "i32", "i8", "fp8e4m3", "fp8e5m2",
     "arch", "lds", "math", "collective", "comm", "placement", "Placement", "Digit", "group",
     "Group",
-    "range", "range_constexpr", "if_", "scope",
+    "range", "range_constexpr", "if_", "scope", "uniform",
     "cdiv", "min", "max", "zeros", "full", "neg_infty", "rand", "load_w4", "load_mx_scales", "load_fp4_frags", "load_fp4_frags_lds", "mx_quant_store", "copy_mx_scales", "mma_ABt_mx", "transpose",
     "transpose_sep", "broadcast_row", "broadcast_col", "as_vec", "mma", "map_cpp", "iota", "mfma_strip",
     "coord", "tile_coord", "elem_coord",

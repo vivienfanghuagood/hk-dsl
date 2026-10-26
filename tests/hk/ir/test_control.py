@@ -253,3 +253,30 @@ def test_any_ne_lowers_to_an_unrolled_or_tree_and_one_any():
     assert "__any(" in src
     assert "outer_dim" in src and "inner_dim" in src
     assert src.count("#pragma unroll") >= 2
+
+
+def test_a_barrier_inside_a_declared_uniform_branch_is_accepted():
+    """hk.uniform(cond): every warp takes the branch or none does (a block-index role in a
+    persistent kernel), so a barrier inside is legal -- at every nesting depth, as long as every
+    enclosing branch is uniform."""
+    def body(x: hk.Tensor[fp32]):
+        if hk.uniform(hk.arch.block_idx.x > 0):
+            hk.arch.barrier()
+            if hk.uniform(hk.arch.block_idx.x < 7):
+                hk.arch.barrier()
+    _k(body).trace()
+
+    def mixed(x: hk.Tensor[fp32]):
+        if hk.uniform(hk.arch.block_idx.x > 0):
+            if hk.arch.warp_id() > 0:
+                hk.arch.barrier()
+    with pytest.raises(VerifyError, match="hk.uniform"):
+        _k(mixed).trace()
+
+
+def test_uniform_takes_a_device_comparison():
+    def body(x: hk.Tensor[fp32]):
+        if hk.uniform(True):
+            hk.arch.barrier()
+    with pytest.raises(TypeError, match="device comparison"):
+        _k(body).trace()

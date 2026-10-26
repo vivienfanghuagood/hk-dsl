@@ -139,10 +139,11 @@ def HK_LoadRowsOp : HK_Op<"load_rows"> {
     `load ... bounded` with a runtime limit as well as the global's: a tile
     whose rows end before the tensor's -- a query tile of one request running
     into the next request's tokens -- reads zeros past `rows` and never
-    touches that memory. `rows` counts from the tile's first row.
+    touches that memory. `rows` counts from the tile's first row. `aux`: a
+    scoped tensor's access bits, as for hk.load.
   }];
   let arguments = (ins Optional<HK_RegTileType>:$dst, HK_GlobalType:$src,
-                       HK_CoordType:$idx, I32:$rows);
+                       HK_CoordType:$idx, I32:$rows, DefaultValuedAttr<I64Attr, "0">:$aux);
   let results = (outs Optional<HK_RegTileType>:$result);
   let assemblyFormat = [{
     $src `[` $idx `]` `rows` $rows (`into` $dst^)? attr-dict `:` qualified(type($src)) `,`
@@ -853,6 +854,72 @@ def HK_MfmaStripOp : HK_Op<"mfma_strip"> {
   let hasVerifier = 1;
 }
 
+def HK_PostElemsOp : HK_Op<"post_elems"> {
+  let summary = "a strip's elements posted as tagged mailbox pairs (gfx950)";
+  let description = [{
+    Element (r, c) of `val` (its 32 bits) and `tag` go to pair `idx[r, c]`
+    of `dst` (int32 elements 2 i, 2 i + 1) as one 8-byte store with the
+    cache-policy bits `aux` (the tensor's scope); an index below zero posts
+    nothing. No drain: the value travels with its tag (hk.comm.post, an
+    element at a time).
+  }];
+  let arguments = (ins HK_GlobalType:$dst, HK_RegTileType:$val, HK_RegTileType:$idx, I32:$tag, I64Attr:$aux,
+                       UnitAttr:$runs, UnitAttr:$bf16);
+  let assemblyFormat = [{
+    $val `,` $tag `,` $dst `[` $idx `]` attr-dict `:` qualified(type($val)) `,` qualified(type($dst)) `,` qualified(type($idx))
+  }];
+  let hasVerifier = 1;
+}
+
+def HK_TakeElemsOp : HK_Op<"take_elems"> {
+  let summary = "a strip's elements taken from tagged mailbox pairs, polled until every tag is current (gfx950)";
+  let description = [{
+    Element (r, c) of the result is the value of pair `idx[r, c]` of `src`
+    once its tag equals `tag` -- every element's pair loaded with `aux`,
+    all re-loaded (s_sleep between) while any is stale; an index below zero
+    is ready at 0. After `timeout` ticks of the 100 MHz clock the kernel
+    traps (0: never).
+  }];
+  let arguments = (ins HK_GlobalType:$src, HK_RegTileType:$idx, I32:$tag, I64Attr:$timeout, I64Attr:$aux,
+                       UnitAttr:$runs, UnitAttr:$bf16);
+  let results = (outs HK_RegTileType:$result);
+  let assemblyFormat = [{
+    $src `[` $idx `]` `,` $tag attr-dict `:` qualified(type($src)) `,` qualified(type($idx)) `->` qualified(type($result))
+  }];
+  let hasVerifier = 1;
+}
+
+def HK_LdsLoadElemsOp : HK_Op<"lds_load_elems"> {
+  let summary = "a strip's elements read from an fp32 LDS tile at computed flat indices (gfx950)";
+  let description = [{
+    Element (r, c) of the result (fp32 or i32: the bits) is element
+    idx[r, c] of `src`, counted row-major (r * cols + c) through the tile's
+    own swizzle; an index below zero or past the tile reads 0. Plain LDS
+    reads the compiler waits for itself; another warp's writes need a
+    drained barrier between.
+  }];
+  let arguments = (ins HK_SharedTileType:$src, HK_RegTileType:$idx);
+  let results = (outs HK_RegTileType:$result);
+  let assemblyFormat = [{
+    $src `[` $idx `]` attr-dict `:` qualified(type($src)) `,` qualified(type($idx)) `->` qualified(type($result))
+  }];
+  let hasVerifier = 1;
+}
+
+def HK_LdsStoreElemsOp : HK_Op<"lds_store_elems"> {
+  let summary = "a strip's elements written to an fp32 LDS tile at computed flat indices (gfx950)";
+  let description = [{
+    Element (r, c) of `val` (fp32 or i32: the bits) to element idx[r, c] of
+    `dst` (row-major, the tile's swizzle); an index below zero or past the
+    tile writes nothing. Before another warp reads: barrier(drain=True).
+  }];
+  let arguments = (ins HK_SharedTileType:$dst, HK_RegTileType:$val, HK_RegTileType:$idx);
+  let assemblyFormat = [{
+    $val `,` $dst `[` $idx `]` attr-dict `:` qualified(type($val)) `,` qualified(type($dst)) `,` qualified(type($idx))
+  }];
+  let hasVerifier = 1;
+}
+
 def HK_IotaOp : HK_Op<"iota"> {
   let summary = "an i32 strip whose element (r, c) is c (gfx950)";
   let description = [{
@@ -872,7 +939,7 @@ def HK_LoadElemsOp : HK_Op<"load_elems"> {
     converted to the result's type; an index below zero or past the tensor
     reads 0. `idx` is an i32 strip of the result's shape and run.
   }];
-  let arguments = (ins HK_GlobalType:$src, HK_RegTileType:$idx);
+  let arguments = (ins HK_GlobalType:$src, HK_RegTileType:$idx, DefaultValuedAttr<I64Attr, "0">:$aux);
   let results = (outs HK_RegTileType:$result);
   let assemblyFormat = [{
     $src `[` $idx `]` attr-dict `:` qualified(type($src)) `,` qualified(type($idx)) `->` qualified(type($result))
@@ -886,9 +953,12 @@ def HK_StoreElemsOp : HK_Op<"store_elems"> {
     Element (r, c) of `val`, converted to the tensor's type, is written to
     element `idx[r, c]` of `dst` (counted as for hk.load_elems); an index
     below zero or past the tensor writes nothing -- a mask is an index of -1.
-    Two elements to one index race.
+    Two elements to one index race. `runs`: each lane's run goes to the
+    consecutive elements from its first element's index (the kernel says so),
+    as one store of the run's bytes, masked by that first index.
   }];
-  let arguments = (ins HK_GlobalType:$dst, HK_RegTileType:$val, HK_RegTileType:$idx);
+  let arguments = (ins HK_GlobalType:$dst, HK_RegTileType:$val, HK_RegTileType:$idx, DefaultValuedAttr<I64Attr, "0">:$aux,
+                       UnitAttr:$runs);
   let assemblyFormat = [{
     $val `,` $dst `[` $idx `]` attr-dict `:` qualified(type($val)) `,` qualified(type($dst)) `,` qualified(type($idx))
   }];

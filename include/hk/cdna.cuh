@@ -539,7 +539,8 @@ template<int N, int AUX = 0> __device__ inline void hk_buf_load_bytes(hk_i32x4 r
     if constexpr (N % 16 == 0) {
         #pragma unroll
         for (int q = 0; q < N / 16; q++) {
-            const __uint128_t x = hk_buf_ld128(r, off + 16 * q, 0, AUX);
+            // a masked run (off ~0) stays past the range: off + 16 q would wrap to the tensor's start
+            const __uint128_t x = hk_buf_ld128(r, off == ~0u ? ~0u : off + 16 * q, 0, AUX);
             __builtin_memcpy((char *)dst + 16 * q, &x, 16);
         }
     }
@@ -554,7 +555,7 @@ template<int N, int AUX = 0> __device__ inline void hk_buf_store_bytes(hk_i32x4 
         #pragma unroll
         for (int q = 0; q < N / 16; q++) {
             __uint128_t x; __builtin_memcpy(&x, (const char *)src + 16 * q, 16);
-            hk_buf_st128(x, r, off + 16 * q, 0, AUX);
+            hk_buf_st128(x, r, off == ~0u ? ~0u : off + 16 * q, 0, AUX);   // (as the load)
         }
     }
     else if constexpr (N == 8) { uint64_t x; __builtin_memcpy(&x, src, 8); hk_buf_st64(x, r, off, 0, AUX); }
@@ -3010,6 +3011,14 @@ template<ducks::gl::all GL> __device__ inline hk_i32x4 hk_elems_srsrc(const GL &
     const uint64_t n = uint64_t(g.batch()) * g.depth() * g.rows() * uint64_t(g.row_stride());
     return hk_srsrc(g.raw_ptr, n * sizeof(U));
 }
+/// Any lane of the wave with an index >= 0 (take_elems on a wave with none polls nothing). Not for
+/// load / store_elems: the branch splits a kernel's loads into blocks the scheduler cannot batch
+/// across (DeepSeek-V4.1 K1's seam slice: +1 us).
+template<typename I> __device__ inline bool hk_any_live(const I &idx) {
+    bool live = false;
+    strip_each<I>([&](int a, int j, int e) { live |= idx.data[a][j][e] >= 0; });
+    return __any(live);
+}
 __device__ inline uint32_t hk_elem_off(int k, uint32_t size) {
     return k < 0 ? 0xFFFFFFFFu : uint32_t(k) * size;     // past the range: reads 0, stores nothing
 }
@@ -3031,6 +3040,137 @@ __device__ static inline void mfma_strip_f32_16x16x4(D &dst, const A &a, const B
     c = __builtin_amdgcn_mfma_f32_16x16x4f32(a.data[0][0][0], b.data[0][0][0], c, 0, 0, 0);
     dst.data[0][0][0] = c[0]; dst.data[0][0][1] = c[1]; dst.data[0][0][2] = c[2]; dst.data[0][0][3] = c[3];
 }
+/** @brief hk post_elems: element (r, c) of val and `tag` to pair idx(r, c) of `box`, one 8-byte AUX store. */
+template<int AUX, ducks::gl::all GL, ducks::rs::all V, ducks::rs::all I>
+__device__ static inline void post_elems(const GL &box, const V &val, const I &idx, int tag) {
+    static_assert(std::is_same_v<typename GL::dtype, int>, "a mailbox is int32 pairs");
+    const detail::hk_i32x4 r = detail::hk_elems_srsrc(box);
+    detail::strip_each<V>([&](int a, int j, int e) {
+        const int k = idx.data[a][j][e];
+        const uint32_t bits = detail::hk_bits(val.data[a][j][e]);
+        detail::hk_buf_st64(uint64_t(bits) | (uint64_t(uint32_t(tag)) << 32), r,
+                            detail::hk_elem_off(k, 8), 0, AUX);
+    });
+}
+/** @brief hk post_elems(runs=True): a lane's run as consecutive pairs from idx of its first element, in
+ * stores of up to 16 bytes (two pairs) -- masked by that first index. */
+template<int AUX, bool BF16, ducks::gl::all GL, ducks::rs::all V, ducks::rs::all I>
+__device__ static inline void post_elems_runs(const GL &box, const V &val, const I &idx, int tag) {
+    static_assert(std::is_same_v<typename GL::dtype, int>, "a mailbox is int32 pairs");
+    constexpr int PER = BF16 ? 4 : 2;           // values a 16-byte store carries (two pairs)
+    static_assert(V::run % PER == 0, "runs of whole 16-byte pairs of pairs");
+    const detail::hk_i32x4 r = detail::hk_elems_srsrc(box);
+    #pragma unroll
+    for (int a = 0; a < V::rows; a++)
+        #pragma unroll
+        for (int j = 0; j < V::chunks; j++) {
+            const int k = idx.data[a][j][0];
+            #pragma unroll
+            for (int e = 0; e < V::run; e += PER) {
+                uint32_t w[4];
+                if constexpr (BF16) {          // two bf16 a pair, the first in the low half (the values' top halves)
+                    w[0] = (detail::hk_bits(val.data[a][j][e]) >> 16) | (detail::hk_bits(val.data[a][j][e + 1]) & 0xFFFF0000u);
+                    w[2] = (detail::hk_bits(val.data[a][j][e + 2]) >> 16) | (detail::hk_bits(val.data[a][j][e + 3]) & 0xFFFF0000u);
+                } else {
+                    w[0] = detail::hk_bits(val.data[a][j][e]);
+                    w[2] = detail::hk_bits(val.data[a][j][e + 1]);
+                }
+                w[1] = w[3] = uint32_t(tag);
+                detail::hk_buf_store_bytes<16, AUX>(r, k < 0 ? 0xFFFFFFFFu : uint32_t(k + e / (PER / 2)) * 8u, w);
+            }
+        }
+}
+/** @brief hk take_elems(runs=True): a lane's run from consecutive pairs from idx of its first element, in
+ * loads of 16 bytes (two pairs); all polled together. */
+template<int AUX, bool BF16, ducks::rs::all D, ducks::gl::all GL, ducks::rs::all I>
+__device__ static inline void take_elems_runs(D &dst, const GL &box, const I &idx, int tag, long long timeout) {
+    static_assert(std::is_same_v<typename GL::dtype, int>, "a mailbox is int32 pairs");
+    constexpr int PER = BF16 ? 4 : 2;
+    static_assert(D::run % PER == 0, "runs of whole 16-byte pairs of pairs");
+    const detail::hk_i32x4 r = detail::hk_elems_srsrc(box);
+    if (!detail::hk_any_live(idx)) {
+        detail::strip_each<D>([&](int a, int j, int e) { dst.data[a][j][e] = typename D::T(0); });
+        return;
+    }
+    const long long t0 = __builtin_amdgcn_s_memrealtime();
+    while (true) {
+        bool ready = true;
+        #pragma unroll
+        for (int a = 0; a < D::rows; a++)
+            #pragma unroll
+            for (int j = 0; j < D::chunks; j++) {
+                const int k = idx.data[a][j][0];
+                #pragma unroll
+                for (int e = 0; e < D::run; e += PER) {
+                    uint32_t w[4];
+                    detail::hk_buf_load_bytes<16, AUX>(r, k < 0 ? 0xFFFFFFFFu : uint32_t(k + e / (PER / 2)) * 8u, w);
+                    ready &= (k < 0) | ((int(w[1]) == tag) & (int(w[3]) == tag));
+                    if constexpr (BF16) {
+                        dst.data[a][j][e]     = detail::hk_from_bits<typename D::T>(w[0] << 16);
+                        dst.data[a][j][e + 1] = detail::hk_from_bits<typename D::T>(w[0] & 0xFFFF0000u);
+                        dst.data[a][j][e + 2] = detail::hk_from_bits<typename D::T>(w[2] << 16);
+                        dst.data[a][j][e + 3] = detail::hk_from_bits<typename D::T>(w[2] & 0xFFFF0000u);
+                    } else {
+                        dst.data[a][j][e] = detail::hk_from_bits<typename D::T>(w[0]);
+                        dst.data[a][j][e + 1] = detail::hk_from_bits<typename D::T>(w[2]);
+                    }
+                }
+            }
+        if (__all(ready)) break;
+        if (timeout && __builtin_amdgcn_s_memrealtime() - t0 > timeout) __builtin_trap();
+        __builtin_amdgcn_s_sleep(1);
+        asm volatile("" ::: "memory");
+    }
+}
+/** @brief hk take_elems: dst(r, c) = value of pair idx(r, c) once its tag is `tag` (all polled together). */
+template<int AUX, ducks::rs::all D, ducks::gl::all GL, ducks::rs::all I>
+__device__ static inline void take_elems(D &dst, const GL &box, const I &idx, int tag, long long timeout) {
+    static_assert(std::is_same_v<typename GL::dtype, int>, "a mailbox is int32 pairs");
+    const detail::hk_i32x4 r = detail::hk_elems_srsrc(box);
+    // a wave with no pair to take polls nothing (DeepSeek-V4.1 K1's norm: waves 4 .. 7 hold no
+    // LIN; polling out of range they still held the CTA's barrier back)
+    if (!detail::hk_any_live(idx)) {
+        detail::strip_each<D>([&](int a, int j, int e) { dst.data[a][j][e] = typename D::T(0); });
+        return;
+    }
+    const long long t0 = __builtin_amdgcn_s_memrealtime();
+    while (true) {
+        bool ready = true;
+        detail::strip_each<D>([&](int a, int j, int e) {
+            const int k = idx.data[a][j][e];
+            // unconditional: a k < 0 offset is past the range and reads 0
+            const uint64_t m = detail::hk_buf_ld64(r, detail::hk_elem_off(k, 8), 0, AUX);
+            ready &= (k < 0) | (int(uint32_t(m >> 32)) == tag);
+            dst.data[a][j][e] = detail::hk_from_bits<typename D::T>(uint32_t(m));
+        });
+        if (__all(ready)) break;   // every lane's pairs current
+        if (timeout && __builtin_amdgcn_s_memrealtime() - t0 > timeout) __builtin_trap();
+        __builtin_amdgcn_s_sleep(1);
+        asm volatile("" ::: "memory");   // re-issued every round
+    }
+}
+/** @brief hk lds_load_elems: dst(r, c) = src's element idx(r, c) (row-major, through its swizzle; OOB -> 0). */
+template<ducks::rs::all D, typename ST, ducks::rs::all I>
+__device__ static inline void lds_load_elems(D &dst, ST &src, const I &idx) {
+    constexpr int N = ST::rows * ST::cols;
+    detail::strip_each<D>([&](int a, int j, int e) {
+        const int k = idx.data[a][j][e];
+        float v = 0.f;
+        if (k >= 0 && k < N) v = *detail::hk_st_elem(src, k / ST::cols, k % ST::cols);
+        dst.data[a][j][e] = detail::hk_from_bits<typename D::T>(detail::hk_bits(v));
+    });
+}
+/** @brief hk lds_store_elems: val(r, c)'s bits to dst's element idx(r, c) (row-major; OOB: none). */
+template<typename ST, ducks::rs::all V, ducks::rs::all I>
+__device__ static inline void lds_store_elems(ST &dst, const V &val, const I &idx) {
+    constexpr int N = ST::rows * ST::cols;
+    detail::strip_each<V>([&](int a, int j, int e) {
+        const int k = idx.data[a][j][e];
+        if (k >= 0 && k < N)
+            *detail::hk_st_elem(dst, k / ST::cols, k % ST::cols) =
+                detail::hk_from_bits<float>(detail::hk_bits(val.data[a][j][e]));
+    });
+}
 /** @brief hk.iota: element (r, c) = c, the column a lane's run element sits in. */
 template<ducks::rs::all D>
 __device__ static inline void iota(D &dst) {
@@ -3040,23 +3180,54 @@ __device__ static inline void iota(D &dst) {
     });
 }
 /** @brief hk.load_elems: dst's element (r, c) = src's element idx(r, c), flat; out of range -> 0. */
-template<ducks::rs::all D, ducks::gl::all GL, ducks::rs::all I>
+template<int AUX = 0, ducks::rs::all D, ducks::gl::all GL, ducks::rs::all I>
 __device__ static inline void load_elems(D &dst, const GL &src, const I &idx) {
     using U = typename GL::dtype;
     const detail::hk_i32x4 r = detail::hk_elems_srsrc(src);
     detail::strip_each<D>([&](int a, int j, int e) {
         dst.data[a][j][e] = detail::hk_cvt<typename D::T, U>(
-            detail::hk_buf_load_elem<U>(r, detail::hk_elem_off(idx.data[a][j][e], sizeof(U))));
+            detail::hk_buf_load_elem<U, AUX>(r, detail::hk_elem_off(idx.data[a][j][e], sizeof(U))));
     });
 }
+/** @brief hk.store_elems(runs=True): each lane's run to the consecutive elements from idx of its first
+ * element, as one store of the run's bytes (masked by that index). */
+template<int AUX = 0, ducks::gl::all GL, ducks::rs::all V, ducks::rs::all I>
+__device__ static inline void store_elems_runs(const GL &dst, const V &val, const I &idx) {
+    using U = typename GL::dtype;
+    const detail::hk_i32x4 r = detail::hk_elems_srsrc(dst);
+    #pragma unroll
+    for (int a = 0; a < V::rows; a++) {
+        #pragma unroll
+        for (int j = 0; j < V::chunks; j++) {
+            const uint32_t off = detail::hk_elem_off(idx.data[a][j][0], sizeof(U));
+            if constexpr (std::is_same_v<U, fp8e4m3> && std::is_same_v<typename V::T, float> &&
+                          V::run % 4 == 0) {
+                // fp32 -> e4m3 four at a time into words (v_cvt_pk_fp8_f32, as the scalar path)
+                uint32_t words[V::run / 4];
+                #pragma unroll
+                for (int q = 0; q < V::run / 4; q++) {
+                    int w = __builtin_amdgcn_cvt_pk_fp8_f32(val.data[a][j][4 * q], val.data[a][j][4 * q + 1], 0, false);
+                    w = __builtin_amdgcn_cvt_pk_fp8_f32(val.data[a][j][4 * q + 2], val.data[a][j][4 * q + 3], w, true);
+                    words[q] = uint32_t(w);
+                }
+                detail::hk_buf_store_bytes<V::run, AUX>(r, off, words);
+            } else {
+                U run[V::run];
+                #pragma unroll
+                for (int e = 0; e < V::run; e++) run[e] = detail::hk_cvt<U, typename V::T>(val.data[a][j][e]);
+                detail::hk_buf_store_bytes<V::run * sizeof(U), AUX>(r, off, run);
+            }
+        }
+    }
+}
 /** @brief hk.store_elems: val's element (r, c) to dst's element idx(r, c), flat; out of range: none. */
-template<ducks::gl::all GL, ducks::rs::all V, ducks::rs::all I>
+template<int AUX = 0, ducks::gl::all GL, ducks::rs::all V, ducks::rs::all I>
 __device__ static inline void store_elems(const GL &dst, const V &val, const I &idx) {
     using U = typename GL::dtype;
     const detail::hk_i32x4 r = detail::hk_elems_srsrc(dst);
     detail::strip_each<V>([&](int a, int j, int e) {
-        detail::hk_buf_store_elem<U>(r, detail::hk_elem_off(idx.data[a][j][e], sizeof(U)),
-                                     detail::hk_cvt<U, typename V::T>(val.data[a][j][e]));
+        detail::hk_buf_store_elem<U, AUX>(r, detail::hk_elem_off(idx.data[a][j][e], sizeof(U)),
+                                          detail::hk_cvt<U, typename V::T>(val.data[a][j][e]));
     });
 }
 
