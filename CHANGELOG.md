@@ -147,6 +147,13 @@ python3 -m hk.integration --status     # every route on or off, and which rule d
   reduction now keeps each summand's rounding (no fma reaches in), and
   `sum(..., times=y)` is the fused form, stated.
 
+- **Tests: `test_sdpa` compares against fp32 attention on torch's math
+  backend** (#61), test-only: no kernel or library change. Its intermittent
+  head_dim-64 failure on a shared MI355X was torch's reference, not hk: in the
+  vLLM ROCm 10 image, torch's fused bf16 SDPA (AOTriton 0.13.50) gave wrong,
+  nondeterministic tiles under same-GPU load, while hk's kernel gave identical
+  bits on every call.
+
 **New in the language: hk.comm (gfx950)** -- hand-offs between the XCDs of
 one GPU and between GPUs, each lowered to what a memory-model litmus suite
 (20000 rounds a combination, across XCDs and across two MI355X) found correct.
