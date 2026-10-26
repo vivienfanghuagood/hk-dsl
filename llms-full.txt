@@ -3618,6 +3618,32 @@ lock's take, a slot's claim). W warps that call it exchange W times.
 
 An LDS tile, or a stack of them (`As[i]` picks one).
 
+#### `SharedTile.load_elems`
+
+```python
+SharedTile.load_elems(self, idx: Tile, dtype: Optional[DType] = None) -> Tile
+```
+
+*New after 0.5.0*
+
+Element by element from this fp32 LDS tile (gfx950): element (r, c) of the result is
+element `idx[r, c]` (row-major, through the tile's swizzle) -- fp32, or its bits as i32 with
+dtype=hk.i32; below zero or past the tile, 0. A CTA's own exchange between warps without a
+round trip to global memory (whose drain would also wait out every load in flight). Another
+warp's writes need hk.arch.barrier(drain=True) between.
+
+#### `SharedTile.store_elems`
+
+```python
+SharedTile.store_elems(self, val: Tile, idx: Tile) -> None
+```
+
+*New after 0.5.0*
+
+Element by element into this fp32 LDS tile (gfx950): val's element (r, c) (fp32, or i32
+bits) to element `idx[r, c]` (row-major); below zero or past the tile, nothing. Before
+another warp reads it: hk.arch.barrier(drain=True).
+
 #### `SharedTile.subtile`
 
 ```python

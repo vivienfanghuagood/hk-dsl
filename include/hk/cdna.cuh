@@ -3064,6 +3064,28 @@ __device__ static inline void take_elems(D &dst, const GL &box, const I &idx, in
         asm volatile("" ::: "memory");   // re-issued every round
     }
 }
+/** @brief hk lds_load_elems: dst(r, c) = src's element idx(r, c) (row-major, through its swizzle; OOB -> 0). */
+template<ducks::rs::all D, typename ST, ducks::rs::all I>
+__device__ static inline void lds_load_elems(D &dst, ST &src, const I &idx) {
+    constexpr int N = ST::rows * ST::cols;
+    detail::strip_each<D>([&](int a, int j, int e) {
+        const int k = idx.data[a][j][e];
+        float v = 0.f;
+        if (k >= 0 && k < N) v = *detail::hk_st_elem(src, k / ST::cols, k % ST::cols);
+        dst.data[a][j][e] = detail::hk_from_bits<typename D::T>(detail::hk_bits(v));
+    });
+}
+/** @brief hk lds_store_elems: val(r, c)'s bits to dst's element idx(r, c) (row-major; OOB: none). */
+template<typename ST, ducks::rs::all V, ducks::rs::all I>
+__device__ static inline void lds_store_elems(ST &dst, const V &val, const I &idx) {
+    constexpr int N = ST::rows * ST::cols;
+    detail::strip_each<V>([&](int a, int j, int e) {
+        const int k = idx.data[a][j][e];
+        if (k >= 0 && k < N)
+            *detail::hk_st_elem(dst, k / ST::cols, k % ST::cols) =
+                detail::hk_from_bits<float>(detail::hk_bits(val.data[a][j][e]));
+    });
+}
 /** @brief hk.iota: element (r, c) = c, the column a lane's run element sits in. */
 template<ducks::rs::all D>
 __device__ static inline void iota(D &dst) {

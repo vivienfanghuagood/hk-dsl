@@ -1575,6 +1575,13 @@ private:
             name(o.getSrc()) + ", " + name(o.getIdx()) + ", " + name(o.getTag()) + ", " +
             std::to_string(o.getTimeout()) + "LL);");
         })
+        .Case([&](LdsLoadElemsOp o) {
+          Value d = dest(Value(), o.getResult());
+          w("kittens::lds_load_elems(" + name(d) + ", " + name(o.getSrc()) + ", " + name(o.getIdx()) + ");");
+        })
+        .Case([&](LdsStoreElemsOp o) {
+          w("kittens::lds_store_elems(" + name(o.getDst()) + ", " + name(o.getVal()) + ", " + name(o.getIdx()) + ");");
+        })
         .Case([&](IotaOp o) {
           Value d = dest(Value(), o.getResult());
           w("kittens::iota(" + name(d) + ");");
