@@ -45,7 +45,11 @@ def test_on_by_default_on_gfx1100_is_every_route_validated_there():
                                  "sdpa_k3"}
 
 
-@pytest.mark.parametrize("gpu", ["gfx942", "gfx1201", None])
+def test_on_by_default_on_gfx1201_is_every_route_validated_there():
+    assert on(gpu="gfx1201") == {"vllm_gemm"}
+
+
+@pytest.mark.parametrize("gpu", ["gfx942", None])
 def test_nothing_is_on_by_default_where_nothing_was_validated(gpu):
     assert on(gpu=gpu) == set()
     assert "validated on" in switches.decide("vllm_mxfp8", {}, gpu).why

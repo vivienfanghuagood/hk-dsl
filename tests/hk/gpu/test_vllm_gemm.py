@@ -80,7 +80,9 @@ def test_every_branch_computes_x_wt(op, m, n, k):
 
 def test_the_table_reaches_all_three_paths():
     _needs_table()
-    paths = {vllm_gemm.route_for(m, 6144, 4096) for m in (4, 192, 1024)}
+    # Every M a step can have up to 2048, not three picked from gfx1100's
+    # table: each arch's table puts the boundaries elsewhere.
+    paths = {vllm_gemm.route_for(m, 6144, 4096) for m in range(1, 2049)}
     assert paths == {"hk_decode", "fallback", "hk"}
 
 

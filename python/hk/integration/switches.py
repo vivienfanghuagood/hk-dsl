@@ -75,9 +75,11 @@ ROUTES: Dict[str, Route] = {r.name: r for r in (
     _R("vllm_int4", "vllm", "HK_VLLM_INT4", True, ("gfx1100", "gfx950"),
        "AWQ 4-bit linear layers on hk's decode GEMM",
        "greedy tokens identical to stock's, Qwen3-8B/14B-AWQ (history 22, 42)"),
-    _R("vllm_gemm", "vllm", "HK_VLLM_GEMM", True, ("gfx1100",),
+    _R("vllm_gemm", "vllm", "HK_VLLM_GEMM", True, ("gfx1100", "gfx1201"),
        "unquantized linear layers by the measured route table, plus tuning at load",
        "gfx1100: greedy tokens identical to stock's, or a bf16 near-tie (history 35). "
+       "gfx1201: greedy tokens identical to stock's, routing counts equal round for round, "
+       "Qwen3-1.7B and Qwen3.5-9B in the R9700 vLLM image; prefill 1.12-1.16x (history 50). "
        "gfx950: measured to change nothing against aiter (history 42), so it stays off there"),
     _R("vllm_moe", "vllm", "HK_VLLM_MOE", True, ("gfx1100",),
        "bf16 MoE GEMMs (Triton's fused_moe kernel)",
