@@ -348,6 +348,35 @@ class Build:
 _WAIT_MARK = "WAITS"
 
 
+def _note_unused_frames(kernels, binary: Path, kind: str, log: Optional[Path] = None) -> None:
+    """A kernel with ScratchSize > 0 but no VGPR spill: if its code object shows the frame
+    reserved and never accessed (cocheck.frame_verdict -- no scratch_*, no flat_* memory, no
+    flat scratch, no private segment buffer SGPRs), record why on it, so the spill gate lets it
+    through, and say so in the build log. Anything else stays a refusal."""
+    todo = [k for k in kernels if k.scratch and not k.vgpr_spill and not k.scratch_note]
+    if not todo:
+        return
+    from . import cocheck  # noqa: PLC0415
+
+    try:
+        verdict = cocheck.unused_scratch_frame(binary, bundled=(kind == "so"))
+    except Exception:  # noqa: BLE001 -- no verdict, no pass: the gate refuses as before
+        return
+    for k in todo:
+        ok, _why = verdict.get(k.mangled, verdict.get(k.name, (False, "")))
+        if ok:
+            k.scratch_note = cocheck.UNUSED_FRAME
+            line = (f"hk: {k.name}: ScratchSize={k.scratch} B/lane allowed -- {cocheck.UNUSED_FRAME}"
+                    f" (no scratch_* / flat_* access, no private segment buffer or flat scratch)")
+            print(line, file=sys.stderr)
+            if log is not None:
+                try:
+                    with open(log, "a") as f:
+                        f.write(line + "\n")
+                except OSError:
+                    pass
+
+
 def _wait_gate(binary: Path, kind: str) -> bool:
     """Refuse a binary whose code reads registers an LDS load is still filling (cocheck's
     lds_copy_hazards): the compiler copied an inline-asm ds_read's destination before hk's
@@ -463,6 +492,7 @@ def build(
         # come from the cached log, not from hipcc. Entries whose log no longer
         # parses gate on nothing, which is what the OK marker already attests.
         if hit.kernels:
+            _note_unused_frames(hit.kernels, hit.so_path, kind)
             resources.gate(
                 hit.kernels,
                 allow_scratch=allow_scratch,
@@ -506,6 +536,7 @@ def build(
             )
 
         kernels = resources.parse(log, target)
+        _note_unused_frames(kernels, tmp / so_name, kind, tmp / "build.log")
         try:
             resources.gate(
                 kernels,

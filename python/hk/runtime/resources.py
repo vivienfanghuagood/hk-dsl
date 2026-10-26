@@ -56,6 +56,9 @@ class KernelResources:
     scratch: int = 0
     vgpr_spill: int = 0
     sgpr_spill: int = 0
+    #: Set by hk.runtime.compile when the code object shows a ScratchSize > 0 that nothing
+    #: touches (cocheck.unused_scratch_frame): why the gate lets that scratch through.
+    scratch_note: str = ""
     lds: int = 0
     occupancy: Optional[int] = None
     #: Filled in when a Target is known.
@@ -67,8 +70,10 @@ class KernelResources:
     def spills(self) -> bool:
         # An SGPR spill with ScratchSize 0 went to VGPR lanes (v_writelane / v_readlane): no
         # memory traffic, nothing for a hand-placed s_waitcnt to reorder against -- not a spill
-        # in the sense that makes a kernel wrong. SGPR spills to scratch show up as scratch.
-        return bool(self.scratch or self.vgpr_spill)
+        # in the sense that makes a kernel wrong. SGPR spills to scratch show up as scratch,
+        # unless the code object shows the frame is reserved and never accessed (scratch_note).
+        # A VGPR spill is refused whatever the code shows.
+        return bool(self.vgpr_spill or (self.scratch and not self.scratch_note))
 
     def line(self) -> str:
         vg = str(self.vgpr)
@@ -81,6 +86,7 @@ class KernelResources:
         return (
             f"{self.name}: vgpr={vg} occ={occ} lds={self.lds} "
             f"scratch={self.scratch} spill={self.vgpr_spill + self.sgpr_spill}{hdrm}"
+            + (f" ({self.scratch_note})" if self.scratch_note else "")
         )
 
 

@@ -389,6 +389,63 @@ def test_the_spill_gate_refuses_memory_spills_not_sgpr_lane_spills():
             gate([KernelResources(name="k", mangled="k", vgpr=180, **bad)])
 
 
+# A ScratchSize > 0 that nothing touches: DeepSeek-V4.1's K1 (an indexer layer's build, ROCm 10)
+# reserved 36 B/lane next to 30 SGPR spills to VGPR lanes, with no scratch access in its code.
+_INDEX_K1_CODE = [
+    "v_writelane_b32 v172, s83, 0",
+    "v_writelane_b32 v172, s82, 2",
+    "buffer_load_dwordx4 v[22:25], v4, s[4:7], 0 offen offset:64",
+    "buffer_load_dwordx4 v[26:29], v4, s[4:7], 0 offen",
+    "s_waitcnt lgkmcnt(0)",
+    "buffer_load_dwordx4 v[2:5], v36, s[4:7], 0 offen",
+    "v_readlane_b32 s14, v172, 8",
+    "buffer_store_dwordx2 v[16:17], v3, s[8:11], 0 offen sc1",
+]
+_NO_PRIVATE = {"private_segment_fixed_size": 36, "scratch_en": 1, "private_segment_buffer": 0,
+               "flat_scratch_init": 0}
+
+
+def test_a_reserved_scratch_frame_nothing_touches_passes_the_gate():
+    """ScratchSize > 0 with no access to it in the code object (cocheck.frame_verdict): the
+    gate lets it through and says why; the K1 indexer build above is such a kernel."""
+    from hk.runtime import cocheck
+    from hk.runtime.resources import KernelResources, gate
+
+    ok, why = cocheck.frame_verdict(_INDEX_K1_CODE, _NO_PRIVATE)
+    assert ok and not why
+    k = KernelResources(name="k1", mangled="k1", vgpr=175, sgpr=106, scratch=36, sgpr_spill=30,
+                        scratch_note=cocheck.UNUSED_FRAME)
+    gate([k])
+    assert cocheck.UNUSED_FRAME in k.line()
+
+
+@pytest.mark.parametrize("extra, kd, why", [
+    (["scratch_store_dword off, v1, s0 offset:4"], {}, "scratch access"),
+    (["flat_store_dword v[0:1], v2"], {}, "flat access"),
+    (["s_mov_b64 flat_scratch, s[0:1]"], {}, "flat_scratch operand"),
+    ([], {"private_segment_buffer": 1}, "private segment buffer"),
+    ([], {"flat_scratch_init": 1}, "flat scratch init"),
+])
+def test_a_frame_with_any_way_to_reach_scratch_is_refused(extra, kd, why):
+    from hk.runtime import cocheck
+    from hk.runtime.resources import KernelResources, ResourceError, gate
+
+    ok, reason = cocheck.frame_verdict(_INDEX_K1_CODE + extra, dict(_NO_PRIVATE, **kd))
+    assert not ok and why in reason
+    # with no note the gate refuses the scratch, as before
+    with pytest.raises(ResourceError, match="ScratchSize"):
+        gate([KernelResources(name="k", mangled="k", vgpr=175, scratch=36, sgpr_spill=30)])
+
+
+def test_a_vgpr_spill_is_refused_whatever_the_code_shows():
+    from hk.runtime import cocheck
+    from hk.runtime.resources import KernelResources, ResourceError, gate
+
+    with pytest.raises(ResourceError, match="ScratchSize"):
+        gate([KernelResources(name="k", mangled="k", vgpr=256, scratch=8, vgpr_spill=2,
+                              scratch_note=cocheck.UNUSED_FRAME)])
+
+
 def test_a_bitcast_keeps_the_element_width():
     import pytest as _pytest
 
