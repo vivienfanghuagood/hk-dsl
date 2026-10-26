@@ -239,13 +239,29 @@ struct LdsAllocPass : public mlir::hk::impl::HKLdsAllocBase<LdsAllocPass> {
       op->setAttr("nbytes", b.getI64IntegerAttr(size));
       offset += size;
     };
-    // Top-level allocations only, in declaration order.
-    for (Operation &op : f.getBody().front()) {
+    // Every allocation, in program order -- also those inside a branch (a role of a persistent
+    // kernel). The C++ allocator bumps at run time along the path taken, which never ends past
+    // the sum over all of them (alignment rounding is monotone), so that sum is the launch's LDS.
+    // Counting only the entry block's left a branch's tiles past the end of the LDS the launch
+    // asked for: their reads returned 0 and their writes vanished, with no error.
+    // An allocation inside a runtime loop would bump every iteration: refused.
+    bool bad = false;
+    f.walk<WalkOrder::PreOrder>([&](Operation *op) {
+      if (!isa<AllocSharedOp, AllocSharedVecOp>(op))
+        return;
+      if (op->getParentOfType<scf::ForOp>() || op->getParentOfType<scf::WhileOp>()) {
+        op->emitError() << "an LDS allocation inside a runtime loop would take new LDS every "
+                           "iteration: allocate it before the loop";
+        bad = true;
+        return;
+      }
       if (auto a = dyn_cast<AllocSharedOp>(op))
         place(a, a.getResult().getType().getNumBytes());
       else if (auto v = dyn_cast<AllocSharedVecOp>(op))
         place(v, v.getResult().getType().getNumBytes());
-    }
+    });
+    if (bad)
+      return signalPassFailure();
     int64_t arrivals = 0;
     f.walk([&](Operation *op) {
       if (isa<WgArriveOp, ArriveOp>(op))
