@@ -48,6 +48,7 @@ from __future__ import annotations
 
 import argparse
 import re
+import struct
 import subprocess
 import sys
 import tempfile
@@ -368,6 +369,79 @@ def check(co: Path) -> List[Kernel]:
         k.hazards = wait_hazards(insts, k.arch, benign=k.warnings)
         k.warnings.extend(exec_hazards(insts))
     return list(ks.values())
+
+
+# ---------------------------------------------------------------- scratch frames
+
+#: The reason the spill gate records for a frame it lets through.
+UNUSED_FRAME = "reserved-unused scratch frame"
+_FLAT_MEM = re.compile(r"^flat_(load|store|atomic)")
+
+
+def kernel_descriptor(co: Path, name: str) -> Dict[str, int]:
+    """The scratch fields of kernel `name`'s descriptor (`name.kd`, 64 bytes): the private
+    segment size, compute_pgm_rsrc2's SCRATCH_EN, and kernel_code_properties' enables of the
+    private segment buffer and flat scratch init user SGPRs."""
+    syms = subprocess.run([_tool("llvm-readelf"), "-sW", str(co)], capture_output=True, text=True,
+                          check=True).stdout
+    secs = subprocess.run([_tool("llvm-readelf"), "-SW", str(co)], capture_output=True, text=True,
+                          check=True).stdout
+    val = ndx = None
+    for line in syms.splitlines():
+        p = line.split()
+        if len(p) >= 8 and p[-1] == name + ".kd":
+            val, ndx = int(p[1], 16), int(p[6])
+    if val is None:
+        raise ValueError(f"no kernel descriptor {name}.kd in {co}")
+    base = None
+    for line in secs.splitlines():
+        m = re.match(r"\s*\[\s*(\d+)\]\s+\S+\s+\S+\s+([0-9a-f]+)\s+([0-9a-f]+)", line)
+        if m and int(m.group(1)) == ndx:
+            base = int(m.group(3), 16) - int(m.group(2), 16)
+    if base is None:
+        raise ValueError(f"no section {ndx} for {name}.kd in {co}")
+    raw = co.read_bytes()[base + val: base + val + 64]
+    props = struct.unpack_from("<H", raw, 56)[0]
+    return {"private_segment_fixed_size": struct.unpack_from("<I", raw, 4)[0],
+            "scratch_en": struct.unpack_from("<I", raw, 52)[0] & 1,
+            "private_segment_buffer": props & 1,
+            "flat_scratch_init": (props >> 5) & 1}
+
+
+def frame_verdict(insts: Sequence[str], kd: Dict[str, int]) -> Tuple[bool, str]:
+    """Whether a kernel's scratch frame is reserved and never accessed: every one of
+    - no scratch_* instruction;
+    - no private segment buffer user SGPRs (so no buffer_* can address the private segment);
+    - no flat scratch: neither its init user SGPRs nor an operand naming flat_scratch;
+    - no flat_* memory instruction (a flat address may be private: without an address analysis
+      every one counts).
+    Returns (unused, why not)."""
+    for text in insts:
+        op = text.split(" ", 1)[0]
+        if op.startswith("scratch_"):
+            return False, f"scratch access: {text}"
+        if _FLAT_MEM.match(op):
+            return False, f"flat access (may be private): {text}"
+        if "flat_scratch" in text:
+            return False, f"flat_scratch operand: {text}"
+    if kd.get("private_segment_buffer"):
+        return False, "the private segment buffer user SGPRs are enabled"
+    if kd.get("flat_scratch_init"):
+        return False, "flat scratch init user SGPRs are enabled"
+    return True, ""
+
+
+def unused_scratch_frame(binary: Path, bundled: bool = True) -> Dict[str, Tuple[bool, str]]:
+    """Per kernel symbol of a binary: frame_verdict on its code and descriptor."""
+    with tempfile.TemporaryDirectory(prefix="hk-cocheck-") as d:
+        cos = unbundle(binary, Path(d)) if bundled else [binary]
+        out: Dict[str, Tuple[bool, str]] = {}
+        for co in cos:
+            code = disassemble(co)
+            for name in resources(co):
+                out[name] = frame_verdict([i.text for i in code.get(name, [])],
+                                          kernel_descriptor(co, name))
+        return out
 
 
 # ---------------------------------------------------------------- fat binaries
