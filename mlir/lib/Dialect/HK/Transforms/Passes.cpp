@@ -103,12 +103,18 @@ struct VerifyPass : public mlir::hk::impl::HKVerifyBase<VerifyPass> {
       if (!isa<BarrierOp, StageLoadOp, StageCommitOp, GroupLoadOp,
                GroupStoreOp, GatherPrepOp>(op))
         return WalkResult::advance();
-      if (op->getParentOfType<scf::IfOp>()) {
+      // a branch declared workgroup-uniform (hk.uniform) is taken by every warp or none
+      bool divergent = false;
+      for (auto i = op->getParentOfType<scf::IfOp>(); i; i = i->getParentOfType<scf::IfOp>())
+        divergent |= !i->hasAttr("hk.uniform");
+      if (divergent) {
         op->emitError() << opcodeOf(op)
                         << " is inside an hk.if_. It is a workgroup operation "
                            "-- every warp has to reach it or the ones that do "
                            "wait forever. Hoist it out and put only the work "
-                           "it guards inside the branch."
+                           "it guards inside the branch -- or, if every warp "
+                           "takes the branch or none does (a block-index role), "
+                           "say so: if hk.uniform(cond):"
                         << atLoc(op);
         return WalkResult::interrupt();
       }
