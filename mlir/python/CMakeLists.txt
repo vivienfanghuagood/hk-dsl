@@ -60,3 +60,19 @@ add_mlir_python_modules(HKPythonModules
   COMMON_CAPI_LINK_LIBS
     HKPythonCAPI
 )
+
+# Every library here is linked with its install RUNPATH ($ORIGIN) from the
+# start. MLIR's functions set BUILD_WITH_INSTALL_RPATH OFF, and CMake then adds
+# the build tree's absolute _mlir_libs path for the three that link
+# libHKPythonCAPI / libnanobind-hk; `cmake --install` overwrites it in place,
+# so .dynstr keeps the old string's length (the layout follows how long the
+# build directory's path is) and the build-id, hashed at link time, the old
+# path. In the build tree they all sit in one _mlir_libs, so $ORIGIN is enough
+# there too.
+get_property(_hk_targets DIRECTORY PROPERTY BUILDSYSTEM_TARGETS)
+foreach(_t IN LISTS _hk_targets)
+  get_target_property(_type ${_t} TYPE)
+  if(_type STREQUAL "SHARED_LIBRARY" OR _type STREQUAL "MODULE_LIBRARY")
+    set_target_properties(${_t} PROPERTIES BUILD_WITH_INSTALL_RPATH ON)
+  endif()
+endforeach()
