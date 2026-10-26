@@ -36,9 +36,14 @@ import hk
 import torch.nn.functional as F
 
 def rel(what, got, want, tol):
+    # Both maxima in the message: an all-zero reference makes the error max|got| / 1e-30,
+    # which reads like a garbage output but is not one.
     got, want = got.detach().float().cpu(), want.detach().float().cpu()
-    err = ((got - want).abs().max() / want.abs().max().clamp_min(1e-30)).item()
-    assert err < tol, f"{what}: relative error {err:.3g} >= {tol}"
+    top = want.abs().max().item()
+    err = ((got - want).abs().max() / max(top, 1e-30)).item()
+    assert err < tol, (f"{what}: relative error {err:.3g} >= {tol} (max |got| "
+                       f"{got.abs().max().item():.4g}, max |want| {top:.4g}"
+                       + (", an all-zero reference" if top == 0 else "") + ")")
 
 def rnd(*shape, dtype=torch.bfloat16, scale=1.0):
     return (torch.randn(*shape, device="cuda") * scale).to(dtype)
@@ -360,10 +365,25 @@ def cache(lens, d, h_kv):
     table = torch.arange(nb, device="cuda", dtype=torch.int32).view(len(lens), mp).contiguous()
     return kc, vc, table, torch.tensor(lens, device="cuda", dtype=torch.int32)
 
+def host(*ts):
+    # Each tensor the check reads, read back whole, once a case, twice, compared bitwise. The
+    # reference is then built on the host: no per-head gather, cast and readback through fresh
+    # fenced allocations (dozens a case before), and a readback that is not stable fails as
+    # the harness's, not as the op's. The one paged failure seen in CI (gfx950, "relative
+    # error 9.73e+29") matches max|got| 0.97265625 / 1e-30, an all-zero reference.
+    out = []
+    for t in ts:
+        a, b = t.cpu(), t.cpu()
+        assert torch.equal(a.reshape(-1).view(torch.uint8), b.reshape(-1).view(torch.uint8)), \\
+            f"two readbacks of one {tuple(t.shape)} {t.dtype} tensor differ: the harness's fault"
+        out.append(a)
+    return out
+
 def gathered(kc, vc, table, i, n, h):
+    # host tensors (host()): the request's first n rows of K and V for kv head h
     pages = table[i, : -(-n // PAGE)].tolist()
-    return (torch.cat([kc[p, h] for p in pages])[:n].float().cpu(),
-            torch.cat([vc[p, h] for p in pages])[:n].float().cpu())
+    return (torch.cat([kc[p, h] for p in pages])[:n].float(),
+            torch.cat([vc[p, h] for p in pages])[:n].float())
 """
 
 
@@ -380,10 +400,11 @@ def test_paged_decode_and_prefill():
         q[:, :, :group] = rnd(len({lens}), h_kv, group, {d})
         o = torch.empty_like(q)
         step("plain", lambda: paged.KERNELS[{d}](q, kc, vc, table, lens, o))
+        kc, vc, table, q, o = host(kc, vc, table, q, o)
         for i, n in enumerate({lens}):
             for h in range(h_kv):
                 kk, vv = gathered(kc, vc, table, i, n, h)
-                want = F.scaled_dot_product_attention(q[i, h, :group].float().cpu()[None, None],
+                want = F.scaled_dot_product_attention(q[i, h, :group].float()[None, None],
                                                       kk[None, None], vv[None, None])[0, 0]
                 rel(f"plain {{i}} {{h}}", o[i, h, :group], want, 5e-2)
         """
@@ -399,6 +420,7 @@ def test_paged_decode_and_prefill():
                 step("fused", lambda: paged.decode(paged.fused_kernel({d}, splits),
                                                    paged.merge_kernel({d}, splits), q, kc, vc,
                                                    table, lens, out, scratch, splits))
+                kc, vc, table, q, out = host(kc, vc, table, q, out)
                 for i, n in enumerate({lens2}):
                     for h in range(h_kv):
                         if n == 0:
@@ -408,7 +430,7 @@ def test_paged_decode_and_prefill():
                                 same("padded", out[i, h], torch.zeros_like(out[i, h]))
                             continue
                         kk, vv = gathered(kc, vc, table, i, n, h)
-                        want = F.scaled_dot_product_attention(q[i, h].float().cpu()[None, None],
+                        want = F.scaled_dot_product_attention(q[i, h].float()[None, None],
                                                               kk[None, None], vv[None, None])[0, 0]
                         rel(f"fused {{i}} {{h}}", out[i, h], want, 2e-2)
                 """
@@ -428,12 +450,13 @@ def test_paged_decode_and_prefill():
         tiles = paged_prefill.work_list([(i, reqs[i][1]) for i in range(len(reqs))], q.device)
         step("prefill", lambda: paged_prefill.kernel_for(d, group)(
             q.view(n_tok, -1), kc, vc, table, lens, q_start, tiles, out.view(n_tok, -1)))
+        kc, vc, table, q, out = host(kc, vc, table, q, out)
         for i, (ctx, n) in enumerate(reqs):
             s = ctx + n
             keep = torch.arange(s)[None, :] <= (ctx + torch.arange(n))[:, None]
             for hh in range(h_kv * group):
                 kk, vv = gathered(kc, vc, table, i, s, hh // group)
-                sc = (q[starts[i]:starts[i + 1], hh].float().cpu() @ kk.T) * d ** -0.5
+                sc = (q[starts[i]:starts[i + 1], hh].float() @ kk.T) * d ** -0.5
                 want = torch.softmax(sc.masked_fill(~keep, float("-inf")), -1) @ vv
                 rel(f"prefill {{i}} {{hh}}", out[starts[i]:starts[i + 1], hh], want, 2e-2)
         """

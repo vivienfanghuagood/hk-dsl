@@ -116,6 +116,12 @@ remaps:
   [testing](docs/testing.md#the-gpu-tier)).
 - Tests of gfx1100's measured data are pinned to gfx1100
   (`@pytest.mark.arch`, #64).
+- The fenced paged-attention checks (`test_fenced.py`) build their reference
+  on the host from one readback of each tensor, read twice and compared, and a
+  relative-error failure prints both maxima. The one intermittent paged failure
+  seen on gfx950, `relative error 9.73e+29`, matches an all-zero reference
+  (0.97265625 / 1e-30), not a wrong output: the paged decode did not fail in
+  thousands of repetitions with poisoned allocations and polluted LDS (#89).
 
 ## 0.7.0
 
