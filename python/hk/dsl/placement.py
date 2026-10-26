@@ -291,6 +291,64 @@ def place(o, w, total, xcds: int, chunk: Union[int, str, Any] = 0, tail: str = "
     return o.add(moved, o.mul(past, o.sub(other, moved)))
 
 
+class _DslOps:
+    """hk device ints, inside a kernel body (renumber, xcd_range)."""
+
+    def c(self, v):
+        return v
+
+    def add(self, a, b):
+        return a + b
+
+    def sub(self, a, b):
+        return a - b
+
+    def mul(self, a, b):
+        return a * b
+
+    def div(self, a, b):
+        return a // b
+
+    def mod(self, a, b):
+        return a % b
+
+    def min(self, a, b):
+        from . import min as _min  # noqa: PLC0415
+
+        return _min(a, b)
+
+    def max(self, a, b):
+        from . import max as _max  # noqa: PLC0415
+
+        return _max(a, b)
+
+
+def renumber(w, total, *, chunk: Union[int, str, Any] = 0, tail: str = "spread"):
+    """`place` inside a kernel body, on device ints: the logical unit of id
+    `w` of `total` as the XCDs of the GPU being traced for deal them. For a
+    persistent kernel, whose units are not workgroups (a workgroup's i-th
+    virtual id is w + i * grid): what Placement.chunked / cluster install at
+    entry for a grid."""
+    from . import builder as B  # noqa: PLC0415
+
+    return place(_DslOps(), w, total, xcd_count(B.current().arch), chunk, tail)
+
+
+def xcd_range(d, total):
+    """(first, count): XCD `d`'s contiguous range of `total` units, the first
+    total % xcds XCDs one unit more -- what contiguous `place` gives each XCD.
+    For a persistent kernel that deals units to its XCDs itself."""
+    from . import builder as B  # noqa: PLC0415
+
+    return _xcd_range(_DslOps(), d, total, xcd_count(B.current().arch))
+
+
+def _xcd_range(o, d, total, xcds: int):
+    base, tall = o.div(total, o.c(xcds)), o.mod(total, o.c(xcds))
+    return (o.add(o.mul(d, base), o.min(d, tall)),
+            o.add(base, o.min(o.max(o.sub(tall, d), o.c(0)), o.c(1))))
+
+
 def place_host(w: int, total: int, xcds: int, chunk: Union[int, str] = 0,
                tail: str = "spread") -> int:
     return place(_IntOps(), w, total, xcds, chunk, tail)
@@ -976,5 +1034,6 @@ def _digit_value(d: Digit, c: Dict[str, int], rad: Dict[str, int]) -> int:
 
 __all__ = ["Digit", "Placement", "Plan", "Analysis", "Choice", "analyze", "make_plan",
            "rewrite", "place", "place_host", "decode_host", "check_bijection", "applicable",
-           "emitted_decode", "check_emitted", "check_kernel", "recording",
+           "emitted_decode", "check_emitted", "check_kernel", "recording", "renumber",
+           "xcd_range",
            "choose", "xcd_count", "MIN_STREAMS", "MIN_ROUNDS_NONUNIFORM"]

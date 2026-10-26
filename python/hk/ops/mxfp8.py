@@ -140,8 +140,6 @@ def mx4w_kernel(name: str = "mxfp8_4w", *, block_m: int = 256, block_n: int = 25
     K) and b (N, K) fp8 e4m3, sa / sb their packed scales, c (M, N) bf16; N a
     multiple of block_n, K of 128. `split_m` x `split_n`: the parts of a warp's
     tile (1 or 2 each way), each a multiple of 64 rows of A and of B."""
-    from .gemm_cdna import NUM_XCDS  # noqa: PLC0415
-
     BKs = 128
     qm, qn = block_m // 2 // split_m, block_n // 2 // split_n   # a part of a warp's tile
     if split_m not in (1, 2) or split_n not in (1, 2) or qm % 64 or qn % 64:
@@ -187,15 +185,9 @@ def mx4w_kernel(name: str = "mxfp8_4w", *, block_m: int = 256, block_n: int = 25
         M = a.rows
         m_blocks = hk.cdiv(M, block_m)
         n_blocks = b.rows // block_n
-        blocks = m_blocks * n_blocks
+        # block_idx.x is already renumbered, chunks of xcd_chunk consecutive ids
+        # an XCD (hk.Placement.chunked, installed by hk.dsl.placement).
         wgid = hk.arch.block_idx.x
-        per_round = NUM_XCDS * xcd_chunk
-        limit = (blocks // per_round) * per_round
-        local = wgid // NUM_XCDS
-        moved = ((local // xcd_chunk) * per_round + (wgid % NUM_XCDS) * xcd_chunk
-                 + local % xcd_chunk)
-        stays = hk.min(hk.max(wgid - limit, 0), 1)
-        wgid = moved + stays * (wgid - moved)
         per_group = WGM * n_blocks
         first_m = (wgid // per_group) * WGM
         group_m = hk.min(m_blocks - first_m, WGM)
@@ -340,7 +332,8 @@ def mx4w_kernel(name: str = "mxfp8_4w", *, block_m: int = 256, block_n: int = 25
     body.__name__ = name
     return hk.kernel(body, arch="gfx950", warps=WARPS, name=name, max_vgprs=512,
                      defines={d: 1 for d in defines.split(",") if d},
-                     grid=lambda p: (hk.cdiv(p.a.rows, block_m) * (p.b.rows // block_n), 1, 1))
+                     grid=lambda p: (hk.cdiv(p.a.rows, block_m) * (p.b.rows // block_n), 1, 1),
+                     placement=hk.Placement.chunked(xcd_chunk, "stay"))
 
 
 def mx4p_kernel(name: str = "mxfp8_4p", *, block_m: int = 256, block_n: int = 256,
@@ -353,8 +346,6 @@ def mx4p_kernel(name: str = "mxfp8_4p", *, block_m: int = 256, block_n: int = 25
     K-tiles instead of ending the workgroup. One K-tile a loop iteration
     (the ring rotates at run time, as mx4w's rolled form). Same arguments and
     results as mx4w_kernel."""
-    from .gemm_cdna import NUM_XCDS  # noqa: PLC0415
-
     BKs = 128
     qm, qn = block_m // 2 // split_m, block_n // 2 // split_n
     if split_m not in (1, 2) or split_n not in (1, 2) or qm % 64 or qn % 64:
@@ -392,14 +383,7 @@ def mx4p_kernel(name: str = "mxfp8_4p", *, block_m: int = 256, block_n: int = 25
             """(m0, n0) of this workgroup's i-th block: the virtual id wg + i*G
             renumbered so a chunk of consecutive ids shares an XCD (as mx4w),
             then WGM block-rows a group."""
-            v = wg + i * G
-            per_round = NUM_XCDS * xcd_chunk
-            limit = (blocks // per_round) * per_round
-            local = v // NUM_XCDS
-            moved = ((local // xcd_chunk) * per_round + (v % NUM_XCDS) * xcd_chunk
-                     + local % xcd_chunk)
-            stays = hk.min(hk.max(v - limit, 0), 1)
-            t = moved + stays * (v - moved)
+            t = hk.placement.renumber(wg + i * G, blocks, chunk=xcd_chunk, tail="stay")
             per_group = WGM * n_blocks
             first_m = (t // per_group) * WGM
             group_m = hk.min(m_blocks - first_m, WGM)

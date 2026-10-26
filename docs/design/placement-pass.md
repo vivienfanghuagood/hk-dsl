@@ -1,7 +1,10 @@
 # Design: workgroup placement as a pass (`hk-placement`)
 
-Status: M0 and M1 implemented (`hk.dsl.placement`; attention and the bf16 GEMMs on it); M2
-(K1, K2, stream-K) next. The owner decided on 2026-10-26 to build it, in the milestones of
+Status: M0, M1 and M2 implemented (`hk.dsl.placement`; attention, the bf16 GEMMs, K2's
+mxfp8, K1's moe_a8w4 and the stream-K plan on it; no hand-written remap and no `NUM_XCDS`
+left in hk.ops). M3 (a `placement` knob in hk.schedules) is not built. M2 measured: K2 at the
+18 DSV4.1 points bitwise, 0.992-1.011x; K1 bitwise, +19-24% where M left main's remap off
+(the stage-1 grid not a multiple of 8: M 9500, 10000, 14000, 15001), +-0.1% where it was on. The owner decided on 2026-10-26 to build it, in the milestones of
 "Merging with what exists" below, one PR on the latest main each. As built, `Placement.chunked`
 renumbers block_idx.x alone, in place (a GEMM's y is its split-K share), and a cluster
 placement flattens the grid. The evidence is the

@@ -21,7 +21,13 @@ import functools
 import math
 
 from ..types import bf16, fp8e4m3, fp32, i8, i32
-from .gemm_cdna import NUM_XCDS
+from ..dsl import placement as _pl
+
+#: gfx950 deals workgroups to its XCDs round robin (id % 8): renumbered so that a block's
+#: column blocks -- an expert's, sharing its token rows -- run on one XCD and share its L2.
+#: Contiguous ranges of the flat id, a bijection for any total (hk.dsl.placement; the
+#: hand-written form this replaces kept the identity unless total % 8 == 0).
+_XCD_PLACEMENT = _pl.Placement.chunked(0, "spread")
 
 TILE = 16
 
@@ -103,13 +109,6 @@ def stage1_lds_kernel(name: str, *, group_rows: int, mt: int = 4, pp: int = 2,
         Xs = hk.lds.alloc(st_x, count=2, name="Xs")
         nblk = h.cols // (TILE * pp * warps)
         wg = hk.arch.block_idx.x
-        if xcd:
-            # gfx950 deals workgroups to its XCDs round robin (id % 8); renumber so that an
-            # expert's column blocks share one XCD, and with it the L2 its token rows sit in
-            total = (tiles.cols - 1) * nblk
-            moved = (wg % NUM_XCDS) * (total // NUM_XCDS) + wg // NUM_XCDS
-            whole = 1 - hk.min(total % NUM_XCDS, 1)        # a permutation only for whole rounds
-            wg = whole * moved + (1 - whole) * wg
         blk = wg % nblk
         e = wg // nblk
         t0 = tiles[hk.elem_coord(0, 0, 0, e)].load_scalar()
@@ -163,7 +162,8 @@ def stage1_lds_kernel(name: str, *, group_rows: int, mt: int = 4, pp: int = 2,
 
     body.__name__ = name
     return hk.kernel(body, arch="gfx950", warps=warps, name=name, max_vgprs=512,
-                     grid=lambda p: ((p.h.cols // (TILE * pp * warps)) * (p.tiles.cols - 1), 1, 1))
+                     grid=lambda p: ((p.h.cols // (TILE * pp * warps)) * (p.tiles.cols - 1), 1, 1),
+                     placement=_XCD_PLACEMENT if xcd else None)
 
 
 def stage1_ring_kernel(name: str, *, group_rows: int, mt: int = 4, pp: int = 4, depth: int = 4,
@@ -205,11 +205,6 @@ def stage1_ring_kernel(name: str, *, group_rows: int, mt: int = 4, pp: int = 4, 
         Xs = hk.lds.alloc(st_x, count=D, name="Xs")
         nblk = h.cols // (TILE * pp * warps)
         wg = hk.arch.block_idx.x
-        if xcd:
-            total = (tiles.cols - 1) * nblk
-            moved = (wg % NUM_XCDS) * (total // NUM_XCDS) + wg // NUM_XCDS
-            whole = 1 - hk.min(total % NUM_XCDS, 1)
-            wg = whole * moved + (1 - whole) * wg
         blk = wg % nblk
         e = wg // nblk
         t0 = tiles[hk.elem_coord(0, 0, 0, e)].load_scalar()
@@ -322,7 +317,8 @@ def stage1_ring_kernel(name: str, *, group_rows: int, mt: int = 4, pp: int = 4, 
 
     body.__name__ = name
     return hk.kernel(body, arch="gfx950", warps=warps, name=name, max_vgprs=2048 // warps,
-                     grid=lambda p: ((p.h.cols // (TILE * pp * warps)) * (p.tiles.cols - 1), 1, 1))
+                     grid=lambda p: ((p.h.cols // (TILE * pp * warps)) * (p.tiles.cols - 1), 1, 1),
+                     placement=_XCD_PLACEMENT if xcd else None)
 
 
 def stage2_kernel(name: str, *, group_rows: int, mt: int = 4, pp: int = 4, depth: int = 3,
@@ -360,11 +356,6 @@ def stage2_kernel(name: str, *, group_rows: int, mt: int = 4, pp: int = 4, depth
         Xs = hk.lds.alloc(st_x, count=D, name="Xs")
         nblk = y.cols // (R * warps)
         wg = hk.arch.block_idx.x
-        if xcd:
-            total = (tiles.cols - 1) * nblk
-            moved = (wg % NUM_XCDS) * (total // NUM_XCDS) + wg // NUM_XCDS
-            whole = 1 - hk.min(total % NUM_XCDS, 1)
-            wg = whole * moved + (1 - whole) * wg
         blk = wg % nblk
         e = wg // nblk
         t0 = tiles[hk.elem_coord(0, 0, 0, e)].load_scalar()
@@ -453,7 +444,8 @@ def stage2_kernel(name: str, *, group_rows: int, mt: int = 4, pp: int = 4, depth
 
     body.__name__ = name
     return hk.kernel(body, arch="gfx950", warps=warps, name=name, max_vgprs=2048 // warps,
-                     grid=lambda p: ((p.y.cols // (R * warps)) * (p.tiles.cols - 1), 1, 1))
+                     grid=lambda p: ((p.y.cols // (R * warps)) * (p.tiles.cols - 1), 1, 1),
+                     placement=_XCD_PLACEMENT if xcd else None)
 
 
 @functools.lru_cache(maxsize=None)
@@ -648,11 +640,6 @@ def _sorted_ring(stage: int, name: str, *, group_rows: int, mt: int, pp: int, k:
             Hs = hk.lds.alloc(hk.ST(bf16, BM, TILE * pp * warps), name="Hs")
         nblk = out.cols // (TILE * pp * warps)
         wg = hk.arch.block_idx.x
-        if xcd:
-            total = seids.cols * nblk
-            moved = (wg % NUM_XCDS) * (total // NUM_XCDS) + wg // NUM_XCDS
-            whole = 1 - hk.min(total % NUM_XCDS, 1)
-            wg = whole * moved + (1 - whole) * wg
         blk = wg % nblk
         b = wg // nblk
         e = seids[hk.elem_coord(0, 0, 0, b)].load_scalar()
@@ -730,7 +717,8 @@ def _sorted_ring(stage: int, name: str, *, group_rows: int, mt: int, pp: int, k:
 
     body.__name__ = name
     return hk.kernel(body, arch="gfx950", warps=warps, name=name, max_vgprs=2048 // warps,
-                     grid=lambda p: (p.seids.cols * (p.out.cols // (TILE * pp * warps)), 1, 1))
+                     grid=lambda p: (p.seids.cols * (p.out.cols // (TILE * pp * warps)), 1, 1),
+                     placement=_XCD_PLACEMENT if xcd else None)
 
 
 def _sorted_s2_persistent(name: str, *, group_rows: int, mt: int, pp: int, k: int, topk: int = 6,
@@ -750,7 +738,7 @@ def _sorted_s2_persistent(name: str, *, group_rows: int, mt: int, pp: int, k: in
     BM = TILE * mt
     R = TILE * pp
     steps = k // KS
-    if mt % 2 or k % KS or steps < 2 or grid % NUM_XCDS:
+    if mt % 2 or k % KS or steps < 2 or grid % _pl.xcd_count("gfx950"):
         raise ValueError(f"_sorted_s2_persistent: an even mt, K a multiple of 128, a grid of whole "
                          f"XCDs (mt={mt}, K={k}, grid={grid})")
     st_x = hk.ST(fp8e4m3, BM, KS)
@@ -770,14 +758,12 @@ def _sorted_s2_persistent(name: str, *, group_rows: int, mt: int, pp: int, k: in
         wid = hk.arch.warp_id()
         valid = nv[hk.elem_coord(0, 0, 0, 0)].load_scalar()
         units = hk.cdiv(valid, BM) * nblk
-        # Each XCD (workgroups x, x + 8, ...) takes a contiguous chunk of the units, so a block's
-        # column blocks -- which share its x tile -- run under one L2.
-        GX = G // NUM_XCDS
-        xcd = wg % NUM_XCDS
-        local = wg // NUM_XCDS
-        chunk = hk.cdiv(units, NUM_XCDS)
-        first = xcd * chunk
-        span = hk.max(hk.min(chunk, units - first), 0)
+        # Each XCD (workgroups x, x + 8, ...) takes a contiguous range of the units, so a block's
+        # column blocks -- which share its x tile -- run under one L2 (hk.dsl.placement).
+        xcds = hk.arch.xcd_count()
+        GX = G // xcds
+        local = wg // xcds
+        first, span = hk.placement.xcd_range(wg % xcds, units)
         mine = hk.cdiv(hk.max(span - local, 0), GX)      # this workgroup's units
         last = first + hk.max(span - 1, 0)
 
@@ -898,11 +884,6 @@ def _sorted_s1_grid(name: str, *, group_rows: int, mt: int, pp: int, k: int, tr:
         Ws = hk.lds.alloc(st_w, count=2, name="Ws", shape="16x128")
         nblk = h.cols // (TILE * pp * tc)
         wg = hk.arch.block_idx.x
-        if xcd:
-            total = seids.cols * nblk
-            moved = (wg % NUM_XCDS) * (total // NUM_XCDS) + wg // NUM_XCDS
-            whole = 1 - hk.min(total % NUM_XCDS, 1)
-            wg = whole * moved + (1 - whole) * wg
         blk = wg % nblk
         b = wg // nblk
         e = seids[hk.elem_coord(0, 0, 0, b)].load_scalar()
@@ -969,7 +950,8 @@ def _sorted_s1_grid(name: str, *, group_rows: int, mt: int, pp: int, k: int, tr:
 
     body.__name__ = name
     return hk.kernel(body, arch="gfx950", warps=warps, name=name, max_vgprs=2048 // warps,
-                     grid=lambda p: (p.seids.cols * (p.h.cols // (TILE * pp * tc)), 1, 1))
+                     grid=lambda p: (p.seids.cols * (p.h.cols // (TILE * pp * tc)), 1, 1),
+                     placement=_XCD_PLACEMENT if xcd else None)
 
 
 @functools.lru_cache(maxsize=None)
@@ -1021,10 +1003,6 @@ def _sorted_s2_resident(name: str, *, group_rows: int, mt: int, pp: int, k: int,
         Hres = hk.lds.alloc(st_x, count=steps, name="Hres")
         nblk = out.cols // (NCW * nt)
         wg = hk.arch.block_idx.x
-        total = seids.cols * nblk
-        moved = (wg % NUM_XCDS) * (total // NUM_XCDS) + wg // NUM_XCDS
-        whole = 1 - hk.min(total % NUM_XCDS, 1)
-        wg = whole * moved + (1 - whole) * wg
         blk = wg % nblk
         b = wg // nblk
         e = seids[hk.elem_coord(0, 0, 0, b)].load_scalar()
@@ -1088,7 +1066,8 @@ def _sorted_s2_resident(name: str, *, group_rows: int, mt: int, pp: int, k: int,
 
     body.__name__ = name
     return hk.kernel(body, arch="gfx950", warps=warps, name=name, max_vgprs=2048 // warps,
-                     grid=lambda p: (p.seids.cols * (p.out.cols // (TILE * pp * warps * nt)), 1, 1))
+                     grid=lambda p: (p.seids.cols * (p.out.cols // (TILE * pp * warps * nt)), 1, 1),
+                     placement=_XCD_PLACEMENT)
 
 
 @functools.lru_cache(maxsize=None)
@@ -1239,10 +1218,6 @@ def stage1_dma_kernel(name: str, *, group_rows: int, mt: int = 4, pp: int = 4, d
         Ws = hk.lds.alloc(st_w, count=D, name="Ws", shape="16x128")
         nblk = h.cols // (TILE * pp * warps)
         wg = hk.arch.block_idx.x
-        total = (tiles.cols - 1) * nblk
-        moved = (wg % NUM_XCDS) * (total // NUM_XCDS) + wg // NUM_XCDS
-        whole = 1 - hk.min(total % NUM_XCDS, 1)
-        wg = whole * moved + (1 - whole) * wg
         blk = wg % nblk
         e = wg // nblk
         t0 = tiles[hk.elem_coord(0, 0, 0, e)].load_scalar()
@@ -1304,7 +1279,8 @@ def stage1_dma_kernel(name: str, *, group_rows: int, mt: int = 4, pp: int = 4, d
 
     body.__name__ = name
     return hk.kernel(body, arch="gfx950", warps=warps, name=name, max_vgprs=512,
-                     grid=lambda p: ((p.h.cols // (TILE * pp * warps)) * (p.tiles.cols - 1), 1, 1))
+                     grid=lambda p: ((p.h.cols // (TILE * pp * warps)) * (p.tiles.cols - 1), 1, 1),
+                     placement=_XCD_PLACEMENT)
 
 
 @functools.lru_cache(maxsize=None)
