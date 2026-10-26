@@ -132,8 +132,9 @@ toolchain. It runs by hand with `gh workflow run pypi.yml -f tag=vX.Y.Z`, and
 on every published release once the repository variable `PYPI_PUBLISH` is
 `true`. It uses the `PYPI_API_TOKEN` secret of the `pypi` environment, or PyPI
 trusted publishing when that secret is not set. The repository has neither
-yet. 0.3.1, the first version on PyPI, through 0.6.0 were uploaded by hand with
-twine from the same manylinux wheels.
+yet. 0.3.1, the first version on PyPI, through 0.7.0 were uploaded by hand with
+twine from the same manylinux wheels. The release steps, and the checks that
+must pass before a tag, are in [releasing](releasing.md).
 
 **Known issue: the workflow cannot upload yet.** Run for v0.6.0 (run
 40186344465), it downloaded the release's wheels and then PyPI refused the
@@ -172,7 +173,7 @@ compiles without it, only launching needs it, and on a ROCm machine it is
 already installed by something with strong opinions about which build. The
 wheel also registers two entry points, `vllm.general_plugins` and
 `sglang.srt.plugins`, each of which does nothing until one of its switches
-is set ([integration](integration.md#turning-them-on)).
+is set ([integration](integration.md#on-by-default-and-turning-it-off)).
 
 Wheels are Linux x86_64 only, one CPython each, and are built by hand today
 on the machines that have the toolchain.

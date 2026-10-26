@@ -1,6 +1,7 @@
 # Examples
 
 Eleven kernels written from scratch, in the order they introduce the language, two files of kernels built from templates,
+two about gfx950's XCDs (a task graph on `hk.comm`, and workgroup placement),
 and a script that checks the shipped kernels against torch. Each kernel
 example checks its result against an fp32 torch reference before it times
 anything, and times itself against the torch call it would replace and,
@@ -23,6 +24,8 @@ beside its model).
 | 11 | [`11_vllm_integration.py`](11_vllm_integration.py) | your kernel in vLLM: `register.op` with a reference and a route, `op.check`, `register.patch`, and the end-to-end A/B (`python -m hk.integration ab`) |
 | 12 | [`12_templates_rowwise.py`](12_templates_rowwise.py) | `hk.templates.elementwise` and `rowwise`: GELU-and-mul, RMSNorm, the fused add, softmax and a cross-entropy over 151936 columns, each the math of one element or one row; the template picks the plan per GPU ([the guide](../docs/templates/elementwise-rowwise.md)) |
 | 13 | [`13_templates_gemm.py`](13_templates_gemm.py) | `hk.templates.gemm`: linear + bias + GELU in one kernel -- your epilogue traced into the store of hk's tuned GEMM, on both GPUs ([docs/templates/gemm.md](../docs/templates/gemm.md)) |
+| 14 | [`14_task_graph.py`](14_task_graph.py) | `hk.comm` (gfx950): a persistent `resident=True` grid taking tasks from a queue (`hk.comm.claim`), each layer waiting for the one before (`wait` with a timeout into an error element, `arrive`), through `"device"`-scoped tensors; `hk.arch.xcd_id()` shows the tasks spread over the 8 XCDs ([docs/design/comm.md](../docs/design/comm.md)) |
+| 15 | [`15_placement.py`](15_placement.py) | which XCD runs which workgroup: `placement=hk.Placement.cluster(...)`, `Kernel.placed()`, `placement="auto"` and `placement_choice()`; outputs bitwise the unplaced kernel's, `hk.check --placement` with no GPU; the identity on gfx1100 ([design](../docs/design/placement-pass.md)) |
 | | [`validate.py`](validate.py) | the shipped `hk.ops` kernels at typical LLM shapes: correctness, then speed against torch |
 
 ## Running

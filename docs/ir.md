@@ -102,7 +102,10 @@ below.
     subtile; an MMA into a 32x32 accumulator gives its operands the 32x16
     or 16x32 fragment that MFMA takes, and the stride of the operand read off
     an accumulator to the other one; a no-op on RDNA and gfx942;
-  - `hk-lds-alloc`: LDS offsets, against the target's limit;
+  - `hk-lds-alloc`: LDS offsets, against the target's limit, over every
+    region: the two arms of a runtime `if` start at the same offset and the
+    larger continues, and an allocation inside a runtime `for` / `while` is
+    refused (allocate it before the loop);
   - `hk-lds-pipeline`: every `lgkmcnt` derived, every asynchronously loaded
     tile proven waited for before it is read, loops walked until they reach
     a steady state; on gfx950, every `vmcnt` of an asynchronous group load

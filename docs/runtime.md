@@ -60,9 +60,21 @@ A kernel that names no `arch` is built for `hk.target.current_arch()`:
 gfx1100. It is resolved on first use, so importing `hk.ops` still builds no
 IR and probes no GPU ([gfx1201](history/13-gfx1201.md)).
 
-`detect()` tries, in order, `HK_ARCH`, `HCC_AMDGPU_TARGET` and
-`PYTORCH_ROCM_ARCH` (the first entry of a list), then the device torch sees,
-then `rocminfo`. `HK_ARCH` is the only way to build for a part that is not in
+`detect()` tries, in order:
+1. `HK_ARCH`;
+2. `HCC_AMDGPU_TARGET` or `PYTORCH_ROCM_ARCH`, only when it names exactly
+   one arch;
+3. the first GPU node of the KFD topology in sysfs
+   (`/sys/class/kfd/kfd/topology/nodes/*/properties`), which creates no HIP
+   context, so an engine plugin can decide in every process;
+4. the device torch sees, then `rocminfo`;
+5. the first entry of a `HCC_AMDGPU_TARGET` / `PYTORCH_ROCM_ARCH` list, as a
+   last resort.
+
+A list says what a build targets, not which GPU is here: vLLM's ROCm image
+sets `PYTORCH_ROCM_ARCH=gfx90a;gfx942;gfx950;...`, and until 0.7.0, which
+read its first entry second, an MI355X was taken for gfx90a and hk built for
+gfx1100 (#54). `HK_ARCH` is the only way to build for a part that is not in
 the machine, which is how the gfx1201 and gfx942 kernels get their compile
 gate on a gfx1100 box. The gfx1100 fallback exists so that a box with no GPU
 gets the source a W7900 would; a detected GPU that is not one of the targets
@@ -349,7 +361,8 @@ listed in [integration](integration.md#environment-variables).
 | variable | read by | effect |
 |---|---|---|
 | `HK_ARCH` | `runtime/arch.py`, `target/__init__.py` | the arch to build for; first in the detection order |
-| `HCC_AMDGPU_TARGET`, `PYTORCH_ROCM_ARCH` | `runtime/arch.py` | next in the detection order (first entry of a list) |
+| `HCC_AMDGPU_TARGET`, `PYTORCH_ROCM_ARCH` | `runtime/arch.py` | next in the detection order when it names one arch; a list's first entry only after the KFD topology, torch and rocminfo |
+| `HK_XCDS` | `dsl/placement.py` | the XCD count workgroup placement deals over (`hk.arch.xcd_count()`), instead of KFD's `num_xcc` |
 | `HK_HIPCC` | `runtime/compile.py` | the hipcc to use |
 | `ROCM_PATH` | `runtime/compile.py` | where `include/hip` is |
 | `HK_INCLUDE_DIR` | `runtime/compile.py` | header directories, as a path list, instead of the packaged or checkout ones |

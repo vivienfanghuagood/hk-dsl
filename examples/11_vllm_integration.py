@@ -21,7 +21,11 @@ product.
     HK_VLLM_USER=examples/11_vllm_integration.py \\
         python -m hk.integration ab --model Qwen/Qwen3-8B --arms user \\
         --context 1024 --batch 1,16 --short 16 --tokens 48
-    HK_PATCH_VLLM=1 HK_VLLM_USER=examples/11_vllm_integration.py vllm serve Qwen/Qwen3-8B
+    HK_VLLM_USER=examples/11_vllm_integration.py vllm serve Qwen/Qwen3-8B
+
+   The served engine also runs hk's default routes for this GPU (hk is on by
+   default since 0.7.0; `HK_PATCH_VLLM=1` would add the encoder SDPA patch
+   too). `ab` keeps them out of both arms, so it measures this patch alone.
 
 Measure before you ship a patch: vLLM compiles its own SiLU-and-mul with
 Inductor, and this kernel is not guaranteed to beat it. The route is where a

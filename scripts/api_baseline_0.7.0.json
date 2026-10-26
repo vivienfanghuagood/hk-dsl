@@ -359,7 +359,8 @@
 "min_occupancy",
 "defines",
 "noalias",
-"preload"
+"preload",
+"resident"
 ],
 "__repr__": [
 "self"
@@ -372,6 +373,10 @@
 "consts"
 ],
 "_launcher": [
+"self",
+"**const_overrides"
+],
+"_launcher_raw": [
 "self",
 "**const_overrides"
 ],
@@ -403,6 +408,10 @@
 ],
 "preloaded": [
 "self"
+],
+"resident_capacity": [
+"self",
+"**const_overrides"
 ],
 "source": [
 "self",
@@ -508,7 +517,7 @@
 "methods": {
 "__class_getitem__": [
 "cls",
-"dtype"
+"spec"
 ]
 }
 },
@@ -528,6 +537,13 @@
 "idx",
 "value",
 "into"
+],
+"_ordered": [
+"self",
+"kind",
+"axis",
+"lanes",
+"xor"
 ],
 "_reduce": [
 "self",
@@ -567,15 +583,21 @@
 ],
 "max": [
 "self",
-"axis"
+"axis",
+"lanes",
+"xor"
 ],
 "min": [
 "self",
-"axis"
+"axis",
+"lanes",
+"xor"
 ],
 "prod": [
 "self",
-"axis"
+"axis",
+"lanes",
+"xor"
 ],
 "right_fill_": [
 "self",
@@ -590,7 +612,10 @@
 ],
 "sum": [
 "self",
-"axis"
+"axis",
+"lanes",
+"xor",
+"times"
 ],
 "to": [
 "self",
@@ -708,7 +733,27 @@
 "self",
 "value"
 ],
+"atomic_and_scalar": [
+"self",
+"value"
+],
+"atomic_exch_scalar": [
+"self",
+"value"
+],
 "atomic_max_scalar": [
+"self",
+"value"
+],
+"atomic_min_scalar": [
+"self",
+"value"
+],
+"atomic_or_scalar": [
+"self",
+"value"
+],
+"atomic_xor_scalar": [
 "self",
 "value"
 ],
@@ -787,6 +832,7 @@
 ]
 },
 "collective": {},
+"comm": {},
 "compiler": {},
 "coord": {
 "params": [
@@ -860,7 +906,8 @@
 "min_occupancy",
 "defines",
 "noalias",
-"preload"
+"preload",
+"resident"
 ]
 },
 "lds": {},
@@ -1922,7 +1969,8 @@
 "cpp": [
 "self"
 ],
-"dtype": null
+"dtype": null,
+"scope": null
 }
 },
 "LAYOUT_SYMBOL": {},
@@ -2402,7 +2450,8 @@
 "min_occupancy",
 "defines",
 "noalias",
-"preload"
+"preload",
+"resident"
 ],
 "__repr__": [
 "self"
@@ -2415,6 +2464,10 @@
 "consts"
 ],
 "_launcher": [
+"self",
+"**const_overrides"
+],
+"_launcher_raw": [
 "self",
 "**const_overrides"
 ],
@@ -2446,6 +2499,10 @@
 ],
 "preloaded": [
 "self"
+],
+"resident_capacity": [
+"self",
+"**const_overrides"
 ],
 "source": [
 "self",
@@ -2547,7 +2604,7 @@
 "methods": {
 "__class_getitem__": [
 "cls",
-"dtype"
+"spec"
 ]
 }
 },
@@ -2567,6 +2624,13 @@
 "idx",
 "value",
 "into"
+],
+"_ordered": [
+"self",
+"kind",
+"axis",
+"lanes",
+"xor"
 ],
 "_reduce": [
 "self",
@@ -2606,15 +2670,21 @@
 ],
 "max": [
 "self",
-"axis"
+"axis",
+"lanes",
+"xor"
 ],
 "min": [
 "self",
-"axis"
+"axis",
+"lanes",
+"xor"
 ],
 "prod": [
 "self",
-"axis"
+"axis",
+"lanes",
+"xor"
 ],
 "right_fill_": [
 "self",
@@ -2629,7 +2699,10 @@
 ],
 "sum": [
 "self",
-"axis"
+"axis",
+"lanes",
+"xor",
+"times"
 ],
 "to": [
 "self",
@@ -2761,7 +2834,27 @@
 "self",
 "value"
 ],
+"atomic_and_scalar": [
+"self",
+"value"
+],
+"atomic_exch_scalar": [
+"self",
+"value"
+],
 "atomic_max_scalar": [
+"self",
+"value"
+],
+"atomic_min_scalar": [
+"self",
+"value"
+],
+"atomic_or_scalar": [
+"self",
+"value"
+],
+"atomic_xor_scalar": [
 "self",
 "value"
 ],
@@ -2959,6 +3052,7 @@
 ]
 },
 "collective": {},
+"comm": {},
 "coord": {
 "params": [
 "b",
@@ -3022,7 +3116,8 @@
 "min_occupancy",
 "defines",
 "noalias",
-"preload"
+"preload",
+"resident"
 ]
 },
 "lds": {},
@@ -3329,7 +3424,8 @@
 "cpp": [
 "self"
 ],
-"dtype": null
+"dtype": null,
+"scope": null
 }
 },
 "Int": {
@@ -3451,7 +3547,27 @@
 "self",
 "value"
 ],
+"atomic_and_scalar": [
+"self",
+"value"
+],
+"atomic_exch_scalar": [
+"self",
+"value"
+],
 "atomic_max_scalar": [
+"self",
+"value"
+],
+"atomic_min_scalar": [
+"self",
+"value"
+],
+"atomic_or_scalar": [
+"self",
+"value"
+],
+"atomic_xor_scalar": [
 "self",
 "value"
 ],
@@ -3565,6 +3681,9 @@
 "expected",
 "scope"
 ]
+},
+"xcd_id": {
+"params": []
 }
 },
 "hk.dsl.builder": {
@@ -3813,6 +3932,282 @@
 ]
 },
 "lds": {}
+},
+"hk.dsl.comm": {
+"Int": {
+"methods": {
+"__add__": [
+"self",
+"o"
+],
+"__bool__": [
+"self"
+],
+"__eq__": [
+"self",
+"o"
+],
+"__floordiv__": [
+"self",
+"o"
+],
+"__ge__": [
+"self",
+"o"
+],
+"__gt__": [
+"self",
+"o"
+],
+"__hash__": null,
+"__index__": [
+"self"
+],
+"__int__": null,
+"__le__": [
+"self",
+"o"
+],
+"__lt__": [
+"self",
+"o"
+],
+"__mod__": [
+"self",
+"o"
+],
+"__mul__": [
+"self",
+"o"
+],
+"__ne__": [
+"self",
+"o"
+],
+"__neg__": [
+"self"
+],
+"__radd__": [
+"self",
+"o"
+],
+"__rfloordiv__": [
+"self",
+"o"
+],
+"__rmod__": [
+"self",
+"o"
+],
+"__rmul__": [
+"self",
+"o"
+],
+"__rsub__": [
+"self",
+"o"
+],
+"__slots__": null,
+"__sub__": [
+"self",
+"o"
+],
+"__truediv__": [
+"self",
+"o"
+]
+}
+},
+"Optional": {},
+"REALTIME_HZ": {},
+"ScalarType": {
+"methods": {
+"__repr__": [
+"self"
+],
+"cpp": [
+"self"
+],
+"dtype": null
+}
+},
+"View": {
+"methods": {
+"__init__": [
+"self",
+"tensor",
+"idx"
+],
+"__slots__": null,
+"_atomic_scalar": [
+"self",
+"kind",
+"value"
+],
+"atomic_add": [
+"self",
+"value"
+],
+"atomic_add_scalar": [
+"self",
+"value"
+],
+"atomic_and_scalar": [
+"self",
+"value"
+],
+"atomic_exch_scalar": [
+"self",
+"value"
+],
+"atomic_max_scalar": [
+"self",
+"value"
+],
+"atomic_min_scalar": [
+"self",
+"value"
+],
+"atomic_or_scalar": [
+"self",
+"value"
+],
+"atomic_xor_scalar": [
+"self",
+"value"
+],
+"load": [
+"self",
+"tile",
+"into",
+"bounded",
+"period"
+],
+"load_scalar": [
+"self",
+"invariant"
+],
+"store": [
+"self",
+"value",
+"bounded"
+],
+"store_scalar": [
+"self",
+"vec"
+]
+}
+},
+"__all__": {},
+"_arrive_if": {
+"params": [
+"cond",
+"view"
+]
+},
+"_error": {
+"params": [
+"error",
+"what"
+]
+},
+"_flag": {
+"params": [
+"view",
+"what"
+]
+},
+"_i32": {
+"params": []
+},
+"_i64": {
+"params": [
+"v"
+]
+},
+"_t": {
+"params": []
+},
+"_ticks": {
+"params": [
+"timeout_s",
+"what"
+]
+},
+"annotations": {},
+"arrive": {
+"params": [
+"view",
+"value"
+]
+},
+"as_int": {
+"params": [
+"x"
+]
+},
+"barrier": {
+"params": [
+"view",
+"target",
+"timeout_s",
+"error"
+]
+},
+"claim": {
+"params": [
+"view",
+"value"
+]
+},
+"hkd": {},
+"i32": {},
+"post": {
+"params": [
+"view",
+"value",
+"tag"
+]
+},
+"scope_aux": {
+"params": [
+"tensor",
+"what",
+"tile"
+]
+},
+"signal": {
+"params": [
+"view",
+"value"
+]
+},
+"take": {
+"params": [
+"view",
+"tag",
+"timeout_s",
+"error"
+]
+},
+"wait": {
+"params": [
+"view",
+"value",
+"cmp",
+"timeout_s",
+"error"
+]
+},
+"xcd_barrier": {
+"params": [
+"cnt",
+"epoch",
+"workgroups",
+"timeout_s",
+"error"
+]
+}
 },
 "hk.dsl.control": {
 "Any": {},
@@ -4277,7 +4672,27 @@
 "self",
 "value"
 ],
+"atomic_and_scalar": [
+"self",
+"value"
+],
+"atomic_exch_scalar": [
+"self",
+"value"
+],
 "atomic_max_scalar": [
+"self",
+"value"
+],
+"atomic_min_scalar": [
+"self",
+"value"
+],
+"atomic_or_scalar": [
+"self",
+"value"
+],
+"atomic_xor_scalar": [
 "self",
 "value"
 ],
@@ -4585,7 +5000,8 @@
 "cpp": [
 "self"
 ],
-"dtype": null
+"dtype": null,
+"scope": null
 }
 },
 "Kernel": {
@@ -4606,7 +5022,8 @@
 "min_occupancy",
 "defines",
 "noalias",
-"preload"
+"preload",
+"resident"
 ],
 "__repr__": [
 "self"
@@ -4619,6 +5036,10 @@
 "consts"
 ],
 "_launcher": [
+"self",
+"**const_overrides"
+],
+"_launcher_raw": [
 "self",
 "**const_overrides"
 ],
@@ -4650,6 +5071,10 @@
 ],
 "preloaded": [
 "self"
+],
+"resident_capacity": [
+"self",
+"**const_overrides"
 ],
 "source": [
 "self",
@@ -4696,7 +5121,7 @@
 "methods": {
 "__class_getitem__": [
 "cls",
-"dtype"
+"spec"
 ]
 }
 },
@@ -4748,6 +5173,7 @@
 "loc"
 ]
 },
+"_symmetric": {},
 "annotations": {},
 "begin_kernel": {
 "params": [
@@ -4790,7 +5216,8 @@
 "min_occupancy",
 "defines",
 "noalias",
-"preload"
+"preload",
+"resident"
 ]
 },
 "rewrite": {
@@ -4950,6 +5377,13 @@
 "value",
 "into"
 ],
+"_ordered": [
+"self",
+"kind",
+"axis",
+"lanes",
+"xor"
+],
 "_reduce": [
 "self",
 "kind",
@@ -4988,15 +5422,21 @@
 ],
 "max": [
 "self",
-"axis"
+"axis",
+"lanes",
+"xor"
 ],
 "min": [
 "self",
-"axis"
+"axis",
+"lanes",
+"xor"
 ],
 "prod": [
 "self",
-"axis"
+"axis",
+"lanes",
+"xor"
 ],
 "right_fill_": [
 "self",
@@ -5011,7 +5451,10 @@
 ],
 "sum": [
 "self",
-"axis"
+"axis",
+"lanes",
+"xor",
+"times"
 ],
 "to": [
 "self",
@@ -5154,7 +5597,8 @@
 "cpp": [
 "self"
 ],
-"dtype": null
+"dtype": null,
+"scope": null
 }
 },
 "GranuleSetType": {
@@ -5821,7 +6265,8 @@
 "cpp": [
 "self"
 ],
-"dtype": null
+"dtype": null,
+"scope": null
 }
 },
 "GranuleSetType": {
@@ -5993,7 +6438,8 @@
 "self",
 "kind",
 "axis",
-"src"
+"src",
+"order"
 ],
 "__mul__": [
 "self",
@@ -6099,6 +6545,7 @@
 "uniform": null
 }
 },
+"SCOPE_AUX": {},
 "Scalar": {},
 "ScalarType": {
 "methods": {
@@ -6246,6 +6693,13 @@
 "value",
 "into"
 ],
+"_ordered": [
+"self",
+"kind",
+"axis",
+"lanes",
+"xor"
+],
 "_reduce": [
 "self",
 "kind",
@@ -6284,15 +6738,21 @@
 ],
 "max": [
 "self",
-"axis"
+"axis",
+"lanes",
+"xor"
 ],
 "min": [
 "self",
-"axis"
+"axis",
+"lanes",
+"xor"
 ],
 "prod": [
 "self",
-"axis"
+"axis",
+"lanes",
+"xor"
 ],
 "right_fill_": [
 "self",
@@ -6307,7 +6767,10 @@
 ],
 "sum": [
 "self",
-"axis"
+"axis",
+"lanes",
+"xor",
+"times"
 ],
 "to": [
 "self",
@@ -6424,7 +6887,27 @@
 "self",
 "value"
 ],
+"atomic_and_scalar": [
+"self",
+"value"
+],
+"atomic_exch_scalar": [
+"self",
+"value"
+],
 "atomic_max_scalar": [
+"self",
+"value"
+],
+"atomic_min_scalar": [
+"self",
+"value"
+],
+"atomic_or_scalar": [
+"self",
+"value"
+],
+"atomic_xor_scalar": [
 "self",
 "value"
 ],
@@ -6679,6 +7162,11 @@
 "_i32": {
 "params": []
 },
+"_i64": {
+"params": [
+"v"
+]
+},
 "_is_strip": {
 "params": [
 "ty"
@@ -6709,6 +7197,15 @@
 "_pad4": {
 "params": [
 "idx"
+]
+},
+"_reduce_order": {
+"params": [
+"t",
+"kind",
+"axis",
+"lanes",
+"xor"
 ]
 },
 "_strip_access": {
@@ -6950,6 +7447,13 @@
 "b"
 ]
 },
+"scope_aux": {
+"params": [
+"tensor",
+"what",
+"tile"
+]
+},
 "tile_coord": {
 "params": [
 "b",
@@ -7071,7 +7575,10 @@
 }
 },
 "hk.integration._sglang_plugin": {
-"_OFF": {},
+"Callable": {},
+"List": {},
+"Tuple": {},
+"__all__": {},
 "annotations": {},
 "enabled": {
 "params": []
@@ -7082,6 +7589,32 @@
 }
 },
 "hk.integration._vllm_plugin": {
+"APPLY": {},
+"Callable": {},
+"Dict": {},
+"List": {},
+"Tuple": {},
+"_backend": {
+"params": []
+},
+"_gemm": {
+"params": []
+},
+"_int4": {
+"params": []
+},
+"_moe": {
+"params": []
+},
+"_moe_a8w4": {
+"params": []
+},
+"_mxfp8": {
+"params": []
+},
+"_sdpa": {
+"params": []
+},
 "annotations": {},
 "enabled": {
 "params": []
@@ -7185,6 +7718,101 @@
 "meta"
 ]
 }
+},
+"hk.integration.contract": {
+"BROKEN": {},
+"CHECKS": {},
+"Callable": {},
+"Dict": {},
+"Iterable": {},
+"List": {},
+"MEASURED_VLLM": {},
+"Optional": {},
+"RAISED": {},
+"_expect": {
+"params": [
+"ok",
+"problem"
+]
+},
+"_gfx950": {
+"params": []
+},
+"_params": {
+"params": [
+"fn",
+"drop_self"
+]
+},
+"_sglang_linear": {
+"params": []
+},
+"_sglang_moe": {
+"params": []
+},
+"_sgld_attn": {
+"params": []
+},
+"_sgld_convrot": {
+"params": []
+},
+"_sgld_linear": {
+"params": []
+},
+"_vllm_backend": {
+"params": []
+},
+"_vllm_gemm": {
+"params": []
+},
+"_vllm_int4": {
+"params": []
+},
+"_vllm_moe": {
+"params": []
+},
+"_vllm_moe_a8w4": {
+"params": []
+},
+"_vllm_mxfp8": {
+"params": []
+},
+"_vllm_sdpa": {
+"params": []
+},
+"annotations": {},
+"check": {
+"params": [
+"routes"
+]
+},
+"engine_version": {
+"params": [
+"engine"
+]
+},
+"inspect": {},
+"names": {
+"params": [
+"fn",
+"drop_self"
+]
+},
+"refuse": {
+"params": [
+"engine",
+"problems",
+"what"
+]
+},
+"same_parameters": {
+"params": [
+"engine_fn",
+"standin",
+"what"
+]
+},
+"sys": {}
 },
 "hk.integration.engine": {
 "Callable": {},
@@ -7800,6 +8428,7 @@
 "TARGET": {},
 "_BOOT": {},
 "_LAST": {},
+"_LINEAR_ORIG": {},
 "_OFF": {},
 "_OPS": {},
 "_PTH": {},
@@ -7825,11 +8454,6 @@
 "op",
 "a",
 "weight"
-]
-},
-"_parts": {
-"params": [
-"value"
 ]
 },
 "_report": {
@@ -7861,6 +8485,9 @@
 ]
 },
 "os": {},
+"revert_linear": {
+"params": []
+},
 "site_dir": {
 "params": []
 },
@@ -8054,6 +8681,96 @@
 ]
 },
 "sys": {}
+},
+"hk.integration.switches": {
+"DISABLE": {},
+"Decision": {
+"methods": {
+"on": null,
+"value": null,
+"why": null
+}
+},
+"Dict": {},
+"ENGINES": {},
+"List": {},
+"Mapping": {},
+"OFF": {},
+"ON": {},
+"Optional": {},
+"ROUTES": {},
+"Route": {
+"methods": {
+"arches": null,
+"default": null,
+"engine": null,
+"env": null,
+"evidence": null,
+"name": null,
+"part": null,
+"what": null
+}
+},
+"Tuple": {},
+"_ARCH": {},
+"_R": {},
+"_get": {
+"params": [
+"env",
+"name"
+]
+},
+"annotations": {},
+"arch": {
+"params": []
+},
+"dataclass": {},
+"decide": {
+"params": [
+"name",
+"env",
+"gpu"
+]
+},
+"disabled": {
+"params": [
+"env"
+]
+},
+"enabled": {
+"params": [
+"name",
+"env"
+]
+},
+"is_off": {
+"params": [
+"v"
+]
+},
+"on": {
+"params": [
+"engine",
+"env"
+]
+},
+"os": {},
+"routes": {
+"params": [
+"engine"
+]
+},
+"table": {
+"params": [
+"env"
+]
+},
+"value": {
+"params": [
+"name",
+"env"
+]
+}
 },
 "hk.integration.tune": {
 "annotations": {},
@@ -8569,6 +9286,7 @@
 }
 },
 "hk.integration.vllm_moe_a8w4": {
+"AITER_PARAMS": {},
 "Callable": {},
 "ENABLED": {},
 "MIN_M": {},
@@ -8639,7 +9357,6 @@
 "_fake": {
 "params": [
 "x",
-"xs",
 "w",
 "ws",
 "hk_wa",
@@ -8660,10 +9377,9 @@
 ]
 },
 "engine": {},
-"mxfp8_block32": {
+"mxfp8_linear": {
 "params": [
 "x",
-"xs",
 "w",
 "ws",
 "hk_wa",
@@ -8689,6 +9405,39 @@
 },
 "status": {
 "params": []
+}
+},
+"hk.integration.warm_routes": {
+"Dict": {},
+"HIDDEN": {},
+"K2_MS": {},
+"List": {},
+"MOE_INTER": {},
+"TOPK": {},
+"Tuple": {},
+"_k1": {
+"params": [
+"tp"
+]
+},
+"_k2": {
+"params": [
+"tp"
+]
+},
+"annotations": {},
+"argparse": {},
+"main": {
+"params": [
+"argv"
+]
+},
+"time": {},
+"warm": {
+"params": [
+"tp",
+"routes"
+]
 }
 },
 "hk.mx": {
@@ -8993,7 +9742,8 @@
 "cpp": [
 "self"
 ],
-"dtype": null
+"dtype": null,
+"scope": null
 }
 },
 "__all__": {},
@@ -9053,7 +9803,15 @@
 "causal",
 "scale",
 "n",
-"bnhd"
+"bnhd",
+"mapping"
+]
+},
+"_mapping": {
+"params": [
+"q",
+"k",
+"causal"
 ]
 },
 "_native_cdna": {
@@ -9134,11 +9892,14 @@
 "Dict": {},
 "HEAD_DIMS": {},
 "KV_BLOCK": {},
+"MAPPINGS": {},
 "NEG_INF": {},
+"NUM_XCDS": {},
 "Optional": {},
 "PAGE": {},
 "Q_ROWS": {},
 "Q_TILE": {},
+"RESIDENT_PER_XCD": {},
 "WARPS": {},
 "_KERNELS": {},
 "__all__": {},
@@ -9147,6 +9908,15 @@
 "n_mma",
 "groups",
 "sync_id"
+]
+},
+"_spatial": {
+"params": [
+"w",
+"batch",
+"h_kv",
+"group",
+"n_t"
 ]
 },
 "annotations": {},
@@ -9163,6 +9933,7 @@
 "skip",
 "_nomask",
 "paged",
+"mapping",
 "arch"
 ]
 },
@@ -9178,11 +9949,20 @@
 "**opts"
 ]
 },
+"mapping_for": {
+"params": [
+"batch",
+"h_kv",
+"n_q",
+"causal"
+]
+},
 "math": {},
 "paged_kernel_for": {
 "params": [
 "head_dim",
-"scale"
+"scale",
+"mapping"
 ]
 }
 },
@@ -11020,11 +11800,14 @@
 "BK": {},
 "BM": {},
 "BN": {},
+"QUANT_COLS": {},
+"QUANT_ROWS": {},
 "WARPS": {},
 "_KERNEL": {},
 "_MX4P": {},
 "_MX4W": {},
 "_PP": {},
+"_QUANT": {},
 "aiter_scales": {
 "params": [
 "s"
@@ -11160,6 +11943,17 @@
 "pack_scales": {
 "params": [
 "s"
+]
+},
+"quant": {
+"params": [
+"x",
+"packed"
+]
+},
+"quant_kernel": {
+"params": [
+"packed"
 ]
 },
 "tail_split": {
@@ -12009,6 +12803,9 @@
 "scale"
 ]
 },
+"_k3_on": {
+"params": []
+},
 "_verdict": {
 "params": [
 "q",
@@ -12037,7 +12834,8 @@
 "causal",
 "scale",
 "n",
-"bnhd"
+"bnhd",
+"mapping"
 ]
 },
 "os": {},
@@ -12947,6 +13745,43 @@
 "ResourceError": {
 "methods": {}
 },
+"SymmetricBuffer": {
+"methods": {
+"__del__": [
+"self"
+],
+"__init__": [
+"self",
+"nbytes",
+"group",
+"uncached",
+"device"
+],
+"close": [
+"self"
+],
+"local": [
+"self",
+"dtype",
+"shape",
+"offset"
+],
+"peer": [
+"self",
+"rank",
+"dtype",
+"shape",
+"offset"
+],
+"tensor": [
+"self",
+"rank",
+"dtype",
+"shape",
+"offset"
+]
+}
+},
 "__all__": {},
 "__getattr__": {
 "params": [
@@ -12976,6 +13811,7 @@
 },
 "module": {},
 "resources": {},
+"symmetric": {},
 "torch_ext": {},
 "torch_op": {
 "params": [
@@ -12990,10 +13826,22 @@
 "ArchMismatchError": {
 "methods": {}
 },
+"KFD_NODES": {},
 "List": {},
 "Optional": {},
 "_GFX_RE": {},
+"_entries": {
+"params": [
+"var"
+]
+},
 "_from_env": {
+"params": []
+},
+"_from_env_list": {
+"params": []
+},
+"_from_kfd": {
 "params": []
 },
 "_from_rocminfo": {
@@ -13413,13 +14261,21 @@
 }
 },
 "Tuple": {},
+"WARM_HINT": {},
 "_ARCH_TREE": {},
 "_BUILT": {},
+"_JIT_NOTICE": {},
+"_JIT_SAID": {},
 "_KEY_MODULE": {},
 "_WAIT_MARK": {},
 "_dialect_version": {},
 "_hipcc_version": {
 "params": []
+},
+"_jit_notice": {
+"params": [
+"name"
+]
 },
 "_keep": {
 "params": [
@@ -13450,6 +14306,11 @@
 ]
 },
 "annotations": {},
+"arm_jit_notice": {
+"params": [
+"what"
+]
+},
 "build": {
 "params": [
 "source",
@@ -13669,6 +14530,93 @@
 },
 "shutil": {},
 "subprocess": {}
+},
+"hk.runtime.symmetric": {
+"List": {},
+"Optional": {},
+"Sequence": {},
+"SymmetricBuffer": {
+"methods": {
+"__del__": [
+"self"
+],
+"__init__": [
+"self",
+"nbytes",
+"group",
+"uncached",
+"device"
+],
+"close": [
+"self"
+],
+"local": [
+"self",
+"dtype",
+"shape",
+"offset"
+],
+"peer": [
+"self",
+"rank",
+"dtype",
+"shape",
+"offset"
+],
+"tensor": [
+"self",
+"rank",
+"dtype",
+"shape",
+"offset"
+]
+}
+},
+"Tuple": {},
+"_DeviceBytes": {
+"methods": {
+"__init__": [
+"self",
+"ptr",
+"nbytes"
+]
+}
+},
+"_IPC_HANDLE_BYTES": {},
+"_IpcHandle": {
+"methods": {
+"_fields_": null
+}
+},
+"_RANGES": {},
+"__all__": {},
+"_ck": {
+"params": [
+"rc",
+"what"
+]
+},
+"_hip": {},
+"_lib": {
+"params": []
+},
+"annotations": {},
+"check_bindings": {
+"params": [
+"kernel_name",
+"params",
+"tensors"
+]
+},
+"ctypes": {},
+"in_symmetric": {
+"params": [
+"ptr"
+]
+},
+"symmetric_open": {
+"params": []
+}
 },
 "hk.runtime.torch_ext": {
 "Any": {},
@@ -16288,7 +17236,8 @@
 "cpp": [
 "self"
 ],
-"dtype": null
+"dtype": null,
+"scope": null
 }
 },
 "KINDS": {},
@@ -16784,7 +17733,8 @@
 "cpp": [
 "self"
 ],
-"dtype": null
+"dtype": null,
+"scope": null
 }
 },
 "List": {},
@@ -18189,7 +19139,8 @@
 "cpp": [
 "self"
 ],
-"dtype": null
+"dtype": null,
+"scope": null
 }
 },
 "GranuleSetType": {
