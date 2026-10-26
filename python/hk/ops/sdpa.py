@@ -189,7 +189,9 @@ _FALLBACK_CAP = 64
 
 
 def reset_stats() -> None:
-    STATS["kernel"] = STATS["fallback"] = STATS["bnhd"] = 0
+    for k in STATS:
+        STATS[k] = 0
+    K3_SHAPES.clear()
     FALLBACKS.clear()
     _VERDICTS.clear()
 
