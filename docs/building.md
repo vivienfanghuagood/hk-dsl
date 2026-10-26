@@ -86,16 +86,43 @@ pip install dist/hk_dsl-0.4.0-cp310-cp310-linux_x86_64.whl
 Releases carry the cp310 and cp312 wheels as assets
 (`gh release create vX.Y.Z dist/*.whl`), and a manylinux copy of each, because
 PyPI refuses the `linux_x86_64` tag. `scripts/manylinux_tag.sh` makes them: it
-retags each wheel with the tag `auditwheel` says it already satisfies,
-`manylinux_2_35` for the cp310 wheel built on Ubuntu 22.04 and `manylinux_2_38`
-for the cp312 one built in the Ubuntu 24.04 pod. Nothing is grafted and the
+retags each wheel with the tag `auditwheel` says it already satisfies. Both
+wheels are built on glibc 2.35 and so are `manylinux_2_35`: cp310 on Ubuntu
+22.04 with its python3, cp312 in the vLLM ROCm image (Ubuntu 22.04, gcc 11.4,
+`/usr/bin/python3` 3.12). Nothing is grafted and the
 binaries are not touched, since the wheels link only libc, libm, libgcc_s and
-libstdc++. Installed into a fresh venv, the retagged cp310 wheel pulls its
+libstdc++.
+
+**Build cp312 on glibc 2.35, not newer.** A wheel's tag is the glibc it was
+built against, and a newer one is not accepted by an older system. 0.3.1
+through 0.7.0 built cp312 in rocm/pytorch on Ubuntu 24.04: `libHKPythonCAPI`
+needed `GLIBC_2.38` (`__isoc23_strtol`, which glibc 2.38's headers substitute
+for `strtol`), so the wheel was `manylinux_2_38`, and `pip install hk-dsl`
+found no cp312 wheel in the vLLM ROCm images, which have glibc 2.35. 0.7.0 got
+an extra cp312 `manylinux_2_35` wheel, built in the vLLM image, and from 0.7.1
+it is the only cp312 wheel; pip on a newer glibc takes it too. Building in the
+vLLM image takes three changes from the rocm/pytorch recipe: run it with
+`--entrypoint bash`; use `/usr/bin/python3` with explicit
+`-DCMAKE_C_COMPILER=/usr/bin/gcc -DCMAKE_CXX_COMPILER=/usr/bin/g++`; and, with
+cmake from pip, put its `cmake/data/bin` on `PATH`, because the `bin/cmake`
+wrapper names an interpreter the image lacks.
+
+**`scripts/check_wheel_glibc.py`** checks the result. For every ELF file in a
+wheel it reads the symbol versions it requires (`readelf -V`). It fails if the
+highest `GLIBC_2.N` is above the wheel's `manylinux_2_M` tag, since such a
+wheel installs on glibc 2.M and then fails at import. With auditwheel
+importable, it also checks every `GLIBCXX`, `CXXABI` and `GCC` version against
+the tag's policy. On 0.7.0's wheels, the cp310 `manylinux_2_35` and both cp312
+wheels (`manylinux_2_38` at `GLIBC_2.38`, `manylinux_2_35` at `GLIBC_2.34`)
+pass; the 2_38 wheel renamed to 2_35 fails. CI runs it on the IR leg against
+the cp310 wheel it builds, and `tests/hk/ir/test_check_wheel_glibc.py` tests
+it on wheels made from a system binary. Installed into a fresh venv, the retagged cp310 wheel pulls its
 three dependencies from PyPI, traces, translates and builds outside the
 checkout.
 
 ```bash
 PYTHON=/path/with/auditwheel/python3 scripts/manylinux_tag.sh dist/*linux_x86_64.whl
+/path/with/auditwheel/python3 scripts/check_wheel_glibc.py dist/*.whl dist/manylinux/*.whl
 gh release upload vX.Y.Z dist/manylinux/*.whl
 ```
 
@@ -149,6 +176,81 @@ is set ([integration](integration.md#turning-them-on)).
 
 Wheels are Linux x86_64 only, one CPython each, and are built by hand today
 on the machines that have the toolchain.
+
+### Reproducible wheels
+
+The same commit, built with the same toolchain, gives the same wheel byte for
+byte, wherever the checkout and the build directory are. 0.7.0's rc and tag
+wheels, built from the same tree, did not: the cp310 build ran in a `mktemp -d`
+directory, whose name ended up in two `__FILE__` strings in
+`libHKPythonCAPI.so` and in the GNU build-id of the three libraries linked
+against it. The zip layer differed too: every entry's timestamp was the
+build time.
+
+What makes a build reproducible, and where it is done:
+
+* **Paths.** `mlir/CMakeLists.txt` compiles with `-ffile-prefix-map` for the
+  checkout (`/hk/src`), the build directory (`/hk/build`), the MLIR install
+  (`/hk/mlir`) and nanobind (`/hk/nanobind`), each both as given and with
+  symlinks resolved, so neither assertion messages (`__FILE__`) nor debug info
+  name a build-machine path. The configure output lists the maps (`-- hk:
+  -ffile-prefix-map=...`). `-DHK_REPRODUCIBLE_PATHS=OFF` turns them off.
+  Arguments to `scripts/build_hk_mlir.sh` go to the cmake configure, so extra
+  flags need no edit: `scripts/build_hk_mlir.sh -DCMAKE_CXX_FLAGS=...`
+  (`CFLAGS` and `CXXFLAGS` in the environment work too, on a fresh build
+  directory).
+* **RPATH.** The bindings are linked with their install RUNPATH, `$ORIGIN`
+  (`mlir/python/CMakeLists.txt`). Linked with the build tree's absolute
+  `_mlir_libs` path instead, the three libraries that link `libHKPythonCAPI`
+  were patched by `cmake --install`, in place: `.dynstr` kept the old string's
+  length, so the layout followed the length of the build directory's path, and
+  the build-id, hashed at link time, kept the old path itself. That, not code,
+  was the "only the build-id differs" of 0.7.0.
+* **Timestamps.** `scripts/build_wheel.sh` sets `SOURCE_DATE_EPOCH` to the
+  checkout's last commit time unless it is already set, and wheel uses it for
+  every zip entry. `scripts/manylinux_tag.sh` rewrites `RECORD`, which takes
+  the same `SOURCE_DATE_EPOCH`, so export it for that step too. Without git
+  (a worktree mounted into a container, whose `.git` names a host path) the
+  script cannot find the commit: pass `SOURCE_DATE_EPOCH` in.
+* **File modes.** The wheel records each file's mode, and a checkout made under
+  `umask 077` has 0600 files. `build_wheel.sh` makes every staged file 0644, or
+  0755 if it was executable, and builds under `umask 022`.
+* **Order.** wheel writes the entries sorted by path and `RECORD` in the same
+  order, so neither depends on the file system. The wheel carries no bytecode
+  (`__pycache__` is dropped from the stage, and setuptools compiles none).
+
+What stays fixed by the toolchain rather than by hk, and so has to be the same
+for two builds to match:
+
+* the compiler and linker, whose versions are in each library's `.comment`
+  (GCC 11.4 from Ubuntu 22.04 for both, on the host for cp310 and in the vLLM
+  image for cp312),
+  and the system headers, named as they are (`/usr/include/c++/11/...`);
+* the MLIR install. Its static libraries carry the paths of its own build,
+  `/dev/shm/hk-llvm/...` for the CI's MLIR 23.1.3, in about 300 assertion
+  strings. They are the same for every hk build against that install, and only
+  a rebuild of MLIR (with LLVM's `-DLLVM_USE_RELATIVE_PATHS_IN_FILES=ON`)
+  removes them;
+* nanobind's, setuptools' and wheel's versions.
+
+A release build that checks itself: build twice, from two worktrees of the tag
+in different directories with different build directories, and compare.
+
+```bash
+SOURCE_DATE_EPOCH=$(git log -1 --format=%ct vX.Y.Z); export SOURCE_DATE_EPOCH
+# ... scripts/build_hk_mlir.sh + scripts/build_wheel.sh + scripts/manylinux_tag.sh, twice ...
+sha256sum a/*.whl b/*.whl                       # equal pairs: done
+python3 -c 'import sys, zipfile; a, b = (zipfile.ZipFile(p) for p in sys.argv[1:]); \
+  print([n for n in a.namelist() if a.read(n) != b.read(n)])' a/X.whl b/X.whl
+```
+
+If the sha256s differ, the second line names the files that do. For a `.so`,
+`readelf -n` shows whether the build-id differs and `strings -a | grep /`
+finds a path that leaked; for the zip layer, compare `ZipInfo.date_time` and
+`external_attr`. The maintainers' release script (`release-build.sh`, not in
+this repository) does all of this, builds cp310 on the host and cp312 in the
+vLLM image, runs the glibc check, and writes `SHA256SUMS`; a rebuild of the same tag checks
+against it with `sha256sum -c SHA256SUMS`.
 
 ## Using a checkout without a wheel
 

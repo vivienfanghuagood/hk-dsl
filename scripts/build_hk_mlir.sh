@@ -4,8 +4,13 @@
 #
 #   scripts/build_hk_mlir.sh
 #   HK_LLVM_ROOT=/workspace/llvm PYTHON=/opt/venv/bin/python3 scripts/build_hk_mlir.sh
+#   scripts/build_hk_mlir.sh -DCMAKE_CXX_FLAGS=-g     # arguments go to the cmake configure
 #
-# Then `ninja -C $BUILD check-hk` runs the lit tests.
+# Then `ninja -C $BUILD check-hk` runs the lit tests. The binaries name no
+# build-machine path (mlir/CMakeLists.txt maps the checkout, $BUILD, the MLIR
+# install and nanobind to /hk/...), so where they live does not change a byte;
+# -DHK_REPRODUCIBLE_PATHS=OFF keeps the real paths. docs/building.md has the
+# reproducible release build.
 set -euo pipefail
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -23,7 +28,8 @@ cmake -G Ninja -S "$REPO/mlir" -B "$BUILD" \
     -DMLIR_DIR="$MLIR_INSTALL/lib/cmake/mlir" \
     -DPython3_EXECUTABLE="$PYTHON" \
     -DLLVM_EXTERNAL_LIT="$LIT" \
-    -DCMAKE_INSTALL_PREFIX="$REPO/python"
+    -DCMAKE_INSTALL_PREFIX="$REPO/python" \
+    "$@"
 
 cmake --build "$BUILD" -j "$JOBS"
 cmake --install "$BUILD" --component HKPythonModules > /dev/null
