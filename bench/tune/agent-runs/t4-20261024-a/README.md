@@ -28,9 +28,9 @@ K = 256, 32,768 rows): 3,335-3,362 us against Triton's 2,732-2,767.
 | submission | `solution.py`, sha256 6ac7e19bc4e1ad80...ecd825e (solution.sha256), 1,076 lines |
 
 **Validity.** The transcript was searched as PROTOCOL.md section 6 says
-(sealed, hk-dx/t4, baselines.py, triton_grouped, dist-packages/aiter,
+(sealed, the evaluator's `t4/` directory, baselines.py, triton_grouped, dist-packages/aiter,
 dist-packages/vllm, git log, git show, gh, curl, wget): its only uses of
-`~/hk-dx/t4` were the permitted `bin/t4gpu` and `bin/t4pull`; it read no
+that directory were the permitted `bin/t4gpu` and `bin/t4pull`; it read no
 baseline source, git history, GitHub or the web, and the solution has no
 case for a public shape by name or dimensions.
 

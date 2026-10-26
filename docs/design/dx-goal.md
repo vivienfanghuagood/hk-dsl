@@ -1,7 +1,7 @@
 # Goal: fast kernels that are easy to write, for people and for agents
 
 Status: active, from 2026-10-20. Owner: the `claude/*` workstreams. Progress: the
-pull requests from those branches, and `~/hk-dx/STATUS.md` on the workstation.
+pull requests from those branches, and `<workspace>/STATUS.md` on the workstation.
 
 ## The goal
 

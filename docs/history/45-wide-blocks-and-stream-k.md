@@ -157,9 +157,9 @@ registers.
 ## How it was run
 
 ```bash
-# the acceptance split, GPUs 1 and 2, the vLLM ROCm 10 image (~/hk-dx/bin/hkx950v)
-~/hk-dx/ci/hk-dsl-wide/k4/loop.sh acc-a 1 acceptance 0 15
-~/hk-dx/ci/hk-dsl-wide/k4/loop.sh acc-b 2 acceptance 15 25
+# the acceptance split, GPUs 1 and 2, the vLLM ROCm 10 image (the workstation's hkx950v wrapper)
+<workspace>/ci/hk-dsl-wide/k4/loop.sh acc-a 1 acceptance 0 15
+<workspace>/ci/hk-dsl-wide/k4/loop.sh acc-b 2 acceptance 15 25
 python3 -m bench.tune.scoreboard RUNS/acc-a RUNS/acc-b --arch gfx950 \
     --write bench/tune/results --name gfx950-k4-2026-10-23
 # a schedule against hipBLASLt, interleaved (3 sets x 9 rounds, GemmBench)

@@ -8,7 +8,7 @@ main's head every ten minutes, on a W7900D of the dev pod and on an MI355X,
 and posted `gpu/gfx1100` and `gpu/gfx950` commit statuses. It was built that
 way because of one finding, written into `orchestrate.py`'s docstring and
 [testing](../testing.md): the cluster reaches github.com and api.github.com
-only through the gh-test and gh-api-test proxies, "and not GitHub's Actions
+only through two GitHub proxies (one for git, one for the API), "and not GitHub's Actions
 service, so no self-hosted runner can sit next to the W7900D". That was
 wrong. This chapter records the measurement that replaced it, the move to two
 self-hosted Actions runners, the burn-in with both CIs side by side, and what
@@ -21,28 +21,28 @@ Measured on 19 October, connecting to each host from each place:
 | from | api.github.com | the Actions service | github.com |
 |---|---|---|---|
 | the workstation | yes | yes | yes |
-| jump host 0004; pod hfang-hk-vllm (DNS 8.8.8.8) | 10/10 | 10/10 | 9/10, `git ls-remote` works |
-| pod hfang-hk-rdna3-b (cluster DNS 10.232.0.10) | by IP, 5/5 | by IP, 5/5 | no, from any of five IPs |
+| the jump host; the vLLM pod (DNS 8.8.8.8) | 10/10 | 10/10 | 9/10, `git ls-remote` works |
+| the dev pod (the cluster's DNS, `<cluster-dns>`) | by IP, 5/5 | by IP, 5/5 | no, from any of five IPs |
 
 The Actions service is what a runner talks to: the broker, pipelines and
 results-receiver hosts under `*.actions.githubusercontent.com`, and
-`blob.core.windows.net`, where logs and artifacts go. hfang-hk-rdna3-b has
+`blob.core.windows.net`, where logs and artifacts go. The dev pod has
 two problems, and neither is the Actions service: its cluster DNS resolves no
 GitHub name, and github.com itself is blocked by name. Everything else
 answers there by IP.
 
-The first conclusion was drawn from github.com alone. From rdna3-b,
+The first conclusion was drawn from github.com alone. From the dev pod,
 github.com fails at every address and no GitHub name resolves, so the
 cluster looked cut off from GitHub but for the proxies. The Actions
 service's hosts were never tried, from that pod or from anywhere else in the
-cluster. gh-api-test.anruicloud.com, named in the finding, is a reverse proxy
-of api.github.com only; nothing needs it. gh-test is still how rdna3-b
+cluster. The API proxy named in the finding is a reverse proxy of
+api.github.com only; nothing needs it. The git proxy is still how the dev pod
 fetches a commit.
 
 ## Two runners, on the workstation
 
 The tier is now `.github/workflows/gpu.yml`, on two ephemeral self-hosted
-runners, `smci355-gfx950` and `smci355-gfx1100` (labels `self-hosted,
+runners, `<prefix>-gfx950` and `<prefix>-gfx1100` (labels `self-hosted,
 hk-gpu, gfx950` and `self-hosted, hk-gpu, gfx1100`), each kept registered by
 `~/gha/supervise.sh`: one job, then registered again. It runs on pushes to
 main and by hand, never on pull requests: the repository is public, and a
@@ -53,16 +53,16 @@ call `scripts/ci/` from the checkout:
   a build directory, pip packages and compile cache of its own under
   `~/gha/x950/ci` and the MLIR install mounted read-only.
 - `run_gfx1100.sh` and `pod_run.sh` relay to the pod as `orchestrate.py`
-  did, over `ssh 0004` and `kubectl exec`, the pod fetching the commit
-  through gh-test, into `/workspace/gha`. A run takes an idle one of GPUs
+  did, over `ssh <jump-host>` and `kubectl exec`, the pod fetching the commit
+  through the git proxy, into `/workspace/gha`. A run takes an idle one of GPUs
   5-7 under a lock of its own, else GPU 0 under `/workspace/ci/gpu0.lock`.
 - `summarize.py` (moved) writes `result.json`; `report.py` turns it into an
   annotation with the counts, the job summary and the exit status.
 
 Both runners live on the workstation, though a runner could now live in the
 cluster: the workstation holds the MI355X and reaches everything, and the
-gfx1100 relay had run for three days. A runner on 0004 or in hfang-hk-vllm
-would work as measured; in rdna3-b it would need GitHub's names resolved
+gfx1100 relay had run for three days. A runner on the jump host or in the
+vLLM pod would work as measured; in the dev pod it would need GitHub's names resolved
 some other way.
 
 Against the polling CI:

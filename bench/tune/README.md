@@ -50,8 +50,8 @@ is the fastest correct baseline per shape.
 Where they run: gfx950 in the vLLM ROCm image (`vllm/vllm-openai-rocm`
 nightly-rocm100, the one engine image with aiter: ROCm 10, torch 2.12, aiter
 0.1.25, FlyDSL 0.3.4.1, Triton 3.8), with hk built there
-(`~/hk-dx/bin/hkx950v`), so every arm is in one process; gfx1100 in the
-hk-rdna3 pod (ROCm 7.2.4, torch 2.10, Triton 3.6, FlyDSL 0.4.0.dev).
+(the workstation's `hkx950v` wrapper), so every arm is in one process; gfx1100 in the
+dev pod (ROCm 7.2.4, torch 2.10, Triton 3.6, FlyDSL 0.4.0.dev).
 
 ## Running it
 

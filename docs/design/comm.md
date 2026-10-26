@@ -3,7 +3,7 @@
 > Hardware: MI355X (gfx950), two GPUs of an 8-GPU node -- one xGMI link between any pair,
 > 59-61 GB/s a direction. Phase 1 of the MegaKernel / comm-compute overlap study; the
 > feasibility study that motivates it (why TP2 prefill communication is the first target)
-> is `~/hk-dx/mk/phase0-report.md` on the dev box.
+> is `<workspace>/mk/phase0-report.md` on the dev box.
 
 ## What is here
 

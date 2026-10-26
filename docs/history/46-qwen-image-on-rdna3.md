@@ -20,7 +20,7 @@ softmax reference than the stock image is.
 
 ## The engine, and why it is SGLang's main
 
-pod `hfang-hk-vllm`, W7900D GPU 0, ROCm 7.2.1, torch 2.9.1, Qwen-Image 2.1
+the vLLM pod, W7900D GPU 0, ROCm 7.2.1, torch 2.9.1, Qwen-Image 2.1
 from the Hub (33 GB: transformer 14.2, text encoder 17.5, VAE 1.4).
 
 - **SGLang 0.5.18 has no native Qwen-Image 2.1 pipeline**: it logs "no
@@ -167,7 +167,7 @@ from host RAM.
 ## How it was run
 
 ```bash
-# pod hfang-hk-vllm: /workspace/venv-sgld = /workspace/venv-sgl (torch 2.9.1, ROCm 7.2.1,
+# the vLLM pod: /workspace/venv-sgld = /workspace/venv-sgl (torch 2.9.1, ROCm 7.2.1,
 # sglang-radeon 0.1.5) with SGLang main 79701a2 installed editable, cache-dit 1.2.3,
 # diffusers 0.42.0, imageio-ffmpeg, addict
 python -m hk.integration sglang-diffusion install          # once, with hk on PYTHONPATH

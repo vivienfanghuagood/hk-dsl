@@ -4,8 +4,9 @@
 #   pod_run.sh SHA PROXY_IPV4 KEY
 #
 # Everything lives in $HK_CI_POD_DIR (default /workspace/gha): the clone,
-# fetched through the gh-test proxy at the address the caller resolved, the
-# dialect's build, the compile cache and runs/KEY. The GPU: an idle one of
+# fetched through the GitHub proxy $HK_CI_PROXY (set by the caller, no default)
+# at the address the caller resolved, the dialect's build, the compile cache
+# and runs/KEY. The GPU: an idle one of
 # $HK_CI_POD_GPUS (default 6), failing that GPU 0, each under the node-level
 # lock of its physical card: /workspace/locks/gpu/<PCI address>.lock, one
 # directory every pod on the node mounts, so a run here and a benchmark in
@@ -15,7 +16,7 @@
 # the node allocates them to other users' serving pods. Nothing outside the
 # locks and this process's environment is changed.
 #
-# HK_CI_NODE_LOCKS=0 (the CI pod on 0044, scripts/ci/k8s/): the pod's GPUs were allocated to it
+# HK_CI_NODE_LOCKS=0 (the CI pod, scripts/ci/k8s/): the pod's GPUs were allocated to it
 # alone by the device plugin, it sees no others and no other pod sees them -- no node lock, no
 # GPU 0 fallback. The run takes every GPU of $HK_CI_POD_GPUS that is idle (waiting for at least
 # one) and shards the suite over them (gpu_suite.sh HK_GPUS). /workspace/pyextra, when there,
@@ -27,7 +28,8 @@ set -uo pipefail
 ulimit -c 0
 export HSA_DISABLE_COREDUMP_ON_EXCEPTION=1
 SHA=$1; IP=$2; KEY=$3
-[[ $SHA =~ ^[0-9a-f]{40}$ && $IP =~ ^[0-9.]+$ && $KEY =~ ^[0-9-]+$ ]] || exit 2
+PROXY=${HK_CI_PROXY:-}
+[[ $SHA =~ ^[0-9a-f]{40}$ && $IP =~ ^[0-9.]+$ && $KEY =~ ^[0-9-]+$ && $PROXY =~ ^[A-Za-z0-9.-]+$ ]] || exit 2
 CI=${HK_CI_POD_DIR:-/workspace/gha}
 GPUS=${HK_CI_POD_GPUS:-6}
 NODE_LOCKS=${HK_CI_NODE_LOCKS:-1}
@@ -41,8 +43,8 @@ export PATH=/opt/venv/bin:$PATH GIT_TERMINAL_PROMPT=0 GIT_CONFIG_COUNT=2
 if [ -d /workspace/pyextra ]; then
     export PYTHONPATH=/workspace/pyextra${PYTHONPATH:+:$PYTHONPATH} PATH=/workspace/pyextra/bin:$PATH
 fi
-export GIT_CONFIG_KEY_0=url.https://gh-test.anruicloud.com/.insteadOf GIT_CONFIG_VALUE_0=https://github.com/
-export GIT_CONFIG_KEY_1=http.curloptResolve GIT_CONFIG_VALUE_1=gh-test.anruicloud.com:443:$IP
+export GIT_CONFIG_KEY_0=url.https://$PROXY/.insteadOf GIT_CONFIG_VALUE_0=https://github.com/
+export GIT_CONFIG_KEY_1=http.curloptResolve GIT_CONFIG_VALUE_1=$PROXY:443:$IP
 DEV="W7900D (gfx1100)"
 fail() {
     echo "error: $*"

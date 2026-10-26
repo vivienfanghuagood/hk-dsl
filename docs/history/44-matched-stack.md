@@ -475,7 +475,7 @@ the original venv.
 ## How it was run
 
 ```
-# pod hfang-hk-vllm, W7900D GPU 0 (HIP_VISIBLE_DEVICES=0); PATH=/workspace/venv-vllm031-tri371/bin:$PATH
+# the vLLM pod, W7900D GPU 0 (HIP_VISIBLE_DEVICES=0); PATH=/workspace/venv-vllm031-tri371/bin:$PATH
 # hk at c35a5e7, hk._mlir built for the venv's Python (scripts/build_hk_mlir.sh, HK_MLIR_BUILD of its own)
 export HK_EAGER=0 HK_VLLM_DEFAULTS=1
 AB="python3 -m hk.integration ab --tokens 72 --short 32 --reps 2"

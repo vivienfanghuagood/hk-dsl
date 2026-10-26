@@ -233,12 +233,13 @@ main's required checks:
 - **`gfx950`**: one MI355X of the workstation, the lowest-numbered one of its
   runner's cards that is idle and unlocked when the job starts, in
   `rocm/pytorch`.
-- **`gfx1100`**: the four W7900D of the CI pod `hfang-hk-ci-0044` on node
-  wx-ms-w7900d-0044 (`scripts/ci/k8s/gfx1100-ci-0044.yaml`), the suite's
-  groups sharded over them. The pod requests `amd.com/gpu: 4` and is not
+- **`gfx1100`**: the four W7900D of the CI pod (`<ci-pod>` on one node of
+  the W7900D cluster, `scripts/ci/k8s/gfx1100-ci.yaml`), the suite's groups
+  sharded over them. The pod requests `amd.com/gpu: 4` and is not
   privileged: the device plugin hands it those four cards alone, so it needs
-  no node lock. Fallback: the dev pod `hfang-hk-rdna3-b`'s GPU 6 under the
-  node lock (the job's `runs-on` back to `gfx1100`, its `env` removed).
+  no node lock. Fallback: the dev pod's (`<dev-pod>`) GPU 6 under the node
+  lock (the job's `runs-on` back to `gfx1100`; that runner's `.env` names the
+  dev pod).
 
 A third job, **`gfx950-vllm`**, runs the DeepSeek-V4.1 routes' tests and the engine contract
 (`tests/hk/gpu/test_engine_contract.py`) in the vLLM deployment image
@@ -248,11 +249,13 @@ It uses the gfx950 runners, with its own dialect build and kernel cache (`x950v/
 runner's state directory, `HK_CI_DIRNAME=x950v`), and runs the files in `HK_CI_TESTS` as one
 group instead of the whole suite. It is not a required check unless the owner makes it one.
 
-The jobs run on self-hosted runners on the workstation: `smci355-gfx950` and
-`smci355-gfx950-b` (both labelled `self-hosted, hk-gpu, gfx950`, each on its
-own MI355X; see [Several gfx950 runners](#several-gfx950-runners)) and
-`smci355-gfx1100-x4` (`self-hosted, hk-gpu, gfx1100-x4`); `smci355-gfx1100`
-(`gfx1100`, the dev pod) stays registered as the fallback. All are
+The jobs run on self-hosted runners on the workstation, named
+`<prefix>-NAME` (`HK_RUNNER_PREFIX`; "Starting and stopping the runners", below):
+`<prefix>-gfx950` and `<prefix>-gfx950-b` (both labelled
+`self-hosted, hk-gpu, gfx950`, each on its own MI355X; see
+[Several gfx950 runners](#several-gfx950-runners)) and `<prefix>-gfx1100-x4`
+(`self-hosted, hk-gpu, gfx1100-x4`); `<prefix>-gfx1100` (`gfx1100`, the dev
+pod) stays registered as the fallback. All are
 ephemeral: registered for one job, then registered again. A job's page has its counts as an
 annotation and, in its summary, each group's result and the failing tests.
 Its artifact (`gfx950-report`, `gfx1100-report`) holds `result.json`,
@@ -280,13 +283,15 @@ moved it).
   builds the dialect for the image's CPython 3.12 against MLIR 23.1.3's cp310
   install (the MLIR C++ libraries do not depend on the interpreter), then
   runs the suite.
-- **`run_gfx1100.sh`** works over `ssh 0004` and `kubectl exec`: it installs
-  **`pod_run.sh`** and `summarize.py` in the pod and starts the run there,
-  detached, then follows its log and brings back its result. The pod
-  fetches the commit itself, through the `gh-test.anruicloud.com` proxy: its
-  cluster DNS resolves no GitHub name, and github.com is blocked by name, so
-  git is pointed at the address the jump host resolves. No code from the
-  repository runs on the jump host.
+- **`run_gfx1100.sh`** works over `ssh $HK_CI_JUMP` and `kubectl exec`: it
+  installs **`pod_run.sh`** and `summarize.py` in the pod (`HK_CI_POD`) and
+  starts the run there, detached, then follows its log and brings back its
+  result. The pod fetches the commit itself, through a GitHub proxy
+  (`HK_CI_PROXY`): its cluster DNS resolves no GitHub name, and github.com is
+  blocked by name, so git is pointed at the address the jump host resolves.
+  No code from the repository runs on the jump host. The jump host, the pod
+  and the proxy have no default: they come from the runner's `.env`, and the
+  script masks them in the job's log, which is public.
 - **`summarize.py`** turns the suite's output into `result.json` and
   `report.txt`; **`report.py`** writes the annotation and the summary, and
   sets the job's exit status.
@@ -298,7 +303,7 @@ picks -- a GPU whose lock is held is skipped, idle or not -- and held for the
 whole container; it takes a free lock only on an idle GPU, since a card
 someone uses without the lock is still theirs. Manual measurements on the
 workstation take the same lock for their whole command, so that neither
-times the other; on this workstation the directory is `~/hk-dx/locks`, set
+times the other; on this workstation the directory is a shared `<lock-dir>`, set
 in each runner's `.env` (the default, `~/.cache/hk-gpu-locks`, is private to
 CI). The minutes in a result count from when the GPU was taken. In the pod, a run takes GPU 6 when it is idle, and otherwise GPU 0,
 each under the node-level lock of the physical card,
@@ -361,8 +366,10 @@ request, so:
   records each as a bypass. For them the checks are a record on each commit
   of main, after the fact, not a gate in front of it.
 
-**The CI pod.** `kubectl apply -f scripts/ci/k8s/gfx1100-ci-0044.yaml` (from
-the jump host) makes it and its 200 GiB node-local PVC, mounted at
+**The CI pod.** `scripts/ci/k8s/gfx1100-ci.yaml`, a template, applied from
+the jump host with the pod's name, its node and the node-local storage class
+set (`HK_CI_POD`, `HK_CI_NODE`, `HK_CI_STORAGE_CLASS`; the command is in the
+file), makes it and its 200 GiB node-local PVC, mounted at
 `/workspace`. Once, the PVC is given what the image lacks, copied from the
 dev pod: `/workspace/llvm/install-cp312` (the MLIR install the dialect builds
 against), `/workspace/FlyDSL`, and in `/workspace/pyextra` the pip packages
@@ -376,7 +383,7 @@ flydsl, nanobind, lit and cmake (`pod_run.sh` puts it on `PYTHONPATH` and
   `scripts/ci/supervise.sh`), which keeps each registered, and its
   logs (`logs/<name>.log`; the runners' own are in `runner-*/_diag`);
 - a gfx950 runner's state directory, `HK_CI_STATE` (`~/gha` for
-  `smci355-gfx950`, `~/gha/state-gfx950-b` for `smci355-gfx950-b`):
+  `<prefix>-gfx950`, `~/gha/state-gfx950-b` for `<prefix>-gfx950-b`):
   - `runs/<tier>/RUN_ID-ATTEMPT`: a run's directory;
   - `x950/ci`: `/ci` in the container, with the dialect's build
     (`hk-build-cp312`), pip's packages (`pylib`) and the compile cache
@@ -391,8 +398,12 @@ On the gfx950 side, `HK_CI_STATE` moves the runs and the CI directories
 `x950`; `HK_CI_DIR` replaces the whole path), `HK_CI_GPUS` lists the cards
 the runner may use (default all eight), `HK_CI_LOCKS` is the lock directory,
 `HK_CI_MLIR` the MLIR install and `HK_CI_IMAGE` the image. `HK_CI_POD`,
-`HK_CI_JUMP`, `HK_CI_PROXY`, `HK_CI_POD_DIR` and `HK_CI_POD_GPUS` set the
-pod's side. A job inherits its runner's environment: set them in the
+`HK_CI_JUMP`, `HK_CI_PROXY` (no defaults: `run_gfx1100.sh` stops if one is
+unset), `HK_CI_POD_DIR`, `HK_CI_POD_GPUS` and `HK_CI_NODE_LOCKS` set the
+pod's side; each gfx1100 runner's `.env` names its own pod and GPUs.
+`HK_RUNNER_PREFIX` names the runners (`supervise.sh`). The machines' names,
+addresses and paths are the runners' configuration, not this public
+repository's. A job inherits its runner's environment: set them in the
 runner's `.env` (`~/gha/runner-<name>/.env`, one `NAME=value` per line, no
 comments), which the listener reads when it starts, so a change applies from
 the runner's next job. Every runner's `.env` sets them explicitly rather than
@@ -433,8 +444,11 @@ through `pam_group`, to login sessions only, and a runner started from cron
 or a service could not start the gfx950 container. `supervise.sh NAME
 [LABELS]` (`scripts/ci/supervise.sh`; install it with `install` to a
 temporary name and `mv` it over `~/gha/supervise.sh`, never by editing in
-place: a running loop reads its script as it goes) keeps runner `smci355-NAME` (directory `runner-NAME`) registered
-with labels `hk-gpu,LABELS` (default `hk-gpu,NAME`).
+place: a running loop reads its script as it goes) keeps runner `PREFIX-NAME` (directory `runner-NAME`) registered
+with labels `hk-gpu,LABELS` (default `hk-gpu,NAME`). `PREFIX` is
+`HK_RUNNER_PREFIX`, from `supervise.sh`'s environment or else from the
+runner's `.env` (default `hk-gha`); set it in every runner's `.env` so that a
+reinstalled `supervise.sh` keeps the names the runners have.
 
 ```bash
 cd ~/gha && rm -f STOP STOP-gfx950 STOP-gfx950-b STOP-gfx1100 STOP-gfx1100-x4
@@ -461,29 +475,42 @@ queues behind the others. Several runners on the workstation carry the
 `gfx950` label, so runs of different refs go in parallel (one run per job
 and ref at a time still holds: `concurrency` in `gpu.yml`). Each one has:
 - **its own GPUs**, `HK_CI_GPUS` in its `.env`, not overlapping another
-  runner's: `smci355-gfx950` GPUs 1 and 2, `smci355-gfx950-b` 3 and 4. GPU 5
+  runner's: `<prefix>-gfx950` GPUs 1 and 2, `<prefix>-gfx950-b` 3 and 4. GPU 5
   is left for interactive work; GPU 0 and GPUs 6-7 belong to other work and
   are in no runner's list;
 - **its own state**, `HK_CI_STATE`: runs, `x950/ci` and `x950v/ci`. A runner
   runs one job at a time, so no two jobs share a dialect build or a kernel
   cache; two runners sharing one would corrupt each other's cmake build;
 - **the GPU locks**, `HK_CI_LOCKS` the same directory for every runner and
-  for manual measurements (`~/hk-dx/locks`).
+  for manual measurements (`<lock-dir>`).
 
-`smci355-gfx950-b`'s `.env`:
+`<prefix>-gfx950-b`'s `.env` (`<home>` is the user's home, written out: a
+`.env` expands nothing):
 
 ```
 LANG=en_US.UTF-8
-HOME=/home/hfang/gha/runner-gfx950-b/home
+HOME=<home>/gha/runner-gfx950-b/home
+HK_RUNNER_PREFIX=<prefix>
 HK_CI_GPUS=3 4
-HK_CI_STATE=/home/hfang/gha/state-gfx950-b
-HK_CI_MLIR=/home/hfang/hk-ci/mlir/install-cp310
-HK_CI_LOCKS=/home/hfang/hk-dx/locks
+HK_CI_STATE=<home>/gha/state-gfx950-b
+HK_CI_MLIR=<home>/hk-ci/mlir/install-cp310
+HK_CI_LOCKS=<lock-dir>
 ```
 
-`smci355-gfx950`'s is the same with `runner-gfx950/home`, `HK_CI_GPUS=1 2`
-and `HK_CI_STATE=/home/hfang/gha`; the gfx1100 runners' set only `LANG` and
-`HOME`.
+`<prefix>-gfx950`'s is the same with `runner-gfx950/home`, `HK_CI_GPUS=1 2`
+and `HK_CI_STATE=<home>/gha`. The gfx1100 runners' set `LANG`, `HOME`,
+`HK_RUNNER_PREFIX` and the pod's side:
+
+```
+HK_CI_JUMP=<jump-host>
+HK_CI_PROXY=<github-proxy>
+HK_CI_POD=<ci-pod>
+HK_CI_POD_GPUS=0 1 2 3
+HK_CI_NODE_LOCKS=0
+```
+
+for `<prefix>-gfx1100-x4`, and `HK_CI_POD=<dev-pod>`, `HK_CI_POD_GPUS=6`,
+`HK_CI_NODE_LOCKS=1` for `<prefix>-gfx1100`.
 
 **Adding one** (here `gfx950-c` on GPU 5, say):
 
@@ -494,7 +521,8 @@ cp runner-gfx950-c/run-helper.sh.template runner-gfx950-c/run-helper.sh
 S=~/gha/state-gfx950-c; mkdir -p $S/runs runner-gfx950-c/home && ln -s $S runner-gfx950-c/home/gha
 cp -a x950 x950v $S/                       # warm: the first run does not recompile every kernel
 printf '%s\n' LANG=en_US.UTF-8 HOME=$HOME/gha/runner-gfx950-c/home 'HK_CI_GPUS=5' HK_CI_STATE=$S \
-    HK_CI_MLIR=$HOME/hk-ci/mlir/install-cp310 HK_CI_LOCKS=$HOME/hk-dx/locks > runner-gfx950-c/.env
+    HK_CI_MLIR=$HOME/hk-ci/mlir/install-cp310 > runner-gfx950-c/.env
+grep -E '^(HK_RUNNER_PREFIX|HK_CI_LOCKS)=' runner-gfx950/.env >> runner-gfx950-c/.env   # the shared ones
 nohup setsid ./supervise.sh gfx950-c gfx950,gfx950-c >> logs/gfx950-c.log 2>&1 < /dev/null &
 ```
 

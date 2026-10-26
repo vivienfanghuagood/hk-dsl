@@ -295,7 +295,7 @@ hk.placement.place_host(w: int, total: int, xcds: int, chunk: Union[int, str] = 
 
 *New after 0.7.0* (the `hk.dsl.placement` module is not in the 0.7.0 wheel)
 
-The policy's thresholds, measured on gfx950's attention (PR #55, ~/hk-dx/research/2511.02132 report §5): cluster from five KV streams an XCD; for non-uniform work (a trip count that depends on the grid), not below twelve rounds of workgroups an XCD.
+The policy's thresholds, measured on gfx950's attention (PR #55, the 2511.02132 study's report, §5): cluster from five KV streams an XCD; for non-uniform work (a trip count that depends on the grid), not below twelve rounds of workgroups an XCD.
 
 ### `hk.placement.MIN_ROUNDS_NONUNIFORM`
 

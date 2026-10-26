@@ -6,7 +6,7 @@
 #   supervise.sh NAME [LABELS]
 #   supervise.sh gfx950|gfx1100|gfx1100-x4             (LABELS default: NAME)
 #   supervise.sh gfx950-b gfx950,gfx950-b               (a second gfx950 instance)
-# NAME is the runner's directory (runner-NAME), its GitHub name (smci355-NAME),
+# NAME is the runner's directory (runner-NAME), its GitHub name (PREFIX-NAME),
 # its pid file and its stop file; LABELS (comma-separated) are its labels
 # besides hk-gpu. Several instances can carry the same label (gfx950): each has
 # its own directory, and its .env its own GPUs (HK_CI_GPUS) and state
@@ -17,6 +17,9 @@
 # runner's .env), never the real one: actions/checkout writes global git config
 # (the job's token as an extraheader, for submodules) under $HOME, so CI never
 # touches ~/.gitconfig. This loop's own gh calls keep the real HOME (gh's auth).
+# PREFIX is HK_RUNNER_PREFIX, from this loop's environment or else from the
+# runner's .env (default hk-gha): the machine's name belongs to the machine's
+# configuration, not to the repository.
 # Replace this file with mv, never edit it in place: running instances read it
 # as they go.
 set -u
@@ -26,6 +29,9 @@ REPO=vivienfanghuagood/hk-dsl
 GHA=$HOME/gha
 DIR=$GHA/runner-$NAME
 cd "$DIR" || exit 1
+PREFIX=${HK_RUNNER_PREFIX:-$(sed -n 's/^HK_RUNNER_PREFIX=//p' .env 2>/dev/null | tail -1)}
+PREFIX=${PREFIX:-hk-gha}
+[[ $PREFIX =~ ^[A-Za-z0-9._-]+$ ]] || { echo "bad HK_RUNNER_PREFIX: $PREFIX"; exit 1; }
 mkdir -p home && chmod 700 home
 echo $$ > "$GHA/supervise-$NAME.pid"
 stopped() { [ -f "$GHA/STOP" ] || [ -f "$GHA/STOP-$NAME" ]; }
@@ -34,9 +40,9 @@ while ! stopped; do
     TOKEN=$(gh api -X POST "repos/$REPO/actions/runners/registration-token" --jq .token) \
         || { echo "$(date -u +%FT%TZ) token failed"; sleep 60; continue; }
     ./config.sh --unattended --ephemeral --replace --url "https://github.com/$REPO" \
-        --token "$TOKEN" --name "smci355-$NAME" --labels "hk-gpu,$LABELS" --work _work \
+        --token "$TOKEN" --name "$PREFIX-$NAME" --labels "hk-gpu,$LABELS" --work _work \
         || { echo "$(date -u +%FT%TZ) config failed"; sleep 60; continue; }
-    echo "$(date -u +%FT%TZ) registered smci355-$NAME ($LABELS), waiting for a job"
+    echo "$(date -u +%FT%TZ) registered $PREFIX-$NAME ($LABELS), waiting for a job"
     HOME=$DIR/home ./run.sh &
     RUN=$!
     while kill -0 $RUN 2>/dev/null; do

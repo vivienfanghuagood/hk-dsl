@@ -2,7 +2,7 @@
 """Phase 2 ops: hk vs torch eager vs torch.compile, in one process.
 
 The discipline is the one from `/kernel-ab-bench`, and it is not optional on a
-shared node: absolute numbers drift between processes -- on wx-ms-w7900d-0043
+shared node: absolute numbers drift between processes -- on one W7900D node
 that drift once manufactured a 13-16% difference out of nothing -- so every
 variant is imported into *this* interpreter and the variants are interleaved
 round-robin. Ratios within a process are trustworthy; the milliseconds are

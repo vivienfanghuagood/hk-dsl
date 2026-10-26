@@ -125,7 +125,7 @@ python -m hk.check my_kernel.py:kernel --placement --inputs "i32[2,1,1,45]"
 
 All measurements are on an MI355X. Old and new were run in one process, interleaved, with
 `rocm-smi` snapshots of the GPU taken around each run. Every output was bitwise identical to the
-default order's. Raw data: `~/hk-dx/research/2511.02132/runs/` (PRs #55, #63, #65).
+default order's. Raw data: `<workspace>/research/2511.02132/runs/` (PRs #55, #63, #65).
 
 **Attention** (`attn_cdna`, MHA unless noted, D 128, B 1; clustered / default):
 

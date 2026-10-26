@@ -115,8 +115,9 @@ def main() -> int:
     fly = None
     if "flydsl" in want_arms:
         try:
-            root = os.environ.get("FLYDSL_ROOT", "/home/hfang/hk-local/FlyDSL")
-            sys.path.append(root)
+            root = os.environ.get("FLYDSL_ROOT", "")   # FlyDSL's source tree; unset: an installed one
+            if root:
+                sys.path.append(root)
             from kernels.attention.flash_attn_interface import flydsl_flash_attn_func as fly
         except Exception as e:  # noqa: BLE001
             print(f"flydsl: not available ({type(e).__name__}: {e})", flush=True)

@@ -108,7 +108,7 @@ scales, bit-identical to vLLM). Winnable, measured: gfx950's scaled MFMA runs
 at 4.5-4.7 PF/s register-only and hipBLASLt's plain FP8 GEMM at 3.14 PF/s
 (8192^3), while every MX GEMM is at 1.25-2.2 PF/s -- the MX penalty is
 software. K2 status as of 2026-10-24 (then on a branch; in main since #33 and #41, see above;
-rounds in `~/hk-dx/kda/k2-mxfp8-gemm/candidates.jsonl`): a four-wave form (`mx4w`,
+rounds in `<workspace>/kda/k2-mxfp8-gemm/candidates.jsonl`): a four-wave form (`mx4w`,
 accumulators in AGPRs, packed scales) with a one-K-tile loop body (hk-lds-pipeline
 now names ring-indexed LDS buffers, so the body no longer has to unroll over the
 ring) at 2.43 PF/s at 8192^3; against the best baseline at the 18 prefill points
@@ -116,10 +116,10 @@ ring) at 2.43 PF/s at 8192^3; against the best baseline at the 18 prefill points
 One gfx950 hazard found on the way (KernelWiki): a load into scale VGPRs that queued scaled
 MFMAs still read corrupts them. A second one suspected at the time, register loads and LDS-DMA
 copies retiring out of order on vmcnt, was refuted the same evening by a controlled
-micro-benchmark (`~/hk-dx/kda/_flow/probes/vmcnt_order.hip`): they retire in issue order.
+micro-benchmark (`<workspace>/kda/_flow/probes/vmcnt_order.hip`): they retire in issue order.
 
 K3 status as of 2026-10-24 (`hk.ops.attn_k3`, then opt-in with `HK_SDPA_K3=1`; in main since
-#24 and on by default on gfx1100 since #54; rounds in `~/hk-dx/kda/k3-dit-attn/candidates.jsonl`). The kernel is the Sage
+#24 and on by default on gfx1100 since #54; rounds in `<workspace>/kda/k3-dit-attn/candidates.jsonl`). The kernel is the Sage
 experiment's hk-arm structure in bf16: S^T = K Q^T, a lazy running max, fp16 V^T
 pre-transposed in the order the P^T operands are cheapest in, the grid's tail
 split over KV. It reads SGLang's (B, N, H, D) views in place at any length.
@@ -154,7 +154,7 @@ split over KV. It reads SGLang's (B, N, H, D) views in place at any length.
   further work goes into ConvRot's image quality.
 - **Direction on CDNA.** K1 and K2 must turn into a visible end-to-end gain for
   DeepSeek-V4.1-Flash in vLLM (prefill TTFT), not stop at kernel ratios. In order:
-  (a) K1 to >= 1.3x along the directions in `~/hk-dx/kda/k1-moe-a8w4/docs/`;
+  (a) K1 to >= 1.3x along the directions in `<workspace>/kda/k1-moe-a8w4/docs/`;
   (b) K1 and K2 wired into vLLM through `hk.integration` with a TTFT A/B;
   (c) if two free MI355X are not available, a single-GPU form (fewer layers, or TP1 with
   dummy weights) for at least a layer- or model-level end-to-end number -- never on
@@ -181,7 +181,7 @@ Status (2026-10-24, evening; both have since landed, see the top of this page):
   at H3's 14720x21504x5376 and at parity at Qwen's shapes. The `hk` backend is in
   `hk.integration.sglang_diffusion` (#26); H3 end to end, measured after this note: denoise
   1.17-1.22x bf16's.
-- **T-SA, the controlled experiment** (`~/hk-dx/kda/runs/sage-experiment-report.md`):
+- **T-SA, the controlled experiment** (`<workspace>/kda/runs/sage-experiment-report.md`):
   both arms correct at round 1 and at the same speed in the end -- hk 1.50x the
   reference, Triton 1.48x (both ~1.15x hk's bf16 attention) -- but the hk arm took
   77 minutes and $12.8 against Triton's 29 minutes and $3.2, and got there only by
@@ -190,7 +190,7 @@ Status (2026-10-24, evening; both have since landed, see the top of this page):
   was decisive. It is closed in main (#31). The hk arm was rerun twice: on `claude/rdna3-int8`
   it reached 1.52x but still wrote two C++ helpers; from main (`3fd779f`) it reached 1.505x with
   no C++ outside the DSL, correct at round 1, in 68 minutes for $11.0. The rerun reports are in
-  `~/hk-dx/kda/runs/`; the remaining gaps are in [kda.md](kda.md).
+  `<workspace>/kda/runs/`; the remaining gaps are in [kda.md](kda.md).
 
 ## How the kernels are built: one task workspace each (KDA-style)
 
@@ -203,8 +203,8 @@ task in a fixed, recorded workflow -- NVlabs' Kernel Design Agents
 (github.com/NVlabs/kda), whose method is hardware-agnostic, ported to AMD and
 hk.
 
-**Layout.** The reusable flow in `~/hk-dx/kda/_flow/` (prompt, record tools,
-skills' sources); one workspace a task in `~/hk-dx/kda/<task>/`:
+**Layout.** The reusable flow in `<workspace>/kda/_flow/` (prompt, record tools,
+skills' sources); one workspace a task in `<workspace>/kda/<task>/`:
 
     task.json         definition + workloads + baselines (FlashInfer-Trace-like): op signature,
                       dtypes/layouts, the shapes with their weights in the model, reference
