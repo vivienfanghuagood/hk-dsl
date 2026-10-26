@@ -809,10 +809,11 @@ def broadcast(op: str, t: "Tile", v: "Vec", *, into=None) -> "Tile":
 class Reduction:
     """`t.sum(axis=1)` before it lands: a vector `+=` folds it in place."""
 
-    __slots__ = ("kind", "axis", "src", "order")
+    __slots__ = ("kind", "axis", "src", "order", "times")
 
     def __init__(self, kind: str, axis: str, src: "Tile", order: Optional[str] = None):
         self.kind, self.axis, self.src, self.order = kind, axis, src, order
+        self.times = None
 
     @property
     def op(self) -> str:
@@ -830,6 +831,8 @@ class Reduction:
                             f"{self.src.ty} gives {self.vtype}. A vector's "
                             f"layout is tied to the tile it came off.")
         extra = {} if self.order is None else {"order": self.order}
+        if self.times is not None:
+            extra["times"] = self.times.v
         return _make(_REDUCE[(self.kind, self.axis)], self.vtype, (self.src.v,),
                      into=into, name=self.op, accumulate=bool(accumulate), **extra)
 
@@ -1012,14 +1015,29 @@ class Tile(_Elementwise):
         return r
 
     def sum(self, axis: int = 1, *, lanes: Optional[str] = None,
-            xor: Optional[Sequence[int]] = None) -> Reduction:
+            xor: Optional[Sequence[int]] = None, times: Optional["Tile"] = None) -> Reduction:
         """Sum along each row (axis=1) or column. On a strip's rows, `lanes` and `xor` state the
         order -- a lane's own values "seq" (left to right) or "tree" (balanced), then the lanes
         combined over the xor offsets `xor` in that order, each of 1 2 4 8 16 32 once -- for a
-        result that must match another kernel bit for bit: dsv41_mono's and aiter's norms are
-        `lanes="seq", xor=(32, 16, 8, 4, 2, 1)`. Unstated, the order is hk's (a tree, then
-        1 .. 32). gfx950 only."""
-        return self._ordered("sum", axis, lanes, xor)
+        result that must match another kernel bit for bit. Unstated, the order is hk's (a tree,
+        then 1 .. 32). gfx950 only.
+
+        A stated order sums the strip's values as they are: `(x * x).sum(...)` adds rounded
+        products (the compiler does not fuse them into the sum). `times=u` with `lanes="seq"` is
+        the fused form, the sum of self * u as LLVM contracts a compiled loop `s = a0 * b0 + a1 *
+        b1; s += ai * bi` -- s = fma(a0, b0, a1 * b1), then s = fma(ai, bi, s) -- then the xor
+        sums: dsv41_mono's and aiter's sums of squares in their norms are `x.sum(axis=1,
+        lanes="seq", xor=(32, 16, 8, 4, 2, 1), times=x)`."""
+        r = self._ordered("sum", axis, lanes, xor)
+        if times is not None:
+            if lanes != "seq":
+                raise ValueError("sum(times=): the products are fused into the running sum left "
+                                 "to right; say lanes=\"seq\"")
+            if not isinstance(times, Tile) or times.ty != self.ty:
+                raise TypeError(f"sum(times=): a strip of the same type as this one, {self.ty}, "
+                                f"not {getattr(times, 'ty', times)!r}")
+            r.times = times
+        return r
 
     def max(self, axis: int = 1, *, lanes: Optional[str] = None,
             xor: Optional[Sequence[int]] = None) -> Reduction:
