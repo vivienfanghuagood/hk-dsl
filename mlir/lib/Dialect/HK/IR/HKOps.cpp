@@ -752,6 +752,55 @@ HK_UNARY_VERIFY(SiluOp)
 HK_UNARY_VERIFY(StepOp)
 #undef HK_UNARY_VERIFY
 
+static LogicalResult verifyElems(Operation *op, Type valT, Type idxT) {
+  auto v = dyn_cast<RegTileType>(valT);
+  auto i = dyn_cast<RegTileType>(idxT);
+  if (!v || !v.isStrip() || !i || !i.isStrip())
+    return op->emitOpError("moves strips' elements: values and indices are strips");
+  if (!i.getElementType().isInteger(32))
+    return op->emitOpError("indices are an i32 strip, not ") << idxT;
+  if (i.getRows() != v.getRows() || i.getCols() != v.getCols() || i.getRun() != v.getRun())
+    return op->emitOpError("indices ") << idxT << " and values " << valT
+           << " have one shape and run";
+  if (!v.getElementType().isF32() && !v.getElementType().isInteger(32))
+    return op->emitOpError("values are an fp32 or i32 strip, not ") << valT;
+  return success();
+}
+
+LogicalResult LoadElemsOp::verify() {
+  return verifyElems(*this, getResult().getType(), getIdx().getType());
+}
+
+LogicalResult StoreElemsOp::verify() {
+  return verifyElems(*this, getVal().getType(), getIdx().getType());
+}
+
+LogicalResult GroupReduceOp::verify() {
+  auto t = dyn_cast<RegTileType>(getSrc().getType());
+  if (!t || !t.isStrip())
+    return emitOpError("reduces a strip's lane groups, not ") << getSrc().getType();
+  if (getResult().getType() != getSrc().getType())
+    return emitOpError("gives a strip of its operand's type");
+  if (getKind() != "sum" && getKind() != "max" && getKind() != "min")
+    return emitOpError("kind is sum, max or min");
+  auto [lanes, offs] = getOrder().split(':');
+  if (lanes != "seq" && lanes != "tree")
+    return emitOpError("order's lane part is seq or tree");
+  SmallVector<StringRef> parts;
+  if (!offs.empty())
+    offs.split(parts, ',');
+  unsigned seen = 0;
+  for (StringRef p : parts) {
+    unsigned v = 0;
+    if (p.getAsInteger(10, v) || v == 0 || v > 16 || (v & (v - 1)) || (seen & v))
+      return emitOpError("order's offsets are powers of two of at most 16, each once");
+    seen |= v;
+  }
+  if (seen & (seen + 1))
+    return emitOpError("order's offsets are 1, 2, .., 2^(k-1): a group of 2^k neighbouring lanes");
+  return success();
+}
+
 LogicalResult MapCppOp::verify() {
   auto res = getResult().getType();
   auto rt = dyn_cast<RegTileType>(res);

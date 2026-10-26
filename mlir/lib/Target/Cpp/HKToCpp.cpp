@@ -1556,6 +1556,29 @@ private:
           Value d = dest(o.getDst(), o.getResult());
           call("copy", d, {name(o.getSrc())});
         })
+        .Case([&](LoadElemsOp o) {
+          Value d = dest(Value(), o.getResult());
+          w("kittens::load_elems(" + name(d) + ", " + name(o.getSrc()) + ", " + name(o.getIdx()) + ");");
+        })
+        .Case([&](StoreElemsOp o) {
+          w("kittens::store_elems(" + name(o.getDst()) + ", " + name(o.getVal()) + ", " +
+            name(o.getIdx()) + ");");
+        })
+        .Case([&](GroupReduceOp o) {
+          Value d = dest(Value(), o.getResult());
+          auto [lanes, offs] = o.getOrder().split(':');
+          std::string tmpl = std::string(o.getKind() == "sum" ? "kittens::base_ops::sum"
+                                         : o.getKind() == "max" ? "kittens::base_ops::max"
+                                                                : "kittens::base_ops::min") +
+                             ", " + (lanes == "seq" ? "1" : "0");
+          SmallVector<StringRef> parts;
+          if (!offs.empty())
+            offs.split(parts, ',');
+          for (StringRef p : parts)
+            tmpl += ", " + p.str();
+          w("kittens::group_reduce_ordered<" + tmpl + ">(" + name(d) + ", " +
+            name(o.getSrc()) + ");");
+        })
         .Case([&](MapCppOp o) {
           // element (r, c) = (T)(expr) with x0.. the arguments' elements (or scalars)
           Value d = dest(Value(), o.getResult());
