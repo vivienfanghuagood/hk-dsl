@@ -820,6 +820,99 @@ def HK_SqrtOp : HK_UnaryMapOp<"sqrt">;
 def HK_RsqrtOp : HK_UnaryMapOp<"rsqrt">;
 def HK_SiluOp : HK_UnaryMapOp<"silu">;
 def HK_StepOp : HK_UnaryMapOp<"step">;
+def HK_LaneGatherOp : HK_Op<"lane_gather"> {
+  let summary = "each element taken from another lane's same element (gfx950)";
+  let description = [{
+    Element (r, c) of lane l of the result is the same run element of lane
+    `src[r, c]` (an i32 strip of the operand's shape, lanes 0..63 of the
+    wave): ds_bpermute, one an element. The small-matrix work of a lane
+    group -- a 4x4 Sinkhorn's row and column sums -- without LDS.
+  }];
+  let arguments = (ins HK_RegTileType:$src, HK_RegTileType:$lanes);
+  let results = (outs HK_RegTileType:$result);
+  let assemblyFormat = [{
+    $src `,` $lanes attr-dict `:` qualified(type($src)) `,` qualified(type($lanes)) `->` qualified(type($result))
+  }];
+  let hasVerifier = 1;
+}
+
+def HK_MfmaStripOp : HK_Op<"mfma_strip"> {
+  let summary = "one raw MFMA on strip registers (gfx950)";
+  let description = [{
+    `kind` "f32_16x16x4": acc (a run-4 strip of 64 x 4: lane l's 4 values
+    are C rows 4 (l / 16) + i, column l % 16) += A B^T over K = 4, lane l
+    holding A[l % 16][l / 16] and B[l % 16][l / 16] (run-1 strips of 64):
+    v_mfma_f32_16x16x4_f32 exactly, for a result that must match another
+    kernel's fp32 MFMA bit for bit.
+  }];
+  let arguments = (ins HK_RegTileType:$a, HK_RegTileType:$b, HK_RegTileType:$acc, StrAttr:$kind);
+  let results = (outs HK_RegTileType:$result);
+  let assemblyFormat = [{
+    $kind $a `,` $b `,` $acc attr-dict `:` qualified(type($a)) `,` qualified(type($b)) `,` qualified(type($acc)) `->` qualified(type($result))
+  }];
+  let hasVerifier = 1;
+}
+
+def HK_IotaOp : HK_Op<"iota"> {
+  let summary = "an i32 strip whose element (r, c) is c (gfx950)";
+  let description = [{
+    Each element's own column -- the lane's place in the row, for index
+    arithmetic (hk.map_cpp) and per-column choices.
+  }];
+  let results = (outs HK_RegTileType:$result);
+  let assemblyFormat = [{ attr-dict `:` qualified(type($result)) }];
+  let hasVerifier = 1;
+}
+
+def HK_LoadElemsOp : HK_Op<"load_elems"> {
+  let summary = "a strip's elements read one by one at computed indices (gfx950)";
+  let description = [{
+    Element (r, c) of the result is element `idx[r, c]` of `src`, counted
+    flat over the tensor (rows over batch and depth, at the row stride) and
+    converted to the result's type; an index below zero or past the tensor
+    reads 0. `idx` is an i32 strip of the result's shape and run.
+  }];
+  let arguments = (ins HK_GlobalType:$src, HK_RegTileType:$idx);
+  let results = (outs HK_RegTileType:$result);
+  let assemblyFormat = [{
+    $src `[` $idx `]` attr-dict `:` qualified(type($src)) `,` qualified(type($idx)) `->` qualified(type($result))
+  }];
+  let hasVerifier = 1;
+}
+
+def HK_StoreElemsOp : HK_Op<"store_elems"> {
+  let summary = "a strip's elements written one by one at computed indices (gfx950)";
+  let description = [{
+    Element (r, c) of `val`, converted to the tensor's type, is written to
+    element `idx[r, c]` of `dst` (counted as for hk.load_elems); an index
+    below zero or past the tensor writes nothing -- a mask is an index of -1.
+    Two elements to one index race.
+  }];
+  let arguments = (ins HK_GlobalType:$dst, HK_RegTileType:$val, HK_RegTileType:$idx);
+  let assemblyFormat = [{
+    $val `,` $dst `[` $idx `]` attr-dict `:` qualified(type($val)) `,` qualified(type($dst)) `,` qualified(type($idx))
+  }];
+  let hasVerifier = 1;
+}
+
+def HK_GroupReduceOp : HK_Op<"group_reduce"> {
+  let summary = "a strip's row reduced over groups of lanes, the group's value in each element";
+  let description = [{
+    `kind` sum / max / min over each group of 2^k lanes of a chunk (k the
+    number of offsets): a lane's run folded as `order`'s lane part says
+    ("seq" left to right, "tree" balanced), then the lanes combined over
+    `order`'s xor offsets in that order -- each of 1, 2, .., 2^(k-1) once
+    -- and the group's value written to every element of each lane's run.
+    A 32-column MX group of a run-8 strip is xor 1, 2. Strips only (gfx950).
+  }];
+  let arguments = (ins HK_RegTileType:$src, StrAttr:$kind, StrAttr:$order);
+  let results = (outs HK_RegTileType:$result);
+  let assemblyFormat = [{
+    $kind $src attr-dict `:` qualified(type($src)) `->` qualified(type($result))
+  }];
+  let hasVerifier = 1;
+}
+
 def HK_MapCppOp : HK_Op<"map_cpp"> {
   let summary = "an elementwise C++ expression over strips (gfx950)";
   let description = [{

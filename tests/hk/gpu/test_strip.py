@@ -310,3 +310,135 @@ def test_map_cpp_does_not_fuse_a_product_and_a_sum():
     assert torch.equal(f.cpu().view(torch.int32), want.view(torch.int32))
     fused = (x.double() * y.double() + x.double()).float()
     assert not torch.equal(fused, want)                         # the inputs tell the two apart
+
+
+# ---------------------------------------------------------------- strip index / lane ops (gfx950)
+
+_gfx950 = pytest.mark.skipif(_target().wave != 64, reason="gfx950's")
+
+
+def _fold(a, tree):
+    """A run folded as cdna.cuh does: left to right, or its balanced tree (a[i] op= a[i + h])."""
+    a = list(a.unbind(-1))
+    if not tree:
+        v = a[0]
+        for x in a[1:]:
+            v = v + x
+        return v
+    n = len(a)
+    while n > 1:
+        h = (n + 1) // 2
+        for i in range(n - h):
+            a[i] = a[i] + a[i + h]
+        n = h
+    return a[0]
+
+
+@_gfx950
+@pytest.mark.parametrize("lanes,xor", [("seq", (1, 2)), ("seq", (2, 1)), ("tree", (1, 2))])
+def test_group_sum_is_in_the_stated_order_and_group_max_min_are_the_groups(lanes, xor):
+    S = hk.RS(hk.fp32, 1, 512, 8)
+
+    def grouped(x: hk.Tensor[hk.fp32], s: hk.Tensor[hk.fp32], mx: hk.Tensor[hk.fp32],
+                mn: hk.Tensor[hk.fp32]):
+        row = hk.arch.block_idx.x
+        a = x.at[row, 0].load(S)
+        s.at[row, 0].store(a.group_sum(32, lanes=lanes, xor=xor))
+        mx.at[row, 0].store(a.group_max(32))
+        mn.at[row, 0].store(a.group_min(32))
+
+    k = hk.kernel(grouped, warps=1, name=f"group_{lanes}_{''.join(map(str, xor))}",
+                  grid=lambda p: (p.x.rows, 1, 1))
+    g = torch.Generator(device="cpu").manual_seed(5)
+    x = torch.randn(16, 512, generator=g) * torch.exp(torch.randn(16, 512, generator=g) * 3)
+    s, mx, mn = (torch.zeros(16, 512, device="cuda") for _ in range(3))
+    k(x.cuda(), s, mx, mn)
+    torch.cuda.synchronize()
+    run = _fold(x.view(16, 16, 4, 8), lanes == "tree")         # [row, group, lane]
+    for o in xor:                                               # lane l takes l ^ o, in order
+        run = run + run[..., torch.arange(4) ^ o]
+    want = run[..., None].expand(16, 16, 4, 8).reshape(16, 512)
+    assert torch.equal(s.cpu().view(torch.int32), want.contiguous().view(torch.int32))
+    grp = x.view(16, 16, 32)
+    assert torch.equal(mx.cpu(), grp.amax(-1, keepdim=True).expand(16, 16, 32).reshape(16, 512))
+    assert torch.equal(mn.cpu(), grp.amin(-1, keepdim=True).expand(16, 16, 32).reshape(16, 512))
+
+
+@_gfx950
+def test_iota_indexes_load_elems_and_store_elems_and_out_of_range_is_masked():
+    S = hk.RS(hk.fp32, 1, 512, 8)
+
+    def gathered(x: hk.Tensor[hk.fp32], t: hk.Tensor[hk.i32], o: hk.Tensor[hk.fp32],
+                 ot: hk.Tensor[hk.i32], sc: hk.Tensor[hk.fp32]):
+        row = hk.arch.block_idx.x
+        c = hk.iota(S)
+        # reversed within the row; every 7th column past the tensor (reads 0), every 11th at -1
+        idx = hk.map_cpp("(x1 * 512 + 511 - x0) + (x0 % 7 == 3 ? (1 << 28) : 0)", c, row)
+        idx = hk.map_cpp("x0 % 11 == 5 ? -1 : x1", c, idx)
+        o.at[row, 0].store(x.load_elems(idx))
+        ot.at[row, 0].store(t.load_elems(idx))
+        # scattered back to the reversed column; the masked elements write nothing
+        sc.store_elems(x.at[row, 0].load(S), idx)
+
+    k = hk.kernel(gathered, warps=1, name="elems", grid=lambda p: (p.x.rows, 1, 1))
+    g = torch.Generator(device="cpu").manual_seed(6)
+    x = torch.randn(8, 512, generator=g)
+    t = torch.randint(-2**31, 2**31 - 1, (8, 512), generator=g, dtype=torch.int32)
+    o = torch.zeros(8, 512, device="cuda")
+    ot = torch.zeros(8, 512, dtype=torch.int32, device="cuda")
+    sc = torch.full((8, 512), -7.0, device="cuda")
+    k(x.cuda(), t.cuda(), o, ot, sc)
+    torch.cuda.synchronize()
+    col = torch.arange(512)
+    live = (col % 7 != 3) & (col % 11 != 5)
+    want = torch.where(live, x.flip(1), 0.0)
+    want_t = torch.where(live, t.flip(1), 0)
+    assert torch.equal(o.cpu(), want) and torch.equal(ot.cpu(), want_t)
+    want_sc = torch.full((8, 512), -7.0)
+    want_sc[:, (511 - col)[live]] = x[:, live]
+    assert torch.equal(sc.cpu(), want_sc)
+
+
+@_gfx950
+def test_lane_gather_takes_the_run_element_of_another_lane():
+    S = hk.RS(hk.fp32, 1, 512, 8)
+
+    def perm(x: hk.Tensor[hk.fp32], o: hk.Tensor[hk.fp32]):
+        row = hk.arch.block_idx.x
+        lane = hk.map_cpp("(x0 / 8) ^ (5 + x1)", hk.iota(S), row)
+        o.at[row, 0].store(x.at[row, 0].load(S).lane_gather(lane))
+
+    k = hk.kernel(perm, warps=1, name="lane_gather", grid=lambda p: (p.x.rows, 1, 1))
+    x = torch.randn(4, 512, generator=torch.Generator(device="cpu").manual_seed(7))
+    o = torch.zeros(4, 512, device="cuda")
+    k(x.cuda(), o)
+    torch.cuda.synchronize()
+    for r in range(4):
+        src = (torch.arange(64) ^ (5 + r))
+        assert torch.equal(o[r].cpu().view(64, 8), x[r].view(64, 8)[src])
+
+
+@_gfx950
+def test_mfma_strip_is_one_f32_16x16x4_in_its_lane_layout():
+    A1, C4 = hk.RS(hk.fp32, 1, 64, 1), hk.RS(hk.fp32, 1, 256, 4)
+
+    def mm(a: hk.Tensor[hk.fp32], b: hk.Tensor[hk.fp32], c: hk.Tensor[hk.fp32], o: hk.Tensor[hk.fp32]):
+        o.at[0, 0].store(hk.mfma_strip("f32_16x16x4", a.at[0, 0].load(A1), b.at[0, 0].load(A1),
+                                       c.at[0, 0].load(C4)))
+
+    k = hk.kernel(mm, warps=1, name="mfma_strip", grid=lambda p: (1, 1, 1))
+    g = torch.Generator(device="cpu").manual_seed(8)
+    A = torch.randint(-8, 8, (16, 4), generator=g).float()       # small integers: the sum is exact
+    B = torch.randint(-8, 8, (16, 4), generator=g).float()
+    C = torch.randint(-64, 64, (16, 16), generator=g).float()
+    lane = torch.arange(64)
+    a = A[lane % 16, lane // 16][None]                           # lane l holds A[l % 16][l // 16]
+    b = B[lane % 16, lane // 16][None]
+    rows = 4 * (lane // 16)[:, None] + torch.arange(4)           # lane l's 4 values: C rows 4 (l // 16) + i
+    cols = (lane % 16)[:, None].expand(64, 4)
+    c = C[rows, cols].reshape(1, 256)
+    o = torch.zeros(1, 256, device="cuda")
+    k(a.cuda(), b.cuda(), c.cuda(), o)
+    torch.cuda.synchronize()
+    D = C + A @ B.T
+    assert torch.equal(o.cpu(), D[rows, cols].reshape(1, 256))

@@ -752,6 +752,95 @@ HK_UNARY_VERIFY(SiluOp)
 HK_UNARY_VERIFY(StepOp)
 #undef HK_UNARY_VERIFY
 
+static LogicalResult verifyElems(Operation *op, Type valT, Type idxT) {
+  auto v = dyn_cast<RegTileType>(valT);
+  auto i = dyn_cast<RegTileType>(idxT);
+  if (!v || !v.isStrip() || !i || !i.isStrip())
+    return op->emitOpError("moves strips' elements: values and indices are strips");
+  if (!i.getElementType().isInteger(32))
+    return op->emitOpError("indices are an i32 strip, not ") << idxT;
+  if (i.getRows() != v.getRows() || i.getCols() != v.getCols() || i.getRun() != v.getRun())
+    return op->emitOpError("indices ") << idxT << " and values " << valT
+           << " have one shape and run";
+  if (!v.getElementType().isF32() && !v.getElementType().isInteger(32))
+    return op->emitOpError("values are an fp32 or i32 strip, not ") << valT;
+  return success();
+}
+
+LogicalResult LaneGatherOp::verify() {
+  auto s = dyn_cast<RegTileType>(getSrc().getType());
+  auto l = dyn_cast<RegTileType>(getLanes().getType());
+  if (!s || !s.isStrip() || !l || !l.isStrip() || !l.getElementType().isInteger(32))
+    return emitOpError("gathers a strip's elements by an i32 strip of lanes");
+  if (l.getRows() != s.getRows() || l.getCols() != s.getCols() || l.getRun() != s.getRun())
+    return emitOpError("lanes have the operand's shape and run");
+  if (getResult().getType() != getSrc().getType())
+    return emitOpError("gives a strip of its operand's type");
+  if (s.getElementType().getIntOrFloatBitWidth() != 32)
+    return emitOpError("gathers 32-bit elements");
+  return success();
+}
+
+LogicalResult MfmaStripOp::verify() {
+  if (getKind() != "f32_16x16x4")
+    return emitOpError("kind is f32_16x16x4");
+  auto a = dyn_cast<RegTileType>(getA().getType());
+  auto b = dyn_cast<RegTileType>(getB().getType());
+  auto c = dyn_cast<RegTileType>(getAcc().getType());
+  auto one = [](RegTileType t, int cols, int run) {
+    return t && t.isStrip() && t.getElementType().isF32() && t.getRows() == 1 &&
+           t.getCols() == cols && t.getRun() == run;
+  };
+  if (!one(a, 64, 1) || !one(b, 64, 1))
+    return emitOpError("A and B are fp32 strips of 1 x 64, run 1: a value a lane");
+  if (!one(c, 256, 4))
+    return emitOpError("acc is an fp32 strip of 1 x 256, run 4: four values a lane");
+  if (getResult().getType() != getAcc().getType())
+    return emitOpError("gives acc's type");
+  return success();
+}
+
+LogicalResult IotaOp::verify() {
+  auto t = dyn_cast<RegTileType>(getResult().getType());
+  if (!t || !t.isStrip() || !t.getElementType().isInteger(32))
+    return emitOpError("makes an i32 strip, not ") << getResult().getType();
+  return success();
+}
+
+LogicalResult LoadElemsOp::verify() {
+  return verifyElems(*this, getResult().getType(), getIdx().getType());
+}
+
+LogicalResult StoreElemsOp::verify() {
+  return verifyElems(*this, getVal().getType(), getIdx().getType());
+}
+
+LogicalResult GroupReduceOp::verify() {
+  auto t = dyn_cast<RegTileType>(getSrc().getType());
+  if (!t || !t.isStrip())
+    return emitOpError("reduces a strip's lane groups, not ") << getSrc().getType();
+  if (getResult().getType() != getSrc().getType())
+    return emitOpError("gives a strip of its operand's type");
+  if (getKind() != "sum" && getKind() != "max" && getKind() != "min")
+    return emitOpError("kind is sum, max or min");
+  auto [lanes, offs] = getOrder().split(':');
+  if (lanes != "seq" && lanes != "tree")
+    return emitOpError("order's lane part is seq or tree");
+  SmallVector<StringRef> parts;
+  if (!offs.empty())
+    offs.split(parts, ',');
+  unsigned seen = 0;
+  for (StringRef p : parts) {
+    unsigned v = 0;
+    if (p.getAsInteger(10, v) || v == 0 || v > 16 || (v & (v - 1)) || (seen & v))
+      return emitOpError("order's offsets are powers of two of at most 16, each once");
+    seen |= v;
+  }
+  if (seen & (seen + 1))
+    return emitOpError("order's offsets are 1, 2, .., 2^(k-1): a group of 2^k neighbouring lanes");
+  return success();
+}
+
 LogicalResult MapCppOp::verify() {
   auto res = getResult().getType();
   auto rt = dyn_cast<RegTileType>(res);

@@ -474,6 +474,7 @@ template<typename RT> __device__ inline int2 hk_frag_coord(int e, int lane) {
  */
 template<typename U, typename T> __device__ inline U hk_cvt(const T &v) {
     if constexpr (std::is_same_v<U, T>) return v;
+    else if constexpr (std::is_integral_v<U> && std::is_integral_v<T>) return static_cast<U>(v);
     else if constexpr (std::is_same_v<U, bf16> && std::is_same_v<T, float>) return __float2bfloat16(v);
     else return base_types::convertor<U, T>::convert(v);
 }
@@ -3000,6 +3001,93 @@ HK_STRIP_BINARY(div, div)
 HK_STRIP_BINARY(max, max)
 HK_STRIP_BINARY(min, min)
 #undef HK_STRIP_BINARY
+
+namespace detail {
+/** The whole tensor as one buffer: rows over batch and depth at the row stride (the descriptor's
+ *  range is 32 bits: a tensor past 4 GB reads zeros and drops stores beyond it). */
+template<ducks::gl::all GL> __device__ inline hk_i32x4 hk_elems_srsrc(const GL &g) {
+    using U = typename GL::dtype;
+    const uint64_t n = uint64_t(g.batch()) * g.depth() * g.rows() * uint64_t(g.row_stride());
+    return hk_srsrc(g.raw_ptr, n * sizeof(U));
+}
+__device__ inline uint32_t hk_elem_off(int k, uint32_t size) {
+    return k < 0 ? 0xFFFFFFFFu : uint32_t(k) * size;     // past the range: reads 0, stores nothing
+}
+}  // namespace detail
+/** @brief hk lane_gather: element (r, c) of lane l = the same run element of lane lanes(r, c). */
+template<ducks::rs::all D, ducks::rs::all I>
+__device__ static inline void lane_gather(D &dst, const D &src, const I &lanes) {
+    detail::strip_each<D>([&](int r, int j, int e) {
+        const int v = __builtin_amdgcn_ds_bpermute(lanes.data[r][j][e] * 4,
+                                                   int(detail::hk_bits(src.data[r][j][e])));
+        dst.data[r][j][e] = detail::hk_from_bits<typename D::T>(uint32_t(v));
+    });
+}
+/** @brief hk mfma_strip f32_16x16x4: acc (4 a lane) += A B^T, lane l holding A[l%16][l/16], B[l%16][l/16]. */
+template<ducks::rs::all D, ducks::rs::all A, ducks::rs::all B>
+__device__ static inline void mfma_strip_f32_16x16x4(D &dst, const A &a, const B &b, const D &acc) {
+    typedef float v4f __attribute__((ext_vector_type(4)));
+    v4f c = {acc.data[0][0][0], acc.data[0][0][1], acc.data[0][0][2], acc.data[0][0][3]};
+    c = __builtin_amdgcn_mfma_f32_16x16x4f32(a.data[0][0][0], b.data[0][0][0], c, 0, 0, 0);
+    dst.data[0][0][0] = c[0]; dst.data[0][0][1] = c[1]; dst.data[0][0][2] = c[2]; dst.data[0][0][3] = c[3];
+}
+/** @brief hk.iota: element (r, c) = c, the column a lane's run element sits in. */
+template<ducks::rs::all D>
+__device__ static inline void iota(D &dst) {
+    const int lane = laneid();
+    detail::strip_each<D>([&](int r, int j, int e) {
+        dst.data[r][j][e] = typename D::T(j * 64 * D::run + lane * D::run + e);
+    });
+}
+/** @brief hk.load_elems: dst's element (r, c) = src's element idx(r, c), flat; out of range -> 0. */
+template<ducks::rs::all D, ducks::gl::all GL, ducks::rs::all I>
+__device__ static inline void load_elems(D &dst, const GL &src, const I &idx) {
+    using U = typename GL::dtype;
+    const detail::hk_i32x4 r = detail::hk_elems_srsrc(src);
+    detail::strip_each<D>([&](int a, int j, int e) {
+        dst.data[a][j][e] = detail::hk_cvt<typename D::T, U>(
+            detail::hk_buf_load_elem<U>(r, detail::hk_elem_off(idx.data[a][j][e], sizeof(U))));
+    });
+}
+/** @brief hk.store_elems: val's element (r, c) to dst's element idx(r, c), flat; out of range: none. */
+template<ducks::gl::all GL, ducks::rs::all V, ducks::rs::all I>
+__device__ static inline void store_elems(const GL &dst, const V &val, const I &idx) {
+    using U = typename GL::dtype;
+    const detail::hk_i32x4 r = detail::hk_elems_srsrc(dst);
+    detail::strip_each<V>([&](int a, int j, int e) {
+        detail::hk_buf_store_elem<U>(r, detail::hk_elem_off(idx.data[a][j][e], sizeof(U)),
+                                     detail::hk_cvt<U, typename V::T>(val.data[a][j][e]));
+    });
+}
+
+/** @brief Each chunk's lane groups reduced: a lane's run folded (SEQ: left to right, else the
+ * balanced tree), then combined over the xor offsets OFFS in that order (1 .. 2^(k-1): groups of
+ * 2^k neighbouring lanes), the group's value written to every element of the lane's run -- an MX
+ * group's amax (run 8, xor 1 2), a 64-dim block's (run 2, xor 1 .. 16). */
+template<typename op, int SEQ, int... OFFS, ducks::rs::all RS>
+__device__ static inline void group_reduce_ordered(RS &dst, const RS &src) {
+    using T = typename RS::T;
+    #pragma unroll
+    for (int r = 0; r < RS::rows; r++) {
+        #pragma unroll
+        for (int j = 0; j < RS::chunks; j++) {
+            T a[RS::run];
+            #pragma unroll
+            for (int e = 0; e < RS::run; e++) a[e] = src.data[r][j][e];
+            T v;
+            if constexpr (SEQ) {
+                v = a[0];
+                #pragma unroll
+                for (int e = 1; e < RS::run; e++) v = op::template op<T>(v, a[e]);
+            } else {
+                v = detail::strip_tree<op>(a);
+            }
+            ((v = detail::hk_xor_op<op, OFFS>(v)), ...);
+            #pragma unroll
+            for (int e = 0; e < RS::run; e++) dst.data[r][j][e] = v;
+        }
+    }
+}
 
 namespace detail {
 template<typename A> __device__ inline auto hk_lane_arg(const A &a, int r, int j, int e) {
