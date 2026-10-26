@@ -101,22 +101,29 @@ tuned arms; "hk vs best" counts every other arm.
 | fused add + rms_norm 1 / 32 / 2048 rows | | | | | | 1.06x / 1.30x / tie |
 | fused add + rms_norm 8192 rows, us | 481 | 572 | 455 | 450 | **446** | **0.93x** |
 | softmax 2048 / 8192 rows | | | | | -- | tie / tie |
-| fp8 32x4096x4096, us | **28.3** | 44.0 | -- | 48.2 | 46.7 | 1.56x |
-| fp8 32x14336x4096, us | 57.7 | 145 | -- | **47.9** | 52.6 | **0.83x** |
-| fp8 128 rows (N 4096 / 14336) | **best** | | | | | 1.07x / 1.15x |
-| fp8 2048 rows (N 4096 / 14336) | **best** | | | 0.08x hk | | 1.48x / 1.37x |
+| fp8 32x4096x4096, W from GDDR6, us | **30.0** | 39.4 | -- | 45.7 | 40.0 | 1.31x |
+| fp8 32x14336x4096, W from GDDR6, us | **101.9** | 165.9 | -- | 110.5 | 118.3 | 1.08x |
+| fp8 128 rows (N 4096 / 14336) | **best** | | | | | 1.07x / 1.16x |
+| fp8 2048 rows (N 4096 / 14336) | **best** | | | 0.08x hk | | 1.48x / 1.39x |
 | int8 2048 / 4096 rows (N, K 4096) | **0.315 / 0.626 ms** | 0.321 / 0.636 | -- | (gfx11 only) | 0.789 / 1.568 | tie (1.02x) |
 | int4 2048 / 4096 rows, ms | -- | -- | -- | 0.169 / 0.402 | -- | (FlyDSL alone) |
 
 The fp8 rows are W8A8 with a scale a token and a channel, which is the
 rowwise path in hipBLASLt and a slow one: hk is 1.4x it from 2048 rows.
-FlyDSL's fp8 kernel is built for 32-row decode and wins the wide decode row;
-it is not meant for prefill (0.08x hk at 2048 rows).
+FlyDSL's fp8 kernel is built for 32-row decode; it is not meant for prefill
+(0.08x hk at 2048 rows).
+
+The 32-row rows read W from GDDR6: each arm cycles through copies of W twice
+the Infinity Cache's size. The first run of this table reused one W, which
+then sat in the 64 MB cache between calls, and there FlyDSL's kernel was 1.2x
+hk's at 32x14336x4096 (48 against 58 us). A decode step does not read a
+layer's W from the cache -- the model's weights are gigabytes -- and streamed,
+hk's is ahead, 100 against 110 us, 585-617 GB/s of the 0.62 TB/s measured
+past the cache (`tools/rdna4-probes/fp8_decode3.py`). The norm rows at 8192
+rows and the 2048-row GEMMs are past the cache anyway.
 
 ## What is left
 
-- **fp8 decode on a wide layer**: FlyDSL's LDS-free 32-row kernel, 48 us
-  against hk's 58 at 32x14336x4096.
 - **int8**: on gfx1100's schedule hk's int8 GEMM was 0.91-0.96x
   torch._int_mm; on the fp8 schedule (the same sweep with iu8 operands picks
   the same point, `tools/rdna4-probes/i8_sweep.py`) it ties, 1.02x. A tie
