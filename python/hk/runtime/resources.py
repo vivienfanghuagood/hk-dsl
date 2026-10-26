@@ -17,8 +17,6 @@ because they read the same three fields.
 
 from __future__ import annotations
 
-import os
-
 import re
 import shutil
 import subprocess
@@ -162,10 +160,7 @@ def gate(
     """
     fails = []
     for r in kernels:
-        # HK_ALLOW_SGPR_SPILL=1 (experiments): SGPR-only spills pass -- a kernel without hk's
-        # hand-counted vmcnt waits (no async group copies) is not reordered by them
-        sgpr_only = r.vgpr_spill == 0 and os.environ.get("HK_ALLOW_SGPR_SPILL") == "1"
-        if r.spills and not allow_scratch and not sgpr_only:
+        if r.spills and not allow_scratch:
             fails.append(
                 f"{r.name}: ScratchSize={r.scratch} B/lane, "
                 f"spill vgpr={r.vgpr_spill} sgpr={r.sgpr_spill}"
