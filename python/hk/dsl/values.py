@@ -1905,7 +1905,8 @@ __all__ = [
 def map_cpp(expr: str, *args, dtype: Optional[DType] = None, name: str = "map") -> Tile:
     """An elementwise C++ expression over strips (gfx950): element (r, c) of the result is `expr`
     with `x0`, `x1`, ... bound to element (r, c) of each strip argument -- or to the argument
-    itself for an `Int` -- converted to `dtype` (default: the first strip's).
+    itself for an `Int` or a Python int -- converted to `dtype` (default: the strips' one dtype;
+    strips of fp32 and i32 together must say it).
 
     For what the operators cannot say and a kernel must reproduce bit for bit: bit manipulation,
     a fused multiply-add, one particular instruction. E.g. the biased exponent of the smallest
@@ -1929,7 +1930,12 @@ def map_cpp(expr: str, *args, dtype: Optional[DType] = None, name: str = "map") 
     s0 = strips[0].ty
     if getattr(s0, "run", None) is None:
         raise TypeError(f"hk.map_cpp maps strips (hk.RS), not {s0}")
-    dtype = s0.dtype if dtype is None else dtype
+    if dtype is None:
+        kinds = {a.ty.dtype.name for a in strips}
+        if len(kinds) > 1:
+            raise TypeError(f"hk.map_cpp over strips of {sorted(kinds)}: say the result's dtype= -- "
+                            f"the first strip's would silently round an fp32 result to an integer")
+        dtype = s0.dtype
     if dtype.name not in ("fp32", "i32"):
         raise TypeError(f"hk.map_cpp makes an fp32 or i32 strip, not {dtype.name}")
     ops = []
@@ -1943,9 +1949,11 @@ def map_cpp(expr: str, *args, dtype: Optional[DType] = None, name: str = "map") 
             ops.append(a.v)
         elif isinstance(a, Int):
             ops.append(a.v)
+        elif isinstance(a, int) and not isinstance(a, bool):
+            ops.append(as_int(a).v)                       # a Python int: an i32 constant
         else:
-            raise TypeError(f"hk.map_cpp: x{i} is {a!r}: a strip or an hk.Int; a Python number "
-                            f"belongs in the expression itself")
+            raise TypeError(f"hk.map_cpp: x{i} is {a!r}: a strip, an hk.Int or a Python int; a "
+                            f"float belongs in the expression itself")
     ty = RegTileType(dtype, s0.rows, s0.cols, s0.layout, s0.frag, run=s0.run)
     t = _t()
     op = hkd.MapCppOp(mlir_type(ty), ops, expr, loc=t.loc(name))

@@ -435,3 +435,19 @@ def test_map_cpp_wants_matching_fp32_or_i32_strips_on_gfx950():
         o.at[0, 0].store(hk.map_cpp("x0", a))
     with pytest.raises(TypeError, match="gfx950"):
         hk.kernel(w32, arch="gfx1100", warps=1, name="w32", grid=lambda p: (1, 1, 1)).source()
+
+
+def test_map_cpp_wants_a_dtype_over_mixed_strips_and_takes_python_ints():
+    def mixed(x: hk.Tensor[hk.fp32], o: hk.Tensor[hk.fp32]):
+        a = x.at[0, 0].load(S64)
+        e = hk.map_cpp("x0", a, dtype=hk.i32)
+        o.at[0, 0].store(hk.map_cpp("x0 * x1 + x2", a, e, 3))
+    with pytest.raises(TypeError, match="dtype="):
+        hk.kernel(mixed, arch="gfx950", warps=1, name="mixed", grid=lambda p: (1, 1, 1)).source()
+
+    def said(x: hk.Tensor[hk.fp32], o: hk.Tensor[hk.fp32]):
+        a = x.at[0, 0].load(S64)
+        e = hk.map_cpp("x0", a, dtype=hk.i32)
+        o.at[0, 0].store(hk.map_cpp("x0 * x1 + x2", a, e, 3, dtype=hk.fp32))
+    assert "kittens::map_cpp(" in hk.kernel(said, arch="gfx950", warps=1, name="said",
+                                            grid=lambda p: (1, 1, 1)).source()
