@@ -1,0 +1,17 @@
+#!/bin/bash
+# gpusnap GPUS [LABEL]   one line per GPU of the gfx1201 dev box, for the record of a run:
+#   <UTC time> gpusnap gpu<N> [LABEL] use=<%> vram=<GiB used>/<GiB> sclk=<MHz> holders: [pid user vram cmd]...|none
+# GPUS: rocm-smi indices, comma or space separated. use / vram / sclk from the amdgpu sysfs of the
+# card's PCI device; holders from KFD's sysfs (gpulock.sh gpu_foreign), any user's process.
+set -u
+. "$(dirname "$(readlink -f "$0")")/gpulock.sh"
+GPUS=${1:?usage: gpusnap GPUS [LABEL]}; LABEL=${2:-}
+for g in ${GPUS//,/ }; do
+    pci=$(gpulock_pci "$g") || continue
+    dev=/sys/bus/pci/devices/$pci
+    use=$(cat "$dev/gpu_busy_percent" 2>/dev/null)
+    vu=$(cat "$dev/mem_info_vram_used" 2>/dev/null); vt=$(cat "$dev/mem_info_vram_total" 2>/dev/null)
+    sclk=$(grep '\*' "$dev/pp_dpm_sclk" 2>/dev/null | grep -o '[0-9]*Mhz' | head -1)
+    h=$(gpu_foreign "$g" | sed 's/^/[/; s/$/]/' | tr '\n' ' ')
+    echo "$(date -u +%FT%TZ) gpusnap gpu$g${LABEL:+ $LABEL} use=${use:-?}% vram=$(( ${vu:-0} >> 30 ))/$(( ${vt:-0} >> 30 ))GiB sclk=${sclk:-?} holders: ${h:-none}"
+done

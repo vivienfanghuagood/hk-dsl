@@ -1,0 +1,12 @@
+#!/bin/bash
+# gpulock IDX [-w WAIT_S] -- CMD...   run CMD holding our lock of GPU IDX on the gfx1201 dev box
+# (see gpulock.sh). CMD inherits the lock's fd; the lock is released when CMD and its children exit.
+set -u
+. "$(dirname "$(readlink -f "$0")")/gpulock.sh"
+IDX=${1:?usage: gpulock IDX [-w WAIT_S] -- CMD...}; shift
+WAIT=3600
+[ "${1:-}" = -w ] && { WAIT=$2; shift 2; }
+[ "${1:-}" = -- ] && shift
+[ $# -gt 0 ] || { echo "usage: gpulock IDX [-w WAIT_S] -- CMD..." >&2; exit 2; }
+GPULOCK_WHAT="$*" gpulock_take "$IDX" "$WAIT" || exit $?
+exec "$@"

@@ -1,10 +1,11 @@
 #!/bin/bash
-# Inside rocm/pytorch (run_gfx950.sh) -- or the vLLM deployment image, as tier
-# gfx950-vllm -- build hk._mlir for this image's CPython against the cp310 MLIR
-# install, then run the GPU tier for gfx950 on the one GPU the container sees:
-# all of it (scripts/gpu_suite.sh), or the test files in HK_CI_TESTS. The MLIR C++ libraries do not depend on the
+# Inside rocm/pytorch (run_gfx950.sh, run_gfx1201.sh) -- or the vLLM deployment
+# image, as tier gfx950-vllm -- build hk._mlir for this image's CPython against
+# the cp310 MLIR install, then run the GPU tier for $HK_CI_ARCH (default gfx950)
+# on the one GPU the container sees: all of it (scripts/gpu_suite.sh), or the
+# test files in HK_CI_TESTS. The MLIR C++ libraries do not depend on the
 # interpreter; the core Python extension is compiled here from MLIR's
-# installed sources.
+# installed sources. HK_CI_DEVICE names the card in the report.
 #   /ci        CI's own directory: hk-build-cp312, pylib, hk-cache, home
 #   /ci/src    the checkout          /ci/run   the run's directory
 #   /ci/mlir   the MLIR install, read-only
@@ -18,7 +19,8 @@ SHA=$1
 GPU=$2
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 TIER=${HK_CI_TIER:-gfx950}
-DEVICE="MI355X (gfx950), GPU $GPU"
+ARCH=${HK_CI_ARCH:-gfx950}
+DEVICE=${HK_CI_DEVICE:-"MI355X (gfx950), GPU $GPU"}
 export HOME=/ci/home PYTHONPATH=/ci/pylib PATH=/ci/pylib/bin:$PATH
 # JIT caches under /ci/home: the vLLM image's aiter puts FlyDSL's in its package directory, which
 # the CI user cannot write (PermissionError on the first MoE call)
@@ -43,7 +45,7 @@ fail() {
   cmake --install /ci/hk-build-cp312 --component HKPythonModules; } >/ci/run/build.log 2>&1 \
     || fail "the dialect did not build (build.log)"
 
-export HK_ARCH=gfx950 HK_CACHE_DIR=/ci/hk-cache
+export HK_ARCH=$ARCH HK_CACHE_DIR=/ci/hk-cache
 if [ -n "${HK_CI_TESTS:-}" ]; then
     # one group, in gpu_suite.sh's output format (a log and a status line)
     mkdir -p /ci/run/gpu
