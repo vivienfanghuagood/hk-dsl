@@ -6,21 +6,23 @@
 #                                      its timeout'd pytest included) unless it has finished
 #   cancel.sh --on-eof ARGS...         a reaper: read stdin until "done" or end of file; at end
 #                                      of file, the job's script is gone without saying done --
-#                                      killed -- so do ARGS
-# The job's script runs the first two from its trap, and starts the reaper on a pipe it holds the
-# only write end of: the runner kills a cancelled job's leftover processes with SIGKILL ("Cleaning
-# up orphan processes"), which no trap sees, and the pipe's end of file is what is left. The
-# reaper is started outside the runner's process tracking (RUNNER_TRACKING_ID=0) for that.
+#                                      cancelled, or killed -- so do ARGS
+# The job's script starts the reaper on a pipe it holds the only write end of, outside the
+# runner's process tracking (RUNNER_TRACKING_ID=0): the runner SIGKILLs a cancelled job's leftover
+# processes ("Cleaning up orphan processes"), which no trap sees, and the pipe's end of file is
+# what is left. run_gfx950.sh also kills its container from its trap (about a second, within the
+# runner's 7.5 s); run_gfx1100.sh leaves the pod to the reaper (a round trip takes 3-4 s).
 set -u
 if [ "${1:-}" = --on-eof ]; then
     shift
     while IFS= read -r line; do [ "$line" = done ] && exit 0; done
     echo "$(date -u +%FT%TZ) the job's script is gone without finishing: cancel.sh $*"
-    sleep 2     # its docker client, killed in the same sweep, can no longer start the container
+    EOF_=1
 fi
 case ${1:-} in
 container)
     NAME=$2
+    [ -n "${EOF_:-}" ] && sleep 2     # the docker client, killed with the script, can no longer start it
     for i in $(seq 60); do
         st=$(docker container inspect --format '{{.State.Status}}' "$NAME" 2>/dev/null) || exit 0
         case $st in
@@ -35,7 +37,7 @@ container)
 pod)
     JUMP=$2 POD=$3 R=$4
     [[ $R =~ ^[A-Za-z0-9_./-]+$ ]] || exit 2
-    echo "cd $R 2>/dev/null && [ -f pid ] && [ ! -f result.json ] && pkill -KILL -s \$(cat pid); true" |
+    echo "cd $R 2>/dev/null && [ -f pid ] && [ ! -f result.json ] && pkill -KILL -s \$(cat pid) && echo killed the session of pod_run.sh \$(cat pid); true" |
         timeout 60 ssh -o BatchMode=yes -o ConnectTimeout=10 "$JUMP" "kubectl exec -i $POD -- bash -s"
     ;;
 *)

@@ -332,9 +332,11 @@ twice. Now:
   with GitHub unreachable, it is killed only once older than 120 minutes;
 - `pick()` counts a GPU as busy while any running `hk-gha-*` container,
   any runner's, has its render node.
-The gfx1100 job does the same for the pod's run: its trap and reaper kill
-`pod_run.sh`'s whole session in the pod (the suite's pytest runs under
-`timeout`, in a process group of its own) unless the run has finished.
+The gfx1100 job's reaper does the same for the pod's run: unless the run has
+finished, the script's trap exits without telling it "done" (a round trip to
+the pod takes 3-4 s, too long for the trap), and it kills `pod_run.sh`'s
+whole session in the pod (the suite's pytest runs under `timeout`, in a
+process group of its own, which the old `kill -- -PGID` missed).
 
 **Required checks.** main's branch protection requires `gfx950` and
 `gfx1100` from GitHub Actions, not up to date with main (`strict: false`),
