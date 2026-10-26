@@ -99,5 +99,6 @@ nav:
       - HipKittens on CDNA4: design/cdna-hipkittens-ops.md
       - Serving readiness: design/serving-readiness.md
       - hk.comm (XCDs and GPUs): design/comm.md
+      - Workgroup placement (design): design/placement-pass.md
       - Cross-architecture API audit: dx/api-consistency.md
   - Development record: history/README.md
