@@ -594,7 +594,7 @@ def aiter_layout_w2_scale(s):
 
 def _sorted_ring(stage: int, name: str, *, group_rows: int, mt: int, pp: int, k: int,
                  limit: float = 10.0, topk: int = 6, warps: int = 4, xcd: bool = True,
-                 depth: int = 2, mxq: bool = False):
+                 depth: int = 2, mxq: bool = False, xpipe: bool = False):
     """Stage 1 or 2 on AITER's own MoE sort (moe_sorting with block_size 16 * mt): a round is one
     sorted block -- its expert sorted_expert_ids[b], its rows sorted_ids[b * BM ..] -- so nothing
     is decoded or gathered on the host. The xsplit ring with two-step 32-row scale dwords (pairs),
@@ -656,6 +656,7 @@ def _sorted_ring(stage: int, name: str, *, group_rows: int, mt: int, pp: int, k:
         row_w = e * GR + col0
         Cs = [hk.zeros(t_c1) for _ in range(mt)]
         X1 = hk.zeros(t_x1)
+        X1s = [X1, hk.zeros(t_x1)] if xpipe else [X1, X1]
         W = [hk.zeros(t_w) for _ in range(D)]
         S = [hk.load_mx_scales(ws, R, 8, row_w, 0, layout=lay, group_rows=GR) for _ in range(2)]
         SX = [hk.load_mx_scales(xs, BM, 8, 0, 0, layout="aiter", group_rows=XGR) for _ in range(2)]
@@ -679,10 +680,17 @@ def _sorted_ring(stage: int, name: str, *, group_rows: int, mt: int, pp: int, k:
                 nu = u + D - 1
                 fetch(kc + D - 1, nu % D, sset=(nu // 2) % 2 if nu % 2 == 0 else None)
             ss, par = (u // 2) % 2, u % 2
+            # xpipe: the next token tile's LDS read is issued before this tile's MFMAs (two
+            # fragments alternate; a step's first read stays behind its barrier) -- k1-prefill c39
+            if xpipe:
+                Xs[cur].subtile(TILE, KS, 0, 0).load(t_x1, wait=False, into=X1s[0])
             for ti in range(mt):
-                Xs[cur].subtile(TILE, KS, ti, 0).load(t_x1, wait=False, into=X1)
-                hk.lds.wait_for(X1)
-                hk.mma_ABt_mx(W[cur], X1, Cs[ti], S[ss], SX[ss], a_fmt="fp4",
+                if not xpipe:
+                    Xs[cur].subtile(TILE, KS, ti, 0).load(t_x1, wait=False, into=X1)
+                elif ti + 1 < mt:
+                    Xs[cur].subtile(TILE, KS, ti + 1, 0).load(t_x1, wait=False, into=X1s[(ti + 1) % 2])
+                hk.lds.wait_for(X1s[ti % 2])
+                hk.mma_ABt_mx(W[cur], X1s[ti % 2], Cs[ti], S[ss], SX[ss], a_fmt="fp4",
                               sa_at=(0, par), sb_at=(ti, par), into=Cs[ti])
             hk.arch.sched_barrier()
 
@@ -1121,17 +1129,17 @@ def _sorted_persistent(group_rows: int, mt: int, pp: int, k: int, topk: int, gri
 
 @functools.lru_cache(maxsize=None)
 def _sorted(stage: int, group_rows: int, mt: int, pp: int, k: int, limit: float, topk: int,
-            depth: int = 2, warps: int = 4, mxq: bool = False):
+            depth: int = 2, warps: int = 4, mxq: bool = False, xpipe: bool = False):
     return _sorted_ring(stage, f"moe_a8w4_s{stage}s_gr{group_rows}_mt{mt}_pp{pp}_k{k}_t{topk}"
                         + (f"_d{depth}" if depth != 2 else "") + (f"_w{warps}" if warps != 4 else "")
-                        + ("_mxq" if mxq else ""),
+                        + ("_mxq" if mxq else "") + ("_xp" if xpipe else ""),
                         group_rows=group_rows, mt=mt, pp=pp, k=k, limit=limit, topk=topk,
-                        depth=depth, warps=warps, mxq=mxq)
+                        depth=depth, warps=warps, mxq=mxq, xpipe=xpipe)
 
 
 def stage1_sorted(xq_tok, xs_sorted, w13, w13_scale, sorted_ids, sorted_expert_ids, num_valid, *,
                   inter: int, mt: int, pp: int = 3, limit: float = 10.0, depth: int = 2,
-                  warps: int = 4, grid=None, mxq: bool = False):
+                  warps: int = 4, grid=None, mxq: bool = False, xpipe: bool = True):
     """h [len(sorted_ids), inter] bf16 in AITER's sorted order (moe_sorting with block_size
     16 * mt): xq_tok [M, K] FP8 in token order and xs_sorted its sorted 32-row-layout scales
     (aiter's fused_dynamic_mxfp8_quant_moe_sort). See _sorted_ring.
@@ -1163,7 +1171,8 @@ def stage1_sorted(xq_tok, xs_sorted, w13, w13_scale, sorted_ids, sorted_expert_i
                              f"scale blocks")
         hq = torch.empty((p, inter), device=xq_tok.device, dtype=torch.float8_e4m3fn)
         hs = torch.empty((p, -(-inter // 256) * 8), device=xq_tok.device, dtype=torch.uint8)
-        _sorted(1, 2 * inter, mt, pp, xq_tok.shape[1], float(limit), 6, depth, warps, mxq=True)(
+        _sorted(1, 2 * inter, mt, pp, xq_tok.shape[1], float(limit), 6, depth, warps, mxq=True,
+                xpipe=xpipe)(
             xq_tok, xs_sorted.view(torch.int8), w13.view(torch.int8), w13_scale.view(torch.int8),
             sorted_ids.view(1, -1), sorted_expert_ids.view(1, -1), num_valid.view(1, -1), dummy,
             hq, hs.view(torch.int8))
