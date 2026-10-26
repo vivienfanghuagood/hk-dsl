@@ -51,7 +51,7 @@ wave-uniform, so not a branch condition for a workgroup operation.
 hk.arch.xcd_id() -> Int
 ```
 
-*New after 0.5.0*
+*New after 0.6.0*
 
 The XCD this workgroup runs on, 0..7 on a gfx950 (read from the hardware: s_getreg
 HW_REG_XCC_ID), wave-uniform. Workgroups are dealt to the XCDs round robin, so it is usually
@@ -149,8 +149,6 @@ hk.arch.vm_wait(keep: int = 0) -> None
 ```python
 hk.arch.wg_arrive(counter, expected: Scalar, *, scope: str = 'device') -> Int
 ```
-
-*Changed after 0.5.0*: new parameter `scope`
 
 Count this workgroup's arrival at `counter` (an element view of an
 int32 global) and return how many arrived before it. The last to arrive

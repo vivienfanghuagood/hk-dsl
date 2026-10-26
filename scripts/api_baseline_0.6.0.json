@@ -1,0 +1,18415 @@
+{
+"hk": {
+"Bool": {
+"methods": {
+"__and__": [
+"self",
+"o"
+],
+"__bool__": [
+"self"
+],
+"__invert__": [
+"self"
+],
+"__or__": [
+"self",
+"o"
+],
+"__rand__": [
+"self",
+"o"
+],
+"__ror__": [
+"self",
+"o"
+],
+"__slots__": null,
+"__xor__": [
+"self",
+"o"
+],
+"_logic": [
+"self",
+"op",
+"o"
+],
+"to_int": [
+"self"
+]
+}
+},
+"Build": {
+"methods": {
+"cached": null,
+"kernels": null,
+"key": null,
+"log_path": null,
+"module_name": null,
+"report": [
+"self"
+],
+"so_path": null,
+"source_path": null
+}
+},
+"CompileError": {
+"methods": {}
+},
+"Constexpr": {
+"methods": {
+"__class_getitem__": [
+"cls",
+"_type"
+]
+}
+},
+"Coord": {
+"methods": {
+"__slots__": null,
+"unit": [
+"self"
+]
+}
+},
+"DTYPES": {},
+"DType": {
+"methods": {
+"__repr__": [
+"self"
+],
+"bits": null,
+"bytes": [
+"self"
+],
+"cpp": null,
+"kind": null,
+"name": null
+}
+},
+"Global": {
+"methods": {
+"__getitem__": [
+"self",
+"idx"
+],
+"__init__": [
+"self",
+"v",
+"ty",
+"name"
+],
+"__setitem__": [
+"self",
+"idx",
+"value"
+],
+"__slots__": null,
+"_extent": [
+"self",
+"axis"
+],
+"_indexed": [
+"self",
+"what",
+"tile",
+"ids",
+"at",
+"count",
+"col"
+],
+"at": [
+"self"
+],
+"batch": [
+"self"
+],
+"cols": [
+"self"
+],
+"depth": [
+"self"
+],
+"dtype": [
+"self"
+],
+"gather": [
+"self",
+"tile",
+"ids",
+"at",
+"count",
+"col",
+"div",
+"into"
+],
+"rows": [
+"self"
+],
+"scatter": [
+"self",
+"value",
+"ids",
+"at",
+"count",
+"col",
+"sort_topk",
+"add"
+],
+"scatter_add_lds": [
+"self",
+"src",
+"ids",
+"at",
+"count",
+"col",
+"sort_topk"
+],
+"tile": [
+"self"
+]
+}
+},
+"Granules": {
+"methods": {
+"__slots__": null,
+"load_frag": [
+"self",
+"row",
+"col",
+"tile",
+"into"
+],
+"store_frag": [
+"self",
+"value",
+"row",
+"col"
+]
+}
+},
+"Group": {
+"methods": {
+"__init__": [
+"self",
+"warps"
+],
+"__repr__": [
+"self"
+],
+"__slots__": null,
+"_check": [
+"self",
+"buf",
+"what"
+],
+"_one": [
+"dst",
+"what"
+],
+"commit": [
+"self",
+"dst",
+"buf",
+"slot",
+"wait"
+],
+"gather_prep": [
+"self",
+"ids",
+"at",
+"rows"
+],
+"load": [
+"self",
+"dst",
+"src",
+"wait",
+"rows",
+"nontemporal",
+"gather",
+"staged"
+],
+"stage": [
+"self",
+"buf",
+"src",
+"slot"
+],
+"stage_buffer": [
+"self",
+"dst",
+"depth",
+"name"
+],
+"store": [
+"self",
+"dst",
+"src"
+],
+"threads": [
+"self"
+],
+"wait_for": [
+"self",
+"*tiles",
+"exact"
+]
+}
+},
+"Int": {
+"methods": {
+"__add__": [
+"self",
+"o"
+],
+"__bool__": [
+"self"
+],
+"__eq__": [
+"self",
+"o"
+],
+"__floordiv__": [
+"self",
+"o"
+],
+"__ge__": [
+"self",
+"o"
+],
+"__gt__": [
+"self",
+"o"
+],
+"__hash__": null,
+"__index__": [
+"self"
+],
+"__int__": null,
+"__le__": [
+"self",
+"o"
+],
+"__lt__": [
+"self",
+"o"
+],
+"__mod__": [
+"self",
+"o"
+],
+"__mul__": [
+"self",
+"o"
+],
+"__ne__": [
+"self",
+"o"
+],
+"__neg__": [
+"self"
+],
+"__radd__": [
+"self",
+"o"
+],
+"__rfloordiv__": [
+"self",
+"o"
+],
+"__rmod__": [
+"self",
+"o"
+],
+"__rmul__": [
+"self",
+"o"
+],
+"__rsub__": [
+"self",
+"o"
+],
+"__slots__": null,
+"__sub__": [
+"self",
+"o"
+],
+"__truediv__": [
+"self",
+"o"
+]
+}
+},
+"Kernel": {
+"methods": {
+"__call__": [
+"self",
+"*tensors",
+"**const_overrides"
+],
+"__init__": [
+"self",
+"fn",
+"arch",
+"warps",
+"grid",
+"name",
+"max_vgprs",
+"min_occupancy",
+"defines",
+"noalias",
+"preload"
+],
+"__repr__": [
+"self"
+],
+"_annotation": [
+"self",
+"p"
+],
+"_key": [
+"consts"
+],
+"_launcher": [
+"self",
+"**const_overrides"
+],
+"_resolve_consts": [
+"self",
+"overrides"
+],
+"_split_params": [
+"self"
+],
+"_trace_grid": [
+"self",
+"consts"
+],
+"arch": [
+"self"
+],
+"build": [
+"self",
+"**const_overrides"
+],
+"build_flags": [
+"self",
+"traced"
+],
+"compile": [
+"self",
+"**const_overrides"
+],
+"preloaded": [
+"self"
+],
+"source": [
+"self",
+"scaffold",
+"**const_overrides"
+],
+"specialize": [
+"self",
+"**const_overrides"
+],
+"trace": [
+"self",
+"**const_overrides"
+],
+"with_defines": [
+"self",
+"src"
+]
+}
+},
+"RS": {
+"params": [
+"dtype",
+"rows",
+"cols",
+"run"
+]
+},
+"RT": {
+"params": [
+"dtype",
+"rows",
+"cols",
+"layout",
+"frag"
+]
+},
+"ResourceError": {
+"methods": {}
+},
+"ST": {
+"params": [
+"dtype",
+"rows",
+"cols",
+"count"
+]
+},
+"SV": {
+"params": [
+"dtype",
+"length",
+"count"
+]
+},
+"SharedTile": {
+"methods": {
+"__getitem__": [
+"self",
+"i"
+],
+"__slots__": null,
+"granules": [
+"self",
+"name"
+],
+"load": [
+"self",
+"tile",
+"wait",
+"into"
+],
+"store": [
+"self",
+"value"
+],
+"subtile": [
+"self",
+"rows",
+"cols",
+"row",
+"col"
+]
+}
+},
+"SharedVec": {
+"methods": {
+"__slots__": null,
+"load": [
+"self",
+"vt",
+"index"
+],
+"store": [
+"self",
+"vec",
+"index"
+]
+}
+},
+"TARGETS": {},
+"Tensor": {
+"methods": {
+"__class_getitem__": [
+"cls",
+"dtype"
+]
+}
+},
+"Tile": {
+"methods": {
+"T": [
+"self"
+],
+"__matmul__": [
+"self",
+"other"
+],
+"__slots__": null,
+"_fill": [
+"self",
+"op",
+"idx",
+"value",
+"into"
+],
+"_reduce": [
+"self",
+"kind",
+"axis"
+],
+"as_operand": [
+"self",
+"dtype",
+"into"
+],
+"bitcast": [
+"self",
+"dtype",
+"into"
+],
+"dtype": [
+"self"
+],
+"left_fill_": [
+"self",
+"idx",
+"value",
+"into"
+],
+"lower_fill_": [
+"self",
+"idx",
+"value",
+"into"
+],
+"make_causal": [
+"self",
+"value",
+"into",
+"transposed"
+],
+"max": [
+"self",
+"axis"
+],
+"min": [
+"self",
+"axis"
+],
+"prod": [
+"self",
+"axis"
+],
+"right_fill_": [
+"self",
+"idx",
+"value",
+"into"
+],
+"subtile": [
+"self",
+"rows",
+"index"
+],
+"sum": [
+"self",
+"axis"
+],
+"to": [
+"self",
+"dtype",
+"into"
+],
+"tril_": [
+"self",
+"idx",
+"value",
+"into"
+],
+"triu_": [
+"self",
+"idx",
+"value",
+"into"
+],
+"upper_fill_": [
+"self",
+"idx",
+"value",
+"into"
+]
+}
+},
+"TracedKernel": {
+"methods": {
+"__init__": [
+"self",
+"name",
+"arch",
+"warps",
+"consts",
+"tensors",
+"module",
+"grid"
+],
+"__repr__": [
+"self"
+],
+"cpp": [
+"self",
+"includes"
+],
+"dump": [
+"self"
+],
+"tensors": [
+"self"
+],
+"threads": [
+"self"
+],
+"written_tensors": [
+"self"
+]
+}
+},
+"Vec": {
+"methods": {
+"__getitem__": [
+"self",
+"key"
+],
+"__iadd__": [
+"self",
+"o"
+],
+"__imul__": [
+"self",
+"o"
+],
+"__slots__": null,
+"any_above": [
+"self",
+"other",
+"threshold"
+],
+"any_ne": [
+"self",
+"other"
+],
+"max_": [
+"self",
+"r"
+],
+"min_": [
+"self",
+"r"
+]
+}
+},
+"VerifyError": {
+"methods": {}
+},
+"View": {
+"methods": {
+"__init__": [
+"self",
+"tensor",
+"idx"
+],
+"__slots__": null,
+"_atomic_scalar": [
+"self",
+"kind",
+"value"
+],
+"atomic_add": [
+"self",
+"value"
+],
+"atomic_add_scalar": [
+"self",
+"value"
+],
+"atomic_max_scalar": [
+"self",
+"value"
+],
+"load": [
+"self",
+"tile",
+"into",
+"bounded",
+"period"
+],
+"load_scalar": [
+"self",
+"invariant"
+],
+"store": [
+"self",
+"value",
+"bounded"
+],
+"store_scalar": [
+"self",
+"vec"
+]
+}
+},
+"__all__": {},
+"__getattr__": {
+"params": [
+"name"
+]
+},
+"__version__": {},
+"_dsl_all": {},
+"arch": {},
+"as_vec": {
+"params": [
+"vec",
+"tile",
+"uniform"
+]
+},
+"attention": {
+"params": [
+"q",
+"k",
+"v",
+"causal",
+"scale",
+"out"
+]
+},
+"autotune": {},
+"bf16": {},
+"broadcast_col": {
+"params": [
+"ty",
+"vec"
+]
+},
+"broadcast_row": {
+"params": [
+"ty",
+"vec"
+]
+},
+"cdiv": {
+"params": [
+"a",
+"b"
+]
+},
+"codegen": {},
+"col_vec": {
+"params": [
+"tile"
+]
+},
+"collective": {},
+"compiler": {},
+"coord": {
+"params": [
+"b",
+"d",
+"r",
+"c",
+"unit"
+]
+},
+"copy_mx_scales": {
+"params": [
+"dst",
+"src"
+]
+},
+"detect_arch": {
+"params": []
+},
+"dsl": {},
+"elem_coord": {
+"params": [
+"b",
+"d",
+"r",
+"c"
+]
+},
+"fp16": {},
+"fp32": {},
+"fp8e4m3": {},
+"fp8e5m2": {},
+"full": {
+"params": [
+"ty",
+"value",
+"into"
+]
+},
+"func": {
+"params": [
+"fn"
+]
+},
+"get_target": {
+"params": [
+"arch"
+]
+},
+"group": {
+"params": [
+"warps"
+]
+},
+"i32": {},
+"i8": {},
+"if_": {
+"params": [
+"cond",
+"opaque"
+]
+},
+"kernel": {
+"params": [
+"fn",
+"arch",
+"warps",
+"grid",
+"name",
+"max_vgprs",
+"min_occupancy",
+"defines",
+"noalias",
+"preload"
+]
+},
+"lds": {},
+"load_fp4_frags": {
+"params": [
+"ty",
+"src",
+"row0",
+"kc0",
+"group_rows",
+"gate_up",
+"into"
+]
+},
+"load_fp4_frags_lds": {
+"params": [
+"ty",
+"src",
+"row0",
+"chunk0",
+"into"
+]
+},
+"load_mx_scales": {
+"params": [
+"src",
+"rows",
+"kblocks",
+"row0",
+"kb0",
+"into",
+"layout",
+"group_rows",
+"loose"
+]
+},
+"load_w4": {
+"params": [
+"ty",
+"qw",
+"s",
+"zs",
+"n0",
+"k0",
+"group",
+"into"
+]
+},
+"math": {},
+"max": {
+"params": [
+"a",
+"b"
+]
+},
+"min": {
+"params": [
+"a",
+"b"
+]
+},
+"mma": {
+"params": [
+"variant",
+"a",
+"b",
+"acc",
+"into"
+]
+},
+"mma_ABt_mx": {
+"params": [
+"a",
+"b",
+"acc",
+"sa",
+"sb",
+"into",
+"a_fmt",
+"b_fmt",
+"sa_at",
+"sb_at"
+]
+},
+"mx": {},
+"mx_quant_store": {
+"params": [
+"src",
+"q",
+"s",
+"row0",
+"col0"
+]
+},
+"neg_infty": {
+"params": [
+"ty",
+"into"
+]
+},
+"ops": {},
+"rand": {
+"params": [
+"ty",
+"seed",
+"offset",
+"row_stride",
+"into"
+]
+},
+"range": {
+"params": [
+"start",
+"stop",
+"step",
+"unroll"
+]
+},
+"range_constexpr": {
+"params": [
+"start",
+"stop",
+"step"
+]
+},
+"row_vec": {
+"params": [
+"tile"
+]
+},
+"runtime": {},
+"scope": {
+"params": []
+},
+"target": {},
+"templates": {},
+"tile_coord": {
+"params": [
+"b",
+"d",
+"r",
+"c"
+]
+},
+"torch_op": {
+"params": [
+"kernel",
+"ns",
+"name",
+"**const_overrides"
+]
+},
+"transpose": {
+"params": [
+"t",
+"into"
+]
+},
+"transpose_sep": {
+"params": [
+"t",
+"into"
+]
+},
+"zeros": {
+"params": [
+"ty",
+"into"
+]
+}
+},
+"hk.autotune": {
+"Any": {},
+"Callable": {},
+"Dict": {},
+"List": {},
+"MIN_GAIN": {},
+"Optional": {},
+"Path": {},
+"REGISTRY": {},
+"ResourceError": {
+"methods": {}
+},
+"Row": {
+"methods": {
+"label": null,
+"line": [
+"self"
+],
+"ms": null,
+"occupancy": null,
+"ok": [
+"self"
+],
+"reason": null,
+"schedule": null,
+"scratch": null,
+"status": null,
+"times": null,
+"vgpr": null
+}
+},
+"Sequence": {},
+"TuneResult": {
+"methods": {
+"best": null,
+"key": null,
+"report": [
+"self"
+],
+"rows": null,
+"seconds": null,
+"survivors": [
+"self"
+]
+}
+},
+"Tuner": {
+"methods": {
+"__init__": [
+"self",
+"name",
+"make",
+"schedules",
+"default",
+"bench",
+"keys",
+"register",
+"knobs"
+],
+"__repr__": [
+"self"
+],
+"_kernel_for": [
+"self",
+"schedule"
+],
+"_schedule_for": [
+"self",
+"key"
+],
+"aot_jobs": [
+"self"
+],
+"arch": [
+"self"
+],
+"build_all": [
+"self",
+"workers",
+"verbose"
+],
+"candidates": [
+"self"
+],
+"kernel": [
+"self",
+"key"
+],
+"schedule_for": [
+"self",
+"key"
+],
+"tune": [
+"self",
+"bench",
+"key",
+"rounds",
+"workers",
+"save",
+"verbose"
+]
+}
+},
+"Tuple": {},
+"VerifyError": {
+"methods": {}
+},
+"_GEN": {},
+"_RECORDS": {},
+"_UNSET": {},
+"__all__": {},
+"_load_registry": {
+"params": []
+},
+"_record_path": {
+"params": [
+"name",
+"user"
+]
+},
+"annotations": {},
+"cache_dir": {
+"params": []
+},
+"dataclass": {},
+"enabled": {
+"params": []
+},
+"field": {},
+"forget_records": {
+"params": []
+},
+"generation": {
+"params": []
+},
+"itertools": {},
+"json": {},
+"label_of": {
+"params": [
+"schedule"
+]
+},
+"load_records": {
+"params": [
+"name",
+"reload"
+]
+},
+"main": {
+"params": [
+"argv"
+]
+},
+"min_gain": {
+"params": []
+},
+"os": {},
+"records_dir": {
+"params": []
+},
+"save_record": {
+"params": [
+"name",
+"key",
+"entry"
+]
+},
+"ship": {
+"params": [
+"min_gain",
+"dry_run"
+]
+},
+"shipped_dir": {
+"params": []
+},
+"space": {
+"params": [
+"constraint",
+"**axes"
+]
+},
+"time": {},
+"toolchain_fingerprint": {
+"params": []
+}
+},
+"hk.autotune.__main__": {
+"main": {
+"params": [
+"argv"
+]
+}
+},
+"hk.autotune.routes": {
+"Any": {},
+"CLOSE_K": {},
+"Callable": {},
+"DECODE_MS": {},
+"Dict": {},
+"GRID": {},
+"Iterable": {},
+"List": {},
+"MAX_SEQS": {},
+"MIN_GAIN": {},
+"NOISE_K": {},
+"OPTIONAL": {},
+"OPT_GAIN": {},
+"Optional": {},
+"OutOfTime": {
+"methods": {}
+},
+"PATHS": {},
+"Path": {},
+"QKV_BIAS": {},
+"ROTATE_BYTES": {},
+"Report": {
+"methods": {
+"__init__": [
+"self"
+],
+"as_dict": [
+"self"
+],
+"line": [
+"self"
+]
+}
+},
+"SPIN_HZ": {},
+"Sequence": {},
+"Tuple": {},
+"_OPS": {},
+"_decode_op": {
+"params": [
+"m",
+"n",
+"k"
+]
+},
+"_gemm_op": {
+"params": [
+"m",
+"n",
+"k"
+]
+},
+"_noise": {
+"params": [
+"point"
+]
+},
+"_tiles": {
+"params": [
+"point"
+]
+},
+"_where": {
+"params": [
+"device"
+]
+},
+"annotations": {},
+"base_path": {
+"params": [
+"t",
+"min_gain",
+"noise",
+"k"
+]
+},
+"biased": {
+"params": [
+"cfg"
+]
+},
+"close_call": {
+"params": [
+"t",
+"noise",
+"min_gain",
+"opt_gain",
+"k",
+"noise_k"
+]
+},
+"compare": {
+"params": [
+"a_path",
+"b_path"
+]
+},
+"contextlib": {},
+"decisions": {
+"params": [
+"table"
+]
+},
+"dump": {
+"params": [
+"table"
+]
+},
+"engine_path": {
+"params": [
+"name"
+]
+},
+"entry": {
+"params": [
+"name",
+"points",
+"min_gain",
+"noise_k",
+"opt_gain",
+"confirm",
+"partial"
+]
+},
+"estimate": {
+"params": [
+"sets"
+]
+},
+"json": {},
+"linear_shapes": {
+"params": [
+"cfg",
+"tp"
+]
+},
+"load_user": {
+"params": [
+"kind",
+"arch"
+]
+},
+"margin": {
+"params": [
+"t",
+"noise",
+"fast",
+"slow",
+"gain",
+"k"
+]
+},
+"measure_points": {
+"params": [
+"n",
+"k",
+"ms",
+"engine",
+"paths",
+"flydsl",
+"rounds",
+"warmup",
+"sets",
+"remeasure",
+"min_gain",
+"opt_gain",
+"close_k",
+"noise_k",
+"rotate_bytes",
+"raw",
+"deadline",
+"device",
+"log",
+"tag",
+"queued"
+]
+},
+"measured_ms": {
+"params": [
+"ent"
+]
+},
+"model_config": {
+"params": [
+"name"
+]
+},
+"optional_wins": {
+"params": [
+"t",
+"noise",
+"name",
+"min_gain",
+"opt_gain",
+"k"
+]
+},
+"os": {},
+"prefer": {
+"params": [
+"points",
+"name",
+"min_gain",
+"opt_gain",
+"k",
+"confirm"
+]
+},
+"records_lock": {
+"params": [
+"kind",
+"arch"
+]
+},
+"records_name": {
+"params": [
+"kind",
+"arch"
+]
+},
+"runs": {
+"params": [
+"points",
+"min_gain",
+"k"
+]
+},
+"save_user": {
+"params": [
+"kind",
+"arch",
+"shapes",
+"meta"
+]
+},
+"statistics": {},
+"time": {},
+"tune_missing": {
+"params": [
+"kind",
+"arch",
+"shapes",
+"engine",
+"engine_name",
+"complete",
+"budget",
+"force",
+"grid",
+"by",
+"log",
+"**how"
+]
+},
+"tune_shape": {
+"params": [
+"n",
+"k",
+"engine",
+"ms",
+"min_gain",
+"name",
+"lm_head",
+"confirm",
+"**how"
+]
+},
+"user_path": {
+"params": [
+"kind",
+"arch"
+]
+}
+},
+"hk.check": {
+"Any": {},
+"BAND_CAP": {},
+"BAND_FLOOR": {},
+"CARDS": {},
+"Callable": {},
+"Dict": {},
+"List": {},
+"Optional": {},
+"Report": {
+"methods": {
+"__str__": [
+"self"
+],
+"arch": null,
+"builds": null,
+"cases": null,
+"device": null,
+"dumps": [
+"self",
+"**kw"
+],
+"errors": null,
+"exit_code": [
+"self"
+],
+"hints": [
+"self"
+],
+"json": [
+"self"
+],
+"mode": null,
+"name": null,
+"notes": null,
+"ok": [
+"self"
+],
+"profile": null,
+"raise_for_status": [
+"self"
+],
+"status": [
+"self"
+],
+"versions": null
+}
+},
+"SCHEMA": {},
+"Sequence": {},
+"TOLERANCES": {},
+"Tuple": {},
+"_CallableModule": {
+"methods": {
+"__call__": [
+"self",
+"*args",
+"**kwargs"
+]
+}
+},
+"_Recorder": {
+"methods": {
+"__init__": [
+"self",
+"launch"
+],
+"_note": [
+"self",
+"k",
+"overrides"
+],
+"active": [
+"self"
+]
+}
+},
+"_SHORT": {},
+"__all__": {},
+"__name__": {},
+"_as_tuple": {
+"params": [
+"x"
+]
+},
+"_attach_profile": {
+"params": [
+"report",
+"fn",
+"make",
+"consts",
+"seed"
+]
+},
+"_call_maker": {
+"params": [
+"make",
+"device",
+"shape"
+]
+},
+"_clone": {
+"params": [
+"args",
+"fp32"
+]
+},
+"_err": {
+"params": [
+"report",
+"stage",
+"e"
+]
+},
+"_event_ms": {
+"params": [
+"fn",
+"n"
+]
+},
+"_fill_nan": {
+"params": [
+"args",
+"idx"
+]
+},
+"_fmt_ms": {
+"params": [
+"ms"
+]
+},
+"_gpu_state": {
+"params": [
+"want"
+]
+},
+"_is_kernel": {
+"params": [
+"fn"
+]
+},
+"_is_tensor": {
+"params": [
+"x"
+]
+},
+"_json": {},
+"_jsonable": {
+"params": [
+"x"
+]
+},
+"_kernel_outputs": {
+"params": [
+"k",
+"overrides",
+"n_args"
+]
+},
+"_name_of": {
+"params": [
+"fn"
+]
+},
+"_outputs_of": {
+"params": [
+"res"
+]
+},
+"_ratios": {
+"params": [
+"times",
+"subject"
+]
+},
+"_resources": {
+"params": [
+"k",
+"overrides",
+"do_build"
+]
+},
+"_spread": {
+"params": [
+"xs"
+]
+},
+"_sweep_variants": {
+"params": [
+"fn",
+"consts",
+"sweep",
+"build",
+"report"
+]
+},
+"_sync": {
+"params": []
+},
+"_time": {},
+"_where": {
+"params": [
+"e"
+]
+},
+"annotations": {},
+"burn_in": {
+"params": [
+"seconds",
+"device"
+]
+},
+"check": {
+"params": [
+"fn",
+"reference",
+"inputs",
+"cases",
+"consts",
+"outputs",
+"inplace",
+"sweep",
+"baselines",
+"extra",
+"rtol",
+"atol",
+"exact",
+"ref_precision",
+"time",
+"rounds",
+"warmup",
+"batch_ms",
+"burn",
+"compile_mode",
+"bytes",
+"flops",
+"name",
+"gpu",
+"build",
+"seed",
+"profile"
+]
+},
+"compare": {
+"params": [
+"got",
+"want",
+"rtol",
+"atol",
+"exact"
+]
+},
+"contextlib": {},
+"dataclass": {},
+"describe": {
+"params": [
+"args"
+]
+},
+"field": {},
+"hints": {
+"params": [
+"r"
+]
+},
+"inspect": {},
+"interleave": {
+"params": [
+"thunks",
+"rounds",
+"warmup",
+"batch_ms"
+]
+},
+"math": {},
+"os": {},
+"platform": {},
+"statistics": {},
+"summary": {
+"params": [
+"r"
+]
+},
+"sys": {},
+"tolerance": {
+"params": [
+"dtype",
+"rtol",
+"atol",
+"scale"
+]
+},
+"traceback": {},
+"types": {},
+"verdict": {
+"params": [
+"ratio",
+"band"
+]
+},
+"versions": {
+"params": []
+}
+},
+"hk.check.__main__": {
+"Any": {},
+"DTYPES": {},
+"Dict": {},
+"List": {},
+"Optional": {},
+"Path": {},
+"_FILES": {},
+"_ITEM": {},
+"_consts": {
+"params": [
+"pairs"
+]
+},
+"_getattr_path": {
+"params": [
+"mod",
+"attr",
+"what"
+]
+},
+"_looks_like_ref": {
+"params": [
+"s"
+]
+},
+"_multi_arch": {
+"params": [
+"args",
+"argv"
+]
+},
+"annotations": {},
+"argparse": {},
+"ast": {},
+"build_parser": {
+"params": []
+},
+"importlib": {},
+"inspect": {},
+"json": {},
+"load_file": {
+"params": [
+"path"
+]
+},
+"main": {
+"params": [
+"argv"
+]
+},
+"make_inputs": {
+"params": [
+"text"
+]
+},
+"make_ref": {
+"params": [
+"text",
+"fn",
+"outputs"
+]
+},
+"materialize": {
+"params": [
+"items",
+"device"
+]
+},
+"namespace": {
+"params": []
+},
+"os": {},
+"param_names": {
+"params": [
+"fn",
+"outputs"
+]
+},
+"parse_spec": {
+"params": [
+"spec"
+]
+},
+"re": {},
+"resolve": {
+"params": [
+"ref"
+]
+},
+"split_top": {
+"params": [
+"s"
+]
+},
+"subprocess": {},
+"sys": {}
+},
+"hk.codegen": {
+"__all__": {},
+"render": {
+"params": [
+"ir",
+"scaffold"
+]
+},
+"scaffold": {}
+},
+"hk.codegen.scaffold": {
+"GL_FIELDS": {},
+"GlobalType": {
+"methods": {
+"__repr__": [
+"self"
+],
+"cpp": [
+"self"
+],
+"dtype": null
+}
+},
+"LAYOUT_SYMBOL": {},
+"List": {},
+"MODULE_NAME_MACRO": {},
+"SCAFFOLDS": {},
+"TYPE_CHECKING": {},
+"_AT_DTYPE": {},
+"_alias_letters": {
+"params": [
+"n"
+]
+},
+"_includes": {
+"params": [
+"ir",
+"*more"
+]
+},
+"_members": {
+"params": [
+"ir"
+]
+},
+"annotations": {},
+"bare": {
+"params": [
+"ir"
+]
+},
+"device": {
+"params": [
+"ir"
+]
+},
+"get_target": {
+"params": [
+"arch"
+]
+},
+"kernel_symbol": {
+"params": [
+"ir"
+]
+},
+"pybind_module": {
+"params": [
+"ir"
+]
+},
+"render": {
+"params": [
+"ir",
+"scaffold"
+]
+},
+"takes_stream": {
+"params": [
+"arch"
+]
+},
+"torch_library": {
+"params": [
+"ir",
+"ns",
+"op_name"
+]
+},
+"torch_schema": {
+"params": [
+"ir",
+"op_name"
+]
+},
+"written_tensors": {
+"params": [
+"ir"
+]
+}
+},
+"hk.compiler": {},
+"hk.compiler.mlir": {
+"Dict": {},
+"ELEMENT": {},
+"List": {},
+"Optional": {},
+"Sequence": {},
+"_CTX": {},
+"_TYPES": {},
+"__all__": {},
+"_lock": {},
+"annotations": {},
+"context": {
+"params": []
+},
+"element": {
+"params": [
+"dtype_name"
+]
+},
+"error_text": {
+"params": [
+"e"
+]
+},
+"hkd": {},
+"ir": {},
+"kernel_of": {
+"params": [
+"module"
+]
+},
+"loc": {
+"params": [
+"py_loc",
+"name"
+]
+},
+"passmanager": {},
+"run_pipeline": {
+"params": [
+"module"
+]
+},
+"threading": {},
+"translate": {
+"params": [
+"module",
+"includes"
+]
+},
+"type_": {
+"params": [
+"spelling"
+]
+}
+},
+"hk.dsl": {
+"Bool": {
+"methods": {
+"__and__": [
+"self",
+"o"
+],
+"__bool__": [
+"self"
+],
+"__invert__": [
+"self"
+],
+"__or__": [
+"self",
+"o"
+],
+"__rand__": [
+"self",
+"o"
+],
+"__ror__": [
+"self",
+"o"
+],
+"__slots__": null,
+"__xor__": [
+"self",
+"o"
+],
+"_logic": [
+"self",
+"op",
+"o"
+],
+"to_int": [
+"self"
+]
+}
+},
+"Constexpr": {
+"methods": {
+"__class_getitem__": [
+"cls",
+"_type"
+]
+}
+},
+"Coord": {
+"methods": {
+"__slots__": null,
+"unit": [
+"self"
+]
+}
+},
+"DType": {
+"methods": {
+"__repr__": [
+"self"
+],
+"bits": null,
+"bytes": [
+"self"
+],
+"cpp": null,
+"kind": null,
+"name": null
+}
+},
+"Global": {
+"methods": {
+"__getitem__": [
+"self",
+"idx"
+],
+"__init__": [
+"self",
+"v",
+"ty",
+"name"
+],
+"__setitem__": [
+"self",
+"idx",
+"value"
+],
+"__slots__": null,
+"_extent": [
+"self",
+"axis"
+],
+"_indexed": [
+"self",
+"what",
+"tile",
+"ids",
+"at",
+"count",
+"col"
+],
+"at": [
+"self"
+],
+"batch": [
+"self"
+],
+"cols": [
+"self"
+],
+"depth": [
+"self"
+],
+"dtype": [
+"self"
+],
+"gather": [
+"self",
+"tile",
+"ids",
+"at",
+"count",
+"col",
+"div",
+"into"
+],
+"rows": [
+"self"
+],
+"scatter": [
+"self",
+"value",
+"ids",
+"at",
+"count",
+"col",
+"sort_topk",
+"add"
+],
+"scatter_add_lds": [
+"self",
+"src",
+"ids",
+"at",
+"count",
+"col",
+"sort_topk"
+],
+"tile": [
+"self"
+]
+}
+},
+"Granules": {
+"methods": {
+"__slots__": null,
+"load_frag": [
+"self",
+"row",
+"col",
+"tile",
+"into"
+],
+"store_frag": [
+"self",
+"value",
+"row",
+"col"
+]
+}
+},
+"Group": {
+"methods": {
+"__init__": [
+"self",
+"warps"
+],
+"__repr__": [
+"self"
+],
+"__slots__": null,
+"_check": [
+"self",
+"buf",
+"what"
+],
+"_one": [
+"dst",
+"what"
+],
+"commit": [
+"self",
+"dst",
+"buf",
+"slot",
+"wait"
+],
+"gather_prep": [
+"self",
+"ids",
+"at",
+"rows"
+],
+"load": [
+"self",
+"dst",
+"src",
+"wait",
+"rows",
+"nontemporal",
+"gather",
+"staged"
+],
+"stage": [
+"self",
+"buf",
+"src",
+"slot"
+],
+"stage_buffer": [
+"self",
+"dst",
+"depth",
+"name"
+],
+"store": [
+"self",
+"dst",
+"src"
+],
+"threads": [
+"self"
+],
+"wait_for": [
+"self",
+"*tiles",
+"exact"
+]
+}
+},
+"Int": {
+"methods": {
+"__add__": [
+"self",
+"o"
+],
+"__bool__": [
+"self"
+],
+"__eq__": [
+"self",
+"o"
+],
+"__floordiv__": [
+"self",
+"o"
+],
+"__ge__": [
+"self",
+"o"
+],
+"__gt__": [
+"self",
+"o"
+],
+"__hash__": null,
+"__index__": [
+"self"
+],
+"__int__": null,
+"__le__": [
+"self",
+"o"
+],
+"__lt__": [
+"self",
+"o"
+],
+"__mod__": [
+"self",
+"o"
+],
+"__mul__": [
+"self",
+"o"
+],
+"__ne__": [
+"self",
+"o"
+],
+"__neg__": [
+"self"
+],
+"__radd__": [
+"self",
+"o"
+],
+"__rfloordiv__": [
+"self",
+"o"
+],
+"__rmod__": [
+"self",
+"o"
+],
+"__rmul__": [
+"self",
+"o"
+],
+"__rsub__": [
+"self",
+"o"
+],
+"__slots__": null,
+"__sub__": [
+"self",
+"o"
+],
+"__truediv__": [
+"self",
+"o"
+]
+}
+},
+"Kernel": {
+"methods": {
+"__call__": [
+"self",
+"*tensors",
+"**const_overrides"
+],
+"__init__": [
+"self",
+"fn",
+"arch",
+"warps",
+"grid",
+"name",
+"max_vgprs",
+"min_occupancy",
+"defines",
+"noalias",
+"preload"
+],
+"__repr__": [
+"self"
+],
+"_annotation": [
+"self",
+"p"
+],
+"_key": [
+"consts"
+],
+"_launcher": [
+"self",
+"**const_overrides"
+],
+"_resolve_consts": [
+"self",
+"overrides"
+],
+"_split_params": [
+"self"
+],
+"_trace_grid": [
+"self",
+"consts"
+],
+"arch": [
+"self"
+],
+"build": [
+"self",
+"**const_overrides"
+],
+"build_flags": [
+"self",
+"traced"
+],
+"compile": [
+"self",
+"**const_overrides"
+],
+"preloaded": [
+"self"
+],
+"source": [
+"self",
+"scaffold",
+"**const_overrides"
+],
+"specialize": [
+"self",
+"**const_overrides"
+],
+"trace": [
+"self",
+"**const_overrides"
+],
+"with_defines": [
+"self",
+"src"
+]
+}
+},
+"RS": {
+"params": [
+"dtype",
+"rows",
+"cols",
+"run"
+]
+},
+"RT": {
+"params": [
+"dtype",
+"rows",
+"cols",
+"layout",
+"frag"
+]
+},
+"ST": {
+"params": [
+"dtype",
+"rows",
+"cols",
+"count"
+]
+},
+"SV": {
+"params": [
+"dtype",
+"length",
+"count"
+]
+},
+"SharedTile": {
+"methods": {
+"__getitem__": [
+"self",
+"i"
+],
+"__slots__": null,
+"granules": [
+"self",
+"name"
+],
+"load": [
+"self",
+"tile",
+"wait",
+"into"
+],
+"store": [
+"self",
+"value"
+],
+"subtile": [
+"self",
+"rows",
+"cols",
+"row",
+"col"
+]
+}
+},
+"SharedVec": {
+"methods": {
+"__slots__": null,
+"load": [
+"self",
+"vt",
+"index"
+],
+"store": [
+"self",
+"vec",
+"index"
+]
+}
+},
+"Tensor": {
+"methods": {
+"__class_getitem__": [
+"cls",
+"dtype"
+]
+}
+},
+"Tile": {
+"methods": {
+"T": [
+"self"
+],
+"__matmul__": [
+"self",
+"other"
+],
+"__slots__": null,
+"_fill": [
+"self",
+"op",
+"idx",
+"value",
+"into"
+],
+"_reduce": [
+"self",
+"kind",
+"axis"
+],
+"as_operand": [
+"self",
+"dtype",
+"into"
+],
+"bitcast": [
+"self",
+"dtype",
+"into"
+],
+"dtype": [
+"self"
+],
+"left_fill_": [
+"self",
+"idx",
+"value",
+"into"
+],
+"lower_fill_": [
+"self",
+"idx",
+"value",
+"into"
+],
+"make_causal": [
+"self",
+"value",
+"into",
+"transposed"
+],
+"max": [
+"self",
+"axis"
+],
+"min": [
+"self",
+"axis"
+],
+"prod": [
+"self",
+"axis"
+],
+"right_fill_": [
+"self",
+"idx",
+"value",
+"into"
+],
+"subtile": [
+"self",
+"rows",
+"index"
+],
+"sum": [
+"self",
+"axis"
+],
+"to": [
+"self",
+"dtype",
+"into"
+],
+"tril_": [
+"self",
+"idx",
+"value",
+"into"
+],
+"triu_": [
+"self",
+"idx",
+"value",
+"into"
+],
+"upper_fill_": [
+"self",
+"idx",
+"value",
+"into"
+]
+}
+},
+"TracedKernel": {
+"methods": {
+"__init__": [
+"self",
+"name",
+"arch",
+"warps",
+"consts",
+"tensors",
+"module",
+"grid"
+],
+"__repr__": [
+"self"
+],
+"cpp": [
+"self",
+"includes"
+],
+"dump": [
+"self"
+],
+"tensors": [
+"self"
+],
+"threads": [
+"self"
+],
+"written_tensors": [
+"self"
+]
+}
+},
+"Value": {
+"methods": {
+"__hash__": null,
+"__init__": [
+"self",
+"v",
+"ty"
+],
+"__repr__": [
+"self"
+],
+"__slots__": null,
+"type": [
+"self"
+]
+}
+},
+"Vec": {
+"methods": {
+"__getitem__": [
+"self",
+"key"
+],
+"__iadd__": [
+"self",
+"o"
+],
+"__imul__": [
+"self",
+"o"
+],
+"__slots__": null,
+"any_above": [
+"self",
+"other",
+"threshold"
+],
+"any_ne": [
+"self",
+"other"
+],
+"max_": [
+"self",
+"r"
+],
+"min_": [
+"self",
+"r"
+]
+}
+},
+"View": {
+"methods": {
+"__init__": [
+"self",
+"tensor",
+"idx"
+],
+"__slots__": null,
+"_atomic_scalar": [
+"self",
+"kind",
+"value"
+],
+"atomic_add": [
+"self",
+"value"
+],
+"atomic_add_scalar": [
+"self",
+"value"
+],
+"atomic_max_scalar": [
+"self",
+"value"
+],
+"load": [
+"self",
+"tile",
+"into",
+"bounded",
+"period"
+],
+"load_scalar": [
+"self",
+"invariant"
+],
+"store": [
+"self",
+"value",
+"bounded"
+],
+"store_scalar": [
+"self",
+"vec"
+]
+}
+},
+"_RT": {
+"methods": {
+"__post_init__": [
+"self"
+],
+"__repr__": [
+"self"
+],
+"_check_strip": [
+"self"
+],
+"base_tiles": [
+"self"
+],
+"cols": null,
+"cpp": [
+"self"
+],
+"dtype": null,
+"frag": null,
+"frag_spelling": [
+"self"
+],
+"frag_stride": [
+"self"
+],
+"layout": null,
+"layout_spelling": [
+"self"
+],
+"rows": null,
+"run": null,
+"span": [
+"self"
+],
+"strip": [
+"self"
+],
+"transposed": [
+"self"
+]
+}
+},
+"_RV": {
+"methods": {
+"__eq__": [
+"self",
+"other"
+],
+"__hash__": [
+"self"
+],
+"__post_init__": [
+"self"
+],
+"__repr__": [
+"self"
+],
+"_key": [
+"self"
+],
+"cpp": [
+"self"
+],
+"dtype": [
+"self"
+],
+"kind": null,
+"length": [
+"self"
+],
+"plain": [
+"self"
+],
+"tile": null,
+"uniform": null
+}
+},
+"_ST": {
+"methods": {
+"__post_init__": [
+"self"
+],
+"__repr__": [
+"self"
+],
+"cols": null,
+"count": null,
+"cpp": [
+"self"
+],
+"dtype": null,
+"element": [
+"self"
+],
+"nbytes": [
+"self"
+],
+"rows": null
+}
+},
+"_SV": {
+"methods": {
+"__post_init__": [
+"self"
+],
+"__repr__": [
+"self"
+],
+"count": null,
+"cpp": [
+"self"
+],
+"dtype": null,
+"element": [
+"self"
+],
+"length": null,
+"nbytes": [
+"self"
+]
+}
+},
+"__all__": {},
+"_builtins": {},
+"_dyn": {
+"params": [
+"*xs"
+]
+},
+"_host": {},
+"_scalar_op": {
+"params": [
+"op",
+"a",
+"b"
+]
+},
+"annotations": {},
+"arch": {},
+"as_vec": {
+"params": [
+"vec",
+"tile",
+"uniform"
+]
+},
+"bf16": {},
+"broadcast_col": {
+"params": [
+"ty",
+"vec"
+]
+},
+"broadcast_row": {
+"params": [
+"ty",
+"vec"
+]
+},
+"cdiv": {
+"params": [
+"a",
+"b"
+]
+},
+"col_vec": {
+"params": [
+"tile"
+]
+},
+"collective": {},
+"coord": {
+"params": [
+"b",
+"d",
+"r",
+"c",
+"unit"
+]
+},
+"copy_mx_scales": {
+"params": [
+"dst",
+"src"
+]
+},
+"elem_coord": {
+"params": [
+"b",
+"d",
+"r",
+"c"
+]
+},
+"fp16": {},
+"fp32": {},
+"fp8e4m3": {},
+"fp8e5m2": {},
+"full": {
+"params": [
+"ty",
+"value",
+"into"
+]
+},
+"func": {
+"params": [
+"fn"
+]
+},
+"group": {
+"params": [
+"warps"
+]
+},
+"i32": {},
+"i8": {},
+"if_": {
+"params": [
+"cond",
+"opaque"
+]
+},
+"kernel": {
+"params": [
+"fn",
+"arch",
+"warps",
+"grid",
+"name",
+"max_vgprs",
+"min_occupancy",
+"defines",
+"noalias",
+"preload"
+]
+},
+"lds": {},
+"load_fp4_frags": {
+"params": [
+"ty",
+"src",
+"row0",
+"kc0",
+"group_rows",
+"gate_up",
+"into"
+]
+},
+"load_fp4_frags_lds": {
+"params": [
+"ty",
+"src",
+"row0",
+"chunk0",
+"into"
+]
+},
+"load_mx_scales": {
+"params": [
+"src",
+"rows",
+"kblocks",
+"row0",
+"kb0",
+"into",
+"layout",
+"group_rows",
+"loose"
+]
+},
+"load_w4": {
+"params": [
+"ty",
+"qw",
+"s",
+"zs",
+"n0",
+"k0",
+"group",
+"into"
+]
+},
+"math": {},
+"max": {
+"params": [
+"a",
+"b"
+]
+},
+"min": {
+"params": [
+"a",
+"b"
+]
+},
+"mma": {
+"params": [
+"variant",
+"a",
+"b",
+"acc",
+"into"
+]
+},
+"mma_ABt_mx": {
+"params": [
+"a",
+"b",
+"acc",
+"sa",
+"sb",
+"into",
+"a_fmt",
+"b_fmt",
+"sa_at",
+"sb_at"
+]
+},
+"mx_quant_store": {
+"params": [
+"src",
+"q",
+"s",
+"row0",
+"col0"
+]
+},
+"neg_infty": {
+"params": [
+"ty",
+"into"
+]
+},
+"rand": {
+"params": [
+"ty",
+"seed",
+"offset",
+"row_stride",
+"into"
+]
+},
+"range": {
+"params": [
+"start",
+"stop",
+"step",
+"unroll"
+]
+},
+"range_constexpr": {
+"params": [
+"start",
+"stop",
+"step"
+]
+},
+"row_vec": {
+"params": [
+"tile"
+]
+},
+"scope": {
+"params": []
+},
+"tile_coord": {
+"params": [
+"b",
+"d",
+"r",
+"c"
+]
+},
+"transpose": {
+"params": [
+"t",
+"into"
+]
+},
+"transpose_sep": {
+"params": [
+"t",
+"into"
+]
+},
+"zeros": {
+"params": [
+"ty",
+"into"
+]
+}
+},
+"hk.dsl.arch": {
+"B": {},
+"Bool": {
+"methods": {
+"__and__": [
+"self",
+"o"
+],
+"__bool__": [
+"self"
+],
+"__invert__": [
+"self"
+],
+"__or__": [
+"self",
+"o"
+],
+"__rand__": [
+"self",
+"o"
+],
+"__ror__": [
+"self",
+"o"
+],
+"__slots__": null,
+"__xor__": [
+"self",
+"o"
+],
+"_logic": [
+"self",
+"op",
+"o"
+],
+"to_int": [
+"self"
+]
+}
+},
+"Coord": {
+"methods": {
+"__slots__": null,
+"unit": [
+"self"
+]
+}
+},
+"CoordType": {
+"methods": {
+"__repr__": [
+"self"
+],
+"unit": null
+}
+},
+"Global": {
+"methods": {
+"__getitem__": [
+"self",
+"idx"
+],
+"__init__": [
+"self",
+"v",
+"ty",
+"name"
+],
+"__setitem__": [
+"self",
+"idx",
+"value"
+],
+"__slots__": null,
+"_extent": [
+"self",
+"axis"
+],
+"_indexed": [
+"self",
+"what",
+"tile",
+"ids",
+"at",
+"count",
+"col"
+],
+"at": [
+"self"
+],
+"batch": [
+"self"
+],
+"cols": [
+"self"
+],
+"depth": [
+"self"
+],
+"dtype": [
+"self"
+],
+"gather": [
+"self",
+"tile",
+"ids",
+"at",
+"count",
+"col",
+"div",
+"into"
+],
+"rows": [
+"self"
+],
+"scatter": [
+"self",
+"value",
+"ids",
+"at",
+"count",
+"col",
+"sort_topk",
+"add"
+],
+"scatter_add_lds": [
+"self",
+"src",
+"ids",
+"at",
+"count",
+"col",
+"sort_topk"
+],
+"tile": [
+"self"
+]
+}
+},
+"GlobalType": {
+"methods": {
+"__repr__": [
+"self"
+],
+"cpp": [
+"self"
+],
+"dtype": null
+}
+},
+"Int": {
+"methods": {
+"__add__": [
+"self",
+"o"
+],
+"__bool__": [
+"self"
+],
+"__eq__": [
+"self",
+"o"
+],
+"__floordiv__": [
+"self",
+"o"
+],
+"__ge__": [
+"self",
+"o"
+],
+"__gt__": [
+"self",
+"o"
+],
+"__hash__": null,
+"__index__": [
+"self"
+],
+"__int__": null,
+"__le__": [
+"self",
+"o"
+],
+"__lt__": [
+"self",
+"o"
+],
+"__mod__": [
+"self",
+"o"
+],
+"__mul__": [
+"self",
+"o"
+],
+"__ne__": [
+"self",
+"o"
+],
+"__neg__": [
+"self"
+],
+"__radd__": [
+"self",
+"o"
+],
+"__rfloordiv__": [
+"self",
+"o"
+],
+"__rmod__": [
+"self",
+"o"
+],
+"__rmul__": [
+"self",
+"o"
+],
+"__rsub__": [
+"self",
+"o"
+],
+"__slots__": null,
+"__sub__": [
+"self",
+"o"
+],
+"__truediv__": [
+"self",
+"o"
+]
+}
+},
+"Iterator": {},
+"SCHED_CLASSES": {},
+"Scalar": {},
+"ScalarType": {
+"methods": {
+"__repr__": [
+"self"
+],
+"cpp": [
+"self"
+],
+"dtype": null
+}
+},
+"View": {
+"methods": {
+"__init__": [
+"self",
+"tensor",
+"idx"
+],
+"__slots__": null,
+"_atomic_scalar": [
+"self",
+"kind",
+"value"
+],
+"atomic_add": [
+"self",
+"value"
+],
+"atomic_add_scalar": [
+"self",
+"value"
+],
+"atomic_max_scalar": [
+"self",
+"value"
+],
+"load": [
+"self",
+"tile",
+"into",
+"bounded",
+"period"
+],
+"load_scalar": [
+"self",
+"invariant"
+],
+"store": [
+"self",
+"value",
+"bounded"
+],
+"store_scalar": [
+"self",
+"vec"
+]
+}
+},
+"_BlockIdx": {
+"methods": {
+"__call__": [
+"self"
+],
+"__getattr__": [
+"self",
+"axis"
+]
+}
+},
+"__all__": {},
+"_i32": {
+"params": []
+},
+"_sched_mask": {
+"params": [
+"classes"
+]
+},
+"annotations": {},
+"as_int": {
+"params": [
+"x"
+]
+},
+"barrier": {
+"params": [
+"drain"
+]
+},
+"block_idx": {},
+"contextmanager": {},
+"hkd": {},
+"i1": {
+"params": [
+"x"
+]
+},
+"i32": {},
+"ir": {},
+"lane_id": {
+"params": []
+},
+"pin": {
+"params": [
+"*values"
+]
+},
+"pingpong": {
+"params": [
+"behind"
+]
+},
+"sched_barrier": {
+"params": [
+"allow"
+]
+},
+"sched_group_barrier": {
+"params": [
+"classes",
+"size",
+"sync_id"
+]
+},
+"setprio": {
+"params": [
+"level"
+]
+},
+"target": {
+"params": []
+},
+"vm_wait": {
+"params": [
+"keep"
+]
+},
+"warp_id": {
+"params": []
+},
+"wg_arrive": {
+"params": [
+"counter",
+"expected",
+"scope"
+]
+}
+},
+"hk.dsl.builder": {
+"Any": {},
+"Dict": {},
+"List": {},
+"M": {},
+"Optional": {},
+"Trace": {
+"methods": {
+"__init__": [
+"self",
+"name",
+"arch"
+],
+"at": [
+"self",
+"ip"
+],
+"hoisted": [
+"self",
+"key",
+"build"
+],
+"ip": [
+"self"
+],
+"loc": [
+"self",
+"name"
+]
+}
+},
+"_CONTEXTLIB": {},
+"_INTERNAL": {},
+"_PKG": {},
+"__all__": {},
+"_internal": {
+"params": [
+"filename"
+]
+},
+"_tls": {},
+"annotations": {},
+"capture_loc": {
+"params": []
+},
+"contextlib": {},
+"contextmanager": {},
+"current": {
+"params": []
+},
+"current_or_none": {
+"params": []
+},
+"ir": {},
+"os": {},
+"threading": {},
+"traceback": {},
+"tracing": {
+"params": [
+"t"
+]
+}
+},
+"hk.dsl.collective": {
+"B": {},
+"COMBINERS": {},
+"Optional": {},
+"RegTileType": {
+"methods": {
+"__post_init__": [
+"self"
+],
+"__repr__": [
+"self"
+],
+"_check_strip": [
+"self"
+],
+"base_tiles": [
+"self"
+],
+"cols": null,
+"cpp": [
+"self"
+],
+"dtype": null,
+"frag": null,
+"frag_spelling": [
+"self"
+],
+"frag_stride": [
+"self"
+],
+"layout": null,
+"layout_spelling": [
+"self"
+],
+"rows": null,
+"run": null,
+"span": [
+"self"
+],
+"strip": [
+"self"
+],
+"transposed": [
+"self"
+]
+}
+},
+"RegVecType": {
+"methods": {
+"__eq__": [
+"self",
+"other"
+],
+"__hash__": [
+"self"
+],
+"__post_init__": [
+"self"
+],
+"__repr__": [
+"self"
+],
+"_key": [
+"self"
+],
+"cpp": [
+"self"
+],
+"dtype": [
+"self"
+],
+"kind": null,
+"length": [
+"self"
+],
+"plain": [
+"self"
+],
+"tile": null,
+"uniform": null
+}
+},
+"SharedVec": {
+"methods": {
+"__slots__": null,
+"load": [
+"self",
+"vt",
+"index"
+],
+"store": [
+"self",
+"vec",
+"index"
+]
+}
+},
+"Vec": {
+"methods": {
+"__getitem__": [
+"self",
+"key"
+],
+"__iadd__": [
+"self",
+"o"
+],
+"__imul__": [
+"self",
+"o"
+],
+"__slots__": null,
+"any_above": [
+"self",
+"other",
+"threshold"
+],
+"any_ne": [
+"self",
+"other"
+],
+"max_": [
+"self",
+"r"
+],
+"min_": [
+"self",
+"r"
+]
+}
+},
+"_REDUCE": {},
+"__all__": {},
+"_top_level": {
+"params": []
+},
+"_vec_of": {
+"params": [
+"x"
+]
+},
+"annotations": {},
+"arch": {},
+"as_vec": {
+"params": [
+"vec",
+"tile",
+"uniform"
+]
+},
+"binary": {
+"params": [
+"op",
+"a",
+"b",
+"into"
+]
+},
+"broadcast_col": {
+"params": [
+"ty",
+"vec"
+]
+},
+"cross_warp": {
+"params": [
+"vec",
+"op",
+"warps",
+"scratch",
+"name"
+]
+},
+"fold_rows": {
+"params": [
+"vec",
+"op",
+"warps",
+"scratch",
+"name"
+]
+},
+"lds": {}
+},
+"hk.dsl.control": {
+"Any": {},
+"B": {},
+"Bool": {
+"methods": {
+"__and__": [
+"self",
+"o"
+],
+"__bool__": [
+"self"
+],
+"__invert__": [
+"self"
+],
+"__or__": [
+"self",
+"o"
+],
+"__rand__": [
+"self",
+"o"
+],
+"__ror__": [
+"self",
+"o"
+],
+"__slots__": null,
+"__xor__": [
+"self",
+"o"
+],
+"_logic": [
+"self",
+"op",
+"o"
+],
+"to_int": [
+"self"
+]
+}
+},
+"Callable": {},
+"DynRange": {
+"methods": {
+"__init__": [
+"self",
+"start",
+"stop",
+"step",
+"unroll"
+],
+"__iter__": [
+"self"
+],
+"__slots__": null
+}
+},
+"Int": {
+"methods": {
+"__add__": [
+"self",
+"o"
+],
+"__bool__": [
+"self"
+],
+"__eq__": [
+"self",
+"o"
+],
+"__floordiv__": [
+"self",
+"o"
+],
+"__ge__": [
+"self",
+"o"
+],
+"__gt__": [
+"self",
+"o"
+],
+"__hash__": null,
+"__index__": [
+"self"
+],
+"__int__": null,
+"__le__": [
+"self",
+"o"
+],
+"__lt__": [
+"self",
+"o"
+],
+"__mod__": [
+"self",
+"o"
+],
+"__mul__": [
+"self",
+"o"
+],
+"__ne__": [
+"self",
+"o"
+],
+"__neg__": [
+"self"
+],
+"__radd__": [
+"self",
+"o"
+],
+"__rfloordiv__": [
+"self",
+"o"
+],
+"__rmod__": [
+"self",
+"o"
+],
+"__rmul__": [
+"self",
+"o"
+],
+"__rsub__": [
+"self",
+"o"
+],
+"__slots__": null,
+"__sub__": [
+"self",
+"o"
+],
+"__truediv__": [
+"self",
+"o"
+]
+}
+},
+"Iterator": {},
+"ScalarType": {
+"methods": {
+"__repr__": [
+"self"
+],
+"cpp": [
+"self"
+],
+"dtype": null
+}
+},
+"Sequence": {},
+"Tuple": {},
+"UNDEF": {
+"methods": {
+"__repr__": [
+"self"
+]
+}
+},
+"Value": {
+"methods": {
+"__hash__": null,
+"__init__": [
+"self",
+"v",
+"ty"
+],
+"__repr__": [
+"self"
+],
+"__slots__": null,
+"type": [
+"self"
+]
+}
+},
+"__all__": {},
+"_bound": {
+"params": [
+"x"
+]
+},
+"_is_static": {
+"params": [
+"*xs"
+]
+},
+"_probe": {
+"params": [
+"t",
+"cond",
+"fn",
+"carried"
+]
+},
+"_promote": {
+"params": [
+"carried"
+]
+},
+"_runtime_for": {
+"params": [
+"rng",
+"body",
+"carried",
+"names",
+"iv_name"
+]
+},
+"_runtime_while": {
+"params": [
+"test",
+"body",
+"carried",
+"names"
+]
+},
+"_scalar_types": {
+"params": [
+"vals"
+]
+},
+"_scratch": {
+"params": [
+"t",
+"fn"
+]
+},
+"annotations": {},
+"arith": {},
+"as_int": {
+"params": [
+"x"
+]
+},
+"as_value": {
+"params": [
+"x",
+"like"
+]
+},
+"builtins": {},
+"contextmanager": {},
+"for_": {
+"params": [
+"iterable",
+"body",
+"carried",
+"names",
+"iv_name"
+]
+},
+"i1": {
+"params": [
+"x"
+]
+},
+"i32": {},
+"if_": {
+"params": [
+"cond",
+"opaque"
+]
+},
+"if_stmt": {
+"params": [
+"cond",
+"then",
+"orelse",
+"carried",
+"names",
+"has_else"
+]
+},
+"ir": {},
+"iter_": {
+"params": [
+"fn",
+"*args",
+"**kwargs"
+]
+},
+"range": {
+"params": [
+"start",
+"stop",
+"step",
+"unroll"
+]
+},
+"range_constexpr": {
+"params": [
+"start",
+"stop",
+"step"
+]
+},
+"scf": {},
+"scope": {
+"params": []
+},
+"while_": {
+"params": [
+"test",
+"body",
+"carried",
+"names"
+]
+}
+},
+"hk.dsl.group": {
+"B": {},
+"Group": {
+"methods": {
+"__init__": [
+"self",
+"warps"
+],
+"__repr__": [
+"self"
+],
+"__slots__": null,
+"_check": [
+"self",
+"buf",
+"what"
+],
+"_one": [
+"dst",
+"what"
+],
+"commit": [
+"self",
+"dst",
+"buf",
+"slot",
+"wait"
+],
+"gather_prep": [
+"self",
+"ids",
+"at",
+"rows"
+],
+"load": [
+"self",
+"dst",
+"src",
+"wait",
+"rows",
+"nontemporal",
+"gather",
+"staged"
+],
+"stage": [
+"self",
+"buf",
+"src",
+"slot"
+],
+"stage_buffer": [
+"self",
+"dst",
+"depth",
+"name"
+],
+"store": [
+"self",
+"dst",
+"src"
+],
+"threads": [
+"self"
+],
+"wait_for": [
+"self",
+"*tiles",
+"exact"
+]
+}
+},
+"SharedTile": {
+"methods": {
+"__getitem__": [
+"self",
+"i"
+],
+"__slots__": null,
+"granules": [
+"self",
+"name"
+],
+"load": [
+"self",
+"tile",
+"wait",
+"into"
+],
+"store": [
+"self",
+"value"
+],
+"subtile": [
+"self",
+"rows",
+"cols",
+"row",
+"col"
+]
+}
+},
+"Stage": {
+"methods": {
+"__slots__": null
+}
+},
+"StageBufferType": {
+"methods": {
+"__post_init__": [
+"self"
+],
+"__repr__": [
+"self"
+],
+"calls": [
+"self"
+],
+"cpp": [
+"self"
+],
+"depth": null,
+"floats": [
+"self"
+],
+"threads": null,
+"tile": null
+}
+},
+"View": {
+"methods": {
+"__init__": [
+"self",
+"tensor",
+"idx"
+],
+"__slots__": null,
+"_atomic_scalar": [
+"self",
+"kind",
+"value"
+],
+"atomic_add": [
+"self",
+"value"
+],
+"atomic_add_scalar": [
+"self",
+"value"
+],
+"atomic_max_scalar": [
+"self",
+"value"
+],
+"load": [
+"self",
+"tile",
+"into",
+"bounded",
+"period"
+],
+"load_scalar": [
+"self",
+"invariant"
+],
+"store": [
+"self",
+"value",
+"bounded"
+],
+"store_scalar": [
+"self",
+"vec"
+]
+}
+},
+"__all__": {},
+"annotations": {},
+"as_int": {
+"params": [
+"x"
+]
+},
+"get_target": {
+"params": [
+"arch"
+]
+},
+"group": {
+"params": [
+"warps"
+]
+},
+"hkd": {},
+"mlir_type": {
+"params": [
+"t"
+]
+}
+},
+"hk.dsl.host": {
+"HostBin": {
+"methods": {
+"__init__": [
+"self",
+"op",
+"lhs",
+"rhs"
+],
+"emit": [
+"self"
+],
+"value": [
+"self",
+"extents"
+]
+}
+},
+"HostConst": {
+"methods": {
+"__init__": [
+"self",
+"value"
+],
+"emit": [
+"self"
+],
+"value": [
+"self",
+"extents"
+]
+}
+},
+"HostDim": {
+"methods": {
+"DIMS": null,
+"__init__": [
+"self",
+"tensor",
+"dim"
+],
+"emit": [
+"self"
+],
+"value": [
+"self",
+"extents"
+]
+}
+},
+"HostExpr": {
+"methods": {
+"__add__": [
+"self",
+"o"
+],
+"__floordiv__": [
+"self",
+"o"
+],
+"__mod__": [
+"self",
+"o"
+],
+"__mul__": [
+"self",
+"o"
+],
+"__radd__": [
+"self",
+"o"
+],
+"__repr__": [
+"self"
+],
+"__rfloordiv__": [
+"self",
+"o"
+],
+"__rmul__": [
+"self",
+"o"
+],
+"__rsub__": [
+"self",
+"o"
+],
+"__sub__": [
+"self",
+"o"
+],
+"_wrap": [
+"self",
+"other"
+],
+"emit": [
+"self"
+],
+"value": [
+"self",
+"extents"
+]
+}
+},
+"Numeric": {},
+"ParamRef": {
+"methods": {
+"__getattr__": [
+"self",
+"name"
+],
+"__init__": [
+"self",
+"tensor_names",
+"consts"
+]
+}
+},
+"TensorRef": {
+"methods": {
+"__getattr__": [
+"self",
+"dim"
+],
+"__init__": [
+"self",
+"name"
+]
+}
+},
+"Union": {},
+"_HOST_OPS": {},
+"annotations": {},
+"cdiv": {
+"params": [
+"a",
+"b"
+]
+}
+},
+"hk.dsl.kernel": {
+"Any": {},
+"B": {},
+"Callable": {},
+"Constexpr": {
+"methods": {
+"__class_getitem__": [
+"cls",
+"_type"
+]
+}
+},
+"DType": {
+"methods": {
+"__repr__": [
+"self"
+],
+"bits": null,
+"bytes": [
+"self"
+],
+"cpp": null,
+"kind": null,
+"name": null
+}
+},
+"Dict": {},
+"Global": {
+"methods": {
+"__getitem__": [
+"self",
+"idx"
+],
+"__init__": [
+"self",
+"v",
+"ty",
+"name"
+],
+"__setitem__": [
+"self",
+"idx",
+"value"
+],
+"__slots__": null,
+"_extent": [
+"self",
+"axis"
+],
+"_indexed": [
+"self",
+"what",
+"tile",
+"ids",
+"at",
+"count",
+"col"
+],
+"at": [
+"self"
+],
+"batch": [
+"self"
+],
+"cols": [
+"self"
+],
+"depth": [
+"self"
+],
+"dtype": [
+"self"
+],
+"gather": [
+"self",
+"tile",
+"ids",
+"at",
+"count",
+"col",
+"div",
+"into"
+],
+"rows": [
+"self"
+],
+"scatter": [
+"self",
+"value",
+"ids",
+"at",
+"count",
+"col",
+"sort_topk",
+"add"
+],
+"scatter_add_lds": [
+"self",
+"src",
+"ids",
+"at",
+"count",
+"col",
+"sort_topk"
+],
+"tile": [
+"self"
+]
+}
+},
+"GlobalType": {
+"methods": {
+"__repr__": [
+"self"
+],
+"cpp": [
+"self"
+],
+"dtype": null
+}
+},
+"Kernel": {
+"methods": {
+"__call__": [
+"self",
+"*tensors",
+"**const_overrides"
+],
+"__init__": [
+"self",
+"fn",
+"arch",
+"warps",
+"grid",
+"name",
+"max_vgprs",
+"min_occupancy",
+"defines",
+"noalias",
+"preload"
+],
+"__repr__": [
+"self"
+],
+"_annotation": [
+"self",
+"p"
+],
+"_key": [
+"consts"
+],
+"_launcher": [
+"self",
+"**const_overrides"
+],
+"_resolve_consts": [
+"self",
+"overrides"
+],
+"_split_params": [
+"self"
+],
+"_trace_grid": [
+"self",
+"consts"
+],
+"arch": [
+"self"
+],
+"build": [
+"self",
+"**const_overrides"
+],
+"build_flags": [
+"self",
+"traced"
+],
+"compile": [
+"self",
+"**const_overrides"
+],
+"preloaded": [
+"self"
+],
+"source": [
+"self",
+"scaffold",
+"**const_overrides"
+],
+"specialize": [
+"self",
+"**const_overrides"
+],
+"trace": [
+"self",
+"**const_overrides"
+],
+"with_defines": [
+"self",
+"src"
+]
+}
+},
+"List": {},
+"M": {},
+"Optional": {},
+"Param": {
+"methods": {
+"const_value": null,
+"is_const": null,
+"name": null,
+"type": null
+}
+},
+"ScalarType": {
+"methods": {
+"__repr__": [
+"self"
+],
+"cpp": [
+"self"
+],
+"dtype": null
+}
+},
+"Tensor": {
+"methods": {
+"__class_getitem__": [
+"cls",
+"dtype"
+]
+}
+},
+"TracedKernel": {
+"methods": {
+"__init__": [
+"self",
+"name",
+"arch",
+"warps",
+"consts",
+"tensors",
+"module",
+"grid"
+],
+"__repr__": [
+"self"
+],
+"cpp": [
+"self",
+"includes"
+],
+"dump": [
+"self"
+],
+"tensors": [
+"self"
+],
+"threads": [
+"self"
+],
+"written_tensors": [
+"self"
+]
+}
+},
+"Tuple": {},
+"VerifyError": {
+"methods": {}
+},
+"__all__": {},
+"_const_dtype": {
+"params": [
+"value"
+]
+},
+"_loc_text": {
+"params": [
+"loc"
+]
+},
+"annotations": {},
+"begin_kernel": {
+"params": [
+"name",
+"arch",
+"warps",
+"consts",
+"tensors",
+"noalias"
+]
+},
+"build_grid": {
+"params": [
+"mod",
+"name",
+"tensors",
+"dims"
+]
+},
+"fp32": {},
+"func": {
+"params": [
+"fn"
+]
+},
+"func_d": {},
+"functools": {},
+"host": {},
+"i32": {},
+"inspect": {},
+"ir": {},
+"kernel": {
+"params": [
+"fn",
+"arch",
+"warps",
+"grid",
+"name",
+"max_vgprs",
+"min_occupancy",
+"defines",
+"noalias",
+"preload"
+]
+},
+"rewrite": {
+"params": [
+"fn"
+]
+},
+"verify_error": {
+"params": [
+"e"
+]
+}
+},
+"hk.dsl.lds": {
+"B": {},
+"Optional": {},
+"RegVecType": {
+"methods": {
+"__eq__": [
+"self",
+"other"
+],
+"__hash__": [
+"self"
+],
+"__post_init__": [
+"self"
+],
+"__repr__": [
+"self"
+],
+"_key": [
+"self"
+],
+"cpp": [
+"self"
+],
+"dtype": [
+"self"
+],
+"kind": null,
+"length": [
+"self"
+],
+"plain": [
+"self"
+],
+"tile": null,
+"uniform": null
+}
+},
+"SHAPES": {},
+"SharedTile": {
+"methods": {
+"__getitem__": [
+"self",
+"i"
+],
+"__slots__": null,
+"granules": [
+"self",
+"name"
+],
+"load": [
+"self",
+"tile",
+"wait",
+"into"
+],
+"store": [
+"self",
+"value"
+],
+"subtile": [
+"self",
+"rows",
+"cols",
+"row",
+"col"
+]
+}
+},
+"SharedTileType": {
+"methods": {
+"__post_init__": [
+"self"
+],
+"__repr__": [
+"self"
+],
+"cols": null,
+"count": null,
+"cpp": [
+"self"
+],
+"dtype": null,
+"element": [
+"self"
+],
+"nbytes": [
+"self"
+],
+"rows": null
+}
+},
+"SharedVec": {
+"methods": {
+"__slots__": null,
+"load": [
+"self",
+"vt",
+"index"
+],
+"store": [
+"self",
+"vec",
+"index"
+]
+}
+},
+"SharedVecType": {
+"methods": {
+"__post_init__": [
+"self"
+],
+"__repr__": [
+"self"
+],
+"count": null,
+"cpp": [
+"self"
+],
+"dtype": null,
+"element": [
+"self"
+],
+"length": null,
+"nbytes": [
+"self"
+]
+}
+},
+"Tile": {
+"methods": {
+"T": [
+"self"
+],
+"__matmul__": [
+"self",
+"other"
+],
+"__slots__": null,
+"_fill": [
+"self",
+"op",
+"idx",
+"value",
+"into"
+],
+"_reduce": [
+"self",
+"kind",
+"axis"
+],
+"as_operand": [
+"self",
+"dtype",
+"into"
+],
+"bitcast": [
+"self",
+"dtype",
+"into"
+],
+"dtype": [
+"self"
+],
+"left_fill_": [
+"self",
+"idx",
+"value",
+"into"
+],
+"lower_fill_": [
+"self",
+"idx",
+"value",
+"into"
+],
+"make_causal": [
+"self",
+"value",
+"into",
+"transposed"
+],
+"max": [
+"self",
+"axis"
+],
+"min": [
+"self",
+"axis"
+],
+"prod": [
+"self",
+"axis"
+],
+"right_fill_": [
+"self",
+"idx",
+"value",
+"into"
+],
+"subtile": [
+"self",
+"rows",
+"index"
+],
+"sum": [
+"self",
+"axis"
+],
+"to": [
+"self",
+"dtype",
+"into"
+],
+"tril_": [
+"self",
+"idx",
+"value",
+"into"
+],
+"triu_": [
+"self",
+"idx",
+"value",
+"into"
+],
+"upper_fill_": [
+"self",
+"idx",
+"value",
+"into"
+]
+}
+},
+"__all__": {},
+"alloc": {
+"params": [
+"tile",
+"name",
+"count",
+"shape"
+]
+},
+"alloc_vec": {
+"params": [
+"ty",
+"name"
+]
+},
+"annotations": {},
+"fp32": {},
+"hkd": {},
+"lds_loads": {
+"params": [
+"tile",
+"src",
+"arch"
+]
+},
+"mlir_type": {
+"params": [
+"t"
+]
+},
+"reserve": {
+"params": [
+"nbytes",
+"name"
+]
+},
+"shared_vec": {
+"params": [
+"vt",
+"count"
+]
+},
+"wait_for": {
+"params": [
+"*tiles"
+]
+}
+},
+"hk.dsl.math": {
+"_ANY": {},
+"_FP32": {},
+"__all__": {},
+"_binary": {
+"params": [
+"name",
+"op",
+"sym"
+]
+},
+"_unary": {
+"params": [
+"name",
+"what"
+]
+},
+"abs": {},
+"add": {},
+"annotations": {},
+"binary": {
+"params": [
+"op",
+"a",
+"b",
+"into"
+]
+},
+"dgelu": {},
+"div": {},
+"exp": {},
+"exp2": {},
+"gelu": {},
+"log": {},
+"log2": {},
+"maximum": {},
+"minimum": {},
+"mul": {},
+"relu": {},
+"rsqrt": {},
+"silu": {},
+"sqrt": {},
+"sub": {},
+"unary": {
+"params": [
+"op",
+"a",
+"into"
+]
+}
+},
+"hk.dsl.module": {
+"CoordType": {
+"methods": {
+"__repr__": [
+"self"
+],
+"unit": null
+}
+},
+"GlobalType": {
+"methods": {
+"__repr__": [
+"self"
+],
+"cpp": [
+"self"
+],
+"dtype": null
+}
+},
+"GranuleSetType": {
+"methods": {
+"__post_init__": [
+"self"
+],
+"__repr__": [
+"self"
+],
+"cpp": [
+"self"
+],
+"n": [
+"self"
+],
+"swizzle_bytes": [
+"self"
+],
+"tile": null
+}
+},
+"M": {},
+"MxScalesType": {
+"methods": {
+"__post_init__": [
+"self"
+],
+"fmt": null,
+"kblocks": null,
+"rows": null
+}
+},
+"RegTileType": {
+"methods": {
+"__post_init__": [
+"self"
+],
+"__repr__": [
+"self"
+],
+"_check_strip": [
+"self"
+],
+"base_tiles": [
+"self"
+],
+"cols": null,
+"cpp": [
+"self"
+],
+"dtype": null,
+"frag": null,
+"frag_spelling": [
+"self"
+],
+"frag_stride": [
+"self"
+],
+"layout": null,
+"layout_spelling": [
+"self"
+],
+"rows": null,
+"run": null,
+"span": [
+"self"
+],
+"strip": [
+"self"
+],
+"transposed": [
+"self"
+]
+}
+},
+"RegVecType": {
+"methods": {
+"__eq__": [
+"self",
+"other"
+],
+"__hash__": [
+"self"
+],
+"__post_init__": [
+"self"
+],
+"__repr__": [
+"self"
+],
+"_key": [
+"self"
+],
+"cpp": [
+"self"
+],
+"dtype": [
+"self"
+],
+"kind": null,
+"length": [
+"self"
+],
+"plain": [
+"self"
+],
+"tile": null,
+"uniform": null
+}
+},
+"ScalarType": {
+"methods": {
+"__repr__": [
+"self"
+],
+"cpp": [
+"self"
+],
+"dtype": null
+}
+},
+"SharedTileType": {
+"methods": {
+"__post_init__": [
+"self"
+],
+"__repr__": [
+"self"
+],
+"cols": null,
+"count": null,
+"cpp": [
+"self"
+],
+"dtype": null,
+"element": [
+"self"
+],
+"nbytes": [
+"self"
+],
+"rows": null
+}
+},
+"SharedVecType": {
+"methods": {
+"__post_init__": [
+"self"
+],
+"__repr__": [
+"self"
+],
+"count": null,
+"cpp": [
+"self"
+],
+"dtype": null,
+"element": [
+"self"
+],
+"length": null,
+"nbytes": [
+"self"
+]
+}
+},
+"StageBufferType": {
+"methods": {
+"__post_init__": [
+"self"
+],
+"__repr__": [
+"self"
+],
+"calls": [
+"self"
+],
+"cpp": [
+"self"
+],
+"depth": null,
+"floats": [
+"self"
+],
+"threads": null,
+"tile": null
+}
+},
+"Type": {
+"methods": {
+"plain": [
+"self"
+]
+}
+},
+"_HOST_ARITH": {},
+"__all__": {},
+"_const_attr": {
+"params": [
+"v"
+]
+},
+"annotations": {},
+"arith": {},
+"begin_kernel": {
+"params": [
+"name",
+"arch",
+"warps",
+"consts",
+"tensors",
+"noalias"
+]
+},
+"build_grid": {
+"params": [
+"mod",
+"name",
+"tensors",
+"dims"
+]
+},
+"func": {},
+"hkd": {},
+"host": {},
+"ir": {},
+"mlir_type": {
+"params": [
+"t"
+]
+}
+},
+"hk.dsl.rewrite": {
+"Dict": {},
+"List": {},
+"Optional": {},
+"Set": {},
+"_CACHE": {},
+"_Jumps": {
+"methods": {
+"__init__": [
+"self"
+],
+"_only_returns": [
+"outer",
+"body"
+],
+"visit_AsyncFor": null,
+"visit_AsyncFunctionDef": null,
+"visit_Break": [
+"self",
+"node"
+],
+"visit_ClassDef": null,
+"visit_Continue": [
+"self",
+"node"
+],
+"visit_For": [
+"self",
+"node"
+],
+"visit_FunctionDef": [
+"self",
+"node"
+],
+"visit_Global": [
+"self",
+"node"
+],
+"visit_Lambda": null,
+"visit_Nonlocal": [
+"self",
+"node"
+],
+"visit_Return": [
+"self",
+"node"
+],
+"visit_While": null,
+"visit_Yield": [
+"self",
+"node"
+],
+"visit_YieldFrom": [
+"self",
+"node"
+]
+}
+},
+"_Names": {
+"methods": {
+"__init__": [
+"self",
+"into_nested_loads"
+],
+"_comp": [
+"self",
+"node"
+],
+"_nested_scope": [
+"self",
+"node",
+"name"
+],
+"visit_AsyncFunctionDef": null,
+"visit_ClassDef": [
+"self",
+"node"
+],
+"visit_DictComp": null,
+"visit_FunctionDef": [
+"self",
+"node"
+],
+"visit_GeneratorExp": null,
+"visit_Import": [
+"self",
+"node"
+],
+"visit_ImportFrom": null,
+"visit_Lambda": [
+"self",
+"node"
+],
+"visit_ListComp": null,
+"visit_Name": [
+"self",
+"node"
+],
+"visit_SetComp": null
+}
+},
+"_RANGES": {},
+"_RUNTIME": {},
+"_Rewriter": {
+"methods": {
+"block": [
+"self",
+"stmts",
+"defined",
+"after"
+],
+"for_": [
+"self",
+"s",
+"defined",
+"later"
+],
+"function": [
+"self",
+"fn"
+],
+"if_": [
+"self",
+"s",
+"defined",
+"later"
+],
+"stmt": [
+"self",
+"s",
+"defined",
+"later"
+],
+"while_": [
+"self",
+"s",
+"defined",
+"later"
+]
+}
+},
+"_UNREAD": {},
+"_UNREWRITTEN": {},
+"__all__": {},
+"_assign": {
+"params": [
+"names",
+"value",
+"like"
+]
+},
+"_compile": {
+"params": [
+"fn"
+]
+},
+"_counter": {},
+"_def": {
+"params": [
+"name",
+"params",
+"body",
+"like"
+]
+},
+"_definite": {
+"params": [
+"s"
+]
+},
+"_exposed": {
+"params": [
+"stmts",
+"assigned"
+]
+},
+"_exposed_stmt": {
+"params": [
+"s",
+"assigned"
+]
+},
+"_fetch": {
+"params": [
+"names"
+]
+},
+"_funcdef": {
+"params": [
+"name",
+"args",
+"body"
+]
+},
+"_hk": {
+"params": [
+"attr"
+]
+},
+"_jumps": {
+"params": [
+"body"
+]
+},
+"_loads": {
+"params": [
+"nodes"
+]
+},
+"_range_call": {
+"params": [
+"it"
+]
+},
+"_runtime": {
+"params": [
+"control"
+]
+},
+"_stores": {
+"params": [
+"nodes"
+]
+},
+"_strs": {
+"params": [
+"names"
+]
+},
+"_targets": {
+"params": [
+"t"
+]
+},
+"_tuple": {
+"params": [
+"names",
+"ctx"
+]
+},
+"_within": {
+"params": [
+"fn",
+"who"
+]
+},
+"annotations": {},
+"ast": {},
+"contextvars": {},
+"fetch": {
+"params": [
+"scope",
+"names"
+]
+},
+"functools": {},
+"inspect": {},
+"itertools": {},
+"rewrite": {
+"params": [
+"fn"
+]
+},
+"textwrap": {},
+"types": {},
+"unrewritten_hint": {
+"params": []
+}
+},
+"hk.dsl.values": {
+"Any": {},
+"B": {},
+"Bool": {
+"methods": {
+"__and__": [
+"self",
+"o"
+],
+"__bool__": [
+"self"
+],
+"__invert__": [
+"self"
+],
+"__or__": [
+"self",
+"o"
+],
+"__rand__": [
+"self",
+"o"
+],
+"__ror__": [
+"self",
+"o"
+],
+"__slots__": null,
+"__xor__": [
+"self",
+"o"
+],
+"_logic": [
+"self",
+"op",
+"o"
+],
+"to_int": [
+"self"
+]
+}
+},
+"Coord": {
+"methods": {
+"__slots__": null,
+"unit": [
+"self"
+]
+}
+},
+"CoordType": {
+"methods": {
+"__repr__": [
+"self"
+],
+"unit": null
+}
+},
+"DType": {
+"methods": {
+"__repr__": [
+"self"
+],
+"bits": null,
+"bytes": [
+"self"
+],
+"cpp": null,
+"kind": null,
+"name": null
+}
+},
+"FP8": {},
+"Global": {
+"methods": {
+"__getitem__": [
+"self",
+"idx"
+],
+"__init__": [
+"self",
+"v",
+"ty",
+"name"
+],
+"__setitem__": [
+"self",
+"idx",
+"value"
+],
+"__slots__": null,
+"_extent": [
+"self",
+"axis"
+],
+"_indexed": [
+"self",
+"what",
+"tile",
+"ids",
+"at",
+"count",
+"col"
+],
+"at": [
+"self"
+],
+"batch": [
+"self"
+],
+"cols": [
+"self"
+],
+"depth": [
+"self"
+],
+"dtype": [
+"self"
+],
+"gather": [
+"self",
+"tile",
+"ids",
+"at",
+"count",
+"col",
+"div",
+"into"
+],
+"rows": [
+"self"
+],
+"scatter": [
+"self",
+"value",
+"ids",
+"at",
+"count",
+"col",
+"sort_topk",
+"add"
+],
+"scatter_add_lds": [
+"self",
+"src",
+"ids",
+"at",
+"count",
+"col",
+"sort_topk"
+],
+"tile": [
+"self"
+]
+}
+},
+"GlobalType": {
+"methods": {
+"__repr__": [
+"self"
+],
+"cpp": [
+"self"
+],
+"dtype": null
+}
+},
+"GranuleSetType": {
+"methods": {
+"__post_init__": [
+"self"
+],
+"__repr__": [
+"self"
+],
+"cpp": [
+"self"
+],
+"n": [
+"self"
+],
+"swizzle_bytes": [
+"self"
+],
+"tile": null
+}
+},
+"Granules": {
+"methods": {
+"__slots__": null,
+"load_frag": [
+"self",
+"row",
+"col",
+"tile",
+"into"
+],
+"store_frag": [
+"self",
+"value",
+"row",
+"col"
+]
+}
+},
+"Int": {
+"methods": {
+"__add__": [
+"self",
+"o"
+],
+"__bool__": [
+"self"
+],
+"__eq__": [
+"self",
+"o"
+],
+"__floordiv__": [
+"self",
+"o"
+],
+"__ge__": [
+"self",
+"o"
+],
+"__gt__": [
+"self",
+"o"
+],
+"__hash__": null,
+"__index__": [
+"self"
+],
+"__int__": null,
+"__le__": [
+"self",
+"o"
+],
+"__lt__": [
+"self",
+"o"
+],
+"__mod__": [
+"self",
+"o"
+],
+"__mul__": [
+"self",
+"o"
+],
+"__ne__": [
+"self",
+"o"
+],
+"__neg__": [
+"self"
+],
+"__radd__": [
+"self",
+"o"
+],
+"__rfloordiv__": [
+"self",
+"o"
+],
+"__rmod__": [
+"self",
+"o"
+],
+"__rmul__": [
+"self",
+"o"
+],
+"__rsub__": [
+"self",
+"o"
+],
+"__slots__": null,
+"__sub__": [
+"self",
+"o"
+],
+"__truediv__": [
+"self",
+"o"
+]
+}
+},
+"MatMul": {
+"methods": {
+"__init__": [
+"self",
+"a",
+"b"
+],
+"__slots__": null,
+"variant": [
+"self"
+]
+}
+},
+"MxScales": {
+"methods": {
+"__slots__": null
+}
+},
+"MxScalesType": {
+"methods": {
+"__post_init__": [
+"self"
+],
+"fmt": null,
+"kblocks": null,
+"rows": null
+}
+},
+"Optional": {},
+"Reduction": {
+"methods": {
+"__add__": [
+"self",
+"o"
+],
+"__getattr__": [
+"self",
+"name"
+],
+"__getitem__": [
+"self",
+"key"
+],
+"__init__": [
+"self",
+"kind",
+"axis",
+"src"
+],
+"__mul__": [
+"self",
+"o"
+],
+"__slots__": null,
+"__sub__": [
+"self",
+"o"
+],
+"__truediv__": [
+"self",
+"o"
+],
+"op": [
+"self"
+],
+"value": [
+"self",
+"into",
+"accumulate"
+],
+"vtype": [
+"self"
+]
+}
+},
+"RegTileType": {
+"methods": {
+"__post_init__": [
+"self"
+],
+"__repr__": [
+"self"
+],
+"_check_strip": [
+"self"
+],
+"base_tiles": [
+"self"
+],
+"cols": null,
+"cpp": [
+"self"
+],
+"dtype": null,
+"frag": null,
+"frag_spelling": [
+"self"
+],
+"frag_stride": [
+"self"
+],
+"layout": null,
+"layout_spelling": [
+"self"
+],
+"rows": null,
+"run": null,
+"span": [
+"self"
+],
+"strip": [
+"self"
+],
+"transposed": [
+"self"
+]
+}
+},
+"RegVecType": {
+"methods": {
+"__eq__": [
+"self",
+"other"
+],
+"__hash__": [
+"self"
+],
+"__post_init__": [
+"self"
+],
+"__repr__": [
+"self"
+],
+"_key": [
+"self"
+],
+"cpp": [
+"self"
+],
+"dtype": [
+"self"
+],
+"kind": null,
+"length": [
+"self"
+],
+"plain": [
+"self"
+],
+"tile": null,
+"uniform": null
+}
+},
+"Scalar": {},
+"ScalarType": {
+"methods": {
+"__repr__": [
+"self"
+],
+"cpp": [
+"self"
+],
+"dtype": null
+}
+},
+"Sequence": {},
+"SharedTile": {
+"methods": {
+"__getitem__": [
+"self",
+"i"
+],
+"__slots__": null,
+"granules": [
+"self",
+"name"
+],
+"load": [
+"self",
+"tile",
+"wait",
+"into"
+],
+"store": [
+"self",
+"value"
+],
+"subtile": [
+"self",
+"rows",
+"cols",
+"row",
+"col"
+]
+}
+},
+"SharedTileType": {
+"methods": {
+"__post_init__": [
+"self"
+],
+"__repr__": [
+"self"
+],
+"cols": null,
+"count": null,
+"cpp": [
+"self"
+],
+"dtype": null,
+"element": [
+"self"
+],
+"nbytes": [
+"self"
+],
+"rows": null
+}
+},
+"SharedVec": {
+"methods": {
+"__slots__": null,
+"load": [
+"self",
+"vt",
+"index"
+],
+"store": [
+"self",
+"vec",
+"index"
+]
+}
+},
+"SharedVecType": {
+"methods": {
+"__post_init__": [
+"self"
+],
+"__repr__": [
+"self"
+],
+"count": null,
+"cpp": [
+"self"
+],
+"dtype": null,
+"element": [
+"self"
+],
+"length": null,
+"nbytes": [
+"self"
+]
+}
+},
+"Stage": {
+"methods": {
+"__slots__": null
+}
+},
+"StageBufferType": {
+"methods": {
+"__post_init__": [
+"self"
+],
+"__repr__": [
+"self"
+],
+"calls": [
+"self"
+],
+"cpp": [
+"self"
+],
+"depth": null,
+"floats": [
+"self"
+],
+"threads": null,
+"tile": null
+}
+},
+"Tile": {
+"methods": {
+"T": [
+"self"
+],
+"__matmul__": [
+"self",
+"other"
+],
+"__slots__": null,
+"_fill": [
+"self",
+"op",
+"idx",
+"value",
+"into"
+],
+"_reduce": [
+"self",
+"kind",
+"axis"
+],
+"as_operand": [
+"self",
+"dtype",
+"into"
+],
+"bitcast": [
+"self",
+"dtype",
+"into"
+],
+"dtype": [
+"self"
+],
+"left_fill_": [
+"self",
+"idx",
+"value",
+"into"
+],
+"lower_fill_": [
+"self",
+"idx",
+"value",
+"into"
+],
+"make_causal": [
+"self",
+"value",
+"into",
+"transposed"
+],
+"max": [
+"self",
+"axis"
+],
+"min": [
+"self",
+"axis"
+],
+"prod": [
+"self",
+"axis"
+],
+"right_fill_": [
+"self",
+"idx",
+"value",
+"into"
+],
+"subtile": [
+"self",
+"rows",
+"index"
+],
+"sum": [
+"self",
+"axis"
+],
+"to": [
+"self",
+"dtype",
+"into"
+],
+"tril_": [
+"self",
+"idx",
+"value",
+"into"
+],
+"triu_": [
+"self",
+"idx",
+"value",
+"into"
+],
+"upper_fill_": [
+"self",
+"idx",
+"value",
+"into"
+]
+}
+},
+"Transposed": {
+"methods": {
+"__init__": [
+"self",
+"tile"
+],
+"__matmul__": [
+"self",
+"other"
+],
+"__slots__": null,
+"value": [
+"self",
+"into"
+]
+}
+},
+"Union": {},
+"Value": {
+"methods": {
+"__hash__": null,
+"__init__": [
+"self",
+"v",
+"ty"
+],
+"__repr__": [
+"self"
+],
+"__slots__": null,
+"type": [
+"self"
+]
+}
+},
+"Vec": {
+"methods": {
+"__getitem__": [
+"self",
+"key"
+],
+"__iadd__": [
+"self",
+"o"
+],
+"__imul__": [
+"self",
+"o"
+],
+"__slots__": null,
+"any_above": [
+"self",
+"other",
+"threshold"
+],
+"any_ne": [
+"self",
+"other"
+],
+"max_": [
+"self",
+"r"
+],
+"min_": [
+"self",
+"r"
+]
+}
+},
+"View": {
+"methods": {
+"__init__": [
+"self",
+"tensor",
+"idx"
+],
+"__slots__": null,
+"_atomic_scalar": [
+"self",
+"kind",
+"value"
+],
+"atomic_add": [
+"self",
+"value"
+],
+"atomic_add_scalar": [
+"self",
+"value"
+],
+"atomic_max_scalar": [
+"self",
+"value"
+],
+"load": [
+"self",
+"tile",
+"into",
+"bounded",
+"period"
+],
+"load_scalar": [
+"self",
+"invariant"
+],
+"store": [
+"self",
+"value",
+"bounded"
+],
+"store_scalar": [
+"self",
+"vec"
+]
+}
+},
+"_ALL_FLOAT": {},
+"_ARITH": {},
+"_BINARY": {},
+"_BROADCAST": {},
+"_Elementwise": {
+"methods": {
+"__abs__": [
+"self"
+],
+"__add__": [
+"self",
+"o"
+],
+"__floordiv__": [
+"self",
+"o"
+],
+"__iadd__": [
+"self",
+"o"
+],
+"__imul__": [
+"self",
+"o"
+],
+"__isub__": [
+"self",
+"o"
+],
+"__itruediv__": [
+"self",
+"o"
+],
+"__mod__": [
+"self",
+"o"
+],
+"__mul__": [
+"self",
+"o"
+],
+"__neg__": [
+"self"
+],
+"__radd__": [
+"self",
+"o"
+],
+"__rfloordiv__": [
+"self",
+"o"
+],
+"__rmod__": [
+"self",
+"o"
+],
+"__rmul__": [
+"self",
+"o"
+],
+"__rsub__": [
+"self",
+"o"
+],
+"__rtruediv__": [
+"self",
+"o"
+],
+"__slots__": null,
+"__sub__": [
+"self",
+"o"
+],
+"__truediv__": [
+"self",
+"o"
+],
+"_index_only": [
+"self",
+"sym"
+],
+"_inplace": [
+"self",
+"op",
+"o"
+],
+"abs": [
+"self",
+"into"
+],
+"copy": [
+"self",
+"into"
+],
+"dgelu": [
+"self",
+"into"
+],
+"exp": [
+"self",
+"into"
+],
+"exp2": [
+"self",
+"into"
+],
+"exp2_": [
+"self"
+],
+"exp_": [
+"self"
+],
+"fill_": [
+"self",
+"v"
+],
+"gelu": [
+"self",
+"into"
+],
+"log": [
+"self",
+"into"
+],
+"log2": [
+"self",
+"into"
+],
+"maximum": [
+"self",
+"o",
+"into"
+],
+"minimum": [
+"self",
+"o",
+"into"
+],
+"neg_infty_": [
+"self"
+],
+"relu": [
+"self",
+"into"
+],
+"rotate_half": [
+"self",
+"span",
+"into"
+],
+"rsqrt": [
+"self",
+"into"
+],
+"rsqrt_": [
+"self"
+],
+"silu": [
+"self",
+"into"
+],
+"sqrt": [
+"self",
+"into"
+],
+"step": [
+"self",
+"into"
+],
+"swap_halves": [
+"self",
+"into"
+],
+"zero_": [
+"self"
+]
+}
+},
+"_FP32_ONLY": {},
+"_Indexer": {
+"methods": {
+"__getitem__": [
+"self",
+"idx"
+],
+"__init__": [
+"self",
+"tensor",
+"unit"
+],
+"__setitem__": [
+"self",
+"idx",
+"value"
+],
+"__slots__": null
+}
+},
+"_MMA_CLS": {},
+"_MMA_SPEC": {},
+"_MX_LAYOUTS": {},
+"_PRED": {},
+"_REDUCE": {},
+"_UNARY": {},
+"__all__": {},
+"_broadcast_fill": {
+"params": [
+"cls",
+"ty",
+"vec",
+"want"
+]
+},
+"_check_map_dtype": {
+"params": [
+"op",
+"ty"
+]
+},
+"_doc": {
+"params": [
+"cls",
+"name",
+"text"
+]
+},
+"_i32": {
+"params": []
+},
+"_is_strip": {
+"params": [
+"ty"
+]
+},
+"_make": {
+"params": [
+"cls",
+"ty",
+"operands",
+"into",
+"name",
+"**attrs"
+]
+},
+"_meet": {
+"params": [
+"a",
+"b"
+]
+},
+"_no_strip": {
+"params": [
+"what",
+"*tys"
+]
+},
+"_pad4": {
+"params": [
+"idx"
+]
+},
+"_strip_access": {
+"params": [
+"what",
+"ty",
+"idx",
+"bounded"
+]
+},
+"_strip_vec_lds": {
+"params": [
+"vt"
+]
+},
+"_t": {
+"params": []
+},
+"_tile_iadd": {
+"params": [
+"self",
+"o"
+]
+},
+"_vec_of": {
+"params": [
+"x"
+]
+},
+"annotations": {},
+"arith": {},
+"as_int": {
+"params": [
+"x"
+]
+},
+"as_vec": {
+"params": [
+"vec",
+"tile",
+"uniform"
+]
+},
+"bf16": {},
+"binary": {
+"params": [
+"op",
+"a",
+"b",
+"into"
+]
+},
+"broadcast": {
+"params": [
+"op",
+"t",
+"v",
+"into"
+]
+},
+"broadcast_col": {
+"params": [
+"ty",
+"vec"
+]
+},
+"broadcast_row": {
+"params": [
+"ty",
+"vec"
+]
+},
+"compare": {
+"params": [
+"op",
+"a",
+"b"
+]
+},
+"const": {
+"params": [
+"x"
+]
+},
+"coord": {
+"params": [
+"b",
+"d",
+"r",
+"c",
+"unit"
+]
+},
+"copy_mx_scales": {
+"params": [
+"dst",
+"src"
+]
+},
+"elem_coord": {
+"params": [
+"b",
+"d",
+"r",
+"c"
+]
+},
+"fp32": {},
+"fp8e4m3": {},
+"full": {
+"params": [
+"ty",
+"value",
+"into"
+]
+},
+"get_target": {
+"params": [
+"arch"
+]
+},
+"hkd": {},
+"i1": {
+"params": [
+"x"
+]
+},
+"i32": {},
+"i8": {},
+"ir": {},
+"lds_loads": {
+"params": [
+"tile",
+"src",
+"arch"
+]
+},
+"load_fp4_frags": {
+"params": [
+"ty",
+"src",
+"row0",
+"kc0",
+"group_rows",
+"gate_up",
+"into"
+]
+},
+"load_fp4_frags_lds": {
+"params": [
+"ty",
+"src",
+"row0",
+"chunk0",
+"into"
+]
+},
+"load_mx_scales": {
+"params": [
+"src",
+"rows",
+"kblocks",
+"row0",
+"kb0",
+"into",
+"layout",
+"group_rows",
+"loose"
+]
+},
+"load_w4": {
+"params": [
+"ty",
+"qw",
+"s",
+"zs",
+"n0",
+"k0",
+"group",
+"into"
+]
+},
+"mlir_type": {
+"params": [
+"t"
+]
+},
+"mma": {
+"params": [
+"variant",
+"a",
+"b",
+"acc",
+"into"
+]
+},
+"mma_ABt_mx": {
+"params": [
+"a",
+"b",
+"acc",
+"sa",
+"sb",
+"into",
+"a_fmt",
+"b_fmt",
+"sa_at",
+"sb_at"
+]
+},
+"mx_quant_store": {
+"params": [
+"src",
+"q",
+"s",
+"row0",
+"col0"
+]
+},
+"neg_infty": {
+"params": [
+"ty",
+"into"
+]
+},
+"rand": {
+"params": [
+"ty",
+"seed",
+"offset",
+"row_stride",
+"into"
+]
+},
+"scalar_op": {
+"params": [
+"op",
+"a",
+"b"
+]
+},
+"tile_coord": {
+"params": [
+"b",
+"d",
+"r",
+"c"
+]
+},
+"transpose": {
+"params": [
+"t",
+"into"
+]
+},
+"transpose_sep": {
+"params": [
+"t",
+"into"
+]
+},
+"unary": {
+"params": [
+"op",
+"a",
+"into"
+]
+},
+"wrap": {
+"params": [
+"v",
+"ty"
+]
+},
+"zeros": {
+"params": [
+"ty",
+"into"
+]
+}
+},
+"hk.errors": {
+"VerifyError": {
+"methods": {}
+},
+"__all__": {}
+},
+"hk.integration": {
+"BACKENDS": {},
+"Dict": {},
+"List": {},
+"__all__": {},
+"annotations": {},
+"apply": {
+"params": [
+"backends"
+]
+},
+"revert": {
+"params": [
+"backends"
+]
+},
+"sglang": {},
+"status": {
+"params": []
+},
+"vllm": {}
+},
+"hk.integration.__main__": {
+"BACKENDS": {},
+"List": {},
+"Tuple": {},
+"annotations": {},
+"apply": {
+"params": [
+"backends"
+]
+},
+"argparse": {},
+"main": {
+"params": [
+"argv"
+]
+},
+"status": {
+"params": []
+},
+"sys": {},
+"warm_jobs": {
+"params": []
+}
+},
+"hk.integration._common": {
+"List": {},
+"Tuple": {},
+"annotations": {},
+"importable": {
+"params": [
+"name"
+]
+},
+"patch_sdpa": {
+"params": [
+"prefixes"
+]
+},
+"rebind": {
+"params": [
+"prefixes",
+"old",
+"new"
+]
+},
+"sys": {},
+"unpatch_sdpa": {
+"params": [
+"prefixes"
+]
+}
+},
+"hk.integration._sglang_plugin": {
+"_OFF": {},
+"annotations": {},
+"enabled": {
+"params": []
+},
+"os": {},
+"register": {
+"params": []
+}
+},
+"hk.integration._vllm_plugin": {
+"annotations": {},
+"enabled": {
+"params": []
+},
+"os": {},
+"register": {
+"params": []
+}
+},
+"hk.integration.ab": {
+"BAND": {},
+"CAP": {},
+"Dict": {},
+"List": {},
+"METRICS": {},
+"Optional": {},
+"Path": {},
+"ROW_KEYS": {},
+"SCHEMA": {},
+"Sequence": {},
+"TIE_MAX": {},
+"Tuple": {},
+"VERDICTS": {},
+"_PKG_ROOT": {},
+"_rep_spread": {
+"params": [
+"v",
+"metric",
+"tokens",
+"short"
+]
+},
+"_same": {
+"params": [
+"ref",
+"got"
+]
+},
+"_value": {
+"params": [
+"v",
+"metric",
+"tokens",
+"short"
+]
+},
+"annotations": {},
+"apply_arm": {
+"params": [
+"backend",
+"routes"
+]
+},
+"argparse": {},
+"json": {},
+"judge": {
+"params": [
+"ratios",
+"within"
+]
+},
+"judge_file": {
+"params": [
+"path",
+"args"
+]
+},
+"main": {
+"params": [
+"argv"
+]
+},
+"one_arm": {
+"params": [
+"args",
+"backend"
+]
+},
+"os": {},
+"print_verdicts": {
+"params": [
+"rows"
+]
+},
+"statistics": {},
+"subprocess": {},
+"sys": {},
+"time": {},
+"verdicts": {
+"params": [
+"rounds",
+"tokens",
+"short",
+"toks"
+]
+},
+"write_verdicts": {
+"params": [
+"path",
+"rows",
+"meta"
+]
+}
+},
+"hk.integration.engine": {
+"Callable": {},
+"Dict": {},
+"GRAPH_CONTRACTS": {},
+"GraphCaptureError": {
+"methods": {}
+},
+"Iterable": {},
+"List": {},
+"Op": {
+"methods": {
+"__call__": [
+"self",
+"*args",
+"**kwargs"
+],
+"__init__": [
+"self",
+"qualname",
+"schema",
+"fake",
+"paths",
+"**kw"
+],
+"define": [
+"self",
+"impl",
+"dispatch"
+],
+"defined": [
+"self"
+]
+}
+},
+"Optional": {},
+"PATCHES": {},
+"Patch": {
+"methods": {
+"__init__": [
+"self",
+"name",
+"paths",
+"graph",
+"why"
+],
+"check_capture": [
+"self"
+],
+"count": [
+"self",
+"path"
+],
+"guard": [
+"self",
+"fn"
+],
+"reset": [
+"self"
+],
+"summary": [
+"self"
+]
+}
+},
+"Path": {},
+"RouteTable": {
+"methods": {
+"__init__": [
+"self",
+"shapes",
+"fallback",
+"meta",
+"source"
+],
+"_add": [
+"self",
+"nk",
+"ent",
+"source"
+],
+"complete": [
+"self"
+],
+"from_json": [
+"cls",
+"path"
+],
+"from_source": [
+"self",
+"source"
+],
+"lookup": [
+"self",
+"m",
+"n",
+"k"
+],
+"optional_paths": [
+"self"
+],
+"overlay": [
+"self",
+"shapes",
+"source"
+],
+"parse": [
+"d"
+],
+"paths": [
+"self"
+],
+"preferred": [
+"self",
+"m",
+"n",
+"k"
+],
+"shapes": [
+"self"
+]
+}
+},
+"Sequence": {},
+"Tuple": {},
+"annotations": {},
+"bisect": {},
+"capturing": {
+"params": []
+},
+"contextlib": {},
+"functools": {},
+"json": {},
+"no_host_sync": {
+"params": [
+"what"
+]
+},
+"os": {},
+"shipped_table": {
+"params": [
+"kind",
+"arch",
+"env",
+"engine"
+]
+}
+},
+"hk.integration.flydsl_gemm": {
+"Dict": {},
+"MODULE": {},
+"NAME": {},
+"Optional": {},
+"Tuple": {},
+"_OFF": {},
+"_PRIVATE": {},
+"_STATE": {},
+"_VARIANT": {},
+"_import_beside": {
+"params": [
+"root",
+"other"
+]
+},
+"_is_flydsl": {
+"params": [
+"dirs"
+]
+},
+"_kernels_dirs": {
+"params": []
+},
+"_load": {
+"params": []
+},
+"annotations": {},
+"available": {
+"params": []
+},
+"importlib": {},
+"os": {},
+"run": {
+"params": [
+"x",
+"weight",
+"out"
+]
+},
+"status": {
+"params": []
+},
+"sys": {},
+"tile_name": {
+"params": [
+"tile"
+]
+},
+"variant": {
+"params": [
+"m",
+"n",
+"k"
+]
+}
+},
+"hk.integration.headroom": {
+"COVERAGE": {},
+"DEVICE_CATS": {},
+"Dict": {},
+"FAMILIES": {},
+"Iterable": {},
+"List": {},
+"Optional": {},
+"PEAKS": {},
+"PHASES": {},
+"Path": {},
+"RECORD": {},
+"Sequence": {},
+"TABLES": {},
+"Tuple": {},
+"_FAMILY_RE": {},
+"_HK_SIG": {},
+"_PKG_ROOT": {},
+"_ROUTED": {},
+"_Steps": {
+"methods": {
+"__init__": [
+"self",
+"core"
+],
+"mark": [
+"self"
+],
+"since": [
+"self",
+"i"
+]
+}
+},
+"_blind": {
+"params": [
+"d",
+"graphs"
+]
+},
+"_child_args": {
+"params": [
+"args"
+]
+},
+"_config": {
+"params": [
+"model"
+]
+},
+"_export": {
+"params": [
+"prof",
+"keep",
+"name"
+]
+},
+"_finish": {
+"params": [
+"args",
+"res"
+]
+},
+"_ms": {
+"params": [
+"us"
+]
+},
+"_pct": {
+"params": [
+"x"
+]
+},
+"_phase": {
+"params": [
+"summary",
+"steps",
+"wall_ms",
+"what",
+"note"
+]
+},
+"_profiler": {
+"params": []
+},
+"analyze": {
+"params": [
+"child",
+"compare",
+"tokens"
+]
+},
+"annotations": {},
+"argparse": {},
+"attribute": {
+"params": [
+"phase"
+]
+},
+"busy_us": {
+"params": [
+"dev"
+]
+},
+"ceiling_of": {
+"params": [
+"ratio"
+]
+},
+"collect_sglang": {
+"params": [
+"args",
+"arm"
+]
+},
+"collect_vllm": {
+"params": [
+"args",
+"arm"
+]
+},
+"device_events": {
+"params": [
+"events"
+]
+},
+"family": {
+"params": [
+"name"
+]
+},
+"floors": {
+"params": [
+"cfg",
+"phase",
+"ph",
+"batch",
+"context",
+"arch"
+]
+},
+"graph_launches": {
+"params": [
+"events"
+]
+},
+"gzip": {},
+"json": {},
+"layer_steps": {
+"params": [
+"kernels",
+"layers"
+]
+},
+"linear_ratio": {
+"params": [
+"routes"
+]
+},
+"linear_routes": {
+"params": [
+"model_cfg",
+"m",
+"lm_rows",
+"arch",
+"engine_name",
+"table",
+"route_for"
+]
+},
+"main": {
+"params": [
+"argv"
+]
+},
+"os": {},
+"provider": {
+"params": [
+"name"
+]
+},
+"rank": {
+"params": [
+"phases",
+"engine_name",
+"arch",
+"routes",
+"compare",
+"patched",
+"roof"
+]
+},
+"re": {},
+"read_trace": {
+"params": [
+"path"
+]
+},
+"record_for": {
+"params": [
+"arch",
+"fam",
+"phase",
+"top_kernel"
+]
+},
+"report": {
+"params": [
+"res",
+"top"
+]
+},
+"request_view": {
+"params": [
+"phases",
+"tokens"
+]
+},
+"rerank": {
+"params": [
+"path",
+"tokens"
+]
+},
+"routes_for": {
+"params": [
+"out",
+"cfg",
+"route_for"
+]
+},
+"statistics": {},
+"subprocess": {},
+"summarize_trace": {
+"params": [
+"events"
+]
+},
+"sys": {},
+"tempfile": {},
+"time": {}
+},
+"hk.integration.newop": {
+"MODULE": {},
+"Path": {},
+"TEST": {},
+"annotations": {},
+"argparse": {},
+"keyword": {},
+"main": {
+"params": [
+"argv"
+]
+},
+"re": {},
+"render": {
+"params": [
+"name",
+"path"
+]
+},
+"sys": {},
+"valid": {
+"params": [
+"name"
+]
+}
+},
+"hk.integration.register": {
+"Any": {},
+"Callable": {},
+"Dict": {},
+"List": {},
+"NAMESPACE": {},
+"OPS": {},
+"Optional": {},
+"Sequence": {},
+"Tuple": {},
+"UserOp": {
+"methods": {
+"__init__": [
+"self",
+"name",
+"kernel",
+"reference",
+"out",
+"route",
+"n_inputs",
+"n_outputs"
+],
+"_fake": [
+"self",
+"*inputs"
+],
+"_impl": [
+"self",
+"*inputs"
+],
+"_impl_forced": [
+"self",
+"*inputs"
+],
+"check": [
+"self",
+"*inputs",
+"rel"
+],
+"stats_line": [
+"self"
+]
+}
+},
+"_PATCHED": {},
+"_TARGETS": {},
+"__all__": {},
+"_as_tuple": {
+"params": [
+"v"
+]
+},
+"_count_outputs": {
+"params": [
+"out",
+"n_tensors"
+]
+},
+"_schema": {
+"params": [
+"name",
+"n_inputs",
+"n_outputs"
+]
+},
+"annotations": {},
+"engine": {},
+"hashlib": {},
+"importlib": {},
+"load_user": {
+"params": [
+"spec"
+]
+},
+"op": {
+"params": [
+"name",
+"kernel",
+"reference",
+"out",
+"route",
+"inputs"
+]
+},
+"os": {},
+"patch": {
+"params": [
+"target",
+"fn"
+]
+},
+"revert": {
+"params": []
+},
+"summary": {
+"params": []
+}
+},
+"hk.integration.sglang": {
+"PREFIXES": {},
+"ROUTES_ENV": {},
+"_APPLIED": {},
+"_LINEAR": {},
+"_LINEAR_HOMES": {},
+"_common": {},
+"annotations": {},
+"apply": {
+"params": []
+},
+"apply_linear": {
+"params": []
+},
+"available": {
+"params": []
+},
+"importlib": {},
+"revert": {
+"params": []
+},
+"routes": {
+"params": []
+},
+"status": {
+"params": []
+}
+},
+"hk.integration.sglang_diffusion": {
+"CONVROT_BACKEND": {},
+"CONVROT_GROUPS": {},
+"CONVROT_HOME": {},
+"CONVROT_STATS": {},
+"DECISIONS": {},
+"ENV": {},
+"LINEAR_HOME": {},
+"LINEAR_STATS": {},
+"List": {},
+"MARGIN": {},
+"MIN_M": {},
+"Path": {},
+"TARGET": {},
+"_BOOT": {},
+"_LAST": {},
+"_OFF": {},
+"_OPS": {},
+"_PTH": {},
+"_bucket": {
+"params": [
+"m"
+]
+},
+"_gemm_op": {
+"params": [
+"sched"
+]
+},
+"_hk_linear": {
+"params": [
+"x",
+"weight",
+"bias"
+]
+},
+"_measure": {
+"params": [
+"op",
+"a",
+"weight"
+]
+},
+"_parts": {
+"params": [
+"value"
+]
+},
+"_report": {
+"params": [
+"force"
+]
+},
+"_reporter": {
+"params": []
+},
+"annotations": {},
+"apply": {
+"params": []
+},
+"apply_convrot": {
+"params": []
+},
+"apply_linear": {
+"params": []
+},
+"install": {
+"params": [
+"target"
+]
+},
+"main": {
+"params": [
+"argv"
+]
+},
+"os": {},
+"site_dir": {
+"params": []
+},
+"stats": {
+"params": []
+},
+"status": {
+"params": []
+},
+"sys": {},
+"sysconfig": {},
+"threading": {},
+"time": {},
+"uninstall": {
+"params": [
+"target"
+]
+}
+},
+"hk.integration.sglang_moe": {
+"BLOCK16_MAX_TOKENS": {},
+"Callable": {},
+"Optional": {},
+"PATCH": {},
+"PREFIXES": {},
+"STATS": {},
+"_GUARDED": {},
+"_ORIG": {},
+"_ORIG_CONFIG": {},
+"_ORIG_TOPK": {},
+"_common": {},
+"_homes": {
+"params": []
+},
+"_plain": {
+"params": [
+"bias",
+"A_scale",
+"B_scale",
+"B_zp",
+"block_shape",
+"add_output_mask",
+"*flags"
+]
+},
+"annotations": {},
+"apply": {
+"params": []
+},
+"apply_topk": {
+"params": []
+},
+"engine": {},
+"invoke_fused_moe_kernel": {
+"params": [
+"A",
+"B",
+"bias",
+"C",
+"A_scale",
+"B_scale",
+"B_zp",
+"topk_weights",
+"topk_ids",
+"sorted_token_ids",
+"expert_ids",
+"num_tokens_post_padded",
+"mul_routed_weight",
+"top_k",
+"config",
+"compute_type",
+"use_fp8_w8a8",
+"use_int8_w8a8",
+"use_int8_w8a16",
+"use_int4_w4a16",
+"per_channel_quant",
+"block_shape",
+"no_combine",
+"a_use_tma",
+"b_use_tma",
+"c_sorted",
+"filter_expert",
+"fuse_sum_all_reduce",
+"router_topk",
+"fuse_add_to_output",
+"add_output_mask",
+"mask_output",
+"lora_preserve_base",
+"fuse_swiglu"
+]
+},
+"revert": {
+"params": []
+},
+"status": {
+"params": []
+},
+"topk_softmax": {
+"params": [
+"topk_weights",
+"topk_ids",
+"gating_output",
+"renormalize",
+"moe_softcapping",
+"correction_bias"
+]
+},
+"try_get_optimal_moe_config": {
+"params": [
+"w1_shape",
+"w2_shape",
+"top_k",
+"dtype",
+"M",
+"is_marlin",
+"block_shape",
+"per_channel_quant",
+"return_down_config"
+]
+}
+},
+"hk.integration.stack": {
+"Dict": {},
+"List": {},
+"MATCHED": {},
+"Optional": {},
+"POLICIES": {},
+"StackMismatch": {
+"methods": {}
+},
+"TRITON_DISTS": {},
+"_WARNED": {},
+"_base": {
+"params": [
+"v"
+]
+},
+"_triton_imported": {
+"params": []
+},
+"_version": {
+"params": [
+"dist"
+]
+},
+"annotations": {},
+"check": {
+"params": [
+"found"
+]
+},
+"enforce": {
+"params": [
+"where",
+"default",
+"found"
+]
+},
+"fix": {
+"params": [
+"found"
+]
+},
+"importlib": {},
+"installed": {
+"params": []
+},
+"main": {
+"params": [
+"argv"
+]
+},
+"md": {},
+"os": {},
+"policy": {
+"params": [
+"default"
+]
+},
+"re": {},
+"report": {
+"params": [
+"problems",
+"where",
+"found"
+]
+},
+"series": {
+"params": [
+"vllm_version"
+]
+},
+"sys": {}
+},
+"hk.integration.tune": {
+"annotations": {},
+"argparse": {},
+"main": {
+"params": [
+"argv"
+]
+},
+"sys": {}
+},
+"hk.integration.vllm": {
+"PREFIXES": {},
+"_APPLIED": {},
+"_common": {},
+"annotations": {},
+"apply": {
+"params": []
+},
+"available": {
+"params": []
+},
+"probe": {
+"params": []
+},
+"revert": {
+"params": []
+},
+"status": {
+"params": []
+}
+},
+"hk.integration.vllm_autotune": {
+"Any": {},
+"BUDGET_ENV": {},
+"DEFAULT_BUDGET": {},
+"Dict": {},
+"List": {},
+"Optional": {},
+"REPORT": {},
+"Tuple": {},
+"WORKER_MODULE": {},
+"_ORIG_LOAD": {},
+"_OnImport": {
+"methods": {
+"__init__": [
+"self",
+"name",
+"then"
+],
+"find_spec": [
+"self",
+"name",
+"path",
+"target"
+]
+}
+},
+"_biased_note": {
+"params": [
+"biased"
+]
+},
+"_print": {
+"params": [
+"s"
+]
+},
+"_wrap": {
+"params": [
+"worker"
+]
+},
+"annotations": {},
+"at_load": {
+"params": [
+"model",
+"device",
+"log"
+]
+},
+"budget": {
+"params": []
+},
+"functools": {},
+"install": {
+"params": []
+},
+"model_shapes": {
+"params": [
+"model"
+]
+},
+"os": {},
+"time": {},
+"uninstall": {
+"params": []
+}
+},
+"hk.integration.vllm_backend": {
+"ClassVar": {},
+"NAME": {},
+"Optional": {},
+"PATCH": {},
+"SLOT": {},
+"TRITON_3D_MAX": {},
+"TRITON_DECODE_ALSO": {},
+"TRITON_DECODE_MAX": {},
+"_BUILDER": {},
+"_OPS": {},
+"_SCRATCH": {},
+"_SEGM": {},
+"_SLOT_NAME": {},
+"_TRITON": {},
+"_UNIT": {},
+"_build": {
+"params": []
+},
+"_engine_limits": {
+"params": []
+},
+"_kv_scales": {
+"params": [
+"layer",
+"device"
+]
+},
+"_op": {
+"params": [
+"kind",
+"head_dim",
+"splits"
+]
+},
+"_prefill_op": {
+"params": [
+"head_dim",
+"group",
+"scale"
+]
+},
+"_scratch": {
+"params": [
+"device",
+"n_kv_heads",
+"head_dim",
+"rows",
+"group"
+]
+},
+"_segm": {
+"params": [
+"device",
+"n_heads",
+"head_dim"
+]
+},
+"_triton_decode": {
+"params": []
+},
+"_triton_decode_max": {
+"params": []
+},
+"_unit_scale": {
+"params": [
+"device"
+]
+},
+"annotations": {},
+"dataclass": {},
+"decode": {
+"params": [
+"q",
+"k_cache",
+"v_cache",
+"block_table",
+"seq_lens",
+"out",
+"scratch",
+"splits"
+]
+},
+"decode_splits": {
+"params": [
+"n",
+"n_kv_heads",
+"pages_cap"
+]
+},
+"engine": {},
+"math": {},
+"register": {
+"params": [
+"slot"
+]
+},
+"triton_decode": {
+"params": [
+"q",
+"k_cache",
+"v_cache",
+"block_table",
+"seq_lens",
+"query_start",
+"out",
+"scale",
+"max_seq_len",
+"k_scale",
+"v_scale"
+]
+},
+"triton_takes": {
+"params": [
+"n"
+]
+}
+},
+"hk.integration.vllm_gemm": {
+"Any": {},
+"Callable": {},
+"Dict": {},
+"OPTIONAL": {},
+"Optional": {},
+"PATCH": {},
+"PREFIXES": {},
+"ROUTES_ENV": {},
+"RUN_PATHS": {},
+"STATS": {},
+"_ARCH_OK": {},
+"_FALLBACK": {},
+"_OPS": {},
+"_ORIG_DISPATCH": {},
+"_TABLE": {},
+"_arch_ok": {
+"params": [
+"device"
+]
+},
+"_cdna": {
+"params": [
+"device"
+]
+},
+"_common": {},
+"_decode_op": {
+"params": [
+"s"
+]
+},
+"_fallback": {
+"params": [
+"x",
+"weight",
+"bias"
+]
+},
+"_gemm": {
+"params": [
+"layer",
+"x",
+"weight",
+"bias"
+]
+},
+"_gemm_takes": {
+"params": [
+"n",
+"k"
+]
+},
+"_hipkittens": {
+"params": [
+"x",
+"x2",
+"weight",
+"bias",
+"m",
+"n"
+]
+},
+"_linear_fake": {
+"params": [
+"x",
+"weight",
+"bias"
+]
+},
+"_op_for": {
+"params": [
+"m",
+"n",
+"k"
+]
+},
+"_own_compile_cache": {
+"params": [
+"name"
+]
+},
+"annotations": {},
+"apply": {
+"params": []
+},
+"dispatch_unquantized_gemm": {
+"params": [
+"*args",
+"**kwargs"
+]
+},
+"engine": {},
+"engine_name": {
+"params": []
+},
+"flydsl_gemm": {},
+"linear": {
+"params": [
+"x",
+"weight",
+"bias"
+]
+},
+"optional_status": {
+"params": [
+"table"
+]
+},
+"register_op": {
+"params": []
+},
+"revert": {
+"params": []
+},
+"route": {
+"params": [
+"m",
+"n",
+"k",
+"**how"
+]
+},
+"route_decode": {
+"params": [
+"m",
+"n",
+"k",
+"**how"
+]
+},
+"route_for": {
+"params": [
+"m",
+"n",
+"k",
+"bf16",
+"bias",
+"contiguous_weight"
+]
+},
+"routes": {
+"params": []
+},
+"set_routes": {
+"params": [
+"table"
+]
+},
+"status": {
+"params": []
+},
+"table_status": {
+"params": [
+"table"
+]
+}
+},
+"hk.integration.vllm_int4": {
+"Callable": {},
+"Optional": {},
+"PATCH": {},
+"STATS": {},
+"_HK_MAX_M": {},
+"_ORIG_APPLY": {},
+"_ORIG_PWAL": {},
+"_cdna": {
+"params": []
+},
+"_common": {},
+"_fake": {
+"params": [
+"x",
+"qweight",
+"scales",
+"qzeros",
+"hk_qw",
+"hk_s",
+"hk_zs",
+"group"
+]
+},
+"_max_m": {
+"params": []
+},
+"_vllm_awq": {
+"params": [
+"x",
+"qweight",
+"scales",
+"qzeros"
+]
+},
+"annotations": {},
+"apply": {
+"params": [
+"self",
+"layer",
+"x",
+"bias"
+]
+},
+"apply_patch": {
+"params": []
+},
+"engine": {},
+"process_weights_after_loading": {
+"params": [
+"self",
+"layer"
+]
+},
+"revert": {
+"params": []
+},
+"status": {
+"params": []
+},
+"w4a16": {
+"params": [
+"x",
+"qweight",
+"scales",
+"qzeros",
+"hk_qw",
+"hk_s",
+"hk_zs",
+"group"
+]
+}
+},
+"hk.integration.vllm_moe": {
+"BLOCK16_MAX_TOKENS": {},
+"Callable": {},
+"Optional": {},
+"PATCH": {},
+"PREFIXES": {},
+"STATS": {},
+"_GUARDED": {},
+"_ORIG": {},
+"_ORIG_CONFIG": {},
+"_common": {},
+"_plain": {
+"params": [
+"A_scale",
+"B_scale",
+"B_bias",
+"block_shape",
+"*quant_flags"
+]
+},
+"annotations": {},
+"apply": {
+"params": []
+},
+"engine": {},
+"invoke_fused_moe_triton_kernel": {
+"params": [
+"A",
+"B",
+"C",
+"A_scale",
+"B_scale",
+"topk_weights",
+"sorted_token_ids",
+"expert_ids",
+"num_tokens_post_padded",
+"mul_routed_weight",
+"top_k",
+"config",
+"compute_type",
+"use_fp8_w8a8",
+"use_int8_w8a8",
+"use_int8_w8a16",
+"use_int4_w4a16",
+"per_channel_quant",
+"block_shape",
+"B_bias"
+]
+},
+"revert": {
+"params": []
+},
+"status": {
+"params": []
+},
+"try_get_optimal_moe_config": {
+"params": [
+"w1_shape",
+"w2_shape",
+"top_k",
+"dtype",
+"M",
+"block_shape"
+]
+}
+},
+"hk.integration.vllm_moe_a8w4": {
+"Callable": {},
+"ENABLED": {},
+"MIN_M": {},
+"MT": {},
+"Optional": {},
+"PATCH": {},
+"STATS": {},
+"_ORIG": {},
+"_takes": {
+"params": [
+"hidden",
+"w1",
+"kw"
+]
+},
+"annotations": {},
+"apply_patch": {
+"params": []
+},
+"engine": {},
+"fused_moe": {
+"params": [
+"hidden_states",
+"w1",
+"w2",
+"topk_weight",
+"topk_ids",
+"*args",
+"**kwargs"
+]
+},
+"moe": {
+"params": [
+"hidden",
+"w1",
+"w2",
+"topk_weight",
+"topk_ids",
+"w1_scale",
+"w2_scale",
+"swiglu_limit"
+]
+},
+"os": {},
+"revert": {
+"params": []
+},
+"status": {
+"params": []
+}
+},
+"hk.integration.vllm_mxfp8": {
+"ANY": {},
+"Callable": {},
+"ENABLED": {},
+"MEASURED": {},
+"MIN_M": {},
+"Optional": {},
+"PATCH": {},
+"STATS": {},
+"_ORIG_APPLY": {},
+"_ORIG_PWAL": {},
+"_SMALL_N": {},
+"_cls": {
+"params": []
+},
+"_common": {},
+"_fake": {
+"params": [
+"x",
+"xs",
+"w",
+"ws",
+"hk_wa",
+"hk_wp",
+"out_dtype"
+]
+},
+"annotations": {},
+"apply_patch": {
+"params": []
+},
+"apply_weights": {
+"params": [
+"self",
+"layer",
+"x",
+"bias"
+]
+},
+"engine": {},
+"mxfp8_block32": {
+"params": [
+"x",
+"xs",
+"w",
+"ws",
+"hk_wa",
+"hk_wp",
+"out_dtype"
+]
+},
+"process_weights_after_loading": {
+"params": [
+"self",
+"layer"
+]
+},
+"revert": {
+"params": []
+},
+"schedule": {
+"params": [
+"m",
+"n",
+"k"
+]
+},
+"status": {
+"params": []
+}
+},
+"hk.mx": {
+"E2M1": {},
+"aiter_fp4_weights": {
+"params": [
+"w",
+"gate_up"
+]
+},
+"aiter_gate_up_scales": {
+"params": [
+"s",
+"e"
+]
+},
+"aiter_scales": {
+"params": [
+"s"
+]
+},
+"annotations": {},
+"dequant": {
+"params": [
+"q",
+"s"
+]
+},
+"expand_block_scales": {
+"params": [
+"s",
+"block_rows"
+]
+},
+"fp4_values": {
+"params": [
+"w"
+]
+},
+"pack_scales": {
+"params": [
+"s"
+]
+},
+"quant": {
+"params": [
+"x"
+]
+}
+},
+"hk.ops": {
+"__all__": {},
+"abs": {
+"params": [
+"a",
+"out"
+]
+},
+"add": {
+"params": [
+"a",
+"b",
+"out"
+]
+},
+"attention": {
+"params": [
+"q",
+"k",
+"v",
+"causal",
+"scale",
+"out"
+]
+},
+"attn": {},
+"decode_gemm": {},
+"dequantize": {
+"params": [
+"q",
+"scales",
+"dtype",
+"out"
+]
+},
+"elementwise": {},
+"exp": {
+"params": [
+"a",
+"out"
+]
+},
+"fused": {},
+"fused_add_rms_norm": {
+"params": [
+"x",
+"residual",
+"weight",
+"eps"
+]
+},
+"gelu": {
+"params": [
+"a",
+"out"
+]
+},
+"gemm": {},
+"layernorm": {
+"params": [
+"x",
+"eps",
+"out"
+]
+},
+"matmul": {
+"params": [
+"a",
+"b",
+"out"
+]
+},
+"maximum": {
+"params": [
+"a",
+"b",
+"out"
+]
+},
+"minimum": {
+"params": [
+"a",
+"b",
+"out"
+]
+},
+"mul": {
+"params": [
+"a",
+"b",
+"out"
+]
+},
+"neg": {
+"params": [
+"a",
+"out"
+]
+},
+"norm": {},
+"paged": {},
+"quant": {},
+"quantize": {
+"params": [
+"x",
+"out",
+"scales"
+]
+},
+"relu": {
+"params": [
+"a",
+"out"
+]
+},
+"rms_norm": {
+"params": [
+"x",
+"weight",
+"eps",
+"out"
+]
+},
+"rmsnorm": {
+"params": [
+"x",
+"eps",
+"out"
+]
+},
+"rope": {
+"params": [
+"x",
+"cos",
+"sin",
+"out"
+]
+},
+"rotary": {
+"params": [
+"x",
+"cos_sin",
+"positions",
+"out"
+]
+},
+"sdpa": {},
+"silu_mul": {
+"params": [
+"a",
+"b",
+"out"
+]
+},
+"softmax": {
+"params": [
+"x",
+"out"
+]
+},
+"sub": {
+"params": [
+"a",
+"b",
+"out"
+]
+}
+},
+"hk.ops._attn_ab": {
+"D_HEAD": {},
+"EXT": {},
+"N_HEADS": {},
+"Path": {},
+"SHAPES": {},
+"annotations": {},
+"bench": {
+"params": [
+"fn",
+"warmup",
+"iters"
+]
+},
+"flops": {
+"params": [
+"b",
+"h",
+"n",
+"causal",
+"d"
+]
+},
+"hk": {},
+"main": {
+"params": []
+},
+"os": {},
+"qkv": {
+"params": [
+"b",
+"h",
+"n",
+"d"
+]
+},
+"sys": {},
+"torch": {}
+},
+"hk.ops._attn_bench": {
+"D_HEAD": {},
+"F": {},
+"N_HEADS": {},
+"SHAPES": {},
+"annotations": {},
+"bench": {
+"params": [
+"fn",
+"warmup",
+"iters"
+]
+},
+"flops": {
+"params": [
+"b",
+"h",
+"n",
+"causal",
+"d"
+]
+},
+"hk": {},
+"main": {
+"params": []
+},
+"os": {},
+"qkv": {
+"params": [
+"b",
+"h",
+"n",
+"d"
+]
+},
+"sys": {},
+"torch": {}
+},
+"hk.ops._epilogue": {
+"GlobalType": {
+"methods": {
+"__repr__": [
+"self"
+],
+"cpp": [
+"self"
+],
+"dtype": null
+}
+},
+"__all__": {},
+"annotations": {},
+"inspect": {},
+"name": {
+"params": [
+"base",
+"epilogue"
+]
+},
+"sign": {
+"params": [
+"body",
+"epilogue",
+"out"
+]
+}
+},
+"hk.ops.attn": {
+"Any": {},
+"DEFAULT": {},
+"Dict": {},
+"HEAD_DIMS": {},
+"KERNELS": {},
+"KV_BLOCK": {},
+"NEG_INF": {},
+"Optional": {},
+"Q_TILE": {},
+"SPACE": {},
+"TUNERS": {},
+"TUNERS_BNHD": {},
+"TUNE_KEYS": {},
+"_SCALED": {},
+"__all__": {},
+"_autotune": {},
+"_bench_for": {
+"params": [
+"head_dim",
+"causal"
+]
+},
+"_derive": {
+"params": [
+"head_dim",
+"q_block",
+"kv_block",
+"warps",
+"vt_d_chunk",
+"qk_tiles",
+"pv_tiles"
+]
+},
+"_kernel_for": {
+"params": [
+"head_dim",
+"causal",
+"scale",
+"n",
+"bnhd"
+]
+},
+"_native_cdna": {
+"params": []
+},
+"_tune_key": {
+"params": [
+"n"
+]
+},
+"_tuner": {
+"params": [
+"head_dim",
+"causal",
+"bnhd"
+]
+},
+"_why": {
+"params": [
+"q",
+"k",
+"v",
+"causal",
+"require_contiguous"
+]
+},
+"attention": {
+"params": [
+"q",
+"k",
+"v",
+"causal",
+"scale",
+"out"
+]
+},
+"attn_kernel": {
+"params": [
+"name",
+"head_dim",
+"q_block",
+"kv_block",
+"warps",
+"vt_d_chunk",
+"qk_tiles",
+"pv_tiles",
+"causal",
+"scale",
+"setprio",
+"max_vgprs",
+"min_occupancy",
+"bnhd"
+]
+},
+"bf16": {},
+"current_arch": {
+"params": []
+},
+"fp32": {},
+"get_target": {
+"params": [
+"arch"
+]
+},
+"hk": {},
+"math": {},
+"supported": {
+"params": [
+"q",
+"k",
+"v",
+"causal"
+]
+}
+},
+"hk.ops.attn_cdna": {
+"Any": {},
+"Dict": {},
+"HEAD_DIMS": {},
+"KV_BLOCK": {},
+"NEG_INF": {},
+"Optional": {},
+"PAGE": {},
+"Q_ROWS": {},
+"Q_TILE": {},
+"WARPS": {},
+"_KERNELS": {},
+"__all__": {},
+"_pairs": {
+"params": [
+"n_mma",
+"groups",
+"sync_id"
+]
+},
+"annotations": {},
+"attn_kernel": {
+"params": [
+"name",
+"head_dim",
+"causal",
+"scale",
+"setprio",
+"lazy",
+"sched",
+"lpt",
+"skip",
+"_nomask",
+"paged",
+"arch"
+]
+},
+"bf16": {},
+"fp32": {},
+"hk": {},
+"i32": {},
+"kernel_for": {
+"params": [
+"head_dim",
+"causal",
+"scale",
+"**opts"
+]
+},
+"math": {},
+"paged_kernel_for": {
+"params": [
+"head_dim",
+"scale"
+]
+}
+},
+"hk.ops.attn_k3": {
+"HEAD_DIM": {},
+"KV_BLOCK": {},
+"LAZY": {},
+"NEG_INF": {},
+"PairPKernel": {
+"methods": {
+"__init__": [
+"self",
+"fn",
+"n_pair_sites",
+"**kw"
+],
+"preloaded": [
+"self"
+],
+"with_defines": [
+"self",
+"src"
+]
+}
+},
+"Q_BLK": {},
+"_CO": {},
+"_EYE": {},
+"_K": {},
+"_PAIR_HELPER": {},
+"_PLANS": {},
+"_dsl": {},
+"_kernels": {
+"params": []
+},
+"_launch": {
+"params": [
+"kern",
+"*tensors"
+]
+},
+"_plan_tensors": {
+"params": [
+"nblk",
+"nqb",
+"dev"
+]
+},
+"_vt_torch": {
+"params": [
+"v",
+"n_pad"
+]
+},
+"annotations": {},
+"attention": {
+"params": [
+"q",
+"k",
+"v"
+]
+},
+"attn_kernel": {
+"params": [
+"name",
+"kv_block",
+"warps",
+"qk_tiles",
+"pv_tiles",
+"setprio",
+"lazy",
+"max_vgprs"
+]
+},
+"bf16": {},
+"combine_kernel": {
+"params": [
+"name",
+"warps"
+]
+},
+"fp16": {},
+"fp32": {},
+"i32": {},
+"is_bnhd": {
+"params": [
+"*ts"
+]
+},
+"math": {},
+"plan": {
+"params": [
+"nblk",
+"device"
+]
+},
+"re": {},
+"vt_kernel": {
+"params": [
+"name",
+"warps"
+]
+},
+"why": {
+"params": [
+"q",
+"k",
+"v",
+"causal",
+"scale"
+]
+}
+},
+"hk.ops.convrot": {
+"H4": {},
+"_MIN_BLOCK": {},
+"_hadamard": {
+"params": [
+"group",
+"device"
+]
+},
+"_hadamard_block": {
+"params": [
+"group",
+"device"
+]
+},
+"_kernel": {
+"params": [
+"with_bias"
+]
+},
+"_scale": {
+"params": [
+"acc",
+"ctx"
+]
+},
+"_scale_bias": {
+"params": [
+"acc",
+"ctx"
+]
+},
+"annotations": {},
+"bf16": {},
+"functools": {},
+"i8": {},
+"linear": {
+"params": [
+"x",
+"wq",
+"ws",
+"group",
+"bias",
+"out"
+]
+},
+"prepare_weight": {
+"params": [
+"w",
+"group"
+]
+},
+"quantize_rows": {
+"params": [
+"v"
+]
+},
+"reference": {
+"params": [
+"x",
+"wq",
+"ws",
+"group",
+"bias"
+]
+},
+"rotate": {
+"params": [
+"x",
+"group"
+]
+}
+},
+"hk.ops.decode_gemm": {
+"Any": {},
+"Dict": {},
+"MAX_TOKENS": {},
+"Optional": {},
+"SCHEDULES": {},
+"Tuple": {},
+"_KERNELS": {},
+"_SCRATCH": {},
+"__all__": {},
+"_epilogue": {},
+"_settle": {
+"params": [
+"s"
+]
+},
+"bf16": {},
+"current_arch": {
+"params": []
+},
+"decode_gemm_kernel": {
+"params": [
+"name",
+"tokens",
+"slices",
+"warps",
+"combine_depth",
+"resident",
+"splits",
+"max_vgprs",
+"min_occupancy",
+"arch",
+"epilogue"
+]
+},
+"fits": {
+"params": [
+"m",
+"n",
+"k"
+]
+},
+"fp32": {},
+"get_target": {
+"params": [
+"arch"
+]
+},
+"hk": {},
+"i32": {},
+"kernel_for": {
+"params": [
+"tokens",
+"slices",
+"warps",
+"combine_depth",
+"resident",
+"splits"
+]
+},
+"matmul": {
+"params": [
+"x",
+"w",
+"out",
+"**override"
+]
+},
+"schedule_for": {
+"params": [
+"m",
+"k"
+]
+},
+"scratch_for": {
+"params": [
+"device",
+"splits",
+"tokens",
+"n"
+]
+},
+"tokens_for": {
+"params": [
+"m"
+]
+}
+},
+"hk.ops.elementwise": {
+"Any": {},
+"COLS": {},
+"KERNELS": {},
+"ROWS": {},
+"ResourceError": {
+"methods": {}
+},
+"STRIP_ARCHS": {},
+"STRIP_GS_KERNELS": {},
+"STRIP_KERNELS": {},
+"STRIP_PLANS": {},
+"STRIP_WARPS": {},
+"Tuple": {},
+"_BINARY": {},
+"_BINARY_FN": {},
+"_DTYPES": {},
+"_FP32_ONLY": {},
+"_REFUSED": {},
+"_STRIP_MAX_BYTES": {},
+"_STRIP_PLANS": {},
+"_TORCH_DTYPES": {},
+"_UNARY": {},
+"_UNARY_FN": {},
+"__all__": {},
+"_apply": {
+"params": [
+"op",
+"*tensors",
+"out"
+]
+},
+"_as_2d": {
+"params": [
+"t",
+"cols"
+]
+},
+"_binary_kernel": {
+"params": [
+"name",
+"op",
+"dtype"
+]
+},
+"_col_choices": {
+"params": [
+"suffix"
+]
+},
+"_fits": {
+"params": [
+"shape",
+"numel",
+"cols"
+]
+},
+"_grid": {
+"params": [
+"p"
+]
+},
+"_kernel_for": {
+"params": [
+"op",
+"suffix"
+]
+},
+"_lru_cache": {},
+"_strip_gs_kernel": {
+"params": [
+"name",
+"op",
+"dtype",
+"warps"
+]
+},
+"_strip_kernel": {
+"params": [
+"name",
+"op",
+"dtype",
+"warps"
+]
+},
+"_strip_plan": {
+"params": [
+"op",
+"suffix",
+"n",
+"nbytes"
+]
+},
+"_suffix_of": {
+"params": [
+"t"
+]
+},
+"_supports": {
+"params": [
+"op",
+"suffix"
+]
+},
+"_tile": {
+"params": [
+"dtype",
+"rows",
+"cols"
+]
+},
+"_tile_shape": {
+"params": [
+"shape",
+"numel",
+"cols"
+]
+},
+"_unary_kernel": {
+"params": [
+"name",
+"op",
+"dtype"
+]
+},
+"abs": {
+"params": [
+"a",
+"out"
+]
+},
+"add": {
+"params": [
+"a",
+"b",
+"out"
+]
+},
+"exp": {
+"params": [
+"a",
+"out"
+]
+},
+"flat_strip_plan": {
+"params": [
+"moved",
+"binary"
+]
+},
+"gelu": {
+"params": [
+"a",
+"out"
+]
+},
+"hk": {},
+"maximum": {
+"params": [
+"a",
+"b",
+"out"
+]
+},
+"minimum": {
+"params": [
+"a",
+"b",
+"out"
+]
+},
+"mul": {
+"params": [
+"a",
+"b",
+"out"
+]
+},
+"neg": {
+"params": [
+"a",
+"out"
+]
+},
+"relu": {
+"params": [
+"a",
+"out"
+]
+},
+"sub": {
+"params": [
+"a",
+"b",
+"out"
+]
+}
+},
+"hk.ops.fused": {
+"COLS": {},
+"KERNELS": {},
+"MAX_TILES": {},
+"ROTARY16_IN_CACHE": {},
+"ROTARY16_KERNELS": {},
+"ROTARY_HALVES_KERNELS": {},
+"ROTARY_KERNELS": {},
+"ROTARY_WARPS": {},
+"ROWS": {},
+"SILU_STRIP_PLANS": {},
+"STRIP_ARCHS": {},
+"STRIP_KERNELS": {},
+"STRIP_PLAN": {},
+"STRIP_WARPS": {},
+"WARP_COUNTS": {},
+"WIDTHS": {},
+"_DTYPES": {},
+"_PLAN_CACHE": {},
+"_ROTARY_CACHE": {},
+"_STRIP_PLANS": {},
+"_TORCH_DTYPES": {},
+"__all__": {},
+"_as_2d": {
+"params": [
+"t",
+"what"
+]
+},
+"_ftile": {
+"params": [
+"rows",
+"cols"
+]
+},
+"_lru_cache": {},
+"_overlaps": {
+"params": [
+"a",
+"b"
+]
+},
+"_resolve": {
+"params": [
+"dtype",
+"cols"
+]
+},
+"_rope_cache": {},
+"_rope_grid": {
+"params": [
+"p"
+]
+},
+"_rope_kernel": {
+"params": [
+"name",
+"dtype",
+"half"
+]
+},
+"_rotary16_kernel": {
+"params": [
+"name",
+"dtype",
+"warps",
+"positions"
+]
+},
+"_rotary16_plan": {
+"params": [
+"tokens",
+"heads",
+"d",
+"nbytes"
+]
+},
+"_rotary_halves_kernel": {
+"params": [
+"name",
+"dtype",
+"warps",
+"positions"
+]
+},
+"_rotary_kernel": {
+"params": [
+"name",
+"dtype",
+"warps",
+"positions"
+]
+},
+"_rotary_warps": {
+"params": [
+"heads"
+]
+},
+"_rows_view": {
+"params": [
+"t",
+"what"
+]
+},
+"_silu_mul_grid": {
+"params": [
+"p"
+]
+},
+"_silu_mul_kernel": {
+"params": [
+"name",
+"dtype",
+"warps"
+]
+},
+"_start": {
+"params": [
+"idx",
+"block",
+"extent"
+]
+},
+"_strip_silu_mul": {
+"params": [
+"plan",
+"a",
+"b",
+"out"
+]
+},
+"_strip_silu_mul_kernel": {
+"params": [
+"name",
+"dtype",
+"warps"
+]
+},
+"_strip_silu_plan": {
+"params": [
+"dtype",
+"cols",
+"rows"
+]
+},
+"_suffix_of": {
+"params": [
+"t"
+]
+},
+"bf16": {},
+"canonical": {
+"params": [
+"rows",
+"cols"
+]
+},
+"fp16": {},
+"fp32": {},
+"hk": {},
+"plan": {
+"params": [
+"cols"
+]
+},
+"rope": {
+"params": [
+"x",
+"cos",
+"sin",
+"out"
+]
+},
+"rotary": {
+"params": [
+"x",
+"cos_sin",
+"positions",
+"out"
+]
+},
+"silu_mul": {
+"params": [
+"a",
+"b",
+"out"
+]
+},
+"silu_strip_plan": {
+"params": [
+"arch",
+"moved"
+]
+}
+},
+"hk.ops.gemm": {
+"Any": {},
+"BLOCK_M": {},
+"BLOCK_N": {},
+"DEFAULT": {},
+"Dict": {},
+"KERNELS": {},
+"KNOBS": {},
+"K_STEP": {},
+"SPACE": {},
+"THIN": {},
+"TUNER": {},
+"TUNE_KEYS": {},
+"Tuple": {},
+"_USER": {},
+"__all__": {},
+"_autotune": {},
+"_bench_for": {
+"params": [
+"key"
+]
+},
+"_bucket": {
+"params": [
+"m"
+]
+},
+"_derive": {
+"params": [
+"block_m",
+"block_n",
+"k_step",
+"dot_slice",
+"warps",
+"warp_rows",
+"n_split"
+]
+},
+"_epilogue": {},
+"_make": {
+"params": [
+"**sched"
+]
+},
+"_sched_name": {
+"params": [
+"s"
+]
+},
+"bf16": {},
+"current_arch": {
+"params": []
+},
+"fp32": {},
+"gemm_kernel": {
+"params": [
+"name",
+"block_m",
+"block_n",
+"k_step",
+"dot_slice",
+"warps",
+"warp_rows",
+"n_split",
+"wgm",
+"write_pos",
+"lds_buffers",
+"stagger",
+"stream_a",
+"setprio",
+"sched",
+"max_vgprs",
+"min_occupancy",
+"epilogue",
+"op_dtype"
+]
+},
+"get_target": {
+"params": [
+"arch"
+]
+},
+"hk": {},
+"i32": {},
+"i8": {},
+"inspect": {},
+"matmul": {
+"params": [
+"a",
+"b",
+"out"
+]
+},
+"schedule_for": {
+"params": [
+"m",
+"n",
+"k",
+"user"
+]
+},
+"user_route": {
+"params": [
+"m",
+"n",
+"k"
+]
+}
+},
+"hk.ops.gemm_cdna": {
+"Any": {},
+"BLOCK_N_MIN": {},
+"CANDIDATES": {},
+"CUS": {},
+"DEFAULT": {},
+"DIRECT_GR": {},
+"Dict": {},
+"K_STEP": {},
+"NUM_XCDS": {},
+"Optional": {},
+"SK_MODES": {},
+"SK_REC": {},
+"TAIL": {},
+"_EXTRA": {},
+"_KERNELS": {},
+"_ROUTES": {},
+"_SK": {},
+"_USER": {},
+"__all__": {},
+"_epilogue": {},
+"_routes": {
+"params": []
+},
+"_sched_name": {
+"params": [
+"s"
+]
+},
+"annotations": {},
+"bf16": {},
+"extra_candidates": {
+"params": []
+},
+"fits": {
+"params": [
+"name",
+"m",
+"n",
+"k"
+]
+},
+"fp32": {},
+"fp8e4m3": {},
+"gemm_kernel": {
+"params": [
+"name",
+"block_m",
+"block_n",
+"k_step",
+"warps_m",
+"warps_n",
+"wgm",
+"xcd_chunk",
+"setprio",
+"transposed_c",
+"early_store",
+"hipkittens_waits",
+"late_b",
+"splits",
+"lds_shape",
+"nt",
+"stream_k",
+"sk_grid",
+"mx",
+"mx_scales",
+"arch",
+"max_vgprs",
+"min_occupancy",
+"epilogue"
+]
+},
+"hk": {},
+"i32": {},
+"i8": {},
+"kernel_for": {
+"params": [
+"sched"
+]
+},
+"matmul": {
+"params": [
+"a",
+"b",
+"out"
+]
+},
+"route": {
+"params": [
+"m",
+"n",
+"k",
+"user"
+]
+},
+"run": {
+"params": [
+"name",
+"a",
+"b",
+"out"
+]
+},
+"schedule_for": {
+"params": [
+"m",
+"n",
+"k"
+]
+},
+"sk_args": {
+"params": [
+"sched",
+"device",
+"m",
+"n",
+"k"
+]
+},
+"sk_plan": {
+"params": [
+"m",
+"n",
+"k",
+"block_m",
+"block_n",
+"k_step",
+"sk_grid",
+"mode",
+"wgm"
+]
+},
+"tail_for": {
+"params": [
+"m",
+"k"
+]
+},
+"user_route": {
+"params": [
+"m",
+"n",
+"k"
+]
+},
+"wave_cut": {
+"params": [
+"m",
+"n"
+]
+}
+},
+"hk.ops.gemm_cdna_dp": {
+"Any": {},
+"DEFAULT": {},
+"Dict": {},
+"NUM_XCDS": {},
+"Optional": {},
+"REDUCE_WARPS": {},
+"STRIP_REDUCE_CHUNKS": {},
+"STRIP_REDUCE_WARPS": {},
+"_KERNELS": {},
+"_SCRATCH": {},
+"__all__": {},
+"_epilogue": {},
+"_sched_name": {
+"params": [
+"s"
+]
+},
+"annotations": {},
+"bf16": {},
+"fp32": {},
+"gemm_kernel": {
+"params": [
+"name",
+"block_m",
+"block_n",
+"k_step",
+"stages",
+"warps_m",
+"warps_n",
+"wgm",
+"xcd_chunk",
+"setprio",
+"splits",
+"pipelined",
+"lds_shape",
+"nt",
+"arch",
+"max_vgprs",
+"min_occupancy",
+"epilogue"
+]
+},
+"hk": {},
+"kernel_for": {
+"params": [
+"sched"
+]
+},
+"launch": {
+"params": [
+"sched",
+"a",
+"b",
+"out"
+]
+},
+"reduce": {
+"params": [
+"ws",
+"out",
+"strips",
+"epilogue",
+"operands",
+"**consts"
+]
+},
+"reduce_epilogue_kernel": {
+"params": [
+"splits",
+"n",
+"epilogue",
+"arch",
+"m"
+]
+},
+"reduce_kernel": {
+"params": [
+"name",
+"splits",
+"arch"
+]
+},
+"scratch_for": {
+"params": [
+"device",
+"splits",
+"m",
+"n"
+]
+},
+"strip_reduce_kernel": {
+"params": [
+"name",
+"splits",
+"warps",
+"arch",
+"epilogue"
+]
+}
+},
+"hk.ops.hipkittens": {
+"ARCH": {},
+"CHECK_TOL": {},
+"Dict": {},
+"GEMM_BLOCK": {},
+"GEMM_K_MULTIPLE": {},
+"GEMM_MAX_ELEMS": {},
+"GEMM_OP": {},
+"GEMM_SRC": {},
+"GQA_BLOCK": {},
+"GQA_FLAGS": {},
+"GQA_MAX_ELEMS": {},
+"GQA_OP": {},
+"GQA_SRC": {},
+"HEAD_DIMS": {},
+"KERNELS_ENV": {},
+"Miscompiled": {
+"methods": {}
+},
+"Optional": {},
+"Path": {},
+"Sequence": {},
+"Tuple": {},
+"Unavailable": {
+"methods": {}
+},
+"Unsupported": {
+"methods": {}
+},
+"WrongArch": {
+"methods": {}
+},
+"_BROKEN": {},
+"_CHECKED": {},
+"_COMMON_GLUE": {},
+"_DEVICE_ARCH": {},
+"_GEMM_GLUE": {},
+"_GQA_GLUE": {},
+"_HIPCC_VERSION": {},
+"_MODULES": {},
+"_RAW_STREAM": {},
+"_WARNED": {},
+"__all__": {},
+"_assemble": {
+"params": [
+"rel",
+"defines",
+"glue"
+]
+},
+"_check_device": {
+"params": [
+"device"
+]
+},
+"_gemm_check": {
+"params": [
+"mod",
+"device"
+]
+},
+"_gemm_fake": {
+"params": [
+"a",
+"b"
+]
+},
+"_gemm_impl": {
+"params": [
+"a",
+"b"
+]
+},
+"_gqa_check": {
+"params": [
+"mod",
+"device",
+"h",
+"h_kv",
+"n",
+"d",
+"causal"
+]
+},
+"_gqa_fake": {
+"params": [
+"q",
+"k",
+"v",
+"causal"
+]
+},
+"_gqa_impl": {
+"params": [
+"q",
+"k",
+"v",
+"causal"
+]
+},
+"_index": {
+"params": [
+"device"
+]
+},
+"_launch": {
+"params": [
+"mod",
+"device",
+"*args"
+]
+},
+"_ready": {
+"params": [
+"key",
+"what",
+"make",
+"check",
+"device"
+]
+},
+"_rel": {
+"params": [
+"got",
+"want"
+]
+},
+"_stream": {
+"params": [
+"idx"
+]
+},
+"_tensor_unsupported": {
+"params": [
+"dtype",
+"*ts"
+]
+},
+"annotations": {},
+"check_arch": {
+"params": [
+"arch"
+]
+},
+"device_arch": {
+"params": [
+"device"
+]
+},
+"engine": {},
+"gemm_bf16": {
+"params": [
+"a",
+"b",
+"out"
+]
+},
+"gemm_build": {
+"params": [
+"arch",
+"**kw"
+]
+},
+"gemm_fits": {
+"params": [
+"m",
+"n",
+"k"
+]
+},
+"gemm_source": {
+"params": []
+},
+"gemm_takes": {
+"params": [
+"a",
+"b"
+]
+},
+"gemm_unsupported": {
+"params": [
+"m",
+"n",
+"k"
+]
+},
+"gqa_build": {
+"params": [
+"h",
+"h_kv",
+"n",
+"d",
+"causal",
+"arch",
+"**kw"
+]
+},
+"gqa_fits": {
+"params": [
+"b",
+"n",
+"h",
+"h_kv",
+"d",
+"n_kv"
+]
+},
+"gqa_fwd": {
+"params": [
+"q",
+"k",
+"v",
+"causal",
+"return_lse"
+]
+},
+"gqa_source": {
+"params": [
+"h",
+"h_kv",
+"n",
+"d",
+"causal"
+]
+},
+"gqa_takes": {
+"params": [
+"q",
+"k",
+"v"
+]
+},
+"gqa_unsupported": {
+"params": [
+"b",
+"n",
+"h",
+"h_kv",
+"d",
+"n_kv"
+]
+},
+"hipcc_version": {
+"params": []
+},
+"kernels_dir": {
+"params": []
+},
+"os": {},
+"register_ops": {
+"params": []
+},
+"sdpa_bnhd": {
+"params": [
+"q",
+"k",
+"v",
+"causal"
+]
+},
+"warn_unavailable": {
+"params": [
+"where",
+"err"
+]
+}
+},
+"hk.ops.moe": {
+"Any": {},
+"Dict": {},
+"Optional": {},
+"Tuple": {},
+"_ARANGE": {},
+"_KERNELS": {},
+"_OPS": {},
+"__all__": {},
+"_arange": {
+"params": [
+"n",
+"device"
+]
+},
+"_launch": {
+"params": [
+"a",
+"w",
+"c",
+"sorted_ids",
+"expert_ids",
+"num_tokens_post_padded",
+"top_k",
+"block_m",
+"topk_weights"
+]
+},
+"_op_for": {
+"params": [
+"*key"
+]
+},
+"_placeholder": {
+"params": [
+"device"
+]
+},
+"bf16": {},
+"fp32": {},
+"functools": {},
+"hk": {},
+"i32": {},
+"kernel_for": {
+"params": [
+"block_m",
+"top_k",
+"routed",
+"slices",
+"warps",
+"naive"
+]
+},
+"moe_align": {
+"params": [
+"topk_ids",
+"block_m",
+"num_experts"
+]
+},
+"moe_gemm": {
+"params": [
+"a",
+"w",
+"c",
+"sorted_ids",
+"expert_ids",
+"num_tokens_post_padded",
+"top_k",
+"block_m",
+"topk_weights"
+]
+},
+"moe_gemm_kernel": {
+"params": [
+"name",
+"block_m",
+"top_k",
+"routed",
+"slices",
+"warps",
+"naive"
+]
+},
+"schedule_for": {
+"params": [
+"block_m",
+"k"
+]
+},
+"takes": {
+"params": [
+"a",
+"w",
+"block_m"
+]
+}
+},
+"hk.ops.moe_a8w4": {
+"NUM_XCDS": {},
+"TILE": {},
+"_IDENT": {},
+"_reduce": {
+"params": [
+"cb",
+"topk",
+"weighted",
+"dense"
+]
+},
+"_sorted": {
+"params": [
+"stage",
+"group_rows",
+"mt",
+"pp",
+"k",
+"limit",
+"topk",
+"depth",
+"warps",
+"mxq"
+]
+},
+"_sorted_grid": {
+"params": [
+"group_rows",
+"mt",
+"pp",
+"k",
+"limit",
+"tr",
+"tc",
+"xcd"
+]
+},
+"_sorted_persistent": {
+"params": [
+"group_rows",
+"mt",
+"pp",
+"k",
+"topk",
+"grid"
+]
+},
+"_sorted_resident": {
+"params": [
+"group_rows",
+"mt",
+"pp",
+"k",
+"topk",
+"nt"
+]
+},
+"_sorted_ring": {
+"params": [
+"stage",
+"name",
+"group_rows",
+"mt",
+"pp",
+"k",
+"limit",
+"topk",
+"warps",
+"xcd",
+"depth",
+"mxq"
+]
+},
+"_sorted_s1_grid": {
+"params": [
+"name",
+"group_rows",
+"mt",
+"pp",
+"k",
+"tr",
+"tc",
+"limit",
+"xcd"
+]
+},
+"_sorted_s2_persistent": {
+"params": [
+"name",
+"group_rows",
+"mt",
+"pp",
+"k",
+"topk",
+"warps",
+"grid"
+]
+},
+"_sorted_s2_resident": {
+"params": [
+"name",
+"group_rows",
+"mt",
+"pp",
+"k",
+"topk",
+"warps",
+"nt"
+]
+},
+"_stage1": {
+"params": [
+"group_rows",
+"nb",
+"mt",
+"warps",
+"limit"
+]
+},
+"_stage1_direct": {
+"params": [
+"group_rows",
+"k",
+"mt",
+"pp",
+"depth",
+"limit"
+]
+},
+"_stage1_dma": {
+"params": [
+"group_rows",
+"mt",
+"pp",
+"depth",
+"limit"
+]
+},
+"_stage1_lds": {
+"params": [
+"group_rows",
+"mt",
+"limit",
+"pp",
+"xcd",
+"exact"
+]
+},
+"_stage1_ring": {
+"params": [
+"group_rows",
+"mt",
+"pp",
+"depth",
+"limit",
+"exact",
+"xsplit",
+"warps",
+"pairs"
+]
+},
+"_stage2": {
+"params": [
+"group_rows",
+"mt",
+"pp",
+"depth",
+"warps",
+"pairs",
+"k",
+"weighted"
+]
+},
+"aiter_layout_w13": {
+"params": [
+"w"
+]
+},
+"aiter_layout_w13_scale": {
+"params": [
+"s",
+"e"
+]
+},
+"aiter_layout_w2": {
+"params": [
+"w"
+]
+},
+"aiter_layout_w2_scale": {
+"params": [
+"s"
+]
+},
+"annotations": {},
+"bf16": {},
+"fp32": {},
+"fp8e4m3": {},
+"functools": {},
+"i32": {},
+"i8": {},
+"identity": {
+"params": [
+"m",
+"topk",
+"device"
+]
+},
+"inverse": {
+"params": [
+"pairs",
+"m",
+"topk"
+]
+},
+"math": {},
+"mx_quant": {
+"params": [
+"x"
+]
+},
+"prepare": {
+"params": [
+"hidden",
+"topk_ids",
+"n_experts",
+"align"
+]
+},
+"reduce": {
+"params": [
+"y",
+"pairs",
+"weights",
+"m",
+"inv",
+"wrow",
+"cb",
+"weighted",
+"dense"
+]
+},
+"reduce_kernel": {
+"params": [
+"name",
+"cb",
+"topk",
+"weighted",
+"dense"
+]
+},
+"reduce_torch": {
+"params": [
+"y",
+"pairs",
+"weights",
+"m"
+]
+},
+"ring_round": {
+"params": [
+"rows",
+"n_experts",
+"k",
+"pairs"
+]
+},
+"row_weights": {
+"params": [
+"pairs",
+"weights"
+]
+},
+"stage1": {
+"params": [
+"xq",
+"xs",
+"w13",
+"w13_scale",
+"tiles",
+"inter",
+"nb",
+"mt",
+"warps",
+"limit",
+"lds",
+"pp",
+"xcd",
+"depth",
+"dma",
+"direct",
+"exact",
+"xsplit",
+"auto",
+"rows",
+"ring_warps",
+"pairs"
+]
+},
+"stage1_direct_kernel": {
+"params": [
+"name",
+"group_rows",
+"k",
+"mt",
+"pp",
+"depth",
+"limit"
+]
+},
+"stage1_dma_kernel": {
+"params": [
+"name",
+"group_rows",
+"mt",
+"pp",
+"depth",
+"limit"
+]
+},
+"stage1_kernel": {
+"params": [
+"name",
+"group_rows",
+"nb",
+"mt",
+"warps",
+"limit"
+]
+},
+"stage1_lds_kernel": {
+"params": [
+"name",
+"group_rows",
+"mt",
+"pp",
+"limit",
+"xcd",
+"exact"
+]
+},
+"stage1_ring_kernel": {
+"params": [
+"name",
+"group_rows",
+"mt",
+"pp",
+"depth",
+"limit",
+"xcd",
+"exact",
+"xsplit",
+"warps",
+"pairs"
+]
+},
+"stage1_sorted": {
+"params": [
+"xq_tok",
+"xs_sorted",
+"w13",
+"w13_scale",
+"sorted_ids",
+"sorted_expert_ids",
+"num_valid",
+"inter",
+"mt",
+"pp",
+"limit",
+"depth",
+"warps",
+"grid",
+"mxq"
+]
+},
+"stage2": {
+"params": [
+"hq",
+"hs",
+"w2",
+"w2_scale",
+"tiles",
+"mt",
+"pp",
+"depth",
+"warps",
+"pairs",
+"wrow"
+]
+},
+"stage2_kernel": {
+"params": [
+"name",
+"group_rows",
+"mt",
+"pp",
+"depth",
+"xcd",
+"warps",
+"pairs",
+"k",
+"weighted"
+]
+},
+"stage2_sorted": {
+"params": [
+"hq",
+"hs_sorted",
+"w2",
+"w2_scale",
+"sorted_ids",
+"sorted_expert_ids",
+"num_valid",
+"sorted_weights",
+"m",
+"topk",
+"n_experts",
+"mt",
+"pp",
+"depth",
+"warps",
+"persistent",
+"resident"
+]
+},
+"units_for": {
+"params": [
+"tiles",
+"mt"
+]
+},
+"weight_view": {
+"params": [
+"w13",
+"group_rows"
+]
+}
+},
+"hk.ops.mxfp8": {
+"BK": {},
+"BM": {},
+"BN": {},
+"WARPS": {},
+"_KERNEL": {},
+"_MX4P": {},
+"_MX4W": {},
+"_PP": {},
+"aiter_scales": {
+"params": [
+"s"
+]
+},
+"annotations": {},
+"bf16": {},
+"expand_block_scales": {
+"params": [
+"s",
+"block_rows"
+]
+},
+"fp32": {},
+"fp8e4m3": {},
+"gemm": {
+"params": [
+"a",
+"b",
+"sa",
+"sb",
+"out"
+]
+},
+"gemm_4p": {
+"params": [
+"a",
+"b",
+"sa_packed",
+"sb_packed",
+"out",
+"**sched"
+]
+},
+"gemm_4w": {
+"params": [
+"a",
+"b",
+"sa_packed",
+"sb_packed",
+"out",
+"**sched"
+]
+},
+"gemm_4w_tail": {
+"params": [
+"a",
+"b",
+"sa_packed",
+"sb_packed",
+"out",
+"n1",
+"tail",
+"**sched"
+]
+},
+"gemm_8w": {
+"params": [
+"a",
+"b",
+"sa_packed",
+"sb_aiter",
+"out",
+"block_n",
+"**sched"
+]
+},
+"gemm_8w_tail": {
+"params": [
+"a",
+"b",
+"sa_packed",
+"sb_aiter",
+"sb_packed",
+"out",
+"n1",
+"tail",
+"**sched"
+]
+},
+"gemm_pp": {
+"params": [
+"a",
+"b",
+"sa",
+"sb",
+"out",
+"block_n",
+"**sched"
+]
+},
+"hk": {},
+"i32": {},
+"i8": {},
+"math": {},
+"mx4p_kernel": {
+"params": [
+"name",
+"block_m",
+"block_n",
+"stages",
+"wgm",
+"split_m",
+"split_n",
+"grid_size",
+"xcd_chunk"
+]
+},
+"mx4w_kernel": {
+"params": [
+"name",
+"block_m",
+"block_n",
+"stages",
+"wgm",
+"xcd_chunk",
+"setprio",
+"split_m",
+"split_n",
+"scale_ahead",
+"ilv",
+"rolled",
+"dbg",
+"defines",
+"exact"
+]
+},
+"mxfp8_kernel": {
+"params": [
+"name"
+]
+},
+"pack_scales": {
+"params": [
+"s"
+]
+},
+"tail_split": {
+"params": [
+"m",
+"n",
+"cus",
+"block_m",
+"block_n",
+"tail_block"
+]
+}
+},
+"hk.ops.norm": {
+"Any": {},
+"COLS": {},
+"KERNELS": {},
+"LAYOUT": {},
+"MAX_TPW": {},
+"MAX_WARPS": {},
+"Optional": {},
+"ROWS": {},
+"STRIP_KERNELS": {},
+"STRIP_MAX_PER_LANE": {},
+"STRIP_MAX_PER_LANE_WAVE64": {},
+"STRIP_PRELOAD_PAST": {},
+"WARP_COUNTS": {},
+"_ADD_TPW_INEXACT": {},
+"_DTYPES": {},
+"_FOLD_FIRST_KINDS": {},
+"_FOLD_MIN_WARPS": {},
+"_FOLD_ROWS_BELOW": {},
+"_HALF_SPLIT": {},
+"_HALF_SPLIT_DTYPES": {},
+"_NEG_INF": {},
+"_PER_LANE_HERE": {},
+"_PLAN_CACHE": {},
+"_PRELOAD_HERE": {},
+"_RESERVE_HERE": {},
+"_SOFTMAX_SPLIT": {},
+"_STRIP_AT_ROWS": {},
+"_STRIP_CACHE_BYTES": {},
+"_STRIP_LONG_ROWS": {},
+"_STRIP_PER_LANE": {},
+"_STRIP_PER_LANE_ARCHS": {},
+"_STRIP_PER_LANE_AT": {},
+"_STRIP_PER_LANE_DEFAULT": {},
+"_STRIP_PER_LANE_WAVE64": {},
+"_STRIP_RESERVE": {},
+"_STRIP_RESERVE_AT": {},
+"_STRIP_STREAMS": {},
+"_TORCH_DTYPES": {},
+"_WEIGHTED_UNFOLD_ROWS": {},
+"__all__": {},
+"_block_start": {
+"params": [
+"idx",
+"block",
+"extent",
+"exact"
+]
+},
+"_ceil": {
+"params": [
+"a",
+"b"
+]
+},
+"_exact": {
+"params": [
+"cols",
+"warps",
+"tpw"
+]
+},
+"_flat": {
+"params": [
+"t",
+"rows",
+"cols"
+]
+},
+"_fold_split": {
+"params": [
+"nblk"
+]
+},
+"_ftile": {
+"params": [
+"rows",
+"cols",
+"fold"
+]
+},
+"_grid": {
+"params": [
+"p"
+]
+},
+"_mask": {
+"params": [
+"tile",
+"pad",
+"ident"
+]
+},
+"_overlaps": {
+"params": [
+"a",
+"b"
+]
+},
+"_per_lane_here": {
+"params": []
+},
+"_reserve_here": {
+"params": []
+},
+"_resolve": {
+"params": [
+"kind",
+"dtype",
+"cols",
+"rows"
+]
+},
+"_resolve_strip": {
+"params": [
+"kind",
+"dtype",
+"cols",
+"rows"
+]
+},
+"_resolve_weighted": {
+"params": [
+"kind",
+"dtype",
+"cols",
+"rows"
+]
+},
+"_rms_weighted_kernel": {
+"params": [
+"name",
+"dtype",
+"warps",
+"residual",
+"split"
+]
+},
+"_row_reduce_kernel": {
+"params": [
+"name",
+"dtype",
+"kind",
+"warps",
+"bounded",
+"split"
+]
+},
+"_rows_cols": {
+"params": [
+"x"
+]
+},
+"_run": {
+"params": [
+"kind",
+"x",
+"out",
+"eps"
+]
+},
+"_run_strip": {
+"params": [
+"kind",
+"x",
+"out",
+"eps"
+]
+},
+"_run_tile": {
+"params": [
+"kind",
+"x",
+"out",
+"eps"
+]
+},
+"_shape_of": {
+"params": [
+"t"
+]
+},
+"_split": {
+"params": [
+"nblk"
+]
+},
+"_strip_grid": {
+"params": [
+"p"
+]
+},
+"_strip_kernel": {
+"params": [
+"name",
+"dtype",
+"kind",
+"warps"
+]
+},
+"_strip_regime": {
+"params": [
+"kind",
+"nbytes",
+"cols",
+"rows",
+"cap",
+"per_lane_at"
+]
+},
+"_strips_here": {
+"params": []
+},
+"_suffix_of": {
+"params": [
+"t"
+]
+},
+"_tpw_cap": {
+"params": [
+"kind",
+"fold",
+"exact"
+]
+},
+"_view": {
+"params": [
+"t",
+"rows",
+"cols",
+"fold"
+]
+},
+"_wave": {
+"params": []
+},
+"_wave64_split": {
+"params": [
+"chunks",
+"per",
+"most"
+]
+},
+"_weighted_strip": {
+"params": [
+"kind",
+"x",
+"rows",
+"cols"
+]
+},
+"bf16": {},
+"cross_warp": {
+"params": [
+"vec",
+"op",
+"warps",
+"scratch",
+"name"
+]
+},
+"fold_rows": {
+"params": [
+"vec",
+"op",
+"warps",
+"scratch",
+"name"
+]
+},
+"fp16": {},
+"fp32": {},
+"fused_add_rms_norm": {
+"params": [
+"x",
+"residual",
+"weight",
+"eps"
+]
+},
+"hk": {},
+"layernorm": {
+"params": [
+"x",
+"eps",
+"out"
+]
+},
+"plan": {
+"params": [
+"cols",
+"kind",
+"rows"
+]
+},
+"rms_norm": {
+"params": [
+"x",
+"weight",
+"eps",
+"out"
+]
+},
+"rmsnorm": {
+"params": [
+"x",
+"eps",
+"out"
+]
+},
+"softmax": {
+"params": [
+"x",
+"out"
+]
+},
+"strip_plan": {
+"params": [
+"cols",
+"kind",
+"nbytes",
+"wave",
+"per_lane"
+]
+},
+"strip_plan_for": {
+"params": [
+"kind",
+"nbytes",
+"cols",
+"rows",
+"arch"
+]
+},
+"strip_preload": {
+"params": [
+"k",
+"moved"
+]
+},
+"strip_preloads": {
+"params": [
+"moved"
+]
+},
+"strip_run": {
+"params": [
+"cols",
+"nbytes"
+]
+}
+},
+"hk.ops.paged": {
+"Dict": {},
+"KERNELS": {},
+"KV_BLOCK": {},
+"MAX_SPLITS": {},
+"MERGE_STEP": {},
+"MIN_SPLIT_PAGES": {},
+"NEG_INF": {},
+"Optional": {},
+"Q_TILE": {},
+"TARGET_WORKGROUPS": {},
+"_FUSED": {},
+"_Kernels": {
+"methods": {
+"__getitem__": [
+"self",
+"head_dim"
+],
+"get": [
+"self",
+"head_dim",
+"default"
+]
+}
+},
+"_MERGE": {},
+"_SPLIT": {},
+"_merge_splits": {
+"params": [
+"out",
+"o_part",
+"ml_part",
+"req",
+"kv_head",
+"splits",
+"active",
+"cols",
+"step"
+]
+},
+"_native_cdna": {
+"params": []
+},
+"bf16": {},
+"decode": {
+"params": [
+"walk",
+"merge",
+"q",
+"k_cache",
+"v_cache",
+"block_table",
+"seq_lens",
+"out",
+"scratch",
+"splits"
+]
+},
+"fp32": {},
+"fused_kernel": {
+"params": [
+"head_dim",
+"splits",
+"ablate",
+"defines"
+]
+},
+"fused_scratch": {
+"params": [
+"rows",
+"n_kv_heads",
+"head_dim",
+"device",
+"group"
+]
+},
+"hk": {},
+"i32": {},
+"math": {},
+"merge_kernel": {
+"params": [
+"head_dim",
+"splits"
+]
+},
+"merge_splits": {
+"params": [
+"o_part",
+"ml_part",
+"splits",
+"out"
+]
+},
+"paged_decode_fused_kernel": {
+"params": [
+"name",
+"head_dim",
+"splits",
+"kv_block",
+"scale",
+"max_vgprs",
+"min_occupancy",
+"ablate",
+"defines"
+]
+},
+"paged_decode_kernel": {
+"params": [
+"name",
+"head_dim",
+"kv_block",
+"scale",
+"max_vgprs",
+"min_occupancy"
+]
+},
+"paged_decode_split_kernel": {
+"params": [
+"name",
+"head_dim",
+"splits",
+"kv_block",
+"scale",
+"max_vgprs",
+"min_occupancy"
+]
+},
+"paged_merge_kernel": {
+"params": [
+"name",
+"head_dim",
+"splits",
+"kv_block",
+"merge_step",
+"warps"
+]
+},
+"plan_splits": {
+"params": [
+"n_reqs",
+"n_kv_heads",
+"n_pages"
+]
+},
+"split_kernel": {
+"params": [
+"head_dim",
+"splits"
+]
+}
+},
+"hk.ops.paged_cdna": {
+"ABLATIONS": {},
+"Any": {},
+"Dict": {},
+"HEAD_DIMS": {},
+"K_SHAPE": {},
+"MERGE_CHUNK": {},
+"MIN_SPLIT_PAGES": {},
+"NEG_INF": {},
+"Optional": {},
+"PAGE": {},
+"Q_TILE": {},
+"TARGET_WORKGROUPS": {},
+"V_SHAPE": {},
+"_KERNELS": {},
+"__all__": {},
+"annotations": {},
+"bf16": {},
+"decode_kernel": {
+"params": [
+"name",
+"head_dim",
+"splits",
+"mode",
+"stages",
+"ablate",
+"scale",
+"arch"
+]
+},
+"fp32": {},
+"hk": {},
+"i32": {},
+"kernel_for": {
+"params": [
+"head_dim",
+"splits",
+"mode",
+"**opts"
+]
+},
+"math": {},
+"merge_for": {
+"params": [
+"head_dim",
+"splits"
+]
+},
+"merge_kernel": {
+"params": [
+"name",
+"head_dim",
+"splits",
+"arch"
+]
+}
+},
+"hk.ops.paged_prefill": {
+"Dict": {},
+"KV_BLOCK": {},
+"NEG_INF": {},
+"Optional": {},
+"Q_TILE": {},
+"_KERNELS": {},
+"__all__": {},
+"_derive": {
+"params": [
+"head_dim",
+"q_block",
+"kv_block",
+"warps",
+"vt_d_chunk",
+"qk_tiles",
+"pv_tiles"
+]
+},
+"_native_cdna": {
+"params": []
+},
+"annotations": {},
+"bf16": {},
+"fp32": {},
+"hk": {},
+"i32": {},
+"kernel_for": {
+"params": [
+"head_dim",
+"group",
+"scale"
+]
+},
+"math": {},
+"paged_prefill_kernel": {
+"params": [
+"name",
+"head_dim",
+"group",
+"q_block",
+"kv_block",
+"warps",
+"vt_d_chunk",
+"qk_tiles",
+"pv_tiles",
+"scale",
+"max_vgprs",
+"min_occupancy"
+]
+},
+"work_list": {
+"params": [
+"q_lens",
+"device"
+]
+}
+},
+"hk.ops.quant": {
+"COLS": {},
+"KERNELS": {},
+"MAX_TPW": {},
+"ROWS": {},
+"STRIP_ARCHS": {},
+"STRIP_KERNELS": {},
+"WARP_COUNTS": {},
+"_DQPLAN_CACHE": {},
+"_DTYPES": {},
+"_ONE_BYTE_RUNS": {},
+"_QPLAN_CACHE": {},
+"_STRIP_NARROW_ROWS": {},
+"_TINY": {},
+"_TORCH_DTYPES": {},
+"__all__": {},
+"_block_start": {
+"params": [
+"idx",
+"block",
+"extent",
+"exact"
+]
+},
+"_ceil": {
+"params": [
+"a",
+"b"
+]
+},
+"_check_2d": {
+"params": [
+"rows",
+"cols",
+"what"
+]
+},
+"_dequantize_kernel": {
+"params": [
+"name",
+"dtype",
+"warps"
+]
+},
+"_exact": {
+"params": [
+"cols",
+"warps",
+"tpw"
+]
+},
+"_ftile": {
+"params": [
+"rows",
+"cols",
+"fold"
+]
+},
+"_grid_dq": {
+"params": [
+"p"
+]
+},
+"_grid_q": {
+"params": [
+"p"
+]
+},
+"_quantize_kernel": {
+"params": [
+"name",
+"dtype",
+"warps"
+]
+},
+"_resolve_dq": {
+"params": [
+"dtype",
+"cols"
+]
+},
+"_resolve_q": {
+"params": [
+"dtype",
+"cols"
+]
+},
+"_resolve_strip_q": {
+"params": [
+"dtype",
+"cols",
+"rows"
+]
+},
+"_split": {
+"params": [
+"nblk"
+]
+},
+"_strip_quantize_kernel": {
+"params": [
+"name",
+"dtype",
+"warps"
+]
+},
+"_suffix": {
+"params": [
+"dtype",
+"what"
+]
+},
+"_view": {
+"params": [
+"t",
+"rows",
+"cols",
+"fold"
+]
+},
+"as_vec": {
+"params": [
+"vec",
+"tile",
+"uniform"
+]
+},
+"bf16": {},
+"cross_warp": {
+"params": [
+"vec",
+"op",
+"warps",
+"scratch",
+"name"
+]
+},
+"dequantize": {
+"params": [
+"q",
+"scales",
+"dtype",
+"out"
+]
+},
+"fold_rows": {
+"params": [
+"vec",
+"op",
+"warps",
+"scratch",
+"name"
+]
+},
+"fp16": {},
+"fp32": {},
+"hk": {},
+"i8": {},
+"plan": {
+"params": [
+"cols",
+"working_set"
+]
+},
+"quantize": {
+"params": [
+"x",
+"out",
+"scales"
+]
+},
+"strip_plan_for": {
+"params": [
+"nbytes",
+"cols",
+"rows",
+"arch"
+]
+},
+"strip_preloads": {
+"params": [
+"moved"
+]
+}
+},
+"hk.ops.sdpa": {
+"Dict": {},
+"FALLBACKS": {},
+"K3_SHAPES": {},
+"List": {},
+"NAMESPACE": {},
+"Optional": {},
+"STATS": {},
+"Tuple": {},
+"_FALLBACK_CAP": {},
+"_K3": {},
+"_K3_FITS": {},
+"_OPS": {},
+"_PATCHED": {},
+"_SEEN": {},
+"_VERBOSE": {},
+"_VERDICTS": {},
+"_VERDICT_CAP": {},
+"__all__": {},
+"_attn": {},
+"_bnhd_views": {
+"params": [
+"*ts"
+]
+},
+"_k3_fits": {
+"params": [
+"q",
+"k",
+"v",
+"scale"
+]
+},
+"_verdict": {
+"params": [
+"q",
+"k",
+"v",
+"attn_mask",
+"dropout_p",
+"is_causal",
+"enable_gqa"
+]
+},
+"annotations": {},
+"attention": {
+"params": [
+"q",
+"k",
+"v",
+"causal",
+"scale",
+"out"
+]
+},
+"op_for": {
+"params": [
+"head_dim",
+"causal",
+"scale",
+"n",
+"bnhd"
+]
+},
+"os": {},
+"patch": {
+"params": []
+},
+"patched": {
+"params": []
+},
+"reset_stats": {
+"params": []
+},
+"scaled_dot_product_attention": {
+"params": [
+"query",
+"key",
+"value",
+"attn_mask",
+"dropout_p",
+"is_causal",
+"scale",
+"enable_gqa"
+]
+},
+"supported": {
+"params": [
+"q",
+"k",
+"v",
+"attn_mask",
+"dropout_p",
+"is_causal",
+"enable_gqa"
+]
+},
+"unpatch": {
+"params": []
+},
+"warm": {
+"params": [
+"shapes",
+"scale",
+"verbose"
+]
+},
+"why_unsupported": {
+"params": [
+"q",
+"k",
+"v",
+"attn_mask",
+"dropout_p",
+"is_causal",
+"enable_gqa"
+]
+}
+},
+"hk.ops.w4a16": {
+"AWQ_ORDER": {},
+"Any": {},
+"Dict": {},
+"MAX_TOKENS": {},
+"Optional": {},
+"SCHEDULES": {},
+"SHALLOW_K": {},
+"Tuple": {},
+"_DTYPES": {},
+"_KERNELS": {},
+"_OPS": {},
+"__all__": {},
+"_deinterleave": {
+"params": [
+"qw"
+]
+},
+"_finish": {
+"params": [
+"q_nk",
+"z_gn",
+"s_gn",
+"group",
+"dtype"
+]
+},
+"_interleave": {
+"params": [
+"words"
+]
+},
+"_op_for": {
+"params": [
+"*key"
+]
+},
+"_pack_k": {
+"params": [
+"q"
+]
+},
+"_unpack_cols": {
+"params": [
+"packed",
+"order"
+]
+},
+"bf16": {},
+"dequant": {
+"params": [
+"qw",
+"s",
+"zs",
+"group"
+]
+},
+"fp16": {},
+"fp32": {},
+"hk": {},
+"i32": {},
+"kernel_for": {
+"params": [
+"tokens",
+"slices",
+"warps",
+"group",
+"blocks",
+"dtype"
+]
+},
+"matmul": {
+"params": [
+"x",
+"qw",
+"s",
+"zs",
+"group",
+"out"
+]
+},
+"repack_awq": {
+"params": [
+"qweight",
+"qzeros",
+"scales",
+"group",
+"dtype"
+]
+},
+"repack_gptq": {
+"params": [
+"qweight",
+"qzeros",
+"scales",
+"group",
+"zero_offset",
+"dtype"
+]
+},
+"schedule_for": {
+"params": [
+"m",
+"k"
+]
+},
+"takes": {
+"params": [
+"m",
+"n",
+"k",
+"group"
+]
+},
+"tokens_for": {
+"params": [
+"m"
+]
+},
+"w4a16_kernel": {
+"params": [
+"name",
+"tokens",
+"slices",
+"warps",
+"group",
+"blocks",
+"dtype"
+]
+}
+},
+"hk.profile": {
+"Any": {},
+"COMPARED": {},
+"Callable": {},
+"Dict": {},
+"List": {},
+"Optional": {},
+"Path": {},
+"Profile": {
+"methods": {
+"__str__": [
+"self"
+],
+"agent": null,
+"arch": null,
+"call": null,
+"compare": null,
+"device": null,
+"dumps": [
+"self",
+"**kw"
+],
+"errors": null,
+"json": [
+"self"
+],
+"kernels": null,
+"name": null,
+"notes": null,
+"ok": [
+"self"
+],
+"passes": null,
+"seconds": null,
+"sources": null,
+"verdict": [
+"self"
+],
+"versions": null
+}
+},
+"SCHEMA": {},
+"Sequence": {},
+"Union": {},
+"_CallableModule": {
+"methods": {
+"__call__": [
+"self",
+"*args",
+"**kwargs"
+]
+}
+},
+"_DIS_CACHE": {},
+"__all__": {},
+"__name__": {},
+"_absolute": {
+"params": [
+"ref"
+]
+},
+"_analyze": {},
+"_counters": {},
+"_counters_read_zero": {
+"params": [
+"recs"
+]
+},
+"_fmt_rate": {
+"params": [
+"x",
+"unit"
+]
+},
+"_functions_of": {
+"params": [
+"build",
+"arch"
+]
+},
+"_get": {
+"params": [
+"d",
+"path"
+]
+},
+"_gpu_present": {
+"params": []
+},
+"_hk_rows": {
+"params": [
+"child"
+]
+},
+"_inputs_ref": {
+"params": [
+"inputs",
+"work"
+]
+},
+"_interleaved": {
+"params": [
+"spec",
+"other",
+"work",
+"timeout"
+]
+},
+"_isa": {},
+"_isa_for": {
+"params": [
+"rec",
+"build",
+"arch",
+"notes"
+]
+},
+"_isa_only": {
+"params": [
+"prof",
+"spec",
+"work",
+"gpu"
+]
+},
+"_json": {},
+"_match_build": {
+"params": [
+"name",
+"rows"
+]
+},
+"_matrix_dtype": {
+"params": [
+"f"
+]
+},
+"_matrix_idle": {
+"params": [
+"att",
+"res",
+"arch"
+]
+},
+"_mix_text": {
+"params": [
+"mx"
+]
+},
+"_pct": {
+"params": [
+"x"
+]
+},
+"_pick_function": {
+"params": [
+"funcs",
+"name"
+]
+},
+"_rocprof_version": {
+"params": []
+},
+"_short": {
+"params": [
+"name",
+"n"
+]
+},
+"_target_ref": {
+"params": [
+"fn"
+]
+},
+"_time": {},
+"annotations": {},
+"call_verdict": {
+"params": [
+"kernels"
+]
+},
+"compare": {
+"params": [
+"a",
+"b"
+]
+},
+"dataclass": {},
+"field": {},
+"kernel_summary": {
+"params": [
+"k"
+]
+},
+"os": {},
+"profile": {
+"params": [
+"fn",
+"inputs",
+"consts",
+"name",
+"vs",
+"counters",
+"att",
+"att_kernels",
+"iters",
+"gap_ms",
+"timeout",
+"flops",
+"bytes",
+"shape",
+"workdir",
+"keep",
+"gpu",
+"record",
+"log"
+]
+},
+"replay": {
+"params": [
+"path"
+]
+},
+"summary": {
+"params": [
+"p"
+]
+},
+"sys": {},
+"tempfile": {},
+"types": {}
+},
+"hk.profile.__main__": {
+"List": {},
+"Optional": {},
+"Path": {},
+"annotations": {},
+"argparse": {},
+"build_parser": {
+"params": []
+},
+"main": {
+"params": [
+"argv"
+]
+},
+"sys": {}
+},
+"hk.profile._child": {
+"Any": {},
+"Dict": {},
+"List": {},
+"MARKER": {},
+"_build_rows": {
+"params": [
+"calls"
+]
+},
+"_inputs": {
+"params": [
+"spec",
+"mod",
+"device"
+]
+},
+"_marker": {
+"params": []
+},
+"_resolve": {
+"params": [
+"spec"
+]
+},
+"annotations": {},
+"json": {},
+"main": {
+"params": [
+"path"
+]
+},
+"sys": {},
+"time": {},
+"traceback": {}
+},
+"hk.profile.analyze": {
+"Any": {},
+"CEILINGS": {},
+"COMPUTE_BOUND": {},
+"Dict": {},
+"FABRIC_BOUND": {},
+"KINDS": {},
+"List": {},
+"MEMORY_BOUND": {},
+"Optional": {},
+"REASONS": {},
+"REASON_TEXT": {},
+"Tuple": {},
+"__all__": {},
+"_counters": {},
+"_dtype_of": {
+"params": [
+"isa",
+"c"
+]
+},
+"_pct": {
+"params": [
+"x"
+]
+},
+"annotations": {},
+"ceilings": {
+"params": [
+"arch"
+]
+},
+"findings": {
+"params": [
+"arch",
+"k"
+]
+},
+"grid_fit": {
+"params": [
+"arch",
+"agent",
+"grid",
+"build"
+]
+},
+"kernel_report": {
+"params": [
+"arch",
+"agent",
+"rec",
+"build",
+"isa",
+"call_bytes",
+"flops",
+"bytes_",
+"single"
+]
+},
+"math": {},
+"stalls_from_att": {
+"params": [
+"region"
+]
+},
+"verdict": {
+"params": [
+"arch",
+"k"
+]
+}
+},
+"hk.profile.counters": {
+"Any": {},
+"CANNOT": {},
+"Dict": {},
+"List": {},
+"Optional": {},
+"PASSES": {},
+"QUAD": {},
+"Tuple": {},
+"_MOPS": {},
+"__all__": {},
+"_r": {
+"params": [
+"x",
+"n"
+]
+},
+"annotations": {},
+"derive": {
+"params": [
+"arch",
+"raw",
+"agent",
+"by_pass"
+]
+},
+"passes": {
+"params": [
+"arch"
+]
+}
+},
+"hk.profile.isa": {
+"Any": {},
+"CLASSES": {},
+"Dict": {},
+"Function": {
+"methods": {
+"insts": null,
+"name": null
+}
+},
+"Inst": {
+"methods": {
+"addr": null,
+"cls": null,
+"mnemonic": null,
+"operands": null,
+"size": null,
+"target": null,
+"text": [
+"self"
+]
+}
+},
+"Iterable": {},
+"List": {},
+"Loop": {
+"methods": {
+"end": null,
+"index": null,
+"start": null
+}
+},
+"Optional": {},
+"Path": {},
+"Tuple": {},
+"_BRANCH": {},
+"_BUNDLE": {},
+"_CNT": {},
+"_FUNC": {},
+"_LINE": {},
+"_MMA_SHAPE": {},
+"_MULTI_K": {},
+"_SMEM": {},
+"_TRANS": {},
+"_VMEM": {},
+"_WIDTH": {},
+"__all__": {},
+"_att_sum": {
+"params": [
+"insts",
+"stats"
+]
+},
+"_att_target": {
+"params": [
+"mn",
+"ops",
+"addr"
+]
+},
+"_elf_sections": {
+"params": [
+"data"
+]
+},
+"_empty_mix": {
+"params": []
+},
+"_unbundle": {
+"params": [
+"blob",
+"arch"
+]
+},
+"access_bytes": {
+"params": [
+"mnemonic"
+]
+},
+"analyze": {
+"params": [
+"f",
+"att",
+"waves_traced"
+]
+},
+"annotations": {},
+"classify": {
+"params": [
+"mnemonic",
+"operands"
+]
+},
+"code_object": {
+"params": [
+"path",
+"arch"
+]
+},
+"dataclass": {},
+"disassemble": {
+"params": [
+"co",
+"arch"
+]
+},
+"field": {},
+"from_att": {
+"params": [
+"code"
+]
+},
+"loops": {
+"params": [
+"f"
+]
+},
+"matrix_ops_per_wave": {
+"params": [
+"f",
+"att",
+"waves_traced"
+]
+},
+"mix": {
+"params": [
+"insts"
+]
+},
+"mma_flops": {
+"params": [
+"mnemonic",
+"wave"
+]
+},
+"objdump": {
+"params": []
+},
+"parse_objdump": {
+"params": [
+"text"
+]
+},
+"re": {},
+"regions": {
+"params": [
+"res"
+]
+},
+"shutil": {},
+"struct": {},
+"subprocess": {},
+"wait_kind": {
+"params": [
+"mnemonic",
+"operands"
+]
+}
+},
+"hk.profile.run": {
+"Any": {},
+"Dict": {},
+"List": {},
+"MARKER": {},
+"Optional": {},
+"Path": {},
+"Tuple": {},
+"_FATAL": {},
+"__all__": {},
+"_agent": {
+"params": [
+"rows",
+"agent_id"
+]
+},
+"_counters": {},
+"_finish": {
+"params": [
+"res",
+"work",
+"own",
+"keep"
+]
+},
+"_kill": {
+"params": [
+"proc"
+]
+},
+"_median": {
+"params": [
+"xs"
+]
+},
+"_per_call": {
+"params": [
+"region",
+"iters"
+]
+},
+"_read_att": {
+"params": [
+"path"
+]
+},
+"_read_csv": {
+"params": [
+"path"
+]
+},
+"_region": {
+"params": [
+"rows"
+]
+},
+"_run": {
+"params": [
+"cmd",
+"log",
+"timeout",
+"env"
+]
+},
+"_spread": {
+"params": [
+"xs"
+]
+},
+"annotations": {},
+"child_env": {
+"params": []
+},
+"collect": {
+"params": [
+"spec",
+"arch",
+"workdir",
+"counters",
+"att",
+"att_kernels",
+"iters",
+"counter_iters",
+"timeout",
+"passes",
+"keep",
+"log"
+]
+},
+"csv": {},
+"decoder_dir": {
+"params": []
+},
+"glob": {},
+"json": {},
+"os": {},
+"re": {},
+"rocprofv3": {
+"params": []
+},
+"shutil": {},
+"signal": {},
+"statistics": {},
+"subprocess": {},
+"sys": {},
+"tempfile": {},
+"time": {}
+},
+"hk.profile.timeline": {
+"Any": {},
+"Callable": {},
+"Dict": {},
+"List": {},
+"Optional": {},
+"SIMD_FLOPS_PER_CYCLE": {},
+"Sequence": {},
+"Tuple": {},
+"__all__": {},
+"annotations": {},
+"bisect": {},
+"matrix_idle": {
+"params": [
+"waves",
+"arch",
+"label",
+"pipe_cycles",
+"is_matrix"
+]
+}
+},
+"hk.runtime": {
+"Build": {
+"methods": {
+"cached": null,
+"kernels": null,
+"key": null,
+"log_path": null,
+"module_name": null,
+"report": [
+"self"
+],
+"so_path": null,
+"source_path": null
+}
+},
+"CompileError": {
+"methods": {}
+},
+"KernelResources": {
+"methods": {
+"agpr": null,
+"lds": null,
+"line": [
+"self"
+],
+"mangled": null,
+"name": null,
+"occ_by_reg": null,
+"occupancy": null,
+"scratch": null,
+"sgpr": null,
+"sgpr_spill": null,
+"spills": [
+"self"
+],
+"vgpr": null,
+"vgpr_headroom": null,
+"vgpr_rounded": null,
+"vgpr_spill": null
+}
+},
+"ResourceError": {
+"methods": {}
+},
+"__all__": {},
+"__getattr__": {
+"params": [
+"name"
+]
+},
+"arch": {},
+"build": {
+"params": [
+"source",
+"arch",
+"name",
+"extra_flags",
+"allow_scratch",
+"max_vgprs",
+"min_occupancy",
+"verbose",
+"kind"
+]
+},
+"cache_dir": {
+"params": []
+},
+"compile": {},
+"include_dirs": {
+"params": []
+},
+"module": {},
+"resources": {},
+"torch_ext": {},
+"torch_op": {
+"params": [
+"kernel",
+"ns",
+"name",
+"**const_overrides"
+]
+}
+},
+"hk.runtime.arch": {
+"ArchMismatchError": {
+"methods": {}
+},
+"List": {},
+"Optional": {},
+"_GFX_RE": {},
+"_from_env": {
+"params": []
+},
+"_from_rocminfo": {
+"params": []
+},
+"_from_torch": {
+"params": []
+},
+"annotations": {},
+"check_device": {
+"params": [
+"arch",
+"what",
+"device"
+]
+},
+"detect": {
+"params": []
+},
+"device_arch": {
+"params": [
+"device"
+]
+},
+"functools": {},
+"get_target": {
+"params": [
+"arch"
+]
+},
+"os": {},
+"re": {},
+"resolve": {
+"params": [
+"arch"
+]
+},
+"shutil": {},
+"subprocess": {}
+},
+"hk.runtime.cocheck": {
+"Dict": {},
+"Inst": {
+"methods": {
+"addr": null,
+"mnem": [
+"self"
+],
+"ops": [
+"self"
+],
+"text": null
+}
+},
+"Kernel": {
+"methods": {
+"agpr": null,
+"arch": null,
+"hazards": null,
+"line": [
+"self"
+],
+"name": null,
+"occupancy": null,
+"ok": [
+"self"
+],
+"scratch": null,
+"sgpr": null,
+"sgpr_spill": null,
+"vgpr": null,
+"vgpr_spill": null,
+"warnings": null,
+"wave": null
+}
+},
+"List": {},
+"Optional": {},
+"Path": {},
+"Sequence": {},
+"Set": {},
+"TARGETS": {},
+"Tuple": {},
+"_LDS_LOAD": {},
+"_REG": {},
+"_STORE": {},
+"_VMEM_ATOMIC": {},
+"_VMEM_LOAD": {},
+"_Walker": {
+"methods": {
+"__init__": [
+"self",
+"stores_in_vmcnt",
+"limit"
+],
+"_step": [
+"self",
+"st",
+"ins"
+],
+"step": [
+"self",
+"st",
+"ins"
+]
+}
+},
+"_branch_target": {
+"params": [
+"ins",
+"next_addr"
+]
+},
+"_regs": {
+"params": [
+"operand"
+]
+},
+"_split_operands": {
+"params": [
+"rest"
+]
+},
+"_tool": {
+"params": [
+"name"
+]
+},
+"annotations": {},
+"argparse": {},
+"check": {
+"params": [
+"co"
+]
+},
+"dataclass": {},
+"disassemble": {
+"params": [
+"co"
+]
+},
+"exec_hazards": {
+"params": [
+"insts",
+"limit"
+]
+},
+"field": {},
+"lds_copy_hazards": {
+"params": [
+"binary",
+"bundled"
+]
+},
+"main": {
+"params": [
+"argv"
+]
+},
+"parse_notes": {
+"params": [
+"out"
+]
+},
+"re": {},
+"resources": {
+"params": [
+"co"
+]
+},
+"subprocess": {},
+"sys": {},
+"tempfile": {},
+"unbundle": {
+"params": [
+"host",
+"outdir"
+]
+},
+"wait_hazards": {
+"params": [
+"insts",
+"arch",
+"limit",
+"benign"
+]
+}
+},
+"hk.runtime.codeobj": {
+"Any": {},
+"CodeObjectKernel": {
+"methods": {
+"__init__": [
+"self",
+"ir",
+"build"
+],
+"_argument": [
+"self"
+],
+"_values": [
+"self",
+"shapes",
+"ptrs",
+"row_strides"
+],
+"function": [
+"self",
+"device"
+],
+"grid_for": [
+"self",
+"shapes"
+],
+"launch": [
+"self",
+"device",
+"stream",
+"shapes",
+"ptrs",
+"row_strides"
+],
+"pack": [
+"self",
+"shapes",
+"ptrs",
+"row_strides"
+]
+}
+},
+"CompileError": {
+"methods": {}
+},
+"Dict": {},
+"List": {},
+"Optional": {},
+"Path": {},
+"Sequence": {},
+"Tuple": {},
+"_HIP": {},
+"_LIBS": {},
+"_LOADED": {},
+"_PARAM_BUFFER": {},
+"_PARAM_END": {},
+"_PARAM_SIZE": {},
+"_TORCH_DTYPES": {},
+"__all__": {},
+"_check": {
+"params": [
+"err",
+"what"
+]
+},
+"_compile": {},
+"_elf_symbols": {
+"params": [
+"data"
+]
+},
+"_layout": {
+"params": [
+"offsets",
+"size"
+]
+},
+"annotations": {},
+"ctypes": {},
+"elf_kernel": {
+"params": [
+"data",
+"prefix"
+]
+},
+"elf_symbol": {
+"params": [
+"data",
+"name"
+]
+},
+"forget": {
+"params": []
+},
+"hip": {
+"params": []
+},
+"load": {
+"params": [
+"kernel",
+"**const_overrides"
+]
+},
+"struct": {},
+"tensor_args": {
+"params": [
+"k",
+"tensors",
+"op"
+]
+},
+"threading": {},
+"torch_op": {
+"params": [
+"kernel",
+"ns",
+"name",
+"**const_overrides"
+]
+}
+},
+"hk.runtime.compile": {
+"Build": {
+"methods": {
+"cached": null,
+"kernels": null,
+"key": null,
+"log_path": null,
+"module_name": null,
+"report": [
+"self"
+],
+"so_path": null,
+"source_path": null
+}
+},
+"CODEOBJ": {},
+"CompileError": {
+"methods": {}
+},
+"KernelResources": {
+"methods": {
+"agpr": null,
+"lds": null,
+"line": [
+"self"
+],
+"mangled": null,
+"name": null,
+"occ_by_reg": null,
+"occupancy": null,
+"scratch": null,
+"sgpr": null,
+"sgpr_spill": null,
+"spills": [
+"self"
+],
+"vgpr": null,
+"vgpr_headroom": null,
+"vgpr_rounded": null,
+"vgpr_spill": null
+}
+},
+"List": {},
+"Optional": {},
+"Path": {},
+"ResourceError": {
+"methods": {}
+},
+"Sequence": {},
+"Target": {
+"methods": {
+"arch": null,
+"charged_vgprs": [
+"self",
+"vgprs",
+"agprs"
+],
+"extra_includes": null,
+"fast_smem_layouts": null,
+"gpu_target": null,
+"has_global_to_lds_dma": null,
+"kernarg_preload": null,
+"kittens_define": null,
+"lds_per_workgroup": null,
+"lds_pool_bytes": null,
+"lgkmcnt_max": null,
+"max_waves_per_simd": null,
+"mma": null,
+"mma_operands_mirrored": null,
+"occupancy": [
+"self",
+"vgprs"
+],
+"occupancy_achieved": [
+"self",
+"vgprs",
+"lds_bytes",
+"waves_per_workgroup"
+],
+"occupancy_by_lds": [
+"self",
+"lds_bytes",
+"waves_per_workgroup"
+],
+"sgprs_per_wave": null,
+"simds_per_lds_pool": null,
+"strips": null,
+"tile_shapes": null,
+"tile_vgprs": [
+"self",
+"dtype_bits",
+"rows",
+"cols"
+],
+"unified_agprs": null,
+"verified": null,
+"vgpr_granule": null,
+"vgpr_headroom": [
+"self",
+"vgprs"
+],
+"vgpr_rounded": [
+"self",
+"vgprs"
+],
+"vgprs_per_simd": null,
+"wave": null
+}
+},
+"Tuple": {},
+"_ARCH_TREE": {},
+"_BUILT": {},
+"_KEY_MODULE": {},
+"_WAIT_MARK": {},
+"_dialect_version": {},
+"_hipcc_version": {
+"params": []
+},
+"_keep": {
+"params": [
+"tmp",
+"key"
+]
+},
+"_load_cached": {
+"params": [
+"d",
+"target"
+]
+},
+"_pybind_includes": {
+"params": []
+},
+"_toolchain_cache": {},
+"_tree_hash": {
+"params": [
+"root",
+"suffixes"
+]
+},
+"_wait_gate": {
+"params": [
+"binary",
+"kind"
+]
+},
+"annotations": {},
+"build": {
+"params": [
+"source",
+"arch",
+"name",
+"extra_flags",
+"allow_scratch",
+"max_vgprs",
+"min_occupancy",
+"verbose",
+"kind"
+]
+},
+"built_fingerprint": {
+"params": []
+},
+"cache_dir": {
+"params": []
+},
+"cache_key": {
+"params": [
+"source",
+"target",
+"extra",
+"kind"
+]
+},
+"codeobj_flags": {
+"params": [
+"target",
+"extra"
+]
+},
+"dataclass": {},
+"dialect_version": {
+"params": []
+},
+"ext_suffix": {
+"params": []
+},
+"flags": {
+"params": [
+"target",
+"module_name",
+"extra"
+]
+},
+"get_target": {
+"params": [
+"arch"
+]
+},
+"hashlib": {},
+"hipcc": {
+"params": []
+},
+"hipcc_fingerprint": {
+"params": []
+},
+"include_dirs": {
+"params": []
+},
+"os": {},
+"resources": {},
+"rocm_path": {
+"params": []
+},
+"shutil": {},
+"subprocess": {},
+"sys": {},
+"sysconfig": {},
+"target_headers_fingerprint": {
+"params": [
+"target"
+]
+},
+"tempfile": {},
+"toolchain_fingerprint": {
+"params": []
+}
+},
+"hk.runtime.module": {
+"Dict": {},
+"ModuleType": {},
+"Path": {},
+"_loaded": {},
+"annotations": {},
+"importlib": {},
+"load": {
+"params": [
+"so_path",
+"module_name"
+]
+},
+"sys": {}
+},
+"hk.runtime.resources": {
+"Dict": {},
+"KernelResources": {
+"methods": {
+"agpr": null,
+"lds": null,
+"line": [
+"self"
+],
+"mangled": null,
+"name": null,
+"occ_by_reg": null,
+"occupancy": null,
+"scratch": null,
+"sgpr": null,
+"sgpr_spill": null,
+"spills": [
+"self"
+],
+"vgpr": null,
+"vgpr_headroom": null,
+"vgpr_rounded": null,
+"vgpr_spill": null
+}
+},
+"List": {},
+"Optional": {},
+"ResourceError": {
+"methods": {}
+},
+"Target": {
+"methods": {
+"arch": null,
+"charged_vgprs": [
+"self",
+"vgprs",
+"agprs"
+],
+"extra_includes": null,
+"fast_smem_layouts": null,
+"gpu_target": null,
+"has_global_to_lds_dma": null,
+"kernarg_preload": null,
+"kittens_define": null,
+"lds_per_workgroup": null,
+"lds_pool_bytes": null,
+"lgkmcnt_max": null,
+"max_waves_per_simd": null,
+"mma": null,
+"mma_operands_mirrored": null,
+"occupancy": [
+"self",
+"vgprs"
+],
+"occupancy_achieved": [
+"self",
+"vgprs",
+"lds_bytes",
+"waves_per_workgroup"
+],
+"occupancy_by_lds": [
+"self",
+"lds_bytes",
+"waves_per_workgroup"
+],
+"sgprs_per_wave": null,
+"simds_per_lds_pool": null,
+"strips": null,
+"tile_shapes": null,
+"tile_vgprs": [
+"self",
+"dtype_bits",
+"rows",
+"cols"
+],
+"unified_agprs": null,
+"verified": null,
+"vgpr_granule": null,
+"vgpr_headroom": [
+"self",
+"vgprs"
+],
+"vgpr_rounded": [
+"self",
+"vgprs"
+],
+"vgprs_per_simd": null,
+"wave": null
+}
+},
+"_FIELDS": {},
+"_FIELD_RE": {},
+"_NAME_RE": {},
+"_demangle": {
+"params": [
+"names"
+]
+},
+"annotations": {},
+"dataclass": {},
+"field": {},
+"gate": {
+"params": [
+"kernels",
+"allow_scratch",
+"max_vgprs",
+"min_occupancy"
+]
+},
+"parse": {
+"params": [
+"log",
+"target"
+]
+},
+"re": {},
+"report": {
+"params": [
+"kernels"
+]
+},
+"shutil": {},
+"subprocess": {}
+},
+"hk.runtime.torch_ext": {
+"Any": {},
+"CompileError": {
+"methods": {}
+},
+"Dict": {},
+"Optional": {},
+"Path": {},
+"Tuple": {},
+"_LOADED": {},
+"_compile": {},
+"_existing": {
+"params": [
+"torch",
+"ns",
+"op"
+]
+},
+"_torch": {
+"params": []
+},
+"annotations": {},
+"build": {
+"params": [
+"kernel",
+"ns",
+"name",
+"**const_overrides"
+]
+},
+"forget": {
+"params": []
+},
+"functools": {},
+"source": {
+"params": [
+"kernel",
+"ns",
+"name",
+"**const_overrides"
+]
+},
+"torch_flags": {
+"params": []
+},
+"torch_op": {
+"params": [
+"kernel",
+"ns",
+"name",
+"**const_overrides"
+]
+}
+},
+"hk.runtime.warm": {
+"Any": {},
+"Build": {
+"methods": {
+"cached": null,
+"kernels": null,
+"key": null,
+"log_path": null,
+"module_name": null,
+"report": [
+"self"
+],
+"so_path": null,
+"source_path": null
+}
+},
+"Dict": {},
+"Iterable": {},
+"List": {},
+"Optional": {},
+"Sequence": {},
+"ThreadPoolExecutor": {},
+"Tuple": {},
+"WarmResult": {
+"methods": {
+"built": null,
+"errors": null,
+"ok": [
+"self"
+],
+"seconds": null
+}
+},
+"_all_shipped_jobs": {
+"params": []
+},
+"annotations": {},
+"build": {
+"params": [
+"source",
+"arch",
+"name",
+"extra_flags",
+"allow_scratch",
+"max_vgprs",
+"min_occupancy",
+"verbose",
+"kind"
+]
+},
+"dataclass": {},
+"default_workers": {
+"params": []
+},
+"field": {},
+"jobs_for": {
+"params": [
+"kernels",
+"consts"
+]
+},
+"main": {
+"params": [
+"argv"
+]
+},
+"os": {},
+"time": {},
+"warm_cache": {
+"params": [
+"jobs",
+"workers",
+"verbose",
+"scaffold",
+"extra_flags",
+"kind"
+]
+}
+},
+"hk.schedules": {
+"AttnCdna": {
+"methods": {
+"_check_struct": [
+"self",
+"arch",
+"head_dim"
+],
+"_make": [
+"self",
+"head_dim",
+"causal",
+"scale",
+"arch"
+],
+"_shared": [
+"self",
+"head_dim",
+"causal",
+"scale"
+],
+"arches": null,
+"canonical": [
+"self"
+],
+"family": null,
+"lazy": null,
+"lpt": null,
+"name_for": [
+"self",
+"head_dim",
+"causal",
+"scale"
+],
+"sched": null,
+"setprio": null,
+"skip": null
+}
+},
+"AttnRdna": {
+"methods": {
+"_check_shape": [
+"self",
+"n",
+"n_kv",
+"head_dim",
+"arch"
+],
+"_check_struct": [
+"self",
+"arch",
+"head_dim"
+],
+"_extra": [
+"self"
+],
+"_make": [
+"self",
+"head_dim",
+"causal",
+"scale",
+"arch"
+],
+"_shared": [
+"self",
+"head_dim",
+"causal",
+"scale"
+],
+"arches": null,
+"base_for_problem": [
+"cls",
+"n",
+"head_dim",
+"causal",
+"arch"
+],
+"family": null,
+"kv_block": null,
+"legacy": [
+"self"
+],
+"max_vgprs": null,
+"min_occupancy": null,
+"name_for": [
+"self",
+"head_dim",
+"causal",
+"scale"
+],
+"pv_tiles": null,
+"q_block": null,
+"qk_tiles": null,
+"setprio": null,
+"vt_d_chunk": null,
+"warps": null
+}
+},
+"AttnSchedule": {
+"methods": {
+"_check_shape": [
+"self",
+"n",
+"n_kv",
+"head_dim",
+"arch"
+],
+"_check_struct": [
+"self",
+"arch",
+"head_dim"
+],
+"_make": [
+"self",
+"head_dim",
+"causal",
+"scale",
+"arch"
+],
+"_shared": [
+"self",
+"head_dim",
+"causal",
+"scale"
+],
+"base_for_problem": [
+"cls",
+"n",
+"head_dim",
+"causal",
+"arch"
+],
+"check": [
+"self",
+"n",
+"head_dim",
+"arch",
+"causal",
+"n_kv",
+"dtype"
+],
+"check_kernel": [
+"self",
+"arch",
+"head_dim",
+"causal"
+],
+"kernel": [
+"self",
+"head_dim",
+"causal",
+"scale",
+"arch"
+],
+"launch": [
+"self",
+"q",
+"k",
+"v",
+"causal",
+"scale",
+"out"
+],
+"space": [
+"cls",
+"n",
+"head_dim",
+"arch",
+"causal",
+"around",
+"radius",
+"axes",
+"legal"
+]
+}
+},
+"Axis": {
+"methods": {
+"default": null,
+"doc": null,
+"gate": null,
+"name": null,
+"near": [
+"self",
+"value",
+"radius"
+],
+"seed": null,
+"values": null
+}
+},
+"CUS": {},
+"Columns": {
+"methods": {
+"__post_init__": [
+"self"
+],
+"__str__": [
+"self"
+],
+"_from_record_dict": [
+"cls",
+"d",
+"strict"
+],
+"_name": [
+"self"
+],
+"_steps": [
+"self",
+"m",
+"n",
+"k",
+"lo"
+],
+"arches": null,
+"axes": [
+"cls"
+],
+"check": [
+"self",
+"m",
+"n",
+"k",
+"arch",
+"dtype"
+],
+"check_kernel": [
+"self",
+"arch"
+],
+"cut": null,
+"cut_at": [
+"self",
+"m",
+"n"
+],
+"family": null,
+"head": null,
+"kernel": [
+"self",
+"epilogue",
+"arch"
+],
+"neighbors": [
+"self",
+"radius",
+"axes"
+],
+"predict": [
+"self",
+"arch"
+],
+"space": [
+"cls",
+"m",
+"n",
+"k",
+"arch",
+"around",
+"radius",
+"axes",
+"base",
+"legal"
+],
+"tail": null,
+"to_record": [
+"self",
+"full"
+]
+}
+},
+"Decode": {
+"methods": {
+"_check_shape": [
+"self",
+"m",
+"n",
+"k",
+"arch"
+],
+"_check_struct": [
+"self",
+"arch"
+],
+"_make": [
+"self",
+"epilogue",
+"arch"
+],
+"_name": [
+"self"
+],
+"_shared_kernel": [
+"self"
+],
+"_steps": [
+"self",
+"m",
+"n",
+"k",
+"lo"
+],
+"arches": null,
+"base_for": [
+"cls",
+"m",
+"n",
+"k",
+"arch"
+],
+"canonical": [
+"self"
+],
+"combine_depth": null,
+"family": null,
+"legacy": [
+"self"
+],
+"max_vgprs": null,
+"min_occupancy": null,
+"resident": null,
+"slices": null,
+"splits": null,
+"tokens": null,
+"warps": null
+}
+},
+"Dp": {
+"methods": {
+"_check_shape": [
+"self",
+"m",
+"n",
+"k",
+"arch"
+],
+"_check_struct": [
+"self",
+"arch"
+],
+"_make": [
+"self",
+"epilogue",
+"arch"
+],
+"_name": [
+"self"
+],
+"_shared_kernel": [
+"self"
+],
+"arches": null,
+"base_for": [
+"cls",
+"m",
+"n",
+"k",
+"arch"
+],
+"block_m": null,
+"block_n": null,
+"family": null,
+"k_step": null,
+"lds_shape": null,
+"max_vgprs": null,
+"min_occupancy": null,
+"nt": null,
+"pipelined": null,
+"setprio": null,
+"splits": null,
+"stages": null,
+"warps_m": null,
+"warps_n": null,
+"wgm": null,
+"xcd_chunk": null
+}
+},
+"GemmSchedule": {
+"methods": {
+"__call__": null,
+"_check_knobs": [
+"self",
+"arch"
+],
+"_check_resources": [
+"self",
+"arch"
+],
+"_check_struct": [
+"self",
+"arch"
+],
+"_make": [
+"self",
+"epilogue",
+"arch"
+],
+"_name": [
+"self"
+],
+"_shared_kernel": [
+"self"
+],
+"_shared_ok": [
+"self"
+],
+"_steps": [
+"self",
+"m",
+"n",
+"k",
+"lo"
+],
+"kernel": [
+"self",
+"epilogue",
+"arch"
+],
+"kernels": [
+"self",
+"m",
+"n",
+"k",
+"epilogue",
+"arch"
+],
+"launch": [
+"self",
+"a",
+"b",
+"out"
+],
+"name": [
+"self"
+],
+"predict": [
+"self",
+"arch"
+],
+"steps": [
+"self",
+"m",
+"n",
+"k"
+]
+}
+},
+"Illegal": {
+"methods": {
+"__init__": [
+"self",
+"schedule",
+"reasons",
+"shape",
+"arch"
+]
+}
+},
+"PingPong": {
+"methods": {
+"_check_shape": [
+"self",
+"m",
+"n",
+"k",
+"arch"
+],
+"_check_struct": [
+"self",
+"arch"
+],
+"_make": [
+"self",
+"epilogue",
+"arch"
+],
+"_name": [
+"self"
+],
+"_shared_kernel": [
+"self"
+],
+"_shared_ok": [
+"self"
+],
+"arches": null,
+"base_for": [
+"cls",
+"m",
+"n",
+"k",
+"arch"
+],
+"block_m": null,
+"block_n": null,
+"canonical": [
+"self"
+],
+"early_store": null,
+"family": null,
+"hipkittens_waits": null,
+"k_step": null,
+"late_b": null,
+"lds_shape": null,
+"max_vgprs": null,
+"min_occupancy": null,
+"nt": null,
+"setprio": null,
+"sk_grid": null,
+"splits": null,
+"stream_k": null,
+"transposed_c": null,
+"warps_m": null,
+"warps_n": null,
+"wgm": null,
+"xcd_chunk": null
+}
+},
+"Rdna": {
+"methods": {
+"_check_shape": [
+"self",
+"m",
+"n",
+"k",
+"arch"
+],
+"_check_struct": [
+"self",
+"arch"
+],
+"_make": [
+"self",
+"epilogue",
+"arch"
+],
+"_name": [
+"self"
+],
+"_shared_kernel": [
+"self"
+],
+"arches": null,
+"base_for": [
+"cls",
+"m",
+"n",
+"k",
+"arch"
+],
+"block_m": null,
+"block_n": null,
+"canonical": [
+"self"
+],
+"dot_slice": null,
+"family": null,
+"k_step": null,
+"lds_buffers": null,
+"legacy": [
+"self"
+],
+"max_vgprs": null,
+"min_occupancy": null,
+"n_split": null,
+"sched": null,
+"setprio": null,
+"stagger": null,
+"stream_a": null,
+"warp_rows": null,
+"warps": null,
+"wgm": null,
+"write_pos": null
+}
+},
+"Schedule": {
+"methods": {
+"__init_subclass__": [
+"cls",
+"**kw"
+],
+"__str__": [
+"self"
+],
+"_check_knobs": [
+"self",
+"arch"
+],
+"_check_shape": [
+"self",
+"m",
+"n",
+"k",
+"arch"
+],
+"_from_record_dict": [
+"cls",
+"d",
+"strict"
+],
+"_what": [
+"self"
+],
+"arches": null,
+"axes": [
+"cls"
+],
+"base_for": [
+"cls",
+"m",
+"n",
+"k",
+"arch"
+],
+"canonical": [
+"self"
+],
+"changed": [
+"self"
+],
+"check": [
+"self",
+"m",
+"n",
+"k",
+"arch",
+"dtype"
+],
+"check_kernel": [
+"self",
+"arch"
+],
+"family": null,
+"from_record": [
+"cls",
+"rec",
+"strict"
+],
+"knobs": [
+"self"
+],
+"legal": [
+"self",
+"m",
+"n",
+"k",
+"arch"
+],
+"neighbors": [
+"self",
+"radius",
+"axes"
+],
+"replace": [
+"self",
+"**knobs"
+],
+"require": [
+"self",
+"m",
+"n",
+"k",
+"arch"
+],
+"space": [
+"cls",
+"m",
+"n",
+"k",
+"arch",
+"around",
+"radius",
+"axes",
+"base",
+"legal"
+],
+"to_record": [
+"self",
+"full"
+]
+}
+},
+"Step": {
+"methods": {
+"__str__": [
+"self"
+],
+"cols": null,
+"epilogue": null,
+"into": null,
+"kernel": null,
+"route": null,
+"sched": null,
+"schedule": null
+}
+},
+"__all__": {},
+"annotations": {},
+"families": {
+"params": [
+"arch"
+]
+},
+"families_for": {
+"params": [
+"arch"
+]
+},
+"family": {
+"params": [
+"name"
+]
+},
+"from_candidate": {
+"params": [
+"name",
+"m",
+"n",
+"k"
+]
+},
+"from_record": {
+"params": [
+"rec",
+"strict",
+"family_cls"
+]
+},
+"knob": {
+"params": [
+"default",
+"values",
+"seed",
+"doc",
+"gate"
+]
+},
+"lookup": {
+"params": [
+"m",
+"n",
+"k",
+"arch",
+"op"
+]
+},
+"lookup_attention": {
+"params": [
+"n",
+"head_dim",
+"causal",
+"arch",
+"scale"
+]
+},
+"space": {
+"params": [
+"m",
+"n",
+"k",
+"arch",
+"families",
+"around",
+"radius",
+"axes",
+"legal"
+]
+},
+"space_attention": {
+"params": [
+"n",
+"head_dim",
+"arch",
+"causal",
+"around",
+"radius",
+"axes"
+]
+}
+},
+"hk.schedules._base": {
+"Any": {},
+"Axis": {
+"methods": {
+"default": null,
+"doc": null,
+"gate": null,
+"name": null,
+"near": [
+"self",
+"value",
+"radius"
+],
+"seed": null,
+"values": null
+}
+},
+"ClassVar": {},
+"Dict": {},
+"Illegal": {
+"methods": {
+"__init__": [
+"self",
+"schedule",
+"reasons",
+"shape",
+"arch"
+]
+}
+},
+"Iterable": {},
+"Iterator": {},
+"List": {},
+"Mapping": {},
+"Optional": {},
+"Schedule": {
+"methods": {
+"__init_subclass__": [
+"cls",
+"**kw"
+],
+"__str__": [
+"self"
+],
+"_check_knobs": [
+"self",
+"arch"
+],
+"_check_shape": [
+"self",
+"m",
+"n",
+"k",
+"arch"
+],
+"_from_record_dict": [
+"cls",
+"d",
+"strict"
+],
+"_what": [
+"self"
+],
+"arches": null,
+"axes": [
+"cls"
+],
+"base_for": [
+"cls",
+"m",
+"n",
+"k",
+"arch"
+],
+"canonical": [
+"self"
+],
+"changed": [
+"self"
+],
+"check": [
+"self",
+"m",
+"n",
+"k",
+"arch",
+"dtype"
+],
+"check_kernel": [
+"self",
+"arch"
+],
+"family": null,
+"from_record": [
+"cls",
+"rec",
+"strict"
+],
+"knobs": [
+"self"
+],
+"legal": [
+"self",
+"m",
+"n",
+"k",
+"arch"
+],
+"neighbors": [
+"self",
+"radius",
+"axes"
+],
+"replace": [
+"self",
+"**knobs"
+],
+"require": [
+"self",
+"m",
+"n",
+"k",
+"arch"
+],
+"space": [
+"cls",
+"m",
+"n",
+"k",
+"arch",
+"around",
+"radius",
+"axes",
+"base",
+"legal"
+],
+"to_record": [
+"self",
+"full"
+]
+}
+},
+"Sequence": {},
+"Tuple": {},
+"_FAMILIES": {},
+"__all__": {},
+"_arch": {
+"params": [
+"arch"
+]
+},
+"_dtype_name": {
+"params": [
+"dtype"
+]
+},
+"_neighbors": {
+"params": [
+"s",
+"ax",
+"radius"
+]
+},
+"annotations": {},
+"dataclass": {},
+"dataclasses": {},
+"families": {
+"params": [
+"arch"
+]
+},
+"family": {
+"params": [
+"name"
+]
+},
+"field": {},
+"fields": {},
+"from_record": {
+"params": [
+"rec",
+"strict",
+"family_cls"
+]
+},
+"itertools": {},
+"knob": {
+"params": [
+"default",
+"values",
+"seed",
+"doc",
+"gate"
+]
+}
+},
+"hk.schedules._regs": {
+"Any": {},
+"Dict": {},
+"LIMIT": {},
+"MARGIN": {},
+"MODEL": {},
+"_place": {
+"params": [
+"sizes"
+]
+},
+"annotations": {},
+"features": {
+"params": [
+"s",
+"arch"
+]
+},
+"lds": {
+"params": [
+"s",
+"arch"
+]
+},
+"limit": {
+"params": [
+"s",
+"arch"
+]
+},
+"predict": {
+"params": [
+"s",
+"arch"
+]
+},
+"tile_estimate": {
+"params": [
+"s",
+"arch"
+]
+},
+"waves": {
+"params": [
+"s"
+]
+}
+},
+"hk.schedules.attention": {
+"Any": {},
+"AttnCdna": {
+"methods": {
+"_check_struct": [
+"self",
+"arch",
+"head_dim"
+],
+"_make": [
+"self",
+"head_dim",
+"causal",
+"scale",
+"arch"
+],
+"_shared": [
+"self",
+"head_dim",
+"causal",
+"scale"
+],
+"arches": null,
+"canonical": [
+"self"
+],
+"family": null,
+"lazy": null,
+"lpt": null,
+"name_for": [
+"self",
+"head_dim",
+"causal",
+"scale"
+],
+"sched": null,
+"setprio": null,
+"skip": null
+}
+},
+"AttnRdna": {
+"methods": {
+"_check_shape": [
+"self",
+"n",
+"n_kv",
+"head_dim",
+"arch"
+],
+"_check_struct": [
+"self",
+"arch",
+"head_dim"
+],
+"_extra": [
+"self"
+],
+"_make": [
+"self",
+"head_dim",
+"causal",
+"scale",
+"arch"
+],
+"_shared": [
+"self",
+"head_dim",
+"causal",
+"scale"
+],
+"arches": null,
+"base_for_problem": [
+"cls",
+"n",
+"head_dim",
+"causal",
+"arch"
+],
+"family": null,
+"kv_block": null,
+"legacy": [
+"self"
+],
+"max_vgprs": null,
+"min_occupancy": null,
+"name_for": [
+"self",
+"head_dim",
+"causal",
+"scale"
+],
+"pv_tiles": null,
+"q_block": null,
+"qk_tiles": null,
+"setprio": null,
+"vt_d_chunk": null,
+"warps": null
+}
+},
+"AttnSchedule": {
+"methods": {
+"_check_shape": [
+"self",
+"n",
+"n_kv",
+"head_dim",
+"arch"
+],
+"_check_struct": [
+"self",
+"arch",
+"head_dim"
+],
+"_make": [
+"self",
+"head_dim",
+"causal",
+"scale",
+"arch"
+],
+"_shared": [
+"self",
+"head_dim",
+"causal",
+"scale"
+],
+"base_for_problem": [
+"cls",
+"n",
+"head_dim",
+"causal",
+"arch"
+],
+"check": [
+"self",
+"n",
+"head_dim",
+"arch",
+"causal",
+"n_kv",
+"dtype"
+],
+"check_kernel": [
+"self",
+"arch",
+"head_dim",
+"causal"
+],
+"kernel": [
+"self",
+"head_dim",
+"causal",
+"scale",
+"arch"
+],
+"launch": [
+"self",
+"q",
+"k",
+"v",
+"causal",
+"scale",
+"out"
+],
+"space": [
+"cls",
+"n",
+"head_dim",
+"arch",
+"causal",
+"around",
+"radius",
+"axes",
+"legal"
+]
+}
+},
+"ClassVar": {},
+"Dict": {},
+"Iterator": {},
+"List": {},
+"Optional": {},
+"Schedule": {
+"methods": {
+"__init_subclass__": [
+"cls",
+"**kw"
+],
+"__str__": [
+"self"
+],
+"_check_knobs": [
+"self",
+"arch"
+],
+"_check_shape": [
+"self",
+"m",
+"n",
+"k",
+"arch"
+],
+"_from_record_dict": [
+"cls",
+"d",
+"strict"
+],
+"_what": [
+"self"
+],
+"arches": null,
+"axes": [
+"cls"
+],
+"base_for": [
+"cls",
+"m",
+"n",
+"k",
+"arch"
+],
+"canonical": [
+"self"
+],
+"changed": [
+"self"
+],
+"check": [
+"self",
+"m",
+"n",
+"k",
+"arch",
+"dtype"
+],
+"check_kernel": [
+"self",
+"arch"
+],
+"family": null,
+"from_record": [
+"cls",
+"rec",
+"strict"
+],
+"knobs": [
+"self"
+],
+"legal": [
+"self",
+"m",
+"n",
+"k",
+"arch"
+],
+"neighbors": [
+"self",
+"radius",
+"axes"
+],
+"replace": [
+"self",
+"**knobs"
+],
+"require": [
+"self",
+"m",
+"n",
+"k",
+"arch"
+],
+"space": [
+"cls",
+"m",
+"n",
+"k",
+"arch",
+"around",
+"radius",
+"axes",
+"base",
+"legal"
+],
+"to_record": [
+"self",
+"full"
+]
+}
+},
+"Tuple": {},
+"_KERNELS": {},
+"_TUNED": {},
+"__all__": {},
+"_arch": {
+"params": [
+"arch"
+]
+},
+"_current": {
+"params": []
+},
+"_dtype_name": {
+"params": [
+"dtype"
+]
+},
+"_rdna_registers": {
+"params": [
+"s",
+"head_dim"
+]
+},
+"_scale_suffix": {
+"params": [
+"scale"
+]
+},
+"annotations": {},
+"dataclass": {},
+"knob": {
+"params": [
+"default",
+"values",
+"seed",
+"doc",
+"gate"
+]
+},
+"lookup_attention": {
+"params": [
+"n",
+"head_dim",
+"causal",
+"arch",
+"scale"
+]
+},
+"space_attention": {
+"params": [
+"n",
+"head_dim",
+"arch",
+"causal",
+"around",
+"radius",
+"axes"
+]
+},
+"struct": {}
+},
+"hk.schedules.gemm": {
+"Any": {},
+"CUS": {},
+"Callable": {},
+"ClassVar": {},
+"Columns": {
+"methods": {
+"__post_init__": [
+"self"
+],
+"__str__": [
+"self"
+],
+"_from_record_dict": [
+"cls",
+"d",
+"strict"
+],
+"_name": [
+"self"
+],
+"_steps": [
+"self",
+"m",
+"n",
+"k",
+"lo"
+],
+"arches": null,
+"axes": [
+"cls"
+],
+"check": [
+"self",
+"m",
+"n",
+"k",
+"arch",
+"dtype"
+],
+"check_kernel": [
+"self",
+"arch"
+],
+"cut": null,
+"cut_at": [
+"self",
+"m",
+"n"
+],
+"family": null,
+"head": null,
+"kernel": [
+"self",
+"epilogue",
+"arch"
+],
+"neighbors": [
+"self",
+"radius",
+"axes"
+],
+"predict": [
+"self",
+"arch"
+],
+"space": [
+"cls",
+"m",
+"n",
+"k",
+"arch",
+"around",
+"radius",
+"axes",
+"base",
+"legal"
+],
+"tail": null,
+"to_record": [
+"self",
+"full"
+]
+}
+},
+"Decode": {
+"methods": {
+"_check_shape": [
+"self",
+"m",
+"n",
+"k",
+"arch"
+],
+"_check_struct": [
+"self",
+"arch"
+],
+"_make": [
+"self",
+"epilogue",
+"arch"
+],
+"_name": [
+"self"
+],
+"_shared_kernel": [
+"self"
+],
+"_steps": [
+"self",
+"m",
+"n",
+"k",
+"lo"
+],
+"arches": null,
+"base_for": [
+"cls",
+"m",
+"n",
+"k",
+"arch"
+],
+"canonical": [
+"self"
+],
+"combine_depth": null,
+"family": null,
+"legacy": [
+"self"
+],
+"max_vgprs": null,
+"min_occupancy": null,
+"resident": null,
+"slices": null,
+"splits": null,
+"tokens": null,
+"warps": null
+}
+},
+"Dict": {},
+"Dp": {
+"methods": {
+"_check_shape": [
+"self",
+"m",
+"n",
+"k",
+"arch"
+],
+"_check_struct": [
+"self",
+"arch"
+],
+"_make": [
+"self",
+"epilogue",
+"arch"
+],
+"_name": [
+"self"
+],
+"_shared_kernel": [
+"self"
+],
+"arches": null,
+"base_for": [
+"cls",
+"m",
+"n",
+"k",
+"arch"
+],
+"block_m": null,
+"block_n": null,
+"family": null,
+"k_step": null,
+"lds_shape": null,
+"max_vgprs": null,
+"min_occupancy": null,
+"nt": null,
+"pipelined": null,
+"setprio": null,
+"splits": null,
+"stages": null,
+"warps_m": null,
+"warps_n": null,
+"wgm": null,
+"xcd_chunk": null
+}
+},
+"GemmSchedule": {
+"methods": {
+"__call__": null,
+"_check_knobs": [
+"self",
+"arch"
+],
+"_check_resources": [
+"self",
+"arch"
+],
+"_check_struct": [
+"self",
+"arch"
+],
+"_make": [
+"self",
+"epilogue",
+"arch"
+],
+"_name": [
+"self"
+],
+"_shared_kernel": [
+"self"
+],
+"_shared_ok": [
+"self"
+],
+"_steps": [
+"self",
+"m",
+"n",
+"k",
+"lo"
+],
+"kernel": [
+"self",
+"epilogue",
+"arch"
+],
+"kernels": [
+"self",
+"m",
+"n",
+"k",
+"epilogue",
+"arch"
+],
+"launch": [
+"self",
+"a",
+"b",
+"out"
+],
+"name": [
+"self"
+],
+"predict": [
+"self",
+"arch"
+],
+"steps": [
+"self",
+"m",
+"n",
+"k"
+]
+}
+},
+"Iterator": {},
+"List": {},
+"Optional": {},
+"PingPong": {
+"methods": {
+"_check_shape": [
+"self",
+"m",
+"n",
+"k",
+"arch"
+],
+"_check_struct": [
+"self",
+"arch"
+],
+"_make": [
+"self",
+"epilogue",
+"arch"
+],
+"_name": [
+"self"
+],
+"_shared_kernel": [
+"self"
+],
+"_shared_ok": [
+"self"
+],
+"arches": null,
+"base_for": [
+"cls",
+"m",
+"n",
+"k",
+"arch"
+],
+"block_m": null,
+"block_n": null,
+"canonical": [
+"self"
+],
+"early_store": null,
+"family": null,
+"hipkittens_waits": null,
+"k_step": null,
+"late_b": null,
+"lds_shape": null,
+"max_vgprs": null,
+"min_occupancy": null,
+"nt": null,
+"setprio": null,
+"sk_grid": null,
+"splits": null,
+"stream_k": null,
+"transposed_c": null,
+"warps_m": null,
+"warps_n": null,
+"wgm": null,
+"xcd_chunk": null
+}
+},
+"Rdna": {
+"methods": {
+"_check_shape": [
+"self",
+"m",
+"n",
+"k",
+"arch"
+],
+"_check_struct": [
+"self",
+"arch"
+],
+"_make": [
+"self",
+"epilogue",
+"arch"
+],
+"_name": [
+"self"
+],
+"_shared_kernel": [
+"self"
+],
+"arches": null,
+"base_for": [
+"cls",
+"m",
+"n",
+"k",
+"arch"
+],
+"block_m": null,
+"block_n": null,
+"canonical": [
+"self"
+],
+"dot_slice": null,
+"family": null,
+"k_step": null,
+"lds_buffers": null,
+"legacy": [
+"self"
+],
+"max_vgprs": null,
+"min_occupancy": null,
+"n_split": null,
+"sched": null,
+"setprio": null,
+"stagger": null,
+"stream_a": null,
+"warp_rows": null,
+"warps": null,
+"wgm": null,
+"write_pos": null
+}
+},
+"Schedule": {
+"methods": {
+"__init_subclass__": [
+"cls",
+"**kw"
+],
+"__str__": [
+"self"
+],
+"_check_knobs": [
+"self",
+"arch"
+],
+"_check_shape": [
+"self",
+"m",
+"n",
+"k",
+"arch"
+],
+"_from_record_dict": [
+"cls",
+"d",
+"strict"
+],
+"_what": [
+"self"
+],
+"arches": null,
+"axes": [
+"cls"
+],
+"base_for": [
+"cls",
+"m",
+"n",
+"k",
+"arch"
+],
+"canonical": [
+"self"
+],
+"changed": [
+"self"
+],
+"check": [
+"self",
+"m",
+"n",
+"k",
+"arch",
+"dtype"
+],
+"check_kernel": [
+"self",
+"arch"
+],
+"family": null,
+"from_record": [
+"cls",
+"rec",
+"strict"
+],
+"knobs": [
+"self"
+],
+"legal": [
+"self",
+"m",
+"n",
+"k",
+"arch"
+],
+"neighbors": [
+"self",
+"radius",
+"axes"
+],
+"replace": [
+"self",
+"**knobs"
+],
+"require": [
+"self",
+"m",
+"n",
+"k",
+"arch"
+],
+"space": [
+"cls",
+"m",
+"n",
+"k",
+"arch",
+"around",
+"radius",
+"axes",
+"base",
+"legal"
+],
+"to_record": [
+"self",
+"full"
+]
+}
+},
+"Step": {
+"methods": {
+"__str__": [
+"self"
+],
+"cols": null,
+"epilogue": null,
+"into": null,
+"kernel": null,
+"route": null,
+"sched": null,
+"schedule": null
+}
+},
+"Tuple": {},
+"_GATES": {},
+"_KERNELS": {},
+"_NT": {},
+"_RUNNERS": {},
+"__all__": {},
+"_arch": {
+"params": [
+"arch"
+]
+},
+"_current": {
+"params": []
+},
+"_lds_cap": {
+"params": [
+"arch"
+]
+},
+"_plain_reduce": {
+"params": [
+"splits",
+"m",
+"n",
+"arch"
+]
+},
+"_regs": {},
+"_runner": {
+"params": [
+"s",
+"m",
+"n",
+"k",
+"device"
+]
+},
+"_scratch_ok": {
+"params": [
+"splits",
+"m",
+"n"
+]
+},
+"_target_of": {
+"params": [
+"arch"
+]
+},
+"annotations": {},
+"dataclass": {},
+"dataclasses": {},
+"families": {
+"params": [
+"arch"
+]
+},
+"families_for": {
+"params": [
+"arch"
+]
+},
+"family": {
+"params": [
+"name"
+]
+},
+"field": {},
+"from_candidate": {
+"params": [
+"name",
+"m",
+"n",
+"k"
+]
+},
+"from_record": {
+"params": [
+"rec",
+"strict",
+"family_cls"
+]
+},
+"knob": {
+"params": [
+"default",
+"values",
+"seed",
+"doc",
+"gate"
+]
+},
+"lookup": {
+"params": [
+"m",
+"n",
+"k",
+"arch",
+"op"
+]
+},
+"space": {
+"params": [
+"m",
+"n",
+"k",
+"arch",
+"families",
+"around",
+"radius",
+"axes",
+"legal"
+]
+}
+},
+"hk.target": {
+"GFX1100": {},
+"GFX1201": {},
+"GFX942": {},
+"GFX950": {},
+"MmaShape": {
+"methods": {
+"accum_vgprs": null,
+"k": null,
+"m": null,
+"n": null,
+"operand_vgprs": null
+}
+},
+"TARGETS": {},
+"Target": {
+"methods": {
+"arch": null,
+"charged_vgprs": [
+"self",
+"vgprs",
+"agprs"
+],
+"extra_includes": null,
+"fast_smem_layouts": null,
+"gpu_target": null,
+"has_global_to_lds_dma": null,
+"kernarg_preload": null,
+"kittens_define": null,
+"lds_per_workgroup": null,
+"lds_pool_bytes": null,
+"lgkmcnt_max": null,
+"max_waves_per_simd": null,
+"mma": null,
+"mma_operands_mirrored": null,
+"occupancy": [
+"self",
+"vgprs"
+],
+"occupancy_achieved": [
+"self",
+"vgprs",
+"lds_bytes",
+"waves_per_workgroup"
+],
+"occupancy_by_lds": [
+"self",
+"lds_bytes",
+"waves_per_workgroup"
+],
+"sgprs_per_wave": null,
+"simds_per_lds_pool": null,
+"strips": null,
+"tile_shapes": null,
+"tile_vgprs": [
+"self",
+"dtype_bits",
+"rows",
+"cols"
+],
+"unified_agprs": null,
+"verified": null,
+"vgpr_granule": null,
+"vgpr_headroom": [
+"self",
+"vgprs"
+],
+"vgpr_rounded": [
+"self",
+"vgprs"
+],
+"vgprs_per_simd": null,
+"wave": null
+}
+},
+"_ALIASES": {},
+"_CURRENT": {},
+"__all__": {},
+"current_arch": {
+"params": []
+},
+"get_target": {
+"params": [
+"arch"
+]
+}
+},
+"hk.target.base": {
+"Dict": {},
+"MmaShape": {
+"methods": {
+"accum_vgprs": null,
+"k": null,
+"m": null,
+"n": null,
+"operand_vgprs": null
+}
+},
+"Target": {
+"methods": {
+"arch": null,
+"charged_vgprs": [
+"self",
+"vgprs",
+"agprs"
+],
+"extra_includes": null,
+"fast_smem_layouts": null,
+"gpu_target": null,
+"has_global_to_lds_dma": null,
+"kernarg_preload": null,
+"kittens_define": null,
+"lds_per_workgroup": null,
+"lds_pool_bytes": null,
+"lgkmcnt_max": null,
+"max_waves_per_simd": null,
+"mma": null,
+"mma_operands_mirrored": null,
+"occupancy": [
+"self",
+"vgprs"
+],
+"occupancy_achieved": [
+"self",
+"vgprs",
+"lds_bytes",
+"waves_per_workgroup"
+],
+"occupancy_by_lds": [
+"self",
+"lds_bytes",
+"waves_per_workgroup"
+],
+"sgprs_per_wave": null,
+"simds_per_lds_pool": null,
+"strips": null,
+"tile_shapes": null,
+"tile_vgprs": [
+"self",
+"dtype_bits",
+"rows",
+"cols"
+],
+"unified_agprs": null,
+"verified": null,
+"vgpr_granule": null,
+"vgpr_headroom": [
+"self",
+"vgprs"
+],
+"vgpr_rounded": [
+"self",
+"vgprs"
+],
+"vgprs_per_simd": null,
+"wave": null
+}
+},
+"Tuple": {},
+"dataclass": {},
+"field": {}
+},
+"hk.target.gfx1100": {
+"CEILINGS": {},
+"GFX1100": {},
+"LDS_WAIT_NEEDS_FRAGMENT_BIND": {},
+"MmaShape": {
+"methods": {
+"accum_vgprs": null,
+"k": null,
+"m": null,
+"n": null,
+"operand_vgprs": null
+}
+},
+"Target": {
+"methods": {
+"arch": null,
+"charged_vgprs": [
+"self",
+"vgprs",
+"agprs"
+],
+"extra_includes": null,
+"fast_smem_layouts": null,
+"gpu_target": null,
+"has_global_to_lds_dma": null,
+"kernarg_preload": null,
+"kittens_define": null,
+"lds_per_workgroup": null,
+"lds_pool_bytes": null,
+"lgkmcnt_max": null,
+"max_waves_per_simd": null,
+"mma": null,
+"mma_operands_mirrored": null,
+"occupancy": [
+"self",
+"vgprs"
+],
+"occupancy_achieved": [
+"self",
+"vgprs",
+"lds_bytes",
+"waves_per_workgroup"
+],
+"occupancy_by_lds": [
+"self",
+"lds_bytes",
+"waves_per_workgroup"
+],
+"sgprs_per_wave": null,
+"simds_per_lds_pool": null,
+"strips": null,
+"tile_shapes": null,
+"tile_vgprs": [
+"self",
+"dtype_bits",
+"rows",
+"cols"
+],
+"unified_agprs": null,
+"verified": null,
+"vgpr_granule": null,
+"vgpr_headroom": [
+"self",
+"vgprs"
+],
+"vgpr_rounded": [
+"self",
+"vgprs"
+],
+"vgprs_per_simd": null,
+"wave": null
+}
+}
+},
+"hk.target.gfx1201": {
+"GFX1201": {},
+"MmaShape": {
+"methods": {
+"accum_vgprs": null,
+"k": null,
+"m": null,
+"n": null,
+"operand_vgprs": null
+}
+},
+"Target": {
+"methods": {
+"arch": null,
+"charged_vgprs": [
+"self",
+"vgprs",
+"agprs"
+],
+"extra_includes": null,
+"fast_smem_layouts": null,
+"gpu_target": null,
+"has_global_to_lds_dma": null,
+"kernarg_preload": null,
+"kittens_define": null,
+"lds_per_workgroup": null,
+"lds_pool_bytes": null,
+"lgkmcnt_max": null,
+"max_waves_per_simd": null,
+"mma": null,
+"mma_operands_mirrored": null,
+"occupancy": [
+"self",
+"vgprs"
+],
+"occupancy_achieved": [
+"self",
+"vgprs",
+"lds_bytes",
+"waves_per_workgroup"
+],
+"occupancy_by_lds": [
+"self",
+"lds_bytes",
+"waves_per_workgroup"
+],
+"sgprs_per_wave": null,
+"simds_per_lds_pool": null,
+"strips": null,
+"tile_shapes": null,
+"tile_vgprs": [
+"self",
+"dtype_bits",
+"rows",
+"cols"
+],
+"unified_agprs": null,
+"verified": null,
+"vgpr_granule": null,
+"vgpr_headroom": [
+"self",
+"vgprs"
+],
+"vgpr_rounded": [
+"self",
+"vgprs"
+],
+"vgprs_per_simd": null,
+"wave": null
+}
+}
+},
+"hk.target.gfx942": {
+"GFX942": {},
+"MmaShape": {
+"methods": {
+"accum_vgprs": null,
+"k": null,
+"m": null,
+"n": null,
+"operand_vgprs": null
+}
+},
+"Target": {
+"methods": {
+"arch": null,
+"charged_vgprs": [
+"self",
+"vgprs",
+"agprs"
+],
+"extra_includes": null,
+"fast_smem_layouts": null,
+"gpu_target": null,
+"has_global_to_lds_dma": null,
+"kernarg_preload": null,
+"kittens_define": null,
+"lds_per_workgroup": null,
+"lds_pool_bytes": null,
+"lgkmcnt_max": null,
+"max_waves_per_simd": null,
+"mma": null,
+"mma_operands_mirrored": null,
+"occupancy": [
+"self",
+"vgprs"
+],
+"occupancy_achieved": [
+"self",
+"vgprs",
+"lds_bytes",
+"waves_per_workgroup"
+],
+"occupancy_by_lds": [
+"self",
+"lds_bytes",
+"waves_per_workgroup"
+],
+"sgprs_per_wave": null,
+"simds_per_lds_pool": null,
+"strips": null,
+"tile_shapes": null,
+"tile_vgprs": [
+"self",
+"dtype_bits",
+"rows",
+"cols"
+],
+"unified_agprs": null,
+"verified": null,
+"vgpr_granule": null,
+"vgpr_headroom": [
+"self",
+"vgprs"
+],
+"vgpr_rounded": [
+"self",
+"vgprs"
+],
+"vgprs_per_simd": null,
+"wave": null
+}
+}
+},
+"hk.target.gfx950": {
+"CEILINGS": {},
+"GFX950": {},
+"MmaShape": {
+"methods": {
+"accum_vgprs": null,
+"k": null,
+"m": null,
+"n": null,
+"operand_vgprs": null
+}
+},
+"Target": {
+"methods": {
+"arch": null,
+"charged_vgprs": [
+"self",
+"vgprs",
+"agprs"
+],
+"extra_includes": null,
+"fast_smem_layouts": null,
+"gpu_target": null,
+"has_global_to_lds_dma": null,
+"kernarg_preload": null,
+"kittens_define": null,
+"lds_per_workgroup": null,
+"lds_pool_bytes": null,
+"lgkmcnt_max": null,
+"max_waves_per_simd": null,
+"mma": null,
+"mma_operands_mirrored": null,
+"occupancy": [
+"self",
+"vgprs"
+],
+"occupancy_achieved": [
+"self",
+"vgprs",
+"lds_bytes",
+"waves_per_workgroup"
+],
+"occupancy_by_lds": [
+"self",
+"lds_bytes",
+"waves_per_workgroup"
+],
+"sgprs_per_wave": null,
+"simds_per_lds_pool": null,
+"strips": null,
+"tile_shapes": null,
+"tile_vgprs": [
+"self",
+"dtype_bits",
+"rows",
+"cols"
+],
+"unified_agprs": null,
+"verified": null,
+"vgpr_granule": null,
+"vgpr_headroom": [
+"self",
+"vgprs"
+],
+"vgpr_rounded": [
+"self",
+"vgprs"
+],
+"vgprs_per_simd": null,
+"wave": null
+}
+}
+},
+"hk.templates": {
+"_TEMPLATES": {},
+"__dir__": {
+"params": []
+},
+"__getattr__": {
+"params": [
+"name"
+]
+},
+"annotations": {},
+"importlib": {}
+},
+"hk.templates._common": {
+"Any": {},
+"DTYPES": {},
+"DType": {
+"methods": {
+"__repr__": [
+"self"
+],
+"bits": null,
+"bytes": [
+"self"
+],
+"cpp": null,
+"kind": null,
+"name": null
+}
+},
+"Dict": {},
+"GlobalType": {
+"methods": {
+"__repr__": [
+"self"
+],
+"cpp": [
+"self"
+],
+"dtype": null
+}
+},
+"KINDS": {},
+"Meta": {
+"methods": {
+"__init__": [
+"self",
+"shape",
+"dtype",
+"stride"
+],
+"__repr__": [
+"self"
+],
+"__slots__": null,
+"dim": [
+"self"
+],
+"numel": [
+"self"
+],
+"stride": [
+"self",
+"dim"
+]
+}
+},
+"Operand": {
+"methods": {
+"__post_init__": [
+"self"
+],
+"__repr__": [
+"self"
+],
+"dtype": null,
+"kind": null,
+"wide": null,
+"width": null
+}
+},
+"Optional": {},
+"RESERVED_PREFIX": {},
+"Sequence": {},
+"Tuple": {},
+"_ALLOW_REDUCE": {},
+"_HK_TO_TORCH": {},
+"_TORCH_TO_HK": {},
+"__all__": {},
+"_dtype": {
+"params": [
+"d"
+]
+},
+"_span": {
+"params": [
+"t"
+]
+},
+"_span_of": {
+"params": [
+"shape",
+"stride"
+]
+},
+"annotations": {},
+"as_operand": {
+"params": [
+"spec"
+]
+},
+"bf16": {},
+"call_key": {
+"params": [
+"args",
+"out",
+"consts"
+]
+},
+"check_runs": {
+"params": [
+"name",
+"arch",
+"run",
+"out_dtypes"
+]
+},
+"classify": {
+"params": [
+"shape",
+"out_shape"
+]
+},
+"contextlib": {},
+"dataclass": {},
+"fp16": {},
+"fp32": {},
+"full": {
+"params": [
+"dtype"
+]
+},
+"hk_dtype": {
+"params": [
+"t"
+]
+},
+"hook_arity": {
+"params": [
+"fn"
+]
+},
+"hook_consts": {
+"params": [
+"fn"
+]
+},
+"i32": {},
+"i8": {},
+"inspect": {},
+"is_contiguous": {
+"params": [
+"shape",
+"stride"
+]
+},
+"kernel_name": {
+"params": [
+"prefix",
+"fn"
+]
+},
+"make_call": {
+"params": [
+"launch",
+"args_meta",
+"out_shapes",
+"out_tdtypes",
+"arg_views",
+"out_views",
+"out_meta",
+"single"
+]
+},
+"meta": {
+"params": [
+"shape",
+"dtype",
+"stride"
+]
+},
+"numel": {
+"params": [
+"shape"
+]
+},
+"overlaps": {
+"params": [
+"a",
+"b"
+]
+},
+"per_col": {
+"params": [
+"dtype"
+]
+},
+"per_row": {
+"params": [
+"dtype",
+"width"
+]
+},
+"re": {},
+"row_stride": {
+"params": [
+"shape",
+"stride",
+"what"
+]
+},
+"rows_cols": {
+"params": [
+"shape"
+]
+},
+"scalar": {
+"params": [
+"dtype"
+]
+},
+"signature": {
+"params": [
+"tensors",
+"consts"
+]
+},
+"tile_reductions_allowed": {
+"params": []
+},
+"tile_reductions_refused": {
+"params": [
+"message"
+]
+},
+"torch_dtype": {
+"params": [
+"d"
+]
+},
+"view_fn": {
+"params": [
+"t_shape",
+"rows",
+"cols",
+"kind",
+"flat"
+]
+}
+},
+"hk.templates.elementwise": {
+"Any": {},
+"C": {},
+"Callable": {},
+"Dict": {},
+"Elementwise": {
+"methods": {
+"__call__": [
+"self",
+"*args",
+"out",
+"**consts"
+],
+"__init__": [
+"self",
+"fn",
+"inputs",
+"outputs",
+"name",
+"arch",
+"plan"
+],
+"_consts": [
+"self",
+"p",
+"consts"
+],
+"_kernel": [
+"self",
+"ops",
+"outs",
+"p"
+],
+"_outputs_arg": [
+"self"
+],
+"_plan": [
+"self",
+"ops",
+"args",
+"shape",
+"outs",
+"out"
+],
+"_prepare": [
+"self",
+"args",
+"out",
+"consts"
+],
+"_resolve": [
+"self",
+"args"
+],
+"arch": [
+"self"
+],
+"kernel": [
+"self",
+"*args",
+"out",
+"**consts"
+],
+"plan": [
+"self",
+"*args",
+"out"
+],
+"with_plan": [
+"self",
+"**override"
+]
+}
+},
+"Optional": {},
+"Plan": {
+"methods": {
+"__str__": [
+"self"
+],
+"arch": null,
+"chunks": null,
+"cols": null,
+"exact": null,
+"flat": null,
+"grid": [
+"self"
+],
+"preload": null,
+"reserve": null,
+"rows": null,
+"run": null,
+"span": [
+"self"
+],
+"warps": null,
+"wave": [
+"self"
+]
+}
+},
+"Sequence": {},
+"Tuple": {},
+"_FLAT_MIN": {},
+"_MAX_BYTES": {},
+"__all__": {},
+"_build": {
+"params": [
+"fn",
+"ops",
+"outs",
+"warps",
+"arch",
+"name",
+"user_consts"
+]
+},
+"_grid_x": {
+"params": [
+"p",
+"warps"
+]
+},
+"_trace": {
+"params": [
+"kw",
+"spec"
+]
+},
+"annotations": {},
+"dataclass": {},
+"elementwise": {
+"params": [
+"fn",
+"inputs",
+"outputs",
+"name",
+"arch",
+"plan"
+]
+},
+"fp32": {},
+"hk": {},
+"plan_for": {
+"params": [
+"arch",
+"rows",
+"cols",
+"flat",
+"moved",
+"inputs",
+"nbytes",
+"override"
+]
+},
+"replace": {}
+},
+"hk.templates.gemm": {
+"Any": {},
+"BAND": {},
+"COL": {},
+"COL_PAD": {},
+"CONST": {},
+"Callable": {},
+"Context": {
+"methods": {
+"__getattr__": [
+"self",
+"name"
+],
+"__init__": [
+"self",
+"ep",
+"ops",
+"ty",
+"r",
+"col",
+"c",
+"bounded"
+],
+"_load": [
+"self",
+"name"
+],
+"_prefetch": [
+"self",
+"names"
+],
+"col": [
+"self"
+],
+"m": [
+"self"
+],
+"row": [
+"self"
+],
+"tile": [
+"self"
+]
+}
+},
+"DType": {
+"methods": {
+"__repr__": [
+"self"
+],
+"bits": null,
+"bytes": [
+"self"
+],
+"cpp": null,
+"kind": null,
+"name": null
+}
+},
+"Dict": {},
+"Epilogue": {
+"methods": {
+"__init__": [
+"self",
+"fn",
+"kinds",
+"dtypes",
+"consts",
+"out_dtype"
+],
+"_one": [
+"self",
+"c",
+"ops",
+"tile",
+"r",
+"col",
+"bounded",
+"ctx",
+"inited"
+],
+"early": [
+"self",
+"c",
+"ops",
+"ty",
+"r",
+"col",
+"bounded"
+],
+"load_init": [
+"self",
+"ops",
+"tile",
+"r",
+"col"
+],
+"store": [
+"self",
+"c",
+"ops",
+"tile",
+"r",
+"col",
+"bounded",
+"inited",
+"ctx"
+]
+}
+},
+"GlobalType": {
+"methods": {
+"__repr__": [
+"self"
+],
+"cpp": [
+"self"
+],
+"dtype": null
+}
+},
+"List": {},
+"NATIVE_TILE": {},
+"OVERRIDE": {},
+"Optional": {},
+"RDNA_DECODE_MAX_M": {},
+"READY": {},
+"ROW": {},
+"RegTileType": {
+"methods": {
+"__post_init__": [
+"self"
+],
+"__repr__": [
+"self"
+],
+"_check_strip": [
+"self"
+],
+"base_tiles": [
+"self"
+],
+"cols": null,
+"cpp": [
+"self"
+],
+"dtype": null,
+"frag": null,
+"frag_spelling": [
+"self"
+],
+"frag_stride": [
+"self"
+],
+"layout": null,
+"layout_spelling": [
+"self"
+],
+"rows": null,
+"run": null,
+"span": [
+"self"
+],
+"strip": [
+"self"
+],
+"transposed": [
+"self"
+]
+}
+},
+"ResourceError": {
+"methods": {}
+},
+"Step": {},
+"TILE": {},
+"Tuple": {},
+"_CHAINS": {},
+"_CallableModule": {
+"methods": {
+"__call__": [
+"self",
+"*args",
+"**kwargs"
+]
+}
+},
+"_EPILOGUES": {},
+"_GELU_A": {},
+"_GELU_B": {},
+"_Gemm": {
+"methods": {
+"Context": null,
+"Step": null,
+"__call__": [
+"self",
+"a",
+"b",
+"epilogue",
+"out",
+"out_dtype",
+"schedule",
+"**operands"
+],
+"__init__": [
+"self"
+],
+"__repr__": [
+"self"
+],
+"chain": null,
+"init_from": null,
+"kernel_for": null,
+"kernels": null,
+"plan": null
+}
+},
+"_IDENTITIES": {},
+"_INITS": {},
+"_KERNELS": {},
+"_LAUNCH": {},
+"_RESERVED": {},
+"_TAGS": {},
+"__all__": {},
+"__name__": {},
+"_bias_residual": {
+"params": [
+"acc",
+"ctx"
+]
+},
+"_call": {
+"params": [
+"rewritten",
+"fn",
+"acc",
+"ctx"
+]
+},
+"_check": {
+"params": [
+"m",
+"n",
+"k",
+"arch"
+]
+},
+"_check_out": {
+"params": [
+"dt",
+"arch"
+]
+},
+"_cols": {
+"params": [
+"ep",
+"ts",
+"lo",
+"hi"
+]
+},
+"_fn_key": {
+"params": [
+"fn"
+]
+},
+"_gemm": {
+"params": [
+"a",
+"b",
+"epilogue",
+"out",
+"out_dtype",
+"schedule",
+"**operands"
+]
+},
+"_hk_dtype": {
+"params": [
+"t"
+]
+},
+"_identity": {
+"params": [
+"acc"
+]
+},
+"_kind": {
+"params": [
+"name",
+"v",
+"m",
+"n"
+]
+},
+"_out_dtype": {
+"params": [
+"out_dtype"
+]
+},
+"_params": {
+"params": [
+"fn"
+]
+},
+"_preparer": {
+"params": [
+"ep",
+"m"
+]
+},
+"_residual": {
+"params": [
+"acc"
+]
+},
+"_schedule_key": {
+"params": [
+"schedule"
+]
+},
+"_schedules_gemm": {},
+"_sig": {
+"params": [
+"item"
+]
+},
+"_slow": {
+"params": [
+"a",
+"b",
+"epilogue",
+"out",
+"out_dtype",
+"operands",
+"schedule"
+]
+},
+"_steps_cdna": {
+"params": [
+"name",
+"m",
+"n",
+"k",
+"lo"
+]
+},
+"annotations": {},
+"bf16": {},
+"bias": {
+"params": [
+"acc",
+"ctx"
+]
+},
+"bias_gelu": {
+"params": [
+"acc",
+"ctx"
+]
+},
+"bias_relu": {
+"params": [
+"acc",
+"ctx"
+]
+},
+"bias_residual": {},
+"bias_silu": {
+"params": [
+"acc",
+"ctx"
+]
+},
+"bind": {
+"params": [
+"fn",
+"operands",
+"m",
+"n",
+"out_dtype"
+]
+},
+"chain": {
+"params": [
+"*fns"
+]
+},
+"fp16": {},
+"fp32": {},
+"fp8e4m3": {},
+"fp8e5m2": {},
+"gelu": {
+"params": [
+"acc"
+]
+},
+"gelu_tanh": {
+"params": [
+"x"
+]
+},
+"gemm": {},
+"hashlib": {},
+"hk": {},
+"i8": {},
+"init_from": {
+"params": [
+"name"
+]
+},
+"inspect": {},
+"kernel_for": {
+"params": [
+"step",
+"ep",
+"arch"
+]
+},
+"kernels": {
+"params": [
+"m",
+"n",
+"k",
+"epilogue",
+"out_dtype",
+"arch",
+"schedule",
+"**operands"
+]
+},
+"plan": {
+"params": [
+"m",
+"n",
+"k",
+"arch",
+"schedule"
+]
+},
+"prepare": {
+"params": [
+"steps",
+"ep",
+"m",
+"n",
+"k",
+"dtype",
+"device"
+]
+},
+"re": {},
+"relu": {
+"params": [
+"acc"
+]
+},
+"residual": {},
+"scale": {
+"params": [
+"acc",
+"ctx"
+]
+},
+"silu": {
+"params": [
+"acc"
+]
+},
+"sys": {},
+"types": {}
+},
+"hk.templates.rowwise": {
+"Any": {},
+"B": {},
+"C": {},
+"Callable": {},
+"Dict": {},
+"LIKE": {},
+"List": {},
+"Optional": {},
+"Plan": {
+"methods": {
+"__str__": [
+"self"
+],
+"arch": null,
+"chunks": null,
+"cols": null,
+"exact": null,
+"fold": null,
+"like": null,
+"preload": null,
+"reserve": null,
+"rows": null,
+"run": null,
+"span": [
+"self"
+],
+"steps": null,
+"warps": null,
+"wave": [
+"self"
+]
+}
+},
+"Rowwise": {
+"methods": {
+"__call__": [
+"self",
+"*args",
+"out",
+"**consts"
+],
+"__init__": [
+"self",
+"fn",
+"inputs",
+"outputs",
+"like",
+"name",
+"arch",
+"plan"
+],
+"_candidates": [
+"self",
+"ops",
+"shape",
+"outs"
+],
+"_consts": [
+"self",
+"p",
+"consts"
+],
+"_kernel": [
+"self",
+"ops",
+"outs",
+"p"
+],
+"_like": [
+"self",
+"ops",
+"outs"
+],
+"_plan": [
+"self",
+"ops",
+"shape",
+"outs"
+],
+"_prepare": [
+"self",
+"args",
+"out",
+"consts"
+],
+"_reductions": [
+"self",
+"ops",
+"outs"
+],
+"_resolve": [
+"self",
+"args"
+],
+"arch": [
+"self"
+],
+"kernel": [
+"self",
+"*args",
+"**consts"
+],
+"plan": [
+"self",
+"*args"
+],
+"with_plan": [
+"self",
+"**override"
+]
+}
+},
+"Sequence": {},
+"Tuple": {},
+"Vec": {
+"methods": {
+"__getitem__": [
+"self",
+"key"
+],
+"__iadd__": [
+"self",
+"o"
+],
+"__imul__": [
+"self",
+"o"
+],
+"__slots__": null,
+"any_above": [
+"self",
+"other",
+"threshold"
+],
+"any_ne": [
+"self",
+"other"
+],
+"max_": [
+"self",
+"r"
+],
+"min_": [
+"self",
+"r"
+]
+}
+},
+"_COMBINE": {},
+"_CTX": {},
+"_Ctx": {
+"methods": {
+"__init__": [
+"self",
+"S",
+"warps",
+"steps"
+],
+"_combine_lse": [
+"self",
+"m",
+"s"
+],
+"_lse": [
+"self",
+"t"
+],
+"finish_pass": [
+"self"
+],
+"reduce": [
+"self",
+"t",
+"op"
+],
+"start_pass": [
+"self",
+"op"
+]
+}
+},
+"_FOLD": {},
+"_IDENT": {},
+"_LOWEST": {},
+"_NEG_INF": {},
+"_STREAM": {},
+"_Stop": {
+"methods": {}
+},
+"__all__": {},
+"_build": {
+"params": [
+"fn",
+"ops",
+"outs",
+"warps",
+"arch",
+"name",
+"user_consts",
+"info"
+]
+},
+"_ctx": {
+"params": [
+"what"
+]
+},
+"_fold": {
+"params": [
+"arch",
+"rows"
+]
+},
+"_store_early": {
+"params": [
+"ctx",
+"res",
+"ys",
+"outs",
+"row",
+"c0",
+"bounded"
+]
+},
+"_trace": {
+"params": [
+"kw",
+"spec"
+]
+},
+"_writes": {
+"params": [
+"op",
+"v"
+]
+},
+"annotations": {},
+"as_vec": {
+"params": [
+"vec",
+"tile",
+"uniform"
+]
+},
+"cross_warp": {
+"params": [
+"vec",
+"op",
+"warps",
+"scratch",
+"name"
+]
+},
+"dataclass": {},
+"for_": {
+"params": [
+"iterable",
+"body",
+"carried",
+"names",
+"iv_name"
+]
+},
+"fp32": {},
+"hk": {},
+"i32": {},
+"i8": {},
+"ir": {},
+"pick": {
+"params": [
+"t",
+"col"
+]
+},
+"plan_for": {
+"params": [
+"arch",
+"like",
+"rows",
+"cols",
+"nbytes",
+"override",
+"moved"
+]
+},
+"replace": {},
+"row_length": {
+"params": []
+},
+"row_logsumexp": {
+"params": [
+"t"
+]
+},
+"row_max": {
+"params": [
+"t"
+]
+},
+"row_mean": {
+"params": [
+"t"
+]
+},
+"row_min": {
+"params": [
+"t"
+]
+},
+"row_sum": {
+"params": [
+"t"
+]
+},
+"rowwise": {
+"params": [
+"fn",
+"inputs",
+"outputs",
+"like",
+"name",
+"arch",
+"plan"
+]
+}
+},
+"hk.tune": {
+"BUDGET": {},
+"Callable": {},
+"Dict": {},
+"Iterable": {},
+"List": {},
+"Optional": {},
+"Sequence": {},
+"Tuple": {},
+"__all__": {},
+"__getattr__": {
+"params": [
+"name"
+]
+},
+"_each_in_a_process": {
+"params": [
+"shapes",
+"args",
+"argv"
+]
+},
+"_meta": {
+"params": [
+"arch"
+]
+},
+"annotations": {},
+"explain": {
+"params": [
+"m",
+"n",
+"k",
+"vs"
+]
+},
+"json": {},
+"main": {
+"params": [
+"argv"
+]
+},
+"model_shapes": {
+"params": [
+"model",
+"tp",
+"ms",
+"layers"
+]
+},
+"os": {},
+"parse_shape": {
+"params": [
+"s"
+]
+},
+"time": {},
+"torch_baselines": {
+"params": [
+"names"
+]
+},
+"tune": {
+"params": [
+"m",
+"n",
+"k",
+"budget",
+"save",
+"baselines",
+"workers",
+"log",
+"arch",
+"compiler",
+"profile",
+"**search"
+]
+},
+"tune_shapes": {
+"params": [
+"shapes",
+"**kw"
+]
+}
+},
+"hk.tune.__main__": {
+"main": {
+"params": [
+"argv"
+]
+},
+"sys": {}
+},
+"hk.tune.cost": {
+"Any": {},
+"CARDS": {},
+"Dict": {},
+"SK_SLOW": {},
+"_tile_eff": {
+"params": [
+"bm",
+"bn",
+"c0"
+]
+},
+"annotations": {},
+"estimate": {
+"params": [
+"kind",
+"s",
+"m",
+"n",
+"k",
+"arch"
+]
+},
+"math": {}
+},
+"hk.tune.measure": {
+"Callable": {},
+"Compiler": {
+"methods": {
+"__init__": [
+"self",
+"workers"
+],
+"close": [
+"self"
+],
+"result": [
+"self",
+"key"
+],
+"submit": [
+"self",
+"key",
+"jobs"
+]
+}
+},
+"Dict": {},
+"GemmBench": {
+"methods": {
+"__init__": [
+"self",
+"m",
+"n",
+"k",
+"arch",
+"seed",
+"rotate_bytes",
+"device"
+],
+"_reference": [
+"self"
+],
+"check": [
+"self",
+"fn"
+],
+"close": [
+"self"
+],
+"load": [
+"self",
+"fn"
+],
+"refresh": [
+"self"
+],
+"time": [
+"self",
+"arms",
+"rounds"
+]
+}
+},
+"List": {},
+"MAX_COPIES": {},
+"Optional": {},
+"ROTATE": {},
+"TOL": {},
+"_SPIN_HZ": {},
+"_spin": {
+"params": [
+"torch",
+"seconds"
+]
+},
+"annotations": {},
+"spin_hz": {
+"params": [
+"torch"
+]
+},
+"time": {}
+},
+"hk.tune.records": {
+"Any": {},
+"Dict": {},
+"Optional": {},
+"Path": {},
+"Tuple": {},
+"_CACHE": {},
+"__all__": {},
+"_empty": {
+"params": [
+"arch"
+]
+},
+"annotations": {},
+"bucket": {
+"params": [
+"m"
+]
+},
+"forget": {
+"params": []
+},
+"json": {},
+"load": {
+"params": [
+"arch"
+]
+},
+"os": {},
+"path": {
+"params": [
+"arch"
+]
+},
+"save": {
+"params": [
+"arch",
+"m",
+"n",
+"k",
+"name",
+"spec",
+"point"
+]
+},
+"spec_of": {
+"params": [
+"schedule"
+]
+},
+"user_route": {
+"params": [
+"arch",
+"m",
+"n",
+"k"
+]
+}
+},
+"hk.tune.search": {
+"Any": {},
+"CONFIRM_SETS": {},
+"Callable": {},
+"Candidate": {
+"methods": {
+"__eq__": [
+"self",
+"other"
+],
+"__hash__": [
+"self"
+],
+"__str__": [
+"self"
+],
+"items": null,
+"kind": null,
+"label": [
+"self"
+],
+"name": null,
+"obj": null,
+"of": [
+"kind",
+"sched",
+"name",
+"obj"
+],
+"of_schedule": [
+"s",
+"name"
+],
+"sched": [
+"self"
+]
+}
+},
+"DECIDE_ROUNDS": {},
+"DECIDE_SETS": {},
+"Dict": {},
+"EXPLORE": {},
+"LOCAL_ITERS": {},
+"LOCAL_MOVES": {},
+"List": {},
+"Optional": {},
+"PLAYOFF": {},
+"POOL_PER_KIND": {},
+"RESTARTS": {},
+"ROUND_OVERHEAD": {},
+"RUNG_ROUNDS": {},
+"Result": {
+"methods": {
+"accepted": [
+"self"
+],
+"arch": null,
+"as_dict": [
+"self"
+],
+"baselines": null,
+"best_baseline": [
+"self"
+],
+"champion": null,
+"compile_seconds": null,
+"counts": null,
+"decision": null,
+"gpu_seconds": null,
+"k": null,
+"load_seconds": null,
+"log": null,
+"m": null,
+"ms": null,
+"n": null,
+"phases": null,
+"profile": null,
+"record": null,
+"refused": null,
+"route": null,
+"route_ms": null,
+"summary": [
+"self"
+],
+"timed": null,
+"verdict": [
+"self"
+],
+"wall_seconds": null
+}
+},
+"Search": {
+"methods": {
+"__init__": [
+"self",
+"space",
+"budget",
+"min_gain",
+"k_noise",
+"pool_per_kind",
+"explore",
+"max_seeds",
+"rung_rounds",
+"local_moves",
+"local_iters",
+"restarts",
+"playoff",
+"decide_sets",
+"decide_rounds",
+"confirm_sets",
+"log"
+],
+"_load": [
+"self",
+"bench",
+"fn",
+"res"
+],
+"_round_cost": [
+"self",
+"bench",
+"ms"
+],
+"_say": [
+"self",
+"res",
+"s"
+],
+"pool": [
+"self",
+"m",
+"n",
+"k",
+"res"
+],
+"run": [
+"self",
+"m",
+"n",
+"k",
+"bench",
+"compiler",
+"baselines",
+"arch"
+]
+}
+},
+"Sequence": {},
+"_ms": {
+"params": [
+"x"
+]
+},
+"_r": {
+"params": [
+"x"
+]
+},
+"annotations": {},
+"dataclass": {},
+"field": {},
+"math": {},
+"random": {},
+"stats": {},
+"time": {}
+},
+"hk.tune.space": {
+"Any": {},
+"Candidate": {
+"methods": {
+"__eq__": [
+"self",
+"other"
+],
+"__hash__": [
+"self"
+],
+"__str__": [
+"self"
+],
+"items": null,
+"kind": null,
+"label": [
+"self"
+],
+"name": null,
+"obj": null,
+"of": [
+"kind",
+"sched",
+"name",
+"obj"
+],
+"of_schedule": [
+"s",
+"name"
+],
+"sched": [
+"self"
+]
+}
+},
+"Dict": {},
+"List": {},
+"Optional": {},
+"ScheduleSpace": {
+"methods": {
+"AXES": null,
+"COUPLED": null,
+"RECORDED": null,
+"_S": [],
+"__init__": [
+"self",
+"arch"
+],
+"cand": [
+"self",
+"s",
+"name"
+],
+"check": [
+"self",
+"c",
+"m",
+"n",
+"k"
+],
+"current": [
+"self",
+"m",
+"n",
+"k"
+],
+"estimate": [
+"self",
+"c",
+"m",
+"n",
+"k"
+],
+"from_spec": [
+"self",
+"spec",
+"name"
+],
+"generate": [
+"self",
+"m",
+"n",
+"k"
+],
+"jobs": [
+"self",
+"c",
+"m",
+"n",
+"k"
+],
+"neighbors": [
+"self",
+"c",
+"m",
+"n",
+"k"
+],
+"preference": [
+"self",
+"c"
+],
+"recorded": [
+"self",
+"m",
+"n",
+"k"
+],
+"runner": [
+"self",
+"c",
+"m",
+"n",
+"k"
+],
+"seeds": [
+"self",
+"m",
+"n",
+"k"
+],
+"spec": [
+"self",
+"c"
+],
+"structure": [
+"self",
+"c",
+"m",
+"n",
+"k"
+]
+}
+},
+"Tuple": {},
+"_ABBREV": {},
+"__all__": {},
+"_hashable": {
+"params": [
+"v"
+]
+},
+"_short": {
+"params": [
+"s"
+]
+},
+"_short_items": {
+"params": [
+"kind",
+"items"
+]
+},
+"annotations": {},
+"cost": {},
+"dataclass": {},
+"describe": {
+"params": [
+"c"
+]
+},
+"field": {},
+"json": {},
+"provider": {
+"params": [
+"arch"
+]
+}
+},
+"hk.tune.stats": {
+"CEILING_MARGIN": {},
+"Decision": {
+"methods": {
+"as_dict": [
+"self"
+],
+"band": null,
+"bar": null,
+"gain": null,
+"ratios": null,
+"sets": null,
+"sigma": null,
+"verdict": null
+}
+},
+"Dict": {},
+"Hashable": {},
+"Iterable": {},
+"K_NOISE": {},
+"List": {},
+"MIN_GAIN": {},
+"Optional": {},
+"PEAK_FLOPS": {},
+"Sequence": {},
+"annotations": {},
+"asdict": {},
+"confirm": {
+"params": [
+"first",
+"again"
+]
+},
+"dataclass": {},
+"decide": {
+"params": [
+"route_sets",
+"cand_sets",
+"min_gain",
+"k_noise",
+"floor"
+]
+},
+"field": {},
+"floor_ms": {
+"params": [
+"m",
+"n",
+"k",
+"arch"
+]
+},
+"halve": {
+"params": [
+"scores",
+"keep",
+"protect",
+"floor"
+]
+},
+"math": {},
+"median": {
+"params": [
+"xs"
+]
+},
+"rank": {
+"params": [
+"scores",
+"floor"
+]
+},
+"ratio_band": {
+"params": [
+"base_sets",
+"arm_sets",
+"floor"
+]
+},
+"screen": {
+"params": [
+"times",
+"floor"
+]
+},
+"spread": {
+"params": [
+"xs"
+]
+},
+"statistics": {},
+"summary": {
+"params": [
+"times",
+"floor"
+]
+}
+},
+"hk.types": {
+"Any": {},
+"CoordType": {
+"methods": {
+"__repr__": [
+"self"
+],
+"unit": null
+}
+},
+"DTYPES": {},
+"DType": {
+"methods": {
+"__repr__": [
+"self"
+],
+"bits": null,
+"bytes": [
+"self"
+],
+"cpp": null,
+"kind": null,
+"name": null
+}
+},
+"FP8": {},
+"GlobalType": {
+"methods": {
+"__repr__": [
+"self"
+],
+"cpp": [
+"self"
+],
+"dtype": null
+}
+},
+"GranuleSetType": {
+"methods": {
+"__post_init__": [
+"self"
+],
+"__repr__": [
+"self"
+],
+"cpp": [
+"self"
+],
+"n": [
+"self"
+],
+"swizzle_bytes": [
+"self"
+],
+"tile": null
+}
+},
+"MxScalesType": {
+"methods": {
+"__post_init__": [
+"self"
+],
+"fmt": null,
+"kblocks": null,
+"rows": null
+}
+},
+"Optional": {},
+"Param": {
+"methods": {
+"const_value": null,
+"is_const": null,
+"name": null,
+"type": null
+}
+},
+"RegTileType": {
+"methods": {
+"__post_init__": [
+"self"
+],
+"__repr__": [
+"self"
+],
+"_check_strip": [
+"self"
+],
+"base_tiles": [
+"self"
+],
+"cols": null,
+"cpp": [
+"self"
+],
+"dtype": null,
+"frag": null,
+"frag_spelling": [
+"self"
+],
+"frag_stride": [
+"self"
+],
+"layout": null,
+"layout_spelling": [
+"self"
+],
+"rows": null,
+"run": null,
+"span": [
+"self"
+],
+"strip": [
+"self"
+],
+"transposed": [
+"self"
+]
+}
+},
+"RegVecType": {
+"methods": {
+"__eq__": [
+"self",
+"other"
+],
+"__hash__": [
+"self"
+],
+"__post_init__": [
+"self"
+],
+"__repr__": [
+"self"
+],
+"_key": [
+"self"
+],
+"cpp": [
+"self"
+],
+"dtype": [
+"self"
+],
+"kind": null,
+"length": [
+"self"
+],
+"plain": [
+"self"
+],
+"tile": null,
+"uniform": null
+}
+},
+"STRIDED_FRAGS": {},
+"ScalarType": {
+"methods": {
+"__repr__": [
+"self"
+],
+"cpp": [
+"self"
+],
+"dtype": null
+}
+},
+"SharedTileType": {
+"methods": {
+"__post_init__": [
+"self"
+],
+"__repr__": [
+"self"
+],
+"cols": null,
+"count": null,
+"cpp": [
+"self"
+],
+"dtype": null,
+"element": [
+"self"
+],
+"nbytes": [
+"self"
+],
+"rows": null
+}
+},
+"SharedVecType": {
+"methods": {
+"__post_init__": [
+"self"
+],
+"__repr__": [
+"self"
+],
+"count": null,
+"cpp": [
+"self"
+],
+"dtype": null,
+"element": [
+"self"
+],
+"length": null,
+"nbytes": [
+"self"
+]
+}
+},
+"StageBufferType": {
+"methods": {
+"__post_init__": [
+"self"
+],
+"__repr__": [
+"self"
+],
+"calls": [
+"self"
+],
+"cpp": [
+"self"
+],
+"depth": null,
+"floats": [
+"self"
+],
+"threads": null,
+"tile": null
+}
+},
+"Tuple": {},
+"Type": {
+"methods": {
+"plain": [
+"self"
+]
+}
+},
+"annotations": {},
+"bf16": {},
+"dataclass": {},
+"fp16": {},
+"fp32": {},
+"fp8e4m3": {},
+"fp8e5m2": {},
+"i32": {},
+"i8": {},
+"natural_stride": {
+"params": [
+"rows",
+"cols"
+]
+}
+}
+}

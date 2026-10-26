@@ -21,8 +21,6 @@ Correctness, resources and timing of a kernel in one call; the guide is [docs/ch
 hk.check.check(fn, reference: Optional[Callable] = None, inputs=None, *, cases: Optional[Sequence] = None, consts: Optional[Dict[str, Any]] = None, outputs: Optional[Sequence] = None, inplace: Optional[Sequence] = None, sweep: Optional[Dict[str, Sequence]] = None, baselines: Sequence[str] = ('eager', 'compile'), extra: Optional[Dict[str, Callable]] = None, rtol: Optional[float] = None, atol: Optional[float] = None, exact: bool = False, ref_precision: str = 'fp32', time: bool = True, rounds: int = 15, warmup: int = 3, batch_ms: float = 1.0, burn: float = 0.5, compile_mode: Optional[str] = None, bytes: Optional[float] = None, flops: Optional[float] = None, name: Optional[str] = None, gpu: Optional[bool] = None, build: bool = True, seed: int = 0, profile: bool = False) -> Report
 ```
 
-*Changed after 0.5.0*: new parameter `profile`
-
 Check `fn` against `reference` on `inputs`; see the module docstring
 and docs/check.md.
 

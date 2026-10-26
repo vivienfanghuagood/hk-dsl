@@ -137,7 +137,7 @@ slow operand layout, a copy racing a barrier ([the traps](docs/README.md#the-tra
 ## Install
 
 `pip install hk-dsl`, for CPython 3.10 (glibc 2.35+) or 3.12 (glibc 2.38+) on
-Linux x86_64. The release is 0.6.0; it carries the HipKittens headers, so at
+Linux x86_64. The release is 0.7.0; it carries the HipKittens headers, so at
 run time only hipcc is needed, and a ROCm build of torch (not a dependency)
 to launch. From source, with the HipKittens submodule:
 

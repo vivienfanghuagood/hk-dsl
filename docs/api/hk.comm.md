@@ -45,7 +45,7 @@ tore over xGMI in the litmus suite).
 hk.comm.signal(view, value) -> None
 ```
 
-*New after 0.5.0* (the `hk.dsl.comm` module is not in the 0.5.0 wheel)
+*New after 0.6.0* (the `hk.dsl.comm` module is not in the 0.6.0 wheel)
 
 Publish `value` into the int32 element `view` (a scoped tensor's): every
 store this workgroup issued before it is acknowledged first, then one
@@ -59,7 +59,7 @@ sit in this XCD's L2). Contains a barrier: every warp must reach it.
 hk.comm.arrive(view, value=1) -> Int
 ```
 
-*New after 0.5.0* (the `hk.dsl.comm` module is not in the 0.5.0 wheel)
+*New after 0.6.0* (the `hk.dsl.comm` module is not in the 0.6.0 wheel)
 
 As `signal`, but one thread *adds* `value` to the int32 element `view`
 (a scoped tensor's) with an atomic of the tensor's scope; returns the
@@ -72,7 +72,7 @@ issued before it is acknowledged first. Contains a barrier.
 hk.comm.claim(view, value=1) -> Int
 ```
 
-*New after 0.5.0* (the `hk.dsl.comm` module is not in the 0.5.0 wheel)
+*New after 0.6.0* (the `hk.dsl.comm` module is not in the 0.6.0 wheel)
 
 A work queue's take: one thread adds `value` to the int32 element `view` (a scoped
 tensor's) with an atomic of its scope and the workgroup gets the value before the add -- a
@@ -92,7 +92,7 @@ Contains barriers: every warp must reach it.
 hk.comm.wait(view, value, *, cmp: str = '>=', timeout_s: float = 2.0, error: Optional[View] = None) -> Int
 ```
 
-*New after 0.5.0* (the `hk.dsl.comm` module is not in the 0.5.0 wheel)
+*New after 0.6.0* (the `hk.dsl.comm` module is not in the 0.6.0 wheel)
 
 Poll the int32 element `view` (a scoped tensor's) until it is `>=` (signed)
 or `==` `value`; return the value seen (wave-uniform). Every warp polls,
@@ -107,7 +107,7 @@ kernel traps, so a lost signal is an error rather than a hang.
 hk.comm.barrier(view, target, *, timeout_s: float = 2.0, error: Optional[View] = None) -> Int
 ```
 
-*New after 0.5.0* (the `hk.dsl.comm` module is not in the 0.5.0 wheel)
+*New after 0.6.0* (the `hk.dsl.comm` module is not in the 0.6.0 wheel)
 
 Every workgroup that reaches it adds 1 to the int32 element `view` and
 waits until it is >= `target` -- with an epoch, target = epoch x the number
@@ -122,7 +122,7 @@ before it are visible after it to accesses of the same scope.
 hk.comm.xcd_barrier(cnt, epoch, workgroups: int, *, timeout_s: float = 2.0, error: Optional[View] = None) -> Int
 ```
 
-*New after 0.5.0* (the `hk.dsl.comm` module is not in the 0.5.0 wheel)
+*New after 0.6.0* (the `hk.dsl.comm` module is not in the 0.6.0 wheel)
 
 A grid barrier aggregated per XCD: each workgroup arrives at its XCD's counter
 (`cnt.at[16 * (1 + hk.arch.xcd_id())]`), the last of each XCD at the top one (`cnt.at[0]`), and
@@ -138,7 +138,7 @@ deals a resident grid: round robin) -- if not, the barrier times out into `error
 hk.comm.post(view, value, tag) -> None
 ```
 
-*New after 0.5.0* (the `hk.dsl.comm` module is not in the 0.5.0 wheel)
+*New after 0.6.0* (the `hk.dsl.comm` module is not in the 0.6.0 wheel)
 
 Post a tagged message: one thread stores `value` into the int32 element `view` (a scoped
 tensor's) and `tag` into the next element, as ONE 8-byte store of the tensor's scope. The two
@@ -157,7 +157,7 @@ the reader has taken it (an ack), or posts round r into slot r % S with tag r.
 hk.comm.take(view, tag, *, timeout_s: float = 2.0, error: Optional[View] = None) -> Int
 ```
 
-*New after 0.5.0* (the `hk.dsl.comm` module is not in the 0.5.0 wheel)
+*New after 0.6.0* (the `hk.dsl.comm` module is not in the 0.6.0 wheel)
 
 Take a tagged message: poll the slot `post` writes at the int32 element `view` (a scoped
 tensor's) -- one 8-byte load of the tensor's scope a poll, s_sleep between -- until its tag
@@ -166,6 +166,6 @@ is `tag`, and return its value (wave-uniform). Every warp polls. Timeout and `er
 
 ### `hk.comm.REALTIME_HZ`
 
-*New after 0.5.0* (the `hk.dsl.comm` module is not in the 0.5.0 wheel)
+*New after 0.6.0* (the `hk.dsl.comm` module is not in the 0.6.0 wheel)
 
 s_memrealtime runs at 100 MHz on gfx9 (not the shader clock: clock64() on gfx1100 is 20 bits and wraps, KernelWiki gfx1100-device-flags-unreliable).

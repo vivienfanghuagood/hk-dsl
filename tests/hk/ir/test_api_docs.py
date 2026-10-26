@@ -34,12 +34,16 @@ def test_every_documented_name_has_a_docstring():
 
 
 def test_since_marks_against_the_pypi_wheel():
+    arch_md = (REPO / "docs" / "api" / "hk.arch.md").read_text()
+    section = arch_md.split("### `hk.arch.xcd_id`", 1)[1].split("###", 1)[0]
+    assert "New after 0.6.0" in section          # not in the 0.6.0 wheel
     hk_md = (REPO / "docs" / "api" / "hk.md").read_text()
     section = hk_md.split("### `hk.mma_ABt_mx`", 1)[1].split("###", 1)[0]
-    assert "New after 0.5.0" in section          # not in the 0.5.0 wheel
-    section = hk_md.split("### `hk.mma`", 1)[1].split("###", 1)[0]
-    assert "after 0.5.0" not in section          # in it, same parameters
-    assert "int8 register tiles build on gfx1100" in hk_md
+    assert "after 0.6.0" not in section          # in it, same parameters
+    group_md = (REPO / "docs" / "api" / "hk.group.md").read_text()
+    section = group_md.split("#### `Group.wait_for`", 1)[1].split("###", 1)[0]
+    assert "after 0.6.0" not in section          # *tiles, exact: unchanged, not reordered
+    assert "a synchronous `g.load` stops at the tensor's last row" in group_md
 
 
 def test_math_page_says_what_gelu_is():
@@ -56,11 +60,17 @@ def test_baseline_reader(tmp_path):
     pkg = tmp_path / "hk"
     (pkg / "dsl").mkdir(parents=True)
     (pkg / "__init__.py").write_text("from .dsl import *\nfrom .dsl import f as g\n")
+    (pkg / "dsl" / "kernel.py").write_text("def k(fn, *, warps=1): pass\n")
     (pkg / "dsl" / "__init__.py").write_text(
-        "__all__ = ['f', 'C']\n"
+        "from .kernel import k\n"
+        "__all__ = ['f', 'C', 'k']\n"
         "def f(a, b=1, *, c=2): pass\n"
-        "class C:\n    def m(self, x): pass\n")
+        "class C:\n    def m(self, x): pass\n    def w(self, *t, exact=False): pass\n")
     base = _gen().record_baseline(tmp_path)
     assert base["hk"]["f"]["params"] == ["a", "b", "c"]
     assert base["hk"]["g"]["params"] == ["a", "b", "c"]
+    # a re-export reached through a star import resolves in the module that made it
+    assert base["hk"]["k"]["params"] == ["fn", "warps"]
     assert base["hk.dsl"]["C"]["methods"]["m"] == ["self", "x"]
+    # inspect.signature's order, so an unchanged signature is not "reordered"
+    assert base["hk.dsl"]["C"]["methods"]["w"] == ["self", "*t", "exact"]
