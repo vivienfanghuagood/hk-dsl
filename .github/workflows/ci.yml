@@ -104,6 +104,17 @@ jobs:
         if: matrix.shard == 'ir'
         run: PYTHONPATH=python /usr/bin/python3 -m pytest -q -p no:cacheprovider -m "not gpu" tests/hk/ir tests/hk/engines
 
+      # The cp310 wheel as a release builds it on Ubuntu 22.04, retagged manylinux, and checked:
+      # no binary in it may need a newer glibc (or GLIBCXX) than its tag promises (docs/building.md).
+      - name: Wheel, manylinux tag, glibc check
+        if: matrix.shard == 'ir'
+        run: |
+          /usr/bin/python3 -m pip install --user auditwheel "wheel>=0.42"
+          PYTHON=/usr/bin/python3 OUT="$RUNNER_TEMP/dist" scripts/build_wheel.sh
+          (cd "$RUNNER_TEMP/dist" && OUT=manylinux PYTHON=/usr/bin/python3 \
+            "$GITHUB_WORKSPACE/scripts/manylinux_tag.sh" ./*linux_x86_64.whl)
+          /usr/bin/python3 scripts/check_wheel_glibc.py "$RUNNER_TEMP"/dist/*.whl "$RUNNER_TEMP"/dist/manylinux/*.whl
+
       - name: codegen tier
         if: matrix.shard != 'ir'
         run: >
