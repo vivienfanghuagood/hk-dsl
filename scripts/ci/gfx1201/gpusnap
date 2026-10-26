@@ -1,8 +1,9 @@
 #!/bin/bash
 # gpusnap GPUS [LABEL]   one line per GPU of the gfx1201 dev box, for the record of a run:
-#   <UTC time> gpusnap gpu<N> [LABEL] use=<%> vram=<GiB used>/<GiB> sclk=<MHz> holders: [pid user vram cmd]...|none
+#   <UTC time> gpusnap gpu<N> [LABEL] use=<%> vram=<GiB used>/<GiB> sclk=<MHz> holders: [pid container user vram cmd]...|none
 # GPUS: rocm-smi indices, comma or space separated. use / vram / sclk from the amdgpu sysfs of the
-# card's PCI device; holders from KFD's sysfs (gpulock.sh gpu_foreign), any user's process.
+# card's PCI device (`?` while the card is powered down); holders from KFD's sysfs (gpulock.sh
+# gpu_foreign), any user's process, with the docker container it runs in (`host` if none).
 set -u
 . "$(dirname "$(readlink -f "$0")")/gpulock.sh"
 GPUS=${1:?usage: gpusnap GPUS [LABEL]}; LABEL=${2:-}
@@ -12,6 +13,17 @@ for g in ${GPUS//,/ }; do
     use=$(cat "$dev/gpu_busy_percent" 2>/dev/null)
     vu=$(cat "$dev/mem_info_vram_used" 2>/dev/null); vt=$(cat "$dev/mem_info_vram_total" 2>/dev/null)
     sclk=$(grep '\*' "$dev/pp_dpm_sclk" 2>/dev/null | grep -o '[0-9]*Mhz' | head -1)
-    h=$(gpu_foreign "$g" | sed 's/^/[/; s/$/]/' | tr '\n' ' ')
+    h=""
+    while read -r pid rest; do
+        [ -n "$pid" ] || continue
+        # the docker container a holder runs in, by name: hk-gha-* is this job's own
+        cid=$(grep -o 'docker-[0-9a-f]\{64\}' "/proc/$pid/cgroup" 2>/dev/null | head -1); cid=${cid#docker-}
+        ctr=host
+        if [ -n "$cid" ]; then
+            [ -n "${NAMES:-}" ] || NAMES=$(timeout 10 docker ps --no-trunc --format '{{.ID}} {{.Names}}' 2>/dev/null)
+            ctr=$(awk -v id="$cid" '$1 == id {print $2}' <<<"$NAMES"); ctr=${ctr:-${cid:0:12}}
+        fi
+        h="$h[$pid $ctr $rest] "
+    done < <(gpu_foreign "$g")
     echo "$(date -u +%FT%TZ) gpusnap gpu$g${LABEL:+ $LABEL} use=${use:-?}% vram=$(( ${vu:-0} >> 30 ))/$(( ${vt:-0} >> 30 ))GiB sclk=${sclk:-?} holders: ${h:-none}"
 done
