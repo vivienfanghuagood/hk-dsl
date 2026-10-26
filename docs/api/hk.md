@@ -368,14 +368,16 @@ A loop unrolled at trace time; its bounds must be Python ints.
 ### `hk.if_`
 
 ```python
-hk.if_(cond, *, opaque: bool = False) -> Iterator[None]
+hk.if_(cond, *, opaque: bool = False, uniform: bool = False) -> Iterator[None]
 ```
 
 A region that runs only where `cond` holds.
 
 `opaque=True` hides the condition from the optimizer (an empty asm that
 claims to modify it), so the branch survives even when it folds to a
-constant -- the tool for keeping two live sets apart.
+constant -- the tool for keeping two live sets apart. `uniform=True`
+declares the condition the same in every warp (see `hk.uniform`): the
+region may then hold barriers.
 
 ### `hk.scope`
 
@@ -1831,4 +1833,4 @@ are bounded: any non-empty length. head_dim is 64 or 128 on both.
 
 ## Also exported
 
-`hk.iota`, `hk.map_cpp`, `hk.mfma_strip`, `hk.mx`, `hk.templates`
+`hk.iota`, `hk.map_cpp`, `hk.mfma_strip`, `hk.mx`, `hk.templates`, `hk.uniform`

@@ -234,6 +234,8 @@ def if_stmt(cond, then: Callable, orelse: Callable, carried: Tuple,
     # the source has it.
     op = scf.IfOp(i1(cond), [x.v.type for x in types],
                   has_else=has_else or bool(results), loc=t.loc())
+    if _is_uniform(cond):
+        op.attributes["hk.uniform"] = ir.UnitAttr.get()
     if results:
         op.attributes["hk.result_names"] = ir.ArrayAttr.get(
             [ir.StringAttr.get(names[i]) for i in results])
@@ -340,16 +342,41 @@ def _runtime_while(test, body, carried, names):
 
 
 @contextmanager
-def if_(cond, *, opaque: bool = False) -> Iterator[None]:
+def uniform(cond):
+    """`cond`, declared the same in every warp of the workgroup -- made of the block index,
+    scalar loads every warp makes, constexprs and the tensors' extents, never of warp_id or a
+    lane's value. A branch on it (`if hk.uniform(bid < 160):` or `hk.if_(c, uniform=True)`) may
+    hold workgroup operations -- barriers, group copies -- as every warp takes it or none does:
+    the role dispatch of a persistent kernel. The declaration is the author's; a condition that
+    differs between warps deadlocks at the first barrier inside."""
+    if not isinstance(cond, (Bool, Int)):
+        raise TypeError(f"hk.uniform takes a device comparison, not {cond!r}")
+    owner = getattr(cond.v, "owner", None)
+    if owner is None or not hasattr(owner, "attributes"):
+        raise TypeError("hk.uniform: the condition is not an operation's result (a kernel argument?)")
+    owner.attributes["hk.wg_uniform"] = ir.UnitAttr.get()
+    return cond
+
+
+def _is_uniform(cond) -> bool:
+    owner = getattr(getattr(cond, "v", None), "owner", None)
+    return owner is not None and hasattr(owner, "attributes") and "hk.wg_uniform" in owner.attributes
+
+
+def if_(cond, *, opaque: bool = False, uniform: bool = False) -> Iterator[None]:
     """A region that runs only where `cond` holds.
 
     `opaque=True` hides the condition from the optimizer (an empty asm that
     claims to modify it), so the branch survives even when it folds to a
-    constant -- the tool for keeping two live sets apart."""
+    constant -- the tool for keeping two live sets apart. `uniform=True`
+    declares the condition the same in every warp (see `hk.uniform`): the
+    region may then hold barriers."""
     if not isinstance(cond, (Bool, Int)):
         raise TypeError(f"if_ condition is {cond!r}, expected a device comparison")
     t = B.current()
     op = scf.IfOp(i1(cond), [], has_else=False, loc=t.loc())
+    if uniform or _is_uniform(cond):
+        op.attributes["hk.uniform"] = ir.UnitAttr.get()
     if opaque:
         op.attributes["hk.opaque"] = ir.UnitAttr.get()
     with t.at(ir.InsertionPoint(op.then_block)):
