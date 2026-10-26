@@ -584,7 +584,7 @@ directory, `/home/amd/hfang-hk/gha/runner-gfx1201/`:
   actions/checkout writes global git config under `$HOME` (every checkout
   also sets `persist-credentials: false`);
 - `.env`, which the jobs inherit: `HOME`, `HK_CI_GPUS` (the cards it may
-  take, in order of preference; default `3 2 1`), `HK_CI_STATE` (`state/`)
+  take, in order of preference; `7 6 5 4 3 2 1`: every card but 0), `HK_CI_STATE` (`state/`)
   and `HK_CI_MLIR` (`/home/amd/hfang-hk/mlir/install-cp310`, the
   `ci-mlir-23.1.3` release's asset, mounted read-only);
 - `state/runs/gfx1201/RUN_ID-ATTEMPT/`, a run's directory, and `state/ci/`,

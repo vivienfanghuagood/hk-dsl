@@ -10,7 +10,7 @@
 #   runs/gfx1201/RUN_ID-ATTEMPT/  the run: build.log, gpu/, gpusnap.log, result.json, report.txt
 #   ci/                           /ci in the container: hk-build-cp312, pylib, hk-cache, home
 # $HK_CI_MLIR (default /home/amd/hfang-hk/mlir/install-cp310) is MLIR 23.1.3 as the ci-mlir-23.1.3
-# release has it. $HK_CI_GPUS: the cards it may take, in order of preference (default "3 2 1").
+# release has it. $HK_CI_GPUS: the cards it may take, in order of preference (default "7 6 5 4 3 2 1").
 #
 # The box is shared and its other users do not take our locks: a card is taken only when its lock
 # (gpulock.sh) is free and no process of anyone's holds it (KFD sysfs), nor an hk-gha container
@@ -25,7 +25,7 @@ STATE=${HK_CI_STATE:-/home/amd/hfang-hk/gha/runner-gfx1201/state}
 MLIR=${HK_CI_MLIR:-/home/amd/hfang-hk/mlir/install-cp310}
 CIDIR=${HK_CI_DIR:-$STATE/ci}
 TIER=${HK_CI_TIER:-gfx1201}
-GPUS=${HK_CI_GPUS:-3 2 1}
+GPUS=${HK_CI_GPUS:-7 6 5 4 3 2 1}
 SHA=$GITHUB_SHA
 KEY=$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT
 RUN=$STATE/runs/$TIER/$KEY
