@@ -99,7 +99,7 @@ through 0.7.0 built cp312 in rocm/pytorch on Ubuntu 24.04: `libHKPythonCAPI`
 needed `GLIBC_2.38` (`__isoc23_strtol`, which glibc 2.38's headers substitute
 for `strtol`), so the wheel was `manylinux_2_38`, and `pip install hk-dsl`
 found no cp312 wheel in the vLLM ROCm images, which have glibc 2.35. 0.7.0 got
-an extra cp312 `manylinux_2_35` wheel, built in the vLLM image, and from 0.7.1
+an extra cp312 `manylinux_2_35` wheel, built in the vLLM image, and from 0.8.0
 it is the only cp312 wheel; pip on a newer glibc takes it too. Building in the
 vLLM image takes three changes from the rocm/pytorch recipe: run it with
 `--entrypoint bash`; use `/usr/bin/python3` with explicit

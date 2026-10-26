@@ -103,7 +103,6 @@ Paths below are relative to the repository root.
   capture it. Time or capture it with `HK_LAUNCH=codeobj` set (or through
   `hk.torch_op(k)`); `hk.check`'s eager timing is unaffected.
 - Names marked *New after 0.7.0* in
-  [docs/api](../../docs/api/README.md) are on main only: no release has
-  them yet, so they need a checkout (whose `hk.__version__` still says
-  0.7.0: main keeps the last release's version).
+  [docs/api](../../docs/api/README.md) need hk-dsl 0.8.0 or a checkout
+  (`hk.__version__` says which you have).
 - Only same-process, interleaved timing counts; under ~2% is a tie.

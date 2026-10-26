@@ -33,34 +33,31 @@ pip install hk-dsl
 ```
 
 A wheel is built per Python interpreter, because it carries the MLIR bindings
-for one CPython. 0.7.0 has three on PyPI:
+for one CPython. 0.8.0 has two on PyPI:
 
 | wheel | glibc |
 |---|---|
-| `hk_dsl-0.7.0-cp310-cp310-manylinux_2_35_x86_64.whl` | 2.35+ |
-| `hk_dsl-0.7.0-cp312-cp312-manylinux_2_35_x86_64.whl` | 2.35+ |
-| `hk_dsl-0.7.0-cp312-cp312-manylinux_2_38_x86_64.whl` | 2.38+ |
+| `hk_dsl-0.8.0-cp310-cp310-manylinux_2_35_x86_64.whl` | 2.35+ |
+| `hk_dsl-0.8.0-cp312-cp312-manylinux_2_35_x86_64.whl` | 2.35+ |
 
-pip takes the cp312 `manylinux_2_38` wheel where glibc is 2.38 or newer and
-the `manylinux_2_35` one elsewhere, as in vLLM's ROCm images (Ubuntu 22.04);
-the two are the same package, built on Ubuntu 24.04 and 22.04. From the next
-release on, cp312 is a single `manylinux_2_35` wheel, as cp310 is: both are
-built on glibc 2.35, and each wheel's glibc is checked against its tag
-([building](building.md#wheels)). The same wheels are attached to each
+Both are built on glibc 2.35 (cp312 in vLLM's ROCm image), so one wheel per
+interpreter serves Ubuntu 22.04, vLLM's ROCm images and anything newer, and
+each wheel's glibc is checked against its tag ([building](building.md#wheels)).
+0.7.0 also had a cp312 `manylinux_2_38` wheel; 0.6.0 and earlier had only
+that one for cp312. The same wheels are attached to each
 [GitHub release](https://github.com/vivienfanghuagood/hk-dsl/releases). For
 another interpreter, build one ([building](building.md#wheels)).
 
 It carries the HipKittens headers, the bindings and the shipped tuning
 records, so nothing else is needed at run time but hipcc.
 
-The release on PyPI is 0.7.0. It turns hk's validated vLLM / SGLang routes on
-by default (`HK_DISABLE=1` turns them off, [integration](integration.md#on-by-default-and-turning-it-off)),
-and it has `hk.comm` (hand-offs between gfx950's XCDs and between GPUs), a
-stated row-reduction order for strips, K2's fused activation quant, and bounded
-synchronous `g.load` / `g.store` on gfx950, which 0.6.0 lacked
-([changelog](../CHANGELOG.md)). Main also has workgroup placement
-(`hk.kernel(placement=)`), which no release has yet: the API reference marks
-such names *New after 0.7.0*.
+The release on PyPI is 0.8.0. hk is on by default in vLLM and SGLang for the
+routes validated on your GPU (`HK_DISABLE=1` turns them all off, `HK_<ROUTE>=0`
+one of them, [integration](integration.md#on-by-default-and-turning-it-off)).
+0.8.0 adds workgroup placement as a pass (`hk.kernel(placement=)`),
+`hk.map_cpp` and i32 strips, strip ops for megakernel roles, and gfx1201
+(RDNA4) on hardware, which 0.7.0 lacked; the API reference marks such names
+*New after 0.7.0* ([changelog](../CHANGELOG.md)).
 
 **From source.** The backend is the `third_party/HipKittens` submodule, so
 clone with `--recursive` (or run `git submodule update --init`). The dialect

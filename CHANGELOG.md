@@ -4,10 +4,24 @@ Release notes for each version are also on its
 [GitHub release](https://github.com/vivienfanghuagood/hk-dsl/releases).
 The next version's notes collect here until it is released.
 
-## Unreleased
+## 0.8.0
 
-What is on main after 0.7.0. `pip install hk-dsl` (0.7.0) does not have it;
-the API reference marks these names *New after 0.7.0*.
+hk-dsl 0.8.0: workgroup placement as a compiler pass on gfx950; `hk.map_cpp`,
+i32 strips and the strip ops a megakernel's roles need; gfx1201 (RDNA4) on
+hardware; and reproducible wheels, one `manylinux_2_35` wheel per interpreter.
+hk stays on by default in vLLM and SGLang for the routes validated on your GPU:
+`HK_DISABLE=1` turns every route off, `HK_<ROUTE>=0` one of them
+([integration](docs/integration.md#on-by-default-and-turning-it-off)).
+
+On PyPI: `pip install hk-dsl`, for CPython 3.10 and 3.12 on Linux x86_64 with
+glibc 2.35 or newer (Ubuntu 22.04 and later, and vLLM's ROCm images): one
+`manylinux_2_35` wheel per interpreter. The wheels on the GitHub release are
+the same files; the manylinux copies are the ones on PyPI. Each carries the
+MLIR bindings for its interpreter and the HipKittens headers, so at run time
+only hipcc is needed. The API reference marks what 0.8.0 adds *New after
+0.7.0*.
+
+    pip install hk_dsl-0.8.0-cp312-cp312-manylinux_2_35_x86_64.whl
 
 **Workgroup placement as a pass** (#63, gfx950; design in
 [docs/design/placement-pass.md](docs/design/placement-pass.md), #62).
@@ -58,6 +72,47 @@ remaps:
   `hk.map_cpp`'s arguments and results. Operators and reductions on them are
   refused, so integer arithmetic is written in `hk.map_cpp`.
 
+**Strip ops for megakernel roles** (#72, gfx950), which DeepSeek-V4.1's K1
+written in hk uses (bitwise to the hand-written K1 over ~496k layer calls a
+rank):
+- `hk.iota(ty)`: an i32 strip whose element (r, c) is c.
+- `Global.load_elems(idx)` / `store_elems(val, idx)`: element gather and
+  scatter at flat indices; an index below zero or past the tensor reads 0 and
+  writes nothing.
+- `Tile.group_sum` / `group_max` / `group_min(cols, lanes=, xor=)`:
+  reductions over groups of lanes, in a stated order like
+  `sum(axis=1, lanes=, xor=)`.
+- `Tile.lane_gather(lanes)` (`ds_bpermute` of each element), and
+  `hk.mfma_strip("f32_16x16x4", a, b, acc)`, one raw MFMA on strip registers
+  for reproducing another kernel's MFMA bit for bit.
+
+**gfx1201 (RDNA4) on hardware** (#70, #71). gfx1201 goes from compile-only to
+hk's GPU tier passing on a Radeon AI PRO R9700 (914 passed, 0 failed;
+[chapter 47](docs/history/47-gfx1201-on-hardware.md)):
+- HipKittens moves to `9d182f93`: `include/rdna4` with gfx12's accumulator
+  layout as measured (every MMA unit test had failed on the old one) and
+  rdna3's work since the fork re-derived for gfx12. gfx1100 and gfx950 are
+  unaffected: `include/rdna3` and the CDNA trees are byte-identical.
+- The LDS reads a tile load issues come from the target: one on gfx1201, where
+  hk assumed gfx1100's two. hk-lds-pipeline derives every LDS wait from that
+  count, and a count too high makes every wait too shallow.
+- The wait gate reads gfx12's waits (hex immediates, `s_wait_loadcnt_dscnt`,
+  `s_wait_storecnt_dscnt`), the target is measured (VGPR granule 24, LDS pool
+  128 KB, i8 WMMA, strips), and the schedules' register model is fitted on
+  gfx1201's own builds.
+- No engine route is validated on gfx1201, so none is on by default there, and
+  nothing is tuned there yet (its tables are gfx1100's).
+
+**Build gates**
+- **The spill gate passes a scratch frame the code never touches** (#68). A
+  kernel with ScratchSize > 0 and no VGPR spill builds when its code object has
+  no `scratch_*` instruction, no `flat_*` memory instruction, no flat scratch
+  and no private segment buffer (`cocheck.unused_scratch_frame`); the build
+  records `scratch_note = "reserved-unused scratch frame"` and says so on
+  stderr and in `build.log`. Found on K1's indexer build under ROCm 10 (36 B
+  reserved, never used). A VGPR spill, any scratch access, and a code object
+  that cannot be read are still refused.
+
 **Fixes**
 - **K1 MoE a8w4 at decode M ran 11% slower after #65** (M 64: 0.89x of before, found by the MI355X
   scoreboard). The sorted kernels' grids are sized for the most sorted blocks a launch can have,
@@ -75,10 +130,12 @@ remaps:
   and user kernels that move fp32 tiles through LDS on gfx950.
 
 **Wheels** (#66)
-- From the next release, cp312 is one `manylinux_2_35` wheel, built on glibc
-  2.35 in vLLM's ROCm image, like cp310: through 0.7.0 cp312 was built on
-  Ubuntu 24.04 and needed glibc 2.38, so `pip install hk-dsl` found no cp312
-  wheel in vLLM's ROCm images until 0.7.0's extra `manylinux_2_35` wheel.
+- cp312 is one `manylinux_2_35` wheel, built on glibc 2.35 in vLLM's ROCm
+  image, like cp310. Through 0.6.0 cp312 was built on Ubuntu 24.04 and needed
+  glibc 2.38, so `pip install hk-dsl` found no cp312 wheel in vLLM's ROCm
+  images; 0.7.0 added a second, `manylinux_2_35` cp312 wheel. (0.7.0's PyPI
+  description still says CPython 3.12 needs glibc 2.38: that page cannot be
+  edited after upload, and 0.8.0's states the wheels above.)
 - `scripts/check_wheel_glibc.py` fails a wheel that needs a newer glibc (or
   GLIBCXX / CXXABI, with auditwheel) than its manylinux tag; CI's IR leg
   builds the cp310 wheel and runs it.
@@ -107,6 +164,14 @@ remaps:
   sync that must pass before a tag.
 - Examples [14](examples/README.md) (an hk.comm task graph, gfx950) and
   [15](examples/README.md) (workgroup placement).
+- `hk.map_cpp` and i32 strips in the language and the API reference (#81).
+- No internal address, host name or user path in the repository (#83): docs,
+  bench records and scripts use placeholders and environment variables, and
+  `scripts/check_public_hygiene.py` (generic rules, an explicit allowlist)
+  runs in CI's IR leg and before every tag.
+- [docs/design/e2e-goal.md](docs/design/e2e-goal.md), the end-to-end goal
+  refocused on three core kernels, and [docs/design/kda.md](docs/design/kda.md)
+  (#20); bench/tune's record of T4 run 20261024-a (#22).
 
 **CI and tests**
 - Several gfx950 runners in parallel, each with its own GPUs and state, and
@@ -122,6 +187,50 @@ remaps:
   seen on gfx950, `relative error 9.73e+29`, matches an all-zero reference
   (0.97265625 / 1e-30), not a wrong output: the paged decode did not fail in
   thousands of repetitions with poisoned allocations and polluted LDS (#89).
+
+**Compatibility**
+- No public DSL name or parameter was removed or renamed since 0.7.0 (checked
+  name by name against the 0.7.0 wheel). The modules' `NUM_XCDS` constants in
+  `hk.ops.attn_cdna`, `gemm_cdna`, `gemm_cdna_dp` and `moe_a8w4` are gone
+  (#65): the XCD count is `hk.arch.xcd_count()`.
+- The dialect's semantic version, part of the compile-cache key, is now
+  `hk-dialect-6`. 0.7.0's cached builds are rebuilt once.
+- The spill gate can build a kernel that 0.7.0 refused: one whose only
+  scratch is a reserved frame its code never touches (#68).
+- gfx950's attention, GEMMs, K1 and K2 now number their workgroups through
+  the placement pass: outputs bitwise as before. `HK_XCDS=1` turns every
+  placement off.
+- cp312 has one wheel, `manylinux_2_35`; 0.7.0's cp312 `manylinux_2_38` wheel
+  has no 0.8.0 counterpart, and pip on a newer glibc takes the 2_35 one.
+
+**Known issues**
+- gfx942: the synchronous group copies are still unbounded (#49): on gfx942 a
+  `g.load` / `g.store` at a partial last tile reads and writes past the
+  tensor. There is no gfx942 here to test the bounded form on.
+- The gfx1100 defaults were not run end to end. Each gfx1100 route's evidence
+  is its earlier opt-in run with real models; the default-on configuration
+  itself was checked by unit tests, the GPU tier and the engine contract.
+- The vLLM decoder attention backend stays off by default: it replaces ROCm's
+  default decoder attention for every model and raises rather than falls back
+  on sliding windows, sinks, softcap, an fp8 KV cache, fp16 and other head
+  sizes; validated on Qwen3-8B only, and on gfx950 slower at one request on
+  long contexts (0.71-0.88x).
+- SGLang-Diffusion installs made before 0.7.0 stay opt-in until
+  `python3 -m hk.integration sglang-diffusion install` is run again.
+- gfx1100's paged decode at `splits=1` leaves a zero-length (padded)
+  request's output rows unspecified; through the merge (`splits` > 1), and on
+  gfx950, they are zero. `hk.ops.convrot.linear` checks neither N % 128 nor
+  K % 64 itself; the SGLang-Diffusion backend checks before calling it.
+- gfx1100's default launch goes to the null stream, so a CUDA graph does not
+  capture it. `HK_LAUNCH=codeobj` launches on torch's current stream.
+- Under the vLLM image's hipcc (ROCm 10), `gemm_cdna`'s `dp128x224` candidate
+  at 130x1792x768 spills and is refused. rocm/pytorch 7.2.3 builds it.
+- gfx1201 runs hk's GPU tier on a dev box, not in CI's required tiers; no
+  route is validated or on by default there and nothing is tuned. gfx942 is
+  compile-only.
+- `.github/workflows/pypi.yml` cannot upload yet: PyPI's trusted publisher is
+  not configured ([building](docs/building.md#wheels)). Releases go up with
+  twine from the GitHub release's manylinux wheels.
 
 ## 0.7.0
 

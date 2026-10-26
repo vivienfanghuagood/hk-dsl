@@ -197,8 +197,8 @@ of `[cos | sin]` rows and optional int32 positions
 element of a strip. It is for what the operators cannot say and a kernel must
 reproduce bit for bit from another implementation: bit manipulation, a fused
 multiply-add, one particular instruction (`__builtin_amdgcn_*`). Triton's
-`inline_asm_elementwise` is the same escape, for the same reason. New after
-0.7.0 (#53).
+`inline_asm_elementwise` is the same escape, for the same reason. New in
+0.8.0 (#53).
 - **Arguments.** `x0`, `x1`, ... in `expr` are `args` in order. A strip
   binds its element (r, c); an `hk.Int` (a `load_scalar()`, an index) or a
   Python int binds its value, the same for every element. Each has its C++
@@ -525,7 +525,7 @@ attention takes the cluster placement by measurement: 1.05-1.18x at 128 KV
 heads, 8K-128K tokens (#55). The design and its evidence are in
 [workgroup placement](design/placement-pass.md);
 [`examples/15_placement.py`](../examples/15_placement.py) shows it on a kernel
-of your own. Not in 0.7.0: placement is on main only.
+of your own. New in 0.8.0 (#63, #65).
 
 ## Namespaces
 
