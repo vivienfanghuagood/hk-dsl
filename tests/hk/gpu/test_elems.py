@@ -1,7 +1,7 @@
 """Element-wise exchange on gfx950: tagged mailbox pairs between CTAs (Global.post_elems /
 take_elems, one element a pair or runs of pairs of pairs, bf16 two a pair), an fp32 LDS tile
 addressed element by element (SharedTile.load_elems / store_elems), and store_elems(runs=True)
--- the hand-offs of DeepSeek-V4.1's K1 in hk (~/hk-dx/kda/mk-decode/m1/k1_hk.py)."""
+-- the hand-offs of DeepSeek-V4.1's K1 in hk."""
 
 from __future__ import annotations
 
