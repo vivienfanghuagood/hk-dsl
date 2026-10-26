@@ -409,9 +409,13 @@ HOME=/home/hfang/gha/state-gfx950-b/home
 
 `HOME` is there for branches older than per-runner state: their
 `gfx950-vllm` job set `HK_CI_DIR=$HOME/gha/x950v/ci`, so `HOME` points at a
-directory whose `gha` is a symlink to the state directory (`home/gha -> ..`;
-`home/.docker` and `home/.gitconfig` link to the real ones). Drop it once
-no such branch is run any more.
+directory whose `gha` is a symlink to the state directory (`home/gha -> ..`).
+Drop it once no such branch is run any more. Link nothing else of the real
+home into it, `.gitconfig` least of all: `actions/checkout` copies
+`$HOME/.gitconfig` to a temporary home as a symlink if it is one, and its
+`git config --global` (the job's token as an `extraheader`, for the
+submodules) then lands in the real file, where every later `git push` on the
+workstation sends that token instead of the user's credentials.
 
 **Adding one** (here `gfx950-c` on GPU 5, say):
 
@@ -419,7 +423,7 @@ no such branch is run any more.
 cd ~/gha && df -h ~                        # the CI directories are ~13 GB
 mkdir runner-gfx950-c && cp -a runner-gfx950/{bin,externals,config.sh,env.sh,run.sh,safe_sleep.sh,run-helper.sh.template,.path} runner-gfx950-c/
 cp runner-gfx950-c/run-helper.sh.template runner-gfx950-c/run-helper.sh
-S=~/gha/state-gfx950-c; mkdir -p $S/runs $S/home && ln -s .. $S/home/gha && ln -s ~/.docker ~/.gitconfig $S/home/
+S=~/gha/state-gfx950-c; mkdir -p $S/runs $S/home && ln -s .. $S/home/gha
 cp -a x950 x950v $S/                       # warm: the first run does not recompile every kernel
 printf '%s\n' LANG=en_US.UTF-8 'HK_CI_GPUS=5' HK_CI_STATE=$S HK_CI_MLIR=$HOME/hk-ci/mlir/install-cp310 \
     HK_CI_LOCKS=$HOME/hk-dx/locks HOME=$S/home > runner-gfx950-c/.env
