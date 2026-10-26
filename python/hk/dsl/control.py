@@ -341,7 +341,6 @@ def _runtime_while(test, body, carried, names):
     return tuple(result)
 
 
-@contextmanager
 def uniform(cond):
     """`cond`, declared the same in every warp of the workgroup -- made of the block index,
     scalar loads every warp makes, constexprs and the tensors' extents, never of warp_id or a
@@ -363,6 +362,7 @@ def _is_uniform(cond) -> bool:
     return owner is not None and hasattr(owner, "attributes") and "hk.wg_uniform" in owner.attributes
 
 
+@contextmanager
 def if_(cond, *, opaque: bool = False, uniform: bool = False) -> Iterator[None]:
     """A region that runs only where `cond` holds.
 
