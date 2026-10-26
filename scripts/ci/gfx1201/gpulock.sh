@@ -1,19 +1,20 @@
-# gpulock.sh -- GPU locks on the gfx1201 dev box amd-G7466-M6 (8x Radeon AI PRO R9700), named by
-# physical PCI address.
+# gpulock.sh -- GPU locks on the gfx1201 dev box (8x Radeon AI PRO R9700), named by physical PCI
+# address.
 #
-# The box is shared: a dozen users, most of them logging in as `amd`, run on these cards with no lock
-# of any kind. These locks only keep *our* sessions off each other's card; the idle check
+# The box is shared: other users run on these cards with no lock of any kind. These locks only keep *our* sessions off each other's card; the idle check
 # (gpu_foreign) is what keeps us off everyone else's. Both are needed before a GPU run.
 # Lock: $GPULOCK_DIR/gpu/<pci>.lock (flock); holder: $GPULOCK_DIR/gpu/<pci>.owner.
 #
-#   . ~/hfang-hk/locks/bin/gpulock.sh
+#   GPULOCK_DIR=<dir> . scripts/ci/gfx1201/gpulock.sh
 #   gpulock_take IDX [WAIT_S]   # IDX: rocm-smi index on the host; takes fd 9
 #   gpulock_pci IDX             # prints the card's PCI address, e.g. 0000:63:00.0
 #   gpulock_render IDX          # prints the card's render node, e.g. renderD128
 #   gpu_foreign IDX             # prints the KFD processes holding VRAM/queues on it (empty: idle)
-# or:  ~/hfang-hk/locks/bin/gpulock IDX [-w WAIT_S] -- CMD...
+# or:  scripts/ci/gfx1201/gpulock IDX [-w WAIT_S] -- CMD...
+# GPULOCK_DIR (required): the lock directory every session on the box shares, with a NODE_LOCKS
+# marker in it; set in the runner's .env, and in a person's shell.
 
-GPULOCK_DIR=${GPULOCK_DIR:-/home/amd/hfang-hk/locks}
+GPULOCK_DIR=${GPULOCK_DIR:-}
 
 gpulock_pci() {
     local pci
@@ -30,6 +31,7 @@ gpulock_render() {
 
 gpulock_path() {
     local pci
+    [ -n "$GPULOCK_DIR" ] || { echo "gpulock: set GPULOCK_DIR to the box's lock directory" >&2; return 2; }
     pci=$(gpulock_pci "$1") || return $?
     echo "$GPULOCK_DIR/gpu/$pci.lock"
 }

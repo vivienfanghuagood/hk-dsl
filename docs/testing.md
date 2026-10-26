@@ -549,52 +549,54 @@ then remove `runner-<name>` and its state directory.
 
 ### The gfx1201 runner
 
-A fourth job, **`gfx1201`**, runs the GPU tier for the RDNA4 port on the
-gfx1201 dev box, amd-G7466-M6 (8x Radeon AI PRO R9700, ROCm 7.2.3), in
+A fourth job, **`gfx1201`**, runs the GPU tier for the RDNA4 port on a shared
+gfx1201 dev box (`<rdna4-host>`: 8x Radeon AI PRO R9700, ROCm 7.2.3), in
 `rocm/pytorch` rocm7.2.3 py3.12 -- the gfx950 job's image. It is not a
 required check, and it is `continue-on-error` until the port's GPU tier is
 green: a red gfx1201 does not fail the run.
 
-**The box is shared.** A dozen people use it, most of them logging in as
-`amd`, and none of them takes our locks. So every GPU run there, CI's and a
-person's, goes through `scripts/ci/gfx1201/hkr9 IDX|auto|none -- CMD`: our
-lock of the card (`gpulock.sh`, `/home/amd/hfang-hk/locks/gpu/<PCI>.lock`),
-then a check that no process of anyone's holds the card (KFD's sysfs), then a
-container that sees that one card, with core dumps off (`--ulimit core=0`,
-`ulimit -c 0`, `HSA_DISABLE_COREDUMP_ON_EXCEPTION=1`; the root partition is
-over 90% full). `auto` takes the first idle card of a list, waiting up to an
-hour. The job (`scripts/ci/run_gfx1201.sh`) takes one card of `HK_CI_GPUS`,
-which leaves out GPU 0 (another user's service holds it most of the time), and
-whose render node no `hk-gha-*` container has, and records what else ran on
-the card while the suite did: `gpusnap.log` in the artifact, a snapshot at the
-start and every five minutes, each holder with its container. A cancel is
-handled as on the gfx950 job ("Cancelled jobs and orphan containers"): the
-step `exec`s the script, which re-executes itself with default signals, kills
-its container from its trap, and leaves a reaper holding the card's lock for
-a SIGKILL. The orphan sweep needs no GitHub token here: the runner is the
-box's only one and runs one job at a time, so any `hk-gha-*` container
-labelled with its name is an orphan. Copies of `hkr9`,
-`gpulock.sh` and `gpusnap` for people are installed in
-`/home/amd/hfang-hk/locks/bin/`; CI uses the checkout's.
+**The box is shared.** Other people run on its cards, and none of them takes
+our locks. So every GPU run there, CI's and a person's, goes through
+`scripts/ci/gfx1201/hkr9 IDX|auto|none -- CMD`: our lock of the card
+(`gpulock.sh`, `$GPULOCK_DIR/gpu/<PCI>.lock`), then a check that no process
+of anyone's holds the card (KFD's sysfs), then a container that sees that one
+card, with core dumps off (`--ulimit core=0`, `ulimit -c 0`,
+`HSA_DISABLE_COREDUMP_ON_EXCEPTION=1`; the root partition is over 90% full).
+`auto` takes the first idle card of a list, waiting up to an hour. The job
+(`scripts/ci/run_gfx1201.sh`) takes one card of `HK_CI_GPUS`, which leaves out
+GPU 0 (another user's service holds it most of the time), and whose render
+node no `hk-gha-*` container has, and records what else ran on the card while
+the suite did: `gpusnap.log` in the artifact, a snapshot at the start and
+every five minutes, each holder with its container. A cancel is handled as on
+the gfx950 job ("Cancelled jobs and orphan containers"): the step `exec`s the
+script, which re-executes itself with default signals, kills its container
+from its trap, and leaves a reaper holding the card's lock for a SIGKILL. The
+orphan sweep needs no GitHub token here: the runner is the box's only one and
+runs one job at a time, so any `hk-gha-*` container labelled with its name is
+an orphan. A person on the box uses the same scripts, with `GPULOCK_DIR` and
+`HK_R9_ROOT` (the directory mounted at `/w`) set in their shell.
 
 **Where things live** -- on the box, everything under the runner's own
-directory, `/home/amd/hfang-hk/gha/runner-gfx1201/`:
+directory, `$RUNNER_ROOT`:
 - the runner (actions-runner 2.338.0), its work directory `_work/`, and
-  `home/`, the HOME it and its jobs run with: never `amd`'s, because
-  actions/checkout writes global git config under `$HOME` (every checkout
-  also sets `persist-credentials: false`);
-- `.env`, which the jobs inherit: `HOME`, `HK_CI_GPUS` (the cards it may
-  take, in order of preference; `7 6 5 4 3 2 1`: every card but 0), `HK_CI_STATE` (`state/`)
-  and `HK_CI_MLIR` (`/home/amd/hfang-hk/mlir/install-cp310`, the
-  `ci-mlir-23.1.3` release's asset, mounted read-only);
+  `home/`, the HOME it and its jobs run with: never the login user's,
+  because actions/checkout writes global git config under `$HOME` (every
+  checkout also sets `persist-credentials: false`);
+- `.env`, which the jobs inherit, and the only place the box's paths are
+  written down: `HOME` (`$RUNNER_ROOT/home`), `HK_CI_GPUS` (the cards it may
+  take, in order of preference; `7 6 5 4 3 2 1`: every card but 0),
+  `HK_CI_STATE` (`$RUNNER_ROOT/state`), `HK_CI_MLIR` (the `ci-mlir-23.1.3`
+  release's asset, mounted read-only) and `GPULOCK_DIR` (the box's lock
+  directory). `run_gfx1201.sh` has no default for any of the last three and
+  stops if one is missing;
 - `state/runs/gfx1201/RUN_ID-ATTEMPT/`, a run's directory, and `state/ci/`,
   `/ci` in the container: the dialect's build, pip's packages, the compile
   cache;
 - `config.log` and `run.log`, the last registration's and the listener's
   output.
 
-The other `actions-runner` in `amd`'s home is someone else's; nothing here
-touches it.
+Any other `actions-runner` on the box is someone else's; nothing here touches
+it.
 
 **Registration is driven from the MI355X workstation.** An ephemeral runner
 needs a registration token for every job, and minting one takes a GitHub
@@ -603,27 +605,28 @@ credential that the shared box must not hold. So the supervisor,
 logged in: each round it asks `gh api` for a token, sends it over ssh's stdin
 to `config.sh` on the box (never on a command line on the workstation, never
 in a file or a log), starts `run.sh` there detached, and registers again when
-the listener exits. The runner is `amd-g7466-gfx1201`, labelled
-`self-hosted, hk-gpu, gfx1201`, for this repository only.
+the listener exits. The runner is `$HK_RUNNER_PREFIX-gfx1201` (default
+`hk-gha-gfx1201`), labelled `self-hosted, hk-gpu, gfx1201`, for this
+repository only. The host and its paths are the workstation's to know
+(`~/gha`), not this repository's:
 
 ```bash
 # on the workstation, from an SSH login (as for the other runners)
 install -m 755 scripts/ci/supervise_remote.sh ~/gha/.supervise_remote.new && mv ~/gha/.supervise_remote.new ~/gha/supervise_remote.sh
 rm -f ~/gha/STOP-gfx1201
-nohup setsid ~/gha/supervise_remote.sh gfx1201 amd@10.170.38.101 \
-    /home/amd/hfang-hk/gha/runner-gfx1201 gfx1201 >> ~/gha/logs/gfx1201.log 2>&1 < /dev/null &
+nohup setsid ~/gha/supervise_remote.sh gfx1201 <user>@<rdna4-host> \
+    <runner-root> gfx1201 >> ~/gha/logs/gfx1201.log 2>&1 < /dev/null &
 touch ~/gha/STOP-gfx1201       # stop: SIGTERM to the listener on the box, unregister, exit
 ```
 
-To change the cards, edit `HK_CI_GPUS` in the box's
-`runner-gfx1201/.env`; the next job reads it. To set the box up from
-nothing: unpack actions-runner into `runner-gfx1201/`, create `home/`
-(mode 700) and `.env`, put the MLIR install at `HK_CI_MLIR`, and start the
-supervisor. A reboot of the box ends the listener and the supervisor
-registers a new one once ssh answers again. A reboot of the workstation ends
-the supervisor: the runner finishes the job it has and is not registered
-again until the supervisor is started, which first waits for a listener still
-running on the box.
+To change the cards, edit `HK_CI_GPUS` in `$RUNNER_ROOT/.env`; the next job
+reads it. To set the box up from nothing: unpack actions-runner into
+`$RUNNER_ROOT`, create `home/` (mode 700) and `.env`, put the MLIR install at
+`HK_CI_MLIR`, and start the supervisor. A reboot of the box ends the listener
+and the supervisor registers a new one once ssh answers again. A reboot of
+the workstation ends the supervisor: the runner finishes the job it has and
+is not registered again until the supervisor is started, which first waits
+for a listener still running on the box.
 
 Until 19 October 2026 the tier was a polling CI on the same machines
 (`scripts/gpu_ci/`, cron and a daemon in `~/hk-ci`), posting `gpu/gfx1100`

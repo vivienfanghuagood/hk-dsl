@@ -8,10 +8,12 @@
 # Each round: a registration token from `gh api`, sent over ssh's stdin to config.sh on HOST (never on
 # a command line here, never in a file or a log), then run.sh started there detached, for one job.
 # When the listener exits, the next round registers again. Started and stopped like supervise.sh:
-#   nohup setsid supervise_remote.sh gfx1201 amd@10.170.38.101 /home/amd/hfang-hk/gha/runner-gfx1201 \
+#   nohup setsid supervise_remote.sh gfx1201 <user>@<rdna4-host> <runner-root> \
 #       gfx1201 >> ~/gha/logs/gfx1201.log 2>&1 < /dev/null &
+# (the real host and paths live in this machine's ~/gha, not in the repository)
 #   touch ~/gha/STOP-gfx1201        # within 15 s: SIGTERM to the listener there, unregister, exit
-# NAME is the runner's GitHub name prefix (amd-g7466-NAME), its pid file and its stop file here.
+# The runner is named $HK_RUNNER_PREFIX-NAME on GitHub (default hk-gha-NAME); NAME also names its pid
+# file and its stop file here.
 # The listener runs with HOME=RDIR/home, never the box's real HOME: actions/checkout writes global
 # git config (the job's token as an extraheader) under $HOME.
 set -u
@@ -20,6 +22,7 @@ HOST=$2
 RDIR=$3
 LABELS=${4:-$NAME}
 REPO=vivienfanghuagood/hk-dsl
+RNAME=${HK_RUNNER_PREFIX:-hk-gha}-$NAME
 GHA=$HOME/gha
 mkdir -p "$GHA"
 echo $$ > "$GHA/supervise-$NAME.pid"
@@ -42,7 +45,7 @@ while ! stopped; do
         || { log "token failed"; sleep 60; continue; }
     printf '%s\n' "$TOKEN" | r "cd '$RDIR' && rm -f .runner .credentials .credentials_rsaparams &&
         read -r T && HOME='$RDIR/home' ./config.sh --unattended --ephemeral --replace \
-            --url https://github.com/$REPO --token \"\$T\" --name 'amd-g7466-$NAME' \
+            --url https://github.com/$REPO --token \"\$T\" --name '$RNAME' \
             --labels 'hk-gpu,$LABELS' --work _work > '$RDIR/config.log' 2>&1"
     rc=$?
     unset TOKEN
@@ -54,8 +57,8 @@ while ! stopped; do
     # run-helper.sh takes a few seconds to start the listener: wait for it, so the next pass
     # does not take "not yet" for "exited".
     for _ in $(seq 30); do alive && { up=1; break; }; sleep 2; done
-    [ $up = 1 ] && log "registered amd-g7466-$NAME ($LABELS) on $HOST, waiting for a job" \
-                || log "registered amd-g7466-$NAME, but its listener did not start ($RDIR/run.log there)"
+    [ $up = 1 ] && log "registered $RNAME ($LABELS) on $HOST, waiting for a job" \
+                || log "registered $RNAME, but its listener did not start ($RDIR/run.log there)"
 done
 log "stop requested"
 alive && {

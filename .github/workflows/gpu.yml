@@ -114,8 +114,7 @@ jobs:
           if-no-files-found: ignore
 
   gfx1201:
-    # The RDNA4 port, on the shared gfx1201 dev box (amd-G7466-M6, 8x Radeon AI PRO
-    # R9700): one card of HK_CI_GPUS (the runner's .env) that is idle, through
+    # The RDNA4 port, on the shared gfx1201 dev box (8x Radeon AI PRO R9700): one card of HK_CI_GPUS (the runner's .env) that is idle, through
     # scripts/ci/gfx1201/hkr9 (docs/testing.md, "The gfx1201 runner"). Not a
     # required check, and continue-on-error until the port's GPU tier is green
     # (plan R2): a red gfx1201 does not fail the run.

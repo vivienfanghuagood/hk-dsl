@@ -10,8 +10,9 @@
 #   for one. `none`: no GPU, for builds and the no-GPU tiers.
 # - Core dumps are off three ways (--ulimit core=0, ulimit -c 0, HSA_DISABLE_COREDUMP_ON_EXCEPTION):
 #   a killed GPU process can write 100+ GB to the shared root partition.
-# - Mounts: $HK_R9_ROOT (default /home/amd/hfang-hk) at /w, the working directory; HKR9_MOUNTS
-#   replaces that with its own docker -v/-w arguments (CI's /ci layout).
+# - Mounts: $HK_R9_ROOT (required unless HKR9_MOUNTS is set: the directory our work lives in on the
+#   box) at /w, the working directory; HKR9_MOUNTS replaces that with its own docker -v/-w
+#   arguments (CI's /ci layout).
 # Environment: HK_IMAGE (default rocm/pytorch rocm7.2.3 py3.12, the gfx950 CI's image), HKR9_NAME
 # (the container's name), HKR9_GPU_FILE (where `auto` writes the index it took), HKR9_DOCKER_ARGS
 # (more `docker run` arguments: CI's labels), HKR9_LOCK_HELD=1 (the caller holds card IDX's lock
@@ -25,7 +26,8 @@ WAIT=3600
 [ "${1:-}" = -- ] && shift
 [ $# -gt 0 ] || { echo "usage: hkr9 IDX|auto|none [-w WAIT_S] -- CMD..." >&2; exit 2; }
 IMAGE=${HK_IMAGE:-rocm/pytorch:rocm7.2.3_ubuntu24.04_py3.12_pytorch_release_2.10.0}
-ROOT=${HK_R9_ROOT:-/home/amd/hfang-hk}
+ROOT=${HK_R9_ROOT:-}
+[ -n "$ROOT" ] || [ -n "${HKR9_MOUNTS:-}" ] || { echo "hkr9: set HK_R9_ROOT (or HKR9_MOUNTS)" >&2; exit 2; }
 WHAT="hkr9 $*"
 
 # Take card $1 if it is idle: our lock (fd 9) and nobody's KFD state on it.
@@ -62,7 +64,7 @@ if [ "$IDX" != none ]; then
 fi
 if [ -n "${HKR9_MOUNTS:-}" ]; then read -ra MOUNTS <<< "$HKR9_MOUNTS"; else MOUNTS=(-v "$ROOT:/w" -w /w); fi
 read -ra EXTRA <<< "${HKR9_DOCKER_ARGS:-}"
-exec docker run --rm -i --name "${HKR9_NAME:-hfang-hk-$(date +%s)-$$}" "${EXTRA[@]}" \
+exec docker run --rm -i --name "${HKR9_NAME:-hkr9-$(date +%s)-$$}" "${EXTRA[@]}" \
     --ulimit core=0 -e HSA_DISABLE_COREDUMP_ON_EXCEPTION=1 \
     --user "$(id -u):$(id -g)" -e HOME=/w/home -e USER="$(id -un)" "${DEV[@]}" --ipc=host \
     --security-opt seccomp=unconfined "${MOUNTS[@]}" --entrypoint bash "$IMAGE" -c "ulimit -c 0; $*"

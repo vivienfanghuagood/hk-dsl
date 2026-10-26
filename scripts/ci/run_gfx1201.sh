@@ -1,16 +1,16 @@
 #!/bin/bash
 # GPU CI, gfx1201, as a self-hosted Actions job (.github/workflows/gpu.yml): the checked-out commit
-# on one idle Radeon AI PRO R9700 of the gfx1201 dev box (amd-G7466-M6), in rocm/pytorch, through
+# on one idle Radeon AI PRO R9700 of the gfx1201 dev box, in rocm/pytorch, through
 # scripts/ci/gfx1201/hkr9 -- a container that sees that one GPU (its render node), the checkout, the
 # run's directory, CI's own directory and the MLIR install, read-only, with core dumps off; it runs
 # container_run.sh, as gfx950's does.
 #
-# Host state is under the runner's own directory, $HK_CI_STATE (the runner's .env sets it to
-# /home/amd/hfang-hk/gha/runner-gfx1201/state):
+# Host state is under the runner's own directory, $HK_CI_STATE (the runner's .env sets it, to
+# $RUNNER_ROOT/state):
 #   runs/gfx1201/RUN_ID-ATTEMPT/  the run: build.log, gpu/, gpusnap.log, result.json, report.txt
 #   ci/                           /ci in the container: hk-build-cp312, pylib, hk-cache, home
-# $HK_CI_MLIR (default /home/amd/hfang-hk/mlir/install-cp310) is MLIR 23.1.3 as the ci-mlir-23.1.3
-# release has it. $HK_CI_GPUS: the cards it may take, in order of preference (default "7 6 5 4 3 2 1").
+# $HK_CI_MLIR is MLIR 23.1.3 as the ci-mlir-23.1.3 release has it, and $GPULOCK_DIR the box's lock
+# directory (gpulock.sh); the runner's .env sets all three, and nothing here has a default for them. $HK_CI_GPUS: the cards it may take, in order of preference (default "7 6 5 4 3 2 1").
 #
 # The box is shared and its other users do not take our locks: a card is taken only when its lock
 # (gpulock.sh) is free and no process of anyone's holds it (KFD sysfs), nor an hk-gha container
@@ -21,8 +21,9 @@ set -uo pipefail
 # process, with the signals at their defaults (as run_gfx950.sh does).
 [ -n "${HK_CI_SIGNALS:-}" ] || HK_CI_SIGNALS=default exec env --default-signal=INT,QUIT,HUP,TERM "${BASH_SOURCE[0]}" "$@"
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
-STATE=${HK_CI_STATE:-/home/amd/hfang-hk/gha/runner-gfx1201/state}
-MLIR=${HK_CI_MLIR:-/home/amd/hfang-hk/mlir/install-cp310}
+STATE=${HK_CI_STATE:?set HK_CI_STATE in the runner .env}
+MLIR=${HK_CI_MLIR:?set HK_CI_MLIR in the runner .env}
+: "${GPULOCK_DIR:?set GPULOCK_DIR in the runner .env}"
 CIDIR=${HK_CI_DIR:-$STATE/ci}
 TIER=${HK_CI_TIER:-gfx1201}
 GPUS=${HK_CI_GPUS:-7 6 5 4 3 2 1}
