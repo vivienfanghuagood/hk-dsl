@@ -971,7 +971,7 @@ def _sorted_grid(group_rows: int, mt: int, pp: int, k: int, limit: float, tr: in
 
 
 def _sorted_s2_resident(name: str, *, group_rows: int, mt: int, pp: int, k: int, topk: int = 6,
-                        warps: int = 4, nt: int = 4):
+                        warps: int = 4, nt: int = 4, xpipe: bool = True):
     """Stage 2 with the sorted block's h resident in LDS: a workgroup loads its BM rows of h
     (all K/128 steps, BM x K bytes) once, then runs `nt` column tiles of TILE * pp * warps
     output columns over them, streaming only the expert's weights -- h is read once a workgroup,
@@ -1025,6 +1025,9 @@ def _sorted_s2_resident(name: str, *, group_rows: int, mt: int, pp: int, k: int,
         col0 = blk * NCW * nt + wid * R
         Cs = [hk.zeros(t_c1) for _ in range(mt)]
         X1 = hk.zeros(t_x1)
+        # xpipe: two token fragments, the next tile's LDS read issued before this tile's MFMAs
+        # (k1-prefill c37: each read was waited on right before its own MFMAs, lgkm_wait 9%)
+        X1s = [X1, hk.zeros(t_x1)] if xpipe else [X1, X1]
         W = [hk.zeros(t_w) for _ in range(D)]
         S = [hk.load_mx_scales(ws, R, 8, e * GR + col0, 0, layout="aiter", group_rows=GR)
              for _ in range(3)]
@@ -1056,6 +1059,13 @@ def _sorted_s2_resident(name: str, *, group_rows: int, mt: int, pp: int, k: int,
             for kc in range(steps):
                 g.wait_for(Hres[kc], exact=True)
             hk.arch.barrier()
+
+            def ldx(kc, ti):                       # token tile ti of K step kc, from the resident h
+                Hres[kc].subtile(TILE, KS, ti, 0).load(t_x1, wait=False, into=X1s[ti % 2])
+
+            if xpipe:
+                ldx(0, 0)
+
             def step(kc, rw):                      # K step kc of the tile at rows rw
                 t = kc + D - 1
                 if t < steps:
@@ -1064,9 +1074,14 @@ def _sorted_s2_resident(name: str, *, group_rows: int, mt: int, pp: int, k: int,
                     fetch(t - steps, rw + NCW)
                 p, par = kc // 2, kc % 2
                 for ti in range(mt):
-                    Hres[kc].subtile(TILE, KS, ti, 0).load(t_x1, wait=False, into=X1)
-                    hk.lds.wait_for(X1)
-                    hk.mma_ABt_mx(W[kc % D], X1, Cs[ti], S[sset(p)], SX[p], a_fmt="fp4",
+                    if not xpipe:
+                        ldx(kc, ti)
+                    elif ti + 1 < mt:
+                        ldx(kc, ti + 1)
+                    else:                          # the next step's first tile (step 0 of the next
+                        ldx((kc + 1) % steps, 0)   # column tile: h does not change)
+                    hk.lds.wait_for(X1s[ti % 2])
+                    hk.mma_ABt_mx(W[kc % D], X1s[ti % 2], Cs[ti], S[sset(p)], SX[p], a_fmt="fp4",
                                   sa_at=(0, par), sb_at=(ti, par), into=Cs[ti])
                 hk.arch.sched_barrier()
 
@@ -1080,6 +1095,8 @@ def _sorted_s2_resident(name: str, *, group_rows: int, mt: int, pp: int, k: int,
                 for kc in range(steps):
                     step(kc, row_w + n * NCW)
                 store(col0 + n * NCW)
+            if xpipe:
+                hk.lds.wait_for(X1s[0])            # the last column tile's dangling read
             hk.arch.barrier()          # (the verifier sees `live` as a loop: Hres reloads at its top)
 
     body.__name__ = name
@@ -1088,9 +1105,12 @@ def _sorted_s2_resident(name: str, *, group_rows: int, mt: int, pp: int, k: int,
 
 
 @functools.lru_cache(maxsize=None)
-def _sorted_resident(group_rows: int, mt: int, pp: int, k: int, topk: int, nt: int):
-    return _sorted_s2_resident(f"moe_a8w4_s2r_gr{group_rows}_mt{mt}_pp{pp}_k{k}_t{topk}_n{nt}",
-                               group_rows=group_rows, mt=mt, pp=pp, k=k, topk=topk, nt=nt)
+def _sorted_resident(group_rows: int, mt: int, pp: int, k: int, topk: int, nt: int,
+                     xpipe: bool = True):
+    return _sorted_s2_resident(f"moe_a8w4_s2r_gr{group_rows}_mt{mt}_pp{pp}_k{k}_t{topk}_n{nt}"
+                               + ("" if xpipe else "_nx"),
+                               group_rows=group_rows, mt=mt, pp=pp, k=k, topk=topk, nt=nt,
+                               xpipe=xpipe)
 
 
 @functools.lru_cache(maxsize=None)
