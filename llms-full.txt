@@ -5483,6 +5483,8 @@ the WMMA is v_wmma_f32_16x16x16_fp8_fp8 or bf8_bf8, twice the bf16 rate).
 `scale_a` is one value or one a row of A ((M,) or (M, 1)); `scale_b` one
 value or one a row of B ((N,) or (1, N)) -- per-tensor or per-token x
 per-channel, the two forms vLLM's fp8 linear layers use. `bias` is (N,).
+Up to FP8_DECODE_M rows, with K a multiple of 1024, it runs
+hk.ops.decode_gemm's kernel instead of the tiled one.
 gfx1201 only: gfx1100 has no fp8 WMMA, and gfx950's fp8 GEMMs are
 hk.ops.gemm_cdna's.
 
