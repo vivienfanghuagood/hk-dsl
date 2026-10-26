@@ -27,7 +27,9 @@ log() { echo "$(date -u +%FT%TZ) $*"; }
 stopped() { [ -f "$GHA/STOP" ] || [ -f "$GHA/STOP-$NAME" ]; }
 r() { ssh -o BatchMode=yes -o ConnectTimeout=20 -o ServerAliveInterval=30 "$HOST" "$@"; }
 # 0: the listener is running there; 1: it is not; anything else: could not tell (ssh failed).
-alive() { r "pgrep -u \$(id -u) -f '$RDIR/bin/Runner.Listener' >/dev/null"; }
+# Anchored: the remote shell running pgrep has the path on its own command line.
+LISTENER="^$RDIR/bin/Runner\\.Listener"
+alive() { r "pgrep -u \$(id -u) -f '$LISTENER' >/dev/null"; }
 
 while ! stopped; do
     alive; a=$?
@@ -49,7 +51,7 @@ while ! stopped; do
     while :; do
         if stopped; then
             log "stop requested"
-            r "pkill -TERM -u \$(id -u) -f '$RDIR/bin/Runner.Listener'"
+            r "pkill -TERM -u \$(id -u) -f '$LISTENER'"
             for _ in $(seq 30); do alive; [ $? = 1 ] && break; sleep 2; done
             break
         fi
