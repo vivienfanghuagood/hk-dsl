@@ -767,6 +767,13 @@ static LogicalResult verifyElems(Operation *op, Type valT, Type idxT) {
   return success();
 }
 
+LogicalResult IotaOp::verify() {
+  auto t = dyn_cast<RegTileType>(getResult().getType());
+  if (!t || !t.isStrip() || !t.getElementType().isInteger(32))
+    return emitOpError("makes an i32 strip, not ") << getResult().getType();
+  return success();
+}
+
 LogicalResult LoadElemsOp::verify() {
   return verifyElems(*this, getResult().getType(), getIdx().getType());
 }

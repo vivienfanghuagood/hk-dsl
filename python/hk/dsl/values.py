@@ -2026,3 +2026,17 @@ def map_cpp(expr: str, *args, dtype: Optional[DType] = None, name: str = "map") 
     op = hkd.MapCppOp(mlir_type(ty), ops, expr, loc=t.loc(name))
     return wrap(op.result, ty)
 
+
+def iota(ty) -> Tile:
+    """An i32 strip of type `ty`'s shape whose element (r, c) is c: each element's own column, for
+    index arithmetic (hk.map_cpp, load_elems / store_elems) and per-column choices (gfx950)."""
+    from .arch import target  # noqa: PLC0415
+
+    if getattr(ty, "run", None) is None:
+        raise TypeError(f"hk.iota makes a strip (hk.RS), not {ty}")
+    if target().wave != 64:
+        raise TypeError(f"hk.iota is gfx950's, not {target().arch}'s")
+    ty = RegTileType(i32, ty.rows, ty.cols, ty.layout, ty.frag, run=ty.run)
+    t = _t()
+    return wrap(hkd.IotaOp(mlir_type(ty), loc=t.loc("iota")).result, ty)
+

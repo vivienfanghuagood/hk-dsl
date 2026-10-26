@@ -820,6 +820,17 @@ def HK_SqrtOp : HK_UnaryMapOp<"sqrt">;
 def HK_RsqrtOp : HK_UnaryMapOp<"rsqrt">;
 def HK_SiluOp : HK_UnaryMapOp<"silu">;
 def HK_StepOp : HK_UnaryMapOp<"step">;
+def HK_IotaOp : HK_Op<"iota"> {
+  let summary = "an i32 strip whose element (r, c) is c (gfx950)";
+  let description = [{
+    Each element's own column -- the lane's place in the row, for index
+    arithmetic (hk.map_cpp) and per-column choices.
+  }];
+  let results = (outs HK_RegTileType:$result);
+  let assemblyFormat = [{ attr-dict `:` qualified(type($result)) }];
+  let hasVerifier = 1;
+}
+
 def HK_LoadElemsOp : HK_Op<"load_elems"> {
   let summary = "a strip's elements read one by one at computed indices (gfx950)";
   let description = [{
