@@ -44,7 +44,9 @@ while ! stopped; do
     rc=$?
     unset TOKEN
     [ $rc = 0 ] || { log "config failed ($rc; $RDIR/config.log there)"; sleep 60; continue; }
-    r "cd '$RDIR' && HOME='$RDIR/home' setsid nohup ./run.sh >> '$RDIR/run.log' 2>&1 < /dev/null &" \
+    # setsid -f: forked and detached, so ssh returns -- a trailing & would leave a subshell
+    # holding ssh's stdout, and ssh would wait for the job to end.
+    r "cd '$RDIR' && HOME='$RDIR/home' setsid -f nohup ./run.sh >> '$RDIR/run.log' 2>&1 < /dev/null" \
         || { log "run.sh did not start"; sleep 60; continue; }
     log "registered amd-g7466-$NAME ($LABELS) on $HOST, waiting for a job"
     sleep 15
