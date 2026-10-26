@@ -44,6 +44,20 @@ remaps:
   [hk.placement](docs/api/hk.placement.md) API page. `hk.Digit.of`'s radix may be spelled
   `"tensor.dim"` (`"k.depth"`).
 
+**`hk.map_cpp` and i32 strips** (#53, gfx950;
+[the language](docs/language.md#hkmap_cpp-and-i32-strips-gfx950)).
+- `hk.map_cpp(expr, *args, dtype=None)` evaluates one C++ expression for each
+  element of its strip arguments (`x0`, `x1`, ... bound to the elements, or
+  to an `hk.Int` / Python int), into an fp32 or i32 strip. It is for what a
+  kernel must reproduce bit for bit and the operators cannot say: bit
+  manipulation, a fused multiply-add, one particular instruction. The
+  expression compiles with floating-point contraction off (`a * b + c` is two
+  roundings; an fma is `__builtin_fmaf`). Strips of fp32 and i32 together
+  must say `dtype=`; wave32 targets refuse it.
+- Strips may hold i32: they load, store, convert with `.to` and are
+  `hk.map_cpp`'s arguments and results. Operators and reductions on them are
+  refused, so integer arithmetic is written in `hk.map_cpp`.
+
 **Fixes**
 - **gfx950: fp32 register tiles through LDS were FLAT loads and stores**
   (#59). `store(st<float>, rt<float>)` / `load(rt<float>, st<float>)` addressed

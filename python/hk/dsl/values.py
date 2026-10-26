@@ -1916,7 +1916,7 @@ def map_cpp(expr: str, *args, dtype: Optional[DType] = None, name: str = "map") 
 
     For what the operators cannot say and a kernel must reproduce bit for bit: bit manipulation,
     a fused multiply-add, one particular instruction. E.g. the biased exponent of the smallest
-    power of two >= x::
+    power of two >= x:
 
         e = hk.map_cpp("((__builtin_bit_cast(int, x0) >> 23) & 0xFF)"
                        " + ((__builtin_bit_cast(int, x0) & 0x7FFFFF) != 0)", x, dtype=hk.i32)

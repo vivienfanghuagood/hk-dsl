@@ -44,6 +44,7 @@ The language: what `import hk` gives a kernel author. A kernel body is traced on
 - [`hk.load_fp4_frags`](#hkload_fp4_frags)
 - [`hk.load_fp4_frags_lds`](#hkload_fp4_frags_lds)
 - [`hk.mx_quant_store`](#hkmx_quant_store)
+- [`hk.map_cpp`](#hkmap_cpp)
 - [`hk.Placement`](#hkplacement)
 - [`hk.Digit`](#hkdigit)
 - [`hk.Tile`](#hktile)
@@ -311,6 +312,8 @@ out, the hk-fragments pass sets it on the operand tiles that need one.
 ```python
 hk.RS(dtype: DType, rows: int, cols: int, run: int = 8) -> RegTileType
 ```
+
+*Changed after 0.7.0*: a strip may hold i32 on gfx950 (#53): it loads, stores (bounded too), converts with `.to` and is an argument or result of `hk.map_cpp`; operators and reductions on it are refused. Through 0.7.0 a strip held bf16, fp16 and fp32.
 
 A register strip type: kittens::rs<T, rows, cols, run>.
 
@@ -661,6 +664,33 @@ a uint8 `s` gets AITER's 32-row layout (hk.mx.aiter_scales of q's [R, K/32], K/3
 8), an int32 `s` the packed layout hk.load_mx_scales reads ([ceil(R/64), K/128 * 64],
 hk.mx.pack_scales; rows past q's last get the unit scale, as pack_scales pads them). The
 result is bit-identical to hk.mx.quant followed by hk.mx.aiter_scales or hk.mx.pack_scales.
+
+## A C++ expression over strips (gfx950)
+
+### `hk.map_cpp`
+
+```python
+hk.map_cpp(expr: str, *args, dtype: Optional[DType] = None, name: str = 'map') -> Tile
+```
+
+*New after 0.7.0*
+
+An elementwise C++ expression over strips (gfx950): element (r, c) of the result is `expr`
+with `x0`, `x1`, ... bound to element (r, c) of each strip argument -- or to the argument
+itself for an `Int` or a Python int -- converted to `dtype` (default: the strips' one dtype;
+strips of fp32 and i32 together must say it).
+
+For what the operators cannot say and a kernel must reproduce bit for bit: bit manipulation,
+a fused multiply-add, one particular instruction. E.g. the biased exponent of the smallest
+power of two >= x:
+
+    e = hk.map_cpp("((__builtin_bit_cast(int, x0) >> 23) & 0xFF)"
+                   " + ((__builtin_bit_cast(int, x0) & 0x7FFFFF) != 0)", x, dtype=hk.i32)
+
+The strips have one shape and run; strips and result are fp32 or i32 (convert a 16-bit strip
+with `.to` first). The expression is one C++ expression, compiled as written -- with
+floating-point contraction off, so `a * b + c` is two roundings and a fused multiply-add is
+spelled `__builtin_fmaf` -- no `;` or braces, and the compiler, not hk, checks it.
 
 ## Workgroup placement (multi-XCD GPUs)
 
@@ -1783,4 +1813,4 @@ are bounded: any non-empty length. head_dim is 64 or 128 on both.
 
 ## Also exported
 
-`hk.map_cpp`, `hk.mx`, `hk.templates`
+`hk.mx`, `hk.templates`
