@@ -820,6 +820,21 @@ LogicalResult TakeElemsOp::verify() {
   return verifyMailElems(*this, getSrc().getType(), getResult().getType(), getIdx().getType(), getAux());
 }
 
+static LogicalResult verifyLdsElems(Operation *op, Type st, Type valT, Type idxT) {
+  auto s = cast<SharedTileType>(st);
+  if (!s.getElementType().isF32() || s.getCount() != 1)
+    return op->emitOpError("addresses one fp32 LDS tile (not a stack), not ") << st;
+  return verifyElems(op, valT, idxT);
+}
+
+LogicalResult LdsLoadElemsOp::verify() {
+  return verifyLdsElems(*this, getSrc().getType(), getResult().getType(), getIdx().getType());
+}
+
+LogicalResult LdsStoreElemsOp::verify() {
+  return verifyLdsElems(*this, getDst().getType(), getVal().getType(), getIdx().getType());
+}
+
 LogicalResult IotaOp::verify() {
   auto t = dyn_cast<RegTileType>(getResult().getType());
   if (!t || !t.isStrip() || !t.getElementType().isInteger(32))

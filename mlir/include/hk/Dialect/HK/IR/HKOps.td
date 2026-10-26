@@ -886,6 +886,37 @@ def HK_TakeElemsOp : HK_Op<"take_elems"> {
   let hasVerifier = 1;
 }
 
+def HK_LdsLoadElemsOp : HK_Op<"lds_load_elems"> {
+  let summary = "a strip's elements read from an fp32 LDS tile at computed flat indices (gfx950)";
+  let description = [{
+    Element (r, c) of the result (fp32 or i32: the bits) is element
+    idx[r, c] of `src`, counted row-major (r * cols + c) through the tile's
+    own swizzle; an index below zero or past the tile reads 0. Plain LDS
+    reads the compiler waits for itself; another warp's writes need a
+    drained barrier between.
+  }];
+  let arguments = (ins HK_SharedTileType:$src, HK_RegTileType:$idx);
+  let results = (outs HK_RegTileType:$result);
+  let assemblyFormat = [{
+    $src `[` $idx `]` attr-dict `:` qualified(type($src)) `,` qualified(type($idx)) `->` qualified(type($result))
+  }];
+  let hasVerifier = 1;
+}
+
+def HK_LdsStoreElemsOp : HK_Op<"lds_store_elems"> {
+  let summary = "a strip's elements written to an fp32 LDS tile at computed flat indices (gfx950)";
+  let description = [{
+    Element (r, c) of `val` (fp32 or i32: the bits) to element idx[r, c] of
+    `dst` (row-major, the tile's swizzle); an index below zero or past the
+    tile writes nothing. Before another warp reads: barrier(drain=True).
+  }];
+  let arguments = (ins HK_SharedTileType:$dst, HK_RegTileType:$val, HK_RegTileType:$idx);
+  let assemblyFormat = [{
+    $val `,` $dst `[` $idx `]` attr-dict `:` qualified(type($val)) `,` qualified(type($dst)) `,` qualified(type($idx))
+  }];
+  let hasVerifier = 1;
+}
+
 def HK_IotaOp : HK_Op<"iota"> {
   let summary = "an i32 strip whose element (r, c) is c (gfx950)";
   let description = [{

@@ -1593,6 +1593,28 @@ class SharedTile(Value):
         return SharedTile(hkd.SharedAtOp(mlir_type(ty), self.v, as_int(i).v,
                                          loc=t.loc("sb")).result, ty)
 
+    def load_elems(self, idx: "Tile", dtype: Optional[DType] = None) -> "Tile":
+        """Element by element from this fp32 LDS tile (gfx950): element (r, c) of the result is
+        element `idx[r, c]` (row-major, through the tile's swizzle) -- fp32, or its bits as i32 with
+        dtype=hk.i32; below zero or past the tile, 0. A CTA's own exchange between warps without a
+        round trip to global memory (whose drain would also wait out every load in flight). Another
+        warp's writes need hk.arch.barrier(drain=True) between."""
+        if getattr(idx.ty, "run", None) is None or idx.ty.dtype.name != "i32":
+            raise TypeError(f"load_elems takes an i32 strip of indices, not {idx.ty}")
+        dtype = fp32 if dtype is None else dtype
+        ty = RegTileType(dtype, idx.ty.rows, idx.ty.cols, idx.ty.layout, idx.ty.frag, run=idx.ty.run)
+        t = _t()
+        return wrap(hkd.LdsLoadElemsOp(mlir_type(ty), self.v, idx.v, loc=t.loc("ldse")).result, ty)
+
+    def store_elems(self, val: "Tile", idx: "Tile") -> None:
+        """Element by element into this fp32 LDS tile (gfx950): val's element (r, c) (fp32, or i32
+        bits) to element `idx[r, c]` (row-major); below zero or past the tile, nothing. Before
+        another warp reads it: hk.arch.barrier(drain=True)."""
+        if getattr(idx.ty, "run", None) is None or idx.ty.dtype.name != "i32":
+            raise TypeError(f"store_elems takes an i32 strip of indices, not {idx.ty}")
+        t = _t()
+        hkd.LdsStoreElemsOp(self.v, val.v, idx.v, loc=t.loc())
+
     def subtile(self, rows: int, cols: int, row: Scalar = 0,
                 col: Scalar = 0) -> "SharedTile":
         """A rows x cols window, indexed in units of itself; a view, so the
