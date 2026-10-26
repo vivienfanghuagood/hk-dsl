@@ -72,6 +72,8 @@ The language: what `import hk` gives a kernel author. A kernel body is traced on
 hk.kernel(fn=None, *, arch: Optional[str] = None, warps: int = 1, grid=None, name: Optional[str] = None, max_vgprs: Optional[int] = None, min_occupancy: Optional[int] = None, defines: Optional[Dict[str, Any]] = None, noalias: bool = False, preload: bool = False, resident: bool = False)
 ```
 
+*Changed after 0.6.0*: new parameter `resident`
+
 Mark a function as a tile kernel. See the module docstring for the
 parameter rules. `resident=True`: every workgroup must be on the GPU at
 once (a kernel that waits on its own workgroups); a launch that cannot be
@@ -172,7 +174,7 @@ Generate, compile and load. Returns the loaded extension module.
 Kernel.resident_capacity(self, **const_overrides: Any) -> int
 ```
 
-*New after 0.5.0*
+*New after 0.6.0*
 
 How many workgroups of this kernel the current GPU holds at once:
 its CUs times the workgroups a CU fits by registers and by LDS (the
@@ -274,8 +276,6 @@ constexpr when it is annotated so.
 ```python
 hk.RT(dtype: DType, rows: int, cols: int, layout: str = 'row', frag=None) -> RegTileType
 ```
-
-*Changed after 0.5.0*: int8 register tiles build on gfx1100 (the iu8 WMMA: C(i32) += A(i8) @ B(i8).T) after 0.5.0; the 0.5.0 wheel refuses an i8 register tile.
 
 A register tile type: kittens::rt<T, rows, cols, layout>. `frag`,
 (rows, cols), names the matrix-core fragment where it is not 16x16; left
@@ -555,8 +555,6 @@ builds. Strips index only this way.
 hk.load_mx_scales(src: Global, rows: int, kblocks: int, row0, kb0, *, into: MxScales = None, layout: str = 'ocp', group_rows: int = 0, loose: bool = False) -> MxScales
 ```
 
-*New after 0.5.0*
-
 Rows row0.. and 32-wide blocks kb0.. of an E8M0 scale tensor (uint8, one
 byte a row and block: [R, K/32], the OCP MX layout -- or packed, i32, as
 hk.mx.pack_scales lays them out: one coalesced dword a lane per 64
@@ -581,8 +579,6 @@ issued before it (K1 c8).
 hk.copy_mx_scales(dst: MxScales, src: MxScales) -> None
 ```
 
-*New after 0.5.0*
-
 dst = src: E8M0 scales copied register to register -- how a one-stage
 loop body hands the next K-tile's prefetched scales to the current set.
 
@@ -591,8 +587,6 @@ loop body hands the next K-tile's prefetched scales to the current set.
 ```python
 hk.mma_ABt_mx(a: Tile, b: Tile, acc: Tile, sa: MxScales, sb: MxScales, *, into=None, a_fmt: str = 'fp8', b_fmt: str = 'fp8', sa_at=(0, 0), sb_at=(0, 0)) -> Tile
 ```
-
-*New after 0.5.0*
 
 acc + (sa . A)(sb . B)^T on gfx950's v_mfma_scale_f32_16x16x128_f8f6f4:
 A (M, K) and B (N, K) fp8 e4m3 row tiles, K a multiple of 128; sa and sb
@@ -609,8 +603,6 @@ loaded once, feeding two token tiles over two steps).
 hk.load_fp4_frags(ty, src: Global, row0, kc0, *, group_rows: int, gate_up: bool = False, into=None) -> Tile
 ```
 
-*New after 0.5.0*
-
 Rows row0.. and 128-wide K steps kc0.. of AITER's shuffled MXFP4 MoE weights (gfx950,
 `shuffle_weight(is_guinterleave=True)`; src uint8 [E * group_rows, K/2], the packed bytes)
 as the B operand of `mma_ABt_mx(..., b_fmt="fp4")`. `ty` is an fp8 e4m3 row tile of 16x128
@@ -625,8 +617,6 @@ column j of the product land in the same lanes.
 hk.load_fp4_frags_lds(ty, src: SharedTile, row0, chunk0, *, into=None) -> Tile
 ```
 
-*New after 0.5.0*
-
 load_fp4_frags from an LDS tile of raw AITER weight bytes (fp8-typed, a row a 16-row block
 with gate|up rows interleaved, 1 KB a 128-wide K step: the [E * N/16 * 2, K/2 * 16] view of the
 weights, brought in by a group load). Fragment (i, s) is row row0 + i, chunk chunk0 + s.
@@ -636,8 +626,6 @@ weights, brought in by a group load). Fragment (i, s) is row row0 + i, chunk chu
 ```python
 hk.mx_quant_store(src: SharedTile, q: Global, s: Global, row0, col0) -> None
 ```
-
-*New after 0.5.0*
 
 MX-quantize an LDS tile's rows and store them -- the epilogue that hands a GEMM's output
 to an MXFP8 consumer without a separate quant pass. Every thread of the workgroup takes
@@ -706,7 +694,7 @@ The element dtype.
 Tile.sum(self, axis: int = 1, *, lanes: Optional[str] = None, xor: Optional[Sequence[int]] = None, times: "Optional['Tile']" = None) -> Reduction
 ```
 
-*Changed after 0.5.0*: new parameters `lanes`, `xor`, `times`
+*Changed after 0.6.0*: new parameters `lanes`, `xor`, `times`
 
 The sum along `axis`: 1 (default) along each row, one value per row (a col_vec); 0 along each column (a row_vec). Lazy: `v = t.sum()` makes the vector, `acc += t.sum()` accumulates into one, and `.value(into=v)` writes an existing one.
 
@@ -716,7 +704,7 @@ The sum along `axis`: 1 (default) along each row, one value per row (a col_vec);
 Tile.max(self, axis: int = 1, *, lanes: Optional[str] = None, xor: Optional[Sequence[int]] = None) -> Reduction
 ```
 
-*Changed after 0.5.0*: new parameters `lanes`, `xor`
+*Changed after 0.6.0*: new parameters `lanes`, `xor`
 
 The max along `axis`: 1 (default) along each row, one value per row (a col_vec); 0 along each column (a row_vec). Lazy: `v = t.max()` makes the vector, `m.max_(t.max())` folds into one (the online max), and `.value(into=v)` writes an existing one.
 
@@ -726,7 +714,7 @@ The max along `axis`: 1 (default) along each row, one value per row (a col_vec);
 Tile.min(self, axis: int = 1, *, lanes: Optional[str] = None, xor: Optional[Sequence[int]] = None) -> Reduction
 ```
 
-*Changed after 0.5.0*: new parameters `lanes`, `xor`
+*Changed after 0.6.0*: new parameters `lanes`, `xor`
 
 The min along `axis`: 1 (default) along each row, one value per row (a col_vec); 0 along each column (a row_vec). Lazy: `v = t.min()` makes the vector, and `.value(into=v)` writes an existing one.
 
@@ -736,7 +724,7 @@ The min along `axis`: 1 (default) along each row, one value per row (a col_vec);
 Tile.prod(self, axis: int = 1, *, lanes: Optional[str] = None, xor: Optional[Sequence[int]] = None) -> Reduction
 ```
 
-*Changed after 0.5.0*: new parameters `lanes`, `xor`
+*Changed after 0.6.0*: new parameters `lanes`, `xor`
 
 The product along `axis`: 1 (default) along each row, one value per row (a col_vec); 0 along each column (a row_vec). Lazy: `v = t.prod()` makes the vector, and `.value(into=v)` writes an existing one.
 
@@ -753,8 +741,6 @@ Change the element type, keeping shape and layout (kittens::copy).
 ```python
 Tile.bitcast(self, dtype: DType, *, into=None) -> Tile
 ```
-
-*New after 0.5.0*
 
 The same registers read as another element type of the same width (fp32 <-> i32,
 bf16 <-> fp16 ...): no instruction, unlike `.to`. E.g. an i32 accumulator started at the
@@ -1345,8 +1331,6 @@ row: a MoE's top-k, whose sorted list counts (token, choice) pairs.
 Global.scatter_add_lds(self, src: SharedTile, ids: Global, at, *, count=None, col=0, sort_topk: int = 0) -> None
 ```
 
-*New after 0.5.0*
-
 A warp's own bf16 LDS tile added into this bf16 tensor's rows by index, atomically:
 row r of `src` into row `ids[at + r]` (with `sort_topk`, AITER sort ids: the token's
 row of an [M, ...] tensor; padding nowhere) from column `col`. Lanes take consecutive
@@ -1362,8 +1346,6 @@ fixed order.
 ```python
 Global.scatter(self, value: Tile, ids: Global, at, *, count=None, col=0, sort_topk: int = 0, add: bool = False) -> None
 ```
-
-*Changed after 0.5.0*: new parameters `sort_topk`, `add`
 
 Rows by index: tile row r goes to row `ids[at + r]`, from column
 `col`; an index outside the tensor, or a position at or past
@@ -1464,7 +1446,7 @@ One int32 atomic max per warp; the value before it.
 View.atomic_min_scalar(self, value) -> Int
 ```
 
-*New after 0.5.0*
+*New after 0.6.0*
 
 One int32 atomic min per warp; the value before it.
 
@@ -1474,7 +1456,7 @@ One int32 atomic min per warp; the value before it.
 View.atomic_or_scalar(self, value) -> Int
 ```
 
-*New after 0.5.0*
+*New after 0.6.0*
 
 One int32 atomic or per warp; the value before it (a set of flags: bit w = workgroup w).
 
@@ -1484,7 +1466,7 @@ One int32 atomic or per warp; the value before it (a set of flags: bit w = workg
 View.atomic_and_scalar(self, value) -> Int
 ```
 
-*New after 0.5.0*
+*New after 0.6.0*
 
 One int32 atomic and per warp; the value before it.
 
@@ -1494,7 +1476,7 @@ One int32 atomic and per warp; the value before it.
 View.atomic_xor_scalar(self, value) -> Int
 ```
 
-*New after 0.5.0*
+*New after 0.6.0*
 
 One int32 atomic xor per warp; the value before it.
 
@@ -1504,7 +1486,7 @@ One int32 atomic xor per warp; the value before it.
 View.atomic_exch_scalar(self, value) -> Int
 ```
 
-*New after 0.5.0*
+*New after 0.6.0*
 
 One int32 atomic exchange per warp: stores `value`, returns the value before it (a
 lock's take, a slot's claim). W warps that call it exchange W times.

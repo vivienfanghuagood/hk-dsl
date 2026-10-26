@@ -1,6 +1,6 @@
 # hk-dsl
 
-> hk-dsl is a Python DSL for AMD GPU tile kernels. A kernel body is traced into an MLIR dialect, checked by passes (spills, LDS waits, layouts), translated to HipKittens C++ and compiled by the stock hipcc, for Radeon RDNA3 (gfx1100, W7900D) and Instinct CDNA4 (gfx950, MI355X). It ships tuned ops (`hk.ops`), templates with hooks (`hk.templates`), and a checker (`python -m hk.check`) that reports a kernel's resources, correctness against torch and speed against torch.compile in one command. MIT; `pip install hk-dsl` (0.6.0; the docs describe main, and the API reference marks what 0.5.0 lacked).
+> hk-dsl is a Python DSL for AMD GPU tile kernels. A kernel body is traced into an MLIR dialect, checked by passes (spills, LDS waits, layouts), translated to HipKittens C++ and compiled by the stock hipcc, for Radeon RDNA3 (gfx1100, W7900D) and Instinct CDNA4 (gfx950, MI355X). It ships tuned ops (`hk.ops`), templates with hooks (`hk.templates`), and a checker (`python -m hk.check`) that reports a kernel's resources, correctness against torch and speed against torch.compile in one command. MIT; `pip install hk-dsl` (0.7.0; the docs describe main, and the API reference marks what 0.6.0 lacked).
 
 Read in this order: this file, [the language](docs/language.md), [hk.check](docs/check.md), then the [API reference](docs/api/README.md) for the names you use. [llms-full.txt](llms-full.txt) is all of them in one file.
 
@@ -65,7 +65,7 @@ Measured with hk.check (torch 2.10, interleaved in one process): on an MI355X it
 
 ## Pitfalls
 
-- The docs describe main; `pip install hk-dsl` is 0.6.0 (check `hk.__version__`). The API reference marks what is *New after 0.5.0*: in 0.6.0, not in 0.5.0, which also refuses int8 register tiles on gfx1100.
+- The docs describe main; `pip install hk-dsl` is 0.7.0 (check `hk.__version__`). The API reference marks what is *New after 0.6.0*: in 0.7.0, not in 0.6.0, whose synchronous `g.load` / `g.store` on gfx950 also read and write past a partial last tile.
 - Positional kernel parameters are tensors (`hk.Tensor[dtype]`, 4-D `(batch, depth, rows, cols)`; a 2-D tensor is `(rows, cols)`). Constexprs are keyword-only with a default, baked into the source: a new value is a new compile.
 - The transcendental math (gelu, dgelu, sqrt, rsqrt, silu) is fp32-only: load 16-bit data into an fp32 tile or strip (the load converts) and store it back (the store converts). `hk.math.gelu` is `F.gelu(x, approximate="tanh")`, not the erf default.
 - A strip's columns are whole chunks of `wave x run` (32 x run on gfx1100, 64 x run on gfx950): `CW=512` with `run=8` fits both. Read the wave from `hk.arch.target().wave` when a plan depends on it.

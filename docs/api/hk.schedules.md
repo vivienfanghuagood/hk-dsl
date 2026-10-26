@@ -53,8 +53,6 @@ The guide is [docs/schedules.md](../schedules.md), the design [docs/design/sched
 hk.schedules.lookup(m: int, n: int, k: int, arch: Optional[str] = None, *, op: str = 'matmul') -> GemmSchedule
 ```
 
-*New after 0.5.0* (the `hk.schedules` module is not in the 0.5.0 wheel)
-
 The schedule hk runs today for C = A @ B.T at M x N x K on `arch`:
 op="matmul" what hk.ops.matmul launches (gfx950: gemm_cdna.route's
 candidate; gfx1100: hk.ops.gemm.schedule_for, the tuned records
@@ -67,8 +65,6 @@ decode GEMV for M <= 32).
 hk.schedules.space(m: int, n: int, k: int, arch: Optional[str] = None, *, families=None, around: Optional[Schedule] = None, radius: int = 1, axes=None, legal: bool = True) -> Iterator[GemmSchedule]
 ```
 
-*New after 0.5.0* (the `hk.schedules` module is not in the 0.5.0 wheel)
-
 Legal GEMM schedules for M x N x K on `arch`, family by family (see
 Schedule.space for `around`, `radius` and `axes`). `families` limits
 them: names ("dp", "pp", ...) or classes. With `around`, only that
@@ -80,8 +76,6 @@ schedule's family (its neighbourhood).
 hk.schedules.from_record(rec: Any, *, strict: bool = True, family_cls: Optional[type] = None) -> Schedule
 ```
 
-*New after 0.5.0* (the `hk.schedules` module is not in the 0.5.0 wheel)
-
 A Schedule from any of its record forms (see Schedule.from_record).
 
 ### `hk.schedules.from_candidate`
@@ -89,8 +83,6 @@ A Schedule from any of its record forms (see Schedule.from_record).
 ```python
 hk.schedules.from_candidate(name: str, m: int, n: int, k: int) -> GemmSchedule
 ```
-
-*New after 0.5.0* (the `hk.schedules` module is not in the 0.5.0 wheel)
 
 The schedule hk.ops.gemm_cdna's route candidate `name` runs at
 M x N x K -- exactly what gemm_cdna.run launches, as data: the
@@ -105,8 +97,6 @@ code does not have) are schedule records, taken as they are.
 hk.schedules.families_for(arch: str) -> List[type]
 ```
 
-*New after 0.5.0* (the `hk.schedules` module is not in the 0.5.0 wheel)
-
 The GEMM families that run on `arch`, the composite last.
 
 ### `hk.schedules.lookup_attention`
@@ -114,8 +104,6 @@ The GEMM families that run on `arch`, the composite last.
 ```python
 hk.schedules.lookup_attention(n: int, head_dim: int, causal: bool = False, arch: Optional[str] = None, *, scale: Optional[float] = None) -> AttnSchedule
 ```
-
-*New after 0.5.0* (the `hk.schedules` module is not in the 0.5.0 wheel)
 
 The schedule hk.attention runs for `n` queries of `head_dim`: gfx950's
 kernel as attn_cdna ships it, gfx1100's at its tuner's record for the
@@ -128,20 +116,14 @@ length (hk.ops.attn._tune_key) -- or, with a `scale` other than
 hk.schedules.space_attention(n: int, head_dim: int, arch: Optional[str] = None, *, causal: bool = False, around: Optional[AttnSchedule] = None, radius: int = 1, axes=None) -> Iterator[AttnSchedule]
 ```
 
-*New after 0.5.0* (the `hk.schedules` module is not in the 0.5.0 wheel)
-
 Legal attention schedules for the problem on `arch` (see
 Schedule.space).
 
 ### `hk.schedules.Illegal`
 
-*New after 0.5.0* (the `hk.schedules` module is not in the 0.5.0 wheel)
-
 A schedule refused by check(): `reasons` lists why, one a line.
 
 ### `hk.schedules.Schedule`
-
-*New after 0.5.0* (the `hk.schedules` module is not in the 0.5.0 wheel)
 
 A point in a kernel family's schedule space. Subclasses are frozen
 dataclasses whose fields are the knobs (see `knob`).
@@ -282,8 +264,6 @@ back to the default (so a space holds each kernel once).
 
 ### `hk.schedules.GemmSchedule`
 
-*New after 0.5.0* (the `hk.schedules` module is not in the 0.5.0 wheel)
-
 What every GEMM schedule does, beyond Schedule's protocol: the
 launches of a call (steps), its kernels, and running it.
 
@@ -342,8 +322,6 @@ of an arch in `arches`. The schedule is checked first: an illegal
 one raises hk.schedules.Illegal with check()'s reasons.
 
 ### `hk.schedules.AttnSchedule`
-
-*New after 0.5.0* (the `hk.schedules` module is not in the 0.5.0 wheel)
 
 What an attention schedule does: check a problem, build its kernel,
 run it. The problem is `n` (query rows; `n_kv` keys, default n),
@@ -407,8 +385,6 @@ Schedule.space for around, radius and axes).
 class hk.schedules.Step(kernel: str, sched: Dict[str, Any], cols: Tuple[int, int], epilogue: bool, into: str = 'out', route: str = '', schedule: Any = None) -> None
 ```
 
-*New after 0.5.0* (the `hk.schedules` module is not in the 0.5.0 wheel)
-
 One launch of a GEMM call.
 
 kernel    "rdna" (hk.ops.gemm), "pp" (gemm_cdna's pingpong), "dp"
@@ -425,8 +401,6 @@ schedule  the hk.schedules object it came from (None for "reduce" and
 ## The families
 
 ### `hk.schedules.Rdna`
-
-*New after 0.5.0* (the `hk.schedules` module is not in the 0.5.0 wheel)
 
 gfx1100's WMMA GEMM (hk.ops.gemm.gemm_kernel; history chapter 28):
 a block_m x block_n block of C per workgroup of `warps` waves in a
@@ -455,8 +429,6 @@ Family `rdna`, on gfx1100.
 
 ### `hk.schedules.Decode`
 
-*New after 0.5.0* (the `hk.schedules` module is not in the 0.5.0 wheel)
-
 The decode GEMV (hk.ops.decode_gemm; history chapter 9): W straight to
 registers, one 16-row block of W a workgroup, its K split across `warps`
 waves (and across `splits` workgroups), combined through LDS. M <= 16 x
@@ -476,8 +448,6 @@ Family `decode`, on gfx1100, gfx950.
 | `min_occupancy` | `1` | - | - | (gate) build gate |
 
 ### `hk.schedules.PingPong`
-
-*New after 0.5.0* (the `hk.schedules` module is not in the 0.5.0 wheel)
 
 gfx950's pingpong GEMM (hk.ops.gemm_cdna.gemm_kernel; history chapters
 33 and 41): HipKittens' 8-wave CDNA4 schedule, a block in four quadrants,
@@ -510,8 +480,6 @@ Family `pp`, on gfx950.
 
 ### `hk.schedules.Dp`
 
-*New after 0.5.0* (the `hk.schedules` module is not in the 0.5.0 wheel)
-
 gfx950's four-warp GEMM (hk.ops.gemm_cdna_dp.gemm_kernel; history
 chapter 41): smaller blocks for the shapes the pingpong has too few of,
 copies `stages - 1` K-tiles ahead in a ring of LDS buffers, one barrier
@@ -539,8 +507,6 @@ Family `dp`, on gfx950.
 
 ### `hk.schedules.Columns`
 
-*New after 0.5.0* (the `hk.schedules` module is not in the 0.5.0 wheel)
-
 Two schedules side by side: `head` on C's first `cut` columns, `tail`
 on the rest (each its own launches). `cut` is a column count, "block"
 (N less N's remainder by the head's block_n: the pingpong's last 128
@@ -548,8 +514,6 @@ columns of a 151936-wide lm_head), or "wave" (the columns whose
 256x256 blocks fill whole waves of the MI355X's CUs; route "ppw").
 
 ### `hk.schedules.AttnRdna`
-
-*New after 0.5.0* (the `hk.schedules` module is not in the 0.5.0 wheel)
 
 gfx1100's flash attention (hk.ops.attn; history chapter 3): `warps`
 waves of `q_block` query rows each, the KV axis in `kv_block` steps, K
@@ -571,8 +535,6 @@ Family `attn_rdna`, on gfx1100.
 | `min_occupancy` | `1` | - | - | (gate) build gate |
 
 ### `hk.schedules.AttnCdna`
-
-*New after 0.5.0* (the `hk.schedules` module is not in the 0.5.0 wheel)
 
 gfx950's flash attention (hk.ops.attn_cdna; history chapter 34):
 HipKittens' CDNA4 GQA forward, eight warps of 32 query rows, 64-row KV

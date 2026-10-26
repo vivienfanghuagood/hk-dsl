@@ -23,6 +23,8 @@ copies, synchronous and staged through registers.
 class hk.group.Group(warps: int)
 ```
 
+*Changed after 0.6.0*: on gfx950 a synchronous `g.load` stops at the tensor's last row and `g.store` writes no row past it, after 0.6.0. In the 0.6.0 wheel, at a partial last tile, the load read up to a tile's rows past the tensor and the store silently overwrote them (#49).
+
 What `hk.group(warps)` returns: copies between global memory and LDS
 done by `warps` warps together.
 
@@ -35,8 +37,6 @@ warps x the wave of the kernel being traced (32 on RDNA, 64 on CDNA).
 ```python
 Group.load(self, dst: SharedTile, src: View, *, wait: bool = True, rows=None, nontemporal: bool = False, gather=None, staged: int = 0) -> None
 ```
-
-*Changed after 0.5.0*: new parameters `gather`, `staged`
 
 Global -> LDS by the whole group, issued and waited. Rows of the
 tile past the tensor's last read zero and touch no memory, on every
@@ -68,8 +68,6 @@ whole prefetch).
 Group.gather_prep(self, ids, at, rows: int) -> None
 ```
 
-*New after 0.5.0*
-
 Stage `rows` source rows of a gathered copy in LDS -- `ids[at + r] &
 0xFFFFFF` -- and pass a barrier (every warp must call it). A
 `g.load(..., gather=(ids, at), staged=rows)` then reads them there.
@@ -79,8 +77,6 @@ Stage `rows` source rows of a gathered copy in LDS -- `ids[at + r] &
 ```python
 Group.wait_for(self, *tiles: SharedTile, exact: bool = False) -> None
 ```
-
-*Changed after 0.5.0*: new parameter `exact`
 
 `s_waitcnt vmcnt(n)`: this warp's share of the asynchronous copies
 into `tiles` has landed, `n` derived by hk-lds-pipeline. The other

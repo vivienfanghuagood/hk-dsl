@@ -1822,6 +1822,8 @@ The language: what `import hk` gives a kernel author. A kernel body is traced on
 hk.kernel(fn=None, *, arch: Optional[str] = None, warps: int = 1, grid=None, name: Optional[str] = None, max_vgprs: Optional[int] = None, min_occupancy: Optional[int] = None, defines: Optional[Dict[str, Any]] = None, noalias: bool = False, preload: bool = False, resident: bool = False)
 ```
 
+*Changed after 0.6.0*: new parameter `resident`
+
 Mark a function as a tile kernel. See the module docstring for the
 parameter rules. `resident=True`: every workgroup must be on the GPU at
 once (a kernel that waits on its own workgroups); a launch that cannot be
@@ -1922,7 +1924,7 @@ Generate, compile and load. Returns the loaded extension module.
 Kernel.resident_capacity(self, **const_overrides: Any) -> int
 ```
 
-*New after 0.5.0*
+*New after 0.6.0*
 
 How many workgroups of this kernel the current GPU holds at once:
 its CUs times the workgroups a CU fits by registers and by LDS (the
@@ -2024,8 +2026,6 @@ constexpr when it is annotated so.
 ```python
 hk.RT(dtype: DType, rows: int, cols: int, layout: str = 'row', frag=None) -> RegTileType
 ```
-
-*Changed after 0.5.0*: int8 register tiles build on gfx1100 (the iu8 WMMA: C(i32) += A(i8) @ B(i8).T) after 0.5.0; the 0.5.0 wheel refuses an i8 register tile.
 
 A register tile type: kittens::rt<T, rows, cols, layout>. `frag`,
 (rows, cols), names the matrix-core fragment where it is not 16x16; left
@@ -2305,8 +2305,6 @@ builds. Strips index only this way.
 hk.load_mx_scales(src: Global, rows: int, kblocks: int, row0, kb0, *, into: MxScales = None, layout: str = 'ocp', group_rows: int = 0, loose: bool = False) -> MxScales
 ```
 
-*New after 0.5.0*
-
 Rows row0.. and 32-wide blocks kb0.. of an E8M0 scale tensor (uint8, one
 byte a row and block: [R, K/32], the OCP MX layout -- or packed, i32, as
 hk.mx.pack_scales lays them out: one coalesced dword a lane per 64
@@ -2331,8 +2329,6 @@ issued before it (K1 c8).
 hk.copy_mx_scales(dst: MxScales, src: MxScales) -> None
 ```
 
-*New after 0.5.0*
-
 dst = src: E8M0 scales copied register to register -- how a one-stage
 loop body hands the next K-tile's prefetched scales to the current set.
 
@@ -2341,8 +2337,6 @@ loop body hands the next K-tile's prefetched scales to the current set.
 ```python
 hk.mma_ABt_mx(a: Tile, b: Tile, acc: Tile, sa: MxScales, sb: MxScales, *, into=None, a_fmt: str = 'fp8', b_fmt: str = 'fp8', sa_at=(0, 0), sb_at=(0, 0)) -> Tile
 ```
-
-*New after 0.5.0*
 
 acc + (sa . A)(sb . B)^T on gfx950's v_mfma_scale_f32_16x16x128_f8f6f4:
 A (M, K) and B (N, K) fp8 e4m3 row tiles, K a multiple of 128; sa and sb
@@ -2359,8 +2353,6 @@ loaded once, feeding two token tiles over two steps).
 hk.load_fp4_frags(ty, src: Global, row0, kc0, *, group_rows: int, gate_up: bool = False, into=None) -> Tile
 ```
 
-*New after 0.5.0*
-
 Rows row0.. and 128-wide K steps kc0.. of AITER's shuffled MXFP4 MoE weights (gfx950,
 `shuffle_weight(is_guinterleave=True)`; src uint8 [E * group_rows, K/2], the packed bytes)
 as the B operand of `mma_ABt_mx(..., b_fmt="fp4")`. `ty` is an fp8 e4m3 row tile of 16x128
@@ -2375,8 +2367,6 @@ column j of the product land in the same lanes.
 hk.load_fp4_frags_lds(ty, src: SharedTile, row0, chunk0, *, into=None) -> Tile
 ```
 
-*New after 0.5.0*
-
 load_fp4_frags from an LDS tile of raw AITER weight bytes (fp8-typed, a row a 16-row block
 with gate|up rows interleaved, 1 KB a 128-wide K step: the [E * N/16 * 2, K/2 * 16] view of the
 weights, brought in by a group load). Fragment (i, s) is row row0 + i, chunk chunk0 + s.
@@ -2386,8 +2376,6 @@ weights, brought in by a group load). Fragment (i, s) is row row0 + i, chunk chu
 ```python
 hk.mx_quant_store(src: SharedTile, q: Global, s: Global, row0, col0) -> None
 ```
-
-*New after 0.5.0*
 
 MX-quantize an LDS tile's rows and store them -- the epilogue that hands a GEMM's output
 to an MXFP8 consumer without a separate quant pass. Every thread of the workgroup takes
@@ -2456,7 +2444,7 @@ The element dtype.
 Tile.sum(self, axis: int = 1, *, lanes: Optional[str] = None, xor: Optional[Sequence[int]] = None, times: "Optional['Tile']" = None) -> Reduction
 ```
 
-*Changed after 0.5.0*: new parameters `lanes`, `xor`, `times`
+*Changed after 0.6.0*: new parameters `lanes`, `xor`, `times`
 
 The sum along `axis`: 1 (default) along each row, one value per row (a col_vec); 0 along each column (a row_vec). Lazy: `v = t.sum()` makes the vector, `acc += t.sum()` accumulates into one, and `.value(into=v)` writes an existing one.
 
@@ -2466,7 +2454,7 @@ The sum along `axis`: 1 (default) along each row, one value per row (a col_vec);
 Tile.max(self, axis: int = 1, *, lanes: Optional[str] = None, xor: Optional[Sequence[int]] = None) -> Reduction
 ```
 
-*Changed after 0.5.0*: new parameters `lanes`, `xor`
+*Changed after 0.6.0*: new parameters `lanes`, `xor`
 
 The max along `axis`: 1 (default) along each row, one value per row (a col_vec); 0 along each column (a row_vec). Lazy: `v = t.max()` makes the vector, `m.max_(t.max())` folds into one (the online max), and `.value(into=v)` writes an existing one.
 
@@ -2476,7 +2464,7 @@ The max along `axis`: 1 (default) along each row, one value per row (a col_vec);
 Tile.min(self, axis: int = 1, *, lanes: Optional[str] = None, xor: Optional[Sequence[int]] = None) -> Reduction
 ```
 
-*Changed after 0.5.0*: new parameters `lanes`, `xor`
+*Changed after 0.6.0*: new parameters `lanes`, `xor`
 
 The min along `axis`: 1 (default) along each row, one value per row (a col_vec); 0 along each column (a row_vec). Lazy: `v = t.min()` makes the vector, and `.value(into=v)` writes an existing one.
 
@@ -2486,7 +2474,7 @@ The min along `axis`: 1 (default) along each row, one value per row (a col_vec);
 Tile.prod(self, axis: int = 1, *, lanes: Optional[str] = None, xor: Optional[Sequence[int]] = None) -> Reduction
 ```
 
-*Changed after 0.5.0*: new parameters `lanes`, `xor`
+*Changed after 0.6.0*: new parameters `lanes`, `xor`
 
 The product along `axis`: 1 (default) along each row, one value per row (a col_vec); 0 along each column (a row_vec). Lazy: `v = t.prod()` makes the vector, and `.value(into=v)` writes an existing one.
 
@@ -2503,8 +2491,6 @@ Change the element type, keeping shape and layout (kittens::copy).
 ```python
 Tile.bitcast(self, dtype: DType, *, into=None) -> Tile
 ```
-
-*New after 0.5.0*
 
 The same registers read as another element type of the same width (fp32 <-> i32,
 bf16 <-> fp16 ...): no instruction, unlike `.to`. E.g. an i32 accumulator started at the
@@ -3095,8 +3081,6 @@ row: a MoE's top-k, whose sorted list counts (token, choice) pairs.
 Global.scatter_add_lds(self, src: SharedTile, ids: Global, at, *, count=None, col=0, sort_topk: int = 0) -> None
 ```
 
-*New after 0.5.0*
-
 A warp's own bf16 LDS tile added into this bf16 tensor's rows by index, atomically:
 row r of `src` into row `ids[at + r]` (with `sort_topk`, AITER sort ids: the token's
 row of an [M, ...] tensor; padding nowhere) from column `col`. Lanes take consecutive
@@ -3112,8 +3096,6 @@ fixed order.
 ```python
 Global.scatter(self, value: Tile, ids: Global, at, *, count=None, col=0, sort_topk: int = 0, add: bool = False) -> None
 ```
-
-*Changed after 0.5.0*: new parameters `sort_topk`, `add`
 
 Rows by index: tile row r goes to row `ids[at + r]`, from column
 `col`; an index outside the tensor, or a position at or past
@@ -3214,7 +3196,7 @@ One int32 atomic max per warp; the value before it.
 View.atomic_min_scalar(self, value) -> Int
 ```
 
-*New after 0.5.0*
+*New after 0.6.0*
 
 One int32 atomic min per warp; the value before it.
 
@@ -3224,7 +3206,7 @@ One int32 atomic min per warp; the value before it.
 View.atomic_or_scalar(self, value) -> Int
 ```
 
-*New after 0.5.0*
+*New after 0.6.0*
 
 One int32 atomic or per warp; the value before it (a set of flags: bit w = workgroup w).
 
@@ -3234,7 +3216,7 @@ One int32 atomic or per warp; the value before it (a set of flags: bit w = workg
 View.atomic_and_scalar(self, value) -> Int
 ```
 
-*New after 0.5.0*
+*New after 0.6.0*
 
 One int32 atomic and per warp; the value before it.
 
@@ -3244,7 +3226,7 @@ One int32 atomic and per warp; the value before it.
 View.atomic_xor_scalar(self, value) -> Int
 ```
 
-*New after 0.5.0*
+*New after 0.6.0*
 
 One int32 atomic xor per warp; the value before it.
 
@@ -3254,7 +3236,7 @@ One int32 atomic xor per warp; the value before it.
 View.atomic_exch_scalar(self, value) -> Int
 ```
 
-*New after 0.5.0*
+*New after 0.6.0*
 
 One int32 atomic exchange per warp: stores `value`, returns the value before it (a
 lock's take, a slot's claim). W warps that call it exchange W times.
@@ -3755,7 +3737,7 @@ wave-uniform, so not a branch condition for a workgroup operation.
 hk.arch.xcd_id() -> Int
 ```
 
-*New after 0.5.0*
+*New after 0.6.0*
 
 The XCD this workgroup runs on, 0..7 on a gfx950 (read from the hardware: s_getreg
 HW_REG_XCC_ID), wave-uniform. Workgroups are dealt to the XCDs round robin, so it is usually
@@ -3854,8 +3836,6 @@ hk.arch.vm_wait(keep: int = 0) -> None
 hk.arch.wg_arrive(counter, expected: Scalar, *, scope: str = 'device') -> Int
 ```
 
-*Changed after 0.5.0*: new parameter `scope`
-
 Count this workgroup's arrival at `counter` (an element view of an
 int32 global) and return how many arrived before it. The last to arrive
 resets the counter. Contains barriers: every warp must reach it.
@@ -3895,6 +3875,8 @@ hk.lds: shared memory -- allocation, and the wait that retires reads.
 ```python
 hk.lds.alloc(tile: SharedTileType, name: str = 'smem', count: Optional[int] = None, *, shape: Optional[str] = None) -> SharedTile
 ```
+
+*Changed after 0.6.0*: an allocation inside a runtime branch is part of the launch's LDS, and one inside a runtime loop is refused, after 0.6.0. In the 0.6.0 wheel both lay past the LDS the launch requested: reads returned 0 and writes were dropped, with no error (#56).
 
 Reserve an LDS tile, or `count` of them in one size-aligned block (the
 two buffers of a pair must differ in one address bit for the XOR swap).
@@ -3990,6 +3972,8 @@ copies, synchronous and staged through registers.
 class hk.group.Group(warps: int)
 ```
 
+*Changed after 0.6.0*: on gfx950 a synchronous `g.load` stops at the tensor's last row and `g.store` writes no row past it, after 0.6.0. In the 0.6.0 wheel, at a partial last tile, the load read up to a tile's rows past the tensor and the store silently overwrote them (#49).
+
 What `hk.group(warps)` returns: copies between global memory and LDS
 done by `warps` warps together.
 
@@ -4002,8 +3986,6 @@ warps x the wave of the kernel being traced (32 on RDNA, 64 on CDNA).
 ```python
 Group.load(self, dst: SharedTile, src: View, *, wait: bool = True, rows=None, nontemporal: bool = False, gather=None, staged: int = 0) -> None
 ```
-
-*Changed after 0.5.0*: new parameters `gather`, `staged`
 
 Global -> LDS by the whole group, issued and waited. Rows of the
 tile past the tensor's last read zero and touch no memory, on every
@@ -4035,8 +4017,6 @@ whole prefetch).
 Group.gather_prep(self, ids, at, rows: int) -> None
 ```
 
-*New after 0.5.0*
-
 Stage `rows` source rows of a gathered copy in LDS -- `ids[at + r] &
 0xFFFFFF` -- and pass a barrier (every warp must call it). A
 `g.load(..., gather=(ids, at), staged=rows)` then reads them there.
@@ -4046,8 +4026,6 @@ Stage `rows` source rows of a gathered copy in LDS -- `ids[at + r] &
 ```python
 Group.wait_for(self, *tiles: SharedTile, exact: bool = False) -> None
 ```
-
-*Changed after 0.5.0*: new parameter `exact`
 
 `s_waitcnt vmcnt(n)`: this warp's share of the asynchronous copies
 into `tiles` has landed, `n` derived by hk-lds-pipeline. The other
@@ -4178,7 +4156,7 @@ tore over xGMI in the litmus suite).
 hk.comm.signal(view, value) -> None
 ```
 
-*New after 0.5.0* (the `hk.dsl.comm` module is not in the 0.5.0 wheel)
+*New after 0.6.0* (the `hk.dsl.comm` module is not in the 0.6.0 wheel)
 
 Publish `value` into the int32 element `view` (a scoped tensor's): every
 store this workgroup issued before it is acknowledged first, then one
@@ -4192,7 +4170,7 @@ sit in this XCD's L2). Contains a barrier: every warp must reach it.
 hk.comm.arrive(view, value=1) -> Int
 ```
 
-*New after 0.5.0* (the `hk.dsl.comm` module is not in the 0.5.0 wheel)
+*New after 0.6.0* (the `hk.dsl.comm` module is not in the 0.6.0 wheel)
 
 As `signal`, but one thread *adds* `value` to the int32 element `view`
 (a scoped tensor's) with an atomic of the tensor's scope; returns the
@@ -4205,7 +4183,7 @@ issued before it is acknowledged first. Contains a barrier.
 hk.comm.claim(view, value=1) -> Int
 ```
 
-*New after 0.5.0* (the `hk.dsl.comm` module is not in the 0.5.0 wheel)
+*New after 0.6.0* (the `hk.dsl.comm` module is not in the 0.6.0 wheel)
 
 A work queue's take: one thread adds `value` to the int32 element `view` (a scoped
 tensor's) with an atomic of its scope and the workgroup gets the value before the add -- a
@@ -4225,7 +4203,7 @@ Contains barriers: every warp must reach it.
 hk.comm.wait(view, value, *, cmp: str = '>=', timeout_s: float = 2.0, error: Optional[View] = None) -> Int
 ```
 
-*New after 0.5.0* (the `hk.dsl.comm` module is not in the 0.5.0 wheel)
+*New after 0.6.0* (the `hk.dsl.comm` module is not in the 0.6.0 wheel)
 
 Poll the int32 element `view` (a scoped tensor's) until it is `>=` (signed)
 or `==` `value`; return the value seen (wave-uniform). Every warp polls,
@@ -4240,7 +4218,7 @@ kernel traps, so a lost signal is an error rather than a hang.
 hk.comm.barrier(view, target, *, timeout_s: float = 2.0, error: Optional[View] = None) -> Int
 ```
 
-*New after 0.5.0* (the `hk.dsl.comm` module is not in the 0.5.0 wheel)
+*New after 0.6.0* (the `hk.dsl.comm` module is not in the 0.6.0 wheel)
 
 Every workgroup that reaches it adds 1 to the int32 element `view` and
 waits until it is >= `target` -- with an epoch, target = epoch x the number
@@ -4255,7 +4233,7 @@ before it are visible after it to accesses of the same scope.
 hk.comm.xcd_barrier(cnt, epoch, workgroups: int, *, timeout_s: float = 2.0, error: Optional[View] = None) -> Int
 ```
 
-*New after 0.5.0* (the `hk.dsl.comm` module is not in the 0.5.0 wheel)
+*New after 0.6.0* (the `hk.dsl.comm` module is not in the 0.6.0 wheel)
 
 A grid barrier aggregated per XCD: each workgroup arrives at its XCD's counter
 (`cnt.at[16 * (1 + hk.arch.xcd_id())]`), the last of each XCD at the top one (`cnt.at[0]`), and
@@ -4271,7 +4249,7 @@ deals a resident grid: round robin) -- if not, the barrier times out into `error
 hk.comm.post(view, value, tag) -> None
 ```
 
-*New after 0.5.0* (the `hk.dsl.comm` module is not in the 0.5.0 wheel)
+*New after 0.6.0* (the `hk.dsl.comm` module is not in the 0.6.0 wheel)
 
 Post a tagged message: one thread stores `value` into the int32 element `view` (a scoped
 tensor's) and `tag` into the next element, as ONE 8-byte store of the tensor's scope. The two
@@ -4290,7 +4268,7 @@ the reader has taken it (an ack), or posts round r into slot r % S with tag r.
 hk.comm.take(view, tag, *, timeout_s: float = 2.0, error: Optional[View] = None) -> Int
 ```
 
-*New after 0.5.0* (the `hk.dsl.comm` module is not in the 0.5.0 wheel)
+*New after 0.6.0* (the `hk.dsl.comm` module is not in the 0.6.0 wheel)
 
 Take a tagged message: poll the slot `post` writes at the int32 element `view` (a scoped
 tensor's) -- one 8-byte load of the tensor's scope a poll, s_sleep between -- until its tag
@@ -4299,7 +4277,7 @@ is `tag`, and return its value (wave-uniform). Every warp polls. Timeout and `er
 
 ### `hk.comm.REALTIME_HZ`
 
-*New after 0.5.0* (the `hk.dsl.comm` module is not in the 0.5.0 wheel)
+*New after 0.6.0* (the `hk.dsl.comm` module is not in the 0.6.0 wheel)
 
 s_memrealtime runs at 100 MHz on gfx9 (not the shader clock: clock64() on gfx1100 is 20 bits and wraps, KernelWiki gfx1100-device-flags-unreliable).
 
@@ -5228,8 +5206,6 @@ The guide is [docs/schedules.md](../schedules.md), the design [docs/design/sched
 hk.schedules.lookup(m: int, n: int, k: int, arch: Optional[str] = None, *, op: str = 'matmul') -> GemmSchedule
 ```
 
-*New after 0.5.0* (the `hk.schedules` module is not in the 0.5.0 wheel)
-
 The schedule hk runs today for C = A @ B.T at M x N x K on `arch`:
 op="matmul" what hk.ops.matmul launches (gfx950: gemm_cdna.route's
 candidate; gfx1100: hk.ops.gemm.schedule_for, the tuned records
@@ -5242,8 +5218,6 @@ decode GEMV for M <= 32).
 hk.schedules.space(m: int, n: int, k: int, arch: Optional[str] = None, *, families=None, around: Optional[Schedule] = None, radius: int = 1, axes=None, legal: bool = True) -> Iterator[GemmSchedule]
 ```
 
-*New after 0.5.0* (the `hk.schedules` module is not in the 0.5.0 wheel)
-
 Legal GEMM schedules for M x N x K on `arch`, family by family (see
 Schedule.space for `around`, `radius` and `axes`). `families` limits
 them: names ("dp", "pp", ...) or classes. With `around`, only that
@@ -5255,8 +5229,6 @@ schedule's family (its neighbourhood).
 hk.schedules.from_record(rec: Any, *, strict: bool = True, family_cls: Optional[type] = None) -> Schedule
 ```
 
-*New after 0.5.0* (the `hk.schedules` module is not in the 0.5.0 wheel)
-
 A Schedule from any of its record forms (see Schedule.from_record).
 
 ### `hk.schedules.from_candidate`
@@ -5264,8 +5236,6 @@ A Schedule from any of its record forms (see Schedule.from_record).
 ```python
 hk.schedules.from_candidate(name: str, m: int, n: int, k: int) -> GemmSchedule
 ```
-
-*New after 0.5.0* (the `hk.schedules` module is not in the 0.5.0 wheel)
 
 The schedule hk.ops.gemm_cdna's route candidate `name` runs at
 M x N x K -- exactly what gemm_cdna.run launches, as data: the
@@ -5280,8 +5250,6 @@ code does not have) are schedule records, taken as they are.
 hk.schedules.families_for(arch: str) -> List[type]
 ```
 
-*New after 0.5.0* (the `hk.schedules` module is not in the 0.5.0 wheel)
-
 The GEMM families that run on `arch`, the composite last.
 
 ### `hk.schedules.lookup_attention`
@@ -5289,8 +5257,6 @@ The GEMM families that run on `arch`, the composite last.
 ```python
 hk.schedules.lookup_attention(n: int, head_dim: int, causal: bool = False, arch: Optional[str] = None, *, scale: Optional[float] = None) -> AttnSchedule
 ```
-
-*New after 0.5.0* (the `hk.schedules` module is not in the 0.5.0 wheel)
 
 The schedule hk.attention runs for `n` queries of `head_dim`: gfx950's
 kernel as attn_cdna ships it, gfx1100's at its tuner's record for the
@@ -5303,20 +5269,14 @@ length (hk.ops.attn._tune_key) -- or, with a `scale` other than
 hk.schedules.space_attention(n: int, head_dim: int, arch: Optional[str] = None, *, causal: bool = False, around: Optional[AttnSchedule] = None, radius: int = 1, axes=None) -> Iterator[AttnSchedule]
 ```
 
-*New after 0.5.0* (the `hk.schedules` module is not in the 0.5.0 wheel)
-
 Legal attention schedules for the problem on `arch` (see
 Schedule.space).
 
 ### `hk.schedules.Illegal`
 
-*New after 0.5.0* (the `hk.schedules` module is not in the 0.5.0 wheel)
-
 A schedule refused by check(): `reasons` lists why, one a line.
 
 ### `hk.schedules.Schedule`
-
-*New after 0.5.0* (the `hk.schedules` module is not in the 0.5.0 wheel)
 
 A point in a kernel family's schedule space. Subclasses are frozen
 dataclasses whose fields are the knobs (see `knob`).
@@ -5457,8 +5417,6 @@ back to the default (so a space holds each kernel once).
 
 ### `hk.schedules.GemmSchedule`
 
-*New after 0.5.0* (the `hk.schedules` module is not in the 0.5.0 wheel)
-
 What every GEMM schedule does, beyond Schedule's protocol: the
 launches of a call (steps), its kernels, and running it.
 
@@ -5517,8 +5475,6 @@ of an arch in `arches`. The schedule is checked first: an illegal
 one raises hk.schedules.Illegal with check()'s reasons.
 
 ### `hk.schedules.AttnSchedule`
-
-*New after 0.5.0* (the `hk.schedules` module is not in the 0.5.0 wheel)
 
 What an attention schedule does: check a problem, build its kernel,
 run it. The problem is `n` (query rows; `n_kv` keys, default n),
@@ -5582,8 +5538,6 @@ Schedule.space for around, radius and axes).
 class hk.schedules.Step(kernel: str, sched: Dict[str, Any], cols: Tuple[int, int], epilogue: bool, into: str = 'out', route: str = '', schedule: Any = None) -> None
 ```
 
-*New after 0.5.0* (the `hk.schedules` module is not in the 0.5.0 wheel)
-
 One launch of a GEMM call.
 
 kernel    "rdna" (hk.ops.gemm), "pp" (gemm_cdna's pingpong), "dp"
@@ -5600,8 +5554,6 @@ schedule  the hk.schedules object it came from (None for "reduce" and
 ## The families
 
 ### `hk.schedules.Rdna`
-
-*New after 0.5.0* (the `hk.schedules` module is not in the 0.5.0 wheel)
 
 gfx1100's WMMA GEMM (hk.ops.gemm.gemm_kernel; history chapter 28):
 a block_m x block_n block of C per workgroup of `warps` waves in a
@@ -5630,8 +5582,6 @@ Family `rdna`, on gfx1100.
 
 ### `hk.schedules.Decode`
 
-*New after 0.5.0* (the `hk.schedules` module is not in the 0.5.0 wheel)
-
 The decode GEMV (hk.ops.decode_gemm; history chapter 9): W straight to
 registers, one 16-row block of W a workgroup, its K split across `warps`
 waves (and across `splits` workgroups), combined through LDS. M <= 16 x
@@ -5651,8 +5601,6 @@ Family `decode`, on gfx1100, gfx950.
 | `min_occupancy` | `1` | - | - | (gate) build gate |
 
 ### `hk.schedules.PingPong`
-
-*New after 0.5.0* (the `hk.schedules` module is not in the 0.5.0 wheel)
 
 gfx950's pingpong GEMM (hk.ops.gemm_cdna.gemm_kernel; history chapters
 33 and 41): HipKittens' 8-wave CDNA4 schedule, a block in four quadrants,
@@ -5685,8 +5633,6 @@ Family `pp`, on gfx950.
 
 ### `hk.schedules.Dp`
 
-*New after 0.5.0* (the `hk.schedules` module is not in the 0.5.0 wheel)
-
 gfx950's four-warp GEMM (hk.ops.gemm_cdna_dp.gemm_kernel; history
 chapter 41): smaller blocks for the shapes the pingpong has too few of,
 copies `stages - 1` K-tiles ahead in a ring of LDS buffers, one barrier
@@ -5714,8 +5660,6 @@ Family `dp`, on gfx950.
 
 ### `hk.schedules.Columns`
 
-*New after 0.5.0* (the `hk.schedules` module is not in the 0.5.0 wheel)
-
 Two schedules side by side: `head` on C's first `cut` columns, `tail`
 on the rest (each its own launches). `cut` is a column count, "block"
 (N less N's remainder by the head's block_n: the pingpong's last 128
@@ -5723,8 +5667,6 @@ columns of a 151936-wide lm_head), or "wave" (the columns whose
 256x256 blocks fill whole waves of the MI355X's CUs; route "ppw").
 
 ### `hk.schedules.AttnRdna`
-
-*New after 0.5.0* (the `hk.schedules` module is not in the 0.5.0 wheel)
 
 gfx1100's flash attention (hk.ops.attn; history chapter 3): `warps`
 waves of `q_block` query rows each, the KV axis in `kv_block` steps, K
@@ -5746,8 +5688,6 @@ Family `attn_rdna`, on gfx1100.
 | `min_occupancy` | `1` | - | - | (gate) build gate |
 
 ### `hk.schedules.AttnCdna`
-
-*New after 0.5.0* (the `hk.schedules` module is not in the 0.5.0 wheel)
 
 gfx950's flash attention (hk.ops.attn_cdna; history chapter 34):
 HipKittens' CDNA4 GQA forward, eight warps of 32 query rows, 64-row KV
@@ -5835,8 +5775,6 @@ The guide is [docs/tune.md](../tune.md); the benchmark that judges it is [bench/
 hk.tune.tune(m: int, n: int, k: int, *, budget: float = 60.0, save: bool = True, baselines: Optional[Dict[str, Callable]] = None, workers: int = 32, log: Optional[Callable[[str], None]] = <built-in function print>, arch: Optional[str] = None, compiler=None, profile: bool = False, **search)
 ```
 
-*New after 0.5.0* (the `hk.tune` module is not in the 0.5.0 wheel)
-
 Tune one M x N x K bf16 GEMM (C = A @ B.T, B as (N, K)) on the current
 GPU; returns a `Result` (hk.tune.search). A win is written to this
 machine's records unless `save=False`. `baselines` ({name: fn(a, b, out)})
@@ -5853,8 +5791,6 @@ the kernel would have to change to be faster.
 hk.tune.tune_shapes(shapes: Sequence[Tuple[int, int, int]], **kw) -> List
 ```
 
-*New after 0.5.0* (the `hk.tune` module is not in the 0.5.0 wheel)
-
 tune() each shape in turn, one compiler for all of them (kernels shared
 between shapes compile once).
 
@@ -5863,8 +5799,6 @@ between shapes compile once).
 ```python
 hk.tune.model_shapes(model: str, tp: int = 1, ms: Sequence[int] = (1, 16, 128, 512, 2048, 8192), layers: str = '') -> List[Tuple[int, int, int]]
 ```
-
-*New after 0.5.0* (the `hk.tune` module is not in the 0.5.0 wheel)
 
 (M, N, K) of a model's linear layers (qkv, o, gate_up, down; and the LM
 head where asked) at tensor-parallel size `tp`, at each M of `ms`.
@@ -5875,8 +5809,6 @@ head where asked) at tensor-parallel size `tp`, at each M of `ms`.
 hk.tune.parse_shape(s: str) -> Tuple[int, int, int]
 ```
 
-*New after 0.5.0* (the `hk.tune` module is not in the 0.5.0 wheel)
-
 "MxNxK" -> (M, N, K).
 
 ### `hk.tune.torch_baselines`
@@ -5884,8 +5816,6 @@ hk.tune.parse_shape(s: str) -> Tuple[int, int, int]
 ```python
 hk.tune.torch_baselines(names: Iterable[str] = ('torch',)) -> Dict[str, Callable]
 ```
-
-*New after 0.5.0* (the `hk.tune` module is not in the 0.5.0 wheel)
 
 Baselines to time beside the decision, by name: "torch" is F.linear
 (hipBLASLt on ROCm); the tuning benchmark's others (tunableop, aiter,
@@ -5898,8 +5828,6 @@ with a message.
 ```python
 hk.tune.explain(m: int, n: int, k: int, *, vs: str = 'torch.nn.functional:linear') -> dict
 ```
-
-*New after 0.5.0* (the `hk.tune` module is not in the 0.5.0 wheel)
 
 hk.profile (docs/profile.md) on hk.ops.matmul at M x N x K -- the
 kernel this machine's records give the shape -- against `vs`:
@@ -5917,8 +5845,6 @@ that the acceptance rule believes -- or to "the route stands".
 class hk.tune.search.Search(space, *, budget: float = 60.0, min_gain: float = 0.01, k_noise: float = 2.0, pool_per_kind: int = 16, explore: int = 6, max_seeds: Optional[int] = None, rung_rounds: Sequence[int] = (3, 6, 10), local_moves: int = 12, local_iters: int = 6, restarts: int = 2, playoff: int = 5, decide_sets: int = 3, decide_rounds: int = 7, confirm_sets: int = 2, log: Optional[Callable[[str], None]] = None)
 ```
 
-*New after 0.5.0* (the `hk.tune.search` module is not in the 0.5.0 wheel)
-
 One shape's search; see the module docstring.
 
 ### `hk.tune.search.Result`
@@ -5926,8 +5852,6 @@ One shape's search; see the module docstring.
 ```python
 class hk.tune.search.Result(m: int, n: int, k: int, arch: str, route: Candidate, champion: Optional[Candidate] = None, decision: Optional[stats.Decision] = None, route_ms: Optional[float] = None, ms: Optional[float] = None, baselines: Dict[str, Dict[str, Any]] = <factory>, counts: Dict[str, int] = <factory>, gpu_seconds: float = 0.0, wall_seconds: float = 0.0, compile_seconds: float = 0.0, load_seconds: float = 0.0, phases: Dict[str, float] = <factory>, profile: Dict[str, Any] = <factory>, log: List[str] = <factory>, timed: Dict[str, Optional[float]] = <factory>, refused: Dict[str, str] = <factory>, record: str = '') -> None
 ```
-
-*New after 0.5.0* (the `hk.tune.search` module is not in the 0.5.0 wheel)
 
 What one tuning run found and what it cost.
 
@@ -5941,8 +5865,6 @@ What a timing means: the statistics and the acceptance rule of `hk.tune`.
 hk.tune.stats.decide(route_sets: Sequence[Sequence[float]], cand_sets: Sequence[Sequence[float]], *, min_gain: float = 0.01, k_noise: float = 2.0, floor: Optional[float] = None) -> Decision
 ```
 
-*New after 0.5.0* (the `hk.tune.stats` module is not in the 0.5.0 wheel)
-
 Whether the candidate beats the route, from S sets of rounds timed
 interleaved (route_sets[s] and cand_sets[s] in the same rounds).
 
@@ -5951,8 +5873,6 @@ interleaved (route_sets[s] and cand_sets[s] in the same rounds).
 ```python
 hk.tune.stats.confirm(first: Decision, again: Decision) -> Decision
 ```
-
-*New after 0.5.0* (the `hk.tune.stats` module is not in the 0.5.0 wheel)
 
 A win only if the decision and its confirmation both say so; the
 numbers are pooled over both.
@@ -5963,8 +5883,6 @@ numbers are pooled over both.
 class hk.tune.stats.Decision(verdict: str, gain: float, sigma: float, bar: float, band: List[float] = <factory>, ratios: List[float] = <factory>, sets: int = 0) -> None
 ```
 
-*New after 0.5.0* (the `hk.tune.stats` module is not in the 0.5.0 wheel)
-
 A candidate against the route it would replace, over sets.
 
 ### `hk.tune.stats.halve`
@@ -5972,8 +5890,6 @@ A candidate against the route it would replace, over sets.
 ```python
 hk.tune.stats.halve(scores: Dict[Hashable, Sequence[float]], keep: int, protect: Iterable[Hashable] = (), floor: Optional[float] = None) -> List[Hashable]
 ```
-
-*New after 0.5.0* (the `hk.tune.stats` module is not in the 0.5.0 wheel)
 
 Successive halving's cut: the `keep` fastest by median, plus every
 protected arm (the route), in rank order. An arm within its own noise of
@@ -5986,8 +5902,6 @@ have told apart.
 ```python
 hk.tune.stats.summary(times: Sequence[float], floor: Optional[float] = None)
 ```
-
-*New after 0.5.0* (the `hk.tune.stats` module is not in the 0.5.0 wheel)
 
 (median ms, spread, rounds kept) of one arm's rounds; median None if
 no round counts.
@@ -6003,8 +5917,6 @@ hk.templates.gemm make in front of their own routes.
 hk.tune.records.user_route(arch: str, m: int, n: int, k: int) -> Optional[Tuple[str, Any]]
 ```
 
-*New after 0.5.0* (the `hk.tune.records` module is not in the 0.5.0 wheel)
-
 (name, schedule record) of this machine's tuned candidate for the
 shape, or None: no record for (N, K) in M's bucket, or HK_AUTOTUNE=0.
 The record is hk.schedules' (`Schedule.to_record()`); whether it takes
@@ -6017,8 +5929,6 @@ hk.ops.gemm.user_route).
 hk.tune.records.save(arch: str, m: int, n: int, k: int, name: str, spec, point: Dict[str, Any]) -> Path
 ```
 
-*New after 0.5.0* (the `hk.tune.records` module is not in the 0.5.0 wheel)
-
 Write one tuned shape: its candidate, its route and its measurement.
 Atomic; replaces an earlier route for the same (N, K) and M bucket.
 
@@ -6027,8 +5937,6 @@ Atomic; replaces an earlier route for the same (N, K) and M bucket.
 ```python
 hk.tune.records.load(arch: str) -> dict
 ```
-
-*New after 0.5.0* (the `hk.tune.records` module is not in the 0.5.0 wheel)
 
 This machine's records for `arch` (an empty table if none). Read once
 per process, again after a tuner in this process wrote (hk.autotune's
@@ -6043,8 +5951,6 @@ are (hk.autotune.load_records).
 hk.tune.records.path(arch: str) -> Path
 ```
 
-*New after 0.5.0* (the `hk.tune.records` module is not in the 0.5.0 wheel)
-
 This machine's record file for `arch`: $HK_TUNE_DIR/routes_gemm_<arch>.json.
 
 ### `hk.tune.records.bucket`
@@ -6052,8 +5958,6 @@ This machine's record file for `arch`: $HK_TUNE_DIR/routes_gemm_<arch>.json.
 ```python
 hk.tune.records.bucket(m: int) -> int
 ```
-
-*New after 0.5.0* (the `hk.tune.records` module is not in the 0.5.0 wheel)
 
 M rounded up to a power of two: the Ms one record answers.
 
@@ -6068,8 +5972,6 @@ over hk.schedules (K1: one Schedule type per GEMM kernel family).
 hk.tune.space.provider(arch: str) -> ScheduleSpace
 ```
 
-*New after 0.5.0* (the `hk.tune.space` module is not in the 0.5.0 wheel)
-
 The space provider for an arch.
 
 ### `hk.tune.space.ScheduleSpace`
@@ -6078,8 +5980,6 @@ The space provider for an arch.
 class hk.tune.space.ScheduleSpace(arch: str)
 ```
 
-*New after 0.5.0* (the `hk.tune.space` module is not in the 0.5.0 wheel)
-
 hk's GEMMs on one arch, as hk.schedules spells them.
 
 ### `hk.tune.space.Candidate`
@@ -6087,8 +5987,6 @@ hk's GEMMs on one arch, as hk.schedules spells them.
 ```python
 class hk.tune.space.Candidate(kind: str, items: Tuple[Tuple[str, Any], ...], name: str = '', obj: Any = None) -> None
 ```
-
-*New after 0.5.0* (the `hk.tune.space` module is not in the 0.5.0 wheel)
 
 One point: a kernel family and its record (the knobs off the
 family's defaults); `obj` is the hk.schedules object, `name` the shipped
@@ -6105,8 +6003,6 @@ compiles and times candidates in, never a decision.
 hk.tune.cost.estimate(kind: str, s: Dict[str, Any], m: int, n: int, k: int, arch: str) -> float
 ```
 
-*New after 0.5.0* (the `hk.tune.cost` module is not in the 0.5.0 wheel)
-
 Seconds, roughly, for candidate (kind, full schedule) at M x N x K.
 
 ## `hk.tune.measure`
@@ -6119,8 +6015,6 @@ Timing GEMM candidates on the GPU, the way the project times them.
 class hk.tune.measure.GemmBench(m: int, n: int, k: int, arch: str, *, seed: int = 0, rotate_bytes: Optional[int] = None, device=None)
 ```
 
-*New after 0.5.0* (the `hk.tune.measure` module is not in the 0.5.0 wheel)
-
 One M x N x K problem on the current GPU.
 
 ### `hk.tune.measure.Compiler`
@@ -6128,8 +6022,6 @@ One M x N x K problem on the current GPU.
 ```python
 class hk.tune.measure.Compiler(workers: int = 32)
 ```
-
-*New after 0.5.0* (the `hk.tune.measure` module is not in the 0.5.0 wheel)
 
 Builds candidates' kernels on the CPU, `workers` hipcc processes at a
 time, while the GPU times something else.
@@ -6161,8 +6053,6 @@ Correctness, resources and timing of a kernel in one call; the guide is [docs/ch
 ```python
 hk.check.check(fn, reference: Optional[Callable] = None, inputs=None, *, cases: Optional[Sequence] = None, consts: Optional[Dict[str, Any]] = None, outputs: Optional[Sequence] = None, inplace: Optional[Sequence] = None, sweep: Optional[Dict[str, Sequence]] = None, baselines: Sequence[str] = ('eager', 'compile'), extra: Optional[Dict[str, Callable]] = None, rtol: Optional[float] = None, atol: Optional[float] = None, exact: bool = False, ref_precision: str = 'fp32', time: bool = True, rounds: int = 15, warmup: int = 3, batch_ms: float = 1.0, burn: float = 0.5, compile_mode: Optional[str] = None, bytes: Optional[float] = None, flops: Optional[float] = None, name: Optional[str] = None, gpu: Optional[bool] = None, build: bool = True, seed: int = 0, profile: bool = False) -> Report
 ```
-
-*Changed after 0.5.0*: new parameter `profile`
 
 Check `fn` against `reference` on `inputs`; see the module docstring
 and docs/check.md.
@@ -6452,8 +6342,6 @@ Why a kernel runs at the speed it does: rocprofv3's counters and thread trace, t
 hk.profile.profile(fn, inputs=None, *, consts: Optional[Dict[str, Any]] = None, name: Optional[str] = None, vs: Optional[Union[str, Dict[str, Any]]] = None, counters: bool = True, att: bool = True, att_kernels: int = 1, iters: int = 20, gap_ms: float = 2.0, timeout: float = 180.0, flops: Optional[float] = None, bytes: Optional[float] = None, shape: Optional[Sequence[int]] = None, workdir: Optional[str] = None, keep: bool = False, gpu: Optional[bool] = None, record: Optional[str] = None, log: Optional[Callable[[str], None]] = None) -> Profile
 ```
 
-*New after 0.5.0* (the `hk.profile` module is not in the 0.5.0 wheel)
-
 Profile the kernels `fn(*inputs)` launches; see the module docstring
 and docs/profile.md.
 
@@ -6484,8 +6372,6 @@ record    write the raw material (per kernel: the profiler's record
 ```python
 class hk.profile.Profile(name: str, arch: str, device: Optional[str] = None, agent: Dict[str, Any] = <factory>, versions: Dict[str, str] = <factory>, call: Dict[str, Any] = <factory>, kernels: List[Dict[str, Any]] = <factory>, sources: Dict[str, str] = <factory>, passes: Dict[str, Any] = <factory>, notes: List[str] = <factory>, errors: List[Dict[str, str]] = <factory>, compare: Optional[Dict[str, Any]] = None, seconds: Optional[float] = None) -> None
 ```
-
-*New after 0.5.0* (the `hk.profile` module is not in the 0.5.0 wheel)
 
 What `hk.profile` found. `str(p)` is the human summary, `p.json()`
 the dict (SCHEMA), `p.verdict` the call's one-line verdict.
@@ -6522,8 +6408,6 @@ Profile.dumps(self, **kw) -> str
 hk.profile.replay(path) -> List[Dict[str, Any]]
 ```
 
-*New after 0.5.0* (the `hk.profile` module is not in the 0.5.0 wheel)
-
 The per-kernel reports of a `record=` file, recomputed from its raw
 measurements -- no GPU, no profiler: how the verdict logic is tested
 and how a change to it is checked against past runs.
@@ -6534,8 +6418,6 @@ and how a change to it is checked against past runs.
 hk.profile.compare(a: Profile, b: Profile) -> Dict[str, Any]
 ```
 
-*New after 0.5.0* (the `hk.profile` module is not in the 0.5.0 wheel)
-
 `b` against `a`: the calls' times, and their slowest kernels' metrics
 side by side with a sentence on what differs.
 
@@ -6545,14 +6427,11 @@ side by side with a sentence on what differs.
 hk.profile.call_verdict(kernels: List[Dict[str, Any]]) -> Dict[str, Any]
 ```
 
-*New after 0.5.0* (the `hk.profile` module is not in the 0.5.0 wheel)
-
 The call's verdict: its slowest kernel's, with that kernel's share of
 the call's kernel time.
 
 ### `hk.profile.SCHEMA`
 
-*New after 0.5.0* (the `hk.profile` module is not in the 0.5.0 wheel)
 
 ```python
 1
@@ -6560,7 +6439,6 @@ the call's kernel time.
 
 ### `hk.profile.COMPARED`
 
-*New after 0.5.0* (the `hk.profile` module is not in the 0.5.0 wheel)
 
 ```python
 [
@@ -6611,8 +6489,6 @@ the call's kernel time.
 hk.profile.analyze.kernel_report(arch: str, agent: Dict[str, Any], rec: Dict[str, Any], *, build: Optional[Dict[str, Any]] = None, isa: Optional[Dict[str, Any]] = None, call_bytes: Optional[float] = None, flops: Optional[float] = None, bytes_: Optional[float] = None, single: bool = False) -> Dict[str, Any]
 ```
 
-*New after 0.5.0* (the `hk.profile.analyze` module is not in the 0.5.0 wheel)
-
 The per-kernel JSON (docs/profile.md#the-json): time, grid, roofline,
 matrix core, occupancy, stalls, LDS, caches, ISA, findings, verdict.
 
@@ -6633,8 +6509,6 @@ single   the call launches only this kernel (call_bytes is then its bytes
 hk.profile.analyze.findings(arch: str, k: Dict[str, Any]) -> List[Dict[str, Any]]
 ```
 
-*New after 0.5.0* (the `hk.profile.analyze` module is not in the 0.5.0 wheel)
-
 What the numbers say, each {kind, cost, text, evidence}: `cost` is
 the share of the kernel's time the finding accounts for, where it can be
 estimated (None where it is a bound, not a loss). Sorted by cost.
@@ -6645,8 +6519,6 @@ estimated (None where it is a bound, not a loss). Sorted by cost.
 hk.profile.analyze.verdict(arch: str, k: Dict[str, Any]) -> Dict[str, Any]
 ```
 
-*New after 0.5.0* (the `hk.profile.analyze` module is not in the 0.5.0 wheel)
-
 The one line: what bounds the kernel, then what it loses, largest
 first -- {line, bound, losses: [kind...]}.
 
@@ -6655,8 +6527,6 @@ first -- {line, bound, losses: [kind...]}.
 ```python
 hk.profile.analyze.grid_fit(arch: str, agent: Dict[str, Any], grid: Dict[str, Any], build: Optional[Dict[str, Any]] = None) -> Dict[str, Any]
 ```
-
-*New after 0.5.0* (the `hk.profile.analyze` module is not in the 0.5.0 wheel)
 
 How the workgroups fill the GPU: workgroups a slot (a CU on CDNA, a
 WGP -- the LDS pool -- on RDNA) holds at once and what binds it, the
@@ -6719,8 +6589,6 @@ compiler's, from the build row, where hk built it).
 ```python
 hk.profile.counters.derive(arch: str, raw: Dict[str, float], agent: Dict[str, Any], by_pass: Optional[Dict[str, Dict[str, float]]] = None) -> Dict[str, Any]
 ```
-
-*New after 0.5.0* (the `hk.profile.counters` module is not in the 0.5.0 wheel)
 
 {metric: value} from one kernel's raw counters (medians over the
 profiled dispatches) and the agent's facts (Cu_Count, Simd_Count,
@@ -6883,8 +6751,6 @@ does not skew another pass's metrics.
 hk.profile.isa.analyze(f: Function, *, att: Optional[Dict[int, Dict[str, int]]] = None, waves_traced: Optional[int] = None) -> Dict[str, Any]
 ```
 
-*New after 0.5.0* (the `hk.profile.isa` module is not in the 0.5.0 wheel)
-
 One kernel's ISA summary (the JSON's `isa`): the whole kernel's mix,
 the loops and the main one, the prologue before it and the epilogue
 after it, and with a thread trace the cycles each part took.
@@ -6895,8 +6761,6 @@ after it, and with a thread trace the cycles each part took.
 hk.profile.isa.classify(mnemonic: str, operands: str = '') -> str
 ```
 
-*New after 0.5.0* (the `hk.profile.isa` module is not in the 0.5.0 wheel)
-
 The class (`CLASSES`) of one instruction, from its mnemonic (and, for
 a buffer load, whether it writes LDS).
 
@@ -6905,8 +6769,6 @@ a buffer load, whether it writes LDS).
 ```python
 hk.profile.isa.mma_flops(mnemonic: str, wave: int = 64) -> int
 ```
-
-*New after 0.5.0* (the `hk.profile.isa` module is not in the 0.5.0 wheel)
 
 FLOPs (multiply + add, so 2 a product) one wave's matrix instruction
 does: 2*M*N*K from its name (v_mfma_f32_16x16x32_bf16 -> 16384,
@@ -6920,8 +6782,6 @@ their block count.
 hk.profile.isa.code_object(path, arch: Optional[str] = None) -> bytes
 ```
 
-*New after 0.5.0* (the `hk.profile.isa` module is not in the 0.5.0 wheel)
-
 The AMDGPU code object hk built at `path`: a device-only `.co` as it
 is, or the one embedded in a host `.so`'s `.hip_fatbin`.
 
@@ -6930,8 +6790,6 @@ is, or the one embedded in a host `.so`'s `.hip_fatbin`.
 ```python
 hk.profile.isa.disassemble(co: bytes, arch: str) -> List[Function]
 ```
-
-*New after 0.5.0* (the `hk.profile.isa` module is not in the 0.5.0 wheel)
 
 The kernels in a code object, disassembled (needs llvm-objdump).
 

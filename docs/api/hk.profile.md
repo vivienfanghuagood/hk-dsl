@@ -33,8 +33,6 @@ Why a kernel runs at the speed it does: rocprofv3's counters and thread trace, t
 hk.profile.profile(fn, inputs=None, *, consts: Optional[Dict[str, Any]] = None, name: Optional[str] = None, vs: Optional[Union[str, Dict[str, Any]]] = None, counters: bool = True, att: bool = True, att_kernels: int = 1, iters: int = 20, gap_ms: float = 2.0, timeout: float = 180.0, flops: Optional[float] = None, bytes: Optional[float] = None, shape: Optional[Sequence[int]] = None, workdir: Optional[str] = None, keep: bool = False, gpu: Optional[bool] = None, record: Optional[str] = None, log: Optional[Callable[[str], None]] = None) -> Profile
 ```
 
-*New after 0.5.0* (the `hk.profile` module is not in the 0.5.0 wheel)
-
 Profile the kernels `fn(*inputs)` launches; see the module docstring
 and docs/profile.md.
 
@@ -65,8 +63,6 @@ record    write the raw material (per kernel: the profiler's record
 ```python
 class hk.profile.Profile(name: str, arch: str, device: Optional[str] = None, agent: Dict[str, Any] = <factory>, versions: Dict[str, str] = <factory>, call: Dict[str, Any] = <factory>, kernels: List[Dict[str, Any]] = <factory>, sources: Dict[str, str] = <factory>, passes: Dict[str, Any] = <factory>, notes: List[str] = <factory>, errors: List[Dict[str, str]] = <factory>, compare: Optional[Dict[str, Any]] = None, seconds: Optional[float] = None) -> None
 ```
-
-*New after 0.5.0* (the `hk.profile` module is not in the 0.5.0 wheel)
 
 What `hk.profile` found. `str(p)` is the human summary, `p.json()`
 the dict (SCHEMA), `p.verdict` the call's one-line verdict.
@@ -103,8 +99,6 @@ Profile.dumps(self, **kw) -> str
 hk.profile.replay(path) -> List[Dict[str, Any]]
 ```
 
-*New after 0.5.0* (the `hk.profile` module is not in the 0.5.0 wheel)
-
 The per-kernel reports of a `record=` file, recomputed from its raw
 measurements -- no GPU, no profiler: how the verdict logic is tested
 and how a change to it is checked against past runs.
@@ -115,8 +109,6 @@ and how a change to it is checked against past runs.
 hk.profile.compare(a: Profile, b: Profile) -> Dict[str, Any]
 ```
 
-*New after 0.5.0* (the `hk.profile` module is not in the 0.5.0 wheel)
-
 `b` against `a`: the calls' times, and their slowest kernels' metrics
 side by side with a sentence on what differs.
 
@@ -126,14 +118,11 @@ side by side with a sentence on what differs.
 hk.profile.call_verdict(kernels: List[Dict[str, Any]]) -> Dict[str, Any]
 ```
 
-*New after 0.5.0* (the `hk.profile` module is not in the 0.5.0 wheel)
-
 The call's verdict: its slowest kernel's, with that kernel's share of
 the call's kernel time.
 
 ### `hk.profile.SCHEMA`
 
-*New after 0.5.0* (the `hk.profile` module is not in the 0.5.0 wheel)
 
 ```python
 1
@@ -141,7 +130,6 @@ the call's kernel time.
 
 ### `hk.profile.COMPARED`
 
-*New after 0.5.0* (the `hk.profile` module is not in the 0.5.0 wheel)
 
 ```python
 [
@@ -192,8 +180,6 @@ the call's kernel time.
 hk.profile.analyze.kernel_report(arch: str, agent: Dict[str, Any], rec: Dict[str, Any], *, build: Optional[Dict[str, Any]] = None, isa: Optional[Dict[str, Any]] = None, call_bytes: Optional[float] = None, flops: Optional[float] = None, bytes_: Optional[float] = None, single: bool = False) -> Dict[str, Any]
 ```
 
-*New after 0.5.0* (the `hk.profile.analyze` module is not in the 0.5.0 wheel)
-
 The per-kernel JSON (docs/profile.md#the-json): time, grid, roofline,
 matrix core, occupancy, stalls, LDS, caches, ISA, findings, verdict.
 
@@ -214,8 +200,6 @@ single   the call launches only this kernel (call_bytes is then its bytes
 hk.profile.analyze.findings(arch: str, k: Dict[str, Any]) -> List[Dict[str, Any]]
 ```
 
-*New after 0.5.0* (the `hk.profile.analyze` module is not in the 0.5.0 wheel)
-
 What the numbers say, each {kind, cost, text, evidence}: `cost` is
 the share of the kernel's time the finding accounts for, where it can be
 estimated (None where it is a bound, not a loss). Sorted by cost.
@@ -226,8 +210,6 @@ estimated (None where it is a bound, not a loss). Sorted by cost.
 hk.profile.analyze.verdict(arch: str, k: Dict[str, Any]) -> Dict[str, Any]
 ```
 
-*New after 0.5.0* (the `hk.profile.analyze` module is not in the 0.5.0 wheel)
-
 The one line: what bounds the kernel, then what it loses, largest
 first -- {line, bound, losses: [kind...]}.
 
@@ -236,8 +218,6 @@ first -- {line, bound, losses: [kind...]}.
 ```python
 hk.profile.analyze.grid_fit(arch: str, agent: Dict[str, Any], grid: Dict[str, Any], build: Optional[Dict[str, Any]] = None) -> Dict[str, Any]
 ```
-
-*New after 0.5.0* (the `hk.profile.analyze` module is not in the 0.5.0 wheel)
 
 How the workgroups fill the GPU: workgroups a slot (a CU on CDNA, a
 WGP -- the LDS pool -- on RDNA) holds at once and what binds it, the
@@ -300,8 +280,6 @@ compiler's, from the build row, where hk built it).
 ```python
 hk.profile.counters.derive(arch: str, raw: Dict[str, float], agent: Dict[str, Any], by_pass: Optional[Dict[str, Dict[str, float]]] = None) -> Dict[str, Any]
 ```
-
-*New after 0.5.0* (the `hk.profile.counters` module is not in the 0.5.0 wheel)
 
 {metric: value} from one kernel's raw counters (medians over the
 profiled dispatches) and the agent's facts (Cu_Count, Simd_Count,
@@ -464,8 +442,6 @@ does not skew another pass's metrics.
 hk.profile.isa.analyze(f: Function, *, att: Optional[Dict[int, Dict[str, int]]] = None, waves_traced: Optional[int] = None) -> Dict[str, Any]
 ```
 
-*New after 0.5.0* (the `hk.profile.isa` module is not in the 0.5.0 wheel)
-
 One kernel's ISA summary (the JSON's `isa`): the whole kernel's mix,
 the loops and the main one, the prologue before it and the epilogue
 after it, and with a thread trace the cycles each part took.
@@ -476,8 +452,6 @@ after it, and with a thread trace the cycles each part took.
 hk.profile.isa.classify(mnemonic: str, operands: str = '') -> str
 ```
 
-*New after 0.5.0* (the `hk.profile.isa` module is not in the 0.5.0 wheel)
-
 The class (`CLASSES`) of one instruction, from its mnemonic (and, for
 a buffer load, whether it writes LDS).
 
@@ -486,8 +460,6 @@ a buffer load, whether it writes LDS).
 ```python
 hk.profile.isa.mma_flops(mnemonic: str, wave: int = 64) -> int
 ```
-
-*New after 0.5.0* (the `hk.profile.isa` module is not in the 0.5.0 wheel)
 
 FLOPs (multiply + add, so 2 a product) one wave's matrix instruction
 does: 2*M*N*K from its name (v_mfma_f32_16x16x32_bf16 -> 16384,
@@ -501,8 +473,6 @@ their block count.
 hk.profile.isa.code_object(path, arch: Optional[str] = None) -> bytes
 ```
 
-*New after 0.5.0* (the `hk.profile.isa` module is not in the 0.5.0 wheel)
-
 The AMDGPU code object hk built at `path`: a device-only `.co` as it
 is, or the one embedded in a host `.so`'s `.hip_fatbin`.
 
@@ -511,8 +481,6 @@ is, or the one embedded in a host `.so`'s `.hip_fatbin`.
 ```python
 hk.profile.isa.disassemble(co: bytes, arch: str) -> List[Function]
 ```
-
-*New after 0.5.0* (the `hk.profile.isa` module is not in the 0.5.0 wheel)
 
 The kernels in a code object, disassembled (needs llvm-objdump).
 
