@@ -119,8 +119,7 @@ then sat in the 64 MB cache between calls, and there FlyDSL's kernel was 1.2x
 hk's at 32x14336x4096 (48 against 58 us). A decode step does not read a
 layer's W from the cache -- the model's weights are gigabytes -- and streamed,
 hk's is ahead, 100 against 110 us, 585-617 GB/s of the 0.62 TB/s measured
-past the cache (`tools/rdna4-probes/fp8_decode3.py`). The norm rows at 8192
-rows and the 2048-row GEMMs are past the cache anyway.
+past the cache (`tools/rdna4-probes/fp8_decode3.py`).
 
 ## What is left
 
