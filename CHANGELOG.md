@@ -121,6 +121,9 @@ The route's thresholds are not touched.
   ephemeral runner registered for this repository. It is continue-on-error and not a required
   check until the RDNA4 port's tier is green (#67,
   [testing](docs/testing.md#the-gfx1201-runner)).
+- The `gfx1201` job is no longer continue-on-error, now that the RDNA4 port's GPU tier is green
+  there: a red gfx1201 fails the run (#97). Whether it is one of main's required checks is a
+  branch-protection setting.
 
 ## 0.8.0
 

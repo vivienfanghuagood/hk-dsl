@@ -114,13 +114,12 @@ jobs:
           if-no-files-found: ignore
 
   gfx1201:
-    # The RDNA4 port, on the shared gfx1201 dev box (8x Radeon AI PRO R9700): one card of HK_CI_GPUS (the runner's .env) that is idle, through
-    # scripts/ci/gfx1201/hkr9 (docs/testing.md, "The gfx1201 runner"). Not a
-    # required check, and continue-on-error until the port's GPU tier is green
-    # (plan R2): a red gfx1201 does not fail the run.
+    # The RDNA4 port, on the shared gfx1201 dev box (8x Radeon AI PRO R9700):
+    # one card of HK_CI_GPUS (the runner's .env) that is idle, through
+    # scripts/ci/gfx1201/hkr9 (docs/testing.md, "The gfx1201 runner"). A red
+    # gfx1201 fails the run, as the other jobs do.
     runs-on: [self-hosted, hk-gpu, gfx1201]
     timeout-minutes: 180
-    continue-on-error: true
     concurrency:
       group: gpu-gfx1201-${{ github.ref }}
       cancel-in-progress: false

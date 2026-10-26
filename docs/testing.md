@@ -551,9 +551,10 @@ then remove `runner-<name>` and its state directory.
 
 A fourth job, **`gfx1201`**, runs the GPU tier for the RDNA4 port on a shared
 gfx1201 dev box (`<rdna4-host>`: 8x Radeon AI PRO R9700, ROCm 7.2.3), in
-`rocm/pytorch` rocm7.2.3 py3.12 -- the gfx950 job's image. It is not a
-required check, and it is `continue-on-error` until the port's GPU tier is
-green: a red gfx1201 does not fail the run.
+`rocm/pytorch` rocm7.2.3 py3.12 -- the gfx950 job's image. It ran
+`continue-on-error` until the port's GPU tier was green there (RDNA4 R1, #71);
+it no longer does, so a red gfx1201 fails the run. Whether it is one of main's
+required checks is the owner's setting.
 
 **The box is shared.** Other people run on its cards, and none of them takes
 our locks. So every GPU run there, CI's and a person's, goes through
