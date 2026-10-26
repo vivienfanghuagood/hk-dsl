@@ -8,8 +8,11 @@ The next version's notes collect here until it is released.
 
 hk-dsl 0.7.0: hk is on by default in vLLM and SGLang, for the routes validated
 with real weights on your GPU; `HK_DISABLE=1` turns it off. Also `hk.comm` for
-hand-offs between gfx950's XCDs and between GPUs, and two out-of-bounds fixes
-on gfx950, one of them a silent write past the tensor in 0.6.0's DSL.
+hand-offs between gfx950's XCDs and between GPUs, and fixes for two silent
+errors that 0.6.0's DSL has in user kernels: on gfx950 a synchronous `g.store`
+at a partial last tile overwrites the memory after the tensor, and LDS
+allocated inside a runtime branch reads back as 0. No shipped op or route was
+affected by either.
 
 On PyPI: `pip install hk-dsl` (CPython 3.10 on glibc 2.35+, 3.12 on glibc
 2.38+, Linux x86_64). The wheels on the GitHub release are the same files; the
@@ -125,6 +128,25 @@ python3 -m hk.integration --status     # every route on or off, and which rule d
   gfx942 still uses the unbounded copies (no hardware to test). RDNA3 already
   bounded them. `tests/hk/gpu/test_fenced.py` now runs every `hk.ops` family at
   ragged shapes under the end-fenced allocator, in CI on gfx950 and gfx1100.
+- **LDS allocated inside a runtime branch was not part of the launch's LDS**
+  (#56). The `hk-lds-alloc` pass sized a kernel's launch from the
+  allocations in the kernel's own block only, while the generated C++ bumps
+  its allocator along the path the kernel takes. So a tile that a kernel
+  allocated with `hk.lds.alloc` inside a runtime `if` (a branch on a device
+  value) lay past the end of the LDS the launch requested: its reads returned
+  0 and its writes were dropped, with no error. An allocation inside a runtime
+  loop was past the end the same way. Found porting DeepSeek-V4.1's K1 to hk,
+  where a reduction tile allocated in a role branch read back as zeros (87.5%
+  of q wrong). Every released version through 0.6.0 has the pass in that form,
+  so a user kernel that allocates LDS in a runtime branch or loop is affected
+  there. No shipped kernel is: a scan of every kernel the IR and codegen tiers
+  translate (both arches) and the gfx950 GPU suite builds found no LDS
+  allocation outside a kernel's own block, in 0.6.0 or in this release. The
+  pass now walks every region: the two arms of an `if` start at the same
+  offset and the larger one continues, and an allocation inside a runtime
+  `for` / `while` is refused, with a message to allocate it before the loop.
+  `tests/hk/gpu/test_lds_branch.py` reads such a tile back across lanes (all
+  zeros before the fix, exact after).
 - **`mxfp8.quant` read up to 63 rows past the activation** (#47). At
   M % 64 != 0, K2's fused quant (#41, after 0.6.0) copied whole 64-row tiles of
   x. When x ended an allocator segment, that read took a GPU memory fault in
@@ -246,6 +268,10 @@ The memory model is in [docs/design/comm.md](docs/design/comm.md).
   inside, instead of `hk_vllm::mxfp8_block32` (#41).
 - On gfx950, a synchronous `g.load` now reads zero for a tile's rows past the
   tensor, and `g.store` no longer writes them. In-bounds rows are unchanged.
+- An LDS allocation inside a runtime loop is now refused at build time (it
+  was silently past the launch's LDS); allocate it before the loop. One inside
+  a runtime branch now counts toward the launch's LDS, so such a kernel asks
+  for more LDS than 0.6.0's did.
 - The dialect's semantic version, part of the compile-cache key, is now
   `hk-dialect-5`. 0.6.0's cached builds are rebuilt once.
 
@@ -253,7 +279,7 @@ The memory model is in [docs/design/comm.md](docs/design/comm.md).
 - **gfx942: the synchronous group copies are still unbounded** (#49). There
   is no gfx942 here to test the bounded form on, so on gfx942 a `g.load` /
   `g.store` at a partial last tile still reads and writes past the tensor.
-- **gfx1100's defaults were not run end to end with the defaults.** Each
+- **The gfx1100 defaults were not run end to end.** Each
   gfx1100 route's evidence is its earlier opt-in run with real models. The
   default-on configuration itself was checked by the unit tests, the gfx1100
   GPU tier and the engine contract in each engine's environment, not by a

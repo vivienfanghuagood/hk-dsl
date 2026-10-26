@@ -58,6 +58,10 @@ BEHAVIOUR: Dict[str, str] = {
                       "`g.store` writes no row past it, after 0.6.0. In the 0.6.0 wheel, at a "
                       "partial last tile, the load read up to a tile's rows past the tensor "
                       "and the store silently overwrote them (#49).",
+    "hk.lds.alloc": "an allocation inside a runtime branch is part of the launch's LDS, and "
+                    "one inside a runtime loop is refused, after 0.6.0. In the 0.6.0 wheel "
+                    "both lay past the LDS the launch requested: reads returned 0 and writes "
+                    "were dropped, with no error (#56).",
 }
 
 #: Per-architecture argument rules of hk.ops, from the audit
