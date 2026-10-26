@@ -45,6 +45,8 @@ from typing import Dict, List, Optional, Sequence, Tuple
 #: The card's bf16 peak (docs/history/30: "a 123 TFLOP/s card"); hk's GEMM
 #: runs at 84-88, FlyDSL's at 89-91.
 PEAK_FLOPS = 122.6e12
+#: The fp8 x fp8 peak, for cases whose unit is "flop8"; gfx1100 has no fp8 WMMA.
+PEAK_FP8_FLOPS: Optional[float] = None
 #: GDDR6 peak, 384 bits at 18 Gbps; a plain read reaches 680-820 GB/s
 #: (hbm_probe.hip), the norms at 8192 rows 770-790.
 HBM_BYTES_S = 864e9
@@ -73,12 +75,13 @@ STAT = "median"
 #: 191 at the boost clock; tools/rdna4-probes/wmma_peaks.hip);
 #: GDDR6 at 20 Gbps x 256 bits, 640 GB/s (past the cache a copy and an add
 #: reach 0.62); and the 64 MB Infinity Cache at `--probe-ceilings`' fastest
-#: cache-resident rate, an add at a 48 MB footprint, 1.81 TB/s.
+#: cache-resident rate, an add at a 48 MB footprint, 1.81 TB/s; fp8 x fp8
+#: WMMA 371.8 TFLOP/s the same way.
 CARDS = {
     "gfx1100": {"PEAK_FLOPS": PEAK_FLOPS, "HBM_BYTES_S": HBM_BYTES_S,
-                "IC_BYTES": IC_BYTES, "IC_BYTES_S": IC_BYTES_S},
+                "IC_BYTES": IC_BYTES, "IC_BYTES_S": IC_BYTES_S, "PEAK_FP8_FLOPS": None},
     "gfx1201": {"PEAK_FLOPS": 197e12, "HBM_BYTES_S": 640e9,
-                "IC_BYTES": 64 * 2**20, "IC_BYTES_S": 1.81e12},
+                "IC_BYTES": 64 * 2**20, "IC_BYTES_S": 1.81e12, "PEAK_FP8_FLOPS": 372e12},
     "gfx950": {"PEAK_FLOPS": 2.52e15, "HBM_BYTES_S": 8.0e12,
                "IC_BYTES": 256 * 2**20, "IC_BYTES_S": 9.1e12},
 }
@@ -96,6 +99,8 @@ def ceiling_rate(unit: str, footprint: Optional[float]) -> Optional[float]:
     """The fastest plausible rate (FLOP/s or bytes/s), or None if unknown."""
     if unit == "flop":
         return PEAK_FLOPS * MARGIN
+    if unit == "flop8":
+        return PEAK_FP8_FLOPS * MARGIN if PEAK_FP8_FLOPS else None
     if unit == "byte" and footprint:
         return (IC_BYTES_S if footprint <= IC_BYTES else HBM_BYTES_S) * MARGIN
     return None

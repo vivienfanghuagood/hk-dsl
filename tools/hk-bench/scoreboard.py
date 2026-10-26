@@ -495,6 +495,61 @@ def softmax_case(m, tune, n=4096):
     return f"softmax {m}x{n}", 2 * m * n * 2, "byte", ref, arms, None
 
 
+def fp8_case(m, n, k, tune):
+    """An fp8 linear layer, W8A8 with a scale a token and a scale a channel:
+    bf16 (A @ B^T) * scale_a * scale_b. gfx1201 (an fp8 WMMA) only."""
+    f8 = torch.float8_e4m3fn
+    a = (torch.randn(m, k, device="cuda") * 0.5).to(f8)
+    b = (torch.randn(n, k, device="cuda") * 0.5).to(f8)
+    sa = torch.rand(m, 1, device="cuda") + 0.5
+    sb = torch.rand(n, device="cuda") + 0.5
+    ref = (a.float() @ b.float().T) * sa * sb
+    outs = {x: torch.empty(m, n, device="cuda", dtype=BF16) for x in ARMS}
+    res = {}
+    arms = {
+        "torch": (lambda: res.__setitem__("torch", torch._scaled_mm(
+            a, b.T, scale_a=sa, scale_b=sb.view(1, n), out_dtype=BF16)),
+                  lambda: res["torch"],
+                  {"level": "library", "space": "hipBLASLt's heuristic (rowwise scales)",
+                   "candidates": None}),
+        "inductor": "the same hipBLASLt call as torch",
+        "triton": "triton_ref has no fp8 GEMM (AITER's Triton one is the aiter column)",
+        "hk_tuned": "no hk fp8 tuning records yet",
+    }
+    try:
+        from hk.ops.gemm import _fp8_block_m, scaled_mm
+        arms["hk"] = (lambda: scaled_mm(a, b, sa, sb, out=outs["hk"]), lambda: outs["hk"],
+                      {"level": "default", "space": "FP8_DEFAULT by M", "candidates": 1,
+                       "chosen": f"block_m {_fp8_block_m(m)}"})
+    except Exception as e:                         # noqa: BLE001
+        arms["hk"] = _why(e)
+    try:
+        from kernels.gemm.rdna_fp8_preshuffle_gemm import compile_fp8_gemm, preshuffle_b_fp8
+        launch = compile_fp8_gemm(M=m, N=n, K=k)
+        # B preshuffled once, as a weight is at load; A is read raw.
+        bs = preshuffle_b_fp8(b.T.contiguous()).view(torch.float32).contiguous()
+        av = a.view(torch.float32)
+        sa1, sb1 = sa.view(m).contiguous(), sb.contiguous()
+        s = torch.cuda.current_stream()
+        arms["flydsl"] = (lambda: launch(outs["flydsl"], av, bs, sa1, sb1, s), lambda: outs["flydsl"],
+                          {"level": "default", "space": "compile_fp8_gemm's defaults "
+                           "(tuned for 32x8192x6144), B preshuffled outside the timing",
+                           "candidates": 1})
+    except Exception as e:                         # noqa: BLE001
+        arms["flydsl"] = _why(e)
+    arms["flydsl_tuned"] = "FlyDSL has no tuner for its gfx12 fp8 GEMM"
+    try:
+        import aiter
+        arms["aiter"] = (lambda: res.__setitem__("aiter", aiter.gemm_a8w8(
+            a, b, sa, sb.view(1, n), None, BF16)), lambda: res["aiter"],
+                         {"level": "library", "space": "aiter.gemm_a8w8 (on gfx1201 its Triton "
+                          "kernel: the CK one has no gfx12 build)", "candidates": None})
+    except Exception as e:                         # noqa: BLE001
+        arms["aiter"] = _why(e)
+    # "flop8": screened against the fp8 WMMA peak, not bf16's (_rounds).
+    return f"fp8 {m}x{n}x{k}", 2 * m * n * k, "flop8", ref, arms, None
+
+
 # ---------------------------------------------------------------- the LLM rows
 #
 # Every row and pointwise op of a decoder layer at the shapes LLMs run it:
@@ -813,6 +868,8 @@ CASES = {
     "norm": lambda t: [rmsnorm_case(m, t) for m in (1, 32, 2048, 8192)]
                       + [fused_add_case(m, t) for m in (1, 32, 2048, 8192)],
     "softmax": lambda t: [softmax_case(m, t) for m in (2048, 8192)],
+    # gfx1201 only (fp8 WMMA); not in the default groups.
+    "fp8": lambda t: [fp8_case(m, n, 4096, t) for m in (32, 128, 2048) for n in (4096, 14336)],
     **{g: _llm_group(parts) for g, parts in LLM_GROUPS.items()},
 }
 
