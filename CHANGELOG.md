@@ -34,6 +34,16 @@ remaps:
   launch's placement covers its grid exactly once, evaluating the decode the
   kernel's own emitted ops compute ([check](docs/check.md#which-xcd-runs-which-workgroup---placement)).
 
+**Fixes**
+- **gfx950: fp32 register tiles through LDS were FLAT loads and stores**
+  (#59). `store(st<float>, rt<float>)` / `load(rt<float>, st<float>)` addressed
+  the tile through a generic pointer, so every access was FLAT: slower to
+  issue than `ds_read` / `ds_write`, and counted in vmcnt as well as lgkmcnt,
+  so each wait for an LDS value also waited for every global load in flight.
+  They are `ds_read` / `ds_write` now. Results are unchanged; affected are the
+  cross-warp combines of fp32 partials (`hk.ops.decode_gemm`, `w4a16`, `moe`)
+  and user kernels that move fp32 tiles through LDS on gfx950.
+
 **Wheels** (#66)
 - From the next release, cp312 is one `manylinux_2_35` wheel, built on glibc
   2.35 in vLLM's ROCm image, like cp310: through 0.7.0 cp312 was built on
