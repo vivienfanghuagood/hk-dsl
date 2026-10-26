@@ -441,6 +441,29 @@ class Global(Value):
         n = ids.cols if count is None else count
         return (ids.v, as_int(at).v, as_int(n).v, as_int(col).v)
 
+    def load_elems(self, idx: "Tile", dtype: Optional[DType] = None) -> "Tile":
+        """Element by element at computed indices (gfx950): element (r, c) of the result is element
+        `idx[r, c]` of this tensor, counted flat (rows over batch and depth, at the row stride),
+        converted to `dtype` (fp32 or i32; default fp32, i32 for an i32 tensor). An index below
+        zero or past the tensor reads 0 -- a table lookup with a fallback, a key table's slots.
+        `idx` is an i32 strip (hk.map_cpp computes one)."""
+        if getattr(idx.ty, "run", None) is None or idx.ty.dtype.name != "i32":
+            raise TypeError(f"load_elems takes an i32 strip of indices, not {idx.ty}")
+        dtype = (i32 if self.dtype is i32 else fp32) if dtype is None else dtype
+        ty = RegTileType(dtype, idx.ty.rows, idx.ty.cols, idx.ty.layout, idx.ty.frag, run=idx.ty.run)
+        t = _t()
+        return wrap(hkd.LoadElemsOp(mlir_type(ty), self.v, idx.v, loc=t.loc("elems")).result, ty)
+
+    def store_elems(self, val: "Tile", idx: "Tile") -> None:
+        """Element by element at computed indices (gfx950): element (r, c) of `val` (an fp32 or
+        i32 strip), converted to this tensor's type, to element `idx[r, c]` (flat, as
+        load_elems). An index below zero or past the tensor writes nothing: -1 masks an element
+        out. Two elements to one index race."""
+        if getattr(idx.ty, "run", None) is None or idx.ty.dtype.name != "i32":
+            raise TypeError(f"store_elems takes an i32 strip of indices, not {idx.ty}")
+        t = _t()
+        hkd.StoreElemsOp(self.v, val.v, idx.v, loc=t.loc())
+
     def gather(self, tile, ids: "Global", at, *, count=None, col=0, div=1,
                into=None) -> "Tile":
         """Rows by index: tile row r is row `ids[at + r] // div` of this
@@ -1042,6 +1065,43 @@ class Tile(_Elementwise):
     def max(self, axis: int = 1, *, lanes: Optional[str] = None,
             xor: Optional[Sequence[int]] = None) -> Reduction:
         return self._ordered("max", axis, lanes, xor)
+
+    def _group(self, kind: str, cols: int, lanes: str, xor) -> "Tile":
+        from .arch import target  # noqa: PLC0415
+
+        run = getattr(self.ty, "run", None)
+        if run is None:
+            raise TypeError(f"group_{kind} reduces a strip's lane groups (hk.RS), not {self.ty}")
+        if target().wave != 64:
+            raise TypeError(f"group_{kind} is gfx950's, not {target().arch}'s")
+        if cols % run or (cols // run) & (cols // run - 1) or cols // run > 32:
+            raise ValueError(f"group_{kind}(cols={cols}): a group is 1, 2, 4 .. 32 lanes' runs of "
+                             f"{run} columns")
+        k = (cols // run).bit_length() - 1
+        offs = tuple(1 << i for i in range(k)) if xor is None else tuple(int(o) for o in xor)
+        if sorted(offs) != [1 << i for i in range(k)]:
+            raise ValueError(f"group_{kind}(cols={cols}, xor={offs}): the offsets of a group of "
+                             f"{1 << k} lanes are {[1 << i for i in range(k)]}, each once")
+        if lanes not in ("seq", "tree"):
+            raise ValueError(f"group_{kind}(lanes={lanes!r}): \"seq\" or \"tree\"")
+        t = _t()
+        op = hkd.GroupReduceOp(mlir_type(self.ty), self.v, kind,
+                               f"{lanes}:" + ",".join(str(o) for o in offs), loc=t.loc(f"group_{kind}"))
+        return wrap(op.result, self.ty)
+
+    def group_max(self, cols: int, *, lanes: str = "seq", xor: Optional[Sequence[int]] = None) -> "Tile":
+        """A strip's rows reduced over groups of `cols` columns (a lane group's runs: an MX group is
+        32 columns of a run-8 strip), the group's max in every element. `lanes` and `xor` state the
+        order, as for `sum(axis=1, ...)`; the offsets are 1 .. cols / run / 2. gfx950."""
+        return self._group("max", cols, lanes, xor)
+
+    def group_min(self, cols: int, *, lanes: str = "seq", xor: Optional[Sequence[int]] = None) -> "Tile":
+        """As `group_max`, the minimum."""
+        return self._group("min", cols, lanes, xor)
+
+    def group_sum(self, cols: int, *, lanes: str = "seq", xor: Optional[Sequence[int]] = None) -> "Tile":
+        """As `group_max`, the sum, in the stated order."""
+        return self._group("sum", cols, lanes, xor)
 
     def min(self, axis: int = 1, *, lanes: Optional[str] = None,
             xor: Optional[Sequence[int]] = None) -> Reduction:
