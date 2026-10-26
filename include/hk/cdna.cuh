@@ -3010,6 +3010,14 @@ template<ducks::gl::all GL> __device__ inline hk_i32x4 hk_elems_srsrc(const GL &
     const uint64_t n = uint64_t(g.batch()) * g.depth() * g.rows() * uint64_t(g.row_stride());
     return hk_srsrc(g.raw_ptr, n * sizeof(U));
 }
+/// Any lane of the wave with an index >= 0 (take_elems on a wave with none polls nothing). Not for
+/// load / store_elems: the branch splits a kernel's loads into blocks the scheduler cannot batch
+/// across (DeepSeek-V4.1 K1's seam slice: +1 us).
+template<typename I> __device__ inline bool hk_any_live(const I &idx) {
+    bool live = false;
+    strip_each<I>([&](int a, int j, int e) { live |= idx.data[a][j][e] >= 0; });
+    return __any(live);
+}
 __device__ inline uint32_t hk_elem_off(int k, uint32_t size) {
     return k < 0 ? 0xFFFFFFFFu : uint32_t(k) * size;     // past the range: reads 0, stores nothing
 }
@@ -3048,13 +3056,19 @@ template<int AUX, ducks::rs::all D, ducks::gl::all GL, ducks::rs::all I>
 __device__ static inline void take_elems(D &dst, const GL &box, const I &idx, int tag, long long timeout) {
     static_assert(std::is_same_v<typename GL::dtype, int>, "a mailbox is int32 pairs");
     const detail::hk_i32x4 r = detail::hk_elems_srsrc(box);
+    // a wave with no pair to take polls nothing (DeepSeek-V4.1 K1's norm: waves 4 .. 7 hold no
+    // LIN; polling out of range they still held the CTA's barrier back)
+    if (!detail::hk_any_live(idx)) {
+        detail::strip_each<D>([&](int a, int j, int e) { dst.data[a][j][e] = typename D::T(0); });
+        return;
+    }
     const long long t0 = __builtin_amdgcn_s_memrealtime();
     while (true) {
         bool ready = true;
         detail::strip_each<D>([&](int a, int j, int e) {
             const int k = idx.data[a][j][e];
-            uint64_t m = 0;
-            if (k >= 0) m = detail::hk_buf_ld64(r, detail::hk_elem_off(k, 8), 0, AUX);
+            // unconditional: a k < 0 offset is past the range and reads 0
+            const uint64_t m = detail::hk_buf_ld64(r, detail::hk_elem_off(k, 8), 0, AUX);
             ready &= (k < 0) | (int(uint32_t(m >> 32)) == tag);
             dst.data[a][j][e] = detail::hk_from_bits<typename D::T>(uint32_t(m));
         });
