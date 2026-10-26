@@ -1400,6 +1400,34 @@ i32 strip), converted to this tensor's type, to element `idx[r, c]` (flat, as
 load_elems). An index below zero or past the tensor writes nothing: -1 masks an element
 out. Two elements to one index race.
 
+#### `Global.post_elems`
+
+```python
+Global.post_elems(self, val: Tile, idx: Tile, tag) -> None
+```
+
+*New after 0.5.0*
+
+Tagged mailbox pairs, an element at a time (gfx950): element (r, c) of `val` (fp32 or i32
+strip) and `tag` go to pair `idx[r, c]` of this scoped int32 tensor (int32 elements 2 i,
+2 i + 1) as one 8-byte store of its scope; an index below zero posts nothing. No drain --
+the value travels with its tag -- so a hand-off between CTAs is one store and, on the
+other side, one poll (dsv41_mono's Mailbox; hk.comm.post for one scalar).
+
+#### `Global.take_elems`
+
+```python
+Global.take_elems(self, idx: Tile, tag, dtype: Optional[DType] = None, *, timeout_s: float = 2.0) -> Tile
+```
+
+*New after 0.5.0*
+
+The other side of post_elems: element (r, c) is the value of pair `idx[r, c]` once its tag
+is `tag`; every element's pair is loaded with the tensor's scope, and all are re-loaded
+(s_sleep between) while any is stale. An index below zero is ready at 0. `dtype`: fp32
+(default) or i32. After `timeout_s` the kernel traps (0: never) -- a lost post is an error,
+not a hang.
+
 #### `Global.gather`
 
 ```python

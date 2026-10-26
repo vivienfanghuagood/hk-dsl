@@ -166,7 +166,7 @@ class TracedKernel:
             if op.name in ("hk.store", "hk.store_rows", "hk.store_scalar",
                            "hk.group_store", "hk.scatter_rows",
                            "hk.atomic_add", "hk.atomic_scalar", "hk.signal", "hk.arrive", "hk.post",
-                           "hk.store_elems"):
+                           "hk.store_elems", "hk.post_elems"):
                 dst = op.operands[0]
                 for i, a in enumerate(args):
                     if a == dst:

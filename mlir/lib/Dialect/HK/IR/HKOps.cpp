@@ -800,6 +800,26 @@ LogicalResult MfmaStripOp::verify() {
   return success();
 }
 
+static LogicalResult verifyMailElems(Operation *op, Type mbox, Type valT, Type idxT, int64_t aux) {
+  if (!cast<GlobalType>(mbox).getElementType().isInteger(32))
+    return op->emitOpError("a mailbox is int32 pairs");
+  if (failed(verifyElems(op, valT, idxT)))
+    return failure();
+  if (aux != 16 && aux != 17)
+    return op->emitOpError("a mailbox has a scope: aux 16 (device) or 17 (system)");
+  return success();
+}
+
+LogicalResult PostElemsOp::verify() {
+  return verifyMailElems(*this, getDst().getType(), getVal().getType(), getIdx().getType(), getAux());
+}
+
+LogicalResult TakeElemsOp::verify() {
+  if (getTimeout() < 0)
+    return emitOpError("timeout is a tick count >= 0");
+  return verifyMailElems(*this, getSrc().getType(), getResult().getType(), getIdx().getType(), getAux());
+}
+
 LogicalResult IotaOp::verify() {
   auto t = dyn_cast<RegTileType>(getResult().getType());
   if (!t || !t.isStrip() || !t.getElementType().isInteger(32))

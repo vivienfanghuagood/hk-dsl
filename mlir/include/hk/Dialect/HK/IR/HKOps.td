@@ -853,6 +853,39 @@ def HK_MfmaStripOp : HK_Op<"mfma_strip"> {
   let hasVerifier = 1;
 }
 
+def HK_PostElemsOp : HK_Op<"post_elems"> {
+  let summary = "a strip's elements posted as tagged mailbox pairs (gfx950)";
+  let description = [{
+    Element (r, c) of `val` (its 32 bits) and `tag` go to pair `idx[r, c]`
+    of `dst` (int32 elements 2 i, 2 i + 1) as one 8-byte store with the
+    cache-policy bits `aux` (the tensor's scope); an index below zero posts
+    nothing. No drain: the value travels with its tag (hk.comm.post, an
+    element at a time).
+  }];
+  let arguments = (ins HK_GlobalType:$dst, HK_RegTileType:$val, HK_RegTileType:$idx, I32:$tag, I64Attr:$aux);
+  let assemblyFormat = [{
+    $val `,` $tag `,` $dst `[` $idx `]` attr-dict `:` qualified(type($val)) `,` qualified(type($dst)) `,` qualified(type($idx))
+  }];
+  let hasVerifier = 1;
+}
+
+def HK_TakeElemsOp : HK_Op<"take_elems"> {
+  let summary = "a strip's elements taken from tagged mailbox pairs, polled until every tag is current (gfx950)";
+  let description = [{
+    Element (r, c) of the result is the value of pair `idx[r, c]` of `src`
+    once its tag equals `tag` -- every element's pair loaded with `aux`,
+    all re-loaded (s_sleep between) while any is stale; an index below zero
+    is ready at 0. After `timeout` ticks of the 100 MHz clock the kernel
+    traps (0: never).
+  }];
+  let arguments = (ins HK_GlobalType:$src, HK_RegTileType:$idx, I32:$tag, I64Attr:$timeout, I64Attr:$aux);
+  let results = (outs HK_RegTileType:$result);
+  let assemblyFormat = [{
+    $src `[` $idx `]` `,` $tag attr-dict `:` qualified(type($src)) `,` qualified(type($idx)) `->` qualified(type($result))
+  }];
+  let hasVerifier = 1;
+}
+
 def HK_IotaOp : HK_Op<"iota"> {
   let summary = "an i32 strip whose element (r, c) is c (gfx950)";
   let description = [{

@@ -3025,6 +3025,39 @@ __device__ static inline void mfma_strip_f32_16x16x4(D &dst, const A &a, const B
     c = __builtin_amdgcn_mfma_f32_16x16x4f32(a.data[0][0][0], b.data[0][0][0], c, 0, 0, 0);
     dst.data[0][0][0] = c[0]; dst.data[0][0][1] = c[1]; dst.data[0][0][2] = c[2]; dst.data[0][0][3] = c[3];
 }
+/** @brief hk post_elems: element (r, c) of val and `tag` to pair idx(r, c) of `box`, one 8-byte AUX store. */
+template<int AUX, ducks::gl::all GL, ducks::rs::all V, ducks::rs::all I>
+__device__ static inline void post_elems(const GL &box, const V &val, const I &idx, int tag) {
+    static_assert(std::is_same_v<typename GL::dtype, int>, "a mailbox is int32 pairs");
+    const detail::hk_i32x4 r = detail::hk_elems_srsrc(box);
+    detail::strip_each<V>([&](int a, int j, int e) {
+        const int k = idx.data[a][j][e];
+        const uint32_t bits = detail::hk_bits(val.data[a][j][e]);
+        detail::hk_buf_st64(uint64_t(bits) | (uint64_t(uint32_t(tag)) << 32), r,
+                            detail::hk_elem_off(k, 8), 0, AUX);
+    });
+}
+/** @brief hk take_elems: dst(r, c) = value of pair idx(r, c) once its tag is `tag` (all polled together). */
+template<int AUX, ducks::rs::all D, ducks::gl::all GL, ducks::rs::all I>
+__device__ static inline void take_elems(D &dst, const GL &box, const I &idx, int tag, long long timeout) {
+    static_assert(std::is_same_v<typename GL::dtype, int>, "a mailbox is int32 pairs");
+    const detail::hk_i32x4 r = detail::hk_elems_srsrc(box);
+    const long long t0 = __builtin_amdgcn_s_memrealtime();
+    while (true) {
+        bool ready = true;
+        detail::strip_each<D>([&](int a, int j, int e) {
+            const int k = idx.data[a][j][e];
+            uint64_t m = 0;
+            if (k >= 0) m = detail::hk_buf_ld64(r, detail::hk_elem_off(k, 8), 0, AUX);
+            ready &= (k < 0) | (int(uint32_t(m >> 32)) == tag);
+            dst.data[a][j][e] = detail::hk_from_bits<typename D::T>(uint32_t(m));
+        });
+        if (__all(ready)) break;   // every lane's pairs current
+        if (timeout && __builtin_amdgcn_s_memrealtime() - t0 > timeout) __builtin_trap();
+        __builtin_amdgcn_s_sleep(1);
+        asm volatile("" ::: "memory");   // re-issued every round
+    }
+}
 /** @brief hk.iota: element (r, c) = c, the column a lane's run element sits in. */
 template<ducks::rs::all D>
 __device__ static inline void iota(D &dst) {
