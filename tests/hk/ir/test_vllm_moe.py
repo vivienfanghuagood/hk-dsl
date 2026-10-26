@@ -41,10 +41,12 @@ def test_schedules_stay_inside_the_measured_register_limits(block_m, k, want):
     assert moe.schedule_for(block_m, k) == want
 
 
-def test_the_plugin_opts_in_by_environment(monkeypatch):
-    from hk.integration import _vllm_plugin
+def test_the_plugin_applies_it_when_asked(monkeypatch):
+    from hk.integration import _vllm_plugin, contract
 
     seen = []
+    monkeypatch.delenv("HK_DISABLE", raising=False)
+    monkeypatch.setattr(contract, "check", lambda routes: [])   # no vLLM here
     monkeypatch.setenv("HK_PATCH_VLLM", "1")
     monkeypatch.setenv("HK_VLLM_MOE", "1")
     monkeypatch.setattr(vllm_moe, "apply", lambda: seen.append("moe") or "moe: test")

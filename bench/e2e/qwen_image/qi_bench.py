@@ -6,6 +6,10 @@ Writes DIR/result.json (wall seconds per run, versions, args) and DIR/img_<i>.pn
 import argparse, json, os, sys, time
 os.environ.setdefault("SGLANG_USE_AITER", "0")
 os.environ.setdefault("MIOPEN_FIND_MODE", "FAST")
+# The recorded runs set HK_SGLD (and HK_SDPA_K3) to choose hk; unset was stock. hk is on by
+# default now, so unset stays stock here only by saying so.
+os.environ.setdefault("HK_SGLD", "0")
+os.environ.setdefault("HK_SDPA_K3", "0")
 
 PROMPT = ("A cozy bookshop window at dusk, a hand-written chalk sign reading 'OPEN LATE', "
           "warm lamps, a ginger cat asleep on a stack of books, rain on the glass")
@@ -41,7 +45,7 @@ def main():
     import torch
     res = dict(args=vars(a), load_s=load_s, walls=walls, median=sorted(walls)[len(walls) // 2],
                torch=torch.__version__, hip=torch.version.hip, env={k: os.environ.get(k) for k in (
-                   "SGLANG_USE_AITER", "MIOPEN_FIND_MODE", "HIP_VISIBLE_DEVICES", "HK_SGLD")})
+                   "SGLANG_USE_AITER", "MIOPEN_FIND_MODE", "HIP_VISIBLE_DEVICES", "HK_SGLD", "HK_SDPA_K3", "HK_DISABLE")})
     json.dump(res, open(os.path.join(a.out, "result.json"), "w"), indent=1)
     print("RESULT", json.dumps(res), flush=True)
     gen.shutdown() if hasattr(gen, "shutdown") else None

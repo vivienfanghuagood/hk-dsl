@@ -13,25 +13,86 @@ is the same speed as torch.
 vLLM's own answer to "run this in every process" is a general plugin, which it
 loads in the driver and in every worker. So that is where the patch belongs.
 
-**Opt-in, by environment.** Installing a kernel library must not silently
-change the numerics of every vLLM on the machine; `HK_PATCH_VLLM=1` is the
-consent. The plugin is otherwise a no-op that costs an entry-point load.
+**On by default.** With hk-dsl installed, vLLM loads this entry point in every
+process, and it applies every route `hk.integration.switches` has on: the ones
+validated with real weights on this GPU. Turning hk off is for comparisons:
 
-    HK_PATCH_VLLM=1 vllm serve OpenGVLab/InternVL2-2B \\
-        --mm-encoder-attn-backend TORCH_SDPA
+    HK_DISABLE=1 vllm serve ...              # stock vLLM: no route, nothing patched
+    HK_VLLM_MXFP8=0 vllm serve ...           # one route off
+    HK_PATCH_VLLM=0 vllm serve ...           # every vLLM route off
+
+Before it patches anything, the plugin checks the engine contract of every route it is about to
+apply (`hk.integration.contract`). If one is broken, for example by a vLLM or AITER other than
+the one measured, it patches nothing, prints one warning line, and vLLM runs stock.
 
 `load_general_plugins` warns that plugins may be loaded more than once in one
-process, so `register()` is idempotent: `apply()` is guarded and `sdpa.patch()`
-refuses to capture itself as the original.
+process, so `register()` is idempotent: every route's apply is guarded and
+`sdpa.patch()` refuses to capture itself as the original.
 """
 
 from __future__ import annotations
 
 import os
+from typing import Callable, Dict, List, Tuple
 
 
 def enabled() -> bool:
-    return os.environ.get("HK_PATCH_VLLM", "0") not in ("0", "", "off", "no")
+    """Whether any vLLM route is on (hk.integration.switches)."""
+    from . import switches  # noqa: PLC0415
+
+    return bool(switches.on("vllm"))
+
+
+def _sdpa() -> Tuple[str, Callable]:
+    from . import vllm as hkv  # noqa: PLC0415
+
+    return hkv.apply(), hkv.revert
+
+
+def _backend() -> Tuple[str, Callable]:
+    # On ROCm it is registered *over* an existing enum member (see vllm_backend.SLOT), the one
+    # ROCm picks by default -- which is why it is not on by default (switches.ROUTES).
+    from . import switches, vllm_backend  # noqa: PLC0415
+
+    v = switches.value("vllm_backend")
+    return vllm_backend.register(v or None), lambda: None
+
+
+def _gemm() -> Tuple[str, Callable]:
+    from . import vllm_gemm  # noqa: PLC0415
+
+    return vllm_gemm.apply(), vllm_gemm.revert
+
+
+def _int4() -> Tuple[str, Callable]:
+    from . import vllm_int4  # noqa: PLC0415
+
+    return vllm_int4.apply_patch(), vllm_int4.revert
+
+
+def _moe_a8w4() -> Tuple[str, Callable]:
+    from . import vllm_moe_a8w4  # noqa: PLC0415
+
+    return vllm_moe_a8w4.apply_patch(), vllm_moe_a8w4.revert
+
+
+def _mxfp8() -> Tuple[str, Callable]:
+    from . import vllm_mxfp8  # noqa: PLC0415
+
+    return vllm_mxfp8.apply_patch(), vllm_mxfp8.revert
+
+
+def _moe() -> Tuple[str, Callable]:
+    from . import vllm_moe  # noqa: PLC0415
+
+    return vllm_moe.apply(), vllm_moe.revert
+
+
+#: route -> its apply, returning (report, revert). In the order they are applied.
+APPLY: Dict[str, Callable[[], Tuple[str, Callable]]] = {
+    "vllm_backend": _backend, "vllm_gemm": _gemm, "vllm_int4": _int4,
+    "vllm_moe_a8w4": _moe_a8w4, "vllm_mxfp8": _mxfp8, "vllm_moe": _moe, "vllm_sdpa": _sdpa,
+}
 
 
 def register() -> None:
@@ -39,7 +100,18 @@ def register() -> None:
     the engine's startup with it, and a kernel that did not get patched is a
     slower server, not a broken one. The one exception is asked for:
     `HK_STACK_CHECK=refuse` on a stack vLLM was not measured on."""
-    if not enabled():
+    from . import contract, switches  # noqa: PLC0415
+
+    pid = os.getpid()
+    if switches.disabled():
+        print(f"[hk] vLLM: off ({switches.DISABLE}=1), stock (pid {pid})", flush=True)
+        return
+    routes = switches.on("vllm")
+    master = os.environ.get(switches.ENGINES["vllm"], "")
+    user = "" if switches.is_off(master) else os.environ.get("HK_VLLM_USER", "")
+    if not routes and not user:
+        why = switches.decide("vllm_mxfp8").why
+        print(f"[hk] vLLM: no route on ({why}), stock (pid {pid})", flush=True)
         return
     notes = []
     # The stack first: a Triton other than the one this vLLM was measured
@@ -54,76 +126,37 @@ def register() -> None:
         raise
     except BaseException as e:  # noqa: BLE001
         notes.append(f"stack not checked ({type(e).__name__}: {e})")
-    # The decoder backend is a second opt-in, not something this one implies.
-    # On ROCm it has to be registered *over* an existing enum member (see
-    # vllm_backend.SLOT), and the member it overrides is the one ROCm picks by
-    # default -- so enabling it quietly would replace a server's attention
-    # without anyone asking for it. It also has to happen in every process
-    # that builds a model, which is what a general plugin is for.
-    if os.environ.get("HK_VLLM_BACKEND", "0") not in ("0", "", "off", "no"):
-        try:
-            from . import vllm_backend  # noqa: PLC0415
-
-            slot = os.environ.get("HK_VLLM_BACKEND")
-            notes.append(vllm_backend.register(
-                slot if slot not in ("1", "on", "yes", "true") else None))
-        except BaseException as e:  # noqa: BLE001
-            notes.append(f"backend not registered ({type(e).__name__}: {e})")
-    # Linear layers are a third opt-in, for the same reason: every
-    # unquantized GEMM in the model changes kernels.
-    if os.environ.get("HK_VLLM_GEMM", "0") not in ("0", "", "off", "no"):
-        try:
-            from . import vllm_gemm  # noqa: PLC0415
-
-            notes.append(vllm_gemm.apply())
-        except BaseException as e:  # noqa: BLE001
-            notes.append(f"linear not patched ({type(e).__name__}: {e})")
-    # 4-bit AWQ layers likewise.
-    if os.environ.get("HK_VLLM_INT4", "0") not in ("0", "", "off", "no"):
-        try:
-            from . import vllm_int4  # noqa: PLC0415
-
-            notes.append(vllm_int4.apply_patch())
-        except BaseException as e:  # noqa: BLE001
-            notes.append(f"int4 not patched ({type(e).__name__}: {e})")
-    # AITER a8w4 MoE (DeepSeek-V4.1 on gfx950) at prefill sizes.
-    if os.environ.get("HK_VLLM_MOE_A8W4", "0") not in ("0", "", "off", "no"):
-        try:
-            from . import vllm_moe_a8w4  # noqa: PLC0415
-
-            notes.append(vllm_moe_a8w4.apply_patch())
-        except BaseException as e:  # noqa: BLE001
-            notes.append(f"moe_a8w4 not patched ({type(e).__name__}: {e})")
-    # Block-scaled MXFP8 linear layers (DeepSeek-V4.1 on gfx950) at prefill sizes.
-    if os.environ.get("HK_VLLM_MXFP8", "0") not in ("0", "", "off", "no"):
-        try:
-            from . import vllm_mxfp8  # noqa: PLC0415
-
-            notes.append(vllm_mxfp8.apply_patch())
-        except BaseException as e:  # noqa: BLE001
-            notes.append(f"mxfp8 not patched ({type(e).__name__}: {e})")
-    # MoE layers likewise: every bf16 expert GEMM changes kernels.
-    if os.environ.get("HK_VLLM_MOE", "0") not in ("0", "", "off", "no"):
-        try:
-            from . import vllm_moe  # noqa: PLC0415
-
-            notes.append(vllm_moe.apply())
-        except BaseException as e:  # noqa: BLE001
-            notes.append(f"moe not patched ({type(e).__name__}: {e})")
-    # A user's own kernels: the modules that register and patch them, imported
-    # here because this is the process the model runs in.
-    user = os.environ.get("HK_VLLM_USER", "")
-    if user:
-        try:
+    # The contract of every route about to be applied: all of them or none (contract.py).
+    problems = contract.check(routes)
+    if problems:
+        contract.refuse("vllm", problems)
+        return
+    applied: List[Tuple[str, Callable]] = []
+    current = ""
+    try:
+        for name, how in APPLY.items():
+            if name in routes:
+                current = name
+                report, revert = how()
+                applied.append((name, revert))
+                notes.append(report)
+        # A user's own kernels: the modules that register and patch them,
+        # imported here because this is the process the model runs in.
+        if user:
+            current = "HK_VLLM_USER"
             from . import register as hk_register  # noqa: PLC0415
 
             notes.append(f"user: {', '.join(hk_register.load_user(user))}")
-        except BaseException as e:  # noqa: BLE001
-            notes.append(f"user modules not loaded ({type(e).__name__}: {e})")
-    try:
-        from . import vllm as hkv  # noqa: PLC0415
+    except BaseException as e:  # noqa: BLE001 -- never half-patched: undo what was applied
+        for _, revert in reversed(applied):
+            try:
+                revert()
+            except BaseException:  # noqa: BLE001,S110
+                pass
+        contract.refuse("vllm", [f"{current} raised {type(e).__name__}: {e}"], contract.RAISED)
+        return
+    from ..runtime.compile import arm_jit_notice  # noqa: PLC0415
 
-        notes.append(hkv.apply())
-    except BaseException as e:  # noqa: BLE001
-        notes.append(f"sdpa not patched ({type(e).__name__}: {e})")
-    print(f"[hk] {'; '.join(notes)} (pid {os.getpid()})", flush=True)
+    arm_jit_notice("vLLM plugin")
+    on = ", ".join(f"{n} ({d.why})" for n, d in routes.items())
+    print(f"[hk] vLLM routes on: {on}; {'; '.join(notes)} (pid {pid})", flush=True)

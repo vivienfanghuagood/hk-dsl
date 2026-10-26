@@ -54,6 +54,10 @@ import sys
 import time
 from pathlib import Path
 
+# Each arm is applied here, explicitly. hk is on by default, so an installed hk-dsl's vLLM
+# plugin would add its default routes to every arm, stock included: it stays out of this run.
+os.environ.setdefault("HK_DISABLE", "1")
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "python"))
 
 #: (name, heads, head_dim, tokens) for vision towers that matter here. The

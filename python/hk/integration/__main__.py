@@ -1,6 +1,6 @@
 """`python3 -m hk.integration`.
 
-    python3 -m hk.integration --status          # what is importable, what is patched
+    python3 -m hk.integration --status          # every route on or off and why; what is patched
     python3 -m hk.integration --warm -j 32      # build the torch ops ahead of time
     python3 -m hk.integration warm-routes --tp 2  # build the DeepSeek-V4.1 routes' kernels (hk.integration.warm_routes)
     python3 -m hk.integration ab --arms user    # end-to-end A/B in vLLM (hk.integration.ab)
@@ -115,6 +115,12 @@ def main(argv=None) -> int:
             print(f"{name:10s} {what}")
         return 0
 
+    from . import switches  # noqa: PLC0415
+
+    print("routes (hk is on by default; HK_DISABLE=1 turns every route off, "
+          "HK_<ROUTE>=0 one of them):")
+    print(switches.table())
+    print()
     for name, what in status().items():
         print(f"{name:10s} {what}")
     if not args.status:

@@ -65,7 +65,8 @@ Then make the patch reach the process that runs the model. vLLM and SGLang's
 LLM engine load plugins in their workers (`hk.integration`'s plugins).
 SGLang-Diffusion does not, so `python -m hk.integration sglang-diffusion
 install` puts a `.pth` boot in the environment that applies the patch, in
-any process, when the patched module is imported, if `HK_SGLD` is set. The
+any process, when the patched module is imported, unless `HK_DISABLE=1` or
+`HK_SGLD=0` (hk is on by default). The
 same pattern works for any engine that spawns workers.
 
 Make the patch say what it did: each patched process reports how many calls

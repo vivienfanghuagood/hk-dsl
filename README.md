@@ -151,12 +151,24 @@ Details: [getting started](docs/getting-started.md#install), [building](docs/bui
 
 ## In vLLM and SGLang
 
-Patches send each shape to hk's kernel where it measured faster
-([integration](docs/integration.md)):
+**hk is on by default.** Installed, hk's vLLM and SGLang plugins apply every
+route that was validated with real weights on your GPU: its outputs were
+bit-identical to the engine's, or its error was within the engine's own noise.
+On an MI355X that is K1 and K2 for DeepSeek-V4.1. On a W7900D it is linear,
+MoE, AWQ and attention. Each route sends a shape to hk's kernel only where hk
+measured faster ([integration](docs/integration.md#on-by-default-and-turning-it-off)).
+Turning it off is for comparisons:
 
 ```bash
-HK_PATCH_VLLM=1 HK_VLLM_GEMM=1 HK_VLLM_BACKEND=1 vllm serve Qwen/Qwen3-8B --attention-backend TRITON_ATTN
+vllm serve Qwen/Qwen3-8B                         # hk on: the routes validated on this GPU
+HK_DISABLE=1 vllm serve Qwen/Qwen3-8B            # stock vLLM: nothing patched
+HK_VLLM_GEMM=0 vllm serve Qwen/Qwen3-8B          # one route off (HK_<ROUTE>=0)
+python3 -m hk.integration --status               # which routes are on, and why
 ```
+
+If the installed engine does not match the contract the routes were
+measured against, hk patches nothing and prints one warning line.
+ConvRot INT8 is lossy, so it stays opt-in (`HK_SGLD=attn,linear,convrot`).
 
 ## For coding agents
 
@@ -172,7 +184,8 @@ GPU that is not in the machine).
 [templates](docs/templates/elementwise-rowwise.md) ·
 [hk.check](docs/check.md) · [the language](docs/language.md) ·
 [API](docs/api/README.md) · [performance](docs/performance.md) ·
-[everything, and why hk-dsl exists](docs/README.md)
+[everything, and why hk-dsl exists](docs/README.md) ·
+[changelog](CHANGELOG.md)
 
 ## Contributing, license, acknowledgements
 

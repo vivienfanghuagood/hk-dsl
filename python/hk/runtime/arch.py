@@ -21,13 +21,56 @@ from ..target import get_target
 _GFX_RE = re.compile(r"\b(gfx\d{3,4}[a-z]*)\b")
 
 
+def _entries(var: str) -> List[str]:
+    return [e for e in re.split(r"[;,\s]+", os.environ.get(var, "").strip()) if e]
+
+
 def _from_env() -> Optional[str]:
-    for var in ("HK_ARCH", "HCC_AMDGPU_TARGET", "PYTORCH_ROCM_ARCH"):
-        v = os.environ.get(var, "").strip()
-        if v:
-            # PYTORCH_ROCM_ARCH may be a semicolon list; the first entry is the
-            # one a single-GPU box is actually running.
-            return re.split(r"[;,\s]+", v)[0]
+    """HK_ARCH, or a build-arch variable that names exactly one arch. A list -- the vLLM ROCm
+    image sets PYTORCH_ROCM_ARCH=gfx90a;gfx942;gfx950;gfx1100;... -- says what a build targets,
+    not which GPU is here: its first entry made an MI355X gfx90a, and hk then built for gfx1100.
+    A list is only the last resort (`_from_env_list`), after the device."""
+    hk = _entries("HK_ARCH")
+    if hk:
+        return hk[0]
+    for var in ("HCC_AMDGPU_TARGET", "PYTORCH_ROCM_ARCH"):
+        e = _entries(var)
+        if len(e) == 1:
+            return e[0]
+    return None
+
+
+def _from_env_list() -> Optional[str]:
+    for var in ("HCC_AMDGPU_TARGET", "PYTORCH_ROCM_ARCH"):
+        e = _entries(var)
+        if e:
+            return e[0]
+    return None
+
+
+#: Where the KFD driver lists its nodes; a parameter for the tests.
+KFD_NODES = "/sys/class/kfd/kfd/topology/nodes"
+
+
+def _from_kfd() -> Optional[str]:
+    """The first GPU node's gfx name from the KFD topology in sysfs. Unlike `_from_torch` this
+    creates no HIP context -- an engine plugin decides in every process, an API server's too."""
+    import glob  # noqa: PLC0415
+
+    def node(path: str) -> int:
+        d = os.path.basename(os.path.dirname(path))
+        return int(d) if d.isdigit() else 1 << 30
+
+    for p in sorted(glob.glob(os.path.join(KFD_NODES, "*", "properties")), key=node):
+        try:
+            with open(p) as f:
+                for line in f:
+                    k, _, v = line.partition(" ")
+                    if k == "gfx_target_version" and int(v) > 0:
+                        v = int(v)
+                        return f"gfx{v // 10000}{(v // 100) % 100:x}{v % 100:x}"
+        except (OSError, ValueError):
+            continue
     return None
 
 
@@ -65,7 +108,7 @@ def _from_rocminfo() -> Optional[str]:
 def detect() -> Optional[str]:
     """The local GPU's gfx name, or None. Cached: probing costs a subprocess
     and the answer cannot change within a process."""
-    for probe in (_from_env, _from_torch, _from_rocminfo):
+    for probe in (_from_env, _from_kfd, _from_torch, _from_rocminfo, _from_env_list):
         arch = probe()
         if arch:
             return arch

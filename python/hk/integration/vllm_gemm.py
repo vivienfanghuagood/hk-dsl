@@ -342,14 +342,21 @@ def _own_compile_cache(name: str = "hk-linear") -> str:
     run, the engine loads back a graph whose linear layers call vLLM's GEMM,
     and the routes are never reached. Read before the engine caches its
     environment, so this runs before the engine starts.
+
+    Several routes in one engine (hk is on by default) share one directory named for all of
+    them, `hk-int4+mxfp8`, whatever the order they were applied in. A worker inherits its
+    parent's root and adds nothing new, so it gets the same one.
     """
     import os  # noqa: PLC0415
 
-    root = os.environ.get("VLLM_CACHE_ROOT") or os.path.join(
-        os.environ.get("XDG_CACHE_HOME") or os.path.expanduser("~/.cache"), "vllm")
-    if os.path.basename(os.path.normpath(root)) != name:
-        root = os.path.join(root, name)
-        os.environ["VLLM_CACHE_ROOT"] = root
+    root = os.path.normpath(os.environ.get("VLLM_CACHE_ROOT") or os.path.join(
+        os.environ.get("XDG_CACHE_HOME") or os.path.expanduser("~/.cache"), "vllm"))
+    names = {name[3:] if name.startswith("hk-") else name}
+    while os.path.basename(root).startswith("hk-"):
+        names |= set(os.path.basename(root)[3:].split("+"))
+        root = os.path.dirname(root)
+    root = os.path.join(root, "hk-" + "+".join(sorted(names)))
+    os.environ["VLLM_CACHE_ROOT"] = root
     return root
 
 

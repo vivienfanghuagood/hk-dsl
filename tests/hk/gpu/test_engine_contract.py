@@ -28,9 +28,8 @@ if current_arch() != "gfx950":
 from hk.integration import vllm_moe_a8w4 as PM  # noqa: E402
 from hk.integration import vllm_mxfp8 as PX  # noqa: E402
 
-#: The vLLM the routes were measured on (kda/e2e-v41). A different one is not a failure; a
-#: broken contract below is.
-MEASURED_VLLM = "0.32.1rc1.dev36+ge68efc685"
+from hk.integration import switches  # noqa: E402
+from hk.integration.contract import MEASURED_VLLM  # noqa: E402
 
 
 def _params(fn):
@@ -117,3 +116,77 @@ def test_vllms_plugin_loader_finds_hks_entry_point_when_installed():
     if not eps:
         pytest.skip("hk is on the path, not installed: no entry point to find")
     assert eps[0].load().__name__ == "register"
+
+
+# -- the runtime check and the default-on plugin ----------------------------------------------
+#
+# hk is on by default: the plugin checks the contract of every route it applies
+# (hk.integration.contract) and patches nothing if one is broken.
+
+VLLM_ROUTES = [r.name for r in switches.routes("vllm")]
+
+
+def test_the_runtime_contract_holds_for_every_vllm_route():
+    from hk.integration import contract
+
+    assert contract.check(VLLM_ROUTES) == []
+
+
+@pytest.fixture
+def plugin_env(monkeypatch):
+    for e in ["HK_DISABLE", "HK_PATCH_VLLM", "HK_VLLM_USER",
+              *[r.env for r in switches.routes("vllm")]]:
+        monkeypatch.delenv(e, raising=False)
+    from hk.integration import vllm_int4
+
+    yield monkeypatch
+    for mod in (PM, PX, vllm_int4):
+        mod.revert()
+
+
+def _patched():
+    import aiter.fused_moe as afm
+
+    cls = PX._cls()
+    return {"vllm_moe_a8w4": afm.fused_moe is PM.fused_moe,
+            "vllm_mxfp8": cls.apply_weights is PX.apply_weights}
+
+
+def test_with_nothing_set_the_plugin_routes_k1_and_k2(plugin_env, capsys):
+    from hk.integration import _vllm_plugin
+
+    _vllm_plugin.register()
+    assert _patched() == {"vllm_moe_a8w4": True, "vllm_mxfp8": True}
+    out = capsys.readouterr().out
+    assert "vllm_mxfp8 (default on (gfx950))" in out and "vllm_moe_a8w4" in out
+
+
+def test_with_hk_disable_the_plugin_patches_nothing(plugin_env, capsys):
+    from hk.integration import _vllm_plugin
+
+    plugin_env.setenv("HK_DISABLE", "1")
+    plugin_env.setenv("HK_VLLM_MXFP8", "1")
+    _vllm_plugin.register()
+    assert _patched() == {"vllm_moe_a8w4": False, "vllm_mxfp8": False}
+    assert "stock" in capsys.readouterr().out
+
+
+def test_an_aiter_that_lost_a_parameter_leaves_the_engine_stock(plugin_env, capsys):
+    """A simulated version mismatch: aiter's fused_moe without gate_mode. The plugin must not
+    patch K1, nor K2 beside it, and must say so in one line."""
+    import aiter.fused_moe as afm
+
+    from hk.integration import _vllm_plugin
+
+    real = afm.fused_moe
+
+    def fused_moe(hidden_states, w1, w2, topk_weight, topk_ids, activation=None,
+                  quant_type=None):
+        return real(hidden_states, w1, w2, topk_weight, topk_ids)
+
+    plugin_env.setattr(afm, "fused_moe", fused_moe)
+    _vllm_plugin.register()
+    assert afm.fused_moe is fused_moe
+    assert _patched() == {"vllm_moe_a8w4": False, "vllm_mxfp8": False}
+    err = [x for x in capsys.readouterr().err.splitlines() if x.startswith("[hk] WARNING")]
+    assert len(err) == 1 and "engine contract FAILED" in err[0] and "gate_mode" in err[0]

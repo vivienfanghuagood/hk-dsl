@@ -883,8 +883,10 @@ def collect_sglang(args, arm: str) -> dict:
     if parts - set(switches):
         raise ValueError(f"SGLang's arms are stock, linear (or gemm) and moe, joined with "
                          f"+; not {sorted(parts - set(switches))}")
-    for p in parts:                      # read by the plugin in SGLang's processes
-        os.environ[switches[p]] = "1"
+    # Read by the plugin in SGLang's processes. Every switch explicitly: hk is on by default,
+    # so an unset switch is not the stock arm.
+    for env in set(switches.values()):
+        os.environ[env] = "1" if any(switches[p] == env for p in parts) else "0"
     if args.keep_trace:
         os.makedirs(args.keep_trace, exist_ok=True)
     # The radix cache off, as `ab` turns vLLM's prefix caching off: a prompt

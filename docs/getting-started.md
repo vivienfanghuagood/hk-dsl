@@ -293,10 +293,12 @@ python3 examples/01_vector_add.py --build      # compile with hipcc, print the r
 
 On a Radeon (gfx1100), with vLLM installed, hk's linear-layer patch runs a
 model's unquantized bf16 linear layers on hk's decode GEMV and GEMM wherever
-they measured faster than vLLM's own kernels:
+they measured faster than vLLM's own kernels. hk is on by default, so there is
+nothing to set; `HK_DISABLE=1` gives stock vLLM, and `HK_VLLM_GEMM=0` turns
+off this route alone:
 
 ```bash
-HK_PATCH_VLLM=1 HK_VLLM_GEMM=1 vllm serve Qwen/Qwen2.5-7B-Instruct
+vllm serve Qwen/Qwen2.5-7B-Instruct
 ```
 
 The routes shipped in the wheel were measured on Qwen3-8B. For any other
