@@ -3117,6 +3117,24 @@ __device__ static inline void load_elems(D &dst, const GL &src, const I &idx) {
             detail::hk_buf_load_elem<U, AUX>(r, detail::hk_elem_off(idx.data[a][j][e], sizeof(U))));
     });
 }
+/** @brief hk.store_elems(runs=True): each lane's run to the consecutive elements from idx of its first
+ * element, as one store of the run's bytes (masked by that index). */
+template<int AUX = 0, ducks::gl::all GL, ducks::rs::all V, ducks::rs::all I>
+__device__ static inline void store_elems_runs(const GL &dst, const V &val, const I &idx) {
+    using U = typename GL::dtype;
+    const detail::hk_i32x4 r = detail::hk_elems_srsrc(dst);
+    #pragma unroll
+    for (int a = 0; a < V::rows; a++) {
+        #pragma unroll
+        for (int j = 0; j < V::chunks; j++) {
+            U run[V::run];
+            #pragma unroll
+            for (int e = 0; e < V::run; e++) run[e] = detail::hk_cvt<U, typename V::T>(val.data[a][j][e]);
+            detail::hk_buf_store_bytes<V::run * sizeof(U), AUX>(
+                r, detail::hk_elem_off(idx.data[a][j][0], sizeof(U)), run);
+        }
+    }
+}
 /** @brief hk.store_elems: val's element (r, c) to dst's element idx(r, c), flat; out of range: none. */
 template<int AUX = 0, ducks::gl::all GL, ducks::rs::all V, ducks::rs::all I>
 __device__ static inline void store_elems(const GL &dst, const V &val, const I &idx) {

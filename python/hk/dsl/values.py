@@ -455,16 +455,24 @@ class Global(Value):
         aux = scope_aux(self, "load_elems") if getattr(self.ty, "scope", "") else 0
         return wrap(hkd.LoadElemsOp(mlir_type(ty), self.v, idx.v, aux=_i64(aux), loc=t.loc("elems")).result, ty)
 
-    def store_elems(self, val: "Tile", idx: "Tile") -> None:
+    def store_elems(self, val: "Tile", idx: "Tile", *, runs: bool = False) -> None:
         """Element by element at computed indices (gfx950): element (r, c) of `val` (an fp32 or
         i32 strip), converted to this tensor's type, to element `idx[r, c]` (flat, as
         load_elems). An index below zero or past the tensor writes nothing: -1 masks an element
-        out. Two elements to one index race."""
+        out. Two elements to one index race.
+
+        `runs=True`: the kernel says each lane's run goes to consecutive elements from its first
+        element's index, aligned to the run's bytes; the run is one store (1, 2, 4, 8 or 16 k
+        bytes), masked by that first index -- 8 fp8 values in one 8-byte store, not eight."""
         if getattr(idx.ty, "run", None) is None or idx.ty.dtype.name != "i32":
             raise TypeError(f"store_elems takes an i32 strip of indices, not {idx.ty}")
+        if runs:
+            nb = idx.ty.run * self.dtype.bits // 8
+            if nb not in (1, 2, 4, 8) and nb % 16:
+                raise TypeError(f"store_elems(runs=True): a run of {nb} bytes; 1, 2, 4, 8 or 16 k")
         t = _t()
         aux = scope_aux(self, "store_elems") if getattr(self.ty, "scope", "") else 0
-        hkd.StoreElemsOp(self.v, val.v, idx.v, aux=_i64(aux), loc=t.loc())
+        hkd.StoreElemsOp(self.v, val.v, idx.v, aux=_i64(aux), runs=bool(runs), loc=t.loc())
 
     def post_elems(self, val: "Tile", idx: "Tile", tag) -> None:
         """Tagged mailbox pairs, an element at a time (gfx950): element (r, c) of `val` (fp32 or i32
@@ -625,8 +633,10 @@ class View:
         aux = scope_aux(self.tensor, "load", tile)
         if aux:
             if bounded is not True and bounded is not False:
-                raise TypeError("load(bounded=n) through a scoped tensor: not supported; "
-                                "scoped loads are bounded by the tensor's rows")
+                if not isinstance(tile, RegTileType) or _is_strip(tile):
+                    raise TypeError("load(bounded=n) through a scoped tensor: register tiles only")
+                return _make(hkd.LoadRowsOp, tile, (self.tensor.v, self.idx.v, as_int(bounded).v),
+                             into=into, name="ld", aux=_i64(aux))
             return _make(hkd.LoadOp, tile, (self.tensor.v, self.idx.v), into=into, name="ld",
                          bounded=bounded, aux=_i64(aux))
         if bounded is True or bounded is False:
