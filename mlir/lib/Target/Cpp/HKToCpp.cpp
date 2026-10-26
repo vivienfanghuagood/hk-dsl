@@ -1565,6 +1565,16 @@ private:
           w("kittens::mfma_strip_f32_16x16x4(" + name(d) + ", " + name(o.getA()) + ", " +
             name(o.getB()) + ", " + name(o.getAcc()) + ");");
         })
+        .Case([&](PostElemsOp o) {
+          w("kittens::post_elems<" + std::to_string(o.getAux()) + ">(" + name(o.getDst()) + ", " +
+            name(o.getVal()) + ", " + name(o.getIdx()) + ", " + name(o.getTag()) + ");");
+        })
+        .Case([&](TakeElemsOp o) {
+          Value d = dest(Value(), o.getResult());
+          w("kittens::take_elems<" + std::to_string(o.getAux()) + ">(" + name(d) + ", " +
+            name(o.getSrc()) + ", " + name(o.getIdx()) + ", " + name(o.getTag()) + ", " +
+            std::to_string(o.getTimeout()) + "LL);");
+        })
         .Case([&](IotaOp o) {
           Value d = dest(Value(), o.getResult());
           w("kittens::iota(" + name(d) + ");");
