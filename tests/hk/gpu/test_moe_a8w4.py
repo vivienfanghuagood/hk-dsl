@@ -272,8 +272,9 @@ def test_sorted_stages_match_dequant(mt, pp1, pp2, depth, pers, I):
                    weighted=False)
     if not pers and I % 384 == 0 and D % (16 * pp2 * 4 * 2) == 0:
         # h resident in LDS, two column tiles a workgroup: the same rows, bit for bit. ROCm 7.2's
-        # hipcc (the CI image) spills the pp 4 form that ROCm 10's (vLLM's image) builds at 183
-        # VGPRs; the spill gate refuses it there, and the test says so rather than passing.
+        # hipcc (the CI image) cannot build the pp 4 form that ROCm 10's (vLLM's image) builds at
+        # ~196 VGPRs: under that pressure it spills, or copies an LDS read's destination before
+        # its wait; hk's build gates refuse both there, and the test says so rather than passing.
         from hk.runtime.resources import ResourceError
 
         try:
@@ -281,7 +282,7 @@ def test_sorted_stages_match_dequant(mt, pp1, pp2, depth, pers, I):
                                  M.aiter_layout_w2_scale(w2s).to(dev), sid, se, nv, sw, T, topk,
                                  E, mt=mt, pp=pp2, resident=2)
         except ResourceError as e:
-            if pp2 == 2 or "ScratchSize" not in str(e):
+            if pp2 == 2 or not ("ScratchSize" in str(e) or "LDS load is still filling" in str(e)):
                 raise
             yr = None
         if yr is not None:
