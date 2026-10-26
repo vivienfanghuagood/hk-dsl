@@ -105,7 +105,7 @@ tuned arms; "hk vs best" counts every other arm.
 | fp8 32x14336x4096, us | 57.7 | 145 | -- | **47.9** | 52.6 | **0.83x** |
 | fp8 128 rows (N 4096 / 14336) | **best** | | | | | 1.07x / 1.15x |
 | fp8 2048 rows (N 4096 / 14336) | **best** | | | 0.08x hk | | 1.48x / 1.37x |
-| int8 2048 / 4096 rows (N, K 4096) | 0.339 / 0.700 ms | **0.325 / 0.634** | -- | (gfx11 only) | 0.786 / 1.578 | **0.96x / 0.91x** |
+| int8 2048 / 4096 rows (N, K 4096) | **0.315 / 0.626 ms** | 0.321 / 0.636 | -- | (gfx11 only) | 0.789 / 1.568 | tie (1.02x) |
 | int4 2048 / 4096 rows, ms | -- | -- | -- | 0.169 / 0.402 | -- | (FlyDSL alone) |
 
 The fp8 rows are W8A8 with a scale a token and a channel, which is the
@@ -117,8 +117,10 @@ it is not meant for prefill (0.08x hk at 2048 rows).
 
 - **fp8 decode on a wide layer**: FlyDSL's LDS-free 32-row kernel, 48 us
   against hk's 58 at 32x14336x4096.
-- **int8**: hk's int8 GEMM, gfx1100's schedule on the iu8 WMMA, is
-  0.91-0.96x torch._int_mm. Nothing has been tuned for it.
+- **int8**: on gfx1100's schedule hk's int8 GEMM was 0.91-0.96x
+  torch._int_mm; on the fp8 schedule (the same sweep with iu8 operands picks
+  the same point, `tools/rdna4-probes/i8_sweep.py`) it ties, 1.02x. A tie
+  is not a win.
 - **int4**: hk has no iu4 WMMA path; FlyDSL main does.
 - **The norms**: fused add + RMSNorm at 8192 rows 0.93x and rms_norm at 2048
   rows 0.96x. In a probe of their own, the LDS reserve made at most 2% of

@@ -1070,7 +1070,7 @@ gfx1201 (no GQA), HIP norms, Triton fp8/int8 GEMMs, `F.linear` for bf16.
 | softmax 2048 / 8192 rows | | | | | -- | tie / tie |
 | fp8 W8A8, 32 rows, N 4096 / 14336, us | **28.3** / 57.7 | 44.0 / 145 | -- | 48.2 / **47.9** | 46.7 / 52.6 | 1.56x / **0.83x** |
 | fp8 W8A8, 128 / 2048 rows | **best** | | | | | 1.07-1.15x / 1.37-1.48x |
-| int8, 2048 / 4096 rows, ms | 0.339 / 0.700 | **0.325 / 0.634** | -- | -- | 0.786 / 1.578 | **0.96x / 0.91x** |
+| int8, 2048 / 4096 rows, ms | **0.315 / 0.626** | 0.321 / 0.636 | -- | -- | 0.789 / 1.568 | tie (1.02x) |
 | int4 (FlyDSL only), 2048 / 4096 rows, ms | -- | -- | -- | 0.169 / 0.402 | -- | |
 
 | GEMM against the BLAS libraries directly | ratio |
