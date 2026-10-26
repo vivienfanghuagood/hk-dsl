@@ -98,7 +98,8 @@ def attn_kernel(name: str, *, head_dim: int = 128, q_block: int = 16,
                 kv_block: int = 32, warps: int = 12, vt_d_chunk: int = 16,
                 qk_tiles: int = 2, pv_tiles: int = 2, causal: bool = False,
                 scale: Optional[float] = None, setprio: bool = True,
-                max_vgprs: int = 256, min_occupancy: int = 1, bnhd: bool = False):
+                max_vgprs: int = 256, min_occupancy: int = 1, bnhd: bool = False,
+                heads_first: bool = False, warp_skip: bool = False):
     """The default tiling is the C++'s, which its sweep.sh picked.
 
     `bnhd`: q, k, v and o are (B, 1, N, H * head_dim) -- the (B, N, H, D)
@@ -164,8 +165,10 @@ def attn_kernel(name: str, *, head_dim: int = 128, q_block: int = 16,
         gr_vt = vt_s.granules(name="gr_vt")
 
         b = hk.arch.block_idx.z
-        head = hk.arch.block_idx.y
-        qb = hk.arch.block_idx.x
+        if heads_first:
+            head, qb = hk.arch.block_idx.x, hk.arch.block_idx.y
+        else:
+            head, qb = hk.arch.block_idx.y, hk.arch.block_idx.x
         n_q = q.rows
         n_kv = k.rows
 
@@ -271,29 +274,12 @@ def attn_kernel(name: str, *, head_dim: int = 128, q_block: int = 16,
                     for t in range(vt_frags):
                         gr_vt.store_frag(v_t, c_chunk * vt_frags + t, w)
 
-        load_kv(block_start(0))
-
-        for kb in range(kv_blocks):
-            kv_lo = kb * kv_block
-            kv_start = hk.min(kv_lo, n_kv - kv_block)
-            skip = kv_lo - kv_start         # rows this block does not own
-
-            # The previous iteration's reads must retire before this one
-            # overwrites the buffers. Single-buffered, so this is the whole
-            # write-after-read hazard.
-            hk.arch.barrier()
-            commit_kv()
-            # s_barrier orders execution, not memory: the ds_writes above have
-            # to be retired explicitly or the next warp's ds_reads race them.
-            hk.arch.barrier(drain=True)
-            # Issue the next block's globals *after* the barrier that published
-            # this one. Nothing below touches them until the next commit, so
-            # they have the whole math body to land in.
-            load_kv(block_start(kb + 1))
-
-            # Everything above is workgroup-wide; everything below is this
-            # warp's. Without the boundary the allocator holds both live sets at
-            # once -- see hk.scope.
+        def block_math(kv_start, skip):
+            # One KV block's math for this warp: everything in it is the
+            # warp's own, and the staging around it workgroup-wide. Without
+            # the scope boundary the allocator holds both live sets at once
+            # -- see hk.scope.
+            nonlocal l_run
             with hk.scope():
                 # The score tile is per block, not running: everything else in
                 # this region accumulates across blocks and this does not.
@@ -405,6 +391,37 @@ def attn_kernel(name: str, *, head_dim: int = 128, q_block: int = 16,
                         if setprio:
                             hk.arch.setprio(0)
 
+        load_kv(block_start(0))
+
+        for kb in range(kv_blocks):
+            kv_lo = kb * kv_block
+            kv_start = hk.min(kv_lo, n_kv - kv_block)
+            skip = kv_lo - kv_start         # rows this block does not own
+
+            # The previous iteration's reads must retire before this one
+            # overwrites the buffers. Single-buffered, so this is the whole
+            # write-after-read hazard.
+            hk.arch.barrier()
+            commit_kv()
+            # s_barrier orders execution, not memory: the ds_writes above have
+            # to be retired explicitly or the next warp's ds_reads race them.
+            hk.arch.barrier(drain=True)
+            # Issue the next block's globals *after* the barrier that published
+            # this one. Nothing below touches them until the next commit, so
+            # they have the whole math body to land in.
+            load_kv(block_start(kb + 1))
+
+            # Everything above is workgroup-wide; block_math is this warp's.
+            if warp_skip:
+                # This warp's rows all end before the block starts: every
+                # score would be masked, exp2(-inf) adds nothing, so the math
+                # is skipped. Wave-uniform (q_row is per warp), and the
+                # staging above stays workgroup-wide.
+                if kv_lo < q_row + q_block:
+                    block_math(kv_start, skip)
+            else:
+                block_math(kv_start, skip)
+
         # Normalise and go back to [q, d] for the store. The C++ moves the data
         # here, one fragment at a time; `hk.transpose` relabels, which is the
         # same permutation with no instructions at all -- a base tile's storage
@@ -419,6 +436,8 @@ def attn_kernel(name: str, *, head_dim: int = 128, q_block: int = 16,
 
     def _grid(p):
         heads = p.q.cols // head_dim if bnhd else p.q.depth
+        if heads_first:
+            return (heads, hk.cdiv(p.q.rows, q_tile), p.q.batch)
         return (hk.cdiv(p.q.rows, q_tile), heads, p.q.batch)
 
     return hk.kernel(body, warps=warps, grid=_grid, name=name,
@@ -529,7 +548,43 @@ Q_TILE = 192
 #: The KV step, and so the shortest K/V the backed-up last block can land on.
 KV_BLOCK = 32
 
+#: An arch's own tiling, where gfx1100's is not its best: (head_dim, causal)
+#: -> attn_kernel's knobs. gfx1201 (a Radeon AI PRO R9700, n4096, 32 query
+#: heads over 8 KV heads, d128; tools/rdna4-probes/attn_sweep.py, one process
+#: with AITER's gfx1201 FlyDSL kernel interleaved), ms:
+#:
+#:                    gfx1100's   16 warps   + heads_first   + warp_skip, kv 64   AITER
+#:     causal n1024     0.183         --          0.122             0.108          0.106
+#:     causal n2048     0.531        0.484        0.411             0.370          0.372
+#:     causal n4096     1.802        1.665        1.581             1.461          1.433
+#:     causal n8192     6.323        6.079        5.921             5.585          5.875
+#:     full   n4096     2.968        2.829        2.835              --            2.793
+#:
+#: Sixteen warps -- a 256-row Q tile -- is the larger step on a part with
+#: twice gfx1100's WMMA rate a CU and fewer CUs. heads_first numbers the grid
+#: head-fastest, so under causal every head's longest Q block launches before
+#: any head's shorter ones; gfx1100's numbering only orders them within a
+#: head. warp_skip drops a warp's math on a KV block its rows all precede. A
+#: 64-row KV block helps causal and costs full attention 15%.
+_TILING = {
+    "gfx1201": {(128, False): dict(warps=16, heads_first=True),
+                (128, True): dict(warps=16, kv_block=64, heads_first=True, warp_skip=True)},
+}
+
+#: Kernels on an arch's own tiling, by name.
+_TILED: Dict[str, object] = {}
+
 _SCALED: Dict[str, object] = {}
+
+
+def _tiling(head_dim: int, causal: bool, n: int) -> Dict[str, Any]:
+    """This arch's tiling for the call, or {} for gfx1100's. A tiling owns
+    warps x 16 query rows; a shorter Q keeps gfx1100's 192-row one, so what
+    `attention` accepts (Q_TILE, KV_BLOCK) is the same on every RDNA arch."""
+    t = _TILING.get(current_arch(), {}).get((head_dim, causal), {})
+    if t and n < t["warps"] * 16:
+        return {}
+    return t
 
 
 def _tune_key(n: int) -> str:
@@ -587,15 +642,25 @@ def _kernel_for(head_dim: int, causal: bool, scale: Optional[float],
     if mapping != "block_first":
         raise ValueError(f"mapping={mapping!r}: gfx950's kernel only")
     suffix = "_causal" if causal else ""
-    if scale is None or scale == head_dim ** -0.5:
+    tiling = _tiling(head_dim, causal, n)
+    default_scale = scale is None or scale == head_dim ** -0.5
+    if default_scale and not tiling:
         return (TUNERS_BNHD if bnhd else TUNERS)[(head_dim, causal)].kernel(_tune_key(n))
-    import struct  # noqa: PLC0415 -- only on the non-default path
-    bits = struct.unpack("<Q", struct.pack("<d", float(scale)))[0]
-    name = f"attn_fwd{'_bnhd' if bnhd else ''}_d{head_dim}{suffix}_s{bits:016x}"
-    k = _SCALED.get(name)
+    name = f"attn_fwd{'_bnhd' if bnhd else ''}_d{head_dim}{suffix}"
+    if not default_scale:
+        import struct  # noqa: PLC0415 -- only on the non-default path
+        bits = struct.unpack("<Q", struct.pack("<d", float(scale)))[0]
+        name += f"_s{bits:016x}"
+    if tiling:
+        # The arch's tiling at DEFAULT's schedule: hk.attention's tuning
+        # records are gfx1100's.
+        name += f"_{current_arch()}"
+    cache = _TILED if tiling else _SCALED
+    k = cache.get(name)
     if k is None:
-        k = _SCALED[name] = attn_kernel(name, head_dim=head_dim, causal=causal,
-                                        scale=float(scale), bnhd=bnhd)
+        k = cache[name] = attn_kernel(name, head_dim=head_dim, causal=causal,
+                                      scale=None if default_scale else float(scale),
+                                      bnhd=bnhd, **tiling)
     return k
 
 
