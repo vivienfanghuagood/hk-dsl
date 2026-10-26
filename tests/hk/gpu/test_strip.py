@@ -285,3 +285,28 @@ def test_map_cpp_computes_bits_fmas_and_takes_scalars():
     assert torch.equal(e.cpu(), want_e)
     want_f = (x.double() * y.double() + x.double()).float()   # one rounding of the exact a*b + a
     assert torch.equal(f.cpu().view(torch.int32), want_f.view(torch.int32))
+
+
+@pytest.mark.skipif(_target().wave != 64, reason="hk.map_cpp is gfx950's")
+def test_map_cpp_does_not_fuse_a_product_and_a_sum():
+    # HIP compiles with contraction on: x0 * x1 + x0 would be one fma (one rounding) unless the
+    # lambda turns it off; as written it is two roundings, and an fma is spelled __builtin_fmaf
+    S = hk.RS(hk.fp32, 1, 512, 8)
+
+    def unfused(x: hk.Tensor[hk.fp32], y: hk.Tensor[hk.fp32], f: hk.Tensor[hk.fp32]):
+        row = hk.arch.block_idx.x
+        a = x.at[row, 0].load(S)
+        b = y.at[row, 0].load(S)
+        f.at[row, 0].store(hk.map_cpp("x0 * x1 + x0", a, b))
+
+    k = hk.kernel(unfused, warps=1, name="map_cpp_unfused", grid=lambda p: (p.x.rows, 1, 1))
+    g = torch.Generator(device="cpu").manual_seed(4)
+    x = torch.randn(64, 512, generator=g)
+    y = torch.randn(64, 512, generator=g)
+    f = torch.zeros(64, 512, device="cuda")
+    k(x.cuda(), y.cuda(), f)
+    torch.cuda.synchronize()
+    want = (x * y) + x                                          # two roundings
+    assert torch.equal(f.cpu().view(torch.int32), want.view(torch.int32))
+    fused = (x.double() * y.double() + x.double()).float()
+    assert not torch.equal(fused, want)                         # the inputs tell the two apart
