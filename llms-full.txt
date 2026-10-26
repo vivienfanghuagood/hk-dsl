@@ -2441,10 +2441,10 @@ The element dtype.
 #### `Tile.sum`
 
 ```python
-Tile.sum(self, axis: int = 1, *, lanes: Optional[str] = None, xor: Optional[Sequence[int]] = None) -> Reduction
+Tile.sum(self, axis: int = 1, *, lanes: Optional[str] = None, xor: Optional[Sequence[int]] = None, times: "Optional['Tile']" = None) -> Reduction
 ```
 
-*Changed after 0.6.0*: new parameters `lanes`, `xor`
+*Changed after 0.6.0*: new parameters `lanes`, `xor`, `times`
 
 The sum along `axis`: 1 (default) along each row, one value per row (a col_vec); 0 along each column (a row_vec). Lazy: `v = t.sum()` makes the vector, `acc += t.sum()` accumulates into one, and `.value(into=v)` writes an existing one.
 

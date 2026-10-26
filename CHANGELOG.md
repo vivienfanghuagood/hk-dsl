@@ -137,6 +137,16 @@ python3 -m hk.integration --status     # every route on or off, and which rule d
   GEMM. The end-fenced allocator test (`test_fenced.py`, which #49 extended)
   came with it.
 
+- **A stated strip-reduction order was not the documented one for products**
+  (#57). With #52's `lanes=` / `xor=`, `(x * x).sum(axis=1, lanes="seq",
+  xor=...)` compiled to fused multiply-adds: HIP's FMA contraction fused each
+  product into the running sum across hk's inlined ops, so the sum was not the
+  documented one of rounded products (4288 of 32768 lanes differed from it on
+  MI355X). Only an ordered reduction of products was affected, and no `hk.ops`
+  kernel uses one. #52 came after 0.6.0, so 0.6.0 is not affected. The ordered
+  reduction now keeps each summand's rounding (no fma reaches in), and
+  `sum(..., times=y)` is the fused form, stated.
+
 **New in the language: hk.comm (gfx950)** -- hand-offs between the XCDs of
 one GPU and between GPUs, each lowered to what a memory-model litmus suite
 (20000 rounds a combination, across XCDs and across two MI355X) found correct.
@@ -170,14 +180,36 @@ The memory model is in [docs/design/comm.md](docs/design/comm.md).
   signal / wait. A mailbox orders nothing else.
 
 **New in the language: strips**
-- **A stated row-reduction order** (#52, gfx950): `t.sum(axis=1, lanes="seq" |
-  "tree", xor=(32, 16, 8, 4, 2, 1))`, and the same for `max`, `min` and `prod`.
-  A lane's values are combined left to right or as a tree, then the lanes over
-  the given xor offsets in that order, so a strip's sum can match another
-  kernel's bit for bit (dsv41_mono's and aiter's norms). Without the arguments
-  nothing changes. Refused on wave32 targets, columns and WMMA tiles.
+- **A stated row-reduction order** (#52, #57, gfx950): `t.sum(axis=1,
+  lanes="seq" | "tree", xor=(32, 16, 8, 4, 2, 1))`, and the same for `max`,
+  `min` and `prod`, for a result that must match another kernel's bit for bit.
+  The guaranteed order:
+  - a lane's own values are combined left to right (`"seq"`) or as a balanced
+    tree (`"tree"`), then the lanes over the given xor offsets in that order,
+    each of 1, 2, 4, 8, 16 and 32 once;
+  - the strip's values are summed as they are: `(x * y).sum(...)` adds the
+    rounded products, and the compiler does not fuse them into the sum;
+  - `x.sum(axis=1, lanes="seq", xor=..., times=y)` is the fused form, spelled
+    with fma: `s = fma(x0, y0, r(x1 * y1))`, then `s = fma(xi, yi, s)`, then the
+    xor sums. That is what a compiled `s += a * b` loop computes, and it is
+    dsv41_mono's and aiter's sum of squares in their norms (`times=x`).
+
+  Without the arguments nothing changes (a tree, then 1 .. 32). Refused on
+  wave32 targets, on columns and on WMMA tiles.
 
 **Kernels and serving**
+- **gfx950 attention: a spatial workgroup numbering, routed by measurement**
+  (#55). `attn_cdna` (dense flash attention and paged prefill) gains
+  `mapping="spatial"`: each XCD takes a contiguous range of (batch, KV head)
+  clusters, so the workgroups resident on an XCD read one K/V stream. Outputs
+  are bitwise the default numbering's. `hk.ops.attn` and the SDPA ops pick it
+  when an XCD would otherwise hold five or more KV heads' streams, except for
+  causal grids with fewer than twelve rounds of workgroups an XCD. Against the
+  default, MHA at D 128 and 8K-128K tokens: 1.05-1.18x at 128 KV heads, up to
+  1.08x at 64 and 1.05x at 40 (at 128 heads, 32K, the L2 hit rate goes from
+  0.47 to 0.96). The routed choice was never below the default at the 74 timed
+  points. The paged prefill accepts the option but is not
+  routed (unmeasured).
 - **K2's activation quant and its scale layout in one launch** (#41):
   `hk.ops.mxfp8.quant(x, packed=True)`, and `hk.mx_quant_store` writes the
   packed scale layout. The vLLM route makes one opaque call
@@ -189,7 +221,8 @@ The memory model is in [docs/design/comm.md](docs/design/comm.md).
   the engine starts (31.2 s on an empty cache, 0.9 s warm).
   [docs/design/serving-readiness.md](docs/design/serving-readiness.md) lists what
   0.6 lacked for a deployment; [docs/design/comm.md](docs/design/comm.md) has
-  hk.comm's roadmap (#51).
+  hk.comm's roadmap (#51); [docs/design/placement-pass.md](docs/design/placement-pass.md)
+  designs workgroup placement as a compiler pass (#62, design only).
 - CI: pushes run only on main, and a PR's superseded runs are cancelled (#42);
   GPU-tier runs write no core dumps (#46).
 
@@ -200,8 +233,8 @@ The memory model is in [docs/design/comm.md](docs/design/comm.md).
   works.
 - No public DSL name or parameter was removed or renamed since 0.6.0 (checked
   name by name against the 0.6.0 wheel). Changed signatures only gained
-  parameters: the strip reductions' `lanes=` and `xor=`, and `hk.kernel`'s
-  `resident=`. One integration op was
+  parameters: the strip reductions' `lanes=` and `xor=` (and `sum`'s
+  `times=`), and `hk.kernel`'s `resident=`. One integration op was
   replaced: vLLM's MXFP8 route calls `hk_vllm::mxfp8_linear`, which quantizes
   inside, instead of `hk_vllm::mxfp8_block32` (#41).
 - On gfx950, a synchronous `g.load` now reads zero for a tile's rows past the
