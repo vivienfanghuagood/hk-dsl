@@ -122,7 +122,14 @@ def attn_kernel(name: str, *, head_dim: int = 128, q_block: int = 16,
     dropped it for 3-4% (docs/history/28-gemm-schedule.md); here, at n=4096,
     32 heads, d=128, dropping it measured 0.5% causal and 0.8% not, under
     noise, so it stays.
+
+    `heads_first` numbers the grid head-fastest (a causal launch then starts
+    every head's longest Q block first); `warp_skip`, causal only, drops a
+    warp's math on a KV block all its rows precede.
     """
+    if warp_skip and not causal:
+        raise ValueError("warp_skip skips KV blocks a causal mask hides; without "
+                         "causal=True every block is needed")
     d = _derive(head_dim, q_block, kv_block, warps, vt_d_chunk, qk_tiles, pv_tiles)
     q_tile, d_frags, kv_frags = d["q_tile"], d["d_frags"], d["kv_frags"]
     d_chunks, v_bands, vt_frags = d["d_chunks"], d["v_bands"], d["vt_frags"]
@@ -571,6 +578,40 @@ _TILING = {
                 (128, True): dict(warps=16, kv_block=64, heads_first=True, warp_skip=True)},
 }
 
+#: The same, by the compiler that builds the kernel: (arch, clang major at or
+#: above which it applies) -> entries replacing _TILING's. The 64-row KV block
+#: above is ROCm 7.2.3's (clang 22); under the TheRock ROCm 7.14 compiler the
+#: R9700 vLLM image ships (clang 23) it is 16-20% slower than a 32-row one,
+#: causal n1024-8192 (tools/rdna4-probes/attn_sweep.py in that image), ms:
+#:
+#:                     kv 64   kv 32
+#:     causal n1024    0.121   0.106
+#:     causal n2048    0.444   0.371
+#:     causal n4096    1.786   1.497
+#:     causal n8192    6.786   5.704
+#:
+#: (and 32 rows under clang 22 is 3-5% behind 64: n4096 1.518.)
+_TILING_FROM_CLANG = {
+    ("gfx1201", 23): {(128, True): dict(warps=16, heads_first=True, warp_skip=True)},
+}
+
+_CLANG: list = []
+
+
+def _clang_major() -> Optional[int]:
+    """The major version of the clang hipcc drives, or None if it says none."""
+    if not _CLANG:
+        import re  # noqa: PLC0415
+
+        from ..runtime.compile import _hipcc_version  # noqa: PLC0415
+
+        try:
+            m = re.search(r"clang version (\d+)", _hipcc_version())
+        except Exception:  # noqa: BLE001 -- no hipcc: the base tiling
+            m = None
+        _CLANG.append(int(m.group(1)) if m else None)
+    return _CLANG[0]
+
 #: Kernels on an arch's own tiling, by name.
 _TILED: Dict[str, object] = {}
 
@@ -581,7 +622,12 @@ def _tiling(head_dim: int, causal: bool, n: int) -> Dict[str, Any]:
     """This arch's tiling for the call, or {} for gfx1100's. A tiling owns
     warps x 16 query rows; a shorter Q keeps gfx1100's 192-row one, so what
     `attention` accepts (Q_TILE, KV_BLOCK) is the same on every RDNA arch."""
-    t = _TILING.get(current_arch(), {}).get((head_dim, causal), {})
+    arch = current_arch()
+    t = _TILING.get(arch, {}).get((head_dim, causal), {})
+    clang = _clang_major()
+    for (a, at), table in sorted(_TILING_FROM_CLANG.items()):
+        if a == arch and clang is not None and clang >= at and (head_dim, causal) in table:
+            t = table[(head_dim, causal)]
     if t and n < t["warps"] * 16:
         return {}
     return t

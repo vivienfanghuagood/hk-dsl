@@ -68,6 +68,15 @@ Three changes, each its own knob on `attn_kernel`:
 gfx1100's tiling, so what `attention` accepts does not move; d64 and gfx1100
 are untouched (gfx1100 may well want `heads_first` too -- not measured).
 
+The 64-row KV block turned out to be the compiler's choice as much as the
+part's. Under the TheRock ROCm 7.14 compiler (clang 23) the R9700 vLLM image
+ships (`ghcr.io/inferstation/vllm-rocm-r9700-main`), the same sweep has it 16-20%
+*slower* than 32 rows for causal, n1024-8192 -- 1.786 ms at n4096 against
+1.497. So the tiling is picked by compiler too (`_TILING_FROM_CLANG`): 64 rows
+under clang 22, 32 under clang 23 and later. In that image the causal row then
+runs 1.393 ms, 2.13x its torch SDPA (which is not AOTriton's 5.8 ms either:
+2.97).
+
 ## An fp8 GEMM
 
 gfx1201 has `v_wmma_f32_16x16x16_fp8_fp8`, twice the bf16 rate (372 TFLOP/s
