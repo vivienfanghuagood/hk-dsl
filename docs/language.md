@@ -142,7 +142,7 @@ a strip (`!hk.rt<f32, 1x1024, strip<8>>`, `kittens::rs`):
   tracing. The gfx950 port arrived in 0.5.0; the 0.4.0 wheel refuses strips
   there ([what each version has](api/README.md)). Its elements are bf16,
   fp16 or fp32, and on gfx950 also i32
-  ([below](#hkmap_cpp-and-i32-strips-gfx950)).
+  ([below](#elementwise-c-over-strips-and-i32-strips-gfx950)).
 
 ```python
 # WARPS and EPS are constexprs; row and warp come from hk.arch
@@ -183,7 +183,7 @@ vLLM's rotary_embedding in NeoX style, token-major, from a `cos_sin_cache`
 of `[cos | sin]` rows and optional int32 positions
 ([chapter 37](history/37-cdna-rows.md)).
 
-### `hk.map_cpp` and i32 strips (gfx950)
+### Elementwise C++ over strips, and i32 strips (gfx950)
 
 `hk.map_cpp(expr, *args, dtype=None)` evaluates one C++ expression for each
 element of a strip. It is for what the operators cannot say and a kernel must

@@ -45,7 +45,7 @@ remaps:
   `"tensor.dim"` (`"k.depth"`).
 
 **`hk.map_cpp` and i32 strips** (#53, gfx950;
-[the language](docs/language.md#hkmap_cpp-and-i32-strips-gfx950)).
+[the language](docs/language.md#elementwise-c-over-strips-and-i32-strips-gfx950)).
 - `hk.map_cpp(expr, *args, dtype=None)` evaluates one C++ expression for each
   element of its strip arguments (`x0`, `x1`, ... bound to the elements, or
   to an `hk.Int` / Python int), into an fp32 or i32 strip. It is for what a
