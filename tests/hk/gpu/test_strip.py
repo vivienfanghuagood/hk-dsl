@@ -251,3 +251,62 @@ def test_a_sum_of_products_in_a_stated_order(run):
         f"fused: {int((got_f != fused).sum())} of {got_f.numel()} lanes differ"
     if run > 1:
         assert not torch.equal(plain, fused)        # the inputs tell the two apart
+
+
+# ---------------------------------------------------------------- hk.map_cpp (gfx950)
+
+@pytest.mark.skipif(_target().wave != 64, reason="hk.map_cpp is gfx950's")
+def test_map_cpp_computes_bits_fmas_and_takes_scalars():
+    S = hk.RS(hk.fp32, 1, 512, 8)
+
+    def mapped(x: hk.Tensor[hk.fp32], y: hk.Tensor[hk.fp32], n: hk.Tensor[hk.i32],
+               e: hk.Tensor[hk.i32], f: hk.Tensor[hk.fp32]):
+        row = hk.arch.block_idx.x
+        a = x.at[row, 0].load(S)
+        b = y.at[row, 0].load(S)
+        k = n.at[0].load_scalar()
+        # the biased exponent of the smallest power of two >= |a|, plus a device scalar
+        ce = hk.map_cpp("((__builtin_bit_cast(int, __builtin_fabsf(x0)) >> 23) & 0xFF)"
+                        " + ((__builtin_bit_cast(int, x0) & 0x7FFFFF) != 0) + x1", a, k, dtype=hk.i32)
+        e.at[row, 0].store(ce)
+        f.at[row, 0].store(hk.map_cpp("__builtin_fmaf(x0, x1, x0)", a, b))
+
+    k = hk.kernel(mapped, warps=1, name="map_cpp_bits", grid=lambda p: (p.x.rows, 1, 1))
+    g = torch.Generator(device="cpu").manual_seed(3)
+    x = torch.randn(64, 512, generator=g) * torch.exp(torch.randn(64, 512, generator=g) * 4)
+    y = torch.randn(64, 512, generator=g)
+    n = torch.tensor([5], dtype=torch.int32)
+    e = torch.zeros(64, 512, dtype=torch.int32, device="cuda")
+    f = torch.zeros(64, 512, device="cuda")
+    k(x.cuda(), y.cuda(), n.cuda(), e, f)
+    torch.cuda.synchronize()
+    bits = x.abs().view(torch.int32)
+    want_e = ((bits >> 23) & 0xFF) + ((x.view(torch.int32) & 0x7FFFFF) != 0).int() + 5
+    assert torch.equal(e.cpu(), want_e)
+    want_f = (x.double() * y.double() + x.double()).float()   # one rounding of the exact a*b + a
+    assert torch.equal(f.cpu().view(torch.int32), want_f.view(torch.int32))
+
+
+@pytest.mark.skipif(_target().wave != 64, reason="hk.map_cpp is gfx950's")
+def test_map_cpp_does_not_fuse_a_product_and_a_sum():
+    # HIP compiles with contraction on: x0 * x1 + x0 would be one fma (one rounding) unless the
+    # lambda turns it off; as written it is two roundings, and an fma is spelled __builtin_fmaf
+    S = hk.RS(hk.fp32, 1, 512, 8)
+
+    def unfused(x: hk.Tensor[hk.fp32], y: hk.Tensor[hk.fp32], f: hk.Tensor[hk.fp32]):
+        row = hk.arch.block_idx.x
+        a = x.at[row, 0].load(S)
+        b = y.at[row, 0].load(S)
+        f.at[row, 0].store(hk.map_cpp("x0 * x1 + x0", a, b))
+
+    k = hk.kernel(unfused, warps=1, name="map_cpp_unfused", grid=lambda p: (p.x.rows, 1, 1))
+    g = torch.Generator(device="cpu").manual_seed(4)
+    x = torch.randn(64, 512, generator=g)
+    y = torch.randn(64, 512, generator=g)
+    f = torch.zeros(64, 512, device="cuda")
+    k(x.cuda(), y.cuda(), f)
+    torch.cuda.synchronize()
+    want = (x * y) + x                                          # two roundings
+    assert torch.equal(f.cpu().view(torch.int32), want.view(torch.int32))
+    fused = (x.double() * y.double() + x.double()).float()
+    assert not torch.equal(fused, want)                         # the inputs tell the two apart
