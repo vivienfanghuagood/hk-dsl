@@ -3067,23 +3067,23 @@ __device__ static inline void iota(D &dst) {
     });
 }
 /** @brief hk.load_elems: dst's element (r, c) = src's element idx(r, c), flat; out of range -> 0. */
-template<ducks::rs::all D, ducks::gl::all GL, ducks::rs::all I>
+template<int AUX = 0, ducks::rs::all D, ducks::gl::all GL, ducks::rs::all I>
 __device__ static inline void load_elems(D &dst, const GL &src, const I &idx) {
     using U = typename GL::dtype;
     const detail::hk_i32x4 r = detail::hk_elems_srsrc(src);
     detail::strip_each<D>([&](int a, int j, int e) {
         dst.data[a][j][e] = detail::hk_cvt<typename D::T, U>(
-            detail::hk_buf_load_elem<U>(r, detail::hk_elem_off(idx.data[a][j][e], sizeof(U))));
+            detail::hk_buf_load_elem<U, AUX>(r, detail::hk_elem_off(idx.data[a][j][e], sizeof(U))));
     });
 }
 /** @brief hk.store_elems: val's element (r, c) to dst's element idx(r, c), flat; out of range: none. */
-template<ducks::gl::all GL, ducks::rs::all V, ducks::rs::all I>
+template<int AUX = 0, ducks::gl::all GL, ducks::rs::all V, ducks::rs::all I>
 __device__ static inline void store_elems(const GL &dst, const V &val, const I &idx) {
     using U = typename GL::dtype;
     const detail::hk_i32x4 r = detail::hk_elems_srsrc(dst);
     detail::strip_each<V>([&](int a, int j, int e) {
-        detail::hk_buf_store_elem<U>(r, detail::hk_elem_off(idx.data[a][j][e], sizeof(U)),
-                                     detail::hk_cvt<U, typename V::T>(val.data[a][j][e]));
+        detail::hk_buf_store_elem<U, AUX>(r, detail::hk_elem_off(idx.data[a][j][e], sizeof(U)),
+                                          detail::hk_cvt<U, typename V::T>(val.data[a][j][e]));
     });
 }
 

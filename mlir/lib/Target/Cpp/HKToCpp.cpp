@@ -1581,11 +1581,12 @@ private:
         })
         .Case([&](LoadElemsOp o) {
           Value d = dest(Value(), o.getResult());
-          w("kittens::load_elems(" + name(d) + ", " + name(o.getSrc()) + ", " + name(o.getIdx()) + ");");
+          w("kittens::load_elems<" + std::to_string(o.getAux()) + ">(" + name(d) + ", " +
+            name(o.getSrc()) + ", " + name(o.getIdx()) + ");");
         })
         .Case([&](StoreElemsOp o) {
-          w("kittens::store_elems(" + name(o.getDst()) + ", " + name(o.getVal()) + ", " +
-            name(o.getIdx()) + ");");
+          w("kittens::store_elems<" + std::to_string(o.getAux()) + ">(" + name(o.getDst()) + ", " +
+            name(o.getVal()) + ", " + name(o.getIdx()) + ");");
         })
         .Case([&](GroupReduceOp o) {
           Value d = dest(Value(), o.getResult());

@@ -905,7 +905,7 @@ def HK_LoadElemsOp : HK_Op<"load_elems"> {
     converted to the result's type; an index below zero or past the tensor
     reads 0. `idx` is an i32 strip of the result's shape and run.
   }];
-  let arguments = (ins HK_GlobalType:$src, HK_RegTileType:$idx);
+  let arguments = (ins HK_GlobalType:$src, HK_RegTileType:$idx, DefaultValuedAttr<I64Attr, "0">:$aux);
   let results = (outs HK_RegTileType:$result);
   let assemblyFormat = [{
     $src `[` $idx `]` attr-dict `:` qualified(type($src)) `,` qualified(type($idx)) `->` qualified(type($result))
@@ -921,7 +921,7 @@ def HK_StoreElemsOp : HK_Op<"store_elems"> {
     below zero or past the tensor writes nothing -- a mask is an index of -1.
     Two elements to one index race.
   }];
-  let arguments = (ins HK_GlobalType:$dst, HK_RegTileType:$val, HK_RegTileType:$idx);
+  let arguments = (ins HK_GlobalType:$dst, HK_RegTileType:$val, HK_RegTileType:$idx, DefaultValuedAttr<I64Attr, "0">:$aux);
   let assemblyFormat = [{
     $val `,` $dst `[` $idx `]` attr-dict `:` qualified(type($val)) `,` qualified(type($dst)) `,` qualified(type($idx))
   }];

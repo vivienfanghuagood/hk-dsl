@@ -452,7 +452,8 @@ class Global(Value):
         dtype = (i32 if self.dtype is i32 else fp32) if dtype is None else dtype
         ty = RegTileType(dtype, idx.ty.rows, idx.ty.cols, idx.ty.layout, idx.ty.frag, run=idx.ty.run)
         t = _t()
-        return wrap(hkd.LoadElemsOp(mlir_type(ty), self.v, idx.v, loc=t.loc("elems")).result, ty)
+        aux = scope_aux(self, "load_elems") if getattr(self.ty, "scope", "") else 0
+        return wrap(hkd.LoadElemsOp(mlir_type(ty), self.v, idx.v, aux=_i64(aux), loc=t.loc("elems")).result, ty)
 
     def store_elems(self, val: "Tile", idx: "Tile") -> None:
         """Element by element at computed indices (gfx950): element (r, c) of `val` (an fp32 or
@@ -462,7 +463,8 @@ class Global(Value):
         if getattr(idx.ty, "run", None) is None or idx.ty.dtype.name != "i32":
             raise TypeError(f"store_elems takes an i32 strip of indices, not {idx.ty}")
         t = _t()
-        hkd.StoreElemsOp(self.v, val.v, idx.v, loc=t.loc())
+        aux = scope_aux(self, "store_elems") if getattr(self.ty, "scope", "") else 0
+        hkd.StoreElemsOp(self.v, val.v, idx.v, aux=_i64(aux), loc=t.loc())
 
     def post_elems(self, val: "Tile", idx: "Tile", tag) -> None:
         """Tagged mailbox pairs, an element at a time (gfx950): element (r, c) of `val` (fp32 or i32
