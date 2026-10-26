@@ -3435,6 +3435,12 @@ strip) and `tag` go to pair `idx[r, c]` of this scoped int32 tensor (int32 eleme
 the value travels with its tag -- so a hand-off between CTAs is one store and, on the
 other side, one poll (dsv41_mono's Mailbox; hk.comm.post for one scalar).
 
+`runs=True`: each lane's run goes to consecutive pairs from its first element's index (the
+lane's other indices are not read), two pairs a 16-byte store; the run is a whole number of
+pairs of pairs. `bf16=True` (with runs): two values a pair, as bf16 -- the TOP HALVES of the
+fp32 values, so they must already be bf16 values (rounded by the caller); the pairs from a
+run's first index are then run / 2.
+
 #### `Global.take_elems`
 
 ```python
@@ -3447,7 +3453,7 @@ The other side of post_elems: element (r, c) is the value of pair `idx[r, c]` on
 is `tag`; every element's pair is loaded with the tensor's scope, and all are re-loaded
 (s_sleep between) while any is stale. An index below zero is ready at 0. `dtype`: fp32
 (default) or i32. After `timeout_s` the kernel traps (0: never) -- a lost post is an error,
-not a hang.
+not a hang. `runs=True` / `bf16=True`: the layout post_elems wrote with them.
 
 #### `Global.gather`
 

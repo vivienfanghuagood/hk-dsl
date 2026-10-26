@@ -484,7 +484,15 @@ class Global(Value):
         strip) and `tag` go to pair `idx[r, c]` of this scoped int32 tensor (int32 elements 2 i,
         2 i + 1) as one 8-byte store of its scope; an index below zero posts nothing. No drain --
         the value travels with its tag -- so a hand-off between CTAs is one store and, on the
-        other side, one poll (dsv41_mono's Mailbox; hk.comm.post for one scalar)."""
+        other side, one poll (dsv41_mono's Mailbox; hk.comm.post for one scalar).
+
+        `runs=True`: each lane's run goes to consecutive pairs from its first element's index (the
+        lane's other indices are not read), two pairs a 16-byte store; the run is a whole number of
+        pairs of pairs. `bf16=True` (with runs): two values a pair, as bf16 -- the TOP HALVES of the
+        fp32 values, so they must already be bf16 values (rounded by the caller); the pairs from a
+        run's first index are then run / 2."""
+        if bf16 and not runs:
+            raise TypeError("post_elems(bf16=True) is a layout of runs: runs=True as well")
         if not getattr(self.ty, "scope", ""):
             raise TypeError(f"post_elems on {self.name!r}, an unscoped tensor: a mailbox other CTAs "
                             f"read is hk.Tensor[hk.i32, \"device\"] (\"system\": other GPUs)")
@@ -498,7 +506,9 @@ class Global(Value):
         is `tag`; every element's pair is loaded with the tensor's scope, and all are re-loaded
         (s_sleep between) while any is stale. An index below zero is ready at 0. `dtype`: fp32
         (default) or i32. After `timeout_s` the kernel traps (0: never) -- a lost post is an error,
-        not a hang."""
+        not a hang. `runs=True` / `bf16=True`: the layout post_elems wrote with them."""
+        if bf16 and not runs:
+            raise TypeError("take_elems(bf16=True) is a layout of runs: runs=True as well")
         if not getattr(self.ty, "scope", ""):
             raise TypeError(f"take_elems on {self.name!r}, an unscoped tensor: a mailbox other CTAs "
                             f"read is hk.Tensor[hk.i32, \"device\"] (\"system\": other GPUs)")
@@ -1634,7 +1644,7 @@ class SharedTile(Value):
         dtype=hk.i32; below zero or past the tile, 0. A CTA's own exchange between warps without a
         round trip to global memory (whose drain would also wait out every load in flight). Another
         warp's writes need hk.arch.barrier(drain=True) between."""
-        if getattr(idx.ty, "run", None) is None or idx.ty.dtype.name != "i32":
+        if not _is_strip_tile(idx.ty) or idx.ty.dtype.name != "i32":
             raise TypeError(f"load_elems takes an i32 strip of indices, not {idx.ty}")
         dtype = fp32 if dtype is None else dtype
         ty = RegTileType(dtype, idx.ty.rows, idx.ty.cols, idx.ty.layout, idx.ty.frag, run=idx.ty.run)
@@ -1645,7 +1655,7 @@ class SharedTile(Value):
         """Element by element into this fp32 LDS tile (gfx950): val's element (r, c) (fp32, or i32
         bits) to element `idx[r, c]` (row-major); below zero or past the tile, nothing. Before
         another warp reads it: hk.arch.barrier(drain=True)."""
-        if getattr(idx.ty, "run", None) is None or idx.ty.dtype.name != "i32":
+        if not _is_strip_tile(idx.ty) or idx.ty.dtype.name != "i32":
             raise TypeError(f"store_elems takes an i32 strip of indices, not {idx.ty}")
         t = _t()
         hkd.LdsStoreElemsOp(self.v, val.v, idx.v, loc=t.loc())
