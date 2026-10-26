@@ -34,6 +34,19 @@ remaps:
   launch's placement covers its grid exactly once, evaluating the decode the
   kernel's own emitted ops compute ([check](docs/check.md#which-xcd-runs-which-workgroup---placement)).
 
+**Wheels** (#66)
+- From the next release, cp312 is one `manylinux_2_35` wheel, built on glibc
+  2.35 in vLLM's ROCm image, like cp310: through 0.7.0 cp312 was built on
+  Ubuntu 24.04 and needed glibc 2.38, so `pip install hk-dsl` found no cp312
+  wheel in vLLM's ROCm images until 0.7.0's extra `manylinux_2_35` wheel.
+- `scripts/check_wheel_glibc.py` fails a wheel that needs a newer glibc (or
+  GLIBCXX / CXXABI, with auditwheel) than its manylinux tag; CI's IR leg
+  builds the cp310 wheel and runs it.
+- Reproducible wheels: no build path in the binaries (`-ffile-prefix-map`,
+  RUNPATH `$ORIGIN` at link time), entry times from `SOURCE_DATE_EPOCH`
+  (the last commit's), fixed modes; the same commit builds byte-identical
+  wheels ([building](docs/building.md#reproducible-wheels)).
+
 **Docs**
 - The API reference marks names against the 0.7.0 wheel (it marked them
   against 0.6.0, so `placement=` and `hk.arch.xcd_count` read as if 0.7.0 had

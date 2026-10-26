@@ -31,14 +31,16 @@ wheels themselves (what they carry, how they are tagged manylinux) are in
    checking that main has not moved past it, and push only the tag.
 4. **Build from the tag**, in a fresh worktree with the submodule: the cp310
    and cp312 wheels, then their manylinux copies (`scripts/manylinux_tag.sh`).
-   Each wheel's glibc must be within its tag: the highest `GLIBC_2.N` any
-   ELF file in it needs must not exceed the `manylinux_2_M` tag
-   (`scripts/check_wheel_glibc.py` once it is on main, #66; until then
-   `readelf -V` on every `.so`).
-5. **Compare with the rc wheels.** Per wheel, the sorted file list and each
-   file's sha256: only `*.dist-info/` (RECORD, WHEEL) and zip timestamps may
-   differ. A difference in a `.py`, `.so`, header or data file stops the
-   release.
+   Both are built on glibc 2.35 (cp312 in vLLM's ROCm image), so each is one
+   `manylinux_2_35` wheel. Each wheel's glibc must be within its tag:
+   `scripts/check_wheel_glibc.py dist/*.whl dist/manylinux/*.whl` (#66)
+   fails a wheel whose highest `GLIBC_2.N` is above its `manylinux_2_M` tag.
+   The build is reproducible ([building](building.md#reproducible-wheels)),
+   so the tag's wheels are byte-identical to the rc's.
+5. **Compare with the rc wheels.** The sha256 of each wheel: with the
+   reproducible build they are equal. Where one differs, compare the sorted
+   file lists and each file's sha256: a difference in a `.py`, `.so`, header
+   or data file stops the release.
 6. **Smoke test** each manylinux wheel in a clean venv, on each glibc it is
    tagged for (rocm/pytorch's Ubuntu 24.04, and vLLM's ROCm image on Ubuntu
    22.04): `hk.__version__`, a kernel against torch, and
@@ -81,7 +83,7 @@ check again.
   section, [getting started](getting-started.md#install), the CHANGELOG's
   install line, [building](building.md#wheels) and the release notes'
   install header are the wheels in `dist/manylinux/`, and each wheel passes
-  the glibc-within-tag check. The ROCm / hipcc versions the install pages
+  `scripts/check_wheel_glibc.py` (its glibc within its tag). The ROCm / hipcc versions the install pages
   name are the ones CI and the GPU tiers run.
 - [ ] **The version strings agree**: `pyproject.toml`, `hk.__version__`, the
   CHANGELOG heading, README, getting started, `docs/README.md`,

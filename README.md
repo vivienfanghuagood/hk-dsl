@@ -146,7 +146,8 @@ slow operand layout, a copy racing a barrier ([the traps](docs/README.md#the-tra
 `pip install hk-dsl`, for CPython 3.10 or 3.12 on Linux x86_64 with glibc
 2.35 or newer (Ubuntu 22.04 and later). The release is 0.7.0: one
 `manylinux_2_35` wheel for cp310, and for cp312 a `manylinux_2_35` and a
-`manylinux_2_38` wheel, of which pip picks the newest your glibc takes. A
+`manylinux_2_38` wheel, of which pip picks the newest your glibc takes; from
+the next release cp312 is one `manylinux_2_35` wheel too. A
 wheel carries the HipKittens headers, so at run time it needs ROCm's hipcc
 (on `PATH`, or `HK_HIPCC`; tested with ROCm 7.2 and the ROCm 10 of vLLM's
 image) and, to launch, a ROCm build of torch (not a dependency). From

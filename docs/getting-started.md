@@ -43,8 +43,10 @@ for one CPython. 0.7.0 has three on PyPI:
 
 pip takes the cp312 `manylinux_2_38` wheel where glibc is 2.38 or newer and
 the `manylinux_2_35` one elsewhere, as in vLLM's ROCm images (Ubuntu 22.04);
-the two are the same package, built on Ubuntu 24.04 and 22.04. The same
-wheels are attached to each
+the two are the same package, built on Ubuntu 24.04 and 22.04. From the next
+release on, cp312 is a single `manylinux_2_35` wheel, as cp310 is: both are
+built on glibc 2.35, and each wheel's glibc is checked against its tag
+([building](building.md#wheels)). The same wheels are attached to each
 [GitHub release](https://github.com/vivienfanghuagood/hk-dsl/releases). For
 another interpreter, build one ([building](building.md#wheels)).
 
