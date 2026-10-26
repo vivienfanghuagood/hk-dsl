@@ -571,9 +571,12 @@ def int8_case(m, n, k, tune):
     try:
         from hk.ops import gemm as G
         from hk.types import i8
-        kern = G.gemm_kernel("scoreboard_i8", op_dtype=i8, **G.DEFAULT)
+        # The 8-bit schedule (FP8_DEFAULT): an iu8 operand is an fp8 one's
+        # size, and the same sweep run for i8 picked the same point
+        # (tools/rdna4-probes/i8_sweep.py).
+        kern = G.gemm_kernel("scoreboard_i8", op_dtype=i8, **G.FP8_DEFAULT)
         arms["hk"] = (lambda: kern(a, b, outs["hk"]), lambda: outs["hk"],
-                      {"level": "default", "space": "hk.ops.gemm DEFAULT, op_dtype=i8",
+                      {"level": "default", "space": "hk.ops.gemm FP8_DEFAULT, op_dtype=i8",
                        "candidates": 1})
     except Exception as e:                         # noqa: BLE001
         arms["hk"] = _why(e)
