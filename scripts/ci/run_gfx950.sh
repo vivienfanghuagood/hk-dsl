@@ -5,9 +5,14 @@
 # checkout, the run's directory, CI's build directory, pip packages and
 # compile cache, and the MLIR install, read-only; nothing else of $HOME.
 #
-# Host state is kept out of the checkout, under $HK_CI_STATE (default ~/gha):
-#   runs/gfx950/RUN_ID-ATTEMPT/  the run: build.log, gpu/, result.json, report.txt
-#   x950/ci/                     /ci in the container: hk-build-cp312, pylib, hk-cache
+# Host state is kept out of the checkout, under $HK_CI_STATE (default ~/gha), one per runner
+# instance when several run gfx950 jobs at once (docs/testing.md, "Several gfx950 runners"):
+#   runs/TIER/RUN_ID-ATTEMPT/  the run: build.log, gpu/, result.json, report.txt
+#   x950/ci/                   /ci in the container: hk-build-cp312, pylib, hk-cache
+#   x950v/ci/                  the same for the vLLM image (HK_CI_DIRNAME=x950v, gpu.yml's gfx950-vllm)
+# GPUs: HK_CI_GPUS (default all eight) are the cards this instance may use. It takes the first
+# that is idle and whose lock, $HK_CI_LOCKS/gfx950-gpu<N>.lock, it can take at once, and holds
+# that lock until the container exits; whoever else measures on these cards takes the same lock.
 # $HK_CI_MLIR (default ~/hk-ci/mlir/install-cp310) is MLIR 23.1.3 as
 # scripts/build_mlir.sh installs it for CPython 3.10, the ci-mlir-23.1.3
 # release's asset unpacked; container_run.sh builds the dialect against it.
@@ -17,8 +22,10 @@ STATE=${HK_CI_STATE:-$HOME/gha}
 MLIR=${HK_CI_MLIR:-$HOME/hk-ci/mlir/install-cp310}
 IMAGE=${HK_CI_IMAGE:-rocm/pytorch:rocm7.2.3_ubuntu24.04_py3.12_pytorch_release_2.10.0}
 # Another image (the vLLM deployment one, gpu.yml's gfx950-vllm) keeps its own build of the
-# dialect and its own kernel cache: its CPython and glibc are not rocm/pytorch's.
-CIDIR=${HK_CI_DIR:-$STATE/x950/ci}
+# dialect and its own kernel cache: its CPython and glibc are not rocm/pytorch's. Two jobs never
+# share one: an instance's jobs run one at a time, and each instance has its own HK_CI_STATE.
+CIDIR=${HK_CI_DIR:-$STATE/${HK_CI_DIRNAME:-x950}/ci}
+LOCKS=${HK_CI_LOCKS:-$HOME/.cache/hk-gpu-locks}
 TIER=${HK_CI_TIER:-gfx950}
 SHA=$GITHUB_SHA
 KEY=$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT
@@ -27,24 +34,32 @@ OUT=$GITHUB_WORKSPACE/gha-report
 declare -A RENDER=([0]=renderD136 [1]=renderD152 [2]=renderD144 [3]=renderD128
                    [4]=renderD168 [5]=renderD184 [6]=renderD176 [7]=renderD160)
 [ -d "$MLIR/lib/cmake/mlir" ] || { echo "::error::no MLIR install at $MLIR (HK_CI_MLIR)"; exit 1; }
-mkdir -p "$RUN" "$OUT" "$CIDIR"
+mkdir -p "$RUN" "$OUT" "$CIDIR" "$LOCKS"
 NAME=hk-gha-$TIER-$KEY
 trap 'docker rm -f "$NAME" >/dev/null 2>&1; exit 130' INT TERM
 
-# Under 10% use and 3% VRAM.
+# The first of HK_CI_GPUS whose lock is free and that is idle (under 10% use and 3% VRAM), with
+# its lock taken (fd LOCKFD, held by this script and the docker client until the container exits).
+# Never blocks on a lock: a held card is someone's, busy or not.
+LOCKFD=
 pick() {
     local g out use mem
-    for g in ${HK_CI_GPUS:-0 1 2 3 4 5 6 7}; do     # HK_CI_GPUS: only these cards
-        out=$(rocm-smi -d $g --showuse --showmemuse 2>/dev/null)
-        use=$(grep -o "GPU use (%): [0-9]*" <<<"$out" | grep -o "[0-9]*$")
-        mem=$(grep -o "VRAM%): [0-9]*" <<<"$out" | grep -o "[0-9]*$")
-        [ "${use:-100}" -le 10 ] && [ "${mem:-100}" -le 3 ] && { echo $g; return 0; }
+    for g in ${HK_CI_GPUS:-0 1 2 3 4 5 6 7}; do
+        exec {LOCKFD}>>"$LOCKS/gfx950-gpu$g.lock" || continue
+        if flock -n "$LOCKFD"; then
+            out=$(rocm-smi -d $g --showuse --showmemuse 2>/dev/null)
+            use=$(grep -o "GPU use (%): [0-9]*" <<<"$out" | grep -o "[0-9]*$")
+            mem=$(grep -o "VRAM%): [0-9]*" <<<"$out" | grep -o "[0-9]*$")
+            [ "${use:-100}" -le 10 ] && [ "${mem:-100}" -le 3 ] && { GPU=$g; return 0; }
+        fi
+        exec {LOCKFD}>&-
     done
     return 1
 }
 GPU=
-for i in $(seq 60); do GPU=$(pick) && break; echo "no idle MI355X; waiting ($i)"; sleep 60; done
+for i in $(seq 60); do pick && break; echo "no idle, unlocked MI355X among ${HK_CI_GPUS:-0-7}; waiting ($i)"; sleep 60; done
 [ -n "$GPU" ] || { echo "::error::no idle MI355X for an hour"; exit 1; }
+echo "holding $LOCKS/gfx950-gpu$GPU.lock"
 echo "GPU $GPU (${RENDER[$GPU]})"
 
 touch "$RUN/started"    # minutes count from here, not from the wait
