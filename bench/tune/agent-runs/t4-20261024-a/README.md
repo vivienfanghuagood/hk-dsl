@@ -59,7 +59,8 @@ copies rotated past the LLC, checking each candidate's output. Its NOTES.md
 is the full log, attempt by attempt.
 
 Two things it found along the way that changed the evaluation or hk:
-- the audit's dropped kernels (above), now fixed in the harness (35ca007);
+- the audit's dropped kernels (above), fixed in the harness by 35ca007, which is
+  in main since #18 (main's `bench/t4` is identical to 35ca007's);
 - a sweep with checks off had scored a candidate 1.52x that computed 256 of
   384 columns; it added a guard and kept checks on.
 
@@ -77,7 +78,7 @@ down (K = 256) then failed on. On gfx950, where it kept working, it had added
 a short-K variant, and the same hidden shape scored 1.112.
 
 The harness lesson: a GPU command that times out on the pod has to take its
-remote process with it; today a hung kernel outlives the cut-off ssh and holds
+remote process with it; at the time of this run a hung kernel outlived the cut-off ssh and held
 the GPU.
 
 ## Files
