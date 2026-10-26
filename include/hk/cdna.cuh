@@ -2614,6 +2614,48 @@ __device__ inline static void store_scatter(const GL &dst, const RT &src, const 
     const detail::hk_i32x4 r = detail::hk_whole_srsrc(dst, oob, nrows);
     const uint32_t row_bytes = uint32_t(dst.template stride<2>()) * sizeof(U);
     const int lane = laneid();
+#if defined(KITTENS_CDNA4)
+    if constexpr (F::R == 16 && F::C == 16 && F::S == 4 && F::K == 1 && RT::width % 2 == 0 &&
+                  std::is_same_v<T, float> && std::is_same_v<U, bf16>) {
+        // 16x16 accumulator fragments (lane l: row l%16, 4 columns at 4(l/16)), stored as
+        // bf16: v_permlane16_swap trades runs between lanes l and l+16 across a pair of
+        // 16-column subtiles, so that each lane holds 8 consecutive columns -- lanes of
+        // quarter q = l/16 start at 16(q&1) + 8(q>>1) of the pair's 32 -- and a row's 64 B
+        // go out in 16-byte stores, half as many instructions as 8-byte ones (K1 k1-prefill
+        // c35: the 8-byte scatter stores were a third of stage 2's time).
+        const int q4 = lane / 16;
+        const uint32_t start = uint32_t(16 * (q4 & 1) + 8 * (q4 >> 1));
+        #pragma unroll
+        for (int i = 0; i < RT::height; i++) {
+            int g = detail::hk_gather_index<F::R>(idx, at, count, i, 1);
+            if constexpr (TOPK > 0) {
+                const int m = nrows / TOPK, tok = g & 0xFFFFFF;
+                g = (g < 0 || tok >= m) ? -1 : (g >> 24) * m + tok;
+            }
+            const bool in = g >= 0 && g < nrows;
+            const uint32_t row_off = in ? uint32_t(g) * row_bytes + uint32_t(col) * sizeof(U) : oob;
+            #pragma unroll
+            for (int j = 0; j < RT::width; j += 2) {
+                uint32_t a[2], b[2];
+                #pragma unroll
+                for (int d = 0; d < 2; d++) {
+                    const bf16_2 pa = detail::hk_cvt_pk_bf16(src.tiles[i][j].data[d].x, src.tiles[i][j].data[d].y);
+                    const bf16_2 pb = detail::hk_cvt_pk_bf16(src.tiles[i][j + 1].data[d].x,
+                                                             src.tiles[i][j + 1].data[d].y);
+                    __builtin_memcpy(&a[d], &pa, 4);
+                    __builtin_memcpy(&b[d], &pb, 4);
+                    const auto s = __builtin_amdgcn_permlane16_swap(a[d], b[d], false, true);
+                    a[d] = s[0];
+                    b[d] = s[1];
+                }
+                uint32_t chunk[4] = {a[0], a[1], b[0], b[1]};
+                detail::hk_buf_store_bytes<16>(
+                    r, in ? row_off + (uint32_t(j * F::C) + start) * sizeof(U) : oob, chunk);
+            }
+        }
+        return;
+    }
+#endif
     #pragma unroll
     for (int i = 0; i < RT::height; i++) {
         int g = detail::hk_gather_index<F::R>(idx, at, count, i, 1);
