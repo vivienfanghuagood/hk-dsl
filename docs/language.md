@@ -137,9 +137,9 @@ a strip (`!hk.rt<f32, 1x1024, strip<8>>`, `kittens::rs`):
   vector loads with the accesses of the rows it scales. Its `col_vec` is
   what `hk.collective.cross_warp` combines.
 - **Limits.** It is never an MMA operand or an LDS tile. It exists where
-  `Target.strips` says: gfx1100 (include/rdna3) and gfx950 (hk's wave64
-  port in `include/hk/cdna.cuh`); gfx1201 and gfx942 refuse it while
-  tracing. The gfx950 port arrived in 0.5.0; the 0.4.0 wheel refuses strips
+  `Target.strips` says: gfx1100 (include/rdna3), gfx1201 (include/rdna4)
+  and gfx950 (hk's wave64 port in `include/hk/cdna.cuh`); gfx942 refuses
+  it while tracing. The gfx950 port arrived in 0.5.0; the 0.4.0 wheel refuses strips
   there ([what each version has](api/README.md)). Its elements are bf16,
   fp16 or fp32, and on gfx950 also i32
   ([below](#elementwise-c-over-strips-and-i32-strips-gfx950)).
@@ -212,7 +212,7 @@ multiply-add, one particular instruction (`__builtin_amdgcn_*`). Triton's
   `__builtin_fmaf(x0, x1, x0)`. Elsewhere HIP compiles with contraction on,
   and whether a product and a sum fused changed with the code around them;
   `__fmul_rn` / `__fadd_rn` are no barrier on ROCm.
-- **Where.** Strips on gfx950 only. A wave32 target (gfx1100) refuses
+- **Where.** Strips on gfx950 only. A wave32 target (gfx1100, gfx1201) refuses
   `hk.map_cpp` while tracing (`TypeError`), and a register tile in its
   place fails verification.
 
