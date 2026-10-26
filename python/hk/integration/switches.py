@@ -70,7 +70,7 @@ ROUTES: Dict[str, Route] = {r.name: r for r in (
        "bit-identical to vLLM's kernel; real-weight GSM8K / ARC within stock's noise "
        "(serving-readiness B1)"),
     _R("vllm_moe_a8w4", "vllm", "HK_VLLM_MOE_A8W4", True, ("gfx950",),
-       "K1: AITER a8w4 MoE (DeepSeek-V4.1) at M >= 4096",
+       "K1: AITER a8w4 MoE (DeepSeek-V4.1) at M >= 2560",
        "error vs fp32 at or below AITER's; real-weight GSM8K / ARC within stock's noise (B1)"),
     _R("vllm_int4", "vllm", "HK_VLLM_INT4", True, ("gfx1100", "gfx950"),
        "AWQ 4-bit linear layers on hk's decode GEMM",

@@ -673,7 +673,7 @@ def test_moe_route_at_ragged_m():
     w2s = shuffle_weight(w2.view(f4), layout=(16, 16), is_guinterleave=True, gate_up=False)
     sc1 = shuffle_scale(s1, experts_cnt=e, is_guinterleave=True, gate_up=True)
     sc2 = shuffle_scale(s2, experts_cnt=e, is_guinterleave=True, gate_up=False)
-    for m in (4097, 5437, 8193, 8255):     # from MIN_M (4096); 5437: a serving chunk's M
+    for m in (2561, 5437, 8193, 8255):     # from MIN_M (2560); 5437: a serving chunk's M
         x = torch.randn(m, k, device="cuda").bfloat16()
         wt = torch.full((m, topk), 1.0 / topk, device="cuda")
         ids = torch.rand(m, e, device="cuda").topk(topk, 1).indices.to(torch.int32)

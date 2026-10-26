@@ -43,7 +43,7 @@ def test_the_route_is_off_when_disabled(monkeypatch):
 
 
 @pytest.mark.skipif("HK_MOE_A8W4_MIN_M" in os.environ, reason="MIN_M set by the environment")
-def test_k1_starts_at_4096():
+def test_k1_starts_at_2560():
     from hk.integration import vllm_moe_a8w4 as K1
 
-    assert K1.MIN_M == 4096
+    assert K1.MIN_M == 2560

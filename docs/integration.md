@@ -45,7 +45,7 @@ and which rule decided.
 | route | switch | default | evidence |
 |---|---|---|---|
 | K2, MXFP8 linear (DeepSeek-V4.1), M >= 2048 (indexer wq_b >= 2825, engram wkv >= 1024: `MIN_M_NK`) | `HK_VLLM_MXFP8` | **on, gfx950** | bit-identical to vLLM's kernel; real weights, GSM8K 94.69% vs stock 94.24-94.39%, with K1 ARC 96.76% vs 96.93-97.10% (McNemar p >= 0.175; [serving readiness](design/serving-readiness.md) B1) |
-| K1, MoE a8w4 (DeepSeek-V4.1), M >= 4096 (`MIN_M`) | `HK_VLLM_MOE_A8W4` | **on, gfx950** | error vs fp32 3.5-6.3e-3 against AITER's 0.97-2.1e-2 on real layers; GSM8K 94.92% (B1) |
+| K1, MoE a8w4 (DeepSeek-V4.1), M >= 2560 (`MIN_M`) | `HK_VLLM_MOE_A8W4` | **on, gfx950** | error vs fp32 3.5-6.3e-3 against AITER's 0.97-2.1e-2 on real layers; GSM8K 94.92% (B1) |
 | AWQ 4-bit linear | `HK_VLLM_INT4` | **on, gfx1100 and gfx950** | greedy tokens identical to stock's, Qwen3-8B/14B-AWQ ([22](history/22-int4.md), [42](history/42-mi355x-in-the-engine.md)) |
 | unquantized linear (+ tuning at load) | `HK_VLLM_GEMM` | **on, gfx1100** | tokens identical, or a bf16 near-tie ([35](history/35-any-model.md)); on gfx950 it was measured to change nothing against aiter ([42](history/42-mi355x-in-the-engine.md)), so it stays off there |
 | bf16 MoE GEMMs | `HK_VLLM_MOE` | **on, gfx1100** | OLMoE tokens identical ([21](history/21-moe.md)); with aiter on gfx950 it routes nothing |
@@ -1002,7 +1002,7 @@ spelled:
 | `HK_VLLM_INT4` | `_vllm_plugin.py` | route AWQ linear layers' fp16/bf16 batches up to 64 tokens (default on) |
 | `HK_VLLM_MXFP8` | `_vllm_plugin.py` | K2: block-scaled MXFP8 linear layers at M >= 2048, two shapes from their own M (`vllm_mxfp8.MIN_M_NK`) (default on, gfx950) |
 | `HK_MXFP8_ANY` | `vllm_mxfp8.py` | `1`: K2 takes any (N, K) of whole tiles, not only the measured TP2 shapes (default off) |
-| `HK_VLLM_MOE_A8W4` | `_vllm_plugin.py` | K1: AITER a8w4 MoE at M >= `HK_MOE_A8W4_MIN_M` (4096) (default on, gfx950) |
+| `HK_VLLM_MOE_A8W4` | `_vllm_plugin.py` | K1: AITER a8w4 MoE at M >= `HK_MOE_A8W4_MIN_M` (2560) (default on, gfx950) |
 | `HK_VLLM_USER` | `_vllm_plugin.py` | comma-separated modules or `.py` files to import in vLLM's process: your `register.op` / `register.patch` calls |
 | `HK_VLLM_ROUTES` | `vllm_gemm.py`, via `engine.shipped_table` | a routing table to use instead of the shipped one and this machine's records; nothing is measured at load against it |
 | `HK_AUTOTUNE_BUDGET` | `vllm_autotune.py` | seconds the linear patch may spend at load measuring the model's shapes no table has (default 60); `0` measures nothing, `inf` without a limit |

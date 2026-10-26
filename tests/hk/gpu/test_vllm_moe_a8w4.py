@@ -1,4 +1,4 @@
-"""hk.integration.vllm_moe_a8w4: aiter.fused_moe patched -- hk takes calls of M >= MIN_M (4096,
+"""hk.integration.vllm_moe_a8w4: aiter.fused_moe patched -- hk takes calls of M >= MIN_M (2560,
 where it wins), AITER the rest; the patched call agrees with AITER's within the K1 criterion
 (needs aiter: the vLLM image)."""
 
@@ -44,7 +44,7 @@ def test_patched_fused_moe_routes_and_agrees(inter):
     import aiter.fused_moe as afm
     from aiter import ActivationType, QuantType
 
-    x, w1, w2, wt, ids, s1, s2 = _inputs(P.MIN_M, inter=inter)     # 4096: where hk wins
+    x, w1, w2, wt, ids, s1, s2 = _inputs(P.MIN_M, inter=inter)     # 2560: where hk wins
     kw = dict(expert_mask=None, activation=ActivationType.Silu, quant_type=QuantType.per_1x32,
               doweight_stage1=False, w1_scale=s1, w2_scale=s2, swiglu_limit=10.0,
               gate_mode="interleave")
