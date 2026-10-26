@@ -3128,11 +3128,24 @@ __device__ static inline void store_elems_runs(const GL &dst, const V &val, cons
     for (int a = 0; a < V::rows; a++) {
         #pragma unroll
         for (int j = 0; j < V::chunks; j++) {
-            U run[V::run];
-            #pragma unroll
-            for (int e = 0; e < V::run; e++) run[e] = detail::hk_cvt<U, typename V::T>(val.data[a][j][e]);
-            detail::hk_buf_store_bytes<V::run * sizeof(U), AUX>(
-                r, detail::hk_elem_off(idx.data[a][j][0], sizeof(U)), run);
+            const uint32_t off = detail::hk_elem_off(idx.data[a][j][0], sizeof(U));
+            if constexpr (std::is_same_v<U, fp8e4m3> && std::is_same_v<typename V::T, float> &&
+                          V::run % 4 == 0) {
+                // fp32 -> e4m3 four at a time into words (v_cvt_pk_fp8_f32, as the scalar path)
+                uint32_t words[V::run / 4];
+                #pragma unroll
+                for (int q = 0; q < V::run / 4; q++) {
+                    int w = __builtin_amdgcn_cvt_pk_fp8_f32(val.data[a][j][4 * q], val.data[a][j][4 * q + 1], 0, false);
+                    w = __builtin_amdgcn_cvt_pk_fp8_f32(val.data[a][j][4 * q + 2], val.data[a][j][4 * q + 3], w, true);
+                    words[q] = uint32_t(w);
+                }
+                detail::hk_buf_store_bytes<V::run, AUX>(r, off, words);
+            } else {
+                U run[V::run];
+                #pragma unroll
+                for (int e = 0; e < V::run; e++) run[e] = detail::hk_cvt<U, typename V::T>(val.data[a][j][e]);
+                detail::hk_buf_store_bytes<V::run * sizeof(U), AUX>(r, off, run);
+            }
         }
     }
 }
