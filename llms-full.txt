@@ -1885,7 +1885,7 @@ sequence, `torch.compile` and hipBLASLt + the epilogue at all 48 (geomean
 
 # `hk`: kernels, types, values
 
-The language: what `import hk` gives a kernel author. A kernel body is traced once per set of constexprs; [the language](../language.md) says how it is written, this page what each name is. The namespaces have pages of their own: [hk.math](hk.math.md), [hk.arch](hk.arch.md), [hk.lds](hk.lds.md), [hk.group](hk.group.md), [hk.collective](hk.collective.md), [hk.comm](hk.comm.md); the shipped kernels are [hk.ops](hk.ops.md), the templates [hk.templates](hk.templates.md), the checker [hk.check](hk.check.md), the profiler [hk.profile](hk.profile.md), the per-arch facts [hk.target](hk.target.md).
+The language: what `import hk` gives a kernel author. A kernel body is traced once per set of constexprs; [the language](../language.md) says how it is written, this page what each name is. The namespaces have pages of their own: [hk.math](hk.math.md), [hk.arch](hk.arch.md), [hk.lds](hk.lds.md), [hk.group](hk.group.md), [hk.collective](hk.collective.md), [hk.comm](hk.comm.md), [hk.placement](hk.placement.md); the shipped kernels are [hk.ops](hk.ops.md), the templates [hk.templates](hk.templates.md), the checker [hk.check](hk.check.md), the profiler [hk.profile](hk.profile.md), the per-arch facts [hk.target](hk.target.md).
 
 - [`hk.kernel`](#hkkernel)
 - [`hk.func`](#hkfunc)
@@ -2574,8 +2574,9 @@ contiguous ranges, balanced to one). chunk 0 is contiguous ranges outright.
 *New after 0.7.0*
 
 A grid axis whole (`kind` "whole"), or one digit of it: `axis // radix`
-("div") or `axis % radix` ("mod"). `radix` is a host expression of the
-tensors' extents and the constexprs.
+("div") or `axis % radix` ("mod"). `radix` is an int, a tensor extent
+spelled "tensor.dim" (`Digit.of("x", "mod", "k.depth")`: the KV heads of
+a (B, H_KV, N, D) `k`), or a host expression of extents and constexprs.
 
 Made with `hk.Digit.of(axis, kind="whole", radix=None)`: `hk.Digit.of("z")`, `hk.Digit.of("x", "mod", 8)`. A `Placement.cluster(key=...)` names its sharing key with these where the analysis cannot see it (an index read from memory).
 
@@ -4461,6 +4462,312 @@ as aiter's mailboxes); default coarse-grained hipMalloc, which is correct
 for scoped accesses and fast for bulk data.
 
 `buf.tensor(rank, dtype, shape, offset=0)` is rank `rank`'s buffer as a torch tensor (no copy); `buf.local(...)` this rank's, `buf.peer(rank, ...)` a peer's; `buf.close()` unmaps and frees, collectively. Bind it to a scoped parameter (`hk.Tensor[dtype, "system"]`): while a buffer is open, a launch refuses it bound to an unscoped one.
+
+
+<!-- docs/api/hk.placement.md -->
+
+# `hk.placement`
+
+Workgroup placement on multi-XCD GPUs: which XCD runs which workgroup.
+
+docs/design/placement-pass.md has the why. In short: a gfx950 deals workgroup
+w to the XCD of w % 8, each XCD has its own 4 MB L2, and a grid whose
+workgroups share input bytes (attention's K/V of one KV head, a GEMM's A and
+B panels) fetches them once per XCD that reads them and, numbered the wrong
+way, holds many unrelated streams on each L2 at once. Renumbering changes
+nothing a workgroup computes -- only which XCD and when -- so outputs stay
+bitwise the same; the time does not (PR #55: +12-17% for attention at 128 KV
+heads, -10% for a short causal grid).
+
+Three parts, all on the traced module before the hk passes run:
+
+  analyze(module)          each global read's sharing key over the grid axes
+                           (digits: an axis whole, or `axis // r` and
+                           `axis % r` for a radix r the kernel divides by),
+                           weighted by bytes; the kernel's classification
+                           (cluster / raster / none) and what would make
+                           reordering unsafe.
+  rewrite(module, plan)    a flat grid, and at kernel entry the logical
+                           (x, y, z) decoded from the workgroup id through
+                           `place` -- a bijection for any total -- replacing
+                           every hk.block_idx.
+  choose(...)              the policy hk.kernel(placement="auto") launches by.
+
+`place` is written once over an arithmetic backend: the rewrite emits it as
+arith ops, and the host evaluates the same formula (hk.check --placement,
+the tests).
+
+- [`hk.placement.Placement`](#hkplacementplacement)
+- [`hk.placement.Digit`](#hkplacementdigit)
+- [`hk.placement.xcd_count`](#hkplacementxcd_count)
+- [`hk.placement.renumber`](#hkplacementrenumber)
+- [`hk.placement.xcd_range`](#hkplacementxcd_range)
+- [`hk.placement.analyze`](#hkplacementanalyze)
+- [`hk.placement.choose`](#hkplacementchoose)
+- [`hk.placement.Analysis`](#hkplacementanalysis)
+- [`hk.placement.Choice`](#hkplacementchoice)
+- [`hk.placement.check_kernel`](#hkplacementcheck_kernel)
+- [`hk.placement.check_emitted`](#hkplacementcheck_emitted)
+- [`hk.placement.emitted_decode`](#hkplacementemitted_decode)
+- [`hk.placement.recording`](#hkplacementrecording)
+- [`hk.placement.place_host`](#hkplacementplace_host)
+- [`hk.placement.MIN_STREAMS`](#hkplacementmin_streams)
+- [`hk.placement.MIN_ROUNDS_NONUNIFORM`](#hkplacementmin_rounds_nonuniform)
+
+### `hk.placement.Placement`
+
+```python
+class hk.placement.Placement(kind: str = 'none', key: Optional[Tuple[Digit, ...]] = None, chunk: Union[int, str] = 0, tail: str = 'spread') -> None
+```
+
+*New after 0.7.0* (the `hk.dsl.placement` module is not in the 0.7.0 wheel)
+
+How a kernel's workgroups are numbered.
+
+Placement.cluster()            one sharing cluster an XCD at a time; the key from
+                               `analyze` (the dominant read's), or `key=` digits
+                               the analysis cannot see (an index read from memory)
+Placement.chunked(chunk, tail) block_idx.x only, within each (y, z) slice and
+                               with the grid as it is: rounds of `xcds * chunk`
+                               consecutive ids an XCD (a GEMM's xcd_chunk, whose
+                               y is the split-K share); chunk="even" is an
+                               eighth of the axis an XCD
+Placement.none()               the identity
+
+`tail` is what happens past the last whole round: "stay" (in round-robin
+order, what the hand-written GEMM remaps did) or "spread" (dealt as
+contiguous ranges, balanced to one). chunk 0 is contiguous ranges outright.
+
+#### `Placement.none`
+
+```python
+Placement.none() -> Placement
+```
+
+*New after 0.7.0* (the `hk.dsl.placement` module is not in the 0.7.0 wheel)
+
+The hardware's order (what placement=None means).
+
+#### `Placement.cluster`
+
+```python
+Placement.cluster(key: Optional[Sequence[Digit]] = None, chunk: int = 0, tail: str = 'spread') -> Placement
+```
+
+*New after 0.7.0* (the `hk.dsl.placement` module is not in the 0.7.0 wheel)
+
+One sharing cluster an XCD at a time; `key` the cluster's digits, or None
+for the analysis's. The grid is flattened and decoded at entry.
+
+#### `Placement.chunked`
+
+```python
+Placement.chunked(chunk: Union[int, str] = 0, tail: str = 'stay') -> Placement
+```
+
+*New after 0.7.0* (the `hk.dsl.placement` module is not in the 0.7.0 wheel)
+
+block_idx.x renumbered in place, `chunk` consecutive ids an XCD a round
+("even": an eighth of the axis; 0: contiguous ranges); `tail` past the
+last whole round: "stay" or "spread".
+
+#### `Placement.suffix`
+
+```python
+Placement.suffix(self, xcds: int) -> str
+```
+
+*New after 0.7.0* (the `hk.dsl.placement` module is not in the 0.7.0 wheel)
+
+The kernel-name suffix of this placement.
+
+### `hk.placement.Digit`
+
+```python
+class hk.placement.Digit(axis: str, kind: str = 'whole', radix: Optional[host.HostExpr] = None, radix_text: str = '') -> None
+```
+
+*New after 0.7.0* (the `hk.dsl.placement` module is not in the 0.7.0 wheel)
+
+A grid axis whole (`kind` "whole"), or one digit of it: `axis // radix`
+("div") or `axis % radix` ("mod"). `radix` is an int, a tensor extent
+spelled "tensor.dim" (`Digit.of("x", "mod", "k.depth")`: the KV heads of
+a (B, H_KV, N, D) `k`), or a host expression of extents and constexprs.
+
+#### `Digit.of`
+
+```python
+Digit.of(axis: str, kind: str = 'whole', radix=None) -> Digit
+```
+
+*New after 0.7.0* (the `hk.dsl.placement` module is not in the 0.7.0 wheel)
+
+A digit of grid axis `axis` ("x", "y" or "z"): whole, or `axis // radix`
+("div") / `axis % radix` ("mod"); `radix` an int, "tensor.dim" or a host
+expression.
+
+### `hk.placement.xcd_count`
+
+```python
+hk.placement.xcd_count(arch: str) -> int
+```
+
+*New after 0.7.0* (the `hk.dsl.placement` module is not in the 0.7.0 wheel)
+
+XCDs of this process's `arch` GPUs: HK_XCDS if set, else the KFD
+topology's num_xcc when every node of that arch agrees (an MI350P or a
+DPX partition says 4, an MI300A 6), else the arch's default.
+
+### `hk.placement.renumber`
+
+```python
+hk.placement.renumber(w, total, *, chunk: Union[int, str, Any] = 0, tail: str = 'spread')
+```
+
+*New after 0.7.0* (the `hk.dsl.placement` module is not in the 0.7.0 wheel)
+
+`place` inside a kernel body, on device ints: the logical unit of id
+`w` of `total` as the XCDs of the GPU being traced for deal them. For a
+persistent kernel, whose units are not workgroups (a workgroup's i-th
+virtual id is w + i * grid): what Placement.chunked / cluster install at
+entry for a grid.
+
+### `hk.placement.xcd_range`
+
+```python
+hk.placement.xcd_range(d, total)
+```
+
+*New after 0.7.0* (the `hk.dsl.placement` module is not in the 0.7.0 wheel)
+
+(first, count): XCD `d`'s contiguous range of `total` units, the first
+total % xcds XCDs one unit more -- what contiguous `place` gives each XCD.
+For a persistent kernel that deals units to its XCDs itself.
+
+### `hk.placement.analyze`
+
+```python
+hk.placement.analyze(module: ir.Module, kernel_name: Optional[str] = None) -> Analysis
+```
+
+*New after 0.7.0* (the `hk.dsl.placement` module is not in the 0.7.0 wheel)
+
+The sharing structure of the kernel func in `module` (see the module
+docstring). Pure: the module is not changed.
+
+### `hk.placement.choose`
+
+```python
+hk.placement.choose(analysis: Analysis, plan: Optional[Plan], grid: Tuple[int, int, int], radii: Dict[str, int], xcds: int, resident_per_xcd: int) -> Choice
+```
+
+*New after 0.7.0* (the `hk.dsl.placement` module is not in the 0.7.0 wheel)
+
+Whether hk.kernel(placement="auto") launches the clustered kernel for
+this grid (docs/design/placement-pass.md §3).
+
+### `hk.placement.Analysis`
+
+```python
+class hk.placement.Analysis(reads: List[Read], kind: str, key: Tuple[Digit, ...], digits: Dict[str, List[Digit]], order_dependent: List[str], nonuniform: bool, broadcast_bytes: int, note: str = '') -> None
+```
+
+*New after 0.7.0* (the `hk.dsl.placement` module is not in the 0.7.0 wheel)
+
+What `analyze` found in one kernel.
+
+#### `Analysis.summary`
+
+```python
+Analysis.summary(self) -> str
+```
+
+*New after 0.7.0* (the `hk.dsl.placement` module is not in the 0.7.0 wheel)
+
+One line: the class, the key, and the flags.
+
+### `hk.placement.Choice`
+
+```python
+class hk.placement.Choice(placed: bool, reason: str, streams: int = 0, rounds: float = 0.0) -> None
+```
+
+*New after 0.7.0* (the `hk.dsl.placement` module is not in the 0.7.0 wheel)
+
+What `choose` decided for one launch geometry: `placed` (launch the
+cluster placement), `reason` (the rule that decided, in words), and the
+numbers it looked at -- `streams`, the most distinct cluster keys among
+an XCD's first resident workgroups under the default order, and `rounds`,
+workgroups an XCD over those it holds at once.
+
+### `hk.placement.check_kernel`
+
+```python
+hk.placement.check_kernel(kernel, shapes: Sequence[Tuple[int, ...]], consts=None) -> List[str]
+```
+
+*New after 0.7.0* (the `hk.dsl.placement` module is not in the 0.7.0 wheel)
+
+hk.check --placement for one launch geometry: the placement `kernel`
+runs with (its own, or for placement="auto" the cluster placement it may
+pick) decodes to every grid point exactly once. Lines for a report; an
+AssertionError if a decode is not a bijection.
+
+### `hk.placement.check_emitted`
+
+```python
+hk.placement.check_emitted(traced, extents) -> int
+```
+
+*New after 0.7.0* (the `hk.dsl.placement` module is not in the 0.7.0 wheel)
+
+hk.check --placement: over every workgroup id of the launch, the
+decode the kernel computes covers the grid its body numbers -- each
+(x, y, z) exactly once. Returns the number of workgroups; raises if not.
+
+### `hk.placement.emitted_decode`
+
+```python
+hk.placement.emitted_decode(module: ir.Module, kernel_name: str) -> Optional[Callable]
+```
+
+*New after 0.7.0* (the `hk.dsl.placement` module is not in the 0.7.0 wheel)
+
+The decode the kernel func actually computes: a function
+(bx, by, bz, extents) -> (x, y, z) of the hardware's block ids, built from
+the ops tagged hk.placement_axis (an untagged axis is the hardware's), or
+None if the kernel has no placement. `extents` maps a tensor parameter to
+its (batch, depth, rows, cols).
+
+### `hk.placement.recording`
+
+*New after 0.7.0* (the `hk.dsl.placement` module is not in the 0.7.0 wheel)
+
+with recording() as launches: the (kernel, shapes, constexprs) of every
+hk kernel launched inside, in order.
+
+### `hk.placement.place_host`
+
+```python
+hk.placement.place_host(w: int, total: int, xcds: int, chunk: Union[int, str] = 0, tail: str = 'spread') -> int
+```
+
+*New after 0.7.0* (the `hk.dsl.placement` module is not in the 0.7.0 wheel)
+
+`place` on host ints: the logical unit workgroup `w` of `total` runs on
+`xcds` XCDs (what a placed kernel computes at entry).
+
+### `hk.placement.MIN_STREAMS`
+
+*New after 0.7.0* (the `hk.dsl.placement` module is not in the 0.7.0 wheel)
+
+The policy's thresholds, measured on gfx950's attention (PR #55, ~/hk-dx/research/2511.02132 report §5): cluster from five KV streams an XCD; for non-uniform work (a trip count that depends on the grid), not below twelve rounds of workgroups an XCD.
+
+### `hk.placement.MIN_ROUNDS_NONUNIFORM`
+
+*New after 0.7.0* (the `hk.dsl.placement` module is not in the 0.7.0 wheel)
+
+`12`
 
 
 <!-- docs/api/hk.ops.md -->

@@ -293,6 +293,13 @@ def test_hk_check_placement_on_a_raw_kernel(tmp_path):
     assert "a bijection over 270 workgroups" in r.stdout
 
 
+def test_a_radix_spelled_tensor_dim_is_that_extent():
+    d = hk.Digit.of("x", "mod", "k.depth")
+    assert repr(d) == "x % g.k.depth()" and d == hk.Digit.of("x", "mod", "k.depth")
+    with pytest.raises(ValueError, match="tensor.dim"):
+        hk.Digit.of("x", "mod", "k.heads")
+
+
 def test_placement_values_are_checked():
     with pytest.raises(ValueError):
         hk.Placement("cluster", tail="anywhere")

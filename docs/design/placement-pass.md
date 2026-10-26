@@ -1,324 +1,293 @@
-# Design: workgroup placement as a pass (`hk-placement`)
+# Design: workgroup placement as a pass (`hk.dsl.placement`)
 
-Status: M0, M1 and M2 implemented (`hk.dsl.placement`; attention, the bf16 GEMMs, K2's
-mxfp8, K1's moe_a8w4 and the stream-K plan on it; no hand-written remap and no `NUM_XCDS`
-left in hk.ops). M3 (a `placement` knob in hk.schedules) is not built. M2 measured: K2 at the
-18 DSV4.1 points bitwise, 0.992-1.011x; K1 bitwise, +19-24% where M left main's remap off
-(the stage-1 grid not a multiple of 8: M 9500, 10000, 14000, 15001), +-0.1% where it was on. The owner decided on 2026-10-26 to build it, in the milestones of
-"Merging with what exists" below, one PR on the latest main each. As built, `Placement.chunked`
-renumbers block_idx.x alone, in place (a GEMM's y is its split-K share), and a cluster
-placement flattens the grid. The evidence is the
-attention experiment of 2026-10-26 (PR #55), described in
-`~/hk-dx/research/2511.02132/report.md` §5.
+Status: built (M0-M2, PRs #63 and #65). Attention, the bf16 GEMMs, K2 (`mxfp8`), K1
+(`moe_a8w4`) and the stream-K plan use it. hk.ops has no hand-written XCD remap and no
+`NUM_XCDS` left. M3, a `placement` knob in `hk.schedules` searched by hk.tune, is not built.
+
+The user's view is [placement.md](../placement.md); the API is
+[hk.placement](../api/hk.placement.md). This page is how it works and why it is built this way.
+The evidence is the attention experiment of 2026-10-26 (PR #55), described in
+`~/hk-dx/research/2511.02132/report.md` §5-6.
+
+- [The problem](#the-problem)
+- [1. Analysis: who shares what](#1-analysis-who-shares-what)
+- [2. Rewrite: one decode at kernel entry](#2-rewrite-one-decode-at-kernel-entry)
+- [3. Policy: when, and which](#3-policy-when-and-which)
+- [4. The XCD count](#4-the-xcd-count)
+- [5. Checking a placement: hk.check --placement](#5-checking-a-placement-hkcheck---placement)
+- [6. Other shapes of work](#6-other-shapes-of-work)
+- [7. What was migrated, and what it measured](#7-what-was-migrated-and-what-it-measured)
+- [8. Limits, and what is not built](#8-limits-and-what-is-not-built)
 
 ## The problem
 
-### How the hardware places workgroups
-
 On gfx950, workgroup `w` runs on the XCD of `w % 8`. This holds in every wave of a grid, whatever
-order the workgroups finish in: PR #55's test
-`test_workgroups_are_dealt_to_the_xcds_by_id_mod_8_in_every_wave` checks it on 64Ki workgroups.
+order the workgroups finish in. `tests/hk/gpu/test_comm.py::test_workgroups_are_dealt_to_the_xcds_by_id_mod_8_in_every_wave`
+checks it on 64Ki workgroups finishing out of order.
 
-Each XCD has a private 4 MB L2. So the order in which a kernel numbers its work decides two things:
+Each XCD has a private 4 MB L2. The order in which a kernel numbers its work therefore decides two
+things:
 
-- how many times shared bytes are fetched, once per XCD that reads them;
-- how many unrelated streams each L2 has to hold at once.
-
-### What it costs (MI355X, PR #55)
+- how many times shared bytes are fetched (once per XCD that reads them);
+- how many unrelated streams each L2 holds at once.
 
 gfx950's attention used HipKittens' numbering: a query block of every head before the next. At 128
-KV heads that holds 16 K/V streams per XCD. Changing only the numbering, with bitwise-identical
-outputs, gave:
+KV heads, that holds 16 K/V streams per XCD. Changing only the numbering made it 12-17% faster.
+The cost is clock, not bandwidth: at 128 heads and 32K, block-first moves 149 GB past the L2s and
+runs at 1.43 GHz, while one-cluster-per-XCD moves 9.7 GB and runs at 1.64 GHz. The matrix core is
+74% busy in both.
 
-| KV heads | gain |
-|---|---|
-| 128 | +11.7% to +17.5% (N 8K-128K) |
-| 64 | +5.5% to +8.0% |
-| 40 | +2% to +5% |
+Before this pass, hk.ops wrote such numberings out by hand 13 times, with `NUM_XCDS = 8` fixed:
 
-The cost is clock, not bandwidth. At 128 heads and 32K, block-first moves 149 GB past the L2s at
-1.43 GHz. Spatial moves 9.7 GB at 1.64 GHz. The matrix core is 74% busy in both.
+- **GEMMs:** chunked round robin.
+- **MoE:** contiguous eighths that fell back to the hardware's order whenever the grid was not a
+  multiple of 8.
+- **Attention:** a hand-written spatial order.
 
-### The same idea, written by hand many times
+A new kernel got none of them unless its author knew to add one.
 
-hk.ops writes this numbering out by hand 13 times, with `NUM_XCDS = 8` hard-coded:
+The pass makes it one mechanism:
 
-| where | form |
-|---|---|
-| `gemm_cdna.py:413` | chunked round robin (`xcd_chunk`); ids past the last whole round stay where they are; then `tile_of` (`wgm` L2 swizzle) |
-| `gemm_cdna.py:662-701` | the stream-K plan on the host: a contiguous range of blocks per XCD |
-| `gemm_cdna_dp.py:87` | chunked round robin, `xcd_chunk = 0` meaning an eighth of the grid |
-| `mxfp8.py:192` (mx4w) and `mxfp8.py:396` (persistent) | chunked round robin + `wgm` |
-| `moe_a8w4.py:110, 210, 365, 653, 903, 1025, 1243` | contiguous eighths, **dropped to identity when `total % 8 != 0`** |
-| `moe_a8w4.py:776` | persistent stage 2: a contiguous chunk of units per XCD |
-| `attn_cdna.py` `_spatial` (PR #55) | contiguous ranges, a bijection for any total |
-
-Each copy is written once, for one kernel. A new kernel gets none of them unless its author knows to
-add one. In the KDA MX experiment the Triton arm did; the hk arm did not.
-
-### What this document proposes
-
-One mechanism:
-
-1. **an analysis** that finds the sharing structure from the IR;
-2. **a rewrite** that installs one placement function at kernel entry;
-3. **a policy** that decides whether and how.
-
-Each part, its limits, and how to validate and migrate are below.
+1. an analysis of the traced kernel;
+2. a rewrite of its entry and grid;
+3. a policy for when to use it.
 
 ## 1. Analysis: who shares what
 
-### The access model
+`hk.placement.analyze(module)` runs on the traced module before the hk passes. It is pure: the
+module is not changed.
 
-After tracing, a kernel is one MLIR function. Every global read is one of these ops:
+**Reads.** Every global read op is examined:
 
-- `hk.load`, `hk.load_rows`, `hk.group_load`;
-- `hk.gather_rows`, `hk.load_scalar`;
-- `hk.load_mx_scales`, `hk.load_fp4_frags`, `hk.load_w4`.
+- `hk.load`, `load_rows`, `group_load`;
+- `gather_rows`, `load_scalar`, `stage_load`;
+- `load_mx_scales`, `load_fp4_frags(_lds)`, `load_w4`.
 
-Each takes a global (`!hk.gl`) and a coordinate (`hk.coord`: batch, depth, row, col). Every
-coordinate is an SSA expression over these leaves:
+**Dependence of an address on the grid.** For each integer operand of a read (its `hk.coord` and
+indices), a memoised walk over the SSA def chain computes:
 
-| leaf | role |
-|---|---|
-| `hk.block_idx x/y/z` | grid axes |
-| `hk.warp_id`, lane ids | within the workgroup |
-| `scf.for` induction variables | the K / KV walk |
-| `hk.extent` | shapes, runtime-uniform |
-| constants and constexprs | |
-| results of `hk.load_scalar` / gather indices | indirect |
+- **digits**: which parts of the grid the value depends on. A digit is a grid axis whole (`x`), or
+  `axis // r` or `axis % r` where the kernel divides a `hk.block_idx` directly by `r`. `r` must be
+  free of the grid: a constant, a tensor extent (`hk.extent`) or arithmetic of those. It is kept as
+  a host expression, e.g. `g.k.depth()`.
+- **flags**:
+  - `loop`: an `scf.for` induction variable or iter_arg. This is the dimension the workgroup sweeps
+    itself, and is projected out.
+  - `warp`: the warp or lane id. Projected out.
+  - `indirect`: the value went through a `load_scalar` (an index read from memory).
 
-The grid itself is a second function in the same module. It is built from `hk.extent` of the
-arguments; the attention dump shows it next to the kernel.
+**Sharing key.** What remains is the read's sharing key. Two workgroups read the same bytes through
+that read exactly when their key digits are equal. Keys are normalised: an axis taken both as
+`// r` and `% r` is the whole axis.
 
-### The analysis
+**Weight.** Each read is weighted by its tile's bytes times the trip counts of the loops around it.
+A loop with a non-constant trip count counts as 16.
 
-For each read op `r`, walk its coordinate expression and project out the walk:
+**Classification.** Reads are grouped by key:
 
-- **loop induction variables, warp and lane ids** are the dimensions the workgroup itself sweeps.
-  They become universally quantified.
-- What remains is the **sharing key** `key_r(block_idx)`, a symbolic function of the grid axes.
-- Two workgroups read the same bytes through `r` exactly when their keys are equal. This is exact
-  when the coordinate is a function of (key, walk) only, which is the case for affine and
-  `div`/`mod` expressions over the block ids.
+- A read whose key holds every axis the kernel uses is the workgroup's own.
+- A read with an empty key is a broadcast (every workgroup reads it).
+- The heaviest remaining key is the cluster key if it carries at least a quarter of the bytes.
+- If a second key over disjoint axes weighs at least a quarter of it, the kernel is a **raster**
+  (a GEMM's A panel and B panel). The analysis reports raster but does not act on it; GEMMs say
+  what they want explicitly (§2).
 
-Each read also gets a byte weight `bytes_r` = tile bytes × trip count. Both are symbolic in extents
-and constexprs; they are evaluated at launch, when the shapes are known.
+**Flags on the kernel.** Order-dependent ops are recorded: `wg_arrive`, `signal`, `arrive`,
+`wait`, `post`, `take`, `atomic_add`, `atomic_scalar` and `scatter_add_lds`. A loop whose bounds
+depend on the grid makes the kernel **non-uniform** (causal attention).
 
-### Examples
+What it found on the shipped kernels:
 
-| kernel | read | key | key cardinality |
-|---|---|---|---|
-| attention (`attn_cdna`) | K and V (`group_load %k[(z, x % h_kv, t*64, 0)]`) | `(z, x % h_kv)` | B · H_KV |
-| attention | Q | `(z, head(x), y)` | unique per workgroup |
-| GEMM (`gemm_cdna`, `mxfp8`) | A | `row(block)` | m_blocks |
-| GEMM | B | `col(block)` | n_blocks |
-| decode GEMV, paged decode | weights / pages | unique per workgroup | — |
-| MoE stage 1 (sorted) | x tile | `b = block // nblk` | sorted blocks |
-| MoE stage 1 (sorted) | expert weights | `seids[b]` | experts used |
-
-For the decode GEMV and the paged decode the result is "no sharing", so the pass leaves the kernel
-alone.
-
-The MoE weight key `seids[b]` goes through a `load_scalar`, so it is indirect; see below.
-
-### Classification
-
-For the grid, combine the reads by bytes:
-
-- **cluster**: one key carries the dominant share of the bytes. In attention, K and V are read once
-  per KV block of the walk, while Q is read once per workgroup. Place by that key.
-- **raster**: two keys over disjoint axes with comparable bytes (GEMM's A row panel and B column
-  panel). The sharing is two-dimensional. Place by grouping blocks (`wgm`) and by chunking per XCD.
-- **none**: no key worth it (decode GEMV, elementwise, norms). Leave the kernel alone.
-
-### What it cannot see, and the annotation
-
-- **Indirect keys.** A key that goes through `hk.load_scalar` / `gather_rows` / `load_fp4_frags` row
-  indices is data, not shape:
-  - the paged block table (`block_table[req, pos]`);
-  - MoE's `sorted_expert_ids[b]` and `sorted_ids`;
-  - the paged prefill work list (`tiles[t]`).
-
-  When the indirect value is itself a function of a grid axis (e.g. `seids[b]` with `b` from the
-  block id), the pass can still cluster by that axis: consecutive `b` are runs of one expert,
-  because the sort makes them so. That is a heuristic, and the pass reports it as one. Otherwise the
-  user states the key.
-
-- **Annotation.** `hk.kernel(..., placement=hk.Placement.cluster(key=lambda p, b: ...))` gives the key
-  as a function of the decoded logical coordinates. `hk.Placement.raster(wgm=, chunk=)` and
-  `hk.Placement.none()` are the other two. An explicit placement overrides the analysis; the pass
-  still checks it (§5).
-
-- **Persistent and queue-driven kernels.** The workgroup id is not the unit of work, so this
-  analysis does not apply. They are handled in §4.
+| kernel | key, as the analysis prints it | class |
+|---|---|---|
+| `attn_cdna`, dense | `(z, x % g.k.depth())`: (batch, KV head), no annotation | cluster; non-uniform under causal |
+| `attn_cdna`, paged | `(y, x % g.k_cache.depth())`, flagged indirect: the page goes through the block table, and `y` (the work list entry) is not the request. The kernel gives the key itself: `Digit.of("x", "mod", "k_cache.depth")` | cluster, by annotation |
+| a copy or a GEMV | every read the workgroup's own | none |
+| a test kernel with `atomic_max` | — | order-dependent |
 
 ## 2. Rewrite: one decode at kernel entry
 
-### What the pass does
+`hk.placement.rewrite` runs before verification and the hk passes, so the passes see an ordinary
+kernel.
 
-The pass `hk-placement` runs after `hk-verify` and before `hk-fragments`.
+**`Placement.cluster(key=None)`**
 
-1. **Flatten the grid.** The grid function becomes `(Gx·Gy·Gz, 1, 1)`. Every `hk.block_idx` use
-   becomes a use of the logical `(x, y, z)` decoded at entry:
+1. **The plan.** The key comes from the analysis, or from `key=` digits. Every axis the key splits
+   (`x % r`) becomes two digits, `x // r` and `x % r`. The logical order lists the key's digits
+   first, then the rest. Each group keeps the original significance (z, y, x; `//` before `%`), so
+   the kernel's own order inside a cluster is unchanged; causal attention's longest-first query
+   blocks stay longest-first.
+2. **The grid** becomes one axis of `Gx·Gy·Gz` workgroups, in both the kernel's grid function and
+   the host's launch expression.
+3. **The decode at entry.** A new `hk.block_idx x` (`pl_wg`) is mapped through
+   `place(w, total, xcds)`. XCD `d = w % xcds` takes one contiguous range of the logical units; the
+   first `total % xcds` XCDs take one more. The unit is cut into its digits in plan order (mixed
+   radix), and each axis is put back together (`x = (x // r)·r + x % r`).
+4. **The replacement.** The three values replace every use of the old `hk.block_idx` ops, which are
+   erased. The body then computes on the logical `(x, y, z)` as before.
 
-       w      = block_idx.x                       # flat
-       u      = place(w, total, xcds, chunk)      # logical unit, a bijection
-       x, y, z = order(u)                         # the logical numbering, cluster-major
+Every emitted value is named `pl_*`, so the generated C++ reads as what it is. The three results
+carry an `hk.placement_axis` attribute, so the checker (§5) can find what was emitted.
 
-   - `place` is the bijection from PR #55 (`attn_cdna._spatial` / `draft/place.py`). With `chunk = 0`,
-     XCD `d` takes one contiguous range of units, and the first `total % xcds` XCDs take one more.
-     With `chunk > 0`, units are dealt in rounds of `xcds · chunk`, and the remainder is dealt as with
-     `chunk = 0` instead of staying in round-robin order. Loads per XCD differ by at most one, for
-     any total.
-   - `order` is cluster-major: the key's axes outermost, the remaining axes inside.
+**`Placement.chunked(chunk, tail)`** renumbers `block_idx.x` alone, in place: `x' = place(x, Gx,
+xcds, chunk, tail)`. The grid is unchanged. This is the GEMM form: its `y` is the split-K share,
+and the old hand-written remaps also renumbered `x` within each share.
 
-2. **Keep the kernel's own order inside a cluster.** LPT under causal (`qb = n − 1 − qb`) and the
-   paged work list's longest-first order are kernel code applied to the decoded `y`, so they survive
-   unchanged.
+**`place`** is written once, over an arithmetic backend:
 
-3. **Raster.** `order` becomes `tile_of(u, m_blocks, n_blocks, wgm)`, the existing `wgm` group walk,
-   applied after `place(..., chunk)`. That is exactly today's GEMM path, now as one function.
+- emitted as `arith` ops by the rewrite;
+- evaluated on host ints by checks and tests;
+- run on device ints inside a kernel body (`hk.placement.renumber`, `xcd_range`, for persistent
+  kernels).
 
-4. **Take the XCD count and the dispatch model from the target.**
-   - `TargetInfo` gets `xcds` (gfx950: 8; MI350P / DPX: 4; gfx942 MI300X: 8, MI300A: 6) and
-     `dispatch = "round_robin"`.
-   - At runtime, `hk.runtime` reads `hipDeviceAttributeNumberOfXccs` (10018, ROCm ≥ 7.0) once per
-     device. If it disagrees with the build's constexpr, the kernel is rebuilt with the device's
-     value; `xcds` is part of the kernel cache key, like `arch`.
-   - `hk.arch.xcd_count()` exposes it to hand-written code.
-   - gfx1100 and other single-L2 parts: `xcds = 1`, and the pass is a no-op.
-
-### Merging with what exists (migration)
-
-| step | change | must hold |
+| chunk | tail | what XCD `d` gets |
 |---|---|---|
-| M0 | the mechanism: `hk.grid.place` (the function), `hk.arch.xcd_count()` and the target's `xcds`; the analysis (sharing keys, bytes, classification) and the rewrite as an opt-in pass (`placement="auto"` or an explicit `hk.Placement`); `hk.check --placement` (the decoded grid covers the original exactly once) | IR property tests and the pass's analysis on the shipped kernels (§5) |
-| M1 | attention and the GEMMs on it: `attn_cdna`'s hand-written `mapping` (PR #55) becomes `placement="auto"`, which must find the key `(z, x % h_kv)` and choose as `mapping_for` does on the 74 measured points or better; `gemm_cdna` (pingpong) and `gemm_cdna_dp` take `Placement.raster(wgm, chunk)` instead of their inline remap. `xcd_chunk` and `wgm` stay as schedule knobs and are passed through | bitwise equal to before; in-process interleaved A/B within ±1% on the GEMM route shapes; §5's attention regression |
-| M2 | the rest of the hand-written remaps: K2 (`mxfp8` mx4w and persistent), K1 (`moe_a8w4`'s seven sorted / grid kernels and the persistent stage 2), the stream-K plan. moe_a8w4's `whole` fallback goes away because `place` is a bijection for any total | bitwise; in-process A/B within ±1% (K2 at the 18 DSV4.1 points, K1 at M 8192 and 16384 plus ragged M) |
-| M3 (later) | `hk.schedules` gains a `placement` knob (`auto` / `none` / `cluster` / `raster(wgm, chunk)`) that hk.tune searches | tuned route tables unchanged or better |
+| 0 | — | one contiguous range; loads differ by at most one |
+| c > 0 | `"stay"` | rounds of `xcds·c` ids, `c` consecutive per XCD; ids past the last whole round in round-robin order (HipKittens' `chiplet_transform_chunked`, what the GEMMs did) |
+| c > 0 | `"spread"` | the same rounds; the remainder dealt as contiguous ranges |
+| `"even"` | either | c = max(total // xcds, 1) (`gemm_cdna_dp`'s `xcd_chunk = 0`) |
 
-The GEMM's `xcd_chunk = 0` ("an eighth of the grid") is `place(chunk = 0)`. A positive `xcd_chunk` is
-`place(chunk = xcd_chunk)`. Both become the same code path.
+`place` is a bijection on `[0, total)` for every total, xcds and chunk. The IR tier checks this
+over totals 0-129 plus four large ones, xcds ∈ {1, 2, 4, 6, 8}, and every chunk/tail combination.
+It also checks that `place` reproduces the GEMMs', dp's and MoE's hand-written remaps exactly where
+those applied.
+
+**On the kernel object.**
+
+- `hk.kernel(placement=...)` takes `None`, `"auto"` or an `hk.Placement`. The analysis and the plan
+  are kept on the `TracedKernel` (`analysis`, `plan`, `logical_grid`).
+- `Kernel.placed(p)` is a sibling kernel with placement `p`, named with a suffix such as
+  `_x8cl0p`, `_x8ch32s` or `_x8ches`.
 
 ## 3. Policy: when, and which
 
-The choice never changes results, because `place` is a bijection and each workgroup computes the
-same thing. That is why "on by default" is possible at all. But it can change time in both
-directions, so the default needs a policy.
+`hk.placement.choose(analysis, plan, grid, radii, xcds, resident_per_xcd)` decides, at one launch
+geometry, whether to launch the cluster placement. Rules, in order:
 
-### Heuristic, in order
+1. **One L2** (xcds 1): no.
+2. **Order-dependent kernel** (any op of §1's list), or `resident=True`: no. Reordering can deadlock
+   a grid whose workgroups wait on later ones, and changes the order of atomic floating-point sums.
+3. **Not a cluster kernel**, or **a split axis is not a whole number of its radix** (the mixed-radix
+   decode would not be a bijection): no.
+4. **Streams per XCD.** Under the default order, count the distinct key values among the first
+   `resident_per_xcd` workgroups of each XCD, and take the maximum. Below `MIN_STREAMS` (5): no.
+5. **Non-uniform work.** rounds = total / (xcds · resident_per_xcd). If the kernel is non-uniform
+   and has fewer than `MIN_ROUNDS_NONUNIFORM` (12) rounds: no. An XCD's last cluster would end on
+   its longest unit, while the default's last round is short units.
+6. Otherwise: yes.
 
-1. **Refuse** (keep the kernel's own numbering) when the kernel's correctness or progress depends on
-   which workgroup runs when:
-   - `resident=True`;
-   - `hk.comm.wait` / `claim` / `xcd_barrier`;
-   - spin loops on a global;
-   - `wg_arrive` where the last arrival does the fix-up;
-   - atomics into floating-point outputs (order changes the sum).
+`resident_per_xcd` is the kernel's measured residency, `Kernel.resident_capacity()` / xcds, from
+its build's registers and LDS.
 
-   Reordering can deadlock a grid that waits on later workgroups. The fix-up order is
-   deterministic in hk, but it is tied to arrival. These kernels can still take an explicit placement
-   if the author vouches for it.
+`placement="auto"` applies `choose` at each launch through `Kernel.__call__`, cached per tensor
+shapes. `Kernel.placement_choice(*tensors)` returns the `Choice` (`placed`, `reason`, `streams`,
+`rounds`). A torch-registered op is launched by torch, not through `__call__`, so it routes itself:
+`attn_cdna.mapping_for` is `choose` on the dense kernel's own analysis, with 32 workgroups per XCD.
 
-2. **No key, or key cardinality ≤ xcds** (GQA with 8 KV heads, TP-sharded heads, a GEMM with ≤ 8
-   row blocks): keep the default. Measured: GQA-8 and 16 heads were within ±2%.
+**Where the thresholds come from.** They were measured on attention (PR #55, 74 points), and
+reproduce its routing at every measured point.
 
-3. **Streams per XCD.** Under the default numbering, count the distinct keys among the first
-   `resident_per_xcd` workgroups of each XCD. This is static, from `place` and the occupancy the
-   build gate already knows. Let `S` be that count.
-   - Below 5: keep the default. Measured: 3-4 streams gained 0-3%, 2 streams ±2%.
-   - From 5 up, and when `S · bytes_per_stream_window` exceeds the L2's share: cluster.
+| case | measured |
+|---|---|
+| 128 KV heads, 16 streams per XCD | +11-18% |
+| 64 KV heads, 8 streams per XCD | +5-8% |
+| 40 KV heads, 5 streams per XCD | +2-5% |
+| 2-4 streams per XCD | within 3% |
+| causal, 40 KV heads, N 8K (5 rounds) | −10% |
+| causal, 10 rounds | −2% |
 
-4. **Non-uniform work** (a trip count that depends on a grid axis, e.g. causal attention's `n_blk`
-   from `qb`): estimate an XCD's tail as one longest unit over its work, using rounds =
-   units / (xcds · resident). Keep the default when rounds < 12. Measured: −10% at 5 rounds, −2% at
-   10, from +1% at 12.
-
-5. **Raster kernels:** search `wgm` × `chunk` with hk.tune as today, with `placement` added as a knob.
-
-The thresholds are the ones measured on attention. On other kernels they are hypotheses until §5's
-checks confirm them.
-
-### When it gets slower
+**When it can be slower.**
 
 | case | why | guard |
 |---|---|---|
-| short causal or otherwise non-uniform grids | an XCD's last cluster ends on its longest unit; the default's last round is short units | rule 4 (−10% measured without it) |
-| uneven work across contiguous ranges (MoE tiles of different experts, ragged requests) | `place` balances unit counts, not work | treat a work list as non-uniform; prefer `chunk > 0` (interleaved rounds) when units differ in cost |
-| fewer clusters than XCDs | contiguous ranges split clusters across XCDs anyway; nothing to win, some locality lost if the kernel relied on round-robin | rule 2 |
-| interleaving several clusters per XCD | tried as a fix for causal grids. It did not fix them (0.92 and 0.88 at 40 heads, 8K, for 2 and 4 clusters). Suspected cause: windows that straddle XCD ranges, giving one XCD a window's long units and another its short ones | do not interleave across range boundaries; one cluster at a time |
-| a kernel already balanced by its own order (global LPT) | the new order breaks it | rule 4; per-kernel opt-out |
-| partitions / other parts | wrong XCD count, wrong groups | `xcds` from the device (§2) |
-| profiling | hk.profile's per-kernel counters are unchanged, but the kernel name gains a placement suffix | documented |
+| short non-uniform grids | an XCD ends on its longest unit | rule 5 |
+| units of different cost in contiguous ranges (MoE experts, ragged requests) | `place` balances counts, not work | measure; `chunk > 0` interleaves rounds |
+| clusters ≤ xcds | nothing to win | rule 4 |
+| interleaving several clusters per XCD | tried for causal grids: 0.92 and 0.88 at 40 heads, 8K. Suspected cause: windows straddle XCD ranges | not offered |
 
-## 4. The same framework, other shapes of work
+## 4. The XCD count
 
-- **GEMM L2 rasterization.** The analysis finds two keys, so it classifies the kernel as raster. The
-  rewrite is today's `xcd_chunk` + `wgm` as one `Placement.raster`. Nothing new for performance; the
-  gain is one implementation and the non-multiple-of-8 tail.
+`hk.placement.xcd_count(arch)` returns the number of L2 domains, from the first of:
 
-- **Persistent kernels.** A persistent kernel loops over units (`mxfp8` persistent, `moe_a8w4`
-  persistent stage 2, the stream-K plan), so placement is the unit order each workgroup walks, not
-  the workgroup id. The same `place` gives each XCD a contiguous, cluster-major range; this is what
-  `moe_a8w4.py:776` and the stream-K plan already do by hand. The pass exposes it as
-  `hk.grid.units(total, cluster=...)`, an iterator for the loop.
+1. `HK_XCDS`, if set.
+2. KFD's `num_xcc` (`/sys/class/kfd/kfd/topology/nodes/*/properties`), when every node of that arch
+   agrees. It reads 8 on an MI355X, 4 on an MI350P or a DPX partition, 6 on an MI300A. This needs
+   no HIP context.
+3. The arch's default: 8 for gfx950 and gfx942, 1 for every other arch.
 
-- **Megakernel queues (I6, comm roadmap R5).** Tasks are pushed to one queue per XCD. The rules carry
-  over unchanged:
-  - **push by cluster key:** tasks that read the same bytes go to one XCD's queue;
-  - **pop cluster-major:** a queue drains one cluster before the next;
-  - **steal whole clusters from the tail:** stealing single tasks splits clusters and re-fetches
-    their bytes on the thief's XCD.
+The count is baked into the emitted decode as a constant, so it is part of the kernel's source and
+of its compile-cache key. `hk.arch.xcd_count()` gives it to a kernel body as a constexpr. A count
+of 1 makes every placement the identity.
 
-  The key comes from the task descriptor's annotation, since the analysis cannot see through the
-  queue. This is a library rule for R5, not a compiler pass.
+## 5. Checking a placement: hk.check --placement
 
-- **Per-XCD broadcast of activations (decode L5).** Here every workgroup reads the same bytes: the
-  key is empty and the cardinality is 1. Placement cannot help, because the data is already shared.
-  What helps is publishing one copy per XCD.
-  - The analysis can **flag** it: a read with an empty key, a `"device"`/`"system"` scope, and a
-    large fan-out is a candidate for `hk.comm`'s per-XCD publish.
-  - The transform itself is a comm-level change. It needs the "XCD-local" visibility proof from the
-    litmus suite: a leader's plain stores, the followers' sc0 loads after an `xcd`-scope flag. It
-    stays out of this pass.
+`hk.placement.emitted_decode(module, name)` builds a host function from the ops the rewrite tagged
+(`hk.placement_axis`). It evaluates `arith` constants, `addi`, `subi`, `muli`, `divsi`, `remsi`,
+`minsi`, `maxsi`, `ceildivsi`, `hk.block_idx` and `hk.extent`. So it checks what was emitted, not
+the Python that emitted it.
 
-- **hk.profile.** The `l2_refetch` finding gains the suggestion "the analysis finds key K with S
-  streams per XCD; `placement=auto` would cluster it". The data is the same as the pass's.
+`check_emitted(traced, extents)` runs it over every workgroup id of a launch and raises unless each
+logical `(x, y, z)` of the grid comes out exactly once.
 
-## 5. Validation
+`python -m hk.check TARGET --placement --inputs SPEC`:
 
-1. **The dispatch policy.** PR #55's GPU test, which fails if `w % 8` stops naming the XCD in any
-   wave. It runs on every gfx950 GPU tier.
-2. **Bijection and balance, statically.**
-   - `place` and every `order` are pure integer functions, so the IR tier evaluates them in Python
-     over every total in 0-300 plus large totals, xcds ∈ {1, 2, 4, 6, 8} and chunk ∈ {0, 1, 16, 32,
-     64}. It checks a permutation, per-XCD loads within one, and one cluster per XCD at a time
-     (PR #55 has the attention instance).
-   - `hk.check` gains `--placement`: it decodes the grid of a concrete call on the host and checks
-     the decoded coordinates cover the original grid exactly once.
-3. **Bitwise.** Every kernel the pass touches must give `torch.equal` outputs with and without it, on
-   the shapes of its GPU tests. A kernel that is not bitwise is in rule 1's refusal set by
-   construction, and the check finds it.
-4. **The attention regression.**
-   - Run the pass with `placement="auto"` on `attn_cdna` with its hand-written `mapping` removed.
-   - Over the 74 points of PR #55 (`runs/attn-mapping-*.json`), the auto choice must equal
-     `attn_cdna.mapping_for` or measure at least as fast, in one process, interleaved.
-   - The key it finds must be `(z, x % h_kv)`.
-5. **No regression on migrated kernels.**
-   - **K2** `mxfp8` mx4w at the 18 DSV4.1 points: bitwise, within ±1%.
-   - **K1** `moe_a8w4` sorted stage 1/2 at M 8192, 16384 and ragged M: bitwise, within ±1%. Ragged M
-     is where the old `whole` fallback turned placement off, so a gain is possible there (I5).
+- **a raw `@hk.kernel`:** checked at the shapes of `--inputs`, with no GPU and no torch (only the
+  spec's shapes are read). For `placement="auto"`, both the kernel and its `.placed()` sibling are
+  checked.
+- **a function:** run on the GPU; every hk kernel it launches is recorded (`hk.placement.recording`)
+  and checked.
 
-## Cost
+Output, one line per kernel per case:
 
-| step | days | GPU |
-|---|---|---|
-| M0 `place`, `xcd_count`, analysis, rewrite pass, annotation, `hk.check --placement` | 4-6 | 10 min (the dispatch test, a smoke run) |
-| M1 attention + GEMM on the pass | 1-2 | ~3 h of A/B on 1 MI355X |
-| M2 K1, K2, stream-K | 2-3 | ~3 h of A/B |
-| M3 schedules knob + hk.tune | 1-2 | tune runs as usual |
+```
+case 0: kernel: a bijection over 270 workgroups, grid (45, 3, 2), order (z, y, x), 8 XCDs
+case 0: kern_x8cl0p: not applicable at grid (30, 8, 1) (an axis is not a whole number of its radix); placement='auto' does not pick it
+case 0: kern: the hardware's numbering (cluster key (z, x % g.k.depth()); non-uniform work)
+```
 
-M2 pays for itself with or without the analysis (the K1 tail, the XCD count). The analysis's value
-depends on how many new kernels will have sharing structure, and on whether the heuristic's
-thresholds hold beyond attention -- which M1's attention regression checks first.
+A failure prints `FAILED <how many grid points ran twice and never>` and exits 1.
+
+## 6. Other shapes of work
+
+- **GEMM rasterization.** It is `Placement.chunked(xcd_chunk, "stay")` on the block id, then the
+  kernel's own `wgm` group walk (`tile_of`) on the result. `xcd_chunk` and `wgm` stay schedule
+  knobs.
+- **Persistent kernels** loop over units that are not workgroups:
+  - `mxfp8`'s persistent GEMM calls `hk.placement.renumber(wg + i·G, blocks, chunk=xcd_chunk)` on
+    each virtual block id.
+  - `moe_a8w4`'s persistent stage 2 takes its XCD's units from `hk.placement.xcd_range(xcd,
+    units)`: contiguous, balanced to one.
+  - The stream-K plan (host Python) reads `xcd_count`.
+- **Megakernel queues** (comm roadmap R5): push a task to the queue of the XCD its sharing key maps
+  to, drain one cluster before the next, and steal whole clusters. These are library rules, not
+  this pass: the analysis cannot see through a queue.
+- **Per-XCD broadcast** (the decode megakernel's activation): a read with an empty key is shared by
+  every workgroup already, so placement does nothing for it. What helps is one copy per XCD (an
+  hk.comm transform). The analysis's `broadcast_bytes` marks such reads.
+
+## 7. What was migrated, and what it measured
+
+MI355X, one process, the old and new kernels interleaved, `rocm-smi` snapshots around each run
+(`~/hk-dx/research/2511.02132/runs/m1-ab*`, `m2-ab*`):
+
+| kernel | before | after | outputs | new / old |
+|---|---|---|---|---|
+| `attn_cdna` spatial | hand-written `_spatial` (PR #55) | `Placement.cluster()` (dense), explicit key (paged) | bitwise, 15 points | 0.993-1.003 against PR #55's |
+| `gemm_cdna`, `gemm_cdna_dp` | inline chunked remaps | `Placement.chunked(xcd_chunk \| "even", "stay")` | bitwise, 11 shapes | 0.997-1.007 |
+| `mxfp8` (K2) | inline chunked remaps | `chunked`, `renumber` | bitwise, 18 DSV4.1 points | 0.992-1.011 |
+| `moe_a8w4` (K1) | contiguous eighths, identity if the grid % 8 ≠ 0 | `chunked(0, "spread")`, `xcd_range` | bitwise | 1.0005-1.0012 where the old remap applied (M 8192, 11000, 12411, 16384); **1.19-1.24** where it did not (M 9500, 10000, 14000, 15001) |
+| stream-K plan | `NUM_XCDS` | `xcd_count` | same plan on 8 XCDs | — |
+
+The default attention kernel's generated C++ is byte-identical before and after.
+
+## 8. Limits, and what is not built
+
+- **Addresses the analysis can follow:** built from block ids by `+ - * // %` with constants,
+  extents and arithmetic of those. Anything through memory is indirect and needs `key=`.
+- **One radix per axis.** An axis divided by two different values is taken whole.
+- **Raster kernels are classified but not placed automatically.** The GEMMs state
+  `Placement.chunked`.
+- **"auto" only through `Kernel.__call__`.** Torch ops route themselves.
+- **The thresholds were measured on one kernel family (attention).**
+- **M3, not built:** `placement` as a searched schedule knob; auto-raster (choosing `wgm` and
+  `chunk` from L2 capacity and panel bytes); placement for persistent kernels from the analysis.

@@ -113,8 +113,9 @@ def _kfd_xcds(arch: str) -> Optional[int]:
 @dataclasses.dataclass(frozen=True)
 class Digit:
     """A grid axis whole (`kind` "whole"), or one digit of it: `axis // radix`
-    ("div") or `axis % radix` ("mod"). `radix` is a host expression of the
-    tensors' extents and the constexprs."""
+    ("div") or `axis % radix` ("mod"). `radix` is an int, a tensor extent
+    spelled "tensor.dim" (`Digit.of("x", "mod", "k.depth")`: the KV heads of
+    a (B, H_KV, N, D) `k`), or a host expression of extents and constexprs."""
 
     axis: str
     kind: str = "whole"
@@ -123,10 +124,19 @@ class Digit:
 
     @staticmethod
     def of(axis: str, kind: str = "whole", radix=None) -> "Digit":
+        """A digit of grid axis `axis` ("x", "y" or "z"): whole, or `axis // radix`
+        ("div") / `axis % radix` ("mod"); `radix` an int, "tensor.dim" or a host
+        expression."""
         if axis not in AXES or kind not in ("whole", "div", "mod"):
             raise ValueError(f"Digit({axis!r}, {kind!r})")
         if (kind == "whole") != (radix is None):
             raise ValueError(f"Digit({axis!r}, {kind!r}): a radix for div and mod only")
+        if isinstance(radix, str):
+            tensor, _, dim = radix.partition(".")
+            if not tensor or dim not in host.HostDim.DIMS:
+                raise ValueError(f"Digit radix {radix!r}: 'tensor.dim', dim one of "
+                                 f"{host.HostDim.DIMS}")
+            radix = host.HostDim(tensor, dim)
         r = host.HostConst(radix) if isinstance(radix, int) else radix
         return Digit(axis, kind, r, r.emit() if r is not None else "")
 
@@ -161,15 +171,21 @@ class Placement:
 
     @staticmethod
     def none() -> "Placement":
+        """The hardware's order (what placement=None means)."""
         return Placement("none")
 
     @staticmethod
     def cluster(key: Optional[Sequence[Digit]] = None, chunk: int = 0,
                 tail: str = "spread") -> "Placement":
+        """One sharing cluster an XCD at a time; `key` the cluster's digits, or None
+        for the analysis's. The grid is flattened and decoded at entry."""
         return Placement("cluster", tuple(key) if key is not None else None, chunk, tail)
 
     @staticmethod
     def chunked(chunk: Union[int, str] = 0, tail: str = "stay") -> "Placement":
+        """block_idx.x renumbered in place, `chunk` consecutive ids an XCD a round
+        ("even": an eighth of the axis; 0: contiguous ranges); `tail` past the
+        last whole round: "stay" or "spread"."""
         return Placement("chunked", None, chunk, tail)
 
     def __post_init__(self):
@@ -351,6 +367,8 @@ def _xcd_range(o, d, total, xcds: int):
 
 def place_host(w: int, total: int, xcds: int, chunk: Union[int, str] = 0,
                tail: str = "spread") -> int:
+    """`place` on host ints: the logical unit workgroup `w` of `total` runs on
+    `xcds` XCDs (what a placed kernel computes at entry)."""
     return place(_IntOps(), w, total, xcds, chunk, tail)
 
 
@@ -385,6 +403,7 @@ class Analysis:
     note: str = ""
 
     def summary(self) -> str:
+        """One line: the class, the key, and the flags."""
         k = ", ".join(map(repr, self.key)) or "-"
         s = f"{self.kind} key ({k})"
         if self.order_dependent:
@@ -986,6 +1005,12 @@ def check_kernel(kernel, shapes: Sequence[Tuple[int, ...]], consts=None) -> List
 
 @dataclasses.dataclass
 class Choice:
+    """What `choose` decided for one launch geometry: `placed` (launch the
+    cluster placement), `reason` (the rule that decided, in words), and the
+    numbers it looked at -- `streams`, the most distinct cluster keys among
+    an XCD's first resident workgroups under the default order, and `rounds`,
+    workgroups an XCD over those it holds at once."""
+
     placed: bool
     reason: str
     streams: int = 0

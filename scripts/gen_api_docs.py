@@ -459,7 +459,8 @@ def page_hk(since: Since) -> Page:
              "how it is written, this page what each name is. The namespaces have "
              "pages of their own: [hk.math](hk.math.md), [hk.arch](hk.arch.md), "
              "[hk.lds](hk.lds.md), [hk.group](hk.group.md), "
-             "[hk.collective](hk.collective.md), [hk.comm](hk.comm.md); the shipped kernels are "
+             "[hk.collective](hk.collective.md), [hk.comm](hk.comm.md), "
+             "[hk.placement](hk.placement.md); the shipped kernels are "
              "[hk.ops](hk.ops.md), the templates [hk.templates](hk.templates.md), "
              "the checker [hk.check](hk.check.md), the profiler "
              "[hk.profile](hk.profile.md), the per-arch facts "
@@ -1074,6 +1075,11 @@ def build_pages() -> List[Page]:
                      "to a scoped parameter (`hk.Tensor[dtype, \"system\"]`): while a "
                      "buffer is open, a launch refuses it bound to an unscoped one.")
     pages.append(comm)
+    pages.append(page_module(
+        since, "hk.dsl.placement", "hk.placement",
+        names=["Placement", "Digit", "xcd_count", "renumber", "xcd_range", "analyze", "choose",
+               "Analysis", "Choice", "check_kernel", "check_emitted", "emitted_decode",
+               "recording", "place_host", "MIN_STREAMS", "MIN_ROUNDS_NONUNIFORM"]))
     pages.append(page_ops(since))
     pages.append(page_templates(since))
     pages.append(page_schedules(since))

@@ -33,6 +33,16 @@ remaps:
 - `python -m hk.check FILE.py:NAME --placement --inputs ...` checks that a
   launch's placement covers its grid exactly once, evaluating the decode the
   kernel's own emitted ops compute ([check](docs/check.md#which-xcd-runs-which-workgroup---placement)).
+- **M2** (#65): K2 (`mxfp8`), K1 (`moe_a8w4`) and the stream-K plan take it too, so hk.ops has no
+  hand-written XCD remap left (and no `NUM_XCDS`); persistent kernels use
+  `hk.placement.renumber` / `hk.placement.xcd_range`. K2 at the 18 DSV4.1 points bitwise,
+  0.992-1.011; K1 bitwise, and **1.19-1.24x faster** at M where its old remap fell back to the
+  hardware's order (stage-1 grid not a multiple of 8: M 9500, 10000, 14000, 15001), within 0.1%
+  where it applied. `HK_XCDS=1` turns every placement off.
+- A user guide, [docs/placement.md](docs/placement.md) (when to use it, examples, the measured
+  tables, limits, turning it off); the design document rewritten as built; an
+  [hk.placement](docs/api/hk.placement.md) API page. `hk.Digit.of`'s radix may be spelled
+  `"tensor.dim"` (`"k.depth"`).
 
 **Fixes**
 - **gfx950: fp32 register tiles through LDS were FLAT loads and stores**
