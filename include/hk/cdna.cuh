@@ -3115,6 +3115,7 @@ __device__ static inline void store_elems(const GL &dst, const V &val, const I &
  * group's amax (run 8, xor 1 2), a 64-dim block's (run 2, xor 1 .. 16). */
 template<typename op, int SEQ, int... OFFS, ducks::rs::all RS>
 __device__ static inline void group_reduce_ordered(RS &dst, const RS &src) {
+    _Pragma("clang fp contract(off)")
     using T = typename RS::T;
     #pragma unroll
     for (int r = 0; r < RS::rows; r++) {
@@ -3281,6 +3282,7 @@ __device__ inline void strip_row_reduce(CV &dst, const RS &src, const CV &acc) {
 /// aiter's norms: sequential, then 32, 16, 8, 4, 2, 1).
 template<typename op, bool reset, bool SEQ, int... OFFS, ducks::rs::cv CV, ducks::rs::all RS>
 __device__ inline void strip_row_reduce_ordered(CV &dst, const RS &src, const CV &acc) {
+    _Pragma("clang fp contract(off)")
     static_assert(CV::length == RS::rows, "one value per row of the strip");
     using T = typename RS::T;
     constexpr int N = RS::chunks * RS::run;

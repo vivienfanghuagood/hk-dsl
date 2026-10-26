@@ -1618,8 +1618,11 @@ private:
             params.push_back("const auto x" + std::to_string(i));
             args.push_back(name(a));
           }
-          w("kittens::map_cpp(" + args[0] + ", [&](" + join(params) + ") { return (" +
-            o.getExpr().str() + "); }" +
+          // contraction off: the expression is compiled as written -- a product and a sum stay two
+          // roundings unless it says fmaf (HIP's __fmul_rn / __fadd_rn are plain operators clang may
+          // otherwise fuse, and whether it does changed with the code around it)
+          w("kittens::map_cpp(" + args[0] + ", [&](" + join(params) +
+            ") { _Pragma(\"clang fp contract(off)\") return (" + o.getExpr().str() + "); }" +
             (args.size() > 1 ? ", " + join(std::vector<std::string>(args.begin() + 1, args.end()))
                              : std::string()) +
             ");");

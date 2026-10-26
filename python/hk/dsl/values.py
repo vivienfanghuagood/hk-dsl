@@ -2024,8 +2024,9 @@ def map_cpp(expr: str, *args, dtype: Optional[DType] = None, name: str = "map") 
                        " + ((__builtin_bit_cast(int, x0) & 0x7FFFFF) != 0)", x, dtype=hk.i32)
 
     The strips have one shape and run; strips and result are fp32 or i32 (convert a 16-bit strip
-    with `.to` first). The expression is one C++ expression, compiled as written: no `;` or
-    braces, and the compiler, not hk, checks it."""
+    with `.to` first). The expression is one C++ expression, compiled as written -- with
+    floating-point contraction off, so `a * b + c` is two roundings and a fused multiply-add is
+    spelled `__builtin_fmaf` -- no `;` or braces, and the compiler, not hk, checks it."""
     from .arch import target  # noqa: PLC0415
 
     if target().wave != 64:
