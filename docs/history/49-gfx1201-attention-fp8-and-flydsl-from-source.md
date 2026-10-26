@@ -137,7 +137,24 @@ past the cache (`tools/rdna4-probes/fp8_decode3.py`).
   the same point, `tools/rdna4-probes/i8_sweep.py`) it ties, 1.02x. A tie
   is not a win.
 - **int4**: hk has no iu4 WMMA path; FlyDSL main does.
-- **The norms**: fused add + RMSNorm at 8192 rows 0.93x and rms_norm at 2048
-  rows 0.96x. In a probe of their own, the LDS reserve made at most 2% of
-  difference at 8192 rows and hk tied tuned Triton there (448 vs 447 us), so
-  the scoreboard's loss is in part where the row runs; not settled.
+
+## The norms, last
+
+The two norm losses were gfx1100's strip plan: 16 elements a lane (8 for the
+fused add), so a 4096-wide row on 8 warps. `tools/hk-bench/strip_plan.py` on
+the R9700 says what gfx950's measurement said: inside the cache, fewer warps
+a row -- 32 a lane at 2048 rows, 16-32 for the fused add at 32 rows -- and the
+fused add past the cache 16. `_STRIP_PER_LANE_AT_GFX1201` holds them (the
+wave32 plan now takes a measured per-lane target, as wave64's did). The
+scoreboard's norm and softmax rows after, against the best other arm:
+
+| | before | after |
+|---|---|---|
+| rms_norm 2048 rows | 21.4 us, **0.96x** | 19.9, 1.04x |
+| fused add + rms_norm 32 rows | 2.5, 1.30x | 2.4, 1.33x |
+| fused add + rms_norm 8192 rows | 481, **0.93x** | 447, tie (0.99x) |
+| softmax 2048 rows | 21.2, tie | 20.4, 1.04x |
+
+Every other norm and softmax row ties or wins as before. No row of the
+gfx1201 scoreboard is a loss now; the ties are rms_norm at 1 and 8192 rows,
+the fused add at 2048 and 8192, softmax at 8192, int8, and attention.
