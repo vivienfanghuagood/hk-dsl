@@ -64,6 +64,11 @@ def _check_map_dtype(op: str, ty) -> None:
             f"compile that names a template, not this line.")
 
 
+def _is_strip_tile(ty) -> bool:
+    """A strip tile (not a vector of one)."""
+    return isinstance(ty, RegTileType) and _is_strip(ty)
+
+
 def _is_strip(ty) -> bool:
     """A strip tile, or a vector of one."""
     if isinstance(ty, RegVecType):
@@ -447,7 +452,7 @@ class Global(Value):
         converted to `dtype` (fp32 or i32; default fp32, i32 for an i32 tensor). An index below
         zero or past the tensor reads 0 -- a table lookup with a fallback, a key table's slots.
         `idx` is an i32 strip (hk.map_cpp computes one)."""
-        if getattr(idx.ty, "run", None) is None or idx.ty.dtype.name != "i32":
+        if not _is_strip_tile(idx.ty) or idx.ty.dtype.name != "i32":
             raise TypeError(f"load_elems takes an i32 strip of indices, not {idx.ty}")
         dtype = (i32 if self.dtype is i32 else fp32) if dtype is None else dtype
         ty = RegTileType(dtype, idx.ty.rows, idx.ty.cols, idx.ty.layout, idx.ty.frag, run=idx.ty.run)
@@ -459,7 +464,7 @@ class Global(Value):
         i32 strip), converted to this tensor's type, to element `idx[r, c]` (flat, as
         load_elems). An index below zero or past the tensor writes nothing: -1 masks an element
         out. Two elements to one index race."""
-        if getattr(idx.ty, "run", None) is None or idx.ty.dtype.name != "i32":
+        if not _is_strip_tile(idx.ty) or idx.ty.dtype.name != "i32":
             raise TypeError(f"store_elems takes an i32 strip of indices, not {idx.ty}")
         t = _t()
         hkd.StoreElemsOp(self.v, val.v, idx.v, loc=t.loc())
@@ -1070,7 +1075,7 @@ class Tile(_Elementwise):
         from .arch import target  # noqa: PLC0415
 
         run = getattr(self.ty, "run", None)
-        if run is None:
+        if not _is_strip_tile(self.ty):
             raise TypeError(f"group_{kind} reduces a strip's lane groups (hk.RS), not {self.ty}")
         if target().wave != 64:
             raise TypeError(f"group_{kind} is gfx950's, not {target().arch}'s")
@@ -1094,7 +1099,7 @@ class Tile(_Elementwise):
         of lane `lanes[r, c]` (an i32 strip of this strip's shape, 0..63) -- ds_bpermute, one an
         element. A lane group's small-matrix work (a 4x4 Sinkhorn's row and column sums) without
         LDS. 32-bit elements."""
-        if getattr(self.ty, "run", None) is None or getattr(lanes.ty, "run", None) is None:
+        if not _is_strip_tile(self.ty) or not _is_strip_tile(lanes.ty):
             raise TypeError(f"lane_gather takes strips, not {self.ty} / {lanes.ty}")
         t = _t()
         return wrap(hkd.LaneGatherOp(mlir_type(self.ty), self.v, lanes.v, loc=t.loc("lg")).result, self.ty)
@@ -2042,7 +2047,7 @@ def iota(ty) -> Tile:
     index arithmetic (hk.map_cpp, load_elems / store_elems) and per-column choices (gfx950)."""
     from .arch import target  # noqa: PLC0415
 
-    if getattr(ty, "run", None) is None:
+    if not _is_strip_tile(ty):
         raise TypeError(f"hk.iota makes a strip (hk.RS), not {ty}")
     if target().wave != 64:
         raise TypeError(f"hk.iota is gfx950's, not {target().arch}'s")
@@ -2057,6 +2062,15 @@ def mfma_strip(kind: str, a: Tile, b: Tile, acc: Tile) -> Tile:
     rows 4 (l // 16) + i, column l % 16) + A B^T over K = 4, where lane l of `a` and `b`
     (hk.RS(fp32, 1, 64, 1)) holds A[l % 16][l // 16] and B[l % 16][l // 16] --
     v_mfma_f32_16x16x4_f32, nothing reordered. Returns the new accumulator."""
+    if kind != "f32_16x16x4":
+        raise ValueError(f"hk.mfma_strip({kind!r}): the one kind is \"f32_16x16x4\"")
+
+    def shaped(v, cols, run):
+        ty = v.ty
+        return (_is_strip_tile(ty) and ty.dtype.name == "fp32" and (ty.rows, ty.cols, ty.run) == (1, cols, run))
+    if not (shaped(a, 64, 1) and shaped(b, 64, 1) and shaped(acc, 256, 4)):
+        raise TypeError(f"hk.mfma_strip(\"f32_16x16x4\") takes a, b: hk.RS(fp32, 1, 64, 1) and acc: "
+                        f"hk.RS(fp32, 1, 256, 4), not {a.ty}, {b.ty}, {acc.ty}")
     t = _t()
     return wrap(hkd.MfmaStripOp(mlir_type(acc.ty), a.v, b.v, acc.v, kind, loc=t.loc("mfma")).result, acc.ty)
 

@@ -451,3 +451,62 @@ def test_map_cpp_wants_a_dtype_over_mixed_strips_and_takes_python_ints():
         o.at[0, 0].store(hk.map_cpp("x0 * x1 + x2", a, e, 3, dtype=hk.fp32))
     assert "kittens::map_cpp(" in hk.kernel(said, arch="gfx950", warps=1, name="said",
                                             grid=lambda p: (1, 1, 1)).source()
+
+
+# ---------------------------------------------------------------- strip index / lane ops
+
+def _src950(body):
+    return hk.kernel(body, arch="gfx950", warps=1, name=body.__name__, grid=lambda p: (1, 1, 1)).source()
+
+
+def test_the_strip_index_and_lane_ops_emit_their_cdna_calls():
+    def ops(x: hk.Tensor[hk.fp32], o: hk.Tensor[hk.fp32]):
+        a = x.at[0, 0].load(S64)
+        c = hk.iota(S64)
+        b = x.load_elems(c).lane_gather(hk.map_cpp("x0 / 8", c))
+        o.store_elems(b.group_sum(32, lanes="tree", xor=(2, 1)) + a.group_max(64), c)
+    src = _src950(ops)
+    for call in ("kittens::iota(", "kittens::load_elems(", "kittens::lane_gather(", "kittens::store_elems(",
+                 "group_reduce_ordered<"):
+        assert call in src, call
+
+
+@pytest.mark.parametrize("cols,xor,match", [(24, None, "lanes' runs"), (512, None, "lanes' runs"),
+                                            (32, (1, 1), "each once"), (32, (1, 4), "each once")])
+def test_a_group_is_a_power_of_two_lanes_with_each_offset_once(cols, xor, match):
+    def bad(x: hk.Tensor[hk.fp32], o: hk.Tensor[hk.fp32]):
+        o.at[0, 0].store(x.at[0, 0].load(S64).group_sum(cols, xor=xor))
+    with pytest.raises(ValueError, match=match):
+        _src950(bad)
+
+
+def test_elems_take_an_i32_strip_of_indices_and_iota_makes_a_strip():
+    def fidx(x: hk.Tensor[hk.fp32], o: hk.Tensor[hk.fp32]):
+        a = x.at[0, 0].load(S64)
+        o.at[0, 0].store(x.load_elems(a))
+    with pytest.raises(TypeError, match="i32 strip"):
+        _src950(fidx)
+
+    def tile(x: hk.Tensor[hk.fp32], o: hk.Tensor[hk.i32]):
+        o.at[0, 0].store(hk.iota(hk.RT(hk.fp32, 16, 16)))
+    with pytest.raises(TypeError, match="strip"):
+        _src950(tile)
+
+
+def test_mfma_strip_is_one_kind_in_its_lane_layout():
+    def mm(a: hk.Tensor[hk.fp32], o: hk.Tensor[hk.fp32]):
+        x = a.at[0, 0].load(hk.RS(hk.fp32, 1, 64, 1))
+        o.at[0, 0].store(hk.mfma_strip("f32_16x16x4", x, x, o.at[0, 0].load(hk.RS(hk.fp32, 1, 256, 4))))
+    assert "mfma_strip_f32_16x16x4(" in _src950(mm)
+
+    def wide(a: hk.Tensor[hk.fp32], o: hk.Tensor[hk.fp32]):
+        x = a.at[0, 0].load(hk.RS(hk.fp32, 1, 128, 1))
+        o.at[0, 0].store(hk.mfma_strip("f32_16x16x4", x, x, o.at[0, 0].load(hk.RS(hk.fp32, 1, 256, 4))))
+    with pytest.raises(TypeError, match="RS\\(fp32, 1, 64, 1\\)"):
+        _src950(wide)
+
+    def kind(a: hk.Tensor[hk.fp32], o: hk.Tensor[hk.fp32]):
+        x = a.at[0, 0].load(hk.RS(hk.fp32, 1, 64, 1))
+        o.at[0, 0].store(hk.mfma_strip("f32_32x32x2", x, x, o.at[0, 0].load(hk.RS(hk.fp32, 1, 256, 4))))
+    with pytest.raises(ValueError, match="one kind"):
+        _src950(kind)
