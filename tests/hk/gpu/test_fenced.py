@@ -553,7 +553,9 @@ def test_mxfp8_route_at_ragged_m():
     from hk.ops import mxfp8
 
     for (n, k), ms in {(1792, 5120): (2049, 2111), (2304, 5120): (2049,),
-                       (5120, 4096): (5121, 8193), (16384, 1280): (2049, 16447)}.items():
+                       (5120, 4096): (5121, 8193), (16384, 1280): (2049, 16447),
+                       # their own smallest M (MIN_M_NK): the indexer's wq_b, engram's wkv
+                       (4096, 1280): (2825, 3073), (12800, 6144): (1025, 2047)}.items():
         w = torch.randn(n, k, device="cuda").to(torch.float8_e4m3fn)
         ws = torch.full((n // 32, k // 32), 127, device="cuda", dtype=torch.uint8)
         rows = mxfp8.expand_block_scales(ws)[:n]
@@ -630,6 +632,29 @@ def test_gemm_cdna_candidates_at_ragged_m():
 
 
 @gfx950
+def test_gemm_route_around_a_refused_candidate():
+    """hk.ops.gemm.matmul where the table routes to dp128x224, at ragged M: under the vLLM
+    image's hipcc the spill gate refuses it and the call takes the next candidate (in
+    rocm/pytorch it runs); then with dp128x224 refused in either."""
+    fenced_cases(COMMON, {"gemm route around a refused candidate": """
+    from hk.ops import gemm, gemm_cdna
+
+    def check(m, n, k):
+        a = rnd(m, k); b = rnd(n, k, scale=k ** -0.5)
+        want = a.float().cpu() @ b.float().cpu().T
+        got = step(f"matmul M{m} N{n} K{k} {gemm_cdna.route(m, n, k)}",
+                   lambda: gemm.matmul(a, b))
+        rel(f"matmul M{m} N{n} K{k}", got, want, 2e-2)
+
+    for m, n in ((257, 28672), (511, 14336)):
+        check(m, n, 4096)
+    print(f"refused by this build: {gemm_cdna._REFUSED}", flush=True)
+    gemm_cdna._REFUSED.setdefault("dp128x224", "refused by the test")
+    check(193, 28672, 4096)
+    """})
+
+
+@gfx950
 def test_moe_route_at_ragged_m():
     """vllm_moe_a8w4's hk path (AITER's sort and quant, hk's stages) at ragged M, uniform and
     skewed routing."""
@@ -648,7 +673,7 @@ def test_moe_route_at_ragged_m():
     w2s = shuffle_weight(w2.view(f4), layout=(16, 16), is_guinterleave=True, gate_up=False)
     sc1 = shuffle_scale(s1, experts_cnt=e, is_guinterleave=True, gate_up=True)
     sc2 = shuffle_scale(s2, experts_cnt=e, is_guinterleave=True, gate_up=False)
-    for m in (8193, 8255):
+    for m in (4097, 5437, 8193, 8255):     # from MIN_M (4096); 5437: a serving chunk's M
         x = torch.randn(m, k, device="cuda").bfloat16()
         wt = torch.full((m, topk), 1.0 / topk, device="cuda")
         ids = torch.rand(m, e, device="cuda").topk(topk, 1).indices.to(torch.int32)

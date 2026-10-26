@@ -62,6 +62,45 @@ def test_the_wave_split_is_right(name, m, n, k, cus, monkeypatch):
     _check(name, m, n, k)
 
 
+def test_a_kernel_the_spill_gate_refuses_falls_back(monkeypatch, capfd):
+    """ROCm 10's hipcc spills dp128x224 (13 VGPRs, 44 B/lane) and the spill gate
+    refuses it; matmul at a shape the table routes there raised (scoreboard-mi355x
+    repro). Here the gate is made to see that spill whatever this hipcc builds: the
+    candidate is refused, never launched, and the call is the next candidate's, right."""
+    from hk.ops import gemm_cdna_dp
+    from hk.runtime import resources
+    from hk.runtime.resources import ResourceError
+
+    real_gate = resources.gate
+
+    def gate(kernels, **kw):
+        spilt = [resources.KernelResources(**{**r.__dict__, "vgpr_spill": 13, "scratch": 44})
+                 if "gemm_cdna_dp_128x224x64" in r.name else r for r in kernels]
+        return real_gate(spilt, **kw)
+
+    monkeypatch.setattr(resources, "gate", gate)
+    monkeypatch.setattr(gemm_cdna_dp, "_KERNELS", {})      # built anew, so gated anew
+    monkeypatch.setattr(gemm_cdna, "_REFUSED", {})
+    m, n, k = 256, 28672, 4096
+    assert gemm_cdna.route(m, n, k) == "dp128x224"
+    g = torch.Generator(device="cuda").manual_seed(1)
+    a = torch.randn(m, k, device="cuda", dtype=torch.bfloat16, generator=g)
+    b = torch.randn(n, k, device="cuda", dtype=torch.bfloat16, generator=g) * k ** -0.5
+    got = gemm_cdna.matmul(a, b)
+    torch.cuda.synchronize()
+    assert "dp128x224" in gemm_cdna._REFUSED
+    assert "spill vgpr=13" in gemm_cdna._REFUSED["dp128x224"]
+    assert "refused by this toolchain's build" in capfd.readouterr().err
+    assert gemm_cdna.route(m, n, k) == "pp128"
+    ref = a.float() @ b.float().t()
+    err = ((got.float() - ref).abs().max() / ref.abs().max()).item()
+    assert err < 1e-2, err
+    # asked for by name, the refused candidate raises at once (no second build)
+    with pytest.raises(ResourceError, match="refused"):
+        gemm_cdna.run("dp128x224", a, b, torch.empty_like(got))
+    assert torch.equal(gemm_cdna.matmul(a, b), got)               # deterministic, no rebuild
+
+
 def test_the_router_is_right_where_it_routes():
     for (m, n, k) in [(7, 4096, 4096), (300, 4096, 14336), (2048, 4096, 14336),
                       (4096, 4224, 1024)]:
