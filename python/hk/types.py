@@ -175,9 +175,10 @@ class RegTileType(Type):
         if self.run not in (1, 2, 4, 8, 16):
             raise ValueError(f"strip run={self.run}: a power of two of at most 16 "
                              f"elements, 8 for the 16-byte access a bf16 row wants")
-        if self.dtype.bits not in (16, 32) or self.dtype.kind != "float":
-            raise TypeError(f"there is no {self.dtype} strip: rs holds bf16, fp16 "
-                            f"and fp32 elements")
+        if not ((self.dtype.bits in (16, 32) and self.dtype.kind == "float")
+                or self.dtype.name == "i32"):
+            raise TypeError(f"there is no {self.dtype} strip: rs holds bf16, fp16, fp32 "
+                            f"and (gfx950, for hk.map_cpp's integer work) i32 elements")
         if self.rows <= 0:
             raise ValueError(f"strip rows={self.rows}: at least one")
         if self.cols <= 0 or self.cols % self.span:

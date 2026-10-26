@@ -389,3 +389,49 @@ def test_the_ordered_sum_keeps_a_products_rounding():
     # the summands are laundered so that HIP's contraction cannot fuse a product into the sum
     src = _ordered().source()
     assert "kittens::row_sum_ordered<1, 32, 16, 8, 4, 2, 1>(" in src
+
+
+# ---------------------------------------------------------------- hk.map_cpp
+
+def _mapped():
+    def mapped(x: hk.Tensor[hk.fp32], o: hk.Tensor[hk.i32]):
+        v = x.at[hk.arch.block_idx.x, 0].load(S64)
+        e = hk.map_cpp("(__builtin_bit_cast(int, x0) >> 23) & 0xFF", v, dtype=hk.i32)
+        o.at[hk.arch.block_idx.x, 0].store(e)
+    return hk.kernel(mapped, arch="gfx950", warps=1, name="mapped", grid=lambda p: (p.x.rows, 1, 1))
+
+
+def test_map_cpp_emits_the_expression_as_a_lambda():
+    src = _mapped().source()
+    assert "kittens::map_cpp(" in src
+    assert "[&](const auto x0) { return ((__builtin_bit_cast(int, x0) >> 23) & 0xFF); }" in src
+
+
+@pytest.mark.parametrize("expr", ["x0; x0", "{x0}", "  "])
+def test_map_cpp_is_one_expression(expr):
+    def bad(x: hk.Tensor[hk.fp32], o: hk.Tensor[hk.fp32]):
+        v = x.at[0, 0].load(S64)
+        o.at[0, 0].store(hk.map_cpp(expr, v))
+    with pytest.raises(ValueError, match="one C\\+\\+ expression"):
+        hk.kernel(bad, arch="gfx950", warps=1, name="bad", grid=lambda p: (1, 1, 1)).source()
+
+
+def test_map_cpp_wants_matching_fp32_or_i32_strips_on_gfx950():
+    def shapes(x: hk.Tensor[hk.fp32], o: hk.Tensor[hk.fp32]):
+        a = x.at[0, 0].load(S64)
+        b = x.at[0, 0].load(hk.RS(hk.fp32, 1, 1024, 8))
+        o.at[0, 0].store(hk.map_cpp("x0 + x1", a, b))
+    with pytest.raises(TypeError, match="shape and run"):
+        hk.kernel(shapes, arch="gfx950", warps=1, name="shapes", grid=lambda p: (1, 1, 1)).source()
+
+    def bf(x: hk.Tensor[hk.bf16], o: hk.Tensor[hk.fp32]):
+        a = x.at[0, 0].load(hk.RS(hk.bf16, 1, 512, 8))
+        o.at[0, 0].store(hk.map_cpp("x0", a, dtype=hk.fp32))
+    with pytest.raises(TypeError, match="fp32 or i32"):
+        hk.kernel(bf, arch="gfx950", warps=1, name="bf", grid=lambda p: (1, 1, 1)).source()
+
+    def w32(x: hk.Tensor[hk.fp32], o: hk.Tensor[hk.fp32]):
+        a = x.at[0, 0].load(hk.RS(hk.fp32, 1, 256))
+        o.at[0, 0].store(hk.map_cpp("x0", a))
+    with pytest.raises(TypeError, match="gfx950"):
+        hk.kernel(w32, arch="gfx1100", warps=1, name="w32", grid=lambda p: (1, 1, 1)).source()

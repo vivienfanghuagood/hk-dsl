@@ -752,6 +752,32 @@ HK_UNARY_VERIFY(SiluOp)
 HK_UNARY_VERIFY(StepOp)
 #undef HK_UNARY_VERIFY
 
+LogicalResult MapCppOp::verify() {
+  auto res = getResult().getType();
+  auto rt = dyn_cast<RegTileType>(res);
+  if (!rt || !rt.isStrip())
+    return emitOpError("makes a strip, not ") << res;
+  auto okElem = [](Type t) { return t.isF32() || t.isInteger(32); };
+  if (!okElem(rt.getElementType()))
+    return emitOpError("makes an fp32 or i32 strip, not ") << res;
+  StringRef e = getExpr();
+  if (e.trim().empty() || e.contains(';') || e.contains('{') || e.contains('}'))
+    return emitOpError("expr is one C++ expression: no ';' and no braces");
+  for (auto [i, a] : llvm::enumerate(getArgs())) {
+    auto t = dyn_cast<RegTileType>(a.getType());
+    if (!t)
+      continue;  // an i32 / f32 scalar
+    if (!t.isStrip() || t.getRows() != rt.getRows() || t.getCols() != rt.getCols() ||
+        t.getRun() != rt.getRun())
+      return emitOpError("argument x") << i << " is " << t
+             << "; every strip argument has the result's shape and run, " << res;
+    if (!okElem(t.getElementType()))
+      return emitOpError("argument x") << i << " is " << t
+             << ": strip arguments are fp32 or i32 (convert a 16-bit strip with .to)";
+  }
+  return success();
+}
+
 LogicalResult SwapHalvesOp::verify() {
   if (failed(verifyUnary(*this)))
     return failure();
