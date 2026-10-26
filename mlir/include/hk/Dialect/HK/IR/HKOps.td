@@ -937,12 +937,15 @@ def HK_LoadElemsOp : HK_Op<"load_elems"> {
     Element (r, c) of the result is element `idx[r, c]` of `src`, counted
     flat over the tensor (rows over batch and depth, at the row stride) and
     converted to the result's type; an index below zero or past the tensor
-    reads 0. `idx` is an i32 strip of the result's shape and run.
+    reads 0. `idx` is an i32 strip of the result's shape and run. `row`: the
+    indices count from row `row` (its base formed in 64 bits), as for
+    hk.store_elems.
   }];
-  let arguments = (ins HK_GlobalType:$src, HK_RegTileType:$idx, DefaultValuedAttr<I64Attr, "0">:$aux);
+  let arguments = (ins HK_GlobalType:$src, HK_RegTileType:$idx, DefaultValuedAttr<I64Attr, "0">:$aux,
+                       Optional<I32>:$row);
   let results = (outs HK_RegTileType:$result);
   let assemblyFormat = [{
-    $src `[` $idx `]` attr-dict `:` qualified(type($src)) `,` qualified(type($idx)) `->` qualified(type($result))
+    $src `[` $idx `]` (`row` $row^)? attr-dict `:` qualified(type($src)) `,` qualified(type($idx)) `->` qualified(type($result))
   }];
   let hasVerifier = 1;
 }

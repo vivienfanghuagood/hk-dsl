@@ -158,6 +158,9 @@ _LDS_LOAD = re.compile(r"^ds_(read|load|bpermute|permute|swizzle)|^ds_\w*_rtn_")
 _VMEM_LOAD = re.compile(r"^(buffer|global|flat|scratch)_load")
 _STORE = re.compile(r"^(buffer|global|flat|scratch)_store|^ds_(write|store)")
 _VMEM_ATOMIC = re.compile(r"^(buffer|global|flat)_atomic")
+#: Distinct in-flight states the wait scan follows into one instruction (paths that differ in
+#: what they have in flight); past it, the first ones.
+_MAX_PATHS = 16
 
 
 def _regs(operand: str) -> Set[Tuple[str, int]]:
@@ -290,23 +293,52 @@ def wait_hazards(insts: Sequence[Inst], arch: str = "", limit: int = 50,
                  benign: Optional[List[str]] = None) -> List[str]:
     """Reads of a VGPR/AGPR a load is still writing, as 'reader  <- load'.
 
-    One walk in program order, then each loop (a backward branch) walked
-    again from the state at its branch, so a load at a loop's bottom that is
-    consumed at its top is seen."""
+    One walk in program order over the states that reach each instruction: a
+    forward branch carries its state to its target, and the instruction after
+    an s_branch is reached by jumps only (walking straight on from the code
+    before it reported that code's loads against a block they never reach).
+    Then each loop (a backward branch) walked again from the states at its
+    branch, so a load at a loop's bottom that is consumed at its top is seen."""
     w = _Walker(stores_in_vmcnt=arch.startswith("gfx9"), limit=limit)
-    st = ([], [])
+
+    def key(st):
+        return tuple(tuple((tuple(sorted(d)), l) for d, l in q) for q in st)
+
+    def merge(sts):
+        out = {}
+        for st in sts:
+            out.setdefault(key(st), st)
+        return list(out.values())[:_MAX_PATHS]
+
+    def step(sts, ins):
+        prev = w.prev
+        out = []
+        for st in sts:
+            w.prev = prev
+            out.append(w._step(st, ins))
+        w.prev = ins.text
+        return merge(out)
+
+    sts = [([], [])]
     at_branch = {}
+    ahead: Dict[int, list] = {}
     index = {ins.addr: i for i, ins in enumerate(insts)}
     for i, ins in enumerate(insts):
-        st = w.step(st, ins)
+        if ins.addr in ahead:
+            sts = merge(sts + ahead.pop(ins.addr))
+        sts = step(sts, ins)
         nxt = insts[i + 1].addr if i + 1 < len(insts) else ins.addr + 4
         tgt = _branch_target(ins, nxt)
+        if tgt is not None and tgt > ins.addr:
+            ahead.setdefault(tgt, []).extend(sts)
         if tgt is not None and tgt <= ins.addr and tgt in index:
-            at_branch[i] = (index[tgt], st)
-    for j, (i, st) in at_branch.items():
+            at_branch[i] = (index[tgt], sts)
+        if ins.mnem == "s_branch":
+            sts = []
+    for j, (i, sts) in at_branch.items():
         w.prev = None
         for ins in insts[i:j + 1]:
-            st = w.step(st, ins)
+            sts = step(sts, ins)
     if benign is not None:
         benign.extend(w.benign)
     return w.found

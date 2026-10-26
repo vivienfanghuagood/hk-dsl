@@ -83,3 +83,19 @@ def test_copies_into_lds_count_on_vmcnt():
     read = "v_and_b32_e32 v59, 0xffff0000, v31"
     assert not wait_hazards(_code(q, dma, dma, "s_waitcnt vmcnt(2)", read), arch="gfx950")
     assert wait_hazards(_code(q, dma, dma, "s_waitcnt vmcnt(3)", read), arch="gfx950")
+
+
+def test_a_load_does_not_reach_past_an_unconditional_branch():
+    # 8 bytes an instruction: a branch at instruction i to instruction k is s_branch 2 (k - i - 1).
+    code = _code("ds_read_b32 v0, v0", "s_branch 4", "v_lshlrev_b32_e32 v5, 5, v0",
+                 "s_endpgm", "s_waitcnt lgkmcnt(0)", "v_mov_b32 v9, v0")
+    assert not wait_hazards(code)
+
+
+def test_a_forward_branch_carries_its_loads_to_its_target():
+    code = _code("ds_read_b32 v0, v8", "s_cbranch_scc1 4", "s_waitcnt lgkmcnt(0)", "s_branch 0",
+                 "v_mov_b32 v9, v0", "s_endpgm")
+    assert wait_hazards(code)                         # scc1: v0 is read unretired
+    retired = _code("ds_read_b32 v0, v8", "s_waitcnt lgkmcnt(0)", "s_cbranch_scc1 2", "s_branch 0",
+                    "v_mov_b32 v9, v0", "s_endpgm")
+    assert not wait_hazards(retired)

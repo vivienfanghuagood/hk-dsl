@@ -1592,7 +1592,8 @@ private:
         .Case([&](LoadElemsOp o) {
           Value d = dest(Value(), o.getResult());
           w("kittens::load_elems<" + std::to_string(o.getAux()) + ">(" + name(d) + ", " +
-            name(o.getSrc()) + ", " + name(o.getIdx()) + ");");
+            name(o.getSrc()) + ", " + name(o.getIdx()) +
+            (o.getRow() ? ", " + name(o.getRow()) : std::string()) + ");");
         })
         .Case([&](StoreElemsOp o) {
           w(std::string("kittens::store_elems") + (o.getRuns() ? "_runs" : "") + "<" +

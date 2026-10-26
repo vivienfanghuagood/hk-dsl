@@ -3247,6 +3247,16 @@ template<int AUX = 0, ducks::gl::all GL, ducks::rs::all V, ducks::rs::all I>
 __device__ static inline void store_elems(const GL &dst, const V &val, const I &idx) {
     store_elems<AUX>(dst, val, idx, detail::hk_elems_srsrc(dst));
 }
+/** @brief load_elems, the indices counting from row `row` (hk_elems_srsrc_row). */
+template<int AUX = 0, ducks::rs::all D, ducks::gl::all GL, ducks::rs::all I>
+__device__ static inline void load_elems(D &dst, const GL &src, const I &idx, int row) {
+    using U = typename GL::dtype;
+    const detail::hk_i32x4 r = detail::hk_elems_srsrc_row(src, row);
+    detail::strip_each<D>([&](int a, int j, int e) {
+        dst.data[a][j][e] = detail::hk_cvt<typename D::T, U>(
+            detail::hk_buf_load_elem<U, AUX>(r, detail::hk_elem_off(idx.data[a][j][e], sizeof(U))));
+    });
+}
 /** @brief store_elems, the indices counting from row `row` (hk_elems_srsrc_row). */
 template<int AUX = 0, ducks::gl::all GL, ducks::rs::all V, ducks::rs::all I>
 __device__ static inline void store_elems(const GL &dst, const V &val, const I &idx, int row) {
