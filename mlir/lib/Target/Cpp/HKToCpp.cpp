@@ -1557,6 +1557,14 @@ private:
           Value d = dest(o.getDst(), o.getResult());
           call("copy", d, {name(o.getSrc())});
         })
+        .Case([&](Fp4OperandOp o) {
+          Value d = dest(Value(), o.getResult());
+          w("kittens::fp4_operand(" + name(d) + ", " + name(o.getWords()) + ");");
+        })
+        .Case([&](MxScalesLooseOp o) {
+          Value d = dest(Value(), o.getResult());
+          w("kittens::mx_scales_loose(" + name(d) + ", " + name(o.getBytes()) + ");");
+        })
         .Case([&](LaneGatherOp o) {
           Value d = dest(Value(), o.getResult());
           w("kittens::lane_gather(" + name(d) + ", " + name(o.getSrc()) + ", " + name(o.getLanes()) + ");");
@@ -1582,6 +1590,9 @@ private:
           Value d = dest(Value(), o.getResult());
           w(std::string("kittens::lds_load_elems") + (o.getRuns() ? "_runs" : "") + "(" + name(d) + ", " +
             name(o.getSrc()) + ", " + name(o.getIdx()) + ");");
+        })
+        .Case([&](LdsAtomicAddElemsOp o) {
+          w("kittens::lds_atomic_add_elems(" + name(o.getDst()) + ", " + name(o.getVal()) + ", " + name(o.getIdx()) + ");");
         })
         .Case([&](LdsStoreElemsOp o) {
           w("kittens::lds_store_elems(" + name(o.getDst()) + ", " + name(o.getVal()) + ", " + name(o.getIdx()) + ");");

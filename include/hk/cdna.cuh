@@ -3230,6 +3230,36 @@ __device__ static inline void lds_store_elems(ST &dst, const V &val, const I &id
         }
     });
 }
+/** @brief hk.fp4_operand: a lane's four dwords (i32 strip 1 x 256, run 4) as the first four dwords of a 16x128
+ * fp8 fragment, the FP4 operand container of mma_ABt_mx(..., fp4). */
+template<typename RT, ducks::rs::all S>
+__device__ static inline void fp4_operand(RT &dst, const S &src) {
+    static_assert(RT::height == 1 && RT::width == 1, "one 16x128 fragment");
+    int w[4];
+    #pragma unroll
+    for (int e = 0; e < 4; e++) w[e] = int(src.data[0][0][e]);
+    __builtin_memcpy(&dst.tiles[0][0].data[0], w, 16);
+}
+/** @brief hk.mx_scales_loose: a lane's element (i32 strip 1 x 64, the E8M0 byte in bits 0..7) as the loose scale
+ * register of row lane % 16, block lane / 16 of a 16x128 operand. */
+template<ducks::rs::all S>
+__device__ static inline void mx_scales_loose(hk_mxs<16, 4, 1> &dst, const S &src) {
+    dst.reg[0][0] = uint32_t(int(src.data[0][0][0]) & 0xFF);
+}
+/** @brief hk lds_atomic_add_elems: val(r, c) (i32) added atomically (ds_add_u32) to dst's element idx(r, c) as
+ * an i32 (row-major; OOB: none). */
+template<typename ST, ducks::rs::all V, ducks::rs::all I>
+__device__ static inline void lds_atomic_add_elems(ST &dst, const V &val, const I &idx) {
+    constexpr int N = ST::rows * ST::cols;
+    detail::strip_each<V>([&](int a, int j, int e) {
+        const int k = idx.data[a][j][e];
+        if (k >= 0 && k < N) {
+            typedef __attribute__((address_space(3))) int lds_int;
+            __hip_atomic_fetch_add((lds_int *)detail::hk_st_elem(dst, k / ST::cols, k % ST::cols),
+                                   int(val.data[a][j][e]), __ATOMIC_RELAXED, __HIP_MEMORY_SCOPE_WORKGROUP);
+        }
+    });
+}
 /** @brief hk.iota: element (r, c) = c, the column a lane's run element sits in. */
 template<ducks::rs::all D>
 __device__ static inline void iota(D &dst) {

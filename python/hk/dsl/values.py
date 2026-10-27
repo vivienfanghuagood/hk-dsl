@@ -1652,6 +1652,18 @@ class SharedTile(Value):
         t = _t()
         hkd.LdsStoreElemsOp(self.v, val.v, idx.v, loc=t.loc())
 
+    def atomic_add_elems(self, val: "Tile", idx: "Tile") -> None:
+        """Element by element, atomically (gfx950): val's element (r, c), an i32, is added to element
+        `idx[r, c]` of this fp32 LDS tile taken as an i32 (ds_add_u32); below zero or past the tile,
+        nothing. Every element to one index lands: a histogram's counts. Read the counts with
+        load_elems(..., i32) after hk.arch.barrier(drain=True)."""
+        if getattr(idx.ty, "run", None) is None or idx.ty.dtype.name != "i32":
+            raise TypeError(f"atomic_add_elems takes an i32 strip of indices, not {idx.ty}")
+        if val.ty.dtype.name != "i32":
+            raise TypeError(f"atomic_add_elems adds i32 values, not {val.ty.dtype.name}")
+        t = _t()
+        hkd.LdsAtomicAddElemsOp(self.v, val.v, idx.v, loc=t.loc())
+
     def subtile(self, rows: int, cols: int, row: Scalar = 0,
                 col: Scalar = 0) -> "SharedTile":
         """A rows x cols window, indexed in units of itself; a view, so the
@@ -1865,6 +1877,32 @@ def load_fp4_frags_lds(ty, src: "SharedTile", row0, chunk0, *, into=None) -> "Ti
         raise TypeError(f"load_fp4_frags_lds: an fp8-typed LDS tile of whole 1 KB rows, not {src!r}")
     return _make(hkd.LoadFp4FragsLdsOp, ty, (src.v, as_int(row0).v, as_int(chunk0).v),
                  into=into, name="w4l")
+
+
+def fp4_operand(words: Tile) -> Tile:
+    """An MXFP4 operand fragment from a lane's four dwords (gfx950): `words`, an i32 strip of 1 x 256
+    with run 4, becomes a 16x128 fp8 e4m3 row tile -- the FP4 container `mma_ABt_mx(..., a_fmt /
+    b_fmt="fp4")` reads, lane l's 32 values being row l % 16, columns 32 (l / 16) .. + 32. For
+    operands gathered with load_elems(runs=True) from a layout no tile load knows (a preshuffled
+    paged cache: a lane's 16 bytes are one token's 32 dims)."""
+    if (getattr(words.ty, "run", None) != 4 or words.ty.dtype is not i32 or words.ty.rows != 1
+            or words.ty.cols != 256):
+        raise TypeError(f"fp4_operand: an i32 strip of 1 x 256, run 4 (four dwords a lane), not {words.ty}")
+    t = _t()
+    ty = RegTileType(fp8e4m3, 16, 128, "row")
+    return wrap(hkd.Fp4OperandOp(mlir_type(ty), words.v, loc=t.loc("fp4")).result, ty)
+
+
+def mx_scales_loose(bytes_: Tile) -> MxScales:
+    """Loose E8M0 scales of a 16x128 operand from a lane's element (gfx950): `bytes_`, an i32 strip of
+    1 x 64 with run 1 holding the byte in bits 0..7, is lane l's scale -- row l % 16, block l / 16."""
+    if (getattr(bytes_.ty, "run", None) != 1 or bytes_.ty.dtype is not i32 or bytes_.ty.rows != 1
+            or bytes_.ty.cols != 64):
+        raise TypeError(f"mx_scales_loose: an i32 strip of 1 x 64, run 1, not {bytes_.ty}")
+    t = _t()
+    ty = MxScalesType(16, 4, 1)
+    op = hkd.MxScalesLooseOp(mlir_type(ty), bytes_.v, loc=t.loc("mxs"))
+    return MxScales(op.result, ty)
 
 
 def mma_ABt_mx(a: Tile, b: Tile, acc: Tile, sa: MxScales, sb: MxScales, *, into=None,

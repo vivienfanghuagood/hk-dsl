@@ -3411,6 +3411,19 @@ another warp reads it: hk.arch.barrier(drain=True). A bf16 tile takes the fp32 v
 rounded to bf16 (round to nearest even) -- an MMA operand built element by element, read
 back with `.load` / `.subtile(...).load`.
 
+#### `SharedTile.atomic_add_elems`
+
+```python
+SharedTile.atomic_add_elems(self, val: Tile, idx: Tile) -> None
+```
+
+*New after 0.5.0*
+
+Element by element, atomically (gfx950): val's element (r, c), an i32, is added to element
+`idx[r, c]` of this fp32 LDS tile taken as an i32 (ds_add_u32); below zero or past the tile,
+nothing. Every element to one index lands: a histogram's counts. Read the counts with
+load_elems(..., i32) after hk.arch.barrier(drain=True).
+
 #### `SharedTile.subtile`
 
 ```python
@@ -3657,7 +3670,7 @@ are bounded: any non-empty length. head_dim is 64 or 128 on both.
 
 ## Also exported
 
-`hk.iota`, `hk.map_cpp`, `hk.mfma_strip`, `hk.mx`, `hk.templates`, `hk.uniform`
+`hk.fp4_operand`, `hk.iota`, `hk.map_cpp`, `hk.mfma_strip`, `hk.mx`, `hk.mx_scales_loose`, `hk.templates`, `hk.uniform`
 
 
 <!-- docs/api/hk.math.md -->
