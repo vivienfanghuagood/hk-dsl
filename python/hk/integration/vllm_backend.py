@@ -163,6 +163,51 @@ def _op(kind: str, head_dim: int, splits: int):
     return op
 
 
+def _split_ops(head_dim: int, scale: float):
+    """gfx950's KV-split prefill and its merge (attn_cdna.split_kernels_for)
+    as torch ops."""
+    op = _OPS.get(("prefill_split", head_dim, scale))
+    if op is None:
+        from ..ops import attn_cdna
+        from ..runtime.torch_ext import launcher
+
+        walk, merge = attn_cdna.split_kernels_for(head_dim, scale)
+        op = _OPS[("prefill_split", head_dim, scale)] = (launcher(walk), launcher(merge))
+    return op
+
+
+def _split_plan(common_attn_metadata, qs, nd: int, n_pf: int, device, n_kv_heads: int = 8):
+    """The prefill's KV-split plan on gfx950 (hk.ops.paged_prefill.split_plan)
+    when it cuts a long walk -- or, on one or two kv heads, whatever it plans:
+    its tiles longest first across requests take 1.2-1.4x off a batch of
+    prompts there (eight warps of query heads a request leave a tail), where
+    on more kv heads that order cost 2-4% of L2 reuse -- else None. Needs the
+    prefill rows' lengths on the host (vLLM's seq_lens_cpu_upper_bound,
+    precise for prefill rows)."""
+    from ..ops import paged_prefill as hk_prefill
+
+    seq = getattr(common_attn_metadata, "seq_lens_cpu_upper_bound", None)
+    if seq is None or not hk_prefill._native_cdna():
+        return None
+    seq = seq.tolist()
+    reqs = [(r, seq[r] - (qs[r + 1] - qs[r]), qs[r + 1] - qs[r], qs[r])
+            for r in range(nd, nd + n_pf)]
+    plan = hk_prefill.split_plan(reqs, _attention_heads(), device)
+    return plan if plan[2] or n_kv_heads <= 2 else None
+
+
+def _attention_heads() -> int:
+    """The engine's query heads a rank, for the prefill split plan's fill (a
+    guess outside one: the plan is only a choice of how to cut the walk)."""
+    try:
+        from vllm.config import get_current_vllm_config
+
+        cfg = get_current_vllm_config()
+        return int(cfg.model_config.get_num_attention_heads(cfg.parallel_config))
+    except Exception:            # noqa: BLE001 -- no engine: a bench, a test
+        return 32
+
+
 def _prefill_op(head_dim: int, group: int, scale: float):
     op = _OPS.get(("prefill", head_dim, group, scale))
     if op is None:
@@ -412,11 +457,17 @@ def _build():
                         common_attn_metadata, decode_threshold=1)
                     md.hk_num_decodes = nd
                     md.hk_prefill_tiles = None
+                    md.hk_prefill_split = None
                     if n_pf:
                         qs = common_attn_metadata.query_start_loc_cpu.tolist()
-                        md.hk_prefill_tiles = hk_prefill.work_list(
-                            [(r, qs[r + 1] - qs[r]) for r in range(nd, nd + n_pf)],
-                            self.device)
+                        spec = getattr(self, "kv_cache_spec", None)
+                        md.hk_prefill_split = _split_plan(
+                            common_attn_metadata, qs, nd, n_pf, self.device,
+                            getattr(spec, "num_kv_heads", 8))
+                        if md.hk_prefill_split is None:
+                            md.hk_prefill_tiles = hk_prefill.work_list(
+                                [(r, qs[r + 1] - qs[r]) for r in range(nd, nd + n_pf)],
+                                self.device)
                     return md
 
             _BUILDER.append(HKAttentionMetadataBuilder)
@@ -601,11 +652,35 @@ def _build():
                 self._decode_all(query, output, k_cache, v_cache,
                                  attn_metadata, nd, layer)
             tiles = getattr(attn_metadata, "hk_prefill_tiles", None)
+            split = getattr(attn_metadata, "hk_prefill_split", None)
             if tiles is not None:
                 self._prefill(query, output, k_cache, v_cache, attn_metadata,
                               n, tiles)
                 PATCH.count("prefill")
+            elif split is not None:
+                self._prefill_split(query, output, k_cache, v_cache, attn_metadata,
+                                    n, split)
+                PATCH.count("prefill")
             return output
+
+        def _prefill_split(self, query, output, k_cache, v_cache, attn_metadata, n,
+                           split):
+            """The prefill with its long walks cut (hk.ops.paged_prefill.
+            split_plan): the walk writes the uncut tiles' answers and the cut
+            ones' partials, the merge weighs those."""
+            from ..ops import paged_prefill as hk_prefill
+
+            h, d = self.num_heads, self.head_size
+            if not self._checked:
+                self._check(attn_metadata.block_table, attn_metadata.seq_lens)
+            tiles, mlist, n_merge, n_slots = split
+            o_part, ml_part = hk_prefill.split_scratch(n_slots, h, d, query.device)
+            walk, merge = _split_ops(d, self.scale)
+            q2, o2 = query[:n].view(n, h * d), output[:n].view(n, h * d)
+            walk(q2, k_cache, v_cache, attn_metadata.block_table, attn_metadata.seq_lens,
+                 attn_metadata.query_start_loc, tiles, o2, o_part, ml_part)
+            if n_merge:
+                merge(mlist, o_part, ml_part, o2)
 
         def _prefill(self, query, output, k_cache, v_cache, attn_metadata, n,
                      tiles):

@@ -346,7 +346,11 @@ decodes first by the builder:
 * **Prefill**: `hk.ops.paged_prefill`, one launch for every prefill request
   in the step, reading K/V through the page table. A cached prefix or an
   earlier chunk is just context in front of the new tokens, so prefix caching
-  and chunked prefill work as vLLM ships them.
+  and chunked prefill work as vLLM ships them. On gfx950, when the step's
+  query tiles times its heads come short of the machine (a short chunk on a
+  long prefix), the builder cuts each tile's walk over its cached prefix
+  (`paged_prefill.split_plan`, from vLLM's host lengths) and a second launch
+  merges the partials.
 
 On gfx950 (MI355X) the same paths run gfx950's kernels (`hk.ops.paged_cdna`
 and the paged form of `hk.ops.attn_cdna`), with the same page, cache layout

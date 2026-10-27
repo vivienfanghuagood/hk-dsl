@@ -9,6 +9,35 @@ The next version's notes collect here until it is released.
 What is on main after 0.8.0. `pip install hk-dsl` (0.8.0) does not have it;
 the API reference marks such names *New after 0.8.0*.
 
+**gfx950 paged prefill: long KV walks cut over the cached prefix.** A
+short chunk on a long prefix, or a batch on few heads, is a few query tiles
+of 256 rows walking the whole context, with most of the machine idle: 4096
+cached + 512 new tokens on 32/8 heads is 64 workgroups for 256 CUs.
+- When the tiles times the heads come short of 256 workgroups,
+  `hk.ops.paged_prefill.split_plan` cuts each tile's walk over the prefix
+  every one of its queries sees, at least 16 64-key blocks a piece, the last
+  piece taking the rest with the diagonal. The cut tiles write normalised
+  partials and (m, l) (`attn_cdna.attn_kernel(kv_split=True)`,
+  `split_kernels_for`), and `attn_cdna.prefill_merge_kernel` weighs them.
+- Its entries go longest first across requests. On one or two kv heads the
+  vLLM backend takes that order even with nothing to cut: 1.2-1.4x on a batch
+  of prompts there. On more kv heads that order cost 2-4% of L2 reuse, and
+  the backend keeps the single-tile work list unless the plan cuts.
+- The vLLM backend plans it in the metadata builder, from
+  `seq_lens_cpu_upper_bound` (exact for prefill rows); without it the
+  prefill is the single launch as before.
+- Measured on the attention task's prefill grid (MI355X; 32/8, 64/8, 32/4 and
+  8/1 heads; 13 batches from fresh prompts to 65536 + 2048 chunks), same
+  process, against AITER's Gluon unified attention, FlyDSL's paged varlen and
+  AITER's varlen:
+  - hk was 0 WIN, 18 tie, 34 LOSS; it is 18 / 16 / 18;
+  - geometric mean 0.93x -> 1.20x;
+  - 1.29x main on average, up to 6.9x: 32768 + 512 on 8/1 heads takes 101 µs,
+    where it took 697 (AITER Gluon 602);
+  - no batch slower than main beyond 1.1%.
+- Cut tiles' outputs change by the order partials are folded in (within the
+  fp32 check; deterministic). Uncut ones are bitwise as before.
+
 **gfx950 causal attention walks query blocks in pairs.** A causal workgroup of
 `hk.ops.attn_cdna` (what `hk.attention` and the SDPA drop-in run on gfx950)
 now walks query block nqb - 1 - y and then block y, so every workgroup does

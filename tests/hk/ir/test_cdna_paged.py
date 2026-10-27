@@ -166,6 +166,43 @@ def test_the_work_list_on_gfx950_is_its_tile_longest_first(monkeypatch):
     del torch
 
 
+def test_the_split_plan_cuts_long_walks_over_the_prefix(monkeypatch):
+    torch = pytest.importorskip("torch")
+    from hk import target
+
+    monkeypatch.setattr(target, "current_arch", lambda: "gfx950")
+    # 4096 cached + 512 new on 32 heads: 2 tiles, 64 workgroups -> 4 splits each.
+    tiles, mlist, n_merge, n_slots = paged_prefill.split_plan([(0, 4096, 512, 0)], 32, "cpu")
+    t = tiles.tolist()
+    assert n_merge == 2 and n_slots == 8 and len(t) == 8
+    # the tile at 256 sees 68 prefix blocks: cuts at 0, 17, 34, 51, the last to its end
+    assert sorted((e[2], e[3]) for e in t if e[1] == 1) == [(0, 17), (17, 34), (34, 51), (51, -1)]
+    assert sorted(mlist.tolist()) == [[0, 256, 4, 4], [256, 256, 0, 4]]
+    # enough tiles to fill the machine: no cut, every entry writes its answer
+    tiles, _, n_merge, n_slots = paged_prefill.split_plan([(0, 0, 4096, 0)] * 4, 32, "cpu")
+    assert n_merge == 0 and n_slots == 0 and all(e[2:] == [0, -1, -1] for e in tiles.tolist())
+    del torch
+
+
+def test_the_backend_takes_the_split_plan_when_it_cuts_or_on_few_kv_heads(monkeypatch):
+    torch = pytest.importorskip("torch")
+    import types
+
+    from hk import target
+    from hk.integration import vllm_backend
+
+    monkeypatch.setattr(target, "current_arch", lambda: "gfx950")
+    md = types.SimpleNamespace(seq_lens_cpu_upper_bound=torch.tensor([4608, 4096, 4096]))
+    # one request, 4096 cached + 512 new: cut
+    assert vllm_backend._split_plan(md, [0, 512], 0, 1, "cpu") is not None
+    # two fresh 4096 prompts: nothing to cut; taken on 1 kv head, not on 8
+    md.seq_lens_cpu_upper_bound = torch.tensor([4096, 4096])
+    assert vllm_backend._split_plan(md, [0, 4096, 8192], 0, 2, "cpu", n_kv_heads=8) is None
+    assert vllm_backend._split_plan(md, [0, 4096, 8192], 0, 2, "cpu", n_kv_heads=1) is not None
+    # no host lengths: no plan
+    assert vllm_backend._split_plan(types.SimpleNamespace(), [0, 512], 0, 1, "cpu") is None
+
+
 def test_kernels_iterates_the_rdna_kernels():
     """paged.KERNELS still lists what it always listed: the source dumps
     and coverage walk it."""

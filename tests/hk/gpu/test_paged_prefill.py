@@ -146,3 +146,63 @@ def test_the_spatial_numbering_is_bitwise_the_default_s(h_kv, group):
     assert torch.equal(outs[0], outs[1])
     want = _reference(q, k_cache, v_cache, table, lens, q_start, group)
     assert _rel(outs[1], want) < 2e-2
+
+
+@pytest.mark.skipif(os.environ.get("HK_ARCH") != "gfx950", reason="attn_cdna's KV-split prefill")
+@pytest.mark.parametrize("reqs,target", [
+    ([(4096, 512)], 256), ([(4100, 300), (0, 600), (33, 1), (9000, 70)], 512),
+    ([(2048, 1024), (2048, 1024)], 1024), ([(5000, 40)], 64)])
+def test_the_kv_split_prefill(reqs, target):
+    """gfx950's prefill with its long walks cut over the cached prefix
+    (paged_prefill.split_plan): cut tiles merged from their partials, uncut ones
+    written straight, a tile whose rows run past its request, a one-token chunk;
+    right against fp32 and the same answer twice."""
+    from hk.ops import attn_cdna
+
+    group = 4
+    q, k_cache, v_cache, table, lens, q_start = _case(reqs, group=group)
+    n_tok, h, d = q.shape
+    starts = q_start.tolist()
+    tiles, mlist, n_merge, n_slots = pp.split_plan(
+        [(i, c, n, starts[i]) for i, (c, n) in enumerate(reqs)], h, q.device, target=target,
+        min_blocks=4)
+    o_part, ml_part = pp.split_scratch(n_slots, h, d, q.device)
+    walk, merge = attn_cdna.split_kernels_for(d)
+    outs = []
+    for _ in range(2):
+        out = torch.full_like(q, 7.0)
+        walk(q.view(n_tok, h * d), k_cache, v_cache, table, lens, q_start, tiles,
+             out.view(n_tok, h * d), o_part, ml_part)
+        if n_merge:
+            merge(mlist, o_part, ml_part, out.view(n_tok, h * d))
+        outs.append(out)
+    want = _reference(q, k_cache, v_cache, table, lens, q_start, group)
+    assert _rel(outs[0], want) < 2e-2
+    assert torch.equal(outs[0], outs[1])
+    if target >= 256:
+        assert n_merge > 0
+
+
+@pytest.mark.skipif(os.environ.get("HK_ARCH") != "gfx950", reason="attn_cdna's KV-split prefill")
+def test_an_uncut_split_plan_is_bitwise_the_work_list():
+    """With nothing cut, the KV-split kernel over split_plan's entries (in its
+    longest-first order) writes every bit the single-tile kernel does."""
+    from hk.ops import attn_cdna
+
+    reqs = [(64, 600), (300, 50), (0, 1024), (33, 1)]
+    q, k_cache, v_cache, table, lens, q_start = _case(reqs, h_kv=1, group=8)
+    n_tok, h, d = q.shape
+    starts = q_start.tolist()
+    tiles, _, n_merge, n_slots = pp.split_plan(
+        [(i, c, n, starts[i]) for i, (c, n) in enumerate(reqs)], h, q.device, target=1)
+    assert n_merge == 0
+    o_part, ml_part = pp.split_scratch(1, h, d, q.device)
+    walk, _ = attn_cdna.split_kernels_for(d)
+    a = torch.full_like(q, 7.0)
+    walk(q.view(n_tok, h * d), k_cache, v_cache, table, lens, q_start, tiles,
+         a.view(n_tok, h * d), o_part, ml_part)
+    b = torch.full_like(q, 7.0)
+    pp.kernel_for(d, 8)(q.view(n_tok, h * d), k_cache, v_cache, table, lens, q_start,
+                        pp.work_list([(i, n) for i, (_, n) in enumerate(reqs)], q.device),
+                        b.view(n_tok, h * d))
+    assert torch.equal(a, b)
