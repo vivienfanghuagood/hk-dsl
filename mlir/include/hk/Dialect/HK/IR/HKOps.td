@@ -839,6 +839,23 @@ def HK_Fp4OperandOp : HK_Op<"fp4_operand"> {
   let hasVerifier = 1;
 }
 
+def HK_Fp8OperandOp : HK_Op<"fp8_operand"> {
+  let summary = "a strip's eight dwords a lane as an MXFP8 MMA operand fragment (gfx950)";
+  let description = [{
+    The lane's eight i32 elements (an i32 strip of 1 x 512, run 4: two runs)
+    become a 16x128 fp8 e4m3 row tile -- a K step's operand, run 0 its
+    16 bytes at K 16 (l / 16) .., run 1 those at 64 + 16 (l / 16) .. of
+    row l % 16 (the fragment a tile load makes). For operands kept in LDS as
+    words (an fp8 shared tile has no register path) or gathered.
+  }];
+  let arguments = (ins HK_RegTileType:$words);
+  let results = (outs HK_RegTileType:$result);
+  let assemblyFormat = [{
+    $words attr-dict `:` qualified(type($words)) `->` qualified(type($result))
+  }];
+  let hasVerifier = 1;
+}
+
 def HK_MxScalesLooseOp : HK_Op<"mx_scales_loose"> {
   let summary = "a strip's element a lane as the E8M0 scales of a 16-row, 128-wide MMA operand (gfx950)";
   let description = [{

@@ -3241,6 +3241,17 @@ __device__ static inline void fp4_operand(RT &dst, const S &src) {
     for (int e = 0; e < 4; e++) w[e] = int(src.data[0][0][e]);
     __builtin_memcpy(&dst.tiles[0][0].data[0], w, 16);
 }
+/** @brief hk.fp8_operand: a lane's eight dwords (i32 strip 1 x 512, run 4: two runs, its K step's 16-byte
+ * halves -- K 16 j .. and 64 + 16 j .., j = lane / 16) as the 16x128 fp8 fragment mma_ABt_mx reads. */
+template<typename RT, ducks::rs::all S>
+__device__ static inline void fp8_operand(RT &dst, const S &src) {
+    static_assert(RT::height == 1 && RT::width == 1, "one 16x128 fragment");
+    static_assert(S::run == 4 && S::chunks == 2, "two runs of four dwords");
+    int w[8];
+    #pragma unroll
+    for (int e = 0; e < 4; e++) { w[e] = int(src.data[0][0][e]); w[4 + e] = int(src.data[0][1][e]); }
+    __builtin_memcpy(&dst.tiles[0][0].data[0], w, 32);
+}
 /** @brief hk.mx_scales_loose: a lane's element (i32 strip 1 x 64, the E8M0 byte in bits 0..7) as the loose scale
  * register of row lane % 16, block lane / 16 of a 16x128 operand. */
 template<ducks::rs::all S>

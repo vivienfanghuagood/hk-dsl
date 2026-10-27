@@ -1902,6 +1902,19 @@ def fp4_operand(words: Tile) -> Tile:
     return wrap(hkd.Fp4OperandOp(mlir_type(ty), words.v, loc=t.loc("fp4")).result, ty)
 
 
+def fp8_operand(words: Tile) -> Tile:
+    """An MXFP8 operand fragment from a lane's eight dwords (gfx950): `words`, an i32 strip of 1 x 512
+    with run 4 (two runs a lane), becomes a 16x128 fp8 e4m3 row tile -- run 0 the K step's 16 bytes at
+    K 16 (l / 16) .., run 1 those at 64 + 16 (l / 16) .., of row l % 16: the fragment a tile load
+    makes. For operands kept in LDS as words (an fp8 shared tile has no register path) or gathered."""
+    if (getattr(words.ty, "run", None) != 4 or words.ty.dtype is not i32 or words.ty.rows != 1
+            or words.ty.cols != 512):
+        raise TypeError(f"fp8_operand: an i32 strip of 1 x 512, run 4 (eight dwords a lane), not {words.ty}")
+    t = _t()
+    ty = RegTileType(fp8e4m3, 16, 128, "row")
+    return wrap(hkd.Fp8OperandOp(mlir_type(ty), words.v, loc=t.loc("fp8")).result, ty)
+
+
 def mx_scales_loose(bytes_: Tile) -> MxScales:
     """Loose E8M0 scales of a 16x128 operand from a lane's element (gfx950): `bytes_`, an i32 strip of
     1 x 64 with run 1 holding the byte in bits 0..7, is lane l's scale -- row l % 16, block l / 16."""

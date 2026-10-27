@@ -1932,4 +1932,4 @@ are bounded: any non-empty length. head_dim is 64 or 128 on both.
 
 ## Also exported
 
-`hk.fp4_operand`, `hk.iota`, `hk.map_cpp`, `hk.mfma_strip`, `hk.mx`, `hk.mx_scales_loose`, `hk.templates`, `hk.uniform`
+`hk.fp4_operand`, `hk.fp8_operand`, `hk.iota`, `hk.map_cpp`, `hk.mfma_strip`, `hk.mx`, `hk.mx_scales_loose`, `hk.templates`, `hk.uniform`

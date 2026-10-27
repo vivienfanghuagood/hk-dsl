@@ -778,6 +778,17 @@ LogicalResult Fp4OperandOp::verify() {
   return success();
 }
 
+LogicalResult Fp8OperandOp::verify() {
+  auto w = dyn_cast<RegTileType>(getWords().getType());
+  auto r = dyn_cast<RegTileType>(getResult().getType());
+  if (!w || !w.isStrip() || !w.getElementType().isInteger(32) || w.getRows() != 1 || w.getCols() != 512 ||
+      w.getRun() != 4)
+    return emitOpError("takes an i32 strip of 1 x 512, run 4 (eight dwords a lane, two runs)");
+  if (!r || r.isStrip() || r.getRows() != 16 || r.getCols() != 128 || r.getLayout() != "row")
+    return emitOpError("gives a 16x128 row tile (an fp8 fragment)");
+  return success();
+}
+
 LogicalResult MxScalesLooseOp::verify() {
   auto b = dyn_cast<RegTileType>(getBytes().getType());
   auto r = cast<MxScalesType>(getResult().getType());
