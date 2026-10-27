@@ -100,6 +100,16 @@ The route's thresholds are not touched.
 - `load_fp4_frags` builds its per-expert buffer resource with a 32-bit compare and a select: the
   64-bit bounds check was two scalar branches at every K step.
 
+**Attention on gfx1201** (#77, RDNA4). `hk.attention` (and the SDPA drop-in) runs its own
+tiling on gfx1201 from 256 query rows: 16 warps (a 256-row Q tile), a head-first grid
+that starts the longest rows of every head first, and, causal, warps that skip the KV
+blocks they precede. At n 4096, GQA 4, head_dim 128 it ties AITER's gfx1201 FlyDSL kernel
+(1.40 vs 1.41 ms causal, 2.65 vs 2.69 full; gfx1100's tiling took 1.71 / 2.78). The causal
+KV block depends on the compiler: 64 rows under ROCm 7.2.3's clang 22, 32 under the
+R9700 vLLM image's clang 23, where 64 is 16-20% slower. A shorter Q keeps gfx1100's
+192-row tiling, so what `hk.attention` accepts is the same on every RDNA arch.
+`attn_kernel(warp_skip=True)` without `causal` raises.
+
 **Fixes**
 - **gfx950: `hk.ops.gemm.matmul` raised `ResourceError` in the vLLM image** (#84) at M 192-512 for
   N 28672 / 14336, K 4096: its table routes there to `dp128x224`, which ROCm 10's hipcc builds
