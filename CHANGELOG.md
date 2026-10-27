@@ -117,6 +117,18 @@ hk's GPU tier passing on a Radeon AI PRO R9700 (914 passed, 0 failed;
   `s_wait_storecnt_dscnt`), the target is measured (VGPR granule 24, LDS pool
   128 KB, i8 WMMA, strips), and the schedules' register model is fitted on
   gfx1201's own builds.
+- Its ceilings are measured on the R9700 (#74): bf16 / f16 WMMA 197 TFLOP/s,
+  fp8 372, iu8 374 TOP/s; an add at 1.81 TB/s inside the 64 MB Infinity Cache,
+  0.62 TB/s past it. `hk.check`, `hk.profile`, `hk.tune` and the scoreboard
+  use them (they fell back to gfx1100's, which would have called hk's own 4096³
+  GEMM faster than the card can), and `hk.tune` has a GEMM space there.
+- The scoreboard on gfx1201, out of the box (gfx1100's plans), every arm in one
+  process, with FlyDSL and AITER arms (#74,
+  [chapter 48](docs/history/48-gfx1201-ceilings-and-first-scoreboard.md),
+  [performance](docs/performance.md#part-c-rdna4-gfx1201-one-radeon-ai-pro-r9700)):
+  hk's GEMM is the fastest at the five shapes (1.03-1.07x the best other arm).
+  It loses attention to AITER's (0.83x causal, 0.97x full, at 4096 tokens,
+  GQA 4) and fused add + rms_norm at 8192 rows (0.93x).
 - No engine route is validated on gfx1201, so none is on by default there, and
   nothing is tuned there yet (its tables are gfx1100's).
 
