@@ -257,7 +257,7 @@ class CodeObjectKernel:
         if err:
             _check(err, f"{self.ir.name}: hipModuleLaunchKernel")
 
-    def launcher(self, op: str):
+    def launcher(self, op: str, *, native: bool = True):
         """`launch(*tensors)`: tensor_args, then launch on torch's current
         stream for the tensors' device -- what the torch op does -- with the
         per-call work cut to what depends on the call.
@@ -346,7 +346,26 @@ class CodeObjectKernel:
                    raw=raw, pack=pack, launch_kernel=launch_kernel, block=block, shmem=shmem,
                    fns=fns, self=self, torch=torch, _check=_check, name=self.ir.name)
         exec("\n".join(src), env)  # noqa: S102 -- source built above from ints and names
-        return env["launch"]
+        launch = env["launch"]
+        mod = _native() if native else None
+        progs = tuple(_grid_program(g, self.tensors) for g in self.grid)
+        if mod is None or None in progs or n > 32 or self.size > 4096:
+            return launch
+        # The same call in C (hk._mlir's _hkLaunch): what this function does when its memo
+        # hits, without the interpreter; everything else -- a new shape included, since C
+        # computes the grid itself -- it hands to this function.
+        def function(idx):
+            return self.function(idx).value
+
+        def on_error(err):
+            _check(err, f"{self.ir.name}: hipModuleLaunchKernel")
+
+        return mod.Launcher(
+            tuple(self.torch_dtypes), self.size,
+            tuple((p, *dims, rs) for p, dims, rs in self.offsets), progs,
+            self.block, self.shmem,
+            ctypes.cast(launch_kernel, ctypes.c_void_p).value,
+            raw, get_device, function, on_error, launch, hostpath)
 
     def _pointer_slots(self) -> List[int]:
         """Where each tensor's pointer lands in `_values`' list, by tensor."""
@@ -367,6 +386,42 @@ class CodeObjectKernel:
             stream, None, extra)
         if err:
             _check(err, f"{self.ir.name}: hipModuleLaunchKernel")
+
+
+_NATIVE: List[Any] = []
+
+
+def _native():
+    """hk._mlir's C launcher module, or None where hk._mlir was built without it."""
+    if not _NATIVE:
+        try:
+            from .._mlir._mlir_libs import _hkLaunch  # noqa: PLC0415
+        except ImportError:
+            _hkLaunch = None
+        _NATIVE.append(_hkLaunch)
+    return _NATIVE[0]
+
+
+#: HostBin's operators, as _hkLaunch's postfix opcodes.
+_OPCODES = {"+": 2, "-": 3, "*": 4, "/": 5, "%": 6}
+
+
+def _grid_program(g, tensors) -> Optional[Tuple[int, ...]]:
+    """A grid dimension as _hkLaunch's postfix program over the tensors'
+    (batch, depth, rows, cols): (0, v) a constant, (1, tensor, dim) an extent,
+    then an opcode per operator. None for anything it does not spell."""
+    from ..dsl import host as H  # noqa: PLC0415
+
+    if isinstance(g, int):
+        return (0, g)
+    if isinstance(g, H.HostConst):
+        return (0, g.const)
+    if isinstance(g, H.HostDim):
+        return (1, tensors.index(g.tensor), H.HostDim.DIMS.index(g.dim))
+    if isinstance(g, H.HostBin) and g.op in _OPCODES:
+        a, b = _grid_program(g.lhs, tensors), _grid_program(g.rhs, tensors)
+        return None if a is None or b is None else a + b + (_OPCODES[g.op],)
+    return None
 
 
 def _legacy_impl(k: "CodeObjectKernel", qual: str):

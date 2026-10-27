@@ -356,17 +356,29 @@ through `torch_ext.launcher`, which goes through the op whenever
 torch.compile is tracing. The engine routes keep their per-shape decisions
 the same way (see [integration](integration.md#host-time-per-call)).
 
+Where hk._mlir has it, that function is C (`hk._mlir._mlir_libs._hkLaunch`,
+built with the bindings, plain CPython API, no HIP: it calls
+`hipModuleLaunchKernel` through the address `codeobj.hip()` read). It takes
+the common call -- every tensor of its dtype, contiguous, on the current GPU
+-- reads the tensors as the pybind entry point does and computes the grid
+from the traced expressions; anything else it hands to the Python function.
+
 The kernels and their arguments are the same, so outputs are bitwise the
 same. `HK_HOST_FASTPATH=0` turns all of it off: every call then takes the
 path it took before, line for line, which is also what a same-process A/B
-flips (`hostpath.set_enabled`). Host time per launch of a code-object op,
-same process, µs (one kernel, pointers changing every call):
+flips (`hostpath.set_enabled`). Host time of one launch of a code-object
+kernel (w4a16, one token), µs, each column one process, pointers changing
+every call:
 
 | | W7900D | MI355X |
 |---|---|---|
-| `torch.ops.hk.<op>`, before | 10.2-13.1 | 9.4 |
-| `torch.ops.hk.<op>`, now | 6.6-8.4 | 6.7 |
-| the implementation without the dispatcher | 4.6-5.8 | 5.6 |
+| `tensor_args` and `launch`: the op's implementation before | 9.4 | 9.7 |
+| the launcher, in Python | 5.4 | 6.6 |
+| the launcher, in C (`_hkLaunch`) | 2.9 | 4.6 |
+| the pybind entry point (`Kernel.__call__`'s) | 3.4 | 5.3 |
+| `hipModuleLaunchKernel` through ctypes, argument pre-packed | 2.5 | 4.2 |
+
+Through `torch.ops.hk.<op>` the dispatcher adds 1-3 µs to any of these.
 | the pybind entry point (`Kernel.__call__`'s) | 2.7-4.4 | 4.7 |
 | `hipModuleLaunchKernel` through ctypes, argument pre-packed | 2.3-3.0 | 3.9 |
 

@@ -61,6 +61,17 @@ add_mlir_python_modules(HKPythonModules
     HKPythonCAPI
 )
 
+# The code-object launcher (hk.runtime.codeobj): plain CPython API, no MLIR and
+# no HIP -- it calls hipModuleLaunchKernel through the address the Python side
+# hands it -- built here so that it ships in the wheel beside the bindings.
+Python3_add_library(_hkLaunch MODULE WITH_SOABI HKLaunch.c)
+set_target_properties(_hkLaunch PROPERTIES
+  C_STANDARD 11
+  LIBRARY_OUTPUT_DIRECTORY "${MLIR_BINARY_DIR}/${MLIR_BINDINGS_PYTHON_INSTALL_PREFIX}/_mlir_libs")
+install(TARGETS _hkLaunch
+  LIBRARY DESTINATION "${MLIR_BINDINGS_PYTHON_INSTALL_PREFIX}/_mlir_libs"
+  COMPONENT HKPythonModules)
+
 # Every library here is linked with its install RUNPATH ($ORIGIN) from the
 # start. MLIR's functions set BUILD_WITH_INSTALL_RPATH OFF, and CMake then adds
 # the build tree's absolute _mlir_libs path for the three that link
