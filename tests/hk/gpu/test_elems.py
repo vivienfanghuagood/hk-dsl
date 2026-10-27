@@ -113,16 +113,17 @@ R = hk.RS(hk.fp32, 1, 256, 4)
 
 @pytest.mark.parametrize("dt", [torch.float32, torch.bfloat16])
 def test_load_elems_runs_is_one_load_a_run(dt):
-    """Run r of a lane's strip from run slot 63 - r (8 or 4 elements apart); run 5's first index is
-    out of range, so the whole run reads 0."""
-    S8 = S if dt == torch.float32 else hk.RS(hk.fp32, 1, 512, 8)
-    hdt = hk.fp32 if dt == torch.float32 else hk.bf16
+    """Run r of a lane's strip from run slot 63 - r (8 elements apart); run 5's first index is out of
+    range, so the whole run reads 0."""
+    idx = "(x0 / 8) == 5 ? 4096 : (63 - x0 / 8) * 8"
+    if dt == torch.float32:
+        def body(x: hk.Tensor[hk.fp32], o: hk.Tensor[hk.fp32]):
+            o.at[0, 0].store(x.load_elems(hk.map_cpp(idx, hk.iota(S)), runs=True))
+    else:
+        def body(x: hk.Tensor[hk.bf16], o: hk.Tensor[hk.fp32]):
+            o.at[0, 0].store(x.load_elems(hk.map_cpp(idx, hk.iota(S)), runs=True))
 
-    def body(x: hk.Tensor[hdt], o: hk.Tensor[hk.fp32]):
-        c = hk.iota(S8)
-        o.at[0, 0].store(x.load_elems(hk.map_cpp("(x0 / 8) == 5 ? 4096 : (63 - x0 / 8) * 8", c), runs=True))
-
-    k = hk.kernel(body, warps=1, name=f"load_runs_{hdt.name}", grid=lambda p: (1, 1, 1))
+    k = hk.kernel(body, warps=1, name=f"load_runs_{str(dt)[6:]}", grid=lambda p: (1, 1, 1))
     x = torch.randn(1, 512, generator=torch.Generator(device="cpu").manual_seed(12)).to(dt)
     o = torch.full((1, 512), -1.0, device="cuda")
     k(x.cuda(), o)
@@ -167,18 +168,19 @@ def test_lds_load_elems_runs_reads_16_bytes_a_four():
         s.store_elems(x.at[0, 0].load(S), c)
         s.store_elems(x.at[0, 512].load(S), hk.map_cpp("x0 + 512", c))
         hk.arch.barrier(drain=True)
-        q = hk.iota(R)
-        # run r (4 elements) from run slot 255 - r; run 9's first index is past the tile: 0
+        q = hk.iota(R)                                            # 64 lanes x 4: runs 0 .. 63
+        # run r from the tile's run slot 255 - r (the top quarter, reversed); run 9's first index is past the
+        # tile: it reads 0
         o.at[0, 0].store(s.load_elems(hk.map_cpp("(x0 / 4) == 9 ? 1024 : (255 - x0 / 4) * 4", q), runs=True))
 
     k = hk.kernel(body, warps=1, name="lds_load_runs", grid=lambda p: (1, 1, 1))
     x = torch.randn(1, 1024, generator=torch.Generator(device="cpu").manual_seed(14))
-    o = torch.full((1, 1024), -1.0, device="cuda")
+    o = torch.full((1, 256), -1.0, device="cuda")
     k(x.cuda(), o)
     torch.cuda.synchronize()
-    want = x.view(256, 4).flip(0).clone()
+    want = x.view(256, 4).flip(0)[:64].clone()
     want[9] = 0.0
-    assert torch.equal(o.cpu()[0, :1024].view(256, 4), want)
+    assert torch.equal(o.cpu().view(64, 4), want)
 
 
 def test_a_bf16_lds_tile_built_element_by_element_is_an_mma_operand():
