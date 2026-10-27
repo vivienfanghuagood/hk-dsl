@@ -139,6 +139,22 @@ R9700 vLLM image's clang 23, where 64 is 16-20% slower. A shorter Q keeps gfx110
 192-row tiling, so what `hk.attention` accepts is the same on every RDNA arch.
 `attn_kernel(warp_skip=True)` without `causal` raises.
 
+**Element ops for a whole cache** (#88, gfx950). The forms DeepSeek-V4.1's
+index chain needed as one launch on vLLM's caches:
+- `Global.load_elems` / `store_elems(..., row=r)`: indices count from row `r`,
+  its base formed in 64 bits and its descriptor that one row -- a paged cache
+  of ~100 GB addressed a block at a time (a descriptor over the tensor wraps
+  at 4 GB).
+- `Global.load_elems(..., runs=True)`: a lane's run is one load of its bytes
+  (masked by its first index), not one `buffer_load_dword` a value.
+- `SharedTile.load_elems(..., runs=True)`: 4 elements a 16-byte LDS read. Index
+  a 16-column tile: a wider `hk.ST` is 16x16 subtiles 1 KB apart, and a
+  flat-indexed strip conflicts 8 ways on every read.
+- `SharedTile.store_elems` into a bf16 tile (round to nearest even): an MMA
+  operand built element by element. LDS element reads are branch-free (an
+  index out of range still reads 0); a guarded read was one exec-masked block
+  each, and a strip's reads ran one at a time.
+
 **Fixes**
 - **gfx950: `hk.ops.gemm.matmul` raised `ResourceError` in the vLLM image** (#84) at M 192-512 for
   N 28672 / 14336, K 4096: its table routes there to `dp128x224`, which ROCm 10's hipcc builds
