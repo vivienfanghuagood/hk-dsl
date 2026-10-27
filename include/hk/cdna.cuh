@@ -3259,6 +3259,15 @@ __device__ static inline void mx_scales_loose(hk_mxs<16, 4, 1> &dst, const S &sr
     dst.reg[0][0] = uint32_t(int(src.data[0][0][0]) & 0xFF);
 }
 #endif
+/** @brief hk.acc_strip: a 16x16 fp32 accumulator tile (col layout: lane l holds C[4 (l / 16) + e][l % 16])
+ * as the strip of the same registers, i32-free: element 4 l + e. */
+template<ducks::rs::all D, typename RT>
+__device__ static inline void acc_strip(D &dst, const RT &src) {
+    static_assert(RT::height == 1 && RT::width == 1, "one 16x16 tile");
+    const float *f = reinterpret_cast<const float *>(&src.tiles[0][0].data[0]);
+    #pragma unroll
+    for (int e = 0; e < 4; e++) dst.data[0][0][e] = f[e];
+}
 /** @brief hk lds_atomic_add_elems: val(r, c) (i32) added atomically (ds_add_u32) to dst's element idx(r, c) as
  * an i32 (row-major; OOB: none). */
 template<typename ST, ducks::rs::all V, ducks::rs::all I>

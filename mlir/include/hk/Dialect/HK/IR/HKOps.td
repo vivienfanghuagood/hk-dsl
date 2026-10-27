@@ -839,6 +839,22 @@ def HK_Fp4OperandOp : HK_Op<"fp4_operand"> {
   let hasVerifier = 1;
 }
 
+def HK_AccStripOp : HK_Op<"acc_strip"> {
+  let summary = "a 16x16 fp32 accumulator tile as the strip of its registers (gfx950)";
+  let description = [{
+    An MFMA's 16x16 fp32 col-layout result, lane l holding rows 4 (l / 16) ..
+    + 3 of column l % 16, as an fp32 strip of 1 x 256, run 4 (element 4 l + e
+    is C[4 (l / 16) + e][l % 16]): its values go on to element ops (a scatter
+    by column) without a round trip through LDS.
+  }];
+  let arguments = (ins HK_RegTileType:$src);
+  let results = (outs HK_RegTileType:$result);
+  let assemblyFormat = [{
+    $src attr-dict `:` qualified(type($src)) `->` qualified(type($result))
+  }];
+  let hasVerifier = 1;
+}
+
 def HK_Fp8OperandOp : HK_Op<"fp8_operand"> {
   let summary = "a strip's eight dwords a lane as an MXFP8 MMA operand fragment (gfx950)";
   let description = [{

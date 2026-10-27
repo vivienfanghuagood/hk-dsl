@@ -1561,6 +1561,10 @@ private:
           Value d = dest(Value(), o.getResult());
           w("kittens::fp4_operand(" + name(d) + ", " + name(o.getWords()) + ");");
         })
+        .Case([&](AccStripOp o) {
+          Value d = dest(Value(), o.getResult());
+          w("kittens::acc_strip(" + name(d) + ", " + name(o.getSrc()) + ");");
+        })
         .Case([&](Fp8OperandOp o) {
           Value d = dest(Value(), o.getResult());
           w("kittens::fp8_operand(" + name(d) + ", " + name(o.getWords()) + ");");
