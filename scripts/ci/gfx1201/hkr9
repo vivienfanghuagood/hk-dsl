@@ -1,0 +1,70 @@
+#!/bin/bash
+# hkr9 IDX|auto|none [-w WAIT_S] -- CMD...   run CMD (bash -c) in rocm/pytorch on the gfx1201 dev box.
+#
+# The one way GPU work runs on that box, for a person and for CI (scripts/ci/run_gfx1201.sh):
+# - IDX: the host's rocm-smi index of the one GPU the container sees (as HIP device 0), taken under
+#   our lock of the card (gpulock.sh) and only when no other process holds it. The box is shared and
+#   nobody else uses our locks, so the idle check is what keeps us off everyone else's work.
+#   `auto`: the first card of $HK_GPUS_PREF (default "3 2 1 4 5 6 7"; never 0, which another user's
+#   service holds most of the time) that is unlocked and idle, waiting up to WAIT_S (default 3600)
+#   for one. `none`: no GPU, for builds and the no-GPU tiers.
+# - Core dumps are off three ways (--ulimit core=0, ulimit -c 0, HSA_DISABLE_COREDUMP_ON_EXCEPTION):
+#   a killed GPU process can write 100+ GB to the shared root partition.
+# - Mounts: $HK_R9_ROOT (required unless HKR9_MOUNTS is set: the directory our work lives in on the
+#   box) at /w, the working directory; HKR9_MOUNTS replaces that with its own docker -v/-w
+#   arguments (CI's /ci layout).
+# Environment: HK_IMAGE (default rocm/pytorch rocm7.2.3 py3.12, the gfx950 CI's image), HKR9_NAME
+# (the container's name), HKR9_GPU_FILE (where `auto` writes the index it took), HKR9_DOCKER_ARGS
+# (more `docker run` arguments: CI's labels), HKR9_LOCK_HELD=1 (the caller holds card IDX's lock
+# already and keeps it until the container is gone: run_gfx1201.sh), HK_ALLOW_SHARED=1 (run on a
+# card someone else holds; for debugging only).
+set -u
+. "$(dirname "$(readlink -f "$0")")/gpulock.sh"
+IDX=${1:?usage: hkr9 IDX|auto|none [-w WAIT_S] -- CMD...}; shift
+WAIT=3600
+[ "${1:-}" = -w ] && { WAIT=$2; shift 2; }
+[ "${1:-}" = -- ] && shift
+[ $# -gt 0 ] || { echo "usage: hkr9 IDX|auto|none [-w WAIT_S] -- CMD..." >&2; exit 2; }
+IMAGE=${HK_IMAGE:-rocm/pytorch:rocm7.2.3_ubuntu24.04_py3.12_pytorch_release_2.10.0}
+ROOT=${HK_R9_ROOT:-}
+[ -n "$ROOT" ] || [ -n "${HKR9_MOUNTS:-}" ] || { echo "hkr9: set HK_R9_ROOT (or HKR9_MOUNTS)" >&2; exit 2; }
+WHAT="hkr9 $*"
+
+# Take card $1 if it is idle: our lock (fd 9) and nobody's KFD state on it.
+take() {
+    [ -z "$(gpu_foreign "$1")" ] || return 1
+    GPULOCK_WHAT="$WHAT" gpulock_take "$1" 0 2>/dev/null || return 1
+    [ -z "$(gpu_foreign "$1")" ] || { exec 9>&-; return 1; }
+}
+
+if [ "$IDX" = auto ]; then
+    t0=$(date +%s)
+    while :; do
+        for g in ${HK_GPUS_PREF:-3 2 1 4 5 6 7}; do take "$g" && { IDX=$g; break; }; done
+        [ "$IDX" != auto ] && break
+        [ $(( $(date +%s) - t0 )) -ge "$WAIT" ] && {
+            echo "hkr9: no idle GPU among ${HK_GPUS_PREF:-3 2 1 4 5 6 7} for ${WAIT}s" >&2; exit 6; }
+        sleep 60
+    done
+    echo "hkr9: GPU $IDX" >&2
+elif [ "$IDX" != none ]; then
+    [ "${HKR9_LOCK_HELD:-0}" = 1 ] || GPULOCK_WHAT="$WHAT" gpulock_take "$IDX" "$WAIT" || exit $?
+    f=$(gpu_foreign "$IDX")
+    if [ -n "$f" ] && [ "${HK_ALLOW_SHARED:-0}" != 1 ]; then
+        echo "hkr9: GPU $IDX is in use by another process; not running (HK_ALLOW_SHARED=1 to override):" >&2
+        echo "$f" >&2
+        exit 6
+    fi
+fi
+DEV=()
+if [ "$IDX" != none ]; then
+    [ -n "${HKR9_GPU_FILE:-}" ] && echo "$IDX" > "$HKR9_GPU_FILE"
+    R=/dev/dri/$(gpulock_render "$IDX")
+    DEV=(--device /dev/kfd --device "$R" --group-add "$(stat -c %g /dev/kfd)" --group-add "$(stat -c %g "$R")")
+fi
+if [ -n "${HKR9_MOUNTS:-}" ]; then read -ra MOUNTS <<< "$HKR9_MOUNTS"; else MOUNTS=(-v "$ROOT:/w" -w /w); fi
+read -ra EXTRA <<< "${HKR9_DOCKER_ARGS:-}"
+exec docker run --rm -i --name "${HKR9_NAME:-hkr9-$(date +%s)-$$}" "${EXTRA[@]}" \
+    --ulimit core=0 -e HSA_DISABLE_COREDUMP_ON_EXCEPTION=1 \
+    --user "$(id -u):$(id -g)" -e HOME=/w/home -e USER="$(id -un)" "${DEV[@]}" --ipc=host \
+    --security-opt seccomp=unconfined "${MOUNTS[@]}" --entrypoint bash "$IMAGE" -c "ulimit -c 0; $*"
