@@ -254,6 +254,39 @@ def test_shapes_route_to_hk_kernels():
     assert gemm_cdna.route(8192, 8192, 8192) == "pp"
 
 
+def test_a_refused_candidate_is_routed_around(monkeypatch):
+    """ROCm 10's hipcc spills dp128x224, which the table sends 256 x 28672 and
+    512 x 14336 (K 4096) to, and the spill gate refuses it. route() then takes
+    the next-fastest candidate the table measured at that point (pp128, 795 vs
+    916 TFLOP/s; ppk2), then the next, and the rule's past those."""
+    monkeypatch.setattr(gemm_cdna, "_REFUSED", {})
+    assert gemm_cdna.route(256, 28672, 4096) == "dp128x224"
+    assert gemm_cdna.route(512, 14336, 4096) == "dp128x224"
+    gemm_cdna._REFUSED["dp128x224"] = "spill vgpr=13"
+    assert gemm_cdna.route(256, 28672, 4096) == "pp128"
+    assert gemm_cdna.route(192, 28672, 4096) == "pp128"
+    assert gemm_cdna.route(512, 14336, 4096) == "ppk2"
+    assert gemm_cdna.route(1024, 28672, 4096) == "pp"           # not dp128x224's: unchanged
+    gemm_cdna._REFUSED["pp128"] = "spill"
+    assert gemm_cdna.route(256, 28672, 4096) == "ppk2"
+    # the table's every candidate refused: the rule, then its next choice
+    ranked = gemm_cdna._RANKED["28672x4096"][256]
+    monkeypatch.setattr(gemm_cdna, "_REFUSED", {c: "spill" for c in ranked})
+    with pytest.raises(hk.ResourceError, match="every candidate"):
+        gemm_cdna.route(256, 28672, 4096)
+    monkeypatch.setattr(gemm_cdna, "_REFUSED", {"dp64": "spill"})
+    assert gemm_cdna.route(300, 3968, 1024) == "dp128"          # a shape the table lacks
+
+
+def test_a_refused_tail_is_skipped():
+    """The pingpong's 128-column tail takes the next split that fits."""
+    gemm_cdna._REFUSED["dp64x64k8"] = "spill"
+    try:
+        assert gemm_cdna.tail_for(256, 4096) == "dp64x64k4"
+    finally:
+        del gemm_cdna._REFUSED["dp64x64k8"]
+
+
 # -- the streaming and balanced blocks ----------------------------------------
 
 

@@ -30,10 +30,23 @@ from . import _common, engine
 _ORIG_PWAL: Optional[Callable] = None
 _ORIG_APPLY: Optional[Callable] = None
 
-#: (N, K) of DeepSeek-V4.1-Flash's prefill projections (TP2), measured in k2-mxfp8-gemm.
-MEASURED = {(1792, 5120), (2304, 5120), (5120, 1152), (5120, 4096), (16384, 1280), (12800, 6144)}
-#: The smallest M measured; below it vLLM's kernel runs.
+#: (N, K) of DeepSeek-V4.1-Flash's prefill projections (TP2), measured in k2-mxfp8-gemm, plus
+#: the indexer's wq_b (4096, 1280), measured in the MI355X scoreboard.
+MEASURED = {(1792, 5120), (2304, 5120), (5120, 1152), (5120, 4096), (16384, 1280), (12800, 6144),
+            (4096, 1280)}
+#: The smallest M measured; below it vLLM's kernel runs (unless MIN_M_NK says otherwise).
 MIN_M = 2048
+#: (N, K) whose smallest M is not MIN_M: where the eight-warp kernel the route picks for them
+#: ("8w", whole 256 x 256 blocks) was measured faster than vLLM's, FlyDSL's, AITER Triton's and
+#: hipBLASLt's kernels, route level with the activation quant (the MI355X scoreboard's harness),
+#: bit-identical to vLLM's at every M:
+#: - (4096, 1280), indexer wq_b: 1.08-1.20x from 2825 to 4096, 1.06-1.17x above. At 2048 (128
+#:   blocks on 256 CUs) FlyDSL's bmm is faster (0.81x), so not from MIN_M. 2304-2824 were
+#:   1.12-1.19x as well: the bound could come down to 2304, not yet checked end to end.
+#: - (12800, 6144), engram wkv: 1.39x at 1024 (hipBLASLt the best there), 1.75-1.79x at 1025,
+#:   1.29x at 1536, 1.39x at 2047. Below it: 1.38-1.45x at 768-1023 (likewise a candidate for
+#:   a lower bound), 1.02x at 512, a loss at 64.
+MIN_M_NK = {(4096, 1280): 2825, (12800, 6144): 1024}
 #: Route hk-able calls to hk (True) or leave every call to vLLM (False): an in-process A/B.
 ENABLED = True
 #: Take any (N, K) of whole 256 x 128 tiles at M >= MIN_M on the eight-warp kernel, not only the
@@ -60,7 +73,8 @@ STATS = PATCH.stats
 
 def schedule(m: int, n: int, k: int):
     """("8w" | "4w", sched) for a shape hk takes, else None."""
-    if not ENABLED or m < MIN_M or n % 256 or k % 128 or ((n, k) not in MEASURED and not ANY):
+    if not ENABLED or m < MIN_M_NK.get((n, k), MIN_M) or n % 256 or k % 128 or (
+            (n, k) not in MEASURED and not ANY):
         return None
     if m < 5120 and n in _SMALL_N:
         return "4w", _SMALL_N[n]
@@ -167,8 +181,9 @@ def apply_patch() -> str:
     _ORIG_PWAL, _ORIG_APPLY = cls.process_weights_after_loading, cls.apply_weights
     cls.process_weights_after_loading = process_weights_after_loading
     cls.apply_weights = apply_weights
+    own = ", ".join(f"{n}x{k} from {m}" for (n, k), m in sorted(MIN_M_NK.items()))
     return (f"mxfp8 -> hk for block-scaled layers of {len(MEASURED)} measured (N, K) at M >= "
-            f"{MIN_M} (compile cache {_own_compile_cache('hk-mxfp8')})")
+            f"{MIN_M} ({own}) (compile cache {_own_compile_cache('hk-mxfp8')})")
 
 
 def revert() -> str:

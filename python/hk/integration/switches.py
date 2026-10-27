@@ -65,11 +65,12 @@ class Route:
 _R = Route
 ROUTES: Dict[str, Route] = {r.name: r for r in (
     _R("vllm_mxfp8", "vllm", "HK_VLLM_MXFP8", True, ("gfx950",),
-       "K2: block-scaled MXFP8 linear layers (DeepSeek-V4.1) at M >= 2048",
+       "K2: block-scaled MXFP8 linear layers (DeepSeek-V4.1) at M >= 2048 (indexer wq_b "
+       "2825, engram wkv 1024)",
        "bit-identical to vLLM's kernel; real-weight GSM8K / ARC within stock's noise "
        "(serving-readiness B1)"),
     _R("vllm_moe_a8w4", "vllm", "HK_VLLM_MOE_A8W4", True, ("gfx950",),
-       "K1: AITER a8w4 MoE (DeepSeek-V4.1) at M >= 8192",
+       "K1: AITER a8w4 MoE (DeepSeek-V4.1) at M >= 2560",
        "error vs fp32 at or below AITER's; real-weight GSM8K / ARC within stock's noise (B1)"),
     _R("vllm_int4", "vllm", "HK_VLLM_INT4", True, ("gfx1100", "gfx950"),
        "AWQ 4-bit linear layers on hk's decode GEMM",

@@ -28,6 +28,24 @@ restores every call's previous path.
   `hk.runtime.codeobj.direct`, `hk.runtime.torch_ext.launcher`,
   `CodeObjectKernel.launcher`, `hk.ops.w4a16.plan`.
 
+**DeepSeek-V4.1 routes, retuned from the MI355X scoreboard** (gfx950, real weights, TP2; every
+point against the best of AITER's tuned FlyDSL, FlyDSL, AITER Triton, hipBLASLt and vLLM's kernel).
+- K1 (`vllm_moe_a8w4`) takes M >= 2560, not 8192 (`HK_MOE_A8W4_MIN_M`), with #85's kernels: on
+  the real router's choices 1.03-1.08x AITER at 2560, 1.08-1.20x at 3072-4096 and 1.27-1.38x
+  from 4608 to 8192, layers 20 and 30. With uniform routing, which DSV4.1's router does not
+  produce, AITER is 3-11% faster from 2304 to 3584; from 4096 hk wins there too (the reasons
+  are at `MIN_M`).
+- K2 (`vllm_mxfp8`) takes the indexer's wq_b (N 4096, K 1280) from M 2825, 1.08-1.20x, and
+  engram's wkv (12800 x 6144) from M 1024 instead of 2048, 1.29-1.79x; per (N, K) in
+  `MIN_M_NK`. Bit-identical to vLLM's kernel at every new point, ragged M included.
+
+**Fixes**
+- **gfx950: `hk.ops.gemm.matmul` raised `ResourceError` in the vLLM image** at M 192-512 for
+  N 28672 / 14336, K 4096: its table routes there to `dp128x224`, which ROCm 10's hipcc builds
+  with a 13-VGPR spill, and the spill gate refuses it. The route now records a refused candidate
+  (once a process, with a line on stderr) and takes the next-fastest one the table measured at
+  that point (`pp128`, `ppk2`), else the rule's next; a refused kernel is never run.
+
 ## 0.8.0
 
 hk-dsl 0.8.0: workgroup placement as a compiler pass on gfx950; `hk.map_cpp`,

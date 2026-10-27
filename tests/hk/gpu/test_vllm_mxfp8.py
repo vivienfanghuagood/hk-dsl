@@ -22,7 +22,12 @@ class _Layer(torch.nn.Module):
 
 
 @pytest.mark.parametrize("m,n,k", [(2048, 1792, 5120), (2048, 5120, 1152), (5120, 2304, 5120),
-                                   (64, 5120, 1152), (2048, 768, 512)])
+                                   (64, 5120, 1152), (2048, 768, 512),
+                                   # MIN_M_NK: the indexer's wq_b from 2825, engram's wkv from
+                                   # 1024 -- at, one under, and ragged above
+                                   (2825, 4096, 1280), (2824, 4096, 1280), (3073, 4096, 1280),
+                                   (1024, 12800, 6144), (1023, 12800, 6144),
+                                   (1537, 12800, 6144)])
 def test_patched_layer_matches_vllm(m, n, k):
     from vllm.model_executor.kernels.linear.mxfp8.rocm_block32_gemm import rocm_mxfp8_block32_gemm
 

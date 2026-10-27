@@ -10,7 +10,7 @@ attribute itself. A call hk takes keeps AITER's own sort and fused quant-sort (`
 - hk's stage 2 (`stage2_sorted`, the block's h resident in LDS) stores each weighted row by its
   (choice, token);
 - the top-k sum is a plain sum over choices, deterministic, unlike AITER's atomics.
-Everything else goes to AITER unchanged: M < `HK_MOE_A8W4_MIN_M` (default 8192, see MIN_M),
+Everything else goes to AITER unchanged: M < `HK_MOE_A8W4_MIN_M` (default 2560, see MIN_M),
 CUDA-graph capture, other activations, quant types or gate modes, expert masks, biases, shared
 experts.
 
@@ -31,11 +31,19 @@ from . import engine
 _ORIG: Optional[Callable] = None
 #: Route hk-able calls to hk (True) or leave every call to AITER (False).
 ENABLED = True
-#: The smallest M hk takes: where it wins. Against AITER on DSV4.1's TP2 shapes (K1, c32-c34):
-#: 1.18x at 8192, 1.15-1.16x at 16384, 1.06-1.08x at 5120, and 0.90x at 2048. At small M both
-#: are bound by streaming every expert's weights (2.26 GB); AITER is within 10% of that floor,
-#: and hk re-reads x across its column blocks. So the route starts at 8192.
-MIN_M = int(os.environ.get("HK_MOE_A8W4_MIN_M", "8192"))
+#: The smallest M hk takes: where it wins under the real router's choices, at every M from there up.
+#: Against AITER's tuned FlyDSL MoE on DSV4.1-Flash's TP2 shapes (the MI355X scoreboard's harness,
+#: real weights of layers 20 and 30, 3 runs each, with #85's stage grids): hk is 1.03-1.04x (layer
+#: 20) and 1.07-1.08x (layer 30) at 2560 with every round apart, 1.08-1.17x at 3072-3584, 1.17-1.20x
+#: at 4096 and 1.27-1.38x from 4608 to 8192. At 2304 layer 20 only ties (1.005-1.014x, rounds
+#: overlapping), and at 2048 AITER is faster (0.98-1.00x). So the route starts at 2560. Two caveats.
+#: Under the layer's gate on proxy activations hk only ties at 2560 on layer 20 (1.01x) and wins
+#: from 3072. And routing skew carries it: with every expert equally loaded (uniform top-6, which
+#: DSV4.1's router does not do: 6-13x max-over-mean on real text) AITER's 64-row-tile kernels, its
+#: (2048, 4096] tier, are 3-11% faster from 2304 to 3584 (hk 0.90-0.97x); from 4096 hk wins under
+#: uniform routing as well (1.06-1.30x). At small M both are bound by streaming every expert's
+#: weights (2.26 GB); AITER is within 10% of that floor, and hk re-reads x across its column blocks.
+MIN_M = int(os.environ.get("HK_MOE_A8W4_MIN_M", "2560"))
 #: Token tiles a block (moe_sorting's block_size / 16): K1 c18-c23 measured 4 best.
 MT = int(os.environ.get("HK_MOE_A8W4_MT", "4"))
 

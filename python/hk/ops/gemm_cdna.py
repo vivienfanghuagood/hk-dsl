@@ -47,7 +47,7 @@ quadrants as soon as they are final (`early_store`) takes 0.4% of it back.
 
 from __future__ import annotations
 
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 from .. import dsl as hk
 from ..dsl import placement as _pl
@@ -837,10 +837,24 @@ CANDIDATES: Dict[str, Any] = {
 
 _ROUTES: Dict[str, Dict[int, str]] = {}
 
+#: The table's measured points, NxK -> {M: hk's candidates, fastest first}:
+#: where route() goes when the table's pick is refused (_REFUSED).
+_RANKED: Dict[str, Dict[int, List[str]]] = {}
+
 #: Candidates a route table defines that CANDIDATES does not: name ->
 #: hk.schedules GemmSchedule, taken exactly as its record says (a tuner's
 #: schedules, `[family, {knobs}]` in the table's "candidates").
 _EXTRA: Dict[str, Any] = {}
+
+#: Candidates whose kernel this process's build refused (hk.runtime's
+#: ResourceError: the spill gate, the wait gate), name -> the reason's first
+#: line. The table was measured with one hipcc (rocm/pytorch 7.2.3's), and
+#: another can build a candidate it routes to differently: ROCm 10's spills
+#: 13 VGPRs of dp128x224 (44 B/lane of scratch), which the table sends M
+#: 192-512 at N 28672 / 14336, K 4096, to. A refused kernel is never run --
+#: a spilling one is wrong, not slow -- and route() goes around it: to the
+#: next-fastest candidate the table measured at that point, else the rule.
+_REFUSED: Dict[str, str] = {}
 
 
 def _routes() -> Dict[str, Dict[int, str]]:
@@ -862,6 +876,11 @@ def _routes() -> Dict[str, Dict[int, str]]:
             for nk, by_m in doc.get("routes", {}).items():
                 _ROUTES[nk] = {int(m): c for m, c in by_m.items()
                                if c in CANDIDATES or c in _EXTRA}
+            for pt in doc.get("points", []):
+                hk_ = {c[3:]: t for c, t in pt.get("tflops", {}).items()
+                       if c.startswith("hk:") and (c[3:] in CANDIDATES or c[3:] in _EXTRA)}
+                _RANKED.setdefault(f"{pt['n']}x{pt['k']}", {})[int(pt["m"])] = sorted(
+                    hk_, key=lambda c: -hk_[c])
         _ROUTES.setdefault("", {})
     return _ROUTES
 
@@ -952,24 +971,45 @@ def route(m: int, n: int, k: int, user: bool = True) -> str:
     bucket (`user=False` skips it) if there is one and it takes the shape;
     else the measured table's, at the nearest M it measured for this N x K
     (on a log scale), if that candidate takes the shape; else the rule the
-    table's measurements mostly follow."""
+    table's measurements mostly follow. A candidate this process's build
+    refused (_REFUSED) is skipped: the table's point then gives the next
+    fastest it measured there, and the rule its next choice."""
     if user:
         _routes()
         name = user_route(m, n, k)
-        if name is not None:
+        if name is not None and name not in _REFUSED:
             return name
     by_m = _routes().get(f"{n}x{k}")
     if by_m:
         near = min(by_m, key=lambda x: (abs((x / m) if x > m else (m / x)), x))
         if fits(by_m[near], m, n, k):
-            return by_m[near]
-    if m <= 32 and fits("decode", m, n, k):
-        return "decode"
-    if m <= 512:
-        return "dp64"
-    if m <= 2048:
-        return "dp128"
-    return "pp"
+            if by_m[near] not in _REFUSED:
+                return by_m[near]
+            for name in _RANKED.get(f"{n}x{k}", {}).get(near, ()):
+                if name not in _REFUSED and fits(name, m, n, k):
+                    return name
+    rule = (["decode"] if m <= 32 else []) + (["dp64"] if m <= 512 else []) + (
+        ["dp128"] if m <= 2048 else []) + ["pp", "dp128", "dp64"]
+    for name in rule:
+        if name not in _REFUSED and (name != "decode" or fits(name, m, n, k)):
+            return name
+    from ..runtime.resources import ResourceError  # noqa: PLC0415
+
+    raise ResourceError(f"gemm_cdna: every candidate for {m}x{n}x{k} was refused by this "
+                        f"toolchain's build: {_REFUSED}")
+
+
+def _refuse(name: str, err: Exception) -> None:
+    """Record that candidate `name`'s build was refused, and say so once."""
+    import sys  # noqa: PLC0415
+
+    if name in _REFUSED:
+        return
+    why = next((ln.strip() for ln in str(err).splitlines()
+                if ln.strip() and "rejected:" not in ln), str(err)[:200])
+    _REFUSED[name] = why
+    print(f"hk.ops.gemm_cdna: candidate {name} refused by this toolchain's build ({why}); "
+          f"routing around it", file=sys.stderr)
 
 
 #: The kernel for the pingpong's last 128 columns, by M. As one 128-wide
@@ -983,13 +1023,32 @@ TAIL: tuple = ((1024, "dp64x64k8"), (2048, "dp64x64k4"), (4096, "dp64k4"),
 def tail_for(m: int, k: int) -> str:
     """The candidate for an M x 128 x K tail."""
     for bound, name in TAIL:
-        if (bound is None or m <= bound) and fits(name, m, 128, k):
+        if (bound is None or m <= bound) and fits(name, m, 128, k) and name not in _REFUSED:
             return name
     return "pp128"
 
 
 def run(name: str, a, b, out):
-    """Candidate `name` on (a, b) into out; the shape checks are matmul's."""
+    """Candidate `name` on (a, b) into out; the shape checks are matmul's.
+    Raises ResourceError if the build of its kernel (or of one it is made of:
+    the pingpong's tail, a wave split's rest) is refused, and records the
+    innermost refused candidate in _REFUSED; one already there raises at once,
+    without building it again."""
+    from ..runtime.resources import ResourceError  # noqa: PLC0415
+
+    if name in _REFUSED:
+        raise ResourceError(f"gemm_cdna candidate {name} was refused by this toolchain's "
+                            f"build: {_REFUSED[name]}")
+    try:
+        return _run(name, a, b, out)
+    except ResourceError as e:
+        if not getattr(e, "_hk_refused", False):     # the innermost run() records it
+            e._hk_refused = True
+            _refuse(name, e)
+        raise
+
+
+def _run(name: str, a, b, out):
     if name not in CANDIDATES:
         return extra_candidates()[name].launch(a, b, out)
     kind, sched = CANDIDATES[name]
@@ -1031,8 +1090,12 @@ def run(name: str, a, b, out):
 def matmul(a, b, out=None):
     """A @ B.T for bf16 on gfx950, fp32 accumulate; `b` is (N, K), as in
     hk.ops.gemm.matmul, whose gfx950 form this is. The kernel is one of hk's
-    own, by route()."""
+    own, by route(). A candidate whose build this toolchain refuses (the spill
+    gate: ROCm 10's dp128x224) is recorded and the shape goes to route()'s
+    next choice -- the next-fastest measured at that point -- in the same call."""
     import torch  # noqa: PLC0415 -- hk traces and compiles without torch
+
+    from ..runtime.resources import ResourceError  # noqa: PLC0415
 
     if a.dim() != 2 or b.dim() != 2:
         raise ValueError(f"matmul: want 2D, got {a.dim()}D and {b.dim()}D")
@@ -1055,8 +1118,17 @@ def matmul(a, b, out=None):
     elif out.shape != (m, n) or out.dtype != torch.bfloat16:
         raise ValueError(f"matmul: out is {tuple(out.shape)}/{out.dtype}, "
                          f"expected ({m}, {n})/bfloat16")
-    run(route(m, n, k), a, b, out)
-    return out
+    while True:
+        name = route(m, n, k)            # raises once every candidate is refused
+        known = len(_REFUSED)
+        try:
+            run(name, a, b, out)
+            return out
+        except ResourceError as e:
+            # run() recorded the part refused (a tail that tail_for now skips); a candidate
+            # that refuses with nothing new recorded -- a fixed part refused before -- goes whole
+            if len(_REFUSED) == known:
+                _refuse(name, e)
 
 
 __all__ = ["gemm_kernel", "kernel_for", "schedule_for", "matmul", "route", "run",
