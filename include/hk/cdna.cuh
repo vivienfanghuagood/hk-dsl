@@ -1168,6 +1168,10 @@ template<int N> __device__ inline int *hk_gather_rows_lds() {
     __shared__ int rows[N];
     return rows;
 }
+template<int N> __device__ inline int *hk_scatter_ids_lds() {
+    __shared__ int ids[N];
+    return ids;
+}
 }  // namespace detail
 
 /**
@@ -1177,12 +1181,14 @@ template<int N> __device__ inline int *hk_gather_rows_lds() {
  * load of a lane's row index would be a vmcnt wait, which retires every load in flight before
  * it (in order on gfx950): the whole prefetch.
  */
-template<int N, ducks::gl::all IL>
+template<int N, int RAW = 0, ducks::gl::all IL>
 __device__ inline static void gather_prep(const IL &ids, int at) {
-    int *rows = detail::hk_gather_rows_lds<N>();
+    // RAW: the ids themselves, for a scatter's rows (store_scatter<.., STAGED = N>), in their
+    // own array: ids[at + r] at [r]; `at` a multiple of N (the scatter indexes it pos % N)
+    int *rows = RAW ? detail::hk_scatter_ids_lds<N>() : detail::hk_gather_rows_lds<N>();
     const int *idp = reinterpret_cast<const int *>(ids.raw_ptr) + at;
     for (int r = int(threadIdx.x); r < N; r += int(blockDim.x))
-        rows[r] = idp[r] & 0xFFFFFF;
+        rows[r] = RAW ? idp[r] : idp[r] & 0xFFFFFF;
     __syncthreads();
 }
 
@@ -2017,8 +2023,12 @@ __device__ inline static void load_fp4_frags(RT &dst, const GL &src, int row0, i
     // 384 x 4608 x 2560 B gate/up at TP1 is 4.5 GB), past a 32-bit offset and num_records.
     // An expert past the tensor (a padded unit's id) gets an empty range: its loads read zero,
     // as the one whole-tensor resource's bounds check made them before.
-    const bool in = e >= 0 && uint64_t(e + 1) * GR <= uint64_t(src.template shape<2>());
-    const uint8_t *base = reinterpret_cast<const uint8_t *>(src.raw_ptr) + (in ? uint64_t(e) * GR * kbytes : 0);
+    // 32-bit, branch-free (a select): the 64-bit compare of (e + 1) * GR with the row count became
+    // two scalar branches at every call, i.e. every K step (K1 k1-prefill c38)
+    const uint32_t ne = uint32_t(src.template shape<2>()) / uint32_t(GR);
+    const bool in = uint32_t(e) < ne;
+    const uint64_t eoff = uint64_t(in ? uint32_t(e) : 0u) * (uint64_t(GR) * kbytes);
+    const uint8_t *base = reinterpret_cast<const uint8_t *>(src.raw_ptr) + eoff;
     const detail::hk_i32x4 r = detail::hk_srsrc(base, in ? uint64_t(GR) * kbytes : 0);
     const uint32_t k0n = kbytes / 64u;
     #pragma unroll
@@ -2511,6 +2521,17 @@ __device__ inline int hk_gather_index(const IL &idx, int at, int count, int i, i
     const int v = idx.raw_ptr[pos];
     return div == 1 ? v : v / div;
 }
+/// A scatter's index: from the LDS copy gather_prep<STAGED, 1> made (an lgkmcnt wait), or global
+/// (a vmcnt wait, which on gfx950 retires every vector-memory op issued before it, in order).
+template<int R, int STAGED, typename IL>
+__device__ inline int hk_scatter_index(const IL &idx, int at, int count, int i) {
+    if constexpr (STAGED > 0) {
+        const int pos = at + R * i + laneid() % R;
+        return pos >= count ? -1 : hk_scatter_ids_lds<STAGED>()[pos % STAGED];
+    } else {
+        return hk_gather_index<R>(idx, at, count, i, 1);
+    }
+}
 }  // namespace detail
 
 /**
@@ -2558,9 +2579,13 @@ __device__ inline static void load_gather(RT &dst, const GL &src, const IL &idx,
  * position at or past `count`, writes nothing. Two tile rows naming one row
  * race; which lands is unspecified.
  */
-template<int TOPK = 0, int ADD = 0, ducks::rt::all RT, ducks::gl::all GL, ducks::gl::all IL>
+template<int TOPK = 0, int ADD = 0, int STAGED = 0, ducks::rt::all RT, ducks::gl::all GL,
+         ducks::gl::all IL>
 __device__ inline static void store_scatter(const GL &dst, const RT &src, const IL &idx,
                                             int at, int count, int col) {
+    // STAGED > 0: the ids were staged in LDS by gather_prep<STAGED, 1>(idx, at0) (at0 a multiple
+    // of STAGED, covering every position stored here): no global index load, so no vmcnt wait
+    // that would drain the loads and stores in flight (K1 k1-prefill c36).
     // TOPK > 0: idx holds AITER's MoE sort ids (token | choice << 24) and dst is [TOPK * M, ..]
     // choice-major: the row is choice * M + token, nothing for a token >= M (padding).
     // ADD: the rows are added atomically (fp32, or bf16 pairs); with TOPK, dst is [M, ..] and the
@@ -2581,7 +2606,7 @@ __device__ inline static void store_scatter(const GL &dst, const RT &src, const 
         const int lane = laneid();
         #pragma unroll
         for (int i = 0; i < RT::height; i++) {
-            int g = detail::hk_gather_index<F::R>(idx, at, count, i, 1);
+            int g = detail::hk_scatter_index<F::R, STAGED>(idx, at, count, i);
             if constexpr (TOPK > 0) g = (g < 0 || (g & 0xFFFFFF) >= nrows) ? -1 : (g & 0xFFFFFF);
             if (g < 0 || g >= nrows) continue;
             U *row = base + uint64_t(g) * row_elems + col;
@@ -2614,9 +2639,51 @@ __device__ inline static void store_scatter(const GL &dst, const RT &src, const 
     const detail::hk_i32x4 r = detail::hk_whole_srsrc(dst, oob, nrows);
     const uint32_t row_bytes = uint32_t(dst.template stride<2>()) * sizeof(U);
     const int lane = laneid();
+#if defined(KITTENS_CDNA4)
+    if constexpr (F::R == 16 && F::C == 16 && F::S == 4 && F::K == 1 && RT::width % 2 == 0 &&
+                  std::is_same_v<T, float> && std::is_same_v<U, bf16>) {
+        // 16x16 accumulator fragments (lane l: row l%16, 4 columns at 4(l/16)), stored as
+        // bf16: v_permlane16_swap trades runs between lanes l and l+16 across a pair of
+        // 16-column subtiles, so that each lane holds 8 consecutive columns -- lanes of
+        // quarter q = l/16 start at 16(q&1) + 8(q>>1) of the pair's 32 -- and a row's 64 B
+        // go out in 16-byte stores, half as many instructions as 8-byte ones (K1 k1-prefill
+        // c35: the 8-byte scatter stores were a third of stage 2's time).
+        const int q4 = lane / 16;
+        const uint32_t start = uint32_t(16 * (q4 & 1) + 8 * (q4 >> 1));
+        #pragma unroll
+        for (int i = 0; i < RT::height; i++) {
+            int g = detail::hk_scatter_index<F::R, STAGED>(idx, at, count, i);
+            if constexpr (TOPK > 0) {
+                const int m = nrows / TOPK, tok = g & 0xFFFFFF;
+                g = (g < 0 || tok >= m) ? -1 : (g >> 24) * m + tok;
+            }
+            const bool in = g >= 0 && g < nrows;
+            const uint32_t row_off = in ? uint32_t(g) * row_bytes + uint32_t(col) * sizeof(U) : oob;
+            #pragma unroll
+            for (int j = 0; j < RT::width; j += 2) {
+                uint32_t a[2], b[2];
+                #pragma unroll
+                for (int d = 0; d < 2; d++) {
+                    const bf16_2 pa = detail::hk_cvt_pk_bf16(src.tiles[i][j].data[d].x, src.tiles[i][j].data[d].y);
+                    const bf16_2 pb = detail::hk_cvt_pk_bf16(src.tiles[i][j + 1].data[d].x,
+                                                             src.tiles[i][j + 1].data[d].y);
+                    __builtin_memcpy(&a[d], &pa, 4);
+                    __builtin_memcpy(&b[d], &pb, 4);
+                    const auto s = __builtin_amdgcn_permlane16_swap(a[d], b[d], false, true);
+                    a[d] = s[0];
+                    b[d] = s[1];
+                }
+                uint32_t chunk[4] = {a[0], a[1], b[0], b[1]};
+                detail::hk_buf_store_bytes<16>(
+                    r, in ? row_off + (uint32_t(j * F::C) + start) * sizeof(U) : oob, chunk);
+            }
+        }
+        return;
+    }
+#endif
     #pragma unroll
     for (int i = 0; i < RT::height; i++) {
-        int g = detail::hk_gather_index<F::R>(idx, at, count, i, 1);
+        int g = detail::hk_scatter_index<F::R, STAGED>(idx, at, count, i);
         if constexpr (TOPK > 0) {
             const int m = nrows / TOPK, tok = g & 0xFFFFFF;
             g = (g < 0 || tok >= m) ? -1 : (g >> 24) * m + tok;

@@ -236,8 +236,11 @@ def HK_GatherPrepOp : HK_Op<"gather_prep"> {
     The workgroup reads `rows` sort ids from `ids` at `at` into a static LDS
     array, masks them to rows (AITER's token | choice << 24), and passes a
     barrier; hk.group_load with gather_staged = rows reads them from there.
+    `raw`: the ids unmasked, in a separate array, for hk.scatter_rows with
+    staged = rows (`at` a multiple of rows).
   }];
-  let arguments = (ins HK_GlobalType:$ids, I32:$at, I64Attr:$rows);
+  let arguments = (ins HK_GlobalType:$ids, I32:$at, I64Attr:$rows,
+                       DefaultValuedAttr<BoolAttr, "false">:$raw);
   let assemblyFormat = "$ids `[` $at `]` attr-dict `:` qualified(type($ids))";
 }
 
@@ -251,11 +254,15 @@ def HK_ScatterRowsOp : HK_Op<"scatter_rows"> {
     bf16 dst; bf16 adds pairs with global_atomic_pk_add_bf16 on gfx950); with
     sort_topk, dst is [M, ...] and row r goes to its token -- the top-k sum
     done by the scatter, in no fixed order.
+    `staged` N > 0: the ids at [at0, at0 + N) (at0 a multiple of N, covering
+    every row stored) were staged in LDS by hk.gather_prep raw, rows = N; the
+    scatter reads them there (an lgkmcnt wait, not a vmcnt one).
   }];
   let arguments = (ins HK_GlobalType:$dst, HK_RegTileType:$value,
                        HK_GlobalType:$idx, I32:$at, I32:$count, I32:$col,
                        DefaultValuedAttr<I64Attr, "0">:$sort_topk,
-                       DefaultValuedAttr<BoolAttr, "false">:$add);
+                       DefaultValuedAttr<BoolAttr, "false">:$add,
+                       DefaultValuedAttr<I64Attr, "0">:$staged);
   let assemblyFormat = [{
     $value `,` $dst `[` $idx `[` $at `,` $count `]` `,` $col `]` attr-dict `:`
     qualified(type($value)) `,` qualified(type($dst)) `,` qualified(type($idx))

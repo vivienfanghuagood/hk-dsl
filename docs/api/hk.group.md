@@ -63,12 +63,16 @@ whole prefetch).
 #### `Group.gather_prep`
 
 ```python
-Group.gather_prep(self, ids, at, rows: int) -> None
+Group.gather_prep(self, ids, at, rows: int, *, raw: bool = False) -> None
 ```
+
+*Changed after 0.8.0*: new parameter `raw`
 
 Stage `rows` source rows of a gathered copy in LDS -- `ids[at + r] &
 0xFFFFFF` -- and pass a barrier (every warp must call it). A
 `g.load(..., gather=(ids, at), staged=rows)` then reads them there.
+`raw=True`: the ids themselves, in their own array, for
+`Global.scatter(..., staged=rows)`; `at` a multiple of `rows`.
 
 #### `Group.wait_for`
 

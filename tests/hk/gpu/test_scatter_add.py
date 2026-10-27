@@ -145,3 +145,35 @@ def test_a_scaled_mfma_tile_adds_its_valid_rows(steps):
     stage 2 was 0.28 off. tests/hk/codegen/test_mfma_scale_sink.py catches the sink itself;
     this test checks the values."""
     assert _sink_case(_sink_probe(), steps, pinned=True) < 2e-2
+
+
+def _staged_kernel(staged):
+    """Four 16-row tiles a workgroup (a 64-row block); `staged`: the block's ids read from LDS."""
+    def scat_staged(x: hk.Tensor[fp32], ids: hk.Tensor[i32], o: hk.Tensor[bf16]):
+        g = hk.group(1)
+        r0 = hk.arch.block_idx.y * 64
+        col = hk.arch.block_idx.x * 64
+        if staged:
+            g.gather_prep(ids, r0, 64, raw=True)
+        for i in range(4):
+            t = x[hk.elem_coord(0, 0, r0 + 16 * i, col)].load(T32)
+            o.scatter(t, ids, r0 + 16 * i, col=col, sort_topk=TOPK, staged=64 if staged else 0)
+
+    return hk.kernel(scat_staged, arch="gfx950", warps=1, name=f"scat_staged_{int(staged)}",
+                     grid=lambda p: (p.x.cols // 64, p.x.rows // 64, 1))
+
+
+def test_a_scatter_reads_its_ids_from_lds_as_from_global():
+    """scatter(staged=64) after g.gather_prep(raw=True): the same rows as the global-index scatter,
+    bit for bit (the ids it reads from LDS keep the choice bits gather_prep's default masks off)."""
+    g = torch.Generator(device="cuda").manual_seed(5)
+    ids = _sort_ids(g)
+    ids = torch.cat([ids, torch.full((-ids.numel() % 64,), M, device="cuda", dtype=torch.int32)])
+    x = torch.randn(ids.numel(), C, device="cuda", generator=g)
+    outs = []
+    for staged in (False, True):
+        out = torch.zeros(TOPK * M, C, device="cuda", dtype=torch.bfloat16)
+        _staged_kernel(staged)(x, ids.view(1, -1), out)
+        outs.append(out)
+    assert torch.equal(outs[1], outs[0])
+    assert torch.equal(outs[1], _want(x, ids, False, torch.bfloat16))

@@ -112,13 +112,15 @@ class Group:
                         async_=not wait, nontemporal=bool(nontemporal),
                         loc=t.loc())
 
-    def gather_prep(self, ids, at, rows: int) -> None:
+    def gather_prep(self, ids, at, rows: int, *, raw: bool = False) -> None:
         """Stage `rows` source rows of a gathered copy in LDS -- `ids[at + r] &
         0xFFFFFF` -- and pass a barrier (every warp must call it). A
-        `g.load(..., gather=(ids, at), staged=rows)` then reads them there."""
+        `g.load(..., gather=(ids, at), staged=rows)` then reads them there.
+        `raw=True`: the ids themselves, in their own array, for
+        `Global.scatter(..., staged=rows)`; `at` a multiple of `rows`."""
         if not hasattr(ids, "dtype") or ids.dtype.name != "i32":
             raise TypeError(f"gather_prep: ids is an int32 tensor, got {ids!r}")
-        hkd.GatherPrepOp(ids.v, as_int(at).v, int(rows), loc=B.current().loc())
+        hkd.GatherPrepOp(ids.v, as_int(at).v, int(rows), raw=bool(raw), loc=B.current().loc())
 
     def wait_for(self, *tiles: SharedTile, exact: bool = False) -> None:
         """`s_waitcnt vmcnt(n)`: this warp's share of the asynchronous copies

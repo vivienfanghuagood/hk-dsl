@@ -594,7 +594,7 @@ def aiter_layout_w2_scale(s):
 
 def _sorted_ring(stage: int, name: str, *, group_rows: int, mt: int, pp: int, k: int,
                  limit: float = 10.0, topk: int = 6, warps: int = 4, xcd: bool = True,
-                 depth: int = 2, mxq: bool = False):
+                 depth: int = 2, mxq: bool = False, xpipe: bool = False):
     """Stage 1 or 2 on AITER's own MoE sort (moe_sorting with block_size 16 * mt): a round is one
     sorted block -- its expert sorted_expert_ids[b], its rows sorted_ids[b * BM ..] -- so nothing
     is decoded or gathered on the host. The xsplit ring with two-step 32-row scale dwords (pairs),
@@ -656,6 +656,7 @@ def _sorted_ring(stage: int, name: str, *, group_rows: int, mt: int, pp: int, k:
         row_w = e * GR + col0
         Cs = [hk.zeros(t_c1) for _ in range(mt)]
         X1 = hk.zeros(t_x1)
+        X1s = [X1, hk.zeros(t_x1)] if xpipe else [X1, X1]
         W = [hk.zeros(t_w) for _ in range(D)]
         S = [hk.load_mx_scales(ws, R, 8, row_w, 0, layout=lay, group_rows=GR) for _ in range(2)]
         SX = [hk.load_mx_scales(xs, BM, 8, 0, 0, layout="aiter", group_rows=XGR) for _ in range(2)]
@@ -679,10 +680,17 @@ def _sorted_ring(stage: int, name: str, *, group_rows: int, mt: int, pp: int, k:
                 nu = u + D - 1
                 fetch(kc + D - 1, nu % D, sset=(nu // 2) % 2 if nu % 2 == 0 else None)
             ss, par = (u // 2) % 2, u % 2
+            # xpipe: the next token tile's LDS read is issued before this tile's MFMAs (two
+            # fragments alternate; a step's first read stays behind its barrier) -- k1-prefill c39
+            if xpipe:
+                Xs[cur].subtile(TILE, KS, 0, 0).load(t_x1, wait=False, into=X1s[0])
             for ti in range(mt):
-                Xs[cur].subtile(TILE, KS, ti, 0).load(t_x1, wait=False, into=X1)
-                hk.lds.wait_for(X1)
-                hk.mma_ABt_mx(W[cur], X1, Cs[ti], S[ss], SX[ss], a_fmt="fp4",
+                if not xpipe:
+                    Xs[cur].subtile(TILE, KS, ti, 0).load(t_x1, wait=False, into=X1)
+                elif ti + 1 < mt:
+                    Xs[cur].subtile(TILE, KS, ti + 1, 0).load(t_x1, wait=False, into=X1s[(ti + 1) % 2])
+                hk.lds.wait_for(X1s[ti % 2])
+                hk.mma_ABt_mx(W[cur], X1s[ti % 2], Cs[ti], S[ss], SX[ss], a_fmt="fp4",
                               sa_at=(0, par), sb_at=(ti, par), into=Cs[ti])
             hk.arch.sched_barrier()
 
@@ -971,7 +979,7 @@ def _sorted_grid(group_rows: int, mt: int, pp: int, k: int, limit: float, tr: in
 
 
 def _sorted_s2_resident(name: str, *, group_rows: int, mt: int, pp: int, k: int, topk: int = 6,
-                        warps: int = 4, nt: int = 4):
+                        warps: int = 4, nt: int = 4, xpipe: bool = True):
     """Stage 2 with the sorted block's h resident in LDS: a workgroup loads its BM rows of h
     (all K/128 steps, BM x K bytes) once, then runs `nt` column tiles of TILE * pp * warps
     output columns over them, streaming only the expert's weights -- h is read once a workgroup,
@@ -1025,11 +1033,23 @@ def _sorted_s2_resident(name: str, *, group_rows: int, mt: int, pp: int, k: int,
         col0 = blk * NCW * nt + wid * R
         Cs = [hk.zeros(t_c1) for _ in range(mt)]
         X1 = hk.zeros(t_x1)
+        # xpipe: two token fragments, the next tile's LDS read issued before this tile's MFMAs
+        # (k1-prefill c37: each read was waited on right before its own MFMAs, lgkm_wait 9%)
+        X1s = [X1, hk.zeros(t_x1)] if xpipe else [X1, X1]
         W = [hk.zeros(t_w) for _ in range(D)]
         S = [hk.load_mx_scales(ws, R, 8, e * GR + col0, 0, layout="aiter", group_rows=GR)
              for _ in range(3)]
 
         for _ in range(live):
+            # the block's scatter ids into LDS and its rows' routing weights into registers, once
+            # for all nt column tiles: loaded in the epilogue, each was a vmcnt wait that drained
+            # the next tile's weight prefetch and this tile's stores (k1-prefill c36)
+            g.gather_prep(sids, r0, BM, raw=True)
+            wsum = []
+            for i in range(mt):
+                wt = wv[hk.elem_coord(0, 0, r0 + i * TILE, 0)].load(t_wv)
+                wt.right_fill_(1, 0.0)
+                wsum.append(wt.sum(axis=1))
             for kc in range(steps):                # the block's h, every K step, once
                 g.load(Hres[kc], x.at[r0, kc * KS], wait=False)
             SX = [hk.load_mx_scales(xs, BM, 8, r0, p * 8, layout="aiter", group_rows=XGR)
@@ -1047,6 +1067,13 @@ def _sorted_s2_resident(name: str, *, group_rows: int, mt: int, pp: int, k: int,
             for kc in range(steps):
                 g.wait_for(Hres[kc], exact=True)
             hk.arch.barrier()
+
+            def ldx(kc, ti):                       # token tile ti of K step kc, from the resident h
+                Hres[kc].subtile(TILE, KS, ti, 0).load(t_x1, wait=False, into=X1s[ti % 2])
+
+            if xpipe:
+                ldx(0, 0)
+
             def step(kc, rw):                      # K step kc of the tile at rows rw
                 t = kc + D - 1
                 if t < steps:
@@ -1055,25 +1082,29 @@ def _sorted_s2_resident(name: str, *, group_rows: int, mt: int, pp: int, k: int,
                     fetch(t - steps, rw + NCW)
                 p, par = kc // 2, kc % 2
                 for ti in range(mt):
-                    Hres[kc].subtile(TILE, KS, ti, 0).load(t_x1, wait=False, into=X1)
-                    hk.lds.wait_for(X1)
-                    hk.mma_ABt_mx(W[kc % D], X1, Cs[ti], S[sset(p)], SX[p], a_fmt="fp4",
+                    if not xpipe:
+                        ldx(kc, ti)
+                    elif ti + 1 < mt:
+                        ldx(kc, ti + 1)
+                    else:                          # the next step's first tile (step 0 of the next
+                        ldx((kc + 1) % steps, 0)   # column tile: h does not change)
+                    hk.lds.wait_for(X1s[ti % 2])
+                    hk.mma_ABt_mx(W[kc % D], X1s[ti % 2], Cs[ti], S[sset(p)], SX[p], a_fmt="fp4",
                                   sa_at=(0, par), sb_at=(ti, par), into=Cs[ti])
                 hk.arch.sched_barrier()
 
             def store(c0):                         # the tile's rows out, weighted; acc to zero
                 for i in range(mt):
-                    o = hk.transpose(Cs[i])
-                    wt = wv[hk.elem_coord(0, 0, r0 + i * TILE, 0)].load(t_wv)
-                    wt.right_fill_(1, 0.0)
-                    o = o * wt.sum(axis=1)[:, None]
-                    out.scatter(o, sids, r0 + i * TILE, col=c0, sort_topk=topk)
+                    o = hk.transpose(Cs[i]) * wsum[i][:, None]
+                    out.scatter(o, sids, r0 + i * TILE, col=c0, sort_topk=topk, staged=BM)
                     Cs[i].zero_()
 
             for n in hk.range(nt):
                 for kc in range(steps):
                     step(kc, row_w + n * NCW)
                 store(col0 + n * NCW)
+            if xpipe:
+                hk.lds.wait_for(X1s[0])            # the last column tile's dangling read
             hk.arch.barrier()          # (the verifier sees `live` as a loop: Hres reloads at its top)
 
     body.__name__ = name
@@ -1082,9 +1113,12 @@ def _sorted_s2_resident(name: str, *, group_rows: int, mt: int, pp: int, k: int,
 
 
 @functools.lru_cache(maxsize=None)
-def _sorted_resident(group_rows: int, mt: int, pp: int, k: int, topk: int, nt: int):
-    return _sorted_s2_resident(f"moe_a8w4_s2r_gr{group_rows}_mt{mt}_pp{pp}_k{k}_t{topk}_n{nt}",
-                               group_rows=group_rows, mt=mt, pp=pp, k=k, topk=topk, nt=nt)
+def _sorted_resident(group_rows: int, mt: int, pp: int, k: int, topk: int, nt: int,
+                     xpipe: bool = True):
+    return _sorted_s2_resident(f"moe_a8w4_s2r_gr{group_rows}_mt{mt}_pp{pp}_k{k}_t{topk}_n{nt}"
+                               + ("" if xpipe else "_nx"),
+                               group_rows=group_rows, mt=mt, pp=pp, k=k, topk=topk, nt=nt,
+                               xpipe=xpipe)
 
 
 @functools.lru_cache(maxsize=None)
@@ -1095,17 +1129,17 @@ def _sorted_persistent(group_rows: int, mt: int, pp: int, k: int, topk: int, gri
 
 @functools.lru_cache(maxsize=None)
 def _sorted(stage: int, group_rows: int, mt: int, pp: int, k: int, limit: float, topk: int,
-            depth: int = 2, warps: int = 4, mxq: bool = False):
+            depth: int = 2, warps: int = 4, mxq: bool = False, xpipe: bool = False):
     return _sorted_ring(stage, f"moe_a8w4_s{stage}s_gr{group_rows}_mt{mt}_pp{pp}_k{k}_t{topk}"
                         + (f"_d{depth}" if depth != 2 else "") + (f"_w{warps}" if warps != 4 else "")
-                        + ("_mxq" if mxq else ""),
+                        + ("_mxq" if mxq else "") + ("_xp" if xpipe else ""),
                         group_rows=group_rows, mt=mt, pp=pp, k=k, limit=limit, topk=topk,
-                        depth=depth, warps=warps, mxq=mxq)
+                        depth=depth, warps=warps, mxq=mxq, xpipe=xpipe)
 
 
 def stage1_sorted(xq_tok, xs_sorted, w13, w13_scale, sorted_ids, sorted_expert_ids, num_valid, *,
                   inter: int, mt: int, pp: int = 3, limit: float = 10.0, depth: int = 2,
-                  warps: int = 4, grid=None, mxq: bool = False):
+                  warps: int = 4, grid=None, mxq: bool = False, xpipe: bool = True):
     """h [len(sorted_ids), inter] bf16 in AITER's sorted order (moe_sorting with block_size
     16 * mt): xq_tok [M, K] FP8 in token order and xs_sorted its sorted 32-row-layout scales
     (aiter's fused_dynamic_mxfp8_quant_moe_sort). See _sorted_ring.
@@ -1137,7 +1171,8 @@ def stage1_sorted(xq_tok, xs_sorted, w13, w13_scale, sorted_ids, sorted_expert_i
                              f"scale blocks")
         hq = torch.empty((p, inter), device=xq_tok.device, dtype=torch.float8_e4m3fn)
         hs = torch.empty((p, -(-inter // 256) * 8), device=xq_tok.device, dtype=torch.uint8)
-        _sorted(1, 2 * inter, mt, pp, xq_tok.shape[1], float(limit), 6, depth, warps, mxq=True)(
+        _sorted(1, 2 * inter, mt, pp, xq_tok.shape[1], float(limit), 6, depth, warps, mxq=True,
+                xpipe=xpipe)(
             xq_tok, xs_sorted.view(torch.int8), w13.view(torch.int8), w13_scale.view(torch.int8),
             sorted_ids.view(1, -1), sorted_expert_ids.view(1, -1), num_valid.view(1, -1), dummy,
             hq, hs.view(torch.int8))
