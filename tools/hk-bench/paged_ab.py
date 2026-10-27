@@ -342,6 +342,8 @@ def run_case(n, ctx, rounds, layers=1):
 #: Batches with prefill in them, as vLLM's defaults make them: (name, [(ctx,
 #: q_len)]), decodes first, the order vLLM's reorder gives the backend.
 PREFILL_CASES = (
+    ("4096+512 (split)", [(4096, 512)]),
+    ("16384+512 (split)", [(16384, 512)]),
     ("prompt 2048", [(0, 2048)]),
     ("prompt 8192", [(0, 8192)]),
     ("chunk 512 @4096", [(4096, 512)]),
@@ -437,12 +439,21 @@ def prefill_case(reqs, rounds):
     nd = 0
     while nd < r and q_lens[nd] == 1:
         nd += 1
+    # The builder's prefill plan: the KV-split one where it cuts (gfx950, the
+    # host lengths vLLM keeps), else the work list.
+    qs = [0]
+    for n in q_lens:
+        qs.append(qs[-1] + n)
+    split = (vllm_backend._split_plan(
+        types.SimpleNamespace(seq_lens_cpu_upper_bound=torch.tensor(seq)), qs, nd, r - nd,
+        "cuda") if nd < r else None)
     md = types.SimpleNamespace(
         num_actual_tokens=n_new, slot_mapping=h_new, max_query_len=max(q_lens),
         max_seq_len=max(seq), block_table=h_table, seq_lens=lens,
-        query_start_loc=cu, hk_num_decodes=nd,
+        query_start_loc=cu, hk_num_decodes=nd, hk_prefill_split=split,
         hk_prefill_tiles=paged_prefill.work_list(
-            [(i, q_lens[i]) for i in range(nd, r)], "cuda") if nd < r else None)
+            [(i, q_lens[i]) for i in range(nd, r)], "cuda") if nd < r and split is None
+        else None)
     h_out = torch.empty(n_new, HQ, D, device="cuda", dtype=BF16)
 
     def hk_layer():

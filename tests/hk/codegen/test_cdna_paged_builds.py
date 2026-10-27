@@ -55,12 +55,18 @@ def test_the_decode_builds_and_its_page_copies_are_counted(d, mode, splits):
 
 
 @pytest.mark.parametrize("d", attn_cdna.HEAD_DIMS)
-def test_the_paged_prefill_builds_within_two_waves(d):
+@pytest.mark.parametrize("kv_split", [False, True])
+def test_the_paged_prefill_builds_within_two_waves(d, kv_split):
     src, asm, kr = _build(attn_cdna.attn_kernel(
-        f"pp_build_{d}", head_dim=d, causal=True, paged=True, arch="gfx950"),
+        f"pp_build_{d}_{int(kv_split)}", head_dim=d, causal=True, paged=True,
+        kv_split=kv_split, arch="gfx950"),
         max_vgprs=256, min_occupancy=2)
     assert kr.occupancy >= 2
     warps = 8 if d == 128 else 4
     copies = src.count(f"kittens::group_load_async<{warps}>(")
     # A 32 x D page over `warps` warps: D * 64 / (1024 * warps) copies each.
     assert len(re.findall(r"buffer_load_dwordx4 .* lds", asm)) == copies * d * 64 // (1024 * warps)
+
+
+def test_the_prefill_merge_builds():
+    _build(attn_cdna.prefill_merge_kernel("pp_merge_build", arch="gfx950"))

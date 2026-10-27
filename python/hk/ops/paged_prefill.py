@@ -258,5 +258,73 @@ def work_list(q_lens, device):
         device, non_blocking=True)
 
 
-__all__ = ["paged_prefill_kernel", "kernel_for", "work_list", "Q_TILE",
-           "KV_BLOCK"]
+def split_plan(reqs, n_heads: int, device, target: int = 256, min_blocks: int = 16):
+    """gfx950's KV-split prefill work for requests [(r, ctx, q_len, tok0)]:
+    (tiles, mlist, n_slots) for attn_cdna.split_kernels_for.
+
+    Each request's query tiles (attn_cdna.Q_TILE rows), longest first. When
+    the tiles times the heads come short of `target` workgroups, a tile's KV
+    walk is cut into splits over its prefix -- the blocks every one of its
+    queries sees -- each at least `min_blocks` 64-key blocks; the last split
+    takes the rest, its diagonal included. A tile entry is (request, tile,
+    first block, end block or -1, slot or -1); a split tile's splits write
+    partials to consecutive slots, and its merge entry is (first token,
+    rows, first slot, splits)."""
+    import torch  # noqa: PLC0415
+
+    from .attn_cdna import KV_BLOCK as blk, Q_TILE as tile  # noqa: PLC0415
+
+    tiles = []
+    for r, ctx, n, tok0 in reqs:
+        for y in reversed(range(-(-n // tile))):
+            q0 = y * tile
+            rows = min(tile, n - q0)
+            work = -(-(ctx + q0 + rows) // blk)
+            tiles.append((work, r, y, ctx, q0, rows, tok0))
+    tiles.sort(key=lambda t: -t[0])
+    want = -(-target // max(1, len(tiles) * n_heads))
+    entries, merges, slots = [], [], 0
+    for work, r, y, ctx, q0, rows, tok0 in tiles:
+        prefix = (ctx + q0) // blk
+        s = max(1, min(want, prefix // min_blocks))
+        if s == 1:
+            entries.append((work, (r, y, 0, -1, -1)))
+            continue
+        per = -(-prefix // s)
+        s = -(-prefix // per)            # no empty split: its walk would be all masked
+        cuts = [i * per for i in range(s)]
+        for i, lo in enumerate(cuts):
+            hi = cuts[i + 1] if i + 1 < s else -1
+            entries.append(((hi if hi >= 0 else work) - lo, (r, y, lo, hi, slots + i)))
+        merges.append((tok0 + q0, rows, slots, s))
+        slots += s
+    entries.sort(key=lambda e: -e[0])
+    t = torch.tensor([e for _, e in entries] or [(0, 0, 0, -1, -1)], dtype=torch.int32)
+    m = torch.tensor(merges or [(0, 0, 0, 0)], dtype=torch.int32)
+    return t.to(device, non_blocking=True), m.to(device, non_blocking=True), len(merges), slots
+
+
+_SPLIT_SCRATCH: dict = {}
+
+
+def split_scratch(n_slots: int, n_heads: int, head_dim: int, device):
+    """The KV-split prefill's partials: (n_slots * Q_TILE, heads * head_dim)
+    bf16 and their (m, l), (1, heads, 2, n_slots * Q_TILE) fp32 -- kept and
+    grown by powers of two, so a batch reuses the last one's."""
+    import torch  # noqa: PLC0415
+
+    from .attn_cdna import Q_TILE as tile  # noqa: PLC0415
+
+    key = (str(device), n_heads, head_dim)
+    have = _SPLIT_SCRATCH.get(key)
+    if have is None or have[0] < n_slots:
+        cap = 1 << max(0, (max(1, n_slots) - 1).bit_length())
+        have = _SPLIT_SCRATCH[key] = (
+            cap,
+            torch.empty(cap * tile, n_heads * head_dim, device=device, dtype=torch.bfloat16),
+            torch.empty(1, n_heads, 2, cap * tile, device=device, dtype=torch.float32))
+    return have[1], have[2]
+
+
+__all__ = ["paged_prefill_kernel", "kernel_for", "work_list", "split_plan", "split_scratch",
+           "Q_TILE", "KV_BLOCK"]
