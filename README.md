@@ -121,6 +121,14 @@ work queues, grid barriers, tagged mailboxes and symmetric memory across
 GPUs, each lowered to what a memory-model litmus suite found correct
 ([hk.comm](docs/language.md#between-workgroups-xcds-and-gpus-hkcomm-gfx950),
 [design](docs/design/comm.md), [a task graph](examples/14_task_graph.py)).
+Which XCD runs which workgroup is a compiler pass:
+`hk.kernel(placement="auto")` keeps a sharing cluster on one XCD where that
+measured faster, with outputs bitwise the unplaced kernel's
+([placement](docs/placement.md), [an example](examples/15_placement.py)). For
+kernels that must match another implementation bit for bit, strips take a
+C++ expression per element (`hk.map_cpp`), i32 elements, stated reduction
+orders and element-wise exchange
+([strips](docs/language.md#strip-ops-for-a-megakernels-roles-gfx950)).
 
 ```mermaid
 flowchart LR
