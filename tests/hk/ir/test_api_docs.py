@@ -34,23 +34,34 @@ def test_every_documented_name_has_a_docstring():
 
 
 def test_since_marks_against_the_pypi_wheel():
+    gen = _gen()
+    assert gen.PYPI == "0.8.0" and gen.BASELINE.name == "api_baseline_0.8.0.json"
+    # 0.8.0's additions are in the 0.8.0 wheel: no mark left on them
     arch_md = (REPO / "docs" / "api" / "hk.arch.md").read_text()
     section = arch_md.split("### `hk.arch.xcd_count`", 1)[1].split("###", 1)[0]
-    assert "New after 0.7.0" in section          # not in the 0.7.0 wheel (#63)
-    section = arch_md.split("### `hk.arch.xcd_id`", 1)[1].split("###", 1)[0]
-    assert "after 0.7.0" not in section          # in it (#48)
+    assert "after 0.8.0" not in section          # in it (#63)
     hk_md = (REPO / "docs" / "api" / "hk.md").read_text()
-    section = hk_md.split("### `hk.kernel`", 1)[1].split("###", 1)[0]
-    assert "*Changed after 0.7.0*: new parameter `placement`" in section   # resident= was in 0.7.0
-    section = hk_md.split("### `hk.mma_ABt_mx`", 1)[1].split("###", 1)[0]
-    assert "after 0.7.0" not in section          # in it, same parameters
-    section = hk_md.split("### `hk.Placement`", 1)[1].split("###", 1)[0]
-    assert "New after 0.7.0" in section
+    for name in ("hk.kernel", "hk.Placement", "hk.map_cpp", "hk.iota", "hk.RS"):
+        section = hk_md.split(f"### `{name}`", 1)[1].split("###", 1)[0]
+        assert "after 0.8.0" not in section, name   # placement=, #53, #72 are in 0.8.0
     group_md = (REPO / "docs" / "api" / "hk.group.md").read_text()
     section = group_md.split("#### `Group.wait_for`", 1)[1].split("###", 1)[0]
-    assert "after 0.7.0" not in section          # *tiles, exact: unchanged, not reordered
+    assert "after 0.8.0" not in section          # *tiles, exact: unchanged, not reordered
+    for page in (REPO / "docs" / "api").glob("*.md"):
+        assert "after 0.7.0" not in page.read_text(), page.name   # the old baseline's marks
+    # what lands after 0.8.0 is marked against the 0.8.0 wheel
+    base = gen.load_baseline()
+    import hk
+
+    base["hk"] = {n: v for n, v in base["hk"].items() if n != "map_cpp"}
+    base["hk"]["kernel"] = {"params": [p for p in base["hk"]["kernel"]["params"]
+                                       if p != "placement"]}
+    since = gen.Since(base)
+    assert since.mark("hk", "map_cpp", hk.map_cpp) == "*New after 0.8.0*"
+    assert since.mark("hk", "kernel", hk.kernel) == \
+        "*Changed after 0.8.0*: new parameter `placement`"
+    assert since.mark("hk", "iota", hk.iota) == ""
     index = (REPO / "docs" / "api" / "README.md").read_text()
-    gen = _gen()
     if gen.RELEASE:      # a release PR: the release that has the marked names
         assert f"{gen.RELEASE} does, and a checkout" in index
     else:                # between releases: main only

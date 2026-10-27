@@ -62,8 +62,6 @@ block id mod 8 -- but a kernel that relies on sharing an XCD's L2 should ask, no
 hk.arch.xcd_count() -> int
 ```
 
-*New after 0.7.0*
-
 XCDs (L2 domains) of the GPU this kernel is traced for, a constant: 8 on an MI355X,
 4 on an MI350P or a DPX partition, 1 on a part with one L2 (KFD's num_xcc, else the arch's
 default; HK_XCDS overrides). What hk.dsl.placement deals workgroups over.

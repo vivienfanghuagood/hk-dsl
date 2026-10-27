@@ -6,9 +6,10 @@ The next version's notes collect here until it is released.
 
 ## Unreleased
 
-What is on main after 0.8.0. `pip install hk-dsl` (0.8.0) does not have it.
+What is on main after 0.8.0. `pip install hk-dsl` (0.8.0) does not have it;
+the API reference marks such names *New after 0.8.0*.
 
-**Host time per call** (cross-arch). An engine route's Python no longer
+**Host time per call** (#91, cross-arch). An engine route's Python no longer
 re-decides per call what only the call's shapes decide, and code-object
 kernels launch from a per-shape memo without the torch dispatcher
 (`hk.runtime.hostpath`, [integration](docs/integration.md#host-time-per-call)).
@@ -28,7 +29,7 @@ restores every call's previous path.
   `hk.runtime.codeobj.direct`, `hk.runtime.torch_ext.launcher`,
   `CodeObjectKernel.launcher`, `hk.ops.w4a16.plan`.
 
-**DeepSeek-V4.1 routes, retuned from the MI355X scoreboard** (gfx950, real weights, TP2; every
+**DeepSeek-V4.1 routes, retuned from the MI355X scoreboard** (#84, gfx950, real weights, TP2; every
 point against the best of AITER's tuned FlyDSL, FlyDSL, AITER Triton, hipBLASLt and vLLM's kernel).
 - K1 (`vllm_moe_a8w4`) takes M >= 2560, not 8192 (`HK_MOE_A8W4_MIN_M`), with #85's kernels: on
   the real router's choices 1.03-1.08x AITER at 2560, 1.08-1.20x at 3072-4096 and 1.27-1.38x
@@ -40,11 +41,20 @@ point against the best of AITER's tuned FlyDSL, FlyDSL, AITER Triton, hipBLASLt 
   `MIN_M_NK`. Bit-identical to vLLM's kernel at every new point, ragged M included.
 
 **Fixes**
-- **gfx950: `hk.ops.gemm.matmul` raised `ResourceError` in the vLLM image** at M 192-512 for
+- **gfx950: `hk.ops.gemm.matmul` raised `ResourceError` in the vLLM image** (#84) at M 192-512 for
   N 28672 / 14336, K 4096: its table routes there to `dp128x224`, which ROCm 10's hipcc builds
   with a 13-VGPR spill, and the spill gate refuses it. The route now records a refused candidate
   (once a process, with a line on stderr) and takes the next-fastest one the table measured at
   that point (`pp128`, `ppk2`), else the rule's next; a refused kernel is never run.
+- **A kernel registered as a torch op through libtorch's headers did not
+  compile against TheRock's torch 2.13** (#79), the torch of the Radeon AI PRO
+  R9700 vLLM image (ROCm 7.14), whose ROCm headers are hipified the newer way
+  (`c10::cuda::CUDAGuard`, no `c10::hip::HIPGuard`): the C++ shim
+  `hk.codegen.scaffold` writes for `hk.runtime.torch_ext` failed with
+  `no type named 'HIPGuard' in namespace 'c10::hip'`. It now picks the names by
+  `C10_HIP_API`, which only the older headers define; with those (rocm/pytorch's
+  torch 2.10, the vLLM 0.31 venv's 2.13, the gfx950 images) it builds the same
+  code as before.
 
 ## 0.8.0
 

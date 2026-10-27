@@ -78,8 +78,6 @@ The language: what `import hk` gives a kernel author. A kernel body is traced on
 hk.kernel(fn=None, *, arch: Optional[str] = None, warps: int = 1, grid=None, name: Optional[str] = None, max_vgprs: Optional[int] = None, min_occupancy: Optional[int] = None, defines: Optional[Dict[str, Any]] = None, noalias: bool = False, preload: bool = False, resident: bool = False, placement=None)
 ```
 
-*Changed after 0.7.0*: new parameter `placement`
-
 Mark a function as a tile kernel. See the module docstring for the
 parameter rules. `resident=True`: every workgroup must be on the GPU at
 once (a kernel that waits on its own workgroups); a launch that cannot be
@@ -182,8 +180,6 @@ Generate, compile and load. Returns the loaded extension module.
 Kernel.placed(self, placement=None) -> Kernel
 ```
 
-*New after 0.7.0*
-
 This kernel with `placement` (default: the analysis's cluster
 placement) installed: its own name (a suffix for the placement),
 traces and builds, the same body.
@@ -193,8 +189,6 @@ traces and builds, the same body.
 ```python
 Kernel.placement_choice(self, *tensors: Any, **const_overrides: Any)
 ```
-
-*New after 0.7.0*
 
 hk.dsl.placement.choose for these tensors: whether
 placement="auto" launches the cluster placement, and why.
@@ -316,8 +310,6 @@ out, the hk-fragments pass sets it on the operand tiles that need one.
 hk.RS(dtype: DType, rows: int, cols: int, run: int = 8) -> RegTileType
 ```
 
-*Changed after 0.7.0*: a strip may hold i32 on gfx950 (#53): it loads, stores (bounded too), converts with `.to` and is an argument or result of `hk.map_cpp`; operators and reductions on it are refused. Through 0.7.0 a strip held bf16, fp16 and fp32.
-
 A register strip type: kittens::rs<T, rows, cols, run>.
 
 The layout for kernels that stream rows -- a norm, a softmax -- rather
@@ -402,8 +394,6 @@ A loop unrolled at trace time; its bounds must be Python ints.
 hk.if_(cond, *, opaque: bool = False, uniform: bool = False) -> Iterator[None]
 ```
 
-*Changed after 0.7.0*: new parameter `uniform`
-
 A region that runs only where `cond` holds.
 
 `opaque=True` hides the condition from the optimizer (an empty asm that
@@ -427,8 +417,6 @@ to be held at once.
 ```python
 hk.uniform(cond)
 ```
-
-*New after 0.7.0*
 
 `cond`, declared the same in every warp of the workgroup -- made of the block index,
 scalar loads every warp makes, constexprs and the tensors' extents, never of warp_id or a
@@ -695,8 +683,6 @@ result is bit-identical to hk.mx.quant followed by hk.mx.aiter_scales or hk.mx.p
 hk.map_cpp(expr: str, *args, dtype: Optional[DType] = None, name: str = 'map') -> Tile
 ```
 
-*New after 0.7.0*
-
 An elementwise C++ expression over strips (gfx950): element (r, c) of the result is `expr`
 with `x0`, `x1`, ... bound to element (r, c) of each strip argument -- or to the argument
 itself for an `Int` or a Python int -- converted to `dtype` (default: the strips' one dtype;
@@ -720,8 +706,6 @@ spelled `__builtin_fmaf` -- no `;` or braces, and the compiler, not hk, checks i
 hk.iota(ty) -> Tile
 ```
 
-*New after 0.7.0*
-
 An i32 strip of type `ty`'s shape whose element (r, c) is c: each element's own column, for
 index arithmetic (hk.map_cpp, load_elems / store_elems) and per-column choices (gfx950).
 
@@ -730,8 +714,6 @@ index arithmetic (hk.map_cpp, load_elems / store_elems) and per-column choices (
 ```python
 hk.mfma_strip(kind: str, a: Tile, b: Tile, acc: Tile) -> Tile
 ```
-
-*New after 0.7.0*
 
 One raw MFMA on strip registers (gfx950), for a result that must match another kernel's
 MFMA bit for bit. "f32_16x16x4": `acc` (hk.RS(fp32, 1, 256, 4): lane l's four values are C
@@ -744,8 +726,6 @@ v_mfma_f32_16x16x4_f32, nothing reordered. Returns the new accumulator.
 Which XCD runs which workgroup: `hk.kernel(placement=...)` takes None (the hardware's order), `"auto"` (the cluster placement where the policy takes it) or an `hk.Placement`. Outputs are bitwise the unplaced kernel's; only the order changes. On a part with one L2 (gfx1100) every placement is the identity. `hk.arch.xcd_count()` is the XCD count it deals over, `Kernel.placed()` / `Kernel.placement_choice()` the placed kernel and the policy's decision, `hk.placement.analyze` / `hk.placement.choose` the analysis and the policy, `python -m hk.check --placement` checks a launch covers its grid exactly once ([check](../check.md#which-xcd-runs-which-workgroup---placement), [design](../design/placement-pass.md)).
 
 ### `hk.Placement`
-
-*New after 0.7.0*
 
 How a kernel's workgroups are numbered.
 
@@ -764,8 +744,6 @@ order, what the hand-written GEMM remaps did) or "spread" (dealt as
 contiguous ranges, balanced to one). chunk 0 is contiguous ranges outright.
 
 ### `hk.Digit`
-
-*New after 0.7.0*
 
 A grid axis whole (`kind` "whole"), or one digit of it: `axis // radix`
 ("div") or `axis % radix` ("mod"). `radix` is an int, a tensor extent
@@ -847,8 +825,6 @@ The max along `axis`: 1 (default) along each row, one value per row (a col_vec);
 Tile.lane_gather(self, lanes: Tile) -> Tile
 ```
 
-*New after 0.7.0*
-
 Each element from another lane (gfx950): element (r, c) of lane l is the same run element
 of lane `lanes[r, c]` (an i32 strip of this strip's shape, 0..63) -- ds_bpermute, one an
 element. A lane group's small-matrix work (a 4x4 Sinkhorn's row and column sums) without
@@ -860,8 +836,6 @@ LDS. 32-bit elements.
 Tile.group_max(self, cols: int, *, lanes: str = 'seq', xor: Optional[Sequence[int]] = None) -> Tile
 ```
 
-*New after 0.7.0*
-
 A strip's rows reduced over groups of `cols` columns (a lane group's runs: an MX group is
 32 columns of a run-8 strip), the group's max in every element. `lanes` and `xor` state the
 order, as for `sum(axis=1, ...)`; the offsets are 1 .. cols / run / 2. gfx950.
@@ -872,8 +846,6 @@ order, as for `sum(axis=1, ...)`; the offsets are 1 .. cols / run / 2. gfx950.
 Tile.group_min(self, cols: int, *, lanes: str = 'seq', xor: Optional[Sequence[int]] = None) -> Tile
 ```
 
-*New after 0.7.0*
-
 As `group_max`, the minimum.
 
 #### `Tile.group_sum`
@@ -881,8 +853,6 @@ As `group_max`, the minimum.
 ```python
 Tile.group_sum(self, cols: int, *, lanes: str = 'seq', xor: Optional[Sequence[int]] = None) -> Tile
 ```
-
-*New after 0.7.0*
 
 As `group_max`, the sum, in the stated order.
 
@@ -1492,8 +1462,6 @@ Tile indexing: `x.tile[r, c]` is a View at tile (r, c) of the tile type the load
 Global.load_elems(self, idx: Tile, dtype: Optional[DType] = None) -> Tile
 ```
 
-*New after 0.7.0*
-
 Element by element at computed indices (gfx950): element (r, c) of the result is element
 `idx[r, c]` of this tensor, counted flat (rows over batch and depth, at the row stride),
 converted to `dtype` (fp32 or i32; default fp32, i32 for an i32 tensor). An index below
@@ -1505,8 +1473,6 @@ zero or past the tensor reads 0 -- a table lookup with a fallback, a key table's
 ```python
 Global.store_elems(self, val: Tile, idx: Tile, *, runs: bool = False) -> None
 ```
-
-*New after 0.7.0*
 
 Element by element at computed indices (gfx950): element (r, c) of `val` (an fp32 or
 i32 strip), converted to this tensor's type, to element `idx[r, c]` (flat, as
@@ -1522,8 +1488,6 @@ bytes), masked by that first index -- 8 fp8 values in one 8-byte store, not eigh
 ```python
 Global.post_elems(self, val: Tile, idx: Tile, tag, *, runs: bool = False, bf16: bool = False) -> None
 ```
-
-*New after 0.7.0*
 
 Tagged mailbox pairs, an element at a time (gfx950): element (r, c) of `val` (fp32 or i32
 strip) and `tag` go to pair `idx[r, c]` of this scoped int32 tensor (int32 elements 2 i,
@@ -1542,8 +1506,6 @@ run's first index are then run / 2.
 ```python
 Global.take_elems(self, idx: Tile, tag, dtype: Optional[DType] = None, *, timeout_s: float = 2.0, runs: bool = False, bf16: bool = False) -> Tile
 ```
-
-*New after 0.7.0*
 
 The other side of post_elems: element (r, c) is the value of pair `idx[r, c]` once its tag
 is `tag`; every element's pair is loaded with the tensor's scope, and all are re-loaded
@@ -1730,8 +1692,6 @@ An LDS tile, or a stack of them (`As[i]` picks one).
 SharedTile.load_elems(self, idx: Tile, dtype: Optional[DType] = None) -> Tile
 ```
 
-*New after 0.7.0*
-
 Element by element from this fp32 LDS tile (gfx950): element (r, c) of the result is
 element `idx[r, c]` (row-major, through the tile's swizzle) -- fp32, or its bits as i32 with
 dtype=hk.i32; below zero or past the tile, 0. A CTA's own exchange between warps without a
@@ -1743,8 +1703,6 @@ warp's writes need hk.arch.barrier(drain=True) between.
 ```python
 SharedTile.store_elems(self, val: Tile, idx: Tile) -> None
 ```
-
-*New after 0.7.0*
 
 Element by element into this fp32 LDS tile (gfx950): val's element (r, c) (fp32, or i32
 bits) to element `idx[r, c]` (row-major); below zero or past the tile, nothing. Before

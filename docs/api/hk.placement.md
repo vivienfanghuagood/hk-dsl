@@ -54,8 +54,6 @@ the tests).
 class hk.placement.Placement(kind: str = 'none', key: Optional[Tuple[Digit, ...]] = None, chunk: Union[int, str] = 0, tail: str = 'spread') -> None
 ```
 
-*New after 0.7.0* (the `hk.dsl.placement` module is not in the 0.7.0 wheel)
-
 How a kernel's workgroups are numbered.
 
 Placement.cluster()            one sharing cluster an XCD at a time; the key from
@@ -78,8 +76,6 @@ contiguous ranges, balanced to one). chunk 0 is contiguous ranges outright.
 Placement.none() -> Placement
 ```
 
-*New after 0.7.0* (the `hk.dsl.placement` module is not in the 0.7.0 wheel)
-
 The hardware's order (what placement=None means).
 
 #### `Placement.cluster`
@@ -87,8 +83,6 @@ The hardware's order (what placement=None means).
 ```python
 Placement.cluster(key: Optional[Sequence[Digit]] = None, chunk: int = 0, tail: str = 'spread') -> Placement
 ```
-
-*New after 0.7.0* (the `hk.dsl.placement` module is not in the 0.7.0 wheel)
 
 One sharing cluster an XCD at a time; `key` the cluster's digits, or None
 for the analysis's. The grid is flattened and decoded at entry.
@@ -98,8 +92,6 @@ for the analysis's. The grid is flattened and decoded at entry.
 ```python
 Placement.chunked(chunk: Union[int, str] = 0, tail: str = 'stay') -> Placement
 ```
-
-*New after 0.7.0* (the `hk.dsl.placement` module is not in the 0.7.0 wheel)
 
 block_idx.x renumbered in place, `chunk` consecutive ids an XCD a round
 ("even": an eighth of the axis; 0: contiguous ranges); `tail` past the
@@ -111,8 +103,6 @@ last whole round: "stay" or "spread".
 Placement.suffix(self, xcds: int) -> str
 ```
 
-*New after 0.7.0* (the `hk.dsl.placement` module is not in the 0.7.0 wheel)
-
 The kernel-name suffix of this placement.
 
 ### `hk.placement.Digit`
@@ -120,8 +110,6 @@ The kernel-name suffix of this placement.
 ```python
 class hk.placement.Digit(axis: str, kind: str = 'whole', radix: Optional[host.HostExpr] = None, radix_text: str = '') -> None
 ```
-
-*New after 0.7.0* (the `hk.dsl.placement` module is not in the 0.7.0 wheel)
 
 A grid axis whole (`kind` "whole"), or one digit of it: `axis // radix`
 ("div") or `axis % radix` ("mod"). `radix` is an int, a tensor extent
@@ -134,8 +122,6 @@ a (B, H_KV, N, D) `k`), or a host expression of extents and constexprs.
 Digit.of(axis: str, kind: str = 'whole', radix=None) -> Digit
 ```
 
-*New after 0.7.0* (the `hk.dsl.placement` module is not in the 0.7.0 wheel)
-
 A digit of grid axis `axis` ("x", "y" or "z"): whole, or `axis // radix`
 ("div") / `axis % radix` ("mod"); `radix` an int, "tensor.dim" or a host
 expression.
@@ -146,8 +132,6 @@ expression.
 hk.placement.xcd_count(arch: str) -> int
 ```
 
-*New after 0.7.0* (the `hk.dsl.placement` module is not in the 0.7.0 wheel)
-
 XCDs of this process's `arch` GPUs: HK_XCDS if set, else the KFD
 topology's num_xcc when every node of that arch agrees (an MI350P or a
 DPX partition says 4, an MI300A 6), else the arch's default.
@@ -157,8 +141,6 @@ DPX partition says 4, an MI300A 6), else the arch's default.
 ```python
 hk.placement.renumber(w, total, *, chunk: Union[int, str, Any] = 0, tail: str = 'spread', live=None)
 ```
-
-*New after 0.7.0* (the `hk.dsl.placement` module is not in the 0.7.0 wheel)
 
 `place` inside a kernel body, on device ints: the logical unit of id
 `w` of `total` as the XCDs of the GPU being traced for deal them. For a
@@ -179,8 +161,6 @@ and leave the others idle (K1 at M = 64: 18-20% slower).
 hk.placement.xcd_range(d, total)
 ```
 
-*New after 0.7.0* (the `hk.dsl.placement` module is not in the 0.7.0 wheel)
-
 (first, count): XCD `d`'s contiguous range of `total` units, the first
 total % xcds XCDs one unit more -- what contiguous `place` gives each XCD.
 For a persistent kernel that deals units to its XCDs itself.
@@ -191,8 +171,6 @@ For a persistent kernel that deals units to its XCDs itself.
 hk.placement.analyze(module: ir.Module, kernel_name: Optional[str] = None) -> Analysis
 ```
 
-*New after 0.7.0* (the `hk.dsl.placement` module is not in the 0.7.0 wheel)
-
 The sharing structure of the kernel func in `module` (see the module
 docstring). Pure: the module is not changed.
 
@@ -201,8 +179,6 @@ docstring). Pure: the module is not changed.
 ```python
 hk.placement.choose(analysis: Analysis, plan: Optional[Plan], grid: Tuple[int, int, int], radii: Dict[str, int], xcds: int, resident_per_xcd: int) -> Choice
 ```
-
-*New after 0.7.0* (the `hk.dsl.placement` module is not in the 0.7.0 wheel)
 
 Whether hk.kernel(placement="auto") launches the clustered kernel for
 this grid (docs/design/placement-pass.md §3).
@@ -213,8 +189,6 @@ this grid (docs/design/placement-pass.md §3).
 class hk.placement.Analysis(reads: List[Read], kind: str, key: Tuple[Digit, ...], digits: Dict[str, List[Digit]], order_dependent: List[str], nonuniform: bool, broadcast_bytes: int, note: str = '') -> None
 ```
 
-*New after 0.7.0* (the `hk.dsl.placement` module is not in the 0.7.0 wheel)
-
 What `analyze` found in one kernel.
 
 #### `Analysis.summary`
@@ -223,8 +197,6 @@ What `analyze` found in one kernel.
 Analysis.summary(self) -> str
 ```
 
-*New after 0.7.0* (the `hk.dsl.placement` module is not in the 0.7.0 wheel)
-
 One line: the class, the key, and the flags.
 
 ### `hk.placement.Choice`
@@ -232,8 +204,6 @@ One line: the class, the key, and the flags.
 ```python
 class hk.placement.Choice(placed: bool, reason: str, streams: int = 0, rounds: float = 0.0) -> None
 ```
-
-*New after 0.7.0* (the `hk.dsl.placement` module is not in the 0.7.0 wheel)
 
 What `choose` decided for one launch geometry: `placed` (launch the
 cluster placement), `reason` (the rule that decided, in words), and the
@@ -247,8 +217,6 @@ workgroups an XCD over those it holds at once.
 hk.placement.check_kernel(kernel, shapes: Sequence[Tuple[int, ...]], consts=None) -> List[str]
 ```
 
-*New after 0.7.0* (the `hk.dsl.placement` module is not in the 0.7.0 wheel)
-
 hk.check --placement for one launch geometry: the placement `kernel`
 runs with (its own, or for placement="auto" the cluster placement it may
 pick) decodes to every grid point exactly once. Lines for a report; an
@@ -260,8 +228,6 @@ AssertionError if a decode is not a bijection.
 hk.placement.check_emitted(traced, extents) -> int
 ```
 
-*New after 0.7.0* (the `hk.dsl.placement` module is not in the 0.7.0 wheel)
-
 hk.check --placement: over every workgroup id of the launch, the
 decode the kernel computes covers the grid its body numbers -- each
 (x, y, z) exactly once. Returns the number of workgroups; raises if not.
@@ -272,8 +238,6 @@ decode the kernel computes covers the grid its body numbers -- each
 hk.placement.emitted_decode(module: ir.Module, kernel_name: str) -> Optional[Callable]
 ```
 
-*New after 0.7.0* (the `hk.dsl.placement` module is not in the 0.7.0 wheel)
-
 The decode the kernel func actually computes: a function
 (bx, by, bz, extents) -> (x, y, z) of the hardware's block ids, built from
 the ops tagged hk.placement_axis (an untagged axis is the hardware's), or
@@ -281,8 +245,6 @@ None if the kernel has no placement. `extents` maps a tensor parameter to
 its (batch, depth, rows, cols).
 
 ### `hk.placement.recording`
-
-*New after 0.7.0* (the `hk.dsl.placement` module is not in the 0.7.0 wheel)
 
 with recording() as launches: the (kernel, shapes, constexprs) of every
 hk kernel launched inside, in order.
@@ -293,19 +255,13 @@ hk kernel launched inside, in order.
 hk.placement.place_host(w: int, total: int, xcds: int, chunk: Union[int, str] = 0, tail: str = 'spread') -> int
 ```
 
-*New after 0.7.0* (the `hk.dsl.placement` module is not in the 0.7.0 wheel)
-
 `place` on host ints: the logical unit workgroup `w` of `total` runs on
 `xcds` XCDs (what a placed kernel computes at entry).
 
 ### `hk.placement.MIN_STREAMS`
 
-*New after 0.7.0* (the `hk.dsl.placement` module is not in the 0.7.0 wheel)
-
 The policy's thresholds, measured on gfx950's attention (PR #55, the 2511.02132 study's report, §5): cluster from five KV streams an XCD; for non-uniform work (a trip count that depends on the grid), not below twelve rounds of workgroups an XCD.
 
 ### `hk.placement.MIN_ROUNDS_NONUNIFORM`
-
-*New after 0.7.0* (the `hk.dsl.placement` module is not in the 0.7.0 wheel)
 
 `12`
