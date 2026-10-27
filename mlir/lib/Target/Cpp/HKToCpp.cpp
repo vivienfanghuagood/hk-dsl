@@ -1564,6 +1564,10 @@ private:
           Value d = dest(Value(), o.getResult());
           w("kittens::fp4_operand(" + name(d) + ", " + name(o.getWords()) + ");");
         })
+        .Case([&](Fp8OperandOp o) {
+          Value d = dest(Value(), o.getResult());
+          w("kittens::fp8_operand(" + name(d) + ", " + name(o.getWords()) + ");");
+        })
         .Case([&](MxScalesLooseOp o) {
           Value d = dest(Value(), o.getResult());
           w("kittens::mx_scales_loose(" + name(d) + ", " + name(o.getBytes()) + ");");

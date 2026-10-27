@@ -118,14 +118,21 @@ struct VerifyPass : public mlir::hk::impl::HKVerifyBase<VerifyPass> {
                         << atLoc(op);
         return WalkResult::interrupt();
       }
-      if (op->getParentOfType<scf::WhileOp>()) {
+      // a loop whose test is declared workgroup-uniform (while hk.uniform(...)) runs the same
+      // iterations in every warp
+      bool divergentLoop = false;
+      for (auto l = op->getParentOfType<scf::WhileOp>(); l; l = l->getParentOfType<scf::WhileOp>())
+        divergentLoop |= !l->hasAttr("hk.uniform");
+      if (divergentLoop) {
         op->emitError() << opcodeOf(op)
                         << " is inside a runtime while loop. It is a "
                            "workgroup operation -- every warp has to reach it "
                            "the same number of times, and a test that differs "
                            "between warps leaves the ones still looping "
                            "waiting forever. Loop with a for over a bound "
-                           "every warp agrees on."
+                           "every warp agrees on -- or, if the test is the same "
+                           "in every warp (a work queue's claimed index), say "
+                           "so: while hk.uniform(t < n):"
                         << atLoc(op);
         return WalkResult::interrupt();
       }

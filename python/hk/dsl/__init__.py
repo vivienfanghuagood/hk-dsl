@@ -36,7 +36,7 @@ from .placement import Digit, Placement
 from .values import (  # noqa: F401
     Bool, Coord, Global, Granules, Int, SharedTile, SharedVec, Tile, Value,
     Vec, View, as_vec, broadcast_col, broadcast_row, coord, elem_coord, full,
-    copy_mx_scales, fp4_operand, iota, mfma_strip, mx_scales_loose, load_fp4_frags, load_fp4_frags_lds, map_cpp, mx_quant_store, load_mx_scales, load_w4, mma, mma_ABt_mx, neg_infty, rand, tile_coord, transpose, transpose_sep, zeros,
+    copy_mx_scales, fp4_operand, fp8_operand, iota, mfma_strip, mx_scales_loose, load_fp4_frags, load_fp4_frags_lds, map_cpp, mx_quant_store, load_mx_scales, load_w4, mma, mma_ABt_mx, neg_infty, rand, tile_coord, transpose, transpose_sep, zeros,
 )
 from .values import scalar_op as _scalar_op
 
@@ -124,7 +124,7 @@ __all__ = [
     "arch", "lds", "math", "collective", "comm", "placement", "Placement", "Digit", "group",
     "Group",
     "range", "range_constexpr", "if_", "scope", "uniform",
-    "cdiv", "min", "max", "zeros", "full", "neg_infty", "rand", "load_w4", "load_mx_scales", "fp4_operand", "mx_scales_loose", "load_fp4_frags", "load_fp4_frags_lds", "mx_quant_store", "copy_mx_scales", "mma_ABt_mx", "transpose",
+    "cdiv", "min", "max", "zeros", "full", "neg_infty", "rand", "load_w4", "load_mx_scales", "fp4_operand", "fp8_operand", "mx_scales_loose", "load_fp4_frags", "load_fp4_frags_lds", "mx_quant_store", "copy_mx_scales", "mma_ABt_mx", "transpose",
     "transpose_sep", "broadcast_row", "broadcast_col", "as_vec", "mma", "map_cpp", "iota", "mfma_strip",
     "coord", "tile_coord", "elem_coord",
     "Int", "Bool", "Tile", "Vec", "Global", "View", "SharedTile", "SharedVec",

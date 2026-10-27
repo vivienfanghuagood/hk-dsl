@@ -509,7 +509,7 @@ class Global(Value):
         run's first index are then run / 2."""
         if bf16 and not runs:
             raise TypeError("post_elems(bf16=True) is a layout of runs: runs=True as well")
-        if not getattr(self.ty, "scope", ""):
+        if getattr(self.ty, "scope", "") not in HANDOFF_SCOPES:
             raise TypeError(f"post_elems on {self.name!r}, an unscoped tensor: a mailbox other CTAs "
                             f"read is hk.Tensor[hk.i32, \"device\"] (\"system\": other GPUs)")
         aux = scope_aux(self, "post_elems")
@@ -525,7 +525,7 @@ class Global(Value):
         not a hang. `runs=True` / `bf16=True`: the layout post_elems wrote with them."""
         if bf16 and not runs:
             raise TypeError("take_elems(bf16=True) is a layout of runs: runs=True as well")
-        if not getattr(self.ty, "scope", ""):
+        if getattr(self.ty, "scope", "") not in HANDOFF_SCOPES:
             raise TypeError(f"take_elems on {self.name!r}, an unscoped tensor: a mailbox other CTAs "
                             f"read is hk.Tensor[hk.i32, \"device\"] (\"system\": other GPUs)")
         aux = scope_aux(self, "take_elems")
@@ -607,7 +607,11 @@ class Global(Value):
 #: A scoped tensor's cache-policy bits on gfx950: SC1 (device scope) or
 #: SC0|SC1 (system scope). Measured (KernelWiki gfx950-cross-gpu-memory-model):
 #: without them a store stays in this XCD's L2 and a load re-reads a stale line.
-SCOPE_AUX = {"": 0, "device": 16, "system": 17}
+#: "stream" is not a scope but a policy: NT (non-temporal), for data a launch reads
+#: once -- a weight stream that should not displace what the L2 holds for reuse.
+SCOPE_AUX = {"": 0, "device": 16, "system": 17, "stream": 2}
+#: the annotations a hand-off (mailbox pair, flag) needs: another CTA's or GPU's stores seen
+HANDOFF_SCOPES = ("device", "system")
 
 
 def scope_aux(tensor: "Global", what: str, tile=None) -> int:
@@ -1948,6 +1952,19 @@ def fp4_operand(words: Tile) -> Tile:
     t = _t()
     ty = RegTileType(fp8e4m3, 16, 128, "row")
     return wrap(hkd.Fp4OperandOp(mlir_type(ty), words.v, loc=t.loc("fp4")).result, ty)
+
+
+def fp8_operand(words: Tile) -> Tile:
+    """An MXFP8 operand fragment from a lane's eight dwords (gfx950): `words`, an i32 strip of 1 x 512
+    with run 4 (two runs a lane), becomes a 16x128 fp8 e4m3 row tile -- run 0 the K step's 16 bytes at
+    K 16 (l / 16) .., run 1 those at 64 + 16 (l / 16) .., of row l % 16: the fragment a tile load
+    makes. For operands kept in LDS as words (an fp8 shared tile has no register path) or gathered."""
+    if (getattr(words.ty, "run", None) != 4 or words.ty.dtype is not i32 or words.ty.rows != 1
+            or words.ty.cols != 512):
+        raise TypeError(f"fp8_operand: an i32 strip of 1 x 512, run 4 (eight dwords a lane), not {words.ty}")
+    t = _t()
+    ty = RegTileType(fp8e4m3, 16, 128, "row")
+    return wrap(hkd.Fp8OperandOp(mlir_type(ty), words.v, loc=t.loc("fp8")).result, ty)
 
 
 def mx_scales_loose(bytes_: Tile) -> MxScales:

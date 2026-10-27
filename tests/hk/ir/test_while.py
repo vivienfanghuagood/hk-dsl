@@ -68,6 +68,22 @@ def test_a_barrier_in_a_runtime_while_is_refused():
         k.trace()
 
 
+def test_a_barrier_in_a_uniform_while_traces():
+    """A work queue's loop: the claimed index is the same in every warp, so the loop declared
+    hk.uniform may hold barriers -- and the loop is marked so the verifier knows."""
+    def body(q: hk.Tensor[hk.i32, "device"], o: hk.Tensor[fp32]):
+        t = hk.comm.claim(q.at[0])
+        while hk.uniform(t < 64):
+            hk.arch.barrier()
+            t = hk.comm.claim(q.at[0])
+
+    k = hk.kernel(body, arch="gfx950", warps=2, name="while_uniform_barrier",
+                  grid=lambda p: (1, 1, 1))
+    ir = k.trace().dump()
+    assert "scf.while" in ir and "hk.uniform" in ir
+    assert "while (" in k.source() or "for (" in k.source()
+
+
 def test_rebinding_a_tile_in_a_runtime_while_is_refused():
     def body(x: hk.Tensor[bf16], o: hk.Tensor[fp32]):
         acc = hk.zeros(T_ACC)

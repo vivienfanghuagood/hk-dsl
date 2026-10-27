@@ -422,7 +422,8 @@ hk.uniform(cond)
 scalar loads every warp makes, constexprs and the tensors' extents, never of warp_id or a
 lane's value. A branch on it (`if hk.uniform(bid < 160):` or `hk.if_(c, uniform=True)`) may
 hold workgroup operations -- barriers, group copies -- as every warp takes it or none does:
-the role dispatch of a persistent kernel. The declaration is the author's; a condition that
+the role dispatch of a persistent kernel. So may a runtime loop on it, `while hk.uniform(t <
+n):`, every warp running the same iterations: a work queue's loop over `hk.comm.claim`. The declaration is the author's; a condition that
 differs between warps deadlocks at the first barrier inside.
 
 ## Functions
@@ -2010,4 +2011,4 @@ are bounded: any non-empty length. head_dim is 64 or 128 on both.
 
 ## Also exported
 
-`hk.fp4_operand`, `hk.mx`, `hk.mx_scales_loose`, `hk.templates`
+`hk.fp4_operand`, `hk.fp8_operand`, `hk.mx`, `hk.mx_scales_loose`, `hk.templates`

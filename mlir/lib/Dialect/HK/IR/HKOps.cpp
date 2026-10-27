@@ -109,10 +109,11 @@ static LogicalResult checkStripAccess(Operation *op, Type t, CoordType idx,
 }
 
 /// The cache-policy field of a scoped access: 0 (none), 16 (SC1: device
-/// scope) or 17 (SC0|SC1: system scope) -- the two hk.comm uses on gfx950.
+/// scope) or 17 (SC0|SC1: system scope) -- the two hk.comm uses on gfx950 --
+/// or 2 (NT: a "stream" tensor, data a launch reads once).
 static LogicalResult verifyAux(Operation *op, int64_t aux) {
-  if (aux != 0 && aux != 16 && aux != 17)
-    return op->emitOpError("aux ") << aux << " is 0, 16 (device scope) or 17 (system scope)";
+  if (aux != 0 && aux != 2 && aux != 16 && aux != 17)
+    return op->emitOpError("aux ") << aux << " is 0, 2 (non-temporal), 16 (device scope) or 17 (system scope)";
   return success();
 }
 
@@ -777,6 +778,17 @@ LogicalResult Fp4OperandOp::verify() {
     return emitOpError("takes an i32 strip of 1 x 256, run 4 (four dwords a lane)");
   if (!r || r.isStrip() || r.getRows() != 16 || r.getCols() != 128 || r.getLayout() != "row")
     return emitOpError("gives a 16x128 row tile (the FP4 container)");
+  return success();
+}
+
+LogicalResult Fp8OperandOp::verify() {
+  auto w = dyn_cast<RegTileType>(getWords().getType());
+  auto r = dyn_cast<RegTileType>(getResult().getType());
+  if (!w || !w.isStrip() || !w.getElementType().isInteger(32) || w.getRows() != 1 || w.getCols() != 512 ||
+      w.getRun() != 4)
+    return emitOpError("takes an i32 strip of 1 x 512, run 4 (eight dwords a lane, two runs)");
+  if (!r || r.isStrip() || r.getRows() != 16 || r.getCols() != 128 || r.getLayout() != "row")
+    return emitOpError("gives a 16x128 row tile (an fp8 fragment)");
   return success();
 }
 

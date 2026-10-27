@@ -60,7 +60,7 @@ def check_bindings(kernel_name: str, params: Sequence, tensors: Sequence) -> Non
     """Refuse symmetric memory bound to an unscoped parameter (see the module
     docstring). Called on a launch only while some buffer is open."""
     for (name, ty), t in zip(params, tensors):
-        if getattr(ty, "scope", ""):
+        if getattr(ty, "scope", "") in ("device", "system"):
             continue
         ptr = getattr(t, "data_ptr", None)
         if ptr is not None and in_symmetric(ptr()):
