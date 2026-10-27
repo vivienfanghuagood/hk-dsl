@@ -36,6 +36,7 @@ the operand tiles are both row-layout and therefore both on the ds_read_b128
 fast path.
 """
 
+import functools
 import inspect
 from typing import Any, Dict, Tuple
 
@@ -43,11 +44,14 @@ from .. import autotune as _autotune
 from .. import dsl as hk
 from . import _epilogue
 from ..target import current_arch, get_target
-from ..types import bf16, fp32, i8, i32
+from ..types import DTYPES, bf16, fp8e4m3, fp8e5m2, fp32, i8, i32
+
+#: The 8-bit float operand types: an fp8 WMMA where the target has one (gfx1201).
+FP8 = (fp8e4m3, fp8e5m2)
 
 
 def _derive(block_m: int, block_n: int, k_step: int, dot_slice: int,
-            warps: int, warp_rows: int, n_split: int) -> Dict[str, int]:
+            warps: int, warp_rows: int, n_split: int, elem_bytes: int = 2) -> Dict[str, int]:
     """The config arithmetic, in one place, with the C++'s static_asserts."""
     warp_cols = warps // warp_rows
     if warp_rows * warp_cols != warps:
@@ -62,7 +66,7 @@ def _derive(block_m: int, block_n: int, k_step: int, dot_slice: int,
         )
     if k_step % dot_slice:
         raise ValueError(f"DOT_SLICE={dot_slice} must divide K_STEP={k_step}")
-    lds = 2 * (block_m + block_n) * k_step * 2
+    lds = 2 * (block_m + block_n) * k_step * elem_bytes
     cap = get_target(current_arch()).lds_per_workgroup
     if lds > cap:
         raise ValueError(f"{lds} B of LDS; a {current_arch()} workgroup has {cap}")
@@ -82,9 +86,15 @@ def gemm_kernel(name: str, *, block_m: int = 128, block_n: int = 128,
     """The default tiling is `big_config` from the C++: 128x128x64, 8 warps.
 
     `op_dtype=hk.i8`: A and B are int8 and the WMMA is v_wmma_i32_16x16x16_iu8
-    (the f16 rate on gfx1100: half the operand bytes, not more throughput);
-    the accumulators are i32, stored to an i32 C without an epilogue, or
-    converted to fp32 for one (a W8A8 dequant: acc * x_scale * w_scale).
+    (the f16 rate on gfx1100: half the operand bytes, not more throughput;
+    twice it on gfx1201); the accumulators are i32, stored to an i32 C without
+    an epilogue, or converted to fp32 for one (a W8A8 dequant: acc * x_scale *
+    w_scale).
+
+    `op_dtype=hk.fp8e4m3` or `hk.fp8e5m2` (gfx1201): A and B are OCP fp8 and
+    the WMMA is v_wmma_f32_16x16x16_fp8_fp8 (bf8_bf8 for e5m2), twice the bf16
+    rate; the accumulators are fp32, stored to a bf16 C or through an epilogue
+    (`scaled_mm`'s: acc * scale_a * scale_b).
 
     The default LDS is one buffer, not the C++'s two. Two let the next
     K-tile be written while this one is read, one barrier a tile; but a
@@ -129,7 +139,8 @@ def gemm_kernel(name: str, *, block_m: int = 128, block_n: int = 128,
     `epilogue` (hk.ops._epilogue) replaces C's store: hk.templates.gemm's
     hook, applied to each accumulator where it would be stored.
     """
-    d = _derive(block_m, block_n, k_step, dot_slice, warps, warp_rows, n_split)
+    d = _derive(block_m, block_n, k_step, dot_slice, warps, warp_rows, n_split,
+                elem_bytes=op_dtype.bytes)
     warp_cols, reg_m, reg_n = d["warp_cols"], d["reg_m"], d["reg_n"]
     split_n, slices = d["split_n"], d["slices"]
     frags = reg_m // 16
@@ -137,8 +148,12 @@ def gemm_kernel(name: str, *, block_m: int = 128, block_n: int = 128,
         raise ValueError(f"stream_a streams a {reg_m}-row warp tile by 16-row "
                          f"fragments; it needs at least two")
 
-    if op_dtype not in (bf16, i8):
-        raise ValueError(f"op_dtype={op_dtype}: bf16 or i8")
+    if op_dtype not in (bf16, i8) + FP8:
+        raise ValueError(f"op_dtype={op_dtype}: bf16, i8, fp8e4m3 or fp8e5m2")
+    if op_dtype in FP8 and (op_dtype.name not in get_target(current_arch()).mma
+                            or get_target(current_arch()).wave != 32):
+        raise ValueError(f"op_dtype={op_dtype}: {current_arch()} has no fp8 WMMA "
+                         f"(gfx1201 does)")
     acc_t = i32 if op_dtype is i8 else fp32
     st_a = hk.ST(op_dtype, block_m, k_step)
     st_b = hk.ST(op_dtype, block_n, k_step)
@@ -438,9 +453,11 @@ def gemm_kernel(name: str, *, block_m: int = 128, block_n: int = 128,
                 put(C_acc[s], m_row, (col_tile + s) * split_n)
 
     body.__name__ = name
-    if op_dtype is i8:
-        # i8 operands; C i32 (raw accumulators) unless an epilogue retypes it
-        body.__annotations__.update(a=hk.Tensor[i8], b=hk.Tensor[i8], c=hk.Tensor[i32])
+    if op_dtype is i8 or op_dtype in FP8:
+        # i8 operands: C i32 (raw accumulators) unless an epilogue retypes it;
+        # fp8 operands: C bf16, from fp32 accumulators
+        body.__annotations__.update(a=hk.Tensor[op_dtype], b=hk.Tensor[op_dtype],
+                                    c=hk.Tensor[i32 if op_dtype is i8 else bf16])
         body.__signature__ = inspect.signature(body).replace(parameters=[
             p.replace(annotation=body.__annotations__[p.name]) if p.name in ("a", "b", "c") else p
             for p in inspect.signature(body).parameters.values()])
@@ -701,5 +718,177 @@ def matmul(a, b, out=None):
     return out
 
 
+#: The fp8 GEMM's schedule (gfx1201): DEFAULT's with twice the rows. Half the
+#: operand bytes put a 256x128 tile 64 deep in 48 KB of LDS, and the extra
+#: rows a warp reuse each B fragment twice as often. A sweep of 52 points
+#: (tools/rdna4-probes/fp8_sweep.py; block 128/256 x 128/256, k_step 64/128,
+#: dot_slice 16/32, one or two LDS buffers, n_split 2/4), one process with
+#: hipBLASLt (torch._scaled_mm) interleaved, TFLOP/s:
+#:
+#:                      this   256x128 n_split 4   128x256   DEFAULT's   hipBLASLt
+#:     4096x4096x4096    240         234              228        210         236
+#:     2048x6144x4096    243         237              231        211         231
+#:
+#: A 128-deep K-tile lost everywhere it fit (206-208), a second LDS buffer
+#: lost 25-30 TFLOP/s.
+FP8_DEFAULT = dict(DEFAULT, block_m=256)
+
+#: Up to this many rows, DEFAULT's 128: a 256-row block is half empty there,
+#: and with fewer workgroups than the R9700's 64 CUs it is 30-50% slower
+#: (tools/rdna4-probes/fp8_small_m.py, per-token x per-channel scales, us):
+#:
+#:     M x N x K          256 rows   128 rows   torch._scaled_mm
+#:     16x4096x4096         38.1       27.8         27.6
+#:     128x14336x4096      135.1       94.5        129.2
+#:     256x4096x4096        45.4       46.5         57.9
+#:     1024x14336x4096     525.8      617.5        729.8
+FP8_SMALL_M = 128
+
+
+def _scale_ab(acc, ctx):
+    return acc * ctx.scale_a * ctx.scale_b
+
+
+def _scale_ab_bias(acc, ctx):
+    return acc * ctx.scale_a * ctx.scale_b + ctx.bias
+
+
+#: Up to this many rows, hk.ops.decode_gemm's kernel with fp8 operands: W
+#: streamed straight into registers, no LDS, a 16-row block of W a
+#: workgroup and K split over its warps -- the shape of a decode step, where
+#: reading W is the whole cost. Swept on the R9700 (slices 2/4/8, warps 8/16,
+#: resident 0/2; tools/rdna4-probes/fp8_decode.py), us, no scales:
+#:
+#:     M x N x K         decode s8 w8   scaled_mm's 128-row tile   FlyDSL's fp8 GEMM
+#:     1x4096x4096           15.4              37.4                     --
+#:     32x4096x4096          19.2              37.8                    64.5
+#:     32x14336x4096         48.1              89.2                    63.5
+#:     32x4096x14336         45.6              83.8                    93.6
+#:     64x14336x4096        110.4              99.2                   136.1
+#:
+#: At 64 rows the tiled kernel is ahead again. W fits the 64 MB Infinity
+#: Cache across back-to-back calls there, so those are a cache's rates. Read
+#: the way a decode step reads it -- six copies of W rotated, from GDDR6,
+#: profiler kernel time with the scales applied (fp8_decode3.py), us:
+#:
+#:     M x N x K         decode s8 w8   FlyDSL's fp8 GEMM   hipBLASLt
+#:     32x14336x4096        100.3            110.3            165.4
+#:     32x4096x4096          31.3             45.7             42.9
+#:     32x4096x14336         98.6            147.5            121.6
+#:     1x14336x4096          95.2              --             158.5
+#:
+#: 585-617 GB/s on the 56 MiB layers, against 0.62 TB/s measured past the
+#: cache. (Cache-resident, FlyDSL's 32-row kernel is ahead at 32x14336.)
+FP8_DECODE_M = 32
+FP8_DECODE = dict(slices=8, warps=8, combine_depth=0, resident=0, splits=1)
+
+
+def _scale_epilogue(with_bias: bool):
+    import torch  # noqa: PLC0415
+
+    # The module, not the package's `gemm` (the template object of that name).
+    from ..templates.gemm import bind  # noqa: PLC0415
+
+    # shapes only classify the operands: scale_a one value a row of C, scale_b
+    # (and bias) one a column
+    ops = {"scale_a": torch.empty(2, 1, device="meta"), "scale_b": torch.empty(3, device="meta")}
+    if with_bias:
+        ops["bias"] = torch.empty(3, dtype=torch.bfloat16, device="meta")
+    return bind(_scale_ab_bias if with_bias else _scale_ab, ops, 2, 3, bf16)
+
+
+@functools.lru_cache(maxsize=None)
+def _scaled_kernel(op: str, with_bias: bool, block_m: int):
+    ep = _scale_epilogue(with_bias)
+    return gemm_kernel(f"scaled_mm_{op}_{'bias' if with_bias else 'nobias'}_m{block_m}",
+                       op_dtype=DTYPES[op], epilogue=ep, **dict(FP8_DEFAULT, block_m=block_m)), ep
+
+
+@functools.lru_cache(maxsize=None)
+def _scaled_decode_kernel(op: str, with_bias: bool, tokens: int):
+    from . import decode_gemm  # noqa: PLC0415
+
+    ep = _scale_epilogue(with_bias)
+    return decode_gemm.decode_gemm_kernel(
+        f"scaled_mm_decode_{op}_{'bias' if with_bias else 'nobias'}_t{tokens}",
+        tokens=tokens, op_dtype=DTYPES[op], epilogue=ep, **FP8_DECODE), ep
+
+
+def _fp8_decodes(m: int, n: int, k: int) -> bool:
+    return m <= FP8_DECODE_M and n % 16 == 0 and not k % (
+        16 * FP8_DECODE["slices"] * FP8_DECODE["warps"])
+
+
+def _fp8_block_m(m: int) -> int:
+    return DEFAULT["block_m"] if m <= FP8_SMALL_M else FP8_DEFAULT["block_m"]
+
+
+def scaled_mm(a, b, scale_a, scale_b, *, bias=None, out=None):
+    """bf16 (A @ B.T) * scale_a * scale_b (+ bias), fp8 operands, fp32
+    accumulate: torch._scaled_mm's product with hk.ops.matmul's layout.
+
+    `a` is (M, K) and `b` (N, K), both float8_e4m3fn or both float8_e5m2 (OCP;
+    the WMMA is v_wmma_f32_16x16x16_fp8_fp8 or bf8_bf8, twice the bf16 rate).
+    `scale_a` is one value or one a row of A ((M,) or (M, 1)); `scale_b` one
+    value or one a row of B ((N,) or (1, N)) -- per-tensor or per-token x
+    per-channel, the two forms vLLM's fp8 linear layers use. `bias` is (N,).
+    Up to FP8_DECODE_M rows, with K a multiple of 1024, it runs
+    hk.ops.decode_gemm's kernel instead of the tiled one.
+    gfx1201 only: gfx1100 has no fp8 WMMA, and gfx950's fp8 GEMMs are
+    hk.ops.gemm_cdna's.
+    """
+    import torch  # noqa: PLC0415
+
+    from ..templates.gemm import _preparer  # noqa: PLC0415
+
+    fp8 = {torch.float8_e4m3fn: "fp8e4m3", torch.float8_e5m2: "fp8e5m2"}
+    if a.dtype != b.dtype or a.dtype not in fp8:
+        raise TypeError(f"scaled_mm: A and B both float8_e4m3fn or both float8_e5m2, "
+                        f"got {a.dtype} and {b.dtype}")
+    op = fp8[a.dtype]
+    tgt = get_target(current_arch())
+    if op not in tgt.mma or tgt.wave != 32:
+        raise ValueError(f"scaled_mm: {current_arch()} has no fp8 WMMA (gfx1201 does)")
+    if a.dim() != 2 or b.dim() != 2 or a.shape[1] != b.shape[1]:
+        raise ValueError(f"scaled_mm: A (M, K) and B (N, K), got {tuple(a.shape)} "
+                         f"and {tuple(b.shape)}")
+    m, k = a.shape
+    n = b.shape[0]
+    s = FP8_DEFAULT          # every block_m it picks shares block_n and k_step
+    if k % s["k_step"] or n % s["block_n"] or m < 1:
+        raise ValueError(f"scaled_mm: K={k} must be a multiple of {s['k_step']} and "
+                         f"N={n} of {s['block_n']}; M (={m}) may be ragged")
+    if a.stride(1) != 1 or b.stride(1) != 1:
+        raise ValueError("scaled_mm: A and B need unit stride along K")
+
+    def vec(t, length, what):
+        t = torch.as_tensor(t, device=a.device, dtype=torch.float32)
+        if t.numel() == 1:
+            return t.reshape(1).expand(length)
+        if t.numel() != length:
+            raise ValueError(f"scaled_mm: {what} has {t.numel()} values; one, or "
+                             f"{length}")
+        return t.reshape(length)
+
+    if _fp8_decodes(m, n, k):
+        from .decode_gemm import tokens_for  # noqa: PLC0415
+
+        kern, ep = _scaled_decode_kernel(op, bias is not None, tokens_for(m))
+    else:
+        kern, ep = _scaled_kernel(op, bias is not None, _fp8_block_m(m))
+    if out is None:
+        out = torch.empty(m, n, device=a.device, dtype=torch.bfloat16)
+    elif out.shape != (m, n) or out.dtype != torch.bfloat16:
+        raise ValueError(f"scaled_mm: out is {tuple(out.shape)}/{out.dtype}, "
+                         f"expected ({m}, {n})/bfloat16")
+    tensors = {"scale_a": vec(scale_a, m, "scale_a").reshape(m, 1),
+               "scale_b": vec(scale_b, n, "scale_b").contiguous()}
+    if bias is not None:
+        tensors["bias"] = bias.reshape(n).to(torch.bfloat16)
+    prep = dict(_preparer(ep, m))
+    kern(a, b, out, *[prep[name](tensors[name]) for name in ep.tensors])
+    return out
+
+
 __all__ = ["KERNELS", "TUNER", "SPACE", "DEFAULT", "gemm_kernel", "matmul",
-           "schedule_for", "BLOCK_M", "BLOCK_N", "K_STEP"]
+           "scaled_mm", "schedule_for", "BLOCK_M", "BLOCK_N", "K_STEP"]
