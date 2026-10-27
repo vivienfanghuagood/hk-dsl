@@ -53,6 +53,25 @@ Radeon AI PRO R9700 against `torch._scaled_mm` (hipBLASLt), in one process: 240 
 at 4096³ per-tensor; per-token x per-channel 1.28-1.99x at M 128-4096 (N 4096 / 14336); a tie
 at M 1-64 with K 4096, and 0.89x at M 1-64 with K 14336 (decode shapes, not tuned yet).
 
+**K1 MoE a8w4 at prefill M: 1.34-1.49x AITER** (gfx950). On DeepSeek-V4.1-Flash's TP2 shapes with
+real weights and real routing, against `aiter.fused_moe`'s tuned FlyDSL kernels (MI355X scoreboard
+harness, four runs): 1.42-1.49x at M 8192 and 1.34-1.36x at 16384, from 1.35-1.37x / 1.22-1.24x
+before; 1.14-1.47x at M 4096-7707, and 1-4% less time than before at M 2560-3584. Outputs
+are bit for bit those of before; decode M unchanged.
+The route's thresholds are not touched.
+- `store_scatter` stores 16x16 fp32 fragments as bf16 in 16-byte runs (`v_permlane16_swap` pairs
+  lanes l and l+16): half the store instructions. Stage 2's scattered top-k rows were a third of
+  its time.
+- `Global.scatter(..., staged=N)` reads its row ids from an LDS copy made by
+  `g.gather_prep(ids, at, N, raw=True)` (both new after 0.8.0). A global id load in an epilogue is a vmcnt
+  wait, and on gfx950 that retires, in order, every load and store issued before it: in the
+  resident stage 2, the next column tile's weight prefetch and the epilogue's own stores. Stage 2
+  now stages its block's ids, and loads its rows' routing weights once, not once a column tile.
+- Both stages issue the next token fragment's LDS read before the current fragment's MFMAs
+  (`stage1_sorted(xpipe=True)`, the default).
+- `load_fp4_frags` builds its per-expert buffer resource with a 32-bit compare and a select: the
+  64-bit bounds check was two scalar branches at every K step.
+
 **Fixes**
 - **gfx950: `hk.ops.gemm.matmul` raised `ResourceError` in the vLLM image** (#84) at M 192-512 for
   N 28672 / 14336, K 4096: its table routes there to `dp128x224`, which ROCm 10's hipcc builds
