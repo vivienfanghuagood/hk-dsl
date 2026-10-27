@@ -68,6 +68,17 @@ def test_it_matches_torch(b, h, n, d, h_kv, causal):
     _close(got, want)
 
 
+@pytest.mark.parametrize("causal", [False, True])
+def test_a_short_call_after_a_long_one_gets_its_own_kernel(causal):
+    # gfx1201 tiles a long Q 256 rows to a workgroup and keeps gfx1100's 192
+    # below that; both lengths share a tuning key, so a memo on the key alone
+    # ran the 200-row call on the 4096-row call's tiling.
+    for n in (4096, 200):
+        q, k, v = _qkv(h=4, n=n)
+        _close(sdpa.scaled_dot_product_attention(q, k, v, is_causal=causal),
+               _ref(q, k, v, is_causal=causal))
+
+
 def test_a_non_default_scale_matches_torch():
     q, k, v = _qkv()
     want = _ref(q, k, v, scale=0.05)

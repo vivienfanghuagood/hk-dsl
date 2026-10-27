@@ -34,6 +34,17 @@ def test_a_short_q_keeps_gfx1100s_tiling_so_what_attention_accepts_is_unchanged(
     assert attn._tiling(64, True, 4096) == {}
 
 
+def test_the_memo_key_separates_a_short_q_from_a_tiled_one(on):
+    # _tune_key alone puts 200 and 4096 in one bucket; a memo on it handed a
+    # 200-row Q the 256-row tiling of the 4096-row call before it.
+    on("gfx1201", 23)
+    assert attn._tune_key(200) == attn._tune_key(4096)
+    assert attn._kernel_key(128, True, 200) != attn._kernel_key(128, True, 4096)
+    assert attn._kernel_key(128, True, 256) == attn._kernel_key(128, True, 4096)
+    on("gfx1100", 22)
+    assert attn._kernel_key(128, True, 200) == attn._kernel_key(128, True, 4096)
+
+
 def test_no_hipcc_is_the_base_tiling(on):
     on("gfx1201", None)
     assert attn._tiling(128, True, 4096)["kv_block"] == 64

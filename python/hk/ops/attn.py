@@ -646,6 +646,16 @@ def _tune_key(n: int) -> str:
     return f"n{b}"
 
 
+def _kernel_key(head_dim: int, causal: bool, n: int) -> str:
+    """What of the length decides `_kernel_for`'s kernel: the tuning key, and
+    whether the arch's tiling applies. What a memo of kernels by length keys
+    on -- not `_tune_key` alone, which puts every N up to 4096 in one bucket
+    while the tiling starts at warps x 16 rows: a 256-row tiling kept for a
+    200-row Q would back its last block up past the start."""
+    key = _tune_key(n)
+    return key + "_tiled" if _tiling(head_dim, causal, n) else key
+
+
 def _native_cdna() -> bool:
     """Whether calls go to `attn_cdna`, gfx950's own kernel: this module's
     tiles (16-wide WMMA operands, P cast straight into an operand) have no
