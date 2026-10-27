@@ -550,3 +550,4 @@ Family `attn_cdna`, on gfx950.
 | `setprio` | `True` | `True`, `False` | `True`, `False` | s_setprio around the PV phase |
 | `lpt` | `True` | `True`, `False` | - | causal: longest query blocks first |
 | `skip` | `True` | `True`, `False` | - | causal: drop the math of the last two steps past a warp's queries |
+| `pairs` | `True` | `True`, `False` | - | causal: a workgroup walks the longest and the shortest query block left |

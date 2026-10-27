@@ -170,6 +170,38 @@ def test_causal_first_half_warps_skip_the_last_two_steps():
     assert src.count("__builtin_amdgcn_s_barrier()") > plain.count("__builtin_amdgcn_s_barrier()")
 
 
+def test_causal_pairs_walk_two_blocks_on_half_the_grid():
+    """`pairs`: the walk traced twice (the second a loop of 0 or 1 trips), K's and V's
+    buffers allocated once, and cdiv(nqb, 2) workgroups a head; kernel_for turns it on
+    for causal on the default numbering only, and names only its absence."""
+    one = scaffold.bare(attn_cdna.attn_kernel("attn_t_one", causal=True, arch="gfx950").trace())
+    two = attn_cdna.attn_kernel("attn_t_pairs", causal=True, pairs=True, arch="gfx950")
+    src = scaffold.bare(two.trace())
+    assert src.count("kittens::group_load_async<8>(") == 2 * one.count(
+        "kittens::group_load_async<8>(")
+
+    class _T:
+        def __init__(self, rows, depth, batch):
+            self.rows, self.depth, self.batch = rows, depth, batch
+
+    class _P:
+        def __init__(self, n):
+            self.q = _T(n, 32, 2)
+    for n, nqb in ((2048, 8), (2049, 9), (256, 1)):
+        assert two.grid_fn(_P(n)) == (32, -(-nqb // 2), 2)
+    # Not for full attention, nor the paged prefill, nor the spatial numbering.
+    for kw in ({"causal": False}, {"causal": True, "mapping": "spatial"}):
+        a = scaffold.bare(attn_cdna.attn_kernel("attn_t_np", pairs=True, arch="gfx950",
+                                                **kw).trace())
+        b = scaffold.bare(attn_cdna.attn_kernel("attn_t_np", arch="gfx950", **kw).trace())
+        assert a == b, kw
+    assert attn_cdna.kernel_for(128, True).name == "attn_fwd_d128_causal_cdna"
+    assert attn_cdna.kernel_for(128, True, pairs=False).name == "attn_fwd_d128_causal_cdna_pairs0"
+    assert attn_cdna.kernel_for(128, False, pairs=False).name == "attn_fwd_d128_cdna"
+    assert attn_cdna.kernel_for(128, True, mapping="spatial").name == \
+        "attn_fwd_d128_causal_cdna_mappingspatial"
+
+
 def test_a_kernel_per_scale_named_by_its_bits():
     a = attn_cdna.kernel_for(128, False)
     assert a is attn_cdna.kernel_for(128, False, 128 ** -0.5)

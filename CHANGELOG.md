@@ -9,6 +9,24 @@ The next version's notes collect here until it is released.
 What is on main after 0.8.0. `pip install hk-dsl` (0.8.0) does not have it;
 the API reference marks such names *New after 0.8.0*.
 
+**gfx950 causal attention walks query blocks in pairs.** A causal workgroup of
+`hk.ops.attn_cdna` (what `hk.attention` and the SDPA drop-in run on gfx950)
+now walks query block nqb - 1 - y and then block y, so every workgroup does
+the same work. Before, longest-first order inside each batch still ended
+grids with few workgroups a batch on a round of long tiles.
+- Outputs are bitwise the same (all 42 causal points of the attention grid,
+  head_dim 128, 8/1 to 64/8 heads, N 1k-32k).
+- Same process, Q/K/V rotated, against the single-block walk:
+  - 8 query / 1 KV heads (a 70B-class model at TP8): 1.26-1.30x at N up to 4k;
+  - 16 / 2 heads: 1.10-1.12x at 1k-2k;
+  - 40 / 8 heads: 1.01-1.03x;
+  - the rest within ±1.4%.
+- At 8/1 and 16/2 heads, short N, hk now ties AITER's asm `fmha_v3`, where it
+  had been at 0.74-0.92x.
+- `attn_cdna.kernel_for(..., pairs=False)` and the `pairs` knob of
+  `hk.schedules.AttnCdna` give back the single-block walk. The spatial
+  numbering and the paged prefill do not change.
+
 **K2 below its MIN_M** (gfx950, `vllm_mxfp8.RANGES`). DeepSeek-V4.1's MXFP8 linears at decode
 and mid-size M were measured against vLLM's kernel, FlyDSL's, AITER Triton's and hipBLASLt's, route
 level with each side's activation quant, weights rotated, two sweeps: hk now takes engram wkv

@@ -283,6 +283,26 @@ def test_the_spatial_numbering_is_bitwise_the_default_s(b, h, h_kv, n, causal):
     assert torch.equal(outs[0], outs[1])
 
 
+@pytest.mark.skipif(os.environ.get("HK_ARCH") != "gfx950", reason="attn_cdna's pairs")
+@pytest.mark.parametrize("b, h, h_kv, n", [
+    (8, 8, 1, 2048), (2, 16, 2, 1280), (1, 32, 8, 4097), (3, 24, 3, 777), (1, 8, 1, 256),
+    (2, 4, 4, 300)])
+def test_causal_pairs_are_bitwise_the_single_block_walk(b, h, h_kv, n):
+    """A causal workgroup walking the pair (nqb - 1 - y, y) computes each query block as
+    the one-block walk does: every output bit the same, with an even and an odd block
+    count (the middle block alone), one block, ragged N, batch and GQA."""
+    from hk.ops import attn_cdna
+
+    q, k, v = _qkv(b, h, n, h_kv=h_kv)
+    outs = []
+    for pairs in (True, False):
+        o = torch.full_like(q, 7.0)
+        attn_cdna.kernel_for(D_HEAD, True, pairs=pairs)(q, k, v, o)
+        outs.append(o)
+    assert torch.equal(outs[0], outs[1])
+    assert attn_cdna.kernel_for(D_HEAD, True).name == "attn_fwd_d128_causal_cdna"
+
+
 @pytest.mark.skipif(os.environ.get("HK_ARCH") != "gfx950", reason="attn_cdna's numbering")
 def test_a_call_routed_to_the_spatial_numbering_is_right():
     """40 KV heads, non-causal: attn_cdna.mapping_for picks "spatial"; hk.attention's
