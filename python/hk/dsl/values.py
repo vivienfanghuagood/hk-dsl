@@ -2205,6 +2205,19 @@ def _fp4_operand(words: Tile) -> Tile:
     return wrap(hkd.Fp4OperandOp(mlir_type(ty), words.v, loc=t.loc("fp4")).result, ty)
 
 
+def acc_strip(tile: Tile) -> Tile:
+    """A 16x16 fp32 MFMA result (col layout) as the strip of the same registers (gfx950): element
+    4 l + e of an fp32 strip of 1 x 256, run 4, is C[4 (l / 16) + e][l % 16] -- lane l's own four
+    values of column l % 16. For element ops on a result (a scatter by column) without an LDS round
+    trip."""
+    if (tile.ty.dtype is not fp32 or _is_strip(tile.ty) or tile.ty.rows != 16 or tile.ty.cols != 16
+            or tile.ty.layout != "col"):
+        raise TypeError(f"acc_strip: a 16x16 fp32 col tile, not {tile.ty}")
+    t = _t()
+    ty = RegTileType(fp32, 1, 256, "strip", run=4)
+    return wrap(hkd.AccStripOp(mlir_type(ty), tile.v, loc=t.loc("acc")).result, ty)
+
+
 def fp8_operand(words: Tile) -> Tile:
     """Deprecated: `words.as_fragment(hk.RT(hk.fp8e4m3, 16, 128))`."""
     _deprecated("hk.fp8_operand(words)", "words.as_fragment(hk.RT(hk.fp8e4m3, 16, 128))")
