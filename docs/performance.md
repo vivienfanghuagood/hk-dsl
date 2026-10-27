@@ -1047,9 +1047,11 @@ nothing to give, and some kernels lose:
 One R9700 of a shared box, rocm/pytorch rocm7.2.3 (torch 2.10.0, hipBLASLt and
 rocBLAS of ROCm 7.2.3, triton 3.6.0), FlyDSL built from source (main,
 0.4.1.dev988) and AITER (ffd08f2) beside it. hk's bf16 GEMM runs gfx1100's
-schedules; attention, the fp8 GEMM and the norms' strip plans are tuned for gfx1201
+schedules, and gfx1201's own at 32-512 rows of Qwen3's four (N, K); attention, the fp8
+GEMM and the norms' strip plans are tuned for gfx1201
 ([chapter 48](history/48-gfx1201-ceilings-and-first-scoreboard.md),
-[chapter 49](history/49-gfx1201-attention-fp8-and-flydsl-from-source.md)).
+[chapter 49](history/49-gfx1201-attention-fp8-and-flydsl-from-source.md),
+[chapter 51](history/51-gfx1201-small-m-gemm.md)).
 
 The card: bf16 WMMA 197 TFLOP/s (twice gfx1100's a CU), fp8 372, iu8 374
 TOP/s; an add 1.81 TB/s inside the 64 MB Infinity Cache, 0.62 TB/s past it.
@@ -1076,7 +1078,8 @@ gfx1201 (no GQA), HIP norms, Triton fp8/int8 GEMMs, `F.linear` for bf16.
 | GEMM against the BLAS libraries directly | ratio |
 |---|---|
 | the linear layer's layout (NT) vs rocBLAS / hipBLASLt, 16-8192 rows | 1.05-2.9x |
-| the same libraries free to pick a layout (a transposed weight) | ties from 1024 rows; 0.57-0.88x below 256 |
+| the same libraries free to pick a layout (a transposed weight) | ties from 1024 rows; 0.57-0.88x below 256 with W in the cache and gfx1100's schedules |
+| 32-512 rows, W from GDDR6, gfx1201's shipped schedules: vs NT / vs the best layout | 1.28-5.7x / 0.94-1.09x |
 
 ## Appendix: superseded results
 
