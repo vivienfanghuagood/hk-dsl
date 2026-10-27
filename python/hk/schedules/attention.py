@@ -322,6 +322,8 @@ class AttnCdna(AttnSchedule):
                      doc="causal: longest query blocks first")
     skip: bool = knob(True, values=(True, False),
                       doc="causal: drop the math of the last two steps past a warp's queries")
+    pairs: bool = knob(True, values=(True, False),
+                       doc="causal: a workgroup walks the longest and the shortest query block left")
 
     def name_for(self, head_dim: int, causal: bool, scale: Optional[float] = None) -> str:
         """The kernel's name, as hk.ops.attn_cdna.kernel_for names it."""

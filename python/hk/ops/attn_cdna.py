@@ -44,7 +44,11 @@ Where this differs from HipKittens' kernel:
   * **Causal.** A warp masks a block only when it reaches past one of its
     queries, with one element-wise triu over the whole block; the last two
     steps, wholly past the first half's queries, are memory only for those
-    warps (`skip`).
+    warps (`skip`). And a workgroup walks two query blocks, the longest and
+    the shortest left -- (nqb - 1 - y, y) -- so every workgroup does the same
+    work (`pairs`): with longest-first order alone, a grid of few workgroups a
+    batch ended on a round of long tiles with most of the machine idle
+    (Llama-3-70B at TP8, 8 query heads, 8 x 2048: 1.30x).
   * **Any N.** Q rows past N read zeros and are not stored; a KV block that
     runs past N_kv is masked with -inf (the DMA reads zeros there); an odd
     block count gets one fully masked block, so the walk is whole steps.
@@ -146,7 +150,8 @@ def attn_kernel(name: str, *, head_dim: int = 128, causal: bool = False,
                 scale: Optional[float] = None, setprio: bool = True,
                 lazy: float = 8.0, sched: bool = True, lpt: bool = True,
                 skip: bool = True, _nomask: bool = False, paged: bool = False,
-                mapping: str = "block_first", arch: Optional[str] = None):
+                mapping: str = "block_first", arch: Optional[str] = None,
+                pairs: bool = False):
     """`lazy`: the running max is taken as stale until a block's max exceeds
     it by more than this (log2 units), so P stays below 2^lazy and O is
     rescaled only when the max really moves (FlashAttention 4's threshold,
@@ -167,6 +172,12 @@ def attn_kernel(name: str, *, head_dim: int = 128, causal: bool = False,
     last q_len of its sequence, causal from the cached prefix on. A 64-row
     KV block is two pages, each its own copy and LDS buffer, read into the
     two 32-row halves of the block's registers.
+
+    `pairs` (dense causal, the default numbering; kernel_for turns it on): a
+    workgroup walks query blocks nqb - 1 - y and then y, one after the other,
+    so every workgroup walks nqb + 1 blocks' worth (the middle block of an odd
+    count alone); the grid's y is cdiv(nqb, 2). Each block is computed as
+    without it, so the output is bitwise the same.
 
     `mapping`: the workgroup numbering (MAPPINGS; the module's docstring),
     installed by hk.dsl.placement: "spatial" is hk.Placement.cluster() -- the
@@ -193,6 +204,9 @@ def attn_kernel(name: str, *, head_dim: int = 128, causal: bool = False,
 
     if paged and not causal:
         raise ValueError("the paged prefill is causal")
+    # Pairs are the dense causal kernel's, on the default numbering (the
+    # spatial one is routed on measurements of the single-block walk).
+    pairs = bool(pairs) and causal and not paged and mapping == "block_first"
     T_Q32 = hk.RT(fp32, Q_ROWS, D, "row")      # this warp's Q, scaled in fp32
     # A K or V block in registers, [kv, d]; paged, two pages of it.
     kv_rows = PAGE if paged else KV_BLOCK
@@ -206,10 +220,15 @@ def attn_kernel(name: str, *, head_dim: int = 128, causal: bool = False,
     # Buffers a block takes in LDS: one, or its pages.
     nbuf = KV_BLOCK // kv_rows
 
-    def walk(q, k, v, o, block_table, seq_lens, q_start, tiles):
+    def alloc():
+        return (hk.lds.alloc(ST, count=2 * nbuf, name="Ks"),
+                hk.lds.alloc(ST, count=2 * nbuf, name="Vs"))
+
+    def walk(q, k, v, o, block_table, seq_lens, q_start, tiles, second=0, lds=None):
+        """`second`: under `pairs`, 0 for the pair's long block, 1 for its
+        short one; `lds`: K's and V's buffers, allocated once for both."""
         g = hk.group(WARPS)
-        Ks = hk.lds.alloc(ST, count=2 * nbuf, name="Ks")
-        Vs = hk.lds.alloc(ST, count=2 * nbuf, name="Vs")
+        Ks, Vs = lds if lds is not None else alloc()
 
         if not paged:
             n_q, n_kv = q.rows, k.rows
@@ -236,7 +255,10 @@ def attn_kernel(name: str, *, head_dim: int = 128, causal: bool = False,
             last_col = block_table.cols - 1
         else:
             qb = hk.arch.block_idx.y
-            if causal and lpt:
+            if pairs:
+                nqb = hk.cdiv(n_q, Q_TILE)
+                qb = nqb - 1 - qb - second * (nqb - 1 - 2 * qb)
+            elif causal and lpt:
                 qb = hk.cdiv(n_q, Q_TILE) - 1 - qb
             ctx = 0
         q0 = qb * Q_TILE
@@ -558,10 +580,23 @@ def attn_kernel(name: str, *, head_dim: int = 128, causal: bool = False,
     else:
         def body(q: hk.Tensor[bf16], k: hk.Tensor[bf16], v: hk.Tensor[bf16],
                  o: hk.Tensor[bf16]):
-            walk(q, k, v, o, None, None, None, None)
+            if not pairs:
+                walk(q, k, v, o, None, None, None, None)
+                return
+            # The two walks traced one after the other: in one runtime loop
+            # of two trips the walk's values were held across its back edge,
+            # and spilled. The second is a loop of 0 or 1 trips (the middle
+            # block of an odd count has no partner), as a branch may not hold
+            # the pingpong.
+            lds = alloc()
+            walk(q, k, v, o, None, None, None, None, 0, lds)
+            for _ in range(hk.min(hk.cdiv(q.rows, Q_TILE) - 2 * hk.arch.block_idx.y - 1, 1)):
+                hk.arch.barrier()
+                walk(q, k, v, o, None, None, None, None, 1, lds)
 
         def _grid(p):
-            return (p.q.depth, hk.cdiv(p.q.rows, Q_TILE), p.q.batch)
+            n_t = hk.cdiv(p.q.rows, Q_TILE)
+            return (p.q.depth, hk.cdiv(n_t, 2) if pairs else n_t, p.q.batch)
 
     body.__name__ = name
     return hk.kernel(body, arch=arch, warps=WARPS, grid=_grid, name=name, placement=placement)
@@ -572,20 +607,25 @@ _KERNELS: Dict[Any, Any] = {}
 
 def kernel_for(head_dim: int, causal: bool, scale: Optional[float] = None, **opts):
     """The kernel for (head_dim, causal, scale), built once. A scale other
-    than 1/sqrt(head_dim) is a separate kernel, named by its bits."""
+    than 1/sqrt(head_dim) is a separate kernel, named by its bits. Causal on
+    the default numbering walks query blocks in pairs (attn_kernel's
+    `pairs`) unless `pairs=False`; only that is named."""
     if scale is not None and scale == head_dim ** -0.5:
         scale = None
-    key = (head_dim, causal, scale, tuple(sorted(opts.items())))
+    on = causal and opts.get("mapping", "block_first") == "block_first"
+    pairs = bool(opts.pop("pairs", True)) and on
+    key = (head_dim, causal, scale, pairs, tuple(sorted(opts.items())))
     if key not in _KERNELS:
         name = f"attn_fwd_d{head_dim}{'_causal' if causal else ''}_cdna"
         if scale is not None:
             import struct  # noqa: PLC0415
             name += f"_s{struct.unpack('<Q', struct.pack('<d', float(scale)))[0]:016x}"
-        for kk, vv in sorted(opts.items()):
+        named = {**opts, **({"pairs": False} if on and not pairs else {})}
+        for kk, vv in sorted(named.items()):
             val = int(vv) if isinstance(vv, bool) else vv
             name += "_" + "".join(ch if ch.isalnum() else "p" for ch in f"{kk}{val}")
         _KERNELS[key] = attn_kernel(name, head_dim=head_dim, causal=causal,
-                                    scale=scale, **opts)
+                                    scale=scale, pairs=pairs, **opts)
     return _KERNELS[key]
 
 
