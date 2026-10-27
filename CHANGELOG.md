@@ -185,6 +185,8 @@ the fused add + rms_norm at 8192 rows from 0.93x to a tie (447 vs 443 us). gfx11
 gfx950's plans are unchanged.
 
 **Ops for an index top-k in one launch** (PRNUM, gfx950), from DeepSeek-V4.1's
+
+**Ops for an index top-k in one launch** (#98, gfx950), from DeepSeek-V4.1's
 index logits and top-512 inside the same launch:
 - `SharedTile.atomic_add_elems(val, idx)`: i32 adds into an LDS tile
   (`ds_add_u32`), every add to one element landing -- a radix select's
