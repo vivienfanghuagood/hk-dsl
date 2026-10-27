@@ -257,6 +257,9 @@ def if_stmt(cond, then: Callable, orelse: Callable, carried: Tuple,
 def _probe(t, cond, fn, carried):
     """Run a branch body into a scratch region and see what it rebinds."""
     probe = scf.IfOp(i1(cond), [], has_else=False, loc=ir.Location.unknown())
+    probe.attributes["hk.probe"] = ir.UnitAttr.get()     # (a scratch trace: lds.alloc records nothing in it)
+    if _is_uniform(cond):                  # as the branch itself (what may be placed in it depends on it)
+        probe.attributes["hk.uniform"] = ir.UnitAttr.get()
     with t.at(ir.InsertionPoint(probe.then_block)):
         got = list(fn(*carried))
         scf.YieldOp([])
