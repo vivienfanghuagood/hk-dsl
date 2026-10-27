@@ -9,6 +9,16 @@ The next version's notes collect here until it is released.
 What is on main after 0.8.0. `pip install hk-dsl` (0.8.0) does not have it;
 the API reference marks such names *New after 0.8.0*.
 
+**K2 below its MIN_M** (gfx950, `vllm_mxfp8.RANGES`). DeepSeek-V4.1's MXFP8 linears at decode
+and mid-size M were measured against vLLM's kernel, FlyDSL's, AITER Triton's and hipBLASLt's, route
+level with each side's activation quant, weights rotated, two sweeps: hk now takes engram wkv
+(12800 x 6144) from M 160, wo_b (5120 x 4096) from 416, the shared expert's w2 (5120 x 1152) from
+512, wq_b (16384 x 1280) from 576, the shared expert's w1|w3 (2304 x 5120) from 960 and fused
+wq_a|wkv (1792 x 5120) from 1216, in the ranges where it won by >= 3% in every round of both
+sweeps -- 1.04-1.61x the best of the four -- on the four-warp kernel at 128 x 128 or the
+eight-warp one. Bitwise vLLM's output at every point. At M <= 128, and for the indexer's wq_b
+below its MIN_M, no hk kernel wins; those calls stay with vLLM.
+
 **Host time per call** (#91, cross-arch). An engine route's Python no longer
 re-decides per call what only the call's shapes decide, and code-object
 kernels launch from a per-shape memo without the torch dispatcher
