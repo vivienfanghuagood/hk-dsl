@@ -781,6 +781,17 @@ LogicalResult Fp4OperandOp::verify() {
   return success();
 }
 
+LogicalResult AccStripOp::verify() {
+  auto s = dyn_cast<RegTileType>(getSrc().getType());
+  auto r = dyn_cast<RegTileType>(getResult().getType());
+  if (!s || s.isStrip() || s.getRows() != 16 || s.getCols() != 16 || s.getLayout() != "col" ||
+      !s.getElementType().isF32())
+    return emitOpError("takes a 16x16 fp32 col-layout tile (an MFMA's result)");
+  if (!r || !r.isStrip() || r.getRows() != 1 || r.getCols() != 256 || r.getRun() != 4 || !r.getElementType().isF32())
+    return emitOpError("gives an fp32 strip of 1 x 256, run 4");
+  return success();
+}
+
 LogicalResult Fp8OperandOp::verify() {
   auto w = dyn_cast<RegTileType>(getWords().getType());
   auto r = dyn_cast<RegTileType>(getResult().getType());
