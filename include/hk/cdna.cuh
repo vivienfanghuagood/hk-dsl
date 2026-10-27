@@ -3280,6 +3280,7 @@ __device__ static inline void lds_store_elems(ST &dst, const V &val, const I &id
         }
     });
 }
+#if defined(KITTENS_CDNA4)   // (hk_mxs and the f8f6f4 operand containers are gfx950's)
 /** @brief hk.fp4_operand: a lane's four dwords (i32 strip 1 x 256, run 4) as the first four dwords of a 16x128
  * fp8 fragment, the FP4 operand container of mma_ABt_mx(..., fp4). */
 template<typename RT, ducks::rs::all S>
@@ -3296,6 +3297,7 @@ template<ducks::rs::all S>
 __device__ static inline void mx_scales_loose(hk_mxs<16, 4, 1> &dst, const S &src) {
     dst.reg[0][0] = uint32_t(int(src.data[0][0][0]) & 0xFF);
 }
+#endif
 /** @brief hk lds_atomic_add_elems: val(r, c) (i32) added atomically (ds_add_u32) to dst's element idx(r, c) as
  * an i32 (row-major; OOB: none). */
 template<typename ST, ducks::rs::all V, ducks::rs::all I>
