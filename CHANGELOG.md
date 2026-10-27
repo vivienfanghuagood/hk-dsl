@@ -155,6 +155,11 @@ index chain needed as one launch on vLLM's caches:
   index out of range still reads 0); a guarded read was one exec-masked block
   each, and a strip's reads ran one at a time.
 
+**Norms on gfx1201** (#78, RDNA4). The strip plans take per-lane targets measured on the
+R9700: rms_norm at 2048 rows goes from 0.96x to 1.04x the best other implementation, and
+the fused add + rms_norm at 8192 rows from 0.93x to a tie (447 vs 443 us). gfx1100's and
+gfx950's plans are unchanged.
+
 **Fixes**
 - **gfx950: `hk.ops.gemm.matmul` raised `ResourceError` in the vLLM image** (#84) at M 192-512 for
   N 28672 / 14336, K 4096: its table routes there to `dp128x224`, which ROCm 10's hipcc builds
