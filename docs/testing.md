@@ -468,16 +468,29 @@ hours. To change a runner's `.env` without cancelling anything, edit it
 while the runner is busy (the next listener reads it) or stop it while it is
 idle (no job in progress, no `hk-gha-*` container) and start it again.
 
+### GPU allocation on the gfx950 workstation
+
+| GPUs | for | rule |
+|---|---|---|
+| 3, 4 | CI only (both gfx950 runners) | no experiments or measurements, ever |
+| 1, 2, 5 | experiments and measurements | TP2 runs use the pair 1+2; take each GPU's lock |
+| 0 | reserved for a separate experiment | not used by CI or by these experiments |
+| 6, 7 | other work | never used here |
+
+Before an experiment that will hold GPUs for more than 30 minutes (a vLLM
+serving or accuracy run, say), look at the CI queue (`gh run list --workflow
+gpu.yml`) and let waiting GPU jobs start first. A gfx950 job that finds no free
+CI GPU for an hour fails, and every PR's GPU tier waits behind it.
+
 ### Several gfx950 runners
 
 The gfx950 jobs are the slow ones, and with one runner every branch's run
 queues behind the others. Several runners on the workstation carry the
 `gfx950` label, so runs of different refs go in parallel (one run per job
 and ref at a time still holds: `concurrency` in `gpu.yml`). Each one has:
-- **its own GPUs**, `HK_CI_GPUS` in its `.env`, not overlapping another
-  runner's: `<prefix>-gfx950` GPUs 1 and 2, `<prefix>-gfx950-b` 3 and 4. GPU 5
-  is left for interactive work; GPU 0 and GPUs 6-7 belong to other work and
-  are in no runner's list;
+- **the CI GPUs**, `HK_CI_GPUS` in its `.env`: both runners list GPUs **3 and
+  4**, a pair kept for CI only, so CI always has GPUs to run on. Two jobs at
+  once take one GPU each; the GPU lock (below) keeps them apart;
 - **its own state**, `HK_CI_STATE`: runs, `x950/ci` and `x950v/ci`. A runner
   runs one job at a time, so no two jobs share a dialect build or a kernel
   cache; two runners sharing one would corrupt each other's cmake build;
@@ -497,8 +510,8 @@ HK_CI_MLIR=<home>/hk-ci/mlir/install-cp310
 HK_CI_LOCKS=<lock-dir>
 ```
 
-`<prefix>-gfx950`'s is the same with `runner-gfx950/home`, `HK_CI_GPUS=1 2`
-and `HK_CI_STATE=<home>/gha`. The gfx1100 runners' set `LANG`, `HOME`,
+`<prefix>-gfx950`'s is the same with `runner-gfx950/home` and
+`HK_CI_STATE=<home>/gha`. The gfx1100 runners' set `LANG`, `HOME`,
 `HK_RUNNER_PREFIX` and the pod's side:
 
 ```
@@ -512,7 +525,7 @@ HK_CI_NODE_LOCKS=0
 for `<prefix>-gfx1100-x4`, and `HK_CI_POD=<dev-pod>`, `HK_CI_POD_GPUS=6`,
 `HK_CI_NODE_LOCKS=1` for `<prefix>-gfx1100`.
 
-**Adding one** (here `gfx950-c` on GPU 5, say):
+**Adding one** (here `gfx950-c`, sharing the CI pair):
 
 ```bash
 cd ~/gha && df -h ~                        # the CI directories are ~13 GB
@@ -520,18 +533,19 @@ mkdir runner-gfx950-c && cp -a runner-gfx950/{bin,externals,config.sh,env.sh,run
 cp runner-gfx950-c/run-helper.sh.template runner-gfx950-c/run-helper.sh
 S=~/gha/state-gfx950-c; mkdir -p $S/runs runner-gfx950-c/home && ln -s $S runner-gfx950-c/home/gha
 cp -a x950 x950v $S/                       # warm: the first run does not recompile every kernel
-printf '%s\n' LANG=en_US.UTF-8 HOME=$HOME/gha/runner-gfx950-c/home 'HK_CI_GPUS=5' HK_CI_STATE=$S \
+printf '%s\n' LANG=en_US.UTF-8 HOME=$HOME/gha/runner-gfx950-c/home 'HK_CI_GPUS=3 4' HK_CI_STATE=$S \
     HK_CI_MLIR=$HOME/hk-ci/mlir/install-cp310 > runner-gfx950-c/.env
 grep -E '^(HK_RUNNER_PREFIX|HK_CI_LOCKS)=' runner-gfx950/.env >> runner-gfx950-c/.env   # the shared ones
 nohup setsid ./supervise.sh gfx950-c gfx950,gfx950-c >> logs/gfx950-c.log 2>&1 < /dev/null &
 ```
 
-Take the GPUs out of the other runners' `HK_CI_GPUS` first. Copy the warm
+A runner on GPUs outside the CI pair takes them away from experiments: change
+the allocation table above in the same PR. Each runner still needs its own
+state directory. Copy the warm
 directories while no job is building in them (a build rewrites
 `hk-build-cp312`; the compile cache is written by rename, so a copy of it is
 consistent). **Retiring one:** `touch ~/gha/STOP-<name>` while it is idle,
-then remove `runner-<name>` and its state directory; give its GPUs back to
-another runner's `HK_CI_GPUS`.
+then remove `runner-<name>` and its state directory.
 
 Until 19 October 2026 the tier was a polling CI on the same machines
 (`scripts/gpu_ci/`, cron and a daemon in `~/hk-ci`), posting `gpu/gfx1100`
