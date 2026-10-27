@@ -248,16 +248,15 @@ one process. The two methods agree within about 3%.)
   has no 0.8.0 counterpart, and pip on a newer glibc takes the 2_35 one.
 
 **Known issues**
-- `tests/hk/gpu/test_fenced.py`'s paged-decode check failed once in about a
-  hundred gfx950 GPU-tier runs (relative error 9.73e+29, the fused decode with
-  32 splits and its merge). It was not an hk kernel defect: 9.73e+29 is an
-  ordinary output maximum (0.97265625) divided by the check's 1e-30 floor, so the
-  check compared against an all-zero host reference, and the merge cannot emit
-  ~1e30 from finite inputs. It did not reproduce in about 25,000 decode and merge
-  calls (poisoned allocations, polluted LDS, both compilers, under load). The
-  test's reference readback is being hardened (#89, test-only). In serving, the
-  paged decode is reached only through the vLLM decoder backend, which is off
-  by default (`HK_VLLM_BACKEND`).
+- A GPU-tier CI run on MI355X (gfx950) once reported a mismatch in the
+  fenced-allocator test of the paged-decode split path
+  (`tests/hk/gpu/test_fenced.py::test_paged_decode_and_prefill`, fused decode,
+  head_dim 64, 32 splits). It did not recur in later runs or in several
+  thousand targeted repetitions with poisoned allocations and polluted LDS; the
+  reported error value matches an all-zero host-side reference rather than a
+  wrong kernel output. The paged decode is used only by the opt-in vLLM
+  attention backend (`HK_VLLM_BACKEND=1`, off by default) and is not reached by
+  any default-on route.
 - gfx942: the synchronous group copies are still unbounded (#49): on gfx942 a
   `g.load` / `g.store` at a partial last tile reads and writes past the
   tensor. There is no gfx942 here to test the bounded form on.
