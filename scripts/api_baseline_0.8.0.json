@@ -87,6 +87,22 @@
 "name": null
 }
 },
+"Digit": {
+"methods": {
+"__repr__": [
+"self"
+],
+"axis": null,
+"kind": null,
+"of": [
+"axis",
+"kind",
+"radix"
+],
+"radix": null,
+"radix_text": null
+}
+},
 "Global": {
 "methods": {
 "__getitem__": [
@@ -143,6 +159,19 @@
 "div",
 "into"
 ],
+"load_elems": [
+"self",
+"idx",
+"dtype"
+],
+"post_elems": [
+"self",
+"val",
+"idx",
+"tag",
+"runs",
+"bf16"
+],
 "rows": [
 "self"
 ],
@@ -164,6 +193,21 @@
 "count",
 "col",
 "sort_topk"
+],
+"store_elems": [
+"self",
+"val",
+"idx",
+"runs"
+],
+"take_elems": [
+"self",
+"idx",
+"tag",
+"dtype",
+"timeout_s",
+"runs",
+"bf16"
 ],
 "tile": [
 "self"
@@ -360,7 +404,8 @@
 "defines",
 "noalias",
 "preload",
-"resident"
+"resident",
+"placement"
 ],
 "__repr__": [
 "self"
@@ -368,6 +413,11 @@
 "_annotation": [
 "self",
 "p"
+],
+"_auto_pick": [
+"self",
+"tensors",
+"const_overrides"
 ],
 "_key": [
 "consts"
@@ -406,6 +456,15 @@
 "self",
 "**const_overrides"
 ],
+"placed": [
+"self",
+"placement"
+],
+"placement_choice": [
+"self",
+"*tensors",
+"**const_overrides"
+],
 "preloaded": [
 "self"
 ],
@@ -430,6 +489,31 @@
 "self",
 "src"
 ]
+}
+},
+"Placement": {
+"methods": {
+"__post_init__": [
+"self"
+],
+"chunk": null,
+"chunked": [
+"chunk",
+"tail"
+],
+"cluster": [
+"key",
+"chunk",
+"tail"
+],
+"key": null,
+"kind": null,
+"none": [],
+"suffix": [
+"self",
+"xcds"
+],
+"tail": null
 }
 },
 "RS": {
@@ -484,9 +568,19 @@
 "wait",
 "into"
 ],
+"load_elems": [
+"self",
+"idx",
+"dtype"
+],
 "store": [
 "self",
 "value"
+],
+"store_elems": [
+"self",
+"val",
+"idx"
 ],
 "subtile": [
 "self",
@@ -538,6 +632,13 @@
 "value",
 "into"
 ],
+"_group": [
+"self",
+"kind",
+"cols",
+"lanes",
+"xor"
+],
 "_ordered": [
 "self",
 "kind",
@@ -562,6 +663,28 @@
 ],
 "dtype": [
 "self"
+],
+"group_max": [
+"self",
+"cols",
+"lanes",
+"xor"
+],
+"group_min": [
+"self",
+"cols",
+"lanes",
+"xor"
+],
+"group_sum": [
+"self",
+"cols",
+"lanes",
+"xor"
+],
+"lane_gather": [
+"self",
+"lanes"
 ],
 "left_fill_": [
 "self",
@@ -652,7 +775,10 @@
 "consts",
 "tensors",
 "module",
-"grid"
+"grid",
+"analysis",
+"plan",
+"logical_grid"
 ],
 "__repr__": [
 "self"
@@ -892,7 +1018,13 @@
 "if_": {
 "params": [
 "cond",
-"opaque"
+"opaque",
+"uniform"
+]
+},
+"iota": {
+"params": [
+"ty"
 ]
 },
 "kernel": {
@@ -907,7 +1039,8 @@
 "defines",
 "noalias",
 "preload",
-"resident"
+"resident",
+"placement"
 ]
 },
 "lds": {},
@@ -956,11 +1089,27 @@
 "into"
 ]
 },
+"map_cpp": {
+"params": [
+"expr",
+"*args",
+"dtype",
+"name"
+]
+},
 "math": {},
 "max": {
 "params": [
 "a",
 "b"
+]
+},
+"mfma_strip": {
+"params": [
+"kind",
+"a",
+"b",
+"acc"
 ]
 },
 "min": {
@@ -1009,6 +1158,7 @@
 ]
 },
 "ops": {},
+"placement": {},
 "rand": {
 "params": [
 "ty",
@@ -1070,6 +1220,11 @@
 "params": [
 "t",
 "into"
+]
+},
+"uniform": {
+"params": [
+"cond"
 ]
 },
 "zeros": {
@@ -1883,6 +2038,15 @@
 "argv"
 ]
 },
+"_placement": {
+"params": [
+"fn",
+"cfg",
+"args",
+"consts",
+"mod"
+]
+},
 "annotations": {},
 "argparse": {},
 "ast": {},
@@ -2178,6 +2342,22 @@
 "name": null
 }
 },
+"Digit": {
+"methods": {
+"__repr__": [
+"self"
+],
+"axis": null,
+"kind": null,
+"of": [
+"axis",
+"kind",
+"radix"
+],
+"radix": null,
+"radix_text": null
+}
+},
 "Global": {
 "methods": {
 "__getitem__": [
@@ -2234,6 +2414,19 @@
 "div",
 "into"
 ],
+"load_elems": [
+"self",
+"idx",
+"dtype"
+],
+"post_elems": [
+"self",
+"val",
+"idx",
+"tag",
+"runs",
+"bf16"
+],
 "rows": [
 "self"
 ],
@@ -2255,6 +2448,21 @@
 "count",
 "col",
 "sort_topk"
+],
+"store_elems": [
+"self",
+"val",
+"idx",
+"runs"
+],
+"take_elems": [
+"self",
+"idx",
+"tag",
+"dtype",
+"timeout_s",
+"runs",
+"bf16"
 ],
 "tile": [
 "self"
@@ -2451,7 +2659,8 @@
 "defines",
 "noalias",
 "preload",
-"resident"
+"resident",
+"placement"
 ],
 "__repr__": [
 "self"
@@ -2459,6 +2668,11 @@
 "_annotation": [
 "self",
 "p"
+],
+"_auto_pick": [
+"self",
+"tensors",
+"const_overrides"
 ],
 "_key": [
 "consts"
@@ -2497,6 +2711,15 @@
 "self",
 "**const_overrides"
 ],
+"placed": [
+"self",
+"placement"
+],
+"placement_choice": [
+"self",
+"*tensors",
+"**const_overrides"
+],
 "preloaded": [
 "self"
 ],
@@ -2521,6 +2744,31 @@
 "self",
 "src"
 ]
+}
+},
+"Placement": {
+"methods": {
+"__post_init__": [
+"self"
+],
+"chunk": null,
+"chunked": [
+"chunk",
+"tail"
+],
+"cluster": [
+"key",
+"chunk",
+"tail"
+],
+"key": null,
+"kind": null,
+"none": [],
+"suffix": [
+"self",
+"xcds"
+],
+"tail": null
 }
 },
 "RS": {
@@ -2572,9 +2820,19 @@
 "wait",
 "into"
 ],
+"load_elems": [
+"self",
+"idx",
+"dtype"
+],
 "store": [
 "self",
 "value"
+],
+"store_elems": [
+"self",
+"val",
+"idx"
 ],
 "subtile": [
 "self",
@@ -2625,6 +2883,13 @@
 "value",
 "into"
 ],
+"_group": [
+"self",
+"kind",
+"cols",
+"lanes",
+"xor"
+],
 "_ordered": [
 "self",
 "kind",
@@ -2649,6 +2914,28 @@
 ],
 "dtype": [
 "self"
+],
+"group_max": [
+"self",
+"cols",
+"lanes",
+"xor"
+],
+"group_min": [
+"self",
+"cols",
+"lanes",
+"xor"
+],
+"group_sum": [
+"self",
+"cols",
+"lanes",
+"xor"
+],
+"lane_gather": [
+"self",
+"lanes"
 ],
 "left_fill_": [
 "self",
@@ -2739,7 +3026,10 @@
 "consts",
 "tensors",
 "module",
-"grid"
+"grid",
+"analysis",
+"plan",
+"logical_grid"
 ],
 "__repr__": [
 "self"
@@ -3102,7 +3392,13 @@
 "if_": {
 "params": [
 "cond",
-"opaque"
+"opaque",
+"uniform"
+]
+},
+"iota": {
+"params": [
+"ty"
 ]
 },
 "kernel": {
@@ -3117,7 +3413,8 @@
 "defines",
 "noalias",
 "preload",
-"resident"
+"resident",
+"placement"
 ]
 },
 "lds": {},
@@ -3166,11 +3463,27 @@
 "into"
 ]
 },
+"map_cpp": {
+"params": [
+"expr",
+"*args",
+"dtype",
+"name"
+]
+},
 "math": {},
 "max": {
 "params": [
 "a",
 "b"
+]
+},
+"mfma_strip": {
+"params": [
+"kind",
+"a",
+"b",
+"acc"
 ]
 },
 "min": {
@@ -3217,6 +3530,7 @@
 "into"
 ]
 },
+"placement": {},
 "rand": {
 "params": [
 "ty",
@@ -3267,6 +3581,11 @@
 "params": [
 "t",
 "into"
+]
+},
+"uniform": {
+"params": [
+"cond"
 ]
 },
 "zeros": {
@@ -3389,6 +3708,19 @@
 "div",
 "into"
 ],
+"load_elems": [
+"self",
+"idx",
+"dtype"
+],
+"post_elems": [
+"self",
+"val",
+"idx",
+"tag",
+"runs",
+"bf16"
+],
 "rows": [
 "self"
 ],
@@ -3410,6 +3742,21 @@
 "count",
 "col",
 "sort_topk"
+],
+"store_elems": [
+"self",
+"val",
+"idx",
+"runs"
+],
+"take_elems": [
+"self",
+"idx",
+"tag",
+"dtype",
+"timeout_s",
+"runs",
+"bf16"
 ],
 "tile": [
 "self"
@@ -3681,6 +4028,9 @@
 "expected",
 "scope"
 ]
+},
+"xcd_count": {
+"params": []
 },
 "xcd_id": {
 "params": []
@@ -4400,6 +4750,11 @@
 "*xs"
 ]
 },
+"_is_uniform": {
+"params": [
+"cond"
+]
+},
 "_probe": {
 "params": [
 "t",
@@ -4474,7 +4829,8 @@
 "if_": {
 "params": [
 "cond",
-"opaque"
+"opaque",
+"uniform"
 ]
 },
 "if_stmt": {
@@ -4513,6 +4869,11 @@
 "scf": {},
 "scope": {
 "params": []
+},
+"uniform": {
+"params": [
+"cond"
+]
 },
 "while_": {
 "params": [
@@ -4611,9 +4972,19 @@
 "wait",
 "into"
 ],
+"load_elems": [
+"self",
+"idx",
+"dtype"
+],
 "store": [
 "self",
 "value"
+],
+"store_elems": [
+"self",
+"val",
+"idx"
 ],
 "subtile": [
 "self",
@@ -4965,6 +5336,19 @@
 "div",
 "into"
 ],
+"load_elems": [
+"self",
+"idx",
+"dtype"
+],
+"post_elems": [
+"self",
+"val",
+"idx",
+"tag",
+"runs",
+"bf16"
+],
 "rows": [
 "self"
 ],
@@ -4986,6 +5370,21 @@
 "count",
 "col",
 "sort_topk"
+],
+"store_elems": [
+"self",
+"val",
+"idx",
+"runs"
+],
+"take_elems": [
+"self",
+"idx",
+"tag",
+"dtype",
+"timeout_s",
+"runs",
+"bf16"
 ],
 "tile": [
 "self"
@@ -5023,7 +5422,8 @@
 "defines",
 "noalias",
 "preload",
-"resident"
+"resident",
+"placement"
 ],
 "__repr__": [
 "self"
@@ -5031,6 +5431,11 @@
 "_annotation": [
 "self",
 "p"
+],
+"_auto_pick": [
+"self",
+"tensors",
+"const_overrides"
 ],
 "_key": [
 "consts"
@@ -5067,6 +5472,15 @@
 ],
 "compile": [
 "self",
+"**const_overrides"
+],
+"placed": [
+"self",
+"placement"
+],
+"placement_choice": [
+"self",
+"*tensors",
 "**const_overrides"
 ],
 "preloaded": [
@@ -5135,7 +5549,10 @@
 "consts",
 "tensors",
 "module",
-"grid"
+"grid",
+"analysis",
+"plan",
+"logical_grid"
 ],
 "__repr__": [
 "self"
@@ -5162,6 +5579,7 @@
 "VerifyError": {
 "methods": {}
 },
+"_RECORDING": {},
 "__all__": {},
 "_const_dtype": {
 "params": [
@@ -5217,7 +5635,8 @@
 "defines",
 "noalias",
 "preload",
-"resident"
+"resident",
+"placement"
 ]
 },
 "rewrite": {
@@ -5287,9 +5706,19 @@
 "wait",
 "into"
 ],
+"load_elems": [
+"self",
+"idx",
+"dtype"
+],
 "store": [
 "self",
 "value"
+],
+"store_elems": [
+"self",
+"val",
+"idx"
 ],
 "subtile": [
 "self",
@@ -5377,6 +5806,13 @@
 "value",
 "into"
 ],
+"_group": [
+"self",
+"kind",
+"cols",
+"lanes",
+"xor"
+],
 "_ordered": [
 "self",
 "kind",
@@ -5401,6 +5837,28 @@
 ],
 "dtype": [
 "self"
+],
+"group_max": [
+"self",
+"cols",
+"lanes",
+"xor"
+],
+"group_min": [
+"self",
+"cols",
+"lanes",
+"xor"
+],
+"group_sum": [
+"self",
+"cols",
+"lanes",
+"xor"
+],
+"lane_gather": [
+"self",
+"lanes"
 ],
 "left_fill_": [
 "self",
@@ -5832,6 +6290,510 @@
 ]
 }
 },
+"hk.dsl.placement": {
+"AXES": {},
+"Analysis": {
+"methods": {
+"broadcast_bytes": null,
+"digits": null,
+"key": null,
+"kind": null,
+"nonuniform": null,
+"note": null,
+"order_dependent": null,
+"reads": null,
+"summary": [
+"self"
+]
+}
+},
+"Any": {},
+"Callable": {},
+"Choice": {
+"methods": {
+"placed": null,
+"reason": null,
+"rounds": null,
+"streams": null
+}
+},
+"DEFAULT_XCDS": {},
+"Dict": {},
+"Digit": {
+"methods": {
+"__repr__": [
+"self"
+],
+"axis": null,
+"kind": null,
+"of": [
+"axis",
+"kind",
+"radix"
+],
+"radix": null,
+"radix_text": null
+}
+},
+"List": {},
+"MIN_ROUNDS_NONUNIFORM": {},
+"MIN_STREAMS": {},
+"ORDER_DEPENDENT_OPS": {},
+"Optional": {},
+"Placement": {
+"methods": {
+"__post_init__": [
+"self"
+],
+"chunk": null,
+"chunked": [
+"chunk",
+"tail"
+],
+"cluster": [
+"key",
+"chunk",
+"tail"
+],
+"key": null,
+"kind": null,
+"none": [],
+"suffix": [
+"self",
+"xcds"
+],
+"tail": null
+}
+},
+"Plan": {
+"methods": {
+"chunk": null,
+"key": null,
+"kind": null,
+"order": null,
+"radii": null,
+"splits": null,
+"tail": null,
+"xcds": null
+}
+},
+"READ_OPS": {},
+"Read": {
+"methods": {
+"bytes": null,
+"indirect": null,
+"key": null,
+"line": null,
+"op": null
+}
+},
+"Sequence": {},
+"Tuple": {},
+"UNKNOWN_TRIPS": {},
+"Union": {},
+"_ArithOps": {
+"methods": {
+"__init__": [
+"self"
+],
+"add": [
+"self",
+"a",
+"b"
+],
+"c": [
+"self",
+"v"
+],
+"div": [
+"self",
+"a",
+"b"
+],
+"max": [
+"self",
+"a",
+"b"
+],
+"min": [
+"self",
+"a",
+"b"
+],
+"mod": [
+"self",
+"a",
+"b"
+],
+"mul": [
+"self",
+"a",
+"b"
+],
+"sub": [
+"self",
+"a",
+"b"
+]
+}
+},
+"_BYTES": {},
+"_Deps": {
+"methods": {
+"__init__": [
+"self",
+"digits",
+"loop",
+"warp",
+"indirect",
+"other"
+],
+"__or__": [
+"self",
+"o"
+],
+"__slots__": null
+}
+},
+"_DslOps": {
+"methods": {
+"add": [
+"self",
+"a",
+"b"
+],
+"c": [
+"self",
+"v"
+],
+"div": [
+"self",
+"a",
+"b"
+],
+"max": [
+"self",
+"a",
+"b"
+],
+"min": [
+"self",
+"a",
+"b"
+],
+"mod": [
+"self",
+"a",
+"b"
+],
+"mul": [
+"self",
+"a",
+"b"
+],
+"sub": [
+"self",
+"a",
+"b"
+]
+}
+},
+"_EMPTY": {},
+"_EVAL": {},
+"_GL_RE": {},
+"_IntOps": {
+"methods": {
+"add": [
+"self",
+"a",
+"b"
+],
+"c": [
+"self",
+"v"
+],
+"div": [
+"self",
+"a",
+"b"
+],
+"max": [
+"self",
+"a",
+"b"
+],
+"min": [
+"self",
+"a",
+"b"
+],
+"mod": [
+"self",
+"a",
+"b"
+],
+"mul": [
+"self",
+"a",
+"b"
+],
+"sub": [
+"self",
+"a",
+"b"
+]
+}
+},
+"_KFD_NODES": {},
+"_TILE_RE": {},
+"_XCD_CACHE": {},
+"__all__": {},
+"_axis_of": {
+"params": [
+"op"
+]
+},
+"_classify": {
+"params": [
+"reads",
+"used_axes",
+"order_dep",
+"nonuniform"
+]
+},
+"_const": {
+"params": [
+"v"
+]
+},
+"_contiguous": {
+"params": [
+"o",
+"w",
+"total",
+"xcds"
+]
+},
+"_digit_value": {
+"params": [
+"d",
+"c",
+"rad"
+]
+},
+"_hmul": {
+"params": [
+"a",
+"b"
+]
+},
+"_host_of": {
+"params": [
+"v",
+"args"
+]
+},
+"_int_typed": {
+"params": [
+"v"
+]
+},
+"_kernel_func": {
+"params": [
+"module",
+"name"
+]
+},
+"_kfd_xcds": {
+"params": [
+"arch"
+]
+},
+"_loc": {
+"params": [
+"name"
+]
+},
+"_norm": {
+"params": [
+"key",
+"used_axes"
+]
+},
+"_place_live": {
+"params": [
+"o",
+"w",
+"live",
+"xcds",
+"chunk",
+"tail"
+]
+},
+"_read_bytes": {
+"params": [
+"op"
+]
+},
+"_sizes": {
+"params": [
+"o",
+"plan",
+"g",
+"radix"
+]
+},
+"_xcd_range": {
+"params": [
+"o",
+"d",
+"total",
+"xcds"
+]
+},
+"analyze": {
+"params": [
+"module",
+"kernel_name"
+]
+},
+"annotations": {},
+"applicable": {
+"params": [
+"plan",
+"grid",
+"radii"
+]
+},
+"arith": {},
+"check_bijection": {
+"params": [
+"plan",
+"grid",
+"radii"
+]
+},
+"check_emitted": {
+"params": [
+"traced",
+"extents"
+]
+},
+"check_kernel": {
+"params": [
+"kernel",
+"shapes",
+"consts"
+]
+},
+"choose": {
+"params": [
+"analysis",
+"plan",
+"grid",
+"radii",
+"xcds",
+"resident_per_xcd"
+]
+},
+"dataclasses": {},
+"decode": {
+"params": [
+"o",
+"plan",
+"w",
+"g",
+"radix"
+]
+},
+"decode_host": {
+"params": [
+"plan",
+"w",
+"grid",
+"radii"
+]
+},
+"emitted_decode": {
+"params": [
+"module",
+"kernel_name"
+]
+},
+"func_d": {},
+"glob": {},
+"hkd": {},
+"host": {},
+"ir": {},
+"make_plan": {
+"params": [
+"placement",
+"analysis",
+"xcds"
+]
+},
+"os": {},
+"place": {
+"params": [
+"o",
+"w",
+"total",
+"xcds",
+"chunk",
+"tail"
+]
+},
+"place_host": {
+"params": [
+"w",
+"total",
+"xcds",
+"chunk",
+"tail"
+]
+},
+"re": {},
+"recording": {
+"methods": {
+"__enter__": [
+"self"
+],
+"__exit__": [
+"self",
+"*exc"
+]
+}
+},
+"renumber": {
+"params": [
+"w",
+"total",
+"chunk",
+"tail",
+"live"
+]
+},
+"rewrite": {
+"params": [
+"module",
+"kernel_name",
+"tensors",
+"dims",
+"plan"
+]
+},
+"xcd_count": {
+"params": [
+"arch"
+]
+},
+"xcd_range": {
+"params": [
+"d",
+"total"
+]
+}
+},
 "hk.dsl.rewrite": {
 "Dict": {},
 "List": {},
@@ -6230,6 +7192,19 @@
 "div",
 "into"
 ],
+"load_elems": [
+"self",
+"idx",
+"dtype"
+],
+"post_elems": [
+"self",
+"val",
+"idx",
+"tag",
+"runs",
+"bf16"
+],
 "rows": [
 "self"
 ],
@@ -6251,6 +7226,21 @@
 "count",
 "col",
 "sort_topk"
+],
+"store_elems": [
+"self",
+"val",
+"idx",
+"runs"
+],
+"take_elems": [
+"self",
+"idx",
+"tag",
+"dtype",
+"timeout_s",
+"runs",
+"bf16"
 ],
 "tile": [
 "self"
@@ -6576,9 +7566,19 @@
 "wait",
 "into"
 ],
+"load_elems": [
+"self",
+"idx",
+"dtype"
+],
 "store": [
 "self",
 "value"
+],
+"store_elems": [
+"self",
+"val",
+"idx"
 ],
 "subtile": [
 "self",
@@ -6693,6 +7693,13 @@
 "value",
 "into"
 ],
+"_group": [
+"self",
+"kind",
+"cols",
+"lanes",
+"xor"
+],
 "_ordered": [
 "self",
 "kind",
@@ -6717,6 +7724,28 @@
 ],
 "dtype": [
 "self"
+],
+"group_max": [
+"self",
+"cols",
+"lanes",
+"xor"
+],
+"group_min": [
+"self",
+"cols",
+"lanes",
+"xor"
+],
+"group_sum": [
+"self",
+"cols",
+"lanes",
+"xor"
+],
+"lane_gather": [
+"self",
+"lanes"
 ],
 "left_fill_": [
 "self",
@@ -7172,6 +8201,11 @@
 "ty"
 ]
 },
+"_is_strip_tile": {
+"params": [
+"ty"
+]
+},
 "_make": {
 "params": [
 "cls",
@@ -7335,6 +8369,11 @@
 },
 "i32": {},
 "i8": {},
+"iota": {
+"params": [
+"ty"
+]
+},
 "ir": {},
 "lds_loads": {
 "params": [
@@ -7386,6 +8425,22 @@
 "k0",
 "group",
 "into"
+]
+},
+"map_cpp": {
+"params": [
+"expr",
+"*args",
+"dtype",
+"name"
+]
+},
+"mfma_strip": {
+"params": [
+"kind",
+"a",
+"b",
+"acc"
 ]
 },
 "mlir_type": {
@@ -9894,15 +10949,20 @@
 "KV_BLOCK": {},
 "MAPPINGS": {},
 "NEG_INF": {},
-"NUM_XCDS": {},
 "Optional": {},
 "PAGE": {},
 "Q_ROWS": {},
 "Q_TILE": {},
 "RESIDENT_PER_XCD": {},
 "WARPS": {},
+"_ANALYSES": {},
 "_KERNELS": {},
 "__all__": {},
+"_analysis": {
+"params": [
+"causal"
+]
+},
 "_pairs": {
 "params": [
 "n_mma",
@@ -9910,15 +10970,7 @@
 "sync_id"
 ]
 },
-"_spatial": {
-"params": [
-"w",
-"batch",
-"h_kv",
-"group",
-"n_t"
-]
-},
+"_pl": {},
 "annotations": {},
 "attn_kernel": {
 "params": [
@@ -9952,9 +11004,11 @@
 "mapping_for": {
 "params": [
 "batch",
+"h",
 "h_kv",
 "n_q",
-"causal"
+"causal",
+"resident_per_xcd"
 ]
 },
 "math": {},
@@ -10748,7 +11802,6 @@
 "DIRECT_GR": {},
 "Dict": {},
 "K_STEP": {},
-"NUM_XCDS": {},
 "Optional": {},
 "SK_MODES": {},
 "SK_REC": {},
@@ -10760,6 +11813,7 @@
 "_USER": {},
 "__all__": {},
 "_epilogue": {},
+"_pl": {},
 "_routes": {
 "params": []
 },
@@ -10895,7 +11949,6 @@
 "Any": {},
 "DEFAULT": {},
 "Dict": {},
-"NUM_XCDS": {},
 "Optional": {},
 "REDUCE_WARPS": {},
 "STRIP_REDUCE_CHUNKS": {},
@@ -11358,9 +12411,10 @@
 }
 },
 "hk.ops.moe_a8w4": {
-"NUM_XCDS": {},
 "TILE": {},
 "_IDENT": {},
+"_XCD_PLACEMENT": {},
+"_pl": {},
 "_reduce": {
 "params": [
 "cb",
@@ -13731,6 +14785,7 @@
 "occ_by_reg": null,
 "occupancy": null,
 "scratch": null,
+"scratch_note": null,
 "sgpr": null,
 "sgpr_spill": null,
 "spills": [
@@ -13925,6 +14980,8 @@
 "Set": {},
 "TARGETS": {},
 "Tuple": {},
+"UNUSED_FRAME": {},
+"_FLAT_MEM": {},
 "_LDS_LOAD": {},
 "_REG": {},
 "_STORE": {},
@@ -13970,6 +15027,12 @@
 "name"
 ]
 },
+"_wait_keeps": {
+"params": [
+"mnem",
+"rest"
+]
+},
 "annotations": {},
 "argparse": {},
 "check": {
@@ -13990,6 +15053,18 @@
 ]
 },
 "field": {},
+"frame_verdict": {
+"params": [
+"insts",
+"kd"
+]
+},
+"kernel_descriptor": {
+"params": [
+"co",
+"name"
+]
+},
 "lds_copy_hazards": {
 "params": [
 "binary",
@@ -14012,6 +15087,7 @@
 "co"
 ]
 },
+"struct": {},
 "subprocess": {},
 "sys": {},
 "tempfile": {},
@@ -14019,6 +15095,12 @@
 "params": [
 "host",
 "outdir"
+]
+},
+"unused_scratch_frame": {
+"params": [
+"binary",
+"bundled"
 ]
 },
 "wait_hazards": {
@@ -14182,6 +15264,7 @@
 "occ_by_reg": null,
 "occupancy": null,
 "scratch": null,
+"scratch_note": null,
 "sgpr": null,
 "sgpr_spill": null,
 "spills": [
@@ -14287,6 +15370,14 @@
 "params": [
 "d",
 "target"
+]
+},
+"_note_unused_frames": {
+"params": [
+"kernels",
+"binary",
+"kind",
+"log"
 ]
 },
 "_pybind_includes": {
@@ -14421,6 +15512,7 @@
 "occ_by_reg": null,
 "occupancy": null,
 "scratch": null,
+"scratch_note": null,
 "sgpr": null,
 "sgpr_spill": null,
 "spills": [
@@ -16981,7 +18073,9 @@
 }
 },
 "hk.target.gfx1201": {
+"CEILINGS": {},
 "GFX1201": {},
+"LDS_WAIT_NEEDS_FRAGMENT_BIND": {},
 "MmaShape": {
 "methods": {
 "accum_vgprs": null,

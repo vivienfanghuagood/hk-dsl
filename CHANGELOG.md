@@ -6,9 +6,10 @@ The next version's notes collect here until it is released.
 
 ## Unreleased
 
-What is on main after 0.8.0. `pip install hk-dsl` (0.8.0) does not have it.
+What is on main after 0.8.0. `pip install hk-dsl` (0.8.0) does not have it;
+the API reference marks such names *New after 0.8.0*.
 
-**Host time per call** (cross-arch). An engine route's Python no longer
+**Host time per call** (#91, cross-arch). An engine route's Python no longer
 re-decides per call what only the call's shapes decide, and code-object
 kernels launch from a per-shape memo without the torch dispatcher
 (`hk.runtime.hostpath`, [integration](docs/integration.md#host-time-per-call)).
@@ -21,14 +22,17 @@ restores every call's previous path.
 - Eager decode of Qwen3-8B-AWQ: 1.27x tokens/s on MI355X, 1.29-1.37x on
   W7900D, at 1 and 16 requests; DeepSeek-V4.1-Flash TP2 1.04-1.07x. Prefill
   and GPU-bound decode (Qwen3-8B bf16) unchanged.
-- Code-object launches in C where hk._mlir has `_hkLaunch` (built with the bindings): 2.9 µs a
+- Code-object launches in C (#92) where hk._mlir has `_hkLaunch` (built with the bindings): 2.9 µs a
   launch on the W7900D and 4.6 on the MI355X, under the pybind entry point's 3.4 / 5.3 (the
   Python launcher: 5.4 / 6.6).
 - New: `hk.runtime.hostpath` (`ENABLED`, `set_enabled`),
   `hk.runtime.codeobj.direct`, `hk.runtime.torch_ext.launcher`,
-  `CodeObjectKernel.launcher`, `hk.ops.w4a16.plan`.
+  `CodeObjectKernel.launcher` (`native=`, #92), `hk.ops.w4a16.plan`. They are runtime and
+  integration names, which the API reference does not cover, so they carry
+  no mark there; [the runtime](docs/runtime.md) and
+  [integration](docs/integration.md#host-time-per-call) describe them.
 
-**DeepSeek-V4.1 routes, retuned from the MI355X scoreboard** (gfx950, real weights, TP2; every
+**DeepSeek-V4.1 routes, retuned from the MI355X scoreboard** (#84, gfx950, real weights, TP2; every
 point against the best of AITER's tuned FlyDSL, FlyDSL, AITER Triton, hipBLASLt and vLLM's kernel).
 - K1 (`vllm_moe_a8w4`) takes M >= 2560, not 8192 (`HK_MOE_A8W4_MIN_M`), with #85's kernels: on
   the real router's choices 1.03-1.08x AITER at 2560, 1.08-1.20x at 3072-4096 and 1.27-1.38x
@@ -39,12 +43,37 @@ point against the best of AITER's tuned FlyDSL, FlyDSL, AITER Triton, hipBLASLt 
   engram's wkv (12800 x 6144) from M 1024 instead of 2048, 1.29-1.79x; per (N, K) in
   `MIN_M_NK`. Bit-identical to vLLM's kernel at every new point, ragged M included.
 
+**fp8 GEMM on gfx1201** (#76, RDNA4). `hk.ops.scaled_mm(a, b, scale_a, scale_b,
+*, bias=None, out=None)` is `torch._scaled_mm`'s product, bf16
+`(A @ B.T) * scale_a * scale_b (+ bias)` from OCP fp8 operands with fp32 accumulation, in
+`hk.ops.matmul`'s (N, K) layout, with per-tensor or per-token x per-channel scales. It runs on
+gfx1201's fp8 WMMA: `hk.ops.gemm`'s kernel takes `op_dtype=hk.fp8e4m3` / `hk.fp8e5m2` there,
+and gfx1100 (no fp8 WMMA) and gfx950 (whose fp8 GEMMs are gemm_cdna's) refuse it. On a
+Radeon AI PRO R9700 against `torch._scaled_mm` (hipBLASLt), in one process: 240 vs 236 TFLOP/s
+at 4096³ per-tensor; per-token x per-channel 1.28-1.99x at M 128-4096 (N 4096 / 14336); a tie
+at M 1-64 with K 4096, and 0.89x at M 1-64 with K 14336 (decode shapes, not tuned yet).
+
 **Fixes**
-- **gfx950: `hk.ops.gemm.matmul` raised `ResourceError` in the vLLM image** at M 192-512 for
+- **gfx950: `hk.ops.gemm.matmul` raised `ResourceError` in the vLLM image** (#84) at M 192-512 for
   N 28672 / 14336, K 4096: its table routes there to `dp128x224`, which ROCm 10's hipcc builds
   with a 13-VGPR spill, and the spill gate refuses it. The route now records a refused candidate
   (once a process, with a line on stderr) and takes the next-fastest one the table measured at
   that point (`pp128`, `ppk2`), else the rule's next; a refused kernel is never run.
+- **A kernel registered as a torch op through libtorch's headers did not
+  compile against TheRock's torch 2.13** (#79), the torch of the Radeon AI PRO
+  R9700 vLLM image (ROCm 7.14), whose ROCm headers are hipified the newer way
+  (`c10::cuda::CUDAGuard`, no `c10::hip::HIPGuard`): the C++ shim
+  `hk.codegen.scaffold` writes for `hk.runtime.torch_ext` failed with
+  `no type named 'HIPGuard' in namespace 'c10::hip'`. It now picks the names by
+  `C10_HIP_API`, which only the older headers define; with those (rocm/pytorch's
+  torch 2.10, the vLLM 0.31 venv's 2.13, the gfx950 images) it builds the same
+  code as before.
+
+**CI and tests**
+- A fourth GPU-tier job, `gfx1201`, on a shared RDNA4 box (Radeon AI PRO R9700), with an
+  ephemeral runner registered for this repository. It is continue-on-error and not a required
+  check until the RDNA4 port's tier is green (#67,
+  [testing](docs/testing.md#the-gfx1201-runner)).
 
 ## 0.8.0
 
