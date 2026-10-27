@@ -184,6 +184,19 @@ R9700: rms_norm at 2048 rows goes from 0.96x to 1.04x the best other implementat
 the fused add + rms_norm at 8192 rows from 0.93x to a tie (447 vs 443 us). gfx1100's and
 gfx950's plans are unchanged.
 
+**Ops for an index top-k in one launch** (PRNUM, gfx950), from DeepSeek-V4.1's
+index logits and top-512 inside the same launch:
+- `SharedTile.atomic_add_elems(val, idx)`: i32 adds into an LDS tile
+  (`ds_add_u32`), every add to one element landing -- a radix select's
+  histogram.
+- `hk.fp4_operand(words)` / `hk.mx_scales_loose(bytes)`: an MXFP4 MMA operand
+  and its E8M0 scales from a lane's own gathered dwords / byte, for operands in
+  a layout no tile load knows (logits straight off a preshuffled paged K
+  cache).
+- `Tile.first_lane()`: lane 0's element of an i32 strip as a scalar
+  (`v_readfirstlane`); one LDS word read by every wave after a barrier may
+  then drive an `hk.uniform` branch (a select's exact-fit early exit).
+
 **Fixes**
 - **gfx950: `hk.ops.gemm.matmul` raised `ResourceError` in the vLLM image** (#84) at M 192-512 for
   N 28672 / 14336, K 4096: its table routes there to `dp128x224`, which ROCm 10's hipcc builds

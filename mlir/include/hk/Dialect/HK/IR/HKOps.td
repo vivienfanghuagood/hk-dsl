@@ -828,6 +828,54 @@ def HK_SqrtOp : HK_UnaryMapOp<"sqrt">;
 def HK_RsqrtOp : HK_UnaryMapOp<"rsqrt">;
 def HK_SiluOp : HK_UnaryMapOp<"silu">;
 def HK_StepOp : HK_UnaryMapOp<"step">;
+def HK_Fp4OperandOp : HK_Op<"fp4_operand"> {
+  let summary = "a strip's four dwords a lane as an MXFP4 MMA operand fragment (gfx950)";
+  let description = [{
+    The lane's four i32 elements (an i32 strip of 1 x 256, run 4) become the
+    first four dwords of a 16x128 fp8 e4m3 row tile -- the FP4 container
+    `mma_ABt_mx(..., a_fmt / b_fmt="fp4")` reads: lane l's 32 FP4 values are
+    row l % 16, columns 32 (l / 16) .. + 32 of the operand. For operands
+    gathered element-wise (load_elems(runs=True)) from a layout no tile load
+    knows, as a preshuffled paged cache.
+  }];
+  let arguments = (ins HK_RegTileType:$words);
+  let results = (outs HK_RegTileType:$result);
+  let assemblyFormat = [{
+    $words attr-dict `:` qualified(type($words)) `->` qualified(type($result))
+  }];
+  let hasVerifier = 1;
+}
+
+def HK_MxScalesLooseOp : HK_Op<"mx_scales_loose"> {
+  let summary = "a strip's element a lane as the E8M0 scales of a 16-row, 128-wide MMA operand (gfx950)";
+  let description = [{
+    Lane l's element (an i32 strip of 1 x 64, run 1; the E8M0 byte in bits
+    0..7) becomes the loose (fmt 1) scale register mma_ABt_mx reads for row
+    l % 16 and 32-wide block l / 16 of a 16x128 operand.
+  }];
+  let arguments = (ins HK_RegTileType:$bytes);
+  let results = (outs HK_MxScalesType:$result);
+  let assemblyFormat = [{
+    $bytes attr-dict `:` qualified(type($bytes)) `->` qualified(type($result))
+  }];
+  let hasVerifier = 1;
+}
+
+def HK_FirstLaneOp : HK_Op<"first_lane"> {
+  let summary = "a strip's first element in lane 0, as a scalar (gfx950)";
+  let description = [{
+    v_readfirstlane of element (0, 0): the wave's lane-0 value as an i32
+    scalar. Uniform across the workgroup when every wave read the same value
+    (one LDS word after a barrier), so it may drive hk.uniform branches.
+  }];
+  let arguments = (ins HK_RegTileType:$src);
+  let results = (outs I32:$result);
+  let assemblyFormat = [{
+    $src attr-dict `:` qualified(type($src))
+  }];
+  let hasVerifier = 1;
+}
+
 def HK_LaneGatherOp : HK_Op<"lane_gather"> {
   let summary = "each element taken from another lane's same element (gfx950)";
   let description = [{
@@ -922,6 +970,22 @@ def HK_LdsStoreElemsOp : HK_Op<"lds_store_elems"> {
     Element (r, c) of `val` (fp32 or i32: the bits) to element idx[r, c] of
     `dst` (row-major, the tile's swizzle); an index below zero or past the
     tile writes nothing. Before another warp reads: barrier(drain=True).
+  }];
+  let arguments = (ins HK_SharedTileType:$dst, HK_RegTileType:$val, HK_RegTileType:$idx);
+  let assemblyFormat = [{
+    $val `,` $dst `[` $idx `]` attr-dict `:` qualified(type($val)) `,` qualified(type($dst)) `,` qualified(type($idx))
+  }];
+  let hasVerifier = 1;
+}
+
+def HK_LdsAtomicAddElemsOp : HK_Op<"lds_atomic_add_elems"> {
+  let summary = "a strip's i32 elements added atomically to an LDS tile's elements (gfx950)";
+  let description = [{
+    Element (r, c) of `val` (i32) is added (ds_add_u32, workgroup scope) to
+    element idx[r, c] of `dst` taken as an i32 (row-major, the tile's
+    swizzle); an index below zero or past the tile adds nothing. Elements to
+    one index all land (a histogram's counts). Read back with load_elems(i32)
+    after barrier(drain=True).
   }];
   let arguments = (ins HK_SharedTileType:$dst, HK_RegTileType:$val, HK_RegTileType:$idx);
   let assemblyFormat = [{
