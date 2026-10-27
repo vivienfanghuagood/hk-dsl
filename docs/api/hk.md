@@ -1462,6 +1462,8 @@ Tile indexing: `x.tile[r, c]` is a View at tile (r, c) of the tile type the load
 Global.load_elems(self, idx: Tile, dtype: Optional[DType] = None, *, runs: bool = False, row=None) -> Tile
 ```
 
+*Changed after 0.8.0*: new parameters `runs`, `row`
+
 Element by element at computed indices (gfx950): element (r, c) of the result is element
 `idx[r, c]` of this tensor, counted flat (rows over batch and depth, at the row stride),
 converted to `dtype` (fp32 or i32; default fp32, i32 for an i32 tensor). An index below
@@ -1478,6 +1480,8 @@ four gathered ones. `row`: as store_elems.
 ```python
 Global.store_elems(self, val: Tile, idx: Tile, *, runs: bool = False, row=None) -> None
 ```
+
+*Changed after 0.8.0*: new parameter `row`
 
 Element by element at computed indices (gfx950): element (r, c) of `val` (an fp32 or
 i32 strip), converted to this tensor's type, to element `idx[r, c]` (flat, as
@@ -1709,6 +1713,8 @@ An LDS tile, or a stack of them (`As[i]` picks one).
 ```python
 SharedTile.load_elems(self, idx: Tile, dtype: Optional[DType] = None, *, runs: bool = False) -> Tile
 ```
+
+*Changed after 0.8.0*: new parameter `runs`
 
 Element by element from this fp32 LDS tile (gfx950): element (r, c) of the result is
 element `idx[r, c]` (row-major, through the tile's swizzle) -- fp32, or its bits as i32 with
