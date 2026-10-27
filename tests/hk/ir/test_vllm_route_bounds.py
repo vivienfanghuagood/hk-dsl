@@ -17,7 +17,10 @@ from hk.integration import vllm_mxfp8 as K2
     # their own: the indexer's wq_b from 2825, engram's wkv from 1024
     (4096, 1280, 2825), (12800, 6144, 1024)])
 def test_each_measured_shape_starts_where_it_was_measured_faster(n, k, first):
-    assert K2.schedule(first - 1, n, k) is None
+    # below MIN_M only the measured ranges (vllm_mxfp8.RANGES; test_vllm_mxfp8_ranges.py)
+    ranged = [(kind, sched) for lo, hi, kind, sched in K2.RANGES.get((n, k), ())
+              if lo <= first - 1 <= hi]
+    assert K2.schedule(first - 1, n, k) == (ranged[0] if ranged else None)
     assert K2.schedule(first, n, k) is not None
     assert K2.schedule(first + 1, n, k) is not None            # ragged M too
     assert K2.schedule(16384, n, k) is not None

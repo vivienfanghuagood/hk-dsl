@@ -552,10 +552,14 @@ def test_mxfp8_route_at_ragged_m():
     from hk.integration import vllm_mxfp8 as P
     from hk.ops import mxfp8
 
-    for (n, k), ms in {(1792, 5120): (2049, 2111), (2304, 5120): (2049,),
-                       (5120, 4096): (5121, 8193), (16384, 1280): (2049, 16447),
+    for (n, k), ms in [((1792, 5120), (2049, 2111)), ((2304, 5120), (2049,)),
+                       ((5120, 4096), (5121, 8193)), ((16384, 1280), (2049, 16447)),
                        # their own smallest M (MIN_M_NK): the indexer's wq_b, engram's wkv
-                       (4096, 1280): (2825, 3073), (12800, 6144): (1025, 2047)}.items():
+                       ((4096, 1280), (2825, 3073)), ((12800, 6144), (1025, 2047)),
+                       # inside the measured ranges below MIN_M (RANGES), ragged against 128
+                       ((12800, 6144), (161, 300, 700)), ((5120, 4096), (417, 1200, 1600)),
+                       ((5120, 1152), (513, 1700)), ((16384, 1280), (577, 1700)),
+                       ((1792, 5120), (1217,)), ((2304, 5120), (961, 1857))]:
         w = torch.randn(n, k, device="cuda").to(torch.float8_e4m3fn)
         ws = torch.full((n // 32, k // 32), 127, device="cuda", dtype=torch.uint8)
         rows = mxfp8.expand_block_scales(ws)[:n]

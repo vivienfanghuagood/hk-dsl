@@ -27,7 +27,11 @@ class _Layer(torch.nn.Module):
                                    # 1024 -- at, one under, and ragged above
                                    (2825, 4096, 1280), (2824, 4096, 1280), (3073, 4096, 1280),
                                    (1024, 12800, 6144), (1023, 12800, 6144),
-                                   (1537, 12800, 6144)])
+                                   (1537, 12800, 6144),
+                                   # the measured ranges below MIN_M (RANGES): bitwise too
+                                   (192, 12800, 6144), (448, 5120, 4096), (1088, 5120, 4096),
+                                   (640, 5120, 1152), (600, 16384, 1280), (1700, 16384, 1280),
+                                   (1300, 1792, 5120), (1000, 2304, 5120), (1900, 2304, 5120)])
 def test_patched_layer_matches_vllm(m, n, k):
     from vllm.model_executor.kernels.linear.mxfp8.rocm_block32_gemm import rocm_mxfp8_block32_gemm
 

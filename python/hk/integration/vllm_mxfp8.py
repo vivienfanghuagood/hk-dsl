@@ -47,6 +47,27 @@ MIN_M = 2048
 #:   1.29x at 1536, 1.39x at 2047. Below it: 1.38-1.45x at 768-1023 (likewise a candidate for
 #:   a lower bound), 1.02x at 512, a loss at 64.
 MIN_M_NK = {(4096, 1280): 2825, (12800, 6144): 1024}
+#: hk's four-warp kernel at 128 x 128 (`hk.ops.mxfp8.gemm_4w`), the K2 decode study's two schedules.
+_S3 = dict(block_m=128, block_n=128, split_m=1, split_n=1, stages=3)
+_S2 = dict(block_m=128, block_n=128, split_m=1, split_n=1, stages=2)
+#: (N, K) -> [(lo, hi, kind, sched)]: the M below each shape's MIN_M where an hk schedule was
+#: measured faster, route level with each side's activation quant, than all four of vLLM's
+#: kernel, FlyDSL's, AITER Triton's and hipBLASLt's -- by >= 3% median to median and in every
+#: round, in each of two sweeps, weights rotated through 1.2 GB so each call reads them from HBM
+#: -- and bitwise vLLM's output at every point. A range spans consecutive measured M (every 32)
+#: (every 64 above 576 for the two narrow ones) that agreed; an M between two that did not stays
+#: with vLLM. Decode batches pad to vLLM's graph sizes. Measured by the K2 decode study (MI355X,
+#: 2026-10-27): 1.04-1.61x the best of the four where taken. At M <= 128, and for the indexer's
+#: wq_b (4096, 1280) below its MIN_M, no hk kernel wins.
+RANGES = {
+    (12800, 6144): [(160, 992, "4w", _S3)],
+    (5120, 4096): [(416, 768, "4w", _S3), (832, 960, "4w", _S2), (992, 992, "4w", _S3),
+                   (1024, 1088, "4w", _S2), (1184, 1376, "4w", _S2), (1408, 2047, "8w", {})],
+    (5120, 1152): [(512, 544, "4w", _S3), (608, 768, "4w", _S3), (1664, 2047, "8w", {})],
+    (16384, 1280): [(576, 832, "8w", {}), (992, 1024, "8w", {}), (1664, 2047, "8w", {})],
+    (1792, 5120): [(1216, 1984, "4w", _S3)],
+    (2304, 5120): [(960, 1152, "4w", _S3), (1280, 1792, "4w", _S3), (1856, 1984, "8w", {})],
+}
 #: Route hk-able calls to hk (True) or leave every call to vLLM (False): an in-process A/B.
 ENABLED = True
 #: Take any (N, K) of whole 256 x 128 tiles at M >= MIN_M on the eight-warp kernel, not only the
@@ -73,8 +94,12 @@ STATS = PATCH.stats
 
 def schedule(m: int, n: int, k: int):
     """("8w" | "4w", sched) for a shape hk takes, else None."""
-    if not ENABLED or m < MIN_M_NK.get((n, k), MIN_M) or n % 256 or k % 128 or (
-            (n, k) not in MEASURED and not ANY):
+    if not ENABLED or n % 256 or k % 128 or ((n, k) not in MEASURED and not ANY):
+        return None
+    for lo, hi, kind, sched in RANGES.get((n, k), ()):
+        if lo <= m <= hi:
+            return kind, sched
+    if m < MIN_M_NK.get((n, k), MIN_M):
         return None
     if m < 5120 and n in _SMALL_N:
         return "4w", _SMALL_N[n]
