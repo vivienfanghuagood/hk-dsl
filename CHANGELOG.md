@@ -27,7 +27,10 @@ restores every call's previous path.
   Python launcher: 5.4 / 6.6).
 - New: `hk.runtime.hostpath` (`ENABLED`, `set_enabled`),
   `hk.runtime.codeobj.direct`, `hk.runtime.torch_ext.launcher`,
-  `CodeObjectKernel.launcher`, `hk.ops.w4a16.plan`.
+  `CodeObjectKernel.launcher`, `hk.ops.w4a16.plan`. They are runtime and
+  integration names, which the API reference does not cover, so they carry
+  no mark there; [the runtime](docs/runtime.md) and
+  [integration](docs/integration.md#host-time-per-call) describe them.
 
 **DeepSeek-V4.1 routes, retuned from the MI355X scoreboard** (#84, gfx950, real weights, TP2; every
 point against the best of AITER's tuned FlyDSL, FlyDSL, AITER Triton, hipBLASLt and vLLM's kernel).
