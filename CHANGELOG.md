@@ -248,6 +248,18 @@ resident hk launch, bitwise vs dsv41_mono's:
   reads once (K2's MoE: 135 -> 123 us a launch). Not a scope: mailboxes, flags
   and symmetric memory refuse it.
 
+**vLLM on gfx1201** (#80, RDNA4), in the Radeon AI PRO R9700 vLLM image
+(`ghcr.io/inferstation/vllm-rocm-r9700-main`: TheRock ROCm 7.14, clang 23, torch 2.13).
+- `vllm_gemm` is on by default on gfx1201, with a measured route table
+  (`routes_vllm_linear_gfx1201.json`): tokens identical to stock and routing counts equal
+  round to round on Qwen3-1.7B and Qwen3.5-9B; prefill 1.11-1.16x on the 9B.
+- `vllm_int4` (AWQ) is on by default on gfx1201: decode 2.5-4.5x the image's AWQ path on
+  Qwen3-8B-AWQ.
+- `vllm_moe` and `vllm_sdpa` stay off there: the MoE route is right but 0.90-0.93x at 16
+  tokens, and the SDPA drop-in's per-call host time hid its kernel's 1.10-1.40x.
+- The decode GEMM's four-tile schedule on gfx1201 is combine depth 2
+  (`decode_gemm.SCHEDULES_AT`), the one that builds without a spill under both compilers.
+
 **Fixes**
 - **gfx950: `hk.ops.gemm.matmul` raised `ResourceError` in the vLLM image** (#84) at M 192-512 for
   N 28672 / 14336, K 4096: its table routes there to `dp128x224`, which ROCm 10's hipcc builds
