@@ -68,9 +68,17 @@ STAT = "median"
 #: footprint, inside the eight XCDs' 4 MB L2s, 9.1 TB/s. torch's out-of-place
 #: add and neg peak at 6.9-7.2 at 160-256 MB, and past the cache all three
 #: sit at 5.8-6.1; at 7.2 the rule rejected a fused add's real 8.35 TB/s.
+#: gfx1201 (Radeon AI PRO R9700), measured: back-to-back
+#: v_wmma_f32_16x16x16_bf16 on every CU, 197.1 TFLOP/s (above the datasheet's
+#: 191 at the boost clock; tools/rdna4-probes/wmma_peaks.hip);
+#: GDDR6 at 20 Gbps x 256 bits, 640 GB/s (past the cache a copy and an add
+#: reach 0.62); and the 64 MB Infinity Cache at `--probe-ceilings`' fastest
+#: cache-resident rate, an add at a 48 MB footprint, 1.81 TB/s.
 CARDS = {
     "gfx1100": {"PEAK_FLOPS": PEAK_FLOPS, "HBM_BYTES_S": HBM_BYTES_S,
                 "IC_BYTES": IC_BYTES, "IC_BYTES_S": IC_BYTES_S},
+    "gfx1201": {"PEAK_FLOPS": 197e12, "HBM_BYTES_S": 640e9,
+                "IC_BYTES": 64 * 2**20, "IC_BYTES_S": 1.81e12},
     "gfx950": {"PEAK_FLOPS": 2.52e15, "HBM_BYTES_S": 8.0e12,
                "IC_BYTES": 256 * 2**20, "IC_BYTES_S": 9.1e12},
 }

@@ -85,6 +85,8 @@ TOLERANCES: Dict[str, Tuple[float, float]] = {
 CARDS: Dict[str, Dict[str, float]] = {
     "gfx1100": {"dram_bytes_s": 864e9, "cache_bytes_s": 2.43e12,
                 "cache_bytes": 96 * 2**20, "bf16_flops": 122.6e12},
+    "gfx1201": {"dram_bytes_s": 640e9, "cache_bytes_s": 1.81e12,
+                "cache_bytes": 64 * 2**20, "bf16_flops": 197e12},
     "gfx950": {"dram_bytes_s": 8.0e12, "cache_bytes_s": 9.1e12,
                "cache_bytes": 256 * 2**20, "bf16_flops": 2.52e15},
 }

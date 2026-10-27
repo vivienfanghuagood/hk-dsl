@@ -29,6 +29,16 @@ CEILINGS: Dict[str, Dict[str, Any]] = {
                   "256 MB Infinity Cache, 6.54-6.60 TB/s); cache-resident 9.1 TB/s "
                   "(hk.check.CARDS). fp8 is 2x bf16 (datasheet ratio, not measured)",
     },
+    "gfx1201": {
+        "matrix_flops": {"bf16": 197e12, "fp16": 198.5e12, "fp8": 372e12, "i8": 374e12},
+        "dram_bytes_s": 640e9,
+        "cache_bytes_s": 1.81e12,
+        "cache_bytes": 64 * 2**20,
+        "source": "Radeon AI PRO R9700 measured: back-to-back WMMAs on every CU (bf16 "
+                  "197.1, fp16 198.5, fp8 371.8 TFLOP/s, iu8 373.8 TOP/s); GDDR6 20 Gbps x "
+                  "256 bits (0.62 TB/s reached past the 64 MB cache); the fastest "
+                  "cache-resident rate measured, an add at 48 MB, 1.81 TB/s (hk.check.CARDS)",
+    },
     "gfx1100": {
         "matrix_flops": {"bf16": 122.6e12, "fp16": 122.6e12},
         "dram_bytes_s": 864e9,

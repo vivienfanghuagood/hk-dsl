@@ -16,6 +16,9 @@ to compute it, all in one process:
   flydsl        FlyDSL's own dispatcher, no measurement: its tile heuristic and
                 per-tile options, or its default block size
   flydsl_tuned  FlyDSL's autotuner searching (FLYDSL_AUTOTUNE=1)
+  aiter         AITER's own entry point for the op, as a vLLM or SGLang on ROCm
+                calls it: its FlyDSL flash attention on gfx1201, tuned_gemm,
+                rms_norm; what it dispatched to is recorded
 
 Every arm records how it was tuned -- what was searched, how many candidates,
 what won -- because a comparison against an opponent who did not try is not a
@@ -38,7 +41,7 @@ why any was rejected. `--probe-ceilings` measures what the cache's ceiling
 stands on.
 
 Two verdicts per row, hk's best against the best other: out of the box (hk,
-torch, inductor, triton, flydsl) and tuned (everything). A gap inside the
+torch, inductor, triton, flydsl, aiter) and tuned (everything). A gap inside the
 band -- the larger of 2% and the two arms' noise -- is a tie.
 
     FLYDSL_ROOT=/workspace/FlyDSL HIP_VISIBLE_DEVICES=0 \\
@@ -79,11 +82,15 @@ from _timing import burn_in                        # noqa: E402
 
 BF16 = torch.bfloat16
 ARMS = ("hk", "hk_tuned", "torch", "inductor", "triton", "triton_tuned",
-        "flydsl", "flydsl_tuned")
-OUT_OF_THE_BOX = ("torch", "inductor", "triton", "flydsl")
+        "flydsl", "flydsl_tuned", "aiter")
+OUT_OF_THE_BOX = ("torch", "inductor", "triton", "flydsl", "aiter")
 LEVELS = {"oob": (("hk",), OUT_OF_THE_BOX),
           "tuned": (("hk", "hk_tuned"), tuple(a for a in ARMS if not a.startswith("hk")))}
 BAND = 0.02
+
+
+def _arch():
+    return torch.cuda.get_device_properties(0).gcnArchName.split(":")[0]
 
 
 def rel(got, want):
@@ -200,17 +207,58 @@ def gemm_case(m, n, k, tune):
                  lambda: triton_ref.matmul_abt_tuned(a, b, out=outs["triton_tuned"]),
                  lambda: outs["triton"], lambda: outs["triton_tuned"])
     try:
-        from kernels.gemm import rdna3_f16_gemm_autotune as fg
-        tile = fg.pick_tile(m, n, k)
-        arms["flydsl"] = (
-            lambda: fg.rdna3_gemm_dispatch(outs["flydsl"], a, b, m, n, k),
-            lambda: outs["flydsl"],
-            {"level": "default", "space": "pick_tile's heuristic, no measurement",
-             "candidates": 1, "chosen": f"tile {tile} {fg.tile_opts(tile)}"})
-        arms["flydsl_tuned"] = _flydsl_gemm_tuned(fg, a, b, outs["flydsl_tuned"], m, n, k)
+        if _arch().startswith("gfx12"):
+            _flydsl_gemm_gfx12(arms, a, b, outs["flydsl"], m, n, k)
+        else:
+            _flydsl_gemm_gfx11(arms, a, b, outs, m, n, k)
     except Exception as e:                         # noqa: BLE001
         arms["flydsl"] = arms["flydsl_tuned"] = _why(e)
+    arms["aiter"] = _aiter_gemm(a, b, outs["aiter"], m, n, k)
     return f"gemm {m}x{n}x{k}", 2 * m * n * k, "flop", ref, arms, None
+
+
+def _flydsl_gemm_gfx11(arms, a, b, outs, m, n, k):
+    from kernels.gemm import rdna3_f16_gemm_autotune as fg
+    tile = fg.pick_tile(m, n, k)
+    arms["flydsl"] = (
+        lambda: fg.rdna3_gemm_dispatch(outs["flydsl"], a, b, m, n, k),
+        lambda: outs["flydsl"],
+        {"level": "default", "space": "pick_tile's heuristic, no measurement",
+         "candidates": 1, "chosen": f"tile {tile} {fg.tile_opts(tile)}"})
+    arms["flydsl_tuned"] = _flydsl_gemm_tuned(fg, a, b, outs["flydsl_tuned"], m, n, k)
+
+
+def _flydsl_gemm_gfx12(arms, a, b, out, m, n, k):
+    """FlyDSL's RDNA4 GEMM (kernels/gemm/rdna_f16_gemm.py): one kernel per
+    shape, its module's default geometry, and nothing to search -- FlyDSL's
+    RDNA autotuner and pick_tile are rdna3_f16_gemm's, gfx11 only."""
+    from kernels.gemm.rdna_f16_gemm import create_wmma_gemm_module
+    launch, bm, bn, bk = create_wmma_gemm_module(m, n, k, "bf16", "bf16")
+    s = torch.cuda.current_stream()
+    arms["flydsl"] = (lambda: launch(out, a, b, s), lambda: out,
+                      {"level": "default", "space": "create_wmma_gemm_module's defaults, "
+                       "no heuristic or measurement", "candidates": 1,
+                       "chosen": f"tile {bm}x{bn}x{bk}, 2x2 waves of 4x4 WMMAs"})
+    arms["flydsl_tuned"] = ("FlyDSL has no tuner for its gfx12 GEMM (rdna3_f16_gemm_"
+                            "autotune and its pick_tile are gfx11's)")
+
+
+def _aiter_gemm(a, b, out, m, n, k):
+    """AITER's bf16 GEMM entry (tgemm.mm, what its linear layers call): a tuned
+    CSV row for (M, N, K, CUs) if there is one, else its default backend."""
+    try:
+        from aiter.tuned_gemm import get_GEMM_A16W16_config, tgemm
+        cfg = get_GEMM_A16W16_config(M=m, N=n, K=k, bias=False, dtype=str(a.dtype),
+                                     otype=str(a.dtype), scaleAB=False, bpreshuffle=False)
+    except Exception as e:                         # noqa: BLE001
+        return _why(e)
+    lib = cfg.get("libtype")
+    space = ("AITER's tuned GEMM CSV row" if "kernelName" in cfg else
+             "no row in AITER's tuned GEMM CSV for this shape and CU count: its default, "
+             + ("F.linear (hipBLASLt)" if lib == "torch" else lib))
+    return (lambda: tgemm.mm(a, b, out=out), lambda: out,
+            {"level": "library", "space": space, "candidates": None,
+             "chosen": f"{lib} solution {cfg.get('solidx')} {cfg.get('kernelName') or ''}".strip()})
 
 
 def attn_case(n, causal, tune, h=32, hkv=8, d=128):
@@ -230,12 +278,42 @@ def attn_case(n, causal, tune, h=32, hkv=8, d=128):
         "inductor": "torch.compile lowers SDPA to the same aotriton call",
         "triton": "aotriton is Triton, compiled ahead of time (the torch "
                   "column); vLLM's own Triton attention is in paged_ab.py",
-        "flydsl": "flash_attn_generic stages through raw_ptr_buffer_load_lds; "
-                  "gfx11 has no global->LDS direct load (flydsl_probe.py)",
+        "flydsl": _NO_FLYDSL_ATTN.get(_arch()[:5], _NO_FLYDSL_ATTN["gfx11"]),
+        "aiter": _aiter_attn(q, k, v, causal, out),
     }
     flops = 4 * h * n * n * d // (2 if causal else 1)
     return (f"attn n{n} {'causal' if causal else 'full'} gqa{h // hkv}",
             flops, "flop", ref, arms, None)
+
+
+#: FlyDSL's dense attention (flydsl_flash_attn_func -> flash_attn_generic) on
+#: RDNA: not called -- on gfx12 it does not fail, it aborts the process.
+_NO_FLYDSL_ATTN = {
+    "gfx11": "flash_attn_generic stages through raw_ptr_buffer_load_lds; "
+             "gfx11 has no global->LDS direct load (flydsl_probe.py)",
+    "gfx12": "flash_attn_generic stages through raw_ptr_buffer_load_lds; gfx12 has no "
+             "global->LDS direct load, and LLVM aborts the process on it ('Do not know how "
+             "to expand this operator's operand', tools/rdna4-probes/fly_probe.py)",
+}
+
+
+def _aiter_attn(q, k, v, causal, out):
+    """AITER's FlyDSL flash attention for gfx1201 (aiter.ops.flydsl.fmha_kernels,
+    a FlyDSL kernel AITER ships): BSHD, one head count for q, k and v. So the
+    GQA heads are expanded and the layout made BSHD once, before and outside
+    the timing -- the call times its kernel, not those copies."""
+    try:
+        from aiter.ops.flydsl.fmha_kernels import flydsl_flash_attn_func
+    except Exception as e:                         # noqa: BLE001
+        return _why(e)
+    g = q.shape[1] // k.shape[1]
+    qb = q.transpose(1, 2).contiguous()
+    kb, vb = (x.repeat_interleave(g, dim=1).transpose(1, 2).contiguous() for x in (k, v))
+    return (lambda: out.__setitem__("aiter", flydsl_flash_attn_func(qb, kb, vb, causal=causal)),
+            lambda: out["aiter"].transpose(1, 2),
+            {"level": "library", "space": "flydsl_flash_attn_func's one kernel "
+             "(128-row tile, waves_per_eu 2)", "candidates": 1,
+             "chosen": f"K/V expanded to {q.shape[1]} heads, BSHD (no GQA in the kernel)"})
 
 
 def _flydsl_compiled(build, *args):
@@ -299,7 +377,19 @@ def rmsnorm_case(m, tune, n=4096):
                      "candidates": len(fr._SEARCH_CONFIGS), "chosen": chosen()})
     except Exception as e:                         # noqa: BLE001
         arms["flydsl_tuned"] = _why(e)
+    arms["aiter"] = _aiter_rms(x, w, res)
     return f"rms_norm {m}x{n}", 2 * m * n * 2 + 2 * n, "byte", ref, arms, None
+
+
+def _aiter_rms(x, w, res):
+    """aiter.rms_norm: its HIP module for bf16 at these widths, else opus."""
+    try:
+        import aiter
+    except Exception as e:                         # noqa: BLE001
+        return _why(e)
+    return (lambda: res.__setitem__("aiter", aiter.rms_norm(x, w, 1e-6)),
+            lambda: res["aiter"], {"level": "library", "space": "aiter.rms_norm",
+                                   "candidates": None})
 
 
 def fused_add_case(m, tune, n=4096):
@@ -348,6 +438,15 @@ def fused_add_case(m, tune, n=4096):
     except Exception as e:                         # noqa: BLE001
         arms["flydsl"] = _why(e)
     arms["flydsl_tuned"] = "FlyDSL has no autotuned fused add + RMSNorm"
+    try:
+        import aiter
+        xa, ra = bufs["aiter"]
+        ya, rao = torch.empty_like(xa), torch.empty_like(ra)
+        arms["aiter"] = (lambda: aiter.rmsnorm2d_fwd_with_add(ya, xa, ra, rao, w, 1e-6),
+                         lambda: ya, {"level": "library", "space": "aiter.rmsnorm2d_fwd_with_add",
+                                      "candidates": None})
+    except Exception as e:                         # noqa: BLE001
+        arms["aiter"] = _why(e)
     # Moves x and r in and out: twice the bytes it touches.
     return (f"fused_add_rms_norm {m}x{n}", 2 * m * n * 4 + 2 * n, "byte", ref, arms,
             2 * m * n * 2 + 2 * n)
@@ -392,6 +491,7 @@ def softmax_case(m, tune, n=4096):
                      "chosen": chosen()})
     except Exception as e:                         # noqa: BLE001
         arms["flydsl_tuned"] = _why(e)
+    arms["aiter"] = "AITER has no softmax op (only fused into its attention and MoE kernels)"
     return f"softmax {m}x{n}", 2 * m * n * 2, "byte", ref, arms, None
 
 
@@ -507,6 +607,8 @@ def llm_rms_case(kind, m, n):
                 len(fr._SEARCH_CONFIGS))
         except Exception as e:                     # noqa: BLE001
             arms["flydsl_tuned"] = _why(e)
+    arms["aiter"] = (_aiter_rms(x, w if kind == "rms_norm" else ones, res)
+                     if kind != "layernorm" else "aiter's layernorm is not in this row")
     work = 2 * m * n * 2 + (2 * n if kind == "rms_norm" else 0)
     return f"{kind} {m}x{n}", work, "byte", ref, arms, None
 
@@ -859,9 +961,11 @@ def probe_ceilings(rounds, calls):
         # On gfx950 copy_ is a DMA memcpy, which leaves no kernel record:
         # a one-input elementwise kernel moves the same bytes. And an
         # in-place add there, a += b, three tensors' bytes over a footprint
-        # of two: what the in-place fused add does.
+        # of two: what the in-place fused add does. gfx1201's copy_ (ROCm
+        # 7.2.3) is a DMA too, so the neg stands in wherever copy_ left none.
         wide = _rounds.IC_BYTES > 128 * 2**20
-        copy = (lambda: torch.neg(x, out=y)) if wide else (lambda: y.copy_(x))
+        dma = not gpu_rounds({"copy": lambda: y.copy_(x)}, 1, 1)["copy"][1][0]
+        copy = (lambda: torch.neg(x, out=y)) if wide or dma else (lambda: y.copy_(x))
         fns = {"copy": copy, "add": lambda: torch.add(a, b, out=c)}
         if wide:
             p, q = (torch.randn(fp // 4, device="cuda", dtype=BF16) for _ in range(2))
@@ -909,6 +1013,17 @@ def _versions():
     except Exception as e:                         # noqa: BLE001
         v["flydsl"] = _why(e)
     return v
+
+
+def _aiter_version():
+    """AITER's, if a case imported it (importing it builds its JIT modules)."""
+    if "aiter" not in sys.modules:
+        return None
+    from importlib import metadata
+    try:
+        return metadata.version("aiter")
+    except metadata.PackageNotFoundError:
+        return getattr(sys.modules["aiter"], "__version__", "source tree")
 
 
 def main() -> int:
@@ -1032,7 +1147,7 @@ def main() -> int:
             for a, why in notes.items():
                 if a in selected:
                     print(f"{'':<30}{a}: {why}")
-            for a in ("hk_tuned", "triton_tuned", "flydsl_tuned"):
+            for a in ("hk_tuned", "triton_tuned", "flydsl_tuned", "aiter"):
                 if a in tuning and tuning[a].get("chosen"):
                     print(f"{'':<30}{a} chose {tuning[a]['chosen'][:110]}")
             for a, (ts, _, rejected, _) in raw.items():
@@ -1058,7 +1173,8 @@ def main() -> int:
                 "footprint": footprint, "arms": {a: arm(a) for a in ARMS}, "verdicts": v})
     from hk.runtime.compile import (built_fingerprint, dialect_version, hipcc_fingerprint,
                                     toolchain_fingerprint)
-    report["meta"].update(kernels=built_fingerprint(), hipcc=hipcc_fingerprint(),
+    report["meta"].update(aiter=_aiter_version(),
+                          kernels=built_fingerprint(), hipcc=hipcc_fingerprint(),
                           toolchain=toolchain_fingerprint(), dialect=dialect_version())
     if args.json:
         Path(args.json).write_text(json.dumps(report, indent=1))
@@ -1093,7 +1209,8 @@ def loc():
 
     rows = [
         ("gemm", gemm.gemm_kernel, py(triton_ref._matmul_abt),
-         "kernels/gemm/rdna3_f16_gemm.py"),
+         "kernels/gemm/rdna_f16_gemm.py" if _arch().startswith("gfx12")
+         else "kernels/gemm/rdna3_f16_gemm.py"),
         ("attention", attn.attn_kernel, None,
          "kernels/attention/flash_attn_generic.py"),
         ("rms_norm + fused add", norm._strip_kernel,

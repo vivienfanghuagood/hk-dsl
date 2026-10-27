@@ -29,6 +29,8 @@ SIMD_FLOPS_PER_CYCLE: Dict[str, Dict[str, int]] = {
     "gfx950": {"bf16": 1024, "fp16": 1024, "fp8": 2048},
     "gfx942": {"bf16": 512, "fp16": 512, "fp8": 1024},
     "gfx1100": {"bf16": 256, "fp16": 256},
+    # 197 TFLOP/s measured = 128 SIMD32s x ~3.0 GHz x 512: twice gfx1100's a SIMD
+    "gfx1201": {"bf16": 512, "fp16": 512, "fp8": 1024},
 }
 
 

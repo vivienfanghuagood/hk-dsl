@@ -6,8 +6,9 @@ was copied from; the source has the harness in
 `tools/hk-bench/`, the raw output and the caveats. The two GPU
 families are kept apart, because nothing measured on one says anything about
 the other: [Part A](#part-a-rdna3-gfx1100-one-w7900d) is RDNA3 (one Radeon PRO
-W7900D) and [Part B](#part-b-cdna4-gfx950-one-mi355x) is CDNA4 (one Instinct
-MI355X). Each part goes level by level: end to end in each engine, kernels
+W7900D), [Part B](#part-b-cdna4-gfx950-one-mi355x) is CDNA4 (one Instinct
+MI355X) and [Part C](#part-c-rdna4-gfx1201-one-radeon-ai-pro-r9700) is RDNA4 (one
+Radeon AI PRO R9700). Each part goes level by level: end to end in each engine, kernels
 against the tuned field, kernels inside the engines against what the engine
 calls, and the losses. Results that newer ones replaced are in
 [the appendix](#appendix-superseded-results).
@@ -29,6 +30,7 @@ is a time ratio.
   - [B2. Kernels against the tuned field](#b2-kernels-against-the-tuned-field)
   - [B3. Kernels inside the engine](#b3-kernels-inside-the-engine)
   - [B4. Losses and no-headroom findings](#b4-losses-and-no-headroom-findings)
+- [Part C: RDNA4 (gfx1201, one Radeon AI PRO R9700)](#part-c-rdna4-gfx1201-one-radeon-ai-pro-r9700)
 - [Appendix: superseded results](#appendix-superseded-results)
 
 ## How the numbers are taken
@@ -1039,6 +1041,37 @@ nothing to give, and some kernels lose:
   shapes it is 0.98-1.00x the best.
 - **Not measured**: SGLang on gfx950, fp16 in hk's attention backend (so it
   cannot run with AWQ models), and gfx942 (no MI300X was available).
+
+## Part C: RDNA4 (gfx1201, one Radeon AI PRO R9700)
+
+One R9700 of a shared box, rocm/pytorch rocm7.2.3 (torch 2.10.0, hipBLASLt and
+rocBLAS of ROCm 7.2.3, triton 3.6.0), FlyDSL 0.4.0 and AITER (ffd08f2) beside
+it. Nothing here is tuned for gfx1201: hk runs gfx1100's plans and schedules
+([chapter 48](history/48-gfx1201-ceilings-and-first-scoreboard.md)).
+
+The card: bf16 WMMA 197 TFLOP/s (twice gfx1100's a CU), fp8 372, iu8 374
+TOP/s; an add 1.81 TB/s inside the 64 MB Infinity Cache, 0.62 TB/s past it.
+
+What AMD's stacks have for it: FlyDSL one bf16/f16 GEMM (untuned) plus its
+arch-free norms and softmax, and no attention -- its generic kernel aborts
+LLVM on gfx12; AITER a FlyDSL attention written for gfx1201 (no GQA), its HIP
+norms, and for a GEMM `F.linear`.
+
+| scoreboard, every arm in one process | hk | torch | Triton | FlyDSL | AITER | hk vs best |
+|---|---|---|---|---|---|---|
+| GEMM 4096³, ms | **0.986** | 1.502 | 1.050 | 1.207 | 1.500 | 1.06x |
+| GEMM, five 2048-4096-row Llama/Qwen shapes | **best** | | | 0.80-0.85x hk | = torch | 1.03-1.07x |
+| attention n4096 GQA 4 causal, ms | 1.707 | 5.825 | -- | aborts | **1.410** | **0.83x** |
+| attention n4096 GQA 4 full, ms | 2.778 | 5.294 | -- | aborts | **2.702** | **0.97x** |
+| rms_norm 1 / 32 / 2048 / 8192 rows | | | | | | 1.03x / 1.25x / 0.96x / tie |
+| fused add + rms_norm 1 / 32 / 2048 rows | | | | | | 1.07x / 1.30x / tie |
+| fused add + rms_norm 8192 rows, us | 482 | 571 | **446** | 451 | **446** | **0.93x** |
+| softmax 2048 / 8192 rows | | | | | | tie / tie |
+
+| GEMM against the BLAS libraries directly | ratio |
+|---|---|
+| the linear layer's layout (NT) vs rocBLAS / hipBLASLt, 16-8192 rows | 1.05-2.9x |
+| the same libraries free to pick a layout (a transposed weight) | ties from 1024 rows; 0.57-0.88x below 256 |
 
 ## Appendix: superseded results
 
