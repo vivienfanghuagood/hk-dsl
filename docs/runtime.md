@@ -138,9 +138,18 @@ return* a spilling kernel.
 
 The gate is `python/hk/runtime/resources.py`. What it enforces:
 
-* **No spill, ever.** Any `ScratchSize`, VGPR spill or SGPR spill raises
-  `hk.ResourceError`, and nothing importable is left behind. The generated
-  source is kept beside the failure for inspection.
+* **No spill, ever.** A memory spill -- any `ScratchSize`, or a VGPR spill --
+  raises `hk.ResourceError`, and nothing importable is left behind. The
+  generated source is kept beside the failure for inspection. SGPR spills to
+  VGPR lanes (ScratchSize 0) are no memory traffic and pass. One exception
+  (#68): a kernel with ScratchSize > 0 but no VGPR spill passes when its code
+  object never touches the frame -- no `scratch_*` instruction, no `flat_*`
+  memory instruction, no flat scratch, no private segment buffer
+  (`hk.runtime.cocheck.unused_scratch_frame`). The compiler can reserve such a
+  frame and never use it (K1's indexer build under ROCm 10: 36 bytes). The
+  build then records `scratch_note = "reserved-unused scratch frame"`, in its
+  report and on stderr. A code object that cannot be read gets no verdict and
+  is refused.
 * **Every instantiation**, not just the one being benchmarked — reading only
   the shipped shape's line is how a regression hides in a build nobody times.
 * **`max_vgprs` and `min_occupancy`**, when the kernel asks for them

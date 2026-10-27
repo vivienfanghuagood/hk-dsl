@@ -189,8 +189,8 @@ of `[cos | sin]` rows and optional int32 positions
 element of a strip. It is for what the operators cannot say and a kernel must
 reproduce bit for bit from another implementation: bit manipulation, a fused
 multiply-add, one particular instruction (`__builtin_amdgcn_*`). Triton's
-`inline_asm_elementwise` is the same escape, for the same reason. New after
-0.7.0 (#53).
+`inline_asm_elementwise` is the same escape, for the same reason. New in
+0.8.0 (#53).
 - **Arguments.** `x0`, `x1`, ... in `expr` are `args` in order. A strip
   binds its element (r, c); an `hk.Int` (a `load_scalar()`, an index) or a
   Python int binds its value, the same for every element. Each has its C++
@@ -247,6 +247,38 @@ On an MI355X, for `x` of shape (64, 512) and `n` in [-8, 8], `e` equals
 `(x.view(torch.int32) >> 23) & 0xFF` and `o` equals `torch.ldexp(x, n.float())`,
 bit for bit. `tests/hk/gpu/test_strip.py` has an `hk.Int` argument and the
 contraction check.
+
+### Strip ops for a megakernel's roles (gfx950)
+
+What a persistent kernel's roles do between its GEMMs -- index arithmetic,
+table lookups, small reductions inside a lane group, hand-offs element by
+element -- written on strips. New in 0.8.0 (#72, #73), all gfx950, and
+written for a K1 that must match a hand-written kernel bit for bit.
+- **Indices.** `hk.iota(ty)` is an i32 strip whose element (r, c) is c;
+  with `hk.map_cpp` it computes flat indices.
+- **Elements at computed indices.** `x.load_elems(idx)` /
+  `x.store_elems(val, idx, runs=False)` gather and scatter element by element
+  (flat indices, an i32 strip); an index below zero or past the tensor reads 0
+  and writes nothing, so -1 masks an element. `runs=True` stores a lane's run
+  as one store from its first element's index (eight fp8 values in one 8-byte
+  store). On an fp32 LDS tile, `st.load_elems` / `st.store_elems` are `ds`
+  operations; another warp's writes need `hk.arch.barrier(drain=True)` first.
+- **Lane groups.** `t.group_sum(cols)` / `group_max` / `group_min` reduce over
+  groups of `cols` columns (an MX group is 32 columns of a run-8 strip), the
+  result in every element, in a stated order (`lanes=`, `xor=`, as
+  `sum(axis=1, ...)`). `t.lane_gather(lanes)` takes each element from another
+  lane (`ds_bpermute`).
+- **One MFMA as written.** `hk.mfma_strip("f32_16x16x4", a, b, acc)` is
+  `v_mfma_f32_16x16x4_f32` on strip registers, nothing reordered, for an
+  MFMA another kernel's result depends on.
+- **Mailbox elements.** On a scoped int32 tensor, `x.post_elems(val, idx,
+  tag)` / `x.take_elems(idx, tag)` are `hk.comm.post` / `take` element by
+  element: value and tag in one 8-byte scoped store, and a poll until every
+  element's tag arrived (a timeout traps). `runs=True` and `bf16=True` pack a
+  lane's run.
+
+Every name is in [the API reference](api/hk.md); `tests/hk/gpu/test_strip.py`
+and `test_elems.py` exercise them.
 
 ### Dtypes, and two deliberate spellings
 
@@ -439,6 +471,15 @@ measured.
   loop with a pragma, `hk.range_constexpr` insists on unrolling, and
   `hk.scope()` / `hk.if_(c, opaque=True)` keep their register-allocator meaning.
 
+A branch that holds a workgroup operation (a barrier, a group copy) must be
+taken by every warp or none. `if hk.uniform(cond):` (or
+`hk.if_(cond, uniform=True)`) declares `cond` the same in every warp -- made of
+the block index, scalar loads every warp makes and constexprs, never of
+`warp_id` or a lane's value -- and such a branch may hold them: a persistent
+kernel's role dispatch (#73, gfx950). The declaration is the author's: a
+condition that differs between warps deadlocks at the first barrier inside. A
+divergent branch around it is still refused.
+
 A `for` over a Python bound — a constexpr, `range(D // 16)` — is unrolled at
 trace time, as in `scale_pow2` above. [`examples/06_control_flow.py`](../examples/06_control_flow.py)
 shows `for`, `if` and `while` on device values, carried scalars, and the
@@ -517,7 +558,7 @@ attention takes the cluster placement by measurement: 1.05-1.18x at 128 KV
 heads, 8K-128K tokens (#55). The design and its evidence are in
 [workgroup placement](design/placement-pass.md);
 [`examples/15_placement.py`](../examples/15_placement.py) shows it on a kernel
-of your own. Not in 0.7.0: placement is on main only.
+of your own. New in 0.8.0 (#63, #65).
 
 ## Namespaces
 

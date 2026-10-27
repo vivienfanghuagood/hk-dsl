@@ -50,7 +50,11 @@ def test_since_marks_against_the_pypi_wheel():
     section = group_md.split("#### `Group.wait_for`", 1)[1].split("###", 1)[0]
     assert "after 0.7.0" not in section          # *tiles, exact: unchanged, not reordered
     index = (REPO / "docs" / "api" / "README.md").read_text()
-    assert "no release has it yet, only a checkout of main" in index
+    gen = _gen()
+    if gen.RELEASE:      # a release PR: the release that has the marked names
+        assert f"{gen.RELEASE} does, and a checkout" in index
+    else:                # between releases: main only
+        assert "no release has it yet, only a checkout of main" in index
 
 
 def test_math_page_says_what_gelu_is():

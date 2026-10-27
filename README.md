@@ -121,6 +121,14 @@ work queues, grid barriers, tagged mailboxes and symmetric memory across
 GPUs, each lowered to what a memory-model litmus suite found correct
 ([hk.comm](docs/language.md#between-workgroups-xcds-and-gpus-hkcomm-gfx950),
 [design](docs/design/comm.md), [a task graph](examples/14_task_graph.py)).
+Which XCD runs which workgroup is a compiler pass:
+`hk.kernel(placement="auto")` keeps a sharing cluster on one XCD where that
+measured faster, with outputs bitwise the unplaced kernel's
+([placement](docs/placement.md), [an example](examples/15_placement.py)). For
+kernels that must match another implementation bit for bit, strips take a
+C++ expression per element (`hk.map_cpp`), i32 elements, stated reduction
+orders and element-wise exchange
+([strips](docs/language.md#strip-ops-for-a-megakernels-roles-gfx950)).
 
 ```mermaid
 flowchart LR
@@ -145,10 +153,8 @@ slow operand layout, a copy racing a barrier ([the traps](docs/README.md#the-tra
 ## Install
 
 `pip install hk-dsl`, for CPython 3.10 or 3.12 on Linux x86_64 with glibc
-2.35 or newer (Ubuntu 22.04 and later). The release is 0.7.0: one
-`manylinux_2_35` wheel for cp310, and for cp312 a `manylinux_2_35` and a
-`manylinux_2_38` wheel, of which pip picks the newest your glibc takes; from
-the next release cp312 is one `manylinux_2_35` wheel too. A
+2.35 or newer (Ubuntu 22.04 and later). The release is 0.8.0: one
+`manylinux_2_35` wheel for cp310 and one for cp312, both built on glibc 2.35. A
 wheel carries the HipKittens headers, so at run time it needs ROCm's hipcc
 (on `PATH`, or `HK_HIPCC`; tested with ROCm 7.2 and the ROCm 10 of vLLM's
 image) and, to launch, a ROCm build of torch (not a dependency). From
