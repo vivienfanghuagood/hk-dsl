@@ -1008,7 +1008,42 @@ _STRIP_PER_LANE_AT = {
     ("addrmsw", 4096, "mid"): (64, True), ("addrmsw", 8192, "mid"): (128, True),
 }
 _STRIP_AT_ROWS, _STRIP_LONG_ROWS = 2048, 8192
-_STRIP_PER_LANE_ARCHS = ("gfx950",)
+
+#: gfx1201's, from the same measurement on a Radeon AI PRO R9700
+#: (tools/hk-bench/strip_plan.py, bf16, us; the plan's default target --
+#: 16 a lane, 8 for the fused add -- then the target taken). Where a band's
+#: rows disagree (1 and 32 rows are both "short") the larger gain is taken;
+#: the other row loses at most 0.07 us:
+#:
+#:                          default   taken
+#:     rms_norm  2048x4096   21.30    32: 19.80
+#:     rms_norm  2048x5120   26.63    32: 24.84
+#:     rms_norm  2048x8192   42.42    32: 40.48
+#:     softmax   2048x4096   21.14    32: 20.43
+#:     softmax   2048x5120   26.42    32: 25.37
+#:     softmax   2048x8192   41.56     8: 40.62
+#:     softmax     32x5120    2.62    32:  2.48
+#:     softmax     32x8192    3.09    32:  2.75
+#:     fused add   32x4096    3.03    16:  2.68
+#:     fused add   32x5120    3.43    16:  3.02
+#:     fused add   32x8192    3.89    32:  3.57
+#:     fused add 8192x4096  473.06    16: 462.04
+#:
+#: Fewer warps a row inside the cache, as on gfx950; the 8192-row read-only
+#: kernels gain under 1% from any target and keep the default.
+_STRIP_PER_LANE_AT_GFX1201 = {
+    ("rmsw", 4096, "mid"): (32, True), ("rmsw", 5120, "mid"): (32, True),
+    ("rmsw", 8192, "mid"): (32, True),
+    ("softmax", 4096, "mid"): (32, True), ("softmax", 5120, "mid"): (32, True),
+    ("softmax", 8192, "mid"): (8, True),
+    ("softmax", 5120, "short"): (32, True), ("softmax", 8192, "short"): (32, True),
+    ("addrmsw", 4096, "short"): (16, True), ("addrmsw", 5120, "short"): (16, True),
+    ("addrmsw", 8192, "short"): (32, True),
+    ("addrmsw", 4096, "long"): (16, True),
+}
+
+#: Each arch's measured per-lane targets; an arch without is the default.
+_STRIP_PER_LANE_TABLES = {"gfx950": _STRIP_PER_LANE_AT, "gfx1201": _STRIP_PER_LANE_AT_GFX1201}
 
 
 def _wave64_split(chunks: int, per: int, most: int):
@@ -1092,7 +1127,8 @@ def strip_plan(cols: int, kind: str, nbytes: int, wave: Optional[int] = None,
     chunks then rebalanced so that no warp holds more than it must. EXACT when
     the warps cover the row with nothing left over: then nothing is bounded.
     `wave` is the target's (32 on gfx11, 64 on CDNA), the current one's if
-    not given; `per_lane` overrides wave64's per-lane target."""
+    not given; `per_lane` overrides the per-lane target (a measured one,
+    _STRIP_PER_LANE_TABLES)."""
     wave = wave or _wave()
     run = strip_run(cols, nbytes)
     span = wave * run
@@ -1106,7 +1142,7 @@ def strip_plan(cols: int, kind: str, nbytes: int, wave: Optional[int] = None,
         if per * run > most:
             return None
         return warps, per, run, int(warps * per * span == cols)
-    target = _STRIP_PER_LANE.get(kind, _STRIP_PER_LANE_DEFAULT)
+    target = per_lane or _STRIP_PER_LANE.get(kind, _STRIP_PER_LANE_DEFAULT)
     per = max(1, target // run)
     warps = min(MAX_WARPS, _ceil(chunks, per))
     per = _ceil(chunks, warps)
@@ -1279,18 +1315,17 @@ _PER_LANE_HERE: list = []
 
 
 def _per_lane_here():
-    """_STRIP_PER_LANE_AT where it was measured, else nothing."""
+    """This arch's _STRIP_PER_LANE_TABLES entry, else nothing."""
     if not _PER_LANE_HERE:
         from ..target import current_arch  # noqa: PLC0415
 
-        _PER_LANE_HERE.append(_STRIP_PER_LANE_AT if current_arch() in _STRIP_PER_LANE_ARCHS
-                              else {})
+        _PER_LANE_HERE.append(_STRIP_PER_LANE_TABLES.get(current_arch(), {}))
     return _PER_LANE_HERE[0]
 
 
 def _strip_regime(kind: str, nbytes: int, cols: int, rows: int, cap, per_lane_at):
     """(streams, per-lane target) of a strip call: whether it moves more
-    than the cache holds and keeps the occupancy cap there, and gfx950's
+    than the cache holds and keeps the occupancy cap there, and the arch's
     measured per-lane target for (kind, cols, rows band), if any."""
     streams = cap is not None and rows * cols * nbytes * _STRIP_STREAMS.get(kind, 2) > cap[0]
     at, capped = None, True
@@ -1317,7 +1352,7 @@ def strip_plan_for(kind: str, nbytes: int, cols: int, rows: int,
         return None
     cap = _STRIP_RESERVE_AT.get(arch)
     streams, at = _strip_regime(kind, nbytes, cols, rows, cap,
-                                _STRIP_PER_LANE_AT if arch in _STRIP_PER_LANE_ARCHS else {})
+                                _STRIP_PER_LANE_TABLES.get(arch, {}))
     p = strip_plan(cols, kind, nbytes, wave=tgt.wave, per_lane=at)
     if p is None:
         return None
