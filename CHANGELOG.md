@@ -230,7 +230,8 @@ one process. The two methods agree within about 3%.)
   relative-error failure prints both maxima. The one intermittent paged failure
   seen on gfx950, `relative error 9.73e+29`, matches an all-zero reference
   (0.97265625 / 1e-30), not a wrong output: the paged decode did not fail in
-  thousands of repetitions with poisoned allocations and polluted LDS (#89).
+  thousands of repetitions with poisoned allocations and polluted LDS (#89;
+  tests only, no kernel change).
 
 **Compatibility**
 - No public DSL name or parameter was removed or renamed since 0.7.0 (checked
@@ -256,7 +257,9 @@ one process. The two methods agree within about 3%.)
   reported error value matches an all-zero host-side reference rather than a
   wrong kernel output. The paged decode is used only by the opt-in vLLM
   attention backend (`HK_VLLM_BACKEND=1`, off by default) and is not reached by
-  any default-on route.
+  any default-on route. The test has since been hardened (#89, tests only): it
+  builds its reference on the host from one stable readback of each tensor, so
+  a recurrence names its cause.
 - gfx942: the synchronous group copies are still unbounded (#49): on gfx942 a
   `g.load` / `g.store` at a partial last tile reads and writes past the
   tensor. There is no gfx942 here to test the bounded form on.
