@@ -772,7 +772,7 @@ def plan_splits(n_reqs: int, n_kv_heads: int, n_pages: int) -> int:
     Without a split the grid is `n_reqs * n_kv_heads` one-warp workgroups.
     This asks for enough splits to reach `TARGET_WORKGROUPS`, capped by the
     page count -- a split with no pages is pure overhead -- and by
-    `MAX_SPLITS`.
+    `MAX_SPLITS` (on gfx950, paged_cdna's target_workgroups and MAX_SPLITS).
     """
     import os  # noqa: PLC0415
 
@@ -790,13 +790,13 @@ def plan_splits(n_reqs: int, n_kv_heads: int, n_pages: int) -> int:
         # per layer, until the card ran out. It is keyed on the split count
         # now (vllm_backend._buffers), and the planned split is the default.
         return 1
-    if forced in ("auto", "plan"):
-        have = max(1, n_reqs * n_kv_heads)
-        target = TARGET_WORKGROUPS
-        if _native_cdna():
-            from . import paged_cdna  # noqa: PLC0415
+    target, cap = TARGET_WORKGROUPS, MAX_SPLITS
+    have = max(1, n_reqs * n_kv_heads)
+    if _native_cdna():
+        from . import paged_cdna  # noqa: PLC0415
 
-            target = paged_cdna.TARGET_WORKGROUPS
+        target, cap = paged_cdna.target_workgroups(have), paged_cdna.MAX_SPLITS
+    if forced in ("auto", "plan"):
         want = -(-target // have)                 # ceil
-        return max(1, min(want, n_pages, MAX_SPLITS))
-    return max(1, min(int(forced), n_pages, MAX_SPLITS))
+        return max(1, min(want, n_pages, cap))
+    return max(1, min(int(forced), n_pages, cap))

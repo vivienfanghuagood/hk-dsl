@@ -53,11 +53,28 @@ HEAD_DIMS = (64, 128)
 #: chapter).
 MIN_SPLIT_PAGES = 4
 #: One-warp workgroups gfx950's decode plan aims for (hk.ops.paged.plan_splits
-#: on gfx950): the best split count measured at every batch from 1 to 128
-#: requests and 512 to 8192 tokens put about 256 on the card, one a CU, for
-#: contexts of 4096 and more; MIN_SPLIT_PAGES takes the shorter ones down
-#: to fewer splits on the device (tools/hk-bench/paged_cdna.py).
+#: on gfx950, `target_workgroups`): about 256, one a CU, below 64 (request,
+#: kv head) pairs and from 256, and 512 between. Measured with the merge's warps
+#: (`merge_warps`) at 1-64 requests, 1-8 kv heads and 1k-128k tokens, one
+#: split count a (requests, kv heads) for every length, as a captured step
+#: needs; MIN_SPLIT_PAGES takes the shorter sequences down to fewer splits on
+#: the device. Before the merge had several warps the plan stopped at 32
+#: splits, where one request on 1 kv head and 128k tokens walked 32
+#: workgroups for 83 us; 256 splits take 24 (docs/history, the gfx950 paged
+#: chapter; tools/hk-bench/paged_cdna.py).
 TARGET_WORKGROUPS = 256
+TARGET_WORKGROUPS_FULL = 512
+#: The most splits gfx950's plan asks for (hk.ops.paged.MAX_SPLITS is
+#: gfx1100's).
+MAX_SPLITS = 512
+
+
+def target_workgroups(pairs: int) -> int:
+    """The one-warp workgroups to aim for with `pairs` (request, kv head)
+    pairs in the batch: 512 from 64 pairs to 255, 256 otherwise. From 256
+    pairs on, two splits were 5% faster at 128k tokens and 5% slower at 1k
+    than one, and a captured step cannot tell which it will see."""
+    return TARGET_WORKGROUPS_FULL if 64 <= pairs < 256 else TARGET_WORKGROUPS
 
 #: The pages' LDS layouts: K's 16x32 operand fragments read out of 16x64
 #: subtiles, V's 32x16 stride-4 ones out of 32x32, so a page's copy reads
@@ -73,7 +90,8 @@ ABLATIONS = ("math",)
 
 def decode_kernel(name: str, *, head_dim: int = 128, splits: int = 1,
                   mode: str = "fused", stages: int = 2, ablate: tuple = (),
-                  scale: Optional[float] = None, arch: Optional[str] = None):
+                  scale: Optional[float] = None, arch: Optional[str] = None,
+                  min_pages: int = MIN_SPLIT_PAGES):
     """The paged decode for one (split, kv head, request) a workgroup.
 
     `mode` is the output contract, one per hk.ops.paged kernel this stands in
@@ -129,7 +147,7 @@ def decode_kernel(name: str, *, head_dim: int = 128, splits: int = 1,
 
         seq_len = seq_lens[hk.elem_coord(0, 0, 0, req)].load_scalar(invariant=True)
         n_pages = hk.cdiv(seq_len, PAGE)
-        per = hk.max(hk.cdiv(n_pages, n_split), MIN_SPLIT_PAGES)
+        per = hk.max(hk.cdiv(n_pages, n_split), min_pages)
         lo = split * per
         n = hk.max(hk.min(n_pages, lo + per) - lo, 0)
         last = hk.max(n_pages - 1, 0)
@@ -208,7 +226,16 @@ def decode_kernel(name: str, *, head_dim: int = 128, splits: int = 1,
         # The ring's last copies are of pages past the split: nothing, but
         # in flight into LDS.
         hk.arch.vm_wait(0)
-        finish(O, m, ell, split, kv_head, req)
+        if mode == "fused" and n_split > MERGE_CHUNK:
+            # The merge reads the rounds of MERGE_CHUNK splits that hold the
+            # first `active` (one round for a padded request); a split past
+            # them has nothing to write.
+            active = hk.cdiv(n_pages, per)
+            read = hk.max(hk.cdiv(active, MERGE_CHUNK), 1) * MERGE_CHUNK
+            if split < read:
+                finish(O, m, ell, split, kv_head, req)
+        else:
+            finish(O, m, ell, split, kv_head, req)
 
     def normalise(O, ell):
         # One division a query, then a multiply an element; the floor makes
@@ -266,14 +293,27 @@ def decode_kernel(name: str, *, head_dim: int = 128, splits: int = 1,
 
 #: Splits the gfx950 merge reads a round.
 MERGE_CHUNK = 8
+#: The most warps a merge workgroup folds with.
+MERGE_WARPS = 16
+
+
+def merge_warps(splits: int) -> int:
+    """Warps of the merge for `splits` splits: about a round of MERGE_CHUNK
+    each, so the fold is a round or two long whatever the split count."""
+    return min(MERGE_WARPS, max(1, splits // MERGE_CHUNK))
 
 
 def merge_kernel(name: str, *, head_dim: int = 128, splits: int = 8,
-                 arch: Optional[str] = None):
+                 arch: Optional[str] = None, min_pages: int = MIN_SPLIT_PAGES,
+                 warps: int = 1):
     """The fused decode's merge on gfx950, (seq_lens, out, o_part, ml_part)
-    as hk.ops.paged.merge_kernel's: one warp a (request, kv head, query row),
-    the row a strip of head_dim, the splits that saw pages read MERGE_CHUNK
-    at a time and folded online in registers.
+    as hk.ops.paged.merge_kernel's: a workgroup a (request, kv head, query
+    row), the row a strip of head_dim, the splits that saw pages read
+    MERGE_CHUNK at a time and folded online in registers. With `warps`
+    warps, warp w folds rounds w, w + warps, ...; the warps' maxima and
+    sums are combined through LDS (hk.collective.cross_warp), their strips
+    element by element, and warp 0 stores. A single warp folding 256 splits
+    took longer than the walk that wrote them.
 
     hk.ops.paged's merge gives a warp 16 columns of a 16-row tile -- of
     which the group's four rows are real -- and on gfx950 it took 3.7 us at
@@ -305,7 +345,7 @@ def merge_kernel(name: str, *, head_dim: int = 128, splits: int = 8,
         # past them would be all empty splits, weightless, and is not run.
         seq_len = seq_lens[hk.elem_coord(0, 0, 0, req)].load_scalar(invariant=True)
         n_pages = hk.cdiv(seq_len, PAGE)
-        active = hk.cdiv(n_pages, hk.max(hk.cdiv(n_pages, splits), MIN_SPLIT_PAGES))
+        active = hk.cdiv(n_pages, hk.max(hk.cdiv(n_pages, splits), min_pages))
         ms = [hk.zeros(CV) for _ in range(chunk)]
         ls = [hk.zeros(CV) for _ in range(chunk)]
         os_ = [hk.zeros(T) for _ in range(chunk)]
@@ -318,7 +358,11 @@ def merge_kernel(name: str, *, head_dim: int = 128, splits: int = 8,
         # SGPRs at 32 splits, and the next round's reads issued under this
         # one's fold 29. A padded request (no context) folds one round of
         # empty splits and stores 0.
-        for k in range(hk.max(hk.cdiv(active, chunk), 1)):
+        rounds = hk.max(hk.cdiv(active, chunk), 1)
+        wid = hk.arch.warp_id() if warps > 1 else 0
+        # With several warps, warp w folds rounds w, w + warps, ...
+        for kk in range(hk.cdiv(hk.max(rounds - wid, 0), warps) if warps > 1 else rounds):
+            k = kk * warps + wid if warps > 1 else kk
             for j in range(chunk):
                 r = req * splits + k * chunk + j
                 ml_part[hk.elem_coord(r, kv_head, 0, g)].load(CV, into=ms[j])
@@ -338,25 +382,56 @@ def merge_kernel(name: str, *, head_dim: int = 128, splits: int = 8,
                 tot.__iadd__(m_s)
                 o_s.__imul__(m_s[:, None])
                 acc.__iadd__(o_s)
+        if warps > 1:
+            sv_max = hk.lds.alloc_vec(hk.lds.shared_vec(CV, warps), name="mmax")
+            sv_sum = hk.lds.alloc_vec(hk.lds.shared_vec(CV, warps), name="msum")
+            parts = hk.lds.alloc(hk.ST(fp32, max(16, warps), D), name="mparts")
+            # One round (a short sequence) is warp 0's alone: nothing to
+            # combine. Otherwise the warps' folds, rescaled to the largest
+            # max and summed: a warp with no round has max -1e30, total 0
+            # and weighs nothing; the strips through LDS element by element,
+            # a row a warp, summed by warp 0 in warp order.
+            if hk.uniform(rounds > 1):
+                big = hk.collective.cross_warp(top, "max", warps, scratch=sv_max)
+                top.__isub__(big)
+                top.exp2_()
+                tot.__imul__(top)
+                acc.__imul__(top[:, None])
+                hk.collective.cross_warp(tot, "add", warps, scratch=sv_sum).copy(into=tot)
+                col = hk.iota(T)
+                parts.store_elems(acc, hk.map_cpp(f"x1 * {D} + x0", col, hk.arch.warp_id()))
+                hk.arch.barrier(drain=True)
+                for w in range(1, warps):
+                    acc.__iadd__(parts.load_elems(hk.map_cpp(f"{w * D} + x0", col)))
         tot.__iadd__(1e-30)
         acc.__itruediv__(tot[:, None])
-        out[hk.elem_coord(req, kv_head, g, 0)].store(acc)
+        if warps > 1:
+            if hk.arch.warp_id() == 0:
+                out[hk.elem_coord(req, kv_head, g, 0)].store(acc)
+        else:
+            out[hk.elem_coord(req, kv_head, g, 0)].store(acc)
 
     body.__name__ = name
-    return hk.kernel(body, arch=arch, warps=1, name=name,
+    return hk.kernel(body, arch=arch, warps=warps, name=name,
                      grid=lambda p: (p.out.rows, p.out.depth, p.out.batch))
 
 
 _KERNELS: Dict[Any, Any] = {}
 
 
-def merge_for(head_dim: int, splits: int):
-    """The gfx950 merge for (head_dim, splits), built once."""
-    key = ("merge", head_dim, splits)
+def merge_for(head_dim: int, splits: int, min_pages: int = MIN_SPLIT_PAGES,
+              warps: Optional[int] = None):
+    """The gfx950 merge for (head_dim, splits), built once; `warps` defaults
+    to merge_warps(splits)."""
+    warps = merge_warps(splits) if warps is None else warps
+    key = ("merge", head_dim, splits, min_pages, warps)
     k = _KERNELS.get(key)
     if k is None:
-        k = _KERNELS[key] = merge_kernel(f"paged_merge_d{head_dim}_s{splits}_cdna",
-                                         head_dim=head_dim, splits=splits)
+        tag = "" if min_pages == MIN_SPLIT_PAGES else f"_minpages{min_pages}"
+        tag += "" if warps == merge_warps(splits) else f"_w{warps}"
+        k = _KERNELS[key] = merge_kernel(f"paged_merge_d{head_dim}_s{splits}{tag}_cdna",
+                                         head_dim=head_dim, splits=splits, min_pages=min_pages,
+                                         warps=warps)
     return k
 
 
@@ -378,4 +453,5 @@ def kernel_for(head_dim: int, splits: int = 1, mode: str = "fused", **opts):
     return k
 
 
-__all__ = ["decode_kernel", "kernel_for", "PAGE", "Q_TILE", "HEAD_DIMS", "ABLATIONS"]
+__all__ = ["decode_kernel", "kernel_for", "PAGE", "Q_TILE", "HEAD_DIMS", "ABLATIONS",
+           "target_workgroups", "merge_warps", "MAX_SPLITS"]

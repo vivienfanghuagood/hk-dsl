@@ -141,9 +141,19 @@ def test_paged_and_paged_prefill_route_to_them_on_gfx950(monkeypatch):
     assert paged.fused_kernel(128, 8).name == "paged_decode_d128_fused_s8_cdna"
     assert paged_prefill.kernel_for(128, 4).name == "paged_prefill_d128_cdna"
     assert paged.merge_kernel(128, 8).name == "paged_merge_d128_s8_cdna"
-    # The plan aims at paged_cdna.TARGET_WORKGROUPS one-warp workgroups.
-    assert paged.plan_splits(1, 8, 1280) == 32 and paged.plan_splits(16, 8, 1280) == 2
-    assert paged.plan_splits(64, 8, 1280) == 1
+    # The plan aims at paged_cdna.target_workgroups one-warp workgroups: 256
+    # below 64 (request, kv head) pairs and from 256, 512 between; up to 512
+    # splits.
+    assert paged.plan_splits(1, 8, 1280) == 32 and paged.plan_splits(16, 8, 1280) == 4
+    assert paged.plan_splits(64, 8, 1280) == 1 and paged.plan_splits(32, 8, 1280) == 1
+    assert paged.plan_splits(16, 4, 1280) == 8
+    assert paged.plan_splits(1, 1, 4096) == 256 and paged.plan_splits(4, 4, 4096) == 16
+    assert paged.plan_splits(1, 1, 100) == 100
+    # Its merge folds on about a warp a round of 8 splits, up to 16.
+    assert [paged_cdna.merge_warps(s) for s in (1, 8, 16, 64, 256, 512)] == [1, 1, 2, 8, 16, 16]
+    assert paged.merge_kernel(128, 256).name == "paged_merge_d128_s256_cdna"
+    assert paged.merge_kernel(128, 256).warps == 16
+    paged.merge_kernel(128, 256).trace()
     with pytest.raises(ValueError, match="ablate"):
         paged.fused_kernel(128, 8, ablate=("qk",))
     monkeypatch.setattr(target, "current_arch", lambda: "gfx1100")

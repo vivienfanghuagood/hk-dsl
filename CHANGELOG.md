@@ -9,6 +9,30 @@ The next version's notes collect here until it is released.
 What is on main after 0.8.0. `pip install hk-dsl` (0.8.0) does not have it;
 the API reference marks such names *New after 0.8.0*.
 
+**gfx950 paged decode: a merge on several warps, and up to 512 splits.** The
+split decode's merge (`hk.ops.paged_cdna.merge_kernel`) folded every split of
+a (request, kv head, query row) on one warp, 8 splits a round. That capped
+the plan at 32 splits, and a request on few kv heads walked its whole context
+on 32 to 128 workgroups.
+- The merge now folds on up to 16 warps (`paged_cdna.merge_warps`, about one
+  round of 8 splits each), combined through LDS; one round stays one warp's.
+- The plan (`hk.ops.paged.plan_splits` on gfx950, `paged_cdna.target_workgroups`)
+  aims at 512 one-warp workgroups from 64 to 255 (request, kv head) pairs and
+  256 otherwise, up to 512 splits (`paged_cdna.MAX_SPLITS`).
+- The walk no longer writes partials for splits the merge does not read.
+- Measured on the attention task's decode grid (MI355X; 32/8, 64/8, 32/4 and 8/1
+  heads; 1-64 requests; 1k-128k tokens; CUDA graphs; KV rotated past 1.2 GB),
+  same process, against main's plan and merge:
+  - 1.08x geometric mean, up to 3.3x: one request on 1 kv head at 128k tokens
+    is 25 µs, where it was 83 (AITER FlyDSL `pa_decode` 27, AITER Gluon 57);
+  - against the best of AITER's Gluon unified attention, FlyDSL `pa_decode` and
+    asm `pa_fwd_asm`: 14 WIN, 62 tie, 44 LOSS, where main had 11 / 38 / 71;
+    geometric mean 0.98x, where it was 0.91x;
+  - 1k tokens at 1-4 requests are up to 7% slower than main (more workgroups
+    launched for a short sequence); hk is still 1.16-1.32x the best there.
+- Outputs change by the order splits are folded in (within the fp32 check;
+  deterministic). `HK_SPLITS` still forces a count.
+
 **gfx950 paged prefill: long KV walks cut over the cached prefix.** A
 short chunk on a long prefix, or a batch on few heads, is a few query tiles
 of 256 rows walking the whole context, with most of the machine idle: 4096
