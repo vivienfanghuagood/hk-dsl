@@ -18,31 +18,44 @@ __all__ = ["alloc", "alloc_vec", "shared_vec", "reserve", "wait_for", "lds_loads
 SHAPES = ("16x64", "32x32", "16x128")
 
 
-def _divergent_branch(t):
-    """The innermost enclosing `scf.if` that not every warp may take (no `hk.uniform` declaration, not an always-taken
-    `hk.scope`), or None."""
+def _divergent_ifs(t):
+    """The enclosing `scf.if`s, innermost first, that not every warp may take (no `hk.uniform` declaration, not an
+    always-taken `hk.scope`), and whether the point is inside the rewriter's scratch probe of a branch."""
     ips = getattr(t, "_ips", None)
+    out, probe = [], False
     if not ips:
-        return None
+        return out, probe
     op = ips[-1].block.owner
     while op is not None:
         o = getattr(op, "operation", op)
-        if o.name == "scf.if" and "hk.uniform" not in o.attributes and "hk.opaque" not in o.attributes:
-            return o
+        if o.name == "scf.if":
+            if "hk.probe" in o.attributes:
+                probe = True
+            if "hk.uniform" not in o.attributes and "hk.opaque" not in o.attributes:
+                out.append(o)
         if o.name in ("func.func", "builtin.module"):
-            return None
+            break
         op = o.parent
-    return None
+    return out, probe
 
 
 def _check_uniform_place(t, name: str) -> None:
     # HipKittens' shared_allocator hands out offsets in execution order (a pointer bumped at each allocation), so a
-    # tile allocated where only some warps go moves every later tile for those warps alone: two warps then see one
-    # "tile" at two addresses (the index chain's top-k selection read another warp's histogram).
-    if _divergent_branch(t) is not None:
-        raise TypeError(f"lds alloc {name!r} inside a branch not every warp takes: LDS offsets are handed out in "
-                        f"execution order, so the warps that skip it would place every later tile elsewhere. "
-                        f"Allocate it before the branch (or declare a workgroup-uniform condition, hk.uniform).")
+    # tile allocated where only some warps go moves every LATER tile for those warps alone: past such a branch, two
+    # warps see one "tile" at two addresses (the index chain's top-k read another warp's histogram). An allocation
+    # inside a divergent branch is fine as long as every later one stays inside that branch.
+    divs, probe = _divergent_ifs(t)
+    seen = getattr(t, "_lds_divergent", None)
+    if seen is None:
+        seen = t._lds_divergent = []
+    for d, first in seen:
+        if not any(d == x for x in divs):
+            raise TypeError(f"lds alloc {name!r} after {first!r}, which was allocated inside a branch not every warp "
+                            f"takes: LDS offsets are handed out in execution order, so the warps that skipped that "
+                            f"branch would see {name!r} at another address. Allocate {first!r} before its branch (or "
+                            f"declare the branch workgroup-uniform, hk.uniform).")
+    if divs and not probe and not any(divs[0] == d for d, _ in seen):
+        seen.append((divs[0], name))
 
 
 def alloc(tile: SharedTileType, name: str = "smem",
