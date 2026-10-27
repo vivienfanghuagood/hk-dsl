@@ -30,6 +30,7 @@ from __future__ import annotations
 
 from typing import Callable, Optional
 
+from ..runtime import hostpath as _hostpath
 from . import _common, engine
 
 _ORIG_PWAL: Optional[Callable] = None
@@ -82,19 +83,46 @@ def w4a16(x, qweight, scales, qzeros, hk_qw, hk_s, hk_zs, group: int):
 
     from ..ops import w4a16 as hk_w4  # noqa: PLC0415
 
+    if not _hostpath.ENABLED:
+        return _w4a16_legacy(x, qweight, scales, qzeros, hk_qw, hk_s, hk_zs, group)
+    m, k = x.shape
+    run = (hk_w4.plan(m, hk_qw.shape[0], k, group, x.dtype)
+           if x.dtype == hk_s.dtype and m <= _max_m() else None)
+    if run is not None:
+        PATCH.count("hk")
+        out = torch.empty((m, hk_qw.shape[0]), device=x.device, dtype=hk_s.dtype)
+        run(x if x.is_contiguous() else x.contiguous(), hk_qw, hk_s, hk_zs, out)
+        return out
+    PATCH.count("fallback")
+    return _vllm_awq(x, qweight, scales, qzeros)
+
+
+def _w4a16_legacy(x, qweight, scales, qzeros, hk_qw, hk_s, hk_zs, group: int):
+    """`w4a16` before the host fast paths, line for line (HK_HOST_FASTPATH=0)."""
+    import torch  # noqa: PLC0415
+
+    from ..ops import w4a16 as hk_w4  # noqa: PLC0415
+    from ..target import current_arch  # noqa: PLC0415
+
     m, k = x.shape
     if (x.dtype == hk_s.dtype and x.dtype in (torch.bfloat16, torch.float16)
-            and m <= _max_m() and hk_w4.takes(m, hk_qw.shape[0], k, group)):
+            and m <= _HK_MAX_M.get(current_arch(), 64)
+            and hk_w4.takes(m, hk_qw.shape[0], k, group)):
         PATCH.count("hk")
         return hk_w4.matmul(x, hk_qw, hk_s, hk_zs, group)
     PATCH.count("fallback")
     return _vllm_awq(x, qweight, scales, qzeros)
 
 
-def _max_m() -> int:
-    from ..target import current_arch  # noqa: PLC0415
+_MAX_M: list = []
 
-    return _HK_MAX_M.get(current_arch(), 64)
+
+def _max_m() -> int:
+    if not _MAX_M:
+        from ..target import current_arch  # noqa: PLC0415
+
+        _MAX_M.append(_HK_MAX_M.get(current_arch(), 64))
+    return _MAX_M[0]
 
 
 def process_weights_after_loading(self, layer) -> None:

@@ -4,6 +4,27 @@ Release notes for each version are also on its
 [GitHub release](https://github.com/vivienfanghuagood/hk-dsl/releases).
 The next version's notes collect here until it is released.
 
+## Unreleased
+
+What is on main after 0.8.0. `pip install hk-dsl` (0.8.0) does not have it.
+
+**Host time per call** (cross-arch). An engine route's Python no longer
+re-decides per call what only the call's shapes decide, and code-object
+kernels launch from a per-shape memo without the torch dispatcher
+(`hk.runtime.hostpath`, [integration](docs/integration.md#host-time-per-call)).
+Same kernels, same arguments, bitwise the same outputs; `HK_HOST_FASTPATH=0`
+restores every call's previous path.
+- Host µs per call, before -> now: `vllm_gemm` decode 38.5 -> 14.0 and
+  prefill 46.5 -> 17.6 (W7900D); `vllm_int4` 33.6 -> 12.5 (W7900D) and
+  19.9 -> 9.4 (MI355X); K3 attention 82.5 -> 49.2; K1 167.1 -> 122.6, and a
+  MoE call K1 leaves to AITER 252.6 -> 208.6 (AITER's own: 202.7).
+- Eager decode of Qwen3-8B-AWQ: 1.27x tokens/s on MI355X, 1.29-1.37x on
+  W7900D, at 1 and 16 requests; DeepSeek-V4.1-Flash TP2 1.04-1.07x. Prefill
+  and GPU-bound decode (Qwen3-8B bf16) unchanged.
+- New: `hk.runtime.hostpath` (`ENABLED`, `set_enabled`),
+  `hk.runtime.codeobj.direct`, `hk.runtime.torch_ext.launcher`,
+  `CodeObjectKernel.launcher`, `hk.ops.w4a16.plan`.
+
 ## 0.8.0
 
 hk-dsl 0.8.0: workgroup placement as a compiler pass on gfx950; `hk.map_cpp`,

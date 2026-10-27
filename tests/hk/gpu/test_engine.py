@@ -70,3 +70,42 @@ def test_a_safe_patch_captures_replays_and_counts_capture_apart():
     torch.cuda.synchronize()
     torch.testing.assert_close(y, torch.full_like(x, 6))
     assert p.stats["a"] == 1 and p.captured["a"] == 1
+
+
+def test_an_op_called_eagerly_runs_its_body_and_compiled_runs_the_op(monkeypatch):
+    """Op.__call__ (hk.runtime.hostpath): from eager code the guarded body
+    without the dispatcher; under torch.compile the op, which the graph
+    holds; with the fast paths off, the op every time."""
+    from hk.runtime import hostpath  # noqa: PLC0415
+
+    monkeypatch.setattr(hostpath, "ENABLED", True)        # whatever HK_HOST_FASTPATH says
+    ran = []
+
+    def body(x):
+        ran.append(torch.compiler.is_compiling())
+        return x * 3
+
+    op = engine.Op("hk_test::thrice", "thrice(Tensor x) -> Tensor",
+                   lambda x: torch.empty_like(x), paths=("hk",))
+    op.define(body)
+    x = torch.randn(64, device="cuda")
+    calls = []
+    real = torch.ops.hk_test.thrice
+
+    class Spy:
+        def __call__(self, *a):
+            calls.append(1)
+            return real(*a)
+
+    op._op = Spy()                                  # what the op path would call
+    torch.testing.assert_close(op(x), 3 * x)
+    assert calls == [] and ran == [False]           # the body, no dispatcher
+    prev = hostpath.set_enabled(False)
+    try:
+        torch.testing.assert_close(op(x), 3 * x)
+    finally:
+        hostpath.set_enabled(prev)
+    assert ran == [False, False]                    # off: through torch.ops, then the body
+    op._op = None
+    f = torch.compile(lambda t: op(t) + 1, fullgraph=True)
+    torch.testing.assert_close(f(x), 3 * x + 1)

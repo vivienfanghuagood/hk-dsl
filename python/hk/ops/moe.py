@@ -123,11 +123,12 @@ def kernel_for(block_m: int, top_k: int, routed: bool, slices: int = 4,
 
 def _op_for(*key):
     """The kernel as a torch op: launched on torch's current stream, so a
-    CUDA graph being captured records it."""
+    CUDA graph being captured records it. Called without the dispatcher
+    outside torch.compile (`torch_ext.launcher`)."""
     if key not in _OPS:
-        from ..runtime.torch_ext import torch_op  # noqa: PLC0415
+        from ..runtime.torch_ext import launcher  # noqa: PLC0415
 
-        _OPS[key] = torch_op(kernel_for(*key))
+        _OPS[key] = launcher(kernel_for(*key))
     return _OPS[key]
 
 

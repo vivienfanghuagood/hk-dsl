@@ -204,12 +204,12 @@ def _gemm_op(sched):
     offload that serialised the weight prefetch behind each GEMM and made
     MiniMax-H3's denoise loop slower with the GEMM patch than without it."""
     from ..ops import gemm  # noqa: PLC0415
-    from ..runtime.torch_ext import torch_op  # noqa: PLC0415
+    from ..runtime.torch_ext import launcher  # noqa: PLC0415
 
     kern = gemm.TUNER._kernel_for(sched)
     op = _OPS.get(kern.name)
     if op is None:
-        op = _OPS[kern.name] = torch_op(kern, ns="hk_sgld")
+        op = _OPS[kern.name] = launcher(kern, ns="hk_sgld")
     return op
 
 

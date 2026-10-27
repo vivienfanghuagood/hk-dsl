@@ -91,7 +91,7 @@ def apply_linear() -> str:
         import torch  # noqa: PLC0415
 
         if x.is_cuda and x.dtype == torch.bfloat16 and not args and not kwargs:
-            return torch.ops.hk_vllm.linear(x, layer.weight, bias)
+            return vllm_gemm.PATCH(x, layer.weight, bias)     # the op, or in eager code its body
         return orig(self, layer, x, bias, *args, **kwargs)
 
     cls.apply = apply

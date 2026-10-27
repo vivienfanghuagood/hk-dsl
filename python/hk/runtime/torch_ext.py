@@ -145,6 +145,35 @@ def torch_op(kernel, *, ns: str = "hk", name: str = "", **const_overrides):
     return existing
 
 
+def launcher(kernel, *, ns: str = "hk", name: str = "", **const_overrides):
+    """`torch_op(kernel)` as a launch: outside torch.compile the op's
+    implementation is called straight (`codeobj.direct`), skipping the
+    dispatcher; while torch.compile traces, the op itself, so the graph
+    holds it as before. The op is registered either way.
+
+    Under HK_TORCH_OP=library -- the libtorch registration, whose
+    implementation is C++ behind the dispatcher -- this is the op."""
+    import os  # noqa: PLC0415
+
+    op = torch_op(kernel, ns=ns, name=name, **const_overrides)
+    if os.environ.get("HK_TORCH_OP", "codeobj") == "library":
+        return op
+    from . import codeobj  # noqa: PLC0415
+
+    from . import hostpath  # noqa: PLC0415
+
+    impl = codeobj.direct(kernel, ns=ns, name=name, **const_overrides)
+    compiling = _torch().compiler.is_compiling
+
+    def launch(*tensors):
+        if compiling() or not hostpath.ENABLED:
+            return op(*tensors)
+        return impl(*tensors)
+
+    launch.op = op
+    return launch
+
+
 def _existing(torch, ns: str, op: str) -> Optional[Any]:
     try:
         return getattr(getattr(torch.ops, ns), op)

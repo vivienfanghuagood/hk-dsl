@@ -155,11 +155,11 @@ def _op(kind: str, head_dim: int, splits: int):
     op = _OPS.get((kind, head_dim, splits))
     if op is None:
         from ..ops import paged as hk_paged
-        from ..runtime.torch_ext import torch_op
+        from ..runtime.torch_ext import launcher
 
         k = (hk_paged.fused_kernel(head_dim, splits) if kind == "walk"
              else hk_paged.merge_kernel(head_dim, splits))
-        op = _OPS[(kind, head_dim, splits)] = torch_op(k)
+        op = _OPS[(kind, head_dim, splits)] = launcher(k)
     return op
 
 
@@ -167,9 +167,9 @@ def _prefill_op(head_dim: int, group: int, scale: float):
     op = _OPS.get(("prefill", head_dim, group, scale))
     if op is None:
         from ..ops import paged_prefill as hk_prefill
-        from ..runtime.torch_ext import torch_op
+        from ..runtime.torch_ext import launcher
 
-        op = _OPS[("prefill", head_dim, group, scale)] = torch_op(
+        op = _OPS[("prefill", head_dim, group, scale)] = launcher(
             hk_prefill.kernel_for(head_dim, group, scale))
     return op
 

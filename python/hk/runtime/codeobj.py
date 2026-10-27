@@ -30,6 +30,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from . import compile as _compile
+from . import hostpath
 from .compile import CompileError
 
 # ---------------------------------------------------------------- the ELF
@@ -256,6 +257,148 @@ class CodeObjectKernel:
         if err:
             _check(err, f"{self.ir.name}: hipModuleLaunchKernel")
 
+    def launcher(self, op: str):
+        """`launch(*tensors)`: tensor_args, then launch on torch's current
+        stream for the tensors' device -- what the torch op does -- with the
+        per-call work cut to what depends on the call.
+
+        The checks and the argument depend on the tensors' dtypes, device,
+        shapes and strides, and only the pointers change between calls of
+        one shape. So a call whose dtypes are the kernel's, whose tensors are
+        on one GPU (`get_device`, -1 off it, the same for all) and whose
+        shapes -- and strides, if any tensor is not contiguous -- were seen
+        before reads its grid and argument from a memo and packs only the
+        pointers. Anything else -- a new shape, a wrong dtype or device --
+        takes `tensor_args`, which checks everything and raises what the C++
+        op would; a shape it accepts is then memoized. Every launch is the
+        same as the unmemoized path's, field for field."""
+        import torch  # noqa: PLC0415
+
+        if self.torch_dtypes is None:
+            self.torch_dtypes = [getattr(torch, _TORCH_DTYPES[d]) for d in self.dtypes]
+        n = len(self.tensors)
+        get_device = torch._C._cuda_getDevice
+        raw = getattr(torch._C, "_cuda_getCurrentRawStream", None) or (
+            lambda i: torch.cuda.current_stream(i).cuda_stream)
+        plans: Dict[Tuple, Any] = {}
+        slots = self._pointer_slots()
+        pack = self._struct.pack_into
+        launch_kernel = hip().hipModuleLaunchKernel
+        block, shmem = self.block, self.shmem
+        fns = self._fn
+
+        def slow(tensors):
+            shapes, ptrs, rows = tensor_args(self, tensors, op)
+            idx = tensors[0].get_device()
+            for t in tensors[1:]:
+                if t.get_device() != idx:
+                    raise RuntimeError(f"{op}: every tensor must be on one device")
+            if len(plans) < _PLAN_CAP:
+                key = tuple(t.shape for t in tensors)
+                if not all(t.is_contiguous() for t in tensors):
+                    key += tuple(t.stride() for t in tensors)
+                plans[key] = (self.grid_for(shapes), self._values(shapes, [0] * n, rows))
+            if get_device() == idx:
+                self.launch(idx, raw(idx), shapes, ptrs, rows)
+            else:
+                with torch.cuda.device(idx):
+                    self.launch(idx, raw(idx), shapes, ptrs, rows)
+
+        # One function per tensor count, written out: the generic loop over
+        # the tensors is most of what this saves.
+        ts = [f"t{i}" for i in range(n)]
+        legacy = _legacy_impl(self, op)
+        src = [
+            f"def launch({', '.join(ts)}):",
+            "    if not hostpath.ENABLED:",
+            f"        return legacy({', '.join(ts)})",
+            f"    if {' or '.join(f'{t}.dtype is not D[{i}]' for i, t in enumerate(ts))}:",
+            f"        return slow(({', '.join(ts)},))",
+            "    idx = t0.get_device()",
+            "    if idx < 0" + "".join(f" or {t}.get_device() != idx" for t in ts[1:]) + ":",
+            f"        return slow(({', '.join(ts)},))",
+            f"    if {' and '.join(f'{t}.is_contiguous()' for t in ts)}:",
+            f"        plan = plans.get(({', '.join(f'{t}.shape' for t in ts)},))",
+            "    else:",
+            f"        plan = plans.get(({', '.join(f'{t}.shape' for t in ts)}, "
+            f"{', '.join(f'{t}.stride()' for t in ts)}))",
+            "    if plan is None:",
+            f"        return slow(({', '.join(ts)},))",
+            "    (gx, gy, gz), v = plan",
+            "    if gx <= 0 or gy <= 0 or gz <= 0:",
+            "        return",
+            "    v = v.copy()",
+            *[f"    v[{s}] = {ts[i]}.data_ptr()" for i, s in enumerate(slots)],
+            "    if get_device() != idx:",
+            "        with torch.cuda.device(idx):",
+            "            return self.launch_values(idx, raw(idx), (gx, gy, gz), v)",
+            "    buf, _, extra = self._argument()",
+            "    pack(buf, 0, *v)",
+            "    fn = fns.get(idx)",
+            "    if fn is None:",
+            "        fn = self.function(idx)",
+            "    err = launch_kernel(fn, gx, gy, gz, block, 1, 1, shmem, raw(idx), None, extra)",
+            "    if err:",
+            "        _check(err, f'{name}: hipModuleLaunchKernel')",
+        ]
+        env = dict(D=tuple(self.torch_dtypes), slow=slow, legacy=legacy, hostpath=hostpath,
+                   plans=plans, get_device=get_device,
+                   raw=raw, pack=pack, launch_kernel=launch_kernel, block=block, shmem=shmem,
+                   fns=fns, self=self, torch=torch, _check=_check, name=self.ir.name)
+        exec("\n".join(src), env)  # noqa: S102 -- source built above from ints and names
+        return env["launch"]
+
+    def _pointer_slots(self) -> List[int]:
+        """Where each tensor's pointer lands in `_values`' list, by tensor."""
+        per = 2 + 4                     # pointer, four extents, row stride
+        natural = [i * per for i in range(len(self.tensors))]
+        if self._perm is None:
+            return natural
+        where = {src: dst for dst, src in enumerate(self._perm)}
+        return [where[i] for i in natural]
+
+    def launch_values(self, device: int, stream: int, grid, values) -> None:
+        """Launch with `_values`' list already made (`launcher`)."""
+        gx, gy, gz = grid
+        buf, _, extra = self._argument()
+        self._struct.pack_into(buf, 0, *values)
+        err = hip().hipModuleLaunchKernel(
+            self.function(device), gx, gy, gz, self.block, 1, 1, self.shmem,
+            stream, None, extra)
+        if err:
+            _check(err, f"{self.ir.name}: hipModuleLaunchKernel")
+
+
+def _legacy_impl(k: "CodeObjectKernel", qual: str):
+    """The torch op's implementation as it was before `launcher`: what runs
+    under HK_HOST_FASTPATH=0 (hk.runtime.hostpath)."""
+    import torch  # noqa: PLC0415
+
+    raw_stream = getattr(torch._C, "_cuda_getCurrentRawStream", None) or (
+        lambda i: torch.cuda.current_stream(i).cuda_stream)
+
+    def impl(*tensors):
+        shapes, ptrs, rows = tensor_args(k, tensors, qual)
+        idx = tensors[0].get_device()
+        for t in tensors[1:]:
+            if t.get_device() != idx:
+                raise RuntimeError(f"{qual}: every tensor must be on one device")
+        stream = raw_stream(idx)
+        if torch.cuda.current_device() == idx:
+            k.launch(idx, stream, shapes, ptrs, rows)
+        else:
+            with torch.cuda.device(idx):
+                k.launch(idx, stream, shapes, ptrs, rows)
+
+    return impl
+
+
+#: Shapes a launcher memoizes, per kernel: past it, new shapes take the
+#: checked path every call (still correct, just not faster). A serving
+#: engine's prefill sees a new M per batch, so the memo must not grow without
+#: bound; 4096 shapes are under 2 MB.
+_PLAN_CAP = 4096
+
 
 def load(kernel, **const_overrides) -> CodeObjectKernel:
     """Trace, build as a code object (cached, gated), and wrap."""
@@ -347,21 +490,8 @@ def torch_op(kernel, *, ns: str = "hk", name: str = "", **const_overrides):
                          f"would mutate nothing and return nothing")
     k = load(kernel, **const_overrides)
     qual = f"{ns}::{op}"
-    raw_stream = getattr(torch._C, "_cuda_getCurrentRawStream", None) or (
-        lambda i: torch.cuda.current_stream(i).cuda_stream)
 
-    def impl(*tensors):
-        shapes, ptrs, rows = tensor_args(k, tensors, qual)
-        idx = tensors[0].get_device()
-        for t in tensors[1:]:
-            if t.get_device() != idx:
-                raise RuntimeError(f"{qual}: every tensor must be on one device")
-        stream = raw_stream(idx)
-        if torch.cuda.current_device() == idx:
-            k.launch(idx, stream, shapes, ptrs, rows)
-        else:
-            with torch.cuda.device(idx):
-                k.launch(idx, stream, shapes, ptrs, rows)
+    impl = k.launcher(qual)
 
     def meta(*tensors):
         return None
@@ -371,8 +501,25 @@ def torch_op(kernel, *, ns: str = "hk", name: str = "", **const_overrides):
     lib.impl(op, impl, "CUDA")
     lib.impl(op, meta, "Meta")
     _LIBS.append(lib)
+    _DIRECT[(ns, op)] = impl
     got = _LOADED[(ns, op)] = getattr(getattr(torch.ops, ns), op)
     return got
+
+
+#: (namespace, op) -> the registered op's implementation, for `direct`.
+_DIRECT: Dict[Tuple[str, str], Any] = {}
+
+
+def direct(kernel, *, ns: str = "hk", name: str = "", **const_overrides):
+    """What `torch_op(kernel)` runs under the dispatcher, without it: the same
+    checks, the same launch on torch's current stream, 1-1.5 us and a boxing
+    of every argument less. For a caller that is itself eager code -- the
+    body of an engine's opaque op, which torch.compile never traces into.
+    Code torch.compile may trace calls the op (`torch_ext.launcher`)."""
+    ir = kernel.trace(**const_overrides)
+    op = name or ir.name
+    torch_op(kernel, ns=ns, name=name, **const_overrides)
+    return _DIRECT[(ns, op)]
 
 
 def forget() -> None:
@@ -380,5 +527,5 @@ def forget() -> None:
     _LOADED.clear()
 
 
-__all__ = ["CodeObjectKernel", "elf_symbol", "hip", "load", "torch_op",
+__all__ = ["CodeObjectKernel", "direct", "elf_symbol", "hip", "load", "torch_op",
            "tensor_args", "forget"]

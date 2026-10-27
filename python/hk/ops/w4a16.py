@@ -209,10 +209,12 @@ def kernel_for(tokens: int, slices: int, warps: int, group: int, blocks: int = 1
 
 
 def _op_for(*key):
+    """The kernel's launch: its torch op outside torch.compile's tracing
+    called without the dispatcher (`torch_ext.launcher`)."""
     if key not in _OPS:
-        from ..runtime.torch_ext import torch_op  # noqa: PLC0415
+        from ..runtime.torch_ext import launcher  # noqa: PLC0415
 
-        _OPS[key] = torch_op(kernel_for(*key))
+        _OPS[key] = launcher(kernel_for(*key))
     return _OPS[key]
 
 
@@ -226,9 +228,68 @@ def takes(m: int, n: int, k: int, group: int) -> bool:
             and k % (kc * s["warps"]) == 0)
 
 
+#: (M, N, K, group, dtype) -> the launch that takes the call, or None for the
+#: dequantize path: `takes`, `schedule_for` and the kernel's name, decided once.
+_PLANS: Dict[Tuple[Any, ...], Any] = {}
+#: Shapes memoized; past it a call decides afresh.
+_PLAN_CAP = 4096
+
+
+def plan(m: int, n: int, k: int, group: int, dtype):
+    """The decode kernel's launch for this call (x, qw, s, zs, out), or None
+    where `matmul` takes the dequantize path: memoized `takes` and schedule."""
+    key = (m, n, k, group, dtype)
+    try:
+        return _PLANS[key]
+    except KeyError:
+        pass
+    import torch  # noqa: PLC0415
+
+    names = {torch.bfloat16: "bf16", torch.float16: "fp16"}
+    run = None
+    if dtype in names and takes(m, n, k, group):
+        sch = schedule_for(m, k)
+        run = _op_for(tokens_for(m), sch["slices"], sch["warps"], group, sch["blocks"],
+                      names[dtype])
+    if len(_PLANS) < _PLAN_CAP:
+        _PLANS[key] = run
+    return run
+
+
 def matmul(x, qw, s, zs, group: int, out=None):
     """x @ W.T for W in hk's 4-bit layout: the decode kernel up to 64 rows of
     x, dequantize-then-F.linear above (or for a shape it does not take)."""
+    import torch  # noqa: PLC0415
+
+    from ..runtime import hostpath  # noqa: PLC0415
+
+    if not hostpath.ENABLED:
+        return _matmul_legacy(x, qw, s, zs, group, out)
+    m, k = x.shape
+    n = qw.shape[0]
+    if out is None:
+        out = torch.empty((m, n), device=x.device, dtype=s.dtype)
+    run = plan(m, n, k, group, x.dtype) if x.dtype == s.dtype else None
+    if run is not None:
+        run(x if x.is_contiguous() else x.contiguous(), qw, s, zs, out)
+        return out
+    out.copy_(torch.nn.functional.linear(x.to(s.dtype), dequant(qw, s, zs, group)))
+    return out
+
+
+def _op_for_legacy(*key):
+    if key not in _OPS_LEGACY:
+        from ..runtime.torch_ext import torch_op  # noqa: PLC0415
+
+        _OPS_LEGACY[key] = torch_op(kernel_for(*key))
+    return _OPS_LEGACY[key]
+
+
+_OPS_LEGACY: Dict[Tuple[Any, ...], Any] = {}
+
+
+def _matmul_legacy(x, qw, s, zs, group: int, out=None):
+    """`matmul` before the host fast paths, line for line (HK_HOST_FASTPATH=0)."""
     import torch  # noqa: PLC0415
 
     m, k = x.shape
@@ -239,7 +300,7 @@ def matmul(x, qw, s, zs, group: int, out=None):
     if x.dtype == s.dtype and x.dtype in names and takes(m, n, k, group):
         t = tokens_for(m)
         sch = schedule_for(m, k)
-        _op_for(t, sch["slices"], sch["warps"], group, sch["blocks"], names[x.dtype])(
+        _op_for_legacy(t, sch["slices"], sch["warps"], group, sch["blocks"], names[x.dtype])(
             x if x.is_contiguous() else x.contiguous(), qw, s, zs, out)
         return out
     out.copy_(torch.nn.functional.linear(x.to(s.dtype), dequant(qw, s, zs, group)))
@@ -247,5 +308,5 @@ def matmul(x, qw, s, zs, group: int, out=None):
 
 
 __all__ = ["AWQ_ORDER", "MAX_TOKENS", "SCHEDULES", "SHALLOW_K", "dequant", "kernel_for",
-           "matmul", "schedule_for",
+           "matmul", "plan", "schedule_for",
            "repack_awq", "repack_gptq", "takes", "tokens_for", "w4a16_kernel"]

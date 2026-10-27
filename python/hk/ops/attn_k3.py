@@ -43,6 +43,7 @@ import math
 import re
 
 from .. import dsl as _dsl
+from ..runtime import hostpath as _hostpath
 from ..types import bf16, fp16, fp32, i32
 
 HEAD_DIM = 128
@@ -370,6 +371,7 @@ _K = {}
 _EYE = {}
 _PLANS = {}
 _CO = {}
+_FAST = {}
 
 
 def _kernels():
@@ -396,6 +398,21 @@ def plan(nblk: int, device) -> tuple:
 
 
 def _launch(kern, *tensors):
+    fast = _FAST.get(id(kern))
+    if fast is None:
+        from ..runtime import codeobj  # noqa: PLC0415
+
+        kk = _CO.get(id(kern))
+        if kk is None:
+            kk = _CO[id(kern)] = codeobj.load(kern)
+        fast = _FAST[id(kern)] = kk.launcher(kern.name)
+    if not _hostpath.ENABLED:
+        return _launch_legacy(kern, *tensors)
+    fast(*tensors)
+
+
+def _launch_legacy(kern, *tensors):
+    """`_launch` before the host fast paths (HK_HOST_FASTPATH=0)."""
     import torch  # noqa: PLC0415
 
     from ..runtime import codeobj  # noqa: PLC0415

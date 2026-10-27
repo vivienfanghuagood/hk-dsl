@@ -539,6 +539,56 @@ The counters are Python, so a CUDA-graph replay — which runs no Python — is
 not counted; calls made while capturing are counted apart, in
 `Patch.captured` (`python/hk/integration/engine.py`).
 
+## Host time per call
+
+An eager engine runs every route's Python on every call, and where the GPU
+work of a step is short -- decode, a 4-bit model -- that Python sets the
+step's pace. Most of it was deciding again what only the call's shapes
+decide: the table lookup and the schedule (`vllm_gemm`), `takes` and the
+schedule twice (`vllm_int4`), `inspect.signature` of AITER's `fused_moe` on
+every MoE layer (K1), and imports inside function bodies. Calls hk does not
+take paid it too.
+
+So each route keeps its decision per shape, and the kernels behind it launch
+from a per-shape memo of their grid and argument without the torch
+dispatcher ([the runtime](runtime.md#torch-ops-and-the-sdpa-drop-in)). The
+memos are bounded; `vllm_gemm`'s is dropped whenever its routing table
+changes. `HK_HOST_FASTPATH=0` turns them off: every call then takes the path
+it took before, line for line. Outputs are bitwise the same either way.
+
+Host time of one engine call, µs, same process, the switch flipped between
+rounds (`hk.runtime.hostpath.set_enabled`):
+
+| route, shape | GPU | before | now | the engine's own path |
+|---|---|---|---|---|
+| `vllm_gemm`, decode (M 16, hk_decode) | W7900D | 38.5 | 14.0 | 17.9 |
+| `vllm_gemm`, prefill (M 2048, hk) | W7900D | 46.5 | 17.6 | 23.9 |
+| `vllm_gemm`, a call it leaves to vLLM (M 1) | W7900D | 41.2 | 25.1 | 18.0 |
+| `vllm_int4` (M 1) | W7900D | 33.6 | 12.5 | -- |
+| `vllm_int4` (M 1) | MI355X | 19.9 | 9.4 | 33.6 |
+| K3 attention (`hk.ops.sdpa` drop-in, B1 H16 N256) | W7900D | 82.5 | 49.2 | 11.6 |
+| K1 `moe_a8w4` (M 8192) | MI355X | 167.1 | 122.6 | 210.7 |
+| K1, a call it leaves to AITER (M 1024) | MI355X | 252.6 | 208.6 | 202.7 |
+| K2 `mxfp8` (M 2048) | MI355X | 30.8 | 27.0 | 54.4 |
+
+The engine's own path for a call hk leaves to it is the engine's function
+called directly; inside the engine it sits behind a custom op of its own,
+which costs about what hk's does.
+
+End to end, `enforce_eager=True`, both arms in one process (V1
+multiprocessing off), greedy tokens the same in both:
+
+| model | GPU | decode tok/s, 1 request | 16 requests | TTFT |
+|---|---|---|---|---|
+| Qwen3-8B-AWQ (fp16, `vllm_int4`) | MI355X | 69.7 -> 88.8 (1.27x) | 1036 -> 1301 (1.26x) | 2048 tokens: unchanged |
+| Qwen3-8B-AWQ (fp16, `vllm_int4`) | W7900D | 58.3 -> 80.1 (1.37x) | 820 -> 1056 (1.29x) | 2048 tokens: unchanged |
+| Qwen3-8B (bf16, `vllm_gemm`) | W7900D | 47.3 -> 47.3 | 628 -> 628 | 2048 tokens: unchanged |
+| DeepSeek-V4.1-Flash TP2, dummy weights (K1, K2) | MI355X | 12.2 -> 13.1 (1.07x) | 193 -> 201 (1.04x) | 8192 tokens: unchanged |
+
+Qwen3-8B in bf16 reads 16 GB of weights a step, and its decode is the GPU's
+pace either way; its 4-bit copy reads a quarter of that, and the host was
+the slower of the two. Prefill is the GPU's pace everywhere.
+
 ## Routing tables
 
 `tools/hk-bench/route_tune.py` measures each (N, K) of the model at every M up
@@ -976,6 +1026,7 @@ spelled:
 | `HK_VLLM_DEFAULTS` | `ab.py` | `1`: the A/B builds vLLM with prefix caching and chunked prefill on, as vLLM ships |
 | `HK_EAGER` | `ab.py` | `1` (default): the A/B runs vLLM eager; `0`: with CUDA graphs |
 | `HK_GPU_UTIL` | `ab.py` | the A/B's `gpu_memory_utilization` (default 0.90) |
+| `HK_HOST_FASTPATH` | `runtime/hostpath.py`, every route | `0`: no per-shape memos and no launches without the dispatcher; every call as before them ([host time](#host-time-per-call)) |
 | `HK_STACK_CHECK` | `stack.py`, from `ab.py` and `_vllm_plugin.py` | what to do when vLLM's Triton or torch is not the stack it was measured on: `refuse` (`ab`'s default: exit 2), `warn` (the plugin's default: print to stderr and carry on), `off` |
 
 A route's switch is off at `0`, `off`, `no` or `false`. Unset or empty, the
