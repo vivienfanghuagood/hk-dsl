@@ -22,12 +22,12 @@ restores every call's previous path.
 - Eager decode of Qwen3-8B-AWQ: 1.27x tokens/s on MI355X, 1.29-1.37x on
   W7900D, at 1 and 16 requests; DeepSeek-V4.1-Flash TP2 1.04-1.07x. Prefill
   and GPU-bound decode (Qwen3-8B bf16) unchanged.
-- Code-object launches in C where hk._mlir has `_hkLaunch` (built with the bindings): 2.9 µs a
+- Code-object launches in C (#92) where hk._mlir has `_hkLaunch` (built with the bindings): 2.9 µs a
   launch on the W7900D and 4.6 on the MI355X, under the pybind entry point's 3.4 / 5.3 (the
   Python launcher: 5.4 / 6.6).
 - New: `hk.runtime.hostpath` (`ENABLED`, `set_enabled`),
   `hk.runtime.codeobj.direct`, `hk.runtime.torch_ext.launcher`,
-  `CodeObjectKernel.launcher`, `hk.ops.w4a16.plan`. They are runtime and
+  `CodeObjectKernel.launcher` (`native=`, #92), `hk.ops.w4a16.plan`. They are runtime and
   integration names, which the API reference does not cover, so they carry
   no mark there; [the runtime](docs/runtime.md) and
   [integration](docs/integration.md#host-time-per-call) describe them.
