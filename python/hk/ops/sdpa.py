@@ -65,12 +65,14 @@ def op_for(head_dim: int, causal: bool, scale: Optional[float] = None,
            n: int = 4096, bnhd: bool = False, mapping: str = "block_first"):
     """The `torch.ops.hk.*` entry for one (head_dim, causal, scale, length).
 
-    `n` only picks the tuned schedule (gfx1100's; gfx950's kernel has one),
-    so it changes which kernel runs and never what it computes. Memoised here as well as in `hk.torch_op` because
+    `n` only picks the tuned schedule (gfx1100's; gfx950's kernel has one)
+    and whether gfx1201's tiling applies, so it changes which kernel runs and
+    never what it computes -- as long as the memo keys on all of that
+    (`attn._kernel_key`), since a tiling is only right from its own length up. Memoised here as well as in `hk.torch_op` because
     this is on the launch path and `_kernel_for` is a couple of dict lookups
     that need not happen per call.
     """
-    key = (head_dim, causal, scale, _attn._tune_key(n), bnhd, mapping)
+    key = (head_dim, causal, scale, _attn._kernel_key(head_dim, causal, n), bnhd, mapping)
     op = _OPS.get(key)
     if op is None:
         from ..runtime.torch_ext import torch_op  # noqa: PLC0415
@@ -89,7 +91,7 @@ def _run_for(head_dim: int, causal: bool, scale: Optional[float] = None,
              n: int = 4096, bnhd: bool = False, mapping: str = "block_first"):
     """`op_for`'s op as a launch: without the dispatcher outside torch.compile
     (`torch_ext.launcher`). What this module's calls go through."""
-    key = (head_dim, causal, scale, _attn._tune_key(n), bnhd, mapping)
+    key = (head_dim, causal, scale, _attn._kernel_key(head_dim, causal, n), bnhd, mapping)
     run = _RUNS.get(key)
     if run is None:
         from ..runtime.torch_ext import launcher  # noqa: PLC0415

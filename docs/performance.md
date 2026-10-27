@@ -1045,28 +1045,33 @@ nothing to give, and some kernels lose:
 ## Part C: RDNA4 (gfx1201, one Radeon AI PRO R9700)
 
 One R9700 of a shared box, rocm/pytorch rocm7.2.3 (torch 2.10.0, hipBLASLt and
-rocBLAS of ROCm 7.2.3, triton 3.6.0), FlyDSL 0.4.0 and AITER (ffd08f2) beside
-it. Nothing here is tuned for gfx1201: hk runs gfx1100's plans and schedules
-([chapter 48](history/48-gfx1201-ceilings-and-first-scoreboard.md)).
+rocBLAS of ROCm 7.2.3, triton 3.6.0), FlyDSL built from source (main,
+0.4.1.dev988) and AITER (ffd08f2) beside it. hk's GEMM and norms run gfx1100's
+plans and schedules; attention and the fp8 GEMM are tuned for gfx1201
+([chapter 48](history/48-gfx1201-ceilings-and-first-scoreboard.md),
+[chapter 49](history/49-gfx1201-attention-fp8-and-flydsl-from-source.md)).
 
 The card: bf16 WMMA 197 TFLOP/s (twice gfx1100's a CU), fp8 372, iu8 374
 TOP/s; an add 1.81 TB/s inside the 64 MB Infinity Cache, 0.62 TB/s past it.
 
-What AMD's stacks have for it: FlyDSL one bf16/f16 GEMM (untuned) plus its
-arch-free norms and softmax, and no attention -- its generic kernel aborts
-LLVM on gfx12; AITER a FlyDSL attention written for gfx1201 (no GQA), its HIP
-norms, and for a GEMM `F.linear`.
+What AMD's stacks have for it: FlyDSL a bf16 GEMM (untuned), a decode fp8
+GEMM, an INT4 GEMM and its arch-free norms and softmax, no attention (its
+generic kernel aborts LLVM on gfx12); AITER a FlyDSL attention written for
+gfx1201 (no GQA), HIP norms, Triton fp8/int8 GEMMs, `F.linear` for bf16.
 
 | scoreboard, every arm in one process | hk | torch | Triton | FlyDSL | AITER | hk vs best |
 |---|---|---|---|---|---|---|
-| GEMM 4096³, ms | **0.986** | 1.502 | 1.050 | 1.207 | 1.500 | 1.06x |
-| GEMM, five 2048-4096-row Llama/Qwen shapes | **best** | | | 0.80-0.85x hk | = torch | 1.03-1.07x |
-| attention n4096 GQA 4 causal, ms | 1.707 | 5.825 | -- | aborts | **1.410** | **0.83x** |
-| attention n4096 GQA 4 full, ms | 2.778 | 5.294 | -- | aborts | **2.702** | **0.97x** |
-| rms_norm 1 / 32 / 2048 / 8192 rows | | | | | | 1.03x / 1.25x / 0.96x / tie |
-| fused add + rms_norm 1 / 32 / 2048 rows | | | | | | 1.07x / 1.30x / tie |
-| fused add + rms_norm 8192 rows, us | 482 | 571 | **446** | 451 | **446** | **0.93x** |
-| softmax 2048 / 8192 rows | | | | | | tie / tie |
+| GEMM 4096³, ms | **0.979** | 1.488 | 1.049 | 1.194 | 1.493 | 1.07x |
+| GEMM, four 2048-row Llama/Qwen shapes | **best** | | | 0.77-0.83x hk | = torch | 1.06-1.08x |
+| attention n4096 GQA 4 causal / full, ms | **1.404 / 2.650** | 5.807 / 5.293 | -- | aborts | 1.409 / 2.693 | tie / tie |
+| rms_norm 1 / 32 / 2048 / 8192 rows | | | | | | tie / 1.33x / **0.96x** / tie |
+| fused add + rms_norm 1 / 32 / 2048 rows | | | | | | 1.06x / 1.30x / tie |
+| fused add + rms_norm 8192 rows, us | 481 | 572 | 455 | 450 | **446** | **0.93x** |
+| softmax 2048 / 8192 rows | | | | | -- | tie / tie |
+| fp8 W8A8, 32 rows, N 4096 / 14336, W from GDDR6, us | **30.0 / 101.9** | 39.4 / 165.9 | -- | 45.7 / 110.5 | 40.0 / 118.3 | 1.31x / 1.08x |
+| fp8 W8A8, 128 / 2048 rows | **best** | | | | | 1.07-1.16x / 1.39-1.48x |
+| int8, 2048 / 4096 rows, ms | **0.315 / 0.626** | 0.321 / 0.636 | -- | -- | 0.789 / 1.568 | tie (1.02x) |
+| int4 (FlyDSL only), 2048 / 4096 rows, ms | -- | -- | -- | 0.169 / 0.402 | -- | |
 
 | GEMM against the BLAS libraries directly | ratio |
 |---|---|

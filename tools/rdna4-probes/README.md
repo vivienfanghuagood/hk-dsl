@@ -11,6 +11,7 @@ descriptor, `mma_gate.hip` and friends the library on top).
 |---|---|
 | `wmma_peaks.hip` | Back-to-back WMMAs, no memory, every CU, for bf16, f16, fp8 x fp8, iu8 and the 2:4 sparse bf16 SWMMAC. On a Radeon AI PRO R9700: 197.1, 198.5, 371.8 TFLOP/s, 373.8 TOP/s, 391.5 (dense-equivalent). |
 | `lds_pool.hip` | One-wave workgroups at 8-64 KB of LDS each, the peak resident at once: 4 MB over the R9700's 32 WGPs at every size, so 128 KB a WGP. |
+| `attn_sweep.py` | hk's attention tilings (warps, KV block, `heads_first`, `warp_skip`) against AITER's gfx1201 FlyDSL attention, one process: the source of `hk.ops.attn._TILING["gfx1201"]`. Needs AITER on `PYTHONPATH`. |
 | `fly_probe.py` | FlyDSL outside hk (`FLYDSL_ROOT`): its gfx12 WMMA GEMM against fp32, then its dense attention, which aborts the process on gfx12 (LLVM cannot lower `raw_ptr_buffer_load_lds`). The abort leaves an apport crash report on a host whose `core_pattern` pipes to apport, core limit or not. |
 | `fp8_sweep.py` | hk's GEMM with fp8 operands over 52 schedules against `torch._scaled_mm`, one process: the source of `hk.ops.gemm.FP8_DEFAULT` (256x128x64, 240 TFLOP/s at 4096³ against hipBLASLt's 236). |
 | `fp8_small_m.py` | `scaled_mm`'s kernel at 256 and 128 rows a block against `torch._scaled_mm` with per-token x per-channel scales, M 1-4096: where `FP8_SMALL_M` comes from. |
