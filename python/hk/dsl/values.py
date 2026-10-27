@@ -496,7 +496,7 @@ class Global(Value):
         2 i + 1) as one 8-byte store of its scope; an index below zero posts nothing. No drain --
         the value travels with its tag -- so a hand-off between CTAs is one store and, on the
         other side, one poll (dsv41_mono's Mailbox; hk.comm.post for one scalar)."""
-        if not getattr(self.ty, "scope", ""):
+        if getattr(self.ty, "scope", "") not in HANDOFF_SCOPES:
             raise TypeError(f"post_elems on {self.name!r}, an unscoped tensor: a mailbox other CTAs "
                             f"read is hk.Tensor[hk.i32, \"device\"] (\"system\": other GPUs)")
         aux = scope_aux(self, "post_elems")
@@ -510,7 +510,7 @@ class Global(Value):
         (s_sleep between) while any is stale. An index below zero is ready at 0. `dtype`: fp32
         (default) or i32. After `timeout_s` the kernel traps (0: never) -- a lost post is an error,
         not a hang."""
-        if not getattr(self.ty, "scope", ""):
+        if getattr(self.ty, "scope", "") not in HANDOFF_SCOPES:
             raise TypeError(f"take_elems on {self.name!r}, an unscoped tensor: a mailbox other CTAs "
                             f"read is hk.Tensor[hk.i32, \"device\"] (\"system\": other GPUs)")
         aux = scope_aux(self, "take_elems")
@@ -583,7 +583,11 @@ class Global(Value):
 #: A scoped tensor's cache-policy bits on gfx950: SC1 (device scope) or
 #: SC0|SC1 (system scope). Measured (KernelWiki gfx950-cross-gpu-memory-model):
 #: without them a store stays in this XCD's L2 and a load re-reads a stale line.
-SCOPE_AUX = {"": 0, "device": 16, "system": 17}
+#: "stream" is not a scope but a policy: NT (non-temporal), for data a launch reads
+#: once -- a weight stream that should not displace what the L2 holds for reuse.
+SCOPE_AUX = {"": 0, "device": 16, "system": 17, "stream": 2}
+#: the annotations a hand-off (mailbox pair, flag) needs: another CTA's or GPU's stores seen
+HANDOFF_SCOPES = ("device", "system")
 
 
 def scope_aux(tensor: "Global", what: str, tile=None) -> int:

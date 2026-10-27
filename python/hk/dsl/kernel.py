@@ -65,8 +65,8 @@ class Tensor:
         dtype, scope = (spec if isinstance(spec, tuple) else (spec, ""))
         if not isinstance(dtype, DType):
             raise TypeError(f"hk.Tensor[...] takes a dtype, got {dtype!r}")
-        if scope not in ("", "device", "system"):
-            raise TypeError(f"hk.Tensor[dtype, scope]: scope is \"device\" or \"system\", "
+        if scope not in ("", "device", "system", "stream"):
+            raise TypeError(f"hk.Tensor[dtype, scope]: scope is \"device\", \"system\" or \"stream\", "
                             f"not {scope!r}")
         return GlobalType(dtype, scope)
 

@@ -109,10 +109,11 @@ static LogicalResult checkStripAccess(Operation *op, Type t, CoordType idx,
 }
 
 /// The cache-policy field of a scoped access: 0 (none), 16 (SC1: device
-/// scope) or 17 (SC0|SC1: system scope) -- the two hk.comm uses on gfx950.
+/// scope) or 17 (SC0|SC1: system scope) -- the two hk.comm uses on gfx950 --
+/// or 2 (NT: a "stream" tensor, data a launch reads once).
 static LogicalResult verifyAux(Operation *op, int64_t aux) {
-  if (aux != 0 && aux != 16 && aux != 17)
-    return op->emitOpError("aux ") << aux << " is 0, 16 (device scope) or 17 (system scope)";
+  if (aux != 0 && aux != 2 && aux != 16 && aux != 17)
+    return op->emitOpError("aux ") << aux << " is 0, 2 (non-temporal), 16 (device scope) or 17 (system scope)";
   return success();
 }
 
