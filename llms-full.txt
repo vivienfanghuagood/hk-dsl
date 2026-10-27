@@ -2817,7 +2817,7 @@ The max along `axis`: 1 (default) along each row, one value per row (a col_vec);
 Tile.first_lane(self) -> Int
 ```
 
-*New after 0.7.0*
+*New after 0.8.0*
 
 Lane 0's first element of this i32 strip, as a scalar (v_readfirstlane, gfx950). Uniform
 across the workgroup when every wave holds the same value -- one LDS word read after a
@@ -3749,7 +3749,7 @@ back with `.load` / `.subtile(...).load`.
 SharedTile.atomic_add_elems(self, val: Tile, idx: Tile) -> None
 ```
 
-*New after 0.7.0*
+*New after 0.8.0*
 
 Element by element, atomically (gfx950): val's element (r, c), an i32, is added to element
 `idx[r, c]` of this fp32 LDS tile taken as an i32 (ds_add_u32); below zero or past the tile,
