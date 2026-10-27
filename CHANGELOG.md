@@ -43,6 +43,16 @@ point against the best of AITER's tuned FlyDSL, FlyDSL, AITER Triton, hipBLASLt 
   engram's wkv (12800 x 6144) from M 1024 instead of 2048, 1.29-1.79x; per (N, K) in
   `MIN_M_NK`. Bit-identical to vLLM's kernel at every new point, ragged M included.
 
+**fp8 GEMM on gfx1201** (#76, RDNA4). `hk.ops.scaled_mm(a, b, scale_a, scale_b,
+*, bias=None, out=None)` is `torch._scaled_mm`'s product, bf16
+`(A @ B.T) * scale_a * scale_b (+ bias)` from OCP fp8 operands with fp32 accumulation, in
+`hk.ops.matmul`'s (N, K) layout, with per-tensor or per-token x per-channel scales. It runs on
+gfx1201's fp8 WMMA: `hk.ops.gemm`'s kernel takes `op_dtype=hk.fp8e4m3` / `hk.fp8e5m2` there,
+and gfx1100 (no fp8 WMMA) and gfx950 (whose fp8 GEMMs are gemm_cdna's) refuse it. On a
+Radeon AI PRO R9700 against `torch._scaled_mm` (hipBLASLt), in one process: 240 vs 236 TFLOP/s
+at 4096³ per-tensor; per-token x per-channel 1.28-1.99x at M 128-4096 (N 4096 / 14336); a tie
+at M 1-64 with K 4096, and 0.89x at M 1-64 with K 14336 (decode shapes, not tuned yet).
+
 **Fixes**
 - **gfx950: `hk.ops.gemm.matmul` raised `ResourceError` in the vLLM image** (#84) at M 192-512 for
   N 28672 / 14336, K 4096: its table routes there to `dp128x224`, which ROCm 10's hipcc builds
@@ -58,6 +68,12 @@ point against the best of AITER's tuned FlyDSL, FlyDSL, AITER Triton, hipBLASLt 
   `C10_HIP_API`, which only the older headers define; with those (rocm/pytorch's
   torch 2.10, the vLLM 0.31 venv's 2.13, the gfx950 images) it builds the same
   code as before.
+
+**CI and tests**
+- A fourth GPU-tier job, `gfx1201`, on a shared RDNA4 box (Radeon AI PRO R9700), with an
+  ephemeral runner registered for this repository. It is continue-on-error and not a required
+  check until the RDNA4 port's tier is green (#67,
+  [testing](docs/testing.md#the-gfx1201-runner)).
 
 ## 0.8.0
 

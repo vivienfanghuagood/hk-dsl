@@ -47,6 +47,9 @@ def test_since_marks_against_the_pypi_wheel():
     group_md = (REPO / "docs" / "api" / "hk.group.md").read_text()
     section = group_md.split("#### `Group.wait_for`", 1)[1].split("###", 1)[0]
     assert "after 0.8.0" not in section          # *tiles, exact: unchanged, not reordered
+    ops_md = (REPO / "docs" / "api" / "hk.ops.md").read_text()
+    section = ops_md.split("### `hk.ops.scaled_mm`", 1)[1].split("###", 1)[0]
+    assert "*New after 0.8.0*" in section        # not in the 0.8.0 wheel (#76)
     for page in (REPO / "docs" / "api").glob("*.md"):
         assert "after 0.7.0" not in page.read_text(), page.name   # the old baseline's marks
     # what lands after 0.8.0 is marked against the 0.8.0 wheel

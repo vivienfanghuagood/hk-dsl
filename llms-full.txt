@@ -5385,7 +5385,7 @@ are bounded: any non-empty length. head_dim is 64 or 128 on both.
 hk.ops.scaled_mm(a, b, scale_a, scale_b, *, bias=None, out=None)
 ```
 
-*New after 0.7.0*
+*New after 0.8.0*
 
 bf16 (A @ B.T) * scale_a * scale_b (+ bias), fp8 operands, fp32
 accumulate: torch._scaled_mm's product with hk.ops.matmul's layout.
