@@ -173,6 +173,11 @@ index chain needed as one launch on vLLM's caches:
 - **The LDS wait check refused a correct kernel** (#87). `hk.runtime.cocheck`'s scan walked the code in
   address order and carried a block's in-flight LDS loads past an unconditional `s_branch` into a block
   that code never reaches. It now follows branches: a forward branch carries its states to its target.
+- **An LDS tile allocated after one inside a branch not every warp takes landed at two addresses** (#96).
+  HipKittens' `shared_allocator` hands out offsets in execution order, so the warps that skipped the branch saw
+  every later tile elsewhere -- silently (DeepSeek-V4.1's index-chain top-k read two histograms). `hk.lds.alloc` now
+  refuses an allocation that follows such a branch outside it; inside the branch, or in a workgroup-uniform one,
+  stays allowed.
 
 **CI and tests**
 - A fourth GPU-tier job, `gfx1201`, on a shared RDNA4 box (Radeon AI PRO R9700), with an

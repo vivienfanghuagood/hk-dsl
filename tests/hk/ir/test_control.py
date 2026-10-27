@@ -280,3 +280,32 @@ def test_uniform_takes_a_device_comparison():
             hk.arch.barrier()
     with pytest.raises(TypeError, match="device comparison"):
         _k(body).trace()
+
+
+def test_lds_alloc_after_one_in_a_branch_not_every_warp_takes_is_refused():
+    """HipKittens hands out LDS offsets in execution order: a tile allocated where only some warps go moves every later
+    tile for those warps alone. Inside that branch it is fine; after it, refused."""
+    import hk
+
+    def bad(x: hk.Tensor[hk.fp32]):
+        if hk.arch.warp_id() == 0:
+            hk.lds.alloc(hk.ST(hk.fp32, 16, 16), name="sp")
+        hk.lds.alloc(hk.ST(hk.fp32, 16, 16), name="later")
+
+    with pytest.raises(TypeError, match="after 'sp'"):
+        hk.kernel(bad, arch="gfx950", warps=4, name="bad_alloc", grid=lambda p: (1, 1, 1)).source()
+
+    def inside(x: hk.Tensor[hk.fp32]):
+        hk.lds.alloc(hk.ST(hk.fp32, 16, 16), name="first")
+        if hk.arch.warp_id() == 0:
+            hk.lds.alloc(hk.ST(hk.fp32, 16, 16), name="sp")
+            hk.lds.alloc(hk.ST(hk.fp32, 16, 16), name="also_inside")
+
+    assert "al.allocate" in hk.kernel(inside, arch="gfx950", warps=4, name="inside_alloc", grid=lambda p: (1, 1, 1)).source()
+
+    def uniform(x: hk.Tensor[hk.fp32]):
+        if hk.uniform(hk.arch.block_idx.x == 0):
+            hk.lds.alloc(hk.ST(hk.fp32, 16, 16), name="sp")
+        hk.lds.alloc(hk.ST(hk.fp32, 16, 16), name="later")
+
+    assert "al.allocate" in hk.kernel(uniform, arch="gfx950", warps=4, name="ok_alloc", grid=lambda p: (1, 1, 1)).source()
