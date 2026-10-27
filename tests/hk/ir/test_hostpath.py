@@ -86,3 +86,54 @@ def test_a_new_original_is_read_again(monkeypatch):
     monkeypatch.setattr(P, "_ORIG", _strict)
     with pytest.raises(TypeError):
         P._arguments((), dict(swiglu_limit=1.0), FIVE)
+
+
+def _launch_module():
+    try:
+        from hk._mlir._mlir_libs import _hkLaunch
+    except ImportError:
+        pytest.skip("hk._mlir built without _hkLaunch")
+    return _hkLaunch
+
+
+def _exprs():
+    from hk.dsl import host as H
+
+    rows, cols, depth = H.HostDim("x", "rows"), H.HostDim("o", "cols"), H.HostDim("x", "depth")
+    return [
+        7,
+        H.HostConst(3),
+        rows,
+        H.cdiv(rows, 16),
+        H.cdiv(cols, 64) * depth,
+        (rows - 100) // 16,                         # negative: floor, as Python has it
+        (rows - 100) % 7,
+        (cols * rows + 5) // (depth + 1) - 3,
+        H.cdiv(rows * cols, 256) % 13 + 1,
+    ]
+
+
+@pytest.mark.parametrize("ext", [(1, 1, 64, 128), (2, 3, 1, 4096), (1, 1, 0, 0), (4, 5, 99, 7)])
+def test_cs_grid_is_the_traced_expressions(ext):
+    """A launch in C computes the grid from a postfix program of the traced
+    expression (codeobj._grid_program); it must be HostExpr.value, floor
+    division and negative intermediates included."""
+    from hk.runtime import codeobj
+
+    L = _launch_module()
+    names = ["x", "o"]
+    extents = {"x": ext, "o": tuple(reversed(ext))}
+    for e in _exprs():
+        prog = codeobj._grid_program(e, names)
+        want = e if isinstance(e, int) else e.value(extents)
+        assert L.grid(prog, (extents["x"], extents["o"])) == want, e
+
+
+def test_a_program_c_cannot_run_is_left_to_python():
+    L = _launch_module()
+    ext = ((1, 1, 4, 4),)
+    assert L.grid((0, 4, 0, 0, 5), ext) is None      # divides by zero
+    assert L.grid((1, 3, 0), ext) is None            # a tensor it does not have
+    assert L.grid((2,), ext) is None                 # an operator with nothing to apply it to
+    assert L.grid((0, 1, 0, 2), ext) is None         # two values left
+    assert L.grid((9,), ext) is None                 # no such opcode

@@ -253,5 +253,31 @@ def test_off_the_launcher_is_the_op_as_it_was(monkeypatch):
     finally:
         hostpath.set_enabled(prev)
     torch.cuda.synchronize()
-    assert memo_calls == 1 and len(seen) == 3          # once to memoize; off, every call
+    # on: at most once, to memoize (C computes a new shape's grid itself); off: every call
+    assert memo_calls <= 1 and len(seen) - memo_calls == 2
     assert torch.equal(out, x + x)
+
+
+def test_the_launch_is_c_where_hk_mlir_has_it_and_writes_what_python_writes():
+    """_hkLaunch (hk._mlir): the same launch as the Python launcher, a new
+    shape's grid computed in C, on shapes whose grid is ragged."""
+    from hk.runtime import hostpath  # noqa: PLC0415
+
+    if codeobj._native() is None:
+        pytest.skip("hk._mlir built without _hkLaunch")
+    k = elementwise.KERNELS["add_bf16"]
+    kc = codeobj.load(k)
+    c, py = kc.launcher("hk::c_vs_py"), kc.launcher("hk::c_vs_py", native=False)
+    assert type(c).__name__ == "Launcher"
+    prev = hostpath.set_enabled(True)
+    try:
+        for rows, cols in ((64, 128), (128, 64 * 7), (16, 64), (64, 128)):
+            x, y = (torch.randn(rows, cols, device="cuda", dtype=torch.bfloat16) for _ in range(2))
+            a, b = (torch.full((rows, cols), 5.0, device="cuda", dtype=torch.bfloat16)
+                    for _ in range(2))
+            c(x, y, a)
+            py(x, y, b)
+            torch.cuda.synchronize()
+            assert torch.equal(a, b) and torch.equal(a, x + y)
+    finally:
+        hostpath.set_enabled(prev)
