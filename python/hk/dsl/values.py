@@ -1133,6 +1133,15 @@ class Tile(_Elementwise):
                                f"{lanes}:" + ",".join(str(o) for o in offs), loc=t.loc(f"group_{kind}"))
         return wrap(op.result, self.ty)
 
+    def first_lane(self) -> "Int":
+        """Lane 0's first element of this i32 strip, as a scalar (v_readfirstlane, gfx950). Uniform
+        across the workgroup when every wave holds the same value -- one LDS word read after a
+        barrier -- so it may drive hk.uniform branches (an early exit decided by one wave)."""
+        if getattr(self.ty, "run", None) is None or self.ty.dtype is not i32:
+            raise TypeError(f"first_lane reads an i32 strip, not {self.ty}")
+        t = _t()
+        return Int(hkd.FirstLaneOp(_i32(), self.v, loc=t.loc("fl")).result, ScalarType(i32))
+
     def lane_gather(self, lanes: "Tile") -> "Tile":
         """Each element from another lane (gfx950): element (r, c) of lane l is the same run element
         of lane `lanes[r, c]` (an i32 strip of this strip's shape, 0..63) -- ds_bpermute, one an

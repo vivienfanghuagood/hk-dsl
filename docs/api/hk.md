@@ -722,6 +722,18 @@ Tile.max(self, axis: int = 1, *, lanes: Optional[str] = None, xor: Optional[Sequ
 
 The max along `axis`: 1 (default) along each row, one value per row (a col_vec); 0 along each column (a row_vec). Lazy: `v = t.max()` makes the vector, `m.max_(t.max())` folds into one (the online max), and `.value(into=v)` writes an existing one.
 
+#### `Tile.first_lane`
+
+```python
+Tile.first_lane(self) -> Int
+```
+
+*New after 0.5.0*
+
+Lane 0's first element of this i32 strip, as a scalar (v_readfirstlane, gfx950). Uniform
+across the workgroup when every wave holds the same value -- one LDS word read after a
+barrier -- so it may drive hk.uniform branches (an early exit decided by one wave).
+
 #### `Tile.lane_gather`
 
 ```python

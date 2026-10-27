@@ -1565,6 +1565,10 @@ private:
           Value d = dest(Value(), o.getResult());
           w("kittens::mx_scales_loose(" + name(d) + ", " + name(o.getBytes()) + ");");
         })
+        .Case([&](FirstLaneOp o) {
+          w("const int " + name(o.getResult()) + " = __builtin_amdgcn_readfirstlane(int(" + name(o.getSrc()) +
+            ".data[0][0][0]));");
+        })
         .Case([&](LaneGatherOp o) {
           Value d = dest(Value(), o.getResult());
           w("kittens::lane_gather(" + name(d) + ", " + name(o.getSrc()) + ", " + name(o.getLanes()) + ");");

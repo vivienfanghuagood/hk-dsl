@@ -854,6 +854,21 @@ def HK_MxScalesLooseOp : HK_Op<"mx_scales_loose"> {
   let hasVerifier = 1;
 }
 
+def HK_FirstLaneOp : HK_Op<"first_lane"> {
+  let summary = "a strip's first element in lane 0, as a scalar (gfx950)";
+  let description = [{
+    v_readfirstlane of element (0, 0): the wave's lane-0 value as an i32
+    scalar. Uniform across the workgroup when every wave read the same value
+    (one LDS word after a barrier), so it may drive hk.uniform branches.
+  }];
+  let arguments = (ins HK_RegTileType:$src);
+  let results = (outs I32:$result);
+  let assemblyFormat = [{
+    $src attr-dict `:` qualified(type($src))
+  }];
+  let hasVerifier = 1;
+}
+
 def HK_LaneGatherOp : HK_Op<"lane_gather"> {
   let summary = "each element taken from another lane's same element (gfx950)";
   let description = [{

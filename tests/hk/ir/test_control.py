@@ -253,3 +253,22 @@ def test_any_ne_lowers_to_an_unrolled_or_tree_and_one_any():
     assert "__any(" in src
     assert "outer_dim" in src and "inner_dim" in src
     assert src.count("#pragma unroll") >= 2
+
+
+def test_lds_alloc_inside_a_branch_not_every_warp_takes_is_refused():
+    """HipKittens hands out LDS offsets in execution order: an allocation only some warps reach would move every
+    later tile for those warps alone."""
+    import hk
+
+    def bad(x: hk.Tensor[hk.fp32]):
+        if hk.arch.warp_id() == 0:
+            hk.lds.alloc(hk.ST(hk.fp32, 16, 16), name="sp")
+
+    with pytest.raises(TypeError, match="not every warp takes"):
+        hk.kernel(bad, arch="gfx950", warps=4, name="bad_alloc", grid=lambda p: (1, 1, 1)).source()
+
+    def ok(x: hk.Tensor[hk.fp32]):
+        if hk.uniform(hk.arch.block_idx.x == 0):
+            hk.lds.alloc(hk.ST(hk.fp32, 16, 16), name="sp")
+
+    assert "al.allocate" in hk.kernel(ok, arch="gfx950", warps=4, name="ok_alloc", grid=lambda p: (1, 1, 1)).source()

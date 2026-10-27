@@ -18,6 +18,33 @@ __all__ = ["alloc", "alloc_vec", "shared_vec", "reserve", "wait_for", "lds_loads
 SHAPES = ("16x64", "32x32", "16x128")
 
 
+def _divergent_branch(t):
+    """The innermost enclosing `scf.if` that not every warp may take (no `hk.uniform` declaration, not an always-taken
+    `hk.scope`), or None."""
+    ips = getattr(t, "_ips", None)
+    if not ips:
+        return None
+    op = ips[-1].block.owner
+    while op is not None:
+        o = getattr(op, "operation", op)
+        if o.name == "scf.if" and "hk.uniform" not in o.attributes and "hk.opaque" not in o.attributes:
+            return o
+        if o.name in ("func.func", "builtin.module"):
+            return None
+        op = o.parent
+    return None
+
+
+def _check_uniform_place(t, name: str) -> None:
+    # HipKittens' shared_allocator hands out offsets in execution order (a pointer bumped at each allocation), so a
+    # tile allocated where only some warps go moves every later tile for those warps alone: two warps then see one
+    # "tile" at two addresses (the index chain's top-k selection read another warp's histogram).
+    if _divergent_branch(t) is not None:
+        raise TypeError(f"lds alloc {name!r} inside a branch not every warp takes: LDS offsets are handed out in "
+                        f"execution order, so the warps that skip it would place every later tile elsewhere. "
+                        f"Allocate it before the branch (or declare a workgroup-uniform condition, hk.uniform).")
+
+
 def alloc(tile: SharedTileType, name: str = "smem",
           count: Optional[int] = None, *, shape: Optional[str] = None) -> SharedTile:
     """Reserve an LDS tile, or `count` of them in one size-aligned block (the
@@ -35,6 +62,7 @@ def alloc(tile: SharedTileType, name: str = "smem",
     if count is not None:
         tile = SharedTileType(tile.dtype, tile.rows, tile.cols, count)
     t = B.current()
+    _check_uniform_place(t, name)
     if shape is not None:
         from ..target import get_target  # noqa: PLC0415
 
@@ -68,6 +96,7 @@ def alloc_vec(ty: SharedVecType, name: str = "svec") -> SharedVec:
     if not isinstance(ty, SharedVecType):
         raise TypeError(f"alloc_vec takes a SharedVecType, got {ty!r}")
     t = B.current()
+    _check_uniform_place(t, name)
     return SharedVec(hkd.AllocSharedVecOp(mlir_type(ty), loc=t.loc(name)).result,
                      ty)
 

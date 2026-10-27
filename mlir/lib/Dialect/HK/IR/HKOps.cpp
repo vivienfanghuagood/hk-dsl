@@ -789,6 +789,13 @@ LogicalResult MxScalesLooseOp::verify() {
   return success();
 }
 
+LogicalResult FirstLaneOp::verify() {
+  auto s = dyn_cast<RegTileType>(getSrc().getType());
+  if (!s || !s.isStrip() || !s.getElementType().isInteger(32))
+    return emitOpError("reads an i32 strip");
+  return success();
+}
+
 LogicalResult LaneGatherOp::verify() {
   auto s = dyn_cast<RegTileType>(getSrc().getType());
   auto l = dyn_cast<RegTileType>(getLanes().getType());
