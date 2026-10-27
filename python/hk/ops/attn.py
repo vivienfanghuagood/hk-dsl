@@ -575,8 +575,30 @@ KV_BLOCK = 32
 #: 64-row KV block helps causal and costs full attention 15%.
 _TILING = {
     "gfx1201": {(128, False): dict(warps=16, heads_first=True),
-                (128, True): dict(warps=16, kv_block=64, heads_first=True, warp_skip=True)},
+                (128, True): dict(warps=16, kv_block=64, heads_first=True, warp_skip=True),
+                (64, False): dict(warps=16, heads_first=True, min_n=2048),
+                (64, True): dict(warps=16, heads_first=True, warp_skip=True, min_n=1024)},
 }
+
+#: head_dim 64 on gfx1201, GQA 4 (32 query heads over 8 KV), ms, gfx1100's
+#: tiling then this one (tools/rdna4-probes/attn_d64.py), under ROCm 7.2.3's
+#: clang 22 / the R9700 vLLM image's clang 23 -- the same winner under both,
+#: and a 32-row KV block under both:
+#:
+#:                      clang 22             clang 23
+#:     causal n1024   0.104 -> 0.065      0.113 -> 0.061
+#:     causal n2048   0.286 -> 0.210      0.284 -> 0.209
+#:     causal n4096   1.007 -> 0.817      0.988 -> 0.799
+#:     causal n8192   3.518 -> 3.195      3.438 -> 3.112
+#:     full   n1024   0.124 -> 0.111      0.120 -> 0.105
+#:     full   n4096   1.600 -> 1.515      1.546 -> 1.453
+#:     full   n8192   6.117 -> 5.943      5.912 -> 5.708
+#:
+#: `min_n`: below it gfx1100's tiling stays. At a ViT's 577 and 1025 tokens
+#: over 16 heads, full, the 256-row tile leaves too few workgroups for 64 CUs
+#: and 12 warps measured faster (1x16x577x64: 26 us against the 16-warp
+#: tiling's 28 and up), so full starts at 2048; causal, whose blocks shrink
+#: along the diagonal, gains from 1024.
 
 #: The same, by the compiler that builds the kernel: (arch, clang major at or
 #: above which it applies) -> entries replacing _TILING's. The 64-row KV block
@@ -628,9 +650,9 @@ def _tiling(head_dim: int, causal: bool, n: int) -> Dict[str, Any]:
     for (a, at), table in sorted(_TILING_FROM_CLANG.items()):
         if a == arch and clang is not None and clang >= at and (head_dim, causal) in table:
             t = table[(head_dim, causal)]
-    if t and n < t["warps"] * 16:
+    if t and n < max(t["warps"] * 16, t.get("min_n", 0)):
         return {}
-    return t
+    return {key: v for key, v in t.items() if key != "min_n"}
 
 
 def _tune_key(n: int) -> str:

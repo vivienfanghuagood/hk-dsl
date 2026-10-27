@@ -31,7 +31,14 @@ def test_gfx1201_takes_its_tiling_and_the_compiler_picks_the_causal_kv_block(on)
 def test_a_short_q_keeps_gfx1100s_tiling_so_what_attention_accepts_is_unchanged(on):
     on("gfx1201", 23)
     assert attn._tiling(128, True, 255) == {} and attn._tiling(128, True, 256)
-    assert attn._tiling(64, True, 4096) == {}
+
+
+def test_gfx1201_head_dim_64_from_its_minimum_length(on):
+    on("gfx1201", 23)
+    assert attn._tiling(64, True, 1023) == {}
+    assert attn._tiling(64, True, 1024) == dict(warps=16, heads_first=True, warp_skip=True)
+    assert attn._tiling(64, False, 2047) == {}
+    assert attn._tiling(64, False, 2048) == dict(warps=16, heads_first=True)
 
 
 def test_the_memo_key_separates_a_short_q_from_a_tiled_one(on):
