@@ -260,6 +260,11 @@ resident hk launch, bitwise vs dsv41_mono's:
 - The decode GEMM's four-tile schedule on gfx1201 is combine depth 2
   (`decode_gemm.SCHEDULES_AT`), the one that builds without a spill under both compilers.
 
+**Attention on gfx1201 at head_dim 64** (#94, RDNA4). The 16-warp tilings now cover
+head_dim 64 too: causal from 1024 query rows, full from 2048; at n 1024-8192, GQA 4, under
+either compiler, causal 1.10-1.84x and full 1.03-1.14x gfx1100's tiling. Below those lengths
+gfx1100's tiling stays, which is faster at a ViT's 577 and 1025 tokens.
+
 **Fixes**
 - **gfx950: `hk.ops.gemm.matmul` raised `ResourceError` in the vLLM image** (#84) at M 192-512 for
   N 28672 / 14336, K 4096: its table routes there to `dp128x224`, which ROCm 10's hipcc builds
