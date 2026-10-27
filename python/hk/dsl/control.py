@@ -323,6 +323,8 @@ def _runtime_while(test, body, carried, names):
         cond = test(*bind(before.arguments, changed))
         if not isinstance(cond, Value):
             raise TypeError(f"the test of a runtime while loop became {cond!r}")
+        if _is_uniform(cond):              # every warp runs the same iterations: barriers may sit in the body
+            loop.attributes["hk.uniform"] = ir.UnitAttr.get()
         scf.ConditionOp(i1(cond), list(before.arguments))
     with t.at(ir.InsertionPoint(after)):
         ins = bind(after.arguments, changed)
@@ -349,7 +351,8 @@ def uniform(cond):
     scalar loads every warp makes, constexprs and the tensors' extents, never of warp_id or a
     lane's value. A branch on it (`if hk.uniform(bid < 160):` or `hk.if_(c, uniform=True)`) may
     hold workgroup operations -- barriers, group copies -- as every warp takes it or none does:
-    the role dispatch of a persistent kernel. The declaration is the author's; a condition that
+    the role dispatch of a persistent kernel. So may a runtime loop on it, `while hk.uniform(t <
+    n):`, every warp running the same iterations: a work queue's loop over `hk.comm.claim`. The declaration is the author's; a condition that
     differs between warps deadlocks at the first barrier inside."""
     if not isinstance(cond, (Bool, Int)):
         raise TypeError(f"hk.uniform takes a device comparison, not {cond!r}")
