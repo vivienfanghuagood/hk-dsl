@@ -197,7 +197,7 @@ index logits and top-512 inside the same launch:
   (`v_readfirstlane`); one LDS word read by every wave after a barrier may
   then drive an `hk.uniform` branch (a select's exact-fit early exit).
 
-**Ops for K2's MoE in one launch** (PRNUM, gfx950), from DeepSeek-V4.1's MoE as one
+**Ops for K2's MoE in one launch** (#104, gfx950), from DeepSeek-V4.1's MoE as one
 resident hk launch, bitwise vs dsv41_mono's:
 - `while hk.uniform(t < n):` -- a runtime loop every warp runs the same
   iterations of may hold barriers: a work queue's loop over `hk.comm.claim`.
