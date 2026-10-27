@@ -24,6 +24,7 @@ from __future__ import annotations
 
 from typing import Callable, Optional
 
+from ..runtime import hostpath as _hostpath
 from . import _common, engine
 
 _ORIG_PWAL: Optional[Callable] = None
@@ -84,13 +85,35 @@ def mxfp8_linear(x, w, ws, hk_wa, hk_wp, out_dtype):
             return mxfp8.gemm_8w_tail(xq, w, xp, hk_wa, hk_wp, **sched)
         return mxfp8.gemm_4w(xq, w, xp, hk_wp, **sched)
     PATCH.count("fallback")
+    quantize, gemm = _vllm_path() if _hostpath.ENABLED else _vllm_path_legacy()
+    xq, xs = quantize(x)
+    return gemm(xq, xs, w, ws, out_dtype)
+
+
+def _vllm_path_legacy():
+    """`_vllm_path` as the fallback's body imported it before the host fast paths: every call."""
     from vllm.model_executor.kernels.linear.mxfp8.rocm_block32_gemm import (  # noqa: PLC0415
         rocm_mxfp8_block32_gemm)
     from vllm.model_executor.layers.quantization.utils.mxfp8_utils import (  # noqa: PLC0415
         mxfp8_e4m3_quantize)
 
-    xq, xs = mxfp8_e4m3_quantize(x)
-    return rocm_mxfp8_block32_gemm(xq, xs, w, ws, out_dtype)
+    return mxfp8_e4m3_quantize, rocm_mxfp8_block32_gemm
+
+
+_VLLM: list = []
+
+
+def _vllm_path():
+    """(mxfp8_e4m3_quantize, rocm_mxfp8_block32_gemm): vLLM's own quant and kernel, imported once
+    -- every call M < MIN_M takes them, decode's included."""
+    if not _VLLM:
+        from vllm.model_executor.kernels.linear.mxfp8.rocm_block32_gemm import (  # noqa: PLC0415
+            rocm_mxfp8_block32_gemm)
+        from vllm.model_executor.layers.quantization.utils.mxfp8_utils import (  # noqa: PLC0415
+            mxfp8_e4m3_quantize)
+
+        _VLLM.extend((mxfp8_e4m3_quantize, rocm_mxfp8_block32_gemm))
+    return _VLLM
 
 
 def process_weights_after_loading(self, layer) -> None:

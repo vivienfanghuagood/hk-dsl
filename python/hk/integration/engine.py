@@ -34,6 +34,8 @@ import os
 from pathlib import Path
 from typing import Callable, Dict, Iterable, List, Optional, Sequence, Tuple
 
+from ..runtime import hostpath as _hostpath
+
 GRAPH_CONTRACTS = ("safe", "never")
 
 #: Every patch constructed, by name, so a status line can report them all.
@@ -44,13 +46,27 @@ class GraphCaptureError(RuntimeError):
     """A patch did, under CUDA-graph capture, something a replay cannot repeat."""
 
 
+#: torch's capture query once a GPU is known to be there, else a False stub.
+#: Every patched call asks twice (`guard`, `count`), and torch.cuda.is_available
+#: re-reads an environment variable each time -- 3.5 us a call of the 32 a
+#: routed int4 layer spent in Python on the W7900D.
+_CAPTURING: List[Callable[[], bool]] = []
+
+
 def capturing() -> bool:
     """Whether the current stream is capturing a CUDA graph. No sync."""
+    if _CAPTURING and _hostpath.ENABLED:
+        return _CAPTURING[0]()
     try:
         import torch  # noqa: PLC0415
     except ImportError:
         return False
-    return torch.cuda.is_available() and torch.cuda.is_current_stream_capturing()
+    if not _hostpath.ENABLED:
+        return torch.cuda.is_available() and torch.cuda.is_current_stream_capturing()
+    if not torch.cuda.is_available():
+        return False                    # asked again next time: a GPU may yet appear
+    _CAPTURING.append(torch.cuda.is_current_stream_capturing)
+    return _CAPTURING[0]()
 
 
 @contextlib.contextmanager
@@ -162,6 +178,8 @@ class Op(Patch):
         self.schema = schema
         self.fake = fake
         self._lib = None
+        self._op = None
+        self._direct = None
 
     @property
     def defined(self) -> bool:
@@ -175,15 +193,38 @@ class Op(Patch):
 
         lib = torch.library.Library(self.ns, "FRAGMENT")
         lib.define(self.schema)
-        lib.impl(self.op_name, self.guard(impl), dispatch)
+        guarded = self.guard(impl)
+        lib.impl(self.op_name, guarded, dispatch)
         torch.library.register_fake(self.name, self.fake, lib=lib)
         self._lib = lib
+        if dispatch == "CUDA":
+            self._direct = (guarded, torch.Tensor, torch.compiler.is_compiling)
         return self
 
     def __call__(self, *args, **kwargs):
-        import torch  # noqa: PLC0415
+        """The op -- or, in eager code, what the op would run: the guarded
+        implementation, called without the dispatcher.
 
-        return getattr(getattr(torch.ops, self.ns), self.op_name)(*args, **kwargs)
+        The op is opaque so that torch.compile does not trace into it; eager
+        code gains nothing from the dispatcher and pays 7 us a call for it on
+        the W7900D, as much as the rest of a decode call's route. So where
+        nothing is tracing (torch.compile, or a fake or functional tensor
+        subclass in the first argument) and the call is for the GPU, the
+        implementation runs directly, under the same capture contract
+        (`guard`). HK_HOST_FASTPATH=0: always the op."""
+        if _hostpath.ENABLED and self._direct is not None and args:
+            guarded, tensor, compiling = self._direct
+            x = args[0]
+            if type(x) is tensor and x.is_cuda and not compiling():
+                return guarded(*args, **kwargs)
+        op = self._op
+        if op is None or not _hostpath.ENABLED:
+            import torch  # noqa: PLC0415
+
+            op = getattr(getattr(torch.ops, self.ns), self.op_name)
+            if self._lib is not None:
+                self._op = op
+        return op(*args, **kwargs)
 
 
 class RouteTable:

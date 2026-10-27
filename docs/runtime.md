@@ -341,6 +341,35 @@ entered a device context. It now costs 17.8 µs ([chapter
   argument out before it returns;
 - there is no device switch when the device is already current.
 
+**The host fast paths** take it further (`hk.runtime.hostpath`). A call's
+checks, grid and argument depend on its tensors' dtypes, device, shapes and
+strides; only the pointers change from one call of a shape to the next. So
+the op's implementation is one function written out per kernel
+(`CodeObjectKernel.launcher`): it checks the dtypes and the device as before,
+reads the grid and the argument from a memo of the shapes it has seen, and
+writes the pointers into it. A new shape, a wrong dtype or device, or a view
+it has not seen takes `tensor_args`, which checks everything and raises the
+same errors as before; a shape it accepts is then memoized (up to 4096 a
+kernel). Code that is itself eager -- an engine's opaque op -- calls that
+implementation without the dispatcher (`codeobj.direct`); hk.ops calls it
+through `torch_ext.launcher`, which goes through the op whenever
+torch.compile is tracing. The engine routes keep their per-shape decisions
+the same way (see [integration](integration.md#host-time-per-call)).
+
+The kernels and their arguments are the same, so outputs are bitwise the
+same. `HK_HOST_FASTPATH=0` turns all of it off: every call then takes the
+path it took before, line for line, which is also what a same-process A/B
+flips (`hostpath.set_enabled`). Host time per launch of a code-object op,
+same process, µs (one kernel, pointers changing every call):
+
+| | W7900D | MI355X |
+|---|---|---|
+| `torch.ops.hk.<op>`, before | 10.2-13.1 | 9.4 |
+| `torch.ops.hk.<op>`, now | 6.6-8.4 | 6.7 |
+| the implementation without the dispatcher | 4.6-5.8 | 5.6 |
+| the pybind entry point (`Kernel.__call__`'s) | 2.7-4.4 | 4.7 |
+| `hipModuleLaunchKernel` through ctypes, argument pre-packed | 2.3-3.0 | 3.9 |
+
 `hk.ops.sdpa` is `F.scaled_dot_product_attention` on the generated kernel
 where it fits, and torch where it does not:
 
@@ -378,6 +407,7 @@ listed in [integration](integration.md#environment-variables).
 | `HK_CACHE_DIR` | `runtime/compile.py` | the compile cache (else `$XDG_CACHE_HOME/hk`, else `~/.cache/hk`) |
 | `HK_TORCH_OP` | `runtime/torch_ext.py` | `library`: `hk.torch_op` builds the libtorch registration (default: over a device-only code object) |
 | `HK_LAUNCH` | `dsl/kernel.py` | `codeobj`: `Kernel.__call__` launches the device-only code object (else the pybind module) |
+| `HK_HOST_FASTPATH` | `runtime/hostpath.py` | `0`/`off`/`no`/`false`: no host fast paths (per-shape memos, launches without the dispatcher); every call takes the path it took before them. Default on |
 | `HK_TUNE_DIR` | `autotune/__init__.py` | where tuning records are written (default: `autotune/` in the cache) |
 | `HK_AUTOTUNE` | `autotune/__init__.py` | `0`, `off` or `no` pins every tuner to its default schedule |
 | `HK_AUTOTUNE_MIN_GAIN` | `autotune/__init__.py` | the smallest recorded win that changes what launches (default 0.01) |

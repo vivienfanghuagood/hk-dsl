@@ -25,6 +25,7 @@ from __future__ import annotations
 import os
 from typing import Callable, Optional
 
+from ..runtime import hostpath as _hostpath
 from . import engine
 
 _ORIG: Optional[Callable] = None
@@ -52,16 +53,39 @@ AITER_PARAMS = ("activation", "quant_type", "doweight_stage1", "gate_mode", "exp
                 "w2_scale", "swiglu_limit")
 
 
-def _takes(hidden, w1, kw) -> bool:
+#: What `_takes` compares against, looked up once: (torch, SiLU, per-1x32 quant, the FP4 dtype or
+#: None). An import statement in a function body is a module-dict lookup and an attribute walk
+#: on every call, and vLLM makes this call on every MoE layer, routed or not.
+_CONSTS: list = []
+
+
+def _consts():
+    if not _CONSTS:
+        import torch  # noqa: PLC0415
+        from aiter import ActivationType, QuantType  # noqa: PLC0415
+
+        _CONSTS.extend((torch, ActivationType.Silu, QuantType.per_1x32,
+                        getattr(torch, "float4_e2m1fn_x2", None)))
+    return _CONSTS
+
+
+def _consts_legacy():
+    """`_consts` as the imports in `_takes`'s body did it before the host fast paths: every call
+    (HK_HOST_FASTPATH=0)."""
     import torch  # noqa: PLC0415
     from aiter import ActivationType, QuantType  # noqa: PLC0415
 
+    return torch, ActivationType.Silu, QuantType.per_1x32, getattr(torch, "float4_e2m1fn_x2", None)
+
+
+def _takes(hidden, w1, kw) -> bool:
+    torch, silu, per_1x32, fp4 = _consts() if _hostpath.ENABLED else _consts_legacy()
     if not ENABLED or hidden.shape[0] < MIN_M or torch.cuda.is_current_stream_capturing():
         return False
-    if getattr(torch, "float4_e2m1fn_x2", None) is None or w1.dtype != torch.float4_e2m1fn_x2:
+    if fp4 is None or w1.dtype != fp4:
         return False
     act, qt = kw.get("activation"), kw.get("quant_type")
-    if act != ActivationType.Silu or qt != QuantType.per_1x32 or kw.get("doweight_stage1"):
+    if act != silu or qt != per_1x32 or kw.get("doweight_stage1"):
         return False
     if kw.get("gate_mode", "") not in ("interleave",):
         return False
@@ -77,13 +101,37 @@ def _takes(hidden, w1, kw) -> bool:
             and hidden.dtype == torch.bfloat16)
 
 
-def moe(hidden, w1, w2, topk_weight, topk_ids, w1_scale, w2_scale, swiglu_limit: float):
-    """The routed experts' output [M, hidden] bf16: AITER's sort and quant, hk's two stages."""
+_FNS: list = []
+
+
+def _fns():
+    """(torch, moe_sorting, fused_dynamic_mxfp8_quant_moe_sort, hk.ops.moe_a8w4), imported once."""
+    if not _FNS:
+        import torch  # noqa: PLC0415
+        from aiter.fused_moe import moe_sorting  # noqa: PLC0415
+        from aiter.ops.quant import fused_dynamic_mxfp8_quant_moe_sort  # noqa: PLC0415
+
+        from ..ops import moe_a8w4  # noqa: PLC0415
+
+        _FNS.extend((torch, moe_sorting, fused_dynamic_mxfp8_quant_moe_sort, moe_a8w4))
+    return _FNS
+
+
+def _fns_legacy():
+    """`_fns` as `moe`'s body imported them before the host fast paths: every call."""
     import torch  # noqa: PLC0415
     from aiter.fused_moe import moe_sorting  # noqa: PLC0415
     from aiter.ops.quant import fused_dynamic_mxfp8_quant_moe_sort  # noqa: PLC0415
 
-    from ..ops import moe_a8w4 as M  # noqa: PLC0415
+    from ..ops import moe_a8w4  # noqa: PLC0415
+
+    return torch, moe_sorting, fused_dynamic_mxfp8_quant_moe_sort, moe_a8w4
+
+
+def moe(hidden, w1, w2, topk_weight, topk_ids, w1_scale, w2_scale, swiglu_limit: float):
+    """The routed experts' output [M, hidden] bf16: AITER's sort and quant, hk's two stages."""
+    torch, moe_sorting, fused_dynamic_mxfp8_quant_moe_sort, M = (
+        _fns() if _hostpath.ENABLED else _fns_legacy())
 
     m, topk = topk_ids.shape
     e = w1.shape[0]
@@ -106,15 +154,59 @@ def moe(hidden, w1, w2, topk_weight, topk_ids, w1_scale, w2_scale, swiglu_limit:
     return y2.view(topk, m, -1).sum(0)
 
 
+#: AITER's fused_moe's signature, read once (apply_patch): (the signature, its positional
+#: parameters after the five named here, every parameter's name, whether it takes **kwargs).
+#: inspect.signature walks the function on every call -- most of the 54 us this wrapper cost
+#: on each MoE layer on the MI355X.
+_SIG: list = []
+
+
+def _sig():
+    if not _SIG or _SIG[0][0] is not _ORIG:
+        import inspect  # noqa: PLC0415
+
+        sig = inspect.signature(_ORIG)
+        ps = list(sig.parameters.values())
+        pos = tuple(p.name for p in ps if p.kind in (p.POSITIONAL_ONLY, p.POSITIONAL_OR_KEYWORD))
+        if any(p.kind == p.VAR_POSITIONAL for p in ps):
+            pos = None                      # *args: leave every call to bind()
+        _SIG[:] = [(_ORIG, sig, pos[5:] if pos else None, frozenset(sig.parameters),
+                    any(p.kind == p.VAR_KEYWORD for p in ps))]
+    return _SIG[0]
+
+
+def _arguments(args, kwargs, five) -> dict:
+    """inspect.signature(_ORIG).bind(*five, *args, **kwargs).arguments with **kwargs folded in --
+    the call's arguments by name -- without bind() where the call is one bind would accept as
+    is: no more positionals than there are parameters, no name given twice, no unknown name
+    unless the function takes **kwargs. Anything else goes to bind(), which raises as before."""
+    orig, sig, pos, names, var_kw = _sig()
+    if pos is not None and len(args) <= len(pos) and kwargs.keys().isdisjoint(pos[:len(args)]) \
+            and kwargs.keys().isdisjoint(_FIVE) and (var_kw or kwargs.keys() <= names):
+        kw = dict(zip(_FIVE, five))
+        kw.update(zip(pos, args))
+        kw.update(kwargs)
+        return kw
+    kw = sig.bind(*five, *args, **kwargs).arguments
+    kw.update(kw.pop("kwargs", {}))
+    return kw
+
+
+_FIVE = ("hidden_states", "w1", "w2", "topk_weight", "topk_ids")
+
+
 def fused_moe(hidden_states, w1, w2, topk_weight, topk_ids, *args, **kwargs):
     """Stands in for aiter.fused_moe.fused_moe, with its signature (apply_patch): vLLM probes
     that signature for `gate_mode` / `quant_dtype_a` and silently drops them when absent -- AITER
     then reads interleaved weights as separated ones, in the stock path as well."""
-    import inspect  # noqa: PLC0415
+    if _hostpath.ENABLED:
+        kw = _arguments(args, kwargs, (hidden_states, w1, w2, topk_weight, topk_ids))
+    else:
+        import inspect  # noqa: PLC0415
 
-    kw = inspect.signature(_ORIG).bind(hidden_states, w1, w2, topk_weight, topk_ids, *args,
-                                       **kwargs).arguments
-    kw.update(kw.pop("kwargs", {}))
+        kw = inspect.signature(_ORIG).bind(hidden_states, w1, w2, topk_weight, topk_ids, *args,
+                                           **kwargs).arguments
+        kw.update(kw.pop("kwargs", {}))
     if _takes(hidden_states, w1, kw):
         PATCH.count("hk")
         return moe(hidden_states, w1, w2, topk_weight, topk_ids, kw["w1_scale"], kw["w2_scale"],

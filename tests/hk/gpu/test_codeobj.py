@@ -155,3 +155,103 @@ def test_a_flat_kernel_launches_as_a_code_object(preload):
     torch.cuda.synchronize()
     assert torch.equal(a, b)
     assert torch.equal(a, (x.float() + y.float()).to(torch.bfloat16))
+
+
+# ------------------------------------------------- the memoized launcher (hk.runtime.hostpath)
+
+
+def _add_launch(name):
+    k = elementwise.KERNELS["add_bf16"]
+    codeobj.torch_op(k, name=name)
+    return codeobj.direct(k, name=name)
+
+
+def test_the_launcher_writes_through_new_pointers_at_a_memoized_shape(monkeypatch):
+    """The memo keeps a shape's grid and argument and nothing of a call's
+    tensors: a second call of the shape writes its own output."""
+    from hk.runtime import hostpath  # noqa: PLC0415
+
+    monkeypatch.setattr(hostpath, "ENABLED", True)
+    run = _add_launch("co_test_add_memo")
+    outs = []
+    for seed in range(3):
+        g = torch.Generator(device="cuda").manual_seed(seed)
+        x, y = (torch.randn(96, 384, device="cuda", dtype=torch.bfloat16, generator=g)
+                for _ in range(2))
+        out = torch.empty_like(x)
+        run(x, y, out)
+        outs.append((out, x + y))
+    torch.cuda.synchronize()
+    for got, want in outs:
+        assert torch.equal(got, want)
+
+
+@pytest.mark.parametrize("rows", [64, 48])        # whole 16-row tiles: add_bf16 stores whole tiles
+def test_the_launcher_and_the_op_agree_on_every_shape_and_view(monkeypatch, rows):
+    """Contiguous and a slice of the last axis, each twice (the second call
+    from the memo), against the dispatcher's op with the fast paths off."""
+    from hk.runtime import hostpath  # noqa: PLC0415
+
+    monkeypatch.setattr(hostpath, "ENABLED", True)
+
+    k = elementwise.KERNELS["add_bf16"]
+    op = codeobj.torch_op(k, name="co_test_add_agree")
+    run = codeobj.direct(k, name="co_test_add_agree")
+    wide = torch.randn(rows, 2 * 256, device="cuda", dtype=torch.bfloat16)
+    for x, y in ((wide[:, :256].contiguous(), wide[:, 256:].contiguous()),
+                 (wide[:, :256], wide[:, 256:])):
+        for _ in range(2):
+            # the same bytes out, whatever the kernel does with a ragged tile
+            a = torch.full((rows, 256), 3.0, device="cuda", dtype=torch.bfloat16)
+            b = a.clone()
+            run(x, y, a)
+            prev = hostpath.set_enabled(False)
+            try:
+                op(x, y, b)
+            finally:
+                hostpath.set_enabled(prev)
+            torch.cuda.synchronize()
+            assert torch.equal(a, b)
+
+
+@pytest.mark.parametrize("on", [True, False], ids=["fast", "off"])
+def test_the_launcher_refuses_what_the_op_refuses_after_a_shape_is_memoized(monkeypatch, on):
+    from hk.runtime import hostpath  # noqa: PLC0415
+
+    monkeypatch.setattr(hostpath, "ENABLED", on)
+    run = _add_launch("co_test_add_refuse")
+    x = torch.randn(64, 128, device="cuda", dtype=torch.bfloat16)
+    run(x, x, torch.empty_like(x))                       # the shape is memoized now
+    with pytest.raises(RuntimeError, match="bf16"):
+        run(x.float(), x.float(), torch.empty_like(x).float())
+    with pytest.raises(RuntimeError, match="GPU"):
+        run(x, x, torch.empty(64, 128, dtype=torch.bfloat16))
+    strided = torch.randn(64, 256, device="cuda", dtype=torch.bfloat16)[:, ::2]
+    with pytest.raises(RuntimeError, match="slice of its last axis"):
+        run(strided, strided, torch.empty_like(x))
+
+
+def test_off_the_launcher_is_the_op_as_it_was(monkeypatch):
+    """HK_HOST_FASTPATH=0 (hostpath.ENABLED False): the torch op's
+    implementation before the fast paths, tensor_args and all."""
+    from hk.runtime import hostpath  # noqa: PLC0415
+
+    monkeypatch.setattr(hostpath, "ENABLED", True)        # whatever HK_HOST_FASTPATH says
+    run = _add_launch("co_test_add_off")
+    seen = []
+    real = codeobj.tensor_args
+    monkeypatch.setattr(codeobj, "tensor_args", lambda *a: seen.append(1) or real(*a))
+    x = torch.randn(32, 64, device="cuda", dtype=torch.bfloat16)
+    out = torch.empty_like(x)
+    run(x, x, out)
+    run(x, x, out)
+    memo_calls = len(seen)
+    prev = hostpath.set_enabled(False)
+    try:
+        run(x, x, out)
+        run(x, x, out)
+    finally:
+        hostpath.set_enabled(prev)
+    torch.cuda.synchronize()
+    assert memo_calls == 1 and len(seen) == 3          # once to memoize; off, every call
+    assert torch.equal(out, x + x)

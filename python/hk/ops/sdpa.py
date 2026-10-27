@@ -82,6 +82,24 @@ def op_for(head_dim: int, causal: bool, scale: Optional[float] = None,
     return op
 
 
+_RUNS = {}
+
+
+def _run_for(head_dim: int, causal: bool, scale: Optional[float] = None,
+             n: int = 4096, bnhd: bool = False, mapping: str = "block_first"):
+    """`op_for`'s op as a launch: without the dispatcher outside torch.compile
+    (`torch_ext.launcher`). What this module's calls go through."""
+    key = (head_dim, causal, scale, _attn._tune_key(n), bnhd, mapping)
+    run = _RUNS.get(key)
+    if run is None:
+        from ..runtime.torch_ext import launcher  # noqa: PLC0415
+
+        run = _RUNS[key] = launcher(
+            _attn._kernel_for(head_dim, causal, scale, n, bnhd=bnhd, mapping=mapping),
+            ns=NAMESPACE)
+    return run
+
+
 def why_unsupported(q, k, v, attn_mask=None, dropout_p: float = 0.0,
                     is_causal: bool = False, enable_gqa: bool = False) -> str:
     """Why this exact call cannot run on the kernel, or '' if it can."""
@@ -165,8 +183,8 @@ def attention(q, k, v, *, causal: bool = False, scale: Optional[float] = None,
     elif out.shape != q.shape or out.dtype != q.dtype or not out.is_contiguous():
         raise ValueError(f"hk sdpa: out is {tuple(out.shape)}/{out.dtype}, "
                          f"expected a contiguous {tuple(q.shape)}/{q.dtype}")
-    op_for(q.shape[-1], causal, scale, q.shape[-2],
-           mapping=_attn._mapping(q, k, causal))(q, k, v, out)
+    _run_for(q.shape[-1], causal, scale, q.shape[-2],
+             mapping=_attn._mapping(q, k, causal))(q, k, v, out)
     return out
 
 
@@ -252,13 +270,13 @@ def scaled_dot_product_attention(query, key, value, attn_mask=None,
         out = torch.empty((b, n, h, d), device=query.device, dtype=query.dtype)
         flat = [t.transpose(1, 2).reshape(t.shape[0], 1, t.shape[2], -1)
                 for t in (query, key, value, out.transpose(1, 2))]
-        op_for(d, bool(is_causal), scale, n, bnhd=True)(*flat)
+        _run_for(d, bool(is_causal), scale, n, bnhd=True)(*flat)
         STATS["bnhd"] += 1
         return out.transpose(1, 2)
     q, k, v = query.contiguous(), key.contiguous(), value.contiguous()
     out = torch.empty_like(q)
-    op_for(q.shape[-1], bool(is_causal), scale, q.shape[-2],
-           mapping=_attn._mapping(q, k, bool(is_causal)))(q, k, v, out)
+    _run_for(q.shape[-1], bool(is_causal), scale, q.shape[-2],
+             mapping=_attn._mapping(q, k, bool(is_causal)))(q, k, v, out)
     return out
 
 

@@ -59,6 +59,7 @@ from __future__ import annotations
 
 from typing import Any, Callable, Dict, Optional
 
+from ..runtime import hostpath as _hostpath
 from . import _common, engine, flydsl_gemm
 
 PREFIXES = ("vllm",)
@@ -74,6 +75,7 @@ ROUTES_ENV = "HK_VLLM_ROUTES"
 _ORIG_DISPATCH: Optional[Callable] = None
 _FALLBACK: Optional[Callable] = None
 _OPS: Dict[str, Callable] = {}
+_OPS_LEGACY: Dict[str, Callable] = {}
 _ARCH_OK: Dict[int, bool] = {}
 _TABLE: list = []
 
@@ -131,6 +133,7 @@ def set_routes(table: Optional[engine.RouteTable]) -> None:
                       "captured; graphs captured before keep replaying the old "
                       "routes", stacklevel=2)
     _TABLE.clear()
+    _PLANS.clear()
     if table is not None:
         _TABLE.append(table)
 
@@ -218,27 +221,63 @@ def _cdna(device) -> bool:
 
 
 def _op_for(m: int, n: int, k: int) -> Callable:
-    """The torch.ops registration for the schedule this shape gets."""
+    """The launch of the schedule this shape gets: its torch.ops registration's
+    implementation, called directly (`codeobj.direct`) -- `linear` is the body
+    of an opaque op, eager code torch.compile does not trace."""
     from ..ops import gemm as hk_gemm  # noqa: PLC0415
-    from ..runtime.torch_ext import torch_op  # noqa: PLC0415
 
     s = hk_gemm.schedule_for(m, n, k)
     key = hk_gemm._sched_name({**hk_gemm.DEFAULT, **s})
     op = _OPS.get(key)
     if op is None:
-        op = _OPS[key] = torch_op(hk_gemm.TUNER._kernel_for(s))
+        op = _OPS[key] = _direct(hk_gemm.TUNER._kernel_for(s))
     return op
 
 
 def _decode_op(s: Dict[str, Any]) -> Callable:
     from ..ops import decode_gemm  # noqa: PLC0415
-    from ..runtime.torch_ext import torch_op  # noqa: PLC0415
 
     key = "decode_" + "_".join(f"{k}{v}" for k, v in sorted(s.items()))
     op = _OPS.get(key)
     if op is None:
-        op = _OPS[key] = torch_op(decode_gemm.kernel_for(**s))
+        op = _OPS[key] = _direct(decode_gemm.kernel_for(**s))
     return op
+
+
+def _op_for_legacy(m: int, n: int, k: int) -> Callable:
+    """`_op_for` before the host fast paths: the torch op (HK_HOST_FASTPATH=0)."""
+    from ..ops import gemm as hk_gemm  # noqa: PLC0415
+    from ..runtime.torch_ext import torch_op  # noqa: PLC0415
+
+    s = hk_gemm.schedule_for(m, n, k)
+    key = hk_gemm._sched_name({**hk_gemm.DEFAULT, **s})
+    op = _OPS_LEGACY.get(key)
+    if op is None:
+        op = _OPS_LEGACY[key] = torch_op(hk_gemm.TUNER._kernel_for(s))
+    return op
+
+
+def _decode_op_legacy(s: Dict[str, Any]) -> Callable:
+    from ..ops import decode_gemm  # noqa: PLC0415
+    from ..runtime.torch_ext import torch_op  # noqa: PLC0415
+
+    key = "decode_" + "_".join(f"{k}{v}" for k, v in sorted(s.items()))
+    op = _OPS_LEGACY.get(key)
+    if op is None:
+        op = _OPS_LEGACY[key] = torch_op(decode_gemm.kernel_for(**s))
+    return op
+
+
+def _direct(kernel) -> Callable:
+    import os  # noqa: PLC0415
+
+    from ..runtime.torch_ext import torch_op  # noqa: PLC0415
+
+    if os.environ.get("HK_TORCH_OP", "codeobj") == "library":
+        return torch_op(kernel)
+    from ..runtime import codeobj  # noqa: PLC0415
+
+    return codeobj.direct(kernel)
 
 
 def _fallback(x, weight, bias):
@@ -254,8 +293,84 @@ def _fallback(x, weight, bias):
     return _FALLBACK(x, weight, bias)
 
 
+#: (M, N, K, dtypes, bias, weight contiguous, device) -> (path, run): where a
+#: call of that shape goes and the launch that takes it there, decided once.
+#: The decision reads only those, the table and OPTIONAL, so the memo is kept
+#: for one table and one OPTIONAL (`_PLANS_FOR`) and dropped when either
+#: changes. Deciding took 20 of the 32 us a routed decode call spent in
+#: Python on the W7900D.
+_PLANS: Dict[tuple, tuple] = {}
+_PLANS_FOR: list = [None, None]
+#: Shapes memoized; past it a call decides afresh (a serving engine's prefill
+#: has a new M per batch).
+_PLAN_CAP = 4096
+
+
+def _plan(x, weight, bias, m: int, n: int, k: int) -> tuple:
+    import torch  # noqa: PLC0415
+
+    path = route_for(m, n, k,
+                     bf16=x.dtype == torch.bfloat16 and weight.dtype == torch.bfloat16,
+                     bias=bias is not None, contiguous_weight=weight.is_contiguous())
+    if path == "fallback" or not _arch_ok(x.device):
+        return "fallback", None
+    if path == "hipkittens":
+        return path, None
+    if path == "hk" and _cdna(x.device):
+        from ..ops import gemm_cdna  # noqa: PLC0415
+
+        return path, gemm_cdna.matmul
+    if path == "hk":
+        return path, _op_for(m, n, k)
+    if path in OPTIONAL:
+        return path, OPTIONAL[path].run
+    from ..ops import decode_gemm  # noqa: PLC0415
+
+    s = decode_gemm.schedule_for(m, k)
+    op = _decode_op(s)
+    if s["splits"] > 1:
+        scratch = decode_gemm.scratch_for(x.device, s["splits"], s["tokens"], n)
+        return path, lambda x2, w, out: op(x2, w, out, *scratch)
+    return path, op
+
+
 def linear(x, weight, bias=None):
     """y = x @ weight.T (+ bias), on the kernel the table names."""
+    if not _hostpath.ENABLED:
+        return _linear_legacy(x, weight, bias)
+    import torch  # noqa: PLC0415
+
+    k = x.shape[-1]
+    m = x.numel() // k if k else 0
+    n = weight.shape[0]
+    table = routes()
+    if _PLANS_FOR[0] is not table or _PLANS_FOR[1] is not OPTIONAL:
+        _PLANS.clear()
+        _PLANS_FOR[:] = [table, OPTIONAL]
+    key = (m, n, k, x.dtype, weight.dtype, bias is None, weight.is_contiguous(),
+           x.get_device())
+    plan = _PLANS.get(key)
+    if plan is None:
+        plan = _plan(x, weight, bias, m, n, k)
+        if len(_PLANS) < _PLAN_CAP:
+            _PLANS[key] = plan
+    path, run = plan
+    if path == "fallback":
+        PATCH.count("fallback")
+        return _fallback(x, weight, bias)
+    x2 = x.reshape(m, k)
+    if not x2.is_contiguous():
+        x2 = x2.contiguous()
+    if path == "hipkittens":
+        return _hipkittens(x, x2, weight, bias, m, n)
+    out = torch.empty((m, n), device=x.device, dtype=x.dtype)
+    run(x2, weight, out)
+    PATCH.count(path)
+    return out.view(*x.shape[:-1], n)
+
+
+def _linear_legacy(x, weight, bias=None):
+    """`linear` before the host fast paths, line for line (HK_HOST_FASTPATH=0)."""
     import torch  # noqa: PLC0415
 
     k = x.shape[-1]
@@ -278,7 +393,7 @@ def linear(x, weight, bias=None):
 
         gemm_cdna.matmul(x2, weight, out)
     elif path == "hk":
-        _op_for(m, n, k)(x2, weight, out)
+        _op_for_legacy(m, n, k)(x2, weight, out)
     elif path in OPTIONAL:
         OPTIONAL[path].run(x2, weight, out)
     else:
@@ -286,10 +401,10 @@ def linear(x, weight, bias=None):
 
         s = decode_gemm.schedule_for(m, k)
         if s["splits"] > 1:
-            _decode_op(s)(x2, weight, out,
-                          *decode_gemm.scratch_for(x.device, s["splits"], s["tokens"], n))
+            _decode_op_legacy(s)(x2, weight, out,
+                                 *decode_gemm.scratch_for(x.device, s["splits"], s["tokens"], n))
         else:
-            _decode_op(s)(x2, weight, out)
+            _decode_op_legacy(s)(x2, weight, out)
     PATCH.count(path)
     return out.view(*x.shape[:-1], n)
 
@@ -323,7 +438,9 @@ def _gemm(layer, x, weight, bias=None):
 
     if not x.is_cuda:
         return torch.nn.functional.linear(x, weight, bias)
-    return torch.ops.hk_vllm.linear(x, weight, bias)
+    if not _hostpath.ENABLED:
+        return torch.ops.hk_vllm.linear(x, weight, bias)
+    return PATCH(x, weight, bias)
 
 
 def dispatch_unquantized_gemm(*args, **kwargs):
