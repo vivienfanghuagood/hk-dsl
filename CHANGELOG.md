@@ -9,6 +9,47 @@ The next version's notes collect here until it is released.
 What is on main after 0.8.0. `pip install hk-dsl` (0.8.0) does not have it;
 the API reference marks such names *New after 0.8.0*.
 
+**gfx950 paged decode: two pages a step, a cheaper merge, and no point
+slower than before the 512-split plan.** The previous entry's plan was up to
+13% slower than the one before it on short sequences (1-2k tokens); this one
+is not, and keeps the plan's gains on long ones.
+- Where (requests x kv heads) is under 64 or 256-511 -- about one workgroup a
+  CU -- the walk takes two pages a step on splits of 8 pages or more and one
+  on shorter ones, in one kernel (`paged_cdna.pages_per_step`,
+  `decode_kernel(ppstep=2)`, `hk.ops.paged.fused_kernel(ppstep=)`): 1.025x
+  one page a step on those points.
+- Two pages a step need a scheduling fence after QK (`decode_kernel(fence_qk=)`,
+  on by default, no measurable cost). Without it the current LLVM threads the
+  softmax's reads of the AGPR scores through the two pages' MFMA chains, and
+  some scores come out wrong: 2-4e-2 off on a 128-token split, a different
+  answer from one build to the next.
+- Splits take at least 2 pages where the merge reads every split (up to 64
+  splits, `paged_cdna.merge_reads_all`, `min_pages_for`) and, with more
+  splits, on sequences of up to 128 pages (`floor_pages`); 4 otherwise. A
+  short sequence on a plan for long ones walked 4 pages a split, 1.2 us more.
+- The merge: up to a round of 8 splits a warp it reads every split without
+  first loading the sequence length (the walk writes empty splits' zeros); it
+  folds on at most 8 warps (`MERGE_WARPS`, 3-10% faster than 16 from 4k
+  tokens at 256 splits); and it sums only the warps that folded something.
+- On many-round plans an empty split skips its query load and copies, and
+  split indices are turned by the (request, kv head) pair so that a short
+  sequence's splits spread over the XCDs.
+- Measured on the attention task's decode grid (MI355X; 32/8, 64/8, 32/4 and
+  8/1 heads; 1-64 requests; 1k, 2k, 4k-128k tokens; CUDA graphs; KV rotated
+  past 1.2 GB), main before the 512-split plan, the 512-split plan, this and
+  the rivals in one process, compared round by round:
+  - against main before the 512-split plan: 1.107x (geometric mean of the
+    per-point medians), up to 3.5x; the lowest four points, 1k tokens, are
+    0.991-0.998x with rounds either side of 1.0, where the 512-split plan had
+    0.87-0.98x on 8 points;
+  - against the 512-split plan: 1.039x, lowest 0.994x;
+  - against the best of AITER's Gluon unified attention, FlyDSL `pa_decode` and
+    asm `pa_fwd_asm`, on the 120 points without 2k: 14 WIN, 93 tie, 13 LOSS,
+    geometric mean 1.009x, where the 512-split plan had 14 / 60 / 46 and
+    0.977x the same day.
+- Outputs change by the order pages and splits are folded in (within the fp32
+  check; deterministic under another process on the GPU).
+
 **gfx950 paged decode: a merge on several warps, and up to 512 splits.** The
 split decode's merge (`hk.ops.paged_cdna.merge_kernel`) folded every split of
 a (request, kv head, query row) on one warp, 8 splits a round. That capped

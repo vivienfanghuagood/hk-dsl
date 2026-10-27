@@ -150,9 +150,14 @@ def test_paged_and_paged_prefill_route_to_them_on_gfx950(monkeypatch):
     assert paged.plan_splits(1, 1, 4096) == 256 and paged.plan_splits(4, 4, 4096) == 16
     assert paged.plan_splits(1, 1, 100) == 100
     # Its merge folds on about a warp a round of 8 splits, up to 16.
-    assert [paged_cdna.merge_warps(s) for s in (1, 8, 16, 64, 256, 512)] == [1, 1, 2, 8, 16, 16]
+    assert [paged_cdna.merge_warps(s) for s in (1, 8, 16, 64, 256, 512)] == [1, 1, 2, 8, 8, 8]
     assert paged.merge_kernel(128, 256).name == "paged_merge_d128_s256_cdna"
-    assert paged.merge_kernel(128, 256).warps == 16
+    assert paged.merge_kernel(128, 256).warps == 8
+    # Two pages a step where the plan puts about a workgroup on a CU.
+    assert [paged.pages_per_step(n, h) for n, h in ((1, 8), (4, 8), (16, 8), (32, 8), (64, 8))] \
+        == [2, 2, 1, 2, 1]
+    assert paged.fused_kernel(128, 32, ppstep=2).name == "paged_decode_d128_fused_s32_cdna_ppstep2"
+    paged.fused_kernel(128, 32, ppstep=2).trace()
     paged.merge_kernel(128, 256).trace()
     with pytest.raises(ValueError, match="ablate"):
         paged.fused_kernel(128, 8, ablate=("qk",))

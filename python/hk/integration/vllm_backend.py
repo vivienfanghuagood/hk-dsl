@@ -151,15 +151,15 @@ def decode_splits(n: int, n_kv_heads: int, pages_cap: int) -> int:
     return 1 << round(math.log2(want))
 
 
-def _op(kind: str, head_dim: int, splits: int):
-    op = _OPS.get((kind, head_dim, splits))
+def _op(kind: str, head_dim: int, splits: int, ppstep: int = 1):
+    op = _OPS.get((kind, head_dim, splits, ppstep))
     if op is None:
         from ..ops import paged as hk_paged
         from ..runtime.torch_ext import launcher
 
-        k = (hk_paged.fused_kernel(head_dim, splits) if kind == "walk"
+        k = (hk_paged.fused_kernel(head_dim, splits, ppstep=ppstep) if kind == "walk"
              else hk_paged.merge_kernel(head_dim, splits))
-        op = _OPS[(kind, head_dim, splits)] = launcher(k)
+        op = _OPS[(kind, head_dim, splits, ppstep)] = launcher(k)
     return op
 
 
@@ -227,7 +227,8 @@ def decode(q, k_cache, v_cache, block_table, seq_lens, out, scratch,
 
     d = q.shape[-1]
     merge = _op("merge", d, splits) if splits > 1 else None
-    hk_paged.decode(_op("walk", d, splits), merge, q, k_cache, v_cache,
+    pp = hk_paged.pages_per_step(q.shape[0], q.shape[1])
+    hk_paged.decode(_op("walk", d, splits, pp), merge, q, k_cache, v_cache,
                     block_table, seq_lens, out, scratch, splits)
 
 
