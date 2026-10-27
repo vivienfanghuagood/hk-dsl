@@ -1548,7 +1548,7 @@ fixed order.
 Global.scatter(self, value: Tile, ids: Global, at, *, count=None, col=0, sort_topk: int = 0, add: bool = False, staged: int = 0) -> None
 ```
 
-*Changed after 0.7.0*: new parameter `staged`
+*Changed after 0.8.0*: new parameter `staged`
 
 Rows by index: tile row r goes to row `ids[at + r]`, from column
 `col`; an index outside the tensor, or a position at or past

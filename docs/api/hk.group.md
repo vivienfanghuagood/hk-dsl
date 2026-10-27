@@ -66,7 +66,7 @@ whole prefetch).
 Group.gather_prep(self, ids, at, rows: int, *, raw: bool = False) -> None
 ```
 
-*Changed after 0.7.0*: new parameter `raw`
+*Changed after 0.8.0*: new parameter `raw`
 
 Stage `rows` source rows of a gathered copy in LDS -- `ids[at + r] &
 0xFFFFFF` -- and pass a barrier (every warp must call it). A
