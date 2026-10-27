@@ -356,6 +356,42 @@ def test_rdna_schedule_and_plan_read_the_record(tunedir):
     assert steps[0].kernel == "decode" and steps[0].sched["warps"] == 8
 
 
+@pytest.mark.arch("gfx1201")
+def test_gfx1201_reads_its_shipped_records_behind_this_machines(tunedir):
+    from hk.ops import gemm
+
+    # The shipped table answers its M bucket (50 rows: the 64 record) ...
+    got = gemm.user_route(50, 4096, 4096)
+    assert got is not None and got[0] == records.shipped_route("gfx1201", 64, 4096, 4096)[0]
+    assert gemm.schedule_for(50, 4096, 4096, user=False)["block_n"] == 64
+    # ... and nothing past what it holds, nor for another arch.
+    assert gemm.user_route(4096, 4096, 4096) is None
+    assert records.shipped_route("gfx1100", 64, 4096, 4096) is None
+    assert records.shipped_route("gfx950", 64, 4096, 4096) is None
+    # This machine's record comes first; HK_AUTOTUNE=0 ignores both.
+    records.save("gfx1201", 64, 4096, 4096, "u:mine", ["rdna", dict(block_m=64, block_n=128)], {})
+    assert gemm.user_route(64, 4096, 4096)[0] == "u:mine"
+    assert gemm.user_route(64, 4096, 4096, user=False)[0] == got[0]
+
+
+def test_gfx1201_shipped_records_take_their_shapes():
+    """Every shipped gfx1201 schedule is legal at the M it was tuned at and at
+    the bottom of its bucket, where the fewest rows meet its tiles."""
+    import hk.schedules as S
+
+    d = json.loads((Path(records.__file__).resolve().parents[1] / "tuned"
+                    / "routes_gemm_gfx1201.json").read_text())
+    assert d["arch"] == "gfx1201" and d["routes"]
+    for nk, by_m in d["routes"].items():
+        n, k = map(int, nk.split("x"))
+        for ms, name in by_m.items():
+            s = S.from_record(d["candidates"][name])
+            for m in (int(ms), int(ms) // 2 + 1):
+                assert not s.check(m, n, k, "gfx1201"), (m, n, k, name)
+    assert {(p["m"], p["n"], p["k"]) for p in d["points"]} == {
+        (int(ms), *map(int, nk.split("x"))) for nk, by_m in d["routes"].items() for ms in by_m}
+
+
 # ---------------------------------------------------------------- spaces
 
 

@@ -608,11 +608,13 @@ def _bucket(m: int) -> int:
     return b
 
 
-def user_route(m: int, n: int, k: int):
+def user_route(m: int, n: int, k: int, user: bool = True):
     """(name, hk.schedules schedule) of this machine's hk.tune record for the
-    shape on this RDNA arch -- an Rdna (this module's kernel) or a Decode
+    shape on this RDNA arch (`user=False` skips it), else of the one this
+    package ships for the arch (hk.tune.records.shipped_route: gfx1201's
+    small-M GEMMs) -- an Rdna (this module's kernel) or a Decode
     (hk.ops.decode_gemm) -- if there is one and it takes the shape; else None."""
-    key = (m, n, k)
+    key = (m, n, k, user)
     gen = _autotune.generation()
     hit = _USER.get(key)
     if hit is not None and hit[0] == gen:
@@ -620,7 +622,8 @@ def user_route(m: int, n: int, k: int):
     from ..tune import records  # noqa: PLC0415
 
     out = None
-    u = records.user_route(current_arch(), m, n, k)
+    u = ((records.user_route(current_arch(), m, n, k) if user else None)
+         or records.shipped_route(current_arch(), m, n, k))
     if u is not None:
         try:
             from .. import schedules  # noqa: PLC0415
@@ -645,7 +648,8 @@ def schedule_for(m: int, n: int, k: int, user: bool = True) -> Dict[str, Any]:
     """The tuned schedule for this shape, or the default.
 
     This machine's hk.tune record for the shape comes first (`user=False`
-    skips it), then the gemm_bf16 tuner's records, then the default.
+    skips it), then the record shipped for the arch (`user_route`), then the
+    gemm_bf16 tuner's records, then the default.
 
     The fallback is not belt and braces. A record is keyed on a bucketed M and
     an exact N and K, so a recorded schedule has tiled *a* shape in this
@@ -653,10 +657,9 @@ def schedule_for(m: int, n: int, k: int, user: bool = True) -> Dict[str, Any]:
     default tiles fine -- into an exception two months later. A schedule that
     cannot tile the shape in front of it loses to the one that can.
     """
-    if user:
-        u = user_route(m, n, k)
-        if u is not None and u[1].family == "rdna":
-            return {**DEFAULT, **u[1].legacy()}
+    u = user_route(m, n, k, user)
+    if u is not None and u[1].family == "rdna":
+        return {**DEFAULT, **u[1].legacy()}
     s = TUNER.schedule_for(f"{_bucket(m)}x{n}x{k}")
     if s == DEFAULT and m <= THIN["block_m"] and not (k % THIN["k_step"] or
                                                      n % THIN["block_n"]):
