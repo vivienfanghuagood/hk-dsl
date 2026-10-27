@@ -61,7 +61,7 @@ def _flag(view, what: str) -> int:
     if view.tensor.dtype is not i32:
         raise TypeError(f"hk.comm.{what}: a flag is an int32 element, not "
                         f"{view.tensor.dtype.name}")
-    if not getattr(view.tensor.ty, "scope", ""):
+    if getattr(view.tensor.ty, "scope", "") not in ("device", "system"):
         raise TypeError(
             f"hk.comm.{what} on {view.tensor.name!r}, an unscoped tensor: annotate it "
             f"hk.Tensor[hk.i32, \"system\"] (another GPU) or \"device\" (another XCD). An "

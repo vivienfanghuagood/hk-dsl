@@ -197,6 +197,16 @@ index logits and top-512 inside the same launch:
   (`v_readfirstlane`); one LDS word read by every wave after a barrier may
   then drive an `hk.uniform` branch (a select's exact-fit early exit).
 
+**Ops for K2's MoE in one launch** (#104, gfx950), from DeepSeek-V4.1's MoE as one
+resident hk launch, bitwise vs dsv41_mono's:
+- `while hk.uniform(t < n):` -- a runtime loop every warp runs the same
+  iterations of may hold barriers: a work queue's loop over `hk.comm.claim`.
+- `hk.fp8_operand(words)`: an MXFP8 MMA operand from a lane's eight dwords, for
+  fp8 operands kept in LDS as words (an fp8 shared tile has no register path).
+- `hk.Tensor[..., "stream"]`: non-temporal accesses for a weight stream a launch
+  reads once (K2's MoE: 135 -> 123 us a launch). Not a scope: mailboxes, flags
+  and symmetric memory refuse it.
+
 **Fixes**
 - **gfx950: `hk.ops.gemm.matmul` raised `ResourceError` in the vLLM image** (#84) at M 192-512 for
   N 28672 / 14336, K 4096: its table routes there to `dp128x224`, which ROCm 10's hipcc builds

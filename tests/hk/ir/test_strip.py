@@ -607,3 +607,16 @@ def test_the_select_ops_emit_their_cdna_calls_and_check_their_strips():
             pass
     with pytest.raises(TypeError, match="i32 strip"):
         _src950(fl)
+
+
+def test_fp8_operand_emits_its_call_and_takes_two_runs_of_four():
+    def ok(a: hk.Tensor[hk.i32], o: hk.Tensor[hk.fp32]):
+        t = hk.fp8_operand(a.load_elems(hk.iota(hk.RS(hk.i32, 1, 512, 4)), runs=True))
+        sc = hk.mx_scales_loose(hk.iota(hk.RS(hk.i32, 1, 64, 1)))
+        o[hk.elem_coord(0, 0, 0, 0)] = hk.mma_ABt_mx(t, t, hk.zeros(hk.RT(hk.fp32, 16, 16, "col")), sc, sc)
+    assert "kittens::fp8_operand(" in _src950(ok)
+
+    def one_run(a: hk.Tensor[hk.i32], o: hk.Tensor[hk.fp32]):
+        hk.fp8_operand(a.load_elems(hk.iota(hk.RS(hk.i32, 1, 256, 4)), runs=True))
+    with pytest.raises(TypeError, match="1 x 512, run 4"):
+        _src950(one_run)

@@ -221,3 +221,39 @@ def test_a_mailbox_must_be_scoped_int32():
         hk.comm.take(box.at[0], 1)
     with pytest.raises(TypeError, match="int32"):
         _kernel(floaty, "comm_take_f32").source()
+
+
+def test_a_stream_tensor_reads_nontemporal_and_is_no_hand_off():
+    """"stream" is a policy, not a scope: NT (non-temporal) accesses for data read once (a weight
+    stream), refused where a hand-off needs another CTA's or GPU's stores seen."""
+    S4 = hk.RS(i32, 1, 256, 4)
+
+    def body(w: hk.Tensor[i32, "stream"], o: hk.Tensor[i32]):
+        c = hk.iota(S4)
+        o.store_elems(w.load_elems(c, runs=True), c, runs=True)
+    src = _kernel(body, "stream_load").source()
+    assert "load_elems_runs<2>(" in src
+
+    def post(w: hk.Tensor[i32, "stream"]):
+        c = hk.iota(S4)
+        w.post_elems(c, c, 1)
+    with pytest.raises(TypeError, match="unscoped"):
+        _kernel(post, "stream_post").source()
+
+    def flag(w: hk.Tensor[i32, "stream"]):
+        hk.comm.signal(w.at[0], 1)
+    with pytest.raises(TypeError, match="unscoped"):
+        _kernel(flag, "stream_flag").source()
+
+    from hk.runtime import symmetric
+    params = [("w", hk.Tensor[i32, "stream"])]
+
+    class Fake:
+        def data_ptr(self): return 0x1800
+    old = list(symmetric._RANGES)
+    symmetric._RANGES[:] = [(0x1000, 0x2000)]
+    try:
+        with pytest.raises(TypeError, match="unscoped"):
+            symmetric.check_bindings("k", params, [Fake()])
+    finally:
+        symmetric._RANGES[:] = old
