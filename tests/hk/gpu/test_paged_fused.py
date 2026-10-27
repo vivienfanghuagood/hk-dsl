@@ -77,6 +77,20 @@ def test_the_decode_is_right_at_every_split(splits, head_dim):
     assert _rel(got, _reference(*case)) < 2e-2
 
 
+@pytest.mark.parametrize("splits", [64, 256])
+def test_many_splits_fold_on_several_warps(splits):
+    """gfx950's plan reaches 256 splits and more at one request on few kv heads
+    (paged_cdna.target_workgroups); its merge folds them on up to 16 warps
+    (paged_cdna.merge_warps). Long and short sequences, a padded one, a
+    sequence with fewer pages than warps' rounds, and the deterministic
+    answer twice."""
+    case = _case([0, 4100, 33, 20000], h_kv=1, group=8)
+    got = _decode(*case, splits)
+    assert torch.count_nonzero(got[0]) == 0
+    assert _rel(got, _reference(*case)) < 2e-2
+    assert torch.equal(got, _decode(*case, splits))
+
+
 def test_a_padded_request_reads_nothing_and_answers_zero():
     case = _case([0, 100, 0, 37])
     got = _decode(*case, 8)

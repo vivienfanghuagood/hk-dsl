@@ -473,7 +473,7 @@ two); gfx1100's merge takes any count.
 Without a split the grid is `n_reqs * n_kv_heads` one-warp workgroups.
 This asks for enough splits to reach `TARGET_WORKGROUPS`, capped by the
 page count -- a split with no pages is pure overhead -- and by
-`MAX_SPLITS`.
+`MAX_SPLITS` (on gfx950, paged_cdna's target_workgroups and MAX_SPLITS).
 
 **Per architecture** ([audit](../dx/api-consistency.md)):
 
