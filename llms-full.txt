@@ -2811,6 +2811,18 @@ Tile.max(self, axis: int = 1, *, lanes: Optional[str] = None, xor: Optional[Sequ
 
 The max along `axis`: 1 (default) along each row, one value per row (a col_vec); 0 along each column (a row_vec). Lazy: `v = t.max()` makes the vector, `m.max_(t.max())` folds into one (the online max), and `.value(into=v)` writes an existing one.
 
+#### `Tile.first_lane`
+
+```python
+Tile.first_lane(self) -> Int
+```
+
+*New after 0.8.0*
+
+Lane 0's first element of this i32 strip, as a scalar (v_readfirstlane, gfx950). Uniform
+across the workgroup when every wave holds the same value -- one LDS word read after a
+barrier -- so it may drive hk.uniform branches (an early exit decided by one wave).
+
 #### `Tile.lane_gather`
 
 ```python
@@ -3731,6 +3743,19 @@ another warp reads it: hk.arch.barrier(drain=True). A bf16 tile takes the fp32 v
 rounded to bf16 (round to nearest even) -- an MMA operand built element by element, read
 back with `.load` / `.subtile(...).load`.
 
+#### `SharedTile.atomic_add_elems`
+
+```python
+SharedTile.atomic_add_elems(self, val: Tile, idx: Tile) -> None
+```
+
+*New after 0.8.0*
+
+Element by element, atomically (gfx950): val's element (r, c), an i32, is added to element
+`idx[r, c]` of this fp32 LDS tile taken as an i32 (ds_add_u32); below zero or past the tile,
+nothing. Every element to one index lands: a histogram's counts. Read the counts with
+load_elems(..., i32) after hk.arch.barrier(drain=True).
+
 #### `SharedTile.subtile`
 
 ```python
@@ -3977,7 +4002,7 @@ are bounded: any non-empty length. head_dim is 64 or 128 on both.
 
 ## Also exported
 
-`hk.mx`, `hk.templates`
+`hk.fp4_operand`, `hk.mx`, `hk.mx_scales_loose`, `hk.templates`
 
 
 <!-- docs/api/hk.math.md -->

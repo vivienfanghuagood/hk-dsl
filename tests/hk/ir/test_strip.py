@@ -567,3 +567,43 @@ def test_a_bf16_lds_tile_takes_element_stores_not_loads():
         o.at[0, 0].store(s.load_elems(hk.iota(S64)))
     with pytest.raises(Exception, match="fp32 LDS tile"):
         _src950(ld)
+
+
+def test_the_select_ops_emit_their_cdna_calls_and_check_their_strips():
+    W, L = hk.RS(hk.i32, 1, 256, 4), hk.RS(hk.i32, 1, 64, 1)
+
+    def ops(a: hk.Tensor[hk.i32], s: hk.Tensor[hk.i8], o: hk.Tensor[hk.fp32]):
+        h = hk.lds.alloc(hk.ST(hk.fp32, 16, 16), name="h")
+        ln = hk.iota(L)
+        h.atomic_add_elems(hk.map_cpp("1", ln, dtype=hk.i32), ln)
+        t = hk.fp4_operand(a.load_elems(hk.iota(W), runs=True))
+        sc = hk.mx_scales_loose(hk.map_cpp("x0 & 0xFF", s.load_elems(ln, hk.i32), dtype=hk.i32))
+        o[hk.elem_coord(0, 0, 0, 0)] = hk.mma_ABt_mx(t, t, hk.zeros(hk.RT(hk.fp32, 16, 16, "col")), sc, sc,
+                                                     a_fmt="fp4", b_fmt="fp4")
+        hk.arch.barrier(drain=True)
+        if hk.uniform(h.load_elems(ln, hk.i32).first_lane() > 0):
+            o.store_elems(hk.map_cpp("0.0f", ln, dtype=hk.fp32), ln)
+    src = _src950(ops)
+    for call in ("kittens::lds_atomic_add_elems(", "kittens::fp4_operand(", "kittens::mx_scales_loose(",
+                 "__builtin_amdgcn_readfirstlane("):
+        assert call in src, call
+
+    def wide(a: hk.Tensor[hk.i32], o: hk.Tensor[hk.fp32]):
+        t = hk.fp4_operand(a.load_elems(hk.iota(hk.RS(hk.i32, 1, 512, 8)), runs=True))
+        o.at[0, 0].store(hk.mma_ABt_mx(t, t, hk.zeros(hk.RT(hk.fp32, 16, 16, "col")),
+                                       hk.mx_scales_loose(hk.iota(L)), hk.mx_scales_loose(hk.iota(L)),
+                                       a_fmt="fp4", b_fmt="fp4"))
+    with pytest.raises(TypeError, match="1 x 256, run 4"):
+        _src950(wide)
+
+    def fadd(o: hk.Tensor[hk.fp32]):
+        h = hk.lds.alloc(hk.ST(hk.fp32, 16, 16), name="h")
+        h.atomic_add_elems(hk.map_cpp("1.0f", hk.iota(L), dtype=hk.fp32), hk.iota(L))
+    with pytest.raises(TypeError, match="adds i32 values"):
+        _src950(fadd)
+
+    def fl(x: hk.Tensor[hk.fp32], o: hk.Tensor[hk.i32]):
+        if hk.uniform(x.at[0, 0].load(S64).first_lane() > 0):
+            pass
+    with pytest.raises(TypeError, match="i32 strip"):
+        _src950(fl)

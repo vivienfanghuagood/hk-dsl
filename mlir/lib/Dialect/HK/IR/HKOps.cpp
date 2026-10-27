@@ -769,6 +769,35 @@ static LogicalResult verifyElems(Operation *op, Type valT, Type idxT) {
   return success();
 }
 
+LogicalResult Fp4OperandOp::verify() {
+  auto w = dyn_cast<RegTileType>(getWords().getType());
+  auto r = dyn_cast<RegTileType>(getResult().getType());
+  if (!w || !w.isStrip() || !w.getElementType().isInteger(32) || w.getRows() != 1 || w.getCols() != 256 ||
+      w.getRun() != 4)
+    return emitOpError("takes an i32 strip of 1 x 256, run 4 (four dwords a lane)");
+  if (!r || r.isStrip() || r.getRows() != 16 || r.getCols() != 128 || r.getLayout() != "row")
+    return emitOpError("gives a 16x128 row tile (the FP4 container)");
+  return success();
+}
+
+LogicalResult MxScalesLooseOp::verify() {
+  auto b = dyn_cast<RegTileType>(getBytes().getType());
+  auto r = cast<MxScalesType>(getResult().getType());
+  if (!b || !b.isStrip() || !b.getElementType().isInteger(32) || b.getRows() != 1 || b.getCols() != 64 ||
+      b.getRun() != 1)
+    return emitOpError("takes an i32 strip of 1 x 64, run 1 (one byte a lane)");
+  if (r.getRows() != 16 || r.getKblocks() != 4 || r.getFmt() != 1)
+    return emitOpError("gives loose (fmt 1) scales of 16 rows and 4 blocks");
+  return success();
+}
+
+LogicalResult FirstLaneOp::verify() {
+  auto s = dyn_cast<RegTileType>(getSrc().getType());
+  if (!s || !s.isStrip() || !s.getElementType().isInteger(32))
+    return emitOpError("reads an i32 strip");
+  return success();
+}
+
 LogicalResult LaneGatherOp::verify() {
   auto s = dyn_cast<RegTileType>(getSrc().getType());
   auto l = dyn_cast<RegTileType>(getLanes().getType());
@@ -838,6 +867,13 @@ LogicalResult LdsStoreElemsOp::verify() {
   auto s = cast<SharedTileType>(getDst().getType());
   if (s.getElementType().isBF16() && s.getCount() == 1)
     return verifyElems(*this, getVal().getType(), getIdx().getType());
+  return verifyLdsElems(*this, getDst().getType(), getVal().getType(), getIdx().getType());
+}
+
+LogicalResult LdsAtomicAddElemsOp::verify() {
+  auto v = dyn_cast<RegTileType>(getVal().getType());
+  if (!v || !v.getElementType().isInteger(32))
+    return emitOpError("adds i32 elements, not ") << getVal().getType();
   return verifyLdsElems(*this, getDst().getType(), getVal().getType(), getIdx().getType());
 }
 
