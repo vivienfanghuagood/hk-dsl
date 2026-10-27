@@ -21,6 +21,7 @@ The language: what `import hk` gives a kernel author. A kernel body is traced on
 - [`hk.range_constexpr`](#hkrange_constexpr)
 - [`hk.if_`](#hkif_)
 - [`hk.scope`](#hkscope)
+- [`hk.uniform`](#hkuniform)
 - [`hk.cdiv`](#hkcdiv)
 - [`hk.min`](#hkmin)
 - [`hk.max`](#hkmax)
@@ -45,6 +46,8 @@ The language: what `import hk` gives a kernel author. A kernel body is traced on
 - [`hk.load_fp4_frags_lds`](#hkload_fp4_frags_lds)
 - [`hk.mx_quant_store`](#hkmx_quant_store)
 - [`hk.map_cpp`](#hkmap_cpp)
+- [`hk.iota`](#hkiota)
+- [`hk.mfma_strip`](#hkmfma_strip)
 - [`hk.Placement`](#hkplacement)
 - [`hk.Digit`](#hkdigit)
 - [`hk.Tile`](#hktile)
@@ -419,6 +422,21 @@ An always-taken region that is a boundary for the register allocator:
 one VGPR and a never-taken branch, and two live sets that no longer have
 to be held at once.
 
+### `hk.uniform`
+
+```python
+hk.uniform(cond)
+```
+
+*New after 0.7.0*
+
+`cond`, declared the same in every warp of the workgroup -- made of the block index,
+scalar loads every warp makes, constexprs and the tensors' extents, never of warp_id or a
+lane's value. A branch on it (`if hk.uniform(bid < 160):` or `hk.if_(c, uniform=True)`) may
+hold workgroup operations -- barriers, group copies -- as every warp takes it or none does:
+the role dispatch of a persistent kernel. The declaration is the author's; a condition that
+differs between warps deadlocks at the first barrier inside.
+
 ## Functions
 
 ### `hk.cdiv`
@@ -669,7 +687,7 @@ a uint8 `s` gets AITER's 32-row layout (hk.mx.aiter_scales of q's [R, K/32], K/3
 hk.mx.pack_scales; rows past q's last get the unit scale, as pack_scales pads them). The
 result is bit-identical to hk.mx.quant followed by hk.mx.aiter_scales or hk.mx.pack_scales.
 
-## A C++ expression over strips (gfx950)
+## Strips: a C++ expression, iota, a raw MFMA (gfx950)
 
 ### `hk.map_cpp`
 
@@ -695,6 +713,31 @@ The strips have one shape and run; strips and result are fp32 or i32 (convert a 
 with `.to` first). The expression is one C++ expression, compiled as written -- with
 floating-point contraction off, so `a * b + c` is two roundings and a fused multiply-add is
 spelled `__builtin_fmaf` -- no `;` or braces, and the compiler, not hk, checks it.
+
+### `hk.iota`
+
+```python
+hk.iota(ty) -> Tile
+```
+
+*New after 0.7.0*
+
+An i32 strip of type `ty`'s shape whose element (r, c) is c: each element's own column, for
+index arithmetic (hk.map_cpp, load_elems / store_elems) and per-column choices (gfx950).
+
+### `hk.mfma_strip`
+
+```python
+hk.mfma_strip(kind: str, a: Tile, b: Tile, acc: Tile) -> Tile
+```
+
+*New after 0.7.0*
+
+One raw MFMA on strip registers (gfx950), for a result that must match another kernel's
+MFMA bit for bit. "f32_16x16x4": `acc` (hk.RS(fp32, 1, 256, 4): lane l's four values are C
+rows 4 (l // 16) + i, column l % 16) + A B^T over K = 4, where lane l of `a` and `b`
+(hk.RS(fp32, 1, 64, 1)) holds A[l % 16][l // 16] and B[l % 16][l // 16] --
+v_mfma_f32_16x16x4_f32, nothing reordered. Returns the new accumulator.
 
 ## Workgroup placement (multi-XCD GPUs)
 
@@ -1953,4 +1996,4 @@ are bounded: any non-empty length. head_dim is 64 or 128 on both.
 
 ## Also exported
 
-`hk.iota`, `hk.mfma_strip`, `hk.mx`, `hk.templates`, `hk.uniform`
+`hk.mx`, `hk.templates`

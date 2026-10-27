@@ -472,13 +472,13 @@ def page_hk(since: Since) -> Page:
     groups = [
         ("Kernels", ["kernel", "func", "Kernel", "TracedKernel", "Tensor", "Constexpr"]),
         ("Types", ["RT", "RS", "ST", "SV", "col_vec", "row_vec", "DType"]),
-        ("Control flow", ["range", "range_constexpr", "if_", "scope"]),
+        ("Control flow", ["range", "range_constexpr", "if_", "scope", "uniform"]),
         ("Functions", ["cdiv", "min", "max", "zeros", "full", "neg_infty", "rand",
                        "transpose", "transpose_sep", "broadcast_row", "broadcast_col",
                        "as_vec", "mma", "load_w4", "coord", "tile_coord", "elem_coord"]),
         ("MX and FP4 (gfx950)", ["load_mx_scales", "copy_mx_scales", "mma_ABt_mx",
                                  "load_fp4_frags", "load_fp4_frags_lds", "mx_quant_store"]),
-        ("A C++ expression over strips (gfx950)", ["map_cpp"]),
+        ("Strips: a C++ expression, iota, a raw MFMA (gfx950)", ["map_cpp", "iota", "mfma_strip"]),
     ]
     documented = set()
     for title, names in groups:
