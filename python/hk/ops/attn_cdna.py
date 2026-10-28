@@ -151,8 +151,13 @@ def attn_kernel(name: str, *, head_dim: int = 128, causal: bool = False,
                 lazy: float = 8.0, sched: bool = True, lpt: bool = True,
                 skip: bool = True, _nomask: bool = False, paged: bool = False,
                 mapping: str = "block_first", arch: Optional[str] = None,
-                pairs: bool = False, kv_split: bool = False):
-    """`lazy`: the running max is taken as stale until a block's max exceeds
+                pairs: bool = False, kv_split: bool = False, acc: str = "vgpr",
+                mma_fence: bool = True):
+    """`acc="agpr"` holds O in AGPRs (hk.arch.agpr): bitwise the default's,
+    measured slower (an asm MFMA LLVM cannot schedule), so off by default.
+    `mma_fence=False` turns hk-mma-fence off for an A/B (hk.arch.mma_fence).
+
+    `lazy`: the running max is taken as stale until a block's max exceeds
     it by more than this (log2 units), so P stays below 2^lazy and O is
     rescaled only when the max really moves (FlashAttention 4's threshold,
     HipKittens' 8). 0 rescales whenever it grows at all.
@@ -187,6 +192,8 @@ def attn_kernel(name: str, *, head_dim: int = 128, causal: bool = False,
     order), whose requests are contiguous runs of it.
     """
     D = head_dim
+    if acc not in ("vgpr", "agpr"):
+        raise ValueError(f"acc={acc!r}: 'vgpr' or 'agpr'")
     if mapping not in MAPPINGS:
         raise ValueError(f"mapping={mapping!r}: one of {MAPPINGS}")
     placement = None
@@ -342,6 +349,10 @@ def attn_kernel(name: str, *, head_dim: int = 128, causal: bool = False,
         Sh = [[S[bb].subtile(half, h) for h in range(2)] for bb in range(2)]
         P_op = hk.zeros(T_P)
         O = hk.zeros(T_O)
+        if not mma_fence:
+            hk.arch.mma_fence(False)
+        if acc == "agpr":
+            hk.arch.agpr(O)
         m = hk.zeros(T_VEC)          # the running max S is taken against
         # The new running max, and once it is taken, exp2(m_old - m): the
         # rescale O takes at the top of the next math phase.

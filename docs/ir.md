@@ -113,6 +113,12 @@ below.
     no warp reads a buffer before every warp's share of the copy into it has
     landed, and no copy goes into a buffer before every warp's reads of it
     have (two barriers inside `hk.pingpong`, one outside);
+  - `hk-mma-fence` (CDNA): an `hk.sched_barrier` between a matrix-core chain
+    and the first other op that touches its accumulator (through
+    `rt_subtile` aliases; branches merged, loop bodies walked twice). On
+    gfx950 LLVM threaded accumulator reads through AGPR MFMA chains and
+    computed wrong values; a kernel opts out with `hk.arch.mma_fence(False)`,
+    for an A/B only. Records `hk.accum_fences` on the kernel.
   - `hk-check-budgets`: the register estimate against the occupancy the
     kernel asked for, and the slow-layout warnings.
 

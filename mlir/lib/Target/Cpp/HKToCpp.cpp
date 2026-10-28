@@ -229,6 +229,10 @@ private:
   int opaque = 0;
   bool bad = false;
   DenseMap<Value, std::string> names;
+  /// Locals hk.arch.agpr put in AGPRs (include/hk/cdna_agpr.cuh), by name:
+  /// a loop-carried or branch result names the same local.
+  llvm::StringSet<> agprNames;
+  int agprCopies = 0;
   llvm::MapVector<std::string, std::pair<Type, std::string>,
                   std::map<std::string, unsigned>>
       aliases;
@@ -777,6 +781,11 @@ private:
     // miss wherever LLVM sinks a late field's load (include/rdna3, util.cuh).
     if (tgt->wave == 32)
       w("kittens::touch_kernargs<sizeof(globals)>();");
+    if (int n = agprBudget()) {
+      // the AGPRs the hk.arch.agpr tiles hold: the attributor otherwise
+      // allots only the widest asm operand's (include/hk/cdna_agpr.cuh)
+      w("asm volatile(\"\" ::: \"a" + std::to_string(n - 1) + "\");");
+    }
     if (ldsBytes()) {
       w("extern __shared__ alignment_dummy __shm[];");
       w("shared_allocator al((int*)&__shm[0]);");
@@ -828,14 +837,118 @@ private:
 
   bool named(Value v) { return names.count(v); }
 
+  /// AGPRs a lane the hk.arch.agpr tiles need: their fp32 elements over the
+  /// wave.
+  int agprBudget() {
+    int n = 0;
+    kernel.getBody().walk([&](Operation *op) {
+      if (!op->hasAttr("hk.agpr"))
+        return;
+      for (Value r : op->getResults())
+        if (auto t = dyn_cast<RegTileType>(r.getType()))
+          n += t.getRows() * t.getCols() / tgt->wave;
+    });
+    return n;
+  }
+
   /// The op's destination: `dst` when it writes one, else its result,
   /// declared here. A fresh declaration of a loop-carried accumulator would
   /// shadow it and keep only the last iteration.
   Value dest(Value dst, Value result) {
     if (dst)
       return dst;
+    Operation *def = result.getDefiningOp();
+    if (def && def->hasAttr("hk.agpr")) {
+      w("hkagpr::acc<" + cpp(result.getType()) + "> " + name(result) + ";");
+      agprNames.insert(name(result));
+      return result;
+    }
     w(cpp(result.getType()) + " " + name(result) + ";");
     return result;
+  }
+
+  bool isAgpr(Value v) {
+    return v && isa<RegTileType>(v.getType()) && agprNames.count(name(v));
+  }
+
+  /// An op on a tile hk.arch.agpr put in AGPRs. Zero, and an mma
+  /// accumulating into it, run on the AGPRs; any other op reads the tile
+  /// into a VGPR copy after the MFMAs' wait states, runs on the copy, and
+  /// writes it back. Returns false when the op touches no such tile.
+  bool emitAgprOp(Operation *op) {
+    if (op->hasAttr("hk.agpr")) {
+      Value d;
+      if (auto z = dyn_cast<ZeroOp>(op))
+        d = dest(z.getDst(), z.getResult());
+      else if (auto f = dyn_cast<FullOp>(op); f && f.getValue().convertToDouble() == 0)
+        d = dest(f.getDst(), f.getResult());
+      if (!d) {
+        w("#error \"hk: hk.arch.agpr takes a tile made by hk.zeros\"");
+        return true;
+      }
+      w("hkagpr::zero(" + name(d) + ");");
+      return true;
+    }
+    if (agprNames.empty())
+      return false;
+    SmallVector<Value> touched;
+    for (Value v : op->getOperands())
+      if (isAgpr(v) && !llvm::is_contained(touched, v))
+        touched.push_back(v);
+    if (touched.empty())
+      return false;
+    // control flow carries the local by name; its body's ops are handled
+    // one by one
+    if (op->getNumRegions() || isa<scf::YieldOp, scf::ConditionOp>(op))
+      return false;
+    if (auto z = dyn_cast<ZeroOp>(op)) {
+      w("hkagpr::zero(" + name(z.getDst()) + ");");
+      return true;
+    }
+    auto mma = [&](auto o) {
+      Value d = o.getDst() ? o.getDst() : o.getResult();
+      if (isAgpr(d) && !isAgpr(o.getA()) && !isAgpr(o.getB()) && name(o.getC()) == name(d)) {
+        w("hkagpr::" + o->getName().stripDialect().str() + "(" + name(d) + ", " +
+          name(o.getA()) + ", " + name(o.getB()) + ");");
+        return true;
+      }
+      return false;
+    };
+    if (auto o = dyn_cast<MmaABOp>(op); o && mma(o)) return true;
+    if (auto o = dyn_cast<MmaABtOp>(op); o && mma(o)) return true;
+    if (auto o = dyn_cast<MmaAtBOp>(op); o && mma(o)) return true;
+    if (auto o = dyn_cast<MmaAtBtOp>(op); o && mma(o)) return true;
+    if (isa<RegSubtileOp>(op)) {
+      w("#error \"hk: a tile hk.arch.agpr holds cannot be subtiled\"");
+      return true;
+    }
+    // in place, a base tile at a time (no whole-tile VGPR copy)
+    auto colScale = [&](auto o, StringRef fn) {
+      Value d = o.getDst();
+      if (d && isAgpr(d) && name(o.getSrc()) == name(d) && !isAgpr(o.getVec())) {
+        w("hkagpr::drain();");
+        w("hkagpr::" + fn.str() + "(" + name(d) + ", " + name(o.getVec()) + ");");
+        return true;
+      }
+      return false;
+    };
+    if (auto o = dyn_cast<MulColOp>(op); o && colScale(o, "mul_col")) return true;
+    if (auto o = dyn_cast<DivColOp>(op); o && colScale(o, "div_col")) return true;
+    w("hkagpr::drain();");
+    SmallVector<std::pair<Value, std::string>> saved;
+    for (Value v : touched) {
+      std::string x = name(v), copy = x + "_v" + std::to_string(agprCopies++);
+      w(cpp(v.getType()) + " " + copy + ";");
+      w("hkagpr::read(" + copy + ", " + x + ");");
+      saved.push_back({v, x});
+      names[v] = copy;
+    }
+    emitPlain(op);
+    for (auto &[v, x] : saved) {
+      w("hkagpr::write(" + x + ", " + names[v] + ");");
+      names[v] = x;
+    }
+    return true;
   }
 
   void call(StringRef fn, Value dst, ArrayRef<std::string> args) {
@@ -1024,6 +1137,12 @@ private:
   }
 
   void emitOp(Operation *op) {
+    if (emitAgprOp(op))
+      return;
+    emitPlain(op);
+  }
+
+  void emitPlain(Operation *op) {
     if (isa<arith::ArithDialect>(op->getDialect()))
       return emitArith(op);
     llvm::TypeSwitch<Operation *>(op)

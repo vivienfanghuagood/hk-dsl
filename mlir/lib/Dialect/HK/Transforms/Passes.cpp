@@ -12,6 +12,9 @@
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/Support/raw_ostream.h"
 
+#include "mlir/Dialect/SCF/IR/SCF.h"
+#include "llvm/ADT/DenseSet.h"
+
 #include <functional>
 #include <set>
 
@@ -19,6 +22,7 @@ namespace mlir::hk {
 #define GEN_PASS_DEF_HKVERIFY
 #define GEN_PASS_DEF_HKLDSALLOC
 #define GEN_PASS_DEF_HKCHECKBUDGETS
+#define GEN_PASS_DEF_HKMMAFENCE
 #include "hk/Dialect/HK/Transforms/Passes.h.inc"
 } // namespace mlir::hk
 
@@ -470,6 +474,128 @@ struct CheckBudgetsPass : public mlir::hk::impl::HKCheckBudgetsBase<CheckBudgets
   }
 };
 
+//===----------------------------------------------------------------------===//
+// hk-mma-fence
+//===----------------------------------------------------------------------===//
+
+/// The tile a register tile value names: through rt_subtile to its source.
+static Value rootTile(Value v) {
+  while (auto sub = v.getDefiningOp<RegSubtileOp>())
+    v = sub.getSrc();
+  return v;
+}
+
+/// (a, b, c, written tile) of an mma op, or nothing.
+static std::optional<std::tuple<Value, Value, Value, Value>> mmaOperands(Operation *op) {
+  auto pick = [](auto m) -> std::tuple<Value, Value, Value, Value> {
+    Value w = m.getDst() ? m.getDst() : (m.getResult() ? m.getResult() : m.getC());
+    return {m.getA(), m.getB(), m.getC(), w};
+  };
+  if (auto m = dyn_cast<MmaABOp>(op)) return pick(m);
+  if (auto m = dyn_cast<MmaABtOp>(op)) return pick(m);
+  if (auto m = dyn_cast<MmaAtBOp>(op)) return pick(m);
+  if (auto m = dyn_cast<MmaAtBtOp>(op)) return pick(m);
+  if (auto m = dyn_cast<MmaABtMxOp>(op)) return pick(m);
+  return std::nullopt;
+}
+
+struct MmaFencePass : public mlir::hk::impl::HKMmaFenceBase<MmaFencePass> {
+  using Marks = llvm::DenseSet<Value>;
+  int inserted = 0;
+
+  static bool isFullFence(Operation *op) {
+    auto sb = dyn_cast<SchedBarrierOp>(op);
+    return sb && sb.getMask() == 0;
+  }
+
+  /// Walk `block` from `marks`; insert fences unless `dry`. Returns the marks
+  /// at the block's end.
+  Marks walk(Block &block, Marks marks, bool dry) {
+    for (Operation &opRef : llvm::make_early_inc_range(block)) {
+      Operation *op = &opRef;
+      if (isFullFence(op)) {
+        marks.clear();
+        continue;
+      }
+      if (isa<RegSubtileOp>(op))
+        continue;
+      if (auto ifOp = dyn_cast<scf::IfOp>(op)) {
+        Marks out = walk(ifOp.getThenRegion().front(), marks, dry);
+        if (!ifOp.getElseRegion().empty()) {
+          Marks e = walk(ifOp.getElseRegion().front(), marks, dry);
+          out.insert(e.begin(), e.end());
+        } else {
+          out.insert(marks.begin(), marks.end());
+        }
+        marks = out;
+        continue;
+      }
+      if (auto forOp = dyn_cast<scf::ForOp>(op)) {
+        Block &body = *forOp.getBody();
+        Marks end = walk(body, marks, /*dry=*/true);
+        Marks in = marks;
+        in.insert(end.begin(), end.end());
+        Marks out = walk(body, in, dry);
+        marks.insert(out.begin(), out.end());
+        continue;
+      }
+      if (op->getNumRegions()) {
+        // anything else with a body (none in hk kernels today): fence before
+        // it if it touches a marked tile, and walk nothing inside
+        if (touches(op, marks)) {
+          if (!dry) fence(op);
+          marks.clear();
+        }
+        continue;
+      }
+      if (auto mma = mmaOperands(op)) {
+        auto [a, b, c, w] = *mma;
+        if (marks.contains(rootTile(a)) || marks.contains(rootTile(b))) {
+          if (!dry) fence(op);
+          marks.clear();
+        }
+        marks.insert(rootTile(w));
+        marks.insert(rootTile(c));
+        continue;
+      }
+      if (touches(op, marks)) {
+        if (!dry) fence(op);
+        marks.clear();
+      }
+    }
+    return marks;
+  }
+
+  /// Does `op` (or anything nested in it) use a marked tile?
+  static bool touches(Operation *op, const Marks &marks) {
+    if (marks.empty()) return false;
+    bool hit = false;
+    op->walk([&](Operation *inner) {
+      for (Value v : inner->getOperands())
+        if (isa<RegTileType>(v.getType()) && marks.contains(rootTile(v)))
+          hit = true;
+    });
+    return hit;
+  }
+
+  void fence(Operation *before) {
+    OpBuilder b(before);
+    b.create<SchedBarrierOp>(before->getLoc(), b.getI64IntegerAttr(0));
+    ++inserted;
+  }
+
+  void runOnOperation() override {
+    func::FuncOp f = getOperation();
+    if (!isKernel(f) || !archOf(f).starts_with("gfx9"))
+      return;
+    if (auto off = f->getAttrOfType<BoolAttr>("hk.mma_fence"); off && !off.getValue())
+      return;
+    for (Block &block : f.getBody())
+      walk(block, {}, /*dry=*/false);
+    f->setAttr("hk.accum_fences", IntegerAttr::get(IntegerType::get(f.getContext(), 64), inserted));
+  }
+};
+
 } // namespace
 
 void mlir::hk::buildKernelPipeline(OpPassManager &pm) {
@@ -477,12 +603,13 @@ void mlir::hk::buildKernelPipeline(OpPassManager &pm) {
   pm.addNestedPass<func::FuncOp>(createHKFragments());
   pm.addNestedPass<func::FuncOp>(createHKLdsAlloc());
   pm.addNestedPass<func::FuncOp>(createHKLdsPipeline());
+  pm.addNestedPass<func::FuncOp>(createHKMmaFence());
   pm.addNestedPass<func::FuncOp>(createHKCheckBudgets());
 }
 
 void mlir::hk::registerKernelPipeline() {
   PassPipelineRegistration<>(
       "hk-kernel-pipeline",
-      "verify, assign fragments, allocate LDS, derive LDS waits, check budgets",
+      "verify, assign fragments, allocate LDS, derive LDS waits, fence MMA accumulators, check budgets",
       [](OpPassManager &pm) { buildKernelPipeline(pm); });
 }

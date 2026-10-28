@@ -186,6 +186,43 @@ def pin(*values) -> None:
     hkd.PinOp([x.v for x in values], loc=B.current().loc())
 
 
+def agpr(tile) -> None:
+    """Hold `tile`, an fp32 MMA accumulator just made by hk.zeros, in AGPRs
+    (CDNA): every mma into it runs on the AGPRs (inline asm, C/D "+a"), every
+    other access reads it into a VGPR copy after the MFMAs' wait states and
+    writes it back (include/hk/cdna_agpr.cuh). Outputs are bitwise the VGPR
+    form's. LLVM picks the VGPR form unless register pressure forces AGPRs,
+    and an asm MFMA is one its scheduler cannot see: measured slower on
+    attn_cdna (docs: KernelWiki pitfalls/gfx950-agpr-mma-chain-interleave.md),
+    so the kernels that offer it keep it off by default."""
+    from .values import Tile  # noqa: PLC0415
+
+    t = B.current()
+    if not t.arch.startswith("gfx9"):
+        raise TypeError(f"hk.arch.agpr: AGPRs are CDNA's, not {t.arch}'s")
+    if not isinstance(tile, Tile):
+        raise TypeError(f"hk.arch.agpr takes a register tile, got {tile!r}")
+    owner = tile.v.owner
+    name = getattr(getattr(owner, "operation", owner), "name", "")
+    if name not in ("hk.zero", "hk.full"):
+        raise TypeError("hk.arch.agpr takes a tile hk.zeros just made "
+                        "(`acc = hk.zeros(T); hk.arch.agpr(acc)`)")
+    owner.attributes["hk.agpr"] = ir.UnitAttr.get()
+
+
+def mma_fence(on: bool = True) -> None:
+    """Whether hk-mma-fence guards this kernel (CDNA; on by default). The
+    pass puts a scheduling fence between a matrix-core chain and the first
+    other access to its accumulator: on gfx950 LLVM threaded accumulator
+    reads through AGPR MFMA chains and computed wrong scores (docs: KernelWiki
+    pitfalls/gfx950-agpr-mma-chain-interleave.md). Turning it off is for an
+    A/B, not a fix."""
+    if not isinstance(on, bool):
+        raise TypeError(f"mma_fence({on!r}): True or False")
+    t = B.current()
+    t.func.attributes["hk.mma_fence"] = ir.BoolAttr.get(on)
+
+
 def setprio(level: int) -> None:
     """`s_setprio`: this wave's issue priority, 0..3."""
     if not isinstance(level, int) or not 0 <= level <= 3:
@@ -227,4 +264,4 @@ def wg_arrive(counter, expected: Scalar, *, scope: str = "device") -> Int:
 
 __all__ = ["block_idx", "warp_id", "lane_id", "xcd_id", "xcd_count", "barrier", "sched_barrier",
            "sched_group_barrier", "SCHED_CLASSES", "pingpong", "pin", "setprio",
-           "vm_wait", "wg_arrive"]
+           "vm_wait", "wg_arrive", "mma_fence", "agpr"]

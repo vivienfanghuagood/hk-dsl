@@ -6,7 +6,7 @@ Generated from the code by `scripts/gen_api_docs.py`: every public name's signat
 
 - [`hk`: kernels, types, values](hk.md) -- 65 entries
 - [`hk.math`](hk.math.md) -- 17 entries
-- [`hk.arch`](hk.arch.md) -- 15 entries
+- [`hk.arch`](hk.arch.md) -- 17 entries
 - [`hk.lds`](hk.lds.md) -- 6 entries
 - [`hk.group`](hk.group.md) -- 2 entries
 - [`hk.collective`](hk.collective.md) -- 3 entries

@@ -46,6 +46,26 @@ def HKLdsPipeline : Pass<"hk-lds-pipeline", "::mlir::func::FuncOp"> {
   }];
 }
 
+def HKMmaFence : Pass<"hk-mma-fence", "::mlir::func::FuncOp"> {
+  let summary = "A scheduling fence between a matrix-core chain and the first other read of its accumulator (CDNA)";
+  let description = [{
+    Walks each block in order. An mma marks its accumulator (the tile it
+    writes, through any rt_subtile alias); a full hk.sched_barrier clears the
+    marks. The first op other than an mma accumulating into the same tile that
+    touches a marked tile -- reads it, writes it, stores it -- gets an
+    hk.sched_barrier in front of it, and the marks clear. Branches are walked
+    with a copy of the marks and merge their union; loop bodies are walked
+    twice, so what the end of one trip leaves marked reaches the next.
+
+    Why (gfx950, LLVM 22-23): left free, LLVM threaded the softmax's reads
+    of AGPR scores through the two pages' MFMA chains of the paged decode and
+    some scores came out wrong, by 2-4e-2 and differently from one build to
+    the next; the ISA breaks none of LLVM's own MFMA hazard rules. A fence at
+    this boundary costs nothing measurable in the kernels that had one by
+    hand. CDNA only; a kernel opts out with `hk.mma_fence = false`.
+  }];
+}
+
 def HKCheckBudgets : Pass<"hk-check-budgets", "::mlir::func::FuncOp"> {
   let summary = "LDS limit, register estimate and slow-layout warnings";
   let description = [{

@@ -133,8 +133,9 @@ def decode_kernel(name: str, *, head_dim: int = 128, splits: int = 1,
 
     `ppstep` pages a step (1 or 2): Sᵀ is that many pages tall and a step's
     softmax, waits and barriers are shared by its pages (pages_per_step).
-    `fence_qk=False` drops the scheduling fence after two pages' QK, for an
-    A/B only: without it this toolchain's build computes wrong scores.
+    `fence_qk=False` turns hk-mma-fence off for this kernel (hk.arch.mma_fence),
+    for an A/B only: without the fence after two pages' QK this toolchain's
+    build computes wrong scores.
 
     `stages` LDS buffers each of K and V: page t+stages-1 is copied while
     page t is worked. Two is the measured best: a deeper ring costs a
@@ -168,6 +169,8 @@ def decode_kernel(name: str, *, head_dim: int = 128, splits: int = 1,
     @hk.func
     def walk(q, k_cache, v_cache, block_table, seq_lens, finish):
         g = hk.group(1)
+        if not fence_qk:
+            hk.arch.mma_fence(False)
         Ks = hk.lds.alloc(ST, count=stages * ppstep, name="Ks", shape=K_SHAPE)
         Vs = hk.lds.alloc(ST, count=stages * ppstep, name="Vs", shape=V_SHAPE)
         kv_head = hk.arch.block_idx.y
@@ -238,14 +241,10 @@ def decode_kernel(name: str, *, head_dim: int = 128, splits: int = 1,
                     for p in range(PP):
                         Sp = S.subtile(PAGE, p)
                         Sp += krs[p] @ qr.T
-                    if fence_qk:
-                        # Nothing crosses the end of QK. Left free, LLVM
-                        # threads the softmax's reads of the AGPR scores
-                        # through the two pages' MFMA chains and some scores
-                        # come out wrong (2-4e-2 off on a split of 128
-                        # tokens, a different answer from one build to the
-                        # next); no wait or barrier anywhere else mends it.
-                        hk.arch.sched_barrier()
+                    # hk-mma-fence puts a scheduling fence here, before the
+                    # first read of the scores: without it LLVM threaded the
+                    # softmax's reads of the AGPR scores through the two
+                    # pages' MFMA chains and some came out wrong.
                 S.__imul__(scale_l2e)
                 for p in range(PP):
                     rows = rows_of(t * PP + p)

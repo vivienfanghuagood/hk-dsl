@@ -4067,3 +4067,5 @@ __device__ inline static void load(CV &dst, const SV &src) {
 }
 
 }  // namespace kittens
+
+#include "cdna_agpr.cuh"
