@@ -52,7 +52,7 @@ def kernel(K, I, GR, name="mx_fp4_aiter_t"):
                                   group_rows=GR, gate_up=True)
             s_b = hk.load_mx_scales(ws, 32, 4, e * GR + nb * 16, kc * 4,
                                     layout="aiter_gate_up", group_rows=GR)
-            acc = hk.mma_ABt_mx(a, b, acc, s_a, s_b, b_fmt="fp4", into=acc)
+            acc = hk.mma("mma_ABt", a.scaled(s_a), b.scaled(s_b, fmt="fp4"), acc, into=acc)
         o[hk.elem_coord(0, e, 0, nb * 32)] = acc
 
     body.__name__ = name
@@ -108,7 +108,7 @@ def kernel_t(K, I, GR, name="mx_fp4_aiter_t_t"):
                                     layout="aiter_gate_up", group_rows=GR)
             b = x[hk.elem_coord(0, 0, 0, kc * 128)].load(hk.RT(fp8e4m3, 16, 128))
             s_b = hk.load_mx_scales(xs, 16, 4, 0, kc * 4)
-            acc = hk.mma_ABt_mx(a, b, acc, s_a, s_b, a_fmt="fp4", into=acc)
+            acc = hk.mma("mma_ABt", a.scaled(s_a, fmt="fp4"), b.scaled(s_b), acc, into=acc)
         o[hk.elem_coord(0, e, nb * 32, 0)] = acc
 
     body.__name__ = name

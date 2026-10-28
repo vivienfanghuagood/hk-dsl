@@ -118,17 +118,17 @@ def wq_kernel(BM: int, BN: int, KT: int, il: int = 1, a_loose: bool = False, wgm
 
         def mma(u, i, j):
             if b_loose:
-                hk.mma_ABt_mx(A[i], B[j], C[i][j], SA[u], SB[u][j], into=C[i][j],
-                              sa_at=(i * QM // 16, 0))
+                hk.mma("mma_ABt", A[i].scaled(SA[u], at=(i * QM // 16, 0)), B[j].scaled(SB[u][j]),
+                       C[i][j], into=C[i][j])
             elif a_loose:
-                hk.mma_ABt_mx(A[i], B[j], C[i][j], SA[u][i], SB[u], into=C[i][j],
-                              sb_at=(j * QN // 16, 0))
+                hk.mma("mma_ABt", A[i].scaled(SA[u][i]), B[j].scaled(SB[u], at=(j * QN // 16, 0)),
+                       C[i][j], into=C[i][j])
             elif tc:
-                hk.mma_ABt_mx(B[j], A[i], C[i][j], SB[u], SA[u], into=C[i][j],
-                              sa_at=(j * QN // 16, 0), sb_at=(i * QM // 16, 0))
+                hk.mma("mma_ABt", B[j].scaled(SB[u], at=(j * QN // 16, 0)),
+                       A[i].scaled(SA[u], at=(i * QM // 16, 0)), C[i][j], into=C[i][j])
             else:
-                hk.mma_ABt_mx(A[i], B[j], C[i][j], SA[u], SB[u], into=C[i][j],
-                              sa_at=(i * QM // 16, 0), sb_at=(j * QN // 16, 0))
+                hk.mma("mma_ABt", A[i].scaled(SA[u], at=(i * QM // 16, 0)),
+                       B[j].scaled(SB[u], at=(j * QN // 16, 0)), C[i][j], into=C[i][j])
 
         def spread(nv):
             if il and nv:

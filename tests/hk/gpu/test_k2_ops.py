@@ -70,8 +70,10 @@ def test_fp8_operand_from_lds_words_is_the_tile_loads_operand():
         ta = a.at[0, 0].load(T_W)
         s_a = hk.load_mx_scales(sa, 16, 4, 0, 0, loose=True)
         s_b = hk.load_mx_scales(sb, 16, 4, 0, 0, loose=True)
-        c0[hk.elem_coord(0, 0, 0, 0)] = hk.mma_ABt_mx(ta, b.at[0, 0].load(T_W), hk.zeros(T_C), s_a, s_b)
-        c1[hk.elem_coord(0, 0, 0, 0)] = hk.mma_ABt_mx(ta, bw, hk.zeros(T_C), s_a, s_b)
+        c0[hk.elem_coord(0, 0, 0, 0)] = hk.mma("mma_ABt", ta.scaled(s_a),
+                                               b.at[0, 0].load(T_W).scaled(s_b), hk.zeros(T_C))
+        c1[hk.elem_coord(0, 0, 0, 0)] = hk.mma("mma_ABt", ta.scaled(s_a), bw.scaled(s_b),
+                                               hk.zeros(T_C))
 
     k = hk.kernel(body, arch="gfx950", warps=1, name="fp8_operand_lds", grid=lambda p: (1, 1, 1))
     g = torch.Generator(device="cuda").manual_seed(30)
