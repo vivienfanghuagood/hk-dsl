@@ -183,44 +183,83 @@ retype_vec left_fill right_fill upper_fill lower_fill triu tril cast bitcast tra
 transpose_sep rt_subtile as_operand mma_AB mma_ABt mma_AtB mma_AtBt lane_strip lane_coord run_xor
 """.split()}, **_OP_KINDS}
 
-#: Every function defined in include/hk/*.cuh (as test_surface extracts the names: the token
-#: before the parameter list of a __device__ definition), by kind. `primitive`: the C++ of a
-#: general DSL op; `internal`: plumbing, library fixes, gap fills and type-selected
-#: specializations (dsl-surface.md §2.5); the rest as their DSL entries.
+#: Every function defined in include/hk/ (as test_surface extracts the names: the token before
+#: the parameter list of a __device__ definition), by header and kind. include/hk/cdna.cuh is the
+#: umbrella of include/hk/cdna/*.cuh, split by kind (S12): `primitive` -- the C++ of a general DSL
+#: op; `internal` -- plumbing (core), library fixes and gap fills (lib), type-selected
+#: specializations (special); the rest as their DSL entries.
 CPP: Dict[str, Dict[str, str]] = {
-    "include/hk/cdna.cuh": {
+    "include/hk/cdna/core.cuh": {
         **{n: "primitive" for n in """
-arrive as_operand atomic_add atomic_scalar atomic_scalar_scoped bin_map claim col_map copy
-lane_coord lane_strip run_xor dgelu gelu group_load_async group_load_async_gather
-group_load_async_rows group_reduce_ordered iota lane_gather lds_atomic_add_elems lds_load_elems
-lds_load_elems_runs lds_store_elems lds_wait lds_wait_for left_fill load load_bounded
-load_elems load_elems_runs load_gather load_period load_scalar load_scalar_invariant
-load_scoped lower_fill neg_infty one philox_uniform post post_elems post_elems_runs right_fill
-row_map row_sum_times_ordered rsqrt signal silu sqrt step store store_bounded store_elems
-store_elems_runs store_scalar store_scatter store_scoped swap_halves take take_elems
-take_elems_runs tril triu unary_map upper_fill vm_wait wait wg_arrive wg_arrive_xcd xcd_id zero
+lds_wait lds_wait_for one vm_wait zero
 """.split()},
         **{n: "internal" for n in """
-__attribute__ _col _ordered _row batch col_reduce cols convert depth fast_tanh group_load_sync
-group_store_bounded hk_any_live hk_as_elem hk_atomic_op hk_bind_regs hk_bits hk_buf_ld128
-hk_buf_ld16 hk_buf_ld32 hk_buf_ld64 hk_buf_ld8 hk_buf_ld_lds hk_buf_load_bytes hk_buf_load_elem
-hk_buf_st128 hk_buf_st16 hk_buf_st32 hk_buf_st64 hk_buf_st8 hk_buf_store_bytes
-hk_buf_store_elem hk_col_rows_fill hk_copy_srsrc hk_cvt hk_cvt_pk_bf16 hk_dpp hk_elem_off
-hk_elems_srsrc hk_elems_srsrc_row hk_frag_coord hk_from_bits hk_gather_index hk_gather_rows_lds
-hk_get hk_lane_arg hk_lane_opaque hk_ld_aux hk_load_tile hk_mailbox_slot hk_mfma_mx
-hk_mfma_mx_b hk_mx_operand hk_ninf_where_key_above hk_opaque hk_philox_first hk_pinned
-hk_rv_load hk_rv_store hk_scatter_ids_lds hk_scatter_index hk_scoped_ld32 hk_scoped_st32 hk_set
-hk_srsrc hk_st_aux hk_st_elem hk_static_for hk_store_tile hk_swap_op hk_tile_srsrc hk_lane_each
-hk_strip_at hk_uniform_from hk_w4_word hk_whole_srsrc hk_xor_op idx lds_bind mma_ABt name num
-op row_stride rows shape strided_gl strip_axis_fill strip_butterfly strip_col_reduce strip_each
-strip_read strip_row_dot_ordered strip_row_reduce strip_row_reduce_ordered strip_scalar
-strip_srsrc strip_tree strip_write stride warpid_uniform word
+batch cols convert depth hk_atomic_op hk_bind_regs hk_buf_ld128 hk_buf_ld16 hk_buf_ld32
+hk_buf_ld64 hk_buf_ld8 hk_buf_ld_lds hk_buf_load_bytes hk_buf_load_elem hk_buf_st128
+hk_buf_st16 hk_buf_st32 hk_buf_st64 hk_buf_st8 hk_buf_store_bytes hk_buf_store_elem
+hk_copy_srsrc hk_cvt hk_cvt_pk_bf16 hk_frag_coord hk_get hk_lane_opaque hk_ld_aux
+hk_load_tile hk_pinned hk_set hk_srsrc hk_st_aux hk_st_elem hk_store_tile hk_tile_srsrc idx
+lds_bind num row_stride rows shape stride strided_gl warpid_uniform
 """.split()},
-        "load_mx_scales": "format", "load_mx_scales_aiter": "format", "load_fp4_frags": "format",
-        "load_w4": "format", "mma_ABt_mx": "primitive", "load_fp4_frags_lds": "format",
-        "mx_quant_store": "merge", "fp4_operand": "primitive",
-        "fp8_operand": "primitive", "mx_scales_loose": "primitive", "gather_prep": "primitive",
-        "map_cpp": "escape", "mfma_strip_f32_16x16x4": "merge",
+    },
+    "include/hk/cdna/lib.cuh": {
+        **{n: "internal" for n in """
+copy dgelu fast_tanh gelu group_load_sync group_store_bounded hk_rv_load hk_rv_store load
+load_scoped mma_ABt one op rsqrt silu sqrt step store store_scoped
+""".split()},
+    },
+    "include/hk/cdna/formats.cuh": {
+        **{n: "primitive" for n in """
+mma_ABt_mx
+""".split()},
+        **{n: "format" for n in """
+load_fp4_frags load_fp4_frags_lds load_mx_scales load_mx_scales_aiter load_w4
+""".split()},
+        **{n: "internal" for n in """
+hk_mfma_mx hk_mfma_mx_b hk_mx_operand hk_w4_word word
+""".split()},
+        **{n: "merge" for n in """
+mx_quant_store
+""".split()},
+    },
+    "include/hk/cdna/special.cuh": {
+        **{n: "internal" for n in """
+col_reduce hk_col_rows_fill hk_ninf_where_key_above hk_static_for lower_fill neg_infty tril
+triu upper_fill
+""".split()},
+    },
+    "include/hk/cdna/primitives.cuh": {
+        **{n: "primitive" for n in """
+arrive as_operand atomic_add atomic_scalar atomic_scalar_scoped bin_map claim col_map copy
+fp4_operand fp8_operand gather_prep group_load_async group_load_async_gather
+group_load_async_rows group_reduce_ordered iota lane_coord lane_gather lane_strip
+lds_atomic_add_elems lds_load_elems lds_load_elems_runs lds_store_elems left_fill load
+load_bounded load_elems load_elems_runs load_gather load_period load_scalar
+load_scalar_invariant load_scoped mx_scales_loose one philox_uniform post post_elems
+post_elems_runs right_fill row_map row_sum_times_ordered run_xor signal store store_bounded
+store_elems store_elems_runs store_scalar store_scatter store_scoped swap_halves take
+take_elems take_elems_runs unary_map wait wg_arrive wg_arrive_xcd xcd_id
+""".split()},
+        **{n: "internal" for n in """
+__attribute__ _col _ordered _row hk_any_live hk_as_elem hk_bits hk_dpp hk_elem_off
+hk_elems_srsrc hk_elems_srsrc_row hk_from_bits hk_gather_index hk_gather_rows_lds
+hk_lane_each hk_mailbox_slot hk_opaque hk_philox_first hk_scatter_ids_lds hk_scatter_index
+hk_scoped_ld32 hk_scoped_st32 hk_strip_at hk_swap_op hk_uniform_from hk_whole_srsrc
+hk_xor_op name op strip_axis_fill strip_butterfly strip_col_reduce strip_each strip_read
+strip_row_dot_ordered strip_row_reduce strip_row_reduce_ordered strip_scalar strip_srsrc
+strip_tree strip_write
+""".split()},
+    },
+    "include/hk/cdna/escape.cuh": {
+        **{n: "internal" for n in """
+hk_lane_arg
+""".split()},
+        **{n: "merge" for n in """
+mfma_strip_f32_16x16x4
+""".split()},
+        **{n: "escape" for n in """
+map_cpp
+""".split()},
     },
     "include/hk/cdna_agpr.cuh": {n: "experiment" for n in """
 col_scale div_col drain mfma mma_AB mma_ABt mma_AtB mma_AtBt mul_col read write zero
