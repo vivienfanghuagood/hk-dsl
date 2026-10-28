@@ -3099,6 +3099,73 @@ __device__ static inline void lane_gather(D &dst, const D &src, const I &lanes) 
         dst.data[r][j][e] = detail::hk_from_bits<typename D::T>(uint32_t(v));
     });
 }
+namespace detail {
+/** f(k, value): a register tile's or a strip's per-lane elements in lane_strip's order. */
+template<typename S, typename F> __device__ inline void hk_lane_each(const S &src, F &&f) {
+    if constexpr (ducks::rs::all<S>) {
+        #pragma unroll
+        for (int r = 0; r < S::rows; r++)
+            #pragma unroll
+            for (int j = 0; j < S::chunks; j++)
+                #pragma unroll
+                for (int e = 0; e < S::run; e++) f((r * S::chunks + j) * S::run + e, src.data[r][j][e]);
+    } else {
+        using G = hk_frag<S>;
+        #pragma unroll
+        for (int i = 0; i < S::height; i++)
+            #pragma unroll
+            for (int j = 0; j < S::width; j++)
+                #pragma unroll
+                for (int e = 0; e < G::E; e++) f((i * S::width + j) * G::E + e, hk_get(src, i, j, e));
+    }
+}
+template<typename D> __device__ inline auto &hk_strip_at(D &d, int k) {
+    return d.data[0][k / D::run][k % D::run];
+}
+}  // namespace detail
+/** @brief hk lane_strip: the operand's registers, lane by lane in its per-lane order, as a 1-row strip. */
+template<ducks::rs::all D, typename S>
+__device__ static inline void lane_strip(D &dst, const S &src) {
+    static_assert(D::rows == 1, "lane_strip gives a 1-row strip");
+    detail::hk_lane_each(src, [&](int k, auto v) {
+        detail::hk_strip_at(dst, k) = detail::hk_from_bits<typename D::T>(detail::hk_bits(v));
+    });
+}
+/** @brief hk lane_coord: each element's operand row (AXIS 0) or column (1), in lane_strip's order. */
+template<int AXIS, ducks::rs::all D, typename S>
+__device__ static inline void lane_coord(D &dst, const S &) {
+    static_assert(D::rows == 1, "lane_coord gives a 1-row strip");
+    const int lane = laneid();
+    if constexpr (ducks::rs::all<S>) {
+        #pragma unroll
+        for (int r = 0; r < S::rows; r++)
+            #pragma unroll
+            for (int j = 0; j < S::chunks; j++)
+                #pragma unroll
+                for (int e = 0; e < S::run; e++)
+                    detail::hk_strip_at(dst, (r * S::chunks + j) * S::run + e) =
+                        AXIS == 0 ? r : j * S::run * WARP_THREADS + lane * S::run + e;
+    } else {
+        using G = detail::hk_frag<S>;
+        #pragma unroll
+        for (int i = 0; i < S::height; i++)
+            #pragma unroll
+            for (int j = 0; j < S::width; j++)
+                #pragma unroll
+                for (int e = 0; e < G::E; e++) {
+                    const int2 c = detail::hk_frag_coord<S>(e, lane);
+                    detail::hk_strip_at(dst, (i * S::width + j) * G::E + e) =
+                        AXIS == 0 ? i * G::R + c.x : j * G::C + c.y;
+                }
+    }
+}
+/** @brief hk run_xor: element e of each lane's run = element e ^ MASK of the same run. */
+template<int MASK, ducks::rs::all D>
+__device__ static inline void run_xor(D &dst, const D &src) {
+    static_assert(MASK > 0 && MASK < D::run, "run_xor's mask is below the run");
+    D t = src;
+    detail::strip_each<D>([&](int r, int j, int e) { dst.data[r][j][e] = t.data[r][j][e ^ MASK]; });
+}
 /** @brief hk mfma_strip f32_16x16x4: acc (4 a lane) += A B^T, lane l holding A[l%16][l/16], B[l%16][l/16]. */
 template<ducks::rs::all D, ducks::rs::all A, ducks::rs::all B>
 __device__ static inline void mfma_strip_f32_16x16x4(D &dst, const A &a, const B &b, const D &acc) {

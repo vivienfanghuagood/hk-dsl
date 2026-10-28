@@ -1699,6 +1699,20 @@ private:
           Value d = dest(Value(), o.getResult());
           w("kittens::lane_gather(" + name(d) + ", " + name(o.getSrc()) + ", " + name(o.getLanes()) + ");");
         })
+        .Case([&](LaneStripOp o) {
+          Value d = dest(Value(), o.getResult());
+          w("kittens::lane_strip(" + name(d) + ", " + name(o.getSrc()) + ");");
+        })
+        .Case([&](LaneCoordOp o) {
+          Value d = dest(Value(), o.getResult());
+          w("kittens::lane_coord<" + std::to_string(o.getAxis()) + ">(" + name(d) + ", " +
+            name(o.getSrc()) + ");");
+        })
+        .Case([&](RunXorOp o) {
+          Value d = dest(Value(), o.getResult());
+          w("kittens::run_xor<" + std::to_string(o.getMask()) + ">(" + name(d) + ", " + name(o.getSrc()) +
+            ");");
+        })
         .Case([&](MfmaStripOp o) {
           Value d = dest(Value(), o.getResult());
           w("kittens::mfma_strip_f32_16x16x4(" + name(d) + ", " + name(o.getA()) + ", " +

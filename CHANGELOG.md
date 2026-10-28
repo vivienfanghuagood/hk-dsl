@@ -9,6 +9,19 @@ The next version's notes collect here until it is released.
 What is on main after 0.8.0. `pip install hk-dsl` (0.8.0) does not have it;
 the API reference marks such names *New after 0.8.0*.
 
+**gfx950: a matrix-core result as a strip, where it sits: `Tile.lane_strip`,
+`hk.lane_coords`, `Tile.run_xor`, and group reductions over any xor offsets.**
+`acc.lane_strip(run)` takes a register tile's registers, lane by lane, as a 1-row
+strip. No data moves. `hk.lane_coords(acc, run)` gives each element's row and
+column in the tile, so `hk.map_cpp`, `group_max` and `store_elems` work on an MMA
+result without a round trip through memory: an epilogue that quantizes
+attention's output to MXFP8 per 32-row group. `run_xor(mask)` takes an element's
+partner inside its lane's run, such as a rotary pair. `group_max`/`group_min`/
+`group_sum` take any distinct power-of-two xor offsets up to 32, not only the
+neighbouring 1 .. 2^(k-1). A 32x32 result's 32-row column block is a lane's
+run plus lane l ^ 32's: `group_max(32, xor=(32,))`.
+`tests/hk/gpu/test_strip.py`, `tests/hk/ir/test_strip.py`.
+
 **CDNA: `hk-mma-fence`, a DSL rule for matrix-core accumulators; `hk.arch.agpr`
 to hold one in AGPRs.**
 - `hk-mma-fence`, a pass in the kernel pipeline, puts an `hk.sched_barrier`

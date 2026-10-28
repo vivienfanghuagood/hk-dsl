@@ -1169,9 +1169,10 @@ class Tile(_Elementwise):
                              f"{run} columns")
         k = (cols // run).bit_length() - 1
         offs = tuple(1 << i for i in range(k)) if xor is None else tuple(int(o) for o in xor)
-        if sorted(offs) != [1 << i for i in range(k)]:
-            raise ValueError(f"group_{kind}(cols={cols}, xor={offs}): the offsets of a group of "
-                             f"{1 << k} lanes are {[1 << i for i in range(k)]}, each once")
+        if (len(offs) != k or len(set(offs)) != k
+                or any(o <= 0 or o > 32 or o & (o - 1) for o in offs)):
+            raise ValueError(f"group_{kind}(cols={cols}, xor={offs}): a group of {1 << k} lanes "
+                             f"takes {k} offsets, distinct powers of two up to 32")
         if lanes not in ("seq", "tree"):
             raise ValueError(f"group_{kind}(lanes={lanes!r}): \"seq\" or \"tree\"")
         t = _t()
@@ -1188,6 +1189,35 @@ class Tile(_Elementwise):
         t = _t()
         return Int(hkd.FirstLaneOp(_i32(), self.v, loc=t.loc("fl")).result, ScalarType(i32))
 
+    def lane_strip(self, run: int = 8) -> "Tile":
+        """This tile's registers as a 1-row strip, lane by lane (gfx950): no data moves. Lane l's
+        elements, in the tile's per-lane order (a matrix-core tile: its fragments row by row of
+        fragments, each fragment's elements in order; a strip: its rows, chunks and runs), become
+        the lane's runs of `run`, chunk after chunk -- so `hk.map_cpp`, the group reductions and
+        `store_elems` work on an MMA result where it sits. `hk.lane_coords(tile, run)` says which
+        row and column of the tile each element is. 32-bit elements."""
+        from .arch import target  # noqa: PLC0415
+
+        if target().wave != 64:
+            raise TypeError(f"lane_strip is gfx950's, not {target().arch}'s")
+        if self.ty.dtype.bits != 32:
+            raise TypeError(f"lane_strip takes 32-bit elements, not {self.ty.dtype.name}")
+        ty = _lane_strip_type(self.ty, run, self.ty.dtype)
+        t = _t()
+        return wrap(hkd.LaneStripOp(mlir_type(ty), self.v, loc=t.loc("ls")).result, ty)
+
+    def run_xor(self, mask: int) -> "Tile":
+        """Each element from another element of its lane's run (gfx950): element e of a run becomes
+        element e ^ `mask` of the same run, a register move. A rotary pair's partner, when the pair
+        sits in one run (an MMA result taken by `lane_strip`)."""
+        run = getattr(self.ty, "run", None)
+        if not _is_strip_tile(self.ty):
+            raise TypeError(f"run_xor permutes a strip's runs (hk.RS), not {self.ty}")
+        if not 0 < int(mask) < run:
+            raise ValueError(f"run_xor({mask}): the mask is in 1 .. {run - 1}, below the run")
+        t = _t()
+        return wrap(hkd.RunXorOp(mlir_type(self.ty), self.v, int(mask), loc=t.loc("rx")).result, self.ty)
+
     def lane_gather(self, lanes: "Tile") -> "Tile":
         """Each element from another lane (gfx950): element (r, c) of lane l is the same run element
         of lane `lanes[r, c]` (an i32 strip of this strip's shape, 0..63) -- ds_bpermute, one an
@@ -1201,7 +1231,11 @@ class Tile(_Elementwise):
     def group_max(self, cols: int, *, lanes: str = "seq", xor: Optional[Sequence[int]] = None) -> "Tile":
         """A strip's rows reduced over groups of `cols` columns (a lane group's runs: an MX group is
         32 columns of a run-8 strip), the group's max in every element. `lanes` and `xor` state the
-        order, as for `sum(axis=1, ...)`; the offsets are 1 .. cols / run / 2. gfx950."""
+        order, as for `sum(axis=1, ...)`; the offsets are 1 .. cols / run / 2 (neighbouring lanes),
+        or as many other distinct powers of two up to 32: the group is then a lane's run and those of
+        lanes l ^ (a sum of the offsets). A 32x32 matrix-core result taken as a strip
+        (`lane_strip(16)`) holds 32 rows of a column in lane l's run and lane l ^ 32's:
+        `group_max(32, xor=(32,))`. gfx950."""
         return self._group("max", cols, lanes, xor)
 
     def group_min(self, cols: int, *, lanes: str = "seq", xor: Optional[Sequence[int]] = None) -> "Tile":
@@ -2230,6 +2264,32 @@ def iota(ty) -> Tile:
     ty = RegTileType(i32, ty.rows, ty.cols, ty.layout, ty.frag, run=ty.run)
     t = _t()
     return wrap(hkd.IotaOp(mlir_type(ty), loc=t.loc("iota")).result, ty)
+
+
+def _lane_strip_type(ty, run: int, dtype) -> RegTileType:
+    if not isinstance(ty, RegTileType):
+        raise TypeError(f"a lane strip is of a register tile, not {ty}")
+    n = ty.rows * ty.cols // 64
+    if run not in (1, 2, 4, 8, 16) or n % run:
+        raise ValueError(f"a lane strip of {ty} ({n} elements a lane) in runs of {run}: a run is "
+                         f"1, 2, 4, 8 or 16 and divides {n}")
+    return RegTileType(dtype, 1, 64 * n, "strip", None, run=run)
+
+
+def lane_coords(tile, run: int = 8) -> tuple:
+    """(rows, cols): i32 strips of `tile.lane_strip(run)`'s shape, element by element the row and the
+    column of `tile` that element is (gfx950). `tile` is a register tile. Index arithmetic for an
+    MMA result taken as a strip: its global rows and columns, MX groups, masks."""
+    from .arch import target  # noqa: PLC0415
+
+    if target().wave != 64:
+        raise TypeError(f"hk.lane_coords is gfx950's, not {target().arch}'s")
+    if not isinstance(tile, Tile):
+        raise TypeError(f"hk.lane_coords takes a register tile, not {tile!r}")
+    sty = _lane_strip_type(tile.ty, run, i32)
+    t = _t()
+    return tuple(wrap(hkd.LaneCoordOp(mlir_type(sty), tile.v, axis, loc=t.loc("lc")).result, sty)
+                 for axis in (0, 1))
 
 
 def mfma_strip(kind: str, a: Tile, b: Tile, acc: Tile) -> Tile:
