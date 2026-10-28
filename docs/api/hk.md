@@ -717,10 +717,14 @@ hk.mfma_strip(kind: str, a: Tile, b: Tile, acc: Tile) -> Tile
 ```
 
 One raw MFMA on strip registers (gfx950), for a result that must match another kernel's
-MFMA bit for bit. "f32_16x16x4": `acc` (hk.RS(fp32, 1, 256, 4): lane l's four values are C
-rows 4 (l // 16) + i, column l % 16) + A B^T over K = 4, where lane l of `a` and `b`
-(hk.RS(fp32, 1, 64, 1)) holds A[l % 16][l // 16] and B[l % 16][l // 16] --
-v_mfma_f32_16x16x4_f32, nothing reordered. Returns the new accumulator.
+MFMA bit for bit. `acc` is hk.RS(fp32, 1, 256, 4): lane l's four values are C rows 4 (l // 16) + i,
+column l % 16. Returns acc + A B^T, nothing reordered:
+  "f32_16x16x4": K = 4; lane l of `a` / `b` (hk.RS(fp32, 1, 64, 1)) holds A[l % 16][l // 16] --
+    v_mfma_f32_16x16x4_f32.
+  "bf16_16x16x32": K = 32; lane l of `a` / `b` (hk.RS(i32, 1, 256, 4)) holds A[l % 16][8 (l // 16) ..
+    + 8] as four dwords of bf16 pairs -- v_mfma_f32_16x16x32_bf16.
+  "bf16_16x16x16_1k": K = 16; lane l of `a` / `b` (hk.RS(i32, 1, 128, 2)) holds A[l % 16][4 (l // 16)
+    .. + 4] as two dwords -- v_mfma_f32_16x16x16_bf16.
 
 ## Workgroup placement (multi-XCD GPUs)
 
@@ -2011,4 +2015,4 @@ are bounded: any non-empty length. head_dim is 64 or 128 on both.
 
 ## Also exported
 
-`hk.fp4_operand`, `hk.fp8_operand`, `hk.mx`, `hk.mx_scales_loose`, `hk.templates`
+`hk.acc_strip`, `hk.fp4_operand`, `hk.fp8_operand`, `hk.fresh`, `hk.lane_regroup`, `hk.mx`, `hk.mx_scales_loose`, `hk.role`, `hk.templates`
