@@ -138,7 +138,7 @@ def kernel(name: str, *, scale: float, mxfp8: bool, arch=None):
         n = ptr[hk.elem_coord(0, 0, 0, t + 1)].load_scalar(invariant=True) - a
         n_pair = hk.cdiv(n, 2 * KB)
 
-        g.load(Ks[0], kv.at[0, 0], wait=False, gather=(ind, a), rows=n)
+        g.load(Ks[0], kv.at[0, 0], wait=False, gather=hk.RowIndex(ind, a), rows=n)
         qd = q[hk.elem_coord(0, 0, t * H, dh * DH)].load(T_Q)
 
         S = hk.zeros(T_S)
@@ -159,8 +159,8 @@ def kernel(name: str, *, scale: float, mxfp8: bool, arch=None):
                 blk = 2 * i + s
                 # rows past the query's read zero, their indices unread: the last query's list may
                 # end its allocation (vLLM's packing leaves no slack when every row is full)
-                g.load(Ks[1 - s], kv.at[0, 0], wait=False, gather=(ind, a + (blk + 1) * KB),
-                       rows=n - (blk + 1) * KB)
+                g.load(Ks[1 - s], kv.at[0, 0], wait=False,
+                       gather=hk.RowIndex(ind, a + (blk + 1) * KB), rows=n - (blk + 1) * KB)
                 g.wait_for(Ks[s])
                 hk.arch.barrier()
                 # QK: this warp's 16 rows, its D half, every head; the halves summed through LDS

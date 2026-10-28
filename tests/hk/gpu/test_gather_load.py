@@ -24,7 +24,7 @@ def _kernel():
         g = hk.group(4)
         s = hk.lds.alloc(st, name="s")
         at = hk.arch.block_idx.x * 32
-        g.load(s, x.at[0, 64], wait=False, gather=(ids, at))
+        g.load(s, x.at[0, 64], wait=False, gather=hk.RowIndex(ids, at))
         g.wait_for(s)
         hk.arch.barrier()
         t = s.load(rt)
@@ -60,8 +60,8 @@ def _kernel_staged():
         g = hk.group(4)
         s = hk.lds.alloc(st, name="s")
         at = hk.arch.block_idx.x * 32
-        g.gather_prep(ids, at, 32)
-        g.load(s, x.at[0, 64], wait=False, gather=(ids, at), staged=32)
+        rows = g.stage_rows(hk.RowIndex(ids, at), 32)
+        g.load(s, x.at[0, 64], wait=False, gather=rows)
         g.wait_for(s)
         hk.arch.barrier()
         t = s.load(rt)
@@ -95,7 +95,7 @@ def _kernel_bounded():
         g = hk.group(4)
         s = hk.lds.alloc(st, name="s")
         at = hk.arch.block_idx.x * 32
-        g.load(s, x.at[0, 64], wait=False, gather=(ids, at), rows=hk.max(ids.cols - at, 0))
+        g.load(s, x.at[0, 64], wait=False, gather=hk.RowIndex(ids, at), rows=hk.max(ids.cols - at, 0))
         g.wait_for(s)
         hk.arch.barrier()
         t = s.load(rt)
@@ -108,7 +108,7 @@ def _kernel_bounded():
 
 
 def test_gathered_rows_stop_at_the_row_limit():
-    """rows= with gather=: an index list that ends inside the tile (77 ids, tiles of 32, and one
+    """rows= with gather=hk.RowIndex(...): an index list that ends inside the tile (77 ids, tiles of 32, and one
     tile wholly past it) -- rows from the limit on read zero, and the ids past it are not read
     (tests/hk/gpu/test_fenced.py::test_gathered_copy_reads_no_index_past_its_rows faults if they are)."""
     n, m = 100, 77

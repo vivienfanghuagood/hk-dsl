@@ -548,40 +548,66 @@ class Global(Value):
                                     _i64(int(round(timeout_s * REALTIME_HZ))), _i64(aux),
                                     runs=bool(runs), bf16=bool(bf16), loc=t.loc("taken")).result, ty)
 
-    def gather(self, tile, ids: "Global", at, *, count=None, col=0, div=1,
+    def gather(self, tile, ids, at=None, *, count=None, col=0, div=None,
                into=None) -> "Tile":
-        """Rows by index: tile row r is row `ids[at + r] // div` of this
-        tensor (rows flattened over batch and depth), from column `col`. An
-        index outside the tensor, or a position at or past `count` (default:
-        all of `ids`), reads zeros -- the padding a MoE sort fills its index
-        list with costs no branch. `div` is how many index values name one
-        row: a MoE's top-k, whose sorted list counts (token, choice) pairs."""
+        """Rows by index: tile row r is row `ids[at + r]` of this tensor (rows flattened over
+        batch and depth), from column `col` -- `ids` an `hk.RowIndex`, which also says how an
+        index names a row (`div`), or an int32 tensor and `at` (and `count`). An index outside the
+        tensor, or a position at or past `count` (default: all of `ids`), reads zeros -- the
+        padding a MoE sort fills its index list with costs no branch. `div=` here is deprecated:
+        `hk.RowIndex(ids, at, div=...)`."""
+        ids, at, count, div = _plain_rows("gather", ids, at, count, div=div)
+        if div is None:
+            div = 1
         idx, at_v, n_v, col_v = self._indexed("gather", tile, ids, at, count, col)
         return _make(hkd.GatherRowsOp, tile,
                      (self.v, idx, at_v, n_v, as_int(div).v, col_v),
                      into=into, name="gat")
 
-    def scatter(self, value: "Tile", ids: "Global", at, *, count=None,
-                col=0, sort_topk: int = 0, add: bool = False, staged: int = 0) -> None:
-        """Rows by index: tile row r goes to row `ids[at + r]`, from column
-        `col`; an index outside the tensor, or a position at or past
-        `count`, writes nothing. Two rows naming one row race. `sort_topk`
-        > 0: `ids` are AITER's MoE sort ids (token | choice << 24) and this
-        tensor is [sort_topk * M, ...] choice-major -- row r goes to row
-        choice * M + token, and padding (token >= M) nowhere.
+    def scatter(self, value: "Tile", ids, at=None, *, count=None,
+                col=0, sort_topk: Optional[int] = None, add: bool = False,
+                staged: Optional[int] = None) -> None:
+        """Rows by index: tile row r goes to row `ids[at + r]`, from column `col` -- `ids` an
+        `hk.RowIndex`, or an int32 tensor and `at` (and `count`). An index outside the tensor, or
+        a position at or past `count`, writes nothing. Two rows naming one row race. With an
+        index of AITER's MoE sort ids (`RowIndex(..., sort_topk=k)`: token | choice << 24) this
+        tensor is [k * M, ...] choice-major -- row r goes to row choice * M + token, and padding
+        (token >= M) nowhere.
 
-        `add=True` adds the rows atomically instead (an fp32 or bf16 global;
-        bf16 adds element pairs, gfx950's global_atomic_pk_add_bf16). With
-        `sort_topk` the tensor is then [M, ...] and every choice of a token
-        adds into its row: the top-k reduce, in no fixed order -- the result
-        varies run to run by the rounding of the adds.
+        `add=True` adds the rows atomically instead (an fp32 or bf16 global; bf16 adds element
+        pairs, gfx950's global_atomic_pk_add_bf16). With sort ids the tensor is then [M, ...] and
+        every choice of a token adds into its row: the top-k reduce, in no fixed order -- the
+        result varies run to run by the rounding of the adds.
 
-        `staged=N`: the ids were staged in LDS by `g.gather_prep(ids, at0, N,
-        raw=True)`, `at0` a multiple of N and [at0, at0 + N) covering every row
-        stored here -- the scatter reads them there. A global index load is a
-        vmcnt wait, which on gfx950 retires every load and store issued before
-        it, in order: in an epilogue between K loops, the next loop's whole
-        prefetch and this epilogue's own earlier stores (K1 k1-prefill c36)."""
+        An index staged in LDS by `g.stage_rows(ix, N, keep_choice=True)` is read there: a global
+        index load is a vmcnt wait, which on gfx950 retires every load and store issued before
+        it, in order -- in an epilogue between K loops, the next loop's whole prefetch and this
+        epilogue's own earlier stores (K1 k1-prefill c36). `sort_topk=` and `staged=` here are
+        deprecated: they are `hk.RowIndex`'s and `g.stage_rows`'."""
+        if isinstance(ids, RowIndex):
+            if sort_topk is not None or staged is not None:
+                raise TypeError("scatter: sort_topk / staged are the RowIndex's, not keywords "
+                                "next to one")
+            if ids.stage_n and not ids.keep_choice:
+                raise TypeError("scatter: this index was staged for gathers (the token rows); a "
+                                "scatter reads the raw ids -- "
+                                "g.stage_rows(ix, rows, keep_choice=True)")
+            if ids.stage_n:
+                ids._check_staged("scatter")
+            sort_topk, staged = ids.sort_topk, ids.stage_n
+            if ids.div != 1:
+                raise TypeError("scatter: an index with div= names rows for a gather")
+            ids, at, count = ids.ids, ids.at, ids.count if count is None else count
+        else:
+            if sort_topk is not None:
+                _deprecated("scatter(..., sort_topk=k)",
+                            "scatter(t, hk.RowIndex(ids, at, sort_topk=k))")
+            if staged is not None:
+                _deprecated("scatter(..., staged=N)",
+                            "scatter(t, g.stage_rows(hk.RowIndex(ids, at), N, keep_choice=True))")
+            if at is None:
+                raise TypeError("scatter: rows by index take an hk.RowIndex, or ids and at")
+            sort_topk, staged = sort_topk or 0, staged or 0
         value = _vec_of(value)
         if staged and get_target(_t().arch).arch != "gfx950":
             raise TypeError(f"scatter(staged=...): gfx950's LDS-staged ids, not {_t().arch}")
@@ -590,6 +616,95 @@ class Global(Value):
         ops = self._indexed("scatter", value.ty, ids, at, count, col)
         hkd.ScatterRowsOp(self.v, value.v, *ops, sort_topk=int(sort_topk), add=bool(add),
                           staged=int(staged), loc=_t().loc())
+
+
+class RowIndex:
+    """Which rows a gather, a scatter or a gathered LDS copy moves: row r of the tile is named by
+    `ids[at + r]`, an int32 global, for positions below `count` (default: all of `ids`) -- and
+    how such an index names a row:
+
+    - plain: it is the row;
+    - `div=k`: the row is `ids[at + r] // k` (a MoE's top-k, its sorted list counting
+      (token, choice) pairs); for a gather;
+    - `sort_topk=k`: AITER's MoE sort ids, token | choice << 24, padding token >= M. A gather or
+      a gathered copy reads the token's row; a scatter writes row choice * M + token of a
+      [k * M, ...] tensor, and with add=True adds into the token's row.
+
+    Positions at or past `count`, padding and indices outside the tensor read zero and write
+    nothing. `g.stage_rows(ix, rows)` copies [at, at + rows) into LDS and returns the staged
+    index the copies then read there (no vmcnt wait for an index). Made in the kernel body; no
+    instruction of its own."""
+
+    __slots__ = ("ids", "at", "count", "div", "sort_topk", "stage_n", "keep_choice")
+
+    def __init__(self, ids: "Global", at=0, *, count=None, div: int = 1, sort_topk: int = 0):
+        if not isinstance(ids, Global) or ids.dtype is not i32:
+            raise TypeError(f"hk.RowIndex: the indices are an int32 global, not {ids!r}")
+        if int(div) < 1 or int(sort_topk) < 0 or (int(div) != 1 and int(sort_topk)):
+            raise TypeError(f"hk.RowIndex: div >= 1 or sort_topk >= 1, not both "
+                            f"(div={div}, sort_topk={sort_topk})")
+        self.ids, self.at, self.count = ids, at, count
+        self.div, self.sort_topk = int(div), int(sort_topk)
+        self.stage_n, self.keep_choice = 0, False
+
+    def offset(self, n) -> "RowIndex":
+        """The same index from position at + n (a later tile of the same block). A staged
+        index stays staged: [at, at + n + the tile's rows) must lie inside what was staged."""
+        out = self._copy()
+        out.at = self.at + n
+        return out
+
+    def staged(self, rows: int, *, keep_choice: bool = False) -> "RowIndex":
+        """This index as `g.stage_rows(self, rows, keep_choice=...)` stages it, without the copy:
+        for code written before the place that stages it (a loop body's copies, defined above
+        the loop). A consumer still refuses it until a `stage_rows` has made that copy."""
+        if self.stage_n:
+            raise TypeError(f"{self!r} is staged already")
+        if int(rows) <= 0:
+            raise TypeError(f"RowIndex.staged: rows > 0, not {rows}")
+        out = self._copy()
+        out.stage_n, out.keep_choice = int(rows), bool(keep_choice)
+        return out
+
+    def _check_staged(self, what: str) -> None:
+        """A staged index is read from LDS: some stage_rows of its size and form must come
+        first."""
+        done = getattr(_t(), "staged_rows", None) or set()
+        if (self.stage_n, self.keep_choice) not in done:
+            raise TypeError(f"{what}: {self!r} is read from LDS, but no g.stage_rows of "
+                            f"{self.stage_n} {'raw ids' if self.keep_choice else 'token rows'} "
+                            f"has made that copy before this point")
+
+    def _copy(self) -> "RowIndex":
+        out = RowIndex.__new__(RowIndex)
+        for k in RowIndex.__slots__:
+            setattr(out, k, getattr(self, k))
+        return out
+
+    def __repr__(self) -> str:
+        bits = [f"div={self.div}"] if self.div != 1 else []
+        bits += [f"sort_topk={self.sort_topk}"] if self.sort_topk else []
+        bits += [f"staged={self.stage_n}" + (", keep_choice" if self.keep_choice else "")] \
+            if self.stage_n else []
+        return f"RowIndex({self.ids!r}, {self.at!r}{''.join(', ' + b for b in bits)})"
+
+
+def _plain_rows(what: str, ids, at, count, *, div=None):
+    """(ids, at, count, div) of a gather's rows: from a RowIndex, or the deprecated keywords."""
+    if isinstance(ids, RowIndex):
+        if at is not None or div is not None:
+            raise TypeError(f"{what}: at / div are the RowIndex's, not arguments next to one")
+        if ids.stage_n:
+            raise TypeError(f"{what}: a staged index is read by g.load(gather=) and scatter; a "
+                            f"register gather reads its ids from the global")
+        if ids.sort_topk:
+            raise TypeError(f"{what}: a register gather takes plain or div= indices, not sort ids")
+        return ids.ids, ids.at, ids.count if count is None else count, ids.div
+    if at is None:
+        raise TypeError(f"{what}: rows by index take an hk.RowIndex, or ids and at")
+    if div is not None:
+        _deprecated(f"{what}(..., div=k)", f"{what}(ty, hk.RowIndex(ids, at, div=k))")
+    return ids, at, count, div
 
 
 #: A scoped tensor's cache-policy bits on gfx950: SC1 (device scope) or

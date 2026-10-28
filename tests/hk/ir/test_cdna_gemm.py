@@ -491,14 +491,14 @@ def test_a_ring_indexed_stack_is_tracked_relative_to_its_base():
 
 
 def test_gathered_rows_staged_in_lds_cost_no_vmcnt_wait_in_the_loop():
-    """g.load(gather=(ids, at), staged=N) reads its row indices from LDS (g.gather_prep):
+    """g.load(gather=<a staged RowIndex>) reads its row indices from LDS (g.stage_rows):
     a per-lane global index load would sit in the vmcnt queue and drain the prefetch."""
     def k(a: hk.Tensor[hk.fp8e4m3], ids: hk.Tensor[hk.i32]):
         g = hk.group(4)
         Xs = hk.lds.alloc(FST, count=2, name="Xs")
-        g.gather_prep(ids, 0, 64)
-        g.load(Xs[0], a.at[0, 0], wait=False, gather=(ids, 0), staged=64)
-        g.load(Xs[1], a.at[0, 128], wait=False, gather=(ids, 0), staged=64)
+        rows = g.stage_rows(hk.RowIndex(ids, 0), 64)
+        g.load(Xs[0], a.at[0, 0], wait=False, gather=rows)
+        g.load(Xs[1], a.at[0, 128], wait=False, gather=rows)
         g.wait_for(Xs[0])
         g.wait_for(Xs[1])
 
@@ -508,13 +508,13 @@ def test_gathered_rows_staged_in_lds_cost_no_vmcnt_wait_in_the_loop():
 
 
 def test_a_gathered_copy_takes_a_row_limit():
-    """g.load(gather=..., rows=n): the limit goes to the copy (rows past it read zero, their ids
+    """g.load(gather=hk.RowIndex(...), rows=n): the limit goes to the copy (rows past it read zero, their ids
     unread), and it counts on vmcnt as the unlimited copy does."""
     def k(a: hk.Tensor[hk.fp8e4m3], ids: hk.Tensor[hk.i32]):
         g = hk.group(4)
         Xs = hk.lds.alloc(FST, count=2, name="Xs")
-        g.load(Xs[0], a.at[0, 0], wait=False, gather=(ids, 0), rows=hk.max(ids.cols - 64, 0))
-        g.load(Xs[1], a.at[0, 128], wait=False, gather=(ids, 64), rows=ids.cols)
+        g.load(Xs[0], a.at[0, 0], wait=False, gather=hk.RowIndex(ids, 0), rows=hk.max(ids.cols - 64, 0))
+        g.load(Xs[1], a.at[0, 128], wait=False, gather=hk.RowIndex(ids, 64), rows=ids.cols)
         g.wait_for(Xs[0])
         g.wait_for(Xs[1])
 

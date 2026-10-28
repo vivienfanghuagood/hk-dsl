@@ -653,6 +653,7 @@ def _sorted_ring(stage: int, name: str, *, group_rows: int, mt: int, pp: int, k:
         e = seids[hk.elem_coord(0, 0, 0, b)].load_scalar()
         live = hk.min(hk.max(valid - b * BM, 0), 1)
         r0 = b * BM
+        rows_in = hk.RowIndex(sids, r0, sort_topk=topk).staged(BM)   # stage 1's gathered rows
         wid = hk.arch.warp_id()
         col0 = (blk * warps + wid) * pp * TILE
         row_w = e * GR + col0
@@ -665,7 +666,7 @@ def _sorted_ring(stage: int, name: str, *, group_rows: int, mt: int, pp: int, k:
 
         def fetch(kc, slot, sset=None):
             if stage == 1:
-                g.load(Xs[slot], x.at[0, kc * KS], wait=False, gather=(sids, r0), staged=BM)
+                g.load(Xs[slot], x.at[0, kc * KS], wait=False, gather=rows_in)
             else:
                 g.load(Xs[slot], x.at[r0, kc * KS], wait=False)
             hk.load_fp4_frags(t_w, w, row_w, kc, group_rows=GR, gate_up=stage == 1, into=W[slot])
@@ -698,7 +699,7 @@ def _sorted_ring(stage: int, name: str, *, group_rows: int, mt: int, pp: int, k:
 
         for _ in range(live):
             if stage == 1:
-                g.gather_prep(sids, r0, BM)      # the block's rows, in LDS: no vmcnt wait in the loop
+                g.stage_rows(rows_in)       # the block's rows, in LDS: no vmcnt wait in the loop
             for k0 in range(D - 1):
                 fetch(k0, k0, sset=(k0 // 2) % 2 if k0 % 2 == 0 else None)
             tail = BODY + steps % BODY if steps >= 2 * BODY else steps
@@ -725,7 +726,7 @@ def _sorted_ring(stage: int, name: str, *, group_rows: int, mt: int, pp: int, k:
                     wt = wv[hk.elem_coord(0, 0, r0 + i * TILE, 0)].load(t_wv)
                     wt.right_fill_(1, 0.0)
                     o = o * wt.sum(axis=1)[:, None]
-                    out.scatter(o, sids, r0 + i * TILE, col=col0, sort_topk=topk)
+                    out.scatter(o, hk.RowIndex(sids, r0 + i * TILE, sort_topk=topk), col=col0)
             if mxq:
                 hk.arch.barrier()
                 hk.mx_quant_store(Hs, out, sq, r0, blk * TILE * pp * warps)
@@ -837,7 +838,7 @@ def _sorted_s2_persistent(name: str, *, group_rows: int, mt: int, pp: int, k: in
                 wt = wv[hk.elem_coord(0, 0, r0 + i * TILE, 0)].load(t_wv)
                 wt.right_fill_(1, 0.0)
                 o = o * wt.sum(axis=1)[:, None]
-                out.scatter(o, sids, r0 + i * TILE, col=col0, sort_topk=topk)
+                out.scatter(o, hk.RowIndex(sids, r0 + i * TILE, sort_topk=topk), col=col0)
 
         u0 = unit(0)
         fetch(0, 0, 0, u0[0], u0[1])
@@ -909,6 +910,7 @@ def _sorted_s1_grid(name: str, *, group_rows: int, mt: int, pp: int, k: int, tr:
         e = seids[hk.elem_coord(0, 0, 0, b)].load_scalar()
         live = hk.min(hk.max(valid - b * BM, 0), 1)
         r0 = b * BM
+        rows_in = hk.RowIndex(sids, r0).staged(BM)       # the block's gathered rows, in LDS
         wid = hk.arch.warp_id()
         rg = wid // tc
         c = wid % tc
@@ -926,7 +928,7 @@ def _sorted_s1_grid(name: str, *, group_rows: int, mt: int, pp: int, k: int, tr:
 
         def fetch(kc, slot, sset=None):
             g.load(Ws[slot], wv.at[wrow0, kc * 1024], wait=False)
-            g.load(Xs[slot], x.at[0, kc * KS], wait=False, gather=(sids, r0), staged=BM)
+            g.load(Xs[slot], x.at[0, kc * KS], wait=False, gather=rows_in)
             if sset is not None:
                 hk.load_mx_scales(ws, R, 8, row_w, kc * 4, layout="aiter_gate_up", group_rows=GR,
                                   into=S[sset])
@@ -950,7 +952,7 @@ def _sorted_s1_grid(name: str, *, group_rows: int, mt: int, pp: int, k: int, tr:
             hk.arch.sched_barrier()
 
         for _ in range(live):
-            g.gather_prep(sids, r0, BM)
+            g.stage_rows(rows_in)
             fetch(0, 0, sset=0)
             tail = 4 + steps % 4 if steps >= 8 else steps
             for kk in hk.range((steps - tail) // 4):
@@ -1031,6 +1033,8 @@ def _sorted_s2_resident(name: str, *, group_rows: int, mt: int, pp: int, k: int,
         e = seids[hk.elem_coord(0, 0, 0, b)].load_scalar()
         live = hk.min(hk.max(valid - b * BM, 0), 1)
         r0 = b * BM
+        # the block's scatter ids, raw (choice bits kept), in LDS
+        rows_out = hk.RowIndex(sids, r0, sort_topk=topk).staged(BM, keep_choice=True)
         wid = hk.arch.warp_id()
         col0 = blk * NCW * nt + wid * R
         Cs = [hk.zeros(t_c1) for _ in range(mt)]
@@ -1046,7 +1050,7 @@ def _sorted_s2_resident(name: str, *, group_rows: int, mt: int, pp: int, k: int,
             # the block's scatter ids into LDS and its rows' routing weights into registers, once
             # for all nt column tiles: loaded in the epilogue, each was a vmcnt wait that drained
             # the next tile's weight prefetch and this tile's stores (k1-prefill c36)
-            g.gather_prep(sids, r0, BM, raw=True)
+            g.stage_rows(rows_out)
             wsum = []
             for i in range(mt):
                 wt = wv[hk.elem_coord(0, 0, r0 + i * TILE, 0)].load(t_wv)
@@ -1098,7 +1102,7 @@ def _sorted_s2_resident(name: str, *, group_rows: int, mt: int, pp: int, k: int,
             def store(c0):                         # the tile's rows out, weighted; acc to zero
                 for i in range(mt):
                     o = hk.transpose(Cs[i]) * wsum[i][:, None]
-                    out.scatter(o, sids, r0 + i * TILE, col=c0, sort_topk=topk, staged=BM)
+                    out.scatter(o, rows_out.offset(i * TILE), col=c0)
                     Cs[i].zero_()
 
             for n in hk.range(nt):

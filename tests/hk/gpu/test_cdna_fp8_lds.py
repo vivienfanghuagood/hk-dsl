@@ -1,5 +1,5 @@
 """fp8 e4m3 operands copied into LDS by gfx950's asynchronous DMA (buffer_load ... lds), plain and
-gathered by index (AITER's MoE sort ids, rows staged in LDS by g.gather_prep), feeding the MFMA."""
+gathered by index (AITER's MoE sort ids, rows staged in LDS by g.stage_rows), feeding the MFMA."""
 
 from __future__ import annotations
 
@@ -31,8 +31,8 @@ def _fp8_dma_kernel(gather):
         g = hk.group(4)
         sa = hk.lds.alloc(hk.ST(fp8e4m3, 64, 128), name="sa")
         if gather:
-            g.gather_prep(ids, 0, 64)
-            g.load(sa, a.at[0, 0], wait=False, gather=(ids, 0), staged=64)
+            rows = g.stage_rows(hk.RowIndex(ids, 0), 64)
+            g.load(sa, a.at[0, 0], wait=False, gather=rows)
         else:
             g.load(sa, a.at[0, 0], wait=False)
         g.wait_for(sa)

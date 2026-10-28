@@ -24,8 +24,8 @@ MFMA inside an `s_and_saveexec` region (a warning).
 in AITER's layout and x [64, K] fp8, each with E8M0 byte scales (K = 128 * steps).
 For each 16-row tile t of x:
 
-    acc = mma_ABt_mx(w, x[16t:16t+16], a_fmt="fp4")      # [n, 16], col layout
-    out.scatter(transpose(acc), ids, 16 * t, sort_topk=TOPK, add=True)
+    acc = mma(w.scaled(fmt="fp4"), x[16t:16t+16].scaled())   # [n, 16], col layout
+    out.scatter(transpose(acc), RowIndex(ids, 16 * t, sort_topk=TOPK), add=True)
 
 ids are AITER's MoE sort ids (token | choice << 24). Rows whose token is >= M
 are padding and add nothing.
@@ -63,7 +63,8 @@ def kernel(steps: int = 2, pinned: bool = True, n: int = 32):
             accs.append(hk.mma("mma_ABt", tw.scaled(s_w, fmt="fp4"), tx.scaled(s_x),
                                hk.zeros(hk.RT(fp32, n, 16, "col"))))
         for t in range(ROWS // 16):
-            out.scatter(hk.transpose(accs[t]), ids, 16 * t, col=0, sort_topk=TOPK, add=True)
+            out.scatter(hk.transpose(accs[t]), hk.RowIndex(ids, 16 * t, sort_topk=TOPK), col=0,
+                        add=True)
 
     return hk.kernel(mx_sink, arch=ARCH, warps=1,
                      name=f"mx_sink_{steps}_{n}" + ("" if pinned else "_unpinned"),
