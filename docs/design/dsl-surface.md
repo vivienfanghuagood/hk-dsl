@@ -500,8 +500,10 @@ the regex over generated C++ are deleted.
 - **The table.** Every public DSL name, every dialect op and every C++ helper a kernel can reach
   gets one entry: name, kind, boundary, and the tests that pin it. §2's table is the first
   version.
-- **Where it lives.** S0 puts it in the code as `hk.dsl.surface.REGISTRY`, rendered into
-  `docs/api`.
+- **Where it lives.** S0 puts it in the code as `python/hk/dsl/surface.py`: `ENTRIES` (the
+  inventoried names that are not plain primitives, with kind, item, boundary, target and step),
+  `PRIMITIVES`, `OPS` (every dialect op) and `CPP` (every function in `include/hk/`). The API
+  reference shows each non-primitive name's kind and boundary.
 - **Kinds:**
   - **primitive**: general; any kernel.
   - **format**: one data layout of hk's or of a third-party library. A new layout of the same
@@ -517,10 +519,21 @@ the regex over generated C++ are deleted.
 **What S0's tests check:**
 - every name in `hk.__all__`, every documented method and every op in `HKOps.td` has a registry
   entry;
-- every escape-hatch call site in `python/hk/ops`, the templates and the examples is in the
-  allowlist;
+- every escape-hatch call site in `python/hk/ops`, the templates and the examples is in a file
+  the allowlist lists, within the line's ceiling (below);
 - no `hk.ops` kernel subclasses `Kernel` to override `with_defines` or `source`;
 - each internal specialization has a test against the generic path.
+
+**The allowlist and the registry are ratchets** (decided 10-29, after the first merge trains). An
+allowlist line is (file, name, ceiling, reason). A use in a file with no line fails, and so do
+more uses than the ceiling: bringing a hatch into a new file, or more of it into a listed one, is
+the reviewed change -- the PR edits the line and the reviewer reads it. Fewer uses than the
+ceiling (or none) pass with a hint to tighten the line. The registry checks work the same way: a
+new name, dialect op, C++ helper or header that is not registered fails; a registered one that is
+gone only hints. The first version demanded exact counts and full equality, and every PR that
+touched an op file then conflicted with S0 in the merge train without anything to review (#137's
+dsv41_index went 173 -> 190 `map_cpp` uses; #120 brought 12 in a new file). A rewriting `Kernel`
+subclass is a line too, with ceiling 1 a class.
 
 **Escape-hatch boundaries:**
 

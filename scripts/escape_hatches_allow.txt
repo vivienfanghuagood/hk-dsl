@@ -1,0 +1,24 @@
+# Every use of an escape hatch or experiment (python/hk/dsl/surface.py: ENTRIES of kind
+# "escape" / "experiment") in hk.ops, the templates and the examples, with the reason it is
+# inside the hatch's boundary, and a ceiling: the most uses the file may have. A ratchet:
+# tests/hk/ir/test_surface.py fails on a use in a file not listed here and on uses above the
+# ceiling -- a new line or a higher ceiling is a reviewed change (CONTRIBUTING.md) -- and only
+# hints when uses drop under it (tighten the ceiling then; a removal never fails).
+#
+# path                           name                  ceil  reason
+python/hk/ops/attn.py            SharedTile.granules   2     gfx1100 attention: K's and V's LDS addressing factored by hand; the address VGPRs were the limit
+python/hk/ops/attn.py            Granules.load_frag    2     as above
+python/hk/ops/attn.py            Granules.store_frag   1     as above
+python/hk/ops/attn_k3.py         SharedTile.granules   2     gfx1100 K3 attention, attn.py's addressing
+python/hk/ops/attn_k3.py         Granules.load_frag    2     as above
+python/hk/ops/attn_k3.py         Kernel.with_defines   2     PairPKernel splices kda::pair_p (the RDNA3 P^T exchange) into its source; replaced by as_operand(k_order="even_odd") in S11 (dsl-surface.md D1)
+python/hk/ops/paged_prefill.py   SharedTile.granules   2     gfx1100 paged prefill, attn.py's addressing
+python/hk/ops/paged_prefill.py   Granules.load_frag    2     as above
+python/hk/ops/paged_prefill.py   Granules.store_frag   1     as above
+python/hk/ops/dsv41_index.py     hk.map_cpp            190   the DeepSeek-V4.1 index front (#115, #137): strip index arithmetic, selects and bit ops the operators cannot write yet, and the scaled fp8 / fp4 conversion intrinsics; the arithmetic moves to the strip operators in S7
+python/hk/ops/paged_cdna.py      hk.map_cpp            2     the split merge's partial-sum indices; integer arithmetic the strip operators cannot write yet (moves to them in S7)
+python/hk/ops/sparse_mla.py      hk.map_cpp            12    the sparse MLA prefill (#120): the MXFP8 row quantization (exponent bits, exp2 scaling), the lane-pair packing selects and the rows' store indices, the bf16 rounding of the rows vLLM's pass reads, and RoPE's index arithmetic and selects; integer and bit arithmetic the strip operators cannot write yet, which moves to them in S7
+python/hk/ops/attn_cdna.py       hk.arch.agpr          1     acc="agpr", off by default (experiment; sunset 2026-10-31 12:00Z)
+#
+# Kernel subclasses that override with_defines or source (refused unless listed).
+python/hk/ops/attn_k3.py         PairPKernel           1     as attn_k3.py's Kernel.with_defines above (S11 removes it)

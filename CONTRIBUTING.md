@@ -45,8 +45,11 @@ The rule for a new kernel, or a new version of one:
    - the tests that pin it;
    - the general op that would retire it.
 
-   Each call site in `hk.ops`, the templates and the examples is listed with a one-line reason in
-   the escape-hatch allowlist.
+   Each file in `hk.ops`, the templates and the examples that uses it has a line in the
+   escape-hatch allowlist (`scripts/escape_hatches_allow.txt`) with a one-line reason and a
+   ceiling: the most uses that file may have. CI fails on a use in an unlisted file or above the
+   ceiling, so adding a line or raising a ceiling is part of the PR and gets reviewed. Fewer uses
+   only print a hint: tighten the ceiling when you see one.
 4. **Never edit the generated C++.** A `Kernel` subclass may not override `with_defines` or
    `source` to splice or rewrite code, and `with_defines` carries `#define NAME value` knobs only.
    Every past case of rewriting was a missing op: ask for the op.
@@ -65,8 +68,10 @@ For every PR that touches `include/hk/`, `mlir/include/hk/Dialect/HK/IR/HKOps.td
       `include/hk/`, dialect op or public DSL name is either general (usable by any kernel,
       tested on its own, documented in `docs/api`) or a registered escape hatch whose written
       justification was reviewed before this PR.
-- [ ] **Every escape-hatch use is inside its boundary and listed in the allowlist.** This covers
-      `hk.map_cpp`, `granules`, `with_defines`, `build_flags` and `hk.arch.agpr`.
+- [ ] **Every escape-hatch use is inside its boundary, and its file's allowlist line covers
+      it.** This covers `hk.map_cpp`, `granules`, `with_defines`, `build_flags` and
+      `hk.arch.agpr`. A new line or a raised ceiling in `scripts/escape_hatches_allow.txt` has a
+      reason that holds.
 - [ ] **No `Kernel` subclass rewrites generated C++**, and `with_defines` carries only `#define`
       knobs.
 - [ ] **A new specialization behind a general op is chosen by type alone** and has a test
