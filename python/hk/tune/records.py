@@ -36,7 +36,7 @@ import os
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
 
-__all__ = ["path", "load", "user_route", "save", "bucket", "forget"]
+__all__ = ["path", "load", "user_route", "shipped_route", "save", "bucket", "forget"]
 
 _CACHE: Dict[str, Tuple[int, dict]] = {}
 
@@ -93,7 +93,10 @@ def user_route(arch: str, m: int, n: int, k: int) -> Optional[Tuple[str, Any]]:
 
     if not enabled() or os.environ.get("HK_TUNE_RECORDS", "1") in ("0", "off", "no"):
         return None
-    d = load(arch)
+    return _lookup(load(arch), m, n, k)
+
+
+def _lookup(d: dict, m: int, n: int, k: int) -> Optional[Tuple[str, Any]]:
     by_m = d.get("routes", {}).get(f"{n}x{k}")
     if not by_m:
         return None
@@ -104,6 +107,34 @@ def user_route(arch: str, m: int, n: int, k: int) -> Optional[Tuple[str, Any]]:
             if spec:
                 return name, spec
     return None
+
+
+_SHIPPED: Dict[str, dict] = {}
+
+
+def shipped_route(arch: str, m: int, n: int, k: int) -> Optional[Tuple[str, Any]]:
+    """`user_route` for the records this package ships for an RDNA arch,
+    `python/hk/tuned/routes_gemm_<arch>.json`: hk.tune's own output, measured
+    on that arch and kept where it won, read behind this machine's records
+    (hk.ops.gemm.user_route). gfx950's table of that name is gemm_cdna's, in
+    its own candidates' terms, and is not read here. `HK_AUTOTUNE=0` ignores
+    it, as it ignores every tuning record; `HK_TUNE_RECORDS=0` does not --
+    that switch is this machine's records."""
+    from ..autotune import enabled  # noqa: PLC0415
+
+    if arch == "gfx950" or not enabled():
+        return None
+    d = _SHIPPED.get(arch)
+    if d is None:
+        p = Path(__file__).resolve().parents[1] / "tuned" / f"routes_gemm_{arch}.json"
+        try:
+            d = json.loads(p.read_text())
+            if not isinstance(d, dict) or d.get("arch") != arch:
+                d = _empty(arch)
+        except (OSError, ValueError):
+            d = _empty(arch)
+        _SHIPPED[arch] = d
+    return _lookup(d, m, n, k)
 
 
 def spec_of(schedule) -> Any:

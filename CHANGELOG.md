@@ -265,6 +265,16 @@ head_dim 64 too: causal from 1024 query rows, full from 2048; at n 1024-8192, GQ
 either compiler, causal 1.10-1.84x and full 1.03-1.14x gfx1100's tiling. Below those lengths
 gfx1100's tiling stays, which is faster at a ViT's 577 and 1025 tokens.
 
+**gfx1201's bf16 GEMM at 32-512 rows** (#102, RDNA4). hk ships tuned schedules for an
+RDNA arch in `python/hk/tuned/routes_gemm_<arch>.json`, in `hk.tune`'s record format,
+read behind a machine's own records (`hk.tune.records.shipped_route`); `hk.ops.gemm.matmul`,
+`schedule_for`, `hk.templates.gemm` and the vLLM route take them. gfx1201's 18, tuned under
+both ROCm 7.2.3's clang 22 and the R9700 vLLM image's clang 23 on Qwen3's four (N, K):
+1.03-1.40x the default schedule; with W from GDDR6, 1.28-5.7x hipBLASLt's NT and 0.94-1.09x
+its best layout. The gfx1201 vLLM table, re-measured with them, routes most of M 33-256 to
+hk: Qwen3.5-9B at 32-128 requests, tokens identical and requests 1.08-1.11x stock (the old
+table's 1.01-1.08x). `HK_AUTOTUNE=0` ignores the shipped records.
+
 **Fixes**
 - **gfx950: `hk.ops.gemm.matmul` raised `ResourceError` in the vLLM image** (#84) at M 192-512 for
   N 28672 / 14336, K 4096: its table routes there to `dp128x224`, which ROCm 10's hipcc builds

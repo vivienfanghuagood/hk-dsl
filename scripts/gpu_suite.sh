@@ -26,7 +26,7 @@ G=tests/hk/gpu
 # below starts them in this order as slots free up.
 labels=(); files=()
 group() { labels+=("$1"); shift; files+=("$(IFS='|'; echo "$*")"); }  # pytest args, |-joined
-group gemm   $G/test_gemm.py $G/test_autotune.py
+group gemm   $G/test_gemm.py $G/test_gemm_shipped.py $G/test_autotune.py
 group attn   $G/test_attn.py $G/test_sdpa.py
 group torch  $G/test_torch_op.py $G/test_engine.py $G/test_vllm_gemm.py $G/test_flydsl_gemm.py
 group decode $G/test_decode_gemm.py $G/test_paged.py $G/test_load_scalar.py

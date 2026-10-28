@@ -1,0 +1,777 @@
+{
+ "arch": "gfx1201",
+ "kind": "gemm",
+ "candidates": {
+  "u:rdna:x64_b2_i1_sp1_t2_a1_g16": {
+   "block_n": 64,
+   "family": "rdna",
+   "lds_buffers": 2,
+   "sched": 1,
+   "setprio": true,
+   "stagger": 2,
+   "stream_a": true,
+   "wgm": 16
+  },
+  "u:rdna:x64_ns1_sp1_t2_a1_g16": {
+   "block_n": 64,
+   "family": "rdna",
+   "n_split": 1,
+   "setprio": true,
+   "stagger": 2,
+   "stream_a": true,
+   "wgm": 16
+  },
+  "u:rdna:32_b2_ns1_sp1_t2_wr2_g1_p1": {
+   "block_m": 32,
+   "family": "rdna",
+   "lds_buffers": 2,
+   "n_split": 1,
+   "setprio": true,
+   "stagger": 2,
+   "warp_rows": 2,
+   "wgm": 1,
+   "write_pos": 1
+  },
+  "u:rdna:32_x64_d32_b2_ns1_i1_sp1_t1_wr2": {
+   "block_m": 32,
+   "block_n": 64,
+   "dot_slice": 32,
+   "family": "rdna",
+   "lds_buffers": 2,
+   "n_split": 1,
+   "sched": 1,
+   "setprio": true,
+   "stagger": 1,
+   "warp_rows": 2
+  },
+  "u:rdna:64_x64_k128_b2_ns1_sp1_t1_wr2": {
+   "block_m": 64,
+   "block_n": 64,
+   "family": "rdna",
+   "k_step": 128,
+   "lds_buffers": 2,
+   "n_split": 1,
+   "setprio": true,
+   "stagger": 1,
+   "warp_rows": 2
+  },
+  "u:rdna:x64_ns1_sp1_t1_a1_g16": {
+   "block_n": 64,
+   "family": "rdna",
+   "n_split": 1,
+   "setprio": true,
+   "stagger": 1,
+   "stream_a": true,
+   "wgm": 16
+  },
+  "u:rdna:32_x64_d32_k128_ns1_i1_sp1_t1_wr2_g4": {
+   "block_m": 32,
+   "block_n": 64,
+   "dot_slice": 32,
+   "family": "rdna",
+   "k_step": 128,
+   "n_split": 1,
+   "sched": 1,
+   "setprio": true,
+   "stagger": 1,
+   "warp_rows": 2,
+   "wgm": 4
+  },
+  "u:rdna:64_x64_k128_b2_ns1_sp1_t1": {
+   "block_m": 64,
+   "block_n": 64,
+   "family": "rdna",
+   "k_step": 128,
+   "lds_buffers": 2,
+   "n_split": 1,
+   "setprio": true,
+   "stagger": 1
+  },
+  "u:rdna:64_x64_ns1_sp1_t1_wr2_g1": {
+   "block_m": 64,
+   "block_n": 64,
+   "family": "rdna",
+   "n_split": 1,
+   "setprio": true,
+   "stagger": 1,
+   "warp_rows": 2,
+   "wgm": 1
+  },
+  "u:rdna:x64_i1_sp1_t1_a1": {
+   "block_n": 64,
+   "family": "rdna",
+   "sched": 1,
+   "setprio": true,
+   "stagger": 1,
+   "stream_a": true
+  },
+  "u:rdna:32_x64_d32_ns1_i1_sp1_t1_wr2_g16": {
+   "block_m": 32,
+   "block_n": 64,
+   "dot_slice": 32,
+   "family": "rdna",
+   "n_split": 1,
+   "sched": 1,
+   "setprio": true,
+   "stagger": 1,
+   "warp_rows": 2,
+   "wgm": 16
+  },
+  "u:rdna:d32_ns1_g4": {
+   "dot_slice": 32,
+   "family": "rdna",
+   "n_split": 1,
+   "wgm": 4
+  },
+  "u:rdna:32_x64_ns1_sp1_t1_wr2_g1": {
+   "block_m": 32,
+   "block_n": 64,
+   "family": "rdna",
+   "n_split": 1,
+   "setprio": true,
+   "stagger": 1,
+   "warp_rows": 2,
+   "wgm": 1
+  },
+  "u:rdna:64_x64_ns1_sp1_t1_wr2_g16": {
+   "block_m": 64,
+   "block_n": 64,
+   "family": "rdna",
+   "n_split": 1,
+   "setprio": true,
+   "stagger": 1,
+   "warp_rows": 2,
+   "wgm": 16
+  },
+  "u:rdna:x64_b2_i2_sp1_t1_a1": {
+   "block_n": 64,
+   "family": "rdna",
+   "lds_buffers": 2,
+   "sched": 2,
+   "setprio": true,
+   "stagger": 1,
+   "stream_a": true
+  },
+  "u:decode:cd8_tk2": {
+   "combine_depth": 8,
+   "family": "decode",
+   "tokens": 2
+  },
+  "u:rdna:d32_ns1_g16": {
+   "dot_slice": 32,
+   "family": "rdna",
+   "n_split": 1,
+   "wgm": 16
+  },
+  "u:rdna:32_x64_d32_ns1_t2_wr2_g1": {
+   "block_m": 32,
+   "block_n": 64,
+   "dot_slice": 32,
+   "family": "rdna",
+   "n_split": 1,
+   "stagger": 2,
+   "warp_rows": 2,
+   "wgm": 1
+  }
+ },
+ "routes": {
+  "24576x4096": {
+   "32": "u:rdna:32_b2_ns1_sp1_t2_wr2_g1_p1",
+   "64": "u:rdna:32_x64_d32_b2_ns1_i1_sp1_t1_wr2",
+   "128": "u:rdna:x64_b2_i1_sp1_t2_a1_g16",
+   "256": "u:rdna:x64_ns1_sp1_t2_a1_g16"
+  },
+  "4096x12288": {
+   "32": "u:rdna:32_x64_d32_k128_ns1_i1_sp1_t1_wr2_g4",
+   "64": "u:rdna:64_x64_k128_b2_ns1_sp1_t1",
+   "128": "u:rdna:64_x64_k128_b2_ns1_sp1_t1_wr2",
+   "256": "u:rdna:x64_ns1_sp1_t1_a1_g16"
+  },
+  "4096x4096": {
+   "32": "u:rdna:32_x64_d32_ns1_i1_sp1_t1_wr2_g16",
+   "64": "u:rdna:32_x64_ns1_sp1_t1_wr2_g1",
+   "128": "u:rdna:64_x64_ns1_sp1_t1_wr2_g1",
+   "256": "u:rdna:x64_i1_sp1_t1_a1",
+   "512": "u:rdna:d32_ns1_g4"
+  },
+  "6144x4096": {
+   "32": "u:decode:cd8_tk2",
+   "64": "u:rdna:32_x64_d32_ns1_t2_wr2_g1",
+   "128": "u:rdna:64_x64_ns1_sp1_t1_wr2_g16",
+   "256": "u:rdna:x64_b2_i2_sp1_t1_a1",
+   "512": "u:rdna:d32_ns1_g16"
+  }
+ },
+ "points": [
+  {
+   "m": 32,
+   "n": 4096,
+   "k": 4096,
+   "champion": "rdna:32_x64_d32_ns1_i1_sp1_t1_wr2_g16",
+   "verdict": "win",
+   "route": "default",
+   "route_ms": 0.078405,
+   "ms": 0.057405,
+   "date": "2026-10-27",
+   "hipcc": "HIP version: 7.14.60850-1b2a555677",
+   "device": "AMD Radeon AI PRO R9700",
+   "gain": 0.36597,
+   "band": [
+    1.3652,
+    1.3789
+   ],
+   "torch_ms": 0.073885,
+   "candidate": "u:rdna:32_x64_d32_ns1_i1_sp1_t1_wr2_g16",
+   "cross_us": {
+    "clang23": {
+     "default_us": 78.5,
+     "clang23_champion_us": 57.5,
+     "clang22_champion_us": 57.8
+    },
+    "clang22": {
+     "default_us": 78.5,
+     "clang23_champion_us": 57.4,
+     "clang22_champion_us": 57.5
+    }
+   }
+  },
+  {
+   "m": 64,
+   "n": 4096,
+   "k": 4096,
+   "champion": "rdna:32_x64_ns1_sp1_t1_wr2_g1",
+   "verdict": "win",
+   "route": "default",
+   "route_ms": 0.079945,
+   "ms": 0.057925,
+   "date": "2026-10-27",
+   "hipcc": "HIP version: 7.14.60850-1b2a555677",
+   "device": "AMD Radeon AI PRO R9700",
+   "gain": 0.38025,
+   "band": [
+    1.3781,
+    1.3864
+   ],
+   "torch_ms": 0.074605,
+   "candidate": "u:rdna:32_x64_ns1_sp1_t1_wr2_g1",
+   "cross_us": {
+    "clang23": {
+     "default_us": 79.7,
+     "clang23_champion_us": 58.2,
+     "clang22_champion_us": 58.3
+    },
+    "clang22": {
+     "default_us": 80.1,
+     "clang23_champion_us": 58.2,
+     "clang22_champion_us": 58.1
+    }
+   }
+  },
+  {
+   "m": 128,
+   "n": 4096,
+   "k": 4096,
+   "champion": "rdna:64_x64_ns1_sp1_t1_wr2_g1",
+   "verdict": "win",
+   "route": "default",
+   "route_ms": 0.083118,
+   "ms": 0.059585,
+   "date": "2026-10-27",
+   "hipcc": "HIP version: 7.14.60850-1b2a555677",
+   "device": "AMD Radeon AI PRO R9700",
+   "gain": 0.39677,
+   "band": [
+    1.3901,
+    1.4072
+   ],
+   "torch_ms": 0.077125,
+   "candidate": "u:rdna:64_x64_ns1_sp1_t1_wr2_g1",
+   "cross_us": {
+    "clang23": {
+     "default_us": 82.2,
+     "clang23_champion_us": 59.6,
+     "clang22_champion_us": 59.5
+    },
+    "clang22": {
+     "default_us": 82.5,
+     "clang23_champion_us": 59.5,
+     "clang22_champion_us": 59.5
+    }
+   }
+  },
+  {
+   "m": 256,
+   "n": 4096,
+   "k": 4096,
+   "champion": "rdna:x64_i1_sp1_t1_a1",
+   "verdict": "win",
+   "route": "default",
+   "route_ms": 0.091524,
+   "ms": 0.077465,
+   "date": "2026-10-27",
+   "hipcc": "HIP version: 7.14.60850-1b2a555677",
+   "device": "AMD Radeon AI PRO R9700",
+   "gain": 0.1815,
+   "band": [
+    1.1795,
+    1.1958
+   ],
+   "torch_ms": 0.086931,
+   "candidate": "u:rdna:x64_i1_sp1_t1_a1",
+   "cross_us": {
+    "clang23": {
+     "default_us": 90.8,
+     "clang23_champion_us": 75.8,
+     "clang22_champion_us": 75.5
+    },
+    "clang22": {
+     "default_us": 91.8,
+     "clang23_champion_us": 78.7,
+     "clang22_champion_us": 78.9
+    }
+   }
+  },
+  {
+   "m": 512,
+   "n": 4096,
+   "k": 4096,
+   "champion": "rdna:d32_ns1_g4",
+   "verdict": "win",
+   "route": "default",
+   "route_ms": 0.150109,
+   "ms": 0.13563,
+   "date": "2026-10-27",
+   "hipcc": "HIP version: 7.14.60850-1b2a555677",
+   "device": "AMD Radeon AI PRO R9700",
+   "gain": 0.10676,
+   "band": [
+    1.0785,
+    1.1342
+   ],
+   "torch_ms": 0.167982,
+   "candidate": "u:rdna:d32_ns1_g4",
+   "cross_us": {
+    "clang23": {
+     "default_us": 148.6,
+     "clang23_champion_us": 129.1
+    },
+    "clang22": {
+     "default_us": 155.2,
+     "clang23_champion_us": 143.9
+    }
+   }
+  },
+  {
+   "m": 32,
+   "n": 4096,
+   "k": 12288,
+   "champion": "rdna:32_x64_d32_k128_ns1_i1_sp1_t1_wr2_g4",
+   "verdict": "win",
+   "route": "default",
+   "route_ms": 0.204755,
+   "ms": 0.165677,
+   "date": "2026-10-27",
+   "hipcc": "HIP version: 7.14.60850-1b2a555677",
+   "device": "AMD Radeon AI PRO R9700",
+   "gain": 0.23588,
+   "band": [
+    1.2304,
+    1.2514
+   ],
+   "torch_ms": 0.195816,
+   "candidate": "u:rdna:32_x64_d32_k128_ns1_i1_sp1_t1_wr2_g4",
+   "cross_us": {
+    "clang23": {
+     "default_us": 204.4,
+     "clang23_champion_us": 166.0,
+     "clang22_champion_us": 166.4
+    },
+    "clang22": {
+     "default_us": 205.5,
+     "clang23_champion_us": 166.2,
+     "clang22_champion_us": 166.5
+    }
+   }
+  },
+  {
+   "m": 64,
+   "n": 4096,
+   "k": 12288,
+   "champion": "rdna:64_x64_k128_b2_ns1_sp1_t1",
+   "verdict": "win",
+   "route": "default",
+   "route_ms": 0.210755,
+   "ms": 0.168196,
+   "date": "2026-10-27",
+   "hipcc": "HIP version: 7.14.60850-1b2a555677",
+   "device": "AMD Radeon AI PRO R9700",
+   "gain": 0.25303,
+   "band": [
+    1.2508,
+    1.2595
+   ],
+   "torch_ms": 0.200695,
+   "candidate": "u:rdna:64_x64_k128_b2_ns1_sp1_t1",
+   "cross_us": {
+    "clang23": {
+     "default_us": 211.3,
+     "clang23_champion_us": 168.5,
+     "clang22_champion_us": 168.4
+    },
+    "clang22": {
+     "default_us": 212.7,
+     "clang23_champion_us": 168.6,
+     "clang22_champion_us": 168.6
+    }
+   }
+  },
+  {
+   "m": 128,
+   "n": 4096,
+   "k": 12288,
+   "champion": "rdna:64_x64_k128_b2_ns1_sp1_t1_wr2",
+   "verdict": "win",
+   "route": "default",
+   "route_ms": 0.221474,
+   "ms": 0.171336,
+   "date": "2026-10-27",
+   "hipcc": "HIP version: 7.14.60850-1b2a555677",
+   "device": "AMD Radeon AI PRO R9700",
+   "gain": 0.29152,
+   "band": [
+    1.2841,
+    1.3002
+   ],
+   "torch_ms": 0.224115,
+   "candidate": "u:rdna:64_x64_k128_b2_ns1_sp1_t1_wr2",
+   "cross_us": {
+    "clang23": {
+     "default_us": 218.1,
+     "clang23_champion_us": 171.0,
+     "clang22_champion_us": 170.6
+    },
+    "clang22": {
+     "default_us": 219.3,
+     "clang23_champion_us": 171.4,
+     "clang22_champion_us": 171.1
+    }
+   }
+  },
+  {
+   "m": 256,
+   "n": 4096,
+   "k": 12288,
+   "champion": "rdna:x64_ns1_sp1_t1_a1_g16",
+   "verdict": "win",
+   "route": "default",
+   "route_ms": 0.241995,
+   "ms": 0.204956,
+   "date": "2026-10-27",
+   "hipcc": "HIP version: 7.14.60850-1b2a555677",
+   "device": "AMD Radeon AI PRO R9700",
+   "gain": 0.17506,
+   "band": [
+    1.0732,
+    1.1945
+   ],
+   "torch_ms": 0.257234,
+   "candidate": "u:rdna:x64_ns1_sp1_t1_a1_g16",
+   "cross_us": {
+    "clang23": {
+     "default_us": 243.6,
+     "clang23_champion_us": 216.2
+    },
+    "clang22": {
+     "default_us": 245.9,
+     "clang23_champion_us": 239.9
+    }
+   }
+  },
+  {
+   "m": 32,
+   "n": 6144,
+   "k": 4096,
+   "champion": "decode:cd8_tk2",
+   "verdict": "win",
+   "route": "default",
+   "route_ms": 0.112587,
+   "ms": 0.087258,
+   "date": "2026-10-27",
+   "hipcc": "HIP version: 7.2.53211-c2d9476115",
+   "device": "AMD Radeon Graphics",
+   "gain": 0.29043,
+   "band": [
+    1.285,
+    1.2967
+   ],
+   "torch_ms": 0.110267,
+   "candidate": "u:decode:cd8_tk2",
+   "cross_us": {
+    "clang23": {
+     "default_us": 112.2,
+     "clang23_champion_us": 86.8,
+     "clang22_champion_us": 86.9
+    },
+    "clang22": {
+     "default_us": 112.8,
+     "clang23_champion_us": 89.5,
+     "clang22_champion_us": 87.3
+    }
+   }
+  },
+  {
+   "m": 64,
+   "n": 6144,
+   "k": 4096,
+   "champion": "rdna:32_x64_d32_ns1_t2_wr2_g1",
+   "verdict": "win",
+   "route": "default",
+   "route_ms": 0.114737,
+   "ms": 0.085368,
+   "date": "2026-10-27",
+   "hipcc": "HIP version: 7.14.60850-1b2a555677",
+   "device": "AMD Radeon AI PRO R9700",
+   "gain": 0.34277,
+   "band": [
+    1.3341,
+    1.3658
+   ],
+   "torch_ms": 0.086668,
+   "candidate": "u:rdna:32_x64_d32_ns1_t2_wr2_g1",
+   "cross_us": {
+    "clang23": {
+     "default_us": 114.0,
+     "clang23_champion_us": 85.6,
+     "clang22_champion_us": 85.7
+    },
+    "clang22": {
+     "default_us": 114.3,
+     "clang23_champion_us": 85.7,
+     "clang22_champion_us": 85.6
+    }
+   }
+  },
+  {
+   "m": 128,
+   "n": 6144,
+   "k": 4096,
+   "champion": "rdna:64_x64_ns1_sp1_t1_wr2_g16",
+   "verdict": "win",
+   "route": "default",
+   "route_ms": 0.119327,
+   "ms": 0.088858,
+   "date": "2026-10-27",
+   "hipcc": "HIP version: 7.14.60850-1b2a555677",
+   "device": "AMD Radeon AI PRO R9700",
+   "gain": 0.34275,
+   "band": [
+    1.3376,
+    1.3668
+   ],
+   "torch_ms": 0.099798,
+   "candidate": "u:rdna:64_x64_ns1_sp1_t1_wr2_g16",
+   "cross_us": {
+    "clang23": {
+     "default_us": 118.8,
+     "clang23_champion_us": 88.7,
+     "clang22_champion_us": 88.3
+    },
+    "clang22": {
+     "default_us": 118.0,
+     "clang23_champion_us": 88.7,
+     "clang22_champion_us": 88.0
+    }
+   }
+  },
+  {
+   "m": 256,
+   "n": 6144,
+   "k": 4096,
+   "champion": "rdna:x64_b2_i2_sp1_t1_a1",
+   "verdict": "win",
+   "route": "default",
+   "route_ms": 0.149016,
+   "ms": 0.123287,
+   "date": "2026-10-27",
+   "hipcc": "HIP version: 7.2.53211-c2d9476115",
+   "device": "AMD Radeon Graphics",
+   "gain": 0.21454,
+   "band": [
+    1.1812,
+    1.2333
+   ],
+   "torch_ms": 0.188256,
+   "candidate": "u:rdna:x64_b2_i2_sp1_t1_a1",
+   "cross_us": {
+    "clang23": {
+     "default_us": 149.3,
+     "clang23_champion_us": 124.9,
+     "clang22_champion_us": 115.8
+    },
+    "clang22": {
+     "default_us": 147.9,
+     "clang23_champion_us": 128.3,
+     "clang22_champion_us": 121.2
+    }
+   }
+  },
+  {
+   "m": 512,
+   "n": 6144,
+   "k": 4096,
+   "champion": "rdna:d32_ns1_g16",
+   "verdict": "win",
+   "route": "default",
+   "route_ms": 0.204015,
+   "ms": 0.183815,
+   "date": "2026-10-27",
+   "hipcc": "HIP version: 7.14.60850-1b2a555677",
+   "device": "AMD Radeon AI PRO R9700",
+   "gain": 0.11415,
+   "band": [
+    1.1027,
+    1.1418
+   ],
+   "torch_ms": 0.224254,
+   "candidate": "u:rdna:d32_ns1_g16",
+   "cross_us": {
+    "clang23": {
+     "default_us": 209.5,
+     "clang23_champion_us": 184.4
+    },
+    "clang22": {
+     "default_us": 219.4,
+     "clang23_champion_us": 206.2
+    }
+   }
+  },
+  {
+   "m": 32,
+   "n": 24576,
+   "k": 4096,
+   "champion": "rdna:32_b2_ns1_sp1_t2_wr2_g1_p1",
+   "verdict": "win",
+   "route": "default",
+   "route_ms": 0.42747,
+   "ms": 0.326172,
+   "date": "2026-10-27",
+   "hipcc": "HIP version: 7.14.60850-1b2a555677",
+   "device": "AMD Radeon AI PRO R9700",
+   "gain": 0.31057,
+   "band": [
+    1.3041,
+    1.3558
+   ],
+   "torch_ms": 0.332931,
+   "candidate": "u:rdna:32_b2_ns1_sp1_t2_wr2_g1_p1",
+   "cross_us": {
+    "clang23": {
+     "default_us": 430.6,
+     "clang23_champion_us": 326.3,
+     "clang22_champion_us": 329.1
+    },
+    "clang22": {
+     "default_us": 429.5,
+     "clang23_champion_us": 326.5,
+     "clang22_champion_us": 329.1
+    }
+   }
+  },
+  {
+   "m": 64,
+   "n": 24576,
+   "k": 4096,
+   "champion": "rdna:32_x64_d32_b2_ns1_i1_sp1_t1_wr2",
+   "verdict": "win",
+   "route": "default",
+   "route_ms": 0.43911,
+   "ms": 0.332172,
+   "date": "2026-10-27",
+   "hipcc": "HIP version: 7.14.60850-1b2a555677",
+   "device": "AMD Radeon AI PRO R9700",
+   "gain": 0.32225,
+   "band": [
+    1.3069,
+    1.3271
+   ],
+   "torch_ms": 0.338272,
+   "candidate": "u:rdna:32_x64_d32_b2_ns1_i1_sp1_t1_wr2",
+   "cross_us": {
+    "clang23": {
+     "default_us": 439.8,
+     "clang23_champion_us": 332.1,
+     "clang22_champion_us": 333.7
+    },
+    "clang22": {
+     "default_us": 439.1,
+     "clang23_champion_us": 332.6,
+     "clang22_champion_us": 333.6
+    }
+   }
+  },
+  {
+   "m": 128,
+   "n": 24576,
+   "k": 4096,
+   "champion": "rdna:x64_b2_i1_sp1_t2_a1_g16",
+   "verdict": "win",
+   "route": "default",
+   "route_ms": 0.457869,
+   "ms": 0.342772,
+   "date": "2026-10-27",
+   "hipcc": "HIP version: 7.14.60850-1b2a555677",
+   "device": "AMD Radeon AI PRO R9700",
+   "gain": 0.33578,
+   "band": [
+    1.3263,
+    1.3441
+   ],
+   "torch_ms": 0.41941,
+   "candidate": "u:rdna:x64_b2_i1_sp1_t2_a1_g16",
+   "cross_us": {
+    "clang23": {
+     "default_us": 458.6,
+     "clang23_champion_us": 342.8,
+     "clang22_champion_us": 342.5
+    },
+    "clang22": {
+     "default_us": 455.7,
+     "clang23_champion_us": 342.6,
+     "clang22_champion_us": 342.7
+    }
+   }
+  },
+  {
+   "m": 256,
+   "n": 24576,
+   "k": 4096,
+   "champion": "rdna:x64_ns1_sp1_t2_a1_g16",
+   "verdict": "win",
+   "route": "default",
+   "route_ms": 0.475789,
+   "ms": 0.41567,
+   "date": "2026-10-27",
+   "hipcc": "HIP version: 7.14.60850-1b2a555677",
+   "device": "AMD Radeon AI PRO R9700",
+   "gain": 0.1424,
+   "band": [
+    1.1134,
+    1.1563
+   ],
+   "torch_ms": 0.43137,
+   "candidate": "u:rdna:x64_ns1_sp1_t2_a1_g16",
+   "cross_us": {
+    "clang23": {
+     "default_us": 479.5,
+     "clang23_champion_us": 410.7,
+     "clang22_champion_us": 406.7
+    },
+    "clang22": {
+     "default_us": 476.6,
+     "clang23_champion_us": 430.2,
+     "clang22_champion_us": 432.2
+    }
+   }
+  }
+ ]
+}

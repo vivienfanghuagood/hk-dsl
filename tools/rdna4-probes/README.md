@@ -21,6 +21,8 @@ descriptor, `mma_gate.hip` and friends the library on top).
 | `i8_sweep.py` | The fp8 sweep with iu8 operands against `torch._int_mm`: the same point (256x128x64) wins, 217 TOP/s at 4096³ against 215. |
 | `fp8_decode3.py` | The fp8 decode kernels with W read from GDDR6 (six copies rotated past the Infinity Cache), profiler time: hk 585-617 GB/s, ahead of FlyDSL's 32-row kernel, which is ahead only when W stays in the cache. |
 | `sdpa_overhead.py [ROOT]` | hk.ops.sdpa's drop-in at ViT shapes: kernel time (profiler) against wall time a call, beside `hk.attention` and torch's SDPA -- the drop-in's Python is what loses there, not the kernel. |
+| `small_m_cold.py [MxNxK ...]` | hk.ops.gemm.matmul (NT) against hipBLASLt in NT, NN and TT, W read back to back ("hot", in the Infinity Cache) and rotated past it ("cold", from GDDR6), Qwen3's four (N, K) at 32-512 rows by default. |
+| `smallm_cross.py A.json B.json` | Two hk.tune record files' champions (one per compiler) timed against each other and the default with hk.tune's bench, in this process's toolchain: where `routes_gemm_gfx1201.json` came from. |
 | `vgpr_sweep.sh ARCH LO HI` | A kernel clobbering v0..v(N-1) for each N, and LLVM's VGPRs / Occupancy remark: the allocation granule (24 on gfx1201: 216 -> 7 waves, 217 -> 6, 241 -> 5). Compile only. |
 
 ```bash
