@@ -17,6 +17,7 @@
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/Tools/mlir-translate/Translation.h"
 #include "llvm/ADT/MapVector.h"
+#include "llvm/ADT/SetVector.h"
 #include "llvm/ADT/StringMap.h"
 #include "llvm/ADT/StringSet.h"
 #include "llvm/ADT/TypeSwitch.h"
@@ -435,6 +436,8 @@ private:
     }
     return s;
   }
+  llvm::DenseMap<Value, std::string> roleArgs;  // hk.role: a parameter's copy loaded at the current role
+  int roles = 0;
   bool ldsPhase = false;  // an hk.lds.phase seen: hk_lds_phase0 holds the shared allocations' end
   int64_t ldsBytes() { return intAttr(attrs::kLdsBytes); }
 
@@ -576,6 +579,8 @@ private:
   }
 
   std::string name(Value v) {
+    if (auto it = roleArgs.find(v); it != roleArgs.end())
+      return it->second;
     if (auto ba = dyn_cast<BlockArgument>(v)) {
       if (ba.getOwner() == &kernel.getBody().front())
         return "g." + argName(kernel, ba.getArgNumber()).str();
@@ -1435,6 +1440,45 @@ private:
           for (int64_t k = 0; k < (int64_t)idx.size(); ++k)
             w(name(d) + ".data[0][" + std::to_string(k / rr) + "][" + std::to_string(k % rr) + "] = " +
               name(o.getSrc()) + ".data[0][" + std::to_string(idx[k] / rs) + "][" + std::to_string(idx[k] % rs) + "];");
+        })
+        .Case([&](FreshArgOp o) {
+          // from the parameter itself (a fresh handle's copy is a local); flat arguments are already
+          // scalars the kernel holds: a copy
+          Value root = o.getTensor();
+          while (auto f = root.getDefiningOp<FreshArgOp>())
+            root = f.getTensor();
+          if (flatArgs())
+            w("const auto " + name(o.getResult()) + " = " + name(root) + ";");
+          else {
+            // by its offset in the kernarg segment: `&g.x` would make the kernel copy all of g to the stack
+            std::string f = argName(kernel, cast<BlockArgument>(root).getArgNumber()).str();
+            w("const auto " + name(o.getResult()) + " = ::kittens::detail::hk_fresh_arg<decltype(globals::" + f +
+              ")>(offsetof(globals, " + f + "));");
+          }
+        })
+        .Case([&](RoleOp o) {
+          // the parameters the ops up to the next role use, each loaded here (flat arguments are already
+          // scalars: none)
+          roleArgs.clear();
+          ++roles;
+          if (flatArgs())
+            return;
+          Block &top = kernel.getBody().front();
+          llvm::SetVector<Value> used;
+          for (Operation *p = o->getNextNode(); p && !isa<RoleOp>(p); p = p->getNextNode())
+            p->walk([&](Operation *q) {
+              for (Value a : q->getOperands())
+                if (auto ba = dyn_cast<BlockArgument>(a); ba && ba.getOwner() == &top &&
+                                                         isa<GlobalType>(a.getType()))
+                  used.insert(a);
+            });
+          for (Value a : used) {
+            std::string f = argName(kernel, cast<BlockArgument>(a).getArgNumber()).str();
+            std::string l = "hk_r" + std::to_string(roles) + "_" + f;
+            w("const auto " + l + " = ::kittens::detail::hk_fresh_arg<decltype(globals::" + f + ")>(offsetof(globals, " +
+              f + "));");
+            roleArgs[a] = l;
+          }
         })
         .Case([&](LdsPhaseOp o) {
           // the first phase saves the allocator's cursor (the shared allocations end there); a later one

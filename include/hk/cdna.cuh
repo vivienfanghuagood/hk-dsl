@@ -997,6 +997,41 @@ template<typename ST> __device__ inline hk_lds_float *hk_st_elem(ST &s, int r, i
     typedef __attribute__((address_space(3))) char lds_char;
     return (hk_lds_float *)((lds_char *)&s.data[0] + sub * ST::underlying_subtile_bytes + off);
 }
+/// hk.fresh: the kernel parameter field at `offset` of the kernarg segment loaded again here, through an opaque
+/// copy of the segment's address -- LLVM cannot merge the loads with an earlier read of it, so its SGPRs (and the
+/// descriptors built from them) live from here, not from the kernel's first use.
+template<typename T> __device__ inline T hk_fresh_arg(int offset) {
+    static_assert(sizeof(T) % 4 == 0, "a parameter of whole dwords");
+    typedef const __attribute__((address_space(4))) char cchar;
+    typedef const __attribute__((address_space(4))) int cint;
+    cchar *k = (cchar *)__builtin_amdgcn_kernarg_segment_ptr();     // (the kernel's one parameter, at 0)
+    asm volatile("" : "+s"(k));
+    cint *p = (cint *)(k + offset);
+    struct W { int w[sizeof(T) / 4]; } u;                             // (dword copies: only the used ones stay)
+    #pragma unroll
+    for (int i = 0; i < int(sizeof(T) / 4); i++) u.w[i] = p[i];
+    return __builtin_bit_cast(T, u);
+}
+/// Row-major element k of `s`. A 4-byte tile of 16 columns on st_16x16 subtiles (an identity swizzle) is linear:
+/// element k sits at byte 4 k, which LLVM cannot see through hk_st_elem's k / 16, k % 16 and subtile arithmetic
+/// (an element op's index math was most of a strip-heavy kernel's VALU).
+template<typename ST> __device__ inline hk_lds_float *hk_st_elem_k(ST &s, int k) {
+    if constexpr (sizeof(typename ST::dtype) == 4 && ST::cols == 16 && ST::underlying_subtile_cols == 16 &&
+                  ST::underlying_subtile_rows == 16 && ST::underlying_subtile_bytes == 1024) {
+        if (ST::swizzle({1, 1}) == 68 && ST::swizzle({15, 15}) == 1020) {
+            typedef __attribute__((address_space(3))) char lds_char;
+            return (hk_lds_float *)((lds_char *)&s.data[0] + 4 * k);
+        }
+    }
+    return hk_st_elem(s, k / ST::cols, k % ST::cols);
+}
+/// An LDS address past any allocation (gfx9 drops a DS write, and reads 0, at an address over the work-group's LDS
+/// size), with its low 18 bits 0: a hardware that wrapped instead would hit element 0 and tests/test_lds_oob would see it.
+/// An element op stores out-of-range indices here instead of branching: a guarded store is an exec-masked block
+/// an element.
+template<typename P> __device__ inline P *hk_lds_nowhere() {
+    return (P *)(uintptr_t)0xFFFC0000u;
+}
 }  // namespace detail
 
 #if defined(KITTENS_CDNA4)
@@ -3435,7 +3470,7 @@ __device__ static inline void lds_load_elems(D &dst, ST &src, const I &idx) {
         const int k = idx.data[a][j][e];
         const bool in = uint32_t(k) < uint32_t(N);
         const int kk = in ? k : 0;
-        const float v = *detail::hk_st_elem(src, kk / ST::cols, kk % ST::cols);
+        const float v = *detail::hk_st_elem_k(src, kk);
         dst.data[a][j][e] = detail::hk_from_bits<typename D::T>(detail::hk_bits(in ? v : 0.f));
     });
 }
@@ -3456,7 +3491,7 @@ __device__ static inline void lds_load_elems_runs(D &dst, ST &src, const I &idx)
                 const int k = idx.data[a][j][4 * q];
                 const bool in = uint32_t(k) < uint32_t(N);
                 const int kk = in ? k : 0;
-                const hk_f4 v = *(hk_lds_f4 *)detail::hk_st_elem(src, kk / ST::cols, kk % ST::cols);
+                const hk_f4 v = *(hk_lds_f4 *)detail::hk_st_elem_k(src, kk);
                 #pragma unroll
                 for (int e = 0; e < 4; e++)
                     dst.data[a][j][4 * q + e] = detail::hk_from_bits<typename D::T>(detail::hk_bits(in ? v[e] : 0.f));
@@ -3470,22 +3505,30 @@ template<typename ST, ducks::rs::all V, ducks::rs::all I>
 __device__ static inline void lds_store_elems(ST &dst, const V &val, const I &idx) {
     constexpr int N = ST::rows * ST::cols;
     detail::strip_each<V>([&](int a, int j, int e) {
+        // branch-free: an index out of range goes to hk_lds_nowhere
         const int k = idx.data[a][j][e];
-        if (k >= 0 && k < N) {
-            const float v = detail::hk_from_bits<float>(detail::hk_bits(val.data[a][j][e]));
-            if constexpr (std::is_same_v<typename ST::dtype, bf16>) {
-                const int r = k / ST::cols, c = k % ST::cols;
+        const bool in = uint32_t(k) < uint32_t(N);
+        const int kk = in ? k : 0;
+        const float v = detail::hk_from_bits<float>(detail::hk_bits(val.data[a][j][e]));
+        if constexpr (std::is_same_v<typename ST::dtype, bf16>) {
+            typedef __attribute__((address_space(3))) char lds_char;
+            typedef __attribute__((address_space(3))) uint16_t lds_u16;
+            lds_u16 *p;
+            constexpr bool lin16 = ST::cols == 16 && ST::underlying_subtile_cols == 16 && ST::underlying_subtile_bytes == 512;
+            if (lin16 && ST::swizzle({1, 1}) == 34 && ST::swizzle({15, 15}) == 510) {
+                p = (lds_u16 *)((lds_char *)&dst.data[0] + 2 * kk);    // (linear: see hk_st_elem_k)
+            } else {
+                const int r = kk / ST::cols, c = kk % ST::cols;
                 const int sub = (r / ST::underlying_subtile_rows) * ST::underlying_subtiles_per_row +
                                 c / ST::underlying_subtile_cols;
                 const uint32_t off = ST::swizzle({r % ST::underlying_subtile_rows, c % ST::underlying_subtile_cols});
-                typedef __attribute__((address_space(3))) char lds_char;
-                typedef __attribute__((address_space(3))) uint16_t lds_u16;
-                const bf16 h = detail::hk_cvt<bf16, float>(v);
-                *(lds_u16 *)((lds_char *)&dst.data[0] + sub * ST::underlying_subtile_bytes + off) =
-                    __builtin_bit_cast(uint16_t, h);
-            } else {
-                *detail::hk_st_elem(dst, k / ST::cols, k % ST::cols) = v;
+                p = (lds_u16 *)((lds_char *)&dst.data[0] + sub * ST::underlying_subtile_bytes + off);
             }
+            const bf16 h = detail::hk_cvt<bf16, float>(v);
+            *(in ? p : detail::hk_lds_nowhere<lds_u16>()) = __builtin_bit_cast(uint16_t, h);
+        } else {
+            detail::hk_lds_float *p = detail::hk_st_elem_k(dst, kk);
+            *(in ? p : detail::hk_lds_nowhere<detail::hk_lds_float>()) = v;
         }
     });
 }
@@ -3534,11 +3577,11 @@ __device__ static inline void lds_atomic_add_elems(ST &dst, const V &val, const 
     constexpr int N = ST::rows * ST::cols;
     detail::strip_each<V>([&](int a, int j, int e) {
         const int k = idx.data[a][j][e];
-        if (k >= 0 && k < N) {
-            typedef __attribute__((address_space(3))) int lds_int;
-            __hip_atomic_fetch_add((lds_int *)detail::hk_st_elem(dst, k / ST::cols, k % ST::cols),
-                                   int(val.data[a][j][e]), __ATOMIC_RELAXED, __HIP_MEMORY_SCOPE_WORKGROUP);
-        }
+        const bool in = uint32_t(k) < uint32_t(N);
+        typedef __attribute__((address_space(3))) int lds_int;
+        lds_int *p = (lds_int *)detail::hk_st_elem_k(dst, in ? k : 0);
+        __hip_atomic_fetch_add(in ? p : detail::hk_lds_nowhere<lds_int>(),
+                               int(val.data[a][j][e]), __ATOMIC_RELAXED, __HIP_MEMORY_SCOPE_WORKGROUP);
     });
 }
 /** @brief hk.iota: element (r, c) = c, the column a lane's run element sits in. */
