@@ -1356,11 +1356,6 @@ private:
             name(o.getAt()) + ", " + name(o.getCount()) + ", " +
             name(o.getCol()) + ");");
         })
-        .Case([&](ScatterAddLdsOp o) {
-          w("kittens::scatter_add_lds<" + std::to_string(o.getSortTopk()) + ">(" +
-            name(o.getDst()) + ", " + name(o.getSrc()) + ", " + name(o.getIdx()) + ", " +
-            name(o.getAt()) + ", " + name(o.getCount()) + ", " + name(o.getCol()) + ");");
-        })
         .Case([&](AtomicAddOp o) {
           w("kittens::atomic_add(" + name(o.getDst()) + ", " +
             name(o.getValue()) + ", " +
@@ -1873,13 +1868,6 @@ private:
                {name(o.getSrc()), name(o.getIdx()),
                 "(" + elemCpp(d.getType()) + ")" +
                     floatLit(o.getValue().convertToDouble())});
-        })
-        .Case<MakeCausalOp, MakeCausalTOp>([&](auto o) {
-          Value d = dest(o.getDst(), o.getResult());
-          // The fill value is the unpacked element type; for bf16 the tile's
-          // dtype is the packed pair, so no cast at all.
-          call(o->getName().stripDialect(), d,
-               {name(o.getSrc()), floatLit(o.getValue().convertToDouble())});
         })
         .Case([&](TransposeOp o) {
           Value d = dest(o.getDst(), o.getResult());

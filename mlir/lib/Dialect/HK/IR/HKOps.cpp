@@ -231,17 +231,6 @@ LogicalResult ScatterRowsOp::verify() {
   return checkIndexedRows(*this, getValue().getType(), getIdx().getType());
 }
 
-LogicalResult ScatterAddLdsOp::verify() {
-  auto st = getSrc().getType();
-  if (!st.getElementType().isBF16() || !getDst().getType().getElementType().isBF16())
-    return emitOpError("adds a bf16 LDS tile into a bf16 global");
-  if (st.getCols() % 2 || 64 % (st.getCols() / 2) || st.getRows() % (64 / (st.getCols() / 2)))
-    return emitOpError("a tile whose rows split into whole lane groups (cols / 2 divides 64)");
-  if (!getIdx().getType().getElementType().isInteger(32))
-    return emitOpError("takes its row indices from an int32 global");
-  return success();
-}
-
 LogicalResult AtomicAddOp::verify() {
   // A 16-bit operand tile is replicated across the wave halves; adding one
   // would count every element twice.
@@ -1200,22 +1189,6 @@ HK_FILL_VERIFY(TriuOp, false)
 HK_FILL_VERIFY(TrilOp, false)
 #undef HK_FILL_VERIFY
 
-template <typename OpT>
-static LogicalResult verifyCausal(OpT op) {
-  if (failed(verifyDest(op, op.getDst(), op.getResult())))
-    return failure();
-  auto src = cast<RegTileType>(op.getSrc().getType());
-  if (failed(noStrip(op, src)))
-    return failure();
-  if (src.getRows() != src.getCols())
-    return op.emitOpError("a diagonal only means something on a square tile");
-  if (destType(op.getDst(), op.getResult()) != src)
-    return op.emitOpError("result type differs from the tile's");
-  return success();
-}
-
-LogicalResult MakeCausalOp::verify() { return verifyCausal(*this); }
-LogicalResult MakeCausalTOp::verify() { return verifyCausal(*this); }
 
 //===----------------------------------------------------------------------===//
 // Conversions

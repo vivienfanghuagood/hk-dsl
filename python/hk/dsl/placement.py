@@ -62,7 +62,7 @@ UNKNOWN_TRIPS = 16
 #: result: waits, arrivals and signals between workgroups, and atomics.
 ORDER_DEPENDENT_OPS = frozenset({
     "hk.wg_arrive", "hk.signal", "hk.arrive", "hk.wait", "hk.post", "hk.take",
-    "hk.atomic_add", "hk.atomic_scalar", "hk.scatter_add_lds",
+    "hk.atomic_add", "hk.atomic_scalar",
 })
 
 #: Global reads, and which operands carry the address.
