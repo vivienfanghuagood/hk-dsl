@@ -565,8 +565,12 @@ required checks is the owner's setting.
 The [performance gate](#the-performance-gate) has a gfx1201 baseline,
 `tests/perf/baselines/gfx1201.json`: gemm, attention, the norms, softmax and
 the fp8 and int8 GEMMs, hk against torch, Inductor and Triton -- the arms the
-job's container has. Its four runs on an R9700 gate 38 pairs at 3.0-8.9%
-(median 3.0%); the 1- and 32-row norms are too noisy there to gate. Run it as
+job's container has. Its eight runs on R9700s, in two sessions hours apart,
+gate 34 pairs at 3.0-12.6% (median 4.5%). Not gated: the 1- and 32-row norms,
+and the 8192-row fused add + RMSNorm, whose hk time is 445 us in some
+processes and 481 in others (the same kernel source, the opponents unchanged);
+a baseline from one session had gated it at 4.5%, and the later session's runs all
+failed it. Run it as
 gfx1100's is, by hand and alone on a card, before and after a change to a
 kernel it times:
 

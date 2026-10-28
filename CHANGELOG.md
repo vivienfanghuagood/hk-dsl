@@ -343,7 +343,7 @@ streams the chosen experts at ~96% of GDDR6's rate. `vllm_moe` is on by default 
   branch-protection setting.
 - gfx1201 has CI legs of its own for the tiers that need no GPU: `IR tier, gfx1201` and
   `codegen tier (I/4), gfx1201`, with `HK_ARCH=gfx1201` and the same ROCm 7.1 hipcc (#106).
-- A performance-gate baseline for gfx1201, `tests/perf/baselines/gfx1201.json` (38 pairs:
+- A performance-gate baseline for gfx1201, `tests/perf/baselines/gfx1201.json` (34 pairs:
   gemm, attention, norms, softmax, fp8 and int8 against torch, Inductor and Triton);
   `check_regression.py` takes each arch's scoreboard arguments (`ARGS_AT`). Run by hand on an
   R9700, as gfx1100's is, not in the gfx1201 job (#106,
