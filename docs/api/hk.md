@@ -1589,10 +1589,10 @@ Tile indexing: `x.tile[r, c]` is a View at tile (r, c) of the tile type the load
 #### `Global.load_elems`
 
 ```python
-Global.load_elems(self, idx: Tile, dtype: Optional[DType] = None, *, runs: bool = False, row=None) -> Tile
+Global.load_elems(self, idx: Tile, dtype: Optional[DType] = None, *, runs: bool = False, row=None, aux: Optional[int] = None) -> Tile
 ```
 
-*Changed after 0.8.0*: new parameters `runs`, `row`
+*Changed after 0.8.0*: new parameters `runs`, `row`, `aux`
 
 Element by element at computed indices (gfx950): element (r, c) of the result is element
 `idx[r, c]` of this tensor, counted flat (rows over batch and depth, at the row stride),

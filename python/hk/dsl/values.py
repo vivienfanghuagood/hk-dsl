@@ -456,7 +456,7 @@ class Global(Value):
         return (ids.v, as_int(at).v, as_int(n).v, as_int(col).v)
 
     def load_elems(self, idx: "Tile", dtype: Optional[DType] = None, *, runs: bool = False,
-                   row=None) -> "Tile":
+                   row=None, aux: Optional[int] = None) -> "Tile":
         """Element by element at computed indices (gfx950): element (r, c) of the result is element
         `idx[r, c]` of this tensor, counted flat (rows over batch and depth, at the row stride),
         converted to `dtype` (fp32 or i32; default fp32, i32 for an i32 tensor). An index below
@@ -476,7 +476,8 @@ class Global(Value):
         dtype = (i32 if self.dtype is i32 else fp32) if dtype is None else dtype
         ty = RegTileType(dtype, idx.ty.rows, idx.ty.cols, idx.ty.layout, idx.ty.frag, run=idx.ty.run)
         t = _t()
-        aux = scope_aux(self, "load_elems") if getattr(self.ty, "scope", "") else 0
+        if aux is None:      # (experiment: `aux` overrides the scope's cache-policy bits)
+            aux = scope_aux(self, "load_elems") if getattr(self.ty, "scope", "") else 0
         return wrap(hkd.LoadElemsOp(mlir_type(ty), self.v, idx.v, aux=_i64(aux), runs=bool(runs),
                                     row=None if row is None else as_int(row).v, loc=t.loc("elems")).result, ty)
 
