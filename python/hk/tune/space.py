@@ -149,10 +149,10 @@ class ScheduleSpace:
             return self.cand(S.from_candidate(name, m, n, k), name)
         from ..ops import gemm as rdna  # noqa: PLC0415
 
-        shipped = rdna.user_route(m, n, k, user=False)
+        shipped = rdna.user_route(m, n, k, user=False, arch=self.arch)
         if shipped is not None:         # the arch's shipped record, Rdna or Decode
             return self.cand(shipped[1], shipped[0])
-        s = rdna.schedule_for(m, n, k, user=False)
+        s = rdna.schedule_for(m, n, k, user=False, arch=self.arch)
         name = "thin" if s == rdna.THIN else ("default" if s == rdna.DEFAULT else "")
         return self.cand(S.Rdna(**s), name)
 

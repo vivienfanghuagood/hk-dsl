@@ -63,3 +63,42 @@ def test_an_fp32_tile_through_lds_is_ds_reads_and_writes(layout):
     text = _isa(k)
     assert not re.findall(r"\bflat_\w+", text), re.findall(r"\bflat_\w+", text)[:4]
     assert re.findall(r"\bds_write\w*", text) and re.findall(r"\bds_read\w*", text)
+
+
+@pytest.mark.hipcc
+@pytest.mark.parametrize("frag", [None, (32, 32)])
+def test_an_fp32_vector_through_lds_is_ds_reads_and_writes(frag):
+    """hk.SharedVec (hk.collective.cross_warp, a vector read back in another tile's layout): include/cdna4's
+    load(rv, sv) / store(sv, rv) indexed sv::data through a generic pointer -- FLAT, counted in vmcnt, so
+    an attention kernel's per-block max exchange waited for its next KV block's DMA."""
+    rt = hk.RT(hk.fp32, 32, 32, "col", **({"frag": frag} if frag else {}))
+    vt = hk.row_vec(rt)
+
+    @hk.kernel(arch="gfx950", warps=4, grid=lambda p: (1, 1, 1), name=f"fp32_sv_{frag is None}")
+    def k(x: hk.Tensor[hk.fp32], o: hk.Tensor[hk.fp32]):
+        t = x.at[0, 0].load(rt)
+        m = hk.collective.cross_warp(t.max(axis=0), "max", 4)
+        t *= m
+        o.at[0, 0].store(t)
+
+    text = _isa(k)
+    assert not re.findall(r"\bflat_\w+", text), re.findall(r"\bflat_\w+", text)[:4]
+    assert re.findall(r"\bds_write\w*", text) and re.findall(r"\bds_read\w*", text)
+
+
+@pytest.mark.hipcc
+def test_a_bf16_col_tile_stored_to_lds_is_ds_writes():
+    """A 16-bit col-layout tile (an accumulator converted to bf16: attention's P handed to the other warps)
+    -> LDS: include/cdna4's store wrote it element by element through `U *` into st::data -- FLAT."""
+    rt = hk.RT(hk.fp32, 16, 32, "col")
+
+    @hk.kernel(arch="gfx950", warps=1, grid=lambda p: (1, 1, 1), name="bf16_col_lds")
+    def k(x: hk.Tensor[hk.fp32], o: hk.Tensor[hk.bf16]):
+        s = hk.lds.alloc(hk.ST(hk.bf16, 16, 32), name="s")
+        s.store(x.at[0, 0].load(rt).to(hk.bf16))
+        hk.arch.barrier(drain=True)
+        o.at[0, 0].store(s.load(hk.RT(hk.bf16, 16, 32, "col", frag=(16, 32))))
+
+    text = _isa(k)
+    assert not re.findall(r"\bflat_\w+", text), re.findall(r"\bflat_\w+", text)[:4]
+    assert re.findall(r"\bds_write_b16\w*", text)

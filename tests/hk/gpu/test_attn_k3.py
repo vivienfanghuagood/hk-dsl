@@ -17,6 +17,8 @@ pytestmark = pytest.mark.gpu
 
 from hk.ops import attn_k3 as K3  # noqa: E402
 
+import _attn_ref  # noqa: E402
+
 # (B, H, N_q, N_kv): whole and ragged tiles, cross attention, N_kv below one block
 CASES = [(1, 2, 512, 512), (2, 3, 1485, 1485), (1, 4, 640, 1001), (1, 2, 128, 33),
          (2, 2, 4096, 4096)]
@@ -36,8 +38,7 @@ def _make(b, h, nq, nkv, bnhd, seed=0):
 def _check(q, k, v, bnhd):
     assert K3.why(q, k, v) == "", K3.why(q, k, v)
     o = K3.attention(q, k, v).clone()
-    r = torch.nn.functional.scaled_dot_product_attention(q.float(), k.float(), v.float())
-    assert ((o.float() - r).abs().max() / r.abs().max()).item() <= 1e-2
+    _attn_ref.check(o, _attn_ref.attention64(q, k, v))
     assert not torch.isnan(o).any()
     assert all(torch.equal(o, K3.attention(q, k, v)) for _ in range(3))
     assert (K3.attention(q, k, torch.ones_like(v)) == 1).all()       # no rounding bias
