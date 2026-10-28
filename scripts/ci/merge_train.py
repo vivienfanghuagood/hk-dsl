@@ -822,8 +822,12 @@ def cmd_build(a):
     exists = os.path.exists(state_path(name))
     if exists:
         st = load(name)
+        if st.get('cleaned') and not a.rebuild:
+            raise Fail(f"{name} has been cleaned up: `build --rebuild --name {name}` stacks its remaining "
+                       f"(e.g. readmitted) members as a new round, or `build --name {name}-r2` builds a new train")
         if st.get('cleaned'):
-            raise Fail(f"{name} has been cleaned up")
+            LOG.say(f"{name} was cleaned up at {st['cleaned']}: rebuilding it as a new round")
+            st.pop('cleaned')
         if st.get('merged') and not a.rebuild:
             raise Fail(f"{name} has merged PRs: `build --rebuild` stacks its remaining (e.g. readmitted) members "
                        f"on the current {MAIN} as a new round")
@@ -1173,7 +1177,12 @@ def cmd_readmit(a):
             del st['kicked'][str(n)]
             save(st)
         LOG.say(f"#{n}: {'would be ' if LOG.dry else ''}readmitted at {m['head'][:7]}, READY {m['ready_at']}")
-    LOG.say("next: `build --rebuild` (after this round's PRs merged, or to restack them with these)")
+    if st.get('cleaned'):
+        LOG.say(f"next: {name} was cleaned up: `build --name {name}-r2` (a new train of the READY PRs, these "
+                f"at their original READY times), or `build --rebuild --name {name}` (a new round of this one)")
+    else:
+        LOG.say(f"next: `build --rebuild --name {name}` (once this round's PRs have merged, or to restack "
+                f"them with these)")
     return rc
 
 
@@ -1505,8 +1514,10 @@ def cmd_cleanup(a):
         cancel_runs(x)
     for p in ((st.get('bisect') or {}).get('probes') or {}).values():
         cancel_runs(p)
-    refs = [l.split('\t')[1][len('refs/heads/'):] for l in
-            git('ls-remote', 'origin', f'refs/heads/{name}', f'refs/heads/{name}-r*').splitlines() if l]
+    # the train's branch and its bisect probes (<name>-r<round>-p<k>) only: not a train named <name>-r2
+    refs = [ref for ref in (l.split('\t')[1][len('refs/heads/'):] for l in
+            git('ls-remote', 'origin', f'refs/heads/{name}', f'refs/heads/{name}-r*').splitlines() if l)
+            if ref == name or re.fullmatch(re.escape(name) + r'-r\d+-p\d+', ref)]
     for ref in refs:
         assert ref.startswith('train/')
         write_api(f"delete {ref}", f"repos/{REPO}/git/refs/heads/{urllib.parse.quote(ref)}", 'DELETE', check=False)
@@ -1526,6 +1537,12 @@ def cmd_cleanup(a):
             LOG.say(f"$ {prune}")
             out = sh([os.path.expanduser(x) for x in shlex.split(prune)], check=False)
             LOG.say(out.stdout.strip()[-4000:])
+    merged = {m['number'] for m in st['merged']}
+    kicked = [k for k in st['kicked'] if int(k) not in merged]
+    if kicked:
+        LOG.say(f"note: kicked members remain: #{', #'.join(kicked)}. The train stays rebuildable after this "
+                f"cleanup: `readmit N...` for those kicked only for an append-only file, then "
+                f"`build --rebuild --name {name}`, or a new train: `build --name {name}-r2`.")
     st['cleaned'] = iso(now())
     save(st)
     if not LOG.dry and os.path.exists(os.path.join(BASE_DIR, 'current')) and \

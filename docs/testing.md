@@ -767,7 +767,10 @@ counts too. The train is green when every CI job passed and all four GPU jobs
   original READY <time> ...)`; the original time keeps the PR's place in the
   queue. It refuses a PR whose head moved, or one kicked for anything else.
   `build --rebuild` then stacks the readmitted PRs on the current main as a new
-  round, also after the train's earlier round has merged.
+  round. That works after the train's earlier round has merged, and after a
+  `cleanup` too; `build --name <train>-r2` makes a new train of them instead.
+  `cleanup` deletes only the train's branch and its bisect probes, never a train
+  named `<train>-r2`. When kicked members remain, it says how to bring them back.
 
 **The merge** is the merger's step alone (`merge --i-am-the-merger`). It refuses
 unless all of these hold:
