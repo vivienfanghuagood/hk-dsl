@@ -162,3 +162,4 @@ def test_diagonal_fill_takes_a_runtime_diagonal():
         t = hk.zeros(hk.RT(fp32, 16, 16, "col"))
         t.triu_(hk.arch.block_idx.x - 16, float("-inf"))
     _trace(body)
+# merge-train test B (throwaway PR, never merged)
