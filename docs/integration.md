@@ -59,7 +59,7 @@ and which rule decided.
 | decoder attention backend | `HK_VLLM_BACKEND` | off | replaces ROCm's default decoder attention for every model, and raises rather than falls back on sliding windows, sinks, softcap, an fp8 KV cache, fp16 or other head sizes; validated on Qwen3-8B only |
 | ConvRot INT8 (`--quantization convrot_int8`) | `HK_SGLD_CONVROT`, or `HK_SGLD=...,convrot` | **off: opt-in** | lossy by design (PSNR 30.4 dB from bf16, visible drift): a model-level choice, not a toolchain default |
 | MXFP8 at any (N, K) | `HK_MXFP8_ANY` | off | a mode of K2; no real-weight run |
-| DeepSeek-V4.1 sparse MLA prefill, calls of T >= 512 queries (`MIN_T`), and the layer's MXFP8 rows for wo_a made in the kernel from O in registers | `HK_VLLM_SPARSE_MLA` | off | on real-weight calls at T 8192: top-k layers 1.39x opus + vLLM's quant and 1.22x AITER's fused fp8 kernel, sliding-window layers 1.97x and 1.12x; MXFP8 rows bit for bit vLLM's quant of hk's bf16 rows; real-weight accuracy and a serving A/B are still to run |
+| DeepSeek-V4.1 sparse MLA prefill, calls of T >= 512 queries (`MIN_T`), and the layer's MXFP8 rows for wo_a made in the kernel from O in registers | `HK_VLLM_SPARSE_MLA` | off: opt-in, the default is the owner's call | serving scorecard 20261028-1529Z (TP2, real weights): prefill 8k +6.1% and 8k TTFT -5.8% vs hk's default routes (+18.5% vs stock), long +1.7%, mixed and TPOT unchanged, GSM8K-1319 equal (McNemar p 0.91); on real-weight calls at T 8192 top-k layers 1.39x opus + vLLM's quant, sliding-window 1.97x; MXFP8 rows bit for bit vLLM's quant of hk's bf16 rows |
 
 On a GPU a route was not validated on (gfx942, gfx1201), it is off unless you
 turn it on.
