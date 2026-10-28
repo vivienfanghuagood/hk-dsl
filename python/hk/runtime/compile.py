@@ -442,6 +442,12 @@ def _mfma_refusal(found: Sequence[str]) -> ResourceError:
         "kernel with the s_nop padding the fixed compiler emits.")
 
 
+def _device_step(argv: Sequence[str]) -> bool:
+    """A device compile step of hipcc's pipeline: its -triple is amdgcn's (the host steps
+    name amdgcn too, as -aux-triple)."""
+    return "-triple" in argv and argv[argv.index("-triple") + 1].startswith("amdgcn")
+
+
 def _pad_mfma_hazards(cmd: Sequence[str], tmp: Path, arch: str) -> List[str]:
     """Rebuild `cmd` (hipcc, output into `tmp`) through its own pipeline, as
     `hipcc -### -save-temps` lists it, padding the device assembly between the
@@ -461,7 +467,7 @@ def _pad_mfma_hazards(cmd: Sequence[str], tmp: Path, arch: str) -> List[str]:
         r = subprocess.run(argv, cwd=tmp, capture_output=True, text=True)
         if r.returncode != 0:
             raise CompileError(f"MFMA padding rebuild: {argv[0]} failed:\n{r.stderr}")
-        if "-S" in argv and "amdgcn-amd-amdhsa" in argv and "-o" in argv:
+        if "-S" in argv and "-o" in argv and _device_step(argv):
             asm = tmp / argv[argv.index("-o") + 1]
             text, said = mfmahaz.fix_asm(asm.read_text(), arch)
             asm.write_text(text)
