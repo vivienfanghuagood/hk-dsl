@@ -1954,6 +1954,36 @@ def fp4_operand(words: Tile) -> Tile:
     return wrap(hkd.Fp4OperandOp(mlir_type(ty), words.v, loc=t.loc("fp4")).result, ty)
 
 
+def fresh(*tensors):
+    """The tensor parameters `tensors`, read again from the kernel's arguments here (CDNA): use the returned
+    handles in a stage instead of the parameters. LLVM keeps each parameter's fields, and the buffer descriptors
+    made from them, live from its first use to its last, so a persistent launch of many stages (each with its own
+    tensors) holds them all at once and spills SGPRs; a stage that reads its tensors through `fresh` handles holds
+    them in that stage only. The read is a scalar load from the argument segment, not merged with any other.
+
+    Returns one handle for one tensor, else a tuple. In a runtime branch, bind the handles to new names (a
+    tensor cannot be a branch result)."""
+    if not tensors:
+        raise TypeError("fresh() needs the tensor parameters to read again")
+    for x in tensors:
+        if not isinstance(x, Global):
+            raise TypeError(f"fresh takes tensor parameters, got {x!r}")
+    t = _t()
+    out = tuple(Global(hkd.FreshArgOp(x.v.type, x.v, loc=t.loc(f"{x.name or 'tensor'}_f")).result, x.ty, x.name) for x in tensors)
+    return out[0] if len(out) == 1 else out
+
+
+def role() -> None:
+    """Start a role of a persistent launch (CDNA): from here to the next `hk.role()`, every use of a tensor
+    parameter reads it through a copy loaded here -- `fresh` for all of the role's tensors at once. LLVM keeps a
+    parameter's fields and buffer descriptors live from its first use to its last; a launch whose workgroups run
+    roles in order, each using a few of many tensors (K2: the attention back, the FFN seam, the MoE), otherwise
+    holds them all at once and spills SGPRs. At the kernel's top level only. No instruction of its own: a scalar
+    load of each tensor's fields, at the role's start."""
+    t = _t()
+    hkd.RoleOp(loc=t.loc("role"))
+
+
 def lane_regroup(src: Tile, ty, idx) -> Tile:
     """A lane's elements of the strip `src` rearranged into a strip of type `ty` (same dtype): element k of each
     lane of the result -- flat over its chunks and run, chunk k // run, element k % run -- is element idx[k] of the
