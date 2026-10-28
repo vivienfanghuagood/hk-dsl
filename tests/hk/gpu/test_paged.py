@@ -13,7 +13,8 @@ from __future__ import annotations
 import pytest
 
 torch = pytest.importorskip("torch")
-import torch.nn.functional as F  # noqa: E402
+
+import _attn_ref  # noqa: E402
 
 import hk  # noqa: E402
 from hk.ops import paged  # noqa: E402
@@ -30,7 +31,7 @@ def _case(seq_lens, head_dim=128, h_kv=2, group=4, n_blocks=64, seed=0):
     r = len(seq_lens)
     k_cache = torch.randn(n_blocks, h_kv, PAGE, head_dim, device="cuda",
                           dtype=torch.bfloat16, generator=g)
-    v_cache = torch.randn_like(k_cache)
+    v_cache = torch.randn(k_cache.shape, device=k_cache.device, dtype=k_cache.dtype, generator=g)
 
     max_pages = max((n + PAGE - 1) // PAGE for n in seq_lens)
     # A permutation, so a kernel that quietly used `i` instead of
@@ -56,12 +57,9 @@ def _reference(q, k_cache, v_cache, table, lens, group, scale=None):
         n = int(lens[i])
         pages = table[i, : (n + PAGE - 1) // PAGE].tolist()
         for h in range(h_kv):
-            kk = torch.cat([k_cache[p, h] for p in pages])[:n].float()
-            vv = torch.cat([v_cache[p, h] for p in pages])[:n].float()
-            qq = q[i, h, :group].float()
-            out[i, h, :group] = F.scaled_dot_product_attention(
-                qq[None, None], kk[None, None], vv[None, None],
-                scale=scale)[0, 0]
+            kk = torch.cat([k_cache[p, h] for p in pages])[:n]
+            vv = torch.cat([v_cache[p, h] for p in pages])[:n]
+            out[i, h, :group] = _attn_ref.softmax_v64(q[i, h, :group], kk, vv, scale)
     return out
 
 
@@ -72,13 +70,12 @@ def _run(seq_lens, **kw):
     want = _reference(q, k_cache, v_cache, table, lens, group)
     got = o.float()[:, :, :group]
     want = want[:, :, :group]
-    rel = (got - want).abs().max().item() / want.abs().max().item()
-    return rel
+    return _attn_ref.check(got, want)
 
 
 @pytest.mark.parametrize("head_dim", [64, 128])
 def test_pages_that_divide(head_dim):
-    assert _run([PAGE * 4, PAGE * 2], head_dim=head_dim) < 5e-2
+    _run([PAGE * 4, PAGE * 2], head_dim=head_dim)
 
 
 @pytest.mark.parametrize("n", [1, PAGE - 1, PAGE + 1, PAGE * 3 + 7])
@@ -86,16 +83,16 @@ def test_a_sequence_that_does_not_fill_its_last_page(n):
     # The one thing a paged kernel can get wrong that a dense one cannot: the
     # slots past the end of the sequence hold whatever the allocator left, and
     # counting them corrupts the softmax sum rather than perturbing it.
-    assert _run([n]) < 5e-2
+    _run([n])
 
 
 def test_requests_of_different_lengths_in_one_launch():
-    assert _run([PAGE * 5, 7, PAGE * 2 + 1, PAGE]) < 5e-2
+    _run([PAGE * 5, 7, PAGE * 2 + 1, PAGE])
 
 
 def test_a_group_narrower_than_the_tile():
-    assert _run([PAGE * 3], group=1) < 5e-2
-    assert _run([PAGE * 3], group=8) < 5e-2
+    _run([PAGE * 3], group=1)
+    _run([PAGE * 3], group=8)
 
 
 def test_garbage_past_the_sequence_end_is_not_read():
@@ -119,9 +116,7 @@ def test_garbage_past_the_sequence_end_is_not_read():
     poisoned = o.float()[:, :, :group]
 
     assert torch.equal(clean, poisoned), "the kernel read past the sequence end"
-    rel = (clean - want[:, :, :group]).abs().max().item() / \
-        want[:, :, :group].abs().max().item()
-    assert rel < 5e-2
+    _attn_ref.check(clean, want[:, :, :group])
 
 
 # ------------------------------------------------------------ split along KV
@@ -148,12 +143,12 @@ def _run_split(seq_lens, splits, **kw):
     want = _reference(q, k_cache, v_cache, table, lens, group)
     got = out[:, :, :group]
     want = want[:, :, :group]
-    return (got - want).abs().max().item() / want.abs().max().item()
+    return _attn_ref.check(got, want)
 
 
 @pytest.mark.parametrize("splits", [1, 2, 4, 8])
 def test_splitting_the_kv_axis_gives_the_same_answer(splits):
-    assert _run_split([PAGE * 8], splits) < 5e-2
+    _run_split([PAGE * 8], splits)
 
 
 @pytest.mark.parametrize("splits", [2, 4])
@@ -161,12 +156,12 @@ def test_more_splits_than_pages(splits):
     # The planner caps splits at the page count, but the kernel must not rely
     # on that: a split with no pages writes m = -inf and l = 0 and has to drop
     # out of the merge rather than poison it with a NaN.
-    assert _run_split([PAGE], splits) < 5e-2
+    _run_split([PAGE], splits)
 
 
 @pytest.mark.parametrize("splits", [2, 4])
 def test_split_with_a_ragged_tail(splits):
-    assert _run_split([PAGE * 5 + 11], splits) < 5e-2
+    _run_split([PAGE * 5 + 11], splits)
 
 
 def test_splits_agree_with_the_unsplit_kernel():
@@ -180,4 +175,4 @@ def test_splits_agree_with_the_unsplit_kernel():
 
 
 def test_mixed_lengths_with_splits():
-    assert _run_split([PAGE * 7, PAGE, PAGE * 3 + 5], 4) < 5e-2
+    _run_split([PAGE * 7, PAGE, PAGE * 3 + 5], 4)

@@ -182,9 +182,9 @@ hk.arch.mma_fence(on: bool = True) -> None
 Whether hk-mma-fence guards this kernel (CDNA; on by default). The
 pass puts a scheduling fence between a matrix-core chain and the first
 other access to its accumulator: on gfx950 LLVM threaded accumulator
-reads through AGPR MFMA chains and computed wrong scores (docs: KernelWiki
-pitfalls/gfx950-agpr-mma-chain-interleave.md). Turning it off is for an
-A/B, not a fix.
+reads through AGPR MFMA chains, read one a branch after its MFMA with too
+few wait states (a hazard recognizer bug: ROCm/llvm-project#5153) and
+computed wrong scores. Turning it off is for an A/B, not a fix.
 
 ### `hk.arch.agpr`
 

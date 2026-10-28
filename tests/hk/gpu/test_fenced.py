@@ -17,6 +17,8 @@ allocation ends exactly where the tensor does. Results are checked against torch
 
 from __future__ import annotations
 
+import os
+
 import pytest
 
 torch = pytest.importorskip("torch")
@@ -27,13 +29,15 @@ from hk.target import current_arch  # noqa: E402
 pytestmark = pytest.mark.gpu
 
 ARCH = current_arch()
+HERE = os.path.dirname(os.path.abspath(__file__))
 gfx950 = pytest.mark.skipif(ARCH != "gfx950", reason="gfx950's routes")
 gfx1100 = pytest.mark.skipif(ARCH != "gfx1100", reason="gfx1100's routes")
 
 # Imports and the relative-error check every family uses.
-COMMON = f"ARCH = {ARCH!r}\n" + """
+COMMON = f"ARCH = {ARCH!r}\nimport sys\nsys.path.insert(0, {HERE!r})\n" + """
 import hk
 import torch.nn.functional as F
+import _attn_ref
 
 def rel(what, got, want, tol):
     # Both maxima in the message: an all-zero reference makes the error max|got| / 1e-30,
@@ -44,6 +48,13 @@ def rel(what, got, want, tol):
     assert err < tol, (f"{what}: relative error {err:.3g} >= {tol} (max |got| "
                        f"{got.abs().max().item():.4g}, max |want| {top:.4g}"
                        + (", an all-zero reference" if top == 0 else "") + ")")
+
+def attn(what, got, want):
+    # attention's bounds, the GPU tests' own (_attn_ref.check)
+    try:
+        _attn_ref.check(got.detach().float().cpu(), want.detach().float().cpu())
+    except AssertionError as e:
+        raise AssertionError(f"{what}: {e}") from None
 
 def rnd(*shape, dtype=torch.bfloat16, scale=1.0):
     return (torch.randn(*shape, device="cuda") * scale).to(dtype)
@@ -344,9 +355,9 @@ def test_attention():
             got = step("attention", lambda: hk.attention(q, k, v, causal={causal}))
             kk = k.float().repeat_interleave({h} // {hkv}, 1); vv = v.float().repeat_interleave({h} // {hkv}, 1)
             want = F.scaled_dot_product_attention(q.float().cpu(), kk.cpu(), vv.cpu(), is_causal={causal})
-            rel("attention", got, want, 5e-2)
+            attn("attention", got, want)
             got = step("sdpa", lambda: hk.ops.sdpa.attention(q, k, v, causal={causal}))
-            rel("sdpa", got, want, 5e-2)
+            attn("sdpa", got, want)
             """
     fenced_cases(COMMON, cases)
 
@@ -406,7 +417,7 @@ def test_paged_decode_and_prefill():
                 kk, vv = gathered(kc, vc, table, i, n, h)
                 want = F.scaled_dot_product_attention(q[i, h, :group].float()[None, None],
                                                       kk[None, None], vv[None, None])[0, 0]
-                rel(f"plain {{i}} {{h}}", o[i, h, :group], want, 5e-2)
+                attn(f"plain {{i}} {{h}}", o[i, h, :group], want)
         """
         for splits in (1, 2, 8, 32):
             for lens2 in ([1, 31, 32, 33, 200, 1000], [0, 100, 0, 37]):
@@ -432,7 +443,7 @@ def test_paged_decode_and_prefill():
                         kk, vv = gathered(kc, vc, table, i, n, h)
                         want = F.scaled_dot_product_attention(q[i, h].float()[None, None],
                                                               kk[None, None], vv[None, None])[0, 0]
-                        rel(f"fused {{i}} {{h}}", out[i, h], want, 2e-2)
+                        attn(f"fused {{i}} {{h}}", out[i, h], want)
                 """
     for reqs in ([(0, 300)], [(1000, 77)], [(64, 100), (300, 50), (0, 200)],
                  [(0, 192), (500, 5), (40, 600), (33, 1)], [(0, 1)], [(31, 257)]):
@@ -458,7 +469,7 @@ def test_paged_decode_and_prefill():
                 kk, vv = gathered(kc, vc, table, i, s, hh // group)
                 sc = (q[starts[i]:starts[i + 1], hh].float() @ kk.T) * d ** -0.5
                 want = torch.softmax(sc.masked_fill(~keep, float("-inf")), -1) @ vv
-                rel(f"prefill {{i}} {{hh}}", out[starts[i]:starts[i + 1], hh], want, 2e-2)
+                attn(f"prefill {{i}} {{hh}}", out[starts[i]:starts[i + 1], hh], want)
         """
     fenced_cases(PAGED, cases)
 

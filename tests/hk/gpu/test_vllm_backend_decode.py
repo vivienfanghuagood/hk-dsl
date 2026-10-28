@@ -11,10 +11,11 @@ import pytest
 
 torch = pytest.importorskip("torch")
 pytest.importorskip("vllm")
-import torch.nn.functional as F  # noqa: E402
 
 from hk.integration import vllm_backend  # noqa: E402
 from hk.ops import paged  # noqa: E402
+
+import _attn_ref  # noqa: E402
 
 pytestmark = pytest.mark.gpu
 
@@ -37,7 +38,7 @@ def test_the_cache_write_lands_head_major_and_skips_padding():
     g = torch.Generator(device="cuda").manual_seed(1)
     nb, hkv, d, n = 64, 8, 128, 300
     key = torch.randn(n, hkv, d, device="cuda", dtype=torch.bfloat16, generator=g)
-    value = torch.randn_like(key)
+    value = torch.randn(key.shape, device=key.device, dtype=key.dtype, generator=g)
     slots = torch.randperm(nb * PAGE, device="cuda", generator=g)[:n]
     slots[::7] = -1
     want = torch.full((2, nb, hkv, PAGE, d), 7.0, device="cuda",
@@ -61,7 +62,7 @@ def _case(seq_lens, hkv=8, group=4, d=128, seed=0):
     nb = r * max_pages + 3
     k = torch.randn(nb, hkv, PAGE, d, device="cuda", dtype=torch.bfloat16,
                     generator=g)
-    v = torch.randn_like(k)
+    v = torch.randn(k.shape, device=k.device, dtype=k.dtype, generator=g)
     perm = torch.randperm(nb, generator=g, device="cuda")[: r * max_pages]
     table = perm.reshape(r, max_pages).to(torch.int32).contiguous()
     q = torch.randn(r, hkv * group, d, device="cuda", dtype=torch.bfloat16,
@@ -71,23 +72,18 @@ def _case(seq_lens, hkv=8, group=4, d=128, seed=0):
 
 
 def _reference(q, k, v, table, lens, group):
+    """Exact decode attention in float64 (_attn_ref)."""
     r, h, d = q.shape
     out = torch.zeros(r, h, d, device="cuda", dtype=torch.float32)
     for i in range(r):
         n = int(lens[i])
         pages = table[i, : -(-n // PAGE)].tolist()
         for kh in range(k.shape[1]):
-            kk = torch.cat([k[p, kh] for p in pages])[:n].float()
-            vv = torch.cat([v[p, kh] for p in pages])[:n].float()
+            kk = torch.cat([k[p, kh] for p in pages])[:n]
+            vv = torch.cat([v[p, kh] for p in pages])[:n]
             heads = slice(kh * group, (kh + 1) * group)
-            qq = q[i, heads].float()[None, :, None]             # (1, g, 1, d)
-            out[i, heads] = F.scaled_dot_product_attention(
-                qq, kk.expand(1, group, n, d), vv.expand(1, group, n, d))[0, :, 0]
+            out[i, heads] = _attn_ref.softmax_v64(q[i, heads], kk, vv, d ** -0.5)
     return out
-
-
-def _rel(got, want):
-    return ((got.float() - want).abs().max() / want.abs().max()).item()
 
 
 @pytest.mark.parametrize("seq_lens", [[1], [37], [1024], [5, 700, 33, 2048],
@@ -103,4 +99,4 @@ def test_the_small_batch_decode_on_hk_pages(seq_lens):
     assert vllm_backend.triton_decode(q, k, v, table, lens, qsl, out, d ** -0.5,
                                       max(seq_lens), one, one)
     want = _reference(q, k, v, table, lens, h // k.shape[1])
-    assert _rel(out, want) < 2e-2
+    _attn_ref.check(out, want)
