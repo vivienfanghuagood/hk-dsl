@@ -2531,18 +2531,24 @@ def lane_coords(tile, run: int = 8) -> tuple:
 
 def mfma_strip(kind: str, a: Tile, b: Tile, acc: Tile) -> Tile:
     """One raw MFMA on strip registers (gfx950), for a result that must match another kernel's
-    MFMA bit for bit. "f32_16x16x4": `acc` (hk.RS(fp32, 1, 256, 4): lane l's four values are C
-    rows 4 (l // 16) + i, column l % 16) + A B^T over K = 4, where lane l of `a` and `b`
-    (hk.RS(fp32, 1, 64, 1)) holds A[l % 16][l // 16] and B[l % 16][l // 16] --
-    v_mfma_f32_16x16x4_f32, nothing reordered. Returns the new accumulator."""
-    if kind != "f32_16x16x4":
-        raise ValueError(f"hk.mfma_strip({kind!r}): the one kind is \"f32_16x16x4\"")
+    MFMA bit for bit. `acc` is hk.RS(fp32, 1, 256, 4): lane l's four values are C rows 4 (l // 16) + i,
+    column l % 16. Returns acc + A B^T, nothing reordered:
+      "f32_16x16x4": K = 4; lane l of `a` / `b` (hk.RS(fp32, 1, 64, 1)) holds A[l % 16][l // 16] --
+        v_mfma_f32_16x16x4_f32.
+      "bf16_16x16x32": K = 32; lane l of `a` / `b` (hk.RS(i32, 1, 256, 4)) holds A[l % 16][8 (l // 16) ..
+        + 8] as four dwords of bf16 pairs -- v_mfma_f32_16x16x32_bf16.
+      "bf16_16x16x16_1k": K = 16; lane l of `a` / `b` (hk.RS(i32, 1, 128, 2)) holds A[l % 16][4 (l // 16)
+        .. + 4] as two dwords -- v_mfma_f32_16x16x16_bf16."""
+    operand = {"f32_16x16x4": ("fp32", 64, 1), "bf16_16x16x32": ("i32", 256, 4), "bf16_16x16x16_1k": ("i32", 128, 2)}
+    if kind not in operand:
+        raise ValueError(f"hk.mfma_strip({kind!r}): the kinds are {sorted(operand)}")
 
-    def shaped(v, cols, run):
+    def shaped(v, dt, cols, run):
         ty = v.ty
-        return (_is_strip_tile(ty) and ty.dtype.name == "fp32" and (ty.rows, ty.cols, ty.run) == (1, cols, run))
-    if not (shaped(a, 64, 1) and shaped(b, 64, 1) and shaped(acc, 256, 4)):
-        raise TypeError(f"hk.mfma_strip(\"f32_16x16x4\") takes a, b: hk.RS(fp32, 1, 64, 1) and acc: "
+        return _is_strip_tile(ty) and ty.dtype.name == dt and (ty.rows, ty.cols, ty.run) == (1, cols, run)
+    dt_, cols_, run_ = operand[kind]
+    if not (shaped(a, dt_, cols_, run_) and shaped(b, dt_, cols_, run_) and shaped(acc, "fp32", 256, 4)):
+        raise TypeError(f"hk.mfma_strip({kind!r}) takes a, b: hk.RS({dt_}, 1, {cols_}, {run_}) and acc: "
                         f"hk.RS(fp32, 1, 256, 4), not {a.ty}, {b.ty}, {acc.ty}")
     t = _t()
     return wrap(hkd.MfmaStripOp(mlir_type(acc.ty), a.v, b.v, acc.v, kind, loc=t.loc("mfma")).result, acc.ty)

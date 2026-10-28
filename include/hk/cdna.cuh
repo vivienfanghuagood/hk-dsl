@@ -3288,6 +3288,34 @@ __device__ static inline void mfma_strip_f32_16x16x4(D &dst, const A &a, const B
     c = __builtin_amdgcn_mfma_f32_16x16x4f32(a.data[0][0][0], b.data[0][0][0], c, 0, 0, 0);
     dst.data[0][0][0] = c[0]; dst.data[0][0][1] = c[1]; dst.data[0][0][2] = c[2]; dst.data[0][0][3] = c[3];
 }
+#if defined(KITTENS_CDNA4)   // (the 16x16x32 bf16 MFMA is gfx950's)
+/** @brief hk mfma_strip bf16_16x16x32: acc (4 a lane) += A B^T, lane l holding A[l%16][8 (l/16) ..] and B alike as
+ * four dwords (eight bf16): v_mfma_f32_16x16x32_bf16 exactly. */
+template<ducks::rs::all D, ducks::rs::all A, ducks::rs::all B>
+__device__ static inline void mfma_strip_bf16_16x16x32(D &dst, const A &a, const B &b, const D &acc) {
+    typedef float v4f __attribute__((ext_vector_type(4)));
+    typedef __bf16 v8bf __attribute__((ext_vector_type(8)));
+    typedef int v4i __attribute__((ext_vector_type(4)));
+    v4i ai = {int(a.data[0][0][0]), int(a.data[0][0][1]), int(a.data[0][0][2]), int(a.data[0][0][3])};
+    v4i bi = {int(b.data[0][0][0]), int(b.data[0][0][1]), int(b.data[0][0][2]), int(b.data[0][0][3])};
+    v4f c = {acc.data[0][0][0], acc.data[0][0][1], acc.data[0][0][2], acc.data[0][0][3]};
+    c = __builtin_amdgcn_mfma_f32_16x16x32_bf16(__builtin_bit_cast(v8bf, ai), __builtin_bit_cast(v8bf, bi), c, 0, 0, 0);
+    dst.data[0][0][0] = c[0]; dst.data[0][0][1] = c[1]; dst.data[0][0][2] = c[2]; dst.data[0][0][3] = c[3];
+}
+#endif
+/** @brief hk mfma_strip bf16_16x16x16_1k: acc (4 a lane) += A B^T, lane l holding A[l%16][4 (l/16) ..] and B alike as
+ * two dwords (four bf16): v_mfma_f32_16x16x16_bf16 exactly. */
+template<ducks::rs::all D, ducks::rs::all A, ducks::rs::all B>
+__device__ static inline void mfma_strip_bf16_16x16x16_1k(D &dst, const A &a, const B &b, const D &acc) {
+    typedef float v4f __attribute__((ext_vector_type(4)));
+    typedef short v4s __attribute__((ext_vector_type(4)));
+    typedef int v2i __attribute__((ext_vector_type(2)));
+    v2i ai = {int(a.data[0][0][0]), int(a.data[0][0][1])};
+    v2i bi = {int(b.data[0][0][0]), int(b.data[0][0][1])};
+    v4f c = {acc.data[0][0][0], acc.data[0][0][1], acc.data[0][0][2], acc.data[0][0][3]};
+    c = __builtin_amdgcn_mfma_f32_16x16x16bf16_1k(__builtin_bit_cast(v4s, ai), __builtin_bit_cast(v4s, bi), c, 0, 0, 0);
+    dst.data[0][0][0] = c[0]; dst.data[0][0][1] = c[1]; dst.data[0][0][2] = c[2]; dst.data[0][0][3] = c[3];
+}
 /** @brief hk post_elems: element (r, c) of val and `tag` to pair idx(r, c) of `box`, one 8-byte AUX store. */
 template<int AUX, ducks::gl::all GL, ducks::rs::all V, ducks::rs::all I>
 __device__ static inline void post_elems(const GL &box, const V &val, const I &idx, int tag) {
