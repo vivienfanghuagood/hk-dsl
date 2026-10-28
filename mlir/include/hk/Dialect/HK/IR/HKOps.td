@@ -918,6 +918,24 @@ def HK_LaneGatherOp : HK_Op<"lane_gather"> {
   let hasVerifier = 1;
 }
 
+def HK_LaneRegroupOp : HK_Op<"lane_regroup"> {
+  let summary = "a lane's strip elements rearranged into another strip (register moves)";
+  let description = [{
+    Element k of each lane of the result (flat over its chunks and run:
+    chunk k / run, element k % run) is element idx[k] of the same lane of
+    `src`, flat alike. The strips may differ in run and chunk count (a
+    lane's elements picked, permuted, broadcast or duplicated); the element
+    type is kept. No lane exchange, no LDS: what a 16-byte load's words need
+    to become operands of another layout.
+  }];
+  let arguments = (ins HK_RegTileType:$src, DenseI64ArrayAttr:$idx);
+  let results = (outs HK_RegTileType:$result);
+  let assemblyFormat = [{
+    $src $idx attr-dict `:` qualified(type($src)) `->` qualified(type($result))
+  }];
+  let hasVerifier = 1;
+}
+
 def HK_LdsPhaseOp : HK_Op<"lds_phase"> {
   let summary = "the start of an LDS phase: its allocations reuse the LDS of the phases before it";
   let description = [{
