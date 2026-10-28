@@ -1139,22 +1139,15 @@ def HK_MapCppOp : HK_Op<"map_cpp"> {
   let hasVerifier = 1;
 }
 
-def HK_SwapHalvesOp : HK_UnaryMapOp<"swap_halves"> {
+def HK_SwapHalvesOp : HK_UnaryMapOp<"swap_halves",
+    (ins DefaultValuedAttr<I64Attr, "0">:$span, UnitAttr:$negate_first)> {
   let description = [{
-    A strip's rows with their two halves exchanged: element (r, c) of the
-    result is element (r, (c + cols/2) mod cols) of the operand -- RoPE's
-    rotate_half without its sign. Strips only, and a row of one chunk or of
-    an even number of them: a register swap between chunks, or one lane
-    exchange across the wave's halves.
-  }];
-}
-def HK_RotateHalfOp : HK_UnaryMapOp<"rotate_half", (ins I64Attr:$span)> {
-  let description = [{
-    NeoX's rotate_half on each `span`-column segment of a strip's rows: for
-    c in the segment's first half the result is -x[c + span/2], in its second
-    x[c - span/2]. Strips only. The halves are 8, 16 or 32 lanes apart -- a
-    DPP row_ror:8, a v_permlane16_swap or a v_permlane32_swap on gfx950 --
-    or whole chunks apart, a register swap; the sign is one XOR a value.
+    The halves of each `span`-column segment of a strip's rows exchanged (span 0: the whole
+    row): for c in a segment's first half the result is x[c + span/2], in its second
+    x[c - span/2]. `negate_first` negates the first half's values -- NeoX's rotate_half,
+    [x1 | x2] -> [-x2 | x1]. Strips only. The halves are 8, 16 or 32 lanes apart -- a DPP
+    row_ror:8, a v_permlane16_swap or a v_permlane32_swap on gfx950 -- or whole chunks apart, a
+    register swap; the sign is one XOR a value.
   }];
 }
 

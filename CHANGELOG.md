@@ -9,6 +9,14 @@ The next version's notes collect here until it is released.
 What is on main after 0.8.0. `pip install hk-dsl` (0.8.0) does not have it;
 the API reference marks such names *New after 0.8.0*.
 
+**`rotate_half` is `swap_halves(span, negate_first=True)` (DSL-surface S4).**
+- `Tile.swap_halves(span=None, negate_first=False)` exchanges the halves of each `span`-column
+  segment (the whole row by default) and optionally negates the first. `rotate_half(span)` stays
+  as sugar for it. The two dialect ops are one (`hk.swap_halves {span, negate_first}`), and the two
+  C++ templates are one, `kittens::swap_halves<SPAN, NEG>`.
+- Evidence: the 70 rotary kernels' code objects are identical on gfx950, function by function
+  (ISA hash and resources).
+
 **Rows by index take an `hk.RowIndex` (DSL-surface S3).**
 - `hk.RowIndex(ids, at, count=, div=, sort_topk=)` says which rows a gather, a scatter or a
   gathered LDS copy moves, and how an index names a row: plain, `div=k`, or AITER's sort ids. It
