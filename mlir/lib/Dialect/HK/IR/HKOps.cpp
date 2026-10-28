@@ -867,6 +867,13 @@ LogicalResult RunXorOp::verify() {
   return success();
 }
 
+LogicalResult LdsPhaseOp::verify() {
+  if (!isa<func::FuncOp>((*this)->getParentOp()))
+    return emitOpError("an LDS phase starts at the kernel's top level, which every workgroup passes (the "
+                       "allocator is rewound there at run time): not inside a branch or a loop");
+  return success();
+}
+
 LogicalResult MfmaStripOp::verify() {
   auto a = dyn_cast<RegTileType>(getA().getType());
   auto b = dyn_cast<RegTileType>(getB().getType());

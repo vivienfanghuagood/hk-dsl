@@ -435,6 +435,7 @@ private:
     }
     return s;
   }
+  bool ldsPhase = false;  // an hk.lds.phase seen: hk_lds_phase0 holds the shared allocations' end
   int64_t ldsBytes() { return intAttr(attrs::kLdsBytes); }
 
   StringRef argName(func::FuncOp f, unsigned i) {
@@ -1424,6 +1425,16 @@ private:
             w(el + " (&" + name(o.getResult()) + ")[" +
               std::to_string(t.getCount()) + "] = al.allocate<" + el + ", " +
               std::to_string(t.getCount()) + ">();");
+        })
+        .Case([&](LdsPhaseOp o) {
+          // the first phase saves the allocator's cursor (the shared allocations end there); a later one
+          // rewinds to it: the phases share that LDS
+          if (!ldsPhase) {
+            w("int *hk_lds_phase0 = al.ptr;");
+            ldsPhase = true;
+          } else {
+            w("al.ptr = hk_lds_phase0;");
+          }
         })
         .Case([&](AllocSharedVecOp o) {
           auto t = o.getResult().getType();

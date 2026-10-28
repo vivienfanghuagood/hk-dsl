@@ -956,6 +956,24 @@ def HK_RunXorOp : HK_Op<"run_xor"> {
   let hasVerifier = 1;
 }
 
+def HK_LdsPhaseOp : HK_Op<"lds_phase"> {
+  let summary = "the start of an LDS phase: its allocations reuse the LDS of the phases before it";
+  let description = [{
+    A persistent kernel whose CTAs run roles in order (a launch made of
+    stages that never overlap in one CTA) can give each stage's LDS the same
+    space, a union. The first phase op marks the end of the allocations
+    every phase shares; each later one starts a phase at that base again.
+    The kernel's LDS is the base plus the largest phase. Only at the
+    kernel's top level, which every workgroup passes: the C++ allocator is
+    rewound there at run time. A tile of an earlier phase must not be read
+    in a later one: its bytes are someone else's.
+  }];
+  let arguments = (ins);
+  let results = (outs);
+  let assemblyFormat = [{ attr-dict }];
+  let hasVerifier = 1;
+}
+
 def HK_MfmaStripOp : HK_Op<"mfma_strip"> {
   let summary = "one raw MFMA on strip registers (gfx950)";
   let description = [{
