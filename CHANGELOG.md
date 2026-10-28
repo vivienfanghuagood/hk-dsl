@@ -9,6 +9,22 @@ The next version's notes collect here until it is released.
 What is on main after 0.8.0. `pip install hk-dsl` (0.8.0) does not have it;
 the API reference marks such names *New after 0.8.0*.
 
+**The surface registry (DSL-surface S0).** `python/hk/dsl/surface.py` registers every name of
+the language, every dialect op and every function in `include/hk/` with its kind (primitive,
+format, escape hatch, experiment, internal, merge / delete / deprecated). The IR tier
+(`tests/hk/ir/test_surface.py`) now fails on anything unregistered, and on an escape-hatch use in
+hk.ops, the templates or the examples that is not in `scripts/escape_hatches_allow.txt` with its
+reason. A `Kernel` subclass may not override `with_defines` / `source` unless listed there.
+- The API reference marks each non-primitive name with its kind and boundary, or its migration
+  step.
+- `tools/surface/snapshot.py` takes the Gate A / B evidence for a change to the generated code:
+  every shipped kernel's generated source hashed (`sources`), or its resources and an ISA hash a
+  function (`builds`), diffed between two checkouts.
+- `tests/hk/gpu/test_specializations.py`: the 32x32 fp32 -> bf16 store, the 16-column column
+  reduction and the -inf column masks (cdna.cuh's type-selected paths) give the generic results
+  bit for bit on gfx950.
+- A pull-request template with the reviewer checklist.
+
 **CONTRIBUTING.md: new kernels add no kernel-specific C++ helpers or one-off DSL ops.**
 - A needed exception goes through review with a written reason and is registered as an escape
   hatch with a usage boundary. The file also has a reviewer checklist.

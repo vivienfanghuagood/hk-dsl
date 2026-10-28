@@ -132,6 +132,8 @@ artifact you take to /kernel-resource-check when something spills.
 Kernel.with_defines(self, src: str) -> str
 ```
 
+*Surface*: an escape hatch, used only within its boundary: #define NAME value knobs and A/B variants; never overridden to splice or rewrite C++.
+
 `src` with this kernel's preprocessor definitions ahead of it.
 
 #### `Kernel.build`
@@ -155,6 +157,8 @@ loop runnable on a machine with no Radeon in it.
 ```python
 Kernel.build_flags(self, traced: TracedKernel) -> Tuple[str, ...]
 ```
+
+*Surface*: an escape hatch, used only within its boundary: tests and probes; not hk.ops kernels.
 
 hipcc flags of this kernel's builds beyond the target's.
 
@@ -549,6 +553,8 @@ tile instead of two ds_read_b128.
 hk.load_w4(ty, qw: Global, s: Global, zs: Global, n0, k0, *, group: int = 128, into=None) -> Tile
 ```
 
+*Surface*: a format primitive: hk's own int4 layout (hk.ops.w4a16's repack).
+
 Rows n0.. and columns k0.. of W, dequantized from 4-bit codes into a
 bf16 row-layout tile: element (n, k) is q * s - zs, q being nibble k % 8
 of row n's word k // 8 (int32 [N, K/8], interleaved [N/16][K/32][16][4]),
@@ -594,6 +600,8 @@ builds. Strips index only this way.
 hk.load_mx_scales(src: Global, rows: int, kblocks: int, row0, kb0, *, into: MxScales = None, layout: str = 'ocp', group_rows: int = 0, loose: bool = False) -> MxScales
 ```
 
+*Surface*: a format primitive: E8M0 scales of gfx950's scaled MFMA (v_mfma_scale_f32_16x16x128_f8f6f4)'s operands; a new layout is a layout= value, not a new op.
+
 Rows row0.. and 32-wide blocks kb0.. of an E8M0 scale tensor (uint8, one
 byte a row and block: [R, K/32], the OCP MX layout -- or packed, i32, as
 hk.mx.pack_scales lays them out: one coalesced dword a lane per 64
@@ -618,6 +626,8 @@ issued before it (K1 c8).
 hk.copy_mx_scales(dst: MxScales, src: MxScales) -> None
 ```
 
+*Surface*: to be merged into MxScales.copy(into=) (DSL-surface migration S2).
+
 dst = src: E8M0 scales copied register to register -- how a one-stage
 loop body hands the next K-tile's prefetched scales to the current set.
 
@@ -626,6 +636,8 @@ loop body hands the next K-tile's prefetched scales to the current set.
 ```python
 hk.mma_ABt_mx(a: Tile, b: Tile, acc: Tile, sa: MxScales, sb: MxScales, *, into=None, a_fmt: str = 'fp8', b_fmt: str = 'fp8', sa_at=(0, 0), sb_at=(0, 0)) -> Tile
 ```
+
+*Surface*: to be merged into hk.mma with Tile.scaled operands (DSL-surface migration S2).
 
 acc + (sa . A)(sb . B)^T on gfx950's v_mfma_scale_f32_16x16x128_f8f6f4:
 A (M, K) and B (N, K) fp8 e4m3 row tiles, K a multiple of 128; sa and sb
@@ -642,6 +654,8 @@ loaded once, feeding two token tiles over two steps).
 hk.load_fp4_frags(ty, src: Global, row0, kc0, *, group_rows: int, gate_up: bool = False, into=None) -> Tile
 ```
 
+*Surface*: a format primitive: AITER's pre-shuffled MXFP4 MoE weights only.
+
 Rows row0.. and 128-wide K steps kc0.. of AITER's shuffled MXFP4 MoE weights (gfx950,
 `shuffle_weight(is_guinterleave=True)`; src uint8 [E * group_rows, K/2], the packed bytes)
 as the B operand of `mma_ABt_mx(..., b_fmt="fp4")`. `ty` is an fp8 e4m3 row tile of 16x128
@@ -656,6 +670,8 @@ column j of the product land in the same lanes.
 hk.load_fp4_frags_lds(ty, src: SharedTile, row0, chunk0, *, into=None) -> Tile
 ```
 
+*Surface*: to be merged into hk.load_fp4_frags(SharedTile) (DSL-surface migration S2).
+
 load_fp4_frags from an LDS tile of raw AITER weight bytes (fp8-typed, a row a 16-row block
 with gate|up rows interleaved, 1 KB a 128-wide K step: the [E * N/16 * 2, K/2 * 16] view of the
 weights, brought in by a group load). Fragment (i, s) is row row0 + i, chunk chunk0 + s.
@@ -665,6 +681,8 @@ weights, brought in by a group load). Fragment (i, s) is row row0 + i, chunk chu
 ```python
 hk.mx_quant_store(src: SharedTile, q: Global, s: Global, row0, col0) -> None
 ```
+
+*Surface*: to be merged into a G1 composition (hk.mx) (DSL-surface migration S10).
 
 MX-quantize an LDS tile's rows and store them -- the epilogue that hands a GEMM's output
 to an MXFP8 consumer without a separate quant pass. Every thread of the workgroup takes
@@ -683,6 +701,8 @@ result is bit-identical to hk.mx.quant followed by hk.mx.aiter_scales or hk.mx.p
 ```python
 hk.map_cpp(expr: str, *args, dtype: Optional[DType] = None, name: str = 'map') -> Tile
 ```
+
+*Surface*: an escape hatch, used only within its boundary: an intrinsic or instruction hk has no op for, or another kernel's exact instruction sequence; not index arithmetic, selects, bit ops or float expressions the operators can write; never in a template.
 
 An elementwise C++ expression over strips (gfx950): element (r, c) of the result is `expr`
 with `x0`, `x1`, ... bound to element (r, c) of each strip argument -- or to the argument
@@ -707,6 +727,8 @@ spelled `__builtin_fmaf` -- no `;` or braces, and the compiler, not hk, checks i
 hk.iota(ty) -> Tile
 ```
 
+*Surface*: to be merged into hk.lane_coords(type)[1] (alias kept) (DSL-surface migration S6).
+
 An i32 strip of type `ty`'s shape whose element (r, c) is c: each element's own column, for
 index arithmetic (hk.map_cpp, load_elems / store_elems) and per-column choices (gfx950).
 
@@ -715,6 +737,8 @@ index arithmetic (hk.map_cpp, load_elems / store_elems) and per-column choices (
 ```python
 hk.mfma_strip(kind: str, a: Tile, b: Tile, acc: Tile) -> Tile
 ```
+
+*Surface*: to be merged into hk.mma on Tile.as_fragment views (DSL-surface migration S9).
 
 One raw MFMA on strip registers (gfx950), for a result that must match another kernel's
 MFMA bit for bit. "f32_16x16x4": `acc` (hk.RS(fp32, 1, 256, 4): lane l's four values are C
@@ -1025,6 +1049,8 @@ destination: load into the whole tile.
 Tile.make_causal(self, value: float = 0.0, *, into=None, transposed: bool = False)
 ```
 
+*Surface*: to be deleted (DSL-surface migration S1); use Tile.tril_(0, v) / Tile.triu_(0, v).
+
 A square tile with the elements above the diagonal set to `value` (below it with `transposed=True`): the causal mask of a diagonal attention block. Not on strips.
 
 #### `Tile.maximum`
@@ -1166,6 +1192,8 @@ chunks (a register swap).
 ```python
 Tile.rotate_half(self, span: int, *, into=None)
 ```
+
+*Surface*: to be merged into Tile.swap_halves(span, negate_first=True) (sugar kept) (DSL-surface migration S4).
 
 NeoX's rotate_half on each `span`-column segment of a strip's rows:
 [x1 | x2] -> [-x2 | x1], one head of `span` columns a segment. Its
@@ -1406,6 +1434,8 @@ chunks (a register swap).
 Vec.rotate_half(self, span: int, *, into=None)
 ```
 
+*Surface*: to be merged into Vec.swap_halves(span, negate_first=True) (sugar kept) (DSL-surface migration S4).
+
 NeoX's rotate_half on each `span`-column segment of a strip's rows:
 [x1 | x2] -> [-x2 | x1], one head of `span` columns a segment. Its
 halves must be 8, 16 or 32 lanes apart (a DPP row_ror:8, a
@@ -1576,6 +1606,8 @@ not a hang. `runs=True` / `bf16=True`: the layout post_elems wrote with them.
 Global.gather(self, tile, ids: Global, at, *, count=None, col=0, div=1, into=None) -> Tile
 ```
 
+*Surface*: `div=`: to be merged into hk.RowIndex(div=) (DSL-surface migration S3).
+
 Rows by index: tile row r is row `ids[at + r] // div` of this
 tensor (rows flattened over batch and depth), from column `col`. An
 index outside the tensor, or a position at or past `count` (default:
@@ -1588,6 +1620,8 @@ row: a MoE's top-k, whose sorted list counts (token, choice) pairs.
 ```python
 Global.scatter_add_lds(self, src: SharedTile, ids: Global, at, *, count=None, col=0, sort_topk: int = 0) -> None
 ```
+
+*Surface*: to be deleted (DSL-surface migration S1); use SharedTile.load + Global.scatter(add=True).
 
 A warp's own bf16 LDS tile added into this bf16 tensor's rows by index, atomically:
 row r of `src` into row `ids[at + r]` (with `sort_topk`, AITER sort ids: the token's
@@ -1606,6 +1640,12 @@ Global.scatter(self, value: Tile, ids: Global, at, *, count=None, col=0, sort_to
 ```
 
 *Changed after 0.8.0*: new parameter `staged`
+
+*Surface*: `sort_topk=`: to be merged into hk.RowIndex(sort_topk=) (DSL-surface migration S3).
+
+*Surface*: `staged=`: to be merged into a staged hk.RowIndex (Group.stage) (DSL-surface migration S3).
+
+*Surface*: `add=`: atomic scatter-add, in no fixed order: not for a route that promises determinism.
 
 Rows by index: tile row r goes to row `ids[at + r]`, from column
 `col`; an index outside the tensor, or a position at or past
@@ -1828,6 +1868,8 @@ Register tile -> LDS.
 SharedTile.granules(self, name: str = 'gr') -> Granules
 ```
 
+*Surface*: an escape hatch, used only within its boundary: the same as hk.Granules'.
+
 Factor this tile's addressing into swizzle_bytes/16 registers, so a
 loop reading many fragments holds those and not one address each.
 
@@ -1862,6 +1904,8 @@ The value's hk type (`RegTileType`, `RegVecType`, ...).
 
 ### `hk.Granules`
 
+*Surface*: an escape hatch, used only within its boundary: gfx11 kernels whose LDS address registers are the measured limiter; not on CDNA.
+
 One shared tile's per-lane LDS addresses.
 
 #### `Granules.load_frag`
@@ -1870,6 +1914,8 @@ One shared tile's per-lane LDS addresses.
 Granules.load_frag(self, row: int, col: int, tile: RegTileType, *, into=None) -> Tile
 ```
 
+*Surface*: an escape hatch, used only within its boundary: the same as hk.Granules'.
+
 One 16x16 fragment at (row, col), in units of 16. Never waits.
 
 #### `Granules.store_frag`
@@ -1877,6 +1923,8 @@ One 16x16 fragment at (row, col), in units of 16. Never waits.
 ```python
 Granules.store_frag(self, value: Tile, row: Scalar, col: int) -> None
 ```
+
+*Surface*: an escape hatch, used only within its boundary: the same as hk.Granules'.
 
 One 16x16 fragment into the tile; `row` may be a runtime value.
 

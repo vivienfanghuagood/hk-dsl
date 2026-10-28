@@ -500,8 +500,10 @@ the regex over generated C++ are deleted.
 - **The table.** Every public DSL name, every dialect op and every C++ helper a kernel can reach
   gets one entry: name, kind, boundary, and the tests that pin it. §2's table is the first
   version.
-- **Where it lives.** S0 puts it in the code as `hk.dsl.surface.REGISTRY`, rendered into
-  `docs/api`.
+- **Where it lives.** S0 puts it in the code as `python/hk/dsl/surface.py`: `ENTRIES` (the
+  inventoried names that are not plain primitives, with kind, item, boundary, target and step),
+  `PRIMITIVES`, `OPS` (every dialect op) and `CPP` (every function in `include/hk/`). The API
+  reference shows each non-primitive name's kind and boundary.
 - **Kinds:**
   - **primitive**: general; any kernel.
   - **format**: one data layout of hk's or of a third-party library. A new layout of the same

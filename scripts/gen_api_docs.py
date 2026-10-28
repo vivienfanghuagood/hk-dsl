@@ -29,6 +29,7 @@ import argparse
 import ast
 import difflib
 import importlib
+import importlib.util
 import inspect
 import json
 import os
@@ -365,6 +366,40 @@ class Since:
         return f"*Changed after {PYPI}*: " + "; ".join(bits)
 
 
+_SURFACE = None
+
+
+def surface_mark(name: str) -> str:
+    """The surface registry's note on a documented name (python/hk/dsl/surface.py): its kind
+    unless it is a plain primitive, and the notes on its registered keywords."""
+    global _SURFACE
+    if _SURFACE is None:
+        spec = importlib.util.spec_from_file_location("hk_surface", REPO / "python/hk/dsl/surface.py")
+        _SURFACE = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(_SURFACE)
+    notes = []
+    for key, e in _SURFACE.ENTRIES.items():
+        base, _, kw = key.partition("(")
+        if base != name:
+            continue
+        what = f"`{kw.rstrip(')')}`: " if kw else ""
+        if e.kind == "merge":
+            notes.append(f"{what}to be merged into {e.target} (DSL-surface migration {e.step}).")
+        elif e.kind == "delete":
+            notes.append(f"{what}to be deleted (DSL-surface migration {e.step}); use {e.target}.")
+        elif e.kind == "deprecated":
+            notes.append(f"{what}deprecated, removed in {e.step}; use {e.target}.")
+        elif e.kind == "escape":
+            notes.append(f"{what}an escape hatch, used only within its boundary: {e.boundary}.")
+        elif e.kind == "experiment":
+            notes.append(f"{what}an experiment: {e.boundary}.")
+        elif e.kind == "format":
+            notes.append(f"{what}a format primitive: {e.boundary}.")
+        elif e.boundary:
+            notes.append(f"{what}{e.boundary}.")
+    return "\n\n".join(f"*Surface*: {n}" for n in notes)
+
+
 class Page:
     def __init__(self, fname: str, title: str, intro: str = ""):
         self.fname = fname
@@ -395,6 +430,9 @@ class Page:
             self.lines.append(f"```python\n{full}\n```\n")
         if mark:
             self.lines.append(mark + "\n")
+        smark = surface_mark(disp.replace(" (property)", ""))
+        if smark:
+            self.lines.append(smark + "\n")
         d = doc(obj)
         if d:
             self.lines.append(d + "\n")
