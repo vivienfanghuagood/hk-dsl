@@ -662,17 +662,21 @@ _FUSED: Dict[tuple, object] = {}
 
 
 def fused_kernel(head_dim: int, splits: int, ablate: tuple = (),
-                 defines: Optional[dict] = None):
+                 defines: Optional[dict] = None, ppstep: int = 1):
     """`defines` builds the walk with library knobs, for an A/B in one
     process (tools/hk-bench/paged_variants.py): HK_RDNA_XPOSE_WORDS=0 is the
-    generic register transpose V took before the packed one."""
+    generic register transpose V took before the packed one. `ppstep`
+    (gfx950) is the pages a step, `pages_per_step`'s choice."""
     if _native_cdna():
         if ablate or defines:
             raise ValueError("ablate= and defines= build variants of the RDNA "
                              "walk; gfx950's decode is hk.ops.paged_cdna's")
         from . import paged_cdna  # noqa: PLC0415
 
-        return paged_cdna.kernel_for(head_dim, splits, "fused")
+        return paged_cdna.kernel_for(head_dim, splits, "fused",
+                                     **({"ppstep": ppstep} if ppstep != 1 else {}))
+    if ppstep != 1:
+        raise ValueError(f"ppstep={ppstep}: gfx950's walk only (gfx1100's takes a page a step)")
     dkey = tuple(sorted((defines or {}).items()))
     key = (head_dim, splits, tuple(sorted(ablate)), dkey)
     if key not in _FUSED:
@@ -760,6 +764,16 @@ TARGET_WORKGROUPS = 256
 #: Past this the merge's traffic grows faster than the split saves, and every
 #: value is a separate compile.
 MAX_SPLITS = 32
+
+
+def pages_per_step(n_reqs: int, n_kv_heads: int) -> int:
+    """Pages the fused walk takes a step for `n_reqs` requests: on gfx950
+    paged_cdna.pages_per_step of the (request, kv head) pairs, elsewhere 1."""
+    if _native_cdna():
+        from . import paged_cdna  # noqa: PLC0415
+
+        return paged_cdna.pages_per_step(max(1, n_reqs * n_kv_heads))
+    return 1
 
 
 def plan_splits(n_reqs: int, n_kv_heads: int, n_pages: int) -> int:

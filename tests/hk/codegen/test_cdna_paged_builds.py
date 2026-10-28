@@ -43,10 +43,11 @@ def _build(k, **gate):
 
 
 @pytest.mark.parametrize("d", paged_cdna.HEAD_DIMS)
-@pytest.mark.parametrize("mode,splits", [("plain", 1), ("fused", 8)])
-def test_the_decode_builds_and_its_page_copies_are_counted(d, mode, splits):
+@pytest.mark.parametrize("mode,splits,ppstep", [("plain", 1, 1), ("fused", 8, 1), ("fused", 64, 2)])
+def test_the_decode_builds_and_its_page_copies_are_counted(d, mode, splits, ppstep):
     src, asm, kr = _build(paged_cdna.decode_kernel(
-        f"pc_build_{mode}_{d}", head_dim=d, splits=splits, mode=mode, arch="gfx950"))
+        f"pc_build_{mode}_{d}_{ppstep}", head_dim=d, splits=splits, mode=mode, ppstep=ppstep,
+        arch="gfx950"))
     # A page of K or V is 32 x D bf16 over one warp: D / 16 16-byte copies.
     copies = src.count("kittens::group_load_async<1, true>(")
     assert len(re.findall(r"buffer_load_dwordx4 .* sc0 nt lds", asm)) == copies * (d // 16)

@@ -55,11 +55,11 @@ def _reference(q, k_cache, v_cache, table, lens):
     return out
 
 
-def _decode(q, k_cache, v_cache, table, lens, splits, walk=None, merge=None):
+def _decode(q, k_cache, v_cache, table, lens, splits, walk=None, merge=None, ppstep=1):
     r, h_kv, group, d = q.shape
     out = torch.empty_like(q)
     scratch = paged.fused_scratch(r * splits, h_kv, d, q.device, group=group)
-    paged.decode(walk or paged.fused_kernel(d, splits),
+    paged.decode(walk or paged.fused_kernel(d, splits, ppstep=ppstep),
                  merge or paged.merge_kernel(d, splits), q, k_cache, v_cache,
                  table, lens, out, scratch, splits)
     return out
@@ -80,15 +80,40 @@ def test_the_decode_is_right_at_every_split(splits, head_dim):
 @pytest.mark.parametrize("splits", [64, 256])
 def test_many_splits_fold_on_several_warps(splits):
     """gfx950's plan reaches 256 splits and more at one request on few kv heads
-    (paged_cdna.target_workgroups); its merge folds them on up to 16 warps
+    (paged_cdna.target_workgroups); its merge folds them on up to 8 warps
     (paged_cdna.merge_warps). Long and short sequences, a padded one, a
-    sequence with fewer pages than warps' rounds, and the deterministic
-    answer twice."""
-    case = _case([0, 4100, 33, 20000], h_kv=1, group=8)
+    sequence with fewer pages than warps' rounds, short ones that take the
+    lower page floor (paged_cdna.floor_pages) over two to six rounds, and the
+    deterministic answer twice."""
+    case = _case([0, 4100, 33, 20000, 1100, 2000, 3000], h_kv=1, group=8)
     got = _decode(*case, splits)
     assert torch.count_nonzero(got[0]) == 0
     assert _rel(got, _reference(*case)) < 2e-2
     assert torch.equal(got, _decode(*case, splits))
+
+
+@pytest.mark.parametrize("splits", [1, 2, 8, 64])
+@pytest.mark.parametrize("lens,h_kv,group", [
+    ([0, 1, 33, 95, 1000, 4100], 2, 4),
+    ([128], 1, 4),
+    ([64, 96, 128, 160, 192, 4096, 8191], 1, 8),
+])
+def test_two_pages_a_step(splits, lens, h_kv, group):
+    """gfx950's walk at two pages a step (paged_cdna.pages_per_step): odd and even
+    page counts in a split, a last page the sequence does not fill, a one-token
+    sequence, a padded request, and the deterministic answer twice. It is held
+    to a page a step's error: a build whose scores were off by 2-4e-2 passed
+    the 2e-2 the other tests ask (paged_cdna's fence_qk)."""
+    if not paged._native_cdna():
+        pytest.skip("two pages a step is gfx950's walk")
+    case = _case(lens, h_kv=h_kv, group=group)
+    want = _reference(*case)
+    got = _decode(*case, splits, ppstep=2)
+    if lens[0] == 0:
+        assert torch.count_nonzero(got[0]) == 0
+    one = _rel(_decode(*case, splits), want)
+    assert _rel(got, want) < max(2 * one, 4e-3)
+    assert torch.equal(got, _decode(*case, splits, ppstep=2))
 
 
 def test_a_padded_request_reads_nothing_and_answers_zero():

@@ -428,12 +428,15 @@ combines. On gfx950, paged_cdna's (head_dim 64 or 128).
 ### `hk.ops.paged.fused_kernel`
 
 ```python
-hk.ops.paged.fused_kernel(head_dim: int, splits: int, ablate: tuple = (), defines: Optional[dict] = None)
+hk.ops.paged.fused_kernel(head_dim: int, splits: int, ablate: tuple = (), defines: Optional[dict] = None, ppstep: int = 1)
 ```
+
+*Changed after 0.8.0*: new parameter `ppstep`
 
 `defines` builds the walk with library knobs, for an A/B in one
 process (tools/hk-bench/paged_variants.py): HK_RDNA_XPOSE_WORDS=0 is the
-generic register transpose V took before the packed one.
+generic register transpose V took before the packed one. `ppstep`
+(gfx950) is the pages a step, `pages_per_step`'s choice.
 
 **Per architecture** ([audit](../dx/api-consistency.md)):
 

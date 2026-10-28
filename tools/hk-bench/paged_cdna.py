@@ -178,7 +178,8 @@ def decode_arms(lgs, q, want, hk_vars=(), only=None):
     qv = q.view(n, HKV, G, D)
     out_hk = torch.empty_like(qv)
     scratch = paged.fused_scratch(n * splits, HKV, D, q.device, group=G)
-    walk, merge = vb._op("walk", D, splits), (vb._op("merge", D, splits) if splits > 1 else None)
+    walk = vb._op("walk", D, splits, paged.pages_per_step(n, HKV))
+    merge = vb._op("merge", D, splits) if splits > 1 else None
     check("hk", lambda l: paged.decode(walk, merge, qv, lgs[l].k, lgs[l].v, lgs[l].table,
                                        lgs[l].lens, out_hk, scratch, splits),
           lambda: out_hk.view(n, HQ, D))
