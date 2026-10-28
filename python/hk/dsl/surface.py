@@ -75,8 +75,6 @@ ENTRIES: Dict[str, Entry] = {
     "Group.load(staged=)": Entry("merge", "B5", target="a staged hk.RowIndex", step="S3"),
     "Global.scatter(add=)": Entry("primitive", "B6", "atomic scatter-add, in no fixed order: not "
                                   "for a route that promises determinism"),
-    "Global.scatter_add_lds": Entry("delete", "B7", target="SharedTile.load + "
-                                    "Global.scatter(add=True)", step="S1"),
     # 2.3 strips, elements, lanes
     "hk.map_cpp": Entry("escape", "C1", "an intrinsic or instruction hk has no op for, or "
                         "another kernel's exact instruction sequence; not index arithmetic, "
@@ -97,8 +95,9 @@ ENTRIES: Dict[str, Entry] = {
     "hk.arch.agpr": Entry("experiment", "D3", "behind an option that is off by default; "
                           "deleted after 2026-10-31 12:00Z unless the task evaluating it adopts "
                           "it (dsl-surface.md §9, decision 6)"),
-    "Tile.make_causal": Entry("delete", "D5", target="Tile.tril_(0, v) / Tile.triu_(0, v)",
-                              step="S1"),
+    "Tile.make_causal": Entry("deprecated", "D5", target="Tile.tril_(0, v) / Tile.triu_(0, v)",
+                              step="0.10, or sooner once nothing outside the repository calls "
+                              "it"),
     "Kernel.with_defines": Entry("escape", "D6", "#define NAME value knobs and A/B variants; "
                                  "never overridden to splice or rewrite C++"),
     "Kernel.build_flags": Entry("escape", "D7", "tests and probes; not hk.ops kernels"),
@@ -159,9 +158,9 @@ _OP_KINDS: Dict[str, str] = {
     "load_mx_scales": "format", "mx_scales_copy": "merge", "mma_ABt_mx": "merge",
     "load_fp4_frags": "format", "load_fp4_frags_lds": "merge", "mx_quant_store": "merge",
     "fp4_operand": "merge", "fp8_operand": "merge", "mx_scales_loose": "merge",
-    "gather_prep": "merge", "scatter_add_lds": "delete", "map_cpp": "escape", "iota": "merge",
+    "gather_prep": "merge", "map_cpp": "escape", "iota": "merge",
     "mfma_strip": "merge", "rotate_half": "merge", "granules": "escape", "load_frag": "escape",
-    "store_frag": "escape", "make_causal": "delete", "make_causal_t": "delete",
+    "store_frag": "escape",
     "load_w4": "format",
 }
 OPS: Dict[str, str] = {**{op: "primitive" for op in """
@@ -215,7 +214,7 @@ strip_srsrc strip_tree strip_write stride warpid_uniform word
         "load_mx_scales": "format", "load_mx_scales_aiter": "format", "load_fp4_frags": "format",
         "load_w4": "format", "mma_ABt_mx": "merge", "load_fp4_frags_lds": "merge",
         "mx_quant_store": "merge", "fp4_operand": "merge", "fp8_operand": "merge",
-        "mx_scales_loose": "merge", "gather_prep": "merge", "scatter_add_lds": "delete",
+        "mx_scales_loose": "merge", "gather_prep": "merge",
         "map_cpp": "escape", "mfma_strip_f32_16x16x4": "merge", "rotate_half": "merge",
     },
     "include/hk/cdna_agpr.cuh": {n: "experiment" for n in """

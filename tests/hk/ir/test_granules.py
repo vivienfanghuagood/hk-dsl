@@ -156,7 +156,7 @@ def test_diagonal_fills_lower(op, cpp):
 
 
 def test_diagonal_fill_takes_a_runtime_diagonal():
-    """Unlike `make_causal_t`, which is the d == 0 case and is only enough
+    """Unlike the old `make_causal_t`, which was the d == 0 case and is only enough
     when every extent is 16-aligned."""
     def body(x: hk.Tensor[fp32]):
         t = hk.zeros(hk.RT(fp32, 16, 16, "col"))

@@ -9,6 +9,20 @@ The next version's notes collect here until it is released.
 What is on main after 0.8.0. `pip install hk-dsl` (0.8.0) does not have it;
 the API reference marks such names *New after 0.8.0*.
 
+**Removed: `Global.scatter_add_lds`; deprecated: `Tile.make_causal` (DSL-surface S1).**
+- `scatter_add_lds` had no user since K1 chose the deterministic sum (K1 c33). Its dialect op
+  and `kittens::scatter_add_lds` are gone. `SharedTile.load` + `Global.scatter(..., add=True)`
+  does the same; `scatter(add=True)` stays, held by its GPU test (`test_scatter_add.py`).
+- `Tile.make_causal(v)` is now `tril_(0, v)` on a copy, and `transposed=True` is `triu_(0, v)`.
+  The call warns (`DeprecationWarning`). The `hk.make_causal` / `hk.make_causal_t` dialect ops
+  are gone; no kernel used them.
+  - On RDNA the old ops were the same C++ as `tril(0)` / `triu(0)`.
+  - On gfx950 the old op only compiled as `make_causal` on fp32 tiles: there it matched
+    `tril_(0, v)` and torch bit for bit (col layout, 16 to 64 square). include/cdna4 has no
+    `make_causal_t` and no bf16 form, so the alias now covers more.
+- Every shipped kernel's generated source is byte-identical (`tools/surface/snapshot.py
+  sources`: gfx950 1145, gfx1100 1049, gfx1201 1049 kernels).
+
 **The surface registry (DSL-surface S0).** `python/hk/dsl/surface.py` registers every name of
 the language, every dialect op and every function in `include/hk/` with its kind (primitive,
 format, escape hatch, experiment, internal, merge / delete / deprecated). The IR tier

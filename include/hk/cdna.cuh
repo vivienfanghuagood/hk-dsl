@@ -2859,45 +2859,6 @@ __device__ inline static void store_scatter(const GL &dst, const RT &src, const 
     }
 }
 
-/**
- * scatter_add_lds: a warp's own bf16 LDS tile added into dst rows by index with gfx950's packed
- * bf16 atomic, lanes on consecutive column pairs of one row (LPR = cols / 2 lanes a row, 64 / LPR
- * rows a pass). The tile was written by this warp through inline-asm ds_writes the compiler does
- * not see, hence the lgkmcnt(0) first. TOPK > 0: AITER sort ids, the token's row of [M, ..].
- */
-template<int TOPK = 0, ducks::st::all ST, ducks::gl::all GL, ducks::gl::all IL>
-__device__ inline static void scatter_add_lds(const GL &dst, const ST &src, const IL &idx,
-                                              int at, int count, int col) {
-    static_assert(std::is_same_v<typename ST::dtype, bf16> && std::is_same_v<typename GL::dtype, bf16>,
-                  "a bf16 LDS tile into a bf16 global");
-    constexpr int LPR = ST::cols / 2, RPP = 64 / LPR;
-    static_assert(ST::cols % 2 == 0 && 64 % LPR == 0 && ST::rows % RPP == 0, "whole lane groups");
-    static_assert(ST::underlying_subtile_bytes_per_thread >= 4, "pairs inside a swizzle run");
-    typedef __bf16 hk_bf16x2 __attribute__((ext_vector_type(2)));
-    asm volatile("s_waitcnt lgkmcnt(0)" ::: "memory");
-    const char *base = reinterpret_cast<const char *>(&src.data[0]);
-    const int *ids = reinterpret_cast<const int *>(idx.raw_ptr);
-    const int nrows = int(dst.template shape<2>());
-    const uint64_t row_elems = uint64_t(dst.template stride<2>());
-    bf16 *out = reinterpret_cast<bf16 *>(dst.raw_ptr);
-    const int lane = laneid(), c = (lane % LPR) * 2;
-    #pragma unroll
-    for (int r0 = 0; r0 < ST::rows; r0 += RPP) {
-        const int r = r0 + lane / LPR, pos = at + r;
-        int g = pos < count ? ids[pos] : -1;
-        if constexpr (TOPK > 0) g = (g < 0 || (g & 0xFFFFFF) >= nrows) ? -1 : (g & 0xFFFFFF);
-        const int sub = (r / ST::underlying_subtile_rows) * ST::underlying_subtiles_per_row +
-                        c / ST::underlying_subtile_cols;
-        const uint32_t off = uint32_t(sub) * ST::underlying_subtile_bytes +
-                             ST::swizzle({r % ST::underlying_subtile_rows, c % ST::underlying_subtile_cols});
-        hk_bf16x2 v;
-        __builtin_memcpy(&v, base + off, 4);
-        if (g >= 0 && g < nrows)
-            __builtin_amdgcn_global_atomic_fadd_v2bf16(
-                (__attribute__((address_space(1))) hk_bf16x2 *)(out + uint64_t(g) * row_elems + col + c), v);
-    }
-}
-
 /* ------------------------------------------------------------------------
  * Random numbers: Triton's Philox, so a kernel and its Triton reference draw
  * the same numbers from the same seed and offsets (include/rdna3 random.cuh).
