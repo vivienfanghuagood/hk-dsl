@@ -264,12 +264,24 @@ struct LdsAllocPass : public mlir::hk::impl::HKLdsAllocBase<LdsAllocPass> {
     // result bounds every path. An allocation inside a runtime loop would
     // take new LDS every iteration: refused.
     bool bad = false;
+    // LDS phases (hk.lds.phase, top level only): the first marker ends the allocations every phase shares
+    // (`base`); each later one starts a phase at `base` again; the launch takes the largest phase's end
+    bool phased = false;
+    int64_t base = 0, phaseEnd = 0;
     std::function<void(Region &)> walk = [&](Region &r) {
       for (Block &blk : r)
         for (Operation &op : blk) {
           if (bad)
             return;
-          if (auto a = dyn_cast<AllocSharedOp>(op)) {
+          if (isa<LdsPhaseOp>(op)) {
+            if (!phased) {
+              phased = true;
+              base = offset;
+            } else {
+              phaseEnd = std::max(phaseEnd, offset);
+              offset = base;
+            }
+          } else if (auto a = dyn_cast<AllocSharedOp>(op)) {
             place(a, a.getResult().getType().getNumBytes());
           } else if (auto v = dyn_cast<AllocSharedVecOp>(op)) {
             place(v, v.getResult().getType().getNumBytes());
@@ -305,7 +317,7 @@ struct LdsAllocPass : public mlir::hk::impl::HKLdsAllocBase<LdsAllocPass> {
       if (isa<WgArriveOp, ArriveOp>(op))
         ++arrivals;
     });
-    f->setAttr(attrs::kLdsBytes, b.getI64IntegerAttr(offset));
+    f->setAttr(attrs::kLdsBytes, b.getI64IntegerAttr(std::max(offset, phaseEnd)));
     // kittens::wg_arrive and kittens::arrive declare one `__shared__ int` per
     // instantiation (counted per op: an upper bound);
     // 16 B is what the static segment rounds it to.
