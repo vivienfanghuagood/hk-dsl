@@ -19,6 +19,8 @@ instructions that order and schedule them.
 - [`hk.arch.setprio`](#hkarchsetprio)
 - [`hk.arch.vm_wait`](#hkarchvm_wait)
 - [`hk.arch.wg_arrive`](#hkarchwg_arrive)
+- [`hk.arch.mma_fence`](#hkarchmma_fence)
+- [`hk.arch.agpr`](#hkarchagpr)
 - [`hk.arch.target`](#hkarchtarget)
 
 ### `hk.arch.block_idx`
@@ -168,6 +170,38 @@ of a gfx950 (block ids equal modulo 8: workgroups are dealt to the XCDs
 round robin), so the stores before it need only reach the shared L2 --
 no device-wide fence, which writes back and invalidates the L2 under
 every other workgroup of the XCD. The caller guarantees the placement.
+
+### `hk.arch.mma_fence`
+
+```python
+hk.arch.mma_fence(on: bool = True) -> None
+```
+
+*New after 0.8.0*
+
+Whether hk-mma-fence guards this kernel (CDNA; on by default). The
+pass puts a scheduling fence between a matrix-core chain and the first
+other access to its accumulator: on gfx950 LLVM threaded accumulator
+reads through AGPR MFMA chains and computed wrong scores (docs: KernelWiki
+pitfalls/gfx950-agpr-mma-chain-interleave.md). Turning it off is for an
+A/B, not a fix.
+
+### `hk.arch.agpr`
+
+```python
+hk.arch.agpr(tile) -> None
+```
+
+*New after 0.8.0*
+
+Hold `tile`, an fp32 MMA accumulator just made by hk.zeros, in AGPRs
+(CDNA): every mma into it runs on the AGPRs (inline asm, C/D "+a"), every
+other access reads it into a VGPR copy after the MFMAs' wait states and
+writes it back (include/hk/cdna_agpr.cuh). Outputs are bitwise the VGPR
+form's. LLVM picks the VGPR form unless register pressure forces AGPRs,
+and an asm MFMA is one its scheduler cannot see: measured slower on
+attn_cdna (docs: KernelWiki pitfalls/gfx950-agpr-mma-chain-interleave.md),
+so the kernels that offer it keep it off by default.
 
 ### `hk.arch.target`
 

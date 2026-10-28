@@ -9,6 +9,33 @@ The next version's notes collect here until it is released.
 What is on main after 0.8.0. `pip install hk-dsl` (0.8.0) does not have it;
 the API reference marks such names *New after 0.8.0*.
 
+**CDNA: `hk-mma-fence`, a DSL rule for matrix-core accumulators; `hk.arch.agpr`
+to hold one in AGPRs.**
+- `hk-mma-fence`, a pass in the kernel pipeline, puts an `hk.sched_barrier`
+  between a matrix-core chain and the first other op that touches its
+  accumulator. On gfx950 LLVM threaded the softmax's reads of AGPR scores
+  through the two-page paged decode's MFMA chains and computed some scores
+  2-4e-2 wrong, differently from one build to the next; the ISA breaks none of
+  LLVM's own MFMA hazard windows. The decode's hand-written fence is gone; the
+  rule covers every CDNA kernel. `hk.arch.mma_fence(False)` turns it off for an
+  A/B (`attn_kernel(mma_fence=)`, `decode_kernel(fence_qk=)`).
+  - Where it lands: attention's prologue (its main loop fences its phases
+    already), the decode's per-step scores and epilogue, GEMM epilogues.
+  - Cost, measured in one process against main's code (MI355X): dense
+    attention 0.993-1.004x (8 shapes, outputs bitwise equal); paged decode
+    0.986-1.013x over 120 points, geometric mean 0.999x -- with one request on
+    1 kv head at 1k-4k tokens 1% slower, the per-step fence of the one-page
+    walk.
+- `hk.arch.agpr(tile)` holds an fp32 accumulator that `hk.zeros` just made in
+  AGPRs (CDNA): mmas into it are inline asm with C/D in AGPRs, other accesses
+  go through a VGPR copy after the MFMAs' wait states
+  (`include/hk/cdna_agpr.cuh`). Outputs are bitwise the VGPR form's.
+  `attn_kernel(acc="agpr")` puts attention's O there; it stays off by default:
+  0.93-0.95x on the 26 full-attention shapes where hk trails FlyDSL/CK, because
+  LLVM cannot schedule around an asm MFMA (AGPR placement itself measured
+  +1.5-2.4% like for like). LLVM 22's register split spills the d128 kernel;
+  the causal pairs walk (two O tiles) spills on either toolchain.
+
 **gfx950 paged decode: two pages a step, a cheaper merge, and no point
 slower than before the 512-split plan.** The previous entry's plan was up to
 13% slower than the one before it on short sequences (1-2k tokens); this one
