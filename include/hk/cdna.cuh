@@ -3210,6 +3210,13 @@ __device__ static inline void take_elems(D &dst, const GL &box, const I &idx, in
         asm volatile("" ::: "memory");   // re-issued every round
     }
 }
+/** @brief Two floats as a bf16 pair (a, b) in one int, both RNE in one v_cvt_pk_bf16_f32 (two scalar casts are
+ * one instruction each). For map_cpp expressions: `hk_pk_bf16(x0, x1)`. */
+__device__ inline int hk_pk_bf16(float a, float b) {
+    typedef float hk_f2 __attribute__((ext_vector_type(2)));
+    typedef __bf16 hk_b2 __attribute__((ext_vector_type(2)));
+    return __builtin_bit_cast(int, __builtin_convertvector((hk_f2){a, b}, hk_b2));
+}
 /** @brief (experiment) s_memrealtime as an ordered point: the memory clobber keeps loads and stores on their
  * side of it, so a timeline of these is in program order. The low 32 bits as a float's bits; x is unused. */
 __device__ inline float hk_stamp_now(int x) {
