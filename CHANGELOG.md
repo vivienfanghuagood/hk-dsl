@@ -9,6 +9,17 @@ The next version's notes collect here until it is released.
 What is on main after 0.8.0. `pip install hk-dsl` (0.8.0) does not have it;
 the API reference marks such names *New after 0.8.0*.
 
+**vLLM, DeepSeek-V4.1 under `--monokernel`: the index layers as one hk launch
+(`HK_VLLM_DSV41_INDEX`, on by default on gfx950).** Between dsv41_mono's two
+launches each index layer ran vLLM's 9-12-kernel chain (`mono_decode._select`).
+At decode steps of up to 8 rows, `hk.integration.vllm_dsv41_index` runs it as
+one resident launch, `hk.ops.dsv41_index`: compressor, compressed-cache insert,
+indexer K and Q, and, for rows of up to 12288 entries, the logits and the
+top-k. The caches, q and q_scale are vLLM's byte for byte and the top-k sets
+equal (docs/integration.md, "The DeepSeek-V4.1 index launch"). The route
+patches through an import hook, since the plugin must not import the model
+package, and its contract is read from the module's source.
+
 **CDNA: `hk-mma-fence`, a DSL rule for matrix-core accumulators; `hk.arch.agpr`
 to hold one in AGPRs.**
 - `hk-mma-fence`, a pass in the kernel pipeline, puts an `hk.sched_barrier`

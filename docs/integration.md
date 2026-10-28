@@ -46,6 +46,7 @@ and which rule decided.
 |---|---|---|---|
 | K2, MXFP8 linear (DeepSeek-V4.1), M >= 2048 (indexer wq_b >= 2825, engram wkv >= 1024: `MIN_M_NK`), and measured M ranges below that (`RANGES`) | `HK_VLLM_MXFP8` | **on, gfx950** | bit-identical to vLLM's kernel; real weights, GSM8K 94.69% vs stock 94.24-94.39%, with K1 ARC 96.76% vs 96.93-97.10% (McNemar p >= 0.175; [serving readiness](design/serving-readiness.md) B1) |
 | K1, MoE a8w4 (DeepSeek-V4.1), M >= 2560 (`MIN_M`) | `HK_VLLM_MOE_A8W4` | **on, gfx950** | error vs fp32 3.5-6.3e-3 against AITER's 0.97-2.1e-2 on real layers; GSM8K 94.92% (B1) |
+| DeepSeek-V4.1 index layers under `--monokernel`: one launch for the compressor, indexer K / Q, logits and top-k, at decode steps of up to 8 rows | `HK_VLLM_DSV41_INDEX` | **on, gfx950** | caches and q byte-identical to vLLM's chain in vLLM, top-k sets equal ([the index launch](#the-deepseek-v41-index-launch)); TPOT and GSM8K: SCORECARD |
 | AWQ 4-bit linear | `HK_VLLM_INT4` | **on, gfx1100, gfx950 and gfx1201** | greedy tokens identical to stock's, Qwen3-8B/14B-AWQ ([22](history/22-int4.md), [42](history/42-mi355x-in-the-engine.md)); on gfx1201 Qwen3-8B-AWQ, decode 2.5-4.5x ([50](history/50-gfx1201-in-vllm.md)) |
 | unquantized linear (+ tuning at load) | `HK_VLLM_GEMM` | **on, gfx1100 and gfx1201** | tokens identical, or a bf16 near-tie ([35](history/35-any-model.md)); on gfx1201 tokens identical and routing counts equal round for round, Qwen3-1.7B and Qwen3.5-9B ([50](history/50-gfx1201-in-vllm.md)); with gfx1201's shipped small-M schedules, requests 1.08-1.11x stock at 32-128 on Qwen3.5-9B ([51](history/51-gfx1201-small-m-gemm.md)); on gfx950 it was measured to change nothing against aiter ([42](history/42-mi355x-in-the-engine.md)), so it stays off there |
 | bf16 MoE GEMMs | `HK_VLLM_MOE` | **on, gfx1100 and gfx1201** | OLMoE tokens identical ([21](history/21-moe.md)); with aiter on gfx950 it routes nothing; on gfx1201 up to 2 tokens a step only, OLMoE tokens identical and decode 1.10-1.12x at 1 request, 1.06-1.07x at 2 ([52](history/52-gfx1201-moe-at-the-roofline.md)) |
@@ -129,6 +130,7 @@ first compile in each process prints one line:
 | AWQ linear layers | `vllm_int4.py` | `AutoAWQLinearMethod.process_weights_after_loading` and `.apply` | `HK_VLLM_INT4` (on) |
 | MXFP8 linear layers (K2) | `vllm_mxfp8.py` | `RocmDotScaledMxfp8LinearKernel.process_weights_after_loading` and `.apply_weights` | `HK_VLLM_MXFP8` (on, gfx950) |
 | MXFP4 MoE, a8w4 (K1) | `vllm_moe_a8w4.py` | `aiter.fused_moe.fused_moe`, with its signature | `HK_VLLM_MOE_A8W4` (on, gfx950) |
+| DeepSeek-V4.1 index layers, `--monokernel` | `vllm_dsv41_index.py` | `mono_decode._select`, through an import hook | `HK_VLLM_DSV41_INDEX` (on, gfx950) |
 | your kernels | `register.py` | whatever `register.patch` names | `HK_VLLM_USER=<modules or files>` |
 | SGLang linear layers | `sglang.py`, `_sglang_plugin.py` | `UnquantizedLinearMethod.apply` | `HK_SGLANG_LINEAR` (on, gfx1100); `apply_linear()` in-process |
 | SGLang MoE layers | `sglang_moe.py`, `_sglang_plugin.py` | `topk_softmax`, `invoke_fused_moe_kernel` and `try_get_optimal_moe_config`, rebound by identity | `HK_SGLANG_MOE` (on, gfx1100), or `=topk` for the routing alone |
@@ -168,6 +170,8 @@ vllm serve allenai/OLMoE-1B-7B-0125-Instruct
 # K1 and K2: on by default on gfx950 (warm their kernels first)
 HK_CACHE_DIR=/cache/hk python3 -m hk.integration warm-routes --tp 2
 HK_CACHE_DIR=/cache/hk vllm serve <DeepSeek-V4.1-Flash> --tensor-parallel-size 2
+# ... and with dsv41_mono, the index launch too
+HK_CACHE_DIR=/cache/hk vllm serve <DeepSeek-V4.1-Flash> --tensor-parallel-size 2 --monokernel
 
 # the decoder attention backend (opt-in), with vLLM's defaults: CUDA graphs,
 # prefix caching and chunked prefill all on
@@ -527,6 +531,71 @@ call, so it uses the compile-cache root `hk-int4`
 VLLM_USE_TRITON_AWQ=1 HK_PATCH_VLLM=1 HK_VLLM_INT4=1 \
     vllm serve Qwen/Qwen3-8B-AWQ --dtype float16
 ```
+
+## The DeepSeek-V4.1 index launch
+
+With `--monokernel`, vLLM runs a DeepSeek-V4.1 decode step's backbone layer
+as dsv41_mono's two persistent launches. Between them, each index layer (a
+compressor and the sparse-attention indexer) runs vLLM's own chain,
+`mono_decode._select`: 9-12 kernels. They are the compressor's projection,
+ring, RMSNorm and compressed-cache insert, the indexer's K store, qr's MXFP8
+quant and the wq_b GEMM, weights_proj, the Q RoPE / MXFP4 quant, then the
+logits and the top-k. `hk/integration/vllm_dsv41_index.py` replaces that
+function with one resident launch, `hk.ops.dsv41_index`, at decode steps of up
+to 8 rows:
+- **The whole chain, top-k included**, while a row fits the launch
+  (the indexer's `max_model_len` up to `WIDTH_MAX`, 12288) and the indexer's
+  candidate list holds every 8-token block of a row. That second condition
+  holds while `max_model_len` is at most 16384 tokens. Then the candidate
+  source's block top-k keeps every block, and the consumers' pool is the
+  whole row, so both reduce to the dense selection.
+- **Past that, up to the logits' inputs**: vLLM's indexer op takes the
+  launch's q, q_scale and head weights.
+- **Anything else runs vLLM's `_select` unchanged**: more rows, a DSpark draft
+  layer, a layer whose shapes or metadata the launch does not know.
+
+The launch's mailbox tags come from mono's runner epoch, which every K1 moves,
+so steps and layers never read each other's values, CUDA-graph replays
+included.
+
+The route patches a module vLLM imports late, with the model. The plugin
+therefore installs an import hook rather than importing the model package
+itself, which would cost every process seconds. The contract is read from the
+module's source (`contract._vllm_dsv41_index`), and the signature is checked
+again when the hook patches it.
+
+What holds it, on vLLM e68efc685 (MI355X):
+- **The captures.** On steps captured from a real-weight TP2 run (~3.5K-token
+  prompts) at every layer kind, the launch was compared with vLLM's chain
+  replayed on the same rows. The kinds are a dense source at ratio 2, the
+  candidate source at ratio 1, and the consumers. The ring, the
+  compressed-cache records, the indexer K cache, q and q_scale are byte for
+  byte vLLM's. The head weights are exact. The top-512 sets and the source's
+  candidate blocks equal the replay's on 8 of 8 rows.
+- **In vLLM.** `HK_DSV41_INDEX_CHECK=N` runs vLLM's chain after the launch
+  on the first N eager calls of each layer, then prints what differs. On all 8
+  index layers the caches, q and q_scale are byte-identical. The top-k sets
+  are equal at M=1; at M=8 they overlap at least 0.994, because vLLM's
+  weights_proj GEMM rounds a few head weights one bf16 ulp differently.
+- **The tests.** `tests/hk/gpu/test_vllm_dsv41_index.py` (the gfx950 vLLM
+  tier) builds synthetic layers of each kind and checks the same bytes against
+  vLLM's own kernels, at 1 and 8 rows and at max_model_len 16640's widths.
+  One difference shows up there that the captures never hit. The launch sums
+  the compressor's projection over its K split in a fixed order, not
+  torch.mm's, so the ring's fp32 rows agree within about 1e-7. Now and then a
+  latent element then rounds to the neighbouring bf16, which moves one value
+  of a compressed-cache record by one code (1 byte in 8 records at 8000-token
+  rows).
+
+```bash
+vllm serve <DeepSeek-V4.1-Flash> --monokernel --tensor-parallel-size 2 ...   # on by default on gfx950
+HK_VLLM_DSV41_INDEX=0 vllm serve ...                    # mono's own chain
+HK_DSV41_INDEX_TOPK=0 vllm serve ...                    # the launch without the logits / top-k
+HK_DSV41_INDEX_CHECK=3 vllm serve ... --enforce-eager   # the in-place check
+```
+
+The counters are `vllm_dsv41_index.STATS` (`hk`, `stock`); the layers that
+stay on vLLM's chain, and why, are in `STOCK_LAYERS`.
 
 ## The engine layer: `Op`, `Patch`, `RouteTable`
 
@@ -1011,6 +1080,9 @@ spelled:
 | `HK_VLLM_MXFP8` | `_vllm_plugin.py` | K2: block-scaled MXFP8 linear layers at M >= 2048, two shapes from their own M (`vllm_mxfp8.MIN_M_NK`), six with measured M ranges below that (`vllm_mxfp8.RANGES`) (default on, gfx950) |
 | `HK_MXFP8_ANY` | `vllm_mxfp8.py` | `1`: K2 takes any (N, K) of whole tiles, not only the measured TP2 shapes (default off) |
 | `HK_VLLM_MOE_A8W4` | `_vllm_plugin.py` | K1: AITER a8w4 MoE at M >= `HK_MOE_A8W4_MIN_M` (2560) (default on, gfx950) |
+| `HK_VLLM_DSV41_INDEX` | `_vllm_plugin.py` | DeepSeek-V4.1's index layers under `--monokernel` as one hk launch at decode steps of up to 8 rows (default on, gfx950) |
+| `HK_DSV41_INDEX_TOPK` | `vllm_dsv41_index.py` | `0`: the index launch stops at the logits' inputs; vLLM's indexer op does the logits and top-k (default on) |
+| `HK_DSV41_INDEX_CHECK` | `vllm_dsv41_index.py` | `N`: on the first N eager calls of each index layer, run vLLM's chain after the launch and print what differs (default 0) |
 | `HK_VLLM_USER` | `_vllm_plugin.py` | comma-separated modules or `.py` files to import in vLLM's process: your `register.op` / `register.patch` calls |
 | `HK_VLLM_ROUTES` | `vllm_gemm.py`, via `engine.shipped_table` | a routing table to use instead of the shipped one and this machine's records; nothing is measured at load against it |
 | `HK_AUTOTUNE_BUDGET` | `vllm_autotune.py` | seconds the linear patch may spend at load measuring the model's shapes no table has (default 60); `0` measures nothing, `inf` without a limit |

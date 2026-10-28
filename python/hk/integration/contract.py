@@ -22,6 +22,7 @@ and add the call-site and numeric checks that are too slow for engine startup.
 from __future__ import annotations
 
 import inspect
+import os
 import sys
 from typing import Callable, Dict, Iterable, List, Optional
 
@@ -180,6 +181,35 @@ def _vllm_backend() -> List[str]:
                       f"vLLM's AttentionBackendEnum has no {slot}"))
 
 
+def _vllm_dsv41_index() -> Optional[List[str]]:
+    if not _gfx950():
+        return None
+    import ast  # noqa: PLC0415
+
+    from . import vllm_dsv41_index as PI  # noqa: PLC0415
+
+    path = PI.source_path()
+    if path is None:
+        return None                 # no DeepSeek-V4.1 mono path: the route reports it and stays out
+    # Read, not imported: importing the model package costs every process seconds, and vLLM
+    # imports it later anyway (the route patches it then, and checks the signature again).
+    with open(path) as f:
+        tree = ast.parse(f.read())
+    fns = {n.name: n for n in tree.body if isinstance(n, ast.FunctionDef)}
+    sel = fns.get(PI.TARGET)
+    args = [a.arg for a in sel.args.args] if sel is not None else None
+    lay = path.replace(os.path.join("models", "deepseek_v41", "amd", "mono_decode.py"),
+                       os.path.join("v1", "attention", "ops", "rocm_paged_mxfp4_indexer.py"))
+    has_layout = False
+    if os.path.isfile(lay):
+        with open(lay) as f:
+            has_layout = "def rocm_paged_mxfp4_cache_layout" in f.read()
+    return (_expect(args == names(PI._select), f"{PI.MODULE}.{PI.TARGET} takes {args}, the "
+                                                 f"stand-in {names(PI._select)}")
+            + _expect("_mono_runner" in fns, f"{PI.MODULE} has no _mono_runner")
+            + _expect(has_layout, "vLLM has no rocm_paged_mxfp4_cache_layout"))
+
+
 # -- SGLang -----------------------------------------------------------------------------------
 
 
@@ -254,7 +284,7 @@ def _sgld_convrot() -> List[str]:
 CHECKS: Dict[str, Callable[[], Optional[List[str]]]] = {
     "vllm_mxfp8": _vllm_mxfp8, "vllm_moe_a8w4": _vllm_moe_a8w4, "vllm_int4": _vllm_int4,
     "vllm_gemm": _vllm_gemm, "vllm_moe": _vllm_moe, "vllm_sdpa": _vllm_sdpa,
-    "vllm_backend": _vllm_backend,
+    "vllm_backend": _vllm_backend, "vllm_dsv41_index": _vllm_dsv41_index,
     "sglang_linear": _sglang_linear, "sglang_moe": _sglang_moe,
     "sgld_attn": _sgld_attn, "sgld_linear": _sgld_linear, "sgld_convrot": _sgld_convrot,
 }
