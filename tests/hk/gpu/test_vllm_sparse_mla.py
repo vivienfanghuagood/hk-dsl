@@ -138,8 +138,9 @@ def test_the_plugin_applies_it_only_when_asked(monkeypatch):
         monkeypatch.delenv(e, raising=False)
     rocm = __import__("vllm.models.deepseek_v41.amd.rocm", fromlist=["x"])
     try:
-        for e in ("HK_VLLM_MXFP8", "HK_VLLM_MOE_A8W4", "HK_VLLM_INT4"):
-            monkeypatch.setenv(e, "0")
+        for r in switches.routes("vllm"):          # every other route off: nothing else to revert
+            if r.name != "vllm_sparse_mla":
+                monkeypatch.setenv(r.env, "0")
         _vllm_plugin.register()
         assert rocm.rocm_sparse_attn_prefill is ops.rocm_sparse_attn_prefill      # default off
         monkeypatch.setenv("HK_VLLM_SPARSE_MLA", "1")
