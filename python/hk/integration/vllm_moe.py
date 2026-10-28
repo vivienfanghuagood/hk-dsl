@@ -30,6 +30,23 @@ PREFIXES = ("vllm",)
 #: config stands. Measured by tools/hk-bench/moe_ab.py.
 BLOCK16_MAX_TOKENS = 256
 
+#: An arch's own limit, past which the call stays vLLM's. gfx1201's is 2 tokens,
+#: where vLLM skips the sort (tokens * top_k * 4 <= experts) and gives each
+#: (token, choice) pair a block of its own: there hk's GEMM streams the few chosen
+#: experts faster than Triton's (OLMoE decode at one request 1.12x, Gate C in the
+#: R9700 vLLM image). With the sort, a model's real routing puts several tokens
+#: on each chosen expert and hk's 16-row blocks lose (decode 0.96x at 4 requests,
+#: 0.83x at 8), though tools/hk-bench/moe_ab.py's uniform routing has hk ahead to
+#: 8 tokens; from 16 both kernels stream at ~96% of GDDR6.
+BLOCK16_MAX_TOKENS_AT = {"gfx1201": 2}
+
+
+def block16_max() -> int:
+    """This arch's token limit for hk's MoE GEMM (BLOCK16_MAX_TOKENS_AT)."""
+    from ..target import current_arch  # noqa: PLC0415
+
+    return BLOCK16_MAX_TOKENS_AT.get(current_arch(), BLOCK16_MAX_TOKENS)
+
 _ORIG: Optional[Callable] = None
 _ORIG_CONFIG: Optional[Callable] = None
 
@@ -58,7 +75,9 @@ def invoke_fused_moe_triton_kernel(A, B, C, A_scale, B_scale, topk_weights,
     # 16-row blocks only: the batches `try_get_optimal_moe_config` below
     # sent to 16 rows. At vLLM's 64- and 128-row blocks the GEMM loses.
     bm = config.get("BLOCK_SIZE_M", 0)
-    if (bm == 16 and A.is_cuda
+    # C is (tokens, top_k, N) for both GEMMs of the layer.
+    tokens = C.shape[0] if C.dim() == 3 else A.shape[0]
+    if (bm == 16 and A.is_cuda and tokens <= block16_max()
             and _plain(A_scale, B_scale, B_bias, block_shape, use_fp8_w8a8,
                        use_int8_w8a8, use_int8_w8a16, use_int4_w4a16)
             and moe.takes(A, B, bm)):
@@ -86,7 +105,7 @@ def try_get_optimal_moe_config(w1_shape, w2_shape, top_k, dtype, M,
     config = _ORIG_CONFIG(w1_shape, w2_shape, top_k, dtype, M, block_shape)
     from ..ops import moe  # noqa: PLC0415
 
-    if (dtype is None and block_shape is None and M <= BLOCK16_MAX_TOKENS
+    if (dtype is None and block_shape is None and M <= block16_max()
             and moe.schedule_for(16, w1_shape[2]) is not None
             and moe.schedule_for(16, w2_shape[2]) is not None):
         config = dict(config, BLOCK_SIZE_M=16)
@@ -112,7 +131,7 @@ def apply() -> str:
     cfg = _common.rebind(PREFIXES, _ORIG_CONFIG, try_get_optimal_moe_config)
     return (f"moe -> hk where hk.ops.moe takes the GEMM ({len(names)} kernel and "
             f"{len(cfg)} config bindings rebound; 16-row blocks up to "
-            f"{BLOCK16_MAX_TOKENS} tokens)")
+            f"{block16_max()} tokens)")
 
 
 def revert() -> str:

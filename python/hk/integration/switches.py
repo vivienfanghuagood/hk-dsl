@@ -82,10 +82,12 @@ ROUTES: Dict[str, Route] = {r.name: r for r in (
        "gfx1201: greedy tokens identical to stock's, routing counts equal round for round, "
        "Qwen3-1.7B and Qwen3.5-9B in the R9700 vLLM image; prefill 1.12-1.16x (history 50). "
        "gfx950: measured to change nothing against aiter (history 42), so it stays off there"),
-    _R("vllm_moe", "vllm", "HK_VLLM_MOE", True, ("gfx1100",),
+    _R("vllm_moe", "vllm", "HK_VLLM_MOE", True, ("gfx1100", "gfx1201"),
        "bf16 MoE GEMMs (Triton's fused_moe kernel)",
-       "gfx1100: OLMoE greedy tokens identical to stock's (history 21). gfx950 with aiter: "
-       "it routes nothing"),
+       "gfx1100: OLMoE greedy tokens identical to stock's (history 21). gfx1201: up to 2 "
+       "tokens a step only (vllm_moe.BLOCK16_MAX_TOKENS_AT); OLMoE tokens identical, counts "
+       "equal round for round, decode 1.10-1.12x at 1 request and 1.06-1.07x at 2, a tie at 4 "
+       "(history 52). gfx950 with aiter: it routes nothing"),
     _R("vllm_sdpa", "vllm", "HK_VLLM_SDPA", True, ("gfx1100",),
        "the vision encoder's F.scaled_dot_product_attention (with --mm-encoder-attn-backend "
        "TORCH_SDPA)",
