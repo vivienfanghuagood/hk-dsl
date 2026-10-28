@@ -47,8 +47,9 @@ run plus lane l ^ 32's: `group_max(32, xor=(32,))`.
 launches each index layer ran vLLM's 9-12-kernel chain (`mono_decode._select`).
 At decode steps of up to 8 rows, `hk.integration.vllm_dsv41_index` runs it as
 one resident launch, `hk.ops.dsv41_index`: compressor, compressed-cache insert,
-indexer K and Q, and, for rows of up to 12288 entries, the logits and the
-top-k. The caches, q and q_scale are vLLM's byte for byte and the top-k sets
+indexer K and Q, and, for rows of up to 16640 entries, the logits and the
+top-k -- the candidate source's block top-k and the consumers' candidate mask
+included. The caches, q and q_scale are vLLM's byte for byte and the top-k sets
 equal (docs/integration.md, "The DeepSeek-V4.1 index launch"). The route
 patches through an import hook, since the plugin must not import the model
 package, and its contract is read from the module's source.

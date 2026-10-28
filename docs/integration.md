@@ -543,12 +543,14 @@ quant and the wq_b GEMM, weights_proj, the Q RoPE / MXFP4 quant, then the
 logits and the top-k. `hk/integration/vllm_dsv41_index.py` replaces that
 function with one resident launch, `hk.ops.dsv41_index`, at decode steps of up
 to 8 rows:
-- **The whole chain, top-k included**, while a row fits the launch
-  (the indexer's `max_model_len` up to `WIDTH_MAX`, 12288) and the indexer's
-  candidate list holds every 8-token block of a row. That second condition
-  holds while `max_model_len` is at most 16384 tokens. Then the candidate
-  source's block top-k keeps every block, and the consumers' pool is the
-  whole row, so both reduce to the dense selection.
+- **The whole chain, top-k included**, while a row fits the launch (the
+  indexer's `max_model_len` up to `WIDTH_MAX`, 16640: its keys in LDS). While
+  a row's 8-token blocks fit the indexer's candidate list (2048 of them, 16384
+  tokens), the candidate source's block top-k keeps every block and the
+  consumers' pool is the whole row, so both reduce to the dense selection.
+  Past that the launch does the source's block top-k itself (the top 2048
+  block maxima, `select_row` on the block keys), and a consumer selects among
+  the source's candidate blocks only.
 - **Past that, up to the logits' inputs**: vLLM's indexer op takes the
   launch's q, q_scale and head weights.
 - **Anything else runs vLLM's `_select` unchanged**: more rows, a DSpark draft
@@ -609,9 +611,9 @@ this one, and the prefill-sized K1 / K2 routes.
 | GSM8K-1319, greedy | 94.84% | 94.43% | 94.54% | |
 
 Every delta is outside both arms' round-to-round spread. The prefill gain comes from the K1 / K2 routes; the
-decode gain from the index launch. At max_model_len 16640 the dense index layers keep their logits and top-k
-in the launch; the candidate source and consumers use vLLM's indexer op, since their rows' 2080 blocks do not
-fit its 2048 candidates. GSM8K agrees with stock's run-to-run noise (McNemar p 0.20-1.00; stock against
+decode gain from the index launch. In this run (#115) the candidate source and consumers still used vLLM's
+indexer op at max_model_len 16640, as their rows' 2080 blocks did not fit its 2048 candidates; the launch has
+done their block top-k and mask itself since. GSM8K agrees with stock's run-to-run noise (McNemar p 0.20-1.00; stock against
 itself, p 0.64).
 
 The counters are `vllm_dsv41_index.STATS` (`hk`, `stock`); the layers that

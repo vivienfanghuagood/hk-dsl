@@ -8,8 +8,8 @@ and compressed-cache insert, the indexer's K store, qr's MXFP8 quant and wq_b GE
 weights_proj, the Q RoPE / MXFP4 quant, then the logits and the top-k. The route replaces that
 function: a decode step of at most `hk.ops.dsv41_index.ROWS` rows runs the whole chain as one
 resident launch (`hk.ops.dsv41_index`), the logits and top-k included while the model length
-fits the launch (`WIDTH_MAX`) and the indexer's candidate list holds every block of a row; past
-that, vLLM's indexer op runs on the launch's q, q_scale and weights. Anything else -- more rows,
+fits the launch (`WIDTH_MAX`) -- the candidate source's block top-k and the consumers' candidate
+mask too; past that, vLLM's indexer op runs on the launch's q, q_scale and weights. Anything else -- more rows,
 a DSpark draft layer, a layer whose shapes or metadata the launch does not know -- runs vLLM's
 `_select` unchanged. The launch's mailbox tags come from mono's own epoch (the runner's), which
 moves with every K1, so steps and layers never read each other's values; CUDA-graph replays
@@ -166,10 +166,11 @@ def _make_plan(layer) -> Optional[dict]:
     cbs = int(getattr(op, "candidate_block_size", 0) or 0)
     # the candidate source / consumers: while a row's blocks fit the candidate list, the source's
     # block top-k keeps every block and the consumers' pool is the whole row -- both reduce to the
-    # dense selection (the source also writes its candidates: every block, in order)
-    fits = cb is not None and cbs > 0 and -(-p["width"] // cbs) <= cb.shape[1]
+    # dense selection (the source also writes its candidates: every block, in order); past it the
+    # launch does the source's block top-k and the consumers' mask itself
     p["cand"] = int(bool(getattr(op, "candidate_write", False)))
-    p["sel"] = int(TOPK and (cb is None or fits) and p["width"] <= X.WIDTH_MAX
+    p["cons"] = int(cb is not None and not p["cand"])
+    p["sel"] = int(TOPK and (cb is None or cbs == X.CBLOCK) and p["width"] <= X.WIDTH_MAX
                    and ind.topk_tokens == X.TOPK)
     p["cb"] = cb
     lay = RI.rocm_paged_mxfp4_cache_layout(ind.n_head, ind.head_dim, p["kblk"])
@@ -219,9 +220,10 @@ def _launch(module, layer, positions, normed, qr, p):
                and lens.shape[0] == m and tk.dtype == torch.int32 and tk.is_contiguous()
                and tk.shape[1] == X.TOPK)
     cand, bends = b["i32_0"], b["i32_0"]
-    if sel and p["cand"]:
+    if sel and (p["cand"] or p["cons"]):
         cand, bends = p["cb"], mk.decode_block_ends
-        sel = cand.dtype == torch.int32 and cand.is_contiguous() and bends.dtype == torch.int32
+        sel = (cand.dtype == torch.int32 and cand.is_contiguous() and bends is not None
+               and bends.dtype == torch.int32)
     if not sel:
         bt, lens, tk, cand, bends = (b["i32_0"],) * 5
     _kernel(p["wscale"])(
@@ -230,7 +232,8 @@ def _launch(module, layer, positions, normed, qr, p):
         comp_v.view(torch.float8_e4m3fn), comp_v.view(torch.bfloat16), comp_v.view(torch.int8), kidx.view(torch.int8),
         p["cs_a"], p["cs_i"], p["normw"], p["wk"], p["knw"], b["q4"].view(torch.int8), b["q4s"].view(torch.int8),
         b["wts"], b["q4"].view(torch.int32), kidx.view(torch.int32), bt, lens, tk, cand, bends,
-        SEL=int(sel), CAND=(p["cand"] if sel else 0), NCAND=(cand.shape[1] if sel and p["cand"] else 2048),
+        SEL=int(sel), CAND=(p["cand"] if sel else 0), CONS=(p["cons"] if sel else 0),
+        NCAND=(cand.shape[1] if sel and (p["cand"] or p["cons"]) else 2048),
         WIDTH=(X.width(p["width"]) if sel else 4096), BTW=(bt.shape[1] if sel else 64),
         RATIO=p["ratio"], MC=m, HASKV=p["haskv"], CBLK=cblk, KBLK=p["kblk"], NPT=p["npt"], DPT=p["dpt"],
         SL=p["sl"])

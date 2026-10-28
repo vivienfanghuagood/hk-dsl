@@ -16,9 +16,9 @@ from hk.runtime import compile as hc  # noqa: E402
 
 VARIANTS = {
     "dense": dict(RATIO=2, HASKV=1, MC=8, SEL=1, WIDTH=4096),
-    "dense_wide": dict(RATIO=2, HASKV=1, MC=8, SEL=1, WIDTH=12288),   # the widest row it takes
-    "source": dict(RATIO=1, HASKV=1, MC=8, SEL=1, CAND=1, WIDTH=8192),
-    "consumer": dict(RATIO=1, HASKV=0, MC=1, SEL=1, WIDTH=8192),
+    "dense_wide": dict(RATIO=2, HASKV=1, MC=8, SEL=1, WIDTH=8448),    # max_model_len 16640's
+    "source": dict(RATIO=1, HASKV=1, MC=8, SEL=1, CAND=1, WIDTH=16640),  # the widest row it takes
+    "consumer": dict(RATIO=1, HASKV=0, MC=1, SEL=1, CONS=1, WIDTH=16640),
     "no_select": dict(RATIO=2, HASKV=1, MC=4, SEL=0),
 }
 
