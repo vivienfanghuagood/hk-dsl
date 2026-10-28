@@ -9,6 +9,14 @@ The next version's notes collect here until it is released.
 What is on main after 0.8.0. `pip install hk-dsl` (0.8.0) does not have it;
 the API reference marks such names *New after 0.8.0*.
 
+**CONTRIBUTING.md: new kernels add no kernel-specific C++ helpers or one-off DSL ops.**
+- A needed exception goes through review with a written reason and is registered as an escape
+  hatch with a usage boundary. The file also has a reviewer checklist.
+- [docs/design/dsl-surface.md](docs/design/dsl-surface.md), a design for review, inventories
+  every kernel-specific op and helper and classifies each: 17 to merge, 28 to keep, 2 to delete.
+  It names the six general abstractions the merges fold into and gives a migration in which every
+  kernel stays bit-identical and no kernel gets slower. No code changes yet.
+
 **gfx950: an LDS tile narrower than its read's layout was never copied.** A
 tile with fewer rows or columns than the include/cdna4 st shape its read's
 fragment picks -- a 32x16 bf16 tile read as the 32x16 row operand of the

@@ -117,5 +117,6 @@ nav:
       - Serving readiness: design/serving-readiness.md
       - hk.comm (XCDs and GPUs): design/comm.md
       - Workgroup placement: design/placement-pass.md
+      - "The DSL surface (design for review)": design/dsl-surface.md
       - Cross-architecture API audit: dx/api-consistency.md
   - Development record: history/README.md

@@ -86,6 +86,7 @@ Coding agents: start from [llms.txt](../llms.txt) and the
 | [Serving readiness](design/serving-readiness.md) | what 0.6 lacked before hk went on by default in an LLM deployment (0.7.0): DSL capabilities and kernel validation apart, with evidence, cost and priority, and the minimum deployable set |
 | [hk.comm](design/comm.md) | hand-offs between gfx950's XCDs and between GPUs: why the scope is the tensor's, the lowering a litmus suite found correct, what it measured, the roadmap |
 | [Workgroup placement](design/placement-pass.md) | which XCD runs which workgroup, as a pass: the analysis, the rewrite, the `"auto"` policy and the measurements behind it |
+| [The DSL surface](design/dsl-surface.md) | design for review: every kernel-specific op and C++ helper inventoried and classified (merge / keep / delete), the general abstractions they fold into, a bit-identical migration, and the rule for new kernels ([CONTRIBUTING.md](../CONTRIBUTING.md)) |
 | [Development record](history/README.md) | the chronological record, chapter by chapter, negative results included |
 
 In these pages, a path under `<workspace>/` is in the maintainers' working
