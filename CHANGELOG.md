@@ -18,6 +18,10 @@ the API reference marks such names *New after 0.8.0*.
   deprecated shims (DeprecationWarning), removed once nothing outside the repository calls them.
 - `hk.MxScales` and `hk.Scaled` are exported and documented. K1, K2, gemm_cdna's MX mode and the
   DeepSeek-V4.1 index front (`dsv41_index`) use the new spellings. Every shipped kernel's generated source is byte-identical.
+- Migrating a call with inline loads in its arguments: bind them to locals in the old argument
+  order first (`hk.mma_ABt_mx` evaluated a, b, acc, sa, sb; `hk.mma` with `.scaled` evaluates a,
+  sa, b, sb, acc), or the loads issue in another order and the kernel changes.
+  `tools/surface/migrate.py` rewrites call sites and does this; [docs/migrating.md](docs/migrating.md).
 
 **Removed: `Global.scatter_add_lds`; deprecated: `Tile.make_causal` (DSL-surface S1).**
 - `scatter_add_lds` had no user since K1 chose the deterministic sum (K1 c33). Its dialect op

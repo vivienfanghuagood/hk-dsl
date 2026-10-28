@@ -577,6 +577,29 @@ form:
 | S11 | D1: RDNA3 `as_operand(k_order="even_odd")`; attn_k3 drops `PairPKernel` | none (internal to attn_k3) | V1 on gfx1100 (the same C++ body); V2 on a W7900D if the ISA differs | S0 |
 | S13 | Upstream E2, E3 and E5 into the HipKittens fork; delete hk's copies when the submodule moves | none | V1 | S12 |
 
+### 5.1 The order trap: a migration must not move an op
+
+*Added after S2's review.* A kernel is its trace, and the trace is the order the DSL emits ops in,
+which is Python's evaluation order. A new spelling that takes its arguments in another order than
+the old one can therefore change the kernel even though each op is the same. G5 is such a case:
+`hk.mma_ABt_mx(a, b, acc, sa, sb)` evaluates `a, b, acc, sa, sb`, and
+`hk.mma("mma_ABt", a.scaled(sa), b.scaled(sb), acc)` evaluates `a, sa, b, sb, acc`. With names as
+arguments nothing moves. With inline loads (the decode MoE's shared-down step loads the weights,
+x and both scales inside the call), an in-place rewrite issues weights, their scales, x, its
+scales instead of weights, x, then the scales: different generated source, and on gfx950 a
+different load issue order, which is performance. `copy_mx_scales(dst, src)` →
+`src.copy(into=dst)` has the same shape.
+
+**The rule.** When a migration reorders arguments, the arguments that emit ops are bound to locals
+in the old order first, and the new spelling takes the locals. `tools/surface/migrate.py` does
+this, only where the relative order would move, and reports a call nested in a larger expression
+(which it cannot reorder alone) for a person. The shims need nothing: an old-spelling call still
+evaluates its arguments in the old order. V0 is still the check -- generated C++ byte-identical
+before and after -- and `tests/hk/ir/test_surface_migrate.py` holds the rewriter to it on a
+kernel with inline loads in every argument, with the trace's load order compared too. The user's
+side of this is [Migrating](../migrating.md). Later steps that change an argument order (S9's
+`hk.mma` form, S10's composition) follow the same rule.
+
 ## 6. Impact on shipped kernels
 
 Every row must come out **bit-identical and not slower**. §7 says how each tier proves it.

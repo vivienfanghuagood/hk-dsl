@@ -593,9 +593,9 @@ def test_the_select_ops_emit_their_cdna_calls_and_check_their_strips():
 
     def wide(a: hk.Tensor[hk.i32], o: hk.Tensor[hk.fp32]):
         t = hk.fp4_operand(a.load_elems(hk.iota(hk.RS(hk.i32, 1, 512, 8)), runs=True))
-        o.at[0, 0].store(hk.mma("mma_ABt", t.scaled(hk.mx_scales_loose(hk.iota(L)), fmt="fp4"),
-                                t.scaled(hk.mx_scales_loose(hk.iota(L)), fmt="fp4"),
-                                hk.zeros(hk.RT(hk.fp32, 16, 16, "col"))))
+        acc = hk.zeros(hk.RT(hk.fp32, 16, 16, "col"))     # (mma_ABt_mx's argument order)
+        sa, sb = hk.mx_scales_loose(hk.iota(L)), hk.mx_scales_loose(hk.iota(L))
+        o.at[0, 0].store(hk.mma("mma_ABt", t.scaled(sa, fmt="fp4"), t.scaled(sb, fmt="fp4"), acc))
     with pytest.raises(TypeError, match="1 x 256, run 4"):
         _src950(wide)
 
