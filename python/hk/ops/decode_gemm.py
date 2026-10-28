@@ -184,6 +184,22 @@ SCHEDULES: Dict[int, Dict[str, int]] = {
     4: dict(slices=2, warps=8, combine_depth=4, resident=0, splits=1),
 }
 
+#: An arch's own, where SCHEDULES' does not build there. gfx1201's four-tile
+#: kernel at combine_depth 4 spills under the TheRock ROCm 7.14 compiler the
+#: R9700 vLLM image ships (264 VGPRs, 21 spilled), and at depth 0 under
+#: ROCm 7.2.3's (9 spilled); depth 2 builds under both. On the R9700, bf16,
+#: W rotated past the cache, us (tools/rdna4-probes/dec_t4.py; the fastest
+#: point that built, then this one):
+#:
+#:                      ROCm 7.2.3         ROCm 7.14
+#:     33x6144x4096     --                 93.0 / 97.6
+#:     64x6144x4096     95.7 / 96.8        93.0 / 93.0
+#:     33x4096x12288    199.8 / 227.9      173.4 / 210.6
+#:     64x4096x12288    210.1 / 210.1      192.6 / 197.0
+SCHEDULES_AT: Dict[str, Dict[int, Dict[str, int]]] = {
+    "gfx1201": {4: dict(slices=2, warps=8, combine_depth=2, resident=0, splits=1)},
+}
+
 #: The widest batch, in 16-row token tiles. Every tile is another X operand
 #: and another accumulator per wave, so the registers run out before the
 #: bandwidth does.
@@ -207,7 +223,7 @@ def schedule_for(m: int, k: int) -> Optional[Dict[str, Any]]:
     if not 0 < m <= 16 * MAX_TOKENS:
         return None
     tokens = tokens_for(m)
-    s = dict(SCHEDULES[tokens], tokens=tokens)
+    s = dict(SCHEDULES_AT.get(current_arch(), {}).get(tokens, SCHEDULES[tokens]), tokens=tokens)
     while k % (16 * s["slices"] * s["warps"]) and s["warps"] > 1:
         s["warps"] //= 2
     if k % (16 * s["slices"] * s["warps"]):

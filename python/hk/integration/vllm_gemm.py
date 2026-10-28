@@ -33,6 +33,8 @@ that, at 1.93-2.03x hipBLASLt per step at M <= 32.
 On gfx950 the candidate is a third path, "hipkittens": HipKittens' own CDNA4
 GEMM (`ops.hipkittens`), which takes M and N in multiples of 256. Its table,
 routes_vllm_linear_gfx950.json, is measured the same way, against F.linear.
+gfx1201's, routes_vllm_linear_gfx1201.json, is gfx1100's two paths measured
+in the Radeon AI PRO R9700 vLLM image against its rocm_unquantized_gemm.
 
 A table may also name kernels hk does not ship: FlyDSL's GEMM
 (`flydsl_gemm`), where FlyDSL is installed and measured faster. Those rows

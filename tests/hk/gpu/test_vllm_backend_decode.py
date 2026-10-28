@@ -27,6 +27,13 @@ def test_the_cache_write_lands_head_major_and_skips_padding():
     must leave the cache untouched."""
     from vllm import _custom_ops as ops
 
+    # Newer vLLM registers its cache ops from _C_stable_libtorch, which its
+    # ROCm platform module imports -- an engine has; a bare _custom_ops does not.
+    import contextlib
+    import importlib
+    with contextlib.suppress(ImportError):
+        importlib.import_module("vllm._C_stable_libtorch")
+
     g = torch.Generator(device="cuda").manual_seed(1)
     nb, hkv, d, n = 64, 8, 128, 300
     key = torch.randn(n, hkv, d, device="cuda", dtype=torch.bfloat16, generator=g)

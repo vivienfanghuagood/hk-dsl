@@ -46,10 +46,10 @@ and which rule decided.
 |---|---|---|---|
 | K2, MXFP8 linear (DeepSeek-V4.1), M >= 2048 (indexer wq_b >= 2825, engram wkv >= 1024: `MIN_M_NK`), and measured M ranges below that (`RANGES`) | `HK_VLLM_MXFP8` | **on, gfx950** | bit-identical to vLLM's kernel; real weights, GSM8K 94.69% vs stock 94.24-94.39%, with K1 ARC 96.76% vs 96.93-97.10% (McNemar p >= 0.175; [serving readiness](design/serving-readiness.md) B1) |
 | K1, MoE a8w4 (DeepSeek-V4.1), M >= 2560 (`MIN_M`) | `HK_VLLM_MOE_A8W4` | **on, gfx950** | error vs fp32 3.5-6.3e-3 against AITER's 0.97-2.1e-2 on real layers; GSM8K 94.92% (B1) |
-| AWQ 4-bit linear | `HK_VLLM_INT4` | **on, gfx1100 and gfx950** | greedy tokens identical to stock's, Qwen3-8B/14B-AWQ ([22](history/22-int4.md), [42](history/42-mi355x-in-the-engine.md)) |
-| unquantized linear (+ tuning at load) | `HK_VLLM_GEMM` | **on, gfx1100** | tokens identical, or a bf16 near-tie ([35](history/35-any-model.md)); on gfx950 it was measured to change nothing against aiter ([42](history/42-mi355x-in-the-engine.md)), so it stays off there |
-| bf16 MoE GEMMs | `HK_VLLM_MOE` | **on, gfx1100** | OLMoE tokens identical ([21](history/21-moe.md)); with aiter on gfx950 it routes nothing |
-| encoder SDPA (`--mm-encoder-attn-backend TORCH_SDPA`) | `HK_VLLM_SDPA` | **on, gfx1100** | InternVL2-2B inside the spread of vLLM's own backends ([05](history/05-phase-6-torch-ops.md)) |
+| AWQ 4-bit linear | `HK_VLLM_INT4` | **on, gfx1100, gfx950 and gfx1201** | greedy tokens identical to stock's, Qwen3-8B/14B-AWQ ([22](history/22-int4.md), [42](history/42-mi355x-in-the-engine.md)); on gfx1201 Qwen3-8B-AWQ, decode 2.5-4.5x ([50](history/50-gfx1201-in-vllm.md)) |
+| unquantized linear (+ tuning at load) | `HK_VLLM_GEMM` | **on, gfx1100 and gfx1201** | tokens identical, or a bf16 near-tie ([35](history/35-any-model.md)); on gfx1201 tokens identical and routing counts equal round for round, Qwen3-1.7B and Qwen3.5-9B ([50](history/50-gfx1201-in-vllm.md)); on gfx950 it was measured to change nothing against aiter ([42](history/42-mi355x-in-the-engine.md)), so it stays off there |
+| bf16 MoE GEMMs | `HK_VLLM_MOE` | **on, gfx1100** | OLMoE tokens identical ([21](history/21-moe.md)); with aiter on gfx950 it routes nothing; on gfx1201 tokens identical but decode at 16 tokens 0.90-0.93x ([50](history/50-gfx1201-in-vllm.md)), so it stays off there |
+| encoder SDPA (`--mm-encoder-attn-backend TORCH_SDPA`) | `HK_VLLM_SDPA` | **on, gfx1100** | InternVL2-2B inside the spread of vLLM's own backends ([05](history/05-phase-6-torch-ops.md)); on gfx1201 the kernel is 1.10-1.40x the R9700 image's torch SDPA at ViT shapes but the drop-in's per-call Python makes the call 0.57-0.88x, so it stays off there ([50](history/50-gfx1201-in-vllm.md)) |
 | SGLang linear | `HK_SGLANG_LINEAR` | **on, gfx1100** | Qwen3-8B up to a bf16 near-tie; error equal to F.linear's ([24](history/24-sglang.md)) |
 | SGLang MoE (and the gfx1100 top-k fix) | `HK_SGLANG_MOE` | **on, gfx1100** | OLMoE tokens identical ([25](history/25-sglang-moe.md)) |
 | SGLang-Diffusion attention | `HK_SGLD_ATTN` | **on, gfx1100** | Qwen-Image 2.1, 42.1 dB from stock and closer to an fp32 reference than stock ([46](history/46-qwen-image-on-rdna3.md)) |
@@ -124,7 +124,7 @@ first compile in each process prints one line:
 |---|---|---|---|
 | SDPA drop-in | `vllm.py`, `sglang.py`, `_common.py` | `F.scaled_dot_product_attention`, rebound by identity | `HK_VLLM_SDPA` (on, gfx1100); `apply()` in-process |
 | decoder attention backend | `vllm_backend.py` | vLLM's `TRITON_ATTN` backend slot | `HK_VLLM_BACKEND=1` (off) |
-| linear layers | `vllm_gemm.py` | `dispatch_unquantized_gemm`, rebound by identity | `HK_VLLM_GEMM` (on, gfx1100) |
+| linear layers | `vllm_gemm.py` | `dispatch_unquantized_gemm`, rebound by identity | `HK_VLLM_GEMM` (on, gfx1100 and gfx1201) |
 | MoE GEMMs | `vllm_moe.py` | `invoke_fused_moe_triton_kernel` and `try_get_optimal_moe_config`, rebound by identity | `HK_VLLM_MOE` (on, gfx1100) |
 | AWQ linear layers | `vllm_int4.py` | `AutoAWQLinearMethod.process_weights_after_loading` and `.apply` | `HK_VLLM_INT4` (on) |
 | MXFP8 linear layers (K2) | `vllm_mxfp8.py` | `RocmDotScaledMxfp8LinearKernel.process_weights_after_loading` and `.apply_weights` | `HK_VLLM_MXFP8` (on, gfx950) |
@@ -377,7 +377,7 @@ vLLM 0.31 runs those skinny GEMMs on gfx11 too, at M ≤ 5. The routing table
 is measured against whichever path the installed vLLM takes
 ([vLLM 0.31](history/20-vllm-031.md)).
 `hk/integration/vllm_gemm.py` installs the replacement, on its own switch
-(`HK_VLLM_GEMM`, on by default on gfx1100). It rebinds `dispatch_unquantized_gemm` by
+(`HK_VLLM_GEMM`, on by default on gfx1100 and gfx1201). It rebinds `dispatch_unquantized_gemm` by
 identity in every vLLM module that imported it, and what that returns calls a
 single opaque custom op, `hk_vllm::linear`, with a fake implementation. Under
 vLLM's torch.compile the token count is symbolic, so branching on it inside
@@ -1001,7 +1001,7 @@ spelled:
 | `HK_VLLM_SDPA` | `switches.py` | the encoder SDPA patch (default on, gfx1100) |
 | `HK_VLLM_BACKEND` | `_vllm_plugin.py` | register the decoder attention backend (default off); a value other than `1`/`on`/`yes`/`true` names the slot |
 | `HK_VLLM_BACKEND_SLOT` | `vllm_backend.py` | the `AttentionBackendEnum` member to register over (default `TRITON_ATTN`) |
-| `HK_VLLM_GEMM` | `_vllm_plugin.py` | route the unquantized linear layers (default on, gfx1100) |
+| `HK_VLLM_GEMM` | `_vllm_plugin.py` | route the unquantized linear layers (default on, gfx1100 and gfx1201) |
 | `HK_VLLM_MOE` | `_vllm_plugin.py` | route the bf16 MoE GEMMs up to 256 tokens a step (default on, gfx1100) |
 | `HK_VLLM_INT4` | `_vllm_plugin.py` | route AWQ linear layers' fp16/bf16 batches up to 64 tokens (default on) |
 | `HK_VLLM_MXFP8` | `_vllm_plugin.py` | K2: block-scaled MXFP8 linear layers at M >= 2048, two shapes from their own M (`vllm_mxfp8.MIN_M_NK`), six with measured M ranges below that (`vllm_mxfp8.RANGES`) (default on, gfx950) |
