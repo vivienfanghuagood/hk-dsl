@@ -23,6 +23,8 @@ torch = pytest.importorskip("torch")
 from hk.integration import engine, vllm_gemm  # noqa: E402
 from hk.ops import hipkittens as hkk  # noqa: E402
 
+import _attn_ref  # noqa: E402
+
 
 def _arch():
     try:
@@ -204,16 +206,17 @@ def _qkv(b, n, h, h_kv, d, seed=0):
             torch.randn(b, n, h_kv, d, device="cuda", dtype=torch.bfloat16, generator=g))
 
 
-def _attn_ref(q, k, v, causal):
+def _gqa_ref(q, k, v, causal):
+    """(out, lse) in float64, out as float32: (B, N, H, D) operands."""
     b, n, h, d = q.shape
     g = h // k.shape[2]
-    qf = q.float().transpose(1, 2)
-    kf = k.float().transpose(1, 2).repeat_interleave(g, dim=1)
-    vf = v.float().transpose(1, 2).repeat_interleave(g, dim=1)
+    qf = q.double().transpose(1, 2)
+    kf = k.double().transpose(1, 2).repeat_interleave(g, dim=1)
+    vf = v.double().transpose(1, 2).repeat_interleave(g, dim=1)
     s = qf @ kf.transpose(-1, -2) / math.sqrt(d)
     if causal:
         s = s.masked_fill(torch.ones(n, n, device="cuda", dtype=torch.bool).triu(1), float("-inf"))
-    return (torch.softmax(s, -1) @ vf).transpose(1, 2), torch.logsumexp(s, -1)
+    return (torch.softmax(s, -1) @ vf).transpose(1, 2).float(), torch.logsumexp(s, -1)
 
 
 @pytest.mark.parametrize("causal", [False, True])
@@ -223,10 +226,11 @@ def test_gqa_is_softmax_qk_v(b, n, h, h_kv, d, causal):
     _gqa_or_skip(h, h_kv, n, d, causal)
     q, k, v = _qkv(b, n, h, h_kv, d)
     o, lse = hkk.gqa_fwd(q, k, v, causal=causal, return_lse=True)
-    want_o, want_lse = _attn_ref(q, k, v, causal)
+    want_o, want_lse = _gqa_ref(q, k, v, causal)
     assert o.shape == q.shape and lse.shape == (b, h, n)
-    assert rel(o, want_o) < TOL
-    assert (lse - want_lse).abs().max().item() < TOL
+    _attn_ref.check(o, want_o)
+    # the log-sum-exp is fp32 from bf16 scores: at most 3.4e-3 off on gfx950
+    assert (lse.double() - want_lse).abs().max().item() < 1e-2
     assert torch.equal(o, hkk.gqa_fwd(q, k, v, causal=causal))
 
 
@@ -235,7 +239,7 @@ def test_gqa_one_build_serves_every_batch():
     n_builds = len(hkk._MODULES)
     for b in (1, 5):
         q, k, v = _qkv(b, 256, 8, 2, 128, seed=b)
-        assert rel(hkk.gqa_fwd(q, k, v), _attn_ref(q, k, v, False)[0]) < TOL
+        _attn_ref.check(hkk.gqa_fwd(q, k, v), _gqa_ref(q, k, v, False)[0])
     assert len(hkk._MODULES) == n_builds
 
 
@@ -244,7 +248,7 @@ def test_gqa_op_falls_back_where_the_kernel_cannot_go():
     before = dict(hkk.GQA_OP.stats)
     o = torch.ops.hk_cdna.gqa_fwd(q, k, v, True)
     assert hkk.GQA_OP.stats["fallback"] == before["fallback"] + 1
-    assert rel(o, _attn_ref(q, k, v, True)[0]) < TOL
+    _attn_ref.check(o, _gqa_ref(q, k, v, True)[0])
 
 
 def test_gqa_op_takes_the_kernel_and_replays_from_a_cuda_graph():
@@ -259,4 +263,4 @@ def test_gqa_op_takes_the_kernel_and_replays_from_a_cuda_graph():
     q.copy_(_qkv(2, 512, 16, 2, 128, seed=3)[0])
     graph.replay()
     torch.cuda.synchronize()
-    assert rel(o, _attn_ref(q, k, v, True)[0]) < TOL
+    _attn_ref.check(o, _gqa_ref(q, k, v, True)[0])

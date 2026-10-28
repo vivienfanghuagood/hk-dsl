@@ -12,6 +12,8 @@ import hk  # noqa: E402
 import hk.schedules as S  # noqa: E402
 from hk.target import current_arch  # noqa: E402
 
+import _attn_ref  # noqa: E402
+
 pytestmark = pytest.mark.gpu
 
 ARCH = current_arch()
@@ -82,10 +84,9 @@ def test_attention_schedules_launch_right(d, causal):
     g = torch.Generator(device="cuda").manual_seed(d + causal)
     q, k, v = (torch.randn(1, 8, n, d, device="cuda", dtype=torch.bfloat16, generator=g)
                for _ in range(3))
-    ref = torch.nn.functional.scaled_dot_product_attention(
-        q.float(), k.float(), v.float(), is_causal=causal)
+    ref = _attn_ref.attention64(q, k, v, causal=causal)
     base = S.lookup_attention(n, d, causal)
     pts = list(S.space_attention(n, d, causal=causal, around=base))[:4]
     for s in pts:
         got = s.launch(q, k, v, causal=causal)
-        assert (got.float() - ref).abs().max().item() < 2e-2 * ref.abs().max().item() + 1e-2, s
+        _attn_ref.check(got, ref)

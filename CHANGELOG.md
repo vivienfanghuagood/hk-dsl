@@ -15,8 +15,11 @@ to hold one in AGPRs.**
   between a matrix-core chain and the first other op that touches its
   accumulator. On gfx950 LLVM threaded the softmax's reads of AGPR scores
   through the two-page paged decode's MFMA chains and computed some scores
-  2-4e-2 wrong, differently from one build to the next; the ISA breaks none of
-  LLVM's own MFMA hazard windows. The decode's hand-written fence is gone; the
+  2-4e-2 wrong, differently from one build to the next: one of those reads
+  sat a branch after its MFMA, and LLVM's hazard recognizer, measuring the
+  longer path into that block, padded 2 wait states where 8 are needed
+  (fixed in LLVM by llvm/llvm-project#225989; ROCm 7.2.3 to 10.1 do not have
+  it, ROCm/llvm-project#5153). The decode's hand-written fence is gone; the
   rule covers every CDNA kernel. `hk.arch.mma_fence(False)` turns it off for an
   A/B (`attn_kernel(mma_fence=)`, `decode_kernel(fence_qk=)`).
   - Where it lands: attention's prologue (its main loop fences its phases
@@ -35,6 +38,22 @@ to hold one in AGPRs.**
   LLVM cannot schedule around an asm MFMA (AGPR placement itself measured
   +1.5-2.4% like for like). LLVM 22's register split spills the d128 kernel;
   the causal pairs walk (two O tiles) spills on either toolchain.
+
+**Attention tests hold the kernels to their own error.** Every attention
+test (test_attn, test_sdpa, test_paged, test_paged_fused, test_paged_prefill,
+test_attn_k3, test_hipkittens' GQA, test_schedules' attention,
+test_vllm_backend_decode, test_fenced's attention cases) compares against
+attention in float64 (`tests/hk/gpu/_attn_ref.py`) instead of torch's fp32
+SDPA, which moved by more than the kernel's error from run to run on ROCm,
+through one check, `_attn_ref.check`:
+- every output row within 4 bf16 ulps of that row's largest value (worst
+  measured: 2.31 on gfx950, CI and vLLM images; 1.32 on gfx1100);
+- and 1e-2 of the whole output's largest value (worst 7.1e-3 / 5.3e-3),
+  where the tests asked 2e-2 to 5e-2.
+The gfx950 decode that computed some scores wrong (ROCm/llvm-project#5153)
+was 16-30 ulps off in its worst row and passed the old bounds. The value
+caches of the paged tests now come from the test's own generator, so a case
+sees the same data in any order.
 
 **gfx950 paged decode: two pages a step, a cheaper merge, and no point
 slower than before the 512-split plan.** The previous entry's plan was up to
