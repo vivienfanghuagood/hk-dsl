@@ -12,6 +12,8 @@ kicked out and the train rebuilt without it.
     merge_train.py build   [--name train/...] [--prs N,M] [--off-window] [--rebuild] [--workflows ci,gpu]
     merge_train.py status  [--wait]                             runs, jobs; on red the suspects
     merge_train.py kick N  [--reason TEXT]                      drop #N, rebuild, rerun
+    merge_train.py readmit N...                                 READY again for PRs kicked only for an
+                                                                append-only file (CHANGELOG.md)
     merge_train.py bisect                                       one step of a bisection over prefixes
     merge_train.py retry                                        rerun the failed jobs (a flake)
     merge_train.py merge   --i-am-the-merger [--admin-bypass]   squash-merge in order, check trees
@@ -36,14 +38,17 @@ MERGE_TRAIN_GIT_NAME / MERGE_TRAIN_GIT_EMAIL (author of the train's commits). Ne
 """
 import argparse
 import datetime as dt
+import difflib
 import fcntl
 import io
 import json
 import os
 import re
 import shlex
+import shutil
 import subprocess
 import sys
+import tempfile
 import time
 import urllib.parse
 import zipfile
@@ -54,8 +59,15 @@ PRUNE_CMD = os.environ.get('MERGE_TRAIN_PRUNE', '')          # cleanup runs it (
 PRUNE_YES_CMD = os.environ.get('MERGE_TRAIN_PRUNE_YES', '')  # cleanup --prune-yes runs this instead
 GIT_NAME = os.environ.get('MERGE_TRAIN_GIT_NAME', 'merge-train')
 GIT_EMAIL = os.environ.get('MERGE_TRAIN_GIT_EMAIL', 'merge-train@localhost')
+# Other users' processes on the CI GPUs (they do not take our locks): a gpu-guard command (`check --gpus`,
+# `occupied-during --gpus --since [--until]`) and the GPUs gpu.yml's gfx950 jobs run on. Unset: no checks.
+GPU_GUARD = os.environ.get('MERGE_TRAIN_GPU_GUARD', '')
+GPU_GUARD_GPUS = os.environ.get('MERGE_TRAIN_GPU_GUARD_GPUS', '3,4')
 
 MAIN = 'main'
+# Append-only entry files: a conflict confined to them is resolved by union while stacking (and the
+# PR's branch is brought to that tree before it merges). ':'-separated.
+UNION_FILES = [f for f in os.environ.get('MERGE_TRAIN_UNION_FILES', 'CHANGELOG.md').split(':') if f]
 WINDOWS = ((1, 0), (13, 0))          # UTC
 WINDOW_GRACE = dt.timedelta(hours=3)  # a build this long after a window still belongs to it
 WORKFLOWS = {'ci': 'ci.yml', 'gpu': 'gpu.yml'}
@@ -71,6 +83,18 @@ HEX = re.compile(r'(?<![0-9a-zA-Z])[0-9a-f]{7,40}(?![0-9a-zA-Z])')
 
 class Fail(Exception):
     pass
+
+
+def gpu_guard(*args):
+    """(rc, one line) of `GPU_GUARD <args> --gpus GPU_GUARD_GPUS`, or None when there is no guard."""
+    if not GPU_GUARD:
+        return None
+    try:
+        p = subprocess.run([*shlex.split(GPU_GUARD), *args, '--gpus', GPU_GUARD_GPUS],
+                           capture_output=True, text=True, timeout=600)
+    except Exception as err:
+        return 3, f"gpu-guard failed: {err}"
+    return p.returncode, (p.stdout.strip().splitlines() or [''])[-1]
 
 
 # --------------------------------------------------------------------------------------------
@@ -197,20 +221,225 @@ def changed_files(base, head):
     return set(filter(None, git('diff', '--name-only', base, head).splitlines()))
 
 
+def blob(rev_, path):
+    r = sh(['git', '-C', repo_dir(), 'cat-file', 'blob', f'{rev_}:{path}'], check=False, binary=True, quiet=True)
+    return r.stdout if r.returncode == 0 else None
+
+
 def squash_tree(onto, head, main_sha):
     """The tree GitHub's squash merge of `head` gives when main's tree is `onto`'s: a three-way
     merge on merge-base(main, head). Squash commits are never ancestors of a PR head, so that base
     does not change as earlier PRs merge (checked against the repo's merged PRs: all reproduce).
-    Returns (tree, None) or (None, [conflicting paths])."""
+    A conflict confined to the append-only files (UNION_FILES) is resolved by union and validated.
+    Returns (tree, conflicts, unioned, why): tree None on a conflict (paths in conflicts, and why
+    when a union was tried and failed); unioned lists the files a union resolved."""
     base = git('merge-base', main_sha, head)
     r = sh(['git', '-C', repo_dir(), 'merge-tree', '--write-tree', '--name-only', '--no-messages',
             f'--merge-base={base}', onto, head], check=False)
     lines = r.stdout.strip().splitlines()
     if r.returncode == 0:
-        return lines[0], None
-    if r.returncode == 1:
-        return None, lines[1:] or ['?']
-    raise Fail(f"git merge-tree failed: {r.stderr.strip()}")
+        return lines[0], None, [], None
+    if r.returncode != 1:
+        raise Fail(f"git merge-tree failed: {r.stderr.strip()}")
+    files = lines[1:] or ['?']
+    if not set(files) <= set(UNION_FILES):
+        return None, files, [], None
+    t, why = union_tree(lines[0], base, onto, head, files)
+    if t is None:
+        return None, files, [], why
+    return t, None, files, None
+
+
+def union_tree(marked_tree, base, onto, head, files):
+    """marked_tree (merge-tree's, with conflict markers) with each of `files` replaced by the union
+    of its three versions (git merge-file --union), if that passes validate_union.
+    -> (tree, None) or (None, why)."""
+    tmp = tempfile.mkdtemp(prefix='merge-train-')
+    try:
+        idx = os.path.join(tmp, 'index')
+        env = {'GIT_INDEX_FILE': idx}
+        sh(['git', '-C', repo_dir(), 'read-tree', marked_tree], env=env)
+        for f in files:
+            o, b, t = blob(onto, f), blob(base, f) or b'', blob(head, f)
+            if o is None or t is None:
+                return None, f"{f} is deleted on one side: not a union"
+            paths = []
+            for nm, data in (('ours', o), ('base', b), ('theirs', t)):
+                paths.append(os.path.join(tmp, nm))
+                with open(paths[-1], 'wb') as fh:
+                    fh.write(data)
+            marked = sh(['git', 'merge-file', '-p', '--diff3', f'--marker-size={MARKS}', *paths], check=False,
+                        binary=True).stdout
+            dec = lambda x: x.decode('utf-8', errors='replace')
+            res = union_hunks(dec(marked)).encode('utf-8')
+            problems = validate_union(dec(o), dec(b), dec(t), dec(res))
+            if problems:
+                return None, f"the union of {f} is not clean: {'; '.join(problems[:3])}"
+            mode = git('ls-tree', marked_tree, '--', f).split()[0]
+            h = sh(['git', '-C', repo_dir(), 'hash-object', '-w', '--stdin'], input=res, binary=True).stdout.decode().strip()
+            sh(['git', '-C', repo_dir(), 'update-index', '--cacheinfo', f'{mode},{h},{f}'], env=env)
+        return sh(['git', '-C', repo_dir(), 'write-tree'], env=env).stdout.strip(), None
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+MARKS = 31   # conflict markers this long cannot be a changelog's own text
+
+
+def _join(ours, theirs):
+    """ours' lines then theirs', with a blank line between when theirs starts a new block (not a list
+    item or an indented continuation) right after a non-blank line of ours: two paragraphs added at
+    one place stay two paragraphs, two list items stay one list."""
+    if ours and theirs and ours[-1].strip() and theirs[0].strip() and not re.match(r'\s|[-*+] |\d+[.)] ', theirs[0]):
+        ours = ours + ['\n']
+    if ours and not ours[-1].endswith('\n'):
+        ours = ours[:-1] + [ours[-1] + '\n']
+    return ours + theirs
+
+
+def merge3_union(base, ours, theirs):
+    """A three-way merge of line lists where both sides' edits survive: edits that do not overlap
+    are applied as a merge would; where they overlap (or both insert at one place) the result is
+    ours' version of that stretch, then theirs' (identical versions once)."""
+    def edits(side):
+        sm = difflib.SequenceMatcher(None, base, side, autojunk=False)
+        return [(i1, i2, side[j1:j2]) for tag, i1, i2, j1, j2 in sm.get_opcodes() if tag != 'equal']
+    ev = sorted([(i1, i2, rep, 'o') for i1, i2, rep in edits(ours)] +
+                [(i1, i2, rep, 't') for i1, i2, rep in edits(theirs)], key=lambda e: (e[0], e[1]))
+
+    def overlap(a, b):
+        return (a[0] < b[1] and b[0] < a[1]) or (a[0] == a[1] == b[0] == b[1])
+    clusters = []
+    for e in ev:
+        if clusters and any(overlap(e, x) for x in clusters[-1]):
+            clusters[-1].append(e)
+        else:
+            clusters.append([e])
+
+    def apply(lo, hi, es):
+        out, i = [], lo
+        for i1, i2, rep, _ in sorted(es, key=lambda e: (e[0], e[1])):
+            out += base[i:i1] + rep
+            i = i2
+        return out + base[i:hi]
+    out, i = [], 0
+    for cl in clusters:
+        lo, hi = min(e[0] for e in cl), max(e[1] for e in cl)
+        out += base[i:lo]
+        o = apply(lo, hi, [e for e in cl if e[3] == 'o'])
+        t = apply(lo, hi, [e for e in cl if e[3] == 't'])
+        sides = {e[3] for e in cl}
+        out += o if sides == {'o'} else t if sides == {'t'} else o if o == t else _join(o, t)
+        i = hi
+    return out + base[i:]
+
+
+def union_hunks(marked):
+    """Resolve every conflict hunk of `git merge-file -p --diff3 --marker-size=MARKS` output with
+    merge3_union over its three parts; the rest is the merge's."""
+    out, part, parts = [], None, {}
+    for ln in marked.splitlines(keepends=True):
+        if ln.startswith('<' * MARKS):
+            part, parts = 'o', {'o': [], 'b': [], 't': []}
+        elif part and ln.startswith('|' * MARKS):
+            part = 'b'
+        elif part and ln.startswith('=' * MARKS):
+            part = 't'
+        elif part and ln.startswith('>' * MARKS):
+            for k in parts:
+                if parts[k] and not parts[k][-1].endswith('\n'):
+                    parts[k][-1] += '\n'
+            out += merge3_union(parts['b'], parts['o'], parts['t'])
+            part = None
+        elif part:
+            parts[part].append(ln)
+        else:
+            out.append(ln)
+    if part:
+        raise Fail("unterminated conflict hunk in merge-file output")
+    return ''.join(out)
+
+
+MARKER = re.compile(r'^(<{7}|>{7}|\|{7})( |$)|^={7}$')
+VERSION_HDR = re.compile(r'^## ')
+SUBSECTION = re.compile(r'^(#{3,6} .+|\*\*[^*].*\*\*:?)\s*$')   # a heading, or a bold line alone
+
+
+def _significant(line):
+    s_ = line.strip()
+    return len(s_) >= 12 or bool(SUBSECTION.match(s_)) or s_.startswith('#')
+
+
+def _sections(lines):
+    """[(line, the version section it is in)], the section being the last `## ` header above."""
+    sec, out = None, []
+    for ln in lines:
+        if VERSION_HDR.match(ln):
+            sec = ln.strip()
+        out.append((ln, sec))
+    return out
+
+
+def _added(base_lines, side_lines):
+    """Indices in side_lines of the lines side added to base."""
+    sm = difflib.SequenceMatcher(None, base_lines, side_lines, autojunk=False)
+    return [j for tag, _, _, j1, j2 in sm.get_opcodes() if tag in ('insert', 'replace') for j in range(j1, j2)]
+
+
+def validate_union(ours, base, theirs, result):
+    """What is wrong with `result`, the union of an append-only file's three versions (a changelog):
+    conflict markers; an entry both sides added, now twice; a version section (`## X`) created,
+    lost or duplicated (the sections are authoritative: they must be the sections of the side that
+    changed them, or of both); a subsection heading twice in one version section; an added entry
+    that ended up in another version section than the one its side put it in. [] = clean."""
+    O, B, T, R = (x.splitlines() for x in (ours, base, theirs, result))
+    problems = []
+    for ln in R:
+        if MARKER.match(ln) and ln not in O and ln not in T:
+            problems.append(f"conflict marker {ln[:10]!r}")
+            break
+    hdr = lambda xs: [x.strip() for x in xs if VERSION_HDR.match(x)]
+    if hdr(T) == hdr(B) or hdr(O) == hdr(T):
+        want = hdr(O)
+    elif hdr(O) == hdr(B):
+        want = hdr(T)
+    else:
+        want = None
+        problems.append("both sides changed the version sections")
+    if want is not None and hdr(R) != want:
+        problems.append(f"version sections {hdr(R)[:4]} instead of {want[:4]}")
+    if len(set(hdr(R))) != len(hdr(R)):
+        problems.append("a version section header twice")
+    # subsection headings once per version section (unless a side already had them twice there)
+    def subs(xs):
+        c = {}
+        for ln, sec in _sections(xs):
+            if SUBSECTION.match(ln.strip()):
+                c[(sec, ln.strip())] = c.get((sec, ln.strip()), 0) + 1
+        return c
+    so, st_, sr = subs(O), subs(T), subs(R)
+    for k, n in sr.items():
+        if n > max(so.get(k, 0), st_.get(k, 0), 1):
+            problems.append(f"subsection {k[1][:40]!r} twice in {k[0]}")
+    # an entry both sides added appears more often than either side has it
+    ao = {O[j].strip() for j in _added(B, O) if _significant(O[j])}
+    at = {T[j].strip() for j in _added(B, T) if _significant(T[j])}
+    cnt = lambda xs, x: sum(1 for y in xs if y.strip() == x)
+    for x in ao & at:
+        if cnt(R, x) > max(cnt(O, x), cnt(T, x)):
+            problems.append(f"entry twice: {x[:50]!r}")
+    # every added entry sits in the version section its side put it in
+    rs = {}
+    for ln, sec in _sections(R):
+        rs.setdefault(ln.strip(), set()).add(sec)
+    for side in (O, T):
+        secs = _sections(side)
+        for j in _added(B, side):
+            ln, sec = secs[j]
+            if _significant(ln) and not VERSION_HDR.match(ln) and sec not in rs.get(ln.strip(), set()):
+                problems.append(f"entry {ln.strip()[:40]!r} left section {sec}")
+                break
+    return problems
 
 
 # --------------------------------------------------------------------------------------------
@@ -254,6 +483,9 @@ def check_ok(by, name, app=None):
                for r in by.get(name, []))
 
 
+READMIT = re.compile(r'readmitted by merge-train.*original READY (\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ)')
+
+
 def ready_comment(head, comments):
     """-> (the READY comment that stands for `head`, (sha, time) of a READY for another head, the
     last withdrawal). Only trusted authors count; the earliest READY since the last withdrawal wins."""
@@ -267,7 +499,10 @@ def ready_comment(head, comments):
         elif k == 'ready':
             toks = HEX.findall(first_line(c['body']))
             if any(head.startswith(t) for t in toks):
-                ready = ready or c
+                if not ready:
+                    # a readmission by the train keeps the PR's original place in the queue
+                    m = READMIT.search(first_line(c['body']))
+                    ready = {**c, 'created_at': m.group(1)} if m else c
             else:
                 other = (toks[0] if toks else '?', c['created_at'])
     return ready, other, revoked
@@ -410,21 +645,24 @@ def stack(st, members, main_sha):
         if sh(['git', '-C', repo_dir(), 'merge-base', '--is-ancestor', m['head'], main_sha], check=False).returncode == 0:
             conflicts.append({**m, 'files': [], 'against': 'already in main'})
             continue
-        t, files = squash_tree(cur, m['head'], main_sha)
+        t, files, unioned, why = squash_tree(cur, m['head'], main_sha)
         if t is None:
             mine = set(files)
             against = [f"#{e['number']}" for e in entries
                        if mine & changed_files(git('merge-base', main_sha, e['head']), e['head'])]
-            conflicts.append({**m, 'files': files, 'against': ', '.join(against) or f'{MAIN} {main_sha[:7]}'})
+            conflicts.append({**m, 'files': files, 'against': ', '.join(against) or f'{MAIN} {main_sha[:7]}',
+                              'why': why})
             continue
         k = len(entries) + 1
         msg = (f"{st['name']} {k}: {m['title']} (#{m['number']})\n\n"
                f"The squash of #{m['number']} at {m['head']}, as GitHub will apply it\n"
-               f"(three-way merge on merge-base({MAIN} {main_sha[:12]}, head)).\n")
+               f"(three-way merge on merge-base({MAIN} {main_sha[:12]}, head))"
+               + (f",\nwith {', '.join(unioned)} resolved by union.\n" if unioned else ".\n"))
         c = sh(['git', '-C', repo_dir(), 'commit-tree', t, '-p', cur, '-p', m['head'], '-m', msg],
                env=env).stdout.strip()
         entries.append({'number': m['number'], 'title': m['title'], 'head': m['head'],
-                        'ready_at': m.get('ready_at'), 'position': k, 'commit': c, 'tree': t})
+                        'ready_at': m.get('ready_at'), 'position': k, 'commit': c, 'tree': t,
+                        'union': unioned})
         cur = c
     return entries, conflicts
 
@@ -501,15 +739,20 @@ def new_round(st, members, why):
          'runs': {}, 'commented': []}
     LOG.say(f"round {r['round']} of {st['name']} on {MAIN} {main_sha[:7]} ({why}):")
     for e in entries:
-        LOG.say(f"  {e['position']}. #{e['number']} head {e['head'][:7]} -> {e['commit'][:7]}  {e['title'][:60]}")
+        LOG.say(f"  {e['position']}. #{e['number']} head {e['head'][:7]} -> {e['commit'][:7]}  {e['title'][:60]}"
+                + (f"  [union: {', '.join(e['union'])}]" if e.get('union') else ''))
     for c in conflicts:
-        LOG.say(f"  KICK #{c['number']}: conflicts with {c['against']} in {', '.join(c['files'][:6])}")
+        LOG.say(f"  KICK #{c['number']}: conflicts with {c['against']} in {', '.join(c['files'][:6])}"
+                + (f" ({c['why']})" if c.get('why') else ''))
     for c in conflicts:
         if str(c['number']) not in st['kicked']:
             do_kick(st, c['number'], c['head'],
                     (f"it is already in {MAIN}" if c['against'] == 'already in main' else
-                     f"it conflicts with {c['against']} in {', '.join(c['files'][:10])}"),
-                    rebuild=False, round_no=r['round'])
+                     f"it conflicts with {c['against']} in {', '.join(c['files'][:10])}"
+                     + (f"; {c['why']}" if c.get('why') else '')),
+                    rebuild=False, round_no=r['round'],
+                    files=c['files'], kind=('in-main' if c['against'] == 'already in main' else
+                                            'union-invalid' if c.get('why') else 'conflict'))
     if prev and prev['head'] == r['head'] and prev['base'] == main_sha:
         LOG.say("  same stack as the round before: nothing to rebuild")
         return prev
@@ -563,12 +806,27 @@ def cmd_build(a):
         name, window = window_name(t, a.off_window)
     LOG.to(os.path.join(BASE_DIR, train_id(name), 'log'))
     LOG.say(f"build {name} (window {window})")
+    g = gpu_guard('check')
+    if g and g[0] == 1:
+        msg = (f"CI GPUs {GPU_GUARD_GPUS} are occupied by other users' processes ({g[1]}). The window is "
+               f"POSTPONED until they are free: run `gpu-guard notify-when-free --gpus {GPU_GUARD_GPUS} "
+               f"--tag merge-train` (it says so, and leaves a marker file, when they "
+               f"are), then build. `build --force` builds anyway (its GPU jobs then wait for a GPU, or fail after "
+               f"an hour)")
+        if not a.force:
+            raise Fail(msg)
+        LOG.say(f"--force: {msg}")
+    elif g:
+        LOG.say(f"CI GPUs {GPU_GUARD_GPUS}: {g[1].split('] ', 1)[-1]}")
     wfs = [WORKFLOWS[w] for w in a.workflows.split(',')]
     exists = os.path.exists(state_path(name))
     if exists:
         st = load(name)
-        if st.get('merged') or st.get('cleaned'):
-            raise Fail(f"{name} has already merged or been cleaned up")
+        if st.get('cleaned'):
+            raise Fail(f"{name} has been cleaned up")
+        if st.get('merged') and not a.rebuild:
+            raise Fail(f"{name} has merged PRs: `build --rebuild` stacks its remaining (e.g. readmitted) members "
+                       f"on the current {MAIN} as a new round")
         r = rnd(st)
         if a.rebuild:
             members = refreshed_members(st)
@@ -598,8 +856,9 @@ def refreshed_members(st):
     READY again (it then rides at its new head), else it is kicked."""
     required, _ = required_checks()
     out = []
+    merged = {x['number'] for x in st['merged']}
     for m in st['members']:
-        if str(m['number']) in st['kicked']:
+        if str(m['number']) in st['kicked'] or m['number'] in merged:
             continue
         pr = api(f"repos/{REPO}/pulls/{m['number']}")
         if pr['state'] != 'open':
@@ -614,7 +873,7 @@ def refreshed_members(st):
             else:
                 do_kick(st, m['number'], pr['head']['sha'],
                         f"its head moved from {m['head'][:7]} to {pr['head']['sha'][:7]} after the train was built",
-                        rebuild=False)
+                        rebuild=False, kind='moved')
                 continue
         out.append(m)
     return out
@@ -721,6 +980,49 @@ def suspects(st, r, runs):
                 f"`bisect` to find the first red prefix, or `retry` if it looks like a flake.")
 
 
+def external_occupancy(runs):
+    """gpu.yml's gfx950 jobs that wait or failed while other users held the CI GPUs (GPU_GUARD's log), labelled
+    so that a "no idle MI355X" failure reads as external occupancy, not a code failure.
+    -> names of jobs whose failure is external occupancy for sure (the job found no idle GPU)."""
+    if not GPU_GUARD or 'gpu.yml' not in runs:
+        return set()
+    run, jobs = runs['gpu.yml']
+    sure, any_hit = set(), False
+    for j in jobs:
+        if not j['name'].startswith('gfx950'):
+            continue
+        failed = j['conclusion'] in ('failure', 'timed_out', 'cancelled')
+        if not failed and j['status'] == 'completed':
+            continue
+        args = ['occupied-during', '--since', j.get('started_at') or j.get('created_at') or run['created_at']]
+        if j['status'] == 'completed' and j.get('completed_at'):
+            args += ['--until', j['completed_at']]
+        g = gpu_guard(*args)
+        if not g or g[0] != 0:
+            continue
+        any_hit = True
+        if failed:
+            text = api(f"repos/{REPO}/actions/jobs/{j['id']}/logs", raw=True, check=False) or b''
+            if b'no idle MI355X' in text:
+                sure.add(j['name'])
+                LOG.say(f"  EXTERNAL OCCUPANCY: {j['name']} failed with \"no idle MI355X\" while other users held "
+                        f"CI GPUs {GPU_GUARD_GPUS} ({g[1]}): not a code failure")
+            else:
+                LOG.say(f"  note: {j['name']} failed while other users held CI GPUs {GPU_GUARD_GPUS} ({g[1]}): "
+                        f"possibly external (e.g. out of memory), check its log before blaming a member")
+        else:
+            LOG.say(f"  EXTERNAL OCCUPANCY: {j['name']} is waiting for a GPU while other users hold CI GPUs "
+                    f"{GPU_GUARD_GPUS} ({g[1]}); it fails after an hour")
+    if any_hit:
+        now_g = gpu_guard('check', '--quick')
+        if now_g and now_g[0] == 0:
+            LOG.say(f"  CI GPUs {GPU_GUARD_GPUS} are free now: `retry` reruns the failed GPU jobs")
+        else:
+            LOG.say(f"  CI GPUs {GPU_GUARD_GPUS} still occupied: `gpu-guard notify-when-free --gpus "
+                    f"{GPU_GUARD_GPUS} --tag merge-train`, and `retry` when it fires")
+    return sure
+
+
 def show_runs(runs):
     for wf, (run, jobs) in runs.items():
         LOG.say(f"  {wf}: {run['status']}/{run['conclusion']} {run['html_url']}")
@@ -760,7 +1062,7 @@ def cmd_status(a):
         if not r['head']:
             return 0
         fetch()
-        if rev(f'origin/{MAIN}') != r['base'] and not st['merged']:
+        if rev(f'origin/{MAIN}') != r['base'] and not {m['number'] for m in st['merged']} & {e['number'] for e in r['stack']}:
             LOG.say(f"  note: {MAIN} moved to {rev('origin/' + MAIN)[:7]} since the build: merge will refuse; "
                     f"`build --rebuild` to restack")
         for n, why in member_drift(st, r):
@@ -770,10 +1072,17 @@ def cmd_status(a):
             LOG.say(f"  not dispatched or not found yet: {', '.join(missing)} (`build` resumes it)")
         runs = collect(st, r)
         show_runs(runs)
+        external = external_occupancy(runs)
         v = verdict(runs) if not missing else 'running'
         LOG.say(f"  => {v.upper()}")
         if v.startswith('red'):
-            suspects(st, r, runs)
+            failed = {j['name'] for _, jobs in runs.values() for j in jobs
+                      if j['conclusion'] in ('failure', 'timed_out', 'cancelled')}
+            if failed and failed <= external:
+                LOG.say(f"  every failure is external occupancy ({', '.join(sorted(failed))}): no suspect; "
+                        f"`retry` once CI GPUs {GPU_GUARD_GPUS} are free")
+            else:
+                suspects(st, r, runs)
         if st['merged']:
             LOG.say(f"  merged so far: {', '.join('#%d' % m['number'] for m in st['merged'])}")
         if not a.wait or v in ('green', 'red'):
@@ -784,8 +1093,8 @@ def cmd_status(a):
 # --------------------------------------------------------------------------------------------
 # kick, retry, bisect
 
-def do_kick(st, n, head, reason, rebuild=True, round_no=None):
-    st['kicked'][str(n)] = {'reason': reason, 'at': iso(now()), 'head': head,
+def do_kick(st, n, head, reason, rebuild=True, round_no=None, files=None, kind='red'):
+    st['kicked'][str(n)] = {'reason': reason, 'at': iso(now()), 'head': head, 'kind': kind, 'files': files or [],
                             'round': round_no or (rnd(st) or {}).get('round')}
     comment(n, f"{MARK} kicked from train `{st['name']}` (head {head[:7]}): {reason}.\n\n"
                f"This withdraws the READY for this head. Fix it (rebase, or wait for the PRs ahead of it "
@@ -818,6 +1127,54 @@ def cmd_kick(a):
     head = next((e['head'] for e in rnd(st)['stack'] if e['number'] == n), m['head'])
     do_kick(st, n, head, a.reason or "the train went red with it (see the train's runs); the train reruns without it")
     return 0
+
+
+def cmd_readmit(a):
+    """READY again, at the same head and the original READY time, for PRs this train kicked only for
+    a conflict in the append-only files, which stacking now resolves by union. Refuses a PR whose
+    head moved since its READY, or that was kicked for anything else."""
+    name = current_name(a)
+    LOG.to(os.path.join(BASE_DIR, train_id(name), 'log'))
+    st = load(name)
+    rc = 0
+    for n in a.prs:
+        k = st['kicked'].get(str(n))
+        m = next((x for x in st['members'] if x['number'] == n), None)
+        if not k or not m:
+            LOG.say(f"#{n}: not kicked from {name}: nothing to readmit")
+            rc = 1
+            continue
+        files = k.get('files')
+        if files is None:   # kicks before kinds were recorded: "it conflicts with ... in A, B"
+            mm = re.fullmatch(r'it conflicts with .+ in ([^;]+)', k['reason'])
+            files = [f.strip() for f in mm.group(1).split(',')] if mm else []
+        kind = k.get('kind') or ('conflict' if files else 'other')
+        if kind != 'conflict' or not files or not set(files) <= set(UNION_FILES):
+            LOG.say(f"#{n}: kicked for {k['reason']!r} ({kind}), not only an append-only file's conflict: "
+                    f"it needs a new READY of its own")
+            rc = 1
+            continue
+        pr = api(f"repos/{REPO}/pulls/{n}")
+        if pr['state'] != 'open' or pr['draft'] or pr['base']['ref'] != MAIN:
+            LOG.say(f"#{n}: {pr['state']}{', draft' if pr['draft'] else ''}, base {pr['base']['ref']}: refused")
+            rc = 1
+            continue
+        if pr['head']['sha'] != m['head'] or k['head'] != m['head']:
+            LOG.say(f"#{n}: head is {pr['head']['sha'][:7]}, READY was for {m['head'][:7]}: refused "
+                    f"(a new head needs its own test and READY)")
+            rc = 1
+            continue
+        comment(n, f"READY {m['head'][:7]} (readmitted by merge-train: kicked from `{name}` only for a conflict "
+                   f"in {', '.join(files)}, which the train now resolves by union; original READY {m['ready_at']} "
+                   f"keeps its place in the queue)\n\nSame head as the READY of {m['ready_at']}"
+                   + (f" ({m['ready_url']})" if m.get('ready_url') else '') + ".")
+        if not LOG.dry:
+            st.setdefault('readmitted', {})[str(n)] = {**k, 'readmitted_at': iso(now())}
+            del st['kicked'][str(n)]
+            save(st)
+        LOG.say(f"#{n}: {'would be ' if LOG.dry else ''}readmitted at {m['head'][:7]}, READY {m['ready_at']}")
+    LOG.say("next: `build --rebuild` (after this round's PRs merged, or to restack them with these)")
+    return rc
 
 
 def cmd_retry(a):
@@ -897,6 +1254,75 @@ def cmd_bisect(a):
 # --------------------------------------------------------------------------------------------
 # merge
 
+def squash_merge(n, pr, head, title, bypass_ok=False):
+    """Squash-merge #n at `head` (GitHub refuses if the head moved); -> the merge commit's sha.
+    Right after a merge GitHub recomputes the next PR's mergeability and may answer 405 "Base branch
+    was modified": wait and retry. A head without main's required checks merges only with
+    bypass_ok, through GraphQL's mergePullRequest as the admin (REST refuses it)."""
+    for attempt in range(8):
+        try:
+            got = write_api(f"squash-merge #{n} at {head[:7]}", f"repos/{REPO}/pulls/{n}/merge", 'PUT',
+                            {'merge_method': 'squash', 'sha': head, 'commit_title': title})
+            return got['sha']
+        except Fail as err:
+            msg = str(err)
+            if bypass_ok and re.search(r'status check|protected branch|required', msg, re.I):
+                LOG.say(f"  #{n}: REST refused ({msg[-160:]}); merging as the admin through GraphQL (bypass)")
+                q = ('mutation($id:ID!,$oid:GitObjectID!,$t:String!){mergePullRequest(input:{pullRequestId:$id,'
+                     'expectedHeadOid:$oid,mergeMethod:SQUASH,commitHeadline:$t}){pullRequest{mergeCommit{oid}}}}')
+                got = write_api(f"squash-merge #{n} at {head[:7]} (GraphQL, admin bypass)", 'graphql', 'POST',
+                                {'query': q, 'variables': {'id': pr['node_id'], 'oid': head, 't': title}})
+                if got.get('errors'):
+                    raise Fail(f"GraphQL merge of #{n}: {got['errors']}")
+                return got['data']['mergePullRequest']['pullRequest']['mergeCommit']['oid']
+            if 'Base branch was modified' not in msg or attempt == 7:
+                raise
+            LOG.say(f"  #{n}: base branch was modified (GitHub still settling); retry in {5 * (attempt + 1)} s")
+            time.sleep(5 * (attempt + 1))
+            if api(f"repos/{REPO}/pulls/{n}").get('merged_at'):
+                raise Fail(f"#{n} merged meanwhile: rerun merge to adopt it")
+
+
+def bring_branch(st, r, e, pr, cur, prev_tree):
+    """Bring #n's branch to a commit whose tree is the train's at e's position: parents (the tested
+    head, main now), so that GitHub's squash of it onto main is exactly that tree. A fast-forward
+    of the branch, pushed with a lease on the tested head, and said on the PR. -> the new head."""
+    n, branch = e['number'], pr['head']['ref']
+    if tree(cur) != prev_tree:
+        raise Fail(f"ALERT: {MAIN} {cur[:7]}'s tree is not the train's before #{n}: not touching its branch")
+    env = {'GIT_AUTHOR_NAME': GIT_NAME, 'GIT_AUTHOR_EMAIL': GIT_EMAIL, 'GIT_COMMITTER_NAME': GIT_NAME,
+           'GIT_COMMITTER_EMAIL': GIT_EMAIL, 'GIT_AUTHOR_DATE': st['created'], 'GIT_COMMITTER_DATE': st['created']}
+    msg = (f"Merge {MAIN} {cur[:12]} into {branch} for {st['name']} (position {e['position']})\n\n"
+           f"{', '.join(e['union'])} resolved by union, exactly as in the tested train commit\n"
+           f"{e['commit']} (tree {e['tree']}).\n")
+    new = sh(['git', '-C', repo_dir(), 'commit-tree', e['tree'], '-p', e['head'], '-p', cur, '-m', msg],
+             env=env).stdout.strip()
+    assert tree(new) == e['tree']
+    if pr['head']['sha'] == new:
+        return new
+    if pr['head']['sha'] != e['head']:
+        raise Fail(f"#{n} head is {pr['head']['sha'][:7]}, neither the tested {e['head'][:7]} nor {new[:7]}")
+    if LOG.dry:
+        LOG.say(f"  [dry-run] would push {new[:7]} (= {e['head'][:7]} + merge of {MAIN} {cur[:7]}, "
+                f"{', '.join(e['union'])} by union; tree {e['tree'][:10]} == train commit {e['commit'][:7]}) "
+                f"to {branch}, lease {e['head'][:7]}, and say so on #{n}")
+        return new
+    git('push', '-q', f'--force-with-lease=refs/heads/{branch}:{e["head"]}', 'origin', f'{new}:refs/heads/{branch}')
+    LOG.say(f"  #{n}: {branch} {e['head'][:7]} -> {new[:7]}: tree {e['tree']} == train commit {e['commit'][:7]}")
+    e['updated_head'] = new
+    save(st)
+    comment(n, f"{MARK} brought this branch to {new[:7]} for its merge from train `{st['name']}` (position "
+               f"{e['position']}): {e['head'][:7]} (tested, READY) plus a merge of {MAIN} {cur[:7]}, with "
+               f"{', '.join(e['union'])} resolved by union. Its tree, `{e['tree']}`, is exactly the tested train "
+               f"commit {e['commit'][:7]}'s (checked before the push). This head has no required checks of its "
+               f"own, so it is squash-merged with an admin bypass, justified by that equality.")
+    for _ in range(20):
+        if api(f"repos/{REPO}/pulls/{n}")['head']['sha'] == new:
+            break
+        time.sleep(3)
+    return new
+
+
 def cmd_merge(a):
     name = current_name(a)
     LOG.to(os.path.join(BASE_DIR, train_id(name), 'log'))
@@ -913,6 +1339,7 @@ def cmd_merge(a):
         raise Fail("an ALERT stopped this train (main's tree differed from the train's): not resuming; "
                    "see the log and the state's `merged`")
     # resume: adopt merges that happened (a crash after the merge call) in train order
+    ours_ = {e['number'] for e in r['stack']}
     for e in r['stack']:
         if any(m['number'] == e['number'] for m in st['merged']):
             continue
@@ -920,14 +1347,15 @@ def cmd_merge(a):
         if not pr.get('merged_at'):
             break
         sha = pr['merge_commit_sha']
-        parent = st['merged'][-1]['sha'] if st['merged'] else r['base']
+        mine = [m for m in st['merged'] if m['number'] in ours_]
+        parent = mine[-1]['sha'] if mine else r['base']
         ok = git('rev-parse', f'{sha}^', check=False) == parent and tree(sha) == e['tree']
         st['merged'].append({'number': e['number'], 'sha': sha, 'at': pr['merged_at'], 'tree_ok': ok, 'adopted': True})
         save(st)
         LOG.say(f"  #{e['number']} was already merged as {sha[:7]} (tree {'==' if ok else '!='} train commit)")
         if not ok:
             raise Fail(f"ALERT: #{e['number']} merged as {sha[:7]} whose parent/tree is not the train's")
-    done = {m['number']: m for m in st['merged']}
+    done = {m['number']: m for m in st['merged'] if m['number'] in ours_}   # this round's
     if len(done) == len(r['stack']):
         LOG.say("every member is merged")
     problems = []
@@ -950,7 +1378,7 @@ def cmd_merge(a):
                         f"({'the last train merge' if done else 'the train base'}): rebuild")
     # 3. each PR still is what was tested, and can merge without a bypass
     required, _ = required_checks()
-    prs = {}
+    prs, lacks = {}, {}
     for e in r['stack']:
         if e['number'] in done:
             continue
@@ -958,14 +1386,17 @@ def cmd_merge(a):
         if pr['state'] != 'open':
             problems.append(f"#{e['number']} is {pr['state']}")
             continue
-        if pr['head']['sha'] != e['head']:
+        if pr['head']['sha'] not in (e['head'], e.get('updated_head')):
             problems.append(f"#{e['number']} head moved {e['head'][:7]} -> {pr['head']['sha'][:7]} since the build")
+        if e.get('union') and (pr['head'].get('repo') or {}).get('full_name') != REPO:
+            problems.append(f"#{e['number']} needs its branch brought to the train's {', '.join(e['union'])} "
+                            f"but its branch is not in {REPO}")
         if pr['draft']:
             problems.append(f"#{e['number']} is a draft")
         if pr['base']['ref'] != MAIN:
             problems.append(f"#{e['number']} base is {pr['base']['ref']}")
         by = head_checks(e['head'])
-        lack = [c for c, app in required.items() if not check_ok(by, c, app)]
+        lack = lacks[e['number']] = [c for c, app in required.items() if not check_ok(by, c, app)]
         if lack and not a.admin_bypass:
             problems.append(f"#{e['number']} head lacks green {', '.join(lack)}: GitHub needs an admin bypass "
                             f"(--admin-bypass, the merger's decision)")
@@ -979,32 +1410,57 @@ def cmd_merge(a):
         return 1
     LOG.say(f"checks passed: train green on {r['head'][:7]}, {MAIN} at {expect[:7]}, every head as built")
 
-    for e in r['stack']:
+    sim = None   # --dry-run: main as the merges so far would have left it (a local commit)
+    for i, e in enumerate(r['stack']):
         n = e['number']
         if n in done:
             continue
-        cur = rev(f'origin/{MAIN}')
+        cur = sim or rev(f'origin/{MAIN}')
         pr = prs[n]
         title = f"{pr['title']} (#{n})"
+        head = e['head']
+        if e.get('union'):
+            # GitHub's squash knows nothing of the union: bring the PR's branch to the train's tree at
+            # this position (a merge of main into it), so that its squash onto main is that tree.
+            prev_tree = r['stack'][i - 1]['tree'] if i else tree(r['base'])
+            head = bring_branch(st, r, e, pr, cur, prev_tree)
+        bypass = head != e['head'] or bool(lacks.get(n))
+        if bypass:
+            # every bypass, item by item, in the log and on the PR
+            th = tree(head)
+            if head != e['head']:
+                if th != e['tree']:
+                    raise Fail(f"ALERT: #{n}'s new head {head[:7]} has tree {th}, not the train commit's {e['tree']}")
+                why = (f"{', '.join(e['union'])} resolved by union in the train; the new head has no required "
+                       f"checks of its own")
+                eq = f"tree {th} == train commit {e['commit']}'s tree {e['tree']} (verified)"
+            else:
+                why = f"the tested head lacks green {', '.join(lacks[n])} (the merger's --admin-bypass)"
+                eq = f"{MAIN}'s tree after the merge must equal train commit {e['commit']}'s tree {e['tree']}"
+            LOG.say(f"  ADMIN-BYPASS #{n}: reason: {why}; head {head}; train commit {e['commit']}; {eq}")
+            if not LOG.dry:
+                st.setdefault('bypasses', []).append({'number': n, 'reason': why, 'head': head, 'train_commit':
+                                                      e['commit'], 'tree': th, 'train_tree': e['tree'],
+                                                      'at': iso(now())})
+                save(st)
+            comment(n, f"{MARK} admin bypass for this PR's merge from train `{name}` (position {e['position']}).\n"
+                       f"- reason: {why}\n- head: `{head}`\n- train commit: `{e['commit']}`\n- {eq}")
         if LOG.dry:
-            LOG.say(f"  [dry-run] would squash-merge #{n} at {e['head'][:7]} as \"{title[:80]}\", "
-                    f"then check {MAIN}'s tree == {e['tree'][:10]} (train commit {e['commit'][:7]})")
+            LOG.say(f"  [dry-run] would squash-merge #{n} at {head[:7]} as \"{title[:80]}\""
+                    + (" with an admin bypass" if bypass else '')
+                    + f", then check {MAIN}'s tree == {e['tree'][:10]} (train commit {e['commit'][:7]})")
+            gb = git('merge-base', cur, head)
+            t = sh(['git', '-C', repo_dir(), 'merge-tree', '--write-tree', f'--merge-base={gb}', cur, head],
+                   check=False).stdout.split()
+            if not t or t[0] != e['tree']:
+                LOG.say(f"  [dry-run] ALERT: GitHub's squash of #{n} at {head[:7]} would not be the train's tree")
+                return 3
+            sim = sh(['git', '-C', repo_dir(), 'commit-tree', t[0], '-p', cur, '-m', f'dry-run squash #{n}'],
+                     env={'GIT_AUTHOR_NAME': GIT_NAME, 'GIT_AUTHOR_EMAIL': GIT_EMAIL, 'GIT_COMMITTER_NAME': GIT_NAME,
+                          'GIT_COMMITTER_EMAIL': GIT_EMAIL}).stdout.strip()
             continue
-        for attempt in range(8):
-            # right after a merge GitHub recomputes the next PR's mergeability and may answer 405
-            # "Base branch was modified": wait and retry. A moved head (409) is not retried.
-            try:
-                got = write_api(f"squash-merge #{n}", f"repos/{REPO}/pulls/{n}/merge", 'PUT',
-                                {'merge_method': 'squash', 'sha': e['head'], 'commit_title': title})
-                break
-            except Fail as err:
-                if 'Base branch was modified' not in str(err) or attempt == 7:
-                    raise
-                LOG.say(f"  #{n}: base branch was modified (GitHub still settling); retry in {5 * (attempt + 1)} s")
-                time.sleep(5 * (attempt + 1))
-                if api(f"repos/{REPO}/pulls/{n}").get('merged_at'):
-                    raise Fail(f"#{n} merged meanwhile: rerun merge to adopt it")
-        sha = got['sha']
+        got = squash_merge(n, pr, head, title, bypass_ok=bypass)
+        sha = got
         for _ in range(10):   # the ref update can lag the API's answer by a moment
             fetch()
             if rev(f'origin/{MAIN}') == sha:
@@ -1041,9 +1497,10 @@ def cmd_cleanup(a):
     LOG.to(os.path.join(BASE_DIR, train_id(name), 'log'))
     st = load(name)
     r = rnd(st)
-    complete = r and r['head'] and len(st['merged']) == len(r['stack'])
-    if r and r['head'] and not complete and not a.abandon:
-        raise Fail(f"{name} is not fully merged ({len(st['merged'])}/{len(r['stack'])}): --abandon to drop it")
+    merged_n = {m['number'] for m in st['merged']}
+    left = [e['number'] for e in (r or {}).get('stack') or [] if e['number'] not in merged_n]
+    if r and r['head'] and left and not a.abandon:
+        raise Fail(f"{name} round {r['round']} is not fully merged (left: {left}): --abandon to drop it")
     for x in st['rounds']:
         cancel_runs(x)
     for p in ((st.get('bisect') or {}).get('probes') or {}).values():
@@ -1101,12 +1558,16 @@ def main():
     s.add_argument('--off-window', action='store_true', help='build outside the 01:00Z/13:00Z windows')
     s.add_argument('--rebuild', action='store_true', help='restack an existing train on the current main')
     s.add_argument('--workflows', default='ci,gpu', help='ci,gpu (default) -- fewer only for tests of the train')
+    s.add_argument('--force', action='store_true',
+                   help='build even if other users occupy the CI GPUs (MERGE_TRAIN_GPU_GUARD)')
     s = sub.add_parser('status', parents=[common])
     s.add_argument('--wait', type=int, nargs='?', const=300, default=0,
                    help='poll every N s (300) until green or red; exit 0 green, 1 red')
     s = sub.add_parser('kick', parents=[common])
     s.add_argument('pr', type=lambda x: int(x.lstrip('#')))
     s.add_argument('--reason')
+    s = sub.add_parser('readmit', parents=[common])
+    s.add_argument('prs', nargs='+', type=lambda x: int(x.lstrip('#')))
     sub.add_parser('bisect', parents=[common])
     sub.add_parser('retry', parents=[common])
     s = sub.add_parser('merge', parents=[common])

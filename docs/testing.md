@@ -713,6 +713,31 @@ k-th train commit's.
   differ when a PR carries commits of an earlier member (one that was stacked on
   it), and the squash rule is the one GitHub applies.
 
+**Append-only files.** Nearly every PR adds a `CHANGELOG.md` entry at the top
+of `## Unreleased`, so a plain stack kicked every PR after the first for a
+conflict there. A conflict confined to the append-only files
+(`MERGE_TRAIN_UNION_FILES`, `:`-separated, default `CHANGELOG.md`) is resolved by
+union instead:
+- `git merge-file --diff3` merges the three versions. Inside each conflict hunk, a
+  line-level three-way merge keeps both sides' edits: ours, then theirs, as two
+  paragraphs, or as items of one list.
+- The result is then checked. It must have no conflict markers, and no entry that
+  both sides added may appear twice. The version sections (`## X`) must be those
+  of the side that changed them: the sections are authoritative. No subsection
+  heading may appear twice within a version section. Every added entry must stay
+  in the version section its side put it in, so an entry written for
+  `## Unreleased` cannot slide into a section that was released meanwhile.
+- A union that fails a check kicks the PR, with the reason. A conflict in any
+  other file kicks it as before. `docs/history/README.md` is not on the list: two
+  chapters both numbered 53 are not a union. Generated files such as
+  `llms-full.txt` are not on it either.
+
+GitHub's squash merge knows nothing of this union. A `.gitattributes` line
+`CHANGELOG.md merge=union` does not help either: on a pair of throwaway PRs into a
+scratch branch, GitHub refused the second one as conflicting (HTTP 405, both
+squash and merge commit), though a local merge with the same attributes was
+clean. So `merge` handles such a PR itself, below.
+
 **The runs.** Neither workflow runs on a push to a branch other than main, so
 the train dispatches both on its branch. The branch is a ref of its own: the
 GPU jobs' one-run-per-ref concurrency groups keep it apart from the PRs' runs.
@@ -736,6 +761,13 @@ counts too. The train is green when every CI job passed and all four GPU jobs
   own commits, main plus the first k PRs) for the first red one. It reruns only
   the workflows that failed, on `train/<...>-r<round>-p<k>`, one probe per call.
 - **For a flake,** `retry` reruns the failed jobs.
+- **`readmit N...`** puts back PRs that were kicked only for a conflict in an
+  append-only file. Such PRs were kicked before stacking took unions, and with no
+  fault of their own. It posts `READY <same head> (readmitted by merge-train ...
+  original READY <time> ...)`; the original time keeps the PR's place in the
+  queue. It refuses a PR whose head moved, or one kicked for anything else.
+  `build --rebuild` then stacks the readmitted PRs on the current main as a new
+  round, also after the train's earlier round has merged.
 
 **The merge** is the merger's step alone (`merge --i-am-the-merger`). It refuses
 unless all of these hold:
@@ -744,6 +776,17 @@ unless all of these hold:
 - every member is open, not a draft, based on main, at the head that was
   tested, still READY, and carries green `gfx950` and `gfx1100` runs of its own.
   A head without them needs `--admin-bypass`, the merger's decision.
+
+For a PR whose place in the train took a union, the PR's branch is first
+brought to the train's tree at that place. The tool builds a commit with that
+exact tree and two parents, the tested head and main as it is now; GitHub's
+squash of it onto main is then that tree. It pushes the commit to the branch as a
+fast-forward, with a lease on the tested head, and says so on the PR. That head
+has no checks of its own, so its merge is an admin bypass, for that PR only.
+Each such bypass is written item by item to the train's log and posted on the
+PR: the reason (the files the union resolved), the new head, the train commit,
+and the verified equality of the two trees. Every bypass also lands in the
+train's state, under `bypasses`.
 
 It then squash-merges the PRs in order through the REST merge endpoint. Each
 call passes the tested head as `sha`, so GitHub refuses one that moved, and
@@ -758,10 +801,10 @@ the train needs no change to it:
 - Every READY head carries those two checks from its own run, and a head behind
   main is not refused. So each PR stays mergeable after the ones ahead of it
   land.
-- The train posts no statuses on the heads, and rewrites no PR branch. A token
-  cannot create a check run that counts for a check pinned to the Actions app.
-  Pushing each PR to its place in the train would give it a new head without
-  checks.
+- The train posts no statuses on the heads. A token cannot create a check run
+  that counts for a check pinned to the Actions app.
+- It rewrites no PR branch. The one push it makes is the fast-forward above,
+  for a union, which merges with a recorded bypass.
 - The owner's merges bypass protection anyway, so the script's checks are the
   gate, and it refuses what GitHub would let through.
 
@@ -774,6 +817,7 @@ python3 scripts/ci/merge_train.py status [--wait]          # runs and jobs; on r
 python3 scripts/ci/merge_train.py kick N [--reason TEXT]   # drop #N, rebuild, rerun
 python3 scripts/ci/merge_train.py bisect                   # one probe of a bisection (call again)
 python3 scripts/ci/merge_train.py retry                    # rerun the failed jobs (a flake)
+python3 scripts/ci/merge_train.py readmit N...             # READY again: kicked only for CHANGELOG.md
 python3 scripts/ci/merge_train.py merge --i-am-the-merger  # squash-merge in order, check the trees
 python3 scripts/ci/merge_train.py cleanup [--abandon]      # delete the train's branches
 ```
@@ -785,14 +829,20 @@ How it behaves:
   rebuild of the same stack is the same commit. A run that was dispatched is
   found again, not dispatched twice. A comment is posted once a round. `merge`
   takes up after the last PR that merged.
-- **It never pushes to main or to a PR branch.** It only creates and moves
-  `train/` branches, each with a lease on the value it expects.
+- **It never pushes to main.** It creates and moves `train/` branches, each with
+  a lease on the value it expects. It touches a PR branch only for a union, at
+  merge time, as a fast-forward of the tested head.
 - **State and a log of every command it ran** are kept per train under
   `$MERGE_TRAIN_DIR` (default `~/.local/state/hk-merge-train`).
 - **`MERGE_TRAIN_PRUNE`** names a command for `cleanup` to run afterwards, such
   as a list of the per-branch build directories that can go;
   `MERGE_TRAIN_PRUNE_YES` names the one that `cleanup --prune-yes` runs instead,
   which deletes them.
+- **`MERGE_TRAIN_GPU_GUARD`** (optional) names a command that reports whether
+  other users' processes occupy the CI GPUs (`MERGE_TRAIN_GPU_GUARD_GPUS`).
+  - If they are occupied, `build` postpones the window; `--force` builds anyway.
+  - `status` labels a GPU job that failed for want of an idle GPU as external
+    occupancy, not a member's fault.
 - **Requirements:** git 2.40 or newer and an authenticated `gh`.
 - **Testing the train itself:** `--prs`, `--include-drafts`,
   `--ignore-head-checks` and `--workflows ci` build a train from throwaway draft
