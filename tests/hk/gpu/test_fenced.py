@@ -877,3 +877,108 @@ got, xs, ii = out.cpu(), x.cpu(), ids.cpu()[0].long()
 want = torch.zeros(128, 64, dtype=torch.bfloat16); want[:76] = xs[ii, 64:]
 same("gathered", got, want)
 ''')
+
+
+SMLA = COMMON + """
+from hk.ops import sparse_mla as SM
+
+def smla_case(lens, rows, seed):
+    # the CSR as vLLM's build_ragged_indices_from_dense packs it, but exactly nnz long: the
+    # allocation ends at the last query's last index (vLLM's ends there when every row is full)
+    g = torch.Generator(device="cpu").manual_seed(seed)
+    T = len(lens)
+    q = (torch.randn(T, SM.H, SM.D, generator=g) * 0.5).bfloat16().cuda()
+    kv = (torch.randn(rows, SM.D, generator=g) * 0.5).bfloat16().cuda()
+    ind = torch.cat([torch.randint(0, rows, (n,), generator=g, dtype=torch.int32) for n in lens]).cuda()
+    ptr = torch.zeros(T + 1, dtype=torch.int32)
+    ptr[1:] = torch.tensor(lens).cumsum(0)
+    sink = torch.randn(SM.H, generator=g).float().cuda()
+    pos = (torch.arange(T) * 7 + 3).to(torch.int64).cuda()
+    cs = torch.randn(int(pos.max()) + 1, 64, generator=g).cuda()
+    return q, kv, ind, ptr.cuda(), sink, pos, cs
+
+def smla_run(lens, rows=4096, seed=0):
+    q, kv, ind, ptr, sink, pos, cs = smla_case(lens, rows, seed)
+    T = q.shape[0]
+    out = step("prefill", lambda: SM.prefill(q, kv, ind, ptr, sink, 512 ** -0.5, torch.empty_like(q)))
+    md = torch.empty(T, SM.H * SM.D, dtype=torch.float8_e4m3fn, device="cuda")
+    ms = torch.empty(T, SM.H * SM.D // 32, dtype=torch.uint8, device="cuda")
+    step("prefill_mxfp8", lambda: SM.prefill_mxfp8(q, kv, ind, ptr, sink, 512 ** -0.5, pos, cs, md, ms))
+    o = out.cpu().float()
+    assert torch.isfinite(o).all(), "non-finite output"
+"""
+
+
+@gfx950
+def test_sparse_mla():
+    """hk.ops.sparse_mla where the index list ends exactly at the last query's last row: every row
+    full (vLLM's packing leaves no slack then), a last query whose rows end mid-block, empty and
+    one-row queries, and a call whose last query is empty."""
+    cases = {
+        "every query 640 rows, T 1024": "smla_run([640] * 1024)",
+        "ragged, last query 600 rows": "smla_run([640, 1, 0, 128, 333] * 120 + [600], seed=1)",
+        "last query empty": "smla_run([640] * 600 + [0], seed=2)",
+        "one query of 1 row": "smla_run([1], rows=64, seed=3)",
+        "every query 128 rows (sliding window), T 2048": "smla_run([128] * 2048, seed=4)",
+    }
+    fenced_cases(SMLA, cases)
+
+
+def _has_vllm_rocm_sparse() -> bool:
+    import importlib.util  # noqa: PLC0415
+
+    try:
+        return importlib.util.find_spec("vllm.v1.attention.ops.rocm_aiter_mla_sparse") is not None
+    except ModuleNotFoundError:
+        return False
+
+
+@gfx950
+@pytest.mark.skipif(not _has_vllm_rocm_sparse(), reason="vLLM's ROCm sparse MLA (the vLLM image)")
+def test_vllm_sparse_mla_route_on_a_mixed_step():
+    """The vllm_sparse_mla route as a real-weight server's mixed step calls it (decode rows run
+    elsewhere): one chunk call holding a full prefill's rows, a partial first chunk and a
+    continuation chunk whose rows are all full, and a continuation-only call where every row is
+    full -- vLLM's build_ragged_indices_from_dense then packs the list flush against its
+    allocation's end. A call below MIN_T stays vLLM's. The server faulted here before the
+    gathered copy took a row limit."""
+    fenced(SMLA + '''
+from hk.integration import vllm_sparse_mla as R
+import vllm.models.deepseek_v41.amd.rocm as rocm
+print(R.apply_patch(), flush=True)
+W, ROWS = 640, 6000
+
+def dense(lens, seed):
+    g = torch.Generator(device="cpu").manual_seed(seed)
+    ind = torch.full((len(lens), W), -1, dtype=torch.int32)
+    for i, n in enumerate(lens):
+        ind[i, :n] = torch.randint(0, ROWS, (n,), generator=g, dtype=torch.int32)
+    return ind.cuda(), torch.tensor(lens, dtype=torch.int32).cuda()
+
+def call(lens, seed):
+    T = len(lens)
+    g = torch.Generator(device="cpu").manual_seed(seed)
+    q = (torch.randn(T, SM.H, SM.D, generator=g) * 0.5).bfloat16().cuda()
+    kv = (torch.randn(ROWS, 1, SM.D, generator=g) * 0.5).bfloat16().cuda()
+    sink = torch.randn(SM.H, generator=g).float().cuda()
+    ind, lens_t = dense(lens, seed)
+    out = torch.empty_like(q)
+    step(f"route T {T}", lambda: rocm.rocm_sparse_attn_prefill(
+        q=q, kv=kv, indices=ind, topk_length=lens_t, scale=512 ** -0.5, head_dim=512, nope_head_dim=448,
+        rope_head_dim=64, attn_sink=sink, output=out))
+    assert torch.isfinite(out.cpu().float()).all(), "non-finite output"
+
+full = [min(W, 128 + p // 2) for p in range(1200)]          # a prefill from position 0
+part = [min(W, 128 + p // 2) for p in range(896)]           # a partial first chunk
+cont = [W] * 487                                             # a continuation: every row full
+call(full + part + cont, 1)
+call([W] * 600, 2)                                           # continuation-only: no slack at all
+call(cont, 3)                                                # below MIN_T: vLLM's
+# the faulting step's prefill rows (its 2 decode rows run in the decode path): prefills of 7562 and
+# 7437 tokens, an 896-token first chunk of a 6687-token prompt, a 487-token continuation chunk
+step_lens = ([min(W, 128 + p // 2) for p in range(7562)] + [min(W, 128 + p // 2) for p in range(7437)]
+             + part + [W] * 487)
+call(step_lens, 4)
+print(R.STATS, flush=True)
+assert R.STATS["hk"] == 3 and R.STATS["fallback"] == 1, R.STATS
+''')

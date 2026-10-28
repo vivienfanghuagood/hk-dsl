@@ -68,7 +68,6 @@ translator now gives such an allocation the fragment's own shape (st_32x16
 here) when that one tiles it, and refuses one that no shape tiles.
 `tests/hk/ir/test_lds_narrow_tile.py`, `tests/hk/gpu/test_lds_narrow_tile.py`.
 
-
 **gfx950: `hk.ops.sparse_mla`, DeepSeek-V4.1's sparse MLA prefill, and a vLLM route
 for it (`HK_VLLM_SPARSE_MLA`, off by default).** The attention vLLM's ROCm path runs
 for a prefill chunk (AITER's opus kernel at T >= 1024): 32 heads of 512, each
@@ -79,7 +78,9 @@ bf16 rows; vLLM's bf16 rows are scratch, so none are written. On real-weight
 DSV4.1-Flash TP2 calls at T 8192 on an MI355X: attention 1.11-1.13x opus; with the
 MXFP8 rows, top-k layers 1.22x AITER's fused fp8 kernel and 1.39x opus + vLLM's
 quant pass, sliding-window layers 1.12x and 1.97x. Below T 512 opus is faster and
-the route leaves the call to vLLM. The route is off until a real-weight accuracy
+the route leaves the call to vLLM. The kernel's gathered copies are bounded by each
+query's rows (`rows=`), so no index past a query's list is read: a real-weight server
+faulted on a mixed step before. The route is off until a real-weight accuracy
 run and a serving A/B. `tests/hk/gpu/test_sparse_mla.py`,
 `tests/hk/gpu/test_vllm_sparse_mla.py`.
 
