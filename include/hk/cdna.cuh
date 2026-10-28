@@ -3460,6 +3460,32 @@ __device__ static inline void take_elems(D &dst, const GL &box, const I &idx, in
         asm volatile("" ::: "memory");   // re-issued every round
     }
 }
+/** @brief Two floats as a bf16 pair (a, b) in one int, both RNE in one v_cvt_pk_bf16_f32 (two scalar casts are
+ * one instruction each). For map_cpp expressions: `hk_pk_bf16(x0, x1)`. */
+__device__ inline int hk_pk_bf16(float a, float b) {
+    typedef float hk_f2 __attribute__((ext_vector_type(2)));
+    typedef __bf16 hk_b2 __attribute__((ext_vector_type(2)));
+    return __builtin_bit_cast(int, __builtin_convertvector((hk_f2){a, b}, hk_b2));
+}
+/** @brief (experiment) s_memrealtime as an ordered point: the memory clobber keeps loads and stores on their
+ * side of it, so a timeline of these is in program order. The low 32 bits as a float's bits; x is unused. */
+__device__ inline float hk_stamp_now(int x) {
+    long long t;
+    asm volatile("s_memrealtime %0\n\ts_waitcnt lgkmcnt(0)" : "=s"(t) :: "memory");
+    return __builtin_bit_cast(float, int(t) + 0 * x);
+}
+/** @brief (experiment) one scalar load from every 64-byte line of a kernel's argument block, held to here: a
+ * later first use of a tensor finds its pointer and shape in the scalar cache. Returns x. */
+template<typename G>
+__device__ inline int hk_touch_args(const G &g, int x) {
+    const int *p = reinterpret_cast<const int *>(&g);
+#pragma unroll
+    for (int i = 0; i < int(sizeof(G) / 4); i += 16) {
+        int v = __builtin_amdgcn_readfirstlane(p[i]);
+        asm volatile("" :: "s"(v));
+    }
+    return x;
+}
 /** @brief hk lds_load_elems: dst(r, c) = src's element idx(r, c) (row-major, through its swizzle; OOB -> 0). */
 template<ducks::rs::all D, typename ST, ducks::rs::all I>
 __device__ static inline void lds_load_elems(D &dst, ST &src, const I &idx) {
