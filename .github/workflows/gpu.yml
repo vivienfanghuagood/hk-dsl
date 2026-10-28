@@ -69,7 +69,7 @@ jobs:
         tests/hk/gpu/test_vllm_moe_a8w4.py tests/hk/gpu/test_mxfp8_quant.py
         tests/hk/gpu/test_mxfp8_gemm.py tests/hk/gpu/test_moe_a8w4.py
         tests/hk/gpu/test_cdna_mx_ops.py tests/hk/gpu/test_scatter_add.py
-        tests/hk/gpu/test_fenced.py
+        tests/hk/gpu/test_fenced.py tests/hk/gpu/test_vllm_dsv41_index.py
     steps:
       - uses: actions/checkout@v4
         with:

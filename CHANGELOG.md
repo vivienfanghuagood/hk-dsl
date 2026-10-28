@@ -42,6 +42,17 @@ neighbouring 1 .. 2^(k-1). A 32x32 result's 32-row column block is a lane's
 run plus lane l ^ 32's: `group_max(32, xor=(32,))`.
 `tests/hk/gpu/test_strip.py`, `tests/hk/ir/test_strip.py`.
 
+**vLLM, DeepSeek-V4.1 under `--monokernel`: the index layers as one hk launch
+(`HK_VLLM_DSV41_INDEX`, on by default on gfx950).** Between dsv41_mono's two
+launches each index layer ran vLLM's 9-12-kernel chain (`mono_decode._select`).
+At decode steps of up to 8 rows, `hk.integration.vllm_dsv41_index` runs it as
+one resident launch, `hk.ops.dsv41_index`: compressor, compressed-cache insert,
+indexer K and Q, and, for rows of up to 12288 entries, the logits and the
+top-k. The caches, q and q_scale are vLLM's byte for byte and the top-k sets
+equal (docs/integration.md, "The DeepSeek-V4.1 index launch"). The route
+patches through an import hook, since the plugin must not import the model
+package, and its contract is read from the module's source.
+
 **CDNA: `hk-mma-fence`, a DSL rule for matrix-core accumulators; `hk.arch.agpr`
 to hold one in AGPRs.**
 - `hk-mma-fence`, a pass in the kernel pipeline, puts an `hk.sched_barrier`
