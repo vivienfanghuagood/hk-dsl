@@ -192,3 +192,44 @@ def test_a_gathered_copy_takes_a_row_limit_from_rows_or_the_index_count():
     """#125's rows= on a gathered copy: as a keyword next to an hk.RowIndex, and from the index's
     own count (rows = max(count - at, 0)) -- the same IR as the deprecated tuple form."""
     assert _row_limit("tuple") == _row_limit("rows") == _row_limit("count")
+
+# -- S5: register views, Tile.as_fragment and Tile.as_scales --------------------------------------
+
+VIEWS = {"a": hk.Tensor[hk.i32], "o": hk.Tensor[fp32]}
+
+
+def _views(old: bool):
+    def body(a, o):
+        w8 = a.load_elems(hk.iota(hk.RS(hk.i32, 1, 512, 4)), runs=True)
+        w4 = a.load_elems(hk.iota(hk.RS(hk.i32, 1, 256, 4)), runs=True)
+        sb = hk.iota(hk.RS(hk.i32, 1, 64, 1))
+        f8 = hk.RT(fp8e4m3, 16, 128)
+        if old:
+            x, y, s = hk.fp8_operand(w8), hk.fp4_operand(w4), hk.mx_scales_loose(sb)
+        else:
+            x, y, s = w8.as_fragment(f8), w4.as_fragment(f8, fmt="fp4"), sb.as_scales()
+        o.at[0, 0].store(hk.mma("mma_ABt", x.scaled(s), y.scaled(s, fmt="fp4"),
+                                hk.zeros(hk.RT(fp32, 16, 16, "col"))))
+    return _trace(body, VIEWS, "views_shim")
+
+
+def test_fp8_fp4_operand_and_loose_scales_are_register_views():
+    old, warned = _views(True)
+    new, none = _views(False)
+    assert old == new and not none
+    for what in ("fp8_operand", "fp4_operand", "mx_scales_loose"):
+        assert any(what in m for m in warned), what
+
+
+def test_as_fragment_takes_the_block_scaled_operand_and_fp8_or_fp4():
+    def wrong_fragment(a, o):
+        a.load_elems(hk.iota(hk.RS(hk.i32, 1, 512, 4)), runs=True).as_fragment(
+            hk.RT(fp8e4m3, 32, 128))
+    with pytest.raises(TypeError, match="16x128"):
+        _trace(wrong_fragment, VIEWS, "wrong_fragment")
+
+    def wrong_fmt(a, o):
+        a.load_elems(hk.iota(hk.RS(hk.i32, 1, 512, 4)), runs=True).as_fragment(
+            hk.RT(fp8e4m3, 16, 128), fmt="fp6")
+    with pytest.raises(TypeError, match="'fp8' or 'fp4'"):
+        _trace(wrong_fmt, VIEWS, "wrong_fmt")

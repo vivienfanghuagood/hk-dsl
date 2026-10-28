@@ -1018,6 +1018,38 @@ Tile.tril_(self, idx, value=0.0, *, into=None)
 
 Keep the lower triangle from diagonal `idx`, the rest set to `value` (default 0), in place. Not on strips.
 
+#### `Tile.as_fragment`
+
+```python
+Tile.as_fragment(self, ty, *, fmt: str = 'fp8') -> Tile
+```
+
+*New after 0.8.0*
+
+This i32 strip's registers as a matrix-core operand fragment, no data moved (gfx950):
+lane l's elements, in the strip's per-lane order (rows, chunks, runs), become lane l's
+dwords of `ty` -- the inverse of `lane_strip` on 32-bit data. For operands gathered with
+`load_elems(runs=True)` from a layout no tile load knows, or kept in LDS as words.
+
+`ty` is the 16x128 fp8 e4m3 row tile (`hk.RT(hk.fp8e4m3, 16, 128)`) a block-scaled MMA
+reads (`Tile.scaled`). fmt="fp8": eight dwords a lane, a strip of 1 x 512 at run 4 -- run 0
+the K step's 16 bytes at K 16 (l / 16) .., run 1 those at 64 + 16 (l / 16) .., of row
+l % 16: the fragment a tile load makes. fmt="fp4": four dwords a lane, a strip of 1 x 256
+at run 4 -- lane l's 32 FP4 values being row l % 16, columns 32 (l / 16) .. + 32 -- in the
+FP4 container (its upper half undefined).
+
+#### `Tile.as_scales`
+
+```python
+Tile.as_scales(self) -> MxScales
+```
+
+*New after 0.8.0*
+
+This i32 strip (1 x 64, run 1) as loose E8M0 scales of a 16x128 operand, no data moved
+(gfx950): lane l's element, the byte in bits 0..7, is the scale of row l % 16, block
+l / 16 -- `Tile.scaled` takes it.
+
 #### `Tile.scaled`
 
 ```python
