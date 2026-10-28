@@ -9,6 +9,13 @@ The next version's notes collect here until it is released.
 What is on main after 0.8.0. `pip install hk-dsl` (0.8.0) does not have it;
 the API reference marks such names *New after 0.8.0*.
 
+**Register views: `Tile.as_fragment`, `Tile.as_scales` (DSL-surface S5).**
+- `words.as_fragment(hk.RT(hk.fp8e4m3, 16, 128), fmt="fp8" | "fp4")` reads an i32 strip's
+  registers as a block-scaled MMA operand fragment, and `bytes.as_scales()` reads one as loose E8M0
+  scales. No data moves. They are the inverse of the planned `lane_strip`.
+- They replace `hk.fp8_operand`, `hk.fp4_operand` and `hk.mx_scales_loose`, now deprecated shims
+  that trace to the same IR. `dsv41_index` uses the new spellings.
+
 **`rotate_half` is `swap_halves(span, negate_first=True)` (DSL-surface S4).**
 - `Tile.swap_halves(span=None, negate_first=False)` exchanges the halves of each `span`-column
   segment (the whole row by default) and optionally negates the first. `rotate_half(span)` stays

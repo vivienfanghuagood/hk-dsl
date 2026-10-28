@@ -1428,6 +1428,35 @@ class Tile(_Elementwise):
     def triu_(self, idx, value=0.0, *, into=None): return self._fill("triu", idx, value, into)
     def tril_(self, idx, value=0.0, *, into=None): return self._fill("tril", idx, value, into)
 
+    def as_fragment(self, ty, *, fmt: str = "fp8") -> "Tile":
+        """This i32 strip's registers as a matrix-core operand fragment, no data moved (gfx950):
+        lane l's elements, in the strip's per-lane order (rows, chunks, runs), become lane l's
+        dwords of `ty` -- the inverse of `lane_strip` on 32-bit data. For operands gathered with
+        `load_elems(runs=True)` from a layout no tile load knows, or kept in LDS as words.
+
+        `ty` is the 16x128 fp8 e4m3 row tile (`hk.RT(hk.fp8e4m3, 16, 128)`) a block-scaled MMA
+        reads (`Tile.scaled`). fmt="fp8": eight dwords a lane, a strip of 1 x 512 at run 4 -- run 0
+        the K step's 16 bytes at K 16 (l / 16) .., run 1 those at 64 + 16 (l / 16) .., of row
+        l % 16: the fragment a tile load makes. fmt="fp4": four dwords a lane, a strip of 1 x 256
+        at run 4 -- lane l's 32 FP4 values being row l % 16, columns 32 (l / 16) .. + 32 -- in the
+        FP4 container (its upper half undefined)."""
+        want = RegTileType(fp8e4m3, 16, 128, "row")
+        if not isinstance(ty, RegTileType) or (ty.dtype, ty.rows, ty.cols, ty.layout) != (
+                want.dtype, want.rows, want.cols, want.layout):
+            raise TypeError(f"as_fragment: the fragment is {want} (a block-scaled MMA operand), "
+                            f"not {ty!r}")
+        if fmt == "fp8":
+            return _fp8_operand(self)
+        if fmt == "fp4":
+            return _fp4_operand(self)
+        raise TypeError(f"as_fragment: fmt is 'fp8' or 'fp4', not {fmt!r}")
+
+    def as_scales(self) -> "MxScales":
+        """This i32 strip (1 x 64, run 1) as loose E8M0 scales of a 16x128 operand, no data moved
+        (gfx950): lane l's element, the byte in bits 0..7, is the scale of row l % 16, block
+        l / 16 -- `Tile.scaled` takes it."""
+        return _mx_scales_loose(self)
+
     def scaled(self, scales: "MxScales", *, fmt: str = "fp8", at=(0, 0)) -> "Scaled":
         """This operand with its E8M0 block scales, for gfx950's block-scaled MFMA:
         `hk.mma("mma_ABt", a.scaled(sa), b.scaled(sb, fmt="fp4"), acc)`. `fmt` is "fp8"
@@ -2183,11 +2212,12 @@ def _load_fp4_frags_lds(ty, src: "SharedTile", row0, chunk0, *, into=None) -> "T
 
 
 def fp4_operand(words: Tile) -> Tile:
-    """An MXFP4 operand fragment from a lane's four dwords (gfx950): `words`, an i32 strip of 1 x 256
-    with run 4, becomes a 16x128 fp8 e4m3 row tile -- the FP4 container `mma_ABt_mx(..., a_fmt /
-    b_fmt="fp4")` reads, lane l's 32 values being row l % 16, columns 32 (l / 16) .. + 32. For
-    operands gathered with load_elems(runs=True) from a layout no tile load knows (a preshuffled
-    paged cache: a lane's 16 bytes are one token's 32 dims)."""
+    """Deprecated: `words.as_fragment(hk.RT(hk.fp8e4m3, 16, 128), fmt="fp4")`."""
+    _deprecated("hk.fp4_operand(words)", 'words.as_fragment(hk.RT(hk.fp8e4m3, 16, 128), fmt="fp4")')
+    return _fp4_operand(words)
+
+
+def _fp4_operand(words: Tile) -> Tile:
     if (getattr(words.ty, "run", None) != 4 or words.ty.dtype is not i32 or words.ty.rows != 1
             or words.ty.cols != 256):
         raise TypeError(f"fp4_operand: an i32 strip of 1 x 256, run 4 (four dwords a lane), not {words.ty}")
@@ -2197,10 +2227,12 @@ def fp4_operand(words: Tile) -> Tile:
 
 
 def fp8_operand(words: Tile) -> Tile:
-    """An MXFP8 operand fragment from a lane's eight dwords (gfx950): `words`, an i32 strip of 1 x 512
-    with run 4 (two runs a lane), becomes a 16x128 fp8 e4m3 row tile -- run 0 the K step's 16 bytes at
-    K 16 (l / 16) .., run 1 those at 64 + 16 (l / 16) .., of row l % 16: the fragment a tile load
-    makes. For operands kept in LDS as words (an fp8 shared tile has no register path) or gathered."""
+    """Deprecated: `words.as_fragment(hk.RT(hk.fp8e4m3, 16, 128))`."""
+    _deprecated("hk.fp8_operand(words)", "words.as_fragment(hk.RT(hk.fp8e4m3, 16, 128))")
+    return _fp8_operand(words)
+
+
+def _fp8_operand(words: Tile) -> Tile:
     if (getattr(words.ty, "run", None) != 4 or words.ty.dtype is not i32 or words.ty.rows != 1
             or words.ty.cols != 512):
         raise TypeError(f"fp8_operand: an i32 strip of 1 x 512, run 4 (eight dwords a lane), not {words.ty}")
@@ -2210,8 +2242,12 @@ def fp8_operand(words: Tile) -> Tile:
 
 
 def mx_scales_loose(bytes_: Tile) -> MxScales:
-    """Loose E8M0 scales of a 16x128 operand from a lane's element (gfx950): `bytes_`, an i32 strip of
-    1 x 64 with run 1 holding the byte in bits 0..7, is lane l's scale -- row l % 16, block l / 16."""
+    """Deprecated: `bytes_.as_scales()`."""
+    _deprecated("hk.mx_scales_loose(bytes_)", "bytes_.as_scales()")
+    return _mx_scales_loose(bytes_)
+
+
+def _mx_scales_loose(bytes_: Tile) -> MxScales:
     if (getattr(bytes_.ty, "run", None) != 1 or bytes_.ty.dtype is not i32 or bytes_.ty.rows != 1
             or bytes_.ty.cols != 64):
         raise TypeError(f"mx_scales_loose: an i32 strip of 1 x 64, run 1, not {bytes_.ty}")
