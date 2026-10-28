@@ -1026,11 +1026,12 @@ template<typename ST> __device__ inline hk_lds_float *hk_st_elem_k(ST &s, int k)
     return hk_st_elem(s, k / ST::cols, k % ST::cols);
 }
 /// An LDS address past any allocation (gfx9 drops a DS write, and reads 0, at an address over the work-group's LDS
-/// size), with its low 18 bits 0: a hardware that wrapped instead would hit element 0 and tests/test_lds_oob would see it.
-/// An element op stores out-of-range indices here instead of branching: a guarded store is an exec-masked block
-/// an element.
+/// size), with its low 18 bits a lane's own word: a hardware that wrapped instead would hit the tile's first words and
+/// tests/test_lds_oob would see it; one address for every lane made the dropped accesses one 64-way bank conflict
+/// (an atomic with 80 of 128 elements out of range took 1.8 us). An element op stores out-of-range indices here
+/// instead of branching: a guarded store is an exec-masked block an element.
 template<typename P> __device__ inline P *hk_lds_nowhere() {
-    return (P *)(uintptr_t)0xFFFC0000u;
+    return (P *)(uintptr_t)(0xFFFC0000u + 4u * uint32_t(__builtin_amdgcn_mbcnt_hi(~0u, __builtin_amdgcn_mbcnt_lo(~0u, 0u))));
 }
 }  // namespace detail
 
