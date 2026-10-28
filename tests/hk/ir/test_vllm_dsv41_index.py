@@ -54,6 +54,8 @@ def fake_vllm(tmp_path, monkeypatch):
     monkeypatch.setattr(hk.target, "current_arch", lambda: "gfx950")
     yield mono.write_text
     PI.revert()
+    for name in [m for m in sys.modules if m == "vllm" or m.startswith("vllm.")]:
+        del sys.modules[name]                     # the stand-in's, not to be seen by later tests
     PI.STOCK_LAYERS.clear()
     PI._LAYERS.clear()
 
