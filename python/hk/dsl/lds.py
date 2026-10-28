@@ -10,7 +10,7 @@ from ..types import RegVecType, SharedTileType, SharedVecType, fp32
 from . import builder as B
 from .values import SharedTile, SharedVec, Tile, lds_loads
 
-__all__ = ["alloc", "alloc_vec", "shared_vec", "reserve", "wait_for", "lds_loads"]
+__all__ = ["alloc", "alloc_vec", "shared_vec", "reserve", "wait_for", "lds_loads", "phase"]
 
 
 #: Layouts an allocation may name (gfx950): include/cdna4's st_shapes that
@@ -124,6 +124,18 @@ def reserve(nbytes: int, name: str = "reserve") -> None:
     if not isinstance(nbytes, int) or nbytes <= 0:
         raise TypeError(f"reserve({nbytes!r}): a positive number of bytes")
     alloc_vec(SharedVecType(fp32, 16, -(-nbytes // 64)), name=name)
+
+
+def phase() -> None:
+    """Start an LDS phase: the allocations from here on reuse the LDS of the phases before (a union).
+
+    For a persistent launch whose workgroups run stages in order (K2's attention back, then its MoE): the
+    allocations before the first `phase()` are every phase's; each phase starts at their end, and the launch
+    takes the largest phase. At the kernel's top level only (every workgroup passes it: the allocator is
+    rewound there at run time). A tile from an earlier phase must not be read in a later one. A barrier
+    between phases is the caller's: a slow warp may still read the last phase's tiles."""
+    t = B.current()
+    hkd.LdsPhaseOp(loc=t.loc("lds_phase"))
 
 
 def wait_for(*tiles: Tile) -> None:

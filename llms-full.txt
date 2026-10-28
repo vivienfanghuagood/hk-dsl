@@ -4062,6 +4062,7 @@ hk.lds: shared memory -- allocation, and the wait that retires reads.
 - [`hk.lds.reserve`](#hkldsreserve)
 - [`hk.lds.wait_for`](#hkldswait_for)
 - [`hk.lds.lds_loads`](#hkldslds_loads)
+- [`hk.lds.phase`](#hkldsphase)
 
 ### `hk.lds.alloc`
 
@@ -4134,6 +4135,22 @@ misses the vectorised path.
 On a wave64 (CDNA) target the count depends on the matrix-core fragment,
 which hk-fragments assigns after tracing, so this only says whether the
 pair is asynchronous at all; hk-lds-pipeline sets the real count.
+
+### `hk.lds.phase`
+
+```python
+hk.lds.phase() -> None
+```
+
+*New after 0.5.0*
+
+Start an LDS phase: the allocations from here on reuse the LDS of the phases before (a union).
+
+For a persistent launch whose workgroups run stages in order (K2's attention back, then its MoE): the
+allocations before the first `phase()` are every phase's; each phase starts at their end, and the launch
+takes the largest phase. At the kernel's top level only (every workgroup passes it: the allocator is
+rewound there at run time). A tile from an earlier phase must not be read in a later one. A barrier
+between phases is the caller's: a slow warp may still read the last phase's tiles.
 
 
 <!-- docs/api/hk.group.md -->

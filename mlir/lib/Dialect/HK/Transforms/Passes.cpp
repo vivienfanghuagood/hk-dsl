@@ -253,7 +253,21 @@ struct LdsAllocPass : public mlir::hk::impl::HKLdsAllocBase<LdsAllocPass> {
     // asked for: their reads returned 0 and their writes vanished, with no error.
     // An allocation inside a runtime loop would bump every iteration: refused.
     bool bad = false;
+    // LDS phases (hk.lds.phase): the first marker ends the allocations every phase shares (`base`); each
+    // later one starts a phase at `base` again; the launch takes the largest phase's end
+    bool phased = false;
+    int64_t base = 0, phaseEnd = 0;
     f.walk<WalkOrder::PreOrder>([&](Operation *op) {
+      if (isa<LdsPhaseOp>(op)) {
+        if (!phased) {
+          phased = true;
+          base = offset;
+        } else {
+          phaseEnd = std::max(phaseEnd, offset);
+          offset = base;
+        }
+        return;
+      }
       if (!isa<AllocSharedOp, AllocSharedVecOp>(op))
         return;
       if (op->getParentOfType<scf::ForOp>() || op->getParentOfType<scf::WhileOp>()) {
@@ -274,7 +288,7 @@ struct LdsAllocPass : public mlir::hk::impl::HKLdsAllocBase<LdsAllocPass> {
       if (isa<WgArriveOp, ArriveOp>(op))
         ++arrivals;
     });
-    f->setAttr(attrs::kLdsBytes, b.getI64IntegerAttr(offset));
+    f->setAttr(attrs::kLdsBytes, b.getI64IntegerAttr(std::max(offset, phaseEnd)));
     // kittens::wg_arrive and kittens::arrive declare one `__shared__ int` per
     // instantiation (counted per op: an upper bound);
     // 16 B is what the static segment rounds it to.
