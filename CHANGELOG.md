@@ -68,6 +68,19 @@ translator now gives such an allocation the fragment's own shape (st_32x16
 here) when that one tiles it, and refuses one that no shape tiles.
 `tests/hk/ir/test_lds_narrow_tile.py`, `tests/hk/gpu/test_lds_narrow_tile.py`.
 
+
+**gfx950: `hk.ops.sparse_mla`, DeepSeek-V4.1's sparse MLA prefill, and a vLLM route
+for it (`HK_VLLM_SPARSE_MLA`, off by default).** The attention vLLM's ROCm path runs
+for a prefill chunk (AITER's opus kernel at T >= 1024): 32 heads of 512, each
+query's sliding window and top-k rows gathered by index into LDS by the DMA.
+`prefill_mxfp8` also writes the layer's inverse-RoPE'd MXFP8 rows for wo_a in the
+epilogue, bit for bit vLLM's quant of the bf16 rows. On real-weight DSV4.1-Flash
+TP2 calls at T 8192 on an MI355X: attention 1.11-1.13x opus; with the MXFP8 rows
+1.13x AITER's fused fp8 kernel and 1.29x opus + vLLM's quant pass. Below T 512
+opus is faster and the route leaves the call to vLLM. The route is off until a
+real-weight accuracy run and a serving A/B. `tests/hk/gpu/test_sparse_mla.py`,
+`tests/hk/gpu/test_vllm_sparse_mla.py`.
+
 **gfx950: fp32 LDS vectors and 16-bit col-layout LDS stores are ds ops, not FLAT.**
 `hk.SharedVec`'s load and store (what `hk.collective.cross_warp` combines
 through) and the store of a 16-bit col-layout register tile into LDS (an

@@ -108,6 +108,14 @@ def _vllm_moe_a8w4() -> Optional[List[str]]:
                       "aiter's fused_dynamic_mxfp8_quant_moe_sort takes fewer than 6 arguments"))
 
 
+def _vllm_sparse_mla() -> Optional[List[str]]:
+    if not _gfx950():
+        return None                 # gfx950's DMA gather: the route reports it and stays out
+    from . import vllm_sparse_mla as PS  # noqa: PLC0415
+
+    return PS.problems()
+
+
 def _vllm_int4() -> List[str]:
     from vllm import _custom_ops as ops  # noqa: PLC0415
     from vllm.model_executor.layers.quantization import auto_awq  # noqa: PLC0415
@@ -285,6 +293,7 @@ CHECKS: Dict[str, Callable[[], Optional[List[str]]]] = {
     "vllm_mxfp8": _vllm_mxfp8, "vllm_moe_a8w4": _vllm_moe_a8w4, "vllm_int4": _vllm_int4,
     "vllm_gemm": _vllm_gemm, "vllm_moe": _vllm_moe, "vllm_sdpa": _vllm_sdpa,
     "vllm_backend": _vllm_backend, "vllm_dsv41_index": _vllm_dsv41_index,
+    "vllm_sparse_mla": _vllm_sparse_mla,
     "sglang_linear": _sglang_linear, "sglang_moe": _sglang_moe,
     "sgld_attn": _sgld_attn, "sgld_linear": _sgld_linear, "sgld_convrot": _sgld_convrot,
 }

@@ -5211,6 +5211,8 @@ row-wise and elementwise ops are being unified by the `hk.templates` work.
 - [`hk.ops.w4a16.matmul`](#hkopsw4a16matmul)
 - [`hk.ops.hipkittens.gemm_bf16`](#hkopshipkittensgemm_bf16)
 - [`hk.ops.hipkittens.gqa_fwd`](#hkopshipkittensgqa_fwd)
+- [`hk.ops.sparse_mla.prefill`](#hkopssparse_mlaprefill)
+- [`hk.ops.sparse_mla.prefill_mxfp8`](#hkopssparse_mlaprefill_mxfp8)
 
 ## Elementwise
 
@@ -5806,6 +5808,28 @@ device checks the build (see the module docstring). Raises like
 | | gfx1100 (RDNA3) | gfx950 (CDNA4) |
 |---|---|---|
 | availability | `WrongArch` | runs |
+
+### `hk.ops.sparse_mla.prefill`
+
+```python
+hk.ops.sparse_mla.prefill(q, kv, indices, indptr, attn_sink, scale: float, out)
+```
+
+*New after 0.8.0* (the `hk.ops.sparse_mla` module is not in the 0.8.0 wheel)
+
+out [T, 32, 512] bf16 <- sparse attention of q over the rows of kv each query's CSR list names.
+
+### `hk.ops.sparse_mla.prefill_mxfp8`
+
+```python
+hk.ops.sparse_mla.prefill_mxfp8(q, kv, indices, indptr, attn_sink, scale: float, out, positions, cos_sin_cache, mx_data, mx_scale)
+```
+
+*New after 0.8.0* (the `hk.ops.sparse_mla` module is not in the 0.8.0 wheel)
+
+`prefill`, and the MXFP8 rows wo_a reads: positions [T] int64, cos_sin_cache [P, 64] fp32
+(cos | sin), mx_data [T, 32 * 512] e4m3 and mx_scale [T, 512] uint8 E8M0 (row-major), as
+vLLM's rocm_inverse_rope_mxfp8_rows writes them. `out` holds the bf16 rows.
 
 
 <!-- docs/api/hk.templates.md -->
