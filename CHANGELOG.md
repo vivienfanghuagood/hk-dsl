@@ -458,6 +458,9 @@ these sizes; the shipped one is the one that holds under both).
   - A PR that conflicts, or that turns the train red, is kicked out and the train is
     rebuilt without it.
   - READY is a PR comment that names the current head.
+- A gfx950 job's wait for an idle MI355X is `HK_CI_PICK_WAIT_MIN` minutes (runner `.env`, default 60,
+  as before), so CI can wait out other users' processes on its GPUs instead of failing; the gfx950
+  and gfx950-vllm jobs' timeout is 360 minutes, which covers the wait (#123).
 
 ## 0.8.0
 
