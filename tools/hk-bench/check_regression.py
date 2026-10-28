@@ -68,6 +68,16 @@ import _rounds  # noqa: E402
 #: count at 50 so the microsecond norms are measurable at all.
 ARGS = ["--only", "gemm,attn,norm,softmax", "--arms", "hk,torch,inductor,triton,flydsl",
         "--rounds", "7", "--calls", "50"]
+#: An arch's own arguments where they differ. gfx1201's gate runs in its CI job's container
+#: (rocm/pytorch, no FlyDSL or AITER), so its arms are the ones that container has, and it
+#: gates the fp8 and int8 GEMMs too, which only gfx1201 has.
+ARGS_AT = {"gfx1201": ["--only", "gemm,attn,norm,softmax,fp8,int", "--arms",
+                       "hk,torch,inductor,triton", "--rounds", "7", "--calls", "50"]}
+
+
+def args_for(arch: str) -> list:
+    """The scoreboard arguments a new baseline for `arch` is measured with."""
+    return ARGS_AT.get(arch, ARGS)
 HK = "hk"
 #: No tolerance below this, however quiet the baseline runs were: three runs
 #: see less than the worst a fourth will.
@@ -223,7 +233,7 @@ def refresh(paths, out: Path) -> int:
         "_noise": summary,
         "arch": archs.pop(),
         "date": max(r["meta"].get("date", "") for r in reports)[:10] or time.strftime("%Y-%m-%d"),
-        "args": ARGS, "floor": FLOOR, "multiplier": MULTIPLIER, "cap": CAP,
+        "args": args_for(reports[0]["meta"]["arch"]), "floor": FLOOR, "multiplier": MULTIPLIER, "cap": CAP,
         "runs": len(reports), "stat": stats.pop(),
         "meta": {k: meta.get(k) for k in DRIFT + INFO if meta.get(k) is not None},
         "cases": cases, "not_gated": skipped,
@@ -317,10 +327,12 @@ def main() -> int:
                     help="print the scoreboard arguments the baseline was measured with")
     ap.add_argument("--audit", action="store_true",
                     help="list the rounds each report's arms rejected, or would have")
+    ap.add_argument("--arch", default="gfx1100",
+                    help="with --print-args and no baseline yet: the arch's arguments (ARGS_AT)")
     args = ap.parse_args()
     if args.print_args:
         p = Path(args.baseline)
-        print(" ".join(json.loads(p.read_text())["args"] if p.is_file() else ARGS))
+        print(" ".join(json.loads(p.read_text())["args"] if p.is_file() else args_for(args.arch)))
         return 0
     if args.audit:
         return audit(args.runs)

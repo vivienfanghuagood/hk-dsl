@@ -39,13 +39,28 @@ jobs:
     # it is split by a stable hash of the test id over ten runners (tests/hk/conftest.py
     # --hk-shard), each with its own compile cache; the IR tier runs on the "ir" leg.
     # Cold (PR #32, every key new): six shards took 8-20 minutes a job, setup 2.5 of them.
-    name: ${{ matrix.shard == 'ir' && 'IR tier' || format('codegen tier ({0}/10)', matrix.shard) }}
+    # gfx1201 (RDNA4) has legs of its own: the IR tier and the codegen tier with HK_ARCH=gfx1201,
+    # the codegen tier in four shards (it compiles the RDNA kernels only). gfx1100's leg names are
+    # unchanged; gfx1201's carry the arch.
+    name: >-
+      ${{ format('{0}{1}',
+            matrix.shard == 'ir' && 'IR tier' || format('codegen tier ({0}/{1})', matrix.shard, matrix.of || 10),
+            matrix.arch == 'gfx1201' && ', gfx1201' || '') }}
     runs-on: ubuntu-22.04
     timeout-minutes: 45
+    env:
+      HK_ARCH: ${{ matrix.arch == 'gfx1201' && 'gfx1201' || '' }}
     strategy:
       fail-fast: false
       matrix:
         shard: [ir, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
+        arch: [gfx1100]
+        include:
+          - {shard: ir, arch: gfx1201}
+          - {shard: 0, arch: gfx1201, of: 4}
+          - {shard: 1, arch: gfx1201, of: 4}
+          - {shard: 2, arch: gfx1201, of: 4}
+          - {shard: 3, arch: gfx1201, of: 4}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -55,7 +70,7 @@ jobs:
       # outside scripts/public_hygiene_allow.txt (docs/releasing.md). The generic rules only; the
       # release gate adds the site's names from a maintainer's local file.
       - name: Public hygiene
-        if: matrix.shard == 'ir'
+        if: matrix.shard == 'ir' && matrix.arch == 'gfx1100'
         run: python3 scripts/check_public_hygiene.py
 
       - name: MLIR 23.1.3, prebuilt
@@ -100,10 +115,10 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~/.cache/hk
-          key: hk-cache-rocm${{ env.ROCM_VERSION }}-s${{ matrix.shard }}of10-${{ hashFiles('include/**', 'python/hk/**/*.py', 'third_party/HipKittens/include/**') }}
+          key: hk-cache-rocm${{ env.ROCM_VERSION }}-${{ matrix.arch == 'gfx1201' && 'gfx1201-' || '' }}s${{ matrix.shard }}of${{ matrix.of || 10 }}-${{ hashFiles('include/**', 'python/hk/**/*.py', 'third_party/HipKittens/include/**') }}
           restore-keys: |
-            hk-cache-rocm${{ env.ROCM_VERSION }}-s${{ matrix.shard }}of10-
-            hk-cache-rocm${{ env.ROCM_VERSION }}-
+            hk-cache-rocm${{ env.ROCM_VERSION }}-${{ matrix.arch == 'gfx1201' && 'gfx1201-' || '' }}s${{ matrix.shard }}of${{ matrix.of || 10 }}-
+            hk-cache-rocm${{ env.ROCM_VERSION }}-${{ matrix.arch == 'gfx1201' && 'gfx1201-' || '' }}
 
       # tests/hk/engines skips here (no vLLM, no SGLang); it runs in the
       # engines' venvs on the dev pod (docs/testing.md).
@@ -116,7 +131,7 @@ jobs:
       # A current setuptools in the user site and ISOLATION=0: 22.04's pip 22.0.2 builds an
       # isolated UNKNOWN-0.0.0 wheel against the system setuptools 59.6.
       - name: Wheel, manylinux tag, glibc check
-        if: matrix.shard == 'ir'
+        if: matrix.shard == 'ir' && matrix.arch == 'gfx1100'
         run: |
           /usr/bin/python3 -m pip install --user "setuptools>=64" auditwheel "wheel>=0.42"
           PYTHON=/usr/bin/python3 ISOLATION=0 OUT="$RUNNER_TEMP/dist" scripts/build_wheel.sh
@@ -128,4 +143,4 @@ jobs:
         if: matrix.shard != 'ir'
         run: >
           PYTHONPATH=python /usr/bin/python3 -m pytest -q -p no:cacheprovider -n auto
-          --hk-shard ${{ matrix.shard }}/10 tests/hk/codegen
+          --hk-shard ${{ matrix.shard }}/${{ matrix.of || 10 }} tests/hk/codegen

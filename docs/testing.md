@@ -218,6 +218,12 @@ cancels a PR's run in progress, but main's runs always finish:
     touching the CDNA shim compiled the whole tier cold on one 4-core runner,
     40-56 minutes against `main`'s warm 5 (PRs #28-#31).
   - **Warm,** the tier takes about 10 seconds a shard.
+- **gfx1201 has legs of its own**: the IR tier (`IR tier, gfx1201`) and the
+  codegen tier in four shards (`codegen tier (I/4), gfx1201`), both with
+  `HK_ARCH=gfx1201` and the same ROCm 7.1 hipcc. They catch what only the RDNA4
+  build does wrong -- a schedule that spills there, a wait or a layout gfx12 has
+  and gfx1100 does not -- without a GPU. Their caches are keyed apart from
+  gfx1100's.
 
 A new MLIR, or a CPython other than the runner's, needs a new archive. Build
 it with `scripts/build_mlir.sh`, pack the install tree with LLVM's and MLIR's
