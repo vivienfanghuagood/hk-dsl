@@ -146,6 +146,21 @@ def rocm_inverse_rope_mxfp8_rows(o, positions, cos_sin_cache, rope_head_dim, out
     return None
 
 
+def _mx_layout_ok(lay: "_Layer") -> bool:
+    """The layer's MXFP8 destination is the layout prefill_mxfp8 writes: [T, 32 * 512] e4m3 and
+    [T, 512] uint8 rows, contiguous; positions int64; cos/sin [P, 64] fp32. Anything else: vLLM's pass."""
+    import torch  # noqa: PLC0415
+
+    from ..ops import sparse_mla as SM  # noqa: PLC0415
+
+    d, sc, p, cs = lay.mxd, lay.mxs, lay.positions, lay.cos_sin
+    n = d.shape[0] if d.dim() == 2 else -1
+    return (d.dtype == torch.float8_e4m3fn and d.dim() == 2 and d.shape[1] == SM.H * SM.D and d.is_contiguous()
+            and sc.dtype == torch.uint8 and tuple(sc.shape) == (n, SM.H * SM.D // 32) and sc.is_contiguous()
+            and p.dtype == torch.int64 and p.dim() == 1 and p.shape[0] == n and p.is_contiguous()
+            and cs.dtype == torch.float32 and cs.dim() == 2 and cs.shape[1] == SM.D - SM.NOPE)
+
+
 def _forward_prefill(self, q, positions, compressed_k_cache, swa_k_cache, output, attn_metadata,
                      swa_metadata, mxfp8_out=None):
     """Stands in for DeepseekV41ROCMAiterMLAAttention._forward_prefill: vLLM's, with the layer's MXFP8
@@ -159,6 +174,8 @@ def _forward_prefill(self, q, positions, compressed_k_cache, swa_k_cache, output
         n = int(swa_metadata.num_prefill_tokens)
         cs = _cos_sin_fp32(self.rotary_emb.cos_sin_cache)
         lay = _Layer(q, positions[:n], cs, mxfp8_out[0][:n], mxfp8_out[1][:n])
+        if not _mx_layout_ok(lay):
+            raise ValueError("not the MXFP8 layout hk writes")
     except Exception:  # noqa: BLE001 -- anything unexpected: vLLM's own path
         return orig(self, q, positions, compressed_k_cache, swa_k_cache, output, attn_metadata, swa_metadata,
                     mxfp8_out=mxfp8_out)

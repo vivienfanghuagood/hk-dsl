@@ -147,3 +147,18 @@ def test_the_plugin_applies_it_only_when_asked(monkeypatch):
         assert rocm.rocm_sparse_attn_prefill is R.rocm_sparse_attn_prefill
     finally:
         R.revert()
+
+
+def test_an_mxfp8_destination_of_another_layout_is_left_to_vllm(patched):
+    """A destination prefill_mxfp8 does not write (a strided scale view here) is refused, so
+    _forward_prefill notes no layer: the chunks run hk's bf16 kernel and vLLM's pass quantizes them."""
+    import torch as T_
+
+    n = 8
+    md = T_.zeros(n, H * D, dtype=T_.float8_e4m3fn, device="cuda")
+    ms = T_.zeros(n, H * D // 16, dtype=T_.uint8, device="cuda")[:, ::2]
+    lay = R._Layer(T_.zeros(n, H, D, dtype=T_.bfloat16, device="cuda"),
+                   T_.arange(n, device="cuda"), T_.zeros(4, 64, device="cuda"), md, ms)
+    assert not R._mx_layout_ok(lay)
+    lay.mxs = ms.contiguous()
+    assert R._mx_layout_ok(lay)
