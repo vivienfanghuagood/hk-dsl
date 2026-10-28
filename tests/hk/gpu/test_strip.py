@@ -442,3 +442,44 @@ def test_mfma_strip_is_one_f32_16x16x4_in_its_lane_layout():
     torch.cuda.synchronize()
     D = C + A @ B.T
     assert torch.equal(o.cpu(), D[rows, cols].reshape(1, 256))
+
+
+@_gfx950
+def test_an_mma_result_as_a_lane_strip_holds_its_elements_where_lane_coords_say():
+    """Oᵀ = Vᵀ P (the 32x32x16 matrix-core shape of an attention's P·V, one warp): the result taken
+    as a run-16 strip and scattered by hk.lane_coords lands as torch's product; a 32-row group's
+    max is a lane's run and lane l ^ 32's; run_xor(1) is the neighbouring row (a col-layout run
+    holds four consecutive rows); a strip's own lane strip re-runs it in place."""
+    TV = hk.RT(hk.bf16, 32, 128, "col", frag=(16, 32))
+    TP = hk.RT(hk.bf16, 32, 32, "col", frag=(16, 32))
+    TO = hk.RT(hk.fp32, 128, 32, "col", frag=(32, 32))
+    S8 = hk.RS(hk.fp32, 1, 512, 8)
+
+    def lanes(v: hk.Tensor[hk.bf16], p: hk.Tensor[hk.bf16], o: hk.Tensor[hk.fp32], mx: hk.Tensor[hk.fp32],
+              nb: hk.Tensor[hk.fp32], x: hk.Tensor[hk.fp32], xo: hk.Tensor[hk.fp32]):
+        acc = hk.zeros(TO)
+        acc += v.at[0, 0].load(TV).T @ p.at[0, 0].load(TP)
+        s = acc.lane_strip(16)
+        rows, cols = hk.lane_coords(acc, 16)
+        at = hk.map_cpp("x0 * 32 + x1", rows, cols, dtype=hk.i32)
+        o.store_elems(s, at)
+        mx.store_elems(s.group_max(32, xor=(32,)), at)
+        nb.store_elems(s.run_xor(1), at)
+        a = x.at[0, 0].load(S8)
+        r4, c4 = hk.lane_coords(a, 4)
+        xo.store_elems(a.lane_strip(4), c4)
+
+    k = hk.kernel(lanes, warps=1, name="lane_strip_mma", grid=lambda p: (1, 1, 1))
+    g = torch.Generator(device="cpu").manual_seed(11)
+    V = torch.randint(-4, 5, (32, 128), generator=g).bfloat16()          # small integers: exact
+    P = torch.randint(-4, 5, (32, 32), generator=g).bfloat16()
+    X = torch.randn(1, 512, generator=g)
+    o, mx, nb = (torch.full((128, 32), float("nan"), device="cuda") for _ in range(3))
+    xo = torch.zeros(1, 512, device="cuda")
+    k(V.cuda(), P.cuda(), o, mx, nb, X.cuda(), xo)
+    torch.cuda.synchronize()
+    want = V.float().T @ P.float()
+    assert torch.equal(o.cpu(), want)
+    assert torch.equal(mx.cpu(), want.view(4, 32, 32).amax(1, keepdim=True).expand(4, 32, 32).reshape(128, 32))
+    assert torch.equal(nb.cpu(), want[torch.arange(128) ^ 1])
+    assert torch.equal(xo.cpu(), X)

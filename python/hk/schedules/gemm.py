@@ -1020,7 +1020,7 @@ def lookup(m: int, n: int, k: int, arch: Optional[str] = None, *,
             return Decode(**decode_gemm.schedule_for(m, k))
     elif op != "matmul":
         raise ValueError(f"op={op!r}: 'matmul' or 'template'")
-    return Rdna(**rdna.schedule_for(m, n, k))
+    return Rdna(**rdna.schedule_for(m, n, k, arch=arch))
 
 
 def space(m: int, n: int, k: int, arch: Optional[str] = None, *,

@@ -9,6 +9,77 @@ The next version's notes collect here until it is released.
 What is on main after 0.8.0. `pip install hk-dsl` (0.8.0) does not have it;
 the API reference marks such names *New after 0.8.0*.
 
+**gfx950: an LDS tile narrower than its read's layout was never copied.** A
+tile with fewer rows or columns than the include/cdna4 st shape its read's
+fragment picks -- a 32x16 bf16 tile read as the 32x16 row operand of the
+32x32x16 MFMA, which picks st_32x32 -- held no whole subtile of that shape, and
+include/cdna4's copies loop over subtiles: every store and load of it compiled
+to nothing, and the MFMA read whatever the LDS held, with no error. The
+translator now gives such an allocation the fragment's own shape (st_32x16
+here) when that one tiles it, and refuses one that no shape tiles.
+`tests/hk/ir/test_lds_narrow_tile.py`, `tests/hk/gpu/test_lds_narrow_tile.py`.
+
+**gfx950: fp32 LDS vectors and 16-bit col-layout LDS stores are ds ops, not FLAT.**
+`hk.SharedVec`'s load and store (what `hk.collective.cross_warp` combines
+through) and the store of a 16-bit col-layout register tile into LDS (an
+accumulator converted to bf16 -- attention's P handed to other warps) went
+through include/cdna4's generic-pointer paths, so the compiler emitted FLAT
+loads and stores. FLAT counts in vmcnt as well as lgkmcnt: a sparse-MLA kernel's
+per-block max exchange waited for its next KV block's DMA. `include/hk/cdna.cuh`
+now has the same accesses through LDS pointers, as the fp32 tiles got in #59.
+`tests/hk/codegen/test_cdna_fp32_lds.py`.
+
+**gfx950: a matrix-core result as a strip, where it sits: `Tile.lane_strip`,
+`hk.lane_coords`, `Tile.run_xor`, and group reductions over any xor offsets.**
+`acc.lane_strip(run)` takes a register tile's registers, lane by lane, as a 1-row
+strip. No data moves. `hk.lane_coords(acc, run)` gives each element's row and
+column in the tile, so `hk.map_cpp`, `group_max` and `store_elems` work on an MMA
+result without a round trip through memory: an epilogue that quantizes
+attention's output to MXFP8 per 32-row group. `run_xor(mask)` takes an element's
+partner inside its lane's run, such as a rotary pair. `group_max`/`group_min`/
+`group_sum` take any distinct power-of-two xor offsets up to 32, not only the
+neighbouring 1 .. 2^(k-1). A 32x32 result's 32-row column block is a lane's
+run plus lane l ^ 32's: `group_max(32, xor=(32,))`.
+`tests/hk/gpu/test_strip.py`, `tests/hk/ir/test_strip.py`.
+
+**vLLM, DeepSeek-V4.1 under `--monokernel`: the index layers as one hk launch
+(`HK_VLLM_DSV41_INDEX`, on by default on gfx950).** Between dsv41_mono's two
+launches each index layer ran vLLM's 9-12-kernel chain (`mono_decode._select`).
+At decode steps of up to 8 rows, `hk.integration.vllm_dsv41_index` runs it as
+one resident launch, `hk.ops.dsv41_index`: compressor, compressed-cache insert,
+indexer K and Q, and, for rows of up to 12288 entries, the logits and the
+top-k. The caches, q and q_scale are vLLM's byte for byte and the top-k sets
+equal (docs/integration.md, "The DeepSeek-V4.1 index launch"). The route
+patches through an import hook, since the plugin must not import the model
+package, and its contract is read from the module's source.
+
+**CDNA: the MFMA hazard gate pads what LLVM leaves short.** The hardware
+does not interlock on an MFMA's result. LLVM before llvm/llvm-project#225989
+-- every ROCm release so far, 7.2.3 and the 10.x images included -- pads too
+little on the shortest path into a block it first reached the long way
+(ROCm/llvm-project#5153), and gfx950's paged decode computed some scores
+wrong from it. hk's build now checks every CDNA code object
+(`hk.runtime.mfmahaz`: a shortest-distance walk backwards over the control
+flow from each instruction that touches an MFMA's registers, against LLVM's
+windows) and, by default, rebuilds a kernel that is short anywhere with the
+`s_nop` padding the fixed compiler would emit (`HK_MFMA_GATE=fix`; `refuse`,
+`report` and `0` are the other modes). The build log, the cache entry's
+`MFMAHAZ` and `python3 -m hk.integration --status` name each padded kernel
+and the places. A compiler that pads the gate's two-path probe is not
+checked. Swept over every kernel the test tiers and the default routes build:
+- ROCm 7.2.3 (CI's GPU image): gfx950's dense attention, head_dim 64 and 128,
+  not causal -- `hk.attention`'s kernel -- reads S for the softmax's max 3-4
+  wait states after the last QK MFMA on the taken path of a branch, where 12
+  are needed (2 places a kernel). Padded, its output is bitwise the unpadded
+  one's and its time 0.993-1.003x (6 shapes, one process).
+- ROCm 10 (the vLLM image): HipKittens' causal attention (`attend_ker`,
+  hk.ops.hipkittens), 3-6 wait states short at the join after an exec branch
+  (6 places at head_dim 128, 3 at 64); and one `hk.ops.gemm_cdna_dp`
+  candidate with a bias+GELU epilogue (an MFMA reading an overlapping
+  accumulator 1 wait state early).
+- The default-on routes' kernels (vllm_mxfp8, vllm_moe_a8w4, vllm_int4) are
+  clean under both; gfx1100 / gfx1201 have no MFMAs.
+
 **`warm-routes` builds every K2 kernel a server can pick.**
 - `python3 -m hk.integration warm-routes` called K2 (the MXFP8 linear route) at
   M = 2048 / 5120 / 8192 / 16384 only. The four-warp `stages=2` schedule that
@@ -28,8 +99,11 @@ to hold one in AGPRs.**
   between a matrix-core chain and the first other op that touches its
   accumulator. On gfx950 LLVM threaded the softmax's reads of AGPR scores
   through the two-page paged decode's MFMA chains and computed some scores
-  2-4e-2 wrong, differently from one build to the next; the ISA breaks none of
-  LLVM's own MFMA hazard windows. The decode's hand-written fence is gone; the
+  2-4e-2 wrong, differently from one build to the next: one of those reads
+  sat a branch after its MFMA, and LLVM's hazard recognizer, measuring the
+  longer path into that block, padded 2 wait states where 8 are needed
+  (fixed in LLVM by llvm/llvm-project#225989; ROCm 7.2.3 to 10.1 do not have
+  it, ROCm/llvm-project#5153). The decode's hand-written fence is gone; the
   rule covers every CDNA kernel. `hk.arch.mma_fence(False)` turns it off for an
   A/B (`attn_kernel(mma_fence=)`, `decode_kernel(fence_qk=)`).
   - Where it lands: attention's prologue (its main loop fences its phases
@@ -48,6 +122,22 @@ to hold one in AGPRs.**
   LLVM cannot schedule around an asm MFMA (AGPR placement itself measured
   +1.5-2.4% like for like). LLVM 22's register split spills the d128 kernel;
   the causal pairs walk (two O tiles) spills on either toolchain.
+
+**Attention tests hold the kernels to their own error.** Every attention
+test (test_attn, test_sdpa, test_paged, test_paged_fused, test_paged_prefill,
+test_attn_k3, test_hipkittens' GQA, test_schedules' attention,
+test_vllm_backend_decode, test_fenced's attention cases) compares against
+attention in float64 (`tests/hk/gpu/_attn_ref.py`) instead of torch's fp32
+SDPA, which moved by more than the kernel's error from run to run on ROCm,
+through one check, `_attn_ref.check`:
+- every output row within 4 bf16 ulps of that row's largest value (worst
+  measured: 2.31 on gfx950, CI and vLLM images; 1.32 on gfx1100);
+- and 1e-2 of the whole output's largest value (worst 7.1e-3 / 5.3e-3),
+  where the tests asked 2e-2 to 5e-2.
+The gfx950 decode that computed some scores wrong (ROCm/llvm-project#5153)
+was 16-30 ulps off in its worst row and passed the old bounds. The value
+caches of the paged tests now come from the test's own generator, so a case
+sees the same data in any order.
 
 **gfx950 paged decode: two pages a step, a cheaper merge, and no point
 slower than before the 512-split plan.** The previous entry's plan was up to
@@ -322,7 +412,17 @@ sort and gives each (token, choice) pair a block of its own. There, OLMoE decode
 equal round for round); past it vLLM's Triton kernel runs, which from 16 tokens a step
 streams the chosen experts at ~96% of GDDR6's rate. `vllm_moe` is on by default on gfx1201.
 
+**gfx1201's bf16 GEMM at 1024-8192 rows** (#114, RDNA4). 11 more shipped gfx1201 schedules
+in `routes_gemm_gfx1201.json`, for Qwen3's four (N, K): 4.1-6.1% faster than the default
+schedule under the R9700 vLLM image's clang 23, and under ROCm 7.2.3's clang 22 2.3-3.4%
+faster at four shapes and within 1% at the rest (each compiler's own champions disagree at
+these sizes; the shipped one is the one that holds under both).
+
 **Fixes**
+- **`hk.schedules.lookup(arch=...)`, `hk.templates.gemm.plan(arch=...)` and hk.tune's
+  incumbent read the current arch's tuned records, not the asked arch's** (#114): under
+  `HK_ARCH=gfx1201`, `lookup(arch="gfx1100")` could return a gfx1201 schedule illegal on
+  gfx1100. `hk.ops.gemm.user_route` / `schedule_for` take an `arch` now.
 - **gfx950: `hk.ops.gemm.matmul` raised `ResourceError` in the vLLM image** (#84) at M 192-512 for
   N 28672 / 14336, K 4096: its table routes there to `dp128x224`, which ROCm 10's hipcc builds
   with a 13-VGPR spill, and the spill gate refuses it. The route now records a refused candidate
@@ -361,6 +461,19 @@ streams the chosen experts at ~96% of GDDR6's rate. `vllm_moe` is on by default 
   `check_regression.py` takes each arch's scoreboard arguments (`ARGS_AT`). Run by hand on an
   R9700, as gfx1100's is, not in the gfx1201 job (#106,
   [testing](docs/testing.md#the-gfx1201-runner)).
+- Pull requests merge through a merge train, `scripts/ci/merge_train.py` (#113,
+  [testing](docs/testing.md#the-merge-train)).
+  - Twice a day, at 01:00Z and 13:00Z, every READY PR is stacked in READY order on
+    `train/<YYYYMMDD>-<HHMM>`, as GitHub's squash merge will apply it.
+  - CI and the GPU tier's four jobs run once on that branch.
+  - If they are green, the PRs are squash-merged in order, and main's tree is checked
+    against the train's after each merge.
+  - A PR that conflicts, or that turns the train red, is kicked out and the train is
+    rebuilt without it.
+  - READY is a PR comment that names the current head.
+- A gfx950 job's wait for an idle MI355X is `HK_CI_PICK_WAIT_MIN` minutes (runner `.env`, default 60,
+  as before), so CI can wait out other users' processes on its GPUs instead of failing; the gfx950
+  and gfx950-vllm jobs' timeout is 360 minutes, which covers the wait (#123).
 
 ## 0.8.0
 
