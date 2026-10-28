@@ -59,7 +59,7 @@ and which rule decided.
 | decoder attention backend | `HK_VLLM_BACKEND` | off | replaces ROCm's default decoder attention for every model, and raises rather than falls back on sliding windows, sinks, softcap, an fp8 KV cache, fp16 or other head sizes; validated on Qwen3-8B only |
 | ConvRot INT8 (`--quantization convrot_int8`) | `HK_SGLD_CONVROT`, or `HK_SGLD=...,convrot` | **off: opt-in** | lossy by design (PSNR 30.4 dB from bf16, visible drift): a model-level choice, not a toolchain default |
 | MXFP8 at any (N, K) | `HK_MXFP8_ANY` | off | a mode of K2; no real-weight run |
-| DeepSeek-V4.1 sparse MLA prefill, calls of T >= 512 queries (`MIN_T`), and the layer's MXFP8 rows for wo_a in the kernel's epilogue | `HK_VLLM_SPARSE_MLA` | off | on real-weight top-k-layer calls (T 8192) 1.29x opus + vLLM's quant, 1.13x AITER's fused fp8 kernel; MXFP8 rows bit for bit vLLM's quant of hk's bf16 rows; real-weight accuracy and a serving A/B are still to run |
+| DeepSeek-V4.1 sparse MLA prefill, calls of T >= 512 queries (`MIN_T`), and the layer's MXFP8 rows for wo_a made in the kernel from O in registers | `HK_VLLM_SPARSE_MLA` | off | on real-weight calls at T 8192: top-k layers 1.39x opus + vLLM's quant and 1.22x AITER's fused fp8 kernel, sliding-window layers 1.97x and 1.12x; MXFP8 rows bit for bit vLLM's quant of hk's bf16 rows; real-weight accuracy and a serving A/B are still to run |
 
 On a GPU a route was not validated on (gfx942, gfx1201), it is off unless you
 turn it on.

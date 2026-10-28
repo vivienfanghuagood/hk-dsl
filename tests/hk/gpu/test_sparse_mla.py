@@ -97,7 +97,7 @@ def _torch_quant(o, pos, cs):
     return qv.to(torch.float8_e4m3fn), bits.to(torch.uint8)
 
 
-def test_mxfp8_rows_are_vllms_quant_of_the_bf16_rows():
+def test_mxfp8_rows_are_vllms_quant_of_prefills_bf16_rows():
     lens = [640, 128, 600, 1, 0, 300] * 6
     q, kv, ind, ptr, sink = _case(lens, seed=3)
     T = q.shape[0]
@@ -105,12 +105,12 @@ def test_mxfp8_rows_are_vllms_quant_of_the_bf16_rows():
     ang = torch.arange(int(pos.max()) + 1, device="cuda", dtype=torch.float32)[:, None] * \
         (10000.0 ** (-torch.arange(32, device="cuda", dtype=torch.float32) / 32))[None]
     cs = torch.cat([ang.cos(), ang.sin()], dim=1).contiguous()
-    out = torch.empty_like(q)
     md = torch.empty(T, H * D, dtype=torch.float8_e4m3fn, device="cuda")
     ms = torch.empty(T, H * D // 32, dtype=torch.uint8, device="cuda")
-    sparse_mla.prefill_mxfp8(q, kv, ind, ptr, sink, SCALE, out, pos, cs, md, ms)
+    sparse_mla.prefill_mxfp8(q, kv, ind, ptr, sink, SCALE, pos, cs, md, ms)
+    # the bf16 rows prefill writes: the MXFP8 rows are made from the same O, in registers
+    out = sparse_mla.prefill(q, kv, ind, ptr, sink, SCALE, torch.empty_like(q))
     torch.cuda.synchronize()
-    assert torch.equal(out, sparse_mla.prefill(q, kv, ind, ptr, sink, SCALE, torch.empty_like(q)))
     vq = _vllm_quant()
     if vq is not None:
         rd, rs = torch.empty_like(md), torch.empty_like(ms)

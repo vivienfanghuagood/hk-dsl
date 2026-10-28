@@ -659,11 +659,11 @@ out [T, 32, 512] bf16 <- sparse attention of q over the rows of kv each query's 
 ### `hk.ops.sparse_mla.prefill_mxfp8`
 
 ```python
-hk.ops.sparse_mla.prefill_mxfp8(q, kv, indices, indptr, attn_sink, scale: float, out, positions, cos_sin_cache, mx_data, mx_scale)
+hk.ops.sparse_mla.prefill_mxfp8(q, kv, indices, indptr, attn_sink, scale: float, positions, cos_sin_cache, mx_data, mx_scale)
 ```
 
 *New after 0.8.0* (the `hk.ops.sparse_mla` module is not in the 0.8.0 wheel)
 
-`prefill`, and the MXFP8 rows wo_a reads: positions [T] int64, cos_sin_cache [P, 64] fp32
-(cos | sin), mx_data [T, 32 * 512] e4m3 and mx_scale [T, 512] uint8 E8M0 (row-major), as
-vLLM's rocm_inverse_rope_mxfp8_rows writes them. `out` holds the bf16 rows.
+`prefill`'s rows as wo_a reads them, and no bf16 rows: positions [T] int64, cos_sin_cache [P, 64]
+fp32 (cos | sin), mx_data [T, 32 * 512] e4m3 and mx_scale [T, 512] uint8 E8M0 (row-major), as
+vLLM's rocm_inverse_rope_mxfp8_rows writes them from `prefill`'s output.

@@ -10,9 +10,10 @@ T >= 1024 queries), on the same inputs:
   * attn_sink [32] fp32 -- exp(sink) joins each head's softmax denominator;
   * out [T, 32, 512] bf16.
 
-`prefill_mxfp8` also writes what the layer hands to wo_a: the rows inverse-RoPE'd on lanes 448-511
-(GPT-J pairs) and MXFP8-quantized, one E8M0 scale a 32 lanes -- the arithmetic of vLLM's
-`_inverse_rope_mxfp8_quant_kernel` on the bf16 rows, bit for bit.
+`prefill_mxfp8` writes instead what the layer hands to wo_a: the rows inverse-RoPE'd on lanes
+448-511 (GPT-J pairs) and MXFP8-quantized, one E8M0 scale a 32 lanes -- the arithmetic of vLLM's
+`_inverse_rope_mxfp8_quant_kernel` on the bf16 rows `prefill` writes, bit for bit -- and no bf16
+rows (vLLM's are a scratch buffer only that pass reads).
 
 The kernel. One query a workgroup of four warps, all 32 heads; two workgroups a CU (71 KB of LDS,
 224 VGPRs), so one workgroup's MFMAs fill the other's waits at its per-block exchanges -- the same
@@ -29,14 +30,18 @@ The query's rows are walked in 32-row blocks, gathered by index into LDS by gfx9
       from: V's col fragment (16 kv x 32 d, a run of 8) and K's row fragment (16 x 32, run 8)
       read the same st_16x32 layout.
 
-The sink and 1/l at the end; Oᵀ stored transposed. The MXFP8 epilogue re-reads the stored bf16 rows
-(each warp a quarter of the heads, all of a head's loads first) as register strips.
+The sink and 1/l at the end; Oᵀ stored transposed. The MXFP8 epilogue works on O where it sits:
+Oᵀ taken as a strip (`lane_strip`), a 32-lane MX group is a lane's run of a 32x32 fragment and lane
+l ^ 32's (`group_max(32, xor=(32,))`), a rope pair's partner the next element of the run
+(`run_xor(1)`); lanes l and l ^ 32 then trade half their values (`lane_gather`) so each stores 16
+consecutive fp8 of its head at once.
 
 Measured on an MI355X against the kernels on vLLM's path, DSV4.1-Flash TP2 calls captured from a
 real-weight run (kda/sparse-mla-prefill): top-k layers at T 8192, 640 rows a query, 1.11-1.13x opus
-(attention), 1.13x AITER's fused fp8 sparse_mla_fwd and 1.29x opus + vLLM's quant (with the MXFP8
-rows); sliding-window layers 1.15-1.20x the faster of opus and AITER (attention). At T <= 256 one
-query a workgroup leaves the machine half empty and opus is faster: `MIN_T`.
+(attention); with the MXFP8 rows 1.22x AITER's fused fp8 sparse_mla_fwd and 1.39x opus + vLLM's
+quant; sliding-window layers 1.15-1.20x the faster of opus and AITER (attention), 1.12x and 1.97x
+with the MXFP8 rows. At T <= 256 one query a workgroup leaves the machine half empty and opus is
+faster: `MIN_T`.
 """
 
 from __future__ import annotations
@@ -76,16 +81,38 @@ ST_KV = hk.ST(bf16, KB, D)
 ST_P = hk.ST(bf16, KB, H)
 ST_SX = hk.ST(fp32, KQ, H)                         # a D-half-1 warp's partial Sᵀ, for its partner
 
-HPW = H // WARPS                                   # heads a warp quantizes in the epilogue
-S8 = hk.RS(fp32, 1, D, 8)                          # a head's row, a run of 8 a lane
-S8I = hk.RS(i32, 1, D, 8)
-S1 = hk.RS(fp32, 1, D - NOPE, 1)                   # the 64 rope lanes, one a lane
-S1I = hk.RS(i32, 1, D - NOPE, 1)
 #: vLLM's _mxfp8_scale_bits, as written there: the biased E8M0 exponent that puts amax at the top
 #: of e4m3's range. (From amax's bits -- hk.mx_quant_store's rule -- differs from it in about one
 #: scale in four million: Triton's log2 just past 1.75 x 2^e.)
 BITS = ("fminf(fmaxf(ceilf(__builtin_log2f(fmaxf(x0, 1.1754943508222875e-38f) / 448.0f)) + 127.0f, "
         "0.0f), 254.0f)")
+
+
+ST16 = hk.RS(fp32, 1, 64 * 64, 16)     # Oᵀ's registers, a run a 32x32 fragment
+#: d within the warp's 128 of a run-16 strip element, x0 its strip column (lane l = (x0 >> 4) & 63, e = x0 & 15)
+DL = "(((x0 >> 10) << 5) + (((x0 & 15) >> 2) << 3) + ((((x0 >> 4) & 63) >> 5) << 2) + (x0 & 3))"
+
+
+def _quant_store(r, mxd, mxs, t, w):
+    """The MXFP8 rows of r (a run-16 strip of Oᵀ, bf16 values) to mxd / mxs row t (a query's 32 x 512)."""
+    b = hk.map_cpp(BITS, hk.map_cpp("fabsf(x0)", r).group_max(32, xor=(32,)))
+    qv = hk.map_cpp("x0 * __builtin_exp2f(127.0f - x1)", r, b)
+    c = hk.iota(ST16)
+    # one scale a 32-d group: element 0 of lane l < 32's run k is d 32k of head l
+    mxs.store_elems(b, hk.map_cpp(f"(x0 & 15) == 0 && ((x0 >> 4) & 63) < 32 ? ((x0 >> 4) & 31) * {D // 32} + "
+                                  f"{DW // 32} * x1 + (x0 >> 10) : -1", c, w, dtype=i32), row=t)
+    # 16 bytes a store: lane l (half h = l >> 5) and lane l ^ 32 trade half their values so each holds
+    # d 32k + 16h .. +15 of its head. h 0 wants [own q0, its q0, own q1, its q1], h 1 [its q2, own q2,
+    # its q3, own q3] (q: a run of 4; the partner's q0 is d 4-7 for h 0, ...)
+    QQ = "((((x3 >> 4) & 63) >= 32) ? (3 - ((x3 & 15) >> 2)) : ((x3 & 15) >> 2))"
+    # slot QQ (h 0: q, h 1: 3 - q) takes: 0 own e, 1 the partner's e ^ 4, 2 own e ^ 12, 3 the partner's e ^ 8
+    own = hk.map_cpp(f"({QQ}) == 2 ? x1 : x0", qv, qv.run_xor(12), qv, c, dtype=fp32)
+    y = qv.lane_gather(hk.map_cpp("((x0 >> 4) & 63) ^ 32", c, dtype=i32))
+    rv = hk.map_cpp(f"({QQ}) == 0 || ({QQ}) == 2 ? x0 : (({QQ}) == 1 ? x1 : x2)", own, y.run_xor(4), y.run_xor(8), c,
+                    dtype=fp32)
+    # run-16 chunk k of lane l: d 32k + 16h
+    mxd.store_elems(rv, hk.map_cpp(f"(((x0 >> 4) & 63) & 31) * {D} + {DW} * x1 + ((x0 >> 10) << 5) + "
+                                   f"((((x0 >> 4) & 63) >> 5) << 4)", c, w, dtype=i32), runs=True, row=t)
 
 
 def kernel(name: str, *, scale: float, mxfp8: bool, arch=None):
@@ -200,45 +227,27 @@ def kernel(name: str, *, scale: float, mxfp8: bool, arch=None):
         inv = hk.full(V_O, 1.0)
         inv.__itruediv__(lt)
         O.__imul__(inv)
-        o[hk.elem_coord(0, 0, t * H, w * DW)].store(hk.transpose(O))
-        if mxfp8:
-            # the MXFP8 rows from the bf16 rows just stored, as vLLM's pair reads them: each warp a
-            # quarter of the heads. Nothing read these rows before (they are this query's), so no
-            # vector-L1 line is stale; the stores have landed (vmcnt) before the barrier.
-            hk.arch.vm_wait(0)
-            hk.arch.barrier()
-            p_t = pos[hk.elem_coord(0, 0, 0, 2 * t)].load_scalar(invariant=True)   # int64, low word
-            c1 = hk.iota(S1I)
-            ccos = cs.load_elems(hk.map_cpp(f"x1 * {D - NOPE} + (x0 >> 1)", c1, p_t, dtype=i32))
-            csin = cs.load_elems(hk.map_cpp(f"x1 * {D - NOPE} + {(D - NOPE) // 2} + (x0 >> 1)", c1, p_t,
-                                            dtype=i32))
-            mate = hk.map_cpp("x0 ^ 1", c1, dtype=i32)
-            c8 = hk.iota(S8I)
-            # mxd / mxs are [T * 32, 512] / [T * 32, 16]: a row a head of a query, the stores by row
-            i8 = hk.map_cpp(f"x0 < {NOPE} ? x0 : -1", c8, dtype=i32)
-            s8 = hk.map_cpp(f"(x0 < {NOPE} && (x0 & 31) == 0) ? (x0 >> 5) : -1", c8, dtype=i32)
-            i1 = hk.map_cpp(f"x0 + {NOPE}", c1, dtype=i32)
-            s1 = hk.map_cpp(f"(x0 & 31) == 0 ? {NOPE // 32} + (x0 >> 5) : -1", c1, dtype=i32)
-            # every row's loads first: the compiler does not move row i+1's loads above row i's stores
-            x8s = [o.at[t * H + w * HPW + i, 0].load(S8) for i in range(HPW)]
-            x1s = [o.at[t * H + w * HPW + i, NOPE].load(S1) for i in range(HPW)]
-            for i in range(HPW):
-                hrow = t * H + w * HPW + i
-                # the nope lanes: groups 0-13 of the run-8 row
-                a8 = hk.map_cpp("fabsf(x0)", x8s[i]).group_max(32)
-                b8 = hk.map_cpp(BITS, a8)
-                q8 = hk.map_cpp("x0 * __builtin_exp2f(127.0f - x1)", x8s[i], b8)
-                mxd.store_elems(q8, i8, runs=True, row=hrow)
-                mxs.store_elems(b8, s8, row=hrow)
-                # the rope lanes, one a lane: inverse GPT-J RoPE as vLLM writes it, then groups 14-15
-                y1 = x1s[i].lane_gather(mate)
-                r1 = hk.map_cpp("(x4 & 1) ? (x0 * x1 - x2 * x3) : (x0 * x1 + x2 * x3)",
-                                x1s[i], ccos, y1, csin, c1, dtype=fp32)
-                a1 = hk.map_cpp("fabsf(x0)", r1).group_max(32)
-                b1 = hk.map_cpp(BITS, a1)
-                q1 = hk.map_cpp("x0 * __builtin_exp2f(127.0f - x1)", r1, b1)
-                mxd.store_elems(q1, i1, row=hrow)
-                mxs.store_elems(b1, s1, row=hrow)
+        if not mxfp8:
+            o[hk.elem_coord(0, 0, t * H, w * DW)].store(hk.transpose(O))
+        else:
+            # Oᵀ [d 128w.., head] where it sits, a run-16 strip: lane l's run k is fragment k's 16 values,
+            # d = 32k + 8(e >> 2) + 4(l >> 5) + (e & 3), head l & 31 (hk.lane_coords; written out below so
+            # nothing but the values stays live). A 32-d MX group is a lane's run and lane l ^ 32's.
+            xb = hk.map_cpp("(float)__float2bfloat16(x0)", O.lane_strip(16))   # the bf16 rows vLLM's pass reads
+            if w == WARPS - 1:
+                # d 384..511: 448.. are the rope lanes, inverse GPT-J RoPE as vLLM writes it
+                p_t = pos[hk.elem_coord(0, 0, 0, 2 * t)].load_scalar(invariant=True)   # int64, low word
+                c = hk.iota(ST16)
+                jc = hk.map_cpp(f"({DL}) >= {NOPE - DW * (WARPS - 1)} ? x1 * {D - NOPE} + "
+                                f"((({DL}) - {NOPE - DW * (WARPS - 1)}) >> 1) : -1", c, p_t, dtype=i32)
+                ccos = cs.load_elems(jc)
+                csin = cs.load_elems(hk.map_cpp(f"x0 < 0 ? -1 : x0 + {(D - NOPE) // 2}", jc, dtype=i32))
+                r = hk.map_cpp(f"({DL.replace('x0', 'x4')}) < {NOPE - DW * (WARPS - 1)} ? x0 : "
+                               "((x4 & 1) ? (x0 * x1 - x2 * x3) : (x0 * x1 + x2 * x3))",
+                               xb, ccos, xb.run_xor(1), csin, c, dtype=fp32)
+                _quant_store(r, mxd, mxs, t, w)
+            else:
+                _quant_store(xb, mxd, mxs, t, w)
 
     body.__name__ = name
     return hk.kernel(body, warps=WARPS, grid=lambda p: (p.q.rows // H, 1, 1), name=name, arch=arch)
@@ -281,6 +290,18 @@ def supports(q, kv, indices, indptr, attn_sink, out) -> str:
     return ""
 
 
+def _dummies(dev):
+    """The arguments a variant does not read: positions, cos/sin, MXFP8 rows and scales, bf16 rows."""
+    import torch  # noqa: PLC0415
+
+    if dev not in _DUMMY:
+        _DUMMY[dev] = (torch.zeros(2, dtype=torch.int32, device=dev), torch.zeros(1, D - NOPE, device=dev),
+                       torch.zeros(1, D, dtype=torch.float8_e4m3fn, device=dev),
+                       torch.zeros(1, D // 32, dtype=torch.int8, device=dev),
+                       torch.zeros(1, D, dtype=torch.bfloat16, device=dev))
+    return _DUMMY[dev]
+
+
 def prefill(q, kv, indices, indptr, attn_sink, scale: float, out):
     """out [T, 32, 512] bf16 <- sparse attention of q over the rows of kv each query's CSR list names."""
     import torch  # noqa: PLC0415
@@ -289,26 +310,21 @@ def prefill(q, kv, indices, indptr, attn_sink, scale: float, out):
     if why:
         raise ValueError(f"hk.ops.sparse_mla.prefill: {why}")
     T = q.shape[0]
-    dev = q.device
-    if dev not in _DUMMY:
-        _DUMMY[dev] = (torch.zeros(2, dtype=torch.int32, device=dev), torch.zeros(1, D - NOPE, device=dev),
-                       torch.zeros(1, D, dtype=torch.float8_e4m3fn, device=dev),
-                       torch.zeros(1, D // 32, dtype=torch.int8, device=dev))
-    pz, cz, dz, sz = _DUMMY[dev]
+    pz, cz, dz, sz, _ = _dummies(q.device)
     kernel_for(scale, False)(q.view(T * H, D), kv, indices, indptr, attn_sink, out.view(T * H, D),
                              pz, cz, dz, sz)
     return out
 
 
-def prefill_mxfp8(q, kv, indices, indptr, attn_sink, scale: float, out, positions, cos_sin_cache,
-                  mx_data, mx_scale):
-    """`prefill`, and the MXFP8 rows wo_a reads: positions [T] int64, cos_sin_cache [P, 64] fp32
-    (cos | sin), mx_data [T, 32 * 512] e4m3 and mx_scale [T, 512] uint8 E8M0 (row-major), as
-    vLLM's rocm_inverse_rope_mxfp8_rows writes them. `out` holds the bf16 rows."""
+def prefill_mxfp8(q, kv, indices, indptr, attn_sink, scale: float, positions, cos_sin_cache, mx_data,
+                  mx_scale):
+    """`prefill`'s rows as wo_a reads them, and no bf16 rows: positions [T] int64, cos_sin_cache [P, 64]
+    fp32 (cos | sin), mx_data [T, 32 * 512] e4m3 and mx_scale [T, 512] uint8 E8M0 (row-major), as
+    vLLM's rocm_inverse_rope_mxfp8_rows writes them from `prefill`'s output."""
     import torch  # noqa: PLC0415
 
-    why = supports(q, kv, indices, indptr, attn_sink, out)
     T = q.shape[0]
+    why = supports(q, kv, indices, indptr, attn_sink, q)
     if not why and (positions.dtype != torch.int64 or positions.numel() != T or not positions.is_contiguous()):
         why = "positions are [T] int64, contiguous"
     if not why and (cos_sin_cache.dtype != torch.float32 or cos_sin_cache.dim() != 2
@@ -322,7 +338,7 @@ def prefill_mxfp8(q, kv, indices, indptr, attn_sink, scale: float, out, position
         why = f"mx_scale is [T, {H * D // 32}] uint8, contiguous"
     if why:
         raise ValueError(f"hk.ops.sparse_mla.prefill_mxfp8: {why}")
-    kernel_for(scale, True)(q.view(T * H, D), kv, indices, indptr, attn_sink, out.view(T * H, D),
-                            positions.view(torch.int32), cos_sin_cache, mx_data.view(T * H, D),
-                            mx_scale.view(torch.int8).view(T * H, D // 32))
+    ob = _dummies(q.device)[4]
+    kernel_for(scale, True)(q.view(T * H, D), kv, indices, indptr, attn_sink, ob, positions.view(torch.int32),
+                            cos_sin_cache, mx_data.view(T, H * D), mx_scale.view(torch.int8).view(T, H * D // 32))
     return mx_data, mx_scale

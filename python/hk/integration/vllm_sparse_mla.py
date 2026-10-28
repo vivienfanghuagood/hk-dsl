@@ -9,14 +9,14 @@ On gfx950 the layer's output is then inverse-RoPE'd and MXFP8-quantized for wo_a
 * `rocm_sparse_attn_prefill`: a call of T >= MIN_T queries, 32 heads of 512, bf16, with a sink, runs
   hk's kernel on the same ragged rows vLLM builds; anything else runs vLLM's;
 * `_forward_prefill` notes, for its chunk calls, where the layer's MXFP8 rows, positions and cos/sin
-  are; a chunk hk takes then writes its MXFP8 rows itself, in the kernel's epilogue (bit for bit
-  vLLM's quant of hk's bf16 rows);
+  are; a chunk hk takes then writes its MXFP8 rows itself, from O in registers (bit for bit vLLM's
+  quant of hk's bf16 rows), and no bf16 rows -- vLLM's are a scratch buffer for that quant;
 * `rocm_inverse_rope_mxfp8_rows` quantizes only the rows no hk call wrote (none, when every chunk
   went to hk).
 
 Measured (kda/sparse-mla-prefill, DSV4.1-Flash TP2 real-weight captures, one MI355X): with the MXFP8
-rows, top-k layers 1.29x and sliding-window layers 1.64x opus + vLLM's quant at T 8192; attention
-alone 1.11-1.13x opus. `ENABLED` toggles the route at run time (an in-process A/B).
+rows, top-k layers 1.39x and sliding-window layers 1.97x opus + vLLM's quant at T 8192 (1.22x and
+1.12x AITER's fused fp8 kernel); attention alone 1.11-1.13x opus. `ENABLED` toggles the route at run time (an in-process A/B).
 
     HK_PATCH_VLLM=1 HK_VLLM_SPARSE_MLA=1 vllm serve <DeepSeek-V4.1-Flash>
 """
@@ -118,8 +118,10 @@ def rocm_sparse_attn_prefill(q, kv, indices, topk_length, scale, head_dim, nope_
     off = (q.data_ptr() - lay.q.data_ptr()) // row if lay is not None else -1
     if (lay is not None and q.untyped_storage().data_ptr() == lay.q.untyped_storage().data_ptr()
             and 0 <= off and off + T <= lay.mxd.shape[0] and (q.data_ptr() - lay.q.data_ptr()) % row == 0):
-        SM.prefill_mxfp8(q, kv2, ind, ptr, sink, float(scale), output, lay.positions[off:off + T],
-                         lay.cos_sin, lay.mxd[off:off + T], lay.mxs[off:off + T])
+        # the chunk's bf16 rows stay unwritten: vLLM's are scratch, read only by the quant pass
+        # below, which skips the rows hk wrote
+        SM.prefill_mxfp8(q, kv2, ind, ptr, sink, float(scale), lay.positions[off:off + T], lay.cos_sin,
+                         lay.mxd[off:off + T], lay.mxs[off:off + T])
         lay.done.append((off, off + T))
         PATCH.count("hk_mxfp8")
         return None

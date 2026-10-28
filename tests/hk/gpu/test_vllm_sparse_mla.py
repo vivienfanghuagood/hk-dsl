@@ -72,8 +72,9 @@ def test_a_small_call_stays_vllms(patched):
 
 
 def test_mxfp8_rows_in_the_kernel_and_the_rest_by_vllm(patched):
-    """Two chunk calls of one layer: the first hk's (rows written in the kernel), the second too small
-    (vLLM's, so its rows go to vLLM's pass); every row must equal vLLM's quant of the bf16 rows."""
+    """Two chunk calls of one layer: the first hk's (MXFP8 rows written in the kernel, no bf16 rows),
+    the second too small (vLLM's, so its rows go to vLLM's pass); every row must equal vLLM's quant
+    of the bf16 rows hk's and vLLM's kernels make."""
     T1, T2 = 1024, 64
     q1, kv, ind1, lens1, sink = _dense(T1, seed=1)
     q2, _, ind2, lens2, _ = _dense(T2, seed=2)
@@ -94,8 +95,13 @@ def test_mxfp8_rows_in_the_kernel_and_the_rest_by_vllm(patched):
     finally:
         R._CTX.layer = None
     torch.cuda.synchronize()
+    # the hk chunk left its bf16 rows unwritten (vLLM's are scratch): hk's own, for the reference
+    ref = out.clone()
+    R._CTX.layer = None
+    _call(q[:T1], kv, ind1, lens1, sink, ref[:T1])
+    torch.cuda.synchronize()
     rd, rs = torch.empty_like(md), torch.empty_like(ms)
-    R._ORIG["quant"](out, pos, cs, 64, rd, rs)
+    R._ORIG["quant"](ref, pos, cs, 64, rd, rs)
     torch.cuda.synchronize()
     assert torch.equal(rd.view(torch.uint8), md.view(torch.uint8))
     assert torch.equal(rs, ms)

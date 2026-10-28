@@ -80,8 +80,8 @@ ROUTES: Dict[str, Route] = {r.name: r for r in (
        "within stock's noise"),
     _R("vllm_sparse_mla", "vllm", "HK_VLLM_SPARSE_MLA", False, (),
        "DeepSeek-V4.1's sparse MLA prefill (T >= 512 queries a call) and its MXFP8 output rows",
-       "off until validated end to end: 1.29x opus + vLLM's quant on real-weight top-k-layer calls, "
-       "1.64x on sliding-window ones, MXFP8 rows bit for bit vLLM's quant of hk's bf16 rows "
+       "off until validated end to end: 1.39x opus + vLLM's quant on real-weight top-k-layer calls, "
+       "1.97x on sliding-window ones, MXFP8 rows bit for bit vLLM's quant of hk's bf16 rows "
        "(kda/sparse-mla-prefill); real-weight accuracy and serving A/B pending"),
     _R("vllm_int4", "vllm", "HK_VLLM_INT4", True, ("gfx1100", "gfx950", "gfx1201"),
        "AWQ 4-bit linear layers on hk's decode GEMM",
