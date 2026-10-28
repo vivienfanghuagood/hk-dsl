@@ -9,6 +9,16 @@ The next version's notes collect here until it is released.
 What is on main after 0.8.0. `pip install hk-dsl` (0.8.0) does not have it;
 the API reference marks such names *New after 0.8.0*.
 
+**gfx950: fp32 LDS vectors and 16-bit col-layout LDS stores are ds ops, not FLAT.**
+`hk.SharedVec`'s load and store (what `hk.collective.cross_warp` combines
+through) and the store of a 16-bit col-layout register tile into LDS (an
+accumulator converted to bf16 -- attention's P handed to other warps) went
+through include/cdna4's generic-pointer paths, so the compiler emitted FLAT
+loads and stores. FLAT counts in vmcnt as well as lgkmcnt: a sparse-MLA kernel's
+per-block max exchange waited for its next KV block's DMA. `include/hk/cdna.cuh`
+now has the same accesses through LDS pointers, as the fp32 tiles got in #59.
+`tests/hk/codegen/test_cdna_fp32_lds.py`.
+
 **CDNA: `hk-mma-fence`, a DSL rule for matrix-core accumulators; `hk.arch.agpr`
 to hold one in AGPRs.**
 - `hk-mma-fence`, a pass in the kernel pipeline, puts an `hk.sched_barrier`
