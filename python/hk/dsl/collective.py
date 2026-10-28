@@ -49,7 +49,8 @@ def cross_warp(vec: Vec, op: str, warps: int, *,
     arch.barrier(drain=True)
     acc = scratch.load(vec.ty, 0)
     for w in range(1, warps):
-        binary(op, acc, scratch.load(vec.ty, w), into=acc)
+        # max / min: a reduction's combine (NaN propagates, -0 < +0 on gfx950), as within a warp
+        binary(op, acc, scratch.load(vec.ty, w), into=acc, reduce=op in ("max", "min"))
     return acc
 
 

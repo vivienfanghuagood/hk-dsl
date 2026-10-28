@@ -3210,6 +3210,58 @@ __device__ static inline void one(S &dst) {
         for (int r = 0; r < S::length; r++) dst.data[r][0] = typename S::T(1.f);
 }
 
+/**
+ * The fp32 max and min of hk's reductions: on gfx950 llvm.maximum / llvm.minimum, which it
+ * selects as v_maximum3_f32 / v_minimum3_f32 as it does fmaxf as v_max3_f32. fmaxf is maxnum, and
+ * in IEEE mode a maxnum operand that might be a signalling NaN is quieted first: a reduction of
+ * 2k + 1 values pairs into max3s but for one two-operand max, whose operands -- MFMA results,
+ * loop-carried values -- LLVM cannot prove quiet, so a v_max_f32 x, x each (attention's row max,
+ * 3 instructions a reduction for 1). llvm.maximum propagates any NaN and needs no quieting. The
+ * same on every value but NaN, which now propagates (torch.amax's), and -0 against +0, which is
+ * now ordered (max -0, +0 is +0). Other types, and other CDNA targets, which have no
+ * v_maximum3_f32 (gfx942 would expand each maximum into a compare and selects), keep the
+ * library's base_ops::max / min.
+ */
+namespace base_ops {
+struct hk_rmax {
+    template<typename T> static __device__ inline T op(const T &a, const T &b) { return max::op<T>(a, b); }
+};
+struct hk_rmin {
+    template<typename T> static __device__ inline T op(const T &a, const T &b) { return min::op<T>(a, b); }
+};
+#if defined(__gfx950__)
+template<> __device__ inline float hk_rmax::op<float>(const float &a, const float &b) {
+    return __builtin_elementwise_maximum(a, b);
+}
+template<> __device__ inline float2 hk_rmax::op<float2>(const float2 &a, const float2 &b) {
+    return float2{__builtin_elementwise_maximum(a.x, b.x), __builtin_elementwise_maximum(a.y, b.y)};
+}
+template<> __device__ inline float hk_rmin::op<float>(const float &a, const float &b) {
+    return __builtin_elementwise_minimum(a, b);
+}
+template<> __device__ inline float2 hk_rmin::op<float2>(const float2 &a, const float2 &b) {
+    return float2{__builtin_elementwise_minimum(a.x, b.x), __builtin_elementwise_minimum(a.y, b.y)};
+}
+#endif
+}  // namespace base_ops
+
+/// The register tiles' row and column max and min through hk_rmax / hk_rmin: more constrained
+/// than the library's (an fp32 tile), so such a tile picks them.
+#define HK_RT_REDUCE(name, kind, opname)                                                        \
+    template<ducks::rv::all V, ducks::rt::all T> requires (std::is_same_v<typename T::T, float>) \
+    __device__ static inline void name(V &dst, const T &src) {                                  \
+        kind##_reduce<base_ops::opname, V, T, true>(dst, src, dst);                             \
+    }                                                                                           \
+    template<ducks::rv::all V, ducks::rt::all T> requires (std::is_same_v<typename T::T, float>) \
+    __device__ static inline void name(V &dst, const T &src, const V &acc) {                    \
+        kind##_reduce<base_ops::opname, V, T, false>(dst, src, acc);                            \
+    }
+HK_RT_REDUCE(row_max, row, hk_rmax)
+HK_RT_REDUCE(row_min, row, hk_rmin)
+HK_RT_REDUCE(col_max, col, hk_rmax)
+HK_RT_REDUCE(col_min, col, hk_rmin)
+#undef HK_RT_REDUCE
+
 #define HK_STRIP_BINARY(name, opname)                                              \
     template<typename S, typename U> requires (ducks::rs::all<S> || ducks::rs::cv<S>) \
     __device__ static inline void name(S &dst, const S &lhs, const U &rhs) {       \
@@ -3222,6 +3274,22 @@ HK_STRIP_BINARY(div, div)
 HK_STRIP_BINARY(max, max)
 HK_STRIP_BINARY(min, min)
 #undef HK_STRIP_BINARY
+
+/// The combine of two partial max / min reductions (cross_warp's, a vector folded in by max_):
+/// base_ops::hk_rmax / hk_rmin, so a reduction split across warps or blocks keeps the NaN and
+/// signed-zero rules of one within a wave. Register vectors and strip vectors.
+#define HK_REDUCE_COMBINE(name, opname)                                                \
+    template<ducks::rv::all T, typename U>                                              \
+    __device__ static inline void name(T &dst, const T &lhs, const U &rhs) {            \
+        bin_op<base_ops::opname, T>(dst, lhs, rhs);                                      \
+    }                                                                                   \
+    template<typename S, typename U> requires (ducks::rs::all<S> || ducks::rs::cv<S>)    \
+    __device__ static inline void name(S &dst, const S &lhs, const U &rhs) {            \
+        bin_map<base_ops::opname, S>(dst, lhs, rhs);                                     \
+    }
+HK_REDUCE_COMBINE(rmax, hk_rmax)
+HK_REDUCE_COMBINE(rmin, hk_rmin)
+#undef HK_REDUCE_COMBINE
 
 namespace detail {
 /** The whole tensor as one buffer: rows over batch and depth at the row stride (the descriptor's
@@ -3949,12 +4017,12 @@ __device__ inline void strip_col_reduce(RV &dst, const RS &src, const RV &acc) {
         detail::strip_##kind##_reduce<base_ops::opname, false>(dst, src, acc);     \
     }
 HK_STRIP_REDUCE(row_sum,  sum, row, cv)
-HK_STRIP_REDUCE(row_max,  max, row, cv)
-HK_STRIP_REDUCE(row_min,  min, row, cv)
+HK_STRIP_REDUCE(row_max,  hk_rmax, row, cv)
+HK_STRIP_REDUCE(row_min,  hk_rmin, row, cv)
 HK_STRIP_REDUCE(row_prod, mul, row, cv)
 HK_STRIP_REDUCE(col_sum,  sum, col, all)
-HK_STRIP_REDUCE(col_max,  max, col, all)
-HK_STRIP_REDUCE(col_min,  min, col, all)
+HK_STRIP_REDUCE(col_max,  hk_rmax, col, all)
+HK_STRIP_REDUCE(col_min,  hk_rmin, col, all)
 HK_STRIP_REDUCE(col_prod, mul, col, all)
 #undef HK_STRIP_REDUCE
 
@@ -3979,8 +4047,8 @@ __device__ static inline void row_sum_times_ordered(V &dst, const RS &src, const
     static_assert(SEQ, "a fused sum of products is left to right");
     detail::strip_row_dot_ordered<false, OFFS...>(dst, src, times, acc);
 }
-HK_STRIP_REDUCE_ORDERED(row_max,  max)
-HK_STRIP_REDUCE_ORDERED(row_min,  min)
+HK_STRIP_REDUCE_ORDERED(row_max,  hk_rmax)
+HK_STRIP_REDUCE_ORDERED(row_min,  hk_rmin)
 HK_STRIP_REDUCE_ORDERED(row_prod, mul)
 #undef HK_STRIP_REDUCE_ORDERED
 
