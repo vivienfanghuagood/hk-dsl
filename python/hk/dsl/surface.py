@@ -71,14 +71,14 @@ ENTRIES: Dict[str, Entry] = {
     "hk.fp8_operand": Entry("merge", "A8", target="Tile.as_fragment", step="S5"),
     "hk.mx_scales_loose": Entry("merge", "A9", target="Tile.as_scales", step="S5"),
     # 2.2 rows by index
-    "Global.gather(div=)": Entry("merge", "B1", target="hk.RowIndex(div=)", step="S3"),
-    "Global.scatter(sort_topk=)": Entry("merge", "B2", target="hk.RowIndex(sort_topk=)",
-                                        step="S3"),
-    "Global.scatter(staged=)": Entry("merge", "B3", target="a staged hk.RowIndex (Group.stage)",
-                                     step="S3"),
-    "Group.gather_prep": Entry("merge", "B4", target="Group.stage", step="S3"),
-    "Group.load(gather=)": Entry("merge", "B5", target="Group.load(gather=RowIndex)", step="S3"),
-    "Group.load(staged=)": Entry("merge", "B5", target="a staged hk.RowIndex", step="S3"),
+    "Global.gather(div=)": Entry("deprecated", "B1", target="hk.RowIndex(div=)", step=_GONE),
+    "Global.scatter(sort_topk=)": Entry("deprecated", "B2", target="hk.RowIndex(sort_topk=)",
+                                        step=_GONE),
+    "Global.scatter(staged=)": Entry("deprecated", "B3",
+                                     target="an index staged by Group.stage_rows", step=_GONE),
+    "Group.gather_prep": Entry("deprecated", "B4", target="Group.stage_rows", step=_GONE),
+    "Group.load(staged=)": Entry("deprecated", "B5", target="Group.load(gather=<a staged "
+                                 "hk.RowIndex>)", step=_GONE),
     "Global.scatter(add=)": Entry("primitive", "B6", "atomic scatter-add, in no fixed order: not "
                                   "for a route that promises determinism"),
     # 2.3 strips, elements, lanes
@@ -116,31 +116,31 @@ PRIMITIVES: FrozenSet[str] = frozenset("""
 Analysis.summary Bool.to_int Bool.type Build.report Coord.type Coord.unit Digit.of Global.at
 Global.batch Global.cols Global.depth Global.dtype Global.gather Global.load_elems
 Global.post_elems Global.rows Global.scatter Global.store_elems Global.take_elems Global.tile
-Global.type Granules.type Group.commit Group.load Group.stage Group.stage_buffer Group.store
-Group.threads Group.wait_for Int.type Kernel.arch Kernel.build Kernel.compile Kernel.placed
-Kernel.placement_choice Kernel.preloaded Kernel.resident_capacity Kernel.source
-Kernel.specialize Kernel.trace MxScales.copy MxScales.type Placement.chunked Placement.cluster
-Placement.none Placement.suffix SharedTile.atomic_add_elems SharedTile.load
-SharedTile.load_elems SharedTile.store SharedTile.store_elems SharedTile.subtile
-SharedTile.type SharedVec.load SharedVec.store SharedVec.type Tile.T Tile.abs Tile.as_operand
-Tile.bitcast Tile.copy Tile.dgelu Tile.dtype Tile.exp Tile.exp2 Tile.exp2_ Tile.exp_ Tile.fill_
-Tile.first_lane Tile.gelu Tile.group_max Tile.group_min Tile.group_sum Tile.lane_gather
-Tile.lane_strip Tile.left_fill_ Tile.log Tile.log2 Tile.lower_fill_ Tile.max Tile.maximum
-Tile.min Tile.minimum Tile.neg_infty_ Tile.prod Tile.relu Tile.right_fill_ Tile.rsqrt
-Tile.rsqrt_ Tile.run_xor Tile.scaled Tile.silu Tile.sqrt Tile.step Tile.subtile Tile.sum
-Tile.swap_halves Tile.to Tile.tril_ Tile.triu_ Tile.type Tile.upper_fill_ Tile.zero_
-TracedKernel.cpp TracedKernel.dump TracedKernel.tensors TracedKernel.threads
-TracedKernel.written_tensors Vec.abs Vec.any_above Vec.any_ne Vec.copy Vec.dgelu Vec.exp
-Vec.exp2 Vec.exp2_ Vec.exp_ Vec.fill_ Vec.gelu Vec.log Vec.log2 Vec.max_ Vec.maximum Vec.min_
-Vec.minimum Vec.neg_infty_ Vec.relu Vec.rsqrt Vec.rsqrt_ Vec.silu Vec.sqrt Vec.step
-Vec.swap_halves Vec.type Vec.zero_ View.atomic_add View.atomic_add_scalar
+Global.type Granules.type Group.commit Group.load Group.stage Group.stage_buffer
+Group.stage_rows Group.store Group.threads Group.wait_for Int.type Kernel.arch Kernel.build
+Kernel.compile Kernel.placed Kernel.placement_choice Kernel.preloaded Kernel.resident_capacity
+Kernel.source Kernel.specialize Kernel.trace MxScales.copy MxScales.type Placement.chunked
+Placement.cluster Placement.none Placement.suffix RowIndex.offset RowIndex.staged
+SharedTile.atomic_add_elems SharedTile.load SharedTile.load_elems SharedTile.store
+SharedTile.store_elems SharedTile.subtile SharedTile.type SharedVec.load SharedVec.store
+SharedVec.type Tile.T Tile.abs Tile.as_operand Tile.bitcast Tile.copy Tile.dgelu Tile.dtype
+Tile.exp Tile.exp2 Tile.exp2_ Tile.exp_ Tile.fill_ Tile.first_lane Tile.gelu Tile.group_max
+Tile.group_min Tile.group_sum Tile.lane_gather Tile.lane_strip Tile.left_fill_ Tile.log
+Tile.log2 Tile.lower_fill_ Tile.max Tile.maximum Tile.min Tile.minimum Tile.neg_infty_
+Tile.prod Tile.relu Tile.right_fill_ Tile.rsqrt Tile.rsqrt_ Tile.run_xor Tile.scaled Tile.silu
+Tile.sqrt Tile.step Tile.subtile Tile.sum Tile.swap_halves Tile.to Tile.tril_ Tile.triu_
+Tile.type Tile.upper_fill_ Tile.zero_ TracedKernel.cpp TracedKernel.dump TracedKernel.tensors
+TracedKernel.threads TracedKernel.written_tensors Vec.abs Vec.any_above Vec.any_ne Vec.copy
+Vec.dgelu Vec.exp Vec.exp2 Vec.exp2_ Vec.exp_ Vec.fill_ Vec.gelu Vec.log Vec.log2 Vec.max_
+Vec.maximum Vec.min_ Vec.minimum Vec.neg_infty_ Vec.relu Vec.rsqrt Vec.rsqrt_ Vec.silu Vec.sqrt
+Vec.step Vec.swap_halves Vec.type Vec.zero_ View.atomic_add View.atomic_add_scalar
 View.atomic_and_scalar View.atomic_exch_scalar View.atomic_max_scalar View.atomic_min_scalar
 View.atomic_or_scalar View.atomic_xor_scalar View.load View.load_scalar View.store
 View.store_scalar hk.Bool hk.Build hk.CompileError hk.Constexpr hk.Coord hk.DType hk.Digit
-hk.Global hk.Int hk.Kernel hk.MxScales hk.Placement hk.RS hk.RT hk.ResourceError hk.ST hk.SV
-hk.Scaled hk.SharedTile hk.SharedVec hk.TARGETS hk.Tensor hk.Tile hk.TracedKernel hk.Vec
-hk.VerifyError hk.View hk.arch.SCHED_CLASSES hk.arch.barrier hk.arch.block_idx hk.arch.lane_id
-hk.arch.mma_fence hk.arch.pin hk.arch.pingpong hk.arch.sched_barrier
+hk.Global hk.Int hk.Kernel hk.MxScales hk.Placement hk.RS hk.RT hk.ResourceError hk.RowIndex
+hk.ST hk.SV hk.Scaled hk.SharedTile hk.SharedVec hk.TARGETS hk.Tensor hk.Tile hk.TracedKernel
+hk.Vec hk.VerifyError hk.View hk.arch.SCHED_CLASSES hk.arch.barrier hk.arch.block_idx
+hk.arch.lane_id hk.arch.mma_fence hk.arch.pin hk.arch.pingpong hk.arch.sched_barrier
 hk.arch.sched_group_barrier hk.arch.setprio hk.arch.target hk.arch.vm_wait hk.arch.warp_id
 hk.arch.wg_arrive hk.arch.xcd_count hk.arch.xcd_id hk.as_vec hk.attention hk.broadcast_col
 hk.broadcast_row hk.cdiv hk.col_vec hk.collective.COMBINERS hk.collective.cross_warp
@@ -165,7 +165,7 @@ _OP_KINDS: Dict[str, str] = {
     "load_mx_scales": "format", "mx_scales_copy": "primitive", "mma_ABt_mx": "primitive",
     "load_fp4_frags": "format", "load_fp4_frags_lds": "format", "mx_quant_store": "merge",
     "fp4_operand": "merge", "fp8_operand": "merge", "mx_scales_loose": "merge",
-    "gather_prep": "merge", "map_cpp": "escape", "iota": "merge",
+    "gather_prep": "primitive", "map_cpp": "escape", "iota": "merge",
     "mfma_strip": "merge", "rotate_half": "merge", "granules": "escape", "load_frag": "escape",
     "store_frag": "escape",
     "load_w4": "format",
@@ -221,7 +221,7 @@ strip_srsrc strip_tree strip_write stride warpid_uniform word
         "load_mx_scales": "format", "load_mx_scales_aiter": "format", "load_fp4_frags": "format",
         "load_w4": "format", "mma_ABt_mx": "primitive", "load_fp4_frags_lds": "format",
         "mx_quant_store": "merge", "fp4_operand": "merge", "fp8_operand": "merge",
-        "mx_scales_loose": "merge", "gather_prep": "merge",
+        "mx_scales_loose": "merge", "gather_prep": "primitive",
         "map_cpp": "escape", "mfma_strip_f32_16x16x4": "merge", "rotate_half": "merge",
     },
     "include/hk/cdna_agpr.cuh": {n: "experiment" for n in """

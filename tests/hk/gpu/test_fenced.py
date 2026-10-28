@@ -850,7 +850,7 @@ def test_attn_k3():
 
 @gfx950
 def test_gathered_copy_reads_no_index_past_its_rows():
-    """g.load(gather=(ids, at), rows=...): an index list ending flush against the fence, inside a
+    """g.load(gather=hk.RowIndex(ids, at), rows=...): an index list ending flush against the fence, inside a
     tile, read by tiles that run past it -- no id past the row limit is read."""
     fenced(COMMON + '''
 from hk.types import bf16, i32
@@ -860,7 +860,7 @@ def body(x: hk.Tensor[bf16], ids: hk.Tensor[i32], out: hk.Tensor[bf16]):
     g = hk.group(4)
     s = hk.lds.alloc(st, name="s")
     at = hk.arch.block_idx.x * 32
-    g.load(s, x.at[0, 64], wait=False, gather=(ids, at), rows=hk.max(ids.cols - at, 0))
+    g.load(s, x.at[0, 64], wait=False, gather=hk.RowIndex(ids, at), rows=hk.max(ids.cols - at, 0))
     g.wait_for(s)
     hk.arch.barrier()
     t = s.load(rt)

@@ -36,7 +36,7 @@ def _rows_kernel(add, sort_topk, out_dtype):
         at = hk.arch.block_idx.y * 16
         col = hk.arch.block_idx.x * 64
         t = x[hk.elem_coord(0, 0, at, col)].load(T32)
-        o.scatter(t, ids, at, col=col, sort_topk=sort_topk, add=add)
+        o.scatter(t, hk.RowIndex(ids, at, sort_topk=sort_topk), col=col, add=add)
 
     scat.__annotations__ = {"x": hk.Tensor[fp32], "ids": hk.Tensor[i32], "o": hk.Tensor[out_dtype]}
 
@@ -132,18 +132,20 @@ def _staged_kernel(staged):
         r0 = hk.arch.block_idx.y * 64
         col = hk.arch.block_idx.x * 64
         if staged:
-            g.gather_prep(ids, r0, 64, raw=True)
+            rows = g.stage_rows(hk.RowIndex(ids, r0, sort_topk=TOPK), 64, keep_choice=True)
         for i in range(4):
             t = x[hk.elem_coord(0, 0, r0 + 16 * i, col)].load(T32)
-            o.scatter(t, ids, r0 + 16 * i, col=col, sort_topk=TOPK, staged=64 if staged else 0)
+            ix = rows.offset(16 * i) if staged else hk.RowIndex(ids, r0 + 16 * i, sort_topk=TOPK)
+            o.scatter(t, ix, col=col)
 
     return hk.kernel(scat_staged, arch="gfx950", warps=1, name=f"scat_staged_{int(staged)}",
                      grid=lambda p: (p.x.cols // 64, p.x.rows // 64, 1))
 
 
 def test_a_scatter_reads_its_ids_from_lds_as_from_global():
-    """scatter(staged=64) after g.gather_prep(raw=True): the same rows as the global-index scatter,
-    bit for bit (the ids it reads from LDS keep the choice bits gather_prep's default masks off)."""
+    """A scatter of an index staged with g.stage_rows(..., keep_choice=True): the same rows as the
+    global-index scatter, bit for bit (the ids it reads from LDS keep the choice bits a gather's
+    staging masks off)."""
     g = torch.Generator(device="cuda").manual_seed(5)
     ids = _sort_ids(g)
     ids = torch.cat([ids, torch.full((-ids.numel() % 64,), M, device="cuda", dtype=torch.int32)])
