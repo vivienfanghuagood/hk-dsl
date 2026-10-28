@@ -19,6 +19,16 @@ translator now gives such an allocation the fragment's own shape (st_32x16
 here) when that one tiles it, and refuses one that no shape tiles.
 `tests/hk/ir/test_lds_narrow_tile.py`, `tests/hk/gpu/test_lds_narrow_tile.py`.
 
+**gfx950: fp32 LDS vectors and 16-bit col-layout LDS stores are ds ops, not FLAT.**
+`hk.SharedVec`'s load and store (what `hk.collective.cross_warp` combines
+through) and the store of a 16-bit col-layout register tile into LDS (an
+accumulator converted to bf16 -- attention's P handed to other warps) went
+through include/cdna4's generic-pointer paths, so the compiler emitted FLAT
+loads and stores. FLAT counts in vmcnt as well as lgkmcnt: a sparse-MLA kernel's
+per-block max exchange waited for its next KV block's DMA. `include/hk/cdna.cuh`
+now has the same accesses through LDS pointers, as the fp32 tiles got in #59.
+`tests/hk/codegen/test_cdna_fp32_lds.py`.
+
 **CDNA: `hk-mma-fence`, a DSL rule for matrix-core accumulators; `hk.arch.agpr`
 to hold one in AGPRs.**
 - `hk-mma-fence`, a pass in the kernel pipeline, puts an `hk.sched_barrier`
