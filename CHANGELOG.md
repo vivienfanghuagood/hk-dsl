@@ -9,6 +9,11 @@ The next version's notes collect here until it is released.
 What is on main after 0.8.0. `pip install hk-dsl` (0.8.0) does not have it;
 the API reference marks such names *New after 0.8.0*.
 
+**`include/hk/cdna.cuh` split by kind (DSL-surface S12).** It is an umbrella over
+`include/hk/cdna/{core,lib,formats,special,primitives,escape}.cuh`, a pure move of the definitions
+in their dependency order; every gfx950 kernel's code object is unchanged, function by function.
+The build cache sees the parts through the preprocessor's dependency list (#136).
+
 **Register views: `Tile.as_fragment`, `Tile.as_scales` (DSL-surface S5).**
 - `words.as_fragment(hk.RT(hk.fp8e4m3, 16, 128), fmt="fp8" | "fp4")` reads an i32 strip's
   registers as a block-scaled MMA operand fragment, and `bytes.as_scales()` reads one as loose E8M0

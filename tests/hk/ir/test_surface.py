@@ -113,7 +113,9 @@ def cpp_names(path: Path):
 
 
 def test_every_cpp_helper_is_registered():
-    headers = sorted((REPO / "include" / "hk").glob("*.cuh"))
+    headers = sorted((REPO / "include" / "hk").rglob("*.cuh"))
+    umbrella = {h for h in headers if not cpp_names(h)}     # only includes (hk/cdna.cuh)
+    headers = [h for h in headers if h not in umbrella]
     have = {h.relative_to(REPO).as_posix() for h in headers}
     assert have <= set(S.CPP), f"headers in include/hk/ not in surface.CPP: {sorted(have - set(S.CPP))}"
     if set(S.CPP) - have:

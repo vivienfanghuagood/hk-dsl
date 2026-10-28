@@ -792,6 +792,20 @@ G1 (S7), which narrows `map_cpp` and enables A6, is the main item for the next p
 
 Line ranges at main `af17846`. S12 regroups these by kind; nothing is renamed.
 
+**As built (S12).** `include/hk/cdna.cuh` is now an umbrella. It includes, in dependency order,
+`include/hk/cdna/core.cuh`, `lib.cuh`, `formats.cuh`, `special.cuh`, `primitives.cuh` and
+`escape.cuh`, then `cdna_agpr.cuh` as before.
+- **core:** int8 packing, `strided_gl`, waits and binds, and the detail plumbing.
+- **lib:** library fixes and gap fills, including #118's LDS-pointer vector stores.
+- **formats:** MX and W4.
+- **special:** the masks, `neg_infty` and the 16-column `col_reduce`.
+- **primitives:** everything else, in its original order, with #121's lane views.
+- **escape:** `map_cpp` and `mfma_strip`.
+
+Each part's header states its kind; the kind of every function is in `surface.CPP`. A heading per
+definition, as §5 planned, was left out: the registry already maps each name to its kind. The
+build cache keys on the preprocessor's dependency list (#136), so an edit to a part recompiles.
+
 | lines | section | kind after S12 |
 |---|---|---|
 | 1-376 | int8 packing, `strided_gl`, waits and binds, base ops, bf16 round-to-nearest-even copies | lib (gap fills), primitives |
