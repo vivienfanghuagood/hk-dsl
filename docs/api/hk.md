@@ -59,6 +59,7 @@ The language: what `import hk` gives a kernel author. A kernel body is traced on
 - [`hk.Granules`](#hkgranules)
 - [`hk.MxScales`](#hkmxscales)
 - [`hk.Scaled`](#hkscaled)
+- [`hk.RowIndex`](#hkrowindex)
 - [`hk.Int`](#hkint)
 - [`hk.Bool`](#hkbool)
 - [`hk.Coord`](#hkcoord)
@@ -1626,51 +1627,49 @@ not a hang. `runs=True` / `bf16=True`: the layout post_elems wrote with them.
 #### `Global.gather`
 
 ```python
-Global.gather(self, tile, ids: Global, at, *, count=None, col=0, div=1, into=None) -> Tile
+Global.gather(self, tile, ids, at=None, *, count=None, col=0, div=None, into=None) -> Tile
 ```
 
-*Surface*: `div=`: to be merged into hk.RowIndex(div=) (DSL-surface migration S3).
+*Surface*: `div=`: deprecated, removed in the release after the last call from outside the repository is migrated, at most two minor releases after its deprecation; use hk.RowIndex(div=).
 
-Rows by index: tile row r is row `ids[at + r] // div` of this
-tensor (rows flattened over batch and depth), from column `col`. An
-index outside the tensor, or a position at or past `count` (default:
-all of `ids`), reads zeros -- the padding a MoE sort fills its index
-list with costs no branch. `div` is how many index values name one
-row: a MoE's top-k, whose sorted list counts (token, choice) pairs.
+Rows by index: tile row r is row `ids[at + r]` of this tensor (rows flattened over
+batch and depth), from column `col` -- `ids` an `hk.RowIndex`, which also says how an
+index names a row (`div`), or an int32 tensor and `at` (and `count`). An index outside the
+tensor, or a position at or past `count` (default: all of `ids`), reads zeros -- the
+padding a MoE sort fills its index list with costs no branch. `div=` here is deprecated:
+`hk.RowIndex(ids, at, div=...)`.
 
 #### `Global.scatter`
 
 ```python
-Global.scatter(self, value: Tile, ids: Global, at, *, count=None, col=0, sort_topk: int = 0, add: bool = False, staged: int = 0) -> None
+Global.scatter(self, value: Tile, ids, at=None, *, count=None, col=0, sort_topk: Optional[int] = None, add: bool = False, staged: Optional[int] = None) -> None
 ```
 
 *Changed after 0.8.0*: new parameter `staged`
 
-*Surface*: `sort_topk=`: to be merged into hk.RowIndex(sort_topk=) (DSL-surface migration S3).
+*Surface*: `sort_topk=`: deprecated, removed in the release after the last call from outside the repository is migrated, at most two minor releases after its deprecation; use hk.RowIndex(sort_topk=).
 
-*Surface*: `staged=`: to be merged into a staged hk.RowIndex (Group.stage) (DSL-surface migration S3).
+*Surface*: `staged=`: deprecated, removed in the release after the last call from outside the repository is migrated, at most two minor releases after its deprecation; use an index staged by Group.stage_rows.
 
 *Surface*: `add=`: atomic scatter-add, in no fixed order: not for a route that promises determinism.
 
-Rows by index: tile row r goes to row `ids[at + r]`, from column
-`col`; an index outside the tensor, or a position at or past
-`count`, writes nothing. Two rows naming one row race. `sort_topk`
-> 0: `ids` are AITER's MoE sort ids (token | choice << 24) and this
-tensor is [sort_topk * M, ...] choice-major -- row r goes to row
-choice * M + token, and padding (token >= M) nowhere.
+Rows by index: tile row r goes to row `ids[at + r]`, from column `col` -- `ids` an
+`hk.RowIndex`, or an int32 tensor and `at` (and `count`). An index outside the tensor, or
+a position at or past `count`, writes nothing. Two rows naming one row race. With an
+index of AITER's MoE sort ids (`RowIndex(..., sort_topk=k)`: token | choice << 24) this
+tensor is [k * M, ...] choice-major -- row r goes to row choice * M + token, and padding
+(token >= M) nowhere.
 
-`add=True` adds the rows atomically instead (an fp32 or bf16 global;
-bf16 adds element pairs, gfx950's global_atomic_pk_add_bf16). With
-`sort_topk` the tensor is then [M, ...] and every choice of a token
-adds into its row: the top-k reduce, in no fixed order -- the result
-varies run to run by the rounding of the adds.
+`add=True` adds the rows atomically instead (an fp32 or bf16 global; bf16 adds element
+pairs, gfx950's global_atomic_pk_add_bf16). With sort ids the tensor is then [M, ...] and
+every choice of a token adds into its row: the top-k reduce, in no fixed order -- the
+result varies run to run by the rounding of the adds.
 
-`staged=N`: the ids were staged in LDS by `g.gather_prep(ids, at0, N,
-raw=True)`, `at0` a multiple of N and [at0, at0 + N) covering every row
-stored here -- the scatter reads them there. A global index load is a
-vmcnt wait, which on gfx950 retires every load and store issued before
-it, in order: in an epilogue between K loops, the next loop's whole
-prefetch and this epilogue's own earlier stores (K1 k1-prefill c36).
+An index staged in LDS by `g.stage_rows(ix, N, keep_choice=True)` is read there: a global
+index load is a vmcnt wait, which on gfx950 retires every load and store issued before
+it, in order -- in an epilogue between K loops, the next loop's whole prefetch and this
+epilogue's own earlier stores (K1 k1-prefill c36). `sort_topk=` and `staged=` here are
+deprecated: they are `hk.RowIndex`'s and `g.stage_rows`'.
 
 #### `Global.type (property)`
 
@@ -1967,6 +1966,45 @@ The value's hk type (`RegTileType`, `RegVecType`, ...).
 An MX operand: an fp8 e4m3 row tile (FP4 in its container with fmt="fp4") and its E8M0
 scales, made by `Tile.scaled`. `hk.mma("mma_ABt", a.scaled(sa), b.scaled(sb), acc)` is
 gfx950's block-scaled MFMA; nothing else takes one.
+
+### `hk.RowIndex`
+
+*New after 0.8.0*
+
+Which rows a gather, a scatter or a gathered LDS copy moves: row r of the tile is named by
+`ids[at + r]`, an int32 global, for positions below `count` (default: all of `ids`) -- and
+how such an index names a row:
+
+- plain: it is the row;
+- `div=k`: the row is `ids[at + r] // k` (a MoE's top-k, its sorted list counting
+  (token, choice) pairs); for a gather;
+- `sort_topk=k`: AITER's MoE sort ids, token | choice << 24, padding token >= M. A gather or
+  a gathered copy reads the token's row; a scatter writes row choice * M + token of a
+  [k * M, ...] tensor, and with add=True adds into the token's row.
+
+Positions at or past `count`, padding and indices outside the tensor read zero and write
+nothing. `g.stage_rows(ix, rows)` copies [at, at + rows) into LDS and returns the staged
+index the copies then read there (no vmcnt wait for an index). Made in the kernel body; no
+instruction of its own.
+
+#### `RowIndex.offset`
+
+```python
+RowIndex.offset(self, n) -> RowIndex
+```
+
+The same index from position at + n (a later tile of the same block). A staged
+index stays staged: [at, at + n + the tile's rows) must lie inside what was staged.
+
+#### `RowIndex.staged`
+
+```python
+RowIndex.staged(self, rows: int, *, keep_choice: bool = False) -> RowIndex
+```
+
+This index as `g.stage_rows(self, rows, keep_choice=...)` stages it, without the copy:
+for code written before the place that stages it (a loop body's copies, defined above
+the loop). A consumer still refuses it until a `stage_rows` has made that copy.
 
 ### `hk.Int`
 

@@ -50,7 +50,7 @@ This page does four things:
 | G1 | **Elementwise integer and bit expressions on strips**: operators on i32 strips, `hk.where`, shifts, bit ops, comparisons, `hk.math.fma`, as one typed `hk.map` region that lowers like `map_cpp` does | 93% of `map_cpp`'s 746 calls (§2.6); `mx_quant_store` as a composition; the E8M0 repack |
 | G2 | **Register views** both ways: `Tile.lane_strip(run)` (#121) and its inverse `Tile.as_fragment(ty)` / `Tile.as_scales()` | `fp4_operand`, `fp8_operand`, `mx_scales_loose`; `mfma_strip`'s operands |
 | G3 | **Lane coordinates**: `hk.lane_coords(tile_or_type, run)` (#121) | `iota` |
-| G4 | **Row index sources**: `hk.RowIndex(ids, at, count, div=, sort_topk=)` and `g.stage(ix, rows)` | `div=`, `sort_topk=`, `staged=`, `gather_prep(raw=)`, `gather=(ids, at)` |
+| G4 | **Row index sources**: `hk.RowIndex(ids, at, count, div=, sort_topk=)` and `g.stage_rows(ix, rows)` | `div=`, `sort_topk=`, `staged=`, `gather_prep(raw=)`, `gather=(ids, at)` |
 | G5 | **One MMA entry**: `hk.mma(variant, a, b, acc)` with scaled operands `a.scaled(sa, fmt=)`; MX scales are ordinary register values | `mma_ABt_mx`, `copy_mx_scales`, `load_fp4_frags_lds` |
 | G6 | **Lane exchanges as one family**: `lane_gather`, `swap_halves(span, negate_first=)`, `run_xor`; on RDNA3, `as_operand(k_order=)` | `rotate_half`; attn_k3's rewrite of its own generated C++ |
 
@@ -405,7 +405,8 @@ c = hk.lane_coords(ST16)[1]  # target; hk.iota stays as this one line
 ```python
 ix = hk.RowIndex(ids, at, *, count=None, div=1, sort_topk=0)   # ids an int32 Global
 ix.offset(n)                                                   # the same list from at + n
-sx = g.stage(ix, rows, *, keep_choice=False)                   # an LDS copy of [at, at + rows), then a barrier
+sx = g.stage_rows(ix, rows, *, keep_choice=False)              # an LDS copy of [at, at + rows), then a barrier
+sx = ix.staged(rows, keep_choice=False); g.stage_rows(sx)      # the same, described before it is copied
 t = src.gather(ty, ix, col=c)                                  # rows by index -> a register tile
 dst.scatter(t, ix, col=c, add=False)                           # a register tile -> rows by index
 g.load(dst_lds, src.at[0, k], wait=False, gather=ix)           # the LDS DMA, rows by index
@@ -420,14 +421,18 @@ g.load(dst_lds, src.at[0, k], wait=False, gather=ix)           # the LDS DMA, ro
   - a scatter with `add=True` adds into the token's row.
 - Positions at or past `count`, and padding, read zero and write nothing.
 
-**Staging.** `g.stage` returns a staged index, and only a staged index can be used where the LDS
-copy is meant:
+**Staging.** `g.stage_rows` (`g.stage` is the register-staged copy's name already) returns a
+staged index, and only a staged index can be used where the LDS copy is meant:
 - with `keep_choice=False` it holds the decoded token rows, which gathers read (today's
   `gather_prep`);
 - with `keep_choice=True` it holds the raw ids, which scatters read (`gather_prep(raw=True)`).
 
-A consumer refuses a staged index of the wrong form. Today that mismatch is a silent read of an
-LDS array no one wrote.
+A consumer refuses a staged index of the wrong form, and a staged index no `stage_rows` has copied
+before it in the trace. Today either mismatch is a silent read of an LDS array no one wrote.
+`ix.staged(rows)` describes the staged index without the copy, for code written before the place
+that stages it -- a loop body's copies defined above the loop, as K1's are; the body then calls
+`g.stage_rows(sx)`. An assignment inside a device loop or a device `if` is local to the body the
+control-flow rewrite makes of it, so the description has to come first.
 
 **Lowering.** Unchanged: `GatherRowsOp` (`div`), `ScatterRowsOp` (`sort_topk`, `staged`),
 `GroupLoadOp` (`gather_staged`), `GatherPrepOp` (`raw`). V0.
@@ -440,9 +445,9 @@ g.gather_prep(sids, r0, BM, raw=True)
 out.scatter(o, sids, r0 + i * TILE, col=c0, sort_topk=topk, staged=BM)
 # target
 ix = hk.RowIndex(sids, r0, sort_topk=topk)
-rows_in = g.stage(ix, BM)
+rows_in = g.stage_rows(ix, BM)
 g.load(Xs[slot], x.at[0, kc * KS], wait=False, gather=rows_in)
-rows_out = g.stage(ix, BM, keep_choice=True)
+rows_out = g.stage_rows(ix, BM, keep_choice=True)
 out.scatter(o, rows_out.offset(i * TILE), col=c0)
 ```
 
@@ -554,7 +559,7 @@ form:
 | **S0** | Guard rails only, no kernel change: the registry (`hk.dsl.surface`) from §2; the tests of §4; the escape-hatch allowlist; one bitwise test per E4 specialization; `tools/surface/snapshot.py`, which traces every shipped kernel at its route-table configurations and hashes the generated C++ (V0's tool); a PR-template checklist pointing at CONTRIBUTING.md | none | none (tests only) | this design |
 | **S1** | DELETE B7 `scatter_add_lds` (DSL method, dialect op, C++, test) and D5 `make_causal` (alias to `tril_` / `triu_` for one release, with a test that they agree; the two dialect ops go) | D5's alias | V0 on every shipped kernel | S0 |
 | **S2** | G5 front end: `Tile.scaled`, `hk.mma` with scaled operands, `MxScales.copy(into=)`, `load_fp4_frags` from a `SharedTile`. Same dialect ops | `mma_ABt_mx`, `copy_mx_scales`, `load_fp4_frags_lds` | V0: K1, K2, gemm_cdna's MX mode | S0 |
-| **S3** | G4: `hk.RowIndex`, `g.stage`, the `gather=ix` form; the staged-form check. Same dialect ops and attributes | `div=`, `sort_topk=`, `staged=`, `gather=(ids, at)`, `gather_prep` | V0: K1, RDNA3 / RDNA4 MoE, example 08 / 09 | S0 |
+| **S3** | G4: `hk.RowIndex`, `g.stage_rows`, the `gather=ix` form; the staged-form check. Same dialect ops and attributes | `div=`, `sort_topk=`, `staged=`, `gather=(ids, at)`, `gather_prep` | V0: K1, RDNA3 / RDNA4 MoE, example 08 / 09 | S0 |
 | **S4** | G6, rope: `rotate_half` folds into `swap_halves(span, negate_first)`: one dialect op, one C++ template | `rotate_half` (sugar, kept) | V1: fused rope kernels at their plans | S0 |
 | **S5** | G2 front end: `as_fragment`, `as_scales`, emitting today's three ops | `fp4_operand`, `fp8_operand`, `mx_scales_loose` | V0 (no in-tree kernel uses them; #115 if merged) | S0 |
 | **S12** | Split `cdna.cuh` by kind, a pure move: `cdna/lib.cuh` (library fixes, gap fills), `cdna/primitives.cuh`, `cdna/formats.cuh` (MX, W4), `cdna/escape.cuh` (`map_cpp`, `mfma_strip`), `cdna/special.cuh` (E4); each definition headed by its registry name | none | V0 (same generated source, which includes one umbrella header) and V1 | S0 |

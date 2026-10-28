@@ -9,6 +9,21 @@ The next version's notes collect here until it is released.
 What is on main after 0.8.0. `pip install hk-dsl` (0.8.0) does not have it;
 the API reference marks such names *New after 0.8.0*.
 
+**Rows by index take an `hk.RowIndex` (DSL-surface S3).**
+- `hk.RowIndex(ids, at, count=, div=, sort_topk=)` says which rows a gather, a scatter or a
+  gathered LDS copy moves, and how an index names a row: plain, `div=k`, or AITER's sort ids. It
+  replaces the `div=` / `sort_topk=` / `staged=` keywords and the `(ids, at)` pair of
+  `g.load(gather=)`. `Global.gather(ty, ids, at)` / `scatter(t, ids, at)` with plain ids stay.
+- `g.stage_rows(ix, rows, keep_choice=)` copies an index into LDS and returns the staged index the
+  copies read there. It replaces `g.gather_prep(ids, at, rows, raw=)`.
+- A consumer now refuses a staged index of the other form, and one no `stage_rows` has copied.
+  Both used to be a silent read of an LDS array no one wrote.
+- `ix.staged(rows)` describes the staged index ahead of the loop body that copies it, and
+  `ix.offset(n)` gives a later tile's positions.
+- The old keywords and `gather_prep` are deprecated shims that trace to the same IR.
+- K1 and the RDNA MoE GEMM use the new form; every shipped kernel's generated source is
+  byte-identical.
+
 **The block-scaled MMA is `hk.mma`; MX scales are register values (DSL-surface S2).**
 - `hk.mma("mma_ABt", a.scaled(sa), b.scaled(sb, fmt="fp4", at=(tile, step)), acc)` is gfx950's
   block-scaled MFMA: `Tile.scaled(scales, fmt=, at=)` makes an MX operand (`hk.Scaled`), and both

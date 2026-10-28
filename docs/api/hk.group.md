@@ -33,12 +33,10 @@ warps x the wave of the kernel being traced (32 on RDNA, 64 on CDNA).
 #### `Group.load`
 
 ```python
-Group.load(self, dst: SharedTile, src: View, *, wait: bool = True, rows=None, nontemporal: bool = False, gather=None, staged: int = 0) -> None
+Group.load(self, dst: SharedTile, src: View, *, wait: bool = True, rows=None, nontemporal: bool = False, gather=None, staged: Optional[int] = None) -> None
 ```
 
-*Surface*: `gather=`: to be merged into Group.load(gather=RowIndex) (DSL-surface migration S3).
-
-*Surface*: `staged=`: to be merged into a staged hk.RowIndex (DSL-surface migration S3).
+*Surface*: `staged=`: deprecated, removed in the release after the last call from outside the repository is migrated, at most two minor releases after its deprecation; use Group.load(gather=<a staged hk.RowIndex>).
 
 Global -> LDS by the whole group, issued and waited. Rows of the
 tile past the tensor's last read zero and touch no memory, on every
@@ -55,14 +53,34 @@ the tensor's last row does: rows past it read zero. `nontemporal`
 (with wait=False) reads past the caches' keeping, sc0 nt, for data
 read once -- in runs of a whole line it streams faster; in the
 half-line runs of a 16x32 tile it fetched lines twice (4.8 against
-6.15 TB/s in the paged decode). `gather=(ids, at)` (with wait=False):
-the tile's rows come by index, row r being the source's row
-`ids[at + r] & 0xFFFFFF` -- AITER's MoE sort ids (token | choice << 24;
-its padding is a row past the tensor, which reads zero); `src`'s
-coordinate gives the column. `staged=N`: the rows were staged in LDS
-by `g.gather_prep(ids, at, N)` (same ids and at) -- read from there, so
-a lane's row costs no vmcnt wait (which, in order, would retire the
-whole prefetch).
+6.15 TB/s in the paged decode). `gather=ix` (with wait=False), an
+`hk.RowIndex`: the tile's rows come by index, row r being the source's
+row `ids[at + r] & 0xFFFFFF` -- AITER's MoE sort ids (token | choice <<
+24; its padding is a row past the tensor, which reads zero); `src`'s
+coordinate gives the column. An index staged by `g.stage_rows(ix, N)` is
+read from LDS, so a lane's row costs no vmcnt wait (which, in order,
+would retire the whole prefetch). `gather=(ids, at)` and `staged=N` are
+deprecated spellings of the same.
+
+#### `Group.stage_rows`
+
+```python
+Group.stage_rows(self, ix: RowIndex, rows: Optional[int] = None, *, keep_choice: Optional[bool] = None) -> RowIndex
+```
+
+*New after 0.8.0*
+
+`ix`'s positions [at, at + rows) copied into LDS, then a barrier (every warp must
+call it); returns the staged index, which `g.load(..., gather=)` and
+`Global.scatter` read from LDS -- no vmcnt wait for an index, which in order would
+retire every load in flight. For gathers it holds the token rows (`ids & 0xFFFFFF`);
+with `keep_choice=True` the ids themselves, which a scatter of sort ids needs (`at` a
+multiple of `rows`). A consumer refuses the other form, and refuses a staged index whose
+copy no `stage_rows` has made before it.
+
+`ix` may already be described as staged (`ix.staged(rows, keep_choice=...)`, made where
+the copies that read it are written, e.g. outside the loop whose body stages it): then
+this makes its copy, here.
 
 #### `Group.gather_prep`
 
@@ -72,13 +90,9 @@ Group.gather_prep(self, ids, at, rows: int, *, raw: bool = False) -> None
 
 *Changed after 0.8.0*: new parameter `raw`
 
-*Surface*: to be merged into Group.stage (DSL-surface migration S3).
+*Surface*: deprecated, removed in the release after the last call from outside the repository is migrated, at most two minor releases after its deprecation; use Group.stage_rows.
 
-Stage `rows` source rows of a gathered copy in LDS -- `ids[at + r] &
-0xFFFFFF` -- and pass a barrier (every warp must call it). A
-`g.load(..., gather=(ids, at), staged=rows)` then reads them there.
-`raw=True`: the ids themselves, in their own array, for
-`Global.scatter(..., staged=rows)`; `at` a multiple of `rows`.
+Deprecated: `g.stage_rows(hk.RowIndex(ids, at), rows, keep_choice=raw)`.
 
 #### `Group.wait_for`
 

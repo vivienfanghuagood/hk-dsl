@@ -24,7 +24,7 @@ def _kernel():
         g = hk.group(4)
         s = hk.lds.alloc(st, name="s")
         at = hk.arch.block_idx.x * 32
-        g.load(s, x.at[0, 64], wait=False, gather=(ids, at))
+        g.load(s, x.at[0, 64], wait=False, gather=hk.RowIndex(ids, at))
         g.wait_for(s)
         hk.arch.barrier()
         t = s.load(rt)
@@ -60,8 +60,8 @@ def _kernel_staged():
         g = hk.group(4)
         s = hk.lds.alloc(st, name="s")
         at = hk.arch.block_idx.x * 32
-        g.gather_prep(ids, at, 32)
-        g.load(s, x.at[0, 64], wait=False, gather=(ids, at), staged=32)
+        rows = g.stage_rows(hk.RowIndex(ids, at), 32)
+        g.load(s, x.at[0, 64], wait=False, gather=rows)
         g.wait_for(s)
         hk.arch.barrier()
         t = s.load(rt)

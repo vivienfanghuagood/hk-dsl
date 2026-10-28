@@ -567,7 +567,7 @@ def page_hk(since: Since) -> Page:
            "names the value an operation writes.")
     p.para(operator_table())
     for n in ["Tile", "Vec", "Global", "View", "SharedTile", "SharedVec", "Granules",
-              "MxScales", "Scaled", "Int", "Bool", "Coord"]:
+              "MxScales", "Scaled", "RowIndex", "Int", "Bool", "Coord"]:
         obj = getattr(hk, n)
         documented.add(n)
         p.entry(f"hk.{n}", obj, display=f"hk.{n}", signature=False,

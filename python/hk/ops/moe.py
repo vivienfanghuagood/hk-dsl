@@ -16,8 +16,8 @@ a server decodes the whole cost is streaming each chosen expert's weights:
     are tokens -- which is what lets the store scatter them.
   * **One 16-row block of one expert's W per workgroup, K split across the
     warps**, interleaved, the partial sums meeting through LDS at the end.
-  * **A's rows come by index**: `A.gather(..., div=top_k)`. A sentinel lands
-    on row `tokens`, past A's end, and reads zeros; the scatter drops it.
+  * **A's rows come by index**: `A.gather(ty, hk.RowIndex(ids, at, div=top_k))`. A sentinel
+    lands on row `tokens`, past A's end, and reads zeros; the scatter drops it.
 
 A block past `num_tokens_post_padded` runs its K loop zero times rather than
 branching around the kernel: the combine has barriers, which every warp must
@@ -72,7 +72,7 @@ def moe_gemm_kernel(name: str, *, block_m: int = 16, top_k: int = 1,
         for t in hk.range(live * (a.cols // (kc * warps))):
             k = (t * warps + wid) * kc
             w_t = w.at[e, n0, k].load(ty_w)
-            x_t = a.gather(ty_x, sorted_ids, at, count=count, col=k, div=top_k)
+            x_t = a.gather(ty_x, hk.RowIndex(sorted_ids, at, count=count, div=top_k), col=k)
             acc += w_t @ x_t.T
 
         out = hk.transpose(acc)

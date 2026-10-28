@@ -83,3 +83,90 @@ def test_a_scaled_mma_wants_both_operands_scaled_and_mma_ABt():
         _trace(lambda a, b, sa, sb, c: body(a, b, sa, sb, c, one=True), MX, "one_scaled")
     with pytest.raises(TypeError, match="is mma_ABt"):
         _trace(lambda a, b, sa, sb, c: body(a, b, sa, sb, c, variant="mma_AB"), MX, "ab")
+
+
+# -- S3: rows by index, hk.RowIndex and g.stage_rows ---------------------------------------------
+
+ROWS = {"x": hk.Tensor[fp32], "ids": hk.Tensor[hk.i32], "o": hk.Tensor[hk.bf16]}
+T32 = hk.RT(fp32, 16, 64)
+
+
+def _rows(old: bool):
+    def body(x, ids, o):
+        g = hk.group(1)
+        r0 = hk.arch.block_idx.y * 64
+        t = x.at[0, 0].load(T32)
+        if old:
+            g.gather_prep(ids, r0, 64, raw=True)
+            o.scatter(t, ids, r0 + 16, col=0, sort_topk=3, staged=64)
+            o.scatter(t, ids, r0, col=64, sort_topk=3)
+            o.at[0, 0] = x.gather(T32, ids, r0, count=40, div=3)
+        else:
+            rows = g.stage_rows(hk.RowIndex(ids, r0, sort_topk=3), 64, keep_choice=True)
+            o.scatter(t, rows.offset(16), col=0)
+            o.scatter(t, hk.RowIndex(ids, r0, sort_topk=3), col=64)
+            o.at[0, 0] = x.gather(T32, hk.RowIndex(ids, r0, count=40, div=3))
+    return _trace(body, ROWS, "rows_shim")
+
+
+def test_scatter_and_gather_keywords_are_a_row_index():
+    old, warned = _rows(True)
+    new, none = _rows(False)
+    assert old == new
+    for what in ("gather_prep", "sort_topk", "staged", "div"):
+        assert any(what in m for m in warned), what
+    assert not none
+
+
+FP8 = {"a": hk.Tensor[fp8e4m3], "ids": hk.Tensor[hk.i32]}
+
+
+def _gathered_copy(old: bool):
+    def body(a, ids):
+        g = hk.group(4)
+        xs = hk.lds.alloc(hk.ST(fp8e4m3, 64, 128), count=2, name="Xs")
+        if old:
+            g.gather_prep(ids, 0, 64)
+            g.load(xs[0], a.at[0, 0], wait=False, gather=(ids, 0), staged=64)
+            g.load(xs[1], a.at[0, 128], wait=False, gather=(ids, 0))
+        else:
+            rows = g.stage_rows(hk.RowIndex(ids, 0), 64)
+            g.load(xs[0], a.at[0, 0], wait=False, gather=rows)
+            g.load(xs[1], a.at[0, 128], wait=False, gather=hk.RowIndex(ids, 0))
+        g.wait_for(xs[0])
+        g.wait_for(xs[1])
+    return _trace(body, FP8, "copy_shim")
+
+
+def test_a_gathered_copy_takes_a_row_index():
+    old, warned = _gathered_copy(True)
+    new, none = _gathered_copy(False)
+    assert old == new and len(warned) >= 3 and not none
+
+
+def test_a_staged_index_is_read_only_in_the_form_it_was_staged_in():
+    def scatter_of_gather_rows(x, ids, o):
+        rows = hk.group(1).stage_rows(hk.RowIndex(ids, 0, sort_topk=3), 64)
+        o.scatter(x.at[0, 0].load(T32), rows, col=0)
+    with pytest.raises(TypeError, match="keep_choice=True"):
+        _trace(scatter_of_gather_rows, ROWS, "bad_scatter")
+
+    def copy_of_raw_ids(a, ids):
+        g = hk.group(4)
+        xs = hk.lds.alloc(hk.ST(fp8e4m3, 64, 128), name="Xs")
+        rows = g.stage_rows(hk.RowIndex(ids, 0), 64, keep_choice=True)
+        g.load(xs, a.at[0, 0], wait=False, gather=rows)
+    with pytest.raises(TypeError, match="staged for scatters"):
+        _trace(copy_of_raw_ids, FP8, "bad_copy")
+
+    def register_gather_of_staged(x, ids, o):
+        rows = hk.group(1).stage_rows(hk.RowIndex(ids, 0), 64)
+        o.at[0, 0] = x.gather(T32, rows)
+    with pytest.raises(TypeError, match="staged index"):
+        _trace(register_gather_of_staged, ROWS, "bad_gather")
+
+    def staged_but_never_copied(x, ids, o):
+        rows = hk.RowIndex(ids, 0, sort_topk=3).staged(64, keep_choice=True)
+        o.scatter(x.at[0, 0].load(T32), rows, col=0)
+    with pytest.raises(TypeError, match="no g.stage_rows"):
+        _trace(staged_but_never_copied, ROWS, "never_copied")
