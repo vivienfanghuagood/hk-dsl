@@ -197,3 +197,24 @@ def test_runs_of_another_statistic_are_refused(baseline, cr, tmp_path, capsys):
     p.write_text(json.dumps(rep))
     assert cr.check(p, baseline) == 2
     assert "every ratio would move" in capsys.readouterr().out
+
+
+def test_a_new_baseline_takes_its_archs_arguments(cr, tmp_path, capsys):
+    # gfx1201's gate runs where FlyDSL is not installed, and gates its fp8 / int8 GEMMs.
+    rs = [report(tmp_path, f"g{i}.json", {"gemm 4096": {"hk": 1.0, "torch": 1.5}}, arch="gfx1201")
+          for i in range(3)]
+    b = tmp_path / "gfx1201.json"
+    assert cr.refresh(rs, b) == 0
+    args = json.loads(b.read_text())["args"]
+    assert args == cr.ARGS_AT["gfx1201"] and "flydsl" not in " ".join(args)
+    assert cr.args_for("gfx1100") == cr.ARGS
+    capsys.readouterr()
+    import sys
+    argv = sys.argv
+    try:
+        sys.argv = ["check_regression.py", "--print-args", "--arch", "gfx1201",
+                    "--baseline", str(tmp_path / "none.json")]
+        assert cr.main() == 0
+    finally:
+        sys.argv = argv
+    assert capsys.readouterr().out.split() == cr.ARGS_AT["gfx1201"]

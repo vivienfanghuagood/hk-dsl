@@ -23,7 +23,7 @@ export PYTHONPATH="python${PYTHONPATH:+:$PYTHONPATH}"
 scoreboard() {  # scoreboard <json> <log>
     # shellcheck disable=SC2046 -- the baseline's arguments, word-split on purpose
     HIP_VISIBLE_DEVICES=$gpu timeout --signal=KILL 3600 "$py" tools/hk-bench/scoreboard.py \
-        $("$py" tools/hk-bench/check_regression.py --print-args --baseline "$base") \
+        $("$py" tools/hk-bench/check_regression.py --print-args --arch "$arch" --baseline "$base") \
         --json "$1" > "$2" 2>&1
 }
 
