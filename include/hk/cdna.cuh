@@ -3461,6 +3461,110 @@ __device__ static inline void take_elems(D &dst, const GL &box, const I &idx, in
         asm volatile("" ::: "memory");   // re-issued every round
     }
 }
+/// lane ^ OFF's value of x (DPP within a 16-lane row, as hk_xor_op), for OFF < 16
+template<int OFF> __device__ inline uint32_t hk_xor_partner(uint32_t x) {
+    int y;
+    const int v = int(x);
+    if constexpr (OFF == 8) {
+        y = __builtin_amdgcn_update_dpp(v, v, 0x118, 0xF, 0xC, false);
+        y = __builtin_amdgcn_update_dpp(y, v, 0x108, 0xF, 0x3, false);
+    } else if constexpr (OFF == 4) {
+        y = __builtin_amdgcn_update_dpp(v, v, 0x114, 0xF, 0xA, false);
+        y = __builtin_amdgcn_update_dpp(y, v, 0x104, 0xF, 0x5, false);
+    } else if constexpr (OFF == 2) {
+        y = __builtin_amdgcn_update_dpp(v, v, 0x4E, 0xF, 0xF, false);
+    } else {
+        y = __builtin_amdgcn_update_dpp(v, v, 0xB1, 0xF, 0xF, false);
+    }
+    return uint32_t(y);
+}
+/** @brief (a top-k's selection) The largest of a lane's six 64-bit keys (h_i << 32 | l_i), then across the wave
+ * (DPP and permlane swaps): every lane gets the winner's low word. One butterfly of 64-bit keys where a value max
+ * and an index min took two. For map_cpp: `hk_wave_argmax64_6(h0, .., h5, l0, .., l5)`. gfx950. */
+__device__ inline int hk_wave_argmax64_6(int h0, int h1, int h2, int h3, int h4, int h5,
+                                         int l0, int l1, int l2, int l3, int l4, int l5) {
+    auto pk = [](int h, int l) { return (uint64_t(uint32_t(h)) << 32) | uint32_t(l); };
+    uint64_t k = pk(h0, l0);
+    const uint64_t c[5] = {pk(h1, l1), pk(h2, l2), pk(h3, l3), pk(h4, l4), pk(h5, l5)};
+    #pragma unroll
+    for (int i = 0; i < 5; i++) k = c[i] > k ? c[i] : k;
+    auto dpp = [&](auto off) {
+        constexpr int O = decltype(off)::value;
+        const uint64_t o = (uint64_t(hk_xor_partner<O>(uint32_t(k >> 32))) << 32) | hk_xor_partner<O>(uint32_t(k));
+        k = o > k ? o : k;
+    };
+    dpp(std::integral_constant<int, 1>{});
+    dpp(std::integral_constant<int, 2>{});
+    dpp(std::integral_constant<int, 4>{});
+    dpp(std::integral_constant<int, 8>{});
+#if defined(KITTENS_CDNA4)
+    {
+        const auto rh = __builtin_amdgcn_permlane16_swap(uint32_t(k >> 32), uint32_t(k >> 32), false, true);
+        const auto rl = __builtin_amdgcn_permlane16_swap(uint32_t(k), uint32_t(k), false, true);
+        const uint64_t a = (uint64_t(rh[0]) << 32) | rl[0], b = (uint64_t(rh[1]) << 32) | rl[1];
+        k = a > b ? a : b;
+    }
+    {
+        const auto rh = __builtin_amdgcn_permlane32_swap(uint32_t(k >> 32), uint32_t(k >> 32), false, true);
+        const auto rl = __builtin_amdgcn_permlane32_swap(uint32_t(k), uint32_t(k), false, true);
+        const uint64_t a = (uint64_t(rh[0]) << 32) | rl[0], b = (uint64_t(rh[1]) << 32) | rl[1];
+        k = a > b ? a : b;
+    }
+#else
+    #pragma unroll
+    for (int off = 16; off < 64; off *= 2) {
+        const uint64_t o = (uint64_t(uint32_t(__shfl_xor(int(k >> 32), off, 64))) << 32) | uint32_t(__shfl_xor(int(k), off, 64));
+        k = o > k ? o : k;
+    }
+#endif
+    return int(uint32_t(k));
+}
+/** @brief (a top-k's selection, k <= 6) A wave's top six of its lanes' six (value, key) pairs: largest value, then
+ * smallest key (keys distinct). Lane i < 6 gets the key of pick i; others 0. Each lane sorts its six once, then
+ * every pick is one 64-bit butterfly over the lanes' heads and the winner's list moves up -- no reduction over a
+ * lane's six a pick. For map_cpp: `hk_wave_top6_key(v0, .., v5, k0, .., k5)` (values fp32, keys int). gfx950. */
+__device__ inline int hk_wave_top6_key(float v0, float v1, float v2, float v3, float v4, float v5,
+                                       int k0, int k1, int k2, int k3, int k4, int k5) {
+    auto ord = [](float v) {
+        const uint32_t u = __builtin_bit_cast(uint32_t, v);
+        return (u & 0x80000000u) ? ~u : (u | 0x80000000u);
+    };
+    auto pk = [&](float v, int k) { return (uint64_t(ord(v)) << 32) | uint32_t(~k); };
+    uint64_t a[6] = {pk(v0, k0), pk(v1, k1), pk(v2, k2), pk(v3, k3), pk(v4, k4), pk(v5, k5)};
+    auto cs = [&](int i, int j) { const uint64_t x = a[i], y = a[j]; a[i] = x > y ? x : y; a[j] = x > y ? y : x; };
+    // 6-input sorting network (12 compare-swaps), descending
+    cs(1, 2); cs(4, 5); cs(0, 2); cs(3, 5); cs(0, 1); cs(3, 4);
+    cs(1, 4); cs(0, 3); cs(2, 5); cs(1, 3); cs(2, 4); cs(2, 3);
+    const int lane = __builtin_amdgcn_mbcnt_hi(~0u, __builtin_amdgcn_mbcnt_lo(~0u, 0u));
+    int out = 0;
+    #pragma unroll
+    for (int r = 0; r < 6; r++) {
+        uint64_t k = a[0];
+        auto dpp = [&](auto off) {
+            constexpr int O = decltype(off)::value;
+            const uint64_t o = (uint64_t(hk_xor_partner<O>(uint32_t(k >> 32))) << 32) | hk_xor_partner<O>(uint32_t(k));
+            k = o > k ? o : k;
+        };
+        dpp(std::integral_constant<int, 1>{});
+        dpp(std::integral_constant<int, 2>{});
+        dpp(std::integral_constant<int, 4>{});
+        dpp(std::integral_constant<int, 8>{});
+        #pragma unroll
+        for (int sw = 0; sw < 2; sw++) {
+            const uint32_t h = uint32_t(k >> 32), l = uint32_t(k);
+            const auto rh = sw == 0 ? __builtin_amdgcn_permlane16_swap(h, h, false, true) : __builtin_amdgcn_permlane32_swap(h, h, false, true);
+            const auto rl = sw == 0 ? __builtin_amdgcn_permlane16_swap(l, l, false, true) : __builtin_amdgcn_permlane32_swap(l, l, false, true);
+            const uint64_t x = (uint64_t(rh[0]) << 32) | rl[0], y = (uint64_t(rh[1]) << 32) | rl[1];
+            k = x > y ? x : y;
+        }
+        const bool won = a[0] == k;                                  // (keys distinct: one lane)
+        #pragma unroll
+        for (int i = 0; i < 5; i++) a[i] = won ? a[i + 1] : a[i];
+        a[5] = won ? 0 : a[5];
+        out = lane == r ? int(~uint32_t(k)) : out;
+    }
+    return out;
+}
 /** @brief Two floats as a bf16 pair (a, b) in one int, both RNE in one v_cvt_pk_bf16_f32 (two scalar casts are
  * one instruction each). For map_cpp expressions: `hk_pk_bf16(x0, x1)`. */
 __device__ inline int hk_pk_bf16(float a, float b) {
