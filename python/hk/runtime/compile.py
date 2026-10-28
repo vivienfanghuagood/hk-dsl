@@ -402,6 +402,95 @@ def _wait_gate(binary: Path, kind: str) -> bool:
     return True
 
 
+_MFMA_MARK = "MFMAHAZ"
+
+
+def _mfma_mode() -> str:
+    """HK_MFMA_GATE: fix (the default: pad and rebuild), refuse, report (say so on stderr
+    and in the build log, and build: for a sweep, never for running a kernel), or off."""
+    v = os.environ.get("HK_MFMA_GATE", "fix").strip().lower()
+    if v in ("0", "off", "no"):
+        return "off"
+    return v if v in ("refuse", "report") else "fix"
+
+
+def _mfma_found(binary: Path, kind: str, arch: str) -> Optional[List[str]]:
+    """The MFMA hazards of a binary (cocheck.mfma_hazards), [] when its target
+    has no MFMAs or its compiler pads every path (mfmahaz.compiler_fixed:
+    llvm/llvm-project#225989), None when the gate is off."""
+    if _mfma_mode() == "off":
+        return None
+    if not (arch.startswith("gfx94") or arch == "gfx950"):
+        return []
+    from . import cocheck, mfmahaz  # noqa: PLC0415
+
+    if mfmahaz.compiler_fixed(cocheck._tool("llc")):
+        return []
+    return cocheck.mfma_hazards(binary, bundled=(kind == "so"))
+
+
+def _mfma_refusal(found: Sequence[str]) -> ResourceError:
+    shown = "\n".join(f"  {h}" for h in found[:6])
+    more = f"\n  ... {len(found) - 6} more" if len(found) > 6 else ""
+    return ResourceError(
+        f"generated kernel rejected: {len(found)} MFMA result(s) read or overwritten too few "
+        f"wait states after the MFMA on some path into the reader:\n{shown}{more}\n"
+        "This compiler pads the shortest path into a block too little when it finds a longer "
+        "one first (fixed in LLVM by llvm/llvm-project#225989; ROCm/llvm-project#5153), and "
+        "the hardware does not interlock on MFMA results: a kernel like this can compute wrong "
+        "values. HK_MFMA_GATE=refuse asked for this refusal; the default (fix) rebuilds the "
+        "kernel with the s_nop padding the fixed compiler emits.")
+
+
+def _pad_mfma_hazards(cmd: Sequence[str], tmp: Path, arch: str) -> List[str]:
+    """Rebuild `cmd` (hipcc, output into `tmp`) through its own pipeline, as
+    `hipcc -### -save-temps` lists it, padding the device assembly between the
+    compile and the assembler step (mfmahaz.fix_asm). Returns what was padded."""
+    import shlex  # noqa: PLC0415
+
+    from . import mfmahaz  # noqa: PLC0415
+
+    plan = subprocess.run([*cmd, "-###", "-save-temps"], cwd=tmp, capture_output=True,
+                          text=True)
+    steps = [shlex.split(l) for l in (plan.stdout + plan.stderr).splitlines()
+             if l.startswith(' "')]
+    if plan.returncode != 0 or not steps:
+        raise CompileError(f"hipcc -### failed for the MFMA padding rebuild:\n{plan.stderr}")
+    padded: List[str] = []
+    for argv in steps:
+        r = subprocess.run(argv, cwd=tmp, capture_output=True, text=True)
+        if r.returncode != 0:
+            raise CompileError(f"MFMA padding rebuild: {argv[0]} failed:\n{r.stderr}")
+        if "-S" in argv and "amdgcn-amd-amdhsa" in argv and "-o" in argv:
+            asm = tmp / argv[argv.index("-o") + 1]
+            text, said = mfmahaz.fix_asm(asm.read_text(), arch)
+            asm.write_text(text)
+            padded += said
+    return padded
+
+
+def mfma_gate_status() -> List[str]:
+    """The MFMA gate for `python3 -m hk.integration --status`: its mode, whether this
+    toolchain's compiler needs it, and the cached builds it padded (each kernel, how many
+    places; the places themselves are in that build's MFMAHAZ and build.log)."""
+    from . import cocheck, mfmahaz  # noqa: PLC0415
+
+    fixed = mfmahaz.compiler_fixed(cocheck._tool("llc"))
+    lines = [f"MFMA gate: HK_MFMA_GATE={_mfma_mode()}; this compiler "
+             + {True: "pads every path (llvm/llvm-project#225989): not checked",
+                False: "lacks llvm/llvm-project#225989: CDNA builds are checked",
+                None: "could not be probed (no llc): CDNA builds are checked"}[fixed]]
+    padded = []
+    for mark in sorted(cache_dir().glob(f"*/{_MFMA_MARK}")):
+        text = mark.read_text().splitlines()
+        if text and text[0].startswith("padded "):
+            kernels = sorted({t.split(":", 1)[0] for t in text[1:] if ":" in t})
+            padded.append(f"  {mark.parent.name[:12]} {', '.join(kernels)}: "
+                          f"{text[0].split()[1]} place(s)")
+    lines.append(f"  {len(padded)} cached build(s) padded" + (":" if padded else ""))
+    return lines + padded
+
+
 def _load_cached(d: Path, target: Target) -> Optional[Build]:
     so = (next(d.glob("*.so"), None) or next(d.glob("*.*.so"), None)
           or ((d / CODEOBJ) if (d / CODEOBJ).exists() else None))
@@ -470,9 +559,11 @@ def build(
     `kind` "so" is an importable extension (pybind or torch registration),
     "co" a device-only code object for hk.runtime.codeobj -- same cache, same
     gate. Raises ResourceError, and leaves nothing importable behind, if any
-    instantiation spills, or if its code reads registers an LDS load is still
-    filling (the wait gate, `_wait_gate`; a cache entry from before the gate is
-    checked on its first hit).
+    instantiation spills, if its code reads registers an LDS load is still
+    filling (the wait gate, `_wait_gate`), or, on CDNA, if it reads or
+    overwrites an MFMA result too soon on some path (the MFMA gate,
+    `_mfma_found`) unless HK_MFMA_GATE=fix -- the default -- can pad it. A cache entry
+    from before a gate is checked on its first hit.
     """
     if kind not in ("so", "co"):
         raise ValueError(f"build kind {kind!r}; 'so' or 'co'")
@@ -484,7 +575,13 @@ def build(
     _BUILT.add(hashlib.sha256("\0".join(
         [source, *(f for f in fl if not f.startswith("-I"))]).encode()).hexdigest())
 
-    if (hit := _load_cached(out, target)) is not None:
+    hit = _load_cached(out, target)
+    if hit is not None and not (out / _MFMA_MARK).exists() and _mfma_mode() == "fix" and \
+            _mfma_found(hit.so_path, kind, target.arch):
+        # built unpadded (the gate off, or before it): rebuilt here, padded, in its place
+        shutil.rmtree(out, ignore_errors=True)
+        hit = None
+    if hit is not None:
         # Re-gate on a hit. The key covers the source and the flags but not the
         # thresholds, so the same bytes can be asked for by one kernel with no
         # occupancy requirement and by another with a strict one; whoever
@@ -505,6 +602,18 @@ def build(
                 (out / _WAIT_MARK).write_text("lds copies checked\n")
             except OSError:
                 pass
+        if not (out / _MFMA_MARK).exists():
+            # built before the MFMA gate, or with it off: a refusal names the fix (a rebuild)
+            found = _mfma_found(hit.so_path, kind, target.arch)
+            if found and _mfma_mode() == "report":
+                print(f"hk: {hit.module_name}: {_mfma_refusal(found)}", file=sys.stderr)
+            elif found:
+                raise ResourceError(f"{_mfma_refusal(found)}\nCached build: {out}")
+            elif found is not None:
+                try:
+                    (out / _MFMA_MARK).write_text("mfma hazards checked\n")
+                except OSError:
+                    pass
         return hit
 
     module_name = f"hk_{name}_{key[:12]}"
@@ -545,6 +654,24 @@ def build(
                 min_occupancy=min_occupancy,
             )
             checked = _wait_gate(tmp / so_name, kind)
+            mfma = _mfma_found(tmp / so_name, kind, target.arch)
+            padded: List[str] = []
+            if mfma and _mfma_mode() == "fix":
+                padded = _pad_mfma_hazards(cmd, tmp, target.arch)
+                line = (f"hk: {name}: HK_MFMA_GATE=fix padded {len(padded)} MFMA hazard(s):\n"
+                        + "".join(f"  {p}\n" for p in padded))
+                print(line, file=sys.stderr, end="")
+                with open(tmp / "build.log", "a") as f:
+                    f.write(line)
+                mfma = _mfma_found(tmp / so_name, kind, target.arch)
+            if mfma and _mfma_mode() == "report":
+                line = f"hk: {name}: {_mfma_refusal(mfma)}\n"
+                print(line, file=sys.stderr, end="")
+                with open(tmp / "build.log", "a") as f:
+                    f.write(line)
+                mfma = None
+            elif mfma:
+                raise _mfma_refusal(mfma)
         except ResourceError as e:
             raise ResourceError(
                 f"{e}\n\nGenerated source kept at {_keep(tmp, key)}"
@@ -552,6 +679,10 @@ def build(
 
         if checked:
             (tmp / _WAIT_MARK).write_text("lds copies checked\n")
+        if mfma is not None:
+            (tmp / _MFMA_MARK).write_text(
+                f"padded {len(padded)}\n" + "".join(f"{p}\n" for p in padded) if padded
+                else "mfma hazards checked\n")
         (tmp / "OK").write_text(module_name)
         try:
             os.rename(tmp, out)

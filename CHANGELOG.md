@@ -9,6 +9,33 @@ The next version's notes collect here until it is released.
 What is on main after 0.8.0. `pip install hk-dsl` (0.8.0) does not have it;
 the API reference marks such names *New after 0.8.0*.
 
+**CDNA: the MFMA hazard gate pads what LLVM leaves short.** The hardware
+does not interlock on an MFMA's result. LLVM before llvm/llvm-project#225989
+-- every ROCm release so far, 7.2.3 and the 10.x images included -- pads too
+little on the shortest path into a block it first reached the long way
+(ROCm/llvm-project#5153), and gfx950's paged decode computed some scores
+wrong from it. hk's build now checks every CDNA code object
+(`hk.runtime.mfmahaz`: a shortest-distance walk backwards over the control
+flow from each instruction that touches an MFMA's registers, against LLVM's
+windows) and, by default, rebuilds a kernel that is short anywhere with the
+`s_nop` padding the fixed compiler would emit (`HK_MFMA_GATE=fix`; `refuse`,
+`report` and `0` are the other modes). The build log, the cache entry's
+`MFMAHAZ` and `python3 -m hk.integration --status` name each padded kernel
+and the places. A compiler that pads the gate's two-path probe is not
+checked. Swept over every kernel the test tiers and the default routes build:
+- ROCm 7.2.3 (CI's GPU image): gfx950's dense attention, head_dim 64 and 128,
+  not causal -- `hk.attention`'s kernel -- reads S for the softmax's max 3-4
+  wait states after the last QK MFMA on the taken path of a branch, where 12
+  are needed (2 places a kernel). Padded, its output is bitwise the unpadded
+  one's and its time 0.993-1.003x (6 shapes, one process).
+- ROCm 10 (the vLLM image): HipKittens' causal attention (`attend_ker`,
+  hk.ops.hipkittens), 3-6 wait states short at the join after an exec branch
+  (6 places at head_dim 128, 3 at 64); and one `hk.ops.gemm_cdna_dp`
+  candidate with a bias+GELU epilogue (an MFMA reading an overlapping
+  accumulator 1 wait state early).
+- The default-on routes' kernels (vllm_mxfp8, vllm_moe_a8w4, vllm_int4) are
+  clean under both; gfx1100 / gfx1201 have no MFMAs.
+
 **CDNA: `hk-mma-fence`, a DSL rule for matrix-core accumulators; `hk.arch.agpr`
 to hold one in AGPRs.**
 - `hk-mma-fence`, a pass in the kernel pipeline, puts an `hk.sched_barrier`

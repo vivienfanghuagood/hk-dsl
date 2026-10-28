@@ -162,6 +162,25 @@ The gate is `python/hk/runtime/resources.py`. What it enforces:
   (`Target.charged_vgprs`). The report prints both (`vgpr=20+16a`).
 * **No remarks is an error.** A build that emits no resource remarks cannot
   be certified, so it is fatal rather than skipped.
+* **MFMA hazards (CDNA).** The hardware does not interlock on an MFMA's
+  result: whatever reads or overwrites it must come enough wait states after
+  it, and LLVM pads with `s_nop`. Before llvm/llvm-project#225989 (ROCm 7.2.3,
+  10.0 and 10.1 included) it measured the wrong path into a block with two
+  predecessors and padded too little; gfx950's paged decode read its scores 2
+  wait states after the QK MFMA where 8 are needed and computed some wrong
+  (ROCm/llvm-project#5153). The gate (`hk.runtime.mfmahaz`) walks the code
+  object's control flow backwards from every instruction that touches an
+  MFMA's registers, shortest path first, against LLVM's windows. A kernel
+  short anywhere is rebuilt through hipcc's own pipeline with the padding the
+  fixed compiler would emit added to its assembly, and checked again (the
+  default, `HK_MFMA_GATE=fix`). The build log, the entry's `MFMAHAZ` file and
+  `python3 -m hk.integration --status` say which kernels were padded and
+  where. `HK_MFMA_GATE=refuse` refuses such a kernel instead, naming the
+  instruction and the wait states missing; `report` builds it and says so,
+  for a sweep; `0` turns the gate off. A compiler that pads the gate's probe
+  (a two-path case, through its own `llc`) is not checked. hk's inline-asm
+  LDS reads are the one case it leaves out: a load writes its destination
+  when its data returns, long after any window.
 
 The gate runs at `k.build()`, which needs hipcc but no GPU: the failure most
 likely to bite — generated code that compiles but spills — is caught on a
@@ -187,6 +206,9 @@ python -m hk.runtime.cocheck --bundle lib.so     # a host binary with an embedde
 
 - **Resources**, from the metadata note: scratch or a spill fails; the VGPR,
   AGPR and SGPR counts and the occupancy they allow are reported.
+- **MFMA hazards**, from the disassembly over its control flow: a read or an
+  overwrite of an MFMA result too few wait states after the MFMA on some path
+  (the gate above).
 - **Waits**, from the disassembly: an instruction that reads a VGPR that an
   LDS or vector-memory load is still writing fails. The compiler inserts the
   waits for loads it emitted, and nothing does for loads written as inline
@@ -194,7 +216,7 @@ python -m hk.runtime.cocheck --bundle lib.so     # a host binary with an embedde
   waits and every configuration returned NaN
   ([chapter 29](history/29-cdna.md)).
 
-It exits 1 if any kernel fails either gate. The wait scan is a linear walk,
+It exits 1 if any kernel fails a gate. The wait scan is a linear walk,
 done twice for loops, so a report can be a false alarm, and a clean pass is
 only as good as that walk is for the kernel's control flow. gfx950's copies
 into LDS (`buffer_load … lds`) write no register but count on vmcnt, so they

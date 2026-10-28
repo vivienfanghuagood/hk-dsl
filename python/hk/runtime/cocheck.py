@@ -1,4 +1,4 @@
-"""hk's two gates, on any AMDGPU code object: resources, and waits.
+"""hk's gates, on any AMDGPU code object: resources, waits, and MFMA hazards.
 
 hk refuses to return a kernel that spills, and its IR keeps the waits that
 inline-asm LDS reads need. Neither check needs hk's source. Both can be read
@@ -19,6 +19,12 @@ same rules:
   inline asm, which is what the bind after hk's waits is for. Measured on
   gfx950 (tools/cdna-probes/bind_hazard.py): with the bind removed, LLVM
   hoists the MFMAs above the waits and every configuration returns NaN.
+* **MFMA hazards.** An instruction that reads or overwrites an MFMA's result
+  (or overwrites a register it reads as srcC) fewer wait states after it,
+  on some path into it, than the MFMA's window: `mfmahaz`. LLVM before
+  llvm/llvm-project#225989 padded the shortest path into a block too
+  little when it found a longer one first (ROCm 7.2.3 to 10.1); a gfx950
+  paged decode computed wrong scores from it (ROCm/llvm-project#5153).
 * **EXEC** (a warning). An MFMA inside a lane-divergent `if` (an
   `s_and_saveexec` region). The MFMA reads every lane's operands, and whatever
   was computed beside it in that block ran only in the active lanes. That is
@@ -41,7 +47,7 @@ flow.
     python -m hk.runtime.cocheck kernel.co [more.co ...]
     python -m hk.runtime.cocheck --bundle lib.so     # a host binary with an embedded HIP fat binary
 
-Exits 1 if any kernel fails either gate.
+Exits 1 if any kernel fails a gate.
 """
 
 from __future__ import annotations
@@ -82,6 +88,8 @@ class Kernel:
     wave: int = 0
     occupancy: Optional[int] = None
     hazards: List[str] = field(default_factory=list)
+    #: MFMA results touched too early on some path (mfmahaz).
+    mfma: List[str] = field(default_factory=list)
     #: Reads of a load's register by the next instruction's address: the old
     #: value, by issue order; and MFMAs under a partial EXEC (exec_hazards).
     #: Warnings, not failures.
@@ -89,7 +97,8 @@ class Kernel:
 
     @property
     def ok(self) -> bool:
-        return not (self.scratch or self.vgpr_spill or self.sgpr_spill or self.hazards)
+        return not (self.scratch or self.vgpr_spill or self.sgpr_spill or self.hazards
+                    or self.mfma)
 
     def line(self) -> str:
         occ = f" occ={self.occupancy}" if self.occupancy is not None else ""
@@ -98,8 +107,11 @@ class Kernel:
         out = (f"{status} {self.name}: vgpr={self.vgpr}{agpr} sgpr={self.sgpr}"
                f" scratch={self.scratch} spill={self.vgpr_spill}/{self.sgpr_spill}{occ}"
                f" wait-hazards={len(self.hazards)}"
+               + (f" mfma-hazards={len(self.mfma)}" if self.mfma else "")
                + (f" warnings={len(self.warnings)}" if self.warnings else ""))
         for h in self.hazards[:3]:
+            out += f"\n       {h}"
+        for h in self.mfma[:3]:
             out += f"\n       {h}"
         for h in self.warnings[:1]:
             out += f"\n       (warning) {h}"
@@ -429,6 +441,7 @@ def check(co: Path) -> List[Kernel]:
     for name, k in ks.items():
         insts = code.get(name, [])
         k.hazards = wait_hazards(insts, k.arch, benign=k.warnings)
+        k.mfma = mfma_hazards_in(insts, k.arch)
         k.warnings.extend(exec_hazards(insts))
     return list(ks.values())
 
@@ -549,6 +562,28 @@ def lds_copy_hazards(binary: Path, bundled: bool = True) -> List[str]:
                 for h in wait_hazards(code.get(name, []), k.arch):
                     if "<- ds_" in h:
                         found.append(f"{name}: {h}")
+        return found
+
+
+def mfma_hazards_in(insts: Sequence[Inst], arch: str) -> List[str]:
+    """One function's MFMA hazards (mfmahaz.deficits), reported."""
+    from . import mfmahaz  # noqa: PLC0415
+
+    prog = mfmahaz.from_objdump(insts)
+    return mfmahaz.report(prog, mfmahaz.deficits(prog, arch))
+
+
+def mfma_hazards(binary: Path, bundled: bool = True) -> List[str]:
+    """What hk.runtime.compile.build refuses on CDNA: an MFMA result read or
+    overwritten too few wait states after the MFMA on some path, as
+    'kernel: where: reader ... needs N more'. `bundled` as lds_copy_hazards."""
+    with tempfile.TemporaryDirectory(prefix="hk-cocheck-") as d:
+        cos = unbundle(binary, Path(d)) if bundled else [binary]
+        found: List[str] = []
+        for co in cos:
+            code = disassemble(co)
+            for name, k in resources(co).items():
+                found += [f"{name}: {h}" for h in mfma_hazards_in(code.get(name, []), k.arch)]
         return found
 
 
