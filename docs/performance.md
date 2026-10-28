@@ -1047,11 +1047,12 @@ nothing to give, and some kernels lose:
 One R9700 of a shared box, rocm/pytorch rocm7.2.3 (torch 2.10.0, hipBLASLt and
 rocBLAS of ROCm 7.2.3, triton 3.6.0), FlyDSL built from source (main,
 0.4.1.dev988) and AITER (ffd08f2) beside it. hk's bf16 GEMM runs gfx1100's
-schedules, and gfx1201's own at 32-512 rows of Qwen3's four (N, K); attention, the fp8
+schedules, and gfx1201's own at 32-8192 rows of Qwen3's four (N, K); attention, the fp8
 GEMM and the norms' strip plans are tuned for gfx1201
 ([chapter 48](history/48-gfx1201-ceilings-and-first-scoreboard.md),
 [chapter 49](history/49-gfx1201-attention-fp8-and-flydsl-from-source.md),
-[chapter 51](history/51-gfx1201-small-m-gemm.md)).
+[chapter 51](history/51-gfx1201-small-m-gemm.md),
+[chapter 53](history/53-gfx1201-large-m-gemm.md)).
 
 The card: bf16 WMMA 197 TFLOP/s (twice gfx1100's a CU), fp8 372, iu8 374
 TOP/s; an add 1.81 TB/s inside the 64 MB Infinity Cache, 0.62 TB/s past it.

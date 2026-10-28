@@ -18,6 +18,8 @@ import pytest
 
 torch = pytest.importorskip("torch")
 
+import _attn_ref  # noqa: E402
+
 from hk.ops import paged_prefill as pp  # noqa: E402
 
 pytestmark = pytest.mark.gpu
@@ -35,7 +37,7 @@ def _case(reqs, head_dim=128, h_kv=2, group=4, seed=0):
     n_blocks = r * max_pages + 5
     k_cache = torch.randn(n_blocks, h_kv, PAGE, head_dim, device="cuda",
                           dtype=torch.bfloat16, generator=g)
-    v_cache = torch.randn_like(k_cache)
+    v_cache = torch.randn(k_cache.shape, device=k_cache.device, dtype=k_cache.dtype, generator=g)
     perm = torch.randperm(n_blocks, generator=g, device="cuda")[: r * max_pages]
     table = perm.reshape(r, max_pages).to(torch.int32).contiguous()
     n_tok = sum(n for _, n in reqs)
@@ -59,11 +61,9 @@ def _reference(q, k_cache, v_cache, table, lens, q_start, group):
         pos = ctx + torch.arange(n, device="cuda")
         keep = torch.arange(s, device="cuda")[None, :] <= pos[:, None]
         for hh in range(h):
-            kk = torch.cat([k_cache[p, hh // group] for p in pages])[:s].float()
-            vv = torch.cat([v_cache[p, hh // group] for p in pages])[:s].float()
-            sc = (q[q0:q1, hh].float() @ kk.T) * d ** -0.5
-            sc = sc.masked_fill(~keep, float("-inf"))
-            out[q0:q1, hh] = torch.softmax(sc, dim=-1) @ vv
+            kk = torch.cat([k_cache[p, hh // group] for p in pages])[:s]
+            vv = torch.cat([v_cache[p, hh // group] for p in pages])[:s]
+            out[q0:q1, hh] = _attn_ref.softmax_v64(q[q0:q1, hh], kk, vv, d ** -0.5, keep)
     return out
 
 
@@ -80,30 +80,26 @@ def _run(reqs, prefill=None, **kw):
     return out, want, q_start
 
 
-def _rel(got, want):
-    return ((got.float() - want).abs().max() / want.abs().max()).item()
-
-
 def test_no_prefix_two_tiles_the_second_short():
     got, want, _ = _run([(0, 300)])
-    assert _rel(got, want) < 2e-2
+    _attn_ref.check(got, want)
 
 
 def test_a_cached_prefix_and_a_chunk_shorter_than_a_tile():
     got, want, _ = _run([(1000, 77)])
-    assert _rel(got, want) < 2e-2
+    _attn_ref.check(got, want)
 
 
 def test_a_tile_that_runs_into_the_next_request():
     # Request 0's only tile covers rows 0..191; rows 100..149 are request 1's
     # and must come out as request 1's answer.
     got, want, _ = _run([(64, 100), (300, 50), (0, 200)])
-    assert _rel(got, want) < 2e-2
+    _attn_ref.check(got, want)
 
 
 def test_ragged_batch_with_a_one_token_request():
     got, want, _ = _run([(0, 192), (500, 5), (40, 600), (33, 1)])
-    assert _rel(got, want) < 2e-2
+    _attn_ref.check(got, want)
 
 
 def test_rows_of_requests_not_in_the_work_list_are_untouched():
@@ -111,18 +107,18 @@ def test_rows_of_requests_not_in_the_work_list_are_untouched():
     got, want, q_start = _run(reqs, prefill=[1])
     lo, hi = int(q_start[1]), int(q_start[2])
     assert torch.all(got[:lo] == 7.0) and torch.all(got[hi:] == 7.0)
-    assert _rel(got[lo:hi], want[lo:hi]) < 2e-2
+    _attn_ref.check(got[lo:hi], want[lo:hi])
 
 
 @pytest.mark.parametrize("group", [1, 4, 8])
 def test_every_gqa_group(group):
     got, want, _ = _run([(96, 130), (0, 64)], group=group)
-    assert _rel(got, want) < 2e-2
+    _attn_ref.check(got, want)
 
 
 def test_head_dim_64():
     got, want, _ = _run([(70, 250)], head_dim=64)
-    assert _rel(got, want) < 2e-2
+    _attn_ref.check(got, want)
 
 
 @pytest.mark.skipif(os.environ.get("HK_ARCH") != "gfx950", reason="attn_cdna's numbering")
@@ -145,7 +141,7 @@ def test_the_spatial_numbering_is_bitwise_the_default_s(h_kv, group):
         outs.append(out)
     assert torch.equal(outs[0], outs[1])
     want = _reference(q, k_cache, v_cache, table, lens, q_start, group)
-    assert _rel(outs[1], want) < 2e-2
+    _attn_ref.check(outs[1], want)
 
 
 @pytest.mark.skipif(os.environ.get("HK_ARCH") != "gfx950", reason="attn_cdna's KV-split prefill")
@@ -177,7 +173,7 @@ def test_the_kv_split_prefill(reqs, target):
             merge(mlist, o_part, ml_part, out.view(n_tok, h * d))
         outs.append(out)
     want = _reference(q, k_cache, v_cache, table, lens, q_start, group)
-    assert _rel(outs[0], want) < 2e-2
+    _attn_ref.check(outs[0], want)
     assert torch.equal(outs[0], outs[1])
     if target >= 256:
         assert n_merge > 0

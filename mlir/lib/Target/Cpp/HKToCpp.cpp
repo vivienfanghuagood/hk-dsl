@@ -22,6 +22,7 @@
 #include "llvm/ADT/TypeSwitch.h"
 
 #include <cmath>
+#include <cstdio>
 #include <iterator>
 #include <map>
 #include <set>
@@ -309,6 +310,14 @@ private:
     return false;
   }
 
+  /// Whether `shape` ("st_RxC") tiles `t` in whole subtiles.
+  static bool tilesBy(SharedTileType t, StringRef shape) {
+    unsigned r = 0, c = 0;
+    if (sscanf(shape.str().c_str(), "st_%ux%u", &r, &c) != 2 || !r || !c)
+      return true;
+    return t.getRows() % r == 0 && t.getCols() % c == 0;
+  }
+
   void findSharedShapes() {
     if (!sharedTilesHaveShape())
       return;
@@ -361,6 +370,23 @@ private:
         return;
       }
       std::string shape = sharedShapeFor(dt);
+      // A tile narrower or shorter than the shape picked for its fragment
+      // (a 32x16 row operand's st_32x32) has no whole subtile of it, and
+      // include/cdna4's copies loop over subtiles_per_row/col = 0: every
+      // load and store of it compiled to nothing. Take the fragment's own
+      // shape when that one tiles it; refuse it otherwise.
+      if (auto st = dyn_cast<SharedTileType>(root.getType()); st && !tilesBy(st, shape)) {
+        std::string own = "st_" + fragName(dt.getFragRows(), dt.getFragCols());
+        if (tilesBy(st, own)) {
+          shape = own;
+        } else {
+          l.emitError() << "an LDS tile of " << st.getRows() << "x" << st.getCols()
+                        << " is not whole " << shape << " subtiles, the layout this "
+                           "read's fragment takes; make the tile a multiple of it";
+          bad = true;
+          return;
+        }
+      }
       auto [it, fresh] = allocShape.insert({root, shape});
       if (!fresh && it->second != shape) {
         InFlightDiagnostic d = l.emitError();

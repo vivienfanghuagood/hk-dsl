@@ -528,7 +528,7 @@ def plan(m: int, n: int, k: int, arch: Optional[str] = None, *,
     from ..ops import decode_gemm  # noqa: PLC0415
     from ..ops import gemm as rdna  # noqa: PLC0415
 
-    tuned = rdna.user_route(m, n, k)
+    tuned = rdna.user_route(m, n, k, arch=arch)
     if tuned is not None and tuned[1].family == "decode":
         steps = tuned[1].steps(m, n, k)
         for st in steps:
@@ -536,7 +536,7 @@ def plan(m: int, n: int, k: int, arch: Optional[str] = None, *,
         return steps
     if m <= RDNA_DECODE_MAX_M and decode_gemm.fits(m, n, k):
         return [Step("decode", decode_gemm.schedule_for(m, k), (0, n), True)]
-    sched = rdna.schedule_for(m, n, k)
+    sched = rdna.schedule_for(m, n, k, arch=arch)
     if k % sched["k_step"] or n % sched["block_n"]:
         raise ValueError(f"hk.templates.gemm: K={k} must be a multiple of "
                          f"{sched['k_step']} and N={n} of {sched['block_n']} on "

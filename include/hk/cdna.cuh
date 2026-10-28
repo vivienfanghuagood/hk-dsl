@@ -1035,6 +1035,159 @@ __device__ inline static void load(rt<float, R, C, L, RS> &dst, const st<float, 
 #endif
 
 #if defined(KITTENS_CDNA4)
+/*
+ * fp32 register vectors <-> LDS vectors (hk.SharedVec: hk.collective.cross_warp, a vector read back
+ * in another tile's layout). include/cdna4's load(rv, sv) / store(sv, rv) index sv::data through a
+ * generic pointer, so they compiled to FLAT, as the fp32 tiles above did: each wait for the vector
+ * also waited for every global load in flight -- in an attention kernel, the next KV block's DMA.
+ * The same element order through an LDS pointer. More specialized than the library's templates.
+ */
+template<size_t N, size_t L, size_t TL, typename SH, typename LAY>
+__device__ inline static void store(sv<float, N> &dst, const rv<float, L, TL, SH, LAY> &src) {
+    using RV = rv<float, L, TL, SH, LAY>;
+    static_assert(N == RV::length);
+    typedef __attribute__((address_space(3))) char lds_char;
+    typedef __attribute__((address_space(3))) float lds_f;
+    lds_f *d = (lds_f *)((lds_char *)&dst.data[0]);
+    const int laneid = ::kittens::laneid();
+    if constexpr (std::is_same_v<typename RV::layout, align_l>) {
+        #pragma unroll
+        for (int w = 0; w < RV::outer_dim; w++) {
+            const int idx = w * RV::reductions + RV::stride * (laneid / RV::aligned_threads);
+            #pragma unroll
+            for (int i = 0; i < RV::strides_per_tile; i++)
+                #pragma unroll
+                for (int j = 0; j < RV::packed_per_stride; j++)
+                {
+                    // two floats, not a float2: HIP's vector types are classes, and a class
+                    // object in address space 3 has no assignment operator
+                    const float2 v = src[w][i * RV::packed_per_stride + j];
+                    lds_f *p = d + idx + i * RV::elements_per_stride_group + j * RV::packing;
+                    p[0] = v.x;
+                    p[1] = v.y;
+                }
+        }
+    } else if constexpr (std::is_same_v<typename RV::layout, ortho_l>) {
+        #pragma unroll
+        for (int w = 0; w < RV::outer_dim; w++)
+            d[w * RV::reductions + (laneid % RV::reductions)] = src[w][0];
+    } else {
+        const int offset = laneid * RV::inner_dim;
+        if (offset >= RV::length) return;
+        #pragma unroll
+        for (int i = 0; i < RV::inner_dim; i++) d[offset + i] = src[0][i];
+    }
+}
+/*
+ * A 16-bit col-layout register tile -> LDS (an attention kernel's P exchanged between warps).
+ * include/cdna4's store(st, rt<col>) writes element by element through `U *` into st::data: a generic
+ * pointer, so FLAT stores, counted in vmcnt. The same addresses through an LDS pointer.
+ */
+template<ducks::st::all ST, int R, int C, typename RS>
+    requires (std::is_same_v<typename ST::dtype, bf16> || std::is_same_v<typename ST::dtype, half>)
+__device__ inline static void store(ST &dst, const rt<typename ST::dtype, R, C, ducks::rt_layout::col, RS> &src) {
+    using RT = rt<typename ST::dtype, R, C, ducks::rt_layout::col, RS>;
+    using U = typename ST::dtype;
+    using T = typename base_types::packing<typename RT::dtype>::unpacked_type;
+    constexpr int packing = base_types::packing<typename RT::dtype>::num();
+    static_assert(RT::rows == ST::rows && RT::cols == ST::cols, "register tile and shared tile must match");
+    typedef __attribute__((address_space(3))) char lds_char;
+    typedef __attribute__((address_space(3))) unsigned short lds_U;  // 16-bit bits: bf16 is a class
+    lds_U *base = (lds_U *)((lds_char *)&dst.data[0]);
+    static_assert(sizeof(U) == 2);
+    const int laneid = kittens::laneid();
+    const int row_offset = src.base_tile_stride * (laneid / src.base_tile_cols);
+    const int col_offset = laneid % src.base_tile_cols;
+    if constexpr (ST::underlying_subtile_rows >= RT::base_tile_rows && ST::underlying_subtile_cols >= RT::base_tile_cols) {
+        constexpr int per_row = ST::underlying_subtile_cols / RT::base_tile_cols;
+        constexpr int per_col = ST::underlying_subtile_rows / RT::base_tile_rows;
+        #pragma unroll
+        for (int k = 0; k < RT::base_tile_num_strides; k++)
+            #pragma unroll
+            for (int l = 0; l < src.base_tile_stride / packing; l++)
+                #pragma unroll
+                for (int i = 0; i < per_col; i++)
+                    #pragma unroll
+                    for (int j = 0; j < per_row; j++) {
+                        const int row = i * RT::base_tile_rows + row_offset + k * RT::base_tile_elements_per_stride_group + l * 2;
+                        const int col = j * RT::base_tile_cols + col_offset;
+                        lds_U *addr = base + dst.swizzle({row, col}) / sizeof(U);
+                        lds_U *next = base + dst.swizzle({row + 1, col}) / sizeof(U);
+                        const int idx = l + k * RT::base_tile_stride / packing;
+                        #pragma unroll
+                        for (int ii = 0; ii < ST::subtiles_per_col; ii++)
+                            #pragma unroll
+                            for (int jj = 0; jj < ST::subtiles_per_row; jj++) {
+                                const int off = ((ii * ST::underlying_subtiles_per_row + jj) * ST::underlying_subtile_bytes) / sizeof(U);
+                                const int rr = ii * per_col + i, rc = jj * per_row + j;
+                                addr[off] = __builtin_bit_cast(unsigned short, base_types::convertor<U, T>::convert(src.tiles[rr][rc].data[idx].x));
+                                next[off] = __builtin_bit_cast(unsigned short, base_types::convertor<U, T>::convert(src.tiles[rr][rc].data[idx].y));
+                            }
+                    }
+    } else if constexpr (ST::underlying_subtile_rows <= RT::base_tile_rows && ST::underlying_subtile_cols <= RT::base_tile_cols) {
+        constexpr int sub_per_row = RT::base_tile_cols / ST::underlying_subtile_cols;
+        const int col = col_offset % ST::underlying_subtile_cols;
+        const int base_col = col_offset / ST::underlying_subtile_cols;
+        #pragma unroll
+        for (int k = 0; k < RT::base_tile_num_strides; k++)
+            #pragma unroll
+            for (int l = 0; l < src.base_tile_stride / packing; l++) {
+                const int row = (row_offset + k * RT::base_tile_elements_per_stride_group) % ST::underlying_subtile_rows + l * 2;
+                const int base_row = (row_offset + k * RT::base_tile_elements_per_stride_group) / ST::underlying_subtile_rows;
+                const int base_off = (base_row * sub_per_row + base_col) * ST::underlying_subtile_bytes;
+                lds_U *addr = base + (dst.swizzle({row, col}) + base_off) / sizeof(U);
+                lds_U *next = base + (dst.swizzle({row + 1, col}) + base_off) / sizeof(U);
+                const int idx = l + k * RT::base_tile_stride / packing;
+                #pragma unroll
+                for (int i = 0; i < RT::height; i++)
+                    #pragma unroll
+                    for (int j = 0; j < RT::width; j++) {
+                        const int sid = (i * (RT::base_tile_rows / ST::underlying_subtile_rows)) * ST::underlying_subtiles_per_row +
+                                        j * sub_per_row;
+                        const int off = (sid * ST::underlying_subtile_bytes) / sizeof(U);
+                        addr[off] = __builtin_bit_cast(unsigned short, base_types::convertor<U, T>::convert(src.tiles[i][j].data[idx].x));
+                        next[off] = __builtin_bit_cast(unsigned short, base_types::convertor<U, T>::convert(src.tiles[i][j].data[idx].y));
+                    }
+            }
+    } else {
+        static_assert(false, "Unsupported subtile sizes");
+    }
+}
+template<size_t N, size_t L, size_t TL, typename SH, typename LAY>
+__device__ inline static void load(rv<float, L, TL, SH, LAY> &dst, const sv<float, N> &src) {
+    using RV = rv<float, L, TL, SH, LAY>;
+    static_assert(N == RV::length);
+    typedef __attribute__((address_space(3))) char lds_char;
+    typedef __attribute__((address_space(3))) float lds_f;
+    const lds_f *s = (const lds_f *)((const lds_char *)&src.data[0]);
+    const int laneid = ::kittens::laneid();
+    if constexpr (std::is_same_v<typename RV::layout, align_l>) {
+        #pragma unroll
+        for (int w = 0; w < RV::outer_dim; w++) {
+            const int idx = w * RV::reductions + RV::stride * (laneid / RV::aligned_threads);
+            #pragma unroll
+            for (int i = 0; i < RV::strides_per_tile; i++)
+                #pragma unroll
+                for (int j = 0; j < RV::packed_per_stride; j++)
+                {
+                    const lds_f *p = s + idx + i * RV::elements_per_stride_group + j * RV::packing;
+                    dst[w][i * RV::packed_per_stride + j] = float2{p[0], p[1]};
+                }
+        }
+    } else if constexpr (std::is_same_v<typename RV::layout, ortho_l>) {
+        #pragma unroll
+        for (int w = 0; w < RV::outer_dim; w++)
+            dst[w][0] = s[w * RV::reductions + (laneid % RV::reductions)];
+    } else {
+        const int offset = laneid * RV::inner_dim;
+        if (offset >= RV::length) return;
+        #pragma unroll
+        for (int i = 0; i < RV::inner_dim; i++) dst[0][i] = s[offset + i];
+    }
+}
+#endif
+
+#if defined(KITTENS_CDNA4)
 namespace detail {
 typedef __attribute__((address_space(3))) uint32_t *hk_lds_ptr;
 __device__ void hk_buf_ld_lds(hk_i32x4 rsrc, hk_lds_ptr lds, int size, int voffset, int soffset,

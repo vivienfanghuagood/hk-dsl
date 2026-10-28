@@ -57,12 +57,17 @@ def HKMmaFence : Pass<"hk-mma-fence", "::mlir::func::FuncOp"> {
     with a copy of the marks and merge their union; loop bodies are walked
     twice, so what the end of one trip leaves marked reaches the next.
 
-    Why (gfx950, LLVM 22-23): left free, LLVM threaded the softmax's reads
-    of AGPR scores through the two pages' MFMA chains of the paged decode and
-    some scores came out wrong, by 2-4e-2 and differently from one build to
-    the next; the ISA breaks none of LLVM's own MFMA hazard rules. A fence at
-    this boundary costs nothing measurable in the kernels that had one by
-    hand. CDNA only; a kernel opts out with `hk.mma_fence = false`.
+    Why (gfx950, ROCm 7.2.3 to 10.1): left free, LLVM scheduled the paged
+    decode so that an MFMA result was read one branch after the MFMA, and
+    its hazard recognizer, measuring the longer path into that block,
+    padded 2 wait states where 8 are needed: some scores came out 2-4e-2
+    wrong, differently from one build to the next. Fixed in LLVM by
+    llvm/llvm-project#225989, not yet in a ROCm release
+    (ROCm/llvm-project#5153). The fence does not fix that; it keeps a
+    chain's results from being read where the scheduler would interleave
+    them, which is where it struck. A fence at this boundary costs nothing
+    measurable in the kernels that had one by hand. CDNA only; a kernel
+    opts out with `hk.mma_fence = false`.
   }];
 }
 
