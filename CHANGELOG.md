@@ -9,6 +9,16 @@ The next version's notes collect here until it is released.
 What is on main after 0.8.0. `pip install hk-dsl` (0.8.0) does not have it;
 the API reference marks such names *New after 0.8.0*.
 
+**gfx950: an LDS tile narrower than its read's layout was never copied.** A
+tile with fewer rows or columns than the include/cdna4 st shape its read's
+fragment picks -- a 32x16 bf16 tile read as the 32x16 row operand of the
+32x32x16 MFMA, which picks st_32x32 -- held no whole subtile of that shape, and
+include/cdna4's copies loop over subtiles: every store and load of it compiled
+to nothing, and the MFMA read whatever the LDS held, with no error. The
+translator now gives such an allocation the fragment's own shape (st_32x16
+here) when that one tiles it, and refuses one that no shape tiles.
+`tests/hk/ir/test_lds_narrow_tile.py`, `tests/hk/gpu/test_lds_narrow_tile.py`.
+
 **CDNA: `hk-mma-fence`, a DSL rule for matrix-core accumulators; `hk.arch.agpr`
 to hold one in AGPRs.**
 - `hk-mma-fence`, a pass in the kernel pipeline, puts an `hk.sched_barrier`
