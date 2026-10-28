@@ -1,8 +1,11 @@
 # Design: converging the DSL surface
 
-Status: **design for review** (2026-10-28). Nothing on this page is built. No code changes until the
-design is reviewed. The work is timeboxed to one week, until 2026-11-04 00:00Z; §8 says which
-steps fit and which come later.
+Status: **approved** (2026-10-28; the decisions are in §9). Nothing on this page is built yet.
+The work is timeboxed to one week, until 2026-11-04 00:00Z; §8 says which steps fit and which
+come later.
+
+#115 (`dsv41_index`) and #121 (`lane_strip`, `lane_coords`, `run_xor`) merged after the review.
+Their call sites, counted under "PRs" in §2, are now in the repository; #120 is still open.
 
 hk-dsl is the DSL and the kernels written in it. The language has grown one hand-written C++
 helper per hard kernel, each exposed as a DSL op:
@@ -25,7 +28,7 @@ This page does four things:
 - [6. Impact on shipped kernels](#6-impact-on-shipped-kernels)
 - [7. Verification: bit-identical and not slower](#7-verification-bit-identical-and-not-slower)
 - [8. Effort, risk and the timebox](#8-effort-risk-and-the-timebox)
-- [9. Open questions for review](#9-open-questions-for-review)
+- [9. Open questions for review, and the decisions](#9-open-questions-for-review-and-the-decisions)
 - [Appendix: cdna.cuh by section](#appendix-cdnacuh-by-section)
 
 ## 0. Summary
@@ -183,7 +186,7 @@ Columns:
 | B3 | `Global.scatter(..., staged=N)` | API | ops: moe_a8w4 1 | test_scatter_add | ids read from an LDS copy, so no vmcnt wait drains the prefetch (K1 c36) | **MERGE: G4.** A staged `RowIndex` returned by `g.stage` |
 | B4 | `Group.gather_prep(ids, at, rows, *, raw)` (`hk.gather_prep` op, `kittens::gather_prep<N, RAW>`, function-static `__shared__` arrays) | API | ops: moe_a8w4 3 (1 raw) | test_cdna_fp8_lds, test_gather_load, test_scatter_add, ir/test_cdna_gemm | staging the ids in LDS. Nothing ties `raw=True` to a later `scatter(staged=)`: a scatter after a non-raw prep reads an LDS array no one wrote, silently | **MERGE: G4.** `g.stage(ix, rows, keep_choice=)` returns the staged index, so the pairing is by construction |
 | B5 | `Group.load(..., gather=(ids, at), staged=N)` (`GroupLoadOp.gather_staged`, `group_load_async_gather<NW, N>`) | API | ops: moe_a8w4 2; PRs: #120 2 | test_cdna_fp8_lds, test_gather_load, ir/test_cdna_gemm | rows by index for the LDS DMA | **MERGE: G4.** `g.load(dst, src, wait=False, gather=ix)` |
-| B6 | `Global.scatter(..., add=True)` (`store_scatter<.., ADD>`) | API | ops: none; tools: the MFMA_SCALE sink probe | test_scatter_add, codegen/test_mfma_scale_sink | atomic top-k reduce (nondeterministic order) | **KEEP, primitive.** The general atomic scatter-add. Boundary: not for routes that promise determinism. In G4 it is `scatter(t, ix, add=True)` |
+| B6 | `Global.scatter(..., add=True)` (`store_scatter<.., ADD>`) | API | ops: none; tools: the MFMA_SCALE sink probe | test_scatter_add, codegen/test_mfma_scale_sink | atomic top-k reduce (nondeterministic order) | **KEEP, primitive.** The general atomic scatter-add. Boundary: not for routes that promise determinism. In G4 it is `scatter(t, ix, add=True)`. Kept only with a GPU test (§9, decision 7) |
 | B7 | `Global.scatter_add_lds(src, ids, at, *, count, col, sort_topk)` (`kittens::scatter_add_lds`) | API | none (K1 c33 measured it and did not ship it) | test_scatter_add | packed bf16 atomics from an LDS tile, lanes on column pairs (310 vs 85 G adds/s) | **DELETE.** No user. Covered functionally by `SharedTile.load` + `scatter(add=True)`. Measured faster, but no kernel wants an atomic reduce (K1 chose the deterministic sum) |
 | B8 | `detail::hk_pinned(t)` (C++) | C++ | `store_scatter<.., ADD>` only | codegen/test_mfma_scale_sink (`HK_UNPINNED`) | roc-7.2.3 sinks `V_MFMA_SCALE` into a divergent `if` and its operand copies run under partial EXEC | **KEEP, internal.** A compiler-bug guard. Boundary: only inside a primitive that consumes an MFMA result in a lane-divergent branch; each use has a sink test |
 
@@ -212,7 +215,7 @@ Columns:
 |---|---|---|---|---|---|---|
 | D1 | attn_k3's `PairPKernel`, a `Kernel` subclass whose `with_defines` splices `kda::pair_p` (20 lines of C++) into the generated source and regex-replaces `kittens::copy(P, S)` | none (inside a shipped op: the `sdpa_k3` route, default-on on gfx1100) | ops: attn_k3 | test_attn_k3 (GPU, bitwise) | RDNA3's paired-lane accumulator-to-operand exchange (Pᵀ) in the even/odd K order, one `permlanex16` a packed dword (assessment §4.1 item 4) | **MERGE: G6.** `S.as_operand(fp16, k_order="even_odd")` on gfx1100, an RDNA3 form of the CDNA `as_operand`. Then `PairPKernel` and its source rewrite are deleted |
 | D2 | `SharedTile.granules()`, `Granules.load_frag` / `store_frag` (RDNA3) | API | ops: attn 2+2+1, attn_k3 2+2, paged_prefill 2+2+1 | ir/test_granules | an LDS tile's addressing factored into swizzle-bytes/16 registers, by hand, to save VGPRs | **KEEP, escape hatch.** Boundary: gfx11 kernels whose address registers are the measured limiter; not on CDNA. The 1-byte-tile extension (assessment §4.1 item 4) goes through review |
-| D3 | `hk.arch.agpr(tile)` + `include/hk/cdna_agpr.cuh` (asm MFMAs with `"+a"`, hand-placed `s_nop`s) | API | ops: attn_cdna, behind `acc="agpr"` (off) | ir/test_agpr_codegen, gpu/test_agpr | an accumulator in AGPRs. LLVM chooses the register file | **KEEP, experiment.** Bitwise the VGPR form's, measured 0.93-0.95x. Boundary: never on by default. Sunset: deleted at the backend decision (assessment §4.2 item 5) unless a route turns it on |
+| D3 | `hk.arch.agpr(tile)` + `include/hk/cdna_agpr.cuh` (asm MFMAs with `"+a"`, hand-placed `s_nop`s) | API | ops: attn_cdna, behind `acc="agpr"` (off) | ir/test_agpr_codegen, gpu/test_agpr | an accumulator in AGPRs. LLVM chooses the register file | **KEEP, experiment.** Bitwise the VGPR form's, measured 0.93-0.95x. Boundary: never on by default. Sunset (§9, decision 6): deleted after 2026-10-31 12:00Z unless the task evaluating it has adopted it |
 | D4 | `Tile.as_operand(dtype)` (CDNA; `kittens::as_operand`, two shapes) | API | ops: attn_cdna, paged_cdna, templates (elementwise, rowwise 2); examples 05; bench solutions | ir/test_cdna_attn; via ops | an MFMA accumulator's registers read as an operand fragment, no data moved | **KEEP, primitive** (several kernel families and the templates). The target of D1 |
 | D5 | `Tile.make_causal(value, *, transposed)` (`hk.make_causal`, `hk.make_causal_t`; the fork's rdna3 `make_causal`) | API | none | codegen/test_transpose_causal | the causal mask of a diagonal block | **DELETE.** Covered: `make_causal(v)` is `tril_(0, v)` and `transposed=True` is `triu_(0, v)`. Every kernel already masks with `triu_` / `lower_fill_`. One release as a deprecated alias, with a test that the two agree |
 | D6 | `Kernel.with_defines(src)` used as a source hook (D1 is the only override) | API | ops: attn_k3 (D1); tests: 3 codegen; tools: 1 probe | test_cdna_builds, test_lds_copy_gate, test_strip_cdna | any C++ at all | **KEEP, escape hatch, narrowed.** `#define NAME value` knobs only (`Kernel.defines`). Overriding `with_defines` or `source` in an `hk.ops` kernel is refused by a test (S0). Every past use was a missing op |
@@ -685,11 +688,14 @@ tiers' own runs.
 
 G1 (S7), which narrows `map_cpp` and enables A6, is the main item for the next phase.
 
-## 9. Open questions for review
+## 9. Open questions for review, and the decisions
 
 1. **`map_cpp`**: keep it as a narrowed escape hatch (this design), or set a date to delete it once
    G1 exists? Deleting it needs an op for each intrinsic the remaining 2% of calls name (and a
    look at the 5% passed in variables).
+
+   **Decision (10-28):** keep `map_cpp` as the narrowed escape hatch, with no deletion date. Revisit
+   the remaining 2% (intrinsics) and 5% (expressions passed in variables) after S7.
 2. **Out-of-tree callers.** The names that change reach few out-of-tree calls:
    - the decode stages: 33 calls (`mma_ABt_mx` 14, `mx_scales_loose` 7, `fp8_operand` 5,
      `mfma_strip` 5, `fp4_operand` 2);
@@ -697,22 +703,49 @@ G1 (S7), which narrows `map_cpp` and enables A6, is the main item for the next p
 
    `iota` and `rotate_half` keep permanent aliases, and `map_cpp` stays. Is one minor release of
    deprecation warnings enough, or should the shims stay until those stages move into `hk.ops`?
+
+   **Decision (10-28):** shims warn (`DeprecationWarning`) from the next release on. They are removed
+   once calls from outside the repository reach zero, and at most two minor releases later. The
+   decode stages and #115 are the project's own: their migration patches are prepared during S2 /
+   S5, so no shim is left hanging.
 3. **A6's source.** Should `mx_quant_store`'s composition read K1's h from LDS (needs a strip load
    from a 16-bit swizzled tile), or quantize from registers through `lane_strip` as #120 does
    (changes K1's epilogue structure)? And if the composition measures slower, is KEEP-format with
    the measurement acceptable?
+
+   **Decision (10-28):** S10 is not this week. When it runs, prefer the register path (`lane_strip`,
+   as #120 does), provided it is not slower. If it measures slower, it stays KEEP-format with the
+   measurements attached.
 4. **"Not slower" thresholds**: ≤ 1.005 per point and ≤ 1.002 geomean (time ratio), or something
    else?
+
+   **Decision (10-28):** per point ≤ 1.005, geomean ≤ 1.002 (time ratio, new over old). Every A/B
+   records the GPU's co-tenant state before and after it.
 5. **Staged row indices** live in function-static `__shared__` arrays outside `hk.lds`'s
    allocator. Should G4 move them into it? That makes the LDS budget honest but moves LDS
    offsets, so it is V2, not V0.
+
+   **Decision (10-28):** yes, move them into the `hk.lds` allocator so the LDS budget is real, but as
+   a separate V2 step after this week, not folded into S3.
 6. **`hk.arch.agpr`**: keep as an experiment with a sunset (this design), or delete now?
+
+   **Decision (10-28):** keep as an experiment. The sunset is the timebox of the task evaluating
+   it (2026-10-31 12:00Z): if that task has not adopted it by then, it is deleted.
 7. **`scatter(add=True)`**: keep as the general primitive (this design), or delete with
    `scatter_add_lds`, since no shipped kernel uses it?
+
+   **Decision (10-28):** keep as a primitive, on condition that a GPU test covers it. Without one it
+   is deleted with `scatter_add_lds`.
 8. **Registry enforcement**: should S0's tests fail CI from day one, or warn for a release while
    the allowlist settles?
+
+   **Decision (10-28):** a hard CI failure from S0 on, with the allowlist seeded from this inventory so
+   existing code stays green.
 9. **#121**: approve as primitives (C11-C14), with `lane_coords` taking a type in S6 and
    `as_fragment` as its inverse in S5?
+
+   **Decision (10-28):** C11-C14 approved as primitives. S6 makes `lane_coords` take a type; S5 adds
+   `as_fragment` as the inverse of `lane_strip`.
 
 ## Appendix: cdna.cuh by section
 
