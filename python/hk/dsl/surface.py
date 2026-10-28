@@ -88,10 +88,6 @@ ENTRIES: Dict[str, Entry] = {
                         "in a template"),
     "hk.iota": Entry("merge", "C2", target="hk.lane_coords(type)[1] (alias kept)", step="S6"),
     "hk.mfma_strip": Entry("merge", "C3", target="hk.mma on Tile.as_fragment views", step="S9"),
-    "Tile.rotate_half": Entry("merge", "C10", target="Tile.swap_halves(span, negate_first=True) "
-                              "(sugar kept)", step="S4"),
-    "Vec.rotate_half": Entry("merge", "C10", target="Vec.swap_halves(span, negate_first=True) "
-                             "(sugar kept)", step="S4"),
     # 2.4 attention, RDNA, the kernel object
     "hk.Granules": Entry("escape", "D2", "gfx11 kernels whose LDS address registers are the "
                          "measured limiter; not on CDNA"),
@@ -127,37 +123,38 @@ SharedVec.type Tile.T Tile.abs Tile.as_operand Tile.bitcast Tile.copy Tile.dgelu
 Tile.exp Tile.exp2 Tile.exp2_ Tile.exp_ Tile.fill_ Tile.first_lane Tile.gelu Tile.group_max
 Tile.group_min Tile.group_sum Tile.lane_gather Tile.lane_strip Tile.left_fill_ Tile.log
 Tile.log2 Tile.lower_fill_ Tile.max Tile.maximum Tile.min Tile.minimum Tile.neg_infty_
-Tile.prod Tile.relu Tile.right_fill_ Tile.rsqrt Tile.rsqrt_ Tile.run_xor Tile.scaled Tile.silu
-Tile.sqrt Tile.step Tile.subtile Tile.sum Tile.swap_halves Tile.to Tile.tril_ Tile.triu_
-Tile.type Tile.upper_fill_ Tile.zero_ TracedKernel.cpp TracedKernel.dump TracedKernel.tensors
-TracedKernel.threads TracedKernel.written_tensors Vec.abs Vec.any_above Vec.any_ne Vec.copy
-Vec.dgelu Vec.exp Vec.exp2 Vec.exp2_ Vec.exp_ Vec.fill_ Vec.gelu Vec.log Vec.log2 Vec.max_
-Vec.maximum Vec.min_ Vec.minimum Vec.neg_infty_ Vec.relu Vec.rsqrt Vec.rsqrt_ Vec.silu Vec.sqrt
-Vec.step Vec.swap_halves Vec.type Vec.zero_ View.atomic_add View.atomic_add_scalar
-View.atomic_and_scalar View.atomic_exch_scalar View.atomic_max_scalar View.atomic_min_scalar
-View.atomic_or_scalar View.atomic_xor_scalar View.load View.load_scalar View.store
-View.store_scalar hk.Bool hk.Build hk.CompileError hk.Constexpr hk.Coord hk.DType hk.Digit
-hk.Global hk.Int hk.Kernel hk.MxScales hk.Placement hk.RS hk.RT hk.ResourceError hk.RowIndex
-hk.ST hk.SV hk.Scaled hk.SharedTile hk.SharedVec hk.TARGETS hk.Tensor hk.Tile hk.TracedKernel
-hk.Vec hk.VerifyError hk.View hk.arch.SCHED_CLASSES hk.arch.barrier hk.arch.block_idx
-hk.arch.lane_id hk.arch.mma_fence hk.arch.pin hk.arch.pingpong hk.arch.sched_barrier
-hk.arch.sched_group_barrier hk.arch.setprio hk.arch.target hk.arch.vm_wait hk.arch.warp_id
-hk.arch.wg_arrive hk.arch.xcd_count hk.arch.xcd_id hk.as_vec hk.attention hk.broadcast_col
-hk.broadcast_row hk.cdiv hk.col_vec hk.collective.COMBINERS hk.collective.cross_warp
-hk.collective.fold_rows hk.comm.REALTIME_HZ hk.comm.arrive hk.comm.barrier hk.comm.claim
-hk.comm.post hk.comm.signal hk.comm.take hk.comm.wait hk.comm.xcd_barrier hk.coord
-hk.detect_arch hk.elem_coord hk.full hk.func hk.get_target hk.group.Group hk.group.group hk.if_
-hk.kernel hk.lane_coords hk.lds.alloc hk.lds.alloc_vec hk.lds.lds_loads hk.lds.reserve
-hk.lds.shared_vec hk.lds.wait_for hk.math.abs hk.math.add hk.math.dgelu hk.math.div hk.math.exp
-hk.math.exp2 hk.math.gelu hk.math.log hk.math.log2 hk.math.maximum hk.math.minimum hk.math.mul
-hk.math.relu hk.math.rsqrt hk.math.silu hk.math.sqrt hk.math.sub hk.max hk.min hk.mma hk.mx
-hk.neg_infty hk.placement.Analysis hk.placement.Choice hk.placement.Digit
-hk.placement.MIN_ROUNDS_NONUNIFORM hk.placement.MIN_STREAMS hk.placement.Placement
-hk.placement.analyze hk.placement.check_emitted hk.placement.check_kernel hk.placement.choose
-hk.placement.emitted_decode hk.placement.place_host hk.placement.recording
-hk.placement.renumber hk.placement.xcd_count hk.placement.xcd_range hk.rand hk.range
-hk.range_constexpr hk.row_vec hk.runtime.SymmetricBuffer hk.scope hk.templates hk.tile_coord
-hk.torch_op hk.transpose hk.transpose_sep hk.uniform hk.zeros
+Tile.prod Tile.relu Tile.right_fill_ Tile.rotate_half Tile.rsqrt Tile.rsqrt_ Tile.run_xor
+Tile.scaled Tile.silu Tile.sqrt Tile.step Tile.subtile Tile.sum Tile.swap_halves Tile.to
+Tile.tril_ Tile.triu_ Tile.type Tile.upper_fill_ Tile.zero_ TracedKernel.cpp TracedKernel.dump
+TracedKernel.tensors TracedKernel.threads TracedKernel.written_tensors Vec.abs Vec.any_above
+Vec.any_ne Vec.copy Vec.dgelu Vec.exp Vec.exp2 Vec.exp2_ Vec.exp_ Vec.fill_ Vec.gelu Vec.log
+Vec.log2 Vec.max_ Vec.maximum Vec.min_ Vec.minimum Vec.neg_infty_ Vec.relu Vec.rotate_half
+Vec.rsqrt Vec.rsqrt_ Vec.silu Vec.sqrt Vec.step Vec.swap_halves Vec.type Vec.zero_
+View.atomic_add View.atomic_add_scalar View.atomic_and_scalar View.atomic_exch_scalar
+View.atomic_max_scalar View.atomic_min_scalar View.atomic_or_scalar View.atomic_xor_scalar
+View.load View.load_scalar View.store View.store_scalar hk.Bool hk.Build hk.CompileError
+hk.Constexpr hk.Coord hk.DType hk.Digit hk.Global hk.Int hk.Kernel hk.MxScales hk.Placement
+hk.RS hk.RT hk.ResourceError hk.RowIndex hk.ST hk.SV hk.Scaled hk.SharedTile hk.SharedVec
+hk.TARGETS hk.Tensor hk.Tile hk.TracedKernel hk.Vec hk.VerifyError hk.View
+hk.arch.SCHED_CLASSES hk.arch.barrier hk.arch.block_idx hk.arch.lane_id hk.arch.mma_fence
+hk.arch.pin hk.arch.pingpong hk.arch.sched_barrier hk.arch.sched_group_barrier hk.arch.setprio
+hk.arch.target hk.arch.vm_wait hk.arch.warp_id hk.arch.wg_arrive hk.arch.xcd_count
+hk.arch.xcd_id hk.as_vec hk.attention hk.broadcast_col hk.broadcast_row hk.cdiv hk.col_vec
+hk.collective.COMBINERS hk.collective.cross_warp hk.collective.fold_rows hk.comm.REALTIME_HZ
+hk.comm.arrive hk.comm.barrier hk.comm.claim hk.comm.post hk.comm.signal hk.comm.take
+hk.comm.wait hk.comm.xcd_barrier hk.coord hk.detect_arch hk.elem_coord hk.full hk.func
+hk.get_target hk.group.Group hk.group.group hk.if_ hk.kernel hk.lane_coords hk.lds.alloc
+hk.lds.alloc_vec hk.lds.lds_loads hk.lds.reserve hk.lds.shared_vec hk.lds.wait_for hk.math.abs
+hk.math.add hk.math.dgelu hk.math.div hk.math.exp hk.math.exp2 hk.math.gelu hk.math.log
+hk.math.log2 hk.math.maximum hk.math.minimum hk.math.mul hk.math.relu hk.math.rsqrt
+hk.math.silu hk.math.sqrt hk.math.sub hk.max hk.min hk.mma hk.mx hk.neg_infty
+hk.placement.Analysis hk.placement.Choice hk.placement.Digit hk.placement.MIN_ROUNDS_NONUNIFORM
+hk.placement.MIN_STREAMS hk.placement.Placement hk.placement.analyze hk.placement.check_emitted
+hk.placement.check_kernel hk.placement.choose hk.placement.emitted_decode
+hk.placement.place_host hk.placement.recording hk.placement.renumber hk.placement.xcd_count
+hk.placement.xcd_range hk.rand hk.range hk.range_constexpr hk.row_vec
+hk.runtime.SymmetricBuffer hk.scope hk.templates hk.tile_coord hk.torch_op hk.transpose
+hk.transpose_sep hk.uniform hk.zeros
 """.split())
 
 #: The dialect's ops (HKOps.td mnemonics) and their kinds; the inventory's are not primitive.
@@ -166,7 +163,7 @@ _OP_KINDS: Dict[str, str] = {
     "load_fp4_frags": "format", "load_fp4_frags_lds": "format", "mx_quant_store": "merge",
     "fp4_operand": "merge", "fp8_operand": "merge", "mx_scales_loose": "merge",
     "gather_prep": "primitive", "map_cpp": "escape", "iota": "merge",
-    "mfma_strip": "merge", "rotate_half": "merge", "granules": "escape", "load_frag": "escape",
+    "mfma_strip": "merge", "granules": "escape", "load_frag": "escape",
     "store_frag": "escape",
     "load_w4": "format",
 }
@@ -222,7 +219,7 @@ strip_srsrc strip_tree strip_write stride warpid_uniform word
         "load_w4": "format", "mma_ABt_mx": "primitive", "load_fp4_frags_lds": "format",
         "mx_quant_store": "merge", "fp4_operand": "merge", "fp8_operand": "merge",
         "mx_scales_loose": "merge", "gather_prep": "primitive",
-        "map_cpp": "escape", "mfma_strip_f32_16x16x4": "merge", "rotate_half": "merge",
+        "map_cpp": "escape", "mfma_strip_f32_16x16x4": "merge",
     },
     "include/hk/cdna_agpr.cuh": {n: "experiment" for n in """
 col_scale div_col drain mfma mma_AB mma_ABt mma_AtB mma_AtBt mul_col read write zero

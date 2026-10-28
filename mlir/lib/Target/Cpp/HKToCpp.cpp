@@ -1683,14 +1683,18 @@ private:
         .Case<AddOp, SubOp, MulOp, DivOp, MaxOp, MinOp>(
             [&](auto o) { emitBinary(o); })
         .Case<ExpOp, Exp2Op, LogOp, Log2Op, AbsOp, ReluOp, CopyOp, GeluOp,
-              DgeluOp, SqrtOp, RsqrtOp, SiluOp, StepOp, SwapHalvesOp>([&](auto o) {
+              DgeluOp, SqrtOp, RsqrtOp, SiluOp, StepOp>([&](auto o) {
           Value d = dest(o.getDst(), o.getResult());
           call(o->getName().stripDialect(), d, {name(o.getSrc())});
         })
-        .Case([&](RotateHalfOp o) {
+        .Case([&](SwapHalvesOp o) {
           Value d = dest(o.getDst(), o.getResult());
-          call("rotate_half<" + std::to_string(o.getSpan()) + ">", d,
-               {name(o.getSrc())});
+          int64_t span = o.getSpan()
+                             ? o.getSpan()
+                             : cast<RegTileType>(o.getSrc().getType()).getCols();
+          call("swap_halves<" + std::to_string(span) + ", " +
+                   (o.getNegateFirst() ? "true" : "false") + ">",
+               d, {name(o.getSrc())});
         })
         .Case<MmaABOp, MmaABtOp, MmaAtBOp, MmaAtBtOp>([&](auto o) {
           Value d = dest(o.getDst(), o.getResult());

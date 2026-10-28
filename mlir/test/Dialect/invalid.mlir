@@ -141,7 +141,7 @@ func.func @vote_on_bf16(%m: !hk.rv<bf16, 64x32, col, row, frag 32x32>) {
 // -----
 
 func.func @swap_halves_of_a_tile(%t: !hk.rt<f32, 16x64, row>) {
-  // expected-error@+1 {{exchanges the halves of a strip's rows; it takes a strip}}
+  // expected-error@+1 {{exchanges the halves of a strip's row segments; it takes a strip}}
   %s = hk.swap_halves %t : !hk.rt<f32, 16x64, row> -> !hk.rt<f32, 16x64, row>
   return
 }
@@ -150,15 +150,15 @@ func.func @swap_halves_of_a_tile(%t: !hk.rt<f32, 16x64, row>) {
 
 func.func @rotate_half_four_lanes_apart(%s: !hk.rt<f32, 1x512, strip<8>>) {
   // expected-error@+1 {{puts its halves neither 8, 16 or 32 lanes nor whole chunks apart}}
-  %h = hk.rotate_half %s {span = 64 : i64} : !hk.rt<f32, 1x512, strip<8>> -> !hk.rt<f32, 1x512, strip<8>>
+  %h = hk.swap_halves %s {negate_first, span = 64 : i64} : !hk.rt<f32, 1x512, strip<8>> -> !hk.rt<f32, 1x512, strip<8>>
   return
 }
 
 // -----
 
 func.func @rotate_half_of_a_tile(%t: !hk.rt<f32, 16x64, row>) {
-  // expected-error@+1 {{rotates the halves of a strip's segments; it takes a strip}}
-  %h = hk.rotate_half %t {span = 64 : i64} : !hk.rt<f32, 16x64, row> -> !hk.rt<f32, 16x64, row>
+  // expected-error@+1 {{exchanges the halves of a strip's row segments; it takes a strip}}
+  %h = hk.swap_halves %t {negate_first, span = 64 : i64} : !hk.rt<f32, 16x64, row> -> !hk.rt<f32, 16x64, row>
   return
 }
 

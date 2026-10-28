@@ -3791,58 +3791,29 @@ __device__ static inline void copy(D &dst, const S &src) {
 }
 
 /**
- * @brief Each row's two halves exchanged: dst(r, c) = src(r, (c + COLS/2) %
- * COLS). A row of an even number of chunks swaps registers; a row of one
- * chunk exchanges lane l's run with lane l ^ 32's, one v_permlane32_swap a
- * dword on gfx950 (ds_bpermute on gfx942).
+ * @brief The halves of each SPAN-column segment of every row exchanged, the first half negated
+ * when NEG (NeoX's rotate_half): dst(r, c) = (NEG ? -1 : 1) * src(r, c + SPAN/2) in a segment's
+ * first half and src(r, c - SPAN/2) in its second; SPAN = the row (COLS) exchanges the row's
+ * halves. Halves whole chunks apart swap registers; halves 8, 16 or 32 lanes apart exchange
+ * lanes -- DPP row_ror:8 inside a 16-lane row, v_permlane16_swap, v_permlane32_swap (gfx950;
+ * ds_bpermute on gfx942) -- and the first half's sign is one XOR a value.
  */
-template<ducks::rs::all RS>
+template<int SPAN, bool NEG, ducks::rs::all RS>
 __device__ static inline void swap_halves(RS &dst, const RS &src) {
     using T = typename RS::T;
-    if constexpr (RS::chunks % 2 == 0) {
-        RS tmp;
-        detail::strip_each<RS>([&](int r, int j, int e) {
-            tmp.data[r][j][e] = src.data[r][(j + RS::chunks / 2) % RS::chunks][e];
-        });
-        dst = tmp;
-    } else {
-        static_assert(RS::chunks == 1, "swap_halves takes a row of one chunk or an even number");
-        detail::strip_each<RS>([&](int r, int j, int e) {
-            const uint32_t u = detail::hk_bits(src.data[r][j][e]);
-#if defined(KITTENS_CDNA4)
-            // vdst's upper half takes vsrc's lower and vsrc's lower vdst's
-            // upper: from (u, u), lane l < 32 finds lane l + 32's value in
-            // the second result and lane l + 32 finds lane l's in the first.
-            const auto p = __builtin_amdgcn_permlane32_swap(u, u, false, true);
-            dst.data[r][j][e] = detail::hk_from_bits<T>(laneid() < 32 ? p[1] : p[0]);
-#else
-            dst.data[r][j][e] = detail::hk_from_bits<T>(uint32_t(__shfl_xor(int(u), 32, WARP_THREADS)));
-#endif
-        });
-    }
-}
-
-/**
- * @brief NeoX's rotate_half on each SPAN-column segment of every row:
- * dst(r, c) = -src(r, c + SPAN/2) in a segment's first half and
- * src(r, c - SPAN/2) in its second. Halves whole chunks apart swap
- * registers; halves 8, 16 or 32 lanes apart exchange lanes -- DPP row_ror:8
- * inside a 16-lane row, v_permlane16_swap, v_permlane32_swap (gfx950) -- and
- * the first half's sign is one XOR a value.
- */
-template<int SPAN, ducks::rs::all RS>
-__device__ static inline void rotate_half(RS &dst, const RS &src) {
-    using T = typename RS::T;
     static_assert(RS::cols % SPAN == 0, "segments tile the row");
-    constexpr uint32_t SIGN = sizeof(T) == 4 ? 0x80000000u : 0x8000u;
+    constexpr uint32_t SIGN = !NEG ? 0u : (sizeof(T) == 4 ? 0x80000000u : 0x8000u);
     if constexpr (SPAN % (2 * RS::span) == 0) {
         constexpr int SEG = SPAN / RS::span, H = SEG / 2;
         RS tmp;
         detail::strip_each<RS>([&](int r, int j, int e) {
             const int s = j % SEG;
-            tmp.data[r][j][e] = s < H
-                ? detail::hk_from_bits<T>(detail::hk_bits(src.data[r][j + H][e]) ^ SIGN)
-                : src.data[r][j - H][e];
+            if constexpr (NEG)
+                tmp.data[r][j][e] = s < H
+                    ? detail::hk_from_bits<T>(detail::hk_bits(src.data[r][j + H][e]) ^ SIGN)
+                    : src.data[r][j - H][e];
+            else
+                tmp.data[r][j][e] = src.data[r][s < H ? j + H : j - H][e];
         });
         dst = tmp;
     } else {
@@ -3850,7 +3821,7 @@ __device__ static inline void rotate_half(RS &dst, const RS &src) {
         static_assert(SPAN % (2 * RS::run) == 0 && (LANES == 8 || LANES == 16 || LANES == 32),
                       "a segment's halves 8, 16 or 32 lanes apart, or whole chunks");
         const int l = laneid();
-        const uint32_t sign = (l % (2 * LANES)) < LANES ? SIGN : 0u;
+        const uint32_t sign = NEG && (l % (2 * LANES)) < LANES ? SIGN : 0u;
         detail::strip_each<RS>([&](int r, int j, int e) {
             const uint32_t u = detail::hk_bits(src.data[r][j][e]);
             uint32_t p;
@@ -3858,18 +3829,24 @@ __device__ static inline void rotate_half(RS &dst, const RS &src) {
             if constexpr (LANES == 8) {
                 p = uint32_t(__builtin_amdgcn_mov_dpp(int(u), 0x128, 0xF, 0xF, true));
             } else if constexpr (LANES == 16) {
-                // As swap_halves: the even row of each pair finds its
-                // partner's value in the second result, the odd row in the first.
+                // the even row of each pair finds its partner's value in the second result,
+                // the odd row in the first
                 const auto q = __builtin_amdgcn_permlane16_swap(u, u, false, true);
                 p = (l % 32) < 16 ? q[1] : q[0];
             } else {
+                // vdst's upper half takes vsrc's lower and vsrc's lower vdst's upper: from
+                // (u, u), lane l < 32 finds lane l + 32's value in the second result and lane
+                // l + 32 finds lane l's in the first
                 const auto q = __builtin_amdgcn_permlane32_swap(u, u, false, true);
                 p = l < 32 ? q[1] : q[0];
             }
 #else
             p = uint32_t(__shfl_xor(int(u), LANES, WARP_THREADS));
 #endif
-            dst.data[r][j][e] = detail::hk_from_bits<T>(p ^ sign);
+            if constexpr (NEG)
+                dst.data[r][j][e] = detail::hk_from_bits<T>(p ^ sign);
+            else
+                dst.data[r][j][e] = detail::hk_from_bits<T>(p);
         });
     }
 }

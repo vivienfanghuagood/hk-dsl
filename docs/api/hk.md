@@ -1202,14 +1202,19 @@ A copy in new registers, or `into=` an existing value.
 #### `Tile.swap_halves`
 
 ```python
-Tile.swap_halves(self, *, into=None)
+Tile.swap_halves(self, span: Optional[int] = None, *, negate_first: bool = False, into=None)
 ```
 
-A strip with each row's two halves exchanged: column c takes
-column (c + cols/2) mod cols -- RoPE's rotate_half without the sign.
-Strips only, on the wave64 port (gfx950), and a row of one chunk (a
-lane exchange across the wave's halves) or of an even number of
-chunks (a register swap).
+*Changed after 0.8.0*: new parameters `span`, `negate_first`
+
+A strip with the two halves of each `span`-column segment of its rows exchanged (span
+None: the whole row): in a segment's first half column c takes column c + span/2, in
+its second c - span/2. `negate_first` negates what lands in the first half -- NeoX's
+rotate_half, [x1 | x2] -> [-x2 | x1] (`rotate_half(span)` is this). Strips only, on the
+wave64 port (gfx950). The halves are whole chunks apart (a register swap) or 8, 16 or 32
+lanes apart (a DPP row_ror:8, a v_permlane16_swap, a v_permlane32_swap): a whole row of
+one chunk or of an even number of them, or a head of `span` columns -- a 128-column head
+at eight bf16 a lane is 16 lanes, its halves eight apart.
 
 #### `Tile.rotate_half`
 
@@ -1217,14 +1222,9 @@ chunks (a register swap).
 Tile.rotate_half(self, span: int, *, into=None)
 ```
 
-*Surface*: to be merged into Tile.swap_halves(span, negate_first=True) (sugar kept) (DSL-surface migration S4).
-
 NeoX's rotate_half on each `span`-column segment of a strip's rows:
-[x1 | x2] -> [-x2 | x1], one head of `span` columns a segment. Its
-halves must be 8, 16 or 32 lanes apart (a DPP row_ror:8, a
-v_permlane16_swap, a v_permlane32_swap) or whole chunks apart.
-Strips only, on the wave64 port (gfx950): a 128-column head at
-eight bf16 a lane is 16 lanes, its halves eight apart.
+[x1 | x2] -> [-x2 | x1], one head of `span` columns a segment --
+`swap_halves(span, negate_first=True)`.
 
 #### `Tile.exp_`
 
@@ -1445,14 +1445,19 @@ A copy in new registers, or `into=` an existing value.
 #### `Vec.swap_halves`
 
 ```python
-Vec.swap_halves(self, *, into=None)
+Vec.swap_halves(self, span: Optional[int] = None, *, negate_first: bool = False, into=None)
 ```
 
-A strip with each row's two halves exchanged: column c takes
-column (c + cols/2) mod cols -- RoPE's rotate_half without the sign.
-Strips only, on the wave64 port (gfx950), and a row of one chunk (a
-lane exchange across the wave's halves) or of an even number of
-chunks (a register swap).
+*Changed after 0.8.0*: new parameters `span`, `negate_first`
+
+A strip with the two halves of each `span`-column segment of its rows exchanged (span
+None: the whole row): in a segment's first half column c takes column c + span/2, in
+its second c - span/2. `negate_first` negates what lands in the first half -- NeoX's
+rotate_half, [x1 | x2] -> [-x2 | x1] (`rotate_half(span)` is this). Strips only, on the
+wave64 port (gfx950). The halves are whole chunks apart (a register swap) or 8, 16 or 32
+lanes apart (a DPP row_ror:8, a v_permlane16_swap, a v_permlane32_swap): a whole row of
+one chunk or of an even number of them, or a head of `span` columns -- a 128-column head
+at eight bf16 a lane is 16 lanes, its halves eight apart.
 
 #### `Vec.rotate_half`
 
@@ -1460,14 +1465,9 @@ chunks (a register swap).
 Vec.rotate_half(self, span: int, *, into=None)
 ```
 
-*Surface*: to be merged into Vec.swap_halves(span, negate_first=True) (sugar kept) (DSL-surface migration S4).
-
 NeoX's rotate_half on each `span`-column segment of a strip's rows:
-[x1 | x2] -> [-x2 | x1], one head of `span` columns a segment. Its
-halves must be 8, 16 or 32 lanes apart (a DPP row_ror:8, a
-v_permlane16_swap, a v_permlane32_swap) or whole chunks apart.
-Strips only, on the wave64 port (gfx950): a 128-column head at
-eight bf16 a lane is 16 lanes, its halves eight apart.
+[x1 | x2] -> [-x2 | x1], one head of `span` columns a segment --
+`swap_halves(span, negate_first=True)`.
 
 #### `Vec.exp_`
 
