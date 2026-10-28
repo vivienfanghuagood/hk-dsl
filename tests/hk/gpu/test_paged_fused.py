@@ -13,7 +13,8 @@ from __future__ import annotations
 import pytest
 
 torch = pytest.importorskip("torch")
-import torch.nn.functional as F  # noqa: E402
+
+import _attn_ref  # noqa: E402
 
 from hk.ops import paged  # noqa: E402
 
@@ -29,7 +30,7 @@ def _case(seq_lens, head_dim=128, h_kv=2, group=4, max_len=None, seed=0):
     n_blocks = r * max_pages + 3
     k_cache = torch.randn(n_blocks, h_kv, PAGE, head_dim, device="cuda",
                           dtype=torch.bfloat16, generator=g)
-    v_cache = torch.randn_like(k_cache)
+    v_cache = torch.randn(k_cache.shape, device=k_cache.device, dtype=k_cache.dtype, generator=g)
     perm = torch.randperm(n_blocks, generator=g, device="cuda")[: r * max_pages]
     table = perm.reshape(r, max_pages).to(torch.int32).contiguous()
     q = torch.randn(r, h_kv, group, head_dim, device="cuda",
@@ -39,6 +40,7 @@ def _case(seq_lens, head_dim=128, h_kv=2, group=4, max_len=None, seed=0):
 
 
 def _reference(q, k_cache, v_cache, table, lens):
+    """Exact decode attention in float64 (_attn_ref)."""
     r, h_kv, group, d = q.shape
     out = torch.zeros(r, h_kv, group, d, device="cuda", dtype=torch.float32)
     for i in range(r):
@@ -47,11 +49,9 @@ def _reference(q, k_cache, v_cache, table, lens):
             continue
         pages = table[i, : -(-n // PAGE)].tolist()
         for h in range(h_kv):
-            kk = torch.cat([k_cache[p, h] for p in pages])[:n].float()
-            vv = torch.cat([v_cache[p, h] for p in pages])[:n].float()
-            out[i, h] = F.scaled_dot_product_attention(
-                q[i, h].float()[None, None], kk[None, None],
-                vv[None, None])[0, 0]
+            kk = torch.cat([k_cache[p, h] for p in pages])[:n]
+            vv = torch.cat([v_cache[p, h] for p in pages])[:n]
+            out[i, h] = _attn_ref.softmax_v64(q[i, h], kk, vv, d ** -0.5)
     return out
 
 
@@ -65,16 +65,12 @@ def _decode(q, k_cache, v_cache, table, lens, splits, walk=None, merge=None, pps
     return out
 
 
-def _rel(got, want):
-    return ((got.float() - want).abs().max() / want.abs().max()).item()
-
-
 @pytest.mark.parametrize("head_dim", [64, 128])
 @pytest.mark.parametrize("splits", [1, 2, 8, 32])
 def test_the_decode_is_right_at_every_split(splits, head_dim):
     case = _case([1, 31, 32, 33, 200, 1000], head_dim=head_dim)
     got = _decode(*case, splits)
-    assert _rel(got, _reference(*case)) < 2e-2
+    _attn_ref.check(got, _reference(*case))
 
 
 @pytest.mark.parametrize("splits", [64, 256])
@@ -88,7 +84,7 @@ def test_many_splits_fold_on_several_warps(splits):
     case = _case([0, 4100, 33, 20000, 1100, 2000, 3000], h_kv=1, group=8)
     got = _decode(*case, splits)
     assert torch.count_nonzero(got[0]) == 0
-    assert _rel(got, _reference(*case)) < 2e-2
+    _attn_ref.check(got, _reference(*case))
     assert torch.equal(got, _decode(*case, splits))
 
 
@@ -101,9 +97,10 @@ def test_many_splits_fold_on_several_warps(splits):
 def test_two_pages_a_step(splits, lens, h_kv, group):
     """gfx950's walk at two pages a step (paged_cdna.pages_per_step): odd and even
     page counts in a split, a last page the sequence does not fill, a one-token
-    sequence, a padded request, and the deterministic answer twice. It is held
-    to a page a step's error: a build whose scores were off by 2-4e-2 passed
-    the 2e-2 the other tests ask (paged_cdna's fence_qk)."""
+    sequence, a padded request, and the deterministic answer twice. A build
+    without hk-mma-fence computed some scores wrong: 22-53 ulps off in its
+    worst row, which _attn_ref.check catches, while 2e-2 of the largest value,
+    the bound these tests used to ask, did not."""
     if not paged._native_cdna():
         pytest.skip("two pages a step is gfx950's walk")
     case = _case(lens, h_kv=h_kv, group=group)
@@ -111,8 +108,7 @@ def test_two_pages_a_step(splits, lens, h_kv, group):
     got = _decode(*case, splits, ppstep=2)
     if lens[0] == 0:
         assert torch.count_nonzero(got[0]) == 0
-    one = _rel(_decode(*case, splits), want)
-    assert _rel(got, want) < max(2 * one, 4e-3)
+    _attn_ref.check(got, want)
     assert torch.equal(got, _decode(*case, splits, ppstep=2))
 
 
@@ -120,18 +116,18 @@ def test_a_padded_request_reads_nothing_and_answers_zero():
     case = _case([0, 100, 0, 37])
     got = _decode(*case, 8)
     assert torch.count_nonzero(got[0]) == 0 and torch.count_nonzero(got[2]) == 0
-    assert _rel(got, _reference(*case)) < 2e-2
+    _attn_ref.check(got, _reference(*case))
 
 
 @pytest.mark.parametrize("group", [1, 4, 8])
 def test_groups_of_every_width_the_tile_holds(group):
     case = _case([77, 513], group=group)
-    assert _rel(_decode(*case, 8), _reference(*case)) < 2e-2
+    _attn_ref.check(_decode(*case, 8), _reference(*case))
 
 
 def test_more_splits_than_pages():
     case = _case([5, 40])
-    assert _rel(_decode(*case, 32), _reference(*case)) < 2e-2
+    _attn_ref.check(_decode(*case, 32), _reference(*case))
 
 
 def test_a_captured_decode_replays_over_new_lengths():
@@ -160,7 +156,7 @@ def test_a_captured_decode_replays_over_new_lengths():
 
     graph.replay()
     torch.cuda.synchronize()
-    assert _rel(out, _reference(q, k_cache, v_cache, table, lens)) < 2e-2
+    _attn_ref.check(out, _reference(q, k_cache, v_cache, table, lens))
 
     # New lengths and a new page order, written in place: a replay runs no
     # Python, so only what the kernels read on the device may change.
@@ -168,4 +164,4 @@ def test_a_captured_decode_replays_over_new_lengths():
     table.copy_(table.flip(0))
     graph.replay()
     torch.cuda.synchronize()
-    assert _rel(out, _reference(q, k_cache, v_cache, table, lens)) < 2e-2
+    _attn_ref.check(out, _reference(q, k_cache, v_cache, table, lens))

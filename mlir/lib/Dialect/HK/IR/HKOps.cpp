@@ -824,6 +824,49 @@ LogicalResult LaneGatherOp::verify() {
   return success();
 }
 
+/// Elements a lane holds of a register tile or strip (wave64).
+static int64_t perLane(RegTileType t) { return t.getRows() * t.getCols() / 64; }
+
+static LogicalResult laneStripResult(Operation *op, RegTileType s, Type res, bool i32) {
+  auto r = dyn_cast<RegTileType>(res);
+  if (!r || !r.isStrip() || r.getRows() != 1)
+    return op->emitOpError("gives a 1-row strip");
+  if (perLane(r) != perLane(s))
+    return op->emitOpError("gives a strip of the operand's ") << perLane(s) << " elements a lane, not "
+                                                              << perLane(r);
+  if (i32 ? !r.getElementType().isInteger(32) : r.getElementType() != s.getElementType())
+    return op->emitOpError(i32 ? "gives an i32 strip" : "gives a strip of the operand's element type");
+  return success();
+}
+
+LogicalResult LaneStripOp::verify() {
+  auto s = dyn_cast<RegTileType>(getSrc().getType());
+  if (!s || s.getElementType().getIntOrFloatBitWidth() != 32)
+    return emitOpError("takes a register tile of 32-bit elements");
+  return laneStripResult(*this, s, getResult().getType(), false);
+}
+
+LogicalResult LaneCoordOp::verify() {
+  auto s = dyn_cast<RegTileType>(getSrc().getType());
+  if (!s)
+    return emitOpError("takes a register tile");
+  if (getAxis() != 0 && getAxis() != 1)
+    return emitOpError("axis is 0 (rows) or 1 (columns)");
+  return laneStripResult(*this, s, getResult().getType(), true);
+}
+
+LogicalResult RunXorOp::verify() {
+  auto s = dyn_cast<RegTileType>(getSrc().getType());
+  if (!s || !s.isStrip())
+    return emitOpError("permutes a strip's runs");
+  if (getResult().getType() != getSrc().getType())
+    return emitOpError("gives a strip of its operand's type");
+  int64_t m = getMask();
+  if (m <= 0 || m >= s.getRun())
+    return emitOpError("mask is in 1 .. run - 1");
+  return success();
+}
+
 LogicalResult MfmaStripOp::verify() {
   if (getKind() != "f32_16x16x4")
     return emitOpError("kind is f32_16x16x4");
@@ -921,12 +964,10 @@ LogicalResult GroupReduceOp::verify() {
   unsigned seen = 0;
   for (StringRef p : parts) {
     unsigned v = 0;
-    if (p.getAsInteger(10, v) || v == 0 || v > 16 || (v & (v - 1)) || (seen & v))
-      return emitOpError("order's offsets are powers of two of at most 16, each once");
+    if (p.getAsInteger(10, v) || v == 0 || v > 32 || (v & (v - 1)) || (seen & v))
+      return emitOpError("order's offsets are powers of two of at most 32, each once");
     seen |= v;
   }
-  if (seen & (seen + 1))
-    return emitOpError("order's offsets are 1, 2, .., 2^(k-1): a group of 2^k neighbouring lanes");
   return success();
 }
 

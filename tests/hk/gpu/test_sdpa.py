@@ -15,6 +15,8 @@ from torch.nn.attention import SDPBackend, sdpa_kernel  # noqa: E402
 
 from hk.ops import sdpa  # noqa: E402
 
+import _attn_ref  # noqa: E402
+
 pytestmark = pytest.mark.skipif(
     not torch.cuda.is_available(), reason="needs a Radeon"
 )
@@ -35,17 +37,35 @@ def _qkv(b=1, h=8, n=1024, d=128, h_kv=None, dtype=torch.bfloat16, seed=0):
     return q, k, v
 
 
-def _ref(q, k, v, **kw):
-    """The answer: SDPA in fp32 on torch's math backend, never one of its fused
-    kernels. In the vLLM image (torch 2.12, ROCm 10) AOTriton's bf16 flash
-    forward is not a reference on gfx950: with another process on the GPU it
-    returns whole 128-row tiles wrong, by up to 0.3, and different ones every
-    call (the 739 mismatches of a d64 run on a shared MI355X were torch's)."""
-    with sdpa_kernel(SDPBackend.MATH):
-        return F.scaled_dot_product_attention(q.float(), k.float(), v.float(), **kw)
+def _ref(q, k, v, *, is_causal=False, enable_gqa=False, scale=None, attn_mask=None):
+    """The answer, in float64 (_attn_ref): softmax(q k^T * scale) v with
+    torch's masking and GQA conventions. Not torch's SDPA: in the vLLM image
+    (torch 2.12, ROCm 10) AOTriton's bf16 flash forward returns whole 128-row
+    tiles wrong under another process on the GPU, and an fp32 call moves by
+    more than this kernel's own error from run to run."""
+    b, h, n, d = q.shape
+    nk = k.shape[2]
+    if enable_gqa and k.shape[1] != h:
+        k = k.repeat_interleave(h // k.shape[1], dim=1)
+        v = v.repeat_interleave(h // v.shape[1], dim=1)
+    scale = d ** -0.5 if scale is None else scale
+    s = torch.einsum("bhnd,bhmd->bhnm", q.double(), k.double()) * scale
+    if is_causal:
+        keep = torch.ones(n, nk, device=q.device, dtype=torch.bool).tril()
+        s = s.masked_fill(~keep, float("-inf"))
+    if attn_mask is not None:
+        if attn_mask.dtype == torch.bool:
+            s = s.masked_fill(~attn_mask, float("-inf"))
+        else:
+            s = s + attn_mask.double()
+    # a row every key of which is masked out answers 0, as torch's math
+    # backend does, not 0/0
+    p = torch.softmax(s, dim=-1).nan_to_num(nan=0.0)
+    return torch.einsum("bhnm,bhmd->bhnd", p, v.double()).float()
 
 
 def _close(got, want, **tol):
+    _attn_ref.check(got, want)
     torch.testing.assert_close(got.float(), want.float(), **(tol or TOL))
 
 

@@ -116,8 +116,10 @@ below.
   - `hk-mma-fence` (CDNA): an `hk.sched_barrier` between a matrix-core chain
     and the first other op that touches its accumulator (through
     `rt_subtile` aliases; branches merged, loop bodies walked twice). On
-    gfx950 LLVM threaded accumulator reads through AGPR MFMA chains and
-    computed wrong values; a kernel opts out with `hk.arch.mma_fence(False)`,
+    gfx950 LLVM threaded accumulator reads through AGPR MFMA chains, read
+    one a branch after its MFMA with too few wait states (a hazard
+    recognizer bug, ROCm/llvm-project#5153) and computed wrong values; a
+    kernel opts out with `hk.arch.mma_fence(False)`,
     for an A/B only. Records `hk.accum_fences` on the kernel.
   - `hk-check-budgets`: the register estimate against the occupancy the
     kernel asked for, and the slow-layout warnings.
