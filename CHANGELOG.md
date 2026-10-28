@@ -309,7 +309,17 @@ sort and gives each (token, choice) pair a block of its own. There, OLMoE decode
 equal round for round); past it vLLM's Triton kernel runs, which from 16 tokens a step
 streams the chosen experts at ~96% of GDDR6's rate. `vllm_moe` is on by default on gfx1201.
 
+**gfx1201's bf16 GEMM at 1024-8192 rows** (#114, RDNA4). 11 more shipped gfx1201 schedules
+in `routes_gemm_gfx1201.json`, for Qwen3's four (N, K): 4.1-6.1% faster than the default
+schedule under the R9700 vLLM image's clang 23, and under ROCm 7.2.3's clang 22 2.3-3.4%
+faster at four shapes and within 1% at the rest (each compiler's own champions disagree at
+these sizes; the shipped one is the one that holds under both).
+
 **Fixes**
+- **`hk.schedules.lookup(arch=...)`, `hk.templates.gemm.plan(arch=...)` and hk.tune's
+  incumbent read the current arch's tuned records, not the asked arch's** (#114): under
+  `HK_ARCH=gfx1201`, `lookup(arch="gfx1100")` could return a gfx1201 schedule illegal on
+  gfx1100. `hk.ops.gemm.user_route` / `schedule_for` take an `arch` now.
 - **gfx950: `hk.ops.gemm.matmul` raised `ResourceError` in the vLLM image** (#84) at M 192-512 for
   N 28672 / 14336, K 4096: its table routes there to `dp128x224`, which ROCm 10's hipcc builds
   with a 13-VGPR spill, and the spill gate refuses it. The route now records a refused candidate
