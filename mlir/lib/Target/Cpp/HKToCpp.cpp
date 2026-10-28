@@ -1405,6 +1405,16 @@ private:
               std::to_string(t.getCount()) + "] = al.allocate<" + el + ", " +
               std::to_string(t.getCount()) + ">();");
         })
+        .Case([&](LaneRegroupOp o) {
+          Value d = dest(Value(), o.getResult());
+          auto st = cast<RegTileType>(o.getSrc().getType());
+          auto rt = cast<RegTileType>(o.getResult().getType());
+          int64_t rs = st.getRun(), rr = rt.getRun();
+          auto idx = o.getIdx();
+          for (int64_t k = 0; k < (int64_t)idx.size(); ++k)
+            w(name(d) + ".data[0][" + std::to_string(k / rr) + "][" + std::to_string(k % rr) + "] = " +
+              name(o.getSrc()) + ".data[0][" + std::to_string(idx[k] / rs) + "][" + std::to_string(idx[k] % rs) + "];");
+        })
         .Case([&](LdsPhaseOp o) {
           // the first phase saves the allocator's cursor (the shared allocations end there); a later one
           // rewinds to it: the phases share that LDS
