@@ -40,8 +40,8 @@ def _packed_kernel(K):
         tb = b[hk.elem_coord(0, 0, 0, 0)].load(hk.RT(fp8e4m3, 64, K))
         s_a = hk.load_mx_scales(sa, 64, K // 32, 0, 0)
         s_b = hk.load_mx_scales(sb, 64, K // 32, 0, 0)
-        c[hk.elem_coord(0, 0, 0, 0)] = hk.mma_ABt_mx(ta, tb, hk.zeros(hk.RT(fp32, 64, 64, "col")),
-                                                     s_a, s_b)
+        c[hk.elem_coord(0, 0, 0, 0)] = hk.mma("mma_ABt", ta.scaled(s_a), tb.scaled(s_b),
+                                              hk.zeros(hk.RT(fp32, 64, 64, "col")))
 
     return hk.kernel(mx_packed, arch="gfx950", warps=1, name=f"mx_packed_{K}",
                      grid=lambda p: (1, 1, 1))
@@ -70,9 +70,9 @@ def _aiter_offsets_kernel():
         for t in range(2):
             acc = hk.zeros(hk.RT(fp32, 16, 32, "col"))
             ta = a[hk.elem_coord(0, 0, 16 * t, 0)].load(hk.RT(fp8e4m3, 16, 128))
-            acc = hk.mma_ABt_mx(ta, tb, acc, s_a, s_b, sa_at=(t, 0), sb_at=(0, 0))
+            acc = hk.mma("mma_ABt", ta.scaled(s_a, at=(t, 0)), tb.scaled(s_b, at=(0, 0)), acc)
             ta2 = a[hk.elem_coord(0, 0, 16 * t, 128)].load(hk.RT(fp8e4m3, 16, 128))
-            acc = hk.mma_ABt_mx(ta2, tb2, acc, s_a, s_b, sa_at=(t, 1), sb_at=(0, 1))
+            acc = hk.mma("mma_ABt", ta2.scaled(s_a, at=(t, 1)), tb2.scaled(s_b, at=(0, 1)), acc)
             c[hk.elem_coord(0, 0, 16 * t, 0)] = acc
 
     return hk.kernel(mx_aiter, arch="gfx950", warps=1, name="mx_aiter_offsets",
@@ -102,8 +102,8 @@ def _fp4_kernel(gate_up, n, K):
         s_w = hk.load_mx_scales(ws, n, K // 32, 0, 0, layout=lay, group_rows=n)
         tx = x[hk.elem_coord(0, 0, 0, 0)].load(hk.RT(fp8e4m3, 16, K))
         s_x = hk.load_mx_scales(xs, 16, K // 32, 0, 0)
-        c[hk.elem_coord(0, 0, 0, 0)] = hk.mma_ABt_mx(tw, tx, hk.zeros(hk.RT(fp32, n, 16, "col")),
-                                                     s_w, s_x, a_fmt="fp4")
+        c[hk.elem_coord(0, 0, 0, 0)] = hk.mma("mma_ABt", tw.scaled(s_w, fmt="fp4"), tx.scaled(s_x),
+                                              hk.zeros(hk.RT(fp32, n, 16, "col")))
 
     return hk.kernel(mx_fp4, arch="gfx950", warps=1, name=f"mx_fp4_{int(gate_up)}_{n}_{K}",
                      grid=lambda p: (1, 1, 1))
@@ -141,8 +141,8 @@ def test_an_expert_past_the_weights_reads_zero_not_another_experts_memory():
         s_w = hk.load_mx_scales(ws, n, K // 32, 0, 0, layout="aiter", group_rows=n)
         tx = x[hk.elem_coord(0, 0, 0, 0)].load(hk.RT(fp8e4m3, 16, K))
         s_x = hk.load_mx_scales(xs, 16, K // 32, 0, 0)
-        c[hk.elem_coord(0, 0, 0, 0)] = hk.mma_ABt_mx(tw, tx, hk.zeros(hk.RT(fp32, n, 16, "col")),
-                                                     s_w, s_x, a_fmt="fp4")
+        c[hk.elem_coord(0, 0, 0, 0)] = hk.mma("mma_ABt", tw.scaled(s_w, fmt="fp4"), tx.scaled(s_x),
+                                              hk.zeros(hk.RT(fp32, n, 16, "col")))
 
     k = hk.kernel(mx_fp4_oob, arch="gfx950", warps=1, name="mx_fp4_oob", grid=lambda p: (1, 1, 1))
     c = torch.full((n, 16), float("nan"), device="cuda")
@@ -196,12 +196,12 @@ def test_fp4_weights_from_an_lds_tile_match_the_global_read():
         sw = hk.lds.alloc(hk.ST(fp8e4m3, 16, 1024 * (K // 128)), name="sw")
         grp.load(sw, wv.at[0, 0])
         hk.arch.barrier()
-        tw = hk.load_fp4_frags_lds(hk.RT(fp8e4m3, 32, K), sw, 2, 0)        # rows 32..63
+        tw = hk.load_fp4_frags(hk.RT(fp8e4m3, 32, K), sw, 2, 0)        # rows 32..63
         s_w = hk.load_mx_scales(ws, 32, K // 32, 32, 0, layout="aiter", group_rows=n)
         tx = x[hk.elem_coord(0, 0, 0, 0)].load(hk.RT(fp8e4m3, 16, K))
         s_x = hk.load_mx_scales(xs, 16, K // 32, 0, 0)
-        c[hk.elem_coord(0, 0, 0, 0)] = hk.mma_ABt_mx(tw, tx, hk.zeros(hk.RT(fp32, 32, 16, "col")),
-                                                     s_w, s_x, a_fmt="fp4")
+        c[hk.elem_coord(0, 0, 0, 0)] = hk.mma("mma_ABt", tw.scaled(s_w, fmt="fp4"), tx.scaled(s_x),
+                                              hk.zeros(hk.RT(fp32, 32, 16, "col")))
 
     k = hk.kernel(mx_fp4_lds, arch="gfx950", warps=1, name="mx_fp4_lds", grid=lambda p: (1, 1, 1))
     w = torch.randint(0, 256, (1, n, K // 2), device="cuda", dtype=torch.uint8, generator=g)

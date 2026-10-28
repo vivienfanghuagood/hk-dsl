@@ -169,7 +169,7 @@ Columns:
 |---|---|---|---|---|---|---|
 | A1 | `hk.load_mx_scales(src, rows, kblocks, row0, kb0, *, into, layout="ocp"\|"aiter"\|"aiter_gate_up", group_rows, loose)` (`values.py`, `hk.load_mx_scales` op, `kittens::load_mx_scales` / `load_mx_scales_aiter`, `hk_mxs<R, KB, F>`) | API | ops: moe_a8w4 45, mxfp8 6, gemm_cdna 2, mx.py 2; PRs: #115 2; out of tree: 18 | test_cdna_mx_ops, test_k2_ops, test_mx_fp4_aiter, ir/test_cdna_fp8 | the scaled MFMA reads E8M0 scales from lane-specific bytes (opsel). OCP, packed and AITER's shuffled layouts all land in those registers | **KEEP, format.** The scaled MFMA's operand. A new scale layout is a `layout=` entry, never a new op |
 | A2 | `hk.copy_mx_scales(dst, src)` (`hk.mx_scales_copy` op) | API | ops: mxfp8 6 | via ops (test_mxfp8_gemm, test_vllm_mxfp8) | `MxScales` is not a `Tile`, so `Tile.copy(into=)` does not apply | **MERGE: G5.** `src.copy(into=dst)` on `MxScales`; the same op is emitted |
-| A3 | `hk.mma_ABt_mx(a, b, acc, sa, sb, *, a_fmt, b_fmt, sa_at, sb_at)` (`hk.mma_ABt_mx` op, `kittens::mma_ABt_mx`) | API | ops: moe_a8w4 13, mxfp8 3, gemm_cdna 1; PRs: #115 3; out of tree: 14 | test_cdna_mx_ops, test_k2_ops, test_mx_fp4_aiter, test_select_ops, ir/test_cdna_fp8, ir/test_strip | `hk.mma` has no scales | **MERGE: G5.** `hk.mma("ABt", a.scaled(sa), b.scaled(sb, fmt="fp4", at=(t, s)), acc)`; the same op is emitted |
+| A3 | `hk.mma_ABt_mx(a, b, acc, sa, sb, *, a_fmt, b_fmt, sa_at, sb_at)` (`hk.mma_ABt_mx` op, `kittens::mma_ABt_mx`) | API | ops: moe_a8w4 13, mxfp8 3, gemm_cdna 1; PRs: #115 3; out of tree: 14 | test_cdna_mx_ops, test_k2_ops, test_mx_fp4_aiter, test_select_ops, ir/test_cdna_fp8, ir/test_strip | `hk.mma` has no scales | **MERGE: G5.** `hk.mma("mma_ABt", a.scaled(sa), b.scaled(sb, fmt="fp4", at=(t, s)), acc)`; the same op is emitted |
 | A4 | `hk.load_fp4_frags(ty, src, row0, kc0, *, group_rows, gate_up)` (`kittens::load_fp4_frags`) | API | ops: moe_a8w4 8 | test_cdna_mx_ops, test_mx_fp4_aiter | AITER's `shuffle_weight` layout (1 KB chunks in lane order, gate/up interleave), with a 64-bit base per expert (a 4.5 GB weight passes a 32-bit buffer offset) | **KEEP, format.** AITER's pre-shuffled MXFP4 weights only |
 | A5 | `hk.load_fp4_frags_lds(ty, src, row0, chunk0)` | API | ops: moe_a8w4 2 | test_cdna_mx_ops | the same bytes, from an LDS tile | **MERGE: A4.** One `load_fp4_frags` whose `src` may be a `SharedTile`; it dispatches to the existing op |
 | A6 | `hk.mx_quant_store(src, q, s, row0, col0)` (`kittens::mx_quant_store`, 70 lines) | API | ops: moe_a8w4 1 (stage-1 epilogue, `mxq`), mxfp8 1 (`quant`) | test_cdna_mx_ops, test_mxfp8_quant, test_moe_a8w4, test_fenced | floor and ceil on exponent bits, byte scatter of scales into AITER's 32-row or the packed layout, packed fp8 conversion: no integer or bit ops on tiles | **MERGE: G1 composition**, after G1, behind V2. If it is slower (K1's +3-4% came from it), reclassify as KEEP-format with the measurement |
@@ -449,20 +449,20 @@ out.scatter(o, rows_out.offset(i * TILE), col=c0)
 ### G5. One MMA entry; MX scales as register values
 
 ```python
-acc = hk.mma("ABt", a.scaled(sa), b.scaled(sb, fmt="fp4", at=(tile, step)), acc)
+acc = hk.mma("mma_ABt", a.scaled(sa), b.scaled(sb, fmt="fp4", at=(tile, step)), acc)
 src.copy(into=dst)                                   # MxScales, as Tile.copy(into=)
 w = hk.load_fp4_frags(ty, src, row0, kc0, ...)       # src a Global or a SharedTile
 ```
 
 **Semantics.**
 - `Tile.scaled(scales, *, fmt="fp8", at=(0, 0))` makes a scaled operand. `hk.mma` takes one only
-  as both operands of the `ABt` variant on gfx950. It emits today's `hk.mma_ABt_mx` with
+  as both operands of the `mma_ABt` variant on gfx950. It emits today's `hk.mma_ABt_mx` with
   `a_fmt` / `b_fmt` / `sa_at` / `sb_at` taken from the operands.
 - Unscaled calls are unchanged.
 
 ```python
 acc = hk.mma_ABt_mx(a, w, acc, sa, sw, b_fmt="fp4", sb_at=(t, s))            # today
-acc = hk.mma("ABt", a.scaled(sa), w.scaled(sw, fmt="fp4", at=(t, s)), acc)   # target
+acc = hk.mma("mma_ABt", a.scaled(sa), w.scaled(sw, fmt="fp4", at=(t, s)), acc)   # target
 hk.copy_mx_scales(S[0][0][i], S[1][0][i])                                    # today
 S[1][0][i].copy(into=S[0][0][i])                                             # target
 ```

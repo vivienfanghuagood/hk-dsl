@@ -60,8 +60,8 @@ def kernel(steps: int = 2, pinned: bool = True, n: int = 32):
         for t in range(ROWS // 16):     # every tile's product first, then the stores: K1's epilogue
             tx = x[hk.elem_coord(0, 0, 16 * t, 0)].load(hk.RT(fp8e4m3, 16, K))
             s_x = hk.load_mx_scales(xs, 16, K // 32, 16 * t, 0)
-            accs.append(hk.mma_ABt_mx(tw, tx, hk.zeros(hk.RT(fp32, n, 16, "col")), s_w, s_x,
-                                      a_fmt="fp4"))
+            accs.append(hk.mma("mma_ABt", tw.scaled(s_w, fmt="fp4"), tx.scaled(s_x),
+                               hk.zeros(hk.RT(fp32, n, 16, "col"))))
         for t in range(ROWS // 16):
             out.scatter(hk.transpose(accs[t]), ids, 16 * t, col=0, sort_topk=TOPK, add=True)
 

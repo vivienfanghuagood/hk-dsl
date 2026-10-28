@@ -50,7 +50,7 @@ def mxfp8_kernel(name: str = "mxfp8_gemm_128x128"):
             hk.arch.barrier()
             ta = As.subtile(64, BK, wr, 0).load(t_a)
             tb = Bs.subtile(64, BK, wc, 0).load(t_b)
-            hk.mma_ABt_mx(ta, tb, acc, s_a, s_b, into=acc)
+            hk.mma("mma_ABt", ta.scaled(s_a), tb.scaled(s_b), acc, into=acc)
             hk.arch.barrier()
         c.at[row0 + wr * 64, col0 + wc * 64] = acc
 
@@ -243,7 +243,8 @@ def mx4w_kernel(name: str = "mxfp8_4w", *, block_m: int = 256, block_n: int = 25
         def mma(q, i, j):
             if setprio:
                 hk.arch.setprio(1)
-            hk.mma_ABt_mx(A[i], B[j], C[i][j], S[q][0][i], S[q][1][j], into=C[i][j])
+            hk.mma("mma_ABt", A[i].scaled(S[q][0][i]), B[j].scaled(S[q][1][j]), C[i][j],
+                   into=C[i][j])
             if setprio:
                 hk.arch.setprio(0)
 
@@ -311,9 +312,9 @@ def mx4w_kernel(name: str = "mxfp8_4w", *, block_m: int = 256, block_n: int = 25
             for t in range(0, k_tiles - (stages - 1)):
                 k_tile(t, 0, True, u=rot % stages, un=(rot + stages - 1) % stages, q=0, qn_=1)
                 for i in range(split_m):
-                    hk.copy_mx_scales(S[0][0][i], S[1][0][i])
+                    S[1][0][i].copy(into=S[0][0][i])
                 for jj in range(split_n):
-                    hk.copy_mx_scales(S[0][1][jj], S[1][1][jj])
+                    S[1][1][jj].copy(into=S[0][1][jj])
                 rot = (rot + 1) % stages
             for d in range(stages - 1):
                 last = d == stages - 2
@@ -321,9 +322,9 @@ def mx4w_kernel(name: str = "mxfp8_4w", *, block_m: int = 256, block_n: int = 25
                        q=0, qn_=1, scales=not last)
                 if not last:
                     for i in range(split_m):
-                        hk.copy_mx_scales(S[0][0][i], S[1][0][i])
+                        S[1][0][i].copy(into=S[0][0][i])
                     for jj in range(split_n):
-                        hk.copy_mx_scales(S[0][1][jj], S[1][1][jj])
+                        S[1][1][jj].copy(into=S[0][1][jj])
 
         for i in range(split_m):
             for j in range(split_n):
@@ -416,9 +417,9 @@ def mx4p_kernel(name: str = "mxfp8_4p", *, block_m: int = 256, block_n: int = 25
 
         def hand_over():
             for i in range(split_m):
-                hk.copy_mx_scales(S[0][0][i], S[1][0][i])
+                S[1][0][i].copy(into=S[0][0][i])
             for jj in range(split_n):
-                hk.copy_mx_scales(S[0][1][jj], S[1][1][jj])
+                S[1][1][jj].copy(into=S[0][1][jj])
 
         def step(u, un, copy_at, scales_at):
             """One K-tile from ring role u; copy_at = (m0, n0, k) of the K-tile
@@ -442,7 +443,8 @@ def mx4p_kernel(name: str = "mxfp8_4p", *, block_m: int = 256, block_n: int = 25
                             piece(*copy_at, un, *PIECES[k])
                 if new:
                     hk.lds.wait_for(*[A[idx] if kind == "a" else B[idx] for kind, idx in new])
-                hk.mma_ABt_mx(A[i], B[jj], C[i][jj], S[0][0][i], S[0][1][jj], into=C[i][jj])
+                hk.mma("mma_ABt", A[i].scaled(S[0][0][i]), B[jj].scaled(S[0][1][jj]), C[i][jj],
+                       into=C[i][jj])
             hk.arch.sched_barrier()
 
         def finish_block(m0, n0):

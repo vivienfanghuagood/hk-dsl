@@ -40,11 +40,11 @@ The language: what `import hk` gives a kernel author. A kernel body is traced on
 - [`hk.tile_coord`](#hktile_coord)
 - [`hk.elem_coord`](#hkelem_coord)
 - [`hk.load_mx_scales`](#hkload_mx_scales)
+- [`hk.load_fp4_frags`](#hkload_fp4_frags)
+- [`hk.mx_quant_store`](#hkmx_quant_store)
 - [`hk.copy_mx_scales`](#hkcopy_mx_scales)
 - [`hk.mma_ABt_mx`](#hkmma_abt_mx)
-- [`hk.load_fp4_frags`](#hkload_fp4_frags)
 - [`hk.load_fp4_frags_lds`](#hkload_fp4_frags_lds)
-- [`hk.mx_quant_store`](#hkmx_quant_store)
 - [`hk.map_cpp`](#hkmap_cpp)
 - [`hk.iota`](#hkiota)
 - [`hk.mfma_strip`](#hkmfma_strip)
@@ -57,6 +57,8 @@ The language: what `import hk` gives a kernel author. A kernel body is traced on
 - [`hk.SharedTile`](#hksharedtile)
 - [`hk.SharedVec`](#hksharedvec)
 - [`hk.Granules`](#hkgranules)
+- [`hk.MxScales`](#hkmxscales)
+- [`hk.Scaled`](#hkscaled)
 - [`hk.Int`](#hkint)
 - [`hk.Bool`](#hkbool)
 - [`hk.Coord`](#hkcoord)
@@ -540,12 +542,20 @@ types are the same: element type, length and layout.
 ### `hk.mma`
 
 ```python
-hk.mma(variant: str, a: Tile, b: Tile, acc: Tile, *, into=None) -> Tile
+hk.mma(variant: str, a, b, acc: Tile, *, into=None) -> Tile
 ```
 
 `acc + A x B` on the WMMA unit. The variant is decided by the layouts
 you have; the wrong one is how a kernel buys eight ds_read_u16 per base
 tile instead of two ds_read_b128.
+
+Scaled operands (`Tile.scaled`) make it gfx950's block-scaled MFMA
+(v_mfma_scale_f32_16x16x128_f8f6f4): `hk.mma("mma_ABt", a.scaled(sa),
+b.scaled(sb, fmt="fp4"), acc)` is acc + (sa . A)(sb . B)^T for A (M, K) and
+B (N, K) fp8 e4m3 row tiles (FP4 in the fp8 container with fmt="fp4"), K a
+multiple of 128, element (r, k) of A counting as A[r][k] *
+2^(sa[r][k // 32] - 127), acc an fp32 col tile (M, N). Both operands are
+scaled, and the variant is mma_ABt.
 
 ### `hk.load_w4`
 
@@ -620,61 +630,26 @@ scale, so its wait sits at the MFMA instead of right after the load --
 the packed form's byte insertion waited there, draining every load
 issued before it (K1 c8).
 
-### `hk.copy_mx_scales`
-
-```python
-hk.copy_mx_scales(dst: MxScales, src: MxScales) -> None
-```
-
-*Surface*: to be merged into MxScales.copy(into=) (DSL-surface migration S2).
-
-dst = src: E8M0 scales copied register to register -- how a one-stage
-loop body hands the next K-tile's prefetched scales to the current set.
-
-### `hk.mma_ABt_mx`
-
-```python
-hk.mma_ABt_mx(a: Tile, b: Tile, acc: Tile, sa: MxScales, sb: MxScales, *, into=None, a_fmt: str = 'fp8', b_fmt: str = 'fp8', sa_at=(0, 0), sb_at=(0, 0)) -> Tile
-```
-
-*Surface*: to be merged into hk.mma with Tile.scaled operands (DSL-surface migration S2).
-
-acc + (sa . A)(sb . B)^T on gfx950's v_mfma_scale_f32_16x16x128_f8f6f4:
-A (M, K) and B (N, K) fp8 e4m3 row tiles, K a multiple of 128; sa and sb
-their E8M0 scales (`load_mx_scales`), element (r, k) of A counting as
-A[r][k] * 2^(sa[r][k // 32] - 127); acc an fp32 col tile (M, N).
-`sa_at` / `sb_at` = (tile, step): the scales may cover more than the
-operand -- its 16-row base tile i and 128-wide step s take the scales' tile
-i + tile and step s + step (e.g. a 32-row block's two-step AITER dwords,
-loaded once, feeding two token tiles over two steps).
-
 ### `hk.load_fp4_frags`
 
 ```python
-hk.load_fp4_frags(ty, src: Global, row0, kc0, *, group_rows: int, gate_up: bool = False, into=None) -> Tile
+hk.load_fp4_frags(ty, src, row0, kc0, *, group_rows: Optional[int] = None, gate_up: bool = False, into=None) -> Tile
 ```
 
 *Surface*: a format primitive: AITER's pre-shuffled MXFP4 MoE weights only.
 
 Rows row0.. and 128-wide K steps kc0.. of AITER's shuffled MXFP4 MoE weights (gfx950,
 `shuffle_weight(is_guinterleave=True)`; src uint8 [E * group_rows, K/2], the packed bytes)
-as the B operand of `mma_ABt_mx(..., b_fmt="fp4")`. `ty` is an fp8 e4m3 row tile of 16x128
-fragments -- the container: each fragment's first four dwords hold the FP4 operand, the rest
-stay undefined. With `gate_up` (a stage-1 gate|up weight) the base tiles alternate the gate
-and up halves of 16-row block (row0 % group_rows) // 16 + i // 2, so gate column j and up
+as an FP4 operand, `w.scaled(sw, fmt="fp4")` in `hk.mma`. `ty` is an fp8 e4m3 row tile of
+16x128 fragments -- the container: each fragment's first four dwords hold the FP4 operand, the
+rest stay undefined. With `gate_up` (a stage-1 gate|up weight) the base tiles alternate the
+gate and up halves of 16-row block (row0 % group_rows) // 16 + i // 2, so gate column j and up
 column j of the product land in the same lanes.
 
-### `hk.load_fp4_frags_lds`
-
-```python
-hk.load_fp4_frags_lds(ty, src: SharedTile, row0, chunk0, *, into=None) -> Tile
-```
-
-*Surface*: to be merged into hk.load_fp4_frags(SharedTile) (DSL-surface migration S2).
-
-load_fp4_frags from an LDS tile of raw AITER weight bytes (fp8-typed, a row a 16-row block
-with gate|up rows interleaved, 1 KB a 128-wide K step: the [E * N/16 * 2, K/2 * 16] view of the
-weights, brought in by a group load). Fragment (i, s) is row row0 + i, chunk chunk0 + s.
+`src` may instead be an LDS tile of raw AITER weight bytes (fp8-typed, a row a 16-row block
+with gate|up rows interleaved, 1 KB a 128-wide K step: the [E * N/16 * 2, K/2 * 16] view of
+the weights, brought in by a group load): fragment (i, s) is then its row row0 + i and 1 KB
+chunk kc0 + s, and `group_rows` / `gate_up` do not apply.
 
 ### `hk.mx_quant_store`
 
@@ -693,6 +668,37 @@ a uint8 `s` gets AITER's 32-row layout (hk.mx.aiter_scales of q's [R, K/32], K/3
 8), an int32 `s` the packed layout hk.load_mx_scales reads ([ceil(R/64), K/128 * 64],
 hk.mx.pack_scales; rows past q's last get the unit scale, as pack_scales pads them). The
 result is bit-identical to hk.mx.quant followed by hk.mx.aiter_scales or hk.mx.pack_scales.
+
+### `hk.copy_mx_scales`
+
+```python
+hk.copy_mx_scales(dst: MxScales, src: MxScales) -> None
+```
+
+*Surface*: deprecated, removed in the release after the last call from outside the repository is migrated, at most two minor releases after its deprecation; use MxScales.copy(into=).
+
+Deprecated: `src.copy(into=dst)`. dst = src, E8M0 scales copied register to register.
+
+### `hk.mma_ABt_mx`
+
+```python
+hk.mma_ABt_mx(a: Tile, b: Tile, acc: Tile, sa: MxScales, sb: MxScales, *, into=None, a_fmt: str = 'fp8', b_fmt: str = 'fp8', sa_at=(0, 0), sb_at=(0, 0)) -> Tile
+```
+
+*Surface*: deprecated, removed in the release after the last call from outside the repository is migrated, at most two minor releases after its deprecation; use hk.mma with Tile.scaled operands.
+
+Deprecated: `hk.mma("mma_ABt", a.scaled(sa, fmt=a_fmt, at=sa_at),
+b.scaled(sb, fmt=b_fmt, at=sb_at), acc)`, the same instruction.
+
+### `hk.load_fp4_frags_lds`
+
+```python
+hk.load_fp4_frags_lds(ty, src: SharedTile, row0, chunk0, *, into=None) -> Tile
+```
+
+*Surface*: deprecated, removed in the release after the last call from outside the repository is migrated, at most two minor releases after its deprecation; use hk.load_fp4_frags(SharedTile).
+
+Deprecated: `hk.load_fp4_frags(ty, src, row0, chunk0)` with `src` an LDS tile.
 
 ## Strips: a C++ expression, iota, a raw MFMA (gfx950)
 
@@ -789,7 +795,7 @@ Made with `hk.Digit.of(axis, kind="whole", radix=None)`: `hk.Digit.of("z")`, `hk
 | `hk.fp8e4m3` | 8 | `fp8e4m3` | float |
 | `hk.fp8e5m2` | 8 | `fp8e5m2` | float |
 
-fp8 is a matrix operand where the target has an fp8 matrix instruction: gfx950's MFMA (plain, and block-scaled through `hk.mma_ABt_mx`, whose A may also be FP4) and gfx1201's WMMA. i8 is a WMMA operand on gfx1100 (`v_wmma_i32_16x16x16_iu8`, an i32 accumulator) and a storage type elsewhere. `hk.mx` has the MX scale layouts and torch references. `hk.DTYPES` maps the names to these.
+fp8 is a matrix operand where the target has an fp8 matrix instruction: gfx950's MFMA (plain, and block-scaled through `hk.mma` with `Tile.scaled` operands, which may also be FP4) and gfx1201's WMMA. i8 is a WMMA operand on gfx1100 (`v_wmma_i32_16x16x16_iu8`, an i32 accumulator) and a storage type elsewhere. `hk.mx` has the MX scale layouts and torch references. `hk.DTYPES` maps the names to these.
 
 ## Device values
 
@@ -1010,6 +1016,21 @@ Tile.tril_(self, idx, value=0.0, *, into=None)
 ```
 
 Keep the lower triangle from diagonal `idx`, the rest set to `value` (default 0), in place. Not on strips.
+
+#### `Tile.scaled`
+
+```python
+Tile.scaled(self, scales: MxScales, *, fmt: str = 'fp8', at=(0, 0)) -> Scaled
+```
+
+*New after 0.8.0*
+
+This operand with its E8M0 block scales, for gfx950's block-scaled MFMA:
+`hk.mma("mma_ABt", a.scaled(sa), b.scaled(sb, fmt="fp4"), acc)`. `fmt` is "fp8"
+(e4m3) or "fp4" (the FP4 container `hk.load_fp4_frags` fills). `at` = (tile, step):
+the scales may cover more than the operand -- its 16-row base tile i and 128-wide step s
+take the scales' tile i + tile and step s + step (a 32-row block's two-step AITER
+dwords, loaded once, feeding two token tiles over two steps).
 
 #### `Tile.as_operand`
 
@@ -1915,6 +1936,37 @@ One 16x16 fragment into the tile; `row` may be a runtime value.
 #### `Granules.type (property)`
 
 The value's hk type (`RegTileType`, `RegVecType`, ...).
+
+### `hk.MxScales`
+
+*New after 0.8.0*
+
+E8M0 block scales of an fp8 operand tile, in the lanes the scaled MFMA
+reads them from (`load_mx_scales`). An operand takes them with
+`Tile.scaled`.
+
+#### `MxScales.copy`
+
+```python
+MxScales.copy(self, *, into: MxScales) -> MxScales
+```
+
+*New after 0.8.0*
+
+`into` = these scales, register to register -- how a one-stage loop body hands
+the next K-tile's prefetched scales to the current set. Returns `into`.
+
+#### `MxScales.type (property)`
+
+The value's hk type (`RegTileType`, `RegVecType`, ...).
+
+### `hk.Scaled`
+
+*New after 0.8.0*
+
+An MX operand: an fp8 e4m3 row tile (FP4 in its container with fmt="fp4") and its E8M0
+scales, made by `Tile.scaled`. `hk.mma("mma_ABt", a.scaled(sa), b.scaled(sb), acc)` is
+gfx950's block-scaled MFMA; nothing else takes one.
 
 ### `hk.Int`
 
