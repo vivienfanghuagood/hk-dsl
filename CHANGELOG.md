@@ -9,6 +9,19 @@ The next version's notes collect here until it is released.
 What is on main after 0.8.0. `pip install hk-dsl` (0.8.0) does not have it;
 the API reference marks such names *New after 0.8.0*.
 
+**`warm-routes` builds every K2 kernel a server can pick.**
+- `python3 -m hk.integration warm-routes` called K2 (the MXFP8 linear route) at
+  M = 2048 / 5120 / 8192 / 16384 only. The four-warp `stages=2` schedule that
+  `vllm_mxfp8.RANGES` takes at M 832-1376 of (5120, 4096) was never built, so
+  every vLLM server compiled it on its first request in that range, in every
+  TP worker (the `[hk] JIT: compiling kernel
+  'mxfp8_4w_block_m128_block_n128_split_m1_split_n1_stages2'` line).
+- `warm_routes.k2_plans(n, k)` now enumerates, for each routed (N, K), every
+  (kind, schedule, tail recut) the route can launch at M up to 32768, and
+  warm-routes makes one call at the smallest M of each.
+  `tests/hk/ir/test_warm_routes.py` checks the cover against an independent
+  scan of `schedule` and `mxfp8.tail_split`.
+
 **CDNA: `hk-mma-fence`, a DSL rule for matrix-core accumulators; `hk.arch.agpr`
 to hold one in AGPRs.**
 - `hk-mma-fence`, a pass in the kernel pipeline, puts an `hk.sched_barrier`
