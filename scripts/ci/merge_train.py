@@ -146,7 +146,8 @@ def write_api(desc, path, method='POST', body=None, check=True):
     if LOG.dry:
         LOG.say(f"  [dry-run] would {desc}")
         return None
-    LOG.write(f"{desc}: {method} {path}")
+    LOG.say(f"  {desc}")
+    LOG.write(f"  {method} {path}")
     return api(path, method, body, check=check)
 
 
