@@ -1583,7 +1583,7 @@ private:
         })
         .Case([&](MfmaStripOp o) {
           Value d = dest(Value(), o.getResult());
-          w("kittens::mfma_strip_f32_16x16x4(" + name(d) + ", " + name(o.getA()) + ", " +
+          w("kittens::mfma_strip_" + o.getKind().str() + "(" + name(d) + ", " + name(o.getA()) + ", " +
             name(o.getB()) + ", " + name(o.getAcc()) + ");");
         })
         .Case([&](PostElemsOp o) {
