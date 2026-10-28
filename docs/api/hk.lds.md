@@ -92,7 +92,7 @@ pair is asynchronous at all; hk-lds-pipeline sets the real count.
 hk.lds.phase() -> None
 ```
 
-*New after 0.5.0*
+*New after 0.8.0*
 
 Start an LDS phase: the allocations from here on reuse the LDS of the phases before (a union).
 
