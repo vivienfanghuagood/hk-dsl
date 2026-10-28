@@ -472,7 +472,9 @@ def test_the_strip_index_and_lane_ops_emit_their_cdna_calls():
 
 
 @pytest.mark.parametrize("cols,xor,match", [(24, None, "lanes' runs"), (512, None, "lanes' runs"),
-                                            (32, (1, 1), "each once"), (32, (1, 4), "each once")])
+                                            (32, (1, 1), "distinct powers of two"),
+                                            (32, (1, 64), "distinct powers of two"),
+                                            (32, (1,), "takes 2 offsets")])
 def test_a_group_is_a_power_of_two_lanes_with_each_offset_once(cols, xor, match):
     def bad(x: hk.Tensor[hk.fp32], o: hk.Tensor[hk.fp32]):
         o.at[0, 0].store(x.at[0, 0].load(S64).group_sum(cols, xor=xor))
@@ -620,3 +622,63 @@ def test_fp8_operand_emits_its_call_and_takes_two_runs_of_four():
         hk.fp8_operand(a.load_elems(hk.iota(hk.RS(hk.i32, 1, 256, 4)), runs=True))
     with pytest.raises(TypeError, match="1 x 512, run 4"):
         _src950(one_run)
+
+
+# ---------------------------------------------------------------- lane strips
+
+
+_TO = hk.RT(hk.fp32, 128, 32, "col", frag=(32, 32))
+
+
+def _lane(x: hk.Tensor[hk.fp32], o: hk.Tensor[hk.fp32]):
+    a = x.at[0, 0].load(_TO)
+    s = a.lane_strip(16)
+    rows, cols = hk.lane_coords(a, 16)
+    s = s.group_max(32, xor=(32,)) + s.run_xor(1)
+    o.store_elems(s, hk.map_cpp("x0 * 32 + x1", rows, cols, dtype=hk.i32))
+
+
+def test_a_tile_as_a_lane_strip_is_three_ops_and_templates():
+    k = _k950(_lane, warps=1)
+    asm = k.trace().module.operation.get_asm()
+    assert "hk.lane_strip" in asm and asm.count("hk.lane_coord") == 2 and "hk.run_xor" in asm
+    src = k.source()
+    assert "using rs_fp32_1x4096_r16 = kittens::rs<float, 1, 4096, 16>;" in src
+    assert "kittens::lane_strip(" in src and "kittens::lane_coord<0>(" in src
+    assert "kittens::lane_coord<1>(" in src and "kittens::run_xor<1>(" in src
+    assert "kittens::group_reduce_ordered<kittens::base_ops::max, 1, 32>(" in src
+
+
+def test_a_lane_strip_is_refused_where_it_cannot_be():
+    with pytest.raises(ValueError, match="divides 64"):
+        def _run(x: hk.Tensor[hk.fp32], o: hk.Tensor[hk.fp32]):
+            x.at[0, 0].load(_TO).lane_strip(3)
+        _k950(_run, warps=1).trace()
+    with pytest.raises(TypeError, match="32-bit elements"):
+        def _bf(x: hk.Tensor[hk.bf16], o: hk.Tensor[hk.fp32]):
+            x.at[0, 0].load(hk.RT(hk.bf16, 16, 32, "row")).lane_strip(8)
+        _k950(_bf, warps=1).trace()
+    with pytest.raises(TypeError, match="gfx950's"):
+        def _rd(x: hk.Tensor[hk.fp32], o: hk.Tensor[hk.fp32]):
+            x.tile[0, 0].load(hk.RT(hk.fp32, 16, 16)).lane_strip(8)
+        _kernel(_rd, warps=1).trace()
+    with pytest.raises(ValueError, match="below the run"):
+        def _rx(x: hk.Tensor[hk.fp32], o: hk.Tensor[hk.fp32]):
+            x.at[0, 0].load(S64).run_xor(8)
+        _k950(_rx, warps=1).trace()
+
+
+def test_a_group_takes_any_distinct_xor_offsets_up_to_32():
+    def _g(x: hk.Tensor[hk.fp32], o: hk.Tensor[hk.fp32]):
+        o.at[0, 0].store(x.at[0, 0].load(S64).group_max(32, xor=(32,)))
+    with pytest.raises(ValueError, match="a group of 4 lanes takes 2 offsets"):
+        _k950(_g, warps=1).trace()
+
+    def _g2(x: hk.Tensor[hk.fp32], o: hk.Tensor[hk.fp32]):
+        o.at[0, 0].store(x.at[0, 0].load(S64).group_max(32, xor=(64, 1)))
+    with pytest.raises(ValueError, match="distinct powers of two up to 32"):
+        _k950(_g2, warps=1).trace()
+
+    def _g3(x: hk.Tensor[hk.fp32], o: hk.Tensor[hk.fp32]):
+        o.at[0, 0].store(x.at[0, 0].load(S64).group_max(32, xor=(32, 2)))
+    assert "group_reduce_ordered<kittens::base_ops::max, 1, 32, 2>(" in _k950(_g3, warps=1).source()
