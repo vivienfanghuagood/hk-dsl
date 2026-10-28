@@ -6,7 +6,8 @@ The routes (vllm_mxfp8, vllm_moe_a8w4) compile their kernels on first use, in ev
 model's shapes and on this GPU, which builds exactly the modules the engine will load into
 `HK_CACHE_DIR`. Run it once per image or cache, with the same HK_CACHE_DIR the server will use,
 then start vLLM. The kernels do not depend on the weights' values, nor, past the route's
-choice of schedule, on M: a few M per shape cover the set.
+choice of schedule, on M: one M per kernel combination the route can pick for a shape
+(`k2_plans`) covers the set.
 
     HK_CACHE_DIR=/cache/hk python3 -m hk.integration warm-routes --tp 2
 
@@ -21,9 +22,44 @@ from typing import Dict, List, Tuple
 
 #: DeepSeek-V4.1-Flash: hidden size, the routed experts' intermediate size before TP, top-k.
 HIDDEN, MOE_INTER, TOPK = 5120, 2304, 6
-#: M at which each route's schedules change (vllm_mxfp8.schedule: 4w below 5120 for small N;
-#: gemm_8w_tail's split): one call at each builds every kernel the route can pick.
-K2_MS = (2048, 5120, 8192, 16384)
+#: The largest M K2 is warmed for: a linear sees at most max_num_batched_tokens rows a step (16384
+#: by default in the measured deployment); twice that covers a larger setting.
+K2_MAX_M = 32768
+
+
+def k2_plans(n: int, k: int, max_m: int = K2_MAX_M) -> Dict[tuple, int]:
+    """Every kernel combination K2 can launch for one (N, K), with the smallest M that launches it:
+    {(kind, schedule, tail): m}. `kind` and `schedule` are vllm_mxfp8.schedule's answer (its
+    measured RANGES below MIN_M included: the four-warp stages=2 schedule lives only there); `tail`
+    is whether gemm_8w_tail recuts the last wave onto a second, four-warp kernel at this M
+    (mxfp8.tail_split). A call at each M builds exactly the kernels the route can pick for this
+    shape at serving M up to `max_m`. No GPU, no torch: the warm-routes test checks it."""
+    from ..ops import mxfp8  # noqa: PLC0415
+    from . import vllm_mxfp8 as P  # noqa: PLC0415
+
+    plans: Dict[tuple, int] = {}
+    tails: Dict[int, bool] = {}
+    for m in range(1, max_m + 1):
+        plan = P.schedule(m, n, k)
+        if plan is None:
+            continue
+        kind, sched = plan
+        tail = False
+        if kind == "8w":
+            mb = -(-m // 256)                          # tail_split depends on M only through this
+            if mb not in tails:
+                n1 = mxfp8.tail_split(m, n)
+                tails[mb] = bool(n1) and n1 < n
+            tail = tails[mb]
+        plans.setdefault((kind, tuple(sorted(sched.items())), tail), m)
+    return plans
+
+
+def k2_shapes(tp: int) -> List[Tuple[int, int]]:
+    """The (N, K) K2 routes at this TP degree (the measured TP2 shapes, rescaled for another TP)."""
+    from . import vllm_mxfp8 as P  # noqa: PLC0415
+
+    return sorted(P.MEASURED) if tp == 2 else sorted({(n * 2 // tp, k) for n, k in P.MEASURED})
 
 
 def _k2(tp: int) -> List[Tuple[str, float]]:
@@ -35,16 +71,13 @@ def _k2(tp: int) -> List[Tuple[str, float]]:
     if tp != 2:
         P.ANY = True                    # the measured (N, K) are TP2's
     out = []
-    shapes = sorted(P.MEASURED) if tp == 2 else sorted({(n * 2 // tp, k) for n, k in P.MEASURED})
-    for n, k in shapes:
+    for n, k in k2_shapes(tp):
         t0 = time.perf_counter()
         w = torch.randn(n, k, device="cuda").to(torch.float8_e4m3fn)
         ws = torch.full((n // 32, k // 32), 127, device="cuda", dtype=torch.uint8)
         rows = mxfp8.expand_block_scales(ws)[:n]
         wa, wp = mxfp8.aiter_scales(rows), mxfp8.pack_scales(rows)
-        for m in K2_MS:
-            if P.schedule(m, n, k) is None:
-                continue
+        for m in sorted(k2_plans(n, k).values()):     # one call per kernel combination it can pick
             x = torch.randn(m, k, device="cuda").bfloat16()
             P.mxfp8_linear(x, w, ws, wa, wp, torch.bfloat16)
         torch.cuda.synchronize()
