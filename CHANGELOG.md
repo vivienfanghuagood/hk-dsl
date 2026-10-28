@@ -348,6 +348,16 @@ streams the chosen experts at ~96% of GDDR6's rate. `vllm_moe` is on by default 
   `check_regression.py` takes each arch's scoreboard arguments (`ARGS_AT`). Run by hand on an
   R9700, as gfx1100's is, not in the gfx1201 job (#106,
   [testing](docs/testing.md#the-gfx1201-runner)).
+- Pull requests merge through a merge train, `scripts/ci/merge_train.py` (#113,
+  [testing](docs/testing.md#the-merge-train)).
+  - Twice a day, at 01:00Z and 13:00Z, every READY PR is stacked in READY order on
+    `train/<YYYYMMDD>-<HHMM>`, as GitHub's squash merge will apply it.
+  - CI and the GPU tier's four jobs run once on that branch.
+  - If they are green, the PRs are squash-merged in order, and main's tree is checked
+    against the train's after each merge.
+  - A PR that conflicts, or that turns the train red, is kicked out and the train is
+    rebuilt without it.
+  - READY is a PR comment that names the current head.
 
 ## 0.8.0
 
