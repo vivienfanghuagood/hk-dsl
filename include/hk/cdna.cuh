@@ -3384,6 +3384,56 @@ __device__ inline int hk_wave_top6_key(float v0, float v1, float v2, float v3, f
     }
     return out;
 }
+/** @brief hk_wave_top6_key's picks with 32-bit reductions: the same six keys in the same order. A pick is the
+ * wave max of the lanes' head values (ord-mapped u32: DPP row steps, then the 16 / 32 lane swaps), and among the
+ * lanes holding it the lowest (a ballot's first bit) -- the key order ((e % 64) 8 + e / 64, smaller first) puts
+ * the lower lane first, and within a lane the sorted six already hold (value, key) order. No 64-bit compares in
+ * the six rounds. For map_cpp: `hk_wave_top6_key2(v0, .., v5, k0, .., k5)`. gfx950. */
+__device__ inline int hk_wave_top6_key2(float v0, float v1, float v2, float v3, float v4, float v5,
+                                        int k0, int k1, int k2, int k3, int k4, int k5) {
+    auto ord = [](float v) {
+        const uint32_t u = __builtin_bit_cast(uint32_t, v);
+        return (u & 0x80000000u) ? ~u : (u | 0x80000000u);
+    };
+    auto pk = [&](float v, int k) { return (uint64_t(ord(v)) << 32) | uint32_t(~k); };
+    uint64_t a[6] = {pk(v0, k0), pk(v1, k1), pk(v2, k2), pk(v3, k3), pk(v4, k4), pk(v5, k5)};
+    auto cs = [&](int i, int j) { const uint64_t x = a[i], y = a[j]; a[i] = x > y ? x : y; a[j] = x > y ? y : x; };
+    cs(1, 2); cs(4, 5); cs(0, 2); cs(3, 5); cs(0, 1); cs(3, 4);
+    cs(1, 4); cs(0, 3); cs(2, 5); cs(1, 3); cs(2, 4); cs(2, 3);
+    const int lane = __builtin_amdgcn_mbcnt_hi(~0u, __builtin_amdgcn_mbcnt_lo(~0u, 0u));
+    uint32_t hv[6], hk[6];                                       // the sorted six as (value, ~key) words
+    #pragma unroll
+    for (int i = 0; i < 6; i++) { hv[i] = uint32_t(a[i] >> 32); hk[i] = uint32_t(a[i]); }
+    int out = 0;
+    #pragma unroll
+    for (int r = 0; r < 6; r++) {
+        uint32_t m = hv[0];
+        m = __builtin_elementwise_max(m, hk_xor_partner<1>(m));
+        m = __builtin_elementwise_max(m, hk_xor_partner<2>(m));
+        m = __builtin_elementwise_max(m, hk_xor_partner<4>(m));
+        m = __builtin_elementwise_max(m, hk_xor_partner<8>(m));
+        {
+            const auto s16 = __builtin_amdgcn_permlane16_swap(m, m, false, true);
+            m = __builtin_elementwise_max(uint32_t(s16[0]), uint32_t(s16[1]));
+            const auto s32 = __builtin_amdgcn_permlane32_swap(m, m, false, true);
+            m = __builtin_elementwise_max(uint32_t(s32[0]), uint32_t(s32[1]));
+        }
+        const uint64_t hit = __builtin_amdgcn_ballot_w64(hv[0] == m);
+        const int wl = __builtin_amdgcn_readfirstlane(int(__builtin_ctzll(hit)));
+        const int key = int(~uint32_t(__builtin_amdgcn_readlane(int(hk[0]), wl)));
+        const bool won = lane == wl;
+        #pragma unroll
+        for (int i = 0; i < 5; i++) { hv[i] = won ? hv[i + 1] : hv[i]; hk[i] = won ? hk[i + 1] : hk[i]; }
+        hv[5] = won ? 0u : hv[5];
+        out = lane == r ? key : out;
+    }
+    return out;
+}
+/** @brief (experiment) this XCD's L2 invalidated (buffer_inv sc1) at this point of the program; returns x. */
+__device__ inline int hk_l2_inv(int x) {
+    asm volatile("buffer_inv sc1" ::: "memory");
+    return x;
+}
 /** @brief Two floats as a bf16 pair (a, b) in one int, both RNE in one v_cvt_pk_bf16_f32 (two scalar casts are
  * one instruction each). For map_cpp expressions: `hk_pk_bf16(x0, x1)`. */
 __device__ inline int hk_pk_bf16(float a, float b) {
