@@ -125,12 +125,14 @@ pick() {
     return 1
 }
 GPU=
-for i in $(seq 60); do
+# HK_CI_PICK_WAIT_MIN (default 60): minutes to wait for a GPU, e.g. while other users' processes,
+# which take no lock, hold the runner's cards. The job's timeout-minutes (gpu.yml) covers the wait too.
+for i in $(seq "${HK_CI_PICK_WAIT_MIN:-60}"); do
     pick && break
     echo "no idle, unlocked MI355X among ${HK_CI_GPUS:-0-7}; waiting ($i)"
     sleep 60 >/dev/null 2>&1 & wait $!     # a trap runs at once, not after the sleep
 done
-[ -n "$GPU" ] || { echo "::error::no idle MI355X for an hour"; exit 1; }
+[ -n "$GPU" ] || { echo "::error::no idle MI355X for ${HK_CI_PICK_WAIT_MIN:-60} min"; exit 1; }
 echo "holding gfx950-gpu$GPU.lock (HK_CI_LOCKS)"
 echo "GPU $GPU (${RENDER[$GPU]})"
 

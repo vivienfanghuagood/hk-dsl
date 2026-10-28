@@ -348,6 +348,9 @@ streams the chosen experts at ~96% of GDDR6's rate. `vllm_moe` is on by default 
   `check_regression.py` takes each arch's scoreboard arguments (`ARGS_AT`). Run by hand on an
   R9700, as gfx1100's is, not in the gfx1201 job (#106,
   [testing](docs/testing.md#the-gfx1201-runner)).
+- A gfx950 job's wait for an idle MI355X is `HK_CI_PICK_WAIT_MIN` minutes (runner `.env`, default 60,
+  as before), so CI can wait out other users' processes on its GPUs instead of failing; the gfx950
+  and gfx950-vllm jobs' timeout is 360 minutes, which covers the wait (#123).
 
 ## 0.8.0
 
