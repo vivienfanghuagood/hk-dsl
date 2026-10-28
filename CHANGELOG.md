@@ -302,6 +302,13 @@ its best layout. The gfx1201 vLLM table, re-measured with them, routes most of M
 hk: Qwen3.5-9B at 32-128 requests, tokens identical and requests 1.08-1.11x stock (the old
 table's 1.01-1.08x). `HK_AUTOTUNE=0` ignores the shipped records.
 
+**vllm_moe on gfx1201, up to 2 tokens a step** (#108, RDNA4). `vllm_moe.BLOCK16_MAX_TOKENS_AT`
+gives an arch its own token limit for hk's MoE GEMM; gfx1201's is 2, where vLLM skips the
+sort and gives each (token, choice) pair a block of its own. There, OLMoE decode is
+1.10-1.12x stock at one request and 1.06-1.07x at two (tokens identical, routing counts
+equal round for round); past it vLLM's Triton kernel runs, which from 16 tokens a step
+streams the chosen experts at ~96% of GDDR6's rate. `vllm_moe` is on by default on gfx1201.
+
 **Fixes**
 - **gfx950: `hk.ops.gemm.matmul` raised `ResourceError` in the vLLM image** (#84) at M 192-512 for
   N 28672 / 14336, K 4096: its table routes there to `dp128x224`, which ROCm 10's hipcc builds
