@@ -505,3 +505,19 @@ def test_gathered_rows_staged_in_lds_cost_no_vmcnt_wait_in_the_loop():
     src = scaffold.bare(hk.kernel(k, arch="gfx950", warps=4, grid=lambda p: (1, 1, 1)).trace())
     assert src.count("group_load_async_gather") == 2
     assert _waits(src) == [2, 0]
+
+
+def test_a_gathered_copy_takes_a_row_limit():
+    """g.load(gather=..., rows=n): the limit goes to the copy (rows past it read zero, their ids
+    unread), and it counts on vmcnt as the unlimited copy does."""
+    def k(a: hk.Tensor[hk.fp8e4m3], ids: hk.Tensor[hk.i32]):
+        g = hk.group(4)
+        Xs = hk.lds.alloc(FST, count=2, name="Xs")
+        g.load(Xs[0], a.at[0, 0], wait=False, gather=(ids, 0), rows=hk.max(ids.cols - 64, 0))
+        g.load(Xs[1], a.at[0, 128], wait=False, gather=(ids, 64), rows=ids.cols)
+        g.wait_for(Xs[0])
+        g.wait_for(Xs[1])
+
+    src = scaffold.bare(hk.kernel(k, arch="gfx950", warps=4, grid=lambda p: (1, 1, 1)).trace())
+    assert len(re.findall(r"group_load_async_gather<4, 0>\(\w+, g\.a, [^;]*, g\.ids, [^;]*, \w+\);", src)) == 2
+    assert _waits(src) == [2, 0]
