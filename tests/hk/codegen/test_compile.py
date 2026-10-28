@@ -10,6 +10,9 @@ every rerun free, so keep the cache directory between runs.
 
 from __future__ import annotations
 
+import os
+import struct
+
 import pytest
 
 import hk
@@ -122,3 +125,89 @@ def test_shipped_kernel_builds_without_spilling(name):
     assert b.kernels
     for k in b.kernels:
         assert not k.spills, f"{name}: {k.line()}"
+
+
+# -- the key covers the headers -----------------------------------------------
+
+
+_PROBE_KERNEL = """#include "kittens.cuh"
+#include "probe/outer.cuh"
+extern "C" __global__ void hk_probe(int* out) { out[0] = PROBE_INNER; out[1] = PROBE_DEVICE; }
+"""
+
+_PROBE_MODULE = _PROBE_KERNEL + """#include <pybind11/pybind11.h>
+static int probe_host() { return PROBE_HOST; }
+PYBIND11_MODULE(HK_MODULE_NAME, m) { m.def("host", &probe_host); }
+"""
+
+
+@pytest.fixture
+def probe(tmp_path, monkeypatch):
+    """A header overlay ahead of hk's include path: probe/outer.cuh includes inner.cuh
+    (two deep from the kernel), device.cuh under __HIP_DEVICE_COMPILE__ only, host.cuh
+    otherwise; probe/unrelated.cuh is included by nothing."""
+    from hk.runtime import compile as C
+
+    real = C.include_dirs()
+    d = tmp_path / "overlay" / "probe"
+    d.mkdir(parents=True)
+    (d / "outer.cuh").write_text('#pragma once\n#include "inner.cuh"\n'
+                                 '#if defined(__HIP_DEVICE_COMPILE__)\n#include "device.cuh"\n#define PROBE_HOST 0\n'
+                                 '#else\n#include "host.cuh"\n#define PROBE_DEVICE 0\n#endif\n')
+    vals = {}
+
+    def put(name, macro, v):
+        (d / name).write_text(f"#pragma once\n#define {macro} {v:#x}\n")
+        vals[macro] = v
+    put("inner.cuh", "PROBE_INNER", 0x5EED0101)
+    put("device.cuh", "PROBE_DEVICE", 0x5EED0201)
+    put("host.cuh", "PROBE_HOST", 0x5EED0301)
+    put("unrelated.cuh", "PROBE_UNRELATED", 0x5EED0401)
+    monkeypatch.setenv("HK_INCLUDE_DIR", os.pathsep.join(map(str, [tmp_path / "overlay", *real])))
+    monkeypatch.setenv("HK_CACHE_DIR", str(tmp_path / "cache"))
+    monkeypatch.setattr(C, "_FILE_HASH", {})
+
+    def build(kind="co"):
+        b = hk.runtime.build(_PROBE_KERNEL if kind == "co" else _PROBE_MODULE, "gfx1100",
+                             name="probe", kind=kind)
+        data = b.so_path.read_bytes()
+        return b, {m: struct.pack("<I", v) in data for m, v in vals.items()}
+    return put, build
+
+
+def test_a_header_edit_two_includes_deep_recompiles(probe):
+    """On 0.8.0 an edit to include/hk/cdna_agpr.cuh (included by cdna.cuh) or to
+    include/pyutils/hk_bind.cuh kept the old key, and the old kernel was served."""
+    put, build = probe
+    b0, has = build()
+    assert not b0.cached and has["PROBE_INNER"] and has["PROBE_DEVICE"]
+    assert build()[0].cached
+    put("inner.cuh", "PROBE_INNER", 0x5EED0102)
+    b1, has = build()
+    assert not b1.cached and b1.key != b0.key and has["PROBE_INNER"]
+
+
+def test_a_header_only_the_device_side_includes_is_keyed(probe):
+    """hipcc's -MD lists the host side's headers only (and none for a code object)."""
+    put, build = probe
+    b0, _ = build()
+    put("device.cuh", "PROBE_DEVICE", 0x5EED0202)
+    b1, has = build()
+    assert not b1.cached and b1.key != b0.key and has["PROBE_DEVICE"]
+
+
+def test_a_header_only_the_host_side_includes_is_keyed(probe):
+    put, build = probe
+    b0, has = build("so")
+    assert has["PROBE_HOST"]
+    put("host.cuh", "PROBE_HOST", 0x5EED0302)
+    b1, has = build("so")
+    assert not b1.cached and b1.key != b0.key and has["PROBE_HOST"]
+
+
+def test_a_header_the_kernel_does_not_include_leaves_it_cached(probe):
+    put, build = probe
+    b0, _ = build()
+    put("unrelated.cuh", "PROBE_UNRELATED", 0x5EED0402)
+    b1, _ = build()
+    assert b1.cached and b1.key == b0.key

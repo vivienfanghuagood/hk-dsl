@@ -110,11 +110,26 @@ object, attention included; the libtorch op takes about 15 s
 
 ## The cache
 
-Key = hipcc version + a content hash of the include directories + the full flag list +
-the dialect version + the generated source. A build lands in
-`~/.cache/hk/<key>/` via a rename, so a killed compile never leaves an
-importable half-written `.so`. Failed builds are kept as `failed-<key>/` with
+Key = hipcc version + the full flag list (and what hipcc appends from
+HIPCC_COMPILE_FLAGS_APPEND and the like) + the dialect version + the generated
+source (torch's and pybind11's versions too, when their headers are on the
+include path) + a content hash of **every header that kernel's compile reads**.
+The header list is the compiler's own: on a miss, a preprocessor pass per side
+(device, and host for a `.so`) writes clang's dependency file, and the list is
+kept as `deps/<part of the key without headers>` beside the entries. A lookup
+reads that list and hashes the files again (once a process; a file re-read only
+if its stat changes), so an edit to any header the kernel includes, however
+deep, is a miss, and an edit to one it does not include is not. ROCm's, Python's,
+torch's and pybind11's own headers are keyed by those versions rather than read.
+A build lands in `~/.cache/hk/<key>/` via a rename, so a killed compile never
+leaves an importable half-written `.so`; a header that changes while it compiles
+is noticed and the build redone. Failed builds are kept as `failed-<key>/` with
 their source and log.
+
+Measured on the warm path (20 cached gfx950 kernels, one process, interleaved
+with the previous key, two runs): the key costs 0.27 ms a kernel against 0.13
+(+0.14-0.18 ms; ~70 headers to stat for a CDNA kernel), and +0.7-0.8 ms over
+all 20 on a process's first pass, against a whole cache hit of 1.1-2.6 ms.
 
 The thresholds (`max_vgprs`, `min_occupancy`) are *not* in the key — they are
 re-applied on every cache hit, so a kernel with a strict occupancy requirement
@@ -123,9 +138,12 @@ is not let through by whoever happened to compile the same bytes first.
 The directory is `$HK_CACHE_DIR`, else `$XDG_CACHE_HOME/hk`, else
 `~/.cache/hk`. Entries are never invalidated, only added: a key that hashes
 everything does not need eviction for correctness, and the directory is one
-you can delete. The include-directory hash is the part that matters most —
+you can delete. The header hash is the part that matters most —
 editing a header changes the kernel while leaving the generated source
-byte-identical. The dialect version is the dialect's semantic version, not a
+byte-identical; through 0.8.0 the key hashed a fixed set of files
+(kittens.cuh, pyutils/, the arch tree, include/hk/cdna.cuh) and an edit to
+`include/hk/cdna_agpr.cuh` or `include/pyutils/hk_bind.cuh` served the old
+kernel. The dialect version is the dialect's semantic version, not a
 hash of the library, so a rebuild that changes nothing it means does not throw
 the cache away (`python/hk/runtime/compile.py`).
 

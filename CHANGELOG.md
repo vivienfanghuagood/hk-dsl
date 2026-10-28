@@ -9,6 +9,27 @@ The next version's notes collect here until it is released.
 What is on main after 0.8.0. `pip install hk-dsl` (0.8.0) does not have it;
 the API reference marks such names *New after 0.8.0*.
 
+**The compile cache served kernels built from old headers.** The key hashed a
+fixed set of files -- kittens.cuh, pyutils/, the target's arch tree and its
+extra_includes (include/hk/cdna.cuh) -- and nothing they include. An edit to
+include/hk/cdna_agpr.cuh (which cdna.cuh includes) or include/pyutils/hk_bind.cuh
+(which every pybind module includes), in a checkout or an installed wheel, kept
+every key, so the next build loaded the binary from before the edit with no
+sign of it: an A/B or benchmark after a header fix could measure the old code.
+The key now covers the contents of every header the kernel's compile reads, as
+the compiler lists them: on a miss, one preprocessor pass per side (device, and
+host for a `.so` -- hipcc's `-MD` lists the host's only) writes clang's
+dependency file, kept beside the cache as a manifest; a hit re-hashes the listed
+files. An edit to a header a kernel does not include still leaves it cached.
+torch's and pybind11's versions are in the key when their headers are on the
+include path (a torch upgraded in place kept its key), and so are the flags
+hipcc appends from HIPCC_COMPILE_FLAGS_APPEND / HIPCC_LINK_FLAGS_APPEND and
+HIP_CLANG_PATH. Warm path: +0.14-0.18 ms a cached kernel, against a 1.1-2.6 ms
+hit. Every existing entry misses once (a new
+key scheme); old entries are never read again and can be deleted.
+`runtime.compile.target_headers_fingerprint` is gone. `tests/hk/ir/test_compile_cache.py`,
+`tests/hk/codegen/test_compile.py`.
+
 **gfx950: an LDS tile narrower than its read's layout was never copied.** A
 tile with fewer rows or columns than the include/cdna4 st shape its read's
 fragment picks -- a 32x16 bf16 tile read as the 32x16 row operand of the
