@@ -1049,9 +1049,11 @@ destination: load into the whole tile.
 Tile.make_causal(self, value: float = 0.0, *, into=None, transposed: bool = False)
 ```
 
-*Surface*: to be deleted (DSL-surface migration S1); use Tile.tril_(0, v) / Tile.triu_(0, v).
+*Surface*: deprecated, removed in 0.10, or sooner once nothing outside the repository calls it; use Tile.tril_(0, v) / Tile.triu_(0, v).
 
-A square tile with the elements above the diagonal set to `value` (below it with `transposed=True`): the causal mask of a diagonal attention block. Not on strips.
+Deprecated: `tril_(0, value)` (`triu_(0, value)` with `transposed=True`), which takes
+any diagonal. A copy of this tile with the elements above the diagonal set to `value`
+(below it with `transposed=True`), or into `into`; this tile is unchanged.
 
 #### `Tile.maximum`
 
@@ -1616,24 +1618,6 @@ index outside the tensor, or a position at or past `count` (default:
 all of `ids`), reads zeros -- the padding a MoE sort fills its index
 list with costs no branch. `div` is how many index values name one
 row: a MoE's top-k, whose sorted list counts (token, choice) pairs.
-
-#### `Global.scatter_add_lds`
-
-```python
-Global.scatter_add_lds(self, src: SharedTile, ids: Global, at, *, count=None, col=0, sort_topk: int = 0) -> None
-```
-
-*Surface*: to be deleted (DSL-surface migration S1); use SharedTile.load + Global.scatter(add=True).
-
-A warp's own bf16 LDS tile added into this bf16 tensor's rows by index, atomically:
-row r of `src` into row `ids[at + r]` (with `sort_topk`, AITER sort ids: the token's
-row of an [M, ...] tensor; padding nowhere) from column `col`. Lanes take consecutive
-column pairs of one row (gfx950's packed bf16 atomic), so an instruction covers a few
-rows of contiguous bytes: 310 G pk-adds/s on an MI355X, where `scatter(add=True)` from
-a register tile (16 rows of 16 bytes an instruction) gets 85. Even so, a bf16 atomic
-reduce is bounded by that rate -- 0.8 ms for DeepSeek-V4.1's top-6 at 16k tokens, 4x a
-plain sum pass (K1 c33). Store the tile with `src.store(...)` first; the sum is in no
-fixed order.
 
 #### `Global.scatter`
 

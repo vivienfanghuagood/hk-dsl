@@ -552,27 +552,6 @@ class Global(Value):
                      (self.v, idx, at_v, n_v, as_int(div).v, col_v),
                      into=into, name="gat")
 
-    def scatter_add_lds(self, src: "SharedTile", ids: "Global", at, *, count=None, col=0,
-                        sort_topk: int = 0) -> None:
-        """A warp's own bf16 LDS tile added into this bf16 tensor's rows by index, atomically:
-        row r of `src` into row `ids[at + r]` (with `sort_topk`, AITER sort ids: the token's
-        row of an [M, ...] tensor; padding nowhere) from column `col`. Lanes take consecutive
-        column pairs of one row (gfx950's packed bf16 atomic), so an instruction covers a few
-        rows of contiguous bytes: 310 G pk-adds/s on an MI355X, where `scatter(add=True)` from
-        a register tile (16 rows of 16 bytes an instruction) gets 85. Even so, a bf16 atomic
-        reduce is bounded by that rate -- 0.8 ms for DeepSeek-V4.1's top-6 at 16k tokens, 4x a
-        plain sum pass (K1 c33). Store the tile with `src.store(...)` first; the sum is in no
-        fixed order."""
-        if not isinstance(src, SharedTile) or src.ty.dtype is not bf16 or self.dtype is not bf16:
-            raise TypeError(f"scatter_add_lds: a bf16 LDS tile into a bf16 global, not {src!r}")
-        if not isinstance(ids, Global) or ids.dtype is not i32:
-            raise TypeError(f"scatter_add_lds takes its row indices from an int32 global, not {ids!r}")
-        if get_target(_t().arch).arch != "gfx950":
-            raise TypeError(f"scatter_add_lds: packed bf16 atomics are gfx950's here, not {_t().arch}")
-        n = ids.cols if count is None else count
-        hkd.ScatterAddLdsOp(self.v, src.v, ids.v, as_int(at).v, as_int(n).v, as_int(col).v,
-                            sort_topk=int(sort_topk), loc=_t().loc())
-
     def scatter(self, value: "Tile", ids: "Global", at, *, count=None,
                 col=0, sort_topk: int = 0, add: bool = False, staged: int = 0) -> None:
         """Rows by index: tile row r goes to row `ids[at + r]`, from column
@@ -1381,14 +1360,24 @@ class Tile(_Elementwise):
                                      loc=tt.loc("sub")).result, ty)
 
     def make_causal(self, value: float = 0.0, *, into=None, transposed: bool = False):
+        """Deprecated: `tril_(0, value)` (`triu_(0, value)` with `transposed=True`), which takes
+        any diagonal. A copy of this tile with the elements above the diagonal set to `value`
+        (below it with `transposed=True`), or into `into`; this tile is unchanged."""
+        import warnings  # noqa: PLC0415
+
+        warnings.warn("Tile.make_causal is deprecated: use tril_(0, value), or triu_(0, value) "
+                      "for transposed=True (docs/design/dsl-surface.md, D5)",
+                      DeprecationWarning, stacklevel=2)
         _no_strip("make_causal", self.ty)
         if self.ty.rows != self.ty.cols:
             raise TypeError(f"make_causal: the tile is {self.ty.rows}x"
                             f"{self.ty.cols}, not square; mask the off-diagonal "
                             f"blocks with left_fill_/right_fill_.")
-        op = "make_causal_t" if transposed else "make_causal"
-        cls = hkd.MakeCausalTOp if transposed else hkd.MakeCausalOp
-        return _make(cls, self.ty, (self.v, float(value)), into=into, name=op)
+        fill = "triu" if transposed else "tril"
+        if into is not None:
+            return self._fill(fill, 0, value, into)
+        out = self.copy()
+        return out._fill(fill, 0, value)
 
 
 class Transposed:
@@ -2185,9 +2174,6 @@ _doc(Tile, "triu_", "Keep the upper triangle from diagonal `idx`, the rest set t
                     "`value` (default 0), in place. Not on strips.")
 _doc(Tile, "tril_", "Keep the lower triangle from diagonal `idx`, the rest set to "
                     "`value` (default 0), in place. Not on strips.")
-_doc(Tile, "make_causal", "A square tile with the elements above the diagonal set "
-                          "to `value` (below it with `transposed=True`): the "
-                          "causal mask of a diagonal attention block. Not on strips.")
 _doc(Vec, "min_", "Fold `t.min(axis=...)` into this vector: the running min.")
 _doc(Global, "batch", "The tensor's extent along axis 0 of (batch, depth, rows, "
                       "cols), a device Int.")
