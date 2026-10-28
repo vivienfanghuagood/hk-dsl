@@ -56,3 +56,4 @@ def test_examples_without_any_hk_say_what_to_install(tmp_path):
     assert r.returncode != 0
     assert "pip install hk-dsl" in r.stderr
     assert "scripts/build_mlir.sh && scripts/build_hk_mlir.sh" in r.stderr
+# merge-train test A (throwaway PR, never merged)
