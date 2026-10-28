@@ -836,8 +836,6 @@ LogicalResult LaneGatherOp::verify() {
 }
 
 LogicalResult MfmaStripOp::verify() {
-  if (getKind() != "f32_16x16x4")
-    return emitOpError("kind is f32_16x16x4");
   auto a = dyn_cast<RegTileType>(getA().getType());
   auto b = dyn_cast<RegTileType>(getB().getType());
   auto c = dyn_cast<RegTileType>(getAcc().getType());
@@ -845,8 +843,22 @@ LogicalResult MfmaStripOp::verify() {
     return t && t.isStrip() && t.getElementType().isF32() && t.getRows() == 1 &&
            t.getCols() == cols && t.getRun() == run;
   };
-  if (!one(a, 64, 1) || !one(b, 64, 1))
-    return emitOpError("A and B are fp32 strips of 1 x 64, run 1: a value a lane");
+  auto words = [](RegTileType t, int cols, int run) {
+    return t && t.isStrip() && t.getElementType().isInteger(32) && t.getRows() == 1 &&
+           t.getCols() == cols && t.getRun() == run;
+  };
+  if (getKind() == "f32_16x16x4") {
+    if (!one(a, 64, 1) || !one(b, 64, 1))
+      return emitOpError("A and B are fp32 strips of 1 x 64, run 1: a value a lane");
+  } else if (getKind() == "bf16_16x16x32") {
+    if (!words(a, 256, 4) || !words(b, 256, 4))
+      return emitOpError("A and B are i32 strips of 1 x 256, run 4: a lane's eight bf16 as four dwords");
+  } else if (getKind() == "bf16_16x16x16_1k") {
+    if (!words(a, 128, 2) || !words(b, 128, 2))
+      return emitOpError("A and B are i32 strips of 1 x 128, run 2: a lane's four bf16 as two dwords");
+  } else {
+    return emitOpError("kind is f32_16x16x4, bf16_16x16x32 or bf16_16x16x16_1k");
+  }
   if (!one(c, 256, 4))
     return emitOpError("acc is an fp32 strip of 1 x 256, run 4: four values a lane");
   if (getResult().getType() != getAcc().getType())

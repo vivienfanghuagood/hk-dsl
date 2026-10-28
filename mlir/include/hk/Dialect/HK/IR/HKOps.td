@@ -928,11 +928,14 @@ def HK_LaneGatherOp : HK_Op<"lane_gather"> {
 def HK_MfmaStripOp : HK_Op<"mfma_strip"> {
   let summary = "one raw MFMA on strip registers (gfx950)";
   let description = [{
-    `kind` "f32_16x16x4": acc (a run-4 strip of 64 x 4: lane l's 4 values
-    are C rows 4 (l / 16) + i, column l % 16) += A B^T over K = 4, lane l
-    holding A[l % 16][l / 16] and B[l % 16][l / 16] (run-1 strips of 64):
-    v_mfma_f32_16x16x4_f32 exactly, for a result that must match another
-    kernel's fp32 MFMA bit for bit.
+    acc (a run-4 fp32 strip of 64 x 4: lane l's 4 values are C rows
+    4 (l / 16) + i, column l % 16) += A B^T, exactly one instruction, for a
+    result that must match another kernel's MFMA bit for bit. `kind`:
+    "f32_16x16x4" (K 4; A / B fp32 run-1 strips of 64, lane l holding
+    A[l % 16][l / 16]: v_mfma_f32_16x16x4_f32), "bf16_16x16x32" (K 32; A / B
+    i32 run-4 strips of 256, lane l's eight bf16 of K 8 (l / 16) ..:
+    v_mfma_f32_16x16x32_bf16), "bf16_16x16x16_1k" (K 16; i32 run-2 strips of
+    128, four bf16 of K 4 (l / 16) ..: v_mfma_f32_16x16x16_bf16).
   }];
   let arguments = (ins HK_RegTileType:$a, HK_RegTileType:$b, HK_RegTileType:$acc, StrAttr:$kind);
   let results = (outs HK_RegTileType:$result);
