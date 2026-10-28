@@ -2205,6 +2205,25 @@ def _fp4_operand(words: Tile) -> Tile:
     return wrap(hkd.Fp4OperandOp(mlir_type(ty), words.v, loc=t.loc("fp4")).result, ty)
 
 
+def lane_regroup(src: Tile, ty, idx) -> Tile:
+    """A lane's elements of the strip `src` rearranged into a strip of type `ty` (same dtype): element k of each
+    lane of the result -- flat over its chunks and run, chunk k // run, element k % run -- is element idx[k] of the
+    same lane of `src`, flat alike. Register moves only (no lane exchange, no LDS): picking a lane's element as a
+    value (`idx=[i]` into hk.RS(t, 1, 64, 1)), duplicating words for a per-half conversion, a 16-byte load's words
+    into another operand's order."""
+    idx = [int(i) for i in idx]
+    if not _is_strip(src.ty) or not _is_strip(ty) or src.ty.rows != 1 or ty.rows != 1:
+        raise TypeError(f"lane_regroup: strips of one row, not {src.ty} -> {ty}")
+    if src.ty.dtype is not ty.dtype:
+        raise TypeError(f"lane_regroup keeps the dtype: {src.ty.dtype} -> {ty.dtype}")
+    ns, nr = src.ty.cols // 64, ty.cols // 64
+    if len(idx) != nr or any(i < 0 or i >= ns for i in idx):
+        raise TypeError(f"lane_regroup: idx gives each of the result's {nr} elements a lane one of the source's {ns}")
+    from .._mlir import ir  # noqa: PLC0415
+    t = _t()
+    return wrap(hkd.LaneRegroupOp(mlir_type(ty), src.v, ir.DenseI64ArrayAttr.get(idx), loc=t.loc("regroup")).result, ty)
+
+
 def acc_strip(tile: Tile) -> Tile:
     """A 16x16 fp32 MFMA result (col layout) as the strip of the same registers (gfx950): element
     4 l + e of an fp32 strip of 1 x 256, run 4, is C[4 (l / 16) + e][l % 16] -- lane l's own four

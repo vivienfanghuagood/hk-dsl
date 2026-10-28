@@ -867,6 +867,22 @@ LogicalResult RunXorOp::verify() {
   return success();
 }
 
+LogicalResult LaneRegroupOp::verify() {
+  auto s = dyn_cast<RegTileType>(getSrc().getType());
+  auto r = dyn_cast<RegTileType>(getResult().getType());
+  if (!s || !r || !s.isStrip() || !r.isStrip() || s.getRows() != 1 || r.getRows() != 1)
+    return emitOpError("takes and gives strips of one row");
+  if (s.getElementType() != r.getElementType())
+    return emitOpError("keeps the element type");
+  int64_t ns = s.getCols() / 64, nr = r.getCols() / 64;
+  if ((int64_t)getIdx().size() != nr)
+    return emitOpError("idx gives each of the result's ") << nr << " elements a lane a source element";
+  for (int64_t i : getIdx())
+    if (i < 0 || i >= ns)
+      return emitOpError("idx ") << i << " is not one of the source's " << ns << " elements a lane";
+  return success();
+}
+
 LogicalResult LdsPhaseOp::verify() {
   if (!isa<func::FuncOp>((*this)->getParentOp()))
     return emitOpError("an LDS phase starts at the kernel's top level, which every workgroup passes (the "
