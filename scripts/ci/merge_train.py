@@ -15,7 +15,7 @@ kicked out and the train rebuilt without it.
     merge_train.py bisect                                       one step of a bisection over prefixes
     merge_train.py retry                                        rerun the failed jobs (a flake)
     merge_train.py merge   --i-am-the-merger [--admin-bypass]   squash-merge in order, check trees
-    merge_train.py cleanup [--abandon]                          delete the train's refs, prune
+    merge_train.py cleanup [--abandon] [--prune-yes]            delete the train's refs, prune
 
 Every command takes --dry-run (no push, dispatch, comment, merge or delete; local git only) and
 --name (default: the current train). Every step is idempotent: rerunning a command after a crash
@@ -29,7 +29,8 @@ not READY if it is a draft, if its base is not main, or if its head lacks green 
 required checks (it could not be merged without an admin bypass).
 
 Environment: MERGE_TRAIN_REPO (owner/name), MERGE_TRAIN_DIR (state; default
-~/.local/state/hk-merge-train), MERGE_TRAIN_PRUNE (a command run by cleanup),
+~/.local/state/hk-merge-train), MERGE_TRAIN_PRUNE (a command cleanup runs; MERGE_TRAIN_PRUNE_YES
+with --prune-yes),
 MERGE_TRAIN_GIT_NAME / MERGE_TRAIN_GIT_EMAIL (author of the train's commits). Needs git >= 2.40
 (merge-tree --write-tree --merge-base) and an authenticated `gh`.
 """
@@ -49,7 +50,8 @@ import zipfile
 
 REPO = os.environ.get('MERGE_TRAIN_REPO', 'vivienfanghuagood/hk-dsl')
 BASE_DIR = os.path.expanduser(os.environ.get('MERGE_TRAIN_DIR', '~/.local/state/hk-merge-train'))
-PRUNE_CMD = os.environ.get('MERGE_TRAIN_PRUNE', '')
+PRUNE_CMD = os.environ.get('MERGE_TRAIN_PRUNE', '')          # cleanup runs it (e.g. a dry-run listing)
+PRUNE_YES_CMD = os.environ.get('MERGE_TRAIN_PRUNE_YES', '')  # cleanup --prune-yes runs this instead
 GIT_NAME = os.environ.get('MERGE_TRAIN_GIT_NAME', 'merge-train')
 GIT_EMAIL = os.environ.get('MERGE_TRAIN_GIT_EMAIL', 'merge-train@localhost')
 
@@ -155,10 +157,6 @@ def comment(n, body):
 
 def now():
     return dt.datetime.now(dt.timezone.utc).replace(microsecond=0)
-
-
-def ts(t):
-    return dt.datetime.fromisoformat(t.replace('Z', '+00:00'))
 
 
 def iso(t):
@@ -399,10 +397,6 @@ def rnd(st):
     return st['rounds'][-1] if st['rounds'] else None
 
 
-def run_url(run_id):
-    return f"https://github.com/{REPO}/actions/runs/{run_id}"
-
-
 # --------------------------------------------------------------------------------------------
 # build
 
@@ -615,7 +609,7 @@ def refreshed_members(st):
             e = evaluate(pr, required, st.get('include_drafts'), st.get('ignore_head_checks'))
             if e['ok']:
                 LOG.say(f"  #{m['number']} moved {m['head'][:7]} -> {e['head'][:7]} and is READY again: new head")
-                m = {**m, 'head': e['head'], 'ready_at': e['ready_at']}
+                m.update(head=e['head'], ready_at=e['ready_at'], ready_url=e['ready_url'])   # kept in st
             else:
                 do_kick(st, m['number'], pr['head']['sha'],
                         f"its head moved from {m['head'][:7]} to {pr['head']['sha'][:7]} after the train was built",
@@ -821,7 +815,7 @@ def cmd_kick(a):
         launch(st, r, st['workflows'])
         return 0
     head = next((e['head'] for e in rnd(st)['stack'] if e['number'] == n), m['head'])
-    do_kick(st, n, head, a.reason or 'the train went red with it, and passes without it is the next round\'s test')
+    do_kick(st, n, head, a.reason or "the train went red with it (see the train's runs); the train reruns without it")
     return 0
 
 
@@ -831,6 +825,8 @@ def cmd_retry(a):
     st = load(name)
     r = rnd(st)
     for wf, d in r['runs'].items():
+        if not d.get('id'):
+            continue
         run = api(f"repos/{REPO}/actions/runs/{d['id']}")
         if run['status'] == 'completed' and run['conclusion'] != 'success':
             write_api(f"rerun the failed jobs of {wf} run {d['id']}",
@@ -993,8 +989,20 @@ def cmd_merge(a):
             LOG.say(f"  [dry-run] would squash-merge #{n} at {e['head'][:7]} as \"{title[:80]}\", "
                     f"then check {MAIN}'s tree == {e['tree'][:10]} (train commit {e['commit'][:7]})")
             continue
-        got = write_api(f"squash-merge #{n}", f"repos/{REPO}/pulls/{n}/merge", 'PUT',
-                        {'merge_method': 'squash', 'sha': e['head'], 'commit_title': title})
+        for attempt in range(8):
+            # right after a merge GitHub recomputes the next PR's mergeability and may answer 405
+            # "Base branch was modified": wait and retry. A moved head (409) is not retried.
+            try:
+                got = write_api(f"squash-merge #{n}", f"repos/{REPO}/pulls/{n}/merge", 'PUT',
+                                {'merge_method': 'squash', 'sha': e['head'], 'commit_title': title})
+                break
+            except Fail as err:
+                if 'Base branch was modified' not in str(err) or attempt == 7:
+                    raise
+                LOG.say(f"  #{n}: base branch was modified (GitHub still settling); retry in {5 * (attempt + 1)} s")
+                time.sleep(5 * (attempt + 1))
+                if api(f"repos/{REPO}/pulls/{n}").get('merged_at'):
+                    raise Fail(f"#{n} merged meanwhile: rerun merge to adopt it")
         sha = got['sha']
         for _ in range(10):   # the ref update can lag the API's answer by a moment
             fetch()
@@ -1052,18 +1060,20 @@ def cmd_cleanup(a):
             if e['number'] not in merged and str(e['number']) not in st['kicked']:
                 comment(e['number'], f"{MARK} train `{name}` was abandoned; this PR's READY stands and it rides "
                                      f"the next window's train.")
-    if PRUNE_CMD:
+    prune = PRUNE_YES_CMD if a.prune_yes and PRUNE_YES_CMD else PRUNE_CMD
+    if prune:
         if LOG.dry:
-            LOG.say(f"  [dry-run] would run: {PRUNE_CMD}")
+            LOG.say(f"  [dry-run] would run: {prune}")
         else:
-            out = sh(shlex.split(os.path.expanduser(PRUNE_CMD)), check=False)
-            LOG.say(out.stdout.strip()[-3000:])
+            LOG.say(f"$ {prune}")
+            out = sh([os.path.expanduser(x) for x in shlex.split(prune)], check=False)
+            LOG.say(out.stdout.strip()[-4000:])
     st['cleaned'] = iso(now())
     save(st)
     if not LOG.dry and os.path.exists(os.path.join(BASE_DIR, 'current')) and \
             open(os.path.join(BASE_DIR, 'current')).read().strip() == name:
         os.remove(os.path.join(BASE_DIR, 'current'))
-    LOG.say(f"{name} cleaned up")
+    LOG.say(f"{name} {'would be ' if LOG.dry else ''}cleaned up")
     return 0
 
 
@@ -1104,6 +1114,7 @@ def main():
                    help='allow PRs whose head lacks main\'s required checks (GitHub then needs an admin)')
     s = sub.add_parser('cleanup', parents=[common])
     s.add_argument('--abandon', action='store_true', help='drop a train that did not (fully) merge')
+    s.add_argument('--prune-yes', action='store_true', help='run MERGE_TRAIN_PRUNE_YES instead of MERGE_TRAIN_PRUNE')
     a = p.parse_args()
     LOG.dry = a.dry_run
     os.makedirs(BASE_DIR, exist_ok=True)

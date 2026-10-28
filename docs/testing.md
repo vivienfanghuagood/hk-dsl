@@ -790,7 +790,9 @@ How it behaves:
 - **State and a log of every command it ran** are kept per train under
   `$MERGE_TRAIN_DIR` (default `~/.local/state/hk-merge-train`).
 - **`MERGE_TRAIN_PRUNE`** names a command for `cleanup` to run afterwards, such
-  as a prune of per-branch build directories.
+  as a list of the per-branch build directories that can go;
+  `MERGE_TRAIN_PRUNE_YES` names the one that `cleanup --prune-yes` runs instead,
+  which deletes them.
 - **Requirements:** git 2.40 or newer and an authenticated `gh`.
 - **Testing the train itself:** `--prs`, `--include-drafts`,
   `--ignore-head-checks` and `--workflows ci` build a train from throwaway draft
