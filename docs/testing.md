@@ -562,12 +562,24 @@ gfx1201 dev box (`<rdna4-host>`: 8x Radeon AI PRO R9700, ROCm 7.2.3), in
 it no longer does, so a red gfx1201 fails the run. Whether it is one of main's
 required checks is the owner's setting.
 
-After the GPU tier the job runs the [performance gate](#the-performance-gate)
-on the same card (`HK_PERF_GATE=1`) against `tests/perf/baselines/gfx1201.json`:
-gemm, attention, the norms, softmax and the fp8 and int8 GEMMs, hk against
-torch, Inductor and Triton -- the arms the container has. The baseline's four
-runs on an R9700 gate 38 pairs at 3.0-8.9% (median 3.0%); the 1- and 32-row norms
-are too noisy there to gate. A warm run takes about a minute.
+The [performance gate](#the-performance-gate) has a gfx1201 baseline,
+`tests/perf/baselines/gfx1201.json`: gemm, attention, the norms, softmax and
+the fp8 and int8 GEMMs, hk against torch, Inductor and Triton -- the arms the
+job's container has. Its four runs on an R9700 gate 38 pairs at 3.0-8.9%
+(median 3.0%); the 1- and 32-row norms are too noisy there to gate. Run it as
+gfx1100's is, by hand and alone on a card, before and after a change to a
+kernel it times:
+
+```bash
+scripts/ci/gfx1201/hkr9 auto -- 'HK_ARCH=gfx1201 HK_GPU=0 scripts/perf_gate.sh'
+```
+
+It is not part of the gfx1201 job. Run there, after the GPU tier, it flagged
+three pairs of an unchanged hk 3.3-6.2% slower (bf16 GEMM against Triton, the
+fp8 GEMM at 2048 rows against hipBLASLt). On a card the tier has just kept busy
+for a quarter of an hour, the ratios of hk's large GEMMs moved further than the
+standalone baseline allows, and a required job cannot fail on a measurement
+condition.
 
 **The box is shared.** Other people run on its cards, and none of them takes
 our locks. So every GPU run there, CI's and a person's, goes through
