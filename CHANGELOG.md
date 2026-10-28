@@ -397,6 +397,11 @@ these sizes; the shipped one is the one that holds under both).
   - A PR that conflicts, or that turns the train red, is kicked out and the train is
     rebuilt without it.
   - READY is a PR comment that names the current head.
+- The merge train resolves a conflict in `CHANGELOG.md` by union instead of kicking the PR.
+  The union is checked before it is kept: no conflict markers, no entry twice, and each
+  version section kept as it was. To merge such a PR, its branch is first brought to the
+  train's tree with an admin bypass, which is logged. `readmit` puts back the PRs kicked
+  only for such a conflict (#128, [testing](docs/testing.md#the-merge-train)).
 
 ## 0.8.0
 
