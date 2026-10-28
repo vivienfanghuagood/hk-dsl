@@ -849,6 +849,24 @@ LogicalResult LaneRegroupOp::verify() {
   return success();
 }
 
+LogicalResult FreshArgOp::verify() {
+  if (getTensor().getType() != getResult().getType())
+    return emitOpError("gives its tensor's type");
+  Value t = getTensor();
+  while (auto f = t.getDefiningOp<FreshArgOp>())
+    t = f.getTensor();
+  auto ba = dyn_cast<BlockArgument>(t);
+  if (!ba || !isa<func::FuncOp>(ba.getOwner()->getParentOp()))
+    return emitOpError("reads a kernel's tensor parameter again, not a value computed in the kernel");
+  return success();
+}
+
+LogicalResult RoleOp::verify() {
+  if (!isa<func::FuncOp>((*this)->getParentOp()))
+    return emitOpError("a role starts at the kernel's top level: not inside a branch or a loop");
+  return success();
+}
+
 LogicalResult LdsPhaseOp::verify() {
   if (!isa<func::FuncOp>((*this)->getParentOp()))
     return emitOpError("an LDS phase starts at the kernel's top level, which every workgroup passes (the "

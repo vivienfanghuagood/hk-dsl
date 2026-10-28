@@ -954,6 +954,44 @@ def HK_LdsPhaseOp : HK_Op<"lds_phase"> {
   let hasVerifier = 1;
 }
 
+def HK_FreshArgOp : HK_Op<"fresh_arg"> {
+  let summary = "a tensor parameter read again from the kernarg segment here (CDNA)";
+  let description = [{
+    The result is `tensor` itself, its fields (pointer, extents) loaded from
+    the kernel's argument segment at this point and not before: LLVM keeps a
+    parameter's fields, and the buffer descriptors built from them, live
+    from their first use to their last, so a launch of many stages that each
+    use their own tensors holds every tensor's SGPRs at once (and spills
+    them). The read goes through an opaque copy of the segment pointer: it
+    is not merged with any other read. Uses of the result only: the
+    parameter's other uses keep theirs.
+  }];
+  let arguments = (ins HK_GlobalType:$tensor);
+  let results = (outs HK_GlobalType:$result);
+  let assemblyFormat = [{
+    $tensor attr-dict `:` qualified(type($tensor)) `->` qualified(type($result))
+  }];
+  let hasVerifier = 1;
+}
+
+def HK_RoleOp : HK_Op<"role"> {
+  let summary = "the start of a role: its uses of tensor parameters read them again here (CDNA)";
+  let description = [{
+    A persistent launch whose workgroups run roles in order (K2's attention
+    back, its FFN seam, the MoE) uses many tensor parameters, each in a few
+    roles. LLVM keeps a parameter's fields, and the buffer descriptors built
+    from them, live from its first use to its last, so the launch holds
+    every role's tensors at once and spills SGPRs. From a role op to the
+    next, every use of a parameter reads it through a copy loaded at the
+    role op (as fresh_arg): what a role holds is its own tensors. At the
+    kernel's top level only.
+  }];
+  let arguments = (ins);
+  let results = (outs);
+  let assemblyFormat = [{ attr-dict }];
+  let hasVerifier = 1;
+}
+
 def HK_MfmaStripOp : HK_Op<"mfma_strip"> {
   let summary = "one raw MFMA on strip registers (gfx950)";
   let description = [{
