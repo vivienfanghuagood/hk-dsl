@@ -89,9 +89,9 @@ def test_the_routes_are_hk_ops_matmuls():
                        for st in T.plan(m, n, k, arch="gfx950"))
     s = T.plan(1024, 4096, 4096, arch="gfx1100")
     assert len(s) == 1 and s[0].kernel == "rdna" and s[0].epilogue
-    assert s[0].sched == rdna.schedule_for(1024, 4096, 4096)
+    assert s[0].sched == rdna.schedule_for(1024, 4096, 4096, arch="gfx1100")
     assert T.plan(48, 4096, 4096, arch="gfx1100")[0].sched == rdna.schedule_for(
-        48, 4096, 4096)
+        48, 4096, 4096, arch="gfx1100")
     # Decode batches go to the GEMV on gfx1100 too, as hk's vLLM routes do
     # (hk.ops.matmul itself runs THIN there): 1.6-2.7x it on a W7900D.
     s = T.plan(8, 4096, 4096, arch="gfx1100")
