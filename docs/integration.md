@@ -46,7 +46,7 @@ and which rule decided.
 |---|---|---|---|
 | K2, MXFP8 linear (DeepSeek-V4.1), M >= 2048 (indexer wq_b >= 2825, engram wkv >= 1024: `MIN_M_NK`), and measured M ranges below that (`RANGES`) | `HK_VLLM_MXFP8` | **on, gfx950** | bit-identical to vLLM's kernel; real weights, GSM8K 94.69% vs stock 94.24-94.39%, with K1 ARC 96.76% vs 96.93-97.10% (McNemar p >= 0.175; [serving readiness](design/serving-readiness.md) B1) |
 | K1, MoE a8w4 (DeepSeek-V4.1), M >= 2560 (`MIN_M`) | `HK_VLLM_MOE_A8W4` | **on, gfx950** | error vs fp32 3.5-6.3e-3 against AITER's 0.97-2.1e-2 on real layers; GSM8K 94.92% (B1) |
-| DeepSeek-V4.1 index layers under `--monokernel`: one launch for the compressor, indexer K / Q, logits and top-k, at decode steps of up to 8 rows | `HK_VLLM_DSV41_INDEX` | **on, gfx950** | caches and q byte-identical to vLLM's chain in vLLM, top-k sets equal ([the index launch](#the-deepseek-v41-index-launch)); with `--monokernel` and hk's other default routes, TPOT 2.6 / 2.5 / 1.7% below mono's at batch 1 / 4 / 8, GSM8K-1319 within stock's noise (McNemar p >= 0.20) |
+| DeepSeek-V4.1 index layers under `--monokernel`: one launch for the compressor, indexer K / Q, logits and top-k, at decode steps of up to 8 rows | `HK_VLLM_DSV41_INDEX` | **on, gfx950** | caches and q byte-identical to vLLM's chain in vLLM, top-k sets equal ([the index launch](#the-deepseek-v41-index-launch)); with `--monokernel` and hk's other default routes, TPOT 4.5 / 4.4 / 3.1% below mono's at batch 1 / 4 / 8, GSM8K-1319 within stock's noise (McNemar p >= 0.39) |
 | AWQ 4-bit linear | `HK_VLLM_INT4` | **on, gfx1100, gfx950 and gfx1201** | greedy tokens identical to stock's, Qwen3-8B/14B-AWQ ([22](history/22-int4.md), [42](history/42-mi355x-in-the-engine.md)); on gfx1201 Qwen3-8B-AWQ, decode 2.5-4.5x ([50](history/50-gfx1201-in-vllm.md)) |
 | unquantized linear (+ tuning at load) | `HK_VLLM_GEMM` | **on, gfx1100 and gfx1201** | tokens identical, or a bf16 near-tie ([35](history/35-any-model.md)); on gfx1201 tokens identical and routing counts equal round for round, Qwen3-1.7B and Qwen3.5-9B ([50](history/50-gfx1201-in-vllm.md)); with gfx1201's shipped small-M schedules, requests 1.08-1.11x stock at 32-128 on Qwen3.5-9B ([51](history/51-gfx1201-small-m-gemm.md)); on gfx950 it was measured to change nothing against aiter ([42](history/42-mi355x-in-the-engine.md)), so it stays off there |
 | bf16 MoE GEMMs | `HK_VLLM_MOE` | **on, gfx1100 and gfx1201** | OLMoE tokens identical ([21](history/21-moe.md)); with aiter on gfx950 it routes nothing; on gfx1201 up to 2 tokens a step only, OLMoE tokens identical and decode 1.10-1.12x at 1 request, 1.06-1.07x at 2 ([52](history/52-gfx1201-moe-at-the-roofline.md)) |
@@ -600,21 +600,21 @@ The serving scorecard: DeepSeek-V4.1-Flash on MI355X, real weights, TP2, max_mod
 `bench serve`, 2 rounds a fresh server each. The "mono + hk" arm is `--monokernel` with hk's default routes:
 this one, and the prefill-sized K1 / K2 routes.
 
-| | stock | mono | mono + hk | mono + hk vs mono |
-|---|---|---|---|---|
-| TPOT, batch 1 (ms) | 6.534 | 3.968 | 3.865 | -2.6% |
-| TPOT, batch 4 (ms) | 7.780 | 4.979 | 4.855 | -2.5% |
-| TPOT, batch 8 (ms) | 9.275 | 6.314 | 6.208 | -1.7% |
-| mixed, 2k / 256 at 32 in flight (req/s) | 6.135 | 6.887 | 7.049 | +2.3% |
-| long, 8k / 128 at 8 in flight (req/s) | 3.476 | 4.133 | 4.331 | +4.8% |
-| prefill, 8k prompts (tok/s) | 62,563 | 62,781 | 69,913 | +11.4% |
-| GSM8K-1319, greedy | 94.84% | 94.43% | 94.54% | |
+| | stock | mono | mono + hk | mono + hk vs mono | (#115: dense layers only) |
+|---|---|---|---|---|---|
+| TPOT, batch 1 (ms) | 6.598 | 3.974 | 3.794 | -4.5% | -2.6% |
+| TPOT, batch 4 (ms) | 7.836 | 4.999 | 4.779 | -4.4% | -2.5% |
+| TPOT, batch 8 (ms) | 9.301 | 6.339 | 6.140 | -3.1% | -1.7% |
+| mixed, 2k / 256 at 32 in flight (req/s) | 6.103 | 6.866 | 7.043 | +2.6% | +2.3% |
+| long, 8k / 128 at 8 in flight (req/s) | 3.491 | 4.117 | 4.418 | +7.3% | +4.8% |
+| prefill, 8k prompts (tok/s) | 62,659 | 62,829 | 69,846 | +11.2% | +11.4% |
+| GSM8K-1319, greedy | 94.39% | 94.58% | 94.58% | | |
 
-Every delta is outside both arms' round-to-round spread. The prefill gain comes from the K1 / K2 routes; the
-decode gain from the index launch. In this run (#115) the candidate source and consumers still used vLLM's
-indexer op at max_model_len 16640, as their rows' 2080 blocks did not fit its 2048 candidates; the launch has
-done their block top-k and mask itself since. GSM8K agrees with stock's run-to-run noise (McNemar p 0.20-1.00; stock against
-itself, p 0.64).
+Every delta is outside both arms' round-to-round spread, and no measurement was discarded. The prefill gain
+comes from the K1 / K2 routes, the decode gain from the index launch. The last column is #115's run, in which
+the candidate source and consumers still used vLLM's indexer op at max_model_len 16640 (their rows' 2080 blocks
+did not fit its 2048 candidates); the launch now does their block top-k and mask itself. GSM8K agrees with
+stock's run-to-run noise (McNemar p 0.39-1.00 against stock).
 
 The counters are `vllm_dsv41_index.STATS` (`hk`, `stock`); the layers that
 stay on vLLM's chain, and why, are in `STOCK_LAYERS`.

@@ -18,7 +18,7 @@ included.
 Measured on DeepSeek-V4.1-Flash, TP2, MI355X (vLLM e68efc685): caches, q and q_scale byte-identical
 to vLLM's chain in vLLM, on all 8 index layers; top-512 sets equal at M=1, overlap >= 0.994 at
 M=8 (head weights within one bf16 ulp: vLLM's weights_proj rounds a few heads differently). In the
-serving scorecard, with hk's other default routes, TPOT is 2.6 / 2.5 / 1.7% below mono's at batch
+serving scorecard, with hk's other default routes, TPOT is 4.5 / 4.4 / 3.1% below mono's at batch
 1 / 4 / 8 and GSM8K-1319 within stock's noise (docs/integration.md, "The DeepSeek-V4.1 index launch").
 
     vllm serve <DeepSeek-V4.1-Flash> --monokernel ...          # on by default on gfx950

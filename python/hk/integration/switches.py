@@ -76,7 +76,7 @@ ROUTES: Dict[str, Route] = {r.name: r for r in (
        "DeepSeek-V4.1's index layers under --monokernel: mono_decode._select's chain (compressor, "
        "indexer K / Q, logits, top-k) as one launch at decode steps of <= 8 rows",
        "caches and q byte-identical to vLLM's chain in vLLM, top-k sets equal at M=1; serving scorecard "
-       "(with hk's other default routes): TPOT 2.6 / 2.5 / 1.7% below mono's at B1/4/8, GSM8K-1319 "
+       "(with hk's other default routes): TPOT 4.5 / 4.4 / 3.1% below mono's at B1/4/8, GSM8K-1319 "
        "within stock's noise"),
     _R("vllm_int4", "vllm", "HK_VLLM_INT4", True, ("gfx1100", "gfx950", "gfx1201"),
        "AWQ 4-bit linear layers on hk's decode GEMM",
