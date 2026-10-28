@@ -580,8 +580,9 @@ def test_the_select_ops_emit_their_cdna_calls_and_check_their_strips():
         h.atomic_add_elems(hk.map_cpp("1", ln, dtype=hk.i32), ln)
         t = hk.fp4_operand(a.load_elems(hk.iota(W), runs=True))
         sc = hk.mx_scales_loose(hk.map_cpp("x0 & 0xFF", s.load_elems(ln, hk.i32), dtype=hk.i32))
-        o[hk.elem_coord(0, 0, 0, 0)] = hk.mma_ABt_mx(t, t, hk.zeros(hk.RT(hk.fp32, 16, 16, "col")), sc, sc,
-                                                     a_fmt="fp4", b_fmt="fp4")
+        o[hk.elem_coord(0, 0, 0, 0)] = hk.mma("mma_ABt", t.scaled(sc, fmt="fp4"),
+                                              t.scaled(sc, fmt="fp4"),
+                                              hk.zeros(hk.RT(hk.fp32, 16, 16, "col")))
         hk.arch.barrier(drain=True)
         if hk.uniform(h.load_elems(ln, hk.i32).first_lane() > 0):
             o.store_elems(hk.map_cpp("0.0f", ln, dtype=hk.fp32), ln)
@@ -592,9 +593,9 @@ def test_the_select_ops_emit_their_cdna_calls_and_check_their_strips():
 
     def wide(a: hk.Tensor[hk.i32], o: hk.Tensor[hk.fp32]):
         t = hk.fp4_operand(a.load_elems(hk.iota(hk.RS(hk.i32, 1, 512, 8)), runs=True))
-        o.at[0, 0].store(hk.mma_ABt_mx(t, t, hk.zeros(hk.RT(hk.fp32, 16, 16, "col")),
-                                       hk.mx_scales_loose(hk.iota(L)), hk.mx_scales_loose(hk.iota(L)),
-                                       a_fmt="fp4", b_fmt="fp4"))
+        acc = hk.zeros(hk.RT(hk.fp32, 16, 16, "col"))     # (mma_ABt_mx's argument order)
+        sa, sb = hk.mx_scales_loose(hk.iota(L)), hk.mx_scales_loose(hk.iota(L))
+        o.at[0, 0].store(hk.mma("mma_ABt", t.scaled(sa, fmt="fp4"), t.scaled(sb, fmt="fp4"), acc))
     with pytest.raises(TypeError, match="1 x 256, run 4"):
         _src950(wide)
 
@@ -615,7 +616,8 @@ def test_fp8_operand_emits_its_call_and_takes_two_runs_of_four():
     def ok(a: hk.Tensor[hk.i32], o: hk.Tensor[hk.fp32]):
         t = hk.fp8_operand(a.load_elems(hk.iota(hk.RS(hk.i32, 1, 512, 4)), runs=True))
         sc = hk.mx_scales_loose(hk.iota(hk.RS(hk.i32, 1, 64, 1)))
-        o[hk.elem_coord(0, 0, 0, 0)] = hk.mma_ABt_mx(t, t, hk.zeros(hk.RT(hk.fp32, 16, 16, "col")), sc, sc)
+        o[hk.elem_coord(0, 0, 0, 0)] = hk.mma("mma_ABt", t.scaled(sc), t.scaled(sc),
+                                              hk.zeros(hk.RT(hk.fp32, 16, 16, "col")))
     assert "kittens::fp8_operand(" in _src950(ok)
 
     def one_run(a: hk.Tensor[hk.i32], o: hk.Tensor[hk.fp32]):

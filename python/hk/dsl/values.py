@@ -117,6 +117,15 @@ def _strip_access(what: str, ty, idx: "Coord", bounded) -> None:
 # ---------------------------------------------------------------- base
 
 
+def _deprecated(old: str, new: str) -> None:
+    """A deprecation shim's warning (docs/design/dsl-surface.md §5): the old spelling still
+    emits what the new one does."""
+    import warnings  # noqa: PLC0415
+
+    warnings.warn(f"{old} is deprecated: use {new} (docs/design/dsl-surface.md)",
+                  DeprecationWarning, stacklevel=3)
+
+
 class Value:
     """A device value of the kernel being traced."""
 
@@ -1301,6 +1310,15 @@ class Tile(_Elementwise):
     def triu_(self, idx, value=0.0, *, into=None): return self._fill("triu", idx, value, into)
     def tril_(self, idx, value=0.0, *, into=None): return self._fill("tril", idx, value, into)
 
+    def scaled(self, scales: "MxScales", *, fmt: str = "fp8", at=(0, 0)) -> "Scaled":
+        """This operand with its E8M0 block scales, for gfx950's block-scaled MFMA:
+        `hk.mma("mma_ABt", a.scaled(sa), b.scaled(sb, fmt="fp4"), acc)`. `fmt` is "fp8"
+        (e4m3) or "fp4" (the FP4 container `hk.load_fp4_frags` fills). `at` = (tile, step):
+        the scales may cover more than the operand -- its 16-row base tile i and 128-wide step s
+        take the scales' tile i + tile and step s + step (a 32-row block's two-step AITER
+        dwords, loaded once, feeding two token tiles over two steps)."""
+        return Scaled(self, scales, fmt, at)
+
     def as_operand(self, dtype: Optional[DType] = None, *, into=None) -> "Tile":
         """This accumulator's registers read as an MFMA operand: no data
         moves across lanes (gfx950).
@@ -1421,10 +1439,27 @@ _MMA_SPEC = {  # (A layout, B layout, D.rows from A, D.cols from B, A red, B red
 }
 
 
-def mma(variant: str, a: Tile, b: Tile, acc: Tile, *, into=None) -> Tile:
+def mma(variant: str, a, b, acc: Tile, *, into=None) -> Tile:
     """`acc + A x B` on the WMMA unit. The variant is decided by the layouts
     you have; the wrong one is how a kernel buys eight ds_read_u16 per base
-    tile instead of two ds_read_b128."""
+    tile instead of two ds_read_b128.
+
+    Scaled operands (`Tile.scaled`) make it gfx950's block-scaled MFMA
+    (v_mfma_scale_f32_16x16x128_f8f6f4): `hk.mma("mma_ABt", a.scaled(sa),
+    b.scaled(sb, fmt="fp4"), acc)` is acc + (sa . A)(sb . B)^T for A (M, K) and
+    B (N, K) fp8 e4m3 row tiles (FP4 in the fp8 container with fmt="fp4"), K a
+    multiple of 128, element (r, k) of A counting as A[r][k] *
+    2^(sa[r][k // 32] - 127), acc an fp32 col tile (M, N). Both operands are
+    scaled, and the variant is mma_ABt."""
+    if isinstance(a, Scaled) or isinstance(b, Scaled):
+        if not (isinstance(a, Scaled) and isinstance(b, Scaled)):
+            raise TypeError(f"{variant}: both operands of a block-scaled MMA carry scales "
+                            f"(Tile.scaled), or neither does")
+        if variant != "mma_ABt":
+            raise TypeError(f"{variant}: the block-scaled MFMA is mma_ABt (A and B row tiles "
+                            f"sharing K), not {variant}")
+        return _mma_mx(a.tile, b.tile, acc, a.scales, b.scales, into=into, a_fmt=a.fmt,
+                       b_fmt=b.fmt, sa_at=a.at, sb_at=b.at)
     spec = _MMA_SPEC[variant]
     for v, what in ((a, "A"), (b, "B"), (acc, "C")):
         if not isinstance(v, Tile):
@@ -1851,9 +1886,38 @@ def lds_loads(tile: RegTileType, src: SharedTileType, arch: str = "gfx1100") -> 
 
 class MxScales(Value):
     """E8M0 block scales of an fp8 operand tile, in the lanes the scaled MFMA
-    reads them from (`load_mx_scales`)."""
+    reads them from (`load_mx_scales`). An operand takes them with
+    `Tile.scaled`."""
 
     __slots__ = ()
+
+    def copy(self, *, into: "MxScales") -> "MxScales":
+        """`into` = these scales, register to register -- how a one-stage loop body hands
+        the next K-tile's prefetched scales to the current set. Returns `into`."""
+        if not isinstance(into, MxScales) or into.ty != self.ty:
+            raise TypeError(f"MxScales.copy: into is MxScales of this shape ({self.ty}), "
+                            f"got {into!r}")
+        hkd.MxScalesCopyOp(into.v, self.v, loc=_t().loc("mxs_copy"))
+        return into
+
+
+class Scaled:
+    """An MX operand: an fp8 e4m3 row tile (FP4 in its container with fmt="fp4") and its E8M0
+    scales, made by `Tile.scaled`. `hk.mma("mma_ABt", a.scaled(sa), b.scaled(sb), acc)` is
+    gfx950's block-scaled MFMA; nothing else takes one."""
+
+    __slots__ = ("tile", "scales", "fmt", "at")
+
+    def __init__(self, tile: "Tile", scales: "MxScales", fmt: str, at):
+        if fmt not in ("fp8", "fp4"):
+            raise TypeError(f"Tile.scaled: fmt is 'fp8' or 'fp4', not {fmt!r}")
+        if not isinstance(scales, MxScales):
+            raise TypeError(f"Tile.scaled: the scales are MxScales (hk.load_mx_scales), "
+                            f"got {scales!r}")
+        self.tile, self.scales, self.fmt, self.at = tile, scales, fmt, (int(at[0]), int(at[1]))
+
+    def __repr__(self) -> str:
+        return f"Scaled({self.tile!r}, {self.scales!r}, fmt={self.fmt!r}, at={self.at})"
 
 
 _MX_LAYOUTS = {"ocp": 0, "aiter_gate_up": 1, "aiter": 2}
@@ -1916,22 +1980,35 @@ def load_mx_scales(src: "Global", rows: int, kblocks: int, row0, kb0, *,
 
 
 def copy_mx_scales(dst: "MxScales", src: "MxScales") -> None:
-    """dst = src: E8M0 scales copied register to register -- how a one-stage
-    loop body hands the next K-tile's prefetched scales to the current set."""
+    """Deprecated: `src.copy(into=dst)`. dst = src, E8M0 scales copied register to register."""
+    _deprecated("hk.copy_mx_scales(dst, src)", "src.copy(into=dst)")
     if not isinstance(dst, MxScales) or not isinstance(src, MxScales) or dst.ty != src.ty:
         raise TypeError(f"copy_mx_scales: two MxScales of one shape, got {dst!r} and {src!r}")
-    hkd.MxScalesCopyOp(dst.v, src.v, loc=_t().loc("mxs_copy"))
+    src.copy(into=dst)
 
 
-def load_fp4_frags(ty, src: "Global", row0, kc0, *, group_rows: int, gate_up: bool = False,
-                   into=None) -> "Tile":
+def load_fp4_frags(ty, src, row0, kc0, *, group_rows: Optional[int] = None,
+                   gate_up: bool = False, into=None) -> "Tile":
     """Rows row0.. and 128-wide K steps kc0.. of AITER's shuffled MXFP4 MoE weights (gfx950,
     `shuffle_weight(is_guinterleave=True)`; src uint8 [E * group_rows, K/2], the packed bytes)
-    as the B operand of `mma_ABt_mx(..., b_fmt="fp4")`. `ty` is an fp8 e4m3 row tile of 16x128
-    fragments -- the container: each fragment's first four dwords hold the FP4 operand, the rest
-    stay undefined. With `gate_up` (a stage-1 gate|up weight) the base tiles alternate the gate
-    and up halves of 16-row block (row0 % group_rows) // 16 + i // 2, so gate column j and up
-    column j of the product land in the same lanes."""
+    as an FP4 operand, `w.scaled(sw, fmt="fp4")` in `hk.mma`. `ty` is an fp8 e4m3 row tile of
+    16x128 fragments -- the container: each fragment's first four dwords hold the FP4 operand, the
+    rest stay undefined. With `gate_up` (a stage-1 gate|up weight) the base tiles alternate the
+    gate and up halves of 16-row block (row0 % group_rows) // 16 + i // 2, so gate column j and up
+    column j of the product land in the same lanes.
+
+    `src` may instead be an LDS tile of raw AITER weight bytes (fp8-typed, a row a 16-row block
+    with gate|up rows interleaved, 1 KB a 128-wide K step: the [E * N/16 * 2, K/2 * 16] view of
+    the weights, brought in by a group load): fragment (i, s) is then its row row0 + i and 1 KB
+    chunk kc0 + s, and `group_rows` / `gate_up` do not apply."""
+    if isinstance(src, SharedTile):
+        if group_rows is not None or gate_up:
+            raise TypeError("load_fp4_frags from an LDS tile: group_rows and gate_up are the "
+                            "global layout's; the LDS rows are already in operand order")
+        return _load_fp4_frags_lds(ty, src, row0, kc0, into=into)
+    if group_rows is None:
+        raise TypeError("load_fp4_frags: group_rows (rows an expert) is needed for global "
+                        "weights")
     if (not isinstance(ty, RegTileType) or ty.dtype is not fp8e4m3 or ty.layout != "row"
             or ty.rows % 16 or ty.cols % 128):
         raise TypeError(f"load_fp4_frags: an fp8 e4m3 row tile of 16x128 fragments, not {ty!r}")
@@ -1972,9 +2049,12 @@ def mx_quant_store(src: "SharedTile", q: "Global", s: "Global", row0, col0) -> N
 
 
 def load_fp4_frags_lds(ty, src: "SharedTile", row0, chunk0, *, into=None) -> "Tile":
-    """load_fp4_frags from an LDS tile of raw AITER weight bytes (fp8-typed, a row a 16-row block
-    with gate|up rows interleaved, 1 KB a 128-wide K step: the [E * N/16 * 2, K/2 * 16] view of the
-    weights, brought in by a group load). Fragment (i, s) is row row0 + i, chunk chunk0 + s."""
+    """Deprecated: `hk.load_fp4_frags(ty, src, row0, chunk0)` with `src` an LDS tile."""
+    _deprecated("hk.load_fp4_frags_lds(...)", "hk.load_fp4_frags(ty, lds_tile, row0, chunk0)")
+    return _load_fp4_frags_lds(ty, src, row0, chunk0, into=into)
+
+
+def _load_fp4_frags_lds(ty, src: "SharedTile", row0, chunk0, *, into=None) -> "Tile":
     if (not isinstance(ty, RegTileType) or ty.dtype is not fp8e4m3 or ty.layout != "row"
             or ty.rows % 16 or ty.cols % 128):
         raise TypeError(f"load_fp4_frags_lds: an fp8 e4m3 row tile of 16x128 fragments, not {ty!r}")
@@ -2025,14 +2105,18 @@ def mx_scales_loose(bytes_: Tile) -> MxScales:
 
 def mma_ABt_mx(a: Tile, b: Tile, acc: Tile, sa: MxScales, sb: MxScales, *, into=None,
                a_fmt: str = "fp8", b_fmt: str = "fp8", sa_at=(0, 0), sb_at=(0, 0)) -> Tile:
-    """acc + (sa . A)(sb . B)^T on gfx950's v_mfma_scale_f32_16x16x128_f8f6f4:
-    A (M, K) and B (N, K) fp8 e4m3 row tiles, K a multiple of 128; sa and sb
-    their E8M0 scales (`load_mx_scales`), element (r, k) of A counting as
-    A[r][k] * 2^(sa[r][k // 32] - 127); acc an fp32 col tile (M, N).
-    `sa_at` / `sb_at` = (tile, step): the scales may cover more than the
-    operand -- its 16-row base tile i and 128-wide step s take the scales' tile
-    i + tile and step s + step (e.g. a 32-row block's two-step AITER dwords,
-    loaded once, feeding two token tiles over two steps)."""
+    """Deprecated: `hk.mma("mma_ABt", a.scaled(sa, fmt=a_fmt, at=sa_at),
+    b.scaled(sb, fmt=b_fmt, at=sb_at), acc)`, the same instruction."""
+    _deprecated("hk.mma_ABt_mx(a, b, acc, sa, sb, ...)",
+                'hk.mma("mma_ABt", a.scaled(sa, ...), b.scaled(sb, ...), acc)')
+    return _mma_mx(a, b, acc, sa, sb, into=into, a_fmt=a_fmt, b_fmt=b_fmt, sa_at=sa_at,
+                   sb_at=sb_at)
+
+
+def _mma_mx(a: Tile, b: Tile, acc: Tile, sa: MxScales, sb: MxScales, *, into=None,
+            a_fmt: str = "fp8", b_fmt: str = "fp8", sa_at=(0, 0), sb_at=(0, 0)) -> Tile:
+    """acc + (sa . A)(sb . B)^T on gfx950's v_mfma_scale_f32_16x16x128_f8f6f4 (hk.mma's scaled
+    form; the checks below name it mma_ABt_mx, the op it emits)."""
     for v, what in ((a, "A"), (b, "B")):
         if not isinstance(v, Tile) or v.ty.dtype is not fp8e4m3 or v.ty.layout != "row":
             raise TypeError(f"mma_ABt_mx: {what} is an fp8 e4m3 row-layout tile, got {v!r}")

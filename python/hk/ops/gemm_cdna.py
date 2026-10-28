@@ -199,7 +199,8 @@ def gemm_kernel(name: str, *, block_m: int = 256, block_n: int = 256,
 
         def mma(i, j):
             if mxs is not None:
-                hk.mma_ABt_mx(A, B[j], C[i][j], cur["a"][i], cur["b"][j], into=C[i][j])
+                hk.mma("mma_ABt", A.scaled(cur["a"][i]), B[j].scaled(cur["b"][j]), C[i][j],
+                       into=C[i][j])
             elif transposed_c:
                 C[i][j] += B[j] @ A.T
             else:

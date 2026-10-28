@@ -62,8 +62,9 @@ def _gathered_fp4_kernel():
         tb = hk.fp4_operand(b.load_elems(widx, runs=True))
         s_a = hk.mx_scales_loose(hk.map_cpp("x0 & 0xFF", sa.load_elems(sidx, i32), dtype=i32))
         s_b = hk.mx_scales_loose(hk.map_cpp("x0 & 0xFF", sb.load_elems(sidx, i32), dtype=i32))
-        c[hk.elem_coord(0, 0, 0, 0)] = hk.mma_ABt_mx(ta, tb, hk.zeros(hk.RT(fp32, 16, 16, "col")), s_a, s_b,
-                                                     a_fmt="fp4", b_fmt="fp4")
+        c[hk.elem_coord(0, 0, 0, 0)] = hk.mma("mma_ABt", ta.scaled(s_a, fmt="fp4"),
+                                              tb.scaled(s_b, fmt="fp4"),
+                                              hk.zeros(hk.RT(fp32, 16, 16, "col")))
 
     return hk.kernel(body, arch="gfx950", warps=1, name="fp4_gathered", grid=lambda p: (1, 1, 1))
 

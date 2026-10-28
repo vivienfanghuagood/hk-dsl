@@ -47,6 +47,10 @@ class Entry(NamedTuple):
     step: str = ""
 
 
+#: When a shim goes (dsl-surface.md §9, decision 2).
+_GONE = ("the release after the last call from outside the repository is migrated, at most two "
+         "minor releases after its deprecation")
+
 _MX = "gfx950's scaled MFMA (v_mfma_scale_f32_16x16x128_f8f6f4)"
 
 #: The inventoried names (dsl-surface.md §2) that are not plain primitives, and the keyword
@@ -55,11 +59,13 @@ ENTRIES: Dict[str, Entry] = {
     # 2.1 MX block-scaled operands
     "hk.load_mx_scales": Entry("format", "A1", f"E8M0 scales of {_MX}'s operands; a new layout "
                                "is a layout= value, not a new op"),
-    "hk.copy_mx_scales": Entry("merge", "A2", target="MxScales.copy(into=)", step="S2"),
-    "hk.mma_ABt_mx": Entry("merge", "A3", target="hk.mma with Tile.scaled operands", step="S2"),
+    "hk.copy_mx_scales": Entry("deprecated", "A2", target="MxScales.copy(into=)",
+                               step=_GONE),
+    "hk.mma_ABt_mx": Entry("deprecated", "A3", target="hk.mma with Tile.scaled operands",
+                           step=_GONE),
     "hk.load_fp4_frags": Entry("format", "A4", "AITER's pre-shuffled MXFP4 MoE weights only"),
-    "hk.load_fp4_frags_lds": Entry("merge", "A5", target="hk.load_fp4_frags(SharedTile)",
-                                   step="S2"),
+    "hk.load_fp4_frags_lds": Entry("deprecated", "A5", target="hk.load_fp4_frags(SharedTile)",
+                                   step=_GONE),
     "hk.mx_quant_store": Entry("merge", "A6", target="a G1 composition (hk.mx)", step="S10"),
     "hk.fp4_operand": Entry("merge", "A7", target="Tile.as_fragment(fmt='fp4')", step="S5"),
     "hk.fp8_operand": Entry("merge", "A8", target="Tile.as_fragment", step="S5"),
@@ -113,26 +119,27 @@ Global.post_elems Global.rows Global.scatter Global.store_elems Global.take_elem
 Global.type Granules.type Group.commit Group.load Group.stage Group.stage_buffer Group.store
 Group.threads Group.wait_for Int.type Kernel.arch Kernel.build Kernel.compile Kernel.placed
 Kernel.placement_choice Kernel.preloaded Kernel.resident_capacity Kernel.source
-Kernel.specialize Kernel.trace Placement.chunked Placement.cluster Placement.none
-Placement.suffix SharedTile.atomic_add_elems SharedTile.load SharedTile.load_elems
-SharedTile.store SharedTile.store_elems SharedTile.subtile SharedTile.type SharedVec.load
-SharedVec.store SharedVec.type Tile.T Tile.abs Tile.as_operand Tile.bitcast Tile.copy
-Tile.dgelu Tile.dtype Tile.exp Tile.exp2 Tile.exp2_ Tile.exp_ Tile.fill_ Tile.first_lane
-Tile.gelu Tile.group_max Tile.group_min Tile.group_sum Tile.lane_gather Tile.lane_strip
-Tile.left_fill_ Tile.log Tile.log2 Tile.lower_fill_ Tile.max Tile.maximum Tile.min Tile.minimum
-Tile.neg_infty_ Tile.prod Tile.relu Tile.right_fill_ Tile.rsqrt Tile.rsqrt_ Tile.run_xor
-Tile.silu Tile.sqrt Tile.step Tile.subtile Tile.sum Tile.swap_halves Tile.to Tile.tril_
-Tile.triu_ Tile.type Tile.upper_fill_ Tile.zero_ TracedKernel.cpp TracedKernel.dump
-TracedKernel.tensors TracedKernel.threads TracedKernel.written_tensors Vec.abs Vec.any_above
-Vec.any_ne Vec.copy Vec.dgelu Vec.exp Vec.exp2 Vec.exp2_ Vec.exp_ Vec.fill_ Vec.gelu Vec.log
-Vec.log2 Vec.max_ Vec.maximum Vec.min_ Vec.minimum Vec.neg_infty_ Vec.relu Vec.rsqrt Vec.rsqrt_
-Vec.silu Vec.sqrt Vec.step Vec.swap_halves Vec.type Vec.zero_ View.atomic_add
-View.atomic_add_scalar View.atomic_and_scalar View.atomic_exch_scalar View.atomic_max_scalar
-View.atomic_min_scalar View.atomic_or_scalar View.atomic_xor_scalar View.load View.load_scalar
-View.store View.store_scalar hk.Bool hk.Build hk.CompileError hk.Constexpr hk.Coord hk.DType
-hk.Digit hk.Global hk.Int hk.Kernel hk.Placement hk.RS hk.RT hk.ResourceError hk.ST hk.SV
-hk.SharedTile hk.SharedVec hk.TARGETS hk.Tensor hk.Tile hk.TracedKernel hk.Vec hk.VerifyError
-hk.View hk.arch.SCHED_CLASSES hk.arch.barrier hk.arch.block_idx hk.arch.lane_id
+Kernel.specialize Kernel.trace MxScales.copy MxScales.type Placement.chunked Placement.cluster
+Placement.none Placement.suffix SharedTile.atomic_add_elems SharedTile.load
+SharedTile.load_elems SharedTile.store SharedTile.store_elems SharedTile.subtile
+SharedTile.type SharedVec.load SharedVec.store SharedVec.type Tile.T Tile.abs Tile.as_operand
+Tile.bitcast Tile.copy Tile.dgelu Tile.dtype Tile.exp Tile.exp2 Tile.exp2_ Tile.exp_ Tile.fill_
+Tile.first_lane Tile.gelu Tile.group_max Tile.group_min Tile.group_sum Tile.lane_gather
+Tile.lane_strip Tile.left_fill_ Tile.log Tile.log2 Tile.lower_fill_ Tile.max Tile.maximum
+Tile.min Tile.minimum Tile.neg_infty_ Tile.prod Tile.relu Tile.right_fill_ Tile.rsqrt
+Tile.rsqrt_ Tile.run_xor Tile.scaled Tile.silu Tile.sqrt Tile.step Tile.subtile Tile.sum
+Tile.swap_halves Tile.to Tile.tril_ Tile.triu_ Tile.type Tile.upper_fill_ Tile.zero_
+TracedKernel.cpp TracedKernel.dump TracedKernel.tensors TracedKernel.threads
+TracedKernel.written_tensors Vec.abs Vec.any_above Vec.any_ne Vec.copy Vec.dgelu Vec.exp
+Vec.exp2 Vec.exp2_ Vec.exp_ Vec.fill_ Vec.gelu Vec.log Vec.log2 Vec.max_ Vec.maximum Vec.min_
+Vec.minimum Vec.neg_infty_ Vec.relu Vec.rsqrt Vec.rsqrt_ Vec.silu Vec.sqrt Vec.step
+Vec.swap_halves Vec.type Vec.zero_ View.atomic_add View.atomic_add_scalar
+View.atomic_and_scalar View.atomic_exch_scalar View.atomic_max_scalar View.atomic_min_scalar
+View.atomic_or_scalar View.atomic_xor_scalar View.load View.load_scalar View.store
+View.store_scalar hk.Bool hk.Build hk.CompileError hk.Constexpr hk.Coord hk.DType hk.Digit
+hk.Global hk.Int hk.Kernel hk.MxScales hk.Placement hk.RS hk.RT hk.ResourceError hk.ST hk.SV
+hk.Scaled hk.SharedTile hk.SharedVec hk.TARGETS hk.Tensor hk.Tile hk.TracedKernel hk.Vec
+hk.VerifyError hk.View hk.arch.SCHED_CLASSES hk.arch.barrier hk.arch.block_idx hk.arch.lane_id
 hk.arch.mma_fence hk.arch.pin hk.arch.pingpong hk.arch.sched_barrier
 hk.arch.sched_group_barrier hk.arch.setprio hk.arch.target hk.arch.vm_wait hk.arch.warp_id
 hk.arch.wg_arrive hk.arch.xcd_count hk.arch.xcd_id hk.as_vec hk.attention hk.broadcast_col
@@ -155,8 +162,8 @@ hk.torch_op hk.transpose hk.transpose_sep hk.uniform hk.zeros
 
 #: The dialect's ops (HKOps.td mnemonics) and their kinds; the inventory's are not primitive.
 _OP_KINDS: Dict[str, str] = {
-    "load_mx_scales": "format", "mx_scales_copy": "merge", "mma_ABt_mx": "merge",
-    "load_fp4_frags": "format", "load_fp4_frags_lds": "merge", "mx_quant_store": "merge",
+    "load_mx_scales": "format", "mx_scales_copy": "primitive", "mma_ABt_mx": "primitive",
+    "load_fp4_frags": "format", "load_fp4_frags_lds": "format", "mx_quant_store": "merge",
     "fp4_operand": "merge", "fp8_operand": "merge", "mx_scales_loose": "merge",
     "gather_prep": "merge", "map_cpp": "escape", "iota": "merge",
     "mfma_strip": "merge", "rotate_half": "merge", "granules": "escape", "load_frag": "escape",
@@ -212,7 +219,7 @@ strip_read strip_row_dot_ordered strip_row_reduce strip_row_reduce_ordered strip
 strip_srsrc strip_tree strip_write stride warpid_uniform word
 """.split()},
         "load_mx_scales": "format", "load_mx_scales_aiter": "format", "load_fp4_frags": "format",
-        "load_w4": "format", "mma_ABt_mx": "merge", "load_fp4_frags_lds": "merge",
+        "load_w4": "format", "mma_ABt_mx": "primitive", "load_fp4_frags_lds": "format",
         "mx_quant_store": "merge", "fp4_operand": "merge", "fp8_operand": "merge",
         "mx_scales_loose": "merge", "gather_prep": "merge",
         "map_cpp": "escape", "mfma_strip_f32_16x16x4": "merge", "rotate_half": "merge",

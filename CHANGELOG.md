@@ -9,6 +9,20 @@ The next version's notes collect here until it is released.
 What is on main after 0.8.0. `pip install hk-dsl` (0.8.0) does not have it;
 the API reference marks such names *New after 0.8.0*.
 
+**The block-scaled MMA is `hk.mma`; MX scales are register values (DSL-surface S2).**
+- `hk.mma("mma_ABt", a.scaled(sa), b.scaled(sb, fmt="fp4", at=(tile, step)), acc)` is gfx950's
+  block-scaled MFMA: `Tile.scaled(scales, fmt=, at=)` makes an MX operand (`hk.Scaled`), and both
+  operands carry one. `hk.mma_ABt_mx` is a deprecated shim for it.
+- `MxScales.copy(into=dst)` replaces `hk.copy_mx_scales(dst, src)`, and `hk.load_fp4_frags`
+  takes an LDS tile as its source, replacing `hk.load_fp4_frags_lds`. Both old names are
+  deprecated shims (DeprecationWarning), removed once nothing outside the repository calls them.
+- `hk.MxScales` and `hk.Scaled` are exported and documented. K1, K2, gemm_cdna's MX mode and the
+  DeepSeek-V4.1 index front (`dsv41_index`) use the new spellings. Every shipped kernel's generated source is byte-identical.
+- Migrating a call with inline loads in its arguments: bind them to locals in the old argument
+  order first (`hk.mma_ABt_mx` evaluated a, b, acc, sa, sb; `hk.mma` with `.scaled` evaluates a,
+  sa, b, sb, acc), or the loads issue in another order and the kernel changes.
+  `tools/surface/migrate.py` rewrites call sites and does this; [docs/migrating.md](docs/migrating.md).
+
 **Removed: `Global.scatter_add_lds`; deprecated: `Tile.make_causal` (DSL-surface S1).**
 - `scatter_add_lds` had no user since K1 chose the deterministic sum (K1 c33). Its dialect op
   and `kittens::scatter_add_lds` are gone. `SharedTile.load` + `Global.scatter(..., add=True)`

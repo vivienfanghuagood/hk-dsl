@@ -34,7 +34,7 @@ from .group import Group, group
 from .kernel import Constexpr, Kernel, TracedKernel, Tensor, func, kernel
 from .placement import Digit, Placement
 from .values import (  # noqa: F401
-    Bool, Coord, Global, Granules, Int, SharedTile, SharedVec, Tile, Value,
+    Bool, Coord, Global, Granules, Int, MxScales, Scaled, SharedTile, SharedVec, Tile, Value,
     Vec, View, as_vec, broadcast_col, broadcast_row, coord, elem_coord, full,
     copy_mx_scales, fp4_operand, fp8_operand, iota, mfma_strip, mx_scales_loose, load_fp4_frags, lane_coords, load_fp4_frags_lds, map_cpp, mx_quant_store, load_mx_scales, load_w4, mma, mma_ABt_mx, neg_infty, rand, tile_coord, transpose, transpose_sep, zeros,
 )
@@ -128,5 +128,5 @@ __all__ = [
     "transpose_sep", "broadcast_row", "broadcast_col", "as_vec", "mma", "map_cpp", "iota", "lane_coords", "mfma_strip",
     "coord", "tile_coord", "elem_coord",
     "Int", "Bool", "Tile", "Vec", "Global", "View", "SharedTile", "SharedVec",
-    "Granules", "Coord",
+    "Granules", "Coord", "MxScales", "Scaled",
 ]

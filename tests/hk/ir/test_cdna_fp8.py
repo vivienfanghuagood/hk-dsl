@@ -59,7 +59,8 @@ def mx_mma_kernel(K=256, name="mx_mma_t"):
         tb = b[hk.elem_coord(0, 0, 0, 0)].load(hk.RT(fp8e4m3, 32, K))
         s_a = hk.load_mx_scales(sa, 16, K // 32, r0, 0)
         s_b = hk.load_mx_scales(sb, 32, K // 32, 0, 0)
-        acc = hk.mma_ABt_mx(ta, tb, hk.zeros(hk.RT(fp32, 16, 32, "col")), s_a, s_b)
+        acc = hk.mma("mma_ABt", ta.scaled(s_a), tb.scaled(s_b),
+                     hk.zeros(hk.RT(fp32, 16, 32, "col")))
         c[hk.elem_coord(0, 0, r0, 0)] = acc
 
     body.__name__ = name
@@ -80,8 +81,8 @@ def test_mx_shapes_are_checked_while_tracing():
     def body(a, sa, c):
         ta = a[hk.elem_coord(0, 0, 0, 0)].load(hk.RT(fp8e4m3, 16, 256))
         s = hk.load_mx_scales(sa, 16, 4, 0, 0)          # 128 wide, not 256
-        c[hk.elem_coord(0, 0, 0, 0)] = hk.mma_ABt_mx(
-            ta, ta, hk.zeros(hk.RT(fp32, 16, 16, "col")), s, s)
+        c[hk.elem_coord(0, 0, 0, 0)] = hk.mma("mma_ABt", ta.scaled(s), ta.scaled(s),
+                                              hk.zeros(hk.RT(fp32, 16, 16, "col")))
 
     body.__annotations__ = {"a": hk.Tensor[fp8e4m3], "sa": hk.Tensor[hk.i8],
                             "c": hk.Tensor[fp32]}

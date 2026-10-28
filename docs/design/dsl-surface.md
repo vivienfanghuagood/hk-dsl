@@ -169,7 +169,7 @@ Columns:
 |---|---|---|---|---|---|---|
 | A1 | `hk.load_mx_scales(src, rows, kblocks, row0, kb0, *, into, layout="ocp"\|"aiter"\|"aiter_gate_up", group_rows, loose)` (`values.py`, `hk.load_mx_scales` op, `kittens::load_mx_scales` / `load_mx_scales_aiter`, `hk_mxs<R, KB, F>`) | API | ops: moe_a8w4 45, mxfp8 6, gemm_cdna 2, mx.py 2; PRs: #115 2; out of tree: 18 | test_cdna_mx_ops, test_k2_ops, test_mx_fp4_aiter, ir/test_cdna_fp8 | the scaled MFMA reads E8M0 scales from lane-specific bytes (opsel). OCP, packed and AITER's shuffled layouts all land in those registers | **KEEP, format.** The scaled MFMA's operand. A new scale layout is a `layout=` entry, never a new op |
 | A2 | `hk.copy_mx_scales(dst, src)` (`hk.mx_scales_copy` op) | API | ops: mxfp8 6 | via ops (test_mxfp8_gemm, test_vllm_mxfp8) | `MxScales` is not a `Tile`, so `Tile.copy(into=)` does not apply | **MERGE: G5.** `src.copy(into=dst)` on `MxScales`; the same op is emitted |
-| A3 | `hk.mma_ABt_mx(a, b, acc, sa, sb, *, a_fmt, b_fmt, sa_at, sb_at)` (`hk.mma_ABt_mx` op, `kittens::mma_ABt_mx`) | API | ops: moe_a8w4 13, mxfp8 3, gemm_cdna 1; PRs: #115 3; out of tree: 14 | test_cdna_mx_ops, test_k2_ops, test_mx_fp4_aiter, test_select_ops, ir/test_cdna_fp8, ir/test_strip | `hk.mma` has no scales | **MERGE: G5.** `hk.mma("ABt", a.scaled(sa), b.scaled(sb, fmt="fp4", at=(t, s)), acc)`; the same op is emitted |
+| A3 | `hk.mma_ABt_mx(a, b, acc, sa, sb, *, a_fmt, b_fmt, sa_at, sb_at)` (`hk.mma_ABt_mx` op, `kittens::mma_ABt_mx`) | API | ops: moe_a8w4 13, mxfp8 3, gemm_cdna 1; PRs: #115 3; out of tree: 14 | test_cdna_mx_ops, test_k2_ops, test_mx_fp4_aiter, test_select_ops, ir/test_cdna_fp8, ir/test_strip | `hk.mma` has no scales | **MERGE: G5.** `hk.mma("mma_ABt", a.scaled(sa), b.scaled(sb, fmt="fp4", at=(t, s)), acc)`; the same op is emitted |
 | A4 | `hk.load_fp4_frags(ty, src, row0, kc0, *, group_rows, gate_up)` (`kittens::load_fp4_frags`) | API | ops: moe_a8w4 8 | test_cdna_mx_ops, test_mx_fp4_aiter | AITER's `shuffle_weight` layout (1 KB chunks in lane order, gate/up interleave), with a 64-bit base per expert (a 4.5 GB weight passes a 32-bit buffer offset) | **KEEP, format.** AITER's pre-shuffled MXFP4 weights only |
 | A5 | `hk.load_fp4_frags_lds(ty, src, row0, chunk0)` | API | ops: moe_a8w4 2 | test_cdna_mx_ops | the same bytes, from an LDS tile | **MERGE: A4.** One `load_fp4_frags` whose `src` may be a `SharedTile`; it dispatches to the existing op |
 | A6 | `hk.mx_quant_store(src, q, s, row0, col0)` (`kittens::mx_quant_store`, 70 lines) | API | ops: moe_a8w4 1 (stage-1 epilogue, `mxq`), mxfp8 1 (`quant`) | test_cdna_mx_ops, test_mxfp8_quant, test_moe_a8w4, test_fenced | floor and ceil on exponent bits, byte scatter of scales into AITER's 32-row or the packed layout, packed fp8 conversion: no integer or bit ops on tiles | **MERGE: G1 composition**, after G1, behind V2. If it is slower (K1's +3-4% came from it), reclassify as KEEP-format with the measurement |
@@ -449,20 +449,20 @@ out.scatter(o, rows_out.offset(i * TILE), col=c0)
 ### G5. One MMA entry; MX scales as register values
 
 ```python
-acc = hk.mma("ABt", a.scaled(sa), b.scaled(sb, fmt="fp4", at=(tile, step)), acc)
+acc = hk.mma("mma_ABt", a.scaled(sa), b.scaled(sb, fmt="fp4", at=(tile, step)), acc)
 src.copy(into=dst)                                   # MxScales, as Tile.copy(into=)
 w = hk.load_fp4_frags(ty, src, row0, kc0, ...)       # src a Global or a SharedTile
 ```
 
 **Semantics.**
 - `Tile.scaled(scales, *, fmt="fp8", at=(0, 0))` makes a scaled operand. `hk.mma` takes one only
-  as both operands of the `ABt` variant on gfx950. It emits today's `hk.mma_ABt_mx` with
+  as both operands of the `mma_ABt` variant on gfx950. It emits today's `hk.mma_ABt_mx` with
   `a_fmt` / `b_fmt` / `sa_at` / `sb_at` taken from the operands.
 - Unscaled calls are unchanged.
 
 ```python
 acc = hk.mma_ABt_mx(a, w, acc, sa, sw, b_fmt="fp4", sb_at=(t, s))            # today
-acc = hk.mma("ABt", a.scaled(sa), w.scaled(sw, fmt="fp4", at=(t, s)), acc)   # target
+acc = hk.mma("mma_ABt", a.scaled(sa), w.scaled(sw, fmt="fp4", at=(t, s)), acc)   # target
 hk.copy_mx_scales(S[0][0][i], S[1][0][i])                                    # today
 S[1][0][i].copy(into=S[0][0][i])                                             # target
 ```
@@ -576,6 +576,29 @@ form:
 | S10 | A6: `mx_quant_store` as a G1 composition, in `hk.mx` (Python), for K1's epilogue and `mxfp8.quant` | `mx_quant_store` (alias to the composition) | V2: K1 and K2 quant bitwise and A/B; fence; spill. Not adopted if slower | S7 (and open question 3) |
 | S11 | D1: RDNA3 `as_operand(k_order="even_odd")`; attn_k3 drops `PairPKernel` | none (internal to attn_k3) | V1 on gfx1100 (the same C++ body); V2 on a W7900D if the ISA differs | S0 |
 | S13 | Upstream E2, E3 and E5 into the HipKittens fork; delete hk's copies when the submodule moves | none | V1 | S12 |
+
+### 5.1 The order trap: a migration must not move an op
+
+*Added after S2's review.* A kernel is its trace, and the trace is the order the DSL emits ops in,
+which is Python's evaluation order. A new spelling that takes its arguments in another order than
+the old one can therefore change the kernel even though each op is the same. G5 is such a case:
+`hk.mma_ABt_mx(a, b, acc, sa, sb)` evaluates `a, b, acc, sa, sb`, and
+`hk.mma("mma_ABt", a.scaled(sa), b.scaled(sb), acc)` evaluates `a, sa, b, sb, acc`. With names as
+arguments nothing moves. With inline loads (the decode MoE's shared-down step loads the weights,
+x and both scales inside the call), an in-place rewrite issues weights, their scales, x, its
+scales instead of weights, x, then the scales: different generated source, and on gfx950 a
+different load issue order, which is performance. `copy_mx_scales(dst, src)` →
+`src.copy(into=dst)` has the same shape.
+
+**The rule.** When a migration reorders arguments, the arguments that emit ops are bound to locals
+in the old order first, and the new spelling takes the locals. `tools/surface/migrate.py` does
+this, only where the relative order would move, and reports a call nested in a larger expression
+(which it cannot reorder alone) for a person. The shims need nothing: an old-spelling call still
+evaluates its arguments in the old order. V0 is still the check -- generated C++ byte-identical
+before and after -- and `tests/hk/ir/test_surface_migrate.py` holds the rewriter to it on a
+kernel with inline loads in every argument, with the trace's load order compared too. The user's
+side of this is [Migrating](../migrating.md). Later steps that change an argument order (S9's
+`hk.mma` form, S10's composition) follow the same rule.
 
 ## 6. Impact on shipped kernels
 

@@ -392,10 +392,10 @@ def index_kernel(wscale: float):
         for i in range(len(g3)):
             wt, ws, xt, xs = g3[i]
             if i == 0:
-                hk.mma_ABt_mx(wt, xt, acc3, ws, xs, into=acc3)
+                hk.mma("mma_ABt", wt.scaled(ws), xt.scaled(xs), acc3, into=acc3)
             else:
                 if w + WAVES * i < 10:
-                    hk.mma_ABt_mx(wt, xt, acc3, ws, xs, into=acc3)
+                    hk.mma("mma_ABt", wt.scaled(ws), xt.scaled(xs), acc3, into=acc3)
         cross_waves(acc3)
         if w == WS:
             e = hk.iota(hk.RS(fp32, 1, 256, 4))                     # token = e >> 4, row = e & 15
@@ -665,7 +665,9 @@ def index_kernel(wscale: float):
                         kb = hk.fp4_operand(kw)
                         ks = hk.mx_scales_loose(hk.map_cpp("x0 & 0xFF", kb8, dtype=i32))
                         for im_ in range(2):
-                            lt_.subtile(16, 16, 2 * w + im_, 0).store(hk.mma_ABt_mx(kb, qa_[im_], hk.zeros(_T_C), ks, qsc_[im_], a_fmt="fp4", b_fmt="fp4"))
+                            lt_.subtile(16, 16, 2 * w + im_, 0).store(hk.mma(
+                                "mma_ABt", kb.scaled(ks, fmt="fp4"),
+                                qa_[im_].scaled(qsc_[im_], fmt="fp4"), hk.zeros(_T_C)))
                         lg16 = hk.zeros(hk.RS(fp32, 1, 1024, 16))
                         for is_ in range(2):
                             sv = lt_.load_elems(hk.map_cpp(f"x0 < 256 ? (2 * x1 + {is_}) * 256 + x0 : -1", hl_, w), runs=True)
