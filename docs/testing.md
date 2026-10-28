@@ -562,6 +562,13 @@ gfx1201 dev box (`<rdna4-host>`: 8x Radeon AI PRO R9700, ROCm 7.2.3), in
 it no longer does, so a red gfx1201 fails the run. Whether it is one of main's
 required checks is the owner's setting.
 
+After the GPU tier the job runs the [performance gate](#the-performance-gate)
+on the same card (`HK_PERF_GATE=1`) against `tests/perf/baselines/gfx1201.json`:
+gemm, attention, the norms, softmax and the fp8 and int8 GEMMs, hk against
+torch, Inductor and Triton -- the arms the container has. The baseline's four
+runs on an R9700 gate 38 pairs at 3.0-8.9% (median 3.0%); the 1- and 32-row norms
+are too noisy there to gate. A warm run takes about a minute.
+
 **The box is shared.** Other people run on its cards, and none of them takes
 our locks. So every GPU run there, CI's and a person's, goes through
 `scripts/ci/gfx1201/hkr9 IDX|auto|none -- CMD`: our lock of the card

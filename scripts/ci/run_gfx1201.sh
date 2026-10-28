@@ -108,7 +108,7 @@ HKR9_LOCK_HELD=1 HKR9_NAME=$NAME \
 HKR9_DOCKER_ARGS="--label hk-gha.runner=$RUNNER --label hk-gha.run=$GITHUB_RUN_ID --label hk-gha.attempt=$GITHUB_RUN_ATTEMPT --label hk-gha.tier=$TIER --label hk-gha.started=$(date +%s)" \
 HKR9_MOUNTS="-v $CIDIR:/ci -v $GITHUB_WORKSPACE:/ci/src -v $RUN:/ci/run -v $MLIR:/ci/mlir:ro -w /ci/src" \
     "$HERE/gfx1201/hkr9" "$GPU" -- \
-    "HK_CI_ARCH=gfx1201 HK_CI_TIER=$TIER HK_CI_DEVICE=\"Radeon AI PRO R9700 (gfx1201), GPU $GPU\" \
+    "HK_CI_ARCH=gfx1201 HK_CI_TIER=$TIER HK_PERF_GATE=1 HK_CI_DEVICE=\"Radeon AI PRO R9700 (gfx1201), GPU $GPU\" \
      /ci/src/scripts/ci/container_run.sh $SHA $GPU" \
     {REAP}>&- {LOCKFD}>&- < /dev/null &
 DPID=$!

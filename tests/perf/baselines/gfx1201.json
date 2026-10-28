@@ -1,0 +1,549 @@
+{
+ "_about": "hk's kernels against torch, Inductor, Triton and FlyDSL as ratios t_arm / t_hk measured in one scoreboard run; written by tools/hk-bench/check_regression.py --refresh, checked by scripts/perf_gate.sh.",
+ "_tolerance": "tol = max(floor, multiplier x noise), per (case, arm). noise is the larger of the ratio's spread across the baseline runs (max |r_i / median - 1|) and its spread within a run (the two arms' second-best-round spreads, summed, worst run). The multiplier covers what a handful of runs does not see; the floor keeps it above zero. A pair whose tol would exceed cap is not gated. To change a tolerance, re-measure the noise (--refresh with more runs); do not edit tol by hand.",
+ "_noise": "4 runs; 38 gated pairs, whose noise has median 0.0084 and max 0.0298; 24 sit at the floor; the widest tolerance is 0.089 (fp8 128x14336x4096 / torch); 14 pairs are not gated.",
+ "arch": "gfx1201",
+ "date": "2026-10-28",
+ "args": [
+  "--only",
+  "gemm,attn,norm,softmax,fp8,int",
+  "--arms",
+  "hk,torch,inductor,triton",
+  "--rounds",
+  "7",
+  "--calls",
+  "50"
+ ],
+ "floor": 0.03,
+ "multiplier": 3.0,
+ "cap": 0.15,
+ "runs": 4,
+ "stat": "median, queued",
+ "meta": {
+  "device": "AMD Radeon Graphics",
+  "torch": "2.10.0+rocm7.2.3.git1a270074",
+  "triton": "3.6.0+rocm7.2.3.git4ed88892",
+  "flydsl": "ModuleNotFoundError: No module named 'flydsl'",
+  "kernels": "442e4fbdba9076d4",
+  "hipcc": "1c2b240bb1f6ff35",
+  "hk": "0.8.0",
+  "dialect": "hk-dialect-6",
+  "toolchain": "7cd60dcb349c1fee8ce8f8c06e05eaca"
+ },
+ "cases": {
+  "gemm 4096x4096x4096": {
+   "torch": {
+    "ratio": 1.4649,
+    "runs": [
+     1.4938,
+     1.4823,
+     1.4474,
+     1.4402
+    ],
+    "across": 0.0198,
+    "within": 0.0053,
+    "tol": 0.0593
+   },
+   "triton": {
+    "ratio": 1.0721,
+    "runs": [
+     1.0793,
+     1.0781,
+     1.0661,
+     1.0659
+    ],
+    "across": 0.0067,
+    "within": 0.0041,
+    "tol": 0.03
+   }
+  },
+  "gemm 2048x6144x4096": {
+   "torch": {
+    "ratio": 1.0769,
+    "runs": [
+     1.0805,
+     1.0769,
+     1.075,
+     1.0768
+    ],
+    "across": 0.0034,
+    "within": 0.0032,
+    "tol": 0.03
+   },
+   "triton": {
+    "ratio": 1.09,
+    "runs": [
+     1.0987,
+     1.0945,
+     1.0855,
+     1.0821
+    ],
+    "across": 0.008,
+    "within": 0.0032,
+    "tol": 0.03
+   }
+  },
+  "gemm 2048x4096x4096": {
+   "torch": {
+    "ratio": 1.0877,
+    "runs": [
+     1.0803,
+     1.0852,
+     1.0903,
+     1.0953
+    ],
+    "across": 0.0069,
+    "within": 0.0065,
+    "tol": 0.03
+   },
+   "triton": {
+    "ratio": 1.0813,
+    "runs": [
+     1.0882,
+     1.0846,
+     1.078,
+     1.0697
+    ],
+    "across": 0.0107,
+    "within": 0.005,
+    "tol": 0.0321
+   }
+  },
+  "gemm 2048x24576x4096": {
+   "torch": {
+    "ratio": 1.0741,
+    "runs": [
+     1.0733,
+     1.0737,
+     1.0745,
+     1.0756
+    ],
+    "across": 0.0014,
+    "within": 0.0039,
+    "tol": 0.03
+   },
+   "triton": {
+    "ratio": 1.0769,
+    "runs": [
+     1.081,
+     1.0788,
+     1.075,
+     1.0733
+    ],
+    "across": 0.0038,
+    "within": 0.0026,
+    "tol": 0.03
+   }
+  },
+  "gemm 2048x4096x12288": {
+   "torch": {
+    "ratio": 1.1534,
+    "runs": [
+     1.1627,
+     1.1531,
+     1.1537,
+     1.1461
+    ],
+    "across": 0.0081,
+    "within": 0.0052,
+    "tol": 0.03
+   },
+   "triton": {
+    "ratio": 1.1259,
+    "runs": [
+     1.1336,
+     1.1329,
+     1.1189,
+     1.1131
+    ],
+    "across": 0.0114,
+    "within": 0.0028,
+    "tol": 0.0341
+   }
+  },
+  "attn n4096 causal gqa4": {
+   "torch": {
+    "ratio": 3.987,
+    "runs": [
+     4.0012,
+     4.0153,
+     3.951,
+     3.9728
+    ],
+    "across": 0.009,
+    "within": 0.0045,
+    "tol": 0.03
+   }
+  },
+  "attn n4096 full gqa4": {
+   "torch": {
+    "ratio": 1.9219,
+    "runs": [
+     1.951,
+     1.9284,
+     1.9154,
+     1.9097
+    ],
+    "across": 0.0152,
+    "within": 0.0036,
+    "tol": 0.0455
+   }
+  },
+  "rms_norm 2048x4096": {
+   "inductor": {
+    "ratio": 1.1114,
+    "runs": [
+     1.1118,
+     1.1109,
+     1.1118,
+     1.1092
+    ],
+    "across": 0.002,
+    "within": 0.0027,
+    "tol": 0.03
+   },
+   "torch": {
+    "ratio": 1.4502,
+    "runs": [
+     1.4464,
+     1.4366,
+     1.454,
+     1.456
+    ],
+    "across": 0.0094,
+    "within": 0.002,
+    "tol": 0.03
+   },
+   "triton": {
+    "ratio": 1.0974,
+    "runs": [
+     1.0986,
+     1.0907,
+     1.1034,
+     1.0962
+    ],
+    "across": 0.0061,
+    "within": 0.0016,
+    "tol": 0.03
+   }
+  },
+  "rms_norm 8192x4096": {
+   "inductor": {
+    "ratio": 1.0121,
+    "runs": [
+     1.0114,
+     1.0114,
+     1.0129,
+     1.0141
+    ],
+    "across": 0.0019,
+    "within": 0.0011,
+    "tol": 0.03
+   },
+   "torch": {
+    "ratio": 1.0257,
+    "runs": [
+     1.0244,
+     1.0243,
+     1.027,
+     1.0272
+    ],
+    "across": 0.0015,
+    "within": 0.0006,
+    "tol": 0.03
+   },
+   "triton": {
+    "ratio": 1.0095,
+    "runs": [
+     1.008,
+     1.0082,
+     1.0107,
+     1.0112
+    ],
+    "across": 0.0017,
+    "within": 0.0004,
+    "tol": 0.03
+   }
+  },
+  "fused_add_rms_norm 2048x4096": {
+   "inductor": {
+    "ratio": 1.1543,
+    "runs": [
+     1.1549,
+     1.1474,
+     1.1536,
+     1.158
+    ],
+    "across": 0.0059,
+    "within": 0.0099,
+    "tol": 0.03
+   },
+   "torch": {
+    "ratio": 1.3623,
+    "runs": [
+     1.3626,
+     1.3621,
+     1.3607,
+     1.3627
+    ],
+    "across": 0.0012,
+    "within": 0.0023,
+    "tol": 0.03
+   },
+   "triton": {
+    "ratio": 1.0238,
+    "runs": [
+     1.0231,
+     1.0242,
+     1.0239,
+     1.0238
+    ],
+    "across": 0.0007,
+    "within": 0.0012,
+    "tol": 0.03
+   }
+  },
+  "fused_add_rms_norm 8192x4096": {
+   "inductor": {
+    "ratio": 1.0406,
+    "runs": [
+     1.0407,
+     1.0405,
+     1.0407,
+     1.0249
+    ],
+    "across": 0.0151,
+    "within": 0.0006,
+    "tol": 0.0454
+   },
+   "torch": {
+    "ratio": 1.2853,
+    "runs": [
+     1.2853,
+     1.2856,
+     1.2852,
+     1.2656
+    ],
+    "across": 0.0153,
+    "within": 0.0006,
+    "tol": 0.0458
+   },
+   "triton": {
+    "ratio": 1.0488,
+    "runs": [
+     1.0488,
+     1.0487,
+     1.0488,
+     1.0334
+    ],
+    "across": 0.0147,
+    "within": 0.0008,
+    "tol": 0.044
+   }
+  },
+  "softmax 2048x4096": {
+   "inductor": {
+    "ratio": 3.135,
+    "runs": [
+     3.1231,
+     3.1454,
+     3.1441,
+     3.1258
+    ],
+    "across": 0.0038,
+    "within": 0.0088,
+    "tol": 0.03
+   },
+   "torch": {
+    "ratio": 1.5519,
+    "runs": [
+     1.5346,
+     1.5527,
+     1.5641,
+     1.551
+    ],
+    "across": 0.0111,
+    "within": 0.0117,
+    "tol": 0.0351
+   },
+   "triton": {
+    "ratio": 1.3333,
+    "runs": [
+     1.3352,
+     1.3312,
+     1.3347,
+     1.332
+    ],
+    "across": 0.0016,
+    "within": 0.0142,
+    "tol": 0.0426
+   }
+  },
+  "softmax 8192x4096": {
+   "inductor": {
+    "ratio": 1.1166,
+    "runs": [
+     1.1054,
+     1.1132,
+     1.12,
+     1.1206
+    ],
+    "across": 0.01,
+    "within": 0.0033,
+    "tol": 0.03
+   },
+   "torch": {
+    "ratio": 1.0127,
+    "runs": [
+     1.0127,
+     1.0113,
+     1.0128,
+     1.0138
+    ],
+    "across": 0.0014,
+    "within": 0.0017,
+    "tol": 0.03
+   },
+   "triton": {
+    "ratio": 1.0262,
+    "runs": [
+     1.0243,
+     1.0248,
+     1.0278,
+     1.0275
+    ],
+    "across": 0.0018,
+    "within": 0.0007,
+    "tol": 0.03
+   }
+  },
+  "fp8 32x4096x4096 W x8": {
+   "torch": {
+    "ratio": 1.2954,
+    "runs": [
+     1.2921,
+     1.2975,
+     1.2951,
+     1.2957
+    ],
+    "across": 0.0025,
+    "within": 0.0167,
+    "tol": 0.0501
+   }
+  },
+  "fp8 32x14336x4096 W x3": {
+   "torch": {
+    "ratio": 1.6259,
+    "runs": [
+     1.6134,
+     1.6217,
+     1.6309,
+     1.63
+    ],
+    "across": 0.0077,
+    "within": 0.003,
+    "tol": 0.03
+   }
+  },
+  "fp8 128x4096x4096": {
+   "torch": {
+    "ratio": 2.5207,
+    "runs": [
+     2.5888,
+     2.5481,
+     2.4933,
+     2.4825
+    ],
+    "across": 0.027,
+    "within": 0.0183,
+    "tol": 0.081
+   }
+  },
+  "fp8 128x14336x4096": {
+   "torch": {
+    "ratio": 1.4294,
+    "runs": [
+     1.4287,
+     1.4689,
+     1.3935,
+     1.43
+    ],
+    "across": 0.0277,
+    "within": 0.0298,
+    "tol": 0.0894
+   }
+  },
+  "fp8 2048x4096x4096": {
+   "torch": {
+    "ratio": 1.4181,
+    "runs": [
+     1.4344,
+     1.4181,
+     1.411,
+     1.4182
+    ],
+    "across": 0.0115,
+    "within": 0.0084,
+    "tol": 0.0344
+   }
+  },
+  "fp8 2048x14336x4096": {
+   "torch": {
+    "ratio": 1.3689,
+    "runs": [
+     1.4018,
+     1.3708,
+     1.367,
+     1.3599
+    ],
+    "across": 0.0241,
+    "within": 0.0042,
+    "tol": 0.0722
+   }
+  },
+  "int8 2048x4096x4096": {
+   "torch": {
+    "ratio": 1.0112,
+    "runs": [
+     1.011,
+     1.0178,
+     1.0114,
+     1.0089
+    ],
+    "across": 0.0065,
+    "within": 0.0075,
+    "tol": 0.03
+   }
+  },
+  "int8 4096x4096x4096": {
+   "torch": {
+    "ratio": 1.0156,
+    "runs": [
+     1.0211,
+     1.0147,
+     1.0165,
+     1.0141
+    ],
+    "across": 0.0054,
+    "within": 0.005,
+    "tol": 0.03
+   }
+  }
+ },
+ "not_gated": {
+  "rms_norm 1x4096 / inductor": "noise 0.092 x 3 = 0.277 passes the cap 0.15",
+  "rms_norm 1x4096 / torch": "noise 0.083 x 3 = 0.248 passes the cap 0.15",
+  "rms_norm 1x4096 / triton": "noise 0.077 x 3 = 0.232 passes the cap 0.15",
+  "rms_norm 32x4096 / inductor": "noise 0.131 x 3 = 0.392 passes the cap 0.15",
+  "rms_norm 32x4096 / torch": "noise 0.086 x 3 = 0.257 passes the cap 0.15",
+  "rms_norm 32x4096 / triton": "noise 0.100 x 3 = 0.300 passes the cap 0.15",
+  "fused_add_rms_norm 1x4096 / inductor": "noise 0.095 x 3 = 0.286 passes the cap 0.15",
+  "fused_add_rms_norm 1x4096 / torch": "noise 0.062 x 3 = 0.187 passes the cap 0.15",
+  "fused_add_rms_norm 1x4096 / triton": "noise 0.051 x 3 = 0.152 passes the cap 0.15",
+  "fused_add_rms_norm 32x4096 / inductor": "noise 0.083 x 3 = 0.250 passes the cap 0.15",
+  "fused_add_rms_norm 32x4096 / torch": "noise 0.077 x 3 = 0.230 passes the cap 0.15",
+  "fused_add_rms_norm 32x4096 / triton": "noise 0.090 x 3 = 0.271 passes the cap 0.15",
+  "int4 2048x4096x4096": "hk was not timed in every run",
+  "int4 4096x4096x4096": "hk was not timed in every run"
+ }
+}
