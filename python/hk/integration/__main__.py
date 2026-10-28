@@ -123,6 +123,11 @@ def main(argv=None) -> int:
     print()
     for name, what in status().items():
         print(f"{name:10s} {what}")
+    if args.status:
+        from ..runtime.compile import mfma_gate_status  # noqa: PLC0415
+
+        print()
+        print("\n".join(mfma_gate_status()))
     if not args.status:
         print(f"\nbackends: {sorted(BACKENDS)}; --patch to apply, --warm to "
               f"precompile")

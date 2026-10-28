@@ -6,6 +6,7 @@
 - [Examples, and checks at full size](#examples-and-checks-at-full-size)
 - [The agents' tools](#the-agents-tools)
 - [CI](#ci)
+- [The merge train](#the-merge-train)
 - [The performance gate](#the-performance-gate)
 - [The gates for a change to the generated code](#the-gates-for-a-change-to-the-generated-code)
 - [Reproducing](#reproducing)
@@ -667,6 +668,143 @@ Until 19 October 2026 the tier was a polling CI on the same machines
 and `gpu/gfx950` commit statuses; older commits carry those, with reports
 in the [`gpu-ci-logs`](https://github.com/vivienfanghuagood/hk-dsl/releases/tag/gpu-ci-logs)
 prerelease. [Chapter 40](history/40-gpu-ci-on-actions.md) records the switch.
+
+## The merge train
+
+Pull requests reach main through a merge train, twice a day. Before it, every
+merge meant rebasing each other ready pull request onto the new main and
+running the GPU tier on it again, about an hour a PR. The train tests them
+together once:
+- **Windows: 01:00Z and 13:00Z.** The train is built in the three hours after
+  a window. Outside the windows only urgent fixes merge, the ordinary way.
+- **At a window,** every READY pull request, in READY order, is stacked on one
+  branch, `train/<YYYYMMDD>-<HHMM>`: main, then each PR. CI (`ci.yml`) and the
+  GPU tier (`gpu.yml`, all four jobs) run once on that branch.
+- **If both are green,** the PRs are squash-merged in the same order, with no
+  run of their own, and main's tree is checked against the train's after each
+  merge.
+- **A PR that conflicts while stacking, or that turns the train red,** is kicked
+  out, and the train is rebuilt without it and run again.
+
+**READY.** A PR is READY when a comment on it says so, by the owner or a
+collaborator. Its first line starts with `READY` and names the PR's current head
+(seven or more hex digits), as in `READY <head> (contains main <sha>)`,
+`READY: head <head> on main <sha>` or `READY at <head> (base main <sha>)`.
+- The comment's time is the PR's place in the queue.
+- A push voids it: the head no longer matches.
+- A later comment whose first line starts with `NOT READY`, or a kick by the
+  train, withdraws it. A new READY after that queues the PR again, at its new
+  time.
+- A draft, a PR whose base is not main (a stacked one, until its base merges
+  and it is retargeted), and a PR whose head lacks green `gfx950` and `gfx1100`
+  runs are not READY. The last could only merge by an admin's bypass.
+- A READY written anywhere else (a status note, a chat) does not count.
+
+READY still means what it did: CI and the four GPU jobs passed on the head. What
+changes is that a READY PR is not rebased again when main moves; the train
+tests it on top of the main it will merge into.
+
+**How a PR is stacked.** Each PR enters the train exactly as GitHub's squash
+merge will apply it: a three-way merge of the train so far with the PR's head,
+on `merge-base(main, head)` (`git merge-tree --write-tree --merge-base`). Each
+is one commit with two parents, the train so far and the PR's head. That base
+does not change as the PRs ahead of it merge, because a squash commit is never
+an ancestor of another PR's head. So after the k-th merge, main's tree is the
+k-th train commit's.
+- This rule reproduces every squash merge in this repository's history, bit for
+  bit (99 when it was written; 16 of them were of heads behind main).
+- For independent PRs a plain `git merge --no-ff` gives the same trees. It can
+  differ when a PR carries commits of an earlier member (one that was stacked on
+  it), and the squash rule is the one GitHub applies.
+
+**The runs.** Neither workflow runs on a push to a branch other than main, so
+the train dispatches both on its branch. The branch is a ref of its own: the
+GPU jobs' one-run-per-ref concurrency groups keep it apart from the PRs' runs.
+`docs.yml` runs on the push when the train changes `docs/`; if it ran, it
+counts too. The train is green when every CI job passed and all four GPU jobs
+(`gfx950`, `gfx950-vllm`, `gfx1100`, `gfx1201`) passed.
+
+**Kicks.**
+- **On a conflict,** the PR is kicked at build time. Its comment names the files
+  and the member ahead of it, or main. If the conflict is with a member, it can
+  only be resolved once that member has merged; it rides the next window.
+- **On red,** `status` lists the failed jobs and their failing test files, from
+  the job logs and the GPU jobs' report artifacts. It also shows the same job on
+  main's own run at the train's base: a failure main has too is not the train's.
+  It then names a suspect: the one member that touches a failing test file, or
+  the only one that changes code rather than `bench/` or prose.
+- **`kick N`** comments on the PR, which withdraws its READY. It cancels the
+  train's runs, rebuilds the branch without the PR, runs it again, and posts
+  each member's new position.
+- **When the suspect is unclear,** `bisect` searches the train's prefixes (its
+  own commits, main plus the first k PRs) for the first red one. It reruns only
+  the workflows that failed, on `train/<...>-r<round>-p<k>`, one probe per call.
+- **For a flake,** `retry` reruns the failed jobs.
+
+**The merge** is the merger's step alone (`merge --i-am-the-merger`). It refuses
+unless all of these hold:
+- the train is green on its current head, and nobody moved the train branch;
+- main is still the train's base, or the last merge this train made;
+- every member is open, not a draft, based on main, at the head that was
+  tested, still READY, and carries green `gfx950` and `gfx1100` runs of its own.
+  A head without them needs `--admin-bypass`, the merger's decision.
+
+It then squash-merges the PRs in order through the REST merge endpoint. Each
+call passes the tested head as `sha`, so GitHub refuses one that moved, and
+titles the commit `<PR title> (#N)`. After each merge, main must be the
+previous main plus that one commit, with the train commit's tree. Otherwise it
+stops at once and says so on the PR. After the last one, main's tree must be
+the train's.
+
+**Branch protection.** main requires `gfx950` and `gfx1100` from GitHub
+Actions, not up to date with main (see "Required checks", above). This is why
+the train needs no change to it:
+- Every READY head carries those two checks from its own run, and a head behind
+  main is not refused. So each PR stays mergeable after the ones ahead of it
+  land.
+- The train posts no statuses on the heads, and rewrites no PR branch. A token
+  cannot create a check run that counts for a check pinned to the Actions app.
+  Pushing each PR to its place in the train would give it a new head without
+  checks.
+- The owner's merges bypass protection anyway, so the script's checks are the
+  gate, and it refuses what GitHub would let through.
+
+**The script** is `scripts/ci/merge_train.py`:
+
+```bash
+python3 scripts/ci/merge_train.py plan                     # READY PRs in order, and why the rest are not
+python3 scripts/ci/merge_train.py build                    # at a window: stack, push, dispatch, comment
+python3 scripts/ci/merge_train.py status [--wait]          # runs and jobs; on red the suspects
+python3 scripts/ci/merge_train.py kick N [--reason TEXT]   # drop #N, rebuild, rerun
+python3 scripts/ci/merge_train.py bisect                   # one probe of a bisection (call again)
+python3 scripts/ci/merge_train.py retry                    # rerun the failed jobs (a flake)
+python3 scripts/ci/merge_train.py merge --i-am-the-merger  # squash-merge in order, check the trees
+python3 scripts/ci/merge_train.py cleanup [--abandon]      # delete the train's branches
+```
+
+How it behaves:
+- **`--dry-run`** works on every command: no push, dispatch, comment, merge or
+  delete.
+- **Every command can be run again.** The train's commits have fixed dates, so a
+  rebuild of the same stack is the same commit. A run that was dispatched is
+  found again, not dispatched twice. A comment is posted once a round. `merge`
+  takes up after the last PR that merged.
+- **It never pushes to main or to a PR branch.** It only creates and moves
+  `train/` branches, each with a lease on the value it expects.
+- **State and a log of every command it ran** are kept per train under
+  `$MERGE_TRAIN_DIR` (default `~/.local/state/hk-merge-train`).
+- **`MERGE_TRAIN_PRUNE`** names a command for `cleanup` to run afterwards, such
+  as a list of the per-branch build directories that can go;
+  `MERGE_TRAIN_PRUNE_YES` names the one that `cleanup --prune-yes` runs instead,
+  which deletes them.
+- **Requirements:** git 2.40 or newer and an authenticated `gh`.
+- **Testing the train itself:** `--prs`, `--include-drafts`,
+  `--ignore-head-checks` and `--workflows ci` build a train from throwaway draft
+  PRs. `merge` refuses a draft, and a head without its own checks unless
+  `--admin-bypass` is given.
+
+`tests/hk/ir/test_merge_train.py` tests the READY rules, the window names, and
+the squash stacking against a scratch repository.
 
 ## The performance gate
 

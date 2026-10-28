@@ -106,6 +106,38 @@ def test_the_patched_fused_moe_keeps_aiters_signature_and_reverts():
     assert list(_params(afm.fused_moe)) == want
 
 
+# -- the DeepSeek-V4.1 index launch -----------------------------------------------------------
+
+
+def test_mono_decode_still_has_the_select_the_index_route_replaces():
+    import importlib
+
+    from hk.integration import vllm_dsv41_index as PI
+    from vllm.v1.attention.ops import rocm_paged_mxfp4_indexer as RI
+
+    m = importlib.import_module(PI.MODULE)
+    assert list(_params(m._select)) == list(_params(PI._select))
+    assert "device" in _params(m._mono_runner)
+    lay = RI.rocm_paged_mxfp4_cache_layout(32, 128, 64)
+    assert {"n_per_tile", "d_per_tile", "scale_lanes"} <= set(dir(lay))
+
+
+def test_the_index_route_patches_mono_decode_and_reverts():
+    import importlib
+
+    from hk.integration import vllm_dsv41_index as PI
+
+    m = importlib.import_module(PI.MODULE)
+    orig = m._select
+    try:
+        assert PI.apply_patch().startswith("DeepSeek-V4.1 index layers")
+        assert m._select.__wrapped__ is PI._select
+        assert list(_params(m._select)) == list(_params(orig))
+    finally:
+        PI.revert()
+    assert m._select is orig
+
+
 # -- the plugin -------------------------------------------------------------------------------
 
 
@@ -137,10 +169,10 @@ def plugin_env(monkeypatch):
     for e in ["HK_DISABLE", "HK_PATCH_VLLM", "HK_VLLM_USER",
               *[r.env for r in switches.routes("vllm")]]:
         monkeypatch.delenv(e, raising=False)
-    from hk.integration import vllm_int4
+    from hk.integration import vllm_dsv41_index, vllm_int4
 
     yield monkeypatch
-    for mod in (PM, PX, vllm_int4):
+    for mod in (PM, PX, vllm_int4, vllm_dsv41_index):
         mod.revert()
 
 

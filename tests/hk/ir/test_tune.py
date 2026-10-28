@@ -365,7 +365,12 @@ def test_gfx1201_reads_its_shipped_records_behind_this_machines(tunedir):
     assert got is not None and got[0] == records.shipped_route("gfx1201", 64, 4096, 4096)[0]
     assert gemm.schedule_for(50, 4096, 4096, user=False)["block_n"] == 64
     # ... and nothing past what it holds, nor for another arch.
-    assert gemm.user_route(4096, 4096, 4096) is None
+    assert gemm.user_route(64, 5120, 4096) is None
+    # Another arch asked for by name gets its own records, not this one's
+    # (hk.schedules.lookup and hk.templates.gemm.plan take an arch).
+    assert gemm.user_route(4096, 4096, 4096) is not None
+    assert gemm.user_route(4096, 4096, 4096, arch="gfx1100") is None
+    assert gemm.schedule_for(4096, 4096, 4096, arch="gfx1100") == gemm.DEFAULT
     assert records.shipped_route("gfx1100", 64, 4096, 4096) is None
     assert records.shipped_route("gfx950", 64, 4096, 4096) is None
     # This machine's record comes first; HK_AUTOTUNE=0 ignores both.

@@ -1,4 +1,4 @@
-"""Numerics for the DSL attention kernel, against `F.scaled_dot_product_attention`.
+"""Numerics for the DSL attention kernel, against exact (float64) attention.
 
 Needs a Radeon and torch. The resource half of the Phase 4 gate -- ScratchSize
 0 on all four variants, one occupancy wave better than the handwritten C++ --
@@ -6,10 +6,11 @@ is a build-time check and runs on the no-GPU tier. This file is the half that
 catches what no resource gate can: a mask off by one row spills nothing and
 occupies nothing extra, and is wrong.
 
-The reference *is* SDPA, not a hand-rolled softmax, because that is what the
-gate names and what a framework would otherwise have called. It is evaluated
-one (batch, head, q-chunk) at a time in fp32: at N=49920 a single head's fp32
-score matrix is 10 GB, so the chunking is not a nicety.
+The reference is softmax(q k^T) v in float64 (_attn_ref.attention64), not
+torch's SDPA: an fp32 SDPA on ROCm moved by more than this kernel's own error
+from run to run. It is evaluated one (batch, head, q-chunk) at a time: at
+N=49920 a single head's score matrix is 20 GB in float64, so the chunking is
+not a nicety.
 
 Two mask conventions differ and the difference is deliberate. torch aligns a
 causal mask to the *bottom* right when n_kv != n_q; this kernel's diagonal is
@@ -24,16 +25,13 @@ import os
 import pytest
 
 torch = pytest.importorskip("torch")
-import torch.nn.functional as F  # noqa: E402
 
 import hk  # noqa: E402
+import _attn_ref  # noqa: E402
 
-#: bf16 operands rounded twice and then summed over thousands of terms land
-#: around 1.2e-2 of relative error against fp32. 5e-2 is 4x that, and still
-#: more than an order of magnitude below the O(1) error a wrong tile or a
-#: shifted mask produces -- the failures this file exists to catch are not
-#: subtle, they are total.
-RTOL = 5e-2
+#: bf16 operands rounded twice and summed over thousands of terms: in this
+#: file at most 2.2 bf16 ulps of a row's largest value on gfx950 and 1.3 on
+#: gfx1100 (_attn_ref.check: 4 ulps a row, and 1e-2 of the largest value).
 
 D_HEAD = 128
 
@@ -48,32 +46,13 @@ def _qkv(b, h, n, d=D_HEAD, h_kv=None, n_kv=None, seed=0):
 
 
 def _ref(q, k, v, causal=False, scale=None, q_chunk=512):
-    """SDPA in fp32, one (batch, head, q-chunk) at a time.
+    """Exact attention in float64 (_attn_ref.attention64), one (batch, head,
+    q-chunk) at a time, the causal diagonal top-left as the kernel's.
 
     GQA is inferred from k's head count rather than passed, because that is
     all GQA is: a q head reads the kv head it maps to.
     """
-    b, h, n, d = q.shape
-    nk = k.shape[2]
-    q_per_kv = h // k.shape[1]
-    out = torch.empty(b, h, n, d, device=q.device, dtype=torch.float32)
-    pos_k = torch.arange(nk, device=q.device)[None, :]
-    for bi in range(b):
-        for hi in range(h):
-            kk = k[bi, hi // q_per_kv].float()[None, None]
-            vv = v[bi, hi // q_per_kv].float()[None, None]
-            for i in range(0, n, q_chunk):
-                j = min(i + q_chunk, n)
-                mask = None
-                if causal:
-                    # top-left aligned, matching the kernel; torch's own
-                    # is_causal is bottom-right when nk != n.
-                    pos_q = torch.arange(i, j, device=q.device)[:, None]
-                    mask = (pos_k <= pos_q)[None, None]
-                out[bi, hi, i:j] = F.scaled_dot_product_attention(
-                    q[bi, hi, i:j].float()[None, None], kk, vv,
-                    attn_mask=mask, scale=scale)[0, 0]
-    return out
+    return _attn_ref.attention64(q, k, v, causal=causal, scale=scale, q_chunk=q_chunk)
 
 
 def _check(got, ref):
@@ -81,10 +60,7 @@ def _check(got, ref):
     # An all-zero `got` against an all-zero `ref` passes every relative test.
     # That failure mode has happened here before, hence the magnitude guard.
     assert ref.abs().max().item() > 1e-6, "reference has no magnitude"
-    assert torch.isfinite(got).all().item(), "output has non-finite elements"
-    rel = (got - ref).abs().max().item() / ref.abs().max().item()
-    assert rel < RTOL, f"relative error {rel:.2e} exceeds {RTOL}"
-    return rel
+    return _attn_ref.check(got, ref)
 
 
 def _run(b, h, n, **kw):
@@ -218,8 +194,8 @@ def test_out_parameter_is_written_in_place():
 
 # ------------------------------------------------------- rounding, not error
 #
-# RTOL above is deliberately loose -- it exists to catch a wrong tile or a
-# shifted mask, which are O(1) failures. It cannot see a *bias*, and a bias is
+# _check above is at the kernel's own rounding error -- it catches a wrong tile,
+# a shifted mask, a few wrong scores. It cannot see a *bias*, and a bias is
 # what fp32 -> bf16 truncation was: half an ulp, always the same direction,
 # applied to a tile of positive probabilities on every KV block. It passed
 # every test in this file while making a VLM decode a different sentence.
