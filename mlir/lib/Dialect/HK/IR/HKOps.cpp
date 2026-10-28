@@ -991,24 +991,12 @@ LogicalResult SwapHalvesOp::verify() {
     return failure();
   auto t = dyn_cast<RegTileType>(getSrc().getType());
   if (!t || !t.isStrip())
-    return emitOpError("exchanges the halves of a strip's rows; it takes a "
+    return emitOpError("exchanges the halves of a strip's row segments; it takes a "
                        "strip, not ")
            << getSrc().getType();
-  if (t.getCols() % (2 * t.getRun()))
-    return emitOpError("a strip row of ")
-           << t.getCols() << " columns has no two halves of whole runs";
-  return success();
-}
-
-LogicalResult RotateHalfOp::verify() {
-  if (failed(verifyUnary(*this)))
-    return failure();
-  auto t = dyn_cast<RegTileType>(getSrc().getType());
-  if (!t || !t.isStrip())
-    return emitOpError("rotates the halves of a strip's segments; it takes a "
-                       "strip, not ")
-           << getSrc().getType();
-  int64_t span = getSpan(), run = t.getRun(), chunk = 64 * run;
+  if (getSpan() < 0)
+    return emitOpError("a span of ") << getSpan() << " columns";
+  int64_t span = getSpan() ? getSpan() : t.getCols(), run = t.getRun(), chunk = 64 * run;
   if (span <= 0 || t.getCols() % span)
     return emitOpError("a span of ")
            << span << " does not divide the strip's " << t.getCols() << " columns";

@@ -216,7 +216,7 @@ def _swap(x: hk.Tensor[hk.bf16], o: hk.Tensor[hk.bf16]):
 def test_swap_halves_is_one_map_in_the_ir_and_the_cpp():
     k = _k950(_swap, warps=1)
     assert "hk.swap_halves" in k.trace().module.operation.get_asm()
-    assert "kittens::swap_halves(" in k.source()
+    assert "kittens::swap_halves<" in k.source()
 
 
 def test_swap_halves_takes_a_wave64_strip_of_one_or_an_even_number_of_chunks():
@@ -251,9 +251,10 @@ def test_rotate_half_and_a_period_load_are_ops_and_templates():
     the template, and the angles a period of D/2 repeated along the chunk."""
     k = _k950(_rot, warps=1)
     asm = k.trace().module.operation.get_asm()
-    assert "hk.rotate_half" in asm and "span = 128" in asm and "period = 64" in asm
+    assert "hk.swap_halves" in asm and "negate_first" in asm and "span = 128" in asm
+    assert "period = 64" in asm
     src = k.source()
-    assert "kittens::rotate_half<128>(" in src
+    assert "kittens::swap_halves<128, true>(" in src
     assert src.count("kittens::load_period<64>(") == 2
 
 
@@ -302,7 +303,7 @@ def test_the_16_byte_rope_reads_its_positions_through_the_scalar_cache(monkeypat
     monkeypatch.setattr(target, "_CURRENT", ["gfx950"])
     src = scaffold.bare(fused._rotary16_kernel("rot16_t", hk.bf16, 1, True).trace())
     assert "kittens::load_scalar_invariant(g.pos" in src
-    assert "kittens::rotate_half<128>(" in src
+    assert "kittens::swap_halves<128, true>(" in src
 
 
 # ---------------------------------------------------------------- a stated reduction order

@@ -1156,46 +1156,49 @@ class _Elementwise(Value):
 
     def copy(self, *, into=None): return unary("copy", self, into=into)
 
-    def swap_halves(self, *, into=None):
-        """A strip with each row's two halves exchanged: column c takes
-        column (c + cols/2) mod cols -- RoPE's rotate_half without the sign.
-        Strips only, on the wave64 port (gfx950), and a row of one chunk (a
-        lane exchange across the wave's halves) or of an even number of
-        chunks (a register swap)."""
+    def swap_halves(self, span: Optional[int] = None, *, negate_first: bool = False, into=None):
+        """A strip with the two halves of each `span`-column segment of its rows exchanged (span
+        None: the whole row): in a segment's first half column c takes column c + span/2, in
+        its second c - span/2. `negate_first` negates what lands in the first half -- NeoX's
+        rotate_half, [x1 | x2] -> [-x2 | x1] (`rotate_half(span)` is this). Strips only, on the
+        wave64 port (gfx950). The halves are whole chunks apart (a register swap) or 8, 16 or 32
+        lanes apart (a DPP row_ror:8, a v_permlane16_swap, a v_permlane32_swap): a whole row of
+        one chunk or of an even number of them, or a head of `span` columns -- a 128-column head
+        at eight bf16 a lane is 16 lanes, its halves eight apart."""
         ty = self.ty
+        what = "rotate_half" if negate_first else "swap_halves"
         if not (isinstance(self, Tile) and _is_strip(ty)):
-            raise TypeError(f"swap_halves takes a strip, not {ty!r}")
+            raise TypeError(f"{what} takes a strip, not {ty!r}")
         tgt = get_target(_t().arch)
         if not tgt.strips or tgt.wave != 64:
-            raise TypeError(f"swap_halves is in hk's wave64 strip port; this "
+            raise TypeError(f"{what} is in hk's wave64 strip port; this "
                             f"kernel is for {_t().arch}")
-        chunks = ty.cols // (tgt.wave * ty.run)
-        if chunks != 1 and chunks % 2:
-            raise TypeError(f"swap_halves of {ty!r}: {chunks} chunks a row, "
-                            f"neither one nor an even number")
-        return unary("swap_halves", self, into=into)
-
-    def rotate_half(self, span: int, *, into=None):
-        """NeoX's rotate_half on each `span`-column segment of a strip's rows:
-        [x1 | x2] -> [-x2 | x1], one head of `span` columns a segment. Its
-        halves must be 8, 16 or 32 lanes apart (a DPP row_ror:8, a
-        v_permlane16_swap, a v_permlane32_swap) or whole chunks apart.
-        Strips only, on the wave64 port (gfx950): a 128-column head at
-        eight bf16 a lane is 16 lanes, its halves eight apart."""
-        ty = self.ty
-        if not (isinstance(self, Tile) and _is_strip(ty)):
-            raise TypeError(f"rotate_half takes a strip, not {ty!r}")
-        tgt = get_target(_t().arch)
-        if not tgt.strips or tgt.wave != 64:
-            raise TypeError(f"rotate_half is in hk's wave64 strip port; this "
-                            f"kernel is for {_t().arch}")
-        if not isinstance(span, int) or span <= 0 or ty.cols % span:
-            raise TypeError(f"rotate_half(span={span!r}) of {ty!r}: a span "
+        if not negate_first:
+            _check_map_dtype("swap_halves", ty)
+        if span is None:
+            chunks = ty.cols // (tgt.wave * ty.run)
+            if chunks != 1 and chunks % 2:
+                raise TypeError(f"{what} of {ty!r}: {chunks} chunks a row, "
+                                f"neither one nor an even number")
+        elif not isinstance(span, int) or span <= 0 or ty.cols % span:
+            raise TypeError(f"{what}(span={span!r}) of {ty!r}: a span "
                             f"divides the strip's columns")
         from .._mlir import ir  # noqa: PLC0415
 
-        return _make(hkd.RotateHalfOp, ty, (self.v,), into=into, name="rotate_half",
-                     span=ir.IntegerAttr.get(ir.IntegerType.get_signless(64), span))
+        attrs = {}
+        if span is not None:
+            attrs["span"] = ir.IntegerAttr.get(ir.IntegerType.get_signless(64), span)
+        if negate_first:
+            attrs["negate_first"] = ir.UnitAttr.get()
+        return _make(hkd.SwapHalvesOp, ty, (self.v,), into=into, name=what, **attrs)
+
+    def rotate_half(self, span: int, *, into=None):
+        """NeoX's rotate_half on each `span`-column segment of a strip's rows:
+        [x1 | x2] -> [-x2 | x1], one head of `span` columns a segment --
+        `swap_halves(span, negate_first=True)`."""
+        if not isinstance(span, int):
+            raise TypeError(f"rotate_half(span={span!r}): a span is a Python int")
+        return self.swap_halves(span, negate_first=True, into=into)
 
     def exp_(self): return unary("exp", self, into=self)
     def exp2_(self): return unary("exp2", self, into=self)
