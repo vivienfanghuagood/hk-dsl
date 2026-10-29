@@ -165,8 +165,8 @@ def test_the_route_and_the_launch_agree_on_rows():
 
 @pytest.mark.parametrize("consts", [
     dict(RATIO=2, HASKV=1, MC=8, SEL=1, WIDTH=12288),              # a dense index source
-    dict(RATIO=1, HASKV=1, MC=1, SEL=1, CAND=1, WIDTH=8192),       # the candidate source
-    dict(RATIO=1, HASKV=0, MC=4, SEL=1, WIDTH=4096),               # a consumer
+    dict(RATIO=1, HASKV=1, MC=1, SEL=1, CAND=1, WIDTH=16640),      # the candidate source
+    dict(RATIO=1, HASKV=0, MC=4, SEL=1, CONS=1, WIDTH=16640),      # a consumer, rows past its candidates
     dict(RATIO=2, HASKV=1, MC=3, SEL=0)])                          # logits / top-k left to vLLM
 def test_the_launch_traces(consts):
     pytest.importorskip("hk._mlir")

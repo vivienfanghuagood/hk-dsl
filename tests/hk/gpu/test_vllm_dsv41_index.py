@@ -23,6 +23,7 @@ from hk.ops import dsv41_index as X  # noqa: E402
 DEV = "cuda"
 NPAGE = 64                      # records a page of the compressed and indexer K caches
 SCALE = 0.08838834764831845     # DeepSeek-V4.1-Flash's indexer softmax scale
+NCAND = 2048                    # vLLM's candidate list a row (blocks of X.CBLOCK)
 
 
 def _layer(kind: str, g, width=None):
@@ -32,7 +33,7 @@ def _layer(kind: str, g, width=None):
     r = lambda *s, sd=1.0: (torch.randn(*s, device=DEV, generator=g) * sd)  # noqa: E731
     ratio = 2 if kind == "A" else 1
     w = dict(kind=kind, ratio=ratio, haskv=kind != "C", width=width or (4096 if kind == "A" else 8192),
-             cand=kind == "B",
+             cand=kind == "B", cons=kind == "C",
              wp=r(X.NH, X.H, sd=0.02).bfloat16(),
              wqb=r(X.NQ, X.QR).to(torch.float8_e4m3fn),
              wqb_s=torch.randint(118, 124, (X.NQ // 32, X.QR // 32), device=DEV, dtype=torch.uint8,
@@ -62,12 +63,19 @@ def _step(w, positions, g):
     kslot = torch.tensor([int(bt[i, (p // ratio) // NPAGE]) * NPAGE + (p // ratio) % NPAGE if live[i] else -1
                           for i, p in enumerate(positions)], dtype=torch.int64, device=DEV)
     s = dict(m=m, pos=pos, kidx=kidx, bt=bt, lens=lens, kslot=kslot,
-             bends=((lens + 7) // 8).to(torch.int32),
+             bends=((lens + X.CBLOCK - 1) // X.CBLOCK).to(torch.int32),
              normed=torch.randn(m, X.H, device=DEV, generator=g).bfloat16(),
              qr=torch.randn(m, X.QR, device=DEV, generator=g).bfloat16())
     if w["haskv"]:
         s["comp"] = torch.randint(0, 256, (kpages, NPAGE * 584), dtype=torch.uint8, device=DEV, generator=g)
         s["cslot"] = kslot.clone()                 # the compressed cache shares the K cache's pages
+    if w["cons"]:
+        # the candidate source's list this step: every block while they fit, else 2048 distinct ones
+        cl = torch.full((m, NCAND), -1, dtype=torch.int32)
+        for i, e in enumerate(s["bends"].tolist()):
+            pick = torch.arange(e) if e <= NCAND else torch.randperm(e, generator=torch.Generator().manual_seed(i))[:NCAND]
+            cl[i, :len(pick)] = pick.to(torch.int32)
+        s["cands"] = cl.to(DEV)
     if ratio == 2:
         s["ring"] = torch.randn(m, 8 * 1024, device=DEV, generator=g)
         s["rslot"] = torch.tensor([i * 8 + p % 8 for i, p in enumerate(positions)], dtype=torch.int64,
@@ -110,12 +118,23 @@ def _vllm(w, s):
     kv = RI._kv_view(s["kidx"].view(-1, NPAGE, 68), X.HD)
     logits = torch.empty(m, w["width"], dtype=torch.float32, device=DEV)
     q_scale = q4s.view(torch.uint8).view(m, X.NH, -1)
+    kw, cands = {}, None
+    if w["cand"]:                           # the source: block maxima beside the logits, their top NCAND
+        scores = torch.empty(m, -(-w["width"] // X.CBLOCK), dtype=torch.float32, device=DEV)
+        kw = dict(calc_block_scores=True, block_scores=scores, candidate_block_size=X.CBLOCK)
     RI._aiter().paged_mxfp4_mqa_logits(q4.unsqueeze(1), q_scale.unsqueeze(1), kv, wts, s["lens"], s["bt"],
-                                       w["width"], out_logits=logits, clean_logits=False)
+                                       w["width"], out_logits=logits, clean_logits=False, **kw)
+    if w["cand"]:
+        cands = torch.empty(m, NCAND, dtype=torch.int32, device=DEV)
+        RI._topk(scores, s["bends"], cands, NCAND)
+    if w["cons"]:                           # a consumer: the logits outside the source's blocks masked
+        from vllm.v1.attention.ops.rocm_aiter_mla_sparse import _apply_candidate_mask_strided
+
+        _apply_candidate_mask_strided(logits, None, s["lens"], s["cands"], X.CBLOCK)
     topk = torch.full((m, X.TOPK), -1, dtype=torch.int32, device=DEV)
     RI._topk(logits, s["lens"], topk, X.TOPK)
     return dict(q4=q4.reshape(-1).view(torch.uint8), q4s=q4s.reshape(-1).view(torch.uint8),
-                wts=wts.reshape(-1), topk=topk)
+                wts=wts.reshape(-1), topk=topk, cand=cands)
 
 
 def _hk(w, s):
@@ -133,7 +152,7 @@ def _hk(w, s):
     q4, q4s = z(m * X.NH * 64, dt=torch.uint8), z(m * X.NH * 4, dt=torch.uint8)
     wts = z(m * X.NH, dt=torch.float32)
     topk = torch.full((m, X.TOPK), -7, dtype=torch.int32, device=DEV)
-    cand = torch.full((m, 2048), -7, dtype=torch.int32, device=DEV)
+    cand = s["cands"].clone() if w["cons"] else torch.full((m, NCAND), -7, dtype=torch.int32, device=DEV)
     comp = s.get("comp", z(1, NPAGE * 584, dt=torch.uint8))
     ring = s.get("ring", z(1, 8192, dt=torch.float32))
     lay = RI.rocm_paged_mxfp4_cache_layout(X.NH, X.HD, NPAGE)
@@ -145,7 +164,7 @@ def _hk(w, s):
       w["cs_a"].view(-1), w["cs_i"].view(-1), w.get("norm", z(512)).view(torch.int32), w.get("wk", z(X.HD, 512)),
       w.get("k_norm", z(X.HD)), q4.view(torch.int8), q4s.view(torch.int8), wts, q4.view(torch.int32),
       s["kidx"].view(torch.int32), s["bt"], s["lens"], topk, cand, s["bends"],
-      SEL=1, CAND=int(w["cand"]), NCAND=2048, WIDTH=X.width(w["width"]), BTW=s["bt"].shape[1], RATIO=w["ratio"], MC=m,
+      SEL=1, CAND=int(w["cand"]), CONS=int(w["cons"]), NCAND=NCAND, WIDTH=X.width(w["width"]), BTW=s["bt"].shape[1], RATIO=w["ratio"], MC=m,
       HASKV=int(w["haskv"]), CBLK=NPAGE, KBLK=NPAGE, NPT=lay.n_per_tile, DPT=lay.d_per_tile, SL=lay.scale_lanes)
     return dict(q4=q4, q4s=q4s, wts=wts, topk=topk, cand=cand)
 
@@ -153,16 +172,20 @@ def _hk(w, s):
 #: positions a step: long rows (the in-launch logits and radix select) and a short one (<= TOPK
 #: entries: the identity), at 1 and 8 rows
 STEPS = {1: [2901], 8: [2900, 1301, 3333, 777, 4001, 2048, 300, 3090]}
+#: max_model_len 16640's candidate source / consumers: rows past 2048 blocks (16384 entries) too
+LONG = {1: [16500], 8: [16639, 16400, 300, 9000, 16385, 2000, 16600, 12000]}
 
 
 @pytest.mark.parametrize("kind,width", [("A", None), ("B", None), ("C", None),
-                                        # max_model_len 16640's dense layers: 8320 a row, WIDTH 12288
-                                        ("A", 8320)])
+                                        # max_model_len 16640: the dense layers' 8320 a row, the
+                                        # candidate source's and consumers' 16640
+                                        ("A", 8320), ("B", 16640), ("C", 16640)])
 @pytest.mark.parametrize("m", [1, 8])
 def test_the_launch_is_vllms_chain(kind, width, m):
     g = torch.Generator(device=DEV).manual_seed(m * 7 + ord(kind))
     w = _layer(kind, g, width)
-    steps = STEPS[m] if width is None else [p * 4 + 1 for p in STEPS[m]]   # rows to ~8000 entries
+    steps = STEPS[m] if width is None else (                       # rows to ~8000 / ~16600 entries
+        [p * 4 + 1 for p in STEPS[m]] if kind == "A" else LONG[m])
     pre = _step(w, steps, g)
     ref_s, hk_s = _clone(pre), _clone(pre)
     ref = _vllm(w, ref_s)
@@ -194,7 +217,11 @@ def test_the_launch_is_vllms_chain(kind, width, m):
         assert len(a & b) >= 0.99 * min(n, X.TOPK), (i, n, len(a & b))
         if n <= X.TOPK:
             assert got["topk"][i].tolist() == list(range(n)) + [-1] * (X.TOPK - n)
-    if w["cand"]:                       # every block of the row while they fit the list
+    if w["cand"]:
         e = pre["bends"].tolist()
         for i in range(m):
-            assert got["cand"][i].tolist() == list(range(e[i])) + [-1] * (2048 - e[i])
+            if e[i] <= NCAND:               # every block of the row while they fit the list
+                assert got["cand"][i].tolist() == list(range(e[i])) + [-1] * (NCAND - e[i])
+            else:                           # else vLLM's block top-k: the same set (a tie at the edge aside)
+                a, b = set(ref["cand"][i].tolist()), set(got["cand"][i].tolist())
+                assert len(a & b) >= NCAND - 2 and -1 not in b, (i, e[i], len(a & b))
