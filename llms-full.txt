@@ -183,6 +183,26 @@ refused on wave32 targets, on columns and on WMMA tiles.
 sq = v.sum(axis=1, lanes="seq", xor=(32, 16, 8, 4, 2, 1), times=v)   # aiter's order
 ```
 
+**fp32 max and min: reductions and elementwise ops (gfx950).** hk has two
+kinds of max and min, with different rules for NaN and signed zeros.
+- *Reductions* are IEEE 754-2019 maximum and minimum on gfx950
+  (`llvm.maximum`, one `v_maximum3_f32` a pair of values): `max` / `min` along
+  a register tile's rows or columns and a strip's rows or columns,
+  `group_max` / `group_min`, the combine of `cross_warp(v, "max" | "min")`
+  and `fold_rows`, and `m.max_(...)` / `m.min_(...)` -- of a reduction or of
+  another vector, the online fold. A NaN anywhere in what is reduced gives
+  NaN, however the reduction is split across lanes, warps or blocks (as
+  `torch.amax` does), and -0 orders below +0: the max of -0 and +0 is +0, the
+  min -0. Until 0.8.0 they were `fmaxf` / `fminf` (maxNum: a NaN is skipped,
+  -0 against +0 is either); in IEEE mode LLVM quiets a maxNum operand it
+  cannot prove quiet first, a `v_max_f32 x, x` each, which cost attention's
+  row max 3 instructions for 1.
+- *Elementwise* `hk.max` / `hk.min` (`a.maximum(b)`, `a.minimum(b)`, and with
+  a number, a clamp) are `fmaxf` / `fminf` everywhere: a NaN operand gives the
+  other operand, like `torch.fmax`.
+- gfx942 has no `v_maximum3_f32`, where `llvm.maximum` would become compares
+  and selects: its reductions keep `fmaxf` / `fminf`, as do RDNA's.
+
 `hk.ops.norm`'s RMSNorm, fused add + RMSNorm, LayerNorm and softmax run on
 strips wherever a row fits one ([chapter 27](history/27-strips.md)). On
 gfx950 so do quantize, the elementwise ops, `silu_mul` (which then takes
@@ -3229,7 +3249,9 @@ of the tile it came off.
 Vec.max_(self, r: Reduction) -> Vec
 ```
 
-Fold `t.max(axis=...)` into this vector: the online max.
+Fold `t.max(axis=...)`, or another partial max (a vector), into this
+vector: the online max. A reduction's NaN and signed-zero rules either
+way (docs/language.md); `maximum` is the elementwise op.
 
 #### `Vec.min_`
 

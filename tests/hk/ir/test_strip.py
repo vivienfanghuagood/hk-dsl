@@ -646,7 +646,7 @@ def test_a_tile_as_a_lane_strip_is_three_ops_and_templates():
     assert "using rs_fp32_1x4096_r16 = kittens::rs<float, 1, 4096, 16>;" in src
     assert "kittens::lane_strip(" in src and "kittens::lane_coord<0>(" in src
     assert "kittens::lane_coord<1>(" in src and "kittens::run_xor<1>(" in src
-    assert "kittens::group_reduce_ordered<kittens::base_ops::max, 1, 32>(" in src
+    assert "kittens::group_reduce_ordered<kittens::base_ops::hk_rmax, 1, 32>(" in src
 
 
 def test_a_lane_strip_is_refused_where_it_cannot_be():
@@ -681,4 +681,4 @@ def test_a_group_takes_any_distinct_xor_offsets_up_to_32():
 
     def _g3(x: hk.Tensor[hk.fp32], o: hk.Tensor[hk.fp32]):
         o.at[0, 0].store(x.at[0, 0].load(S64).group_max(32, xor=(32, 2)))
-    assert "group_reduce_ordered<kittens::base_ops::max, 1, 32, 2>(" in _k950(_g3, warps=1).source()
+    assert "group_reduce_ordered<kittens::base_ops::hk_rmax, 1, 32, 2>(" in _k950(_g3, warps=1).source()

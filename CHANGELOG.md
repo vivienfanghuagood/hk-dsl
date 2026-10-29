@@ -30,6 +30,34 @@ key scheme); old entries are never read again and can be deleted.
 `runtime.compile.target_headers_fingerprint` is gone. `tests/hk/ir/test_compile_cache.py`,
 `tests/hk/codegen/test_compile.py`.
 
+**gfx950: fp32 max and min reductions are IEEE 754-2019 maximum and minimum.**
+Row and column `max` / `min` of register tiles and strips, `group_max` /
+`group_min`, the combine of `cross_warp(v, "max" | "min")` and `fold_rows`,
+and the online fold `m.max_(...)` / `m.min_(...)` are `llvm.maximum` /
+`llvm.minimum` on gfx950 (`v_maximum3_f32`, `v_minimum3_f32`), where they were
+`fmaxf` / `fminf`.
+- Two semantic changes, on values no shipped kernel reduces: a NaN anywhere
+  in what is reduced now gives NaN, however the reduction is split across
+  lanes, warps or blocks (as `torch.amax` does; maxNum skipped it), and -0
+  orders below +0 (the max of -0 and +0 is +0, the min -0; maxNum may return
+  either). `tests/hk/gpu/test_reduce_nan.py` holds both, within a wave, across
+  warps and across blocks.
+- Unchanged: elementwise `hk.max` / `hk.min` (`maximum`, `minimum`, clamps)
+  stay `fmaxf` / `fminf` everywhere; gfx942 (no `v_maximum3_f32`: LLVM would
+  expand each maximum into compares and selects) and RDNA keep `fmaxf` for
+  reductions too. docs/language.md has the two kinds.
+- Why: in IEEE mode LLVM quiets a maxNum operand it cannot prove quiet with a
+  `v_max_f32 x, x`. A reduction of 2k + 1 values pairs into `v_max3_f32`s but
+  for one two-operand max, whose operands (MFMA results, loop-carried values)
+  it never can: attention's row max took 3 instructions for that 1. The d128
+  main loop is 693 -> 680 instructions, 348 -> 338 VALU.
+- Outputs: every launch of every `tests/hk/gpu` test, re-run as a twin built
+  from the previous headers and emitter, is bit-identical (1182 launches; the
+  6 that differ also differ from themselves run to run: atomics). Speed, one
+  process against the previous code (MI355X, d128 attention, 6 shapes):
+  0.999-1.010x, median +0.35%. GEMM, K1 and K2 compile to the same
+  instructions as before.
+
 **gfx950: an LDS tile narrower than its read's layout was never copied.** A
 tile with fewer rows or columns than the include/cdna4 st shape its read's
 fragment picks -- a 32x16 bf16 tile read as the 32x16 row operand of the

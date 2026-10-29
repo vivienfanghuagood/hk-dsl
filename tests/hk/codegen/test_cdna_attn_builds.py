@@ -51,3 +51,16 @@ def test_it_builds_within_two_waves_and_its_copies_are_counted(d, causal, pairs,
     assert dma == copies * (d // 64)
     (ck,) = cocheck.check(b.so_path)
     assert ck.ok, ck.line()
+
+
+def test_the_row_max_is_maximum3_with_no_quieting():
+    """gfx950's max reductions are llvm.maximum (include/hk/cdna.cuh, hk_rmax): v_maximum3_f32,
+    and no `v_max_f32 x, x` -- the quieting LLVM put in front of a maxNum operand it could not
+    prove quiet (attention's row max, before: 8 of them, 12 v_max_f32 for 64 v_max3_f32)."""
+    k = attn_cdna.attn_kernel("attn_build_rmax", head_dim=128, arch="gfx950")
+    tr = k.trace()
+    b = hc.build(scaffold.device(tr), "gfx950", name=tr.name, kind="co")
+    asm = subprocess.run([_objdump(), "-d", str(b.so_path)], capture_output=True,
+                         text=True, check=True).stdout
+    assert "v_maximum3_f32" in asm
+    assert not re.findall(r"v_max_f32_e32 (v\d+), (v\d+), \2\b", asm)

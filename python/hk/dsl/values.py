@@ -824,11 +824,14 @@ class View:
 # ---------------------------------------------------------------- tiles
 
 
-def _make(cls, ty, operands, *, into=None, name: str, **attrs):
-    """Make a fresh value of type `ty`, or write `into` an existing one."""
+def _make(cls, ty, operands, *, into=None, name: str, mark: Optional[str] = None, **attrs):
+    """Make a fresh value of type `ty`, or write `into` an existing one. `mark`: a unit attribute
+    set on the op (the C++ emitter reads it)."""
     t = _t()
     if into is None:
         op = cls(mlir_type(ty), *operands, loc=t.loc(name), **attrs)
+        if mark:
+            op.operation.attributes[mark] = _unit_attr()
         return wrap(op.result, ty)
     if not isinstance(into, Value):
         raise TypeError(f"into= takes a tile or vector, got {into!r}")
@@ -839,8 +842,16 @@ def _make(cls, ty, operands, *, into=None, name: str, **attrs):
         raise TypeError(f"into is {into.ty} but the result is {ty}. An into= "
                         f"that does not match is a different tile, not a "
                         f"conversion.")
-    cls(None, *operands, dst=into.v, loc=t.loc(name), **attrs)
+    op = cls(None, *operands, dst=into.v, loc=t.loc(name), **attrs)
+    if mark:
+        op.operation.attributes[mark] = _unit_attr()
     return into
+
+
+def _unit_attr():
+    from .._mlir import ir  # noqa: PLC0415
+
+    return ir.UnitAttr.get()
 
 
 def _meet(a, b):
@@ -865,11 +876,17 @@ _REDUCE = {("max", "row"): hkd.RowMaxOp, ("min", "row"): hkd.RowMinOp,
            ("sum", "col"): hkd.ColSumOp, ("prod", "col"): hkd.ColProdOp}
 
 
-def binary(op: str, a: "Value", b, *, into=None):
+def binary(op: str, a: "Value", b, *, into=None, reduce: bool = False):
     """Elementwise `op` on a tile or vector and another of the same type, a
     device scalar, or a number. A tile and a vector broadcast: a column
     vector (one value per row) applies along rows (`mul_row`), a row vector
-    along columns."""
+    along columns. `reduce=True` on a max or min of two vectors: the
+    combine of two partial reductions, with a reduction's NaN and signed-zero
+    rules (docs/language.md) rather than the elementwise op's."""
+    if reduce:
+        if op not in ("max", "min") or not isinstance(a, Vec) or not isinstance(b, Vec):
+            raise TypeError(f"binary(reduce=True) combines two vectors' max or min, not {op} "
+                            f"of {getattr(a, 'ty', a)!r} and {getattr(b, 'ty', b)!r}")
     if not isinstance(a, (Tile, Vec)):
         raise TypeError(f"{op}: left operand is {a!r}, expected a tile or a vector")
     if isinstance(a, Tile) and isinstance(b, Vec) and op in ("add", "sub", "mul", "div"):
@@ -896,7 +913,7 @@ def binary(op: str, a: "Value", b, *, into=None):
         raise TypeError(f"{op}: operand types differ, {a.ty} vs {b.ty}. "
                         f"Elementwise ops do not broadcast between tiles.")
     return _make(_BINARY[op], _meet(a.ty, b.ty), (a.v,), into=into, name=op,
-                 rhs=b.v)
+                 rhs=b.v, mark="hk.reduce" if reduce else None)
 
 
 def unary(op: str, a: "Value", *, into=None):
@@ -1510,15 +1527,19 @@ class Vec(_Elementwise):
         return self._inplace("mul", o)
 
     def max_(self, r: Reduction) -> "Vec":
-        """Fold `t.max(axis=...)` into this vector: the online max."""
+        """Fold `t.max(axis=...)`, or another partial max (a vector), into this
+        vector: the online max. A reduction's NaN and signed-zero rules either
+        way (docs/language.md); `maximum` is the elementwise op."""
         if not isinstance(r, Reduction) or r.kind != "max":
-            return binary("max", self, _vec_of(r), into=self)
+            r = _vec_of(r)
+            return binary("max", self, r, into=self, reduce=isinstance(r, Vec))
         r.value(into=self, accumulate=True)
         return self
 
     def min_(self, r: Reduction) -> "Vec":
         if not isinstance(r, Reduction) or r.kind != "min":
-            return binary("min", self, _vec_of(r), into=self)
+            r = _vec_of(r)
+            return binary("min", self, r, into=self, reduce=isinstance(r, Vec))
         r.value(into=self, accumulate=True)
         return self
 
