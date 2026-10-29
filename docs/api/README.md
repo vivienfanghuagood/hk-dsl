@@ -12,7 +12,7 @@ Generated from the code by `scripts/gen_api_docs.py`: every public name's signat
 - [`hk.collective`](hk.collective.md) -- 3 entries
 - [`hk.comm`](hk.comm.md) -- 10 entries
 - [`hk.placement`](hk.placement.md) -- 16 entries
-- [`hk.ops`: the shipped kernels](hk.ops.md) -- 37 entries
+- [`hk.ops`: the shipped kernels](hk.ops.md) -- 39 entries
 - [`hk.templates`](hk.templates.md) -- 14 entries
 - [`hk.schedules`: schedules as data](hk.schedules.md) -- 19 entries
 - [`hk.tune`: a GEMM schedule search](hk.tune.md) -- 24 entries

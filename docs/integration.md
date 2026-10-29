@@ -59,6 +59,7 @@ and which rule decided.
 | decoder attention backend | `HK_VLLM_BACKEND` | off | replaces ROCm's default decoder attention for every model, and raises rather than falls back on sliding windows, sinks, softcap, an fp8 KV cache, fp16 or other head sizes; validated on Qwen3-8B only |
 | ConvRot INT8 (`--quantization convrot_int8`) | `HK_SGLD_CONVROT`, or `HK_SGLD=...,convrot` | **off: opt-in** | lossy by design (PSNR 30.4 dB from bf16, visible drift): a model-level choice, not a toolchain default |
 | MXFP8 at any (N, K) | `HK_MXFP8_ANY` | off | a mode of K2; no real-weight run |
+| DeepSeek-V4.1 sparse MLA prefill, calls of T >= 512 queries (`MIN_T`), and the layer's MXFP8 rows for wo_a made in the kernel from O in registers | `HK_VLLM_SPARSE_MLA` | off: opt-in, the default is the owner's call | serving scorecard 20261028-1529Z (TP2, real weights): prefill 8k +6.1% and 8k TTFT -5.8% vs hk's default routes (+18.5% vs stock), long +1.7%, mixed and TPOT unchanged, GSM8K-1319 equal (McNemar p 0.91); on real-weight calls at T 8192 top-k layers 1.39x opus + vLLM's quant, sliding-window 1.97x; MXFP8 rows bit for bit vLLM's quant of hk's bf16 rows |
 
 On a GPU a route was not validated on (gfx942, gfx1201), it is off unless you
 turn it on.
@@ -131,6 +132,7 @@ first compile in each process prints one line:
 | MXFP8 linear layers (K2) | `vllm_mxfp8.py` | `RocmDotScaledMxfp8LinearKernel.process_weights_after_loading` and `.apply_weights` | `HK_VLLM_MXFP8` (on, gfx950) |
 | MXFP4 MoE, a8w4 (K1) | `vllm_moe_a8w4.py` | `aiter.fused_moe.fused_moe`, with its signature | `HK_VLLM_MOE_A8W4` (on, gfx950) |
 | DeepSeek-V4.1 index layers, `--monokernel` | `vllm_dsv41_index.py` | `mono_decode._select`, through an import hook | `HK_VLLM_DSV41_INDEX` (on, gfx950) |
+| sparse MLA prefill (DeepSeek-V4.1) | `vllm_sparse_mla.py` | `rocm_sparse_attn_prefill` and `rocm_inverse_rope_mxfp8_rows`, rebound by identity, and `DeepseekV41ROCMAiterMLAAttention._forward_prefill`, with their signatures | `HK_VLLM_SPARSE_MLA` (off) |
 | your kernels | `register.py` | whatever `register.patch` names | `HK_VLLM_USER=<modules or files>` |
 | SGLang linear layers | `sglang.py`, `_sglang_plugin.py` | `UnquantizedLinearMethod.apply` | `HK_SGLANG_LINEAR` (on, gfx1100); `apply_linear()` in-process |
 | SGLang MoE layers | `sglang_moe.py`, `_sglang_plugin.py` | `topk_softmax`, `invoke_fused_moe_kernel` and `try_get_optimal_moe_config`, rebound by identity | `HK_SGLANG_MOE` (on, gfx1100), or `=topk` for the routing alone |

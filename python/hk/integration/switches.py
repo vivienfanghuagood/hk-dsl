@@ -78,6 +78,12 @@ ROUTES: Dict[str, Route] = {r.name: r for r in (
        "caches and q byte-identical to vLLM's chain in vLLM, top-k sets equal at M=1; serving scorecard "
        "(with hk's other default routes): TPOT 4.5 / 4.4 / 3.1% below mono's at B1/4/8, GSM8K-1319 "
        "within stock's noise"),
+    _R("vllm_sparse_mla", "vllm", "HK_VLLM_SPARSE_MLA", False, (),
+       "DeepSeek-V4.1's sparse MLA prefill (T >= 512 queries a call) and its MXFP8 output rows",
+       "opt-in until the owner decides on the default: serving scorecard 20261028-1529Z (TP2, real "
+       "weights) prefill 8k +6.1% and TTFT -5.8% vs hk's default routes, GSM8K-1319 equal (McNemar "
+       "p 0.91); 1.39x opus + vLLM's quant on real-weight top-k-layer calls, MXFP8 rows bit for bit "
+       "vLLM's quant of hk's bf16 rows (kda/sparse-mla-prefill)"),
     _R("vllm_int4", "vllm", "HK_VLLM_INT4", True, ("gfx1100", "gfx950", "gfx1201"),
        "AWQ 4-bit linear layers on hk's decode GEMM",
        "greedy tokens identical to stock's, Qwen3-8B/14B-AWQ (history 22, 42); gfx1201: "

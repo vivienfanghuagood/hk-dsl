@@ -741,6 +741,7 @@ OPS_EXTRA = [
     ("hk.ops.moe", ["moe_gemm", "moe_align"]),
     ("hk.ops.w4a16", ["matmul"]),
     ("hk.ops.hipkittens", ["gemm_bf16", "gqa_fwd"]),
+    ("hk.ops.sparse_mla", ["prefill", "prefill_mxfp8"]),
 ]
 
 

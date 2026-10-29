@@ -88,6 +88,12 @@ def _dsv41_index() -> Tuple[str, Callable]:
     return vllm_dsv41_index.apply_patch(), vllm_dsv41_index.revert
 
 
+def _sparse_mla() -> Tuple[str, Callable]:
+    from . import vllm_sparse_mla  # noqa: PLC0415
+
+    return vllm_sparse_mla.apply_patch(), vllm_sparse_mla.revert
+
+
 def _moe() -> Tuple[str, Callable]:
     from . import vllm_moe  # noqa: PLC0415
 
@@ -99,6 +105,7 @@ APPLY: Dict[str, Callable[[], Tuple[str, Callable]]] = {
     "vllm_backend": _backend, "vllm_gemm": _gemm, "vllm_int4": _int4,
     "vllm_moe_a8w4": _moe_a8w4, "vllm_mxfp8": _mxfp8,
     "vllm_dsv41_index": _dsv41_index, "vllm_moe": _moe, "vllm_sdpa": _sdpa,
+    "vllm_sparse_mla": _sparse_mla,
 }
 
 
