@@ -1,15 +1,17 @@
 # Design: converging the DSL surface
 
-Status: **approved** (2026-10-28; the decisions are in §9). Nothing on this page is built yet.
-The work is timeboxed to one week, until 2026-11-04 00:00Z; §8 says which steps fit and which
+Status: **approved** (2026-10-28; the decisions are in §9). **Built:** S0-S5 and S12 (S0 in #130;
+S1-S5 and S12 in one combined PR after it, one commit a step; 2026-10-29); the later steps (S6-S11, S13) are not. The work is timeboxed to one week, until 2026-11-04 00:00Z; §8 says which steps fit and which
 come later.
 
 #115 (`dsv41_index`) and #121 (`lane_strip`, `lane_coords`, `run_xor`) merged after the review.
-Their call sites, counted under "PRs" in §2, are now in the repository; #120 is still open.
+Their call sites, counted under "PRs" in §2, are now in the repository, and so are #120's
+(`sparse_mla`, merged 2026-10-29).
 
 hk-dsl is the DSL and the kernels written in it. The language has grown one hand-written C++
 helper per hard kernel, each exposed as a DSL op:
-- `include/hk/cdna.cuh` went from nothing to 4,071 lines in 13 days.
+- `include/hk/cdna.cuh` went from nothing to 4,071 lines in 13 days (4,389 two days later, when
+  S12 split it into `include/hk/cdna/`).
 - The ops it exports include `mx_quant_store`, `copy_mx_scales`, the scatter forms, the strip and
   element ops of the decode megakernel, and `map_cpp`.
 
@@ -126,8 +128,8 @@ Each item is classified into exactly one of three classes:
 - shipped ops: `python/hk/ops`, `python/hk/templates`, `python/hk/mx.py`;
 - examples and `bench/`;
 - tests and tools;
-- open PRs #115 (`dsv41_index`), #118 (LDS-pointer stores), #120 (`sparse_mla`) and #121 (lane
-  strips);
+- the PRs open at the time, all merged since: #115 (`dsv41_index`), #118 (LDS-pointer stores),
+  #120 (`sparse_mla`) and #121 (lane strips);
 - the out-of-tree DeepSeek-V4.1 decode stages written in hk: the seam / attention front, the MoE,
   and the attention back.
 
@@ -137,7 +139,8 @@ is not a shipped kernel. It is migrated through deprecation shims, not edits.
 **The surface today, at main `af17846`:**
 - `hk` exports 74 names; `docs/api/hk.md` documents 203 functions and methods;
 - the dialect has 137 ops;
-- `include/hk/cdna.cuh` has 4,071 lines (sections in the [appendix](#appendix-cdnacuh-by-section));
+- `include/hk/cdna.cuh` has 4,071 lines (sections in the [appendix](#appendix-cdnacuh-by-section);
+  4,389 at bc2e9299, before S12's split);
 - `include/hk/cdna_agpr.cuh` has 183 lines.
 
 **Out of scope** (sibling designs, named so nothing is lost):
@@ -561,14 +564,16 @@ docs (`scripts/gen_api_docs.py`) and states its verification tier (§7).
 **The shim policy.** A public name that changes keeps its old spelling as a shim that emits the new
 form:
 - The shim warns (`DeprecationWarning`) from the release after the step.
-- It is removed one minor release later.
+- It is removed in the release after the last call from outside the repository is migrated, and
+  at most two minor releases after the release that deprecated it (§9, decision 2). One policy for
+  every shim; [Migrating](../migrating.md) lists them.
 - In-tree callers, examples and docs move in the step itself.
 - Out-of-tree callers (the decode stages) move at their owners' pace within that window.
 
 | step | change | shims | tier | depends on |
 |---|---|---|---|---|
 | **S0** | Guard rails only, no kernel change: the registry (`hk.dsl.surface`) from §2; the tests of §4; the escape-hatch allowlist; one bitwise test per E4 specialization; `tools/surface/snapshot.py`, which traces every shipped kernel at its route-table configurations and hashes the generated C++ (V0's tool); a PR-template checklist pointing at CONTRIBUTING.md | none | none (tests only) | this design |
-| **S1** | DELETE B7 `scatter_add_lds` (DSL method, dialect op, C++, test) and D5 `make_causal` (alias to `tril_` / `triu_` for one release, with a test that they agree; the two dialect ops go) | D5's alias | V0 on every shipped kernel | S0 |
+| **S1** | DELETE B7 `scatter_add_lds` (DSL method, dialect op, C++, test) and D5 `make_causal` (a deprecated alias to `tril_` / `triu_` under the shim policy above, with a test that they agree; the two dialect ops go) | D5's alias | V0 on every shipped kernel | S0 |
 | **S2** | G5 front end: `Tile.scaled`, `hk.mma` with scaled operands, `MxScales.copy(into=)`, `load_fp4_frags` from a `SharedTile`. Same dialect ops | `mma_ABt_mx`, `copy_mx_scales`, `load_fp4_frags_lds` | V0: K1, K2, gemm_cdna's MX mode | S0 |
 | **S3** | G4: `hk.RowIndex`, `g.stage_rows`, the `gather=ix` form; the staged-form check. Same dialect ops and attributes | `div=`, `sort_topk=`, `staged=`, `gather=(ids, at)`, `gather_prep` | V0: K1, RDNA3 / RDNA4 MoE, example 08 / 09 | S0 |
 | **S4** | G6, rope: `rotate_half` folds into `swap_halves(span, negate_first)`: one dialect op, one C++ template | `rotate_half` (sugar, kept) | V1: fused rope kernels at their plans | S0 |
@@ -640,7 +645,7 @@ applied per step:
 **V0: the generated source is byte-identical (CPU only).**
 - **Two worktrees.** The pre-migration build (the merge base) and the step's build each trace every
   shipped kernel at every configuration its route table, schedule records or plan functions
-  produce. The kernels are listed in §6; #115 and #120 count once merged.
+  produce. The kernels are listed in §6, with #115's and #120's (both merged).
 - **The check.** `Kernel.source()` must match byte for byte, per (kernel, configuration).
 - **Why it is enough.** Identical source, compiled by the same hipcc against the same headers,
   gives an identical code object, so bitwise outputs and speed follow. A step that edits

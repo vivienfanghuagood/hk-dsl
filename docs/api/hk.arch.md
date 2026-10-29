@@ -194,7 +194,7 @@ hk.arch.agpr(tile) -> None
 
 *New after 0.8.0*
 
-*Surface*: an experiment: behind an option that is off by default; deleted after 2026-10-31 12:00Z unless the task evaluating it adopts it (dsl-surface.md §9, decision 6).
+*Surface*: an experiment: behind an option that is off by default; experimental, and may be removed without notice.
 
 Hold `tile`, an fp32 MMA accumulator just made by hk.zeros, in AGPRs
 (CDNA): every mma into it runs on the AGPRs (inline asm, C/D "+a"), every
@@ -203,6 +203,8 @@ writes it back (include/hk/cdna_agpr.cuh). Outputs are bitwise the VGPR
 form's. LLVM picks the VGPR form unless register pressure forces AGPRs,
 and an asm MFMA is one its scheduler cannot see: measured slower on
 attn_cdna, so the kernels that offer it keep it off by default.
+
+Experimental: it may be removed without notice.
 
 ### `hk.arch.target`
 

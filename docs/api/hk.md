@@ -1103,7 +1103,7 @@ destination: load into the whole tile.
 Tile.make_causal(self, value: float = 0.0, *, into=None, transposed: bool = False)
 ```
 
-*Surface*: deprecated, removed in 0.10, or sooner once nothing outside the repository calls it; use Tile.tril_(0, v) / Tile.triu_(0, v).
+*Surface*: deprecated, removed in the release after the last call from outside the repository is migrated, at most two minor releases after its deprecation; use Tile.tril_(0, v) / Tile.triu_(0, v).
 
 Deprecated: `tril_(0, value)` (`triu_(0, value)` with `transposed=True`), which takes
 any diagonal. A copy of this tile with the elements above the diagonal set to `value`

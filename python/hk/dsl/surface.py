@@ -96,11 +96,9 @@ ENTRIES: Dict[str, Entry] = {
     "Granules.load_frag": Entry("escape", "D2", "the same as hk.Granules'"),
     "Granules.store_frag": Entry("escape", "D2", "the same as hk.Granules'"),
     "hk.arch.agpr": Entry("experiment", "D3", "behind an option that is off by default; "
-                          "deleted after 2026-10-31 12:00Z unless the task evaluating it adopts "
-                          "it (dsl-surface.md §9, decision 6)"),
+                          "experimental, and may be removed without notice"),
     "Tile.make_causal": Entry("deprecated", "D5", target="Tile.tril_(0, v) / Tile.triu_(0, v)",
-                              step="0.10, or sooner once nothing outside the repository calls "
-                              "it"),
+                              step=_GONE),
     "Kernel.with_defines": Entry("escape", "D6", "#define NAME value knobs and A/B variants; "
                                  "never overridden to splice or rewrite C++"),
     "Kernel.build_flags": Entry("escape", "D7", "tests and probes; not hk.ops kernels"),

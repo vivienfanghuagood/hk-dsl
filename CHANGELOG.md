@@ -52,7 +52,7 @@ The build cache sees the parts through the preprocessor's dependency list (#136)
   operands carry one. `hk.mma_ABt_mx` is a deprecated shim for it.
 - `MxScales.copy(into=dst)` replaces `hk.copy_mx_scales(dst, src)`, and `hk.load_fp4_frags`
   takes an LDS tile as its source, replacing `hk.load_fp4_frags_lds`. Both old names are
-  deprecated shims (DeprecationWarning), removed once nothing outside the repository calls them.
+  deprecated shims (DeprecationWarning).
 - `hk.MxScales` and `hk.Scaled` are exported and documented. K1, K2, gemm_cdna's MX mode and the
   DeepSeek-V4.1 index front (`dsv41_index`) use the new spellings. Every shipped kernel's generated source is byte-identical.
 - Migrating a call with inline loads in its arguments: bind them to locals in the old argument
@@ -67,6 +67,10 @@ The build cache sees the parts through the preprocessor's dependency list (#136)
 - `Tile.make_causal(v)` is now `tril_(0, v)` on a copy, and `transposed=True` is `triu_(0, v)`.
   The call warns (`DeprecationWarning`). The `hk.make_causal` / `hk.make_causal_t` dialect ops
   are gone; no kernel used them.
+- Every name the DSL-surface steps deprecate (S1, S2, S3, S5) is removed in the release after the
+  last call from outside the repository is migrated, and at most two minor releases after the
+  release that deprecated it. [docs/migrating.md](docs/migrating.md) lists them with their
+  replacements.
   - On RDNA the old ops were the same C++ as `tril(0)` / `triu(0)`.
   - On gfx950 the old op only compiled as `make_causal` on fp32 tiles: there it matched
     `tril_(0, v)` and torch bit for bit (col layout, 16 to 64 square). include/cdna4 has no
