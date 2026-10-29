@@ -25,6 +25,27 @@ The GPU tests run with ROCm 7.2 (7.2.4 on gfx1100, 7.2.3 on gfx950) and, on
 gfx950, also with the ROCm 10 of vLLM's ROCm image; the no-GPU CI compiles with
 ROCm 7.1's hipcc ([testing](testing.md#ci)).
 
+Tested toolchains, by the clang `hipcc --version` reports:
+
+- **AMD clang 22** (ROCm 7.2.2-7.2.4, `rocm/pytorch:rocm7.2.x`): the GPU tier,
+  gfx950 and gfx1100.
+- **AMD clang 23** (ROCm 10.0, vLLM's `nightly-rocm100` image): gfx950.
+- **AMD clang 24** (ROCm 10.1, TheRock: `rocm/pytorch:rocm10.1.0_ubuntu24.04_py3.12_pytorch_release_2.14.0`):
+  main after 0.8.0, the quick start and examples on gfx950.
+
+Known not to work:
+
+- **hk 0.8.0 with clang 24**: every compile, `--build` included, fails with
+  "the build emitted no kernel-resource-usage remarks". clang 24 prints those
+  remarks in a shape 0.8.0 does not read; main reads it ([changelog](../CHANGELOG.md)).
+- **clang 24 on gfx1100**: `hk.ops`' fp16/bf16 RMSNorm and LayerNorm and its
+  rope, and examples 02 (RMSNorm) and 03 (softmax), spill under it, and hk
+  refuses a spilling kernel (`ResourceError`) rather than run it.
+
+In TheRock's layout hipcc is a launcher in `/usr/local/bin` and ROCm is under
+`site-packages/_rocm_sdk_devel`, with none of its LLVM tools on `PATH`; hk finds
+them beside hipcc's clang ([the runtime](runtime.md#environment-variables)).
+
 **From PyPI**, for CPython 3.10 or 3.12 on glibc 2.35 or newer (Ubuntu 22.04
 and later):
 

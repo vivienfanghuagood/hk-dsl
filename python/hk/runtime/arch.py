@@ -132,6 +132,33 @@ def device_arch(device: int) -> Optional[str]:
     return m.group(1) if m else None
 
 
+#: Where sysfs lists PCI devices; a parameter for the tests.
+PCI_DEVICES = "/sys/bus/pci/devices"
+
+#: What HIP calls a device whose ID is missing from the libdrm table its runtime reads
+#: (an MI355X under several ROCm images): not a name.
+_GENERIC_NAMES = ("AMD Radeon Graphics", "")
+
+
+def device_name(props) -> str:
+    """A HIP device's name, from torch's device properties. The runtime's name comes from a
+    libdrm table, and a device that table does not list is "AMD Radeon Graphics" -- an
+    MI355X under several ROCm images. The board's own name (its FRU product name, in sysfs
+    under the device's PCI address, "AMD Instinct MI355 OAM") is used then, when the board
+    has one; otherwise the runtime's name as it is."""
+    name = (getattr(props, "name", "") or "").strip()
+    if name not in _GENERIC_NAMES:
+        return name
+    try:
+        addr = "{:04x}:{:02x}:{:02x}.0".format(int(getattr(props, "pci_domain_id", 0) or 0),
+                                               int(props.pci_bus_id), int(props.pci_device_id))
+        with open(os.path.join(PCI_DEVICES, addr, "product_name")) as f:
+            board = f.read().strip()
+    except (AttributeError, OSError, TypeError, ValueError):
+        board = ""
+    return board or name
+
+
 class ArchMismatchError(RuntimeError):
     """A kernel built for one arch was about to be loaded onto another."""
 

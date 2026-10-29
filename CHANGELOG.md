@@ -27,6 +27,47 @@ uses under a ceiling, print a hint to tighten them and never fail.
   bit for bit on gfx950.
 - A pull-request template with the reviewer checklist.
 
+**ROCm 10.1 (AMD clang 24): every compile failed; it builds and runs now.** In
+the official `rocm/pytorch:rocm10.1.0_ubuntu24.04_py3.12_pytorch_release_2.14.0`
+(TheRock), even `python3 examples/01_vector_add.py --build` raised
+`ResourceError: the build emitted no kernel-resource-usage remarks`. clang 24
+builds a host+device module (`-shared`, the pybind and torch path) with its new
+offload driver: clang-linker-wrapper generates the device code at link time and
+prints the remarks bare, `k.cpp:3:0:     VGPRs: 2`, without clang's
+`remark:` and `[-Rpass-analysis=kernel-resource-usage]`, which were all the
+spill gate read (a device-only `--genco` build still prints those). The gate
+now reads both shapes; a bare line counts only with a `file:line:col:`
+location and one of the remark's keys. Captured output of clang 22, 23 and 24
+is in `tests/hk/remark_fixtures` (`tests/hk/ir/test_resource_remarks.py`).
+- The error sent people to check that `-Rpass-analysis` reached hipcc, which it
+  had. It now names the compiler (`hipcc --version`'s clang line) and shows the
+  first lines of its output.
+- ROCm's LLVM tools -- `llvm-objdump`, `llvm-readelf`, `llvm-objcopy`,
+  `clang-offload-bundler`, `llvm-cxxfilt` -- are found beside the clang hipcc
+  runs (`InstalledDir`, or `HIP_CLANG_PATH`), then in `ROCM_PATH`'s `llvm/bin`,
+  then on `PATH`. TheRock puts none on `PATH`, so `HK_LAUNCH=codeobj`, the wait
+  gate and `hk.profile`'s disassembly died on `FileNotFoundError: 'llvm-objdump'`;
+  a tool that is nowhere is now an error that says where it looked
+  (`runtime.compile.llvm_tool`). `rocm_path()` finds TheRock's
+  `_rocm_sdk_devel` (it fell back to a `/opt/rocm` that is not there).
+- `HK_MFMA_GATE=fix` padded nothing in a `.so` built by clang 24: its pipeline
+  has no device assembly step, so the rebuild ran unpadded and the kernel was
+  refused. The rebuild plans such a command under `--no-offload-new-driver`,
+  and a plan with no device assembly at all is now an error.
+- Tested with the three compilers on an MI355X: `01_vector_add.py` (`--build`,
+  run, `HK_LAUNCH=codeobj`), the README quick start, and `hk.check` on the
+  getting-started kernel. Known under clang 24: on gfx1100 the fp16/bf16
+  RMSNorm and LayerNorm and the rope of `hk.ops`, and examples 02 and 03,
+  spill and are refused (README, *Install*).
+
+**`hk.check` named an MI355X "AMD Radeon Graphics"**, HIP's name for a device
+its libdrm table does not list (rocm/pytorch 7.2.3). For that name it now
+takes the board's own from sysfs (`AMD Instinct MI355 OAM`):
+`runtime.arch.device_name`.
+
+**`requires-python` is `>=3.10`** (was `>=3.9`, which nothing tested), with
+classifiers; the wheels are cp310 and cp312, another 3.x builds from source.
+
 **The compile cache served kernels built from old headers.** The key hashed a
 fixed set of files -- kittens.cuh, pyutils/, the target's arch tree and its
 extra_includes (include/hk/cdna.cuh) -- and nothing they include. An edit to

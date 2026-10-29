@@ -99,10 +99,22 @@ hipcc is `$HK_HIPCC`, else the one on `PATH`, else `/opt/rocm/bin/hipcc`. The
 headers come from the wheel's `hk/include`, or in a checkout from `include/`
 and the `third_party/HipKittens` submodule; `HK_INCLUDE_DIR` overrides them
 with a path list. `ROCM_PATH` is used for `include/hip` when set, else it is
-found by walking up from hipcc. The flags include `--offload-arch=<arch>`,
+found by walking up from hipcc, then from the clang hipcc runs (the
+`InstalledDir` of `hipcc --version`: TheRock's pip layout, as in
+`rocm/pytorch` 10.x, has a hipcc launcher in `/usr/local/bin` and the toolchain
+under `site-packages/_rocm_sdk_devel`). The LLVM tools hk reads code objects
+with (`llvm-objdump`, `llvm-readelf`, `clang-offload-bundler`, ...) are taken
+from beside that clang (`HIP_CLANG_PATH` when set), then `ROCM_PATH`'s
+`llvm/bin`, then `PATH`; a missing one is an error that says where it looked.
+The flags include `--offload-arch=<arch>`,
 `-std=c++20 -O3`, `-shared -fPIC`, and
 `-Rpass-analysis=kernel-resource-usage`, which the gate depends on; the full
-list is `flags()` in `python/hk/runtime/compile.py`.
+list is `flags()` in `python/hk/runtime/compile.py`. The gate reads the
+remarks in both shapes compilers print them: clang's diagnostics
+(`k.cpp:3:1: remark: VGPRs: 2 [-Rpass-analysis=kernel-resource-usage]`, clang 22
+and 23, and clang 24's `--genco`), and clang 24's bare lines for a `-shared`
+module, whose device code its new offload driver generates at link time
+(`k.cpp:3:0:     VGPRs: 2`).
 
 A cold compile takes about 4-7 s as a pybind module and about 1 s as a code
 object, attention included; the libtorch op takes about 15 s
@@ -454,7 +466,8 @@ listed in [integration](integration.md#environment-variables).
 | `HCC_AMDGPU_TARGET`, `PYTORCH_ROCM_ARCH` | `runtime/arch.py` | next in the detection order when it names one arch; a list's first entry only after the KFD topology, torch and rocminfo |
 | `HK_XCDS` | `dsl/placement.py` | the XCD count workgroup placement deals over (`hk.arch.xcd_count()`), instead of KFD's `num_xcc` |
 | `HK_HIPCC` | `runtime/compile.py` | the hipcc to use |
-| `ROCM_PATH` | `runtime/compile.py` | where `include/hip` is |
+| `ROCM_PATH` | `runtime/compile.py` | where `include/hip` is, and the second place LLVM tools are looked for (`llvm/bin`) |
+| `HIP_CLANG_PATH` | `runtime/compile.py` | hipcc's own: the directory of the clang it runs. hk takes `llvm-objdump` and the other LLVM tools from it first, and keys the compile cache on it |
 | `HK_INCLUDE_DIR` | `runtime/compile.py` | header directories, as a path list, instead of the packaged or checkout ones |
 | `HK_CACHE_DIR` | `runtime/compile.py` | the compile cache (else `$XDG_CACHE_HOME/hk`, else `~/.cache/hk`) |
 | `HK_TORCH_OP` | `runtime/torch_ext.py` | `library`: `hk.torch_op` builds the libtorch registration (default: over a device-only code object) |

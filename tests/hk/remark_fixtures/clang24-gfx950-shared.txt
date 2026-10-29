@@ -1,0 +1,30 @@
+k.cpp:3:0: Function Name: _Z5scalePff
+k.cpp:3:0:     TotalSGPRs: 11
+k.cpp:3:0:     VGPRs: 2
+k.cpp:3:0:     AGPRs: 0
+k.cpp:3:0:     ScratchSize [bytes/lane]: 0
+k.cpp:3:0:     Dynamic Stack: False
+k.cpp:3:0:     Occupancy [waves/SIMD]: 8
+k.cpp:3:0:     SGPRs Spill: 0
+k.cpp:3:0:     VGPRs Spill: 0
+k.cpp:3:0:     LDS Size [bytes/block]: 0
+k.cpp:6:0: Function Name: _Z5stackILi4EEvPfPKi
+k.cpp:6:0:     TotalSGPRs: 14
+k.cpp:6:0:     VGPRs: 7
+k.cpp:6:0:     AGPRs: 0
+k.cpp:6:0:     ScratchSize [bytes/lane]: 0
+k.cpp:6:0:     Dynamic Stack: False
+k.cpp:6:0:     Occupancy [waves/SIMD]: 8
+k.cpp:6:0:     SGPRs Spill: 0
+k.cpp:6:0:     VGPRs Spill: 0
+k.cpp:6:0:     LDS Size [bytes/block]: 0
+k.cpp:6:0: Function Name: _Z5stackILi256EEvPfPKi
+k.cpp:6:0:     TotalSGPRs: 21
+k.cpp:6:0:     VGPRs: 40
+k.cpp:6:0:     AGPRs: 0
+k.cpp:6:0:     ScratchSize [bytes/lane]: 1040
+k.cpp:6:0:     Dynamic Stack: False
+k.cpp:6:0:     Occupancy [waves/SIMD]: 8
+k.cpp:6:0:     SGPRs Spill: 0
+k.cpp:6:0:     VGPRs Spill: 0
+k.cpp:6:0:     LDS Size [bytes/block]: 0

@@ -135,3 +135,25 @@ def test_sweep_drops_a_variant_that_does_not_trace():
     assert r.status == "built"
     assert [b.get("variant") for b in r.builds] == [None, "hk[CW=1024]"]
     assert any("hk[CW=128] does not build" in n for n in r.notes)
+
+
+def test_a_device_the_runtime_cannot_name_takes_its_board_s_name(tmp_path, monkeypatch):
+    """HIP names an MI355X "AMD Radeon Graphics" when its libdrm table lacks the device ID;
+    hk.check showed "gfx950 (AMD Radeon Graphics)". The board's FRU name is in sysfs."""
+    from types import SimpleNamespace
+
+    from hk.runtime import arch
+
+    (tmp_path / "0000:75:00.0").mkdir()
+    (tmp_path / "0000:75:00.0" / "product_name").write_text("AMD Instinct MI355 OAM\n")
+    monkeypatch.setattr(arch, "PCI_DEVICES", str(tmp_path))
+    mi355 = SimpleNamespace(name="AMD Radeon Graphics", pci_domain_id=0, pci_bus_id=0x75,
+                            pci_device_id=0)
+    assert arch.device_name(mi355) == "AMD Instinct MI355 OAM"
+    # a name the runtime does know is kept; no board name, the runtime's stays
+    w7900 = SimpleNamespace(name="AMD Radeon PRO W7900D", pci_domain_id=0, pci_bus_id=0x75,
+                            pci_device_id=0)
+    assert arch.device_name(w7900) == "AMD Radeon PRO W7900D"
+    assert arch.device_name(SimpleNamespace(name="AMD Radeon Graphics", pci_bus_id=3,
+                                            pci_device_id=0)) == "AMD Radeon Graphics"
+    assert arch.device_name(SimpleNamespace(name="AMD Radeon Graphics")) == "AMD Radeon Graphics"

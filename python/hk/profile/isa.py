@@ -224,19 +224,13 @@ def code_object(path, arch: Optional[str] = None) -> bytes:
 
 
 def objdump() -> Optional[str]:
-    """ROCm's llvm-objdump, or None."""
+    """ROCm's llvm-objdump (found as hk.runtime.compile.llvm_tool finds it), or None."""
     try:
-        from ..runtime.compile import rocm_path  # noqa: PLC0415
+        from ..runtime.compile import llvm_tool  # noqa: PLC0415
 
-        p = Path(rocm_path()) / "llvm" / "bin" / "llvm-objdump"
-        if p.exists():
-            return str(p)
-    except Exception:  # noqa: BLE001
-        pass
-    for p in ("/opt/rocm/llvm/bin/llvm-objdump",):
-        if Path(p).exists():
-            return p
-    return shutil.which("llvm-objdump")
+        return llvm_tool("llvm-objdump", required=False)
+    except Exception:  # noqa: BLE001 -- no hipcc at all: PATH is all there is
+        return shutil.which("llvm-objdump")
 
 
 @dataclass
@@ -306,7 +300,9 @@ def disassemble(co: bytes, arch: str) -> List[Function]:
 
     tool = objdump()
     if tool is None:
-        raise FileNotFoundError("llvm-objdump not found (ROCm's llvm/bin)")
+        raise FileNotFoundError(
+            "llvm-objdump not found: not beside hipcc's clang, not in ROCM_PATH's llvm/bin, "
+            "not on PATH. Set ROCM_PATH to the ROCm install that has llvm/bin/llvm-objdump.")
     fd, path = tempfile.mkstemp(suffix=".co")
     try:
         with os.fdopen(fd, "wb") as f:
