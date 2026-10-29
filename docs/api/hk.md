@@ -1237,7 +1237,9 @@ of the tile it came off.
 Vec.max_(self, r: Reduction) -> Vec
 ```
 
-Fold `t.max(axis=...)` into this vector: the online max.
+Fold `t.max(axis=...)`, or another partial max (a vector), into this
+vector: the online max. A reduction's NaN and signed-zero rules either
+way (docs/language.md); `maximum` is the elementwise op.
 
 #### `Vec.min_`
 

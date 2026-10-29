@@ -1565,7 +1565,8 @@ private:
               ", " + std::to_string(o.getGatherStaged()) +
               ">(" + name(o.getDst()) + ", " + name(o.getSrc()) + ", " +
               coordArg(o.getIdx(), tileCpp(o.getDst().getType())) + ", " +
-              name(o.getGatherIds()) + ", " + name(o.getGatherAt()) + ");");
+              name(o.getGatherIds()) + ", " + name(o.getGatherAt()) +
+              (o.getRows() ? ", " + name(o.getRows()) : std::string()) + ");");
             return;
           }
           if (o.getAsync()) {
@@ -1785,9 +1786,11 @@ private:
         .Case([&](GroupReduceOp o) {
           Value d = dest(Value(), o.getResult());
           auto [lanes, offs] = o.getOrder().split(':');
+          // hk_rmax / hk_rmin: gfx950's max and min reductions are llvm.maximum / minimum
+          // (include/hk/cdna.cuh)
           std::string tmpl = std::string(o.getKind() == "sum" ? "kittens::base_ops::sum"
-                                         : o.getKind() == "max" ? "kittens::base_ops::max"
-                                                                : "kittens::base_ops::min") +
+                                         : o.getKind() == "max" ? "kittens::base_ops::hk_rmax"
+                                                                : "kittens::base_ops::hk_rmin") +
                              ", " + (lanes == "seq" ? "1" : "0");
           SmallVector<StringRef> parts;
           if (!offs.empty())
@@ -1917,6 +1920,13 @@ private:
     if (auto s = o.getScalar())
       args.push_back("(" + elemCpp(d.getType()) + ")" +
                      floatLit(s->convertToDouble()));
+    // A max / min that combines two partial reductions (hk.reduce: cross_warp's,
+    // Vec.max_ of a vector): hk/cdna.cuh's rmax / rmin, a reduction's
+    // llvm.maximum / minimum on gfx950. The RDNA trees have no such rule.
+    if (o->hasAttr("hk.reduce") && tgt->wave == 64) {
+      call(isa<MaxOp>(o.getOperation()) ? "rmax" : "rmin", d, args);
+      return;
+    }
     call(o->getName().stripDialect(), d, args);
   }
 

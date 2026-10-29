@@ -624,6 +624,8 @@ def HK_GroupLoadOp : HK_Op<"group_load", [AttrSizedOperandSegments]> {
     tensor's end and reads zero); `idx` gives the column, its row is ignored.
     `gather_staged` N > 0: the rows were staged in LDS by hk.gather_prep (N
     rows): read from there, on lgkmcnt -- not from the index list, on vmcnt.
+    With `rows`, a gathered tile's rows from `rows` on read zero and their
+    indices are not read: a list that ends inside the tile is not read past.
   }];
   let arguments = (ins HK_SharedTileType:$dst, HK_GlobalType:$src,
                        HK_CoordType:$idx, Optional<I32>:$rows,

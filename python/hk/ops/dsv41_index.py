@@ -25,7 +25,9 @@ With `SEL`, stages 3-4 are the logits and the top-k as well (rows of at most `WI
       preshuffled K pages, the keys (order-preserving uint32) by mailbox to the row's Q workgroup
   4   the row's Q workgroup: rows of at most TOPK entries take 0 .. len-1 (the stock decode
       kernel's answer), longer ones a radix select (`select_row`) in index order. `CAND`: the
-      candidate source also writes its candidate blocks (every block while they fit).
+      candidate source also writes its candidate blocks -- every block while they fit NCAND, else
+      the top NCAND by block max (`select_row` on the block keys); `CONS`: a consumer past NCAND
+      blocks selects among the source's candidate blocks only.
 
 Every cache byte, q / q_scale and the top-k sets are vLLM's (hk.integration.vllm_dsv41_index has
 the evidence); the head weights are fp32-accumulated, vLLM's weights_proj rounds a few heads by
@@ -46,9 +48,12 @@ QR = 1280
 #: Top-k of the indexer.
 TOPK = 512
 #: The widest row (the indexer's max_model_len) the in-launch selection takes; a longer model length
-#: keeps vLLM's logits and top-k. The launch's WIDTH is the row width rounded up to `WIDTH_STEP`.
-WIDTH_MAX = 12288
-WIDTH_STEP = 4096
+#: keeps vLLM's logits and top-k (its keys must fit the LDS). The launch's WIDTH is the row width
+#: rounded up to `WIDTH_STEP`.
+WIDTH_MAX = 16640
+WIDTH_STEP = 256
+#: The candidate lists' blocks (vLLM's candidate_block_size).
+CBLOCK = 8
 WAVES = 8
 WS = WAVES - 1                  # the storing wave: every post and cache write, no poll after one
                                 # (gfx950's vmcnt counts stores: a wave that stored waits out
@@ -106,9 +111,9 @@ def alloc_select():
 
 
 @hk.func
-def select_row(lk, n, w, topk, r, WIDTH: int, bufs=None):
-    """The top TOPK of keys lk[0 .. n) (a 16-column LDS tile of order-preserving uint32 keys, n > TOPK,
-    every wave of the workgroup calling) into topk[r, :], in index order: the keys above the
+def select_row(lk, n, w, topk, r, WIDTH: int, bufs=None, K: int = TOPK):
+    """The top K of keys lk[0 .. n) (a 16-column LDS tile of order-preserving uint32 keys, n > K, n <=
+    WIDTH, every wave of the workgroup calling) into topk[r, :K], in index order: the keys above the
     threshold key, then ties."""
     # radix select on the keys: 11 / 11 / 10 bits from the top, a 2048-bin LDS histogram of the keys
     # that match the prefix so far; wave 0 finds the bin where the count from the top reaches what
@@ -147,7 +152,7 @@ def select_row(lk, n, w, topk, r, WIDTH: int, bufs=None):
             hk.arch.barrier(drain=True)
             hi = sh + nbits
             same = "1" if hi >= 32 else f"((unsigned)x1 >> {hi}) == ((unsigned)x3 >> {hi})"
-            for it in range(WIDTH // (256 * WAVES)):
+            for it in range(-(-WIDTH // (256 * WAVES))):
                 if hk.uniform(it * 256 * WAVES < n):
                     e = hk.map_cpp(f"({it} * {WAVES} + x1) * 256 + x0", z4, w)
                     key = lk.load_elems(hk.map_cpp("x0 < x1 ? x0 : -1", e, n), i32, runs=True)
@@ -165,7 +170,7 @@ def select_row(lk, n, w, topk, r, WIDTH: int, bufs=None):
                 si = scan(g, lane16, 64, up=True)
                 L = hk.zeros(F16)
                 L += hk.map_cpp("(x1 - x2 < x4 - __builtin_bit_cast(float, x3) && x4 - __builtin_bit_cast(float, x3) <= x1)"
-                                " ? (float)(x0 / 16) : -1.0f", c16, si, g, abv, TOPK, dtype=fp32).max(axis=1)
+                                " ? (float)(x0 / 16) : -1.0f", c16, si, g, abv, K, dtype=fp32).max(axis=1)
                 Li = hk.map_cpp("(int)x0", L, dtype=i32)
                 gL = hk.map_cpp("__builtin_bit_cast(int, x0)", g.lane_gather(Li), dtype=i32).first_lane()
                 sL = hk.map_cpp("__builtin_bit_cast(int, x0)", si.lane_gather(Li), dtype=i32).first_lane()
@@ -174,7 +179,7 @@ def select_row(lk, n, w, topk, r, WIDTH: int, bufs=None):
                 hb = hk.map_cpp("(float)x0", hist.load_elems(hk.map_cpp("x0 < 32 ? x1 * 32 + x0 : -1", lid, Ls), i32), dtype=fp32)
                 bi = scan(hb, lid, 32, up=True)
                 BASE = "(__builtin_bit_cast(float, x5) - __builtin_bit_cast(float, x6))"
-                NEED = f"({TOPK}.0f - __builtin_bit_cast(float, x4))"
+                NEED = f"({K}.0f - __builtin_bit_cast(float, x4))"
                 Hm = hk.zeros(FS)
                 Hm += hk.map_cpp(f"(x0 < 32 && {BASE} + x1 - x2 < {NEED} && {NEED} <= {BASE} + x1) ? (float)x0 : -1.0f",
                                  lid, bi, hb, Ls, abv, sL, gL, dtype=fp32).max(axis=1)
@@ -186,7 +191,7 @@ def select_row(lk, n, w, topk, r, WIDTH: int, bufs=None):
                                   lid, abv, sL, gL, bH, hH, dtype=fp32)
                 # exact fit: the keys in bins >= H (groups above + this group's suffix) are what is needed
                 closed = hk.map_cpp(f"({last} || __builtin_bit_cast(float, x3) - __builtin_bit_cast(float, x4) + x1"
-                                    f" == {TOPK}.0f - __builtin_bit_cast(float, x2)) ? 1 : 0", lid, bH, abv, sL, gL, dtype=i32)
+                                    f" == {K}.0f - __builtin_bit_cast(float, x2)) ? 1 : 0", lid, bH, abv, sL, gL, dtype=i32)
                 ctl.store_elems(hk.map_cpp("__builtin_bit_cast(float, x0)", newp, dtype=fp32), hk.map_cpp("x0 == 0 ? 0 : -1", lid))
                 ctl.store_elems(nabv, hk.map_cpp("x0 == 0 ? 1 : -1", lid))
                 ctl.store_elems(hk.map_cpp("__builtin_bit_cast(float, x0)", closed, dtype=fp32), hk.map_cpp("x0 == 0 ? 2 : -1", lid))
@@ -199,7 +204,7 @@ def select_row(lk, n, w, topk, r, WIDTH: int, bufs=None):
     abv = fbits(ctl.load_elems(hk.map_cpp("1 + 0 * x0", lid)))
     cut = ctl.load_elems(hk.map_cpp("3 + 0 * x0", lid), i32).first_lane()
     carry_g, carry_e = hk.zeros(FS), hk.zeros(FS)
-    for it in range(WIDTH // (256 * WAVES)):
+    for it in range(-(-WIDTH // (256 * WAVES))):
         if hk.uniform(it * 256 * WAVES < n):
             es, gts, eqs = [], [], []
             for j in range(4):
@@ -226,9 +231,9 @@ def select_row(lk, n, w, topk, r, WIDTH: int, bufs=None):
                 carry_e += te
             hk.arch.barrier(drain=True)
             for j in range(4):
-                pos = hk.map_cpp(f"x0 > 0.0f ? (int)x2 : ((x1 > 0.0f && __builtin_bit_cast(float, x4) + x3 < {TOPK}.0f)"
+                pos = hk.map_cpp(f"x0 > 0.0f ? (int)x2 : ((x1 > 0.0f && __builtin_bit_cast(float, x4) + x3 < {K}.0f)"
                                  f" ? (int)(__builtin_bit_cast(float, x4) + x3) : -1)", gts[j], eqs[j], bg, be, abv, dtype=i32)
-                topk.store_elems(es[j], hk.map_cpp(f"x0 < 0 ? -1 : x1 * {TOPK} + x0", pos, r))
+                topk.store_elems(es[j], hk.map_cpp(f"x0 < 0 ? -1 : x1 * {K} + x0", pos, r))
                 bg = bg + gts[j]
                 be = be + eqs[j]
 
@@ -249,7 +254,8 @@ def index_kernel(wscale: float):
       block ends.
     Constants: RATIO (1 or 2), MC (rows, <= ROWS), HASKV (a compressor), CBLK / KBLK (records
     a compressed / K page), NPT / DPT / SL (AITER's MXFP4 cache layout), SEL / WIDTH / BTW
-    (selection, `width(max_model_len)`, block-table width), CAND / NCAND (the candidate source)."""
+    (selection, `width(max_model_len)`, block-table width), CAND / CONS / NCAND (the candidate source, a
+    consumer, the candidate list's blocks)."""
     wscale = float(wscale)
 
     def body(normed: hk.Tensor[bf16], wkv: hk.Tensor[bf16], wp: hk.Tensor[bf16],
@@ -265,25 +271,27 @@ def index_kernel(wscale: float):
              topk: hk.Tensor[i32], cand: hk.Tensor[i32], bends: hk.Tensor[i32],
              *, RATIO: int = 2, MC: int = 8, HASKV: int = 1, CBLK: int = 64, KBLK: int = 64,
              NPT: int = 16, DPT: int = 16, SL: int = 4, SEL: int = 0, WIDTH: int = 4096,
-             BTW: int = 64, CAND: int = 0, NCAND: int = 2048):
+             BTW: int = 64, CAND: int = 0, CONS: int = 0, NCAND: int = 2048):
         b = hk.arch.block_idx.x
         w = hk.arch.warp_id()
+        # LDS is placed in program order, each tile aligned to its size (a power of two) or 16 B: the
+        # large tiles first, each stage's in falling alignment, the selection's keys last (WIDTH 16640:
+        # 147 KB of gfx950's 160)
         if SEL:
-            # the selection's LDS first, at the lowest offsets (see the stage-4 note)
-            lk = hk.lds.alloc(hk.ST(fp32, WIDTH // 16, 16), name="lk")
-            selbufs = alloc_select()
+            # stage 3's per-wave logit tiles (wave w, head half i: rows (2 w + i) 16 ..); in stage 4 the
+            # candidate source's block keys or a consumer's candidate flags
+            lt_ = hk.lds.alloc(hk.ST(fp32, 256, 16), name="lt_")
+            hist = hk.lds.alloc(hk.ST(fp32, 128, 16), name="hist")
+        red = hk.lds.alloc(_ST_C, count=WAVES, name="red")
+        tot = hk.lds.alloc(_ST_C, name="tot")
+        if SEL:
+            selbufs = (hist, hk.lds.alloc(hk.ST(fp32, 16, 16), name="ctl"), hk.lds.alloc(hk.ST(fp32, 16, 16), name="wt"))
         tag = ep.at[0].load_scalar(invariant=True) * 2 + 1
         N1 = 512 * RATIO
         TILES1 = N1 // 16
         SPLITS1 = 256 // TILES1
         KC1 = H // SPLITS1
         CH1 = KC1 // 32                                    # 32-column chunks of this workgroup's K slice
-        red = hk.lds.alloc(_ST_C, count=WAVES, name="red")
-        tot = hk.lds.alloc(_ST_C, name="tot")
-        # stage 3's per-wave logit tiles, here rather than in its branch: LDS is placed in program
-        # order, each tile aligned to its size, and here it fills the gap before stage C's tiles
-        # (12288-entry rows fit gfx950's 160 KB with it here, 8192 without)
-        lt_ = hk.lds.alloc(hk.ST(fp32, 16, 32), count=WAVES, name="lt_") if SEL else None
 
         def cross_waves(acc):
             # every wave's 16 x 16 partial into LDS, wave 0 sums them in wave order into `tot`
@@ -419,6 +427,8 @@ def index_kernel(wscale: float):
             P = hk.iota(PP)                                                         # pair P: dims 2 P, 2 P + 1
             p_, ks_, rs_, cs_ = pC, ksC, rsC, csC
             gp = (p_ // RATIO) * RATIO
+            rg = hk.lds.alloc(hk.ST(fp32, 64, 16), name="rg")
+            kq = hk.lds.alloc(hk.ST(fp32, 128, 16), name="kq")                        # [wk row][token column]
             sl = hk.lds.alloc(hk.ST(bf16, 16, 512), name="sl")
             # operands that do not depend on this step's kv_score, issued before its poll
             w0 = hk.map_cpp(f"x1 == {WS} ? 1 : 0", P, w)                       # the storing wave writes
@@ -445,12 +455,11 @@ def index_kernel(wscale: float):
             # (element-indexed LDS is 16 columns wide: one column of 16 x 16 subtiles is linear, where a
             # wider tile puts every 16th element 1 KB on -- the same banks, an 8-way conflict on each
             # strip read)
-            sc = hk.lds.alloc(hk.ST(fp32, 256, 16), name="sc")                      # 4096 partials
+            sc = hk.lds.alloc(hk.ST(fp32, 256, 16), name="sc")                      # 4096 partials (allocated last)
             # retire the prefetches here, ahead of any store (a later wait for them would wait out the stores)
             hk.arch.pin(nwE, nwO, ccE, ssE)
             # wk's tiles behind the poll (ahead of it, their 128 KB held the poll back): they land under the sums
             wkt = [wk.at[w * 16, k * 32].load(_T_X) for k in range(16)]
-            rg = hk.lds.alloc(hk.ST(fp32, 64, 16), name="rg")
             rg.store_elems(rgv, hk.map_cpp("(x0 & ~511) + (x0 & 1) * 256 + ((x0 & 511) >> 1)", rge))   # de-interleaved
             # de-interleaved: each 512-element segment as [even 256 | odd 256], so the sums below read P
             # contiguous
@@ -528,7 +537,6 @@ def index_kernel(wscale: float):
             acc = hk.zeros(_T_C)
             for k in range(16):
                 acc += wkt[k] @ sl.subtile(16, 32, 0, k).load(_T_X).T
-            kq = hk.lds.alloc(hk.ST(fp32, 128, 16), name="kq")                        # [wk row][token column]
             kq.subtile(16, 16, w, 0).store(acc)
             hk.arch.barrier(drain=True)
             if w == 0:
@@ -618,6 +626,8 @@ def index_kernel(wscale: float):
             # (the roles below reuse the earlier stages' LDS -- allocations in sibling branches share it
             # -- so every wave finishes the one before writing the next)
             hk.arch.barrier(drain=True)
+            # the row's keys, past every stage's tiles (16 B aligned: no padding in front of it)
+            lk = hk.lds.alloc(hk.ST(fp32, WIDTH // 16, 16), name="lk")
             # ---- stage 3: the logits of a row past TOPK entries, on every workgroup -- row b // 32, its
             # 16-token blocks (b % 32) 8 + w + 256 k -- once the row's q (Q workgroup) and new K entry
             # (C workgroup) are stored; the 16 keys of a block (logits as ordered uint32, all 16
@@ -641,7 +651,7 @@ def index_kernel(wscale: float):
                         f"(x1 * {NH} + {16 * hq_} + x0 % 16) * 4 + x0 / 16", l1_, rr), i32), dtype=i32)))
                     wv_.append(wts.load_elems(hk.map_cpp(f"x1 * {NH} + {16 * hq_} + x0 % 16", hl_, rr), runs=True))
                 nb_ = (nr + 15) // 16
-                for j in range(WIDTH // 16 // 256):
+                for j in range(-(-WIDTH // (16 * 256))):
                     blk = cc * 8 + w + 256 * j
                     if blk < nb_:                  # wave-uniform only
                         t0 = blk * 16
@@ -655,10 +665,10 @@ def index_kernel(wscale: float):
                         kb = hk.fp4_operand(kw)
                         ks = hk.mx_scales_loose(hk.map_cpp("x0 & 0xFF", kb8, dtype=i32))
                         for im_ in range(2):
-                            lt_[w].subtile(16, 16, 0, im_).store(hk.mma_ABt_mx(kb, qa_[im_], hk.zeros(_T_C), ks, qsc_[im_], a_fmt="fp4", b_fmt="fp4"))
+                            lt_.subtile(16, 16, 2 * w + im_, 0).store(hk.mma_ABt_mx(kb, qa_[im_], hk.zeros(_T_C), ks, qsc_[im_], a_fmt="fp4", b_fmt="fp4"))
                         lg16 = hk.zeros(hk.RS(fp32, 1, 1024, 16))
                         for is_ in range(2):
-                            sv = lt_[w].load_elems(hk.map_cpp(f"x0 / 16 < 16 ? (x0 / 16) * 32 + {16 * is_} + x0 % 16 : -1", hl_), runs=True)
+                            sv = lt_.load_elems(hk.map_cpp(f"x0 < 256 ? (2 * x1 + {is_}) * 256 + x0 : -1", hl_, w), runs=True)
                             lg16 = lg16 + hk.map_cpp("__builtin_fmaxf(x0, 0.0f) * x1", sv, wv_[is_]).group_sum(16, lanes="seq")
                         mb.post_elems(hk.map_cpp(KEY, lg16, dtype=i32),
                                       hk.map_cpp(f"(x0 % 16 == 0 && x0 / 16 < 16) ? {LK0} + x1 * {WIDTH} + x2 + x0 / 16 : -1", hl_, rr, t0), tag)
@@ -668,15 +678,16 @@ def index_kernel(wscale: float):
             if hk.uniform((b >= 240) & (b < 240 + MC)):
                 tq_ = b - 240
                 nt = lens.at[tq_].load_scalar(invariant=True)
+                be = bends.at[tq_].load_scalar(invariant=True) if (CAND or CONS) else None
                 if CAND:
-                    # the candidate source: its candidate blocks for the consumers -- every block of the
-                    # row (the stock block top-k's answer while the blocks fit NCAND), 0 .. ends-1, then -1
-                    be = bends.at[tq_].load_scalar(invariant=True)
-                    cz = hk.iota(hk.RS(i32, 1, 256, 4))
-                    for ic in range(NCAND // (256 * WAVES)):
-                        ci = hk.map_cpp(f"({ic} * {WAVES} + x1) * 256 + x0", cz, w)
-                        cand.store_elems(hk.map_cpp("x0 < x1 ? x0 : -1", ci, be, dtype=i32),
-                                         hk.map_cpp(f"x1 * {NCAND} + x0", ci, tq_), runs=True)
+                    # the candidate source: its candidate blocks for the consumers -- while they fit NCAND,
+                    # every block of the row (the stock block top-k's answer), 0 .. ends-1, then -1
+                    if hk.uniform(be <= NCAND):
+                        cz = hk.iota(hk.RS(i32, 1, 256, 4))
+                        for ic in range(NCAND // (256 * WAVES)):
+                            ci = hk.map_cpp(f"({ic} * {WAVES} + x1) * 256 + x0", cz, w)
+                            cand.store_elems(hk.map_cpp("x0 < x1 ? x0 : -1", ci, be, dtype=i32),
+                                             hk.map_cpp(f"x1 * {NCAND} + x0", ci, tq_), runs=True)
                 if hk.uniform(nt <= TOPK):
                     if w == 0:
                         sel = hk.iota(hk.RS(i32, 1, 512, 8))
@@ -684,13 +695,51 @@ def index_kernel(wscale: float):
                                          runs=True)
                 if hk.uniform(nt > TOPK):
                     z4 = hk.iota(hk.RS(i32, 1, 256, 4))
-                    for it in range(WIDTH // 2048):
+                    for it in range(-(-WIDTH // 2048)):
                         if hk.uniform(it * 2048 < nt):
                             e = hk.map_cpp(f"({it} * 8 + x1) * 256 + x0", z4, w)
                             kv = mb.take_elems(hk.map_cpp(f"x0 < ((x2 + 15) / 16) * 16 ? {LK0} + x1 * {WIDTH} + x0 : -1", e, tq_, nt),
                                                tag, i32, runs=True, timeout_s=2.0)
                             lk.store_elems(kv, hk.map_cpp("x0 < x1 ? x0 : -1", e, nt))
                     hk.arch.barrier(drain=True)
+                    NBK = -(-WIDTH // CBLOCK)                  # blocks a row, at most
+                    if CAND:
+                        # past NCAND blocks (rows past NCAND x 8 entries), the stock block top-k: a block's key is
+                        # its CBLOCK keys' max (logits as ordered uint32), its top NCAND into the candidates
+                        if hk.uniform(be > NCAND):
+                            for ib in range(-(-NBK // (256 * WAVES))):
+                                bb = hk.map_cpp(f"({ib} * {WAVES} + x1) * 256 + x0", z4, w)
+                                bk = lk.load_elems(hk.map_cpp(f"x0 < x1 ? x0 * {CBLOCK} : -1", bb, be), i32)
+                                for c_ in range(1, CBLOCK):
+                                    bk = hk.map_cpp("(int)__builtin_elementwise_max((unsigned)x0, (unsigned)x1)", bk, lk.load_elems(
+                                        hk.map_cpp(f"(x0 < x1 && x0 * {CBLOCK} + {c_} < x2) ? x0 * {CBLOCK} + {c_} : -1", bb, be, nt), i32),
+                                        dtype=i32)
+                                lt_.store_elems(hk.map_cpp("__builtin_bit_cast(float, x0)", bk, dtype=fp32), hk.map_cpp("x0 < x1 ? x0 : -1", bb, be))
+                            hk.arch.barrier(drain=True)
+                            select_row(lt_, be, w, cand, tq_, 256 * 16, bufs=selbufs, K=NCAND)
+                            hk.arch.barrier(drain=True)
+                    if CONS:
+                        # past NCAND blocks, the stock consumer's mask: only the candidate source's blocks
+                        # (this step's, written by its launch before this one) -- the other keys to 0, below any
+                        # logit's
+                        if hk.uniform(be > NCAND):
+                            for ib in range(-(-NBK // (256 * WAVES))):
+                                bb = hk.map_cpp(f"({ib} * {WAVES} + x1) * 256 + x0", z4, w)
+                                lt_.store_elems(hk.map_cpp("0.0f * (float)x0", bb, dtype=fp32), hk.map_cpp("x0 < x1 ? x0 : -1", bb, be))
+                            hk.arch.barrier(drain=True)
+                            for ic in range(NCAND // (256 * WAVES)):
+                                ci = hk.map_cpp(f"({ic} * {WAVES} + x1) * 256 + x0", z4, w)
+                                cb_ = cand.load_elems(hk.map_cpp(f"x1 * {NCAND} + x0", ci, tq_), i32, runs=True)
+                                lt_.store_elems(hk.map_cpp("1.0f + 0.0f * (float)x0", cb_, dtype=fp32),
+                                                hk.map_cpp("(x0 >= 0 && x0 < x1) ? x0 : -1", cb_, be))
+                            hk.arch.barrier(drain=True)
+                            for it in range(-(-WIDTH // 2048)):
+                                if hk.uniform(it * 2048 < nt):
+                                    e = hk.map_cpp(f"({it} * 8 + x1) * 256 + x0", z4, w)
+                                    fl = lt_.load_elems(hk.map_cpp(f"x0 < x1 ? x0 / {CBLOCK} : -1", e, nt))
+                                    lk.store_elems(hk.map_cpp("0 * x0", e, dtype=i32),
+                                                   hk.map_cpp("(x0 < x1 && x2 == 0.0f) ? x0 : -1", e, nt, fl, dtype=i32))
+                            hk.arch.barrier(drain=True)
                     select_row(lk, nt, w, topk, tq_, WIDTH, bufs=selbufs)
     body.__name__ = "body"
     return hk.kernel(body, arch="gfx950", warps=WAVES, name="dsv41_index", grid=lambda p: (256, 1, 1), resident=True)

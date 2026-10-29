@@ -1339,15 +1339,20 @@ __device__ inline static void gather_prep(const IL &ids, int at) {
     // RAW: the ids themselves, for a scatter's rows (store_scatter<.., STAGED = N>), in their
     // own array: ids[at + r] at [r]; `at` a multiple of N (the scatter indexes it pos % N)
     int *rows = RAW ? detail::hk_scatter_ids_lds<N>() : detail::hk_gather_rows_lds<N>();
-    const int *idp = reinterpret_cast<const int *>(ids.raw_ptr) + at;
+    const int *idp = reinterpret_cast<const int *>(ids.raw_ptr);
+    // positions past the ids tensor are not read: their rows are 0xFFFFFF (a row past any tensor)
+    const int n_ids = int(ids.batch() * ids.depth() * ids.rows() * ids.cols());
     for (int r = int(threadIdx.x); r < N; r += int(blockDim.x))
-        rows[r] = RAW ? idp[r] : idp[r] & 0xFFFFFF;
+        rows[r] = at + r < n_ids ? (RAW ? idp[at + r] : idp[at + r] & 0xFFFFFF) : (RAW ? -1 : 0xFFFFFF);
     __syncthreads();
 }
 
 template<int NW, int N = 0, ducks::st::all ST, typename U, ducks::coord::tile COORD, ducks::gl::all IL>
 __device__ inline static void group_load_async_gather(ST &dst, const strided_gl<U> &src,
-                                                      const COORD &idx, const IL &ids, int at) {
+                                                      const COORD &idx, const IL &ids, int at,
+                                                      int limit = 0x7FFFFFFF) {
+    // limit: tile rows from `limit` on read zero and their ids are not read (a list that ends
+    // inside the tile -- the last query of a CSR -- is never read past its end)
     using T = typename ST::dtype;
     static_assert(sizeof(T) == sizeof(U) && (sizeof(T) == 2 || sizeof(T) == 1),
                   "16-bit or fp8 tiles of the global's own dtype");
@@ -1363,26 +1368,51 @@ __device__ inline static void group_load_async_gather(ST &dst, const strided_gl<
     const int rs = int(src.template stride<2>());
     // the whole slab from row 0 and the tile's column: an index past the last row reads zero
     const detail::hk_i32x4 r = detail::hk_copy_srsrc(src, unit.b, unit.d, 0, unit.c, 0x7FFFFFFF);
-    const int *idp = reinterpret_cast<const int *>(ids.raw_ptr) + at;
+    const int *ids0 = reinterpret_cast<const int *>(ids.raw_ptr);
+    const int n_ids = int(ids.batch() * ids.depth() * ids.rows() * ids.cols());   // a copy reads no id past it
     const int lane = laneid();
     const int w = int(threadIdx.x / WARP_THREADS) % NW;
     const uint32_t lds = __builtin_amdgcn_readfirstlane(
         uint32_t(reinterpret_cast<uintptr_t>(&dst.data[0])) + w * PER_WARP);
-    auto copy = [&](int i) {
+    // where copy i's lane lands in the tile
+    auto place = [&](int i, int &row, int &col) {
         const int byte = lane * 16 + w * PER_WARP + i * PER_CALL;
         const int sub = byte / ST::underlying_subtile_bytes;
         const int in = byte % ST::underlying_subtile_bytes;
         const uint32_t sw = ST::swizzle({in / ST::underlying_subtile_row_bytes,
                                          (in % ST::underlying_subtile_row_bytes) / int(sizeof(T))});
-        const int row = int(sw) / ST::underlying_subtile_row_bytes +
-                        (sub / ST::underlying_subtiles_per_row) * ST::underlying_subtile_rows;
-        const int col = (int(sw) % ST::underlying_subtile_row_bytes) / int(sizeof(T)) +
-                        (sub % ST::underlying_subtiles_per_row) * ST::underlying_subtile_cols;
+        row = int(sw) / ST::underlying_subtile_row_bytes +
+              (sub / ST::underlying_subtiles_per_row) * ST::underlying_subtile_rows;
+        col = (int(sw) % ST::underlying_subtile_row_bytes) / int(sizeof(T)) +
+              (sub % ST::underlying_subtiles_per_row) * ST::underlying_subtile_cols;
+    };
+    // A lane past the limit reads the last live id (its position clamped: ints only) and adds 2^31
+    // to its offset, past the range, so it reads zero. The biases go through empty asms, all before
+    // the first index load: LLVM would otherwise fold a bias into a select of the loaded id and lower
+    // that to a branch on the lane being live, and an asm between the loads keeps them from issuing
+    // together -- either is a vmcnt wait per copy (sparse MLA 711 -> 800-1000 us).
+    constexpr int CALLS = FULL + (PART > 0 ? 1 : 0);
+    uint32_t past[CALLS > 0 ? CALLS : 1];
+    #pragma unroll
+    for (int i = 0; i < CALLS; i++) {
+        int row, col;
+        place(i, row, col);
+        past[i] = row < limit && at + row < n_ids ? 0u : 0x80000000u;
+        asm volatile("" : "+v"(past[i]));
+    }
+    auto copy = [&](int i) {
+        int row, col;
+        place(i, row, col);
+        // the position read: this lane's, or for a dead lane the list's last live one -- in the
+        // ids tensor either way (a dead lane's row is discarded by its bias)
+        int k = row < limit ? at + row : at + limit - 1;
+        k = k < n_ids ? k : n_ids - 1;
+        k = k > 0 ? k : 0;
         int src_row;
-        if constexpr (N > 0) src_row = detail::hk_gather_rows_lds<N>()[row];   // gather_prep's
-        else src_row = idp[row] & 0xFFFFFF;
+        if constexpr (N > 0) src_row = detail::hk_gather_rows_lds<N>()[k - at > 0 ? k - at : 0];   // gather_prep's
+        else src_row = ids0[k] & 0xFFFFFF;
         detail::hk_buf_ld_lds(r, (detail::hk_lds_ptr)(uintptr_t)(lds + i * PER_CALL), 16,
-                              (src_row * rs + col) * int(sizeof(T)), 0, 0, 0);
+                              uint32_t((src_row * rs + col) * int(sizeof(T))) + past[i], 0, 0, 0);
     };
     #pragma unroll
     for (int i = 0; i < FULL; i++)
@@ -3210,6 +3240,58 @@ __device__ static inline void one(S &dst) {
         for (int r = 0; r < S::length; r++) dst.data[r][0] = typename S::T(1.f);
 }
 
+/**
+ * The fp32 max and min of hk's reductions: on gfx950 llvm.maximum / llvm.minimum, which it
+ * selects as v_maximum3_f32 / v_minimum3_f32 as it does fmaxf as v_max3_f32. fmaxf is maxnum, and
+ * in IEEE mode a maxnum operand that might be a signalling NaN is quieted first: a reduction of
+ * 2k + 1 values pairs into max3s but for one two-operand max, whose operands -- MFMA results,
+ * loop-carried values -- LLVM cannot prove quiet, so a v_max_f32 x, x each (attention's row max,
+ * 3 instructions a reduction for 1). llvm.maximum propagates any NaN and needs no quieting. The
+ * same on every value but NaN, which now propagates (torch.amax's), and -0 against +0, which is
+ * now ordered (max -0, +0 is +0). Other types, and other CDNA targets, which have no
+ * v_maximum3_f32 (gfx942 would expand each maximum into a compare and selects), keep the
+ * library's base_ops::max / min.
+ */
+namespace base_ops {
+struct hk_rmax {
+    template<typename T> static __device__ inline T op(const T &a, const T &b) { return max::op<T>(a, b); }
+};
+struct hk_rmin {
+    template<typename T> static __device__ inline T op(const T &a, const T &b) { return min::op<T>(a, b); }
+};
+#if defined(__gfx950__)
+template<> __device__ inline float hk_rmax::op<float>(const float &a, const float &b) {
+    return __builtin_elementwise_maximum(a, b);
+}
+template<> __device__ inline float2 hk_rmax::op<float2>(const float2 &a, const float2 &b) {
+    return float2{__builtin_elementwise_maximum(a.x, b.x), __builtin_elementwise_maximum(a.y, b.y)};
+}
+template<> __device__ inline float hk_rmin::op<float>(const float &a, const float &b) {
+    return __builtin_elementwise_minimum(a, b);
+}
+template<> __device__ inline float2 hk_rmin::op<float2>(const float2 &a, const float2 &b) {
+    return float2{__builtin_elementwise_minimum(a.x, b.x), __builtin_elementwise_minimum(a.y, b.y)};
+}
+#endif
+}  // namespace base_ops
+
+/// The register tiles' row and column max and min through hk_rmax / hk_rmin: more constrained
+/// than the library's (an fp32 tile), so such a tile picks them.
+#define HK_RT_REDUCE(name, kind, opname)                                                        \
+    template<ducks::rv::all V, ducks::rt::all T> requires (std::is_same_v<typename T::T, float>) \
+    __device__ static inline void name(V &dst, const T &src) {                                  \
+        kind##_reduce<base_ops::opname, V, T, true>(dst, src, dst);                             \
+    }                                                                                           \
+    template<ducks::rv::all V, ducks::rt::all T> requires (std::is_same_v<typename T::T, float>) \
+    __device__ static inline void name(V &dst, const T &src, const V &acc) {                    \
+        kind##_reduce<base_ops::opname, V, T, false>(dst, src, acc);                            \
+    }
+HK_RT_REDUCE(row_max, row, hk_rmax)
+HK_RT_REDUCE(row_min, row, hk_rmin)
+HK_RT_REDUCE(col_max, col, hk_rmax)
+HK_RT_REDUCE(col_min, col, hk_rmin)
+#undef HK_RT_REDUCE
+
 #define HK_STRIP_BINARY(name, opname)                                              \
     template<typename S, typename U> requires (ducks::rs::all<S> || ducks::rs::cv<S>) \
     __device__ static inline void name(S &dst, const S &lhs, const U &rhs) {       \
@@ -3222,6 +3304,22 @@ HK_STRIP_BINARY(div, div)
 HK_STRIP_BINARY(max, max)
 HK_STRIP_BINARY(min, min)
 #undef HK_STRIP_BINARY
+
+/// The combine of two partial max / min reductions (cross_warp's, a vector folded in by max_):
+/// base_ops::hk_rmax / hk_rmin, so a reduction split across warps or blocks keeps the NaN and
+/// signed-zero rules of one within a wave. Register vectors and strip vectors.
+#define HK_REDUCE_COMBINE(name, opname)                                                \
+    template<ducks::rv::all T, typename U>                                              \
+    __device__ static inline void name(T &dst, const T &lhs, const U &rhs) {            \
+        bin_op<base_ops::opname, T>(dst, lhs, rhs);                                      \
+    }                                                                                   \
+    template<typename S, typename U> requires (ducks::rs::all<S> || ducks::rs::cv<S>)    \
+    __device__ static inline void name(S &dst, const S &lhs, const U &rhs) {            \
+        bin_map<base_ops::opname, S>(dst, lhs, rhs);                                     \
+    }
+HK_REDUCE_COMBINE(rmax, hk_rmax)
+HK_REDUCE_COMBINE(rmin, hk_rmin)
+#undef HK_REDUCE_COMBINE
 
 namespace detail {
 /** The whole tensor as one buffer: rows over batch and depth at the row stride (the descriptor's
@@ -3949,12 +4047,12 @@ __device__ inline void strip_col_reduce(RV &dst, const RS &src, const RV &acc) {
         detail::strip_##kind##_reduce<base_ops::opname, false>(dst, src, acc);     \
     }
 HK_STRIP_REDUCE(row_sum,  sum, row, cv)
-HK_STRIP_REDUCE(row_max,  max, row, cv)
-HK_STRIP_REDUCE(row_min,  min, row, cv)
+HK_STRIP_REDUCE(row_max,  hk_rmax, row, cv)
+HK_STRIP_REDUCE(row_min,  hk_rmin, row, cv)
 HK_STRIP_REDUCE(row_prod, mul, row, cv)
 HK_STRIP_REDUCE(col_sum,  sum, col, all)
-HK_STRIP_REDUCE(col_max,  max, col, all)
-HK_STRIP_REDUCE(col_min,  min, col, all)
+HK_STRIP_REDUCE(col_max,  hk_rmax, col, all)
+HK_STRIP_REDUCE(col_min,  hk_rmin, col, all)
 HK_STRIP_REDUCE(col_prod, mul, col, all)
 #undef HK_STRIP_REDUCE
 
@@ -3979,8 +4077,8 @@ __device__ static inline void row_sum_times_ordered(V &dst, const RS &src, const
     static_assert(SEQ, "a fused sum of products is left to right");
     detail::strip_row_dot_ordered<false, OFFS...>(dst, src, times, acc);
 }
-HK_STRIP_REDUCE_ORDERED(row_max,  max)
-HK_STRIP_REDUCE_ORDERED(row_min,  min)
+HK_STRIP_REDUCE_ORDERED(row_max,  hk_rmax)
+HK_STRIP_REDUCE_ORDERED(row_min,  hk_rmin)
 HK_STRIP_REDUCE_ORDERED(row_prod, mul)
 #undef HK_STRIP_REDUCE_ORDERED
 

@@ -9,6 +9,55 @@ The next version's notes collect here until it is released.
 What is on main after 0.8.0. `pip install hk-dsl` (0.8.0) does not have it;
 the API reference marks such names *New after 0.8.0*.
 
+**The compile cache served kernels built from old headers.** The key hashed a
+fixed set of files -- kittens.cuh, pyutils/, the target's arch tree and its
+extra_includes (include/hk/cdna.cuh) -- and nothing they include. An edit to
+include/hk/cdna_agpr.cuh (which cdna.cuh includes) or include/pyutils/hk_bind.cuh
+(which every pybind module includes), in a checkout or an installed wheel, kept
+every key, so the next build loaded the binary from before the edit with no
+sign of it: an A/B or benchmark after a header fix could measure the old code.
+The key now covers the contents of every header the kernel's compile reads, as
+the compiler lists them: on a miss, one preprocessor pass per side (device, and
+host for a `.so` -- hipcc's `-MD` lists the host's only) writes clang's
+dependency file, kept beside the cache as a manifest; a hit re-hashes the listed
+files. An edit to a header a kernel does not include still leaves it cached.
+torch's and pybind11's versions are in the key when their headers are on the
+include path (a torch upgraded in place kept its key), and so are the flags
+hipcc appends from HIPCC_COMPILE_FLAGS_APPEND / HIPCC_LINK_FLAGS_APPEND and
+HIP_CLANG_PATH. Warm path: +0.14-0.18 ms a cached kernel, against a 1.1-2.6 ms
+hit. Every existing entry misses once (a new
+key scheme); old entries are never read again and can be deleted.
+`runtime.compile.target_headers_fingerprint` is gone. `tests/hk/ir/test_compile_cache.py`,
+`tests/hk/codegen/test_compile.py`.
+
+**gfx950: fp32 max and min reductions are IEEE 754-2019 maximum and minimum.**
+Row and column `max` / `min` of register tiles and strips, `group_max` /
+`group_min`, the combine of `cross_warp(v, "max" | "min")` and `fold_rows`,
+and the online fold `m.max_(...)` / `m.min_(...)` are `llvm.maximum` /
+`llvm.minimum` on gfx950 (`v_maximum3_f32`, `v_minimum3_f32`), where they were
+`fmaxf` / `fminf`.
+- Two semantic changes, on values no shipped kernel reduces: a NaN anywhere
+  in what is reduced now gives NaN, however the reduction is split across
+  lanes, warps or blocks (as `torch.amax` does; maxNum skipped it), and -0
+  orders below +0 (the max of -0 and +0 is +0, the min -0; maxNum may return
+  either). `tests/hk/gpu/test_reduce_nan.py` holds both, within a wave, across
+  warps and across blocks.
+- Unchanged: elementwise `hk.max` / `hk.min` (`maximum`, `minimum`, clamps)
+  stay `fmaxf` / `fminf` everywhere; gfx942 (no `v_maximum3_f32`: LLVM would
+  expand each maximum into compares and selects) and RDNA keep `fmaxf` for
+  reductions too. docs/language.md has the two kinds.
+- Why: in IEEE mode LLVM quiets a maxNum operand it cannot prove quiet with a
+  `v_max_f32 x, x`. A reduction of 2k + 1 values pairs into `v_max3_f32`s but
+  for one two-operand max, whose operands (MFMA results, loop-carried values)
+  it never can: attention's row max took 3 instructions for that 1. The d128
+  main loop is 693 -> 680 instructions, 348 -> 338 VALU.
+- Outputs: every launch of every `tests/hk/gpu` test, re-run as a twin built
+  from the previous headers and emitter, is bit-identical (1182 launches; the
+  6 that differ also differ from themselves run to run: atomics). Speed, one
+  process against the previous code (MI355X, d128 attention, 6 shapes):
+  0.999-1.010x, median +0.35%. GEMM, K1 and K2 compile to the same
+  instructions as before.
+
 **CONTRIBUTING.md: new kernels add no kernel-specific C++ helpers or one-off DSL ops.**
 - A needed exception goes through review with a written reason and is registered as an escape
   hatch with a usage boundary. The file also has a reviewer checklist.
@@ -56,11 +105,14 @@ run plus lane l ^ 32's: `group_max(32, xor=(32,))`.
 launches each index layer ran vLLM's 9-12-kernel chain (`mono_decode._select`).
 At decode steps of up to 8 rows, `hk.integration.vllm_dsv41_index` runs it as
 one resident launch, `hk.ops.dsv41_index`: compressor, compressed-cache insert,
-indexer K and Q, and, for rows of up to 12288 entries, the logits and the
-top-k. The caches, q and q_scale are vLLM's byte for byte and the top-k sets
-equal (docs/integration.md, "The DeepSeek-V4.1 index launch"). The route
-patches through an import hook, since the plugin must not import the model
-package, and its contract is read from the module's source.
+indexer K and Q, and, for rows of up to 16640 entries, the logits and the
+top-k -- the candidate source's block top-k and the consumers' candidate mask
+included. The caches, q and q_scale are vLLM's byte for byte and the top-k sets
+equal (docs/integration.md, "The DeepSeek-V4.1 index launch"). Serving on
+MI355X (TP2, max_model_len 16640, with hk's other default routes): TPOT 4.5 /
+4.4 / 3.1% below mono's at batch 1 / 4 / 8, GSM8K-1319 within stock's noise.
+The route patches through an import hook, since the plugin must not import the
+model package, and its contract is read from the module's source.
 
 **CDNA: the MFMA hazard gate pads what LLVM leaves short.** The hardware
 does not interlock on an MFMA's result. LLVM before llvm/llvm-project#225989
@@ -101,6 +153,18 @@ checked. Swept over every kernel the test tiers and the default routes build:
   warm-routes makes one call at the smallest M of each.
   `tests/hk/ir/test_warm_routes.py` checks the cover against an independent
   scan of `schedule` and `mxfp8.tail_split`.
+
+**gfx950: a gathered LDS copy takes a row limit, and reads no index past it.**
+`g.load(..., wait=False, gather=(ids, at))` read `ids[at + r]` for every row r of the
+tile. When an index list ended inside the tile (the last query of a CSR), the copy
+read up to a tile of ids past the list's end. Usually that lands in the allocator's
+slack; when the list ends its segment, it is a memory fault. In vLLM that was the
+sparse-MLA prefill, under a real-weight server's mixed batch. `rows=` (refused with
+`gather=` until now) now bounds a gathered copy: rows from the limit on read zero,
+and their ids are not read; and no gathered copy or `g.gather_prep` reads an id past
+the ids tensor (those rows read zero too). The copy stays branch-free, so its index
+loads still issue together. `tests/hk/gpu/test_gather_load.py`,
+`tests/hk/gpu/test_fenced.py::test_gathered_copy_reads_no_index_past_its_rows`.
 
 **CDNA: `hk-mma-fence`, a DSL rule for matrix-core accumulators; `hk.arch.agpr`
 to hold one in AGPRs.**
@@ -483,6 +547,11 @@ these sizes; the shipped one is the one that holds under both).
 - A gfx950 job's wait for an idle MI355X is `HK_CI_PICK_WAIT_MIN` minutes (runner `.env`, default 60,
   as before), so CI can wait out other users' processes on its GPUs instead of failing; the gfx950
   and gfx950-vllm jobs' timeout is 360 minutes, which covers the wait (#123).
+- The merge train resolves a conflict in `CHANGELOG.md` by union instead of kicking the PR.
+  The union is checked before it is kept: no conflict markers, no entry twice, and each
+  version section kept as it was. To merge such a PR, its branch is first brought to the
+  train's tree with an admin bypass, which is logged. `readmit` puts back the PRs kicked
+  only for such a conflict (#128, [testing](docs/testing.md#the-merge-train)).
 
 ## 0.8.0
 
