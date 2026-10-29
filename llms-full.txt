@@ -4588,7 +4588,9 @@ half-line runs of a 16x32 tile it fetched lines twice (4.8 against
 the tile's rows come by index, row r being the source's row
 `ids[at + r] & 0xFFFFFF` -- AITER's MoE sort ids (token | choice << 24;
 its padding is a row past the tensor, which reads zero); `src`'s
-coordinate gives the column. `staged=N`: the rows were staged in LDS
+coordinate gives the column; with `rows`, the tile's rows from `rows` on
+read zero and their ids are not read -- an index list that ends inside
+the tile (a CSR's last row) is not read past. `staged=N`: the rows were staged in LDS
 by `g.gather_prep(ids, at, N)` (same ids and at) -- read from there, so
 a lane's row costs no vmcnt wait (which, in order, would retire the
 whole prefetch).

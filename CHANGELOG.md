@@ -93,6 +93,18 @@ checked. Swept over every kernel the test tiers and the default routes build:
   `tests/hk/ir/test_warm_routes.py` checks the cover against an independent
   scan of `schedule` and `mxfp8.tail_split`.
 
+**gfx950: a gathered LDS copy takes a row limit, and reads no index past it.**
+`g.load(..., wait=False, gather=(ids, at))` read `ids[at + r]` for every row r of the
+tile. When an index list ended inside the tile (the last query of a CSR), the copy
+read up to a tile of ids past the list's end. Usually that lands in the allocator's
+slack; when the list ends its segment, it is a memory fault. In vLLM that was the
+sparse-MLA prefill, under a real-weight server's mixed batch. `rows=` (refused with
+`gather=` until now) now bounds a gathered copy: rows from the limit on read zero,
+and their ids are not read; and no gathered copy or `g.gather_prep` reads an id past
+the ids tensor (those rows read zero too). The copy stays branch-free, so its index
+loads still issue together. `tests/hk/gpu/test_gather_load.py`,
+`tests/hk/gpu/test_fenced.py::test_gathered_copy_reads_no_index_past_its_rows`.
+
 **CDNA: `hk-mma-fence`, a DSL rule for matrix-core accumulators; `hk.arch.agpr`
 to hold one in AGPRs.**
 - `hk-mma-fence`, a pass in the kernel pipeline, puts an `hk.sched_barrier`

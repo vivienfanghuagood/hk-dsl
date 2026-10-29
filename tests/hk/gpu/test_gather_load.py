@@ -85,3 +85,38 @@ def test_gathered_rows_staged():
     live = tok < n
     ref[live] = x[tok[live].long(), 64:]
     assert torch.equal(out, ref)
+
+
+def _kernel_bounded():
+    st = hk.ST(bf16, 32, 64)
+    rt = hk.RT(bf16, 32, 64, "row")
+
+    def body(x: hk.Tensor[bf16], ids: hk.Tensor[i32], out: hk.Tensor[bf16]):
+        g = hk.group(4)
+        s = hk.lds.alloc(st, name="s")
+        at = hk.arch.block_idx.x * 32
+        g.load(s, x.at[0, 64], wait=False, gather=(ids, at), rows=hk.max(ids.cols - at, 0))
+        g.wait_for(s)
+        hk.arch.barrier()
+        t = s.load(rt)
+        if hk.arch.warp_id() == 0:
+            out[hk.elem_coord(0, 0, at, 0)].store(t)
+
+    body.__name__ = "gather_load_bounded_t"
+    return hk.kernel(body, arch="gfx950", warps=4, name="gather_load_bounded_t",
+                     grid=lambda p: ((p.ids.cols + 31) // 32 + 1, 1, 1))
+
+
+def test_gathered_rows_stop_at_the_row_limit():
+    """rows= with gather=: an index list that ends inside the tile (77 ids, tiles of 32, and one
+    tile wholly past it) -- rows from the limit on read zero, and the ids past it are not read
+    (tests/hk/gpu/test_fenced.py::test_gathered_copy_reads_no_index_past_its_rows faults if they are)."""
+    n, m = 100, 77
+    x = torch.randn(n, 128, device="cuda").to(torch.bfloat16)
+    tok = torch.randint(0, n, (m,), device="cuda", dtype=torch.int32)
+    ids = tok.view(1, -1)
+    out = torch.full((4 * 32, 64), float("nan"), device="cuda", dtype=torch.bfloat16)
+    _kernel_bounded()(x, ids, out)
+    ref = torch.zeros(4 * 32, 64, device="cuda", dtype=torch.bfloat16)
+    ref[:m] = x[tok.long(), 64:]
+    assert torch.equal(out, ref)

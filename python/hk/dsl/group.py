@@ -74,7 +74,9 @@ class Group:
         the tile's rows come by index, row r being the source's row
         `ids[at + r] & 0xFFFFFF` -- AITER's MoE sort ids (token | choice << 24;
         its padding is a row past the tensor, which reads zero); `src`'s
-        coordinate gives the column. `staged=N`: the rows were staged in LDS
+        coordinate gives the column; with `rows`, the tile's rows from `rows` on
+        read zero and their ids are not read -- an index list that ends inside
+        the tile (a CSR's last row) is not read past. `staged=N`: the rows were staged in LDS
         by `g.gather_prep(ids, at, N)` (same ids and at) -- read from there, so
         a lane's row costs no vmcnt wait (which, in order, would retire the
         whole prefetch)."""
@@ -98,9 +100,8 @@ class Group:
                     "g.load(wait=False) into a subtile: the copy lays out a "
                     "whole LDS tile. Copy into the allocation, or one buffer "
                     "of a stack.")
-        if gather is not None and (wait or rows is not None):
-            raise TypeError("g.load(gather=...) is the asynchronous copy's (wait=False), "
-                            "without a row limit")
+        if gather is not None and wait:
+            raise TypeError("g.load(gather=...) is the asynchronous copy's (wait=False)")
         gids, gat = (None, None) if gather is None else gather
         if gids is not None and (not hasattr(gids, "dtype") or gids.dtype.name != "i32"):
             raise TypeError(f"g.load(gather=(ids, at)): ids is an int32 tensor, got {gids!r}")

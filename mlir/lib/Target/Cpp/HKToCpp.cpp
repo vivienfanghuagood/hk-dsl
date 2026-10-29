@@ -1565,7 +1565,8 @@ private:
               ", " + std::to_string(o.getGatherStaged()) +
               ">(" + name(o.getDst()) + ", " + name(o.getSrc()) + ", " +
               coordArg(o.getIdx(), tileCpp(o.getDst().getType())) + ", " +
-              name(o.getGatherIds()) + ", " + name(o.getGatherAt()) + ");");
+              name(o.getGatherIds()) + ", " + name(o.getGatherAt()) +
+              (o.getRows() ? ", " + name(o.getRows()) : std::string()) + ");");
             return;
           }
           if (o.getAsync()) {
