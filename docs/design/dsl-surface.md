@@ -628,7 +628,7 @@ applied per step:
    - The arms: the pre-migration kernels are loaded under different module names next to the
      step's, as the #107 A/B loaded its `_nf` arms. A cross-process A/B is not valid on these
      GPUs.
-   - The harness: the MI355X scoreboard (`<workspace>/kda/scoreboard-mi355x`: `k1_ab`, `k2_sb`,
+   - The harness: the MI355X scoreboard (`k1_ab`, `k2_sb`,
      `attn_sb`, `paged_sb`):
      - 7 interleaved rounds;
      - weights rotated through at least 1.2 GB, so no call finds them warm;

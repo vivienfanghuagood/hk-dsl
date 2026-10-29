@@ -94,8 +94,8 @@
 "warps": 1,
 "threads": 32,
 "lds_bytes": 0,
-"binary": "/workspace/claude/hk-dsl-profile/cache/20bc88e0650bafaba626b2f769b12896/hk_gelu_mul_tiles_20bc88e0650b.cpython-312-x86_64-linux-gnu.so",
-"source": "/workspace/claude/hk-dsl-profile/cache/20bc88e0650bafaba626b2f769b12896/kernel.cpp",
+"binary": "<workspace>/hk-dsl-profile/cache/20bc88e0650bafaba626b2f769b12896/hk_gelu_mul_tiles_20bc88e0650b.cpython-312-x86_64-linux-gnu.so",
+"source": "<workspace>/hk-dsl-profile/cache/20bc88e0650bafaba626b2f769b12896/kernel.cpp",
 "instantiations": [
 {
 "name": "gelu_mul_tiles_kernel(globals)",

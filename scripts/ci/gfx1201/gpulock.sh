@@ -7,7 +7,7 @@
 #
 #   GPULOCK_DIR=<dir> . scripts/ci/gfx1201/gpulock.sh
 #   gpulock_take IDX [WAIT_S]   # IDX: rocm-smi index on the host; takes fd 9
-#   gpulock_pci IDX             # prints the card's PCI address, e.g. 0000:63:00.0
+#   gpulock_pci IDX             # prints the card's PCI address, e.g. DDDD:BB:DD.F
 #   gpulock_render IDX          # prints the card's render node, e.g. renderD128
 #   gpu_foreign IDX             # prints the KFD processes holding VRAM/queues on it (empty: idle)
 # or:  scripts/ci/gfx1201/gpulock IDX [-w WAIT_S] -- CMD...

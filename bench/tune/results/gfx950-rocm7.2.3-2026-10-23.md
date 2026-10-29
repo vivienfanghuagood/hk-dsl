@@ -1,7 +1,7 @@
 # hk.tune scoreboard: gfx950, acceptance split, 2026-10-23
 
 Device AMD Radeon Graphics; torch 2.10.0+rocm7.2.3.git1a270074, HIP 7.2.53211, hipcc `HIP version: 7.2.53211-c2d9476115`; triton 3.6.0+rocm7.2.3.git4ed88892.
-hk-dsl at `f0dff9a` (claude/tune). Baselines missing: none. hk.tune budget 60.0 GPU-s a shape; scoring 3 sets x 7 rounds, interleaved, queued, weights rotated past the Infinity Cache.
+hk-dsl at `f0dff9a` (the tuning branch). Baselines missing: none. hk.tune budget 60.0 GPU-s a shape; scoring 3 sets x 7 rounds, interleaved, queued, weights rotated past the Infinity Cache.
 
 | | before (routes) | after (hk.tune) |
 |---|---|---|

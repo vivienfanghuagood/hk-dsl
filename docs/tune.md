@@ -189,7 +189,7 @@ time, each miss's numbers -- are in [bench/tune/results](../bench/tune/results/)
 
 **The named target, 2048x16384x4096 on gfx950**: the route rule sends it to
 `dp128`, 0.61-0.62x hipBLASLt measured here (the 0.76x in tuning-goal.md is
-stale; the lead re-measured 0.58x). `hk.tune` takes it to the 256x256
+stale; re-measured, 0.58x). `hk.tune` takes it to the 256x256
 pingpong with a 4-block-row swizzle (`pp(wgm=4)`, with `xcd_chunk=16` in run
 1): **0.995-1.004x hipBLASLt** in the vLLM image (0.999x the best baseline in
 run 1), 0.981x hipBLASLt (0.978x TunableOp's) in rocm/pytorch 7.2.3, in 3 GPU-seconds.

@@ -160,8 +160,8 @@ arguments, then the check:
   measurable at all;
 - about 80 seconds a run on GPU 3.
 
-The GitHub runner has no GPU, and a self-hosted runner needs the owner's
-approval. So the gate runs on the dev pod: by hand, nightly, or as the last
+The GitHub runner has no GPU, and a self-hosted runner was not set up
+yet. So the gate runs on the dev pod: by hand, nightly, or as the last
 group of `HK_PERF_GATE=1 scripts/gpu_suite.sh`.
 
 **The tolerance is measured, per pair.** `--refresh` builds the baseline

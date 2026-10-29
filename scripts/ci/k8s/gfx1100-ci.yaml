@@ -11,8 +11,8 @@
 #     envsubst '$HK_CI_POD $HK_CI_NODE $HK_CI_STORAGE_CLASS' < gfx1100-ci.yaml | kubectl apply -f -
 # HK_CI_POD is also the gfx1100-x4 runner's (its .env).
 #
-# Bootstrapping the PVC once (MLIR install, FlyDSL, the extra pip packages): docs/testing.md.
-# No credentials here: the job's runner lives on the MI355X workstation and reaches the pod
+# Bootstrapping the PVC once (MLIR install, FlyDSL, the extra pip packages) is the operator's step.
+# No credentials here: the job's runner reaches the pod
 # with `ssh $HK_CI_JUMP kubectl exec`; the pod fetches commits through the GitHub proxy itself.
 apiVersion: v1
 kind: PersistentVolumeClaim

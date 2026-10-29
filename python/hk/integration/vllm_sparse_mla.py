@@ -14,7 +14,7 @@ On gfx950 the layer's output is then inverse-RoPE'd and MXFP8-quantized for wo_a
 * `rocm_inverse_rope_mxfp8_rows` quantizes only the rows no hk call wrote (none, when every chunk
   went to hk).
 
-Measured (kda/sparse-mla-prefill, DSV4.1-Flash TP2 real-weight captures, one MI355X): with the MXFP8
+Measured (DSV4.1-Flash TP2 real-weight captures, one MI355X): with the MXFP8
 rows, top-k layers 1.39x and sliding-window layers 1.97x opus + vLLM's quant at T 8192 (1.22x and
 1.12x AITER's fused fp8 kernel); attention alone 1.11-1.13x opus. `ENABLED` toggles the route at run time (an in-process A/B).
 

@@ -7,8 +7,8 @@ attention `score_mod` -- from first kernel to >= 0.95x the best baseline within
 a stated budget, on both GPUs; the run is recorded.*
 
 This note says how that sentence became `task.md`, `score.py` and the pass
-rule. It and [PROTOCOL.md](PROTOCOL.md) are removed from the evaluated agent's
-checkout (`t4-make-checkout`): they name what the baselines are and how close
+rule. It is removed from the evaluated agent's
+checkout: it names what the baselines are and how close
 each is to the hardware, which the agent should find out by measuring.
 
 ## The variant: the grouped GEMM of an MoE layer
@@ -139,15 +139,15 @@ pass in two scoring runs started at least an hour apart.
 Fourteen shapes per GPU, from seven MoE models that are not among the public
 six (two cases a model, each one of its expert GEMMs at a batch size,
 the routings from a master seed fixed before any solution existed), drawn by `shapes.py` within task.md's
-guarantees. They live in `<workspace>/t4/sealed/` on the MI355X workstation (PROTOCOL.md's `$DX`) and
+guarantees. They are kept outside the repository and
 are read only through `$HK_T4_SEALED`; every baseline was run and checked on
-them before the task commit (PROTOCOL.md, section 8). Publishing a scored run
+them before the task commit. Publishing a scored run
 reveals them, and the set is then spent.
 
 ## The budget
 
 10 hours of wall-clock and 4.0 GPU-hours on each GPU, compiles included,
-kept by `t4gpu`'s ledger. For scale: `hk.tune`'s acceptance runs spent
+kept by the run's GPU-time ledger. For scale: `hk.tune`'s acceptance runs spent
 0.09-0.21 GPU-minutes a shape, a full public scoring run takes a few minutes
-per GPU, and a gfx1100 command pays a sync to the pod. Four GPU-hours is room
+per GPU, and a gfx1100 command pays a sync to the remote machine. Four GPU-hours is room
 for a few hundred scored attempts, not for a blind sweep.

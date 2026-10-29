@@ -3,7 +3,7 @@
   "python": "3.12.3",
   "torch": "2.10.0+rocm7.2.3.git1a270074",
   "hip": "7.2.53211",
-  "host": "f2f887132f5d",
+  "host": "<host>",
   "triton": "3.6.0+rocm7.2.3.git4ed88892",
   "hk": "0.4.0",
   "hk_arch": "gfx950",

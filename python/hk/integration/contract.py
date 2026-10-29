@@ -26,7 +26,7 @@ import os
 import sys
 from typing import Callable, Dict, Iterable, List, Optional
 
-#: The vLLM the DeepSeek-V4.1 routes were measured on (kda/e2e-v41). Another version is not a
+#: The vLLM the DeepSeek-V4.1 routes were measured on. Another version is not a
 #: failure by itself; a broken contract is.
 MEASURED_VLLM = "0.32.1rc1.dev36+ge68efc685"
 

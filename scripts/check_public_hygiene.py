@@ -13,11 +13,15 @@ allowlist does not name:
 
 The built-in rules are generic (they name no machine): private and shared
 IPv4 ranges, /home/<user>, /root/, /dev/shm/<name>, internal-only domain
-suffixes. The names of a particular site cannot be listed here without
-publishing them, so a maintainer keeps them in a local file, one regular
-expression per line (a line starting with '#' is a comment), passed with --patterns or in
-HK_HYGIENE_PATTERNS (paths separated by ':'). CI runs the built-in rules;
-the release gate (docs/releasing.md) runs them with the local file too.
+suffixes, PCI addresses, /workspace/<name>, ~/<dir>, and a container's
+hex hostname in a "host" field. The names of a particular site cannot be
+listed here without publishing them, so a maintainer keeps them in a local
+file, one regular expression per line (a line starting with '#' is a comment),
+passed with --patterns or in HK_HYGIENE_PATTERNS (paths separated by ':').
+CI runs the built-in rules, and the site's file too when the repository has
+it as the secret HK_HYGIENE_PATTERNS (ci.yml); the release gate
+(docs/releasing.md) runs them with the local file. A hit from a site rule is
+reported by the rule's file and line, never by its pattern.
 
 The allowlist (scripts/public_hygiene_allow.txt) has one entry per line:
 a path glob, whitespace, and a regular expression the whole matched text
@@ -50,6 +54,14 @@ RULES: dict[str, str] = {
     "root-path": r"(?<![\w.])/root/[^\s`'\")]+",
     "shm-path": r"(?<![\w.])/dev/shm/[A-Za-z0-9_.-]+",
     "internal-domain": r"\b[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.(?:internal|corp|intranet|localdomain|lan)\b",
+    # A PCI address (domain:bus:device.function) names one card of one machine.
+    "pci-address": r"(?<![\w:])[0-9A-Fa-f]{4}:[0-9A-Fa-f]{2}:[0-9A-Fa-f]{2}\.[0-7](?!\w)",
+    # A directory under a container's /workspace: someone's checkout, venv or scratch space.
+    "workspace-path": r"(?<![\w.<])/workspace/[A-Za-z0-9_.-]+",
+    # A non-hidden directory in someone's home (~/.cache and the like are fine).
+    "home-dir": r"(?<![\w/~])~/[A-Za-z][A-Za-z0-9_.-]*",
+    # A container's hostname (12 hex digits, as docker makes it) recorded as a host.
+    "container-host": r"\"host(?:name)?\":\s*\"[0-9a-f]{12}\"",
 }
 
 

@@ -6,7 +6,7 @@ group, every rank holding every peer's buffer mapped into its own address space
 The binding is checked: while any SymmetricBuffer is open, a launch that passes
 memory of one (its own or a peer's) to an *unscoped* parameter raises -- the
 stores through it would stay in this XCD's L2 and the loads would re-read stale
-lines (KernelWiki pitfalls/gfx950-cross-gpu-memory-model.md).
+lines (measured with tools/cdna-probes/litmus_comm.hip).
 """
 
 from __future__ import annotations

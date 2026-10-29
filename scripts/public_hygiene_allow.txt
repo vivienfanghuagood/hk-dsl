@@ -13,3 +13,22 @@ docs/history/20-vllm-031.md /root/\.cache/vllm/hk-linear
 
 # A made-up HOME in a unit test of the cache path.
 tests/hk/ir/test_vllm_gemm.py   /home/u
+
+# The engine container's software layout, which scripts, tools and docs default to or cite: the
+# engines' venvs, the FlyDSL and HipKittens checkouts, the LLVM build, extra packages. The same
+# path in every such container, not a person's (each script's default can be overridden).
+*                           /workspace/(?:FlyDSL|HipKittens|llvm|pyextra|venv-[\w.-]+|vllm031[\w.-]*|README-venvs\.txt)
+
+# The GPU runner scripts' default state and lock directories (overridable: HK_CI_POD_DIR,
+# HK_CI_STATE, HK_CI_MLIR): generic names the scripts and runners depend on.
+scripts/ci/*.sh             /workspace/(?:gha|locks)
+scripts/ci/*.sh             ~/(?:gha|hk-ci)
+
+# The gfx1201 runner's container wrapper: its name is also the name the runner host's operators
+# and environment use, so renaming it is a change coordinated with that host, not a scrub.
+scripts/ci/gfx1201/hkr9     hkr9
+scripts/ci/run_gfx1201.sh   hkr9
+
+# Two comments in the CDNA header cite a maintainers' note by name; the header is being split
+# into include/hk/cdna/ by open PRs, so they are reworded after that lands. Remove this entry then.
+include/hk/cdna*            KernelWiki

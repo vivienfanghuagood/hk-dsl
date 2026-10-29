@@ -245,8 +245,8 @@ mesh of 8 with 7 links per GPU.
 - Every access keeps the tensor's scope, as scoped tensors do now.
 
 **Cost.** M-L: a new type and its lowering (a table load, then a buffer resource per access), the
-runtime side, and tests. **It needs more than GPUs 6 and 7**, so the 4- and 8-rank tests have to be
-scheduled with the lead session.
+runtime side, and tests. **It needs more than two GPUs**, so the 4- and 8-rank tests need a
+machine with four or eight free.
 
 **Validation.**
 

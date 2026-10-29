@@ -67,11 +67,24 @@ jobs:
           submodules: recursive
 
       # The repository is public: no private address, user home or such path in a tracked file
-      # outside scripts/public_hygiene_allow.txt (docs/releasing.md). The generic rules only; the
-      # release gate adds the site's names from a maintainer's local file.
+      # outside scripts/public_hygiene_allow.txt (docs/releasing.md). The generic rules, plus the
+      # site's names when the repository has them as the secret HK_HYGIENE_PATTERNS (one regular
+      # expression a line). The secret goes to a file, never to the log; a hit is reported by the
+      # rule's line number, not its pattern. Without the secret (a fork's PR, or not set) only the
+      # generic rules run. The variable is not named HK_HYGIENE_PATTERNS: the script reads that
+      # name as a list of files.
       - name: Public hygiene
         if: matrix.shard == 'ir' && matrix.arch == 'gfx1100'
-        run: python3 scripts/check_public_hygiene.py
+        env:
+          SITE_PATTERNS: ${{ secrets.HK_HYGIENE_PATTERNS }}
+        run: |
+          args=()
+          if [ -n "$SITE_PATTERNS" ]; then
+            f=$(mktemp -p "$RUNNER_TEMP" site.XXXXXX)
+            printf '%s\n' "$SITE_PATTERNS" > "$f"
+            args=(--patterns "$f")
+          fi
+          python3 scripts/check_public_hygiene.py "${args[@]}"
 
       - name: MLIR 23.1.3, prebuilt
         env:

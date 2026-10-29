@@ -5,8 +5,8 @@
 # - IDX: the host's rocm-smi index of the one GPU the container sees (as HIP device 0), taken under
 #   our lock of the card (gpulock.sh) and only when no other process holds it. The box is shared and
 #   nobody else uses our locks, so the idle check is what keeps us off everyone else's work.
-#   `auto`: the first card of $HK_GPUS_PREF (default "3 2 1 4 5 6 7"; never 0, which another user's
-#   service holds most of the time) that is unlocked and idle, waiting up to WAIT_S (default 3600)
+#   `auto`: the first card of $HK_GPUS_PREF (default "3 2 1 4 5 6 7"; card 0 is left out of
+#   the default) that is unlocked and idle, waiting up to WAIT_S (default 3600)
 #   for one. `none`: no GPU, for builds and the no-GPU tiers.
 # - Core dumps are off three ways (--ulimit core=0, ulimit -c 0, HSA_DISABLE_COREDUMP_ON_EXCEPTION):
 #   a killed GPU process can write 100+ GB to the shared root partition.

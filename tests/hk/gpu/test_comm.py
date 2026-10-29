@@ -1,6 +1,6 @@
 """hk.comm on gfx950: message passing between two XCDs of one GPU and between two GPUs,
-written in hk -- the litmus suite's correct protocol (KernelWiki pitfalls/gfx950-cross-gpu-
-memory-model.md), checked end to end, and the negative control that shows the test can fail.
+written in hk -- the litmus suite's correct protocol (tools/cdna-probes/litmus_comm.hip),
+checked end to end, and the negative control that shows the test can fail.
 
 Message passing, R rounds: the writer stores round r's tile (slot r % S of `src`, a value
 no other round has) into `data` and signals r; the reader -- which first read `data` through a

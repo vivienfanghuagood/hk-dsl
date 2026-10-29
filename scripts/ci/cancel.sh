@@ -1,6 +1,5 @@
 #!/bin/bash
-# Stop a GPU CI job's work when the job is cancelled or times out (docs/testing.md, "Cancelled
-# jobs and orphan containers"). Idempotent; it touches only the job's own container or pod run.
+# Stop a GPU CI job's work when the job is cancelled or times out. Idempotent; it touches only the job's own container or pod run.
 #   cancel.sh container NAME           docker kill container NAME and wait until it is gone
 #   cancel.sh pod JUMP POD RUNDIR      kill the pod's run in RUNDIR (pod_run.sh's whole session,
 #                                      its timeout'd pytest included) unless it has finished

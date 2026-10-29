@@ -330,9 +330,9 @@ moved is 272, between two of its points.
 ```
 # in the engines' pod: MLIR from the dev pod, hk._mlir built for its python3.12
 kubectl exec <dev-pod> -- tar -C /workspace/llvm -cf - install-cp312 \
-    | kubectl exec -i <vllm-pod> -- tar -C /workspace/measure/llvm -xf -
+    | kubectl exec -i <vllm-pod> -- tar -C <workspace>/measure/llvm -xf -
 python3.12 -m venv buildenv && buildenv/bin/pip install nanobind==2.15.0 lit==23.1.3
-HK_LLVM_ROOT=/workspace/measure/llvm HK_MLIR_BUILD=/workspace/measure/hk-build-cp312 \
+HK_LLVM_ROOT=<workspace>/measure/llvm HK_MLIR_BUILD=<workspace>/measure/hk-build-cp312 \
     PYTHON=buildenv/bin/python scripts/build_hk_mlir.sh
 
 export HIP_VISIBLE_DEVICES=3 FLYDSL_ROOT=/workspace/FlyDSL PYTHONPATH=python

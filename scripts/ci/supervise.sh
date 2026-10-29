@@ -1,7 +1,6 @@
 #!/bin/bash
 # One self-hosted runner for hk-dsl's GPU tier, ephemeral: registered for one
-# job, then registered again. Installed as ~/gha/supervise.sh (docs/testing.md,
-# "Starting and stopping the runners"):
+# job, then registered again. Installed as ~/gha/supervise.sh:
 #   install -m 755 scripts/ci/supervise.sh ~/gha/.supervise.new && mv ~/gha/.supervise.new ~/gha/supervise.sh
 #   supervise.sh NAME [LABELS]
 #   supervise.sh gfx950|gfx1100|gfx1100-x4             (LABELS default: NAME)
@@ -10,7 +9,7 @@
 # its pid file and its stop file; LABELS (comma-separated) are its labels
 # besides hk-gpu. Several instances can carry the same label (gfx950): each has
 # its own directory, and its .env its own GPUs (HK_CI_GPUS) and state
-# (HK_CI_STATE) -- see docs/testing.md, "Several gfx950 runners".
+# (HK_CI_STATE).
 # Stop: touch ~/gha/STOP (all) or ~/gha/STOP-<name>. Within 10 s the listener
 # gets SIGTERM, which cancels a job in progress, and this loop exits.
 # The listener and its jobs run with HOME=runner-NAME/home (also set in the

@@ -38,7 +38,7 @@ RUNNER=${RUNNER_NAME:-manual}
 SNAP=$HERE/gfx1201/gpusnap
 . "$HERE/gfx1201/gpulock.sh"
 
-# Cancellation (docs/testing.md, "Cancelled jobs and orphan containers"): the trap kills the
+# Cancellation (scripts/ci/cancel.sh): the trap kills the
 # container by name and waits until it is gone; for a SIGKILL, the reaper (cancel.sh --on-eof)
 # does. Either holds the card's lock until then.
 DPID= REAP=

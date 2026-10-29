@@ -42,20 +42,19 @@ fetches a commit.
 ## Two runners, on the workstation
 
 The tier is now `.github/workflows/gpu.yml`, on two ephemeral self-hosted
-runners, `<prefix>-gfx950` and `<prefix>-gfx1100` (labels `self-hosted,
-hk-gpu, gfx950` and `self-hosted, hk-gpu, gfx1100`), each kept registered by
-`~/gha/supervise.sh`: one job, then registered again. It runs on pushes to
+runners, one for gfx950 and one for gfx1100, each kept registered by a
+supervisor script: one job, then registered again. It runs on pushes to
 main and by hand, never on pull requests: the repository is public, and a
 fork's code must not reach these machines. Its jobs, `gfx950` and `gfx1100`,
 call `scripts/ci/` from the checkout:
 - `run_gfx950.sh` runs the commit on the lowest-numbered idle MI355X, in
   `rocm/pytorch`, through `container_run.sh` (the polling CI's, moved), with
-  a build directory, pip packages and compile cache of its own under
-  `~/gha/x950/ci` and the MLIR install mounted read-only.
+  a build directory, pip packages and compile cache of its own and the MLIR
+  install mounted read-only.
 - `run_gfx1100.sh` and `pod_run.sh` relay to the pod as `orchestrate.py`
   did, over `ssh <jump-host>` and `kubectl exec`, the pod fetching the commit
-  through the git proxy, into `/workspace/gha`. A run takes an idle one of GPUs
-  5-7 under a lock of its own, else GPU 0 under `/workspace/ci/gpu0.lock`.
+  through the git proxy, into a CI directory of its own. A run takes an idle
+  GPU under a lock.
 - `summarize.py` (moved) writes `result.json`; `report.py` turns it into an
   annotation with the counts, the job summary and the exit status.
 
@@ -72,13 +71,11 @@ Against the polling CI:
 - a documentation-only commit is run, not credited with its parent's
   result: with a warm compile cache the suite takes a minute or two.
 - no nightly rerun; `gh workflow run gpu.yml --ref main` reruns by hand.
-- gfx1100 tries GPUs 5-7 before GPU 0, which the polling CI used alone.
+- gfx1100 can take one of several GPUs, where the polling CI used one.
 - the result is a check run, with the report as an artifact, instead of a
   status linking to an asset of the `gpu-ci-logs` prerelease.
-- `gfx950` and `gfx1100` are main's required checks, without enforcement on
-  admins: every push to main so far is the owner's, and goes through as a
-  recorded bypass. What that does and does not enforce is in
-  [testing](../testing.md#the-gpu-tier).
+- `gfx950` and `gfx1100` are main's required checks
+  ([testing](../testing.md#the-gpu-tier)).
 
 ## Burn-in
 
@@ -96,7 +93,7 @@ SHA, for a commit of a batch whose push tested only its head.
 Each pair agrees in state and in every count, and both followed the 850
 gfx950 tests as chapter 39's batch turned skips into passes: 52 by `c669558`
 (paged attention and the 4-bit GEMM), three more by its head. Before main,
-the trial branch had run `~/gha`'s scripts on `95cd1d0`'s tree, gfx950
+the trial branch had run the runners' scripts on `95cd1d0`'s tree, gfx950
 failure 5/718/121 and gfx1100 0/659/89, and the repository's on `0bc9bbb`'s,
 0/729/121 and 0/659/95: the polling CI's results on those commits exactly,
 the five failures the same tests. A second run of `9f953b0` by hand repeated
@@ -114,9 +111,7 @@ either CI.
 - `scripts/gpu_ci/` is gone from the repository. `container_run.sh` and
   `summarize.py` live on in `scripts/ci/`; `orchestrate.py`, `local_run.sh`
   and `pod_run.sh` are replaced by the jobs and `scripts/ci/pod_run.sh`.
-- `~/hk-ci` is left in place, inert, with a note saying so. One part is still
-  used: `mlir/install-cp310`, the MLIR install the gfx950 job mounts. The
-  rest, about 2.5 GB (the polling CI's build, pip packages, compile cache and
-  checkout, its mirror, runs, state, logs and scripts), can be deleted. In
-  the pod, `/workspace/ci/gpu0.lock` is still GPU 0's lock; the rest of
-  `/workspace/ci`, about 1.2 GB, is inert too.
+- The polling CI's directories are left in place, inert. One part is still
+  used: the MLIR install the gfx950 job mounts. The rest (the polling CI's
+  build, pip packages, compile cache and checkout, its mirror, runs, state,
+  logs and scripts) can be deleted.

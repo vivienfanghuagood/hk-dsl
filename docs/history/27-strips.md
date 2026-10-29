@@ -276,7 +276,7 @@ How to read it:
 ## Reproduction
 
 ```
-cd /workspace/hk-dsl
+cd hk-dsl
 export FLYDSL_ROOT=/workspace/FlyDSL HIP_VISIBLE_DEVICES=0 PYTHONPATH=python
 python3 tools/hk-bench/scoreboard.py --only norm,softmax --rounds 9 --calls 50
 python3 tools/hk-bench/scoreboard.py --only norm,softmax --rounds 5 --json sb.json

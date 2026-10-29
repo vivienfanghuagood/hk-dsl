@@ -310,8 +310,7 @@ list plus `gelu`, which `include/cdna3` lacks.
 
 ### 4.1 Results on one MI355X
 
-GPU 6 of the node (GPUs 0 and 7 belonged to other users, and 4 and 5 were taken
-mid-session), passed alone to the container (`/dev/kfd` and `renderD176`). Each check is
+One GPU of an eight-GPU node, passed alone to the container (`/dev/kfd` and its render node). Each check is
 `max|got - want| / max|want|` against an fp32 torch reference. Times are best-of-5, in
 one process, with contenders interleaved.
 

@@ -383,7 +383,7 @@ have; to close the norm gap, one register layout it does not have.
 ## Reproduction
 
 ```
-cd /workspace/hk-dsl
+cd hk-dsl
 export FLYDSL_ROOT=/workspace/FlyDSL HIP_VISIBLE_DEVICES=0 PYTHONPATH=python
 python3 tools/hk-bench/scoreboard.py --only gemm,norm,softmax,attn --rounds 5 --json sb.json
 python3 tools/hk-bench/scoreboard.py --only norm,softmax --rounds 9 --calls 50   # small M

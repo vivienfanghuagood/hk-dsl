@@ -2,7 +2,7 @@
 
 Status: proposed 2026-10-24, the milestone after the tuning goal
 ([tuning-goal.md](tuning-goal.md): T1-T3 merged; T4's first sealed run FAILED
-on gfx1100's floor, record in `bench/tune/agent-runs/t4-20261024-a`).
+on gfx1100's floor).
 Refocused the same day: the first draft (E1-E5: every model, every kernel
 family) spread the work across kernels where the best AMD library is already
 near the hardware's limit. This version picks the kernels where hk can win
@@ -14,7 +14,7 @@ current state of each route see [integration](../integration.md#on-by-default-an
 and [serving readiness](serving-readiness.md).
 - **K1** (MoE a8w4): `hk.ops.moe_a8w4` and vLLM's a8w4 route (#34). It runs 1.15-1.18x AITER at
   M >= 8192 and takes only those M (`MIN_M`), so the 1.3x target below was not reached. It is
-  deterministic, and its max-rel against exact fp32 is within the owner's criterion.
+  deterministic, and its max-rel against exact fp32 is within the K1 criterion below.
 - **K2** (MXFP8 GEMM): `hk.ops.mxfp8` with `gemm_cdna`'s MX mode and vLLM's MXFP8 linear route
   (#33), plus the activation's quant fused in (#41). It takes six measured (N, K) at M >= 2048
   and is bit-identical to vLLM's kernel: 1.00-1.48x on the 18 measured points (serving readiness,
@@ -27,7 +27,7 @@ and [serving readiness](serving-readiness.md).
   gfx950, K3 gfx1100). `HK_DISABLE=1` turns hk off.
 - **T-CR** (ConvRot INT8): int8 on gfx1100 (#31) and the ConvRot linear (#26), opt-in: lossy by
   design. MiniMax-H3's denoise is 1.17-1.22x bf16's.
-- **T-SA** ran again from main: the hk arm no longer leaves the DSL ([kda.md](kda.md)).
+- **T-SA** ran again from main: the hk arm no longer leaves the DSL.
 - Decode on CDNA (the `dsv41_mono` row below) became its own track, the megakernel work
   (serving readiness, A1; [comm.md](comm.md)).
 
@@ -107,19 +107,19 @@ K1 and K2 share the scaled-MFMA path hk already has (FP8 operands, E8M0
 scales, bit-identical to vLLM). Winnable, measured: gfx950's scaled MFMA runs
 at 4.5-4.7 PF/s register-only and hipBLASLt's plain FP8 GEMM at 3.14 PF/s
 (8192^3), while every MX GEMM is at 1.25-2.2 PF/s -- the MX penalty is
-software. K2 status as of 2026-10-24 (then on a branch; in main since #33 and #41, see above;
-rounds in `<workspace>/kda/k2-mxfp8-gemm/candidates.jsonl`): a four-wave form (`mx4w`,
+software. K2 status as of 2026-10-24 (then on a branch; in main since #33 and #41, see above):
+a four-wave form (`mx4w`,
 accumulators in AGPRs, packed scales) with a one-K-tile loop body (hk-lds-pipeline
 now names ring-indexed LDS buffers, so the body no longer has to unroll over the
 ring) at 2.43 PF/s at 8192^3; against the best baseline at the 18 prefill points
 (FlyDSL at 13 of them) 0.85-1.27x, geomean ~1.06x -- the 1.2x target is not met.
-One gfx950 hazard found on the way (KernelWiki): a load into scale VGPRs that queued scaled
+One gfx950 hazard found on the way: a load into scale VGPRs that queued scaled
 MFMAs still read corrupts them. A second one suspected at the time, register loads and LDS-DMA
 copies retiring out of order on vmcnt, was refuted the same evening by a controlled
-micro-benchmark (`<workspace>/kda/_flow/probes/vmcnt_order.hip`): they retire in issue order.
+micro-benchmark: they retire in issue order.
 
 K3 status as of 2026-10-24 (`hk.ops.attn_k3`, then opt-in with `HK_SDPA_K3=1`; in main since
-#24 and on by default on gfx1100 since #54; rounds in `<workspace>/kda/k3-dit-attn/candidates.jsonl`). The kernel is the Sage
+#24 and on by default on gfx1100 since #54). The kernel is the Sage
 experiment's hk-arm structure in bf16: S^T = K Q^T, a lazy running max, fp16 V^T
 pre-transposed in the order the P^T operands are cheapest in, the grid's tail
 split over KV. It reads SGLang's (B, N, H, D) views in place at any length.
@@ -130,7 +130,7 @@ split over KV. It reads SGLang's (B, N, H, D) views in place at any length.
   and aotriton.
 - End to end (production image, 1024^2 / 30 steps, interleaved): 1 GPU 29.0 ->
   28.4 s (-2.1%); 4 GPUs 9.77 -> 9.55 s (-2.3%).
-- Two parts of the done-criteria need restating, which is the owner's call.
+- Two parts of the done-criteria need restating (decided below).
   - The peak: 70% of the 122.6 TF/s spec is 85% of the ~100 TF/s the card
     attains even in a register-only WMMA loop; K3 is at ~82% of attainable.
     What is left (prologue/epilogue, LDS, exp2) is 2-5% items each.
@@ -139,7 +139,7 @@ split over KV. It reads SGLang's (B, N, H, D) views in place at any length.
     change. K3 is 36.6 dB (1 GPU) and 37.7 dB (4 GPUs, where hk is 37.1). The
     measurable criterion is per-call accuracy, which K3 meets.
 
-### Owner decisions (2026-10-24, late)
+### Decisions (2026-10-24, late)
 
 - **K1 correctness.** Measured against an exact fp32 reference (bf16 activations,
   dequantized FP4 weights, no activation quantization) on sampled tokens, hk's max-rel
@@ -154,16 +154,15 @@ split over KV. It reads SGLang's (B, N, H, D) views in place at any length.
   further work goes into ConvRot's image quality.
 - **Direction on CDNA.** K1 and K2 must turn into a visible end-to-end gain for
   DeepSeek-V4.1-Flash in vLLM (prefill TTFT), not stop at kernel ratios. In order:
-  (a) K1 to >= 1.3x along the directions in `<workspace>/kda/k1-moe-a8w4/docs/`;
+  (a) K1 to >= 1.3x;
   (b) K1 and K2 wired into vLLM through `hk.integration` with a TTFT A/B;
   (c) if two free MI355X are not available, a single-GPU form (fewer layers, or TP1 with
-  dummy weights) for at least a layer- or model-level end-to-end number -- never on
-  another user's GPU allocations.
+  dummy weights) for at least a layer- or model-level end-to-end number.
   W7900D work (K3, T-CR) stays where it is.
 
-### Testbed kernels (owner, 2026-10-24)
+### Testbed kernels (2026-10-24)
 
-Two kernels the owner chose to test the DSL on something unfamiliar, from
+Two kernels chosen to test the DSL on something unfamiliar, from
 the MiniMax-H3 / Qwen-Image DiT on a W7900D, recorded by the same criteria:
 
 | id | kernel | reference / baseline | what the hardware offers |
@@ -173,7 +172,7 @@ the MiniMax-H3 / Qwen-Image DiT on a W7900D, recorded by the same criteria:
 
 Status (2026-10-24, evening; both have since landed, see the top of this page):
 - **T-CR**: the first round was a `dsl` failure -- hk's RDNA3 layer was built on
-  the false premise that gfx1100 has no int8 WMMA. Branch `claude/rdna3-int8` (#31 in main)
+  the false premise that gfx1100 has no int8 WMMA. #31 (in main)
   adds i8 register tiles and the iu8 WMMA (and fixes a latent `st<int8>` swizzle
   bug in HipKittens); the tuned bf16 GEMM schedule on int8 operands is bit-exact
   and 87.7-93.2 TOP/s (hipBLASLt int8 68.7-83.7). The whole ConvRot linear
@@ -181,46 +180,26 @@ Status (2026-10-24, evening; both have since landed, see the top of this page):
   at H3's 14720x21504x5376 and at parity at Qwen's shapes. The `hk` backend is in
   `hk.integration.sglang_diffusion` (#26); H3 end to end, measured after this note: denoise
   1.17-1.22x bf16's.
-- **T-SA, the controlled experiment** (`<workspace>/kda/runs/sage-experiment-report.md`):
+- **T-SA, the controlled experiment**:
   both arms correct at round 1 and at the same speed in the end -- hk 1.50x the
   reference, Triton 1.48x (both ~1.15x hk's bf16 attention) -- but the hk arm took
-  77 minutes and $12.8 against Triton's 29 minutes and $3.2, and got there only by
+  77 minutes against Triton's 29 minutes, and got there only by
   injecting two C++ helpers into hk's generated source, because hk refused int8
   tiles. Verdict for this kernel: the workflow and harness held; the DSL's gap
-  was decisive. It is closed in main (#31). The hk arm was rerun twice: on `claude/rdna3-int8`
+  was decisive. It is closed in main (#31). The hk arm was rerun twice: on #31's branch
   it reached 1.52x but still wrote two C++ helpers; from main (`3fd779f`) it reached 1.505x with
-  no C++ outside the DSL, correct at round 1, in 68 minutes for $11.0. The rerun reports are in
-  `<workspace>/kda/runs/`; the remaining gaps are in [kda.md](kda.md).
+  no C++ outside the DSL, correct at round 1, in 68 minutes.
 
-## How the kernels are built: one task workspace each (KDA-style)
+## How the kernels are built: one task each (KDA-style)
 
-**Every new kernel is a KDA task** (owner, 2026-10-24): the workflow, the failure classes and
-the cross-task failure table that orders DSL work are in [kda.md](kda.md).
-
-Owner, 2026-10-24: a lead agent iterating by hand cannot tell, when it fails,
-whether the harness or the DSL is at fault. Each kernel above is therefore a
-task in a fixed, recorded workflow -- NVlabs' Kernel Design Agents
-(github.com/NVlabs/kda), whose method is hardware-agnostic, ported to AMD and
-hk.
-
-**Layout.** The reusable flow in `<workspace>/kda/_flow/` (prompt, record tools,
-skills' sources); one workspace a task in `<workspace>/kda/<task>/`:
-
-    task.json         definition + workloads + baselines (FlashInfer-Trace-like): op signature,
-                      dtypes/layouts, the shapes with their weights in the model, reference
-                      callable, tolerance or "bitwise", baselines to beat
-    docs/contract.md  objective, correctness, target, allowed approaches, validation command,
-                      evaluation command, promotion criteria
-    docs/draft.md     baseline + how it is validated, risks, candidate directions ranked by
-                      expected value and risk, first steps, the exact commands, the evidence
-                      that promotes / revises / rejects a candidate -- before any code
-    docs/plan.md      the draft made executable
-    candidates.jsonl  one line a candidate: name, parent, change, why, status
-                      (proposed/built/correct/promoted/rejected), failure class, evidence paths
-    benchmark.csv     every measured number: candidate, shape, arm, us, TF/s, % peak, run id
-    profile/          hk.profile / rocprofv3 reports per candidate
-    runs/ outputs/    raw logs
-    .claude/skills/   the task's skills (never installed globally)
+Each kernel above is a task in a fixed, recorded workflow -- NVlabs' Kernel
+Design Agents (github.com/NVlabs/kda), whose method is hardware-agnostic,
+ported to AMD and hk -- so that a failure can be attributed to the harness or
+to the DSL. A task has a definition (op signature, dtypes and layouts, the
+shapes with their weights in the model, a reference, a tolerance or "bitwise",
+the baselines to beat), a contract (objective, correctness, target, validation
+and evaluation commands, promotion criteria), a draft and a plan written before
+any code, and a record of every candidate and every measured number.
 
 **One round** = one candidate: edit -> build (spill gate, ISA dump) ->
 validate (bitwise or tolerance against the reference, **and N repeated runs
@@ -236,23 +215,12 @@ cluster).
 `hk.tune.measure` (interleaved, LLC-rotated timing), `hk.profile` (counters,
 thread trace, ISA mix, verdict, JSON), `hk.schedules` (knobs as data), T4's
 harness (sealed shapes, an audit that the submitted kernel actually ran, a
-GPU ledger), the GPU locks and helpers. New: `kda_record.py` (schema-checked
-appends to candidates.jsonl / benchmark.csv), `kda_validate.py` (repeat-run
-determinism on top of hk.check).
-
-**Skills (AMD versions of KDA's three).** `hk-kernelwiki`: gfx950 / gfx1100
-hard limits (VGPR granule 24 on gfx11, 512 regs with AGPRs at one wave a
-SIMD on gfx950, LDS 64 / 160 KB, WMMA / MFMA rates measured), HipKittens
-idioms, and the pitfalls already paid for (a VGPR spill corrupts silently;
-`s_waitcnt` does not hold a WMMA back; narrowing stores go bytewise; gfx11's
-`__syncthreads` flushes L0; a refill of a queued scaled MFMA's scale VGPRs corrupts it). `hk-profile-report`: reading hk.profile / rocprofv3 output into a
-next step (replaces ncu-report-skill). `kda-loop`: draft -> plan -> one
-candidate a round -> record (replaces humanize).
+GPU-time ledger).
 
 **The controlled experiment** (answers "harness or DSL?"). T-SA (or T-CR if
 SageAttention's Triton kernel does not run on gfx1100): the same task
 contract, the same workflow and skills, the same agent (a fresh
-claude-opus-5-5 headless session, as T4) and budget (8 h wall, 3 GPU-h on one
+session, as T4) and budget (8 h wall, 3 GPU-h on one
 W7900D), two arms -- **hk-dsl** and **Triton** (the control language with a
 gfx1100 backend). The reference is a black-box oracle in both (its source is
 not given; the transcript is audited as T4's is). Compared: rounds to the

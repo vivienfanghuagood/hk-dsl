@@ -4,8 +4,8 @@ A *scoped* tensor -- `hk.Tensor[dtype, "system"]` for memory other GPUs touch
 while the kernel runs (a peer's buffer, a mailbox), `"device"` for memory other
 XCDs of this GPU touch -- carries its scope into every access through it. The
 scope is the tensor's, not the access's, because on gfx950 *both* sides of a
-hand-off must carry it (measured, KernelWiki pitfalls/gfx950-cross-gpu-memory-
-model.md): a plain store stays in the writer's L2 and is not seen however long
+hand-off must carry it (measured with tools/cdna-probes/litmus_comm.hip):
+a plain store stays in the writer's L2 and is not seen however long
 the reader waits for the flag after it; a plain load after a correct flag
 re-reads the line the reader had before -- on uncached memory too. A tensor
 whose every access is scoped cannot get one of them wrong.
@@ -35,7 +35,7 @@ from ..types import ScalarType, i32
 from .values import Int, View, _i32, _i64, _t, as_int, scope_aux
 
 #: s_memrealtime runs at 100 MHz on gfx9 (not the shader clock: clock64() on
-#: gfx1100 is 20 bits and wraps, KernelWiki gfx1100-device-flags-unreliable).
+#: gfx1100 is 20 bits and wraps).
 REALTIME_HZ = 100_000_000
 
 

@@ -235,338 +235,52 @@ licence files, attach it to a release, and point `MLIR_RELEASE` and
 ### The GPU tier
 
 `HK_GPU=0 scripts/gpu_suite.sh OUTDIR` runs `tests/hk/gpu` in groups, three
-at a time on one GPU, and exits non-zero if a group failed. On every push to
-main it runs on two GPUs, as `.github/workflows/gpu.yml`, whose two jobs are
-main's required checks:
-- **`gfx950`**: one MI355X of the workstation, the lowest-numbered one of its
-  runner's cards that is idle and unlocked when the job starts, in
-  `rocm/pytorch`.
-- **`gfx1100`**: the four W7900D of the CI pod (`<ci-pod>` on one node of
-  the W7900D cluster, `scripts/ci/k8s/gfx1100-ci.yaml`), the suite's groups
-  sharded over them. The pod requests `amd.com/gpu: 4` and is not
-  privileged: the device plugin hands it those four cards alone, so it needs
-  no node lock. Fallback: the dev pod's (`<dev-pod>`) GPU 6 under the node
-  lock (the job's `runs-on` back to `gfx1100`; that runner's `.env` names the
-  dev pod).
+at a time on one GPU, and exits non-zero if a group failed. In CI it runs as
+`.github/workflows/gpu.yml`, on self-hosted runners that the maintainers
+operate, one job per target:
+- **`gfx950`** (MI355X) and **`gfx1100`** (W7900D, the suite's groups sharded
+  over several cards): main's required checks.
+- **`gfx950-vllm`**: the DeepSeek-V4.1 routes' tests and the engine contract
+  (`tests/hk/gpu/test_engine_contract.py`) in the vLLM deployment image
+  (`vllm/vllm-openai-rocm:nightly-rocm100-…`, ROCm 10). That image's compiler
+  is not `rocm/pytorch`'s, and the difference has mattered three times: #35,
+  #39, and a dp128x224 spill. It runs the files in `HK_CI_TESTS` as one group
+  instead of the whole suite.
+- **`gfx1201`** (Radeon AI PRO R9700): the RDNA4 port's GPU tier
+  ([below](#the-gfx1201-runner)).
 
-A third job, **`gfx950-vllm`**, runs the DeepSeek-V4.1 routes' tests and the engine contract
-(`tests/hk/gpu/test_engine_contract.py`) in the vLLM deployment image
-(`vllm/vllm-openai-rocm:nightly-rocm100-…`, ROCm 10). That image's compiler is not
-`rocm/pytorch`'s, and the difference has mattered three times: #35, #39, and a dp128x224 spill.
-It uses the gfx950 runners, with its own dialect build and kernel cache (`x950v/ci` under the
-runner's state directory, `HK_CI_DIRNAME=x950v`), and runs the files in `HK_CI_TESTS` as one
-group instead of the whole suite. It is not a required check unless the owner makes it one.
-
-The jobs run on self-hosted runners on the workstation, named
-`<prefix>-NAME` (`HK_RUNNER_PREFIX`; "Starting and stopping the runners", below):
-`<prefix>-gfx950` and `<prefix>-gfx950-b` (both labelled
-`self-hosted, hk-gpu, gfx950`, each on its own MI355X; see
-[Several gfx950 runners](#several-gfx950-runners)) and `<prefix>-gfx1100-x4`
-(`self-hosted, hk-gpu, gfx1100-x4`); `<prefix>-gfx1100` (`gfx1100`, the dev
-pod) stays registered as the fallback. All are
-ephemeral: registered for one job, then registered again. A job's page has its counts as an
-annotation and, in its summary, each group's result and the failing tests.
-Its artifact (`gfx950-report`, `gfx1100-report`) holds `result.json`,
-`report.txt` (with the tail of each failed group's log) and the build log;
-gfx950's also every group's log, gfx1100's the pod's driver log.
+Each job runs the suite in a container that sees only the card it took, under
+a lock of that card, so that a CI run and a measurement never share a GPU. A
+job's page has its counts as an annotation and, in its summary, each group's
+result and the failing tests. Its artifact (`gfx950-report`, `gfx1100-report`,
+...) holds `result.json`, `report.txt` (with the tail of each failed group's
+log) and the build log. The scripts the jobs run are in `scripts/ci/`; the
+machines' names, addresses and paths are each runner's own configuration, not
+this repository's.
 
 The workflow runs on pushes to main and by hand
-(`gh workflow run gpu.yml --ref BRANCH`), and never on pull requests: the
-repository is public, and a fork's code must not reach these machines. Do
-not add a `pull_request` or `pull_request_target` trigger. One run per arch
-and ref at a time: a push waits for the run in progress, and replaces a push
-that was waiting, so commits pushed close together are tested at the last.
-With a warm compile cache the suite takes a minute or two; a change that
-recompiles the kernels takes about 25 minutes on gfx950, and on gfx1100 32 on
-the dev pod's single GPU (see the CI pod's numbers in the pull request that
-moved it).
+(`gh workflow run gpu.yml --ref BRANCH`, by a maintainer), and never on pull
+requests: the repository is public, and a fork's code must not reach these
+machines. Do not add a `pull_request` or `pull_request_target` trigger. One
+run per arch and ref at a time: a push waits for the run in progress, and
+replaces a push that was waiting, so commits pushed close together are tested
+at the last. With a warm compile cache the suite takes a minute or two; a
+change that recompiles the kernels takes about 25 minutes on gfx950 and about
+30 on gfx1100. Before a pull request merges, a maintainer runs the GPU tier on
+its head; `gfx950` and `gfx1100` must pass.
 
-**What the jobs run** (`scripts/ci/`, from the job's checkout):
-- **`run_gfx950.sh`** picks the GPU among its runner's `HK_CI_GPUS` (the
-  first whose lock it can take at once, that is under 10% use and 3% VRAM,
-  and whose render node no `hk-gha-*` container has; it waits `HK_CI_PICK_WAIT_MIN` minutes for one,
-  default 60), holds that
-  GPU's lock until the container is gone, and starts `rocm/pytorch` with that GPU's render node,
-  the checkout, the run's directory, CI's own directory, and the MLIR
-  install read-only; nothing else of `$HOME`. In it, **`container_run.sh`**
-  builds the dialect for the image's CPython 3.12 against MLIR 23.1.3's cp310
-  install (the MLIR C++ libraries do not depend on the interpreter), then
-  runs the suite.
-- **`run_gfx1100.sh`** works over `ssh $HK_CI_JUMP` and `kubectl exec`: it
-  installs **`pod_run.sh`** and `summarize.py` in the pod (`HK_CI_POD`) and
-  starts the run there, detached, then follows its log and brings back its
-  result. The pod fetches the commit itself, through a GitHub proxy
-  (`HK_CI_PROXY`): its cluster DNS resolves no GitHub name, and github.com is
-  blocked by name, so git is pointed at the address the jump host resolves.
-  No code from the repository runs on the jump host. The jump host, the pod
-  and the proxy have no default: they come from the runner's `.env`, and the
-  script masks them in the job's log, which is public.
-- **`summarize.py`** turns the suite's output into `result.json` and
-  `report.txt`; **`report.py`** writes the annotation and the summary, and
-  sets the job's exit status.
-
-**GPUs and locks.** The MI355X are shared with whoever else is measuring on
-the workstation. A gfx950 job claims its GPU with a lock file,
-`$HK_CI_LOCKS/gfx950-gpu<N>.lock` (`flock`), taken without waiting while it
-picks -- a GPU whose lock is held is skipped, idle or not -- and held for the
-whole container; it takes a free lock only on an idle GPU, since a card
-someone uses without the lock is still theirs. Manual measurements on the
-workstation take the same lock for their whole command, so that neither
-times the other; on this workstation the directory is a shared `<lock-dir>`, set
-in each runner's `.env` (the default, `~/.cache/hk-gpu-locks`, is private to
-CI). The minutes in a result count from when the GPU was taken. In the pod, a run takes GPU 6 when it is idle, and otherwise GPU 0,
-each under the node-level lock of the physical card,
-`/workspace/locks/gpu/<PCI address>.lock` (0000:c3:00.0 and 0000:03:00.0);
-it never touches GPU 3, where the performance gate runs. The lock directory
-is one directory on the node that every pod seeing these cards mounts at
-`/workspace/locks` -- every pod on the node is privileged and sees all eight
-GPUs, so a lock inside one pod is invisible to the others -- and a run
-without it refuses to start. A manual benchmark takes the same lock
-(`/workspace/locks/bin/gpulock IDX -- <command>`), so that neither times the
-other.
-
-**Cancelled jobs and orphan containers.** On a cancel (or a job's timeout)
-the runner sends SIGINT to the step's shell alone, SIGTERM 7.5 s later, and
-2.5 s after that SIGKILLs the shell; at the job's end it SIGKILLs every
-process the job left ("Cleaning up orphan processes"). Until 2026-10-26 the
-step's shell ran `run_gfx950.sh` as a child, which saw no signal and was
-SIGKILLed with its docker client; the container, which belongs to dockerd,
-kept running, the GPU's lock went with the killed processes, and the
-runner's next job took the "idle" card -- two containers on one GPU, seen
-twice. Now:
-- the steps `exec` their script, which is then the step's shell. Its trap
-  (INT, TERM, HUP and EXIT; `scripts/ci/cancel.sh`) kills its own container
-  by name and waits until it is gone, holding the lock until then: about a
-  second. The script first re-executes itself (same process) with
-  `env --default-signal`: the workstation's listeners, started by `cmd &`
-  from a non-interactive shell, ignore SIGINT and SIGQUIT (`SigIgn` in
-  `/proc/PID/status`), their jobs inherit that, and bash cannot trap a
-  signal ignored on entry;
-- a reaper, `cancel.sh --on-eof`, started outside the runner's process
-  tracking (`RUNNER_TRACKING_ID=0`) and holding the lock too, waits on a
-  pipe only the script writes to; if the script dies without saying done (a
-  SIGKILL), it kills the container, and the lock goes when it exits, after;
-- each container is labelled `hk-gha.runner`, `hk-gha.run`, `hk-gha.attempt`
-  and `hk-gha.started`. A job starts by sweeping its runner's `hk-gha-*`
-  containers: one whose run attempt GitHub reports completed is killed (the
-  job's `GITHUB_TOKEN`, `actions: read`); queued or in progress, it is kept;
-  with GitHub unreachable, it is killed only once older than 120 minutes;
-- `pick()` counts a GPU as busy while any running `hk-gha-*` container,
-  any runner's, has its render node.
-The gfx1100 job's reaper does the same for the pod's run: unless the run has
-finished, the script's trap exits without telling it "done" (a round trip to
-the pod takes 3-4 s, too long for the trap), and it kills `pod_run.sh`'s
-whole session in the pod (the suite's pytest runs under `timeout`, in a
-process group of its own, which the old `kill -- -PGID` missed).
-
-**Required checks.** main's branch protection requires `gfx950` and
-`gfx1100` from GitHub Actions, not up to date with main (`strict: false`),
-without enforcing it on admins, and nothing else: no reviews, no other
-rule. The workflow runs on main's pushes and by hand, never for a pull
-request, so:
-- a pull request can be merged once its head commit has passed both checks,
-  and it gets them only if someone with write access runs the workflow by
-  hand on a branch here at that commit. For a fork's pull request that would
-  put the fork's code on these machines: do not. In practice only an admin,
-  bypassing the rule, merges one;
-- a non-admin's push to main is refused unless its commit has already
-  passed both, the same way;
-- the owner's pushes, the agents' among them, go through, and GitHub
-  records each as a bypass. For them the checks are a record on each commit
-  of main, after the fact, not a gate in front of it.
-
-**The CI pod.** `scripts/ci/k8s/gfx1100-ci.yaml`, a template, applied from
-the jump host with the pod's name, its node and the node-local storage class
-set (`HK_CI_POD`, `HK_CI_NODE`, `HK_CI_STORAGE_CLASS`; the command is in the
-file), makes it and its 200 GiB node-local PVC, mounted at
-`/workspace`. Once, the PVC is given what the image lacks, copied from the
-dev pod: `/workspace/llvm/install-cp312` (the MLIR install the dialect builds
-against), `/workspace/FlyDSL`, and in `/workspace/pyextra` the pip packages
-flydsl, nanobind, lit and cmake (`pod_run.sh` puts it on `PYTHONPATH` and
-`PATH`). Everything else -- clone, dialect build, compile cache, runs -- is
-`/workspace/gha`, as on the dev pod.
-
-**Where things live.** Host state is kept out of the checkout:
-- `~/gha`: the runners (`runner-<name>`, each with its own `HOME`,
-  `runner-<name>/home`), `supervise.sh` (installed from
-  `scripts/ci/supervise.sh`), which keeps each registered, and its
-  logs (`logs/<name>.log`; the runners' own are in `runner-*/_diag`);
-- a gfx950 runner's state directory, `HK_CI_STATE` (`~/gha` for
-  `<prefix>-gfx950`, `~/gha/state-gfx950-b` for `<prefix>-gfx950-b`):
-  - `runs/<tier>/RUN_ID-ATTEMPT`: a run's directory;
-  - `x950/ci`: `/ci` in the container, with the dialect's build
-    (`hk-build-cp312`), pip's packages (`pylib`) and the compile cache
-    (`hk-cache`); `x950v/ci` the same for the vLLM image;
-- `~/hk-ci/mlir/install-cp310`: the MLIR install, the `ci-mlir-23.1.3`
-  release's asset unpacked, mounted read-only;
-- `/workspace/gha` in the pod: its clone, `hk-build-cp312`, `hk-cache` and
-  `runs/RUN_ID-ATTEMPT`.
-
-On the gfx950 side, `HK_CI_STATE` moves the runs and the CI directories
-(default `~/gha`), `HK_CI_DIRNAME` names the CI directory in it (default
-`x950`; `HK_CI_DIR` replaces the whole path), `HK_CI_GPUS` lists the cards
-the runner may use (default all eight), `HK_CI_LOCKS` is the lock directory,
-`HK_CI_MLIR` the MLIR install and `HK_CI_IMAGE` the image. `HK_CI_POD`,
-`HK_CI_JUMP`, `HK_CI_PROXY` (no defaults: `run_gfx1100.sh` stops if one is
-unset), `HK_CI_POD_DIR`, `HK_CI_POD_GPUS` and `HK_CI_NODE_LOCKS` set the
-pod's side; each gfx1100 runner's `.env` names its own pod and GPUs.
-`HK_RUNNER_PREFIX` names the runners (`supervise.sh`). The machines' names,
-addresses and paths are the runners' configuration, not this public
-repository's. A job inherits its runner's environment: set them in the
-runner's `.env` (`~/gha/runner-<name>/.env`, one `NAME=value` per line, no
-comments), which the listener reads when it starts, so a change applies from
-the runner's next job. Every runner's `.env` sets them explicitly rather than
-leaving them to defaults under `$HOME`, which is not the user's home (below).
-
-**Each runner has its own `HOME`.** A runner's listener, and so every job it
-runs, has `HOME=~/gha/runner-<name>/home`: `supervise.sh` starts `run.sh` with
-it and the runner's `.env` sets it too. `actions/checkout` writes global git
-config -- for the submodules, the job's token as
-`http.https://github.com/.extraheader` and two `url.*.insteadOf` -- into a
-temporary home it makes from a copy of `$HOME/.gitconfig`. The copy is made
-with `@actions/io`'s `cp`, which recreates a symlink as a symlink, so with a
-symlinked `.gitconfig` the token lands in the target, and that happened once
-(2026-10-26: a runner `HOME` with `.gitconfig` linked to the user's put the
-token in `~/.gitconfig` for five minutes; every `git push` on the workstation
-got 403, and the other runners' checkouts, copying it, failed with
-"Duplicate header: Authorization"). So CI never works in the user's home, and
-nothing of it is linked into a runner's: no `.gitconfig`, no gh credentials
-(`supervise.sh`'s own `gh` calls keep the real `HOME`, where gh's login is).
-What the jobs need from the user's home they get without it:
-- docker: the socket, through the docker group; `~/.docker/config.json`
-  holds only registry logins, and the images the jobs run are local (a
-  missing one is pulled anonymously);
-- ssh to the jump host (`run_gfx1100.sh`): OpenSSH takes `~/.ssh` (config and
-  keys) from the passwd entry, not `$HOME`, so nothing is copied;
-- paths: `HK_CI_STATE`, `HK_CI_MLIR` and `HK_CI_LOCKS` in the `.env`; unset,
-  `run_gfx950.sh` takes their defaults under the user's home from the passwd
-  entry, not under `$HOME`.
-A gfx950 runner's `home/gha` is a symlink to its state directory, for branches
-older than per-runner state, whose `gfx950-vllm` job set
-`HK_CI_DIR=$HOME/gha/x950v/ci` (`runner-gfx950/home/gha -> ~/gha`,
-`runner-gfx950-b/home/gha -> ~/gha/state-gfx950-b`); it can go once no such
-branch is run any more.
-
-**Starting and stopping the runners.** After a reboot, start them from an
-SSH login: the workstation grants the docker, render and video groups
-through `pam_group`, to login sessions only, and a runner started from cron
-or a service could not start the gfx950 container. `supervise.sh NAME
-[LABELS]` (`scripts/ci/supervise.sh`; install it with `install` to a
-temporary name and `mv` it over `~/gha/supervise.sh`, never by editing in
-place: a running loop reads its script as it goes) keeps runner `PREFIX-NAME` (directory `runner-NAME`) registered
-with labels `hk-gpu,LABELS` (default `hk-gpu,NAME`). `PREFIX` is
-`HK_RUNNER_PREFIX`, from `supervise.sh`'s environment or else from the
-runner's `.env` (default `hk-gha`); set it in every runner's `.env` so that a
-reinstalled `supervise.sh` keeps the names the runners have.
-
-```bash
-cd ~/gha && rm -f STOP STOP-gfx950 STOP-gfx950-b STOP-gfx1100 STOP-gfx1100-x4
-for n in gfx950 gfx1100 gfx1100-x4; do nohup setsid ./supervise.sh $n >> logs/$n.log 2>&1 < /dev/null & done
-nohup setsid ./supervise.sh gfx950-b gfx950,gfx950-b >> logs/gfx950-b.log 2>&1 < /dev/null &
-gh api repos/vivienfanghuagood/hk-dsl/actions/runners --jq '.runners[] | [.name, .status, .busy] | @tsv'
-```
-
-To stop them, `touch ~/gha/STOP` (all) or `~/gha/STOP-<name>` (one). Within
-10 seconds the listener gets SIGTERM, which cancels a job in progress, the
-runner is unregistered and `supervise.sh` exits. Remove the file before
-starting again. Stop them this way rather than by killing processes:
-`supervise.sh` registers a new runner whenever its listener exits, and a
-runner that did not exit cleanly stays registered, offline. While a runner
-is down its jobs queue, and GitHub cancels a job that found no runner in 24
-hours. To change a runner's `.env` without cancelling anything, edit it
-while the runner is busy (the next listener reads it) or stop it while it is
-idle (no job in progress, no `hk-gha-*` container) and start it again.
-
-### GPU allocation on the gfx950 workstation
-
-| GPUs | for | rule |
-|---|---|---|
-| 3, 4 | CI only (both gfx950 runners) | no experiments or measurements, ever |
-| 1, 2, 5 | experiments and measurements | TP2 runs use the pair 1+2; take each GPU's lock |
-| 0 | reserved for a separate experiment | not used by CI or by these experiments |
-| 6, 7 | other work | never used here |
-
-Before an experiment that will hold GPUs for more than 30 minutes (a vLLM
-serving or accuracy run, say), look at the CI queue (`gh run list --workflow
-gpu.yml`) and let waiting GPU jobs start first. A gfx950 job that finds no free
-CI GPU within `HK_CI_PICK_WAIT_MIN` minutes (default 60) fails, and every PR's GPU tier waits behind it.
-Other users' processes take no lock, so a CI GPU can be occupied from outside: set
-`HK_CI_PICK_WAIT_MIN` in the runners' `.env` (e.g. 240) so that jobs wait such occupancy out instead of
-failing; the gfx950 jobs' `timeout-minutes` (360) covers the wait.
-
-### Several gfx950 runners
-
-The gfx950 jobs are the slow ones, and with one runner every branch's run
-queues behind the others. Several runners on the workstation carry the
-`gfx950` label, so runs of different refs go in parallel (one run per job
-and ref at a time still holds: `concurrency` in `gpu.yml`). Each one has:
-- **the CI GPUs**, `HK_CI_GPUS` in its `.env`: both runners list GPUs **3 and
-  4**, a pair kept for CI only, so CI always has GPUs to run on. Two jobs at
-  once take one GPU each; the GPU lock (below) keeps them apart;
-- **its own state**, `HK_CI_STATE`: runs, `x950/ci` and `x950v/ci`. A runner
-  runs one job at a time, so no two jobs share a dialect build or a kernel
-  cache; two runners sharing one would corrupt each other's cmake build;
-- **the GPU locks**, `HK_CI_LOCKS` the same directory for every runner and
-  for manual measurements (`<lock-dir>`).
-
-`<prefix>-gfx950-b`'s `.env` (`<home>` is the user's home, written out: a
-`.env` expands nothing):
-
-```
-LANG=en_US.UTF-8
-HOME=<home>/gha/runner-gfx950-b/home
-HK_RUNNER_PREFIX=<prefix>
-HK_CI_GPUS=3 4
-HK_CI_STATE=<home>/gha/state-gfx950-b
-HK_CI_MLIR=<home>/hk-ci/mlir/install-cp310
-HK_CI_LOCKS=<lock-dir>
-```
-
-`<prefix>-gfx950`'s is the same with `runner-gfx950/home` and
-`HK_CI_STATE=<home>/gha`. The gfx1100 runners' set `LANG`, `HOME`,
-`HK_RUNNER_PREFIX` and the pod's side:
-
-```
-HK_CI_JUMP=<jump-host>
-HK_CI_PROXY=<github-proxy>
-HK_CI_POD=<ci-pod>
-HK_CI_POD_GPUS=0 1 2 3
-HK_CI_NODE_LOCKS=0
-```
-
-for `<prefix>-gfx1100-x4`, and `HK_CI_POD=<dev-pod>`, `HK_CI_POD_GPUS=6`,
-`HK_CI_NODE_LOCKS=1` for `<prefix>-gfx1100`.
-
-**Adding one** (here `gfx950-c`, sharing the CI pair):
-
-```bash
-cd ~/gha && df -h ~                        # the CI directories are ~13 GB
-mkdir runner-gfx950-c && cp -a runner-gfx950/{bin,externals,config.sh,env.sh,run.sh,safe_sleep.sh,run-helper.sh.template,.path} runner-gfx950-c/
-cp runner-gfx950-c/run-helper.sh.template runner-gfx950-c/run-helper.sh
-S=~/gha/state-gfx950-c; mkdir -p $S/runs runner-gfx950-c/home && ln -s $S runner-gfx950-c/home/gha
-cp -a x950 x950v $S/                       # warm: the first run does not recompile every kernel
-printf '%s\n' LANG=en_US.UTF-8 HOME=$HOME/gha/runner-gfx950-c/home 'HK_CI_GPUS=3 4' HK_CI_STATE=$S \
-    HK_CI_MLIR=$HOME/hk-ci/mlir/install-cp310 > runner-gfx950-c/.env
-grep -E '^(HK_RUNNER_PREFIX|HK_CI_LOCKS)=' runner-gfx950/.env >> runner-gfx950-c/.env   # the shared ones
-nohup setsid ./supervise.sh gfx950-c gfx950,gfx950-c >> logs/gfx950-c.log 2>&1 < /dev/null &
-```
-
-A runner on GPUs outside the CI pair takes them away from experiments: change
-the allocation table above in the same PR. Each runner still needs its own
-state directory. Copy the warm
-directories while no job is building in them (a build rewrites
-`hk-build-cp312`; the compile cache is written by rename, so a copy of it is
-consistent). **Retiring one:** `touch ~/gha/STOP-<name>` while it is idle,
-then remove `runner-<name>` and its state directory.
+Until 19 October 2026 the tier was a polling CI on the same machines
+(`scripts/gpu_ci/`), posting `gpu/gfx1100` and `gpu/gfx950` commit statuses;
+older commits carry those, with reports in the
+[`gpu-ci-logs`](https://github.com/vivienfanghuagood/hk-dsl/releases/tag/gpu-ci-logs)
+prerelease. [Chapter 40](history/40-gpu-ci-on-actions.md) records the switch.
 
 ### The gfx1201 runner
 
-A fourth job, **`gfx1201`**, runs the GPU tier for the RDNA4 port on a shared
-gfx1201 dev box (`<rdna4-host>`: 8x Radeon AI PRO R9700, ROCm 7.2.3), in
-`rocm/pytorch` rocm7.2.3 py3.12 -- the gfx950 job's image. It ran
-`continue-on-error` until the port's GPU tier was green there (RDNA4 R1, #71);
-it no longer does, so a red gfx1201 fails the run. Whether it is one of main's
-required checks is the owner's setting.
+The `gfx1201` job runs the GPU tier for the RDNA4 port in `rocm/pytorch`
+rocm7.2.3 py3.12 -- the gfx950 job's image. It ran `continue-on-error` until
+the port's GPU tier was green there (RDNA4 R1, #71); it no longer does, so a
+red gfx1201 fails the run.
 
 The [performance gate](#the-performance-gate) has a gfx1201 baseline,
 `tests/perf/baselines/gfx1201.json`: gemm, attention, the norms, softmax and
@@ -581,7 +295,7 @@ gfx1100's is, by hand and alone on a card, before and after a change to a
 kernel it times:
 
 ```bash
-scripts/ci/gfx1201/hkr9 auto -- 'HK_ARCH=gfx1201 HK_GPU=0 scripts/perf_gate.sh'
+HK_ARCH=gfx1201 HK_GPU=0 scripts/perf_gate.sh
 ```
 
 It is not part of the gfx1201 job. Run there, after the GPU tier, it flagged
@@ -591,283 +305,22 @@ for a quarter of an hour, the ratios of hk's large GEMMs moved further than the
 standalone baseline allows, and a required job cannot fail on a measurement
 condition.
 
-**The box is shared.** Other people run on its cards, and none of them takes
-our locks. So every GPU run there, CI's and a person's, goes through
-`scripts/ci/gfx1201/hkr9 IDX|auto|none -- CMD`: our lock of the card
-(`gpulock.sh`, `$GPULOCK_DIR/gpu/<PCI>.lock`), then a check that no process
-of anyone's holds the card (KFD's sysfs), then a container that sees that one
-card, with core dumps off (`--ulimit core=0`, `ulimit -c 0`,
-`HSA_DISABLE_COREDUMP_ON_EXCEPTION=1`; the root partition is over 90% full).
-`auto` takes the first idle card of a list, waiting up to an hour. The job
-(`scripts/ci/run_gfx1201.sh`) takes one card of `HK_CI_GPUS`, which leaves out
-GPU 0 (another user's service holds it most of the time), and whose render
-node no `hk-gha-*` container has, and records what else ran on the card while
-the suite did: `gpusnap.log` in the artifact, a snapshot at the start and
-every five minutes, each holder with its container. A cancel is handled as on
-the gfx950 job ("Cancelled jobs and orphan containers"): the step `exec`s the
-script, which re-executes itself with default signals, kills its container
-from its trap, and leaves a reaper holding the card's lock for a SIGKILL. The
-orphan sweep needs no GitHub token here: the runner is the box's only one and
-runs one job at a time, so any `hk-gha-*` container labelled with its name is
-an orphan. A person on the box uses the same scripts, with `GPULOCK_DIR` and
-`HK_R9_ROOT` (the directory mounted at `/w`) set in their shell.
-
-**Where things live** -- on the box, everything under the runner's own
-directory, `$RUNNER_ROOT`:
-- the runner (actions-runner 2.338.0), its work directory `_work/`, and
-  `home/`, the HOME it and its jobs run with: never the login user's,
-  because actions/checkout writes global git config under `$HOME` (every
-  checkout also sets `persist-credentials: false`);
-- `.env`, which the jobs inherit, and the only place the box's paths are
-  written down: `HOME` (`$RUNNER_ROOT/home`), `HK_CI_GPUS` (the cards it may
-  take, in order of preference; `7 6 5 4 3 2 1`: every card but 0),
-  `HK_CI_STATE` (`$RUNNER_ROOT/state`), `HK_CI_MLIR` (the `ci-mlir-23.1.3`
-  release's asset, mounted read-only) and `GPULOCK_DIR` (the box's lock
-  directory). `run_gfx1201.sh` has no default for any of the last three and
-  stops if one is missing;
-- `state/runs/gfx1201/RUN_ID-ATTEMPT/`, a run's directory, and `state/ci/`,
-  `/ci` in the container: the dialect's build, pip's packages, the compile
-  cache;
-- `config.log` and `run.log`, the last registration's and the listener's
-  output.
-
-Any other `actions-runner` on the box is someone else's; nothing here touches
-it.
-
-**Registration is driven from the MI355X workstation.** An ephemeral runner
-needs a registration token for every job, and minting one takes a GitHub
-credential that the shared box must not hold. So the supervisor,
-`scripts/ci/supervise_remote.sh`, runs on the workstation, where `gh` is
-logged in: each round it asks `gh api` for a token, sends it over ssh's stdin
-to `config.sh` on the box (never on a command line on the workstation, never
-in a file or a log), starts `run.sh` there detached, and registers again when
-the listener exits. The runner is `$HK_RUNNER_PREFIX-gfx1201` (default
-`hk-gha-gfx1201`), labelled `self-hosted, hk-gpu, gfx1201`, for this
-repository only. The host and its paths are the workstation's to know
-(`~/gha`), not this repository's:
-
-```bash
-# on the workstation, from an SSH login (as for the other runners)
-install -m 755 scripts/ci/supervise_remote.sh ~/gha/.supervise_remote.new && mv ~/gha/.supervise_remote.new ~/gha/supervise_remote.sh
-rm -f ~/gha/STOP-gfx1201
-nohup setsid ~/gha/supervise_remote.sh gfx1201 <user>@<rdna4-host> \
-    <runner-root> gfx1201 >> ~/gha/logs/gfx1201.log 2>&1 < /dev/null &
-touch ~/gha/STOP-gfx1201       # stop: SIGTERM to the listener on the box, unregister, exit
-```
-
-To change the cards, edit `HK_CI_GPUS` in `$RUNNER_ROOT/.env`; the next job
-reads it. To set the box up from nothing: unpack actions-runner into
-`$RUNNER_ROOT`, create `home/` (mode 700) and `.env`, put the MLIR install at
-`HK_CI_MLIR`, and start the supervisor. A reboot of the box ends the listener
-and the supervisor registers a new one once ssh answers again. A reboot of
-the workstation ends the supervisor: the runner finishes the job it has and
-is not registered again until the supervisor is started, which first waits
-for a listener still running on the box.
-
-Until 19 October 2026 the tier was a polling CI on the same machines
-(`scripts/gpu_ci/`, cron and a daemon in `~/hk-ci`), posting `gpu/gfx1100`
-and `gpu/gfx950` commit statuses; older commits carry those, with reports
-in the [`gpu-ci-logs`](https://github.com/vivienfanghuagood/hk-dsl/releases/tag/gpu-ci-logs)
-prerelease. [Chapter 40](history/40-gpu-ci-on-actions.md) records the switch.
-
 ## The merge train
 
-Pull requests reach main through a merge train, twice a day. Before it, every
-merge meant rebasing each other ready pull request onto the new main and
-running the GPU tier on it again, about an hour a PR. The train tests them
-together once:
-- **Windows: 01:00Z and 13:00Z.** The train is built in the three hours after
-  a window. Outside the windows only urgent fixes merge, the ordinary way.
-- **At a window,** every READY pull request, in READY order, is stacked on one
-  branch, `train/<YYYYMMDD>-<HHMM>`: main, then each PR. CI (`ci.yml`) and the
-  GPU tier (`gpu.yml`, all four jobs) run once on that branch.
-- **If both are green,** the PRs are squash-merged in the same order, with no
-  run of their own, and main's tree is checked against the train's after each
-  merge.
-- **A PR that conflicts while stacking, or that turns the train red,** is kicked
-  out, and the train is rebuilt without it and run again.
-
-**READY.** A PR is READY when a comment on it says so, by the owner or a
-collaborator. Its first line starts with `READY` and names the PR's current head
-(seven or more hex digits), as in `READY <head> (contains main <sha>)`,
-`READY: head <head> on main <sha>` or `READY at <head> (base main <sha>)`.
-- The comment's time is the PR's place in the queue.
-- A push voids it: the head no longer matches.
-- A later comment whose first line starts with `NOT READY`, or a kick by the
-  train, withdraws it. A new READY after that queues the PR again, at its new
-  time.
-- A draft, a PR whose base is not main (a stacked one, until its base merges
-  and it is retargeted), and a PR whose head lacks green `gfx950` and `gfx1100`
-  runs are not READY. The last could only merge by an admin's bypass.
-- A READY written anywhere else (a status note, a chat) does not count.
-
-READY still means what it did: CI and the four GPU jobs passed on the head. What
-changes is that a READY PR is not rebased again when main moves; the train
-tests it on top of the main it will merge into.
-
-**How a PR is stacked.** Each PR enters the train exactly as GitHub's squash
-merge will apply it: a three-way merge of the train so far with the PR's head,
-on `merge-base(main, head)` (`git merge-tree --write-tree --merge-base`). Each
-is one commit with two parents, the train so far and the PR's head. That base
-does not change as the PRs ahead of it merge, because a squash commit is never
-an ancestor of another PR's head. So after the k-th merge, main's tree is the
-k-th train commit's.
-- This rule reproduces every squash merge in this repository's history, bit for
-  bit (99 when it was written; 16 of them were of heads behind main).
-- For independent PRs a plain `git merge --no-ff` gives the same trees. It can
-  differ when a PR carries commits of an earlier member (one that was stacked on
-  it), and the squash rule is the one GitHub applies.
-
-**Append-only files.** Nearly every PR adds a `CHANGELOG.md` entry at the top
-of `## Unreleased`, so a plain stack kicked every PR after the first for a
-conflict there. A conflict confined to the append-only files
-(`MERGE_TRAIN_UNION_FILES`, `:`-separated, default `CHANGELOG.md`) is resolved by
-union instead:
-- `git merge-file --diff3` merges the three versions. Inside each conflict hunk, a
-  line-level three-way merge keeps both sides' edits: ours, then theirs, as two
-  paragraphs, or as items of one list.
-- The result is then checked. It must have no conflict markers, and no entry that
-  both sides added may appear twice. The version sections (`## X`) must be those
-  of the side that changed them: the sections are authoritative. No subsection
-  heading may appear twice within a version section. Every added entry must stay
-  in the version section its side put it in, so an entry written for
-  `## Unreleased` cannot slide into a section that was released meanwhile.
-- A union that fails a check kicks the PR, with the reason. A conflict in any
-  other file kicks it as before. `docs/history/README.md` is not on the list: two
-  chapters both numbered 53 are not a union. Generated files such as
-  `llms-full.txt` are not on it either.
-
-GitHub's squash merge knows nothing of this union. A `.gitattributes` line
-`CHANGELOG.md merge=union` does not help either: on a pair of throwaway PRs into a
-scratch branch, GitHub refused the second one as conflicting (HTTP 405, both
-squash and merge commit), though a local merge with the same attributes was
-clean. So `merge` handles such a PR itself, below.
-
-**The runs.** Neither workflow runs on a push to a branch other than main, so
-the train dispatches both on its branch. The branch is a ref of its own: the
-GPU jobs' one-run-per-ref concurrency groups keep it apart from the PRs' runs.
-`docs.yml` runs on the push when the train changes `docs/`; if it ran, it
-counts too. The train is green when every CI job passed and all four GPU jobs
-(`gfx950`, `gfx950-vllm`, `gfx1100`, `gfx1201`) passed.
-
-**Kicks.**
-- **On a conflict,** the PR is kicked at build time. Its comment names the files
-  and the member ahead of it, or main. If the conflict is with a member, it can
-  only be resolved once that member has merged; it rides the next window.
-- **On red,** `status` lists the failed jobs and their failing test files, from
-  the job logs and the GPU jobs' report artifacts. It also shows the same job on
-  main's own run at the train's base: a failure main has too is not the train's.
-  It then names a suspect: the one member that touches a failing test file, or
-  the only one that changes code rather than `bench/` or prose.
-- **`kick N`** comments on the PR, which withdraws its READY. It cancels the
-  train's runs, rebuilds the branch without the PR, runs it again, and posts
-  each member's new position.
-- **When the suspect is unclear,** `bisect` searches the train's prefixes (its
-  own commits, main plus the first k PRs) for the first red one. It reruns only
-  the workflows that failed, on `train/<...>-r<round>-p<k>`, one probe per call.
-- **For a flake,** `retry` reruns the failed jobs.
-- **`readmit N...`** puts back PRs that were kicked only for a conflict in an
-  append-only file. Such PRs were kicked before stacking took unions, and with no
-  fault of their own. It posts `READY <same head> (readmitted by merge-train ...
-  original READY <time> ...)`; the original time keeps the PR's place in the
-  queue. It refuses a PR whose head moved, or one kicked for anything else.
-  `build --rebuild` then stacks the readmitted PRs on the current main as a new
-  round. That works after the train's earlier round has merged, and after a
-  `cleanup` too; `build --name <train>-r2` makes a new train of them instead.
-  `cleanup` deletes only the train's branch and its bisect probes, never a train
-  named `<train>-r2`. When kicked members remain, it says how to bring them back.
-
-**The merge** is the merger's step alone (`merge --i-am-the-merger`). It refuses
-unless all of these hold:
-- the train is green on its current head, and nobody moved the train branch;
-- main is still the train's base, or the last merge this train made;
-- every member is open, not a draft, based on main, at the head that was
-  tested, still READY, and carries green `gfx950` and `gfx1100` runs of its own.
-  A head without them needs `--admin-bypass`, the merger's decision.
-
-For a PR whose place in the train took a union, the PR's branch is first
-brought to the train's tree at that place. The tool builds a commit with that
-exact tree and two parents, the tested head and main as it is now; GitHub's
-squash of it onto main is then that tree. It pushes the commit to the branch as a
-fast-forward, with a lease on the tested head, and says so on the PR. That head
-has no checks of its own, so its merge is an admin bypass, for that PR only.
-Each such bypass is written item by item to the train's log and posted on the
-PR: the reason (the files the union resolved), the new head, the train commit,
-and the verified equality of the two trees. Every bypass also lands in the
-train's state, under `bypasses`.
-
-It then squash-merges the PRs in order through the REST merge endpoint. Each
-call passes the tested head as `sha`, so GitHub refuses one that moved, and
-titles the commit `<PR title> (#N)`. After each merge, main must be the
-previous main plus that one commit, with the train commit's tree. Otherwise it
-stops at once and says so on the PR. After the last one, main's tree must be
-the train's.
-
-**Branch protection.** main requires `gfx950` and `gfx1100` from GitHub
-Actions, not up to date with main (see "Required checks", above). This is why
-the train needs no change to it:
-- Every READY head carries those two checks from its own run, and a head behind
-  main is not refused. So each PR stays mergeable after the ones ahead of it
-  land.
-- The train posts no statuses on the heads. A token cannot create a check run
-  that counts for a check pinned to the Actions app.
-- It rewrites no PR branch. The one push it makes is the fast-forward above,
-  for a union, which merges with a recorded bypass.
-- The owner's merges bypass protection anyway, so the script's checks are the
-  gate, and it refuses what GitHub would let through.
-
-**The script** is `scripts/ci/merge_train.py`:
-
-```bash
-python3 scripts/ci/merge_train.py plan                     # READY PRs in order, and why the rest are not
-python3 scripts/ci/merge_train.py build                    # at a window: stack, push, dispatch, comment
-python3 scripts/ci/merge_train.py status [--wait]          # runs and jobs; on red the suspects
-python3 scripts/ci/merge_train.py kick N [--reason TEXT]   # drop #N, rebuild, rerun
-python3 scripts/ci/merge_train.py bisect                   # one probe of a bisection (call again)
-python3 scripts/ci/merge_train.py retry                    # rerun the failed jobs (a flake)
-python3 scripts/ci/merge_train.py readmit N...             # READY again: kicked only for CHANGELOG.md
-python3 scripts/ci/merge_train.py merge --i-am-the-merger  # squash-merge in order, check the trees
-python3 scripts/ci/merge_train.py cleanup [--abandon]      # delete the train's branches
-```
-
-How it behaves:
-- **`--dry-run`** works on every command: no push, dispatch, comment, merge or
-  delete.
-- **Every command can be run again.** The train's commits have fixed dates, so a
-  rebuild of the same stack is the same commit. A run that was dispatched is
-  found again, not dispatched twice. A comment is posted once a round. `merge`
-  takes up after the last PR that merged.
-- **It never pushes to main.** It creates and moves `train/` branches, each with
-  a lease on the value it expects. It touches a PR branch only for a union, at
-  merge time, as a fast-forward of the tested head.
-- **State and a log of every command it ran** are kept per train under
-  `$MERGE_TRAIN_DIR` (default `~/.local/state/hk-merge-train`).
-- **`MERGE_TRAIN_PRUNE`** names a command for `cleanup` to run afterwards, such
-  as a list of the per-branch build directories that can go;
-  `MERGE_TRAIN_PRUNE_YES` names the one that `cleanup --prune-yes` runs instead,
-  which deletes them.
-- **`MERGE_TRAIN_GPU_GUARD`** (optional) names a command that reports whether
-  other users' processes occupy the CI GPUs (`MERGE_TRAIN_GPU_GUARD_GPUS`).
-  - If they are occupied, `build` postpones the window; `--force` builds anyway.
-  - `status` labels a GPU job that failed for want of an idle GPU as external
-    occupancy, not a member's fault.
-- **Requirements:** git 2.40 or newer and an authenticated `gh`.
-- **Testing the train itself:** `--prs`, `--include-drafts`,
-  `--ignore-head-checks` and `--workflows ci` build a train from throwaway draft
-  PRs. `merge` refuses a draft, and a head without its own checks unless
-  `--admin-bypass` is given.
-
-`tests/hk/ir/test_merge_train.py` tests the READY rules, the window names, and
-the squash stacking against a scratch repository.
+Ready pull requests are merged in batches: stacked on main in order, tested
+together once (CI and the GPU tier), and squash-merged in that order if both
+are green; a pull request that conflicts or turns the batch red is dropped from
+it. The tool is `scripts/ci/merge_train.py` (`--help`), tested by
+`tests/hk/ir/test_merge_train.py`.
 
 ## The performance gate
 
-`scripts/perf_gate.sh` catches a kernel that got slower. It runs on the dev
-pod, alone on one GPU, by hand or nightly; `HK_PERF_GATE=1
+`scripts/perf_gate.sh` catches a kernel that got slower. It runs alone on one
+W7900D, by hand or nightly; `HK_PERF_GATE=1
 scripts/gpu_suite.sh` runs it after the GPU tier as group `perf`.
 
 ```bash
-HK_GPU=3 FLYDSL_ROOT=/workspace/FlyDSL scripts/perf_gate.sh [OUTDIR]   # exit 1 on a regression
+HK_GPU=0 FLYDSL_ROOT=<FlyDSL checkout> scripts/perf_gate.sh [OUTDIR]   # exit 1 on a regression
 ```
 
 **What it compares.** The node is shared, and absolute times drift 3-5%
@@ -952,8 +405,8 @@ re-measure the noise; editing the number by hand loosens the gate blindly.
 
 **What the first queued baseline measured.** hk with
 [chapter 32](history/32-measuring-the-measurements.md)'s scoreboard: queued
-rounds, timed by the median of the rounds kept. Ten runs on GPU 3 of the
-engines' pod (vLLM 0.31 venv: torch 2.13.0+rocm7.2, Triton 3.8.0, FlyDSL
+rounds, timed by the median of the rounds kept. Ten runs on one W7900D, in the
+engines' container (vLLM 0.31 venv: torch 2.13.0+rocm7.2, Triton 3.8.0, FlyDSL
 0.4.0): six on `28ffe21` with this work, three of them half an hour after the
 others, and four four hours later on `47b40aa`, after
 [chapter 33](history/33-cdna-gemm.md). All ten built the same kernels (one
@@ -981,7 +434,7 @@ others, and four four hours later on `47b40aa`, after
   8192-row softmax, -2.2% of 7.2%).
 
 [Chapter 38](history/38-rdna-losses.md) refreshed it from four
-back-to-back runs on GPU 3, when RDNA's stores began rounding to even and
+back-to-back runs on one W7900D, when RDNA's stores began rounding to even and
 V's transpose was packed (a new `kernels` hash, Triton 3.8.0 in the venv):
 57 gated pairs, tolerances 3.0-6.6%, the median pair moved 0.0%, attention
 against torch +6-10%, and a gate run after it passed.
@@ -989,10 +442,10 @@ against torch +6-10%, and a gate run after it passed.
 **On the matched stack (2026-10-23).** Every baseline up to here was
 measured in a venv with PyPI's Triton 3.8.0 installed over the triton-rocm
 3.7.1 that torch 2.13.0+rocm7.2 pins ([chapter 44](history/44-matched-stack.md)).
-That venv is retired, and `/workspace/venv-vllm031` is now the matched venv
+That venv is retired, and vLLM 0.31's venv is now the matched one
 (torch 2.13.0+rocm7.2, triton-rocm 3.7.1, FlyDSL 0.4.0;
 [integration](integration.md#supported-versions-and-the-contract-tests)).
-The shipped baseline was refreshed there: eight runs on W7900D GPU 0, in two
+The shipped baseline was refreshed there: eight runs on one W7900D, in two
 blocks of four about 50 minutes apart. Each run was interleaved with a run
 of the retired venv, on the same hk tree (`0df64ae`, one `kernels` hash),
 with the arm order rotated. No round of the matched runs was rejected.
@@ -1033,8 +486,8 @@ with the arm order rotated. No round of the matched runs was rejected.
   runs), the large cases did not move, and the scoreboard took 130 s
   instead of 68 s. A run of the retired venv right after it was slowed the
   same way. A fixed cost added to every call compresses small cases' ratios
-  towards 1, which a ratio does not cancel. GPU 0 was idle and the cause on
-  the node was not found. A plain scoreboard run 25 minutes later read the
+  towards 1, which a ratio does not cancel. The GPU was idle and the cause
+  was not found. A plain scoreboard run 25 minutes later read the
   usual times, and the gate run after it exited 0: all 57 pairs within
   tolerance, the largest drop -0.8% (of 3.0-4.0%). If the gate fails on
   the small cases alone, look at their absolute times before believing it.
@@ -1069,7 +522,7 @@ and left every RDNA kernel's C++ as it was. A HipKittens header change that
 leaves the generated C++ alone is the one change the note does not see.
 
 ```bash
-HK_GPU=3 FLYDSL_ROOT=/workspace/FlyDSL scripts/perf_gate.sh --refresh 4
+HK_GPU=0 FLYDSL_ROOT=<FlyDSL checkout> scripts/perf_gate.sh --refresh 4
 git diff tests/perf/baselines/gfx1100.json      # every moved ratio is a claim
 ```
 
