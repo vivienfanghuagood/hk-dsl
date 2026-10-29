@@ -590,9 +590,8 @@ LogicalResult GroupLoadOp::verify() {
     return emitOpError("nontemporal: the cache policy is the async copy's");
   if (bool(getGatherIds()) != bool(getGatherAt()))
     return emitOpError("gather: the index list and the position in it, both");
-  if (getGatherIds() && (!getAsync() || getRows()))
-    return emitOpError("gather: an async copy's rows by index (no row limit: an index past the "
-                       "tensor reads zero)");
+  if (getGatherIds() && !getAsync())
+    return emitOpError("gather: an async copy's rows by index");
   if (getGatherIds() && !getGatherIds().getType().getElementType().isInteger(32))
     return emitOpError("gather: the index list is int32");
   return success();

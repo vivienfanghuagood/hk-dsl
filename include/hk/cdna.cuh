@@ -1339,15 +1339,20 @@ __device__ inline static void gather_prep(const IL &ids, int at) {
     // RAW: the ids themselves, for a scatter's rows (store_scatter<.., STAGED = N>), in their
     // own array: ids[at + r] at [r]; `at` a multiple of N (the scatter indexes it pos % N)
     int *rows = RAW ? detail::hk_scatter_ids_lds<N>() : detail::hk_gather_rows_lds<N>();
-    const int *idp = reinterpret_cast<const int *>(ids.raw_ptr) + at;
+    const int *idp = reinterpret_cast<const int *>(ids.raw_ptr);
+    // positions past the ids tensor are not read: their rows are 0xFFFFFF (a row past any tensor)
+    const int n_ids = int(ids.batch() * ids.depth() * ids.rows() * ids.cols());
     for (int r = int(threadIdx.x); r < N; r += int(blockDim.x))
-        rows[r] = RAW ? idp[r] : idp[r] & 0xFFFFFF;
+        rows[r] = at + r < n_ids ? (RAW ? idp[at + r] : idp[at + r] & 0xFFFFFF) : (RAW ? -1 : 0xFFFFFF);
     __syncthreads();
 }
 
 template<int NW, int N = 0, ducks::st::all ST, typename U, ducks::coord::tile COORD, ducks::gl::all IL>
 __device__ inline static void group_load_async_gather(ST &dst, const strided_gl<U> &src,
-                                                      const COORD &idx, const IL &ids, int at) {
+                                                      const COORD &idx, const IL &ids, int at,
+                                                      int limit = 0x7FFFFFFF) {
+    // limit: tile rows from `limit` on read zero and their ids are not read (a list that ends
+    // inside the tile -- the last query of a CSR -- is never read past its end)
     using T = typename ST::dtype;
     static_assert(sizeof(T) == sizeof(U) && (sizeof(T) == 2 || sizeof(T) == 1),
                   "16-bit or fp8 tiles of the global's own dtype");
@@ -1363,26 +1368,51 @@ __device__ inline static void group_load_async_gather(ST &dst, const strided_gl<
     const int rs = int(src.template stride<2>());
     // the whole slab from row 0 and the tile's column: an index past the last row reads zero
     const detail::hk_i32x4 r = detail::hk_copy_srsrc(src, unit.b, unit.d, 0, unit.c, 0x7FFFFFFF);
-    const int *idp = reinterpret_cast<const int *>(ids.raw_ptr) + at;
+    const int *ids0 = reinterpret_cast<const int *>(ids.raw_ptr);
+    const int n_ids = int(ids.batch() * ids.depth() * ids.rows() * ids.cols());   // a copy reads no id past it
     const int lane = laneid();
     const int w = int(threadIdx.x / WARP_THREADS) % NW;
     const uint32_t lds = __builtin_amdgcn_readfirstlane(
         uint32_t(reinterpret_cast<uintptr_t>(&dst.data[0])) + w * PER_WARP);
-    auto copy = [&](int i) {
+    // where copy i's lane lands in the tile
+    auto place = [&](int i, int &row, int &col) {
         const int byte = lane * 16 + w * PER_WARP + i * PER_CALL;
         const int sub = byte / ST::underlying_subtile_bytes;
         const int in = byte % ST::underlying_subtile_bytes;
         const uint32_t sw = ST::swizzle({in / ST::underlying_subtile_row_bytes,
                                          (in % ST::underlying_subtile_row_bytes) / int(sizeof(T))});
-        const int row = int(sw) / ST::underlying_subtile_row_bytes +
-                        (sub / ST::underlying_subtiles_per_row) * ST::underlying_subtile_rows;
-        const int col = (int(sw) % ST::underlying_subtile_row_bytes) / int(sizeof(T)) +
-                        (sub % ST::underlying_subtiles_per_row) * ST::underlying_subtile_cols;
+        row = int(sw) / ST::underlying_subtile_row_bytes +
+              (sub / ST::underlying_subtiles_per_row) * ST::underlying_subtile_rows;
+        col = (int(sw) % ST::underlying_subtile_row_bytes) / int(sizeof(T)) +
+              (sub % ST::underlying_subtiles_per_row) * ST::underlying_subtile_cols;
+    };
+    // A lane past the limit reads the last live id (its position clamped: ints only) and adds 2^31
+    // to its offset, past the range, so it reads zero. The biases go through empty asms, all before
+    // the first index load: LLVM would otherwise fold a bias into a select of the loaded id and lower
+    // that to a branch on the lane being live, and an asm between the loads keeps them from issuing
+    // together -- either is a vmcnt wait per copy (sparse MLA 711 -> 800-1000 us).
+    constexpr int CALLS = FULL + (PART > 0 ? 1 : 0);
+    uint32_t past[CALLS > 0 ? CALLS : 1];
+    #pragma unroll
+    for (int i = 0; i < CALLS; i++) {
+        int row, col;
+        place(i, row, col);
+        past[i] = row < limit && at + row < n_ids ? 0u : 0x80000000u;
+        asm volatile("" : "+v"(past[i]));
+    }
+    auto copy = [&](int i) {
+        int row, col;
+        place(i, row, col);
+        // the position read: this lane's, or for a dead lane the list's last live one -- in the
+        // ids tensor either way (a dead lane's row is discarded by its bias)
+        int k = row < limit ? at + row : at + limit - 1;
+        k = k < n_ids ? k : n_ids - 1;
+        k = k > 0 ? k : 0;
         int src_row;
-        if constexpr (N > 0) src_row = detail::hk_gather_rows_lds<N>()[row];   // gather_prep's
-        else src_row = idp[row] & 0xFFFFFF;
+        if constexpr (N > 0) src_row = detail::hk_gather_rows_lds<N>()[k - at > 0 ? k - at : 0];   // gather_prep's
+        else src_row = ids0[k] & 0xFFFFFF;
         detail::hk_buf_ld_lds(r, (detail::hk_lds_ptr)(uintptr_t)(lds + i * PER_CALL), 16,
-                              (src_row * rs + col) * int(sizeof(T)), 0, 0, 0);
+                              uint32_t((src_row * rs + col) * int(sizeof(T))) + past[i], 0, 0, 0);
     };
     #pragma unroll
     for (int i = 0; i < FULL; i++)

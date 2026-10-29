@@ -846,3 +846,34 @@ def test_attn_k3():
         rel("attn_k3 bnhd", got, want, 1e-2)
         """
     fenced_cases(COMMON, cases)
+
+
+@gfx950
+def test_gathered_copy_reads_no_index_past_its_rows():
+    """g.load(gather=(ids, at), rows=...): an index list ending flush against the fence, inside a
+    tile, read by tiles that run past it -- no id past the row limit is read."""
+    fenced(COMMON + '''
+from hk.types import bf16, i32
+st = hk.ST(bf16, 32, 64); rt = hk.RT(bf16, 32, 64, "row")
+
+def body(x: hk.Tensor[bf16], ids: hk.Tensor[i32], out: hk.Tensor[bf16]):
+    g = hk.group(4)
+    s = hk.lds.alloc(st, name="s")
+    at = hk.arch.block_idx.x * 32
+    g.load(s, x.at[0, 64], wait=False, gather=(ids, at), rows=hk.max(ids.cols - at, 0))
+    g.wait_for(s)
+    hk.arch.barrier()
+    t = s.load(rt)
+    if hk.arch.warp_id() == 0:
+        out[hk.elem_coord(0, 0, at, 0)].store(t)
+
+body.__name__ = "gather_fenced_t"
+k = hk.kernel(body, arch="gfx950", warps=4, name="gather_fenced_t", grid=lambda p: (4, 1, 1))
+x = rnd(100, 128)
+ids = torch.randint(0, 100, (1, 76), dtype=torch.int32).cuda()     # 304 bytes: ends at the fence
+out = torch.zeros(128, 64, device="cuda", dtype=torch.bfloat16)
+step("gather rows=", lambda: k(x, ids, out))
+got, xs, ii = out.cpu(), x.cpu(), ids.cpu()[0].long()
+want = torch.zeros(128, 64, dtype=torch.bfloat16); want[:76] = xs[ii, 64:]
+same("gathered", got, want)
+''')
