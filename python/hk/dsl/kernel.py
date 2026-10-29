@@ -59,16 +59,34 @@ class Tensor:
     writes while the kernel runs -- a peer's buffer, a mailbox. Every load,
     store and atomic through it carries the scope, and hk.comm.signal /
     hk.comm.wait take only scoped tensors (see hk.comm for why the scope is
-    the tensor's and not the access's)."""
+    the tensor's and not the access's).
+
+    `hk.Tensor[hk.bf16, "strided"]` is a *strided* tensor: the kernel takes
+    every stride the caller's tensor has -- batch, depth, row, and a granule
+    stride along the columns (16-byte granules at any distance) -- where a
+    plain tensor's outer axes must be compact over its rows. It is how a kernel
+    reads an engine's layout in place: vLLM's x-split K cache passed as the 5-D
+    view (blocks, heads, block, head_dim / G, G), G 16 bytes of elements, or its
+    flash-layout cache as a permuted 4-D view. RDNA; read by `g.stage` (any
+    other op on it is refused when the kernel is translated)."""
 
     def __class_getitem__(cls, spec) -> GlobalType:
-        dtype, scope = (spec if isinstance(spec, tuple) else (spec, ""))
+        dtype, *opts = (spec if isinstance(spec, tuple) else (spec,))
         if not isinstance(dtype, DType):
             raise TypeError(f"hk.Tensor[...] takes a dtype, got {dtype!r}")
-        if scope not in ("", "device", "system", "stream"):
-            raise TypeError(f"hk.Tensor[dtype, scope]: scope is \"device\", \"system\" or \"stream\", "
-                            f"not {scope!r}")
-        return GlobalType(dtype, scope)
+        scope, strided = "", False
+        for o in opts:
+            if o == "strided" and not strided:
+                strided = True
+            elif o in ("device", "system", "stream") and not scope:
+                scope = o
+            else:
+                raise TypeError(f"hk.Tensor[dtype, ...]: the options are a scope (\"device\", "
+                                f"\"system\" or \"stream\") and \"strided\", each once; not {o!r}")
+        if strided and scope:
+            raise TypeError("hk.Tensor[dtype, scope, \"strided\"]: a scoped tensor is not strided "
+                            "(its accesses carry the scope through ops that address a gl)")
+        return GlobalType(dtype, scope, strided)
 
 
 class Constexpr:

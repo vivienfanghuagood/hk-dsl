@@ -35,6 +35,19 @@ default. They are baked into the source and are ordinary Python values in the
 body, so `range(D // 16)` unrolls and `if KIND == "softmax"` picks a branch at
 trace time.
 
+A plain tensor's outer axes are compact over its rows: the launcher takes a
+contiguous tensor or a slice of its last axis (one row stride). An engine's
+layout often is neither, and `hk.Tensor[dtype, "strided"]` takes it in place:
+every stride the torch tensor has (batch, depth, row) and a *granule* stride
+along the columns, the distance between consecutive 16-byte granules of a row.
+Pass a 4-D view whose last axis is contiguous -- vLLM's flash-layout KV cache
+`(blocks, block, heads, d)` as `.permute(0, 2, 1, 3)` -- or a 5-D view
+`(b, d, r, granules, G)` whose last axis is one 16-byte granule -- ROCM_ATTN's
+x-split K cache `(blocks, heads, d / 8, block, 8)` as `.permute(0, 1, 3, 2, 4)`,
+whose rows are then 8 elements apart and their granules `block * 8`. RDNA only,
+and read by `g.stage` so far; translating a kernel that does anything else with
+one is an error that names the op.
+
 ```python
 T = hk.RT(hk.fp32, 16, 64)
 
