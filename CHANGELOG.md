@@ -9,6 +9,24 @@ The next version's notes collect here until it is released.
 What is on main after 0.8.0. `pip install hk-dsl` (0.8.0) does not have it;
 the API reference marks such names *New after 0.8.0*.
 
+**The surface registry (DSL-surface S0).** `python/hk/dsl/surface.py` registers every name of
+the language, every dialect op and every function in `include/hk/` with its kind (primitive,
+format, escape hatch, experiment, internal, merge / delete / deprecated). The IR tier
+(`tests/hk/ir/test_surface.py`) now fails on anything unregistered, and on an escape-hatch use in
+a file of hk.ops, the templates or the examples that `scripts/escape_hatches_allow.txt` does not
+list with its reason, or above that line's ceiling. A `Kernel` subclass may not override
+`with_defines` / `source` unless listed there. Both ratchet: a registered name that is gone, or
+uses under a ceiling, print a hint to tighten them and never fail.
+- The API reference marks each non-primitive name with its kind and boundary, or its migration
+  step.
+- `tools/surface/snapshot.py` takes the Gate A / B evidence for a change to the generated code:
+  every shipped kernel's generated source hashed (`sources`), or its resources and an ISA hash a
+  function (`builds`), diffed between two checkouts.
+- `tests/hk/gpu/test_specializations.py`: the 32x32 fp32 -> bf16 store, the 16-column column
+  reduction and the -inf column masks (cdna.cuh's type-selected paths) give the generic results
+  bit for bit on gfx950.
+- A pull-request template with the reviewer checklist.
+
 **ROCm 10.1 (AMD clang 24): every compile failed; it builds and runs now.** In
 the official `rocm/pytorch:rocm10.1.0_ubuntu24.04_py3.12_pytorch_release_2.14.0`
 (TheRock), even `python3 examples/01_vector_add.py --build` raised

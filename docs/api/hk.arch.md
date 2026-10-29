@@ -194,6 +194,8 @@ hk.arch.agpr(tile) -> None
 
 *New after 0.8.0*
 
+*Surface*: an experiment: behind an option that is off by default; deleted after 2026-10-31 12:00Z unless the task evaluating it adopts it (dsl-surface.md §9, decision 6).
+
 Hold `tile`, an fp32 MMA accumulator just made by hk.zeros, in AGPRs
 (CDNA): every mma into it runs on the AGPRs (inline asm, C/D "+a"), every
 other access reads it into a VGPR copy after the MFMAs' wait states and
