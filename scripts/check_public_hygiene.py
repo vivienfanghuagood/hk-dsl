@@ -40,7 +40,8 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 ALLOW = ROOT / "scripts" / "public_hygiene_allow.txt"
-SELF = {"scripts/check_public_hygiene.py", "scripts/public_hygiene_allow.txt"}  # rules, not hits
+SELF = {"scripts/check_public_hygiene.py", "scripts/public_hygiene_allow.txt",  # rules, not hits
+        "tests/hk/ir/test_public_hygiene.py"}  # made-up samples of what the rules catch
 
 _OCT = r"(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)"
 RULES: dict[str, str] = {
