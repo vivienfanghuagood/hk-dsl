@@ -322,18 +322,41 @@ def _plan(x, weight, bias, m: int, n: int, k: int) -> tuple:
         from ..ops import gemm_cdna  # noqa: PLC0415
 
         return path, gemm_cdna.matmul
-    if path == "hk":
-        return path, _op_for(m, n, k)
     if path in OPTIONAL:
         return path, OPTIONAL[path].run
-    from ..ops import decode_gemm  # noqa: PLC0415
+    from ..runtime.resources import ResourceError  # noqa: PLC0415
 
-    s = decode_gemm.schedule_for(m, k)
-    op = _decode_op(s)
+    # The kernels build here, on the first call of a shape: one this compiler
+    # refuses (a spill; hk does not run spilling kernels) sends the shape to
+    # vLLM's path, said once, instead of raising inside the model's forward.
+    try:
+        if path == "hk":
+            return path, _op_for(m, n, k)
+        from ..ops import decode_gemm  # noqa: PLC0415
+
+        s = decode_gemm.schedule_for(m, k)
+        op = _decode_op(s)
+    except ResourceError as e:
+        _refused(path, e)
+        return "fallback", None
     if s["splits"] > 1:
         scratch = decode_gemm.scratch_for(x.device, s["splits"], s["tokens"], n)
         return path, lambda x2, w, out: op(x2, w, out, *scratch)
     return path, op
+
+
+#: Paths whose kernel this compiler refused, said once each.
+_REFUSED: set = set()
+
+
+def _refused(path: str, err: Exception) -> None:
+    if path in _REFUSED:
+        return
+    _REFUSED.add(path)
+    import sys  # noqa: PLC0415
+
+    print(f"[hk] linear: the {path} kernel does not build with this compiler, so the shapes "
+          f"routed to it run vLLM's path ({str(err).splitlines()[0]})", file=sys.stderr, flush=True)
 
 
 def linear(x, weight, bias=None):
