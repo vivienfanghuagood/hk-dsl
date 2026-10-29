@@ -468,18 +468,21 @@ class Decode(GemmSchedule):
                          doc="cap on workgroups a WGP/CU holds, by sizing the combine's LDS")
     splits: int = knob(1, values=(1, 2, 4, 8), seed=(1, 2, 4),
                        doc="K cut across workgroups, the last to arrive sums the shares")
+    occupancy: int = knob(0, values=(0, 5, 6, 7, 8), seed=(0,),
+                          doc="cap on waves a SIMD (hk.kernel's max_occupancy); 0: the registers'")
     max_vgprs: int = knob(256, gate=True, doc="build gate")
     min_occupancy: int = knob(1, gate=True, doc="build gate")
 
     def _name(self) -> str:
         return (f"decode_gemm_t{self.tokens}_s{self.slices}_w{self.warps}"
                 f"_c{self.combine_depth}_r{self.resident}"
-                + (f"_k{self.splits}" if self.splits > 1 else ""))
+                + (f"_k{self.splits}" if self.splits > 1 else "")
+                + (f"_o{self.occupancy}" if self.occupancy else ""))
 
     def legacy(self) -> Dict[str, Any]:
         return dict(tokens=self.tokens, slices=self.slices, warps=self.warps,
                     combine_depth=self.combine_depth, resident=self.resident,
-                    splits=self.splits)
+                    splits=self.splits, occupancy=self.occupancy)
 
     def _steps(self, m, n, k, lo):
         return [Step("decode", self.legacy(), (lo, lo + n), True, schedule=self)]
