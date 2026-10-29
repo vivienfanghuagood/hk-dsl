@@ -33,7 +33,7 @@ std::string mlir::hk::pyRepr(Type t) {
            ">" + n;
   }
   if (auto g = dyn_cast<GlobalType>(t))
-    return "gl<" + dn(g.getElementType()) + ">";
+    return "gl<" + dn(g.getElementType()) + (g.getStrided() ? ", strided" : "") + ">";
   if (auto c = dyn_cast<CoordType>(t))
     return std::string("coord<") + (c.getElement() ? "element" : "tile") + ">";
   if (auto g = dyn_cast<GranulesType>(t))
