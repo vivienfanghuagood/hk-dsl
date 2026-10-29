@@ -26,7 +26,8 @@ def causal_mask(s: hk.Tensor[fp32], o: hk.Tensor[fp32], *, N=32):
     t = s[idx].load(hk.RT(fp32, N, N, "col"))
     # -inf, not 0: these entries go through exp2 before they are summed, and
     # exp2(0) is 1.
-    o[idx] = t.make_causal(float("-inf"), transposed=True)
+    t.triu_(0, float("-inf"))
+    o[idx] = t
 
 
 @hk.kernel(arch="gfx1100", grid=lambda p: (1, 1, 1))

@@ -65,13 +65,16 @@ def test_fp8_operand_from_lds_words_is_the_tile_loads_operand():
         lw.store_elems(b32.load_elems(q, runs=True), q)
         hk.arch.barrier(drain=True)
         x = hk.iota(X)                                              # lane l, run r, word e
-        bw = hk.fp8_operand(lw.load_elems(hk.map_cpp(
-            "((x0 % 256) / 4 % 16) * 32 + (x0 / 256) * 16 + ((x0 % 256) / 64) * 4 + x0 % 4", x, dtype=i32), i32, runs=True))
+        bw = lw.load_elems(hk.map_cpp(
+            "((x0 % 256) / 4 % 16) * 32 + (x0 / 256) * 16 + ((x0 % 256) / 64) * 4 + x0 % 4", x,
+            dtype=i32), i32, runs=True).as_fragment(hk.RT(hk.fp8e4m3, 16, 128))
         ta = a.at[0, 0].load(T_W)
         s_a = hk.load_mx_scales(sa, 16, 4, 0, 0, loose=True)
         s_b = hk.load_mx_scales(sb, 16, 4, 0, 0, loose=True)
-        c0[hk.elem_coord(0, 0, 0, 0)] = hk.mma_ABt_mx(ta, b.at[0, 0].load(T_W), hk.zeros(T_C), s_a, s_b)
-        c1[hk.elem_coord(0, 0, 0, 0)] = hk.mma_ABt_mx(ta, bw, hk.zeros(T_C), s_a, s_b)
+        c0[hk.elem_coord(0, 0, 0, 0)] = hk.mma("mma_ABt", ta.scaled(s_a),
+                                               b.at[0, 0].load(T_W).scaled(s_b), hk.zeros(T_C))
+        c1[hk.elem_coord(0, 0, 0, 0)] = hk.mma("mma_ABt", ta.scaled(s_a), bw.scaled(s_b),
+                                               hk.zeros(T_C))
 
     k = hk.kernel(body, arch="gfx950", warps=1, name="fp8_operand_lds", grid=lambda p: (1, 1, 1))
     g = torch.Generator(device="cuda").manual_seed(30)

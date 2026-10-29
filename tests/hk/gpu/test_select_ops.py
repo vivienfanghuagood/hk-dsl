@@ -58,12 +58,13 @@ def _gathered_fp4_kernel():
         lw, ln = hk.iota(W), hk.iota(L)
         widx = hk.map_cpp("((x0 >> 2) % 16) * 16 + 4 * ((x0 >> 2) / 16) + (x0 & 3)", lw)
         sidx = hk.map_cpp("(x0 % 16) * 4 + x0 / 16", ln)
-        ta = hk.fp4_operand(a.load_elems(widx, runs=True))
-        tb = hk.fp4_operand(b.load_elems(widx, runs=True))
-        s_a = hk.mx_scales_loose(hk.map_cpp("x0 & 0xFF", sa.load_elems(sidx, i32), dtype=i32))
-        s_b = hk.mx_scales_loose(hk.map_cpp("x0 & 0xFF", sb.load_elems(sidx, i32), dtype=i32))
-        c[hk.elem_coord(0, 0, 0, 0)] = hk.mma_ABt_mx(ta, tb, hk.zeros(hk.RT(fp32, 16, 16, "col")), s_a, s_b,
-                                                     a_fmt="fp4", b_fmt="fp4")
+        ta = a.load_elems(widx, runs=True).as_fragment(hk.RT(hk.fp8e4m3, 16, 128), fmt="fp4")
+        tb = b.load_elems(widx, runs=True).as_fragment(hk.RT(hk.fp8e4m3, 16, 128), fmt="fp4")
+        s_a = hk.map_cpp("x0 & 0xFF", sa.load_elems(sidx, i32), dtype=i32).as_scales()
+        s_b = hk.map_cpp("x0 & 0xFF", sb.load_elems(sidx, i32), dtype=i32).as_scales()
+        c[hk.elem_coord(0, 0, 0, 0)] = hk.mma("mma_ABt", ta.scaled(s_a, fmt="fp4"),
+                                              tb.scaled(s_b, fmt="fp4"),
+                                              hk.zeros(hk.RT(fp32, 16, 16, "col")))
 
     return hk.kernel(body, arch="gfx950", warps=1, name="fp4_gathered", grid=lambda p: (1, 1, 1))
 

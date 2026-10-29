@@ -38,8 +38,7 @@ The rule for a new kernel, or a new version of one:
      result that came out wrong.
    - Name the general op that would replace it, and say why that op is not being built now.
 3. **It is registered as an escape hatch with a usage boundary.** The entry goes in the surface
-   registry (`hk.dsl.surface`; until that lands, the inventory tables in the design page) and
-   states:
+   registry (`python/hk/dsl/surface.py`, `hk.dsl.surface`) and states:
    - its kind;
    - when it may be used and when not;
    - the tests that pin it;
@@ -52,7 +51,10 @@ The rule for a new kernel, or a new version of one:
    only print a hint: tighten the ceiling when you see one.
 4. **Never edit the generated C++.** A `Kernel` subclass may not override `with_defines` or
    `source` to splice or rewrite code, and `with_defines` carries `#define NAME value` knobs only.
-   Every past case of rewriting was a missing op: ask for the op.
+   Every past case of rewriting was a missing op: ask for the op. One exception predates the rule:
+   `attn_k3.py`'s `PairPKernel` splices the RDNA3 Pᵀ exchange into its source. It is listed in the
+   escape-hatch allowlist (the class, and its two `with_defines` uses) until S11 replaces it with
+   an op, and the allowlist's ceilings fail CI on any new override.
 
 A type-selected specialization behind a general op is allowed without an escape-hatch entry, under
 one condition: it must produce bitwise the generic path's results. Examples are a wider store for

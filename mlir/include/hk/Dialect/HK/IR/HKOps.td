@@ -270,26 +270,6 @@ def HK_ScatterRowsOp : HK_Op<"scatter_rows"> {
   let hasVerifier = 1;
 }
 
-def HK_ScatterAddLdsOp : HK_Op<"scatter_add_lds"> {
-  let summary = "a warp's LDS tile added into global rows by index, atomically, row-contiguous";
-  let description = [{
-    The atomic twin of scatter_rows for an epilogue: src (bf16, a warp's own LDS tile, written
-    by that warp) row r is added into dst row idx[at + r] from column `col` with gfx950's
-    packed bf16 atomic add. Lanes take consecutive column pairs of one row, so one instruction
-    covers 64 / (cols / 2) rows of 4 * (cols / 2) contiguous bytes each -- a register tile's
-    own layout would touch 16 rows of 16 bytes. sort_topk > 0: idx holds AITER's MoE sort ids
-    (token | choice << 24) and the row is the token's (dst [M, ...]), padding (token >= M)
-    nowhere. Positions at or past `count` add nothing. The sum is in no fixed order.
-  }];
-  let arguments = (ins HK_GlobalType:$dst, HK_SharedTileType:$src, HK_GlobalType:$idx,
-                       I32:$at, I32:$count, I32:$col, DefaultValuedAttr<I64Attr, "0">:$sort_topk);
-  let assemblyFormat = [{
-    $src `,` $dst `[` $idx `[` $at `,` $count `]` `,` $col `]` attr-dict `:`
-    qualified(type($src)) `,` qualified(type($dst)) `,` qualified(type($idx))
-  }];
-  let hasVerifier = 1;
-}
-
 def HK_AtomicAddOp : HK_Op<"atomic_add"> {
   let summary = "add an fp32 register tile into a float global, atomically";
   let arguments = (ins HK_GlobalType:$dst, HK_RegTileType:$value,
@@ -1159,22 +1139,15 @@ def HK_MapCppOp : HK_Op<"map_cpp"> {
   let hasVerifier = 1;
 }
 
-def HK_SwapHalvesOp : HK_UnaryMapOp<"swap_halves"> {
+def HK_SwapHalvesOp : HK_UnaryMapOp<"swap_halves",
+    (ins DefaultValuedAttr<I64Attr, "0">:$span, UnitAttr:$negate_first)> {
   let description = [{
-    A strip's rows with their two halves exchanged: element (r, c) of the
-    result is element (r, (c + cols/2) mod cols) of the operand -- RoPE's
-    rotate_half without its sign. Strips only, and a row of one chunk or of
-    an even number of them: a register swap between chunks, or one lane
-    exchange across the wave's halves.
-  }];
-}
-def HK_RotateHalfOp : HK_UnaryMapOp<"rotate_half", (ins I64Attr:$span)> {
-  let description = [{
-    NeoX's rotate_half on each `span`-column segment of a strip's rows: for
-    c in the segment's first half the result is -x[c + span/2], in its second
-    x[c - span/2]. Strips only. The halves are 8, 16 or 32 lanes apart -- a
-    DPP row_ror:8, a v_permlane16_swap or a v_permlane32_swap on gfx950 --
-    or whole chunks apart, a register swap; the sign is one XOR a value.
+    The halves of each `span`-column segment of a strip's rows exchanged (span 0: the whole
+    row): for c in a segment's first half the result is x[c + span/2], in its second
+    x[c - span/2]. `negate_first` negates the first half's values -- NeoX's rotate_half,
+    [x1 | x2] -> [-x2 | x1]. Strips only. The halves are 8, 16 or 32 lanes apart -- a DPP
+    row_ror:8, a v_permlane16_swap or a v_permlane32_swap on gfx950 -- or whole chunks apart, a
+    register swap; the sign is one XOR a value.
   }];
 }
 
@@ -1278,9 +1251,6 @@ def HK_UpperFillOp : HK_FillOp<"upper_fill">;
 def HK_LowerFillOp : HK_FillOp<"lower_fill">;
 def HK_TriuOp : HK_FillOp<"triu">;
 def HK_TrilOp : HK_FillOp<"tril">;
-
-def HK_MakeCausalOp : HK_UnaryMapOp<"make_causal", (ins F64Attr:$value)>;
-def HK_MakeCausalTOp : HK_UnaryMapOp<"make_causal_t", (ins F64Attr:$value)>;
 
 //===----------------------------------------------------------------------===//
 // Conversions and WMMA

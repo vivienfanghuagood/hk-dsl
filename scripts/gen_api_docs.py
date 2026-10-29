@@ -510,8 +510,8 @@ def page_hk(since: Since) -> Page:
         ("Functions", ["cdiv", "min", "max", "zeros", "full", "neg_infty", "rand",
                        "transpose", "transpose_sep", "broadcast_row", "broadcast_col",
                        "as_vec", "mma", "load_w4", "coord", "tile_coord", "elem_coord"]),
-        ("MX and FP4 (gfx950)", ["load_mx_scales", "copy_mx_scales", "mma_ABt_mx",
-                                 "load_fp4_frags", "load_fp4_frags_lds", "mx_quant_store"]),
+        ("MX and FP4 (gfx950)", ["load_mx_scales", "load_fp4_frags", "mx_quant_store",
+                                 "copy_mx_scales", "mma_ABt_mx", "load_fp4_frags_lds"]),
         ("Strips: a C++ expression, iota, a raw MFMA (gfx950)", ["map_cpp", "iota", "mfma_strip"]),
     ]
     documented = set()
@@ -554,7 +554,8 @@ def page_hk(since: Since) -> Page:
         f"| `hk.{d.name}` | {d.bits} | `{d.cpp}` | {d.kind} |" for d in hk.DTYPES.values())
         + "\n\nfp8 is a matrix operand where the target has an fp8 matrix "
           "instruction: gfx950's MFMA (plain, and block-scaled through "
-          "`hk.mma_ABt_mx`, whose A may also be FP4) and gfx1201's WMMA. i8 is a "
+          "`hk.mma` with `Tile.scaled` operands, which may also be FP4) and "
+          "gfx1201's WMMA. i8 is a "
           "WMMA operand on gfx1100 (`v_wmma_i32_16x16x16_iu8`, an i32 accumulator) "
           "and a storage type elsewhere. `hk.mx` has the MX scale layouts and "
           "torch references. `hk.DTYPES` maps the names to these.")
@@ -566,7 +567,7 @@ def page_hk(since: Since) -> Page:
            "names the value an operation writes.")
     p.para(operator_table())
     for n in ["Tile", "Vec", "Global", "View", "SharedTile", "SharedVec", "Granules",
-              "Int", "Bool", "Coord"]:
+              "MxScales", "Scaled", "RowIndex", "Int", "Bool", "Coord"]:
         obj = getattr(hk, n)
         documented.add(n)
         p.entry(f"hk.{n}", obj, display=f"hk.{n}", signature=False,

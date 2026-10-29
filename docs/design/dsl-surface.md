@@ -1,15 +1,17 @@
 # Design: converging the DSL surface
 
-Status: **approved** (2026-10-28; the decisions are in §9). Nothing on this page is built yet.
-The work is timeboxed to one week, until 2026-11-04 00:00Z; §8 says which steps fit and which
+Status: **approved** (2026-10-28; the decisions are in §9). **Built:** S0-S5 and S12 (S0 in #130;
+S1-S5 and S12 in one combined PR after it, one commit a step; 2026-10-29); the later steps (S6-S11, S13) are not. The work is timeboxed to one week, until 2026-11-04 00:00Z; §8 says which steps fit and which
 come later.
 
 #115 (`dsv41_index`) and #121 (`lane_strip`, `lane_coords`, `run_xor`) merged after the review.
-Their call sites, counted under "PRs" in §2, are now in the repository; #120 is still open.
+Their call sites, counted under "PRs" in §2, are now in the repository, and so are #120's
+(`sparse_mla`, merged 2026-10-29).
 
 hk-dsl is the DSL and the kernels written in it. The language has grown one hand-written C++
 helper per hard kernel, each exposed as a DSL op:
-- `include/hk/cdna.cuh` went from nothing to 4,071 lines in 13 days.
+- `include/hk/cdna.cuh` went from nothing to 4,071 lines in 13 days (4,389 two days later, when
+  S12 split it into `include/hk/cdna/`).
 - The ops it exports include `mx_quant_store`, `copy_mx_scales`, the scatter forms, the strip and
   element ops of the decode megakernel, and `map_cpp`.
 
@@ -50,7 +52,7 @@ This page does four things:
 | G1 | **Elementwise integer and bit expressions on strips**: operators on i32 strips, `hk.where`, shifts, bit ops, comparisons, `hk.math.fma`, as one typed `hk.map` region that lowers like `map_cpp` does | 93% of `map_cpp`'s 746 calls (§2.6); `mx_quant_store` as a composition; the E8M0 repack |
 | G2 | **Register views** both ways: `Tile.lane_strip(run)` (#121) and its inverse `Tile.as_fragment(ty)` / `Tile.as_scales()` | `fp4_operand`, `fp8_operand`, `mx_scales_loose`; `mfma_strip`'s operands |
 | G3 | **Lane coordinates**: `hk.lane_coords(tile_or_type, run)` (#121) | `iota` |
-| G4 | **Row index sources**: `hk.RowIndex(ids, at, count, div=, sort_topk=)` and `g.stage(ix, rows)` | `div=`, `sort_topk=`, `staged=`, `gather_prep(raw=)`, `gather=(ids, at)` |
+| G4 | **Row index sources**: `hk.RowIndex(ids, at, count, div=, sort_topk=)` and `g.stage_rows(ix, rows)` | `div=`, `sort_topk=`, `staged=`, `gather_prep(raw=)`, `gather=(ids, at)` |
 | G5 | **One MMA entry**: `hk.mma(variant, a, b, acc)` with scaled operands `a.scaled(sa, fmt=)`; MX scales are ordinary register values | `mma_ABt_mx`, `copy_mx_scales`, `load_fp4_frags_lds` |
 | G6 | **Lane exchanges as one family**: `lane_gather`, `swap_halves(span, negate_first=)`, `run_xor`; on RDNA3, `as_operand(k_order=)` | `rotate_half`; attn_k3's rewrite of its own generated C++ |
 
@@ -126,8 +128,8 @@ Each item is classified into exactly one of three classes:
 - shipped ops: `python/hk/ops`, `python/hk/templates`, `python/hk/mx.py`;
 - examples and `bench/`;
 - tests and tools;
-- open PRs #115 (`dsv41_index`), #118 (LDS-pointer stores), #120 (`sparse_mla`) and #121 (lane
-  strips);
+- the PRs open at the time, all merged since: #115 (`dsv41_index`), #118 (LDS-pointer stores),
+  #120 (`sparse_mla`) and #121 (lane strips);
 - the out-of-tree DeepSeek-V4.1 decode stages written in hk: the seam / attention front, the MoE,
   and the attention back.
 
@@ -137,7 +139,8 @@ is not a shipped kernel. It is migrated through deprecation shims, not edits.
 **The surface today, at main `af17846`:**
 - `hk` exports 74 names; `docs/api/hk.md` documents 203 functions and methods;
 - the dialect has 137 ops;
-- `include/hk/cdna.cuh` has 4,071 lines (sections in the [appendix](#appendix-cdnacuh-by-section));
+- `include/hk/cdna.cuh` has 4,071 lines (sections in the [appendix](#appendix-cdnacuh-by-section);
+  4,389 at bc2e9299, before S12's split);
 - `include/hk/cdna_agpr.cuh` has 183 lines.
 
 **Out of scope** (sibling designs, named so nothing is lost):
@@ -169,7 +172,7 @@ Columns:
 |---|---|---|---|---|---|---|
 | A1 | `hk.load_mx_scales(src, rows, kblocks, row0, kb0, *, into, layout="ocp"\|"aiter"\|"aiter_gate_up", group_rows, loose)` (`values.py`, `hk.load_mx_scales` op, `kittens::load_mx_scales` / `load_mx_scales_aiter`, `hk_mxs<R, KB, F>`) | API | ops: moe_a8w4 45, mxfp8 6, gemm_cdna 2, mx.py 2; PRs: #115 2; out of tree: 18 | test_cdna_mx_ops, test_k2_ops, test_mx_fp4_aiter, ir/test_cdna_fp8 | the scaled MFMA reads E8M0 scales from lane-specific bytes (opsel). OCP, packed and AITER's shuffled layouts all land in those registers | **KEEP, format.** The scaled MFMA's operand. A new scale layout is a `layout=` entry, never a new op |
 | A2 | `hk.copy_mx_scales(dst, src)` (`hk.mx_scales_copy` op) | API | ops: mxfp8 6 | via ops (test_mxfp8_gemm, test_vllm_mxfp8) | `MxScales` is not a `Tile`, so `Tile.copy(into=)` does not apply | **MERGE: G5.** `src.copy(into=dst)` on `MxScales`; the same op is emitted |
-| A3 | `hk.mma_ABt_mx(a, b, acc, sa, sb, *, a_fmt, b_fmt, sa_at, sb_at)` (`hk.mma_ABt_mx` op, `kittens::mma_ABt_mx`) | API | ops: moe_a8w4 13, mxfp8 3, gemm_cdna 1; PRs: #115 3; out of tree: 14 | test_cdna_mx_ops, test_k2_ops, test_mx_fp4_aiter, test_select_ops, ir/test_cdna_fp8, ir/test_strip | `hk.mma` has no scales | **MERGE: G5.** `hk.mma("ABt", a.scaled(sa), b.scaled(sb, fmt="fp4", at=(t, s)), acc)`; the same op is emitted |
+| A3 | `hk.mma_ABt_mx(a, b, acc, sa, sb, *, a_fmt, b_fmt, sa_at, sb_at)` (`hk.mma_ABt_mx` op, `kittens::mma_ABt_mx`) | API | ops: moe_a8w4 13, mxfp8 3, gemm_cdna 1; PRs: #115 3; out of tree: 14 | test_cdna_mx_ops, test_k2_ops, test_mx_fp4_aiter, test_select_ops, ir/test_cdna_fp8, ir/test_strip | `hk.mma` has no scales | **MERGE: G5.** `hk.mma("mma_ABt", a.scaled(sa), b.scaled(sb, fmt="fp4", at=(t, s)), acc)`; the same op is emitted |
 | A4 | `hk.load_fp4_frags(ty, src, row0, kc0, *, group_rows, gate_up)` (`kittens::load_fp4_frags`) | API | ops: moe_a8w4 8 | test_cdna_mx_ops, test_mx_fp4_aiter | AITER's `shuffle_weight` layout (1 KB chunks in lane order, gate/up interleave), with a 64-bit base per expert (a 4.5 GB weight passes a 32-bit buffer offset) | **KEEP, format.** AITER's pre-shuffled MXFP4 weights only |
 | A5 | `hk.load_fp4_frags_lds(ty, src, row0, chunk0)` | API | ops: moe_a8w4 2 | test_cdna_mx_ops | the same bytes, from an LDS tile | **MERGE: A4.** One `load_fp4_frags` whose `src` may be a `SharedTile`; it dispatches to the existing op |
 | A6 | `hk.mx_quant_store(src, q, s, row0, col0)` (`kittens::mx_quant_store`, 70 lines) | API | ops: moe_a8w4 1 (stage-1 epilogue, `mxq`), mxfp8 1 (`quant`) | test_cdna_mx_ops, test_mxfp8_quant, test_moe_a8w4, test_fenced | floor and ceil on exponent bits, byte scatter of scales into AITER's 32-row or the packed layout, packed fp8 conversion: no integer or bit ops on tiles | **MERGE: G1 composition**, after G1, behind V2. If it is slower (K1's +3-4% came from it), reclassify as KEEP-format with the measurement |
@@ -405,7 +408,8 @@ c = hk.lane_coords(ST16)[1]  # target; hk.iota stays as this one line
 ```python
 ix = hk.RowIndex(ids, at, *, count=None, div=1, sort_topk=0)   # ids an int32 Global
 ix.offset(n)                                                   # the same list from at + n
-sx = g.stage(ix, rows, *, keep_choice=False)                   # an LDS copy of [at, at + rows), then a barrier
+sx = g.stage_rows(ix, rows, *, keep_choice=False)              # an LDS copy of [at, at + rows), then a barrier
+sx = ix.staged(rows, keep_choice=False); g.stage_rows(sx)      # the same, described before it is copied
 t = src.gather(ty, ix, col=c)                                  # rows by index -> a register tile
 dst.scatter(t, ix, col=c, add=False)                           # a register tile -> rows by index
 g.load(dst_lds, src.at[0, k], wait=False, gather=ix)           # the LDS DMA, rows by index
@@ -420,14 +424,18 @@ g.load(dst_lds, src.at[0, k], wait=False, gather=ix)           # the LDS DMA, ro
   - a scatter with `add=True` adds into the token's row.
 - Positions at or past `count`, and padding, read zero and write nothing.
 
-**Staging.** `g.stage` returns a staged index, and only a staged index can be used where the LDS
-copy is meant:
+**Staging.** `g.stage_rows` (`g.stage` is the register-staged copy's name already) returns a
+staged index, and only a staged index can be used where the LDS copy is meant:
 - with `keep_choice=False` it holds the decoded token rows, which gathers read (today's
   `gather_prep`);
 - with `keep_choice=True` it holds the raw ids, which scatters read (`gather_prep(raw=True)`).
 
-A consumer refuses a staged index of the wrong form. Today that mismatch is a silent read of an
-LDS array no one wrote.
+A consumer refuses a staged index of the wrong form, and a staged index no `stage_rows` has copied
+before it in the trace. Today either mismatch is a silent read of an LDS array no one wrote.
+`ix.staged(rows)` describes the staged index without the copy, for code written before the place
+that stages it -- a loop body's copies defined above the loop, as K1's are; the body then calls
+`g.stage_rows(sx)`. An assignment inside a device loop or a device `if` is local to the body the
+control-flow rewrite makes of it, so the description has to come first.
 
 **Lowering.** Unchanged: `GatherRowsOp` (`div`), `ScatterRowsOp` (`sort_topk`, `staged`),
 `GroupLoadOp` (`gather_staged`), `GatherPrepOp` (`raw`). V0.
@@ -440,29 +448,29 @@ g.gather_prep(sids, r0, BM, raw=True)
 out.scatter(o, sids, r0 + i * TILE, col=c0, sort_topk=topk, staged=BM)
 # target
 ix = hk.RowIndex(sids, r0, sort_topk=topk)
-rows_in = g.stage(ix, BM)
+rows_in = g.stage_rows(ix, BM)
 g.load(Xs[slot], x.at[0, kc * KS], wait=False, gather=rows_in)
-rows_out = g.stage(ix, BM, keep_choice=True)
+rows_out = g.stage_rows(ix, BM, keep_choice=True)
 out.scatter(o, rows_out.offset(i * TILE), col=c0)
 ```
 
 ### G5. One MMA entry; MX scales as register values
 
 ```python
-acc = hk.mma("ABt", a.scaled(sa), b.scaled(sb, fmt="fp4", at=(tile, step)), acc)
+acc = hk.mma("mma_ABt", a.scaled(sa), b.scaled(sb, fmt="fp4", at=(tile, step)), acc)
 src.copy(into=dst)                                   # MxScales, as Tile.copy(into=)
 w = hk.load_fp4_frags(ty, src, row0, kc0, ...)       # src a Global or a SharedTile
 ```
 
 **Semantics.**
 - `Tile.scaled(scales, *, fmt="fp8", at=(0, 0))` makes a scaled operand. `hk.mma` takes one only
-  as both operands of the `ABt` variant on gfx950. It emits today's `hk.mma_ABt_mx` with
+  as both operands of the `mma_ABt` variant on gfx950. It emits today's `hk.mma_ABt_mx` with
   `a_fmt` / `b_fmt` / `sa_at` / `sb_at` taken from the operands.
 - Unscaled calls are unchanged.
 
 ```python
 acc = hk.mma_ABt_mx(a, w, acc, sa, sw, b_fmt="fp4", sb_at=(t, s))            # today
-acc = hk.mma("ABt", a.scaled(sa), w.scaled(sw, fmt="fp4", at=(t, s)), acc)   # target
+acc = hk.mma("mma_ABt", a.scaled(sa), w.scaled(sw, fmt="fp4", at=(t, s)), acc)   # target
 hk.copy_mx_scales(S[0][0][i], S[1][0][i])                                    # today
 S[1][0][i].copy(into=S[0][0][i])                                             # target
 ```
@@ -556,16 +564,18 @@ docs (`scripts/gen_api_docs.py`) and states its verification tier (§7).
 **The shim policy.** A public name that changes keeps its old spelling as a shim that emits the new
 form:
 - The shim warns (`DeprecationWarning`) from the release after the step.
-- It is removed one minor release later.
+- It is removed in the release after the last call from outside the repository is migrated, and
+  at most two minor releases after the release that deprecated it (§9, decision 2). One policy for
+  every shim; [Migrating](../migrating.md) lists them.
 - In-tree callers, examples and docs move in the step itself.
 - Out-of-tree callers (the decode stages) move at their owners' pace within that window.
 
 | step | change | shims | tier | depends on |
 |---|---|---|---|---|
 | **S0** | Guard rails only, no kernel change: the registry (`hk.dsl.surface`) from §2; the tests of §4; the escape-hatch allowlist; one bitwise test per E4 specialization; `tools/surface/snapshot.py`, which traces every shipped kernel at its route-table configurations and hashes the generated C++ (V0's tool); a PR-template checklist pointing at CONTRIBUTING.md | none | none (tests only) | this design |
-| **S1** | DELETE B7 `scatter_add_lds` (DSL method, dialect op, C++, test) and D5 `make_causal` (alias to `tril_` / `triu_` for one release, with a test that they agree; the two dialect ops go) | D5's alias | V0 on every shipped kernel | S0 |
+| **S1** | DELETE B7 `scatter_add_lds` (DSL method, dialect op, C++, test) and D5 `make_causal` (a deprecated alias to `tril_` / `triu_` under the shim policy above, with a test that they agree; the two dialect ops go) | D5's alias | V0 on every shipped kernel | S0 |
 | **S2** | G5 front end: `Tile.scaled`, `hk.mma` with scaled operands, `MxScales.copy(into=)`, `load_fp4_frags` from a `SharedTile`. Same dialect ops | `mma_ABt_mx`, `copy_mx_scales`, `load_fp4_frags_lds` | V0: K1, K2, gemm_cdna's MX mode | S0 |
-| **S3** | G4: `hk.RowIndex`, `g.stage`, the `gather=ix` form; the staged-form check. Same dialect ops and attributes | `div=`, `sort_topk=`, `staged=`, `gather=(ids, at)`, `gather_prep` | V0: K1, RDNA3 / RDNA4 MoE, example 08 / 09 | S0 |
+| **S3** | G4: `hk.RowIndex`, `g.stage_rows`, the `gather=ix` form; the staged-form check. Same dialect ops and attributes | `div=`, `sort_topk=`, `staged=`, `gather=(ids, at)`, `gather_prep` | V0: K1, RDNA3 / RDNA4 MoE, example 08 / 09 | S0 |
 | **S4** | G6, rope: `rotate_half` folds into `swap_halves(span, negate_first)`: one dialect op, one C++ template | `rotate_half` (sugar, kept) | V1: fused rope kernels at their plans | S0 |
 | **S5** | G2 front end: `as_fragment`, `as_scales`, emitting today's three ops | `fp4_operand`, `fp8_operand`, `mx_scales_loose` | V0 (no in-tree kernel uses them; #115 if merged) | S0 |
 | **S12** | Split `cdna.cuh` by kind, a pure move: `cdna/lib.cuh` (library fixes, gap fills), `cdna/primitives.cuh`, `cdna/formats.cuh` (MX, W4), `cdna/escape.cuh` (`map_cpp`, `mfma_strip`), `cdna/special.cuh` (E4); each definition headed by its registry name | none | V0 (same generated source, which includes one umbrella header) and V1 | S0 |
@@ -576,6 +586,29 @@ form:
 | S10 | A6: `mx_quant_store` as a G1 composition, in `hk.mx` (Python), for K1's epilogue and `mxfp8.quant` | `mx_quant_store` (alias to the composition) | V2: K1 and K2 quant bitwise and A/B; fence; spill. Not adopted if slower | S7 (and open question 3) |
 | S11 | D1: RDNA3 `as_operand(k_order="even_odd")`; attn_k3 drops `PairPKernel` | none (internal to attn_k3) | V1 on gfx1100 (the same C++ body); V2 on a W7900D if the ISA differs | S0 |
 | S13 | Upstream E2, E3 and E5 into the HipKittens fork; delete hk's copies when the submodule moves | none | V1 | S12 |
+
+### 5.1 The order trap: a migration must not move an op
+
+*Added after S2's review.* A kernel is its trace, and the trace is the order the DSL emits ops in,
+which is Python's evaluation order. A new spelling that takes its arguments in another order than
+the old one can therefore change the kernel even though each op is the same. G5 is such a case:
+`hk.mma_ABt_mx(a, b, acc, sa, sb)` evaluates `a, b, acc, sa, sb`, and
+`hk.mma("mma_ABt", a.scaled(sa), b.scaled(sb), acc)` evaluates `a, sa, b, sb, acc`. With names as
+arguments nothing moves. With inline loads (the decode MoE's shared-down step loads the weights,
+x and both scales inside the call), an in-place rewrite issues weights, their scales, x, its
+scales instead of weights, x, then the scales: different generated source, and on gfx950 a
+different load issue order, which is performance. `copy_mx_scales(dst, src)` →
+`src.copy(into=dst)` has the same shape.
+
+**The rule.** When a migration reorders arguments, the arguments that emit ops are bound to locals
+in the old order first, and the new spelling takes the locals. `tools/surface/migrate.py` does
+this, only where the relative order would move, and reports a call nested in a larger expression
+(which it cannot reorder alone) for a person. The shims need nothing: an old-spelling call still
+evaluates its arguments in the old order. V0 is still the check -- generated C++ byte-identical
+before and after -- and `tests/hk/ir/test_surface_migrate.py` holds the rewriter to it on a
+kernel with inline loads in every argument, with the trace's load order compared too. The user's
+side of this is [Migrating](../migrating.md). Later steps that change an argument order (S9's
+`hk.mma` form, S10's composition) follow the same rule.
 
 ## 6. Impact on shipped kernels
 
@@ -612,7 +645,7 @@ applied per step:
 **V0: the generated source is byte-identical (CPU only).**
 - **Two worktrees.** The pre-migration build (the merge base) and the step's build each trace every
   shipped kernel at every configuration its route table, schedule records or plan functions
-  produce. The kernels are listed in §6; #115 and #120 count once merged.
+  produce. The kernels are listed in §6, with #115's and #120's (both merged).
 - **The check.** `Kernel.source()` must match byte for byte, per (kernel, configuration).
 - **Why it is enough.** Identical source, compiled by the same hipcc against the same headers,
   gives an identical code object, so bitwise outputs and speed follow. A step that edits
@@ -763,6 +796,20 @@ G1 (S7), which narrows `map_cpp` and enables A6, is the main item for the next p
 ## Appendix: cdna.cuh by section
 
 Line ranges at main `af17846`. S12 regroups these by kind; nothing is renamed.
+
+**As built (S12).** `include/hk/cdna.cuh` is now an umbrella. It includes, in dependency order,
+`include/hk/cdna/core.cuh`, `lib.cuh`, `formats.cuh`, `special.cuh`, `primitives.cuh` and
+`escape.cuh`, then `cdna_agpr.cuh` as before.
+- **core:** int8 packing, `strided_gl`, waits and binds, and the detail plumbing.
+- **lib:** library fixes and gap fills, including #118's LDS-pointer vector stores.
+- **formats:** MX and W4.
+- **special:** the masks, `neg_infty` and the 16-column `col_reduce`.
+- **primitives:** everything else, in its original order, with #121's lane views.
+- **escape:** `map_cpp` and `mfma_strip`.
+
+Each part's header states its kind; the kind of every function is in `surface.CPP`. A heading per
+definition, as §5 planned, was left out: the registry already maps each name to its kind. The
+build cache keys on the preprocessor's dependency list (#136), so an edit to a part recompiles.
 
 | lines | section | kind after S12 |
 |---|---|---|

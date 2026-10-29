@@ -117,6 +117,15 @@ def _strip_access(what: str, ty, idx: "Coord", bounded) -> None:
 # ---------------------------------------------------------------- base
 
 
+def _deprecated(old: str, new: str) -> None:
+    """A deprecation shim's warning (docs/design/dsl-surface.md §5): the old spelling still
+    emits what the new one does."""
+    import warnings  # noqa: PLC0415
+
+    warnings.warn(f"{old} is deprecated: use {new} (docs/design/dsl-surface.md)",
+                  DeprecationWarning, stacklevel=3)
+
+
 class Value:
     """A device value of the kernel being traced."""
 
@@ -539,61 +548,66 @@ class Global(Value):
                                     _i64(int(round(timeout_s * REALTIME_HZ))), _i64(aux),
                                     runs=bool(runs), bf16=bool(bf16), loc=t.loc("taken")).result, ty)
 
-    def gather(self, tile, ids: "Global", at, *, count=None, col=0, div=1,
+    def gather(self, tile, ids, at=None, *, count=None, col=0, div=None,
                into=None) -> "Tile":
-        """Rows by index: tile row r is row `ids[at + r] // div` of this
-        tensor (rows flattened over batch and depth), from column `col`. An
-        index outside the tensor, or a position at or past `count` (default:
-        all of `ids`), reads zeros -- the padding a MoE sort fills its index
-        list with costs no branch. `div` is how many index values name one
-        row: a MoE's top-k, whose sorted list counts (token, choice) pairs."""
+        """Rows by index: tile row r is row `ids[at + r]` of this tensor (rows flattened over
+        batch and depth), from column `col` -- `ids` an `hk.RowIndex`, which also says how an
+        index names a row (`div`), or an int32 tensor and `at` (and `count`). An index outside the
+        tensor, or a position at or past `count` (default: all of `ids`), reads zeros -- the
+        padding a MoE sort fills its index list with costs no branch. `div=` here is deprecated:
+        `hk.RowIndex(ids, at, div=...)`."""
+        ids, at, count, div = _plain_rows("gather", ids, at, count, div=div)
+        if div is None:
+            div = 1
         idx, at_v, n_v, col_v = self._indexed("gather", tile, ids, at, count, col)
         return _make(hkd.GatherRowsOp, tile,
                      (self.v, idx, at_v, n_v, as_int(div).v, col_v),
                      into=into, name="gat")
 
-    def scatter_add_lds(self, src: "SharedTile", ids: "Global", at, *, count=None, col=0,
-                        sort_topk: int = 0) -> None:
-        """A warp's own bf16 LDS tile added into this bf16 tensor's rows by index, atomically:
-        row r of `src` into row `ids[at + r]` (with `sort_topk`, AITER sort ids: the token's
-        row of an [M, ...] tensor; padding nowhere) from column `col`. Lanes take consecutive
-        column pairs of one row (gfx950's packed bf16 atomic), so an instruction covers a few
-        rows of contiguous bytes: 310 G pk-adds/s on an MI355X, where `scatter(add=True)` from
-        a register tile (16 rows of 16 bytes an instruction) gets 85. Even so, a bf16 atomic
-        reduce is bounded by that rate -- 0.8 ms for DeepSeek-V4.1's top-6 at 16k tokens, 4x a
-        plain sum pass (K1 c33). Store the tile with `src.store(...)` first; the sum is in no
-        fixed order."""
-        if not isinstance(src, SharedTile) or src.ty.dtype is not bf16 or self.dtype is not bf16:
-            raise TypeError(f"scatter_add_lds: a bf16 LDS tile into a bf16 global, not {src!r}")
-        if not isinstance(ids, Global) or ids.dtype is not i32:
-            raise TypeError(f"scatter_add_lds takes its row indices from an int32 global, not {ids!r}")
-        if get_target(_t().arch).arch != "gfx950":
-            raise TypeError(f"scatter_add_lds: packed bf16 atomics are gfx950's here, not {_t().arch}")
-        n = ids.cols if count is None else count
-        hkd.ScatterAddLdsOp(self.v, src.v, ids.v, as_int(at).v, as_int(n).v, as_int(col).v,
-                            sort_topk=int(sort_topk), loc=_t().loc())
+    def scatter(self, value: "Tile", ids, at=None, *, count=None,
+                col=0, sort_topk: Optional[int] = None, add: bool = False,
+                staged: Optional[int] = None) -> None:
+        """Rows by index: tile row r goes to row `ids[at + r]`, from column `col` -- `ids` an
+        `hk.RowIndex`, or an int32 tensor and `at` (and `count`). An index outside the tensor, or
+        a position at or past `count`, writes nothing. Two rows naming one row race. With an
+        index of AITER's MoE sort ids (`RowIndex(..., sort_topk=k)`: token | choice << 24) this
+        tensor is [k * M, ...] choice-major -- row r goes to row choice * M + token, and padding
+        (token >= M) nowhere.
 
-    def scatter(self, value: "Tile", ids: "Global", at, *, count=None,
-                col=0, sort_topk: int = 0, add: bool = False, staged: int = 0) -> None:
-        """Rows by index: tile row r goes to row `ids[at + r]`, from column
-        `col`; an index outside the tensor, or a position at or past
-        `count`, writes nothing. Two rows naming one row race. `sort_topk`
-        > 0: `ids` are AITER's MoE sort ids (token | choice << 24) and this
-        tensor is [sort_topk * M, ...] choice-major -- row r goes to row
-        choice * M + token, and padding (token >= M) nowhere.
+        `add=True` adds the rows atomically instead (an fp32 or bf16 global; bf16 adds element
+        pairs, gfx950's global_atomic_pk_add_bf16). With sort ids the tensor is then [M, ...] and
+        every choice of a token adds into its row: the top-k reduce, in no fixed order -- the
+        result varies run to run by the rounding of the adds.
 
-        `add=True` adds the rows atomically instead (an fp32 or bf16 global;
-        bf16 adds element pairs, gfx950's global_atomic_pk_add_bf16). With
-        `sort_topk` the tensor is then [M, ...] and every choice of a token
-        adds into its row: the top-k reduce, in no fixed order -- the result
-        varies run to run by the rounding of the adds.
-
-        `staged=N`: the ids were staged in LDS by `g.gather_prep(ids, at0, N,
-        raw=True)`, `at0` a multiple of N and [at0, at0 + N) covering every row
-        stored here -- the scatter reads them there. A global index load is a
-        vmcnt wait, which on gfx950 retires every load and store issued before
-        it, in order: in an epilogue between K loops, the next loop's whole
-        prefetch and this epilogue's own earlier stores (K1 k1-prefill c36)."""
+        An index staged in LDS by `g.stage_rows(ix, N, keep_choice=True)` is read there: a global
+        index load is a vmcnt wait, which on gfx950 retires every load and store issued before
+        it, in order -- in an epilogue between K loops, the next loop's whole prefetch and this
+        epilogue's own earlier stores (K1 k1-prefill c36). `sort_topk=` and `staged=` here are
+        deprecated: they are `hk.RowIndex`'s and `g.stage_rows`'."""
+        if isinstance(ids, RowIndex):
+            if sort_topk is not None or staged is not None:
+                raise TypeError("scatter: sort_topk / staged are the RowIndex's, not keywords "
+                                "next to one")
+            if ids.stage_n and not ids.keep_choice:
+                raise TypeError("scatter: this index was staged for gathers (the token rows); a "
+                                "scatter reads the raw ids -- "
+                                "g.stage_rows(ix, rows, keep_choice=True)")
+            if ids.stage_n:
+                ids._check_staged("scatter")
+            sort_topk, staged = ids.sort_topk, ids.stage_n
+            if ids.div != 1:
+                raise TypeError("scatter: an index with div= names rows for a gather")
+            ids, at, count = ids.ids, ids.at, ids.count if count is None else count
+        else:
+            if sort_topk is not None:
+                _deprecated("scatter(..., sort_topk=k)",
+                            "scatter(t, hk.RowIndex(ids, at, sort_topk=k))")
+            if staged is not None:
+                _deprecated("scatter(..., staged=N)",
+                            "scatter(t, g.stage_rows(hk.RowIndex(ids, at), N, keep_choice=True))")
+            if at is None:
+                raise TypeError("scatter: rows by index take an hk.RowIndex, or ids and at")
+            sort_topk, staged = sort_topk or 0, staged or 0
         value = _vec_of(value)
         if staged and get_target(_t().arch).arch != "gfx950":
             raise TypeError(f"scatter(staged=...): gfx950's LDS-staged ids, not {_t().arch}")
@@ -602,6 +616,95 @@ class Global(Value):
         ops = self._indexed("scatter", value.ty, ids, at, count, col)
         hkd.ScatterRowsOp(self.v, value.v, *ops, sort_topk=int(sort_topk), add=bool(add),
                           staged=int(staged), loc=_t().loc())
+
+
+class RowIndex:
+    """Which rows a gather, a scatter or a gathered LDS copy moves: row r of the tile is named by
+    `ids[at + r]`, an int32 global, for positions below `count` (default: all of `ids`) -- and
+    how such an index names a row:
+
+    - plain: it is the row;
+    - `div=k`: the row is `ids[at + r] // k` (a MoE's top-k, its sorted list counting
+      (token, choice) pairs); for a gather;
+    - `sort_topk=k`: AITER's MoE sort ids, token | choice << 24, padding token >= M. A gather or
+      a gathered copy reads the token's row; a scatter writes row choice * M + token of a
+      [k * M, ...] tensor, and with add=True adds into the token's row.
+
+    Positions at or past `count`, padding and indices outside the tensor read zero and write
+    nothing. `g.stage_rows(ix, rows)` copies [at, at + rows) into LDS and returns the staged
+    index the copies then read there (no vmcnt wait for an index). Made in the kernel body; no
+    instruction of its own."""
+
+    __slots__ = ("ids", "at", "count", "div", "sort_topk", "stage_n", "keep_choice")
+
+    def __init__(self, ids: "Global", at=0, *, count=None, div: int = 1, sort_topk: int = 0):
+        if not isinstance(ids, Global) or ids.dtype is not i32:
+            raise TypeError(f"hk.RowIndex: the indices are an int32 global, not {ids!r}")
+        if int(div) < 1 or int(sort_topk) < 0 or (int(div) != 1 and int(sort_topk)):
+            raise TypeError(f"hk.RowIndex: div >= 1 or sort_topk >= 1, not both "
+                            f"(div={div}, sort_topk={sort_topk})")
+        self.ids, self.at, self.count = ids, at, count
+        self.div, self.sort_topk = int(div), int(sort_topk)
+        self.stage_n, self.keep_choice = 0, False
+
+    def offset(self, n) -> "RowIndex":
+        """The same index from position at + n (a later tile of the same block). A staged
+        index stays staged: [at, at + n + the tile's rows) must lie inside what was staged."""
+        out = self._copy()
+        out.at = self.at + n
+        return out
+
+    def staged(self, rows: int, *, keep_choice: bool = False) -> "RowIndex":
+        """This index as `g.stage_rows(self, rows, keep_choice=...)` stages it, without the copy:
+        for code written before the place that stages it (a loop body's copies, defined above
+        the loop). A consumer still refuses it until a `stage_rows` has made that copy."""
+        if self.stage_n:
+            raise TypeError(f"{self!r} is staged already")
+        if int(rows) <= 0:
+            raise TypeError(f"RowIndex.staged: rows > 0, not {rows}")
+        out = self._copy()
+        out.stage_n, out.keep_choice = int(rows), bool(keep_choice)
+        return out
+
+    def _check_staged(self, what: str) -> None:
+        """A staged index is read from LDS: some stage_rows of its size and form must come
+        first."""
+        done = getattr(_t(), "staged_rows", None) or set()
+        if (self.stage_n, self.keep_choice) not in done:
+            raise TypeError(f"{what}: {self!r} is read from LDS, but no g.stage_rows of "
+                            f"{self.stage_n} {'raw ids' if self.keep_choice else 'token rows'} "
+                            f"has made that copy before this point")
+
+    def _copy(self) -> "RowIndex":
+        out = RowIndex.__new__(RowIndex)
+        for k in RowIndex.__slots__:
+            setattr(out, k, getattr(self, k))
+        return out
+
+    def __repr__(self) -> str:
+        bits = [f"div={self.div}"] if self.div != 1 else []
+        bits += [f"sort_topk={self.sort_topk}"] if self.sort_topk else []
+        bits += [f"staged={self.stage_n}" + (", keep_choice" if self.keep_choice else "")] \
+            if self.stage_n else []
+        return f"RowIndex({self.ids!r}, {self.at!r}{''.join(', ' + b for b in bits)})"
+
+
+def _plain_rows(what: str, ids, at, count, *, div=None):
+    """(ids, at, count, div) of a gather's rows: from a RowIndex, or the deprecated keywords."""
+    if isinstance(ids, RowIndex):
+        if at is not None or div is not None:
+            raise TypeError(f"{what}: at / div are the RowIndex's, not arguments next to one")
+        if ids.stage_n:
+            raise TypeError(f"{what}: a staged index is read by g.load(gather=) and scatter; a "
+                            f"register gather reads its ids from the global")
+        if ids.sort_topk:
+            raise TypeError(f"{what}: a register gather takes plain or div= indices, not sort ids")
+        return ids.ids, ids.at, ids.count if count is None else count, ids.div
+    if at is None:
+        raise TypeError(f"{what}: rows by index take an hk.RowIndex, or ids and at")
+    if div is not None:
+        _deprecated(f"{what}(..., div=k)", f"{what}(ty, hk.RowIndex(ids, at, div=k))")
+    return ids, at, count, div
 
 
 #: A scoped tensor's cache-policy bits on gfx950: SC1 (device scope) or
@@ -1070,46 +1173,49 @@ class _Elementwise(Value):
 
     def copy(self, *, into=None): return unary("copy", self, into=into)
 
-    def swap_halves(self, *, into=None):
-        """A strip with each row's two halves exchanged: column c takes
-        column (c + cols/2) mod cols -- RoPE's rotate_half without the sign.
-        Strips only, on the wave64 port (gfx950), and a row of one chunk (a
-        lane exchange across the wave's halves) or of an even number of
-        chunks (a register swap)."""
+    def swap_halves(self, span: Optional[int] = None, *, negate_first: bool = False, into=None):
+        """A strip with the two halves of each `span`-column segment of its rows exchanged (span
+        None: the whole row): in a segment's first half column c takes column c + span/2, in
+        its second c - span/2. `negate_first` negates what lands in the first half -- NeoX's
+        rotate_half, [x1 | x2] -> [-x2 | x1] (`rotate_half(span)` is this). Strips only, on the
+        wave64 port (gfx950). The halves are whole chunks apart (a register swap) or 8, 16 or 32
+        lanes apart (a DPP row_ror:8, a v_permlane16_swap, a v_permlane32_swap): a whole row of
+        one chunk or of an even number of them, or a head of `span` columns -- a 128-column head
+        at eight bf16 a lane is 16 lanes, its halves eight apart."""
         ty = self.ty
+        what = "rotate_half" if negate_first else "swap_halves"
         if not (isinstance(self, Tile) and _is_strip(ty)):
-            raise TypeError(f"swap_halves takes a strip, not {ty!r}")
+            raise TypeError(f"{what} takes a strip, not {ty!r}")
         tgt = get_target(_t().arch)
         if not tgt.strips or tgt.wave != 64:
-            raise TypeError(f"swap_halves is in hk's wave64 strip port; this "
+            raise TypeError(f"{what} is in hk's wave64 strip port; this "
                             f"kernel is for {_t().arch}")
-        chunks = ty.cols // (tgt.wave * ty.run)
-        if chunks != 1 and chunks % 2:
-            raise TypeError(f"swap_halves of {ty!r}: {chunks} chunks a row, "
-                            f"neither one nor an even number")
-        return unary("swap_halves", self, into=into)
-
-    def rotate_half(self, span: int, *, into=None):
-        """NeoX's rotate_half on each `span`-column segment of a strip's rows:
-        [x1 | x2] -> [-x2 | x1], one head of `span` columns a segment. Its
-        halves must be 8, 16 or 32 lanes apart (a DPP row_ror:8, a
-        v_permlane16_swap, a v_permlane32_swap) or whole chunks apart.
-        Strips only, on the wave64 port (gfx950): a 128-column head at
-        eight bf16 a lane is 16 lanes, its halves eight apart."""
-        ty = self.ty
-        if not (isinstance(self, Tile) and _is_strip(ty)):
-            raise TypeError(f"rotate_half takes a strip, not {ty!r}")
-        tgt = get_target(_t().arch)
-        if not tgt.strips or tgt.wave != 64:
-            raise TypeError(f"rotate_half is in hk's wave64 strip port; this "
-                            f"kernel is for {_t().arch}")
-        if not isinstance(span, int) or span <= 0 or ty.cols % span:
-            raise TypeError(f"rotate_half(span={span!r}) of {ty!r}: a span "
+        if not negate_first:
+            _check_map_dtype("swap_halves", ty)
+        if span is None:
+            chunks = ty.cols // (tgt.wave * ty.run)
+            if chunks != 1 and chunks % 2:
+                raise TypeError(f"{what} of {ty!r}: {chunks} chunks a row, "
+                                f"neither one nor an even number")
+        elif not isinstance(span, int) or span <= 0 or ty.cols % span:
+            raise TypeError(f"{what}(span={span!r}) of {ty!r}: a span "
                             f"divides the strip's columns")
         from .._mlir import ir  # noqa: PLC0415
 
-        return _make(hkd.RotateHalfOp, ty, (self.v,), into=into, name="rotate_half",
-                     span=ir.IntegerAttr.get(ir.IntegerType.get_signless(64), span))
+        attrs = {}
+        if span is not None:
+            attrs["span"] = ir.IntegerAttr.get(ir.IntegerType.get_signless(64), span)
+        if negate_first:
+            attrs["negate_first"] = ir.UnitAttr.get()
+        return _make(hkd.SwapHalvesOp, ty, (self.v,), into=into, name=what, **attrs)
+
+    def rotate_half(self, span: int, *, into=None):
+        """NeoX's rotate_half on each `span`-column segment of a strip's rows:
+        [x1 | x2] -> [-x2 | x1], one head of `span` columns a segment --
+        `swap_halves(span, negate_first=True)`."""
+        if not isinstance(span, int):
+            raise TypeError(f"rotate_half(span={span!r}): a span is a Python int")
+        return self.swap_halves(span, negate_first=True, into=into)
 
     def exp_(self): return unary("exp", self, into=self)
     def exp2_(self): return unary("exp2", self, into=self)
@@ -1322,6 +1428,44 @@ class Tile(_Elementwise):
     def triu_(self, idx, value=0.0, *, into=None): return self._fill("triu", idx, value, into)
     def tril_(self, idx, value=0.0, *, into=None): return self._fill("tril", idx, value, into)
 
+    def as_fragment(self, ty, *, fmt: str = "fp8") -> "Tile":
+        """This i32 strip's registers as a matrix-core operand fragment, no data moved (gfx950):
+        lane l's elements, in the strip's per-lane order (rows, chunks, runs), become lane l's
+        dwords of `ty` -- the inverse of `lane_strip` on 32-bit data. For operands gathered with
+        `load_elems(runs=True)` from a layout no tile load knows, or kept in LDS as words.
+
+        `ty` is the 16x128 fp8 e4m3 row tile (`hk.RT(hk.fp8e4m3, 16, 128)`) a block-scaled MMA
+        reads (`Tile.scaled`). fmt="fp8": eight dwords a lane, a strip of 1 x 512 at run 4 -- run 0
+        the K step's 16 bytes at K 16 (l / 16) .., run 1 those at 64 + 16 (l / 16) .., of row
+        l % 16: the fragment a tile load makes. fmt="fp4": four dwords a lane, a strip of 1 x 256
+        at run 4 -- lane l's 32 FP4 values being row l % 16, columns 32 (l / 16) .. + 32 -- in the
+        FP4 container (its upper half undefined)."""
+        want = RegTileType(fp8e4m3, 16, 128, "row")
+        if not isinstance(ty, RegTileType) or (ty.dtype, ty.rows, ty.cols, ty.layout) != (
+                want.dtype, want.rows, want.cols, want.layout):
+            raise TypeError(f"as_fragment: the fragment is {want} (a block-scaled MMA operand), "
+                            f"not {ty!r}")
+        if fmt == "fp8":
+            return _fp8_operand(self)
+        if fmt == "fp4":
+            return _fp4_operand(self)
+        raise TypeError(f"as_fragment: fmt is 'fp8' or 'fp4', not {fmt!r}")
+
+    def as_scales(self) -> "MxScales":
+        """This i32 strip (1 x 64, run 1) as loose E8M0 scales of a 16x128 operand, no data moved
+        (gfx950): lane l's element, the byte in bits 0..7, is the scale of row l % 16, block
+        l / 16 -- `Tile.scaled` takes it."""
+        return _mx_scales_loose(self)
+
+    def scaled(self, scales: "MxScales", *, fmt: str = "fp8", at=(0, 0)) -> "Scaled":
+        """This operand with its E8M0 block scales, for gfx950's block-scaled MFMA:
+        `hk.mma("mma_ABt", a.scaled(sa), b.scaled(sb, fmt="fp4"), acc)`. `fmt` is "fp8"
+        (e4m3) or "fp4" (the FP4 container `hk.load_fp4_frags` fills). `at` = (tile, step):
+        the scales may cover more than the operand -- its 16-row base tile i and 128-wide step s
+        take the scales' tile i + tile and step s + step (a 32-row block's two-step AITER
+        dwords, loaded once, feeding two token tiles over two steps)."""
+        return Scaled(self, scales, fmt, at)
+
     def as_operand(self, dtype: Optional[DType] = None, *, into=None) -> "Tile":
         """This accumulator's registers read as an MFMA operand: no data
         moves across lanes (gfx950).
@@ -1381,14 +1525,24 @@ class Tile(_Elementwise):
                                      loc=tt.loc("sub")).result, ty)
 
     def make_causal(self, value: float = 0.0, *, into=None, transposed: bool = False):
+        """Deprecated: `tril_(0, value)` (`triu_(0, value)` with `transposed=True`), which takes
+        any diagonal. A copy of this tile with the elements above the diagonal set to `value`
+        (below it with `transposed=True`), or into `into`; this tile is unchanged."""
+        import warnings  # noqa: PLC0415
+
+        warnings.warn("Tile.make_causal is deprecated: use tril_(0, value), or triu_(0, value) "
+                      "for transposed=True (docs/design/dsl-surface.md, D5)",
+                      DeprecationWarning, stacklevel=2)
         _no_strip("make_causal", self.ty)
         if self.ty.rows != self.ty.cols:
             raise TypeError(f"make_causal: the tile is {self.ty.rows}x"
                             f"{self.ty.cols}, not square; mask the off-diagonal "
                             f"blocks with left_fill_/right_fill_.")
-        op = "make_causal_t" if transposed else "make_causal"
-        cls = hkd.MakeCausalTOp if transposed else hkd.MakeCausalOp
-        return _make(cls, self.ty, (self.v, float(value)), into=into, name=op)
+        fill = "triu" if transposed else "tril"
+        if into is not None:
+            return self._fill(fill, 0, value, into)
+        out = self.copy()
+        return out._fill(fill, 0, value)
 
 
 class Transposed:
@@ -1432,10 +1586,27 @@ _MMA_SPEC = {  # (A layout, B layout, D.rows from A, D.cols from B, A red, B red
 }
 
 
-def mma(variant: str, a: Tile, b: Tile, acc: Tile, *, into=None) -> Tile:
+def mma(variant: str, a, b, acc: Tile, *, into=None) -> Tile:
     """`acc + A x B` on the WMMA unit. The variant is decided by the layouts
     you have; the wrong one is how a kernel buys eight ds_read_u16 per base
-    tile instead of two ds_read_b128."""
+    tile instead of two ds_read_b128.
+
+    Scaled operands (`Tile.scaled`) make it gfx950's block-scaled MFMA
+    (v_mfma_scale_f32_16x16x128_f8f6f4): `hk.mma("mma_ABt", a.scaled(sa),
+    b.scaled(sb, fmt="fp4"), acc)` is acc + (sa . A)(sb . B)^T for A (M, K) and
+    B (N, K) fp8 e4m3 row tiles (FP4 in the fp8 container with fmt="fp4"), K a
+    multiple of 128, element (r, k) of A counting as A[r][k] *
+    2^(sa[r][k // 32] - 127), acc an fp32 col tile (M, N). Both operands are
+    scaled, and the variant is mma_ABt."""
+    if isinstance(a, Scaled) or isinstance(b, Scaled):
+        if not (isinstance(a, Scaled) and isinstance(b, Scaled)):
+            raise TypeError(f"{variant}: both operands of a block-scaled MMA carry scales "
+                            f"(Tile.scaled), or neither does")
+        if variant != "mma_ABt":
+            raise TypeError(f"{variant}: the block-scaled MFMA is mma_ABt (A and B row tiles "
+                            f"sharing K), not {variant}")
+        return _mma_mx(a.tile, b.tile, acc, a.scales, b.scales, into=into, a_fmt=a.fmt,
+                       b_fmt=b.fmt, sa_at=a.at, sb_at=b.at)
     spec = _MMA_SPEC[variant]
     for v, what in ((a, "A"), (b, "B"), (acc, "C")):
         if not isinstance(v, Tile):
@@ -1862,9 +2033,38 @@ def lds_loads(tile: RegTileType, src: SharedTileType, arch: str = "gfx1100") -> 
 
 class MxScales(Value):
     """E8M0 block scales of an fp8 operand tile, in the lanes the scaled MFMA
-    reads them from (`load_mx_scales`)."""
+    reads them from (`load_mx_scales`). An operand takes them with
+    `Tile.scaled`."""
 
     __slots__ = ()
+
+    def copy(self, *, into: "MxScales") -> "MxScales":
+        """`into` = these scales, register to register -- how a one-stage loop body hands
+        the next K-tile's prefetched scales to the current set. Returns `into`."""
+        if not isinstance(into, MxScales) or into.ty != self.ty:
+            raise TypeError(f"MxScales.copy: into is MxScales of this shape ({self.ty}), "
+                            f"got {into!r}")
+        hkd.MxScalesCopyOp(into.v, self.v, loc=_t().loc("mxs_copy"))
+        return into
+
+
+class Scaled:
+    """An MX operand: an fp8 e4m3 row tile (FP4 in its container with fmt="fp4") and its E8M0
+    scales, made by `Tile.scaled`. `hk.mma("mma_ABt", a.scaled(sa), b.scaled(sb), acc)` is
+    gfx950's block-scaled MFMA; nothing else takes one."""
+
+    __slots__ = ("tile", "scales", "fmt", "at")
+
+    def __init__(self, tile: "Tile", scales: "MxScales", fmt: str, at):
+        if fmt not in ("fp8", "fp4"):
+            raise TypeError(f"Tile.scaled: fmt is 'fp8' or 'fp4', not {fmt!r}")
+        if not isinstance(scales, MxScales):
+            raise TypeError(f"Tile.scaled: the scales are MxScales (hk.load_mx_scales), "
+                            f"got {scales!r}")
+        self.tile, self.scales, self.fmt, self.at = tile, scales, fmt, (int(at[0]), int(at[1]))
+
+    def __repr__(self) -> str:
+        return f"Scaled({self.tile!r}, {self.scales!r}, fmt={self.fmt!r}, at={self.at})"
 
 
 _MX_LAYOUTS = {"ocp": 0, "aiter_gate_up": 1, "aiter": 2}
@@ -1927,22 +2127,35 @@ def load_mx_scales(src: "Global", rows: int, kblocks: int, row0, kb0, *,
 
 
 def copy_mx_scales(dst: "MxScales", src: "MxScales") -> None:
-    """dst = src: E8M0 scales copied register to register -- how a one-stage
-    loop body hands the next K-tile's prefetched scales to the current set."""
+    """Deprecated: `src.copy(into=dst)`. dst = src, E8M0 scales copied register to register."""
+    _deprecated("hk.copy_mx_scales(dst, src)", "src.copy(into=dst)")
     if not isinstance(dst, MxScales) or not isinstance(src, MxScales) or dst.ty != src.ty:
         raise TypeError(f"copy_mx_scales: two MxScales of one shape, got {dst!r} and {src!r}")
-    hkd.MxScalesCopyOp(dst.v, src.v, loc=_t().loc("mxs_copy"))
+    src.copy(into=dst)
 
 
-def load_fp4_frags(ty, src: "Global", row0, kc0, *, group_rows: int, gate_up: bool = False,
-                   into=None) -> "Tile":
+def load_fp4_frags(ty, src, row0, kc0, *, group_rows: Optional[int] = None,
+                   gate_up: bool = False, into=None) -> "Tile":
     """Rows row0.. and 128-wide K steps kc0.. of AITER's shuffled MXFP4 MoE weights (gfx950,
     `shuffle_weight(is_guinterleave=True)`; src uint8 [E * group_rows, K/2], the packed bytes)
-    as the B operand of `mma_ABt_mx(..., b_fmt="fp4")`. `ty` is an fp8 e4m3 row tile of 16x128
-    fragments -- the container: each fragment's first four dwords hold the FP4 operand, the rest
-    stay undefined. With `gate_up` (a stage-1 gate|up weight) the base tiles alternate the gate
-    and up halves of 16-row block (row0 % group_rows) // 16 + i // 2, so gate column j and up
-    column j of the product land in the same lanes."""
+    as an FP4 operand, `w.scaled(sw, fmt="fp4")` in `hk.mma`. `ty` is an fp8 e4m3 row tile of
+    16x128 fragments -- the container: each fragment's first four dwords hold the FP4 operand, the
+    rest stay undefined. With `gate_up` (a stage-1 gate|up weight) the base tiles alternate the
+    gate and up halves of 16-row block (row0 % group_rows) // 16 + i // 2, so gate column j and up
+    column j of the product land in the same lanes.
+
+    `src` may instead be an LDS tile of raw AITER weight bytes (fp8-typed, a row a 16-row block
+    with gate|up rows interleaved, 1 KB a 128-wide K step: the [E * N/16 * 2, K/2 * 16] view of
+    the weights, brought in by a group load): fragment (i, s) is then its row row0 + i and 1 KB
+    chunk kc0 + s, and `group_rows` / `gate_up` do not apply."""
+    if isinstance(src, SharedTile):
+        if group_rows is not None or gate_up:
+            raise TypeError("load_fp4_frags from an LDS tile: group_rows and gate_up are the "
+                            "global layout's; the LDS rows are already in operand order")
+        return _load_fp4_frags_lds(ty, src, row0, kc0, into=into)
+    if group_rows is None:
+        raise TypeError("load_fp4_frags: group_rows (rows an expert) is needed for global "
+                        "weights")
     if (not isinstance(ty, RegTileType) or ty.dtype is not fp8e4m3 or ty.layout != "row"
             or ty.rows % 16 or ty.cols % 128):
         raise TypeError(f"load_fp4_frags: an fp8 e4m3 row tile of 16x128 fragments, not {ty!r}")
@@ -1983,9 +2196,12 @@ def mx_quant_store(src: "SharedTile", q: "Global", s: "Global", row0, col0) -> N
 
 
 def load_fp4_frags_lds(ty, src: "SharedTile", row0, chunk0, *, into=None) -> "Tile":
-    """load_fp4_frags from an LDS tile of raw AITER weight bytes (fp8-typed, a row a 16-row block
-    with gate|up rows interleaved, 1 KB a 128-wide K step: the [E * N/16 * 2, K/2 * 16] view of the
-    weights, brought in by a group load). Fragment (i, s) is row row0 + i, chunk chunk0 + s."""
+    """Deprecated: `hk.load_fp4_frags(ty, src, row0, chunk0)` with `src` an LDS tile."""
+    _deprecated("hk.load_fp4_frags_lds(...)", "hk.load_fp4_frags(ty, lds_tile, row0, chunk0)")
+    return _load_fp4_frags_lds(ty, src, row0, chunk0, into=into)
+
+
+def _load_fp4_frags_lds(ty, src: "SharedTile", row0, chunk0, *, into=None) -> "Tile":
     if (not isinstance(ty, RegTileType) or ty.dtype is not fp8e4m3 or ty.layout != "row"
             or ty.rows % 16 or ty.cols % 128):
         raise TypeError(f"load_fp4_frags_lds: an fp8 e4m3 row tile of 16x128 fragments, not {ty!r}")
@@ -1996,11 +2212,12 @@ def load_fp4_frags_lds(ty, src: "SharedTile", row0, chunk0, *, into=None) -> "Ti
 
 
 def fp4_operand(words: Tile) -> Tile:
-    """An MXFP4 operand fragment from a lane's four dwords (gfx950): `words`, an i32 strip of 1 x 256
-    with run 4, becomes a 16x128 fp8 e4m3 row tile -- the FP4 container `mma_ABt_mx(..., a_fmt /
-    b_fmt="fp4")` reads, lane l's 32 values being row l % 16, columns 32 (l / 16) .. + 32. For
-    operands gathered with load_elems(runs=True) from a layout no tile load knows (a preshuffled
-    paged cache: a lane's 16 bytes are one token's 32 dims)."""
+    """Deprecated: `words.as_fragment(hk.RT(hk.fp8e4m3, 16, 128), fmt="fp4")`."""
+    _deprecated("hk.fp4_operand(words)", 'words.as_fragment(hk.RT(hk.fp8e4m3, 16, 128), fmt="fp4")')
+    return _fp4_operand(words)
+
+
+def _fp4_operand(words: Tile) -> Tile:
     if (getattr(words.ty, "run", None) != 4 or words.ty.dtype is not i32 or words.ty.rows != 1
             or words.ty.cols != 256):
         raise TypeError(f"fp4_operand: an i32 strip of 1 x 256, run 4 (four dwords a lane), not {words.ty}")
@@ -2010,10 +2227,12 @@ def fp4_operand(words: Tile) -> Tile:
 
 
 def fp8_operand(words: Tile) -> Tile:
-    """An MXFP8 operand fragment from a lane's eight dwords (gfx950): `words`, an i32 strip of 1 x 512
-    with run 4 (two runs a lane), becomes a 16x128 fp8 e4m3 row tile -- run 0 the K step's 16 bytes at
-    K 16 (l / 16) .., run 1 those at 64 + 16 (l / 16) .., of row l % 16: the fragment a tile load
-    makes. For operands kept in LDS as words (an fp8 shared tile has no register path) or gathered."""
+    """Deprecated: `words.as_fragment(hk.RT(hk.fp8e4m3, 16, 128))`."""
+    _deprecated("hk.fp8_operand(words)", "words.as_fragment(hk.RT(hk.fp8e4m3, 16, 128))")
+    return _fp8_operand(words)
+
+
+def _fp8_operand(words: Tile) -> Tile:
     if (getattr(words.ty, "run", None) != 4 or words.ty.dtype is not i32 or words.ty.rows != 1
             or words.ty.cols != 512):
         raise TypeError(f"fp8_operand: an i32 strip of 1 x 512, run 4 (eight dwords a lane), not {words.ty}")
@@ -2023,8 +2242,12 @@ def fp8_operand(words: Tile) -> Tile:
 
 
 def mx_scales_loose(bytes_: Tile) -> MxScales:
-    """Loose E8M0 scales of a 16x128 operand from a lane's element (gfx950): `bytes_`, an i32 strip of
-    1 x 64 with run 1 holding the byte in bits 0..7, is lane l's scale -- row l % 16, block l / 16."""
+    """Deprecated: `bytes_.as_scales()`."""
+    _deprecated("hk.mx_scales_loose(bytes_)", "bytes_.as_scales()")
+    return _mx_scales_loose(bytes_)
+
+
+def _mx_scales_loose(bytes_: Tile) -> MxScales:
     if (getattr(bytes_.ty, "run", None) != 1 or bytes_.ty.dtype is not i32 or bytes_.ty.rows != 1
             or bytes_.ty.cols != 64):
         raise TypeError(f"mx_scales_loose: an i32 strip of 1 x 64, run 1, not {bytes_.ty}")
@@ -2036,14 +2259,18 @@ def mx_scales_loose(bytes_: Tile) -> MxScales:
 
 def mma_ABt_mx(a: Tile, b: Tile, acc: Tile, sa: MxScales, sb: MxScales, *, into=None,
                a_fmt: str = "fp8", b_fmt: str = "fp8", sa_at=(0, 0), sb_at=(0, 0)) -> Tile:
-    """acc + (sa . A)(sb . B)^T on gfx950's v_mfma_scale_f32_16x16x128_f8f6f4:
-    A (M, K) and B (N, K) fp8 e4m3 row tiles, K a multiple of 128; sa and sb
-    their E8M0 scales (`load_mx_scales`), element (r, k) of A counting as
-    A[r][k] * 2^(sa[r][k // 32] - 127); acc an fp32 col tile (M, N).
-    `sa_at` / `sb_at` = (tile, step): the scales may cover more than the
-    operand -- its 16-row base tile i and 128-wide step s take the scales' tile
-    i + tile and step s + step (e.g. a 32-row block's two-step AITER dwords,
-    loaded once, feeding two token tiles over two steps)."""
+    """Deprecated: `hk.mma("mma_ABt", a.scaled(sa, fmt=a_fmt, at=sa_at),
+    b.scaled(sb, fmt=b_fmt, at=sb_at), acc)`, the same instruction."""
+    _deprecated("hk.mma_ABt_mx(a, b, acc, sa, sb, ...)",
+                'hk.mma("mma_ABt", a.scaled(sa, ...), b.scaled(sb, ...), acc)')
+    return _mma_mx(a, b, acc, sa, sb, into=into, a_fmt=a_fmt, b_fmt=b_fmt, sa_at=sa_at,
+                   sb_at=sb_at)
+
+
+def _mma_mx(a: Tile, b: Tile, acc: Tile, sa: MxScales, sb: MxScales, *, into=None,
+            a_fmt: str = "fp8", b_fmt: str = "fp8", sa_at=(0, 0), sb_at=(0, 0)) -> Tile:
+    """acc + (sa . A)(sb . B)^T on gfx950's v_mfma_scale_f32_16x16x128_f8f6f4 (hk.mma's scaled
+    form; the checks below name it mma_ABt_mx, the op it emits)."""
     for v, what in ((a, "A"), (b, "B")):
         if not isinstance(v, Tile) or v.ty.dtype is not fp8e4m3 or v.ty.layout != "row":
             raise TypeError(f"mma_ABt_mx: {what} is an fp8 e4m3 row-layout tile, got {v!r}")
@@ -2185,9 +2412,6 @@ _doc(Tile, "triu_", "Keep the upper triangle from diagonal `idx`, the rest set t
                     "`value` (default 0), in place. Not on strips.")
 _doc(Tile, "tril_", "Keep the lower triangle from diagonal `idx`, the rest set to "
                     "`value` (default 0), in place. Not on strips.")
-_doc(Tile, "make_causal", "A square tile with the elements above the diagonal set "
-                          "to `value` (below it with `transposed=True`): the "
-                          "causal mask of a diagonal attention block. Not on strips.")
 _doc(Vec, "min_", "Fold `t.min(axis=...)` into this vector: the running min.")
 _doc(Global, "batch", "The tensor's extent along axis 0 of (batch, depth, rows, "
                       "cols), a device Int.")

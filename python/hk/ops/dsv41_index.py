@@ -61,6 +61,7 @@ WS = WAVES - 1                  # the storing wave: every post and cache write, 
 _T_X = hk.RT(bf16, 16, 32, "row")           # a 32-column chunk of W rows / token rows
 _T_C = hk.RT(fp32, 16, 16, "col")
 _ST_C = hk.ST(fp32, 16, 16)
+_T_FP4 = hk.RT(hk.fp8e4m3, 16, 128)    # the FP4 operand container a strip is read as
 _T_W8 = hk.RT(fp8e4m3, 16, 128, "row")
 
 # mailbox regions (int32 pairs)
@@ -392,10 +393,10 @@ def index_kernel(wscale: float):
         for i in range(len(g3)):
             wt, ws, xt, xs = g3[i]
             if i == 0:
-                hk.mma_ABt_mx(wt, xt, acc3, ws, xs, into=acc3)
+                hk.mma("mma_ABt", wt.scaled(ws), xt.scaled(xs), acc3, into=acc3)
             else:
                 if w + WAVES * i < 10:
-                    hk.mma_ABt_mx(wt, xt, acc3, ws, xs, into=acc3)
+                    hk.mma("mma_ABt", wt.scaled(ws), xt.scaled(xs), acc3, into=acc3)
         cross_waves(acc3)
         if w == WS:
             e = hk.iota(hk.RS(fp32, 1, 256, 4))                     # token = e >> 4, row = e & 15
@@ -645,10 +646,12 @@ def index_kernel(wscale: float):
                 qa_, qsc_, wv_ = [], [], []
                 hl_ = hk.iota(hk.RS(i32, 1, 1024, 16))
                 for hq_ in range(2):
-                    qa_.append(hk.fp4_operand(q4w.load_elems(hk.map_cpp(
-                        f"((x1 * {NH} + {16 * hq_} + (x0 >> 2) % 16) * 16) + 4 * ((x0 >> 2) / 16) + (x0 & 3)", lw_, rr), runs=True)))
-                    qsc_.append(hk.mx_scales_loose(hk.map_cpp("x0 & 0xFF", q4s.load_elems(hk.map_cpp(
-                        f"(x1 * {NH} + {16 * hq_} + x0 % 16) * 4 + x0 / 16", l1_, rr), i32), dtype=i32)))
+                    qw_ = q4w.load_elems(hk.map_cpp(
+                        f"((x1 * {NH} + {16 * hq_} + (x0 >> 2) % 16) * 16) + 4 * ((x0 >> 2) / 16) + (x0 & 3)", lw_, rr), runs=True)
+                    qa_.append(qw_.as_fragment(_T_FP4, fmt="fp4"))
+                    qs_ = hk.map_cpp("x0 & 0xFF", q4s.load_elems(hk.map_cpp(
+                        f"(x1 * {NH} + {16 * hq_} + x0 % 16) * 4 + x0 / 16", l1_, rr), i32), dtype=i32)
+                    qsc_.append(qs_.as_scales())
                     wv_.append(wts.load_elems(hk.map_cpp(f"x1 * {NH} + {16 * hq_} + x0 % 16", hl_, rr), runs=True))
                 nb_ = (nr + 15) // 16
                 for j in range(-(-WIDTH // (16 * 256))):
@@ -662,10 +665,12 @@ def index_kernel(wscale: float):
                         kb8 = kidx.load_elems(hk.map_cpp(
                             f"{KBLK} * 64 + (((x1 % {KBLK}) + x0 % 16) / {NPT}) * ({NPT} * 4) + ((x0 / 16) % {SL}) * ({NPT} * (4 / {SL}))"
                             f" + (((x1 % {KBLK}) + x0 % 16) % {NPT}) * (4 / {SL}) + (x0 / 16) / {SL}", l1_, t0), i32, row=pg)
-                        kb = hk.fp4_operand(kw)
-                        ks = hk.mx_scales_loose(hk.map_cpp("x0 & 0xFF", kb8, dtype=i32))
+                        kb = kw.as_fragment(_T_FP4, fmt="fp4")
+                        ks = hk.map_cpp("x0 & 0xFF", kb8, dtype=i32).as_scales()
                         for im_ in range(2):
-                            lt_.subtile(16, 16, 2 * w + im_, 0).store(hk.mma_ABt_mx(kb, qa_[im_], hk.zeros(_T_C), ks, qsc_[im_], a_fmt="fp4", b_fmt="fp4"))
+                            lt_.subtile(16, 16, 2 * w + im_, 0).store(hk.mma(
+                                "mma_ABt", kb.scaled(ks, fmt="fp4"),
+                                qa_[im_].scaled(qsc_[im_], fmt="fp4"), hk.zeros(_T_C)))
                         lg16 = hk.zeros(hk.RS(fp32, 1, 1024, 16))
                         for is_ in range(2):
                             sv = lt_.load_elems(hk.map_cpp(f"x0 < 256 ? (2 * x1 + {is_}) * 256 + x0 : -1", hl_, w), runs=True)

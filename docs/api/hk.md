@@ -40,11 +40,11 @@ The language: what `import hk` gives a kernel author. A kernel body is traced on
 - [`hk.tile_coord`](#hktile_coord)
 - [`hk.elem_coord`](#hkelem_coord)
 - [`hk.load_mx_scales`](#hkload_mx_scales)
+- [`hk.load_fp4_frags`](#hkload_fp4_frags)
+- [`hk.mx_quant_store`](#hkmx_quant_store)
 - [`hk.copy_mx_scales`](#hkcopy_mx_scales)
 - [`hk.mma_ABt_mx`](#hkmma_abt_mx)
-- [`hk.load_fp4_frags`](#hkload_fp4_frags)
 - [`hk.load_fp4_frags_lds`](#hkload_fp4_frags_lds)
-- [`hk.mx_quant_store`](#hkmx_quant_store)
 - [`hk.map_cpp`](#hkmap_cpp)
 - [`hk.iota`](#hkiota)
 - [`hk.mfma_strip`](#hkmfma_strip)
@@ -57,6 +57,9 @@ The language: what `import hk` gives a kernel author. A kernel body is traced on
 - [`hk.SharedTile`](#hksharedtile)
 - [`hk.SharedVec`](#hksharedvec)
 - [`hk.Granules`](#hkgranules)
+- [`hk.MxScales`](#hkmxscales)
+- [`hk.Scaled`](#hkscaled)
+- [`hk.RowIndex`](#hkrowindex)
 - [`hk.Int`](#hkint)
 - [`hk.Bool`](#hkbool)
 - [`hk.Coord`](#hkcoord)
@@ -540,12 +543,20 @@ types are the same: element type, length and layout.
 ### `hk.mma`
 
 ```python
-hk.mma(variant: str, a: Tile, b: Tile, acc: Tile, *, into=None) -> Tile
+hk.mma(variant: str, a, b, acc: Tile, *, into=None) -> Tile
 ```
 
 `acc + A x B` on the WMMA unit. The variant is decided by the layouts
 you have; the wrong one is how a kernel buys eight ds_read_u16 per base
 tile instead of two ds_read_b128.
+
+Scaled operands (`Tile.scaled`) make it gfx950's block-scaled MFMA
+(v_mfma_scale_f32_16x16x128_f8f6f4): `hk.mma("mma_ABt", a.scaled(sa),
+b.scaled(sb, fmt="fp4"), acc)` is acc + (sa . A)(sb . B)^T for A (M, K) and
+B (N, K) fp8 e4m3 row tiles (FP4 in the fp8 container with fmt="fp4"), K a
+multiple of 128, element (r, k) of A counting as A[r][k] *
+2^(sa[r][k // 32] - 127), acc an fp32 col tile (M, N). Both operands are
+scaled, and the variant is mma_ABt.
 
 ### `hk.load_w4`
 
@@ -620,61 +631,26 @@ scale, so its wait sits at the MFMA instead of right after the load --
 the packed form's byte insertion waited there, draining every load
 issued before it (K1 c8).
 
-### `hk.copy_mx_scales`
-
-```python
-hk.copy_mx_scales(dst: MxScales, src: MxScales) -> None
-```
-
-*Surface*: to be merged into MxScales.copy(into=) (DSL-surface migration S2).
-
-dst = src: E8M0 scales copied register to register -- how a one-stage
-loop body hands the next K-tile's prefetched scales to the current set.
-
-### `hk.mma_ABt_mx`
-
-```python
-hk.mma_ABt_mx(a: Tile, b: Tile, acc: Tile, sa: MxScales, sb: MxScales, *, into=None, a_fmt: str = 'fp8', b_fmt: str = 'fp8', sa_at=(0, 0), sb_at=(0, 0)) -> Tile
-```
-
-*Surface*: to be merged into hk.mma with Tile.scaled operands (DSL-surface migration S2).
-
-acc + (sa . A)(sb . B)^T on gfx950's v_mfma_scale_f32_16x16x128_f8f6f4:
-A (M, K) and B (N, K) fp8 e4m3 row tiles, K a multiple of 128; sa and sb
-their E8M0 scales (`load_mx_scales`), element (r, k) of A counting as
-A[r][k] * 2^(sa[r][k // 32] - 127); acc an fp32 col tile (M, N).
-`sa_at` / `sb_at` = (tile, step): the scales may cover more than the
-operand -- its 16-row base tile i and 128-wide step s take the scales' tile
-i + tile and step s + step (e.g. a 32-row block's two-step AITER dwords,
-loaded once, feeding two token tiles over two steps).
-
 ### `hk.load_fp4_frags`
 
 ```python
-hk.load_fp4_frags(ty, src: Global, row0, kc0, *, group_rows: int, gate_up: bool = False, into=None) -> Tile
+hk.load_fp4_frags(ty, src, row0, kc0, *, group_rows: Optional[int] = None, gate_up: bool = False, into=None) -> Tile
 ```
 
 *Surface*: a format primitive: AITER's pre-shuffled MXFP4 MoE weights only.
 
 Rows row0.. and 128-wide K steps kc0.. of AITER's shuffled MXFP4 MoE weights (gfx950,
 `shuffle_weight(is_guinterleave=True)`; src uint8 [E * group_rows, K/2], the packed bytes)
-as the B operand of `mma_ABt_mx(..., b_fmt="fp4")`. `ty` is an fp8 e4m3 row tile of 16x128
-fragments -- the container: each fragment's first four dwords hold the FP4 operand, the rest
-stay undefined. With `gate_up` (a stage-1 gate|up weight) the base tiles alternate the gate
-and up halves of 16-row block (row0 % group_rows) // 16 + i // 2, so gate column j and up
+as an FP4 operand, `w.scaled(sw, fmt="fp4")` in `hk.mma`. `ty` is an fp8 e4m3 row tile of
+16x128 fragments -- the container: each fragment's first four dwords hold the FP4 operand, the
+rest stay undefined. With `gate_up` (a stage-1 gate|up weight) the base tiles alternate the
+gate and up halves of 16-row block (row0 % group_rows) // 16 + i // 2, so gate column j and up
 column j of the product land in the same lanes.
 
-### `hk.load_fp4_frags_lds`
-
-```python
-hk.load_fp4_frags_lds(ty, src: SharedTile, row0, chunk0, *, into=None) -> Tile
-```
-
-*Surface*: to be merged into hk.load_fp4_frags(SharedTile) (DSL-surface migration S2).
-
-load_fp4_frags from an LDS tile of raw AITER weight bytes (fp8-typed, a row a 16-row block
-with gate|up rows interleaved, 1 KB a 128-wide K step: the [E * N/16 * 2, K/2 * 16] view of the
-weights, brought in by a group load). Fragment (i, s) is row row0 + i, chunk chunk0 + s.
+`src` may instead be an LDS tile of raw AITER weight bytes (fp8-typed, a row a 16-row block
+with gate|up rows interleaved, 1 KB a 128-wide K step: the [E * N/16 * 2, K/2 * 16] view of
+the weights, brought in by a group load): fragment (i, s) is then its row row0 + i and 1 KB
+chunk kc0 + s, and `group_rows` / `gate_up` do not apply.
 
 ### `hk.mx_quant_store`
 
@@ -693,6 +669,37 @@ a uint8 `s` gets AITER's 32-row layout (hk.mx.aiter_scales of q's [R, K/32], K/3
 8), an int32 `s` the packed layout hk.load_mx_scales reads ([ceil(R/64), K/128 * 64],
 hk.mx.pack_scales; rows past q's last get the unit scale, as pack_scales pads them). The
 result is bit-identical to hk.mx.quant followed by hk.mx.aiter_scales or hk.mx.pack_scales.
+
+### `hk.copy_mx_scales`
+
+```python
+hk.copy_mx_scales(dst: MxScales, src: MxScales) -> None
+```
+
+*Surface*: deprecated, removed in the release after the last call from outside the repository is migrated, at most two minor releases after its deprecation; use MxScales.copy(into=).
+
+Deprecated: `src.copy(into=dst)`. dst = src, E8M0 scales copied register to register.
+
+### `hk.mma_ABt_mx`
+
+```python
+hk.mma_ABt_mx(a: Tile, b: Tile, acc: Tile, sa: MxScales, sb: MxScales, *, into=None, a_fmt: str = 'fp8', b_fmt: str = 'fp8', sa_at=(0, 0), sb_at=(0, 0)) -> Tile
+```
+
+*Surface*: deprecated, removed in the release after the last call from outside the repository is migrated, at most two minor releases after its deprecation; use hk.mma with Tile.scaled operands.
+
+Deprecated: `hk.mma("mma_ABt", a.scaled(sa, fmt=a_fmt, at=sa_at),
+b.scaled(sb, fmt=b_fmt, at=sb_at), acc)`, the same instruction.
+
+### `hk.load_fp4_frags_lds`
+
+```python
+hk.load_fp4_frags_lds(ty, src: SharedTile, row0, chunk0, *, into=None) -> Tile
+```
+
+*Surface*: deprecated, removed in the release after the last call from outside the repository is migrated, at most two minor releases after its deprecation; use hk.load_fp4_frags(SharedTile).
+
+Deprecated: `hk.load_fp4_frags(ty, src, row0, chunk0)` with `src` an LDS tile.
 
 ## Strips: a C++ expression, iota, a raw MFMA (gfx950)
 
@@ -789,7 +796,7 @@ Made with `hk.Digit.of(axis, kind="whole", radix=None)`: `hk.Digit.of("z")`, `hk
 | `hk.fp8e4m3` | 8 | `fp8e4m3` | float |
 | `hk.fp8e5m2` | 8 | `fp8e5m2` | float |
 
-fp8 is a matrix operand where the target has an fp8 matrix instruction: gfx950's MFMA (plain, and block-scaled through `hk.mma_ABt_mx`, whose A may also be FP4) and gfx1201's WMMA. i8 is a WMMA operand on gfx1100 (`v_wmma_i32_16x16x16_iu8`, an i32 accumulator) and a storage type elsewhere. `hk.mx` has the MX scale layouts and torch references. `hk.DTYPES` maps the names to these.
+fp8 is a matrix operand where the target has an fp8 matrix instruction: gfx950's MFMA (plain, and block-scaled through `hk.mma` with `Tile.scaled` operands, which may also be FP4) and gfx1201's WMMA. i8 is a WMMA operand on gfx1100 (`v_wmma_i32_16x16x16_iu8`, an i32 accumulator) and a storage type elsewhere. `hk.mx` has the MX scale layouts and torch references. `hk.DTYPES` maps the names to these.
 
 ## Device values
 
@@ -1011,6 +1018,53 @@ Tile.tril_(self, idx, value=0.0, *, into=None)
 
 Keep the lower triangle from diagonal `idx`, the rest set to `value` (default 0), in place. Not on strips.
 
+#### `Tile.as_fragment`
+
+```python
+Tile.as_fragment(self, ty, *, fmt: str = 'fp8') -> Tile
+```
+
+*New after 0.8.0*
+
+This i32 strip's registers as a matrix-core operand fragment, no data moved (gfx950):
+lane l's elements, in the strip's per-lane order (rows, chunks, runs), become lane l's
+dwords of `ty` -- the inverse of `lane_strip` on 32-bit data. For operands gathered with
+`load_elems(runs=True)` from a layout no tile load knows, or kept in LDS as words.
+
+`ty` is the 16x128 fp8 e4m3 row tile (`hk.RT(hk.fp8e4m3, 16, 128)`) a block-scaled MMA
+reads (`Tile.scaled`). fmt="fp8": eight dwords a lane, a strip of 1 x 512 at run 4 -- run 0
+the K step's 16 bytes at K 16 (l / 16) .., run 1 those at 64 + 16 (l / 16) .., of row
+l % 16: the fragment a tile load makes. fmt="fp4": four dwords a lane, a strip of 1 x 256
+at run 4 -- lane l's 32 FP4 values being row l % 16, columns 32 (l / 16) .. + 32 -- in the
+FP4 container (its upper half undefined).
+
+#### `Tile.as_scales`
+
+```python
+Tile.as_scales(self) -> MxScales
+```
+
+*New after 0.8.0*
+
+This i32 strip (1 x 64, run 1) as loose E8M0 scales of a 16x128 operand, no data moved
+(gfx950): lane l's element, the byte in bits 0..7, is the scale of row l % 16, block
+l / 16 -- `Tile.scaled` takes it.
+
+#### `Tile.scaled`
+
+```python
+Tile.scaled(self, scales: MxScales, *, fmt: str = 'fp8', at=(0, 0)) -> Scaled
+```
+
+*New after 0.8.0*
+
+This operand with its E8M0 block scales, for gfx950's block-scaled MFMA:
+`hk.mma("mma_ABt", a.scaled(sa), b.scaled(sb, fmt="fp4"), acc)`. `fmt` is "fp8"
+(e4m3) or "fp4" (the FP4 container `hk.load_fp4_frags` fills). `at` = (tile, step):
+the scales may cover more than the operand -- its 16-row base tile i and 128-wide step s
+take the scales' tile i + tile and step s + step (a 32-row block's two-step AITER
+dwords, loaded once, feeding two token tiles over two steps).
+
 #### `Tile.as_operand`
 
 ```python
@@ -1049,9 +1103,11 @@ destination: load into the whole tile.
 Tile.make_causal(self, value: float = 0.0, *, into=None, transposed: bool = False)
 ```
 
-*Surface*: to be deleted (DSL-surface migration S1); use Tile.tril_(0, v) / Tile.triu_(0, v).
+*Surface*: deprecated, removed in the release after the last call from outside the repository is migrated, at most two minor releases after its deprecation; use Tile.tril_(0, v) / Tile.triu_(0, v).
 
-A square tile with the elements above the diagonal set to `value` (below it with `transposed=True`): the causal mask of a diagonal attention block. Not on strips.
+Deprecated: `tril_(0, value)` (`triu_(0, value)` with `transposed=True`), which takes
+any diagonal. A copy of this tile with the elements above the diagonal set to `value`
+(below it with `transposed=True`), or into `into`; this tile is unchanged.
 
 #### `Tile.maximum`
 
@@ -1178,14 +1234,19 @@ A copy in new registers, or `into=` an existing value.
 #### `Tile.swap_halves`
 
 ```python
-Tile.swap_halves(self, *, into=None)
+Tile.swap_halves(self, span: Optional[int] = None, *, negate_first: bool = False, into=None)
 ```
 
-A strip with each row's two halves exchanged: column c takes
-column (c + cols/2) mod cols -- RoPE's rotate_half without the sign.
-Strips only, on the wave64 port (gfx950), and a row of one chunk (a
-lane exchange across the wave's halves) or of an even number of
-chunks (a register swap).
+*Changed after 0.8.0*: new parameters `span`, `negate_first`
+
+A strip with the two halves of each `span`-column segment of its rows exchanged (span
+None: the whole row): in a segment's first half column c takes column c + span/2, in
+its second c - span/2. `negate_first` negates what lands in the first half -- NeoX's
+rotate_half, [x1 | x2] -> [-x2 | x1] (`rotate_half(span)` is this). Strips only, on the
+wave64 port (gfx950). The halves are whole chunks apart (a register swap) or 8, 16 or 32
+lanes apart (a DPP row_ror:8, a v_permlane16_swap, a v_permlane32_swap): a whole row of
+one chunk or of an even number of them, or a head of `span` columns -- a 128-column head
+at eight bf16 a lane is 16 lanes, its halves eight apart.
 
 #### `Tile.rotate_half`
 
@@ -1193,14 +1254,9 @@ chunks (a register swap).
 Tile.rotate_half(self, span: int, *, into=None)
 ```
 
-*Surface*: to be merged into Tile.swap_halves(span, negate_first=True) (sugar kept) (DSL-surface migration S4).
-
 NeoX's rotate_half on each `span`-column segment of a strip's rows:
-[x1 | x2] -> [-x2 | x1], one head of `span` columns a segment. Its
-halves must be 8, 16 or 32 lanes apart (a DPP row_ror:8, a
-v_permlane16_swap, a v_permlane32_swap) or whole chunks apart.
-Strips only, on the wave64 port (gfx950): a 128-column head at
-eight bf16 a lane is 16 lanes, its halves eight apart.
+[x1 | x2] -> [-x2 | x1], one head of `span` columns a segment --
+`swap_halves(span, negate_first=True)`.
 
 #### `Tile.exp_`
 
@@ -1421,14 +1477,19 @@ A copy in new registers, or `into=` an existing value.
 #### `Vec.swap_halves`
 
 ```python
-Vec.swap_halves(self, *, into=None)
+Vec.swap_halves(self, span: Optional[int] = None, *, negate_first: bool = False, into=None)
 ```
 
-A strip with each row's two halves exchanged: column c takes
-column (c + cols/2) mod cols -- RoPE's rotate_half without the sign.
-Strips only, on the wave64 port (gfx950), and a row of one chunk (a
-lane exchange across the wave's halves) or of an even number of
-chunks (a register swap).
+*Changed after 0.8.0*: new parameters `span`, `negate_first`
+
+A strip with the two halves of each `span`-column segment of its rows exchanged (span
+None: the whole row): in a segment's first half column c takes column c + span/2, in
+its second c - span/2. `negate_first` negates what lands in the first half -- NeoX's
+rotate_half, [x1 | x2] -> [-x2 | x1] (`rotate_half(span)` is this). Strips only, on the
+wave64 port (gfx950). The halves are whole chunks apart (a register swap) or 8, 16 or 32
+lanes apart (a DPP row_ror:8, a v_permlane16_swap, a v_permlane32_swap): a whole row of
+one chunk or of an even number of them, or a head of `span` columns -- a 128-column head
+at eight bf16 a lane is 16 lanes, its halves eight apart.
 
 #### `Vec.rotate_half`
 
@@ -1436,14 +1497,9 @@ chunks (a register swap).
 Vec.rotate_half(self, span: int, *, into=None)
 ```
 
-*Surface*: to be merged into Vec.swap_halves(span, negate_first=True) (sugar kept) (DSL-surface migration S4).
-
 NeoX's rotate_half on each `span`-column segment of a strip's rows:
-[x1 | x2] -> [-x2 | x1], one head of `span` columns a segment. Its
-halves must be 8, 16 or 32 lanes apart (a DPP row_ror:8, a
-v_permlane16_swap, a v_permlane32_swap) or whole chunks apart.
-Strips only, on the wave64 port (gfx950): a 128-column head at
-eight bf16 a lane is 16 lanes, its halves eight apart.
+[x1 | x2] -> [-x2 | x1], one head of `span` columns a segment --
+`swap_halves(span, negate_first=True)`.
 
 #### `Vec.exp_`
 
@@ -1605,69 +1661,49 @@ not a hang. `runs=True` / `bf16=True`: the layout post_elems wrote with them.
 #### `Global.gather`
 
 ```python
-Global.gather(self, tile, ids: Global, at, *, count=None, col=0, div=1, into=None) -> Tile
+Global.gather(self, tile, ids, at=None, *, count=None, col=0, div=None, into=None) -> Tile
 ```
 
-*Surface*: `div=`: to be merged into hk.RowIndex(div=) (DSL-surface migration S3).
+*Surface*: `div=`: deprecated, removed in the release after the last call from outside the repository is migrated, at most two minor releases after its deprecation; use hk.RowIndex(div=).
 
-Rows by index: tile row r is row `ids[at + r] // div` of this
-tensor (rows flattened over batch and depth), from column `col`. An
-index outside the tensor, or a position at or past `count` (default:
-all of `ids`), reads zeros -- the padding a MoE sort fills its index
-list with costs no branch. `div` is how many index values name one
-row: a MoE's top-k, whose sorted list counts (token, choice) pairs.
-
-#### `Global.scatter_add_lds`
-
-```python
-Global.scatter_add_lds(self, src: SharedTile, ids: Global, at, *, count=None, col=0, sort_topk: int = 0) -> None
-```
-
-*Surface*: to be deleted (DSL-surface migration S1); use SharedTile.load + Global.scatter(add=True).
-
-A warp's own bf16 LDS tile added into this bf16 tensor's rows by index, atomically:
-row r of `src` into row `ids[at + r]` (with `sort_topk`, AITER sort ids: the token's
-row of an [M, ...] tensor; padding nowhere) from column `col`. Lanes take consecutive
-column pairs of one row (gfx950's packed bf16 atomic), so an instruction covers a few
-rows of contiguous bytes: 310 G pk-adds/s on an MI355X, where `scatter(add=True)` from
-a register tile (16 rows of 16 bytes an instruction) gets 85. Even so, a bf16 atomic
-reduce is bounded by that rate -- 0.8 ms for DeepSeek-V4.1's top-6 at 16k tokens, 4x a
-plain sum pass (K1 c33). Store the tile with `src.store(...)` first; the sum is in no
-fixed order.
+Rows by index: tile row r is row `ids[at + r]` of this tensor (rows flattened over
+batch and depth), from column `col` -- `ids` an `hk.RowIndex`, which also says how an
+index names a row (`div`), or an int32 tensor and `at` (and `count`). An index outside the
+tensor, or a position at or past `count` (default: all of `ids`), reads zeros -- the
+padding a MoE sort fills its index list with costs no branch. `div=` here is deprecated:
+`hk.RowIndex(ids, at, div=...)`.
 
 #### `Global.scatter`
 
 ```python
-Global.scatter(self, value: Tile, ids: Global, at, *, count=None, col=0, sort_topk: int = 0, add: bool = False, staged: int = 0) -> None
+Global.scatter(self, value: Tile, ids, at=None, *, count=None, col=0, sort_topk: Optional[int] = None, add: bool = False, staged: Optional[int] = None) -> None
 ```
 
 *Changed after 0.8.0*: new parameter `staged`
 
-*Surface*: `sort_topk=`: to be merged into hk.RowIndex(sort_topk=) (DSL-surface migration S3).
+*Surface*: `sort_topk=`: deprecated, removed in the release after the last call from outside the repository is migrated, at most two minor releases after its deprecation; use hk.RowIndex(sort_topk=).
 
-*Surface*: `staged=`: to be merged into a staged hk.RowIndex (Group.stage) (DSL-surface migration S3).
+*Surface*: `staged=`: deprecated, removed in the release after the last call from outside the repository is migrated, at most two minor releases after its deprecation; use an index staged by Group.stage_rows.
 
 *Surface*: `add=`: atomic scatter-add, in no fixed order: not for a route that promises determinism.
 
-Rows by index: tile row r goes to row `ids[at + r]`, from column
-`col`; an index outside the tensor, or a position at or past
-`count`, writes nothing. Two rows naming one row race. `sort_topk`
-> 0: `ids` are AITER's MoE sort ids (token | choice << 24) and this
-tensor is [sort_topk * M, ...] choice-major -- row r goes to row
-choice * M + token, and padding (token >= M) nowhere.
+Rows by index: tile row r goes to row `ids[at + r]`, from column `col` -- `ids` an
+`hk.RowIndex`, or an int32 tensor and `at` (and `count`). An index outside the tensor, or
+a position at or past `count`, writes nothing. Two rows naming one row race. With an
+index of AITER's MoE sort ids (`RowIndex(..., sort_topk=k)`: token | choice << 24) this
+tensor is [k * M, ...] choice-major -- row r goes to row choice * M + token, and padding
+(token >= M) nowhere.
 
-`add=True` adds the rows atomically instead (an fp32 or bf16 global;
-bf16 adds element pairs, gfx950's global_atomic_pk_add_bf16). With
-`sort_topk` the tensor is then [M, ...] and every choice of a token
-adds into its row: the top-k reduce, in no fixed order -- the result
-varies run to run by the rounding of the adds.
+`add=True` adds the rows atomically instead (an fp32 or bf16 global; bf16 adds element
+pairs, gfx950's global_atomic_pk_add_bf16). With sort ids the tensor is then [M, ...] and
+every choice of a token adds into its row: the top-k reduce, in no fixed order -- the
+result varies run to run by the rounding of the adds.
 
-`staged=N`: the ids were staged in LDS by `g.gather_prep(ids, at0, N,
-raw=True)`, `at0` a multiple of N and [at0, at0 + N) covering every row
-stored here -- the scatter reads them there. A global index load is a
-vmcnt wait, which on gfx950 retires every load and store issued before
-it, in order: in an epilogue between K loops, the next loop's whole
-prefetch and this epilogue's own earlier stores (K1 k1-prefill c36).
+An index staged in LDS by `g.stage_rows(ix, N, keep_choice=True)` is read there: a global
+index load is a vmcnt wait, which on gfx950 retires every load and store issued before
+it, in order -- in an epilogue between K loops, the next loop's whole prefetch and this
+epilogue's own earlier stores (K1 k1-prefill c36). `sort_topk=` and `staged=` here are
+deprecated: they are `hk.RowIndex`'s and `g.stage_rows`'.
 
 #### `Global.type (property)`
 
@@ -1933,6 +1969,76 @@ One 16x16 fragment into the tile; `row` may be a runtime value.
 #### `Granules.type (property)`
 
 The value's hk type (`RegTileType`, `RegVecType`, ...).
+
+### `hk.MxScales`
+
+*New after 0.8.0*
+
+E8M0 block scales of an fp8 operand tile, in the lanes the scaled MFMA
+reads them from (`load_mx_scales`). An operand takes them with
+`Tile.scaled`.
+
+#### `MxScales.copy`
+
+```python
+MxScales.copy(self, *, into: MxScales) -> MxScales
+```
+
+*New after 0.8.0*
+
+`into` = these scales, register to register -- how a one-stage loop body hands
+the next K-tile's prefetched scales to the current set. Returns `into`.
+
+#### `MxScales.type (property)`
+
+The value's hk type (`RegTileType`, `RegVecType`, ...).
+
+### `hk.Scaled`
+
+*New after 0.8.0*
+
+An MX operand: an fp8 e4m3 row tile (FP4 in its container with fmt="fp4") and its E8M0
+scales, made by `Tile.scaled`. `hk.mma("mma_ABt", a.scaled(sa), b.scaled(sb), acc)` is
+gfx950's block-scaled MFMA; nothing else takes one.
+
+### `hk.RowIndex`
+
+*New after 0.8.0*
+
+Which rows a gather, a scatter or a gathered LDS copy moves: row r of the tile is named by
+`ids[at + r]`, an int32 global, for positions below `count` (default: all of `ids`) -- and
+how such an index names a row:
+
+- plain: it is the row;
+- `div=k`: the row is `ids[at + r] // k` (a MoE's top-k, its sorted list counting
+  (token, choice) pairs); for a gather;
+- `sort_topk=k`: AITER's MoE sort ids, token | choice << 24, padding token >= M. A gather or
+  a gathered copy reads the token's row; a scatter writes row choice * M + token of a
+  [k * M, ...] tensor, and with add=True adds into the token's row.
+
+Positions at or past `count`, padding and indices outside the tensor read zero and write
+nothing. `g.stage_rows(ix, rows)` copies [at, at + rows) into LDS and returns the staged
+index the copies then read there (no vmcnt wait for an index). Made in the kernel body; no
+instruction of its own.
+
+#### `RowIndex.offset`
+
+```python
+RowIndex.offset(self, n) -> RowIndex
+```
+
+The same index from position at + n (a later tile of the same block). A staged
+index stays staged: [at, at + n + the tile's rows) must lie inside what was staged.
+
+#### `RowIndex.staged`
+
+```python
+RowIndex.staged(self, rows: int, *, keep_choice: bool = False) -> RowIndex
+```
+
+This index as `g.stage_rows(self, rows, keep_choice=...)` stages it, without the copy:
+for code written before the place that stages it (a loop body's copies, defined above
+the loop). A consumer still refuses it until a `stage_rows` has made that copy.
 
 ### `hk.Int`
 

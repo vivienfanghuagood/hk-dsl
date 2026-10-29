@@ -78,6 +78,7 @@ nav:
   - "Tuning a GEMM: hk.tune": tune.md
   - Workgroup placement: placement.md
   - The language: language.md
+  - "Migrating: the DSL surface": migrating.md
   - API reference:
       - api/README.md
       - hk: api/hk.md

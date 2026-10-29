@@ -231,17 +231,6 @@ LogicalResult ScatterRowsOp::verify() {
   return checkIndexedRows(*this, getValue().getType(), getIdx().getType());
 }
 
-LogicalResult ScatterAddLdsOp::verify() {
-  auto st = getSrc().getType();
-  if (!st.getElementType().isBF16() || !getDst().getType().getElementType().isBF16())
-    return emitOpError("adds a bf16 LDS tile into a bf16 global");
-  if (st.getCols() % 2 || 64 % (st.getCols() / 2) || st.getRows() % (64 / (st.getCols() / 2)))
-    return emitOpError("a tile whose rows split into whole lane groups (cols / 2 divides 64)");
-  if (!getIdx().getType().getElementType().isInteger(32))
-    return emitOpError("takes its row indices from an int32 global");
-  return success();
-}
-
 LogicalResult AtomicAddOp::verify() {
   // A 16-bit operand tile is replicated across the wave halves; adding one
   // would count every element twice.
@@ -1001,24 +990,12 @@ LogicalResult SwapHalvesOp::verify() {
     return failure();
   auto t = dyn_cast<RegTileType>(getSrc().getType());
   if (!t || !t.isStrip())
-    return emitOpError("exchanges the halves of a strip's rows; it takes a "
+    return emitOpError("exchanges the halves of a strip's row segments; it takes a "
                        "strip, not ")
            << getSrc().getType();
-  if (t.getCols() % (2 * t.getRun()))
-    return emitOpError("a strip row of ")
-           << t.getCols() << " columns has no two halves of whole runs";
-  return success();
-}
-
-LogicalResult RotateHalfOp::verify() {
-  if (failed(verifyUnary(*this)))
-    return failure();
-  auto t = dyn_cast<RegTileType>(getSrc().getType());
-  if (!t || !t.isStrip())
-    return emitOpError("rotates the halves of a strip's segments; it takes a "
-                       "strip, not ")
-           << getSrc().getType();
-  int64_t span = getSpan(), run = t.getRun(), chunk = 64 * run;
+  if (getSpan() < 0)
+    return emitOpError("a span of ") << getSpan() << " columns";
+  int64_t span = getSpan() ? getSpan() : t.getCols(), run = t.getRun(), chunk = 64 * run;
   if (span <= 0 || t.getCols() % span)
     return emitOpError("a span of ")
            << span << " does not divide the strip's " << t.getCols() << " columns";
@@ -1200,22 +1177,6 @@ HK_FILL_VERIFY(TriuOp, false)
 HK_FILL_VERIFY(TrilOp, false)
 #undef HK_FILL_VERIFY
 
-template <typename OpT>
-static LogicalResult verifyCausal(OpT op) {
-  if (failed(verifyDest(op, op.getDst(), op.getResult())))
-    return failure();
-  auto src = cast<RegTileType>(op.getSrc().getType());
-  if (failed(noStrip(op, src)))
-    return failure();
-  if (src.getRows() != src.getCols())
-    return op.emitOpError("a diagonal only means something on a square tile");
-  if (destType(op.getDst(), op.getResult()) != src)
-    return op.emitOpError("result type differs from the tile's");
-  return success();
-}
-
-LogicalResult MakeCausalOp::verify() { return verifyCausal(*this); }
-LogicalResult MakeCausalTOp::verify() { return verifyCausal(*this); }
 
 //===----------------------------------------------------------------------===//
 // Conversions

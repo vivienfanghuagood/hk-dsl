@@ -18,7 +18,7 @@ python/hk/ops/paged_prefill.py   Granules.store_frag   1     as above
 python/hk/ops/dsv41_index.py     hk.map_cpp            190   the DeepSeek-V4.1 index front (#115, #137): strip index arithmetic, selects and bit ops the operators cannot write yet, and the scaled fp8 / fp4 conversion intrinsics; the arithmetic moves to the strip operators in S7
 python/hk/ops/paged_cdna.py      hk.map_cpp            2     the split merge's partial-sum indices; integer arithmetic the strip operators cannot write yet (moves to them in S7)
 python/hk/ops/sparse_mla.py      hk.map_cpp            12    the sparse MLA prefill (#120): the MXFP8 row quantization (exponent bits, exp2 scaling), the lane-pair packing selects and the rows' store indices, the bf16 rounding of the rows vLLM's pass reads, and RoPE's index arithmetic and selects; integer and bit arithmetic the strip operators cannot write yet, which moves to them in S7
-python/hk/ops/attn_cdna.py       hk.arch.agpr          1     acc="agpr", off by default (experiment; sunset 2026-10-31 12:00Z)
+python/hk/ops/attn_cdna.py       hk.arch.agpr          1     acc="agpr", off by default (an experiment; may be removed)
 #
 # Kernel subclasses that override with_defines or source (refused unless listed).
 python/hk/ops/attn_k3.py         PairPKernel           1     as attn_k3.py's Kernel.with_defines above (S11 removes it)

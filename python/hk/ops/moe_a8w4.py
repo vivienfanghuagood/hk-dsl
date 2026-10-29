@@ -68,7 +68,7 @@ def stage1_kernel(name: str, *, group_rows: int, nb: int = 4, mt: int = 2, warps
                     r0 = hk.min(base + i, t1 - 1) * TILE
                     b = x[hk.elem_coord(0, 0, r0, kc * 128)].load(hk.RT(fp8e4m3, TILE, 128))
                     sb = hk.load_mx_scales(xs, TILE, 4, r0, kc * 4)
-                    hk.mma_ABt_mx(a, b, accs[i], sa, sb, a_fmt="fp4", into=accs[i])
+                    hk.mma("mma_ABt", a.scaled(sa, fmt="fp4"), b.scaled(sb), accs[i], into=accs[i])
             for i in range(mt):
                 if base + i < t1:
                     for j in range(nb):
@@ -139,7 +139,7 @@ def stage1_lds_kernel(name: str, *, group_rows: int, mt: int = 4, pp: int = 2,
                 fetch(kc + 1, r0, 1 - cur)
             Xs[cur].load(t_x, wait=False, into=X)
             hk.lds.wait_for(X)
-            hk.mma_ABt_mx(W[cur], X, C, S[cur], SX[cur], a_fmt="fp4", into=C)
+            hk.mma("mma_ABt", W[cur].scaled(S[cur], fmt="fp4"), X.scaled(SX[cur]), C, into=C)
             hk.arch.sched_barrier()
 
         for rnd in range(hk.cdiv(t1 - t0, mt)):
@@ -269,17 +269,18 @@ def stage1_ring_kernel(name: str, *, group_rows: int, mt: int = 4, pp: int = 4, 
                 for ti in range(mt):
                     Xs[cur].subtile(TILE, KS, ti, 0).load(t_x1, wait=False, into=X1)
                     hk.lds.wait_for(X1)
-                    hk.mma_ABt_mx(W[cur], X1, Cs[ti], S[ss], SX[ss], a_fmt="fp4",
-                                  sa_at=(0, par), sb_at=(ti, par), into=Cs[ti])
+                    hk.mma("mma_ABt", W[cur].scaled(S[ss], fmt="fp4", at=(0, par)),
+                           X1.scaled(SX[ss], at=(ti, par)), Cs[ti], into=Cs[ti])
             elif xsplit:
                 for ti in range(mt):
                     Xs[cur].subtile(TILE, KS, ti, 0).load(t_x1, wait=False, into=X1)
                     hk.lds.wait_for(X1)
-                    hk.mma_ABt_mx(W[cur], X1, Cs[ti], S[cur], SX[cur][ti], a_fmt="fp4", into=Cs[ti])
+                    hk.mma("mma_ABt", W[cur].scaled(S[cur], fmt="fp4"), X1.scaled(SX[cur][ti]),
+                           Cs[ti], into=Cs[ti])
             else:
                 Xs[cur].load(t_x, wait=False, into=X)
                 hk.lds.wait_for(X)
-                hk.mma_ABt_mx(W[cur], X, C, S[cur], SX[cur], a_fmt="fp4", into=C)
+                hk.mma("mma_ABt", W[cur].scaled(S[cur], fmt="fp4"), X.scaled(SX[cur]), C, into=C)
             hk.arch.sched_barrier()
 
         for rnd in range(hk.cdiv(t1 - t0, mt)):
@@ -403,10 +404,11 @@ def stage2_kernel(name: str, *, group_rows: int, mt: int = 4, pp: int = 4, depth
                 hk.lds.wait_for(X1)
                 if pairs:
                     ss, par = (u // 2) % 2, u % 2
-                    hk.mma_ABt_mx(W[cur], X1, Cs[ti], S[ss], SX[ss], a_fmt="fp4",
-                                  sa_at=(0, par), sb_at=(ti, par), into=Cs[ti])
+                    hk.mma("mma_ABt", W[cur].scaled(S[ss], fmt="fp4", at=(0, par)),
+                           X1.scaled(SX[ss], at=(ti, par)), Cs[ti], into=Cs[ti])
                 else:
-                    hk.mma_ABt_mx(W[cur], X1, Cs[ti], S[cur], SX[cur][ti], a_fmt="fp4", into=Cs[ti])
+                    hk.mma("mma_ABt", W[cur].scaled(S[cur], fmt="fp4"), X1.scaled(SX[cur][ti]),
+                           Cs[ti], into=Cs[ti])
             hk.arch.sched_barrier()
 
         for rnd in range(hk.cdiv(t1 - t0, mt)):
@@ -651,6 +653,7 @@ def _sorted_ring(stage: int, name: str, *, group_rows: int, mt: int, pp: int, k:
         e = seids[hk.elem_coord(0, 0, 0, b)].load_scalar()
         live = hk.min(hk.max(valid - b * BM, 0), 1)
         r0 = b * BM
+        rows_in = hk.RowIndex(sids, r0, sort_topk=topk).staged(BM)   # stage 1's gathered rows
         wid = hk.arch.warp_id()
         col0 = (blk * warps + wid) * pp * TILE
         row_w = e * GR + col0
@@ -663,7 +666,7 @@ def _sorted_ring(stage: int, name: str, *, group_rows: int, mt: int, pp: int, k:
 
         def fetch(kc, slot, sset=None):
             if stage == 1:
-                g.load(Xs[slot], x.at[0, kc * KS], wait=False, gather=(sids, r0), staged=BM)
+                g.load(Xs[slot], x.at[0, kc * KS], wait=False, gather=rows_in)
             else:
                 g.load(Xs[slot], x.at[r0, kc * KS], wait=False)
             hk.load_fp4_frags(t_w, w, row_w, kc, group_rows=GR, gate_up=stage == 1, into=W[slot])
@@ -690,13 +693,13 @@ def _sorted_ring(stage: int, name: str, *, group_rows: int, mt: int, pp: int, k:
                 elif ti + 1 < mt:
                     Xs[cur].subtile(TILE, KS, ti + 1, 0).load(t_x1, wait=False, into=X1s[(ti + 1) % 2])
                 hk.lds.wait_for(X1s[ti % 2])
-                hk.mma_ABt_mx(W[cur], X1s[ti % 2], Cs[ti], S[ss], SX[ss], a_fmt="fp4",
-                              sa_at=(0, par), sb_at=(ti, par), into=Cs[ti])
+                hk.mma("mma_ABt", W[cur].scaled(S[ss], fmt="fp4", at=(0, par)),
+                       X1s[ti % 2].scaled(SX[ss], at=(ti, par)), Cs[ti], into=Cs[ti])
             hk.arch.sched_barrier()
 
         for _ in range(live):
             if stage == 1:
-                g.gather_prep(sids, r0, BM)      # the block's rows, in LDS: no vmcnt wait in the loop
+                g.stage_rows(rows_in)       # the block's rows, in LDS: no vmcnt wait in the loop
             for k0 in range(D - 1):
                 fetch(k0, k0, sset=(k0 // 2) % 2 if k0 % 2 == 0 else None)
             tail = BODY + steps % BODY if steps >= 2 * BODY else steps
@@ -723,7 +726,7 @@ def _sorted_ring(stage: int, name: str, *, group_rows: int, mt: int, pp: int, k:
                     wt = wv[hk.elem_coord(0, 0, r0 + i * TILE, 0)].load(t_wv)
                     wt.right_fill_(1, 0.0)
                     o = o * wt.sum(axis=1)[:, None]
-                    out.scatter(o, sids, r0 + i * TILE, col=col0, sort_topk=topk)
+                    out.scatter(o, hk.RowIndex(sids, r0 + i * TILE, sort_topk=topk), col=col0)
             if mxq:
                 hk.arch.barrier()
                 hk.mx_quant_store(Hs, out, sq, r0, blk * TILE * pp * warps)
@@ -827,15 +830,15 @@ def _sorted_s2_persistent(name: str, *, group_rows: int, mt: int, pp: int, k: in
                 for ti in range(mt):
                     Xs[slot].subtile(TILE, KS, ti, 0).load(t_x1, wait=False, into=X1)
                     hk.lds.wait_for(X1)
-                    hk.mma_ABt_mx(W[slot], X1, Cs[ti], S[ss], SX[ss], a_fmt="fp4",
-                                  sa_at=(0, par), sb_at=(ti, par), into=Cs[ti])
+                    hk.mma("mma_ABt", W[slot].scaled(S[ss], fmt="fp4", at=(0, par)),
+                           X1.scaled(SX[ss], at=(ti, par)), Cs[ti], into=Cs[ti])
                 hk.arch.sched_barrier()
             for i in range(mt):
                 o = hk.transpose(Cs[i])
                 wt = wv[hk.elem_coord(0, 0, r0 + i * TILE, 0)].load(t_wv)
                 wt.right_fill_(1, 0.0)
                 o = o * wt.sum(axis=1)[:, None]
-                out.scatter(o, sids, r0 + i * TILE, col=col0, sort_topk=topk)
+                out.scatter(o, hk.RowIndex(sids, r0 + i * TILE, sort_topk=topk), col=col0)
 
         u0 = unit(0)
         fetch(0, 0, 0, u0[0], u0[1])
@@ -907,6 +910,7 @@ def _sorted_s1_grid(name: str, *, group_rows: int, mt: int, pp: int, k: int, tr:
         e = seids[hk.elem_coord(0, 0, 0, b)].load_scalar()
         live = hk.min(hk.max(valid - b * BM, 0), 1)
         r0 = b * BM
+        rows_in = hk.RowIndex(sids, r0).staged(BM)       # the block's gathered rows, in LDS
         wid = hk.arch.warp_id()
         rg = wid // tc
         c = wid % tc
@@ -924,7 +928,7 @@ def _sorted_s1_grid(name: str, *, group_rows: int, mt: int, pp: int, k: int, tr:
 
         def fetch(kc, slot, sset=None):
             g.load(Ws[slot], wv.at[wrow0, kc * 1024], wait=False)
-            g.load(Xs[slot], x.at[0, kc * KS], wait=False, gather=(sids, r0), staged=BM)
+            g.load(Xs[slot], x.at[0, kc * KS], wait=False, gather=rows_in)
             if sset is not None:
                 hk.load_mx_scales(ws, R, 8, row_w, kc * 4, layout="aiter_gate_up", group_rows=GR,
                                   into=S[sset])
@@ -939,16 +943,16 @@ def _sorted_s1_grid(name: str, *, group_rows: int, mt: int, pp: int, k: int, tr:
                 nu = u + 1
                 fetch(kc + 1, nu % 2, sset=(nu // 2) % 2 if nu % 2 == 0 else None)
             ss, par = (u // 2) % 2, u % 2
-            hk.load_fp4_frags_lds(t_w, Ws[cur], c * 2 * pp, 0, into=W)
+            hk.load_fp4_frags(t_w, Ws[cur], c * 2 * pp, 0, into=W)
             for ti in range(HM):
                 Xs[cur].subtile(TILE, KS, rg * HM + ti, 0).load(t_x1, wait=False, into=X1)
                 hk.lds.wait_for(X1)
-                hk.mma_ABt_mx(W, X1, Cs[ti], S[ss], SX[ss], a_fmt="fp4",
-                              sa_at=(0, par), sb_at=(ti, par), into=Cs[ti])
+                hk.mma("mma_ABt", W.scaled(S[ss], fmt="fp4", at=(0, par)),
+                       X1.scaled(SX[ss], at=(ti, par)), Cs[ti], into=Cs[ti])
             hk.arch.sched_barrier()
 
         for _ in range(live):
-            g.gather_prep(sids, r0, BM)
+            g.stage_rows(rows_in)
             fetch(0, 0, sset=0)
             tail = 4 + steps % 4 if steps >= 8 else steps
             for kk in hk.range((steps - tail) // 4):
@@ -1029,6 +1033,8 @@ def _sorted_s2_resident(name: str, *, group_rows: int, mt: int, pp: int, k: int,
         e = seids[hk.elem_coord(0, 0, 0, b)].load_scalar()
         live = hk.min(hk.max(valid - b * BM, 0), 1)
         r0 = b * BM
+        # the block's scatter ids, raw (choice bits kept), in LDS
+        rows_out = hk.RowIndex(sids, r0, sort_topk=topk).staged(BM, keep_choice=True)
         wid = hk.arch.warp_id()
         col0 = blk * NCW * nt + wid * R
         Cs = [hk.zeros(t_c1) for _ in range(mt)]
@@ -1044,7 +1050,7 @@ def _sorted_s2_resident(name: str, *, group_rows: int, mt: int, pp: int, k: int,
             # the block's scatter ids into LDS and its rows' routing weights into registers, once
             # for all nt column tiles: loaded in the epilogue, each was a vmcnt wait that drained
             # the next tile's weight prefetch and this tile's stores (k1-prefill c36)
-            g.gather_prep(sids, r0, BM, raw=True)
+            g.stage_rows(rows_out)
             wsum = []
             for i in range(mt):
                 wt = wv[hk.elem_coord(0, 0, r0 + i * TILE, 0)].load(t_wv)
@@ -1089,14 +1095,14 @@ def _sorted_s2_resident(name: str, *, group_rows: int, mt: int, pp: int, k: int,
                     else:                          # the next step's first tile (step 0 of the next
                         ldx((kc + 1) % steps, 0)   # column tile: h does not change)
                     hk.lds.wait_for(X1s[ti % 2])
-                    hk.mma_ABt_mx(W[kc % D], X1s[ti % 2], Cs[ti], S[sset(p)], SX[p], a_fmt="fp4",
-                                  sa_at=(0, par), sb_at=(ti, par), into=Cs[ti])
+                    hk.mma("mma_ABt", W[kc % D].scaled(S[sset(p)], fmt="fp4", at=(0, par)),
+                           X1s[ti % 2].scaled(SX[p], at=(ti, par)), Cs[ti], into=Cs[ti])
                 hk.arch.sched_barrier()
 
             def store(c0):                         # the tile's rows out, weighted; acc to zero
                 for i in range(mt):
                     o = hk.transpose(Cs[i]) * wsum[i][:, None]
-                    out.scatter(o, sids, r0 + i * TILE, col=c0, sort_topk=topk, staged=BM)
+                    out.scatter(o, rows_out.offset(i * TILE), col=c0)
                     Cs[i].zero_()
 
             for n in hk.range(nt):
@@ -1296,10 +1302,10 @@ def stage1_dma_kernel(name: str, *, group_rows: int, mt: int = 4, pp: int = 4, d
                 scales(kc + 1, r0, (u + 1) % 2)
             if more_copies:
                 copies(kc + D - 1, r0, (u + D - 1) % D)
-            hk.load_fp4_frags_lds(t_w, Ws[u], wid * 2 * pp, 0, into=W)
+            hk.load_fp4_frags(t_w, Ws[u], wid * 2 * pp, 0, into=W)
             Xs[u].load(t_x, wait=False, into=X)
             hk.lds.wait_for(X)
-            hk.mma_ABt_mx(W, X, C, S[u % 2], SX[u % 2], a_fmt="fp4", into=C)
+            hk.mma("mma_ABt", W.scaled(S[u % 2], fmt="fp4"), X.scaled(SX[u % 2]), C, into=C)
             hk.arch.sched_barrier()
 
         for rnd in range(hk.cdiv(t1 - t0, mt)):
@@ -1402,7 +1408,7 @@ def stage1_direct_kernel(name: str, *, group_rows: int, k: int, mt: int = 4, pp:
                 if s + D - 1 < steps:
                     fetch(s + D - 1, r0, (s + D - 1) % D, W, X, S, SX)
                 q = s % D
-                hk.mma_ABt_mx(W[q], X[q], C, S[q], SX[q], a_fmt="fp4", into=C)
+                hk.mma("mma_ABt", W[q].scaled(S[q], fmt="fp4"), X[q].scaled(SX[q]), C, into=C)
                 # keep each step's loads where the ring puts them: hoisted across the unrolled
                 # steps they hold every set at once (spills)
                 hk.arch.sched_barrier()

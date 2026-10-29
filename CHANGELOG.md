@@ -9,6 +9,75 @@ The next version's notes collect here until it is released.
 What is on main after 0.8.0. `pip install hk-dsl` (0.8.0) does not have it;
 the API reference marks such names *New after 0.8.0*.
 
+**`include/hk/cdna.cuh` split by kind (DSL-surface S12).** It is an umbrella over
+`include/hk/cdna/{core,lib,formats,special,primitives,escape}.cuh`, a pure move of the definitions
+in their dependency order; every gfx950 kernel's code object is unchanged, function by function.
+The build cache sees the parts through the preprocessor's dependency list (#136).
+
+**Register views: `Tile.as_fragment`, `Tile.as_scales` (DSL-surface S5).**
+- `words.as_fragment(hk.RT(hk.fp8e4m3, 16, 128), fmt="fp8" | "fp4")` reads an i32 strip's
+  registers as a block-scaled MMA operand fragment, and `bytes.as_scales()` reads one as loose E8M0
+  scales. No data moves. They are the inverse of the planned `lane_strip`.
+- They replace `hk.fp8_operand`, `hk.fp4_operand` and `hk.mx_scales_loose`, now deprecated shims
+  that trace to the same IR. `dsv41_index` uses the new spellings.
+
+**`rotate_half` is `swap_halves(span, negate_first=True)` (DSL-surface S4).**
+- `Tile.swap_halves(span=None, negate_first=False)` exchanges the halves of each `span`-column
+  segment (the whole row by default) and optionally negates the first. `rotate_half(span)` stays
+  as sugar for it. The two dialect ops are one (`hk.swap_halves {span, negate_first}`), and the two
+  C++ templates are one, `kittens::swap_halves<SPAN, NEG>`.
+- Evidence: the 70 rotary kernels' code objects are identical on gfx950, function by function
+  (ISA hash and resources).
+
+**Rows by index take an `hk.RowIndex` (DSL-surface S3).**
+- `hk.RowIndex(ids, at, count=, div=, sort_topk=)` says which rows a gather, a scatter or a
+  gathered LDS copy moves, and how an index names a row: plain, `div=k`, or AITER's sort ids. It
+  replaces the `div=` / `sort_topk=` / `staged=` keywords and the `(ids, at)` pair of
+  `g.load(gather=)`. `Global.gather(ty, ids, at)` / `scatter(t, ids, at)` with plain ids stay.
+- `g.stage_rows(ix, rows, keep_choice=)` copies an index into LDS and returns the staged index the
+  copies read there. It replaces `g.gather_prep(ids, at, rows, raw=)`.
+- A consumer now refuses a staged index of the other form, and one no `stage_rows` has copied.
+  Both used to be a silent read of an LDS array no one wrote.
+- `ix.staged(rows)` describes the staged index ahead of the loop body that copies it, and
+  `ix.offset(n)` gives a later tile's positions.
+- A gathered copy's row limit (#125) carries over: `g.load(..., gather=ix, rows=n)`, or the
+  index's own `count` (rows = max(count - at, 0)) -- the same IR as `gather=(ids, at), rows=`.
+- The old keywords and `gather_prep` are deprecated shims that trace to the same IR.
+- K1 and the RDNA MoE GEMM use the new form; every shipped kernel's generated source is
+  byte-identical.
+
+**The block-scaled MMA is `hk.mma`; MX scales are register values (DSL-surface S2).**
+- `hk.mma("mma_ABt", a.scaled(sa), b.scaled(sb, fmt="fp4", at=(tile, step)), acc)` is gfx950's
+  block-scaled MFMA: `Tile.scaled(scales, fmt=, at=)` makes an MX operand (`hk.Scaled`), and both
+  operands carry one. `hk.mma_ABt_mx` is a deprecated shim for it.
+- `MxScales.copy(into=dst)` replaces `hk.copy_mx_scales(dst, src)`, and `hk.load_fp4_frags`
+  takes an LDS tile as its source, replacing `hk.load_fp4_frags_lds`. Both old names are
+  deprecated shims (DeprecationWarning).
+- `hk.MxScales` and `hk.Scaled` are exported and documented. K1, K2, gemm_cdna's MX mode and the
+  DeepSeek-V4.1 index front (`dsv41_index`) use the new spellings. Every shipped kernel's generated source is byte-identical.
+- Migrating a call with inline loads in its arguments: bind them to locals in the old argument
+  order first (`hk.mma_ABt_mx` evaluated a, b, acc, sa, sb; `hk.mma` with `.scaled` evaluates a,
+  sa, b, sb, acc), or the loads issue in another order and the kernel changes.
+  `tools/surface/migrate.py` rewrites call sites and does this; [docs/migrating.md](docs/migrating.md).
+
+**Removed: `Global.scatter_add_lds`; deprecated: `Tile.make_causal` (DSL-surface S1).**
+- `scatter_add_lds` had no user since K1 chose the deterministic sum (K1 c33). Its dialect op
+  and `kittens::scatter_add_lds` are gone. `SharedTile.load` + `Global.scatter(..., add=True)`
+  does the same; `scatter(add=True)` stays, held by its GPU test (`test_scatter_add.py`).
+- `Tile.make_causal(v)` is now `tril_(0, v)` on a copy, and `transposed=True` is `triu_(0, v)`.
+  The call warns (`DeprecationWarning`). The `hk.make_causal` / `hk.make_causal_t` dialect ops
+  are gone; no kernel used them.
+- Every name the DSL-surface steps deprecate (S1, S2, S3, S5) is removed in the release after the
+  last call from outside the repository is migrated, and at most two minor releases after the
+  release that deprecated it. [docs/migrating.md](docs/migrating.md) lists them with their
+  replacements.
+  - On RDNA the old ops were the same C++ as `tril(0)` / `triu(0)`.
+  - On gfx950 the old op only compiled as `make_causal` on fp32 tiles: there it matched
+    `tril_(0, v)` and torch bit for bit (col layout, 16 to 64 square). include/cdna4 has no
+    `make_causal_t` and no bf16 form, so the alias now covers more.
+- Every shipped kernel's generated source is byte-identical (`tools/surface/snapshot.py
+  sources`: gfx950 1145, gfx1100 1049, gfx1201 1049 kernels).
+
 **The surface registry (DSL-surface S0).** `python/hk/dsl/surface.py` registers every name of
 the language, every dialect op and every function in `include/hk/` with its kind (primitive,
 format, escape hatch, experiment, internal, merge / delete / deprecated). The IR tier

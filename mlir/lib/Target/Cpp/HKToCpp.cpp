@@ -1356,11 +1356,6 @@ private:
             name(o.getAt()) + ", " + name(o.getCount()) + ", " +
             name(o.getCol()) + ");");
         })
-        .Case([&](ScatterAddLdsOp o) {
-          w("kittens::scatter_add_lds<" + std::to_string(o.getSortTopk()) + ">(" +
-            name(o.getDst()) + ", " + name(o.getSrc()) + ", " + name(o.getIdx()) + ", " +
-            name(o.getAt()) + ", " + name(o.getCount()) + ", " + name(o.getCol()) + ");");
-        })
         .Case([&](AtomicAddOp o) {
           w("kittens::atomic_add(" + name(o.getDst()) + ", " +
             name(o.getValue()) + ", " +
@@ -1688,14 +1683,18 @@ private:
         .Case<AddOp, SubOp, MulOp, DivOp, MaxOp, MinOp>(
             [&](auto o) { emitBinary(o); })
         .Case<ExpOp, Exp2Op, LogOp, Log2Op, AbsOp, ReluOp, CopyOp, GeluOp,
-              DgeluOp, SqrtOp, RsqrtOp, SiluOp, StepOp, SwapHalvesOp>([&](auto o) {
+              DgeluOp, SqrtOp, RsqrtOp, SiluOp, StepOp>([&](auto o) {
           Value d = dest(o.getDst(), o.getResult());
           call(o->getName().stripDialect(), d, {name(o.getSrc())});
         })
-        .Case([&](RotateHalfOp o) {
+        .Case([&](SwapHalvesOp o) {
           Value d = dest(o.getDst(), o.getResult());
-          call("rotate_half<" + std::to_string(o.getSpan()) + ">", d,
-               {name(o.getSrc())});
+          int64_t span = o.getSpan()
+                             ? o.getSpan()
+                             : cast<RegTileType>(o.getSrc().getType()).getCols();
+          call("swap_halves<" + std::to_string(span) + ", " +
+                   (o.getNegateFirst() ? "true" : "false") + ">",
+               d, {name(o.getSrc())});
         })
         .Case<MmaABOp, MmaABtOp, MmaAtBOp, MmaAtBtOp>([&](auto o) {
           Value d = dest(o.getDst(), o.getResult());
@@ -1873,13 +1872,6 @@ private:
                {name(o.getSrc()), name(o.getIdx()),
                 "(" + elemCpp(d.getType()) + ")" +
                     floatLit(o.getValue().convertToDouble())});
-        })
-        .Case<MakeCausalOp, MakeCausalTOp>([&](auto o) {
-          Value d = dest(o.getDst(), o.getResult());
-          // The fill value is the unpacked element type; for bf16 the tile's
-          // dtype is the packed pair, so no cast at all.
-          call(o->getName().stripDialect(), d,
-               {name(o.getSrc()), floatLit(o.getValue().convertToDouble())});
         })
         .Case([&](TransposeOp o) {
           Value d = dest(o.getDst(), o.getResult());
