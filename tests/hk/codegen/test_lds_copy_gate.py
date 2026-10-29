@@ -104,6 +104,9 @@ def _gfx950(code: str) -> str:
 
 def test_rocm10_refuses_the_mxfp8_gemm_that_was_wrong_at_k1152():
     _rocm10()
+    if int(re.search(r"clang version (\d+)", hc._hipcc_version()).group(1)) != 23:
+        pytest.skip("clang 23's copies (the vLLM image's ROCm 10, where K=1152 was wrong); "
+                    "clang 24 (rocm/pytorch 10.1) does not make them at K=1152 and builds it")
     out = _gfx950(f"import runpy; runpy.run_path({str(PROBE)!r}, run_name='__main__')")
     assert "K=1152: refused -- generated kernel rejected" in out, out
     assert "K=1024: built" in out and "K=1280: built" in out, out      # exact when run

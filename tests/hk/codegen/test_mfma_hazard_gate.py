@@ -179,3 +179,23 @@ def test_the_dense_attention_hits_under_rocm_7_2_3(cache, monkeypatch):
     b = hc.build(src, "gfx950", name=tr.name, kind="co")
     assert "padded 2 MFMA hazard(s)" in b.log_path.read_text()
     assert cocheck.mfma_hazards(b.so_path, bundled=False) == []
+
+
+def test_the_padding_rebuild_finds_the_device_assembly_of_a_module(tmp_path, monkeypatch):
+    """A host+device .so, as kind="so" builds one. clang 24's new offload driver generates its
+    device code at link time (clang-linker-wrapper), with no device assembly step in
+    `hipcc -###` to pad; the rebuild plans it under --no-offload-new-driver instead. Before,
+    it ran the pipeline, padded nothing, and the refusal that followed named a hazard the
+    default mode should have fixed."""
+    src = tmp_path / "k.cpp"
+    src.write_text("#include <hip/hip_runtime.h>\n"
+                   "__global__ void k(float* x) { x[threadIdx.x] *= 2.0f; }\n")
+    out = tmp_path / "k.so"
+    cmd = [hc.hipcc(), "--offload-arch=gfx950", "-O3", "-w", "-shared", "-fPIC", str(src),
+           "-o", str(out)]
+    seen = []
+    fix_asm = mfmahaz.fix_asm
+    monkeypatch.setattr(mfmahaz, "fix_asm", lambda text, arch: seen.append(arch) or fix_asm(text, arch))
+    assert hc._pad_mfma_hazards(cmd, tmp_path, "gfx950") == []
+    assert seen == ["gfx950"], "the device assembly was never handed to the padder"
+    assert out.exists() and cocheck.mfma_hazards(out, bundled=True) == []

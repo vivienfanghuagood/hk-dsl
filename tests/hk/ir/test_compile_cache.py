@@ -33,7 +33,7 @@ def cc(tmp_path, monkeypatch):
     monkeypatch.setattr(C, "hipcc", lambda: "/fake/hipcc")
     monkeypatch.setattr(C, "_hipcc_version", lambda: "hipcc x")
     monkeypatch.setattr(C, "rocm_path", lambda: tmp_path / "rocm")
-    monkeypatch.setattr(C.resources, "parse", lambda log, target=None: [])
+    monkeypatch.setattr(C.resources, "parse", lambda log, target=None, **kw: [])
     monkeypatch.setattr(C, "_FILE_HASH", {})
 
     def scan(fl, src, kind, tmp):

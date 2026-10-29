@@ -6,8 +6,23 @@ build-backend = "setuptools.build_meta"
 name = "hk-dsl"
 version = "0.8.0"
 description = "AMD GPU kernels in Python (RDNA3/4, CDNA3/4) over an MLIR dialect, generating HipKittens C++"
-requires-python = ">=3.9"
+# Release wheels are cp310 and cp312 (each carries MLIR bindings for one CPython);
+# another 3.x builds from source (docs/building.md). CI tests 3.10 and 3.12.
+requires-python = ">=3.10"
 license = { text = "MIT" }
+classifiers = [
+    "Environment :: GPU",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: C++",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Software Development :: Compilers",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
 # numpy and typing_extensions are what the MLIR Python bindings import.
 dependencies = ["pybind11>=2.10", "numpy", "typing_extensions"]
 # The description is README.md with its relative links made absolute at the

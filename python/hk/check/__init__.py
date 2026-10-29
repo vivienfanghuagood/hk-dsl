@@ -599,8 +599,10 @@ def _gpu_state(want: Optional[bool]) -> Tuple[bool, Optional[str], Optional[str]
 
         if not torch.cuda.is_available():
             return False, None, None
+        from ..runtime.arch import device_name  # noqa: PLC0415
+
         p = torch.cuda.get_device_properties(torch.cuda.current_device())
-        return True, p.name, (getattr(p, "gcnArchName", "") or "").split(":")[0] or None
+        return True, device_name(p), (getattr(p, "gcnArchName", "") or "").split(":")[0] or None
     except Exception:  # noqa: BLE001
         return False, None, None
 

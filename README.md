@@ -156,9 +156,17 @@ slow operand layout, a copy racing a barrier ([the traps](docs/README.md#the-tra
 2.35 or newer (Ubuntu 22.04 and later). The release is 0.8.0: one
 `manylinux_2_35` wheel for cp310 and one for cp312, both built on glibc 2.35. A
 wheel carries the HipKittens headers, so at run time it needs ROCm's hipcc
-(on `PATH`, or `HK_HIPCC`; tested with ROCm 7.2 and the ROCm 10 of vLLM's
-image) and, to launch, a ROCm build of torch (not a dependency). From
-source, with the HipKittens submodule:
+(on `PATH`, or `HK_HIPCC`) and, to launch, a ROCm build of torch (not a
+dependency). Another CPython 3.x (3.11, 3.13) has no wheel: build from source.
+
+| hipcc's compiler | where | status |
+|---|---|---|
+| AMD clang 22 (ROCm 7.2.2-7.2.4) | `rocm/pytorch:rocm7.2.x` images | tested: the GPU tier, gfx950 and gfx1100 |
+| AMD clang 23 (ROCm 10.0) | vLLM's ROCm image (`nightly-rocm100`) | tested on gfx950 |
+| AMD clang 24 (ROCm 10.1, TheRock) | `rocm/pytorch:rocm10.1.0_ubuntu24.04_py3.12_pytorch_release_2.14.0` | main after 0.8.0: quick start and examples tested on gfx950. **0.8.0 fails every compile there** ("no kernel-resource-usage remarks"). On gfx1100, `hk.ops`' fp16/bf16 RMSNorm and LayerNorm and its rope, and examples 02 and 03, spill under it and are refused |
+| ROCm 7.1's hipcc | CI's no-GPU tiers | compile-only |
+
+From source, with the HipKittens submodule:
 
 ```bash
 git clone --recursive https://github.com/vivienfanghuagood/hk-dsl.git && cd hk-dsl

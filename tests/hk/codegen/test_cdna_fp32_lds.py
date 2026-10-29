@@ -39,7 +39,9 @@ def _isa(k) -> str:
         assert r.returncode == 0, r.stderr[-2000:]
         text = asm.read_text()
     at = re.search(r"^_Z\w*_kernel\w*:", text, re.M).start()
-    return text[at:text.index("s_endpgm", at)]
+    # the whole function: clang 24 places an early-exit block (and its s_endpgm) before the
+    # block that reads LDS, so the first s_endpgm is not its end
+    return text[at:text.index(".Lfunc_end", at)]
 
 
 @pytest.mark.hipcc

@@ -11,8 +11,25 @@ The interactive analysis tool is .claude/skills/kernel-resource-check (tables,
 headroom, before/after diffs). This module is deliberately not that: it is the
 few lines that must keep working inside a wheel where .claude/ does not exist,
 so it parses the remarks itself rather than shelling out to a script that may
-not be installed. The remark format is stable compiler output; the two agree
-because they read the same three fields.
+not be installed. The two agree because they read the same three fields.
+
+The remarks come in two shapes, and `parse` reads both. A compile that runs the
+device code generator itself -- every hipcc through clang 23, and clang 24's
+device-only `--genco` -- prints clang diagnostics:
+
+    k.cpp:3:1: remark: Function Name: _Z5scalePff [-Rpass-analysis=kernel-resource-usage]
+    k.cpp:3:1: remark:     VGPRs: 2 [-Rpass-analysis=kernel-resource-usage]
+
+clang 24 (TheRock, ROCm 10.1) builds a host+device `-shared` module with the new
+offload driver: the device code is generated at link time, by
+clang-linker-wrapper, which prints the same remarks bare:
+
+    k.cpp:3:0: Function Name: _Z5scalePff
+    k.cpp:3:0:     VGPRs: 2
+
+A bare line is only taken as a remark when it starts with a `file:line:col:`
+location and names one of the known keys, so no other diagnostic can be read
+as one. Captured outputs of clang 22, 23 and 24 are in tests/hk/remark_fixtures.
 """
 
 from __future__ import annotations
@@ -25,9 +42,6 @@ from typing import Dict, List, Optional
 
 from ..target import Target
 
-_NAME_RE = re.compile(r"remark:\s*Function Name:\s*(\S+)")
-_FIELD_RE = re.compile(r"remark:\s+(.+?):\s*(-?\d+|True|False)\s*\[")
-
 _FIELDS = {
     "VGPRs": "vgpr",
     "AGPRs": "agpr",
@@ -38,6 +52,16 @@ _FIELDS = {
     "VGPRs Spill": "vgpr_spill",
     "LDS Size [bytes/block]": "lds",
 }
+
+#: The remark's text after its location: `Function Name: <mangled>`, or one of
+#: the kernel's fields (`Dynamic Stack` is printed but not kept).
+_BODY = (r"\s*(?:Function Name:\s*(?P<name>\S+)"
+         r"|(?P<key>" + "|".join(re.escape(k) for k in [*_FIELDS, "Dynamic Stack"]) + r")"
+         r":\s*(?P<val>-?\d+|True|False))")
+#: clang's diagnostic: `<loc>: remark: <body> [-Rpass-analysis=kernel-resource-usage]`.
+_REMARK_RE = re.compile(r"remark:" + _BODY + r"\s*\[-Rpass-analysis[^\]]*\]\s*$")
+#: clang-linker-wrapper's (clang 24, -shared): `<file>:<line>:<col>: <body>` and nothing after.
+_BARE_RE = re.compile(r"^\S[^\n]*?:\d+:\d+:" + _BODY + r"\s*$")
 
 
 class ResourceError(Exception):
@@ -92,6 +116,13 @@ class KernelResources:
 
 def _demangle(names: List[str]) -> Dict[str, str]:
     exe = shutil.which("llvm-cxxfilt") or shutil.which("c++filt")
+    if not exe:  # TheRock's pip layout: ROCm's LLVM is not on PATH
+        try:
+            from .compile import llvm_tool  # noqa: PLC0415 -- compile imports this module
+
+            exe = llvm_tool("llvm-cxxfilt", required=False)
+        except Exception:  # noqa: BLE001 -- no hipcc either: stay mangled
+            exe = None
     if not exe or not names:
         return {n: n for n in names}
     try:
@@ -103,39 +134,54 @@ def _demangle(names: List[str]) -> Dict[str, str]:
     return dict(zip(names, out)) if len(out) == len(names) else {n: n for n in names}
 
 
-def parse(log: str, target: Optional[Target] = None) -> List[KernelResources]:
+def remark(line: str):
+    """One line of a build log -> ("name", mangled), (field, value), or None
+    when it is not a kernel-resource-usage remark (either shape; module doc)."""
+    m = _REMARK_RE.search(line) or _BARE_RE.match(line)
+    if m is None:
+        return None
+    if m.group("name"):
+        return "name", m.group("name")
+    key = _FIELDS.get(m.group("key"))
+    if key is None:
+        return None
+    val = m.group("val")
+    return key, (int(val == "True") if val in ("True", "False") else int(val))
+
+
+def parse(log: str, target: Optional[Target] = None, *, compiler: str = "") -> List[KernelResources]:
     """Build log -> one record per kernel instantiation.
 
     An empty result is an error, not an empty answer: an up-to-date target
     emits no remarks at all, which is indistinguishable from a clean build.
     hk always compiles into a fresh directory, so reaching here with nothing
-    means the flag did not take.
+    means the compiler printed them in a shape this does not read, or not at
+    all. `compiler` (`hipcc --version`'s clang line) goes into that error.
     """
     raw: Dict[str, Dict[str, int]] = {}
     cur = None
     for line in log.splitlines():
-        m = _NAME_RE.search(line)
-        if m:
-            cur = m.group(1)
-            raw.setdefault(cur, {})
+        r = remark(line)
+        if r is None:
             continue
-        m = _FIELD_RE.search(line)
-        if m and cur is not None:
-            key = _FIELDS.get(m.group(1).strip())
-            if key:
-                val = m.group(2)
-                if val in ("True", "False"):
-                    raw[cur][key] = int(val == "True")
-                else:
-                    raw[cur][key] = int(val)
+        if r[0] == "name":
+            cur = r[1]
+            raw.setdefault(cur, {})
+        elif cur is not None:
+            raw[cur][r[0]] = r[1]
 
     if not raw:
+        head = [l for l in log.splitlines() if l.strip()][:12]
+        shown = ("\n".join(f"    {l[:200]}" for l in head) if head
+                 else "    (nothing: the compiler printed no output at all)")
         raise ResourceError(
-            "the build emitted no kernel-resource-usage remarks.\n"
+            "the build emitted no kernel-resource-usage remarks that hk can read.\n"
             "  hk cannot certify a kernel it has no numbers for, and a spilling\n"
             "  kernel silently computes the wrong answer, so this is fatal rather\n"
-            "  than skipped. Check that -Rpass-analysis=kernel-resource-usage\n"
-            "  survived into the hipcc command line."
+            "  than skipped. hk passed -Rpass-analysis=kernel-resource-usage; it reads\n"
+            "  the remarks of clang 22, 23 and 24 (the README lists the tested toolchains).\n"
+            f"  Compiler: {compiler or 'unknown'}\n"
+            f"  First lines of its output:\n{shown}"
         )
 
     pretty = _demangle(list(raw))

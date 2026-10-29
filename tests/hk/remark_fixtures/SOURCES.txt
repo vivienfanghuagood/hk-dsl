@@ -1,0 +1,20 @@
+Kernel-resource-usage remarks as each compiler printed them for k.cpp (three kernels:
+scale, stack<4>, stack<256> -- the last one with a 1040 B/lane scratch frame). Captured
+with the command below in /src, so the locations read "k.cpp:LINE:COL"; nothing else edited.
+
+  hipcc --offload-arch=ARCH -O3 -w -shared -fPIC -Rpass-analysis=kernel-resource-usage k.cpp -o k.so
+  hipcc --offload-arch=ARCH -O3 -w --offload-device-only --genco --no-gpu-bundle-output \
+        -Rpass-analysis=kernel-resource-usage k.cpp -o k.co              (the -genco files)
+
+clang22-*  rocm/pytorch:rocm7.2.3_ubuntu24.04_py3.12_pytorch_release_2.10.0
+           AMD clang version 22.0.0git (roc-7.2.3 26084 f58b06dce1f9)
+           rocm7.2.2's image prints byte-identical output.
+clang23-*  vllm/vllm-openai-rocm:nightly-rocm100-5d35ce3934a7804b298559d2d99eec33792e1eb9
+           AMD clang version 23.0.0git (8f497e0992fb)
+clang24-*  rocm/pytorch:rocm10.1.0_ubuntu24.04_py3.12_pytorch_release_2.14.0
+           AMD clang version 24.0.0git (d6f6cb691863), TheRock
+           -shared goes through the new offload driver: clang-linker-wrapper generates
+           the device code at link time and prints the remarks bare (no "remark:", no
+           "[-Rpass-analysis=...]", column 0). --genco still prints clang's diagnostics.
+
+clang 22 and 23 print the same shape for -shared and --genco.

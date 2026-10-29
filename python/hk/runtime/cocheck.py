@@ -66,10 +66,14 @@ from ..target import TARGETS
 
 
 def _tool(name: str) -> str:
-    from .compile import rocm_path  # noqa: PLC0415
+    """ROCm's LLVM tool `name`, where hipcc's clang is (compile.llvm_tool); FileNotFoundError
+    naming where it looked if it is nowhere. llc may be missing (TheRock ships none): its
+    callers probe with it and get "llc" back, which does not exist, and say so."""
+    from .compile import llvm_tool  # noqa: PLC0415
 
-    p = rocm_path() / "llvm" / "bin" / name
-    return str(p) if p.exists() else name
+    if name == "llc":
+        return llvm_tool(name, required=False) or name
+    return llvm_tool(name)
 
 
 # ---------------------------------------------------------------- resources

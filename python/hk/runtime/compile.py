@@ -129,11 +129,69 @@ def rocm_path() -> Path:
     if env:
         return Path(env)
     # hipcc lives at <rocm>/bin/hipcc or <rocm>/lib/llvm/bin; walk up to the
-    # directory that has include/hip.
-    for parent in Path(hipcc()).resolve().parents:
-        if (parent / "include" / "hip").is_dir():
-            return parent
+    # directory that has include/hip. TheRock's pip layout (rocm/pytorch 10.x) puts
+    # a launcher script in /usr/local/bin instead, so the clang hipcc runs is asked
+    # too: its InstalledDir is <rocm>/lib/llvm/bin, under _rocm_sdk_devel.
+    for start in (lambda: Path(hipcc()).resolve(), clang_dir):
+        where = start()
+        for parent in (where.parents if where is not None else ()):
+            if (parent / "include" / "hip").is_dir():
+                return parent
     return Path("/opt/rocm")
+
+
+def clang_dir() -> Optional[Path]:
+    """The directory of the clang hipcc runs: HIP_CLANG_PATH when set (hipcc reads
+    it), else the `InstalledDir:` of `hipcc --version`. None if neither names one."""
+    env = os.environ.get("HIP_CLANG_PATH")
+    if env and os.path.isdir(env):
+        return Path(env)
+    try:
+        version = _hipcc_version()
+    except CompileError:
+        return None
+    m = re.search(r"^InstalledDir:\s*(.+?)\s*$", version, re.M)
+    return Path(m.group(1)) if m and os.path.isdir(m.group(1)) else None
+
+
+def compiler_version() -> str:
+    """The `clang version` line of `hipcc --version` (its first line when it has none)."""
+    try:
+        lines = _hipcc_version().splitlines()
+    except CompileError as e:
+        return str(e)
+    return next((l.strip() for l in lines if "clang version" in l),
+                lines[0].strip() if lines else "unknown")
+
+
+def llvm_tool(name: str, required: bool = True) -> Optional[str]:
+    """ROCm's LLVM tool `name` (llvm-objdump, llvm-readelf, clang-offload-bundler, ...),
+    found where hipcc's clang is rather than on PATH: beside that clang (`clang_dir`),
+    then <rocm>/llvm/bin and <rocm>/lib/llvm/bin, then PATH. TheRock's pip layout puts
+    none of them on PATH. Raises FileNotFoundError naming where it looked when
+    `required`, else returns None."""
+    dirs: List[Path] = []
+    cd = clang_dir()
+    if cd is not None:
+        dirs.append(cd)
+    root = rocm_path()
+    dirs += [root / "llvm" / "bin", root / "lib" / "llvm" / "bin"]
+    seen = set()
+    for d in dirs:
+        if d in seen:
+            continue
+        seen.add(d)
+        p = d / name
+        if p.is_file() and os.access(p, os.X_OK):
+            return str(p)
+    found = shutil.which(name)
+    if found or not required:
+        return found
+    raise FileNotFoundError(
+        f"{name} not found: hk needs ROCm's LLVM tools to read the code objects it builds, "
+        f"and looked for it in {', '.join(str(d) for d in dict.fromkeys(dirs))} and on PATH. "
+        f"Set ROCM_PATH to the ROCm install that has llvm/bin/{name} (or HIP_CLANG_PATH to "
+        f"the directory of the clang hipcc runs, if {name} is beside it).")
 
 
 def flags(target: Target, module_name: str, extra: Sequence[str] = ()) -> List[str]:
@@ -608,13 +666,13 @@ def _device_step(argv: Sequence[str]) -> bool:
     return "-triple" in argv and argv[argv.index("-triple") + 1].startswith("amdgcn")
 
 
-def _pad_mfma_hazards(cmd: Sequence[str], tmp: Path, arch: str) -> List[str]:
-    """Rebuild `cmd` (hipcc, output into `tmp`) through its own pipeline, as
-    `hipcc -### -save-temps` lists it, padding the device assembly between the
-    compile and the assembler step (mfmahaz.fix_asm). Returns what was padded."""
-    import shlex  # noqa: PLC0415
+def _device_asm_step(argv: Sequence[str]) -> bool:
+    return "-S" in argv and "-o" in argv and _device_step(argv)
 
-    from . import mfmahaz  # noqa: PLC0415
+
+def _plan(cmd: Sequence[str], tmp: Path) -> List[List[str]]:
+    """`hipcc -### -save-temps` of `cmd`: its steps, each an argv."""
+    import shlex  # noqa: PLC0415
 
     plan = subprocess.run([*cmd, "-###", "-save-temps"], cwd=tmp, capture_output=True,
                           text=True)
@@ -622,12 +680,34 @@ def _pad_mfma_hazards(cmd: Sequence[str], tmp: Path, arch: str) -> List[str]:
              if l.startswith(' "')]
     if plan.returncode != 0 or not steps:
         raise CompileError(f"hipcc -### failed for the MFMA padding rebuild:\n{plan.stderr}")
+    return steps
+
+
+def _pad_mfma_hazards(cmd: Sequence[str], tmp: Path, arch: str) -> List[str]:
+    """Rebuild `cmd` (hipcc, output into `tmp`) through its own pipeline, as
+    `hipcc -### -save-temps` lists it, padding the device assembly between the
+    compile and the assembler step (mfmahaz.fix_asm). Returns what was padded.
+
+    clang 24's new offload driver builds a host+device module with no device
+    assembly step: clang-linker-wrapper generates the device code at link time.
+    Such a command is planned again under --no-offload-new-driver, which has
+    the step. A plan with no device assembly at all is a CompileError: a
+    rebuild that pads nothing would look like a kernel with nothing to pad."""
+    from . import mfmahaz  # noqa: PLC0415
+
+    steps = _plan(cmd, tmp)
+    if not any(_device_asm_step(a) for a in steps) and \
+            any(os.path.basename(a[0]) == "clang-linker-wrapper" for a in steps):
+        steps = _plan([*cmd, "--no-offload-new-driver"], tmp)
+    if not any(_device_asm_step(a) for a in steps):
+        raise CompileError("MFMA padding rebuild: hipcc's pipeline for this build has no device "
+                           "assembly step to pad:\n" + "\n".join(" ".join(a) for a in steps))
     padded: List[str] = []
     for argv in steps:
         r = subprocess.run(argv, cwd=tmp, capture_output=True, text=True)
         if r.returncode != 0:
             raise CompileError(f"MFMA padding rebuild: {argv[0]} failed:\n{r.stderr}")
-        if "-S" in argv and "-o" in argv and _device_step(argv):
+        if _device_asm_step(argv):
             asm = tmp / argv[argv.index("-o") + 1]
             text, said = mfmahaz.fix_asm(asm.read_text(), arch)
             asm.write_text(text)
@@ -836,7 +916,7 @@ def _build_once(source: str, target: Target, name: str, extra_flags: Sequence[st
                 f"Source kept at {_keep(tmp, key)}\n\n{log}"
             )
 
-        kernels = resources.parse(log, target)
+        kernels = resources.parse(log, target, compiler=compiler_version())
         _note_unused_frames(kernels, tmp / so_name, kind, tmp / "build.log")
         try:
             resources.gate(kernels, **gates)
