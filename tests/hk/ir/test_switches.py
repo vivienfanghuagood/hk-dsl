@@ -35,8 +35,8 @@ def on(env=None, gpu="gfx950", engine=None):
 # -- the defaults ------------------------------------------------------------------------------
 
 
-def test_on_by_default_on_gfx950_is_k1_k2_the_index_launch_and_int4():
-    assert on() == {"vllm_mxfp8", "vllm_moe_a8w4", "vllm_dsv41_index", "vllm_int4"}
+def test_on_by_default_on_gfx950_is_k1_k2_the_index_launch_sparse_mla_and_int4():
+    assert on() == {"vllm_mxfp8", "vllm_moe_a8w4", "vllm_dsv41_index", "vllm_sparse_mla", "vllm_int4"}
 
 
 def test_on_by_default_on_gfx1100_is_every_route_validated_there():
@@ -178,7 +178,7 @@ def plugin(clean):
 def test_the_vllm_plugin_applies_the_defaults_with_nothing_set(plugin, capsys):
     applied, _ = plugin
     _vllm_plugin.register()
-    assert applied == ["vllm_int4", "vllm_moe_a8w4", "vllm_mxfp8", "vllm_dsv41_index"]
+    assert applied == ["vllm_int4", "vllm_moe_a8w4", "vllm_mxfp8", "vllm_dsv41_index", "vllm_sparse_mla"]
     out = capsys.readouterr().out
     assert "[hk] vLLM routes on: " in out and "default on (gfx950)" in out
 
@@ -196,7 +196,14 @@ def test_the_vllm_plugin_leaves_out_a_route_at_0(plugin, monkeypatch):
     applied, _ = plugin
     monkeypatch.setenv("HK_VLLM_MOE_A8W4", "0")
     _vllm_plugin.register()
-    assert applied == ["vllm_int4", "vllm_mxfp8", "vllm_dsv41_index"]
+    assert applied == ["vllm_int4", "vllm_mxfp8", "vllm_dsv41_index", "vllm_sparse_mla"]
+
+
+def test_hk_vllm_sparse_mla_0_turns_the_sparse_mla_route_off(plugin, monkeypatch):
+    applied, _ = plugin
+    monkeypatch.setenv("HK_VLLM_SPARSE_MLA", "0")
+    _vllm_plugin.register()
+    assert "vllm_sparse_mla" not in applied and "vllm_mxfp8" in applied
 
 
 def test_the_vllm_plugin_with_hk_patch_vllm_0_applies_nothing(plugin, monkeypatch):
@@ -219,7 +226,7 @@ def test_a_broken_contract_leaves_vllm_stock_with_one_warning(plugin, capsys, mo
     monkeypatch.setattr(contract, "check", check)
     _vllm_plugin.register()
     assert applied == []                         # all or nothing: K2 is not applied either
-    assert seen == [["vllm_dsv41_index", "vllm_int4", "vllm_moe_a8w4", "vllm_mxfp8"]]
+    assert seen == [["vllm_dsv41_index", "vllm_int4", "vllm_moe_a8w4", "vllm_mxfp8", "vllm_sparse_mla"]]
     cap = capsys.readouterr()
     lines = [x for x in cap.err.splitlines() if x.strip()]
     assert len(lines) == 1 and lines[0].startswith("[hk] WARNING: vllm: engine contract FAILED")

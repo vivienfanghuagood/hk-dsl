@@ -78,12 +78,15 @@ ROUTES: Dict[str, Route] = {r.name: r for r in (
        "caches and q byte-identical to vLLM's chain in vLLM, top-k sets equal at M=1; serving scorecard "
        "(with hk's other default routes): TPOT 4.5 / 4.4 / 3.1% below mono's at B1/4/8, GSM8K-1319 "
        "within stock's noise"),
-    _R("vllm_sparse_mla", "vllm", "HK_VLLM_SPARSE_MLA", False, (),
-       "DeepSeek-V4.1's sparse MLA prefill (T >= 512 queries a call) and its MXFP8 output rows",
-       "opt-in: in the serving scorecard (TP2, real "
-       "weights) prefill 8k +6.1% and TTFT -5.8% vs hk's default routes, GSM8K-1319 equal (McNemar "
-       "p 0.91); 1.39x opus + vLLM's quant on real-weight top-k-layer calls, MXFP8 rows bit for bit "
-       "vLLM's quant of hk's bf16 rows"),
+    _R("vllm_sparse_mla", "vllm", "HK_VLLM_SPARSE_MLA", True, ("gfx950",),
+       "DeepSeek-V4.1's sparse MLA prefill (T >= 512 queries a call) and its MXFP8 output rows; "
+       "it runs where vLLM's own sparse MLA does (VLLM_ROCM_USE_AITER_TRITON_SPARSE_MLA unset)",
+       "owner's decision 2026-10-29 on the serving scorecard (TP2, real weights). Run "
+       "20261029-0737Z vs same-session stock: prefill 8k +17.6% (+5.4% over hk), 8k TTFT -15.0%, "
+       "GSM8K-1319 equal (pooled McNemar p 0.12) -- but decode TPOT at B4 +2.2% vs stock (+2.8% "
+       "vs hk), beyond the spread: the route needs vLLM's own sparse MLA, which also replaces "
+       "AITER's decode kernel. Best vs best (run 20261029-1556Z, vs AITER-tuned stock): prefill "
+       "+7.6%, long +3.0%, mixed -1.5%, B4 TPOT +0.9%. HK_VLLM_SPARSE_MLA=0 turns it off"),
     _R("vllm_int4", "vllm", "HK_VLLM_INT4", True, ("gfx1100", "gfx950", "gfx1201"),
        "AWQ 4-bit linear layers on hk's decode GEMM",
        "greedy tokens identical to stock's, Qwen3-8B/14B-AWQ (history 22, 42); gfx1201: "

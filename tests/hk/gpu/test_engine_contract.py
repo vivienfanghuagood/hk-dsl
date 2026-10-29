@@ -169,10 +169,10 @@ def plugin_env(monkeypatch):
     for e in ["HK_DISABLE", "HK_PATCH_VLLM", "HK_VLLM_USER",
               *[r.env for r in switches.routes("vllm")]]:
         monkeypatch.delenv(e, raising=False)
-    from hk.integration import vllm_dsv41_index, vllm_int4
+    from hk.integration import vllm_dsv41_index, vllm_int4, vllm_sparse_mla
 
     yield monkeypatch
-    for mod in (PM, PX, vllm_int4, vllm_dsv41_index):
+    for mod in (PM, PX, vllm_int4, vllm_dsv41_index, vllm_sparse_mla):
         mod.revert()
 
 

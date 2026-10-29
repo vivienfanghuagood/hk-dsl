@@ -9,6 +9,20 @@ The next version's notes collect here until it is released.
 What is on main after 0.8.0. `pip install hk-dsl` (0.8.0) does not have it;
 the API reference marks such names *New after 0.8.0*.
 
+**vLLM: the sparse MLA route (`vllm_sparse_mla`) is on by default on gfx950.** The owner
+decided this on 2026-10-29 from the serving scorecard (TP2, real weights).
+- **Against same-session stock** (run 20261029-0737Z): prefill 8k +17.6% (+5.4% over
+  hk's other default routes), 8k TTFT -15.0%, GSM8K-1319 equal (pooled McNemar p 0.12).
+- **The cost is decode.** TPOT at B4 is +2.2% vs stock (+2.8% vs hk), beyond the spread.
+  The route runs only where vLLM's own sparse MLA does, which replaces AITER's decode
+  kernel as well (an open item).
+- **Best vs best** (run 20261029-1556Z, against AITER-tuned stock): prefill +7.6%, long
+  +3.0%, mixed -1.5%, B4 TPOT +0.9%.
+
+`HK_VLLM_SPARSE_MLA=0` turns it off. With `VLLM_ROCM_USE_AITER_TRITON_SPARSE_MLA=1`, vLLM
+takes AITER's path for prefill and decode and the route stands aside; its startup line
+says so.
+
 **`include/hk/cdna.cuh` split by kind (DSL-surface S12).** It is an umbrella over
 `include/hk/cdna/{core,lib,formats,special,primitives,escape}.cuh`, a pure move of the definitions
 in their dependency order; every gfx950 kernel's code object is unchanged, function by function.

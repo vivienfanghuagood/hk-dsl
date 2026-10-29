@@ -1,4 +1,4 @@
-"""DeepSeek-V4.1's sparse MLA prefill on hk's kernel (`HK_VLLM_SPARSE_MLA=1`, gfx950).
+"""DeepSeek-V4.1's sparse MLA prefill on hk's kernel (on by default on gfx950; `HK_VLLM_SPARSE_MLA=0` off).
 
 vLLM's ROCm path (`vllm/models/deepseek_v41/amd/rocm.py`, `DeepseekV41ROCMAiterMLAAttention._forward_prefill`)
 gathers each chunk's KV rows out of its fp8 caches into a bf16 workspace and calls
@@ -18,7 +18,14 @@ Measured (DSV4.1-Flash TP2 real-weight captures, one MI355X): with the MXFP8
 rows, top-k layers 1.39x and sliding-window layers 1.97x opus + vLLM's quant at T 8192 (1.22x and
 1.12x AITER's fused fp8 kernel); attention alone 1.11-1.13x opus. `ENABLED` toggles the route at run time (an in-process A/B).
 
-    HK_PATCH_VLLM=1 HK_VLLM_SPARSE_MLA=1 vllm serve <DeepSeek-V4.1-Flash>
+It runs where vLLM's own sparse MLA does. With VLLM_ROCM_USE_AITER_TRITON_SPARSE_MLA=1, vLLM takes
+AITER's path for prefill *and* decode and the route stands aside (`_forward_prefill` hands every call
+back). The serving cost of the route is that choice: vLLM's own decode kernel in place of AITER's
+(scorecard 20261029-0737Z: decode TPOT at B4 +2.2% vs stock); the route itself does nothing on a
+decode step.
+
+    vllm serve <DeepSeek-V4.1-Flash>                          # the route on (gfx950)
+    HK_VLLM_SPARSE_MLA=0 vllm serve <DeepSeek-V4.1-Flash>     # off
 """
 
 from __future__ import annotations
@@ -246,8 +253,11 @@ def apply_patch() -> str:
     names = (_common.rebind(("vllm",), have["prefill"], rocm_sparse_attn_prefill)
              + _common.rebind(("vllm",), have["quant"], rocm_inverse_rope_mxfp8_rows))
     cls._forward_prefill = _forward_prefill
+    aiter = os.environ.get("VLLM_ROCM_USE_AITER_TRITON_SPARSE_MLA", "").strip().lower() in ("1", "true")
     return (f"sparse_mla -> hk for DeepSeek-V4.1 sparse MLA prefill calls of T >= {MIN_T}"
-            f"{', MXFP8 rows in the kernel' if FUSE else ''} ({len(names)} bindings rebound)")
+            f"{', MXFP8 rows in the kernel' if FUSE else ''} ({len(names)} bindings rebound)"
+            + ("; inactive while VLLM_ROCM_USE_AITER_TRITON_SPARSE_MLA=1 (vLLM's AITER path runs "
+               "prefill and decode)" if aiter else ""))
 
 
 def revert() -> str:
