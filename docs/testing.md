@@ -568,6 +568,22 @@ Gate B's resource comparison needs only hipcc, and it is the part to run
 first: a change that spills is a wrong kernel, not a slow one
 ([resource gates](runtime.md#the-resource-gates)).
 
+`tools/surface/snapshot.py` takes the evidence for Gates A and B on the kernels
+that ship: the examples, hk.ops' row-kernel tables, and the kernels the routes
+build for the target (on gfx950 K1, K2, gemm_cdna's candidates, attention, the
+paged decode and int4; on gfx1100 / gfx1201 attention, K3, the paged decode,
+the MoE GEMM, int4 and the GEMMs). Run it in the base checkout and in the
+changed one, each with its own hk._mlir, for the same `HK_ARCH`, and diff:
+
+```bash
+python3 tools/surface/snapshot.py sources > base.jsonl     # Gate A: every scaffold and the IR, hashed
+python3 tools/surface/snapshot.py builds > base.jsonl      # Gate B: resources and an ISA hash a function
+python3 tools/surface/snapshot.py diff base.jsonl change.jsonl
+```
+
+The DSL-surface migration ([design](design/dsl-surface.md#7-verification-bit-identical-and-not-slower))
+calls these V0 (sources identical) and V1 (ISA and resources identical).
+
 ## Reproducing
 
 ```bash

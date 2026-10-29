@@ -36,6 +36,10 @@ warps x the wave of the kernel being traced (32 on RDNA, 64 on CDNA).
 Group.load(self, dst: SharedTile, src: View, *, wait: bool = True, rows=None, nontemporal: bool = False, gather=None, staged: int = 0) -> None
 ```
 
+*Surface*: `gather=`: to be merged into Group.load(gather=RowIndex) (DSL-surface migration S3).
+
+*Surface*: `staged=`: to be merged into a staged hk.RowIndex (DSL-surface migration S3).
+
 Global -> LDS by the whole group, issued and waited. Rows of the
 tile past the tensor's last read zero and touch no memory, on every
 target (gfx950's copy used to span the tile's whole rows: a last,
@@ -69,6 +73,8 @@ Group.gather_prep(self, ids, at, rows: int, *, raw: bool = False) -> None
 ```
 
 *Changed after 0.8.0*: new parameter `raw`
+
+*Surface*: to be merged into Group.stage (DSL-surface migration S3).
 
 Stage `rows` source rows of a gathered copy in LDS -- `ids[at + r] &
 0xFFFFFF` -- and pass a barrier (every warp must call it). A
