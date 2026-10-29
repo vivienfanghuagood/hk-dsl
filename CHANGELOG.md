@@ -474,6 +474,11 @@ these sizes; the shipped one is the one that holds under both).
 - A gfx950 job's wait for an idle MI355X is `HK_CI_PICK_WAIT_MIN` minutes (runner `.env`, default 60,
   as before), so CI can wait out other users' processes on its GPUs instead of failing; the gfx950
   and gfx950-vllm jobs' timeout is 360 minutes, which covers the wait (#123).
+- The merge train resolves a conflict in `CHANGELOG.md` by union instead of kicking the PR.
+  The union is checked before it is kept: no conflict markers, no entry twice, and each
+  version section kept as it was. To merge such a PR, its branch is first brought to the
+  train's tree with an admin bypass, which is logged. `readmit` puts back the PRs kicked
+  only for such a conflict (#128, [testing](docs/testing.md#the-merge-train)).
 
 ## 0.8.0
 
