@@ -909,6 +909,57 @@ def HK_LaneGatherOp : HK_Op<"lane_gather"> {
   let hasVerifier = 1;
 }
 
+def HK_LaneStripOp : HK_Op<"lane_strip"> {
+  let summary = "a register tile's registers as a strip, lane by lane (gfx950)";
+  let description = [{
+    The result is a 1-row strip holding, in each lane, the same registers as
+    the operand, in the operand's per-lane order: a matrix-core tile's
+    fragments row by row of fragments, each fragment's elements in order (a
+    strip operand: its rows, chunks and runs in order). Element (0, c) of the
+    result is, in lane (c / run) % 64, the lane's register (c / (64 run)) run
+    + c % run. No data moves; the strip ops (hk.map_cpp, group reductions,
+    store_elems) then work on a matrix-core result in place. Where each
+    element sits in the operand: hk.lane_coord. 32-bit elements.
+  }];
+  let arguments = (ins HK_RegTileType:$src);
+  let results = (outs HK_RegTileType:$result);
+  let assemblyFormat = [{
+    $src attr-dict `:` qualified(type($src)) `->` qualified(type($result))
+  }];
+  let hasVerifier = 1;
+}
+
+def HK_LaneCoordOp : HK_Op<"lane_coord"> {
+  let summary = "each element's row or column in a register tile (gfx950)";
+  let description = [{
+    An i32 strip of the shape `lane_strip` gives `src`, element by element
+    the operand row (`axis` 0) or column (`axis` 1) that lane_strip's element
+    held: index arithmetic for a matrix-core result taken as a strip. Only
+    `src`'s type is read.
+  }];
+  let arguments = (ins HK_RegTileType:$src, I64Attr:$axis);
+  let results = (outs HK_RegTileType:$result);
+  let assemblyFormat = [{
+    $src attr-dict `:` qualified(type($src)) `->` qualified(type($result))
+  }];
+  let hasVerifier = 1;
+}
+
+def HK_RunXorOp : HK_Op<"run_xor"> {
+  let summary = "each element taken from another element of its lane's run (gfx950)";
+  let description = [{
+    Element e of each lane's run of the result is element e ^ `mask` of the
+    same run of the operand: a register permutation inside a lane (a rotary
+    pair's partner, when both halves sit in one run). `mask` is below the run.
+  }];
+  let arguments = (ins HK_RegTileType:$src, I64Attr:$mask);
+  let results = (outs HK_RegTileType:$result);
+  let assemblyFormat = [{
+    $src attr-dict `:` qualified(type($src)) `->` qualified(type($result))
+  }];
+  let hasVerifier = 1;
+}
+
 def HK_MfmaStripOp : HK_Op<"mfma_strip"> {
   let summary = "one raw MFMA on strip registers (gfx950)";
   let description = [{
@@ -1070,9 +1121,12 @@ def HK_GroupReduceOp : HK_Op<"group_reduce"> {
     `kind` sum / max / min over each group of 2^k lanes of a chunk (k the
     number of offsets): a lane's run folded as `order`'s lane part says
     ("seq" left to right, "tree" balanced), then the lanes combined over
-    `order`'s xor offsets in that order -- each of 1, 2, .., 2^(k-1) once
-    -- and the group's value written to every element of each lane's run.
-    A 32-column MX group of a run-8 strip is xor 1, 2. Strips only (gfx950).
+    `order`'s xor offsets in that order -- powers of two up to 32, each
+    once; 1, 2, .., 2^(k-1) is a group of neighbouring lanes, any other set
+    the lanes l ^ (a sum of the offsets) -- and the group's value written to
+    every element of each lane's run. A 32-column MX group of a run-8 strip
+    is xor 1, 2; of a 32x32 matrix-core result taken as a strip (lane_strip),
+    a lane's run and xor 32. Strips only (gfx950).
   }];
   let arguments = (ins HK_RegTileType:$src, StrAttr:$kind, StrAttr:$order);
   let results = (outs HK_RegTileType:$result);

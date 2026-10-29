@@ -219,7 +219,7 @@ is either impossible to write or refused before the kernel runs:
    a different wrong answer on each run. The translation now follows every
    such copy with its wait ([the race](history/29-cdna.md#the-race)).
 
-`python -m hk.runtime.cocheck` runs the resource and wait gates on any AMDGPU
+`python -m hk.runtime.cocheck` runs the resource, wait and MFMA-hazard gates on any AMDGPU
 code object, hk's or not ([runtime](runtime.md#any-code-object-cocheck)).
 
 ### Arch facts as data

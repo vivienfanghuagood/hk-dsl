@@ -2824,6 +2824,33 @@ Lane 0's first element of this i32 strip, as a scalar (v_readfirstlane, gfx950).
 across the workgroup when every wave holds the same value -- one LDS word read after a
 barrier -- so it may drive hk.uniform branches (an early exit decided by one wave).
 
+#### `Tile.lane_strip`
+
+```python
+Tile.lane_strip(self, run: int = 8) -> Tile
+```
+
+*New after 0.8.0*
+
+This tile's registers as a 1-row strip, lane by lane (gfx950): no data moves. Lane l's
+elements, in the tile's per-lane order (a matrix-core tile: its fragments row by row of
+fragments, each fragment's elements in order; a strip: its rows, chunks and runs), become
+the lane's runs of `run`, chunk after chunk -- so `hk.map_cpp`, the group reductions and
+`store_elems` work on an MMA result where it sits. `hk.lane_coords(tile, run)` says which
+row and column of the tile each element is. 32-bit elements.
+
+#### `Tile.run_xor`
+
+```python
+Tile.run_xor(self, mask: int) -> Tile
+```
+
+*New after 0.8.0*
+
+Each element from another element of its lane's run (gfx950): element e of a run becomes
+element e ^ `mask` of the same run, a register move. A rotary pair's partner, when the pair
+sits in one run (an MMA result taken by `lane_strip`).
+
 #### `Tile.lane_gather`
 
 ```python
@@ -2843,7 +2870,11 @@ Tile.group_max(self, cols: int, *, lanes: str = 'seq', xor: Optional[Sequence[in
 
 A strip's rows reduced over groups of `cols` columns (a lane group's runs: an MX group is
 32 columns of a run-8 strip), the group's max in every element. `lanes` and `xor` state the
-order, as for `sum(axis=1, ...)`; the offsets are 1 .. cols / run / 2. gfx950.
+order, as for `sum(axis=1, ...)`; the offsets are 1 .. cols / run / 2 (neighbouring lanes),
+or as many other distinct powers of two up to 32: the group is then a lane's run and those of
+lanes l ^ (a sum of the offsets). A 32x32 matrix-core result taken as a strip
+(`lane_strip(16)`) holds 32 rows of a column in lane l's run and lane l ^ 32's:
+`group_max(32, xor=(32,))`. gfx950.
 
 #### `Tile.group_min`
 
@@ -4003,7 +4034,7 @@ are bounded: any non-empty length. head_dim is 64 or 128 on both.
 
 ## Also exported
 
-`hk.fp4_operand`, `hk.fp8_operand`, `hk.mx`, `hk.mx_scales_loose`, `hk.templates`
+`hk.fp4_operand`, `hk.fp8_operand`, `hk.lane_coords`, `hk.mx`, `hk.mx_scales_loose`, `hk.templates`
 
 
 <!-- docs/api/hk.math.md -->

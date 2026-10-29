@@ -19,6 +19,80 @@ translator now gives such an allocation the fragment's own shape (st_32x16
 here) when that one tiles it, and refuses one that no shape tiles.
 `tests/hk/ir/test_lds_narrow_tile.py`, `tests/hk/gpu/test_lds_narrow_tile.py`.
 
+**gfx950: fp32 LDS vectors and 16-bit col-layout LDS stores are ds ops, not FLAT.**
+`hk.SharedVec`'s load and store (what `hk.collective.cross_warp` combines
+through) and the store of a 16-bit col-layout register tile into LDS (an
+accumulator converted to bf16 -- attention's P handed to other warps) went
+through include/cdna4's generic-pointer paths, so the compiler emitted FLAT
+loads and stores. FLAT counts in vmcnt as well as lgkmcnt: a sparse-MLA kernel's
+per-block max exchange waited for its next KV block's DMA. `include/hk/cdna.cuh`
+now has the same accesses through LDS pointers, as the fp32 tiles got in #59.
+`tests/hk/codegen/test_cdna_fp32_lds.py`.
+
+**gfx950: a matrix-core result as a strip, where it sits: `Tile.lane_strip`,
+`hk.lane_coords`, `Tile.run_xor`, and group reductions over any xor offsets.**
+`acc.lane_strip(run)` takes a register tile's registers, lane by lane, as a 1-row
+strip. No data moves. `hk.lane_coords(acc, run)` gives each element's row and
+column in the tile, so `hk.map_cpp`, `group_max` and `store_elems` work on an MMA
+result without a round trip through memory: an epilogue that quantizes
+attention's output to MXFP8 per 32-row group. `run_xor(mask)` takes an element's
+partner inside its lane's run, such as a rotary pair. `group_max`/`group_min`/
+`group_sum` take any distinct power-of-two xor offsets up to 32, not only the
+neighbouring 1 .. 2^(k-1). A 32x32 result's 32-row column block is a lane's
+run plus lane l ^ 32's: `group_max(32, xor=(32,))`.
+`tests/hk/gpu/test_strip.py`, `tests/hk/ir/test_strip.py`.
+
+**vLLM, DeepSeek-V4.1 under `--monokernel`: the index layers as one hk launch
+(`HK_VLLM_DSV41_INDEX`, on by default on gfx950).** Between dsv41_mono's two
+launches each index layer ran vLLM's 9-12-kernel chain (`mono_decode._select`).
+At decode steps of up to 8 rows, `hk.integration.vllm_dsv41_index` runs it as
+one resident launch, `hk.ops.dsv41_index`: compressor, compressed-cache insert,
+indexer K and Q, and, for rows of up to 12288 entries, the logits and the
+top-k. The caches, q and q_scale are vLLM's byte for byte and the top-k sets
+equal (docs/integration.md, "The DeepSeek-V4.1 index launch"). The route
+patches through an import hook, since the plugin must not import the model
+package, and its contract is read from the module's source.
+
+**CDNA: the MFMA hazard gate pads what LLVM leaves short.** The hardware
+does not interlock on an MFMA's result. LLVM before llvm/llvm-project#225989
+-- every ROCm release so far, 7.2.3 and the 10.x images included -- pads too
+little on the shortest path into a block it first reached the long way
+(ROCm/llvm-project#5153), and gfx950's paged decode computed some scores
+wrong from it. hk's build now checks every CDNA code object
+(`hk.runtime.mfmahaz`: a shortest-distance walk backwards over the control
+flow from each instruction that touches an MFMA's registers, against LLVM's
+windows) and, by default, rebuilds a kernel that is short anywhere with the
+`s_nop` padding the fixed compiler would emit (`HK_MFMA_GATE=fix`; `refuse`,
+`report` and `0` are the other modes). The build log, the cache entry's
+`MFMAHAZ` and `python3 -m hk.integration --status` name each padded kernel
+and the places. A compiler that pads the gate's two-path probe is not
+checked. Swept over every kernel the test tiers and the default routes build:
+- ROCm 7.2.3 (CI's GPU image): gfx950's dense attention, head_dim 64 and 128,
+  not causal -- `hk.attention`'s kernel -- reads S for the softmax's max 3-4
+  wait states after the last QK MFMA on the taken path of a branch, where 12
+  are needed (2 places a kernel). Padded, its output is bitwise the unpadded
+  one's and its time 0.993-1.003x (6 shapes, one process).
+- ROCm 10 (the vLLM image): HipKittens' causal attention (`attend_ker`,
+  hk.ops.hipkittens), 3-6 wait states short at the join after an exec branch
+  (6 places at head_dim 128, 3 at 64); and one `hk.ops.gemm_cdna_dp`
+  candidate with a bias+GELU epilogue (an MFMA reading an overlapping
+  accumulator 1 wait state early).
+- The default-on routes' kernels (vllm_mxfp8, vllm_moe_a8w4, vllm_int4) are
+  clean under both; gfx1100 / gfx1201 have no MFMAs.
+
+**`warm-routes` builds every K2 kernel a server can pick.**
+- `python3 -m hk.integration warm-routes` called K2 (the MXFP8 linear route) at
+  M = 2048 / 5120 / 8192 / 16384 only. The four-warp `stages=2` schedule that
+  `vllm_mxfp8.RANGES` takes at M 832-1376 of (5120, 4096) was never built, so
+  every vLLM server compiled it on its first request in that range, in every
+  TP worker (the `[hk] JIT: compiling kernel
+  'mxfp8_4w_block_m128_block_n128_split_m1_split_n1_stages2'` line).
+- `warm_routes.k2_plans(n, k)` now enumerates, for each routed (N, K), every
+  (kind, schedule, tail recut) the route can launch at M up to 32768, and
+  warm-routes makes one call at the smallest M of each.
+  `tests/hk/ir/test_warm_routes.py` checks the cover against an independent
+  scan of `schedule` and `mxfp8.tail_split`.
+
 **CDNA: `hk-mma-fence`, a DSL rule for matrix-core accumulators; `hk.arch.agpr`
 to hold one in AGPRs.**
 - `hk-mma-fence`, a pass in the kernel pipeline, puts an `hk.sched_barrier`
@@ -397,6 +471,9 @@ these sizes; the shipped one is the one that holds under both).
   - A PR that conflicts, or that turns the train red, is kicked out and the train is
     rebuilt without it.
   - READY is a PR comment that names the current head.
+- A gfx950 job's wait for an idle MI355X is `HK_CI_PICK_WAIT_MIN` minutes (runner `.env`, default 60,
+  as before), so CI can wait out other users' processes on its GPUs instead of failing; the gfx950
+  and gfx950-vllm jobs' timeout is 360 minutes, which covers the wait (#123).
 - The merge train resolves a conflict in `CHANGELOG.md` by union instead of kicking the PR.
   The union is checked before it is kept: no conflict markers, no entry twice, and each
   version section kept as it was. To merge such a PR, its branch is first brought to the

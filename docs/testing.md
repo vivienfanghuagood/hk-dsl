@@ -283,7 +283,8 @@ moved it).
 **What the jobs run** (`scripts/ci/`, from the job's checkout):
 - **`run_gfx950.sh`** picks the GPU among its runner's `HK_CI_GPUS` (the
   first whose lock it can take at once, that is under 10% use and 3% VRAM,
-  and whose render node no `hk-gha-*` container has; it waits up to an hour for one), holds that
+  and whose render node no `hk-gha-*` container has; it waits `HK_CI_PICK_WAIT_MIN` minutes for one,
+  default 60), holds that
   GPU's lock until the container is gone, and starts `rocm/pytorch` with that GPU's render node,
   the checkout, the run's directory, CI's own directory, and the MLIR
   install read-only; nothing else of `$HOME`. In it, **`container_run.sh`**
@@ -487,7 +488,10 @@ idle (no job in progress, no `hk-gha-*` container) and start it again.
 Before an experiment that will hold GPUs for more than 30 minutes (a vLLM
 serving or accuracy run, say), look at the CI queue (`gh run list --workflow
 gpu.yml`) and let waiting GPU jobs start first. A gfx950 job that finds no free
-CI GPU for an hour fails, and every PR's GPU tier waits behind it.
+CI GPU within `HK_CI_PICK_WAIT_MIN` minutes (default 60) fails, and every PR's GPU tier waits behind it.
+Other users' processes take no lock, so a CI GPU can be occupied from outside: set
+`HK_CI_PICK_WAIT_MIN` in the runners' `.env` (e.g. 240) so that jobs wait such occupancy out instead of
+failing; the gfx950 jobs' `timeout-minutes` (360) covers the wait.
 
 ### Several gfx950 runners
 
