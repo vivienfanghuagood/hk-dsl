@@ -665,8 +665,7 @@ these sizes; the shipped one is the one that holds under both).
   stays allowed.
 
 **CI and tests**
-- A fourth GPU-tier job, `gfx1201`, on a shared RDNA4 box (Radeon AI PRO R9700), with an
-  ephemeral runner registered for this repository. It is continue-on-error and not a required
+- A fourth GPU-tier job, `gfx1201`, on a Radeon AI PRO R9700 (RDNA4). It is continue-on-error and not a required
   check until the RDNA4 port's tier is green (#67,
   [testing](docs/testing.md#the-gfx1201-runner)).
 - The `gfx1201` job is no longer continue-on-error, now that the RDNA4 port's GPU tier is green
@@ -679,24 +678,16 @@ these sizes; the shipped one is the one that holds under both).
   `check_regression.py` takes each arch's scoreboard arguments (`ARGS_AT`). Run by hand on an
   R9700, as gfx1100's is, not in the gfx1201 job (#106,
   [testing](docs/testing.md#the-gfx1201-runner)).
-- Pull requests merge through a merge train, `scripts/ci/merge_train.py` (#113,
-  [testing](docs/testing.md#the-merge-train)).
-  - Twice a day, at 01:00Z and 13:00Z, every READY PR is stacked in READY order on
-    `train/<YYYYMMDD>-<HHMM>`, as GitHub's squash merge will apply it.
-  - CI and the GPU tier's four jobs run once on that branch.
-  - If they are green, the PRs are squash-merged in order, and main's tree is checked
-    against the train's after each merge.
-  - A PR that conflicts, or that turns the train red, is kicked out and the train is
-    rebuilt without it.
-  - READY is a PR comment that names the current head.
-- A gfx950 job's wait for an idle MI355X is `HK_CI_PICK_WAIT_MIN` minutes (runner `.env`, default 60,
-  as before), so CI can wait out other users' processes on its GPUs instead of failing; the gfx950
-  and gfx950-vllm jobs' timeout is 360 minutes, which covers the wait (#123).
-- The merge train resolves a conflict in `CHANGELOG.md` by union instead of kicking the PR.
+- Pull requests merge in batches through a merge train, `scripts/ci/merge_train.py`: ready
+  PRs are stacked on main in order, tested together once (CI and the GPU tier), and
+  squash-merged in that order if both are green; a PR that conflicts or turns the batch red
+  is dropped from it (#113, [testing](docs/testing.md#the-merge-train)).
+- A gfx950 job waits for an idle MI355X (a configurable limit, 60 minutes by default) instead
+  of failing when its GPUs are busy; the gfx950 and gfx950-vllm jobs' timeout is 360 minutes,
+  which covers the wait (#123).
+- The merge train resolves a conflict in `CHANGELOG.md` by union instead of dropping the PR.
   The union is checked before it is kept: no conflict markers, no entry twice, and each
-  version section kept as it was. To merge such a PR, its branch is first brought to the
-  train's tree with an admin bypass, which is logged. `readmit` puts back the PRs kicked
-  only for such a conflict (#128, [testing](docs/testing.md#the-merge-train)).
+  version section kept as it was (#128, [testing](docs/testing.md#the-merge-train)).
 
 ## 0.8.0
 
@@ -920,13 +911,12 @@ one process. The two methods agree within about 3%.)
   `scripts/check_public_hygiene.py` (generic rules, an explicit allowlist)
   runs in CI's IR leg and before every tag.
 - [docs/design/e2e-goal.md](docs/design/e2e-goal.md), the end-to-end goal
-  refocused on three core kernels, and [docs/design/kda.md](docs/design/kda.md)
-  (#20); bench/tune's record of T4 run 20261024-a (#22).
+  refocused on three core kernels (#20, #22).
 
 **CI and tests**
 - Several gfx950 runners in parallel, each with its own GPUs and state, and
   GPU locks shared with manual measurements (#60,
-  [testing](docs/testing.md#several-gfx950-runners)).
+  [testing](docs/testing.md#the-gpu-tier)).
 - A cancelled GPU job no longer leaves its container on the GPU (#69,
   [testing](docs/testing.md#the-gpu-tier)).
 - Tests of gfx1100's measured data are pinned to gfx1100

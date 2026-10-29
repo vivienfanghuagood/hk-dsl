@@ -73,7 +73,7 @@ Against the polling CI:
 - no nightly rerun; `gh workflow run gpu.yml --ref main` reruns by hand.
 - gfx1100 can take one of several GPUs, where the polling CI used one.
 - the result is a check run, with the report as an artifact, instead of a
-  status linking to an asset of the `gpu-ci-logs` prerelease.
+  status linking to a report attached to a prerelease.
 - `gfx950` and `gfx1100` are main's required checks
   ([testing](../testing.md#the-gpu-tier)).
 
@@ -106,8 +106,8 @@ either CI.
 - The two cron entries (`# hk-dsl gpu ci`) are removed and the
   `orchestrate.py daemon` is stopped, between ticks and with no run in
   progress; nothing posts `gpu/*` statuses any more. The commits it tested
-  keep theirs, and the `gpu-ci-logs` prerelease keeps the reports they
-  link to.
+  keep theirs; the prerelease that held the reports they link to was
+  removed later.
 - `scripts/gpu_ci/` is gone from the repository. `container_run.sh` and
   `summarize.py` live on in `scripts/ci/`; `orchestrate.py`, `local_run.sh`
   and `pod_run.sh` are replaced by the jobs and `scripts/ci/pod_run.sh`.

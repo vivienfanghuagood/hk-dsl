@@ -29,9 +29,5 @@ scripts/ci/*.sh             ~/(?:gha|hk-ci)
 scripts/ci/gfx1201/hkr9     hkr9
 scripts/ci/run_gfx1201.sh   hkr9
 
-# Two comments in the CDNA header cite a maintainers' note by name; the header is being split
-# into include/hk/cdna/ by open PRs, so they are reworded after that lands. Remove this entry then.
-include/hk/cdna*            KernelWiki
-
 # A made-up PCI address in a unit test of the device name read from sysfs.
-tests/hk/ir/test_check.py   0000:75:00\.0
+tests/hk/ir/test_check.py   0000:5e:00\.0

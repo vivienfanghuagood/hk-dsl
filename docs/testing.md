@@ -271,9 +271,8 @@ its head; `gfx950` and `gfx1100` must pass.
 
 Until 19 October 2026 the tier was a polling CI on the same machines
 (`scripts/gpu_ci/`), posting `gpu/gfx1100` and `gpu/gfx950` commit statuses;
-older commits carry those, with reports in the
-[`gpu-ci-logs`](https://github.com/vivienfanghuagood/hk-dsl/releases/tag/gpu-ci-logs)
-prerelease. [Chapter 40](history/40-gpu-ci-on-actions.md) records the switch.
+older commits carry those (the prerelease that held their reports has since
+been removed). [Chapter 40](history/40-gpu-ci-on-actions.md) records the switch.
 
 ### The gfx1201 runner
 
