@@ -209,7 +209,8 @@ GPU that is not in the machine).
 
 ## Contributing, license, acknowledgements
 
-Issues and pull requests welcome: [testing](docs/testing.md),
+Issues and pull requests welcome: [CONTRIBUTING.md](CONTRIBUTING.md) (new kernels add no
+kernel-specific helpers or one-off DSL ops; the reviewer checklist), [testing](docs/testing.md),
 [how numbers are taken](docs/performance.md#how-the-numbers-are-taken). MIT
 ([LICENSE](LICENSE)). hk-dsl began in a fork of
 [HipKittens](https://github.com/HazyResearch/HipKittens) (HazyResearch),
