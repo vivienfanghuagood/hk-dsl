@@ -532,14 +532,14 @@ the regex over generated C++ are deleted.
 - no `hk.ops` kernel subclasses `Kernel` to override `with_defines` or `source`;
 - each internal specialization has a test against the generic path.
 
-**The allowlist and the registry are ratchets** (decided 10-29, after the first merge trains). An
+**The allowlist and the registry are ratchets** (decided 10-29). An
 allowlist line is (file, name, ceiling, reason). A use in a file with no line fails, and so do
 more uses than the ceiling: bringing a hatch into a new file, or more of it into a listed one, is
 the reviewed change -- the PR edits the line and the reviewer reads it. Fewer uses than the
 ceiling (or none) pass with a hint to tighten the line. The registry checks work the same way: a
 new name, dialect op, C++ helper or header that is not registered fails; a registered one that is
 gone only hints. The first version demanded exact counts and full equality, and every PR that
-touched an op file then conflicted with S0 in the merge train without anything to review (#137's
+touched an op file then conflicted with S0 when merged together, without anything to review (#137's
 dsv41_index went 173 -> 190 `map_cpp` uses; #120 brought 12 in a new file). A rewriting `Kernel`
 subclass is a line too, with ceiling 1 a class.
 
@@ -632,7 +632,7 @@ Every row must come out **bit-identical and not slower**. §7 says how each tier
 ## 7. Verification: bit-identical and not slower
 
 Each step names its tier. A step passes its tier on every kernel in its §6 rows before it is
-marked READY, and on a head that contains the latest main.
+merged, on a head that contains the latest main.
 
 The tiers are the repository's existing
 [gates for a change to the generated code](../testing.md#the-gates-for-a-change-to-the-generated-code),

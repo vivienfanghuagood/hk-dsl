@@ -7,11 +7,11 @@ constraints and the kernel computes the wrong answer -- silently, with no
 diagnostic, at full speed. So `hk.compile()` does not hand back a spilling
 kernel with a warning attached. It raises.
 
-The interactive analysis tool is .claude/skills/kernel-resource-check (tables,
-headroom, before/after diffs). This module is deliberately not that: it is the
-few lines that must keep working inside a wheel where .claude/ does not exist,
-so it parses the remarks itself rather than shelling out to a script that may
-not be installed. The two agree because they read the same three fields.
+The interactive resource analysis (tables, headroom, before/after diffs) is a
+separate maintainers' tool. This module is deliberately not that: it is the few
+lines that must keep working inside a wheel, where that tool does not exist, so
+it parses the remarks itself rather than shelling out to a script that may not
+be installed. The two agree because they read the same three fields.
 
 The remarks come in two shapes, and `parse` reads both. A compile that runs the
 device code generator itself -- every hipcc through clang 23, and clang 24's

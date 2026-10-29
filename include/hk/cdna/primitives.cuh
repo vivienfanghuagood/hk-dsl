@@ -56,7 +56,7 @@ __device__ inline static void store_bounded(const GL &dst, const RT &src, const 
  *
  * AUX is the cache-policy field of every access: 16 (SC1, device scope) or
  * 17 (SC0|SC1, system scope). What is correct on gfx950 was measured by the
- * litmus suite (KernelWiki pitfalls/gfx950-cross-gpu-memory-model.md):
+ * litmus suite (tools/cdna-probes/litmus_comm.hip):
  *   writer: data stored with AUX, s_waitcnt vmcnt(0), flag stored with AUX;
  *   reader: flag polled with AUX, data loaded with AUX.
  * Plain data stores stay in the writer's L2 and plain loads re-read stale
@@ -198,7 +198,7 @@ __device__ inline int *hk_mailbox_slot(const GL &box, const COORD &idx) {
  * @brief Post a tagged message: thread 0 stores (`v`, `tag`) into the 8-byte slot at the int32
  * element `idx` (elements idx and idx + 1, 8-byte aligned) as ONE store of scope AUX. The value
  * travels with its tag, so the writer needs no drain and the reader no separate flag and data
- * read (8 B stores never tore over xGMI: KernelWiki gfx950-cross-gpu-memory-model). It orders
+ * read (8 B stores never tore over xGMI in the litmus suite). It orders
  * nothing else: data the reader needs besides the value still goes through signal(). No barrier.
  */
 template<int AUX, ducks::gl::all GL, typename COORD>
