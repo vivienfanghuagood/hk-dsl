@@ -6,11 +6,13 @@ every import and far too slow to pay inside an autotune sweep. So the compiled
 
   * the generated source (which already folds in the kernel's Python source,
     its constexpr arguments and the target, since all three shaped the text),
-  * the toolchain -- hipcc's own version string and the flags,
-  * the contents of the include directories (hk's and HipKittens'), because
-    editing a header changes the kernel while leaving the generator's output
-    byte-identical. This is the one people get wrong, and it is the one that
-    produces a stale kernel that looks right.
+  * the toolchain -- hipcc's own version string and the flags (and torch's and
+    pybind11's versions, when their headers are on the include path),
+  * the contents of every header the kernel's compile reads, from hk's and
+    HipKittens' include directories or any other, listed by the compiler's own
+    preprocessor (`_scan_deps`), because editing a header changes the kernel
+    while leaving the generator's output byte-identical. This is the one people
+    get wrong, and it is the one that produces a stale kernel that looks right.
 
 Cache entries are never invalidated, only added: a key that hashes everything
 does not need eviction for correctness, and `HK_CACHE_DIR` is a directory the
@@ -21,11 +23,13 @@ from __future__ import annotations
 
 import hashlib
 import os
+import re
 import shutil
 import subprocess
 import sys
 import sysconfig
 import tempfile
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import List, Optional, Sequence, Tuple
@@ -225,47 +229,190 @@ def toolchain_fingerprint() -> str:
     return fp
 
 
-#: The HipKittens tree each -DKITTENS_* define selects (include/kittens.cuh).
-_ARCH_TREE = {"KITTENS_CDNA3": "cdna3", "KITTENS_CDNA4": "cdna4", "KITTENS_CDNA5": "cdna5",
-              "KITTENS_RDNA3": "rdna3", "KITTENS_RDNA4": "rdna4"}
-
-
-def target_headers_fingerprint(target: Target) -> str:
-    """hipcc's version + only the headers a kernel of `target` can include: kittens.cuh,
-    pyutils/, the one arch tree its -DKITTENS_* define selects, and its extra_includes
-    (hk/cdna.cuh for CDNA). A change to the CDNA shim then recompiles CDNA kernels and leaves
-    every RDNA one cached, and the other way round -- toolchain_fingerprint() moved every
-    kernel's key on any header, so a branch touching include/hk/cdna.cuh compiled the whole
-    codegen tier cold (40-56 min on CI against main's 5). A HipKittens tree of a layout this
-    does not know is hashed whole. Cached per process and target."""
-    key = ("target-headers", hipcc(), target.arch)
-    if key in _toolchain_cache:
-        return _toolchain_cache[key]
-    tree = _ARCH_TREE.get(getattr(target, "kittens_define", ""), "")
-    extra = [e.strip('"<>') for e in getattr(target, "extra_includes", ())]
-    h = hashlib.sha256(_hipcc_version().encode())
-    for d in include_dirs():     # what generated C++ includes: kittens.cuh + extra_includes
-        if (d / "kittens.cuh").exists():
-            if tree and (d / tree).is_dir():
-                h.update((d / "kittens.cuh").read_bytes())
-                for sub in ("pyutils", tree):
-                    if (d / sub).is_dir():
-                        h.update(_tree_hash(d / sub).encode())
-            else:                  # a layout this does not know: all of it
-                h.update(_tree_hash(d).encode())
-        for e in extra:
-            if (d / e).is_file():
-                h.update(e.encode())
-                h.update((d / e).read_bytes())
-    fp = h.hexdigest()[:32]
-    _toolchain_cache[key] = fp
-    return fp
-
-
 #: Stand-in for the module name while keying. The real name is derived from the
 #: key, so it cannot be an input to it; it also cannot change the generated code
 #: in any way that matters, since it only names the pybind entry point.
 _KEY_MODULE = "<module>"
+
+#: Names what the key covers. A cache entry written under another scheme is not
+#: wrong to keep, only never found again.
+_KEY_SCHEME = "hk-key-2: per-kernel header deps"
+
+
+# ---------------------------------------------------------------- headers
+#
+# A kernel's key covers the contents of every header its compile reads -- not
+# a guess at which trees it might include. The list comes from the compiler
+# (a preprocessor pass with clang's -dependency-file, `_scan_deps`), is kept
+# beside the cache as a manifest named by the header-free part of the key, and
+# on a lookup the listed files are hashed again (each once a process, re-read
+# only if its stat changes). An edit to any header the kernel includes, however
+# deep, moves its key; an edit to one it does not include leaves it cached.
+#
+# The previous key hashed kittens.cuh, pyutils/, the arch tree and the target's
+# extra_includes (hk/cdna.cuh) -- but only those files: include/hk/cdna_agpr.cuh,
+# which cdna.cuh includes, and include/pyutils/hk_bind.cuh, which every pybind
+# module includes, were in no key, and an edit to either served the old kernel.
+
+#: path -> ((st_ino, st_size, st_mtime_ns), sha256 of the contents, when it was hashed)
+_FILE_HASH: dict = {}
+
+#: A file modified this close before it was hashed is hashed again, as git treats a
+#: "racily clean" entry: the file system's clock ticks in milliseconds, so an edit
+#: of the same size in the same tick leaves the stat unchanged.
+_RACY_NS = 2_000_000_000
+
+
+def _file_hash(path: str) -> str:
+    try:
+        st = os.stat(path)
+    except OSError:
+        return "missing"
+    sig = (st.st_ino, st.st_size, st.st_mtime_ns)
+    got = _FILE_HASH.get(path)
+    if got is not None and got[0] == sig and st.st_mtime_ns < got[2] - _RACY_NS:
+        return got[1]
+    now = time.time_ns()
+    try:
+        digest = hashlib.sha256(Path(path).read_bytes()).hexdigest()
+    except OSError:
+        return "missing"
+    _FILE_HASH[path] = (sig, digest, now)
+    return digest
+
+
+def headers_digest(deps: Sequence[str]) -> str:
+    """One hash over the paths and contents of `deps` (a missing file hashes as
+    missing, so its key misses and the next build rescans)."""
+    h = hashlib.sha256()
+    for p in deps:
+        h.update(f"{p}\0{_file_hash(p)}\n".encode())
+    return h.hexdigest()
+
+
+def _full_key(base: str, digest: str) -> str:
+    return hashlib.sha256(f"{base}\0{digest}".encode()).hexdigest()[:32]
+
+
+def _manifest(base: str) -> Path:
+    return cache_dir() / "deps" / base
+
+
+def _read_manifest(base: str) -> Optional[List[str]]:
+    try:
+        lines = _manifest(base).read_text().split("\n")
+    except OSError:
+        return None
+    if not lines or lines[0] != _KEY_SCHEME:
+        return None
+    return [p for p in lines[1:] if p]
+
+
+def _write_manifest(base: str, deps: Sequence[str]) -> None:
+    m = _manifest(base)
+    try:
+        m.parent.mkdir(parents=True, exist_ok=True)
+        fd, tmp = tempfile.mkstemp(prefix=".deps-", dir=m.parent)
+        with os.fdopen(fd, "w") as f:
+            f.write("\n".join([_KEY_SCHEME, *deps]) + "\n")
+        os.replace(tmp, m)
+    except OSError:
+        pass          # no manifest: the next lookup rescans, which costs a preprocessor pass
+
+
+def _parse_depfile(text: str) -> List[str]:
+    """The prerequisites of a make rule as clang writes it (`target: a b \\` ...;
+    a space in a path is `\\ `, a `$` is `$$`)."""
+    text = text.replace("\\\n", " ")
+    _, _, rest = text.partition(":")
+    toks = re.findall(r"(?:\\.|[^\s\\])+", rest)
+    return [re.sub(r"\\(.)", r"\1", t).replace("$$", "$") for t in toks]
+
+
+def _versioned_dirs(fl: Sequence[str]) -> List[str]:
+    """Include directories keyed by a version rather than by their headers' contents:
+    ROCm's (hipcc's version), Python's (its path names the version), and pybind11's and
+    torch's (`_external_versions`). Hashing torch's few thousand headers on every start
+    would buy nothing the version does not."""
+    dirs = [str(rocm_path()), sysconfig.get_path("include"), sysconfig.get_path("platinclude")]
+    for f in fl:
+        if f.startswith("-I") and (_is_torch_include(f[2:]) or _is_pybind_include(f[2:])):
+            dirs.append(f[2:])
+    return [os.path.realpath(d) for d in dirs if d]
+
+
+def _under(p: str, d: str) -> bool:
+    return p == d or p.startswith(d + os.sep)
+
+
+#: (directory, package file) -> whether the directory is inside that package; real paths
+#: cost syscalls, and a warm lookup asks for every -I on every kernel.
+_INSIDE: dict = {}
+
+
+def _inside_package(d: str, mod: str, sub: str = "") -> bool:
+    m = sys.modules.get(mod)
+    f = getattr(m, "__file__", None)
+    if not f:
+        return False
+    k = (d, f, sub)
+    if k not in _INSIDE:
+        root = os.path.realpath(os.path.join(os.path.dirname(f), sub))
+        _INSIDE[k] = _under(os.path.realpath(d), root)
+    return _INSIDE[k]
+
+
+def _is_torch_include(d: str) -> bool:
+    """`d` is inside the imported torch package (torch_flags, or pybind11 as torch vendors it)."""
+    return _inside_package(d, "torch")
+
+
+def _is_pybind_include(d: str) -> bool:
+    """`d` is inside the imported pybind11 package (its headers ship in it)."""
+    return _inside_package(d, "pybind11")
+
+
+def _external_versions(fl: Sequence[str]) -> List[str]:
+    """The versions that stand for the headers `_versioned_dirs` leaves out."""
+    out = []
+    incs = [f[2:] for f in fl if f.startswith("-I")]
+    t = sys.modules.get("torch")
+    if t is not None and any(_is_torch_include(d) for d in incs):
+        out.append(f"torch {t.__version__} {getattr(getattr(t, 'version', None), 'git_version', '')}")
+    p = sys.modules.get("pybind11")
+    if p is not None and any(_is_pybind_include(d) for d in incs):
+        out.append(f"pybind11 {getattr(p, '__version__', '?')}")
+    return out
+
+
+def _scan_deps(fl: Sequence[str], src: Path, kind: str, tmp: Path) -> List[str]:
+    """Every header the compile of `src` with `fl` reads, but the toolchain's and
+    `_versioned_dirs`', as real paths, sorted. One preprocessor pass per side the
+    compile builds -- the device's, and for a .so the host's too: hipcc's -MD writes
+    the host side's list only, and with --offload-device-only none at all, so a header
+    included under __HIP_DEVICE_COMPILE__ would be missed. -dependency-file, like
+    -MMD, leaves system headers out. About 0.1 s a side, against seconds of compile.
+    Raises CompileError with the preprocessor's output if a pass fails."""
+    drop = {"--genco", "--no-gpu-bundle-output", "-shared", "-fPIC",
+            "--offload-device-only", "--offload-host-only"}
+    base = [("-DHK_MODULE_NAME=hk_deps" if f.startswith("-DHK_MODULE_NAME=") else f)  # a token
+            for f in fl if f not in drop and not f.startswith(("-Rpass", "-L", "-l", "-Wl,"))]
+    sides = ["--offload-device-only"] + (["--offload-host-only"] if kind == "so" else [])
+    skip = _versioned_dirs(fl)
+    found = set()
+    for i, side in enumerate(sides):
+        dep = tmp / f"deps{i}.d"
+        cmd = [hipcc(), *base, side, "-E", str(src), "-o", os.devnull,
+               "-Xclang", "-dependency-file", "-Xclang", str(dep),
+               "-Xclang", "-MT", "-Xclang", "hkdeps"]
+        proc = subprocess.run(cmd, capture_output=True, text=True)
+        if proc.returncode != 0 or not dep.exists():
+            raise CompileError(f"hipcc's preprocessor failed ({proc.returncode}) listing the "
+                               f"headers of {src}:\n{proc.stdout}{proc.stderr}")
+        for p in _parse_depfile(dep.read_text()):
+            found.add(os.path.realpath(p))
+    found.discard(os.path.realpath(src))
+    return sorted(p for p in found if not any(_under(p, d) for d in skip))
 
 
 _dialect_version: list = []
@@ -285,21 +432,34 @@ def dialect_version() -> str:
     return _dialect_version[0]
 
 
+#: Environment hipcc itself reads that changes what it compiles: flags it appends to every
+#: command, and which clang it runs (whose version `hipcc --version` may not report).
+_HIPCC_ENV = ("HIPCC_COMPILE_FLAGS_APPEND", "HIPCC_LINK_FLAGS_APPEND", "HIP_CLANG_PATH")
+
+
 def cache_key(source: str, target: Target, extra: Sequence[str] = (),
               kind: str = "so") -> str:
-    """Everything that can change the compiled bytes.
+    """Everything that can change the compiled bytes but the headers' contents:
+    hipcc's version, the dialect's, the full flag list (and the flags hipcc
+    appends from its environment), torch's and pybind11's versions when their
+    headers are on it, and the source. `build` adds the
+    headers (`headers_digest` of the kernel's own dependency list) to make the
+    key of a cache entry; this part names its dependency manifest.
 
     The full flag list is in here, not just `extra`: hk's own flags change when
     hk changes, and a cache that ignores them serves the artifact from before
     the fix. That is exactly the failure mode the include-path bug would have
     hidden.
     """
-    h = hashlib.sha256()
-    h.update(target_headers_fingerprint(target).encode())
+    h = hashlib.sha256(_KEY_SCHEME.encode())
+    h.update(_hipcc_version().encode())
     h.update(dialect_version().encode())
     fl = (flags(target, _KEY_MODULE, extra) if kind == "so"
           else codeobj_flags(target, extra))
     h.update("\0".join(fl).encode())
+    h.update("\0".join(_external_versions(fl)).encode())
+    h.update("\0".join(f"{v}={os.environ.get(v, '')}" for v in _HIPCC_ENV).encode())
+    h.update(kind.encode())
     h.update(source.encode())
     return h.hexdigest()[:32]
 
@@ -574,58 +734,71 @@ def build(
     if kind not in ("so", "co"):
         raise ValueError(f"build kind {kind!r}; 'so' or 'co'")
     target = get_target(arch)
-    key = cache_key(source, target, extra_flags, kind)
-    out = cache_dir() / key
-    fl = (flags(target, _KEY_MODULE, extra_flags) if kind == "so"
-          else codeobj_flags(target, extra_flags))
+    base = cache_key(source, target, extra_flags, kind)
+    key_fl = (flags(target, _KEY_MODULE, extra_flags) if kind == "so"
+              else codeobj_flags(target, extra_flags))
     _BUILT.add(hashlib.sha256("\0".join(
-        [source, *(f for f in fl if not f.startswith("-I"))]).encode()).hexdigest())
+        [source, *(f for f in key_fl if not f.startswith("-I"))]).encode()).hexdigest())
+    gates = dict(allow_scratch=allow_scratch, max_vgprs=max_vgprs, min_occupancy=min_occupancy)
 
-    hit = _load_cached(out, target)
-    if hit is not None and not (out / _MFMA_MARK).exists() and _mfma_mode() == "fix" and \
+    deps = _read_manifest(base)
+    if deps is not None:
+        hit = _hit(cache_dir() / _full_key(base, headers_digest(deps)), target, kind, gates)
+        if hit is not None:
+            return hit
+
+    _jit_notice(name)
+    for _ in range(3):
+        got = _build_once(source, target, name, extra_flags, kind, gates, verbose, base, key_fl)
+        if got is not None:
+            return got
+    raise CompileError(f"the headers kernel {name!r} includes kept changing while it compiled "
+                       f"(three times); nothing was cached. Build again once they are written.")
+
+
+def _hit(out: Path, target: Target, kind: str, gates: dict) -> Optional[Build]:
+    """The cache entry at `out`, re-gated, or None (none there, or one to rebuild)."""
+    if (hit := _load_cached(out, target)) is None:
+        return None
+    if not (out / _MFMA_MARK).exists() and _mfma_mode() == "fix" and \
             _mfma_found(hit.so_path, kind, target.arch):
         # built unpadded (the gate off, or before it): rebuilt here, padded, in its place
         shutil.rmtree(out, ignore_errors=True)
-        hit = None
-    if hit is not None:
-        # Re-gate on a hit. The key covers the source and the flags but not the
-        # thresholds, so the same bytes can be asked for by one kernel with no
-        # occupancy requirement and by another with a strict one; whoever
-        # compiled first must not decide for the second. Cheap -- the numbers
-        # come from the cached log, not from hipcc. Entries whose log no longer
-        # parses gate on nothing, which is what the OK marker already attests.
-        if hit.kernels:
-            _note_unused_frames(hit.kernels, hit.so_path, kind)
-            resources.gate(
-                hit.kernels,
-                allow_scratch=allow_scratch,
-                max_vgprs=max_vgprs,
-                min_occupancy=min_occupancy,
-            )
-        if not (out / _WAIT_MARK).exists() and _wait_gate(hit.so_path, kind):
-            # built before the wait gate, or with it off: checked once, then marked
+        return None
+    # Re-gate on a hit. The key covers the source and the flags but not the
+    # thresholds, so the same bytes can be asked for by one kernel with no
+    # occupancy requirement and by another with a strict one; whoever
+    # compiled first must not decide for the second. Cheap -- the numbers
+    # come from the cached log, not from hipcc. Entries whose log no longer
+    # parses gate on nothing, which is what the OK marker already attests.
+    if hit.kernels:
+        _note_unused_frames(hit.kernels, hit.so_path, kind)
+        resources.gate(hit.kernels, **gates)
+    if not (out / _WAIT_MARK).exists() and _wait_gate(hit.so_path, kind):
+        # built before the wait gate, or with it off: checked once, then marked
+        try:
+            (out / _WAIT_MARK).write_text("lds copies checked\n")
+        except OSError:
+            pass
+    if not (out / _MFMA_MARK).exists():
+        # built before the MFMA gate, or with it off: a refusal names the fix (a rebuild)
+        found = _mfma_found(hit.so_path, kind, target.arch)
+        if found and _mfma_mode() == "report":
+            print(f"hk: {hit.module_name}: {_mfma_refusal(found)}", file=sys.stderr)
+        elif found:
+            raise ResourceError(f"{_mfma_refusal(found)}\nCached build: {out}")
+        elif found is not None:
             try:
-                (out / _WAIT_MARK).write_text("lds copies checked\n")
+                (out / _MFMA_MARK).write_text("mfma hazards checked\n")
             except OSError:
                 pass
-        if not (out / _MFMA_MARK).exists():
-            # built before the MFMA gate, or with it off: a refusal names the fix (a rebuild)
-            found = _mfma_found(hit.so_path, kind, target.arch)
-            if found and _mfma_mode() == "report":
-                print(f"hk: {hit.module_name}: {_mfma_refusal(found)}", file=sys.stderr)
-            elif found:
-                raise ResourceError(f"{_mfma_refusal(found)}\nCached build: {out}")
-            elif found is not None:
-                try:
-                    (out / _MFMA_MARK).write_text("mfma hazards checked\n")
-                except OSError:
-                    pass
-        return hit
+    return hit
 
-    module_name = f"hk_{name}_{key[:12]}"
-    so_name = module_name + ext_suffix() if kind == "so" else CODEOBJ
-    _jit_notice(name)
 
+def _build_once(source: str, target: Target, name: str, extra_flags: Sequence[str], kind: str,
+                gates: dict, verbose: bool, base: str, key_fl: Sequence[str]) -> Optional[Build]:
+    """List the headers, key, compile, gate, publish. None if a header changed
+    while it compiled: the binary then matches neither version's key."""
     # Build in a scratch directory and move into place, so a killed or failing
     # compile never leaves a half-written .so that the next run would import.
     tmp = Path(tempfile.mkdtemp(prefix="hk-build-", dir=cache_dir()))
@@ -633,6 +806,19 @@ def build(
     try:
         src = tmp / "kernel.cpp"
         src.write_text(source)
+        try:
+            deps = _scan_deps(key_fl, src, kind, tmp)
+        except CompileError as e:
+            raise CompileError(f"kernel {name!r}: {e}\nSource kept at {_keep(tmp, base)}") from None
+        digest = headers_digest(deps)
+        key = _full_key(base, digest)
+        out = cache_dir() / key
+        if (hit := _hit(out, target, kind, gates)) is not None:
+            _write_manifest(base, deps)
+            return hit
+
+        module_name = f"hk_{name}_{key[:12]}"
+        so_name = module_name + ext_suffix() if kind == "so" else CODEOBJ
         fl = (flags(target, module_name, extra_flags) if kind == "so"
               else codeobj_flags(target, extra_flags))
         cmd = [hipcc(), *fl, str(src), "-o", str(tmp / so_name)]
@@ -653,12 +839,7 @@ def build(
         kernels = resources.parse(log, target)
         _note_unused_frames(kernels, tmp / so_name, kind, tmp / "build.log")
         try:
-            resources.gate(
-                kernels,
-                allow_scratch=allow_scratch,
-                max_vgprs=max_vgprs,
-                min_occupancy=min_occupancy,
-            )
+            resources.gate(kernels, **gates)
             checked = _wait_gate(tmp / so_name, kind)
             mfma = _mfma_found(tmp / so_name, kind, target.arch)
             padded: List[str] = []
@@ -683,12 +864,15 @@ def build(
                 f"{e}\n\nGenerated source kept at {_keep(tmp, key)}"
             ) from None
 
+        if headers_digest(deps) != digest:
+            return None
         if checked:
             (tmp / _WAIT_MARK).write_text("lds copies checked\n")
         if mfma is not None:
             (tmp / _MFMA_MARK).write_text(
                 f"padded {len(padded)}\n" + "".join(f"{p}\n" for p in padded) if padded
                 else "mfma hazards checked\n")
+        (tmp / "deps").write_text("\n".join(deps) + "\n")
         (tmp / "OK").write_text(module_name)
         try:
             os.rename(tmp, out)
@@ -699,7 +883,9 @@ def build(
             # so losing is not an error.
             if not (out / "OK").exists():
                 raise
+            _write_manifest(base, deps)
             return _load_cached(out, target)
+        _write_manifest(base, deps)
     finally:
         if not moved:
             shutil.rmtree(tmp, ignore_errors=True)

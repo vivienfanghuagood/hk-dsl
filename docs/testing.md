@@ -211,10 +211,11 @@ cancels a PR's run in progress, but main's runs always finish:
     A run restores the branch's cache, its base branch's, or `main`'s.
   - Cold, six shards took 8-20 minutes a job (2.5 of setup, 2 of IR tier on the first);
     hence ten, with the IR tier apart.
-  - **What goes cold:** a kernel's cache key is hipcc plus the headers its own
-    target includes (`runtime.compile.target_headers_fingerprint`: kittens.cuh,
-    pyutils/, the arch tree, extra_includes). An edit to `include/hk/cdna.cuh`
-    recompiles the CDNA kernels and leaves the RDNA ones cached.
+  - **What goes cold:** a kernel's cache key is hipcc plus the contents of the
+    headers its own compile reads, as the preprocessor lists them
+    ([the cache](runtime.md#the-cache)). An edit to `include/hk/cdna.cuh`
+    recompiles the kernels that include it -- the CDNA ones -- and leaves the
+    RDNA ones cached; an edit to an rdna3/ header, the reverse.
   - **Before both changes:** every header was in every key, and a branch
     touching the CDNA shim compiled the whole tier cold on one 4-core runner,
     40-56 minutes against `main`'s warm 5 (PRs #28-#31).
