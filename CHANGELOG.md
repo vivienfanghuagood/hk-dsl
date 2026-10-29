@@ -33,6 +33,12 @@ to hk in the W7900D production images again.** Under its AMD clang 23 the four-t
   kernel out of what it measures instead of failing.
 - `tests/hk/codegen/test_decode_gemm_builds.py`: every shipped schedule builds without
   spilling at its cap, under whichever hipcc runs it.
+- The shipped gfx1100 vLLM table has rows for MiniCPM5-2B's and MiniCPM-V-4.7-35B-A3B's (TP2)
+  linear shapes, measured in their production image, so they start without tuning at load
+  (it had taken MiniCPM-V's startup from 130-140 s to 200-250 s) and every shape is covered --
+  tuning at load had run out of its 60 s before MiniCPM-V's down_proj and in_proj_ba. M = 1 stays on vLLM's
+  skinny GEMM there. MiniCPM5-2B end to end in that image: median TPOT 1.22-1.44x at
+  concurrency 8-32; GSM8K 87.95% vs 88.02% (1319 questions, McNemar p = 1.0).
 
 **`include/hk/cdna.cuh` split by kind (DSL-surface S12).** It is an umbrella over
 `include/hk/cdna/{core,lib,formats,special,primitives,escape}.cuh`, a pure move of the definitions
