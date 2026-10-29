@@ -37,7 +37,7 @@ l ^ 32's (`group_max(32, xor=(32,))`), a rope pair's partner the next element of
 consecutive fp8 of its head at once.
 
 Measured on an MI355X against the kernels on vLLM's path, DSV4.1-Flash TP2 calls captured from a
-real-weight run (kda/sparse-mla-prefill): top-k layers at T 8192, 640 rows a query, 1.11-1.13x opus
+real-weight run: top-k layers at T 8192, 640 rows a query, 1.11-1.13x opus
 (attention); with the MXFP8 rows 1.22x AITER's fused fp8 sparse_mla_fwd and 1.39x opus + vLLM's
 quant; sliding-window layers 1.15-1.20x the faster of opus and AITER (attention), 1.12x and 1.97x
 with the MXFP8 rows. At T <= 256 one query a workgroup leaves the machine half empty and opus is

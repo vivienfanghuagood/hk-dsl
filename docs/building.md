@@ -38,7 +38,7 @@ scripts/build_wheel.sh      # optional: a wheel for this interpreter, headers in
 ```
 
 `build_mlir.sh` takes `LLVM_TAG`, `PYTHON`, `HK_LLVM_ROOT`, `JOBS` and
-`LINK_JOBS`; keep `JOBS` × ~2 GB under the memory limit (a 48 Gi pod is
+`LINK_JOBS`; keep `JOBS` × ~2 GB under the memory limit (48 GiB of memory takes
 `JOBS=6 LINK_JOBS=1`). The bindings land in `python/hk/_mlir`, about 36 MB.
 
 From the scripts themselves:
@@ -248,8 +248,7 @@ python3 -c 'import sys, zipfile; a, b = (zipfile.ZipFile(p) for p in sys.argv[1:
 If the sha256s differ, the second line names the files that do. For a `.so`,
 `readelf -n` shows whether the build-id differs and `strings -a | grep /`
 finds a path that leaked; for the zip layer, compare `ZipInfo.date_time` and
-`external_attr`. The maintainers' release script (`release-build.sh`, not in
-this repository) does all of this, builds cp310 on the host and cp312 in the
+`external_attr`. The maintainers' release script does all of this, builds cp310 on the host and cp312 in the
 vLLM image, runs the glibc check, and writes `SHA256SUMS`; a rebuild of the same tag checks
 against it with `sha256sum -c SHA256SUMS`.
 
@@ -264,9 +263,9 @@ submodule; `HK_INCLUDE_DIR` overrides that ([compiling](runtime.md#compiling)).
 
 CI is two workflows. `ci.yml`, on GitHub's runners, on every push and pull
 request, builds the dialect against a prebuilt MLIR 23.1.3 and runs the two
-tiers that need no GPU. `gpu.yml`, on two self-hosted runners on the MI355X
-workstation, on pushes to main only, runs the GPU tier on a gfx950 and a
-gfx1100; its jobs, `gfx950` and `gfx1100`, are main's required checks. How,
+tiers that need no GPU. `gpu.yml`, on self-hosted runners that the maintainers
+operate, on pushes to main and by hand, runs the GPU tier on gfx950, gfx1100
+and gfx1201; its jobs `gfx950` and `gfx1100` are main's required checks. How,
 what each costs, and how to make a new MLIR archive:
 [testing](testing.md#ci) and [the GPU tier](testing.md#the-gpu-tier).
 

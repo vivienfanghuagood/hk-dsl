@@ -6,9 +6,8 @@ ones that are correct, interleaved in one process, and write a scoreboard.
     python3 -m bench.dx.run --solutions torch_compile,docs_only --json out.json
     python3 -m bench.dx.run --list                           # tasks, shapes, solutions
 
-On the workstation: `hkx950 <checkout> 5 python3 -m bench.dx.run ...` (gfx950)
-and `hkx1100 <checkout> python3 -m bench.dx.run --tasks t1 ...` (gfx1100,
-one task per call: the GPU is shared). bench/dx/README.md has the protocol.
+In a ROCm container on the GPU, with the checkout's `hk._mlir` built: on a shared
+gfx1100, one task per call (`--tasks t1`). bench/dx/README.md has the protocol.
 """
 
 from __future__ import annotations

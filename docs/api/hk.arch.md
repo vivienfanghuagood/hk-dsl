@@ -200,8 +200,7 @@ other access reads it into a VGPR copy after the MFMAs' wait states and
 writes it back (include/hk/cdna_agpr.cuh). Outputs are bitwise the VGPR
 form's. LLVM picks the VGPR form unless register pressure forces AGPRs,
 and an asm MFMA is one its scheduler cannot see: measured slower on
-attn_cdna (docs: KernelWiki pitfalls/gfx950-agpr-mma-chain-interleave.md),
-so the kernels that offer it keep it off by default.
+attn_cdna, so the kernels that offer it keep it off by default.
 
 ### `hk.arch.target`
 

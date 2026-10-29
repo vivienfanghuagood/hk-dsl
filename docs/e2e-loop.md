@@ -21,7 +21,7 @@ before trusting a number:
 - **Every request succeeded.** A failed request returns in milliseconds and
   looks like a fast one; make the script fail loudly (`qi_bench.py` raises).
   A request whose worker died can also never return: watch the log and treat
-  minutes of silence as a hang (`podwait`'s silence timeout in E1's record).
+  minutes of silence as a hang (a silence timeout on the log).
 
 ## 2. Find where the device time goes
 

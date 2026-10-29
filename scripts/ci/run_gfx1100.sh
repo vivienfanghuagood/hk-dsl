@@ -9,7 +9,7 @@
 # on the jump host.
 # The jump host, the pod and the proxy are the runner's configuration, not the
 # repository's: HK_CI_JUMP, HK_CI_POD and HK_CI_PROXY come from the runner's .env
-# (docs/testing.md, "Where things live") and have no default. The job log is
+# and have no default. The job log is
 # public: they are masked in it, and this script does not print them.
 set -uo pipefail
 # A runner's listener started by `cmd &` from a non-interactive shell ignores SIGINT and SIGQUIT
@@ -19,7 +19,7 @@ set -uo pipefail
 [ -n "${HK_CI_SIGNALS:-}" ] || HK_CI_SIGNALS=default exec env --default-signal=INT,QUIT,HUP,TERM "${BASH_SOURCE[0]}" "$@"
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 for v in HK_CI_JUMP HK_CI_POD HK_CI_PROXY; do
-    [ -n "${!v:-}" ] || { echo "::error::$v is not set (the runner's .env; docs/testing.md)"; exit 1; }
+    [ -n "${!v:-}" ] || { echo "::error::$v is not set (the runner's .env)"; exit 1; }
 done
 POD=$HK_CI_POD
 JUMP=$HK_CI_JUMP
@@ -37,7 +37,7 @@ mkdir -p "$OUT"
 # Run the script on stdin in the pod.
 pod() { ssh -o BatchMode=yes -o ServerAliveInterval=30 "$JUMP" "kubectl exec -i $POD -- bash -s" {REAP}>&- ; }
 
-# Cancellation (docs/testing.md, "Cancelled jobs and orphan containers"): the runner sends SIGINT,
+# Cancellation (scripts/ci/cancel.sh): the runner sends SIGINT,
 # then SIGTERM 7.5 s later, to the step's shell alone -- gpu.yml execs this script, so that is this
 # script -- SIGKILLs it 2.5 s after that, and then every process the job left. A round trip to the
 # pod takes 3-4 s and a trap waits for the one in progress, so the pod's run is killed by the

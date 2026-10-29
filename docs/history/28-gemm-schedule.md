@@ -119,7 +119,7 @@ tests run the new default.
 ## Reproduction
 
 ```
-cd /workspace/hk-dsl
+cd hk-dsl
 export FLYDSL_ROOT=/workspace/FlyDSL HIP_VISIBLE_DEVICES=0 PYTHONPATH=python
 python3 tools/hk-bench/gemm_vs_flydsl.py --arms "hk default,hk +setprio,hk i2,hk l2,hk l2 i2,fly 128 dispatch opts,fly 128 -sched"
 python3 tools/hk-bench/gemm_vs_flydsl.py --arms "hk thin,hk thin +setprio,hk default" \

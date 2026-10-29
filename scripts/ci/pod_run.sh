@@ -12,8 +12,7 @@
 # directory every pod on the node mounts, so a run here and a benchmark in
 # another pod that sees the same cards cannot both take one (a lock inside
 # this pod alone is invisible to them). Without that directory the run
-# refuses to start rather than run unlocked. GPUs 5 and 7 left the default:
-# the node allocates them to other users' serving pods. Nothing outside the
+# refuses to start rather than run unlocked. Nothing outside the
 # locks and this process's environment is changed.
 #
 # HK_CI_NODE_LOCKS=0 (the CI pod, scripts/ci/k8s/): the pod's GPUs were allocated to it

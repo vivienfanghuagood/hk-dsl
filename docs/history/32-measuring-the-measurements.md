@@ -382,8 +382,8 @@ softmax, -2.2% of 7.2%).
 
 ```
 # in the engines' pod, GPU 3; hk._mlir built against chapter 31's MLIR copy
-HK_LLVM_ROOT=/workspace/measure/llvm HK_MLIR_BUILD=$PWD/../hk-build \
-    PYTHON=/workspace/measure/buildenv/bin/python scripts/build_hk_mlir.sh
+HK_LLVM_ROOT=<workspace>/measure/llvm HK_MLIR_BUILD=$PWD/../hk-build \
+    PYTHON=<workspace>/measure/buildenv/bin/python scripts/build_hk_mlir.sh
 export HIP_VISIBLE_DEVICES=3 FLYDSL_ROOT=/workspace/FlyDSL PYTHONPATH=python
 
 python3 tools/hk-bench/scoreboard.py --probe-ceilings --rounds 7 --calls 50

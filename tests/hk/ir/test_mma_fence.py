@@ -2,7 +2,7 @@
 first other access to its accumulator, as a DSL rule rather than a fence a
 kernel remembers. On gfx950 LLVM threaded the softmax's reads of AGPR scores
 through the two pages' MFMA chains of the paged decode and computed wrong
-scores; KernelWiki pitfalls/gfx950-agpr-mma-chain-interleave.md."""
+scores."""
 
 from __future__ import annotations
 

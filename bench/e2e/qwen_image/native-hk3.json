@@ -1,7 +1,7 @@
 {
  "args": {
-  "out": "/workspace/e1/native-hk3",
-  "model": "/workspace/hf/hub/models--Qwen--Qwen-Image-2.1/snapshots/d26bb61231c349cf6b7896fa83353113880e1ba3",
+  "out": "<workspace>/e1/native-hk3",
+  "model": "<workspace>/hf/hub/models--Qwen--Qwen-Image-2.1/snapshots/d26bb61231c349cf6b7896fa83353113880e1ba3",
   "runs": 3,
   "steps": 30,
   "size": 1024,

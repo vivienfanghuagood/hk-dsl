@@ -60,8 +60,8 @@
     "consts": {},
     "warps": 1,
     "lds_bytes": 0,
-    "source": "/workspace/claude/hk-dsl-profile/cache/20bc88e0650bafaba626b2f769b12896/kernel.cpp",
-    "binary": "/workspace/claude/hk-dsl-profile/cache/20bc88e0650bafaba626b2f769b12896/hk_gelu_mul_tiles_20bc88e0650b.cpython-312-x86_64-linux-gnu.so",
+    "source": "<workspace>/hk-dsl-profile/cache/20bc88e0650bafaba626b2f769b12896/kernel.cpp",
+    "binary": "<workspace>/hk-dsl-profile/cache/20bc88e0650bafaba626b2f769b12896/hk_gelu_mul_tiles_20bc88e0650b.cpython-312-x86_64-linux-gnu.so",
     "resources": {
      "name": "gelu_mul_tiles_kernel(globals)",
      "vgpr": 92,
@@ -1093,8 +1093,8 @@
       "consts": {},
       "warps": 1,
       "lds_bytes": 0,
-      "source": "/workspace/claude/hk-dsl-profile/cache/2e55a8748448d0b80cecb1152ea9692b/kernel.cpp",
-      "binary": "/workspace/claude/hk-dsl-profile/cache/2e55a8748448d0b80cecb1152ea9692b/hk_gelu_mul_strips_2e55a8748448.cpython-312-x86_64-linux-gnu.so",
+      "source": "<workspace>/hk-dsl-profile/cache/2e55a8748448d0b80cecb1152ea9692b/kernel.cpp",
+      "binary": "<workspace>/hk-dsl-profile/cache/2e55a8748448d0b80cecb1152ea9692b/hk_gelu_mul_strips_2e55a8748448.cpython-312-x86_64-linux-gnu.so",
       "resources": {
        "name": "gelu_mul_strips_kernel(globals)",
        "vgpr": 102,

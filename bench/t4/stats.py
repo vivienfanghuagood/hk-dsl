@@ -15,7 +15,7 @@ The measurement rules are the project's (docs/history/31-32, hk.tune.stats):
     (> 1: the solution is faster); a shape's ratio is the median over sets,
     reported with the sets' range.
 
-The pass rule (task.md, PROTOCOL.md) is `verdict()`.
+The pass rule (task.md) is `verdict()`.
 """
 
 from __future__ import annotations

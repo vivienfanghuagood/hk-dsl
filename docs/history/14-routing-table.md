@@ -121,8 +121,6 @@ raw HIP call inside an extension.
 Not ported: the two SDPA rebinding patches (`vllm.py`, `sglang.py`) still
 keep their own counters.
 
-See `.claude/plans/` for the full plan and its gates.
-
 ---
 
 ← [gfx1201](13-gfx1201.md) · [Development record](README.md) · [The IR as an MLIR dialect](15-mlir-dialect.md) →

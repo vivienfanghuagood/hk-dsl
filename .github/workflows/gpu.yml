@@ -1,15 +1,14 @@
 name: GPU tier
 
-# The GPU tier (scripts/gpu_suite.sh) on self-hosted runners (scripts/ci/,
-# docs/testing.md#the-gpu-tier): gfx950 on one of the MI355X workstation's idle
-# MI355X, gfx1100 relayed to the CI pod on the W7900D cluster and sharded over
-# its four W7900D, gfx1201 on an idle R9700 of the RDNA4 dev box. On pushes to
+# The GPU tier (scripts/gpu_suite.sh) on self-hosted runners the maintainers
+# operate (scripts/ci/, docs/testing.md#the-gpu-tier): gfx950 on an idle MI355X,
+# gfx1100 sharded over four W7900D, gfx1201 on an idle R9700. On pushes to
 # main and by hand only. Never add pull_request or pull_request_target: the
 # repository is public, and a fork's code must never reach these machines.
 
 # The GPU steps exec their script (`exec scripts/ci/...`): on cancel or timeout the runner signals
 # the step's shell alone, so the script must be that shell to see it and kill its container or pod
-# run (docs/testing.md, "Cancelled jobs and orphan containers").
+# run (scripts/ci/cancel.sh).
 
 on:
   push:
@@ -24,8 +23,8 @@ jobs:
   # The job names are main's required checks; renaming one is a change to
   # main's branch protection too.
   gfx950:
-    # Any runner labelled gfx950: there may be several on the workstation, each on its own GPUs
-    # (HK_CI_GPUS) with its own state (HK_CI_STATE), so different refs' runs go in parallel.
+    # Any runner labelled gfx950: there may be several, each on its own GPUs (HK_CI_GPUS) with
+    # its own state (HK_CI_STATE), so different refs' runs go in parallel.
     runs-on: [self-hosted, hk-gpu, gfx950]
     # Covers run_gfx950.sh's wait for a GPU (HK_CI_PICK_WAIT_MIN in the runner's .env) as well as the run.
     timeout-minutes: 360
@@ -88,14 +87,10 @@ jobs:
           if-no-files-found: ignore
 
   gfx1100:
-    # The runner labelled gfx1100-x4 relays to the CI pod
-    # (scripts/ci/k8s/gfx1100-ci.yaml): four W7900D the device plugin gave
-    # that pod alone, so no node lock, and the suite's groups sharded over all
-    # four. Fallback: runs-on [self-hosted, hk-gpu, gfx1100] -- the dev pod's
-    # single GPU under the node lock. The jump host, the pod, its GPUs and the
-    # proxy are each runner's own (HK_CI_JUMP, HK_CI_POD, HK_CI_POD_GPUS,
-    # HK_CI_NODE_LOCKS, HK_CI_PROXY in its .env; docs/testing.md), never this
-    # public file's.
+    # The runner labelled gfx1100-x4 relays to a CI pod with four W7900D
+    # (scripts/ci/k8s/gfx1100-ci.yaml) and shards the suite's groups over all
+    # four. Where it runs is the runner's configuration (HK_CI_JUMP, HK_CI_POD,
+    # HK_CI_POD_GPUS, HK_CI_NODE_LOCKS, HK_CI_PROXY), never this public file's.
     runs-on: [self-hosted, hk-gpu, gfx1100-x4]
     timeout-minutes: 180
     concurrency:
@@ -115,10 +110,9 @@ jobs:
           if-no-files-found: ignore
 
   gfx1201:
-    # The RDNA4 port, on the shared gfx1201 dev box (8x Radeon AI PRO R9700):
-    # one card of HK_CI_GPUS (the runner's .env) that is idle, through
-    # scripts/ci/gfx1201/hkr9 (docs/testing.md, "The gfx1201 runner"). A red
-    # gfx1201 fails the run, as the other jobs do.
+    # The RDNA4 port, on one idle Radeon AI PRO R9700 of HK_CI_GPUS (the runner's
+    # configuration), in a container (scripts/ci/run_gfx1201.sh). A red gfx1201
+    # fails the run, as the other jobs do.
     runs-on: [self-hosted, hk-gpu, gfx1201]
     timeout-minutes: 180
     concurrency:

@@ -605,7 +605,7 @@ class Global(Value):
 
 
 #: A scoped tensor's cache-policy bits on gfx950: SC1 (device scope) or
-#: SC0|SC1 (system scope). Measured (KernelWiki gfx950-cross-gpu-memory-model):
+#: SC0|SC1 (system scope). Measured (tools/cdna-probes/litmus_comm.hip):
 #: without them a store stays in this XCD's L2 and a load re-reads a stale line.
 #: "stream" is not a scope but a policy: NT (non-temporal), for data a launch reads
 #: once -- a weight stream that should not displace what the L2 holds for reuse.
@@ -624,7 +624,7 @@ def scope_aux(tensor: "Global", what: str, tile=None) -> int:
     if get_target(arch).arch != "gfx950":
         raise TypeError(f"{what} through a {scope}-scoped tensor: scoped accesses are gfx950's "
                         f"(on {arch} a peer's writes stay stale in the L2 and no instruction "
-                        f"invalidates it -- KernelWiki gfx1100-peer-write-l2-stale)")
+                        f"invalidates it)")
     if tile is not None:
         ok = isinstance(tile, RegTileType) and not _is_strip(tile)
         ok = ok or (isinstance(tile, RegVecType) and tensor.dtype.bits == 32

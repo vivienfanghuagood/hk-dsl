@@ -94,8 +94,8 @@
 "warps": 8,
 "threads": 256,
 "lds_bytes": 32768,
-"binary": "/workspace/claude/hk-dsl-profile/cache/3f37f2d5ed710ad2c7128a515ab11101/hk_gemm_bf16_128x128x64_w8r4_s2_d16_g8_p2_l1_3f37f2d5ed71.cpython-312-x86_64-linux-gnu.so",
-"source": "/workspace/claude/hk-dsl-profile/cache/3f37f2d5ed710ad2c7128a515ab11101/kernel.cpp",
+"binary": "<workspace>/hk-dsl-profile/cache/3f37f2d5ed710ad2c7128a515ab11101/hk_gemm_bf16_128x128x64_w8r4_s2_d16_g8_p2_l1_3f37f2d5ed71.cpython-312-x86_64-linux-gnu.so",
+"source": "<workspace>/hk-dsl-profile/cache/3f37f2d5ed710ad2c7128a515ab11101/kernel.cpp",
 "instantiations": [
 {
 "name": "gemm_bf16_128x128x64_w8r4_s2_d16_g8_p2_l1_kernel(globals)",

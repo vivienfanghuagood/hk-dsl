@@ -107,7 +107,10 @@ check again.
   site's own names (hosts, pods, nodes, proxies, logins, workspace paths),
   which is never committed. Without it the script checks only the generic
   rules (private IPv4, `/home/<user>`, `/root/`, `/dev/shm/<name>`,
-  internal domains), as the IR tier does on every PR. A hit is replaced by a
+  internal domains, PCI addresses, `/workspace/<name>`, `~/<dir>`, a
+  container's hex hostname as a `"host"`), as the IR tier does on every PR,
+  with the site's file too when the repository has it as the secret
+  `HK_HYGIENE_PATTERNS`. A hit is replaced by a
   placeholder or an environment variable, or, if it is generic, added to
   `scripts/public_hygiene_allow.txt` with the reason. Anything sensitive
   that ever reached main is still in git history: rotate it, do not just

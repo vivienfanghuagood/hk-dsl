@@ -29,11 +29,12 @@ python3 -m bench.dx.run --tasks t1,t2 --solutions torch_compile,docs_only --json
 python3 -m bench.dx.run --small                      # the test's tiny shapes, correctness only
 ```
 
-On the workstation (bench/dx needs the worktree's `hk._mlir`, which the helpers build):
+In a ROCm container on the GPU (bench/dx needs the checkout's `hk._mlir` built,
+docs/building.md):
 
 ```bash
-hkx950 <checkout> 5 python3 -m bench.dx.run --json bench/dx/results/gfx950-DATE.json
-hkx1100 <checkout> python3 -m bench.dx.run --tasks t1 --json bench/dx/results/x.json   # one task per call
+HIP_VISIBLE_DEVICES=<gpu> python3 -m bench.dx.run --json bench/dx/results/gfx950-DATE.json
+HIP_VISIBLE_DEVICES=<gpu> python3 -m bench.dx.run --tasks t1 --json bench/dx/results/x.json   # one task per call
 ```
 
 Options: `--tasks`, `--solutions`, `--kinds`, `--shapes` (substring of shape

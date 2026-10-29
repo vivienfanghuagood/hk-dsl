@@ -111,7 +111,6 @@ nav:
       - Schedules as data: design/schedules.md
       - Tuning goal: design/tuning-goal.md
       - The end-to-end goal: design/e2e-goal.md
-      - KDA, how a kernel is built: design/kda.md
       - CDNA3/4: design/cdna.md
       - HipKittens on CDNA4: design/cdna-hipkittens-ops.md
       - Serving readiness: design/serving-readiness.md

@@ -6,7 +6,7 @@
 # compile cache, and the MLIR install, read-only; nothing else of the user's home.
 #
 # Host state is kept out of the checkout, under $HK_CI_STATE (default ~/gha), one per runner
-# instance when several run gfx950 jobs at once (docs/testing.md, "Several gfx950 runners"):
+# instance when several run gfx950 jobs at once:
 #   runs/TIER/RUN_ID-ATTEMPT/  the run: build.log, gpu/, result.json, report.txt
 #   x950/ci/                   /ci in the container: hk-build-cp312, pylib, hk-cache
 #   x950v/ci/                  the same for the vLLM image (HK_CI_DIRNAME=x950v, gpu.yml's gfx950-vllm)
@@ -26,7 +26,7 @@ set -uo pipefail
 [ -n "${HK_CI_SIGNALS:-}" ] || HK_CI_SIGNALS=default exec env --default-signal=INT,QUIT,HUP,TERM "${BASH_SOURCE[0]}" "$@"
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 # Defaults are under the user's home from the passwd entry, not $HOME: a runner runs its jobs with
-# HOME=~/gha/runner-<name>/home (supervise.sh; docs/testing.md, "Each runner has its own HOME").
+# HOME=~/gha/runner-<name>/home (supervise.sh).
 USERHOME=$(getent passwd "$(id -un)" | cut -d: -f6)
 STATE=${HK_CI_STATE:-$USERHOME/gha}
 MLIR=${HK_CI_MLIR:-$USERHOME/hk-ci/mlir/install-cp310}
@@ -49,7 +49,7 @@ mkdir -p "$RUN" "$OUT" "$CIDIR" "$LOCKS"
 NAME=hk-gha-$TIER-$KEY
 RUNNER=${RUNNER_NAME:-manual}
 
-# Cancellation (docs/testing.md, "Cancelled jobs and orphan containers"). The runner sends SIGINT,
+# Cancellation (scripts/ci/cancel.sh). The runner sends SIGINT,
 # then SIGTERM 7.5 s later, to the step's shell alone -- gpu.yml execs this script, so that is this
 # script -- SIGKILLs it 2.5 s after that, and then every process the job left. The container belongs to dockerd and
 # survives all of that unless killed by name: the trap does it, and, for a SIGKILL, the reaper
