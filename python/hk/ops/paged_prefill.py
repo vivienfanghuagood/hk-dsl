@@ -49,14 +49,39 @@ def paged_prefill_kernel(name: str, *, head_dim: int = 128, group: int = 4,
                          warps: int = 12, vt_d_chunk: int = 16,
                          qk_tiles: int = 2, pv_tiles: int = 2,
                          scale: Optional[float] = None,
-                         max_vgprs: int = 256, min_occupancy: int = 1):
+                         max_vgprs: int = 256, min_occupancy: int = 1,
+                         layout: str = "hk", page: int = 16):
     """Causal paged prefill: `q` and `o` are the engine's (tokens, heads *
-    head_dim) rows, `tiles` the (request, tile) work list, `q_start` the
-    batch's query_start_loc."""
+    head_dim) rows, `q_start` the batch's query_start_loc.
+
+    `layout` is the cache's:
+
+    * "hk": hk's head-major pages, (blocks, kv_heads, kv_block, head_dim) for
+      K and V, a page a KV block; `tiles` is the (request, tile) work list
+      (`work_list`).
+    * "rocm": vLLM ROCM_ATTN's own cache, read in place. K is its x-split
+      layout passed as the strided 5-D view (blocks, kv_heads, page,
+      head_dim / 8, 8) (`rocm_views`); V is (blocks, kv_heads, head_dim, page),
+      a page of V^T already, staged straight into the V^T tile. A KV block is
+      kv_block / page pages, each staged into its band of the K and V^T tiles.
+      The grid is (Q tiles of the longest query, heads, requests) and `tiles`
+      only gives its first extent (rows = Q tiles): a workgroup works out its
+      request and tile from its index, and one whose tile starts past its
+      request's queries -- or whose request has one query, a decode, which
+      this skips as vLLM's prefix-prefill does -- loads and stores nothing.
+      Nothing is read on the host, so a launch is a function of (max query
+      length, requests) alone.
+    """
+    if layout not in ("hk", "rocm"):
+        raise ValueError(f"layout={layout!r}: 'hk' or 'rocm'")
+    rocm = layout == "rocm"
     d = _derive(head_dim, q_block, kv_block, warps, vt_d_chunk, qk_tiles, pv_tiles)
     q_tile, d_frags, kv_frags = d["q_tile"], d["d_frags"], d["kv_frags"]
     d_chunks, v_bands, vt_frags = d["d_chunks"], d["v_bands"], d["vt_frags"]
     scale_l2e = (scale if scale is not None else head_dim ** -0.5) * math.log2(math.e)
+    if rocm and (page % 16 or kv_block % page):
+        raise ValueError(f"page={page}: a multiple of 16 that divides kv_block={kv_block}")
+    ppb = kv_block // page if rocm else 1
 
     st_k = hk.ST(bf16, kv_block, head_dim)
     st_vt = hk.ST(bf16, head_dim, kv_block)
@@ -67,22 +92,35 @@ def paged_prefill_kernel(name: str, *, head_dim: int = 128, group: int = 4,
     ty_v = hk.RT(bf16, 16, vt_d_chunk, "row")
     ty_vr = hk.RT(bf16, 16, 16, "row")
     ty_vec = hk.row_vec(ty_s)
+    k_ty = hk.Tensor[bf16, "strided"] if rocm else hk.Tensor[bf16]
 
-    def body(q: hk.Tensor[bf16], k_cache: hk.Tensor[bf16],
+    def body(q: hk.Tensor[bf16], k_cache: k_ty,
              v_cache: hk.Tensor[bf16], block_table: hk.Tensor[i32],
              seq_lens: hk.Tensor[i32], q_start: hk.Tensor[i32],
              tiles: hk.Tensor[i32], o: hk.Tensor[bf16]):
         g = hk.group(warps)
         k_s = hk.lds.alloc(st_k, name="k_s")
         vt_s = hk.lds.alloc(st_vt, name="vt_s")
-        buf_k = g.stage_buffer(k_s, name="buf_k")
+        if rocm:
+            # a page's band of each tile, and a staging slot a page
+            k_pg = [k_s.subtile(page, head_dim, p, 0) for p in range(ppb)]
+            v_pg = [vt_s.subtile(head_dim, page, 0, p) for p in range(ppb)]
+            buf_k = g.stage_buffer(k_pg[0], depth=ppb, name="buf_k")
+            buf_v = g.stage_buffer(v_pg[0], depth=ppb, name="buf_v")
+        else:
+            buf_k = g.stage_buffer(k_s, name="buf_k")
         gr_k = k_s.granules(name="gr_k")
         gr_vt = vt_s.granules(name="gr_vt")
 
-        t = hk.arch.block_idx.x
-        head = hk.arch.block_idx.y
-        req = tiles[hk.elem_coord(0, 0, t, 0)].load_scalar()
-        qb = tiles[hk.elem_coord(0, 0, t, 1)].load_scalar()
+        if rocm:
+            qb = hk.arch.block_idx.x
+            head = hk.arch.block_idx.y
+            req = hk.arch.block_idx.z
+        else:
+            t = hk.arch.block_idx.x
+            head = hk.arch.block_idx.y
+            req = tiles[hk.elem_coord(0, 0, t, 0)].load_scalar()
+            qb = tiles[hk.elem_coord(0, 0, t, 1)].load_scalar()
         q0 = q_start[hk.elem_coord(0, 0, 0, req)].load_scalar()
         q_len = q_start[hk.elem_coord(0, 0, 0, req + 1)].load_scalar() - q0
         seq_len = seq_lens[hk.elem_coord(0, 0, 0, req)].load_scalar()
@@ -94,52 +132,76 @@ def paged_prefill_kernel(name: str, *, head_dim: int = 128, group: int = 4,
         wid = hk.arch.warp_id()
         q_local = tile_lo + wid * q_block           # this warp's first row
         left = q_len - q_local                      # its rows the request has
+        if rocm:
+            # 1 for a tile of a prefill's queries; 0 past them and for a decode
+            act = hk.min(hk.max(q_len - 1, 0), 1) * hk.min(hk.max(q_len - tile_lo, 0), 1)
+            left = hk.min(left, act * q_tile)
 
         q_r = [q[hk.elem_coord(0, 0, q0 + q_local, col + 16 * kk)]
                .load(ty_q, bounded=left) for kk in range(d_frags)]
         o_c = [hk.zeros(ty_o) for _ in range(d_frags)]
         m_run = hk.neg_infty(ty_vec)
         l_run = hk.zeros(ty_vec)
-        v_rows = [hk.zeros(ty_v) for _ in range(v_bands)]
-        c_chunk = wid
-        stages_v = c_chunk < d_chunks
+        if not rocm:
+            v_rows = [hk.zeros(ty_v) for _ in range(v_bands)]
+            c_chunk = wid
+            stages_v = c_chunk < d_chunks
 
         # Up to the workgroup's last real query, uniform across it: staging
         # has barriers in it. A warp whose rows end sooner is masked per
         # fragment below.
         last_q = ctx + hk.min(tile_lo + q_tile, q_len) - 1
         kv_blocks = hk.cdiv(last_q + 1, kv_block)
+        n_pages = kv_blocks
+        if rocm:
+            kv_blocks = kv_blocks * act
+            # At least the request's first page: a request padded into the
+            # batch (no queries, no tokens) still prefetches one, from its
+            # table row's first entry.
+            n_pages = hk.max(hk.cdiv(last_q + 1, page), 1)
 
-        def page_of(kb):
+        def page_of(pg):
             # Clamped: past the end the prefetch rereads the last page.
             return block_table[hk.elem_coord(
-                0, 0, req, hk.min(kb, kv_blocks - 1))].load_scalar()
+                0, 0, req, hk.min(pg, n_pages - 1))].load_scalar()
 
-        def load_kv(page):
-            g.stage(buf_k, k_cache[hk.elem_coord(page, head_kv, 0, 0)])
-            if stages_v:
-                for w in range(v_bands):
-                    v_cache[hk.elem_coord(page, head_kv, 16 * w,
-                                          c_chunk * vt_d_chunk)].load(
-                        ty_v, into=v_rows[w])
+        def load_kv(kb):
+            if rocm:
+                for p in range(ppb):
+                    pg = page_of(kb * ppb + p)
+                    g.stage(buf_k, k_cache[hk.elem_coord(pg, head_kv, 0, 0)], slot=p)
+                    g.stage(buf_v, v_cache[hk.elem_coord(pg, head_kv, 0, 0)], slot=p)
+            else:
+                pg = page_of(kb)
+                g.stage(buf_k, k_cache[hk.elem_coord(pg, head_kv, 0, 0)])
+                if stages_v:
+                    for w in range(v_bands):
+                        v_cache[hk.elem_coord(pg, head_kv, 16 * w,
+                                              c_chunk * vt_d_chunk)].load(
+                            ty_v, into=v_rows[w])
 
         def commit_kv():
             hk.arch.vm_wait(0)
-            g.commit(k_s, buf_k)
-            if stages_v:
-                for w in range(v_bands):
-                    v_t = hk.transpose_sep(v_rows[w])
-                    for tt in range(vt_frags):
-                        gr_vt.store_frag(v_t, c_chunk * vt_frags + tt, w)
+            if rocm:
+                for p in range(ppb):
+                    g.commit(k_pg[p], buf_k, slot=p)
+                    g.commit(v_pg[p], buf_v, slot=p)
+            else:
+                g.commit(k_s, buf_k)
+                if stages_v:
+                    for w in range(v_bands):
+                        v_t = hk.transpose_sep(v_rows[w])
+                        for tt in range(vt_frags):
+                            gr_vt.store_frag(v_t, c_chunk * vt_frags + tt, w)
 
-        load_kv(page_of(0))
+        load_kv(0)
 
         for kb in range(kv_blocks):
             kv_lo = kb * kv_block
             hk.arch.barrier()
             commit_kv()
             hk.arch.barrier(drain=True)
-            load_kv(page_of(kb + 1))
+            load_kv(kb + 1)
 
             with hk.scope():
                 s_f = [hk.zeros(ty_s) for _ in range(kv_frags)]
@@ -196,8 +258,13 @@ def paged_prefill_kernel(name: str, *, head_dim: int = 128, group: int = 4,
                 hk.transpose(c), bounded=left)
 
     body.__name__ = name
+    # the cache's K is strided for layout="rocm" (the annotation is a string
+    # under `from __future__ import annotations`; this is its value)
+    body.__annotations__["k_cache"] = k_ty
 
     def _grid(p):
+        if rocm:
+            return (p.tiles.rows, p.o.cols // head_dim, p.seq_lens.cols)
         return (p.tiles.rows, p.o.cols // head_dim, 1)
 
     return hk.kernel(body, warps=warps, grid=_grid, name=name,
@@ -215,6 +282,49 @@ def _native_cdna() -> bool:
     from ..target import current_arch  # noqa: PLC0415
 
     return current_arch() == "gfx950"
+
+
+def rocm_kernel_for(head_dim: int, group: int, scale: Optional[float] = None,
+                    page: int = 16):
+    """The paged prefill over vLLM ROCM_ATTN's own cache (layout="rocm"), for
+    (head_dim, group, scale, page); gfx1100."""
+    key = ("rocm", head_dim, group, None if scale is None or scale == head_dim ** -0.5
+           else float(scale), page)
+    k = _KERNELS.get(key)
+    if k is None:
+        import struct  # noqa: PLC0415
+
+        tag = "" if key[3] is None else "_s%016x" % struct.unpack(
+            "<Q", struct.pack("<d", key[3]))[0]
+        k = _KERNELS[key] = paged_prefill_kernel(
+            f"paged_prefill_rocm_d{head_dim}_g{group}_p{page}{tag}", head_dim=head_dim,
+            group=group, scale=key[3], layout="rocm", page=page)
+    return k
+
+
+def rocm_views(key_cache, value_cache):
+    """ROCM_ATTN's caches as layout="rocm" takes them: K (blocks, kv_heads,
+    head_dim / x, page, x) as the strided view (blocks, kv_heads, page,
+    head_dim / x, x); V (blocks, kv_heads, head_dim, page) as it is."""
+    return key_cache.permute(0, 1, 3, 2, 4), value_cache
+
+
+_SPANS: dict = {}
+
+
+def q_tiles(max_query_len: int, device, tile: int = Q_TILE):
+    """`tiles` for layout="rocm": an int32 (tiles, 1) view whose rows are the
+    `tile`-row Q tiles of the longest query -- the grid's first extent, never
+    read. One buffer a device, sliced, so a launch allocates nothing."""
+    import torch  # noqa: PLC0415
+
+    n = max(1, -(-max_query_len // tile))
+    buf = _SPANS.get(str(device))
+    if buf is None or buf.shape[0] < n:
+        cap = 1 << (n - 1).bit_length()
+        buf = _SPANS[str(device)] = torch.zeros(max(cap, 64), 1, dtype=torch.int32,
+                                                device=device)
+    return buf[:n]
 
 
 def kernel_for(head_dim: int, group: int, scale: Optional[float] = None):
@@ -328,5 +438,5 @@ def split_scratch(n_slots: int, n_heads: int, head_dim: int, device):
     return have[1], have[2]
 
 
-__all__ = ["paged_prefill_kernel", "kernel_for", "work_list", "split_plan", "split_scratch",
-           "Q_TILE", "KV_BLOCK"]
+__all__ = ["paged_prefill_kernel", "kernel_for", "rocm_kernel_for", "rocm_views", "q_tiles",
+           "work_list", "split_plan", "split_scratch", "Q_TILE", "KV_BLOCK"]
