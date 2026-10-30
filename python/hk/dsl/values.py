@@ -2493,7 +2493,7 @@ def map_cpp(expr: str, *args, dtype: Optional[DType] = None, name: str = "map") 
                             f"float belongs in the expression itself")
     ty = RegTileType(dtype, s0.rows, s0.cols, s0.layout, s0.frag, run=s0.run)
     t = _t()
-    op = hkd.MapCppOp(mlir_type(ty), ops, expr, loc=t.loc(name))
+    op = hkd.MapOp(mlir_type(ty), ops, body=expr, loc=t.loc(name))
     return wrap(op.result, ty)
 
 

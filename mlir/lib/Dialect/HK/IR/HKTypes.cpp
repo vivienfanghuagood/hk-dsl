@@ -83,7 +83,8 @@ static LogicalResult checkExtent(function_ref<InFlightDiagnostic()> emitError,
   return success();
 }
 
-static bool knownDtype(Type t) { return !dtypeName(t).empty(); }
+// i1 (`b1`, a mask) is known only as a strip's element: hk.map's comparisons
+static bool knownDtype(Type t) { return !t.isInteger(1) && !dtypeName(t).empty(); }
 
 //===----------------------------------------------------------------------===//
 // rt
@@ -147,9 +148,9 @@ LogicalResult RegTileType::verify(function_ref<InFlightDiagnostic()> emitError,
                             "own stride is written without one)";
   }
   if (run) {
-    if (!knownDtype(et) || dtypeBits(et) < 16)
+    if (!et.isInteger(1) && (!knownDtype(et) || dtypeBits(et) < 16))
       return emitError() << "there is no " << dtypeName(et)
-                         << " strip: rs holds 16- and 32-bit elements";
+                         << " strip: rs holds 16- and 32-bit elements, and b1 masks";
     if (col || fr)
       return emitError() << "a strip has no col layout and no fragment";
     if (run > 16 || (run & (run - 1)))

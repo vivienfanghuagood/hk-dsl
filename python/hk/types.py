@@ -178,7 +178,7 @@ class RegTileType(Type):
         if not ((self.dtype.bits in (16, 32) and self.dtype.kind == "float")
                 or self.dtype.name == "i32"):
             raise TypeError(f"there is no {self.dtype} strip: rs holds bf16, fp16, fp32 "
-                            f"and (gfx950, for hk.map_cpp's integer work) i32 elements")
+                            f"and (gfx950, for integer work) i32 elements")
         if self.rows <= 0:
             raise ValueError(f"strip rows={self.rows}: at least one")
         if self.cols <= 0 or self.cols % self.span:

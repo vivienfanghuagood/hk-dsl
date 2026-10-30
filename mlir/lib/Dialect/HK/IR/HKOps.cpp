@@ -959,17 +959,28 @@ LogicalResult GroupReduceOp::verify() {
   return success();
 }
 
-LogicalResult MapCppOp::verify() {
+namespace {
+// a map's element types: f32, i32 and (masks) i1
+bool mapElem(Type t) { return t.isF32() || t.isInteger(32) || t.isInteger(1); }
+}  // namespace
+
+LogicalResult MapOp::verify() {
   auto res = getResult().getType();
   auto rt = dyn_cast<RegTileType>(res);
   if (!rt || !rt.isStrip())
     return emitOpError("makes a strip, not ") << res;
-  auto okElem = [](Type t) { return t.isF32() || t.isInteger(32); };
-  if (!okElem(rt.getElementType()))
-    return emitOpError("makes an fp32 or i32 strip, not ") << res;
-  StringRef e = getExpr();
-  if (e.trim().empty() || e.contains(';') || e.contains('{') || e.contains('}'))
-    return emitOpError("expr is one C++ expression: no ';' and no braces");
+  if (!mapElem(rt.getElementType()))
+    return emitOpError("makes an fp32, i32 or i1 strip, not ") << res;
+  bool hasBody = getBody().has_value(), hasRegion = !getRegion().empty();
+  if (hasBody == hasRegion)
+    return emitOpError("is a region of scalar ops or a C++ `body`, exactly one of them");
+  if (hasBody) {
+    StringRef e = *getBody();
+    if (e.trim().empty() || e.contains(';') || e.contains('{') || e.contains('}'))
+      return emitOpError("body is one C++ expression: no ';' and no braces");
+    if (rt.getElementType().isInteger(1))
+      return emitOpError("with a C++ body makes an fp32 or i32 strip");
+  }
   for (auto [i, a] : llvm::enumerate(getArgs())) {
     auto t = dyn_cast<RegTileType>(a.getType());
     if (!t)
@@ -978,9 +989,47 @@ LogicalResult MapCppOp::verify() {
         t.getRun() != rt.getRun())
       return emitOpError("argument x") << i << " is " << t
              << "; every strip argument has the result's shape and run, " << res;
-    if (!okElem(t.getElementType()))
+    if (!mapElem(t.getElementType()) || (hasBody && t.getElementType().isInteger(1)))
       return emitOpError("argument x") << i << " is " << t
-             << ": strip arguments are fp32 or i32 (convert a 16-bit strip with .to)";
+             << ": strip arguments are fp32 or i32" << (hasBody ? "" : " or i1")
+             << " (convert a 16-bit strip with .to)";
+  }
+  return success();
+}
+
+LogicalResult MapOp::verifyRegions() {
+  if (getRegion().empty())
+    return success();
+  if (!getRegion().hasOneBlock())
+    return emitOpError("region is one block");
+  Block &b = getRegion().front();
+  if (b.getNumArguments() != getArgs().size())
+    return emitOpError("region takes one argument an operand: ")
+           << getArgs().size() << ", not " << b.getNumArguments();
+  for (auto [i, a] : llvm::enumerate(getArgs())) {
+    Type want = a.getType();
+    if (auto t = dyn_cast<RegTileType>(want))
+      want = t.getElementType();
+    if (b.getArgument(i).getType() != want)
+      return emitOpError("region argument ") << i << " is " << b.getArgument(i).getType()
+             << ", operand x" << i << "'s element type is " << want;
+  }
+  auto y = dyn_cast<YieldOp>(b.getTerminator());
+  Type elem = cast<RegTileType>(getResult().getType()).getElementType();
+  if (!y || y.getValue().getType() != elem)
+    return emitOpError("region yields the result's element type, ") << elem;
+  for (Operation &op : b.without_terminator()) {
+    StringRef d = op.getDialect() ? op.getDialect()->getNamespace() : StringRef();
+    if (d != "arith" && d != "math" && !isa<RcpOp>(op))
+      return op.emitOpError("inside an hk.map: only arith, math and hk.rcp ops on scalars");
+    if (op.getNumRegions())
+      return op.emitOpError("inside an hk.map: no nested regions");
+    SmallVector<Type> types(op.getOperandTypes());
+    llvm::append_range(types, op.getResultTypes());
+    for (Type t : types)
+      if (!mapElem(t) && !t.isBF16())
+        return op.emitOpError("inside an hk.map: values are f32, i32, i1 or bf16 scalars, not ")
+               << t;
   }
   return success();
 }
