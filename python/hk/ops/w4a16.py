@@ -181,13 +181,16 @@ MAX_TOKENS = max(SCHEDULES)
 SHALLOW_K = 4096
 
 
-def schedule_for(m: int, k: int) -> Optional[Dict[str, int]]:
+def schedule_for(m: int, k: int, group: int = 128) -> Optional[Dict[str, int]]:
+    """The schedule for M rows at depth K. A load's 16 x slices columns share
+    one scale, so a group narrower than the load (GPTQ's 32) narrows it."""
     t = tokens_for(m)
     if t is None:
         return None
-    if t == 1 and k <= SHALLOW_K:
-        return dict(slices=4, warps=8, blocks=2)
-    return SCHEDULES[t]
+    s = dict(slices=4, warps=8, blocks=2) if t == 1 and k <= SHALLOW_K else dict(SCHEDULES[t])
+    if 16 * s["slices"] > group and group % 16 == 0:
+        s["slices"] = group // 16
+    return s
 
 _KERNELS: Dict[Tuple[Any, ...], Any] = {}
 _OPS: Dict[Tuple[Any, ...], Any] = {}
@@ -221,7 +224,7 @@ def _op_for(*key):
 
 def takes(m: int, n: int, k: int, group: int) -> bool:
     """Whether the decode kernel runs an (M, N, K) GEMM at this group size."""
-    s = schedule_for(m, k)
+    s = schedule_for(m, k, group)
     if s is None or k % group:
         return False
     kc = 16 * s["slices"]
@@ -249,7 +252,7 @@ def plan(m: int, n: int, k: int, group: int, dtype):
     names = {torch.bfloat16: "bf16", torch.float16: "fp16"}
     run = None
     if dtype in names and takes(m, n, k, group):
-        sch = schedule_for(m, k)
+        sch = schedule_for(m, k, group)
         run = _op_for(tokens_for(m), sch["slices"], sch["warps"], group, sch["blocks"],
                       names[dtype])
     if len(_PLANS) < _PLAN_CAP:
@@ -301,7 +304,7 @@ def _matmul_legacy(x, qw, s, zs, group: int, out=None):
     names = {torch.bfloat16: "bf16", torch.float16: "fp16"}
     if x.dtype == s.dtype and x.dtype in names and takes(m, n, k, group):
         t = tokens_for(m)
-        sch = schedule_for(m, k)
+        sch = schedule_for(m, k, group)
         _op_for_legacy(t, sch["slices"], sch["warps"], group, sch["blocks"], names[x.dtype])(
             x if x.is_contiguous() else x.contiguous(), qw, s, zs, out)
         return out
