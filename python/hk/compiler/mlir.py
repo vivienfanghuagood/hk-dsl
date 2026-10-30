@@ -21,7 +21,7 @@ _TYPES: Dict[str, ir.Type] = {}
 #: hk's dtype names -> MLIR element types.
 ELEMENT = {
     "bf16": "bf16", "fp16": "f16", "fp32": "f32", "i32": "i32", "i8": "i8",
-    "fp8e4m3": "f8E4M3FN", "fp8e5m2": "f8E5M2",
+    "fp8e4m3": "f8E4M3FN", "fp8e5m2": "f8E5M2", "b1": "i1",
 }
 
 

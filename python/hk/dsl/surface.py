@@ -145,7 +145,8 @@ hk.comm.post hk.comm.signal hk.comm.take hk.comm.wait hk.comm.xcd_barrier hk.coo
 hk.detect_arch hk.elem_coord hk.full hk.func hk.get_target hk.group.Group hk.group.group hk.if_
 hk.kernel hk.lane_coords hk.lds.alloc hk.lds.alloc_vec hk.lds.lds_loads hk.lds.reserve
 hk.lds.shared_vec hk.lds.wait_for hk.math.abs hk.math.add hk.math.dgelu hk.math.div hk.math.exp
-hk.math.exp2 hk.math.gelu hk.math.log hk.math.log2 hk.math.maximum hk.math.minimum hk.math.mul
+hk.map hk.where hk.math.ceil hk.math.ctz hk.math.floor hk.math.fma hk.math.popcount
+hk.math.rcp hk.math.exp2 hk.math.gelu hk.math.log hk.math.log2 hk.math.maximum hk.math.minimum hk.math.mul
 hk.math.relu hk.math.rsqrt hk.math.silu hk.math.sqrt hk.math.sub hk.max hk.min hk.mma hk.mx
 hk.neg_infty hk.placement.Analysis hk.placement.Choice hk.placement.Digit
 hk.placement.MIN_ROUNDS_NONUNIFORM hk.placement.MIN_STREAMS hk.placement.Placement
