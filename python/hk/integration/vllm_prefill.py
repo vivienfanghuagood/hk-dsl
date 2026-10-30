@@ -281,6 +281,8 @@ def u_why_not(a: dict) -> str:
     for t in (q, out):
         if t.stride(-1) != 1 or t.stride(-2) != t.shape[-1]:
             return "q / out heads not packed"
+    if not out.is_contiguous():
+        return "output not contiguous"
     if _flash_kv(k, v) is None:
         return "key/value caches are not the halves of one (blocks, 2, ...) tensor"
     return ""
@@ -305,8 +307,12 @@ def unified_attention(*args, **kwargs):
     op, tile = got
     from ..ops import paged_prefill as pp  # noqa: PLC0415
 
-    op(q.reshape(n, h * d), kv, kv, a["block_table"], a["seqused_k"], a["cu_seqlens_q"],
-       pp.q_tiles(int(a["max_seqlen_q"]), q.device, tile), out.reshape(n, h * d))
+    args = [q.reshape(n, h * d), kv, kv, a["block_table"], a["seqused_k"], a["cu_seqlens_q"],
+            pp.q_tiles(int(a["max_seqlen_q"]), q.device, tile), out.reshape(n, h * d)]
+    if d <= 128:
+        # the GQA-packed decodes' views: q and the output as (1, tokens, heads, head_dim)
+        args += [q.unsqueeze(0), out.unsqueeze(0)]
+    op(*args)
     PATCH.count("hk")
     if SHADOW:
         import torch  # noqa: PLC0415
