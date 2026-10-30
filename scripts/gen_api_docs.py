@@ -1145,6 +1145,18 @@ def _add_toc(pg: Page) -> None:
 FULL_ORDER = ["docs/language.md", "docs/check.md"]
 
 
+def _without_dated_appendix(text: str) -> str:
+    """A page's text without its dated measurement appendix (a trailing
+    `## Appendix: measured ...` section): a record behind a banner on the
+    page, not reference material for an agent's context."""
+    m = re.search(r"^## Appendix: measured\b.*", text, re.M | re.S)
+    if not m:
+        return text
+    return (text[:m.start()].rstrip() + "\n\n(The page's dated appendix of "
+            "measurements is left out here: the only performance numbers the "
+            "project quotes are on docs/performance/scorecard.md.)\n")
+
+
 def llms_full(pages: List[Page]) -> str:
     out = ["# hk-dsl: the full reference for language models",
            "",
@@ -1162,7 +1174,7 @@ def llms_full(pages: List[Page]) -> str:
     for f in files:
         if f.exists():
             out += [f"\n\n<!-- {f.relative_to(REPO).as_posix()} -->\n",
-                    f.read_text(encoding="utf-8").strip()]
+                    _without_dated_appendix(f.read_text(encoding="utf-8")).strip()]
     for pg in pages:
         out += [f"\n\n<!-- docs/api/{pg.fname} -->\n",
                 pg.text().replace(HEADER, "").strip()]

@@ -22,8 +22,8 @@ y = rms_norm(x, weight)                               # weight: one value per co
 
 [`examples/12_templates_rowwise.py`](../../examples/12_templates_rowwise.py)
 runs five of them against torch. The rest of this page is what a hook may
-do, what the templates decide for you, how to see and override that, and
-what they measured.
+do, what the templates decide for you, and how to see and override that. A
+dated appendix keeps what they measured when they landed.
 
 - [elementwise](#elementwise)
 - [rowwise](#rowwise)
@@ -31,8 +31,8 @@ what they measured.
 - [the plan, and overriding it](#the-plan-and-overriding-it)
 - [without a GPU](#without-a-gpu)
 - [hk.ops on the same plans](#hkops-on-the-same-plans)
-- [measured](#measured)
 - [limits](#limits)
+- [appendix: measured at hk 0.4.0](#appendix-measured-at-hk-040)
 
 ## elementwise
 
@@ -272,7 +272,38 @@ that `hk.ops` falls back to its tile kernels (at least 16x64); the rowwise
 template streams such a row instead, on both. `gelu` is fp32-only in both
 `hk.ops` tile and strip tables (HipKittens specialises it for float).
 
-## measured
+## limits
+
+- The templates run on register strips, which gfx1100 and gfx950 have;
+  gfx942 and gfx1201 refuse them while planning.
+- A hook is traced, not rewritten: a Python `if` on a device value inside
+  it raises. Arithmetic selects (`(label != -100).to_int()`, `t.step()`)
+  do what a branch would.
+- A row whose length is odd is read in runs of one element (aligned
+  accesses), and on gfx1100 such a row cannot go into an int8 output (a
+  one-byte run, which its strip store does not move): the template says so.
+  A tensor past 2 GiB must divide the plan exactly.
+- On gfx1100 a template kernel is launched on the null stream (RDNA's
+  launcher takes none), so a CUDA graph does not capture it; on gfx950 it
+  runs on torch's current stream and is captured.
+- Python overhead: a call builds a key of its tensors' shapes, strides and
+  dtypes and checks `out=` against the inputs. At the 1-32 row launch floor
+  that is 0.3-1 us more than an `hk.ops` call in eager mode (the kernels'
+  own times are equal; see the [appendix](#appendix-measured-at-hk-040)).
+- `pick` reads one element per row; it is a gather, not a lookup table.
+- A rowwise hook's per-row outputs are fp32 (or any dtype `store_scalar`
+  takes); its full outputs any dtype.
+- The rows of a rowwise call are one workgroup each: a decode step's
+  handful of rows of 4096 is a handful of workgroups, at the launch floor
+  like every other arm.
+
+## Appendix: measured at hk 0.4.0
+
+> **A dated record, not current claims.** These measurements were taken when
+> the templates landed (October 2026: hk 0.4.0, torch 2.10, Triton 3.6) and
+> have not been re-run against current baselines. The only performance
+> numbers this project quotes are on the [scorecard](../performance/scorecard.md).
+> `python3 -m hk.check` times a template against `torch.compile` on your GPU.
 
 Every number below was taken in one process per GPU, the arms interleaved
 (rounds rotate the order, each round queued behind a GPU spin, the median
@@ -502,28 +533,3 @@ shapes), and why:
 | int8 quantize | 8192x8192 | 278.16 | 278.21 | 288.10 | 1.00 | 1.04 |
 
 </details>
-
-## limits
-
-- The templates run on register strips, which gfx1100 and gfx950 have;
-  gfx942 and gfx1201 refuse them while planning.
-- A hook is traced, not rewritten: a Python `if` on a device value inside
-  it raises. Arithmetic selects (`(label != -100).to_int()`, `t.step()`)
-  do what a branch would.
-- A row whose length is odd is read in runs of one element (aligned
-  accesses), and on gfx1100 such a row cannot go into an int8 output (a
-  one-byte run, which its strip store does not move): the template says so.
-  A tensor past 2 GiB must divide the plan exactly.
-- On gfx1100 a template kernel is launched on the null stream (RDNA's
-  launcher takes none), so a CUDA graph does not capture it; on gfx950 it
-  runs on torch's current stream and is captured.
-- Python overhead: a call builds a key of its tensors' shapes, strides and
-  dtypes and checks `out=` against the inputs. At the 1-32 row launch floor
-  that is 0.3-1 us more than an `hk.ops` call in eager mode (the kernels'
-  own times are equal; see the tables).
-- `pick` reads one element per row; it is a gather, not a lookup table.
-- A rowwise hook's per-row outputs are fp32 (or any dtype `store_scalar`
-  takes); its full outputs any dtype.
-- The rows of a rowwise call are one workgroup each: a decode step's
-  handful of rows of 4096 is a handful of workgroups, at the launch floor
-  like every other arm.

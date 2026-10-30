@@ -23,8 +23,8 @@ second pass over C, on a Radeon (gfx1100) and an Instinct (gfx950) alike.
 - [Writing an epilogue](#writing-an-epilogue)
 - [Ready-made epilogues](#ready-made-epilogues)
 - [How the plan is chosen](#how-the-plan-is-chosen)
-- [What it costs: measured](#what-it-costs-measured)
 - [Limits](#limits)
+- [Appendix: measured at hk 0.4.0](#appendix-measured-at-hk-040)
 
 ## The call
 
@@ -159,7 +159,7 @@ block (128), K of its K-tile (64). The one place the template leaves
 `hk.ops.matmul`'s choice is a decode batch, M <= 32: `hk.ops.matmul` runs
 the WMMA kernel's 16-row `THIN` schedule there, the template
 `hk.ops.decode_gemm` (the GEMV hk's vLLM routes already use) with the
-epilogue -- 1.6-2.7x faster on a W7900D at Qwen3-8B's layers. At 33-64 rows
+epilogue, which measured faster on a W7900D at Qwen3-8B's layers. At 33-64 rows
 the GEMV's four token tiles leave no registers for an epilogue, so those
 stay on the WMMA kernel.
 
@@ -208,7 +208,42 @@ can run the shape -- an illegal one raises with the reasons.
 picks; [Schedules](../schedules.md) is how to inspect one, walk the legal
 ones around it and pass it.
 
-## What it costs: measured
+## Limits
+
+- A and B are bf16, B is `(N, K)`; C bf16, fp16 or fp32, and on gfx950 also
+  int8 and fp8 (`torch.float8_e4m3fn`, `float8_e5m2`) -- include/rdna3's
+  tile store is 16- and 32-bit only. An fp8 C saturates at +-448 (e4m3),
+  where torch's own cast gives NaN.
+- N a multiple of 128 and K of 64; M anything.
+- A column-vector operand is read by an unbounded vector load, so when M is
+  not a multiple of 256 the template pads a copy of it (one small extra
+  launch a call).
+- An epilogue too big to fit beside a kernel's registers (the build refuses
+  any spill) is not an error: the template warns, stores the fp32 sum and
+  runs the epilogue in a pass of its own (the split-K reduction, of one
+  share) -- right, at the cost of a second pass over C.
+- The epilogue sees a tile, not a row: a reduction across C's columns (a
+  row-wise absmax for per-token quantization) is not an epilogue -- every
+  tile holds part of a row.
+- GELU is the tanh form only.
+- The template is as fast as the GEMM it takes: on gfx950 a shape outside
+  `routes_gemm_gfx950.json` gets `route()`'s rule, which is not always the
+  best kernel (2048 x 16384 x 4096 runs the four-warp `dp128`, slower than
+  hipBLASLt there), and the template inherits it. Tuning the route
+  (`tools/hk-bench/gemm_cdna_routes.py`) helps both.
+- On gfx950, an epilogue's arithmetic at the end of the pingpong overlaps
+  nothing (every wave of the CU stores at once), so its cost is its
+  instruction count: GELU(tanh) is ~3.5% of a large GEMM, and 5-8% at
+  M = 1024 on the widest layers, where the grid is 1.5-2 waves of workgroups
+  and the epilogue is paid per wave.
+
+## Appendix: measured at hk 0.4.0
+
+> **A dated record, not current claims.** These measurements were taken when
+> the template landed (October 2026, hk 0.4.0) and
+> have not been re-run against current baselines. The only performance
+> numbers this project quotes are on the [scorecard](../performance/scorecard.md).
+> `python3 -m hk.check` times a template against `torch.compile` on your GPU.
 
 Measured interleaved in one process (`tools/hk-bench/gemm_epilogue.py
 --graphs`), at Qwen3-8B's and Llama-3-8B's linear layers (qkv and o_proj are
@@ -409,34 +444,3 @@ sequence, `torch.compile` and hipBLASLt + the epilogue at all 48 (geomean
 | llama3-8b gate_up (28672 x 4096) | 128 | residual | 593.2 | 530.2 | 0.894 | 628.8 | 904.1 | 901.4 | 1.71x | 1.70x |
 | llama3-8b gate_up (28672 x 4096) | 1024 | residual | 2712.1 | 2726.0 | 1.005 | 2977.0 | 3731.3 | 3789.1 | 1.37x | 1.39x |
 | llama3-8b gate_up (28672 x 4096) | 4096 | residual | 11023.0 | 11043.5 | 1.002 | 11866.6 | 15775.5 | 15747.5 | 1.43x | 1.43x |
-
-
-
-## Limits
-
-- A and B are bf16, B is `(N, K)`; C bf16, fp16 or fp32, and on gfx950 also
-  int8 and fp8 (`torch.float8_e4m3fn`, `float8_e5m2`) -- include/rdna3's
-  tile store is 16- and 32-bit only. An fp8 C saturates at +-448 (e4m3),
-  where torch's own cast gives NaN.
-- N a multiple of 128 and K of 64; M anything.
-- A column-vector operand is read by an unbounded vector load, so when M is
-  not a multiple of 256 the template pads a copy of it (one small extra
-  launch a call).
-- An epilogue too big to fit beside a kernel's registers (the build refuses
-  any spill) is not an error: the template warns, stores the fp32 sum and
-  runs the epilogue in a pass of its own (the split-K reduction, of one
-  share) -- right, at the cost of a second pass over C.
-- The epilogue sees a tile, not a row: a reduction across C's columns (a
-  row-wise absmax for per-token quantization) is not an epilogue -- every
-  tile holds part of a row.
-- GELU is the tanh form only.
-- The template is as fast as the GEMM it takes: on gfx950 a shape outside
-  `routes_gemm_gfx950.json` gets `route()`'s rule, which is not always the
-  best kernel (2048 x 16384 x 4096 runs the four-warp `dp128` at 0.76x
-  hipBLASLt), and the template inherits it. Tuning the route
-  (`tools/hk-bench/gemm_cdna_routes.py`) helps both.
-- On gfx950, an epilogue's arithmetic at the end of the pingpong overlaps
-  nothing (every wave of the CU stores at once), so its cost is its
-  instruction count: GELU(tanh) is ~3.5% of a large GEMM, and 5-8% at
-  M = 1024 on the widest layers, where the grid is 1.5-2 waves of workgroups
-  and the epilogue is paid per wave.
