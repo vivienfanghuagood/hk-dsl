@@ -84,8 +84,9 @@ ARCH_RULES: Dict[str, List[Tuple[str, str, str]]] = {
                                        "lane), tiles past that"),
     ],
     "rope": [("path", "the same tile kernel on both", "the same")],
-    "rotary": [("availability", "`NotImplementedError` (use `hk.ops.rope`, which takes "
-                                "separate cos/sin tables)", "runs (strips)")],
+    "rotary": [("path", "strips, a head's two halves as two strips (no lane exchange)",
+                "strips, a head in one"),
+               ("head_dim", "64 x 1, 2, 4 or 8", "64 x 1, 2, 4, 8 or 16")],
     "quantize": [("shape", "at least 16 x 64", "any shape")],
     "matmul": [
         ("kernel", "hk.ops.gemm (WMMA), tuned per shape", "hk.ops.gemm_cdna (MFMA), "

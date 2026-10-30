@@ -5206,14 +5206,15 @@ without positions:
 
 In place when `out` is `x`. D is 64 * a power of two up to 16 (128 and
 256 qualify) on gfx950, 64 * a power of two up to 8 on gfx1100. On
-strips: gfx950 and gfx1100 (where a head's halves are two strips, there
-being no lane exchange there).
+strips: gfx950, and gfx1100 and gfx1201 (where a head's halves are two
+strips, there being no lane exchange there).
 
 **Per architecture** ([audit](../dx/api-consistency.md)):
 
 | | gfx1100 (RDNA3) | gfx950 (CDNA4) |
 |---|---|---|
-| availability | `NotImplementedError` (use `hk.ops.rope`, which takes separate cos/sin tables) | runs (strips) |
+| path | strips, a head's two halves as two strips (no lane exchange) | strips, a head in one |
+| head_dim | 64 x 1, 2, 4 or 8 | 64 x 1, 2, 4, 8 or 16 |
 
 ## Quantization
 
