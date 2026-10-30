@@ -8,6 +8,8 @@ No GPU, no hipcc: operands are hk.templates.meta stand-ins.
 
 from __future__ import annotations
 
+import importlib
+
 import pytest
 
 pytest.importorskip("hk._mlir")
@@ -46,11 +48,18 @@ def softmax(arch, **kw):
 # ---------------------------------------------------------------- the package
 
 
-def test_a_template_name_stays_the_template_after_its_module_is_imported():
+@pytest.mark.parametrize("name", ["rowwise", "elementwise"])
+def test_a_template_name_stays_the_template_after_its_module_is_imported(name, monkeypatch):
     # Importing hk.templates.rowwise binds the module to the package's
     # `rowwise` attribute; the template has to win on every later lookup.
-    assert callable(T.rowwise) and callable(T.rowwise)
-    assert callable(T.elementwise) and callable(T.elementwise)
+    assert callable(getattr(T, name)) and callable(getattr(T, name))
+    # An import that runs before the first lookup (scripts/gen_api_docs.py's, or a
+    # user's) leaves the module itself there, so the module calls through, as
+    # hk.templates.gemm's does. It did not: every test below failed after
+    # test_api_docs in one process ("'module' object is not callable").
+    monkeypatch.setattr(T, name, importlib.import_module(f"hk.templates.{name}"))
+    k = (rms_norm if name == "rowwise" else gelu_mul)("gfx1100")
+    assert type(k).__name__ == name.capitalize()
     assert T.row_sum is T.row_sum and callable(hk.templates.per_col)
 
 

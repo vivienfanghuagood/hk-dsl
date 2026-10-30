@@ -46,6 +46,12 @@ strips"; docs/design/dsl-surface.md S7).
 - An `hk.Int` on the left of a strip operator (`hk.arch.warp_id() * 64 + col`) now gives the
   strip's operator instead of a `TypeError`.
 
+**`hk.templates.rowwise` and `hk.templates.elementwise` stay callable after their module is
+imported.** `import hk.templates.rowwise` (or `from hk.templates.rowwise import ...`) before the
+first use bound the module to the package's name, and `hk.templates.rowwise(...)` then raised
+"'module' object is not callable". The two modules now call through to their template, as
+`hk.templates.gemm`'s already did.
+
 **gfx1100: the decode GEMM builds under the TheRock ROCm 7.14 compiler, so vLLM's linear routes
 to hk in the W7900D production images again.** Under its AMD clang 23 the four-tile
 `decode_gemm` spilled (256 -> 264 VGPRs), the spill gate refused it, tuning at load failed and
