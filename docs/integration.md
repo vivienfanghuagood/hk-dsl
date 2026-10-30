@@ -61,8 +61,8 @@ and which rule decided.
 | MXFP8 at any (N, K) | `HK_MXFP8_ANY` | off | a mode of K2; no real-weight run |
 | DeepSeek-V4.1 sparse MLA prefill, calls of T >= 512 queries (`MIN_T`), and the layer's MXFP8 rows for wo_a made in the kernel from O in registers | `HK_VLLM_SPARSE_MLA` | off: opt-in | serving scorecard (TP2, real weights): prefill 8k +6.1% and 8k TTFT -5.8% vs hk's default routes (+18.5% vs stock), long +1.7%, mixed and TPOT unchanged, GSM8K-1319 equal (McNemar p 0.91); on real-weight calls at T 8192 top-k layers 1.39x opus + vLLM's quant, sliding-window 1.97x; MXFP8 rows bit for bit vLLM's quant of hk's bf16 rows |
 
-On a GPU a route was not validated on (gfx942, gfx1201), it is off unless you
-turn it on.
+On a GPU a route was not validated on (gfx942 for every route, and gfx1201 for
+the routes not marked for it above), it is off unless you turn it on.
 
 **Turning it off.** The first rule that applies decides:
 

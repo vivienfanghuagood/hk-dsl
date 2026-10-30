@@ -1,5 +1,12 @@
 # Performance
 
+> **A dated record, not current claims.** This page keeps kernel-level and
+> engine-level measurements as they were taken. Several baselines were weaker
+> than the opponent's best configuration. Examples are a tuning table made for
+> a different workload, a bypassed tuned entry point and an older library
+> version. The only numbers this project quotes are on the
+> [scorecard](performance/scorecard.md).
+
 Every number on this page comes from the [development record](history/README.md)
 or, for the templates, from their own pages, and each table names where it
 was copied from; the source has the harness in

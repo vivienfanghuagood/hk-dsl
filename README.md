@@ -4,19 +4,48 @@
 [![CI](https://github.com/vivienfanghuagood/hk-dsl/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/vivienfanghuagood/hk-dsl/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-2a78d6)](LICENSE)
 
-**Fast AMD GPU kernels in a few lines of Python.** Write the math of an
-element, a row or a GEMM epilogue; hk-dsl turns it into a tuned kernel for
-the Radeon (gfx1100) or Instinct (gfx950) GPU you are on. For full control,
-write the kernel in [HipKittens](https://github.com/HazyResearch/HipKittens)'
-tiles. Either way it is traced into an MLIR dialect whose passes refuse
-silent failures, translated to HipKittens C++, compiled by hipcc and called
-from torch. `python -m hk.check` says whether it is right and whether it
-beats `torch.compile`.
+**hk-dsl is a general-purpose Python DSL for AMD GPU kernels on RDNA and CDNA,
+with build-time gates against silent tile-level errors (spills, missing waits,
+MFMA hazards).** Today its largest end-to-end gains are on Radeon (RDNA3 and
+RDNA4), where its kernels plug into vLLM and SGLang.
+[What it is and is not](docs/positioning.md).
+
+It has three layers:
+
+- **The language** (`hk`, `hk.templates`, `hk.check`) is general. You control
+  tiles in registers and LDS, matrix instructions and waits. hk-dsl lowers the
+  kernel through its MLIR dialect to HipKittens C++ for hipcc. It catches
+  spills, unwaited LDS reads and MFMA hazards at build time.
+- **Kernels** (`hk.ops`) are written in the language. They show that it works,
+  and they are how its gains reach a model.
+- **Engine routes** (`hk.integration`) are thin adapters that send some of
+  vLLM's and SGLang's calls to `hk.ops`.
+
+> **Installed next to vLLM or SGLang, hk's routes are on by default.** The
+> engine loads hk's plugin, which turns on the routes checked on your GPU.
+> `python3 -m hk.integration --status` lists them, and `HK_DISABLE=1` turns
+> them all off ([details](#in-vllm-and-sglang)).
+
+## Where it runs
+
+| GPU | arch | support |
+|---|---|---|
+| Radeon PRO W7900 / W7900D, RX 7900 | gfx1100, RDNA3 | full: the language, templates, `hk.ops`, routes in vLLM, SGLang and SGLang-Diffusion |
+| Instinct MI355X | gfx950, CDNA4 | full: the language (with MX/FP4 MFMA and `hk.comm`), templates, `hk.ops`, routes in vLLM |
+| Radeon AI PRO R9700, RX 9070 | gfx1201, RDNA4 | the language, templates and the general `hk.ops`, tested in CI. On by default in vLLM: AWQ linear, unquantized linear, and bf16 MoE at up to 2 tokens a step. No SGLang routes |
+| Instinct MI300X / MI325X | gfx942, CDNA3 | compile-only: no strips, no templates |
+
+- **Compilers (hipcc's clang):** clang 22 (ROCm 7.2.x) in CI's GPU tier;
+  clang 23 (ROCm 10.0), tested on gfx950; clang 24 (ROCm 10.1), main after
+  0.8.0 only. **Known issue:** with clang 24 on gfx1100, some kernels spill and
+  are refused ([#140](https://github.com/vivienfanghuagood/hk-dsl/pull/140)).
+- **Python:** wheels for CPython 3.10 and 3.12 ([install](#install)).
 
 ## Quick start
 
-`pip install hk-dsl` (ROCm's hipcc and a ROCm torch [besides](#install)), then
-save a file:
+```bash
+pip install hk-dsl      # plus ROCm's hipcc and a ROCm build of torch: see Install
+```
 
 ```python
 # my_kernels.py
@@ -29,7 +58,7 @@ gelu_and_mul = T.elementwise(lambda g, u: hk.math.gelu(g) * u)  # the math of on
 def rms_norm(x, w, *, EPS=1e-6):
     return x * (T.row_mean(x * x) + EPS).rsqrt() * w
 
-def bias_gelu(acc, ctx):                                         # traced into a tuned GEMM's store
+def bias_gelu(acc, ctx):                                         # fused into a GEMM's store
     acc += ctx.bias
     return hk.templates.gemm.gelu_tanh(acc)
 
@@ -37,59 +66,51 @@ def linear_bias_gelu(x, w, b):
     return hk.templates.gemm(x, w, epilogue=bias_gelu, bias=b)
 ```
 
-call it with torch tensors:
-
-```python
-import torch
-from my_kernels import gelu_and_mul, rms_norm, linear_bias_gelu
-
-x = torch.randn(4096, 2 * 14336, device="cuda", dtype=torch.bfloat16)  # a gate/up output
-h = torch.randn(4096, 4096, device="cuda", dtype=torch.bfloat16)
-w = torch.randn(4096, device="cuda", dtype=torch.bfloat16)
-W = torch.randn(12288, 4096, device="cuda", dtype=torch.bfloat16) / 64
-b = torch.randn(12288, device="cuda", dtype=torch.bfloat16)
-
-y = gelu_and_mul(x[:, :14336], x[:, 14336:])  # the two halves, read in place
-n = rms_norm(h, w)
-z = linear_bias_gelu(h, W, b)                  # F.gelu(F.linear(h, W, b), approximate="tanh")
-```
-
-and check a kernel against torch:
-
 ```bash
-python -m hk.check my_kernels.py:rms_norm \
+python3 -m hk.check my_kernels.py:rms_norm \
     --ref "lambda x, w: x * torch.rsqrt((x * x).mean(-1, keepdim=True) + 1e-6) * w" \
     --inputs "bf16[4096,4096], bf16[4096]"
 ```
 
-`hk.check` reports registers, occupancy and spills, the error against the
-reference, and the time against torch eager and `torch.compile`; it exits 0
-(pass), 1 (wrong) or 2 (error). Each block runs as shown on a W7900D and an
-MI355X. Guides:
-[elementwise/rowwise](docs/templates/elementwise-rowwise.md),
+Call them with torch tensors, as `rms_norm(h, w)`. `hk.check` reports the
+registers, occupancy and spills, the error against the reference, and the time
+against torch eager and `torch.compile` on your GPU. It exits with 0 (pass),
+1 (wrong) or 2 (error). Next:
+[getting started](docs/getting-started.md),
+[templates](docs/templates/elementwise-rowwise.md),
 [GEMM epilogues](docs/templates/gemm.md), [hk.check](docs/check.md).
 
-## Results at a glance
+## Performance
 
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset="docs/assets/templates-vs-torch-compile-dark.svg">
-  <img alt="Speedup of hk.templates over torch.compile, W7900D then MI355X: GELU-and-mul 1.03x, 1.11x; the same op on 16x64 tiles 0.83x, 0.78x; add+RMSNorm+int8 1.17x, 1.45x; cross-entropy 1.58x, 2.50x; MoE router 7.37x, 9.06x; linear+bias+GELU 1.68x, 1.20x; linear+residual 1.71x, 1.20x." src="docs/assets/templates-vs-torch-compile.svg" width="760">
-</picture>
+We quote only end-to-end serving results from the
+[scorecard](docs/performance/scorecard.md).
 
-Hollow: the same op by hand on 16x64 tiles, the slow way. The
-[chart's script](tools/docs/make_charts.py) reads the committed tables.
+- **Instinct MI355X**, DeepSeek-V4.1-Flash on vLLM (TP2): hk's default routes on
+  top of a stock vLLM that already uses AITER's tuned paths give **about +5% on
+  8k-token prefill**. Decode is unchanged.
+- **Radeon:** RDNA end-to-end results will come with the RDNA scorecard.
 
-| | Radeon PRO W7900D (gfx1100) | Instinct MI355X (gfx950) |
-|---|---|---|
-| [templates](docs/templates/elementwise-rowwise.md#measured) against hk's tuned kernel for the same job | 0.92-1.02x | 0.98-1.03x |
-| [GEMM + epilogue](docs/templates/gemm.md#what-it-costs-measured) against `torch.compile` | faster at 48 of 48 layer shapes, geomean 1.69x | faster at 46 of 48, level at 2 |
-| vLLM, Qwen3-8B, per request against stock ([A1](docs/performance.md#vllm-031-on-gfx1100), [B1](docs/performance.md#b1-end-to-end-in-vllm-aiter-on)) | 1.22-1.85x at 1-32 requests (vLLM 0.31.0, torch 2.13.0+rocm7.2, triton-rocm 3.7.1) | 1.13x at 16, 1.21x at 64 |
-| bf16 GEMM against the field ([A2](docs/performance.md#a2-kernels-against-the-tuned-field), [B2](docs/performance.md#b2-kernels-against-the-tuned-field)) | ties FlyDSL, 1.28-1.39x hipBLASLt | 0.9x or better of the best at all 122 LLM shapes |
-| where it loses ([A4](docs/performance.md#a4-losses-and-limits), [B4](docs/performance.md#b4-losses-and-no-headroom-findings)) | paged decode 0.86-1.12x Triton's | GEMMs 0.79-1.21x aiter's, norms 0.74-1.05x, MoE 0.66-0.94x CK's |
+## How it compares
 
-One GPU of each; every comparison interleaved in one process.
-[Performance](docs/performance.md) has the method, the software stack of
-every table and every loss.
+- **[Triton](https://github.com/triton-lang/triton)** is compiler-managed and
+  much cheaper to write, on CDNA and RDNA. Use it unless you need control of
+  tiles, LDS and waits.
+- **[FlyDSL](https://github.com/ROCm/FlyDSL)** is AMD's MLIR Python DSL with
+  instruction-level control. It is CDNA-first and used by AITER and vLLM.
+- **hk-dsl** gives tile- and instruction-level control and emits HipKittens C++.
+  Its gates check the result at build time, and RDNA3 and RDNA4 are
+  first-class targets. It is not a faster code generator than that C++
+  ([comparison](docs/positioning.md#how-it-compares)).
+
+## Documentation
+
+[What it is and is not](docs/positioning.md) ·
+[getting started](docs/getting-started.md) ·
+[templates](docs/templates/elementwise-rowwise.md) ·
+[hk.check](docs/check.md) · [the language](docs/language.md) ·
+[API](docs/api/README.md) · [vLLM and SGLang](docs/integration.md) ·
+[scorecard](docs/performance/scorecard.md) · [every page](docs/README.md) ·
+[changelog](CHANGELOG.md) · [docs site](https://vivienfanghuagood.github.io/hk-dsl/)
 
 ## The language, when you need control
 
@@ -112,23 +133,18 @@ print(gelu_mul.source())            # the HipKittens C++ -- needs nothing
 print(gelu_mul.build().report())    # hipcc and the resource gate -- no GPU
 ```
 
-It ties `torch.compile` on an MI355X ([check](docs/check.md#the-loop)).
-More: [the language](docs/language.md), [examples](examples/README.md).
+`python3 -m hk.check` checks and times it like any other kernel
+([check](docs/check.md#the-loop)). More: [the language](docs/language.md),
+[examples](examples/README.md).
 
-On gfx950 a kernel can also hand work between workgroups, XCDs and GPUs:
-`hk.comm` has scoped tensors, signal / wait with a timeout instead of a hang,
-work queues, grid barriers, tagged mailboxes and symmetric memory across
-GPUs, each lowered to what a memory-model litmus suite found correct
-([hk.comm](docs/language.md#between-workgroups-xcds-and-gpus-hkcomm-gfx950),
-[design](docs/design/comm.md), [a task graph](examples/14_task_graph.py)).
-Which XCD runs which workgroup is a compiler pass:
-`hk.kernel(placement="auto")` keeps a sharing cluster on one XCD where that
-measured faster, with outputs bitwise the unplaced kernel's
-([placement](docs/placement.md), [an example](examples/15_placement.py)). For
-kernels that must match another implementation bit for bit, strips take a
-C++ expression per element (`hk.map_cpp`), i32 elements, stated reduction
-orders and element-wise exchange
-([strips](docs/language.md#strip-ops-for-a-megakernels-roles-gfx950)).
+On gfx950 there is more:
+- **`hk.comm`** hands work between workgroups, XCDs and GPUs
+  ([hk.comm](docs/language.md#between-workgroups-xcds-and-gpus-hkcomm-gfx950),
+  [design](docs/design/comm.md), [a task graph](examples/14_task_graph.py)).
+- **Workgroup placement on XCDs** is a compiler pass
+  ([placement](docs/placement.md), [an example](examples/15_placement.py)).
+- **Strip ops** let a kernel match another implementation bit for bit
+  ([strips](docs/language.md#strip-ops-for-a-megakernels-roles-gfx950)).
 
 ```mermaid
 flowchart LR
@@ -141,15 +157,6 @@ flowchart LR
 The passes refuse what fails silently: an MMA above its wait, a spill, a
 slow operand layout, a copy racing a barrier ([the traps](docs/README.md#the-traps)).
 
-## Where it runs
-
-| GPU | arch | status |
-|---|---|---|
-| Radeon PRO W7900 / W7900D, RX 7900 | gfx1100, RDNA3 | primary: every kernel, template and engine patch |
-| Instinct MI355X | gfx950, CDNA4 | every kernel and template; vLLM end to end ([CDNA](docs/design/cdna.md)) |
-| Radeon AI PRO R9700, RX 9070 | gfx1201, RDNA4 | the GPU tier runs ([chapter 47](docs/history/47-gfx1201-on-hardware.md)); no engine route validated, nothing tuned yet |
-| Instinct MI300X | gfx942, CDNA3 | compile-only, no templates |
-
 ## Install
 
 `pip install hk-dsl`, for CPython 3.10 or 3.12 on Linux x86_64 with glibc
@@ -159,12 +166,8 @@ wheel carries the HipKittens headers, so at run time it needs ROCm's hipcc
 (on `PATH`, or `HK_HIPCC`) and, to launch, a ROCm build of torch (not a
 dependency). Another CPython 3.x (3.11, 3.13) has no wheel: build from source.
 
-| hipcc's compiler | where | status |
-|---|---|---|
-| AMD clang 22 (ROCm 7.2.2-7.2.4) | `rocm/pytorch:rocm7.2.x` images | tested: the GPU tier, gfx950 and gfx1100 |
-| AMD clang 23 (ROCm 10.0) | vLLM's ROCm image (`nightly-rocm100`) | tested on gfx950 |
-| AMD clang 24 (ROCm 10.1, TheRock) | `rocm/pytorch:rocm10.1.0_ubuntu24.04_py3.12_pytorch_release_2.14.0` | main after 0.8.0: quick start and examples tested on gfx950. **0.8.0 fails every compile there** ("no kernel-resource-usage remarks"). On gfx1100, `hk.ops`' fp16/bf16 RMSNorm and LayerNorm and its rope, and examples 02 and 03, spill under it and are refused |
-| ROCm 7.1's hipcc | CI's no-GPU tiers | compile-only |
+Which ROCm and hipcc versions are tested, and which are known not to work, is
+in [getting started](docs/getting-started.md#install).
 
 From source, with the HipKittens submodule:
 
@@ -178,13 +181,22 @@ Details: [getting started](docs/getting-started.md#install), [building](docs/bui
 
 ## In vLLM and SGLang
 
-**hk is on by default.** Installed, hk's vLLM and SGLang plugins apply every
-route that was validated with real weights on your GPU: its outputs were
-bit-identical to the engine's, or its error was within the engine's own noise.
-On an MI355X that is K1 and K2 for DeepSeek-V4.1. On a W7900D it is linear,
-MoE, AWQ and attention. Each route sends a shape to hk's kernel only where hk
-measured faster ([integration](docs/integration.md#on-by-default-and-turning-it-off)).
-Turning it off is for comparisons:
+**hk is on by default.** Once installed, hk's vLLM and SGLang plugins apply
+every route that was validated with real weights on your GPU. A route is
+validated when its outputs were bit-identical to the engine's, or its error was
+within the engine's own noise. What is on by default:
+
+- **MI355X (gfx950), vLLM:** DeepSeek-V4.1's MXFP8 linear layers and its a8w4
+  MoE; its index layers when vLLM runs with `--monokernel`; AWQ linear layers.
+- **W7900D (gfx1100):** in vLLM, linear, AWQ, MoE and the vision encoder's
+  attention. In SGLang, linear and MoE. In SGLang-Diffusion, attention and
+  linear, after `python3 -m hk.integration sglang-diffusion install`.
+- **R9700 (gfx1201), vLLM:** AWQ linear, unquantized linear, and bf16 MoE at
+  up to 2 tokens a step.
+
+Each route sends a shape to hk's kernel only where hk measured faster
+([integration](docs/integration.md#on-by-default-and-turning-it-off)). Turn
+it off for comparisons:
 
 ```bash
 vllm serve Qwen/Qwen3-8B                         # hk on: the routes validated on this GPU
@@ -201,19 +213,9 @@ ConvRot INT8 is lossy, so it stays opt-in (`HK_SGLD=attn,linear,convrot`).
 
 [llms.txt](llms.txt) (or [llms-full.txt](llms-full.txt), every doc in one
 file), the [hk-kernel skill](skills/hk-kernel/SKILL.md), the generated
-[API reference](docs/api/README.md), and `python -m hk.check FILE.py:NAME
+[API reference](docs/api/README.md), and `python3 -m hk.check FILE.py:NAME
 --json -` as the loop's one command (`--arch gfx1100,gfx950` builds for the
 GPU that is not in the machine).
-
-## Documentation
-
-[Getting started](docs/getting-started.md) ·
-[templates](docs/templates/elementwise-rowwise.md) ·
-[hk.check](docs/check.md) · [the language](docs/language.md) ·
-[workgroup placement](docs/placement.md) ·
-[API](docs/api/README.md) · [performance](docs/performance.md) ·
-[everything, and why hk-dsl exists](docs/README.md) ·
-[changelog](CHANGELOG.md)
 
 ## Contributing, license, acknowledgements
 
