@@ -16,8 +16,11 @@ torch = pytest.importorskip("torch")
 
 import hk  # noqa: E402
 from hk.runtime.torch_ext import launcher  # noqa: E402
+from hk.target import current_arch  # noqa: E402
 
-pytestmark = pytest.mark.gpu
+pytestmark = [pytest.mark.gpu,
+              pytest.mark.skipif(not current_arch().startswith("gfx1"),
+                                 reason="strided globals are RDNA-only so far (#146)")]
 
 BLOCK, D = 16, 128
 

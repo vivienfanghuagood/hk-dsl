@@ -367,7 +367,9 @@ class CodeObjectKernel:
         launch = env["launch"]
         mod = _native() if native else None
         progs = tuple(_grid_program(g, self.tensors) for g in self.grid)
-        if mod is None or None in progs or n > 32 or self.size > 4096:
+        # The C launcher packs a gl's fields from the shape of a contiguous tensor; it has no
+        # field for a strided global's three extra strides, so those kernels stay here.
+        if mod is None or None in progs or n > 32 or self.size > 4096 or self.strided:
             return launch
         # The same call in C (hk._mlir's _hkLaunch): what this function does when its memo
         # hits, without the interpreter; everything else -- a new shape included, since C

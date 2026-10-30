@@ -727,10 +727,14 @@ class Kernel:
         On CDNA the pybind entry point takes the stream too
         (`scaffold.takes_stream`), and gets torch's current stream for the
         first tensor's device, so the launch is ordered against torch's work
-        and a CUDA graph captures it."""
+        and a CUDA graph captures it.
+
+        A kernel with a strided global always launches the code object: the
+        pybind layer builds a gl, which has one stride."""
         import os  # noqa: PLC0415
 
-        if os.environ.get("HK_LAUNCH", "pybind") != "codeobj":
+        strided = any(getattr(t, "strided", False) for _, t in self._tensors)
+        if os.environ.get("HK_LAUNCH", "pybind") != "codeobj" and not strided:
             fn = getattr(self.compile(**const_overrides), self.name)
             from ..codegen.scaffold import takes_stream  # noqa: PLC0415
 
