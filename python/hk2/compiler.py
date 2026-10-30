@@ -50,6 +50,32 @@ def _const(v, dt: T.DType) -> str:
     return str(int(v))
 
 
+class LazyRegs:
+    """Registers read from LDS at their first use: a dot reads each operand fragment right before the
+    instruction that needs it, instead of holding a whole operand tile in registers."""
+
+    def __init__(self, n: int, loader):
+        self.vals: List[Optional[str]] = [None] * n
+        self.loader = loader
+
+    def __len__(self):
+        return len(self.vals)
+
+    def __getitem__(self, idx):
+        if isinstance(idx, slice):
+            return [self[i] for i in range(*idx.indices(len(self.vals)))]
+        if self.vals[idx] is None:
+            self.loader(idx, self.vals)
+        return self.vals[idx]
+
+    def __iter__(self):
+        return (self[i] for i in range(len(self.vals)))
+
+    def materialize(self):
+        for i in range(len(self.vals)):
+            self[i]
+
+
 @dataclass
 class TV:
     """A tile as emitted: its layout and one SSA name per register (copies share a name)."""
@@ -718,7 +744,7 @@ class Compiler:
         lb = self.en(("ldsbytes", lin, dt.bytes), lambda: f"mul i32 {lin}, {dt.bytes}")
         return lb, base + const * dt.bytes
 
-    def convert(self, items: Sequence[Tuple[ir.Value, Layout]], double: bool = False) -> List[TV]:
+    def convert(self, items: Sequence[Tuple[ir.Value, Layout]], double: bool = False, lazy: bool = False) -> List[TV]:
         """Move tiles into new layouts through LDS: all writes, one barrier, all reads. ``double``: inside a
         loop, alternate between two copies of the buffers so the next iteration's writes need no barrier
         against this iteration's reads."""
@@ -784,7 +810,7 @@ class Compiler:
             self.emit('  fence syncscope("wavefront") acquire')
         self.lds_read(acc)
         for i, src, D, geom, b0 in plans:
-            tv = self._lds_load_tile(D, src.dtype, geom, b0, dyn)
+            tv = self._lds_load_tile(D, src.dtype, geom, b0, dyn, lazy)
             out[i] = tv
             self.memo[-1][("cvt", items[i][0].id, D)] = tv
         return out
@@ -827,29 +853,35 @@ class Compiler:
                 vec = self.pack(regs, dt)
                 self.emit(f"  store <{v} x {self.ty(dt)}> {vec}, ptr addrspace(3) {p}, align {v * dt.bytes}")
 
-    def _lds_load_tile(self, D: Layout, dt: T.DType, geom, b0: int, dyn: Optional[str] = None) -> TV:
+    def _lds_load_tile(self, D: Layout, dt: T.DType, geom, b0: int, dyn: Optional[str] = None,
+                       lazy: bool = False) -> TV:
         v = self._vec(D, geom, dt)
-        if v < 4 and D.rank == 2 and self.tr16_ok(D, dt, geom[0]):
-            return self._lds_load_tr16(D, dt, geom, b0, dyn)
-        regs: List[Optional[str]] = [None] * D.nregs
-        for r in range(0, D.nregs, v):
-            if D.canonical_reg(r) != r:
-                continue
-            lb, const = self._lds_addr(D, geom, b0, r, dt)
-            addr = self.e(f"add i32 {self._dyn_addr(lb, dyn)}, {const}")
-            p = self.lds_ptr(addr)
-            if v == 1:
-                regs[r] = self.e(f"load {self.ty(dt)}, ptr addrspace(3) {p}, align {dt.bytes}")
-            else:
+        tr = v < 4 and D.rank == 2 and self.tr16_ok(D, dt, geom[0])
+        if tr:
+            v, read = 4, self._tr16_reader(D, dt, geom, b0, dyn)
+        else:
+            def read(r):
+                lb, const = self._lds_addr(D, geom, b0, r, dt)
+                addr = self.e(f"add i32 {self._dyn_addr(lb, dyn)}, {const}")
+                p = self.lds_ptr(addr)
+                if v == 1:
+                    return [self.e(f"load {self.ty(dt)}, ptr addrspace(3) {p}, align {dt.bytes}")]
                 vt = f"<{v} x {self.ty(dt)}>"
-                x = self.e(f"load {vt}, ptr addrspace(3) {p}, align {v * dt.bytes}")
-                regs[r:r + v] = self.unpack(x, v, dt)
-        for r in range(D.nregs):
-            if regs[r] is None:
-                regs[r] = regs[D.canonical_reg(r)]
+                return self.unpack(self.e(f"load {vt}, ptr addrspace(3) {p}, align {v * dt.bytes}"), v, dt)
+
+        def loader(r, vals):
+            c = D.canonical_reg(r)
+            if vals[c] is None:
+                start = c - c % v
+                vals[start:start + v] = read(start)
+            vals[r] = vals[c]
+        regs = LazyRegs(D.nregs, loader)
+        if not lazy:
+            regs.materialize()
+            regs = list(regs.vals)
         return TV(D, regs, dt)
 
-    def _lds_load_tr16(self, D: Layout, dt: T.DType, geom, b0: int, dyn: Optional[str]) -> TV:
+    def _tr16_reader(self, D: Layout, dt: T.DType, geom, b0: int, dyn: Optional[str]):
         """Four elements per ds_read_b64_tr_b16: this lane addresses row (slow) base + j//4, columns (fast)
         base + 4*(j%4), with j its lane within 16; it receives column base + j, rows base + 0..3."""
         fast, slow, pitch = geom
@@ -865,19 +897,14 @@ class Compiler:
         lb = self.en(("tr16b", hi, geom), lambda: f"mul i32 {lin}, {dt.bytes}")
         name = "llvm.amdgcn.ds.read.tr16.b64.v4i16"
         self.decl(f"declare <4 x i16> @{name}(ptr addrspace(3))")
-        regs: List[Optional[str]] = [None] * D.nregs
-        for r in range(0, D.nregs, 4):
-            if D.canonical_reg(r) != r:
-                continue
+
+        def read(r):
             off = D.reg_offset(r)
             const = b0 + (off[slow] * pitch + off[fast]) * dt.bytes
             addr = self.e(f"add i32 {self._dyn_addr(lb, dyn)}, {const}")
             x = self.e(f"call <4 x i16> @{name}(ptr addrspace(3) {self.lds_ptr(addr)})")
-            regs[r:r + 4] = self.unpack(x, 4, dt, "<4 x i16>")
-        for r in range(D.nregs):
-            if regs[r] is None:
-                regs[r] = regs[D.canonical_reg(r)]
-        return TV(D, regs, dt)
+            return self.unpack(x, 4, dt, "<4 x i16>")
+        return read
 
     # ================================================================ ops
     def emit_block(self, block: ir.Block):
@@ -1124,7 +1151,8 @@ class Compiler:
             if pi:
                 La, Lb = self.permute_k(La, pi, 1), self.permute_k(Lb, pi, 0)
         Lc = self.lay[op.result.id]
-        ta, tb = self.convert([(a, La), (b, Lb)], double=self.depth > 0)
+        ta, tb = self.convert([(a, La), (b, Lb)], double=self.depth > 0,
+                              lazy=not os.environ.get("HK2_NO_LAZY"))
         tc = self.get(c, Lc)
         wm, wn = grid
         rm, rn, rk = (m // wm) // atom.m, (n // wn) // atom.n, k // atom.k
@@ -1153,6 +1181,10 @@ class Compiler:
                 for i in range(rm):
                     accs[i, j] = self.e(f"call {atom.c_ty} @{atom.intrinsic}({atom.op_ty} {avecs[i]}, "
                                         f"{atom.op_ty} {bvec}, {atom.c_ty} {accs[i, j]}{atom.tail})")
+        for tv in (ta, tb):  # a memoized conversion must not read LDS later, after others wrote it
+            if isinstance(tv.regs, LazyRegs):
+                tv.regs.materialize()
+                tv.regs = list(tv.regs.vals)
         regs = [None] * Lc.nregs
         for i in range(rm):
             for j in range(rn):

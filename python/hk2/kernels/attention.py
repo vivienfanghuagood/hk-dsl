@@ -60,9 +60,15 @@ def attention(q: torch.Tensor, k: torch.Tensor, v: torch.Tensor, causal: bool = 
     sm_scale = sm_scale if sm_scale is not None else D ** -0.5
     arch = torch.cuda.get_device_properties(q.device).gcnArchName
     rdna = "gfx1" in arch
-    # measured defaults (bench/hk2/attention.py): MI355X 256x64, 8 warps; W7900D 128x32, 8 warps (no spills)
-    BM = BM or (128 if rdna else 256)
-    BN = BN or (32 if rdna or D > 128 else 64)
+    # measured defaults (bench/hk2/attention.py): MI355X 256x64 at D=128, 256x128 at D=64 (128x64 causal);
+    # W7900D 128x32; all 8 warps, no spills
+    if rdna:
+        bm, bn = 128, 32
+    elif D <= 64:
+        bm, bn = (128, 64) if causal else (256, 128)
+    else:
+        bm, bn = 256, 64 if D <= 128 else 32
+    BM, BN = BM or bm, BN or bn
     num_warps = num_warps or 8
     attn_fwd[(hk.cdiv(S, BM), H, B)](q, k, v, o, sm_scale, BM=BM, BN=BN, D=D, CAUSAL=causal, GROUP=H // Hkv,
                                      num_warps=num_warps)

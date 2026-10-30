@@ -79,10 +79,11 @@ if __name__ == "__main__":
     if os.environ.get("HK2_ATT_CHILD"):
         child(which, d)
         sys.exit(0)
-    out = tempfile.mkdtemp(prefix="att-", dir="/hk2home")
+    out = tempfile.mkdtemp(prefix="att-", dir=os.environ.get("HK2_ATT_DIR", "/hk2home"))
     regex = "_fa" if which == "triton" else "attn_fwd"
     env = dict(os.environ, HK2_ATT_CHILD="1")
-    cmd = ["rocprofv3", "--att", "--att-library-path", "/dec", "--kernel-include-regex", regex, "-d", out, "-o", "x",
+    cmd = ["rocprofv3", "--att", "--att-library-path", os.environ.get("HK2_DEC", "/dec"), "--kernel-include-regex",
+           regex, "-d", out, "-o", "x",
            "--", sys.executable, __file__, which, str(d)]
     r = subprocess.run(cmd, env=env, capture_output=True, text=True)
     jsons = sorted(glob.glob(os.path.join(out, "**", "ui_output_agent_*_dispatch_*", "code.json"), recursive=True))
