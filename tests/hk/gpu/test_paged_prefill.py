@@ -222,7 +222,8 @@ def _rdna() -> bool:
 rocm_only = pytest.mark.skipif(not _rdna(), reason="layout='rocm' is RDNA's (strided globals)")
 
 
-def _rocm_case(reqs, head_dim=128, h_kv=2, group=8, seed=0, v_ones=False, page=ROCM_PAGE):
+def _rocm_case(reqs, head_dim=128, h_kv=2, group=8, seed=0, v_ones=False, page=ROCM_PAGE,
+               dtype=torch.bfloat16, q_scale=1.0):
     """reqs: [(ctx, q_len)] over `page`-token pages. The token-major caches (for the reference)
     and ROCM_ATTN's: K x-split (blocks, kv_heads, d / 8, page, 8), V (blocks, kv_heads, d,
     page)."""
@@ -230,15 +231,14 @@ def _rocm_case(reqs, head_dim=128, h_kv=2, group=8, seed=0, v_ones=False, page=R
     seq = [c + n for c, n in reqs]
     max_pages = max(1, max(-(-s // page) for s in seq))
     n_blocks = len(reqs) * max_pages + 3
-    k = torch.randn(n_blocks, h_kv, page, head_dim, device="cuda", dtype=torch.bfloat16,
-                    generator=g)
+    k = torch.randn(n_blocks, h_kv, page, head_dim, device="cuda", dtype=dtype, generator=g)
     v = (torch.ones_like(k) if v_ones else
-         torch.randn(k.shape, device="cuda", dtype=torch.bfloat16, generator=g))
+         torch.randn(k.shape, device="cuda", dtype=dtype, generator=g))
     perm = torch.randperm(n_blocks, generator=g, device="cuda")[: len(reqs) * max_pages]
     table = perm.reshape(len(reqs), max_pages).to(torch.int32).contiguous()
     n_tok = sum(n for _, n in reqs)
-    q = torch.randn(n_tok, h_kv * group, head_dim, device="cuda", dtype=torch.bfloat16,
-                    generator=g)
+    q = (torch.randn(n_tok, h_kv * group, head_dim, device="cuda", generator=g)
+         * q_scale).to(dtype)
     starts = [0]
     for _, n in reqs:
         starts.append(starts[-1] + n)
@@ -255,7 +255,7 @@ def _rocm_run(reqs, page=ROCM_PAGE, **kw):
     n_tok, h, d = q.shape
     out = torch.full_like(q, 7.0)
     tiles = pp.q_tiles(max(n for _, n in reqs), q.device)
-    pp.rocm_kernel_for(d, group, page=page)(q.view(n_tok, h * d), *pp.rocm_views(k5, v4), table,
+    pp.rocm_kernel_for(d, group, page=page, dtype=_dname(q.dtype))(q.view(n_tok, h * d), *pp.rocm_views(k5, v4), table,
                                             lens, q_start, tiles, out.view(n_tok, h * d))
     want = _reference(q, k, v, table, lens, q_start, group, page=page)
     return out, want, q_start
@@ -341,12 +341,17 @@ def _nan_past_ends(k, v, table, lens):
     return k.masked_fill(dead, float("nan")), v.masked_fill(dead, float("nan"))
 
 
+def _dname(dtype) -> str:
+    return "bf16" if dtype == torch.bfloat16 else "fp16"
+
+
 def _flash_run(reqs, head_dim=128, h_kv=2, group=8, dsplit=False, layout="flash", seed=0,
                decodes=True, warps=None, page=ROCM_PAGE, v_ones=False, kv_order="planes",
-               nan_tail=False):
+               nan_tail=False, dtype=torch.bfloat16, q_scale=1.0):
     q, (k, v), (k5, v4), table, lens, q_start = _rocm_case(reqs, head_dim=head_dim, h_kv=h_kv,
                                                            group=group, seed=seed, page=page,
-                                                           v_ones=v_ones)
+                                                           v_ones=v_ones, dtype=dtype,
+                                                           q_scale=q_scale)
     if nan_tail:
         k, v = _nan_past_ends(k, v, table, lens)
     n_tok, h, d = q.shape
@@ -355,9 +360,10 @@ def _flash_run(reqs, head_dim=128, h_kv=2, group=8, dsplit=False, layout="flash"
     kern = pp.paged_prefill_kernel(
         f"t_pp_{layout}_d{head_dim}_g{group}{'_ds' if dsplit else ''}_w{warps}"
         f"{'_dec' if decodes else ''}{'' if page == ROCM_PAGE else f'_p{page}'}"
-        f"{'' if kv_order == 'planes' else '_' + kv_order}",
+        f"{'' if kv_order == 'planes' else '_' + kv_order}"
+        f"{'' if dtype == torch.bfloat16 else '_f16'}",
         head_dim=head_dim, group=group, layout=layout, dsplit=dsplit, warps=warps,
-        decodes=decodes, page=page, kv_order=kv_order)
+        decodes=decodes, page=page, kv_order=kv_order, dtype=_dname(dtype))
     tile = 16 * (warps // 2 if dsplit else warps)
     tiles = pp.q_tiles(max(n for _, n in reqs), q.device, tile)
     if layout == "flash":
@@ -461,29 +467,36 @@ def test_flash_packed_decodes_with_a_strided_q():
 
 @rocm_only
 @pytest.mark.parametrize("reqs", [[(0, 300)], [(500, 1), (2047, 1), (0, 300), (1000, 77), (33, 1)]])
-@pytest.mark.parametrize("page,kv_order", [(16, "planes"), (544, "tokens"), (784, "tokens")])
-def test_flash_vt_pages_is_bitwise_the_flash_layout(reqs, page, kv_order):
+@pytest.mark.parametrize("page,kv_order,dtype", [(16, "planes", torch.bfloat16),
+                                                 (544, "tokens", torch.bfloat16),
+                                                 (784, "tokens", torch.bfloat16),
+                                                 (544, "tokens", torch.float16),
+                                                 (784, "tokens", torch.float16)])
+def test_flash_vt_pages_is_bitwise_the_flash_layout(reqs, page, kv_order, dtype):
     """vt_pages: the batch's V pages packed once into V^T slots (vt_pack_kernel) and staged
     straight -- the same V^T tile in LDS as the register transpose builds, so the same bits."""
     q, (k, v), _, table, lens, q_start = _rocm_case(reqs, head_dim=128, h_kv=2, group=8,
-                                                    page=page)
+                                                    page=page, dtype=dtype)
     n_tok, h, d = q.shape
     kv = _flash_cache(k, v, kv_order)
     max_q = max(n for _, n in reqs)
-    pt = ("" if page == 16 else f"_p{page}") + ("" if kv_order == "planes" else f"_{kv_order}")
+    pt = (("" if page == 16 else f"_p{page}") + ("" if kv_order == "planes" else f"_{kv_order}")
+          + ("" if dtype == torch.bfloat16 else "_f16"))
     outs = []
     for vt in (False, True):
         out = torch.full_like(q, 7.0)
         kern = pp.paged_prefill_kernel(f"t_pp_flash_d128_g8_w12_dec{'_vt' if vt else ''}{pt}",
                                        head_dim=128, group=8, layout="flash", warps=12,
-                                       decodes=True, vt_pages=vt, page=page, kv_order=kv_order)
+                                       decodes=True, vt_pages=vt, page=page, kv_order=kv_order,
+                                       dtype=_dname(dtype))
         v_src = kv
         if vt:
             span = max(-(-s // page) for s in lens.tolist())
             # NaN where nothing is packed: a read of an unpacked V^T column would show
             v_src = torch.full((len(reqs) * span, 2, d, page), float("nan"), device="cuda",
-                               dtype=torch.bfloat16)
-            pp.vt_pack_kernel(f"t_vt_pack_d128{pt}", head_dim=128, page=page, kv_order=kv_order)(
+                               dtype=dtype)
+            pp.vt_pack_kernel(f"t_vt_pack_d128{pt}", head_dim=128, page=page, kv_order=kv_order,
+                              dtype=_dname(dtype))(
                 kv, table, lens, pp.vt_pack_span(max(lens.tolist()), q.device, page), v_src)
         kern(q.view(n_tok, h * d), kv, v_src, table, lens, q_start, pp.q_tiles(max_q, q.device, 192),
              out.view(n_tok, h * d), q.unsqueeze(0), out.unsqueeze(0))
@@ -620,10 +633,12 @@ def _gfx1100() -> bool:
 
 
 @pytest.mark.skipif(not _gfx1100(), reason="the route is gfx1100's")
+@pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float16])
 @pytest.mark.parametrize("vt", [False, True])
 @pytest.mark.parametrize("kv_order,page", [("planes", 16), ("tokens", 16), ("tokens", 544),
                                            ("tokens", 784)])
-def test_vllm_prefill_takes_a_triton_attn_batch_and_matches(monkeypatch, kv_order, page, vt):
+def test_vllm_prefill_takes_a_triton_attn_batch_and_matches(monkeypatch, kv_order, page, vt,
+                                                            dtype):
     """The route (vllm_prefill): unified_attention's stand-in, called as
     TRITON_ATTN calls it on a mixed batch (prefill chunks and decodes), takes it on hk's kernel --
     counted as hk, vLLM's kernel never called -- and matches the reference. Both of vLLM's
@@ -641,9 +656,10 @@ def test_vllm_prefill_takes_a_triton_attn_batch_and_matches(monkeypatch, kv_orde
     monkeypatch.setattr(vp, "_ORIG_U", unified_attention)
     monkeypatch.setattr(vp, "_U_SIG", inspect.signature(unified_attention))
     monkeypatch.setattr(vp, "VT", vt)
+    monkeypatch.setattr(vp, "FP16", True)
     reqs = [(0, 300), (500, 1), (1000, 77), (33, 1)]
     q, (k, v), _, table, lens, q_start = _rocm_case(reqs, head_dim=128, h_kv=2, group=8,
-                                                    page=page)
+                                                    page=page, dtype=dtype)
     cache = _flash_cache(k, v, kv_order)
     nb, d = k.shape[0], k.shape[3]
     if kv_order == "planes":
@@ -659,3 +675,45 @@ def test_vllm_prefill_takes_a_triton_attn_batch_and_matches(monkeypatch, kv_orde
                          q_descale=None, k_descale=None, v_descale=None)
     assert vp.PATCH.stats["hk"] == before + 1
     _attn_ref.check(out, _reference(q, k, v, table, lens, q_start, 8, page=page))
+
+
+# ---- fp16 (an fp16 model's caches: vLLM serves GPTQ checkpoints in fp16) ---------------------
+
+@rocm_only
+@pytest.mark.parametrize("case", [
+    dict(layout="flash"), dict(layout="flash", page=544, kv_order="tokens"), dict(layout="rocm"),
+    pytest.param(dict(layout="flash", head_dim=256, h_kv=1, dsplit=True, warps=16, page=544,
+                      kv_order="tokens"), marks=flash_dsplit_builds),
+    dict(layout="rocm", head_dim=256, h_kv=1, dsplit=True, warps=12, decodes=False),
+    pytest.param(dict(layout="flash", head_dim=256, h_kv=2, group=6, dsplit=True, warps=16,
+                      page=784, kv_order="tokens"), marks=flash_dsplit_builds)])
+def test_fp16(case):
+    reqs = [(0, 192), (500, 5), (40, 600), (33, 1)]
+    case = dict(case)
+    if case["layout"] == "rocm":
+        case.setdefault("decodes", False)
+    got, want, q_start = _flash_run(reqs, dtype=torch.float16, **case)
+    assert got.dtype == torch.float16
+    rows = (list(range(got.shape[0])) if case.get("decodes", True) else
+            _prefill_rows(reqs, q_start))
+    _attn_ref.check(got[rows], want[rows])
+
+
+@rocm_only
+@pytest.mark.parametrize("case", [
+    dict(), dict(page=544, kv_order="tokens"),
+    pytest.param(dict(head_dim=256, h_kv=1, dsplit=True, warps=16, page=544, kv_order="tokens"),
+                 marks=flash_dsplit_builds)])
+def test_fp16_v_ones_is_exactly_one(case):
+    """P rounded to fp16 (round to nearest even): softmax weights still sum to exactly 1."""
+    got, _, _ = _flash_run([(300, 200), (0, 50), (7, 1)], dtype=torch.float16, v_ones=True, **case)
+    assert torch.all(got == 1.0)
+
+
+@rocm_only
+def test_fp16_a_peaked_softmax_with_large_logits():
+    """Scaled logits with a spread of tens (q 16x a unit normal): S and the running max stay
+    fp32, and most of P underflows fp16 -- the result still matches the float64 reference."""
+    got, want, _ = _flash_run([(0, 300), (1000, 77)], dtype=torch.float16, q_scale=16.0)
+    assert torch.isfinite(got).all()
+    _attn_ref.check(got, want)

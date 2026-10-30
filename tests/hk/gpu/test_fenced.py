@@ -499,6 +499,74 @@ def test_paged_decode_and_prefill():
     fenced_cases(PAGED, cases)
 
 
+@gfx1100
+def test_paged_prefill_on_vllms_caches():
+    """The vLLM route's prefill (paged_prefill layout="flash", decodes on: the whole batch) in
+    bf16 and fp16, on TRITON_ATTN's cache in both of its orders -- 16-token K/V planes and a
+    hybrid model's 544-token pages with a head's K and V side by side -- with no spare block:
+    the last request's last page is the cache's last block. d128 GQA-packed decodes, and d256
+    split across warp pairs."""
+    cases = {}
+    for dtype in ("bfloat16", "float16"):
+        for d, page, order in ((128, 16, "planes"), (128, 544, "tokens"), (256, 544, "tokens")):
+            reqs_list = ([[(0, 300)], [(0, 192), (500, 5), (40, 600), (33, 1)], [(31, 257)], [(0, 1)]]
+                         if d == 128 else [[(1000, 77), (0, 1), (40, 600)]])
+            for reqs in reqs_list:
+                cases[f"flash {dtype} d{d} p{page} {order} {reqs}"] = f"""
+                reqs, d, page, order, dt = {reqs}, {d}, {page}, {order!r}, torch.{dtype}
+                ds = d > 128
+                h_kv, group = (1, 8) if ds else (2, 8)
+                lens = [c + n for c, n in reqs]
+                pages = [max(1, -(-n // page)) for n in lens]
+                nb = sum(pages)
+                table = torch.zeros(len(reqs), max(pages), device="cuda", dtype=torch.int32)
+                b0 = 0
+                for i, np_ in enumerate(pages):
+                    table[i, :np_] = torch.arange(b0, b0 + np_, dtype=torch.int32)
+                    b0 += np_
+                if order == "planes":
+                    kv = rnd(nb, 2, page, h_kv * d, dtype=dt)
+                else:
+                    kv = rnd(nb, 1, page, h_kv * 2 * d, dtype=dt)
+                n_tok = sum(n for _, n in reqs)
+                q = rnd(n_tok, h_kv * group, d, dtype=dt)
+                starts = [0]
+                for _, n in reqs:
+                    starts.append(starts[-1] + n)
+                q_start = torch.tensor(starts, device="cuda", dtype=torch.int32)
+                lens_t = torch.tensor(lens, device="cuda", dtype=torch.int32)
+                out = torch.full_like(q, 7.0)
+                warps = 16 if ds else 12
+                k = paged_prefill.paged_prefill_kernel(
+                    f"fence_pp_flash_d{{d}}_p{{page}}_{{order}}_{{dt}}".replace("torch.", ""),
+                    head_dim=d, group=group, layout="flash", dsplit=ds, warps=warps, decodes=True,
+                    page=page, kv_order=order, dtype="bf16" if dt == torch.bfloat16 else "fp16")
+                from hk.runtime.torch_ext import launcher
+                op = launcher(k)
+                tiles = paged_prefill.q_tiles(max(n for _, n in reqs), q.device, 16 * (warps // 2 if ds else warps))
+                extra = [] if ds else [q.unsqueeze(0), out.unsqueeze(0)]
+                step("flash", lambda: op(q.view(n_tok, -1), kv, kv, table, lens_t, q_start, tiles,
+                                         out.view(n_tok, -1), *extra))
+                kv, table, q, out = host(kv, table, q, out)
+                for i, (ctx, n) in enumerate(reqs):
+                    s = ctx + n
+                    blocks = table[i, : -(-s // page)].tolist()
+                    keep = torch.arange(s)[None, :] <= (ctx + torch.arange(n))[:, None]
+                    for hh in range(h_kv * group):
+                        hk_ = hh // group
+                        if order == "planes":
+                            kk = torch.cat([kv[b, 0, :, hk_ * d:(hk_ + 1) * d] for b in blocks])[:s].float()
+                            vv = torch.cat([kv[b, 1, :, hk_ * d:(hk_ + 1) * d] for b in blocks])[:s].float()
+                        else:
+                            kk = torch.cat([kv[b, 0, :, hk_ * 2 * d:hk_ * 2 * d + d] for b in blocks])[:s].float()
+                            vv = torch.cat([kv[b, 0, :, hk_ * 2 * d + d:(hk_ + 1) * 2 * d] for b in blocks])[:s].float()
+                        sc = (q[starts[i]:starts[i + 1], hh].float() @ kk.T) * d ** -0.5
+                        want = torch.softmax(sc.masked_fill(~keep, float("-inf")), -1) @ vv
+                        attn(f"flash {{i}} {{hh}}", out[starts[i]:starts[i + 1], hh], want)
+                """
+    fenced_cases(PAGED, cases)
+
+
 def test_templates_rowwise_and_elementwise():
     """User kernels from hk.templates: row strips, a multi-pass stream, folded rows, the
     elementwise form on gate/up halves."""

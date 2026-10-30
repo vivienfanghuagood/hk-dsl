@@ -127,7 +127,8 @@ ROUTES: Dict[str, Route] = {r.name: r for r in (
        "cache write and block size stay vLLM's",
        "end-to-end gates passed best vs best (16k TTFT on a d128 model; 8k on a d256 hybrid "
        "model at TP2, also against ROCM_ATTN), quality within stock's spread. "
-       "gfx1100, bf16, head size 64 / 128 (and 256 on TRITON_ATTN), pages of 16 or 32 "
+       "gfx1100, bf16 (fp16 with HK_VLLM_PREFILL_FP16=1), head size 64 / 128 (and 256 on "
+       "TRITON_ATTN), pages of 16 or 32 "
        "(on TRITON_ATTN any multiple of 16: hybrid models' 544, 784); any other call falls back to "
        "vLLM's kernel"),
     _R("sglang_linear", "sglang", "HK_SGLANG_LINEAR", True, ("gfx1100",),
