@@ -1037,6 +1037,121 @@ private:
     w("const int " + name(op->getResult(0)) + " = " + expr + ";");
   }
 
+  /// An hk.map region as a C++ lambda body: one expression where every value is used once,
+  /// `const auto vN = ...;` for a value used more than once. "" after fail() on an op it cannot
+  /// print.
+  std::string mapRegionCpp(MapOp m) {
+    Block &b = m.getRegion().front();
+    llvm::DenseMap<Value, std::string> expr;
+    for (auto [i, a] : llvm::enumerate(b.getArguments()))
+      expr[a] = "x" + std::to_string(i);
+    std::string stmts;
+    unsigned n = 0;
+    auto cty = [](Type t) -> std::string {
+      if (t.isF32())
+        return "float";
+      if (t.isInteger(1))
+        return "bool";
+      if (t.isBF16())
+        return "__hip_bfloat16";
+      return "int";
+    };
+    for (Operation &op : b) {
+      if (auto y = dyn_cast<YieldOp>(op))
+        return stmts + "return (" + expr[y.getValue()] + ");";
+      auto in = [&](unsigned k) { return expr[op.getOperand(k)]; };
+      auto bin = [&](StringRef sym) { return "(" + in(0) + " " + sym.str() + " " + in(1) + ")"; };
+      auto call = [&](StringRef f) {
+        std::vector<std::string> a;
+        for (unsigned k = 0; k < op.getNumOperands(); ++k)
+          a.push_back(in(k));
+        return f.str() + "(" + join(a) + ")";
+      };
+      std::string e;
+      if (auto c = dyn_cast<arith::ConstantOp>(op)) {
+        if (auto f = dyn_cast<FloatAttr>(c.getValue()))
+          e = "(float)" + floatLit(f.getValueAsDouble());
+        else if (auto i = dyn_cast<IntegerAttr>(c.getValue()))
+          e = c.getType().isInteger(1) ? (i.getValue().isZero() ? "false" : "true")
+                                       : std::to_string(i.getValue().getSExtValue());
+      } else if (isa<arith::AddIOp, arith::AddFOp>(op)) e = bin("+");
+      else if (isa<arith::SubIOp, arith::SubFOp>(op)) e = bin("-");
+      else if (isa<arith::MulIOp, arith::MulFOp>(op)) e = bin("*");
+      else if (isa<arith::DivSIOp, arith::DivFOp>(op)) e = bin("/");
+      else if (isa<arith::RemSIOp>(op)) e = bin("%");
+      else if (isa<arith::AndIOp>(op)) e = bin("&");
+      else if (isa<arith::OrIOp>(op)) e = bin("|");
+      else if (auto x = dyn_cast<arith::XOrIOp>(op)) {
+        auto c = x.getRhs().getDefiningOp<arith::ConstantOp>();
+        bool notI1 = x.getType().isInteger(1) && c && cast<IntegerAttr>(c.getValue()).getValue().isOne();
+        e = notI1 ? "(!" + in(0) + ")" : bin("^");
+      } else if (isa<arith::ShLIOp>(op)) e = bin("<<");
+      else if (isa<arith::ShRSIOp>(op)) e = bin(">>");
+      else if (isa<arith::ShRUIOp>(op)) e = "(int)((unsigned)" + in(0) + " >> " + in(1) + ")";
+      else if (isa<arith::NegFOp>(op)) e = "(-" + in(0) + ")";
+      else if (auto c = dyn_cast<arith::CmpIOp>(op)) {
+        static const char *sym[] = {"==", "!=", "<", "<=", ">", ">="};
+        if ((int)c.getPredicate() > 5) {
+          fail(&op, "hk.map: integer comparisons are signed");
+          return "";
+        }
+        e = bin(sym[(int)c.getPredicate()]);
+      } else if (auto c = dyn_cast<arith::CmpFOp>(op)) {
+        using P = arith::CmpFPredicate;
+        StringRef s = c.getPredicate() == P::OEQ ? "==" : c.getPredicate() == P::UNE ? "!="
+                    : c.getPredicate() == P::OLT ? "<" : c.getPredicate() == P::OLE ? "<="
+                    : c.getPredicate() == P::OGT ? ">" : c.getPredicate() == P::OGE ? ">=" : "";
+        if (s.empty()) {
+          fail(&op, "hk.map: a float comparison is ordered ==, <, <=, >, >= or unordered !=");
+          return "";
+        }
+        e = bin(s);
+      } else if (isa<arith::SelectOp>(op)) e = "(" + in(0) + " ? " + in(1) + " : " + in(2) + ")";
+      else if (isa<arith::MaxNumFOp>(op)) e = call("fmaxf");
+      else if (isa<arith::MinNumFOp>(op)) e = call("fminf");
+      else if (isa<arith::MaximumFOp>(op)) e = call("__builtin_elementwise_maximum");
+      else if (isa<arith::MinimumFOp>(op)) e = call("__builtin_elementwise_minimum");
+      else if (isa<arith::MaxSIOp>(op)) e = call("__builtin_elementwise_max");
+      else if (isa<arith::MinSIOp>(op)) e = call("__builtin_elementwise_min");
+      else if (isa<arith::SIToFPOp>(op)) e = "(float)" + in(0);
+      else if (isa<arith::FPToSIOp>(op)) e = "(int)" + in(0);
+      else if (isa<arith::ExtUIOp>(op)) e = "(int)" + in(0);
+      else if (auto t = dyn_cast<arith::TruncFOp>(op)) {
+        if (!t.getType().isBF16()) {
+          fail(&op, "hk.map: a float truncation is to bf16");
+          return "";
+        }
+        e = "__float2bfloat16(" + in(0) + ")";
+      } else if (isa<arith::ExtFOp>(op)) e = "(float)" + in(0);
+      else if (isa<arith::BitcastOp>(op))
+        e = "__builtin_bit_cast(" + cty(op.getResult(0).getType()) + ", " + in(0) + ")";
+      else if (isa<math::FmaOp>(op)) e = call("__builtin_fmaf");
+      else if (isa<math::AbsFOp>(op)) e = call("fabsf");
+      else if (isa<math::CeilOp>(op)) e = call("ceilf");
+      else if (isa<math::FloorOp>(op)) e = call("floorf");
+      else if (isa<math::Log2Op>(op)) e = call("__builtin_log2f");
+      else if (isa<math::Exp2Op>(op)) e = call("__builtin_exp2f");
+      else if (isa<math::SqrtOp>(op)) e = call("__builtin_sqrtf");
+      else if (isa<math::CtPopOp>(op)) e = call("__builtin_popcount");
+      else if (isa<math::CountTrailingZerosOp>(op)) e = "__builtin_ctzg((unsigned)" + in(0) + ", 32)";
+      else if (isa<RcpOp>(op)) e = call("__builtin_amdgcn_rcpf");
+      if (e.empty()) {
+        fail(&op, "hk.map: no C++ for " + op.getName().getStringRef());
+        return "";
+      }
+      Value r = op.getResult(0);
+      if (r.hasOneUse()) {
+        expr[r] = e;
+      } else {
+        std::string v = "v" + std::to_string(n++);
+        stmts += "const " + cty(r.getType()) + " " + v + " = " + e + "; ";
+        expr[r] = v;
+      }
+    }
+    fail(m, "hk.map: a region without hk.yield");
+    return "";
+  }
+
   void emitArith(Operation *op) {
     if (op->getNumResults() == 1 && !named(op->getResult(0)))
       return; // written inline where it is used
@@ -1837,19 +1952,23 @@ private:
           w("kittens::group_reduce_ordered<" + tmpl + ">(" + name(d) + ", " +
             name(o.getSrc()) + ");");
         })
-        .Case([&](MapCppOp o) {
-          // element (r, c) = (T)(expr) with x0.. the arguments' elements (or scalars)
+        .Case([&](MapOp o) {
+          // element (r, c) = the expression, with x0.. the arguments' elements (or scalars): a
+          // C++ body as written (hk.map_cpp), or the region printed as one. Contraction off: a
+          // product and a sum stay two roundings unless the expression says fma (HIP's
+          // __fmul_rn / __fadd_rn are plain operators clang may otherwise fuse, and whether it
+          // does changed with the code around it).
           Value d = dest(Value(), o.getResult());
           std::vector<std::string> params, args{name(d)};
           for (auto [i, a] : llvm::enumerate(o.getArgs())) {
             params.push_back("const auto x" + std::to_string(i));
             args.push_back(name(a));
           }
-          // contraction off: the expression is compiled as written -- a product and a sum stay two
-          // roundings unless it says fmaf (HIP's __fmul_rn / __fadd_rn are plain operators clang may
-          // otherwise fuse, and whether it does changed with the code around it)
+          std::string body = o.getBody() ? "return (" + o.getBody()->str() + ");" : mapRegionCpp(o);
+          if (body.empty())
+            return;
           w("kittens::map_cpp(" + args[0] + ", [&](" + join(params) +
-            ") { _Pragma(\"clang fp contract(off)\") return (" + o.getExpr().str() + "); }" +
+            ") { _Pragma(\"clang fp contract(off)\") " + body + " }" +
             (args.size() > 1 ? ", " + join(std::vector<std::string>(args.begin() + 1, args.end()))
                              : std::string()) +
             ");");
@@ -2001,7 +2120,7 @@ void mlir::hk::registerToCppTranslation() {
         return success();
       },
       [](DialectRegistry &registry) {
-        registry.insert<HKDialect, arith::ArithDialect, scf::SCFDialect,
+        registry.insert<HKDialect, arith::ArithDialect, math::MathDialect, scf::SCFDialect,
                         func::FuncDialect>();
       });
 }

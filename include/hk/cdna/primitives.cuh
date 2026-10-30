@@ -960,12 +960,16 @@ struct cv_identifier {};
 }  // namespace rs
 }  // namespace ducks
 
+/** @brief A strip's element type: the unpacked type, or bool for a mask (hk.map's b1 strips). */
+template<typename T> struct rs_elem { using type = typename base_types::packing<T>::unpacked_type; };
+template<> struct rs_elem<bool> { using type = bool; };
+
 /** @brief One value per row of a strip, held by every lane of the warp. */
 template<typename _T, int _length>
 struct rs_cv {
     using identifier = ducks::rs::cv_identifier;
     static_assert(_length > 0, "a strip has at least one row");
-    using T = typename base_types::packing<_T>::unpacked_type;
+    using T = typename rs_elem<_T>::type;
     using dtype = T;
     static constexpr int length    = _length;
     static constexpr int outer_dim = _length;
@@ -980,7 +984,7 @@ struct rs_cv {
 template<typename _T, int _rows, int _cols, int _run = 8>
 struct rs {
     using identifier = ducks::rs::identifier;
-    using T = typename base_types::packing<_T>::unpacked_type;
+    using T = typename rs_elem<_T>::type;
     using dtype = T;
     static constexpr int rows   = _rows;
     static constexpr int cols   = _cols;

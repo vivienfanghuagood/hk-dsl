@@ -541,14 +541,14 @@ def merge_kernel(name: str, *, head_dim: int = 128, splits: int = 8,
                 acc.__imul__(top[:, None])
                 hk.collective.cross_warp(tot, "add", warps, scratch=sv_sum).copy(into=tot)
                 col = hk.iota(T)
-                parts.store_elems(acc, hk.map_cpp(f"x1 * {D} + x0", col, hk.arch.warp_id()))
+                parts.store_elems(acc, hk.arch.warp_id() * D + col)
                 hk.arch.barrier(drain=True)
                 for w in range(1, warps):
                     # Only warps that folded a round hold anything: a short
                     # sequence on many warps sums one or two strips, not
                     # fifteen element-by-element reads.
                     if hk.uniform(seen > w):
-                        acc.__iadd__(parts.load_elems(hk.map_cpp(f"{w * D} + x0", col)))
+                        acc.__iadd__(parts.load_elems(w * D + col))
         tot.__iadd__(1e-30)
         acc.__itruediv__(tot[:, None])
         if warps > 1:

@@ -513,7 +513,8 @@ def page_hk(since: Since) -> Page:
                        "as_vec", "mma", "load_w4", "coord", "tile_coord", "elem_coord"]),
         ("MX and FP4 (gfx950)", ["load_mx_scales", "load_fp4_frags", "mx_quant_store",
                                  "copy_mx_scales", "mma_ABt_mx", "load_fp4_frags_lds"]),
-        ("Strips: a C++ expression, iota, a raw MFMA (gfx950)", ["map_cpp", "iota", "mfma_strip"]),
+        ("Strips: elementwise expressions, iota, a raw MFMA (gfx950)",
+         ["map", "where", "map_cpp", "iota", "mfma_strip"]),
     ]
     documented = set()
     for title, names in groups:
@@ -625,8 +626,20 @@ OPERATORS = [
     ("a % b", "__mod__"), ("-a", "__neg__"), ("abs(a)", "__abs__"),
     ("a += b (also -= *= /=)", "__iadd__"), ("a @ b", "__matmul__"),
     ("a < b (<= > >= == !=)", "__lt__"), ("a & b, a | b, a ^ b", "__and__"),
-    ("~a", "__invert__"), ("v[:, None], v[None, :]", "__getitem__"),
+    ("a << b, a >> b", "__lshift__"), ("~a", "__invert__"),
+    ("v[:, None], v[None, :]", "__getitem__"),
 ]
+
+#: Cells the source cannot tell: what a tile takes only as a strip (an hk.map), and what a
+#: vector refuses through the shared method.
+OPERATOR_CELLS = {
+    **{("Tile", d): "i32 strips" for d in ("__floordiv__", "__mod__")},
+    **{("Tile", d): "i32 strips, masks" for d in ("__and__", "__invert__")},
+    ("Tile", "__lshift__"): "i32 strips",
+    ("Tile", "__lt__"): "strips (a mask)",
+    **{("Vec", d): "refused" for d in ("__floordiv__", "__mod__", "__and__", "__lshift__",
+                                       "__invert__", "__lt__")},
+}
 
 
 def operator_table() -> str:
@@ -643,6 +656,9 @@ def operator_table() -> str:
     for text, dunder in OPERATORS:
         cells = []
         for c in classes:
+            if (c.__name__, dunder) in OPERATOR_CELLS:
+                cells.append(OPERATOR_CELLS[(c.__name__, dunder)])
+                continue
             fn = getattr(c, dunder, None)
             own = fn is not None and any(dunder in k.__dict__ for k in c.__mro__
                                          if k.__module__.startswith("hk"))
@@ -730,6 +746,10 @@ The transcendental functions are specialised for fp32 tiles: load bf16 or
 fp16 data into an fp32 tile (`x.at[r, c].load(hk.RT(hk.fp32, 16, 64))`
 converts on the way) and convert back with `.to(hk.bf16)` before the store.
 A function the library lacks for a dtype raises while tracing.
+
+`fma`, `rcp`, `popcount`, `ctz`, `ceil` and `floor` have no tile op: of
+strips each is a one-op `hk.map` (gfx950), and every function here also
+takes `hk.map` elements, inside the `fn` of `hk.map(fn, ...)`.
 """
 
 TORCH_EQUIV = {
@@ -740,7 +760,14 @@ TORCH_EQUIV = {
     "sqrt": "torch.sqrt", "rsqrt": "torch.rsqrt", "silu": "F.silu",
     "add": "a + b", "sub": "a - b", "mul": "a * b", "div": "a / b",
     "maximum": "torch.maximum", "minimum": "torch.minimum",
+    "fma": "a * b + c, one rounding", "rcp": "1 / x, within 1 ulp",
+    "popcount": "the set bits of the 32", "ctz": "trailing zero bits, 32 at 0",
+    "ceil": "torch.ceil", "floor": "torch.floor",
 }
+
+
+#: hk.math functions with no tile op: an hk.map of strips
+MAP_ONLY = ("fma", "rcp", "popcount", "ctz", "ceil", "floor")
 
 
 def page_math(since: Since) -> Page:
@@ -749,10 +776,11 @@ def page_math(since: Since) -> Page:
     p = Page("hk.math.md", "`hk.math`", MATH_INTRO)
     p.para("| function | torch equivalent | also spelled |\n|---|---|---|\n" + "\n".join(
         f"| [`hk.math.{n}`](#{_anchor('hk.math.' + n)}) "
-        f"| `{TORCH_EQUIV.get(n, '')}` | `t.{n}()`"
+        f"| `{TORCH_EQUIV.get(n, '')}` | "
+        + ("`hk.map(lambda x: ...)` |" if n in MAP_ONLY else f"`t.{n}()`")
         + (f", `t.{n}_()`" if hasattr(hk.Tile, n + "_") else "")
         + (f", `a {'+-*/'['add sub mul div'.split().index(n)]} b`"
-           if n in ("add", "sub", "mul", "div") else "") + " |"
+           if n in ("add", "sub", "mul", "div") else "") + " |" * (n not in MAP_ONLY)
         for n in hk.math.__all__))
     for n in hk.math.__all__:
         obj = getattr(hk.math, n)

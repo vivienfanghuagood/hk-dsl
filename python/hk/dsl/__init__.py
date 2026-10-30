@@ -28,6 +28,7 @@ from ..types import (  # noqa: F401
     SharedVecType as _SV,
 )
 from . import host as _host
+from . import maps as _maps
 from . import arch, collective, comm, lds, math, placement  # noqa: F401
 from .control import if_, range, range_constexpr, scope, uniform  # noqa: A004
 from .group import Group, group
@@ -100,7 +101,12 @@ def cdiv(a, b):
 
 
 def min(a, b):  # noqa: A001
-    """Of ints, of device Ints, or elementwise of tiles and vectors."""
+    """Of ints, of device Ints, elementwise of tiles and vectors (an i32 strip: C's signed min),
+    or of hk.map elements."""
+    if isinstance(a, _maps.Scalar) or isinstance(b, _maps.Scalar):
+        return _maps.minimum_(a, b)
+    if isinstance(b, Tile) and not isinstance(a, (Tile, Vec)):
+        a, b = b, a
     if isinstance(a, (Tile, Vec)):
         return a.minimum(b)
     if _dyn(a, b):
@@ -109,12 +115,46 @@ def min(a, b):  # noqa: A001
 
 
 def max(a, b):  # noqa: A001
-    """Of ints, of device Ints, or elementwise of tiles and vectors."""
+    """Of ints, of device Ints, elementwise of tiles and vectors (an i32 strip: C's signed max),
+    or of hk.map elements."""
+    if isinstance(a, _maps.Scalar) or isinstance(b, _maps.Scalar):
+        return _maps.maximum_(a, b)
+    if isinstance(b, Tile) and not isinstance(a, (Tile, Vec)):
+        a, b = b, a
     if isinstance(a, (Tile, Vec)):
         return a.maximum(b)
     if _dyn(a, b):
         return _scalar_op("max", a, b)
     return _builtins.max(a, b)
+
+
+def map(fn, *args):  # noqa: A001
+    """Element (r, c) of the result is `fn` of element (r, c) of each strip argument (an
+    `hk.Int` or a Python number argument is passed as itself): one `hk.map` op, `fn` traced
+    once. `fn` sees elements (`hk.dsl.maps.Scalar`) with Python's operators at C's semantics
+    -- `//` and `%` truncate, `>>` is arithmetic --, comparisons making masks, `hk.where`,
+    `hk.min` / `hk.max`, `.to(dtype)`, `.bitcast(dtype)` and the hk.math functions. The
+    result's dtype is what `fn` returns: fp32, i32 or a mask (b1). Floating-point contraction
+    is off: `a * b + c` is two roundings, `hk.math.fma(a, b, c)` one.
+
+        idx = hk.map(lambda c, w: ((c >> 4) & 63) * 4 + w * 512, col, hk.arch.warp_id())
+
+    The operators on i32 strips and masks build these one op at a time and the hk-map-fuse
+    pass merges a chain; `hk.map` is for an expression to read as one, or to keep a float
+    expression's roundings as written. Strips on gfx950; RDNA's have no lowering yet (S7 in
+    docs/design/dsl-surface.md)."""
+    return _maps.map_(fn, *args)
+
+
+def where(m, a, b):
+    """Elementwise `a` where the mask `m` holds, else `b` (C's `m ? a : b`): `m` a comparison of
+    strips (or of hk.map elements), `a` and `b` strips of one dtype or numbers -- a Python
+    number takes the other arm's dtype. One hk.map."""
+    if _builtins.any(isinstance(x, _maps.Scalar) for x in (m, a, b)):
+        return _maps.where_(m, a, b)
+    if not (isinstance(m, Tile) and m.ty.dtype.name == "b1"):
+        raise TypeError(f"hk.where(m, a, b): m is a mask -- a comparison of strips -- not {m!r}")
+    return _maps.lift(_maps.where_, m, a, b, name="where")
 
 
 __all__ = [
@@ -124,7 +164,7 @@ __all__ = [
     "arch", "lds", "math", "collective", "comm", "placement", "Placement", "Digit", "group",
     "Group",
     "range", "range_constexpr", "if_", "scope", "uniform",
-    "cdiv", "min", "max", "zeros", "full", "neg_infty", "rand", "load_w4", "load_mx_scales", "fp4_operand", "fp8_operand", "mx_scales_loose", "load_fp4_frags", "load_fp4_frags_lds", "mx_quant_store", "copy_mx_scales", "mma_ABt_mx", "transpose",
+    "cdiv", "min", "max", "map", "where", "zeros", "full", "neg_infty", "rand", "load_w4", "load_mx_scales", "fp4_operand", "fp8_operand", "mx_scales_loose", "load_fp4_frags", "load_fp4_frags_lds", "mx_quant_store", "copy_mx_scales", "mma_ABt_mx", "transpose",
     "transpose_sep", "broadcast_row", "broadcast_col", "as_vec", "mma", "map_cpp", "iota", "lane_coords", "mfma_strip",
     "coord", "tile_coord", "elem_coord",
     "Int", "Bool", "Tile", "Vec", "Global", "View", "SharedTile", "SharedVec",

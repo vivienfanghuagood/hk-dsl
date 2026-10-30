@@ -1,7 +1,8 @@
-"""hk.math: elementwise functions of a tile or a vector."""
+"""hk.math: elementwise functions of a tile or a vector, and of hk.map elements."""
 
 from __future__ import annotations
 
+from . import maps
 from .values import binary, unary
 
 _FP32 = (" fp32 tiles and vectors only: load bf16/fp16 data into an fp32 tile "
@@ -11,11 +12,17 @@ _ANY = " bf16, fp16 and fp32."
 
 def _unary(name, what):
     def f(x, *, into=None):
+        if isinstance(x, maps.Scalar) and name in maps.SCALAR:
+            return maps.SCALAR[name](x)
         return unary(name, x, into=into)
 
     f.__name__ = name
+    cname = {"abs": "fabsf"}.get(name, f"{name}f")
+    scalar = (f" Of an hk.map element, math.{name}: C's {cname}"
+              + (", which handles the arguments the bare instruction does not (denormals)"
+                 if name in ("exp2", "log2") else "") + "." if name in maps.SCALAR else "")
     f.__doc__ = (f"Elementwise {what}; kittens::{name}. Also `x.{name}()`. "
-                 f"`into=` writes an existing value instead of making one.")
+                 f"`into=` writes an existing value instead of making one.{scalar}")
     return f
 
 
@@ -40,6 +47,10 @@ silu = _unary("silu", "SiLU, x * sigmoid(x) = x / (1 + exp(-x)), through the "
 
 def _binary(name, op, sym):
     def f(a, b, *, into=None):
+        if isinstance(a, maps.Scalar) or isinstance(b, maps.Scalar):
+            return {"add": lambda: a + b, "sub": lambda: a - b, "mul": lambda: a * b,
+                    "div": lambda: a / b, "max": lambda: maps.maximum_(a, b),
+                    "min": lambda: maps.minimum_(a, b)}[op]()
         return binary(op, a, b, into=into)
 
     f.__name__ = name
@@ -60,6 +71,35 @@ maximum = _binary("maximum", "max", "max(a, b) (`hk.max(a, b)`, `a.maximum(b)`)"
 minimum = _binary("minimum", "min", "min(a, b) (`hk.min(a, b)`, `a.minimum(b)`)")
 
 
+
+
+def _mapped(name, what, nargs):
+    """A function hk has no tile op for: of hk.map elements, the op; of strips, a one-op
+    hk.map."""
+    def f(*xs):
+        if len(xs) != nargs:
+            raise TypeError(f"hk.math.{name} takes {nargs} argument{'s' * (nargs > 1)}")
+        if any(isinstance(x, maps.Scalar) for x in xs):
+            return maps.SCALAR[name](*xs)
+        return maps.lift(maps.SCALAR[name], *xs, name=name)
+
+    f.__name__ = name
+    f.__doc__ = (f"Elementwise {what} Of strips (one hk.map) or of hk.map elements; "
+                 f"gfx950.")
+    return f
+
+
+fma = _mapped("fma", "a * b + c with one rounding (`__builtin_fmaf`, v_fma_f32): fp32.", 3)
+rcp = _mapped("rcp", "1 / x by the hardware's reciprocal (v_rcp_f32, `__builtin_amdgcn_rcpf`: "
+              "within 1 ulp, not the division): fp32.", 1)
+popcount = _mapped("popcount", "the number of set bits of the 32 (`__builtin_popcount`): i32.",
+                   1)
+ctz = _mapped("ctz", "the number of trailing zero bits, 32 for 0 (`__builtin_ctzg(x, 32)`): "
+              "i32.", 1)
+ceil = _mapped("ceil", "the least integer >= x, as a float (`ceilf`): fp32.", 1)
+floor = _mapped("floor", "the greatest integer <= x, as a float (`floorf`): fp32.", 1)
+
+
 __all__ = ["exp", "exp2", "log", "log2", "abs", "relu", "gelu", "dgelu",
            "sqrt", "rsqrt", "silu", "add", "sub", "mul", "div", "maximum",
-           "minimum"]
+           "minimum", "fma", "rcp", "popcount", "ctz", "ceil", "floor"]

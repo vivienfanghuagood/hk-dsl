@@ -52,6 +52,9 @@ i8 = DType("i8", 8, "int8", "int")
 fp8e4m3 = DType("fp8e4m3", 8, "fp8e4m3", "float")
 fp8e5m2 = DType("fp8e5m2", 8, "fp8e5m2", "float")
 FP8 = (fp8e4m3, fp8e5m2)
+#: A mask: what a comparison of strips makes (hk.map, gfx950). Only maps read and make one; it is
+#: not a tensor's element type and has no load or store.
+b1 = DType("b1", 1, "bool", "bool")
 
 DTYPES = {d.name: d for d in (bf16, fp16, fp32, i32, i8, fp8e4m3, fp8e5m2)}
 
@@ -176,9 +179,9 @@ class RegTileType(Type):
             raise ValueError(f"strip run={self.run}: a power of two of at most 16 "
                              f"elements, 8 for the 16-byte access a bf16 row wants")
         if not ((self.dtype.bits in (16, 32) and self.dtype.kind == "float")
-                or self.dtype.name == "i32"):
+                or self.dtype.name in ("i32", "b1")):
             raise TypeError(f"there is no {self.dtype} strip: rs holds bf16, fp16, fp32 "
-                            f"and (gfx950, for hk.map_cpp's integer work) i32 elements")
+                            f"and (gfx950, for integer work) i32 elements and b1 masks")
         if self.rows <= 0:
             raise ValueError(f"strip rows={self.rows}: at least one")
         if self.cols <= 0 or self.cols % self.span:

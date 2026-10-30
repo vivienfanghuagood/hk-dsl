@@ -97,3 +97,29 @@ func.func @strip_rotate_half(%s: !hk.rt<f32, 1x512, strip<8>>, %g: !hk.gl<f32>,
   %c = hk.load %g[%idx] {period = 64 : i64} : !hk.gl<f32>, !hk.coord<element> -> !hk.rt<f32, 1x512, strip<8>>
   return
 }
+
+// hk.map: a region of scalar ops, or a C++ body.
+// CHECK-LABEL: func.func @strip_map
+func.func @strip_map(%s: !hk.rt<i32, 1x64, strip<1>>, %n: i32) {
+  // CHECK: hk.map(%{{.*}}, %{{.*}}) : (!hk.rt<i32, 1x64, strip<1>>, i32) -> !hk.rt<i1, 1x64, strip<1>> {
+  // CHECK: ^bb0(%{{.*}}: i32, %{{.*}}: i32):
+  // CHECK: arith.cmpi slt
+  // CHECK: hk.yield %{{.*}} : i1
+  %m = hk.map(%s, %n) : (!hk.rt<i32, 1x64, strip<1>>, i32) -> !hk.rt<i1, 1x64, strip<1>> {
+  ^bb0(%x: i32, %y: i32):
+    %p = math.ctpop %x : i32
+    %lt = arith.cmpi slt, %p, %y : i32
+    hk.yield %lt : i1
+  }
+  // CHECK: hk.map(%{{.*}}) : (!hk.rt<i32, 1x64, strip<1>>) -> !hk.rt<f32, 1x64, strip<1>> {
+  // CHECK: hk.rcp %{{.*}} : f32
+  %f = hk.map(%s) : (!hk.rt<i32, 1x64, strip<1>>) -> !hk.rt<f32, 1x64, strip<1>> {
+  ^bb0(%x: i32):
+    %v = arith.sitofp %x : i32 to f32
+    %r = hk.rcp %v : f32
+    hk.yield %r : f32
+  }
+  // CHECK: hk.map(%{{.*}}) {body = "fabsf(x0)"} : (!hk.rt<f32, 1x64, strip<1>>) -> !hk.rt<f32, 1x64, strip<1>>{{$}}
+  %a = hk.map(%f) {body = "fabsf(x0)"} : (!hk.rt<f32, 1x64, strip<1>>) -> !hk.rt<f32, 1x64, strip<1>>
+  return
+}

@@ -4,6 +4,7 @@ target_link_libraries(hk-opt PRIVATE
   MLIRHK
   MLIRHKTransforms
   MLIRArithDialect
+  MLIRMathDialect
   MLIRSCFDialect
   MLIRFuncDialect
   MLIROptLib

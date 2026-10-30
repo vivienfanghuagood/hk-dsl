@@ -11,7 +11,7 @@ int main(int argc, char **argv) {
   mlir::hk::registerKernelPipeline();
 
   mlir::DialectRegistry registry;
-  registry.insert<mlir::hk::HKDialect, mlir::arith::ArithDialect,
+  registry.insert<mlir::hk::HKDialect, mlir::arith::ArithDialect, mlir::math::MathDialect,
                   mlir::scf::SCFDialect, mlir::func::FuncDialect>();
   return mlir::asMainReturnCode(
       mlir::MlirOptMain(argc, argv, "hk optimizer driver\n", registry));

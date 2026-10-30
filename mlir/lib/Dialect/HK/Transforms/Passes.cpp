@@ -600,6 +600,7 @@ struct MmaFencePass : public mlir::hk::impl::HKMmaFenceBase<MmaFencePass> {
 
 void mlir::hk::buildKernelPipeline(OpPassManager &pm) {
   pm.addNestedPass<func::FuncOp>(createHKVerify());
+  pm.addNestedPass<func::FuncOp>(createHKMapFuse());
   pm.addNestedPass<func::FuncOp>(createHKFragments());
   pm.addNestedPass<func::FuncOp>(createHKLdsAlloc());
   pm.addNestedPass<func::FuncOp>(createHKLdsPipeline());
@@ -610,6 +611,6 @@ void mlir::hk::buildKernelPipeline(OpPassManager &pm) {
 void mlir::hk::registerKernelPipeline() {
   PassPipelineRegistration<>(
       "hk-kernel-pipeline",
-      "verify, assign fragments, allocate LDS, derive LDS waits, fence MMA accumulators, check budgets",
+      "verify, fuse maps, assign fragments, allocate LDS, derive LDS waits, fence MMA accumulators, check budgets",
       [](OpPassManager &pm) { buildKernelPipeline(pm); });
 }

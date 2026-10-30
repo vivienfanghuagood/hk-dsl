@@ -13,7 +13,8 @@ namespace mlir::hk {
 #define GEN_PASS_REGISTRATION
 #include "hk/Dialect/HK/Transforms/Passes.h.inc"
 
-/// hk-verify, hk-lds-alloc, hk-lds-pipeline, hk-check-budgets, in that order,
+/// hk-verify, hk-map-fuse, hk-fragments, hk-lds-alloc, hk-lds-pipeline, hk-mma-fence,
+/// hk-check-budgets, in that order,
 /// on every kernel in the module. Registered as `hk-kernel-pipeline`.
 void buildKernelPipeline(OpPassManager &pm);
 void registerKernelPipeline();

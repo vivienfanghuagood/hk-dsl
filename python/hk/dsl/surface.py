@@ -145,7 +145,8 @@ hk.comm.post hk.comm.signal hk.comm.take hk.comm.wait hk.comm.xcd_barrier hk.coo
 hk.detect_arch hk.elem_coord hk.full hk.func hk.get_target hk.group.Group hk.group.group hk.if_
 hk.kernel hk.lane_coords hk.lds.alloc hk.lds.alloc_vec hk.lds.lds_loads hk.lds.reserve
 hk.lds.shared_vec hk.lds.wait_for hk.math.abs hk.math.add hk.math.dgelu hk.math.div hk.math.exp
-hk.math.exp2 hk.math.gelu hk.math.log hk.math.log2 hk.math.maximum hk.math.minimum hk.math.mul
+hk.map hk.where hk.math.ceil hk.math.ctz hk.math.floor hk.math.fma hk.math.popcount
+hk.math.rcp hk.math.exp2 hk.math.gelu hk.math.log hk.math.log2 hk.math.maximum hk.math.minimum hk.math.mul
 hk.math.relu hk.math.rsqrt hk.math.silu hk.math.sqrt hk.math.sub hk.max hk.min hk.mma hk.mx
 hk.neg_infty hk.placement.Analysis hk.placement.Choice hk.placement.Digit
 hk.placement.MIN_ROUNDS_NONUNIFORM hk.placement.MIN_STREAMS hk.placement.Placement
@@ -161,7 +162,7 @@ _OP_KINDS: Dict[str, str] = {
     "load_mx_scales": "format", "mx_scales_copy": "primitive", "mma_ABt_mx": "primitive",
     "load_fp4_frags": "format", "load_fp4_frags_lds": "format", "mx_quant_store": "merge",
     "fp4_operand": "primitive", "fp8_operand": "primitive", "mx_scales_loose": "primitive",
-    "gather_prep": "primitive", "map_cpp": "escape", "iota": "merge",
+    "gather_prep": "primitive", "iota": "merge",
     "mfma_strip": "merge", "granules": "escape", "load_frag": "escape",
     "store_frag": "escape",
     "load_w4": "format",
@@ -179,6 +180,7 @@ group_reduce swap_halves row_max row_min row_sum row_prod col_max col_min col_su
 add_row sub_row mul_row div_row add_col sub_col mul_col div_col broadcast_row broadcast_col
 retype_vec left_fill right_fill upper_fill lower_fill triu tril cast bitcast transpose
 transpose_sep rt_subtile as_operand mma_AB mma_ABt mma_AtB mma_AtBt lane_strip lane_coord run_xor
+map yield rcp
 """.split()}, **_OP_KINDS}
 
 #: Every function defined in include/hk/ (as test_surface extracts the names: the token before

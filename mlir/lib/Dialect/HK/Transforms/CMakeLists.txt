@@ -2,6 +2,7 @@ add_mlir_dialect_library(MLIRHKTransforms
   Passes.cpp
   Fragments.cpp
   LdsPipeline.cpp
+  MapFuse.cpp
 
   DEPENDS
   MLIRHKPassesIncGen

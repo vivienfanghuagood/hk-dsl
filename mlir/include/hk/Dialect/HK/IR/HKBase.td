@@ -34,6 +34,7 @@ def HK_Dialect : Dialect {
   }];
   let dependentDialects = [
     "::mlir::arith::ArithDialect",
+    "::mlir::math::MathDialect",
     "::mlir::scf::SCFDialect",
     "::mlir::func::FuncDialect"
   ];

@@ -160,7 +160,7 @@ a strip (`!hk.rt<f32, 1x1024, strip<8>>`, `kittens::rs`):
   it while tracing. The gfx950 port arrived in 0.5.0; the 0.4.0 wheel refuses strips
   there ([what each version has](api/README.md)). Its elements are bf16,
   fp16 or fp32, and on gfx950 also i32
-  ([below](#elementwise-c-over-strips-and-i32-strips-gfx950)).
+  ([below](#integer-mask-and-bit-expressions-on-strips-hkmap-gfx950)).
 
 ```python
 # WARPS and EPS are constexprs; row and warp come from hk.arch
@@ -221,49 +221,48 @@ vLLM's rotary_embedding in NeoX style, token-major, from a `cos_sin_cache`
 of `[cos | sin]` rows and optional int32 positions
 ([chapter 37](history/37-cdna-rows.md)).
 
-### Elementwise C++ over strips, and i32 strips (gfx950)
+### Integer, mask and bit expressions on strips: `hk.map` (gfx950)
 
-`hk.map_cpp(expr, *args, dtype=None)` evaluates one C++ expression for each
-element of a strip. It is for what the operators cannot say and a kernel must
-reproduce bit for bit from another implementation: bit manipulation, a fused
-multiply-add, one particular instruction (`__builtin_amdgcn_*`). Triton's
-`inline_asm_elementwise` is the same escape, for the same reason. New in
-0.8.0 (#53).
-- **Arguments.** `x0`, `x1`, ... in `expr` are `args` in order. A strip
-  binds its element (r, c); an `hk.Int` (a `load_scalar()`, an index) or a
-  Python int binds its value, the same for every element. Each has its C++
-  type: `float` for an fp32 strip, `int` for an i32 strip, an `hk.Int` or a
-  Python int. A Python float is refused: write it in the expression (`0.5f`).
-  At least one argument is a strip, and every strip has one shape and run,
-  which are the result's.
-- **Types.** Strip arguments and the result are fp32 or i32: convert a bf16
-  or fp16 strip with `.to(hk.fp32)` first. The result is the expression's
-  value cast to `dtype`, which defaults to the strips' one dtype. Strips of
-  fp32 and i32 together must say `dtype=`, because taking the first strip's
-  would silently make an fp32 result an integer.
-- **The expression** is one C++ expression, with no `;` and no braces
-  (`ValueError`). It is emitted as a lambda,
-  `kittens::map_cpp(dst, [&](const auto x0, ...) { return (expr); }, args...)`,
-  and compiled as written: hk does not parse it, so a mistake in it is a
-  hipcc error. Floating-point contraction is off inside it, so
-  `x0 * x1 + x0` is two roundings and a fused multiply-add is spelled
-  `__builtin_fmaf(x0, x1, x0)`. Elsewhere HIP compiles with contraction on,
-  and whether a product and a sum fused changed with the code around them;
-  `__fmul_rn` / `__fadd_rn` are no barrier on ROCm.
-- **Where.** Strips on gfx950 only. A wave32 target (gfx1100, gfx1201) refuses
-  `hk.map_cpp` while tracing (`TypeError`), and a register tile in its
-  place fails verification.
+On gfx950 a strip may hold i32, `hk.RS(hk.i32, rows, cols, run)`: index
+arithmetic, exponent bits, scale bytes. It loads from and stores to i32
+tensors like any strip, `bounded=True` included. `.to(hk.fp32)` and
+`.to(hk.i32)` convert in registers, and an fp32 strip stored into an i32
+tensor converts on the way; fp32 to i32 truncates toward zero (2.5 to 2, -1.7
+to -1). There are no other integer strips (an i8 strip is refused).
 
-**i32 strips.** On gfx950 a strip may hold i32, `hk.RS(hk.i32, rows, cols,
-run)`, for `hk.map_cpp`'s integer work: index arithmetic, exponent bits,
-scale bytes. It loads from and stores to i32 tensors like any strip,
-`bounded=True` included. `.to(hk.fp32)` and `.to(hk.i32)` convert in
-registers, and an fp32 strip stored into an i32 tensor converts on the way.
-fp32 to i32, either way, truncates toward zero (2.5 to 2, -1.7 to -1).
-Operators and reductions have no i32 implementation (`a + 1` on an i32 strip
-is a `TypeError`), so integer arithmetic is written in `hk.map_cpp`. There
-are no other integer strips (an i8 strip is refused). i32 strips are tested
-on gfx950 only.
+- **Operators on i32 strips** are C's: `+ - * // % << >> & | ^ ~` and unary
+  `-`; `//` and `%` truncate toward zero (`-7 // 2` is -3, `-7 % 2` is -1, as
+  `hk.Int`'s), `>>` is arithmetic, and `+`, `-`, `*` must not overflow (C++'s
+  `int`). `/` is refused on an i32 strip. The other operand is a strip of the
+  same shape and run, an `hk.Int` or a Python int.
+- **Comparisons** of i32 or fp32 strips (`< <= == != > >=`) make a mask, a
+  `b1` strip; `&`, `|`, `^` and `~` combine masks, and `hk.where(m, a, b)`
+  picks `a` where `m` holds, else `b` (C's `m ? a : b`; `a`, `b` strips of one
+  dtype or numbers). Float comparisons are C's: a NaN compares unequal to
+  everything, so `x != x` finds NaNs. A mask has no load or store, and using
+  one as a Python `bool` is a `TypeError`. `hk.min` / `hk.max` of i32 strips
+  are signed.
+- **`hk.math.fma` / `rcp` / `popcount` / `ctz` / `ceil` / `floor`** have no
+  tile op: of a strip each is one map. `fma` is one rounding, `rcp` is
+  `v_rcp_f32` (within an ulp, not the division), `ctz(0)` is 32.
+- **`hk.map(fn, *args)`** traces `fn` once on the elements -- element (r, c)
+  of each strip argument, an `hk.Int` or a Python number as itself -- into one
+  map: the operators above, `.to` (i32 <-> fp32, fp32 <-> bf16, a mask to i32),
+  `.bitcast`, `hk.where`, `hk.min` / `hk.max` and the `hk.math` functions
+  (`exp2`, `log2`, `sqrt` and `abs` of an element are C's `exp2f`, ...). The
+  result's dtype is what `fn` returns. Floating-point contraction is off in a
+  map, so `a * b + c` is two roundings and `hk.math.fma(a, b, c)` one.
+  Elsewhere HIP compiles with contraction on, and whether a product and a sum
+  fused changed with the code around them; `__fmul_rn` / `__fadd_rn` are no
+  barrier on ROCm.
+- **One expression.** Each operator builds a one-op map; the `hk-map-fuse`
+  pass merges a chain into one, so `((c >> 4) & 63) * w + c` compiles to the
+  C++ expression an author would write. A value used twice is computed once,
+  and nothing moves across a load, a store, a lane exchange or a barrier.
+- **Lowering.** A map prints as `kittens::map_cpp(dst, [&](const auto x0,
+  ...) { ... }, args...)` (include/hk/cdna). The IR has no arch in it, but
+  RDNA strips have no such lowering yet: a map on gfx1100 / gfx1201 is refused
+  while tracing.
 
 ```python
 S = hk.RS(hk.fp32, 1, 512)    # one row: 64 lanes x a run of 8
@@ -275,16 +274,33 @@ def exp_ldexp(x: hk.Tensor[hk.fp32], n: hk.Tensor[hk.i32],
     row = hk.arch.block_idx.x
     v = x.at[row, 0].load(S)
     k = n.at[row, 0].load(I)                  # an i32 strip
-    # the biased exponent of v: bits, which no operator says
-    e.at[row, 0].store(hk.map_cpp("(__builtin_bit_cast(int, x0) >> 23) & 0xFF", v, dtype=hk.i32))
-    # v * 2^k: fp32 and i32 strips together, so the result's dtype is said
-    o.at[row, 0].store(hk.map_cpp("__builtin_ldexpf(x0, x1)", v, k, dtype=hk.fp32))
+    # the biased exponent of v
+    e.at[row, 0].store(hk.map(lambda x: (x.bitcast(hk.i32) >> 23) & 0xFF, v))
+    # v * 2^k where k is in range, else v
+    o.at[row, 0].store(hk.where((k >= -8) & (k <= 8),
+                                hk.map(lambda x, k: x * hk.math.exp2(k.to(hk.fp32)), v, k), v))
 ```
 
-On an MI355X, for `x` of shape (64, 512) and `n` in [-8, 8], `e` equals
-`(x.view(torch.int32) >> 23) & 0xFF` and `o` equals `torch.ldexp(x, n.float())`,
-bit for bit. `tests/hk/gpu/test_strip.py` has an `hk.Int` argument and the
-contraction check.
+`tests/hk/gpu/test_map.py` checks the semantics against torch on an MI355X.
+
+**The escape hatch: `hk.map_cpp(expr, *args, dtype=None)`** evaluates one
+C++ expression for each element, for what `hk.map` cannot say: an intrinsic
+or instruction hk has no op for (`__builtin_amdgcn_*`), or another kernel's
+exact instruction sequence. Triton's `inline_asm_elementwise` is the same
+escape. New in 0.8.0 (#53); since S7 it is `hk.map` with a string body.
+- **Arguments.** `x0`, `x1`, ... in `expr` are `args` in order. A strip binds
+  its element (r, c); an `hk.Int` or a Python int binds its value. Each has its
+  C++ type: `float` for an fp32 strip, `int` for an i32 strip, an `hk.Int` or a
+  Python int. A Python float is refused: write it in the expression (`0.5f`).
+  At least one argument is a strip, and every strip has one shape and run.
+- **Types.** Strip arguments and the result are fp32 or i32. The result is the
+  expression's value cast to `dtype`, which defaults to the strips' one dtype;
+  strips of fp32 and i32 together must say `dtype=`.
+- **The expression** is one C++ expression, with no `;` and no braces
+  (`ValueError`), compiled as written with contraction off: hk does not parse
+  it, so a mistake in it is a hipcc error. It is never fused with a map.
+- **Where.** gfx950 only; its use in hk.ops is on a reviewed allowlist
+  (`scripts/escape_hatches_allow.txt`).
 
 ### Strip ops for a megakernel's roles (gfx950)
 
@@ -293,7 +309,7 @@ table lookups, small reductions inside a lane group, hand-offs element by
 element -- written on strips. New in 0.8.0 (#72, #73), all gfx950, and
 written for a K1 that must match a hand-written kernel bit for bit.
 - **Indices.** `hk.iota(ty)` is an i32 strip whose element (r, c) is c;
-  with `hk.map_cpp` it computes flat indices.
+  with the i32 strip operators it computes flat indices.
 - **Elements at computed indices.** `x.load_elems(idx)` /
   `x.store_elems(val, idx, runs=False)` gather and scatter element by element
   (flat indices, an i32 strip); an index below zero or past the tensor reads 0

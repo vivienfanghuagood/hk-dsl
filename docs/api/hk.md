@@ -45,6 +45,8 @@ The language: what `import hk` gives a kernel author. A kernel body is traced on
 - [`hk.copy_mx_scales`](#hkcopy_mx_scales)
 - [`hk.mma_ABt_mx`](#hkmma_abt_mx)
 - [`hk.load_fp4_frags_lds`](#hkload_fp4_frags_lds)
+- [`hk.map`](#hkmap)
+- [`hk.where`](#hkwhere)
 - [`hk.map_cpp`](#hkmap_cpp)
 - [`hk.iota`](#hkiota)
 - [`hk.mfma_strip`](#hkmfma_strip)
@@ -462,7 +464,8 @@ of tensor extents in a grid lambda.
 hk.min(a, b)
 ```
 
-Of ints, of device Ints, or elementwise of tiles and vectors.
+Of ints, of device Ints, elementwise of tiles and vectors (an i32 strip: C's signed min),
+or of hk.map elements.
 
 ### `hk.max`
 
@@ -470,7 +473,8 @@ Of ints, of device Ints, or elementwise of tiles and vectors.
 hk.max(a, b)
 ```
 
-Of ints, of device Ints, or elementwise of tiles and vectors.
+Of ints, of device Ints, elementwise of tiles and vectors (an i32 strip: C's signed max),
+or of hk.map elements.
 
 ### `hk.zeros`
 
@@ -713,7 +717,42 @@ hk.load_fp4_frags_lds(ty, src: SharedTile, row0, chunk0, *, into=None) -> Tile
 
 Deprecated: `hk.load_fp4_frags(ty, src, row0, chunk0)` with `src` an LDS tile.
 
-## Strips: a C++ expression, iota, a raw MFMA (gfx950)
+## Strips: elementwise expressions, iota, a raw MFMA (gfx950)
+
+### `hk.map`
+
+```python
+hk.map(fn, *args)
+```
+
+*New after 0.8.0*
+
+Element (r, c) of the result is `fn` of element (r, c) of each strip argument (an
+`hk.Int` or a Python number argument is passed as itself): one `hk.map` op, `fn` traced
+once. `fn` sees elements (`hk.dsl.maps.Scalar`) with Python's operators at C's semantics
+-- `//` and `%` truncate, `>>` is arithmetic --, comparisons making masks, `hk.where`,
+`hk.min` / `hk.max`, `.to(dtype)`, `.bitcast(dtype)` and the hk.math functions. The
+result's dtype is what `fn` returns: fp32, i32 or a mask (b1). Floating-point contraction
+is off: `a * b + c` is two roundings, `hk.math.fma(a, b, c)` one.
+
+    idx = hk.map(lambda c, w: ((c >> 4) & 63) * 4 + w * 512, col, hk.arch.warp_id())
+
+The operators on i32 strips and masks build these one op at a time and the hk-map-fuse
+pass merges a chain; `hk.map` is for an expression to read as one, or to keep a float
+expression's roundings as written. Strips on gfx950; RDNA's have no lowering yet (S7 in
+docs/design/dsl-surface.md).
+
+### `hk.where`
+
+```python
+hk.where(m, a, b)
+```
+
+*New after 0.8.0*
+
+Elementwise `a` where the mask `m` holds, else `b` (C's `m ? a : b`): `m` a comparison of
+strips (or of hk.map elements), `a` and `b` strips of one dtype or numbers -- a Python
+number takes the other arm's dtype. One hk.map.
 
 ### `hk.map_cpp`
 
@@ -826,15 +865,16 @@ What a kernel body computes with. They are made by loads, `hk.zeros` and friends
 | `n * a` | yes | yes | yes |  |
 | `a / b` | yes | yes | refused |  |
 | `n / a` | yes | yes |  |  |
-| `a // b` | refused | refused | yes |  |
-| `a % b` | refused | refused | yes |  |
+| `a // b` | i32 strips | refused | yes |  |
+| `a % b` | i32 strips | refused | yes |  |
 | `-a` | yes | yes | yes |  |
 | `abs(a)` | yes | yes |  |  |
 | `a += b (also -= *= /=)` | yes | yes | yes (rebinds) |  |
 | `a @ b` | yes |  |  |  |
-| `a < b (<= > >= == !=)` |  |  | yes |  |
-| `a & b, a \| b, a ^ b` |  |  |  | yes |
-| `~a` |  |  |  | yes |
+| `a < b (<= > >= == !=)` | strips (a mask) | refused | yes |  |
+| `a & b, a \| b, a ^ b` | i32 strips, masks | refused |  | yes |
+| `a << b, a >> b` | i32 strips | refused |  |  |
+| `~a` | i32 strips, masks | refused |  | yes |
 | `v[:, None], v[None, :]` |  | yes |  |  |
 
 `acc += a @ b.T` is one matrix-core instruction into `acc` (the variant follows from the transposes); `t.sum(axis=1)` and friends are lazy reductions that `+=`, `max_` or `.value()` land.

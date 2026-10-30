@@ -13,6 +13,10 @@ fp16 data into an fp32 tile (`x.at[r, c].load(hk.RT(hk.fp32, 16, 64))`
 converts on the way) and convert back with `.to(hk.bf16)` before the store.
 A function the library lacks for a dtype raises while tracing.
 
+`fma`, `rcp`, `popcount`, `ctz`, `ceil` and `floor` have no tile op: of
+strips each is a one-op `hk.map` (gfx950), and every function here also
+takes `hk.map` elements, inside the `fn` of `hk.map(fn, ...)`.
+
 - [`hk.math.exp`](#hkmathexp)
 - [`hk.math.exp2`](#hkmathexp2)
 - [`hk.math.log`](#hkmathlog)
@@ -30,6 +34,12 @@ A function the library lacks for a dtype raises while tracing.
 - [`hk.math.div`](#hkmathdiv)
 - [`hk.math.maximum`](#hkmathmaximum)
 - [`hk.math.minimum`](#hkmathminimum)
+- [`hk.math.fma`](#hkmathfma)
+- [`hk.math.rcp`](#hkmathrcp)
+- [`hk.math.popcount`](#hkmathpopcount)
+- [`hk.math.ctz`](#hkmathctz)
+- [`hk.math.ceil`](#hkmathceil)
+- [`hk.math.floor`](#hkmathfloor)
 
 | function | torch equivalent | also spelled |
 |---|---|---|
@@ -50,6 +60,12 @@ A function the library lacks for a dtype raises while tracing.
 | [`hk.math.div`](#hkmathdiv) | `a / b` | `t.div()`, `a / b` |
 | [`hk.math.maximum`](#hkmathmaximum) | `torch.maximum` | `t.maximum()` |
 | [`hk.math.minimum`](#hkmathminimum) | `torch.minimum` | `t.minimum()` |
+| [`hk.math.fma`](#hkmathfma) | `a * b + c, one rounding` | `hk.map(lambda x: ...)` |
+| [`hk.math.rcp`](#hkmathrcp) | `1 / x, within 1 ulp` | `hk.map(lambda x: ...)` |
+| [`hk.math.popcount`](#hkmathpopcount) | `the set bits of the 32` | `hk.map(lambda x: ...)` |
+| [`hk.math.ctz`](#hkmathctz) | `trailing zero bits, 32 at 0` | `hk.map(lambda x: ...)` |
+| [`hk.math.ceil`](#hkmathceil) | `torch.ceil` | `hk.map(lambda x: ...)` |
+| [`hk.math.floor`](#hkmathfloor) | `torch.floor` | `hk.map(lambda x: ...)` |
 
 ### `hk.math.exp`
 
@@ -65,7 +81,7 @@ Elementwise e**x. bf16, fp16 and fp32.; kittens::exp. Also `x.exp()`. `into=` wr
 hk.math.exp2(x, *, into=None)
 ```
 
-Elementwise 2**x (the hardware's v_exp_f32; exp(x) = exp2(x * log2(e))). bf16, fp16 and fp32.; kittens::exp2. Also `x.exp2()`. `into=` writes an existing value instead of making one.
+Elementwise 2**x (the hardware's v_exp_f32; exp(x) = exp2(x * log2(e))). bf16, fp16 and fp32.; kittens::exp2. Also `x.exp2()`. `into=` writes an existing value instead of making one. Of an hk.map element, math.exp2: C's exp2f, which handles the arguments the bare instruction does not (denormals).
 
 ### `hk.math.log`
 
@@ -81,7 +97,7 @@ Elementwise natural logarithm. bf16, fp16 and fp32.; kittens::log. Also `x.log()
 hk.math.log2(x, *, into=None)
 ```
 
-Elementwise base-2 logarithm. bf16, fp16 and fp32.; kittens::log2. Also `x.log2()`. `into=` writes an existing value instead of making one.
+Elementwise base-2 logarithm. bf16, fp16 and fp32.; kittens::log2. Also `x.log2()`. `into=` writes an existing value instead of making one. Of an hk.map element, math.log2: C's log2f, which handles the arguments the bare instruction does not (denormals).
 
 ### `hk.math.abs`
 
@@ -89,7 +105,7 @@ Elementwise base-2 logarithm. bf16, fp16 and fp32.; kittens::log2. Also `x.log2(
 hk.math.abs(x, *, into=None)
 ```
 
-Elementwise |x|. bf16, fp16 and fp32.; kittens::abs. Also `x.abs()`. `into=` writes an existing value instead of making one.
+Elementwise |x|. bf16, fp16 and fp32.; kittens::abs. Also `x.abs()`. `into=` writes an existing value instead of making one. Of an hk.map element, math.abs: C's fabsf.
 
 ### `hk.math.relu`
 
@@ -121,7 +137,7 @@ Elementwise derivative of `gelu` (the tanh form), for a backward pass. fp32 tile
 hk.math.sqrt(x, *, into=None)
 ```
 
-Elementwise square root (one v_sqrt_f32). fp32 tiles and vectors only: load bf16/fp16 data into an fp32 tile (the load converts) and `.to(hk.bf16)` the result.; kittens::sqrt. Also `x.sqrt()`. `into=` writes an existing value instead of making one.
+Elementwise square root (one v_sqrt_f32). fp32 tiles and vectors only: load bf16/fp16 data into an fp32 tile (the load converts) and `.to(hk.bf16)` the result.; kittens::sqrt. Also `x.sqrt()`. `into=` writes an existing value instead of making one. Of an hk.map element, math.sqrt: C's sqrtf.
 
 ### `hk.math.rsqrt`
 
@@ -186,3 +202,63 @@ hk.math.minimum(a, b, *, into=None)
 ```
 
 Elementwise min(a, b) (`hk.min(a, b)`, `a.minimum(b)`): what the operator does, with `into=` naming the value it writes (which may be an operand). `b` is a value of `a`'s type, a Python number, a device `Int`.
+
+### `hk.math.fma`
+
+```python
+hk.math.fma(*xs)
+```
+
+*New after 0.8.0*
+
+Elementwise a * b + c with one rounding (`__builtin_fmaf`, v_fma_f32): fp32. Of strips (one hk.map) or of hk.map elements; gfx950.
+
+### `hk.math.rcp`
+
+```python
+hk.math.rcp(*xs)
+```
+
+*New after 0.8.0*
+
+Elementwise 1 / x by the hardware's reciprocal (v_rcp_f32, `__builtin_amdgcn_rcpf`: within 1 ulp, not the division): fp32. Of strips (one hk.map) or of hk.map elements; gfx950.
+
+### `hk.math.popcount`
+
+```python
+hk.math.popcount(*xs)
+```
+
+*New after 0.8.0*
+
+Elementwise the number of set bits of the 32 (`__builtin_popcount`): i32. Of strips (one hk.map) or of hk.map elements; gfx950.
+
+### `hk.math.ctz`
+
+```python
+hk.math.ctz(*xs)
+```
+
+*New after 0.8.0*
+
+Elementwise the number of trailing zero bits, 32 for 0 (`__builtin_ctzg(x, 32)`): i32. Of strips (one hk.map) or of hk.map elements; gfx950.
+
+### `hk.math.ceil`
+
+```python
+hk.math.ceil(*xs)
+```
+
+*New after 0.8.0*
+
+Elementwise the least integer >= x, as a float (`ceilf`): fp32. Of strips (one hk.map) or of hk.map elements; gfx950.
+
+### `hk.math.floor`
+
+```python
+hk.math.floor(*xs)
+```
+
+*New after 0.8.0*
+
+Elementwise the greatest integer <= x, as a float (`floorf`): fp32. Of strips (one hk.map) or of hk.map elements; gfx950.

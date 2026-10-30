@@ -24,6 +24,28 @@ resource at 32-bit offsets (HipKittens#4, `HK_RT_GLOBAL_BUFFERED`):
 Under clang 22 and 23 nothing changes: the ISA is identical for all 1049 kernels of the gfx1100
 catalog.
 
+**Integer, mask and bit expressions on strips: `hk.map` (gfx950).** What needed `hk.map_cpp`'s
+C++ strings is written with operators (docs/language.md, "Integer, mask and bit expressions on
+strips"; docs/design/dsl-surface.md S7).
+- i32 strips take C's `+ - * // % << >> & | ^ ~` (`//` and `%` truncate, `>>` is arithmetic);
+  comparisons of i32 and fp32 strips make masks, combined with `& | ~` and used by
+  `hk.where(m, a, b)`; `hk.min` / `hk.max` of i32 strips are signed. `hk.math.fma`, `rcp`,
+  `popcount`, `ctz`, `ceil` and `floor` are new. `hk.map(fn, *args)` traces a Python function of
+  the elements into one expression, with contraction off.
+- In the IR this is one op, `hk.map`: a region of `arith` / `math` scalar ops (the `math`
+  dialect is now registered), or a C++ body -- `hk.map_cpp` is that form, and prints the same
+  C++ as before. The `hk-map-fuse` pass merges the one-op maps the operators build into one
+  expression; it never moves arithmetic across a load, a store, a lane exchange or a barrier.
+- `paged_cdna`'s and `sparse_mla`'s map_cpp calls are rewritten with the operators: the
+  generated ISA and resources are identical on all 76 of their catalog builds, so their
+  allowlist entries are gone. `dsv41_index`'s 190 stay for a later step.
+- No float result changes: fp32 strip and tile operators keep their ops. `==` / `!=` of two
+  strips now make a mask (it was Python's identity test); of WMMA tiles and vectors they still
+  are identity. RDNA strips have no `hk.map` lowering yet (S7b): a map there is
+  refused while tracing.
+- An `hk.Int` on the left of a strip operator (`hk.arch.warp_id() * 64 + col`) now gives the
+  strip's operator instead of a `TypeError`.
+
 **gfx1100: the decode GEMM builds under the TheRock ROCm 7.14 compiler, so vLLM's linear routes
 to hk in the W7900D production images again.** Under its AMD clang 23 the four-tile
 `decode_gemm` spilled (256 -> 264 VGPRs), the spill gate refused it, tuning at load failed and
@@ -741,7 +763,7 @@ remaps:
   `"tensor.dim"` (`"k.depth"`).
 
 **`hk.map_cpp` and i32 strips** (#53, gfx950;
-[the language](docs/language.md#elementwise-c-over-strips-and-i32-strips-gfx950)).
+[the language](docs/language.md#integer-mask-and-bit-expressions-on-strips-hkmap-gfx950)).
 - `hk.map_cpp(expr, *args, dtype=None)` evaluates one C++ expression for each
   element of its strip arguments (`x0`, `x1`, ... bound to the elements, or
   to an `hk.Int` / Python int), into an fp32 or i32 strip. It is for what a
