@@ -9,6 +9,12 @@ The next version's notes collect here until it is released.
 What is on main after 0.8.0. `pip install hk-dsl` (0.8.0) does not have it;
 the API reference marks such names *New after 0.8.0*.
 
+**`hk.templates.rowwise` and `hk.templates.elementwise` stay callable after their module is
+imported.** `import hk.templates.rowwise` (or `from hk.templates.rowwise import ...`) before the
+first use bound the module to the package's name, and `hk.templates.rowwise(...)` then raised
+"'module' object is not callable". The two modules now call through to their template, as
+`hk.templates.gemm`'s already did.
+
 **gfx1100: the decode GEMM builds under the TheRock ROCm 7.14 compiler, so vLLM's linear routes
 to hk in the W7900D production images again.** Under its AMD clang 23 the four-tile
 `decode_gemm` spilled (256 -> 264 VGPRs), the spill gate refused it, tuning at load failed and
