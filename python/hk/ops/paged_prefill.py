@@ -50,7 +50,7 @@ def paged_prefill_kernel(name: str, *, head_dim: int = 128, group: int = 4,
                          qk_tiles: int = 2, pv_tiles: int = 2,
                          scale: Optional[float] = None,
                          max_vgprs: int = 256, min_occupancy: int = 1,
-                         layout: str = "hk", page: int = 16):
+                         layout: str = "hk", page: int = 16, decodes: bool = False):
     """Causal paged prefill: `q` and `o` are the engine's (tokens, heads *
     head_dim) rows, `q_start` the batch's query_start_loc.
 
@@ -62,26 +62,41 @@ def paged_prefill_kernel(name: str, *, head_dim: int = 128, group: int = 4,
     * "rocm": vLLM ROCM_ATTN's own cache, read in place. K is its x-split
       layout passed as the strided 5-D view (blocks, kv_heads, page,
       head_dim / 8, 8) (`rocm_views`); V is (blocks, kv_heads, head_dim, page),
-      a page of V^T already, staged straight into the V^T tile. A KV block is
-      kv_block / page pages, each staged into its band of the K and V^T tiles.
-      The grid is (Q tiles of the longest query, heads, requests) and `tiles`
-      only gives its first extent (rows = Q tiles): a workgroup works out its
-      request and tile from its index, and one whose tile starts past its
-      request's queries -- or whose request has one query, a decode, which
-      this skips as vLLM's prefix-prefill does -- loads and stores nothing.
-      Nothing is read on the host, so a launch is a function of (max query
-      length, requests) alone.
+      a page of V^T already, staged straight into the V^T tile.
+    * "flash": vLLM TRITON_ATTN's cache (blocks, 2, page, kv_heads, head_dim)
+      as the 4-D (blocks, 2, page, kv_heads * head_dim) it is, passed as both
+      `k_cache` and `v_cache`: K at depth 0, V (token-major, transposed on its
+      way into LDS as the hk layout's) at depth 1.
+
+    For "rocm" and "flash" a KV block is kv_block / page pages, each staged
+    into its band of the tiles, and the grid is (Q tiles of the longest query,
+    heads, requests); `tiles` only gives its first extent (rows = Q tiles). A
+    workgroup works out its request and tile from its index, and one whose tile
+    starts past its request's queries -- or whose request has one query, a
+    decode, which vLLM's prefill kernels skip too -- loads and stores nothing.
+    Nothing is read on the host, so a launch is a function of (max query
+    length, requests) alone.
+
+    `decodes`: one-query requests are computed too (a 16-row fragment of the tile, the rest
+    masked) -- for an engine whose one kernel takes the whole batch (TRITON_ATTN); off, they are
+    skipped, as ROCM_ATTN's prefill-only call wants.
     """
-    if layout not in ("hk", "rocm"):
-        raise ValueError(f"layout={layout!r}: 'hk' or 'rocm'")
-    rocm = layout == "rocm"
-    d = _derive(head_dim, q_block, kv_block, warps, vt_d_chunk, qk_tiles, pv_tiles)
+    if layout not in ("hk", "rocm", "flash"):
+        raise ValueError(f"layout={layout!r}: 'hk', 'rocm' or 'flash'")
+    rocm, flash = layout == "rocm", layout == "flash"
+    paged = rocm or flash                   # vLLM's pages, the device-side grid
+    # chunks_a_warp: this kernel loops a warp over its V^T chunks (v_iters) and counts its
+    # own LDS below
+    d = _derive(head_dim, q_block, kv_block, warps, vt_d_chunk, qk_tiles, pv_tiles,
+                chunks_a_warp=True)
     q_tile, d_frags, kv_frags = d["q_tile"], d["d_frags"], d["kv_frags"]
     d_chunks, v_bands, vt_frags = d["d_chunks"], d["v_bands"], d["vt_frags"]
     scale_l2e = (scale if scale is not None else head_dim ** -0.5) * math.log2(math.e)
-    if rocm and (page % 16 or kv_block % page):
+    if paged and (page % 16 or kv_block % page):
         raise ValueError(f"page={page}: a multiple of 16 that divides kv_block={kv_block}")
-    ppb = kv_block // page if rocm else 1
+    if flash and page != 16:
+        raise ValueError("layout='flash' stages V a 16-row band a page: page=16")
+    ppb = kv_block // page if paged else 1
 
     st_k = hk.ST(bf16, kv_block, head_dim)
     st_vt = hk.ST(bf16, head_dim, kv_block)
@@ -93,6 +108,14 @@ def paged_prefill_kernel(name: str, *, head_dim: int = 128, group: int = 4,
     ty_vr = hk.RT(bf16, 16, 16, "row")
     ty_vec = hk.row_vec(ty_s)
     k_ty = hk.Tensor[bf16, "strided"] if rocm else hk.Tensor[bf16]
+    # the V^T chunks (vt_d_chunk wide) a warp transposes into LDS each block
+    v_iters = -(-d_chunks // warps) if not rocm else 0
+    lds = 2 * kv_block * head_dim * 2
+    from ..target import current_arch, get_target  # noqa: PLC0415
+
+    if lds > get_target(current_arch()).lds_per_workgroup:
+        raise ValueError(f"{lds} B of LDS; a workgroup has "
+                         f"{get_target(current_arch()).lds_per_workgroup}")
 
     def body(q: hk.Tensor[bf16], k_cache: k_ty,
              v_cache: hk.Tensor[bf16], block_table: hk.Tensor[i32],
@@ -101,18 +124,19 @@ def paged_prefill_kernel(name: str, *, head_dim: int = 128, group: int = 4,
         g = hk.group(warps)
         k_s = hk.lds.alloc(st_k, name="k_s")
         vt_s = hk.lds.alloc(st_vt, name="vt_s")
-        if rocm:
+        if paged:
             # a page's band of each tile, and a staging slot a page
             k_pg = [k_s.subtile(page, head_dim, p, 0) for p in range(ppb)]
-            v_pg = [vt_s.subtile(head_dim, page, 0, p) for p in range(ppb)]
             buf_k = g.stage_buffer(k_pg[0], depth=ppb, name="buf_k")
-            buf_v = g.stage_buffer(v_pg[0], depth=ppb, name="buf_v")
+            if rocm:
+                v_pg = [vt_s.subtile(head_dim, page, 0, p) for p in range(ppb)]
+                buf_v = g.stage_buffer(v_pg[0], depth=ppb, name="buf_v")
         else:
             buf_k = g.stage_buffer(k_s, name="buf_k")
         gr_k = k_s.granules(name="gr_k")
         gr_vt = vt_s.granules(name="gr_vt")
 
-        if rocm:
+        if paged:
             qb = hk.arch.block_idx.x
             head = hk.arch.block_idx.y
             req = hk.arch.block_idx.z
@@ -132,9 +156,12 @@ def paged_prefill_kernel(name: str, *, head_dim: int = 128, group: int = 4,
         wid = hk.arch.warp_id()
         q_local = tile_lo + wid * q_block           # this warp's first row
         left = q_len - q_local                      # its rows the request has
-        if rocm:
+        if paged:
             # 1 for a tile of a prefill's queries; 0 past them and for a decode
-            act = hk.min(hk.max(q_len - 1, 0), 1) * hk.min(hk.max(q_len - tile_lo, 0), 1)
+            if decodes:
+                act = hk.min(hk.max(q_len - tile_lo, 0), 1)
+            else:
+                act = hk.min(hk.max(q_len - 1, 0), 1) * hk.min(hk.max(q_len - tile_lo, 0), 1)
             left = hk.min(left, act * q_tile)
 
         q_r = [q[hk.elem_coord(0, 0, q0 + q_local, col + 16 * kk)]
@@ -143,9 +170,12 @@ def paged_prefill_kernel(name: str, *, head_dim: int = 128, group: int = 4,
         m_run = hk.neg_infty(ty_vec)
         l_run = hk.zeros(ty_vec)
         if not rocm:
-            v_rows = [hk.zeros(ty_v) for _ in range(v_bands)]
-            c_chunk = wid
-            stages_v = c_chunk < d_chunks
+            # V^T through registers: this warp's chunk(s), each v_bands 16-row bands of
+            # the block
+            v_rows = [[hk.zeros(ty_v) for _ in range(v_bands)] for _ in range(v_iters)]
+            c_chunk = [wid + warps * i if i else wid for i in range(v_iters)]
+            stages_v = [c < d_chunks for c in c_chunk]
+            v_col0 = head_kv * head_dim if flash else 0
 
         # Up to the workgroup's last real query, uniform across it: staging
         # has barriers in it. A warp whose rows end sooner is masked per
@@ -153,7 +183,7 @@ def paged_prefill_kernel(name: str, *, head_dim: int = 128, group: int = 4,
         last_q = ctx + hk.min(tile_lo + q_tile, q_len) - 1
         kv_blocks = hk.cdiv(last_q + 1, kv_block)
         n_pages = kv_blocks
-        if rocm:
+        if paged:
             kv_blocks = kv_blocks * act
             # At least the request's first page: a request padded into the
             # batch (no queries, no tokens) still prefetches one, from its
@@ -165,36 +195,101 @@ def paged_prefill_kernel(name: str, *, head_dim: int = 128, group: int = 4,
             return block_table[hk.elem_coord(
                 0, 0, req, hk.min(pg, n_pages - 1))].load_scalar()
 
+        def load_v(pg, i, w):
+            c0 = c_chunk[i] * vt_d_chunk
+            if not (isinstance(v_col0, int) and v_col0 == 0):
+                c0 = v_col0 + c0
+            if flash:
+                return v_cache[hk.elem_coord(pg, 1, 0, c0)]
+            return v_cache[hk.elem_coord(pg, head_kv, 16 * w, c0)]
+
         def load_kv(kb):
-            if rocm:
+            if paged:
                 for p in range(ppb):
                     pg = page_of(kb * ppb + p)
-                    g.stage(buf_k, k_cache[hk.elem_coord(pg, head_kv, 0, 0)], slot=p)
-                    g.stage(buf_v, v_cache[hk.elem_coord(pg, head_kv, 0, 0)], slot=p)
+                    if rocm:
+                        g.stage(buf_k, k_cache[hk.elem_coord(pg, head_kv, 0, 0)], slot=p)
+                        g.stage(buf_v, v_cache[hk.elem_coord(pg, head_kv, 0, 0)], slot=p)
+                    else:
+                        g.stage(buf_k, k_cache[hk.elem_coord(pg, 0, 0, head_kv * head_dim)],
+                                slot=p)
+                    if flash:
+                        for i in range(v_iters):
+                            if stages_v[i]:
+                                load_v(pg, i, p).load(ty_v, into=v_rows[i][p])
             else:
                 pg = page_of(kb)
                 g.stage(buf_k, k_cache[hk.elem_coord(pg, head_kv, 0, 0)])
-                if stages_v:
-                    for w in range(v_bands):
-                        v_cache[hk.elem_coord(pg, head_kv, 16 * w,
-                                              c_chunk * vt_d_chunk)].load(
-                            ty_v, into=v_rows[w])
+                for i in range(v_iters):
+                    if stages_v[i]:
+                        for w in range(v_bands):
+                            load_v(pg, i, w).load(ty_v, into=v_rows[i][w])
 
         def commit_kv():
             hk.arch.vm_wait(0)
-            if rocm:
+            if paged:
                 for p in range(ppb):
                     g.commit(k_pg[p], buf_k, slot=p)
-                    g.commit(v_pg[p], buf_v, slot=p)
+                    if rocm:
+                        g.commit(v_pg[p], buf_v, slot=p)
             else:
                 g.commit(k_s, buf_k)
-                if stages_v:
-                    for w in range(v_bands):
-                        v_t = hk.transpose_sep(v_rows[w])
-                        for tt in range(vt_frags):
-                            gr_vt.store_frag(v_t, c_chunk * vt_frags + tt, w)
+            if not rocm:
+                for i in range(v_iters):
+                    if stages_v[i]:
+                        for w in range(v_bands):
+                            v_t = hk.transpose_sep(v_rows[i][w])
+                            for tt in range(vt_frags):
+                                gr_vt.store_frag(v_t, c_chunk[i] * vt_frags + tt, w)
 
         load_kv(0)
+
+        def qk(s_f):
+            for kk in range(d_frags):
+                for n0 in range(0, kv_frags, qk_tiles):
+                    k_win = [gr_k.load_frag(n0 + i, kk, ty_k)
+                             for i in range(qk_tiles)]
+                    hk.lds.wait_for(*k_win)
+                    hk.arch.setprio(1)
+                    for i in range(qk_tiles):
+                        s_f[n0 + i] += k_win[i] @ q_r[kk].T
+                    hk.arch.setprio(0)
+
+        def softmax_pv(s_f, kv_lo):
+            nonlocal l_run
+            for n in range(kv_frags):
+                s_f[n] *= scale_l2e
+
+            # kv > position: S^T's rows are kv, its columns this warp's
+            # queries, at positions ctx + q_local + column.
+            dd = ctx + q_local - kv_lo
+            for n in range(kv_frags):
+                s_f[n].triu_(dd - 16 * n, NEG_INF)
+
+            m_old = m_run.copy()
+            for n in range(kv_frags):
+                m_run.max_(s_f[n].max(axis=0))
+            for n in range(kv_frags):
+                s_f[n] -= m_run
+                s_f[n].exp2_()
+            if m_run.any_ne(m_old):
+                alpha = (m_old - m_run).exp2()
+                l_run *= alpha
+                for c in o_c:
+                    c *= alpha
+            for n in range(kv_frags):
+                l_run += s_f[n].sum(axis=0)
+
+            for n in range(kv_frags):
+                p_cvt = s_f[n].to(bf16)
+                for g0 in range(0, d_frags, pv_tiles):
+                    v_win = [gr_vt.load_frag(g0 + i, n, ty_vr)
+                             for i in range(pv_tiles)]
+                    hk.lds.wait_for(*v_win)
+                    hk.arch.setprio(1)
+                    for i in range(pv_tiles):
+                        o_c[g0 + i] += v_win[i] @ p_cvt
+                    hk.arch.setprio(0)
 
         for kb in range(kv_blocks):
             kv_lo = kb * kv_block
@@ -205,49 +300,8 @@ def paged_prefill_kernel(name: str, *, head_dim: int = 128, group: int = 4,
 
             with hk.scope():
                 s_f = [hk.zeros(ty_s) for _ in range(kv_frags)]
-                for kk in range(d_frags):
-                    for n0 in range(0, kv_frags, qk_tiles):
-                        k_win = [gr_k.load_frag(n0 + i, kk, ty_k)
-                                 for i in range(qk_tiles)]
-                        hk.lds.wait_for(*k_win)
-                        hk.arch.setprio(1)
-                        for i in range(qk_tiles):
-                            s_f[n0 + i] += k_win[i] @ q_r[kk].T
-                        hk.arch.setprio(0)
-
-                for n in range(kv_frags):
-                    s_f[n] *= scale_l2e
-
-                # kv > position: S^T's rows are kv, its columns this warp's
-                # queries, at positions ctx + q_local + column.
-                dd = ctx + q_local - kv_lo
-                for n in range(kv_frags):
-                    s_f[n].triu_(dd - 16 * n, NEG_INF)
-
-                m_old = m_run.copy()
-                for n in range(kv_frags):
-                    m_run.max_(s_f[n].max(axis=0))
-                for n in range(kv_frags):
-                    s_f[n] -= m_run
-                    s_f[n].exp2_()
-                if m_run.any_ne(m_old):
-                    alpha = (m_old - m_run).exp2()
-                    l_run *= alpha
-                    for c in o_c:
-                        c *= alpha
-                for n in range(kv_frags):
-                    l_run += s_f[n].sum(axis=0)
-
-                for n in range(kv_frags):
-                    p_cvt = s_f[n].to(bf16)
-                    for g0 in range(0, d_frags, pv_tiles):
-                        v_win = [gr_vt.load_frag(g0 + i, n, ty_vr)
-                                 for i in range(pv_tiles)]
-                        hk.lds.wait_for(*v_win)
-                        hk.arch.setprio(1)
-                        for i in range(pv_tiles):
-                            o_c[g0 + i] += v_win[i] @ p_cvt
-                        hk.arch.setprio(0)
+                qk(s_f)
+                softmax_pv(s_f, kv_lo)
 
         # A warp past the request's end saw only masked keys past its own
         # position and has l = 0 in no row it writes: its stores are bounded
@@ -263,7 +317,7 @@ def paged_prefill_kernel(name: str, *, head_dim: int = 128, group: int = 4,
     body.__annotations__["k_cache"] = k_ty
 
     def _grid(p):
-        if rocm:
+        if paged:
             return (p.tiles.rows, p.o.cols // head_dim, p.seq_lens.cols)
         return (p.tiles.rows, p.o.cols // head_dim, 1)
 
