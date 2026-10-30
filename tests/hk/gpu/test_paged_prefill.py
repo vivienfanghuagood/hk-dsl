@@ -311,3 +311,40 @@ def test_rocm_layout_is_deterministic_and_skips_padding():
     reqs = [(500, 300), (0, 0), (40, 77)]
     outs = [_rocm_run(reqs, seed=5)[0] for _ in range(3)]
     assert torch.equal(outs[0], outs[1]) and torch.equal(outs[0], outs[2])
+
+
+# ---- layout="flash" (TRITON_ATTN's cache) ----------------------------------------------------
+
+def _flash_run(reqs, head_dim=128, h_kv=2, group=8, layout="flash", seed=0, decodes=True,
+               warps=None):
+    q, (k, v), (k5, v4), table, lens, q_start = _rocm_case(reqs, head_dim=head_dim, h_kv=h_kv,
+                                                           group=group, seed=seed)
+    n_tok, h, d = q.shape
+    out = torch.full_like(q, 7.0)
+    warps = warps or 12
+    kern = pp.paged_prefill_kernel(
+        f"t_pp_{layout}_d{head_dim}_g{group}_w{warps}{'_dec' if decodes else ''}",
+        head_dim=head_dim, group=group, layout=layout, warps=warps, decodes=decodes)
+    tile = 16 * warps
+    tiles = pp.q_tiles(max(n for _, n in reqs), q.device, tile)
+    if layout == "flash":
+        nb = k.shape[0]
+        fl = torch.stack([k.transpose(1, 2), v.transpose(1, 2)], dim=1)   # (nb, 2, 16, hkv, d)
+        kv = fl.reshape(nb, 2, ROCM_PAGE, h_kv * d).contiguous()
+        kern(q.view(n_tok, h * d), kv, kv, table, lens, q_start, tiles, out.view(n_tok, h * d))
+    else:
+        kern(q.view(n_tok, h * d), *pp.rocm_views(k5, v4), table, lens, q_start, tiles,
+             out.view(n_tok, h * d))
+    want = _reference(q, k, v, table, lens, q_start, group, page=ROCM_PAGE)
+    return out, want, q_start
+
+
+@rocm_only
+@pytest.mark.parametrize("reqs", [
+    [(0, 300)],
+    [(0, 192), (500, 5), (40, 600), (33, 1)],     # with a decode: computed (decodes=True)
+    [(7, 2), (16, 16), (31, 33), (2047, 2049)],
+])
+def test_flash_layout_with_decodes(reqs):
+    got, want, _ = _flash_run(reqs)
+    _attn_ref.check(got, want)

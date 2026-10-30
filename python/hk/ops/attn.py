@@ -46,7 +46,8 @@ NEG_INF = float("-inf")
 
 
 def _derive(head_dim: int, q_block: int, kv_block: int, warps: int,
-            vt_d_chunk: int, qk_tiles: int, pv_tiles: int) -> Dict[str, int]:
+            vt_d_chunk: int, qk_tiles: int, pv_tiles: int,
+            chunks_a_warp: bool = False) -> Dict[str, int]:
     """The config arithmetic, with the C++'s static_asserts."""
     for n, v in (("head_dim", head_dim), ("q_block", q_block),
                  ("kv_block", kv_block), ("vt_d_chunk", vt_d_chunk)):
@@ -69,7 +70,7 @@ def _derive(head_dim: int, q_block: int, kv_block: int, warps: int,
             f"has no register subtile -- write the loop over 16-wide slabs."
         )
     d_chunks = head_dim // vt_d_chunk
-    if d_chunks > warps:
+    if d_chunks > warps and not chunks_a_warp:
         # V_ITERS > 1 in the C++. Expressible here -- it is a Python loop over
         # `warp_id + i * warps` -- but it has never been the measured config and
         # an untested branch in a kernel this tight is a liability, so it is a
@@ -81,7 +82,7 @@ def _derive(head_dim: int, q_block: int, kv_block: int, warps: int,
         )
     lds = (kv_block * head_dim + head_dim * kv_block) * 2
     cap = get_target(current_arch()).lds_per_workgroup
-    if lds > cap:
+    if lds > cap and not chunks_a_warp:
         raise ValueError(f"{lds} B of LDS; a {current_arch()} workgroup has {cap}")
     return dict(
         q_tile=q_block * warps,
