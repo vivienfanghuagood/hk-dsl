@@ -313,7 +313,13 @@ vLLM picked.
 Head size 64, 128 and 256. At 256 the kernel uses `dsplit`, a query row
 across a pair of warps. Where a kernel does not build spill-free under the
 compiler at hand, its calls stay vLLM's: TRITON_ATTN at d256 under clang 22
-(ROCm 7.2.3). It builds under the vLLM images' clang 23. gfx1100, bf16, pages of 16 (and 32 on ROCM_ATTN). A call
+(ROCm 7.2.3). It builds under the vLLM images' clang 23. gfx1100, bf16,
+pages of 16 or 32 tokens -- on TRITON_ATTN any multiple of 16: hybrid
+models' attention pages (544 tokens for MiniCPM-V-4.7, 784 for Qwen3.8) hold
+whole 32-key blocks or halves of them, and are read as zero past a
+sequence's end since the rows there belong to the model's other layers. TRITON_ATTN's cache is read in either of vLLM's
+orders: K and V planes a block, or a head's K and V side by side (vLLM's
+per-layer layouts, token- or head-major). A call
 with anything else falls back to vLLM's kernel unchanged and is counted:
 ALiBi, sliding windows, sinks, softcap, an fp8 or quantized cache, fp8
 output, non-causal, or a call made while a graph is captured.
