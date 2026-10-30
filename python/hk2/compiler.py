@@ -126,8 +126,8 @@ class Compiler:
             best = max(cands, key=self._score) if cands else FLEX
             L[r.id] = best
         elif k == "dot":
-            atom, grid = self.dot_plan(op.args[0].type.dtype, sh[0], sh[1])
-            L[r.id] = A.acc_layout(atom, sh[0], sh[1], self.nwarps, grid)
+            atom, grid, trans = self.dot_plan(op.args[0].type.dtype, sh[0], sh[1])
+            L[r.id] = self.acc_layout(atom, sh[0], sh[1], grid, trans)
         elif k == "reduce":
             x = op.args[0]
             xl = L[x.id]
@@ -190,9 +190,58 @@ class Compiler:
         a warp and meet the other dots' rows without moving."""
         if self.rowmode:
             atom = self.arch.mma(dtype)
-            return atom, A.rows_grid(m, n, self.nwarps, atom)
+            # Transposed: the instruction runs with its operands swapped, so the accumulator holds rows on
+            # lanes 0-15 -- the shape of an A operand. A dot feeding another dot (attention's P @ V) then
+            # keeps P in registers (see match_operand). Not on RDNA3, whose A operand repeats lanes 16-31.
+            trans = self.arch.family == "cdna" or self.arch.name.startswith("gfx12")
+            if os.environ.get("HK2_NO_TRANS_DOT"):
+                trans = False
+            return atom, A.rows_grid(m, n, self.nwarps, atom), trans
         atom = self.arch.mma(dtype, m, n, self.nwarps)
-        return atom, A.warp_grid(m, n, self.nwarps, atom)
+        return atom, A.warp_grid(m, n, self.nwarps, atom), False
+
+    def acc_layout(self, atom, m: int, n: int, grid, trans: bool) -> Layout:
+        if trans:
+            wm, wn = grid
+            return A.acc_layout(atom, n, m, self.nwarps, (wn, wm)).transpose()
+        return A.acc_layout(atom, m, n, self.nwarps, grid)
+
+    @staticmethod
+    def match_operand(P: Layout, C: Layout, kdim: int):
+        """A permutation of the K bits under which layout P *is* the operand layout C (same rows on the same
+        lanes and warps, K anywhere in registers or lanes), or None. A dot may sum K in any order as long as
+        both operands agree, so the other operand takes the same permutation."""
+        if P.shape != C.shape or P.warp != C.warp or len(P.lane) != len(C.lane):
+            return None
+        md = 1 - kdim
+        pi = {}
+        for bp, bc in zip(P.lane, C.lane):
+            if bc[md]:
+                if bp != bc:
+                    return None
+            elif bc[kdim]:
+                if bp[md] or not bp[kdim]:
+                    return None
+                pi[bc[kdim]] = bp[kdim]
+            elif any(bp):
+                return None
+        if any(not any(b) for b in P.reg) or any(not any(b) for b in C.reg):
+            return None
+        if sorted(b[md] for b in C.reg if b[md]) != sorted(b[md] for b in P.reg if b[md]):
+            return None
+        ck = sorted(b[kdim] for b in C.reg if b[kdim])
+        pk = sorted(b[kdim] for b in P.reg if b[kdim])
+        if len(ck) != len(pk):
+            return None
+        pi.update(zip(ck, pk))
+        if sorted(pi) != sorted(pi.values()):
+            return None
+        return pi
+
+    @staticmethod
+    def permute_k(L: Layout, pi, kdim: int) -> Layout:
+        f = lambda bs: tuple(tuple(pi.get(x, x) if d == kdim and x else x for d, x in enumerate(b)) for b in bs)
+        return Layout(L.shape, f(L.reg), f(L.lane), f(L.warp), L.name + "~k")
 
     def _detect_rowmode(self, block: ir.Block) -> bool:
         producer = {}
@@ -356,7 +405,7 @@ class Compiler:
         if dt.is_float:
             ops = {"add": "fadd", "sub": "fsub", "mul": "fmul", "truediv": "fdiv", "mod": "frem"}
             if fn in ops:
-                r = self.e(f"{ops[fn]} {t} {a}, {b}")
+                r = self.e(f"{ops[fn]} contract {t} {a}, {b}")
             elif fn in ("max", "min"):
                 name = f"llvm.{'maxnum' if fn == 'max' else 'minnum'}.{self._fsuf(dt)}"
                 self.decl(f"declare {t} @{name}({t}, {t})")
@@ -625,13 +674,31 @@ class Compiler:
     def lds_ptr(self, off: str) -> str:
         return self.e(f"getelementptr inbounds i8, ptr addrspace(3) @hk2.lds, i32 {off}")
 
+    def tr16_ok(self, D: Layout, dt: T.DType, fast: int) -> bool:
+        """gfx950's ds_read_b64_tr_b16 can read D from storage whose fast dimension is ``fast``: lanes 0-3 of
+        each 16 step along ``fast`` and registers 0-1 along the other dimension (an MFMA operand fragment
+        stored the other way round). Probed: within 16 lanes, source lane j's 4 elements e land in lane
+        4*(j%4)+e, element j//4."""
+        if self.arch.name != "gfx950" or dt.bits != 16 or D.rank != 2 or len(D.lane) < 4 or len(D.reg) < 2 or \
+                os.environ.get("HK2_NO_TR"):
+            return False
+        slow = 1 - fast
+        unit = lambda dim, v: tuple(v if d == dim else 0 for d in range(2))
+        return D.lane[:4] == tuple(unit(fast, 1 << i) for i in range(4)) and \
+            D.reg[:2] == (unit(slow, 1), unit(slow, 2))
+
     def _geometry(self, shape, dt, D: Layout, S: Layout):
-        """LDS storage for a conversion: the destination's contiguous dimension is the fast one."""
+        """LDS storage for a conversion: the destination's contiguous dimension is the fast one, unless the
+        destination can be read transposed (tr16_ok) and the source writes whole vectors the other way."""
         if len(shape) == 1:
             return 0, 0, shape[0]
         fast = 0 if D.contig(0) > D.contig(1) else 1
         if D.contig(0) == D.contig(1) == 1:
             fast = 0 if S.contig(0) > S.contig(1) else 1
+        for f in (1, 0):
+            if D.contig(f) < 4 and S.contig(f) >= 4 and self.tr16_ok(D, dt, f):
+                fast = f
+                break
         n = shape[fast]
         pad = (16 // dt.bytes) if n * dt.bytes >= 64 else 0
         return fast, 1 - fast, n + pad
@@ -672,7 +739,10 @@ class Compiler:
                 todo.append(i)
         if not todo:
             return out
-        base, plans = 0, []
+        # Inside a loop each conversion group gets its own LDS region, so groups never fence each other;
+        # outside loops conversions are transient and share offset 0.
+        org = self.loops[-1]["bump"] if self.loops else 0
+        base, plans = org, []
         for i in todo:
             v, D = items[i]
             src = self.vals[v.id]
@@ -691,15 +761,19 @@ class Compiler:
         local = all(self.warp_local(src.layout, D) for _, src, D, _, _ in plans)
         part = tuple((src.layout.warp, D.warp, geom, b0, src.dtype.bytes) for _, src, D, geom, b0 in plans) \
             if local and not os.environ.get("HK2_NO_WARP_LOCAL") else None
-        if part is None and double and self.loops and 2 * base <= self.arch.lds_bytes and \
+        size = base - org
+        if part is None and double and self.loops and org + 2 * size <= self.arch.lds_bytes and \
                 not os.environ.get("HK2_NO_DOUBLE"):
             par = self.parity()
-            dyn = self.e(f"mul i32 {par}, {base}")
-            acc = ("cur", 0, base, 0, 2 * base, None)
-            self.lds_size = max(self.lds_size, 2 * base)
+            dyn = self.e(f"mul i32 {par}, {size}")
+            acc = ("cur", org, base, org, org + 2 * size, None)
+            end = org + 2 * size
         else:
-            acc = ("", 0, base, 0, 0, part)
-            self.lds_size = max(self.lds_size, base)
+            acc = ("", org, base, 0, 0, part)
+            end = base
+        self.lds_size = max(self.lds_size, end)
+        if self.loops:
+            self.loops[-1]["bump"] = end
         self.lds_write(acc)
         for i, src, D, geom, b0 in plans:
             self._lds_store_tile(src, geom, b0, dyn)
@@ -755,6 +829,8 @@ class Compiler:
 
     def _lds_load_tile(self, D: Layout, dt: T.DType, geom, b0: int, dyn: Optional[str] = None) -> TV:
         v = self._vec(D, geom, dt)
+        if v < 4 and D.rank == 2 and self.tr16_ok(D, dt, geom[0]):
+            return self._lds_load_tr16(D, dt, geom, b0, dyn)
         regs: List[Optional[str]] = [None] * D.nregs
         for r in range(0, D.nregs, v):
             if D.canonical_reg(r) != r:
@@ -768,6 +844,36 @@ class Compiler:
                 vt = f"<{v} x {self.ty(dt)}>"
                 x = self.e(f"load {vt}, ptr addrspace(3) {p}, align {v * dt.bytes}")
                 regs[r:r + v] = self.unpack(x, v, dt)
+        for r in range(D.nregs):
+            if regs[r] is None:
+                regs[r] = regs[D.canonical_reg(r)]
+        return TV(D, regs, dt)
+
+    def _lds_load_tr16(self, D: Layout, dt: T.DType, geom, b0: int, dyn: Optional[str]) -> TV:
+        """Four elements per ds_read_b64_tr_b16: this lane addresses row (slow) base + j//4, columns (fast)
+        base + 4*(j%4), with j its lane within 16; it receives column base + j, rows base + 0..3."""
+        fast, slow, pitch = geom
+        hi = Layout(D.shape, D.reg, ((0, 0),) * 4 + D.lane[4:], D.warp, D.name + "/hi")
+        bs, bf = self.lw(hi, slow), self.lw(hi, fast)
+        lane = self.lane()
+        jr = self.en(("tr16jr",), lambda: f"lshr i32 {self.en(('tr16j',), lambda: f'and i32 {lane}, 15')}, 2")
+        jc = self.en(("tr16jc",), lambda: f"shl i32 {self.en(('tr16j3',), lambda: f'and i32 {lane}, 3')}, 2")
+        row = self.en(("tr16row", hi, slow), lambda: f"add i32 {bs}, {jr}")
+        col = self.en(("tr16col", hi, fast), lambda: f"add i32 {bf}, {jc}")
+        lin = self.en(("tr16lin", hi, geom), lambda: f"mul i32 {row}, {pitch}")
+        lin = self.en(("tr16lin2", hi, geom), lambda: f"add i32 {lin}, {col}")
+        lb = self.en(("tr16b", hi, geom), lambda: f"mul i32 {lin}, {dt.bytes}")
+        name = "llvm.amdgcn.ds.read.tr16.b64.v4i16"
+        self.decl(f"declare <4 x i16> @{name}(ptr addrspace(3))")
+        regs: List[Optional[str]] = [None] * D.nregs
+        for r in range(0, D.nregs, 4):
+            if D.canonical_reg(r) != r:
+                continue
+            off = D.reg_offset(r)
+            const = b0 + (off[slow] * pitch + off[fast]) * dt.bytes
+            addr = self.e(f"add i32 {self._dyn_addr(lb, dyn)}, {const}")
+            x = self.e(f"call <4 x i16> @{name}(ptr addrspace(3) {self.lds_ptr(addr)})")
+            regs[r:r + 4] = self.unpack(x, 4, dt, "<4 x i16>")
         for r in range(D.nregs):
             if regs[r] is None:
                 regs[r] = regs[D.canonical_reg(r)]
@@ -1006,18 +1112,25 @@ class Compiler:
         a, b, c = op.args
         m, k = a.type.shape
         n = b.type.shape[1]
-        atom, grid = self.dot_plan(a.type.dtype, m, n)
+        atom, grid, trans = self.dot_plan(a.type.dtype, m, n)
         if m % atom.m or n % atom.n or k % atom.k:
             raise ValueError(f"hk2.dot {m}x{k} @ {k}x{n}: on {self.arch.name} the tile sizes must be multiples of "
                              f"{atom.m}x{atom.k} @ {atom.k}x{atom.n}")
         La = A.a_layout(atom, m, k, n, self.nwarps, grid)
         Lb = A.b_layout(atom, m, k, n, self.nwarps, grid)
+        # an A operand already in an operand shape (P from a transposed dot): use it in place
+        if self.lay.get(a.id) is not FLEX and a.id in self.vals and not os.environ.get("HK2_NO_MATCH"):
+            pi = self.match_operand(self.vals[a.id].layout, La, 1)
+            if pi:
+                La, Lb = self.permute_k(La, pi, 1), self.permute_k(Lb, pi, 0)
         Lc = self.lay[op.result.id]
         ta, tb = self.convert([(a, La), (b, Lb)], double=self.depth > 0)
         tc = self.get(c, Lc)
         wm, wn = grid
         rm, rn, rk = (m // wm) // atom.m, (n // wn) // atom.n, k // atom.k
         rm, rn = max(rm, 1), max(rn, 1)
+        if trans:  # C^T = B^T A^T: blocks of n index the accumulator rows
+            rm, rn = rn, rm
         dt = a.type.dtype
         self.decl(f"declare {atom.c_ty} @{atom.intrinsic}({atom.op_ty}, {atom.op_ty}, {atom.c_ty}"
                   f"{', i32 immarg, i32 immarg, i32 immarg' if atom.tail else ''})")
@@ -1027,14 +1140,16 @@ class Compiler:
                 base = atom.c_regs * (j + rn * i)
                 accs[i, j] = self.pack(tc.regs[base:base + atom.c_regs], T.f32)
         op_n = int(atom.op_ty.split()[0][1:])
+        # transposed: the instruction's first operand is the B fragment, its second the A fragment
+        first, second = (tb, ta) if trans else (ta, tb)
         for kk in range(rk):
             avecs = {}
             for i in range(rm):
                 ab = atom.a_regs * (kk + rk * i)
-                avecs[i] = self._operand(ta.regs[ab:ab + atom.a_regs], dt, atom, op_n)
+                avecs[i] = self._operand(first.regs[ab:ab + atom.a_regs], dt, atom, op_n)
             for j in range(rn):
                 bb = atom.b_regs * (kk + rk * j)
-                bvec = self._operand(tb.regs[bb:bb + atom.b_regs], dt, atom, op_n)
+                bvec = self._operand(second.regs[bb:bb + atom.b_regs], dt, atom, op_n)
                 for i in range(rm):
                     accs[i, j] = self.e(f"call {atom.c_ty} @{atom.intrinsic}({atom.op_ty} {avecs[i]}, "
                                         f"{atom.op_ty} {bvec}, {atom.c_ty} {accs[i, j]}{atom.tail})")
@@ -1218,7 +1333,7 @@ class Compiler:
         head_r, head_w = self._absolute(self.pend_r), self._absolute(self.pend_w)
         for attempt in range(6):
             self.memo.append({})
-            self.loops.append({"par": None})
+            self.loops.append({"par": None, "bump": self.loops[-1]["bump"] if self.loops else 0})
             self.pend_r, self.pend_w = list(head_r), list(head_w)
             self.depth += 1
             self.emit_block(blk)
@@ -1278,7 +1393,7 @@ class Compiler:
             a, b = d.args[:2]
             m, k = a.type.shape
             n = b.type.shape[1]
-            atom, grid = self.dot_plan(a.type.dtype, m, n)
+            atom, grid, _ = self.dot_plan(a.type.dtype, m, n)
             for v, L in ((a, A.a_layout(atom, m, k, n, self.nwarps, grid)),
                          (b, A.b_layout(atom, m, k, n, self.nwarps, grid))):
                 if v.id not in inside and self.lay.get(v.id) is not FLEX and v.id in self.vals and \
@@ -1349,6 +1464,8 @@ class Compiler:
             out += lines
         out.append("}")
         threads = self.nwarps * self.wave
+        # amdgpu-ieee=false: min/max need not quiet signalling NaNs first (one VALU per operand saved on CDNA);
+        # NaNs still propagate through arithmetic
         out.append(f'attributes #0 = {{ "amdgpu-flat-work-group-size"="{threads},{threads}" '
-                   f'"uniform-work-group-size"="true" }}')
+                   f'"uniform-work-group-size"="true" "amdgpu-ieee"="false" }}')
         return "\n".join(out) + "\n"

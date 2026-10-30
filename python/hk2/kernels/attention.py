@@ -11,15 +11,15 @@ import hk2 as hk
 def _step(qt, k, v, b, kh, n0, m_i, l_i, acc, scale, rows, S, BN, D, MASK, CAUSAL):
     """One block of keys: scores, online softmax, and the P @ V update."""
     kt = hk.load(k, (b, kh, n0, 0), (BN, D))
-    s = hk.dot(qt, kt.T) * scale
+    s = hk.dot(qt, kt.T)
     if MASK:  # only the blocks at the end of the sequence or on the diagonal pay for the mask
         cols = n0 + hk.arange(BN)
         keep = cols[None, :] < S
         if CAUSAL:
             keep = keep & (cols[None, :] <= rows[:, None])
         s = hk.where(keep, s, float("-inf"))
-    m_new = hk.maximum(m_i, s.max(1))
-    p = hk.exp2(s - m_new[:, None])
+    m_new = hk.maximum(m_i, s.max(1) * scale)  # scale > 0: scaling the max, not every score
+    p = hk.exp2(s * scale - m_new[:, None])  # one fused multiply-add per score
     alpha = hk.exp2(m_i - m_new)
     l_i = l_i * alpha + p.sum(1)
     vt = hk.load(v, (b, kh, n0, 0), (BN, D))
