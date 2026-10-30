@@ -54,12 +54,23 @@ class Arch:
     lds_bytes: int
     buffer_flags: int       # dword 3 of a raw buffer resource
     atoms: Dict[str, MmaAtom] = field(default_factory=dict)
+    big_atoms: Dict[str, MmaAtom] = field(default_factory=dict)  # 32x32 forms, where they exist
 
-    def mma(self, dtype: T.DType) -> MmaAtom:
+    def mma(self, dtype: T.DType, m: int = 0, n: int = 0, nwarps: int = 0) -> MmaAtom:
+        """The matrix instruction for a dot of this type: the 32x32 form when every warp's share of the
+        output is at least 32x32 (fewer instructions per FLOP), else the 16x16 one."""
+        import os
         try:
-            return self.atoms[dtype.name]
+            small = self.atoms[dtype.name]
         except KeyError:
             raise NotImplementedError(f"hk2: no {dtype.name} matrix instruction on {self.name}") from None
+        big = self.big_atoms.get(dtype.name)
+        want = os.environ.get("HK2_MMA", "auto")
+        if big is not None and m and want != "16":
+            wm, wn = warp_grid(m, n, nwarps, big) if m >= 32 and n >= 32 else (0, 0)
+            if wm and m // wm >= 32 and n // wn >= 32 and (want == "32" or (m // wm) * (n // wn) >= 64 * 64):
+                return big
+        return small
 
 
 R2 = lambda *bs: tuple(bs)
@@ -82,6 +93,23 @@ def _mfma(k, dtype, intrinsic, op_ty, op_elt):
 
 _GFX950 = {"bfloat16": _mfma(32, T.bf16, "llvm.amdgcn.mfma.f32.16x16x32.bf16", "<8 x bfloat>", "bfloat"),
            "float16": _mfma(32, T.f16, "llvm.amdgcn.mfma.f32.16x16x32.f16", "<8 x half>", "half")}
+
+
+# 32x32 accumulators: lane l holds column l % 32, rows 8*(i/4) + 4*(l/32) + i%4 (i < 16).
+def _mfma32(k, dtype, intrinsic, op_ty, op_elt):
+    kv = k // 2
+    return MmaAtom(32, 32, k, dtype, intrinsic, op_ty, op_elt,
+                   a_reg=tuple((0, 1 << i) for i in range(log2(kv))),
+                   a_lane=R2((1, 0), (2, 0), (4, 0), (8, 0), (16, 0), (0, kv)),
+                   b_reg=tuple((1 << i, 0) for i in range(log2(kv))),
+                   b_lane=R2((0, 1), (0, 2), (0, 4), (0, 8), (0, 16), (kv, 0)),
+                   c_reg=R2((1, 0), (2, 0), (8, 0), (16, 0)),
+                   c_lane=R2((0, 1), (0, 2), (0, 4), (0, 8), (0, 16), (4, 0)), c_ty="<16 x float>",
+                   tail=", i32 0, i32 0, i32 0")
+
+
+_GFX950_32 = {"bfloat16": _mfma32(16, T.bf16, "llvm.amdgcn.mfma.f32.32x32x16.bf16", "<8 x bfloat>", "bfloat"),
+              "float16": _mfma32(16, T.f16, "llvm.amdgcn.mfma.f32.32x32x16.f16", "<8 x half>", "half")}
 _GFX942 = {"bfloat16": _mfma(16, T.bf16, "llvm.amdgcn.mfma.f32.16x16x16bf16.1k", "<4 x i16>", "i16"),
            "float16": _mfma(16, T.f16, "llvm.amdgcn.mfma.f32.16x16x16f16", "<4 x half>", "half")}
 
@@ -114,7 +142,8 @@ for _n, _fam, _lds, _atoms in (("gfx942", "cdna", 64 << 10, _GFX942), ("gfx950",
                                ("gfx1102", "rdna", 64 << 10, _GFX11), ("gfx1151", "rdna", 64 << 10, _GFX11),
                                ("gfx1200", "rdna", 64 << 10, _GFX12), ("gfx1201", "rdna", 64 << 10, _GFX12)):
     ARCHES[_n] = Arch(_n, _fam, 64 if _fam == "cdna" else 32, _lds,
-                      _CDNA_FLAGS if _fam == "cdna" else _RDNA_FLAGS, _atoms)
+                      _CDNA_FLAGS if _fam == "cdna" else _RDNA_FLAGS, _atoms,
+                      _GFX950_32 if _n == "gfx950" else {})
 
 
 def get_arch(name: str) -> Arch:

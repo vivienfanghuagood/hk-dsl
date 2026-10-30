@@ -14,6 +14,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 from . import arch as A
 from . import ir
 from . import language as hl
+from . import passes
 from . import runtime as rt
 from . import types as T
 from .compiler import Compiler
@@ -318,6 +319,8 @@ class Kernel:
                 raise hl.HKError(f"{self.name}: kernels return nothing; write results with hk2.store")
         finally:
             hl._State.builder = None
+        if os.environ.get("HK2_PIPELINE", "1") != "0":
+            passes.pipeline_loads(b.top)
         c = Compiler(arch, num_warps, self.name, rt.llvm_major())
         text = c.compile(b.top, params, param_div)
         if os.environ.get("HK2_DUMP"):

@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import itertools
 import math
+import os
 import struct
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Sequence, Tuple
@@ -72,12 +73,15 @@ class Compiler:
         self.decls: set = set()
         self._n = itertools.count()
         self.lds_size = 0
-        self.pend_r: List[Tuple[int, int]] = []
-        self.pend_w: List[Tuple[int, int]] = []
+        self.pend_r: List[Tuple] = []
+        self.pend_w: List[Tuple] = []
+        self.loops: List[Dict] = []
         self.div: Dict[int, int] = {}
         self.ivs: Dict[int, ir.Op] = {}
         self.param_div: Dict[int, int] = {}
         self.n_barriers = 0
+        self.deferred: List[Tuple[int, ir.Op]] = []
+        self.depth = 0
 
     # ================================================================ pass 1: layouts
     def blocked_for(self, shape, dt: T.DType, vec: int = 0) -> Layout:
@@ -121,7 +125,7 @@ class Compiler:
             best = max(cands, key=self._score) if cands else FLEX
             L[r.id] = best
         elif k == "dot":
-            atom = self.arch.mma(op.args[0].type.dtype)
+            atom = self.arch.mma(op.args[0].type.dtype, sh[0], sh[1], self.nwarps)
             L[r.id] = A.acc_layout(atom, sh[0], sh[1], self.nwarps)
         elif k == "reduce":
             x = op.args[0]
@@ -502,9 +506,18 @@ class Compiler:
         raise NotImplementedError(f"rematerialize {k}")
 
     # ================================================================ LDS
+    # A pending access is (slot, lo, hi, region_lo, region_hi). slot "" is an absolute byte range; "cur" and
+    # "oth" are byte ranges inside one slot of a double-buffered region [region_lo, region_hi) of the
+    # innermost loop: this iteration's slot and the other one. They swap at the back edge.
     @staticmethod
-    def _overlap(ranges, lo, hi) -> bool:
-        return any(a < hi and lo < b for a, b in ranges)
+    def _conflict(a, b) -> bool:
+        sa, la, ha, ra0, ra1 = a
+        sb, lb, hb, rb0, rb1 = b
+        if sa and sb and (ra0, ra1) == (rb0, rb1):
+            return sa == sb and la < hb and lb < ha
+        x0, x1 = (ra0, ra1) if sa else (la, ha)
+        y0, y1 = (rb0, rb1) if sb else (lb, hb)
+        return x0 < y1 and y0 < x1
 
     def barrier(self):
         self.decl("declare void @llvm.amdgcn.s.barrier()")
@@ -514,15 +527,31 @@ class Compiler:
         self.pend_r, self.pend_w = [], []
         self.n_barriers += 1
 
-    def lds_write(self, lo, hi):
-        if self._overlap(self.pend_r, lo, hi) or self._overlap(self.pend_w, lo, hi):
+    def lds_write(self, acc):
+        if any(self._conflict(acc, p) for p in self.pend_r + self.pend_w):
             self.barrier()
-        self.pend_w.append((lo, hi))
+        self.pend_w.append(acc)
 
-    def lds_read(self, lo, hi):
-        if self._overlap(self.pend_w, lo, hi):
+    def lds_read(self, acc):
+        if any(self._conflict(acc, p) for p in self.pend_w):
             self.barrier()
-        self.pend_r.append((lo, hi))
+        self.pend_r.append(acc)
+
+    @staticmethod
+    def _absolute(pend):
+        return sorted({("", r0, r1, 0, 0) if s else ("", lo, hi, 0, 0) for s, lo, hi, r0, r1 in pend})
+
+    @staticmethod
+    def _swap(pend):
+        sw = {"cur": "oth", "oth": "cur", "": ""}
+        return sorted({(sw[s], lo, hi, r0, r1) for s, lo, hi, r0, r1 in pend})
+
+    def parity(self) -> str:
+        """0 or 1: which slot of the innermost loop's double buffers this iteration uses."""
+        lp = self.loops[-1]
+        if lp["par"] is None:
+            lp["par"] = self.t()
+        return lp["par"]
 
     def lds_ptr(self, off: str) -> str:
         return self.e(f"getelementptr inbounds i8, ptr addrspace(3) @hk2.lds, i32 {off}")
@@ -553,8 +582,10 @@ class Compiler:
         lb = self.en(("ldsbytes", lin, dt.bytes), lambda: f"mul i32 {lin}, {dt.bytes}")
         return lb, base + const * dt.bytes
 
-    def convert(self, items: Sequence[Tuple[ir.Value, Layout]]) -> List[TV]:
-        """Move tiles into new layouts through LDS: all writes, one barrier, all reads."""
+    def convert(self, items: Sequence[Tuple[ir.Value, Layout]], double: bool = False) -> List[TV]:
+        """Move tiles into new layouts through LDS: all writes, one barrier, all reads. ``double``: inside a
+        loop, alternate between two copies of the buffers so the next iteration's writes need no barrier
+        against this iteration's reads."""
         out: List[Optional[TV]] = [None] * len(items)
         todo = []
         for i, (v, L) in enumerate(items):
@@ -579,30 +610,48 @@ class Compiler:
             size = rows * geom[2] * src.dtype.bytes
             plans.append((i, src, D, geom, base))
             base += (size + 15) // 16 * 16
-        self.lds_size = max(self.lds_size, base)
-        self.lds_write(0, base)
+        dyn = None
+        if double and self.loops and 2 * base <= self.arch.lds_bytes and not os.environ.get("HK2_NO_DOUBLE"):
+            par = self.parity()
+            dyn = self.e(f"mul i32 {par}, {base}")
+            acc = ("cur", 0, base, 0, 2 * base)
+            self.lds_size = max(self.lds_size, 2 * base)
+        else:
+            acc = ("", 0, base, 0, 0)
+            self.lds_size = max(self.lds_size, base)
+        self.lds_write(acc)
         for i, src, D, geom, b0 in plans:
-            self._lds_store_tile(src, geom, b0)
-        self.lds_read(0, base)
+            self._lds_store_tile(src, geom, b0, dyn)
+        self.flush_deferred()
+        self.lds_read(acc)
         for i, src, D, geom, b0 in plans:
-            tv = self._lds_load_tile(D, src.dtype, geom, b0)
+            tv = self._lds_load_tile(D, src.dtype, geom, b0, dyn)
             out[i] = tv
             self.memo[-1][("cvt", items[i][0].id, D)] = tv
         return out
+
+    def _dyn_addr(self, lb: str, dyn: Optional[str]) -> str:
+        if dyn is None:
+            return lb
+        key = ("dynaddr", lb, dyn)
+        got = self.memo[-1].get(key)
+        if got is None:
+            got = self.memo[-1][key] = self.e(f"add i32 {lb}, {dyn}")
+        return got
 
     def _vec(self, L: Layout, geom, dt: T.DType) -> int:
         if L.rank == 1:
             return min(L.contig(0), max(1, 16 // dt.bytes))
         return min(L.contig(geom[0]), max(1, 16 // dt.bytes))
 
-    def _lds_store_tile(self, src: TV, geom, b0: int):
+    def _lds_store_tile(self, src: TV, geom, b0: int, dyn: Optional[str] = None):
         L, dt = src.layout, src.dtype
         v = self._vec(L, geom, dt)
         for r in range(0, L.nregs, v):
             if L.canonical_reg(r) != r:
                 continue
             lb, const = self._lds_addr(L, geom, b0, r, dt)
-            addr = self.e(f"add i32 {lb}, {const}")
+            addr = self.e(f"add i32 {self._dyn_addr(lb, dyn)}, {const}")
             p = self.lds_ptr(addr)
             regs = src.regs[r:r + v]
             if v == 1:
@@ -611,14 +660,14 @@ class Compiler:
                 vec = self.pack(regs, dt)
                 self.emit(f"  store <{v} x {self.ty(dt)}> {vec}, ptr addrspace(3) {p}, align {v * dt.bytes}")
 
-    def _lds_load_tile(self, D: Layout, dt: T.DType, geom, b0: int) -> TV:
+    def _lds_load_tile(self, D: Layout, dt: T.DType, geom, b0: int, dyn: Optional[str] = None) -> TV:
         v = self._vec(D, geom, dt)
         regs: List[Optional[str]] = [None] * D.nregs
         for r in range(0, D.nregs, v):
             if D.canonical_reg(r) != r:
                 continue
             lb, const = self._lds_addr(D, geom, b0, r, dt)
-            addr = self.e(f"add i32 {lb}, {const}")
+            addr = self.e(f"add i32 {self._dyn_addr(lb, dyn)}, {const}")
             p = self.lds_ptr(addr)
             if v == 1:
                 regs[r] = self.e(f"load {self.ty(dt)}, ptr addrspace(3) {p}, align {dt.bytes}")
@@ -636,7 +685,20 @@ class Compiler:
         for op in block.ops:
             if op.kind == "yield":
                 continue
+            if op.attrs.get("prefetch"):
+                self.deferred.append((self.depth, op))
+                continue
             self.emit_op(op)
+
+    def flush_deferred(self):
+        """Issue the pipelined loads waiting at this nesting level."""
+        keep = []
+        for d, op in self.deferred:
+            if d == self.depth:
+                self.emit_op(op)
+            else:
+                keep.append((d, op))
+        self.deferred = keep
 
     def emit_op(self, op: ir.Op):
         k = op.kind
@@ -813,7 +875,13 @@ class Compiler:
             tv = self.vals[val.id]
             last = len(val.type.shape) - 1
             if tv.layout.contig(last) < min(Lb.contig(last), max(1, 16 // dt.bytes)):
-                tv = self.get(val, Lb)  # scattered stores cost more than one trip through LDS
+                # Scattered stores cost more than one trip through LDS, unless that trip would raise the
+                # kernel's LDS high-water mark (and so cost occupancy for the whole kernel): then store as is.
+                geom = self._geometry(val.type.shape, dt, Lb, tv.layout)
+                rows = val.type.shape[geom[1]] if len(val.type.shape) == 2 else 1
+                need = rows * geom[2] * dt.bytes
+                if need <= max(self.lds_size, 32 << 10):
+                    tv = self.get(val, Lb)
         L = tv.layout
         rsrc, rem, strides, v = self._mem_plan(op, L, dt)
         bits = v * dt.bits
@@ -836,14 +904,14 @@ class Compiler:
         a, b, c = op.args
         m, k = a.type.shape
         n = b.type.shape[1]
-        atom = self.arch.mma(a.type.dtype)
+        atom = self.arch.mma(a.type.dtype, m, n, self.nwarps)
         if m % atom.m or n % atom.n or k % atom.k:
             raise ValueError(f"hk2.dot {m}x{k} @ {k}x{n}: on {self.arch.name} the tile sizes must be multiples of "
                              f"{atom.m}x{atom.k} @ {atom.k}x{atom.n}")
         La = A.a_layout(atom, m, k, n, self.nwarps)
         Lb = A.b_layout(atom, m, k, n, self.nwarps)
         Lc = self.lay[op.result.id]
-        ta, tb = self.convert([(a, La), (b, Lb)])
+        ta, tb = self.convert([(a, La), (b, Lb)], double=self.depth > 0)
         tc = self.get(c, Lc)
         wm, wn = A.warp_grid(m, n, self.nwarps, atom)
         rm, rn, rk = (m // wm) // atom.m, (n // wn) // atom.n, k // atom.k
@@ -940,7 +1008,7 @@ class Compiler:
         size = K * P * dt.bytes
         self.lds_size = max(self.lds_size, size)
         pos0 = self.lw(R, 0)
-        self.lds_write(0, size)
+        self.lds_write(("", 0, size, 0, 0))
         seen = {}
         for r in range(R.nregs):
             c = R.canonical_reg(r)
@@ -952,7 +1020,7 @@ class Compiler:
             idx = self.e(f"add i32 {kp}, {p}")
             byt = self.e(f"mul i32 {idx}, {dt.bytes}")
             self.emit(f"  store {self.ty(dt)} {regs[r]}, ptr addrspace(3) {self.lds_ptr(byt)}, align {dt.bytes}")
-        self.lds_read(0, size)
+        self.lds_read(("", 0, size, 0, 0))
         out, done = list(regs), {}
         for r in range(R.nregs):
             if regs[r] in done:
@@ -1003,6 +1071,8 @@ class Compiler:
         lb, ub, step = (self.vals[a.id] for a in op.args[:3])
         params = blk.params[1:]
         inits = [self._in_layout(i, p) for i, p in zip(op.args[3:], params)]
+        if self.pend_r or self.pend_w:
+            self.barrier()  # once here, rather than at the top of every iteration
         pre = self.cur
         hdr, body, exit_ = self.label("for"), self.label("body"), self.label("done")
         self.emit(f"  br label %{hdr}")
@@ -1015,15 +1085,40 @@ class Compiler:
         for p, names in zip(params, pnames):
             self.vals[p.id] = self._from_phis(p, names, self.lay[p.id] if p.is_tile else None)
         self.start(body)
-        self.memo.append({})
-        self.pend_r, self.pend_w = [(0, INF)], []
-        self.emit_block(blk)
+        # The LDS state at the loop head is the fixpoint of (state before the loop) and (state at the end of
+        # the body, slots swapped): emit the body under an assumed head state, and emit it again from a wider
+        # one if the end state is not covered.
+        n_blocks, deferred0, nbar0 = len(self.blocks), list(self.deferred), self.n_barriers
+        head_r, head_w = self._absolute(self.pend_r), self._absolute(self.pend_w)
+        for attempt in range(6):
+            self.memo.append({})
+            self.loops.append({"par": None})
+            self.pend_r, self.pend_w = list(head_r), list(head_w)
+            self.depth += 1
+            self.emit_block(blk)
+            self.flush_deferred()
+            self.depth -= 1
+            end_r, end_w = self._swap(self.pend_r), self._swap(self.pend_w)
+            if set(end_r) <= set(head_r) and set(end_w) <= set(head_w):
+                break
+            head_r, head_w = sorted(set(head_r) | set(end_r)), sorted(set(head_w) | set(end_w))
+            self.memo.pop()
+            self.loops.pop()
+            del self.blocks[n_blocks:]
+            self.blocks[-1][1].clear()
+            self.deferred, self.n_barriers = list(deferred0), nbar0
+        else:
+            raise RuntimeError("hk2: LDS barrier analysis did not converge")
         ys = [self._in_layout(y, p) for y, p in zip(blk.ops[-1].args, params)]
         ivn = self.e(f"add i32 {iv}, {step}")
+        lp = self.loops.pop()
+        parn = self.e(f"xor i32 {lp['par']}, 1") if lp["par"] else None
         latch = self.cur
         self.emit(f"  br label %{hdr}")
         self.memo.pop()
         lines = [f"  {iv} = phi i32 [ {lb}, %{pre} ], [ {ivn}, %{latch} ]"]
+        if parn:
+            lines.append(f"  {lp['par']} = phi i32 [ 0, %{pre} ], [ {parn}, %{latch} ]")
         for p, names, i0, y in zip(params, pnames, inits, ys):
             for nm, a, b in zip(names, self._phi_vals(p, i0), self._phi_vals(p, y)):
                 lines.append(f"  {nm} = phi {self._llty(p)} [ {a}, %{pre} ], [ {b}, %{latch} ]")
@@ -1032,7 +1127,7 @@ class Compiler:
         lines.append(f"  br i1 {cond}, label %{body}, label %{exit_}")
         hdr_block[1].extend(lines)
         self.start(exit_)
-        self.pend_r, self.pend_w = [(0, INF)], [(0, INF)]
+        self.pend_r, self.pend_w = self._absolute(head_r), self._absolute(head_w)
         for p, res in zip(params, op.results):
             self.vals[res.id] = self.vals[p.id]
 
@@ -1042,17 +1137,23 @@ class Compiler:
         self.emit(f"  br i1 {cond}, label %{tl}, label %{el}")
         ends, outs = [], []
         r0, w0 = list(self.pend_r), list(self.pend_w)
+        merged_r, merged_w = set(), set()
         for lbl, blk in zip((tl, el), op.blocks):
             self.start(lbl)
             self.memo.append({})
             self.pend_r, self.pend_w = list(r0), list(w0)
+            self.depth += 1
             self.emit_block(blk)
+            self.flush_deferred()
+            self.depth -= 1
             outs.append([self._in_layout(y, res) for y, res in zip(blk.ops[-1].args, op.results)])
+            merged_r |= set(self.pend_r)
+            merged_w |= set(self.pend_w)
             ends.append(self.cur)
             self.emit(f"  br label %{ml}")
             self.memo.pop()
         self.start(ml)
-        self.pend_r, self.pend_w = [(0, INF)], [(0, INF)]
+        self.pend_r, self.pend_w = sorted(merged_r), sorted(merged_w)
         for j, res in enumerate(op.results):
             a, b = (self._phi_vals(res, outs[k][j]) for k in range(2))
             names = []
@@ -1073,6 +1174,10 @@ class Compiler:
         self.start("body")
         self.emit_block(top)
         self.emit("  ret void")
+        if self.lds_size > self.arch.lds_bytes:
+            raise ValueError(f"hk2: {self.name} needs {self.lds_size} bytes of LDS for its layout changes; "
+                             f"{self.arch.name} has {self.arch.lds_bytes} per workgroup. Use smaller tiles "
+                             f"(the dot operands are staged in LDS: about (BM + BN) * BK * 2 bytes for 16-bit types)")
         out = ['target triple = "amdgcn-amd-amdhsa"']
         if self.lds_size:
             out.append(f"@hk2.lds = internal addrspace(3) global [{self.lds_size} x i8] poison, align 16")
