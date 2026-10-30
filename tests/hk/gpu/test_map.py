@@ -129,3 +129,27 @@ def test_bit_functions_and_float_functions():
     assert torch.equal(fm.view(torch.int32), one.view(torch.int32))
     assert torch.equal(mu.view(torch.int32), two.view(torch.int32))
     assert not torch.equal(one, two)                # the inputs tell the two apart
+
+
+def test_the_language_docs_example():
+    # docs/language.md, "Integer, mask and bit expressions on strips"
+    def exp_ldexp(x: hk.Tensor[hk.fp32], n: hk.Tensor[hk.i32], e: hk.Tensor[hk.i32],
+                  o: hk.Tensor[hk.fp32]):
+        row = hk.arch.block_idx.x
+        v = x.at[row, 0].load(F)
+        k = n.at[row, 0].load(S)
+        e.at[row, 0].store(hk.map(lambda x: (x.bitcast(hk.i32) >> 23) & 0xFF, v))
+        o.at[row, 0].store(hk.where((k >= -8) & (k <= 8),
+                                    hk.map(lambda x, k: x * hk.math.exp2(k.to(hk.fp32)), v, k), v))
+
+    kern = hk.kernel(exp_ldexp, warps=1, name="map_doc", grid=lambda p: (p.x.rows, 1, 1))
+    g = torch.Generator(device="cpu").manual_seed(5)
+    x = torch.randn(ROWS, 512, generator=g)
+    n = torch.randint(-12, 13, (ROWS, 512), generator=g, dtype=torch.int32)
+    e = torch.zeros(ROWS, 512, dtype=torch.int32, device="cuda")
+    o = torch.zeros(ROWS, 512, device="cuda")
+    kern(x.cuda(), n.cuda(), e, o)
+    torch.cuda.synchronize()
+    assert torch.equal(e.cpu(), (x.view(torch.int32) >> 23) & 0xFF)
+    want = torch.where((n >= -8) & (n <= 8), torch.ldexp(x, n.float()), x)
+    assert torch.equal(o.cpu().view(torch.int32), want.view(torch.int32))
