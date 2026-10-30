@@ -25,7 +25,7 @@ from _contract import (  # noqa: E402
     names,
 )
 
-from hk.integration import vllm_backend, vllm_gemm, vllm_moe  # noqa: E402
+from hk.integration import vllm_backend, vllm_gemm, vllm_moe, vllm_prefill  # noqa: E402
 
 
 def test_report_the_version_under_test(record_property):
@@ -128,6 +128,43 @@ def test_the_moe_call_sites_are_rebindable_after_what_apply_imports():
         "invoke_fused_moe_triton_kernel", "vllm", fm.invoke_fused_moe_triton_kernel)
     assert_rebind_reaches_every_call_site(
         "try_get_optimal_moe_config", "vllm", fm.try_get_optimal_moe_config)
+
+
+# ---------------------------------------------------------------- ROCM_ATTN prefill
+
+def test_the_prefix_prefill_takes_the_standins_parameters():
+    """The vLLM the route was built against (the MiniCPM5 production image's); on another the
+    route's contract refuses and it stays out (contract._vllm_prefill)."""
+    from vllm.v1.attention.ops import prefix_prefill
+
+    from hk.integration import switches
+
+    if switches.arch() != "gfx1100":
+        pytest.skip("the prefill route is gfx1100's")
+
+    assert_same_parameters(prefix_prefill.context_attention_fwd,
+                           vllm_prefill.context_attention_fwd, "context_attention_fwd")
+
+
+def test_the_prefix_prefill_call_sites_are_rebindable():
+    """chunked_prefill_paged_decode (ROCM_ATTN's forward) reaches the prefill through a module
+    attribute the rebind replaces."""
+    from vllm.v1.attention.ops import chunked_prefill_paged_decode  # noqa: F401
+    from vllm.v1.attention.ops import prefix_prefill
+
+    assert_rebind_reaches_every_call_site(
+        "context_attention_fwd", "vllm", prefix_prefill.context_attention_fwd)
+
+
+def test_rocm_attn_splits_its_cache_into_the_layout_the_route_reads():
+    """K x-split (blocks, kv_heads, d / x, block, x), V (blocks, kv_heads, d, block): what
+    paged_prefill layout="rocm" takes (rocm_views)."""
+    torch = pytest.importorskip("torch")
+    from vllm.v1.attention.ops.paged_attn import PagedAttention
+
+    kv = torch.zeros(2, 5, 16, 2, 128, dtype=torch.bfloat16)
+    k, v = PagedAttention.split_kv_cache(kv, 2, 128)
+    assert tuple(k.shape) == (5, 2, 16, 16, 8) and tuple(v.shape) == (5, 2, 128, 16)
 
 
 # ---------------------------------------------------------------- AWQ
