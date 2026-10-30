@@ -506,8 +506,8 @@ class Rowwise:
 
         if not get_target(self.arch).strips:
             raise NotImplementedError(f"hk.templates.rowwise runs on register strips, "
-                                      f"which {self.arch} does not have (gfx1100 and "
-                                      f"gfx950 do)")
+                                      f"which {self.arch} does not have (gfx1100, "
+                                      f"gfx1201 and gfx950 do)")
         return next(p for p in self._candidates(ops, shape, outs)
                     if (ops, outs, p) not in self._refused)
 

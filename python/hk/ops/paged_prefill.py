@@ -32,6 +32,7 @@ from typing import Dict, Optional
 
 from .. import dsl as hk
 from ..types import bf16, fp32, i32
+from . import _arch
 from .attn import _derive
 
 NEG_INF = float("-inf")
@@ -222,6 +223,7 @@ def kernel_for(head_dim: int, group: int, scale: Optional[float] = None):
     head_dim is a multiple of 32 up to 192. On gfx950 this is
     attn_cdna.paged_kernel_for: `group` is read off the shapes (the argument
     is ignored) and head_dim is 64 or 128."""
+    _arch.require("hk.ops.paged_prefill")
     if _native_cdna():
         from . import attn_cdna  # noqa: PLC0415
 

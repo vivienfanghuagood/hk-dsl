@@ -515,7 +515,10 @@ def plan(m: int, n: int, k: int, arch: Optional[str] = None, *,
     hk.schedules.Illegal (a ValueError) with the reasons."""
     from ..target import current_arch  # noqa: PLC0415
 
+    from ..ops._arch import require  # noqa: PLC0415
+
     arch = arch or current_arch()
+    require("hk.templates.gemm", arch=arch)
     if schedule is not None:
         from .. import schedules  # noqa: PLC0415
 

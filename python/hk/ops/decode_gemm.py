@@ -30,7 +30,7 @@ from typing import Any, Dict, Optional, Tuple
 
 from .. import dsl as hk
 from ..types import bf16, fp32, i32
-from . import _epilogue
+from . import _arch, _epilogue
 from ..target import current_arch, get_target
 
 
@@ -313,6 +313,7 @@ def matmul(x, w, out=None, **override):
     """
     import torch  # noqa: PLC0415 -- hk traces and compiles without torch
 
+    _arch.require("hk.ops.decode_gemm.matmul")
     if x.dim() != 2 or w.dim() != 2 or x.shape[1] != w.shape[1]:
         raise ValueError(f"decode matmul: want (M, K) @ (N, K).T, got "
                          f"{tuple(x.shape)} and {tuple(w.shape)}")

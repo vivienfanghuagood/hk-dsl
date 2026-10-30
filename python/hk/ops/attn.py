@@ -41,6 +41,7 @@ from .. import autotune as _autotune
 from .. import dsl as hk
 from ..target import current_arch, get_target
 from ..types import bf16, fp32
+from . import _arch
 
 NEG_INF = float("-inf")
 
@@ -759,6 +760,9 @@ def _why(q, k, v, causal, *, require_contiguous: bool = True):
     """
     import torch  # noqa: PLC0415
 
+    no_kernel = _arch.why_not("hk.attention")
+    if no_kernel:
+        return no_kernel
     if q.dtype != torch.bfloat16 or k.dtype != q.dtype or v.dtype != q.dtype:
         return f"bf16 only, got {q.dtype}/{k.dtype}/{v.dtype}"
     if q.dim() != 4 or k.dim() != 4 or v.dim() != 4:
@@ -817,6 +821,7 @@ def attention(q, k, v, *, causal: bool = False, scale: Optional[float] = None,
     """
     import torch  # noqa: PLC0415 -- hk traces and compiles without torch
 
+    _arch.require("hk.attention")
     why = _why(q, k, v, causal)
     if why:
         raise ValueError(f"hk.attention: {why}")

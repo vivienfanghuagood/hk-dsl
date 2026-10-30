@@ -35,6 +35,7 @@ from typing import Any, Dict, Optional, Tuple
 
 from .. import dsl as hk
 from ..types import bf16, fp32, i32
+from . import _arch
 
 
 def moe_gemm_kernel(name: str, *, block_m: int = 16, top_k: int = 1,
@@ -193,6 +194,7 @@ def moe_gemm(a, w, c, sorted_ids, expert_ids, num_tokens_post_padded, *,
     assignment, one pair per block, `expert_ids` then being the flattened
     top-k ids. `topk_weights` given multiplies each row by its routing
     weight. Raises ValueError for a GEMM `takes` refuses."""
+    _arch.require("hk.ops.moe.moe_gemm")
     if not takes(a, w, block_m):
         raise ValueError(f"moe_gemm: does not take A {tuple(a.shape)} {a.dtype}, "
                          f"W {tuple(w.shape)} {w.dtype} at BLOCK_M={block_m}")
