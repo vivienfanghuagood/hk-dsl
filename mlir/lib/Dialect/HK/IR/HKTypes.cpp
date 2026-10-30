@@ -308,6 +308,35 @@ uint64_t SharedVecType::getNumBytes() const {
 }
 
 //===----------------------------------------------------------------------===//
+// gl
+//===----------------------------------------------------------------------===//
+
+Type GlobalType::parse(AsmParser &p) {
+  Type et;
+  if (p.parseLess() || p.parseType(et))
+    return {};
+  bool strided = false;
+  if (succeeded(p.parseOptionalComma())) {
+    SMLoc at = p.getCurrentLocation();
+    StringRef kw;
+    if (p.parseKeyword(&kw))
+      return {};
+    if (kw != "strided") {
+      p.emitError(at, "a global's only option is 'strided'");
+      return {};
+    }
+    strided = true;
+  }
+  if (p.parseGreater())
+    return {};
+  return GlobalType::get(p.getContext(), et, strided);
+}
+
+void GlobalType::print(AsmPrinter &p) const {
+  p << "<" << getElementType() << (getStrided() ? ", strided" : "") << ">";
+}
+
+//===----------------------------------------------------------------------===//
 // coord
 //===----------------------------------------------------------------------===//
 

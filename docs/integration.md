@@ -7,7 +7,7 @@ plugins apply every route validated with real weights on your GPU
 all of it off. Every patch reports what it took and what it left alone, and
 falls back to what the engine would have run for any call it cannot serve. The code is `python/hk/integration/`; its module docstrings
 and the [development record](history/README.md) are the source for this page,
-and what each patch measured is in [performance](performance.md).
+and serving results are on [the scorecard](performance/scorecard.md) ([performance](performance.md) is a dated record of what each patch measured).
 
 - [On by default, and turning it off](#on-by-default-and-turning-it-off)
 - [The patches](#the-patches)
@@ -44,22 +44,22 @@ and which rule decided.
 
 | route | switch | default | evidence |
 |---|---|---|---|
-| K2, MXFP8 linear (DeepSeek-V4.1), M >= 2048 (indexer wq_b >= 2825, engram wkv >= 1024: `MIN_M_NK`), and measured M ranges below that (`RANGES`) | `HK_VLLM_MXFP8` | **on, gfx950** | bit-identical to vLLM's kernel; real weights, GSM8K 94.69% vs stock 94.24-94.39%, with K1 ARC 96.76% vs 96.93-97.10% (McNemar p >= 0.175; [serving readiness](design/serving-readiness.md) B1) |
-| K1, MoE a8w4 (DeepSeek-V4.1), M >= 2560 (`MIN_M`) | `HK_VLLM_MOE_A8W4` | **on, gfx950** | error vs fp32 3.5-6.3e-3 against AITER's 0.97-2.1e-2 on real layers; GSM8K 94.92% (B1) |
-| DeepSeek-V4.1 index layers under `--monokernel`: one launch for the compressor, indexer K / Q, logits and top-k, at decode steps of up to 8 rows | `HK_VLLM_DSV41_INDEX` | **on, gfx950** | caches and q byte-identical to vLLM's chain in vLLM, top-k sets equal ([the index launch](#the-deepseek-v41-index-launch)); with `--monokernel` and hk's other default routes, TPOT 4.5 / 4.4 / 3.1% below mono's at batch 1 / 4 / 8, GSM8K-1319 within stock's noise (McNemar p >= 0.39) |
-| AWQ 4-bit linear | `HK_VLLM_INT4` | **on, gfx1100, gfx950 and gfx1201** | greedy tokens identical to stock's, Qwen3-8B/14B-AWQ ([22](history/22-int4.md), [42](history/42-mi355x-in-the-engine.md)); on gfx1201 Qwen3-8B-AWQ, decode 2.5-4.5x ([50](history/50-gfx1201-in-vllm.md)) |
-| unquantized linear (+ tuning at load) | `HK_VLLM_GEMM` | **on, gfx1100 and gfx1201** | tokens identical, or a bf16 near-tie ([35](history/35-any-model.md)); on gfx1201 tokens identical and routing counts equal round for round, Qwen3-1.7B and Qwen3.5-9B ([50](history/50-gfx1201-in-vllm.md)); with gfx1201's shipped small-M schedules, requests 1.08-1.11x stock at 32-128 on Qwen3.5-9B ([51](history/51-gfx1201-small-m-gemm.md)); on gfx950 it was measured to change nothing against aiter ([42](history/42-mi355x-in-the-engine.md)), so it stays off there |
-| bf16 MoE GEMMs | `HK_VLLM_MOE` | **on, gfx1100 and gfx1201** | OLMoE tokens identical ([21](history/21-moe.md)); with aiter on gfx950 it routes nothing; on gfx1201 up to 2 tokens a step only, OLMoE tokens identical and decode 1.10-1.12x at 1 request, 1.06-1.07x at 2 ([52](history/52-gfx1201-moe-at-the-roofline.md)) |
-| encoder SDPA (`--mm-encoder-attn-backend TORCH_SDPA`) | `HK_VLLM_SDPA` | **on, gfx1100** | InternVL2-2B inside the spread of vLLM's own backends ([05](history/05-phase-6-torch-ops.md)); on gfx1201 the kernel is 1.10-1.40x the R9700 image's torch SDPA at ViT shapes but the drop-in's per-call Python makes the call 0.57-0.88x, so it stays off there ([50](history/50-gfx1201-in-vllm.md)) |
+| MXFP8 linear (DeepSeek-V4.1), M >= 2048 (indexer wq_b >= 2825, engram wkv >= 1024: `MIN_M_NK`), and measured M ranges below that (`RANGES`) | `HK_VLLM_MXFP8` | **on, gfx950** | bit-identical to vLLM's kernel; real weights, GSM8K 94.69% vs stock 94.24-94.39%, with the a8w4 MoE route ARC 96.76% vs 96.93-97.10% (McNemar p >= 0.175; [serving readiness](design/serving-readiness.md) B1) |
+| MoE a8w4, MXFP4 weights (DeepSeek-V4.1), M >= 2560 (`MIN_M`) | `HK_VLLM_MOE_A8W4` | **on, gfx950** | error vs fp32 3.5-6.3e-3 against AITER's 0.97-2.1e-2 on real layers; GSM8K 94.92% (B1) |
+| DeepSeek-V4.1 index layers under `--monokernel`: one launch for the compressor, indexer K / Q, logits and top-k, at decode steps of up to 8 rows | `HK_VLLM_DSV41_INDEX` | **on, gfx950** | caches and q byte-identical to vLLM's chain in vLLM, top-k sets equal ([the index launch](#the-deepseek-v41-index-launch)); with `--monokernel` and hk's other default routes, real-weight GSM8K-1319 within stock's noise (McNemar p >= 0.39) |
+| AWQ 4-bit linear | `HK_VLLM_INT4` | **on, gfx1100, gfx950 and gfx1201** | greedy tokens identical to stock's, Qwen3-8B/14B-AWQ ([22](history/22-int4.md), [42](history/42-mi355x-in-the-engine.md)); on gfx1201 Qwen3-8B-AWQ tokens identical ([50](history/50-gfx1201-in-vllm.md)) |
+| unquantized linear (+ tuning at load) | `HK_VLLM_GEMM` | **on, gfx1100 and gfx1201** | tokens identical, or a bf16 near-tie ([35](history/35-any-model.md)); on gfx1201 tokens identical and routing counts equal round for round, Qwen3-1.7B and Qwen3.5-9B ([50](history/50-gfx1201-in-vllm.md)), also with gfx1201's shipped small-M schedules ([51](history/51-gfx1201-small-m-gemm.md)); on gfx950 it was measured to change nothing against aiter ([42](history/42-mi355x-in-the-engine.md)), so it stays off there |
+| bf16 MoE GEMMs | `HK_VLLM_MOE` | **on, gfx1100 and gfx1201** | OLMoE tokens identical ([21](history/21-moe.md)); with aiter on gfx950 it routes nothing; on gfx1201 up to 2 tokens a step only, OLMoE tokens identical ([52](history/52-gfx1201-moe-at-the-roofline.md)) |
+| encoder SDPA (`--mm-encoder-attn-backend TORCH_SDPA`) | `HK_VLLM_SDPA` | **on, gfx1100** | InternVL2-2B inside the spread of vLLM's own backends ([05](history/05-phase-6-torch-ops.md)); on gfx1201 the drop-in's per-call Python makes the call slower than the R9700 image's torch SDPA, so it stays off there ([50](history/50-gfx1201-in-vllm.md)) |
 | SGLang linear | `HK_SGLANG_LINEAR` | **on, gfx1100** | Qwen3-8B up to a bf16 near-tie; error equal to F.linear's ([24](history/24-sglang.md)) |
 | SGLang MoE (and the gfx1100 top-k fix) | `HK_SGLANG_MOE` | **on, gfx1100** | OLMoE tokens identical ([25](history/25-sglang-moe.md)) |
 | SGLang-Diffusion attention | `HK_SGLD_ATTN` | **on, gfx1100** | Qwen-Image 2.1, 42.1 dB from stock and closer to an fp32 reference than stock ([46](history/46-qwen-image-on-rdna3.md)) |
 | SGLang-Diffusion linear | `HK_SGLD_LINEAR` | **on, gfx1100** | 40.0 dB from stock, closer to fp32 than stock ([46](history/46-qwen-image-on-rdna3.md)) |
-| K3, DiT attention in `hk.ops.sdpa` | `HK_SDPA_K3` | **on, gfx1100** | per-call error 2.95e-5 against the current path's 4.50e-5 (#24) |
+| DiT attention in `hk.ops.sdpa` (non-causal, head_dim 128, on `hk.ops.attn_k3`) | `HK_SDPA_K3` | **on, gfx1100** | per-call error 2.95e-5 against the current path's 4.50e-5 (#24) |
 | decoder attention backend | `HK_VLLM_BACKEND` | off | replaces ROCm's default decoder attention for every model, and raises rather than falls back on sliding windows, sinks, softcap, an fp8 KV cache, fp16 or other head sizes; validated on Qwen3-8B only |
 | ConvRot INT8 (`--quantization convrot_int8`) | `HK_SGLD_CONVROT`, or `HK_SGLD=...,convrot` | **off: opt-in** | lossy by design (PSNR 30.4 dB from bf16, visible drift): a model-level choice, not a toolchain default |
-| MXFP8 at any (N, K) | `HK_MXFP8_ANY` | off | a mode of K2; no real-weight run |
-| DeepSeek-V4.1 sparse MLA prefill, calls of T >= 512 queries (`MIN_T`), and the layer's MXFP8 rows for wo_a made in the kernel from O in registers. It runs where vLLM's own sparse MLA does: with `VLLM_ROCM_USE_AITER_TRITON_SPARSE_MLA=1` vLLM takes AITER's path for prefill and decode and the route stands aside | `HK_VLLM_SPARSE_MLA` (`=0` turns it off) | **on, gfx950** (owner's decision, 2026-10-29) | serving scorecard run 20261029-0737Z (TP2, real weights) vs same-session stock: prefill 8k +17.6% (+5.4% over hk), 8k TTFT -15.0%, GSM8K-1319 equal (pooled McNemar p 0.12), **but decode TPOT at B4 +2.2% vs stock (+2.8% vs hk), beyond the spread** -- the route needs vLLM's own sparse MLA, whose decode kernel replaces AITER's (an open item). Best vs best, run 20261029-1556Z vs AITER-tuned stock: prefill +7.6%, long +3.0%, mixed -1.5%, B4 TPOT +0.9% |
+| MXFP8 at any (N, K) | `HK_MXFP8_ANY` | off | a mode of the MXFP8 linear route; no real-weight run |
+| DeepSeek-V4.1 sparse MLA prefill, calls of T >= 512 queries (`MIN_T`), and the layer's MXFP8 rows for wo_a made in the kernel from O in registers. It runs where vLLM's own sparse MLA does: with `VLLM_ROCM_USE_AITER_TRITON_SPARSE_MLA=1` vLLM takes AITER's path for prefill and decode and the route stands aside | `HK_VLLM_SPARSE_MLA` (`=0` turns it off) | **on, gfx950** | real weights, TP2: GSM8K-1319 equal to stock's (pooled McNemar p 0.12). **Its cost is at decode:** the route needs vLLM's own sparse MLA, whose decode kernel replaces AITER's, so decode steps can be slightly slower than with AITER's (an open item). Serving results: [the scorecard](performance/scorecard.md) |
 
 On a GPU a route was not validated on (gfx942 for every route, and gfx1201 for
 the routes not marked for it above), it is off unless you turn it on.
@@ -69,7 +69,7 @@ the routes not marked for it above), it is off unless you turn it on.
 1. `HK_DISABLE=1` turns every route off, in every engine. Nothing overrides it.
 2. An engine's own switch at `0` turns off all of that engine's routes:
    `HK_PATCH_VLLM=0`, `HK_PATCH_SGLANG=0` or `HK_SGLD=0`.
-3. A route's own switch decides that route: `HK_VLLM_MXFP8=0` turns K2 off, and
+3. A route's own switch decides that route: `HK_VLLM_MXFP8=0` turns the MXFP8 linear route off, and
    `=1` turns on a default-off route, or a route on a GPU it was not validated on.
 4. The legacy opt-ins still mean what they meant. `HK_SGLD=attn,linear,convrot`
    turns on exactly the parts it names, and `HK_SGLD=1` turns on attention
@@ -83,7 +83,7 @@ A value of `0`, `off`, `no` or `false` is off. An empty value counts as unset.
 ```bash
 vllm serve <model>                       # hk on: the default routes
 HK_DISABLE=1 vllm serve <model>          # stock vLLM: the plugin patches nothing
-HK_VLLM_MOE_A8W4=0 vllm serve <model>    # every default route but K1
+HK_VLLM_MOE_A8W4=0 vllm serve <model>    # every default route but the a8w4 MoE
 ```
 
 **Comparison scripts must say stock.** Leaving the variables unset no longer
@@ -129,8 +129,8 @@ first compile in each process prints one line:
 | linear layers | `vllm_gemm.py` | `dispatch_unquantized_gemm`, rebound by identity | `HK_VLLM_GEMM` (on, gfx1100 and gfx1201) |
 | MoE GEMMs | `vllm_moe.py` | `invoke_fused_moe_triton_kernel` and `try_get_optimal_moe_config`, rebound by identity | `HK_VLLM_MOE` (on, gfx1100 and gfx1201) |
 | AWQ linear layers | `vllm_int4.py` | `AutoAWQLinearMethod.process_weights_after_loading` and `.apply` | `HK_VLLM_INT4` (on) |
-| MXFP8 linear layers (K2) | `vllm_mxfp8.py` | `RocmDotScaledMxfp8LinearKernel.process_weights_after_loading` and `.apply_weights` | `HK_VLLM_MXFP8` (on, gfx950) |
-| MXFP4 MoE, a8w4 (K1) | `vllm_moe_a8w4.py` | `aiter.fused_moe.fused_moe`, with its signature | `HK_VLLM_MOE_A8W4` (on, gfx950) |
+| MXFP8 linear layers | `vllm_mxfp8.py` | `RocmDotScaledMxfp8LinearKernel.process_weights_after_loading` and `.apply_weights` | `HK_VLLM_MXFP8` (on, gfx950) |
+| MXFP4 MoE, a8w4 | `vllm_moe_a8w4.py` | `aiter.fused_moe.fused_moe`, with its signature | `HK_VLLM_MOE_A8W4` (on, gfx950) |
 | DeepSeek-V4.1 index layers, `--monokernel` | `vllm_dsv41_index.py` | `mono_decode._select`, through an import hook | `HK_VLLM_DSV41_INDEX` (on, gfx950) |
 | sparse MLA prefill (DeepSeek-V4.1) | `vllm_sparse_mla.py` | `rocm_sparse_attn_prefill` and `rocm_inverse_rope_mxfp8_rows`, rebound by identity, and `DeepseekV41ROCMAiterMLAAttention._forward_prefill`, with their signatures | `HK_VLLM_SPARSE_MLA` (on, gfx950) |
 | your kernels | `register.py` | whatever `register.patch` names | `HK_VLLM_USER=<modules or files>` |
@@ -593,30 +593,15 @@ What holds it, on vLLM e68efc685 (MI355X):
 
 ```bash
 vllm serve <DeepSeek-V4.1-Flash> --monokernel --tensor-parallel-size 2 ...   # on by default on gfx950
-HK_VLLM_DSV41_INDEX=0 vllm serve ...                    # mono's own chain
+HK_VLLM_DSV41_INDEX=0 vllm serve ...                    # vLLM's own chain
 HK_DSV41_INDEX_TOPK=0 vllm serve ...                    # the launch without the logits / top-k
 HK_DSV41_INDEX_CHECK=3 vllm serve ... --enforce-eager   # the in-place check
 ```
 
-The serving scorecard: DeepSeek-V4.1-Flash on MI355X, real weights, TP2, max_model_len 16640, vLLM's
-`bench serve`, 2 rounds a fresh server each. The "mono + hk" arm is `--monokernel` with hk's default routes:
-this one, and the prefill-sized K1 / K2 routes.
-
-| | stock | mono | mono + hk | mono + hk vs mono | (#115: dense layers only) |
-|---|---|---|---|---|---|
-| TPOT, batch 1 (ms) | 6.598 | 3.974 | 3.794 | -4.5% | -2.6% |
-| TPOT, batch 4 (ms) | 7.836 | 4.999 | 4.779 | -4.4% | -2.5% |
-| TPOT, batch 8 (ms) | 9.301 | 6.339 | 6.140 | -3.1% | -1.7% |
-| mixed, 2k / 256 at 32 in flight (req/s) | 6.103 | 6.866 | 7.043 | +2.6% | +2.3% |
-| long, 8k / 128 at 8 in flight (req/s) | 3.491 | 4.117 | 4.418 | +7.3% | +4.8% |
-| prefill, 8k prompts (tok/s) | 62,659 | 62,829 | 69,846 | +11.2% | +11.4% |
-| GSM8K-1319, greedy | 94.39% | 94.58% | 94.58% | | |
-
-Every delta is outside both arms' round-to-round spread, and no measurement was discarded. The prefill gain
-comes from the K1 / K2 routes, the decode gain from the index launch. The last column is #115's run, in which
-the candidate source and consumers still used vLLM's indexer op at max_model_len 16640 (their rows' 2080 blocks
-did not fit its 2048 candidates); the launch now does their block top-k and mask itself. GSM8K agrees with
-stock's run-to-run noise (McNemar p 0.39-1.00 against stock).
+Serving results are on [the scorecard](performance/scorecard.md). With
+`--monokernel` and hk's default routes, DeepSeek-V4.1-Flash's real-weight
+GSM8K-1319 (greedy) agrees with stock's run-to-run noise (McNemar p 0.39-1.00
+against stock).
 
 The counters are `vllm_dsv41_index.STATS` (`hk`, `stock`); the layers that
 stay on vLLM's chain, and why, are in `STOCK_LAYERS`.

@@ -711,8 +711,8 @@ def rotary(x, cos_sin, positions=None, out=None):
 
     In place when `out` is `x`. D is 64 * a power of two up to 16 (128 and
     256 qualify) on gfx950, 64 * a power of two up to 8 on gfx1100. On
-    strips: gfx950 and gfx1100 (where a head's halves are two strips, there
-    being no lane exchange there)."""
+    strips: gfx950, and gfx1100 and gfx1201 (where a head's halves are two
+    strips, there being no lane exchange there)."""
     import torch  # noqa: PLC0415
 
     from ..target import current_arch, get_target  # noqa: PLC0415
@@ -721,7 +721,7 @@ def rotary(x, cos_sin, positions=None, out=None):
     halves = arch not in STRIP_ARCHS
     if halves and not get_target(arch).strips:
         raise NotImplementedError(f"hk.ops.rotary runs on register strips (gfx950, "
-                                  f"gfx1100); on {arch} use hk.ops.rope")
+                                  f"gfx1100, gfx1201); on {arch} use hk.ops.rope")
     if x.dim() < 2 or not x.is_contiguous():
         raise ValueError(f"rotary: x must be a contiguous (..., heads, D) tensor, "
                          f"got {tuple(x.shape)}")

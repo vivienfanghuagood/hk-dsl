@@ -140,10 +140,9 @@ rounds back to nearest even, as torch does); `T.row_mean`, `T.row_sum`,
 `T.row_max` and `T.row_logsumexp` reduce the whole row. The template picks
 the layout, the warps, the grid order and the launch for the GPU it runs
 on, from the plans hk's tuned `hk.ops` kernels measured, and handles ragged
-shapes and strided views; `plan()` prints what it chose. Measured against
-the tuned kernel for the same job, the templates are 0.98-1.03x on an MI355X
-and 0.92-1.02x on a W7900D, and they beat `torch.compile` at large shapes
-([measured](templates/elementwise-rowwise.md#measured)).
+shapes and strided views; `plan()` prints what it chose. A template runs
+the plan of hk's tuned kernel for the same job; `hk.check`, below, times it
+against `torch.compile` on your GPU.
 
 A GEMM with a fused epilogue -- a bias, an activation, a residual -- is
 `hk.templates.gemm(a, b, epilogue=fn, **operands)`, the tuned GEMM of each
@@ -213,13 +212,9 @@ read, so a body typed into `python3 -c` traces but cannot have runtime loops
 **This is the shape of a kernel, not the fast way to stream memory.** A
 16x64 register tile is the matrix core's layout: one warp a tile, each lane
 holding pieces of several rows. For an elementwise or row-wise kernel it
-leaves bandwidth unused. The same tiling of a GELU-and-mul is 0.78x
-`torch.compile` on an MI355X and 0.83x on a W7900D (geomean over eight LLM
-shapes; 0.54x at 4096x14336 on the MI355X), where the template above is
-1.11x and 1.03x ([the DX suite](../bench/dx/FINDINGS.md),
-[the templates](templates/elementwise-rowwise.md#measured)). Write a
-streaming kernel on **register strips**, each lane owning 16-byte runs of
-a row:
+leaves bandwidth unused: the same tiling of a GELU-and-mul is slower than
+`torch.compile` on both GPUs. Write a streaming kernel on
+**register strips**, each lane owning 16-byte runs of a row:
 
 ```python
 # gelu_mul.py
@@ -237,8 +232,8 @@ def gelu_mul(a: hk.Tensor[hk.bf16], b: hk.Tensor[hk.bf16], o: hk.Tensor[hk.bf16]
     o.at[row, c0].store(x, bounded=True)          # fp32 -> bf16 on the store
 ```
 
-It ties `torch.compile` at 4096x14336 on an MI355X and is 1.02x it on a
-W7900D ([hk.check](check.md#the-loop)). A strip's columns are whole chunks
+`hk.check` times it against `torch.compile` on your GPU
+([hk.check](check.md#the-loop)). A strip's columns are whole chunks
 of the wave's lanes times the run: 32 x 8 on gfx1100, 64 x 8 on gfx950, so
 `CW=512` fits both ([register strips](language.md#register-strips)). Keep
 register tiles (`hk.RT`), staged through LDS (`hk.ST`), for what feeds the

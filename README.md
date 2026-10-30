@@ -187,7 +187,10 @@ validated when its outputs were bit-identical to the engine's, or its error was
 within the engine's own noise. What is on by default:
 
 - **MI355X (gfx950), vLLM:** DeepSeek-V4.1's MXFP8 linear layers and its a8w4
-  MoE; its index layers when vLLM runs with `--monokernel`; AWQ linear layers.
+  MoE; its sparse MLA prefill (`HK_VLLM_SPARSE_MLA=0` turns it off; inactive
+  while `VLLM_ROCM_USE_AITER_TRITON_SPARSE_MLA=1`, where vLLM runs AITER's
+  sparse MLA instead); its index layers when vLLM runs with `--monokernel`; AWQ
+  linear layers.
 - **W7900D (gfx1100):** in vLLM, linear, AWQ, MoE and the vision encoder's
   attention. In SGLang, linear and MoE. In SGLang-Diffusion, attention and
   linear, after `python3 -m hk.integration sglang-diffusion install`.

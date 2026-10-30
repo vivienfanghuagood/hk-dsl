@@ -42,8 +42,8 @@ Coding agents: start from [llms.txt](../llms.txt) and the
 | page | |
 |---|---|
 | [Getting started](getting-started.md) | install from a wheel or from source, a first kernel, the four entry points, timing, tests and examples |
-| [Templates: elementwise and rowwise](templates/elementwise-rowwise.md) | `hk.templates.elementwise` / `rowwise`: hooks, operands, the per-GPU plan and how to override it, what they measured, limits |
-| [Templates: GEMM](templates/gemm.md) | `hk.templates.gemm(epilogue=...)`: writing an epilogue, the ready-made ones, how the plan follows `hk.ops.matmul`, what it costs, limits |
+| [Templates: elementwise and rowwise](templates/elementwise-rowwise.md) | `hk.templates.elementwise` / `rowwise`: hooks, operands, the per-GPU plan and how to override it, limits, and a dated record of what they measured |
+| [Templates: GEMM](templates/gemm.md) | `hk.templates.gemm(epilogue=...)`: writing an epilogue, the ready-made ones, how the plan follows `hk.ops.matmul`, limits, and a dated record of what it cost |
 | [Schedules](schedules.md) | `hk.schedules`: what hk runs for a GEMM shape, every knob of each kernel family as data, `check()` with reasons before compiling, the legal space around a schedule, records, `hk.templates.gemm(schedule=)` |
 | [The language](language.md) | kernels and parameters, tiles and strips, operators, memory, control flow, `hk.comm` between XCDs and GPUs, workgroup placement, namespaces, `@hk.func`, errors, limits |
 | [Migrating: the DSL surface](migrating.md) | the deprecated spellings and their replacements, `tools/surface/migrate.py`, and the rule that keeps a migrated kernel byte-identical: bind inline loads to locals in the old argument order |
@@ -56,7 +56,7 @@ Coding agents: start from [llms.txt](../llms.txt) and the
 |---|---|
 | [hk.check](check.md) | the loop: build and resources without a GPU, correctness against a torch reference, interleaved timing against torch eager and `torch.compile`, `--json` |
 | [hk.profile](profile.md) | why it runs at that speed: rocprofv3's counters and thread trace per kernel -- the roofline, matrix core busy, occupancy, the grid's tail, where the waves wait, the main loop's instructions -- and a verdict, `--json` for agents |
-| [Performance](performance.md) | every measured result with its baseline, software stack and source chapter, RDNA3 and CDNA4 apart, end to end, kernel for kernel, and the losses |
+| [Performance](performance.md) | a dated record, not current claims: older measurements with their baselines, software stacks and source chapters, RDNA3 and CDNA4 apart, end to end, kernel for kernel, and the losses |
 | [Tuning a GEMM: hk.tune](tune.md) | `python -m hk.tune MxNxK` or `--model`: search hk's GEMM schedules within a GPU-time budget, keep a winner only past the measured noise, as a record `hk.ops.matmul` reads |
 | [The tuning benchmark](../bench/tune/README.md) | hidden real-model GEMM shapes per GPU, every baseline (hipBLASLt, TunableOp, aiter, FlyDSL, HipKittens, Triton), the scoreboard before and after `hk.tune` |
 | [The DX suite](../bench/dx/README.md) | eight LLM kernel tasks with references and baselines on both GPUs, one command to a JSON scoreboard |
@@ -92,7 +92,7 @@ Coding agents: start from [llms.txt](../llms.txt) and the
 
 | page | |
 |---|---|
-| [The end-to-end loop](e2e-loop.md) | from "this model is slow" to "my engine runs hk's kernel": measure, attribute, check at the model's shapes, patch without editing the engine, check the output, profile again -- with Qwen-Image 2.1 on a W7900D (1.50x) as the worked example |
+| [The end-to-end loop](e2e-loop.md) | from "this model is slow" to "my engine runs hk's kernel": measure, attribute, check at the model's shapes, patch without editing the engine, check the output, profile again -- with Qwen-Image 2.1 on a W7900D as the worked example |
 | [The end-to-end goal](design/e2e-goal.md) | after the tuning goal: a few kernels that are hot, under-optimised by every AMD library, and winnable -- chosen from measured opportunity tables -- and where they stand (K1, K2, K3 in main, on by default) |
 | [The DX goal](design/dx-goal.md) | the goal the templates, `hk.check` and these docs serve, and its acceptance criteria |
 | [Schedules as data](design/schedules.md) | `hk.schedules`' design: one type per kernel family, legality and how it was measured, the record formats, the byte-identical round trip |
@@ -113,98 +113,75 @@ public repository.
 
 ## Why this exists
 
-Fast tile kernels for AMD GPUs can be written: HipKittens' C++ reaches the
-hardware's peak. Three things stood between that and a faster model. The
-serving engines do not use such kernels on a Radeon; at the tile level the
-kernels fail silently; and writing and tuning them by hand is slow. This
-section takes each in turn, with what hk-dsl does about it and where it
-stops.
+Fast tile kernels for AMD GPUs can be written in C++, as HipKittens shows.
+Three things stood between that and a faster model. The serving engines do
+not use such kernels on a Radeon; at the tile level the kernels fail
+silently; and writing and tuning them by hand is slow. This section takes
+each in turn, with what hk-dsl does about it and where it stops.
 
 ### The engines leave Radeon on slow paths
 
-vLLM and SGLang are tuned for Instinct. On a W7900D (gfx1100), each kernel
-below was measured against what the engine runs:
+vLLM and SGLang are tuned for Instinct. On a W7900D (gfx1100), hk's routes
+replace these calls, each one only for the shapes where hk's kernel measured
+faster than what the engine runs:
 
-- **SGLang's linear layers** are `F.linear` on ROCm, which is hipBLASLt. At
-  decode it uses 38-44% of the memory bandwidth; hk's GEMV uses 87% on qkv.
-  Per layer that is 1.18-2.30x, and end to end 1.49-1.81x the output
-  throughput ([SGLang](history/24-sglang.md)).
-- **SGLang's MoE** does not run on gfx1100: sgl_kernel's top-k faults. hk's
-  patch replaces the top-k, and its expert GEMMs give OLMoE 1.06-1.32x the
-  output throughput of SGLang's Triton GEMMs
+- **SGLang's linear layers**, which are `F.linear` on ROCm (hipBLASLt)
+  ([SGLang](history/24-sglang.md)).
+- **SGLang's MoE**, which does not run on gfx1100: sgl_kernel's top-k
+  faults. hk's patch replaces the top-k and the expert GEMMs
   ([SGLang MoE](history/25-sglang-moe.md)).
-- **vLLM's 4-bit linear layers** run a Triton AWQ kernel on ROCm. hk's W4A16
-  GEMM is 1.40-2.61x faster, and Qwen3-14B-AWQ up to 4.47x per request
-  ([4-bit weights](history/22-int4.md), re-measured in
-  [chapter 44](history/44-matched-stack.md)).
-- **vLLM's MoE** is Triton's `fused_moe`. hk's MoE GEMM is 1.00-2.77x up to
-  256 tokens ([MoE](history/21-moe.md)).
-- **vLLM's prefill attention** is Triton's `unified_attention`. hk's paged
-  prefill is 3.6-7.9x ([captured whole](history/17-the-decode-step-captured-whole.md)).
-  With hk's attention backend and its linear layers, Qwen3-8B is 1.22-1.85x
-  faster per request than stock vLLM 0.31 at 1-32 requests (vLLM 0.31.0,
-  torch 2.13.0+rocm7.2, triton-rocm 3.7.1; [vLLM 0.31](history/20-vllm-031.md),
-  [the matched stack](history/44-matched-stack.md)).
+- **vLLM's 4-bit linear layers**, a Triton AWQ kernel on ROCm
+  ([4-bit weights](history/22-int4.md)).
+- **vLLM's MoE**, Triton's `fused_moe` ([MoE](history/21-moe.md)).
+- **vLLM's decoder attention**, Triton's `unified_attention`, through hk's
+  attention backend. It is off by default
+  ([integration](integration.md#the-decoder-attention-backend)).
 
-Each patch is turned on by an environment variable, sends each shape to the
-kernel that measured fastest for it, and keeps to the CUDA-graph contract
+Each patch can be turned off by an environment variable, sends each shape to
+the kernel that measured fastest for it, and keeps to the CUDA-graph contract
 ([integration](integration.md)). A model nobody tuned for gets its linear
-layers' routes measured at its first start: Qwen2.5-7B-Instruct, in no
-shipped table, is 1.18-1.32x faster per request at 16-128 requests
-([chapter 35](history/35-any-model.md), re-measured on triton-rocm 3.7.1 in
-[chapter 44](history/44-matched-stack.md)).
+layers' routes measured at its first start
+([chapter 35](history/35-any-model.md)). What the routes gain end to end on
+Radeon will be published with the RDNA scorecard.
 
-On an MI355X (gfx950) the engines are tuned for the card: with aiter on,
-vLLM's decode linear layers run at 68-86% of the roofline. There hk's
-attention backend still makes Qwen3-8B 1.13-1.21x faster at 16-64 requests
-and its 4-bit patch makes Qwen3-8B-AWQ 1.35-1.87x faster at 1-16, while its
-linear, norm and MoE kernels have little or nothing to give against aiter's
-([chapter 42](history/42-mi355x-in-the-engine.md)).
+On an MI355X (gfx950) the engines are tuned for the card through AITER. There
+hk's default routes give DeepSeek-V4.1-Flash on vLLM (TP2) about +5% on
+8k-token prefill over a stock vLLM that already uses AITER's tuned paths
+([the scorecard](performance/scorecard.md)).
 
 ### Why not HipKittens' C++ directly
 
-HipKittens' `include/rdna3` is about 12,000 lines of tested C++, reaching
-77 TFLOP/s on GEMM and 64-65 on attention. Using it meant writing C++:
-`kernels/rdna3/attn/fwd/attn.cpp` is 1108 lines with 18 `#define` knobs, and
-retuning meant editing macros, `make clean`, rebuild, remeasure. vLLM and
-SGLang could not touch it.
+HipKittens' `include/rdna3` is about 12,000 lines of tested C++. Using it
+meant writing C++: `kernels/rdna3/attn/fwd/attn.cpp` is 1108 lines with 18
+`#define` knobs, and retuning meant editing macros, `make clean`, rebuild,
+remeasure. vLLM and SGLang could not touch it.
 
 hk-dsl keeps HipKittens as the backend: its tiles, MMAs and waits, in the C++
 it generates. In front of it are a typed Python layer, an MLIR dialect whose
 passes check and derive what the C++ left to the author, a tuner, and the
 engine layer. The knobs are Python parameters a tuner searches, and a kernel
 becomes a torch op, then an engine patch, in a few lines. A kernel written in
-hk-dsl runs at the C++'s speed: attention 0.999-1.002x
-([Phase 4](history/03-phase-4-attention.md)), GEMM 1.00x
-([Phase 3](history/02-phase-3-gemm.md)). One 59-line strip kernel is RMSNorm,
+hk-dsl compiles to that C++ and runs at its speed, no faster
+([Phase 4](history/03-phase-4-attention.md),
+[Phase 3](history/02-phase-3-gemm.md)). One 59-line strip kernel is RMSNorm,
 LayerNorm, softmax, the weighted RMSNorm and the fused add + RMSNorm
 ([strips](history/27-strips.md)).
 
 ### Why not only Triton or FlyDSL
 
-On gfx1100, with every contender tuned and measured in one process
-([the scoreboard](history/26-the-scoreboard-retuned.md)), each covers part of
-the space:
+Each covers part of the space:
 
-- **FlyDSL**'s GEMM dispatcher beat hk's GEMM by 2-5% until hk's schedule
-  changed; now they tie, 0.99-1.01x
-  ([the GEMM schedule](history/28-gemm-schedule.md)). FlyDSL has no attention
-  on gfx11, because its flash attention stages K/V through a global-to-LDS
-  load gfx11 does not have.
-- **Triton** schedules the tile itself. Against Triton tuned over gfx1100's
-  space, hk's GEMM is 1.09-1.11x faster, and hk's register strips tie or beat
-  its row kernels ([strips](history/27-strips.md)). The attention torch runs
-  on ROCm is aotriton.
-- **hk-dsl** has the attention: 1.24x causal and 1.05x non-causal against
-  torch 2.13's SDPA ([chapter 38](history/38-rdna-losses.md)), and 2.7-3.8x
-  the slower SDPA of torch 2.10
-  ([chapter 30](history/30-flydsl-routes-gate-contracts.md)).
+- **FlyDSL** has a GEMM dispatcher with instruction-level control. It has no
+  attention on gfx11, because its flash attention stages K/V through a
+  global-to-LDS load gfx11 does not have.
+- **Triton** schedules the tile itself, and is much cheaper to write. The
+  attention torch runs on ROCm is aotriton.
+- **hk-dsl** gives tile-level control on RDNA3 and RDNA4 as well as CDNA,
+  attention included, with the build-time gates below.
 
 So hk-dsl is built to sit beside them. A route table may name FlyDSL's
 kernel, HipKittens' own or the engine's for the shapes where they measured
-fastest, and the scoreboard keeps measuring all of them. In vLLM, FlyDSL's
-GEMM serves the decode steps at 96 and 128 requests, which it makes 12%
-shorter ([chapter 30](history/30-flydsl-routes-gate-contracts.md)).
+fastest ([FlyDSL on the routes](integration.md#flydsls-gemm-as-an-optional-path)).
 
 ### The traps
 
@@ -264,12 +241,10 @@ the resource gate ([runtime](runtime.md#the-resource-gates)), the passes
   vLLM routes are on by default there
   ([integration](integration.md#on-by-default-and-turning-it-off)), and gfx942
   has only been compiled for ([CDNA3/4](design/cdna.md)).
-- **Some kernels lose.** On the W7900D, paged decode attention is 0.86-1.12x
-  Triton's kernel at 16-64 requests (triton-rocm 3.7.1), yet stays on hk's,
-  because in the captured step Triton's kernel is the slower; the MoE GEMM
-  loses above 256 tokens and the W4A16 GEMM at 1-4 tokens, and the routing
-  leaves those calls to the engine. On the MI355X, hk's GEMMs are 0.79-1.21x
-  aiter's tuned ones, its norms 0.74-1.05x aiter's and its MoE GEMM
-  0.66-0.94x CK's, so those patches buy about 1% or nothing there.
-  [Performance](performance.md#a4-losses-and-limits) lists every loss, for
+- **Some kernels lose.** Where hk's kernel is slower than the engine's for a
+  shape, the routing leaves that call to the engine: on the W7900D the MoE
+  GEMM above 256 tokens and the W4A16 GEMM at 1-4 tokens; on the MI355X most
+  GEMMs, norms and bf16 MoE GEMMs against AITER's tuned ones, so hk's
+  unquantized-linear and bf16 MoE routes do nothing there. [Performance](performance.md#a4-losses-and-limits), a
+  dated record, lists the losses as they were measured, for
   [CDNA4](performance.md#b4-losses-and-no-headroom-findings) as well.

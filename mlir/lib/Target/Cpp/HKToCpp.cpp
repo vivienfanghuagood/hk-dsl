@@ -87,9 +87,12 @@ std::string rawCpp(Type t) {
   if (auto s = dyn_cast<SharedVecType>(t))
     return "kittens::sv<" + dtypeCpp(s.getElementType()).str() + ", " +
            std::to_string(s.getLength()) + ">";
-  if (auto g = dyn_cast<GlobalType>(t))
+  if (auto g = dyn_cast<GlobalType>(t)) {
+    if (g.getStrided())
+      return "kittens::gl_strided<" + dtypeCpp(g.getElementType()).str() + ">";
     return "kittens::gl<" + dtypeCpp(g.getElementType()).str() +
            ", -1, -1, -1, -1>";
+  }
   if (auto g = dyn_cast<GranulesType>(t))
     return "kittens::lds_granules<" + rawCpp(g.getTile()) + ">";
   if (isa<StageType>(t))
@@ -192,6 +195,8 @@ public:
       return failure();
     findSharedShapes();
     assignNames();
+    if (failed(checkStrided()))
+      return failure();
     header(includes);
     if (failed(globalsStruct()))
       return failure();
@@ -673,6 +678,30 @@ private:
   std::string tgtArch() {
     auto arch = kernel->getAttrOfType<StringAttr>(attrs::kArch);
     return arch ? arch.getValue().str() : "gfx1100";
+  }
+
+  /// A strided global (`!hk.gl<T, strided>`, kittens::gl_strided) is read by
+  /// the ops that have a strided implementation and asked its extents; any
+  /// other use is refused here rather than compiled against a gl it is not.
+  LogicalResult checkStrided() {
+    bool ok = true;
+    kernel.walk([&](Operation *op) {
+      for (Value v : op->getOperands()) {
+        auto g = dyn_cast<GlobalType>(v.getType());
+        if (!g || !g.getStrided())
+          continue;
+        if (tgt->wave == 64) {
+          op->emitError("a strided global is RDNA-only so far (gfx950's "
+                        "strided_gl carries a row stride only)");
+          ok = false;
+        } else if (!isa<StageLoadOp, ExtentOp>(op)) {
+          op->emitError("a strided global is read by g.stage only so far; "
+                        "this op has no strided implementation");
+          ok = false;
+        }
+      }
+    });
+    return success(ok);
   }
 
   LogicalResult globalsStruct() {
@@ -1654,6 +1683,15 @@ private:
         .Case([&](StageLoadOp o) {
           auto [g, expr, tmpl] = stageArgs(o.getBuf(), o.getSlot());
           auto t = o.getBuf().getType();
+          if (cast<GlobalType>(o.getSrc().getType()).getStrided()) {
+            // include/hk/rdna/strided.cuh: the same chunk -> lane mapping,
+            // addressed through every stride of the source.
+            w("kittens::stage_load_strided<" + std::to_string(t.getThreads()) +
+              ">(" + expr + ", " + std::to_string(t.getCalls()) + ", " +
+              name(o.getSrc()) + ", " +
+              coordArg(o.getIdx(), tileCpp(t.getTile())) + ", " + tmpl + ");");
+            return;
+          }
           w(g + "load_global_to_register_buffer(" + expr + ", " +
             std::to_string(t.getCalls()) + ", " + name(o.getSrc()) + ", " +
             coordArg(o.getIdx(), tileCpp(t.getTile())) + ", " + tmpl + ");");

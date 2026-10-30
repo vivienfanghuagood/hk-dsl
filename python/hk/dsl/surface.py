@@ -189,6 +189,14 @@ map yield rcp
 #: op; `internal` -- plumbing (core), library fixes and gap fills (lib), type-selected
 #: specializations (special); the rest as their DSL entries.
 CPP: Dict[str, Dict[str, str]] = {
+    # RDNA strided globals (`hk.Tensor[dtype, "strided"]`): g.stage's strided form and the
+    # type's accessors.
+    "include/hk/rdna/strided.cuh": {
+        "stage_load_strided": "primitive",
+        **{n: "internal" for n in """
+batch batch_stride cols depth depth_stride granule_stride offset row_stride rows
+""".split()},
+    },
     "include/hk/cdna/core.cuh": {
         **{n: "primitive" for n in """
 lds_wait lds_wait_for one vm_wait zero

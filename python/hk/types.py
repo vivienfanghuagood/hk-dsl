@@ -578,11 +578,18 @@ class GlobalType(Type):
     #: write it while the kernel runs) or "system" (other GPUs do): every access
     #: through the tensor then carries that scope (hk.comm).
     scope: str = ""
+    #: Every stride from the tensor -- batch, depth, row and a column granule
+    #: stride -- rather than the outer axes compact over one row stride
+    #: (`hk.Tensor[dtype, "strided"]`; C++ kittens::gl_strided, RDNA).
+    strided: bool = False
 
     def __repr__(self) -> str:
-        return f"gl<{self.dtype}{', ' + self.scope if self.scope else ''}>"
+        opts = [o for o in (self.scope, "strided" if self.strided else "") if o]
+        return f"gl<{self.dtype}{''.join(', ' + o for o in opts)}>"
 
     def cpp(self) -> str:
+        if self.strided:
+            return f"kittens::gl_strided<{self.dtype.cpp}>"
         return f"kittens::gl<{self.dtype.cpp}, -1, -1, -1, -1>"
 
 
