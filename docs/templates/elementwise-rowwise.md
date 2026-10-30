@@ -274,8 +274,8 @@ template streams such a row instead, on both. `gelu` is fp32-only in both
 
 ## limits
 
-- The templates run on register strips, which gfx1100 and gfx950 have;
-  gfx942 and gfx1201 refuse them while planning.
+- The templates run on register strips, which gfx1100, gfx1201 and gfx950
+  have; gfx942 has none and refuses them while planning.
 - A hook is traced, not rewritten: a Python `if` on a device value inside
   it raises. Arithmetic selects (`(label != -100).to_int()`, `t.step()`)
   do what a branch would.
@@ -390,7 +390,8 @@ shapes), and why:
   Triton at 1-256 tokens of 128 experts; on the W7900D 1.05-2.05x Triton at
   its three `--quick` shapes.
 - **Strips only.** gfx942 and gfx1201 have none, and the templates refuse
-  them.
+  them. *(Correction, 2026-10-30: gfx1201 has strips, and runs the
+  templates, since the RDNA4 port (#71); only gfx942 has none.)*
 
 <details><summary>Every case, gfx950 (device time, us)</summary>
 
