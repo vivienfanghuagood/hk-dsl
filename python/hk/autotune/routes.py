@@ -337,9 +337,18 @@ QKV_BIAS = {"Qwen2ForCausalLM", "Qwen2MoeForCausalLM", "Qwen2VLForConditionalGen
 
 
 def linear_shapes(cfg: dict, tp: int = 1) -> List[Tuple[str, int, int, int]]:
-    """(name, N, K, calls per step) for every unquantized linear of a dense
-    decoder, sharded the way vLLM shards them at tensor-parallel size `tp`;
-    the LM head's rows padded to a multiple of 64, as vLLM pads them."""
+    """(name, N, K, calls per step) for every unquantized linear of a decoder,
+    sharded the way vLLM shards them at tensor-parallel size `tp`; the LM
+    head's rows padded to a multiple of 64, as vLLM pads them.
+
+    A hybrid decoder (Qwen3.5 / Qwen3.6 / Qwen3.8, Qwen3-Next: `layer_types`
+    mixing "full_attention" with "linear_attention") has the attention
+    projections only on its full-attention layers, and on the others the
+    Gated-DeltaNet projections: `qkvz` (q and k of `linear_num_key_heads`, v
+    and the gate z of `linear_num_value_heads`), `ba` (one b and one a per
+    value head) and `out` (back to the hidden size). `attn_output_gate`
+    doubles q for the gate it carries. Shapes two names share are listed once
+    each by name; a table keys on (N, K)."""
     cfg = cfg.get("text_config", cfg)
     hid = cfg["hidden_size"]
     heads = cfg["num_attention_heads"]
@@ -348,9 +357,23 @@ def linear_shapes(cfg: dict, tp: int = 1) -> List[Tuple[str, int, int, int]]:
     inter = cfg["intermediate_size"]
     layers = cfg["num_hidden_layers"]
     vocab = -(-cfg["vocab_size"] // 64) * 64
-    return [
-        ("qkv", (heads + 2 * kv) * hd // tp, hid, layers),
-        ("o", hid, heads * hd // tp, layers),
+    types = cfg.get("layer_types") or []
+    full = sum(t == "full_attention" for t in types) if types else layers
+    lin = sum(t == "linear_attention" for t in types)
+    q = heads * hd * (2 if cfg.get("attn_output_gate") else 1)
+    out = [
+        ("qkv", (q + 2 * kv * hd) // tp, hid, full),
+        ("o", hid, heads * hd // tp, full),
+    ]
+    if lin:
+        nk, nv = cfg["linear_num_key_heads"], cfg["linear_num_value_heads"]
+        dk, dv = cfg["linear_key_head_dim"], cfg["linear_value_head_dim"]
+        out += [
+            ("qkvz", (2 * nk * dk + 2 * nv * dv) // tp, hid, lin),
+            ("ba", 2 * nv // tp, hid, lin),
+            ("out", hid, nv * dv // tp, lin),
+        ]
+    return out + [
         ("gate_up", 2 * inter // tp, hid, layers),
         ("down", hid, inter // tp, layers),
         ("lm_head", vocab // tp, hid, 1),
