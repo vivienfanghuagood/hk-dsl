@@ -249,6 +249,14 @@ operate, one job per target:
 - **`gfx1201`** (Radeon AI PRO R9700): the RDNA4 port's GPU tier
   ([below](#the-gfx1201-runner)).
 
+Every engine route that is on by default has a GPU test on every arch it is on
+by default on: `tests/hk/ir/test_route_coverage.py` holds the table and fails
+when a default-on (route, arch) has none, or when its test needs vLLM and is
+not in `gfx950-vllm`'s `HK_CI_TESTS`. The routes whose engine is not in a CI
+image are tested through their stand-ins on the GPU
+(`tests/hk/gpu/test_route_paths.py`): the function or method each route puts
+in the engine's place, called as the engine calls it.
+
 Each job runs the suite in a container that sees only the card it took, under
 a lock of that card, so that a CI run and a measurement never share a GPU. A
 job's page has its counts as an annotation and, in its summary, each group's
