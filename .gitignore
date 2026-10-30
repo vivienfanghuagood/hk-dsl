@@ -8,3 +8,4 @@ python/hk/_mlir/
 
 # mkdocs build (mkdocs.yml)
 /site/
+out/
