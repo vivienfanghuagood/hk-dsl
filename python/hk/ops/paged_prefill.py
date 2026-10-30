@@ -51,7 +51,7 @@ def paged_prefill_kernel(name: str, *, head_dim: int = 128, group: int = 4,
                          scale: Optional[float] = None,
                          max_vgprs: int = 256, min_occupancy: int = 1,
                          layout: str = "hk", page: int = 16, dsplit: bool = False,
-                         decodes: bool = False):
+                         decodes: bool = False, vt_pages: bool = False):
     """Causal paged prefill: `q` and `o` are the engine's (tokens, heads *
     head_dim) rows, `q_start` the batch's query_start_loc.
 
@@ -87,6 +87,11 @@ def paged_prefill_kernel(name: str, *, head_dim: int = 128, group: int = 4,
     row masked at the token's position, and stored to `oh`. With dsplit a decode is one row of
     one query head's tile.
 
+    `vt_pages` ("flash"): V comes from `v_cache` as V^T pages -- (slots, kv_heads, head_dim,
+    page), what `vt_pack_kernel` writes -- staged straight into the V^T tile instead of through
+    the register transpose. A request's pages are consecutive slots after the earlier requests'
+    (the same order the pack uses); K still comes through the block table.
+
     `dsplit` (head_dim 256): a query row's head_dim is split between a pair of
     warps, each holding its half of Q and of O (a d256 row in one warp is 256
     VGPRs of Q and O alone). Each computes its half's partial S, the pair adds
@@ -96,6 +101,9 @@ def paged_prefill_kernel(name: str, *, head_dim: int = 128, group: int = 4,
     if layout not in ("hk", "rocm", "flash"):
         raise ValueError(f"layout={layout!r}: 'hk', 'rocm' or 'flash'")
     rocm, flash = layout == "rocm", layout == "flash"
+    if vt_pages and not flash:
+        raise ValueError("vt_pages is layout='flash''s")
+    vstraight = rocm or vt_pages                   # V^T pages staged as they are
     paged = rocm or flash                   # vLLM's pages, the device-side grid
     if dsplit and (warps % 2 or head_dim % 32):
         raise ValueError(f"dsplit: an even warp count and head_dim a multiple of 32, "
@@ -131,7 +139,7 @@ def paged_prefill_kernel(name: str, *, head_dim: int = 128, group: int = 4,
         raise ValueError(f"group={group}: a packed decode is one 16-row tile of query heads")
     # the V^T chunks (vt_d_chunk wide) a warp transposes into LDS each block: d_chunks of its
     # half, shared by the warps of that half
-    v_iters = -(-d_chunks // rows_warps) if not rocm else 0
+    v_iters = -(-d_chunks // rows_warps) if not vstraight else 0
     lds = (2 * kv_block * head_dim * 2 + (warps * kv_frags * 16 * q_block * 4 if dsplit else 0)
            + (16 * head_dim * 2 if decodes and paged and not dsplit else 0))
     from ..target import current_arch, get_target  # noqa: PLC0415
@@ -161,7 +169,7 @@ def paged_prefill_kernel(name: str, *, head_dim: int = 128, group: int = 4,
             k_pg = [[(k_s[h] if dsplit else k_s).subtile(page, dh, p, 0)
                      for h in range(halves)] for p in range(ppb)]
             buf_k = g.stage_buffer(k_pg[0][0], depth=ppb * halves, name="buf_k")
-            if rocm:
+            if vstraight:
                 v_pg = [[(vt_s[h] if dsplit else vt_s).subtile(dh, page, 0, p)
                          for h in range(halves)] for p in range(ppb)]
                 buf_v = g.stage_buffer(v_pg[0][0], depth=ppb * halves, name="buf_v")
@@ -233,7 +241,7 @@ def paged_prefill_kernel(name: str, *, head_dim: int = 128, group: int = 4,
         o_c = [hk.zeros(ty_o) for _ in range(d_frags)]
         m_run = hk.neg_infty(ty_vec)
         l_run = hk.zeros(ty_vec)
-        if not rocm:
+        if not vstraight:
             # V^T through registers: this warp's chunk(s) of its half, each v_bands
             # 16-row bands of the block
             v_rows = [[hk.zeros(ty_v) for _ in range(v_bands)] for _ in range(v_iters)]
@@ -256,6 +264,12 @@ def paged_prefill_kernel(name: str, *, head_dim: int = 128, group: int = 4,
             # table row's first entry.
             n_pages = hk.max(hk.cdiv(last_q + 1, page), 1)
 
+        if vt_pages:
+            # this request's first V^T slot: the pages of the requests before it
+            vbase = 0
+            for rr in range(req):
+                vbase = vbase + hk.cdiv(seq_lens[hk.elem_coord(0, 0, 0, rr)].load_scalar(), page)
+
         def page_of(pg):
             # Clamped: past the end the prefetch rereads the last page.
             return block_table[hk.elem_coord(
@@ -273,6 +287,8 @@ def paged_prefill_kernel(name: str, *, head_dim: int = 128, group: int = 4,
             if paged:
                 for p in range(ppb):
                     pg = page_of(kb * ppb + p)
+                    if vt_pages:
+                        vslot = vbase + hk.min(kb * ppb + p, n_pages - 1)
                     for h in range(halves):
                         if rocm:
                             g.stage(buf_k, k_cache[hk.elem_coord(pg, head_kv, 0, h * dh)],
@@ -283,7 +299,10 @@ def paged_prefill_kernel(name: str, *, head_dim: int = 128, group: int = 4,
                             c0 = head_kv * head_dim + h * dh if h else head_kv * head_dim
                             g.stage(buf_k, k_cache[hk.elem_coord(pg, 0, 0, c0)],
                                     slot=p * halves + h)
-                    if flash:
+                            if vt_pages:
+                                g.stage(buf_v, v_cache[hk.elem_coord(vslot, head_kv, h * dh, 0)],
+                                        slot=p * halves + h)
+                    if flash and not vt_pages:
                         for i in range(v_iters):
                             if stages_v[i]:
                                 load_v(pg, i, p).load(ty_v, into=v_rows[i][p])
@@ -301,11 +320,11 @@ def paged_prefill_kernel(name: str, *, head_dim: int = 128, group: int = 4,
                 for p in range(ppb):
                     for h in range(halves):
                         g.commit(k_pg[p][h], buf_k, slot=p * halves + h)
-                        if rocm:
+                        if vstraight:
                             g.commit(v_pg[p][h], buf_v, slot=p * halves + h)
             else:
                 g.commit(k_s, buf_k)
-            if not rocm:
+            if not vstraight:
                 for i in range(v_iters):
                     if stages_v[i]:
                         for w in range(v_bands):
@@ -469,6 +488,37 @@ def rocm_views(key_cache, value_cache):
     head_dim / x, page, x) as the strided view (blocks, kv_heads, page,
     head_dim / x, x); V (blocks, kv_heads, head_dim, page) as it is."""
     return key_cache.permute(0, 1, 3, 2, 4), value_cache
+
+
+def vt_pack_kernel(name: str = "paged_vt_pack", *, head_dim: int = 128, page: int = 16):
+    """TRITON_ATTN's V pages, transposed into consecutive V^T slots for `vt_pages`: request r's
+    page j (j < cdiv(seq_len, page)) to slot (pages of the requests before r) + j, (slots,
+    kv_heads, head_dim, page). `kv` is the flash cache (blocks, 2, page, kv_heads * head_dim);
+    the grid is (`span` rows -- the longest request's pages --, kv heads, requests), a warp a
+    (page, kv head, request), and one past its request's pages writes nothing."""
+    if page != 16 or head_dim % 16:
+        raise ValueError("a 16-token page, head_dim a multiple of 16")
+    ty = hk.RT(bf16, 16, 16, "row")
+
+    def body(kv: hk.Tensor[bf16], block_table: hk.Tensor[i32], seq_lens: hk.Tensor[i32],
+             span: hk.Tensor[i32], vt: hk.Tensor[bf16]):
+        j = hk.arch.block_idx.x
+        h = hk.arch.block_idx.y
+        r = hk.arch.block_idx.z
+        pages = hk.cdiv(seq_lens[hk.elem_coord(0, 0, 0, r)].load_scalar(), page)
+        base = 0
+        for rr in range(r):
+            base = base + hk.cdiv(seq_lens[hk.elem_coord(0, 0, 0, rr)].load_scalar(), page)
+        live = hk.min(hk.max(pages - j, 0), 1)       # 1 for one of the request's pages
+        pg = block_table[hk.elem_coord(0, 0, r, hk.min(j, hk.max(pages - 1, 0)))].load_scalar()
+        for c in range(head_dim // 16):
+            v = kv[hk.elem_coord(pg, 1, 0, h * head_dim + 16 * c)].load(ty, bounded=live * 16)
+            vt[hk.elem_coord(base + j, h, 16 * c, 0)].store(hk.transpose_sep(v),
+                                                             bounded=live * 16)
+
+    body.__name__ = name
+    return hk.kernel(body, warps=1, grid=lambda p: (p.span.rows, p.vt.depth, p.seq_lens.cols),
+                     name=name)
 
 
 _SPANS: dict = {}
