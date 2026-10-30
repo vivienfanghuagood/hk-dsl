@@ -81,6 +81,7 @@ class Compiler:
         self.param_div: Dict[int, int] = {}
         self.n_barriers = 0
         self.deferred: List[Tuple[int, ir.Op]] = []
+        self.rowmode = False
         self.depth = 0
 
     # ================================================================ pass 1: layouts
@@ -98,7 +99,7 @@ class Compiler:
     def _score(l) -> int:
         if l is FLEX:
             return -1
-        return 3 if l.name.startswith("mma_c") else 2 if l.name.startswith("mma") else 1
+        return 3 if "mma_c" in l.name else 2 if "mma" in l.name else 1
 
     def infer_op(self, op: ir.Op):
         k, L = op.kind, self.lay
@@ -125,8 +126,8 @@ class Compiler:
             best = max(cands, key=self._score) if cands else FLEX
             L[r.id] = best
         elif k == "dot":
-            atom = self.arch.mma(op.args[0].type.dtype, sh[0], sh[1], self.nwarps)
-            L[r.id] = A.acc_layout(atom, sh[0], sh[1], self.nwarps)
+            atom, grid = self.dot_plan(op.args[0].type.dtype, sh[0], sh[1])
+            L[r.id] = A.acc_layout(atom, sh[0], sh[1], self.nwarps, grid)
         elif k == "reduce":
             x = op.args[0]
             xl = L[x.id]
@@ -148,24 +149,25 @@ class Compiler:
         self.ivs[blk.params[0].id] = op
         inits = op.args[3:]
         params = blk.params[1:]
+        # A carried tile starting as a constant (a running max, a zero accumulator) takes the layout the body
+        # gives it: iterate with such parameters left flexible until the yields stop changing.
         guess = [self.lay.get(i.id) if i.is_tile else None for i in inits]
-        for _ in range(6):
+        for _ in range(8):
             for p, g in zip(params, guess):
                 if p.is_tile:
-                    self.lay[p.id] = self._default(p, g)
+                    self.lay[p.id] = g
             self.infer(blk)
-            ys = blk.ops[-1].args
             new = []
-            for p, g, y in zip(params, guess, ys):
-                if not p.is_tile:
-                    new.append(None)
-                    continue
-                yl = self.lay[y.id]
-                new.append(yl if yl is not FLEX else g)
-            if [self._default(p, g) if p.is_tile else None for p, g in zip(params, new)] == \
-                    [self._default(p, g) if p.is_tile else None for p, g in zip(params, guess)]:
+            for p, g, y in zip(params, guess, blk.ops[-1].args):
+                yl = self.lay.get(y.id) if p.is_tile else None
+                new.append(None if not p.is_tile else (yl if yl is not FLEX else g))
+            if new == guess:
                 break
             guess = new
+        for p, g in zip(params, guess):
+            if p.is_tile:
+                self.lay[p.id] = self._default(p, g)
+        self.infer(blk)
         for p, res in zip(params, op.results):
             if p.is_tile:
                 self.lay[res.id] = self.lay[p.id]
@@ -180,6 +182,42 @@ class Compiler:
             b = self.lay[op.blocks[1].ops[-1].args[j].id]
             pick = a if a is not FLEX else b
             self.lay[res.id] = self._default(res, pick)
+
+    # ================================================================ matrix-core plans
+    def dot_plan(self, dtype: T.DType, m: int, n: int):
+        """The atom and warp grid of a dot. When a kernel reduces dot results along rows (softmax,
+        attention), every dot gives each warp whole rows and uses one atom shape, so row statistics stay in
+        a warp and meet the other dots' rows without moving."""
+        if self.rowmode:
+            atom = self.arch.mma(dtype)
+            return atom, A.rows_grid(m, n, self.nwarps, atom)
+        atom = self.arch.mma(dtype, m, n, self.nwarps)
+        return atom, A.warp_grid(m, n, self.nwarps, atom)
+
+    def _detect_rowmode(self, block: ir.Block) -> bool:
+        producer = {}
+        reduces = []
+
+        def walk(b):
+            for op in b.ops:
+                for r in op.results:
+                    producer[r.id] = op
+                if op.kind == "reduce" and op.attrs["axis"] == len(op.args[0].type.shape) - 1:
+                    reduces.append(op)
+                for bb in op.blocks:
+                    walk(bb)
+        walk(block)
+
+        def from_dot(v, depth=0):
+            op = producer.get(v.id)
+            if op is None or depth > 16:
+                return False
+            if op.kind == "dot":
+                return True
+            if op.kind in ("ew", "cast", "where"):
+                return any(a.is_tile and from_dot(a, depth + 1) for a in op.args)
+            return False
+        return any(from_dot(r.args[0]) for r in reduces)
 
     # ================================================================ divisibility of scalars
     def divisibility(self, v: ir.Value) -> int:
@@ -411,6 +449,12 @@ class Compiler:
 
     def _call1(self, name: str, x: str, dt: T.DType) -> str:
         t = self.ty(dt)
+        if name in ("exp2", "log2") and dt == T.f32 and not os.environ.get("HK2_PRECISE_EXP"):
+            # the hardware instruction itself (v_exp_f32 / v_log_f32): results below 2^-126 flush to zero,
+            # which is what softmax-style code wants; LLVM's generic form adds range reduction around it
+            full = f"llvm.amdgcn.{name}.f32"
+            self.decl(f"declare float @{full}(float)")
+            return self.e(f"call float @{full}(float {x})")
         full = f"llvm.{name}.{self._fsuf(dt)}"
         self.decl(f"declare {t} @{full}({t})")
         return self.e(f"call afn {t} @{full}({t} {x})") if name in ("exp2", "log2") else \
@@ -471,7 +515,29 @@ class Compiler:
         tv = self.vals[v.id]
         if tv.layout == L:
             return tv
+        moved = self.remap(tv, L)
+        if moved is not None:
+            return moved
         return self.convert([(v, L)])[0]
+
+    @staticmethod
+    def remap(tv: TV, L: Layout) -> Optional[TV]:
+        """The same elements, numbered differently in registers: no data moves. Applies when lanes and warps
+        hold the same elements in both layouts (copies included), e.g. a row statistic of one dot meeting
+        another dot with the same rows."""
+        S = tv.layout
+        if S.shape != L.shape or S.lane != L.lane or S.warp != L.warp:
+            return None
+        where = {}
+        for r in range(S.nregs):
+            where.setdefault(S.reg_offset(r), r)
+        regs = []
+        for r in range(L.nregs):
+            src = where.get(L.reg_offset(r))
+            if src is None:
+                return None
+            regs.append(tv.regs[src])
+        return TV(L, regs, tv.dtype)
 
     def concrete(self, v: ir.Value) -> TV:
         lv = self.lay[v.id]
@@ -511,8 +577,10 @@ class Compiler:
     # innermost loop: this iteration's slot and the other one. They swap at the back edge.
     @staticmethod
     def _conflict(a, b) -> bool:
-        sa, la, ha, ra0, ra1 = a
-        sb, lb, hb, rb0, rb1 = b
+        sa, la, ha, ra0, ra1, pa = a
+        sb, lb, hb, rb0, rb1, pb = b
+        if pa is not None and pa == pb:
+            return False  # the same warp-local partition: each warp touches only its own bytes
         if sa and sb and (ra0, ra1) == (rb0, rb1):
             return sa == sb and la < hb and lb < ha
         x0, x1 = (ra0, ra1) if sa else (la, ha)
@@ -539,12 +607,13 @@ class Compiler:
 
     @staticmethod
     def _absolute(pend):
-        return sorted({("", r0, r1, 0, 0) if s else ("", lo, hi, 0, 0) for s, lo, hi, r0, r1 in pend})
+        return sorted({("", r0, r1, 0, 0, p) if s else ("", lo, hi, 0, 0, p) for s, lo, hi, r0, r1, p in pend},
+                      key=repr)
 
     @staticmethod
     def _swap(pend):
         sw = {"cur": "oth", "oth": "cur", "": ""}
-        return sorted({(sw[s], lo, hi, r0, r1) for s, lo, hi, r0, r1 in pend})
+        return sorted({(sw[s], lo, hi, r0, r1, p) for s, lo, hi, r0, r1, p in pend}, key=repr)
 
     def parity(self) -> str:
         """0 or 1: which slot of the innermost loop's double buffers this iteration uses."""
@@ -595,6 +664,8 @@ class Compiler:
                 got = self.get(v, L)
             if got is None and self.vals[v.id].layout == L:
                 got = self.vals[v.id]
+            if got is None:
+                got = self.remap(self.vals[v.id], L)
             if got is not None:
                 out[i] = got
             else:
@@ -610,25 +681,47 @@ class Compiler:
             size = rows * geom[2] * src.dtype.bytes
             plans.append((i, src, D, geom, base))
             base += (size + 15) // 16 * 16
+        if os.environ.get("HK2_TRACE_CVT"):
+            for i, src, D, geom, b0 in plans:
+                v = items[i][0]
+                op = self.defs.get(v.id)
+                print(f"[hk2 cvt] depth {self.depth} {op.kind if op else 'param'} {v.type}\n  from {src.layout}\n"
+                      f"  to   {D}\n  warp-local {self.warp_local(src.layout, D)}")
         dyn = None
-        if double and self.loops and 2 * base <= self.arch.lds_bytes and not os.environ.get("HK2_NO_DOUBLE"):
+        local = all(self.warp_local(src.layout, D) for _, src, D, _, _ in plans)
+        part = tuple((src.layout.warp, D.warp, geom, b0, src.dtype.bytes) for _, src, D, geom, b0 in plans) \
+            if local and not os.environ.get("HK2_NO_WARP_LOCAL") else None
+        if part is None and double and self.loops and 2 * base <= self.arch.lds_bytes and \
+                not os.environ.get("HK2_NO_DOUBLE"):
             par = self.parity()
             dyn = self.e(f"mul i32 {par}, {base}")
-            acc = ("cur", 0, base, 0, 2 * base)
+            acc = ("cur", 0, base, 0, 2 * base, None)
             self.lds_size = max(self.lds_size, 2 * base)
         else:
-            acc = ("", 0, base, 0, 0)
+            acc = ("", 0, base, 0, 0, part)
             self.lds_size = max(self.lds_size, base)
         self.lds_write(acc)
         for i, src, D, geom, b0 in plans:
             self._lds_store_tile(src, geom, b0, dyn)
         self.flush_deferred()
+        if part is not None:
+            # every warp reads back only what it wrote: order this wave's own LDS accesses, no s_barrier
+            self.emit('  fence syncscope("wavefront") release')
+            self.emit('  fence syncscope("wavefront") acquire')
         self.lds_read(acc)
         for i, src, D, geom, b0 in plans:
             tv = self._lds_load_tile(D, src.dtype, geom, b0, dyn)
             out[i] = tv
             self.memo[-1][("cvt", items[i][0].id, D)] = tv
         return out
+
+    @staticmethod
+    def warp_local(S: Layout, D: Layout) -> bool:
+        """Each warp holds the same elements in both layouts, so a change between them never crosses warps."""
+        if S.warp != D.warp or S.shape != D.shape:
+            return False
+        span = lambda L: {b for b in L.reg + L.lane if any(b)}
+        return span(S) == span(D)
 
     def _dyn_addr(self, lb: str, dyn: Optional[str]) -> str:
         if dyn is None:
@@ -810,13 +903,22 @@ class Compiler:
         nd = op.attrs["ndim"]
         offv = [self.vals[o.id] for o in offs]
         rsrc = self._rsrc(ptr, strides, offv, dt)
-        rem = [self.e(f"sub i32 {d}, {o}") for d, o in zip(dims, offv)]
-        last = nd - 1
+        lead = nd - L.rank  # leading dimensions are indexed, the trailing ones tiled
+        rem = [self.e(f"sub i32 {d}, {o}") for d, o in zip(dims[lead:], offv[lead:])]
+        lead_ok = None
+        for d, o in zip(dims[:lead], offv[:lead]):
+            c = self.e(f"icmp ult i32 {o}, {d}")
+            lead_ok = c if lead_ok is None else self.e(f"and i1 {lead_ok}, {c}")
         v = 1
-        if strides[last] == "1":
-            v = min(L.contig(last), op.attrs["vec"] or 1, max(1, 16 // dt.bytes))
-            v = min(v, max(1, self.divisibility(offs[last])))
-        return rsrc, rem, strides, v
+        if strides[nd - 1] == "1":
+            v = min(L.contig(L.rank - 1), op.attrs["vec"] or 1, max(1, 16 // dt.bytes))
+            v = min(v, max(1, self.divisibility(offs[nd - 1])))
+        return rsrc, rem, strides[lead:], v, lead_ok
+
+    def _and(self, a: Optional[str], b: Optional[str]) -> Optional[str]:
+        if a is None or b is None:
+            return a or b
+        return self.e(f"and i1 {a}, {b}")
 
     def _elem_offset(self, L: Layout, r: int, rem, strides, v: int, dt: T.DType, extra_ok: Optional[str]):
         off = L.reg_offset(r)
@@ -841,7 +943,7 @@ class Compiler:
     def op_load(self, op):
         L = self.lay[op.result.id]
         dt = op.result.type.dtype
-        rsrc, rem, strides, v = self._mem_plan(op, L, dt)
+        rsrc, rem, strides, v, lead_ok = self._mem_plan(op, L, dt)
         bits = v * dt.bits
         ity, suf = self.int_ty(bits), self.int_suf(bits)
         self.decl(f"declare {ity} @llvm.amdgcn.raw.ptr.buffer.load.{suf}(ptr addrspace(8), i32, i32, i32)")
@@ -850,7 +952,7 @@ class Compiler:
         for r in range(0, L.nregs, v):
             if L.canonical_reg(r) != r:
                 continue
-            voff, ok = self._elem_offset(L, r, rem, strides, v, dt, None)
+            voff, ok = self._elem_offset(L, r, rem, strides, v, dt, lead_ok)
             x = self.e(f"call {ity} @llvm.amdgcn.raw.ptr.buffer.load.{suf}(ptr addrspace(8) {rsrc}, i32 {voff}, "
                        f"i32 0, i32 0)")
             vals = self.unpack(x, v, dt, ity) if v > 1 else [self.e(f"bitcast {ity} {x} to {self.ty(dt)}")
@@ -883,11 +985,11 @@ class Compiler:
                 if need <= max(self.lds_size, 32 << 10):
                     tv = self.get(val, Lb)
         L = tv.layout
-        rsrc, rem, strides, v = self._mem_plan(op, L, dt)
+        rsrc, rem, strides, v, lead_ok = self._mem_plan(op, L, dt)
         bits = v * dt.bits
         ity, suf = self.int_ty(bits), self.int_suf(bits)
         self.decl(f"declare void @llvm.amdgcn.raw.ptr.buffer.store.{suf}({ity}, ptr addrspace(8), i32, i32, i32)")
-        own = self.owner(L)
+        own = self._and(self.owner(L), lead_ok)
         for r in range(0, L.nregs, v):
             if L.canonical_reg(r) != r:
                 continue
@@ -904,16 +1006,16 @@ class Compiler:
         a, b, c = op.args
         m, k = a.type.shape
         n = b.type.shape[1]
-        atom = self.arch.mma(a.type.dtype, m, n, self.nwarps)
+        atom, grid = self.dot_plan(a.type.dtype, m, n)
         if m % atom.m or n % atom.n or k % atom.k:
             raise ValueError(f"hk2.dot {m}x{k} @ {k}x{n}: on {self.arch.name} the tile sizes must be multiples of "
                              f"{atom.m}x{atom.k} @ {atom.k}x{atom.n}")
-        La = A.a_layout(atom, m, k, n, self.nwarps)
-        Lb = A.b_layout(atom, m, k, n, self.nwarps)
+        La = A.a_layout(atom, m, k, n, self.nwarps, grid)
+        Lb = A.b_layout(atom, m, k, n, self.nwarps, grid)
         Lc = self.lay[op.result.id]
         ta, tb = self.convert([(a, La), (b, Lb)], double=self.depth > 0)
         tc = self.get(c, Lc)
-        wm, wn = A.warp_grid(m, n, self.nwarps, atom)
+        wm, wn = grid
         rm, rn, rk = (m // wm) // atom.m, (n // wn) // atom.n, k // atom.k
         rm, rn = max(rm, 1), max(rn, 1)
         dt = a.type.dtype
@@ -951,6 +1053,27 @@ class Compiler:
         return self.pack(regs, dt, atom.op_ty)
 
     # reductions ------------------------------------------------------------
+    def dpp_pair(self, x: str, b: int, lower_reduced: bool, dt: T.DType) -> Optional[str]:
+        """The value of the partner lane for a reduction step over lane bit ``b`` (b < 4), by DPP: a VALU
+        move, no LDS traffic. RDNA has an exact xor (row_xmask); CDNA pairs lanes with quad permutes and,
+        when the lower bits are already reduced, with the half-row and row mirrors."""
+        if dt.bits != 32 or b > 3 or os.environ.get("HK2_NO_DPP"):
+            return None
+        if self.arch.family == "rdna":
+            ctrl = 0x160 | (1 << b)
+        elif b == 0:
+            ctrl = 0xB1  # quad_perm [1,0,3,2]
+        elif b == 1:
+            ctrl = 0x4E  # quad_perm [2,3,0,1]
+        elif lower_reduced:
+            ctrl = 0x141 if b == 2 else 0x140  # row_half_mirror, row_mirror
+        else:
+            return None
+        self.decl("declare i32 @llvm.amdgcn.update.dpp.i32(i32, i32, i32 immarg, i32 immarg, i32 immarg, i1 immarg)")
+        xi = x if dt.is_int else self.e(f"bitcast {self.ty(dt)} {x} to i32")
+        y = self.e(f"call i32 @llvm.amdgcn.update.dpp.i32(i32 0, i32 {xi}, i32 {ctrl}, i32 15, i32 15, i1 true)")
+        return y if dt.is_int else self.e(f"bitcast i32 {y} to {self.ty(dt)}")
+
     def shfl_xor(self, x: str, mask: int, dt: T.DType) -> str:
         self.decl("declare i32 @llvm.amdgcn.ds.bpermute(i32, i32)")
         addr = self.en(("shfladdr", mask), lambda: f"xor i32 {self.lane()}, {mask}")
@@ -985,11 +1108,13 @@ class Compiler:
         for b, basis in enumerate(L.lane):
             if not basis[ax]:
                 continue
+            lower = all(L.lane[i][ax] for i in range(b))
             done = {}
             for r in range(n):
                 c = regs[r]
                 if c not in done:
-                    done[c] = self.binop(fn, c, self.shfl_xor(c, 1 << b, dt), dt)
+                    other = self.dpp_pair(c, b, lower, dt) or self.shfl_xor(c, 1 << b, dt)
+                    done[c] = self.binop(fn, c, other, dt)
                 regs[r] = done[c]
         wbits = [b for b, basis in enumerate(L.warp) if basis[ax]]
         if wbits:
@@ -1008,7 +1133,7 @@ class Compiler:
         size = K * P * dt.bytes
         self.lds_size = max(self.lds_size, size)
         pos0 = self.lw(R, 0)
-        self.lds_write(("", 0, size, 0, 0))
+        self.lds_write(("", 0, size, 0, 0, None))
         seen = {}
         for r in range(R.nregs):
             c = R.canonical_reg(r)
@@ -1020,7 +1145,7 @@ class Compiler:
             idx = self.e(f"add i32 {kp}, {p}")
             byt = self.e(f"mul i32 {idx}, {dt.bytes}")
             self.emit(f"  store {self.ty(dt)} {regs[r]}, ptr addrspace(3) {self.lds_ptr(byt)}, align {dt.bytes}")
-        self.lds_read(("", 0, size, 0, 0))
+        self.lds_read(("", 0, size, 0, 0, None))
         out, done = list(regs), {}
         for r in range(R.nregs):
             if regs[r] in done:
@@ -1071,6 +1196,7 @@ class Compiler:
         lb, ub, step = (self.vals[a.id] for a in op.args[:3])
         params = blk.params[1:]
         inits = [self._in_layout(i, p) for i, p in zip(op.args[3:], params)]
+        self._hoist_operands(blk)
         if self.pend_r or self.pend_w:
             self.barrier()  # once here, rather than at the top of every iteration
         pre = self.cur
@@ -1101,7 +1227,8 @@ class Compiler:
             end_r, end_w = self._swap(self.pend_r), self._swap(self.pend_w)
             if set(end_r) <= set(head_r) and set(end_w) <= set(head_w):
                 break
-            head_r, head_w = sorted(set(head_r) | set(end_r)), sorted(set(head_w) | set(end_w))
+            head_r = sorted(set(head_r) | set(end_r), key=repr)
+            head_w = sorted(set(head_w) | set(end_w), key=repr)
             self.memo.pop()
             self.loops.pop()
             del self.blocks[n_blocks:]
@@ -1131,6 +1258,35 @@ class Compiler:
         for p, res in zip(params, op.results):
             self.vals[res.id] = self.vals[p.id]
 
+    def _hoist_operands(self, blk: ir.Block):
+        """Matrix-core operands that do not change in the loop (attention's Q) take their operand layout once,
+        before it, instead of every iteration."""
+        inside, dots = set(), []
+
+        def walk(b):
+            for p in b.params:
+                inside.add(p.id)
+            for o in b.ops:
+                inside.update(r.id for r in o.results)
+                if o.kind == "dot":
+                    dots.append(o)
+                for bb in o.blocks:
+                    walk(bb)
+        walk(blk)
+        items = []
+        for d in dots:
+            a, b = d.args[:2]
+            m, k = a.type.shape
+            n = b.type.shape[1]
+            atom, grid = self.dot_plan(a.type.dtype, m, n)
+            for v, L in ((a, A.a_layout(atom, m, k, n, self.nwarps, grid)),
+                         (b, A.b_layout(atom, m, k, n, self.nwarps, grid))):
+                if v.id not in inside and self.lay.get(v.id) is not FLEX and v.id in self.vals and \
+                        self.vals[v.id].layout != L:
+                    items.append((v, L))
+        if items:
+            self.convert(items)
+
     def op_if(self, op):
         cond = self.vals[op.args[0].id]
         tl, el, ml = self.label("then"), self.label("else"), self.label("endif")
@@ -1153,7 +1309,7 @@ class Compiler:
             self.emit(f"  br label %{ml}")
             self.memo.pop()
         self.start(ml)
-        self.pend_r, self.pend_w = sorted(merged_r), sorted(merged_w)
+        self.pend_r, self.pend_w = sorted(merged_r, key=repr), sorted(merged_w, key=repr)
         for j, res in enumerate(op.results):
             a, b = (self._phi_vals(res, outs[k][j]) for k in range(2))
             names = []
@@ -1167,6 +1323,7 @@ class Compiler:
     def compile(self, top: ir.Block, params: List[Tuple[ir.Value, str, str]], param_div: Dict[int, int]) -> str:
         """``params``: (value, LLVM type, name) for each kernel argument in order."""
         self.param_div = param_div
+        self.rowmode = self._detect_rowmode(top)
         self.infer(top)
         self.start("entry")
         for v, _, name in params:

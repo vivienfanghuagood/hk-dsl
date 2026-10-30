@@ -187,8 +187,8 @@ def _is_constexpr(p: inspect.Parameter) -> bool:
 def _tensor_key(t) -> Tuple:
     from .types import from_torch
     dt = from_torch(t.dtype)
-    if t.dim() not in (1, 2):
-        raise ValueError(f"hk2 kernels take 1-D or 2-D tensors (view the others), got {t.dim()}-D")
+    if not 1 <= t.dim() <= 4:
+        raise ValueError(f"hk2 kernels take tensors of 1 to 4 dimensions, got {t.dim()}-D")
     contig = t.stride(-1) == 1
     vec = max(1, 16 // dt.bytes)
     aligned = contig and t.data_ptr() % 16 == 0 and t.shape[-1] % vec == 0 and all(

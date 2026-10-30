@@ -187,22 +187,30 @@ def _warps(wm, wn, nwarps, m_step, n_step, a_like: Optional[str]):
     return tuple(out)
 
 
-def acc_layout(atom: MmaAtom, m: int, n: int, nwarps: int) -> Layout:
-    wm, wn = warp_grid(m, n, nwarps, atom)
+def rows_grid(m: int, n: int, nwarps: int, atom: MmaAtom) -> Tuple[int, int]:
+    """Warps over rows only (each warp owns whole rows), as far as the rows allow: row reductions of the
+    result then stay inside a warp."""
+    wm = max(1, min(nwarps, m // atom.m))
+    wn = max(1, min(nwarps // wm, n // atom.n))
+    return wm, wn
+
+
+def acc_layout(atom: MmaAtom, m: int, n: int, nwarps: int, grid: Optional[Tuple[int, int]] = None) -> Layout:
+    wm, wn = grid or warp_grid(m, n, nwarps, atom)
     tm, tn = m // wm, n // wn
     reg = atom.c_reg + _rep(atom.n, tn // atom.n, 1) + _rep(atom.m, tm // atom.m, 0)
     return Layout((m, n), reg, atom.c_lane, _warps(wm, wn, nwarps, tm, tn, None), f"mma_c{wm}x{wn}")
 
 
-def a_layout(atom: MmaAtom, m: int, k: int, n: int, nwarps: int) -> Layout:
-    wm, wn = warp_grid(m, n, nwarps, atom)
+def a_layout(atom: MmaAtom, m: int, k: int, n: int, nwarps: int, grid: Optional[Tuple[int, int]] = None) -> Layout:
+    wm, wn = grid or warp_grid(m, n, nwarps, atom)
     tm = m // wm
     reg = atom.a_reg + _rep(atom.k, k // atom.k, 1) + _rep(atom.m, tm // atom.m, 0)
     return Layout((m, k), reg, atom.a_lane, _warps(wm, wn, nwarps, tm, 0, "a"), f"mma_a{wm}x{wn}")
 
 
-def b_layout(atom: MmaAtom, m: int, k: int, n: int, nwarps: int) -> Layout:
-    wm, wn = warp_grid(m, n, nwarps, atom)
+def b_layout(atom: MmaAtom, m: int, k: int, n: int, nwarps: int, grid: Optional[Tuple[int, int]] = None) -> Layout:
+    wm, wn = grid or warp_grid(m, n, nwarps, atom)
     tn = n // wn
     reg = atom.b_reg + _rep(atom.k, k // atom.k, 0) + _rep(atom.n, tn // atom.n, 1)
     return Layout((k, n), reg, atom.b_lane, _warps(wm, wn, nwarps, 0, tn, "b"), f"mma_b{wm}x{wn}")

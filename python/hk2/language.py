@@ -352,12 +352,14 @@ def _tensor_operands(t: TensorArg) -> List[Value]:
 
 
 def load(t: TensorArg, offsets, shape, other=0) -> Tile:
-    """The block of ``t`` at ``offsets`` (one per dimension) of the given shape; outside ``t`` reads ``other``."""
+    """The block of ``t`` at ``offsets`` (one per dimension of ``t``) of the given shape; outside ``t`` reads
+    ``other``. A tile is 1-D or 2-D: when ``t`` has more dimensions, the leading offsets index them and the
+    tile covers the trailing ones, e.g. ``hk.load(q, (b, h, m0, 0), (BM, D))`` on a (B, H, S, D) tensor."""
     if not isinstance(t, TensorArg):
         raise _err("hk.load takes a tensor argument")
     shape = _check_shape(shape if isinstance(shape, (tuple, list)) else (shape,))
-    if len(shape) != t.ndim:
-        raise _err(f"{t.name} is {t.ndim}-D; the tile shape must be too, got {shape}")
+    if len(shape) > t.ndim:
+        raise _err(f"{t.name} is {t.ndim}-D; a {len(shape)}-D tile does not fit it")
     offs = _offsets(t, offsets)
     return Tile(_op("load", _tensor_operands(t) + [o.v for o in offs], [TileType(shape, t.dtype)],
                     {"ndim": t.ndim, "other": other, "vec": t.vec, "name": t.name}).result)
@@ -370,8 +372,8 @@ def store(t: TensorArg, offsets, value) -> None:
     offs = _offsets(t, offsets)
     if not isinstance(value, Tile):
         raise _err("hk.store writes a tile")
-    if len(value.shape) != t.ndim:
-        raise _err(f"{t.name} is {t.ndim}-D; the tile is {len(value.shape)}-D")
+    if len(value.shape) > t.ndim:
+        raise _err(f"{t.name} is {t.ndim}-D; a {len(value.shape)}-D tile does not fit it")
     value = value.to(t.dtype)
     _op("store", _tensor_operands(t) + [o.v for o in offs] + [value.v], [], {"ndim": t.ndim, "vec": t.vec,
                                                                           "name": t.name})
