@@ -49,10 +49,13 @@ def _strided(ir: "TracedKernel") -> List[str]:
 
 def _includes(ir: "TracedKernel", *more: str) -> tuple:
     """kittens.cuh, then what this target's tree lacks, then the wrapper's;
-    hk/rdna/strided.cuh only for a kernel with a strided global, so every
-    other kernel's source is what it was."""
+    hk/rdna/strided.cuh only for a kernel with a strided global, and on RDNA
+    hk/rdna/map.cuh only for a kernel with an hk.map (CDNA's hk/cdna.cuh has
+    map_cpp), so every other kernel's source is what it was."""
+    tgt = get_target(ir.arch)
     strided = ('"hk/rdna/strided.cuh"',) if _strided(ir) else ()
-    return ('"kittens.cuh"', *get_target(ir.arch).extra_includes, *strided, *more)
+    maps = ('"hk/rdna/map.cuh"',) if tgt.wave == 32 and ir._has_op("hk.map") else ()
+    return ('"kittens.cuh"', *tgt.extra_includes, *strided, *maps, *more)
 
 
 def _no_strided(ir: "TracedKernel", what: str) -> None:
