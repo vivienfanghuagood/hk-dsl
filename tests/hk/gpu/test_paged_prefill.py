@@ -332,7 +332,9 @@ def _flash_run(reqs, head_dim=128, h_kv=2, group=8, dsplit=False, layout="flash"
         nb = k.shape[0]
         fl = torch.stack([k.transpose(1, 2), v.transpose(1, 2)], dim=1)   # (nb, 2, 16, hkv, d)
         kv = fl.reshape(nb, 2, ROCM_PAGE, h_kv * d).contiguous()
-        kern(q.view(n_tok, h * d), kv, kv, table, lens, q_start, tiles, out.view(n_tok, h * d))
+        packed = [q.unsqueeze(0), out.unsqueeze(0)] if decodes and not dsplit else []
+        kern(q.view(n_tok, h * d), kv, kv, table, lens, q_start, tiles, out.view(n_tok, h * d),
+             *packed)
     else:
         kern(q.view(n_tok, h * d), *pp.rocm_views(k5, v4), table, lens, q_start, tiles,
              out.view(n_tok, h * d))
@@ -403,3 +405,25 @@ def test_dsplit_rocm_v_ones_is_exactly_one():
     kern(q.view(n_tok, h * d), *pp.rocm_views(k5, v4), table, lens, q_start,
          pp.q_tiles(200, q.device, 96), out.view(n_tok, h * d))
     assert torch.all(out == 1.0)
+
+
+@rocm_only
+def test_flash_packed_decodes_with_a_strided_q():
+    """Decodes GQA-packed (one workgroup a request and kv head) next to prefill chunks, with q a
+    slice of a wider row as a fused qkv projection gives it."""
+    reqs = [(500, 1), (2047, 1), (0, 300), (16, 1), (1000, 77), (33, 1)]
+    q, (k, v), _, table, lens, q_start = _rocm_case(reqs, head_dim=128, h_kv=2, group=8)
+    n_tok, h, d = q.shape
+    wide = torch.randn(n_tok, h * d + 2 * 2 * d, device="cuda", dtype=torch.bfloat16)
+    wide[:, : h * d] = q.reshape(n_tok, h * d)
+    qs = wide[:, : h * d].view(n_tok, h, d)                   # row stride (h + 4) * d
+    out = torch.full_like(q, 7.0)
+    kern = pp.paged_prefill_kernel("t_pp_flash_d128_g8_w12_dec", head_dim=128, group=8,
+                                   layout="flash", warps=12, decodes=True)
+    fl = torch.stack([k.transpose(1, 2), v.transpose(1, 2)], dim=1)
+    kv = fl.reshape(k.shape[0], 2, ROCM_PAGE, 2 * d).contiguous()
+    kern(qs.reshape(n_tok, h * d), kv, kv, table, lens, q_start,
+         pp.q_tiles(300, q.device, 192), out.view(n_tok, h * d), qs.unsqueeze(0),
+         out.unsqueeze(0))
+    want = _reference(q, k, v, table, lens, q_start, 8, page=ROCM_PAGE)
+    _attn_ref.check(out, want)

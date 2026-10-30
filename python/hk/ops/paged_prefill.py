@@ -77,9 +77,14 @@ def paged_prefill_kernel(name: str, *, head_dim: int = 128, group: int = 4,
     Nothing is read on the host, so a launch is a function of (max query
     length, requests) alone.
 
-    `decodes`: one-query requests are computed too (a 16-row fragment of the tile, the rest
-    masked) -- for an engine whose one kernel takes the whole batch (TRITON_ATTN); off, they are
-    skipped, as ROCM_ATTN's prefill-only call wants.
+    `decodes`: one-query requests are computed too -- for an engine whose one kernel takes the
+    whole batch (TRITON_ATTN); off, they are skipped, as ROCM_ATTN's prefill-only call wants.
+    Without dsplit a decode is GQA-packed: one workgroup a (request, kv head), its first warp's
+    rows the `group` query heads of the request's one token. The kernel then takes two more
+    tensors, `qh` -- q as (1, tokens, heads, head_dim), a strided view (a fused qkv's row stride)
+    -- and `oh`, the output the same way; a head-packed tile is staged from `qh` into LDS, every
+    row masked at the token's position, and stored to `oh`. With dsplit a decode is one row of
+    one query head's tile.
 
     `dsplit` (head_dim 256): a query row's head_dim is split between a pair of
     warps, each holding its half of Q and of O (a d256 row in one warp is 256
@@ -120,10 +125,14 @@ def paged_prefill_kernel(name: str, *, head_dim: int = 128, group: int = 4,
     ty_vr = hk.RT(bf16, 16, 16, "row")
     ty_vec = hk.row_vec(ty_s)
     k_ty = hk.Tensor[bf16, "strided"] if rocm else hk.Tensor[bf16]
+    packed = decodes and paged and not dsplit       # GQA-packed decode workgroups
+    if packed and group > 16:
+        raise ValueError(f"group={group}: a packed decode is one 16-row tile of query heads")
     # the V^T chunks (vt_d_chunk wide) a warp transposes into LDS each block: d_chunks of its
     # half, shared by the warps of that half
     v_iters = -(-d_chunks // rows_warps) if not rocm else 0
-    lds = 2 * kv_block * head_dim * 2 + (warps * kv_frags * 16 * q_block * 4 if dsplit else 0)
+    lds = (2 * kv_block * head_dim * 2 + (warps * kv_frags * 16 * q_block * 4 if dsplit else 0)
+           + (16 * head_dim * 2 if decodes and paged and not dsplit else 0))
     from ..target import current_arch, get_target  # noqa: PLC0415
 
     if lds > get_target(current_arch()).lds_per_workgroup:
@@ -133,7 +142,8 @@ def paged_prefill_kernel(name: str, *, head_dim: int = 128, group: int = 4,
     def body(q: hk.Tensor[bf16], k_cache: k_ty,
              v_cache: hk.Tensor[bf16], block_table: hk.Tensor[i32],
              seq_lens: hk.Tensor[i32], q_start: hk.Tensor[i32],
-             tiles: hk.Tensor[i32], o: hk.Tensor[bf16]):
+             tiles: hk.Tensor[i32], o: hk.Tensor[bf16],
+             qh: hk.Tensor[bf16, "strided"] = None, oh: hk.Tensor[bf16] = None):
         g = hk.group(warps)
         k_s = hk.lds.alloc(st_k, name="k_s")
         vt_s = hk.lds.alloc(st_vt, name="vt_s")
@@ -156,6 +166,9 @@ def paged_prefill_kernel(name: str, *, head_dim: int = 128, group: int = 4,
                 buf_v = g.stage_buffer(v_pg[0][0], depth=ppb * halves, name="buf_v")
         else:
             buf_k = g.stage_buffer(k_s, name="buf_k")
+        if packed:
+            q_s = hk.lds.alloc(hk.ST(bf16, 16, head_dim), name="q_s")
+            buf_q = g.stage_buffer(q_s, name="buf_q")
         gr_k = k_me.granules(name="gr_k")
         gr_vt = vt_me.granules(name="gr_vt")
 
@@ -184,14 +197,38 @@ def paged_prefill_kernel(name: str, *, head_dim: int = 128, group: int = 4,
         left = q_len - q_local                      # its rows the request has
         if paged:
             # 1 for a tile of a prefill's queries; 0 past them and for a decode
-            if decodes:
+            if packed:
+                # a prefill's tile, or a decode's (request, kv head) workgroup: one of the two
+                is_pre = hk.min(hk.max(q_len - 1, 0), 1)
+                act = is_pre * hk.min(hk.max(q_len - tile_lo, 0), 1)
+                act_d = ((1 - is_pre) * hk.min(q_len, 1) * (1 - hk.min(head % group, 1))
+                         * (1 - hk.min(qb, 1)))
+            elif decodes:
                 act = hk.min(hk.max(q_len - tile_lo, 0), 1)
             else:
                 act = hk.min(hk.max(q_len - 1, 0), 1) * hk.min(hk.max(q_len - tile_lo, 0), 1)
             left = hk.min(left, act * q_tile)
+            if packed:
+                # the first warp's rows are the token's `group` query heads
+                left = left + act_d * group * (1 - hk.min(wid, 1))
+                dec = act_d > 0
 
-        q_r = [q[hk.elem_coord(0, 0, q0 + q_local, col + 16 * kk)]
-               .load(ty_q, bounded=left) for kk in range(d_frags)]
+        if packed:
+            q_r = [hk.zeros(ty_q) for _ in range(d_frags)]
+            if hk.uniform(dec):
+                g.stage(buf_q, qh[hk.elem_coord(0, q0, head, 0)])
+                hk.arch.vm_wait(0)
+                g.commit(q_s, buf_q)
+                hk.arch.barrier(drain=True)
+                for kk in range(d_frags):
+                    q_s.subtile(16, 16, 0, kk).load(ty_q, into=q_r[kk])
+            else:
+                for kk in range(d_frags):
+                    q[hk.elem_coord(0, 0, q0 + q_local, col + 16 * kk)].load(
+                        ty_q, bounded=left, into=q_r[kk])
+        else:
+            q_r = [q[hk.elem_coord(0, 0, q0 + q_local, col + 16 * kk)]
+                   .load(ty_q, bounded=left) for kk in range(d_frags)]
         o_c = [hk.zeros(ty_o) for _ in range(d_frags)]
         m_run = hk.neg_infty(ty_vec)
         l_run = hk.zeros(ty_vec)
@@ -212,7 +249,7 @@ def paged_prefill_kernel(name: str, *, head_dim: int = 128, group: int = 4,
         kv_blocks = hk.cdiv(last_q + 1, kv_block)
         n_pages = kv_blocks
         if paged:
-            kv_blocks = kv_blocks * act
+            kv_blocks = kv_blocks * (act + act_d if packed else act)
             # At least the request's first page: a request padded into the
             # batch (no queries, no tokens) still prefetches one, from its
             # table row's first entry.
@@ -296,8 +333,17 @@ def paged_prefill_kernel(name: str, *, head_dim: int = 128, group: int = 4,
             # kv > position: S^T's rows are kv, its columns this warp's
             # queries, at positions ctx + q_local + column.
             dd = ctx + q_local - kv_lo
-            for n in range(kv_frags):
-                s_f[n].triu_(dd - 16 * n, NEG_INF)
+            if packed:
+                # a decode's rows are all at the token's position, ctx: keys past it masked
+                if hk.uniform(dec):
+                    for n in range(kv_frags):
+                        s_f[n].lower_fill_(ctx + 1 - kv_lo - 16 * n, NEG_INF)
+                else:
+                    for n in range(kv_frags):
+                        s_f[n].triu_(dd - 16 * n, NEG_INF)
+            else:
+                for n in range(kv_frags):
+                    s_f[n].triu_(dd - 16 * n, NEG_INF)
 
             m_old = m_run.copy()
             for n in range(kv_frags):
@@ -356,13 +402,26 @@ def paged_prefill_kernel(name: str, *, head_dim: int = 128, group: int = 4,
         # to nothing.
         for i, c in enumerate(o_c):
             c /= l_run
-            o[hk.elem_coord(0, 0, q0 + q_local, col + 16 * i)].store(
-                hk.transpose(c), bounded=left)
+            if packed:
+                if hk.uniform(dec):
+                    oh[hk.elem_coord(0, q0, head, 16 * i)].store(hk.transpose(c), bounded=left)
+                else:
+                    o[hk.elem_coord(0, 0, q0 + q_local, col + 16 * i)].store(
+                        hk.transpose(c), bounded=left)
+            else:
+                o[hk.elem_coord(0, 0, q0 + q_local, col + 16 * i)].store(
+                    hk.transpose(c), bounded=left)
 
     body.__name__ = name
     # the cache's K is strided for layout="rocm" (the annotation is a string
     # under `from __future__ import annotations`; this is its value)
     body.__annotations__["k_cache"] = k_ty
+    if not packed:
+        # the eight tensors; qh and oh are the packed decode's (their defaults are never used)
+        import inspect  # noqa: PLC0415
+
+        sig = inspect.signature(body)
+        body.__signature__ = sig.replace(parameters=list(sig.parameters.values())[:8])
 
     def _grid(p):
         if paged:
