@@ -961,6 +961,9 @@ class Compiler:
     def op_full(self, op):
         pass
 
+    def op_print(self, op):
+        pass  # interpreter only
+
     op_splat = op_arange = op_broadcast = op_full
 
     def op_expand_dims(self, op):

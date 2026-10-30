@@ -10,7 +10,7 @@ from . import ir
 from . import types as T
 from .ir import PtrType, ScalarType, TileType, Value
 
-__all__ = ["program_id", "zeros", "full", "arange", "load", "store", "dot", "sum", "max", "min", "exp", "exp2",
+__all__ = ["print", "program_id", "zeros", "full", "arange", "load", "store", "dot", "sum", "max", "min", "exp", "exp2",
            "log", "log2", "sqrt", "rsqrt", "abs", "maximum", "minimum", "where", "cdiv", "static_range", "constexpr",
            "Tile", "Scalar", "TensorArg", "HKError"]
 
@@ -483,6 +483,12 @@ def max(x: Tile, axis: int) -> Tile:  # noqa: A001
 
 def min(x: Tile, axis: int) -> Tile:  # noqa: A001
     return _reduce("min", x, axis)
+
+
+def print(msg: str, *values) -> None:  # noqa: A001
+    """Show values when the kernel runs in the interpreter (HK2_INTERPRET=1); compiled kernels ignore it."""
+    vs = [v.v for v in values if isinstance(v, (Tile, Scalar))]
+    _op("print", vs, [], {"msg": str(msg)})
 
 
 def cdiv(a, b):

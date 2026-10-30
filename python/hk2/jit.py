@@ -231,7 +231,7 @@ class Kernel:
         raise TypeError(f"launch {self.name} with a grid: {self.name}[grid](...)")
 
     def _bind(self, args, kwargs):
-        opts = {k: kwargs.pop(k) for k in ("num_warps", "arch") if k in kwargs}
+        opts = {k: kwargs.pop(k) for k in ("num_warps", "arch", "interpret") if k in kwargs}
         ba = self.sig.bind(*args, **kwargs)
         ba.apply_defaults()
         return ba, opts
@@ -257,8 +257,27 @@ class Kernel:
         return tuple(key)
 
     def compile(self, key, ba, arch_name: str, num_warps: int) -> Compiled:
-        import torch
         arch = A.get_arch(arch_name)
+        top, params, packing, param_div = self.trace(key, ba)
+        if os.environ.get("HK2_PIPELINE", "1") != "0":
+            passes.pipeline_loads(top)
+        c = Compiler(arch, num_warps, self.name, rt.llvm_major())
+        text = c.compile(top, params, param_div)
+        if os.environ.get("HK2_DUMP"):
+            print(ir.dump(top))
+            print(text)
+        co = rt.compile_ir(text, arch.name)
+        stats = asm_stats(co.asm)
+        stats["barriers"] = c.n_barriers
+        if stats.get("scratch", 0) and not os.environ.get("HK2_ALLOW_SPILL"):
+            warnings.warn(f"hk2: {self.name} spills {stats['scratch']} bytes per lane to scratch on {arch.name} "
+                          f"(vgprs {stats.get('vgprs')}); smaller tiles or fewer warps' work per thread avoid it",
+                          stacklevel=4)
+        return Compiled(rt.CodeObject(co.hsaco, self.name), text, co.asm, stats, c.lds_size,
+                        num_warps * arch.wave, packing)
+
+    def trace(self, key, ba):
+        """The kernel as tile IR for one specialization: (top block, params, packing, divisibility)."""
         if self._rw is None:
             self._rw = rewrite(self.fn)
         b = ir.Builder()
@@ -319,22 +338,17 @@ class Kernel:
                 raise hl.HKError(f"{self.name}: kernels return nothing; write results with hk2.store")
         finally:
             hl._State.builder = None
-        if os.environ.get("HK2_PIPELINE", "1") != "0":
-            passes.pipeline_loads(b.top)
-        c = Compiler(arch, num_warps, self.name, rt.llvm_major())
-        text = c.compile(b.top, params, param_div)
-        if os.environ.get("HK2_DUMP"):
-            print(ir.dump(b.top))
-            print(text)
-        co = rt.compile_ir(text, arch.name)
-        stats = asm_stats(co.asm)
-        stats["barriers"] = c.n_barriers
-        if stats.get("scratch", 0) and not os.environ.get("HK2_ALLOW_SPILL"):
-            warnings.warn(f"hk2: {self.name} spills {stats['scratch']} bytes per lane to scratch on {arch.name} "
-                          f"(vgprs {stats.get('vgprs')}); smaller tiles or fewer warps' work per thread avoid it",
-                          stacklevel=4)
-        return Compiled(rt.CodeObject(co.hsaco, self.name), text, co.asm, stats, c.lds_size,
-                        num_warps * arch.wave, packing)
+        return b.top, params, packing, param_div
+
+    def interpret(self, grid, ba):
+        """Run on the CPU through hk2.interpret (no GPU compiler involved); results land in the tensors."""
+        from . import interpret as it
+        key = self.specialize(ba, "interpret", 1)
+        top, params, packing, _ = self.trace(key, ba)
+        if callable(grid):
+            grid = grid(dict(ba.arguments))
+        grid = tuple(int(g) for g in (grid if isinstance(grid, (tuple, list)) else (grid,)))
+        it.run(top, params, packing, dict(ba.arguments), grid + (1,) * (3 - len(grid)))
 
     def warmup(self, *args, **kwargs) -> Compiled:
         ba, opts = self._bind(list(args), dict(kwargs))
@@ -348,6 +362,8 @@ class Kernel:
     def run(self, grid, *args, **kwargs):
         import torch
         ba, opts = self._bind(list(args), dict(kwargs))
+        if opts.get("interpret", os.environ.get("HK2_INTERPRET", "0") not in ("", "0")):
+            return self.interpret(grid, ba)
         arch = opts.get("arch") or rt.current_arch()
         nw = opts.get("num_warps") or self.num_warps or 4
         key = self.specialize(ba, arch, nw)
