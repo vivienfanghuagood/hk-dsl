@@ -9,6 +9,21 @@ The next version's notes collect here until it is released.
 What is on main after 0.8.0. `pip install hk-dsl` (0.8.0) does not have it;
 the API reference marks such names *New after 0.8.0*.
 
+**gfx1100 under clang 24 (ROCm 10.1): the kernels the spill gate refused build again.** With clang
+24, 139 of the codegen tier's gfx1100 kernels spilled and were refused: `hk.ops`' fp16/bf16
+RMSNorm and LayerNorm, rope, the fp32 norm/softmax at the top of their range, examples 02 and 03,
+and four decode schedules. The cause was HipKittens' element-by-element global<->register paths,
+the fallback for unaligned rows and the only path for layouts that don't vectorize. They gave
+every element a 64-bit pointer, and clang 24 kept a whole tile's worth of them live: an RMSNorm
+that needs 79 VGPRs under clang 22 took 256. Under clang 24 these paths now go through a buffer
+resource at 32-bit offsets (HipKittens#4, `HK_RT_GLOBAL_BUFFERED`):
+- the codegen tier passes on gfx1100;
+- the 256 kernels that already built use a median of 48 fewer VGPRs;
+- 12 of them lose one occupancy step (attention, paged decode, elementwise min/max/gelu).
+
+Under clang 22 and 23 nothing changes: the ISA is identical for all 1049 kernels of the gfx1100
+catalog.
+
 **gfx1100: the decode GEMM builds under the TheRock ROCm 7.14 compiler, so vLLM's linear routes
 to hk in the W7900D production images again.** Under its AMD clang 23 the four-tile
 `decode_gemm` spilled (256 -> 264 VGPRs), the spill gate refused it, tuning at load failed and
