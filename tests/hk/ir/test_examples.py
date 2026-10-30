@@ -44,3 +44,20 @@ def test_the_control_flow_example_carries_its_scalars():
     kernels = dict(KERNELS)
     assert "hk.carried_names = [\"col\"]" in kernels["prefix_sum_for"].trace().dump()
     assert "scf.while" in kernels["prefix_sum_while"].trace().dump()
+
+
+def test_an_example_pinned_to_some_gpus_says_which_and_why():
+    """The GPU tier skips such an example elsewhere with its WHY (test_example_runs), rather
+    than counting the line it prints there as a pass; one that checks the GPU's arch must
+    declare them."""
+    from hk.target import TARGETS
+
+    assert _catalog.arches("14_task_graph.py")[0] == ("gfx950",)
+    for script, *_ in _catalog.SCRIPTS:
+        arches, why = _catalog.arches(script)
+        text = (_catalog.HERE / script).read_text(encoding="utf-8")
+        if "device_arch(" in text or "runs_here(" in text:
+            assert arches, f"{script} checks the GPU's arch but declares no ARCHES"
+        if arches is not None:
+            assert set(arches) <= set(TARGETS) and why, script
+

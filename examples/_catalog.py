@@ -7,9 +7,10 @@ breaks an example fails there rather than in a reader's terminal.
 
 from __future__ import annotations
 
+import ast
 import importlib.util
 from pathlib import Path
-from typing import List, Tuple
+from typing import List, Optional, Tuple
 
 HERE = Path(__file__).resolve().parent
 
@@ -99,3 +100,14 @@ SCRIPTS = [
     ("15_placement.py",),
     ("validate.py", "--quick"),
 ]
+
+
+def arches(script: str) -> Tuple[Optional[Tuple[str, ...]], str]:
+    """The GPUs `script` runs on and why, from its module-level ARCHES and WHY,
+    read without importing it; (None, "") for an example that runs everywhere."""
+    found = {}
+    for node in ast.parse((HERE / script).read_text(encoding="utf-8")).body:
+        if isinstance(node, ast.Assign) and len(node.targets) == 1 \
+                and isinstance(node.targets[0], ast.Name) and node.targets[0].id in ("ARCHES", "WHY"):
+            found[node.targets[0].id] = ast.literal_eval(node.value)
+    return (tuple(found["ARCHES"]) if "ARCHES" in found else None), found.get("WHY", "")
