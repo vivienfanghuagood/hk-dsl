@@ -11,6 +11,21 @@ def HKVerify : Pass<"hk-verify", "::mlir::func::FuncOp"> {
   }];
 }
 
+def HKMapFuse : Pass<"hk-map-fuse", "::mlir::func::FuncOp"> {
+  let summary = "Merge a chain of region-form hk.map ops into one map";
+  let description = [{
+    A region-form hk.map whose operand is the result of another region-form
+    map in the same block, read by it alone, takes that map's operands and
+    computes its value inline, until no such operand is left: the one-op
+    maps the operators build become the one expression a kernel author would
+    write. A value read twice (by two maps, or by a map and another op) is
+    computed once and read, as inside a region. A producer is inlined only
+    across maps and scalar arithmetic -- never past a load, a store, a lane
+    exchange or a barrier, nor into a loop. A string-body map (hk.map_cpp)
+    is never fused.
+  }];
+}
+
 def HKFragments : Pass<"hk-fragments", "::mlir::func::FuncOp"> {
   let summary = "Name the matrix-core fragment in the type of every tile that needs one";
   let description = [{

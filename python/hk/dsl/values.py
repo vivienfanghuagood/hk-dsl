@@ -203,6 +203,8 @@ _PRED = {"lt": "slt", "le": "sle", "gt": "sgt", "ge": "sge", "eq": "eq",
          "ne": "ne"}
 
 
+
+
 def scalar_op(op: str, a: Scalar, b: Scalar) -> "Int":
     t = _t()
     va, vb = as_int(a), as_int(b)
@@ -218,6 +220,14 @@ def compare(op: str, a: Scalar, b: Scalar) -> "Bool":
                 ScalarType(i32))
 
 
+def _defer(o) -> bool:
+    """A tile, a vector or an hk.map element: an Int's operator returns NotImplemented and
+    Python asks the other operand."""
+    from .maps import Scalar as _Element  # noqa: PLC0415
+
+    return isinstance(o, (_Elementwise, _Element))
+
+
 class Int(Value):
     """A wave-uniform 32-bit integer: an index, an extent, a loop counter.
 
@@ -228,23 +238,29 @@ class Int(Value):
 
     __slots__ = ()
 
-    def __add__(self, o): return scalar_op("add", self, o)
-    def __radd__(self, o): return scalar_op("add", o, self)
-    def __sub__(self, o): return scalar_op("sub", self, o)
-    def __rsub__(self, o): return scalar_op("sub", o, self)
-    def __mul__(self, o): return scalar_op("mul", self, o)
-    def __rmul__(self, o): return scalar_op("mul", o, self)
-    def __floordiv__(self, o): return scalar_op("div", self, o)
-    def __rfloordiv__(self, o): return scalar_op("div", o, self)
-    def __mod__(self, o): return scalar_op("mod", self, o)
-    def __rmod__(self, o): return scalar_op("mod", o, self)
+    # beside a tile, a strip or an hk.map element, the other operand's operator decides (an Int
+    # broadcasts into a strip's hk.map)
+    def __add__(self, o): return NotImplemented if _defer(o) else scalar_op("add", self, o)
+    def __radd__(self, o): return NotImplemented if _defer(o) else scalar_op("add", o, self)
+    def __sub__(self, o): return NotImplemented if _defer(o) else scalar_op("sub", self, o)
+    def __rsub__(self, o): return NotImplemented if _defer(o) else scalar_op("sub", o, self)
+    def __mul__(self, o): return NotImplemented if _defer(o) else scalar_op("mul", self, o)
+    def __rmul__(self, o): return NotImplemented if _defer(o) else scalar_op("mul", o, self)
+    def __floordiv__(self, o): return NotImplemented if _defer(o) else scalar_op("div", self, o)
+    def __rfloordiv__(self, o): return NotImplemented if _defer(o) else scalar_op("div", o, self)
+    def __mod__(self, o): return NotImplemented if _defer(o) else scalar_op("mod", self, o)
+    def __rmod__(self, o): return NotImplemented if _defer(o) else scalar_op("mod", o, self)
     def __neg__(self): return scalar_op("sub", 0, self)
-    def __lt__(self, o): return compare("lt", self, o)
-    def __le__(self, o): return compare("le", self, o)
-    def __gt__(self, o): return compare("gt", self, o)
-    def __ge__(self, o): return compare("ge", self, o)
-    def __eq__(self, o): return compare("eq", self, o)  # type: ignore[override]
-    def __ne__(self, o): return compare("ne", self, o)  # type: ignore[override]
+    def __lt__(self, o): return NotImplemented if _defer(o) else compare("lt", self, o)
+    def __le__(self, o): return NotImplemented if _defer(o) else compare("le", self, o)
+    def __gt__(self, o): return NotImplemented if _defer(o) else compare("gt", self, o)
+    def __ge__(self, o): return NotImplemented if _defer(o) else compare("ge", self, o)
+    def __eq__(self, o):  # type: ignore[override]
+        return NotImplemented if _defer(o) else compare("eq", self, o)
+
+    def __ne__(self, o):  # type: ignore[override]
+        return NotImplemented if _defer(o) else compare("ne", self, o)
+
     __hash__ = Value.__hash__
 
     def __truediv__(self, o):
@@ -1108,48 +1124,153 @@ def _vec_of(x) -> "Vec":
     return x.value() if isinstance(x, Reduction) else x
 
 
+def _int_map(a, b=None) -> bool:
+    """An operator on an i32 strip or a mask: a one-op hk.map (hk.dsl.maps), not a tile op. A
+    vector beside a strip keeps its broadcast (add_row ..., which i32 strips have)."""
+    from . import maps  # noqa: PLC0415
+
+    if isinstance(a, (Vec, Reduction)) or isinstance(b, (Vec, Reduction)):
+        return False
+    return maps.is_int_strip(a) or maps.is_int_strip(b)
+
+
+def _lift(sym: str, a, b):
+    """`a sym b` on strips as a one-op hk.map."""
+    import operator  # noqa: PLC0415
+
+    from . import maps  # noqa: PLC0415
+
+    f = {"+": operator.add, "-": operator.sub, "*": operator.mul, "/": operator.truediv,
+         "//": operator.floordiv, "%": operator.mod, "<<": operator.lshift,
+         ">>": operator.rshift, "&": operator.and_, "|": operator.or_, "^": operator.xor,
+         "<": operator.lt, "<=": operator.le, ">": operator.gt, ">=": operator.ge,
+         "==": operator.eq, "!=": operator.ne}[sym]
+    return maps.lift(f, a, b, name="map")
+
+
 class _Elementwise(Value):
     __slots__ = ()
 
-    def __add__(self, o): return binary("add", self, _vec_of(o))
-    def __sub__(self, o): return binary("sub", self, _vec_of(o))
-    def __mul__(self, o): return binary("mul", self, _vec_of(o))
-    def __truediv__(self, o): return binary("div", self, _vec_of(o))
+    def __add__(self, o):
+        return _lift("+", self, o) if _int_map(self, o) else binary("add", self, _vec_of(o))
 
-    def __radd__(self, o): return binary("add", self, o)
-    def __rmul__(self, o): return binary("mul", self, o)
+    def __sub__(self, o):
+        return _lift("-", self, o) if _int_map(self, o) else binary("sub", self, _vec_of(o))
+
+    def __mul__(self, o):
+        return _lift("*", self, o) if _int_map(self, o) else binary("mul", self, _vec_of(o))
+
+    def __truediv__(self, o):
+        return _lift("/", self, o) if _int_map(self, o) else binary("div", self, _vec_of(o))
+
+    def __radd__(self, o):
+        return _lift("+", o, self) if _int_map(self) else binary("add", self, o)
+
+    def __rmul__(self, o):
+        return _lift("*", o, self) if _int_map(self) else binary("mul", self, o)
+
     # A number on the left of `-` or `/`: `1.0 - p`, `127.0 / amax`.
-    def __rsub__(self, o): return binary("add", binary("mul", self, -1.0), o)
-    def __rtruediv__(self, o): return binary("div", full(self.ty, float(o)), self)
+    def __rsub__(self, o):
+        if _int_map(self):
+            return _lift("-", o, self)
+        return binary("add", binary("mul", self, -1.0), o)
+
+    def __rtruediv__(self, o):
+        if _int_map(self):
+            return _lift("/", o, self)
+        return binary("div", full(self.ty, float(o)), self)
 
     def __iadd__(self, o): return self._inplace("add", o)
     def __isub__(self, o): return self._inplace("sub", o)
     def __imul__(self, o): return self._inplace("mul", o)
     def __itruediv__(self, o): return self._inplace("div", o)
 
-    # Index arithmetic only: `//` on a float tile would have to round, and
-    # kittens::div does not.
-    def __floordiv__(self, o): return self._index_only("//")
-    def __rfloordiv__(self, o): return self._index_only("//")
-    def __mod__(self, o): return self._index_only("%")
-    def __rmod__(self, o): return self._index_only("%")
+    # Index arithmetic: C's truncating `//` and `%` on i32 strips (an hk.map). On a float tile
+    # `//` would have to round, and kittens::div does not.
+    def __floordiv__(self, o): return self._index_only("//", self, o)
+    def __rfloordiv__(self, o): return self._index_only("//", o, self)
+    def __mod__(self, o): return self._index_only("%", self, o)
+    def __rmod__(self, o): return self._index_only("%", o, self)
+    # bits and masks: i32 strips and masks (an hk.map)
+    def __lshift__(self, o): return self._index_only("<<", self, o)
+    def __rlshift__(self, o): return self._index_only("<<", o, self)
+    def __rshift__(self, o): return self._index_only(">>", self, o)
+    def __rrshift__(self, o): return self._index_only(">>", o, self)
+    def __and__(self, o): return self._index_only("&", self, o)
+    def __rand__(self, o): return self._index_only("&", o, self)
+    def __or__(self, o): return self._index_only("|", self, o)
+    def __ror__(self, o): return self._index_only("|", o, self)
+    def __xor__(self, o): return self._index_only("^", self, o)
+    def __rxor__(self, o): return self._index_only("^", o, self)
 
-    def _index_only(self, sym):
-        raise TypeError(f"{sym} is index arithmetic and {self.ty} is not an "
-                        f"index. There is no rounding division on a tile.")
+    def __invert__(self):
+        if _int_map(self):
+            from . import maps  # noqa: PLC0415
+
+            return maps.lift(lambda x: ~x, self, name="map")
+        raise TypeError(f"~ is on an i32 strip or a mask, not {self.ty}")
+
+    def _index_only(self, sym, a, b):
+        if _int_map(self):
+            return _lift(sym, a, b)
+        raise TypeError(f"{sym} is index or bit arithmetic and {self.ty} is not an "
+                        f"index: it is on i32 strips (and & | ^ on masks). There is no "
+                        f"rounding division on a tile.")
+
+    # Comparisons of strips make a mask (an hk.map): for hk.where, & | ~. Of other tiles and
+    # vectors there are none; == and != fall back to identity there.
+    def _compare(self, sym, o):
+        from . import maps  # noqa: PLC0415
+
+        if isinstance(self, Tile) and _is_strip_tile(self.ty):
+            return _lift(sym, self, o)
+        if sym in ("==", "!="):
+            return NotImplemented
+        raise TypeError(f"`{sym}` compares strips (an hk.map makes the mask), not {self.ty}"
+                        if not isinstance(o, maps.Scalar) else
+                        f"`{sym}` of a strip and an hk.map element: pass the strip to hk.map")
+
+    def __lt__(self, o): return self._compare("<", o)
+    def __le__(self, o): return self._compare("<=", o)
+    def __gt__(self, o): return self._compare(">", o)
+    def __ge__(self, o): return self._compare(">=", o)
+    def __eq__(self, o): return self._compare("==", o)  # type: ignore[override]
+    def __ne__(self, o): return self._compare("!=", o)  # type: ignore[override]
+    __hash__ = Value.__hash__
+
+    def __bool__(self):
+        if self.ty.dtype.name == "b1":
+            raise TypeError("a mask was used where Python needs a bool: a mask is per element "
+                            "-- choose with hk.where(m, a, b), combine with & | ~")
+        return True
 
     def _inplace(self, op, o):
+        if _int_map(self, o):
+            return NotImplemented      # `k += 1` on an i32 strip rebinds k to a new map's value
         binary(op, self, _vec_of(o), into=self)
         return self
 
     def __neg__(self):
+        if _int_map(self):
+            return _lift("-", 0, self)
         return binary("mul", self, -1.0)
 
     def __abs__(self):
         return unary("abs", self)
 
-    def maximum(self, o, *, into=None): return binary("max", self, o, into=into)
-    def minimum(self, o, *, into=None): return binary("min", self, o, into=into)
+    def maximum(self, o, *, into=None):
+        if _int_map(self, o) and into is None:
+            from . import maps  # noqa: PLC0415
+
+            return maps.lift(maps.maximum_, self, o, name="max")
+        return binary("max", self, o, into=into)
+
+    def minimum(self, o, *, into=None):
+        if _int_map(self, o) and into is None:
+            from . import maps  # noqa: PLC0415
+
+            return maps.lift(maps.minimum_, self, o, name="min")
+        return binary("min", self, o, into=into)
 
     # unary maps, functional and in place
     def exp(self, *, into=None): return unary("exp", self, into=into)
@@ -2493,7 +2614,7 @@ def map_cpp(expr: str, *args, dtype: Optional[DType] = None, name: str = "map") 
                             f"float belongs in the expression itself")
     ty = RegTileType(dtype, s0.rows, s0.cols, s0.layout, s0.frag, run=s0.run)
     t = _t()
-    op = hkd.MapCppOp(mlir_type(ty), ops, expr, loc=t.loc(name))
+    op = hkd.MapOp(mlir_type(ty), ops, body=expr, loc=t.loc(name))
     return wrap(op.result, ty)
 
 

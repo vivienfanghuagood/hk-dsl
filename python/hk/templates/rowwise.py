@@ -28,6 +28,8 @@ docs/templates/elementwise-rowwise.md is the guide.
 
 from __future__ import annotations
 
+import sys
+import types
 from dataclasses import dataclass, replace
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
@@ -887,6 +889,17 @@ def rowwise(fn: Optional[Callable] = None, inputs: Optional[Sequence] = None,
                                  plan=plan)
     return Rowwise(fn, inputs, outputs, like=like, name=name, arch=arch, plan=plan)
 
+
+class _CallableModule(types.ModuleType):
+    """`import hk.templates.rowwise` binds the package's attribute to this
+    module, so the module calls through too, as hk.templates.gemm's does:
+    `hk.templates.rowwise(...)` is the template whichever was imported first."""
+
+    def __call__(self, *args, **kwargs):
+        return rowwise(*args, **kwargs)
+
+
+sys.modules[__name__].__class__ = _CallableModule
 
 __all__ = ["rowwise", "Rowwise", "Plan", "plan_for", "row_sum", "row_max", "row_min",
            "row_mean", "row_logsumexp", "row_length", "pick", "LIKE"]

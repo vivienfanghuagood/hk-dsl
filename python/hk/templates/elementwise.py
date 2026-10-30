@@ -15,6 +15,8 @@ read as one flat row. docs/templates/elementwise-rowwise.md is the guide.
 
 from __future__ import annotations
 
+import sys
+import types
 from dataclasses import dataclass, replace
 from typing import Any, Callable, Dict, Optional, Sequence, Tuple
 
@@ -416,5 +418,16 @@ def elementwise(fn: Optional[Callable] = None, inputs: Optional[Sequence] = None
         return lambda f: Elementwise(f, inputs, outputs, name=name, arch=arch, plan=plan)
     return Elementwise(fn, inputs, outputs, name=name, arch=arch, plan=plan)
 
+
+class _CallableModule(types.ModuleType):
+    """`import hk.templates.elementwise` binds the package's attribute to this
+    module, so the module calls through too, as hk.templates.gemm's does:
+    `hk.templates.elementwise(...)` is the template whichever was imported first."""
+
+    def __call__(self, *args, **kwargs):
+        return elementwise(*args, **kwargs)
+
+
+sys.modules[__name__].__class__ = _CallableModule
 
 __all__ = ["elementwise", "Elementwise", "Plan", "plan_for"]

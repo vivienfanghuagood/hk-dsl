@@ -13,6 +13,7 @@ add_mlir_dialect_library(MLIRHK
   LINK_LIBS PUBLIC
   MLIRIR
   MLIRArithDialect
+  MLIRMathDialect
   MLIRSCFDialect
   MLIRFuncDialect
   MLIRSideEffectInterfaces

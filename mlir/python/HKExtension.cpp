@@ -5,6 +5,7 @@
 
 #include "mlir-c/Dialect/Arith.h"
 #include "mlir-c/Dialect/Func.h"
+#include "mlir-c/Dialect/Math.h"
 #include "mlir-c/Dialect/SCF.h"
 #include "mlir/Bindings/Python/Nanobind.h"
 #include "mlir/Bindings/Python/NanobindAdaptors.h"
@@ -34,7 +35,8 @@ NB_MODULE(_hkDialects, m) {
       [](MlirContext context, bool load) {
         MlirDialectHandle handles[] = {
             mlirGetDialectHandle__hk__(), mlirGetDialectHandle__arith__(),
-            mlirGetDialectHandle__scf__(), mlirGetDialectHandle__func__()};
+            mlirGetDialectHandle__math__(), mlirGetDialectHandle__scf__(),
+            mlirGetDialectHandle__func__()};
         for (MlirDialectHandle h : handles) {
           mlirDialectHandleRegisterDialect(h, context);
           if (load)
@@ -42,7 +44,7 @@ NB_MODULE(_hkDialects, m) {
         }
       },
       nb::arg("context").none() = nb::none(), nb::arg("load") = true,
-      "Register (and load) hk, arith, scf and func in a context.");
+      "Register (and load) hk, arith, math, scf and func in a context.");
 
   hk.def("dialect_version", []() {
     MlirStringRef v = mlirHKDialectVersion();

@@ -3,6 +3,7 @@
 
 include "hk/Dialect/HK/IR/HKBase.td"
 include "hk/Dialect/HK/IR/HKTypes.td"
+include "mlir/Interfaces/ControlFlowInterfaces.td"
 include "mlir/Interfaces/SideEffectInterfaces.td"
 
 //===----------------------------------------------------------------------===//
@@ -899,7 +900,7 @@ def HK_LaneStripOp : HK_Op<"lane_strip"> {
     fragments row by row of fragments, each fragment's elements in order (a
     strip operand: its rows, chunks and runs in order). Element (0, c) of the
     result is, in lane (c / run) % 64, the lane's register (c / (64 run)) run
-    + c % run. No data moves; the strip ops (hk.map_cpp, group reductions,
+    + c % run. No data moves; the strip ops (hk.map, group reductions,
     store_elems) then work on a matrix-core result in place. Where each
     element sits in the operand: hk.lane_coord. 32-bit elements.
   }];
@@ -1048,7 +1049,7 @@ def HK_IotaOp : HK_Op<"iota"> {
   let summary = "an i32 strip whose element (r, c) is c (gfx950)";
   let description = [{
     Each element's own column -- the lane's place in the row, for index
-    arithmetic (hk.map_cpp) and per-column choices.
+    arithmetic (hk.map) and per-column choices.
   }];
   let results = (outs HK_RegTileType:$result);
   let assemblyFormat = [{ attr-dict `:` qualified(type($result)) }];
@@ -1118,25 +1119,49 @@ def HK_GroupReduceOp : HK_Op<"group_reduce"> {
   let hasVerifier = 1;
 }
 
-def HK_MapCppOp : HK_Op<"map_cpp"> {
-  let summary = "an elementwise C++ expression over strips (gfx950)";
+def HK_MapOp : HK_Op<"map", [IsolatedFromAbove]> {
+  let summary = "an elementwise expression over strips: a region of scalar ops, or a C++ string";
   let description = [{
-    Element (r, c) of the result is `expr` evaluated with `x0`, `x1`, ...
-    bound to element (r, c) of each strip argument, or to the argument
-    itself for an i32 / f32 scalar, converted to the result's element
-    type. The strips have the result's shape and run; strips and result
-    are fp32 or i32. The expression is one C++ expression (no `;`,
-    braces), compiled as written: bit manipulation, fused multiply-adds,
-    the hardware's own instructions (`__builtin_amdgcn_*`) -- what a
-    kernel must reproduce from another bit for bit.
+    Element (r, c) of the result is the expression evaluated on element (r, c)
+    of each strip argument, or on the argument itself for an i32 / f32 scalar.
+    The strips have the result's shape and run.
+
+    The expression is either the region -- one block, one argument a
+    operand (its element type: f32, i32 or i1), `arith` and `math` ops and
+    `hk.rcp` on scalars, ended by `hk.yield` of the result's element type --
+    or `body`, one C++ expression over `x0`, `x1`, ... (`hk.map_cpp`, the
+    escape hatch: no `;` or braces, compiled as written). Never both.
+    Floating-point contraction is off inside either: a product and a sum are
+    two roundings unless the expression says `math.fma` (`__builtin_fmaf`).
+    `hk-map-fuse` merges a region-form map into the region-form maps that
+    use it; a `body` map is opaque to it.
   }];
   let arguments = (ins Variadic<AnyTypeOf<[HK_RegTileType, I32, F32]>>:$args,
-                       StrAttr:$expr);
+                       OptionalAttr<StrAttr>:$body);
   let results = (outs HK_RegTileType:$result);
+  let regions = (region AnyRegion:$region);
   let assemblyFormat = [{
-    $expr `(` $args `)` attr-dict `:` functional-type($args, $result)
+    `(` $args `)` attr-dict `:` functional-type($args, $result) ($region^)?
   }];
   let hasVerifier = 1;
+  let hasRegionVerifier = 1;
+}
+
+def HK_YieldOp : HK_Op<"yield", [Terminator, HasParent<"MapOp">, Pure, ReturnLike]> {
+  let summary = "the value of one element of an hk.map";
+  let arguments = (ins AnyTypeOf<[I32, F32, I1]>:$value);
+  let assemblyFormat = "$value attr-dict `:` type($value)";
+}
+
+def HK_RcpOp : HK_Op<"rcp", [Pure]> {
+  let summary = "v_rcp_f32: 1 / x to about 1 ulp, inside an hk.map";
+  let description = [{
+    The hardware reciprocal (`__builtin_amdgcn_rcpf`), which `arith.divf 1, x`
+    is not: a correctly rounded division is several instructions.
+  }];
+  let arguments = (ins F32:$x);
+  let results = (outs F32:$result);
+  let assemblyFormat = "$x attr-dict `:` type($result)";
 }
 
 def HK_SwapHalvesOp : HK_UnaryMapOp<"swap_halves",

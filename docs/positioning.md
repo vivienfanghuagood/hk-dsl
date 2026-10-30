@@ -71,7 +71,13 @@ HipKittens fork. The gates are the price of tile-level control.
 **The routes are on by default.** When hk-dsl is installed next to vLLM or
 SGLang, their plugin loaders apply hk's routes for your GPU, so the next
 `vllm serve` runs some layers on hk's kernels. SGLang-Diffusion needs one
-`python3 -m hk.integration sglang-diffusion install` first.
+`python3 -m hk.integration sglang-diffusion install` first. On an MI355X
+(gfx950) the vLLM routes on by default are DeepSeek-V4.1's MXFP8 linear
+layers, its a8w4 MoE, its sparse MLA prefill (`HK_VLLM_SPARSE_MLA=0` turns it
+off; inactive while `VLLM_ROCM_USE_AITER_TRITON_SPARSE_MLA=1`, where vLLM runs
+AITER's sparse MLA instead), its index layers under `--monokernel`, and AWQ
+linear layers. Every GPU's list is in
+[integration](integration.md#on-by-default-and-turning-it-off).
 
 ```bash
 python3 -m hk.integration --status   # every route: on or off, and why

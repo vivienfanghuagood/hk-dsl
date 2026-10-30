@@ -34,7 +34,7 @@ def mlir_type(t: Type) -> ir.Type:
         n = f", {t.count}" if t.count != 1 else ""
         s = f"!hk.sv<{e(t.dtype)}, {t.length}{n}>"
     elif isinstance(t, GlobalType):
-        s = f"!hk.gl<{e(t.dtype)}>"
+        s = f"!hk.gl<{e(t.dtype)}{', strided' if t.strided else ''}>"
     elif isinstance(t, CoordType):
         s = f"!hk.coord<{t.unit}>"
     elif isinstance(t, GranuleSetType):
