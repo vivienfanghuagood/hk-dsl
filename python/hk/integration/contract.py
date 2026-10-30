@@ -173,6 +173,26 @@ def _vllm_sdpa() -> List[str]:
                    "(vit_attn_wrappers.apply_sdpa)")
 
 
+def _vllm_prefill() -> Optional[List[str]]:
+    from . import switches  # noqa: PLC0415
+
+    if switches.arch() != "gfx1100":
+        return None                 # gfx1100's kernel: the route reports it and stays out
+    from vllm.v1.attention.ops import prefix_prefill  # noqa: PLC0415
+
+    from . import vllm_prefill  # noqa: PLC0415
+
+    from vllm.v1.attention.ops import triton_unified_attention as tua  # noqa: PLC0415
+
+    fn = vllm_prefill._ORIG or prefix_prefill.context_attention_fwd
+    u = vllm_prefill._ORIG_U or tua.unified_attention
+    need = {"q", "k", "v", "out", "cu_seqlens_q", "max_seqlen_q", "seqused_k", "softmax_scale",
+            "causal", "block_table"}
+    lost = sorted(need - set(names(u)))
+    return (same_parameters(fn, vllm_prefill.context_attention_fwd, "context_attention_fwd")
+            + _expect(not lost, f"unified_attention lost {lost}"))
+
+
 def _vllm_backend() -> List[str]:
     import os  # noqa: PLC0415
 
@@ -293,7 +313,7 @@ CHECKS: Dict[str, Callable[[], Optional[List[str]]]] = {
     "vllm_mxfp8": _vllm_mxfp8, "vllm_moe_a8w4": _vllm_moe_a8w4, "vllm_int4": _vllm_int4,
     "vllm_gemm": _vllm_gemm, "vllm_moe": _vllm_moe, "vllm_sdpa": _vllm_sdpa,
     "vllm_backend": _vllm_backend, "vllm_dsv41_index": _vllm_dsv41_index,
-    "vllm_sparse_mla": _vllm_sparse_mla,
+    "vllm_sparse_mla": _vllm_sparse_mla, "vllm_prefill": _vllm_prefill,
     "sglang_linear": _sglang_linear, "sglang_moe": _sglang_moe,
     "sgld_attn": _sgld_attn, "sgld_linear": _sgld_linear, "sgld_convrot": _sgld_convrot,
 }
