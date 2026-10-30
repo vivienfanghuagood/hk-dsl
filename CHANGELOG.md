@@ -9,6 +9,15 @@ The next version's notes collect here until it is released.
 What is on main after 0.8.0. `pip install hk-dsl` (0.8.0) does not have it;
 the API reference marks such names *New after 0.8.0*.
 
+**`hk.map` on RDNA strips (gfx1100, gfx1201).** The integer, mask and bit expressions below,
+`hk.map(fn)` and `hk.map_cpp` lower on RDNA too, through include/hk/rdna/map.cuh (the trees'
+`strip_each`, wave32), included only by a kernel with a map -- every other kernel's source is
+unchanged. RDNA's strips hold no bool, so a mask must stay inside a map (used where it is made,
+or read once by another map); one read twice or stored is a verifier error naming the line.
+`hk-map-fuse` now also fuses across scalar index ops (`x.at[r, c]`'s coordinates), which a
+store's index put between a mask and its `hk.where`. Tested on the GPU on all three targets
+(tests/hk/gpu/test_map.py) and built by hipcc for each (tests/hk/codegen/test_map_builds.py).
+
 **gfx1100 under clang 24 (ROCm 10.1): the kernels the spill gate refused build again.** With clang
 24, 139 of the codegen tier's gfx1100 kernels spilled and were refused: `hk.ops`' fp16/bf16
 RMSNorm and LayerNorm, rope, the fp32 norm/softmax at the top of their range, examples 02 and 03,
@@ -41,8 +50,7 @@ strips"; docs/design/dsl-surface.md S7).
   allowlist entries are gone. `dsv41_index`'s 190 stay for a later step.
 - No float result changes: fp32 strip and tile operators keep their ops. `==` / `!=` of two
   strips now make a mask (it was Python's identity test); of WMMA tiles and vectors they still
-  are identity. RDNA strips have no `hk.map` lowering yet (S7b): a map there is
-  refused while tracing.
+  are identity.
 - An `hk.Int` on the left of a strip operator (`hk.arch.warp_id() * 64 + col`) now gives the
   strip's operator instead of a `TypeError`.
 
@@ -777,7 +785,7 @@ remaps:
   `"tensor.dim"` (`"k.depth"`).
 
 **`hk.map_cpp` and i32 strips** (#53, gfx950;
-[the language](docs/language.md#integer-mask-and-bit-expressions-on-strips-hkmap-gfx950)).
+[the language](docs/language.md#integer-mask-and-bit-expressions-on-strips-hkmap)).
 - `hk.map_cpp(expr, *args, dtype=None)` evaluates one C++ expression for each
   element of its strip arguments (`x0`, `x1`, ... bound to the elements, or
   to an `hk.Int` / Python int), into an fp32 or i32 strip. It is for what a
