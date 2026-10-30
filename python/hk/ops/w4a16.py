@@ -25,6 +25,7 @@ from typing import Any, Dict, Optional, Tuple
 
 from .. import dsl as hk
 from ..types import bf16, fp16, fp32, i32
+from . import _arch
 
 _DTYPES = {"bf16": bf16, "fp16": fp16}
 
@@ -261,6 +262,7 @@ def matmul(x, qw, s, zs, group: int, out=None):
     x, dequantize-then-F.linear above (or for a shape it does not take)."""
     import torch  # noqa: PLC0415
 
+    _arch.require("hk.ops.w4a16.matmul")
     from ..runtime import hostpath  # noqa: PLC0415
 
     if not hostpath.ENABLED:

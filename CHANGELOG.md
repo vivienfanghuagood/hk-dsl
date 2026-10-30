@@ -9,6 +9,14 @@ The next version's notes collect here until it is released.
 What is on main after 0.8.0. `pip install hk-dsl` (0.8.0) does not have it;
 the API reference marks such names *New after 0.8.0*.
 
+**gfx942 (MI300X / MI325X): an op with no kernel there refuses at the call.** `hk.ops.matmul`,
+`hk.attention`, the paged decode and prefill, `decode_gemm.matmul`, `moe.moe_gemm`, `w4a16.matmul`
+and `hk.templates.gemm` used to get as far as hipcc and fail on a missing include/cdna3 member.
+They now raise `NotImplementedError` at the call: "<op> has no kernel for gfx942; it runs on
+gfx1100, gfx1201, gfx950", and the message says that gfx942 is compile-only. `hk.ops.sdpa` falls
+back to torch there. The `hk.templates.rowwise` refusal now names gfx1201 among the arches with
+register strips.
+
 **gfx1100: the decode GEMM builds under the TheRock ROCm 7.14 compiler, so vLLM's linear routes
 to hk in the W7900D production images again.** Under its AMD clang 23 the four-tile
 `decode_gemm` spilled (256 -> 264 VGPRs), the spill gate refused it, tuning at load failed and

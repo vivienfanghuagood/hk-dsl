@@ -44,6 +44,7 @@ from .. import autotune as _autotune
 from .. import dsl as hk
 from . import _epilogue
 from ..target import current_arch, get_target
+from . import _arch
 from ..types import DTYPES, bf16, fp8e4m3, fp8e5m2, fp32, i8, i32
 
 #: The 8-bit float operand types: an fp8 WMMA where the target has one (gfx1201).
@@ -689,6 +690,7 @@ def matmul(a, b, out=None):
     """
     import torch  # noqa: PLC0415 -- hk traces and compiles without torch
 
+    _arch.require("hk.ops.matmul")
     if current_arch() == "gfx950":
         from . import gemm_cdna  # noqa: PLC0415
 

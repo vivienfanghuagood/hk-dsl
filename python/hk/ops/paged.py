@@ -37,6 +37,7 @@ from typing import Dict, Optional
 
 from .. import dsl as hk
 from ..types import bf16, fp32, i32
+from . import _arch
 
 #: The cache's page size. Also the kernel's KV block, by construction.
 KV_BLOCK = 32
@@ -332,6 +333,7 @@ class _Kernels(dict):
     """head_dim -> the unsplit decode; on gfx950, paged_cdna's."""
 
     def __getitem__(self, head_dim):
+        _arch.require("hk.ops.paged")
         if _native_cdna():
             from . import paged_cdna  # noqa: PLC0415
 
@@ -358,6 +360,7 @@ def split_kernel(head_dim: int, splits: int):
     """The split decode's walk for (head_dim, splits): each split's
     partial output and its (max, sum) into the scratch `merge_kernel`
     combines. On gfx950, paged_cdna's (head_dim 64 or 128)."""
+    _arch.require("hk.ops.paged")
     if _native_cdna():
         from . import paged_cdna  # noqa: PLC0415
 
@@ -667,6 +670,7 @@ def fused_kernel(head_dim: int, splits: int, ablate: tuple = (),
     process (tools/hk-bench/paged_variants.py): HK_RDNA_XPOSE_WORDS=0 is the
     generic register transpose V took before the packed one. `ppstep`
     (gfx950) is the pages a step, `pages_per_step`'s choice."""
+    _arch.require("hk.ops.paged")
     if _native_cdna():
         if ablate or defines:
             raise ValueError("ablate= and defines= build variants of the RDNA "
@@ -696,6 +700,7 @@ def merge_kernel(head_dim: int, splits: int):
     """The kernel that combines `splits` partial outputs of the split decode
     into the answer. On gfx950, paged_cdna's: it reads splits eight at a
     time, so above 8 `splits` is a multiple of 8."""
+    _arch.require("hk.ops.paged")
     if _native_cdna():
         from . import paged_cdna  # noqa: PLC0415
 
