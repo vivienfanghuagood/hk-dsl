@@ -163,6 +163,23 @@ def report(title: str, best: Dict[str, float], *, baseline: str,
         print(f"    {k:<22} {ms:9.3f} ms {rate}  {best[baseline] / ms:6.2f}x vs {baseline}")
 
 
+def runs_here(arches, why: str) -> bool:
+    """Whether the GPU is one of `arches`. When it is not, say which GPUs the
+    example needs and why, and what still works here, so the caller returns:
+    an example pinned to one arch is skipped there, not failed."""
+    import torch
+
+    from hk.runtime.arch import device_arch
+
+    here = device_arch(torch.cuda.current_device())
+    if here in arches:
+        return True
+    name = Path(sys.argv[0]).name
+    print(f"{name} runs on {' / '.join(arches)} only, and this GPU is {here}: {why}.\n"
+          f"Nothing ran. `--dump ir|cpp` and `--build` work on any machine.")
+    return False
+
+
 def require_gpu() -> None:
     try:
         import torch

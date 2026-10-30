@@ -44,6 +44,12 @@ import _common
 import hk
 from hk import i32
 
+#: The GPUs this example runs on, and why only those: the script says so elsewhere and returns,
+#: and the GPU tier skips it there (examples/_catalog.py reads these two without importing).
+ARCHES = ("gfx950",)
+WHY = ("hk.comm needs gfx950 (Instinct MI355X): on RDNA a peer's writes stay stale in the L2, "
+       "and no shader instruction invalidates it")
+
 K, L = 64, 16        # tasks a layer, layers
 WORKGROUPS = 64      # persistent workgroups: 8 an XCD
 
@@ -82,14 +88,9 @@ def main():
     if _common.static(args, task_graph):
         return
     _common.require_gpu()
-    import torch
-
-    from hk.runtime.arch import device_arch
-
-    here = device_arch(torch.cuda.current_device())
-    if here != "gfx950":
-        print(f"skipped: hk.comm needs gfx950 (this GPU is {here})")
+    if not _common.runs_here(ARCHES, WHY):
         return
+    import torch
 
     seed = torch.randint(1, 10, (K,), dtype=torch.int32, device="cuda")
     q = torch.zeros(16, dtype=torch.int32, device="cuda")       # the queue's head
