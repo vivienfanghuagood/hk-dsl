@@ -199,3 +199,44 @@ def test_maps_lower_on_gfx950_only_for_now():
         o.at[0, 0].store(x.at[0, 0].load(hk.RS(hk.i32, 1, 256)) + 1)
     with pytest.raises(TypeError, match="no lowering yet"):
         _src(w32, arch="gfx1100")
+
+
+# ---------------------------------------------------------------- hk-map-fuse
+
+
+def test_a_chain_of_operators_prints_as_one_expression():
+    def chain(x: hk.Tensor[hk.i32], y: hk.Tensor[hk.fp32], o: hk.Tensor[hk.i32]):
+        c = x.at[0, 0].load(I)
+        v = y.at[0, 0].load(F)
+        k = hk.arch.warp_id()
+        o.at[0, 0].store(hk.where((c < 3) & (v >= 0.5), ((c >> 4) & 63) * k + c, -1))
+    (m,) = _maps(_src(chain))
+    assert ('[&](const auto x0, const auto x1, const auto x2) { _Pragma("clang fp contract(off)") '
+            'return ((((x0 < 3) & (x1 >= (float)0.5)) ? ((((x0 >> 4) & 63) * x2) + x0) : -1)); }') in m
+
+
+def test_a_value_another_op_reads_is_computed_once():
+    def shared(x: hk.Tensor[hk.i32], o: hk.Tensor[hk.i32]):
+        c = x.at[0, 0].load(I)
+        idx = c * 2 + 1
+        o.store_elems(c, idx)                 # a non-map user: idx stays a strip
+        o.at[0, 0].store(idx - 3)
+    ms = _maps(_src(shared))
+    assert len(ms) == 2
+    assert "return (((x0 * 2) + 1)); }, ld);" in ms[0]
+    assert "return ((x0 - 3)); }, map);" in ms[1]
+
+
+def test_a_mask_lives_inside_the_map_that_reads_it():
+    def masked(x: hk.Tensor[hk.i32], o: hk.Tensor[hk.i32]):
+        c = x.at[0, 0].load(I)
+        o.at[0, 0].store(hk.where(c < 0, -c, c))
+    src = _src(masked)
+    assert len(_maps(src)) == 1 and "rs_b1_" not in src
+
+
+def test_a_c_body_is_not_fused():
+    def body(x: hk.Tensor[hk.i32], o: hk.Tensor[hk.i32]):
+        c = x.at[0, 0].load(I)
+        o.at[0, 0].store(hk.map_cpp("x0 + 1", c + 2) * 3)
+    assert len(_maps(_src(body))) == 3

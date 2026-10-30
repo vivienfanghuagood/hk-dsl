@@ -4,10 +4,9 @@
 // local), a body as written; both with contraction off.
 
 // CHECK-LABEL: map_kernel
-// CHECK: kittens::map_cpp(idx, [&](const auto x0, const auto x1) { _Pragma("clang fp contract(off)") return (((x1 * 64) + x0)); }, col, w);
-// CHECK: kittens::map_cpp(sel, [&](const auto x0, const auto x1) { _Pragma("clang fp contract(off)") const int v0 = (x0 & 63); return (((v0 < x1) ? (v0 >> 2) : (0 - (v0 % 4)))); }, idx, w);
-// CHECK: kittens::map_cpp(bits, [&](const auto x0) { _Pragma("clang fp contract(off)") return ((__builtin_popcount(x0) + __builtin_ctzg((unsigned)x0, 32))); }, sel);
-// CHECK: kittens::map_cpp(f, [&](const auto x0) { _Pragma("clang fp contract(off)") const float v0 = (float)x0; return (__builtin_fmaf(v0, v0, __builtin_amdgcn_rcpf((float)__float2bfloat16(v0)))); }, bits);
+// hk-map-fuse made the chain idx -> sel -> bits -> f one map; f, which the body map
+// also reads, is computed once and m reads it
+// CHECK: kittens::map_cpp(f, [&](const auto x0, const auto x1) { _Pragma("clang fp contract(off)") const int v0 = (((x0 * 64) + x1) & 63); const int v1 = ((v0 < x0) ? (v0 >> 2) : (0 - (v0 % 4))); const float v2 = (float)(__builtin_popcount(v1) + __builtin_ctzg((unsigned)v1, 32)); return (__builtin_fmaf(v2, v2, __builtin_amdgcn_rcpf((float)__float2bfloat16(v2)))); }, w, col);
 // CHECK: kittens::map_cpp(m, [&](const auto x0, const auto x1) { _Pragma("clang fp contract(off)") return ((!(x0 >= (float)0.5))); }, f, w);
 // CHECK: kittens::map_cpp(raw, [&](const auto x0) { _Pragma("clang fp contract(off)") return (fabsf(x0)); }, f);
 

@@ -68,7 +68,7 @@ def loc(py_loc: Optional[str], name: str = "") -> ir.Location:
 
 
 def run_pipeline(module: ir.Module) -> None:
-    """hk-verify, hk-fragments, hk-lds-alloc, hk-lds-pipeline, hk-mma-fence, hk-check-budgets."""
+    """hk-verify, hk-map-fuse, hk-fragments, hk-lds-alloc, hk-lds-pipeline, hk-mma-fence, hk-check-budgets."""
     with context():
         pm = passmanager.PassManager.parse("builtin.module(hk-kernel-pipeline)")
         pm.run(module.operation)
