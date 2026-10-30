@@ -21,7 +21,7 @@ _TYPES: Dict[str, ir.Type] = {}
 #: hk's dtype names -> MLIR element types.
 ELEMENT = {
     "bf16": "bf16", "fp16": "f16", "fp32": "f32", "i32": "i32", "i8": "i8",
-    "fp8e4m3": "f8E4M3FN", "fp8e5m2": "f8E5M2",
+    "fp8e4m3": "f8E4M3FN", "fp8e5m2": "f8E5M2", "b1": "i1",
 }
 
 
@@ -68,7 +68,7 @@ def loc(py_loc: Optional[str], name: str = "") -> ir.Location:
 
 
 def run_pipeline(module: ir.Module) -> None:
-    """hk-verify, hk-fragments, hk-lds-alloc, hk-lds-pipeline, hk-mma-fence, hk-check-budgets."""
+    """hk-verify, hk-map-fuse, hk-fragments, hk-lds-alloc, hk-lds-pipeline, hk-mma-fence, hk-check-budgets."""
     with context():
         pm = passmanager.PassManager.parse("builtin.module(hk-kernel-pipeline)")
         pm.run(module.operation)

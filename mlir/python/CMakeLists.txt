@@ -30,6 +30,7 @@ declare_mlir_python_extension(HKPythonSources.Extension
   EMBED_CAPI_LINK_LIBS
     MLIRCAPIIR
     MLIRCAPIArith
+    MLIRCAPIMath
     MLIRCAPISCF
     MLIRCAPIFunc
     MLIRCAPITransforms
@@ -41,6 +42,7 @@ set(_hk_declared_sources
   MLIRPythonSources.Core
   MLIRPythonSources.Dialects.builtin
   MLIRPythonSources.Dialects.arith
+  MLIRPythonSources.Dialects.math
   MLIRPythonSources.Dialects.scf
   MLIRPythonSources.Dialects.func
 )

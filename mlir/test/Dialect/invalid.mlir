@@ -177,3 +177,118 @@ func.func @period_of_part_of_a_run(%g: !hk.gl<f32>, %idx: !hk.coord<element>) {
   %c = hk.load %g[%idx] {period = 4 : i64} : !hk.gl<f32>, !hk.coord<element> -> !hk.rt<f32, 1x512, strip<8>>
   return
 }
+
+// -----
+
+func.func @map_neither(%s: !hk.rt<i32, 1x64, strip<1>>) {
+  // expected-error@+1 {{is a region of scalar ops or a C++ `body`, exactly one of them}}
+  %r = hk.map(%s) : (!hk.rt<i32, 1x64, strip<1>>) -> !hk.rt<i32, 1x64, strip<1>>
+  return
+}
+
+// -----
+
+func.func @map_both(%s: !hk.rt<i32, 1x64, strip<1>>) {
+  // expected-error@+1 {{exactly one of them}}
+  %r = hk.map(%s) {body = "x0"} : (!hk.rt<i32, 1x64, strip<1>>) -> !hk.rt<i32, 1x64, strip<1>> {
+  ^bb0(%x: i32):
+    hk.yield %x : i32
+  }
+  return
+}
+
+// -----
+
+func.func @map_body_statement(%s: !hk.rt<i32, 1x64, strip<1>>) {
+  // expected-error@+1 {{body is one C++ expression: no ';' and no braces}}
+  %r = hk.map(%s) {body = "x0; x0"} : (!hk.rt<i32, 1x64, strip<1>>) -> !hk.rt<i32, 1x64, strip<1>>
+  return
+}
+
+// -----
+
+func.func @map_body_mask(%s: !hk.rt<i32, 1x64, strip<1>>) {
+  // expected-error@+1 {{with a C++ body makes an fp32 or i32 strip}}
+  %r = hk.map(%s) {body = "x0 < 3"} : (!hk.rt<i32, 1x64, strip<1>>) -> !hk.rt<i1, 1x64, strip<1>>
+  return
+}
+
+// -----
+
+func.func @map_shape(%s: !hk.rt<i32, 1x64, strip<1>>) {
+  // expected-error@+1 {{every strip argument has the result's shape and run}}
+  %r = hk.map(%s) {body = "x0"} : (!hk.rt<i32, 1x64, strip<1>>) -> !hk.rt<i32, 1x128, strip<2>>
+  return
+}
+
+// -----
+
+func.func @map_bf16_strip(%s: !hk.rt<bf16, 1x64, strip<1>>) {
+  // expected-error@+1 {{strip arguments are fp32 or i32 or i1 (convert a 16-bit strip with .to)}}
+  %r = hk.map(%s) : (!hk.rt<bf16, 1x64, strip<1>>) -> !hk.rt<f32, 1x64, strip<1>> {
+  ^bb0(%x: bf16):
+    %e = arith.extf %x : bf16 to f32
+    hk.yield %e : f32
+  }
+  return
+}
+
+// -----
+
+func.func @map_block_args(%s: !hk.rt<i32, 1x64, strip<1>>) {
+  // expected-error@+1 {{region argument 0 is 'f32', operand x0's element type is 'i32'}}
+  %r = hk.map(%s) : (!hk.rt<i32, 1x64, strip<1>>) -> !hk.rt<f32, 1x64, strip<1>> {
+  ^bb0(%x: f32):
+    hk.yield %x : f32
+  }
+  return
+}
+
+// -----
+
+func.func @map_yield_type(%s: !hk.rt<i32, 1x64, strip<1>>) {
+  // expected-error@+1 {{region yields the result's element type, 'f32'}}
+  %r = hk.map(%s) : (!hk.rt<i32, 1x64, strip<1>>) -> !hk.rt<f32, 1x64, strip<1>> {
+  ^bb0(%x: i32):
+    hk.yield %x : i32
+  }
+  return
+}
+
+// -----
+
+func.func @map_foreign_op(%s: !hk.rt<i32, 1x64, strip<1>>) {
+  %r = hk.map(%s) : (!hk.rt<i32, 1x64, strip<1>>) -> !hk.rt<i32, 1x64, strip<1>> {
+  ^bb0(%x: i32):
+    // expected-error@+1 {{inside an hk.map: only arith, math and hk.rcp ops on scalars}}
+    %w = hk.warp_id
+    %s2 = arith.addi %x, %w : i32
+    hk.yield %s2 : i32
+  }
+  return
+}
+
+// -----
+
+func.func @map_captures(%s: !hk.rt<i32, 1x64, strip<1>>, %n: i32) {
+  // expected-note@+1 {{required by region isolation constraints}}
+  %r = hk.map(%s) : (!hk.rt<i32, 1x64, strip<1>>) -> !hk.rt<i32, 1x64, strip<1>> {
+  ^bb0(%x: i32):
+    // expected-error@+1 {{using value defined outside the region}}
+    %s2 = arith.addi %x, %n : i32
+    hk.yield %s2 : i32
+  }
+  return
+}
+
+// -----
+
+func.func @map_vector(%s: !hk.rt<i32, 1x64, strip<1>>) {
+  %r = hk.map(%s) : (!hk.rt<i32, 1x64, strip<1>>) -> !hk.rt<i32, 1x64, strip<1>> {
+  ^bb0(%x: i32):
+    // expected-error@+1 {{values are f32, i32, i1 or bf16 scalars, not 'vector<2xi32>'}}
+    %v = arith.constant dense<1> : vector<2xi32>
+    hk.yield %x : i32
+  }
+  return
+}

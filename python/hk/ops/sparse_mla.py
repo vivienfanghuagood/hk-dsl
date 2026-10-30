@@ -83,36 +83,59 @@ ST_SX = hk.ST(fp32, KQ, H)                         # a D-half-1 warp's partial S
 
 #: vLLM's _mxfp8_scale_bits, as written there: the biased E8M0 exponent that puts amax at the top
 #: of e4m3's range. (From amax's bits -- hk.mx_quant_store's rule -- differs from it in about one
-#: scale in four million: Triton's log2 just past 1.75 x 2^e.)
-BITS = ("fminf(fmaxf(ceilf(__builtin_log2f(fmaxf(x0, 1.1754943508222875e-38f) / 448.0f)) + 127.0f, "
-        "0.0f), 254.0f)")
+#: scale in four million: Triton's log2 just past 1.75 x 2^e.) Of an hk.map element.
+def _bits(a):
+    return hk.min(hk.max(hk.math.ceil(hk.math.log2(hk.max(a, 1.1754943508222875e-38) / 448.0))
+                         + 127.0, 0.0), 254.0)
 
 
 ST16 = hk.RS(fp32, 1, 64 * 64, 16)     # Oᵀ's registers, a run a 32x32 fragment
-#: d within the warp's 128 of a run-16 strip element, x0 its strip column (lane l = (x0 >> 4) & 63, e = x0 & 15)
-DL = "(((x0 >> 10) << 5) + (((x0 & 15) >> 2) << 3) + ((((x0 >> 4) & 63) >> 5) << 2) + (x0 & 3))"
+
+
+def _lane(c):
+    """The lane of a run-16 strip element at strip column c."""
+    return (c >> 4) & 63
+
+
+def _dl(c):
+    """d within the warp's 128 of a run-16 strip element at strip column c (lane l = (c >> 4) & 63,
+    e = c & 15)."""
+    return ((c >> 10) << 5) + (((c & 15) >> 2) << 3) + ((_lane(c) >> 5) << 2) + (c & 3)
+
+
+def _qq(c):
+    """The 16-byte slot a run-16 element's quarter q = (c & 15) >> 2 goes to: q in half 0 of the
+    lanes, 3 - q in half 1."""
+    return hk.where(_lane(c) >= 32, 3 - ((c & 15) >> 2), (c & 15) >> 2)
+
+
+def _slot(own, y4, y8, c):
+    """What slot _qq(c) of a 16-byte store takes: own (slots 0 and 2), the partner's e ^ 4 (1),
+    its e ^ 8 (3). Each comparison takes its own _qq, as the C++ this replaced did: with one
+    shared, clang schedules the lane exchange around it differently (V1, docs/design/dsl-surface.md
+    §7)."""
+    return hk.where((_qq(c) == 0) | (_qq(c) == 2), own, hk.where(_qq(c) == 1, y4, y8))
 
 
 def _quant_store(r, mxd, mxs, t, w):
     """The MXFP8 rows of r (a run-16 strip of Oᵀ, bf16 values) to mxd / mxs row t (a query's 32 x 512)."""
-    b = hk.map_cpp(BITS, hk.map_cpp("fabsf(x0)", r).group_max(32, xor=(32,)))
-    qv = hk.map_cpp("x0 * __builtin_exp2f(127.0f - x1)", r, b)
+    b = hk.map(_bits, hk.map(abs, r).group_max(32, xor=(32,)))
+    qv = hk.map(lambda x, e: x * hk.math.exp2(127.0 - e), r, b)
     c = hk.iota(ST16)
     # one scale a 32-d group: element 0 of lane l < 32's run k is d 32k of head l
-    mxs.store_elems(b, hk.map_cpp(f"(x0 & 15) == 0 && ((x0 >> 4) & 63) < 32 ? ((x0 >> 4) & 31) * {D // 32} + "
-                                  f"{DW // 32} * x1 + (x0 >> 10) : -1", c, w, dtype=i32), row=t)
+    mxs.store_elems(b, hk.map(lambda c, w: hk.where(((c & 15) == 0) & (_lane(c) < 32),
+                                                    (_lane(c) & 31) * (D // 32) + DW // 32 * w + (c >> 10),
+                                                    -1), c, w), row=t)
     # 16 bytes a store: lane l (half h = l >> 5) and lane l ^ 32 trade half their values so each holds
     # d 32k + 16h .. +15 of its head. h 0 wants [own q0, its q0, own q1, its q1], h 1 [its q2, own q2,
     # its q3, own q3] (q: a run of 4; the partner's q0 is d 4-7 for h 0, ...)
-    QQ = "((((x3 >> 4) & 63) >= 32) ? (3 - ((x3 & 15) >> 2)) : ((x3 & 15) >> 2))"
     # slot QQ (h 0: q, h 1: 3 - q) takes: 0 own e, 1 the partner's e ^ 4, 2 own e ^ 12, 3 the partner's e ^ 8
-    own = hk.map_cpp(f"({QQ}) == 2 ? x1 : x0", qv, qv.run_xor(12), qv, c, dtype=fp32)
-    y = qv.lane_gather(hk.map_cpp("((x0 >> 4) & 63) ^ 32", c, dtype=i32))
-    rv = hk.map_cpp(f"({QQ}) == 0 || ({QQ}) == 2 ? x0 : (({QQ}) == 1 ? x1 : x2)", own, y.run_xor(4), y.run_xor(8), c,
-                    dtype=fp32)
+    own = hk.map(lambda x, x12, c: hk.where(_qq(c) == 2, x12, x), qv, qv.run_xor(12), c)
+    y = qv.lane_gather(_lane(c) ^ 32)
+    rv = hk.map(_slot, own, y.run_xor(4), y.run_xor(8), c)
     # run-16 chunk k of lane l: d 32k + 16h
-    mxd.store_elems(rv, hk.map_cpp(f"(((x0 >> 4) & 63) & 31) * {D} + {DW} * x1 + ((x0 >> 10) << 5) + "
-                                   f"((((x0 >> 4) & 63) >> 5) << 4)", c, w, dtype=i32), runs=True, row=t)
+    mxd.store_elems(rv, hk.map(lambda c, w: (_lane(c) & 31) * D + DW * w + ((c >> 10) << 5)
+                               + ((_lane(c) >> 5) << 4), c, w), runs=True, row=t)
 
 
 def kernel(name: str, *, scale: float, mxfp8: bool, arch=None):
@@ -235,18 +258,19 @@ def kernel(name: str, *, scale: float, mxfp8: bool, arch=None):
             # Oᵀ [d 128w.., head] where it sits, a run-16 strip: lane l's run k is fragment k's 16 values,
             # d = 32k + 8(e >> 2) + 4(l >> 5) + (e & 3), head l & 31 (hk.lane_coords; written out below so
             # nothing but the values stays live). A 32-d MX group is a lane's run and lane l ^ 32's.
-            xb = hk.map_cpp("(float)__float2bfloat16(x0)", O.lane_strip(16))   # the bf16 rows vLLM's pass reads
+            xb = hk.map(lambda x: x.to(bf16).to(fp32), O.lane_strip(16))   # the bf16 rows vLLM's pass reads
             if w == WARPS - 1:
                 # d 384..511: 448.. are the rope lanes, inverse GPT-J RoPE as vLLM writes it
                 p_t = pos[hk.elem_coord(0, 0, 0, 2 * t)].load_scalar(invariant=True)   # int64, low word
                 c = hk.iota(ST16)
-                jc = hk.map_cpp(f"({DL}) >= {NOPE - DW * (WARPS - 1)} ? x1 * {D - NOPE} + "
-                                f"((({DL}) - {NOPE - DW * (WARPS - 1)}) >> 1) : -1", c, p_t, dtype=i32)
+                k0 = NOPE - DW * (WARPS - 1)
+                jc = hk.map(lambda c, p: hk.where(_dl(c) >= k0, p * (D - NOPE) + ((_dl(c) - k0) >> 1), -1),
+                            c, p_t)
                 ccos = cs.load_elems(jc)
-                csin = cs.load_elems(hk.map_cpp(f"x0 < 0 ? -1 : x0 + {(D - NOPE) // 2}", jc, dtype=i32))
-                r = hk.map_cpp(f"({DL.replace('x0', 'x4')}) < {NOPE - DW * (WARPS - 1)} ? x0 : "
-                               "((x4 & 1) ? (x0 * x1 - x2 * x3) : (x0 * x1 + x2 * x3))",
-                               xb, ccos, xb.run_xor(1), csin, c, dtype=fp32)
+                csin = cs.load_elems(hk.where(jc < 0, -1, jc + (D - NOPE) // 2))
+                r = hk.map(lambda x, co, xr, si, c: hk.where(
+                    _dl(c) < k0, x, hk.where((c & 1) != 0, x * co - xr * si, x * co + xr * si)),
+                    xb, ccos, xb.run_xor(1), csin, c)
                 _quant_store(r, mxd, mxs, t, w)
             else:
                 _quant_store(xb, mxd, mxs, t, w)

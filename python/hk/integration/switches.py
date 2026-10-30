@@ -65,44 +65,40 @@ class Route:
 _R = Route
 ROUTES: Dict[str, Route] = {r.name: r for r in (
     _R("vllm_mxfp8", "vllm", "HK_VLLM_MXFP8", True, ("gfx950",),
-       "K2: block-scaled MXFP8 linear layers (DeepSeek-V4.1) at M >= 2048 (indexer wq_b "
-       "2825, engram wkv 1024)",
+       "block-scaled MXFP8 linear layers (DeepSeek-V4.1) at M >= 2048 (indexer wq_b 2825, "
+       "engram wkv 1024)",
        "bit-identical to vLLM's kernel; real-weight GSM8K / ARC within stock's noise "
        "(serving-readiness B1)"),
     _R("vllm_moe_a8w4", "vllm", "HK_VLLM_MOE_A8W4", True, ("gfx950",),
-       "K1: AITER a8w4 MoE (DeepSeek-V4.1) at M >= 2560",
+       "AITER's a8w4 MoE, MXFP4 weights (DeepSeek-V4.1), at M >= 2560",
        "error vs fp32 at or below AITER's; real-weight GSM8K / ARC within stock's noise (B1)"),
     _R("vllm_dsv41_index", "vllm", "HK_VLLM_DSV41_INDEX", True, ("gfx950",),
        "DeepSeek-V4.1's index layers under --monokernel: mono_decode._select's chain (compressor, "
        "indexer K / Q, logits, top-k) as one launch at decode steps of <= 8 rows",
-       "caches and q byte-identical to vLLM's chain in vLLM, top-k sets equal at M=1; serving scorecard "
-       "(with hk's other default routes): TPOT 4.5 / 4.4 / 3.1% below mono's at B1/4/8, GSM8K-1319 "
-       "within stock's noise"),
+       "caches and q byte-identical to vLLM's chain in vLLM, top-k sets equal at M=1; real-weight "
+       "GSM8K-1319 within stock's noise"),
     _R("vllm_sparse_mla", "vllm", "HK_VLLM_SPARSE_MLA", True, ("gfx950",),
        "DeepSeek-V4.1's sparse MLA prefill (T >= 512 queries a call) and its MXFP8 output rows; "
        "it runs where vLLM's own sparse MLA does (VLLM_ROCM_USE_AITER_TRITON_SPARSE_MLA unset)",
-       "owner's decision 2026-10-29 on the serving scorecard (TP2, real weights). Run "
-       "20261029-0737Z vs same-session stock: prefill 8k +17.6% (+5.4% over hk), 8k TTFT -15.0%, "
-       "GSM8K-1319 equal (pooled McNemar p 0.12) -- but decode TPOT at B4 +2.2% vs stock (+2.8% "
-       "vs hk), beyond the spread: the route needs vLLM's own sparse MLA, which also replaces "
-       "AITER's decode kernel. Best vs best (run 20261029-1556Z, vs AITER-tuned stock): prefill "
-       "+7.6%, long +3.0%, mixed -1.5%, B4 TPOT +0.9%. HK_VLLM_SPARSE_MLA=0 turns it off"),
+       "real weights, TP2: GSM8K-1319 equal to stock's. Its cost is at decode: it needs vLLM's "
+       "own sparse MLA, whose decode kernel replaces AITER's, so decode steps can be slightly "
+       "slower. Inactive while VLLM_ROCM_USE_AITER_TRITON_SPARSE_MLA=1; HK_VLLM_SPARSE_MLA=0 "
+       "turns it off"),
     _R("vllm_int4", "vllm", "HK_VLLM_INT4", True, ("gfx1100", "gfx950", "gfx1201"),
        "AWQ 4-bit linear layers on hk's decode GEMM",
        "greedy tokens identical to stock's, Qwen3-8B/14B-AWQ (history 22, 42); gfx1201: "
-       "Qwen3-8B-AWQ tokens identical, counts equal round for round, decode 2.5-4.5x (history 50)"),
+       "Qwen3-8B-AWQ tokens identical, counts equal round for round (history 50)"),
     _R("vllm_gemm", "vllm", "HK_VLLM_GEMM", True, ("gfx1100", "gfx1201"),
        "unquantized linear layers by the measured route table, plus tuning at load",
        "gfx1100: greedy tokens identical to stock's, or a bf16 near-tie (history 35). "
        "gfx1201: greedy tokens identical to stock's, routing counts equal round for round, "
-       "Qwen3-1.7B and Qwen3.5-9B in the R9700 vLLM image; prefill 1.12-1.16x (history 50). "
+       "Qwen3-1.7B and Qwen3.5-9B in the R9700 vLLM image (history 50). "
        "gfx950: measured to change nothing against aiter (history 42), so it stays off there"),
     _R("vllm_moe", "vllm", "HK_VLLM_MOE", True, ("gfx1100", "gfx1201"),
        "bf16 MoE GEMMs (Triton's fused_moe kernel)",
        "gfx1100: OLMoE greedy tokens identical to stock's (history 21). gfx1201: up to 2 "
        "tokens a step only (vllm_moe.BLOCK16_MAX_TOKENS_AT); OLMoE tokens identical, counts "
-       "equal round for round, decode 1.10-1.12x at 1 request and 1.06-1.07x at 2, a tie at 4 "
-       "(history 52). gfx950 with aiter: it routes nothing"),
+       "equal round for round (history 52). gfx950 with aiter: it routes nothing"),
     _R("vllm_sdpa", "vllm", "HK_VLLM_SDPA", True, ("gfx1100",),
        "the vision encoder's F.scaled_dot_product_attention (with --mm-encoder-attn-backend "
        "TORCH_SDPA)",
@@ -133,7 +129,7 @@ ROUTES: Dict[str, Route] = {r.name: r for r in (
        "off: lossy by design (PSNR 30.4 dB from bf16, visible drift); a model-level choice",
        part="convrot"),
     _R("sdpa_k3", "ops", "HK_SDPA_K3", True, ("gfx1100",),
-       "K3: hk.ops.sdpa's non-causal head_dim-128 calls on hk.ops.attn_k3",
+       "hk.ops.sdpa's non-causal head_dim-128 calls on its newer kernel (hk.ops.attn_k3)",
        "per-call error 2.95e-5 vs the current path's 4.50e-5 at Qwen-Image's shape (#24)"),
 )}
 

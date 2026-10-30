@@ -142,7 +142,8 @@ def _store_histogram(kernel) -> dict:
         assert r.returncode == 0, r.stderr[-2000:]
         text = asm.read_text()
     hist = {}
-    for m in re.finditer(r"\bglobal_store_(\w+)", text):
+    # (the elementwise path stores 16- and 32-bit elements through a buffer resource)
+    for m in re.finditer(r"\b(?:global|buffer)_store_(\w+)", text):
         hist[m.group(1)] = hist.get(m.group(1), 0) + 1
     return hist
 

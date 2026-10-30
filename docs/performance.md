@@ -126,7 +126,7 @@ for the task rows.
 </picture>
 
 **The DX suite's tasks, written with a template**
-([elementwise and rowwise, measured](templates/elementwise-rowwise.md#measured)).
+([elementwise and rowwise, measured](templates/elementwise-rowwise.md#appendix-measured-at-hk-040)).
 MI355X: device time, geomean over the task's shapes (min-max); W7900D:
 `--quick`, three shapes. The best baseline is the fastest of torch eager,
 `torch.compile`, Triton and the `hk.ops` kernels the task has.
@@ -146,11 +146,11 @@ MI355X and 0.83x (0.71-0.92) on the W7900D; on register strips, 1.11x and
 **Against hk's tuned kernel for the same job**, the elementwise and rowwise
 templates are 0.98-1.03x on the MI355X (device time) and 0.92-1.02x on the
 W7900D (eager calls), across the shapes of its summary, 1-8192 rows
-([the summary table](templates/elementwise-rowwise.md#measured)).
+([the summary table](templates/elementwise-rowwise.md#appendix-measured-at-hk-040)).
 
 **A GEMM with a fused epilogue** -- bias + GELU(tanh), or a residual add --
 at Qwen3-8B's and Llama-3-8B's linear layers, M = 16-4096
-([GEMM template, measured](templates/gemm.md#what-it-costs-measured)):
+([GEMM template, measured](templates/gemm.md#appendix-measured-at-hk-040)):
 
 - MI355X, device time: within 5% of the plain `hk.ops.matmul` at 45 of 48
   cases; faster than `torch.compile` at 46, level at two (down at M = 4096

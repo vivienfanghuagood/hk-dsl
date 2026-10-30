@@ -64,9 +64,9 @@ Paths below are relative to the repository root.
   `run=8` for 16-bit data (16 bytes a lane), loads and stores by element
   (`x.at[row, c0]`), `bounded=True` for ragged edges. One workgroup per
   `CW`-column block of a row, consecutive workgroups along the row. The
-  10-line example in [llms.txt](../../llms.txt) is this shape: it ties or
-  beats torch.compile on both GPUs at 4096x14336 and is 3.7-4.7x it at
-  16x14336; the same op on 16x64 `hk.RT` tiles is 0.54x on an MI355X.
+  10-line example in [llms.txt](../../llms.txt) is this shape. The same op
+  on 16x64 `hk.RT` tiles leaves memory bandwidth unused: tiles are the
+  matrix core's layout, not a streaming one.
 - **Matrix core** (GEMM, attention): register tiles `hk.RT`, LDS tiles
   `hk.ST` staged by `hk.group(n)`, `acc += a @ b.T`. Prefer the GEMM template
   or `hk.ops.matmul` / `hk.attention` to writing one.

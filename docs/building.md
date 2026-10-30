@@ -83,15 +83,19 @@ PYTHON=/opt/venv/bin/python3 ISOLATION=0 scripts/build_wheel.sh
 pip install dist/hk_dsl-0.4.0-cp310-cp310-linux_x86_64.whl
 ```
 
-Releases carry the cp310 and cp312 wheels as assets
+Releases carry the cp310, cp311, cp312 and cp313 wheels as assets
 (`gh release create vX.Y.Z dist/*.whl`), and a manylinux copy of each, because
 PyPI refuses the `linux_x86_64` tag. `scripts/manylinux_tag.sh` makes them: it
-retags each wheel with the tag `auditwheel` says it already satisfies. Both
-wheels are built on glibc 2.35 and so are `manylinux_2_35`: cp310 on Ubuntu
-22.04 with its python3, cp312 in the vLLM ROCm image (Ubuntu 22.04, gcc 11.4,
-`/usr/bin/python3` 3.12). Nothing is grafted and the
-binaries are not touched, since the wheels link only libc, libm, libgcc_s and
-libstdc++.
+retags each wheel with the tag `auditwheel` says it already satisfies. All four
+wheels are built on glibc 2.35 and so are `manylinux_2_35`:
+- cp310 on Ubuntu 22.04 with its python3;
+- cp312 in the vLLM ROCm image (Ubuntu 22.04, gcc 11.4, `/usr/bin/python3` 3.12);
+- cp311 and cp313 in `scripts/wheel-builder.Dockerfile` (Ubuntu 22.04, gcc 11.4, deadsnakes'
+  3.11 and 3.13, each in a venv with pinned setuptools and wheel).
+
+Each builds `hk._mlir` against the same MLIR install. Nothing is grafted and the binaries are not
+touched, since the wheels link only libc, libm, libgcc_s and libstdc++. A cp311 or cp313 build takes
+about 40 s on top of the MLIR install, and adds 12.5 MB per wheel to the release.
 
 **Build cp312 on glibc 2.35, not newer.** A wheel's tag is the glibc it was
 built against, and a newer one is not accepted by an older system. 0.3.1

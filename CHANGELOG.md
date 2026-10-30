@@ -9,6 +9,43 @@ The next version's notes collect here until it is released.
 What is on main after 0.8.0. `pip install hk-dsl` (0.8.0) does not have it;
 the API reference marks such names *New after 0.8.0*.
 
+**gfx1100 under clang 24 (ROCm 10.1): the kernels the spill gate refused build again.** With clang
+24, 139 of the codegen tier's gfx1100 kernels spilled and were refused: `hk.ops`' fp16/bf16
+RMSNorm and LayerNorm, rope, the fp32 norm/softmax at the top of their range, examples 02 and 03,
+and four decode schedules. The cause was HipKittens' element-by-element global<->register paths,
+the fallback for unaligned rows and the only path for layouts that don't vectorize. They gave
+every element a 64-bit pointer, and clang 24 kept a whole tile's worth of them live: an RMSNorm
+that needs 79 VGPRs under clang 22 took 256. Under clang 24 these paths now go through a buffer
+resource at 32-bit offsets (HipKittens#4, `HK_RT_GLOBAL_BUFFERED`):
+- the codegen tier passes on gfx1100;
+- the 256 kernels that already built use a median of 48 fewer VGPRs;
+- 12 of them lose one occupancy step (attention, paged decode, elementwise min/max/gelu).
+
+Under clang 22 and 23 nothing changes: the ISA is identical for all 1049 kernels of the gfx1100
+catalog.
+
+**Integer, mask and bit expressions on strips: `hk.map` (gfx950).** What needed `hk.map_cpp`'s
+C++ strings is written with operators (docs/language.md, "Integer, mask and bit expressions on
+strips"; docs/design/dsl-surface.md S7).
+- i32 strips take C's `+ - * // % << >> & | ^ ~` (`//` and `%` truncate, `>>` is arithmetic);
+  comparisons of i32 and fp32 strips make masks, combined with `& | ~` and used by
+  `hk.where(m, a, b)`; `hk.min` / `hk.max` of i32 strips are signed. `hk.math.fma`, `rcp`,
+  `popcount`, `ctz`, `ceil` and `floor` are new. `hk.map(fn, *args)` traces a Python function of
+  the elements into one expression, with contraction off.
+- In the IR this is one op, `hk.map`: a region of `arith` / `math` scalar ops (the `math`
+  dialect is now registered), or a C++ body -- `hk.map_cpp` is that form, and prints the same
+  C++ as before. The `hk-map-fuse` pass merges the one-op maps the operators build into one
+  expression; it never moves arithmetic across a load, a store, a lane exchange or a barrier.
+- `paged_cdna`'s and `sparse_mla`'s map_cpp calls are rewritten with the operators: the
+  generated ISA and resources are identical on all 76 of their catalog builds, so their
+  allowlist entries are gone. `dsv41_index`'s 190 stay for a later step.
+- No float result changes: fp32 strip and tile operators keep their ops. `==` / `!=` of two
+  strips now make a mask (it was Python's identity test); of WMMA tiles and vectors they still
+  are identity. RDNA strips have no `hk.map` lowering yet (S7b): a map there is
+  refused while tracing.
+- An `hk.Int` on the left of a strip operator (`hk.arch.warp_id() * 64 + col`) now gives the
+  strip's operator instead of a `TypeError`.
+
 **`hk.templates.rowwise` and `hk.templates.elementwise` stay callable after their module is
 imported.** `import hk.templates.rowwise` (or `from hk.templates.rowwise import ...`) before the
 first use bound the module to the package's name, and `hk.templates.rowwise(...)` then raised
@@ -26,14 +63,11 @@ to hk in the W7900D production images again.** Under its AMD clang 23 the four-t
   spilled now build on both, none breaks. Outputs are bit-identical.
 - `hk.kernel(max_occupancy=N)`: a cap on the waves a SIMD holds -- the kernel keeps enough
   VGPRs that no more fit. The freed registers raised the decode GEMM's occupancy, and more
-  workgroups streaming W at once read it slower (0.76-0.88x on the widest layers); its two-
-  and four-tile schedules now carry the occupancy they were tuned at (`occupancy`: 6 and 5).
-- Measured on a W7900D, one process against the previous build, W rotated past the cache,
-  MiniCPM5-2B's and Qwen3-8B's shapes at M 1-64, outputs bit-identical: in the production
-  image (clang 23) the one- and two-tile kernels are 0.997-1.009x and 0.989-1.030x, and the
-  four-tile kernel builds -- 1.1-2.6x hipBLASLt on 11 of 14 points; under ROCm 7.2's clang 22,
-  0.979-1.001x (one tile: 2% slower on the 2048- and 2560-wide layers), 0.990-1.004x and
-  0.968-1.058x.
+  workgroups streaming W at once read it slower on the widest layers; its two- and four-tile
+  schedules now carry the occupancy they were tuned at (`occupancy`: 6 and 5).
+- Checked on a W7900D against the previous build at MiniCPM5-2B's and Qwen3-8B's shapes, M
+  1-64: outputs bit-identical under both clang 23 (the production image) and ROCm 7.2's
+  clang 22, and the four-tile kernel builds under clang 23.
 - A kernel the compiler refuses no longer breaks the route: `vllm_gemm` sends that shape to
   vLLM's path (said once) instead of raising inside the forward, and tuning leaves the
   kernel out of what it measures instead of failing.
@@ -43,18 +77,16 @@ to hk in the W7900D production images again.** Under its AMD clang 23 the four-t
   linear shapes, measured in their production image, so they start without tuning at load
   (it had taken MiniCPM-V's startup from 130-140 s to 200-250 s) and every shape is covered --
   tuning at load had run out of its 60 s before MiniCPM-V's down_proj and in_proj_ba. M = 1 stays on vLLM's
-  skinny GEMM there. MiniCPM5-2B end to end in that image: median TPOT 1.22-1.44x at
-  concurrency 8-32; GSM8K 87.95% vs 88.02% (1319 questions, McNemar p = 1.0).
+  skinny GEMM there. MiniCPM5-2B end to end in that image: GSM8K 87.95% vs 88.02% (1319
+  questions, McNemar p = 1.0).
 
-**vLLM: the sparse MLA route (`vllm_sparse_mla`) is on by default on gfx950.** The owner
-decided this on 2026-10-29 from the serving scorecard (TP2, real weights).
-- **Against same-session stock** (run 20261029-0737Z): prefill 8k +17.6% (+5.4% over
-  hk's other default routes), 8k TTFT -15.0%, GSM8K-1319 equal (pooled McNemar p 0.12).
-- **The cost is decode.** TPOT at B4 is +2.2% vs stock (+2.8% vs hk), beyond the spread.
-  The route runs only where vLLM's own sparse MLA does, which replaces AITER's decode
-  kernel as well (an open item).
-- **Best vs best** (run 20261029-1556Z, against AITER-tuned stock): prefill +7.6%, long
-  +3.0%, mixed -1.5%, B4 TPOT +0.9%.
+**vLLM: the sparse MLA route (`vllm_sparse_mla`) is on by default on gfx950.** Validated on
+the serving scorecard (DeepSeek-V4.1-Flash, MI355X TP2, real weights): GSM8K-1319 equal to
+stock's. The serving result quoted for hk's default routes is on the
+[scorecard](docs/performance/scorecard.md).
+- **The trade-off is decode.** The route runs only where vLLM's own sparse MLA does, and
+  that path also replaces AITER's decode kernel, so decode steps can be slightly slower at
+  some batch sizes (an open item).
 
 `HK_VLLM_SPARSE_MLA=0` turns it off. With `VLLM_ROCM_USE_AITER_TRITON_SPARSE_MLA=1`, vLLM
 takes AITER's path for prefill and decode and the route stands aside; its startup line
@@ -232,10 +264,9 @@ and the online fold `m.max_(...)` / `m.min_(...)` are `llvm.maximum` /
   main loop is 693 -> 680 instructions, 348 -> 338 VALU.
 - Outputs: every launch of every `tests/hk/gpu` test, re-run as a twin built
   from the previous headers and emitter, is bit-identical (1182 launches; the
-  6 that differ also differ from themselves run to run: atomics). Speed, one
-  process against the previous code (MI355X, d128 attention, 6 shapes):
-  0.999-1.010x, median +0.35%. GEMM, K1 and K2 compile to the same
-  instructions as before.
+  6 that differ also differ from themselves run to run: atomics). The GEMM and
+  the MXFP4 MoE and MXFP8 linear kernels compile to the same instructions as
+  before.
 
 **CONTRIBUTING.md: new kernels add no kernel-specific C++ helpers or one-off DSL ops.**
 - A needed exception goes through review with a written reason and is registered as an escape
@@ -262,15 +293,12 @@ for a prefill chunk (AITER's opus kernel at T >= 1024): 32 heads of 512, each
 query's sliding window and top-k rows gathered by index into LDS by the DMA.
 `prefill_mxfp8` writes instead the layer's inverse-RoPE'd MXFP8 rows for wo_a,
 made from O in registers (`lane_strip`) and bit for bit vLLM's quant of `prefill`'s
-bf16 rows; vLLM's bf16 rows are scratch, so none are written. On real-weight
-DSV4.1-Flash TP2 calls at T 8192 on an MI355X: attention 1.11-1.13x opus; with the
-MXFP8 rows, top-k layers 1.22x AITER's fused fp8 kernel and 1.39x opus + vLLM's
-quant pass, sliding-window layers 1.12x and 1.97x. Below T 512 opus is faster and
-the route leaves the call to vLLM. The kernel's gathered copies are bounded by each
+bf16 rows; vLLM's bf16 rows are scratch, so none are written. Calls below T 512
+are left to vLLM. The kernel's gathered copies are bounded by each
 query's rows (`rows=`), so no index past a query's list is read: a real-weight server
-faulted on a mixed step before. Serving scorecard (TP2, real weights): prefill 8k
-+6.1% and TTFT -5.8% against hk's default routes, GSM8K equal. The route is opt-in
-(`HK_VLLM_SPARSE_MLA=1`). `tests/hk/gpu/test_sparse_mla.py`,
+faulted on a mixed step before. Serving with real weights (DeepSeek-V4.1-Flash,
+MI355X TP2): GSM8K equal to stock's. The route is opt-in
+(`HK_VLLM_SPARSE_MLA=1`; a later entry turns it on by default). `tests/hk/gpu/test_sparse_mla.py`,
 `tests/hk/gpu/test_vllm_sparse_mla.py`.
 
 **gfx950: fp32 LDS vectors and 16-bit col-layout LDS stores are ds ops, not FLAT.**
@@ -305,8 +333,8 @@ indexer K and Q, and, for rows of up to 16640 entries, the logits and the
 top-k -- the candidate source's block top-k and the consumers' candidate mask
 included. The caches, q and q_scale are vLLM's byte for byte and the top-k sets
 equal (docs/integration.md, "The DeepSeek-V4.1 index launch"). Serving on
-MI355X (TP2, max_model_len 16640, with hk's other default routes): TPOT 4.5 /
-4.4 / 3.1% below mono's at batch 1 / 4 / 8, GSM8K-1319 within stock's noise.
+MI355X (TP2, max_model_len 16640, with hk's other default routes): GSM8K-1319
+within stock's noise.
 The route patches through an import hook, since the plugin must not import the
 model package, and its contract is read from the module's source.
 
@@ -328,7 +356,7 @@ checked. Swept over every kernel the test tiers and the default routes build:
   not causal -- `hk.attention`'s kernel -- reads S for the softmax's max 3-4
   wait states after the last QK MFMA on the taken path of a branch, where 12
   are needed (2 places a kernel). Padded, its output is bitwise the unpadded
-  one's and its time 0.993-1.003x (6 shapes, one process).
+  one's and its time unchanged within noise (6 shapes, one process).
 - ROCm 10 (the vLLM image): HipKittens' causal attention (`attend_ker`,
   hk.ops.hipkittens), 3-6 wait states short at the join after an exec branch
   (6 places at head_dim 128, 3 at 64); and one `hk.ops.gemm_cdna_dp`
@@ -377,19 +405,18 @@ to hold one in AGPRs.**
   A/B (`attn_kernel(mma_fence=)`, `decode_kernel(fence_qk=)`).
   - Where it lands: attention's prologue (its main loop fences its phases
     already), the decode's per-step scores and epilogue, GEMM epilogues.
-  - Cost, measured in one process against main's code (MI355X): dense
-    attention 0.993-1.004x (8 shapes, outputs bitwise equal); paged decode
-    0.986-1.013x over 120 points, geometric mean 0.999x -- with one request on
-    1 kv head at 1k-4k tokens 1% slower, the per-step fence of the one-page
-    walk.
+  - Cost, measured in one process against the previous code (MI355X): dense
+    attention unchanged within noise (8 shapes, outputs bitwise equal); paged
+    decode unchanged within noise over 120 points, except one request on 1 kv
+    head at 1k-4k tokens, slightly slower (the per-step fence of the one-page
+    walk).
 - `hk.arch.agpr(tile)` holds an fp32 accumulator that `hk.zeros` just made in
   AGPRs (CDNA): mmas into it are inline asm with C/D in AGPRs, other accesses
   go through a VGPR copy after the MFMAs' wait states
   (`include/hk/cdna_agpr.cuh`). Outputs are bitwise the VGPR form's.
   `attn_kernel(acc="agpr")` puts attention's O there; it stays off by default:
-  0.93-0.95x on the 26 full-attention shapes where hk trails FlyDSL/CK, because
-  LLVM cannot schedule around an asm MFMA (AGPR placement itself measured
-  +1.5-2.4% like for like). LLVM 22's register split spills the d128 kernel;
+  it is slower on full-attention shapes, because LLVM cannot schedule around an
+  asm MFMA. LLVM 22's register split spills the d128 kernel;
   the causal pairs walk (two O tiles) spills on either toolchain.
 
 **Attention tests hold the kernels to their own error.** Every attention
@@ -409,14 +436,12 @@ caches of the paged tests now come from the test's own generator, so a case
 sees the same data in any order.
 
 **gfx950 paged decode: two pages a step, a cheaper merge, and no point
-slower than before the 512-split plan.** The previous entry's plan was up to
-13% slower than the one before it on short sequences (1-2k tokens); this one
-is not, and keeps the plan's gains on long ones.
+slower than before the 512-split plan.** The previous entry's plan was slower
+than the one before it on short sequences (1-2k tokens); this one is not.
 - Where (requests x kv heads) is under 64 or 256-511 -- about one workgroup a
   CU -- the walk takes two pages a step on splits of 8 pages or more and one
   on shorter ones, in one kernel (`paged_cdna.pages_per_step`,
-  `decode_kernel(ppstep=2)`, `hk.ops.paged.fused_kernel(ppstep=)`): 1.025x
-  one page a step on those points.
+  `decode_kernel(ppstep=2)`, `hk.ops.paged.fused_kernel(ppstep=)`).
 - Two pages a step need a scheduling fence after QK (`decode_kernel(fence_qk=)`,
   on by default, no measurable cost). Without it the current LLVM threads the
   softmax's reads of the AGPR scores through the two pages' MFMA chains, and
@@ -425,27 +450,17 @@ is not, and keeps the plan's gains on long ones.
 - Splits take at least 2 pages where the merge reads every split (up to 64
   splits, `paged_cdna.merge_reads_all`, `min_pages_for`) and, with more
   splits, on sequences of up to 128 pages (`floor_pages`); 4 otherwise. A
-  short sequence on a plan for long ones walked 4 pages a split, 1.2 us more.
+  short sequence on a plan for long ones walked 4 pages a split.
 - The merge: up to a round of 8 splits a warp it reads every split without
   first loading the sequence length (the walk writes empty splits' zeros); it
-  folds on at most 8 warps (`MERGE_WARPS`, 3-10% faster than 16 from 4k
-  tokens at 256 splits); and it sums only the warps that folded something.
+  folds on at most 8 warps (`MERGE_WARPS`); and it sums only the warps that
+  folded something.
 - On many-round plans an empty split skips its query load and copies, and
   split indices are turned by the (request, kv head) pair so that a short
   sequence's splits spread over the XCDs.
-- Measured on the attention task's decode grid (MI355X; 32/8, 64/8, 32/4 and
-  8/1 heads; 1-64 requests; 1k, 2k, 4k-128k tokens; CUDA graphs; KV rotated
-  past 1.2 GB), main before the 512-split plan, the 512-split plan, this and
-  the rivals in one process, compared round by round:
-  - against main before the 512-split plan: 1.107x (geometric mean of the
-    per-point medians), up to 3.5x; the lowest four points, 1k tokens, are
-    0.991-0.998x with rounds either side of 1.0, where the 512-split plan had
-    0.87-0.98x on 8 points;
-  - against the 512-split plan: 1.039x, lowest 0.994x;
-  - against the best of AITER's Gluon unified attention, FlyDSL `pa_decode` and
-    asm `pa_fwd_asm`, on the 120 points without 2k: 14 WIN, 93 tie, 13 LOSS,
-    geometric mean 1.009x, where the 512-split plan had 14 / 60 / 46 and
-    0.977x the same day.
+- Measured on a decode grid (MI355X; 32/8, 64/8, 32/4 and 8/1 heads; 1-64
+  requests; 1k-128k tokens; CUDA graphs) in one process against both earlier
+  plans: no point is slower than before the 512-split plan beyond noise.
 - Outputs change by the order pages and splits are folded in (within the fp32
   check; deterministic under another process on the GPU).
 
@@ -460,16 +475,8 @@ on 32 to 128 workgroups.
   aims at 512 one-warp workgroups from 64 to 255 (request, kv head) pairs and
   256 otherwise, up to 512 splits (`paged_cdna.MAX_SPLITS`).
 - The walk no longer writes partials for splits the merge does not read.
-- Measured on the attention task's decode grid (MI355X; 32/8, 64/8, 32/4 and 8/1
-  heads; 1-64 requests; 1k-128k tokens; CUDA graphs; KV rotated past 1.2 GB),
-  same process, against main's plan and merge:
-  - 1.08x geometric mean, up to 3.3x: one request on 1 kv head at 128k tokens
-    is 25 µs, where it was 83 (AITER FlyDSL `pa_decode` 27, AITER Gluon 57);
-  - against the best of AITER's Gluon unified attention, FlyDSL `pa_decode` and
-    asm `pa_fwd_asm`: 14 WIN, 62 tie, 44 LOSS, where main had 11 / 38 / 71;
-    geometric mean 0.98x, where it was 0.91x;
-  - 1k tokens at 1-4 requests are up to 7% slower than main (more workgroups
-    launched for a short sequence); hk is still 1.16-1.32x the best there.
+- The plan is for long contexts on few (request, kv head) pairs. Short sequences
+  (1k tokens at 1-4 requests) got slower under it; the entry above fixes that.
 - Outputs change by the order splits are folded in (within the fp32 check;
   deterministic). `HK_SPLITS` still forces a count.
 
@@ -484,21 +491,15 @@ cached + 512 new tokens on 32/8 heads is 64 workgroups for 256 CUs.
   partials and (m, l) (`attn_cdna.attn_kernel(kv_split=True)`,
   `split_kernels_for`), and `attn_cdna.prefill_merge_kernel` weighs them.
 - Its entries go longest first across requests. On one or two kv heads the
-  vLLM backend takes that order even with nothing to cut: 1.2-1.4x on a batch
-  of prompts there. On more kv heads that order cost 2-4% of L2 reuse, and
-  the backend keeps the single-tile work list unless the plan cuts.
+  vLLM backend takes that order even with nothing to cut. On more kv heads that
+  order costs L2 reuse, and the backend keeps the single-tile work list unless
+  the plan cuts.
 - The vLLM backend plans it in the metadata builder, from
   `seq_lens_cpu_upper_bound` (exact for prefill rows); without it the
   prefill is the single launch as before.
-- Measured on the attention task's prefill grid (MI355X; 32/8, 64/8, 32/4 and
-  8/1 heads; 13 batches from fresh prompts to 65536 + 2048 chunks), same
-  process, against AITER's Gluon unified attention, FlyDSL's paged varlen and
-  AITER's varlen:
-  - hk was 0 WIN, 18 tie, 34 LOSS; it is 18 / 16 / 18;
-  - geometric mean 0.93x -> 1.20x;
-  - 1.29x main on average, up to 6.9x: 32768 + 512 on 8/1 heads takes 101 µs,
-    where it took 697 (AITER Gluon 602);
-  - no batch slower than main beyond 1.1%.
+- Measured on a prefill grid (MI355X; 32/8, 64/8, 32/4 and 8/1 heads; 13
+  batches from fresh prompts to 65536 + 2048 chunks) in one process against the
+  previous code: no batch slower by more than 1.1%.
 - Cut tiles' outputs change by the order partials are folded in (within the
   fp32 check; deterministic). Uncut ones are bitwise as before.
 
@@ -509,26 +510,21 @@ the same work. Before, longest-first order inside each batch still ended
 grids with few workgroups a batch on a round of long tiles.
 - Outputs are bitwise the same (all 42 causal points of the attention grid,
   head_dim 128, 8/1 to 64/8 heads, N 1k-32k).
-- Same process, Q/K/V rotated, against the single-block walk:
-  - 8 query / 1 KV heads (a 70B-class model at TP8): 1.26-1.30x at N up to 4k;
-  - 16 / 2 heads: 1.10-1.12x at 1k-2k;
-  - 40 / 8 heads: 1.01-1.03x;
-  - the rest within ±1.4%.
-- At 8/1 and 16/2 heads, short N, hk now ties AITER's asm `fmha_v3`, where it
-  had been at 0.74-0.92x.
+- It helps most where few heads leave the grid short (8 query / 1 KV heads, a
+  70B-class model at TP8, and 16 / 2 heads, at short N); measured in one process
+  against the single-block walk, no other point moves by more than 1.4% either way.
 - `attn_cdna.kernel_for(..., pairs=False)` and the `pairs` knob of
   `hk.schedules.AttnCdna` give back the single-block walk. The spatial
   numbering and the paged prefill do not change.
 
-**K2 below its MIN_M** (gfx950, `vllm_mxfp8.RANGES`). DeepSeek-V4.1's MXFP8 linears at decode
-and mid-size M were measured against vLLM's kernel, FlyDSL's, AITER Triton's and hipBLASLt's, route
-level with each side's activation quant, weights rotated, two sweeps: hk now takes engram wkv
-(12800 x 6144) from M 160, wo_b (5120 x 4096) from 416, the shared expert's w2 (5120 x 1152) from
-512, wq_b (16384 x 1280) from 576, the shared expert's w1|w3 (2304 x 5120) from 960 and fused
-wq_a|wkv (1792 x 5120) from 1216, in the ranges where it won by >= 3% in every round of both
-sweeps -- 1.04-1.61x the best of the four -- on the four-warp kernel at 128 x 128 or the
+**The MXFP8 linear route below its MIN_M** (gfx950, `vllm_mxfp8.RANGES`). DeepSeek-V4.1's MXFP8
+linears at decode and mid-size M were measured route level against the other available kernels:
+hk now takes engram wkv (12800 x 6144) from M 160, wo_b (5120 x 4096) from 416, the shared
+expert's w2 (5120 x 1152) from 512, wq_b (16384 x 1280) from 576, the shared expert's w1|w3
+(2304 x 5120) from 960 and fused wq_a|wkv (1792 x 5120) from 1216, only in the ranges where it
+measured faster in every round of two sweeps, on the four-warp kernel at 128 x 128 or the
 eight-warp one. Bitwise vLLM's output at every point. At M <= 128, and for the indexer's wq_b
-below its MIN_M, no hk kernel wins; those calls stay with vLLM.
+below its MIN_M, those calls stay with vLLM.
 
 **Host time per call** (#91, cross-arch). An engine route's Python no longer
 re-decides per call what only the call's shapes decide, and code-object
@@ -538,14 +534,10 @@ Same kernels, same arguments, bitwise the same outputs; `HK_HOST_FASTPATH=0`
 restores every call's previous path.
 - Host µs per call, before -> now: `vllm_gemm` decode 38.5 -> 14.0 and
   prefill 46.5 -> 17.6 (W7900D); `vllm_int4` 33.6 -> 12.5 (W7900D) and
-  19.9 -> 9.4 (MI355X); K3 attention 82.5 -> 49.2; K1 167.1 -> 122.6, and a
-  MoE call K1 leaves to AITER 252.6 -> 208.6 (AITER's own: 202.7).
-- Eager decode of Qwen3-8B-AWQ: 1.27x tokens/s on MI355X, 1.29-1.37x on
-  W7900D, at 1 and 16 requests; DeepSeek-V4.1-Flash TP2 1.04-1.07x. Prefill
-  and GPU-bound decode (Qwen3-8B bf16) unchanged.
-- Code-object launches in C (#92) where hk._mlir has `_hkLaunch` (built with the bindings): 2.9 µs a
-  launch on the W7900D and 4.6 on the MI355X, under the pybind entry point's 3.4 / 5.3 (the
-  Python launcher: 5.4 / 6.6).
+  19.9 -> 9.4 (MI355X); `hk.ops.sdpa`'s DiT attention 82.5 -> 49.2; the a8w4 MoE route
+  167.1 -> 122.6, and a MoE call it leaves to AITER 252.6 -> 208.6.
+- Code-object launches in C (#92) where hk._mlir has `_hkLaunch` (built with the bindings),
+  with less host time a launch than the pybind entry point and the Python launcher.
 - New: `hk.runtime.hostpath` (`ENABLED`, `set_enabled`),
   `hk.runtime.codeobj.direct`, `hk.runtime.torch_ext.launcher`,
   `CodeObjectKernel.launcher` (`native=`, #92), `hk.ops.w4a16.plan`. They are runtime and
@@ -553,36 +545,27 @@ restores every call's previous path.
   no mark there; [the runtime](docs/runtime.md) and
   [integration](docs/integration.md#host-time-per-call) describe them.
 
-**DeepSeek-V4.1 routes, retuned from the MI355X scoreboard** (#84, gfx950, real weights, TP2; every
-point against the best of AITER's tuned FlyDSL, FlyDSL, AITER Triton, hipBLASLt and vLLM's kernel).
-- K1 (`vllm_moe_a8w4`) takes M >= 2560, not 8192 (`HK_MOE_A8W4_MIN_M`), with #85's kernels: on
-  the real router's choices 1.03-1.08x AITER at 2560, 1.08-1.20x at 3072-4096 and 1.27-1.38x
-  from 4608 to 8192, layers 20 and 30. With uniform routing, which DSV4.1's router does not
-  produce, AITER is 3-11% faster from 2304 to 3584; from 4096 hk wins there too (the reasons
-  are at `MIN_M`).
-- K2 (`vllm_mxfp8`) takes the indexer's wq_b (N 4096, K 1280) from M 2825, 1.08-1.20x, and
-  engram's wkv (12800 x 6144) from M 1024 instead of 2048, 1.29-1.79x; per (N, K) in
-  `MIN_M_NK`. Bit-identical to vLLM's kernel at every new point, ragged M included.
+**DeepSeek-V4.1 routes, new thresholds** (#84, gfx950, real weights, TP2).
+- The a8w4 MoE route (`vllm_moe_a8w4`) takes M >= 2560, not 8192 (`HK_MOE_A8W4_MIN_M`), with
+  #85's kernels. The threshold was measured on the real router's choices; with uniform routing,
+  which DSV4.1's router does not produce, AITER is faster at the low end of that range (the
+  reasons are at `MIN_M`).
+- The MXFP8 linear route (`vllm_mxfp8`) takes the indexer's wq_b (N 4096, K 1280) from M 2825,
+  and engram's wkv (12800 x 6144) from M 1024 instead of 2048; per (N, K) in `MIN_M_NK`.
+  Bit-identical to vLLM's kernel at every new point, ragged M included.
 
 **fp8 GEMM on gfx1201** (#76, RDNA4). `hk.ops.scaled_mm(a, b, scale_a, scale_b,
 *, bias=None, out=None)` is `torch._scaled_mm`'s product, bf16
 `(A @ B.T) * scale_a * scale_b (+ bias)` from OCP fp8 operands with fp32 accumulation, in
 `hk.ops.matmul`'s (N, K) layout, with per-tensor or per-token x per-channel scales. It runs on
 gfx1201's fp8 WMMA: `hk.ops.gemm`'s kernel takes `op_dtype=hk.fp8e4m3` / `hk.fp8e5m2` there,
-and gfx1100 (no fp8 WMMA) and gfx950 (whose fp8 GEMMs are gemm_cdna's) refuse it. On a
-Radeon AI PRO R9700 against `torch._scaled_mm` (hipBLASLt), in one process: 240 vs 236 TFLOP/s
-at 4096³ per-tensor; per-token x per-channel 1.28-1.99x at M 128-4096 (N 4096 / 14336); a tie
-at M 1-64 with K 4096, and 0.89x at M 1-64 with K 14336 (decode shapes, not tuned yet).
+and gfx1100 (no fp8 WMMA) and gfx950 (whose fp8 GEMMs are gemm_cdna's) refuse it. The decode
+shapes (M 1-64) are not tuned yet.
 
-**K1 MoE a8w4 at prefill M: 1.34-1.49x AITER** (gfx950). On DeepSeek-V4.1-Flash's TP2 shapes with
-real weights and real routing, against `aiter.fused_moe`'s tuned FlyDSL kernels (MI355X scoreboard
-harness, four runs): 1.42-1.49x at M 8192 and 1.34-1.36x at 16384, from 1.35-1.37x / 1.22-1.24x
-before; 1.14-1.47x at M 4096-7707, and 1-4% less time than before at M 2560-3584. Outputs
-are bit for bit those of before; decode M unchanged.
-The route's thresholds are not touched.
+**The MXFP4 a8w4 MoE kernel at prefill M: a shorter stage 2** (gfx950). Outputs are bit for
+bit those of before; decode M unchanged. The route's thresholds are not touched.
 - `store_scatter` stores 16x16 fp32 fragments as bf16 in 16-byte runs (`v_permlane16_swap` pairs
-  lanes l and l+16): half the store instructions. Stage 2's scattered top-k rows were a third of
-  its time.
+  lanes l and l+16): half the store instructions, on stage 2's scattered top-k rows.
 - `Global.scatter(..., staged=N)` reads its row ids from an LDS copy made by
   `g.gather_prep(ids, at, N, raw=True)` (both new after 0.8.0). A global id load in an epilogue is a vmcnt
   wait, and on gfx950 that retires, in order, every load and store issued before it: in the
@@ -596,10 +579,8 @@ The route's thresholds are not touched.
 **Attention on gfx1201** (#77, RDNA4). `hk.attention` (and the SDPA drop-in) runs its own
 tiling on gfx1201 from 256 query rows: 16 warps (a 256-row Q tile), a head-first grid
 that starts the longest rows of every head first, and, causal, warps that skip the KV
-blocks they precede. At n 4096, GQA 4, head_dim 128 it ties AITER's gfx1201 FlyDSL kernel
-(1.40 vs 1.41 ms causal, 2.65 vs 2.69 full; gfx1100's tiling took 1.71 / 2.78). The causal
-KV block depends on the compiler: 64 rows under ROCm 7.2.3's clang 22, 32 under the
-R9700 vLLM image's clang 23, where 64 is 16-20% slower. A shorter Q keeps gfx1100's
+blocks they precede. The causal KV block depends on the compiler: 64 rows under ROCm
+7.2.3's clang 22, 32 under the R9700 vLLM image's clang 23. A shorter Q keeps gfx1100's
 192-row tiling, so what `hk.attention` accepts is the same on every RDNA arch.
 `attn_kernel(warp_skip=True)` without `causal` raises.
 
@@ -620,9 +601,7 @@ index chain needed as one launch on vLLM's caches:
   each, and a strip's reads ran one at a time.
 
 **Norms on gfx1201** (#78, RDNA4). The strip plans take per-lane targets measured on the
-R9700: rms_norm at 2048 rows goes from 0.96x to 1.04x the best other implementation, and
-the fused add + rms_norm at 8192 rows from 0.93x to a tie (447 vs 443 us). gfx1100's and
-gfx950's plans are unchanged.
+R9700, for rms_norm and the fused add + rms_norm. gfx1100's and gfx950's plans are unchanged.
 
 **Ops for an index top-k in one launch** (#98, gfx950), from DeepSeek-V4.1's
 index logits and top-512 inside the same launch:
@@ -637,55 +616,50 @@ index logits and top-512 inside the same launch:
   (`v_readfirstlane`); one LDS word read by every wave after a barrier may
   then drive an `hk.uniform` branch (a select's exact-fit early exit).
 
-**Ops for K2's MoE in one launch** (#104, gfx950), from DeepSeek-V4.1's MoE as one
-resident hk launch, bitwise vs dsv41_mono's:
+**Ops for a MoE in one launch** (#104, gfx950), from DeepSeek-V4.1's MoE as one
+resident hk launch, bitwise vs vLLM's `--monokernel` MoE:
 - `while hk.uniform(t < n):` -- a runtime loop every warp runs the same
   iterations of may hold barriers: a work queue's loop over `hk.comm.claim`.
 - `hk.fp8_operand(words)`: an MXFP8 MMA operand from a lane's eight dwords, for
   fp8 operands kept in LDS as words (an fp8 shared tile has no register path).
 - `hk.Tensor[..., "stream"]`: non-temporal accesses for a weight stream a launch
-  reads once (K2's MoE: 135 -> 123 us a launch). Not a scope: mailboxes, flags
+  reads once. Not a scope: mailboxes, flags
   and symmetric memory refuse it.
 
 **vLLM on gfx1201** (#80, RDNA4), in the Radeon AI PRO R9700 vLLM image
 (`ghcr.io/inferstation/vllm-rocm-r9700-main`: TheRock ROCm 7.14, clang 23, torch 2.13).
 - `vllm_gemm` is on by default on gfx1201, with a measured route table
   (`routes_vllm_linear_gfx1201.json`): tokens identical to stock and routing counts equal
-  round to round on Qwen3-1.7B and Qwen3.5-9B; prefill 1.11-1.16x on the 9B.
-- `vllm_int4` (AWQ) is on by default on gfx1201: decode 2.5-4.5x the image's AWQ path on
+  round to round on Qwen3-1.7B and Qwen3.5-9B.
+- `vllm_int4` (AWQ) is on by default on gfx1201: tokens identical to the image's AWQ path on
   Qwen3-8B-AWQ.
-- `vllm_moe` and `vllm_sdpa` stay off there: the MoE route is right but 0.90-0.93x at 16
-  tokens, and the SDPA drop-in's per-call host time hid its kernel's 1.10-1.40x.
+- `vllm_moe` and `vllm_sdpa` stay off there: the MoE route is right but slower at 16 tokens,
+  and the SDPA drop-in's per-call host time outweighs its kernel.
 - The decode GEMM's four-tile schedule on gfx1201 is combine depth 2
   (`decode_gemm.SCHEDULES_AT`), the one that builds without a spill under both compilers.
 
 **Attention on gfx1201 at head_dim 64** (#94, RDNA4). The 16-warp tilings now cover
-head_dim 64 too: causal from 1024 query rows, full from 2048; at n 1024-8192, GQA 4, under
-either compiler, causal 1.10-1.84x and full 1.03-1.14x gfx1100's tiling. Below those lengths
-gfx1100's tiling stays, which is faster at a ViT's 577 and 1025 tokens.
+head_dim 64 too: causal from 1024 query rows, full from 2048, under either compiler. Below
+those lengths gfx1100's tiling stays, which is faster at a ViT's 577 and 1025 tokens.
 
 **gfx1201's bf16 GEMM at 32-512 rows** (#102, RDNA4). hk ships tuned schedules for an
 RDNA arch in `python/hk/tuned/routes_gemm_<arch>.json`, in `hk.tune`'s record format,
 read behind a machine's own records (`hk.tune.records.shipped_route`); `hk.ops.gemm.matmul`,
 `schedule_for`, `hk.templates.gemm` and the vLLM route take them. gfx1201's 18, tuned under
-both ROCm 7.2.3's clang 22 and the R9700 vLLM image's clang 23 on Qwen3's four (N, K):
-1.03-1.40x the default schedule; with W from GDDR6, 1.28-5.7x hipBLASLt's NT and 0.94-1.09x
-its best layout. The gfx1201 vLLM table, re-measured with them, routes most of M 33-256 to
-hk: Qwen3.5-9B at 32-128 requests, tokens identical and requests 1.08-1.11x stock (the old
-table's 1.01-1.08x). `HK_AUTOTUNE=0` ignores the shipped records.
+both ROCm 7.2.3's clang 22 and the R9700 vLLM image's clang 23 on Qwen3's four (N, K). The
+gfx1201 vLLM table, re-measured with them, routes most of M 33-256 to hk: Qwen3.5-9B at
+32-128 requests, tokens identical to stock's. `HK_AUTOTUNE=0` ignores the shipped records.
 
 **vllm_moe on gfx1201, up to 2 tokens a step** (#108, RDNA4). `vllm_moe.BLOCK16_MAX_TOKENS_AT`
 gives an arch its own token limit for hk's MoE GEMM; gfx1201's is 2, where vLLM skips the
-sort and gives each (token, choice) pair a block of its own. There, OLMoE decode is
-1.10-1.12x stock at one request and 1.06-1.07x at two (tokens identical, routing counts
-equal round for round); past it vLLM's Triton kernel runs, which from 16 tokens a step
-streams the chosen experts at ~96% of GDDR6's rate. `vllm_moe` is on by default on gfx1201.
+sort and gives each (token, choice) pair a block of its own. There, OLMoE tokens are
+identical to stock's and routing counts equal round for round; past the limit vLLM's Triton
+kernel runs. `vllm_moe` is on by default on gfx1201.
 
 **gfx1201's bf16 GEMM at 1024-8192 rows** (#114, RDNA4). 11 more shipped gfx1201 schedules
-in `routes_gemm_gfx1201.json`, for Qwen3's four (N, K): 4.1-6.1% faster than the default
-schedule under the R9700 vLLM image's clang 23, and under ROCm 7.2.3's clang 22 2.3-3.4%
-faster at four shapes and within 1% at the rest (each compiler's own champions disagree at
-these sizes; the shipped one is the one that holds under both).
+in `routes_gemm_gfx1201.json`, for Qwen3's four (N, K), tuned under both the R9700 vLLM
+image's clang 23 and ROCm 7.2.3's clang 22 (each compiler's own champions disagree at these
+sizes; the shipped one is the one that holds under both).
 
 **Fixes**
 - **`hk.schedules.lookup(arch=...)`, `hk.templates.gemm.plan(arch=...)` and hk.tune's
@@ -795,7 +769,7 @@ remaps:
   `"tensor.dim"` (`"k.depth"`).
 
 **`hk.map_cpp` and i32 strips** (#53, gfx950;
-[the language](docs/language.md#elementwise-c-over-strips-and-i32-strips-gfx950)).
+[the language](docs/language.md#integer-mask-and-bit-expressions-on-strips-hkmap-gfx950)).
 - `hk.map_cpp(expr, *args, dtype=None)` evaluates one C++ expression for each
   element of its strip arguments (`x0`, `x1`, ... bound to the elements, or
   to an `hk.Int` / Python int), into an fp32 or i32 strip. It is for what a

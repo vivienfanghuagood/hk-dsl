@@ -29,6 +29,8 @@ StringRef mlir::hk::dtypeName(Type t) {
     return "i32";
   if (t.isInteger(8))
     return "i8";
+  if (t.isInteger(1))
+    return "b1";
   if (isa<Float8E4M3FNType>(t))
     return "fp8e4m3";
   if (isa<Float8E5M2Type>(t))
@@ -47,6 +49,8 @@ StringRef mlir::hk::dtypeCpp(Type t) {
     return "int";
   if (t.isInteger(8))
     return "int8";
+  if (t.isInteger(1))
+    return "bool";
   if (isa<Float8E4M3FNType>(t))
     return "fp8e4m3";
   if (isa<Float8E5M2Type>(t))

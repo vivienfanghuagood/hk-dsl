@@ -1,7 +1,8 @@
 # Design: converging the DSL surface
 
 Status: **approved** (2026-10-28; the decisions are in §9). **Built:** S0-S5 and S12 (S0 in #130;
-S1-S5 and S12 in one combined PR after it, one commit a step; 2026-10-29); the later steps (S6-S11, S13) are not. The work is timeboxed to one week, until 2026-11-04 00:00Z; §8 says which steps fit and which
+S1-S5 and S12 in one combined PR after it, one commit a step; 2026-10-29), and S7 (2026-10-30;
+RDNA's lowering split off as S7b); the later steps (S6, S8-S11, S13) are not. The work is timeboxed to one week, until 2026-11-04 00:00Z; §8 says which steps fit and which
 come later.
 
 #115 (`dsv41_index`) and #121 (`lane_strip`, `lane_coords`, `run_xor`) merged after the review.
@@ -306,6 +307,13 @@ x.to(fp8e4m3)                             # packed v_cvt_pk_fp8_f32 (exists in s
 - The operators build an `hk.map` op whose body is a region of `arith` / `math` ops on scalars:
   one element. This is `linalg.generic`'s shape, on strips.
 - A fusion pattern merges a chain of single-use `hk.map`s into one region.
+  *As built (`hk-map-fuse`):* a producer is inlined only when its one user is a region map in its
+  block and nothing but maps and scalar arithmetic lies between them -- never past a load, a
+  store, a lane exchange or a barrier (§5.1: moving arithmetic across them can reschedule the
+  kernel), nor into a loop. A value read twice is computed once. V1 is sensitive to an
+  expression's shape beyond that: sparse_mla's slot select is identical only with each
+  comparison computing its own slot, as its C++ did; one shared value scheduled the lane
+  exchange around it differently (16 more instructions).
 - HKToCpp prints a region exactly as it prints `map_cpp` today: one `strip_each` lambda, with
   contraction off.
 - A migrated call site therefore compiles to the same C++ expression up to its text, and to the
@@ -580,7 +588,8 @@ form:
 | **S5** | G2 front end: `as_fragment`, `as_scales`, emitting today's three ops | `fp4_operand`, `fp8_operand`, `mx_scales_loose` | V0 (no in-tree kernel uses them; #115 if merged) | S0 |
 | **S12** | Split `cdna.cuh` by kind, a pure move: `cdna/lib.cuh` (library fixes, gap fills), `cdna/primitives.cuh`, `cdna/formats.cuh` (MX, W4), `cdna/escape.cuh` (`map_cpp`, `mfma_strip`), `cdna/special.cuh` (E4); each definition headed by its registry name | none | V0 (same generated source, which includes one umbrella header) and V1 | S0 |
 | S6 | G3: `lane_coords` takes a type; `iota` becomes its alias; the `hk.iota` op goes | `iota` (alias, kept) | V1: paged_cdna; #120 / #115 if merged | #121 |
-| S7 | G1: integer and bit operators on strips, `hk.where`, `hk.math.fma` / `rcp` / `popcount` / `ctz`, the `hk.map` region op and its fusion pattern; `map_cpp` becomes `hk.map` with a string body; the escape-hatch allowlist starts. Migrate paged_cdna's 2 calls (and #120's 12 if merged) | `map_cpp` stays (escape hatch) | V1 (ISA identical expected); V2 where not | S0 |
+| **S7** | G1: integer and bit operators on strips, `hk.where`, `hk.math.fma` / `rcp` / `popcount` / `ctz`, the `hk.map` region op and its fusion pattern; `map_cpp` becomes `hk.map` with a string body; the escape-hatch allowlist starts. Migrate paged_cdna's 2 calls (and #120's 12 if merged). *Built: both migrated, V1 identical on all 76 of their catalog kernels; dsv41_index's calls later* | `map_cpp` stays (escape hatch) | V1 (ISA identical expected); V2 where not | S0 |
+| S7b | G1 on RDNA strips: a `map_cpp` lowering in include/rdna3 / rdna4 (they have `strip_each`, not `map_cpp`), so `hk.map` and the operators lower on gfx1100 / gfx1201. No M5 kernel needs it yet, so it does not come before S8 | none | V0 on the RDNA kernels; the G1 GPU semantics test on a W7900D | S7 |
 | S8 | E1: `group_load_sync` → the DMA body + wait | none (C++) | V2: `mxfp8.gemm` (128x128) bitwise, A/B, fence | S12 |
 | S9 | C3: `hk.mma` takes the fp32 16x16x4 form; `mfma_strip` becomes an alias over views; G2's single `hk.lane_view` op | `mfma_strip` | V1 on the strip tests; out-of-tree users bitwise | S5, S6 |
 | S10 | A6: `mx_quant_store` as a G1 composition, in `hk.mx` (Python), for K1's epilogue and `mxfp8.quant` | `mx_quant_store` (alias to the composition) | V2: K1 and K2 quant bitwise and A/B; fence; spill. Not adopted if slower | S7 (and open question 3) |
