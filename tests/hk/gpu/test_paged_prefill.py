@@ -313,19 +313,20 @@ def test_rocm_layout_is_deterministic_and_skips_padding():
     assert torch.equal(outs[0], outs[1]) and torch.equal(outs[0], outs[2])
 
 
-# ---- layout="flash" (TRITON_ATTN's cache) ----------------------------------------------------
+# ---- layout="flash" (TRITON_ATTN's cache) and dsplit (head_dim 256) --------------------------
 
-def _flash_run(reqs, head_dim=128, h_kv=2, group=8, layout="flash", seed=0, decodes=True,
-               warps=None):
+def _flash_run(reqs, head_dim=128, h_kv=2, group=8, dsplit=False, layout="flash", seed=0,
+               decodes=True, warps=None):
     q, (k, v), (k5, v4), table, lens, q_start = _rocm_case(reqs, head_dim=head_dim, h_kv=h_kv,
                                                            group=group, seed=seed)
     n_tok, h, d = q.shape
     out = torch.full_like(q, 7.0)
-    warps = warps or 12
+    warps = warps or (16 if dsplit else 12)
     kern = pp.paged_prefill_kernel(
-        f"t_pp_{layout}_d{head_dim}_g{group}_w{warps}{'_dec' if decodes else ''}",
-        head_dim=head_dim, group=group, layout=layout, warps=warps, decodes=decodes)
-    tile = 16 * warps
+        f"t_pp_{layout}_d{head_dim}_g{group}{'_ds' if dsplit else ''}_w{warps}"
+        f"{'_dec' if decodes else ''}", head_dim=head_dim, group=group, layout=layout,
+        dsplit=dsplit, warps=warps, decodes=decodes)
+    tile = 16 * (warps // 2 if dsplit else warps)
     tiles = pp.q_tiles(max(n for _, n in reqs), q.device, tile)
     if layout == "flash":
         nb = k.shape[0]
@@ -348,3 +349,57 @@ def _flash_run(reqs, head_dim=128, h_kv=2, group=8, layout="flash", seed=0, deco
 def test_flash_layout_with_decodes(reqs):
     got, want, _ = _flash_run(reqs)
     _attn_ref.check(got, want)
+
+
+def _clang_23() -> bool:
+    from hk.ops.attn import _clang_major
+
+    return (_clang_major() or 0) >= 23
+
+
+#: dsplit with the flash layout holds V^T's register staging across the compute as well, and
+#: at 256 VGPRs clang 22 (ROCm 7.2.3) spills 1-8 of them -- the build refuses it; clang 23
+#: (TheRock 7.14, the production vLLM images) does not. The route falls back where it does not
+#: build.
+flash_dsplit_builds = pytest.mark.skipif(not _clang_23(), reason="flash dsplit spills under clang 22")
+
+
+@rocm_only
+@pytest.mark.parametrize("layout", [pytest.param("flash", marks=flash_dsplit_builds), "rocm"])
+@pytest.mark.parametrize("reqs", [[(0, 300)], [(1000, 77), (0, 1), (40, 600)]])
+def test_dsplit_head_dim_256(layout, reqs):
+    """d256 with each query row split over a warp pair: MiniCPM-V's / Qwen3.8's full attention."""
+    got, want, q_start = _flash_run(reqs, head_dim=256, h_kv=1, group=8, dsplit=True,
+                                    layout=layout, decodes=layout == "flash",
+                                    warps=16 if layout == "flash" else 12)
+    rows = (list(range(got.shape[0])) if layout == "flash" else _prefill_rows(reqs, q_start))
+    _attn_ref.check(got[rows], want[rows])
+
+
+@rocm_only
+@flash_dsplit_builds
+def test_dsplit_v_ones_is_exactly_one():
+    q, (k, v), _, table, lens, q_start = _rocm_case([(300, 200)], head_dim=256, h_kv=1, group=8,
+                                                    v_ones=True)
+    n_tok, h, d = q.shape
+    out = torch.full_like(q, 7.0)
+    kern = pp.paged_prefill_kernel("t_pp_flash_d256_g8_ds_w16_dec", head_dim=256, group=8,
+                                   layout="flash", dsplit=True, warps=16, decodes=True)
+    fl = torch.stack([k.transpose(1, 2), v.transpose(1, 2)], dim=1)
+    kv = fl.reshape(k.shape[0], 2, ROCM_PAGE, d).contiguous()
+    kern(q.view(n_tok, h * d), kv, kv, table, lens, q_start, pp.q_tiles(200, q.device, 128),
+         out.view(n_tok, h * d))
+    assert torch.all(out == 1.0)
+
+
+@rocm_only
+def test_dsplit_rocm_v_ones_is_exactly_one():
+    q, (k, v), (k5, v4), table, lens, q_start = _rocm_case([(300, 200)], head_dim=256, h_kv=1,
+                                                           group=8, v_ones=True)
+    n_tok, h, d = q.shape
+    out = torch.full_like(q, 7.0)
+    kern = pp.paged_prefill_kernel("t_pp_rocm_d256_g8_ds_w12", head_dim=256, group=8,
+                                   layout="rocm", dsplit=True, warps=12)
+    kern(q.view(n_tok, h * d), *pp.rocm_views(k5, v4), table, lens, q_start,
+         pp.q_tiles(200, q.device, 96), out.view(n_tok, h * d))
+    assert torch.all(out == 1.0)
