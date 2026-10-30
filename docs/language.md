@@ -49,7 +49,7 @@ def row_sumsq(x: hk.Tensor[hk.bf16], o: hk.Tensor[hk.fp32]):
 ```
 
 `@hk.kernel` takes `warps`, `grid`, and optionally `arch`, `name`,
-`max_vgprs`, `min_occupancy`, `defines`, `resident` and `placement`
+`max_vgprs`, `min_occupancy`, `max_occupancy`, `defines`, `resident` and `placement`
 (`python/hk/dsl/kernel.py`; the last two are
 [below](#between-workgroups-xcds-and-gpus-hkcomm-gfx950)).
 `defines` is a dict emitted as `#define KEY value` lines ahead of the
@@ -66,7 +66,12 @@ extent and `p.<CONSTEXPR>` gives a constexpr value, and it must return a
 3-tuple. A kernel that names no `arch` is built for `hk.target.current_arch()`
 (see [runtime](runtime.md#which-gpu)). `max_vgprs` and `min_occupancy` are
 extra build gates on top of the unconditional no-spill rule
-([resource gates](runtime.md#the-resource-gates)).
+([resource gates](runtime.md#the-resource-gates)). `max_occupancy=N` is not a
+gate but a cap: the kernel holds enough VGPRs that at most N waves fit a SIMD
+(an empty asm clobbers the register the target's model puts at that level). A
+schedule tuned at an occupancy keeps it when a compile frees registers -- fewer
+concurrent waves can read memory faster, as `hk.ops.decode_gemm`'s two- and
+four-tile schedules do (6 and 5 waves).
 
 A constexpr does not have to be keyword-only. A positional one is a constexpr
 when it is annotated so, and it still needs a default, because every

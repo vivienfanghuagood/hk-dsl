@@ -320,7 +320,8 @@ def _legacy_kernel_for(step, ep, arch):
     else:
         nm = (f"decode_gemm_t{s['tokens']}_s{s['slices']}_w{s['warps']}"
               f"_c{s['combine_depth']}_r{s['resident']}"
-              + (f"_k{s['splits']}" if s["splits"] > 1 else ""))
+              + (f"_k{s['splits']}" if s["splits"] > 1 else "")
+              + (f"_o{s['occupancy']}" if s.get("occupancy") else ""))
         k = decode_gemm.decode_gemm_kernel(_epilogue.name(nm, e), **s, epilogue=e,
                                            arch=arch)
     return k

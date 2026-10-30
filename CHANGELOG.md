@@ -9,6 +9,37 @@ The next version's notes collect here until it is released.
 What is on main after 0.8.0. `pip install hk-dsl` (0.8.0) does not have it;
 the API reference marks such names *New after 0.8.0*.
 
+**gfx1100: the decode GEMM builds under the TheRock ROCm 7.14 compiler, so vLLM's linear routes
+to hk in the W7900D production images again.** Under its AMD clang 23 the four-tile
+`decode_gemm` spilled (256 -> 264 VGPRs), the spill gate refused it, tuning at load failed and
+`vllm_gemm` routed nothing.
+- The cause: include/rdna3 copied fp32 tiles between LDS and registers through generic
+  pointers, a FLAT load and a 64-bit address an element; the decode GEMM's fp32 combine peaked
+  there. Those copies now go through LDS pointers (HipKittens submodule bump): the four-tile
+  kernel is 194 VGPRs under clang 23, 162 under clang 22; 30 of 180 decode GEMM schedules that
+  spilled now build on both, none breaks. Outputs are bit-identical.
+- `hk.kernel(max_occupancy=N)`: a cap on the waves a SIMD holds -- the kernel keeps enough
+  VGPRs that no more fit. The freed registers raised the decode GEMM's occupancy, and more
+  workgroups streaming W at once read it slower (0.76-0.88x on the widest layers); its two-
+  and four-tile schedules now carry the occupancy they were tuned at (`occupancy`: 6 and 5).
+- Measured on a W7900D, one process against the previous build, W rotated past the cache,
+  MiniCPM5-2B's and Qwen3-8B's shapes at M 1-64, outputs bit-identical: in the production
+  image (clang 23) the one- and two-tile kernels are 0.997-1.009x and 0.989-1.030x, and the
+  four-tile kernel builds -- 1.1-2.6x hipBLASLt on 11 of 14 points; under ROCm 7.2's clang 22,
+  0.979-1.001x (one tile: 2% slower on the 2048- and 2560-wide layers), 0.990-1.004x and
+  0.968-1.058x.
+- A kernel the compiler refuses no longer breaks the route: `vllm_gemm` sends that shape to
+  vLLM's path (said once) instead of raising inside the forward, and tuning leaves the
+  kernel out of what it measures instead of failing.
+- `tests/hk/codegen/test_decode_gemm_builds.py`: every shipped schedule builds without
+  spilling at its cap, under whichever hipcc runs it.
+- The shipped gfx1100 vLLM table has rows for MiniCPM5-2B's and MiniCPM-V-4.7-35B-A3B's (TP2)
+  linear shapes, measured in their production image, so they start without tuning at load
+  (it had taken MiniCPM-V's startup from 130-140 s to 200-250 s) and every shape is covered --
+  tuning at load had run out of its 60 s before MiniCPM-V's down_proj and in_proj_ba. M = 1 stays on vLLM's
+  skinny GEMM there. MiniCPM5-2B end to end in that image: median TPOT 1.22-1.44x at
+  concurrency 8-32; GSM8K 87.95% vs 88.02% (1319 questions, McNemar p = 1.0).
+
 **vLLM: the sparse MLA route (`vllm_sparse_mla`) is on by default on gfx950.** The owner
 decided this on 2026-10-29 from the serving scorecard (TP2, real weights).
 - **Against same-session stock** (run 20261029-0737Z): prefill 8k +17.6% (+5.4% over

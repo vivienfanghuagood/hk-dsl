@@ -5,6 +5,12 @@ description: Write, check and tune an AMD GPU kernel with hk-dsl (Python, `impor
 
 # Writing an hk kernel
 
+hk-dsl is a general-purpose Python DSL for AMD GPU kernels on RDNA and CDNA,
+with build-time gates against silent tile-level errors (spills, missing waits,
+MFMA hazards). Today its largest end-to-end gains are on Radeon (RDNA3/RDNA4),
+where its kernels plug into vLLM and SGLang. This skill is the loop for
+writing one kernel in it ([what hk-dsl is and is not](../../docs/positioning.md)).
+
 Use it in Claude Code from a checkout: copy or symlink this directory to
 `.claude/skills/hk-kernel/` (project) or `~/.claude/skills/hk-kernel/` (user).
 In Cursor: copy this file to `.cursor/rules/hk-kernel.mdc` and replace the

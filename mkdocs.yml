@@ -5,7 +5,7 @@
 # keeps the result as an artifact; publishing to GitHub Pages is off until the
 # repository enables Pages and sets the variable HK_DOCS_PAGES to "true".
 site_name: hk-dsl
-site_description: Fast AMD GPU kernels in a few lines of Python -- tile kernels for Radeon RDNA3 and Instinct CDNA4 on HipKittens
+site_description: A general-purpose Python DSL for AMD GPU kernels on RDNA and CDNA, with build-time gates against silent tile-level errors (spills, missing waits, MFMA hazards). Its largest end-to-end gains today are on Radeon (RDNA3/RDNA4), through vLLM and SGLang.
 site_url: https://vivienfanghuagood.github.io/hk-dsl/
 repo_url: https://github.com/vivienfanghuagood/hk-dsl
 repo_name: vivienfanghuagood/hk-dsl
@@ -68,6 +68,7 @@ not_in_nav: |
 
 nav:
   - Overview: README.md
+  - What it is and is not: positioning.md
   - Getting started: getting-started.md
   - Templates:
       - Elementwise and rowwise: templates/elementwise-rowwise.md
@@ -96,7 +97,9 @@ nav:
       - hk.check: api/hk.check.md
       - hk.profile: api/hk.profile.md
       - hk.target: api/hk.target.md
-  - Performance: performance.md
+  - Performance:
+      - The scorecard: performance/scorecard.md
+      - The measurement record: performance.md
   - How it works:
       - The IR: ir.md
       - The runtime: runtime.md

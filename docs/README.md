@@ -1,9 +1,17 @@
 # hk-dsl documentation
 
+**hk-dsl is a general-purpose Python DSL for AMD GPU kernels on RDNA and CDNA,
+with build-time gates against silent tile-level errors (spills, missing waits,
+MFMA hazards).** Today its largest end-to-end gains are on Radeon (RDNA3 and
+RDNA4), where its kernels plug into vLLM and SGLang.
+[What it is and is not](positioning.md) has the comparison with Triton,
+FlyDSL and AITER, the supported hardware, and where the numbers come from
+([the scorecard](performance/scorecard.md)).
+
 ## Start here
 
-Five pages, in order, take you from nothing to a kernel that is right and
-faster than `torch.compile`:
+Five pages, in order, take you from nothing to a kernel that is checked for
+correctness and timed against `torch.compile`:
 
 1. [Getting started](getting-started.md): install, a first kernel from a
    template, checking it, and a kernel written by hand.
@@ -21,6 +29,13 @@ Coding agents: start from [llms.txt](../llms.txt) and the
 [hk-kernel skill](../skills/hk-kernel/SKILL.md) instead.
 
 ## Every page
+
+**What it is**
+
+| page | |
+|---|---|
+| [What it is and is not](positioning.md) | the positioning, the three layers (language, kernels, engine routes), the comparison with Triton, FlyDSL and AITER, supported hardware and toolchains |
+| [The scorecard](performance/scorecard.md) | the only performance numbers the project quotes: end-to-end serving results |
 
 **Writing kernels**
 
@@ -245,8 +260,9 @@ the resource gate ([runtime](runtime.md#the-resource-gates)), the passes
 
 - **One GPU of each kind.** Every number is from one W7900D or one MI355X.
   The engine results are mostly the W7900D's; on the MI355X only vLLM has
-  been measured end to end; gfx1201 runs the GPU tier on an R9700 with
-  nothing tuned there yet ([chapter 47](history/47-gfx1201-on-hardware.md)), and gfx942
+  been measured end to end; gfx1201 runs the GPU tier on an R9700, and three
+  vLLM routes are on by default there
+  ([integration](integration.md#on-by-default-and-turning-it-off)), and gfx942
   has only been compiled for ([CDNA3/4](design/cdna.md)).
 - **Some kernels lose.** On the W7900D, paged decode attention is 0.86-1.12x
   Triton's kernel at 16-64 requests (triton-rocm 3.7.1), yet stays on hk's,

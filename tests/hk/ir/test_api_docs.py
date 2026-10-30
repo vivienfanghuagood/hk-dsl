@@ -41,9 +41,13 @@ def test_since_marks_against_the_pypi_wheel():
     section = arch_md.split("### `hk.arch.xcd_count`", 1)[1].split("###", 1)[0]
     assert "after 0.8.0" not in section          # in it (#63)
     hk_md = (REPO / "docs" / "api" / "hk.md").read_text()
-    for name in ("hk.kernel", "hk.Placement", "hk.map_cpp", "hk.iota", "hk.RS"):
+    for name in ("hk.Placement", "hk.map_cpp", "hk.iota", "hk.RS"):
         section = hk_md.split(f"### `{name}`", 1)[1].split("###", 1)[0]
-        assert "after 0.8.0" not in section, name   # placement=, #53, #72 are in 0.8.0
+        assert "after 0.8.0" not in section, name   # #53, #72 are in 0.8.0
+    # hk.kernel: placement= is in 0.8.0; max_occupancy= came after it, and is the only mark
+    section = hk_md.split("### `hk.kernel`", 1)[1].split("###", 1)[0]
+    assert "*Changed after 0.8.0*: new parameter `max_occupancy`" in section
+    assert "placement" not in section.split("after 0.8.0", 1)[1].split("\n", 1)[0]
     group_md = (REPO / "docs" / "api" / "hk.group.md").read_text()
     section = group_md.split("#### `Group.wait_for`", 1)[1].split("###", 1)[0]
     assert "after 0.8.0" not in section          # *tiles, exact: unchanged, not reordered
@@ -62,7 +66,7 @@ def test_since_marks_against_the_pypi_wheel():
     since = gen.Since(base)
     assert since.mark("hk", "map_cpp", hk.map_cpp) == "*New after 0.8.0*"
     assert since.mark("hk", "kernel", hk.kernel) == \
-        "*Changed after 0.8.0*: new parameter `placement`"
+        "*Changed after 0.8.0*: new parameters `max_occupancy`, `placement`"
     assert since.mark("hk", "iota", hk.iota) == ""
     index = (REPO / "docs" / "api" / "README.md").read_text()
     if gen.RELEASE:      # a release PR: the release that has the marked names

@@ -61,8 +61,8 @@ and which rule decided.
 | MXFP8 at any (N, K) | `HK_MXFP8_ANY` | off | a mode of K2; no real-weight run |
 | DeepSeek-V4.1 sparse MLA prefill, calls of T >= 512 queries (`MIN_T`), and the layer's MXFP8 rows for wo_a made in the kernel from O in registers. It runs where vLLM's own sparse MLA does: with `VLLM_ROCM_USE_AITER_TRITON_SPARSE_MLA=1` vLLM takes AITER's path for prefill and decode and the route stands aside | `HK_VLLM_SPARSE_MLA` (`=0` turns it off) | **on, gfx950** (owner's decision, 2026-10-29) | serving scorecard run 20261029-0737Z (TP2, real weights) vs same-session stock: prefill 8k +17.6% (+5.4% over hk), 8k TTFT -15.0%, GSM8K-1319 equal (pooled McNemar p 0.12), **but decode TPOT at B4 +2.2% vs stock (+2.8% vs hk), beyond the spread** -- the route needs vLLM's own sparse MLA, whose decode kernel replaces AITER's (an open item). Best vs best, run 20261029-1556Z vs AITER-tuned stock: prefill +7.6%, long +3.0%, mixed -1.5%, B4 TPOT +0.9% |
 
-On a GPU a route was not validated on (gfx942, gfx1201), it is off unless you
-turn it on.
+On a GPU a route was not validated on (gfx942 for every route, and gfx1201 for
+the routes not marked for it above), it is off unless you turn it on.
 
 **Turning it off.** The first rule that applies decides:
 
@@ -731,8 +731,13 @@ Tables are per arch, per model and per engine, because the path a kernel has
 to beat is the engine's. The shipped ones, in `hk/tuned/`, named
 `routes_<engine>_<kind>_<arch>.json`:
 - `routes_vllm_linear_gfx1100.json`: Qwen3-8B against vLLM 0.31's op, raw
-  timings included, with FlyDSL rows (below). `$HK_VLLM_ROUTES` names
-  another.
+  timings included, with FlyDSL rows (below), and the production W7900D
+  models' shapes -- MiniCPM5-2B's and MiniCPM-V-4.7-35B-A3B's per TP2 rank --
+  measured in their TheRock ROCm 7.14 image against its vLLM's op, each row
+  with its own `meta` (engine, toolchain, model). Those models then start
+  without measuring at load. M = 1 stays on vLLM's skinny GEMM in those rows:
+  the margin there is a few percent either way and moved between images.
+  `$HK_VLLM_ROUTES` names another.
 - `routes_sglang_linear_gfx1100.json` (`route_tune.py --engine sglang`):
   against the `F.linear` SGLang calls on ROCm, with FlyDSL rows.
   `$HK_SGLANG_ROUTES` names another. It disagrees with vLLM's below M = 4:

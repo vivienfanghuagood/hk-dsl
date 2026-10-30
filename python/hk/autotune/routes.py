@@ -470,7 +470,10 @@ def _gemm_op(m, n, k):
         return None
     key = hk_gemm._sched_name({**hk_gemm.DEFAULT, **s})
     if key not in _OPS:
-        _OPS[key] = torch_op(hk_gemm.TUNER._kernel_for(s))
+        kernel = hk_gemm.TUNER._kernel_for(s)
+        if not _builds(kernel):
+            return None
+        _OPS[key] = torch_op(kernel)
     return _OPS[key]
 
 
@@ -483,8 +486,26 @@ def _decode_op(m, n, k):
     s = hk_decode.schedule_for(m, k)
     key = ("decode",) + tuple(sorted(s.items()))
     if key not in _OPS:
-        _OPS[key] = torch_op(hk_decode.kernel_for(**s))
+        kernel = hk_decode.kernel_for(**s)
+        if not _builds(kernel):
+            return None
+        _OPS[key] = torch_op(kernel)
     return _OPS[key]
+
+
+def _builds(kernel) -> bool:
+    """Whether this compiler builds the kernel within hk's gates. One it
+    refuses (a spill) is not a path to measure: the point is measured without
+    it, as vLLM's linear route would run it, instead of the tune failing."""
+    from ..runtime.resources import ResourceError  # noqa: PLC0415
+
+    try:
+        kernel.build()
+        return True
+    except ResourceError as e:
+        print(f"[hk] tune: {kernel.name} does not build with this compiler, not measured "
+              f"({str(e).splitlines()[0]})", flush=True)
+        return False
 
 
 class OutOfTime(Exception):

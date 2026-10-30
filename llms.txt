@@ -1,6 +1,6 @@
 # hk-dsl
 
-> hk-dsl is a Python DSL for AMD GPU tile kernels. A kernel body is traced into an MLIR dialect, checked by passes (spills, LDS waits, layouts), translated to HipKittens C++ and compiled by the stock hipcc, for Radeon RDNA3 (gfx1100, W7900D) and Instinct CDNA4 (gfx950, MI355X). It ships tuned ops (`hk.ops`), templates with hooks (`hk.templates`), and a checker (`python -m hk.check`) that reports a kernel's resources, correctness against torch and speed against torch.compile in one command. MIT; `pip install hk-dsl` (0.8.0, CPython 3.10 or 3.12, glibc 2.35+; the docs describe main, and the API reference marks what 0.8.0 lacks).
+> hk-dsl is a general-purpose Python DSL for AMD GPU kernels on RDNA and CDNA, with build-time gates against silent tile-level errors (spills, missing waits, MFMA hazards). Today its largest end-to-end gains are on Radeon (RDNA3/RDNA4), where its kernels plug into vLLM and SGLang. A kernel body is traced into an MLIR dialect, checked by passes (spills, LDS waits, layouts), translated to HipKittens C++ and compiled by the stock hipcc. Targets: gfx1100 (RDNA3, W7900D) and gfx950 (CDNA4, MI355X) fully, gfx1201 (RDNA4, R9700) with fewer engine routes, gfx942 (MI300X) compile-only. Three layers: the language (`hk`, templates in `hk.templates`, and a checker, `python3 -m hk.check`, that reports a kernel's resources, correctness against torch and time against torch.compile in one command); the kernels written in it (`hk.ops`); and engine routes (`hk.integration`), which are on by default when hk-dsl is installed next to vLLM or SGLang (`python3 -m hk.integration --status` lists them, `HK_DISABLE=1` turns them all off). MIT; `pip install hk-dsl` (0.8.0, CPython 3.10 or 3.12, glibc 2.35+; the docs describe main, and the API reference marks what 0.8.0 lacks).
 
 Read in this order: this file, [the language](docs/language.md), [hk.check](docs/check.md), then the [API reference](docs/api/README.md) for the names you use. [llms-full.txt](llms-full.txt) is all of them in one file.
 
@@ -32,6 +32,7 @@ Measured with hk.check (torch 2.10, interleaved in one process): on an MI355X it
 
 ## Docs
 
+- [What it is and is not](docs/positioning.md): the positioning, the three layers, the comparison with Triton, FlyDSL and AITER, supported hardware, and where the performance numbers come from
 - [The language](docs/language.md): kernels and constexprs, types (RT tiles, RS strips, ST LDS tiles, vectors), operators, memory, control flow, namespaces, errors, limits
 - [hk.check](docs/check.md): the loop -- build and resources without a GPU, correctness against a torch reference, interleaved timing against torch eager and torch.compile, `--json`
 - [hk.profile](docs/profile.md): why it is slow -- rocprofv3 counters and a thread trace per kernel: % of the compute and memory roofline, matrix core busy, occupancy, the grid's tail, the stalls the main loop waits on, its instruction mix, and a verdict; `--json` for agents
