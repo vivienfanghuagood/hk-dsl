@@ -88,6 +88,10 @@ ROUTES: Dict[str, Route] = {r.name: r for r in (
        "AWQ 4-bit linear layers on hk's decode GEMM",
        "greedy tokens identical to stock's, Qwen3-8B/14B-AWQ (history 22, 42); gfx1201: "
        "Qwen3-8B-AWQ tokens identical, counts equal round for round (history 50)"),
+    _R("vllm_gptq", "vllm", "HK_VLLM_GPTQ", False, (),
+       "4-bit symmetric GPTQ linear layers on RDNA3W4A16LinearKernel, on hk's decode GEMM at "
+       "4-64 tokens; act-order checkpoints refused",
+       "off until its end-to-end gate on Qwen3.8-27B-GPTQ-Int4 (W7900D, vLLM) is in"),
     _R("vllm_gemm", "vllm", "HK_VLLM_GEMM", True, ("gfx1100", "gfx1201"),
        "unquantized linear layers by the measured route table, plus tuning at load",
        "gfx1100: greedy tokens identical to stock's, or a bf16 near-tie (history 35). "

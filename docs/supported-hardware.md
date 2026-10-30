@@ -38,6 +38,7 @@ A route is on by default only on the GPUs it was validated on (**on** below). El
 | `vllm_dsv41_index` | vLLM | `HK_VLLM_DSV41_INDEX` | off | off | off | **on** |
 | `vllm_sparse_mla` | vLLM | `HK_VLLM_SPARSE_MLA` | off | off | off | **on** |
 | `vllm_int4` | vLLM | `HK_VLLM_INT4` | **on** | **on** | off | **on** |
+| `vllm_gptq` | vLLM | `HK_VLLM_GPTQ` | opt-in | opt-in | opt-in | opt-in |
 | `vllm_gemm` | vLLM | `HK_VLLM_GEMM` | **on** | **on** | off | off |
 | `vllm_moe` | vLLM | `HK_VLLM_MOE` | **on** | **on** | off | off |
 | `vllm_sdpa` | vLLM | `HK_VLLM_SDPA` | **on** | off | off | off |
