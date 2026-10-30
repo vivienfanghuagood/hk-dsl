@@ -42,9 +42,25 @@ def _members(ir: "TracedKernel") -> str:
     return ", ".join(f"&globals::{p.name}" for p in ir.tensors())
 
 
+def _strided(ir: "TracedKernel") -> List[str]:
+    """The strided tensor parameters (`hk.Tensor[dtype, "strided"]`)."""
+    return [p.name for p in ir.tensors() if getattr(p.type, "strided", False)]
+
+
 def _includes(ir: "TracedKernel", *more: str) -> tuple:
-    """kittens.cuh, then what this target's tree lacks, then the wrapper's."""
-    return ('"kittens.cuh"', *get_target(ir.arch).extra_includes, *more)
+    """kittens.cuh, then what this target's tree lacks, then the wrapper's;
+    hk/rdna/strided.cuh only for a kernel with a strided global, so every
+    other kernel's source is what it was."""
+    strided = ('"hk/rdna/strided.cuh"',) if _strided(ir) else ()
+    return ('"kittens.cuh"', *get_target(ir.arch).extra_includes, *strided, *more)
+
+
+def _no_strided(ir: "TracedKernel", what: str) -> None:
+    if _strided(ir):
+        raise ValueError(
+            f"{ir.name}: {what} cannot pass the strided tensor(s) {_strided(ir)} -- it builds a "
+            f"gl from a torch tensor and a gl has one stride. Launch it through the code object "
+            f"(hk.runtime.torch_ext.launcher / torch_op), which packs every stride.")
 
 
 def takes_stream(arch: str) -> bool:
@@ -64,6 +80,7 @@ def pybind_module(ir: "TracedKernel") -> str:
     """A self-contained pybind11 extension exporting one function, `ir.name`,
     that takes the tensor parameters positionally in declaration order, and
     on CDNA the stream after them (`takes_stream`)."""
+    _no_strided(ir, "the pybind module")
     src = ir.cpp(_includes(ir, '"pyutils/hk_bind.cuh"'))
     if takes_stream(ir.arch):
         bind = (f'    kittens::py::fast::bind_function_on_stream<launch_on>(m, '
@@ -103,6 +120,16 @@ def bare(ir: "TracedKernel") -> str:
 #: the four extents and the row stride.
 GL_FIELDS = ("raw_ptr", "batch_internal", "depth_internal", "rows_internal",
              "cols_internal", "row_stride_internal")
+
+#: A strided global's fields past GL_FIELDS (kittens::gl_strided), each a 64-bit
+#: integer, in the order `device` lists them in STRIDED_SYMBOL.
+STRIDED_FIELDS = ("depth_stride_internal", "batch_stride_internal",
+                  "granule_stride_internal")
+
+#: The symbol `device` emits the strided globals' table as, when there are any:
+#: their count, then per strided tensor its index among the tensors and its
+#: STRIDED_FIELDS' offsets from the argument's start.
+STRIDED_SYMBOL = "hk_layout_strided"
 
 #: The symbol `device` emits the layout table as.
 LAYOUT_SYMBOL = "hk_layout"
@@ -151,6 +178,16 @@ def device(ir: "TracedKernel") -> str:
             rows.append("0")
             rows += [f"offsetof(hk_kernarg, hk_{p.name}{s})"
                      for s in ("", "_b", "_d", "_r", "_c", "_rs")]
+    strided = []
+    if _strided(ir):
+        if getattr(ir, "flat_args", False):
+            raise ValueError(f"{ir.name}: a flat-argument kernel (CDNA) takes no strided global")
+        names = [p.name for p in ir.tensors()]
+        strided = [str(len(_strided(ir)))]
+        for n in _strided(ir):
+            strided.append(str(names.index(n)))
+            strided += [f"offsetof(globals, {n}) + offsetof(decltype(globals::{n}), {f})"
+                        for f in STRIDED_FIELDS]
     return "\n".join([
         ir.cpp(_includes(ir)),
         "#include <cstddef>",
@@ -159,6 +196,10 @@ def device(ir: "TracedKernel") -> str:
         f"{LAYOUT_SYMBOL}[] = {{",
         ",\n".join(f"    (long long)({r})" for r in rows),
         "};",
+        *([f'extern "C" __device__ __attribute__((used)) const long long '
+           f"{STRIDED_SYMBOL}[] = {{",
+           ",\n".join(f"    (long long)({r})" for r in strided),
+           "};"] if strided else []),
     ]) + "\n"
 
 
@@ -217,6 +258,7 @@ def torch_library(ir: "TracedKernel", ns: str = "hk", op_name: str = "") -> str:
       there is no shape for a fake tensor to carry back.
     """
     name = op_name or ir.name
+    _no_strided(ir, "the libtorch registration (HK_TORCH_OP=library)")
     written = set(written_tensors(ir))
     if not written:
         raise ValueError(

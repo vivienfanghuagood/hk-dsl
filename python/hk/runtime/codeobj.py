@@ -123,18 +123,21 @@ def _check(err: int, what: str) -> None:
 _PARAM_BUFFER, _PARAM_SIZE, _PARAM_END = 1, 2, 3
 
 
-def _layout(offsets, size: int) -> Tuple[struct.Struct, Optional[List[int]]]:
+def _layout(offsets, size: int, extra=()) -> Tuple[struct.Struct, Optional[List[int]]]:
     """One struct for the whole argument, so a launch packs it in one call
     instead of one per field: every field at its offset, in offset order,
     with padding between. Also the permutation from the natural order (per
-    tensor: pointer, batch, depth, rows, cols, row stride) to offset order,
-    or None where the two agree."""
+    tensor: pointer, batch, depth, rows, cols, row stride; then the strided
+    tensors' three 64-bit strides, `extra`) to offset order, or None where the
+    two agree."""
     fields = []
     for po, dims, ro in offsets:
         fields.append((po, "Q", len(fields)))
         for o in dims:
             fields.append((o, "i", len(fields)))
         fields.append((ro, "i", len(fields)))
+    for o in extra:
+        fields.append((o, "q", len(fields)))
     fields.sort()
     fmt, at = ["<"], 0
     for off, code, _ in fields:
@@ -189,7 +192,18 @@ class CodeObjectKernel:
             base, ptr, b, d, r, c, rs = table[1 + per * i:1 + per * (i + 1)]
             self.offsets.append((base + ptr, (base + b, base + d, base + r,
                                               base + c), base + rs))
-        self._struct, self._perm = _layout(self.offsets, self.size)
+        #: The strided tensors (kittens::gl_strided): their indices, and the
+        #: offsets of their depth, batch and granule strides.
+        self.strided: List[Tuple[int, Tuple[int, int, int]]] = []
+        try:
+            raw = elf_symbol(self.image, sc.STRIDED_SYMBOL)
+        except CompileError:
+            raw = b""
+        if raw:
+            t = struct.unpack(f"<{len(raw) // 8}q", raw)
+            self.strided = [(t[1 + 4 * j], tuple(t[2 + 4 * j:5 + 4 * j])) for j in range(t[0])]
+        self._struct, self._perm = _layout(
+            self.offsets, self.size, [o for _, offs in self.strided for o in offs])
         self._fn: Dict[int, ctypes.c_void_p] = {}
         self._modules: Dict[int, ctypes.c_void_p] = {}
         self._local = threading.local()
@@ -211,11 +225,15 @@ class CodeObjectKernel:
         return fn
 
     def _values(self, shapes, ptrs, row_strides) -> List[int]:
+        """`row_strides`: per tensor its row stride, or for a strided tensor
+        (row, depth, batch, granule) strides (tensor_args)."""
         flat: List[int] = []
         for s, p, rs in zip(shapes, ptrs, row_strides):
             flat.append(p)
             flat.extend(s)
-            flat.append(rs)
+            flat.append(rs if isinstance(rs, int) else rs[0])
+        for i, _ in self.strided:
+            flat.extend(row_strides[i][1:])
         return flat if self._perm is None else [flat[i] for i in self._perm]
 
     def pack(self, shapes: Sequence[Tuple[int, int, int, int]],
@@ -349,7 +367,9 @@ class CodeObjectKernel:
         launch = env["launch"]
         mod = _native() if native else None
         progs = tuple(_grid_program(g, self.tensors) for g in self.grid)
-        if mod is None or None in progs or n > 32 or self.size > 4096:
+        # The C launcher packs a gl's fields from the shape of a contiguous tensor; it has no
+        # field for a strided global's three extra strides, so those kernels stay here.
+        if mod is None or None in progs or n > 32 or self.size > 4096 or self.strided:
             return launch
         # The same call in C (hk._mlir's _hkLaunch): what this function does when its memo
         # hits, without the interpreter; everything else -- a new shape included, since C
@@ -492,11 +512,18 @@ def tensor_args(k: CodeObjectKernel, tensors, op: str):
 
         dtypes = k.torch_dtypes = [getattr(torch, _TORCH_DTYPES[d]) for d in k.dtypes]
     shapes, ptrs, rows = [], [], []
-    for name, want, dt, t in zip(k.tensors, k.dtypes, dtypes, tensors):
+    strided = {i for i, _ in getattr(k, "strided", ())}
+    for i, (name, want, dt, t) in enumerate(zip(k.tensors, k.dtypes, dtypes, tensors)):
         if not t.is_cuda:
             raise RuntimeError(f"{op}: {name} must be on the GPU")
         if t.dtype != dt:
             raise RuntimeError(f"{op}: {name} must be {want}, got {t.dtype}")
+        if i in strided:
+            shape, st = strided_args(t, name, op)
+            shapes.append(shape)
+            ptrs.append(t.data_ptr())
+            rows.append(st)
+            continue
         nd = t.dim()
         if not 1 <= nd <= 4:
             raise RuntimeError(f"{op}: {name} must have 1 to 4 dimensions, "
@@ -520,6 +547,31 @@ def tensor_args(k: CodeObjectKernel, tensors, op: str):
         ptrs.append(t.data_ptr())
         rows.append(row)
     return shapes, ptrs, rows
+
+
+def strided_args(t, name: str, op: str):
+    """A strided tensor's (batch, depth, rows, cols) and its (row, depth, batch,
+    granule) strides in elements (kittens::gl_strided). Taken as it is: a 1-4-D
+    view whose last axis is contiguous (columns in granules of G = 16 bytes,
+    `G` elements apart), or a 5-D view (b, d, r, granules, G) whose last axis is
+    exactly one contiguous 16-byte granule -- the granule stride is then the
+    fourth axis's (vLLM's x-split K cache, permuted to (blocks, heads, block,
+    head_dim / G, G))."""
+    g = 16 // t.element_size()
+    nd, size, st = t.dim(), list(t.shape), list(t.stride())
+    if nd == 5:
+        if size[4] != g or st[4] != 1:
+            raise RuntimeError(f"{op}: {name} is 5-D, so its last axis must be one contiguous "
+                               f"16-byte granule ({g} elements, stride 1); got size {size[4]}, "
+                               f"stride {st[4]}")
+        return (size[0], size[1], size[2], size[3] * g), (st[2], st[1], st[0], st[3])
+    if not 1 <= nd <= 4:
+        raise RuntimeError(f"{op}: {name} (strided) must have 1 to 5 dimensions, got {nd}")
+    if size[-1] != 1 and st[-1] != 1:
+        raise RuntimeError(f"{op}: {name} (strided) must be contiguous along its last axis")
+    size = [1] * (4 - nd) + size
+    st = [0] * (4 - nd) + st
+    return tuple(size), (st[2], st[1], st[0], g)
 
 
 #: (namespace, op) -> the registered op, and the libraries that keep them.
@@ -583,4 +635,4 @@ def forget() -> None:
 
 
 __all__ = ["CodeObjectKernel", "direct", "elf_symbol", "hip", "load", "torch_op",
-           "tensor_args", "forget"]
+           "tensor_args", "strided_args", "forget"]

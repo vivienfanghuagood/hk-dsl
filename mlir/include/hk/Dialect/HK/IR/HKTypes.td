@@ -181,8 +181,22 @@ def HK_SharedVecType : HK_Type<"SharedVec", "sv"> {
 
 def HK_GlobalType : HK_Type<"Global", "gl"> {
   let summary = "a global tensor, 4D (b, d, r, c): kittens::gl<T, -1, -1, -1, -1>";
-  let parameters = (ins "::mlir::Type":$elementType);
-  let assemblyFormat = "`<` $elementType `>`";
+  let description = [{
+    `!hk.gl<bf16>` is a tensor whose outer axes are compact over its rows
+    (one row stride, from the launcher). `!hk.gl<bf16, strided>` carries every
+    stride: batch, depth and row, and a *granule* stride along the columns --
+    the distance between consecutive 16-byte granules of a row, which is 16
+    bytes for a row-contiguous tensor and something else for an interleaved
+    layout (vLLM's x-split K cache). C++ `kittens::gl_strided<T>`
+    (include/hk/rdna/strided.cuh). RDNA only; the ops that take one say so.
+  }];
+  let parameters = (ins "::mlir::Type":$elementType, "bool":$strided);
+  let hasCustomAssemblyFormat = 1;
+  let builders = [
+    TypeBuilder<(ins "::mlir::Type":$elementType), [{
+      return $_get($_ctxt, elementType, false);
+    }]>
+  ];
 }
 
 def HK_CoordType : HK_Type<"Coord", "coord"> {

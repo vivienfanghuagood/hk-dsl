@@ -294,6 +294,15 @@ store and atomic through it carries the scope, and hk.comm.signal /
 hk.comm.wait take only scoped tensors (see hk.comm for why the scope is
 the tensor's and not the access's).
 
+`hk.Tensor[hk.bf16, "strided"]` is a *strided* tensor: the kernel takes
+every stride the caller's tensor has -- batch, depth, row, and a granule
+stride along the columns (16-byte granules at any distance) -- where a
+plain tensor's outer axes must be compact over its rows. It is how a kernel
+reads an engine's layout in place: vLLM's x-split K cache passed as the 5-D
+view (blocks, heads, block, head_dim / G, G), G 16 bytes of elements, or its
+flash-layout cache as a permuted 4-D view. RDNA; read by `g.stage` (any
+other op on it is refused when the kernel is translated).
+
 ### `hk.Constexpr`
 
 Marks a constexpr parameter, with its type if you like:
