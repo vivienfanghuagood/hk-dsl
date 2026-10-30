@@ -444,6 +444,7 @@ Family `decode`, on gfx1100, gfx1201, gfx950.
 | `combine_depth` | `0` | `0`, `2`, `4`, `8` | `0`, `4` | partials the combine reads before it waits (0: all) |
 | `resident` | `0` | `0`, `1`, `2`, `4` | `0`, `2` | cap on workgroups a WGP/CU holds, by sizing the combine's LDS |
 | `splits` | `1` | `1`, `2`, `4`, `8` | `1`, `2`, `4` | K cut across workgroups, the last to arrive sums the shares |
+| `occupancy` | `0` | `0`, `5`, `6`, `7`, `8` | `0` | cap on waves a SIMD (hk.kernel's max_occupancy); 0: the registers' |
 | `max_vgprs` | `256` | - | - | (gate) build gate |
 | `min_occupancy` | `1` | - | - | (gate) build gate |
 

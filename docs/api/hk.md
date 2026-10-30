@@ -78,8 +78,10 @@ The language: what `import hk` gives a kernel author. A kernel body is traced on
 ### `hk.kernel`
 
 ```python
-hk.kernel(fn=None, *, arch: Optional[str] = None, warps: int = 1, grid=None, name: Optional[str] = None, max_vgprs: Optional[int] = None, min_occupancy: Optional[int] = None, defines: Optional[Dict[str, Any]] = None, noalias: bool = False, preload: bool = False, resident: bool = False, placement=None)
+hk.kernel(fn=None, *, arch: Optional[str] = None, warps: int = 1, grid=None, name: Optional[str] = None, max_vgprs: Optional[int] = None, min_occupancy: Optional[int] = None, max_occupancy: Optional[int] = None, defines: Optional[Dict[str, Any]] = None, noalias: bool = False, preload: bool = False, resident: bool = False, placement=None)
 ```
+
+*Changed after 0.8.0*: new parameter `max_occupancy`
 
 Mark a function as a tile kernel. See the module docstring for the
 parameter rules. `resident=True`: every workgroup must be on the GPU at
@@ -100,7 +102,7 @@ and `while` rewritten like a kernel's.
 ### `hk.Kernel`
 
 ```python
-class hk.Kernel(fn: Callable, *, arch: Optional[str] = None, warps: int = 1, grid: Optional[Callable] = None, name: Optional[str] = None, max_vgprs: Optional[int] = None, min_occupancy: Optional[int] = None, defines: Optional[Dict[str, Any]] = None, noalias: bool = False, preload: bool = False, resident: bool = False, placement=None)
+class hk.Kernel(fn: Callable, *, arch: Optional[str] = None, warps: int = 1, grid: Optional[Callable] = None, name: Optional[str] = None, max_vgprs: Optional[int] = None, min_occupancy: Optional[int] = None, max_occupancy: Optional[int] = None, defines: Optional[Dict[str, Any]] = None, noalias: bool = False, preload: bool = False, resident: bool = False, placement=None)
 ```
 
 A tile kernel. Call it to launch; `trace`, `source` and `build` stop
@@ -137,7 +139,8 @@ Kernel.with_defines(self, src: str) -> str
 
 *Surface*: an escape hatch, used only within its boundary: #define NAME value knobs and A/B variants; never overridden to splice or rewrite C++.
 
-`src` with this kernel's preprocessor definitions ahead of it.
+`src` with this kernel's preprocessor definitions ahead of it, and
+its occupancy cap (`max_occupancy`) at the top of its body.
 
 #### `Kernel.build`
 

@@ -731,8 +731,13 @@ Tables are per arch, per model and per engine, because the path a kernel has
 to beat is the engine's. The shipped ones, in `hk/tuned/`, named
 `routes_<engine>_<kind>_<arch>.json`:
 - `routes_vllm_linear_gfx1100.json`: Qwen3-8B against vLLM 0.31's op, raw
-  timings included, with FlyDSL rows (below). `$HK_VLLM_ROUTES` names
-  another.
+  timings included, with FlyDSL rows (below), and the production W7900D
+  models' shapes -- MiniCPM5-2B's and MiniCPM-V-4.7-35B-A3B's per TP2 rank --
+  measured in their TheRock ROCm 7.14 image against its vLLM's op, each row
+  with its own `meta` (engine, toolchain, model). Those models then start
+  without measuring at load. M = 1 stays on vLLM's skinny GEMM in those rows:
+  the margin there is a few percent either way and moved between images.
+  `$HK_VLLM_ROUTES` names another.
 - `routes_sglang_linear_gfx1100.json` (`route_tune.py --engine sglang`):
   against the `F.linear` SGLang calls on ROCm, with FlyDSL rows.
   `$HK_SGLANG_ROUTES` names another. It disagrees with vLLM's below M = 4:

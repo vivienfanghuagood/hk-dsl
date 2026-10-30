@@ -36,7 +36,7 @@ from ..target import current_arch, get_target
 
 def decode_gemm_kernel(name: str, *, tokens: int = 1, slices: int = 4,
                        warps: int = 16, combine_depth: int = 0,
-                       resident: int = 0, splits: int = 1,
+                       resident: int = 0, splits: int = 1, occupancy: int = 0,
                        max_vgprs: int = 256, min_occupancy: int = 1,
                        arch: Optional[str] = None, epilogue=None, op_dtype=bf16):
     """`tokens` 16-row token tiles (M <= 16*tokens), `slices` 16-deep K slices
@@ -50,6 +50,14 @@ def decode_gemm_kernel(name: str, *, tokens: int = 1, slices: int = 4,
     combine's LDS so that no more fit; 0 leaves it to the registers. Fewer
     concurrent streams read faster here: at 16 warps, 2 per WGP beat 4 by 11%
     on a 12288-deep layer and 7% on a 4096-wide one, for the same code.
+
+    `occupancy` caps the waves a SIMD holds (hk.kernel's max_occupancy); 0
+    leaves it to the registers. The register count used to cap it by itself:
+    the warp-0 combine read its fp32 partials through generic pointers, FLAT
+    loads with a 64-bit address an element, and that peak set the occupancy
+    the two- and four-tile schedules were tuned at. Read through LDS pointers
+    it is 60-90 VGPRs smaller, and the occupancy it then allows reads W
+    slower: 9 waves where 5-7 ran, 0.76-0.88x on the widest layers.
 
     `splits` > 1 also cuts K across workgroups: workgroup (b, s) takes the
     s-th slice, stores its fp32 partial to `ws[s]`, and arrives at `cnt[b]`;
@@ -169,7 +177,8 @@ def decode_gemm_kernel(name: str, *, tokens: int = 1, slices: int = 4,
 
     return hk.kernel(fn, arch=arch, warps=warps, name=name,
                      grid=lambda p: (p.w.rows // 16, splits, 1),
-                     max_vgprs=max_vgprs, min_occupancy=min_occupancy)
+                     max_vgprs=max_vgprs, min_occupancy=min_occupancy,
+                     max_occupancy=occupancy or None)
 
 
 #: Per token-tile count, measured on Qwen3-8B's decode shapes, timed as a
@@ -178,10 +187,18 @@ def decode_gemm_kernel(name: str, *, tokens: int = 1, slices: int = 4,
 #: two per WGP; two tiles cannot hold 15 partials of 16 VGPRs and batch them;
 #: four cannot afford 16 warps at all. The wider two are held to one and two
 #: workgroups per WGP by their registers already.
+#: The two- and four-tile kernels hold the occupancy their combine's registers
+#: used to set (`occupancy`, see decode_gemm_kernel): 6 waves a SIMD is one
+#: 16-warp workgroup a WGP, 5 two 8-warp ones; one tile's `resident` already
+#: binds below its registers. On the W7900D, W rotated past the cache, against
+#: the build before (one process, outputs bit-identical): the two-tile kernel
+#: 0.988-1.002x at ROCm 7.2's clang 22, the four-tile 0.964-1.059x; under the
+#: TheRock 7.14 clang 23 the four-tile kernel builds at all (it spilled) and
+#: the two-tile one is 0.986-1.031x.
 SCHEDULES: Dict[int, Dict[str, int]] = {
     1: dict(slices=4, warps=16, combine_depth=0, resident=2, splits=1),
-    2: dict(slices=2, warps=16, combine_depth=8, resident=0, splits=1),
-    4: dict(slices=2, warps=8, combine_depth=4, resident=0, splits=1),
+    2: dict(slices=2, warps=16, combine_depth=8, resident=0, splits=1, occupancy=6),
+    4: dict(slices=2, warps=8, combine_depth=4, resident=0, splits=1, occupancy=5),
 }
 
 #: An arch's own, where SCHEDULES' does not build there. gfx1201's four-tile
@@ -226,6 +243,9 @@ def schedule_for(m: int, k: int) -> Optional[Dict[str, Any]]:
     s = dict(SCHEDULES_AT.get(current_arch(), {}).get(tokens, SCHEDULES[tokens]), tokens=tokens)
     while k % (16 * s["slices"] * s["warps"]) and s["warps"] > 1:
         s["warps"] //= 2
+        # the cap was measured at the schedule's own warp count: workgroups
+        # of fewer warps are not held to it
+        s.pop("occupancy", None)
     if k % (16 * s["slices"] * s["warps"]):
         return None
     if k % (16 * s["slices"] * s["warps"] * s["splits"]):
@@ -245,14 +265,16 @@ def _settle(s: Dict[str, int]) -> Dict[str, int]:
 
 
 def kernel_for(tokens: int, slices: int, warps: int, combine_depth: int = 0,
-               resident: int = 0, splits: int = 1):
-    key = (tokens, slices, warps, combine_depth, resident, splits)
+               resident: int = 0, splits: int = 1, occupancy: int = 0):
+    key = (tokens, slices, warps, combine_depth, resident, splits, occupancy)
     if key not in _KERNELS:
         _KERNELS[key] = decode_gemm_kernel(
             f"decode_gemm_t{tokens}_s{slices}_w{warps}_c{combine_depth}"
-            f"_r{resident}" + (f"_k{splits}" if splits > 1 else ""),
+            f"_r{resident}" + (f"_k{splits}" if splits > 1 else "")
+            + (f"_o{occupancy}" if occupancy else ""),
             tokens=tokens, slices=slices, warps=warps,
-            combine_depth=combine_depth, resident=resident, splits=splits)
+            combine_depth=combine_depth, resident=resident, splits=splits,
+            occupancy=occupancy)
     return _KERNELS[key]
 
 

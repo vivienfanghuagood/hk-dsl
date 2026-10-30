@@ -232,6 +232,7 @@ class Kernel:
         name: Optional[str] = None,
         max_vgprs: Optional[int] = None,
         min_occupancy: Optional[int] = None,
+        max_occupancy: Optional[int] = None,
         defines: Optional[Dict[str, Any]] = None,
         noalias: bool = False,
         preload: bool = False,
@@ -256,6 +257,13 @@ class Kernel:
         #: benchmark.
         self.max_vgprs = max_vgprs
         self.min_occupancy = min_occupancy
+        #: At most this many waves a SIMD: the kernel is made to hold enough
+        #: VGPRs that no more fit (an empty asm clobbering the register the
+        #: target's model puts at that level). A schedule tuned at an
+        #: occupancy keeps it when a better compile frees registers: fewer
+        #: concurrent waves can be the faster ones (hk.ops.decode_gemm, where
+        #: more workgroups streaming W at once read it slower).
+        self.max_occupancy = max_occupancy
         #: No tensor is written where another is read, except by the lane
         #: that read it, after it did -- an in-place call is that. On CDNA the
         #: kernel then takes its arguments flat, pointers __restrict__.
@@ -449,11 +457,37 @@ class Kernel:
                                            scaffold))
 
     def with_defines(self, src: str) -> str:
-        """`src` with this kernel's preprocessor definitions ahead of it."""
+        """`src` with this kernel's preprocessor definitions ahead of it, and
+        its occupancy cap (`max_occupancy`) at the top of its body."""
+        if self.max_occupancy:
+            src = self._occupancy_floor(src)
         if not self.defines:
             return src
         head = "".join(f"#define {k} {v}\n" for k, v in self.defines.items())
         return head + src
+
+    def _occupancy_floor(self, src: str) -> str:
+        """`src` with the kernel's body opening on an empty asm that clobbers
+        the lowest VGPR at which the target holds at most `max_occupancy`
+        waves a SIMD: the allocation then reaches it whatever the compiler's
+        own need."""
+        import re  # noqa: PLC0415
+
+        from ..target import get_target  # noqa: PLC0415
+
+        tgt = get_target(self.arch)
+        floor = next((v for v in range(1, 257) if tgt.occupancy(v) <= self.max_occupancy), None)
+        if floor is None:
+            raise ValueError(f"{self.name}: max_occupancy={self.max_occupancy} is below what "
+                             f"{self.arch}'s 256 VGPRs a wave can hold a SIMD to "
+                             f"({tgt.occupancy(256)})")
+        if tgt.occupancy(1) <= self.max_occupancy:
+            return src          # no cap below what the target allows anyway
+        body = re.compile(r"(void \w+_kernel\([^)]*\) \{\n)")
+        if not body.search(src):
+            raise ValueError(f"{self.name}: max_occupancy: no kernel body found in the source")
+        return body.sub(lambda m: m.group(1) + f'    asm volatile("" ::: "v{floor - 1}");\n',
+                        src, count=1)
 
     def build(self, **const_overrides: Any):
         """Generate and compile. Returns a runtime.Build, which carries the
@@ -498,7 +532,7 @@ class Kernel:
             self._preloaded = type(self)(
                 self.fn, arch=self._arch, warps=self.warps, grid=self.grid_fn,
                 name=self.name, max_vgprs=self.max_vgprs,
-                min_occupancy=self.min_occupancy, defines=self.defines,
+                min_occupancy=self.min_occupancy, max_occupancy=self.max_occupancy, defines=self.defines,
                 noalias=self.noalias, preload=True, resident=self.resident,
                 placement=self.placement)
             self._preloaded._defaults = dict(self._defaults)
@@ -596,7 +630,7 @@ class Kernel:
         k = type(self)(
             self.fn, arch=self._arch, warps=self.warps, grid=self.grid_fn,
             name=self.name + pl.suffix(P.xcd_count(self.arch)), max_vgprs=self.max_vgprs,
-            min_occupancy=self.min_occupancy, defines=self.defines, noalias=self.noalias,
+            min_occupancy=self.min_occupancy, max_occupancy=self.max_occupancy, defines=self.defines, noalias=self.noalias,
             preload=self.preload, resident=self.resident, placement=pl)
         k._defaults = dict(self._defaults)
         if placement is None:
@@ -735,7 +769,7 @@ class Kernel:
             k = type(self)(
                 self.fn, arch=self._arch, warps=self.warps, grid=self.grid_fn,
                 name=self.name, max_vgprs=self.max_vgprs,
-                min_occupancy=self.min_occupancy, defines=self.defines,
+                min_occupancy=self.min_occupancy, max_occupancy=self.max_occupancy, defines=self.defines,
                 noalias=self.noalias, preload=self.preload, resident=self.resident,
                 placement=self.placement,
             )
@@ -749,7 +783,7 @@ class Kernel:
 
 def kernel(fn=None, *, arch: Optional[str] = None, warps: int = 1, grid=None,
            name: Optional[str] = None, max_vgprs: Optional[int] = None,
-           min_occupancy: Optional[int] = None,
+           min_occupancy: Optional[int] = None, max_occupancy: Optional[int] = None,
            defines: Optional[Dict[str, Any]] = None, noalias: bool = False,
            preload: bool = False, resident: bool = False, placement=None):
     """Mark a function as a tile kernel. See the module docstring for the
@@ -762,6 +796,7 @@ def kernel(fn=None, *, arch: Optional[str] = None, warps: int = 1, grid=None,
     def wrap(f):
         return Kernel(f, arch=arch, warps=warps, grid=grid, name=name,
                       max_vgprs=max_vgprs, min_occupancy=min_occupancy,
+                      max_occupancy=max_occupancy,
                       defines=defines, noalias=noalias, preload=preload,
                       resident=resident, placement=placement)
 
