@@ -835,11 +835,18 @@ LogicalResult LaneStripOp::verify() {
 }
 
 LogicalResult LaneCoordOp::verify() {
+  if (getAxis() != 0 && getAxis() != 1)
+    return emitOpError("axis is 0 (rows) or 1 (columns)");
+  if (!getSrc()) {
+    auto t = dyn_cast<RegTileType>(getResult().getType());
+    if (!t || !t.isStrip() || !t.getElementType().isInteger(32))
+      return emitOpError("without a tile makes an i32 strip (its own coordinates), not ")
+             << getResult().getType();
+    return success();
+  }
   auto s = dyn_cast<RegTileType>(getSrc().getType());
   if (!s)
     return emitOpError("takes a register tile");
-  if (getAxis() != 0 && getAxis() != 1)
-    return emitOpError("axis is 0 (rows) or 1 (columns)");
   return laneStripResult(*this, s, getResult().getType(), true);
 }
 
@@ -918,13 +925,6 @@ LogicalResult LdsAtomicAddElemsOp::verify() {
   if (!v || !v.getElementType().isInteger(32))
     return emitOpError("adds i32 elements, not ") << getVal().getType();
   return verifyLdsElems(*this, getDst().getType(), getVal().getType(), getIdx().getType());
-}
-
-LogicalResult IotaOp::verify() {
-  auto t = dyn_cast<RegTileType>(getResult().getType());
-  if (!t || !t.isStrip() || !t.getElementType().isInteger(32))
-    return emitOpError("makes an i32 strip, not ") << getResult().getType();
-  return success();
 }
 
 LogicalResult LoadElemsOp::verify() {

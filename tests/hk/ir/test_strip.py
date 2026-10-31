@@ -468,7 +468,7 @@ def test_the_strip_index_and_lane_ops_emit_their_cdna_calls():
         b = x.load_elems(c).lane_gather(hk.map_cpp("x0 / 8", c))
         o.store_elems(b.group_sum(32, lanes="tree", xor=(2, 1)) + a.group_max(64), c)
     src = _src950(ops)
-    for call in ("kittens::iota(", "kittens::load_elems", "kittens::lane_gather(", "kittens::store_elems",
+    for call in ("kittens::lane_coord<1>(", "kittens::load_elems", "kittens::lane_gather(", "kittens::store_elems",
                  "group_reduce_ordered<"):
         assert call in src, call
 
@@ -689,3 +689,28 @@ def test_a_group_takes_any_distinct_xor_offsets_up_to_32():
     def _g3(x: hk.Tensor[hk.fp32], o: hk.Tensor[hk.fp32]):
         o.at[0, 0].store(x.at[0, 0].load(S64).group_max(32, xor=(32, 2)))
     assert "group_reduce_ordered<kittens::base_ops::hk_rmax, 1, 32, 2>(" in _k950(_g3, warps=1).source()
+
+
+# ---------------------------------------------------------------- lane_coords of a strip (S6)
+
+def test_lane_coords_of_a_strip_type_are_its_rows_and_columns_and_iota_is_the_columns():
+    T = hk.RS(hk.fp32, 2, 512, 4)
+
+    def coords(x: hk.Tensor[hk.i32], o: hk.Tensor[hk.i32]):
+        r, c = hk.lane_coords(T)
+        o.at[0, 0].store(r * 1000 + c)
+        o.at[2, 0].store(hk.iota(T))
+    src = _src950(coords)
+    assert src.count("kittens::lane_coord<0>(") == 1 and src.count("kittens::lane_coord<1>(") == 2
+    assert "rs_i32_2x512_r4" in src and "kittens::iota(" not in src
+
+
+def test_lane_coords_of_a_strip_value_are_its_lane_strips():
+    # a strip value is a register tile: the coordinates of its lane_strip(run) (#121), not its type's
+    T = hk.RS(hk.fp32, 1, 512, 8)
+
+    def coords(x: hk.Tensor[hk.fp32], o: hk.Tensor[hk.i32]):
+        v = x.at[0, 0].load(T)
+        o.store_elems(hk.lane_coords(v, 4)[1], hk.lane_coords(v, 4)[1])
+    src = _src950(coords)
+    assert "kittens::lane_coord<1>(" in src and "rs_i32_1x512_r4" in src

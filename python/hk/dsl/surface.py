@@ -87,7 +87,6 @@ ENTRIES: Dict[str, Entry] = {
                         "another kernel's exact instruction sequence; not index arithmetic, "
                         "selects, bit ops or float expressions the operators can write; never "
                         "in a template"),
-    "hk.iota": Entry("merge", "C2", target="hk.lane_coords(type)[1] (alias kept)", step="S6"),
     "hk.mfma_strip": Entry("merge", "C3", target="hk.mma on Tile.as_fragment views", step="S9"),
     # 2.4 attention, RDNA, the kernel object
     "hk.Granules": Entry("escape", "D2", "gfx11 kernels whose LDS address registers are the "
@@ -143,7 +142,7 @@ hk.broadcast_row hk.cdiv hk.col_vec hk.collective.COMBINERS hk.collective.cross_
 hk.collective.fold_rows hk.comm.REALTIME_HZ hk.comm.arrive hk.comm.barrier hk.comm.claim
 hk.comm.post hk.comm.signal hk.comm.take hk.comm.wait hk.comm.xcd_barrier hk.coord
 hk.detect_arch hk.elem_coord hk.full hk.func hk.get_target hk.group.Group hk.group.group hk.if_
-hk.kernel hk.lane_coords hk.lds.alloc hk.lds.alloc_vec hk.lds.lds_loads hk.lds.reserve
+hk.iota hk.kernel hk.lane_coords hk.lds.alloc hk.lds.alloc_vec hk.lds.lds_loads hk.lds.reserve
 hk.lds.shared_vec hk.lds.wait_for hk.math.abs hk.math.add hk.math.dgelu hk.math.div hk.math.exp
 hk.map hk.where hk.math.ceil hk.math.ctz hk.math.floor hk.math.fma hk.math.popcount
 hk.math.rcp hk.math.exp2 hk.math.gelu hk.math.log hk.math.log2 hk.math.maximum hk.math.minimum hk.math.mul
@@ -162,7 +161,7 @@ _OP_KINDS: Dict[str, str] = {
     "load_mx_scales": "format", "mx_scales_copy": "primitive", "mma_ABt_mx": "primitive",
     "load_fp4_frags": "format", "load_fp4_frags_lds": "format", "mx_quant_store": "merge",
     "fp4_operand": "primitive", "fp8_operand": "primitive", "mx_scales_loose": "primitive",
-    "gather_prep": "primitive", "iota": "merge",
+    "gather_prep": "primitive",
     "mfma_strip": "merge", "granules": "escape", "load_frag": "escape",
     "store_frag": "escape",
     "load_w4": "format",
@@ -240,7 +239,7 @@ triu upper_fill
         **{n: "primitive" for n in """
 arrive as_operand atomic_add atomic_scalar atomic_scalar_scoped bin_map claim col_map copy
 fp4_operand fp8_operand gather_prep group_load_async group_load_async_gather
-group_load_async_rows group_reduce_ordered iota lane_coord lane_gather lane_strip
+group_load_async_rows group_reduce_ordered lane_coord lane_gather lane_strip
 lds_atomic_add_elems lds_load_elems lds_load_elems_runs lds_store_elems left_fill load
 load_bounded load_elems load_elems_runs load_gather load_period load_scalar
 load_scalar_invariant load_scoped mx_scales_loose one philox_uniform post post_elems

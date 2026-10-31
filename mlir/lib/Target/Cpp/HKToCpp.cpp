@@ -1884,8 +1884,8 @@ private:
         })
         .Case([&](LaneCoordOp o) {
           Value d = dest(Value(), o.getResult());
-          w("kittens::lane_coord<" + std::to_string(o.getAxis()) + ">(" + name(d) + ", " +
-            name(o.getSrc()) + ");");
+          w("kittens::lane_coord<" + std::to_string(o.getAxis()) + ">(" + name(d) +
+            (o.getSrc() ? ", " + name(o.getSrc()) : std::string()) + ");");
         })
         .Case([&](RunXorOp o) {
           Value d = dest(Value(), o.getResult());
@@ -1919,10 +1919,6 @@ private:
         })
         .Case([&](LdsStoreElemsOp o) {
           w("kittens::lds_store_elems(" + name(o.getDst()) + ", " + name(o.getVal()) + ", " + name(o.getIdx()) + ");");
-        })
-        .Case([&](IotaOp o) {
-          Value d = dest(Value(), o.getResult());
-          w("kittens::iota(" + name(d) + ");");
         })
         .Case([&](LoadElemsOp o) {
           Value d = dest(Value(), o.getResult());

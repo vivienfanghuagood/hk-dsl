@@ -1368,6 +1368,15 @@ __device__ static inline void lane_coord(D &dst, const S &) {
                 }
     }
 }
+/** @brief hk lane_coord of a strip itself: element (r, c) = r (AXIS 0) or c (1), the column a
+ * lane's run element sits in (hk.lane_coords(type); hk.iota is its column). */
+template<int AXIS, ducks::rs::all D>
+__device__ static inline void lane_coord(D &dst) {
+    const int lane = laneid();
+    detail::strip_each<D>([&](int r, int j, int e) {
+        dst.data[r][j][e] = typename D::T(AXIS == 0 ? r : j * 64 * D::run + lane * D::run + e);
+    });
+}
 /** @brief hk run_xor: element e of each lane's run = element e ^ MASK of the same run. */
 template<int MASK, ducks::rs::all D>
 __device__ static inline void run_xor(D &dst, const D &src) {
@@ -1590,14 +1599,6 @@ __device__ static inline void lds_atomic_add_elems(ST &dst, const V &val, const 
             __hip_atomic_fetch_add((lds_int *)detail::hk_st_elem(dst, k / ST::cols, k % ST::cols),
                                    int(val.data[a][j][e]), __ATOMIC_RELAXED, __HIP_MEMORY_SCOPE_WORKGROUP);
         }
-    });
-}
-/** @brief hk.iota: element (r, c) = c, the column a lane's run element sits in. */
-template<ducks::rs::all D>
-__device__ static inline void iota(D &dst) {
-    const int lane = laneid();
-    detail::strip_each<D>([&](int r, int j, int e) {
-        dst.data[r][j][e] = typename D::T(j * 64 * D::run + lane * D::run + e);
     });
 }
 /** @brief hk.load_elems: dst's element (r, c) = src's element idx(r, c), flat; out of range -> 0. */
