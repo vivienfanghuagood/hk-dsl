@@ -273,7 +273,8 @@ __device__ inline static int atomic_scalar_scoped(const GL &dst, const COORD &id
  * out in half-line runs had each line fetched twice).
  */
 
-template<int NW, bool NT = false, ducks::st::all ST, typename U, ducks::coord::tile COORD>
+template<int NW, bool NT = false, bool UNIFORM = false, ducks::st::all ST, typename U,
+         ducks::coord::tile COORD>
 __device__ inline static void group_load_async_rows(ST &dst, const strided_gl<U> &src, const COORD &idx,
                                                     int limit) {
     using T = typename ST::dtype;
@@ -294,7 +295,14 @@ __device__ inline static void group_load_async_rows(ST &dst, const strided_gl<U>
     constexpr int PART = (BYTES % PER_CALL) / PER_WARP;
     const auto unit = idx.template unit_coord<2, 3>();
     const int rs = int(src.template stride<2>());
-    const detail::hk_i32x4 r = detail::hk_copy_srsrc(src, unit.b, unit.d, unit.r, unit.c, limit);
+    detail::hk_i32x4 r = detail::hk_copy_srsrc(src, unit.b, unit.d, unit.r, unit.c, limit);
+    // UNIFORM (the synchronous g.load's form): the descriptor's words read from lane 0. Its inputs
+    // are wave-uniform, but where LLVM cannot prove it (mxfp8.gemm) a descriptor in VGPRs is a
+    // waterfall loop around every copy (8 loops, +102 instructions there). Not by default: the
+    // readfirstlanes do not fold away, and the asynchronous kernels' code was measured as it is.
+    if constexpr (UNIFORM)
+        r = detail::hk_i32x4{__builtin_amdgcn_readfirstlane(r.x), __builtin_amdgcn_readfirstlane(r.y),
+                             __builtin_amdgcn_readfirstlane(r.z), __builtin_amdgcn_readfirstlane(r.w)};
     const int lane = laneid();
     // The warp from threadIdx.x rather than a readfirstlane, which LLVM
     // never moves out of a loop: the per-lane offsets below depend only on

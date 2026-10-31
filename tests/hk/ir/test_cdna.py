@@ -172,7 +172,7 @@ def test_cdna_waits_for_the_lds_reads_the_library_does_not():
 
 def test_cdna_waits_for_the_global_to_lds_dma_before_the_barrier():
     src = _lds_gemm("gfx950")
-    i = src.index("kittens::group_load_sync<2>(As")
+    i = src.index("kittens::group_load_async_rows<2, false, true>(As")
     assert src.index("kittens::vm_wait<0>();", i) < src.index("__builtin_amdgcn_s_barrier", i)
 
 
@@ -194,9 +194,17 @@ def _group_copy(arch):
 def test_cdna_group_copies_are_hks_bounded_ones(arch):
     """include/cdna4's group load spans the tile's whole rows and its store writes them all:
     a last, partial tile went past the tensor (mxfp8.quant's fault, #47). hk/cdna.cuh's stop
-    at the tensor's last row (gfx942's forward to the library's: no gfx942 to test on)."""
+    at the tensor's last row (gfx942's forward to the library's: no gfx942 to test on). On
+    gfx950 the synchronous load is the asynchronous copy's DMA body, ended at the tile's 64
+    rows, and the waits after it (S8)."""
     src = _group_copy(arch)
-    assert "kittens::group_load_sync<4>(Xs, g.x, " in src
+    if arch == "gfx950":
+        assert "kittens::group_load_async_rows<4, false, true>(Xs, g.x, " in src and ", 64);" in src
+        i = src.index("kittens::group_load_async_rows<4, false, true>(Xs")
+        assert src.index("kittens::vm_wait<0>();", i) < src.index("kittens::lds_wait<0>();", i)
+        assert "group_load_sync" not in src
+    else:
+        assert "kittens::group_load_sync<4>(Xs, g.x, " in src
     assert "kittens::group_store_bounded<4>(g.y, Xs, " in src
     assert "group<4>::load" not in src and "group<4>::store" not in src
 
