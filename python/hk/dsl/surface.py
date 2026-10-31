@@ -268,6 +268,8 @@ mfma_strip_f32_16x16x4
 map_cpp
 """.split()},
     },
+    # hk.map on RDNA strips (S7b): the same map_cpp as cdna/escape.cuh, over the trees' strip_each
+    "include/hk/rdna/map.cuh": {"hk_lane_arg": "internal", "map_cpp": "escape"},
     "include/hk/cdna_agpr.cuh": {n: "experiment" for n in """
 col_scale div_col drain mfma mma_AB mma_ABt mma_AtB mma_AtBt mul_col read write zero
 """.split()},

@@ -141,6 +141,28 @@ def test_a_configs_linear_shapes_and_their_biases():
     assert R.biased(LLAMA3) == set()
 
 
+#: Qwen3.8-27B's text config, the keys linear_shapes reads (16 full-attention
+#: layers among 64; the rest Gated-DeltaNet).
+QWEN38 = {"hidden_size": 5120, "num_attention_heads": 24, "num_key_value_heads": 4,
+          "head_dim": 256, "intermediate_size": 17408, "num_hidden_layers": 64,
+          "vocab_size": 248320, "attn_output_gate": True,
+          "linear_num_key_heads": 16, "linear_num_value_heads": 48,
+          "linear_key_head_dim": 128, "linear_value_head_dim": 128,
+          "layer_types": (["linear_attention"] * 3 + ["full_attention"]) * 16}
+
+
+def test_a_hybrid_decoders_shapes_are_its_layers_own():
+    """The per-rank shapes vLLM and SGLang run Qwen3.8-27B's TP2 linears at:
+    attention (gated q) on 16 layers, the Gated-DeltaNet projections on 48."""
+    got = R.linear_shapes({"text_config": QWEN38}, tp=2)
+    assert got == [
+        ("qkv", 7168, 5120, 16), ("o", 5120, 3072, 16),
+        ("qkvz", 8192, 5120, 48), ("ba", 48, 5120, 48), ("out", 5120, 3072, 48),
+        ("gate_up", 17408, 5120, 64), ("down", 5120, 8704, 64), ("lm_head", 124160, 5120, 1)]
+    # A dense decoder is what it was.
+    assert R.linear_shapes(LLAMA3)[0] == ("qkv", 6144, 4096, 32)
+
+
 def test_model_config_reads_a_file_or_a_directory(tmp_path):
     (tmp_path / "config.json").write_text(json.dumps(LLAMA3))
     assert R.model_config(str(tmp_path))["hidden_size"] == 4096

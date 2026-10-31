@@ -22,7 +22,8 @@ def HKMapFuse : Pass<"hk-map-fuse", "::mlir::func::FuncOp"> {
     computed once and read, as inside a region. A producer is inlined only
     across maps and scalar arithmetic -- never past a load, a store, a lane
     exchange or a barrier, nor into a loop. A string-body map (hk.map_cpp)
-    is never fused.
+    is never fused. On RDNA, whose strips hold no bool, a mask strip left
+    after fusion is an error.
   }];
 }
 

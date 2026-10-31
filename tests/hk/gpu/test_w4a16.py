@@ -70,3 +70,25 @@ def test_the_decode_kernel_matches_the_dequantized_product(m, dtype):
     want = x.float() @ w4a16.dequant(qw, s, zs, group).float().t()
     err = (got - want).abs().max().item() / want.abs().max().item()
     assert err < 2e-2, err
+
+
+@pytest.mark.parametrize("m", [1, 4, 16, 33, 64])
+def test_the_decode_kernel_takes_gptq_groups_of_32(m):
+    """A GPTQ checkpoint's 32-column groups: the load narrows to one group
+    (w4a16.schedule_for), and the product is still the dequantized one."""
+    g = torch.Generator(device="cuda").manual_seed(100 + m)
+    n, k, group = 512, 2048, 32
+    q = torch.randint(0, 16, (k, n), device="cuda", generator=g, dtype=torch.int32)
+    s = (torch.rand(k // group, n, device="cuda", generator=g) * 0.02 + 0.005).half()
+    shifts = torch.arange(0, 32, 4, device="cuda", dtype=torch.int64)
+    qweight = (q.to(torch.int64).reshape(k // 8, 8, n) << shifts.view(1, 8, 1)).sum(1)
+    qweight = torch.where(qweight >= 2 ** 31, qweight - 2 ** 32, qweight).to(torch.int32)
+    qzeros = torch.full((k // group, n // 8), 0x77777777, device="cuda", dtype=torch.int32)
+    qw, sc, zs = w4a16.repack_gptq(qweight, qzeros, s, group, dtype=torch.float16)
+    assert w4a16.takes(m, n, k, group) and w4a16.schedule_for(m, k, group)["slices"] == 2
+    x = torch.randn(m, k, device="cuda", dtype=torch.float16, generator=g)
+    got = w4a16.matmul(x, qw, sc, zs, group).float()
+    w = ((q - 8).float() * s.float().repeat_interleave(group, 0)).t()
+    want = x.float() @ w.t()
+    err = (got - want).abs().max().item() / want.abs().max().item()
+    assert err < 2e-2, err

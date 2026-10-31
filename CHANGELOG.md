@@ -9,6 +9,37 @@ The next version's notes collect here until it is released.
 What is on main after 0.8.0. `pip install hk-dsl` (0.8.0) does not have it;
 the API reference marks such names *New after 0.8.0*.
 
+**`hk.map` on RDNA strips (gfx1100, gfx1201).** The integer, mask and bit expressions below,
+`hk.map(fn)` and `hk.map_cpp` lower on RDNA too, through include/hk/rdna/map.cuh (the trees'
+`strip_each`, wave32), included only by a kernel with a map -- every other kernel's source is
+unchanged. RDNA's strips hold no bool, so a mask must stay inside a map (used where it is made,
+or read once by another map); one read twice or stored is a verifier error naming the line.
+`hk-map-fuse` now also fuses across scalar index ops (`x.at[r, c]`'s coordinates), which a
+store's index put between a mask and its `hk.where`. Tested on the GPU on all three targets
+(tests/hk/gpu/test_map.py) and built by hipcc for each (tests/hk/codegen/test_map_builds.py).
+
+**Qwen3.8-27B's linear layers on the gfx1100 routes (vLLM and SGLang, TP2).** Before this, neither
+engine routed a single Qwen3.8 linear to hk, because neither table held its shapes.
+- `hk.autotune.routes.linear_shapes` now reads hybrid decoders (Qwen3.5 / 3.6 / 3.8, Qwen3-Next):
+  the attention projections on the full-attention layers only (q doubled by `attn_output_gate`),
+  and the Gated-DeltaNet `in_proj_qkvz`, `in_proj_ba` and `out_proj` on the rest. `route_tune.py
+  --model`, `hk.integration.tune` and `tools/hk-bench/vllm_gemm.py` use it.
+- `routes_vllm_linear_gfx1100.json` and `routes_sglang_linear_gfx1100.json` gain Qwen3.8's seven
+  TP2 per-rank (N, K), measured with `route_tune.py` in each engine's image (vLLM: TheRock ROCm
+  7.14, clang 23; SGLang: sglang-radeon). Each shape records the run it came from.
+- The tuner's held-out shape sets are redrawn: they exclude every shipped (N, K).
+
+**GPTQ-Int4 linear layers in vLLM on RDNA3: `vllm_gptq` (`HK_VLLM_GPTQ`, on by default on gfx1100).**
+vLLM runs a 4-bit symmetric GPTQ checkpoint on gfx1100 through `AutoGPTQLinearMethod` with
+`RDNA3W4A16LinearKernel`. The new route keeps hk's own layout of the codes beside vLLM's.
+Batches of 4-64 tokens run on hk's 4-bit decode GEMM; smaller and larger ones stay on vLLM's
+kernel. Act-order checkpoints, other quant types and layers on another kernel are refused, and
+`vllm_gptq.REFUSED` counts them by reason.
+- `hk.ops.w4a16`: a quantization group narrower than the load now narrows the load
+  (`schedule_for(m, k, group)`). Before, GPTQ's 32-column groups fell to the dequantize path at
+  every batch up to 16 tokens.
+- `tools/hk-bench/gptq_w4a16.py` times hk against `gptq_gemm_rdna3` on GPTQ checkpoints.
+
 **`hk.lane_coords` of a strip type; `hk.iota` is its column (DSL-surface S6).**
 `hk.lane_coords(ty)` -- of a strip type (`hk.RS`) -- gives two i32 strips of its shape,
 element (r, c) holding r and c; of a register tile it is as before. `hk.iota(ty)` is
@@ -49,8 +80,7 @@ strips"; docs/design/dsl-surface.md S7).
   allowlist entries are gone. `dsv41_index`'s 190 stay for a later step.
 - No float result changes: fp32 strip and tile operators keep their ops. `==` / `!=` of two
   strips now make a mask (it was Python's identity test); of WMMA tiles and vectors they still
-  are identity. RDNA strips have no `hk.map` lowering yet (S7b): a map there is
-  refused while tracing.
+  are identity.
 - An `hk.Int` on the left of a strip operator (`hk.arch.warp_id() * 64 + col`) now gives the
   strip's operator instead of a `TypeError`.
 
@@ -785,7 +815,7 @@ remaps:
   `"tensor.dim"` (`"k.depth"`).
 
 **`hk.map_cpp` and i32 strips** (#53, gfx950;
-[the language](docs/language.md#integer-mask-and-bit-expressions-on-strips-hkmap-gfx950)).
+[the language](docs/language.md#integer-mask-and-bit-expressions-on-strips-hkmap)).
 - `hk.map_cpp(expr, *args, dtype=None)` evaluates one C++ expression for each
   element of its strip arguments (`x0`, `x1`, ... bound to the elements, or
   to an `hk.Int` / Python int), into an fp32 or i32 strip. It is for what a

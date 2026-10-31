@@ -40,7 +40,7 @@ def test_on_by_default_on_gfx950_is_k1_k2_the_index_launch_sparse_mla_and_int4()
 
 
 def test_on_by_default_on_gfx1100_is_every_route_validated_there():
-    assert on(gpu="gfx1100") == {"vllm_int4", "vllm_gemm", "vllm_moe", "vllm_sdpa",
+    assert on(gpu="gfx1100") == {"vllm_int4", "vllm_gptq", "vllm_gemm", "vllm_moe", "vllm_sdpa",
                                  "sglang_linear", "sglang_moe", "sgld_attn", "sgld_linear",
                                  "sdpa_k3"}
 

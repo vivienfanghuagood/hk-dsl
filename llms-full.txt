@@ -167,8 +167,8 @@ a strip (`!hk.rt<f32, 1x1024, strip<8>>`, `kittens::rs`):
   and gfx950 (hk's wave64 port in `include/hk/cdna.cuh`); gfx942 refuses
   it while tracing. The gfx950 port arrived in 0.5.0; the 0.4.0 wheel refuses strips
   there ([what each version has](api/README.md)). Its elements are bf16,
-  fp16 or fp32, and on gfx950 also i32
-  ([below](#integer-mask-and-bit-expressions-on-strips-hkmap-gfx950)).
+  fp16, fp32 or i32
+  ([below](#integer-mask-and-bit-expressions-on-strips-hkmap)).
 
 ```python
 # WARPS and EPS are constexprs; row and warp come from hk.arch
@@ -229,9 +229,9 @@ vLLM's rotary_embedding in NeoX style, token-major, from a `cos_sin_cache`
 of `[cos | sin]` rows and optional int32 positions
 ([chapter 37](history/37-cdna-rows.md)).
 
-### Integer, mask and bit expressions on strips: `hk.map` (gfx950)
+### Integer, mask and bit expressions on strips: `hk.map`
 
-On gfx950 a strip may hold i32, `hk.RS(hk.i32, rows, cols, run)`: index
+A strip may hold i32, `hk.RS(hk.i32, rows, cols, run)`: index
 arithmetic, exponent bits, scale bytes. It loads from and stores to i32
 tensors like any strip, `bounded=True` included. `.to(hk.fp32)` and
 `.to(hk.i32)` convert in registers, and an fp32 strip stored into an i32
@@ -267,10 +267,13 @@ to -1). There are no other integer strips (an i8 strip is refused).
   pass merges a chain into one, so `((c >> 4) & 63) * w + c` compiles to the
   C++ expression an author would write. A value used twice is computed once,
   and nothing moves across a load, a store, a lane exchange or a barrier.
-- **Lowering.** A map prints as `kittens::map_cpp(dst, [&](const auto x0,
-  ...) { ... }, args...)` (include/hk/cdna). The IR has no arch in it, but
-  RDNA strips have no such lowering yet: a map on gfx1100 / gfx1201 is refused
-  while tracing.
+- **Where.** On every target with strips: gfx950, gfx1100 and gfx1201. A map
+  prints as `kittens::map_cpp(dst, [&](const auto x0, ...) { ... },
+  args...)`, from include/hk/cdna on gfx950 and include/hk/rdna/map.cuh on
+  RDNA. RDNA's strips hold no bool, so there a mask lives only inside a map:
+  one used where it is made (`hk.where(a < b, x, y)`, `m1 & m2`) or read once
+  by another map is fine; one read twice, or stored, is a verifier error --
+  compute it inside one `hk.map(fn)` instead.
 
 ```python
 S = hk.RS(hk.fp32, 1, 512)    # one row: 64 lanes x a run of 8
@@ -307,7 +310,7 @@ escape. New in 0.8.0 (#53); since S7 it is `hk.map` with a string body.
 - **The expression** is one C++ expression, with no `;` and no braces
   (`ValueError`), compiled as written with contraction off: hk does not parse
   it, so a mistake in it is a hipcc error. It is never fused with a map.
-- **Where.** gfx950 only; its use in hk.ops is on a reviewed allowlist
+- **Where.** Where `hk.map` is; its use in hk.ops is on a reviewed allowlist
   (`scripts/escape_hatches_allow.txt`).
 
 ### Strip ops for a megakernel's roles (gfx950)
@@ -2357,8 +2360,8 @@ is off: `a * b + c` is two roundings, `hk.math.fma(a, b, c)` one.
 
 The operators on i32 strips and masks build these one op at a time and the hk-map-fuse
 pass merges a chain; `hk.map` is for an expression to read as one, or to keep a float
-expression's roundings as written. Strips on gfx950; RDNA's have no lowering yet (S7 in
-docs/design/dsl-surface.md).
+expression's roundings as written. On gfx950, gfx1100 and gfx1201; on RDNA a mask only
+feeds another map (its strips hold no bool).
 
 ### `hk.where`
 
@@ -2380,7 +2383,7 @@ hk.map_cpp(expr: str, *args, dtype: Optional[DType] = None, name: str = 'map') -
 
 *Surface*: an escape hatch, used only within its boundary: an intrinsic or instruction hk has no op for, or another kernel's exact instruction sequence; not index arithmetic, selects, bit ops or float expressions the operators can write; never in a template.
 
-An elementwise C++ expression over strips (gfx950): element (r, c) of the result is `expr`
+An elementwise C++ expression over strips: element (r, c) of the result is `expr`
 with `x0`, `x1`, ... bound to element (r, c) of each strip argument -- or to the argument
 itself for an `Int` or a Python int -- converted to `dtype` (default: the strips' one dtype;
 strips of fp32 and i32 together must say it).

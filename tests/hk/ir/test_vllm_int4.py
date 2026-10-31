@@ -45,6 +45,9 @@ def test_the_decode_kernel_takes_batches_to_64(m, want):
     assert w4a16.takes(m, 4096, 4096, 128) is want
 
 
-def test_a_group_narrower_than_the_load_is_not_taken():
-    assert not w4a16.takes(1, 4096, 4096, 32)      # one token loads 64 columns
-    assert w4a16.takes(17, 4096, 4096, 32)         # two load 32
+def test_a_group_narrower_than_the_load_narrows_the_load():
+    # one token loads 64 columns; at GPTQ's 32-column groups it loads 32
+    assert w4a16.schedule_for(1, 8192, 128)["slices"] == 4
+    assert w4a16.schedule_for(1, 8192, 32)["slices"] == 2
+    assert w4a16.takes(1, 4096, 4096, 32) and w4a16.takes(17, 4096, 4096, 32)
+    assert not w4a16.takes(1, 4096, 4096, 8)       # no load is that narrow

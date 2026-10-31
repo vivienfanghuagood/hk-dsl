@@ -2560,7 +2560,7 @@ __all__ = [
 
 
 def map_cpp(expr: str, *args, dtype: Optional[DType] = None, name: str = "map") -> Tile:
-    """An elementwise C++ expression over strips (gfx950): element (r, c) of the result is `expr`
+    """An elementwise C++ expression over strips: element (r, c) of the result is `expr`
     with `x0`, `x1`, ... bound to element (r, c) of each strip argument -- or to the argument
     itself for an `Int` or a Python int -- converted to `dtype` (default: the strips' one dtype;
     strips of fp32 and i32 together must say it).
@@ -2578,8 +2578,8 @@ def map_cpp(expr: str, *args, dtype: Optional[DType] = None, name: str = "map") 
     spelled `__builtin_fmaf` -- no `;` or braces, and the compiler, not hk, checks it."""
     from .arch import target  # noqa: PLC0415
 
-    if target().wave != 64:
-        raise TypeError(f"hk.map_cpp is gfx950's (its strips), not {target().arch}'s")
+    if not target().strips:
+        raise TypeError(f"hk.map_cpp maps strips, and {target().arch} has none")
     if not isinstance(expr, str) or not expr.strip() or any(ch in expr for ch in ";{}"):
         raise ValueError(f"hk.map_cpp: one C++ expression, no ';' or braces, got {expr!r}")
     strips = [a for a in args if isinstance(a, Tile)]

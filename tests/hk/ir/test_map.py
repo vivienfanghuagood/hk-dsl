@@ -193,12 +193,40 @@ def test_equality_of_a_wmma_tile_is_identity():
     _src(same)
 
 
-def test_maps_lower_on_gfx950_only_for_now():
-    # the IR is arch-neutral; RDNA strips have no map lowering yet
-    def w32(x: hk.Tensor[hk.i32], o: hk.Tensor[hk.i32]):
-        o.at[0, 0].store(x.at[0, 0].load(hk.RS(hk.i32, 1, 256)) + 1)
-    with pytest.raises(TypeError, match="no lowering yet"):
-        _src(w32, arch="gfx1100")
+@pytest.mark.parametrize("arch", ["gfx1100", "gfx1201"])
+def test_maps_lower_on_rdna_through_hk_rdna_map(arch):
+    def ints(x: hk.Tensor[hk.i32], y: hk.Tensor[hk.fp32], o: hk.Tensor[hk.i32]):
+        c = x.at[0, 0].load(hk.RS(hk.i32, 1, 256))
+        v = y.at[0, 0].load(hk.RS(hk.fp32, 1, 256))
+        o.at[0, 0].store(hk.where((c < 3) & (v >= 0.5), ((c >> 4) & 63) * 4 + c, -1))
+    src = _src(ints, arch)
+    assert '#include "hk/rdna/map.cuh"' in src
+    (m,) = _maps(src)
+    assert "return ((((x0 < 3) & (x1 >= (float)0.5)) ? ((((x0 >> 4) & 63) * 4) + x0) : -1)); }" in m
+
+
+def test_an_rdna_kernel_without_a_map_includes_nothing_new():
+    def plain(y: hk.Tensor[hk.fp32], o: hk.Tensor[hk.fp32]):
+        o.at[0, 0].store(y.at[0, 0].load(hk.RS(hk.fp32, 1, 256)) * 2.0)
+    assert "hk/rdna/map.cuh" not in _src(plain, "gfx1100")
+
+
+def test_a_mask_cannot_leave_its_map_on_rdna():
+    def leaves(x: hk.Tensor[hk.i32], o: hk.Tensor[hk.i32]):
+        c = x.at[0, 0].load(hk.RS(hk.i32, 1, 512))
+        m = c < 3                                   # read twice: it stays a strip
+        o.at[0, 0].store(hk.where(m, c, 0))
+        o.at[1, 0].store(hk.where(m, 0, c))
+    with pytest.raises(Exception, match="mask strip leaves its hk.map on gfx1100"):
+        _src(leaves, "gfx1100")
+    _src(leaves, "gfx950")                          # gfx950's strips hold bool
+
+
+def test_maps_need_strips():
+    def none(x: hk.Tensor[hk.i32], o: hk.Tensor[hk.i32]):
+        o.at[0, 0].store(x.at[0, 0].load(hk.RS(hk.i32, 1, 512)) + 1)
+    with pytest.raises(TypeError, match="strips"):
+        _src(none, "gfx942")
 
 
 # ---------------------------------------------------------------- hk-map-fuse

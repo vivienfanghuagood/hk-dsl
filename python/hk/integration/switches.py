@@ -88,6 +88,12 @@ ROUTES: Dict[str, Route] = {r.name: r for r in (
        "AWQ 4-bit linear layers on hk's decode GEMM",
        "greedy tokens identical to stock's, Qwen3-8B/14B-AWQ (history 22, 42); gfx1201: "
        "Qwen3-8B-AWQ tokens identical, counts equal round for round (history 50)"),
+    _R("vllm_gptq", "vllm", "HK_VLLM_GPTQ", True, ("gfx1100",),
+       "4-bit symmetric GPTQ linear layers on RDNA3W4A16LinearKernel, on hk's decode GEMM at "
+       "4-64 tokens; act-order checkpoints refused",
+       "gfx1100: Qwen3.8-27B-GPTQ-Int4 in the Radeon TheRock vLLM image against stock-fair "
+       "(TRITON_ATTN, TunableOp with a 256 MB rotating buffer), 3 starts an arm: GSM8K-200 equal, "
+       "TPOT ahead at 8-16 concurrent requests and level at 1 (RDNA scorecard)"),
     _R("vllm_gemm", "vllm", "HK_VLLM_GEMM", True, ("gfx1100", "gfx1201"),
        "unquantized linear layers by the measured route table, plus tuning at load",
        "gfx1100: greedy tokens identical to stock's, or a bf16 near-tie (history 35). "
@@ -109,6 +115,13 @@ ROUTES: Dict[str, Route] = {r.name: r for r in (
        "off: it replaces ROCm's default decoder attention for every model. It raises, rather "
        "than falls back, on sliding windows, sinks, softcap, an fp8 KV cache, fp16 and other "
        "head sizes. Validated on Qwen3-8B only"),
+    _R("vllm_prefill", "vllm", "HK_VLLM_PREFILL", False, (),
+       "prefill attention in place on vLLM's own cache: ROCM_ATTN's prefix-prefill, and "
+       "TRITON_ATTN's unified_attention on batches with prefill in them; decode-only steps, "
+       "cache write and block size stay vLLM's",
+       "off until its end-to-end gates (16k TTFT on a d128 model, 8k on a d256 one) pass. "
+       "gfx1100, bf16, head size 64 / 128 (and 256 on TRITON_ATTN), pages of 16 (or 32 on "
+       "ROCM_ATTN); any other call falls back to vLLM's kernel"),
     _R("sglang_linear", "sglang", "HK_SGLANG_LINEAR", True, ("gfx1100",),
        "unquantized linear layers by the measured route table",
        "Qwen3-8B greedy output matches stock's up to a bf16 near-tie; error vs fp64 equal to "
