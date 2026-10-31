@@ -115,6 +115,13 @@ ROUTES: Dict[str, Route] = {r.name: r for r in (
        "off: it replaces ROCm's default decoder attention for every model. It raises, rather "
        "than falls back, on sliding windows, sinks, softcap, an fp8 KV cache, fp16 and other "
        "head sizes. Validated on Qwen3-8B only"),
+    _R("vllm_prefill", "vllm", "HK_VLLM_PREFILL", False, (),
+       "prefill attention in place on vLLM's own cache: ROCM_ATTN's prefix-prefill, and "
+       "TRITON_ATTN's unified_attention on batches with prefill in them; decode-only steps, "
+       "cache write and block size stay vLLM's",
+       "off until its end-to-end gates (16k TTFT on a d128 model, 8k on a d256 one) pass. "
+       "gfx1100, bf16, head size 64 / 128 (and 256 on TRITON_ATTN), pages of 16 (or 32 on "
+       "ROCM_ATTN); any other call falls back to vLLM's kernel"),
     _R("sglang_linear", "sglang", "HK_SGLANG_LINEAR", True, ("gfx1100",),
        "unquantized linear layers by the measured route table",
        "Qwen3-8B greedy output matches stock's up to a bf16 near-tie; error vs fp64 equal to "

@@ -1,4 +1,5 @@
-"""hk.map and the integer / mask / bit operations on strips, on the GPU, against torch: C's
+"""hk.map and the integer / mask / bit operations on strips, on the GPU (gfx950, gfx1100,
+gfx1201), against torch: C's
 semantics where Python's differ (`//` and `%` truncate, `>>` is arithmetic), hk.where with
 scalar arms, popcount, ctz (32 at 0), rcp within an ulp, the bf16 round trip, and fma as one
 rounding where `a * b + c` is two.
@@ -18,11 +19,12 @@ def _target():
 
 
 pytestmark = [pytest.mark.gpu,
-              pytest.mark.skipif(_target().wave != 64,
-                                 reason="hk.map lowers on gfx950 (RDNA strips: S7b)")]
+              pytest.mark.skipif(not _target().strips, reason="hk.map maps strips")]
 
+# 512 columns: two chunks of a run of 8 on wave32, one on wave64
 S = hk.RS(hk.i32, 1, 512, 8)
 F = hk.RS(hk.fp32, 1, 512, 8)
+
 ROWS = 64
 
 

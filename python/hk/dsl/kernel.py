@@ -212,6 +212,17 @@ class TracedKernel:
                 visit(o)
         return [n for n in names if n in out]
 
+    def _has_op(self, op_name: str) -> bool:
+        """Whether the kernel has an op `op_name` ("hk.map"), at any depth."""
+        k = M.kernel_of(self.module)
+
+        def visit(op) -> bool:
+            return op.name == op_name or any(visit(o) for r in op.regions for b in r.blocks
+                                             for o in b.operations)
+
+        with M.context():
+            return any(visit(o) for o in k.regions[0].blocks[0].operations)
+
     def cpp(self, includes) -> str:
         """The kernel's HipKittens C++ body, with `includes`; `Kernel.source()`
         is the whole translation unit."""

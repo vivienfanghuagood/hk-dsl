@@ -43,6 +43,7 @@ A route is on by default only on the GPUs it was validated on (**on** below). El
 | `vllm_moe` | vLLM | `HK_VLLM_MOE` | **on** | **on** | off | off |
 | `vllm_sdpa` | vLLM | `HK_VLLM_SDPA` | **on** | off | off | off |
 | `vllm_backend` | vLLM | `HK_VLLM_BACKEND` | opt-in | opt-in | opt-in | opt-in |
+| `vllm_prefill` | vLLM | `HK_VLLM_PREFILL` | opt-in | opt-in | opt-in | opt-in |
 | `sglang_linear` | SGLang | `HK_SGLANG_LINEAR` | **on** | off | off | off |
 | `sglang_moe` | SGLang | `HK_SGLANG_MOE` | **on** | off | off | off |
 | `sgld_attn` | SGLang-Diffusion | `HK_SGLD_ATTN` | **on** | off | off | off |
