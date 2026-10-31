@@ -308,8 +308,11 @@ What a persistent kernel's roles do between its GEMMs -- index arithmetic,
 table lookups, small reductions inside a lane group, hand-offs element by
 element -- written on strips. New in 0.8.0 (#72, #73), all gfx950, and
 written for a K1 that must match a hand-written kernel bit for bit.
-- **Indices.** `hk.iota(ty)` is an i32 strip whose element (r, c) is c;
-  with the i32 strip operators it computes flat indices.
+- **Indices.** `hk.lane_coords(ty)` gives two i32 strips of a strip type's
+  shape, element (r, c) holding r and c; `hk.iota(ty)` is the second. Of a
+  register tile, `hk.lane_coords(tile, run)` gives each element of
+  `tile.lane_strip(run)` its row and column in the tile. With the i32 strip
+  operators they compute flat indices.
 - **Elements at computed indices.** `x.load_elems(idx)` /
   `x.store_elems(val, idx, runs=False)` gather and scatter element by element
   (flat indices, an i32 strip); an index below zero or past the tensor reads 0

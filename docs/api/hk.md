@@ -785,10 +785,9 @@ spelled `__builtin_fmaf` -- no `;` or braces, and the compiler, not hk, checks i
 hk.iota(ty) -> Tile
 ```
 
-*Surface*: to be merged into hk.lane_coords(type)[1] (alias kept) (DSL-surface migration S6).
-
 An i32 strip of type `ty`'s shape whose element (r, c) is c: each element's own column, for
-index arithmetic (hk.map_cpp, load_elems / store_elems) and per-column choices (gfx950).
+index arithmetic (the strip operators, load_elems / store_elems) and per-column choices
+(gfx950). `hk.lane_coords(ty)[1]`, kept as this one line.
 
 ### `hk.mfma_strip`
 

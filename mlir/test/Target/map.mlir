@@ -14,7 +14,7 @@ module {
   func.func @map(%o: !hk.gl<f32> {hk.name = "o"})
       attributes {hk.kernel, hk.arch = "gfx950", hk.warps = 1 : i64, hk.consts = {}} {
     %w = hk.warp_id loc("w")
-    %col = hk.iota : !hk.rt<i32, 1x64, strip<1>> loc("col")
+    %col = hk.lane_coord {axis = 1 : i64} -> !hk.rt<i32, 1x64, strip<1>> loc("col")
     %idx = hk.map(%col, %w) : (!hk.rt<i32, 1x64, strip<1>>, i32) -> !hk.rt<i32, 1x64, strip<1>> {
     ^bb0(%x: i32, %y: i32):
       %c64 = arith.constant 64 : i32
