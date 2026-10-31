@@ -913,17 +913,18 @@ def HK_LaneStripOp : HK_Op<"lane_strip"> {
 }
 
 def HK_LaneCoordOp : HK_Op<"lane_coord"> {
-  let summary = "each element's row or column in a register tile (gfx950)";
+  let summary = "each element's row or column: in a register tile, or in a strip (gfx950)";
   let description = [{
-    An i32 strip of the shape `lane_strip` gives `src`, element by element
-    the operand row (`axis` 0) or column (`axis` 1) that lane_strip's element
-    held: index arithmetic for a matrix-core result taken as a strip. Only
-    `src`'s type is read.
+    With `src`: an i32 strip of the shape `lane_strip` gives `src`, element by
+    element the operand row (`axis` 0) or column (`axis` 1) that lane_strip's
+    element held -- index arithmetic for a matrix-core result taken as a
+    strip; only `src`'s type is read. Without it: the result strip's own
+    coordinates, element (r, c) being r (`axis` 0) or c (`axis` 1).
   }];
-  let arguments = (ins HK_RegTileType:$src, I64Attr:$axis);
+  let arguments = (ins Optional<HK_RegTileType>:$src, I64Attr:$axis);
   let results = (outs HK_RegTileType:$result);
   let assemblyFormat = [{
-    $src attr-dict `:` qualified(type($src)) `->` qualified(type($result))
+    ($src^ `:` qualified(type($src)))? attr-dict `->` qualified(type($result))
   }];
   let hasVerifier = 1;
 }
@@ -1042,17 +1043,6 @@ def HK_LdsAtomicAddElemsOp : HK_Op<"lds_atomic_add_elems"> {
   let assemblyFormat = [{
     $val `,` $dst `[` $idx `]` attr-dict `:` qualified(type($val)) `,` qualified(type($dst)) `,` qualified(type($idx))
   }];
-  let hasVerifier = 1;
-}
-
-def HK_IotaOp : HK_Op<"iota"> {
-  let summary = "an i32 strip whose element (r, c) is c (gfx950)";
-  let description = [{
-    Each element's own column -- the lane's place in the row, for index
-    arithmetic (hk.map) and per-column choices.
-  }];
-  let results = (outs HK_RegTileType:$result);
-  let assemblyFormat = [{ attr-dict `:` qualified(type($result)) }];
   let hasVerifier = 1;
 }
 

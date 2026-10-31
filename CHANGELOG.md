@@ -9,6 +9,14 @@ The next version's notes collect here until it is released.
 What is on main after 0.8.0. `pip install hk-dsl` (0.8.0) does not have it;
 the API reference marks such names *New after 0.8.0*.
 
+**`hk.lane_coords` of a strip type; `hk.iota` is its column (DSL-surface S6).**
+`hk.lane_coords(ty)` -- of a strip type (`hk.RS`) -- gives two i32 strips of its shape,
+element (r, c) holding r and c; of a register tile it is as before. `hk.iota(ty)` is
+`hk.lane_coords(ty)[1]`, kept as a one-line alias. In the IR the `hk.iota` op is gone: an
+`hk.lane_coord` without an operand is a strip's own coordinates (`kittens::lane_coord<AXIS>(dst)`,
+`kittens::iota`'s formula). The generated source of the 14 catalog kernels that used `hk.iota`
+changes; their ISA and resources are identical (all 1160 gfx950 builds compared against main).
+
 **gfx1100 under clang 24 (ROCm 10.1): the kernels the spill gate refused build again.** With clang
 24, 139 of the codegen tier's gfx1100 kernels spilled and were refused: `hk.ops`' fp16/bf16
 RMSNorm and LayerNorm, rope, the fp32 norm/softmax at the top of their range, examples 02 and 03,
