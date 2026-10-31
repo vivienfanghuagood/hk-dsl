@@ -9,6 +9,11 @@ The next version's notes collect here until it is released.
 What is on main after 0.8.0. `pip install hk-dsl` (0.8.0) does not have it;
 the API reference marks such names *New after 0.8.0*.
 
+**gfx1201: a single-row linear stays on vLLM's own GEMM.** On a Radeon AI PRO R9700, `vllm_gemm` no
+longer sends M = 1 calls to hk's decode GEMM even where its table measured hk faster: vLLM's wvSplitK
+already streams the weights at the memory roof there, and the routed shape lost end to end at batch 1.
+`vllm_gemm.ENGINE_KEEPS_M1` names the arches; gfx1100's tables and routing are unchanged.
+
 **gfx1100 under clang 24 (ROCm 10.1): the kernels the spill gate refused build again.** With clang
 24, 139 of the codegen tier's gfx1100 kernels spilled and were refused: `hk.ops`' fp16/bf16
 RMSNorm and LayerNorm, rope, the fp32 norm/softmax at the top of their range, examples 02 and 03,
