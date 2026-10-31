@@ -9,7 +9,7 @@ The next version's notes collect here until it is released.
 What is on main after 0.8.0. `pip install hk-dsl` (0.8.0) does not have it;
 the API reference marks such names *New after 0.8.0*.
 
-**GPTQ-Int4 linear layers in vLLM on RDNA3: `vllm_gptq` (`HK_VLLM_GPTQ`, off by default).**
+**GPTQ-Int4 linear layers in vLLM on RDNA3: `vllm_gptq` (`HK_VLLM_GPTQ`, on by default on gfx1100).**
 vLLM runs a 4-bit symmetric GPTQ checkpoint on gfx1100 through `AutoGPTQLinearMethod` with
 `RDNA3W4A16LinearKernel`. The new route keeps hk's own layout of the codes beside vLLM's.
 Batches of 4-64 tokens run on hk's 4-bit decode GEMM; smaller and larger ones stay on vLLM's

@@ -1,4 +1,4 @@
-"""vLLM's GPTQ linear layers on hk's 4-bit decode GEMM (`HK_VLLM_GPTQ=1`).
+"""vLLM's GPTQ linear layers on hk's 4-bit decode GEMM (`HK_VLLM_GPTQ`, on by default on gfx1100).
 
 On RDNA3, vLLM runs a 4-bit symmetric GPTQ checkpoint through
 `AutoGPTQLinearMethod` with `RDNA3W4A16LinearKernel`, its own HIP W4A16 GEMM
@@ -23,7 +23,7 @@ RDNA3W4A16LinearKernel. Each of those layers keeps vLLM's path.
 Like the other linear patches it changes what the compiled graph calls, so it
 gives the engine its own compile-cache root, `hk-gptq` under the current one.
 
-    HK_PATCH_VLLM=1 HK_VLLM_GPTQ=1 vllm serve <a GPTQ-Int4 checkpoint> --dtype float16
+    HK_PATCH_VLLM=1 vllm serve <a GPTQ-Int4 checkpoint> --dtype float16
 """
 
 from __future__ import annotations
@@ -75,6 +75,11 @@ def gptq_w4a16(x, w_q, w_zp, w_s, hk_qw, hk_s, hk_zs, group: int):
         run(x if x.is_contiguous() else x.contiguous(), hk_qw, hk_s, hk_zs, out)
         return out
     PATCH.count("fallback")
+    return _vllm_gptq(x, w_q, w_zp, w_s)
+
+
+def _vllm_gptq(x, w_q, w_zp, w_s):
+    """RDNA3W4A16LinearKernel.apply_weights' own GEMM, for the batches hk leaves."""
     from vllm import _custom_ops as ops  # noqa: PLC0415
 
     return ops.gptq_gemm_rdna3(x, w_q, w_zp, w_s, False)
