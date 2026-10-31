@@ -9,6 +9,14 @@ The next version's notes collect here until it is released.
 What is on main after 0.8.0. `pip install hk-dsl` (0.8.0) does not have it;
 the API reference marks such names *New after 0.8.0*.
 
+**gfx950: one copy body for a group's loads into LDS (DSL-surface S8).** A synchronous
+`g.load(tile, view)` is the asynchronous copy's DMA body -- bounded at the tensor's last row and the
+tile's -- followed by the waits it always had; hk/cdna.cuh's second, synchronous copy body is gone.
+In this form the copy's descriptor is read from lane 0, so a descriptor LLVM cannot prove uniform is
+not a waterfall loop around every copy. Only the two kernels with such loads change: `mxfp8.gemm`
+(outputs bit for bit the same at four shapes, 0.2-2.9% faster in one process) and example 02's GEMM.
+gfx942 is unchanged.
+
 **gfx1100 under clang 24 (ROCm 10.1): the kernels the spill gate refused build again.** With clang
 24, 139 of the codegen tier's gfx1100 kernels spilled and were refused: `hk.ops`' fp16/bf16
 RMSNorm and LayerNorm, rope, the fp32 norm/softmax at the top of their range, examples 02 and 03,
