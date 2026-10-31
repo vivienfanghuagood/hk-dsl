@@ -40,9 +40,12 @@ engine routed a single Qwen3.8 linear to hk, because neither table held its shap
 **GPTQ-Int4 linear layers in vLLM on RDNA3: `vllm_gptq` (`HK_VLLM_GPTQ`, on by default on gfx1100).**
 vLLM runs a 4-bit symmetric GPTQ checkpoint on gfx1100 through `AutoGPTQLinearMethod` with
 `RDNA3W4A16LinearKernel`. The new route keeps hk's own layout of the codes beside vLLM's.
-Batches of 4-64 tokens run on hk's 4-bit decode GEMM; smaller and larger ones stay on vLLM's
-kernel. Act-order checkpoints, other quant types and layers on another kernel are refused, and
-`vllm_gptq.REFUSED` counts them by reason.
+Batches of 1-64 tokens run on hk's 4-bit decode GEMM, in the symmetric form below (its scales in
+16-row blocks, no zero-times-scale tensor); larger ones stay on vLLM's kernel. Act-order
+checkpoints, other quant types, layers on another kernel and layers whose stored zero points are not
+8 are refused, and `vllm_gptq.REFUSED` counts them by reason. On Qwen3.8-27B-GPTQ-Int4 (W7900D,
+TRITON_ATTN + TunableOp on both sides) TPOT is 1.10x vLLM's at one user (8k and 1k context),
+1.08-1.28x at 4-16.
 - `hk.ops.w4a16`: a quantization group narrower than the load now narrows the load
   (`schedule_for(m, k, group)`). Before, GPTQ's 32-column groups fell to the dequantize path at
   every batch up to 16 tokens.
