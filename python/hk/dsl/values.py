@@ -2370,7 +2370,7 @@ def _fp4_operand(words: Tile) -> Tile:
         raise TypeError(f"fp4_operand: an i32 strip of 1 x 256, run 4 (four dwords a lane), not {words.ty}")
     t = _t()
     ty = RegTileType(fp8e4m3, 16, 128, "row")
-    return wrap(hkd.Fp4OperandOp(mlir_type(ty), words.v, loc=t.loc("fp4")).result, ty)
+    return wrap(hkd.LaneViewOp(mlir_type(ty), words.v, loc=t.loc("fp4")).result, ty)
 
 
 def fp8_operand(words: Tile) -> Tile:
@@ -2385,7 +2385,7 @@ def _fp8_operand(words: Tile) -> Tile:
         raise TypeError(f"fp8_operand: an i32 strip of 1 x 512, run 4 (eight dwords a lane), not {words.ty}")
     t = _t()
     ty = RegTileType(fp8e4m3, 16, 128, "row")
-    return wrap(hkd.Fp8OperandOp(mlir_type(ty), words.v, loc=t.loc("fp8")).result, ty)
+    return wrap(hkd.LaneViewOp(mlir_type(ty), words.v, loc=t.loc("fp8")).result, ty)
 
 
 def mx_scales_loose(bytes_: Tile) -> MxScales:
@@ -2400,7 +2400,7 @@ def _mx_scales_loose(bytes_: Tile) -> MxScales:
         raise TypeError(f"mx_scales_loose: an i32 strip of 1 x 64, run 1, not {bytes_.ty}")
     t = _t()
     ty = MxScalesType(16, 4, 1)
-    op = hkd.MxScalesLooseOp(mlir_type(ty), bytes_.v, loc=t.loc("mxs"))
+    op = hkd.LaneViewOp(mlir_type(ty), bytes_.v, loc=t.loc("mxs"))
     return MxScales(op.result, ty)
 
 

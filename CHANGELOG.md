@@ -48,6 +48,12 @@ kernel. Act-order checkpoints, other quant types and layers on another kernel ar
   every batch up to 16 tokens.
 - `tools/hk-bench/gptq_w4a16.py` times hk against `gptq_gemm_rdna3` on GPTQ checkpoints.
 
+**One register-view op: `hk.lane_view` (DSL-surface S9a).** `Tile.as_fragment` and `Tile.as_scales`
+(and the deprecated `hk.fp8_operand` / `hk.fp4_operand` / `hk.mx_scales_loose`) build one dialect op,
+`hk.lane_view`, and one C++ function, `kittens::lane_view`, picked by the types -- instead of three of
+each. The generated code is the same: ISA and resources identical on K1 and dsv41_index.
+`hk.mfma_strip` is unchanged (S9b, deferred).
+
 **`hk.lane_coords` of a strip type; `hk.iota` is its column (DSL-surface S6).**
 `hk.lane_coords(ty)` -- of a strip type (`hk.RS`) -- gives two i32 strips of its shape,
 element (r, c) holding r and c; of a register tile it is as before. `hk.iota(ty)` is
