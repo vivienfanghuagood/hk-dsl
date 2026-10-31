@@ -18,6 +18,17 @@ or read once by another map); one read twice or stored is a verifier error namin
 store's index put between a mask and its `hk.where`. Tested on the GPU on all three targets
 (tests/hk/gpu/test_map.py) and built by hipcc for each (tests/hk/codegen/test_map_builds.py).
 
+**Qwen3.8-27B's linear layers on the gfx1100 routes (vLLM and SGLang, TP2).** Before this, neither
+engine routed a single Qwen3.8 linear to hk, because neither table held its shapes.
+- `hk.autotune.routes.linear_shapes` now reads hybrid decoders (Qwen3.5 / 3.6 / 3.8, Qwen3-Next):
+  the attention projections on the full-attention layers only (q doubled by `attn_output_gate`),
+  and the Gated-DeltaNet `in_proj_qkvz`, `in_proj_ba` and `out_proj` on the rest. `route_tune.py
+  --model`, `hk.integration.tune` and `tools/hk-bench/vllm_gemm.py` use it.
+- `routes_vllm_linear_gfx1100.json` and `routes_sglang_linear_gfx1100.json` gain Qwen3.8's seven
+  TP2 per-rank (N, K), measured with `route_tune.py` in each engine's image (vLLM: TheRock ROCm
+  7.14, clang 23; SGLang: sglang-radeon). Each shape records the run it came from.
+- The tuner's held-out shape sets are redrawn: they exclude every shipped (N, K).
+
 **gfx1100 under clang 24 (ROCm 10.1): the kernels the spill gate refused build again.** With clang
 24, 139 of the codegen tier's gfx1100 kernels spilled and were refused: `hk.ops`' fp16/bf16
 RMSNorm and LayerNorm, rope, the fp32 norm/softmax at the top of their range, examples 02 and 03,
