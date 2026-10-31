@@ -79,3 +79,52 @@ def test_an_argument_hk_does_not_know_refuses_the_call(monkeypatch):
     assert vp._unknown_set({"q": 1, "new_feature": None, "use_td": True}) == ""
     assert vp._unknown_set({"q": 1, "new_feature": torch.zeros(2)}) == "new_feature"
     assert vp._unknown_set({"q": 1, "never_heard_of": 3}) == "never_heard_of"
+
+
+def _caf_old(q, k, v, o, kv_cache_dtype, k_cache, v_cache, b_loc, b_start_loc, b_seq_len,
+             max_seq_len, max_input_len, k_scale, v_scale, alibi_slopes=None,
+             sliding_window=None, sm_scale=None, skip_decode=False, fp8_out_scale=None,
+             sinks=None, is_block_table_ptr=False, causal=True):
+    return "vllm"
+
+
+def _caf_new(q, k, v, o, kv_cache_dtype, k_cache, v_cache, b_loc, b_start_loc, b_seq_len,
+             max_seq_len, max_input_len, k_scale, v_scale, alibi_slopes=None,
+             sliding_window=None, sm_scale=None, skip_decode=False, fp8_out_scale=None,
+             sinks=None, is_block_table_ptr=False, interleaved_v_pack_factor=0, causal=True):
+    return "vllm"
+
+
+@pytest.mark.parametrize("orig", [_caf_old, _caf_new])
+def test_the_rocm_attn_standin_takes_either_signature(monkeypatch, orig):
+    """vLLM's context_attention_fwd before and after interleaved_v_pack_factor: the stand-in
+    shows the signature it rebinds and binds a call to it by name; the parameter at its default
+    is not a refusal, a packed V cache is (that call falls back, the engine's other calls and
+    routes are untouched)."""
+    monkeypatch.setattr(vp, "_P_SIG", inspect.signature(orig))
+    monkeypatch.setattr(vp, "_ORIG", orig)
+    monkeypatch.setattr(vp.context_attention_fwd, "__signature__", inspect.signature(orig),
+                        raising=False)
+    assert list(inspect.signature(vp._GUARDED).parameters) == list(
+        inspect.signature(orig).parameters)
+    assert vp._p_unknown({"q": 1, "causal": True}) == ""
+    if "interleaved_v_pack_factor" in inspect.signature(orig).parameters:
+        assert vp._p_unknown({"q": 1, "interleaved_v_pack_factor": 0}) == ""
+        assert "interleaved_v_pack_factor=8" in vp._p_unknown({"interleaved_v_pack_factor": 8})
+        # a refused call goes to vLLM's kernel with the caller's arguments, as they came
+        args = dict(q=None, k=None, v=None, o=None, kv_cache_dtype="auto", k_cache=None,
+                    v_cache=None, b_loc=None, b_start_loc=None, b_seq_len=None, max_seq_len=1,
+                    max_input_len=1, k_scale=None, v_scale=None, interleaved_v_pack_factor=8)
+        before = vp.PATCH.stats["fallback"]
+        assert vp.context_attention_fwd(**args) == "vllm"
+        assert vp.PATCH.stats["fallback"] == before + 1
+
+
+def test_the_contract_checks_only_what_the_rocm_attn_standin_reads():
+    from hk.integration import contract
+
+    have = set(inspect.signature(_caf_new).parameters)
+    assert vp._P_NEED <= have and vp._P_NEED <= set(inspect.signature(_caf_old).parameters)
+    assert "same_parameters(fn, vllm_prefill.context_attention_fwd" not in inspect.getsource(
+        contract._vllm_prefill)
+

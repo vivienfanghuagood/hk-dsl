@@ -213,7 +213,11 @@ def _vllm_prefill() -> Optional[List[str]]:
     need = {"q", "k", "v", "out", "cu_seqlens_q", "max_seqlen_q", "seqused_k", "softmax_scale",
             "causal", "block_table"}
     lost = sorted(need - set(names(u)))
-    return (same_parameters(fn, vllm_prefill.context_attention_fwd, "context_attention_fwd")
+    # the stand-ins take vLLM's own signature and read what they need by name; a parameter a
+    # newer vLLM adds is refused per call unless it is at its default -- a contract failure here
+    # would turn off every route of the engine, not this one
+    p_lost = sorted(vllm_prefill._P_NEED - set(names(fn)))
+    return (_expect(not p_lost, f"context_attention_fwd lost {p_lost}")
             + _expect(not lost, f"unified_attention lost {lost}"))
 
 

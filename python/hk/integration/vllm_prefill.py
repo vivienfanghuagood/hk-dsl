@@ -122,41 +122,81 @@ def why_not(q, o, kv_cache_dtype, k_cache, v_cache, b_loc, b_start_loc, b_seq_le
     return ""
 
 
-def context_attention_fwd(q, k, v, o, kv_cache_dtype: str, k_cache, v_cache, b_loc,
-                          b_start_loc, b_seq_len, max_seq_len, max_input_len, k_scale,
-                          v_scale, alibi_slopes=None, sliding_window=None, sm_scale=None,
-                          skip_decode=False, fp8_out_scale=None, sinks=None,
-                          is_block_table_ptr: bool = False, causal: bool = True):
-    """vLLM's prefix-prefill entry point (its parameters, in its order), hk's kernel where it
-    takes the call."""
-    if why_not(q, o, kv_cache_dtype, k_cache, v_cache, b_loc, b_start_loc, b_seq_len,
-               alibi_slopes, sliding_window, skip_decode, fp8_out_scale, sinks,
-               is_block_table_ptr, causal):
+#: context_attention_fwd's parameters the stand-in reads (the rest of vLLM's must be at their
+#: defaults, or the call falls back: _p_unknown).
+_P_READ = frozenset((
+    "q", "k", "v", "o", "kv_cache_dtype", "k_cache", "v_cache", "b_loc", "b_start_loc",
+    "b_seq_len", "max_seq_len", "max_input_len", "k_scale", "v_scale", "alibi_slopes",
+    "sliding_window", "sm_scale", "skip_decode", "fp8_out_scale", "sinks", "is_block_table_ptr",
+    "causal"))
+
+#: of those, the ones vLLM's context_attention_fwd must still have (the contract's check)
+_P_NEED = frozenset((
+    "q", "k", "v", "o", "kv_cache_dtype", "k_cache", "v_cache", "b_loc", "b_start_loc",
+    "b_seq_len", "max_seq_len", "max_input_len", "k_scale", "v_scale", "sm_scale",
+    "skip_decode"))
+
+#: vLLM's context_attention_fwd's signature, set on apply (the stand-in shows it as its own).
+_P_SIG = None
+
+
+def _p_unknown(a: dict) -> str:
+    """A parameter of this vLLM's context_attention_fwd that hk neither reads nor tests and that
+    is not at its default, as a refusal reason, or "". interleaved_v_pack_factor (> 0: ROCM_ATTN's
+    V cache interleaved for its fused writer, not the per-page V^T layout="rocm" reads) is one."""
+    for name, val in a.items():
+        if name in _P_READ:
+            continue
+        p = _P_SIG.parameters.get(name) if _P_SIG is not None else None
+        default = p.default if p is not None else None
+        try:
+            if val is default or (not hasattr(val, "shape") and val == default):
+                continue
+        except Exception:  # noqa: BLE001 -- an uncomparable value is a set one
+            pass
+        return f"{name}={val!r} (a parameter hk does not take)"
+    return ""
+
+
+def context_attention_fwd(*args, **kwargs):
+    """vLLM's prefix-prefill entry point (its signature, set on apply: newer vLLMs add
+    parameters), hk's kernel where it takes the call."""
+    a = dict(kwargs) if not args else _P_SIG.bind(*args, **kwargs).arguments
+    g = {n: (a[n] if n in a else (_P_SIG.parameters[n].default if _P_SIG is not None and
+                                  n in _P_SIG.parameters else d))
+         for n, d in (("alibi_slopes", None), ("sliding_window", None), ("sm_scale", None),
+                      ("skip_decode", False), ("fp8_out_scale", None), ("sinks", None),
+                      ("is_block_table_ptr", False), ("causal", True))}
+    q, o, k_cache, v_cache = a["q"], a["o"], a["k_cache"], a["v_cache"]
+    unknown = _p_unknown(a)
+    if unknown:
+        _P_REFUSED[unknown] = _P_REFUSED.get(unknown, 0) + 1
+    if unknown or why_not(q, o, a["kv_cache_dtype"], k_cache, v_cache, a["b_loc"],
+                          a["b_start_loc"], a["b_seq_len"], g["alibi_slopes"],
+                          g["sliding_window"], g["skip_decode"], g["fp8_out_scale"], g["sinks"],
+                          g["is_block_table_ptr"], g["causal"]):
         PATCH.count("fallback")
-        return _ORIG(q, k, v, o, kv_cache_dtype, k_cache, v_cache, b_loc, b_start_loc,
-                     b_seq_len, max_seq_len, max_input_len, k_scale, v_scale,
-                     alibi_slopes, sliding_window, sm_scale, skip_decode, fp8_out_scale,
-                     sinks, is_block_table_ptr, causal)
+        return _ORIG(*args, **kwargs)
     from ..ops import paged_prefill as pp  # noqa: PLC0415
 
     n, h, d = q.shape
+    sm_scale = g["sm_scale"]
     scale = None if sm_scale is None or sm_scale == d ** -0.5 else float(sm_scale)
     got = _op(d, h // k_cache.shape[1], scale, int(v_cache.shape[3]))
     if got is None:
         PATCH.count("fallback")
-        return _ORIG(q, k, v, o, kv_cache_dtype, k_cache, v_cache, b_loc, b_start_loc,
-                     b_seq_len, max_seq_len, max_input_len, k_scale, v_scale,
-                     alibi_slopes, sliding_window, sm_scale, skip_decode, fp8_out_scale,
-                     sinks, is_block_table_ptr, causal)
+        return _ORIG(*args, **kwargs)
     op, tile = got
-    op(q.reshape(n, h * d), *pp.rocm_views(k_cache, v_cache), b_loc, b_seq_len, b_start_loc,
-       pp.q_tiles(int(max_input_len), q.device, tile), o.reshape(n, h * d))
+    op(q.reshape(n, h * d), *pp.rocm_views(k_cache, v_cache), a["b_loc"], a["b_seq_len"],
+       a["b_start_loc"], pp.q_tiles(int(a["max_input_len"]), q.device, tile), o.reshape(n, h * d))
     PATCH.count("hk")
     if SHADOW:
-        _shadow(o, (q, k, v, kv_cache_dtype, k_cache, v_cache, b_loc, b_start_loc, b_seq_len,
-                    max_seq_len, max_input_len, k_scale, v_scale, alibi_slopes, sliding_window,
-                    sm_scale, skip_decode, fp8_out_scale, sinks, is_block_table_ptr, causal))
+        _shadow(o, args, kwargs, a)
     return None
+
+
+#: refusals by _p_unknown, by reason (the per-call refusal of a parameter hk does not take)
+_P_REFUSED: dict = {}
 
 
 #: HK_VLLM_PREFILL_SHADOW=1: after every hk call, vLLM's kernel on the same arguments into a
@@ -167,13 +207,14 @@ SHADOW = __import__("os").environ.get("HK_VLLM_PREFILL_SHADOW", "") not in ("", 
 SHADOW_STATS = {"calls": 0, "worst_ulps": 0.0, "worst_call": -1, "over_4": 0}
 
 
-def _shadow(o, args) -> None:
+def _shadow(o, args, kwargs, a) -> None:
     import torch  # noqa: PLC0415
 
-    q, k, v, kvd, kc, vc, bl, bs, bsl, *rest = args
     ref = torch.empty_like(o)
-    _ORIG(q, k, v, ref, kvd, kc, vc, bl, bs, bsl, *rest)
-    qs = bs.tolist()
+    b = dict(a)
+    b["o"] = ref
+    _ORIG(**b)
+    qs = a["b_start_loc"].tolist()
     rows = [r for i in range(len(qs) - 1) if qs[i + 1] - qs[i] > 1 for r in range(qs[i], qs[i + 1])]
     _compare(o, ref, rows)
 
@@ -469,7 +510,13 @@ def apply() -> str:
         return "prefill: not patched -- not a ROCm platform"
     from vllm.v1.attention.ops import prefix_prefill  # noqa: PLC0415
 
+    global _P_SIG
+    import inspect  # noqa: PLC0415
+
     _ORIG = prefix_prefill.context_attention_fwd
+    _P_SIG = inspect.signature(_ORIG)
+    # vLLM's callers pass keywords, and probes may read the signature: the stand-in shows vLLM's
+    context_attention_fwd.__signature__ = _P_SIG
     names = _common.rebind(PREFIXES, _ORIG, _GUARDED)
     unames = _apply_unified()
     return (f"prefill -> hk where hk.ops.paged_prefill takes ROCM_ATTN's prefill "
