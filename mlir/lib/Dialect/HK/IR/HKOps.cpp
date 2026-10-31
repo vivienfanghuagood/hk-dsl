@@ -340,8 +340,15 @@ LogicalResult LoadW4Op::verify() {
     return emitOpError("dequantizes into a bf16 or f16 row-layout tile");
   if (!getQw().getType().getElementType().isInteger(32))
     return emitOpError("reads its codes from an int32 global, eight to a word");
+  if (bool(getZs()) == getZero().has_value())
+    return emitOpError("takes a zero-times-scale tensor zs, or one `zero` for every group "
+                       "(symmetric), exactly one of them");
+  if (getZero() && (*getZero() < 0 || *getZero() > 15))
+    return emitOpError("zero is a 4-bit code, 0..15, not ") << *getZero();
+  if (getSBlocked() && !getZero())
+    return emitOpError("s_blocked (scales in 16-row blocks) is the symmetric form's layout");
   if (getS().getType().getElementType() != et ||
-      getZs().getType().getElementType() != et)
+      (getZs() && getZs().getType().getElementType() != et))
     return emitOpError("reads scales and zero-times-scales of the tile's type");
   if (getGroup() <= 0 || getGroup() % 16)
     return emitOpError("group must be a positive multiple of 16, got ")

@@ -48,6 +48,17 @@ kernel. Act-order checkpoints, other quant types and layers on another kernel ar
   every batch up to 16 tokens.
 - `tools/hk-bench/gptq_w4a16.py` times hk against `gptq_gemm_rdna3` on GPTQ checkpoints.
 
+**W4A16's symmetric form: `hk.load_w4(..., zero=, s_blocked=)`.** A 4-bit checkpoint whose zero
+points are all one value (GPTQ's uint4b8: 8) loads without the zero-times-scale tensor:
+`hk.load_w4(ty, qw, s, None, n0, k0, group=G, zero=8)` dequantizes `(q - 8) * s`, 12.5% fewer bytes
+at 32-column groups. `s_blocked=True` reads scales laid out `[N/16, K/G * 16]`, so the 16 rows a
+k-step reads take 32 contiguous bytes. On RDNA a half tile decodes in packed fp16 (include/hk/rdna/w4.cuh,
+included only by a kernel that uses the form): `q - 8` exactly, then one multiply by `s` rounded to
+nearest. bf16 tiles and CDNA keep the fp32 decode. `hk.ops.w4a16.repack_gptq(..., symmetric=True)`
+returns `(qw, s in 16-row blocks, None)` and refuses a checkpoint whose zero points are not all 8;
+`dequant`, `matmul` and `plan` take `zs=None` as the symmetric form. The asymmetric form (AWQ's too)
+is unchanged: every catalog kernel's source is the same.
+
 **`hk.lane_coords` of a strip type; `hk.iota` is its column (DSL-surface S6).**
 `hk.lane_coords(ty)` -- of a strip type (`hk.RS`) -- gives two i32 strips of its shape,
 element (r, c) holding r and c; of a register tile it is as before. `hk.iota(ty)` is
