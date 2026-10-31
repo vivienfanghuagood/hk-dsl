@@ -9,6 +9,17 @@ The next version's notes collect here until it is released.
 What is on main after 0.8.0. `pip install hk-dsl` (0.8.0) does not have it;
 the API reference marks such names *New after 0.8.0*.
 
+**GPTQ-Int4 linear layers in vLLM on RDNA3: `vllm_gptq` (`HK_VLLM_GPTQ`, on by default on gfx1100).**
+vLLM runs a 4-bit symmetric GPTQ checkpoint on gfx1100 through `AutoGPTQLinearMethod` with
+`RDNA3W4A16LinearKernel`. The new route keeps hk's own layout of the codes beside vLLM's.
+Batches of 4-64 tokens run on hk's 4-bit decode GEMM; smaller and larger ones stay on vLLM's
+kernel. Act-order checkpoints, other quant types and layers on another kernel are refused, and
+`vllm_gptq.REFUSED` counts them by reason.
+- `hk.ops.w4a16`: a quantization group narrower than the load now narrows the load
+  (`schedule_for(m, k, group)`). Before, GPTQ's 32-column groups fell to the dequantize path at
+  every batch up to 16 tokens.
+- `tools/hk-bench/gptq_w4a16.py` times hk against `gptq_gemm_rdna3` on GPTQ checkpoints.
+
 **gfx1100 under clang 24 (ROCm 10.1): the kernels the spill gate refused build again.** With clang
 24, 139 of the codegen tier's gfx1100 kernels spilled and were refused: `hk.ops`' fp16/bf16
 RMSNorm and LayerNorm, rope, the fp32 norm/softmax at the top of their range, examples 02 and 03,
