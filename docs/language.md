@@ -471,6 +471,12 @@ O += v_tile.T @ P                      # V read with P's lane run
   to bf16 or fp16 on the way. The reduction index then runs down the rows in
   the accumulator's order; `hk-fragments` gives the MMA's other operand the
   same stride, so the product is unchanged.
+- `Tile.as_operand(hk.fp16, k_order="even_odd")` is RDNA3's form (gfx1100):
+  a 32x16 fp32 col-layout pair of 16x16 WMMA accumulators (Sᵀ's kv rows 0-15
+  and 16-31) as two fp16 operands, `subtile(16, 0)` the one whose K axis is
+  the pair's even rows and `subtile(16, 1)` the odd ones. V's rows are laid
+  out in that order (`hk.ops.attn_k3`'s Vᵀ kernel does), and each packed
+  dword costs one conversion, one `permlanex16` and two selects.
 - `Tile.subtile(rows, index)` is rows `[index*rows, (index+1)*rows)` of a
   register tile as a tile: an alias, so a write into it writes the tile.
   `index` is a Python int.

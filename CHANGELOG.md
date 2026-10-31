@@ -9,6 +9,14 @@ The next version's notes collect here until it is released.
 What is on main after 0.8.0. `pip install hk-dsl` (0.8.0) does not have it;
 the API reference marks such names *New after 0.8.0*.
 
+**RDNA3's paired WMMA operand: `as_operand(k_order="even_odd")` (DSL-surface S11).** On gfx1100,
+`S.as_operand(hk.fp16, k_order="even_odd")` turns a 32x16 fp32 pair of WMMA accumulators into two fp16
+operands, the pair's even rows and its odd rows, one `permlanex16` a packed dword. `hk.ops.attn_k3`
+writes its Pᵀ this way; its `PairPKernel` subclass, which spliced the same C++ into the generated
+source and rewrote it with a regex, is gone -- no `hk.ops` kernel overrides `with_defines` any more.
+attn_k3's ISA and resources are identical on gfx1100; on gfx1201, where its route never ran and RDNA4's
+accumulator layout differs, tracing it is now refused.
+
 **`hk.map` on RDNA strips (gfx1100, gfx1201).** The integer, mask and bit expressions below,
 `hk.map(fn)` and `hk.map_cpp` lower on RDNA too, through include/hk/rdna/map.cuh (the trees'
 `strip_each`, wave32), included only by a kernel with a map -- every other kernel's source is

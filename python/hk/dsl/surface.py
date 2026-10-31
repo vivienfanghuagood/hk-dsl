@@ -80,6 +80,8 @@ ENTRIES: Dict[str, Entry] = {
     "Group.gather_prep": Entry("deprecated", "B4", target="Group.stage_rows", step=_GONE),
     "Group.load(staged=)": Entry("deprecated", "B5", target="Group.load(gather=<a staged "
                                  "hk.RowIndex>)", step=_GONE),
+    "Tile.as_operand(k_order=)": Entry("primitive", "D1", "RDNA3's (gfx1100) paired WMMA operand: "
+                                       "a 32-row fp32 S^T pair as its even and odd P^T operands"),
     "Global.scatter(add=)": Entry("primitive", "B6", "atomic scatter-add, in no fixed order: not "
                                   "for a route that promises determinism"),
     # 2.3 strips, elements, lanes
@@ -270,6 +272,8 @@ map_cpp
     },
     # hk.map on RDNA strips (S7b): the same map_cpp as cdna/escape.cuh, over the trees' strip_each
     "include/hk/rdna/map.cuh": {"hk_lane_arg": "internal", "map_cpp": "escape"},
+    # RDNA3's paired WMMA operand (S11): Tile.as_operand(k_order="even_odd")
+    "include/hk/rdna/operand.cuh": {"as_operand_even_odd": "primitive"},
     "include/hk/cdna_agpr.cuh": {n: "experiment" for n in """
 col_scale div_col drain mfma mma_AB mma_ABt mma_AtB mma_AtBt mul_col read write zero
 """.split()},

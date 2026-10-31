@@ -1307,8 +1307,15 @@ def HK_AsOperandOp : HK_Op<"as_operand"> {
     This is how P, the softmax of an MFMA result, feeds P·V on gfx950
     without a cross-lane reshuffle: the scores are computed transposed,
     Sᵀ = K·Qᵀ, and Oᵀ += Vᵀ·Pᵀ reads Pᵀ in place.
+
+    `even_odd` (RDNA3, gfx1100): a 32x16 fp32 col-layout pair of 16x16 WMMA
+    accumulators, Sᵀ's kv rows [0, 16) and [16, 32), as two fp16 operands:
+    tile 0 the operand whose K axis is the pair's 16 even rows, tile 1 the
+    odd rows. Data moves: per packed dword one conversion, one permlanex16
+    and two selects (include/hk/rdna/operand.cuh).
   }];
-  let arguments = (ins Optional<HK_RegTileType>:$dst, HK_RegTileType:$src);
+  let arguments = (ins Optional<HK_RegTileType>:$dst, HK_RegTileType:$src,
+                       UnitAttr:$even_odd);
   let results = (outs Optional<HK_RegTileType>:$result);
   let assemblyFormat = [{
     $src (`into` $dst^)? attr-dict `:` qualified(type($src)) (`into` qualified(type($dst))^)?

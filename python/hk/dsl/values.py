@@ -22,7 +22,7 @@ from .module import mlir_type
 from ..types import (
     FP8, CoordType, DType, GlobalType, GranuleSetType, MxScalesType, RegTileType,
     RegVecType, ScalarType, SharedTileType, SharedVecType, StageBufferType, fp32, i32,
-    fp8e4m3, i8, bf16,
+    fp8e4m3, i8, bf16, fp16,
 )
 from ..target import get_target
 from . import builder as B
@@ -1587,9 +1587,11 @@ class Tile(_Elementwise):
         dwords, loaded once, feeding two token tiles over two steps)."""
         return Scaled(self, scales, fmt, at)
 
-    def as_operand(self, dtype: Optional[DType] = None, *, into=None) -> "Tile":
+    def as_operand(self, dtype: Optional[DType] = None, *, k_order: str = "natural",
+                   into=None) -> "Tile":
         """This accumulator's registers read as an MFMA operand: no data
-        moves across lanes (gfx950).
+        moves across lanes (gfx950). `k_order="even_odd"` is RDNA3's form
+        (gfx1100), below.
 
         `self` is a col-layout tile in an accumulator fragment -- an MFMA
         result, or its cast to bf16. Each lane holds a column and four rows
@@ -1600,7 +1602,31 @@ class Tile(_Elementwise):
         transposed, `o_t += v.T @ p_t.as_operand(bf16)` is P·V straight off
         the softmax, with no reshuffle across lanes. `dtype` converts an
         fp32 accumulator on the way (to nearest even); a 16-bit one is read
-        as it is."""
+        as it is.
+
+        `k_order="even_odd"` (gfx1100): a 32x16 fp32 col-layout pair of 16x16
+        WMMA accumulators (Sᵀ's kv rows [0, 16) and [16, 32)) as two fp16
+        operands, `subtile(16, 0)` the one whose K axis is the pair's 16 even
+        rows and `subtile(16, 1)` the odd rows -- so a V whose rows are laid
+        out in that order (even, then odd, a 32-row group) feeds P·V. Data
+        moves: per packed dword one conversion, one permlanex16 and two
+        selects, against a per-element exchange for the natural order."""
+        if k_order == "even_odd":
+            from .arch import target  # noqa: PLC0415
+
+            if target().arch != "gfx1100":
+                raise TypeError(f"as_operand(k_order=\"even_odd\") is RDNA3's paired WMMA "
+                                f"operand (gfx1100), not {target().arch}'s")
+            t = self.ty
+            if (t.dtype is not fp32 or t.layout != "col" or (t.rows, t.cols) != (32, 16)
+                    or t.frag is not None or dtype is not fp16):
+                raise TypeError(f"as_operand(fp16, k_order=\"even_odd\") reads a 32x16 fp32 "
+                                f"col-layout pair of 16x16 accumulators, not {t} (to {dtype})")
+            ty = RegTileType(fp16, 32, 16, "col")
+            return _make(hkd.AsOperandOp, ty, (self.v,), into=into, name="opnd",
+                         even_odd=_unit_attr())
+        if k_order != "natural":
+            raise ValueError(f"as_operand(k_order={k_order!r}): \"natural\" or \"even_odd\"")
         t = self.ty
         dtype = dtype or t.dtype
         if t.layout != "col" or (t.dtype is not fp32 and t.dtype.bits != 16):

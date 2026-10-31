@@ -27,9 +27,9 @@ hk can carry (it derives one from rows x row stride, (N+1) rows' worth), so V^T
 takes a launch a batch -- BNHD's B, small -- or, past 8 batches, torch's padded
 permute-copy (4x the kernel's time).
 
-One escape hatch: `kda::pair_p`, the fp32 -> fp16 conversion of a 32-row S^T
-pair into its two P^T operands, is spliced into the generated C++ (`PairPKernel`)
--- hk has no op for that exchange.
+P^T comes off S^T as `as_operand(fp16, k_order="even_odd")`: the fp32 -> fp16
+conversion of a 32-row S^T pair into its two P^T operands, the even kv rows and
+the odd, one permlanex16 a packed dword (include/hk/rdna/operand.cuh).
 
 Measured on a W7900D (interleaved, in place on BNHD): Qwen-Image B1 H32 N4096
 76.7 TF/s, MiniMax-H3 B1 H56 N14720 81.7 TF/s, against 63.2 / 68.8 for
@@ -40,7 +40,6 @@ WMMA rate on the card is ~100 TF/s.
 from __future__ import annotations
 
 import math
-import re
 
 from .. import dsl as _dsl
 from ..runtime import hostpath as _hostpath
@@ -52,86 +51,12 @@ KV_BLOCK = 32
 LAZY = 8.0           # log2 units: P <= 2^8 before a rescale, fp16-safe
 NEG_INF = float("-inf")
 
-_PAIR_HELPER = r"""
-namespace kda {
-typedef float f2_t __attribute__((ext_vector_type(2)));
-typedef _Float16 h2_t __attribute__((ext_vector_type(2)));
-// P^T for the PV WMMA, two S^T fragments at a time (pair_p). src: rt<float, 32, 16, col>, the
-// fp32 accumulators of kv rows [0, 16) and [16, 32) of a 32-row pair: lane l, element e holds kv
-// row 2e + h of its fragment (h = l >> 4), query l & 15. dst: rt<half, 32, 16, col>; tile 0 is
-// the operand whose K axis is the pair's 16 even rows (0, 2, .., 30), tile 1 the odd rows -- the
-// order vt_kernel writes V^T's columns in. A lane's own values are then already one of the two
-// operands, in order; the other comes from the mirror lane: per packed dword one cvt pair, one
-// permlanex16 and two selects, against hk's per-element exchange (cvt pair + permlane + two
-// selects per *element*) for the natural order.
-template<typename DT, typename ST>
-__device__ static inline void pair_p(DT &dst, const ST &src) {
-    static_assert(ST::height == 2 && ST::width == 1 && DT::height == 2 && DT::width == 1, "a pair");
-    static_assert(sizeof(src.tiles[0][0].data) == 32 && sizeof(dst.tiles[0][0].data) == 32, "16x16");
-    const bool h = (__lane_id() >> 4) != 0;
-    #pragma unroll
-    for (int f = 0; f < 2; f++) {
-        #pragma unroll
-        for (int q = 0; q < 4; q++) {
-            f2_t x;
-            __builtin_memcpy(&x, (const char *)&src.tiles[f][0].data[0] + 8 * q, 8);
-            const h2_t hh = __builtin_convertvector(x, h2_t);     // v_cvt_f16_f32: nearest even
-            int own;
-            __builtin_memcpy(&own, &hh, 4);
-            const int oth = __builtin_amdgcn_permlanex16(own, own, 0x76543210, 0xfedcba98, false, false);
-            const int ev = h ? oth : own, od = h ? own : oth;
-            __builtin_memcpy((char *)&dst.tiles[0][0].data[0] + 4 * (4 * f + q), &ev, 4);
-            __builtin_memcpy((char *)&dst.tiles[1][0].data[0] + 4 * (4 * f + q), &od, 4);
-        }
-    }
-}
-}  // namespace kda
-"""
-
-
-class PairPKernel(_dsl.Kernel):
-    """An hk kernel whose 32-row P^T conversions are kda::pair_p (module docstring)."""
-
-    def __init__(self, fn, *, n_pair_sites: int = 0, **kw):
-        super().__init__(fn, **kw)
-        self.n_pair_sites = n_pair_sites
-
-    def with_defines(self, src: str) -> str:
-        # Every build path (Kernel.source for pybind, hk.runtime.codeobj.load for the
-        # device-only code object) passes the generated C++ through here.
-        src = super().with_defines(src)
-        inc = '#include "kittens.cuh"\n'
-        if inc not in src:
-            raise RuntimeError(f"{self.name}: no kittens include to anchor the pair_p helper")
-        src = src.replace(inc, inc + _PAIR_HELPER, 1)
-        # `pair.to(fp16)` on a [32, 16] fp32 S^T pair -> kda::pair_p (the even/odd band order).
-        names = set(re.findall(r"rt_fp16_32x16_col (\w+);", src))
-        pat = re.compile(r"kittens::copy\((\w+), (\w+)\);")
-        n = 0
-
-        def sub(m):
-            nonlocal n
-            if m.group(1) in names:
-                n += 1
-                return f"kda::pair_p({m.group(1)}, {m.group(2)});"
-            return m.group(0)
-        src = pat.sub(sub, src)
-        if n != self.n_pair_sites:
-            raise RuntimeError(f"{self.name}: expected {self.n_pair_sites} P pair conversions, "
-                               f"found {n}")
-        return src
-
-    def preloaded(self):
-        # hk's preloaded() rebuilds the kernel through type(self)(...) without our arguments.
-        return self
-
-
 # ---------------------------------------------------------------- V^T
 
 
 def vt_kernel(name: str = "attn_k3_vt", warps: int = 2):
     """vt [1, G, 128, N_pad] fp16 from bf16 V, G = batch' * heads', the columns of every 32-row
-    group in kda::pair_p's order (its 16 even kv rows, then the 16 odd). ve / vo: V's even / odd
+    group in as_operand(k_order="even_odd")'s order (its 16 even kv rows, then the 16 odd). ve / vo: V's even / odd
     rows, [batch', 1, ceil(N/2) / floor(N/2), heads' * 128] with a row stride of two rows. A WMMA
     against the identity (bf16 V . I in fp32, exact) lands V in the accumulator layout, stored
     transposed and narrowed to fp16. Past N the loads read zeros: V^T's padding is 0."""
@@ -291,7 +216,7 @@ def attn_kernel(name: str = "attn_k3", *, kv_block: int = KV_BLOCK, warps: int =
                     l_run += s_f[n].sum(axis=0)
 
                 for j in range(kv_frags // 2):
-                    p_pair = s_w.subtile(32, j).to(fp16)       # -> kda::pair_p
+                    p_pair = s_w.subtile(32, j).as_operand(fp16, k_order="even_odd")
                     for par in range(2):
                         p_cvt = p_pair.subtile(16, par)
                         for g0 in range(0, d_frags, pv_tiles):
@@ -317,8 +242,8 @@ def attn_kernel(name: str = "attn_k3", *, kv_block: int = KV_BLOCK, warps: int =
                 o[hk.elem_coord(bb, 0, q_row, col0 + 16 * i)].store(hk.transpose(c))
 
     body.__name__ = name
-    return PairPKernel(body, n_pair_sites=kv_frags // 2, warps=warps, name=name,
-                       grid=lambda p: (p.wu.cols, 1, 1), max_vgprs=max_vgprs, min_occupancy=1)
+    return _dsl.kernel(body, warps=warps, name=name, grid=lambda p: (p.wu.cols, 1, 1),
+                       max_vgprs=max_vgprs, min_occupancy=1)
 
 
 def combine_kernel(name: str = "attn_k3_combine", warps: int = 8):

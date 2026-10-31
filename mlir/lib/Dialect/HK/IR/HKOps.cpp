@@ -1289,6 +1289,18 @@ LogicalResult AsOperandOp::verify() {
   auto dst = cast<RegTileType>(destType(getDst(), getResult()));
   if (failed(noStrip(*this, src)))
     return failure();
+  if (getEvenOdd()) {
+    // RDNA3's paired operand: a 32-row fp32 pair of 16x16 accumulators, as two fp16 operands
+    auto want = RegTileType::get(getContext(), Float16Type::get(getContext()), 32, 16, true, 0, 0);
+    if (!src.getElementType().isF32() || !src.getColLayout() || src.getRows() != 32 ||
+        src.getCols() != 16 || src.hasFrag())
+      return emitOpError() << "with even_odd reads a 32x16 fp32 col-layout pair of 16x16 "
+                              "accumulators, not "
+                           << src;
+    if (dst != want)
+      return emitOpError() << "with even_odd makes " << want << ", not " << dst;
+    return success();
+  }
   // fp32 -> 16-bit converts each element on the way (rounding to nearest
   // even); a 16-bit source is read as it is.
   bool fromF32 = src.getElementType().isF32();
