@@ -6,8 +6,9 @@ Each is an `hk.map` op: a region of scalar `arith` / `math` ops (and `hk.rcp`) a
 `hk.map(fn, ...)` traces `fn` once into one map's region. Floating-point contraction is off in a
 map: `a * b + c` is two roundings, `hk.math.fma(a, b, c)` one.
 
-The IR is arch-neutral; the lowering is include/hk/cdna's `kittens::map_cpp` (gfx950). RDNA
-strips have no such lowering yet (S7b), and a map there is refused when the kernel is traced.
+The IR is arch-neutral; the lowering is `kittens::map_cpp`, in include/hk/cdna (gfx950) and
+include/hk/rdna/map.cuh (gfx1100, gfx1201). On RDNA a mask lives only inside a map: the trees'
+strips hold no bool, and hk-map-fuse refuses a mask that would leave its map.
 """
 
 from __future__ import annotations
@@ -267,9 +268,8 @@ SCALAR = {
 def _check_lowering(what: str) -> None:
     from .arch import target  # noqa: PLC0415
 
-    if target().wave != 64:
-        raise TypeError(f"{what}: hk.map lowers through include/hk/cdna's kittens::map_cpp, and "
-                        f"{target().arch}'s strips have no lowering yet (S7b)")
+    if not target().strips:
+        raise TypeError(f"{what}: hk.map maps strips, and {target().arch} has none")
 
 
 def map_(fn: Callable, *args, name: str = "map"):
@@ -277,7 +277,7 @@ def map_(fn: Callable, *args, name: str = "map"):
     `hk.Int` or a Python number argument is passed as itself. `fn` is traced once on
     `hk.map` elements (`Scalar`): Python's operators, `hk.where`, `hk.max` / `hk.min` and the
     hk.math functions, with C's semantics (module docstring). The result's dtype is what `fn`
-    returns: i32, fp32 or a mask."""
+    returns: i32, fp32 or a mask (on RDNA a mask only feeds another map)."""
     v = _v()
     if not callable(fn):
         raise TypeError(f"hk.map(fn, *args): fn is a function of the elements, not {fn!r}")
