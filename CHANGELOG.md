@@ -9,6 +9,14 @@ The next version's notes collect here until it is released.
 What is on main after 0.8.0. `pip install hk-dsl` (0.8.0) does not have it;
 the API reference marks such names *New after 0.8.0*.
 
+**`hk.ops.rms_norm` / `fused_add_rms_norm(weight_offset=)`: weights stored as an offset from one.**
+Gemma-style models (y = x_hat * (1 + w)) pass their stored `w` and `weight_offset=1.0`. The kernels
+add the offset in fp32 after loading the 16-bit weight, so the result is within half a unit of the
+output dtype of a float64 reference. Folding the one into a bf16 weight first rounds most of a
+model's weights. The offset is fixed when a kernel is built (`hk.ops.norm.offset_kernel`), not a
+constexpr argument, so every registered norm kernel generates the source it did before: the default
+path is unchanged on every arch.
+
 **gfx1100 under clang 24 (ROCm 10.1): the kernels the spill gate refused build again.** With clang
 24, 139 of the codegen tier's gfx1100 kernels spilled and were refused: `hk.ops`' fp16/bf16
 RMSNorm and LayerNorm, rope, the fp32 norm/softmax at the top of their range, examples 02 and 03,

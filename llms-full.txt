@@ -5247,21 +5247,29 @@ that the caller may not want.
 ### `hk.ops.rms_norm`
 
 ```python
-hk.ops.rms_norm(x, weight, eps: float = 1e-06, out=None)
+hk.ops.rms_norm(x, weight, eps: float = 1e-06, out=None, *, weight_offset: float = 0.0)
 ```
 
-x * rsqrt(mean(x^2) + eps) * weight over the last axis -- the RMSNorm
-a model has. Any number of rows, including fewer than a tile's.
+*Changed after 0.8.0*: new parameter `weight_offset`
+
+x * rsqrt(mean(x^2) + eps) * (weight + weight_offset) over the last
+axis -- the RMSNorm a model has. Any number of rows, including fewer than
+a tile's. `weight_offset` is added in fp32 inside the kernel: a weight
+stored as an offset from one (Gemma-style, y = x_hat * (1 + w)) passes
+weight_offset=1.0 and its stored w, exactly, where folding the one into a
+16-bit weight first would round it.
 
 ### `hk.ops.fused_add_rms_norm`
 
 ```python
-hk.ops.fused_add_rms_norm(x, residual, weight, eps: float = 1e-06)
+hk.ops.fused_add_rms_norm(x, residual, weight, eps: float = 1e-06, *, weight_offset: float = 0.0)
 ```
 
+*Changed after 0.8.0*: new parameter `weight_offset`
+
 vLLM's fused_add_rms_norm, in place: `residual` becomes x + residual
-and `x` its RMSNorm times `weight`. One read of x, residual and weight,
-one write of each result.
+and `x` its RMSNorm times `weight` (+ `weight_offset`, as rms_norm's).
+One read of x, residual and weight, one write of each result.
 
 ### `hk.ops.layernorm`
 

@@ -118,3 +118,50 @@ def test_a_streamed_block_two_warps_cover_is_added_once(rows, cols, fold, dtype,
     hk.ops.fused_add_rms_norm(x, r, w)
     assert torch.equal(r, want_r)
     assert _rel(x, want_y) < 2e-2
+
+
+def _ulps(got, want, dtype):
+    """max |got - want| in units of `dtype`'s spacing at `want` (float64)."""
+    mant = {torch.bfloat16: 7, torch.float16: 10}[dtype]
+    e = torch.floor(torch.log2(want.to(dtype).double().abs().clamp_min(2.0 ** -14)))
+    return ((got.double() - want).abs() / torch.pow(2.0, e - mant)).max().item()
+
+
+#: A model that stores its weight as an offset from one, at its hidden widths
+#: and decode / prefill row counts, and the strip tails.
+OFFSET_SHAPES = [(1, 5120), (8, 5120), (1024, 5120), (2, 4096), (3, 4100), (5, 3000)]
+
+
+@pytest.mark.parametrize("rows,cols", OFFSET_SHAPES)
+@pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float16])
+def test_weight_offset_is_added_exactly(rows, cols, dtype, layout):
+    """weight_offset=1 with the stored w is y = x_hat * (1 + w), the one added
+    in fp32: within half a unit of the output dtype of a float64 reference
+    (plus fp32's own rounding), where folding the one into a 16-bit weight
+    first is not. The fused add's residual stays bit-exact, and the norm is of
+    the unrounded sum, as without the offset."""
+    g = torch.Generator(device="cuda").manual_seed(rows * 31 + cols)
+    x = torch.randn(rows, cols, device="cuda", dtype=dtype, generator=g)
+    r = (torch.randn(rows, cols, device="cuda", generator=g) * 4).to(dtype)
+    w = (torch.randn(cols, device="cuda", generator=g) * 0.1).to(dtype)
+
+    def ref(z):
+        z = z.double()
+        return z * torch.rsqrt(z.pow(2).mean(-1, keepdim=True) + 1e-6) * (1.0 + w.double())
+
+    assert _ulps(hk.ops.rms_norm(x, w, weight_offset=1.0), ref(x), dtype) <= 0.51
+    folded = hk.ops.rms_norm(x, (w.float() + 1.0).to(dtype))
+    assert _ulps(folded, ref(x), dtype) > 0.51, "the folded weight was exact: a weak probe"
+    z = x.double() + r.double()
+    xi, ri = x.clone(), r.clone()
+    hk.ops.fused_add_rms_norm(xi, ri, w, weight_offset=1.0)
+    assert torch.equal(ri, (x.float() + r.float()).to(dtype))
+    assert _ulps(xi, ref(z), dtype) <= 0.51
+
+
+@pytest.mark.parametrize("rows,cols", [(1, 5120), (300, 4096)])
+def test_weight_offset_zero_is_the_plain_call(rows, cols, layout):
+    g = torch.Generator(device="cuda").manual_seed(rows + 3 * cols)
+    x = torch.randn(rows, cols, device="cuda", dtype=torch.bfloat16, generator=g)
+    w = torch.rand(cols, device="cuda", dtype=torch.bfloat16, generator=g) + 0.5
+    assert torch.equal(hk.ops.rms_norm(x, w, weight_offset=0.0), hk.ops.rms_norm(x, w))
