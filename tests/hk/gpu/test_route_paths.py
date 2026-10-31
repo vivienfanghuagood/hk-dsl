@@ -18,7 +18,7 @@ torch = pytest.importorskip("torch")
 
 from hk.integration import sglang as hks  # noqa: E402
 from hk.integration import sglang_diffusion as sgld  # noqa: E402
-from hk.integration import sglang_moe, vllm_gemm, vllm_int4, vllm_moe  # noqa: E402
+from hk.integration import sglang_moe, vllm_gemm, vllm_gptq, vllm_int4, vllm_moe  # noqa: E402
 from hk.ops import moe, w4a16  # noqa: E402
 from hk.target import current_arch  # noqa: E402
 
@@ -167,6 +167,32 @@ def test_vllm_int4_takes_up_to_this_archs_limit_and_leaves_the_rest(monkeypatch)
     vllm_int4.w4a16(torch.randn(top + 1, k, device="cuda", dtype=torch.float16),
                     qweight, scales, qzeros, qw, s, zs, group)
     assert seen == [top + 1]
+
+
+def test_vllm_gptq_takes_min_m_to_64_and_leaves_the_rest(monkeypatch):
+    _on_here("vllm_gptq")
+    seen = []
+    monkeypatch.setattr(vllm_gptq, "_vllm_gptq", lambda x, *a: seen.append(x.shape[0]))
+    n, k, group = 512, 1024, 32
+    g = torch.Generator("cuda").manual_seed(5)
+    q = torch.randint(0, 16, (k, n), device="cuda", generator=g, dtype=torch.int32)
+    s = (torch.rand(k // group, n, device="cuda", generator=g) * 0.02 + 0.005).half()
+    shifts = torch.arange(0, 32, 4, device="cuda", dtype=torch.int64)
+    qweight = (q.to(torch.int64).reshape(k // 8, 8, n) << shifts.view(1, 8, 1)).sum(1)
+    qweight = torch.where(qweight >= 2 ** 31, qweight - 2 ** 32, qweight).to(torch.int32)
+    qzeros = torch.full((k // group, n // 8), 0x77777777, device="cuda", dtype=torch.int32)
+    qw, sc, zs = w4a16.repack_gptq(qweight, qzeros, s, group, dtype=torch.float16)
+    w = ((q - 8).float() * s.float().repeat_interleave(group, 0)).t()
+    for m in (vllm_gptq.MIN_M, 64):
+        x = torch.randn(m, k, device="cuda", dtype=torch.float16) * 0.1
+        before = vllm_gptq.STATS["hk"]
+        y = vllm_gptq.gptq_w4a16(x, None, None, None, qw, sc, zs, group)
+        assert vllm_gptq.STATS["hk"] == before + 1 and y.shape == (m, n)
+        _close(y, x.float() @ w.t())
+    for m in (vllm_gptq.MIN_M - 1, 65):
+        vllm_gptq.gptq_w4a16(torch.randn(m, k, device="cuda", dtype=torch.float16),
+                             None, None, None, qw, sc, zs, group)
+    assert seen == [vllm_gptq.MIN_M - 1, 65]
 
 
 # ---------------------------------------------------------------- linear (SGLang, SGLang-Diffusion)
