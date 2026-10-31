@@ -51,12 +51,15 @@ def _case(reqs, head_dim=128, h_kv=2, group=4, seed=0):
     return q, k_cache, v_cache, table, lens, q_start
 
 
-def _reference(q, k_cache, v_cache, table, lens, q_start, group):
+def _reference(q, k_cache, v_cache, table, lens, q_start, group, page=PAGE):
+    PAGE = page  # noqa: N806 -- the cache's page, hk's or ROCM_ATTN's
     n_tok, h, d = q.shape
     out = torch.zeros(n_tok, h, d, device="cuda", dtype=torch.float32)
     for i in range(len(lens)):
         q0, q1, s = int(q_start[i]), int(q_start[i + 1]), int(lens[i])
         n, ctx = q1 - q0, s - (q1 - q0)
+        if n == 0:
+            continue
         pages = table[i, : -(-s // PAGE)].tolist()
         pos = ctx + torch.arange(n, device="cuda")
         keep = torch.arange(s, device="cuda")[None, :] <= pos[:, None]
@@ -202,3 +205,225 @@ def test_an_uncut_split_plan_is_bitwise_the_work_list():
                         pp.work_list([(i, n) for i, (_, n) in enumerate(reqs)], q.device),
                         b.view(n_tok, h * d))
     assert torch.equal(a, b)
+
+
+# ---- layout="rocm": vLLM ROCM_ATTN's own cache, read in place -------------------------------
+
+ROCM_PAGE = 16
+
+
+def _rdna() -> bool:
+    from hk.target import current_arch
+
+    return current_arch().startswith("gfx1")
+
+
+#: layout="rocm" reads K through a strided global, an RDNA-only type so far (#146).
+rocm_only = pytest.mark.skipif(not _rdna(), reason="layout='rocm' is RDNA's (strided globals)")
+
+
+def _rocm_case(reqs, head_dim=128, h_kv=2, group=8, seed=0, v_ones=False):
+    """reqs: [(ctx, q_len)] over 16-token pages. The token-major caches (for the reference)
+    and ROCM_ATTN's: K x-split (blocks, kv_heads, d / 8, 16, 8), V (blocks, kv_heads, d, 16)."""
+    g = torch.Generator(device="cuda").manual_seed(seed)
+    seq = [c + n for c, n in reqs]
+    max_pages = max(1, max(-(-s // ROCM_PAGE) for s in seq))
+    n_blocks = len(reqs) * max_pages + 3
+    k = torch.randn(n_blocks, h_kv, ROCM_PAGE, head_dim, device="cuda", dtype=torch.bfloat16,
+                    generator=g)
+    v = (torch.ones_like(k) if v_ones else
+         torch.randn(k.shape, device="cuda", dtype=torch.bfloat16, generator=g))
+    perm = torch.randperm(n_blocks, generator=g, device="cuda")[: len(reqs) * max_pages]
+    table = perm.reshape(len(reqs), max_pages).to(torch.int32).contiguous()
+    n_tok = sum(n for _, n in reqs)
+    q = torch.randn(n_tok, h_kv * group, head_dim, device="cuda", dtype=torch.bfloat16,
+                    generator=g)
+    starts = [0]
+    for _, n in reqs:
+        starts.append(starts[-1] + n)
+    q_start = torch.tensor(starts, device="cuda", dtype=torch.int32)
+    lens = torch.tensor(seq, device="cuda", dtype=torch.int32)
+    k5 = k.view(n_blocks, h_kv, ROCM_PAGE, head_dim // 8, 8).permute(0, 1, 3, 2, 4).contiguous()
+    v4 = v.transpose(2, 3).contiguous()
+    return q, (k, v), (k5, v4), table, lens, q_start
+
+
+def _rocm_run(reqs, **kw):
+    group = kw.get("group", 8)
+    q, (k, v), (k5, v4), table, lens, q_start = _rocm_case(reqs, **kw)
+    n_tok, h, d = q.shape
+    out = torch.full_like(q, 7.0)
+    tiles = pp.q_tiles(max(n for _, n in reqs), q.device)
+    pp.rocm_kernel_for(d, group)(q.view(n_tok, h * d), *pp.rocm_views(k5, v4), table, lens,
+                                 q_start, tiles, out.view(n_tok, h * d))
+    want = _reference(q, k, v, table, lens, q_start, group, page=ROCM_PAGE)
+    return out, want, q_start
+
+
+def _prefill_rows(reqs, q_start):
+    """Rows of requests with more than one query: the ones layout="rocm" computes."""
+    s = q_start.tolist()
+    return [r for i, (_, n) in enumerate(reqs) if n > 1 for r in range(s[i], s[i + 1])]
+
+
+@rocm_only
+@pytest.mark.parametrize("reqs", [
+    [(0, 300)],                                   # no prefix, two tiles, the second short
+    [(1000, 77)],                                 # a prefix and a chunk shorter than a tile
+    [(64, 100), (300, 50), (0, 200)],             # a tile running into the next request
+    [(0, 192), (500, 5), (40, 600), (33, 1)],     # ragged, with a one-token request (a decode)
+    [(7, 2), (16, 16), (31, 33), (2047, 2049)],   # ctx / ends at and off the 16-token pages
+])
+def test_rocm_layout(reqs):
+    got, want, q_start = _rocm_run(reqs)
+    rows = _prefill_rows(reqs, q_start)
+    _attn_ref.check(got[rows], want[rows])
+    skip = sorted(set(range(got.shape[0])) - set(rows))
+    assert torch.all(got[skip] == 7.0), "a decode's rows are vLLM's paged decode's, not this"
+
+
+@rocm_only
+@pytest.mark.parametrize("group,h_kv", [(1, 4), (4, 2), (8, 2), (8, 1)])
+def test_rocm_layout_every_gqa_group(group, h_kv):
+    reqs = [(96, 130), (0, 64)]
+    got, want, _ = _rocm_run(reqs, group=group, h_kv=h_kv)
+    _attn_ref.check(got, want)
+
+
+@rocm_only
+def test_rocm_layout_head_dim_64():
+    got, want, _ = _rocm_run([(70, 250)], head_dim=64, group=4)
+    _attn_ref.check(got, want)
+
+
+@rocm_only
+def test_rocm_layout_v_ones_is_exactly_one():
+    """softmax weights sum to 1: with V all ones every output is exactly 1.0 -- a biased
+    bf16 conversion of P (hk-bf16-truncation-bias) shows here and nowhere else."""
+    got, _, q_start = _rocm_run([(300, 200), (0, 50)], v_ones=True)
+    assert torch.all(got == 1.0)
+
+
+@rocm_only
+def test_rocm_layout_is_deterministic_and_skips_padding():
+    """The same answer three times; a request padded into the batch (no queries, no tokens),
+    as a captured batch has, computes and reads nothing."""
+    reqs = [(500, 300), (0, 0), (40, 77)]
+    outs = [_rocm_run(reqs, seed=5)[0] for _ in range(3)]
+    assert torch.equal(outs[0], outs[1]) and torch.equal(outs[0], outs[2])
+
+
+# ---- layout="flash" (TRITON_ATTN's cache) and dsplit (head_dim 256) --------------------------
+
+def _flash_run(reqs, head_dim=128, h_kv=2, group=8, dsplit=False, layout="flash", seed=0,
+               decodes=True, warps=None):
+    q, (k, v), (k5, v4), table, lens, q_start = _rocm_case(reqs, head_dim=head_dim, h_kv=h_kv,
+                                                           group=group, seed=seed)
+    n_tok, h, d = q.shape
+    out = torch.full_like(q, 7.0)
+    warps = warps or (16 if dsplit else 12)
+    kern = pp.paged_prefill_kernel(
+        f"t_pp_{layout}_d{head_dim}_g{group}{'_ds' if dsplit else ''}_w{warps}"
+        f"{'_dec' if decodes else ''}", head_dim=head_dim, group=group, layout=layout,
+        dsplit=dsplit, warps=warps, decodes=decodes)
+    tile = 16 * (warps // 2 if dsplit else warps)
+    tiles = pp.q_tiles(max(n for _, n in reqs), q.device, tile)
+    if layout == "flash":
+        nb = k.shape[0]
+        fl = torch.stack([k.transpose(1, 2), v.transpose(1, 2)], dim=1)   # (nb, 2, 16, hkv, d)
+        kv = fl.reshape(nb, 2, ROCM_PAGE, h_kv * d).contiguous()
+        packed = [q.unsqueeze(0), out.unsqueeze(0)] if decodes and not dsplit else []
+        kern(q.view(n_tok, h * d), kv, kv, table, lens, q_start, tiles, out.view(n_tok, h * d),
+             *packed)
+    else:
+        kern(q.view(n_tok, h * d), *pp.rocm_views(k5, v4), table, lens, q_start, tiles,
+             out.view(n_tok, h * d))
+    want = _reference(q, k, v, table, lens, q_start, group, page=ROCM_PAGE)
+    return out, want, q_start
+
+
+@rocm_only
+@pytest.mark.parametrize("reqs", [
+    [(0, 300)],
+    [(0, 192), (500, 5), (40, 600), (33, 1)],     # with a decode: computed (decodes=True)
+    [(7, 2), (16, 16), (31, 33), (2047, 2049)],
+])
+def test_flash_layout_with_decodes(reqs):
+    got, want, _ = _flash_run(reqs)
+    _attn_ref.check(got, want)
+
+
+def _clang_23() -> bool:
+    from hk.ops.attn import _clang_major
+
+    return (_clang_major() or 0) >= 23
+
+
+#: dsplit with the flash layout holds V^T's register staging across the compute as well, and
+#: at 256 VGPRs clang 22 (ROCm 7.2.3) spills 1-8 of them -- the build refuses it; clang 23
+#: (TheRock 7.14, the production vLLM images) does not. The route falls back where it does not
+#: build.
+flash_dsplit_builds = pytest.mark.skipif(not _clang_23(), reason="flash dsplit spills under clang 22")
+
+
+@rocm_only
+@pytest.mark.parametrize("layout", [pytest.param("flash", marks=flash_dsplit_builds), "rocm"])
+@pytest.mark.parametrize("reqs", [[(0, 300)], [(1000, 77), (0, 1), (40, 600)]])
+def test_dsplit_head_dim_256(layout, reqs):
+    """d256 with each query row split over a warp pair: MiniCPM-V's / Qwen3.8's full attention."""
+    got, want, q_start = _flash_run(reqs, head_dim=256, h_kv=1, group=8, dsplit=True,
+                                    layout=layout, decodes=layout == "flash",
+                                    warps=16 if layout == "flash" else 12)
+    rows = (list(range(got.shape[0])) if layout == "flash" else _prefill_rows(reqs, q_start))
+    _attn_ref.check(got[rows], want[rows])
+
+
+@rocm_only
+@flash_dsplit_builds
+def test_dsplit_v_ones_is_exactly_one():
+    q, (k, v), _, table, lens, q_start = _rocm_case([(300, 200)], head_dim=256, h_kv=1, group=8,
+                                                    v_ones=True)
+    n_tok, h, d = q.shape
+    out = torch.full_like(q, 7.0)
+    kern = pp.paged_prefill_kernel("t_pp_flash_d256_g8_ds_w16_dec", head_dim=256, group=8,
+                                   layout="flash", dsplit=True, warps=16, decodes=True)
+    fl = torch.stack([k.transpose(1, 2), v.transpose(1, 2)], dim=1)
+    kv = fl.reshape(k.shape[0], 2, ROCM_PAGE, d).contiguous()
+    kern(q.view(n_tok, h * d), kv, kv, table, lens, q_start, pp.q_tiles(200, q.device, 128),
+         out.view(n_tok, h * d))
+    assert torch.all(out == 1.0)
+
+
+@rocm_only
+def test_dsplit_rocm_v_ones_is_exactly_one():
+    q, (k, v), (k5, v4), table, lens, q_start = _rocm_case([(300, 200)], head_dim=256, h_kv=1,
+                                                           group=8, v_ones=True)
+    n_tok, h, d = q.shape
+    out = torch.full_like(q, 7.0)
+    kern = pp.paged_prefill_kernel("t_pp_rocm_d256_g8_ds_w12", head_dim=256, group=8,
+                                   layout="rocm", dsplit=True, warps=12)
+    kern(q.view(n_tok, h * d), *pp.rocm_views(k5, v4), table, lens, q_start,
+         pp.q_tiles(200, q.device, 96), out.view(n_tok, h * d))
+    assert torch.all(out == 1.0)
+
+
+@rocm_only
+def test_flash_packed_decodes_with_a_strided_q():
+    """Decodes GQA-packed (one workgroup a request and kv head) next to prefill chunks, with q a
+    slice of a wider row as a fused qkv projection gives it."""
+    reqs = [(500, 1), (2047, 1), (0, 300), (16, 1), (1000, 77), (33, 1)]
+    q, (k, v), _, table, lens, q_start = _rocm_case(reqs, head_dim=128, h_kv=2, group=8)
+    n_tok, h, d = q.shape
+    wide = torch.randn(n_tok, h * d + 2 * 2 * d, device="cuda", dtype=torch.bfloat16)
+    wide[:, : h * d] = q.reshape(n_tok, h * d)
+    qs = wide[:, : h * d].view(n_tok, h, d)                   # row stride (h + 4) * d
+    out = torch.full_like(q, 7.0)
+    kern = pp.paged_prefill_kernel("t_pp_flash_d128_g8_w12_dec", head_dim=128, group=8,
+                                   layout="flash", warps=12, decodes=True)
+    fl = torch.stack([k.transpose(1, 2), v.transpose(1, 2)], dim=1)
+    kv = fl.reshape(k.shape[0], 2, ROCM_PAGE, 2 * d).contiguous()
+    kern(qs.reshape(n_tok, h * d), kv, kv, table, lens, q_start,
+         pp.q_tiles(300, q.device, 192), out.view(n_tok, h * d), qs.unsqueeze(0),
+         out.unsqueeze(0))
+    want = _reference(q, k, v, table, lens, q_start, 8, page=ROCM_PAGE)
+    _attn_ref.check(out, want)

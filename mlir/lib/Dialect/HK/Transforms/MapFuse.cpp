@@ -18,9 +18,11 @@
 // moves into its body.
 
 #include "hk/Dialect/HK/Transforms/Passes.h"
+#include "hk/Target/Target.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/IR/IRMapping.h"
+#include "mlir/Interfaces/SideEffectInterfaces.h"
 #include "llvm/ADT/SetVector.h"
 #include "llvm/ADT/SmallVector.h"
 
@@ -39,6 +41,16 @@ bool isRegionMap(Operation *op) {
   return m && !m.getBody() && !m.getRegion().empty();
 }
 
+/// Scalar arithmetic: an arith op, or an op on scalars and coordinates alone with no memory
+/// effect (hk.coord, hk.extent, hk.block_idx): what a producer may be moved past.
+bool scalarArith(Operation *o) {
+  if (isa<arith::ArithDialect>(o->getDialect()))
+    return true;
+  auto scalar = [](Type t) { return t.isIntOrIndexOrFloat() || isa<CoordType, GlobalType>(t); };
+  return isMemoryEffectFree(o) && o->getNumRegions() == 0 &&
+         llvm::all_of(o->getOperandTypes(), scalar) && llvm::all_of(o->getResultTypes(), scalar);
+}
+
 /// A region-form map read once, by a region-form map later in its block with nothing but maps
 /// and scalar arithmetic between them: what is inlined.
 bool inlinable(Operation *op) {
@@ -48,7 +60,7 @@ bool inlinable(Operation *op) {
   if (!isRegionMap(u) || u->getBlock() != op->getBlock())
     return false;
   for (Operation *o = op->getNextNode(); o && o != u; o = o->getNextNode())
-    if (!isa<MapOp>(o) && !isa<arith::ArithDialect>(o->getDialect()))
+    if (!isa<MapOp>(o) && !scalarArith(o))
       return false;
   return true;
 }
@@ -117,6 +129,22 @@ struct MapFusePass : public mlir::hk::impl::HKMapFuseBase<MapFusePass> {
     // the producers, now unused: last first, so a chain goes in one pass
     for (Operation *p : llvm::reverse(fused))
       p->erase();
+    // RDNA's strips hold no bool (include/rdna3 / rdna4's base_types::T1): a mask may live only
+    // inside a map, and one that leaves it here is refused, not a C++ static_assert
+    auto arch = f->getAttrOfType<StringAttr>(attrs::kArch);
+    const TargetInfo *tgt = getTarget(arch ? arch.getValue() : "gfx1100");
+    if (tgt && tgt->wave == 32)
+      f.walk([&](MapOp m) {
+        auto t = cast<RegTileType>(m.getResult().getType());
+        if (t.getElementType().isInteger(1)) {
+          m.emitError() << "a mask strip leaves its hk.map on " << tgt->arch
+                        << ": on RDNA a mask (a comparison) can only live inside a map -- "
+                           "include/rdna3 and include/rdna4 have no bool strips. Use it where "
+                           "it is made (hk.where(a < b, x, y)), or compute it inside one "
+                           "hk.map(fn)" << atLoc(m);
+          signalPassFailure();
+        }
+      });
   }
 };
 

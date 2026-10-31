@@ -141,8 +141,8 @@ def map(fn, *args):  # noqa: A001
 
     The operators on i32 strips and masks build these one op at a time and the hk-map-fuse
     pass merges a chain; `hk.map` is for an expression to read as one, or to keep a float
-    expression's roundings as written. Strips on gfx950; RDNA's have no lowering yet (S7 in
-    docs/design/dsl-surface.md)."""
+    expression's roundings as written. On gfx950, gfx1100 and gfx1201; on RDNA a mask only
+    feeds another map (its strips hold no bool)."""
     return _maps.map_(fn, *args)
 
 
