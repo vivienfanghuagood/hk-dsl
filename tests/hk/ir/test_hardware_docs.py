@@ -28,6 +28,20 @@ def test_page_is_current():
         "commit the result:\n" + r.stdout[-4000:] + r.stderr[-2000:])
 
 
+def test_the_readme_and_positioning_show_the_generated_table():
+    """Both keep the page's GPU table between their markers (`--check` above holds its
+    content); a page dropped from MARKED, or markers removed, fails here."""
+    gen = _gen()
+    assert set(gen.MARKED) == {REPO / "README.md", REPO / "docs" / "positioning.md"}
+    target, _, _ = gen._load()
+    for path, link in gen.MARKED.items():
+        text = path.read_text(encoding="utf-8")
+        table = text.split(gen.BEGIN, 1)[1].split(gen.END, 1)[0]
+        for arch in target.TARGETS:
+            assert f"| {arch} (" in table, (path.name, arch)
+        assert f"]({link})" in table, path.name
+
+
 def test_every_target_names_its_gpus():
     target, _, mods = _gen()._load()
     for arch, t in target.TARGETS.items():
