@@ -207,8 +207,8 @@ The gate is `python/hk/runtime/resources.py`. What it enforces:
   short anywhere is rebuilt through hipcc's own pipeline with the padding the
   fixed compiler would emit added to its assembly, and checked again (the
   default, `HK_MFMA_GATE=fix`). The build log, the entry's `MFMAHAZ` file and
-  `python3 -m hk.integration --status` say which kernels were padded and
-  where. `HK_MFMA_GATE=refuse` refuses such a kernel instead, naming the
+  `python3 -m hk.integration --status` (on a CDNA GPU) say which kernels were
+  padded and where. `HK_MFMA_GATE=refuse` refuses such a kernel instead, naming the
   instruction and the wait states missing; `report` builds it and says so,
   for a sweep; `0` turns the gate off. A compiler that pads the gate's probe
   (a two-path case, through its own `llc`) is not checked. hk's inline-asm
