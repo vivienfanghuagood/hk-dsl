@@ -7,7 +7,7 @@ plugins apply every route validated with real weights on your GPU
 all of it off. Every patch reports what it took and what it left alone, and
 falls back to what the engine would have run for any call it cannot serve. The code is `python/hk/integration/`; its module docstrings
 and the [development record](history/README.md) are the source for this page,
-and serving results are on [the scorecard](performance/scorecard.md) ([performance](performance.md) is a dated record of what each patch measured).
+and serving results are on [the scorecard](performance/scorecard.md) ([performance](archive/performance-2026-10.md) is a dated record of what each patch measured).
 
 - [On by default, and turning it off](#on-by-default-and-turning-it-off)
 - [The patches](#the-patches)
@@ -44,7 +44,7 @@ and which rule decided.
 
 | route | switch | default | evidence |
 |---|---|---|---|
-| MXFP8 linear (DeepSeek-V4.1), M >= 2048 (indexer wq_b >= 2825, engram wkv >= 1024: `MIN_M_NK`), and measured M ranges below that (`RANGES`) | `HK_VLLM_MXFP8` | **on, gfx950** | bit-identical to vLLM's kernel; real weights, GSM8K 94.69% vs stock 94.24-94.39%, with the a8w4 MoE route ARC 96.76% vs 96.93-97.10% (McNemar p >= 0.175; [serving readiness](design/serving-readiness.md) B1) |
+| MXFP8 linear (DeepSeek-V4.1), M >= 2048 (indexer wq_b >= 2825, engram wkv >= 1024: `MIN_M_NK`), and measured M ranges below that (`RANGES`) | `HK_VLLM_MXFP8` | **on, gfx950** | bit-identical to vLLM's kernel; real weights, GSM8K 94.69% vs stock 94.24-94.39%, with the a8w4 MoE route ARC 96.76% vs 96.93-97.10% (McNemar p >= 0.175; [serving readiness](archive/design/serving-readiness.md) B1) |
 | MoE a8w4, MXFP4 weights (DeepSeek-V4.1), M >= 2560 (`MIN_M`) | `HK_VLLM_MOE_A8W4` | **on, gfx950** | error vs fp32 3.5-6.3e-3 against AITER's 0.97-2.1e-2 on real layers; GSM8K 94.92% (B1) |
 | DeepSeek-V4.1 index layers under `--monokernel`: one launch for the compressor, indexer K / Q, logits and top-k, at decode steps of up to 8 rows | `HK_VLLM_DSV41_INDEX` | **on, gfx950** | caches and q byte-identical to vLLM's chain in vLLM, top-k sets equal ([the index launch](#the-deepseek-v41-index-launch)); with `--monokernel` and hk's other default routes, real-weight GSM8K-1319 within stock's noise (McNemar p >= 0.39) |
 | AWQ 4-bit linear | `HK_VLLM_INT4` | **on, gfx1100, gfx950 and gfx1201** | greedy tokens identical to stock's, Qwen3-8B/14B-AWQ ([22](history/22-int4.md), [42](history/42-mi355x-in-the-engine.md)); on gfx1201 Qwen3-8B-AWQ tokens identical ([50](history/50-gfx1201-in-vllm.md)) |
@@ -435,7 +435,7 @@ On gfx1100 each call takes one of three paths, counted in `vllm_gemm.STATS`:
 `F.linear`. Which one is a [routing table](#routing-tables). A table may
 also send a call to FlyDSL's GEMM (`flydsl`, below), and on gfx950 to
 HipKittens' CDNA4 GEMM (`hipkittens`,
-[design note](design/cdna-hipkittens-ops.md)). A call also falls back when it is
+[design note](archive/design/cdna-hipkittens-ops.md)). A call also falls back when it is
 not bf16, has a bias, has a non-contiguous weight, does not tile, or runs on a
 device of another arch. With no table for the current arch the patch is not
 installed at all, and says so.
@@ -532,7 +532,7 @@ by 2% at few prefill Ms: the re-measured table routes 41 points to FlyDSL
 instead of 105. Of its prefill rows, the one measured end to end, gate_up's
 8192-token steps, makes those prefills 1.5-1.7% shorter; dropping the rows
 at M = 1024 cost a 1024-token prefill 1.2%
-([performance](performance.md#flydsls-gemm-on-the-routes)). SGLang's table
+([performance](archive/performance-2026-10.md#flydsls-gemm-on-the-routes)). SGLang's table
 carries FlyDSL rows too (38 points); served at 32 requests they make the
 decode step 0.4-0.6% shorter, and at 1 and 8 requests change nothing
 measurable ([chapter 32](history/32-measuring-the-measurements.md)).
@@ -796,7 +796,7 @@ to beat is the engine's. The shipped ones, in `hk/tuned/`, named
   is 1.3-2.3x slower than it.
 - `routes_vllm_linear_gfx950.json`: on an MI355X, against hipBLASLt, with
   HipKittens' CDNA4 GEMM as the candidate. It takes 37 of 206 points, all at
-  M ≥ 1792 ([design note](design/cdna-hipkittens-ops.md)).
+  M ≥ 1792 ([design note](archive/design/cdna-hipkittens-ops.md)).
 
 A table measured on another arch is refused, and an `$HK_VLLM_ROUTES` that
 names a missing file raises (`engine.shipped_table`). There are no buckets:
@@ -1066,7 +1066,7 @@ times -- the patch would be slower than what it replaces:
   with their neighbours, and an opaque op would cost Inductor those fusions.
   On Qwen3-8B shapes the tile kernels of the time also took 44-64% longer
   than Inductor's norms before multiplying any weight
-  ([performance](performance.md#against-what-vllm-runs-under-torchcompile)).
+  ([performance](archive/performance-2026-10.md#against-what-vllm-runs-under-torchcompile)).
   That was before chapter 27's strips, which beat Inductor's standalone
   RMSNorm at 1-8192 rows; inside vLLM's compiled graph it has not been
   re-measured.

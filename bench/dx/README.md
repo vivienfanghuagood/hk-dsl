@@ -3,7 +3,7 @@
 Eight kernel-writing tasks an LLM developer actually has, each with a torch
 reference, realistic shapes and baselines, and one command that checks and
 times every solution on a GPU and writes a scoreboard. It is the yardstick for
-[the DX goal](../../docs/design/dx-goal.md): a kernel written by a person or an
+[the DX goal](../../docs/archive/design/dx-goal.md): a kernel written by a person or an
 agent who has read only the docs should be correct and at least as fast as
 `torch.compile`, close to an hk expert's, on gfx1100 and gfx950.
 

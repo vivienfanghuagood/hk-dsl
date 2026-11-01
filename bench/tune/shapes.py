@@ -28,7 +28,7 @@ lands in the same split: the tuner is developed on the first and judged on the
 second, and nothing learned about one (N, K) at one M is judged at another.
 Within a split, Ms are drawn per class (decode 1-16, 128-512, 1024-2048,
 4096-8192) so that each class is represented. 2048x16384x4096 is named by the
-goal (docs/design/tuning-goal.md, T3) and goes into gfx950's acceptance split
+goal (docs/archive/design/tuning-goal.md, T3) and goes into gfx950's acceptance split
 by hand.
 """
 

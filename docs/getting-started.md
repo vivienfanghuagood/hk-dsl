@@ -17,7 +17,7 @@ From nothing to a kernel that is right and at least as fast as
 ## Install
 
 You need Linux x86_64 and ROCm's hipcc to compile; a Radeon (gfx1100, RDNA3)
-or an Instinct MI355X (gfx950, CDNA4; see [CDNA](design/cdna.md) for what runs
+or an Instinct MI355X (gfx950, CDNA4; see [CDNA](archive/design/cdna.md) for what runs
 there) and torch to launch. torch is not a dependency of the package — install the
 ROCm build you already use. hk finds hipcc on `PATH` (or `HK_HIPCC`, and the
 HIP headers under `ROCM_PATH`, [the runtime](runtime.md#environment-variables)).
@@ -263,7 +263,7 @@ does all of trace, source and build (once) and later calls are a dict lookup
 Time kernels in one process, interleaved round by round against their
 baselines, as `hk.check` does: across processes an A/B of the same kernel
 has shown 13-16% differences out of nothing
-([how numbers are taken](performance.md#how-the-numbers-are-taken)).
+([how numbers are taken](archive/performance-2026-10.md#how-the-numbers-are-taken)).
 
 **On gfx1100, `k(...)` launches on the null stream.** RDNA's launcher takes
 no stream (CDNA's takes torch's current one). Eager back-to-back calls on
@@ -347,9 +347,8 @@ command (greedy outputs are compared too):
 python -m hk.integration ab --model Qwen/Qwen2.5-7B-Instruct --arms stock,gemm
 ```
 
-What it measured on a model no table had, and what it costs, is in
-[chapter 35](history/35-any-model.md). The patches, and what each one
-replaces, are in [integration](integration.md).
+The patches, and what each one replaces, are in
+[integration](integration.md).
 
 ## Where next
 
@@ -362,5 +361,5 @@ replaces, are in [integration](integration.md).
   [hk.math](api/hk.math.md)'s functions.
 * [The runtime](runtime.md): the cache, the gates, the stream, autotune,
   `torch.ops`.
-* [Performance](performance.md): what each kernel and patch measured, level
+* [Performance](archive/performance-2026-10.md): what each kernel and patch measured, level
   by level for RDNA3 and CDNA4, the losses included.

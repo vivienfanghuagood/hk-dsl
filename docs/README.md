@@ -56,7 +56,7 @@ Coding agents: start from [llms.txt](../llms.txt) and the
 |---|---|
 | [hk.check](check.md) | the loop: build and resources without a GPU, correctness against a torch reference, interleaved timing against torch eager and `torch.compile`, `--json` |
 | [hk.profile](profile.md) | why it runs at that speed: rocprofv3's counters and thread trace per kernel -- the roofline, matrix core busy, occupancy, the grid's tail, where the waves wait, the main loop's instructions -- and a verdict, `--json` for agents |
-| [Performance](performance.md) | a dated record, not current claims: older measurements with their baselines, software stacks and source chapters, RDNA3 and CDNA4 apart, end to end, kernel for kernel, and the losses |
+| [Performance](archive/performance-2026-10.md) | a dated record, not current claims: older measurements with their baselines, software stacks and source chapters, RDNA3 and CDNA4 apart, end to end, kernel for kernel, and the losses |
 | [Tuning a GEMM: hk.tune](tune.md) | `python -m hk.tune MxNxK` or `--model`: search hk's GEMM schedules within a GPU-time budget, keep a winner only past the measured noise, as a record `hk.ops.matmul` reads |
 | [The tuning benchmark](../bench/tune/README.md) | hidden real-model GEMM shapes per GPU, every baseline (hipBLASLt, TunableOp, aiter, FlyDSL, HipKittens, Triton), the scoreboard before and after `hk.tune` |
 | [The DX suite](../bench/dx/README.md) | eight LLM kernel tasks with references and baselines on both GPUs, one command to a JSON scoreboard |
@@ -87,19 +87,19 @@ Coding agents: start from [llms.txt](../llms.txt) and the
 | [llms.txt](../llms.txt) | the map, a ten-line kernel, the pitfalls |
 | [llms-full.txt](../llms-full.txt) | the language, hk.check, the templates and the API reference in one file |
 | [The hk-kernel skill](../skills/hk-kernel/SKILL.md) | the write-check-iterate loop, as a Claude Code skill or a Cursor rule |
-| [Cross-architecture API audit](dx/api-consistency.md) | where an `hk.ops` op's arguments or behaviour differ between gfx1100 and gfx950 |
+| [Cross-architecture API audit](archive/design/api-consistency.md) | where an `hk.ops` op's arguments or behaviour differ between gfx1100 and gfx950 |
 
 **Design and history**
 
 | page | |
 |---|---|
 | [The end-to-end loop](e2e-loop.md) | from "this model is slow" to "my engine runs hk's kernel": measure, attribute, check at the model's shapes, patch without editing the engine, check the output, profile again -- with Qwen-Image 2.1 on a W7900D as the worked example |
-| [The end-to-end goal](design/e2e-goal.md) | after the tuning goal: a few kernels that are hot, under-optimised by every AMD library, and winnable -- chosen from measured opportunity tables -- and where they stand (K1, K2, K3 in main, on by default) |
-| [The DX goal](design/dx-goal.md) | the goal the templates, `hk.check` and these docs serve, and its acceptance criteria |
+| [The end-to-end goal](archive/design/e2e-goal.md) | after the tuning goal: a few kernels that are hot, under-optimised by every AMD library, and winnable -- chosen from measured opportunity tables -- and where they stand (K1, K2, K3 in main, on by default) |
+| [The DX goal](archive/design/dx-goal.md) | the goal the templates, `hk.check` and these docs serve, and its acceptance criteria |
 | [Schedules as data](design/schedules.md) | `hk.schedules`' design: one type per kernel family, legality and how it was measured, the record formats, the byte-identical round trip |
-| [CDNA3/4](design/cdna.md) | what is RDNA3-only, what HipKittens offers on gfx942/gfx950, and what runs on an MI355X |
-| [HipKittens on CDNA4](design/cdna-hipkittens-ops.md) | HipKittens' gfx950 GEMM and GQA forward as hk ops: constraints, measurements, the route table |
-| [Serving readiness](design/serving-readiness.md) | what 0.6 lacked before hk went on by default in an LLM deployment (0.7.0): DSL capabilities and kernel validation apart, with evidence, cost and priority, and the minimum deployable set |
+| [CDNA3/4](archive/design/cdna.md) | what is RDNA3-only, what HipKittens offers on gfx942/gfx950, and what runs on an MI355X |
+| [HipKittens on CDNA4](archive/design/cdna-hipkittens-ops.md) | HipKittens' gfx950 GEMM and GQA forward as hk ops: constraints, measurements, the route table |
+| [Serving readiness](archive/design/serving-readiness.md) | what 0.6 lacked before hk went on by default in an LLM deployment (0.7.0): DSL capabilities and kernel validation apart, with evidence, cost and priority, and the minimum deployable set |
 | [hk.comm](design/comm.md) | hand-offs between gfx950's XCDs and between GPUs: why the scope is the tensor's, the lowering a litmus suite found correct, what it measured, the roadmap |
 | [Workgroup placement](design/placement-pass.md) | which XCD runs which workgroup, as a pass: the analysis, the rewrite, the `"auto"` policy and the measurements behind it |
 | [The DSL surface](design/dsl-surface.md) | approved design: every kernel-specific op and C++ helper inventoried and classified (merge / keep / delete), the general abstractions they fold into, a bit-identical migration, and the rule for new kernels ([CONTRIBUTING.md](../CONTRIBUTING.md)) |
@@ -126,14 +126,11 @@ vLLM and SGLang are tuned for Instinct. On a W7900D (gfx1100), hk's routes
 replace these calls, each one only for the shapes where hk's kernel measured
 faster than what the engine runs:
 
-- **SGLang's linear layers**, which are `F.linear` on ROCm (hipBLASLt)
-  ([SGLang](history/24-sglang.md)).
+- **SGLang's linear layers**, which are `F.linear` on ROCm (hipBLASLt).
 - **SGLang's MoE**, which does not run on gfx1100: sgl_kernel's top-k
-  faults. hk's patch replaces the top-k and the expert GEMMs
-  ([SGLang MoE](history/25-sglang-moe.md)).
-- **vLLM's 4-bit linear layers**, a Triton AWQ kernel on ROCm
-  ([4-bit weights](history/22-int4.md)).
-- **vLLM's MoE**, Triton's `fused_moe` ([MoE](history/21-moe.md)).
+  faults. hk's patch replaces the top-k and the expert GEMMs.
+- **vLLM's 4-bit linear layers**, a Triton AWQ kernel on ROCm.
+- **vLLM's MoE**, Triton's `fused_moe`.
 - **vLLM's decoder attention**, Triton's `unified_attention`, through hk's
   attention backend. It is off by default
   ([integration](integration.md#the-decoder-attention-backend)).
@@ -141,8 +138,7 @@ faster than what the engine runs:
 Each patch can be turned off by an environment variable, sends each shape to
 the kernel that measured fastest for it, and keeps to the CUDA-graph contract
 ([integration](integration.md)). A model nobody tuned for gets its linear
-layers' routes measured at its first start
-([chapter 35](history/35-any-model.md)). What the routes gain end to end on
+layers' routes measured at its first start. What the routes gain end to end on
 Radeon will be published with the RDNA scorecard.
 
 On an MI355X (gfx950) the engines are tuned for the card through AITER. There
@@ -162,11 +158,8 @@ it generates. In front of it are a typed Python layer, an MLIR dialect whose
 passes check and derive what the C++ left to the author, a tuner, and the
 engine layer. The knobs are Python parameters a tuner searches, and a kernel
 becomes a torch op, then an engine patch, in a few lines. A kernel written in
-hk-dsl compiles to that C++ and runs at its speed, no faster
-([Phase 4](history/03-phase-4-attention.md),
-[Phase 3](history/02-phase-3-gemm.md)). One 59-line strip kernel is RMSNorm,
-LayerNorm, softmax, the weighted RMSNorm and the fused add + RMSNorm
-([strips](history/27-strips.md)).
+hk-dsl compiles to that C++ and runs at its speed, no faster. One 59-line strip kernel is RMSNorm,
+LayerNorm, softmax, the weighted RMSNorm and the fused add + RMSNorm.
 
 ### Why not only Triton or FlyDSL
 
@@ -198,7 +191,7 @@ is either impossible to write or refused before the kernel runs:
    wrong, `ScratchSize` is 0, and nothing is reported. The translation binds
    the fragment with a volatile asm after every wait — you cannot forget to
    ([IR](ir.md#translation)). CDNA4 is no different: on an MI355X, every LDS
-   GEMM built without the bind returned NaN ([chapter 29](history/29-cdna.md)).
+   GEMM built without the bind returned NaN.
 2. **A VGPR spill is silent corruption, not slowness**, because this library
    hand-places `s_waitcnt` and scratch traffic reorders against it.
    `k.build()` parses `-Rpass-analysis=kernel-resource-usage` and *refuses to
@@ -211,7 +204,7 @@ is either impossible to write or refused before the kernel runs:
    LLVM put no wait before `s_barrier`, and the reads after it are inline asm
    that LLVM's wait insertion cannot see. The first LDS GEMM on an MI355X gave
    a different wrong answer on each run. The translation now follows every
-   such copy with its wait ([the race](history/29-cdna.md#the-race)).
+   such copy with its wait.
 
 `python -m hk.runtime.cocheck` runs the resource, wait and MFMA-hazard gates on any AMDGPU
 code object, hk's or not ([runtime](runtime.md#any-code-object-cocheck)).
@@ -241,11 +234,11 @@ the resource gate ([runtime](runtime.md#the-resource-gates)), the passes
   been measured end to end; gfx1201 runs the GPU tier on an R9700, and three
   vLLM routes are on by default there
   ([integration](integration.md#on-by-default-and-turning-it-off)), and gfx942
-  has only been compiled for ([CDNA3/4](design/cdna.md)).
+  has only been compiled for ([CDNA3/4](archive/design/cdna.md)).
 - **Some kernels lose.** Where hk's kernel is slower than the engine's for a
   shape, the routing leaves that call to the engine: on the W7900D the MoE
   GEMM above 256 tokens and the W4A16 GEMM at 1-4 tokens; on the MI355X most
   GEMMs, norms and bf16 MoE GEMMs against AITER's tuned ones, so hk's
-  unquantized-linear and bf16 MoE routes do nothing there. [Performance](performance.md#a4-losses-and-limits), a
+  unquantized-linear and bf16 MoE routes do nothing there. [Performance](archive/performance-2026-10.md#a4-losses-and-limits), a
   dated record, lists the losses as they were measured, for
-  [CDNA4](performance.md#b4-losses-and-no-headroom-findings) as well.
+  [CDNA4](archive/performance-2026-10.md#b4-losses-and-no-headroom-findings) as well.

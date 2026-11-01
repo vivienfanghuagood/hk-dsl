@@ -55,7 +55,7 @@ their verifiers, and a strip load or store takes an element coordinate.
 Every RDNA kernel's C++ begins with `kittens::touch_kernargs<sizeof(globals)>()`,
 which reads each 64-byte line of the kernel's arguments at entry: LLVM sinks
 an argument's load to its first use, and a late one is a cold miss nothing
-overlaps ([chapter 27](history/27-strips.md)).
+overlaps.
 
 The ODS definitions are in `mlir/include/hk/Dialect/HK/IR` (`HKTypes.td`,
 `HKOps.td`).
@@ -72,7 +72,7 @@ In the dump above the kernel carries `hk.kernel`, `hk.arch`, `hk.warps` and
 with `hk.grid_of`. The destination form is the IR's spelling of
 [tiles are buffers](language.md#values-and-operators).
 
-gfx950's attention added four ops ([chapter 34](history/34-cdna-attention.md)):
+gfx950's attention added four ops:
 
 ```mlir
 %h = hk.rt_subtile %s[1] : !hk.rt<f32, 64x32, col, frag 32x32> -> !hk.rt<f32, 32x32, col, frag 32x32>
@@ -144,9 +144,9 @@ occupancy 6 needs ≤240 registers, not ≤256.
 | target | file | status |
 |---|---|---|
 | gfx1100, RDNA3 | `gfx1100.py` | probed and measured on a W7900D |
-| gfx1201, RDNA4 | `gfx1201.py` | probed and measured on a Radeon AI PRO R9700: the fragment layouts, a 128 KB WGP LDS pool, the granule 24 from LLVM's remark ([chapter 47](history/47-gfx1201-on-hardware.md)) |
+| gfx1201, RDNA4 | `gfx1201.py` | probed and measured on a Radeon AI PRO R9700: the fragment layouts, a 128 KB WGP LDS pool, the granule 24 from LLVM's remark |
 | gfx942, CDNA3 | `gfx942.py` | modelled from the compiler, not run |
-| gfx950, CDNA4 | `gfx950.py` | modelled from the compiler, timed on an MI355X ([chapter 29](history/29-cdna.md)) |
+| gfx950, CDNA4 | `gfx950.py` | modelled from the compiler, timed on an MI355X |
 
 The CDNA tables differ in more than numbers: wave64, a 16x32 bf16 operand on
 gfx950 (hence `hk-fragments`), a 4-bit lgkmcnt (a derived wait above 15 is

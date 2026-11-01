@@ -1,5 +1,7 @@
 # Development record
 
+> **Archived: a dated record.** Each chapter is the state of the work when it was written: its API, its numbers and its baselines are of that time, and some baselines were weaker than the opponent's best configuration. For current documentation start at [the docs home](../README.md); the only numbers the project quotes are on [the scorecard](../performance/scorecard.md).
+
 The chapters below are a record, in the order the work happened. Chapters
 01-15 were written while hk lived inside the HipKittens repository: paths
 such as `kernels/rdna3`, `include/rdna3` and `tools/rdna-probes` are
@@ -12,7 +14,7 @@ re-measures the ones that matter against the port. A later chapter can
 overturn an earlier one's verdict (chapter 26 did, for the GEMM); each
 chapter is kept as written.
 
-For the results in one place, with the hardware and baseline of each, see [performance](../performance.md).
+For the results in one place, with the hardware and baseline of each, see [performance](../archive/performance-2026-10.md).
 
 | | chapter | in brief |
 |---|---|---|

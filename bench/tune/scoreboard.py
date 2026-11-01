@@ -4,7 +4,7 @@ shape and in total, before (the current routes) and after (hk.tune's records).
     python3 -m bench.tune.scoreboard DIR [DIR...] [--arch gfx950] [--split acceptance]
                                      [--explain] [--write bench/tune/results]
 
-The acceptance (docs/design/tuning-goal.md, T3), per GPU, on the held-out
+The acceptance (docs/archive/design/tuning-goal.md, T3), per GPU, on the held-out
 split: the share of shapes at >= 0.95x the best available baseline after
 tuning (target >= 80%), the median and worst ratio, GPU-minutes per shape.
 A shape's ratio is the median over the scoring sets of best/hk, the band the

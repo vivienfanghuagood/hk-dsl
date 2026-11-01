@@ -1,4 +1,4 @@
-"""The cross-architecture fixes of docs/dx/api-consistency.md: the same
+"""The cross-architecture fixes of docs/archive/design/api-consistency.md: the same
 call answers the same way, or says which arch does what, on gfx1100 and
 gfx950. No GPU: the arch is monkeypatched, as tests/hk/ir/test_cdna_paged.py
 does, and the checks run before any launch."""

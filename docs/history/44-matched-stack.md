@@ -442,7 +442,7 @@ carry the matched numbers with their stack:
 - README's "Results at a glance": Qwen3-8B per request 1.20-1.75x becomes
   1.22-1.85x at 1-32 requests; the note that the RDNA3 vLLM tables await a
   re-run is gone.
-- [Performance](../performance.md) A1: the Qwen3-8B table is this chapter's;
+- [Performance](../archive/performance-2026-10.md) A1: the Qwen3-8B table is this chapter's;
   chapter 38's before-and-after table, chapter 30's graph-mode rows, chapter
   35's Qwen2.5-7B table and chapter 21's MoE table gain the matched numbers
   or are replaced by them; the AWQ table gains them. The stacks table lists

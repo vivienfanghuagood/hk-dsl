@@ -950,7 +950,7 @@ hk's GPU tier passing on a Radeon AI PRO R9700 (914 passed, 0 failed;
 - The scoreboard on gfx1201, out of the box (gfx1100's plans), every arm in one
   process, with FlyDSL and AITER arms (#74,
   [chapter 48](docs/history/48-gfx1201-ceilings-and-first-scoreboard.md),
-  [performance](docs/performance.md#part-c-rdna4-gfx1201-one-radeon-ai-pro-r9700)):
+  [performance](docs/archive/performance-2026-10.md#part-c-rdna4-gfx1201-one-radeon-ai-pro-r9700)):
   hk's GEMM is the fastest at the five shapes (1.03-1.07x the best other arm).
   It loses attention to AITER's (0.83x causal, 0.97x full, at 4096 tokens,
   GQA 4) and fused add + rms_norm at 8192 rows (0.93x).
@@ -1050,7 +1050,7 @@ one process. The two methods agree within about 3%.)
   bench records and scripts use placeholders and environment variables, and
   `scripts/check_public_hygiene.py` (generic rules, an explicit allowlist)
   runs in CI's IR leg and before every tag.
-- [docs/design/e2e-goal.md](docs/design/e2e-goal.md), the end-to-end goal
+- [docs/archive/design/e2e-goal.md](docs/archive/design/e2e-goal.md), the end-to-end goal
   refocused on three core kernels (#20, #22).
 
 **CI and tests**
@@ -1379,7 +1379,7 @@ The memory model is in [docs/design/comm.md](docs/design/comm.md).
   in the vLLM deployment image (ROCm 10), and `python3 -m hk.integration
   warm-routes --tp 2`, which builds the DeepSeek-V4.1 routes' kernels before
   the engine starts (31.2 s on an empty cache, 0.9 s warm).
-  [docs/design/serving-readiness.md](docs/design/serving-readiness.md) lists what
+  [docs/archive/design/serving-readiness.md](docs/archive/design/serving-readiness.md) lists what
   0.6 lacked for a deployment; [docs/design/comm.md](docs/design/comm.md) has
   hk.comm's roadmap (#51); [docs/design/placement-pass.md](docs/design/placement-pass.md)
   designs workgroup placement as a compiler pass (#62, design only).

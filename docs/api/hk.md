@@ -2265,7 +2265,7 @@ does not own. So on gfx1100 n_q must be at least Q_TILE (192) and n_kv at
 least KV_BLOCK (32). On gfx950 this runs hk.ops.attn_cdna, whose loads
 are bounded: any non-empty length. head_dim is 64 or 128 on both.
 
-**Per architecture** ([audit](../dx/api-consistency.md)):
+**Per architecture** ([audit](../archive/design/api-consistency.md)):
 
 | | gfx1100 (RDNA3) | gfx950 (CDNA4) |
 |---|---|---|

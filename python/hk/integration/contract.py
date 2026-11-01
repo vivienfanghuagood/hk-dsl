@@ -1,6 +1,6 @@
 """The engine contract, checked when a plugin starts: every engine entry point an enabled route
 patches or falls back to still exists, with the parameters the route uses
-(docs/design/serving-readiness.md, A9).
+(docs/archive/design/serving-readiness.md, A9).
 
 Routes patch engine internals by name, and they were measured against one engine build. If a
 release renames, moves or re-signs one of those names, the patch does not fail loudly. Either it

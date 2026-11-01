@@ -81,7 +81,7 @@ away from zero, HipKittens' cheaper default, while every store that narrows
 rounds to nearest even as torch does, and gfx950 rounds to even
 throughout. A kernel that converts in registers and must match torch bit
 for bit -- a residual `x + r` of two bf16 values, which is a tie about one
-time in ten -- sets it ([chapter 38](history/38-rdna-losses.md#bf16-stores-round-as-torch-rounds)). The grid is a
+time in ten -- sets it. The grid is a
 function of the parameters: `p.<tensor>.<batch|depth|rows|cols>` gives an
 extent and `p.<CONSTEXPR>` gives a constexpr value, and it must return a
 3-tuple. A kernel that names no `arch` is built for `hk.target.current_arch()`
@@ -222,12 +222,11 @@ kinds of max and min, with different rules for NaN and signed zeros.
   and selects: its reductions keep `fmaxf` / `fminf`, as do RDNA's.
 
 `hk.ops.norm`'s RMSNorm, fused add + RMSNorm, LayerNorm and softmax run on
-strips wherever a row fits one ([chapter 27](history/27-strips.md)). On
+strips wherever a row fits one. On
 gfx950 so do quantize, the elementwise ops, `silu_mul` (which then takes
 the two halves of a gate/up output as strided views) and `hk.ops.rotary`,
 vLLM's rotary_embedding in NeoX style, token-major, from a `cos_sin_cache`
-of `[cos | sin]` rows and optional int32 positions
-([chapter 37](history/37-cdna-rows.md)).
+of `[cos | sin]` rows and optional int32 positions.
 
 ### Integer, mask and bit expressions on strips: `hk.map`
 
@@ -352,11 +351,10 @@ and `test_elems.py` exercise them.
 
 The dtypes are `hk.bf16`, `hk.fp16`, `hk.fp32`, `hk.i8` and `hk.i32`, plus
 `hk.fp8e4m3` and `hk.fp8e5m2`, which are accepted only where the target has an
-fp8 WMMA — gfx1201, not gfx1100 (see
-[the gfx1201 chapter](history/13-gfx1201.md)).
+fp8 WMMA — gfx1201, not gfx1100 ([supported hardware](supported-hardware.md)).
 
 Two spellings are deliberate, both kept on purpose when the language moved to
-MLIR ([history](history/15-mlir-dialect.md)):
+MLIR:
 - a vector type is named by the tile it reduces, `hk.col_vec(T)`, not
   `hk.ColVec[fp32, 16]`, because the dialect ties a vector's layout to its
   tile;
@@ -390,12 +388,10 @@ MLIR ([history](history/15-mlir-dialect.md)):
 A global carries one runtime row stride, so a slice of the last axis — the
 two halves of a fused `(M, 2I)` output, say — is accepted without a copy:
 contiguous along it, rows evenly strided, outer axes compact over the rows.
-Anything else is refused with a message saying why
-([strided globals](history/12-strided-globals.md)). Register loads and stores
+Anything else is refused with a message saying why. Register loads and stores
 can be bounded by rows, `x[idx].load(ty, bounded=True)` and
 `o[idx].store(t, bounded=True)`, which makes a tile that runs past the last
-row read zeros and drop the stores past it, with no branch
-([row-predicated loads and stores](history/10-row-predicated.md)); a strip
+row read zeros and drop the stores past it, with no branch; a strip
 is bounded by rows and columns alike (`x.at[r, c].load(S, bounded=True)`).
 A workgroup's synchronous copy, `g.load(tile, view)` / `g.store(view, tile)`,
 is bounded by rows without asking on gfx1100 and on gfx950: rows past the
@@ -433,9 +429,8 @@ x = As[1].subtile(64, 64, wr, 0).load(T, wait=False)
 include/cdna4 st_shape rather than the one its reads' fragment picks (16x32
 row operands, and 32x16 stride-4 col operands, read out of those too): a copy
 then reads each row in 128- or 64-byte runs instead of 64 or 32, and its
-lines once. The paged decode's copies went from 6.15 to 6.9 TB/s with both
-([chapter 39](history/39-cdna-paged.md)); non-temporal in the shorter runs
-fetched each line twice.
+lines once. Use the two together: non-temporal copies in the shorter runs
+fetch each line twice.
 
 The tile is a whole allocation or a buffer of a stack picked by a Python int,
 so `hk-lds-pipeline` knows which buffer each copy writes and checks the two
@@ -453,8 +448,7 @@ math between barriers runs the halves out of phase, so with eight warps the
 two waves on a SIMD take turns at the matrix core. `behind` comes from
 `warp_id()`, both ends are in the kernel's own body, and inside, the pass
 counts two barriers where one would do outside. gfx950's GEMM
-(`hk.ops.gemm_cdna`, [chapter 33](history/33-cdna-gemm.md)) is built from
-these.
+(`hk.ops.gemm_cdna`) is built from these.
 
 ### An accumulator read as an operand (gfx950)
 
@@ -496,7 +490,7 @@ O += v_tile.T @ P                      # V read with P's lane run
   use; in a schedule of phases a barrier apart that moves work into the other
   phase, which `sched_barrier` (a fence for the scheduler only) does not stop.
 
-`hk.ops.attn_cdna` is built from these ([chapter 34](history/34-cdna-attention.md)).
+`hk.ops.attn_cdna` is built from these.
 
 ## Rows by index, atomics, random numbers
 
@@ -530,9 +524,7 @@ that seed and offset, so a kernel can be checked against its Triton original
 exactly. The seed may be a device scalar (`x.at[0].load_scalar()`): a
 non-tensor argument is a constexpr, built in, and a seed that changes every
 step would compile every step. `step()` turns a comparison into a factor;
-[`examples/07_dropout.py`](../examples/07_dropout.py) is a dropout with it,
-and [chapter 19](history/19-rows-by-index.md) records what each of these
-measured.
+[`examples/07_dropout.py`](../examples/07_dropout.py) is a dropout with it.
 
 ## Control flow
 
@@ -665,19 +657,18 @@ instruction is in no class. include/rdna3's LDS fragment reads and writes are
 asm, so in hk's GEMM it can place the staging loads and the WMMAs, not the
 LDS traffic. `s_setprio` ends a scheduling region, so a group does not reach
 across one. `hk.arch.sched_barrier(allow)` is a fence that lets the classes
-in `allow` cross ([chapter 28](history/28-gemm-schedule.md)).
+in `allow` cross.
 
 **Occupancy caps.** `hk.lds.reserve(nbytes)` allocates LDS the kernel never
 uses, to cap how many workgroups share a WGP: on gfx1100 a WGP holds
-128 KB ÷ (the kernel's LDS + `nbytes`) workgroups
-([chapter 27](history/27-strips.md)).
+128 KB ÷ (the kernel's LDS + `nbytes`) workgroups.
 
 `hk.arch.wg_arrive(counter, expected)` counts this workgroup's arrival at
 `counter` (an element view of an int32 global) and returns how many arrived
 before it; the last to arrive resets the counter, and it contains barriers, so
-every warp must reach it (`python/hk/dsl/arch.py`). Why it is a counter rather
-than fp32 atomics is in [the chapter that added it](history/11-cross-workgroup-reduction.md),
-where it was introduced as `hk.wg_arrive(counter, idx, expected)`.
+every warp must reach it (`python/hk/dsl/arch.py`). It is a counter rather
+than fp32 atomics so the combine is deterministic: the partial sums are added
+in one fixed order.
 
 ## `@hk.func`
 
@@ -728,14 +719,10 @@ spelling that works:
   CPython each.
 * gfx942 is compile-only, and has no register strips (so no templates).
   gfx1201 runs the GPU tier on an R9700 with gfx1100's plans and schedules,
-  none of them tuned there yet ([chapter 47](history/47-gfx1201-on-hardware.md)). On gfx950 strips build, and its GEMM and attention are
-  kernels of hk's own (`hk.ops.gemm_cdna`, `hk.ops.attn_cdna`,
-  [chapters 33](history/33-cdna-gemm.md) and [34](history/34-cdna-attention.md)),
+  none of them tuned there yet. On gfx950 strips build, and its GEMM and attention are
+  kernels of hk's own (`hk.ops.gemm_cdna`, `hk.ops.attn_cdna`),
   with HipKittens' CDNA4 kernels also wrapped as hk ops
-  ([CDNA3/4](design/cdna.md)).
-
-This list is from [the MLIR chapter](history/15-mlir-dialect.md), which ends
-with "For whoever continues": the next pieces of work, in order of value.
+  ([CDNA3/4](archive/design/cdna.md)).
 
 
 <!-- docs/check.md -->
@@ -833,7 +820,7 @@ PASS
 
 Correct, fully occupied and half the speed of `torch.compile`: the tile
 kernel the first page of the docs teaches is the wrong shape for a streaming
-op on this card ([the goal](design/dx-goal.md) measured the same, 0.61x).
+op on this card ([the goal](archive/design/dx-goal.md) measured the same, 0.61x).
 Rewritten on register strips as the hint says -- the ten-line kernel in
 [llms.txt](../llms.txt) -- it measured 61.7 us, a tie with `torch.compile`
 (and 1.02x it on a W7900D); `hk.ops.silu_mul`, the tuned op for the same
@@ -1019,7 +1006,7 @@ facts that change a kernel's plan are in [hk.target](api/hk.target.md).
   match.
 - **Timing is in one process, interleaved**, the only comparison this
   project trusts: across processes a kernel A/B manufactured 13-16% out of
-  nothing ([phase 5](history/04-phase-5-autotune.md)). A verdict is `tie`
+  nothing. A verdict is `tie`
   inside a band of max(2%, the noise), and `noise` when the band passes 15%.
   Back-to-back calls find a footprint smaller than the cache (96 MB on a
   W7900D, 256 MB on an MI355X) resident, for every contender alike; the
@@ -1337,7 +1324,7 @@ in the machine.
 ## hk.ops on the same plans
 
 The ops the templates reproduce take the same arguments on both GPUs now
-(the cross-architecture audit in docs/dx/api-consistency.md listed where they
+(the cross-architecture audit in docs/archive/design/api-consistency.md listed where they
 did not):
 
 | op | before, on gfx1100 | now, on both |
@@ -3892,7 +3879,7 @@ does not own. So on gfx1100 n_q must be at least Q_TILE (192) and n_kv at
 least KV_BLOCK (32). On gfx950 this runs hk.ops.attn_cdna, whose loads
 are bounded: any non-empty length. head_dim is 64 or 128 on both.
 
-**Per architecture** ([audit](../dx/api-consistency.md)):
+**Per architecture** ([audit](../archive/design/api-consistency.md)):
 
 | | gfx1100 (RDNA3) | gfx950 (CDNA4) |
 |---|---|---|
@@ -5123,7 +5110,7 @@ torch tensors on the GPU; they return the output (or write `out=`).
 
 Where an op's arguments or behaviour differ between gfx1100 and gfx950 the
 entry says so in a **Per architecture** table; the full audit, with the code
-evidence, is [docs/dx/api-consistency.md](../dx/api-consistency.md). The
+evidence, is [docs/archive/design/api-consistency.md](../archive/design/api-consistency.md). The
 row-wise and elementwise ops are being unified by the `hk.templates` work.
 
 - [`hk.ops.add`](#hkopsadd)
@@ -5170,7 +5157,7 @@ row-wise and elementwise ops are being unified by the `hk.templates` work.
 
 On gfx950 these run on register strips and take any size. `hk.ops.gelu` is the tanh form, like `hk.math.gelu`.
 
-**Per architecture, every op below** ([audit](../dx/api-consistency.md)):
+**Per architecture, every op below** ([audit](../archive/design/api-consistency.md)):
 
 | | gfx1100 (RDNA3) | gfx950 (CDNA4) |
 |---|---|---|
@@ -5262,7 +5249,7 @@ Elementwise |a|.
 
 ## Rows: norms, softmax
 
-**Per architecture, every op below** ([audit](../dx/api-consistency.md)):
+**Per architecture, every op below** ([audit](../archive/design/api-consistency.md)):
 
 | | gfx1100 (RDNA3) | gfx950 (CDNA4) |
 |---|---|---|
@@ -5280,7 +5267,7 @@ No learned weight: a weight multiply is elementwise and belongs in whatever
 fuses next, and adding it here would mean a second global and a broadcast
 that the caller may not want.
 
-**Per architecture** ([audit](../dx/api-consistency.md)):
+**Per architecture** ([audit](../archive/design/api-consistency.md)):
 
 | | gfx1100 (RDNA3) | gfx950 (CDNA4) |
 |---|---|---|
@@ -5345,7 +5332,7 @@ silu(a) * b -- the second half of SwiGLU, with the gate already split.
 torch's equivalent is `F.silu(a) * b`; this does it in one pass, so the
 intermediate never reaches memory.
 
-**Per architecture** ([audit](../dx/api-consistency.md)):
+**Per architecture** ([audit](../archive/design/api-consistency.md)):
 
 | | gfx1100 (RDNA3) | gfx950 (CDNA4) |
 |---|---|---|
@@ -5366,7 +5353,7 @@ Rotary embedding over the last axis, half-split (NeoX) convention.
 multiple of 64 -- head dims of 128 and 256 qualify, 64 does not, and the
 error says so rather than silently producing a rotation by the wrong angle.
 
-**Per architecture** ([audit](../dx/api-consistency.md)):
+**Per architecture** ([audit](../archive/design/api-consistency.md)):
 
 | | gfx1100 (RDNA3) | gfx950 (CDNA4) |
 |---|---|---|
@@ -5391,7 +5378,7 @@ In place when `out` is `x`. D is 64 * a power of two up to 16 (128 and
 strips: gfx950, and gfx1100 and gfx1201 (where a head's halves are two
 strips, there being no lane exchange there).
 
-**Per architecture** ([audit](../dx/api-consistency.md)):
+**Per architecture** ([audit](../archive/design/api-consistency.md)):
 
 | | gfx1100 (RDNA3) | gfx950 (CDNA4) |
 |---|---|---|
@@ -5411,7 +5398,7 @@ Symmetric per-row int8 quantization over the last axis.
 Returns `(q, scales)`: `q` has x's shape and dtype int8, `scales` is x's
 shape without the last axis, in fp32. `x ~ q * scales[..., None]`.
 
-**Per architecture** ([audit](../dx/api-consistency.md)):
+**Per architecture** ([audit](../archive/design/api-consistency.md)):
 
 | | gfx1100 (RDNA3) | gfx950 (CDNA4) |
 |---|---|---|
@@ -5425,7 +5412,7 @@ hk.ops.dequantize(q, scales, dtype=None, out=None)
 
 q * scales[..., None], back to a float dtype.
 
-**Per architecture** ([audit](../dx/api-consistency.md)):
+**Per architecture** ([audit](../archive/design/api-consistency.md)):
 
 | | gfx1100 (RDNA3) | gfx950 (CDNA4) |
 |---|---|---|
@@ -5444,7 +5431,7 @@ A @ B.T for bf16, fp32 accumulate.
 On gfx950 this is hk.ops.gemm_cdna.matmul (MFMA, routed by M from a
 measured table): K must be a multiple of 64 there, and its bf16 store
 rounds to nearest even where this one rounds ties away from zero (the
-split-K routes sum fp32 shares, then round). docs/dx/api-consistency.md.
+split-K routes sum fp32 shares, then round). docs/archive/design/api-consistency.md.
 
 `b` is (N, K), not (K, N). That is not an inconvenience to be hidden: it
 keeps both shared loads contiguous and makes `mma_ABt` the primitive, which
@@ -5452,7 +5439,7 @@ is what puts both operand tiles in row layout and therefore on the
 `ds_read_b128` fast path. Transposing here instead would copy, and the copy
 is a bigger cost than the GEMM saves.
 
-**Per architecture** ([audit](../dx/api-consistency.md)):
+**Per architecture** ([audit](../archive/design/api-consistency.md)):
 
 | | gfx1100 (RDNA3) | gfx950 (CDNA4) |
 |---|---|---|
@@ -5482,7 +5469,7 @@ does not own. So on gfx1100 n_q must be at least Q_TILE (192) and n_kv at
 least KV_BLOCK (32). On gfx950 this runs hk.ops.attn_cdna, whose loads
 are bounded: any non-empty length. head_dim is 64 or 128 on both.
 
-**Per architecture** ([audit](../dx/api-consistency.md)):
+**Per architecture** ([audit](../archive/design/api-consistency.md)):
 
 | | gfx1100 (RDNA3) | gfx950 (CDNA4) |
 |---|---|---|
@@ -5528,7 +5515,7 @@ hk.ops.sdpa.scaled_dot_product_attention(query, key, value, attn_mask=None, drop
 Signature-identical to torch's, defaults included, so it can replace it by
 assignment. Anything the kernel does not cover is forwarded to torch.
 
-**Per architecture** ([audit](../dx/api-consistency.md)):
+**Per architecture** ([audit](../archive/design/api-consistency.md)):
 
 | | gfx1100 (RDNA3) | gfx950 (CDNA4) |
 |---|---|---|
@@ -5544,7 +5531,7 @@ The split decode's walk for (head_dim, splits): each split's
 partial output and its (max, sum) into the scratch `merge_kernel`
 combines. On gfx950, paged_cdna's (head_dim 64 or 128).
 
-**Per architecture** ([audit](../dx/api-consistency.md)):
+**Per architecture** ([audit](../archive/design/api-consistency.md)):
 
 | | gfx1100 (RDNA3) | gfx950 (CDNA4) |
 |---|---|---|
@@ -5564,7 +5551,7 @@ process (tools/hk-bench/paged_variants.py): HK_RDNA_XPOSE_WORDS=0 is the
 generic register transpose V took before the packed one. `ppstep`
 (gfx950) is the pages a step, `pages_per_step`'s choice.
 
-**Per architecture** ([audit](../dx/api-consistency.md)):
+**Per architecture** ([audit](../archive/design/api-consistency.md)):
 
 | | gfx1100 (RDNA3) | gfx950 (CDNA4) |
 |---|---|---|
@@ -5581,7 +5568,7 @@ The kernel that combines `splits` partial outputs of the split decode
 into the answer. On gfx950, paged_cdna's: it reads splits eight at a
 time, so above 8 `splits` is a multiple of 8.
 
-**Per architecture** ([audit](../dx/api-consistency.md)):
+**Per architecture** ([audit](../archive/design/api-consistency.md)):
 
 | | gfx1100 (RDNA3) | gfx950 (CDNA4) |
 |---|---|---|
@@ -5604,7 +5591,7 @@ This asks for enough splits to reach `TARGET_WORKGROUPS`, capped by the
 page count -- a split with no pages is pure overhead -- and by
 `MAX_SPLITS` (on gfx950, paged_cdna's target_workgroups and MAX_SPLITS).
 
-**Per architecture** ([audit](../dx/api-consistency.md)):
+**Per architecture** ([audit](../archive/design/api-consistency.md)):
 
 | | gfx1100 (RDNA3) | gfx950 (CDNA4) |
 |---|---|---|
@@ -5624,7 +5611,7 @@ KV traffic the splits exist to parallelise. If it shows up in a profile it
 becomes a kernel; writing it as one first would be optimising a thing
 nobody has measured.
 
-**Per architecture** ([audit](../dx/api-consistency.md)):
+**Per architecture** ([audit](../archive/design/api-consistency.md)):
 
 | | gfx1100 (RDNA3) | gfx950 (CDNA4) |
 |---|---|---|
@@ -5642,7 +5629,7 @@ head_dim is a multiple of 32 up to 192. On gfx950 this is
 attn_cdna.paged_kernel_for: `group` is read off the shapes (the argument
 is ignored) and head_dim is 64 or 128.
 
-**Per architecture** ([audit](../dx/api-consistency.md)):
+**Per architecture** ([audit](../archive/design/api-consistency.md)):
 
 | | gfx1100 (RDNA3) | gfx950 (CDNA4) |
 |---|---|---|
@@ -5658,7 +5645,7 @@ hk.ops.paged_prefill.work_list(q_lens, device)
 The (request, tile) entries for a batch's prefill requests: one per
 Q_TILE rows of each, ints on the host, one int32 copy to the device.
 
-**Per architecture** ([audit](../dx/api-consistency.md)):
+**Per architecture** ([audit](../archive/design/api-consistency.md)):
 
 | | gfx1100 (RDNA3) | gfx950 (CDNA4) |
 |---|---|---|
@@ -5676,7 +5663,7 @@ if given, is the (M, N) bf16 tensor to write.
 `override` replaces fields of the schedule (slices, warps, combine_depth,
 resident, splits) -- for measuring, not for use.
 
-**Per architecture** ([audit](../dx/api-consistency.md)):
+**Per architecture** ([audit](../archive/design/api-consistency.md)):
 
 | | gfx1100 (RDNA3) | gfx950 (CDNA4) |
 |---|---|---|
@@ -5694,7 +5681,7 @@ assignment, one pair per block, `expert_ids` then being the flattened
 top-k ids. `topk_weights` given multiplies each row by its routing
 weight. Raises ValueError for a GEMM `takes` refuses.
 
-**Per architecture** ([audit](../dx/api-consistency.md)):
+**Per architecture** ([audit](../archive/design/api-consistency.md)):
 
 | | gfx1100 (RDNA3) | gfx950 (CDNA4) |
 |---|---|---|
@@ -5709,7 +5696,7 @@ hk.ops.moe.moe_align(topk_ids, block_m: int, num_experts: int)
 A torch moe_align_block_size, for tests and for running without vLLM:
 (sorted_ids, expert_ids, num_tokens_post_padded).
 
-**Per architecture** ([audit](../dx/api-consistency.md)):
+**Per architecture** ([audit](../archive/design/api-consistency.md)):
 
 | | gfx1100 (RDNA3) | gfx950 (CDNA4) |
 |---|---|---|
@@ -5725,7 +5712,7 @@ x @ W.T for W in hk's 4-bit layout: the decode kernel up to 64 rows of
 x, dequantize-then-F.linear above (or for a shape it does not take).
 zs None: the symmetric form (every zero point 8; `repack_gptq(symmetric=True)`).
 
-**Per architecture** ([audit](../dx/api-consistency.md)):
+**Per architecture** ([audit](../archive/design/api-consistency.md)):
 
 | | gfx1100 (RDNA3) | gfx950 (CDNA4) |
 |---|---|---|
@@ -5744,7 +5731,7 @@ the module docstring), `WrongArch` off gfx950, and `Unavailable` when the
 kernel did not build or failed its check under this hipcc. `out`, if
 given, must be a contiguous (M, N) bf16 tensor that aliases neither input.
 
-**Per architecture** ([audit](../dx/api-consistency.md)):
+**Per architecture** ([audit](../archive/design/api-consistency.md)):
 
 | | gfx1100 (RDNA3) | gfx950 (CDNA4) |
 |---|---|---|
@@ -5765,7 +5752,7 @@ call at a new (H, H_KV, N, D, causal) compiles, and the first on each
 device checks the build (see the module docstring). Raises like
 `gemm_bf16`.
 
-**Per architecture** ([audit](../dx/api-consistency.md)):
+**Per architecture** ([audit](../archive/design/api-consistency.md)):
 
 | | gfx1100 (RDNA3) | gfx950 (CDNA4) |
 |---|---|---|
@@ -5804,7 +5791,7 @@ A template owns the tiling, the layout, the per-architecture plan and the
 schedule; the hook is a traced function (like an `@hk.func` body) for the
 math that makes the kernel yours -- an elementwise function, a row
 reduction's epilogue, a GEMM's epilogue, an attention score modifier.
-docs/design/dx-goal.md says what they are for and how they are judged.
+docs/archive/design/dx-goal.md says what they are for and how they are judged.
 
 Each template lives in its own module and is imported on first use, so the
 modules are independent of one another.

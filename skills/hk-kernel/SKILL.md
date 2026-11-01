@@ -103,7 +103,7 @@ Paths below are relative to the repository root.
   `hk.check --arch`.
 - `hk.ops` argument rules differ by arch in a few places (attention's
   lengths, the paged kernels;
-  [docs/dx/api-consistency.md](../../docs/dx/api-consistency.md)); the row
+  [docs/archive/design/api-consistency.md](../../docs/archive/design/api-consistency.md)); the row
   and elementwise ops are alike on both.
 - On gfx1100 `k(...)` launches on the null stream: a CUDA graph does not
   capture it. Time or capture it with `HK_LAUNCH=codeobj` set (or through

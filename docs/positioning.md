@@ -126,7 +126,7 @@ Three admissions explain why we quote nothing else:
    ran with a tuning table made for a different routing distribution. One
    comparison bypassed the opponent's tuned entry point, one left out work that
    hk itself needed, and one used an older library version. They are in the [development record](history/README.md) and the
-   older [performance page](performance.md). Against fixed baselines, most of
+   older [performance page](archive/performance-2026-10.md). Against fixed baselines, most of
    hk's kernel-level leads on gfx950 are within noise.
 2. **On Radeon, much of what hk's routes gained came from the engines' weak
    paths there,** not from better code generation. A competent kernel in any

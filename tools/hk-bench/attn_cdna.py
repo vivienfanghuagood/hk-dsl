@@ -35,7 +35,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "python"))
 
-#: The shapes docs/design/cdna-hipkittens-ops.md measured HipKittens' GQA at.
+#: The shapes docs/archive/design/cdna-hipkittens-ops.md measured HipKittens' GQA at.
 CONFIGS = tuple((16, 64, 8, n, 128) for n in (1024, 2048, 4096, 8192)) + (
     (1, 32, 8, 4096, 128), (16, 64, 8, 4096, 64))
 

@@ -8,7 +8,7 @@ torch tensors on the GPU; they return the output (or write `out=`).
 
 Where an op's arguments or behaviour differ between gfx1100 and gfx950 the
 entry says so in a **Per architecture** table; the full audit, with the code
-evidence, is [docs/dx/api-consistency.md](../dx/api-consistency.md). The
+evidence, is [docs/archive/design/api-consistency.md](../archive/design/api-consistency.md). The
 row-wise and elementwise ops are being unified by the `hk.templates` work.
 
 - [`hk.ops.add`](#hkopsadd)
@@ -55,7 +55,7 @@ row-wise and elementwise ops are being unified by the `hk.templates` work.
 
 On gfx950 these run on register strips and take any size. `hk.ops.gelu` is the tanh form, like `hk.math.gelu`.
 
-**Per architecture, every op below** ([audit](../dx/api-consistency.md)):
+**Per architecture, every op below** ([audit](../archive/design/api-consistency.md)):
 
 | | gfx1100 (RDNA3) | gfx950 (CDNA4) |
 |---|---|---|
@@ -147,7 +147,7 @@ Elementwise |a|.
 
 ## Rows: norms, softmax
 
-**Per architecture, every op below** ([audit](../dx/api-consistency.md)):
+**Per architecture, every op below** ([audit](../archive/design/api-consistency.md)):
 
 | | gfx1100 (RDNA3) | gfx950 (CDNA4) |
 |---|---|---|
@@ -165,7 +165,7 @@ No learned weight: a weight multiply is elementwise and belongs in whatever
 fuses next, and adding it here would mean a second global and a broadcast
 that the caller may not want.
 
-**Per architecture** ([audit](../dx/api-consistency.md)):
+**Per architecture** ([audit](../archive/design/api-consistency.md)):
 
 | | gfx1100 (RDNA3) | gfx950 (CDNA4) |
 |---|---|---|
@@ -230,7 +230,7 @@ silu(a) * b -- the second half of SwiGLU, with the gate already split.
 torch's equivalent is `F.silu(a) * b`; this does it in one pass, so the
 intermediate never reaches memory.
 
-**Per architecture** ([audit](../dx/api-consistency.md)):
+**Per architecture** ([audit](../archive/design/api-consistency.md)):
 
 | | gfx1100 (RDNA3) | gfx950 (CDNA4) |
 |---|---|---|
@@ -251,7 +251,7 @@ Rotary embedding over the last axis, half-split (NeoX) convention.
 multiple of 64 -- head dims of 128 and 256 qualify, 64 does not, and the
 error says so rather than silently producing a rotation by the wrong angle.
 
-**Per architecture** ([audit](../dx/api-consistency.md)):
+**Per architecture** ([audit](../archive/design/api-consistency.md)):
 
 | | gfx1100 (RDNA3) | gfx950 (CDNA4) |
 |---|---|---|
@@ -276,7 +276,7 @@ In place when `out` is `x`. D is 64 * a power of two up to 16 (128 and
 strips: gfx950, and gfx1100 and gfx1201 (where a head's halves are two
 strips, there being no lane exchange there).
 
-**Per architecture** ([audit](../dx/api-consistency.md)):
+**Per architecture** ([audit](../archive/design/api-consistency.md)):
 
 | | gfx1100 (RDNA3) | gfx950 (CDNA4) |
 |---|---|---|
@@ -296,7 +296,7 @@ Symmetric per-row int8 quantization over the last axis.
 Returns `(q, scales)`: `q` has x's shape and dtype int8, `scales` is x's
 shape without the last axis, in fp32. `x ~ q * scales[..., None]`.
 
-**Per architecture** ([audit](../dx/api-consistency.md)):
+**Per architecture** ([audit](../archive/design/api-consistency.md)):
 
 | | gfx1100 (RDNA3) | gfx950 (CDNA4) |
 |---|---|---|
@@ -310,7 +310,7 @@ hk.ops.dequantize(q, scales, dtype=None, out=None)
 
 q * scales[..., None], back to a float dtype.
 
-**Per architecture** ([audit](../dx/api-consistency.md)):
+**Per architecture** ([audit](../archive/design/api-consistency.md)):
 
 | | gfx1100 (RDNA3) | gfx950 (CDNA4) |
 |---|---|---|
@@ -329,7 +329,7 @@ A @ B.T for bf16, fp32 accumulate.
 On gfx950 this is hk.ops.gemm_cdna.matmul (MFMA, routed by M from a
 measured table): K must be a multiple of 64 there, and its bf16 store
 rounds to nearest even where this one rounds ties away from zero (the
-split-K routes sum fp32 shares, then round). docs/dx/api-consistency.md.
+split-K routes sum fp32 shares, then round). docs/archive/design/api-consistency.md.
 
 `b` is (N, K), not (K, N). That is not an inconvenience to be hidden: it
 keeps both shared loads contiguous and makes `mma_ABt` the primitive, which
@@ -337,7 +337,7 @@ is what puts both operand tiles in row layout and therefore on the
 `ds_read_b128` fast path. Transposing here instead would copy, and the copy
 is a bigger cost than the GEMM saves.
 
-**Per architecture** ([audit](../dx/api-consistency.md)):
+**Per architecture** ([audit](../archive/design/api-consistency.md)):
 
 | | gfx1100 (RDNA3) | gfx950 (CDNA4) |
 |---|---|---|
@@ -367,7 +367,7 @@ does not own. So on gfx1100 n_q must be at least Q_TILE (192) and n_kv at
 least KV_BLOCK (32). On gfx950 this runs hk.ops.attn_cdna, whose loads
 are bounded: any non-empty length. head_dim is 64 or 128 on both.
 
-**Per architecture** ([audit](../dx/api-consistency.md)):
+**Per architecture** ([audit](../archive/design/api-consistency.md)):
 
 | | gfx1100 (RDNA3) | gfx950 (CDNA4) |
 |---|---|---|
@@ -413,7 +413,7 @@ hk.ops.sdpa.scaled_dot_product_attention(query, key, value, attn_mask=None, drop
 Signature-identical to torch's, defaults included, so it can replace it by
 assignment. Anything the kernel does not cover is forwarded to torch.
 
-**Per architecture** ([audit](../dx/api-consistency.md)):
+**Per architecture** ([audit](../archive/design/api-consistency.md)):
 
 | | gfx1100 (RDNA3) | gfx950 (CDNA4) |
 |---|---|---|
@@ -429,7 +429,7 @@ The split decode's walk for (head_dim, splits): each split's
 partial output and its (max, sum) into the scratch `merge_kernel`
 combines. On gfx950, paged_cdna's (head_dim 64 or 128).
 
-**Per architecture** ([audit](../dx/api-consistency.md)):
+**Per architecture** ([audit](../archive/design/api-consistency.md)):
 
 | | gfx1100 (RDNA3) | gfx950 (CDNA4) |
 |---|---|---|
@@ -449,7 +449,7 @@ process (tools/hk-bench/paged_variants.py): HK_RDNA_XPOSE_WORDS=0 is the
 generic register transpose V took before the packed one. `ppstep`
 (gfx950) is the pages a step, `pages_per_step`'s choice.
 
-**Per architecture** ([audit](../dx/api-consistency.md)):
+**Per architecture** ([audit](../archive/design/api-consistency.md)):
 
 | | gfx1100 (RDNA3) | gfx950 (CDNA4) |
 |---|---|---|
@@ -466,7 +466,7 @@ The kernel that combines `splits` partial outputs of the split decode
 into the answer. On gfx950, paged_cdna's: it reads splits eight at a
 time, so above 8 `splits` is a multiple of 8.
 
-**Per architecture** ([audit](../dx/api-consistency.md)):
+**Per architecture** ([audit](../archive/design/api-consistency.md)):
 
 | | gfx1100 (RDNA3) | gfx950 (CDNA4) |
 |---|---|---|
@@ -489,7 +489,7 @@ This asks for enough splits to reach `TARGET_WORKGROUPS`, capped by the
 page count -- a split with no pages is pure overhead -- and by
 `MAX_SPLITS` (on gfx950, paged_cdna's target_workgroups and MAX_SPLITS).
 
-**Per architecture** ([audit](../dx/api-consistency.md)):
+**Per architecture** ([audit](../archive/design/api-consistency.md)):
 
 | | gfx1100 (RDNA3) | gfx950 (CDNA4) |
 |---|---|---|
@@ -509,7 +509,7 @@ KV traffic the splits exist to parallelise. If it shows up in a profile it
 becomes a kernel; writing it as one first would be optimising a thing
 nobody has measured.
 
-**Per architecture** ([audit](../dx/api-consistency.md)):
+**Per architecture** ([audit](../archive/design/api-consistency.md)):
 
 | | gfx1100 (RDNA3) | gfx950 (CDNA4) |
 |---|---|---|
@@ -527,7 +527,7 @@ head_dim is a multiple of 32 up to 192. On gfx950 this is
 attn_cdna.paged_kernel_for: `group` is read off the shapes (the argument
 is ignored) and head_dim is 64 or 128.
 
-**Per architecture** ([audit](../dx/api-consistency.md)):
+**Per architecture** ([audit](../archive/design/api-consistency.md)):
 
 | | gfx1100 (RDNA3) | gfx950 (CDNA4) |
 |---|---|---|
@@ -543,7 +543,7 @@ hk.ops.paged_prefill.work_list(q_lens, device)
 The (request, tile) entries for a batch's prefill requests: one per
 Q_TILE rows of each, ints on the host, one int32 copy to the device.
 
-**Per architecture** ([audit](../dx/api-consistency.md)):
+**Per architecture** ([audit](../archive/design/api-consistency.md)):
 
 | | gfx1100 (RDNA3) | gfx950 (CDNA4) |
 |---|---|---|
@@ -561,7 +561,7 @@ if given, is the (M, N) bf16 tensor to write.
 `override` replaces fields of the schedule (slices, warps, combine_depth,
 resident, splits) -- for measuring, not for use.
 
-**Per architecture** ([audit](../dx/api-consistency.md)):
+**Per architecture** ([audit](../archive/design/api-consistency.md)):
 
 | | gfx1100 (RDNA3) | gfx950 (CDNA4) |
 |---|---|---|
@@ -579,7 +579,7 @@ assignment, one pair per block, `expert_ids` then being the flattened
 top-k ids. `topk_weights` given multiplies each row by its routing
 weight. Raises ValueError for a GEMM `takes` refuses.
 
-**Per architecture** ([audit](../dx/api-consistency.md)):
+**Per architecture** ([audit](../archive/design/api-consistency.md)):
 
 | | gfx1100 (RDNA3) | gfx950 (CDNA4) |
 |---|---|---|
@@ -594,7 +594,7 @@ hk.ops.moe.moe_align(topk_ids, block_m: int, num_experts: int)
 A torch moe_align_block_size, for tests and for running without vLLM:
 (sorted_ids, expert_ids, num_tokens_post_padded).
 
-**Per architecture** ([audit](../dx/api-consistency.md)):
+**Per architecture** ([audit](../archive/design/api-consistency.md)):
 
 | | gfx1100 (RDNA3) | gfx950 (CDNA4) |
 |---|---|---|
@@ -610,7 +610,7 @@ x @ W.T for W in hk's 4-bit layout: the decode kernel up to 64 rows of
 x, dequantize-then-F.linear above (or for a shape it does not take).
 zs None: the symmetric form (every zero point 8; `repack_gptq(symmetric=True)`).
 
-**Per architecture** ([audit](../dx/api-consistency.md)):
+**Per architecture** ([audit](../archive/design/api-consistency.md)):
 
 | | gfx1100 (RDNA3) | gfx950 (CDNA4) |
 |---|---|---|
@@ -629,7 +629,7 @@ the module docstring), `WrongArch` off gfx950, and `Unavailable` when the
 kernel did not build or failed its check under this hipcc. `out`, if
 given, must be a contiguous (M, N) bf16 tensor that aliases neither input.
 
-**Per architecture** ([audit](../dx/api-consistency.md)):
+**Per architecture** ([audit](../archive/design/api-consistency.md)):
 
 | | gfx1100 (RDNA3) | gfx950 (CDNA4) |
 |---|---|---|
@@ -650,7 +650,7 @@ call at a new (H, H_KV, N, D, causal) compiles, and the first on each
 device checks the build (see the module docstring). Raises like
 `gemm_bf16`.
 
-**Per architecture** ([audit](../dx/api-consistency.md)):
+**Per architecture** ([audit](../archive/design/api-consistency.md)):
 
 | | gfx1100 (RDNA3) | gfx950 (CDNA4) |
 |---|---|---|

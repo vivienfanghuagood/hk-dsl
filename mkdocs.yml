@@ -65,6 +65,14 @@ validation:
 # that cite them, not listed one by one.
 not_in_nav: |
   /history/[0-9]*.md
+  /performance.md
+  /design/cdna.md
+  /design/cdna-hipkittens-ops.md
+  /design/serving-readiness.md
+  /design/dx-goal.md
+  /design/tuning-goal.md
+  /design/e2e-goal.md
+  /dx/api-consistency.md
 
 nav:
   - Overview: README.md
@@ -100,7 +108,6 @@ nav:
       - hk.target: api/hk.target.md
   - Performance:
       - The scorecard: performance/scorecard.md
-      - The measurement record: performance.md
   - How it works:
       - The IR: ir.md
       - The runtime: runtime.md
@@ -112,15 +119,19 @@ nav:
       - "The end-to-end loop: a model, measured and patched": e2e-loop.md
       - "For agents: kernels in an engine": agents.md
   - Design:
-      - The DX goal: design/dx-goal.md
       - Schedules as data: design/schedules.md
-      - Tuning goal: design/tuning-goal.md
-      - The end-to-end goal: design/e2e-goal.md
-      - CDNA3/4: design/cdna.md
-      - HipKittens on CDNA4: design/cdna-hipkittens-ops.md
-      - Serving readiness: design/serving-readiness.md
       - hk.comm (XCDs and GPUs): design/comm.md
       - Workgroup placement: design/placement-pass.md
       - "The DSL surface": design/dsl-surface.md
-      - Cross-architecture API audit: dx/api-consistency.md
-  - Development record: history/README.md
+  - Archive:
+      - archive/README.md
+      - The measurement record: archive/performance-2026-10.md
+      - Superseded design:
+          - The DX goal: archive/design/dx-goal.md
+          - Tuning goal: archive/design/tuning-goal.md
+          - The end-to-end goal: archive/design/e2e-goal.md
+          - CDNA3/4: archive/design/cdna.md
+          - HipKittens on CDNA4: archive/design/cdna-hipkittens-ops.md
+          - Serving readiness: archive/design/serving-readiness.md
+          - Cross-architecture API audit: archive/design/api-consistency.md
+      - Development record: history/README.md

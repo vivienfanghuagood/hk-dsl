@@ -1,7 +1,7 @@
 """The CDNA compile gate: the kernels that run on an MI355X build for gfx950 and
 gfx942 through hk's own build, spill gate included.
 
-What ran, and against what, is in docs/design/cdna.md; this holds the build so
+What ran, and against what, is in docs/archive/design/cdna.md; this holds the build so
 a change to the translation or the shim that breaks it fails here, with hipcc
 and no GPU. gfx942 is compile-only -- there is no MI300 here.
 """

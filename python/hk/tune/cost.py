@@ -7,7 +7,7 @@ what can be known without a GPU:
 
   * **wave quantization** -- workgroups over the CUs that run them at once;
     a grid of 1.75 waves pays for two (the gate_up-at-1024 case of
-    docs/design/tuning-goal.md);
+    docs/archive/design/tuning-goal.md);
   * **padding** -- a 256-row block at M = 300 computes 512 rows;
   * **tile efficiency** -- operand bytes per MFMA fall as a block grows
     (bm * bn / (bm + bn));
