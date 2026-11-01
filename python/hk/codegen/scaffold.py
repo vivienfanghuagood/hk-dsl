@@ -47,12 +47,20 @@ def _strided(ir: "TracedKernel") -> List[str]:
     return [p.name for p in ir.tensors() if getattr(p.type, "strided", False)]
 
 
+def _w4_zp(op) -> bool:
+    """Whether an hk.load_w4 reads zero codes (its zp operand, segment 4 of dst, qw, s, zs,
+    zp, n0, k0, is present)."""
+    seg = op.attributes["operandSegmentSizes"]
+    return list(seg)[4] > 0
+
+
 def _symmetric_w4(ir: "TracedKernel") -> bool:
-    """Whether the kernel has a symmetric hk.load_w4 (a `zero`, no zs)."""
+    """Whether the kernel has an hk.load_w4 of hk/rdna/w4.cuh's: symmetric (a `zero`, no zs)
+    or with zero codes (zp)."""
     from ..compiler import mlir as M  # noqa: PLC0415
 
     def visit(op) -> bool:
-        return ((op.name == "hk.load_w4" and "zero" in op.attributes)
+        return ((op.name == "hk.load_w4" and ("zero" in op.attributes or _w4_zp(op)))
                 or any(visit(o) for r in op.regions for b in r.blocks for o in b.operations))
 
     with M.context():
@@ -65,9 +73,9 @@ def _includes(ir: "TracedKernel", *more: str) -> tuple:
     hk/rdna/strided.cuh only for a kernel with a strided global, and on RDNA
     hk/rdna/map.cuh only for a kernel with an hk.map, hk/rdna/operand.cuh
     only for one with an hk.as_operand (CDNA's hk/cdna.cuh has both) and
-    hk/rdna/w4.cuh only for one with a symmetric hk.load_w4 (CDNA's
-    hk/cdna/formats.cuh has it), so every other kernel's source is what it
-    was."""
+    hk/rdna/w4.cuh only for one with a symmetric or zero-code hk.load_w4
+    (CDNA's hk/cdna/formats.cuh has the symmetric form), so every other
+    kernel's source is what it was."""
     tgt = get_target(ir.arch)
     strided = ('"hk/rdna/strided.cuh"',) if _strided(ir) else ()
     maps = ('"hk/rdna/map.cuh"',) if tgt.wave == 32 and ir._has_op("hk.map") else ()

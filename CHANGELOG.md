@@ -41,6 +41,32 @@ writes its Pᵀ this way; its `PairPKernel` subclass, which spliced the same C++
 source and rewrote it with a regex, is gone -- no `hk.ops` kernel overrides `with_defines` any more.
 attn_k3's ISA and resources are identical on gfx1100; on gfx1201, where its route never ran and RDNA4's
 accumulator layout differs, tracing it is now refused.
+**AWQ MoE at decode on RDNA3: `hk.load_w4(zp=, rows=True)`, `hk.ops.moe.moe_gemm_w4` and the vLLM
+route `vllm_moe_wna16` (opt-in, `HK_VLLM_MOE_WNA16=1`).** vLLM runs an AWQ MoE checkpoint's routed
+experts through moe_wna16: codes uint8 [E, N, K/2], scales [E, N, K/group], and 4-bit zero codes per
+row and group. hk now reads those tensors as they are, with no repack and no second copy of the
+experts (~17 GB on Qwen3.6-35B-A3B-AWQ):
+- `hk.load_w4(..., zp=Z)`: the element is (q - z) * s, with z read from an int8 [N/2, K/group]
+  tensor holding two rows to a byte. An fp16 tile decodes as the symmetric form does, so q - z is
+  exact and the product rounds once to nearest even. `rows=True`: the codes are row-major, int32
+  [N, K/8], each lane reading its own row's 16 bytes. On a Qwen3.6 microbenchmark this is within 1%
+  of hk's interleaved layout. RDNA only (include/hk/rdna/w4.cuh). The asymmetric and symmetric forms
+  print exactly as before: V0 shows 0 differences over the catalog (1049 kernels) and over every
+  w4a16 kernel the routes build (66), on gfx1100 and gfx1201.
+- `hk.ops.moe.moe_gemm_kernel` gains `dtype` (fp16), `w4_group` (W in the layout above, expert e's
+  rows at e * N) and `unroll`. The bf16 kernels are unchanged. `moe_gemm_w4` / `takes_w4` run it.
+- `hk.integration.vllm_moe_wna16` rebinds `invoke_fused_moe_wna16_triton_kernel` and asks for
+  16-row blocks at up to 32 tokens a step, on the (experts, N, K, group) it was validated on
+  (`VALIDATED`: Qwen3.6-35B-A3B-AWQ's two expert GEMMs; `HK_VLLM_MOE_WNA16=force` takes any).
+  Prefill chunks, other shapes, symmetric GPTQ without zero points and int8 weights stay on vLLM's
+  kernel, counted by reason in `REFUSED`.
+- Qwen3.6-35B-A3B-AWQ, one W7900D, the Radeon TheRock vLLM image, against stock-fair' (TRITON_ATTN,
+  TunableOp, and the int4 MoE config picked per M by in-vLLM time), 3 alternating starts each:
+  - 1k TPOT: 1.22x at 1 request, **1.48x at 8**, 1.42x at 16;
+  - 8k decode at 4 requests: 1.24x;
+  - GSM8K-200 equal (.870 / .875 / .870 vs .860 / .875 / .860);
+  - every captured decode call took hk's kernel.
+  Kernel alone, with real captured routing and cold weights: 2.6-3.2x vLLM's kernel at 1-16 tokens.
 
 **`hk.map` on RDNA strips (gfx1100, gfx1201).** The integer, mask and bit expressions below,
 `hk.map(fn)` and `hk.map_cpp` lower on RDNA too, through include/hk/rdna/map.cuh (the trees'

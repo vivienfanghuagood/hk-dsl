@@ -1923,7 +1923,7 @@ def zeros(ty, *, into=None):
 
 def load_w4(ty, qw: "Global", s: "Global", zs: Optional["Global"], n0, k0, *,
             group: int = 128, zero: Optional[int] = None, s_blocked: bool = False,
-            into=None) -> "Tile":
+            zp: Optional["Global"] = None, rows: bool = False, into=None) -> "Tile":
     """Rows n0.. and columns k0.. of W, dequantized from 4-bit codes into a
     bf16 row-layout tile: element (n, k) is q * s - zs, q being nibble k % 8
     of row n's word k // 8 (int32 [N, K/8], interleaved [N/16][K/32][16][4]),
@@ -1943,7 +1943,20 @@ def load_w4(ty, qw: "Global", s: "Global", zs: Optional["Global"], n0, k0, *,
     `s_blocked` (symmetric): s is laid out [N/16, K/group * 16] -- a 16-row
     block's scales of one group are 16 consecutive values, so the 16 rows a
     k-step reads take 32 contiguous bytes instead of 16 lines
-    (`hk.ops.w4a16.repack_gptq(..., symmetric=True)` writes it)."""
+    (`hk.ops.w4a16.repack_gptq(..., symmetric=True)` writes it).
+
+    Zero codes: `zs=None, zp=Z` -- the element is (q - z) * s with z the
+    4-bit zero code of row n and group k // group, read from Z, int8
+    [N/2, K/group] with two rows to a byte (row 2j in the low nibble, 2j + 1
+    in the high): vLLM's moe_wna16 layout of an AWQ (or zero-point GPTQ)
+    checkpoint, no zero-times-scale tensor (16.5 bytes a 32-column group of a
+    row against 20 with zs). An fp16 tile decodes as the symmetric form does,
+    q - z exact and the product rounded once to nearest even; a bf16 tile
+    through the fp32 path with zs = z * s. RDNA (wave32) only.
+
+    `rows` (zero codes): the codes are row-major, int32 [N, K/8] with nibble
+    t of word w column 8w + t -- vLLM's uint8 [N, K/2] viewed as int32 -- not
+    hk's interleaved order; each lane loads its own row's 16 bytes."""
     if ty.cols % 32:
         raise ValueError(f"load_w4 reads whole 32-column chunks; the tile is "
                          f"{ty.cols} wide")
@@ -1953,9 +1966,19 @@ def load_w4(ty, qw: "Global", s: "Global", zs: Optional["Global"], n0, k0, *,
                         f"not {ty!r}")
     if group <= 0 or group % 16:
         raise ValueError(f"load_w4: group {group} must be a positive multiple of 16")
-    if (zs is None) == (zero is None):
-        raise TypeError("load_w4 takes zs (asymmetric) or zero= (symmetric: one zero point "
-                        "for every group), exactly one of them")
+    if (zs is not None) + (zero is not None) + (zp is not None) != 1:
+        raise TypeError("load_w4 takes zs (asymmetric), zero= (symmetric: one zero point "
+                        "for every group) or zp= (a tensor of zero codes), exactly one of them")
+    if rows and zp is None:
+        raise TypeError("load_w4(rows=True) is the zero-code form's code layout: give zp=")
+    if zp is not None:
+        from .arch import target  # noqa: PLC0415
+
+        if target().wave != 32:
+            raise TypeError(f"load_w4(zp=): RDNA's (wave32) form, not {target().arch}'s")
+        if not isinstance(zp, Global) or zp.dtype.name != "i8":
+            raise TypeError(f"load_w4: zp holds int8 bytes of two 4-bit zero codes, "
+                            f"not {getattr(zp, 'dtype', zp)!r}")
     if zero is not None and (not isinstance(zero, int) or isinstance(zero, bool)
                              or not 0 <= zero <= 15):
         raise ValueError(f"load_w4: zero is a 4-bit code, 0..15, not {zero!r}")
@@ -1972,7 +1995,12 @@ def load_w4(ty, qw: "Global", s: "Global", zs: Optional["Global"], n0, k0, *,
         if want is None and g.dtype.name != ty.dtype.name:
             raise TypeError(f"load_w4: {name} is the tile's {ty.dtype.name}, "
                             f"not {g.dtype.name}")
-    extra = {"zs": zs.v} if zs is not None else {"zero": _i64(zero)}
+    if zp is not None:
+        extra = {"zp": zp.v}
+        if rows:
+            extra["rows"] = _unit_attr()
+    else:
+        extra = {"zs": zs.v} if zs is not None else {"zero": _i64(zero)}
     if s_blocked:
         extra["s_blocked"] = _unit_attr()
     return _make(hkd.LoadW4Op, ty, (qw.v, s.v, as_int(n0).v, as_int(k0).v),
