@@ -188,13 +188,13 @@ def test_vllm_gptq_takes_min_m_to_64_and_leaves_the_rest(monkeypatch):
     for m in sorted({vllm_gptq.MIN_M, 2, 4, 64}):
         x = torch.randn(m, k, device="cuda", dtype=torch.float16) * 0.1
         before = vllm_gptq.STATS["hk"]
-        y = vllm_gptq.gptq_w4a16(x, None, None, None, qw, sc, zs, group)
+        y = vllm_gptq.gptq_w4a16(x, None, None, None, None, qw, sc, zs, group)
         assert vllm_gptq.STATS["hk"] == before + 1 and y.shape == (m, n)
         _close(y, x.float() @ w.t())
     for m in (vllm_gptq.MIN_M - 1, 65):
         if m > 0:
             vllm_gptq.gptq_w4a16(torch.randn(m, k, device="cuda", dtype=torch.float16),
-                                 None, None, None, qw, sc, zs, group)
+                                 None, None, None, None, qw, sc, zs, group)
     assert seen == [m for m in (vllm_gptq.MIN_M - 1, 65) if m > 0]
 
 
