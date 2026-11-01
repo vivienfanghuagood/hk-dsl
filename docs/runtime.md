@@ -41,9 +41,12 @@ generated source always has; their serving paths go through
 What that means on gfx1100 when you call `k(...)` yourself: eager calls on
 torch's default stream run and time correctly, but a CUDA graph does not
 capture the kernel (a replay runs nothing, and a timing of it measures
-nothing), and work on another stream is not ordered against it. Nothing
-reports either. To capture or time an hk kernel in a graph on gfx1100, or to
-run it on a stream of your own, set `HK_LAUNCH=codeobj` before its first
+nothing), and work on another stream is not ordered against it. So a launch
+checks torch's current stream: on any but the default one -- a stream of your
+own, an engine's model stream, a graph capture -- it warns once for that
+kernel (`RuntimeWarning`), and with `HK_STRICT_STREAM=1` raises. To capture
+or time an hk kernel in a graph on gfx1100, or to run it on a stream of your
+own, set `HK_LAUNCH=codeobj` before its first
 call -- every `@hk.kernel`, and so every template, then launches its
 [device-only code object](#over-a-device-only-code-object) on torch's current
 stream -- or call it through `hk.torch_op(k)`. The DX suite's runner does the
@@ -472,6 +475,7 @@ listed in [integration](integration.md#environment-variables).
 | `HK_CACHE_DIR` | `runtime/compile.py` | the compile cache (else `$XDG_CACHE_HOME/hk`, else `~/.cache/hk`) |
 | `HK_TORCH_OP` | `runtime/torch_ext.py` | `library`: `hk.torch_op` builds the libtorch registration (default: over a device-only code object) |
 | `HK_LAUNCH` | `dsl/kernel.py` | `codeobj`: `Kernel.__call__` launches the device-only code object (else the pybind module) |
+| `HK_STRICT_STREAM` | `dsl/kernel.py` | `1`: on RDNA, `k(...)` under a non-default torch stream raises instead of warning once (its pybind launch is on the null stream) |
 | `HK_HOST_FASTPATH` | `runtime/hostpath.py` | `0`/`off`/`no`/`false`: no host fast paths (per-shape memos, launches without the dispatcher); every call takes the path it took before them. Default on |
 | `HK_TUNE_DIR` | `autotune/__init__.py` | where tuning records are written (default: `autotune/` in the cache) |
 | `HK_AUTOTUNE` | `autotune/__init__.py` | `0`, `off` or `no` pins every tuner to its default schedule |

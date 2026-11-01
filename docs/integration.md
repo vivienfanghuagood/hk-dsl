@@ -54,6 +54,7 @@ and which rule decided.
 | encoder SDPA (`--mm-encoder-attn-backend TORCH_SDPA`) | `HK_VLLM_SDPA` | **on, gfx1100** | InternVL2-2B inside the spread of vLLM's own backends ([05](history/05-phase-6-torch-ops.md)); on gfx1201 the drop-in's per-call Python makes the call slower than the R9700 image's torch SDPA, so it stays off there ([50](history/50-gfx1201-in-vllm.md)) |
 | SGLang linear | `HK_SGLANG_LINEAR` | **on, gfx1100** | Qwen3-8B up to a bf16 near-tie; error equal to F.linear's ([24](history/24-sglang.md)) |
 | SGLang MoE (and the gfx1100 top-k fix) | `HK_SGLANG_MOE` | **on, gfx1100** | OLMoE tokens identical ([25](history/25-sglang-moe.md)) |
+| SGLang Gemma-style RMSNorm, where SGLang would run its native torch path | `HK_SGLANG_NORM` | **on, gfx1100** | within half a bf16 unit of a float64 reference, as SGLang's Triton Gemma kernel; residual bit-exact; Qwen3.8-27B GSM8K equal to stock's |
 | SGLang-Diffusion attention | `HK_SGLD_ATTN` | **on, gfx1100** | Qwen-Image 2.1, 42.1 dB from stock and closer to an fp32 reference than stock ([46](history/46-qwen-image-on-rdna3.md)) |
 | SGLang-Diffusion linear | `HK_SGLD_LINEAR` | **on, gfx1100** | 40.0 dB from stock, closer to fp32 than stock ([46](history/46-qwen-image-on-rdna3.md)) |
 | DiT attention in `hk.ops.sdpa` (non-causal, head_dim 128, on `hk.ops.attn_k3`) | `HK_SDPA_K3` | **on, gfx1100** | per-call error 2.95e-5 against the current path's 4.50e-5 (#24) |
@@ -140,6 +141,7 @@ first compile in each process prints one line:
 | your kernels | `register.py` | whatever `register.patch` names | `HK_VLLM_USER=<modules or files>` |
 | SGLang linear layers | `sglang.py`, `_sglang_plugin.py` | `UnquantizedLinearMethod.apply` | `HK_SGLANG_LINEAR` (on, gfx1100); `apply_linear()` in-process |
 | SGLang MoE layers | `sglang_moe.py`, `_sglang_plugin.py` | `topk_softmax`, `invoke_fused_moe_kernel` and `try_get_optimal_moe_config`, rebound by identity | `HK_SGLANG_MOE` (on, gfx1100), or `=topk` for the routing alone |
+| SGLang Gemma-style RMSNorm | `sglang.py`, `_sglang_plugin.py` | `GemmaRMSNorm.forward_hip`, only where `layernorm` has neither aiter's nor vLLM's norms; applied before the model is built | `HK_SGLANG_NORM` (on, gfx1100); `apply_norm()` in-process |
 | SGLang-Diffusion attention, linear, ConvRot | `sglang_diffusion.py` | see [SGLang-Diffusion](#sglang-diffusion-text-to-image-and-video) | `HK_SGLD_ATTN`, `HK_SGLD_LINEAR` (on, gfx1100), `HK_SGLD_CONVROT` (off) |
 
 `engine.py` is what every patch but the two SDPA rebinds shares: the custom
@@ -198,9 +200,13 @@ size, 32).
 **In SGLang, through its plugin entry point.** The package also registers
 `hk = "hk.integration._sglang_plugin:register"` under `sglang.srt.plugins`.
 SGLang loads it in the launcher and in every scheduler process, which is where
-its model runs. It prints the same `[hk] ...` line per process. Both routes
-are on by default on gfx1100. `HK_SGLANG_LINEAR=0` or `HK_SGLANG_MOE=0`
-turns one off, and `HK_DISABLE=1` turns both off.
+its model runs. It prints the same `[hk] ...` line per process. All three
+routes are on by default on gfx1100. `HK_SGLANG_LINEAR=0`, `HK_SGLANG_NORM=0`
+or `HK_SGLANG_MOE=0` turns one off, and `HK_DISABLE=1` turns them all off.
+
+The norm route counts its calls in `sglang.NORM_STATS` (`norm_stats()`): `hk`
+for the calls it took, and every call it left to SGLang under its reason (not
+contiguous, a dtype hk's norms don't take, a residual of another shape).
 
 ```bash
 python -m sglang.launch_server --model-path Qwen/Qwen3-8B \
@@ -314,6 +320,9 @@ output, non-causal, or a call made while a graph is captured.
 
 Nothing is read on the host. The grid is (Q tiles of the longest query,
 heads, requests), and a workgroup works out its request from its index.
+On TRITON_ATTN at head size up to 128 the route first transposes the batch's
+V pages once into a scratch of V^T pages (`vt_pages`), instead of in every
+workgroup; `HK_VLLM_PREFILL_VT=0` turns that off.
 `HK_VLLM_PREFILL_SHADOW=1` also runs vLLM's kernel on every call hk takes and
 compares the rows. It is a diagnostic that syncs; don't serve with it.
 
@@ -576,13 +585,16 @@ A 4-bit symmetric GPTQ checkpoint runs on RDNA3 through `AutoGPTQLinearMethod`
 with `RDNA3W4A16LinearKernel`, vLLM's HIP kernel on GPTQ's shuffled codes.
 `hk/integration/vllm_gptq.py` wraps that method the same way:
 - each layer gets hk's layout (`hk.ops.w4a16.repack_gptq`) *before* vLLM's
-  weight processing, which shuffles the codes in place. The zero point is
-  vLLM's: 8, whatever a symmetric checkpoint stores;
+  weight processing, which shuffles the codes in place. It is `load_w4`'s
+  symmetric form (`repack_gptq(..., symmetric=True)`): zero point 8, no
+  zero-times-scale tensor, scales in 16-row blocks;
 - `apply` calls the opaque op `hk_vllm::gptq_w4a16`, inside which batches of
-  4 to 64 tokens take hk's decode GEMM, and the rest vLLM's kernel. Below
-  4 tokens, with GPTQ's 32-column groups, vLLM's kernel is the faster one.
-- Act-order checkpoints (`desc_act`), other quant types and layers on another
-  kernel keep vLLM's path; `vllm_gptq.REFUSED` counts them by reason.
+  1 to 64 tokens take hk's decode GEMM, and the rest vLLM's kernel. At one
+  token hk's is 1.04-1.12x `gptq_gemm_rdna3` on Qwen3.8-27B's shapes, and it
+  is one kernel a call where vLLM's dispatches a fill before each GEMM.
+- Act-order checkpoints (`desc_act`), other quant types, layers on another
+  kernel and layers whose stored zero points are not 8 keep vLLM's path;
+  `vllm_gptq.REFUSED` counts them by reason.
 
 ```bash
 HK_PATCH_VLLM=1 vllm serve <a GPTQ-Int4 checkpoint> --dtype float16    # HK_VLLM_GPTQ=0 turns it off
@@ -1143,11 +1155,12 @@ spelled:
 | `HK_VLLM_BACKEND` | `_vllm_plugin.py` | register the decoder attention backend (default off); a value other than `1`/`on`/`yes`/`true` names the slot |
 | `HK_VLLM_BACKEND_SLOT` | `vllm_backend.py` | the `AttentionBackendEnum` member to register over (default `TRITON_ATTN`) |
 | `HK_VLLM_PREFILL` | `_vllm_plugin.py` | prefill attention on vLLM's own cache, ROCM_ATTN and TRITON_ATTN (default off) |
+| `HK_VLLM_PREFILL_VT` | `vllm_prefill.py` | `0`: on TRITON_ATTN, transpose V in every workgroup instead of packing the batch's V^T pages once a call (`paged_prefill` `vt_pages`; default on, head size up to 128) |
 | `HK_VLLM_PREFILL_SHADOW` | `vllm_prefill.py` | `1`: also run vLLM's kernel on every call hk takes and print the worst row's difference in bf16 ulps (a diagnostic; syncs) |
 | `HK_VLLM_GEMM` | `_vllm_plugin.py` | route the unquantized linear layers (default on, gfx1100 and gfx1201) |
 | `HK_VLLM_MOE` | `_vllm_plugin.py` | route the bf16 MoE GEMMs up to 256 tokens a step (2 on gfx1201; default on, gfx1100 and gfx1201) |
 | `HK_VLLM_INT4` | `_vllm_plugin.py` | route AWQ linear layers' fp16/bf16 batches up to 64 tokens (default on) |
-| `HK_VLLM_GPTQ` | `_vllm_plugin.py` | route 4-bit symmetric GPTQ layers' fp16/bf16 batches of 4-64 tokens (default on, gfx1100) |
+| `HK_VLLM_GPTQ` | `_vllm_plugin.py` | route 4-bit symmetric GPTQ layers' fp16/bf16 batches of 1-64 tokens (default on, gfx1100) |
 | `HK_VLLM_MXFP8` | `_vllm_plugin.py` | K2: block-scaled MXFP8 linear layers at M >= 2048, two shapes from their own M (`vllm_mxfp8.MIN_M_NK`), six with measured M ranges below that (`vllm_mxfp8.RANGES`) (default on, gfx950) |
 | `HK_MXFP8_ANY` | `vllm_mxfp8.py` | `1`: K2 takes any (N, K) of whole tiles, not only the measured TP2 shapes (default off) |
 | `HK_VLLM_MOE_A8W4` | `_vllm_plugin.py` | K1: AITER a8w4 MoE at M >= `HK_MOE_A8W4_MIN_M` (2560) (default on, gfx950) |
@@ -1165,6 +1178,7 @@ spelled:
 | `HK_SGLANG_LINEAR` | `_sglang_plugin.py` | route SGLang's unquantized linear layers (default on, gfx1100) |
 | `HK_SGLANG_ROUTES` | `sglang.py`, via `engine.shipped_table` | a routing table for SGLang's linear layers instead of the shipped one |
 | `HK_SGLANG_MOE` | `_sglang_plugin.py` | `1` (default on, gfx1100): the torch top-k and hk's expert GEMMs; `topk`: the torch top-k alone |
+| `HK_SGLANG_NORM` | `_sglang_plugin.py` | route SGLang's GemmaRMSNorm where it would run its native torch path (default on, gfx1100) |
 | `HK_SGLD` | `sglang_diffusion.py` and its boot | `0`: every SGLang-Diffusion route off; a list (`attn,linear,convrot`) names exactly the parts; `1`: attention and linear |
 | `HK_SGLD_ATTN`, `HK_SGLD_LINEAR` | `switches.py` | SGLang-Diffusion's attention and linear (default on, gfx1100) |
 | `HK_SGLD_CONVROT` | `switches.py` | ConvRot INT8, lossy (default off: opt-in) |

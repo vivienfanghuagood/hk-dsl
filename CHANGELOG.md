@@ -9,6 +9,23 @@ The next version's notes collect here until it is released.
 What is on main after 0.8.0. `pip install hk-dsl` (0.8.0) does not have it;
 the API reference marks such names *New after 0.8.0*.
 
+**SGLang: Gemma-style RMSNorm on hk (`HK_SGLANG_NORM`, on by default on gfx1100).** Where
+SGLang's `GemmaRMSNorm` would run its native torch path, which it does on ROCm without aiter or
+vLLM (eleven kernels a norm), it goes through hk's weighted norm kernels. The route passes the
+stored weight at `weight_offset=1`, fuses the residual add, writes out of place, and launches on
+torch's current stream. Calls it does not take go back to SGLang's forward, counted by reason in
+`hk.integration.sglang.NORM_STATS`. Where SGLang has its own fused norm (aiter, vLLM) the route
+is not applied.
+
+**RDNA: `k(...)` under a non-default torch stream warns (`HK_STRICT_STREAM=1`: raises).** On gfx1100
+and gfx1201 the pybind entry point launches on the null stream, which is ordered against nothing torch
+queued on a stream of its own: a direct `hk.ops` / `@hk.kernel` call made under `torch.cuda.stream(s)`
+-- an engine's model stream, a side stream, a graph capture -- could read its inputs before they were
+written, and nothing said so. Each such launch now checks torch's current stream and warns once per
+kernel, naming the fix (`hk.torch_op(k)` or `HK_LAUNCH=codeobj`); `HK_STRICT_STREAM=1` makes it an
+error. Calls on the default stream, and every engine route (they launch on torch's stream), are
+unchanged; no kernel's source changes.
+
 **`vllm_gemm`: a layer the table never routes keeps vLLM's GEMM, unwrapped.** Every unquantized
 linear used to go through hk's op, which fell back inside for a call it did not take. A model whose
 dense layers are fp16 (the tables are bf16) got no hk call but paid for one captured op per layer
@@ -48,13 +65,33 @@ engine routed a single Qwen3.8 linear to hk, because neither table held its shap
 **GPTQ-Int4 linear layers in vLLM on RDNA3: `vllm_gptq` (`HK_VLLM_GPTQ`, on by default on gfx1100).**
 vLLM runs a 4-bit symmetric GPTQ checkpoint on gfx1100 through `AutoGPTQLinearMethod` with
 `RDNA3W4A16LinearKernel`. The new route keeps hk's own layout of the codes beside vLLM's.
-Batches of 4-64 tokens run on hk's 4-bit decode GEMM; smaller and larger ones stay on vLLM's
-kernel. Act-order checkpoints, other quant types and layers on another kernel are refused, and
-`vllm_gptq.REFUSED` counts them by reason.
+Batches of 1-64 tokens run on hk's 4-bit decode GEMM, in the symmetric form below (its scales in
+16-row blocks, no zero-times-scale tensor); larger ones stay on vLLM's kernel. Act-order
+checkpoints, other quant types, layers on another kernel and layers whose stored zero points are not
+8 are refused, and `vllm_gptq.REFUSED` counts them by reason. On Qwen3.8-27B-GPTQ-Int4 (W7900D,
+TRITON_ATTN + TunableOp on both sides) TPOT is 1.10x vLLM's at one user (8k and 1k context),
+1.08-1.28x at 4-16.
 - `hk.ops.w4a16`: a quantization group narrower than the load now narrows the load
   (`schedule_for(m, k, group)`). Before, GPTQ's 32-column groups fell to the dequantize path at
   every batch up to 16 tokens.
 - `tools/hk-bench/gptq_w4a16.py` times hk against `gptq_gemm_rdna3` on GPTQ checkpoints.
+
+**W4A16's symmetric form: `hk.load_w4(..., zero=, s_blocked=)`.** A 4-bit checkpoint whose zero
+points are all one value (GPTQ's uint4b8: 8) loads without the zero-times-scale tensor:
+`hk.load_w4(ty, qw, s, None, n0, k0, group=G, zero=8)` dequantizes `(q - 8) * s`, 12.5% fewer bytes
+at 32-column groups. `s_blocked=True` reads scales laid out `[N/16, K/G * 16]`, so the 16 rows a
+k-step reads take 32 contiguous bytes. On RDNA a half tile decodes in packed fp16 (include/hk/rdna/w4.cuh,
+included only by a kernel that uses the form): `q - 8` exactly, then one multiply by `s` rounded to
+nearest. bf16 tiles and CDNA keep the fp32 decode. `hk.ops.w4a16.repack_gptq(..., symmetric=True)`
+returns `(qw, s in 16-row blocks, None)` and refuses a checkpoint whose zero points are not all 8;
+`dequant`, `matmul` and `plan` take `zs=None` as the symmetric form. The asymmetric form (AWQ's too)
+is unchanged: every catalog kernel's source is the same.
+
+**One register-view op: `hk.lane_view` (DSL-surface S9a).** `Tile.as_fragment` and `Tile.as_scales`
+(and the deprecated `hk.fp8_operand` / `hk.fp4_operand` / `hk.mx_scales_loose`) build one dialect op,
+`hk.lane_view`, and one C++ function, `kittens::lane_view`, picked by the types -- instead of three of
+each. The generated code is the same: ISA and resources identical on K1 and dsv41_index.
+`hk.mfma_strip` is unchanged (S9b, deferred).
 
 **`hk.lane_coords` of a strip type; `hk.iota` is its column (DSL-surface S6).**
 `hk.lane_coords(ty)` -- of a strip type (`hk.RS`) -- gives two i32 strips of its shape,

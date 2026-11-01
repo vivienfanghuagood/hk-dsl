@@ -281,6 +281,22 @@ def _sglang_linear() -> List[str]:
     return [f"no UnquantizedLinearMethod in {hks._LINEAR_HOMES}"]
 
 
+def _sglang_norm() -> List[str]:
+    import importlib  # noqa: PLC0415
+
+    from . import sglang as hks  # noqa: PLC0415
+
+    L = importlib.import_module(hks._NORM_HOME)
+    cls = getattr(L, "GemmaRMSNorm", None)
+    if cls is None:
+        return [f"no GemmaRMSNorm in {hks._NORM_HOME}"]
+    want = ["self", "x", "residual", "post_residual_addition"]
+    return (_expect(names(cls.forward_hip) == want,
+                    f"GemmaRMSNorm.forward_hip takes {names(cls.forward_hip)}, not {want}")
+            + _expect(hasattr(L, "_use_aiter") and hasattr(L, "_has_vllm_rms_norm"),
+                      f"{hks._NORM_HOME} no longer says whether aiter / vLLM norms are in use"))
+
+
 def _sglang_moe() -> List[str]:
     from . import sglang_moe  # noqa: PLC0415
 
@@ -339,7 +355,7 @@ CHECKS: Dict[str, Callable[[], Optional[List[str]]]] = {
     "vllm_gemm": _vllm_gemm, "vllm_moe": _vllm_moe, "vllm_sdpa": _vllm_sdpa,
     "vllm_backend": _vllm_backend, "vllm_dsv41_index": _vllm_dsv41_index,
     "vllm_sparse_mla": _vllm_sparse_mla, "vllm_prefill": _vllm_prefill,
-    "sglang_linear": _sglang_linear, "sglang_moe": _sglang_moe,
+    "sglang_linear": _sglang_linear, "sglang_moe": _sglang_moe, "sglang_norm": _sglang_norm,
     "sgld_attn": _sgld_attn, "sgld_linear": _sgld_linear, "sgld_convrot": _sgld_convrot,
 }
 

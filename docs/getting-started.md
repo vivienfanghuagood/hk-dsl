@@ -25,22 +25,10 @@ The GPU tests run with ROCm 7.2 (7.2.4 on gfx1100, 7.2.3 on gfx950) and, on
 gfx950, also with the ROCm 10 of vLLM's ROCm image; the no-GPU CI compiles with
 ROCm 7.1's hipcc ([testing](testing.md#ci)).
 
-Tested toolchains, by the clang `hipcc --version` reports:
-
-- **AMD clang 22** (ROCm 7.2.2-7.2.4, `rocm/pytorch:rocm7.2.x`): the GPU tier,
-  gfx950 and gfx1100.
-- **AMD clang 23** (ROCm 10.0, vLLM's `nightly-rocm100` image): gfx950.
-- **AMD clang 24** (ROCm 10.1, TheRock: `rocm/pytorch:rocm10.1.0_ubuntu24.04_py3.12_pytorch_release_2.14.0`):
-  main after 0.8.0, the quick start and examples on gfx950.
-
-Known not to work:
-
-- **hk 0.8.0 with clang 24**: every compile, `--build` included, fails with
-  "the build emitted no kernel-resource-usage remarks". clang 24 prints those
-  remarks in a shape 0.8.0 does not read; main reads it ([changelog](../CHANGELOG.md)).
-- **clang 24 on gfx1100**: `hk.ops`' fp16/bf16 RMSNorm and LayerNorm and its
-  rope, and examples 02 (RMSNorm) and 03 (softmax), spill under it, and hk
-  refuses a spilling kernel (`ResourceError`) rather than run it.
+Which hipcc (AMD clang 20 to 24) is tested with which GPU, and what is known to break in 0.8.0 and on
+main, is the [toolchain matrix](toolchains.md). In short: clang 22 (ROCm 7.2.x) is what the GPU tests
+run on every supported GPU; **hk 0.8.0 does not compile anything under clang 24 (ROCm 10.1)** -- use
+ROCm 7.2.x or 10.0 with the 0.8.0 wheel, or main.
 
 In TheRock's layout hipcc is a launcher in `/usr/local/bin` and ROCm is under
 `site-packages/_rocm_sdk_devel`, with none of its LLVM tools on `PATH`; hk finds
@@ -281,11 +269,13 @@ has shown 13-16% differences out of nothing
 no stream (CDNA's takes torch's current one). Eager back-to-back calls on
 torch's default stream are timed correctly, but a CUDA graph does not
 capture the kernel -- a replay runs nothing, and times nothing -- and work
-on another stream is not ordered against it. To capture an hk kernel on
-gfx1100, or to run it on a stream of your own, launch it on torch's stream:
-set `HK_LAUNCH=codeobj` before the first call (every `@hk.kernel` and
-template then launches its code object on torch's current stream), or call
-it through `hk.torch_op(k)` ([the stream](runtime.md#what-a-launch-does)).
+on another stream is not ordered against it; a call under a non-default
+torch stream warns once (`HK_STRICT_STREAM=1` makes it an error). To capture
+an hk kernel on gfx1100, or to run it on a stream of your own, launch it on
+torch's stream: set `HK_LAUNCH=codeobj` before the first call (every
+`@hk.kernel` and template then launches its code object on torch's current
+stream), or call it through `hk.torch_op(k)`
+([the stream](runtime.md#what-a-launch-does)).
 The serving engines' patches already do.
 
 ## Running the tests
