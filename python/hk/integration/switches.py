@@ -126,6 +126,11 @@ ROUTES: Dict[str, Route] = {r.name: r for r in (
        "unquantized linear layers by the measured route table",
        "Qwen3-8B greedy output matches stock's up to a bf16 near-tie; error vs fp64 equal to "
        "F.linear's (history 24, 32)"),
+    _R("sglang_norm", "sglang", "HK_SGLANG_NORM", True, ("gfx1100",),
+       "Gemma-style RMSNorm (GemmaRMSNorm) where SGLang would run its native torch path (no "
+       "aiter, no vLLM): hk's weighted norm kernels, the stored weight with weight offset 1",
+       "within half a unit of bf16 of a float64 reference, as SGLang's Triton Gemma kernel; the "
+       "residual bit-exact; Qwen3.8-27B GSM8K equal to stock's"),
     _R("sglang_moe", "sglang", "HK_SGLANG_MOE", True, ("gfx1100",),
        "the softmax top-k that fails on gfx1100, and the bf16 MoE GEMMs (=topk: the top-k only)",
        "OLMoE greedy tokens identical to stock's (history 25)"),

@@ -9,6 +9,13 @@ The next version's notes collect here until it is released.
 What is on main after 0.8.0. `pip install hk-dsl` (0.8.0) does not have it;
 the API reference marks such names *New after 0.8.0*.
 
+**SGLang: Gemma-style RMSNorm on hk (`HK_SGLANG_NORM`, on by default on gfx1100).** Where
+SGLang's `GemmaRMSNorm` would run its native torch path, which it does on ROCm without aiter or
+vLLM (eleven kernels a norm), it goes through hk's weighted norm kernels. The route passes the
+stored weight at `weight_offset=1`, fuses the residual add, writes out of place, and launches on
+torch's current stream. Calls it does not take go back to SGLang's forward, counted by reason in
+`hk.integration.sglang.NORM_STATS`. Where SGLang has its own fused norm (aiter, vLLM) the route
+is not applied.
 **RDNA3's paired WMMA operand: `as_operand(k_order="even_odd")` (DSL-surface S11).** On gfx1100,
 `S.as_operand(hk.fp16, k_order="even_odd")` turns a 32x16 fp32 pair of WMMA accumulators into two fp16
 operands, the pair's even rows and its odd rows, one `permlanex16` a packed dword. `hk.ops.attn_k3`

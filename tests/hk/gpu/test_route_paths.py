@@ -224,6 +224,94 @@ def test_sglang_linear_routes_its_apply_through_hk_and_reverts(monkeypatch):
     assert Unquantized.apply is orig
 
 
+def test_sglang_norm_takes_gemma_rmsnorm_through_hk_and_reverts(monkeypatch):
+    """SGLang's GemmaRMSNorm (y = x_hat * (1 + w)) on hk's kernels: the fused add out of place
+    (x and the residual untouched, as on SGLang's HIP paths) and within half a bf16 unit of float64 with the one exact, the plain norm the same; a call hk
+    cannot take (not contiguous) goes back to SGLang's forward and is counted."""
+    _on_here("sglang_norm")
+    calls = []
+
+    class GemmaRMSNorm:
+        def __init__(self, weight):
+            self.weight, self.variance_epsilon = weight, 1e-6
+
+        def forward_hip(self, x, residual=None, post_residual_addition=None):
+            calls.append(x.shape)
+            return "sglang"
+
+    _stand_in(monkeypatch, hks._NORM_HOME, GemmaRMSNorm=GemmaRMSNorm, _use_aiter=False,
+              _has_vllm_rms_norm=False)
+    orig = GemmaRMSNorm.forward_hip
+    g = torch.Generator(device="cuda").manual_seed(5)
+    w = (torch.randn(5120, device="cuda", generator=g) * 0.1).to(B)
+    layer = GemmaRMSNorm(w)
+
+    def ref(z):
+        z = z.double()
+        return z * torch.rsqrt(z.pow(2).mean(-1, keepdim=True) + 1e-6) * (1.0 + w.double())
+
+    def ulps(got, want):
+        e = torch.floor(torch.log2(want.to(B).double().abs().clamp_min(2.0 ** -14)))
+        return ((got.double() - want).abs() / torch.pow(2.0, e - 7)).max().item()
+
+    try:
+        assert "norm -> hk" in hks.apply_norm()
+        for m in (1, 8, 300):
+            x = torch.randn(m, 5120, device="cuda", dtype=B, generator=g)
+            r = (torch.randn(m, 5120, device="cuda", generator=g) * 4).to(B)
+            z, want_r = x.double() + r.double(), (x.float() + r.float()).to(B)
+            assert ulps(layer.forward_hip(x), ref(x)) <= 0.51
+            x0, r0 = x.clone(), r.clone()
+            y, h = layer.forward_hip(x, r)
+            assert torch.equal(h, want_r) and torch.equal(x, x0) and torch.equal(r, r0)
+            assert ulps(y, ref(z)) <= 0.51
+        before = hks.NORM_STATS["hk"]
+        assert layer.forward_hip(torch.randn(5120, 8, device="cuda", dtype=B).t()) == "sglang"
+        assert hks.NORM_STATS["x not contiguous"] == 1 and hks.NORM_STATS["hk"] == before
+        assert len(calls) == 1
+    finally:
+        assert "norm -> sglang" in hks.revert()
+    assert GemmaRMSNorm.forward_hip is orig
+
+
+def test_sglang_norm_is_ordered_on_the_engines_stream(monkeypatch):
+    """SGLang runs its model on a stream of its own. The route launches on torch's current
+    stream, so a norm whose input a busy kernel on that stream is still writing waits for it:
+    10 of 10 exact. (hk.ops' pybind entry points launch on the null stream on RDNA, which a
+    non-blocking stream does not wait for: that was wrong 10 of 10 here.)"""
+    _on_here("sglang_norm")
+
+    class GemmaRMSNorm:
+        def __init__(self, weight):
+            self.weight, self.variance_epsilon = weight, 1e-6
+
+        def forward_hip(self, x, residual=None, post_residual_addition=None):
+            raise AssertionError("SGLang's own forward ran")
+
+    _stand_in(monkeypatch, hks._NORM_HOME, GemmaRMSNorm=GemmaRMSNorm, _use_aiter=False,
+              _has_vllm_rms_norm=False)
+    layer = GemmaRMSNorm(torch.zeros(5120, device="cuda", dtype=B))
+    side = torch.cuda.Stream()
+    big = torch.randn(4096, 4096, device="cuda")
+    try:
+        assert "norm -> hk" in hks.apply_norm()
+        exact = 0
+        for it in range(10):
+            with torch.cuda.stream(side):
+                for _ in range(3):
+                    big = big @ big * 1e-4                     # keep the stream busy
+                x = torch.full((122, 5120), 1.0, device="cuda", dtype=B) + it
+                r = torch.full((122, 5120), 2.0, device="cuda", dtype=B)
+                y, h = layer.forward_hip(x, r)
+                plain = layer.forward_hip(x)
+            torch.cuda.synchronize()
+            exact += int(torch.equal(h, x + r) and torch.equal(y, torch.ones_like(y))
+                         and torch.equal(plain, torch.ones_like(plain)))
+        assert exact == 10
+    finally:
+        hks.revert()
+
+
 def test_sgld_linear_takes_a_dit_projection_through_hk(monkeypatch):
     _on_here("sgld_linear")
 
