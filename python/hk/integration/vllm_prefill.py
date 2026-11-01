@@ -14,7 +14,9 @@ are not read.
 
 A call it does not take falls back to vLLM's kernel unchanged and is counted: another dtype
 or an fp8 cache, ALiBi, a sliding window, sinks, fp8 output, non-causal, a head size without a
-kernel, a page that is not 16 or 32 tokens, block-table pointers, or another arch. Nothing is
+kernel, a page other than 16 or 32 tokens, block-table pointers, or another arch. (On
+TRITON_ATTN, below, a page may be any multiple of 16: hybrid models' pages, 544 tokens for
+MiniCPM-V-4.7's, 784 for Qwen3.8's.) Nothing is
 read on the host, so a call is graph-safe.
 """
 
@@ -28,10 +30,16 @@ PREFIXES = ("vllm",)
 
 PATCH = engine.Patch("hk_vllm::prefill", paths=("hk", "fallback"), graph="safe")
 
-#: Head sizes and pages the kernel is instantiated for (256: dsplit, a query row across a pair
-#: of warps).
+#: Head sizes the kernel is instantiated for (256: dsplit, a query row across a pair of warps).
 HEAD_DIMS = (64, 128, 256)
-PAGES = (16, 32)
+
+
+def page_why_not(page: int) -> str:
+    """Why hk does not take a cache of `page`-token pages, or "": any multiple of 16 tokens (a
+    32-key block lies in one page, spans whole ones, or is two 16-key halves of two pages)."""
+    if page > 0 and page % 16 == 0:
+        return ""
+    return f"page {page}: hk takes pages of a multiple of 16 tokens"
 
 _ORIG = None
 _OPS: dict = {}
@@ -96,8 +104,13 @@ def why_not(q, o, kv_cache_dtype, k_cache, v_cache, b_loc, b_start_loc, b_seq_le
         return f"cache layout {tuple(k_cache.shape)}"
     if q.dim() != 3 or q.shape[-1] not in HEAD_DIMS:
         return f"head size {q.shape[-1]}"
-    if v_cache.shape[3] not in PAGES or k_cache.shape[3] != v_cache.shape[3]:
-        return f"page {v_cache.shape[3]}"
+    if k_cache.shape[3] != v_cache.shape[3]:
+        return f"K page {k_cache.shape[3]} and V page {v_cache.shape[3]}"
+    if int(v_cache.shape[3]) not in (16, 32):
+        # larger pages are hybrid models', whose rows past a sequence's end hold another
+        # layer's bytes; layout="rocm" stages V^T pages unmasked (TRITON_ATTN's route masks)
+        return (f"page {v_cache.shape[3]}: on ROCM_ATTN's cache hk takes pages of 16 or 32 "
+                f"(it stages V^T pages as they are, past a sequence's end too)")
     if q.shape[1] % k_cache.shape[1]:
         return "query heads not a multiple of kv heads"
     for t in (b_loc, b_start_loc, b_seq_len):
@@ -109,41 +122,81 @@ def why_not(q, o, kv_cache_dtype, k_cache, v_cache, b_loc, b_start_loc, b_seq_le
     return ""
 
 
-def context_attention_fwd(q, k, v, o, kv_cache_dtype: str, k_cache, v_cache, b_loc,
-                          b_start_loc, b_seq_len, max_seq_len, max_input_len, k_scale,
-                          v_scale, alibi_slopes=None, sliding_window=None, sm_scale=None,
-                          skip_decode=False, fp8_out_scale=None, sinks=None,
-                          is_block_table_ptr: bool = False, causal: bool = True):
-    """vLLM's prefix-prefill entry point (its parameters, in its order), hk's kernel where it
-    takes the call."""
-    if why_not(q, o, kv_cache_dtype, k_cache, v_cache, b_loc, b_start_loc, b_seq_len,
-               alibi_slopes, sliding_window, skip_decode, fp8_out_scale, sinks,
-               is_block_table_ptr, causal):
+#: context_attention_fwd's parameters the stand-in reads (the rest of vLLM's must be at their
+#: defaults, or the call falls back: _p_unknown).
+_P_READ = frozenset((
+    "q", "k", "v", "o", "kv_cache_dtype", "k_cache", "v_cache", "b_loc", "b_start_loc",
+    "b_seq_len", "max_seq_len", "max_input_len", "k_scale", "v_scale", "alibi_slopes",
+    "sliding_window", "sm_scale", "skip_decode", "fp8_out_scale", "sinks", "is_block_table_ptr",
+    "causal"))
+
+#: of those, the ones vLLM's context_attention_fwd must still have (the contract's check)
+_P_NEED = frozenset((
+    "q", "k", "v", "o", "kv_cache_dtype", "k_cache", "v_cache", "b_loc", "b_start_loc",
+    "b_seq_len", "max_seq_len", "max_input_len", "k_scale", "v_scale", "sm_scale",
+    "skip_decode"))
+
+#: vLLM's context_attention_fwd's signature, set on apply (the stand-in shows it as its own).
+_P_SIG = None
+
+
+def _p_unknown(a: dict) -> str:
+    """A parameter of this vLLM's context_attention_fwd that hk neither reads nor tests and that
+    is not at its default, as a refusal reason, or "". interleaved_v_pack_factor (> 0: ROCM_ATTN's
+    V cache interleaved for its fused writer, not the per-page V^T layout="rocm" reads) is one."""
+    for name, val in a.items():
+        if name in _P_READ:
+            continue
+        p = _P_SIG.parameters.get(name) if _P_SIG is not None else None
+        default = p.default if p is not None else None
+        try:
+            if val is default or (not hasattr(val, "shape") and val == default):
+                continue
+        except Exception:  # noqa: BLE001 -- an uncomparable value is a set one
+            pass
+        return f"{name}={val!r} (a parameter hk does not take)"
+    return ""
+
+
+def context_attention_fwd(*args, **kwargs):
+    """vLLM's prefix-prefill entry point (its signature, set on apply: newer vLLMs add
+    parameters), hk's kernel where it takes the call."""
+    a = dict(kwargs) if not args else _P_SIG.bind(*args, **kwargs).arguments
+    g = {n: (a[n] if n in a else (_P_SIG.parameters[n].default if _P_SIG is not None and
+                                  n in _P_SIG.parameters else d))
+         for n, d in (("alibi_slopes", None), ("sliding_window", None), ("sm_scale", None),
+                      ("skip_decode", False), ("fp8_out_scale", None), ("sinks", None),
+                      ("is_block_table_ptr", False), ("causal", True))}
+    q, o, k_cache, v_cache = a["q"], a["o"], a["k_cache"], a["v_cache"]
+    unknown = _p_unknown(a)
+    if unknown:
+        _P_REFUSED[unknown] = _P_REFUSED.get(unknown, 0) + 1
+    if unknown or why_not(q, o, a["kv_cache_dtype"], k_cache, v_cache, a["b_loc"],
+                          a["b_start_loc"], a["b_seq_len"], g["alibi_slopes"],
+                          g["sliding_window"], g["skip_decode"], g["fp8_out_scale"], g["sinks"],
+                          g["is_block_table_ptr"], g["causal"]):
         PATCH.count("fallback")
-        return _ORIG(q, k, v, o, kv_cache_dtype, k_cache, v_cache, b_loc, b_start_loc,
-                     b_seq_len, max_seq_len, max_input_len, k_scale, v_scale,
-                     alibi_slopes, sliding_window, sm_scale, skip_decode, fp8_out_scale,
-                     sinks, is_block_table_ptr, causal)
+        return _ORIG(*args, **kwargs)
     from ..ops import paged_prefill as pp  # noqa: PLC0415
 
     n, h, d = q.shape
+    sm_scale = g["sm_scale"]
     scale = None if sm_scale is None or sm_scale == d ** -0.5 else float(sm_scale)
     got = _op(d, h // k_cache.shape[1], scale, int(v_cache.shape[3]))
     if got is None:
         PATCH.count("fallback")
-        return _ORIG(q, k, v, o, kv_cache_dtype, k_cache, v_cache, b_loc, b_start_loc,
-                     b_seq_len, max_seq_len, max_input_len, k_scale, v_scale,
-                     alibi_slopes, sliding_window, sm_scale, skip_decode, fp8_out_scale,
-                     sinks, is_block_table_ptr, causal)
+        return _ORIG(*args, **kwargs)
     op, tile = got
-    op(q.reshape(n, h * d), *pp.rocm_views(k_cache, v_cache), b_loc, b_seq_len, b_start_loc,
-       pp.q_tiles(int(max_input_len), q.device, tile), o.reshape(n, h * d))
+    op(q.reshape(n, h * d), *pp.rocm_views(k_cache, v_cache), a["b_loc"], a["b_seq_len"],
+       a["b_start_loc"], pp.q_tiles(int(a["max_input_len"]), q.device, tile), o.reshape(n, h * d))
     PATCH.count("hk")
     if SHADOW:
-        _shadow(o, (q, k, v, kv_cache_dtype, k_cache, v_cache, b_loc, b_start_loc, b_seq_len,
-                    max_seq_len, max_input_len, k_scale, v_scale, alibi_slopes, sliding_window,
-                    sm_scale, skip_decode, fp8_out_scale, sinks, is_block_table_ptr, causal))
+        _shadow(o, args, kwargs, a)
     return None
+
+
+#: refusals by _p_unknown, by reason (the per-call refusal of a parameter hk does not take)
+_P_REFUSED: dict = {}
 
 
 #: HK_VLLM_PREFILL_SHADOW=1: after every hk call, vLLM's kernel on the same arguments into a
@@ -154,13 +207,14 @@ SHADOW = __import__("os").environ.get("HK_VLLM_PREFILL_SHADOW", "") not in ("", 
 SHADOW_STATS = {"calls": 0, "worst_ulps": 0.0, "worst_call": -1, "over_4": 0}
 
 
-def _shadow(o, args) -> None:
+def _shadow(o, args, kwargs, a) -> None:
     import torch  # noqa: PLC0415
 
-    q, k, v, kvd, kc, vc, bl, bs, bsl, *rest = args
     ref = torch.empty_like(o)
-    _ORIG(q, k, v, ref, kvd, kc, vc, bl, bs, bsl, *rest)
-    qs = bs.tolist()
+    b = dict(a)
+    b["o"] = ref
+    _ORIG(**b)
+    qs = a["b_start_loc"].tolist()
     rows = [r for i in range(len(qs) - 1) if qs[i + 1] - qs[i] > 1 for r in range(qs[i], qs[i + 1])]
     _compare(o, ref, rows)
 
@@ -195,12 +249,21 @@ _GUARDED = PATCH.guard(context_attention_fwd)
 #: vLLM's unified_attention, while patched.
 _ORIG_U = None
 
-#: (head_dim, group, scale) -> (launch, Q tile rows) for layout="flash" with decodes on.
+#: (head_dim, group, scale, page) -> (launch, Q tile rows) for layout="flash" with decodes on.
 _FLASH: dict = {}
 
 
-def _flash_op(head_dim: int, group: int, scale: Optional[float]):
-    key = (head_dim, group, scale)
+def _ptag(page: int) -> str:
+    return "" if page == 16 else f"_p{page}"
+
+
+def _otag(order: str) -> str:
+    return "" if order == "planes" else f"_{order}"
+
+
+def _flash_op(head_dim: int, group: int, scale: Optional[float], page: int = 16,
+              order: str = "planes"):
+    key = (head_dim, group, scale, page, order)
     if key not in _FLASH:
         from ..ops import paged_prefill as pp  # noqa: PLC0415
 
@@ -209,9 +272,10 @@ def _flash_op(head_dim: int, group: int, scale: Optional[float]):
             warps = 16 if ds else 12
             tag = "" if scale is None else "_s%08x" % (hash(scale) & 0xffffffff)
             return pp.paged_prefill_kernel(
-                f"paged_prefill_flash_d{head_dim}_g{group}{'_ds' if ds else ''}{tag}",
-                head_dim=head_dim, group=group, scale=scale, layout="flash", dsplit=ds,
-                warps=warps, decodes=True), 16 * (warps // 2 if ds else warps)
+                f"paged_prefill_flash_d{head_dim}_g{group}{'_ds' if ds else ''}{_ptag(page)}"
+                f"{_otag(order)}{tag}", head_dim=head_dim, group=group, scale=scale,
+                layout="flash", dsplit=ds, warps=warps, decodes=True, page=page,
+                kv_order=order), 16 * (warps // 2 if ds else warps)
         _FLASH[key] = _built(make)
     return _FLASH[key]
 
@@ -226,9 +290,10 @@ _VT_OPS: dict = {}
 _VT_SCRATCH: dict = {}
 
 
-def _vt_ops(head_dim: int, group: int, scale: Optional[float]):
+def _vt_ops(head_dim: int, group: int, scale: Optional[float], page: int = 16,
+            order: str = "planes"):
     """(pack launch, vt_pages launch, Q tile rows), or None (not built here, or head_dim 256)."""
-    key = (head_dim, group, scale)
+    key = (head_dim, group, scale, page, order)
     if key not in _VT_OPS:
         _VT_OPS[key] = None
         if head_dim <= 128:
@@ -236,23 +301,24 @@ def _vt_ops(head_dim: int, group: int, scale: Optional[float]):
 
             tag = "" if scale is None else "_s%08x" % (hash(scale) & 0xffffffff)
             main = _built(lambda: (pp.paged_prefill_kernel(
-                f"paged_prefill_flashvt_d{head_dim}_g{group}{tag}", head_dim=head_dim,
-                group=group, scale=scale, layout="flash", warps=12, decodes=True,
-                vt_pages=True), 192))
-            pack = _built(lambda: (pp.vt_pack_kernel(f"paged_vt_pack_d{head_dim}",
-                                                     head_dim=head_dim), 0))
+                f"paged_prefill_flashvt_d{head_dim}_g{group}{_ptag(page)}{_otag(order)}{tag}",
+                head_dim=head_dim, group=group, scale=scale, layout="flash", warps=12,
+                decodes=True, vt_pages=True, page=page, kv_order=order), 192))
+            pack = _built(lambda: (pp.vt_pack_kernel(
+                f"paged_vt_pack_d{head_dim}{_ptag(page)}{_otag(order)}", head_dim=head_dim,
+                page=page, kv_order=order), 0))
             if main is not None and pack is not None:
                 _VT_OPS[key] = (pack[0], main[0], main[1])
     return _VT_OPS[key]
 
 
-def _vt_scratch(device, slots: int, hkv: int, d: int):
+def _vt_scratch(device, slots: int, hkv: int, d: int, page: int = 16):
     import torch  # noqa: PLC0415
 
-    key = (str(device), hkv, d)
+    key = (str(device), hkv, d, page)
     got = _VT_SCRATCH.get(key)
     if got is None or got.shape[0] < slots:
-        got = _VT_SCRATCH[key] = torch.empty(1 << (slots - 1).bit_length(), hkv, d, 16,
+        got = _VT_SCRATCH[key] = torch.empty(1 << (slots - 1).bit_length(), hkv, d, page,
                                              device=device, dtype=torch.bfloat16)
     return got
 
@@ -267,22 +333,68 @@ _U_OFF = {
     "chunk_lookback": lambda v: v is None or v < 0,
     "kv_quant_mode": lambda v: v is None or getattr(v, "name", str(v)) in ("NONE", "0"),
     "k_scale_cache": lambda v: v is None, "v_scale_cache": lambda v: v is None,
+    "rswa_window": lambda v: v is None,
 }
+
+#: unified_attention's arguments hk reads, or that change nothing it computes: its split-softmax
+#: scratch for the 3-D decode kernel, Intel's tensor-descriptor switch, and two modifiers of
+#: features _U_OFF already requires off (ALiBi's sqrt, a multimodal prefix's window clamp).
+#: Any other argument -- one a later vLLM adds -- must be at its default, or the call falls back.
+_U_READ = frozenset((
+    "q", "k", "v", "out", "cu_seqlens_q", "max_seqlen_q", "seqused_k", "max_seqlen_k",
+    "softmax_scale", "causal", "block_table", "k_descale", "v_descale", "seq_threshold_3D",
+    "num_par_softmax_segments", "softmax_segm_output", "softmax_segm_max",
+    "softmax_segm_expsum", "use_td", "use_alibi_sqrt", "mm_prefix_clamp_sliding_window"))
+
+
+def _unknown_set(a: dict) -> str:
+    """The first argument hk neither reads nor tests that is not at its default, or ""."""
+    for name, val in a.items():
+        if name in _U_READ or name in _U_OFF:
+            continue
+        p = _U_SIG.parameters.get(name) if _U_SIG is not None else None
+        default = p.default if p is not None else None
+        if val is default:
+            continue
+        try:
+            if not hasattr(val, "shape") and val == default:
+                continue
+        except Exception:  # noqa: BLE001 -- an uncomparable value is a set one
+            pass
+        return name
+    return ""
 
 
 def _flash_kv(k, v):
-    """The (blocks, 2, block, kv_heads * head_dim) tensor TRITON_ATTN's key and value caches
-    are the halves of, or None if they are not that (another layout, padded strides)."""
+    """(kv, kv_order): the 4-D tensor TRITON_ATTN's key and value caches -- (blocks, page,
+    kv_heads, head_dim) views -- are both views of, as paged_prefill's layout="flash" takes it,
+    or None if they are not one of its orders (another layout, padded strides):
+
+    * "planes": (blocks, 2, page, kv_heads * head_dim), K then V a block (vLLM until its
+      per-layer layouts);
+    * "tokens": a head's K and V side by side, token-major, (blocks, 1, page, kv_heads * 2 *
+      head_dim) (vLLM's (B, H, N, 2 * head_size) cache laid out [B, N, H, C]);
+    * "heads": the same head-major, (blocks, kv_heads, page, 2 * head_dim) ([B, H, N, C]).
+    """
     import torch  # noqa: PLC0415
 
-    if k.dim() != 4 or v.shape != k.shape or k.stride() != v.stride():
+    if k.dim() != 4 or v.shape != k.shape or k.stride() != v.stride() or k.stride(-1) != 1:
         return None
     nb, bs, hkv, d = k.shape
     blk = bs * hkv * d
-    if (k.stride() != (2 * blk, hkv * d, d, 1)
-            or v.data_ptr() - k.data_ptr() != blk * k.element_size()):
+    off = (v.data_ptr() - k.data_ptr()) // k.element_size()
+    st = k.stride()
+    if st == (2 * blk, hkv * d, d, 1) and off == blk:
+        return torch.as_strided(k, (nb, 2, bs, hkv * d), (2 * blk, blk, hkv * d, 1)), "planes"
+    if off != d:
         return None
-    return torch.as_strided(k, (nb, 2, bs, hkv * d), (2 * blk, blk, hkv * d, 1))
+    if st[0] == 2 * blk and st[1] == hkv * 2 * d and (st[2] == 2 * d or hkv == 1):
+        return (torch.as_strided(k, (nb, 1, bs, hkv * 2 * d), (2 * blk, 2 * blk, hkv * 2 * d, 1)),
+                "tokens")
+    if st == (2 * blk, 2 * d, bs * 2 * d, 1):
+        return (torch.as_strided(k, (nb, hkv, bs, 2 * d), (2 * blk, bs * 2 * d, 2 * d, 1)),
+                "heads")
+    return None
 
 
 def u_why_not(a: dict) -> str:
@@ -302,13 +414,19 @@ def u_why_not(a: dict) -> str:
     for name, ok in _U_OFF.items():
         if name in a and not ok(a[name]):
             return f"{name} set"
+    unknown = _unknown_set(a)
+    if unknown:
+        return f"{unknown} set (an argument hk does not know)"
     q, k, v, out = a["q"], a["k"], a["v"], a["out"]
     if q.dtype != torch.bfloat16 or out.dtype != torch.bfloat16 or k.dtype != torch.bfloat16:
         return f"dtype {q.dtype} / cache {k.dtype}"
     if q.dim() != 3 or q.shape[-1] not in (64, 128, 256):
         return f"head size {q.shape[-1]}"
-    if k.dim() != 4 or k.shape[1] != 16:
-        return f"cache {tuple(k.shape)} (pages of 16)"
+    if k.dim() != 4:
+        return f"cache {tuple(k.shape)}"
+    why = page_why_not(int(k.shape[1]))
+    if why:
+        return why
     if q.shape[1] % k.shape[2]:
         return "query heads not a multiple of kv heads"
     for t in (a["block_table"], a["seqused_k"], a["cu_seqlens_q"]):
@@ -320,7 +438,8 @@ def u_why_not(a: dict) -> str:
     if not out.is_contiguous():
         return "output not contiguous"
     if _flash_kv(k, v) is None:
-        return "key/value caches are not the halves of one (blocks, 2, ...) tensor"
+        return (f"key/value caches {tuple(k.shape)} strides {tuple(k.stride())} (V at +"
+                f"{(v.data_ptr() - k.data_ptr()) // k.element_size()}): not a layout hk reads")
     return ""
 
 
@@ -333,10 +452,11 @@ def unified_attention(*args, **kwargs):
         return _ORIG_U(*args, **kwargs)
     q, out = a["q"], a["out"]
     n, h, d = q.shape
-    kv = _flash_kv(a["k"], a["v"])
+    kv, order = _flash_kv(a["k"], a["v"])
     sc = a["softmax_scale"]
     scale = None if sc is None or sc == d ** -0.5 else float(sc)
-    got = _flash_op(d, h // a["k"].shape[2], scale)
+    page = int(a["k"].shape[1])
+    got = _flash_op(d, h // a["k"].shape[2], scale, page, order)
     if got is None:
         PATCH.count("fallback")
         return _ORIG_U(*args, **kwargs)
@@ -346,13 +466,15 @@ def unified_attention(*args, **kwargs):
     v_src = kv
     if VT and d <= 128:
         hkv = a["k"].shape[2]
-        span = -(-int(a.get("max_seqlen_k") or 0) // 16)
-        slots = len(a["seqused_k"]) * span
-        vt_ops = _vt_ops(d, h // hkv, scale) if 0 < slots * hkv * d * 32 <= VT_CAP_BYTES else None
+        max_k = int(a.get("max_seqlen_k") or 0)
+        slots = len(a["seqused_k"]) * -(-max_k // page)
+        vt_ops = (_vt_ops(d, h // hkv, scale, page, order)
+                  if 0 < slots * hkv * d * page * 2 <= VT_CAP_BYTES else None)
         if vt_ops is not None:
             pack, op, tile = vt_ops
-            v_src = _vt_scratch(q.device, slots, hkv, d)
-            pack(kv, a["block_table"], a["seqused_k"], pp.q_tiles(span * 16, q.device, 16), v_src)
+            v_src = _vt_scratch(q.device, slots, hkv, d, page)
+            pack(kv, a["block_table"], a["seqused_k"], pp.vt_pack_span(max_k, q.device, page),
+                 v_src)
     args = [q.reshape(n, h * d), kv, v_src, a["block_table"], a["seqused_k"], a["cu_seqlens_q"],
             pp.q_tiles(int(a["max_seqlen_q"]), q.device, tile), out.reshape(n, h * d)]
     if d <= 128:
@@ -388,7 +510,13 @@ def apply() -> str:
         return "prefill: not patched -- not a ROCm platform"
     from vllm.v1.attention.ops import prefix_prefill  # noqa: PLC0415
 
+    global _P_SIG
+    import inspect  # noqa: PLC0415
+
     _ORIG = prefix_prefill.context_attention_fwd
+    _P_SIG = inspect.signature(_ORIG)
+    # vLLM's callers pass keywords, and probes may read the signature: the stand-in shows vLLM's
+    context_attention_fwd.__signature__ = _P_SIG
     names = _common.rebind(PREFIXES, _ORIG, _GUARDED)
     unames = _apply_unified()
     return (f"prefill -> hk where hk.ops.paged_prefill takes ROCM_ATTN's prefill "
