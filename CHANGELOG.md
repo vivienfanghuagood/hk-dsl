@@ -9,6 +9,8 @@ The next version's notes collect here until it is released.
 What is on main after 0.8.0. `pip install hk-dsl` (0.8.0) does not have it;
 the API reference marks such names *New after 0.8.0*.
 
+**gfx1201: shipped vLLM linear routes for MiniCPM5-2B and Qwen3.8-27B (TP2).** `routes_vllm_linear_gfx1201.json` gains their twelve (N, K), measured with `route_tune --timing graph` in the R9700 vLLM image, so a server of either model no longer measures them at load (~28 s on MiniCPM5; Qwen3.8's ran out of the 60 s budget). M 1-5 stay on vLLM's skinny GEMM on every shape but `in_proj_ba` (from M 5); hk's decode GEMM takes MiniCPM5's qkv, o and down from M 6. On an R9700, on top of #189: MiniCPM5 TPOT 1.054x at concurrency 8 and = at 1, Qwen3.8 TP2 = stock-fair. A machine's own records for these shapes still override the shipped rows.
+
 **Fix: `vllm_gptq` no longer turns off every vLLM route on a vLLM whose `gptq_gemm_rdna3` takes
 `b_g_idx`.** vLLM builds differ in that GEMM's parameters: some take the act-order index, some do not.
 The route's engine contract counted five arguments, so on the other builds it failed, and the
