@@ -70,6 +70,7 @@ nav:
   - Overview: README.md
   - What it is and is not: positioning.md
   - Getting started: getting-started.md
+  - Toolchains: toolchains.md
   - Templates:
       - Elementwise and rowwise: templates/elementwise-rowwise.md
       - GEMM with an epilogue: templates/gemm.md

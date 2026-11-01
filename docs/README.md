@@ -68,6 +68,7 @@ Coding agents: start from [llms.txt](../llms.txt) and the
 |---|---|
 | [The IR](ir.md) | the hk dialect's types and ops, the passes, the C++ translation, `hk-opt` / `hk-translate` |
 | [The runtime](runtime.md) | arch detection, hipcc and the cache, the resource gates, the code-object checker, the stream a kernel launches on, autotune, `torch.ops` |
+| [Toolchains](toolchains.md) | which hipcc (AMD clang 20-24) builds and runs on which GPU, how each is checked, and what is known to break in 0.8.0 and on main |
 | [Building](building.md) | MLIR and the dialect, the wheels and what they carry, the repository layout |
 | [Testing](testing.md) | the test tiers, CI and the GPU tier's self-hosted runners, the engine contract tests, the performance gate |
 | [Releasing](releasing.md) | the release steps, and the documentation sync that must pass before a tag |
