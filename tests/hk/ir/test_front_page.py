@@ -13,6 +13,7 @@ import pytest
 
 REPO = Path(__file__).resolve().parents[3]
 DOCS = [REPO / "README.md", REPO / "docs" / "README.md", REPO / "docs" / "getting-started.md",
+        REPO / "docs" / "install.md", REPO / "docs" / "quickstart.md", REPO / "docs" / "examples.md",
         REPO / "docs" / "language.md", REPO / "docs" / "performance.md",
         REPO / "examples" / "README.md"]
 
@@ -105,7 +106,7 @@ def test_the_front_page_templates_trace(tmp_path, arch):
 
 
 @pytest.mark.parametrize("arch", ["gfx1100", "gfx950"])
-@pytest.mark.parametrize("doc", ["README.md", "docs/getting-started.md"])
+@pytest.mark.parametrize("doc", ["README.md", "docs/quickstart.md"])
 def test_the_raw_kernels_trace(tmp_path, doc, arch):
     pytest.importorskip("torch")
     pytest.importorskip("hk._mlir")

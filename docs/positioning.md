@@ -160,7 +160,7 @@ Tested: measured on the part and run by CI's GPU tier. What the language and eac
 - **Python:** wheels for CPython 3.10 and 3.12 (Linux x86_64, glibc 2.35 or
   newer). Other versions build from source.
 
-Details: [getting started](getting-started.md#install),
+Details: [install](install.md),
 [integration](integration.md#on-by-default-and-turning-it-off).
 
 ## Who it is for
