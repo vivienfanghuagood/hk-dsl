@@ -46,11 +46,13 @@ def test_decode_batches_take_the_decode_kernel(m, nk):
 
 
 @pytest.mark.parametrize("nk", SHAPES)
-@pytest.mark.parametrize("m", [1, 2])
-def test_the_smallest_batches_stay_on_vllms_skinny_gemm(m, nk):
+def test_one_token_stays_on_vllms_skinny_gemm(nk):
     # Since 0.2x vLLM runs wvSplitK / LLMM1 at M <= 5 on gfx11, and the table
-    # is measured against what the installed vLLM runs.
-    assert vllm_gemm.route_for(m, *nk) == "fallback"
+    # is measured against what the installed vLLM runs. Timed as a captured step
+    # runs it (graph timing), its one-token GEMV is level with or ahead of hk's
+    # on these shapes; at M = 2-4 the decode GEMV can be ahead (6144x4096: 80.6
+    # vs 74.0 us at M = 4), so only M = 1 is pinned here.
+    assert vllm_gemm.route_for(1, *nk) == "fallback"
 
 
 @pytest.mark.parametrize("nk", (QKV, O, GATE_UP, DOWN))
