@@ -34,6 +34,30 @@ layer whose (dtype, N, K) the table routes at no M, or whose weight is biased or
 vLLM's own GEMM directly. The load reports `[hk] linear layers at load: N through hk's op;
 unrouted at load: ...`.
 
+**The gfx1100 GEMM route measures what a decode step runs: graph timing in the routes tuner, and
+12 table rows re-measured.**
+- **The bias.** `hk.autotune.routes` (route_tune and the at-load tuner) timed an unqueued burst on
+  RDNA, which charged vLLM's ~8 us of Python dispatch at M <= 5 to the engine. For 1536x1536 at
+  M = 1 it read 17.2 us for the engine against hk's 11.5 us. In a captured graph it is 9.4 us
+  against 11.0 us.
+- **The cost.** InternVL3-2B lost c1 TPOT to it (0.965x of stock-fair, from an at-load record).
+- **Timing.** `measure_points(timing=)` adds "graph": each path's burst over the rotated weights is
+  captured once as a CUDA graph, warmed and captured on a side stream of its own, and its replays
+  are timed. Graph is now the default on RDNA; gfx950 keeps "queued".
+- **Records.** At-load records record their timing. On RDNA a record without one is measured
+  again.
+- **route_tune.** It gains `--timing`, `--nk`, `--merge-into` and `--splice`; `--splice` replaces
+  a row's points at the measured Ms only and re-derives its runs.
+- **The 12 rows.** The shipped gfx1100 rows that sent M <= 5 to hk against the burst floor were
+  re-measured at M 1-63 with graph timing and spliced. Small-N rows give M <= 1-5 back to vLLM
+  (2048x256: M <= 16). Large rows take hk from M = 2, where vLLM's M = 2-4 is slower than the
+  decode GEMV in a graph. M = 1 stays vLLM's everywhere.
+- **Gates.** One W7900D, 3 alternating server starts per arm:
+  - InternVL3-2B c1 TPOT 5.058 vs stock-fair 5.051 ms (equal), c8 1.08x;
+  - MiniCPM5-2B c1 equal and c8 1.20x vs hk on main;
+  - MiniCPM-V-4.7-35B TP2 c1 / c4 / c16 equal to hk on main;
+  - GSM8K equal throughout.
+
 **RDNA3's paired WMMA operand: `as_operand(k_order="even_odd")` (DSL-surface S11).** On gfx1100,
 `S.as_operand(hk.fp16, k_order="even_odd")` turns a 32x16 fp32 pair of WMMA accumulators into two fp16
 operands, the pair's even rows and its odd rows, one `permlanex16` a packed dword. `hk.ops.attn_k3`

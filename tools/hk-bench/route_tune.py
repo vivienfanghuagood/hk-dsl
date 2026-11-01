@@ -58,11 +58,26 @@ HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parents[1] / "python"))
 
 from hk.autotune.routes import (  # noqa: E402,F401 -- the tests read these here
-    CLOSE_K, GRID, NOISE_K, OPTIONAL, PATHS, ROTATE_BYTES, base_path, close_call,
+    CLOSE_K, GRID, NOISE_K, OPTIONAL, PATHS, ROTATE_BYTES, TIMINGS, base_path, close_call,
     compare, decisions, dump, engine_path, estimate, linear_shapes, margin,
     model_config, optional_wins, prefer, runs, tune_shape)
 
 _engine = engine_path
+
+
+def splice(old: dict, new: dict, **gains) -> dict:
+    """`old`'s row with the points at `new`'s Ms replaced by `new`'s, its runs, above and overlay
+    re-derived from the merged points (hk.autotune.routes.entry); the spliced Ms and how they were
+    measured go in meta["spliced"]."""
+    from hk.autotune.routes import entry
+
+    ms = {p[0] for p in new["points"]}
+    pts = sorted([p for p in old["points"] if p[0] not in ms] + new["points"], key=lambda p: p[0])
+    ent = entry(old["name"], pts, partial=bool(old.get("partial")), **gains)
+    meta = dict(old.get("meta", {}))
+    meta["spliced"] = {"ms": sorted(ms), **new.get("meta", {})}
+    ent["meta"] = meta
+    return ent
 
 
 def main() -> int:
@@ -78,6 +93,19 @@ def main() -> int:
     ap.add_argument("--shapes", default="",
                     help="comma-separated subset of qkv,o,gate_up,down,lm_head")
     ap.add_argument("--m", default="", help="comma-separated Ms (default: the grid)")
+    ap.add_argument("--timing", choices=TIMINGS, default=None,
+                    help="how a burst is timed (hk.autotune.routes.measure_points): default "
+                    "queued on gfx950, graph (captured, cold weights) on RDNA")
+    ap.add_argument("--nk", default="",
+                    help="name=NxK,... measured instead of --model's linear_shapes")
+    ap.add_argument("--merge-into", default="",
+                    help="an existing table: write it with this run's rows added, each replacing "
+                    "the row of its key whole (or, with --splice, only at the measured Ms), with "
+                    "this run's measurement in the row's meta")
+    ap.add_argument("--splice", action="store_true",
+                    help="with --merge-into: replace only the measured Ms' points of an existing "
+                    "row and re-derive its runs, keeping its other points (a fix at decode Ms "
+                    "without re-measuring the whole grid); a row not in the table is added whole")
     ap.add_argument("--rounds", type=int, default=3)
     ap.add_argument("--min-gain", type=float, default=0.03)
     ap.add_argument("--paths", default="hk,hk_decode",
@@ -118,6 +146,10 @@ def main() -> int:
         return compare(*args.compare)
     if not args.out:
         ap.error("--out is required")
+    if args.merge_into and args.confirm:
+        ap.error("--merge-into and --confirm do not combine")
+    if args.splice and not args.merge_into:
+        ap.error("--splice needs --merge-into")
     paths = set(args.paths.split(","))
     if not paths <= set(PATHS):
         raise SystemExit(f"--paths: unknown {sorted(paths - set(PATHS))}")
@@ -130,11 +162,17 @@ def main() -> int:
     dev = torch.device("cuda")
     arch = (torch.cuda.get_device_properties(dev).gcnArchName or "").split(":")[0]
     shapes, seen = [], set()
-    for model in args.model.split(","):
-        for s in linear_shapes(model_config(model), args.tp):
-            if s[1:3] not in seen:
-                seen.add(s[1:3])
-                shapes.append(s)
+    if args.nk:
+        for item in args.nk.split(","):
+            nm, nk = item.split("=")
+            n, k = (int(v) for v in nk.lower().split("x"))
+            shapes.append((nm, n, k, 0))
+    else:
+        for model in args.model.split(","):
+            for s in linear_shapes(model_config(model), args.tp):
+                if s[1:3] not in seen:
+                    seen.add(s[1:3])
+                    shapes.append(s)
     if args.shapes:
         keep = set(args.shapes.split(","))
         shapes = [s for s in shapes if s[0] in keep]
@@ -159,6 +197,8 @@ def main() -> int:
                  noise_k=args.noise_k, date=time.strftime("%Y-%m-%d"), shapes={})
     if hkk is not None:
         table["hipcc"] = hkk.hipcc_version()
+    from hk.target import current_arch
+    table["timing"] = args.timing or ("queued" if current_arch() == "gfx950" else "graph")
     if args.rotate_mb != ROTATE_BYTES // 2**20:
         table["rotate_mb"] = args.rotate_mb
     if fly:
@@ -176,9 +216,12 @@ def main() -> int:
                          remeasure=args.remeasure, opt_gain=args.opt_gain,
                          close_k=args.close_k, noise_k=args.noise_k,
                          rotate_bytes=args.rotate_mb * 2**20, raw=args.raw,
-                         log=lambda s: print(s, flush=True))
+                         timing=args.timing, log=lambda s: print(s, flush=True))
         remeasured += ent.pop("remeasured")
         ent.pop("seconds")
+        if args.merge_into:
+            ent["meta"] = {k: table[k] for k in ("model", "engine", "torch", "hip", "device", "toolchain",
+                                                 "min_gain", "date", "timing") if k in table}
         table["shapes"][f"{n}x{k}"] = ent
         print(f"{sname} {n}x{k}: {len(ent['points'])} Ms, {time.time() - t0:.0f}s", flush=True)
         for lo, hi, path in ent["runs"]:
@@ -188,6 +231,15 @@ def main() -> int:
                 print(f"    {lo:>6}..{'' if hi is None else hi:<6} {name} {var}", flush=True)
 
     table["remeasured"] = remeasured
+    if args.merge_into:
+        base = json.loads(Path(args.merge_into).read_text())
+        for key, ent in table["shapes"].items():
+            old = base["shapes"].get(key)
+            if args.splice and old is not None:
+                ent = splice(old, ent, min_gain=args.min_gain, noise_k=args.noise_k,
+                             opt_gain=args.opt_gain)
+            base["shapes"][key] = ent
+        table = base
     Path(args.out).write_text(dump(table))
     print(f"wrote {args.out} ({remeasured} points re-measured as close calls)")
     return 0

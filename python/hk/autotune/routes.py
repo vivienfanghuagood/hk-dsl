@@ -267,6 +267,29 @@ def entry(name: str, points: List[list], *, min_gain: float = MIN_GAIN,
     return ent
 
 
+#: How measure_points times a burst (see its docstring).
+TIMINGS = ("burst", "queued", "graph")
+
+
+def default_timing(arch: Optional[str] = None) -> str:
+    """measure_points' timing when none is given: "queued" on gfx950, "graph" on RDNA."""
+    if arch is None:
+        from ..target import current_arch  # noqa: PLC0415
+
+        arch = current_arch()
+    return "queued" if arch == "gfx950" else "graph"
+
+
+def _record_timing(ent: dict, arch: str) -> Optional[str]:
+    """How a record was timed: its meta's; for a record from before timing was recorded (a meta
+    without it), what records were then (queued on gfx950, an unqueued burst elsewhere); None for
+    a row with no meta at all, which says nothing about how it was measured (as with its engine)."""
+    meta = ent.get("meta")
+    if meta is None:
+        return None
+    return meta.get("timing") or ("queued" if arch == "gfx950" else "burst")
+
+
 def dump(table: dict) -> str:
     """JSON with one line per run and per measured M, so a diff of two tables
     reads as a diff of decisions."""
@@ -543,7 +566,7 @@ def measure_points(n: int, k: int, ms: Sequence[int], *, engine: Callable,
                    rotate_bytes: int = ROTATE_BYTES, raw: bool = False,
                    deadline: Optional[float] = None, device=None,
                    log: Optional[Callable[[str], None]] = None,
-                   tag: str = "", queued: Optional[bool] = None
+                   tag: str = "", queued: Optional[bool] = None, timing: Optional[str] = None
                    ) -> Tuple[List[list], int, bool]:
     """Measure y = x @ W.T for W (n, k) at each M of `ms`, in order.
 
@@ -556,9 +579,23 @@ def measure_points(n: int, k: int, ms: Sequence[int], *, engine: Callable,
     no path is charged for its launch's host cost. Default: on for gfx950,
     where vLLM's path is aiter's tuned GEMM, ~60 us of Python a call at
     M = 16 against a 12 us kernel, which an unqueued burst times as the
-    kernel's (docs/history/42); off elsewhere, as the shipped tables were
-    measured.
+    kernel's (docs/history/42).
+
+    `timing` says how a burst is timed: "burst" (unqueued, launches as the
+    host makes them), "queued" (as above) or "graph": each path's burst over
+    the rotated weights captured once as a CUDA graph and its replays timed --
+    how a captured decode step runs it, with no host cost in either arm and
+    cold weights. Default: "queued" on gfx950 (or `queued`'s value when
+    given), "graph" on RDNA. An unqueued burst on gfx1100 charged vLLM's ~8 us
+    of Python dispatch at M <= 5 (wvSplitK) to the engine: 1536x1536 at M = 1,
+    17.2 vs hk's 11.5 us unqueued, 8.6 vs 11.3 queued, 9.4 vs 11.0 in a graph,
+    and a table measured so sent small M to hk where serving, in graphs, was
+    slower.
     """
+    if timing is None:
+        timing = default_timing() if queued is None else ("queued" if queued else "burst")
+    if timing not in TIMINGS:
+        raise ValueError(f"timing={timing!r}: one of {TIMINGS}")
     import torch  # noqa: PLC0415
 
     paths = set(paths)
@@ -595,10 +632,7 @@ def measure_points(n: int, k: int, ms: Sequence[int], *, engine: Callable,
             variants["flydsl"] = lambda w: fly.run(x, w, out) or out
         return variants
 
-    if queued is None:
-        from ..target import current_arch  # noqa: PLC0415
-
-        queued = current_arch() == "gfx950"
+    queued = timing == "queued"
 
     def one_set(m, names):
         """{path: [ms per round]} on activations of their own."""
@@ -608,6 +642,34 @@ def measure_points(n: int, k: int, ms: Sequence[int], *, engine: Callable,
         per = {p: [] for p in ok}
         order = list(ok)
         host = {}
+        if timing == "graph":
+            # Captured on a stream of its own, warmed on that stream first: a library that keeps
+            # per-stream state (hipBLASLt's handle and workspace, which TunableOp's tuned GEMMs
+            # reach) makes it on first use, which a stream being captured does not permit.
+            graphs = {}
+            side = torch.cuda.Stream()
+            side.wait_stream(torch.cuda.current_stream())
+            for name, call in ok.items():
+                with torch.cuda.stream(side):
+                    call(ws[0])
+                side.synchronize()
+                gph = torch.cuda.CUDAGraph()
+                with torch.cuda.graph(gph, stream=side):
+                    for w in ws:
+                        call(w)
+                graphs[name] = gph
+            torch.cuda.synchronize()
+            for r in range(rounds):
+                for name in (order if r % 2 == 0 else order[::-1]):
+                    graphs[name].replay()
+                    s, e = torch.cuda.Event(True), torch.cuda.Event(True)
+                    s.record()
+                    graphs[name].replay()
+                    e.record()
+                    torch.cuda.synchronize()
+                    per[name].append(s.elapsed_time(e) / copies)
+            del graphs
+            return per
         if queued:
             for name, call in ok.items():
                 t0 = time.perf_counter()
@@ -806,6 +868,7 @@ def tune_missing(kind: str, arch: str, shapes: Sequence[Tuple[str, int, int, int
                 rounds=how.get("rounds", 3), warmup=how.get("warmup", 1),
                 sets=how.get("sets", 1), remeasure=how.get("remeasure", 2),
                 close_k=how.get("close_k", CLOSE_K), noise_k=how.get("noise_k", NOISE_K),
+                timing=how.get("timing") or default_timing(arch),
                 by=by or "hk.autotune.routes")
     with records_lock(kind, arch):
         rep.waited = time.monotonic() - t0
@@ -814,7 +877,10 @@ def tune_missing(kind: str, arch: str, shapes: Sequence[Tuple[str, int, int, int
         for name, n, k, calls in shapes:
             key = f"{n}x{k}"
             ent = user.get(key)
-            fresh = ent is not None and ent.get("meta", {}).get("engine") in (None, engine_name)
+            # A record measured against another engine, or timed another way (gfx1100's unqueued
+            # bursts before "graph": hk-state/vllm-gemm-c1-gfx1100.md), is measured again.
+            fresh = (ent is not None and ent.get("meta", {}).get("engine") in (None, engine_name)
+                     and _record_timing(ent, arch) in (None, meta["timing"]))
             if not force and ((fresh and not ent.get("partial"))
                               or (ent is None and (n, k) in complete)):
                 rep.known.append((name, n, k))
