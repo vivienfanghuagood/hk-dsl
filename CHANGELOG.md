@@ -9,6 +9,20 @@ The next version's notes collect here until it is released.
 What is on main after 0.8.0. `pip install hk-dsl` (0.8.0) does not have it;
 the API reference marks such names *New after 0.8.0*.
 
+**hk.ops.paged refuses a decode whose tensors are not the shapes its kernels read.** The
+unsplit kernels (`paged.KERNELS[d]`) and `paged.decode` (the fused walk and its merge, which the vLLM
+backend runs) took their tensors on trust. A wrong layout became a read or a write past an
+allocation: the unsplit kernel given the fused walk's 4-row query read 12 rows past it and page-faulted
+a W7900D. Both entry points now check the decode's contract (`paged.check_decode`) before launching:
+- q and out are (requests, kv_heads, rows, head_dim), with a whole 16-row tile for the unsplit
+  kernel and 1-16 rows for the fused walk;
+- the caches are (blocks, kv_heads, KV_BLOCK, head_dim);
+- block_table and seq_lens are int32 and cover every request;
+- the fused scratch has a row per (request, split) and the group's rows.
+
+A wrong call raises ValueError naming the tensor, its shape and the one the kernel needs. No kernel
+changes; `decode` checks a set of shapes once. gfx950's decode (hk.ops.paged_cdna) is not affected.
+
 **SGLang: Gemma-style RMSNorm on hk (`HK_SGLANG_NORM`, on by default on gfx1100).** Where
 SGLang's `GemmaRMSNorm` would run its native torch path, which it does on ROCm without aiter or
 vLLM (eleven kernels a norm), it goes through hk's weighted norm kernels. The route passes the
