@@ -275,7 +275,7 @@ does all of trace, source and build (once) and later calls are a dict lookup
 Time kernels in one process, interleaved round by round against their
 baselines, as `hk.check` does: across processes an A/B of the same kernel
 has shown 13-16% differences out of nothing
-([how numbers are taken](performance.md#how-the-numbers-are-taken)).
+([how numbers are taken](performance/method.md)).
 
 **On gfx1100, `k(...)` launches on the null stream.** RDNA's launcher takes
 no stream (CDNA's takes torch's current one). Eager back-to-back calls on

@@ -36,6 +36,7 @@ Coding agents: start from [llms.txt](../llms.txt) and the
 |---|---|
 | [What it is and is not](positioning.md) | the positioning, the three layers (language, kernels, engine routes), the comparison with Triton, FlyDSL and AITER, supported hardware and toolchains |
 | [The scorecard](performance/scorecard.md) | the only performance numbers the project quotes: end-to-end serving results |
+| [How the numbers are taken](performance/method.md) | the measurement rules: one process interleaved, checked first, past the cache, the median of rounds, verdict bands; end to end, same-session arms and compared outputs |
 
 **Writing kernels**
 
