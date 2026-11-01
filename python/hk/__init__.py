@@ -22,7 +22,7 @@ of shipping into vLLM and SGLang.
 
 Three things this layer exists to make impossible rather than merely
 discouraged, each of which is a silent wrong answer on gfx11 and cost days to
-find by hand (CDNA4 adds a fourth, docs/README.md#the-traps):
+find by hand (CDNA4 adds a fourth, docs/correctness-gates.md#the-traps):
 
   1. A spilling kernel is never returned. `s_waitcnt` in include/rdna3 is placed
      by hand; scratch traffic reorders against it and the kernel computes the
