@@ -4,7 +4,7 @@ A kernel is a Python function, traced once per set of constexprs into the
 [hk dialect](ir.md), translated to HipKittens C++ and compiled by hipcc. This
 page is the language a kernel body is written in. For what happens to it after
 tracing, see [the IR](ir.md) and [the runtime](runtime.md); for complete
-programs, see [`examples/`](../examples/README.md).
+programs, see [the examples](examples.md).
 
 Before writing a kernel, see whether a template does the job:
 [`hk.templates.elementwise` / `rowwise`](templates/elementwise-rowwise.md) for

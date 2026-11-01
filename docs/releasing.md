@@ -80,7 +80,7 @@ check again.
   under `Unreleased`.
 - [ ] **The install matrix matches the wheels being built**: the Python
   versions × manylinux tags × minimum glibc stated in README's install
-  section, [getting started](getting-started.md#install), the CHANGELOG's
+  section, [install](install.md), the CHANGELOG's
   install line, [building](building.md#wheels) and the release notes'
   install header are the wheels in `dist/manylinux/`, and each wheel passes
   `scripts/check_wheel_glibc.py` (its glibc within its tag). The ROCm / hipcc versions the install pages

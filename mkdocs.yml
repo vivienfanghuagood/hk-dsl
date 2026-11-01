@@ -75,56 +75,66 @@ not_in_nav: |
   /dx/api-consistency.md
 
 nav:
-  - Overview: README.md
-  - What it is and is not: positioning.md
-  - Getting started: getting-started.md
-  - Toolchains: toolchains.md
-  - Templates:
-      - Elementwise and rowwise: templates/elementwise-rowwise.md
-      - GEMM with an epilogue: templates/gemm.md
-  - hk.check: check.md
-  - "hk.profile: why it is slow": profile.md
-  - Schedules: schedules.md
-  - "Tuning a GEMM: hk.tune": tune.md
-  - Workgroup placement: placement.md
-  - The language: language.md
-  - "Migrating: the DSL surface": migrating.md
-  - API reference:
-      - api/README.md
-      - hk: api/hk.md
-      - hk.math: api/hk.math.md
-      - hk.arch: api/hk.arch.md
-      - hk.lds: api/hk.lds.md
-      - hk.group: api/hk.group.md
-      - hk.collective: api/hk.collective.md
-      - hk.comm: api/hk.comm.md
-      - hk.placement: api/hk.placement.md
-      - hk.templates: api/hk.templates.md
-      - hk.ops: api/hk.ops.md
-      - hk.schedules: api/hk.schedules.md
-      - hk.tune: api/hk.tune.md
-      - hk.check: api/hk.check.md
-      - hk.profile: api/hk.profile.md
-      - hk.target: api/hk.target.md
-  - Performance:
-      - The scorecard: performance/scorecard.md
-  - How it works:
-      - The IR: ir.md
+  # The eight sections of the docs' target structure; archive material is last.
+  - Home:
+      - Overview: README.md
+      - What it is and is not: positioning.md
+  - 1 Getting started:
+      - getting-started.md
+      - Install: install.md
+      - Supported hardware: supported-hardware.md
+      - Toolchains: toolchains.md
+      - Quickstart: quickstart.md
+      - Examples: examples.md
+  - 2 Concepts:
+      - The pipeline and its IR: ir.md
+      - Workgroup placement and XCDs: placement.md
+  - 3 Language reference:
+      - The language: language.md
+      - Templates:
+          - Elementwise and rowwise: templates/elementwise-rowwise.md
+          - GEMM with an epilogue: templates/gemm.md
+      - Schedules: schedules.md
+      - hk.check: check.md
+      - "hk.profile: why it is slow": profile.md
+      - "Tuning a GEMM: hk.tune": tune.md
       - The runtime: runtime.md
-      - Building: building.md
-      - Testing: testing.md
-      - Releasing: releasing.md
-  - Serving engines:
+      - "Migrating: the DSL surface": migrating.md
+      - API reference:
+          - api/README.md
+          - hk: api/hk.md
+          - hk.math: api/hk.math.md
+          - hk.arch: api/hk.arch.md
+          - hk.lds: api/hk.lds.md
+          - hk.group: api/hk.group.md
+          - hk.collective: api/hk.collective.md
+          - hk.comm: api/hk.comm.md
+          - hk.placement: api/hk.placement.md
+          - hk.templates: api/hk.templates.md
+          - hk.schedules: api/hk.schedules.md
+          - hk.tune: api/hk.tune.md
+          - hk.check: api/hk.check.md
+          - hk.profile: api/hk.profile.md
+          - hk.target: api/hk.target.md
+  - 4 Ops:
+      - hk.ops: api/hk.ops.md
+  - 5 Serving engines:
       - Integration: integration.md
       - "The end-to-end loop: a model, measured and patched": e2e-loop.md
       - "For agents: kernels in an engine": agents.md
-  - Design:
-      - Schedules as data: design/schedules.md
-      - hk.comm (XCDs and GPUs): design/comm.md
-      - Workgroup placement: design/placement-pass.md
-      - "The DSL surface": design/dsl-surface.md
-  - Archive:
+  - 6 Performance:
+      - The scorecard: performance/scorecard.md
+  - 7 Contributing:
+      - Building: building.md
+      - Testing: testing.md
+      - Releasing: releasing.md
+  - 8 Archive:
       - archive/README.md
+      - Design documents in force:
+          - Schedules as data: design/schedules.md
+          - hk.comm (XCDs and GPUs): design/comm.md
+          - Workgroup placement: design/placement-pass.md
+          - "The DSL surface": design/dsl-surface.md
       - The measurement record: archive/performance-2026-10.md
       - Superseded design:
           - The DX goal: archive/design/dx-goal.md

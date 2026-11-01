@@ -80,7 +80,7 @@ Call them with torch tensors, as `rms_norm(h, w)`. `hk.check` reports the
 registers, occupancy and spills, the error against the reference, and the time
 against torch eager and `torch.compile` on your GPU. It exits with 0 (pass),
 1 (wrong) or 2 (error). Next:
-[getting started](docs/getting-started.md),
+[quickstart](docs/quickstart.md),
 [templates](docs/templates/elementwise-rowwise.md),
 [GEMM epilogues](docs/templates/gemm.md), [hk.check](docs/check.md).
 
@@ -139,7 +139,7 @@ print(gelu_mul.build().report())    # hipcc and the resource gate -- no GPU
 
 `python3 -m hk.check` checks and times it like any other kernel
 ([check](docs/check.md#the-loop)). More: [the language](docs/language.md),
-[examples](examples/README.md).
+[examples](docs/examples.md).
 
 On gfx950 there is more:
 - **`hk.comm`** hands work between workgroups, XCDs and GPUs
@@ -171,7 +171,7 @@ wheel carries the HipKittens headers, so at run time it needs ROCm's hipcc
 dependency). Another CPython 3.x (3.11, 3.13) has no wheel: build from source.
 
 Which ROCm and hipcc versions are tested, and which are known not to work, is
-in [getting started](docs/getting-started.md#install).
+in [install](docs/install.md).
 
 From source, with the HipKittens submodule:
 
@@ -181,7 +181,7 @@ scripts/build_mlir.sh && scripts/build_hk_mlir.sh   # MLIR 23.1.3 (~20 min on 64
 export PYTHONPATH=$PWD/python
 ```
 
-Details: [getting started](docs/getting-started.md#install), [building](docs/building.md).
+Details: [install](docs/install.md), [building](docs/building.md).
 
 ## In vLLM and SGLang
 
