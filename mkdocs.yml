@@ -99,6 +99,7 @@ nav:
       - hk.target: api/hk.target.md
   - Performance:
       - The scorecard: performance/scorecard.md
+      - How the numbers are taken: performance/method.md
       - The measurement record: performance.md
   - How it works:
       - The IR: ir.md

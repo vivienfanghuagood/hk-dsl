@@ -2,7 +2,7 @@
 
 Issues and pull requests are welcome. These pages cover the mechanics:
 - [testing](docs/testing.md): the tiers, and the gates for a change to the generated code;
-- [how numbers are taken](docs/performance.md#how-the-numbers-are-taken);
+- [how numbers are taken](docs/performance/method.md);
 - [releasing](docs/releasing.md).
 
 A change to a public signature or docstring regenerates the API reference

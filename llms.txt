@@ -83,6 +83,6 @@ It traces and runs on both GPUs, ragged shapes (100x1000) included; `hk.check` t
 
 - [The IR](docs/ir.md): the hk dialect, the passes and the C++ translation
 - [Integration](docs/integration.md): the vLLM and SGLang patches
-- [The scorecard](docs/performance/scorecard.md): the only performance numbers the project quotes (end-to-end serving); [performance](docs/performance.md) is a dated record of older kernel-level measurements, not current claims
+- [The scorecard](docs/performance/scorecard.md): the only performance numbers the project quotes (end-to-end serving), taken as [the method](docs/performance/method.md) says; [performance](docs/performance.md) is a dated record of older kernel-level measurements, not current claims
 - [CDNA3/4 design](docs/design/cdna.md): what runs on an MI300X / MI355X
 - [Development record](docs/history/README.md): how each number was taken
