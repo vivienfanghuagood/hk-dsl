@@ -188,6 +188,19 @@ def _vllm_moe() -> List[str]:
                               "try_get_optimal_moe_config"))
 
 
+def _vllm_moe_wna16() -> List[str]:
+    from vllm.model_executor.layers.fused_moe import fused_moe as fm  # noqa: PLC0415
+
+    from . import vllm_moe_wna16  # noqa: PLC0415
+
+    return (same_parameters(fm.invoke_fused_moe_wna16_triton_kernel,
+                            vllm_moe_wna16.invoke_fused_moe_wna16_triton_kernel,
+                            "invoke_fused_moe_wna16_triton_kernel")
+            + same_parameters(fm.try_get_optimal_moe_config,
+                              vllm_moe_wna16.try_get_optimal_moe_config,
+                              "try_get_optimal_moe_config"))
+
+
 def _vllm_sdpa() -> List[str]:
     import torch  # noqa: PLC0415
     from vllm.v1.attention.ops import vit_attn_wrappers as w  # noqa: PLC0415
@@ -352,7 +365,8 @@ def _sgld_convrot() -> List[str]:
 CHECKS: Dict[str, Callable[[], Optional[List[str]]]] = {
     "vllm_mxfp8": _vllm_mxfp8, "vllm_moe_a8w4": _vllm_moe_a8w4, "vllm_int4": _vllm_int4,
     "vllm_gptq": _vllm_gptq,
-    "vllm_gemm": _vllm_gemm, "vllm_moe": _vllm_moe, "vllm_sdpa": _vllm_sdpa,
+    "vllm_gemm": _vllm_gemm, "vllm_moe": _vllm_moe, "vllm_moe_wna16": _vllm_moe_wna16,
+    "vllm_sdpa": _vllm_sdpa,
     "vllm_backend": _vllm_backend, "vllm_dsv41_index": _vllm_dsv41_index,
     "vllm_sparse_mla": _vllm_sparse_mla, "vllm_prefill": _vllm_prefill,
     "sglang_linear": _sglang_linear, "sglang_moe": _sglang_moe, "sglang_norm": _sglang_norm,
