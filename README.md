@@ -188,18 +188,12 @@ Details: [getting started](docs/getting-started.md#install), [building](docs/bui
 **hk is on by default.** Once installed, hk's vLLM and SGLang plugins apply
 every route that was validated with real weights on your GPU. A route is
 validated when its outputs were bit-identical to the engine's, or its error was
-within the engine's own noise. What is on by default:
-
-- **MI355X (gfx950), vLLM:** DeepSeek-V4.1's MXFP8 linear layers and its a8w4
-  MoE; its sparse MLA prefill (`HK_VLLM_SPARSE_MLA=0` turns it off; inactive
-  while `VLLM_ROCM_USE_AITER_TRITON_SPARSE_MLA=1`, where vLLM runs AITER's
-  sparse MLA instead); its index layers when vLLM runs with `--monokernel`; AWQ
-  linear layers.
-- **W7900D (gfx1100):** in vLLM, linear, AWQ, MoE and the vision encoder's
-  attention. In SGLang, linear and MoE. In SGLang-Diffusion, attention and
-  linear, after `python3 -m hk.integration sglang-diffusion install`.
-- **R9700 (gfx1201), vLLM:** AWQ linear, unquantized linear, and bf16 MoE at
-  up to 2 tokens a step.
+within the engine's own noise. Which routes are on for each GPU is the
+generated [route table](docs/supported-hardware.md#engine-routes-on-each)
+(from the switches hk reads, so it cannot drift from them);
+`python3 -m hk.integration --status` prints the decision on your machine.
+SGLang-Diffusion's routes need `python3 -m hk.integration sglang-diffusion install`
+once.
 
 Each route sends a shape to hk's kernel only where hk measured faster
 ([integration](docs/integration.md#on-by-default-and-turning-it-off)). Turn
