@@ -159,8 +159,8 @@ a strip (`!hk.rt<f32, 1x1024, strip<8>>`, `kittens::rs`):
   and gfx950 (hk's wave64 port in `include/hk/cdna.cuh`); gfx942 refuses
   it while tracing. The gfx950 port arrived in 0.5.0; the 0.4.0 wheel refuses strips
   there ([what each version has](api/README.md)). Its elements are bf16,
-  fp16 or fp32, and on gfx950 also i32
-  ([below](#integer-mask-and-bit-expressions-on-strips-hkmap-gfx950)).
+  fp16, fp32 or i32
+  ([below](#integer-mask-and-bit-expressions-on-strips-hkmap)).
 
 ```python
 # WARPS and EPS are constexprs; row and warp come from hk.arch
@@ -221,9 +221,9 @@ vLLM's rotary_embedding in NeoX style, token-major, from a `cos_sin_cache`
 of `[cos | sin]` rows and optional int32 positions
 ([chapter 37](history/37-cdna-rows.md)).
 
-### Integer, mask and bit expressions on strips: `hk.map` (gfx950)
+### Integer, mask and bit expressions on strips: `hk.map`
 
-On gfx950 a strip may hold i32, `hk.RS(hk.i32, rows, cols, run)`: index
+A strip may hold i32, `hk.RS(hk.i32, rows, cols, run)`: index
 arithmetic, exponent bits, scale bytes. It loads from and stores to i32
 tensors like any strip, `bounded=True` included. `.to(hk.fp32)` and
 `.to(hk.i32)` convert in registers, and an fp32 strip stored into an i32
@@ -259,10 +259,13 @@ to -1). There are no other integer strips (an i8 strip is refused).
   pass merges a chain into one, so `((c >> 4) & 63) * w + c` compiles to the
   C++ expression an author would write. A value used twice is computed once,
   and nothing moves across a load, a store, a lane exchange or a barrier.
-- **Lowering.** A map prints as `kittens::map_cpp(dst, [&](const auto x0,
-  ...) { ... }, args...)` (include/hk/cdna). The IR has no arch in it, but
-  RDNA strips have no such lowering yet: a map on gfx1100 / gfx1201 is refused
-  while tracing.
+- **Where.** On every target with strips: gfx950, gfx1100 and gfx1201. A map
+  prints as `kittens::map_cpp(dst, [&](const auto x0, ...) { ... },
+  args...)`, from include/hk/cdna on gfx950 and include/hk/rdna/map.cuh on
+  RDNA. RDNA's strips hold no bool, so there a mask lives only inside a map:
+  one used where it is made (`hk.where(a < b, x, y)`, `m1 & m2`) or read once
+  by another map is fine; one read twice, or stored, is a verifier error --
+  compute it inside one `hk.map(fn)` instead.
 
 ```python
 S = hk.RS(hk.fp32, 1, 512)    # one row: 64 lanes x a run of 8
@@ -299,7 +302,7 @@ escape. New in 0.8.0 (#53); since S7 it is `hk.map` with a string body.
 - **The expression** is one C++ expression, with no `;` and no braces
   (`ValueError`), compiled as written with contraction off: hk does not parse
   it, so a mistake in it is a hipcc error. It is never fused with a map.
-- **Where.** gfx950 only; its use in hk.ops is on a reviewed allowlist
+- **Where.** Where `hk.map` is; its use in hk.ops is on a reviewed allowlist
   (`scripts/escape_hatches_allow.txt`).
 
 ### Strip ops for a megakernel's roles (gfx950)
@@ -308,8 +311,11 @@ What a persistent kernel's roles do between its GEMMs -- index arithmetic,
 table lookups, small reductions inside a lane group, hand-offs element by
 element -- written on strips. New in 0.8.0 (#72, #73), all gfx950, and
 written for a K1 that must match a hand-written kernel bit for bit.
-- **Indices.** `hk.iota(ty)` is an i32 strip whose element (r, c) is c;
-  with the i32 strip operators it computes flat indices.
+- **Indices.** `hk.lane_coords(ty)` gives two i32 strips of a strip type's
+  shape, element (r, c) holding r and c; `hk.iota(ty)` is the second. Of a
+  register tile, `hk.lane_coords(tile, run)` gives each element of
+  `tile.lane_strip(run)` its row and column in the tile. With the i32 strip
+  operators they compute flat indices.
 - **Elements at computed indices.** `x.load_elems(idx)` /
   `x.store_elems(val, idx, runs=False)` gather and scatter element by element
   (flat indices, an i32 strip); an index below zero or past the tensor reads 0

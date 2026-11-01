@@ -48,6 +48,7 @@ and which rule decided.
 | MoE a8w4, MXFP4 weights (DeepSeek-V4.1), M >= 2560 (`MIN_M`) | `HK_VLLM_MOE_A8W4` | **on, gfx950** | error vs fp32 3.5-6.3e-3 against AITER's 0.97-2.1e-2 on real layers; GSM8K 94.92% (B1) |
 | DeepSeek-V4.1 index layers under `--monokernel`: one launch for the compressor, indexer K / Q, logits and top-k, at decode steps of up to 8 rows | `HK_VLLM_DSV41_INDEX` | **on, gfx950** | caches and q byte-identical to vLLM's chain in vLLM, top-k sets equal ([the index launch](#the-deepseek-v41-index-launch)); with `--monokernel` and hk's other default routes, real-weight GSM8K-1319 within stock's noise (McNemar p >= 0.39) |
 | AWQ 4-bit linear | `HK_VLLM_INT4` | **on, gfx1100, gfx950 and gfx1201** | greedy tokens identical to stock's, Qwen3-8B/14B-AWQ ([22](history/22-int4.md), [42](history/42-mi355x-in-the-engine.md)); on gfx1201 Qwen3-8B-AWQ tokens identical ([50](history/50-gfx1201-in-vllm.md)) |
+| GPTQ 4-bit linear (symmetric, grouped; RDNA3W4A16LinearKernel) | `HK_VLLM_GPTQ` | **on, gfx1100** | Qwen3.8-27B-GPTQ-Int4 against stock-fair (TRITON_ATTN, TunableOp with a 256 MB rotating buffer): GSM8K-200 equal, TPOT in the RDNA scorecard; act-order checkpoints are refused and counted (`vllm_gptq.REFUSED`) |
 | unquantized linear (+ tuning at load) | `HK_VLLM_GEMM` | **on, gfx1100 and gfx1201** | tokens identical, or a bf16 near-tie ([35](history/35-any-model.md)); on gfx1201 tokens identical and routing counts equal round for round, Qwen3-1.7B and Qwen3.5-9B ([50](history/50-gfx1201-in-vllm.md)), also with gfx1201's shipped small-M schedules ([51](history/51-gfx1201-small-m-gemm.md)); on gfx950 it was measured to change nothing against aiter ([42](history/42-mi355x-in-the-engine.md)), so it stays off there |
 | bf16 MoE GEMMs | `HK_VLLM_MOE` | **on, gfx1100 and gfx1201** | OLMoE tokens identical ([21](history/21-moe.md)); with aiter on gfx950 it routes nothing; on gfx1201 up to 2 tokens a step only, OLMoE tokens identical ([52](history/52-gfx1201-moe-at-the-roofline.md)) |
 | encoder SDPA (`--mm-encoder-attn-backend TORCH_SDPA`) | `HK_VLLM_SDPA` | **on, gfx1100** | InternVL2-2B inside the spread of vLLM's own backends ([05](history/05-phase-6-torch-ops.md)); on gfx1201 the drop-in's per-call Python makes the call slower than the R9700 image's torch SDPA, so it stays off there ([50](history/50-gfx1201-in-vllm.md)) |
@@ -57,6 +58,7 @@ and which rule decided.
 | SGLang-Diffusion linear | `HK_SGLD_LINEAR` | **on, gfx1100** | 40.0 dB from stock, closer to fp32 than stock ([46](history/46-qwen-image-on-rdna3.md)) |
 | DiT attention in `hk.ops.sdpa` (non-causal, head_dim 128, on `hk.ops.attn_k3`) | `HK_SDPA_K3` | **on, gfx1100** | per-call error 2.95e-5 against the current path's 4.50e-5 (#24) |
 | decoder attention backend | `HK_VLLM_BACKEND` | off | replaces ROCm's default decoder attention for every model, and raises rather than falls back on sliding windows, sinks, softcap, an fp8 KV cache, fp16 or other head sizes; validated on Qwen3-8B only |
+| prefill attention on vLLM's own cache | `HK_VLLM_PREFILL` | off: until its end-to-end gates pass | ROCM_ATTN's prefix-prefill and TRITON_ATTN's batches with prefill in them, in place on each backend's cache; decode-only steps, cache write and block size stay vLLM's; any call it does not take falls back. In-situ against vLLM's kernels on every call (`HK_VLLM_PREFILL_SHADOW=1`, MiniCPM5-2B, about 22,000 calls on each backend): at most 2 bf16 ulps of a row's max |
 | ConvRot INT8 (`--quantization convrot_int8`) | `HK_SGLD_CONVROT`, or `HK_SGLD=...,convrot` | **off: opt-in** | lossy by design (PSNR 30.4 dB from bf16, visible drift): a model-level choice, not a toolchain default |
 | MXFP8 at any (N, K) | `HK_MXFP8_ANY` | off | a mode of the MXFP8 linear route; no real-weight run |
 | DeepSeek-V4.1 sparse MLA prefill, calls of T >= 512 queries (`MIN_T`), and the layer's MXFP8 rows for wo_a made in the kernel from O in registers. It runs where vLLM's own sparse MLA does: with `VLLM_ROCM_USE_AITER_TRITON_SPARSE_MLA=1` vLLM takes AITER's path for prefill and decode and the route stands aside | `HK_VLLM_SPARSE_MLA` (`=0` turns it off) | **on, gfx950** | real weights, TP2: GSM8K-1319 equal to stock's (pooled McNemar p 0.12). **Its cost is at decode:** the route needs vLLM's own sparse MLA, whose decode kernel replaces AITER's, so decode steps can be slightly slower than with AITER's (an open item). Serving results: [the scorecard](performance/scorecard.md) |
@@ -126,9 +128,11 @@ first compile in each process prints one line:
 |---|---|---|---|
 | SDPA drop-in | `vllm.py`, `sglang.py`, `_common.py` | `F.scaled_dot_product_attention`, rebound by identity | `HK_VLLM_SDPA` (on, gfx1100); `apply()` in-process |
 | decoder attention backend | `vllm_backend.py` | vLLM's `TRITON_ATTN` backend slot | `HK_VLLM_BACKEND=1` (off) |
+| prefill attention | `vllm_prefill.py` | `prefix_prefill.context_attention_fwd` (ROCM_ATTN) with its parameters, and `triton_unified_attention.unified_attention` (TRITON_ATTN) with its signature, rebound by identity | `HK_VLLM_PREFILL` (off) |
 | linear layers | `vllm_gemm.py` | `dispatch_unquantized_gemm`, rebound by identity | `HK_VLLM_GEMM` (on, gfx1100 and gfx1201) |
 | MoE GEMMs | `vllm_moe.py` | `invoke_fused_moe_triton_kernel` and `try_get_optimal_moe_config`, rebound by identity | `HK_VLLM_MOE` (on, gfx1100 and gfx1201) |
 | AWQ linear layers | `vllm_int4.py` | `AutoAWQLinearMethod.process_weights_after_loading` and `.apply` | `HK_VLLM_INT4` (on) |
+| GPTQ linear layers | `vllm_gptq.py` | `AutoGPTQLinearMethod.process_weights_after_loading` and `.apply` | `HK_VLLM_GPTQ` (on, gfx1100) |
 | MXFP8 linear layers | `vllm_mxfp8.py` | `RocmDotScaledMxfp8LinearKernel.process_weights_after_loading` and `.apply_weights` | `HK_VLLM_MXFP8` (on, gfx950) |
 | MXFP4 MoE, a8w4 | `vllm_moe_a8w4.py` | `aiter.fused_moe.fused_moe`, with its signature | `HK_VLLM_MOE_A8W4` (on, gfx950) |
 | DeepSeek-V4.1 index layers, `--monokernel` | `vllm_dsv41_index.py` | `mono_decode._select`, through an import hook | `HK_VLLM_DSV41_INDEX` (on, gfx950) |
@@ -286,6 +290,32 @@ indistinguishable from one that works unless something counts.
 `tools/hk-bench/vllm_verify.py` is the in-engine verification; the run, the
 bf16 rounding bug it found and the tie that is left are in
 [Phase 6](history/05-phase-6-torch-ops.md).
+
+## Prefill attention on vLLM's own cache
+
+With chunked prefill and prefix caching on, a long prompt's time on RDNA is
+mostly prefill attention over the paged cache. `HK_VLLM_PREFILL=1` replaces
+only that kernel. The cache, its layout and block size, the cache write, and the
+decode of decode-only steps all stay vLLM's. So does the rest of the backend
+vLLM picked.
+
+| backend | what is rebound | hk's kernel |
+|---|---|---|
+| `ROCM_ATTN` (ROCm's default) | `prefix_prefill.context_attention_fwd`, which `chunked_prefill_paged_decode` calls for requests with more than one query | `paged_prefill` `layout="rocm"`: K through a strided global over the x-split cache, V's pages already V^T |
+| `TRITON_ATTN` | `unified_attention`, on batches with prefill in them; decode-only batches (the FULL CUDA graphs) keep vLLM's | `paged_prefill` `layout="flash"`, `decodes=True`: the whole batch, a decode row a 16-row fragment |
+
+Head size 64, 128 and 256. At 256 the kernel uses `dsplit`, a query row
+across a pair of warps. Where a kernel does not build spill-free under the
+compiler at hand, its calls stay vLLM's: TRITON_ATTN at d256 under clang 22
+(ROCm 7.2.3). It builds under the vLLM images' clang 23. gfx1100, bf16, pages of 16 (and 32 on ROCM_ATTN). A call
+with anything else falls back to vLLM's kernel unchanged and is counted:
+ALiBi, sliding windows, sinks, softcap, an fp8 or quantized cache, fp8
+output, non-causal, or a call made while a graph is captured.
+
+Nothing is read on the host. The grid is (Q tiles of the longest query,
+heads, requests), and a workgroup works out its request from its index.
+`HK_VLLM_PREFILL_SHADOW=1` also runs vLLM's kernel on every call hk takes and
+compares the rows. It is a diagnostic that syncs; don't serve with it.
 
 ## The decoder attention backend
 
@@ -532,6 +562,22 @@ call, so it uses the compile-cache root `hk-int4`
 ```bash
 VLLM_USE_TRITON_AWQ=1 HK_PATCH_VLLM=1 HK_VLLM_INT4=1 \
     vllm serve Qwen/Qwen3-8B-AWQ --dtype float16
+```
+
+A 4-bit symmetric GPTQ checkpoint runs on RDNA3 through `AutoGPTQLinearMethod`
+with `RDNA3W4A16LinearKernel`, vLLM's HIP kernel on GPTQ's shuffled codes.
+`hk/integration/vllm_gptq.py` wraps that method the same way:
+- each layer gets hk's layout (`hk.ops.w4a16.repack_gptq`) *before* vLLM's
+  weight processing, which shuffles the codes in place. The zero point is
+  vLLM's: 8, whatever a symmetric checkpoint stores;
+- `apply` calls the opaque op `hk_vllm::gptq_w4a16`, inside which batches of
+  4 to 64 tokens take hk's decode GEMM, and the rest vLLM's kernel. Below
+  4 tokens, with GPTQ's 32-column groups, vLLM's kernel is the faster one.
+- Act-order checkpoints (`desc_act`), other quant types and layers on another
+  kernel keep vLLM's path; `vllm_gptq.REFUSED` counts them by reason.
+
+```bash
+HK_PATCH_VLLM=1 vllm serve <a GPTQ-Int4 checkpoint> --dtype float16    # HK_VLLM_GPTQ=0 turns it off
 ```
 
 ## The DeepSeek-V4.1 index launch
@@ -1088,9 +1134,12 @@ spelled:
 | `HK_VLLM_SDPA` | `switches.py` | the encoder SDPA patch (default on, gfx1100) |
 | `HK_VLLM_BACKEND` | `_vllm_plugin.py` | register the decoder attention backend (default off); a value other than `1`/`on`/`yes`/`true` names the slot |
 | `HK_VLLM_BACKEND_SLOT` | `vllm_backend.py` | the `AttentionBackendEnum` member to register over (default `TRITON_ATTN`) |
+| `HK_VLLM_PREFILL` | `_vllm_plugin.py` | prefill attention on vLLM's own cache, ROCM_ATTN and TRITON_ATTN (default off) |
+| `HK_VLLM_PREFILL_SHADOW` | `vllm_prefill.py` | `1`: also run vLLM's kernel on every call hk takes and print the worst row's difference in bf16 ulps (a diagnostic; syncs) |
 | `HK_VLLM_GEMM` | `_vllm_plugin.py` | route the unquantized linear layers (default on, gfx1100 and gfx1201) |
 | `HK_VLLM_MOE` | `_vllm_plugin.py` | route the bf16 MoE GEMMs up to 256 tokens a step (2 on gfx1201; default on, gfx1100 and gfx1201) |
 | `HK_VLLM_INT4` | `_vllm_plugin.py` | route AWQ linear layers' fp16/bf16 batches up to 64 tokens (default on) |
+| `HK_VLLM_GPTQ` | `_vllm_plugin.py` | route 4-bit symmetric GPTQ layers' fp16/bf16 batches of 4-64 tokens (default on, gfx1100) |
 | `HK_VLLM_MXFP8` | `_vllm_plugin.py` | K2: block-scaled MXFP8 linear layers at M >= 2048, two shapes from their own M (`vllm_mxfp8.MIN_M_NK`), six with measured M ranges below that (`vllm_mxfp8.RANGES`) (default on, gfx950) |
 | `HK_MXFP8_ANY` | `vllm_mxfp8.py` | `1`: K2 takes any (N, K) of whole tiles, not only the measured TP2 shapes (default off) |
 | `HK_VLLM_MOE_A8W4` | `_vllm_plugin.py` | K1: AITER a8w4 MoE at M >= `HK_MOE_A8W4_MIN_M` (2560) (default on, gfx950) |

@@ -1,8 +1,8 @@
 # Design: converging the DSL surface
 
 Status: **approved** (2026-10-28; the decisions are in §9). **Built:** S0-S5 and S12 (S0 in #130;
-S1-S5 and S12 in one combined PR after it, one commit a step; 2026-10-29), and S7 (2026-10-30;
-RDNA's lowering split off as S7b); the later steps (S6, S8-S11, S13) are not. The work is timeboxed to one week, until 2026-11-04 00:00Z; §8 says which steps fit and which
+S1-S5 and S12 in one combined PR after it, one commit a step; 2026-10-29), S7 (#152, 2026-10-30)
+and S7b (RDNA's lowering, after it); the later steps (S6, S8-S11, S13) are not. The work is timeboxed to one week, until 2026-11-04 00:00Z; §8 says which steps fit and which
 come later.
 
 #115 (`dsv41_index`) and #121 (`lane_strip`, `lane_coords`, `run_xor`) merged after the review.
@@ -587,9 +587,9 @@ form:
 | **S4** | G6, rope: `rotate_half` folds into `swap_halves(span, negate_first)`: one dialect op, one C++ template | `rotate_half` (sugar, kept) | V1: fused rope kernels at their plans | S0 |
 | **S5** | G2 front end: `as_fragment`, `as_scales`, emitting today's three ops | `fp4_operand`, `fp8_operand`, `mx_scales_loose` | V0 (no in-tree kernel uses them; #115 if merged) | S0 |
 | **S12** | Split `cdna.cuh` by kind, a pure move: `cdna/lib.cuh` (library fixes, gap fills), `cdna/primitives.cuh`, `cdna/formats.cuh` (MX, W4), `cdna/escape.cuh` (`map_cpp`, `mfma_strip`), `cdna/special.cuh` (E4); each definition headed by its registry name | none | V0 (same generated source, which includes one umbrella header) and V1 | S0 |
-| S6 | G3: `lane_coords` takes a type; `iota` becomes its alias; the `hk.iota` op goes | `iota` (alias, kept) | V1: paged_cdna; #120 / #115 if merged | #121 |
+| **S6** | G3: `lane_coords` takes a type; `iota` becomes its alias; the `hk.iota` op goes. *Built: `hk.lane_coord` without an operand is a strip type's own coordinates (`kittens::lane_coord<AXIS>(dst)`); a strip value keeps #121's form (its `lane_strip(run)`'s coordinates); `kittens::iota` is gone; `hk.iota` a primitive alias* | `iota` (alias, kept) | V1: paged_cdna; #120 / #115 if merged | #121 |
 | **S7** | G1: integer and bit operators on strips, `hk.where`, `hk.math.fma` / `rcp` / `popcount` / `ctz`, the `hk.map` region op and its fusion pattern; `map_cpp` becomes `hk.map` with a string body; the escape-hatch allowlist starts. Migrate paged_cdna's 2 calls (and #120's 12 if merged). *Built: both migrated, V1 identical on all 76 of their catalog kernels; dsv41_index's calls later* | `map_cpp` stays (escape hatch) | V1 (ISA identical expected); V2 where not | S0 |
-| S7b | G1 on RDNA strips: a `map_cpp` lowering in include/rdna3 / rdna4 (they have `strip_each`, not `map_cpp`), so `hk.map` and the operators lower on gfx1100 / gfx1201. No M5 kernel needs it yet, so it does not come before S8 | none | V0 on the RDNA kernels; the G1 GPU semantics test on a W7900D | S7 |
+| **S7b** | G1 on RDNA strips: a `map_cpp` lowering for include/rdna3 / rdna4 (they have `strip_each`, not `map_cpp`), so `hk.map` and the operators lower on gfx1100 / gfx1201. *Built: hk-side include/hk/rdna/map.cuh, included only by a kernel with a map; the fork is untouched -- its strips hold no bool, so on RDNA a mask that leaves its map is a verifier error (bool in the fork's T1 when a kernel needs it, as a HipKittens PR). Done before S8 for language parity on RDNA, not for an M5 kernel* | none | V0 on the RDNA kernels; the G1 GPU semantics test on gfx1100 and gfx1201 | S7 |
 | S8 | E1: `group_load_sync` → the DMA body + wait | none (C++) | V2: `mxfp8.gemm` (128x128) bitwise, A/B, fence | S12 |
 | S9 | C3: `hk.mma` takes the fp32 16x16x4 form; `mfma_strip` becomes an alias over views; G2's single `hk.lane_view` op | `mfma_strip` | V1 on the strip tests; out-of-tree users bitwise | S5, S6 |
 | S10 | A6: `mx_quant_store` as a G1 composition, in `hk.mx` (Python), for K1's epilogue and `mxfp8.quant` | `mx_quant_store` (alias to the composition) | V2: K1 and K2 quant bitwise and A/B; fence; spill. Not adopted if slower | S7 (and open question 3) |

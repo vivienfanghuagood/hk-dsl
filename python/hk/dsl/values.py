@@ -2560,7 +2560,7 @@ __all__ = [
 
 
 def map_cpp(expr: str, *args, dtype: Optional[DType] = None, name: str = "map") -> Tile:
-    """An elementwise C++ expression over strips (gfx950): element (r, c) of the result is `expr`
+    """An elementwise C++ expression over strips: element (r, c) of the result is `expr`
     with `x0`, `x1`, ... bound to element (r, c) of each strip argument -- or to the argument
     itself for an `Int` or a Python int -- converted to `dtype` (default: the strips' one dtype;
     strips of fp32 and i32 together must say it).
@@ -2578,8 +2578,8 @@ def map_cpp(expr: str, *args, dtype: Optional[DType] = None, name: str = "map") 
     spelled `__builtin_fmaf` -- no `;` or braces, and the compiler, not hk, checks it."""
     from .arch import target  # noqa: PLC0415
 
-    if target().wave != 64:
-        raise TypeError(f"hk.map_cpp is gfx950's (its strips), not {target().arch}'s")
+    if not target().strips:
+        raise TypeError(f"hk.map_cpp maps strips, and {target().arch} has none")
     if not isinstance(expr, str) or not expr.strip() or any(ch in expr for ch in ";{}"):
         raise ValueError(f"hk.map_cpp: one C++ expression, no ';' or braces, got {expr!r}")
     strips = [a for a in args if isinstance(a, Tile)]
@@ -2618,18 +2618,24 @@ def map_cpp(expr: str, *args, dtype: Optional[DType] = None, name: str = "map") 
     return wrap(op.result, ty)
 
 
+def _strip_coord(ty, axis: int, name: str) -> Tile:
+    """Axis `axis` (0 rows, 1 columns) of a strip type's own coordinates, as an i32 strip."""
+    ty = RegTileType(i32, ty.rows, ty.cols, ty.layout, ty.frag, run=ty.run)
+    t = _t()
+    return wrap(hkd.LaneCoordOp(mlir_type(ty), axis, loc=t.loc(name)).result, ty)
+
+
 def iota(ty) -> Tile:
     """An i32 strip of type `ty`'s shape whose element (r, c) is c: each element's own column, for
-    index arithmetic (hk.map_cpp, load_elems / store_elems) and per-column choices (gfx950)."""
+    index arithmetic (the strip operators, load_elems / store_elems) and per-column choices
+    (gfx950). `hk.lane_coords(ty)[1]`, kept as this one line."""
     from .arch import target  # noqa: PLC0415
 
     if not _is_strip_tile(ty):
         raise TypeError(f"hk.iota makes a strip (hk.RS), not {ty}")
     if target().wave != 64:
         raise TypeError(f"hk.iota is gfx950's, not {target().arch}'s")
-    ty = RegTileType(i32, ty.rows, ty.cols, ty.layout, ty.frag, run=ty.run)
-    t = _t()
-    return wrap(hkd.IotaOp(mlir_type(ty), loc=t.loc("iota")).result, ty)
+    return _strip_coord(ty, 1, "iota")
 
 
 def _lane_strip_type(ty, run: int, dtype) -> RegTileType:
@@ -2643,18 +2649,26 @@ def _lane_strip_type(ty, run: int, dtype) -> RegTileType:
 
 
 def lane_coords(tile, run: int = 8) -> tuple:
-    """(rows, cols): i32 strips of `tile.lane_strip(run)`'s shape, element by element the row and the
-    column of `tile` that element is (gfx950). `tile` is a register tile. Index arithmetic for an
-    MMA result taken as a strip: its global rows and columns, MX groups, masks."""
+    """(rows, cols): i32 strips, element by element a row and a column (gfx950).
+
+    - Of a register tile (a strip included): of `tile.lane_strip(run)`'s shape, the row and the
+      column of `tile` each element is -- index arithmetic for an MMA result taken as a strip:
+      its global rows and columns, MX groups, masks.
+    - Of a strip type (hk.RS): of its own shape, element (r, c)'s r and c (`hk.iota(ty)` is the
+      second). `run` does not apply.
+
+    The two are built only if used: an unused one is no code."""
     from .arch import target  # noqa: PLC0415
 
     if target().wave != 64:
         raise TypeError(f"hk.lane_coords is gfx950's, not {target().arch}'s")
+    if _is_strip_tile(tile):
+        return tuple(_strip_coord(tile, axis, "lc") for axis in (0, 1))
     if not isinstance(tile, Tile):
-        raise TypeError(f"hk.lane_coords takes a register tile, not {tile!r}")
+        raise TypeError(f"hk.lane_coords takes a register tile or a strip type, not {tile!r}")
     sty = _lane_strip_type(tile.ty, run, i32)
     t = _t()
-    return tuple(wrap(hkd.LaneCoordOp(mlir_type(sty), tile.v, axis, loc=t.loc("lc")).result, sty)
+    return tuple(wrap(hkd.LaneCoordOp(mlir_type(sty), axis, src=tile.v, loc=t.loc("lc")).result, sty)
                  for axis in (0, 1))
 
 

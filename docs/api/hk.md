@@ -739,8 +739,8 @@ is off: `a * b + c` is two roundings, `hk.math.fma(a, b, c)` one.
 
 The operators on i32 strips and masks build these one op at a time and the hk-map-fuse
 pass merges a chain; `hk.map` is for an expression to read as one, or to keep a float
-expression's roundings as written. Strips on gfx950; RDNA's have no lowering yet (S7 in
-docs/design/dsl-surface.md).
+expression's roundings as written. On gfx950, gfx1100 and gfx1201; on RDNA a mask only
+feeds another map (its strips hold no bool).
 
 ### `hk.where`
 
@@ -762,7 +762,7 @@ hk.map_cpp(expr: str, *args, dtype: Optional[DType] = None, name: str = 'map') -
 
 *Surface*: an escape hatch, used only within its boundary: an intrinsic or instruction hk has no op for, or another kernel's exact instruction sequence; not index arithmetic, selects, bit ops or float expressions the operators can write; never in a template.
 
-An elementwise C++ expression over strips (gfx950): element (r, c) of the result is `expr`
+An elementwise C++ expression over strips: element (r, c) of the result is `expr`
 with `x0`, `x1`, ... bound to element (r, c) of each strip argument -- or to the argument
 itself for an `Int` or a Python int -- converted to `dtype` (default: the strips' one dtype;
 strips of fp32 and i32 together must say it).
@@ -785,10 +785,9 @@ spelled `__builtin_fmaf` -- no `;` or braces, and the compiler, not hk, checks i
 hk.iota(ty) -> Tile
 ```
 
-*Surface*: to be merged into hk.lane_coords(type)[1] (alias kept) (DSL-surface migration S6).
-
 An i32 strip of type `ty`'s shape whose element (r, c) is c: each element's own column, for
-index arithmetic (hk.map_cpp, load_elems / store_elems) and per-column choices (gfx950).
+index arithmetic (the strip operators, load_elems / store_elems) and per-column choices
+(gfx950). `hk.lane_coords(ty)[1]`, kept as this one line.
 
 ### `hk.mfma_strip`
 

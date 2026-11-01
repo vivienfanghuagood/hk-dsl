@@ -134,6 +134,30 @@ def _vllm_int4() -> List[str]:
                if f'"{p}"' not in src and f"'{p}'" not in src])
 
 
+def _vllm_gptq() -> Optional[List[str]]:
+    from vllm import _custom_ops as ops  # noqa: PLC0415
+    from vllm.model_executor.layers.quantization import auto_gptq  # noqa: PLC0415
+
+    if not hasattr(ops, "gptq_gemm_rdna3"):
+        return None                 # no RDNA3 GPTQ kernel in this vLLM: nothing to route
+    from vllm.model_executor.kernels.linear.mixed_precision import rdna3_w4a16  # noqa: PLC0415
+
+    cls = auto_gptq.AutoGPTQLinearMethod
+    kern = rdna3_w4a16.RDNA3W4A16LinearKernel
+    src = inspect.getsource(cls.create_weights)
+    return (_expect(names(cls.process_weights_after_loading) == ["self", "layer"],
+                    f"AutoGPTQLinearMethod.process_weights_after_loading takes "
+                    f"{names(cls.process_weights_after_loading)}")
+            + _expect(names(cls.apply) == ["self", "layer", "x", "bias"],
+                      f"AutoGPTQLinearMethod.apply takes {names(cls.apply)}")
+            + _expect(len(names(ops.gptq_gemm_rdna3)) == 5,
+                      "gptq_gemm_rdna3 no longer takes 5 arguments")
+            + _expect(hasattr(kern, "_get_weight_params"),
+                      "RDNA3W4A16LinearKernel has no _get_weight_params")
+            + [f"GPTQ layers no longer have {p}" for p in ("qweight", "qzeros", "scales")
+               if f'"{p}"' not in src and f"'{p}'" not in src])
+
+
 def _vllm_gemm() -> List[str]:
     from vllm.model_executor.layers import utils as vu  # noqa: PLC0415
     from vllm.v1.worker import gpu_worker  # noqa: PLC0415
@@ -171,6 +195,26 @@ def _vllm_sdpa() -> List[str]:
     return _expect(hasattr(w, "apply_sdpa") and getattr(w, "F", None) is torch.nn.functional,
                    "vLLM's ViT attention no longer calls F.scaled_dot_product_attention "
                    "(vit_attn_wrappers.apply_sdpa)")
+
+
+def _vllm_prefill() -> Optional[List[str]]:
+    from . import switches  # noqa: PLC0415
+
+    if switches.arch() != "gfx1100":
+        return None                 # gfx1100's kernel: the route reports it and stays out
+    from vllm.v1.attention.ops import prefix_prefill  # noqa: PLC0415
+
+    from . import vllm_prefill  # noqa: PLC0415
+
+    from vllm.v1.attention.ops import triton_unified_attention as tua  # noqa: PLC0415
+
+    fn = vllm_prefill._ORIG or prefix_prefill.context_attention_fwd
+    u = vllm_prefill._ORIG_U or tua.unified_attention
+    need = {"q", "k", "v", "out", "cu_seqlens_q", "max_seqlen_q", "seqused_k", "softmax_scale",
+            "causal", "block_table"}
+    lost = sorted(need - set(names(u)))
+    return (same_parameters(fn, vllm_prefill.context_attention_fwd, "context_attention_fwd")
+            + _expect(not lost, f"unified_attention lost {lost}"))
 
 
 def _vllm_backend() -> List[str]:
@@ -291,9 +335,10 @@ def _sgld_convrot() -> List[str]:
 #: route -> its contract: a list of problems ([] holds), or None where it does not apply here.
 CHECKS: Dict[str, Callable[[], Optional[List[str]]]] = {
     "vllm_mxfp8": _vllm_mxfp8, "vllm_moe_a8w4": _vllm_moe_a8w4, "vllm_int4": _vllm_int4,
+    "vllm_gptq": _vllm_gptq,
     "vllm_gemm": _vllm_gemm, "vllm_moe": _vllm_moe, "vllm_sdpa": _vllm_sdpa,
     "vllm_backend": _vllm_backend, "vllm_dsv41_index": _vllm_dsv41_index,
-    "vllm_sparse_mla": _vllm_sparse_mla,
+    "vllm_sparse_mla": _vllm_sparse_mla, "vllm_prefill": _vllm_prefill,
     "sglang_linear": _sglang_linear, "sglang_moe": _sglang_moe,
     "sgld_attn": _sgld_attn, "sgld_linear": _sgld_linear, "sgld_convrot": _sgld_convrot,
 }
