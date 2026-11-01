@@ -457,6 +457,14 @@ path. So the patch measures the model it is given, on the machine it runs on
   the same model finds every shape and measures nothing.
 - **Once per machine.** Writers hold a file lock. Tensor-parallel ranks, or
   two servers, measure a shape once: the others wait, then read it.
+- **Then every layer is decided.** Each unquantized linear layer and the LM
+  head is looked up once against the table it will run on. A layer the table
+  routes at no M keeps vLLM's own GEMM with nothing of hk's in its path: an
+  fp16 or biased weight, or a shape every measured M of which fell back. A
+  wrapper there would still be an op of its own in every captured decode
+  step. `[hk] linear layers at load: N through hk's op; unrouted at load: ...`
+  says how many of each, by reason (`vllm_gemm.UNROUTED`). With
+  `HK_AUTOTUNE_BUDGET=0` the same decision is taken on each layer's first call.
 
 To pay the cost before a server starts instead, on a quiet card and with no
 budget unless one is given:

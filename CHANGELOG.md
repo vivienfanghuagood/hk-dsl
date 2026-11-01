@@ -9,6 +9,14 @@ The next version's notes collect here until it is released.
 What is on main after 0.8.0. `pip install hk-dsl` (0.8.0) does not have it;
 the API reference marks such names *New after 0.8.0*.
 
+**`vllm_gemm`: a layer the table never routes keeps vLLM's GEMM, unwrapped.** Every unquantized
+linear used to go through hk's op, which fell back inside for a call it did not take. A model whose
+dense layers are fp16 (the tables are bf16) got no hk call but paid for one captured op per layer
+per decode step. Now each layer is decided once, at load, after the missing shapes are measured. A
+layer whose (dtype, N, K) the table routes at no M, or whose weight is biased or strided, calls
+vLLM's own GEMM directly. The load reports `[hk] linear layers at load: N through hk's op;
+unrouted at load: ...`.
+
 **RDNA3's paired WMMA operand: `as_operand(k_order="even_odd")` (DSL-surface S11).** On gfx1100,
 `S.as_operand(hk.fp16, k_order="even_odd")` turns a 32x16 fp32 pair of WMMA accumulators into two fp16
 operands, the pair's even rows and its odd rows, one `permlanex16` a packed dword. `hk.ops.attn_k3`
