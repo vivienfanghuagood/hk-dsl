@@ -48,6 +48,7 @@ def main(argv=None) -> int:
 
     cfg = R.model_config(args.model)
     shapes = R.linear_shapes(cfg, args.tp)
+    model = [s[:3] for s in shapes]          # every layer, biased or not: the context they run in
     if args.shapes:
         keep = set(args.shapes.split(","))
         shapes = [s for s in shapes if s[0] in keep]
@@ -81,7 +82,9 @@ def main(argv=None) -> int:
     rep = R.tune_missing(kind, arch, todo, engine=fn, engine_name=ename,
                          complete=set() if args.force else have, budget=args.budget,
                          force=args.force, flydsl=args.flydsl, by="hk.integration tune",
-                         log=lambda s: print(s, flush=True))
+                         log=lambda s: print(s, flush=True), model=model,
+                         route_of=lambda m, n, k: table.lookup(m, n, k) if (n, k) in have
+                         else "engine")
     print(rep.line())
     return 0 if not rep.left else 1
 

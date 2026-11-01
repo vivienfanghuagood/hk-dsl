@@ -34,29 +34,43 @@ layer whose (dtype, N, K) the table routes at no M, or whose weight is biased or
 vLLM's own GEMM directly. The load reports `[hk] linear layers at load: N through hk's op;
 unrouted at load: ...`.
 
-**The gfx1100 GEMM route measures what a decode step runs: graph timing in the routes tuner, and
-12 table rows re-measured.**
-- **The bias.** `hk.autotune.routes` (route_tune and the at-load tuner) timed an unqueued burst on
-  RDNA, which charged vLLM's ~8 us of Python dispatch at M <= 5 to the engine. For 1536x1536 at
-  M = 1 it read 17.2 us for the engine against hk's 11.5 us. In a captured graph it is 9.4 us
-  against 11.0 us.
-- **The cost.** InternVL3-2B lost c1 TPOT to it (0.965x of stock-fair, from an at-load record).
-- **Timing.** `measure_points(timing=)` adds "graph": each path's burst over the rotated weights is
-  captured once as a CUDA graph, warmed and captured on a side stream of its own, and its replays
-  are timed. Graph is now the default on RDNA; gfx950 keeps "queued".
-- **Records.** At-load records record their timing. On RDNA a record without one is measured
-  again.
-- **route_tune.** It gains `--timing`, `--nk`, `--merge-into` and `--splice`; `--splice` replaces
-  a row's points at the measured Ms only and re-derives its runs.
+**The routes tuner times what a decode step runs (RDNA): each call in its model's context, TunableOp
+in the records, and 12 gfx1100 rows re-measured.**
+- **Two biases.** `hk.autotune.routes` (route_tune and the tuning at load) timed an unqueued burst
+  on RDNA, which charged vLLM's ~8 us of Python dispatch at M <= 5 to the engine: 1536x1536 at
+  M = 1 read 17.2 us against hk's 11.5, where a captured graph runs 9.4 against 11.0. InternVL3-2B
+  lost c1 TPOT to it (0.965x of stock-fair). And a shape timed alone flatters a tuned hipBLASLt
+  kernel: on an R9700 with MiniCPM5's TunableOp results, vLLM's o_proj at M = 8 ran 17.1 us back
+  to back and 20.5-21.6 in the served step, while hk's decode GEMV ran 17.3-17.6 either way.
+  Timed alone, the tuning at load left M = 8 on vLLM.
+- **Timing.** `measure_points(timing="context")`, the default on RDNA: each path's calls are
+  captured in a CUDA graph and replayed. Every call runs after a norm-like kernel that writes its
+  input, then the model's other linear layers follow on their routes at that M, each with an input
+  kernel of its own. Every shape rotates through 576 MB of its own copies. The context's own graph
+  is timed in the same rounds and taken off. "graph" (a shape's burst alone) stays; the LM head,
+  one call a step, is timed so.
+- **The routes move the context.** Once every decode M is in, the Ms whose context changed are
+  timed again in the routes chosen so far, until none moves (at most 3 passes).
+- **Records.** `meta.timing`, `meta.context_routes` (the context each point was timed in) and
+  `meta.tunableop` (the results file and a hash of it, or "off"). A record timed another way or
+  under another TunableOp state is measured again, and a later start re-times what an earlier one
+  measured in another context.
+- **route_tune.** It gains `--timing`, `--nk`, `--merge-into` and `--splice` (replace a row's
+  points at the measured Ms only, re-derive its runs), and times a model's shapes in context.
+- **Checked against serving (R9700, MiniCPM5, TunableOp, rocprofv3).** Linear time a layer at
+  decode batch 8, routes picked by context timing (qkv and o on hk's GEMV): 166.1 us served
+  against 176.2 for stock-fair; the harness predicted 166.6 against 176.8. Batches 1 and 32 stay
+  on vLLM's path, served equal to stock-fair.
 - **The 12 rows.** The shipped gfx1100 rows that sent M <= 5 to hk against the burst floor were
   re-measured at M 1-63 with graph timing and spliced. Small-N rows give M <= 1-5 back to vLLM
   (2048x256: M <= 16). Large rows take hk from M = 2, where vLLM's M = 2-4 is slower than the
   decode GEMV in a graph. M = 1 stays vLLM's everywhere.
-- **Gates.** One W7900D, 3 alternating server starts per arm:
-  - InternVL3-2B c1 TPOT 5.058 vs stock-fair 5.051 ms (equal), c8 1.08x;
-  - MiniCPM5-2B c1 equal and c8 1.20x vs hk on main;
-  - MiniCPM-V-4.7-35B TP2 c1 / c4 / c16 equal to hk on main;
-  - GSM8K equal throughout.
+- **Gates.** 3 alternating server starts per arm, TunableOp on (stock-fair), GSM8K level throughout.
+  - gfx1201 (R9700), MiniCPM5-2B with no shipped rows, routes tuned at load: c1 = stock-fair
+    (8.47 ms; main 0.98x), c8 1.05x once the records are complete (main 1.06x), c32 and 16k TTFT
+    equal. With the gfx1201 MiniCPM5 rows that land next to this change c8 is 1.057x.
+  - gfx1100 (W7900D): MiniCPM5-2B c1 = stock-fair and main (7.77 ms), c8 9.65 vs main 9.66 ms
+    (1.10x stock-fair); InternVL3-2B c1 = stock-fair (5.02-5.04 vs 5.04 ms; main 0.965x), c8 1.07x.
 
 **RDNA3's paired WMMA operand: `as_operand(k_order="even_odd")` (DSL-surface S11).** On gfx1100,
 `S.as_operand(hk.fp16, k_order="even_odd")` turns a 32x16 fp32 pair of WMMA accumulators into two fp16

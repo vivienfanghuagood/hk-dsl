@@ -456,9 +456,31 @@ path. So the patch measures the model it is given, on the machine it runs on
   missing shape first, largest weight stream first, then the prefill grid.
   A shape whose calls all carry a bias is not measured, since those calls
   fall back anyway.
+- **How it times.** As a captured decode step runs the layer (`measure_points`,
+  `timing="context"`): each candidate's calls are replayed from a CUDA graph,
+  each one after a norm-like kernel that writes its input and before the
+  model's other linear layers, on the routes they take at that M, each with
+  an input kernel of its own. Every shape rotates through 576 MB of its own
+  weight copies, so none is read from the Infinity Cache. The context's own
+  graph is timed in the same rounds and taken off. A shape timed alone
+  flatters a tuned hipBLASLt kernel, which runs 2-5 us faster back to back
+  than after other kernels, while hk's decode GEMV does not change: on an
+  R9700 with MiniCPM5's TunableOp results the alone-timed tuner left M = 8
+  on vLLM, and the routes context timing picks there cut the served step's
+  linear time at batch 8 by 5.8% (166.1 against 176.2 us a layer). Once
+  every decode M is in, the Ms whose context moved (another shape's route
+  changed) are timed again, until none moves. The LM head, one call a step,
+  is timed alone.
+- **TunableOp.** Which kernel vLLM's GEMM runs at an M is what TunableOp's
+  results file says. A record keeps the file's name and a hash of its
+  contents (`meta.tunableop`, "off" without TunableOp), and a record
+  measured under another state is measured again.
 - **How long.** `HK_AUTOTUNE_BUDGET` seconds, 60 by default. A shape whose
   grid the budget cut short routes only up to the largest M measured; the
-  next start carries on. The patch's report line says what was measured,
+  next start carries on. Context timing costs more a point than a shape timed
+  alone: on an R9700, MiniCPM5-2B's decode Ms took three 60-second starts, so
+  its first start routed little. Run `python -m hk.integration tune` (below)
+  before the server to start on the full routes. The patch's report line says what was measured,
   how long it took, and which shapes stayed on vLLM's path.
 - **Where it goes.** This machine's records: `$HK_TUNE_DIR` (by default
   beside the compile cache), `routes_vllm_linear_<arch>.json`. Each shape

@@ -268,16 +268,43 @@ def entry(name: str, points: List[list], *, min_gain: float = MIN_GAIN,
 
 
 #: How measure_points times a burst (see its docstring).
-TIMINGS = ("burst", "queued", "graph")
+TIMINGS = ("burst", "queued", "graph", "context")
 
 
 def default_timing(arch: Optional[str] = None) -> str:
-    """measure_points' timing when none is given: "queued" on gfx950, "graph" on RDNA."""
+    """measure_points' timing when none is given: "queued" on gfx950, "context" on RDNA."""
     if arch is None:
         from ..target import current_arch  # noqa: PLC0415
 
         arch = current_arch()
-    return "queued" if arch == "gfx950" else "graph"
+    return "queued" if arch == "gfx950" else "context"
+
+
+def tunableop_state() -> Any:
+    """PyTorch's TunableOp as this process runs it, as a record says it: "off", or its results
+    file's name and a hash of its contents. Which GEMM the engine's path runs at an M is what
+    that file says: with MiniCPM5's file on an R9700, vLLM's o_proj at M = 8 runs a tuned
+    hipBLASLt kernel at 17 us in a burst, and the untuned one at 29."""
+    import hashlib  # noqa: PLC0415
+
+    try:
+        import torch  # noqa: PLC0415
+
+        t = torch.cuda.tunable
+        if not t.is_enabled():
+            return "off"
+        name = t.get_filename()
+        dev = torch.cuda.current_device()
+    except Exception:  # noqa: BLE001 -- no torch, no TunableOp: metadata, not a failure
+        return "off"
+    out: Dict[str, Any] = {"file": os.path.basename(name), "tuning": bool(t.tuning_is_enabled())}
+    for path in (name.replace("%d", str(dev)), name):
+        try:
+            out["sha"] = hashlib.sha256(Path(path).read_bytes()).hexdigest()[:16]
+            break
+        except OSError:
+            continue
+    return out
 
 
 def _record_timing(ent: dict, arch: str) -> Optional[str]:
@@ -288,6 +315,17 @@ def _record_timing(ent: dict, arch: str) -> Optional[str]:
     if meta is None:
         return None
     return meta.get("timing") or ("queued" if arch == "gfx950" else "burst")
+
+
+def route_at(points: Sequence[list], m: int, min_gain: float = MIN_GAIN,
+             noise_k: float = NOISE_K) -> str:
+    """The path measured points take at M by the runs' rule ("engine" where the engine's path
+    won, or M was not measured)."""
+    for p in points:
+        if p[0] == m:
+            path = base_path(p[1], min_gain, _noise(p), noise_k)
+            return "engine" if path == "fallback" else path
+    return "engine"
 
 
 def dump(table: dict) -> str:
@@ -566,7 +604,8 @@ def measure_points(n: int, k: int, ms: Sequence[int], *, engine: Callable,
                    rotate_bytes: int = ROTATE_BYTES, raw: bool = False,
                    deadline: Optional[float] = None, device=None,
                    log: Optional[Callable[[str], None]] = None,
-                   tag: str = "", queued: Optional[bool] = None, timing: Optional[str] = None
+                   tag: str = "", queued: Optional[bool] = None, timing: Optional[str] = None,
+                   context: Sequence[Tuple[int, int, Callable[[int], str]]] = ()
                    ) -> Tuple[List[list], int, bool]:
     """Measure y = x @ W.T for W (n, k) at each M of `ms`, in order.
 
@@ -585,17 +624,37 @@ def measure_points(n: int, k: int, ms: Sequence[int], *, engine: Callable,
     host makes them), "queued" (as above) or "graph": each path's burst over
     the rotated weights captured once as a CUDA graph and its replays timed --
     how a captured decode step runs it, with no host cost in either arm and
-    cold weights. Default: "queued" on gfx950 (or `queued`'s value when
-    given), "graph" on RDNA. An unqueued burst on gfx1100 charged vLLM's ~8 us
-    of Python dispatch at M <= 5 (wvSplitK) to the engine: 1536x1536 at M = 1,
-    17.2 vs hk's 11.5 us unqueued, 8.6 vs 11.3 queued, 9.4 vs 11.0 in a graph,
-    and a table measured so sent small M to hk where serving, in graphs, was
-    slower.
+    cold weights -- or "context": as "graph", each call among the model's
+    other linear layers, `context`, as a decode step runs them. Default: "queued" on gfx950 (or `queued`'s value when given), "context"
+    on RDNA. An unqueued burst on gfx1100 charged vLLM's ~8 us of Python
+    dispatch at M <= 5 (wvSplitK) to the engine: 1536x1536 at M = 1, 17.2 vs
+    hk's 11.5 us unqueued, 8.6 vs 11.3 queued, 9.4 vs 11.0 in a graph, and a
+    table measured so sent small M to hk where serving, in graphs, was slower.
+
+    `context` is (N, K, path at M) of each other linear layer, in the model's
+    order from the one measured. Each call of a path runs after a kernel that
+    writes its input (`_glue`) and before one call of every layer of the
+    context, on its route at that M ("engine", "hk", "hk_decode"), each with
+    an input kernel and weights of its own; the context's own graph, with the
+    measured shape's input kernel in it, is timed in the same rounds and
+    taken off. What is left is what routing the shape so adds to a step,
+    including what it does to the kernels around it. A burst of one shape
+    alone flatters a tuned hipBLASLt kernel: on an R9700 with MiniCPM5's
+    TunableOp results, vLLM's o_proj at M = 8 ran 15.6 us (kernel time) after
+    itself, 17.6-19.0 after another GEMM and 20.5-21.6 in the served step,
+    while hk's GEMV, one small kernel for every shape, ran 17.3-17.6
+    throughout. Timed alone, M = 8 stayed on the engine; served, the routes
+    context timing picks there took 10.2 us a layer (5.8%) off the step's
+    linear time, as it predicted. Without a context, "context" times as
+    "graph".
     """
     if timing is None:
         timing = default_timing() if queued is None else ("queued" if queued else "burst")
     if timing not in TIMINGS:
         raise ValueError(f"timing={timing!r}: one of {TIMINGS}")
+    ctx = list(context) if timing == "context" else []
+    if timing == "context":
+        timing = "graph"
     import torch  # noqa: PLC0415
 
     paths = set(paths)
@@ -610,11 +669,39 @@ def measure_points(n: int, k: int, ms: Sequence[int], *, engine: Callable,
 
         fly = flydsl_gemm if flydsl_gemm.available() else None
 
+    # Calls a timed graph makes: with a context, CONTEXT_CALLS layers or more (at most
+    # CONTEXT_CALLS_MAX), each shape -- this one and every layer of the context -- going through
+    # CONTEXT_ROTATE x rotate_bytes of copies of its own. The context's streaming does not keep a
+    # shape's weights out of the Infinity Cache: on an R9700, qkv's four copies (40 MB) among
+    # MiniCPM5's other layers gave hk's GEMV 9.8 us a call at M = 1, read from the cache, and 16
+    # copies 21.5, its time alone with cold weights; on a W7900D, down 2048x6144 at M = 1 took
+    # 34.8 us over 288 MB of copies and 38.4-39.2 over 576 MB to 2.3 GB.
     w_bytes = n * k * 2
-    copies = max(2, -(-rotate_bytes // w_bytes))
+    rot = rotate_bytes * (CONTEXT_ROTATE if ctx else 1)
+    if ctx:
+        # Within the free memory, the context's copies counted: halved down to rotate_bytes.
+        need = sum(min(-(-rot // b), CONTEXT_CALLS_MAX) * b
+                   for b in [w_bytes] + [cn * ck * 2 for cn, ck, _ in ctx])
+        free = torch.cuda.mem_get_info(dev)[0]
+        while rot > rotate_bytes and need > free // 2:
+            rot //= 2
+            need //= 2
+            log(f"  {tag}: context copies over {rot >> 20} MB a shape, for the free memory")
+
+    def copies_of(nbytes):
+        return max(2, -(-rot // nbytes))
+
+    copies = copies_of(w_bytes)
+    if ctx:
+        calls_n = min(max(copies, CONTEXT_CALLS), CONTEXT_CALLS_MAX)
+        copies = min(copies, calls_n)
+    else:
+        calls_n = copies
     g = torch.Generator(device=dev).manual_seed(0)
     ws = [torch.randn(n, k, device=dev, dtype=torch.bfloat16, generator=g)
           * k ** -0.5 for _ in range(copies)]
+    cws = [[torch.randn(cn, ck, device=dev, dtype=torch.bfloat16, generator=g) * ck ** -0.5
+            for _ in range(min(copies_of(cn * ck * 2), calls_n))] for cn, ck, _ in ctx]
     points: List[list] = []
     remeasured = 0
 
@@ -643,32 +730,55 @@ def measure_points(n: int, k: int, ms: Sequence[int], *, engine: Callable,
         order = list(ok)
         host = {}
         if timing == "graph":
+            # Each call: the path's on a copy, then the context's layers on theirs ([] without one).
+            around = [[] for _ in range(calls_n)]
+            for (cn, ck, at), cw in zip(ctx, cws):
+                glue, run = _context_call(engine, m, cn, ck, at(m), dev, g)
+                for i in range(calls_n):
+                    around[i] += [glue, lambda w=cw[i % len(cw)], run=run: run(w)]
+            # With a context, each layer's input is written by a kernel of its own just before
+            # it, as a norm, attention or activation writes it in a step -- this shape's too, in
+            # the context's own graph as well, so that what is taken off leaves its GEMM alone.
+            before = [_glue(x, dev, g)] if ctx else []
+            bursts = {name: [c for i in range(calls_n) for c in
+                             before + [lambda w=ws[i % copies], call=call: call(w)] + around[i]]
+                      for name, call in ok.items()}
+            if ctx:
+                bursts[_CONTEXT] = [c for i in range(calls_n) for c in before + around[i]]
             # Captured on a stream of its own, warmed on that stream first: a library that keeps
             # per-stream state (hipBLASLt's handle and workspace, which TunableOp's tuned GEMMs
             # reach) makes it on first use, which a stream being captured does not permit.
             graphs = {}
             side = torch.cuda.Stream()
             side.wait_stream(torch.cuda.current_stream())
-            for name, call in ok.items():
+            for name, calls in bursts.items():
                 with torch.cuda.stream(side):
-                    call(ws[0])
+                    for c in calls[:len(calls) // calls_n]:
+                        c()
                 side.synchronize()
                 gph = torch.cuda.CUDAGraph()
                 with torch.cuda.graph(gph, stream=side):
-                    for w in ws:
-                        call(w)
+                    for c in calls:
+                        c()
                 graphs[name] = gph
             torch.cuda.synchronize()
+            names = list(graphs)
+            took: Dict[str, List[float]] = {name: [] for name in names}
             for r in range(rounds):
-                for name in (order if r % 2 == 0 else order[::-1]):
+                for name in (names if r % 2 == 0 else names[::-1]):
                     graphs[name].replay()
                     s, e = torch.cuda.Event(True), torch.cuda.Event(True)
                     s.record()
                     graphs[name].replay()
                     e.record()
                     torch.cuda.synchronize()
-                    per[name].append(s.elapsed_time(e) / copies)
+                    took[name].append(s.elapsed_time(e))
             del graphs
+            # With a context: what the path's calls add to it, the effect on its other layers'
+            # kernels included -- what routing the shape so changes in a step.
+            base = took.pop(_CONTEXT, [0.0] * rounds)
+            for name in order:
+                per[name] = [max((t - b) / calls_n, 1e-4) for t, b in zip(took[name], base)]
             return per
         if queued:
             for name, call in ok.items():
@@ -737,9 +847,64 @@ def measure_points(n: int, k: int, ms: Sequence[int], *, engine: Callable,
                 point.append(got)
             points.append(point)
     finally:
-        del ws
+        del ws, cws
         torch.cuda.empty_cache()
     return points, remeasured, complete
+
+
+#: measure_points' name for the context's own graph, timed beside the paths' and taken off them.
+_CONTEXT = "(context)"
+#: Layers a context-timed graph runs: at least CONTEXT_CALLS, so that what a graph pays once is
+#: a small part of a call; at most CONTEXT_CALLS_MAX, where a small shape's copies stop short of
+#: rotate_bytes rather than make a graph of thousands of layers.
+CONTEXT_CALLS = 16
+CONTEXT_CALLS_MAX = 64
+#: Passes over the decode Ms, after the first, re-timing each M whose context has moved: the
+#: routes one shape takes change the others' contexts. On an R9700 (MiniCPM5, TunableOp) the
+#: first such pass decided 0-16 of 25-54 re-timed Ms a shape differently, the second 0-1, the
+#: third none; on a W7900D the first decided 0-1.
+CONTEXT_PASSES = 3
+#: How many times rotate_bytes each shape of a context-timed graph rotates through (see
+#: measure_points: a W7900D's 96 MB Infinity Cache still served part of 288 MB).
+CONTEXT_ROTATE = 2
+
+
+def _context_call(engine, m, n, k, path, dev, g) -> Tuple[Callable, Callable]:
+    """One layer of a context: (the call that writes its input, y = x @ W.T for W (n, k) at M on
+    `path` as a call of W). The engine's path where hk's would not take the shape."""
+    import torch  # noqa: PLC0415
+
+    x = torch.randn(m, k, device=dev, dtype=torch.bfloat16, generator=g)
+    glue = _glue(x, dev, g)
+    op = _decode_op(m, n, k) if path == "hk_decode" else _gemm_op(m, n, k) if path == "hk" else None
+    if op is None:
+        return glue, lambda w: engine(x, w, None)
+    out = torch.empty(m, n, device=dev, dtype=torch.bfloat16)
+    return glue, lambda w: op(x, w, out)
+
+
+def _glue(x, dev, g) -> Callable:
+    """A call that writes x as a step's norm would: an RMS norm of another (M, K), copied in.
+    Between the GEMMs of a step run other kernels, and a tuned hipBLASLt GEMM runs slower after
+    them than after a GEMM: on an R9700 (MiniCPM5 at M = 8, TunableOp), hk's GEMV on o_proj
+    saved 1.1 us a layer over vLLM's among the other GEMMs alone, 1.5 with this before each,
+    3.4 with the step's own norm, attention and activation; served, 3.2."""
+    import torch  # noqa: PLC0415
+    import torch.nn.functional as F  # noqa: N812,PLC0415
+
+    src = torch.randn(x.shape, device=dev, dtype=x.dtype, generator=g)
+    w = torch.ones(x.shape[-1], device=dev, dtype=x.dtype)
+    return lambda: x.copy_(F.rms_norm(src, (x.shape[-1],), w))
+
+
+def context_of(order: Sequence[Tuple[int, int]], n: int, k: int,
+               path_at: Callable[[int, int], Callable[[int], str]]) -> list:
+    """measure_points' `context` for (n, k) in a model whose linear layers are `order`, (N, K)
+    in model order, each once: the others, starting after (n, k) and wrapping round, each
+    with `path_at(N, K)`, its path at an M."""
+    keys = list(dict.fromkeys(order))
+    i = keys.index((n, k)) if (n, k) in keys else len(keys)
+    return [(cn, ck, path_at(cn, ck)) for cn, ck in keys[i + 1:] + keys[:i]]
 
 
 def tune_shape(n: int, k: int, *, engine: Optional[Callable] = None,
@@ -839,7 +1004,9 @@ def tune_missing(kind: str, arch: str, shapes: Sequence[Tuple[str, int, int, int
                  engine: Callable, engine_name: str, complete: Iterable[Tuple[int, int]] = (),
                  budget: Optional[float] = None, force: bool = False,
                  grid: Sequence[int] = GRID, by: str = "",
-                 log: Optional[Callable[[str], None]] = None, **how) -> Report:
+                 log: Optional[Callable[[str], None]] = None,
+                 model: Optional[Sequence[Tuple[str, int, int]]] = None,
+                 route_of: Optional[Callable[[int, int, int], str]] = None, **how) -> Report:
     """Measure every (N, K) of `shapes` -- (name, N, K, calls per step) --
     that no table has measured, and write each into this machine's records
     as soon as it is done.
@@ -847,8 +1014,10 @@ def tune_missing(kind: str, arch: str, shapes: Sequence[Tuple[str, int, int, int
     `complete` is the shapes the shipped table has; this machine's records
     are read here, under the lock, so a shape another process measured while
     this one waited is not measured again. A record of this machine's
-    measured against another engine (`engine_name`) is measured again, and
-    so is everything with `force`.
+    measured against another engine (`engine_name`), timed another way, or
+    under another TunableOp state (`tunableop_state`: which GEMM the engine's
+    path runs is what its results file says) is measured again, and so is
+    everything with `force`.
 
     `budget` seconds, from the call, bound the whole thing. Decode-sized Ms
     go first, for every shape -- they are where a decode step's time is, and
@@ -856,6 +1025,19 @@ def tune_missing(kind: str, arch: str, shapes: Sequence[Tuple[str, int, int, int
     first; then the rest of the grid, shape by shape. A shape whose grid was
     cut short is written `partial`: its runs answer only up to the largest M
     measured, and the next call carries on from there.
+
+    Context timing (`measure_points`) runs each call among the model's other
+    linear layers: `model`, (name, N, K) of every one in model order
+    (default: `shapes`), each on its route at the M -- a shape measured here
+    on its points so far, any other on `route_of(M, N, K)` (the table's; the
+    engine's without it). A shape measured first is timed among layers still
+    on the engine's path, and its routes change the others' context; so once
+    every shape's decode Ms are in, each decode M whose context has changed
+    since it was measured is measured again, in the routes chosen so far, for
+    up to CONTEXT_PASSES passes or until none has moved. A record keeps each
+    point's context (meta.context_routes), so a later call re-checks what an
+    earlier one measured. The LM head, one call a step, is timed alone and is
+    in no context.
     """
     log = log or (lambda s: None)
     t0 = time.monotonic()
@@ -863,13 +1045,22 @@ def tune_missing(kind: str, arch: str, shapes: Sequence[Tuple[str, int, int, int
     rep = Report()
     complete = set(complete)
     lm_names = ("lm_head",)
+    timing = how.pop("timing", None) or default_timing(arch)
     meta = dict(engine=engine_name, **_where(how.get("device")),
                 min_gain=how.get("min_gain", MIN_GAIN),
                 rounds=how.get("rounds", 3), warmup=how.get("warmup", 1),
                 sets=how.get("sets", 1), remeasure=how.get("remeasure", 2),
                 close_k=how.get("close_k", CLOSE_K), noise_k=how.get("noise_k", NOISE_K),
-                timing=how.get("timing") or default_timing(arch),
-                by=by or "hk.autotune.routes")
+                tunableop=tunableop_state(), by=by or "hk.autotune.routes")
+    order = [(n, k) for name, n, k in (model or [s[:3] for s in shapes]) if name not in lm_names]
+
+    def timing_of(n, k):
+        """How (n, k) is timed: in context where the model has other layers -- but the LM head,
+        one call a step of ~1 ms, in a graph of its own: what a context changes is microseconds."""
+        if timing != "context":
+            return timing
+        return "context" if (n, k) in order and len(set(order)) > 1 else "graph"
+
     with records_lock(kind, arch):
         rep.waited = time.monotonic() - t0
         user = (load_user(kind, arch) or {}).get("shapes", {})
@@ -877,10 +1068,13 @@ def tune_missing(kind: str, arch: str, shapes: Sequence[Tuple[str, int, int, int
         for name, n, k, calls in shapes:
             key = f"{n}x{k}"
             ent = user.get(key)
-            # A record measured against another engine, or timed another way (gfx1100's unqueued
-            # bursts before "graph": hk-state/vllm-gemm-c1-gfx1100.md), is measured again.
+            # A record measured against another engine, timed another way (gfx1100's unqueued
+            # bursts before "graph", single-shape graphs before "context") or under another
+            # TunableOp state is measured again.
             fresh = (ent is not None and ent.get("meta", {}).get("engine") in (None, engine_name)
-                     and _record_timing(ent, arch) in (None, meta["timing"]))
+                     and _record_timing(ent, arch) in (None, timing_of(n, k))
+                     and ent.get("meta", {}).get("tunableop", meta["tunableop"])
+                     == meta["tunableop"])
             if not force and ((fresh and not ent.get("partial"))
                               or (ent is None and (n, k) in complete)):
                 rep.known.append((name, n, k))
@@ -889,36 +1083,82 @@ def tune_missing(kind: str, arch: str, shapes: Sequence[Tuple[str, int, int, int
             have = [p for p in ent["points"]] if (fresh and not force and ent) else []
             todo.append(dict(name=name, n=n, k=k, calls=calls, want=want, points=have,
                              seconds=float((ent or {}).get("meta", {}).get("seconds", 0.0))
-                             if have else 0.0, remeasured=0))
+                             if have else 0.0, remeasured=0,
+                             seen={int(m): sig for m, sig in (ent or {}).get("meta", {})
+                                   .get("context_routes", {}).items()} if have else {}))
         todo.sort(key=lambda s: -s["n"] * s["k"] * s["calls"])
+        mine = {(s["n"], s["k"]): s for s in todo}
+
+        def path_at(n, k):
+            s = mine.get((n, k))
+            if s is not None:
+                return lambda m: route_at(s["points"], m, meta["min_gain"], meta["noise_k"])
+            if route_of is not None:
+                return lambda m: _engine_or(route_of(m, n, k))
+            return lambda m: "engine"
 
         def save(s, complete_now):
             ent = entry(s["name"], s["points"], min_gain=meta["min_gain"],
                         noise_k=meta["noise_k"], partial=not complete_now)
-            ent["meta"] = {**meta, "date": time.strftime("%Y-%m-%d"),
+            ent["meta"] = {**meta, "timing": timing_of(s["n"], s["k"]),
+                           "date": time.strftime("%Y-%m-%d"),
                            "seconds": round(s["seconds"], 1), "remeasured": s["remeasured"]}
+            if s["seen"]:
+                ent["meta"]["context_routes"] = {str(m): sig for m, sig in sorted(s["seen"].items())}
             rep.path = save_user(kind, arch, {f"{s['n']}x{s['k']}": ent},
                                  dict(kind=kind, arch=arch))
 
-        for phase in ("decode", "rest"):
+        def measure(s, ms, phase):
+            how_s = timing_of(s["n"], s["k"])
+            ctx = context_of(order, s["n"], s["k"], path_at) if how_s == "context" else []
+            t1 = time.monotonic()
+            pts, rm, _ = measure_points(s["n"], s["k"], ms, engine=engine, deadline=deadline,
+                                        log=log, tag=s["name"], timing=how_s, context=ctx,
+                                        **how)
+            for p in pts:
+                s["seen"][p[0]] = _routes_sig(ctx, p[0])
+            got = {p[0] for p in pts}
+            s["points"] = [p for p in s["points"] if p[0] not in got] + pts
+            s["remeasured"] += rm
+            s["seconds"] += time.monotonic() - t1
+            if pts:
+                save(s, set(s["want"]) <= measured_ms({"points": s["points"]}))
+            log(f"  {s['name']} {s['n']}x{s['k']}: {phase} Ms, {len(pts)} of "
+                f"{len(ms)} measured, {time.monotonic() - t1:.1f} s")
+            return pts
+
+        settled = False
+        for phase in ("decode",) + ("decode again",) * CONTEXT_PASSES + ("rest",):
+            if phase == "decode again":
+                # Only once every shape's decode Ms are in (before, a context is still moving),
+                # and until a pass finds no decode M whose context moved since it was timed.
+                if settled or timing != "context" or any(
+                        set(DECODE_MS) & set(t["want"]) - measured_ms(t) for t in todo):
+                    continue
+                settled = True
             for s in todo:
+                if deadline is not None and time.monotonic() > deadline:
+                    break
+                if phase == "decode again":
+                    if timing_of(s["n"], s["k"]) != "context":
+                        continue
+                    ctx = context_of(order, s["n"], s["k"], path_at)
+                    ms = [m for m, was in s["seen"].items() if m in DECODE_MS
+                          and was != _routes_sig(ctx, m)]
+                    before = {m: route_at(s["points"], m, meta["min_gain"], meta["noise_k"])
+                              for m in ms}
+                    if ms and measure(s, sorted(ms), phase):
+                        settled = False
+                        flips = sum(route_at(s["points"], m, meta["min_gain"], meta["noise_k"])
+                                    != was for m, was in before.items())
+                        log(f"  {s['name']}: {flips} of {len(ms)} re-timed decode Ms decided "
+                            f"differently in the chosen routes' context")
+                    continue
                 done = measured_ms({"points": s["points"]})
                 ms = [m for m in s["want"] if m not in done
                       and ((m in DECODE_MS) == (phase == "decode"))]
-                if not ms:
-                    continue
-                if deadline is not None and time.monotonic() > deadline:
-                    break
-                t1 = time.monotonic()
-                pts, rm, _ = measure_points(s["n"], s["k"], ms, engine=engine,
-                                            deadline=deadline, log=log, tag=s["name"], **how)
-                s["points"] += pts
-                s["remeasured"] += rm
-                s["seconds"] += time.monotonic() - t1
-                if pts:
-                    save(s, set(s["want"]) <= measured_ms({"points": s["points"]}))
-                log(f"  {s['name']} {s['n']}x{s['k']}: {phase} Ms, {len(pts)} of "
-                    f"{len(ms)} measured, {time.monotonic() - t1:.1f} s")
+                if ms:
+                    measure(s, ms, phase)
         for s in todo:
             got = measured_ms({"points": s["points"]})
             if set(s["want"]) <= got:
@@ -929,3 +1169,14 @@ def tune_missing(kind: str, arch: str, shapes: Sequence[Tuple[str, int, int, int
                 rep.left.append((s["name"], s["n"], s["k"]))
     rep.seconds = time.monotonic() - t0
     return rep
+
+
+def _routes_sig(ctx, m: int) -> str:
+    """A context's routes at M, a letter a layer (e engine, d hk's GEMV, g hk's GEMM), as a
+    record keeps them: the context each point was measured in."""
+    return "".join({"hk_decode": "d", "hk": "g"}.get(at(m), "e") for _, _, at in ctx)
+
+
+def _engine_or(path: Optional[str]) -> str:
+    """A table's answer as a context's path: hk's kernels by name, anything else the engine's."""
+    return path if path in ("hk", "hk_decode") else "engine"
