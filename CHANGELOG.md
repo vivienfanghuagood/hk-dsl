@@ -9,6 +9,23 @@ The next version's notes collect here until it is released.
 What is on main after 0.8.0. `pip install hk-dsl` (0.8.0) does not have it;
 the API reference marks such names *New after 0.8.0*.
 
+**The VOPD gate (gfx11.0, gfx11.5): kernels with the VOPD interlock hazard are rebuilt without dual
+issue.** When X's and Y's SRC0, or their VSRC1, are distinct VGPRs with the same parity, gfx11's VOPD
+forwarding drops the interlock, and an operand written just before can be read stale. LLVM fixed the
+pairing in llvm/llvm-project#220348, scoped to gfx11.0 and gfx11.5 by #225880; no ROCm release has the
+fix yet. hk's bounded strip RMSNorm with the fused add (1024 x 5120 bf16, 16 warps), built by AMD clang
+23 (TheRock 7.14), had such a VOPD and was wrong in 25-65% of launches. In
+tools/rdna3-probes/vopd_interlock_parity.hip, the same window is wrong in 88-93 of 100 launches under a
+partial EXEC when the VSRC1s share a parity, and in none when they differ or EXEC is full.
+
+`hk.runtime.compile.build` now applies the upstream rule (`cocheck.vopd_parity_hazard`) to every
+gfx11.0 / gfx11.5 code object. A kernel with a hazardous VOPD is rebuilt with
+`-mllvm -amdgpu-enable-vopd=0` (`HK_VOPD_GATE=fix`, the default; `refuse`, `report` and `0` as for the
+MFMA gate). Every other kernel's code object is unchanged, and gfx12 is not affected. Cached builds
+from before the gate are checked on their first hit, and `python3 -m hk.integration --status` lists
+what was rebuilt. tests/hk/gpu/test_vopd_gate.py launches the strip kernel 200 times into NaN-filled
+outputs (bf16 and fp16, weight offset 0 and 1).
+
 **SGLang: Gemma-style RMSNorm on hk (`HK_SGLANG_NORM`, on by default on gfx1100).** Where
 SGLang's `GemmaRMSNorm` would run its native torch path, which it does on ROCm without aiter or
 vLLM (eleven kernels a norm), it goes through hk's weighted norm kernels. The route passes the

@@ -29,6 +29,7 @@ def cc(tmp_path, monkeypatch):
     monkeypatch.setenv("HK_CACHE_DIR", str(tmp_path / "cache"))
     monkeypatch.setenv("HK_WAIT_GATE", "0")
     monkeypatch.setenv("HK_MFMA_GATE", "off")
+    monkeypatch.setenv("HK_VOPD_GATE", "off")
     monkeypatch.setattr(C, "include_dirs", lambda: [inc])
     monkeypatch.setattr(C, "hipcc", lambda: "/fake/hipcc")
     monkeypatch.setattr(C, "_hipcc_version", lambda: "hipcc x")
