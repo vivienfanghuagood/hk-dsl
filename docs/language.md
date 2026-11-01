@@ -73,7 +73,7 @@ away from zero, HipKittens' cheaper default, while every store that narrows
 rounds to nearest even as torch does, and gfx950 rounds to even
 throughout. A kernel that converts in registers and must match torch bit
 for bit -- a residual `x + r` of two bf16 values, which is a tie about one
-time in ten -- sets it ([chapter 38](history/38-rdna-losses.md#bf16-stores-round-as-torch-rounds)). The grid is a
+time in ten -- sets it. The grid is a
 function of the parameters: `p.<tensor>.<batch|depth|rows|cols>` gives an
 extent and `p.<CONSTEXPR>` gives a constexpr value, and it must return a
 3-tuple. A kernel that names no `arch` is built for `hk.target.current_arch()`
@@ -214,12 +214,11 @@ kinds of max and min, with different rules for NaN and signed zeros.
   and selects: its reductions keep `fmaxf` / `fminf`, as do RDNA's.
 
 `hk.ops.norm`'s RMSNorm, fused add + RMSNorm, LayerNorm and softmax run on
-strips wherever a row fits one ([chapter 27](history/27-strips.md)). On
+strips wherever a row fits one. On
 gfx950 so do quantize, the elementwise ops, `silu_mul` (which then takes
 the two halves of a gate/up output as strided views) and `hk.ops.rotary`,
 vLLM's rotary_embedding in NeoX style, token-major, from a `cos_sin_cache`
-of `[cos | sin]` rows and optional int32 positions
-([chapter 37](history/37-cdna-rows.md)).
+of `[cos | sin]` rows and optional int32 positions.
 
 ### Integer, mask and bit expressions on strips: `hk.map`
 
@@ -344,11 +343,10 @@ and `test_elems.py` exercise them.
 
 The dtypes are `hk.bf16`, `hk.fp16`, `hk.fp32`, `hk.i8` and `hk.i32`, plus
 `hk.fp8e4m3` and `hk.fp8e5m2`, which are accepted only where the target has an
-fp8 WMMA — gfx1201, not gfx1100 (see
-[the gfx1201 chapter](history/13-gfx1201.md)).
+fp8 WMMA — gfx1201, not gfx1100 ([supported hardware](supported-hardware.md)).
 
 Two spellings are deliberate, both kept on purpose when the language moved to
-MLIR ([history](history/15-mlir-dialect.md)):
+MLIR:
 - a vector type is named by the tile it reduces, `hk.col_vec(T)`, not
   `hk.ColVec[fp32, 16]`, because the dialect ties a vector's layout to its
   tile;
@@ -382,12 +380,10 @@ MLIR ([history](history/15-mlir-dialect.md)):
 A global carries one runtime row stride, so a slice of the last axis — the
 two halves of a fused `(M, 2I)` output, say — is accepted without a copy:
 contiguous along it, rows evenly strided, outer axes compact over the rows.
-Anything else is refused with a message saying why
-([strided globals](history/12-strided-globals.md)). Register loads and stores
+Anything else is refused with a message saying why. Register loads and stores
 can be bounded by rows, `x[idx].load(ty, bounded=True)` and
 `o[idx].store(t, bounded=True)`, which makes a tile that runs past the last
-row read zeros and drop the stores past it, with no branch
-([row-predicated loads and stores](history/10-row-predicated.md)); a strip
+row read zeros and drop the stores past it, with no branch; a strip
 is bounded by rows and columns alike (`x.at[r, c].load(S, bounded=True)`).
 A workgroup's synchronous copy, `g.load(tile, view)` / `g.store(view, tile)`,
 is bounded by rows without asking on gfx1100 and on gfx950: rows past the
@@ -425,9 +421,8 @@ x = As[1].subtile(64, 64, wr, 0).load(T, wait=False)
 include/cdna4 st_shape rather than the one its reads' fragment picks (16x32
 row operands, and 32x16 stride-4 col operands, read out of those too): a copy
 then reads each row in 128- or 64-byte runs instead of 64 or 32, and its
-lines once. The paged decode's copies went from 6.15 to 6.9 TB/s with both
-([chapter 39](history/39-cdna-paged.md)); non-temporal in the shorter runs
-fetched each line twice.
+lines once. Use the two together: non-temporal copies in the shorter runs
+fetch each line twice.
 
 The tile is a whole allocation or a buffer of a stack picked by a Python int,
 so `hk-lds-pipeline` knows which buffer each copy writes and checks the two
@@ -445,8 +440,7 @@ math between barriers runs the halves out of phase, so with eight warps the
 two waves on a SIMD take turns at the matrix core. `behind` comes from
 `warp_id()`, both ends are in the kernel's own body, and inside, the pass
 counts two barriers where one would do outside. gfx950's GEMM
-(`hk.ops.gemm_cdna`, [chapter 33](history/33-cdna-gemm.md)) is built from
-these.
+(`hk.ops.gemm_cdna`) is built from these.
 
 ### An accumulator read as an operand (gfx950)
 
@@ -488,7 +482,7 @@ O += v_tile.T @ P                      # V read with P's lane run
   use; in a schedule of phases a barrier apart that moves work into the other
   phase, which `sched_barrier` (a fence for the scheduler only) does not stop.
 
-`hk.ops.attn_cdna` is built from these ([chapter 34](history/34-cdna-attention.md)).
+`hk.ops.attn_cdna` is built from these.
 
 ## Rows by index, atomics, random numbers
 
@@ -522,9 +516,7 @@ that seed and offset, so a kernel can be checked against its Triton original
 exactly. The seed may be a device scalar (`x.at[0].load_scalar()`): a
 non-tensor argument is a constexpr, built in, and a seed that changes every
 step would compile every step. `step()` turns a comparison into a factor;
-[`examples/07_dropout.py`](../examples/07_dropout.py) is a dropout with it,
-and [chapter 19](history/19-rows-by-index.md) records what each of these
-measured.
+[`examples/07_dropout.py`](../examples/07_dropout.py) is a dropout with it.
 
 ## Control flow
 
@@ -657,19 +649,18 @@ instruction is in no class. include/rdna3's LDS fragment reads and writes are
 asm, so in hk's GEMM it can place the staging loads and the WMMAs, not the
 LDS traffic. `s_setprio` ends a scheduling region, so a group does not reach
 across one. `hk.arch.sched_barrier(allow)` is a fence that lets the classes
-in `allow` cross ([chapter 28](history/28-gemm-schedule.md)).
+in `allow` cross.
 
 **Occupancy caps.** `hk.lds.reserve(nbytes)` allocates LDS the kernel never
 uses, to cap how many workgroups share a WGP: on gfx1100 a WGP holds
-128 KB ÷ (the kernel's LDS + `nbytes`) workgroups
-([chapter 27](history/27-strips.md)).
+128 KB ÷ (the kernel's LDS + `nbytes`) workgroups.
 
 `hk.arch.wg_arrive(counter, expected)` counts this workgroup's arrival at
 `counter` (an element view of an int32 global) and returns how many arrived
 before it; the last to arrive resets the counter, and it contains barriers, so
-every warp must reach it (`python/hk/dsl/arch.py`). Why it is a counter rather
-than fp32 atomics is in [the chapter that added it](history/11-cross-workgroup-reduction.md),
-where it was introduced as `hk.wg_arrive(counter, idx, expected)`.
+every warp must reach it (`python/hk/dsl/arch.py`). It is a counter rather
+than fp32 atomics so the combine is deterministic: the partial sums are added
+in one fixed order.
 
 ## `@hk.func`
 
@@ -720,11 +711,8 @@ spelling that works:
   CPython each.
 * gfx942 is compile-only, and has no register strips (so no templates).
   gfx1201 runs the GPU tier on an R9700 with gfx1100's plans and schedules,
-  none of them tuned there yet ([chapter 47](history/47-gfx1201-on-hardware.md)). On gfx950 strips build, and its GEMM and attention are
-  kernels of hk's own (`hk.ops.gemm_cdna`, `hk.ops.attn_cdna`,
-  [chapters 33](history/33-cdna-gemm.md) and [34](history/34-cdna-attention.md)),
+  none of them tuned there yet. On gfx950 strips build, and its GEMM and attention are
+  kernels of hk's own (`hk.ops.gemm_cdna`, `hk.ops.attn_cdna`),
   with HipKittens' CDNA4 kernels also wrapped as hk ops
-  ([CDNA3/4](design/cdna.md)).
+  ([CDNA3/4](archive/design/cdna.md)).
 
-This list is from [the MLIR chapter](history/15-mlir-dialect.md), which ends
-with "For whoever continues": the next pieces of work, in order of value.

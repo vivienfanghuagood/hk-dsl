@@ -6,7 +6,7 @@ it found only if the measurement says it is a win. The result is a record on
 this machine that `hk.ops.matmul` and `hk.templates.gemm` read for that shape;
 nothing shipped changes.
 
-It is the baseline tuner of the [tuning goal](design/tuning-goal.md) (T3):
+It is the baseline tuner of the [tuning goal](archive/design/tuning-goal.md) (T3):
 an agent with `hk.schedules`, `hk.check` and `hk.profile` should do better;
 `hk.tune` is what it has to beat, and [bench/tune](../bench/tune/README.md) is
 the benchmark that judges both.
@@ -218,7 +218,7 @@ kernels can be told to do -- the *space* -- or a baseline at the roofline:
   waves a SIMD, LDS bank conflicts in 75% of its LDS cycles). The hipBLASLt
   kernels they were profiled against have macro tiles hk's GEMMs do not --
   144x256, 160x256, 160x128, 192x256, 192x128 -- and Tensile's StreamK field
-  set (SK5). **Since added** ([chapter 45](history/45-wide-blocks-and-stream-k.md)):
+  set (SK5). **Since added**:
   `PingPong` blocks of 160, 192 and 320 and a persistent stream-K form
   (`stream_k=1|2`), both in the space. They make hk 4-12% faster at
   1024x5120x14336, 4096x3072x4096, 2048x4608x4096 and 2048x4096x1024, but the
@@ -235,7 +235,7 @@ kernels can be told to do -- the *space* -- or a baseline at the roofline:
 - **Compute-bound, 3-6% behind hipBLASLt** (baseline at its roofline; 3):
   8192x5120x5120 (0.935), 8192x14336x8192 (0.947), 2048x55296x5120 (0.949) --
   hk's pingpong at 54-61% of the bf16 peak against hipBLASLt's 58-65%, the
-  store of C being 5-8% of the pingpong (docs/history/33). Here routing to
+  store of C being 5-8% of the pingpong. Here routing to
   hipBLASLt is the answer, which is what the "or a route" row counts: with
   `F.linear` as a route where it is faster (as hk.integration's route tables
   route to the engine), 22 of 25 shapes reach 0.95x in every run; the three
@@ -251,8 +251,7 @@ already ahead of FlyDSL, the best baseline there, and stays at 1.00-1.29x it.
 both splits, the 63 above 5% all reproduced in the scoring process (each at
 least half its tuning gain); of the 9 under 5%, 8 did (+1.6 to +5.2%), and
 one, +1.2% at 8192x3584x5120 on gfx1100, measured -0.6% in scoring: a 1% bar
-is at the edge of what two measurement contexts agree on (docs/history/32 saw
-the same drift between sessions). Such a record costs nothing measurable -- the
+is at the edge of what two measurement contexts agree on. Such a record costs nothing measurable -- the
 two schedules are a tie -- but a stricter bar for shipping a record (as
 `hk.autotune --ship` has) would leave it out.
 

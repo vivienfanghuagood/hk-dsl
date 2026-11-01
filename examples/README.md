@@ -52,7 +52,7 @@ without timing.
 On an MI355X (gfx950) the GPU tier runs them too. `05_attention.py` walks
 its 32-key blocks on the matrix core there, Pᵀ read in place
 ([chapter 39](../docs/history/39-cdna-paged.md)), and `validate.py` passes
-every case, attention included ([CDNA3/4](../docs/design/cdna.md)).
+every case, attention included ([CDNA3/4](../docs/archive/design/cdna.md)).
 
 The timings follow the protocol every number in this repository was taken
 with: all contenders in one process, interleaved round by round, best round

@@ -2,7 +2,7 @@
 
 The example keeps half of B's reads in flight across the first mma with
 wait=False; on a CDNA target hk refuses that until hk-lds-pipeline counts
-ds_reads per target (see docs/design/cdna.md). Everything else is the same
+ds_reads per target (see docs/archive/design/cdna.md). Everything else is the same
 kernel: four warps, a 64 x 64 block of C, the workgroup copies A and B
 global -> LDS, each warp reads its subtiles and runs mma_ABt.
 

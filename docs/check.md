@@ -91,7 +91,7 @@ PASS
 
 Correct, fully occupied and half the speed of `torch.compile`: the tile
 kernel the first page of the docs teaches is the wrong shape for a streaming
-op on this card ([the goal](design/dx-goal.md) measured the same, 0.61x).
+op on this card ([the goal](archive/design/dx-goal.md) measured the same, 0.61x).
 Rewritten on register strips as the hint says -- the ten-line kernel in
 [llms.txt](../llms.txt) -- it measured 61.7 us, a tie with `torch.compile`
 (and 1.02x it on a W7900D); `hk.ops.silu_mul`, the tuned op for the same
@@ -277,7 +277,7 @@ facts that change a kernel's plan are in [hk.target](api/hk.target.md).
   match.
 - **Timing is in one process, interleaved**, the only comparison this
   project trusts: across processes a kernel A/B manufactured 13-16% out of
-  nothing ([phase 5](history/04-phase-5-autotune.md)). A verdict is `tie`
+  nothing. A verdict is `tie`
   inside a band of max(2%, the noise), and `noise` when the band passes 15%.
   Back-to-back calls find a footprint smaller than the cache (96 MB on a
   W7900D, 256 MB on an MI355X) resident, for every contender alike; the

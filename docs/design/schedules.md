@@ -1,6 +1,6 @@
 # Design: schedules as data (`hk.schedules`)
 
-Status: K1 of [the tuning goal](tuning-goal.md), criterion T1. GEMM on both
+Status: K1 of [the tuning goal](../archive/design/tuning-goal.md), criterion T1. GEMM on both
 GPUs; attention later under the same protocol.
 
 ## The problem

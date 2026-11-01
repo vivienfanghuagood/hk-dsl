@@ -1,7 +1,7 @@
 """gfx1100 non-causal attention, head_dim 128, bf16: the DiT kernel (K3).
 
 The structure the KDA SageAttention experiment's hk arm arrived at, in bf16
-(docs/design/e2e-goal.md, K3): S^T = K . Q^T kept [kv, q] on the bf16 WMMA, so
+(docs/archive/design/e2e-goal.md, K3): S^T = K . Q^T kept [kv, q] on the bf16 WMMA, so
 the softmax's reductions over kv are within a lane plus one exchange; online
 softmax in log2 units with a lazy running max (rescale O and l only when a
 row's block max passes the stale one by more than LAZY, as FA-4 does); V
