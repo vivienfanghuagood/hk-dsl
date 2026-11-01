@@ -1729,11 +1729,18 @@ private:
             return;
           }
           std::string nw = std::to_string(o.getThreads() / tgt->wave);
-          // CDNA: hk/cdna.cuh's copy, its descriptor ending at the tensor's
-          // last row; include/cdna4's spans the tile's whole rows, so a last,
-          // partial tile read past the tensor (mxfp8.quant's fault, #47).
+          // gfx950: the asynchronous copy's DMA body (hk/cdna.cuh), its
+          // descriptor ending at the tensor's last row and at the tile's and
+          // read from lane 0 (UNIFORM), then the waits below -- one copy body
+          // for both forms. gfx942:
+          // hk/cdna.cuh's group_load_sync (include/cdna3's, unbounded).
           // include/rdna3's group load is bounded already.
-          if (tgt->wave == 64)
+          if (tgt->arch == "gfx950")
+            w("kittens::group_load_async_rows<" + nw + ", false, true>(" + name(o.getDst()) + ", " +
+              name(o.getSrc()) + ", " +
+              coordArg(o.getIdx(), tileCpp(o.getDst().getType())) + ", " +
+              std::to_string(cast<SharedTileType>(o.getDst().getType()).getRows()) + ");");
+          else if (tgt->wave == 64)
             w("kittens::group_load_sync<" + nw + ">(" + name(o.getDst()) + ", " +
               name(o.getSrc()) + ", " +
               coordArg(o.getIdx(), tileCpp(o.getDst().getType())) + ");");
