@@ -159,7 +159,7 @@ flowchart LR
 ```
 
 The passes refuse what fails silently: an MMA above its wait, a spill, a
-slow operand layout, a copy racing a barrier ([the traps](docs/README.md#the-traps)).
+slow operand layout, a copy racing a barrier ([the traps](docs/correctness-gates.md#the-traps)).
 
 ## Install
 
