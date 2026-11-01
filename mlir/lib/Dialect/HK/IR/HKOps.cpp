@@ -340,9 +340,13 @@ LogicalResult LoadW4Op::verify() {
     return emitOpError("dequantizes into a bf16 or f16 row-layout tile");
   if (!getQw().getType().getElementType().isInteger(32))
     return emitOpError("reads its codes from an int32 global, eight to a word");
-  if (bool(getZs()) == getZero().has_value())
-    return emitOpError("takes a zero-times-scale tensor zs, or one `zero` for every group "
-                       "(symmetric), exactly one of them");
+  if (int(bool(getZs())) + int(getZero().has_value()) + int(bool(getZp())) != 1)
+    return emitOpError("takes a zero-times-scale tensor zs, one `zero` for every group "
+                       "(symmetric), or a tensor of zero codes zp, exactly one of them");
+  if (getZp() && !getZp().getType().getElementType().isInteger(8))
+    return emitOpError("reads its zero codes from an int8 global, two rows to a byte");
+  if (getRows() && !getZp())
+    return emitOpError("rows (row-major codes) is the zero-code form's layout: give zp");
   if (getZero() && (*getZero() < 0 || *getZero() > 15))
     return emitOpError("zero is a 4-bit code, 0..15, not ") << *getZero();
   if (getSBlocked() && !getZero())

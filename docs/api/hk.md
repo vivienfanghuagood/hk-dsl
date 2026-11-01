@@ -577,16 +577,20 @@ scaled, and the variant is mma_ABt.
 ### `hk.load_w4`
 
 ```python
-hk.load_w4(ty, qw: Global, s: Global, zs: "Optional['Global']", n0, k0, *, group: int = 128, zero: Optional[int] = None, s_blocked: bool = False, into=None) -> Tile
+hk.load_w4(ty, qw: Global, s: Global, zs: "Optional['Global']", n0, k0, *, group: int = 128, zero: Optional[int] = None, s_blocked: bool = False, zp: "Optional['Global']" = None, rows: bool = False, into=None) -> Tile
 ```
 
-*Changed after 0.8.0*: new parameters `zero`, `s_blocked`
+*Changed after 0.8.0*: new parameters `zero`, `s_blocked`, `zp`, `rows`
 
 *Surface*: a format primitive: hk's own int4 layout (hk.ops.w4a16's repack).
 
 *Surface*: `zero=`: a format primitive: the symmetric form: one zero point for every group, no zs read (GPTQ's uint4b8).
 
 *Surface*: `s_blocked=`: a format primitive: the symmetric form's scales in 16-row blocks, [N/16, K/group * 16] (hk.ops.w4a16.repack_gptq(symmetric=True)).
+
+*Surface*: `zp=`: a format primitive: 4-bit zero codes per row and group, int8 [N/2, K/group] two rows to a byte (vLLM's moe_wna16 layout), no zs read.
+
+*Surface*: `rows=`: a format primitive: the zero-code form's row-major codes, int32 [N, K/8] (vLLM's uint8 [N, K/2] viewed as int32).
 
 Rows n0.. and columns k0.. of W, dequantized from 4-bit codes into a
 bf16 row-layout tile: element (n, k) is q * s - zs, q being nibble k % 8
@@ -608,6 +612,19 @@ the asymmetric path rounds toward zero after an fp32 FMA.
 block's scales of one group are 16 consecutive values, so the 16 rows a
 k-step reads take 32 contiguous bytes instead of 16 lines
 (`hk.ops.w4a16.repack_gptq(..., symmetric=True)` writes it).
+
+Zero codes: `zs=None, zp=Z` -- the element is (q - z) * s with z the
+4-bit zero code of row n and group k // group, read from Z, int8
+[N/2, K/group] with two rows to a byte (row 2j in the low nibble, 2j + 1
+in the high): vLLM's moe_wna16 layout of an AWQ (or zero-point GPTQ)
+checkpoint, no zero-times-scale tensor (16.5 bytes a 32-column group of a
+row against 20 with zs). An fp16 tile decodes as the symmetric form does,
+q - z exact and the product rounded once to nearest even; a bf16 tile
+through the fp32 path with zs = z * s. RDNA (wave32) only.
+
+`rows` (zero codes): the codes are row-major, int32 [N, K/8] with nibble
+t of word w column 8w + t -- vLLM's uint8 [N, K/2] viewed as int32 -- not
+hk's interleaved order; each lane loads its own row's 16 bytes.
 
 ### `hk.coord`
 

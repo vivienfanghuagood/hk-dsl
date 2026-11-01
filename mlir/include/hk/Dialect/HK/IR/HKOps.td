@@ -412,14 +412,22 @@ def HK_LoadW4Op : HK_Op<"load_w4", [AttrSizedOperandSegments]> {
     (q - zero) * s and no zs is read. `s_blocked` (symmetric): s is laid out
     [N/16, K/group * 16], a 16-row block's scales of one group 16
     consecutive values, so a k-step's 16 rows read 32 contiguous bytes.
+    Zero codes (`zp`, no `zs`): the element is (q - z) * s with z the 4-bit
+    zero code of row n and group k / group, int8 [N/2, K/group] two rows to a
+    byte (row 2j low nibble) -- vLLM's moe_wna16 layout. `rows`: the codes
+    are row-major int32 [N, K/8] (vLLM's uint8 [N, K/2]), not interleaved;
+    with `zp` only.
   }];
   let arguments = (ins Optional<HK_RegTileType>:$dst, HK_GlobalType:$qw,
-                       HK_GlobalType:$s, Optional<HK_GlobalType>:$zs, I32:$n0, I32:$k0,
-                       I64Attr:$group, OptionalAttr<I64Attr>:$zero, UnitAttr:$s_blocked);
+                       HK_GlobalType:$s, Optional<HK_GlobalType>:$zs,
+                       Optional<HK_GlobalType>:$zp, I32:$n0, I32:$k0,
+                       I64Attr:$group, OptionalAttr<I64Attr>:$zero, UnitAttr:$s_blocked,
+                       UnitAttr:$rows);
   let results = (outs Optional<HK_RegTileType>:$result);
   let assemblyFormat = [{
-    $qw `,` $s (`,` $zs^)? `[` $n0 `,` $k0 `]` `group` $group (`into` $dst^)? attr-dict `:`
-    qualified(type($qw)) `,` qualified(type($s)) (`,` qualified(type($zs))^)?
+    $qw `,` $s (`,` $zs^)? (`zp` $zp^)? `[` $n0 `,` $k0 `]` `group` $group (`into` $dst^)?
+    attr-dict `:` qualified(type($qw)) `,` qualified(type($s)) (`,` qualified(type($zs))^)?
+    (`zp` qualified(type($zp))^)?
     (`into` qualified(type($dst))^)?
     (`->` qualified(type($result))^)?
   }];
