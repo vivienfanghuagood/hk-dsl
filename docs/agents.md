@@ -3,7 +3,7 @@
 **Writing or tuning one kernel** rather than a model's step: start from
 [llms.txt](../llms.txt) (the map, the ten-line kernel, the pitfalls) and the
 [hk-kernel skill](../skills/hk-kernel/SKILL.md) (the loop), and check every
-edit with `python -m hk.check FILE.py:NAME --json out.json`
+edit with `python3 -m hk.check FILE.py:NAME --json out.json`
 ([hk.check](check.md)): resources without a GPU, correctness against a torch
 reference, and timing against torch eager and `torch.compile` interleaved in
 one process, as this page's tools time an engine. The API reference,
@@ -13,9 +13,9 @@ loop one level up: a kernel inside vLLM or SGLang.
 Three commands answer the two questions without a harness of your own:
 
 ```bash
-python -m hk.integration headroom --model M --batch B --context C --json h.json   # where the step's time is, and what hk has for it
-python -m hk.integration new-op NAME --dir DIR                                     # a kernel on the rails: reference, route, exact test, bench row
-python -m hk.integration ab --model M --arms stock,ARM --json v.json               # did the request get faster: win | loss | tie | noise
+python3 -m hk.integration headroom --model M --batch B --context C --json h.json   # where the step's time is, and what hk has for it
+python3 -m hk.integration new-op NAME --dir DIR                                     # a kernel on the rails: reference, route, exact test, bench row
+python3 -m hk.integration ab --model M --arms stock,ARM --json v.json               # did the request get faster: win | loss | tie | noise
 ```
 
 and three more hold a result once you have one: the scoreboard
@@ -35,7 +35,7 @@ another machine see [the last section](#on-another-machine).
 ## Find the gap: `headroom`
 
 ```bash
-python -m hk.integration headroom --model Qwen/Qwen3-8B --batch 16 --context 4096 \
+python3 -m hk.integration headroom --model Qwen/Qwen3-8B --batch 16 --context 4096 \
     --arms stock,hk+gemm --tokens 24 --json h.json
 ```
 
@@ -83,7 +83,7 @@ The ratio comes from, in this order:
 3. **the record**: a ratio a chapter measured, cited, and only where the
    engine's largest kernel in the family is the one it was measured
    against. hk's paged decode is 0.86-1.12x TRITON_ATTN's kernel under
-   triton-rocm 3.7.1 at 16-64 requests ([chapter 38](history/38-rdna-losses.md)),
+   triton-rocm 3.7.1 at 16-64 requests,
    and that says nothing about stock 0.31's `kernel_paged_attention_2d`.
 
 With no ratio, the ceiling is the **roofline**'s, labelled "at most": for
@@ -100,11 +100,13 @@ peak has more.
 `(GPU idle)` is a row too: the step's wall time the device was not busy.
 No kernel wins it back; graphs or fewer launches do. `--tokens T` adds the
 shares over one request batch of T output tokens, which is what a profile
-of a whole `generate` shows (chapter 07's view).
+of a whole `generate` shows.
 
-**Qwen3-8B, 16 requests x 4096, eager**, `--arms stock,hk+gemm`
-([chapter 36](history/36-the-agent-loop.md)). "of peak" is the family's
-roofline over its time:
+**An example of the output**, from one dated run (Qwen3-8B, 16 requests x
+4096, eager, `--arms stock,hk+gemm`); its numbers show what the columns mean
+and are not claims -- the project's performance numbers are on
+[the scorecard](performance/scorecard.md). "of peak" is the family's roofline
+over its time:
 
 | phase | family | share of step | ms | of peak | ratio | score |
 |---|---|---|---|---|---|---|
@@ -117,7 +119,7 @@ Ranked from `hk+gemm` instead, the next targets are its own kernels: decode
 attention at 67% of its roofline (5.5 ms a step left at most), the GEMV at
 89% (2.3 ms); the prefill GEMMs at 74% of the bf16 peak, prefill attention
 at 40%. Ranked from TRITON_ATTN (`--arms TRITON_ATTN,hk`), hk's decode
-attention measures 0.87x its kernel and ranks last, as chapter 20 found,
+attention measures 0.87x its kernel and ranks last,
 while its prefill attention is 53.8% of a prefill step and measures 9.25x.
 
 **CUDA graphs.** `--graphs` profiles the engine as it ships (graphs and
@@ -142,7 +144,7 @@ and its table put hk's GEMV at 1.90x there.
 ## Add a kernel: `new-op`
 
 ```bash
-python -m hk.integration new-op residual_add --dir my_ops
+python3 -m hk.integration new-op residual_add --dir my_ops
 ```
 
 writes `my_ops/residual_add.py` and `my_ops/test_residual_add.py`. The op
@@ -175,15 +177,13 @@ Change `kernel`, `reference`, `out`, `route` and `exact()` together, and keep
 `exact()` exact: attention's is V all ones, where every output element is
 exactly 1.0 whatever Q and K are (`tests/hk/gpu/test_attn.py`). A tolerance
 is where a wrong kernel hides; a half-ulp bias in a bf16 conversion passed
-all 31 of attention's tolerance cases while changing what a model said
-([phase 6](history/05-phase-6-torch-ops.md)). Random inputs do not make an
+all 31 of attention's tolerance cases while changing what a model said. Random inputs do not make an
 exact case in general: a kernel's fp32 arithmetic need not be torch's, in
 order or in rounding. For the stub's add it happens to be: a sum of two bf16
 values is an exact tie a fifth of the time, HipKittens' stores rounded those
 ties away from zero where torch rounds them to even, and the stub differed
-from torch at 10.7% of its elements ([chapter 36](history/36-the-agent-loop.md));
-RDNA's stores now round to even and it agrees at every element
-([chapter 38](history/38-rdna-losses.md)). The stub's exact case is still
+from torch at 10.7% of its elements;
+RDNA's stores now round to even and it agrees at every element. The stub's exact case is still
 small integers, which need no rounding at all.
 
 ## Prove it helps
@@ -207,7 +207,7 @@ joins as a group named by its `NAME`; `$HK_SCOREBOARD_CASES` does the same.
 **End to end: `ab`.**
 
 ```bash
-HK_VLLM_USER=my_ops/residual_add.py python -m hk.integration ab --model Qwen/Qwen3-8B \
+HK_VLLM_USER=my_ops/residual_add.py python3 -m hk.integration ab --model Qwen/Qwen3-8B \
     --arms stock,user --context 1024,4096 --batch 1,16 --tokens 72 --short 32 --reps 3 \
     --out raw.json --json verdicts.json
 ```
@@ -233,8 +233,9 @@ metric (total, prefill, decode step) and arm, every row with the same keys:
 - `tokens_same`: how many leading greedy tokens of the first request match
   stock's.
 
-`--from raw.json` judges an earlier run again. **Qwen3-8B, the `gemm` arm**,
-vLLM's defaults, three rounds ([chapter 36](history/36-the-agent-loop.md)):
+`--from raw.json` judges an earlier run again. **An example of the verdicts**,
+from one dated run (Qwen3-8B, the `gemm` arm, vLLM's defaults, three rounds);
+not claims -- the project's numbers are on [the scorecard](performance/scorecard.md):
 
 | ctx x batch | total | prefill | decode step |
 |---|---|---|---|
@@ -263,44 +264,43 @@ then its own measured noise, times three, at least 3%.
 Each of these has cost this project a wrong conclusion once.
 
 - **A kernel A/B across processes.** On these GPUs it manufactures 13-16%
-  differences out of nothing ([phase 5](history/04-phase-5-autotune.md)):
+  differences out of nothing:
   kernels are compared in one process, interleaved. `ab` is cross-process
   because an engine is; that is why its rounds alternate, its ratio is paired
   round by round and its band is measured, and why one round is `noise`.
 - **A baseline that did not run its own autotuner.** FlyDSL's GEMM autotuner
   had never searched, and Triton's ranked cold calls; retuned, hk's GEMM went
-  from 1.03-1.08x to 0.95-0.98x ([chapter 26](history/26-the-scoreboard-retuned.md)).
+  from 1.03-1.08x to 0.95-0.98x.
   Every scoreboard arm says how it was tuned; an opponent that did not try
   is not a comparison.
 - **A gap under ~2-5%.** Noise until shown otherwise. Two attention tuning
   sweeps crowned contradictory winners at 0.1% and 2.8%; two runs of the
   route tuner on one tree disagree at 2% of their points
-  ([chapter 31](history/31-remeasured.md)). The scoreboard's band floor is
+ . The scoreboard's band floor is
   2%; `ab` calls nothing inside 5% a tie unless the band is that narrow.
 - **A microsecond kernel launched onto an idle GPU.** A launch that reaches
   it 5-16 us after it went idle costs about 10 us more, which the call's own
-  record counts ([chapter 32](history/32-measuring-the-measurements.md)).
+  record counts.
   The scoreboard queues every round behind a spin; an eager `headroom` step
   has the same cost in its small kernels when the batch is small, so look at
   the `(GPU idle)` row and compare with `--graphs`.
 - **A per-call win as an end-to-end one.** FlyDSL's M = 1024 rows measured
   0.2% ahead per call, summed, and the 1024-token prefill step was 1.2%
-  slower with them ([chapter 31](history/31-remeasured.md)); Triton's decode
+  slower with them; Triton's decode
   kernel beats hk's at every batch, and routing 16+ requests to it made the
-  captured step slower ([chapter 20](history/20-vllm-031.md)). The request is
+  captured step slower. The request is
   what a server pays: `ab`.
 - **A share as a saving, or one configuration's share as another's.** A
   family at 40% of a step is a bound of 40%, not a gain; the ceiling is what
   hk's kernel measured against the engine's. And shares move: decode
-  attention was 0.9% of a request in chapter 07's profile (vLLM 0.16), and
+  attention was 0.9% of a request in an older profile (vLLM 0.16), and
   is 40% of a decode step at 16 x 4096 on vLLM 0.31's default backend,
   against 25% on TRITON_ATTN's. Profile the engine, backend, batch and
   context you serve, and say whether a share is of a step or a request.
 - **An opponent's version nobody checked.** A Triton 3.8.0 wheel was
   installed over the triton-rocm 3.7.1 vLLM 0.31 is built for, and its
-  decode kernel is up to 40% slower; hk's walk read as 1.03-1.30x "Triton"
-  where it is 0.86-1.12x the Triton chapter 20 measured
-  ([chapter 38](history/38-rdna-losses.md)). Print `triton.__version__`
+  decode kernel is slower, and hk's walk read as faster than "Triton" where
+  it was level with the Triton the stack ships. Print `triton.__version__`
   (and torch's, FlyDSL's) beside a ratio, and re-run the record's own tool
   before calling a record wrong. In vLLM's venv, `python3 -m
   hk.integration.stack` says whether the stack is the measured one, and
@@ -317,7 +317,7 @@ Each of these has cost this project a wrong conclusion once.
   ran in ([integration](integration.md#on-by-default-and-turning-it-off)). `ab` prints each
   patch's counters; `headroom` says whether a family's kernels are hk's.
 - **A round faster than the card.** An 8192x4096 RMSNorm "ran" at 1.38 TB/s
-  on 864 GB/s of GDDR6 ([chapter 32](history/32-measuring-the-measurements.md)):
+  on 864 GB/s of GDDR6:
   the scoreboard rejects rounds past the card's ceiling and reports the
   median of the rest.
 

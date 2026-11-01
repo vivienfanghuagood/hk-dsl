@@ -76,7 +76,9 @@ Coding agents: start from [llms.txt](../llms.txt) and the
 
 | page | |
 |---|---|
-| [Integration](integration.md) | the vLLM and SGLang patches, the environment variables that turn them on, `Op` / `Patch` / `RouteTable`, FlyDSL on the routes, the CUDA-graph contract |
+| [Integration](integration.md) | what applies to every engine: on by default and turning it off, `--status`, the plugins, `Op` / `Patch` / `RouteTable`, host time, routing tables, the CUDA-graph contract, supported versions and contract tests, your own kernel, the environment variables |
+| [vLLM](vllm.md) | each vLLM route: vision-tower SDPA, prefill attention on vLLM's cache, the decoder attention backend, linear layers (and a model no table measured), MoE, 4-bit, DeepSeek-V4.1's index launch |
+| [SGLang and SGLang-Diffusion](sglang.md) | SGLang's linear and MoE routes; SGLang-Diffusion's attention and linear |
 | [For agents: kernels in an engine](agents.md) | `headroom`, `new-op`, `ab --json`: find a step's gap, add a kernel, prove it helped; the numbers not to trust |
 
 **For coding agents**
@@ -135,7 +137,7 @@ faster than what the engine runs:
 - **vLLM's MoE**, Triton's `fused_moe` ([MoE](history/21-moe.md)).
 - **vLLM's decoder attention**, Triton's `unified_attention`, through hk's
   attention backend. It is off by default
-  ([integration](integration.md#the-decoder-attention-backend)).
+  ([integration](vllm.md#the-decoder-attention-backend)).
 
 Each patch can be turned off by an environment variable, sends each shape to
 the kernel that measured fastest for it, and keeps to the CUDA-graph contract
@@ -181,7 +183,7 @@ Each covers part of the space:
 
 So hk-dsl is built to sit beside them. A route table may name FlyDSL's
 kernel, HipKittens' own or the engine's for the shapes where they measured
-fastest ([FlyDSL on the routes](integration.md#flydsls-gemm-as-an-optional-path)).
+fastest ([FlyDSL on the routes](vllm.md#flydsls-gemm-as-an-optional-path)).
 
 ### The traps
 
