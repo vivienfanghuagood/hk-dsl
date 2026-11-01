@@ -1,4 +1,4 @@
-"""bf16 GEMM for decode batches: C[M, N] = X[M, K] @ W[N, K]^T, M <= 64.
+"""bf16 (or fp16) GEMM for decode batches: C[M, N] = X[M, K] @ W[N, K]^T, M <= 64.
 
 At decode M is the batch, the math is free, and the whole cost is reading W
 once. The tiled GEMM in `ops.gemm` does that at 418-602 GB/s on Qwen3-8B's
@@ -29,7 +29,7 @@ global every round; it is a few hundred KB and stays in L2.
 from typing import Any, Dict, Optional, Tuple
 
 from .. import dsl as hk
-from ..types import bf16, fp32, i32
+from ..types import bf16, fp16, fp32, i32
 from . import _arch, _epilogue
 from ..target import current_arch, get_target
 
@@ -38,7 +38,8 @@ def decode_gemm_kernel(name: str, *, tokens: int = 1, slices: int = 4,
                        warps: int = 16, combine_depth: int = 0,
                        resident: int = 0, splits: int = 1, occupancy: int = 0,
                        max_vgprs: int = 256, min_occupancy: int = 1,
-                       arch: Optional[str] = None, epilogue=None, op_dtype=bf16):
+                       arch: Optional[str] = None, epilogue=None, op_dtype=bf16,
+                       c_dtype=None):
     """`tokens` 16-row token tiles (M <= 16*tokens), `slices` 16-deep K slices
     per load, `warps` waves sharing each 16-row block of W.
 
@@ -73,6 +74,11 @@ def decode_gemm_kernel(name: str, *, tokens: int = 1, slices: int = 4,
     `epilogue` (hk.ops._epilogue) replaces C's store with hk.templates.gemm's
     hook, on warp 0's combined 16*tokens x 16 tile -- with `splits`, in the
     workgroup that arrives last, once the shares are summed.
+
+    `op_dtype` is X's and W's type (bf16; fp16, or gfx1201's fp8, where the
+    target has the WMMA) and `c_dtype` C's (bf16 by default). An fp16 model's
+    layers take `op_dtype=c_dtype=fp16`: v_wmma_f32_16x16x16_f16 at the bf16
+    form's rate, the same schedule, C rounded once from the fp32 sum.
     """
     m_rows = 16 * tokens
     kc = 16 * slices
@@ -143,7 +149,13 @@ def decode_gemm_kernel(name: str, *, tokens: int = 1, slices: int = 4,
             return None
         return epilogue.early(c, ops, ty_out, 0, hk.arch.block_idx.x * 16)
 
-    def body(x: hk.Tensor[op_dtype], w: hk.Tensor[op_dtype], c: hk.Tensor[bf16], **ops):
+    c_t = bf16 if c_dtype is None else c_dtype
+    if c_t not in (bf16, fp16):
+        raise ValueError(f"c_dtype={c_dtype}: C is bf16 or fp16")
+    if c_t is not bf16 and epilogue is not None:
+        raise ValueError("an epilogue stores into a bf16 C")
+
+    def body(x: hk.Tensor[op_dtype], w: hk.Tensor[op_dtype], c: hk.Tensor[c_t], **ops):
         pre = early(c, ops)
 
         def finish(out, n0):
@@ -151,7 +163,7 @@ def decode_gemm_kernel(name: str, *, tokens: int = 1, slices: int = 4,
 
         partial(x, w, 0, x.cols // (kc * warps), finish)
 
-    def body_split(x: hk.Tensor[op_dtype], w: hk.Tensor[op_dtype], c: hk.Tensor[bf16],
+    def body_split(x: hk.Tensor[op_dtype], w: hk.Tensor[op_dtype], c: hk.Tensor[c_t],
                    ws: hk.Tensor[fp32], cnt: hk.Tensor[i32], **ops):
         s = hk.arch.block_idx.y
         per = x.cols // splits
@@ -264,17 +276,29 @@ def _settle(s: Dict[str, int]) -> Dict[str, int]:
     return s
 
 
+#: The dtypes a decode GEMM takes by name: X, W and C all of it.
+DTYPES = {"bf16": bf16, "fp16": fp16}
+
+
 def kernel_for(tokens: int, slices: int, warps: int, combine_depth: int = 0,
-               resident: int = 0, splits: int = 1, occupancy: int = 0):
-    key = (tokens, slices, warps, combine_depth, resident, splits, occupancy)
+               resident: int = 0, splits: int = 1, occupancy: int = 0, dtype: str = "bf16"):
+    """The kernel of a schedule; `dtype` "fp16" is the same kernel on fp16 X, W and C
+    (bf16's name, parameters and source are unchanged)."""
+    key = (tokens, slices, warps, combine_depth, resident, splits, occupancy) + \
+        ((dtype,) if dtype != "bf16" else ())
     if key not in _KERNELS:
+        if dtype not in DTYPES:
+            raise ValueError(f"dtype={dtype!r}: one of {sorted(DTYPES)}")
+        t = DTYPES[dtype]
         _KERNELS[key] = decode_gemm_kernel(
             f"decode_gemm_t{tokens}_s{slices}_w{warps}_c{combine_depth}"
             f"_r{resident}" + (f"_k{splits}" if splits > 1 else "")
-            + (f"_o{occupancy}" if occupancy else ""),
+            + (f"_o{occupancy}" if occupancy else "")
+            + (f"_{dtype}" if dtype != "bf16" else ""),
             tokens=tokens, slices=slices, warps=warps,
             combine_depth=combine_depth, resident=resident, splits=splits,
-            occupancy=occupancy)
+            occupancy=occupancy,
+            **({"op_dtype": t, "c_dtype": t} if dtype != "bf16" else {}))
     return _KERNELS[key]
 
 
@@ -305,8 +329,9 @@ def fits(m: int, n: int, k: int) -> bool:
 
 
 def matmul(x, w, out=None, **override):
-    """x @ w.T for a decode batch. `w` is (N, K), as in `gemm.matmul`; `out`,
-    if given, is the (M, N) bf16 tensor to write.
+    """x @ w.T for a decode batch, bf16 or fp16 (x and w the same). `w` is
+    (N, K), as in `gemm.matmul`; `out`, if given, is the (M, N) tensor of x's
+    type to write.
 
     `override` replaces fields of the schedule (slices, warps, combine_depth,
     resident, splits) -- for measuring, not for use.
@@ -317,8 +342,10 @@ def matmul(x, w, out=None, **override):
     if x.dim() != 2 or w.dim() != 2 or x.shape[1] != w.shape[1]:
         raise ValueError(f"decode matmul: want (M, K) @ (N, K).T, got "
                          f"{tuple(x.shape)} and {tuple(w.shape)}")
-    if x.dtype != torch.bfloat16 or w.dtype != torch.bfloat16:
-        raise TypeError(f"decode matmul: bf16 only, got {x.dtype} and {w.dtype}")
+    names = {torch.bfloat16: "bf16", torch.float16: "fp16"}
+    if x.dtype not in names or w.dtype != x.dtype:
+        raise TypeError(f"decode matmul: bf16 or fp16, x and w alike, got {x.dtype} and {w.dtype}")
+    dtype = names[x.dtype]
     m, k = x.shape
     n = w.shape[0]
     s = schedule_for(m, k)
@@ -332,17 +359,17 @@ def matmul(x, w, out=None, **override):
     if not x.is_contiguous():
         x = x.contiguous()
     if out is None:
-        out = torch.empty((m, n), device=x.device, dtype=torch.bfloat16)
-    elif out.shape != (m, n) or out.dtype != torch.bfloat16:
+        out = torch.empty((m, n), device=x.device, dtype=x.dtype)
+    elif out.shape != (m, n) or out.dtype != x.dtype:
         raise ValueError(f"decode matmul: out is {tuple(out.shape)}/{out.dtype}, "
-                         f"expected ({m}, {n})/bfloat16")
+                         f"expected ({m}, {n})/{x.dtype}")
     if s["splits"] > 1:
-        kernel_for(**s)(x, w.contiguous(), out,
-                        *scratch_for(x.device, s["splits"], s["tokens"], n))
+        kernel_for(**s, dtype=dtype)(x, w.contiguous(), out,
+                                     *scratch_for(x.device, s["splits"], s["tokens"], n))
     else:
-        kernel_for(**s)(x, w.contiguous(), out)
+        kernel_for(**s, dtype=dtype)(x, w.contiguous(), out)
     return out
 
 
-__all__ = ["MAX_TOKENS", "SCHEDULES", "decode_gemm_kernel", "fits",
+__all__ = ["DTYPES", "MAX_TOKENS", "SCHEDULES", "decode_gemm_kernel", "fits",
            "kernel_for", "matmul", "schedule_for", "scratch_for", "tokens_for"]

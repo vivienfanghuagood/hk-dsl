@@ -104,3 +104,39 @@ def test_it_refuses_what_it_cannot_tile(m, n, k):
     w = torch.zeros(n, k, device="cuda", dtype=torch.bfloat16)
     with pytest.raises(ValueError):
         decode_gemm.matmul(x, w)
+
+
+# -- fp16 (an fp16 model's layers: X, W and C all fp16) --------------------------------------------
+
+@pytest.mark.parametrize("m", [1, 5, 8, 16, 17, 33, 64])
+@pytest.mark.parametrize("n,k", [(64, 2048), (256, 2048), (1024, 2048), (2048, 512), (2048, 4096),
+                                 (9216, 2048)])
+def test_fp16_is_within_two_ulps_a_row_of_float64(m, n, k):
+    """Qwen3.6-35B-A3B's dense layers (GDN ba, router, shared expert, o / out, qkv): each output row
+    within two fp16 ulps of its largest |value| against float64 (fp32 accumulation, C rounded once)."""
+    if decode_gemm.schedule_for(m, k) is None:
+        pytest.skip("no schedule")
+    g = torch.Generator(device="cuda").manual_seed(m * 7 + n)
+    x = torch.randn(m, k, device="cuda", dtype=torch.float16, generator=g)
+    w = (torch.randn(n, k, device="cuda", dtype=torch.float32, generator=g) * k ** -0.5).half()
+    got = decode_gemm.matmul(x, w)
+    assert got.shape == (m, n) and got.dtype == torch.float16
+    want = x.double() @ w.double().T
+    top = want.abs().amax(dim=1, keepdim=True)
+    ulp = torch.pow(2.0, torch.floor(torch.log2(top.clamp_min(2.0 ** -14)))) * 2.0 ** -10
+    assert ((got.double() - want).abs() <= 2 * ulp).all(), ((got.double() - want).abs() / ulp).max().item()
+
+
+@pytest.mark.parametrize("splits", [2, 4])
+def test_fp16_split_k(splits):
+    x = torch.randn(5, 4096, device="cuda", dtype=torch.float16)
+    w = (torch.randn(512, 4096, device="cuda") * 4096 ** -0.5).half()
+    torch.testing.assert_close(decode_gemm.matmul(x, w, splits=splits).float(),
+                               x.float() @ w.float().T, rtol=RTOL, atol=ATOL)
+
+
+def test_mixed_dtypes_are_refused():
+    x = torch.zeros(4, 512, device="cuda", dtype=torch.float16)
+    w = torch.zeros(256, 512, device="cuda", dtype=torch.bfloat16)
+    with pytest.raises(TypeError):
+        decode_gemm.matmul(x, w)

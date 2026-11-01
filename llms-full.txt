@@ -5652,8 +5652,9 @@ Q_TILE rows of each, ints on the host, one int32 copy to the device.
 hk.ops.decode_gemm.matmul(x, w, out=None, **override)
 ```
 
-x @ w.T for a decode batch. `w` is (N, K), as in `gemm.matmul`; `out`,
-if given, is the (M, N) bf16 tensor to write.
+x @ w.T for a decode batch, bf16 or fp16 (x and w the same). `w` is
+(N, K), as in `gemm.matmul`; `out`, if given, is the (M, N) tensor of x's
+type to write.
 
 `override` replaces fields of the schedule (slices, warps, combine_depth,
 resident, splits) -- for measuring, not for use.
