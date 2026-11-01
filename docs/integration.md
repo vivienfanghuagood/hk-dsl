@@ -314,6 +314,9 @@ output, non-causal, or a call made while a graph is captured.
 
 Nothing is read on the host. The grid is (Q tiles of the longest query,
 heads, requests), and a workgroup works out its request from its index.
+On TRITON_ATTN at head size up to 128 the route first transposes the batch's
+V pages once into a scratch of V^T pages (`vt_pages`), instead of in every
+workgroup; `HK_VLLM_PREFILL_VT=0` turns that off.
 `HK_VLLM_PREFILL_SHADOW=1` also runs vLLM's kernel on every call hk takes and
 compares the rows. It is a diagnostic that syncs; don't serve with it.
 
@@ -1135,6 +1138,7 @@ spelled:
 | `HK_VLLM_BACKEND` | `_vllm_plugin.py` | register the decoder attention backend (default off); a value other than `1`/`on`/`yes`/`true` names the slot |
 | `HK_VLLM_BACKEND_SLOT` | `vllm_backend.py` | the `AttentionBackendEnum` member to register over (default `TRITON_ATTN`) |
 | `HK_VLLM_PREFILL` | `_vllm_plugin.py` | prefill attention on vLLM's own cache, ROCM_ATTN and TRITON_ATTN (default off) |
+| `HK_VLLM_PREFILL_VT` | `vllm_prefill.py` | `0`: on TRITON_ATTN, transpose V in every workgroup instead of packing the batch's V^T pages once a call (`paged_prefill` `vt_pages`; default on, head size up to 128) |
 | `HK_VLLM_PREFILL_SHADOW` | `vllm_prefill.py` | `1`: also run vLLM's kernel on every call hk takes and print the worst row's difference in bf16 ulps (a diagnostic; syncs) |
 | `HK_VLLM_GEMM` | `_vllm_plugin.py` | route the unquantized linear layers (default on, gfx1100 and gfx1201) |
 | `HK_VLLM_MOE` | `_vllm_plugin.py` | route the bf16 MoE GEMMs up to 256 tokens a step (2 on gfx1201; default on, gfx1100 and gfx1201) |
