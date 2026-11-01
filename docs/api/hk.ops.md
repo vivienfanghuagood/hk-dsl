@@ -608,6 +608,7 @@ hk.ops.w4a16.matmul(x, qw, s, zs, group: int, out=None)
 
 x @ W.T for W in hk's 4-bit layout: the decode kernel up to 64 rows of
 x, dequantize-then-F.linear above (or for a shape it does not take).
+zs None: the symmetric form (every zero point 8; `repack_gptq(symmetric=True)`).
 
 **Per architecture** ([audit](../dx/api-consistency.md)):
 
