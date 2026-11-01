@@ -2048,9 +2048,10 @@ private:
         })
         .Case([&](AsOperandOp o) {
           // hk/cdna.cuh: register renaming only; the verifier has held the
-          // two fragments to the same lanes.
+          // two fragments to the same lanes. even_odd: hk/rdna/operand.cuh's
+          // exchange (RDNA3).
           Value d = dest(o.getDst(), o.getResult());
-          call("as_operand", d, {name(o.getSrc())});
+          call(o.getEvenOdd() ? "as_operand_even_odd" : "as_operand", d, {name(o.getSrc())});
         })
         .Default([&](Operation *o) {
           fail(o, "no C++ emitter for " + o->getName().getStringRef());

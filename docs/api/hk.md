@@ -1119,11 +1119,16 @@ dwords, loaded once, feeding two token tiles over two steps).
 #### `Tile.as_operand`
 
 ```python
-Tile.as_operand(self, dtype: Optional[DType] = None, *, into=None) -> Tile
+Tile.as_operand(self, dtype: Optional[DType] = None, *, k_order: str = 'natural', into=None) -> Tile
 ```
 
+*Changed after 0.8.0*: new parameter `k_order`
+
+*Surface*: `k_order=`: RDNA3's (gfx1100) paired WMMA operand: a 32-row fp32 S^T pair as its even and odd P^T operands.
+
 This accumulator's registers read as an MFMA operand: no data
-moves across lanes (gfx950).
+moves across lanes (gfx950). `k_order="even_odd"` is RDNA3's form
+(gfx1100), below.
 
 `self` is a col-layout tile in an accumulator fragment -- an MFMA
 result, or its cast to bf16. Each lane holds a column and four rows
@@ -1135,6 +1140,14 @@ transposed, `o_t += v.T @ p_t.as_operand(bf16)` is P·V straight off
 the softmax, with no reshuffle across lanes. `dtype` converts an
 fp32 accumulator on the way (to nearest even); a 16-bit one is read
 as it is.
+
+`k_order="even_odd"` (gfx1100): a 32x16 fp32 col-layout pair of 16x16
+WMMA accumulators (Sᵀ's kv rows [0, 16) and [16, 32)) as two fp16
+operands, `subtile(16, 0)` the one whose K axis is the pair's 16 even
+rows and `subtile(16, 1)` the odd rows -- so a V whose rows are laid
+out in that order (even, then odd, a 32-row group) feeds P·V. Data
+moves: per packed dword one conversion, one permlanex16 and two
+selects, against a per-element exchange for the natural order.
 
 #### `Tile.subtile`
 

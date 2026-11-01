@@ -268,3 +268,34 @@ def test_a_c_body_is_not_fused():
         c = x.at[0, 0].load(I)
         o.at[0, 0].store(hk.map_cpp("x0 + 1", c + 2) * 3)
     assert len(_maps(_src(body))) == 3
+
+
+# ---------------------------------------------------------------- RDNA3's paired operand (S11)
+
+
+def test_the_even_odd_operand_is_rdna3s_pair_exchange():
+    def pair(x: hk.Tensor[hk.fp32], o: hk.Tensor[hk.fp16]):
+        s = x.at[0, 0].load(hk.RT(hk.fp32, 32, 16, "col"))
+        p = s.as_operand(hk.fp16, k_order="even_odd")
+        o.at[0, 0].store(p.subtile(16, 0))
+        o.at[1, 0].store(p.subtile(16, 1))
+    src = _src(pair, "gfx1100")
+    assert '#include "hk/rdna/operand.cuh"' in src
+    assert "kittens::as_operand_even_odd(" in src
+    for arch in ("gfx1201", "gfx950"):
+        with pytest.raises(TypeError, match="gfx1100"):
+            _src(pair, arch)
+
+
+def test_the_even_odd_operand_wants_a_32x16_fp32_pair():
+    def wide(x: hk.Tensor[hk.fp32], o: hk.Tensor[hk.fp16]):
+        s = x.at[0, 0].load(hk.RT(hk.fp32, 64, 16, "col"))
+        o.at[0, 0].store(s.as_operand(hk.fp16, k_order="even_odd"))
+    with pytest.raises(TypeError, match="32x16 fp32"):
+        _src(wide, "gfx1100")
+
+    def other(x: hk.Tensor[hk.fp32], o: hk.Tensor[hk.fp16]):
+        s = x.at[0, 0].load(hk.RT(hk.fp32, 32, 16, "col"))
+        o.at[0, 0].store(s.as_operand(hk.fp16, k_order="odd_even"))
+    with pytest.raises(ValueError, match="natural"):
+        _src(other, "gfx1100")
