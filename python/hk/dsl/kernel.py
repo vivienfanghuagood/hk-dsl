@@ -136,6 +136,47 @@ def verify_error(e: Exception) -> VerifyError:
 #: kernels a function launches. None (the usual case) costs one test a launch.
 _RECORDING: Optional[List] = None
 
+#: The kernels `_null_stream_guard` has warned about (once each).
+_NULL_STREAM_WARNED: set = set()
+
+
+def _null_stream_guard(name: str, fn: Callable) -> Callable:
+    """RDNA's pybind entry point launches on the null stream, which is ordered
+    against nothing torch queued on a stream of its own: a call made under
+    `torch.cuda.stream(s)` -- an engine's model stream, a side stream -- can
+    read its inputs before the kernels that write them have run, silently
+    (SGLang's norm route returned NaN this way). So each launch checks torch's
+    current stream for the first tensor's device, one call; on any but the
+    default it warns once for this kernel, or with HK_STRICT_STREAM=1 refuses."""
+    import torch  # noqa: PLC0415
+
+    raw = getattr(torch._C, "_cuda_getCurrentRawStream", None) or (
+        lambda i: torch.cuda.current_stream(i).cuda_stream)
+
+    def guarded(*tensors):
+        dev = tensors[0].get_device() if tensors else -1
+        if dev >= 0 and raw(dev) != 0:
+            _off_default_stream(name)
+        return fn(*tensors)
+
+    return guarded
+
+
+def _off_default_stream(name: str) -> None:
+    import os  # noqa: PLC0415
+    import warnings  # noqa: PLC0415
+
+    msg = (f"{name}: on RDNA, k(...) launches on the null stream, but torch's current stream "
+           "is not the default one -- the launch is not ordered against the work queued on "
+           "it, and may read its inputs before they are written (or, under CUDA graph "
+           "capture, not be captured). Call it through hk.torch_op(k), or set "
+           "HK_LAUNCH=codeobj before its first call, to launch on torch's stream.")
+    if os.environ.get("HK_STRICT_STREAM") == "1":
+        raise RuntimeError(msg + " (HK_STRICT_STREAM=1 makes this an error.)")
+    if name not in _NULL_STREAM_WARNED:
+        _NULL_STREAM_WARNED.add(name)
+        warnings.warn(msg + " Set HK_STRICT_STREAM=1 to make it an error.", RuntimeWarning, stacklevel=4)
+
 
 class TracedKernel:
     """One specialization of a kernel, traced and lowered: its hk module and
@@ -739,6 +780,8 @@ class Kernel:
         (`scaffold.takes_stream`), and gets torch's current stream for the
         first tensor's device, so the launch is ordered against torch's work
         and a CUDA graph captures it.
+        On RDNA it launches on the null stream, and checks that torch's
+        current stream is the default one (`_null_stream_guard`).
 
         A kernel with a strided global always launches the code object: the
         pybind layer builds a gl, which has one stride."""
@@ -750,7 +793,7 @@ class Kernel:
             from ..codegen.scaffold import takes_stream  # noqa: PLC0415
 
             if not takes_stream(self.trace(**const_overrides).arch):
-                return fn
+                return _null_stream_guard(self.name, fn)
             import torch  # noqa: PLC0415
 
             raw = getattr(torch._C, "_cuda_getCurrentRawStream", None) or (
