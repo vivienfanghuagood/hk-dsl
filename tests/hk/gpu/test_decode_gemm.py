@@ -108,6 +108,13 @@ def test_it_refuses_what_it_cannot_tile(m, n, k):
 
 # -- fp16 (an fp16 model's layers: X, W and C all fp16) --------------------------------------------
 
+#: The fp16 option is RDNA's (wave32 WMMA; gfx950 refuses op_dtype=fp16 at construction).
+rdna_only = pytest.mark.skipif(
+    not torch.cuda.is_available() or "gfx1" not in torch.cuda.get_device_properties(0).gcnArchName,
+    reason="the fp16 decode GEMM is RDNA's")
+
+
+@rdna_only
 @pytest.mark.parametrize("m", [1, 5, 8, 16, 17, 33, 64])
 @pytest.mark.parametrize("n,k", [(64, 2048), (256, 2048), (1024, 2048), (2048, 512), (2048, 4096),
                                  (9216, 2048)])
@@ -127,6 +134,7 @@ def test_fp16_is_within_two_ulps_a_row_of_float64(m, n, k):
     assert ((got.double() - want).abs() <= 2 * ulp).all(), ((got.double() - want).abs() / ulp).max().item()
 
 
+@rdna_only
 @pytest.mark.parametrize("splits", [2, 4])
 def test_fp16_split_k(splits):
     x = torch.randn(5, 4096, device="cuda", dtype=torch.float16)
@@ -135,6 +143,7 @@ def test_fp16_split_k(splits):
                                x.float() @ w.float().T, rtol=RTOL, atol=ATOL)
 
 
+@rdna_only
 def test_mixed_dtypes_are_refused():
     x = torch.zeros(4, 512, device="cuda", dtype=torch.float16)
     w = torch.zeros(256, 512, device="cuda", dtype=torch.bfloat16)
