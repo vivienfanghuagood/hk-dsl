@@ -80,8 +80,9 @@ def _has_names(src: str, params) -> Dict[str, bool]:
 # Each route's contract is two halves. gather_<route>() reads the engine -- imports, attributes,
 # signatures, source -- and returns the facts the check judges, as plain JSON (None where the
 # route does not apply here). judge_<route>(facts) turns them into problems, reading only hk's own
-# stand-ins. check() runs both, so a plugin's startup is what it was, and the facts can be kept
-# and judged without the engine.
+# stand-ins. check() runs both, so a plugin's startup is what it was. `python3 -m
+# hk.integration.contract --record` writes the installed engine's facts to a file; the production
+# images' are kept in tests/hk/ir/engine_facts/ and judged there without the images.
 
 
 # -- vLLM -------------------------------------------------------------------------------------
@@ -521,3 +522,38 @@ def refuse(engine: str, problems: List[str], what: str = BROKEN) -> str:
               f"this. (pid {os.getpid()})")
     print(line, file=sys.stderr, flush=True)
     return line
+
+
+def record(routes: Optional[Iterable[str]] = None) -> dict:
+    """The installed engines' facts for `routes` (default: every route), as a fixture for
+    tests/hk/ir/test_engine_facts.py (tests/hk/ir/engine_facts/): what the engine is, and each
+    route's gathered facts."""
+    from . import switches  # noqa: PLC0415
+
+    return {"engines": {e: engine_version(e) for e in ("vllm", "sglang")},
+            "arch": switches.arch(),
+            "facts": {r: gather(r) for r in (routes or CHECKS)}}
+
+
+def main(argv=None) -> int:
+    """python3 -m hk.integration.contract --record OUT.json [--image DIGEST] [--deployed-on ARCH]"""
+    import argparse  # noqa: PLC0415
+    import json  # noqa: PLC0415
+
+    ap = argparse.ArgumentParser(description=main.__doc__)
+    ap.add_argument("--record", required=True, help="write the facts here")
+    ap.add_argument("--image", default="", help="the image's digest (sha256:...), for the record")
+    ap.add_argument("--deployed-on", default="", help="the arch this image serves on")
+    a = ap.parse_args(argv)
+    rec = record()
+    rec.update(image=a.image, deployed_on=a.deployed_on or rec["arch"])
+    with open(a.record, "w") as fh:
+        json.dump(rec, fh, indent=1, sort_keys=True)
+        fh.write("\n")
+    bad = {r: judge(r, f) for r, f in rec["facts"].items() if judge(r, f)}
+    print(f"recorded {len(rec['facts'])} routes to {a.record}; broken here: {bad or 'none'}")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

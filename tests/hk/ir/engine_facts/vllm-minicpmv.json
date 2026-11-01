@@ -1,0 +1,419 @@
+{
+ "arch": "gfx1100",
+ "deployed_on": "gfx1100",
+ "engines": {
+  "sglang": "sglang (version unknown)",
+  "vllm": "vllm 0.1.dev1+g10cc2f6ae.rocm714"
+ },
+ "expected_refusals": {},
+ "facts": {
+  "sglang_linear": {
+   "apply": null
+  },
+  "sglang_moe": {
+   "_error": "ModuleNotFoundError: No module named 'sglang'"
+  },
+  "sgld_attn": {
+   "_error": "ModuleNotFoundError: No module named 'sglang'"
+  },
+  "sgld_convrot": null,
+  "sgld_linear": {
+   "_error": "ModuleNotFoundError: No module named 'sglang'"
+  },
+  "vllm_backend": {
+   "backend_slots": [
+    "FLASH_ATTN",
+    "FLASH_ATTN_DIFFKV",
+    "TRITON_ATTN",
+    "TRITON_ATTN_DIFFKV",
+    "TRITON_FLASH_ATTN",
+    "ROCM_ATTN",
+    "ROCM_SEGMENTED_ATTN",
+    "ROCM_AITER_MLA",
+    "ROCM_AITER_TRITON_MLA",
+    "ROCM_AITER_FA",
+    "ROCM_AITER_MLA_SPARSE",
+    "XPU_MLA_SPARSE",
+    "TORCH_SDPA",
+    "FLASHINFER",
+    "TRITON_FLASHINFER",
+    "FLASHINFER_MLA",
+    "TOKENSPEED_MLA",
+    "FLASHINFER_MLA_SPARSE",
+    "FLASHINFER_MLA_SPARSE_SM120",
+    "FLASHINFER_MLA_SPARSE_SM90",
+    "TRITON_MLA",
+    "CUTLASS_MLA",
+    "FLASHMLA",
+    "FLASHMLA_SPARSE",
+    "FLASHMLA_SPARSE_DSV4",
+    "FLASHINFER_MLA_SPARSE_DSV4",
+    "ROCM_FLASHMLA_SPARSE_DSV4",
+    "FLASHMLA_SPARSE_DSV41",
+    "FLASHINFER_MLA_SPARSE_DSV41",
+    "FLASHMLA_MEGA_ATTN_DSV41",
+    "B12X",
+    "FLASH_ATTN_MLA",
+    "FLASH_ATTN_MLA_SPARSE",
+    "MINIMAX_M3_SPARSE",
+    "CUTLASS_MSA",
+    "TRITON_MSA",
+    "NO_ATTENTION",
+    "FLEX_ATTENTION",
+    "HPC_ATTN",
+    "ROCM_AITER_UNIFIED_ATTN",
+    "CPU_ATTN",
+    "CPU_MLA",
+    "AMX_MLA",
+    "TURBOQUANT",
+    "ULTRAQUANT",
+    "CUSTOM"
+   ],
+   "register_backend": true
+  },
+  "vllm_dsv41_index": null,
+  "vllm_gemm": {
+   "dispatch_required": [],
+   "dispatched": [
+    "layer",
+    "x",
+    "weight",
+    "bias"
+   ],
+   "worker_load_model": true
+  },
+  "vllm_gptq": {
+   "apply": [
+    "self",
+    "layer",
+    "x",
+    "bias"
+   ],
+   "create_weights_has": {
+    "qweight": true,
+    "qzeros": true,
+    "scales": true
+   },
+   "gptq_gemm_rdna3_nargs": 5,
+   "kernel_has_get_weight_params": true,
+   "pwal": [
+    "self",
+    "layer"
+   ]
+  },
+  "vllm_int4": {
+   "apply": [
+    "self",
+    "layer",
+    "x",
+    "bias"
+   ],
+   "awq_dequantize_nargs": 6,
+   "awq_gemm_nargs": 5,
+   "create_weights_has": {
+    "qweight": true,
+    "qzeros": true,
+    "scales": true
+   },
+   "pwal": [
+    "self",
+    "layer"
+   ]
+  },
+  "vllm_moe": {
+   "invoke_fused_moe_triton_kernel": [
+    [
+     "A",
+     false,
+     null
+    ],
+    [
+     "B",
+     false,
+     null
+    ],
+    [
+     "C",
+     false,
+     null
+    ],
+    [
+     "A_scale",
+     false,
+     null
+    ],
+    [
+     "B_scale",
+     false,
+     null
+    ],
+    [
+     "topk_weights",
+     false,
+     null
+    ],
+    [
+     "sorted_token_ids",
+     false,
+     null
+    ],
+    [
+     "expert_ids",
+     false,
+     null
+    ],
+    [
+     "num_tokens_post_padded",
+     false,
+     null
+    ],
+    [
+     "mul_routed_weight",
+     false,
+     null
+    ],
+    [
+     "top_k",
+     false,
+     null
+    ],
+    [
+     "config",
+     false,
+     null
+    ],
+    [
+     "compute_type",
+     false,
+     null
+    ],
+    [
+     "use_fp8_w8a8",
+     false,
+     null
+    ],
+    [
+     "use_int8_w8a8",
+     false,
+     null
+    ],
+    [
+     "use_int8_w8a16",
+     false,
+     null
+    ],
+    [
+     "use_int4_w4a16",
+     false,
+     null
+    ],
+    [
+     "per_channel_quant",
+     false,
+     null
+    ],
+    [
+     "block_shape",
+     true,
+     "None"
+    ],
+    [
+     "B_bias",
+     true,
+     "None"
+    ]
+   ],
+   "try_get_optimal_moe_config": [
+    [
+     "w1_shape",
+     false,
+     null
+    ],
+    [
+     "w2_shape",
+     false,
+     null
+    ],
+    [
+     "top_k",
+     false,
+     null
+    ],
+    [
+     "dtype",
+     false,
+     null
+    ],
+    [
+     "M",
+     false,
+     null
+    ],
+    [
+     "block_shape",
+     true,
+     "None"
+    ]
+   ]
+  },
+  "vllm_moe_a8w4": null,
+  "vllm_mxfp8": null,
+  "vllm_prefill": {
+   "context_attention_fwd": [
+    [
+     "q",
+     false,
+     null
+    ],
+    [
+     "k",
+     false,
+     null
+    ],
+    [
+     "v",
+     false,
+     null
+    ],
+    [
+     "o",
+     false,
+     null
+    ],
+    [
+     "kv_cache_dtype",
+     false,
+     null
+    ],
+    [
+     "k_cache",
+     false,
+     null
+    ],
+    [
+     "v_cache",
+     false,
+     null
+    ],
+    [
+     "b_loc",
+     false,
+     null
+    ],
+    [
+     "b_start_loc",
+     false,
+     null
+    ],
+    [
+     "b_seq_len",
+     false,
+     null
+    ],
+    [
+     "max_seq_len",
+     false,
+     null
+    ],
+    [
+     "max_input_len",
+     false,
+     null
+    ],
+    [
+     "k_scale",
+     false,
+     null
+    ],
+    [
+     "v_scale",
+     false,
+     null
+    ],
+    [
+     "alibi_slopes",
+     true,
+     "None"
+    ],
+    [
+     "sliding_window",
+     true,
+     "None"
+    ],
+    [
+     "sm_scale",
+     true,
+     "None"
+    ],
+    [
+     "skip_decode",
+     true,
+     "False"
+    ],
+    [
+     "fp8_out_scale",
+     true,
+     "None"
+    ],
+    [
+     "sinks",
+     true,
+     "None"
+    ],
+    [
+     "is_block_table_ptr",
+     true,
+     "False"
+    ],
+    [
+     "causal",
+     true,
+     "True"
+    ]
+   ],
+   "unified_attention": [
+    "q",
+    "k",
+    "v",
+    "out",
+    "cu_seqlens_q",
+    "max_seqlen_q",
+    "seqused_k",
+    "max_seqlen_k",
+    "softmax_scale",
+    "causal",
+    "window_size",
+    "block_table",
+    "softcap",
+    "q_descale",
+    "k_descale",
+    "v_descale",
+    "seq_threshold_3D",
+    "num_par_softmax_segments",
+    "softmax_segm_output",
+    "softmax_segm_max",
+    "softmax_segm_expsum",
+    "alibi_slopes",
+    "output_scale",
+    "qq_bias",
+    "sinks",
+    "mm_prefix_range",
+    "rswa_prefix_lens",
+    "rswa_window",
+    "use_alibi_sqrt",
+    "kv_quant_mode",
+    "k_scale_cache",
+    "v_scale_cache",
+    "chunk_lookback",
+    "use_td",
+    "mm_prefix_clamp_sliding_window"
+   ]
+  },
+  "vllm_sdpa": {
+   "calls_torch_sdpa": true
+  },
+  "vllm_sparse_mla": null
+ },
+ "image": "sha256:e57d6073da0dc0b79a1a62a3c4fadd4f2fb6264315c3283f096ac15faffd02f0",
+ "image_note": "the MiniCPM-V-4.7 production vLLM image (TheRock ROCm 7.14, gfx1100)"
+}

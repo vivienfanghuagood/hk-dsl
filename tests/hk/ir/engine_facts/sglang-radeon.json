@@ -1,0 +1,311 @@
+{
+ "arch": "gfx1100",
+ "deployed_on": "gfx1100",
+ "engines": {
+  "sglang": "sglang 0.0.0",
+  "vllm": "vllm (version unknown)"
+ },
+ "expected_refusals": {},
+ "facts": {
+  "sglang_linear": {
+   "apply": [
+    "self",
+    "layer",
+    "x",
+    "bias"
+   ]
+  },
+  "sglang_moe": {
+   "invoke_fused_moe_kernel": [
+    [
+     "A",
+     false,
+     null
+    ],
+    [
+     "B",
+     false,
+     null
+    ],
+    [
+     "bias",
+     false,
+     null
+    ],
+    [
+     "C",
+     false,
+     null
+    ],
+    [
+     "A_scale",
+     false,
+     null
+    ],
+    [
+     "B_scale",
+     false,
+     null
+    ],
+    [
+     "B_zp",
+     false,
+     null
+    ],
+    [
+     "topk_weights",
+     false,
+     null
+    ],
+    [
+     "topk_ids",
+     false,
+     null
+    ],
+    [
+     "sorted_token_ids",
+     false,
+     null
+    ],
+    [
+     "expert_ids",
+     false,
+     null
+    ],
+    [
+     "num_tokens_post_padded",
+     false,
+     null
+    ],
+    [
+     "mul_routed_weight",
+     false,
+     null
+    ],
+    [
+     "top_k",
+     false,
+     null
+    ],
+    [
+     "config",
+     false,
+     null
+    ],
+    [
+     "compute_type",
+     false,
+     null
+    ],
+    [
+     "use_fp8_w8a8",
+     false,
+     null
+    ],
+    [
+     "use_int8_w8a8",
+     false,
+     null
+    ],
+    [
+     "use_int8_w8a16",
+     false,
+     null
+    ],
+    [
+     "use_int4_w4a16",
+     false,
+     null
+    ],
+    [
+     "per_channel_quant",
+     false,
+     null
+    ],
+    [
+     "block_shape",
+     true,
+     "None"
+    ],
+    [
+     "no_combine",
+     true,
+     "False"
+    ],
+    [
+     "a_use_tma",
+     true,
+     "False"
+    ],
+    [
+     "b_use_tma",
+     true,
+     "False"
+    ],
+    [
+     "c_sorted",
+     true,
+     "False"
+    ],
+    [
+     "filter_expert",
+     true,
+     "True"
+    ],
+    [
+     "fuse_sum_all_reduce",
+     true,
+     "False"
+    ],
+    [
+     "router_topk",
+     true,
+     "1"
+    ],
+    [
+     "fuse_add_to_output",
+     true,
+     "False"
+    ],
+    [
+     "add_output_mask",
+     true,
+     "None"
+    ],
+    [
+     "mask_output",
+     true,
+     "False"
+    ],
+    [
+     "lora_preserve_base",
+     true,
+     "False"
+    ],
+    [
+     "fuse_swiglu",
+     true,
+     "False"
+    ]
+   ],
+   "topk_softmax": [
+    [
+     "topk_weights",
+     false,
+     null
+    ],
+    [
+     "topk_ids",
+     false,
+     null
+    ],
+    [
+     "gating_output",
+     false,
+     null
+    ],
+    [
+     "renormalize",
+     true,
+     "False"
+    ],
+    [
+     "moe_softcapping",
+     true,
+     "0.0"
+    ],
+    [
+     "correction_bias",
+     true,
+     "None"
+    ]
+   ],
+   "try_get_optimal_moe_config": [
+    [
+     "w1_shape",
+     false,
+     null
+    ],
+    [
+     "w2_shape",
+     false,
+     null
+    ],
+    [
+     "top_k",
+     false,
+     null
+    ],
+    [
+     "dtype",
+     false,
+     null
+    ],
+    [
+     "M",
+     false,
+     null
+    ],
+    [
+     "is_marlin",
+     true,
+     "False"
+    ],
+    [
+     "block_shape",
+     true,
+     "None"
+    ],
+    [
+     "per_channel_quant",
+     true,
+     "False"
+    ],
+    [
+     "return_down_config",
+     true,
+     "False"
+    ]
+   ]
+  },
+  "sgld_attn": {
+   "calls_sdpa": true
+  },
+  "sgld_convrot": null,
+  "sgld_linear": {
+   "apply": [
+    "self",
+    "layer",
+    "x",
+    "bias"
+   ]
+  },
+  "vllm_backend": {
+   "_error": "ModuleNotFoundError: No module named 'vllm'"
+  },
+  "vllm_dsv41_index": null,
+  "vllm_gemm": {
+   "_error": "ModuleNotFoundError: No module named 'vllm'"
+  },
+  "vllm_gptq": {
+   "_error": "ModuleNotFoundError: No module named 'vllm'"
+  },
+  "vllm_int4": {
+   "_error": "ModuleNotFoundError: No module named 'vllm'"
+  },
+  "vllm_moe": {
+   "_error": "ModuleNotFoundError: No module named 'vllm'"
+  },
+  "vllm_moe_a8w4": null,
+  "vllm_mxfp8": null,
+  "vllm_prefill": {
+   "_error": "ModuleNotFoundError: No module named 'vllm'"
+  },
+  "vllm_sdpa": {
+   "_error": "ModuleNotFoundError: No module named 'vllm'"
+  },
+  "vllm_sparse_mla": null
+ },
+ "image": "sha256:e9c8365e6e0a7e63c1241aa9d0de8acd104d19ad785a45fc1b76215b541184d1",
+ "image_note": "the sglang-radeon production image (SGLang and SGLang-Diffusion, ROCm 7.2.1, gfx1100)"
+}
