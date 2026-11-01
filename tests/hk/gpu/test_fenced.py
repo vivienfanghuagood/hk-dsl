@@ -174,6 +174,13 @@ def test_norms_and_quantize():
         xi, ri = x.clone(), r.clone()
         step("fused_add_rms_norm", lambda: hk.ops.fused_add_rms_norm(xi, ri, w.bfloat16()))
         same("residual", ri, (x.float() + r.float()).bfloat16())
+        wo = (torch.rand({n}, device="cuda") - 0.5).bfloat16()
+        rel("rms_norm offset", step("rms_norm offset",
+            lambda: hk.ops.rms_norm(x, wo, weight_offset=1.0)), rms * (1.0 + wo.float()), 2e-2)
+        xo, ro = x.clone(), r.clone()
+        step("fused_add_rms_norm offset",
+             lambda: hk.ops.fused_add_rms_norm(xo, ro, wo, weight_offset=1.0))
+        same("residual offset", ro, (x.float() + r.float()).bfloat16())
         if ARCH == "gfx950" or {n} % 2 == 0 or ({m} >= 16 and {n} >= 64):   # else refused
             q, s = step("quantize", lambda: hk.ops.quantize(x * 3))
             amax = (x * 3).float().abs().amax(-1).clamp_min(1e-12)
