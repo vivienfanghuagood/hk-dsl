@@ -1868,17 +1868,9 @@ private:
           Value d = dest(o.getDst(), o.getResult());
           call("copy", d, {name(o.getSrc())});
         })
-        .Case([&](Fp4OperandOp o) {
+        .Case([&](LaneViewOp o) {
           Value d = dest(Value(), o.getResult());
-          w("kittens::fp4_operand(" + name(d) + ", " + name(o.getWords()) + ");");
-        })
-        .Case([&](Fp8OperandOp o) {
-          Value d = dest(Value(), o.getResult());
-          w("kittens::fp8_operand(" + name(d) + ", " + name(o.getWords()) + ");");
-        })
-        .Case([&](MxScalesLooseOp o) {
-          Value d = dest(Value(), o.getResult());
-          w("kittens::mx_scales_loose(" + name(d) + ", " + name(o.getBytes()) + ");");
+          w("kittens::lane_view(" + name(d) + ", " + name(o.getSrc()) + ");");
         })
         .Case([&](FirstLaneOp o) {
           w("const int " + name(o.getResult()) + " = __builtin_amdgcn_readfirstlane(int(" + name(o.getSrc()) +
