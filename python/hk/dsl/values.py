@@ -1921,8 +1921,9 @@ def zeros(ty, *, into=None):
     return _make(hkd.ZeroOp, ty, (), into=into, name=name)
 
 
-def load_w4(ty, qw: "Global", s: "Global", zs: "Global", n0, k0, *,
-            group: int = 128, into=None) -> "Tile":
+def load_w4(ty, qw: "Global", s: "Global", zs: Optional["Global"], n0, k0, *,
+            group: int = 128, zero: Optional[int] = None, s_blocked: bool = False,
+            into=None) -> "Tile":
     """Rows n0.. and columns k0.. of W, dequantized from 4-bit codes into a
     bf16 row-layout tile: element (n, k) is q * s - zs, q being nibble k % 8
     of row n's word k // 8 (int32 [N, K/8], interleaved [N/16][K/32][16][4]),
@@ -1930,7 +1931,19 @@ def load_w4(ty, qw: "Global", s: "Global", zs: "Global", n0, k0, *,
     `zs[n][k // group]` (bf16 [N, K/group]). The layout
     `hk.ops.w4a16.repack_*` writes. The tile is a whole number of 32-column
     chunks and k0 a multiple of 32, and of the tile's width when the group
-    spans it."""
+    spans it.
+
+    Symmetric: `zs=None, zero=z` -- one zero point z for every group (GPTQ's
+    uint4b8: 8), so the element is (q - z) * s and no zs is stored or read:
+    12.5% fewer bytes than codes + s + zs at 32-column groups. A bf16 tile is
+    then bit for bit the asymmetric one on a checkpoint whose zs is z * s; an
+    fp16 tile is (q - z) * s rounded once to nearest even (packed fp16), where
+    the asymmetric path rounds toward zero after an fp32 FMA.
+
+    `s_blocked` (symmetric): s is laid out [N/16, K/group * 16] -- a 16-row
+    block's scales of one group are 16 consecutive values, so the 16 rows a
+    k-step reads take 32 contiguous bytes instead of 16 lines
+    (`hk.ops.w4a16.repack_gptq(..., symmetric=True)` writes it)."""
     if ty.cols % 32:
         raise ValueError(f"load_w4 reads whole 32-column chunks; the tile is "
                          f"{ty.cols} wide")
@@ -1940,7 +1953,17 @@ def load_w4(ty, qw: "Global", s: "Global", zs: "Global", n0, k0, *,
                         f"not {ty!r}")
     if group <= 0 or group % 16:
         raise ValueError(f"load_w4: group {group} must be a positive multiple of 16")
+    if (zs is None) == (zero is None):
+        raise TypeError("load_w4 takes zs (asymmetric) or zero= (symmetric: one zero point "
+                        "for every group), exactly one of them")
+    if zero is not None and (not isinstance(zero, int) or isinstance(zero, bool)
+                             or not 0 <= zero <= 15):
+        raise ValueError(f"load_w4: zero is a 4-bit code, 0..15, not {zero!r}")
+    if s_blocked and zero is None:
+        raise TypeError("load_w4(s_blocked=True) is the symmetric form's scale layout: give zero=")
     for name, g, want in (("qw", qw, i32), ("s", s, None), ("zs", zs, None)):
+        if g is None:
+            continue
         if not isinstance(g, Global):
             raise TypeError(f"load_w4: {name} must be a tensor parameter, got {g!r}")
         if want is not None and g.dtype is not want:
@@ -1949,8 +1972,11 @@ def load_w4(ty, qw: "Global", s: "Global", zs: "Global", n0, k0, *,
         if want is None and g.dtype.name != ty.dtype.name:
             raise TypeError(f"load_w4: {name} is the tile's {ty.dtype.name}, "
                             f"not {g.dtype.name}")
-    return _make(hkd.LoadW4Op, ty, (qw.v, s.v, zs.v, as_int(n0).v, as_int(k0).v),
-                 into=into, name="w4", group=group)
+    extra = {"zs": zs.v} if zs is not None else {"zero": _i64(zero)}
+    if s_blocked:
+        extra["s_blocked"] = _unit_attr()
+    return _make(hkd.LoadW4Op, ty, (qw.v, s.v, as_int(n0).v, as_int(k0).v),
+                 into=into, name="w4", group=group, **extra)
 
 
 def rand(ty, seed, offset, row_stride, *, into=None) -> "Tile":
@@ -2370,7 +2396,7 @@ def _fp4_operand(words: Tile) -> Tile:
         raise TypeError(f"fp4_operand: an i32 strip of 1 x 256, run 4 (four dwords a lane), not {words.ty}")
     t = _t()
     ty = RegTileType(fp8e4m3, 16, 128, "row")
-    return wrap(hkd.Fp4OperandOp(mlir_type(ty), words.v, loc=t.loc("fp4")).result, ty)
+    return wrap(hkd.LaneViewOp(mlir_type(ty), words.v, loc=t.loc("fp4")).result, ty)
 
 
 def fp8_operand(words: Tile) -> Tile:
@@ -2385,7 +2411,7 @@ def _fp8_operand(words: Tile) -> Tile:
         raise TypeError(f"fp8_operand: an i32 strip of 1 x 512, run 4 (eight dwords a lane), not {words.ty}")
     t = _t()
     ty = RegTileType(fp8e4m3, 16, 128, "row")
-    return wrap(hkd.Fp8OperandOp(mlir_type(ty), words.v, loc=t.loc("fp8")).result, ty)
+    return wrap(hkd.LaneViewOp(mlir_type(ty), words.v, loc=t.loc("fp8")).result, ty)
 
 
 def mx_scales_loose(bytes_: Tile) -> MxScales:
@@ -2400,7 +2426,7 @@ def _mx_scales_loose(bytes_: Tile) -> MxScales:
         raise TypeError(f"mx_scales_loose: an i32 strip of 1 x 64, run 1, not {bytes_.ty}")
     t = _t()
     ty = MxScalesType(16, 4, 1)
-    op = hkd.MxScalesLooseOp(mlir_type(ty), bytes_.v, loc=t.loc("mxs"))
+    op = hkd.LaneViewOp(mlir_type(ty), bytes_.v, loc=t.loc("mxs"))
     return MxScales(op.result, ty)
 
 

@@ -340,8 +340,15 @@ LogicalResult LoadW4Op::verify() {
     return emitOpError("dequantizes into a bf16 or f16 row-layout tile");
   if (!getQw().getType().getElementType().isInteger(32))
     return emitOpError("reads its codes from an int32 global, eight to a word");
+  if (bool(getZs()) == getZero().has_value())
+    return emitOpError("takes a zero-times-scale tensor zs, or one `zero` for every group "
+                       "(symmetric), exactly one of them");
+  if (getZero() && (*getZero() < 0 || *getZero() > 15))
+    return emitOpError("zero is a 4-bit code, 0..15, not ") << *getZero();
+  if (getSBlocked() && !getZero())
+    return emitOpError("s_blocked (scales in 16-row blocks) is the symmetric form's layout");
   if (getS().getType().getElementType() != et ||
-      getZs().getType().getElementType() != et)
+      (getZs() && getZs().getType().getElementType() != et))
     return emitOpError("reads scales and zero-times-scales of the tile's type");
   if (getGroup() <= 0 || getGroup() % 16)
     return emitOpError("group must be a positive multiple of 16, got ")
@@ -758,36 +765,23 @@ static LogicalResult verifyElems(Operation *op, Type valT, Type idxT) {
   return success();
 }
 
-LogicalResult Fp4OperandOp::verify() {
-  auto w = dyn_cast<RegTileType>(getWords().getType());
-  auto r = dyn_cast<RegTileType>(getResult().getType());
-  if (!w || !w.isStrip() || !w.getElementType().isInteger(32) || w.getRows() != 1 || w.getCols() != 256 ||
-      w.getRun() != 4)
-    return emitOpError("takes an i32 strip of 1 x 256, run 4 (four dwords a lane)");
-  if (!r || r.isStrip() || r.getRows() != 16 || r.getCols() != 128 || r.getLayout() != "row")
-    return emitOpError("gives a 16x128 row tile (the FP4 container)");
-  return success();
-}
-
-LogicalResult Fp8OperandOp::verify() {
-  auto w = dyn_cast<RegTileType>(getWords().getType());
-  auto r = dyn_cast<RegTileType>(getResult().getType());
-  if (!w || !w.isStrip() || !w.getElementType().isInteger(32) || w.getRows() != 1 || w.getCols() != 512 ||
-      w.getRun() != 4)
-    return emitOpError("takes an i32 strip of 1 x 512, run 4 (eight dwords a lane, two runs)");
-  if (!r || r.isStrip() || r.getRows() != 16 || r.getCols() != 128 || r.getLayout() != "row")
-    return emitOpError("gives a 16x128 row tile (an fp8 fragment)");
-  return success();
-}
-
-LogicalResult MxScalesLooseOp::verify() {
-  auto b = dyn_cast<RegTileType>(getBytes().getType());
-  auto r = cast<MxScalesType>(getResult().getType());
-  if (!b || !b.isStrip() || !b.getElementType().isInteger(32) || b.getRows() != 1 || b.getCols() != 64 ||
-      b.getRun() != 1)
-    return emitOpError("takes an i32 strip of 1 x 64, run 1 (one byte a lane)");
-  if (r.getRows() != 16 || r.getKblocks() != 4 || r.getFmt() != 1)
-    return emitOpError("gives loose (fmt 1) scales of 16 rows and 4 blocks");
+LogicalResult LaneViewOp::verify() {
+  auto w = dyn_cast<RegTileType>(getSrc().getType());
+  if (!w || !w.isStrip() || !w.getElementType().isInteger(32) || w.getRows() != 1)
+    return emitOpError("reads a 1-row i32 strip, not ") << getSrc().getType();
+  if (auto r = dyn_cast<MxScalesType>(getResult().getType())) {
+    if (w.getCols() != 64 || w.getRun() != 1)
+      return emitOpError("as scales takes an i32 strip of 1 x 64, run 1 (one byte a lane)");
+    if (r.getRows() != 16 || r.getKblocks() != 4 || r.getFmt() != 1)
+      return emitOpError("gives loose (fmt 1) scales of 16 rows and 4 blocks");
+    return success();
+  }
+  auto r = cast<RegTileType>(getResult().getType());
+  if (r.isStrip() || r.getRows() != 16 || r.getCols() != 128 || r.getLayout() != "row")
+    return emitOpError("gives a 16x128 row tile (an fp8 fragment or the FP4 container), not ") << r;
+  if (w.getRun() != 4 || (w.getCols() != 512 && w.getCols() != 256))
+    return emitOpError("as a fragment takes an i32 strip of 1 x 512 (fp8: eight dwords a lane) or "
+                       "1 x 256 (fp4: four), run 4");
   return success();
 }
 

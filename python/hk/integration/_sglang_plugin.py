@@ -13,6 +13,8 @@ reason the vLLM patch is a vLLM general plugin.
 * `HK_SGLANG_MOE` replaces the softmax top-k that fails on gfx1100 and
   routes the bf16 expert GEMMs through hk's (`sglang_moe.apply`);
   `HK_SGLANG_MOE=topk` replaces only the top-k (`sglang_moe.apply_topk`).
+* `HK_SGLANG_NORM` runs SGLang's Gemma-style RMSNorm on hk's weighted norm
+  kernels where SGLang would take its native torch path (`sglang.apply_norm`).
 
     python -m sglang.launch_server --model-path Qwen/Qwen3-8B \\
         --attention-backend triton --disable-cuda-graph          # hk's routes on
@@ -65,6 +67,12 @@ def register() -> None:
             from . import sglang as hks  # noqa: PLC0415
 
             notes.append(hks.apply_linear())
+            applied.append(hks.revert)
+        if "sglang_norm" in routes:
+            current = "sglang_norm"
+            from . import sglang as hks  # noqa: PLC0415
+
+            notes.append(hks.apply_norm())
             applied.append(hks.revert)
         if "sglang_moe" in routes:
             current = "sglang_moe"

@@ -105,6 +105,10 @@ ENTRIES: Dict[str, Entry] = {
     "Kernel.build_flags": Entry("escape", "D7", "tests and probes; not hk.ops kernels"),
     # 2.5 kept as primitives / formats
     "hk.load_w4": Entry("format", "E8", "hk's own int4 layout (hk.ops.w4a16's repack)"),
+    "hk.load_w4(zero=)": Entry("format", "E8", "the symmetric form: one zero point for every "
+                               "group, no zs read (GPTQ's uint4b8)"),
+    "hk.load_w4(s_blocked=)": Entry("format", "E8", "the symmetric form's scales in 16-row blocks, "
+                                    "[N/16, K/group * 16] (hk.ops.w4a16.repack_gptq(symmetric=True))"),
 }
 
 #: Every other documented name of the language: general, any kernel may use it.
@@ -162,7 +166,7 @@ hk.torch_op hk.transpose hk.transpose_sep hk.uniform hk.zeros
 _OP_KINDS: Dict[str, str] = {
     "load_mx_scales": "format", "mx_scales_copy": "primitive", "mma_ABt_mx": "primitive",
     "load_fp4_frags": "format", "load_fp4_frags_lds": "format", "mx_quant_store": "merge",
-    "fp4_operand": "primitive", "fp8_operand": "primitive", "mx_scales_loose": "primitive",
+    "lane_view": "primitive",
     "gather_prep": "primitive",
     "mfma_strip": "merge", "granules": "escape", "load_frag": "escape",
     "store_frag": "escape",
@@ -190,6 +194,8 @@ map yield rcp
 #: op; `internal` -- plumbing (core), library fixes and gap fills (lib), type-selected
 #: specializations (special); the rest as their DSL entries.
 CPP: Dict[str, Dict[str, str]] = {
+    # RDNA's symmetric 4-bit decode (hk.load_w4(zero=)); the asymmetric form is the trees'
+    "include/hk/rdna/w4.cuh": {"load_w4": "format", "w4_word_sym_f16": "internal"},
     # RDNA strided globals (`hk.Tensor[dtype, "strided"]`): g.stage's strided form and the
     # type's accessors.
     "include/hk/rdna/strided.cuh": {
@@ -240,11 +246,11 @@ triu upper_fill
     "include/hk/cdna/primitives.cuh": {
         **{n: "primitive" for n in """
 arrive as_operand atomic_add atomic_scalar atomic_scalar_scoped bin_map claim col_map copy
-fp4_operand fp8_operand gather_prep group_load_async group_load_async_gather
+gather_prep group_load_async group_load_async_gather
 group_load_async_rows group_reduce_ordered lane_coord lane_gather lane_strip
 lds_atomic_add_elems lds_load_elems lds_load_elems_runs lds_store_elems left_fill load
 load_bounded load_elems load_elems_runs load_gather load_period load_scalar
-load_scalar_invariant load_scoped mx_scales_loose one philox_uniform post post_elems
+lane_view load_scalar_invariant load_scoped one philox_uniform post post_elems
 post_elems_runs right_fill row_map row_sum_times_ordered run_xor signal store store_bounded
 store_elems store_elems_runs store_scalar store_scatter store_scoped swap_halves take
 take_elems take_elems_runs unary_map wait wg_arrive wg_arrive_xcd xcd_id

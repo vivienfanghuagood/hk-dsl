@@ -41,7 +41,8 @@ def test_on_by_default_on_gfx950_is_k1_k2_the_index_launch_sparse_mla_and_int4()
 
 def test_on_by_default_on_gfx1100_is_every_route_validated_there():
     assert on(gpu="gfx1100") == {"vllm_int4", "vllm_gptq", "vllm_gemm", "vllm_moe", "vllm_sdpa",
-                                 "sglang_linear", "sglang_moe", "sgld_attn", "sgld_linear",
+                                 "sglang_linear", "sglang_moe", "sglang_norm", "sgld_attn",
+                                 "sgld_linear",
                                  "sdpa_k3"}
 
 
@@ -320,9 +321,10 @@ def test_the_sglang_plugin_is_on_by_default_and_off_with_hk_disable(clean, capsy
     clean.setattr(switches, "arch", lambda: "gfx1100")
     clean.setattr(contract, "check", lambda routes: [])
     clean.setattr(hks, "apply_linear", lambda: seen.append("linear") or "linear: test")
+    clean.setattr(hks, "apply_norm", lambda: seen.append("norm") or "norm: test")
     clean.setattr(sglang_moe, "apply", lambda: seen.append("moe") or "moe: test")
     _sglang_plugin.register()
-    assert seen == ["linear", "moe"]
+    assert seen == ["linear", "norm", "moe"]
     seen.clear()
     clean.setenv("HK_DISABLE", "1")
     _sglang_plugin.register()
