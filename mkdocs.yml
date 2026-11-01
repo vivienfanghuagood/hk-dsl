@@ -70,6 +70,11 @@ nav:
   - Overview: README.md
   - What it is and is not: positioning.md
   - Getting started: getting-started.md
+  - Concepts:
+      - "How a kernel runs: the pipeline": pipeline.md
+      - "Tiles, strips and LDS": tiles-and-strips.md
+      - The correctness gates: correctness-gates.md
+      - "XCDs, placement and hk.comm": xcds-and-comm.md
   - Templates:
       - Elementwise and rowwise: templates/elementwise-rowwise.md
       - GEMM with an epilogue: templates/gemm.md

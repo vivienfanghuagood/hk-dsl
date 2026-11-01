@@ -128,7 +128,7 @@ below.
   `at file:line in function` — the kernel author's line.
 
 The passes are also where the third of
-[the traps](README.md#the-traps) is caught: on RDNA3 only row-layout 16-bit
+[the traps](correctness-gates.md#the-traps) is caught: on RDNA3 only row-layout 16-bit
 operands reach `ds_read_b128`, column layout degrades to 16 scalar
 `ds_read_u16`, and the passes flag it while tracing, not at benchmark time.
 The target tables say which layouts are fast; gfx950 reads both.
@@ -176,7 +176,7 @@ The C++ for the kernel above:
 ```
 
 The translation is where the first of
-[the traps](README.md#the-traps) is closed: `s_waitcnt` carries no
+[the traps](correctness-gates.md#the-traps) is closed: `s_waitcnt` carries no
 register dependence, so it binds the fragment with a volatile asm after every
 wait — you cannot forget to. `k.source()` returns this C++ with the pybind
 scaffold; `k.source("torch")`, `k.source("bare")` and `k.source("device")`

@@ -129,10 +129,9 @@ tensor is `(rows, cols)` (`include/pyutils/hk_bind.cuh`).
 
 A tile's lane layout is the one WMMA gives it: a 16-bit row tile holds each
 row twice, and an fp32 tile gives a lane alternate columns. A kernel that only
-streams rows wants each lane to own contiguous runs of a row instead, and the
-difference is large: a GELU-and-mul on 16x64 tiles is 0.54x `torch.compile`
-at 4096x14336 on an MI355X, on strips 1.03x
-([the DX suite](../bench/dx/FINDINGS.md)). Elementwise and row-wise kernels
+streams rows wants each lane to own contiguous runs of a row instead: on
+16x64 tiles such a kernel leaves bandwidth unused
+([tiles and strips](tiles-and-strips.md)). Elementwise and row-wise kernels
 belong on strips, and the [templates](templates/elementwise-rowwise.md) put
 them there for you. That is
 a strip (`!hk.rt<f32, 1x1024, strip<8>>`, `kittens::rs`):
