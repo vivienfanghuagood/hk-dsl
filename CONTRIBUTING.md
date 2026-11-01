@@ -5,7 +5,7 @@ Issues and pull requests are welcome. These pages cover the mechanics:
 - [the default-on rule](docs/testing.md#the-default-on-rule): what an engine route needs before it
   is on by default (a 1.15x time-weighted win at a real model's shapes, only on shapes where hk is
   faster; the correctness suite; one end-to-end smoke per engine);
-- [how numbers are taken](docs/archive/performance-2026-10.md#how-the-numbers-are-taken);
+- [how numbers are taken](docs/performance/method.md);
 - [releasing](docs/releasing.md).
 
 A change to a public signature or docstring regenerates the API reference
