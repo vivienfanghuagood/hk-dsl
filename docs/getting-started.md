@@ -269,11 +269,13 @@ has shown 13-16% differences out of nothing
 no stream (CDNA's takes torch's current one). Eager back-to-back calls on
 torch's default stream are timed correctly, but a CUDA graph does not
 capture the kernel -- a replay runs nothing, and times nothing -- and work
-on another stream is not ordered against it. To capture an hk kernel on
-gfx1100, or to run it on a stream of your own, launch it on torch's stream:
-set `HK_LAUNCH=codeobj` before the first call (every `@hk.kernel` and
-template then launches its code object on torch's current stream), or call
-it through `hk.torch_op(k)` ([the stream](runtime.md#what-a-launch-does)).
+on another stream is not ordered against it; a call under a non-default
+torch stream warns once (`HK_STRICT_STREAM=1` makes it an error). To capture
+an hk kernel on gfx1100, or to run it on a stream of your own, launch it on
+torch's stream: set `HK_LAUNCH=codeobj` before the first call (every
+`@hk.kernel` and template then launches its code object on torch's current
+stream), or call it through `hk.torch_op(k)`
+([the stream](runtime.md#what-a-launch-does)).
 The serving engines' patches already do.
 
 ## Running the tests

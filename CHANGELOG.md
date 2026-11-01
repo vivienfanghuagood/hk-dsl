@@ -16,6 +16,16 @@ stored weight at `weight_offset=1`, fuses the residual add, writes out of place,
 torch's current stream. Calls it does not take go back to SGLang's forward, counted by reason in
 `hk.integration.sglang.NORM_STATS`. Where SGLang has its own fused norm (aiter, vLLM) the route
 is not applied.
+
+**RDNA: `k(...)` under a non-default torch stream warns (`HK_STRICT_STREAM=1`: raises).** On gfx1100
+and gfx1201 the pybind entry point launches on the null stream, which is ordered against nothing torch
+queued on a stream of its own: a direct `hk.ops` / `@hk.kernel` call made under `torch.cuda.stream(s)`
+-- an engine's model stream, a side stream, a graph capture -- could read its inputs before they were
+written, and nothing said so. Each such launch now checks torch's current stream and warns once per
+kernel, naming the fix (`hk.torch_op(k)` or `HK_LAUNCH=codeobj`); `HK_STRICT_STREAM=1` makes it an
+error. Calls on the default stream, and every engine route (they launch on torch's stream), are
+unchanged; no kernel's source changes.
+
 **RDNA3's paired WMMA operand: `as_operand(k_order="even_odd")` (DSL-surface S11).** On gfx1100,
 `S.as_operand(hk.fp16, k_order="even_odd")` turns a 32x16 fp32 pair of WMMA accumulators into two fp16
 operands, the pair's even rows and its odd rows, one `permlanex16` a packed dword. `hk.ops.attn_k3`
