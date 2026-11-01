@@ -45,6 +45,7 @@ It traces and runs on both GPUs, ragged shapes (100x1000) included; `hk.check` t
 
 ## API reference (generated from the code)
 
+- [Op catalog](docs/ops.md): every `hk.ops` kernel family, its GPUs, dtypes, engine routes and GPU tests (generated)
 - [hk](docs/api/hk.md): `kernel`, `func`, `Tensor`, `Constexpr`, `RT`, `RS`, `ST`, `SV`, `col_vec`, `row_vec`, dtypes, `range`, `if_`, `cdiv`, `zeros`, `tile_coord`, `elem_coord`, `mma`, and the methods of `Tile`, `Vec`, `Global`, `View`, `SharedTile`
 - [hk.math](docs/api/hk.math.md): every elementwise function (exp, exp2, log, log2, abs, relu, gelu, dgelu, sqrt, rsqrt, silu, add, sub, mul, div, maximum, minimum) -- there is no tanh or sigmoid
 - [hk.arch](docs/api/hk.arch.md): block/warp/lane ids, `target()`, barriers, scheduling hints

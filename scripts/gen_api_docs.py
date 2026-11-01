@@ -792,7 +792,9 @@ def page_math(since: Since) -> Page:
 OPS_INTRO = """\
 The kernels hk ships, written in the language, each behind a torch-facing
 function that picks a plan for the shape and the architecture. Call them on
-torch tensors on the GPU; they return the output (or write `out=`).
+torch tensors on the GPU; they return the output (or write `out=`). Every
+kernel family -- the GPUs it runs on, its dtypes, the engine routes that call
+it, the GPU tests that run it -- is in [the op catalog](../ops.md).
 
 Where an op's arguments or behaviour differ between gfx1100 and gfx950 the
 entry says so in a **Per architecture** table; the full audit, with the code
