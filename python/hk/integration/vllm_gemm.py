@@ -140,6 +140,13 @@ def set_routes(table: Optional[engine.RouteTable]) -> None:
         _TABLE.append(table)
 
 
+#: Arches where a single-row call (M = 1, decode at batch 1) stays on the engine's own path
+#: whatever the table says. On gfx1201 that path is vLLM's wvSplitK, which streams the weights at
+#: the GDDR6 roof at M = 1; a shape the table sent to hk there measured a win alone and a loss in
+#: the engine (MiniCPM5-2B on an R9700: TPOT at concurrency 1 0.983x, every start).
+ENGINE_KEEPS_M1 = ("gfx1201",)
+
+
 def route_for(m: int, n: int, k: int, *, bf16: bool = True, bias: bool = False,
               contiguous_weight: bool = True) -> str:
     """"hk", "hk_decode", "hipkittens", "flydsl" or "fallback" for y = x @ W.T,
@@ -155,6 +162,11 @@ def route_for(m: int, n: int, k: int, *, bf16: bool = True, bias: bool = False,
 
     if m < 1 or not bf16 or bias or not contiguous_weight:
         return "fallback"
+    if m == 1:
+        from ..target import current_arch  # noqa: PLC0415
+
+        if current_arch() in ENGINE_KEEPS_M1:
+            return "fallback"
     table = routes()
     if table is None:
         return "fallback"
