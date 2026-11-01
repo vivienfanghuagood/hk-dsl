@@ -664,13 +664,21 @@ def _row_reduce_kernel(name: str, dtype, kind: str, warps: int,
 
 
 def _rms_weighted_kernel(name: str, dtype, warps: int, residual: bool,
-                         split: int = 0):
+                         split: int = 0, offset: float = 0.0):
     """The RMSNorm a model runs: y = x * rsqrt(mean(x^2) + eps) * w, and with
     `residual` vLLM's fused_add_rms_norm -- x + r is what is normalised, and
     it is written back to `r_out` -- one read of each operand.
 
     `split` is HipKittens' HK_RT_HALF_SPLIT for this kernel: see
     _HALF_SPLIT for which plans take it.
+
+    `offset` is added to the weight in fp32 once it is loaded: y = ... *
+    (w + offset). A model that stores its weight as an offset from one
+    (Gemma-style) gets offset=1 and its own w, which is exact; adding the one
+    to a 16-bit weight beforehand rounds most of the weights. It is fixed when
+    the kernel is built, not a constexpr argument, so that 0 -- every kernel
+    in KERNELS -- generates the source it always did; offset_kernel() builds
+    the others.
 
     `_row_reduce_kernel`'s schedule. With FOLD the caller views the row as
     FOLD chunks -- one workgroup a row, a tile's rows its chunks -- and the
@@ -715,7 +723,10 @@ def _rms_weighted_kernel(name: str, dtype, warps: int, residual: bool,
         # across the wave halves (tools/hk-bench/norm_stages.py, one 1x4096
         # row: 0.86 us of a 3.5 us kernel).
         def weight(widx):
-            return w[widx].load(t, bounded=True) if FOLD != 1 else w[widx].load(rv)
+            g = w[widx].load(t, bounded=True) if FOLD != 1 else w[widx].load(rv)
+            if offset:
+                g += offset
+            return g
 
         def load(col_lo, pad=None):
             idx = hk.elem_coord(0, 0, row_lo, col_lo)
@@ -816,8 +827,9 @@ def _rms_weighted_kernel(name: str, dtype, warps: int, residual: bool,
     defines = {"HK_BF16_ROUND": 2} if residual else {}
     if split:
         defines["HK_RT_HALF_SPLIT"] = split
-    return hk.kernel(body, warps=warps, grid=_grid, name=name,
-                     defines=defines or None)
+    k = hk.kernel(body, warps=warps, grid=_grid, name=name, defines=defines or None)
+    _BUILT[name] = (_rms_weighted_kernel, (dtype, warps, residual, split))
+    return k
 
 
 _DTYPES = {"bf16": bf16, "fp16": fp16, "fp32": fp32}
@@ -868,6 +880,27 @@ WARP_COUNTS = tuple(range(1, MAX_WARPS + 1))
 #: TPW/FOLD ride in as constexpr arguments so that one entry here still covers
 #: every column count.
 KERNELS = {}
+
+#: name -> (factory, its arguments after the name), for offset_kernel().
+_BUILT: dict = {}
+_OFFSET_KERNELS: dict = {}
+
+
+def offset_kernel(name: str, offset: float):
+    """KERNELS[name] or STRIP_KERNELS[name], a weighted one, with `offset`
+    added to its weight (see _rms_weighted_kernel). Built on first use and
+    kept; offset 0 is the registered kernel itself."""
+    if not offset:
+        return KERNELS[name] if name in KERNELS else STRIP_KERNELS[name]
+    key = (name, float(offset))
+    k = _OFFSET_KERNELS.get(key)
+    if k is None:
+        factory, args = _BUILT[name]
+        tag = f"{float(offset):g}".replace("-", "m").replace(".", "p").replace("+", "")
+        k = _OFFSET_KERNELS[key] = factory(f"{name}_wo{tag}", *args, offset=float(offset))
+    return k
+
+
 for _s, _dt in _DTYPES.items():
     for _k in ("rms", "layer", "softmax"):
         for _w in WARP_COUNTS:
@@ -1151,12 +1184,13 @@ def strip_plan(cols: int, kind: str, nbytes: int, wave: Optional[int] = None,
     return warps, per, run, int(warps * per * span == cols)
 
 
-def _strip_kernel(name: str, dtype, kind: str, warps: int):
+def _strip_kernel(name: str, dtype, kind: str, warps: int, offset: float = 0.0):
     """A row kernel on a strip: one workgroup a row, the row read once.
 
     `kind`: rms, layer, softmax (unweighted, as _row_reduce_kernel), rmsw
     (times a weight) and addrmsw (vLLM's fused_add_rms_norm: x + r is
-    normalised and written back to r_out). Rows are any count, columns any
+    normalised and written back to r_out); `offset` as _rms_weighted_kernel's.
+    Rows are any count, columns any
     count: without EXACT every access is bounded -- a run at or past the row's
     end reads zero and is not written -- and the reductions that a zero would
     move are masked.
@@ -1173,6 +1207,8 @@ def _strip_kernel(name: str, dtype, kind: str, warps: int):
         # The weight first: its loads then issue beside the row's rather than
         # after the reduction has waited for them.
         g = w.at[0, c0].load(hk.row_vec(S), bounded=bounded) if w is not None else None
+        if offset:
+            g += offset
         v = x.at[row, c0].load(S, bounded=bounded)
         if r is not None:
             v += r.at[row, c0].load(S, bounded=bounded)
@@ -1234,8 +1270,10 @@ def _strip_kernel(name: str, dtype, kind: str, warps: int):
     body.__name__ = name
     # Ties to even for the residual, as _rms_weighted_kernel says why.
     defines = {"HK_BF16_ROUND": 2} if kind == "addrmsw" else None
-    return hk.kernel(body, warps=warps, grid=_strip_grid, name=name, defines=defines,
-                     noalias=True)
+    k = hk.kernel(body, warps=warps, grid=_strip_grid, name=name, defines=defines,
+                  noalias=True)
+    _BUILT[name] = (_strip_kernel, (dtype, kind, warps))
+    return k
 
 
 def _strip_grid(p):
@@ -1359,7 +1397,7 @@ def strip_plan_for(kind: str, nbytes: int, cols: int, rows: int,
     return (*p, cap[1] if streams else 0)
 
 
-def _resolve_strip(kind: str, dtype, cols: int, rows: int):
+def _resolve_strip(kind: str, dtype, cols: int, rows: int, offset: float = 0.0):
     """(kernel, CHUNKS, RUN, EXACT, RESERVE), or None for a row too wide for a
     strip. RESERVE caps the workgroups a WGP (a CU on gfx950) holds when the
     call streams HBM: see _STRIP_RESERVE and _STRIP_RESERVE_AT."""
@@ -1367,7 +1405,7 @@ def _resolve_strip(kind: str, dtype, cols: int, rows: int):
     cap = _reserve_here()
     streams, at = _strip_regime(kind, nbytes, cols, rows, cap, _per_lane_here())
     pre = kind != "addrmsw" and strip_preloads(rows * cols * nbytes * _STRIP_STREAMS.get(kind, 2))
-    key = ("strip", kind, dtype, cols, streams, at, pre)
+    key = ("strip", kind, dtype, cols, streams, at, pre) + ((offset,) if offset else ())
     got = _PLAN_CACHE.get(key, False)
     if got is False:
         suffix = _TORCH_DTYPES.get(str(dtype))
@@ -1377,7 +1415,7 @@ def _resolve_strip(kind: str, dtype, cols: int, rows: int):
         got = None
         if p is not None:
             warps, chunks, run, exact = p
-            k = STRIP_KERNELS[f"strip_{kind}_{suffix}_w{warps}"]
+            k = offset_kernel(f"strip_{kind}_{suffix}_w{warps}", offset)
             got = (k.preloaded() if pre else k, chunks, run, exact, cap[1] if streams else 0)
         _PLAN_CACHE[key] = got
     return got
@@ -1607,14 +1645,14 @@ def _tpw_cap(kind: str, fold: int, exact: bool) -> int:
     return MAX_TPW
 
 
-def _resolve_weighted(kind: str, dtype, cols: int, rows: int):
+def _resolve_weighted(kind: str, dtype, cols: int, rows: int, offset: float = 0.0):
     """(kernel, TPW, FOLD, EXACT). HK_NORM_FOLD=on/off overrides the row
     rule, for measuring the one plan against the other."""
     import os  # noqa: PLC0415
 
     mode = os.environ.get("HK_NORM_FOLD", "auto")
     want = mode == "on" or (mode == "auto" and rows < _WEIGHTED_UNFOLD_ROWS)
-    key = (kind, dtype, cols, want)
+    key = (kind, dtype, cols, want) + ((offset,) if offset else ())
     got = _PLAN_CACHE.get(key)
     if got is None:
         suffix = _TORCH_DTYPES.get(str(dtype))
@@ -1628,8 +1666,8 @@ def _resolve_weighted(kind: str, dtype, cols: int, rows: int):
             exact = _exact(cols // fold, warps, tpw)
         half = fold != 1 and tpw == 1 and suffix in _HALF_SPLIT_DTYPES
         got = _PLAN_CACHE[key] = (
-            KERNELS[f"{kind}_{suffix}_w{warps}" + ("_h" if half else "")], tpw,
-            fold, int(exact))
+            offset_kernel(f"{kind}_{suffix}_w{warps}" + ("_h" if half else ""), offset),
+            tpw, fold, int(exact))
     return got
 
 
@@ -1643,20 +1681,25 @@ def _rows_cols(x):
     return (x.numel() // cols if cols else 0), cols
 
 
-def _weighted_strip(kind: str, x, rows: int, cols: int):
+def _weighted_strip(kind: str, x, rows: int, cols: int, offset: float = 0.0):
     if LAYOUT != "strip" or not rows:
         return None
-    return _resolve_strip(kind, x.dtype, cols, rows)
+    return _resolve_strip(kind, x.dtype, cols, rows, offset)
 
 
-def rms_norm(x, weight, eps: float = 1e-6, out=None):
-    """x * rsqrt(mean(x^2) + eps) * weight over the last axis -- the RMSNorm
-    a model has. Any number of rows, including fewer than a tile's."""
+def rms_norm(x, weight, eps: float = 1e-6, out=None, *, weight_offset: float = 0.0):
+    """x * rsqrt(mean(x^2) + eps) * (weight + weight_offset) over the last
+    axis -- the RMSNorm a model has. Any number of rows, including fewer than
+    a tile's. `weight_offset` is added in fp32 inside the kernel: a weight
+    stored as an offset from one (Gemma-style, y = x_hat * (1 + w)) passes
+    weight_offset=1.0 and its stored w, exactly, where folding the one into a
+    16-bit weight first would round it."""
+    off = float(weight_offset)
     rows, cols = _rows_cols(x)
     if out is None:
         import torch  # noqa: PLC0415
         out = torch.empty_like(x)
-    got = _weighted_strip("rmsw", x, rows, cols)
+    got = _weighted_strip("rmsw", x, rows, cols, off)
     if got is not None:
         k, chunks, run, exact, reserve = got
         k(_flat(x, rows, cols), weight.view(1, cols), _flat(out, rows, cols),
@@ -1664,22 +1707,24 @@ def rms_norm(x, weight, eps: float = 1e-6, out=None):
         return out
     if not rows:
         return out
-    k, tpw, fold, exact = _resolve_weighted("rmsw", x.dtype, cols, rows)
+    k, tpw, fold, exact = _resolve_weighted("rmsw", x.dtype, cols, rows, off)
     shape = (rows * fold, cols // fold)
     k(x.view(shape), weight.view(fold, cols // fold), out.view(shape),
       TPW=tpw, FOLD=fold, EXACT=exact, EPS=eps)
     return out
 
 
-def fused_add_rms_norm(x, residual, weight, eps: float = 1e-6):
+def fused_add_rms_norm(x, residual, weight, eps: float = 1e-6, *,
+                       weight_offset: float = 0.0):
     """vLLM's fused_add_rms_norm, in place: `residual` becomes x + residual
-    and `x` its RMSNorm times `weight`. One read of x, residual and weight,
-    one write of each result."""
+    and `x` its RMSNorm times `weight` (+ `weight_offset`, as rms_norm's).
+    One read of x, residual and weight, one write of each result."""
+    off = float(weight_offset)
     rows, cols = _rows_cols(x)
     if residual.shape != x.shape or not residual.is_contiguous():
         raise ValueError(f"residual is {tuple(residual.shape)}, expected a "
                          f"contiguous {tuple(x.shape)}")
-    got = _weighted_strip("addrmsw", x, rows, cols)
+    got = _weighted_strip("addrmsw", x, rows, cols, off)
     if got is not None:
         k, chunks, run, exact, reserve = got
         xv, rv = _flat(x, rows, cols), _flat(residual, rows, cols)
@@ -1688,7 +1733,7 @@ def fused_add_rms_norm(x, residual, weight, eps: float = 1e-6):
         return x, residual
     if not rows:
         return x, residual
-    k, tpw, fold, exact = _resolve_weighted("addrmsw", x.dtype, cols, rows)
+    k, tpw, fold, exact = _resolve_weighted("addrmsw", x.dtype, cols, rows, off)
     shape = (rows * fold, cols // fold)
     xv, rv = x.view(shape), residual.view(shape)
     k(xv, rv, weight.view(fold, cols // fold), xv, rv, TPW=tpw, FOLD=fold,
@@ -1699,5 +1744,5 @@ def fused_add_rms_norm(x, residual, weight, eps: float = 1e-6):
 __all__ = [
     "KERNELS", "STRIP_KERNELS", "ROWS", "COLS", "MAX_TPW", "MAX_WARPS",
     "WARP_COUNTS", "plan", "strip_plan", "rmsnorm", "layernorm", "softmax",
-    "rms_norm", "fused_add_rms_norm",
+    "rms_norm", "fused_add_rms_norm", "offset_kernel",
 ]

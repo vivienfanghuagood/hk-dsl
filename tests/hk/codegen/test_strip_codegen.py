@@ -79,3 +79,22 @@ def test_the_arguments_are_read_in_one_clause():
     head = head[:head.index("s_waitcnt lgkmcnt(0)")]
     offsets = {int(m, 16) // 64 for m in re.findall(r"s_load_b\d+ s\[?[\d:]+\]?, s\[0:1\], 0x([0-9a-f]+)", head)}
     assert offsets >= {0, 1, 2}, head
+
+
+#: (kernel, constexprs): the offset variants (weight + 1 in fp32) of the strip
+#: and tile weighted norms, at the plans a 5120-wide decode row and a folded
+#: prefill take.
+OFFSET_CASES = [("strip_addrmsw_bf16_w8", dict(CHUNKS=2, RUN=8, EXACT=0)),
+                ("strip_rmsw_bf16_w8", dict(CHUNKS=2, RUN=8, EXACT=0)),
+                ("addrmsw_bf16_w4", dict(TPW=1, FOLD=16, EXACT=1)),
+                ("rmsw_bf16_w4_h", dict(TPW=1, FOLD=16, EXACT=1))]
+
+
+@pytest.mark.hipcc
+@pytest.mark.parametrize("name,consts", OFFSET_CASES, ids=[c[0] for c in OFFSET_CASES])
+def test_an_offset_kernel_compiles_without_spilling(name, consts):
+    k, base = norm.offset_kernel(name, 1.0), norm.offset_kernel(name, 0.0)
+    assert base is (norm.STRIP_KERNELS if name.startswith("strip_") else norm.KERNELS)[name]
+    assert k.source(**consts) != base.source(**consts)
+    for b in k.build(**consts).kernels:
+        assert b.scratch == 0 and not b.spills, f"{name}: {b.line()}"
