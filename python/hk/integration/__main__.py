@@ -124,6 +124,7 @@ def main(argv=None) -> int:
     for name, what in status().items():
         print(f"{name:10s} {what}")
     if args.status:
+        from ..runtime.cocheck import VOPD_HAZARD_ARCHS  # noqa: PLC0415
         from ..target import current_arch, get_target  # noqa: PLC0415
 
         if get_target(current_arch()).wave == 64:   # the MFMA gate checks CDNA builds only
@@ -131,6 +132,11 @@ def main(argv=None) -> int:
 
             print()
             print("\n".join(mfma_gate_status()))
+        if current_arch().startswith(VOPD_HAZARD_ARCHS):   # the VOPD gate: gfx11.0 / 11.5
+            from ..runtime.compile import vopd_gate_status  # noqa: PLC0415
+
+            print()
+            print("\n".join(vopd_gate_status()))
     if not args.status:
         print(f"\nbackends: {sorted(BACKENDS)}; --patch to apply, --warm to "
               f"precompile")
