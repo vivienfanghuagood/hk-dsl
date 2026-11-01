@@ -577,10 +577,16 @@ scaled, and the variant is mma_ABt.
 ### `hk.load_w4`
 
 ```python
-hk.load_w4(ty, qw: Global, s: Global, zs: Global, n0, k0, *, group: int = 128, into=None) -> Tile
+hk.load_w4(ty, qw: Global, s: Global, zs: "Optional['Global']", n0, k0, *, group: int = 128, zero: Optional[int] = None, s_blocked: bool = False, into=None) -> Tile
 ```
 
+*Changed after 0.8.0*: new parameters `zero`, `s_blocked`
+
 *Surface*: a format primitive: hk's own int4 layout (hk.ops.w4a16's repack).
+
+*Surface*: `zero=`: a format primitive: the symmetric form: one zero point for every group, no zs read (GPTQ's uint4b8).
+
+*Surface*: `s_blocked=`: a format primitive: the symmetric form's scales in 16-row blocks, [N/16, K/group * 16] (hk.ops.w4a16.repack_gptq(symmetric=True)).
 
 Rows n0.. and columns k0.. of W, dequantized from 4-bit codes into a
 bf16 row-layout tile: element (n, k) is q * s - zs, q being nibble k % 8
@@ -590,6 +596,18 @@ s and zs the group's scale and zero-times-scale `s[n][k // group]`,
 `hk.ops.w4a16.repack_*` writes. The tile is a whole number of 32-column
 chunks and k0 a multiple of 32, and of the tile's width when the group
 spans it.
+
+Symmetric: `zs=None, zero=z` -- one zero point z for every group (GPTQ's
+uint4b8: 8), so the element is (q - z) * s and no zs is stored or read:
+12.5% fewer bytes than codes + s + zs at 32-column groups. A bf16 tile is
+then bit for bit the asymmetric one on a checkpoint whose zs is z * s; an
+fp16 tile is (q - z) * s rounded once to nearest even (packed fp16), where
+the asymmetric path rounds toward zero after an fp32 FMA.
+
+`s_blocked` (symmetric): s is laid out [N/16, K/group * 16] -- a 16-row
+block's scales of one group are 16 consecutive values, so the 16 rows a
+k-step reads take 32 contiguous bytes instead of 16 lines
+(`hk.ops.w4a16.repack_gptq(..., symmetric=True)` writes it).
 
 ### `hk.coord`
 

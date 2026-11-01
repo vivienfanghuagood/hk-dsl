@@ -181,18 +181,21 @@ def test_vllm_gptq_takes_min_m_to_64_and_leaves_the_rest(monkeypatch):
     qweight = (q.to(torch.int64).reshape(k // 8, 8, n) << shifts.view(1, 8, 1)).sum(1)
     qweight = torch.where(qweight >= 2 ** 31, qweight - 2 ** 32, qweight).to(torch.int32)
     qzeros = torch.full((k // group, n // 8), 0x77777777, device="cuda", dtype=torch.int32)
-    qw, sc, zs = w4a16.repack_gptq(qweight, qzeros, s, group, dtype=torch.float16)
+    # the route's layout: symmetric, scales in 16-row blocks, an empty zs slot
+    qw, sc, _ = w4a16.repack_gptq(qweight, qzeros, s, group, dtype=torch.float16, symmetric=True)
+    zs = sc.new_empty(0)
     w = ((q - 8).float() * s.float().repeat_interleave(group, 0)).t()
-    for m in (vllm_gptq.MIN_M, 64):
+    for m in sorted({vllm_gptq.MIN_M, 2, 4, 64}):
         x = torch.randn(m, k, device="cuda", dtype=torch.float16) * 0.1
         before = vllm_gptq.STATS["hk"]
         y = vllm_gptq.gptq_w4a16(x, None, None, None, qw, sc, zs, group)
         assert vllm_gptq.STATS["hk"] == before + 1 and y.shape == (m, n)
         _close(y, x.float() @ w.t())
     for m in (vllm_gptq.MIN_M - 1, 65):
-        vllm_gptq.gptq_w4a16(torch.randn(m, k, device="cuda", dtype=torch.float16),
-                             None, None, None, qw, sc, zs, group)
-    assert seen == [vllm_gptq.MIN_M - 1, 65]
+        if m > 0:
+            vllm_gptq.gptq_w4a16(torch.randn(m, k, device="cuda", dtype=torch.float16),
+                                 None, None, None, qw, sc, zs, group)
+    assert seen == [m for m in (vllm_gptq.MIN_M - 1, 65) if m > 0]
 
 
 # ---------------------------------------------------------------- linear (SGLang, SGLang-Diffusion)

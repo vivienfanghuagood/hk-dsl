@@ -47,13 +47,27 @@ engine routed a single Qwen3.8 linear to hk, because neither table held its shap
 **GPTQ-Int4 linear layers in vLLM on RDNA3: `vllm_gptq` (`HK_VLLM_GPTQ`, on by default on gfx1100).**
 vLLM runs a 4-bit symmetric GPTQ checkpoint on gfx1100 through `AutoGPTQLinearMethod` with
 `RDNA3W4A16LinearKernel`. The new route keeps hk's own layout of the codes beside vLLM's.
-Batches of 4-64 tokens run on hk's 4-bit decode GEMM; smaller and larger ones stay on vLLM's
-kernel. Act-order checkpoints, other quant types and layers on another kernel are refused, and
-`vllm_gptq.REFUSED` counts them by reason.
+Batches of 1-64 tokens run on hk's 4-bit decode GEMM, in the symmetric form below (its scales in
+16-row blocks, no zero-times-scale tensor); larger ones stay on vLLM's kernel. Act-order
+checkpoints, other quant types, layers on another kernel and layers whose stored zero points are not
+8 are refused, and `vllm_gptq.REFUSED` counts them by reason. On Qwen3.8-27B-GPTQ-Int4 (W7900D,
+TRITON_ATTN + TunableOp on both sides) TPOT is 1.10x vLLM's at one user (8k and 1k context),
+1.08-1.28x at 4-16.
 - `hk.ops.w4a16`: a quantization group narrower than the load now narrows the load
   (`schedule_for(m, k, group)`). Before, GPTQ's 32-column groups fell to the dequantize path at
   every batch up to 16 tokens.
 - `tools/hk-bench/gptq_w4a16.py` times hk against `gptq_gemm_rdna3` on GPTQ checkpoints.
+
+**W4A16's symmetric form: `hk.load_w4(..., zero=, s_blocked=)`.** A 4-bit checkpoint whose zero
+points are all one value (GPTQ's uint4b8: 8) loads without the zero-times-scale tensor:
+`hk.load_w4(ty, qw, s, None, n0, k0, group=G, zero=8)` dequantizes `(q - 8) * s`, 12.5% fewer bytes
+at 32-column groups. `s_blocked=True` reads scales laid out `[N/16, K/G * 16]`, so the 16 rows a
+k-step reads take 32 contiguous bytes. On RDNA a half tile decodes in packed fp16 (include/hk/rdna/w4.cuh,
+included only by a kernel that uses the form): `q - 8` exactly, then one multiply by `s` rounded to
+nearest. bf16 tiles and CDNA keep the fp32 decode. `hk.ops.w4a16.repack_gptq(..., symmetric=True)`
+returns `(qw, s in 16-row blocks, None)` and refuses a checkpoint whose zero points are not all 8;
+`dequant`, `matmul` and `plan` take `zs=None` as the symmetric form. The asymmetric form (AWQ's too)
+is unchanged: every catalog kernel's source is the same.
 
 **`hk.lane_coords` of a strip type; `hk.iota` is its column (DSL-surface S6).**
 `hk.lane_coords(ty)` -- of a strip type (`hk.RS`) -- gives two i32 strips of its shape,

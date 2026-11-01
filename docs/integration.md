@@ -577,13 +577,16 @@ A 4-bit symmetric GPTQ checkpoint runs on RDNA3 through `AutoGPTQLinearMethod`
 with `RDNA3W4A16LinearKernel`, vLLM's HIP kernel on GPTQ's shuffled codes.
 `hk/integration/vllm_gptq.py` wraps that method the same way:
 - each layer gets hk's layout (`hk.ops.w4a16.repack_gptq`) *before* vLLM's
-  weight processing, which shuffles the codes in place. The zero point is
-  vLLM's: 8, whatever a symmetric checkpoint stores;
+  weight processing, which shuffles the codes in place. It is `load_w4`'s
+  symmetric form (`repack_gptq(..., symmetric=True)`): zero point 8, no
+  zero-times-scale tensor, scales in 16-row blocks;
 - `apply` calls the opaque op `hk_vllm::gptq_w4a16`, inside which batches of
-  4 to 64 tokens take hk's decode GEMM, and the rest vLLM's kernel. Below
-  4 tokens, with GPTQ's 32-column groups, vLLM's kernel is the faster one.
-- Act-order checkpoints (`desc_act`), other quant types and layers on another
-  kernel keep vLLM's path; `vllm_gptq.REFUSED` counts them by reason.
+  1 to 64 tokens take hk's decode GEMM, and the rest vLLM's kernel. At one
+  token hk's is 1.04-1.12x `gptq_gemm_rdna3` on Qwen3.8-27B's shapes, and it
+  is one kernel a call where vLLM's dispatches a fill before each GEMM.
+- Act-order checkpoints (`desc_act`), other quant types, layers on another
+  kernel and layers whose stored zero points are not 8 keep vLLM's path;
+  `vllm_gptq.REFUSED` counts them by reason.
 
 ```bash
 HK_PATCH_VLLM=1 vllm serve <a GPTQ-Int4 checkpoint> --dtype float16    # HK_VLLM_GPTQ=0 turns it off
@@ -1149,7 +1152,7 @@ spelled:
 | `HK_VLLM_GEMM` | `_vllm_plugin.py` | route the unquantized linear layers (default on, gfx1100 and gfx1201) |
 | `HK_VLLM_MOE` | `_vllm_plugin.py` | route the bf16 MoE GEMMs up to 256 tokens a step (2 on gfx1201; default on, gfx1100 and gfx1201) |
 | `HK_VLLM_INT4` | `_vllm_plugin.py` | route AWQ linear layers' fp16/bf16 batches up to 64 tokens (default on) |
-| `HK_VLLM_GPTQ` | `_vllm_plugin.py` | route 4-bit symmetric GPTQ layers' fp16/bf16 batches of 4-64 tokens (default on, gfx1100) |
+| `HK_VLLM_GPTQ` | `_vllm_plugin.py` | route 4-bit symmetric GPTQ layers' fp16/bf16 batches of 1-64 tokens (default on, gfx1100) |
 | `HK_VLLM_MXFP8` | `_vllm_plugin.py` | K2: block-scaled MXFP8 linear layers at M >= 2048, two shapes from their own M (`vllm_mxfp8.MIN_M_NK`), six with measured M ranges below that (`vllm_mxfp8.RANGES`) (default on, gfx950) |
 | `HK_MXFP8_ANY` | `vllm_mxfp8.py` | `1`: K2 takes any (N, K) of whole tiles, not only the measured TP2 shapes (default off) |
 | `HK_VLLM_MOE_A8W4` | `_vllm_plugin.py` | K1: AITER a8w4 MoE at M >= `HK_MOE_A8W4_MIN_M` (2560) (default on, gfx950) |

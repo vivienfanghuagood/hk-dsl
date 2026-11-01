@@ -105,6 +105,10 @@ ENTRIES: Dict[str, Entry] = {
     "Kernel.build_flags": Entry("escape", "D7", "tests and probes; not hk.ops kernels"),
     # 2.5 kept as primitives / formats
     "hk.load_w4": Entry("format", "E8", "hk's own int4 layout (hk.ops.w4a16's repack)"),
+    "hk.load_w4(zero=)": Entry("format", "E8", "the symmetric form: one zero point for every "
+                               "group, no zs read (GPTQ's uint4b8)"),
+    "hk.load_w4(s_blocked=)": Entry("format", "E8", "the symmetric form's scales in 16-row blocks, "
+                                    "[N/16, K/group * 16] (hk.ops.w4a16.repack_gptq(symmetric=True))"),
 }
 
 #: Every other documented name of the language: general, any kernel may use it.
@@ -190,6 +194,8 @@ map yield rcp
 #: op; `internal` -- plumbing (core), library fixes and gap fills (lib), type-selected
 #: specializations (special); the rest as their DSL entries.
 CPP: Dict[str, Dict[str, str]] = {
+    # RDNA's symmetric 4-bit decode (hk.load_w4(zero=)); the asymmetric form is the trees'
+    "include/hk/rdna/w4.cuh": {"load_w4": "format", "w4_word_sym_f16": "internal"},
     # RDNA strided globals (`hk.Tensor[dtype, "strided"]`): g.stage's strided form and the
     # type's accessors.
     "include/hk/rdna/strided.cuh": {

@@ -400,22 +400,26 @@ def HK_PhiloxOp : HK_Op<"philox_uniform"> {
   let hasVerifier = 1;
 }
 
-def HK_LoadW4Op : HK_Op<"load_w4"> {
+def HK_LoadW4Op : HK_Op<"load_w4", [AttrSizedOperandSegments]> {
   let summary = "4-bit weight codes -> a dequantized bf16 row-layout tile";
   let description = [{
     Tile element (r, c) is q * s - zs for W row n0 + r and column k0 + c: q is
     nibble (k % 8) of row n's word k / 8 (int32 [N, K/8], interleaved by
     16-row block and 32-column chunk), s and zs the group's scale and
     zero-times-scale `s[n][k / group]`, `zs[n][k / group]` (bf16
-    [N, K/group]). hk's repack of an AWQ or GPTQ checkpoint.
+    [N, K/group]). hk's repack of an AWQ or GPTQ checkpoint. Symmetric
+    (`zero`, no `zs`): one zero point for every group, so the element is
+    (q - zero) * s and no zs is read. `s_blocked` (symmetric): s is laid out
+    [N/16, K/group * 16], a 16-row block's scales of one group 16
+    consecutive values, so a k-step's 16 rows read 32 contiguous bytes.
   }];
   let arguments = (ins Optional<HK_RegTileType>:$dst, HK_GlobalType:$qw,
-                       HK_GlobalType:$s, HK_GlobalType:$zs, I32:$n0, I32:$k0,
-                       I64Attr:$group);
+                       HK_GlobalType:$s, Optional<HK_GlobalType>:$zs, I32:$n0, I32:$k0,
+                       I64Attr:$group, OptionalAttr<I64Attr>:$zero, UnitAttr:$s_blocked);
   let results = (outs Optional<HK_RegTileType>:$result);
   let assemblyFormat = [{
-    $qw `,` $s `,` $zs `[` $n0 `,` $k0 `]` `group` $group (`into` $dst^)? attr-dict `:`
-    qualified(type($qw)) `,` qualified(type($s)) `,` qualified(type($zs))
+    $qw `,` $s (`,` $zs^)? `[` $n0 `,` $k0 `]` `group` $group (`into` $dst^)? attr-dict `:`
+    qualified(type($qw)) `,` qualified(type($s)) (`,` qualified(type($zs))^)?
     (`into` qualified(type($dst))^)?
     (`->` qualified(type($result))^)?
   }];

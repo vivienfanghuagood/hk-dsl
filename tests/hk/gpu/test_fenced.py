@@ -317,6 +317,24 @@ def test_decode_gemm_and_w4a16():
         """
         for m in (1, 7, 16, 17, 33, 64)
     }
+    cases |= {
+        f"w4a16 symmetric M{m}": f"""
+        from hk.ops import w4a16
+        n, k, group = 512, 2048, 32
+        q = torch.randint(0, 16, (k, n), device="cuda", dtype=torch.int32)
+        s = (torch.rand(k // group, n, device="cuda") * 0.02 + 0.005).half()
+        shifts = torch.arange(0, 32, 4, device="cuda", dtype=torch.int64)
+        qweight = (q.to(torch.int64).reshape(k // 8, 8, n) << shifts.view(1, 8, 1)).sum(1)
+        qweight = torch.where(qweight >= 2 ** 31, qweight - 2 ** 32, qweight).to(torch.int32)
+        qzeros = torch.full((k // group, n // 8), 0x77777777, device="cuda", dtype=torch.int32)
+        qw, sc, zs = w4a16.repack_gptq(qweight, qzeros, s, group, dtype=torch.float16, symmetric=True)
+        qw, sc = qw.clone(), sc.clone()
+        x = rnd({m}, k).half()
+        got = step("w4a16 symmetric", lambda: w4a16.matmul(x, qw, sc, None, group))
+        rel("w4a16 symmetric", got, x.float() @ w4a16.dequant(qw, sc, None, group).float().t(), 2e-2)
+        """
+        for m in (1, 2, 4, 7, 17, 64)
+    }
     fenced_cases(COMMON, cases)
 
 
