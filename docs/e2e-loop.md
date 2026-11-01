@@ -3,8 +3,7 @@
 The steps a developer's harness -- a person or a coding agent -- takes to make
 a model faster end to end with hk-dsl, in the order they pay off. Each step
 names the tool and what to look at. The worked example is Qwen-Image 2.1 in
-SGLang-Diffusion on a W7900D, 42.2 s -> 28.2 s an image
-([chapter 46](history/46-qwen-image-on-rdna3.md)); the same steps apply to
+SGLang-Diffusion on a W7900D, 42.2 s -> 28.2 s an image; the same steps apply to
 vLLM, where `hk.integration` has more of them built in.
 
 ## 1. Measure the engine as it ships
@@ -12,7 +11,7 @@ vLLM, where `hk.integration` has more of them built in.
 One script that builds the engine once, runs a warm-up request, then times
 several identical requests (same prompt, seed, size, steps), and writes the
 wall times and the versions. `bench/e2e/qwen_image/qi_bench.py` is one; for
-vLLM, `python -m hk.integration ab` does this and more. Check two things
+vLLM, `python3 -m hk.integration ab` does this and more. Check two things
 before trusting a number:
 
 - **It is the path that is served.** SGLang 0.5.18 silently ran Qwen-Image 2.1
@@ -25,7 +24,7 @@ before trusting a number:
 
 ## 2. Find where the device time goes
 
-- vLLM: `python -m hk.integration headroom --model M --batch B --context N`
+- vLLM: `python3 -m hk.integration headroom --model M --batch B --context N`
   attributes a decode step and a prefill to kernel families and ranks them
   against what hk has.
 - Anything else: `rocprofv3 --kernel-trace --stats -f csv -- python script.py`
@@ -48,8 +47,8 @@ per = gb.time({"engine": lambda x, w, out: torch.matmul(x, w.t(), out=out),
                "hk": lambda x, w, out: hk.ops.matmul(x, w, out=out)}, rounds=7)
 ```
 
-`python -m hk.check` does the same for a kernel of your own, and
-`python -m hk.tune MxNxK` searches hk's schedule space for a GEMM shape (for
+`python3 -m hk.check` does the same for a kernel of your own, and
+`python3 -m hk.tune MxNxK` searches hk's schedule space for a GEMM shape (for
 Qwen-Image's four it found the shipped route already best). If hk loses
 here, stop: no integration will make it win.
 
@@ -63,7 +62,7 @@ Find the narrowest seam the engine calls at run time and rebind it:
 
 Then make the patch reach the process that runs the model. vLLM and SGLang's
 LLM engine load plugins in their workers (`hk.integration`'s plugins).
-SGLang-Diffusion does not, so `python -m hk.integration sglang-diffusion
+SGLang-Diffusion does not, so `python3 -m hk.integration sglang-diffusion
 install` puts a `.pth` boot in the environment that applies the patch, in
 any process, when the patched module is imported, unless `HK_DISABLE=1` or
 `HK_SGLD=0` (hk is on by default). The
@@ -110,6 +109,6 @@ N, K) on the call's own operands and keeps the faster (`HK_SGLD_LOG=1`).
   prints a native and a Python backtrace in `exit()` found the kernel in one
   run.
 - **Measure in one process where you can.** Two processes on these GPUs
-  differ by more than many kernel wins (docs/history/32); end-to-end arms are
+  differ by more than many kernel wins; end-to-end arms are
   separate processes by necessity, so run each arm several times and report
   every run.
