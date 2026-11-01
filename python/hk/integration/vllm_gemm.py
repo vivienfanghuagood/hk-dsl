@@ -59,6 +59,7 @@ itself graph-safe -- and `engine` holds it to that under capture.
 
 from __future__ import annotations
 
+from collections import Counter
 from typing import Any, Callable, Dict, Optional
 
 from ..runtime import hostpath as _hostpath
@@ -75,6 +76,10 @@ OPTIONAL = {flydsl_gemm.NAME: flydsl_gemm}
 ROUTES_ENV = "HK_VLLM_ROUTES"
 
 _ORIG_DISPATCH: Optional[Callable] = None
+#: Layers left on vLLM's own GEMM when they were first called, by reason: the table routes their
+#: (dtype, N, K) at no M, so no wrapper stands in their path (see `_takes_layer`).
+UNROUTED: "Counter[str]" = Counter()
+_GEMMS: Dict[Any, Callable] = {}
 _FALLBACK: Optional[Callable] = None
 _OPS: Dict[str, Callable] = {}
 _OPS_LEGACY: Dict[str, Callable] = {}
@@ -457,8 +462,47 @@ def register_op():
     PATCH.define(linear)
 
 
+def _unrouted(weight, bias) -> str:
+    """Why the table can take no call of a layer with this weight and bias, at any M -- "" if it
+    can take some."""
+    import torch  # noqa: PLC0415
+
+    if weight.dtype != torch.bfloat16:
+        return f"weight {str(weight.dtype).replace('torch.', '')}"
+    if bias is not None:
+        return "bias"
+    if weight.dim() != 2 or not weight.is_contiguous():
+        return "weight not a contiguous matrix"
+    table = routes()
+    n, k = weight.shape
+    if table is None or not table.routes_any(n, k):
+        return "no route at any M"
+    return ""
+
+
+def _takes_layer(layer, weight, bias) -> bool:
+    """Whether this layer's calls go through hk's op at all. Decided on the layer's first call --
+    after the weights are loaded and the missing shapes measured (vllm_autotune), before vLLM's
+    profile run or any graph capture -- and kept on the layer for the table it was decided
+    against. A layer the table routes at no M keeps vLLM's own GEMM, unwrapped: in a captured
+    decode graph the wrapper is an op of its own on every call, measured at ~0.8% of TPOT for a
+    model whose dense layers are all fp16."""
+    table = routes()
+    memo = getattr(layer, "_hk_gemm", None)
+    if memo is not None and memo[0] is table:
+        return memo[1]
+    why = _unrouted(weight, bias)
+    if why and (memo is None or memo[1]):
+        UNROUTED[why] += 1
+    try:
+        layer._hk_gemm = (table, not why)
+    except AttributeError:          # a layer that takes no attributes: decide every call
+        pass
+    return not why
+
+
 def _gemm(layer, x, weight, bias=None):
-    """What `dispatch_unquantized_gemm()` hands back once patched."""
+    """What `dispatch_unquantized_gemm()` hands back once patched, for a layer it routes."""
     import torch  # noqa: PLC0415
 
     if not x.is_cuda:
@@ -470,8 +514,26 @@ def _gemm(layer, x, weight, bias=None):
 
 def dispatch_unquantized_gemm(*args, **kwargs):
     """Stands in for vLLM's. The arguments -- a linear-backend name in newer
-    releases -- select among CUDA backends and mean nothing on ROCm."""
-    return _gemm
+    releases -- select among CUDA backends and mean nothing on ROCm; they are
+    passed on to vLLM's own dispatch, whose GEMM a layer the table never
+    routes keeps (`_takes_layer`)."""
+    try:
+        key = (args, tuple(sorted(kwargs.items())))
+        hit = _GEMMS.get(key)
+    except TypeError:
+        key, hit = None, None
+    if hit is not None:
+        return hit
+    orig = _ORIG_DISPATCH(*args, **kwargs)
+
+    def gemm(layer, x, weight, bias=None):
+        if not _takes_layer(layer, weight, bias):
+            return orig(layer, x, weight, bias)
+        return _gemm(layer, x, weight, bias)
+
+    if key is not None:
+        _GEMMS[key] = gemm
+    return gemm
 
 
 def _own_compile_cache(name: str = "hk-linear") -> str:
@@ -521,6 +583,7 @@ def apply() -> str:
         return (f"linear: not patched -- no routing table for {current_arch()}; "
                 f"tools/hk-bench/route_tune.py writes one")
     register_op()
+    _GEMMS.clear()
     _ORIG_DISPATCH = vu.dispatch_unquantized_gemm
     names = _common.rebind(PREFIXES, _ORIG_DISPATCH, dispatch_unquantized_gemm)
     cache = _own_compile_cache()
@@ -553,8 +616,44 @@ def revert() -> str:
         return "linear: not patched"
     names = _common.rebind(PREFIXES, dispatch_unquantized_gemm, _ORIG_DISPATCH)
     _ORIG_DISPATCH = None
+    _GEMMS.clear()
     return f"linear -> vllm ({len(names)} rebound)"
 
 
+def decide_layers(model) -> str:
+    """Decide every unquantized linear layer of a loaded vLLM model, and its LM head, now --
+    after the weights and the shapes measured at load, before the profile run or any capture --
+    rather than on each one's first call. Returns the report: how many go through hk's op, and
+    how many were left on vLLM's own GEMM, by reason."""
+    import torch  # noqa: PLC0415
+
+    head = getattr(model, "lm_head", None)
+    routed = 0
+    for _, mod in model.named_modules():
+        w = getattr(mod, "weight", None)
+        qm = type(getattr(mod, "quant_method", None)).__name__
+        if not isinstance(w, torch.Tensor) or w.dim() != 2:
+            continue
+        if qm == "UnquantizedEmbeddingMethod":
+            if mod is not head and type(mod).__name__ != "ParallelLMHead":
+                continue                    # an embedding lookup, not a GEMM
+            bias = None
+        elif qm == "UnquantizedLinearMethod":
+            bias = None if getattr(mod, "skip_bias_add", False) else getattr(mod, "bias", None)
+        else:
+            continue
+        routed += _takes_layer(mod, w, bias)
+    return f"{routed} layer{'s' * (routed != 1)} through hk's op; {unrouted_status()}"
+
+
+def unrouted_status() -> str:
+    """The layers left on vLLM's GEMM at load, by reason, for a report line."""
+    if not UNROUTED:
+        return "unrouted at load: none"
+    return "unrouted at load: " + ", ".join(f"{n} ({why})" for why, n in UNROUTED.most_common())
+
+
 def status() -> str:
-    return "patched" if _ORIG_DISPATCH is not None else "not patched"
+    if _ORIG_DISPATCH is None:
+        return "not patched"
+    return f"patched; {unrouted_status()}"

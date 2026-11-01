@@ -176,11 +176,85 @@ def test_the_attention_backend_declares_its_decode_capturable():
     assert vllm_backend.PATCH.graph == "safe"
 
 
-def test_the_patched_dispatcher_ignores_its_arguments():
-    # Newer vLLM passes a linear-backend name; it selects among CUDA backends
-    # and has no meaning on ROCm, so whatever is passed the answer is ours.
-    assert vllm_gemm.dispatch_unquantized_gemm() is vllm_gemm._gemm
-    assert vllm_gemm.dispatch_unquantized_gemm("auto") is vllm_gemm._gemm
+class _Layer:
+    pass
+
+
+@pytest.fixture
+def dispatch(monkeypatch):
+    """vllm_gemm's dispatcher over a stand-in for vLLM's: (dispatch, calls) where calls records
+    which GEMM each call went to."""
+    calls = []
+    monkeypatch.setattr(vllm_gemm, "_ORIG_DISPATCH",
+                        lambda *a, **k: (lambda layer, x, w, b=None: calls.append(("vllm", a)) or "vllm"))
+    monkeypatch.setattr(vllm_gemm, "_gemm",
+                        lambda layer, x, w, b=None: calls.append(("hk",)) or "hk")
+    table = engine.RouteTable({(6144, 4096): dict(runs=[[1, 64, "hk_decode"]], above="fallback"),
+                               (4096, 4096): dict(runs=[[1, 8192, "fallback"]])})
+    monkeypatch.setattr(vllm_gemm, "routes", lambda: table)
+    monkeypatch.setattr(vllm_gemm, "_GEMMS", {})
+    monkeypatch.setattr(vllm_gemm, "UNROUTED", vllm_gemm.Counter())
+    return vllm_gemm.dispatch_unquantized_gemm, calls
+
+
+def test_the_patched_dispatcher_passes_its_arguments_to_vllms(dispatch):
+    # Newer vLLM passes a linear-backend name; vLLM's own dispatch gets it, for the layers that
+    # keep vLLM's GEMM.
+    torch = pytest.importorskip("torch")
+    d, calls = dispatch
+    assert d("auto") is d("auto")               # one stand-in per argument tuple
+    d("auto")(_Layer(), None, torch.empty(4096, 4096, dtype=torch.float16))
+    assert calls == [("vllm", ("auto",))]
+
+
+def test_a_layer_the_table_never_routes_keeps_vllms_gemm_unwrapped(dispatch):
+    """Decided once per layer: an fp16 weight, a bias, or a shape whose every M falls back
+    goes straight to vLLM's GEMM -- no hk op in its path -- and is counted once."""
+    torch = pytest.importorskip("torch")
+    d, calls = dispatch
+    bf16, fp16 = torch.bfloat16, torch.float16
+    routed, fp16_layer, fallback_only, unmeasured = _Layer(), _Layer(), _Layer(), _Layer()
+    for _ in range(3):
+        d()(routed, None, torch.empty(6144, 4096, dtype=bf16))
+        d()(fp16_layer, None, torch.empty(6144, 4096, dtype=fp16))
+        d()(fallback_only, None, torch.empty(4096, 4096, dtype=bf16))
+        d()(unmeasured, None, torch.empty(1024, 4096, dtype=bf16))
+    assert [c[0] for c in calls] == ["hk", "vllm", "vllm", "vllm"] * 3
+    assert vllm_gemm.UNROUTED == {"weight float16": 1, "no route at any M": 2}
+    assert "unrouted at load: 2 (no route at any M), 1 (weight float16)" == vllm_gemm.unrouted_status()
+
+
+def test_a_bias_or_a_strided_weight_is_left_to_vllm(dispatch):
+    torch = pytest.importorskip("torch")
+    d, calls = dispatch
+    w = torch.empty(6144, 4096, dtype=torch.bfloat16)
+    d()(_Layer(), None, w, torch.empty(6144, dtype=torch.bfloat16))
+    d()(_Layer(), None, torch.empty(4096, 6144, dtype=torch.bfloat16).t())
+    assert [c[0] for c in calls] == ["vllm", "vllm"]
+    assert set(vllm_gemm.UNROUTED) == {"bias", "weight not a contiguous matrix"}
+
+
+def test_a_new_table_decides_the_layer_again(dispatch, monkeypatch):
+    torch = pytest.importorskip("torch")
+    d, calls = dispatch
+    layer, w = _Layer(), torch.empty(1024, 4096, dtype=torch.bfloat16)
+    d()(layer, None, w)
+    monkeypatch.setattr(vllm_gemm, "routes", lambda: engine.RouteTable(
+        {(1024, 4096): dict(runs=[[1, 16, "hk_decode"]])}))      # e.g. measured at load
+    d()(layer, None, w)
+    assert [c[0] for c in calls] == ["vllm", "hk"]
+
+
+@pytest.mark.parametrize("ent, want", [
+    (dict(runs=[[1, 64, "hk_decode"]], above="fallback"), True),
+    (dict(runs=[[1, 64, "fallback"]], above="hk"), True),
+    (dict(runs=[[1, 8192, "fallback"]]), False),
+    (dict(runs=[[1, 64, "fallback"]], prefer={"flydsl": [[128, None, "t"]]}), True),
+])
+def test_routes_any(ent, want):
+    t = engine.RouteTable({(6144, 4096): ent})
+    assert t.routes_any(6144, 4096) is want
+    assert t.routes_any(1, 1) is False
 
 
 @pytest.mark.parametrize("given, want", [
@@ -220,3 +294,35 @@ def test_apply_without_vllm_reports_rather_than_raises():
         pytest.skip("vllm is installed here; the gpu tier covers apply()")
     assert "not importable" in vllm_gemm.apply()
     assert vllm_gemm.status() == "not patched"
+
+
+def test_layers_are_decided_at_load_and_counted(dispatch):
+    """decide_layers walks the loaded model once: unquantized linears and the LM head are
+    decided there (the embedding lookup is not a GEMM), and their first calls reuse it."""
+    torch = pytest.importorskip("torch")
+    d, calls = dispatch
+
+    class UnquantizedLinearMethod:
+        pass
+
+    class UnquantizedEmbeddingMethod:
+        pass
+
+    def mod(n, k, dtype, qm, bias=None):
+        m = torch.nn.Module()
+        m.weight = torch.nn.Parameter(torch.empty(n, k, dtype=dtype), requires_grad=False)
+        m.quant_method, m.bias = qm(), bias
+        return m
+
+    model = torch.nn.Module()
+    model.qkv = mod(6144, 4096, torch.bfloat16, UnquantizedLinearMethod)
+    model.o = mod(4096, 4096, torch.float16, UnquantizedLinearMethod)
+    model.embed = mod(151936, 4096, torch.bfloat16, UnquantizedEmbeddingMethod)
+    model.lm_head = mod(151936, 4096, torch.bfloat16, UnquantizedEmbeddingMethod)
+    line = vllm_gemm.decide_layers(model)
+    assert line == ("1 layer through hk's op; unrouted at load: "
+                    "1 (weight float16), 1 (no route at any M)")
+    d()(model.qkv, None, model.qkv.weight)
+    d()(model.o, None, model.o.weight)
+    assert [c[0] for c in calls] == ["hk", "vllm"]
+    assert sum(vllm_gemm.UNROUTED.values()) == 2           # not counted again on the call
