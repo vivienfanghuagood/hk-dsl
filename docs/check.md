@@ -126,9 +126,11 @@ pass, 56.8 us.
 
    Timing is **cold** by default. Each contender runs on copies of its inputs
    in turn, enough that together they exceed twice the GPU's last-level cache
-   (96 MiB on a W7900D, 64 MiB on an R9700, 256 MiB on an MI355X). Each call
-   then reads DRAM, as a model's layers do, and the bandwidth reported is DRAM
-   traffic. A small input reused over and over would otherwise sit in the cache
+   (96 MiB on a W7900D, 64 MiB on an R9700, 256 MiB on an MI355X). The
+   outputs of the last calls are kept too, so a function that returns a new
+   tensor writes a different buffer each call instead of the one torch's
+   allocator would hand back. Each call then reads and writes DRAM, as a
+   model's layers do, and the bandwidth reported is DRAM traffic. A small input reused over and over would otherwise sit in the cache
    and report more than the card's DRAM can deliver.
 
    The run is timed **hot** instead, with a note saying why, when:

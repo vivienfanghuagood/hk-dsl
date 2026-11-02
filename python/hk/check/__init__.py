@@ -563,7 +563,7 @@ def _arg_bytes(args: Sequence[Any]) -> int:
 
 
 def _cold_copies(cache: str, contenders: Dict[str, Tuple[Callable, List[Any], Dict[str, Any]]],
-                 card: Dict[str, float]) -> Tuple[int, Optional[str]]:
+                 card: Dict[str, float], out_bytes: int = 0) -> Tuple[int, Optional[str]]:
     """How many copies of each contender's arguments to rotate through: enough that one round of
     them exceeds COLD_FACTOR x the card's last-level cache (so the kernel reads DRAM, not a cache
     the previous call left warm). -> (copies, why it is timed hot instead, or None)."""
@@ -580,7 +580,8 @@ def _cold_copies(cache: str, contenders: Dict[str, Tuple[Callable, List[Any], Di
     if n > COLD_MAX_COPIES:
         return 1, (f"the inputs ({per / 2**20:.1f} MiB) are too small to leave the "
                    f"{card['cache_bytes'] / 2**20:.0f} MiB cache in rotation; they stay cache-resident in use too")
-    need = (n - 1) * sum(_arg_bytes(a) for _, a, _ in contenders.values())
+    # the copies of the inputs, and `n` kept outputs of each contender that returns new tensors
+    need = (n - 1) * sum(_arg_bytes(a) for _, a, _ in contenders.values()) + n * out_bytes * len(contenders)
     free = torch.cuda.mem_get_info()[0]
     if need > COLD_MEM_SHARE * free:
         return 1, (f"{n} copies of the inputs ({need / 2**30:.1f} GiB) would take more than "
@@ -590,14 +591,22 @@ def _cold_copies(cache: str, contenders: Dict[str, Tuple[Callable, List[Any], Di
 
 def _rotating(f: Callable, args: Sequence[Any], kw: Dict[str, Any], copies: int) -> Callable[[], Any]:
     """A thunk calling f on `copies` copies of args in turn (the first is args itself). Untouched
-    copies are clones, so every copy holds the same values."""
+    copies are clones, so every copy holds the same values. The last `copies` results are kept
+    alive: a function that returns a new tensor would otherwise get the same block from torch's
+    caching allocator every call, and write it in the cache (an R9700 rms_norm read 681 GB/s that
+    way, past its 640 GB/s DRAM, and 588 GB/s with the outputs kept)."""
+    import collections  # noqa: PLC0415
+
     sets = [list(args)] + [_clone(args) for _ in range(copies - 1)]
+    kept: "collections.deque[Any]" = collections.deque(maxlen=copies if copies > 1 else 0)
     state = [0]
 
     def call():
         a = sets[state[0] % len(sets)]
         state[0] += 1
-        return f(*a, **kw)
+        out = f(*a, **kw)
+        kept.append(out)
+        return out
     return call
 
 
@@ -1031,7 +1040,8 @@ def check(fn, reference: Optional[Callable] = None, inputs=None, *,
             if not compared:
                 nbytes += sum(g.numel() * g.element_size() for g in got)
         card = CARDS.get(arch, {})
-        copies, why_hot = _cold_copies(cache, contenders, card)
+        copies, why_hot = _cold_copies(cache, contenders, card,
+                                       0 if compared else sum(g.numel() * g.element_size() for g in got))
         if why_hot:
             report.notes.append(f"case {ci}: timed hot: {why_hot}")
         try:
