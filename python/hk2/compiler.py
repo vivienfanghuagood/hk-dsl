@@ -30,6 +30,34 @@ _SCOPE = ", !alias.scope !903, !noalias !904"  # LDS DMA writes
 _RSCOPE = ", !alias.scope !904, !noalias !903"  # reads of DMA-filled tiles
 
 
+_BANK_CACHE: Dict = {}
+
+
+def _bank_cost(L: Layout, geom, nbytes: int, banks: int, v: int) -> int:
+    import numpy as np
+    vb = v * nbytes
+    fast, slow, pitch = geom
+    if vb >= 4 and (pitch * nbytes) % vb:
+        return 1 << 30  # vector accesses would be misaligned
+    per = max(1, banks * 4 // max(vb, 4))  # lanes per bank row
+    lanes = np.arange(L.wave)
+    lane_pos = np.zeros((L.wave, L.rank), dtype=np.int64)
+    for b, basis in enumerate(L.lane):
+        lane_pos ^= ((lanes[:, None] >> b) & 1) * np.array(basis, dtype=np.int64)[None, :]
+    words = max(vb, 4) // 4
+    total = 0
+    for r in range(0, L.nregs, v):
+        if L.canonical_reg(r) != r:
+            continue
+        pos = lane_pos ^ np.array(L.reg_offset(r), dtype=np.int64)[None, :]
+        addr = (pos[:, slow] * pitch + pos[:, fast]) * nbytes // 4
+        for g in range(0, L.wave, per):
+            dw = (addr[g:g + per, None] + np.arange(words)[None, :]).ravel()
+            dw = np.unique(dw)
+            total += int(np.bincount(dw % banks, minlength=banks).max())
+    return total
+
+
 @dataclass
 class LdsTile:
     """A tile DMA'd into a double-buffered LDS region; ``trans``: viewed transposed (a B operand)."""
@@ -762,11 +790,34 @@ class Compiler:
             fast = 0 if S.contig(0) > S.contig(1) else 1
         for f in (1, 0):
             if D.contig(f) < 4 and S.contig(f) >= 4 and self.tr16_ok(D, dt, f):
-                fast = f
-                break
-        n = shape[fast]
-        pad = (16 // dt.bytes) if n * dt.bytes >= 64 else 0
-        return fast, 1 - fast, n + pad
+                n = shape[f]
+                return f, 1 - f, n + ((16 // dt.bytes) if n * dt.bytes >= 64 else 0)
+        if os.environ.get("HK2_NO_BANKMODEL"):
+            n = shape[fast]
+            return fast, 1 - fast, n + ((16 // dt.bytes) if n * dt.bytes >= 64 else 0)
+        # Otherwise simulate the LDS banks for every candidate storage (orientation x row padding) on the
+        # actual write and read instructions, and keep the cheapest.
+        best = None
+        for f in (fast, 1 - fast):
+            for pad_bytes in (0, 4, 8, 16, 32):
+                if pad_bytes % dt.bytes:
+                    continue
+                geom = (f, 1 - f, shape[f] + pad_bytes // dt.bytes)
+                cost = self._bank_cost(S, geom, dt) + self._bank_cost(D, geom, dt)
+                key = (cost, pad_bytes, f != fast)
+                if best is None or key < best[0]:
+                    best = (key, geom)
+        return best[1]
+
+    def _bank_cost(self, L: Layout, geom, dt: T.DType) -> int:
+        """Cycles one warp spends on L's LDS accesses under storage ``geom``: lanes are served a bank row at a
+        time; within it, distinct dwords on one bank serialize (the same dword is a broadcast)."""
+        key = (L, geom, dt.bytes, self.arch.name)
+        got = _BANK_CACHE.get(key)
+        if got is None:
+            got = _BANK_CACHE[key] = _bank_cost(L, geom, dt.bytes, 64 if self.arch.name == "gfx950" else 32,
+                                                self._vec(L, geom, dt))
+        return got
 
     def _lds_addr(self, L: Layout, geom, base: int, r: int, dt: T.DType) -> Tuple[str, int]:
         fast, slow, pitch = geom
