@@ -329,8 +329,28 @@ def _native_cdna() -> bool:
     return current_arch() == "gfx950"
 
 
+class _Checked:
+    """An unsplit decode kernel whose launch is checked against the decode's contract first
+    (`check_decode`, rows="tile"); everything else -- name, trace, build -- is the kernel's."""
+
+    def __init__(self, kernel, head_dim: int):
+        self.kernel, self.head_dim = kernel, head_dim
+
+    def __call__(self, q, k_cache, v_cache, block_table, seq_lens, o, **const_overrides):
+        check_decode(q, k_cache, v_cache, block_table, seq_lens, o, rows="tile",
+                     head_dim=self.head_dim)
+        return self.kernel(q, k_cache, v_cache, block_table, seq_lens, o, **const_overrides)
+
+    def __getattr__(self, name):
+        return getattr(self.kernel, name)
+
+    def __repr__(self):
+        return f"checked({self.kernel!r})"
+
+
 class _Kernels(dict):
-    """head_dim -> the unsplit decode; on gfx950, paged_cdna's."""
+    """head_dim -> the unsplit decode, its launches checked (`_Checked`); on gfx950,
+    paged_cdna's."""
 
     def __getitem__(self, head_dim):
         _arch.require("hk.ops.paged")
@@ -338,7 +358,7 @@ class _Kernels(dict):
             from . import paged_cdna  # noqa: PLC0415
 
             return paged_cdna.kernel_for(head_dim, 1, "plain")
-        return dict.__getitem__(self, head_dim)
+        return _Checked(dict.__getitem__(self, head_dim), head_dim)
 
     def get(self, head_dim, default=None):
         """As `[]`, so gfx950 gets paged_cdna's kernel here too (dict.get
@@ -726,10 +746,86 @@ def fused_scratch(rows: int, n_kv_heads: int, head_dim: int, device,
     return o_part, ml
 
 
+def check_decode(q, k_cache, v_cache, block_table, seq_lens, out, *, rows: str = "group",
+                 head_dim: Optional[int] = None, scratch=None, splits: int = 1) -> None:
+    """Refuse, before anything is launched, a decode whose tensors do not have the shapes the
+    kernels read. ValueError names the tensor, the shape it has and the one it needs.
+
+    The contract (this module's docstring): `q` and `out` are (requests, kv_heads, rows,
+    head_dim); `k_cache` and `v_cache` (blocks, kv_heads, KV_BLOCK, head_dim); `block_table`
+    (requests, pages) and `seq_lens` (requests,), both int32. `rows` is "tile" for the unsplit
+    kernels (`KERNELS`), whose query and output are a padded Q_TILE-row tile read and written
+    whole, and "group" for the fused walk, which bounds them to the group's 1..Q_TILE rows.
+    `scratch` and `splits` are the fused walk's partials (`fused_scratch`). A shape the kernels
+    take on trust is otherwise a read or a write past an allocation -- a page fault, or a
+    wrong answer from another tensor's memory: the unsplit kernel given the fused walk's
+    4-row query read 12 rows past it and faulted. Contents (page ids, lengths past the
+    table) are not read here; that would be a device sync."""
+    import torch  # noqa: PLC0415
+
+    def no(name, t, want):
+        raise ValueError(f"hk.ops.paged: {name} is {tuple(t.shape)} {t.dtype}; the decode "
+                         f"reads {want}")
+
+    if q.dim() != 4:
+        no("q", q, "(requests, kv_heads, rows, head_dim)")
+    reqs, heads, n_rows, d = q.shape
+    if head_dim is not None and d != head_dim:
+        no("q", q, f"head_dim {head_dim} (this kernel's)")
+    if rows == "tile" and n_rows != Q_TILE:
+        no("q", q, f"(requests, kv_heads, {Q_TILE}, head_dim): this kernel reads and writes a "
+           f"whole {Q_TILE}-row tile -- pad the GQA group to {Q_TILE} rows, or use the fused "
+           f"walk (fused_kernel / decode), which takes the group's rows as they are")
+    if not 1 <= n_rows <= Q_TILE:
+        no("q", q, f"1 to {Q_TILE} query rows (the GQA group) a kv head")
+    if q.dtype != torch.bfloat16:
+        no("q", q, "bfloat16")
+    if out.shape != q.shape or out.dtype != q.dtype:
+        no("out", out, f"q's shape and dtype, {tuple(q.shape)} {q.dtype}")
+    page = (heads, KV_BLOCK, d)
+    for name, t in (("k_cache", k_cache), ("v_cache", v_cache)):
+        if t.dim() != 4 or tuple(t.shape[1:]) != page or t.dtype != torch.bfloat16:
+            no(name, t, f"(blocks, {heads}, {KV_BLOCK}, {d}) bfloat16: q's kv heads, a page "
+               f"of KV_BLOCK tokens, q's head_dim")
+    if v_cache.shape[0] != k_cache.shape[0]:
+        no("v_cache", v_cache, f"k_cache's {k_cache.shape[0]} blocks")
+    if block_table.dim() != 2 or block_table.shape[0] < reqs or block_table.dtype != torch.int32:
+        no("block_table", block_table, f"(requests >= {reqs}, pages) int32")
+    if seq_lens.dim() != 1 or seq_lens.shape[0] < reqs or seq_lens.dtype != torch.int32:
+        no("seq_lens", seq_lens, f"(requests >= {reqs},) int32")
+    if scratch is not None and splits > 1:
+        o_part, ml = scratch
+        if (o_part.dim() != 4 or o_part.shape[0] < reqs * splits
+                or tuple(o_part.shape[1:]) != (heads, n_rows, d)):
+            no("scratch o_part", o_part, f"(>= {reqs * splits}, {heads}, {n_rows}, {d}): a row a "
+               f"(request, split), q's group rows (fused_scratch)")
+        if (ml.dim() != 4 or ml.shape[0] < reqs * splits
+                or tuple(ml.shape[1:]) != (heads, 2, Q_TILE)):
+            no("scratch ml_part", ml, f"(>= {reqs * splits}, {heads}, 2, {Q_TILE}) "
+               f"(fused_scratch)")
+
+
+#: Shapes check_decode has passed, so an engine's decode, which calls `decode` a layer a step
+#: with the same few shapes, pays a dict lookup and not the checks.
+_PASSED: set = set()
+_PASSED_CAP = 4096
+
+
 def decode(walk, merge, q, k_cache, v_cache, block_table, seq_lens, out,
            scratch, splits: int) -> None:
     """The split decode's two launches, with whatever callables run them --
-    Kernels for a bench, torch ops for an engine."""
+    Kernels for a bench, torch ops for an engine. The tensors are checked against the
+    decode's contract first (`check_decode`; on gfx950, paged_cdna's walk takes its own)."""
+    if not _native_cdna():
+        key = (q.shape, q.dtype, k_cache.shape, v_cache.shape, block_table.shape,
+               block_table.dtype, seq_lens.shape, seq_lens.dtype, out.shape, out.dtype,
+               splits, scratch[0].shape if splits > 1 else None,
+               scratch[1].shape if splits > 1 else None)
+        if key not in _PASSED:
+            check_decode(q, k_cache, v_cache, block_table, seq_lens, out,
+                         scratch=scratch, splits=splits)
+            if len(_PASSED) < _PASSED_CAP:
+                _PASSED.add(key)
     walk(q, k_cache, v_cache, block_table, seq_lens, out, *scratch)
     if splits > 1:
         merge(seq_lens, out, *scratch)
