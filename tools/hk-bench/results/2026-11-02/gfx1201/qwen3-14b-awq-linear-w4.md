@@ -4,38 +4,38 @@ torch 2.13.0a0+rocm7.14.0a20260612, HIP 7.14.60850, vLLM 0.1.dev1+ga50259bb3, Tr
 
 | shape | M | hk, us | best competitor, us | hk vs best | hk w4a16 | vLLM AWQ dequantize + matmul | vLLM awq_gemm (Triton) |
 |---|---:|---:|---|---:|---:|---:|---:|
-| qkv | 1 | 35.85 | 76.42 (vLLM awq_gemm (Triton)) | **2.13x** | 35.85 | 238.60 | 76.42 |
-| qkv | 2 | 35.97 | 76.71 (vLLM awq_gemm (Triton)) | **2.13x** | 35.97 | 242.19 | 76.71 |
-| qkv | 4 | 36.24 | 77.12 (vLLM awq_gemm (Triton)) | **2.13x** | 36.24 | 244.00 | 77.12 |
-| qkv | 8 | 36.51 | 77.23 (vLLM awq_gemm (Triton)) | **2.12x** | 36.51 | 241.93 | 77.23 |
-| qkv | 16 | 36.91 | 78.90 (vLLM awq_gemm (Triton)) | **2.14x** | 36.91 | 241.94 | 78.90 |
-| qkv | 32 | 49.15 | 84.33 (vLLM awq_gemm (Triton)) | **1.72x** | 49.15 | 247.69 | 84.33 |
-| qkv | 64 | 84.55 | 158.36 (vLLM awq_gemm (Triton)) | **1.87x** | 84.55 | 251.34 | 158.36 |
-| qkv | 256 | -- | 293.42 (vLLM AWQ dequantize + matmul) | -- | -- | 293.42 | 635.14 |
-| o | 1 | 26.99 | 58.82 (vLLM awq_gemm (Triton)) | **2.18x** | 26.99 | 99.10 | 58.82 |
-| o | 2 | 27.18 | 58.47 (vLLM awq_gemm (Triton)) | **2.15x** | 27.18 | 99.64 | 58.47 |
-| o | 4 | 27.38 | 58.88 (vLLM awq_gemm (Triton)) | **2.15x** | 27.38 | 98.60 | 58.88 |
-| o | 8 | 27.40 | 59.88 (vLLM awq_gemm (Triton)) | **2.19x** | 27.40 | 99.40 | 59.88 |
-| o | 16 | 27.82 | 59.78 (vLLM awq_gemm (Triton)) | **2.15x** | 27.82 | 100.15 | 59.78 |
-| o | 32 | 35.34 | 63.14 (vLLM awq_gemm (Triton)) | **1.79x** | 35.34 | 102.44 | 63.14 |
-| o | 64 | 66.74 | 102.03 (vLLM AWQ dequantize + matmul) | **1.53x** | 66.74 | 102.03 | 116.11 |
-| o | 256 | -- | 171.81 (vLLM AWQ dequantize + matmul) | -- | -- | 171.81 | 451.99 |
-| gate_up | 1 | 155.69 | 326.31 (vLLM awq_gemm (Triton)) | **2.10x** | 155.69 | 1437.85 | 326.31 |
-| gate_up | 2 | 156.29 | 326.81 (vLLM awq_gemm (Triton)) | **2.09x** | 156.29 | 1435.42 | 326.81 |
-| gate_up | 4 | 157.74 | 330.00 (vLLM awq_gemm (Triton)) | **2.09x** | 157.74 | 1437.45 | 330.00 |
-| gate_up | 8 | 159.96 | 335.02 (vLLM awq_gemm (Triton)) | **2.09x** | 159.96 | 1440.81 | 335.02 |
-| gate_up | 16 | 162.88 | 344.56 (vLLM awq_gemm (Triton)) | **2.12x** | 162.88 | 1440.51 | 344.56 |
-| gate_up | 32 | 207.84 | 374.66 (vLLM awq_gemm (Triton)) | **1.80x** | 207.84 | 1445.25 | 374.66 |
-| gate_up | 64 | 388.13 | 775.38 (vLLM awq_gemm (Triton)) | **2.00x** | 388.13 | 1448.31 | 775.38 |
-| gate_up | 256 | -- | 1547.61 (vLLM AWQ dequantize + matmul) | -- | -- | 1547.61 | 3338.35 |
-| down | 1 | 81.57 | 177.56 (vLLM awq_gemm (Triton)) | **2.18x** | 81.57 | 705.32 | 177.56 |
-| down | 2 | 81.51 | 179.07 (vLLM awq_gemm (Triton)) | **2.20x** | 81.51 | 705.67 | 179.07 |
-| down | 4 | 81.52 | 179.93 (vLLM awq_gemm (Triton)) | **2.21x** | 81.52 | 705.60 | 179.93 |
-| down | 8 | 81.71 | 180.59 (vLLM awq_gemm (Triton)) | **2.21x** | 81.71 | 706.34 | 180.59 |
-| down | 16 | 82.68 | 180.54 (vLLM awq_gemm (Triton)) | **2.18x** | 82.68 | 708.50 | 180.54 |
-| down | 32 | 120.25 | 188.95 (vLLM awq_gemm (Triton)) | **1.57x** | 120.25 | 710.08 | 188.95 |
-| down | 64 | 191.82 | 362.68 (vLLM awq_gemm (Triton)) | **1.89x** | 191.82 | 714.67 | 362.68 |
-| down | 256 | -- | 796.99 (vLLM AWQ dequantize + matmul) | -- | -- | 796.99 | 1491.55 |
+| qkv | 1 | 35.91 | 76.51 (vLLM awq_gemm (Triton)) | **2.13x** | 35.91 | 244.60 | 76.51 |
+| qkv | 2 | 36.10 | 76.76 (vLLM awq_gemm (Triton)) | **2.13x** | 36.10 | 244.11 | 76.76 |
+| qkv | 4 | 36.29 | 76.47 (vLLM awq_gemm (Triton)) | **2.11x** | 36.29 | 243.25 | 76.47 |
+| qkv | 8 | 36.32 | 77.28 (vLLM awq_gemm (Triton)) | **2.13x** | 36.32 | 246.59 | 77.28 |
+| qkv | 16 | 36.99 | 79.20 (vLLM awq_gemm (Triton)) | **2.14x** | 36.99 | 244.75 | 79.20 |
+| qkv | 32 | 49.17 | 84.43 (vLLM awq_gemm (Triton)) | **1.72x** | 49.17 | 247.85 | 84.43 |
+| qkv | 64 | 87.11 | 162.72 (vLLM awq_gemm (Triton)) | **1.87x** | 87.11 | 255.53 | 162.72 |
+| qkv | 256 | -- | 295.38 (vLLM AWQ dequantize + matmul) | -- | -- | 295.38 | 665.11 |
+| o | 1 | 27.01 | 59.13 (vLLM awq_gemm (Triton)) | **2.19x** | 27.01 | 98.77 | 59.13 |
+| o | 2 | 27.22 | 58.70 (vLLM awq_gemm (Triton)) | **2.16x** | 27.22 | 99.43 | 58.70 |
+| o | 4 | 27.41 | 59.11 (vLLM awq_gemm (Triton)) | **2.16x** | 27.41 | 100.13 | 59.11 |
+| o | 8 | 27.65 | 59.89 (vLLM awq_gemm (Triton)) | **2.17x** | 27.65 | 101.00 | 59.89 |
+| o | 16 | 28.03 | 61.31 (vLLM awq_gemm (Triton)) | **2.19x** | 28.03 | 102.47 | 61.31 |
+| o | 32 | 36.35 | 66.30 (vLLM awq_gemm (Triton)) | **1.82x** | 36.35 | 102.73 | 66.30 |
+| o | 64 | 70.37 | 102.97 (vLLM AWQ dequantize + matmul) | **1.46x** | 70.37 | 102.97 | 126.60 |
+| o | 256 | -- | 180.46 (vLLM AWQ dequantize + matmul) | -- | -- | 180.46 | 475.69 |
+| gate_up | 1 | 155.41 | 328.04 (vLLM awq_gemm (Triton)) | **2.11x** | 155.41 | 1437.12 | 328.04 |
+| gate_up | 2 | 156.32 | 331.29 (vLLM awq_gemm (Triton)) | **2.12x** | 156.32 | 1436.57 | 331.29 |
+| gate_up | 4 | 157.61 | 331.73 (vLLM awq_gemm (Triton)) | **2.10x** | 157.61 | 1435.43 | 331.73 |
+| gate_up | 8 | 159.81 | 339.80 (vLLM awq_gemm (Triton)) | **2.13x** | 159.81 | 1438.68 | 339.80 |
+| gate_up | 16 | 162.89 | 351.08 (vLLM awq_gemm (Triton)) | **2.15x** | 162.89 | 1438.23 | 351.08 |
+| gate_up | 32 | 210.24 | 382.74 (vLLM awq_gemm (Triton)) | **1.82x** | 210.24 | 1443.20 | 382.74 |
+| gate_up | 64 | 399.33 | 790.85 (vLLM awq_gemm (Triton)) | **1.98x** | 399.33 | 1449.02 | 790.85 |
+| gate_up | 256 | -- | 1541.87 (vLLM AWQ dequantize + matmul) | -- | -- | 1541.87 | 3433.47 |
+| down | 1 | 81.57 | 180.19 (vLLM awq_gemm (Triton)) | **2.21x** | 81.57 | 705.42 | 180.19 |
+| down | 2 | 81.57 | 180.58 (vLLM awq_gemm (Triton)) | **2.21x** | 81.57 | 705.11 | 180.58 |
+| down | 4 | 81.60 | 181.31 (vLLM awq_gemm (Triton)) | **2.22x** | 81.60 | 705.52 | 181.31 |
+| down | 8 | 81.58 | 182.08 (vLLM awq_gemm (Triton)) | **2.23x** | 81.58 | 706.15 | 182.08 |
+| down | 16 | 82.38 | 184.04 (vLLM awq_gemm (Triton)) | **2.23x** | 82.38 | 708.14 | 184.04 |
+| down | 32 | 120.49 | 192.52 (vLLM awq_gemm (Triton)) | **1.60x** | 120.49 | 709.97 | 192.52 |
+| down | 64 | 199.71 | 373.40 (vLLM awq_gemm (Triton)) | **1.87x** | 199.71 | 714.43 | 373.40 |
+| down | 256 | -- | 799.81 (vLLM AWQ dequantize + matmul) | -- | -- | 799.81 | 1543.56 |
 
 **Setup of each arm.**
 - hk w4a16: hk.ops.w4a16.matmul, zero points (repack_awq, as vllm_int4 loads it)
