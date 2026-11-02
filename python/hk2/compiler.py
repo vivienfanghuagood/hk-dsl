@@ -122,6 +122,7 @@ class Compiler:
         self.dma_pending = False
         self.dma_seen = False
         self.dma_wait = 0
+        self.n_vmem = self.n_ds = 0
         self.depth = 0
 
     # ================================================================ pass 1: layouts
@@ -1221,6 +1222,7 @@ class Compiler:
                 voff = self.e(f"select i1 {ok}, i32 {by}, i32 -2147483648")
             self.emit(f"  call void @llvm.amdgcn.raw.ptr.buffer.load.lds(ptr addrspace(8) {rsrc}, ptr addrspace(3) "
                       f"{lp}, i32 16, i32 {voff}, i32 {soff}, i32 0, i32 0){_SCOPE}")
+            self.n_vmem += 1
         self.dma_pending = self.dma_seen = True
         self.vals[op.result.id] = LdsTile(op.attrs["dma"])
 
@@ -1251,6 +1253,7 @@ class Compiler:
             b = self.e(f"add i32 {b}, {rc * g['rb']}")
             p = self.e(f"getelementptr inbounds i8, ptr addrspace(3) {nm}, i32 {b}")
             vec = self.e(f"load <8 x {self.ty(dt)}>, ptr addrspace(3) {p}, align 16{_RSCOPE}")
+            self.n_ds += 1
             return self.unpack(vec, 8, dt)
 
         def loader(r, vals):
@@ -1341,6 +1344,7 @@ class Compiler:
             if pi:
                 La, Lb = self.permute_k(La, pi, 1), self.permute_k(Lb, pi, 0)
         Lc = self.lay[op.result.id]
+        ds0, vm0 = self.n_ds, self.n_vmem
         va, vb = self.vals.get(a.id), self.vals.get(b.id)
         ldsops = [(i, v, L) for i, (v, L) in enumerate(((va, La), (vb, Lb))) if isinstance(v, LdsTile)]
         got = {}
@@ -1391,6 +1395,8 @@ class Compiler:
                     accs[i, j] = self.e(f"call {atom.c_ty} @{atom.intrinsic}({atom.op_ty} {avecs[i]}, "
                                         f"{atom.op_ty} {bvecs[j]}, {atom.c_ty} {accs[i, j]}{atom.tail})")
             cur = nxt if nxt is not None else (frags(kk + 1) if kk + 1 < rk else None)
+        if self.depth > 0 and os.environ.get("HK2_SCHED", "0") != "0":  # measured: LLVM does better alone
+            self._interleave(rm * rn * rk, self.n_ds - ds0, self.n_vmem - vm0)
         for tv in (ta, tb):  # a memoized conversion must not read LDS later, after others wrote it
             if isinstance(tv.regs, LazyRegs):
                 tv.regs.materialize()
@@ -1404,6 +1410,19 @@ class Compiler:
             if regs[r] is None:
                 regs[r] = regs[Lc.canonical_reg(r)]
         self.vals[op.result.id] = TV(Lc, regs, T.f32)
+
+    def _interleave(self, n_mfma: int, n_ds: int, n_vmem: int):
+        """Ask LLVM's scheduler to spread this dot's LDS reads and DMA issues evenly between its matrix
+        instructions, so the matrix pipe is never idle while memory instructions queue."""
+        if not n_mfma or not (n_ds or n_vmem):
+            return
+        self.decl("declare void @llvm.amdgcn.sched.group.barrier(i32 immarg, i32 immarg, i32 immarg)")
+        for i in range(n_mfma):
+            self.emit("  call void @llvm.amdgcn.sched.group.barrier(i32 8, i32 1, i32 0)")  # one MFMA
+            for mask, n in ((0x100, n_ds), (0x20, n_vmem)):  # DS reads, VMEM reads
+                k = (i + 1) * n // n_mfma - i * n // n_mfma
+                if k:
+                    self.emit(f"  call void @llvm.amdgcn.sched.group.barrier(i32 {mask}, i32 {k}, i32 0)")
 
     def _operand(self, regs, dt, atom, op_n):
         assert len(regs) == op_n, (len(regs), op_n)
