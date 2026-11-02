@@ -132,18 +132,13 @@ def test_the_moe_call_sites_are_rebindable_after_what_apply_imports():
 
 # ---------------------------------------------------------------- ROCM_ATTN prefill
 
-def test_the_prefix_prefill_takes_the_standins_parameters():
-    """The vLLM the route was built against (the MiniCPM5 production image's); on another the
-    route's contract refuses and it stays out (contract._vllm_prefill)."""
+def test_the_prefix_prefill_has_what_the_standin_reads():
+    """The stand-in takes vLLM's own signature and reads the parameters it needs by name
+    (vllm_prefill._P_NEED); any other parameter must be at its default or the call falls back."""
     from vllm.v1.attention.ops import prefix_prefill
 
-    from hk.integration import switches
-
-    if switches.arch() != "gfx1100":
-        pytest.skip("the prefill route is gfx1100's")
-
-    assert_same_parameters(prefix_prefill.context_attention_fwd,
-                           vllm_prefill.context_attention_fwd, "context_attention_fwd")
+    lost = sorted(vllm_prefill._P_NEED - set(names(prefix_prefill.context_attention_fwd)))
+    assert not lost, f"context_attention_fwd lost {lost}"
 
 
 def test_the_prefix_prefill_call_sites_are_rebindable():

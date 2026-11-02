@@ -1,6 +1,7 @@
-"""hk.load_w4's two forms, traced: the asymmetric one (s and zs) as it was, and the symmetric one
-(one zero point, no zs, s optionally in 16-row blocks) -- the C++ each prints, the RDNA header the
-symmetric form brings, and what is refused. The GPU checks are tests/hk/gpu/test_w4a16.py."""
+"""hk.load_w4's forms, traced: the asymmetric one (s and zs) as it was, the symmetric one (one zero
+point, no zs, s optionally in 16-row blocks) and the zero-code one (a tensor of 4-bit zero codes,
+codes optionally row-major) -- the C++ each prints, the RDNA header the latter two bring, and what is
+refused. The GPU checks are tests/hk/gpu/test_w4a16.py and tests/hk/gpu/test_moe_w4.py."""
 
 from __future__ import annotations
 
@@ -57,6 +58,43 @@ def test_refusals():
         hk.load_w4(TW, qw, s, zs, 0, 0, group=32, s_blocked=True)
     with pytest.raises(TypeError, match="symmetric"):
         _src(blocked_asym, "gfx1100")
+
+
+@pytest.mark.parametrize("arch", ["gfx1100", "gfx1201"])
+@pytest.mark.parametrize("rows", [False, True])
+def test_the_zero_code_form_reads_zp(arch, rows):
+    def zcode(qw: hk.Tensor[hk.i32], s: hk.Tensor[hk.fp16], zp: hk.Tensor[hk.i8], o: hk.Tensor[hk.fp16]):
+        o.at[0, 0].store(hk.load_w4(TW, qw, s, None, 0, 0, group=32, zp=zp, rows=rows))
+    src = _src(zcode, arch)
+    assert f"kittens::load_w4_zp<32, {'true' if rows else 'false'}>(w4, g.qw, g.s, g.zp, " in src
+    assert '#include "hk/rdna/w4.cuh"' in src
+
+
+def test_zero_code_refusals():
+    def with_zs(qw: hk.Tensor[hk.i32], s: hk.Tensor[hk.fp16], zs: hk.Tensor[hk.fp16],
+                zp: hk.Tensor[hk.i8], o: hk.Tensor[hk.fp16]):
+        hk.load_w4(TW, qw, s, zs, 0, 0, group=32, zp=zp)
+    with pytest.raises(TypeError, match="exactly one"):
+        _src(with_zs, "gfx1100")
+
+    def rows_asym(qw: hk.Tensor[hk.i32], s: hk.Tensor[hk.fp16], zs: hk.Tensor[hk.fp16],
+                  o: hk.Tensor[hk.fp16]):
+        hk.load_w4(TW, qw, s, zs, 0, 0, group=32, rows=True)
+    with pytest.raises(TypeError, match="zero-code"):
+        _src(rows_asym, "gfx1100")
+
+    def zp_fp16(qw: hk.Tensor[hk.i32], s: hk.Tensor[hk.fp16], zp: hk.Tensor[hk.fp16],
+                o: hk.Tensor[hk.fp16]):
+        hk.load_w4(TW, qw, s, None, 0, 0, group=32, zp=zp)
+    with pytest.raises(TypeError, match="int8"):
+        _src(zp_fp16, "gfx1100")
+
+    ty = hk.RT(hk.fp16, 16, 32, "row", frag=(16, 32))
+
+    def on_cdna(qw: hk.Tensor[hk.i32], s: hk.Tensor[hk.fp16], zp: hk.Tensor[hk.i8], o: hk.Tensor[hk.fp16]):
+        hk.load_w4(ty, qw, s, None, 0, 0, group=32, zp=zp)
+    with pytest.raises(TypeError, match="wave32"):
+        _src(on_cdna, "gfx950")
 
 
 def test_the_w4a16_kernel_names_and_signatures():

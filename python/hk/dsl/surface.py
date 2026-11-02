@@ -109,6 +109,10 @@ ENTRIES: Dict[str, Entry] = {
                                "group, no zs read (GPTQ's uint4b8)"),
     "hk.load_w4(s_blocked=)": Entry("format", "E8", "the symmetric form's scales in 16-row blocks, "
                                     "[N/16, K/group * 16] (hk.ops.w4a16.repack_gptq(symmetric=True))"),
+    "hk.load_w4(zp=)": Entry("format", "E8", "4-bit zero codes per row and group, int8 [N/2, K/group] "
+                             "two rows to a byte (vLLM's moe_wna16 layout), no zs read"),
+    "hk.load_w4(rows=)": Entry("format", "E8", "the zero-code form's row-major codes, int32 [N, K/8] "
+                               "(vLLM's uint8 [N, K/2] viewed as int32)"),
 }
 
 #: Every other documented name of the language: general, any kernel may use it.
@@ -195,7 +199,8 @@ map yield rcp
 #: specializations (special); the rest as their DSL entries.
 CPP: Dict[str, Dict[str, str]] = {
     # RDNA's symmetric 4-bit decode (hk.load_w4(zero=)); the asymmetric form is the trees'
-    "include/hk/rdna/w4.cuh": {"load_w4": "format", "w4_word_sym_f16": "internal"},
+    "include/hk/rdna/w4.cuh": {"load_w4": "format", "w4_word_sym_f16": "internal",
+                               "load_w4_zp": "format", "w4_word_zp_f16": "internal"},
     # RDNA strided globals (`hk.Tensor[dtype, "strided"]`): g.stage's strided form and the
     # type's accessors.
     "include/hk/rdna/strided.cuh": {
