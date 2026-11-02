@@ -207,11 +207,11 @@ def _vllm_sdpa() -> List[str]:
 def _vllm_prefill() -> Optional[List[str]]:
     from . import switches  # noqa: PLC0415
 
-    if switches.arch() != "gfx1100":
-        return None                 # gfx1100's kernel: the route reports it and stays out
-    from vllm.v1.attention.ops import prefix_prefill  # noqa: PLC0415
-
     from . import vllm_prefill  # noqa: PLC0415
+
+    if switches.arch() not in vllm_prefill.ARCHES:
+        return None                 # RDNA's kernels: the route reports it and stays out
+    from vllm.v1.attention.ops import prefix_prefill  # noqa: PLC0415
 
     from vllm.v1.attention.ops import triton_unified_attention as tua  # noqa: PLC0415
 

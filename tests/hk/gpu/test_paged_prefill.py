@@ -613,13 +613,14 @@ def test_pages_of_784_v_ones_and_nan_tails(case):
 
 # ---- the route: vllm_prefill's TRITON_ATTN stand-in, without vLLM ---------------------------
 
-def _gfx1100() -> bool:
+def _route_arch() -> bool:
+    from hk.integration.vllm_prefill import ARCHES
     from hk.target import current_arch
 
-    return current_arch() == "gfx1100"
+    return current_arch() in ARCHES
 
 
-@pytest.mark.skipif(not _gfx1100(), reason="the route is gfx1100's")
+@pytest.mark.skipif(not _route_arch(), reason="the route is gfx1100's and gfx1201's")
 @pytest.mark.parametrize("vt", [False, True])
 @pytest.mark.parametrize("kv_order,page", [("planes", 16), ("tokens", 16), ("tokens", 544),
                                            ("tokens", 784)])
