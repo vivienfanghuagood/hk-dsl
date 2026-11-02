@@ -401,6 +401,23 @@ def surface_mark(name: str) -> str:
     return "\n\n".join(f"*Surface*: {n}" for n in notes)
 
 
+#: docs/stability.md, as this reference marks it: the pages whose names may change in any release, and
+#: entries of stable pages that are experimental. Every other page and entry is stable.
+EXPERIMENTAL_PAGES = {"hk.comm.md", "hk.collective.md", "hk.placement.md", "hk.group.md",
+                      "hk.schedules.md", "hk.tune.md", "hk.profile.md", "hk.target.md"}
+EXPERIMENTAL_NAMES = {"hk.torch_op"}
+STABILITY = "[stability](../stability.md)"
+
+
+def stability_line(fname: str) -> str:
+    if fname in EXPERIMENTAL_PAGES:
+        return (f"*Stability*: **experimental**. These names may change in any release ({STABILITY}).")
+    if fname == "hk.ops.md":
+        return (f"*Stability*: stable: the entry points above \"In the submodules\". Those below it, "
+                f"which the engine integrations call, are experimental ({STABILITY}).")
+    return (f"*Stability*: stable, except where an entry says otherwise ({STABILITY}).")
+
+
 class Page:
     def __init__(self, fname: str, title: str, intro: str = ""):
         self.fname = fname
@@ -431,6 +448,8 @@ class Page:
             self.lines.append(f"```python\n{full}\n```\n")
         if mark:
             self.lines.append(mark + "\n")
+        if disp in EXPERIMENTAL_NAMES:
+            self.lines.append(f"*Experimental* in this release ({STABILITY}).\n")
         smark = surface_mark(disp.replace(" (property)", ""))
         if smark:
             self.lines.append(smark + "\n")
@@ -854,7 +873,7 @@ def page_ops(since: Since) -> Page:
                     mark=_mark(since, "hk.ops", n, obj, f"hk.ops.{n}"))
     p.h2("In the submodules")
     p.para("Imported on first use (`import hk.ops.paged`); what the engine "
-           "integrations call.")
+           f"integrations call. **Experimental**: these may change in any release ({STABILITY}).")
     for modname, names in OPS_EXTRA:
         mod = importlib.import_module(modname)
         for n in names:
@@ -1119,10 +1138,12 @@ def page_index(pages: List[Page]) -> Page:
              + (f"{RELEASE} does, and a checkout" if RELEASE else
                 "no release has it yet, only a checkout of main")
              + ", docs/building.md). For how the language is written, read "
-             "[the language](../language.md) first.")
+             "[the language](../language.md) first. Which names are stable and which "
+             f"experimental: {STABILITY}.")
     for pg in pages:
         n = len([t for t in pg.toc if t[0] == 3])
-        p.lines.append(f"- [{pg.lines[0].split('# ', 1)[1].strip()}]({pg.fname}) -- {n} entries")
+        exp = " (experimental)" if pg.fname in EXPERIMENTAL_PAGES else ""
+        p.lines.append(f"- [{pg.lines[0].split('# ', 1)[1].strip()}]({pg.fname}) -- {n} entries{exp}")
     return p
 
 
@@ -1161,6 +1182,7 @@ def build_pages() -> List[Page]:
     pages.append(page_target(since))
     for pg in pages:
         _add_toc(pg)
+        pg.lines.insert(1, stability_line(pg.fname) + "\n")
     return [page_index(pages)] + pages
 
 

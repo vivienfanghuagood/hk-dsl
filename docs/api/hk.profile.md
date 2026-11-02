@@ -2,6 +2,8 @@
 
 # `hk.profile`
 
+*Stability*: **experimental**. These names may change in any release ([stability](../stability.md)).
+
 Why a kernel runs at the speed it does: rocprofv3's counters and thread trace, the disassembled code object and a verdict; the guide, with the JSON schema, is [docs/profile.md](../profile.md). `hk.profile(...)` is `hk.profile.profile(...)`.
 
 - [`hk.profile.profile`](#hkprofileprofile)

@@ -2,6 +2,8 @@
 
 # `hk.group`
 
+*Stability*: **experimental**. These names may change in any release ([stability](../stability.md)).
+
 `hk.group(W)`: what a whole workgroup does together -- the global<->LDS
 copies, synchronous and staged through registers.
 

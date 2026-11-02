@@ -2,6 +2,8 @@
 
 # `hk.arch`
 
+*Stability*: stable, except where an entry says otherwise ([stability](../stability.md)).
+
 hk.arch: the machine -- where this workgroup and warp are, and the
 instructions that order and schedule them.
 

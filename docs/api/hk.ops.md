@@ -2,6 +2,8 @@
 
 # `hk.ops`: the shipped kernels
 
+*Stability*: stable: the entry points above "In the submodules". Those below it, which the engine integrations call, are experimental ([stability](../stability.md)).
+
 The kernels hk ships, written in the language, each behind a torch-facing
 function that picks a plan for the shape and the architecture. Call them on
 torch tensors on the GPU; they return the output (or write `out=`). Every
@@ -402,7 +404,7 @@ hk.ops.gemm_cdna's.
 
 ## In the submodules
 
-Imported on first use (`import hk.ops.paged`); what the engine integrations call.
+Imported on first use (`import hk.ops.paged`); what the engine integrations call. **Experimental**: these may change in any release ([stability](../stability.md)).
 
 ### `hk.ops.sdpa.scaled_dot_product_attention`
 

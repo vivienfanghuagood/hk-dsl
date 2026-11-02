@@ -2,6 +2,8 @@
 
 # `hk.templates`
 
+*Stability*: stable, except where an entry says otherwise ([stability](../stability.md)).
+
 hk.templates: complete, tuned kernels with hooks for the part that is yours.
 
 A template owns the tiling, the layout, the per-architecture plan and the

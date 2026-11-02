@@ -2,6 +2,8 @@
 
 # `hk.check`
 
+*Stability*: stable, except where an entry says otherwise ([stability](../stability.md)).
+
 Correctness, resources and timing of a kernel in one call; the guide is [docs/check.md](../check.md). `hk.check(...)` is `hk.check.check(...)`.
 
 - [`hk.check.check`](#hkcheckcheck)
