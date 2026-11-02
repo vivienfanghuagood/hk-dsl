@@ -72,7 +72,8 @@ vLLM picked.
 | backend | what is rebound | hk's kernel |
 |---|---|---|
 | `ROCM_ATTN` (ROCm's default) | `prefix_prefill.context_attention_fwd`, which `chunked_prefill_paged_decode` calls for requests with more than one query | `paged_prefill` `layout="rocm"`: K through a strided global over the x-split cache, V's pages already V^T |
-| `TRITON_ATTN` | `unified_attention`, on batches with prefill in them; decode-only batches (the FULL CUDA graphs) keep vLLM's | `paged_prefill` `layout="flash"`, `decodes=True`: the whole batch, a decode row a 16-row fragment |
+| `TRITON_ATTN` | `unified_attention`, on batches with prefill in them | `paged_prefill` `layout="flash"`, `decodes=True`: the whole batch, a decode row a 16-row fragment |
+| `TRITON_ATTN`, decode-only batches (the FULL CUDA graphs) | `unified_attention` at head size 256 (`HK_VLLM_DECODE`, below) | `paged_decode`: the KV axis split across the card |
 
 Head size 64, 128 and 256. At 256 the kernel uses `dsplit`, a query row
 across a pair of warps. Where a kernel does not build spill-free under the
@@ -95,6 +96,28 @@ V pages once into a scratch of V^T pages (`vt_pages`), instead of in every
 workgroup; `HK_VLLM_PREFILL_VT=0` turns that off.
 `HK_VLLM_PREFILL_SHADOW=1` also runs vLLM's kernel on every call hk takes and
 compares the rows. It is a diagnostic that syncs; don't serve with it.
+
+### Decode-only batches on TRITON_ATTN
+
+A decode step reads the whole KV cache and does one query row a head of maths
+on it. vLLM's Triton kernel cuts each sequence into 16 segments, so at 1-4
+requests most of the card is idle. `hk.ops.paged_decode` reads the same cache
+in place and cuts the KV axis into a number of splits planned from the batch
+alone. A split's range is arithmetic on the device's sequence length, so the
+count a CUDA graph was captured with is right for every replay. A second
+launch merges the splits.
+
+- `HK_VLLM_DECODE` unset: head size 256 at every batch. Those are hybrid
+  models' attention layers (Qwen3.8, Qwen3.6, MiniCPM-V-4.7): there hk is
+  1.02-4.0x the faster of TRITON_ATTN's kernel and ROCM_ATTN's (which runs an
+  unsplit Triton fallback on pages that are not a power of two).
+- `HK_VLLM_DECODE=1`: head size 128 too, up to 8 (request, kv head) pairs.
+  It is opt-in: at one request below 16k tokens, ROCM_ATTN's paged decode is
+  as fast.
+- `HK_VLLM_DECODE=0`: off.
+
+`tools/hk-bench/attention_bench.py` measures every shape against both stock
+kernels (`tools/hk-bench/README-attention.md`).
 
 ## The decoder attention backend
 
