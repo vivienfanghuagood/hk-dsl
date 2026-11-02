@@ -49,6 +49,13 @@ a W7900D. Both entry points now check the decode's contract (`paged.check_decode
 A wrong call raises ValueError naming the tensor, its shape and the one the kernel needs. No kernel
 changes; `decode` checks a set of shapes once. gfx950's decode (hk.ops.paged_cdna) is not affected.
 
+**Fixed: a kernel the compiler refuses could crash the process.** An error raised inside the pass
+pipeline (for example "a mask strip leaves its hk.map" on RDNA) was reported from MLIR's worker
+thread, where the Python bindings' error capture has no Python thread state; when the function ran
+on a worker the process segfaulted instead of raising, about once in a thousand refusals (and once in
+the IR tests' CI). hk's MLIR context now runs passes on the calling thread. The generated code is
+unchanged (V0: byte-identical on gfx950, gfx1100, gfx1201), and compiling is no slower.
+
 **SGLang: Gemma-style RMSNorm on hk (`HK_SGLANG_NORM`, on by default on gfx1100).** Where
 SGLang's `GemmaRMSNorm` would run its native torch path, which it does on ROCm without aiter or
 vLLM (eleven kernels a norm), it goes through hk's weighted norm kernels. The route passes the
