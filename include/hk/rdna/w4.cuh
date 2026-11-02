@@ -135,4 +135,122 @@ __device__ inline static void load_w4(RT &dst, const QL &qw, const SL &s, int n0
     }
 }
 
+namespace detail {
+/// w4_word_sym_f16 with the zero point a runtime code: bias2 is the half pair -(1024 + z), so
+/// (half(0x6400 | q) + bias2) * s is (q - z) * s, q - z exact and the product rounded once.
+__device__ inline void w4_word_zp_f16(uint32_t word, uint32_t s2, uint32_t bias2, uint32_t out[4]) {
+    typedef _Float16 h2_t __attribute__((ext_vector_type(2)));
+    const uint32_t lo = word & 0x0F0F0F0Fu;
+    const uint32_t hi = (word >> 4) & 0x0F0F0F0Fu;
+    h2_t sc, bias;
+    __builtin_memcpy(&sc, &s2, 4);
+    __builtin_memcpy(&bias, &bias2, 4);
+    #pragma unroll
+    for (int t = 0; t < 4; t++) {
+        const uint32_t u = __builtin_amdgcn_perm(hi, lo, 0x0C040C00u + 0x00010001u * t) | 0x64006400u;
+        h2_t h;
+        __builtin_memcpy(&h, &u, 4);
+        const h2_t v = (h + bias) * sc;
+        __builtin_memcpy(&out[t], &v, 4);
+    }
+}
+}  // namespace detail
+
+/**
+ * @brief hk.load_w4(zp=): element (n, k) is (q - z) * s[n][k / G], z the 4-bit zero code of row n
+ * and group k / G read from zp, int8 [N/2, K/G] with two rows to a byte (row 2j in the low nibble,
+ * 2j + 1 in the high) -- the asymmetric form without a zero-times-scale tensor, as vLLM's
+ * moe_wna16 stores an AWQ or GPTQ checkpoint's zero points. s is [N, K/G].
+ * ROWS: the codes are row-major, int32 [N, K/8] with nibble t of word w column 8w + t (vLLM's
+ * uint8 [N, K/2] viewed as int32), each lane loading its own row's 16 bytes; otherwise hk's
+ * interleaved [N/16][K/32][16][4]. A half tile decodes in packed fp16 (one rounding, to nearest
+ * even); a bf16 tile through the fp32 path with zs = z * s.
+ */
+template<int G, bool ROWS, ducks::rt::all RT, ducks::gl::all QL, ducks::gl::all SL, ducks::gl::all ZL>
+__device__ inline static void load_w4_zp(RT &dst, const QL &qw, const SL &s, const ZL &zp, int n0, int k0) {
+    using T = typename base_types::packing<typename RT::dtype>::unpacked_type;
+    using L = typename RT::layout;
+    using base = rt_base<T, L>;
+    static_assert(std::is_same_v<L, ducks::rt_layout::row>, "W4 codes load into row-layout tiles");
+    static_assert(std::is_same_v<T, bf16> || std::is_same_v<T, half>,
+                  "W4 codes dequantize into bf16 or half tiles");
+    static_assert(base::element_stride == 1 &&
+                  (base::elements_per_thread == 16 || base::elements_per_thread == 8),
+                  "a lane holds a base tile's 16 columns of its row (gfx11) or 8 of them (gfx12)");
+    static_assert(std::is_same_v<typename QL::dtype, int>, "codes are packed in int32");
+    static_assert(std::is_same_v<typename SL::dtype, T>, "scales are the tile's type");
+    static_assert(sizeof(typename ZL::dtype) == 1, "zero codes are bytes, two rows to a byte");
+    static_assert(G % 16 == 0, "a group spans whole base tiles");
+    static_assert(RT::width % 2 == 0, "the tile is a whole number of 32-column chunks");
+    constexpr bool one_group = G % (16 * RT::width) == 0;
+    constexpr bool halves = base::elements_per_thread == 16;   // gfx11: both halves hold the row
+
+    const int r = laneid() & 15;
+    const bool upper = laneid() >= 16;
+    const long words = qw.cols();                // int32 words per row (K / 8)
+    const int groups = s.cols();
+    const int *qp = reinterpret_cast<const int *>(qw.raw_ptr);
+    const T *sp = s.raw_ptr;
+    const uint8_t *zb = reinterpret_cast<const uint8_t *>(zp.raw_ptr);
+    #pragma unroll
+    for (int i = 0; i < dst.height; i++) {
+        const long n = n0 + i * dst.tile_size_row + r;
+        const int *blk = ROWS ? qp + n * words : qp + (n >> 4) * words * 16 + r * 4;
+        float sc = 0.f, zsc = 0.f;
+        uint32_t s2 = 0, b2 = 0;
+        auto scale = [&](int g) {
+            const int z = (zb[(n >> 1) * groups + g] >> (4 * (n & 1))) & 0xF;
+            if constexpr (std::is_same_v<T, half>) {
+                uint16_t b;
+                __builtin_memcpy(&b, &sp[n * groups + g], 2);
+                s2 = uint32_t(b) * 0x00010001u;
+                const _Float16 bz = _Float16(-(1024 + z));
+                uint16_t bb;
+                __builtin_memcpy(&bb, &bz, 2);
+                b2 = uint32_t(bb) * 0x00010001u;
+            } else {
+                sc = base_types::convertor<float, T>::convert(sp[n * groups + g]);
+                zsc = sc * float(z);
+            }
+        };
+        if constexpr (one_group)
+            scale(k0 / G);
+        #pragma unroll
+        for (int j = 0; j < dst.width; j += 2) {
+            const int c = (k0 + j * dst.tile_size_col) / 32;   // 32-column chunk
+            const int4 w = *reinterpret_cast<const int4 *>(ROWS ? blk + c * 4 : blk + c * 64);
+            #pragma unroll
+            for (int jj = 0; jj < 2; jj++) {
+                if constexpr (!one_group)
+                    scale((k0 + (j + jj) * dst.tile_size_col) / G);
+                const uint32_t mine = uint32_t(jj ? (upper ? w.w : w.z) : (upper ? w.y : w.x));
+                uint32_t own[4];
+                if constexpr (std::is_same_v<T, half>)
+                    detail::w4_word_zp_f16(mine, s2, b2, own);
+                else
+                    detail::w4_word<T>(mine, sc, zsc, own);
+                if constexpr (halves) {
+                    uint32_t other[4];
+                    #pragma unroll
+                    for (int t = 0; t < 4; t++) {
+                        other[t] = uint32_t(__builtin_amdgcn_permlanex16(
+                            int(own[t]), int(own[t]), 0x76543210u, 0xfedcba98u, false, false));
+                    }
+                    #pragma unroll
+                    for (int t = 0; t < 4; t++) {
+                        const uint32_t c0 = upper ? other[t] : own[t];
+                        const uint32_t c1 = upper ? own[t] : other[t];
+                        __builtin_memcpy(&dst.tiles[i][j + jj].data[t], &c0, 4);
+                        __builtin_memcpy(&dst.tiles[i][j + jj].data[4 + t], &c1, 4);
+                    }
+                } else {
+                    #pragma unroll
+                    for (int t = 0; t < 4; t++)
+                        __builtin_memcpy(&dst.tiles[i][j + jj].data[t], &own[t], 4);
+                }
+            }
+        }
+    }
+}
+
 }  // namespace kittens

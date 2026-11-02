@@ -1477,8 +1477,16 @@ private:
             name(o.getSa()) + ", " + name(o.getSb()) + ");");
         })
         .Case([&](LoadW4Op o) {
-          // symmetric (zero, no zs): hk/rdna/w4.cuh's or hk/cdna/formats.cuh's form
+          // zero codes (zp): hk/rdna/w4.cuh's load_w4_zp
           Value d = dest(o.getDst(), o.getResult());
+          if (o.getZp()) {
+            w("kittens::load_w4_zp<" + std::to_string(o.getGroup()) +
+              (o.getRows() ? ", true" : ", false") + ">(" + name(d) + ", " + name(o.getQw()) +
+              ", " + name(o.getS()) + ", " + name(o.getZp()) + ", " + name(o.getN0()) + ", " +
+              name(o.getK0()) + ");");
+            return;
+          }
+          // symmetric (zero, no zs): hk/rdna/w4.cuh's or hk/cdna/formats.cuh's form
           std::string tmpl = std::to_string(o.getGroup()) +
                              (o.getZero() ? ", " + std::to_string(*o.getZero()) : std::string()) +
                              (o.getSBlocked() ? ", true" : "");
