@@ -54,6 +54,8 @@ LINEAR_MS = (1, 2, 4, 8, 16, 32, 64, 256, 1024, 4096)
 #: time is marked in the table (its accuracy is looser than one rounding of a 16-bit output with
 #: fp32 accumulation allows), above WRONG it is not timed at all.
 LOOSE, WRONG = 2e-2, 0.1
+#: The most calls one MoE graph replays (one routing each).
+MOE_CALLS_MAX = 64
 MOE_MS = (1, 2, 4, 8, 16, 32, 64, 256, 1024)
 
 
@@ -503,8 +505,13 @@ def run_moe(a, w4: bool, only: set, notes: dict) -> List[dict]:
     for m in a.ms:
         x = torch.randn(m, hidden, device=dev, dtype=dt, generator=g)
         h = torch.randn(m * top_k, inter, device=dev, dtype=dt, generator=g)
+        # Each call its own routing, and enough calls that the experts they read cover the
+        # rotation: at a few tokens a call reads only top_k experts, and two layer copies' worth
+        # of calls would be served from the Infinity Cache.
+        touched = min(experts, m * top_k) * layer_bytes / experts
+        calls = min(MOE_CALLS_MAX, max(copies, math.ceil(a.rotate_mb * 2**20 / touched)))
         routings = []
-        for _ in range(8):
+        for _ in range(calls):
             scores = torch.rand(m, experts, device=dev, generator=g)
             tw, ti = scores.topk(top_k, dim=1)
             routings.append((tw.softmax(dim=1).float(), ti.to(torch.int32)))
@@ -577,8 +584,7 @@ def run_moe(a, w4: bool, only: set, notes: dict) -> List[dict]:
                         "the schedule its vLLM route picks")}
 
         def calls_of(fn, sets, o1, o2):
-            return [lambda L=L, s=sets[i % len(sets)]: fn(L, s, o1, o2)
-                    for i, L in enumerate(layers)]
+            return [lambda L=layers[i % copies], s=sets[i]: fn(L, s, o1, o2) for i in range(calls)]
 
         if "search" in only:
             best, best_cfg, refused = float("inf"), None, 0

@@ -4,21 +4,22 @@ torch 2.13.0a0+rocm7.14.0a20260612, HIP 7.14.60850, vLLM 0.1.dev1+g3775d5fca, Tr
 
 | shape | M | hk, us | best competitor, us | hk vs best | hk | vLLM Triton (searched config) | vLLM Triton (vLLM's config) |
 |---|---:|---:|---|---:|---:|---:|---:|
-| E256 top8 2048x512 | 1 | 42.60 | 87.56 (vLLM Triton (searched config)) | **2.06x** | 42.60 | 87.56 | 123.50 |
-| E256 top8 2048x512 | 2 | 71.22 | 145.78 (vLLM Triton (searched config)) | **2.05x** | 71.22 | 145.78 | 264.00 |
-| E256 top8 2048x512 | 4 | 130.82 | 276.90 (vLLM Triton (searched config)) | **2.12x** | 130.82 | 276.90 | 589.10 |
-| E256 top8 2048x512 | 8 | 235.00 | 486.92 (vLLM Triton (searched config)) | **2.07x** | 235.00 | 486.92 | 956.76 |
-| E256 top8 2048x512 | 16 | 355.52 | 707.24 (vLLM Triton (searched config)) | **1.99x** | 355.52 | 707.24 | 1387.20 |
-| E256 top8 2048x512 | 32 | 593.04 | 1187.40 (vLLM Triton (searched config)) | **2.00x** | 593.04 | 1187.40 | 2357.65 |
-| E256 top8 2048x512 | 64 | 788.50 | 1508.38 (vLLM Triton (searched config)) | **1.91x** | 788.50 | 1508.38 | 2676.83 |
-| E256 top8 2048x512 | 256 | 930.78 | 1720.61 (vLLM Triton (searched config)) | **1.85x** | 930.78 | 1720.61 | 3087.13 |
+| E256 top8 2048x512 | 1 | 43.70 | 92.70 (vLLM Triton (searched config)) | **2.12x** | 43.70 | 92.70 | 123.11 |
+| E256 top8 2048x512 | 2 | 70.42 | 155.53 (vLLM Triton (searched config)) | **2.21x** | 70.42 | 155.53 | 272.13 |
+| E256 top8 2048x512 | 4 | 122.40 | 266.55 (vLLM Triton (searched config)) | **2.18x** | 122.40 | 266.55 | 548.18 |
+| E256 top8 2048x512 | 8 | 217.08 | 449.15 (vLLM Triton (searched config)) | **2.07x** | 217.08 | 449.15 | 900.25 |
+| E256 top8 2048x512 | 16 | 365.11 | 732.22 (vLLM Triton (searched config)) | **2.00x** | 365.11 | 732.22 | 1392.43 |
+| E256 top8 2048x512 | 32 | 585.24 | 1168.39 (vLLM Triton (searched config)) | **2.00x** | 585.24 | 1168.39 | 2348.37 |
+| E256 top8 2048x512 | 64 | 770.12 | 1502.19 (vLLM Triton (searched config)) | **1.95x** | 770.12 | 1502.19 | 2650.91 |
+| E256 top8 2048x512 | 256 | 950.42 | 1732.21 (vLLM Triton (searched config)) | **1.82x** | 950.42 | 1732.21 | 3048.76 |
 
 **Setup of each arm.**
 - hk: hk.ops.moe.moe_gemm_w4, BLOCK_M 16, the schedule its vLLM route picks
 - vLLM Triton (searched config), by row:
-  - E256 top8 2048x512 M=1, E256 top8 2048x512 M=64, E256 top8 2048x512 M=256: best of vLLM's config and 108 searched here (0 refused by the compiler or the LDS): {'BLOCK_SIZE_M': 16, 'BLOCK_SIZE_N': 128, 'BLOCK_SIZE_K': 64, 'GROUP_SIZE_M': 1, 'num_warps': 4, 'num_stages': 2, 'SPLIT_K': 1}
-  - E256 top8 2048x512 M=2, E256 top8 2048x512 M=4, E256 top8 2048x512 M=8, E256 top8 2048x512 M=16: best of vLLM's config and 108 searched here (0 refused by the compiler or the LDS): {'BLOCK_SIZE_M': 16, 'BLOCK_SIZE_N': 128, 'BLOCK_SIZE_K': 128, 'GROUP_SIZE_M': 1, 'num_warps': 4, 'num_stages': 2, 'SPLIT_K': 1}
-  - E256 top8 2048x512 M=32: best of vLLM's config and 108 searched here (0 refused by the compiler or the LDS): {'BLOCK_SIZE_M': 16, 'BLOCK_SIZE_N': 128, 'BLOCK_SIZE_K': 64, 'GROUP_SIZE_M': 8, 'num_warps': 4, 'num_stages': 2, 'SPLIT_K': 1}
+  - E256 top8 2048x512 M=1, E256 top8 2048x512 M=64, E256 top8 2048x512 M=256: best of vLLM's config and 108 searched here (0 refused by the compiler or the LDS): {'BLOCK_SIZE_M': 16, 'BLOCK_SIZE_N': 128, 'BLOCK_SIZE_K': 64, 'GROUP_SIZE_M': 8, 'num_warps': 4, 'num_stages': 2, 'SPLIT_K': 1}
+  - E256 top8 2048x512 M=2: best of vLLM's config and 108 searched here (0 refused by the compiler or the LDS): {'BLOCK_SIZE_M': 16, 'BLOCK_SIZE_N': 128, 'BLOCK_SIZE_K': 128, 'GROUP_SIZE_M': 8, 'num_warps': 4, 'num_stages': 2, 'SPLIT_K': 1}
+  - E256 top8 2048x512 M=4, E256 top8 2048x512 M=8, E256 top8 2048x512 M=16: best of vLLM's config and 108 searched here (0 refused by the compiler or the LDS): {'BLOCK_SIZE_M': 16, 'BLOCK_SIZE_N': 128, 'BLOCK_SIZE_K': 128, 'GROUP_SIZE_M': 1, 'num_warps': 4, 'num_stages': 2, 'SPLIT_K': 1}
+  - E256 top8 2048x512 M=32: best of vLLM's config and 108 searched here (0 refused by the compiler or the LDS): {'BLOCK_SIZE_M': 32, 'BLOCK_SIZE_N': 128, 'BLOCK_SIZE_K': 64, 'GROUP_SIZE_M': 1, 'num_warps': 4, 'num_stages': 2, 'SPLIT_K': 1}
 - vLLM Triton (vLLM's config), by row:
   - E256 top8 2048x512 M=1, E256 top8 2048x512 M=2, E256 top8 2048x512 M=4, E256 top8 2048x512 M=8, E256 top8 2048x512 M=16: moe_wna16 Triton kernel, config {'BLOCK_SIZE_M': 16, 'GROUP_SIZE_M': 1, 'SPLIT_K': 1}
   - E256 top8 2048x512 M=32: moe_wna16 Triton kernel, config {'BLOCK_SIZE_M': 32, 'GROUP_SIZE_M': 1, 'SPLIT_K': 1}
@@ -26,3 +27,4 @@ torch 2.13.0a0+rocm7.14.0a20260612, HIP 7.14.60850, vLLM 0.1.dev1+g3775d5fca, Tr
 
 - AITER: n/a: aiter's fused_moe kernels are CDNA-only
 - FlyDSL: n/a: no RDNA MoE kernel in FlyDSL
+
