@@ -1,4 +1,4 @@
-"""The cross-architecture questions of docs/dx/api-consistency.md, asked of the
+"""The cross-architecture questions of docs/archive/design/api-consistency.md, asked of the
 GPU this runs on: one JSON record per probe (max abs error against an fp32
 torch reference, or the error raised). Run it on each GPU and compare:
 

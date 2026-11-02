@@ -5,6 +5,8 @@
   which the site cannot serve.
 - docs/templates/ is content: MkDocs leaves any templates/ directory out by
   default (a theme override's place), and no exclude_docs setting undoes that.
+- Each chapter of the development record (docs/history/NN-*.md) opens with the
+  archive's banner on the site: a dated record, not current documentation.
 """
 
 from __future__ import annotations
@@ -36,7 +38,17 @@ def on_files(files, config):  # noqa: ARG001
     return files
 
 
+HISTORY_BANNER = (
+    '!!! note "Archived: a dated record"\n'
+    "    This chapter is the state of the work when it was written: its API, numbers and "
+    "baselines are of that time. Current documentation starts at [the docs home](../README.md); "
+    "the numbers the project quotes are on [the scorecard](../performance/scorecard.md).\n\n")
+
+
 def on_page_markdown(markdown, page, config, files):  # noqa: ARG001 (MkDocs' signature)
+    if re.match(r"history/\d", page.file.src_uri):
+        title, _, rest = markdown.partition("\n")
+        markdown = f"{title}\n\n{HISTORY_BANNER}{rest.lstrip()}"
     out, fenced = [], False
     for line in markdown.split("\n"):
         if FENCE.match(line.lstrip()):

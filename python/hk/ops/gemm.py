@@ -680,7 +680,7 @@ def matmul(a, b, out=None):
     On gfx950 this is hk.ops.gemm_cdna.matmul (MFMA, routed by M from a
     measured table): K must be a multiple of 64 there, and its bf16 store
     rounds to nearest even where this one rounds ties away from zero (the
-    split-K routes sum fp32 shares, then round). docs/dx/api-consistency.md.
+    split-K routes sum fp32 shares, then round). docs/archive/design/api-consistency.md.
 
     `b` is (N, K), not (K, N). That is not an inconvenience to be hidden: it
     keeps both shared loads contiguous and makes `mma_ABt` the primitive, which

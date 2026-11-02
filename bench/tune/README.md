@@ -3,7 +3,7 @@
 What judges `hk.tune` (and, later, an agent that tunes): real model GEMM
 shapes no shipped table holds, per GPU, against every baseline that is
 available there, measured the project's way. The goal and its acceptance are
-[docs/design/tuning-goal.md](../../docs/design/tuning-goal.md) (T3); the tuner
+[docs/archive/design/tuning-goal.md](../../docs/archive/design/tuning-goal.md) (T3); the tuner
 is [docs/tune.md](../../docs/tune.md).
 
 ## The shapes

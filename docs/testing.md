@@ -563,7 +563,7 @@ found at the move; the full account is in
   old and new timed in one process, interleaved, the old as control. At the
   move: 422 instantiations, 92 differing beyond names and all identical in
   resources; every timing gap inside its row's own round-to-round spread
-  ([performance](performance.md#after-the-mlir-move)).
+  ([performance](archive/performance-2026-10.md#after-the-mlir-move)).
 - **Gate C — the engine.** vLLM serving Qwen3-8B with the patch, from the
   tree before and after, each against stock vLLM: the routing counters must
   match call for call, and the greedy output must match stock's. Run it with

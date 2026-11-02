@@ -92,3 +92,87 @@ def test_the_decode_kernel_takes_gptq_groups_of_32(m):
     want = x.float() @ w.t()
     err = (got - want).abs().max().item() / want.abs().max().item()
     assert err < 2e-2, err
+
+
+# ---------------------------------------------------------------- symmetric (zs None, s in 16-row blocks)
+
+
+def _gptq_sym(n, k, group, g, q=None, s=None):
+    """A symmetric GPTQ v1 checkpoint (every stored zero 7, i.e. zero point 8) for codes q [K, N] and
+    scales s [K/group, N] (random when None), and its symmetric repack."""
+    if q is None:
+        q = torch.randint(0, 16, (k, n), device="cuda", generator=g, dtype=torch.int32)
+    if s is None:
+        s = (torch.rand(k // group, n, device="cuda", generator=g) * 0.02 + 0.005).half()
+    shifts = torch.arange(0, 32, 4, device="cuda", dtype=torch.int64)
+    qweight = (q.to(torch.int64).reshape(k // 8, 8, n) << shifts.view(1, 8, 1)).sum(1)
+    qweight = torch.where(qweight >= 2 ** 31, qweight - 2 ** 32, qweight).to(torch.int32)
+    qzeros = torch.full((k // group, n // 8), 0x77777777, device="cuda", dtype=torch.int32)
+    return q, s, qweight, qzeros, w4a16.repack_gptq(qweight, qzeros, s, group, dtype=torch.float16,
+                                                    symmetric=True)
+
+
+def test_the_symmetric_repack_refuses_other_zero_points():
+    g = torch.Generator(device="cuda").manual_seed(5)
+    _, s, qweight, qzeros, (qw, sc, zs) = _gptq_sym(64, 128, 32, g)
+    assert zs is None and sc.shape == (64 // 16, 128 // 32 * 16)
+    assert torch.equal(w4a16.unblock_scales(sc), s.t().contiguous())
+    bad = qzeros.clone()
+    bad[0, 0] = 0x77777778                      # one zero point 9
+    with pytest.raises(ValueError, match="not all 8"):
+        w4a16.repack_gptq(qweight, bad, s, 32, symmetric=True)
+
+
+@pytest.mark.parametrize("m", [1, 2, 4, 7, 16, 33, 64])
+def test_the_symmetric_kernel_is_within_an_ulp_a_row_of_float64(m):
+    """fp16 activations, GPTQ's 32-column groups: against the float64 product, each output row within
+    two fp16 ulps of its largest |value| (one rounding of each weight, fp32 accumulation, one rounding
+    of the output)."""
+    g = torch.Generator(device="cuda").manual_seed(200 + m)
+    n, k, group = 512, 2048, 32
+    q, s, _, _, (qw, sc, zs) = _gptq_sym(n, k, group, g)
+    assert w4a16.takes(m, n, k, group)
+    x = torch.randn(m, k, device="cuda", dtype=torch.float16, generator=g)
+    got = w4a16.matmul(x, qw, sc, zs, group).double()
+    w = ((q - 8).double() * s.double().repeat_interleave(group, 0)).t()       # [N, K]
+    want = x.double() @ w.t()
+    top = want.abs().amax(dim=1, keepdim=True)
+    ulp = torch.pow(2.0, torch.floor(torch.log2(top.clamp_min(2.0 ** -14)))) * 2.0 ** -10
+    assert ((got - want).abs() <= 2 * ulp).all(), ((got - want).abs() / ulp).max().item()
+
+
+def test_every_code_and_scale_dequantizes_to_one_rounding_of_the_exact_product():
+    """q = 0..15 against scales from subnormal to large, read back through one-hot rows of x: each
+    output is one weight, which must be (q - 8) * s rounded once to nearest even -- and exactly 0 at
+    q = 8."""
+    n, k, group = 64, 128, 32
+    scales = torch.tensor([2.0 ** -24, 3 * 2.0 ** -20, 6.0e-5, 1.0e-3, 0.0371, 0.5, 7.0, 100.0, 1000.0],
+                          dtype=torch.float16)
+    q = (torch.arange(k).view(k, 1) + torch.arange(n).view(1, n)) % 16
+    s = scales[(torch.arange(k // group).view(-1, 1) * 7 + torch.arange(n).view(1, -1)) % len(scales)]
+    q, s = q.to(torch.int32).cuda(), s.cuda()
+    _, _, _, _, (qw, sc, zs) = _gptq_sym(n, k, group, None, q=q, s=s)
+    want = ((q - 8).double() * s.double().repeat_interleave(group, 0)).half().t()   # [N, K], once
+    for k0 in range(0, k, 64):
+        x = torch.zeros(64, k, device="cuda", dtype=torch.float16)
+        x[torch.arange(64), k0 + torch.arange(64)] = 1.0
+        got = w4a16.matmul(x, qw, sc, zs, group)                                   # [64, N]
+        assert torch.equal(got.t().view(torch.int16), want[:, k0:k0 + 64].contiguous().view(torch.int16))
+
+
+def test_all_zero_codes_are_exactly_minus_eight_s_times_the_sums():
+    """Every code 0: W = -8 s, so with power-of-two scales and small non-negative integer x the output
+    is exact. (x of both signs can cancel to 0 within a WMMA's dot product, which then leaves a
+    residue of a few 2^-18 -- the asymmetric path the same: the matrix core's accumulation, not
+    the decode.)"""
+    g = torch.Generator(device="cuda").manual_seed(9)
+    n, k, group = 128, 1024, 32
+    q = torch.zeros(k, n, device="cuda", dtype=torch.int32)
+    e = torch.randint(-8, -2, (k // group, n), device="cuda", generator=g)
+    s = torch.pow(2.0, e.float()).half()
+    _, _, _, _, (qw, sc, zs) = _gptq_sym(n, k, group, g, q=q, s=s)
+    x = torch.randint(0, 4, (4, k), device="cuda", generator=g).half()
+    got = w4a16.matmul(x, qw, sc, zs, group)
+    xs = x.double().reshape(4, k // group, group).sum(-1)                         # [4, G]
+    want = (xs @ (-8.0 * s.double())).half()                                      # [4, N]
+    assert torch.equal(got.view(torch.int16), want.view(torch.int16))

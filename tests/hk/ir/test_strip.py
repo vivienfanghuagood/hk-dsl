@@ -589,7 +589,7 @@ def test_the_select_ops_emit_their_cdna_calls_and_check_their_strips():
         if hk.uniform(h.load_elems(ln, hk.i32).first_lane() > 0):
             o.store_elems(hk.map_cpp("0.0f", ln, dtype=hk.fp32), ln)
     src = _src950(ops)
-    for call in ("kittens::lds_atomic_add_elems(", "kittens::fp4_operand(", "kittens::mx_scales_loose(",
+    for call in ("kittens::lds_atomic_add_elems(", "kittens::lane_view(",
                  "__builtin_amdgcn_readfirstlane("):
         assert call in src, call
 
@@ -622,7 +622,7 @@ def test_fp8_operand_emits_its_call_and_takes_two_runs_of_four():
         sc = hk.iota(hk.RS(hk.i32, 1, 64, 1)).as_scales()
         o[hk.elem_coord(0, 0, 0, 0)] = hk.mma("mma_ABt", t.scaled(sc), t.scaled(sc),
                                               hk.zeros(hk.RT(hk.fp32, 16, 16, "col")))
-    assert "kittens::fp8_operand(" in _src950(ok)
+    assert _src950(ok).count("kittens::lane_view(") == 2     # the fragment and the scales
 
     def one_run(a: hk.Tensor[hk.i32], o: hk.Tensor[hk.fp32]):
         a.load_elems(hk.iota(hk.RS(hk.i32, 1, 256, 4)), runs=True).as_fragment(

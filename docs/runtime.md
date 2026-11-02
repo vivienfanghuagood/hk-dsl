@@ -24,8 +24,7 @@ hash, the loaded module by path, and the launcher on the constexpr keyword
 arguments as passed — so after the first call everything before the launch
 is a dict lookup (`python/hk/dsl/kernel.py`, `python/hk/runtime/module.py`).
 That matters at these sizes: a 4096x4096 quantize is 60 µs of GPU, so ten
-microseconds of Python in front of it is sixteen percent. The host-overhead
-work is in [Phases 1 and 2](history/01-phases-1-2.md).
+microseconds of Python in front of it is sixteen percent.
 
 **The stream.** On CDNA (gfx942, gfx950) the pybind entry point takes the
 stream to launch on, and `Kernel.__call__` passes torch's current stream for
@@ -41,9 +40,12 @@ generated source always has; their serving paths go through
 What that means on gfx1100 when you call `k(...)` yourself: eager calls on
 torch's default stream run and time correctly, but a CUDA graph does not
 capture the kernel (a replay runs nothing, and a timing of it measures
-nothing), and work on another stream is not ordered against it. Nothing
-reports either. To capture or time an hk kernel in a graph on gfx1100, or to
-run it on a stream of your own, set `HK_LAUNCH=codeobj` before its first
+nothing), and work on another stream is not ordered against it. So a launch
+checks torch's current stream: on any but the default one -- a stream of your
+own, an engine's model stream, a graph capture -- it warns once for that
+kernel (`RuntimeWarning`), and with `HK_STRICT_STREAM=1` raises. To capture
+or time an hk kernel in a graph on gfx1100, or to run it on a stream of your
+own, set `HK_LAUNCH=codeobj` before its first
 call -- every `@hk.kernel`, and so every template, then launches its
 [device-only code object](#over-a-device-only-code-object) on torch's current
 stream -- or call it through `hk.torch_op(k)`. The DX suite's runner does the
@@ -58,7 +60,7 @@ corrupts that process's view of the code (`python/hk/runtime/module.py`).
 A kernel that names no `arch` is built for `hk.target.current_arch()`:
 `$HK_ARCH`, else the GPU in the machine (`hk.runtime.arch.detect`), else
 gfx1100. It is resolved on first use, so importing `hk.ops` still builds no
-IR and probes no GPU ([gfx1201](history/13-gfx1201.md)).
+IR and probes no GPU.
 
 `detect()` tries, in order:
 1. `HK_ARCH`;
@@ -204,8 +206,8 @@ The gate is `python/hk/runtime/resources.py`. What it enforces:
   short anywhere is rebuilt through hipcc's own pipeline with the padding the
   fixed compiler would emit added to its assembly, and checked again (the
   default, `HK_MFMA_GATE=fix`). The build log, the entry's `MFMAHAZ` file and
-  `python3 -m hk.integration --status` say which kernels were padded and
-  where. `HK_MFMA_GATE=refuse` refuses such a kernel instead, naming the
+  `python3 -m hk.integration --status` (on a CDNA GPU) say which kernels were
+  padded and where. `HK_MFMA_GATE=refuse` refuses such a kernel instead, naming the
   instruction and the wait states missing; `report` builds it and says so,
   for a sweep; `0` turns the gate off. A compiler that pads the gate's probe
   (a two-path case, through its own `llc`) is not checked. hk's inline-asm
@@ -243,14 +245,13 @@ python -m hk.runtime.cocheck --bundle lib.so     # a host binary with an embedde
   LDS or vector-memory load is still writing fails. The compiler inserts the
   waits for loads it emitted, and nothing does for loads written as inline
   asm. On gfx950, with hk's bind removed, LLVM hoisted the MFMAs above the
-  waits and every configuration returned NaN
-  ([chapter 29](history/29-cdna.md)).
+  waits and every configuration returned NaN.
 
 It exits 1 if any kernel fails a gate. The wait scan is a linear walk,
 done twice for loops, so a report can be a false alarm, and a clean pass is
 only as good as that walk is for the kernel's control flow. gfx950's copies
 into LDS (`buffer_load … lds`) write no register but count on vmcnt, so they
-take their place in its queue ([chapter 34](history/34-cdna-attention.md)).
+take their place in its queue.
 
 ## Warming the cache
 
@@ -308,8 +309,7 @@ one, and a record from another arch is ignored. A record changes nothing
 unless it beat the default by `MIN_GAIN` (1%); the bar is applied at `--ship`
 and again on lookup, `HK_AUTOTUNE_MIN_GAIN` moves it, and `HK_AUTOTUNE=0`
 ignores records entirely. `python/hk/tuned/README.md` says why there are so
-few: in [Phase 5](history/04-phase-5-autotune.md) 4 of 16 keys cleared the
-bar, and three attention records ship today (`gemm_bf16.json` is empty).
+few: when the records were made, 4 of 16 keys cleared the bar, and three attention records ship today (`gemm_bf16.json` is empty).
 
 `--aot` prebuilds every schedule production can reach — the recorded ones and
 the default, since the default is what an unrecorded key gets.
@@ -341,8 +341,7 @@ With `HK_TORCH_OP=library`, the op is a libtorch registration instead:
 * It registers with `TORCH_LIBRARY_FRAGMENT` (every kernel is its own `.so`
   in one namespace), and building it needs torch's headers.
 
-The reasons for each of these are in [Phase 6](history/05-phase-6-torch-ops.md),
-with the measurement that the registration costs nothing.
+Registering the op costs nothing measurable at launch.
 
 ### Over a device-only code object
 
@@ -386,8 +385,7 @@ What an eager launch costs on the host is what an eager server pays per hk
 call whenever the CPU, not the GPU, sets the pace. SGLang on RDNA3 decodes
 eagerly. The torch op used to cost 27.3 µs of host time per call on the pod:
 it packed the argument field by field, built a ctypes buffer per launch and
-entered a device context. It now costs 17.8 µs ([chapter
-25](history/25-sglang-moe.md)):
+entered a device context. It now costs 17.8 µs:
 - one precompiled `struct` packs the whole argument in one call;
 - each thread reuses one argument buffer, since the launch copies the
   argument out before it returns;
@@ -472,6 +470,7 @@ listed in [integration](integration.md#environment-variables).
 | `HK_CACHE_DIR` | `runtime/compile.py` | the compile cache (else `$XDG_CACHE_HOME/hk`, else `~/.cache/hk`) |
 | `HK_TORCH_OP` | `runtime/torch_ext.py` | `library`: `hk.torch_op` builds the libtorch registration (default: over a device-only code object) |
 | `HK_LAUNCH` | `dsl/kernel.py` | `codeobj`: `Kernel.__call__` launches the device-only code object (else the pybind module) |
+| `HK_STRICT_STREAM` | `dsl/kernel.py` | `1`: on RDNA, `k(...)` under a non-default torch stream raises instead of warning once (its pybind launch is on the null stream) |
 | `HK_HOST_FASTPATH` | `runtime/hostpath.py` | `0`/`off`/`no`/`false`: no host fast paths (per-shape memos, launches without the dispatcher); every call takes the path it took before them. Default on |
 | `HK_TUNE_DIR` | `autotune/__init__.py` | where tuning records are written (default: `autotune/` in the cache) |
 | `HK_AUTOTUNE` | `autotune/__init__.py` | `0`, `off` or `no` pins every tuner to its default schedule |

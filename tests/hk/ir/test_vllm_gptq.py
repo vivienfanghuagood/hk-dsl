@@ -65,16 +65,17 @@ def test_what_it_refuses_and_why(method, why):
     assert vllm_gptq._why_not(method) == why
 
 
-def test_batches_below_min_m_stay_on_vllms_kernel(monkeypatch):
-    """At GPTQ's group 32, below MIN_M tokens vLLM's kernel is the faster."""
+def test_batches_past_64_stay_on_vllms_kernel(monkeypatch):
+    """hk's kernel takes 1 (MIN_M) to 64 tokens; a bigger batch is vLLM's."""
     torch = pytest.importorskip("torch")
     if _common.importable("vllm"):
         pytest.skip("vllm is installed here; the gpu tier covers the fallback")
     from hk.ops import w4a16
 
+    assert vllm_gptq.MIN_M == 1
     calls = []
     monkeypatch.setattr(w4a16, "plan", lambda *a: calls.append(a) or None)
-    x = torch.empty(vllm_gptq.MIN_M - 1, 5120, dtype=torch.float16)
+    x = torch.empty(65, 5120, dtype=torch.float16)
     s = torch.empty(1, dtype=torch.float16)
     with pytest.raises(ImportError):          # the fallback is vLLM's op; no vLLM here
         vllm_gptq.gptq_w4a16(x, None, None, None, torch.empty(17408, 640), s, s, 32)

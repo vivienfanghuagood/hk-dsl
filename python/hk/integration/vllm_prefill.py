@@ -216,6 +216,47 @@ def _flash_op(head_dim: int, group: int, scale: Optional[float]):
     return _FLASH[key]
 
 
+#: V^T pre-pack for TRITON_ATTN (paged_prefill vt_pages): the batch's V pages transposed once a
+#: call into a scratch, instead of once per (query head, tile) workgroup inside the kernel. Taken
+#: when the scratch -- requests x the longest request's pages -- stays under VT_CAP_BYTES;
+#: HK_VLLM_PREFILL_VT=0 turns it off.
+VT = __import__("os").environ.get("HK_VLLM_PREFILL_VT", "1") not in ("0", "off", "no", "false")
+VT_CAP_BYTES = 256 << 20
+_VT_OPS: dict = {}
+_VT_SCRATCH: dict = {}
+
+
+def _vt_ops(head_dim: int, group: int, scale: Optional[float]):
+    """(pack launch, vt_pages launch, Q tile rows), or None (not built here, or head_dim 256)."""
+    key = (head_dim, group, scale)
+    if key not in _VT_OPS:
+        _VT_OPS[key] = None
+        if head_dim <= 128:
+            from ..ops import paged_prefill as pp  # noqa: PLC0415
+
+            tag = "" if scale is None else "_s%08x" % (hash(scale) & 0xffffffff)
+            main = _built(lambda: (pp.paged_prefill_kernel(
+                f"paged_prefill_flashvt_d{head_dim}_g{group}{tag}", head_dim=head_dim,
+                group=group, scale=scale, layout="flash", warps=12, decodes=True,
+                vt_pages=True), 192))
+            pack = _built(lambda: (pp.vt_pack_kernel(f"paged_vt_pack_d{head_dim}",
+                                                     head_dim=head_dim), 0))
+            if main is not None and pack is not None:
+                _VT_OPS[key] = (pack[0], main[0], main[1])
+    return _VT_OPS[key]
+
+
+def _vt_scratch(device, slots: int, hkv: int, d: int):
+    import torch  # noqa: PLC0415
+
+    key = (str(device), hkv, d)
+    got = _VT_SCRATCH.get(key)
+    if got is None or got.shape[0] < slots:
+        got = _VT_SCRATCH[key] = torch.empty(1 << (slots - 1).bit_length(), hkv, d, 16,
+                                             device=device, dtype=torch.bfloat16)
+    return got
+
+
 #: unified_attention's arguments that must be off for hk to take a call: name -> the test.
 _U_OFF = {
     "alibi_slopes": lambda v: v is None, "sinks": lambda v: v is None,
@@ -302,7 +343,17 @@ def unified_attention(*args, **kwargs):
     op, tile = got
     from ..ops import paged_prefill as pp  # noqa: PLC0415
 
-    args = [q.reshape(n, h * d), kv, kv, a["block_table"], a["seqused_k"], a["cu_seqlens_q"],
+    v_src = kv
+    if VT and d <= 128:
+        hkv = a["k"].shape[2]
+        span = -(-int(a.get("max_seqlen_k") or 0) // 16)
+        slots = len(a["seqused_k"]) * span
+        vt_ops = _vt_ops(d, h // hkv, scale) if 0 < slots * hkv * d * 32 <= VT_CAP_BYTES else None
+        if vt_ops is not None:
+            pack, op, tile = vt_ops
+            v_src = _vt_scratch(q.device, slots, hkv, d)
+            pack(kv, a["block_table"], a["seqused_k"], pp.q_tiles(span * 16, q.device, 16), v_src)
+    args = [q.reshape(n, h * d), kv, v_src, a["block_table"], a["seqused_k"], a["cu_seqlens_q"],
             pp.q_tiles(int(a["max_seqlen_q"]), q.device, tile), out.reshape(n, h * d)]
     if d <= 128:
         # the GQA-packed decodes' views: q and the output as (1, tokens, heads, head_dim)

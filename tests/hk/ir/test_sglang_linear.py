@@ -96,6 +96,7 @@ def test_the_plugin_patches_by_default(fake_sglang, monkeypatch, capsys):
     for e in ("HK_DISABLE", "HK_SGLANG_LINEAR", "HK_PATCH_SGLANG"):
         monkeypatch.delenv(e, raising=False)
     monkeypatch.setenv("HK_SGLANG_MOE", "0")          # its contract needs SGLang's MoE modules
+    monkeypatch.setenv("HK_SGLANG_NORM", "0")         # and this one its layernorm module
     orig = Unquantized.apply
     _sglang_plugin.register()
     assert Unquantized.apply is not orig
@@ -108,6 +109,7 @@ def test_the_plugin_does_nothing_when_turned_off(fake_sglang, monkeypatch, env):
     from hk.integration import _sglang_plugin
 
     monkeypatch.setenv("HK_SGLANG_MOE", "0")
+    monkeypatch.setenv("HK_SGLANG_NORM", "0")
     for k, v in env.items():
         monkeypatch.setenv(k, v)
     orig = Unquantized.apply
@@ -121,6 +123,7 @@ def test_the_plugin_patches_when_asked_and_never_raises(fake_sglang, monkeypatch
     monkeypatch.delenv("HK_DISABLE", raising=False)
     monkeypatch.setenv("HK_SGLANG_LINEAR", "1")
     monkeypatch.setenv("HK_SGLANG_MOE", "0")
+    monkeypatch.setenv("HK_SGLANG_NORM", "0")
     _sglang_plugin.register()
     assert "linear -> hk" in capsys.readouterr().out
 

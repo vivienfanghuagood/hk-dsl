@@ -1,5 +1,5 @@
 """`python3 -m hk.integration warm-routes`: build the kernels of hk's DeepSeek-V4.1 vLLM routes
-before the engine starts, so no request pays a JIT compile (docs/design/serving-readiness.md, A3).
+before the engine starts, so no request pays a JIT compile (docs/archive/design/serving-readiness.md, A3).
 
 The routes (vllm_mxfp8, vllm_moe_a8w4) compile their kernels on first use, in every TP worker.
 `--warm` builds the attention ops only. This runs each route once, on synthetic data of the

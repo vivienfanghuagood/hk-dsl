@@ -346,6 +346,18 @@ class RouteTable:
             return []
         return [(p, var) for p, lo, hi, var in pref if lo <= m <= hi]
 
+    def routes_any(self, n: int, k: int) -> bool:
+        """Whether some M of this (N, K) takes a path other than `fallback`: a run, the path
+        above the measured grid, or an optional path's range. False for a shape the table never
+        measured."""
+        rs = self._runs.get((n, k))
+        if self._prefer.get((n, k)):
+            return True
+        if not rs:
+            return False
+        return (any(p != self.fallback for _, _, p in rs)
+                or self._above[(n, k)] != self.fallback)
+
     def lookup(self, m: int, n: int, k: int) -> str:
         rs = self._runs.get((n, k))
         if not rs:

@@ -145,7 +145,7 @@ LDS. The knobs are the C++'s `#define`s: the tile (`block_m`, `block_n`,
 `k_step`, `dot_slice`), the warp grid (`warps`, `warp_rows`), how a warp tile
 is cut into accumulators (`n_split`), the L2 swizzle (`wgm`), one or two LDS
 buffers and where the staging drain lands (`lds_buffers`, `write_pos`), and
-the schedule hints of [chapter 28](history/28-gemm-schedule.md): `setprio`
+the schedule hints: `setprio`
 (off -- it was a fence, 3.5-4.3% slower), `sched` (sched_group_barrier
 interleaving), `stream_a` (FlyDSL's one-fragment-at-a-time A), `stagger`
 (FlyDSL's K rotation, a loss here). The default is one LDS buffer, 128x128x64,
@@ -154,33 +154,29 @@ eight waves as 4x2 (three workgroups a WGP).
 ### gfx950: `PingPong` -- HipKittens' 8-wave schedule (`hk.ops.gemm_cdna`)
 
 The 256x256 block in four quadrants, eight waves as two halves a barrier
-apart so every SIMD has one wave at the matrix core and one at memory
-([chapter 33](history/33-cdna-gemm.md)). Knobs: the block (`block_m`,
+apart so every SIMD has one wave at the matrix core and one at memory. Knobs: the block (`block_m`,
 `block_n` in 128/256), `k_step`, the warp grid (`warps_m x warps_n` = 8), the
 L2/XCD placement (`wgm`, `xcd_chunk`), `setprio`, `early_store` (the first
 two quadrants stored while the last are computed), `late_b` (the read that
 makes HipKittens' own waits right), `transposed_c` (kept as a measured loss),
-`splits` (split-K), and the weight-streaming copies of
-[chapter 41](history/41-cdna-leftovers.md): `lds_shape="16x64"` (whole-line
+`splits` (split-K), and the weight-streaming copies: `lds_shape="16x64"` (whole-line
 copies) and `nt` (nontemporal, past the caches).
 
 ### gfx950: `Dp` -- the four-warp ring (`hk.ops.gemm_cdna_dp`)
 
-Smaller blocks for shapes the pingpong has too few of
-([chapter 33](history/33-cdna-gemm.md#the-shapes-256x256-has-too-few-blocks-for)):
+Smaller blocks for shapes the pingpong has too few of:
 `block_m x block_n` over a `warps_m x warps_n` grid, copies `stages - 1`
 K-tiles ahead in a ring of LDS buffers, one barrier a tile; `pipelined` reads
 tile t+1's operands during tile t; `splits` cuts K across workgroups; the
 CU-filling blocks (96, 224 columns) and the streamed weights (`lds_shape`,
-`nt`, deep `k_step`) of [chapter 41](history/41-cdna-leftovers.md).
+`nt`, deep `k_step`).
 
 ### Both: `Decode` -- the decode GEMV (`hk.ops.decode_gemm`)
 
 For M <= 64: W straight to registers, one 16-row block of W a workgroup, its
 K split across `warps` waves and, with `splits`, across workgroups.
 `tokens` 16-row tiles of X, `slices` 16-deep K slices a load, the combine's
-batch (`combine_depth`) and the workgroups a WGP/CU holds (`resident`)
-([chapter 9](history/09-decode-kernel.md)).
+batch (`combine_depth`) and the workgroups a WGP/CU holds (`resident`).
 
 ### `Columns`
 
@@ -200,13 +196,12 @@ t.kernel(128, causal=True).source()
 out = t.launch(q, k, v, causal=True)                            # (B, H, N, D) bf16
 ```
 
-`AttnRdna` (gfx1100, `hk.ops.attn`; [chapter 3](history/03-phase-4-attention.md)):
+`AttnRdna` (gfx1100, `hk.ops.attn`):
 the query block (`q_block` x `warps` rows; only 16-row blocks trace), the KV
 step (`kv_block`, 32 or 64; 64 at head_dim 128 spills), how many 16x16 LDS
 reads of K and V^T go in flight before their waits (`qk_tiles`, `pv_tiles`:
 what its tuner searches and the shipped `attn_fwd_d128*.json` records hold),
-and `setprio`. `AttnCdna` (gfx950, `hk.ops.attn_cdna`;
-[chapter 34](history/34-cdna-attention.md)): the tile is HipKittens'; the knobs
+and `setprio`. `AttnCdna` (gfx950, `hk.ops.attn_cdna`): the tile is HipKittens'; the knobs
 are the schedule's choices around it -- the lazy rescale's headroom (`lazy`),
 the MFMA/VALU interleave (`sched`), `setprio`, and under causal the longest
 blocks first (`lpt`) and skipping the math past a warp's queries (`skip`).

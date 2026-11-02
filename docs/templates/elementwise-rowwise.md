@@ -256,7 +256,7 @@ in the machine.
 ## hk.ops on the same plans
 
 The ops the templates reproduce take the same arguments on both GPUs now
-(the cross-architecture audit in docs/dx/api-consistency.md listed where they
+(the cross-architecture audit in docs/archive/design/api-consistency.md listed where they
 did not):
 
 | op | before, on gfx1100 | now, on both |

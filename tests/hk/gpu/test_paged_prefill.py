@@ -427,3 +427,33 @@ def test_flash_packed_decodes_with_a_strided_q():
          out.unsqueeze(0))
     want = _reference(q, k, v, table, lens, q_start, 8, page=ROCM_PAGE)
     _attn_ref.check(out, want)
+
+
+@rocm_only
+@pytest.mark.parametrize("reqs", [[(0, 300)], [(500, 1), (2047, 1), (0, 300), (1000, 77), (33, 1)]])
+def test_flash_vt_pages_is_bitwise_the_flash_layout(reqs):
+    """vt_pages: the batch's V pages packed once into V^T slots (vt_pack_kernel) and staged
+    straight -- the same V^T tile in LDS as the register transpose builds, so the same bits."""
+    q, (k, v), _, table, lens, q_start = _rocm_case(reqs, head_dim=128, h_kv=2, group=8)
+    n_tok, h, d = q.shape
+    fl = torch.stack([k.transpose(1, 2), v.transpose(1, 2)], dim=1)
+    kv = fl.reshape(k.shape[0], 2, ROCM_PAGE, 2 * d).contiguous()
+    max_q = max(n for _, n in reqs)
+    outs = []
+    for vt in (False, True):
+        out = torch.full_like(q, 7.0)
+        kern = pp.paged_prefill_kernel(f"t_pp_flash_d128_g8_w12_dec{'_vt' if vt else ''}",
+                                       head_dim=128, group=8, layout="flash", warps=12,
+                                       decodes=True, vt_pages=vt)
+        v_src = kv
+        if vt:
+            span = max(-(-s // 16) for s in lens.tolist())
+            v_src = torch.full((len(reqs) * span, 2, d, 16), float("nan"), device="cuda",
+                               dtype=torch.bfloat16)
+            pp.vt_pack_kernel("t_vt_pack_d128", head_dim=128)(
+                kv, table, lens, pp.q_tiles(span * 16, q.device, 16), v_src)
+        kern(q.view(n_tok, h * d), kv, v_src, table, lens, q_start, pp.q_tiles(max_q, q.device, 192),
+             out.view(n_tok, h * d), q.unsqueeze(0), out.unsqueeze(0))
+        outs.append(out)
+    assert torch.equal(outs[0], outs[1])
+    _attn_ref.check(outs[1], _reference(q, k, v, table, lens, q_start, 8, page=ROCM_PAGE))

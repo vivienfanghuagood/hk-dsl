@@ -4,7 +4,7 @@ A template owns the tiling, the layout, the per-architecture plan and the
 schedule; the hook is a traced function (like an `@hk.func` body) for the
 math that makes the kernel yours -- an elementwise function, a row
 reduction's epilogue, a GEMM's epilogue, an attention score modifier.
-docs/design/dx-goal.md says what they are for and how they are judged.
+docs/archive/design/dx-goal.md says what they are for and how they are judged.
 
 Each template lives in its own module and is imported on first use, so the
 modules are independent of one another.

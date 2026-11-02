@@ -4,7 +4,7 @@
 
 Everything before this chapter ran on gfx1100 and gfx1201. This chapter adds
 gfx942 (CDNA3, MI300X) and gfx950 (CDNA4, MI355X) as targets. The design
-assessment is in [design/cdna.md](../design/cdna.md); this chapter records
+assessment is in [design/cdna.md](../archive/design/cdna.md); this chapter records
 what was merged and what it measured. The hardware was one MI355X of a shared
 8-GPU node, used one GPU at a time inside `rocm/pytorch` (ROCm 7.2.3,
 PyTorch 2.10). No gfx942 part was available, so everything said about gfx942
@@ -71,7 +71,7 @@ every kernel.
 
 ### What it measured
 
-[CDNA, on one MI355X](../performance.md#the-first-cdna-pass) has the
+[CDNA, on one MI355X](../archive/performance-2026-10.md#the-first-cdna-pass) has the
 numbers. In short:
 - Vector add, RMSNorm and softmax are correct, at 0.51-0.61x torch with
   tiles planned for RDNA3.
@@ -289,7 +289,7 @@ To make this per target without touching RDNA output:
 - The row kernels take the 16x32 fragment for their fp32 tile, except where
   a row is folded onto the tile's rows.
 
-The numbers are in [performance](../performance.md#the-first-cdna-pass). In
+The numbers are in [performance](../archive/performance-2026-10.md#the-first-cdna-pass). In
 short, at 8192x4096 the norms went from 0.70-0.80x torch to 0.93-1.04x,
 fused add + RMSNorm from 1.19x to 1.44x, and `silu_mul` is 1.76x.
 
@@ -349,7 +349,7 @@ CUDA graph can capture it. The ops are `gemm_bf16` and `gqa_fwd`, plus the
 `engine.Op`s `hk_cdna::gemm_bf16` and `hk_cdna::gqa_fwd`. They refuse, with
 the reason, a shape the kernel cannot take; nothing is padded. vLLM's linear
 patch gains a `hipkittens` path. The full write-up is
-[design/cdna-hipkittens-ops.md](../design/cdna-hipkittens-ops.md).
+[design/cdna-hipkittens-ops.md](../archive/design/cdna-hipkittens-ops.md).
 
 ### The toolchain decides whether the kernels are right
 

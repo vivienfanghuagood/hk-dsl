@@ -1,6 +1,6 @@
 # T4: why this task, these baselines and this rule (evaluator only)
 
-Criterion T4 of [docs/design/tuning-goal.md](../../docs/design/tuning-goal.md):
+Criterion T4 of [docs/archive/design/tuning-goal.md](../../docs/archive/design/tuning-goal.md):
 *a fresh agent given only the docs, `hk.check`, `hk.profile`, `hk.tune` and
 `hk.schedules` takes a hidden variant -- one of fp8 GEMM, grouped/MoE GEMM, an
 attention `score_mod` -- from first kernel to >= 0.95x the best baseline within

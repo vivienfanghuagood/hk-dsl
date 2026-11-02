@@ -508,6 +508,57 @@ __device__ inline static void load_w4(RT &dst, const QL &qw, const SL &s, const 
         }
     }
 }
+/**
+ * load_w4's symmetric form: one zero point ZERO for every group (GPTQ's uint4b8: 8), element (n, k)
+ * being (q - ZERO) * s -- zs computed as ZERO * s in registers, never read (12.5% fewer bytes at
+ * 32-column groups). Bit for bit the asymmetric form on a checkpoint whose zs is ZERO * s.
+ */
+template<int G, int ZERO, bool SBLK = false, ducks::rt::all RT, ducks::gl::all QL, ducks::gl::all SL>
+__device__ inline static void load_w4(RT &dst, const QL &qw, const SL &s, int n0, int k0) {
+    using F = detail::hk_frag<RT>;
+    using T = typename F::T;
+    static_assert(F::row && F::R == 16 && F::C == 32 && F::S == 8 && F::K == 1,
+                  "W4 codes load into 16x32 row-layout operand fragments");
+    static_assert(std::is_same_v<T, bf16> || std::is_same_v<T, half>,
+                  "W4 codes dequantize into bf16 or half tiles");
+    static_assert(std::is_same_v<typename QL::dtype, int>, "codes are packed in int32");
+    static_assert(std::is_same_v<typename SL::dtype, T>, "scales are the tile's type");
+    static_assert(G % 8 == 0, "a lane's eight columns lie in one group");
+    static_assert(ZERO >= 0 && ZERO < 16, "a 4-bit zero point");
+    constexpr bool one_group = G % (32 * RT::width) == 0;
+
+    const int lane = laneid();
+    const int r = lane % 16, wq = lane / 16;      // row, and word of the chunk
+    const int chunks = qw.cols() / 4;             // 32-column chunks per row
+    const int groups = SBLK ? s.cols() / 16 : s.cols();
+    const int *qp = reinterpret_cast<const int *>(qw.raw_ptr);
+    const T *sp = s.raw_ptr;
+    #pragma unroll
+    for (int i = 0; i < RT::height; i++) {
+        const int n = n0 + i * 16 + r;
+        const int *blk = qp + (n >> 4) * chunks * 64 + r * 4 + wq;
+        auto s_at = [&](int g) { return SBLK ? (n >> 4) * groups * 16 + g * 16 + (n & 15) : n * groups + g; };
+        float sc = 0.f, zsc = 0.f;
+        if constexpr (one_group) {
+            sc = base_types::convertor<float, T>::convert(sp[s_at(k0 / G)]);
+            zsc = sc * float(ZERO);
+        }
+        #pragma unroll
+        for (int j = 0; j < RT::width; j++) {
+            const uint32_t word = uint32_t(blk[((k0 + j * 32) / 32) * 64]);
+            if constexpr (!one_group) {
+                const int g = (k0 + j * 32 + 8 * wq) / G;
+                sc = base_types::convertor<float, T>::convert(sp[s_at(g)]);
+                zsc = sc * float(ZERO);
+            }
+            uint32_t out[4];
+            detail::hk_w4_word<T>(word, sc, zsc, out);
+            #pragma unroll
+            for (int t = 0; t < 4; t++)
+                __builtin_memcpy(&dst.tiles[i][j].data[t], &out[t], 4);
+        }
+    }
+}
 #endif
 
 }  // namespace kittens

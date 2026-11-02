@@ -52,7 +52,7 @@ jobs:
   gfx950-vllm:
     # The deployment image: the vLLM nightly the DeepSeek-V4.1 routes were measured on (ROCm 10,
     # hipcc clang 23), whose compiler has differed from rocm/pytorch's three times (#35, #39, a
-    # dp128x224 spill). The routes' tests and the engine contract (docs/design/serving-readiness.md,
+    # dp128x224 spill). The routes' tests and the engine contract (docs/archive/design/serving-readiness.md,
     # A7 / A9), not the whole tier; its own dialect build and kernel cache (x950v/ci under the runner
     # instance's HK_CI_STATE: set HK_CI_DIRNAME, not HK_CI_DIR, so that each instance keeps its own).
     runs-on: [self-hosted, hk-gpu, gfx950]

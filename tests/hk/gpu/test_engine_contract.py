@@ -1,6 +1,6 @@
 """The engine contract of hk's DeepSeek-V4.1 routes: every vLLM / AITER entry point they patch or
 call still exists with the parameters they use, and a patched engine reaches hk and gives stock
-results when it falls back (docs/design/serving-readiness.md, A9).
+results when it falls back (docs/archive/design/serving-readiness.md, A9).
 
 The routes patch internals: RocmDotScaledMxfp8LinearKernel's two methods (vllm_mxfp8) and
 aiter.fused_moe.fused_moe with its signature (vllm_moe_a8w4). They were measured on one vLLM

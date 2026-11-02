@@ -1567,31 +1567,30 @@ __device__ static inline void lds_store_elems(ST &dst, const V &val, const I &id
     });
 }
 #if defined(KITTENS_CDNA4)   // (hk_mxs and the f8f6f4 operand containers are gfx950's)
-/** @brief hk.fp4_operand: a lane's four dwords (i32 strip 1 x 256, run 4) as the first four dwords of a 16x128
- * fp8 fragment, the FP4 operand container of mma_ABt_mx(..., fp4). */
+/** @brief hk.lane_view: a 1-row i32 strip's dwords as a 16x128 fp8 fragment -- eight a lane (1 x 512,
+ * run 4: two runs, its K step's 16-byte halves at K 16 j .. and 64 + 16 j .., j = lane / 16), the fragment
+ * mma_ABt_mx reads; or four (1 x 256, run 4), the first four dwords of the FP4 operand container. */
 template<typename RT, ducks::rs::all S>
-__device__ static inline void fp4_operand(RT &dst, const S &src) {
+__device__ static inline void lane_view(RT &dst, const S &src) {
     static_assert(RT::height == 1 && RT::width == 1, "one 16x128 fragment");
-    int w[4];
-    #pragma unroll
-    for (int e = 0; e < 4; e++) w[e] = int(src.data[0][0][e]);
-    __builtin_memcpy(&dst.tiles[0][0].data[0], w, 16);
+    static_assert(S::rows == 1 && S::run == 4 && (S::chunks == 1 || S::chunks == 2),
+                  "four or eight dwords a lane, in runs of four");
+    if constexpr (S::chunks == 1) {
+        int w[4];
+        #pragma unroll
+        for (int e = 0; e < 4; e++) w[e] = int(src.data[0][0][e]);
+        __builtin_memcpy(&dst.tiles[0][0].data[0], w, 16);
+    } else {
+        int w[8];
+        #pragma unroll
+        for (int e = 0; e < 4; e++) { w[e] = int(src.data[0][0][e]); w[4 + e] = int(src.data[0][1][e]); }
+        __builtin_memcpy(&dst.tiles[0][0].data[0], w, 32);
+    }
 }
-/** @brief hk.fp8_operand: a lane's eight dwords (i32 strip 1 x 512, run 4: two runs, its K step's 16-byte
- * halves -- K 16 j .. and 64 + 16 j .., j = lane / 16) as the 16x128 fp8 fragment mma_ABt_mx reads. */
-template<typename RT, ducks::rs::all S>
-__device__ static inline void fp8_operand(RT &dst, const S &src) {
-    static_assert(RT::height == 1 && RT::width == 1, "one 16x128 fragment");
-    static_assert(S::run == 4 && S::chunks == 2, "two runs of four dwords");
-    int w[8];
-    #pragma unroll
-    for (int e = 0; e < 4; e++) { w[e] = int(src.data[0][0][e]); w[4 + e] = int(src.data[0][1][e]); }
-    __builtin_memcpy(&dst.tiles[0][0].data[0], w, 32);
-}
-/** @brief hk.mx_scales_loose: a lane's element (i32 strip 1 x 64, the E8M0 byte in bits 0..7) as the loose scale
- * register of row lane % 16, block lane / 16 of a 16x128 operand. */
+/** @brief hk.lane_view as scales: a lane's element (i32 strip 1 x 64, the E8M0 byte in bits 0..7) as the loose
+ * scale register of row lane % 16, block lane / 16 of a 16x128 operand. */
 template<ducks::rs::all S>
-__device__ static inline void mx_scales_loose(hk_mxs<16, 4, 1> &dst, const S &src) {
+__device__ static inline void lane_view(hk_mxs<16, 4, 1> &dst, const S &src) {
     dst.reg[0][0] = uint32_t(int(src.data[0][0][0]) & 0xFF);
 }
 #endif

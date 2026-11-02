@@ -184,6 +184,15 @@ def _wrap(worker) -> None:
         except BaseException as e:  # noqa: BLE001 -- a slower server, not a broken one
             REPORT.update(line=f"tuning at load failed ({type(e).__name__}: {e})")
             print(f"[hk] linear routes at load: {REPORT['line']}", flush=True)
+        try:
+            from . import vllm_gemm  # noqa: PLC0415
+
+            line = vllm_gemm.decide_layers(self.model_runner.get_model())
+            REPORT["layers"] = line
+            print(f"[hk] linear layers at load: {line} (pid {os.getpid()})", flush=True)
+        except BaseException as e:  # noqa: BLE001 -- layers then decide on their first call
+            print(f"[hk] linear layers at load: not decided ({type(e).__name__}: {e}); "
+                  f"each decides on its first call", flush=True)
         return out
 
     worker.load_model = load_model

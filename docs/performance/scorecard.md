@@ -37,7 +37,7 @@ each engine's latest RDNA path. Until it exists, we quote no RDNA numbers.
 
 ## The older numbers
 
-The [performance page](../performance.md) and the
+The [performance page](../archive/performance-2026-10.md) and the
 [development record](../history/README.md) are kept as a dated record of
 kernel-level and engine-level measurements. Some of their baselines were
 weaker than the opponents' best configuration, so do not read them as current

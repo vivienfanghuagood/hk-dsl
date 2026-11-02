@@ -1477,11 +1477,14 @@ private:
             name(o.getSa()) + ", " + name(o.getSb()) + ");");
         })
         .Case([&](LoadW4Op o) {
+          // symmetric (zero, no zs): hk/rdna/w4.cuh's or hk/cdna/formats.cuh's form
           Value d = dest(o.getDst(), o.getResult());
-          w("kittens::load_w4<" + std::to_string(o.getGroup()) + ">(" + name(d) +
-            ", " + name(o.getQw()) + ", " + name(o.getS()) + ", " +
-            name(o.getZs()) + ", " + name(o.getN0()) + ", " + name(o.getK0()) +
-            ");");
+          std::string tmpl = std::to_string(o.getGroup()) +
+                             (o.getZero() ? ", " + std::to_string(*o.getZero()) : std::string()) +
+                             (o.getSBlocked() ? ", true" : "");
+          w("kittens::load_w4<" + tmpl + ">(" + name(d) + ", " + name(o.getQw()) + ", " +
+            name(o.getS()) + ", " + (o.getZs() ? name(o.getZs()) + ", " : std::string()) +
+            name(o.getN0()) + ", " + name(o.getK0()) + ");");
         })
         .Case([&](GatherPrepOp o) {
           w("kittens::gather_prep<" + std::to_string(o.getRows()) + (o.getRaw() ? ", 1" : "") +
@@ -1865,17 +1868,9 @@ private:
           Value d = dest(o.getDst(), o.getResult());
           call("copy", d, {name(o.getSrc())});
         })
-        .Case([&](Fp4OperandOp o) {
+        .Case([&](LaneViewOp o) {
           Value d = dest(Value(), o.getResult());
-          w("kittens::fp4_operand(" + name(d) + ", " + name(o.getWords()) + ");");
-        })
-        .Case([&](Fp8OperandOp o) {
-          Value d = dest(Value(), o.getResult());
-          w("kittens::fp8_operand(" + name(d) + ", " + name(o.getWords()) + ");");
-        })
-        .Case([&](MxScalesLooseOp o) {
-          Value d = dest(Value(), o.getResult());
-          w("kittens::mx_scales_loose(" + name(d) + ", " + name(o.getBytes()) + ");");
+          w("kittens::lane_view(" + name(d) + ", " + name(o.getSrc()) + ");");
         })
         .Case([&](FirstLaneOp o) {
           w("const int " + name(o.getResult()) + " = __builtin_amdgcn_readfirstlane(int(" + name(o.getSrc()) +

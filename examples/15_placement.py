@@ -116,8 +116,15 @@ def main():
         "hardware order": lambda: shared_sum(q, kv, o),
         "cluster placement": lambda: shared_sum_placed(q, kv, o),
     }, args.rounds)
+    # Rate over each byte once (q and kv read, o written): the bytes DRAM has to move at least.
+    # The workgroups request 16x more of kv than that -- every query tile of a head reads all of
+    # its kv -- but the repeats come from the L2s (and, on a Radeon, the Infinity Cache), so a
+    # rate over the requested bytes would read above DRAM's peak without meaning anything.
     _common.report("time", best, baseline="hardware order",
-                   work=(q.numel() * 2 + kv.numel() * (n // 16)) * 2, unit="TB/s (as read)")
+                   work=(q.numel() * 2 + kv.numel()) * 2, unit="TB/s (each byte once)")
+    print("  (far below DRAM's peak by design: one warp a workgroup adds its kv tiles one after\n"
+          "   another, so the kernel is bound by that latency, not by bandwidth; it shows what a\n"
+          "   placement changes, not a fast kernel)")
 
 
 if __name__ == "__main__":

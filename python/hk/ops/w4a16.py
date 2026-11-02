@@ -19,6 +19,17 @@ zs, so a code dequantizes as q * s - zs, one FMA:
     zs  bf16  [N, K / group]
 
 `repack_awq` and `repack_gptq` write it from either checkpoint format.
+
+**Symmetric.** A checkpoint with one zero point for every group, GPTQ's
+uint4b8 (8), need not keep zs: `repack_gptq(..., symmetric=True)` returns zs
+None and s in 16-row blocks,
+
+    s   [N/16, K/group * 16]: block b, group g, row r at [b][16 g + r]
+
+so the 16 rows a k-step reads take 32 contiguous bytes. The kernels compute
+(q - 8) * s (`hk.load_w4(..., zero=8, s_blocked=True)`), in packed fp16 for
+fp16 activations: q - 8 exact, the product rounded once to nearest even.
+12.5% fewer bytes at GPTQ's 32-column groups, and half the decode work.
 """
 
 from typing import Any, Dict, Optional, Tuple
@@ -92,31 +103,60 @@ def repack_awq(qweight, qzeros, scales, group: int, dtype=None):
     return _finish(q.t().contiguous(), z, scales, group, dtype)
 
 
+#: The zero point of a symmetric 4-bit checkpoint (GPTQ's uint4b8).
+SYMMETRIC_ZERO = 8
+
+
 def repack_gptq(qweight, qzeros, scales, group: int, *, zero_offset: int = 1,
-                dtype=None):
+                dtype=None, symmetric: bool = False):
     """A GPTQ checkpoint without act-order -- qweight int32 [K/8, N] packed
     along K, qzeros int32 [K/group, N/8] packed along N, scales [K/group, N]
-    -- as (qw, s, zs). `zero_offset` 1 is GPTQ v1's stored zero, one short."""
+    -- as (qw, s, zs). `zero_offset` 1 is GPTQ v1's stored zero, one short.
+
+    `symmetric`: (qw, s, None) for the kernels' symmetric form, which takes
+    every zero point to be 8. Refused (ValueError) unless every stored zero
+    point is: a checkpoint is checked, not assumed."""
     import torch  # noqa: PLC0415
 
     k8, n = qweight.shape
     shifts = torch.arange(0, 32, 4, device=qweight.device, dtype=torch.int32)
     q = ((qweight.unsqueeze(1) >> shifts.view(1, 8, 1)) & 0xF).reshape(k8 * 8, n)
     z = _unpack_cols(qzeros).to(torch.int32) + zero_offset
+    if symmetric:
+        if not bool((z == SYMMETRIC_ZERO).all()):
+            raise ValueError(f"repack_gptq(symmetric=True): the checkpoint's zero points are not "
+                             f"all {SYMMETRIC_ZERO} (with zero_offset {zero_offset})")
+        qw, s, _ = _finish(q.t().contiguous().to(torch.uint8), z, scales, group, dtype)
+        return qw, block_scales(s), None
     return _finish(q.t().contiguous().to(torch.uint8), z, scales, group, dtype)
+
+
+def block_scales(s):
+    """Scales [N, G] -> the symmetric form's 16-row blocks [N/16, G * 16]."""
+    n, g = s.shape
+    return s.reshape(n // 16, 16, g).permute(0, 2, 1).reshape(n // 16, g * 16).contiguous()
+
+
+def unblock_scales(s):
+    """`block_scales`' inverse: [N/16, G * 16] -> [N, G]."""
+    b, g16 = s.shape
+    return s.reshape(b, g16 // 16, 16).permute(0, 2, 1).reshape(b * 16, g16 // 16)
 
 
 def dequant(qw, s, zs, group: int):
     """hk's layout back to a bf16 [N, K]: the reference, and the path for
-    batches the decode kernel does not take."""
+    batches the decode kernel does not take. zs None: symmetric -- (q - 8) * s,
+    s in 16-row blocks."""
     q = _unpack_cols(_deinterleave(qw)).float()     # [N, K]
+    if zs is None:
+        s = unblock_scales(s)
     sc = s.float().repeat_interleave(group, dim=1)
-    z = zs.float().repeat_interleave(group, dim=1)
+    z = sc * SYMMETRIC_ZERO if zs is None else zs.float().repeat_interleave(group, dim=1)
     return (q * sc - z).to(s.dtype)
 
 
 def w4a16_kernel(name: str, *, tokens: int = 1, slices: int = 4, warps: int = 16,
-                 group: int = 128, blocks: int = 1, dtype=bf16):
+                 group: int = 128, blocks: int = 1, dtype=bf16, symmetric: bool = False):
     """`tokens` 16-row token tiles (M <= 16 * tokens), `slices` 16-deep K
     slices per load, `warps` waves sharing each workgroup's `blocks` 16-row
     blocks of W, `group` columns per scale. K is a multiple of
@@ -125,7 +165,10 @@ def w4a16_kernel(name: str, *, tokens: int = 1, slices: int = 4, warps: int = 16
 
     `blocks` > 1 reads each token tile once for several blocks of W: at four
     bits a 16 x 64 block of W is 512 bytes and the tokens' tile beside it
-    2 KB, so the token reads, not the weights, can be what fills the L2."""
+    2 KB, so the token reads, not the weights, can be what fills the L2.
+
+    `symmetric`: the kernel takes (x, qw, s, c), every zero point 8, no zs, s
+    in 16-row blocks (module docstring)."""
     m_rows = 16 * tokens
     kc = 16 * slices
     rows = 16 * blocks
@@ -138,14 +181,16 @@ def w4a16_kernel(name: str, *, tokens: int = 1, slices: int = 4, warps: int = 16
     st_part = hk.ST(fp32, m_rows, rows)
     in_flight = max(2, 8 // (tokens * blocks))
 
-    def body(x: hk.Tensor[dtype], qw: hk.Tensor[i32], s: hk.Tensor[dtype],
-             zs: hk.Tensor[dtype], c: hk.Tensor[dtype]):
+    @hk.func
+    def gemm(x, qw, s, zs, c):
         n0 = hk.arch.block_idx.x * rows
         wid = hk.arch.warp_id()
         acc = hk.zeros(ty_acc)
         for t in hk.range(x.cols // (kc * warps)):
             k = (t * warps + wid) * kc
-            w_t = hk.load_w4(ty_w, qw, s, zs, n0, k, group=group)
+            w_t = (hk.load_w4(ty_w, qw, s, None, n0, k, group=group, zero=SYMMETRIC_ZERO,
+                              s_blocked=True)
+                   if zs is None else hk.load_w4(ty_w, qw, s, zs, n0, k, group=group))
             x_t = x[hk.elem_coord(0, 0, 0, k)].load(ty_x, bounded=True)
             acc += w_t @ x_t.T
         out = hk.transpose(acc)
@@ -160,6 +205,15 @@ def w4a16_kernel(name: str, *, tokens: int = 1, slices: int = 4, warps: int = 16
                         hk.arch.sched_barrier()
                     out += parts[i].load(ty_out)
             c[hk.elem_coord(0, 0, 0, n0)].store(out, bounded=True)
+
+    if symmetric:
+        def body(x: hk.Tensor[dtype], qw: hk.Tensor[i32], s: hk.Tensor[dtype],
+                 c: hk.Tensor[dtype]):
+            gemm(x, qw, s, None, c)
+    else:
+        def body(x: hk.Tensor[dtype], qw: hk.Tensor[i32], s: hk.Tensor[dtype],
+                 zs: hk.Tensor[dtype], c: hk.Tensor[dtype]):
+            gemm(x, qw, s, zs, c)
 
     body.__name__ = name
     return hk.kernel(body, warps=warps, name=name,
@@ -202,13 +256,13 @@ def tokens_for(m: int) -> Optional[int]:
 
 
 def kernel_for(tokens: int, slices: int, warps: int, group: int, blocks: int = 1,
-               dtype: str = "bf16"):
-    key = (tokens, slices, warps, group, blocks, dtype)
+               dtype: str = "bf16", symmetric: bool = False):
+    key = (tokens, slices, warps, group, blocks, dtype, symmetric)
     if key not in _KERNELS:
         _KERNELS[key] = w4a16_kernel(
-            f"w4a16_t{tokens}_s{slices}_w{warps}_g{group}_b{blocks}_{dtype}",
+            f"w4a16_t{tokens}_s{slices}_w{warps}_g{group}_b{blocks}_{dtype}" + ("_sym" if symmetric else ""),
             tokens=tokens, slices=slices, warps=warps, group=group, blocks=blocks,
-            dtype=_DTYPES[dtype])
+            dtype=_DTYPES[dtype], symmetric=symmetric)
     return _KERNELS[key]
 
 
@@ -239,10 +293,11 @@ _PLANS: Dict[Tuple[Any, ...], Any] = {}
 _PLAN_CAP = 4096
 
 
-def plan(m: int, n: int, k: int, group: int, dtype):
-    """The decode kernel's launch for this call (x, qw, s, zs, out), or None
-    where `matmul` takes the dequantize path: memoized `takes` and schedule."""
-    key = (m, n, k, group, dtype)
+def plan(m: int, n: int, k: int, group: int, dtype, symmetric: bool = False):
+    """The decode kernel's launch for this call -- (x, qw, s, zs, out), or (x, qw, s, out)
+    `symmetric` -- or None where `matmul` takes the dequantize path: memoized `takes` and
+    schedule."""
+    key = (m, n, k, group, dtype, symmetric)
     try:
         return _PLANS[key]
     except KeyError:
@@ -254,7 +309,7 @@ def plan(m: int, n: int, k: int, group: int, dtype):
     if dtype in names and takes(m, n, k, group):
         sch = schedule_for(m, k, group)
         run = _op_for(tokens_for(m), sch["slices"], sch["warps"], group, sch["blocks"],
-                      names[dtype])
+                      names[dtype], symmetric)
     if len(_PLANS) < _PLAN_CAP:
         _PLANS[key] = run
     return run
@@ -262,7 +317,8 @@ def plan(m: int, n: int, k: int, group: int, dtype):
 
 def matmul(x, qw, s, zs, group: int, out=None):
     """x @ W.T for W in hk's 4-bit layout: the decode kernel up to 64 rows of
-    x, dequantize-then-F.linear above (or for a shape it does not take)."""
+    x, dequantize-then-F.linear above (or for a shape it does not take).
+    zs None: the symmetric form (every zero point 8; `repack_gptq(symmetric=True)`)."""
     import torch  # noqa: PLC0415
 
     _arch.require("hk.ops.w4a16.matmul")
@@ -274,9 +330,13 @@ def matmul(x, qw, s, zs, group: int, out=None):
     n = qw.shape[0]
     if out is None:
         out = torch.empty((m, n), device=x.device, dtype=s.dtype)
-    run = plan(m, n, k, group, x.dtype) if x.dtype == s.dtype else None
+    run = plan(m, n, k, group, x.dtype, zs is None) if x.dtype == s.dtype else None
     if run is not None:
-        run(x if x.is_contiguous() else x.contiguous(), qw, s, zs, out)
+        xc = x if x.is_contiguous() else x.contiguous()
+        if zs is None:
+            run(xc, qw, s, out)
+        else:
+            run(xc, qw, s, zs, out)
         return out
     out.copy_(torch.nn.functional.linear(x.to(s.dtype), dequant(qw, s, zs, group)))
     return out
@@ -305,13 +365,19 @@ def _matmul_legacy(x, qw, s, zs, group: int, out=None):
     if x.dtype == s.dtype and x.dtype in names and takes(m, n, k, group):
         t = tokens_for(m)
         sch = schedule_for(m, k, group)
-        _op_for_legacy(t, sch["slices"], sch["warps"], group, sch["blocks"], names[x.dtype])(
-            x if x.is_contiguous() else x.contiguous(), qw, s, zs, out)
+        op = _op_for_legacy(t, sch["slices"], sch["warps"], group, sch["blocks"], names[x.dtype],
+                            zs is None)
+        xc = x if x.is_contiguous() else x.contiguous()
+        if zs is None:
+            op(xc, qw, s, out)
+        else:
+            op(xc, qw, s, zs, out)
         return out
     out.copy_(torch.nn.functional.linear(x.to(s.dtype), dequant(qw, s, zs, group)))
     return out
 
 
-__all__ = ["AWQ_ORDER", "MAX_TOKENS", "SCHEDULES", "SHALLOW_K", "dequant", "kernel_for",
+__all__ = ["AWQ_ORDER", "MAX_TOKENS", "SCHEDULES", "SHALLOW_K", "SYMMETRIC_ZERO", "block_scales",
+           "dequant", "kernel_for", "unblock_scales",
            "matmul", "plan", "schedule_for",
            "repack_awq", "repack_gptq", "takes", "tokens_for", "w4a16_kernel"]

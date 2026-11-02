@@ -39,6 +39,8 @@ COVERAGE = {
     ("vllm_sdpa", "gfx1100"): "test_sdpa.py::test_patch_and_unpatch_round_trip",
     ("sglang_linear", "gfx1100"):
         "test_route_paths.py::test_sglang_linear_routes_its_apply_through_hk_and_reverts",
+    ("sglang_norm", "gfx1100"):
+        "test_route_paths.py::test_sglang_norm_takes_gemma_rmsnorm_through_hk_and_reverts",
     ("sglang_moe", "gfx1100"):
         "test_route_paths.py::test_sglang_moe_takes_a_decode_batch_and_its_top_k_matches_torch",
     # the route is hk.ops.sdpa.patch(), as vllm_sdpa's

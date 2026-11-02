@@ -175,8 +175,9 @@ def runs_here(arches, why: str) -> bool:
     if here in arches:
         return True
     name = Path(sys.argv[0]).name
-    print(f"{name} runs on {' / '.join(arches)} only, and this GPU is {here}: {why}.\n"
-          f"Nothing ran. `--dump ir|cpp` and `--build` work on any machine.")
+    print(f"{name} runs on {' / '.join(arches)} only: {why}.\n"
+          f"SKIPPED on this GPU ({here}): nothing ran, which is not a failure. "
+          f"`--dump ir|cpp` and `--build` work on any machine.")
     return False
 
 

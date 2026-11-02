@@ -47,17 +47,33 @@ def _strided(ir: "TracedKernel") -> List[str]:
     return [p.name for p in ir.tensors() if getattr(p.type, "strided", False)]
 
 
+def _symmetric_w4(ir: "TracedKernel") -> bool:
+    """Whether the kernel has a symmetric hk.load_w4 (a `zero`, no zs)."""
+    from ..compiler import mlir as M  # noqa: PLC0415
+
+    def visit(op) -> bool:
+        return ((op.name == "hk.load_w4" and "zero" in op.attributes)
+                or any(visit(o) for r in op.regions for b in r.blocks for o in b.operations))
+
+    with M.context():
+        k = M.kernel_of(ir.module)
+        return any(visit(o) for o in k.regions[0].blocks[0].operations)
+
+
 def _includes(ir: "TracedKernel", *more: str) -> tuple:
     """kittens.cuh, then what this target's tree lacks, then the wrapper's;
     hk/rdna/strided.cuh only for a kernel with a strided global, and on RDNA
-    hk/rdna/map.cuh only for a kernel with an hk.map and hk/rdna/operand.cuh
-    only for one with an hk.as_operand (CDNA's hk/cdna.cuh has both), so every
-    other kernel's source is what it was."""
+    hk/rdna/map.cuh only for a kernel with an hk.map, hk/rdna/operand.cuh
+    only for one with an hk.as_operand (CDNA's hk/cdna.cuh has both) and
+    hk/rdna/w4.cuh only for one with a symmetric hk.load_w4 (CDNA's
+    hk/cdna/formats.cuh has it), so every other kernel's source is what it
+    was."""
     tgt = get_target(ir.arch)
     strided = ('"hk/rdna/strided.cuh"',) if _strided(ir) else ()
     maps = ('"hk/rdna/map.cuh"',) if tgt.wave == 32 and ir._has_op("hk.map") else ()
     pair = ('"hk/rdna/operand.cuh"',) if tgt.wave == 32 and ir._has_op("hk.as_operand") else ()
-    return ('"kittens.cuh"', *tgt.extra_includes, *strided, *maps, *pair, *more)
+    w4 = ('"hk/rdna/w4.cuh"',) if tgt.wave == 32 and _symmetric_w4(ir) else ()
+    return ('"kittens.cuh"', *tgt.extra_includes, *strided, *maps, *pair, *w4, *more)
 
 
 def _no_strided(ir: "TracedKernel", what: str) -> None:

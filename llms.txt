@@ -39,7 +39,7 @@ It traces and runs on both GPUs, ragged shapes (100x1000) included; `hk.check` t
 - [Getting started](docs/getting-started.md): install, a first kernel, the four entry points (`trace`, `source`, `build`, call)
 - [The runtime](docs/runtime.md): the compile cache, the resource gates (a spill is an error), arch detection, `HK_ARCH`, warming the cache
 - [For agents: engine integration](docs/agents.md): `headroom`, `new-op`, `ab` for kernels inside vLLM/SGLang, and the numbers not to trust
-- [Cross-architecture API audit](docs/dx/api-consistency.md): where an op's arguments or behaviour differ between gfx1100 and gfx950
+- [Cross-architecture API audit](docs/archive/design/api-consistency.md): where an op's arguments or behaviour differ between gfx1100 and gfx950
 - [Templates](docs/templates/): `hk.templates.elementwise`, `rowwise`, `gemm(epilogue=...)` -- start here when one fits
 - [The skill](skills/hk-kernel/SKILL.md): the loop for writing an hk kernel, as a Claude Code skill / Cursor rule
 
@@ -83,6 +83,6 @@ It traces and runs on both GPUs, ragged shapes (100x1000) included; `hk.check` t
 
 - [The IR](docs/ir.md): the hk dialect, the passes and the C++ translation
 - [Integration](docs/integration.md): the vLLM and SGLang patches
-- [The scorecard](docs/performance/scorecard.md): the only performance numbers the project quotes (end-to-end serving); [performance](docs/performance.md) is a dated record of older kernel-level measurements, not current claims
-- [CDNA3/4 design](docs/design/cdna.md): what runs on an MI300X / MI355X
+- [The scorecard](docs/performance/scorecard.md): the only performance numbers the project quotes (end-to-end serving); [performance](docs/archive/performance-2026-10.md) is a dated record of older kernel-level measurements, not current claims
+- [CDNA3/4 design](docs/archive/design/cdna.md): what runs on an MI300X / MI355X
 - [Development record](docs/history/README.md): how each number was taken

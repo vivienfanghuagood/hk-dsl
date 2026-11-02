@@ -131,7 +131,7 @@ def test_fp16_takes_the_fallback(op):
 
 def test_the_patched_layer_function_matches_f_linear():
     x, w = _wx(4096, 6144, 4096)
-    y = vllm_gemm.dispatch_unquantized_gemm()(None, x, w, None)
+    y = vllm_gemm._gemm(None, x, w, None)
     torch.testing.assert_close(y.float(), _ref(x, w), rtol=RTOL, atol=ATOL)
 
 
