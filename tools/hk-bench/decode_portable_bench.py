@@ -132,6 +132,17 @@ def hk_arm(case, portable: bool, splits: int):
     return call, out
 
 
+def ceiling_arm(case):
+    """Not attention: a sum over one layer's whole cache storage, the card's read rate on the
+    same bytes (reported as 'GB/s' of the KV the decode reads, so comparable)."""
+    out = torch.empty((), device=case.q.device, dtype=torch.float32)
+
+    def call(layer):
+        kv = case.caches[layer][2]
+        torch.sum(kv.reshape(-1), 0, dtype=torch.float32, out=out)
+    return call, None
+
+
 def graphed(call, layers):
     s = torch.cuda.Stream()
     s.wait_stream(torch.cuda.current_stream())
@@ -172,6 +183,8 @@ def main():
     ap.add_argument("--ctx", default="16384")
     ap.add_argument("--splits", default="0", help="portable arm's split counts, e.g. 0,8,32 (0: plan)")
     ap.add_argument("--rounds", type=int, default=5)
+    ap.add_argument("--page", type=int, default=0,
+                    help="override the model's page (gfx950 takes whole 32-key blocks: 32, 544)")
     ap.add_argument("--json")
     args = ap.parse_args()
     from hk.target import current_arch  # noqa: PLC0415
@@ -183,7 +196,9 @@ def main():
     except Exception:  # noqa: BLE001
         have_vllm = False
     rows = []
-    m = MODELS[args.model]
+    m = dict(MODELS[args.model])
+    if args.page:
+        m["page"] = args.page
     for ctx in [int(x) for x in args.ctx.split(",")]:
         for batch in [int(x) for x in args.batch.split(",")]:
             case = Case(m, batch, ctx)
@@ -192,11 +207,15 @@ def main():
                 arms["triton"] = triton_arm(case)
             for s in [int(x) for x in args.splits.split(",")]:
                 arms[f"portable_s{s or 'plan'}"] = hk_arm(case, True, s)
-            if arch.startswith("gfx1"):
+            if arch.startswith("gfx1") and m["page"] % 16 == 0:
                 arms["rdna_tuned"] = hk_arm(case, False, 0)
+            arms["read_ceiling"] = ceiling_arm(case)
             ref = case.reference(0)
             err = {}
             for name, (call, out) in arms.items():
+                if out is None:
+                    err[name] = 0.0
+                    continue
                 out.fill_(float("nan"))
                 call(0)
                 torch.cuda.synchronize()
@@ -205,7 +224,7 @@ def main():
             ok = {n: c for n, (c, _) in arms.items() if err[n] != "nan" and err[n] < 2e-2}
             t = time_arms({n: graphed(c, case.layers) for n, c in ok.items()}, case.layers,
                           args.rounds)
-            row = dict(arch=arch, model=args.model, batch=batch, ctx=ctx, layers=case.layers,
+            row = dict(arch=arch, model=args.model, page=m["page"], batch=batch, ctx=ctx, layers=case.layers,
                        splits={n: getattr(arms[n][0], "splits", None) for n in arms},
                        err=err, us={n: round(v, 2) for n, v in t.items()},
                        gbs={n: round(case.kv_bytes / v / 1e3, 1) for n, v in t.items()})

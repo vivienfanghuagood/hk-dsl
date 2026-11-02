@@ -12,14 +12,16 @@ keys:
     softmax over Sᵀ's columns, online (both warps the same)
     Oᵀ += Vᵀ Pᵀ                  [16-row chunks of the warp's half of head_dim, 16]
 
-Two lines are the target's (`_p_operand`, `_v_operand`): how the scores' accumulator becomes
-the PV mma's operand, and how a chunk of V is read as that mma's transposed operand. Why, in
-the hardware: an MFMA accumulator's registers already *are* a stride-4 operand fragment
-(gfx950 reads Pᵀ in place, `Tile.as_operand`) and MFMA takes Vᵀ from a col-layout LDS read; a
-WMMA accumulator is not in an operand's lane layout (the bf16 cast relayouts it) and a col-layout
-16-bit LDS read on RDNA is 16 scalar ds_read_u16 a tile (it spilled at head_dim 128), so RDNA
-reads V row-wise and transposes in registers. Everything else -- tile shapes, the copies, the
-softmax, the split partials, the grid -- is one source.
+Three things are the target's, each a few lines: how the scores' accumulator becomes the PV
+mma's operand (`_p_operand`), how a chunk of V is read as that mma's transposed operand
+(`_v_operand`), and V's LDS layout. Why, in the hardware: an MFMA accumulator's registers already
+*are* a stride-4 operand fragment (gfx950 reads Pᵀ in place, `Tile.as_operand`), MFMA takes Vᵀ
+from a col-layout read of a 32x32-subtile LDS layout (st_32x32), and so a block of V must arrive
+there as whole 32-row subtiles -- gfx950 takes pages of whole 32-key blocks (32, 64, 544), not 16,
+784 or 2064. A WMMA accumulator is not in an operand's lane layout (the bf16 cast relayouts it),
+and a col-layout 16-bit LDS read on RDNA is 16 scalar ds_read_u16 a tile (it spilled at head_dim
+128), so RDNA reads V row-wise and transposes in registers. Everything else -- tile shapes, the
+copies, the softmax, the split partials, the grid -- is one source.
 
 The split head_dim is what makes one source fit both register files: on RDNA a WMMA operand is
 duplicated across the wave's two half-waves, so one warp holding a d128 row's Oᵀ, a K chunk and a
@@ -56,20 +58,18 @@ def _p_operand(s, p, cdna: bool):
 
 
 @hk.func
-def _v_operand(v_chunk, cdna: bool, valid, masked: bool):
-    """A [32 keys, 16 d] chunk of V in LDS as the PV mma's Vᵀ -- target-specific line 2. With
-    `masked` (a hybrid model's pages: NaN past the sequence's end) its rows from `valid` on are
-    zeroed: P = 0 times NaN is NaN."""
+def _v_operand(v_chunk, cdna: bool, masked: bool, valid):
+    """A [32 keys, 32 d] chunk of V in LDS as the PV mma's Vᵀ -- target-specific line 2. With
+    `masked` (a hybrid model's pages: NaN past the sequence's end, where P is 0, and 0 times NaN
+    is NaN) the sequence's last block (`valid` < 32 keys) is clamped to bf16's finite range: a
+    NaN becomes finite, a value does not change. Elementwise, so it holds in any operand layout
+    (gfx950's permutes the rows); only the last block, because only it has rows past the end."""
+    v = v_chunk.load(hk.RT(bf16, KV_BLOCK, 32, "col" if cdna else "row"), wait=False)
+    hk.lds.wait_for(v)
     if masked:
         if valid < KV_BLOCK:
-            # zeroed in LDS, through a plain row tile: gfx950's operand tile has its rows
-            # permuted (stride-4 fragments), where a row fill cannot be applied
-            z = v_chunk.load(hk.RT(bf16, KV_BLOCK, 16, "row"), wait=False)
-            hk.lds.wait_for(z)
-            z.lower_fill_(valid, 0.0)
-            v_chunk.store(z)
-    v = v_chunk.load(hk.RT(bf16, KV_BLOCK, 16, "col" if cdna else "row"), wait=False)
-    hk.lds.wait_for(v)
+            v.maximum(-3.0e38, into=v)
+            v.minimum(3.0e38, into=v)
     if cdna:
         return v.T                          # gfx950: MFMA reads Vᵀ as a col tile's registers
     return hk.transpose_sep(v)              # RDNA: row-wise read, transposed in registers
@@ -88,18 +88,24 @@ def walk_kernel(name: str, *, head_dim: int = 128, group: int = 8, page: int = 1
                          f"group {group}: 1..{Q_TILE}")
     nw = D // 64                                     # warps: 64 columns of head_dim each
     dh = 64                                          # a warp's share of head_dim
-    band = math.gcd(page, KV_BLOCK)
+    cdna = _cdna()
+    band = math.gcd(page, KV_BLOCK)                   # rows a copy brings from one page
     ppb = KV_BLOCK // band
     masked = page >= KV_BLOCK and page > 16          # hybrid pages: NaN past the end
     scale_l2e = (scale if scale is not None else D ** -0.5) * math.log2(math.e)
-    cdna = _cdna()
+    if cdna and band < KV_BLOCK:
+        # gfx950's Vᵀ operand is read from an LDS tile laid out in 32x32 subtiles (32x16
+        # stride-4 fragments): a block's V has to arrive as whole 32-row subtiles, and a page
+        # of 16 (or a page that is not whole blocks, 784, 2064) brings it in 16-row bands
+        raise ValueError(f"page={page}: on gfx950 a page of a whole number of 32-key blocks "
+                         f"(a block of V is one 32-row LDS subtile there)")
 
     T_Q = hk.RT(bf16, Q_TILE, 32, "row")             # a chunk of the group's queries, [q, d]
     T_K = hk.RT(bf16, KV_BLOCK, 32, "row")           # a chunk of a block of K, [kv, d]
     T_S = hk.RT(fp32, KV_BLOCK, Q_TILE, "col")       # Sᵀ, [kv, q]
     T_P = (hk.RT(bf16, KV_BLOCK, Q_TILE, "col", frag=(32, 16, 4)) if cdna
            else hk.RT(bf16, KV_BLOCK, Q_TILE, "col"))  # Pᵀ, the PV operand
-    T_O = hk.RT(fp32, 16, Q_TILE, "col")             # a 16-row chunk of Oᵀ, [d, q]
+    T_O = hk.RT(fp32, 32, Q_TILE, "col")             # a 32-row chunk of Oᵀ, [d, q]
     T_VEC = hk.row_vec(T_S)
 
     def body(qh: hk.Tensor[bf16], kv: hk.Tensor[bf16], block_table: hk.Tensor[i32],
@@ -124,7 +130,8 @@ def walk_kernel(name: str, *, head_dim: int = 128, group: int = 8, page: int = 1
         g = hk.group(nw)
         q_s = hk.lds.alloc(hk.ST(bf16, Q_TILE, D), name="q_s")
         k_s = hk.lds.alloc(hk.ST(bf16, KV_BLOCK, D), name="k_s")
-        v_s = hk.lds.alloc(hk.ST(bf16, KV_BLOCK, D), name="v_s")
+        v_s = (hk.lds.alloc(hk.ST(bf16, KV_BLOCK, D), name="v_s", shape="32x32") if cdna
+               else hk.lds.alloc(hk.ST(bf16, KV_BLOCK, D), name="v_s"))
         xs = hk.lds.alloc(hk.ST(fp32, KV_BLOCK, Q_TILE, max(nw, 2)), name="xs")  # partial Sᵀ
         k_b = [k_s.subtile(band, D, p, 0) for p in range(ppb)]
         v_b = [v_s.subtile(band, D, p, 0) for p in range(ppb)]
@@ -135,15 +142,14 @@ def walk_kernel(name: str, *, head_dim: int = 128, group: int = 8, page: int = 1
         def copy(b):
             # block b's bands (clamped into the request's pages: past the end it rereads the last)
             for p in range(ppb):
-                i = (b * (KV_BLOCK // page) + p if page <= KV_BLOCK
-                     else (b * KV_BLOCK + p * band) // page)
+                i = (b * KV_BLOCK + p * band) // page
                 pg = block_table[hk.elem_coord(0, 0, req, hk.min(i, n_pg - 1))].load_scalar(
                     invariant=True)
-                r0 = 0 if page <= KV_BLOCK else (b * KV_BLOCK + p * band) % page
+                r0 = 0 if page == band else (b * KV_BLOCK + p * band) % page
                 g.load(k_b[p], kv[hk.elem_coord(pg, k_dep, r0, k_col)])
                 g.load(v_b[p], kv[hk.elem_coord(pg, v_dep, r0, v_col)])
 
-        O = [hk.zeros(T_O) for _ in range(dh // 16)]
+        O = [hk.zeros(T_O) for _ in range(dh // 32)]
         m = hk.neg_infty(T_VEC)
         m_old = hk.neg_infty(T_VEC)
         ell = hk.zeros(T_VEC)
@@ -180,25 +186,25 @@ def walk_kernel(name: str, *, head_dim: int = 128, group: int = 8, page: int = 1
                 o *= hk.as_vec(alpha, T_O)
             ell += S.sum(axis=0)
             _p_operand(S, P, cdna)
-            for c in range(dh // 16):
-                O[c] += _v_operand(v_s.subtile(KV_BLOCK, 16, 0, half * (dh // 16) + c), cdna,
-                                   valid, masked) @ P
+            for c in range(dh // 32):
+                O[c] += _v_operand(v_s.subtile(KV_BLOCK, 32, 0, half * (dh // 32) + c), cdna,
+                                   masked, valid) @ P
 
         inv = hk.full(T_VEC, 1.0)
         ell_s = ell.copy()
         ell_s += 1e-30
         inv /= ell_s
-        for c in range(dh // 16):
+        for c in range(dh // 32):
             O[c] *= hk.as_vec(inv, T_O)
         col0 = half * dh
         if splits == 1:
-            for c in range(dh // 16):
-                out[hk.elem_coord(tok, kv_head, 0, col0 + 16 * c)].store(hk.transpose(O[c]),
+            for c in range(dh // 32):
+                out[hk.elem_coord(tok, kv_head, 0, col0 + 32 * c)].store(hk.transpose(O[c]),
                                                                          bounded=rows)
             return
         row = req * splits + split
-        for c in range(dh // 16):
-            o_part[hk.elem_coord(row, kv_head, 0, col0 + 16 * c)].store(hk.transpose(O[c]),
+        for c in range(dh // 32):
+            o_part[hk.elem_coord(row, kv_head, 0, col0 + 32 * c)].store(hk.transpose(O[c]),
                                                                         bounded=True)
         if half == 0:
             ml_part[hk.elem_coord(row, kv_head, 0, 0)] = m
