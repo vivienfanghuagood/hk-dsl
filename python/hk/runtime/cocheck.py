@@ -25,6 +25,11 @@ same rules:
   llvm/llvm-project#225989 padded the shortest path into a block too
   little when it found a longer one first (ROCm 7.2.3 to 10.1); a gfx950
   paged decode computed wrong scores from it (ROCm/llvm-project#5153).
+* **VOPD interlock hazard (gfx11.0, gfx11.5).** A dual-issue instruction
+  (`v_dual_X :: v_dual_Y`) whose X and Y SRC0, or VSRC1, are distinct VGPRs
+  with the same parity: `vopd_parity_hazard`. The forwarding drops the
+  interlock and an operand written just before is read stale; LLVM fixed the
+  pairing in llvm/llvm-project#220348, which no ROCm release has yet.
 * **EXEC** (a warning). An MFMA inside a lane-divergent `if` (an
   `s_and_saveexec` region). The MFMA reads every lane's operands, and whatever
   was computed beside it in that block ran only in the active lanes. That is
@@ -94,6 +99,8 @@ class Kernel:
     hazards: List[str] = field(default_factory=list)
     #: MFMA results touched too early on some path (mfmahaz).
     mfma: List[str] = field(default_factory=list)
+    #: VOPDs with gfx11's interlock hazard (vopd_parity_hazard).
+    vopd: List[str] = field(default_factory=list)
     #: Reads of a load's register by the next instruction's address: the old
     #: value, by issue order; and MFMAs under a partial EXEC (exec_hazards).
     #: Warnings, not failures.
@@ -102,7 +109,7 @@ class Kernel:
     @property
     def ok(self) -> bool:
         return not (self.scratch or self.vgpr_spill or self.sgpr_spill or self.hazards
-                    or self.mfma)
+                    or self.mfma or self.vopd)
 
     def line(self) -> str:
         occ = f" occ={self.occupancy}" if self.occupancy is not None else ""
@@ -112,10 +119,13 @@ class Kernel:
                f" scratch={self.scratch} spill={self.vgpr_spill}/{self.sgpr_spill}{occ}"
                f" wait-hazards={len(self.hazards)}"
                + (f" mfma-hazards={len(self.mfma)}" if self.mfma else "")
+               + (f" vopd-pairs={len(self.vopd)}" if self.vopd else "")
                + (f" warnings={len(self.warnings)}" if self.warnings else ""))
         for h in self.hazards[:3]:
             out += f"\n       {h}"
         for h in self.mfma[:3]:
+            out += f"\n       {h}"
+        for h in self.vopd[:3]:
             out += f"\n       {h}"
         for h in self.warnings[:1]:
             out += f"\n       (warning) {h}"
@@ -446,6 +456,8 @@ def check(co: Path) -> List[Kernel]:
         insts = code.get(name, [])
         k.hazards = wait_hazards(insts, k.arch, benign=k.warnings)
         k.mfma = mfma_hazards_in(insts, k.arch)
+        k.vopd = [i.text for i in insts if vopd_parity_hazard(i)] if k.arch.startswith(
+            VOPD_HAZARD_ARCHS) else []
         k.warnings.extend(exec_hazards(insts))
     return list(ks.values())
 
@@ -588,6 +600,57 @@ def mfma_hazards(binary: Path, bundled: bool = True) -> List[str]:
             code = disassemble(co)
             for name, k in resources(co).items():
                 found += [f"{name}: {h}" for h in mfma_hazards_in(code.get(name, []), k.arch)]
+        return found
+
+
+#: The targets with the VOPD interlock hazard: gfx11.0 and gfx11.5 (not gfx11.7, not gfx12).
+VOPD_HAZARD_ARCHS = ("gfx110", "gfx115", "gfx11-generic")
+_VGPR = re.compile(r"^v(\d+)$")
+
+
+def _vopd_sources(half: str) -> List[str]:
+    """SRC0 and VSRC1 of one VOPD component (`v_dual_add_f32 v0, v14, v22` -> [v14, v22]):
+    fmamk carries its literal between them, fmaak after them."""
+    op, _, rest = half.partition(" ")
+    srcs = _split_operands(rest)[1:]
+    if op.endswith("fmamk_f32"):
+        return [srcs[0], srcs[2]] if len(srcs) > 2 else srcs[:1]
+    return srcs[:2]
+
+
+def vopd_parity_hazard(ins: Inst) -> Optional[str]:
+    """Why a VOPD instruction (`v_dual_X ... :: v_dual_Y ...`) has gfx11's VOPD interlock hazard,
+    or None: X's and Y's SRC0, or their VSRC1, are distinct VGPRs with the same register-number
+    parity. The destination-buffer forwarding then drops the interlock for one of them, and an
+    operand written just before is read stale. LLVM requires only different banks (the number mod
+    4) there; llvm/llvm-project#220348 requires different parity on gfx11.0 and gfx11.5, and no
+    ROCm release has it yet. On gfx1100 under a partial EXEC, 88-93 of 100 launches of the window
+    in tools/rdna3-probes/vopd_interlock_parity.hip read a wrong value, and none with the parities
+    made different; a bounded strip RMSNorm computed wrong values from one such pair."""
+    x, sep, y = ins.text.partition(" :: ")
+    if not sep or not x.startswith("v_dual_"):
+        return None
+    for i, (a, b) in enumerate(zip(_vopd_sources(x), _vopd_sources(y))):
+        ma, mb = _VGPR.match(a), _VGPR.match(b)
+        if ma and mb and ma.group(1) != mb.group(1) and \
+                int(ma.group(1)) % 2 == int(mb.group(1)) % 2:
+            return f"X and Y {'VSRC1' if i else 'SRC0'} {a} and {b} have the same parity"
+    return None
+
+
+def vopd_hazards(binary: Path, bundled: bool = True) -> List[str]:
+    """What hk.runtime.compile.build rebuilds on gfx11.0 / gfx11.5: every VOPD with the interlock
+    hazard (`vopd_parity_hazard`), as 'kernel: instruction   <- why'. `bundled` as
+    lds_copy_hazards."""
+    with tempfile.TemporaryDirectory(prefix="hk-cocheck-") as d:
+        cos = unbundle(binary, Path(d)) if bundled else [binary]
+        found: List[str] = []
+        for co in cos:
+            for name, insts in disassemble(co).items():
+                for i in insts:
+                    why = vopd_parity_hazard(i)
+                    if why:
+                        found.append(f"{name}: {i.text}   <- {why}")
         return found
 
 

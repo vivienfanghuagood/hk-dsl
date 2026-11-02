@@ -34,31 +34,40 @@ import functools
 from typing import Any, Dict, Optional, Tuple
 
 from .. import dsl as hk
-from ..types import bf16, fp32, i32
+from ..types import bf16, fp16, fp32, i8, i32
 from . import _arch
+
+_DTYPES = {"bf16": bf16, "fp16": fp16}
 
 
 def moe_gemm_kernel(name: str, *, block_m: int = 16, top_k: int = 1,
                     routed: bool = False, slices: int = 4, warps: int = 16,
-                    naive: bool = False):
+                    naive: bool = False, dtype=bf16, w4_group: int = 0, unroll: int = 1):
     """`block_m` token rows per block (vLLM's BLOCK_SIZE_M, a multiple of 16),
     `top_k` index values per A row, `routed` multiplies each row by its
     routing weight, `slices` 16-deep K slices per load, `warps` waves sharing
     each 16-row block of W, `naive` one pair per block (see the module
-    docstring). K must be a multiple of 16 * slices * warps."""
+    docstring), `dtype` the activations' (and a 16-bit W's) type, bf16 or
+    fp16, `unroll` the K loop's `#pragma unroll`. K must be a multiple of
+    16 * slices * warps.
+
+    `w4_group` > 0: W is 4-bit, as vLLM's moe_wna16 holds an AWQ checkpoint
+    -- codes int32 [E * N, K / 8] row-major (its uint8 [E, N, K / 2] viewed),
+    scales [E * N, K / group] of `dtype`, zero codes int8 [E * N / 2, K / group]
+    two rows to a byte -- read by `hk.load_w4(zp=, rows=True)`; expert e's
+    rows start at e * N. The kernel's W parameter becomes (qw, s, zp)."""
     if block_m % 16:
         raise ValueError(f"block_m={block_m}: token rows come in 16-row tiles")
     kc = 16 * slices
-    ty_w = hk.RT(bf16, 16, kc, "row")
-    ty_x = hk.RT(bf16, block_m, kc, "row")
+    ty_w = hk.RT(dtype, 16, kc, "row")
+    ty_x = hk.RT(dtype, block_m, kc, "row")
     ty_acc = hk.RT(fp32, 16, block_m, "col")     # C^T: W rows x tokens
     ty_out = hk.RT(fp32, block_m, 16, "row")     # its transpose: tokens x W rows
     st_part = hk.ST(fp32, block_m, 16)
     in_flight = max(2, 8 // (block_m // 16))
 
-    def body(a: hk.Tensor[bf16], w: hk.Tensor[bf16], c: hk.Tensor[bf16],
-             sorted_ids: hk.Tensor[i32], expert_ids: hk.Tensor[i32],
-             ntp: hk.Tensor[i32], topk_w: hk.Tensor[fp32]):
+    @hk.func
+    def body(a, w, c, sorted_ids, expert_ids, ntp, topk_w, qw=None, s=None, zp=None):
         n0 = hk.arch.block_idx.x * 16
         blk = hk.arch.block_idx.y
         wid = hk.arch.warp_id()
@@ -70,9 +79,13 @@ def moe_gemm_kernel(name: str, *, block_m: int = 16, top_k: int = 1,
         live = hk.min(hk.max(ntp.at[0, 0].load_scalar() - blk * block_m, 0), 1) * \
             hk.min(hk.max(e + 1, 0), 1)
         acc = hk.zeros(ty_acc)
-        for t in hk.range(live * (a.cols // (kc * warps))):
+        for t in hk.range(live * (a.cols // (kc * warps)), unroll=unroll):
             k = (t * warps + wid) * kc
-            w_t = w.at[e, n0, k].load(ty_w)
+            if w4_group:
+                w_t = hk.load_w4(ty_w, qw, s, None, e * c.cols + n0, k, group=w4_group,
+                                 zp=zp, rows=True)
+            else:
+                w_t = w.at[e, n0, k].load(ty_w)
             x_t = a.gather(ty_x, hk.RowIndex(sorted_ids, at, count=count, div=top_k), col=k)
             acc += w_t @ x_t.T
 
@@ -97,12 +110,25 @@ def moe_gemm_kernel(name: str, *, block_m: int = 16, top_k: int = 1,
                 out *= rw.sum(axis=1)[:, None]
             c.scatter(out, sorted_ids, at, count=count, col=n0)
 
-    body.__name__ = name
-    if naive:
-        grid = lambda p: (p.w.rows // 16, p.sorted_ids.cols, 1)  # noqa: E731
+    if w4_group:
+        def entry(a: hk.Tensor[dtype], qw: hk.Tensor[i32], s: hk.Tensor[dtype],
+                  zp: hk.Tensor[i8], c: hk.Tensor[dtype], sorted_ids: hk.Tensor[i32],
+                  expert_ids: hk.Tensor[i32], ntp: hk.Tensor[i32], topk_w: hk.Tensor[fp32]):
+            body(a, None, c, sorted_ids, expert_ids, ntp, topk_w, qw=qw, s=s, zp=zp)
+        rows_of = lambda p: p.c.cols  # noqa: E731
     else:
-        grid = lambda p: (p.w.rows // 16, hk.cdiv(p.sorted_ids.cols, block_m), 1)  # noqa: E731
-    return hk.kernel(body, warps=warps, name=name, grid=grid)
+        def entry(a: hk.Tensor[dtype], w: hk.Tensor[dtype], c: hk.Tensor[dtype],
+                  sorted_ids: hk.Tensor[i32], expert_ids: hk.Tensor[i32],
+                  ntp: hk.Tensor[i32], topk_w: hk.Tensor[fp32]):
+            body(a, w, c, sorted_ids, expert_ids, ntp, topk_w)
+        rows_of = lambda p: p.w.rows  # noqa: E731
+
+    entry.__name__ = name
+    if naive:
+        grid = lambda p: (rows_of(p) // 16, p.sorted_ids.cols, 1)  # noqa: E731
+    else:
+        grid = lambda p: (rows_of(p) // 16, hk.cdiv(p.sorted_ids.cols, block_m), 1)  # noqa: E731
+    return hk.kernel(entry, warps=warps, name=name, grid=grid)
 
 
 _KERNELS: Dict[Tuple[Any, ...], Any] = {}
@@ -111,14 +137,19 @@ _ARANGE: Dict[Tuple[Any, ...], Any] = {}
 
 
 def kernel_for(block_m: int, top_k: int, routed: bool, slices: int = 4,
-               warps: int = 16, naive: bool = False):
-    key = (block_m, top_k, routed, slices, warps, naive)
+               warps: int = 16, naive: bool = False, dtype: str = "bf16", w4_group: int = 0,
+               unroll: int = 1):
+    key = (block_m, top_k, routed, slices, warps, naive) + \
+        ((dtype, w4_group, unroll) if (dtype, w4_group, unroll) != ("bf16", 0, 1) else ())
     if key not in _KERNELS:
         _KERNELS[key] = moe_gemm_kernel(
             f"moe_gemm_m{block_m}_k{top_k}_r{int(routed)}_s{slices}_w{warps}"
-            + ("_naive" if naive else ""),
+            + ("_naive" if naive else "")
+            + (f"_{dtype}" if dtype != "bf16" else "")
+            + (f"_w4g{w4_group}" if w4_group else "")
+            + (f"_u{unroll}" if unroll != 1 else ""),
             block_m=block_m, top_k=top_k, routed=routed, slices=slices,
-            warps=warps, naive=naive)
+            warps=warps, naive=naive, dtype=_DTYPES[dtype], w4_group=w4_group, unroll=unroll)
     return _KERNELS[key]
 
 
@@ -227,6 +258,47 @@ def _launch(a, w, c, sorted_ids, expert_ids, num_tokens_post_padded, *,
         num_tokens_post_padded.view(1, 1), tw)
 
 
+def takes_w4(a, qw, s, zp, n: int, block_m: int, group: int, warps: int, slices: int) -> bool:
+    """Whether the 4-bit form runs this GEMM: 16-bit A of the scales' type, qw int32
+    [E * n, K / 8], s [E * n, K / group], zp int8 [E * n / 2, K / group], n a multiple of 16,
+    K a multiple of 16 * slices * warps, and a whole number of groups."""
+    import torch  # noqa: PLC0415
+
+    if not (a.dtype in (torch.bfloat16, torch.float16) and s.dtype == a.dtype
+            and qw.dtype == torch.int32 and zp.dtype == torch.int8 and block_m % 16 == 0
+            and n % 16 == 0 and group % 16 == 0 and qw.is_contiguous() and s.is_contiguous()
+            and zp.is_contiguous()):
+        return False
+    k = a.shape[1]
+    return (qw.shape[1] * 8 == k and k % group == 0 and k % (16 * slices * warps) == 0
+            and qw.shape[0] % n == 0 and s.shape == (qw.shape[0], k // group)
+            and zp.shape == (qw.shape[0] // 2, k // group))
+
+
+def moe_gemm_w4(a, qw, s, zp, c, sorted_ids, expert_ids, num_tokens_post_padded, *,
+                top_k: int, block_m: int, group: int, warps: int, slices: int, unroll: int = 1,
+                topk_weights=None) -> None:
+    """`moe_gemm` with 4-bit W in vLLM's moe_wna16 layout (see `moe_gemm_kernel`'s
+    `w4_group`): qw int32 [E * N, K / 8], s [E * N, K / group], zp int8 [E * N / 2, K / group];
+    `c` (tokens * top_k, N) or a view of it. Raises ValueError for a GEMM `takes_w4` refuses."""
+    _arch.require("hk.ops.moe.moe_gemm_w4", ("gfx1100", "gfx1201"))
+    n = c.shape[-1]
+    if not takes_w4(a, qw, s, zp, n, block_m, group, warps, slices):
+        raise ValueError(f"moe_gemm_w4: does not take A {tuple(a.shape)} {a.dtype}, qw "
+                         f"{tuple(qw.shape)}, s {tuple(s.shape)}, zp {tuple(zp.shape)}, N {n}")
+    m = a.shape[0]
+    em = total = sorted_ids.numel()
+    if m < block_m:
+        em = min(em, m * top_k * block_m)
+    ids = sorted_ids if em == total else sorted_ids[:em]
+    routed = topk_weights is not None
+    tw = topk_weights.reshape(-1, 1) if routed else _placeholder(a.device)
+    names = {"torch.bfloat16": "bf16", "torch.float16": "fp16"}
+    _op_for(block_m, top_k, routed, slices, warps, False, names[str(a.dtype)], group, unroll)(
+        a if a.is_contiguous() else a.contiguous(), qw, s, zp, c.view(-1, n), ids,
+        expert_ids.view(-1), num_tokens_post_padded.view(1, 1), tw)
+
+
 def moe_align(topk_ids, block_m: int, num_experts: int):
     """A torch moe_align_block_size, for tests and for running without vLLM:
     (sorted_ids, expert_ids, num_tokens_post_padded)."""
@@ -253,5 +325,5 @@ def moe_align(topk_ids, block_m: int, num_experts: int):
     return out, exp, torch.tensor([total], device=dev, dtype=torch.int32)
 
 
-__all__ = ["kernel_for", "moe_align", "moe_gemm", "moe_gemm_kernel", "schedule_for",
-           "takes"]
+__all__ = ["kernel_for", "moe_align", "moe_gemm", "moe_gemm_kernel", "moe_gemm_w4",
+           "schedule_for", "takes", "takes_w4"]

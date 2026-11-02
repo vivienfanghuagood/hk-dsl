@@ -9,6 +9,32 @@ The next version's notes collect here until it is released.
 What is on main after 0.8.0. `pip install hk-dsl` (0.8.0) does not have it;
 the API reference marks such names *New after 0.8.0*.
 
+**Fix: `vllm_gptq` no longer turns off every vLLM route on a vLLM whose `gptq_gemm_rdna3` takes
+`b_g_idx`.** vLLM builds differ in that GEMM's parameters: some take the act-order index, some do not.
+The route's engine contract counted five arguments, so on the other builds it failed, and the
+contract is all-or-nothing, so hk patched nothing in that engine. The fallback now calls vLLM's GEMM
+by parameter name, whatever this build's signature. Weights are read by the names the kernel was
+given. The contract checks only the two `AutoGPTQLinearMethod` entry points the route wraps. A build
+that lacks something the route needs leaves those layers on vLLM's path, counted in
+`vllm_gptq.REFUSED`; the engine's other routes stay on.
+
+**The VOPD gate (gfx11.0, gfx11.5): kernels with the VOPD interlock hazard are rebuilt without dual
+issue.** When X's and Y's SRC0, or their VSRC1, are distinct VGPRs with the same parity, gfx11's VOPD
+forwarding drops the interlock, and an operand written just before can be read stale. LLVM fixed the
+pairing in llvm/llvm-project#220348, scoped to gfx11.0 and gfx11.5 by #225880; no ROCm release has the
+fix yet. hk's bounded strip RMSNorm with the fused add (1024 x 5120 bf16, 16 warps), built by AMD clang
+23 (TheRock 7.14), had such a VOPD and was wrong in 25-65% of launches. In
+tools/rdna3-probes/vopd_interlock_parity.hip, the same window is wrong in 88-93 of 100 launches under a
+partial EXEC when the VSRC1s share a parity, and in none when they differ or EXEC is full.
+
+`hk.runtime.compile.build` now applies the upstream rule (`cocheck.vopd_parity_hazard`) to every
+gfx11.0 / gfx11.5 code object. A kernel with a hazardous VOPD is rebuilt with
+`-mllvm -amdgpu-enable-vopd=0` (`HK_VOPD_GATE=fix`, the default; `refuse`, `report` and `0` as for the
+MFMA gate). Every other kernel's code object is unchanged, and gfx12 is not affected. Cached builds
+from before the gate are checked on their first hit, and `python3 -m hk.integration --status` lists
+what was rebuilt. tests/hk/gpu/test_vopd_gate.py launches the strip kernel 200 times into NaN-filled
+outputs (bf16 and fp16, weight offset 0 and 1).
+
 **hk.ops.paged refuses a decode whose tensors are not the shapes its kernels read.** The
 unsplit kernels (`paged.KERNELS[d]`) and `paged.decode` (the fused walk and its merge, which the vLLM
 backend runs) took their tensors on trust. A wrong layout became a read or a write past an
@@ -48,6 +74,11 @@ layer whose (dtype, N, K) the table routes at no M, or whose weight is biased or
 vLLM's own GEMM directly. The load reports `[hk] linear layers at load: N through hk's op;
 unrouted at load: ...`.
 
+**gfx1201: a single-row linear stays on vLLM's own GEMM.** On a Radeon AI PRO R9700, `vllm_gemm` no
+longer sends M = 1 calls to hk's decode GEMM even where its table measured hk faster: vLLM's wvSplitK
+already streams the weights at the memory roof there, and the routed shape lost end to end at batch 1.
+`vllm_gemm.ENGINE_KEEPS_M1` names the arches; gfx1100's tables and routing are unchanged.
+
 **RDNA3's paired WMMA operand: `as_operand(k_order="even_odd")` (DSL-surface S11).** On gfx1100,
 `S.as_operand(hk.fp16, k_order="even_odd")` turns a 32x16 fp32 pair of WMMA accumulators into two fp16
 operands, the pair's even rows and its odd rows, one `permlanex16` a packed dword. `hk.ops.attn_k3`
@@ -55,6 +86,32 @@ writes its Pᵀ this way; its `PairPKernel` subclass, which spliced the same C++
 source and rewrote it with a regex, is gone -- no `hk.ops` kernel overrides `with_defines` any more.
 attn_k3's ISA and resources are identical on gfx1100; on gfx1201, where its route never ran and RDNA4's
 accumulator layout differs, tracing it is now refused.
+**AWQ MoE at decode on RDNA3: `hk.load_w4(zp=, rows=True)`, `hk.ops.moe.moe_gemm_w4` and the vLLM
+route `vllm_moe_wna16` (opt-in, `HK_VLLM_MOE_WNA16=1`).** vLLM runs an AWQ MoE checkpoint's routed
+experts through moe_wna16: codes uint8 [E, N, K/2], scales [E, N, K/group], and 4-bit zero codes per
+row and group. hk now reads those tensors as they are, with no repack and no second copy of the
+experts (~17 GB on Qwen3.6-35B-A3B-AWQ):
+- `hk.load_w4(..., zp=Z)`: the element is (q - z) * s, with z read from an int8 [N/2, K/group]
+  tensor holding two rows to a byte. An fp16 tile decodes as the symmetric form does, so q - z is
+  exact and the product rounds once to nearest even. `rows=True`: the codes are row-major, int32
+  [N, K/8], each lane reading its own row's 16 bytes. On a Qwen3.6 microbenchmark this is within 1%
+  of hk's interleaved layout. RDNA only (include/hk/rdna/w4.cuh). The asymmetric and symmetric forms
+  print exactly as before: V0 shows 0 differences over the catalog (1049 kernels) and over every
+  w4a16 kernel the routes build (66), on gfx1100 and gfx1201.
+- `hk.ops.moe.moe_gemm_kernel` gains `dtype` (fp16), `w4_group` (W in the layout above, expert e's
+  rows at e * N) and `unroll`. The bf16 kernels are unchanged. `moe_gemm_w4` / `takes_w4` run it.
+- `hk.integration.vllm_moe_wna16` rebinds `invoke_fused_moe_wna16_triton_kernel` and asks for
+  16-row blocks at up to 32 tokens a step, on the (experts, N, K, group) it was validated on
+  (`VALIDATED`: Qwen3.6-35B-A3B-AWQ's two expert GEMMs; `HK_VLLM_MOE_WNA16=force` takes any).
+  Prefill chunks, other shapes, symmetric GPTQ without zero points and int8 weights stay on vLLM's
+  kernel, counted by reason in `REFUSED`.
+- Qwen3.6-35B-A3B-AWQ, one W7900D, the Radeon TheRock vLLM image, against stock-fair' (TRITON_ATTN,
+  TunableOp, and the int4 MoE config picked per M by in-vLLM time), 3 alternating starts each:
+  - 1k TPOT: 1.22x at 1 request, **1.48x at 8**, 1.42x at 16;
+  - 8k decode at 4 requests: 1.24x;
+  - GSM8K-200 equal (.870 / .875 / .870 vs .860 / .875 / .860);
+  - every captured decode call took hk's kernel.
+  Kernel alone, with real captured routing and cold weights: 2.6-3.2x vLLM's kernel at 1-16 tokens.
 
 **`hk.map` on RDNA strips (gfx1100, gfx1201).** The integer, mask and bit expressions below,
 `hk.map(fn)` and `hk.map_cpp` lower on RDNA too, through include/hk/rdna/map.cuh (the trees'

@@ -660,6 +660,47 @@ def _mfma_refusal(found: Sequence[str]) -> ResourceError:
         "kernel with the s_nop padding the fixed compiler emits.")
 
 
+_VOPD_MARK = "VOPDHAZ"
+
+#: What the VOPD gate rebuilds a kernel with: LLVM's dual-issue pairing off.
+NO_VOPD = ("-mllvm", "-amdgpu-enable-vopd=0")
+
+
+def _vopd_mode() -> str:
+    """HK_VOPD_GATE: fix (the default: rebuild without VOPD), refuse, report, or off -- as
+    HK_MFMA_GATE."""
+    v = os.environ.get("HK_VOPD_GATE", "fix").strip().lower()
+    if v in ("0", "off", "no"):
+        return "off"
+    return v if v in ("refuse", "report") else "fix"
+
+
+def _vopd_found(binary: Path, kind: str, arch: str) -> Optional[List[str]]:
+    """The VOPDs of a binary with gfx11's interlock hazard (cocheck.vopd_hazards: X's and Y's
+    SRC0 or VSRC1 distinct VGPRs of the same parity; llvm/llvm-project#220348, scoped to gfx11.0
+    and gfx11.5 by #225880), [] on any other target, None when the gate is off."""
+    if _vopd_mode() == "off":
+        return None
+    from . import cocheck  # noqa: PLC0415
+
+    if not arch.startswith(cocheck.VOPD_HAZARD_ARCHS):
+        return []
+    return cocheck.vopd_hazards(binary, bundled=(kind == "so"))
+
+
+def _vopd_refusal(found: Sequence[str]) -> ResourceError:
+    shown = "\n".join(f"  {h}" for h in found[:6])
+    more = f"\n  ... {len(found) - 6} more" if len(found) > 6 else ""
+    return ResourceError(
+        f"generated kernel rejected: {len(found)} VOPD(s) with gfx11's interlock hazard:\n"
+        f"{shown}{more}\n"
+        "When X's and Y's SRC0, or their VSRC1, are distinct VGPRs of the same parity, the "
+        "destination-buffer forwarding drops the interlock and an operand written just before "
+        "is read stale (llvm/llvm-project#220348, which no ROCm release has yet). A gfx1100 strip "
+        "RMSNorm computed wrong values from one such pair. HK_VOPD_GATE=refuse asked for this "
+        "refusal; the default (fix) rebuilds the kernel with -mllvm -amdgpu-enable-vopd=0.")
+
+
 def _device_step(argv: Sequence[str]) -> bool:
     """A device compile step of hipcc's pipeline: its -triple is amdgcn's (the host steps
     name amdgcn too, as -aux-triple)."""
@@ -737,6 +778,24 @@ def mfma_gate_status() -> List[str]:
     return lines + padded
 
 
+def vopd_gate_status() -> List[str]:
+    """The VOPD gate for `python3 -m hk.integration --status`: its mode and the cached builds
+    it rebuilt without dual issue (each kernel, how many VOPDs; they are in that build's
+    VOPDHAZ and build.log)."""
+    lines = [f"VOPD gate: HK_VOPD_GATE={_vopd_mode()}; gfx11.0/11.5 builds with a VOPD whose X and "
+             f"Y read distinct same-parity VGPRs (llvm/llvm-project#220348) are rebuilt with "
+             f"{' '.join(NO_VOPD)}"]
+    rebuilt = []
+    for mark in sorted(cache_dir().glob(f"*/{_VOPD_MARK}")):
+        text = mark.read_text().splitlines()
+        if text and text[0].startswith("rebuilt "):
+            kernels = sorted({t.split(":", 1)[0] for t in text[1:] if ":" in t})
+            rebuilt.append(f"  {mark.parent.name[:12]} {', '.join(kernels)}: "
+                           f"{text[0].split()[1]} VOPD(s)")
+    lines.append(f"  {len(rebuilt)} cached build(s) rebuilt without VOPD" + (":" if rebuilt else ""))
+    return lines + rebuilt
+
+
 def _load_cached(d: Path, target: Target) -> Optional[Build]:
     so = (next(d.glob("*.so"), None) or next(d.glob("*.*.so"), None)
           or ((d / CODEOBJ) if (d / CODEOBJ).exists() else None))
@@ -808,8 +867,9 @@ def build(
     instantiation spills, if its code reads registers an LDS load is still
     filling (the wait gate, `_wait_gate`), or, on CDNA, if it reads or
     overwrites an MFMA result too soon on some path (the MFMA gate,
-    `_mfma_found`) unless HK_MFMA_GATE=fix -- the default -- can pad it. A cache entry
-    from before a gate is checked on its first hit.
+    `_mfma_found`) unless HK_MFMA_GATE=fix -- the default -- can pad it. On gfx11.0 and
+    gfx11.5 a build with a VOPD that has the interlock hazard (the VOPD gate, `_vopd_found`)
+    is rebuilt with -mllvm -amdgpu-enable-vopd=0 (HK_VOPD_GATE=fix, the default) or refused. A cache entry from before a gate is checked on its first hit.
     """
     if kind not in ("so", "co"):
         raise ValueError(f"build kind {kind!r}; 'so' or 'co'")
@@ -845,6 +905,11 @@ def _hit(out: Path, target: Target, kind: str, gates: dict) -> Optional[Build]:
         # built unpadded (the gate off, or before it): rebuilt here, padded, in its place
         shutil.rmtree(out, ignore_errors=True)
         return None
+    if not (out / _VOPD_MARK).exists() and _vopd_mode() == "fix" and \
+            _vopd_found(hit.so_path, kind, target.arch):
+        # built with dependent VOPD pairs (the gate off, or before it): rebuilt without them
+        shutil.rmtree(out, ignore_errors=True)
+        return None
     # Re-gate on a hit. The key covers the source and the flags but not the
     # thresholds, so the same bytes can be asked for by one kernel with no
     # occupancy requirement and by another with a strict one; whoever
@@ -870,6 +935,17 @@ def _hit(out: Path, target: Target, kind: str, gates: dict) -> Optional[Build]:
         elif found is not None:
             try:
                 (out / _MFMA_MARK).write_text("mfma hazards checked\n")
+            except OSError:
+                pass
+    if not (out / _VOPD_MARK).exists():
+        found = _vopd_found(hit.so_path, kind, target.arch)
+        if found and _vopd_mode() == "report":
+            print(f"hk: {hit.module_name}: {_vopd_refusal(found)}", file=sys.stderr)
+        elif found:
+            raise ResourceError(f"{_vopd_refusal(found)}\nCached build: {out}")
+        elif found is not None:
+            try:
+                (out / _VOPD_MARK).write_text("vopd pairs checked\n")
             except OSError:
                 pass
     return hit
@@ -939,6 +1015,36 @@ def _build_once(source: str, target: Target, name: str, extra_flags: Sequence[st
                 mfma = None
             elif mfma:
                 raise _mfma_refusal(mfma)
+            vopd = _vopd_found(tmp / so_name, kind, target.arch)
+            unpaired: List[str] = []
+            if vopd and _vopd_mode() == "fix":
+                unpaired = vopd
+                cmd = [*cmd, *NO_VOPD]
+                proc = subprocess.run(cmd, capture_output=True, text=True)
+                log = proc.stdout + proc.stderr
+                line = (f"hk: {name}: HK_VOPD_GATE=fix rebuilt with {' '.join(NO_VOPD)}: "
+                        f"{len(vopd)} VOPD(s) with gfx11's interlock hazard:\n"
+                        + "".join(f"  {v}\n" for v in vopd))
+                print(line, file=sys.stderr, end="")
+                (tmp / "build.log").write_text(log + line)
+                (tmp / "command").write_text(" ".join(cmd))
+                if proc.returncode != 0:
+                    raise CompileError(
+                        f"hipcc failed ({proc.returncode}) for kernel {name!r} rebuilt without "
+                        f"VOPD.\nSource kept at {_keep(tmp, key)}\n\n{log}")
+                kernels = resources.parse(log, target, compiler=compiler_version())
+                _note_unused_frames(kernels, tmp / so_name, kind, tmp / "build.log")
+                resources.gate(kernels, **gates)
+                checked = _wait_gate(tmp / so_name, kind)
+                vopd = _vopd_found(tmp / so_name, kind, target.arch)
+            if vopd and _vopd_mode() == "report":
+                line = f"hk: {name}: {_vopd_refusal(vopd)}\n"
+                print(line, file=sys.stderr, end="")
+                with open(tmp / "build.log", "a") as f:
+                    f.write(line)
+                vopd = None
+            elif vopd:
+                raise _vopd_refusal(vopd)
         except ResourceError as e:
             raise ResourceError(
                 f"{e}\n\nGenerated source kept at {_keep(tmp, key)}"
@@ -952,6 +1058,10 @@ def _build_once(source: str, target: Target, name: str, extra_flags: Sequence[st
             (tmp / _MFMA_MARK).write_text(
                 f"padded {len(padded)}\n" + "".join(f"{p}\n" for p in padded) if padded
                 else "mfma hazards checked\n")
+        if vopd is not None:
+            (tmp / _VOPD_MARK).write_text(
+                f"rebuilt {len(unpaired)}\n" + "".join(f"{v}\n" for v in unpaired) if unpaired
+                else "vopd pairs checked\n")
         (tmp / "deps").write_text("\n".join(deps) + "\n")
         (tmp / "OK").write_text(module_name)
         try:

@@ -112,11 +112,18 @@ def _moe() -> Tuple[str, Callable]:
     return vllm_moe.apply(), vllm_moe.revert
 
 
+def _moe_wna16() -> Tuple[str, Callable]:
+    from . import vllm_moe_wna16  # noqa: PLC0415
+
+    return vllm_moe_wna16.apply(), vllm_moe_wna16.revert
+
+
 #: route -> its apply, returning (report, revert). In the order they are applied.
 APPLY: Dict[str, Callable[[], Tuple[str, Callable]]] = {
     "vllm_backend": _backend, "vllm_gemm": _gemm, "vllm_int4": _int4, "vllm_gptq": _gptq,
     "vllm_moe_a8w4": _moe_a8w4, "vllm_mxfp8": _mxfp8,
-    "vllm_dsv41_index": _dsv41_index, "vllm_moe": _moe, "vllm_sdpa": _sdpa,
+    "vllm_dsv41_index": _dsv41_index, "vllm_moe": _moe, "vllm_moe_wna16": _moe_wna16,
+    "vllm_sdpa": _sdpa,
     "vllm_sparse_mla": _sparse_mla, "vllm_prefill": _prefill,
 }
 

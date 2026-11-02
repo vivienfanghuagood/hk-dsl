@@ -135,27 +135,21 @@ def _vllm_int4() -> List[str]:
 
 
 def _vllm_gptq() -> Optional[List[str]]:
+    """Only what the stand-ins read: the two AutoGPTQLinearMethod entry points they wrap and
+    forward positionally. gptq_gemm_rdna3 is called by name, whatever this build's signature
+    (vllm_gptq.plan_call), and a layer whose kernel or weights lack something the route needs is
+    left on vLLM's path and counted (vllm_gptq.REFUSED) -- never the whole engine."""
     from vllm import _custom_ops as ops  # noqa: PLC0415
     from vllm.model_executor.layers.quantization import auto_gptq  # noqa: PLC0415
 
     if not hasattr(ops, "gptq_gemm_rdna3"):
         return None                 # no RDNA3 GPTQ kernel in this vLLM: nothing to route
-    from vllm.model_executor.kernels.linear.mixed_precision import rdna3_w4a16  # noqa: PLC0415
-
     cls = auto_gptq.AutoGPTQLinearMethod
-    kern = rdna3_w4a16.RDNA3W4A16LinearKernel
-    src = inspect.getsource(cls.create_weights)
     return (_expect(names(cls.process_weights_after_loading) == ["self", "layer"],
                     f"AutoGPTQLinearMethod.process_weights_after_loading takes "
                     f"{names(cls.process_weights_after_loading)}")
             + _expect(names(cls.apply) == ["self", "layer", "x", "bias"],
-                      f"AutoGPTQLinearMethod.apply takes {names(cls.apply)}")
-            + _expect(len(names(ops.gptq_gemm_rdna3)) == 5,
-                      "gptq_gemm_rdna3 no longer takes 5 arguments")
-            + _expect(hasattr(kern, "_get_weight_params"),
-                      "RDNA3W4A16LinearKernel has no _get_weight_params")
-            + [f"GPTQ layers no longer have {p}" for p in ("qweight", "qzeros", "scales")
-               if f'"{p}"' not in src and f"'{p}'" not in src])
+                      f"AutoGPTQLinearMethod.apply takes {names(cls.apply)}"))
 
 
 def _vllm_gemm() -> List[str]:
@@ -188,6 +182,19 @@ def _vllm_moe() -> List[str]:
                               "try_get_optimal_moe_config"))
 
 
+def _vllm_moe_wna16() -> List[str]:
+    from vllm.model_executor.layers.fused_moe import fused_moe as fm  # noqa: PLC0415
+
+    from . import vllm_moe_wna16  # noqa: PLC0415
+
+    return (same_parameters(fm.invoke_fused_moe_wna16_triton_kernel,
+                            vllm_moe_wna16.invoke_fused_moe_wna16_triton_kernel,
+                            "invoke_fused_moe_wna16_triton_kernel")
+            + same_parameters(fm.try_get_optimal_moe_config,
+                              vllm_moe_wna16.try_get_optimal_moe_config,
+                              "try_get_optimal_moe_config"))
+
+
 def _vllm_sdpa() -> List[str]:
     import torch  # noqa: PLC0415
     from vllm.v1.attention.ops import vit_attn_wrappers as w  # noqa: PLC0415
@@ -213,7 +220,11 @@ def _vllm_prefill() -> Optional[List[str]]:
     need = {"q", "k", "v", "out", "cu_seqlens_q", "max_seqlen_q", "seqused_k", "softmax_scale",
             "causal", "block_table"}
     lost = sorted(need - set(names(u)))
-    return (same_parameters(fn, vllm_prefill.context_attention_fwd, "context_attention_fwd")
+    # the stand-ins take vLLM's own signature and read what they need by name; a parameter a
+    # newer vLLM adds is refused per call unless it is at its default -- a contract failure here
+    # would turn off every route of the engine, not this one
+    p_lost = sorted(vllm_prefill._P_NEED - set(names(fn)))
+    return (_expect(not p_lost, f"context_attention_fwd lost {p_lost}")
             + _expect(not lost, f"unified_attention lost {lost}"))
 
 
@@ -352,7 +363,8 @@ def _sgld_convrot() -> List[str]:
 CHECKS: Dict[str, Callable[[], Optional[List[str]]]] = {
     "vllm_mxfp8": _vllm_mxfp8, "vllm_moe_a8w4": _vllm_moe_a8w4, "vllm_int4": _vllm_int4,
     "vllm_gptq": _vllm_gptq,
-    "vllm_gemm": _vllm_gemm, "vllm_moe": _vllm_moe, "vllm_sdpa": _vllm_sdpa,
+    "vllm_gemm": _vllm_gemm, "vllm_moe": _vllm_moe, "vllm_moe_wna16": _vllm_moe_wna16,
+    "vllm_sdpa": _vllm_sdpa,
     "vllm_backend": _vllm_backend, "vllm_dsv41_index": _vllm_dsv41_index,
     "vllm_sparse_mla": _vllm_sparse_mla, "vllm_prefill": _vllm_prefill,
     "sglang_linear": _sglang_linear, "sglang_moe": _sglang_moe, "sglang_norm": _sglang_norm,
