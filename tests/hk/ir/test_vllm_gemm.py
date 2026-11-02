@@ -91,6 +91,18 @@ def test_a_table_cannot_send_a_shape_to_a_kernel_that_refuses_it():
         assert vllm_gemm.route_for(4096, *nk) == "fallback"
 
 
+@pytest.mark.arch("gfx1201")
+def test_one_row_stays_on_the_engine_on_gfx1201_whatever_the_table_says():
+    vllm_gemm.set_routes(engine.RouteTable({QKV: {"runs": [[1, 64, "hk_decode"]]}}))
+    assert vllm_gemm.route_for(1, *QKV) == "fallback"
+    assert vllm_gemm.route_for(2, *QKV) == "hk_decode"
+
+
+def test_one_row_follows_the_table_on_gfx1100():
+    vllm_gemm.set_routes(engine.RouteTable({QKV: {"runs": [[1, 64, "hk_decode"]]}}))
+    assert vllm_gemm.route_for(1, *QKV) == "hk_decode"
+
+
 def test_an_unknown_path_in_a_table_falls_back():
     vllm_gemm.set_routes(engine.RouteTable({QKV: {"runs": [[1, 99999, "cutlass"]]}}))
     assert vllm_gemm.route_for(4096, *QKV) == "fallback"
