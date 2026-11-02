@@ -5,9 +5,44 @@ that must pass before the tag, the wheels, the GitHub release and PyPI. The
 wheels themselves (what they carry, how they are tagged manylinux) are in
 [building](building.md#wheels).
 
+- [A release candidate](#a-release-candidate)
 - [The steps](#the-steps)
 - [Documentation sync (must pass before tagging)](#documentation-sync-must-pass-before-tagging)
 - [After the release](#after-the-release)
+
+## A release candidate
+
+A release starts as a candidate, `vX.Y.ZrcN`, tagged on a commit of main.
+A maintainer prepares it; the merger tags it. Every item is checked on the
+commit to be tagged. **If any item fails, do not tag.**
+
+- [ ] **CI and the GPU tier are green on the commit**: every CI job, and all
+  four GPU jobs (`gfx950`, `gfx950-vllm`, `gfx1100`, `gfx1201`). A job
+  skipped because its runner was offline is a failure here.
+- [ ] **The install matrix is green on the commit**: `install.yml`,
+  dispatched on it ([testing](testing.md#the-install-matrix)). Every leg
+  passes. The release notes say which (ROCm, GPU) pairs the matrix does not
+  cover.
+- [ ] **The documentation sync gate** passes
+  ([below](#documentation-sync-must-pass-before-tagging)).
+- [ ] **Every route that is on by default meets
+  [the default-on rule](testing.md#the-default-on-rule)** on each GPU it is on
+  for. `python3 -m hk.integration --status` lists them; the evidence for each
+  is in [integration](integration.md#on-by-default-and-turning-it-off).
+- [ ] **The notes quote only the scorecard.** Every performance number in the
+  CHANGELOG section and the release notes comes from
+  [the scorecard](performance/scorecard.md) at this commit's measurements, with
+  its row. A kernel-level ratio is not a release claim.
+- [ ] **The public text is clean.** The repository's hygiene check covers
+  tracked files only, so check the release notes, the release PR's description
+  and the tag message separately, with the same site patterns:
+  `grep -nE -f <site-patterns> notes.md` finds nothing.
+
+Then tag `vX.Y.ZrcN` (annotated) and build its wheels as
+[step 4](#the-steps) does. They go on a GitHub pre-release, not PyPI. The
+final `vX.Y.Z` is the same commit, unless a fix was needed, which makes a new
+candidate. Its wheels must be byte-identical to the candidate's
+([step 5](#the-steps)).
 
 ## The steps
 

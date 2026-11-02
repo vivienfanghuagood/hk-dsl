@@ -1,0 +1,23 @@
+name: Install problem
+description: pip install hk-dsl fails, or `import hk` / the quick start does not run.
+labels: [install]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: The command and its output
+      description: The pip command, or the quick start step, and its full output.
+      render: text
+    validations:
+      required: true
+  - type: textarea
+    id: env
+    attributes:
+      label: Environment
+      description: |
+        `python3 --version`, `ldd --version | head -1` (glibc), `hipcc --version | head -2`, the ROCm version
+        (`cat /opt/rocm/.info/version`), the container image if you use one (e.g. rocm/pytorch:...), and the
+        GPU (`rocm-smi --showproductname` or torch's gcnArchName).
+      render: text
+    validations:
+      required: true

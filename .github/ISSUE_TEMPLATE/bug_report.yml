@@ -1,0 +1,48 @@
+name: Bug report
+description: A wrong result, a crash, an error that should not happen, or a route that misbehaves in vLLM / SGLang.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the report. A wrong result is the most serious kind of bug here: if a kernel returns
+        wrong values, say so in the title. The smallest script that shows the problem helps most.
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - A kernel I wrote (hk.kernel, hk.templates)
+        - hk.ops (a shipped kernel)
+        - hk.check / hk.profile / hk.tune
+        - vLLM or SGLang integration (a route)
+        - Build or compile (hipcc, the dialect, the cache)
+        - Something else
+    validations:
+      required: true
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened, and what you expected
+      description: The error message or traceback in full, or the wrong values next to the expected ones.
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: The smallest script that shows it
+      description: Shapes and dtypes matter. For a route, the engine's command line and the model.
+      render: python
+    validations:
+      required: true
+  - type: textarea
+    id: env
+    attributes:
+      label: Environment
+      description: |
+        The output of:
+        python3 -c "import hk, torch, sys; p = torch.cuda.get_device_properties(0); print(hk.__version__, torch.__version__, torch.version.hip, p.name, p.gcnArchName, sys.version.split()[0])"
+        and `hipcc --version | head -2`. For a vLLM / SGLang problem, also `python3 -m hk.integration --status`.
+      render: text
+    validations:
+      required: true
