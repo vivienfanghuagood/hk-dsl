@@ -5,14 +5,15 @@ patches or falls back to still exists, with the parameters the route uses
 Routes patch engine internals by name, and they were measured against one engine build. If a
 release renames, moves or re-signs one of those names, the patch does not fail loudly. Either it
 quietly routes nothing, or its stand-in passes arguments into the wrong slots. A bare-signature
-wrapper once did the second, and it changed vLLM's stock MoE path too. So a plugin calls `check()`
-before it patches anything. If any route it is about to apply has a broken contract, it patches
-**nothing** in that engine, prints one warning line and leaves the engine stock (`refuse()`).
+wrapper once did the second, and it changed vLLM's stock MoE path too. So a plugin checks each
+route's contract before it patches anything (`check_each`).
 
-**All or nothing, per engine.** The routes in one engine patch different entry points, but a
-broken contract on any of them means this engine is not the build they were measured on. A
-half-patched engine was never measured as a whole, and nobody chose it. Each route's apply
-already falls back for shapes and arches it does not take.
+**Per route.** A route whose contract is broken, or whose apply raises, is turned off, with one
+warning line per route on stderr (`refuse_route`); the engine's other routes are applied as
+usual (`apply_routes`). Each route patches its own entry points and falls back by itself for
+the shapes and arches it does not take, so a broken one says nothing about the others. Until
+2026-11 it was all or nothing per engine: one broken contract left every route off, and that
+happened three times on engine updates for a reason in one route.
 
 The checks only introspect the engine: imports, attributes and `inspect.signature`. They launch
 nothing. tests/hk/gpu/test_engine_contract.py and tests/hk/engines hold the same contract in CI,
@@ -307,7 +308,7 @@ def judge_vllm_prefill(f: dict) -> List[str]:
     lost = sorted(need - set(f["unified_attention"]))
     # the stand-ins take vLLM's own signature and read what they need by name; a parameter a
     # newer vLLM adds is refused per call unless it is at its default -- a contract failure here
-    # would turn off every route of the engine, not this one
+    # would turn the route off for every call, not only the calls that pass it
     p_lost = sorted(vllm_prefill._P_NEED - set(f["context_attention_fwd"]))
     return (_expect(not p_lost, f"context_attention_fwd lost {p_lost}")
             + _expect(not lost, f"unified_attention lost {lost}"))
@@ -536,14 +537,24 @@ def judge(name: str, facts) -> List[str]:
         return [f"{type(e).__name__}: {e}"]
 
 
-def check(routes: Iterable[str]) -> List[str]:
-    """Every broken contract among `routes`, as "route: problem" lines; [] if all hold."""
-    problems = []
+def check_each(routes: Iterable[str]) -> Dict[str, List[str]]:
+    """Each route among `routes` whose contract is broken, with its problems; {} if all hold."""
+    broken: Dict[str, List[str]] = {}
     for name in routes:
         if name not in CHECKS:
             continue
-        problems += [f"{name}: {p}" for p in judge(name, gather(name))]
-    return problems
+        try:
+            got = CHECKS[name]()    # judge(gather()), unless a test or a caller replaced it
+        except Exception as e:  # noqa: BLE001 -- a moved module is a broken contract
+            got = [f"{type(e).__name__}: {e}"]
+        if got:
+            broken[name] = list(got)
+    return broken
+
+
+def check(routes: Iterable[str]) -> List[str]:
+    """Every broken contract among `routes`, as "route: problem" lines; [] if all hold."""
+    return [f"{name}: {p}" for name, got in check_each(routes).items() for p in got]
 
 
 def engine_version(engine: str) -> str:
@@ -556,15 +567,59 @@ def engine_version(engine: str) -> str:
         return f"{mod} (version unknown)"
 
 
-#: What refuse() says went wrong.
+#: What refuse() / refuse_route() say went wrong.
 BROKEN = "engine contract FAILED"
-RAISED = "a route failed to apply"
+RAISED = "the route failed to apply"
+
+
+def refuse_route(engine: str, route: str, problems: List[str], what: str = BROKEN) -> str:
+    """The warning line for one route left off; the engine's other routes are unaffected. Also
+    returned."""
+    from . import switches  # noqa: PLC0415
+
+    measured = f"; routes measured on vllm {MEASURED_VLLM}" if engine == "vllm" else ""
+    r = switches.ROUTES.get(route)
+    off = (f"{r.env}=0" if r is not None
+           else f"{route}=" if route.startswith("HK_") else "HK_DISABLE=1")
+    line = (f"[hk] WARNING: {engine}: route {route} OFF -- {what} "
+            f"({engine_version(engine)}{measured}): " + "; ".join(problems)
+            + f". hk's other routes in this engine are unaffected. Use the engine version hk "
+              f"was measured on, or set {off} to silence this. (pid {os.getpid()})")
+    print(line, file=sys.stderr, flush=True)
+    return line
+
+
+def apply_routes(engine: str, routes: Iterable[str],
+                 appliers: Iterable[tuple]) -> tuple:
+    """Check each route's contract and apply the ones that hold, in `appliers`' order.
+
+    `appliers` is (route, apply) pairs; apply() patches and returns its one-line report, or
+    (report, revert). A route with a broken contract is not applied, and one whose apply raises
+    is reported and skipped (its apply is what must not leave a half patch behind); either way
+    `refuse_route` says so and the others go on. Returns (reports, applied route names,
+    {route left off: why})."""
+    routes = list(routes)
+    off = {name: (problems, BROKEN) for name, problems in check_each(routes).items()}
+    for name, (problems, what) in off.items():
+        refuse_route(engine, name, problems, what)
+    reports, applied = [], []
+    for name, how in appliers:
+        if name not in routes or name in off:
+            continue
+        try:
+            got = how()
+        except Exception as e:  # noqa: BLE001 -- one route's failure leaves the others on
+            off[name] = ([f"raised {type(e).__name__}: {e}"], RAISED)
+            refuse_route(engine, name, off[name][0], RAISED)
+            continue
+        reports.append(got[0] if isinstance(got, tuple) else got)
+        applied.append(name)
+    return reports, applied, {n: p for n, (p, _) in off.items()}
 
 
 def refuse(engine: str, problems: List[str], what: str = BROKEN) -> str:
-    """The one warning line a plugin prints when it leaves an engine stock. Also returned."""
-    import os  # noqa: PLC0415
-
+    """The one warning line for a whole engine left stock (a user's own modules failed to
+    load, say). Also returned."""
     measured = f"; routes measured on vllm {MEASURED_VLLM}" if engine == "vllm" else ""
     line = (f"[hk] WARNING: {engine}: {what} -- hk patched NOTHING in this engine, it runs "
             f"stock ({engine_version(engine)}{measured}): " + "; ".join(problems)

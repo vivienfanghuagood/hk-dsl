@@ -4,11 +4,9 @@ written by `python3 -m hk.integration.contract --record` inside the image) -- so
 check that changes is held to the real engines here, without any image in CI. A route whose
 contract an image breaks today is listed in that fixture's `expected_refusals`, with the reason.
 
-Today a refusal is not per route: one broken contract makes the plugin leave the WHOLE engine stock
-(contract.py, "all or nothing, per engine"), so an expected refusal means hk patches nothing in that
-image while the route is on. The test says so in its message.
-TODO(per-route contract policy, pending with the owner): if one route's refusal comes to turn only
-that route off, assert here that the image's other default-on routes still apply.
+A refusal is per route (contract.apply_routes): the refused route stays off with its own warning,
+and the image's other default-on routes are applied. The last test holds that against each
+fixture's own facts.
 """
 
 from __future__ import annotations
@@ -72,27 +70,35 @@ def test_a_default_on_route_holds_its_contract_in_every_recorded_image(image, ro
     why = fx["expected_refusals"].get(route)
     if why is None:
         assert problems == [], (
-            f"{route}'s contract breaks in {image} ({fx['image_note']}): {problems}. With the route "
-            f"on by default there, hk would patch NOTHING in that engine. Fix the stand-in or the "
-            f"check, or -- if the image really changed -- re-record it.")
+            f"{route}'s contract breaks in {image} ({fx['image_note']}): {problems}. The route is on "
+            f"by default there, and would be off. Fix the stand-in or the check, or -- if the image "
+            f"really changed -- re-record it and list the refusal.")
     else:
         assert problems, (
             f"{route} now holds in {image}: drop it from that fixture's expected_refusals "
             f"(was: {why})")
-        # Today one refusal leaves the whole engine stock (all or nothing, per engine).
 
 
-def test_a_known_refusal_is_said_as_a_whole_engine_refusal():
+def test_a_known_refusal_turns_off_only_its_route(monkeypatch):
+    """apply_routes over a fixture's facts: each expected refusal is off, every other default-on
+    route of that engine is applied."""
+    seen = 0
     for path in _fixtures():
         fx = _load(path)
-        for r, why in fx["expected_refusals"].items():
-            route = switches.ROUTES[r]
-            if not (route.default and fx["deployed_on"] in route.arches):
+        for engine in {switches.ROUTES[r].engine for r in fx["expected_refusals"]}:
+            if not _installed(fx, engine):
                 continue
-            others = [o.name for o in switches.ROUTES.values()
-                      if o.engine == route.engine and o.default and fx["deployed_on"] in o.arches
-                      and o.name != r]
-            line = contract.refuse(route.engine, [f"{r}: {p}" for p in
-                                                  contract.judge(r, fx["facts"][r])])
-            assert "hk patched NOTHING in this engine" in line, (
-                f"{path.name}: {r} refuses, and today that takes {others} off with it")
+            on = [o.name for o in switches.ROUTES.values() if o.engine == engine and o.default
+                  and fx["deployed_on"] in o.arches and o.name in contract.CHECKS]
+            refused = [r for r in fx["expected_refusals"] if r in on]
+            if not refused:
+                continue
+            for r in on:
+                monkeypatch.setitem(contract.CHECKS, r,
+                                    lambda r=r: contract.judge(r, fx["facts"][r]))
+            _, applied, off = contract.apply_routes(
+                engine, on, [(r, lambda r=r: f"{r} applied") for r in on])
+            assert sorted(off) == sorted(refused), (path.name, off)
+            assert applied == [r for r in on if r not in refused], (path.name, applied)
+            seen += 1
+    assert seen, "no fixture has an expected refusal of a default-on route: drop or rewrite this"

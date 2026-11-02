@@ -168,7 +168,7 @@ def plugin(clean):
         return apply
 
     clean.setattr(_vllm_plugin, "APPLY", {n: fake(n) for n in _vllm_plugin.APPLY})
-    clean.setattr(contract, "check", lambda routes: [])
+    clean.setattr(contract, "check_each", lambda routes: {})
     from hk.integration import stack
 
     clean.setattr(stack, "enforce", lambda *a, **k: "stack: test")
@@ -216,26 +216,39 @@ def test_the_vllm_plugin_with_hk_patch_vllm_0_applies_nothing(plugin, monkeypatc
     assert applied == []
 
 
-def test_a_broken_contract_leaves_vllm_stock_with_one_warning(plugin, capsys, monkeypatch):
+def test_a_broken_contract_turns_off_that_route_only_with_one_warning(plugin, capsys, monkeypatch):
     applied, _ = plugin
     seen = []
 
-    def check(routes):
+    def check_each(routes):
         seen.append(sorted(routes))
-        return ["vllm_moe_a8w4: aiter.fused_moe.fused_moe lost ['gate_mode']"]
+        return {"vllm_moe_a8w4": ["aiter.fused_moe.fused_moe lost ['gate_mode']"]}
 
-    monkeypatch.setattr(contract, "check", check)
+    monkeypatch.setattr(contract, "check_each", check_each)
     _vllm_plugin.register()
-    assert applied == []                         # all or nothing: K2 is not applied either
+    assert applied == ["vllm_int4", "vllm_mxfp8", "vllm_dsv41_index", "vllm_sparse_mla"]
     assert seen == [["vllm_dsv41_index", "vllm_int4", "vllm_moe_a8w4", "vllm_mxfp8", "vllm_sparse_mla"]]
     cap = capsys.readouterr()
     lines = [x for x in cap.err.splitlines() if x.strip()]
-    assert len(lines) == 1 and lines[0].startswith("[hk] WARNING: vllm: engine contract FAILED")
-    assert "patched NOTHING" in lines[0] and "gate_mode" in lines[0]
-    assert "routes on" not in cap.out
+    assert len(lines) == 1 and lines[0].startswith(
+        "[hk] WARNING: vllm: route vllm_moe_a8w4 OFF -- engine contract FAILED")
+    assert "gate_mode" in lines[0] and "HK_VLLM_MOE_A8W4=0" in lines[0]
+    assert "other routes in this engine are unaffected" in lines[0]
+    assert "[hk] vLLM routes on: " in cap.out and "vllm_int4 (" in cap.out
+    assert "vllm_moe_a8w4 (" not in cap.out and "OFF: vllm_moe_a8w4" in cap.out
 
 
-def test_a_route_that_raises_reverts_the_ones_before_it(plugin, capsys, monkeypatch):
+def test_every_contract_broken_leaves_vllm_stock_and_says_so(plugin, capsys, monkeypatch):
+    applied, _ = plugin
+    monkeypatch.setattr(contract, "check_each", lambda routes: {r: ["moved"] for r in routes})
+    _vllm_plugin.register()
+    assert applied == []
+    cap = capsys.readouterr()
+    assert len([x for x in cap.err.splitlines() if x.startswith("[hk] WARNING")]) == 5
+    assert "no route applied (5 off, see the warnings), stock" in cap.out
+
+
+def test_a_route_that_raises_is_off_and_the_others_stay_on(plugin, capsys, monkeypatch):
     applied, reverted = plugin
 
     def boom():
@@ -243,11 +256,13 @@ def test_a_route_that_raises_reverts_the_ones_before_it(plugin, capsys, monkeypa
 
     monkeypatch.setitem(_vllm_plugin.APPLY, "vllm_mxfp8", boom)
     _vllm_plugin.register()
-    assert applied == ["vllm_int4", "vllm_moe_a8w4"]
-    assert reverted == ["vllm_moe_a8w4", "vllm_int4"]          # undone, last first
-    err = capsys.readouterr().err.strip().splitlines()
-    assert len(err) == 1 and "a route failed to apply" in err[0]
-    assert "vllm_mxfp8 raised RuntimeError: moved" in err[0]
+    assert applied == ["vllm_int4", "vllm_moe_a8w4", "vllm_dsv41_index", "vllm_sparse_mla"]
+    assert reverted == []                                       # nothing undone
+    cap = capsys.readouterr()
+    err = cap.err.strip().splitlines()
+    assert len(err) == 1 and "route vllm_mxfp8 OFF -- the route failed to apply" in err[0]
+    assert "raised RuntimeError: moved" in err[0]
+    assert "OFF: vllm_mxfp8" in cap.out
 
 
 def _fake_aiter(monkeypatch, with_gate_mode: bool):
@@ -289,12 +304,12 @@ def test_a_real_mismatch_leaves_aiter_unwrapped(clean, capsys):
     from hk.integration import stack
 
     clean.setattr(stack, "enforce", lambda *a, **k: "stack: test")
-    clean.setenv("HK_VLLM_MXFP8", "0")            # vLLM is not importable here: K1 alone
-    clean.setenv("HK_VLLM_INT4", "0")
+    for env in ("HK_VLLM_MXFP8", "HK_VLLM_INT4", "HK_VLLM_DSV41_INDEX", "HK_VLLM_SPARSE_MLA"):
+        clean.setenv(env, "0")                    # vLLM is not importable here: K1 alone
     _vllm_plugin.register()
     assert afm.fused_moe is orig
     err = capsys.readouterr().err.strip().splitlines()
-    assert len(err) == 1 and "lost ['gate_mode']" in err[0]
+    assert len(err) == 1 and "route vllm_moe_a8w4 OFF" in err[0] and "lost ['gate_mode']" in err[0]
 
 
 def test_the_contract_check_reports_a_missing_engine_as_broken(clean):
@@ -319,7 +334,7 @@ def test_the_sglang_plugin_is_on_by_default_and_off_with_hk_disable(clean, capsy
 
     seen = []
     clean.setattr(switches, "arch", lambda: "gfx1100")
-    clean.setattr(contract, "check", lambda routes: [])
+    clean.setattr(contract, "check_each", lambda routes: {})
     clean.setattr(hks, "apply_linear", lambda: seen.append("linear") or "linear: test")
     clean.setattr(hks, "apply_norm", lambda: seen.append("norm") or "norm: test")
     clean.setattr(sglang_moe, "apply", lambda: seen.append("moe") or "moe: test")

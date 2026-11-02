@@ -360,7 +360,8 @@ def revert_linear() -> str:
 def apply() -> str:
     """Apply the SGLang-Diffusion routes hk.integration.switches has on: attention and linear
     by default on gfx1100; convrot only when asked for (HK_SGLD=...,convrot or HK_SGLD_CONVROT=1).
-    Checks their engine contract first and patches nothing if one is broken. Idempotent."""
+    Checks each route's engine contract first; a broken or raising route stays off with its own
+    warning line and the others are applied. Idempotent."""
     import atexit  # noqa: PLC0415
 
     from . import contract, switches  # noqa: PLC0415
@@ -370,38 +371,25 @@ def apply() -> str:
     routes = switches.on("sglang_diffusion")
     if not routes:
         return f"no route on ({switches.decide('sgld_attn').why}), stock"
-    problems = contract.check(routes)
-    if problems:
-        contract.refuse("sglang_diffusion", problems)
-        return "engine contract failed: nothing patched, stock"
-    notes, undo, current = [], [], ""
-    try:
-        if "sgld_attn" in routes:
-            current = "sgld_attn"
-            from ..ops import sdpa  # noqa: PLC0415
+    def attn() -> str:
+        from ..ops import sdpa  # noqa: PLC0415
 
-            sdpa.patch()
-            undo.append(sdpa.unpatch)
-            notes.append("F.scaled_dot_product_attention -> hk.ops.sdpa (torch_sdpa backend)")
-        if "sgld_linear" in routes:
-            current = "sgld_linear"
-            notes.append(apply_linear())
-            undo.append(revert_linear)
-        if "sgld_convrot" in routes:
-            current = "sgld_convrot"
-            try:
-                notes.append(apply_convrot())
-            except ImportError as e:   # an SGLang without convrot_int8
-                notes.append(f"convrot: not available ({e})")
-    except BaseException as e:  # noqa: BLE001 -- never half-patched: undo what was applied
-        for f in reversed(undo):
-            try:
-                f()
-            except BaseException:  # noqa: BLE001,S110
-                pass
-        contract.refuse("sglang_diffusion", [f"{current} raised {type(e).__name__}: {e}"],
-                        contract.RAISED)
-        return "a route failed to apply: nothing patched, stock"
+        sdpa.patch()
+        return "F.scaled_dot_product_attention -> hk.ops.sdpa (torch_sdpa backend)"
+
+    def convrot() -> str:
+        try:
+            return apply_convrot()
+        except ImportError as e:   # an SGLang without convrot_int8
+            return f"convrot: not available ({e})"
+
+    # Each route's contract, then each route that holds, one at a time: a broken or raising
+    # route is off with its own warning line, and the others are applied (contract.py).
+    notes, applied, off = contract.apply_routes(
+        "sglang_diffusion", routes,
+        [("sgld_attn", attn), ("sgld_linear", apply_linear), ("sgld_convrot", convrot)])
+    if not applied:
+        return f"no route applied ({', '.join(off)} off, see the warnings): stock"
     from ..runtime.compile import arm_jit_notice  # noqa: PLC0415
 
     arm_jit_notice("SGLang-Diffusion patch")
@@ -412,8 +400,9 @@ def apply() -> str:
         atexit.register(_report, True)
         threading.Thread(target=_reporter, name="hk-sgld-report", daemon=True).start()
         apply._done = True
-    on = ", ".join(f"{n} ({d.why})" for n, d in routes.items())
-    return f"routes on: {on}; " + "; ".join(notes)
+    on = ", ".join(f"{n} ({d.why})" for n, d in routes.items() if n in applied)
+    left = f"; OFF: {', '.join(off)}" if off else ""
+    return f"routes on: {on}{left}; " + "; ".join(notes)
 
 
 _LAST = [None]

@@ -203,9 +203,9 @@ def test_with_hk_disable_the_plugin_patches_nothing(plugin_env, capsys):
     assert "stock" in capsys.readouterr().out
 
 
-def test_an_aiter_that_lost_a_parameter_leaves_the_engine_stock(plugin_env, capsys):
+def test_an_aiter_that_lost_a_parameter_turns_off_that_route_only(plugin_env, capsys):
     """A simulated version mismatch: aiter's fused_moe without gate_mode. The plugin must not
-    patch K1, nor K2 beside it, and must say so in one line."""
+    patch K1 and must say so in one line; K2 beside it, whose contract holds, is applied."""
     import aiter.fused_moe as afm
 
     from hk.integration import _vllm_plugin
@@ -219,6 +219,7 @@ def test_an_aiter_that_lost_a_parameter_leaves_the_engine_stock(plugin_env, caps
     plugin_env.setattr(afm, "fused_moe", fused_moe)
     _vllm_plugin.register()
     assert afm.fused_moe is fused_moe
-    assert _patched() == {"vllm_moe_a8w4": False, "vllm_mxfp8": False}
+    assert _patched() == {"vllm_moe_a8w4": False, "vllm_mxfp8": True}
     err = [x for x in capsys.readouterr().err.splitlines() if x.startswith("[hk] WARNING")]
-    assert len(err) == 1 and "engine contract FAILED" in err[0] and "gate_mode" in err[0]
+    assert len(err) == 1 and "route vllm_moe_a8w4 OFF -- engine contract FAILED" in err[0]
+    assert "gate_mode" in err[0]

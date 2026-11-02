@@ -90,8 +90,9 @@ python3 -m hk.integration --status   # every route: on or off, and why
 HK_DISABLE=1 vllm serve ...          # turns every route off
 ```
 
-If the installed engine is not the build the routes were checked against, hk
-patches nothing and prints one warning line. The details are in
+If the installed engine breaks a route's contract (it renamed or re-signed an
+entry point the route patches), that route stays off with one warning line,
+and the other routes stay on. The details are in
 [integration](integration.md#on-by-default-and-turning-it-off).
 
 ## What it is not

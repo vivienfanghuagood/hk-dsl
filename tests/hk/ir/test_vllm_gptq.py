@@ -33,7 +33,7 @@ def test_it_is_on_for_gfx1100_only_and_the_plugin_applies_it_when_asked(monkeypa
     assert switches.ROUTES["vllm_gptq"].default and switches.ROUTES["vllm_gptq"].arches == ("gfx1100",)
     seen = []
     monkeypatch.delenv("HK_DISABLE", raising=False)
-    monkeypatch.setattr(contract, "check", lambda routes: [])   # no vLLM here
+    monkeypatch.setattr(contract, "check_each", lambda routes: {})   # no vLLM here
     monkeypatch.setenv("HK_PATCH_VLLM", "1")
     monkeypatch.setenv("HK_VLLM_GPTQ", "1")
     monkeypatch.setattr(vllm_gptq, "apply_patch", lambda: seen.append("gptq") or "gptq: test")
