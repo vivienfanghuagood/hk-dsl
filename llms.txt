@@ -36,7 +36,8 @@ It traces and runs on both GPUs, ragged shapes (100x1000) included; `hk.check` t
 - [The language](docs/language.md): kernels and constexprs, types (RT tiles, RS strips, ST LDS tiles, vectors), operators, memory, control flow, namespaces, errors, limits
 - [hk.check](docs/check.md): the loop -- build and resources without a GPU, correctness against a torch reference, interleaved timing against torch eager and torch.compile, `--json`
 - [hk.profile](docs/profile.md): why it is slow -- rocprofv3 counters and a thread trace per kernel: % of the compute and memory roofline, matrix core busy, occupancy, the grid's tail, the stalls the main loop waits on, its instruction mix, and a verdict; `--json` for agents
-- [Getting started](docs/getting-started.md): install, a first kernel, the four entry points (`trace`, `source`, `build`, call)
+- [Install](docs/install.md): toolchains, the wheel or a source build, a clone for the examples and tests
+- [Quickstart](docs/quickstart.md): a first kernel (template, then by hand), `hk.check`, the four entry points (`trace`, `source`, `build`, call); W7900D and MI355X tracks
 - [The runtime](docs/runtime.md): the compile cache, the resource gates (a spill is an error), arch detection, `HK_ARCH`, warming the cache
 - [For agents: engine integration](docs/agents.md): `headroom`, `new-op`, `ab` for kernels inside vLLM/SGLang, and the numbers not to trust
 - [Cross-architecture API audit](docs/archive/design/api-consistency.md): where an op's arguments or behaviour differ between gfx1100 and gfx950
@@ -62,7 +63,7 @@ It traces and runs on both GPUs, ragged shapes (100x1000) included; `hk.check` t
 - [04_gemm.py](examples/04_gemm.py), [05_attention.py](examples/05_attention.py): LDS staging, WMMA/MFMA, flash attention
 - [06_control_flow.py](examples/06_control_flow.py): runtime for/if/while
 - [07_dropout.py](examples/07_dropout.py) .. [10_layernorm_backward.py](examples/10_layernorm_backward.py): random numbers, gather/scatter, two-pass kernels
-- [examples/README.md](examples/README.md): all of them
+- [docs/examples.md](docs/examples.md): all of them, and which GPUs each runs on
 
 ## Pitfalls
 
