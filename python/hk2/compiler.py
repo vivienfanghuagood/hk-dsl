@@ -195,7 +195,7 @@ class Compiler:
             best = max(cands, key=self._score) if cands else FLEX
             L[r.id] = best
         elif k == "dot":
-            atom, grid, trans = self.dot_plan(op.args[0].type.dtype, sh[0], sh[1])
+            atom, grid, trans = self.dot_plan(op.args[0].type.dtype, sh[0], sh[1], op.args[0].type.shape[1])
             L[r.id] = self.acc_layout(atom, sh[0], sh[1], grid, trans)
         elif k == "reduce":
             x = op.args[0]
@@ -253,12 +253,12 @@ class Compiler:
             self.lay[res.id] = self._default(res, pick)
 
     # ================================================================ matrix-core plans
-    def dot_plan(self, dtype: T.DType, m: int, n: int):
+    def dot_plan(self, dtype: T.DType, m: int, n: int, k: int = 0):
         """The atom and warp grid of a dot. When a kernel reduces dot results along rows (softmax,
         attention), every dot gives each warp whole rows and uses one atom shape, so row statistics stay in
         a warp and meet the other dots' rows without moving."""
         if self.rowmode:
-            atom = self.arch.mma(dtype)
+            atom = self.arch.mma(dtype, k=k)
             # Transposed: the instruction runs with its operands swapped, so the accumulator holds rows on
             # lanes 0-15 -- the shape of an A operand. A dot feeding another dot (attention's P @ V) then
             # keeps P in registers (see match_operand; on RDNA3, whose A operand repeats lanes 16-31, one
@@ -267,7 +267,7 @@ class Compiler:
             if os.environ.get("HK2_NO_TRANS_DOT"):
                 trans = False
             return atom, A.rows_grid(m, n, self.nwarps, atom), trans
-        atom = self.arch.mma(dtype, m, n, self.nwarps)
+        atom = self.arch.mma(dtype, m, n, self.nwarps, k)
         return atom, A.warp_grid(m, n, self.nwarps, atom), False
 
     def acc_layout(self, atom, m: int, n: int, grid, trans: bool) -> Layout:
@@ -516,6 +516,8 @@ class Compiler:
     def cast(self, x: str, src: T.DType, dst: T.DType) -> str:
         if src == dst:
             return x
+        if src.is_fp8 or dst.is_fp8:
+            return self.cast_fp8(x, src, dst)
         key = ("cast", x, src, dst)
         m = self.memo[-1].get(key)
         if m:
@@ -537,6 +539,28 @@ class Compiler:
             r = self.e(f"trunc {s} {x} to {d}")
         else:
             r = x
+        self.memo[-1][key] = r
+        return r
+
+    def cast_fp8(self, x: str, src: T.DType, dst: T.DType) -> str:
+        """fp8 <-> f32 with v_cvt_f32_fp8 / v_cvt_pk_fp8_f32 (round to nearest even, saturating per OCP)."""
+        if self.arch.name not in ("gfx950",) and not self.arch.name.startswith("gfx12"):
+            raise NotImplementedError(f"hk2: fp8 conversions need gfx950 or RDNA4, not {self.arch.name}")
+        key = ("cast8", x, src, dst)
+        m = self.memo[-1].get(key)
+        if m:
+            return m
+        if src.is_fp8:
+            k = "fp8" if src == T.f8e4m3 else "bf8"
+            self.decl(f"declare float @llvm.amdgcn.cvt.f32.{k}(i32, i32 immarg)")
+            w = self.e(f"zext i8 {x} to i32")
+            r = self.cast(self.e(f"call float @llvm.amdgcn.cvt.f32.{k}(i32 {w}, i32 0)"), T.f32, dst)
+        else:
+            k = "fp8" if dst == T.f8e4m3 else "bf8"
+            f = self.cast(x, src, T.f32)
+            self.decl(f"declare i32 @llvm.amdgcn.cvt.pk.{k}.f32(float, float, i32, i1 immarg)")
+            p = self.e(f"call i32 @llvm.amdgcn.cvt.pk.{k}.f32(float {f}, float 0.0, i32 0, i1 false)")
+            r = self.e(f"trunc i32 {p} to i8")
         self.memo[-1][key] = r
         return r
 
@@ -1334,12 +1358,15 @@ class Compiler:
         g = self.dma[t.tag]
         dt = g["dt"]
         rdim, cdim = 1 - kdim, kdim
-        v = min(D.contig(cdim), 16 // 2)
-        assert v == 8, f"hk2: DMA tile read needs 8 contiguous K per fragment, layout {D}"
+        ce = 16 // dt.bytes  # elements per swizzled 16-byte chunk
+        v = min(D.contig(cdim), ce)
+        assert v * dt.bytes >= 4, f"hk2: DMA tile read needs 4 or more contiguous bytes of K per fragment, {D}"
         dyn = self.e(f"mul i32 {self.ring()}, {g['size']}") if self.loops else "0"
         row_lw, col_lw = self.lw(D, rdim), self.lw(D, cdim)
         f_lw = self._swz(row_lw, g)
-        ch_lw = self.en(("dmachl", D, cdim), lambda: f"lshr i32 {col_lw}, 3")
+        ch_lw = self.en(("dmachl", D, cdim, ce), lambda: f"lshr i32 {col_lw}, {log2(ce)}")
+        in_lw = self.en(("dmainl", D, cdim, ce), lambda: f"and i32 {col_lw}, {ce - 1}")
+        in_b = self.en(("dmainb", D, cdim, ce, dt.bytes), lambda: f"mul i32 {in_lw}, {dt.bytes}")
         x = self.en(("dmax", D, t.tag), lambda: f"xor i32 {ch_lw}, {f_lw}")
         rbase = self.en(("dmarb", D, t.tag), lambda: f"mul i32 {row_lw}, {g['rb']}")
         nm = g["name"]
@@ -1347,22 +1374,24 @@ class Compiler:
         def read(r):
             off = D.reg_offset(r)
             rc, cc = off[rdim], off[cdim]
-            cst = (cc >> 3) ^ ((rc >> g["fs"]) & (g["nc"] - 1))
+            cst = (cc // ce) ^ ((rc >> g["fs"]) & (g["nc"] - 1))
             chv = self.e(f"xor i32 {x}, {cst}") if cst else x
             b = self.e(f"shl i32 {chv}, 4")
             b = self.e(f"add i32 {b}, {rbase}")
             b = self.e(f"add i32 {b}, {dyn}")
-            b = self.e(f"add i32 {b}, {rc * g['rb']}")
+            b = self.e(f"add i32 {b}, {rc * g['rb'] + (cc % ce) * dt.bytes}")
+            if ce > v:
+                b = self.e(f"add i32 {b}, {in_b}")
             p = self.e(f"getelementptr inbounds i8, ptr addrspace(3) {nm}, i32 {b}")
-            vec = self.e(f"load <8 x {self.ty(dt)}>, ptr addrspace(3) {p}, align 16{_RSCOPE}")
+            vec = self.e(f"load <{v} x {self.ty(dt)}>, ptr addrspace(3) {p}, align {v * dt.bytes}{_RSCOPE}")
             self.n_ds += 1
-            return self.unpack(vec, 8, dt)
+            return self.unpack(vec, v, dt)
 
         def loader(r, vals):
             c = D.canonical_reg(r)
             if vals[c] is None:
-                start = c - c % 8
-                vals[start:start + 8] = read(start)
+                start = c - c % v
+                vals[start:start + v] = read(start)
             vals[r] = vals[c]
         return TV(D, LazyRegs(D.nregs, loader), dt)
 
@@ -1434,7 +1463,7 @@ class Compiler:
         a, b, c = op.args
         m, k = a.type.shape
         n = b.type.shape[1]
-        atom, grid, trans = self.dot_plan(a.type.dtype, m, n)
+        atom, grid, trans = self.dot_plan(a.type.dtype, m, n, k)
         if m % atom.m or n % atom.n or k % atom.k:
             raise ValueError(f"hk2.dot {m}x{k} @ {k}x{n}: on {self.arch.name} the tile sizes must be multiples of "
                              f"{atom.m}x{atom.k} @ {atom.k}x{atom.n}")
@@ -1470,14 +1499,21 @@ class Compiler:
         if trans:  # C^T = B^T A^T: blocks of n index the accumulator rows
             rm, rn = rn, rm
         dt = a.type.dtype
-        self.decl(f"declare {atom.c_ty} @{atom.intrinsic}({atom.op_ty}, {atom.op_ty}, {atom.c_ty}"
-                  f"{', i32 immarg, i32 immarg, i32 immarg' if atom.tail else ''})")
+        if atom.sig:
+            sig = atom.sig
+        elif atom.form:
+            sig = atom.form.replace("{A}", atom.op_ty).replace("{B}", atom.op_ty).replace("{C}", atom.c_ty)
+            sig = sig.replace("i1 true", "i1 immarg").replace("i1 false", "i1 immarg")
+        else:
+            sig = f"{atom.op_ty}, {atom.op_ty}, {atom.c_ty}" + (", i32 immarg, i32 immarg, i32 immarg" if atom.tail else "")
+        self.decl(f"declare {atom.c_ty} @{atom.intrinsic}({sig})")
+        acc_dt = atom.acc
         accs = {}
         for i in range(rm):
             for j in range(rn):
                 base = atom.c_regs * (j + rn * i)
-                accs[i, j] = self.pack(tc.regs[base:base + atom.c_regs], T.f32)
-        op_n = int(atom.op_ty.split()[0][1:])
+                accs[i, j] = self.pack(tc.regs[base:base + atom.c_regs], acc_dt)
+        op_n = atom.a_regs  # operand elements per lane (the intrinsic may take them packed in wider words)
         # transposed: the instruction's first operand is the B fragment, its second the A fragment
         first, second = (tb, ta) if trans else (ta, tb)
 
@@ -1494,8 +1530,12 @@ class Compiler:
             avecs, bvecs = cur
             for j in range(rn):
                 for i in range(rm):
-                    accs[i, j] = self.e(f"call {atom.c_ty} @{atom.intrinsic}({atom.op_ty} {avecs[i]}, "
-                                        f"{atom.op_ty} {bvecs[j]}, {atom.c_ty} {accs[i, j]}{atom.tail})")
+                    if atom.form:
+                        args = atom.form.replace("{A}", f"{atom.op_ty} {avecs[i]}").replace(
+                            "{B}", f"{atom.op_ty} {bvecs[j]}").replace("{C}", f"{atom.c_ty} {accs[i, j]}")
+                    else:
+                        args = f"{atom.op_ty} {avecs[i]}, {atom.op_ty} {bvecs[j]}, {atom.c_ty} {accs[i, j]}{atom.tail}"
+                    accs[i, j] = self.e(f"call {atom.c_ty} @{atom.intrinsic}({args})")
             cur = nxt if nxt is not None else (frags(kk + 1) if kk + 1 < rk else None)
         if self.depth > 0 and os.environ.get("HK2_SCHED", "0") != "0":  # measured: LLVM does better alone
             self._interleave(rm * rn * rk, self.n_ds - ds0, self.n_vmem - vm0)
@@ -1507,11 +1547,11 @@ class Compiler:
         for i in range(rm):
             for j in range(rn):
                 base = atom.c_regs * (j + rn * i)
-                regs[base:base + atom.c_regs] = self.unpack(accs[i, j], atom.c_regs, T.f32)
+                regs[base:base + atom.c_regs] = self.unpack(accs[i, j], atom.c_regs, acc_dt)
         for r in range(Lc.nregs):
             if regs[r] is None:
                 regs[r] = regs[Lc.canonical_reg(r)]
-        self.vals[op.result.id] = TV(Lc, regs, T.f32)
+        self.vals[op.result.id] = TV(Lc, regs, acc_dt)
 
     def _interleave(self, n_mfma: int, n_ds: int, n_vmem: int):
         """Ask LLVM's scheduler to spread this dot's LDS reads and DMA issues evenly between its matrix
@@ -1783,7 +1823,7 @@ class Compiler:
             a, b = d.args[:2]
             m, k = a.type.shape
             n = b.type.shape[1]
-            atom, grid, _ = self.dot_plan(a.type.dtype, m, n)
+            atom, grid, _ = self.dot_plan(a.type.dtype, m, n, k)
             for v, L in ((a, A.a_layout(atom, m, k, n, self.nwarps, grid)),
                          (b, A.b_layout(atom, m, k, n, self.nwarps, grid))):
                 if v.id not in inside and self.lay.get(v.id) is not FLEX and v.id in self.vals and \

@@ -32,6 +32,9 @@ class MmaAtom:
     c_reg: Tuple[Basis, ...]
     c_lane: Tuple[Basis, ...]
     tail: str = ""          # trailing immediate operands (cbsz, abid, blgp on MFMA)
+    acc: T.DType = T.f32    # accumulator element type
+    form: str = ""          # the call's operand list, if not "A, B, C<tail>": {A} {B} {C} placeholders
+    sig: str = ""           # its declared parameter types, when form has immediates
 
     @property
     def a_regs(self) -> int:
@@ -56,8 +59,9 @@ class Arch:
     atoms: Dict[str, MmaAtom] = field(default_factory=dict)
     big_atoms: Dict[str, MmaAtom] = field(default_factory=dict)  # 32x32 forms, where they exist
     xcds: int = 1           # dies workgroups are dealt to round-robin (each with its own L2)
+    short_k: Dict[str, MmaAtom] = field(default_factory=dict)  # for tiles whose K is below the main atom's
 
-    def mma(self, dtype: T.DType, m: int = 0, n: int = 0, nwarps: int = 0) -> MmaAtom:
+    def mma(self, dtype: T.DType, m: int = 0, n: int = 0, nwarps: int = 0, k: int = 0) -> MmaAtom:
         """The matrix instruction for a dot of this type: the 32x32 form when every warp's share of the
         output is at least 32x32 (fewer instructions per FLOP), else the 16x16 one."""
         import os
@@ -65,6 +69,8 @@ class Arch:
             small = self.atoms[dtype.name]
         except KeyError:
             raise NotImplementedError(f"hk2: no {dtype.name} matrix instruction on {self.name}") from None
+        if k and k % small.k and dtype.name in self.short_k:
+            return self.short_k[dtype.name]
         big = self.big_atoms.get(dtype.name)
         want = os.environ.get("HK2_MMA", "auto")
         if big is not None and m and want != "16":
@@ -82,18 +88,34 @@ _MFMA_C = dict(c_reg=R2((1, 0), (2, 0)), c_lane=R2((0, 1), (0, 2), (0, 4), (0, 8
                tail=", i32 0, i32 0, i32 0")
 
 
-def _mfma(k, dtype, intrinsic, op_ty, op_elt):
+def _mfma(k, dtype, intrinsic, op_ty, op_elt, acc=T.f32, form="", sig=""):
     kv = k // 4  # K elements per lane
     a_reg = tuple((0, 1 << i) for i in range(log2(kv)))
     a_lane = R2((1, 0), (2, 0), (4, 0), (8, 0), (0, kv), (0, 2 * kv))
     b_reg = tuple((1 << i, 0) for i in range(log2(kv)))
     b_lane = R2((0, 1), (0, 2), (0, 4), (0, 8), (kv, 0), (2 * kv, 0))
+    c = dict(_MFMA_C)
+    if acc == T.i32:
+        c["c_ty"] = "<4 x i32>"
     return MmaAtom(16, 16, k, dtype, intrinsic, op_ty, op_elt, a_reg=a_reg, a_lane=a_lane, b_reg=b_reg, b_lane=b_lane,
-                   **_MFMA_C)
+                   acc=acc, form=form, sig=sig, **c)
 
 
+_GFX950_SHORT = {
+    "float8_e4m3": _mfma(32, T.f8e4m3, "llvm.amdgcn.mfma.f32.16x16x32.fp8.fp8", "i64", "i8"),
+    "float8_e5m2": _mfma(32, T.f8e5m2, "llvm.amdgcn.mfma.f32.16x16x32.bf8.bf8", "i64", "i8"),
+    "int8": _mfma(32, T.i8, "llvm.amdgcn.mfma.i32.16x16x32.i8", "i64", "i8", T.i32)}
+_F8SIG = "<8 x i32>, <8 x i32>, <4 x float>, i32 immarg, i32 immarg, i32 immarg, i32, i32 immarg, i32"
 _GFX950 = {"bfloat16": _mfma(32, T.bf16, "llvm.amdgcn.mfma.f32.16x16x32.bf16", "<8 x bfloat>", "bfloat"),
-           "float16": _mfma(32, T.f16, "llvm.amdgcn.mfma.f32.16x16x32.f16", "<8 x half>", "half")}
+           "float16": _mfma(32, T.f16, "llvm.amdgcn.mfma.f32.16x16x32.f16", "<8 x half>", "half"),
+           # fp8: the double-rate f8f6f4 instruction, block scales fixed at 1.0 (E8M0 127)
+           "float8_e4m3": _mfma(128, T.f8e4m3, "llvm.amdgcn.mfma.scale.f32.16x16x128.f8f6f4.v8i32.v8i32",
+                                "<8 x i32>", "i8", form="{A}, {B}, {C}, i32 0, i32 0, i32 0, i32 127, i32 0, i32 127",
+                                sig=_F8SIG),
+           "float8_e5m2": _mfma(128, T.f8e5m2, "llvm.amdgcn.mfma.scale.f32.16x16x128.f8f6f4.v8i32.v8i32",
+                                "<8 x i32>", "i8", form="{A}, {B}, {C}, i32 1, i32 1, i32 0, i32 127, i32 0, i32 127",
+                                sig=_F8SIG),
+           "int8": _mfma(64, T.i8, "llvm.amdgcn.mfma.i32.16x16x64.i8", "<4 x i32>", "i8", T.i32)}
 
 
 # 32x32 accumulators: lane l holds column l % 32, rows 8*(i/4) + 4*(l/32) + i%4 (i < 16).
@@ -122,7 +144,10 @@ _W11 = dict(a_reg=R2((0, 1), (0, 2), (0, 4), (0, 8)), a_lane=R2((1, 0), (2, 0), 
 _GFX11 = {"bfloat16": MmaAtom(16, 16, 16, T.bf16, "llvm.amdgcn.wmma.f32.16x16x16.bf16.v8f32.v16i16", "<16 x i16>",
                               "i16", **_W11),
           "float16": MmaAtom(16, 16, 16, T.f16, "llvm.amdgcn.wmma.f32.16x16x16.f16.v8f32.v16f16", "<16 x half>",
-                             "half", **_W11)}
+                             "half", **_W11),
+          "int8": MmaAtom(16, 16, 16, T.i8, "llvm.amdgcn.wmma.i32.16x16x16.iu8.v8i32.v4i32", "<4 x i32>", "i8",
+                          acc=T.i32, form="i1 true, {A}, i1 true, {B}, {C}, i1 false",
+                          **dict(_W11, c_ty="<8 x i32>"))}
 
 # ---------------------------------------------------------------- RDNA4 (wave32, WMMA, no lane repeat)
 # A: lane l holds row l % 16, K 8*(l/16) + j. C: lane l holds rows 8*(l/16) + i.
@@ -144,7 +169,8 @@ for _n, _fam, _lds, _atoms in (("gfx942", "cdna", 64 << 10, _GFX942), ("gfx950",
                                ("gfx1200", "rdna", 64 << 10, _GFX12), ("gfx1201", "rdna", 64 << 10, _GFX12)):
     ARCHES[_n] = Arch(_n, _fam, 64 if _fam == "cdna" else 32, _lds,
                       _CDNA_FLAGS if _fam == "cdna" else _RDNA_FLAGS, _atoms,
-                      _GFX950_32 if _n == "gfx950" else {}, 8 if _fam == "cdna" else 1)
+                      _GFX950_32 if _n == "gfx950" else {}, 8 if _fam == "cdna" else 1,
+                      _GFX950_SHORT if _n == "gfx950" else {})
 
 
 def get_arch(name: str) -> Arch:

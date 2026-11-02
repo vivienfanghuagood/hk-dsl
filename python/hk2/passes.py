@@ -72,7 +72,8 @@ def _dma_ok(ld: ir.Op, uses, dma) -> bool:
     if not dma:
         return False
     t = ld.result.type
-    if len(t.shape) != 2 or t.dtype.bits != 16 or ld.attrs.get("vec") != 8 or t.shape[1] < 8:
+    per = 16 // t.dtype.bytes  # elements per 16-byte chunk
+    if len(t.shape) != 2 or t.dtype.bits not in (8, 16) or ld.attrs.get("vec") != per or t.shape[1] < per:
         return False
     per_inst, nwarps = dma[0], dma[1]
     total = t.shape[0] * t.shape[1] * 2

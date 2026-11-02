@@ -222,6 +222,8 @@ def _tile_args(*xs):
 
 
 def _ew(fn: str, *xs) -> "Tile":
+    if builtins.any(isinstance(x, Tile) and x.dtype.is_fp8 for x in xs):
+        xs = tuple(x.to(T.f32) if isinstance(x, Tile) and x.dtype.is_fp8 else x for x in xs)
     if fn in ("and", "or", "xor") and builtins.any(isinstance(x, Tile) and x.dtype.is_float for x in xs):
         raise _err(f"bitwise {fn} needs integer or boolean tiles")
     ts, shape, dt = _tile_args(*xs)
@@ -315,6 +317,8 @@ def _reduce(fn: str, t: Tile, axis: int) -> Tile:
     if not shape:
         raise _err("reducing a 1-D tile to a scalar is not supported yet; keep a 2-D tile and reduce one axis")
     dt = t.dtype
+    if dt.is_fp8:
+        dt = T.f32
     if fn == "add" and dt in (T.bf16, T.f16):
         dt = T.f32  # sums of 16-bit floats accumulate in f32
     return Tile(_op("reduce", [t.to(dt).v], [TileType(shape, dt)], {"fn": fn, "axis": axis}).result)
@@ -410,14 +414,16 @@ def dot(a: Tile, b: Tile, acc: Optional[Tile] = None) -> Tile:
     (m, k), (k2, n) = a.shape, b.shape
     if k != k2:
         raise _err(f"hk.dot: inner dimensions differ, {a.shape} @ {b.shape}")
-    if a.dtype != b.dtype or a.dtype not in (T.bf16, T.f16):
-        raise _err(f"hk.dot takes bf16 or f16 operands of one type, got {a.dtype.name} and {b.dtype.name}")
+    if a.dtype != b.dtype or a.dtype not in (T.bf16, T.f16, T.i8, T.f8e4m3, T.f8e5m2):
+        raise _err(f"hk.dot takes bf16, f16, fp8 or int8 operands of one type, got {a.dtype.name} and "
+                   f"{b.dtype.name}")
+    adt = T.i32 if a.dtype == T.i8 else T.f32  # int8 accumulates exactly in i32
     if acc is None:
-        acc = zeros((m, n), T.f32)
+        acc = zeros((m, n), adt)
     if not isinstance(acc, Tile) or acc.shape != (m, n):
         raise _err(f"hk.dot: the accumulator must be a {m}x{n} tile")
-    acc = acc.to(T.f32)
-    return Tile(_op("dot", [a.v, b.v, acc.v], [TileType((m, n), T.f32)]).result)
+    acc = acc.to(adt)
+    return Tile(_op("dot", [a.v, b.v, acc.v], [TileType((m, n), adt)]).result)
 
 
 def _unary(fn):

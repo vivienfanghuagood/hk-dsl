@@ -16,7 +16,8 @@ from . import ir
 from . import types as T
 
 _TORCH = {"float32": torch.float32, "float16": torch.float16, "bfloat16": torch.bfloat16, "int32": torch.int32,
-          "int16": torch.int16, "int8": torch.int8, "uint8": torch.uint8, "int1": torch.bool}
+          "int16": torch.int16, "int8": torch.int8, "uint8": torch.uint8, "int1": torch.bool,
+          "float8_e4m3": torch.float8_e4m3fn, "float8_e5m2": torch.float8_e5m2}
 
 
 def tdt(dt: T.DType):
@@ -129,7 +130,8 @@ class Interpreter:
             r = x.sum(ax, dtype=x.dtype) if fn == "add" else (x.amax(ax) if fn == "max" else x.amin(ax))
             env[res.id] = r
         elif k == "dot":
-            env[res.id] = a[0].float() @ a[1].float() + a[2].float()
+            exact = a[0].double() @ a[1].double() + a[2].double()
+            env[res.id] = exact.to(tdt(rdt))
         elif k == "load":
             env[res.id] = self.load(op, a, res)
         elif k == "store":
