@@ -56,6 +56,8 @@ LINEAR_MS = (1, 2, 4, 8, 16, 32, 64, 256, 1024, 4096)
 LOOSE, WRONG = 2e-2, 0.1
 #: The most calls one MoE graph replays (one routing each).
 MOE_CALLS_MAX = 64
+#: How long every arm's graphs replay before a row is timed (graph_us).
+WARM_MS = 100
 MOE_MS = (1, 2, 4, 8, 16, 32, 64, 256, 1024)
 
 
@@ -82,6 +84,14 @@ def graph_us(arms: Dict[str, List[Callable]], rounds: int) -> Dict[str, Dict[str
                 c()
         graphs[name] = g
     torch.cuda.synchronize()
+    # Replay every graph for WARM_MS first: a shape's first rows otherwise ran 10-15% slow in both
+    # arms (the GPU had idled while the host made the weight copies, and its clocks were still
+    # coming up), so the first token count of every shape read slow.
+    t0 = time.perf_counter()
+    while time.perf_counter() - t0 < WARM_MS / 1e3:
+        for g in graphs.values():
+            g.replay()
+        torch.cuda.synchronize()
     took: Dict[str, List[float]] = {n: [] for n in arms}
     names = list(arms)
     for r in range(rounds):
@@ -318,6 +328,21 @@ def call_by_name(fn, **kw):
     return fn(*[kw[n] for n in names if n in kw])
 
 
+def _vllm_kernels():
+    """Load vLLM's kernel libraries, as its engine does at start: its GPTQ ops live in libraries
+    that importing vllm._custom_ops alone does not load in every build."""
+    import importlib
+
+    from vllm.platforms import current_platform
+
+    current_platform.import_kernels()
+    for mod in ("vllm._C_stable_libtorch", "vllm._rocm_C"):
+        try:
+            importlib.import_module(mod)
+        except ImportError:
+            pass
+
+
 def gptq_checkpoint(n, k, group, dev, g):
     """A random symmetric GPTQ v1 checkpoint (qweight [K/8, N], qzeros, scales [K/group, N])
     and the fp32 W [N, K] it means."""
@@ -390,6 +415,8 @@ def run_linear_w4(a, only: set, notes: dict) -> List[dict]:
         os.environ.setdefault("VLLM_USE_TRITON_AWQ", "1")     # ROCm's AWQ is the Triton kernel
     try:
         from vllm import _custom_ops as ops
+
+        _vllm_kernels()
     except Exception as e:  # noqa: BLE001
         ops = None
         notes["vLLM"] = f"n/a: {type(e).__name__}: {str(e)[:100]}"
