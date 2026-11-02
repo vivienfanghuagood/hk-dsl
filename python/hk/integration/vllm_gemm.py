@@ -59,6 +59,7 @@ itself graph-safe -- and `engine` holds it to that under capture.
 
 from __future__ import annotations
 
+import functools
 from collections import Counter
 from typing import Any, Callable, Dict, Optional
 
@@ -85,6 +86,9 @@ _OPS: Dict[str, Callable] = {}
 _OPS_LEGACY: Dict[str, Callable] = {}
 _ARCH_OK: Dict[int, bool] = {}
 _TABLE: list = []
+#: Bumped whenever the table is replaced (`set_routes`); a layer's decision is kept for the
+#: generation it was made in. An int, so a traced call compares it as a constant.
+_GEN: list = [0]
 
 
 def _linear_fake(x, weight, bias=None):
@@ -141,6 +145,7 @@ def set_routes(table: Optional[engine.RouteTable]) -> None:
                       "routes", stacklevel=2)
     _TABLE.clear()
     _PLANS.clear()
+    _GEN[0] += 1
     if table is not None:
         _TABLE.append(table)
 
@@ -492,22 +497,33 @@ def _unrouted(weight, bias) -> str:
     return ""
 
 
+def _compiling() -> bool:
+    import torch  # noqa: PLC0415
+
+    return torch.compiler.is_compiling()
+
+
 def _takes_layer(layer, weight, bias) -> bool:
-    """Whether this layer's calls go through hk's op at all. Decided on the layer's first call --
+    """Whether this layer's calls go through hk's op at all. Decided at load (`decide_layers`) --
     after the weights are loaded and the missing shapes measured (vllm_autotune), before vLLM's
-    profile run or any graph capture -- and kept on the layer for the table it was decided
-    against. A layer the table routes at no M keeps vLLM's own GEMM, unwrapped: in a captured
+    profile run or any graph capture -- and kept on the layer for the table generation it was
+    decided in. A layer the table routes at no M keeps vLLM's own GEMM, unwrapped: in a captured
     decode graph the wrapper is an op of its own on every call, measured at ~0.8% of TPOT for a
-    model whose dense layers are all fp16."""
-    table = routes()
+    model whose dense layers are all fp16.
+
+    Read-only while torch.compile traces: vLLM's forward is compiled whole, and a write the graph
+    has to replay afterwards (an attribute, a counter) is refused by vLLM's CUDA-graph guard. A
+    layer not decided for the current table is decided again there, and the answer is not kept."""
     memo = getattr(layer, "_hk_gemm", None)
-    if memo is not None and memo[0] is table:
+    if memo is not None and memo[0] == _GEN[0]:
         return memo[1]
     why = _unrouted(weight, bias)
+    if _compiling():
+        return not why
     if why and (memo is None or memo[1]):
         UNROUTED[why] += 1
     try:
-        layer._hk_gemm = (table, not why)
+        layer._hk_gemm = (_GEN[0], not why)
     except AttributeError:          # a layer that takes no attributes: decide every call
         pass
     return not why
@@ -524,11 +540,23 @@ def _gemm(layer, x, weight, bias=None):
     return PATCH(x, weight, bias)
 
 
+def _routed_gemm(orig, layer, x, weight, bias=None):
+    """The GEMM `dispatch_unquantized_gemm` hands back, bound to vLLM's own (`orig`)."""
+    if not _takes_layer(layer, weight, bias):
+        return orig(layer, x, weight, bias)
+    return _gemm(layer, x, weight, bias)
+
+
 def dispatch_unquantized_gemm(*args, **kwargs):
     """Stands in for vLLM's. The arguments -- a linear-backend name in newer
     releases -- select among CUDA backends and mean nothing on ROCm; they are
     passed on to vLLM's own dispatch, whose GEMM a layer the table never
-    routes keeps (`_takes_layer`)."""
+    routes keeps (`_takes_layer`).
+
+    vLLM calls this inside the forward it compiles, on every linear call. So it writes its cache
+    only in eager code: a first call while torch.compile traces (vLLM's profile run is the first
+    forward) builds the stand-in and keeps nothing, as a write there would be replayed after the
+    graph, and vLLM's CUDA-graph guard refuses a forward that writes."""
     try:
         key = (args, tuple(sorted(kwargs.items())))
         hit = _GEMMS.get(key)
@@ -536,14 +564,8 @@ def dispatch_unquantized_gemm(*args, **kwargs):
         key, hit = None, None
     if hit is not None:
         return hit
-    orig = _ORIG_DISPATCH(*args, **kwargs)
-
-    def gemm(layer, x, weight, bias=None):
-        if not _takes_layer(layer, weight, bias):
-            return orig(layer, x, weight, bias)
-        return _gemm(layer, x, weight, bias)
-
-    if key is not None:
+    gemm = functools.partial(_routed_gemm, _ORIG_DISPATCH(*args, **kwargs))
+    if key is not None and not _compiling():
         _GEMMS[key] = gemm
     return gemm
 
