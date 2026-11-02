@@ -204,6 +204,7 @@ SHAPES = [("o", 3584, 3584, 28), ("gate_up", 37888, 3584, 28), ("lm_head", 15206
 
 
 def _tune(**kw):
+    kw.setdefault("timing", "graph")         # the budget's order, without context timing's re-check
     return R.tune_missing("vllm_linear", "gfx1100", SHAPES, engine=None,
                           engine_name="vllm 0.31.0 rocm_unquantized_gemm",
                           grid=list(range(1, 65)) + [80, 96, 112], **kw)
@@ -281,6 +282,75 @@ def test_a_second_process_waits_for_the_first_then_reads_its_records(records):
     assert p.wait(timeout=30) == 0
     assert time.monotonic() - t0 >= 1.0 and rep.waited >= 1.0
     assert rep.known == [("o", 3584, 3584)] and not rep.tuned
+
+
+def test_context_timing_re_times_a_decode_m_once_the_context_has_moved(monkeypatch):
+    # qkv is measured first, among o still on the engine's path; o then takes hk's GEMV at every
+    # decode M, so qkv's decode Ms are measured once more, among o on hk's GEMV. o was measured
+    # among qkv's final routes already. The LM head is timed alone, and is in no context.
+    clock = _Clock()
+    monkeypatch.setattr(R.time, "monotonic", clock)
+    monkeypatch.setattr(R, "tunableop_state", lambda: "off")
+    seen = []
+
+    def measure(n, k, ms, *, engine, timing, context, deadline=None, **how):
+        assert timing == ("graph" if n == 73472 else "context")         # the LM head: a graph alone
+        seen.append(((n, k), [(cn, ck) for cn, ck, _ in context],
+                     {m: tuple(at(m) for _, _, at in context) for m in ms}))
+        return [_pt(m, 1.0, hk_decode=0.6) for m in ms], 0, True
+
+    monkeypatch.setattr(R, "measure_points", measure)
+    shapes = [("qkv", 2560, 2048, 40), ("o", 2048, 2048, 40), ("lm_head", 73472, 2048, 1)]
+    R.tune_missing("vllm_linear", "gfx1100", shapes, engine=None, engine_name="vllm test",
+                   grid=list(range(1, 65)) + [80])
+    qkv_, o_, lm_ = (2560, 2048), (2048, 2048), (73472, 2048)
+    assert [(nk, ctx) for nk, ctx, _ in seen] == [
+        (qkv_, [o_]), (o_, [qkv_]), (lm_, []),                  # decode Ms, largest stream first
+        (qkv_, [o_]),                                           # qkv's decode Ms once more
+        (qkv_, [o_]), (o_, [qkv_]), (lm_, [])]                  # then the rest of the grid
+    assert set(seen[0][2][8]) == {"engine"} and seen[1][2][8] == ("hk_decode",)
+    assert sorted(seen[3][2]) == list(range(1, 65))
+    assert all(at == ("hk_decode",) for at in seen[3][2].values())
+    rec = R.load_user("vllm_linear", "gfx1100")["shapes"]
+    assert rec["2560x2048"]["meta"]["timing"] == "context"
+    assert rec["2560x2048"]["meta"]["tunableop"] == "off"
+    assert rec["2560x2048"]["meta"]["context_routes"]["8"] == "d"         # o on hk's GEMV
+    assert rec["2048x2048"]["meta"]["context_routes"]["8"] == "d"
+
+
+def test_a_later_call_re_times_what_an_earlier_one_measured_in_another_context(monkeypatch):
+    # An earlier start measured qkv's decode Ms among o on the engine's path ("e") and ran out of
+    # time; this one measures o, which takes hk's GEMV, and so re-times qkv's decode Ms.
+    monkeypatch.setattr(R, "tunableop_state", lambda: "off")
+    qkv = R.entry("qkv", [_pt(m, 1.0, hk_decode=0.6) for m in range(1, 65)], partial=True)
+    qkv["meta"] = {"engine": "vllm test", "timing": "context", "tunableop": "off",
+                   "context_routes": {str(m): "e" for m in range(1, 65)}}
+    R.save_user("vllm_linear", "gfx1100", {"2560x2048": qkv}, {"kind": "vllm_linear", "arch": "gfx1100"})
+    measured = []
+
+    def measure(n, k, ms, *, engine, deadline=None, **how):
+        measured.append(((n, k), list(ms)))
+        return [_pt(m, 1.0, hk_decode=0.6) for m in ms], 0, True
+
+    monkeypatch.setattr(R, "measure_points", measure)
+    R.tune_missing("vllm_linear", "gfx1100", [("qkv", 2560, 2048, 40), ("o", 2048, 2048, 40)],
+                   engine=None, engine_name="vllm test", grid=list(range(1, 65)) + [80])
+    assert measured[0] == ((2048, 2048), list(range(1, 65)))           # o's decode Ms
+    assert measured[1] == ((2560, 2048), list(range(1, 65)))           # qkv's, once more
+    rec = R.load_user("vllm_linear", "gfx1100")["shapes"]["2560x2048"]
+    assert {rec["meta"]["context_routes"][str(m)] for m in range(1, 65)} == {"d"}
+
+
+def test_a_record_under_another_tunableop_state_is_measured_again(fake_measure, monkeypatch):
+    on = {"file": "mcpm5%d.csv", "sha": "0123456789abcdef", "tuning": False}
+    monkeypatch.setattr(R, "tunableop_state", lambda: on)
+    _tune(budget=None)
+    n0 = len(fake_measure)
+    assert len(_tune(budget=None).known) == 3 and len(fake_measure) == n0
+    monkeypatch.setattr(R, "tunableop_state", lambda: "off")
+    rep = _tune(budget=None)
+    assert len(rep.tuned) == 3 and len(fake_measure) > n0
+    assert R.load_user("vllm_linear", "gfx1100")["shapes"]["3584x3584"]["meta"]["tunableop"] == "off"
 
 
 def test_no_budget_left_measures_nothing_and_says_so(fake_measure):

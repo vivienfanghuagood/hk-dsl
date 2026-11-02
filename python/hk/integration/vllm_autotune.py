@@ -144,10 +144,14 @@ def at_load(model, device=None, log=_print) -> Dict[str, Any]:
         REPORT.update(line=why + _biased_note(biased), seconds=0.0, missing=len(missing))
         return REPORT
     engine, engine_name = _routes.engine_path("vllm")
+    # Every layer, biased ones too, is the context the missing ones are timed in, each on the
+    # table's route.
     rep = _routes.tune_missing(
         "vllm_linear", current_arch(), missing, engine=engine, engine_name=engine_name,
         complete=have, budget=b, by="vllm startup", device=device,
-        log=lambda s: log(f"[hk] {s}"))
+        log=lambda s: log(f"[hk] {s}"),
+        model=[s[:3] for s in shapes] + [tuple(s) for s in biased],
+        route_of=lambda m, n, k: table.lookup(m, n, k) if (n, k) in have else "engine")
     vllm_gemm.set_routes(None)
     vllm_gemm.routes()
     REPORT.update(rep.as_dict(), line=rep.line() + _biased_note(biased),

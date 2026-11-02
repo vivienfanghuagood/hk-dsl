@@ -56,3 +56,13 @@ def test_measured_shapes_reach_the_routes(tmp_path, monkeypatch):
         assert t.origin[(512, 1024)] == str(R.user_path("vllm_linear", "gfx1100"))
     finally:
         vllm_gemm.set_routes(None)
+
+
+def test_a_context_runs_between_the_calls_and_is_taken_off():
+    # Two layers of ~100 us between calls of a ~5 us GEMM: per call, the GEMM's time, not theirs.
+    lin = torch.nn.functional.linear
+    ctx = [(8192, 4096, lambda m: "engine"), (4096, 4096, lambda m: "hk_decode")]
+    pts, _, done = R.measure_points(512, 1024, [8], engine=lin, timing="context", context=ctx,
+                                    **FAST)
+    assert done and set(pts[0][1]) >= {"engine", "hk_decode"}
+    assert all(0 < t < 0.05 for t in pts[0][1].values()), pts[0][1]
