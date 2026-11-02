@@ -41,7 +41,11 @@ The steps, each one skipped with a note when the machine cannot do it:
    rotate the contenders, each a burst of back-to-back calls; the median of
    the rounds, its noise, the per-round ratios' median and a verdict inside a
    noise band. The first call of each, which includes the compile, is timed
-   on its own.
+   on its own. Cold by default: each contender runs on copies of its inputs
+   in turn, enough that they exceed twice the GPU's last-level cache (96 MiB
+   on a W7900D, 64 MiB on an R9700, 256 MiB on an MI355X), so a call reads
+   DRAM as a model's layers do, and the GB/s it reports is DRAM traffic.
+   `cache="hot"` (`--hot`) times the same inputs over and over instead.
 """
 
 from __future__ import annotations
@@ -545,6 +549,58 @@ def interleave(thunks: Dict[str, Callable[[], Any]], *, rounds: int = 15,
     return times, calls
 
 
+#: Cold timing: the rotated copies of a contender's arguments together exceed the card's last-level
+#: cache by this factor, so each call reads its inputs from DRAM, as a model's layers do.
+COLD_FACTOR = 2.0
+#: At most this many copies (tiny inputs stay cache-resident in use too: timed hot), and at most this
+#: share of the free device memory for all of them.
+COLD_MAX_COPIES = 256
+COLD_MEM_SHARE = 0.25
+
+
+def _arg_bytes(args: Sequence[Any]) -> int:
+    return sum(a.numel() * a.element_size() for a in args if _is_tensor(a))
+
+
+def _cold_copies(cache: str, contenders: Dict[str, Tuple[Callable, List[Any], Dict[str, Any]]],
+                 card: Dict[str, float]) -> Tuple[int, Optional[str]]:
+    """How many copies of each contender's arguments to rotate through: enough that one round of
+    them exceeds COLD_FACTOR x the card's last-level cache (so the kernel reads DRAM, not a cache
+    the previous call left warm). -> (copies, why it is timed hot instead, or None)."""
+    if cache == "hot":
+        return 1, None
+    if not card or not card.get("cache_bytes"):
+        return 1, "this GPU's cache size is not in hk.check.CARDS"
+    import torch  # noqa: PLC0415
+
+    per = max(_arg_bytes(a) for _, a, _ in contenders.values())
+    if per <= 0:
+        return 1, "no tensor arguments"
+    n = math.ceil(COLD_FACTOR * card["cache_bytes"] / per)
+    if n > COLD_MAX_COPIES:
+        return 1, (f"the inputs ({per / 2**20:.1f} MiB) are too small to leave the "
+                   f"{card['cache_bytes'] / 2**20:.0f} MiB cache in rotation; they stay cache-resident in use too")
+    need = (n - 1) * sum(_arg_bytes(a) for _, a, _ in contenders.values())
+    free = torch.cuda.mem_get_info()[0]
+    if need > COLD_MEM_SHARE * free:
+        return 1, (f"{n} copies of the inputs ({need / 2**30:.1f} GiB) would take more than "
+                   f"{COLD_MEM_SHARE:.0%} of the free device memory")
+    return max(n, 2), None
+
+
+def _rotating(f: Callable, args: Sequence[Any], kw: Dict[str, Any], copies: int) -> Callable[[], Any]:
+    """A thunk calling f on `copies` copies of args in turn (the first is args itself). Untouched
+    copies are clones, so every copy holds the same values."""
+    sets = [list(args)] + [_clone(args) for _ in range(copies - 1)]
+    state = [0]
+
+    def call():
+        a = sets[state[0] % len(sets)]
+        state[0] += 1
+        return f(*a, **kw)
+    return call
+
+
 def _spread(xs: Sequence[float]) -> float:
     """Median absolute deviation over the median: the rounds' noise."""
     if len(xs) < 2:
@@ -682,7 +738,7 @@ def check(fn, reference: Optional[Callable] = None, inputs=None, *,
           rtol: Optional[float] = None, atol: Optional[float] = None,
           exact: bool = False, ref_precision: str = "fp32",
           time: bool = True, rounds: int = 15, warmup: int = 3,
-          batch_ms: float = 1.0, burn: float = 0.5,
+          batch_ms: float = 1.0, burn: float = 0.5, cache: str = "cold",
           compile_mode: Optional[str] = None,
           bytes: Optional[float] = None, flops: Optional[float] = None,  # noqa: A002
           name: Optional[str] = None, gpu: Optional[bool] = None,
@@ -720,6 +776,11 @@ def check(fn, reference: Optional[Callable] = None, inputs=None, *,
                inputs (the default); "native" on the inputs as they are
     time, rounds, warmup, batch_ms, burn   the timing (burn: seconds of
                memory traffic first, to settle the clocks)
+    cache      "cold" (the default): every contender rotates through copies
+               of its inputs that together exceed twice the last-level cache
+               (CARDS), so the rates are DRAM traffic; tiny inputs, or copies
+               that would take over a quarter of the free memory, are timed
+               hot with a note. "hot": the same inputs every call
     bytes, flops   work a call does, for the rates (default bytes: every
                input and output once)
     gpu        False forces build-only; None uses a GPU when one is there
@@ -903,8 +964,8 @@ def check(fn, reference: Optional[Callable] = None, inputs=None, *,
                 case["correct"] = {"ok": all(o["ok"] for o in outs), "outputs": outs}
 
         # The sweep's variants: checked like the subject, timed beside it.
-        contenders: Dict[str, Callable] = {
-            "hk": lambda f=fn, a=args, c=consts: f(*a, **c)}
+        # (callable, its arguments, its keywords): timed on rotated copies of the arguments (_rotating)
+        contenders: Dict[str, Tuple[Callable, List[Any], Dict[str, Any]]] = {"hk": (fn, args, consts)}
         for label, vc in variants.items():
             try:
                 vm = _clone(args)
@@ -922,7 +983,7 @@ def check(fn, reference: Optional[Callable] = None, inputs=None, *,
                     if not ok:
                         report.notes.append(f"case {ci}: {label} is wrong; not timed")
                         continue
-                contenders[label] = (lambda f=fn, a=args, c=vc: f(*a, **c))
+                contenders[label] = (fn, args, vc)
             except Exception as e:  # noqa: BLE001
                 report.notes.append(f"case {ci}: {label} did not run: {type(e).__name__}: "
                                     f"{str(e).splitlines()[0] if str(e) else ''}")
@@ -952,7 +1013,7 @@ def check(fn, reference: Optional[Callable] = None, inputs=None, *,
                            for g, w in zip(out, want)]
                     errs[k] = {"max_abs": max(c.get("max_abs", 0.0) for c in cmp),
                                "ok": all(c["ok"] for c in cmp)}
-                contenders[k] = (lambda f=f, a=a: f(*a))
+                contenders[k] = (f, a, {})
             except Exception as e:  # noqa: BLE001
                 report.notes.append(f"case {ci}: baseline {k} failed: "
                                     f"{type(e).__name__}: {str(e).splitlines()[0] if str(e) else ''}")
@@ -964,21 +1025,28 @@ def check(fn, reference: Optional[Callable] = None, inputs=None, *,
         if not burned:
             burn_in(burn)
             burned = True
-        try:
-            with torch.no_grad():
-                times, calls = interleave(contenders, rounds=rounds, warmup=warmup,
-                                          batch_ms=batch_ms)
-        except Exception as e:  # noqa: BLE001
-            _err(report, "time", e)
-            continue
         nbytes = bytes
         if nbytes is None:
             nbytes = sum(a.numel() * a.element_size() for a in args if _is_tensor(a))
             if not compared:
                 nbytes += sum(g.numel() * g.element_size() for g in got)
-        tm: Dict[str, Any] = {"rounds": rounds, "calls_per_round": calls,
-                              "bytes": nbytes, "flops": flops, "ms": {}}
         card = CARDS.get(arch, {})
+        copies, why_hot = _cold_copies(cache, contenders, card)
+        if why_hot:
+            report.notes.append(f"case {ci}: timed hot: {why_hot}")
+        try:
+            thunks = {k: _rotating(f, a, kw, copies) for k, (f, a, kw) in contenders.items()}
+            with torch.no_grad():
+                times, calls = interleave(thunks, rounds=rounds, warmup=warmup,
+                                          batch_ms=batch_ms)
+            del thunks
+        except Exception as e:  # noqa: BLE001
+            _err(report, "time", e)
+            continue
+        cold = copies > 1
+        tm: Dict[str, Any] = {"rounds": rounds, "calls_per_round": calls,
+                              "bytes": nbytes, "flops": flops, "ms": {},
+                              "cache": "cold" if cold else "hot", "copies": copies}
         for k, ts in times.items():
             med = statistics.median(ts)
             row = {"median": round(med, 5), "min": round(min(ts), 5),
@@ -997,14 +1065,12 @@ def check(fn, reference: Optional[Callable] = None, inputs=None, *,
         hk_ms = tm["ms"]["hk"]["median"]
         if card and nbytes and hk_ms > 0:
             rate = nbytes / (hk_ms * 1e-3)
-            in_cache = nbytes <= card["cache_bytes"]
-            ceiling = card["cache_bytes_s"] if in_cache else card["dram_bytes_s"]
             tm["of_dram_peak"] = round(rate / card["dram_bytes_s"], 3)
-            if rate > ceiling * 1.15:
+            if rate > card["dram_bytes_s"] * 1.15:
                 report.notes.append(
-                    f"case {ci}: hk moved {rate / 1e12:.2f} TB/s, past this card's "
-                    f"{'cache' if in_cache else 'DRAM'} ceiling: the byte count "
-                    f"overstates the traffic, or the kernel skipped work")
+                    f"case {ci}: hk's {rate / 1e9:.0f} GB/s is past this card's DRAM peak "
+                    f"({card['dram_bytes_s'] / 1e9:.0f} GB/s): inputs were cache-resident"
+                    + ("" if cold else " (timed hot)") + "; this is not DRAM bandwidth")
         case["time"] = tm
     if profile and not report.errors:
         _attach_profile(report, fn, all_cases[0], consts, seed)
@@ -1156,8 +1222,10 @@ def summary(r: Report) -> str:
             if hk_m.get("gb_s"):
                 peak = (f" = {t['of_dram_peak'] * 100:.0f}% of DRAM peak"
                         if t.get("of_dram_peak") is not None else "")
+                how = (f"cold: {t['copies']} copies of the inputs, rotated past the cache"
+                       if t.get("cache") == "cold" else "hot: the same inputs every call")
                 lines.append(f"    rate    hk {hk_m['gb_s']:.0f} GB/s{peak} "
-                             f"(inputs + outputs once)")
+                             f"(inputs + outputs once; {how})")
         fc = c.get("first_call_s")
         if fc:
             lines.append("    first   " + "   ".join(f"{k} {s:.2f} s" for k, s in fc.items())
