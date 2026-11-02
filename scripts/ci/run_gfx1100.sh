@@ -95,7 +95,7 @@ for i in $(seq 360); do     # 3 hours
     fi
     [[ $st == done* ]] && { DONE=1; break; }
 done
-echo "cd $R && tar -cf - result.json report.txt build.log driver.log 2>/dev/null" | pod | tar -xf - -C "$OUT"
+echo "cd $R && tar -cf - \$(ls result.json report.txt build.log driver.log 2>/dev/null)" | pod | tar -xf - -C "$OUT"
 [ -f "$OUT/result.json" ] || { echo "::error::no result from the pod"; exit 1; }
 [ -n "$KITSUM" ] && rm -f "$KITTAR"
 if [ "$MODE" = install ]; then
