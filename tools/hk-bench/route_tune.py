@@ -58,11 +58,27 @@ HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parents[1] / "python"))
 
 from hk.autotune.routes import (  # noqa: E402,F401 -- the tests read these here
-    CLOSE_K, GRID, NOISE_K, OPTIONAL, PATHS, ROTATE_BYTES, base_path, close_call,
-    compare, decisions, dump, engine_path, estimate, linear_shapes, margin,
-    model_config, optional_wins, prefer, runs, tune_shape)
+    CLOSE_K, CONTEXT_PASSES, DECODE_MS, GRID, NOISE_K, OPTIONAL, PATHS, ROTATE_BYTES, TIMINGS,
+    base_path, close_call, compare, context_of, decisions, default_timing, dump, engine_path, entry,
+    estimate, linear_shapes, margin, measure_points, model_config, optional_wins, prefer,
+    route_at, runs, tune_shape, tunableop_state)
 
 _engine = engine_path
+
+
+def splice(old: dict, new: dict, **gains) -> dict:
+    """`old`'s row with the points at `new`'s Ms replaced by `new`'s, its runs, above and overlay
+    re-derived from the merged points (hk.autotune.routes.entry); the spliced Ms and how they were
+    measured go in meta["spliced"]."""
+    from hk.autotune.routes import entry
+
+    ms = {p[0] for p in new["points"]}
+    pts = sorted([p for p in old["points"] if p[0] not in ms] + new["points"], key=lambda p: p[0])
+    ent = entry(old["name"], pts, partial=bool(old.get("partial")), **gains)
+    meta = dict(old.get("meta", {}))
+    meta["spliced"] = {"ms": sorted(ms), **new.get("meta", {})}
+    ent["meta"] = meta
+    return ent
 
 
 def main() -> int:
@@ -78,6 +94,20 @@ def main() -> int:
     ap.add_argument("--shapes", default="",
                     help="comma-separated subset of qkv,o,gate_up,down,lm_head")
     ap.add_argument("--m", default="", help="comma-separated Ms (default: the grid)")
+    ap.add_argument("--timing", choices=TIMINGS, default=None,
+                    help="how a burst is timed (hk.autotune.routes.measure_points): default "
+                    "queued on gfx950, context on RDNA (captured, cold weights, each call among "
+                    "the model's other linear layers on their routes)")
+    ap.add_argument("--nk", default="",
+                    help="name=NxK,... measured instead of --model's linear_shapes")
+    ap.add_argument("--merge-into", default="",
+                    help="an existing table: write it with this run's rows added, each replacing "
+                    "the row of its key whole (or, with --splice, only at the measured Ms), with "
+                    "this run's measurement in the row's meta")
+    ap.add_argument("--splice", action="store_true",
+                    help="with --merge-into: replace only the measured Ms' points of an existing "
+                    "row and re-derive its runs, keeping its other points (a fix at decode Ms "
+                    "without re-measuring the whole grid); a row not in the table is added whole")
     ap.add_argument("--rounds", type=int, default=3)
     ap.add_argument("--min-gain", type=float, default=0.03)
     ap.add_argument("--paths", default="hk,hk_decode",
@@ -118,6 +148,10 @@ def main() -> int:
         return compare(*args.compare)
     if not args.out:
         ap.error("--out is required")
+    if args.merge_into and args.confirm:
+        ap.error("--merge-into and --confirm do not combine")
+    if args.splice and not args.merge_into:
+        ap.error("--splice needs --merge-into")
     paths = set(args.paths.split(","))
     if not paths <= set(PATHS):
         raise SystemExit(f"--paths: unknown {sorted(paths - set(PATHS))}")
@@ -130,11 +164,17 @@ def main() -> int:
     dev = torch.device("cuda")
     arch = (torch.cuda.get_device_properties(dev).gcnArchName or "").split(":")[0]
     shapes, seen = [], set()
-    for model in args.model.split(","):
-        for s in linear_shapes(model_config(model), args.tp):
-            if s[1:3] not in seen:
-                seen.add(s[1:3])
-                shapes.append(s)
+    if args.nk:
+        for item in args.nk.split(","):
+            nm, nk = item.split("=")
+            n, k = (int(v) for v in nk.lower().split("x"))
+            shapes.append((nm, n, k, 0))
+    else:
+        for model in args.model.split(","):
+            for s in linear_shapes(model_config(model), args.tp):
+                if s[1:3] not in seen:
+                    seen.add(s[1:3])
+                    shapes.append(s)
     if args.shapes:
         keep = set(args.shapes.split(","))
         shapes = [s for s in shapes if s[0] in keep]
@@ -159,6 +199,10 @@ def main() -> int:
                  noise_k=args.noise_k, date=time.strftime("%Y-%m-%d"), shapes={})
     if hkk is not None:
         table["hipcc"] = hkk.hipcc_version()
+    from hk.target import current_arch
+    timing = args.timing or default_timing(current_arch())
+    table["timing"] = timing
+    table["tunableop"] = tunableop_state()
     if args.rotate_mb != ROTATE_BYTES // 2**20:
         table["rotate_mb"] = args.rotate_mb
     if fly:
@@ -167,19 +211,25 @@ def main() -> int:
     if args.confirm:
         table["confirmed_by"] = args.confirm
     t0, remeasured = time.time(), 0
-    for sname, n, k, _ in shapes:
-        conf = ({m for (key, m), (_, took) in confirmed.items() if key == f"{n}x{k}" and took}
-                if confirmed is not None else None)
-        ent = tune_shape(n, k, engine=engine, ms=grid, min_gain=args.min_gain, name=sname,
-                         lm_head=sname == "lm_head", confirm=conf, paths=paths, flydsl=fly,
-                         rounds=args.rounds, warmup=args.warmup, sets=args.sets,
-                         remeasure=args.remeasure, opt_gain=args.opt_gain,
-                         close_k=args.close_k, noise_k=args.noise_k,
-                         rotate_bytes=args.rotate_mb * 2**20, raw=args.raw,
-                         log=lambda s: print(s, flush=True))
-        remeasured += ent.pop("remeasured")
-        ent.pop("seconds")
-        table["shapes"][f"{n}x{k}"] = ent
+    # Context timing (hk.autotune.routes.tune_missing does the same at load): every call runs among
+    # the model's other linear layers, the LM head aside, each on its route so far -- the engine's
+    # until measured. Then each decode M whose context changed since is measured once more.
+    order = [(n, k) for sname, n, k, _ in shapes if sname != "lm_head"]
+    gains = dict(min_gain=args.min_gain, noise_k=args.noise_k, opt_gain=args.opt_gain)
+    how = dict(paths=paths, flydsl=fly, rounds=args.rounds, warmup=args.warmup, sets=args.sets,
+               remeasure=args.remeasure, opt_gain=args.opt_gain, close_k=args.close_k,
+               noise_k=args.noise_k, rotate_bytes=args.rotate_mb * 2**20, raw=args.raw,
+               timing=timing, log=lambda s: print(s, flush=True))
+
+    def path_at(n, k):
+        ent = table["shapes"].get(f"{n}x{k}")
+        return lambda m: route_at(ent["points"] if ent else [], m, args.min_gain, args.noise_k)
+
+    def context(n, k):
+        # the LM head (one call a step, ~1 ms) is timed in a graph of its own, as at load
+        return context_of(order, n, k, path_at) if timing == "context" and (n, k) in order else []
+
+    def show(sname, n, k, ent):
         print(f"{sname} {n}x{k}: {len(ent['points'])} Ms, {time.time() - t0:.0f}s", flush=True)
         for lo, hi, path in ent["runs"]:
             print(f"    {lo:>6}..{hi:<6} {path}", flush=True)
@@ -187,7 +237,61 @@ def main() -> int:
             for lo, hi, var in ranges:
                 print(f"    {lo:>6}..{'' if hi is None else hi:<6} {name} {var}", flush=True)
 
+    conf_of, seen = {}, {}
+    for sname, n, k, _ in shapes:
+        conf_of[(n, k)] = conf = (
+            {m for (key, m), (_, took) in confirmed.items() if key == f"{n}x{k}" and took}
+            if confirmed is not None else None)
+        ctx = context(n, k)
+        seen[(n, k)] = {m: tuple(at(m) for _, _, at in ctx) for m in grid}
+        ent = tune_shape(n, k, engine=engine, ms=grid, name=sname, lm_head=sname == "lm_head",
+                         confirm=conf, context=ctx, **{**how, "min_gain": args.min_gain})
+        remeasured += ent.pop("remeasured")
+        ent.pop("seconds")
+        if args.merge_into:
+            ent["meta"] = {k: table[k] for k in ("model", "engine", "torch", "hip", "device", "toolchain",
+                                                 "min_gain", "date", "timing", "tunableop")
+                           if k in table}
+        table["shapes"][f"{n}x{k}"] = ent
+        show(sname, n, k, ent)
+    for _ in range(CONTEXT_PASSES if timing == "context" else 0):
+        moved = False
+        for sname, n, k, _ in shapes:
+            ctx = context(n, k)
+            now = {m: tuple(at(m) for _, _, at in ctx) for m in grid if m in DECODE_MS}
+            ms = [m for m in now if seen[(n, k)][m] != now[m]]
+            if not ms:
+                continue
+            moved = True
+            ent = table["shapes"][f"{n}x{k}"]
+            before = {m: route_at(ent["points"], m, args.min_gain, args.noise_k) for m in ms}
+            pts, rm, _ = measure_points(n, k, ms, engine=engine, context=ctx, tag=sname,
+                                        **{**how, "min_gain": args.min_gain})
+            remeasured += rm
+            seen[(n, k)].update({m: now[m] for m in ms})
+            pts = sorted([p for p in ent["points"] if p[0] not in ms] + pts, key=lambda p: p[0])
+            new = entry(ent["name"], pts, confirm=conf_of[(n, k)], **gains)
+            if "meta" in ent:
+                new["meta"] = ent["meta"]
+            table["shapes"][f"{n}x{k}"] = new
+            flips = sum(route_at(pts, m, args.min_gain, args.noise_k) != was
+                        for m, was in before.items())
+            print(f"{sname} {n}x{k}: {len(ms)} decode Ms re-timed in the chosen routes' context, "
+                  f"{flips} decided differently", flush=True)
+            show(sname, n, k, new)
+        if not moved:
+            break
+
     table["remeasured"] = remeasured
+    if args.merge_into:
+        base = json.loads(Path(args.merge_into).read_text())
+        for key, ent in table["shapes"].items():
+            old = base["shapes"].get(key)
+            if args.splice and old is not None:
+                ent = splice(old, ent, min_gain=args.min_gain, noise_k=args.noise_k,
+                             opt_gain=args.opt_gain)
+            base["shapes"][key] = ent
+        table = base
     Path(args.out).write_text(dump(table))
     print(f"wrote {args.out} ({remeasured} points re-measured as close calls)")
     return 0
