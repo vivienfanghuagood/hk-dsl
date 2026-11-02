@@ -31,6 +31,12 @@ def context() -> ir.Context:
         with _lock:
             if not _CTX:
                 ctx = ir.Context()
+                # One thread. With MLIR's pool on, a func pass that fails
+                # reports its error from a worker thread, and the Python
+                # error capture builds Python objects there with no thread
+                # state: a segfault, when the func lands on a worker.
+                # hk's modules are a few funcs; the pool never paid for itself.
+                ctx.enable_multithreading(False)
                 hkd.register_dialects(ctx)
                 hkd.register_passes()
                 _CTX.append(ctx)

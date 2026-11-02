@@ -3,6 +3,9 @@ it prints, and what is refused. The GPU semantics are tests/hk/gpu/test_map.py."
 
 from __future__ import annotations
 
+import subprocess
+import sys
+
 import pytest
 
 pytest.importorskip("hk._mlir")
@@ -220,6 +223,33 @@ def test_a_mask_cannot_leave_its_map_on_rdna():
     with pytest.raises(Exception, match="mask strip leaves its hk.map on gfx1100"):
         _src(leaves, "gfx1100")
     _src(leaves, "gfx950")                          # gfx950's strips hold bool
+
+
+_REFUSE_MANY = """
+import hk
+def leaves(x: hk.Tensor[hk.i32], o: hk.Tensor[hk.i32]):
+    c = x.at[0, 0].load(hk.RS(hk.i32, 1, 512))
+    m = c < 3
+    o.at[0, 0].store(hk.where(m, c, 0))
+    o.at[1, 0].store(hk.where(m, 0, c))
+for i in range(2000):
+    k = hk.kernel(leaves, arch="gfx1100", warps=1, name=f"leaves_{i}", grid=lambda p: (1, 1, 1))
+    try:
+        k.source()
+    except Exception as e:
+        assert "mask strip leaves its hk.map" in str(e), e
+    else:
+        raise AssertionError("not refused")
+"""
+
+
+def test_a_pass_error_is_reported_safely_many_times():
+    # A refusal raised inside the pass pipeline once segfaulted the process
+    # when MLIR ran the func on a worker thread (about one run in a thousand).
+    # In a fresh process, so its context is the one under test.
+    r = subprocess.run([sys.executable, "-c", _REFUSE_MANY], capture_output=True, text=True,
+                       timeout=300)
+    assert r.returncode == 0, (r.returncode, r.stderr[-2000:])
 
 
 def test_maps_need_strips():
