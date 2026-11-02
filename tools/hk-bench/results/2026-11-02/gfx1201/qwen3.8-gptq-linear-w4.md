@@ -4,56 +4,58 @@ torch 2.13.0a0+rocm7.14.0a20260612, HIP 7.14.60850, vLLM 0.1.dev1+ga50259bb3, Tr
 
 | shape | M | hk, us | best competitor, us | hk vs best | hk w4a16 | vLLM gptq_gemm (exllama) | vLLM gptq_gemm_rdna3 |
 |---|---:|---:|---|---:|---:|---:|---:|
-| qkv | 1 | 78.47 | 83.17 (vLLM gptq_gemm (exllama)) | **1.06x** | 78.47 | 83.17 | error |
-| qkv | 2 | 78.29 | 89.48 (vLLM gptq_gemm (exllama)) | **1.14x** | 78.29 | 89.48 | error |
-| qkv | 4 | 78.86 | 102.07 (vLLM gptq_gemm (exllama)) | **1.29x** | 78.86 | 102.07 | error |
-| qkv | 8 | 79.19 | 118.98 (vLLM gptq_gemm (exllama)) | **1.50x** | 79.19 | 118.98 | error |
-| qkv | 16 | 81.45 | 155.17 (vLLM gptq_gemm (exllama)) | **1.91x** | 81.45 | 155.17 | error |
-| qkv | 32 | 103.03 | 304.83 (vLLM gptq_gemm (exllama)) | **2.96x** | 103.03 | 304.83 | error |
-| qkv | 64 | 172.02 | 596.14 (vLLM gptq_gemm (exllama)) | **3.46x** | 172.02 | 596.14 | error |
-| o | 1 | 35.39 | 68.41 (vLLM gptq_gemm (exllama)) | **1.93x** | 35.39 | 68.41 | error |
-| o | 2 | 35.51 | 73.56 (vLLM gptq_gemm (exllama)) | **2.07x** | 35.51 | 73.56 | error |
-| o | 4 | 36.06 | 81.61 (vLLM gptq_gemm (exllama)) | **2.26x** | 36.06 | 81.61 | error |
-| o | 8 | 36.75 | 92.73 (vLLM gptq_gemm (exllama)) | **2.52x** | 36.75 | 92.73 | error |
-| o | 16 | 37.73 | 81.34 (vLLM gptq_gemm (exllama)) | **2.16x** | 37.73 | 81.34 | error |
-| o | 32 | 46.20 | 136.60 (vLLM gptq_gemm (exllama)) | **2.96x** | 46.20 | 136.60 | error |
-| o | 64 | 73.64 | 147.55 (vLLM gptq_gemm (exllama)) | **2.00x** | 73.64 | 147.55 | error |
-| qkvz | 1 | 87.95 | 89.73 (vLLM gptq_gemm (exllama)) | **1.02x** | 87.95 | 89.73 | error |
-| qkvz | 2 | 88.10 | 94.74 (vLLM gptq_gemm (exllama)) | **1.07x** | 88.10 | 94.74 | error |
-| qkvz | 4 | 88.85 | 104.23 (vLLM gptq_gemm (exllama)) | **1.17x** | 88.85 | 104.23 | error |
-| qkvz | 8 | 89.66 | 131.72 (vLLM gptq_gemm (exllama)) | **1.47x** | 89.66 | 131.72 | error |
-| qkvz | 16 | 92.30 | 174.00 (vLLM gptq_gemm (exllama)) | **1.89x** | 92.30 | 174.00 | error |
-| qkvz | 32 | 115.32 | 349.16 (vLLM gptq_gemm (exllama)) | **3.03x** | 115.32 | 349.16 | error |
-| qkvz | 64 | 190.46 | 671.62 (vLLM gptq_gemm (exllama)) | **3.53x** | 190.46 | 671.62 | error |
-| ba | 1 | 5.60 | 17.18 (vLLM gptq_gemm (exllama)) | **3.07x** | 5.60 | 17.18 | error |
-| ba | 2 | 5.63 | 18.92 (vLLM gptq_gemm (exllama)) | **3.36x** | 5.63 | 18.92 | error |
-| ba | 4 | 5.66 | 21.72 (vLLM gptq_gemm (exllama)) | **3.83x** | 5.66 | 21.72 | error |
-| ba | 8 | 5.70 | 26.63 (vLLM gptq_gemm (exllama)) | **4.67x** | 5.70 | 26.63 | error |
-| ba | 16 | 5.75 | 26.90 (vLLM gptq_gemm (exllama)) | **4.68x** | 5.75 | 26.90 | error |
-| ba | 32 | 6.33 | 27.51 (vLLM gptq_gemm (exllama)) | **4.34x** | 6.33 | 27.51 | error |
-| ba | 64 | 13.13 | 34.97 (vLLM gptq_gemm (exllama)) | **2.66x** | 13.13 | 34.97 | error |
-| out | 1 | 35.24 | 67.17 (vLLM gptq_gemm (exllama)) | **1.91x** | 35.24 | 67.17 | error |
-| out | 2 | 35.62 | 72.20 (vLLM gptq_gemm (exllama)) | **2.03x** | 35.62 | 72.20 | error |
-| out | 4 | 35.95 | 79.99 (vLLM gptq_gemm (exllama)) | **2.23x** | 35.95 | 79.99 | error |
-| out | 8 | 36.55 | 91.20 (vLLM gptq_gemm (exllama)) | **2.50x** | 36.55 | 91.20 | error |
-| out | 16 | 37.65 | 80.84 (vLLM gptq_gemm (exllama)) | **2.15x** | 37.65 | 80.84 | error |
-| out | 32 | 45.54 | 136.62 (vLLM gptq_gemm (exllama)) | **3.00x** | 45.54 | 136.62 | error |
-| out | 64 | 74.72 | 148.00 (vLLM gptq_gemm (exllama)) | **1.98x** | 74.72 | 148.00 | error |
-| gate_up | 1 | 181.46 | 175.12 (vLLM gptq_gemm (exllama)) | **0.96x** | 181.46 | 175.12 | error |
-| gate_up | 2 | 181.95 | 180.18 (vLLM gptq_gemm (exllama)) | **0.99x** | 181.95 | 180.18 | error |
-| gate_up | 4 | 183.54 | 193.91 (vLLM gptq_gemm (exllama)) | **1.06x** | 183.54 | 193.91 | error |
-| gate_up | 8 | 185.81 | 229.23 (vLLM gptq_gemm (exllama)) | **1.23x** | 185.81 | 229.23 | error |
-| gate_up | 16 | 190.94 | 361.35 (vLLM gptq_gemm (exllama)) | **1.89x** | 190.94 | 361.35 | error |
-| gate_up | 32 | 234.54 | 725.36 (vLLM gptq_gemm (exllama)) | **3.09x** | 234.54 | 725.36 | error |
-| gate_up | 64 | 395.92 | 1437.78 (vLLM gptq_gemm (exllama)) | **3.63x** | 395.92 | 1437.78 | error |
-| down | 1 | 97.18 | 112.71 (vLLM gptq_gemm (exllama)) | **1.16x** | 97.18 | 112.71 | error |
-| down | 2 | 97.27 | 121.88 (vLLM gptq_gemm (exllama)) | **1.25x** | 97.27 | 121.88 | error |
-| down | 4 | 98.40 | 140.35 (vLLM gptq_gemm (exllama)) | **1.43x** | 98.40 | 140.35 | error |
-| down | 8 | 98.29 | 171.91 (vLLM gptq_gemm (exllama)) | **1.75x** | 98.29 | 171.91 | error |
-| down | 16 | 100.99 | 197.81 (vLLM gptq_gemm (exllama)) | **1.96x** | 100.99 | 197.81 | error |
-| down | 32 | 127.00 | 374.82 (vLLM gptq_gemm (exllama)) | **2.95x** | 127.00 | 374.82 | error |
-| down | 64 | 190.17 | 719.43 (vLLM gptq_gemm (exllama)) | **3.78x** | 190.17 | 719.43 | error |
+| qkv | 1 | 71.14 | 83.27 (vLLM gptq_gemm (exllama)) | **1.17x** | 71.14 | 83.27 | error |
+| qkv | 2 | 70.73 | 89.17 (vLLM gptq_gemm (exllama)) | **1.26x** | 70.73 | 89.17 | error |
+| qkv | 3 | 71.13 | 95.49 (vLLM gptq_gemm (exllama)) | **1.34x** | 71.13 | 95.49 | error |
+| qkv | 4 | 71.14 | 101.47 (vLLM gptq_gemm (exllama)) | **1.43x** | 71.14 | 101.47 | error |
+| qkv | 8 | 72.01 | 119.30 (vLLM gptq_gemm (exllama)) | **1.66x** | 72.01 | 119.30 | error |
+| qkv | 16 | 73.28 | 154.50 (vLLM gptq_gemm (exllama)) | **2.11x** | 73.28 | 154.50 | error |
+| qkv | 32 | 89.29 | 300.55 (vLLM gptq_gemm (exllama)) | **3.37x** | 89.29 | 300.55 | error |
+| qkv | 64 | 176.34 | 587.28 (vLLM gptq_gemm (exllama)) | **3.33x** | 176.34 | 587.28 | error |
+| o | 1 | 31.80 | 68.41 (vLLM gptq_gemm (exllama)) | **2.15x** | 31.80 | 68.41 | error |
+| o | 2 | 31.95 | 73.51 (vLLM gptq_gemm (exllama)) | **2.30x** | 31.95 | 73.51 | error |
+| o | 3 | 32.17 | 77.67 (vLLM gptq_gemm (exllama)) | **2.41x** | 32.17 | 77.67 | error |
+| o | 4 | 32.28 | 81.56 (vLLM gptq_gemm (exllama)) | **2.53x** | 32.28 | 81.56 | error |
+| o | 8 | 32.62 | 92.66 (vLLM gptq_gemm (exllama)) | **2.84x** | 32.62 | 92.66 | error |
+| o | 16 | 34.08 | 80.81 (vLLM gptq_gemm (exllama)) | **2.37x** | 34.08 | 80.81 | error |
+| o | 32 | 39.48 | 137.00 (vLLM gptq_gemm (exllama)) | **3.47x** | 39.48 | 137.00 | error |
+| o | 64 | 72.36 | 147.33 (vLLM gptq_gemm (exllama)) | **2.04x** | 72.36 | 147.33 | error |
+| qkvz | 1 | 79.68 | 89.33 (vLLM gptq_gemm (exllama)) | **1.12x** | 79.68 | 89.33 | error |
+| qkvz | 2 | 79.64 | 94.48 (vLLM gptq_gemm (exllama)) | **1.19x** | 79.64 | 94.48 | error |
+| qkvz | 3 | 79.76 | 99.06 (vLLM gptq_gemm (exllama)) | **1.24x** | 79.76 | 99.06 | error |
+| qkvz | 4 | 80.15 | 104.11 (vLLM gptq_gemm (exllama)) | **1.30x** | 80.15 | 104.11 | error |
+| qkvz | 8 | 81.28 | 131.68 (vLLM gptq_gemm (exllama)) | **1.62x** | 81.28 | 131.68 | error |
+| qkvz | 16 | 82.84 | 175.39 (vLLM gptq_gemm (exllama)) | **2.12x** | 82.84 | 175.39 | error |
+| qkvz | 32 | 97.65 | 346.16 (vLLM gptq_gemm (exllama)) | **3.54x** | 97.65 | 346.16 | error |
+| qkvz | 64 | 191.26 | 672.15 (vLLM gptq_gemm (exllama)) | **3.51x** | 191.26 | 672.15 | error |
+| out | 1 | 31.65 | 67.01 (vLLM gptq_gemm (exllama)) | **2.12x** | 31.65 | 67.01 | error |
+| out | 2 | 31.87 | 71.90 (vLLM gptq_gemm (exllama)) | **2.26x** | 31.87 | 71.90 | error |
+| out | 3 | 32.02 | 76.33 (vLLM gptq_gemm (exllama)) | **2.38x** | 32.02 | 76.33 | error |
+| out | 4 | 32.10 | 80.04 (vLLM gptq_gemm (exllama)) | **2.49x** | 32.10 | 80.04 | error |
+| out | 8 | 32.42 | 91.01 (vLLM gptq_gemm (exllama)) | **2.81x** | 32.42 | 91.01 | error |
+| out | 16 | 34.23 | 81.11 (vLLM gptq_gemm (exllama)) | **2.37x** | 34.23 | 81.11 | error |
+| out | 32 | 38.92 | 136.38 (vLLM gptq_gemm (exllama)) | **3.50x** | 38.92 | 136.38 | error |
+| out | 64 | 74.17 | 147.25 (vLLM gptq_gemm (exllama)) | **1.99x** | 74.17 | 147.25 | error |
+| gate_up | 1 | 163.97 | 174.93 (vLLM gptq_gemm (exllama)) | **1.07x** | 163.97 | 174.93 | error |
+| gate_up | 2 | 164.72 | 179.86 (vLLM gptq_gemm (exllama)) | **1.09x** | 164.72 | 179.86 | error |
+| gate_up | 3 | 165.31 | 185.72 (vLLM gptq_gemm (exllama)) | **1.12x** | 165.31 | 185.72 | error |
+| gate_up | 4 | 165.88 | 193.71 (vLLM gptq_gemm (exllama)) | **1.17x** | 165.88 | 193.71 | error |
+| gate_up | 8 | 168.28 | 229.71 (vLLM gptq_gemm (exllama)) | **1.36x** | 168.28 | 229.71 | error |
+| gate_up | 16 | 171.88 | 363.91 (vLLM gptq_gemm (exllama)) | **2.12x** | 171.88 | 363.91 | error |
+| gate_up | 32 | 201.75 | 741.72 (vLLM gptq_gemm (exllama)) | **3.68x** | 201.75 | 741.72 | error |
+| gate_up | 64 | 405.82 | 1437.24 (vLLM gptq_gemm (exllama)) | **3.54x** | 405.82 | 1437.24 | error |
+| down | 1 | 83.30 | 112.96 (vLLM gptq_gemm (exllama)) | **1.36x** | 83.30 | 112.96 | error |
+| down | 2 | 83.53 | 120.98 (vLLM gptq_gemm (exllama)) | **1.45x** | 83.53 | 120.98 | error |
+| down | 3 | 83.71 | 130.85 (vLLM gptq_gemm (exllama)) | **1.56x** | 83.71 | 130.85 | error |
+| down | 4 | 83.90 | 140.11 (vLLM gptq_gemm (exllama)) | **1.67x** | 83.90 | 140.11 | error |
+| down | 8 | 84.28 | 171.68 (vLLM gptq_gemm (exllama)) | **2.04x** | 84.28 | 171.68 | error |
+| down | 16 | 89.10 | 197.18 (vLLM gptq_gemm (exllama)) | **2.21x** | 89.10 | 197.18 | error |
+| down | 32 | 105.79 | 365.36 (vLLM gptq_gemm (exllama)) | **3.45x** | 105.79 | 365.36 | error |
+| down | 64 | 198.15 | 719.31 (vLLM gptq_gemm (exllama)) | **3.63x** | 198.15 | 719.31 | error |
 
 **Setup of each arm.**
-- hk w4a16: hk.ops.w4a16.matmul (GPTQ repacked)
+- hk w4a16: hk.ops.w4a16.matmul, symmetric form (repack_gptq(symmetric=True), as vllm_gptq loads it)
 - vLLM gptq_gemm (exllama): vllm._custom_ops.gptq_gemm, exllama kernel
+
+- skipped: ba: left unquantized by the checkpoint
+

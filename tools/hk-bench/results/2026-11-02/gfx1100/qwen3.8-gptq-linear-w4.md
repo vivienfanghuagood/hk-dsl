@@ -4,59 +4,61 @@ torch 2.13.0a0+rocm7.14.0a20260612, HIP 7.14.60850, vLLM 0.1.dev1+g3775d5fca, Tr
 
 | shape | M | hk, us | best competitor, us | hk vs best | hk w4a16 | vLLM gptq_gemm (exllama) | vLLM gptq_gemm_rdna3 |
 |---|---:|---:|---|---:|---:|---:|---:|
-| qkv | 1 | 77.48 | 61.74 (vLLM gptq_gemm_rdna3) | **0.80x** | 77.48 | 80.64 | 61.74 † |
-| qkv | 2 | 77.41 | 63.13 (vLLM gptq_gemm_rdna3) | **0.82x** | 77.41 | 86.84 | 63.13 † |
-| qkv | 4 | 77.51 | 65.11 (vLLM gptq_gemm_rdna3) | **0.84x** | 77.51 | 101.17 | 65.11 † |
-| qkv | 8 | 78.25 | 86.28 (vLLM gptq_gemm_rdna3) | **1.10x** | 78.25 | 92.06 | 86.28 † |
-| qkv | 16 | 89.08 | 141.29 (vLLM gptq_gemm_rdna3) | **1.59x** | 89.08 | 148.16 | 141.29 † |
-| qkv | 32 | 121.10 | 256.49 (vLLM gptq_gemm_rdna3) | **2.12x** | 121.10 | 268.93 | 256.49 † |
-| qkv | 64 | 226.34 | 250.14 (vLLM gptq_gemm_rdna3) | **1.10x** | 226.34 | 542.67 | 250.14 |
-| o | 1 | 36.88 | 31.48 (vLLM gptq_gemm_rdna3) | **0.85x** | 36.88 | 58.10 | 31.48 † |
-| o | 2 | 36.92 | 32.80 (vLLM gptq_gemm_rdna3) | **0.89x** | 36.92 | 61.78 | 32.80 † |
-| o | 4 | 37.05 | 34.79 (vLLM gptq_gemm_rdna3) | **0.94x** | 37.05 | 66.48 | 34.79 † |
-| o | 8 | 37.46 | 47.50 (vLLM gptq_gemm_rdna3) | **1.27x** | 37.46 | 69.50 | 47.50 † |
-| o | 16 | 41.36 | 68.26 (vLLM gptq_gemm_rdna3) | **1.65x** | 41.36 | 80.64 | 68.26 † |
-| o | 32 | 55.11 | 119.81 (vLLM gptq_gemm_rdna3) | **2.17x** | 55.11 | 128.47 | 119.81 † |
-| o | 64 | 94.99 | 135.59 (vLLM gptq_gemm_rdna3) | **1.43x** | 94.99 | 159.94 | 135.59 |
-| qkvz | 1 | 87.67 | 72.55 (vLLM gptq_gemm_rdna3) | **0.83x** | 87.67 | 83.13 | 72.55 † |
-| qkvz | 2 | 87.69 | 79.23 (vLLM gptq_gemm_rdna3) | **0.90x** | 87.69 | 90.86 | 79.23 † |
-| qkvz | 4 | 87.82 | 89.58 (vLLM gptq_gemm_rdna3) | **1.02x** | 87.82 | 106.17 | 89.58 † |
-| qkvz | 8 | 88.94 | 95.42 (vLLM gptq_gemm_rdna3) | **1.07x** | 88.94 | 102.78 | 95.42 † |
-| qkvz | 16 | 100.70 | 159.65 (vLLM gptq_gemm_rdna3) | **1.58x** | 100.70 | 165.06 | 159.65 † |
-| qkvz | 32 | 136.65 | 285.12 (vLLM gptq_gemm_rdna3) | **2.09x** | 136.65 | 302.22 | 285.12 † |
-| qkvz | 64 | 258.78 | 286.31 (vLLM gptq_gemm_rdna3) | **1.11x** | 258.78 | 689.76 | 286.31 |
-| ba | 1 | 7.88 | 15.79 (vLLM gptq_gemm_rdna3) | **2.00x** | 7.88 | 20.55 | 15.79 † |
-| ba | 2 | 7.88 | 18.80 (vLLM gptq_gemm_rdna3) | **2.39x** | 7.88 | 23.09 | 18.80 |
-| ba | 4 | 7.89 | 23.60 (vLLM gptq_gemm_rdna3) | **2.99x** | 7.89 | 27.35 | 23.60 † |
-| ba | 8 | 7.91 | 34.39 (vLLM gptq_gemm_rdna3) | **4.34x** | 7.91 | 35.32 | 34.39 † |
-| ba | 16 | 7.97 | 34.48 (vLLM gptq_gemm_rdna3) | **4.33x** | 7.97 | 36.25 | 34.48 † |
-| ba | 32 | 9.60 | 35.01 (vLLM gptq_gemm_rdna3) | **3.65x** | 9.60 | 38.72 | 35.01 † |
-| ba | 64 | 15.78 | 45.09 (vLLM gptq_gemm (exllama)) | **2.86x** | 15.78 | 45.09 | 62.53 |
-| out | 1 | 36.88 | 31.58 (vLLM gptq_gemm_rdna3) | **0.86x** | 36.88 | 58.09 | 31.58 † |
-| out | 2 | 36.94 | 32.78 (vLLM gptq_gemm_rdna3) | **0.89x** | 36.94 | 61.63 | 32.78 † |
-| out | 4 | 37.09 | 34.82 (vLLM gptq_gemm_rdna3) | **0.94x** | 37.09 | 66.40 | 34.82 † |
-| out | 8 | 37.55 | 47.53 (vLLM gptq_gemm_rdna3) | **1.27x** | 37.55 | 70.17 | 47.53 † |
-| out | 16 | 41.57 | 68.28 (vLLM gptq_gemm_rdna3) | **1.64x** | 41.57 | 80.74 | 68.28 † |
-| out | 32 | 53.95 | 119.92 (vLLM gptq_gemm_rdna3) | **2.22x** | 53.95 | 128.12 | 119.92 † |
-| out | 64 | 94.60 | 135.68 (vLLM gptq_gemm_rdna3) | **1.43x** | 94.60 | 159.49 | 135.68 |
-| gate_up | 1 | 181.70 | 161.05 (vLLM gptq_gemm_rdna3) | **0.89x** | 181.70 | 163.18 | 161.05 † |
-| gate_up | 2 | 183.75 | 161.07 (vLLM gptq_gemm_rdna3) | **0.88x** | 183.75 | 170.70 | 161.07 † |
-| gate_up | 4 | 173.26 | 152.31 (vLLM gptq_gemm_rdna3) | **0.88x** | 173.26 | 170.26 | 152.31 † |
-| gate_up | 8 | 181.00 | 186.88 (vLLM gptq_gemm_rdna3) | **1.03x** | 181.00 | 189.63 | 186.88 † |
-| gate_up | 16 | 205.84 | 311.85 (vLLM gptq_gemm_rdna3) | **1.51x** | 205.84 | 329.79 | 311.85 † |
-| gate_up | 32 | 283.58 | 600.53 (vLLM gptq_gemm_rdna3) | **2.12x** | 283.58 | 655.36 | 600.53 † |
-| gate_up | 64 | 544.54 | 560.87 (vLLM gptq_gemm_rdna3) | **1.03x** | 544.54 | 1472.94 | 560.87 |
-| down | 1 | 93.03 | 92.80 (vLLM gptq_gemm_rdna3) | **1.00x** | 93.03 | 150.97 | 92.80 † |
-| down | 2 | 93.83 | 96.42 (vLLM gptq_gemm_rdna3) | **1.03x** | 93.83 | 159.71 | 96.42 † |
-| down | 4 | 95.90 | 110.89 (vLLM gptq_gemm_rdna3) | **1.16x** | 95.90 | 172.49 | 110.89 † |
-| down | 8 | 104.99 | 103.19 (vLLM gptq_gemm_rdna3) | **0.98x** | 104.99 | 159.98 | 103.19 † |
-| down | 16 | 130.77 | 170.23 (vLLM gptq_gemm_rdna3) | **1.30x** | 130.77 | 176.54 | 170.23 † |
-| down | 32 | 174.66 | 305.03 (vLLM gptq_gemm_rdna3) | **1.75x** | 174.66 | 322.29 | 305.03 † |
-| down | 64 | 294.26 | 346.74 (vLLM gptq_gemm_rdna3) | **1.18x** | 294.26 | 663.16 † | 346.74 |
+| qkv | 1 | 67.41 | 61.86 (vLLM gptq_gemm_rdna3) | **0.92x** | 67.41 | 81.00 | 61.86 † |
+| qkv | 2 | 67.51 | 63.35 (vLLM gptq_gemm_rdna3) | **0.94x** | 67.51 | 87.05 | 63.35 † |
+| qkv | 3 | 67.51 | 70.23 (vLLM gptq_gemm_rdna3) | **1.04x** | 67.51 | 93.63 | 70.23 † |
+| qkv | 4 | 67.69 | 65.47 (vLLM gptq_gemm_rdna3) | **0.97x** | 67.69 | 101.80 | 65.47 † |
+| qkv | 8 | 68.10 | 86.66 (vLLM gptq_gemm_rdna3) | **1.27x** | 68.10 | 92.59 | 86.66 † |
+| qkv | 16 | 69.98 | 144.92 (vLLM gptq_gemm_rdna3) | **2.07x** | 69.98 | 150.19 | 144.92 † |
+| qkv | 32 | 102.89 | 256.54 (vLLM gptq_gemm_rdna3) | **2.49x** | 102.89 | 268.42 | 256.54 † |
+| qkv | 64 | 183.81 | 251.18 (vLLM gptq_gemm_rdna3) | **1.37x** | 183.81 | 541.07 | 251.18 |
+| o | 1 | 33.18 | 31.61 (vLLM gptq_gemm_rdna3) | **0.95x** | 33.18 | 58.12 | 31.61 † |
+| o | 2 | 33.28 | 32.96 (vLLM gptq_gemm_rdna3) | **0.99x** | 33.28 | 61.72 | 32.96 † |
+| o | 3 | 33.33 | 33.03 (vLLM gptq_gemm_rdna3) | **0.99x** | 33.33 | 64.54 | 33.03 † |
+| o | 4 | 33.34 | 34.97 (vLLM gptq_gemm_rdna3) | **1.05x** | 33.34 | 66.52 | 34.97 † |
+| o | 8 | 33.67 | 47.69 (vLLM gptq_gemm_rdna3) | **1.42x** | 33.67 | 70.11 | 47.69 † |
+| o | 16 | 34.17 | 68.56 (vLLM gptq_gemm_rdna3) | **2.01x** | 34.17 | 81.17 | 68.56 † |
+| o | 32 | 47.01 | 120.10 (vLLM gptq_gemm_rdna3) | **2.56x** | 47.01 | 128.13 | 120.10 † |
+| o | 64 | 84.17 | 135.97 (vLLM gptq_gemm_rdna3) | **1.61x** | 84.17 | 159.66 | 135.97 |
+| qkvz | 1 | 78.28 | 72.78 (vLLM gptq_gemm_rdna3) | **0.93x** | 78.28 | 83.15 | 72.78 † |
+| qkvz | 2 | 78.41 | 79.47 (vLLM gptq_gemm_rdna3) | **1.01x** | 78.41 | 91.23 | 79.47 † |
+| qkvz | 3 | 78.54 | 79.59 (vLLM gptq_gemm_rdna3) | **1.01x** | 78.54 | 98.52 | 79.59 † |
+| qkvz | 4 | 78.62 | 89.90 (vLLM gptq_gemm_rdna3) | **1.14x** | 78.62 | 106.43 | 89.90 † |
+| qkvz | 8 | 79.08 | 94.82 (vLLM gptq_gemm_rdna3) | **1.20x** | 79.08 | 102.99 | 94.82 † |
+| qkvz | 16 | 80.23 | 162.49 (vLLM gptq_gemm_rdna3) | **2.02x** | 80.23 | 166.01 | 162.49 † |
+| qkvz | 32 | 117.02 | 288.84 (vLLM gptq_gemm_rdna3) | **2.47x** | 117.02 | 306.90 | 288.84 † |
+| qkvz | 64 | 220.25 | 286.20 (vLLM gptq_gemm_rdna3) | **1.30x** | 220.25 | 690.91 | 286.20 |
+| out | 1 | 33.22 | 31.63 (vLLM gptq_gemm_rdna3) | **0.95x** | 33.22 | 58.18 | 31.63 † |
+| out | 2 | 33.25 | 32.80 (vLLM gptq_gemm_rdna3) | **0.99x** | 33.25 | 61.76 | 32.80 † |
+| out | 3 | 33.33 | 32.96 (vLLM gptq_gemm_rdna3) | **0.99x** | 33.33 | 64.39 | 32.96 † |
+| out | 4 | 33.39 | 34.86 (vLLM gptq_gemm_rdna3) | **1.04x** | 33.39 | 66.42 | 34.86 † |
+| out | 8 | 33.57 | 47.64 (vLLM gptq_gemm_rdna3) | **1.42x** | 33.57 | 70.02 | 47.64 † |
+| out | 16 | 34.15 | 68.25 (vLLM gptq_gemm_rdna3) | **2.00x** | 34.15 | 81.10 | 68.25 † |
+| out | 32 | 46.86 | 120.07 (vLLM gptq_gemm_rdna3) | **2.56x** | 46.86 | 128.76 | 120.07 † |
+| out | 64 | 82.03 | 135.60 (vLLM gptq_gemm_rdna3) | **1.65x** | 82.03 | 159.43 | 135.60 |
+| gate_up | 1 | 161.21 | 161.06 (vLLM gptq_gemm_rdna3) | **1.00x** | 161.21 | 163.38 | 161.06 † |
+| gate_up | 2 | 154.53 | 144.83 (vLLM gptq_gemm_rdna3) | **0.94x** | 154.53 | 151.53 | 144.83 † |
+| gate_up | 3 | 155.38 | 152.75 (vLLM gptq_gemm_rdna3) | **0.98x** | 155.38 | 160.79 | 152.75 † |
+| gate_up | 4 | 154.86 | 152.03 (vLLM gptq_gemm_rdna3) | **0.98x** | 154.86 | 170.57 | 152.03 † |
+| gate_up | 8 | 158.89 | 186.77 (vLLM gptq_gemm_rdna3) | **1.18x** | 158.89 | 188.69 | 186.77 † |
+| gate_up | 16 | 165.41 | 323.56 (vLLM gptq_gemm_rdna3) | **1.96x** | 165.41 | 337.13 | 323.56 † |
+| gate_up | 32 | 240.06 | 612.78 (vLLM gptq_gemm_rdna3) | **2.55x** | 240.06 | 647.50 | 612.78 † |
+| gate_up | 64 | 465.22 | 562.84 (vLLM gptq_gemm_rdna3) | **1.21x** | 465.22 | 1481.94 | 562.84 |
+| down | 1 | 84.22 | 92.81 (vLLM gptq_gemm_rdna3) | **1.10x** | 84.22 | 150.30 | 92.81 † |
+| down | 2 | 84.33 | 96.44 (vLLM gptq_gemm_rdna3) | **1.14x** | 84.33 | 159.72 | 96.44 † |
+| down | 3 | 84.41 | 89.97 (vLLM gptq_gemm_rdna3) | **1.07x** | 84.41 | 166.27 | 89.97 † |
+| down | 4 | 84.37 | 111.43 (vLLM gptq_gemm_rdna3) | **1.32x** | 84.37 | 172.42 | 111.43 † |
+| down | 8 | 84.86 | 103.57 (vLLM gptq_gemm_rdna3) | **1.22x** | 84.86 | 159.40 | 103.57 † |
+| down | 16 | 87.82 | 172.38 (vLLM gptq_gemm_rdna3) | **1.96x** | 87.82 | 178.05 | 172.38 † |
+| down | 32 | 127.58 | 307.47 (vLLM gptq_gemm_rdna3) | **2.41x** | 127.58 | 323.63 | 307.47 † |
+| down | 64 | 240.24 | 348.20 (vLLM gptq_gemm_rdna3) | **1.45x** | 240.24 | 662.89 † | 348.20 |
 
 † relative error above 0.02 against the reference (looser than one rounding of a 16-bit output with fp32 accumulation); still below 0.1, so timed. The JSON has each arm's error.
 
 **Setup of each arm.**
-- hk w4a16: hk.ops.w4a16.matmul (GPTQ repacked)
+- hk w4a16: hk.ops.w4a16.matmul, symmetric form (repack_gptq(symmetric=True), as vllm_gptq loads it)
 - vLLM gptq_gemm (exllama): vllm._custom_ops.gptq_gemm, exllama kernel
 - vLLM gptq_gemm_rdna3: vllm._custom_ops.gptq_gemm_rdna3 (vLLM's RDNA3 GPTQ kernel, what its GPTQ layers run on gfx11)
+
+- skipped: ba: left unquantized by the checkpoint
+

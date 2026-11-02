@@ -63,17 +63,17 @@ One W7900D (gfx1100) and one Radeon AI PRO R9700 (gfx1201), each in the vLLM ima
 | gfx1100 | moe | openbmb/MiniCPM-V-4.7-35B-A3B (TP2) | 9 | 5 | 3 | 1 | 1.56x | [minicpm-v-tp2-moe.md](results/2026-11-02/gfx1100/minicpm-v-tp2-moe.md) |
 | gfx1100 | moe-w4 | Qwen/Qwen3.6-35B-A3B (an AWQ 4-bit checkpoint) (TP1) | 8 | 8 | 0 | 0 | 2.12x | [qwen3.6-awq-moe-w4.md](results/2026-11-02/gfx1100/qwen3.6-awq-moe-w4.md) |
 | gfx1100 | linear | Qwen/Qwen3.8-27B (TP2) | 69 | 4 | 45 | 20 | 2.73x | [qwen3.8-tp2-linear.md](results/2026-11-02/gfx1100/qwen3.8-tp2-linear.md) |
-| gfx1100 | linear-w4 | palmfuture/Qwen3.8-27B-GPTQ-Int4 (TP1) | 49 | 25 | 10 | 14 | 4.34x | [qwen3.8-gptq-linear-w4.md](results/2026-11-02/gfx1100/qwen3.8-gptq-linear-w4.md) |
+| gfx1100 | linear-w4 | palmfuture/Qwen3.8-27B-GPTQ-Int4 (TP1) | 48 | 25 | 19 | 4 | 2.56x | [qwen3.8-gptq-linear-w4.md](results/2026-11-02/gfx1100/qwen3.8-gptq-linear-w4.md) |
 | gfx1201 | linear | openbmb/MiniCPM5-2B (TP1) | 44 | 0 | 31 | 13 | 1.02x | [minicpm5-linear.md](results/2026-11-02/gfx1201/minicpm5-linear.md) |
 | gfx1201 | linear | openbmb/MiniCPM-V-4.7-35B-A3B (TP2) | 68 | 5 | 29 | 34 | 1.84x | [minicpm-v-tp2-linear.md](results/2026-11-02/gfx1201/minicpm-v-tp2-linear.md) |
 | gfx1201 | moe | openbmb/MiniCPM-V-4.7-35B-A3B (TP2) | 9 | 0 | 4 | 5 | 1.10x | [minicpm-v-tp2-moe.md](results/2026-11-02/gfx1201/minicpm-v-tp2-moe.md) |
 | gfx1201 | moe-w4 | Qwen/Qwen3.6-35B-A3B (an AWQ 4-bit checkpoint) (TP1) | 8 | 8 | 0 | 0 | 2.36x | [qwen3.6-awq-moe-w4.md](results/2026-11-02/gfx1201/qwen3.6-awq-moe-w4.md) |
 | gfx1201 | linear | Qwen/Qwen3.8-27B (TP2) | 69 | 2 | 52 | 15 | 1.31x | [qwen3.8-tp2-linear.md](results/2026-11-02/gfx1201/qwen3.8-tp2-linear.md) |
-| gfx1201 | linear-w4 | palmfuture/Qwen3.8-27B-GPTQ-Int4 (TP1) | 49 | 42 | 7 | 0 | 4.68x | [qwen3.8-gptq-linear-w4.md](results/2026-11-02/gfx1201/qwen3.8-gptq-linear-w4.md) |
+| gfx1201 | linear-w4 | palmfuture/Qwen3.8-27B-GPTQ-Int4 (TP1) | 48 | 44 | 4 | 0 | 3.68x | [qwen3.8-gptq-linear-w4.md](results/2026-11-02/gfx1201/qwen3.8-gptq-linear-w4.md) |
 
 **Reading.**
 - **MoE with 4-bit AWQ experts: hk is ahead everywhere it was measured.** It is 1.85-2.12x faster on gfx1100 and 1.62-2.36x on gfx1201 than vLLM's `moe_wna16` at the best of 108 configs searched at each token count, from 1 to 256 tokens.
-- **Dense GPTQ int4:** hk is ahead on every shape from M = 16 on gfx1100 (1.30-4.33x) and from M = 8 on gfx1201 (1.23-4.68x). At M = 1-4 on gfx1100, vLLM's RDNA3 kernel wins on the large shapes (hk 0.80-0.94x), while hk stays ahead on the small ones (`ba` 2.0-3.0x). On gfx1201, where vLLM's RDNA3 kernel doesn't run (`error` in the table) and the exllama kernel is the competitor, hk is even at M = 1-2 (0.97-0.99x on the large shapes).
+- **Dense GPTQ int4** (the layers the checkpoint quantizes; it keeps `in_proj_ba` in 16 bits): hk is ahead on every shape from M = 8 on gfx1100 (1.15-2.56x) and on gfx1201 (1.36-3.68x). At M = 1-4 on gfx1100, hk and vLLM's RDNA3 kernel are about even (0.92-1.14x; `down` 1.07-1.32x). On gfx1201, where vLLM's RDNA3 kernel doesn't run (`error` in the table) and the exllama kernel is the competitor, hk is 1.07-2.53x from M = 1.
 - **MoE with bf16 experts:** hk is 1.20-1.56x at 1-16 tokens on gfx1100 and about even at 32-256. On gfx1201 it is not ahead (0.67-1.10x).
 - **Dense bf16 linear:** hk is clearly ahead only on small or latency-bound shapes at M ≈ 4-32 (`ba`, the shared expert, `o`/`out`: 1.15-2.7x). The large decode GEMVs run at memory bandwidth for hk and tuned hipBLASLt alike, so they tie (0.94-1.07x). hk loses at M = 1 to Inductor's Triton GEMV, and at M = 64-256 to TunableOp-tuned hipBLASLt and FlyDSL.
 - hk's vLLM routes send a (shape, M) to hk only where it measured faster in the model's context (`hk.autotune.routes`, timing "context"). The rows where a competitor wins stay on that engine.

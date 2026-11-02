@@ -67,3 +67,10 @@ def test_a_saved_run_renders_with_each_arms_setup(kb):
     md = kb.render(d)
     assert "### moe at openbmb/MiniCPM-V-4.7-35B-A3B (TP2)" in md
     assert "- hk: BLOCK_M 16" in md and "E256 M=2: config 2" in md and "AITER: n/a" in md
+
+
+def test_a_shape_the_checkpoint_leaves_in_16_bits_is_not_benchmarked_at_4(kb):
+    qc = {"dynamic": {r"-:.*\.linear_attn\.in_proj_ba$": {}, r"-:.*\.mlp\.gate$": {}, "lm_head": {}}}
+    assert not kb.quantized(qc, "ba")
+    assert all(kb.quantized(qc, s) for s in ("qkv", "o", "qkvz", "out", "gate_up", "down"))
+    assert kb.quantized({}, "ba")

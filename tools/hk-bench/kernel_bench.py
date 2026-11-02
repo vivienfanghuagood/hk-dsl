@@ -331,6 +331,24 @@ def gptq_checkpoint(n, k, group, dev, g):
     return qweight, qzeros, scales, w
 
 
+#: The checkpoint's modules behind each shape `linear_shapes` names, for `quantized`.
+MODULES = {"qkv": ("self_attn.q_proj", "self_attn.k_proj", "self_attn.v_proj"),
+           "o": ("self_attn.o_proj",), "qkvz": ("linear_attn.in_proj_qkvz",),
+           "ba": ("linear_attn.in_proj_ba", "linear_attn.in_proj_a", "linear_attn.in_proj_b"),
+           "out": ("linear_attn.out_proj",), "gate_up": ("mlp.gate_proj", "mlp.up_proj"),
+           "down": ("mlp.down_proj",)}
+
+
+def quantized(qc: dict, name: str) -> bool:
+    """Whether the checkpoint quantizes shape `name`: GPTQModel's `dynamic` rules starting "-:"
+    leave the modules they match unquantized (a Qwen3.8 checkpoint keeps in_proj_ba in 16 bits)."""
+    import re
+
+    mods = [f"model.layers.0.{m}" for m in MODULES.get(name, (name,))]
+    return not any(rule.startswith("-:") and re.fullmatch(rule[2:], m)
+                   for rule in (qc.get("dynamic") or {}) for m in mods)
+
+
 def run_linear_w4(a, only: set, notes: dict) -> List[dict]:
     """4-bit GPTQ (symmetric, fp16 activations) linear layers: hk's w4a16 decode GEMM against
     vLLM's RDNA3 GPTQ kernel and its exllama kernel."""
@@ -350,12 +368,18 @@ def run_linear_w4(a, only: set, notes: dict) -> List[dict]:
     dev = torch.device("cuda")
     g = torch.Generator(device=dev).manual_seed(0)
     rows = []
+    skipped = []
     for name, n, k in linear_shapes(a.model, a.tp):
         if name == "lm_head" or k % group or n % 8:
             continue
+        if not quantized(qc, name):
+            skipped.append(name)
+            continue
         copies = max(2, math.ceil(a.rotate_mb * 2**20 / (n * k // 2)))
         ck = [gptq_checkpoint(n, k, group, dev, g) for _ in range(copies)]
-        hkw = [W.repack_gptq(qw, qz, sc, group, dtype=torch.float16) for qw, qz, sc, _ in ck]
+        # The symmetric form, as vllm_gptq loads it: every zero point 8, scales in 16-row blocks.
+        hkw = [W.repack_gptq(qw, qz, sc, group, dtype=torch.float16, symmetric=True)
+               for qw, qz, sc, _ in ck]
         vl = []
         if ops is not None:
             empty = torch.empty(0, device=dev, dtype=torch.int32)        # no act-order g_idx
@@ -367,9 +391,11 @@ def run_linear_w4(a, only: set, notes: dict) -> List[dict]:
             x = (torch.randn(m, k, device=dev, generator=g) * 0.5).half()
             ref = x.float() @ ck[0][3].t()
             arms = {}
-            if W.plan(m, n, k, group, torch.float16) is not None:
+            if W.plan(m, n, k, group, torch.float16, True) is not None:
                 arms["hk w4a16"] = ([lambda i=i, x=x: W.matmul(x, *hkw[i], group)
-                                     for i in range(copies)], "hk.ops.w4a16.matmul (GPTQ repacked)")
+                                     for i in range(copies)],
+                                    "hk.ops.w4a16.matmul, symmetric form (repack_gptq(symmetric=True), "
+                                    "as vllm_gptq loads it)")
             if ops is not None and hasattr(ops, "gptq_gemm_rdna3"):
                 arms["vLLM gptq_gemm_rdna3"] = (
                     [lambda i=i, x=x: call_by_name(
@@ -408,6 +434,8 @@ def run_linear_w4(a, only: set, notes: dict) -> List[dict]:
             print(line(row), flush=True)
         del ck, hkw, vl
         torch.cuda.empty_cache()
+    if skipped:
+        notes["skipped"] = f"{', '.join(skipped)}: left unquantized by the checkpoint"
     return rows
 
 
