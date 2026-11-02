@@ -104,6 +104,28 @@ exec {REAP}> >(exec env RUNNER_TRACKING_ID=0 setsid "$HERE/cancel.sh" --on-eof c
                >>"$RUN/reaper.log" 2>&1)
 touch "$RUN/started"    # minutes count from here, not from the wait
 "$SNAP" "$GPU" start >> "$RUN/gpusnap.log" 2>&1
+if [ "${HK_CI_MODE:-}" = install ]; then
+    # The install matrix (install.yml), as run_gfx950.sh's: a fresh container of the stock image HK_CI_IMAGE,
+    # as root, with only the install kit mounted read-only; an image not on this box is an error, not a pull.
+    IMAGE=${HK_CI_IMAGE:?install mode needs HK_CI_IMAGE}
+    KIT=$GITHUB_WORKSPACE/${HK_INSTALL_KIT:-install-kit}
+    WHL=$(cd "$KIT" 2>/dev/null && ls hk_dsl-*.whl 2>/dev/null | head -1)
+    [ -n "$WHL" ] || { echo "::error::no wheel in the install kit"; exit 1; }
+    docker image inspect "$IMAGE" >/dev/null 2>&1 || { echo "::error::$IMAGE is not on this runner"; exit 1; }
+    HK_IMAGE=$IMAGE HKR9_AS_ROOT=1 HKR9_LOCK_HELD=1 HKR9_NAME=$NAME \
+    HKR9_DOCKER_ARGS="--label hk-gha.runner=$RUNNER --label hk-gha.run=$GITHUB_RUN_ID --label hk-gha.attempt=$GITHUB_RUN_ATTEMPT --label hk-gha.tier=$TIER --label hk-gha.started=$(date +%s)" \
+    HKR9_MOUNTS="-v $KIT:/inst:ro -w /tmp" \
+        "$HERE/gfx1201/hkr9" "$GPU" -- \
+        "HK_INSTALL_ARCH=gfx1201 python3 /inst/install_smoke.py /inst/$WHL /inst/README.md /inst/deps" \
+        {REAP}>&- {LOCKFD}>&- < /dev/null &
+    DPID=$!
+    wait $DPID
+    rc=$?
+    DPID=
+    "$SNAP" "$GPU" end >> "$RUN/gpusnap.log" 2>&1
+    cat "$RUN/gpusnap.log" 2>/dev/null
+    exit $rc
+fi
 HKR9_LOCK_HELD=1 HKR9_NAME=$NAME \
 HKR9_DOCKER_ARGS="--label hk-gha.runner=$RUNNER --label hk-gha.run=$GITHUB_RUN_ID --label hk-gha.attempt=$GITHUB_RUN_ATTEMPT --label hk-gha.tier=$TIER --label hk-gha.started=$(date +%s)" \
 HKR9_MOUNTS="-v $CIDIR:/ci -v $GITHUB_WORKSPACE:/ci/src -v $RUN:/ci/run -v $MLIR:/ci/mlir:ro -w /ci/src" \

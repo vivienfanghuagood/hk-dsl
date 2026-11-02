@@ -17,7 +17,8 @@
 # (the container's name), HKR9_GPU_FILE (where `auto` writes the index it took), HKR9_DOCKER_ARGS
 # (more `docker run` arguments: CI's labels), HKR9_LOCK_HELD=1 (the caller holds card IDX's lock
 # already and keeps it until the container is gone: run_gfx1201.sh), HK_ALLOW_SHARED=1 (run on a
-# card someone else holds; for debugging only).
+# card someone else holds; for debugging only), HKR9_AS_ROOT=1 (root in the container, HOME=/tmp: the
+# install matrix's pip into the image's own Python; only with read-only mounts).
 set -u
 . "$(dirname "$(readlink -f "$0")")/gpulock.sh"
 IDX=${1:?usage: hkr9 IDX|auto|none [-w WAIT_S] -- CMD...}; shift
@@ -64,7 +65,9 @@ if [ "$IDX" != none ]; then
 fi
 if [ -n "${HKR9_MOUNTS:-}" ]; then read -ra MOUNTS <<< "$HKR9_MOUNTS"; else MOUNTS=(-v "$ROOT:/w" -w /w); fi
 read -ra EXTRA <<< "${HKR9_DOCKER_ARGS:-}"
+WHO=(--user "$(id -u):$(id -g)" -e HOME=/w/home)
+[ "${HKR9_AS_ROOT:-0}" = 1 ] && WHO=(-e HOME=/tmp)
 exec docker run --rm -i --name "${HKR9_NAME:-hkr9-$(date +%s)-$$}" "${EXTRA[@]}" \
     --ulimit core=0 -e HSA_DISABLE_COREDUMP_ON_EXCEPTION=1 \
-    --user "$(id -u):$(id -g)" -e HOME=/w/home -e USER="$(id -un)" "${DEV[@]}" --ipc=host \
+    "${WHO[@]}" -e USER="$(id -un)" "${DEV[@]}" --ipc=host \
     --security-opt seccomp=unconfined "${MOUNTS[@]}" --entrypoint bash "$IMAGE" -c "ulimit -c 0; $*"

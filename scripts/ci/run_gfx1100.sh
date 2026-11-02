@@ -64,10 +64,24 @@ trap 'stop' EXIT
 IP=$(ssh -o BatchMode=yes "$JUMP" "getent ahostsv4 $PROXY | head -1 | cut -d' ' -f1" {REAP}>&-)
 [[ $IP =~ ^[0-9.]+$ ]] || { echo "::error::cannot resolve the proxy (HK_CI_PROXY) on the jump host (HK_CI_JUMP)"; exit 1; }
 echo "::add-mask::$IP"
+MODE=${HK_CI_MODE:-}
+KITSUM=
+if [ "$MODE" = install ]; then
+    # The install matrix (install.yml): the kit goes to the pod's run directory as a tar, checked by sha256
+    # (a large binary through `kubectl exec` once arrived short); pod_run.sh installs it with --target.
+    KIT=$GITHUB_WORKSPACE/${HK_INSTALL_KIT:-install-kit}
+    ls "$KIT"/hk_dsl-*.whl >/dev/null 2>&1 || { echo "::error::no wheel in the install kit"; exit 1; }
+    KITTAR=$(mktemp); tar -C "$KIT" -czf "$KITTAR" .
+    KITSUM=$(sha256sum "$KITTAR" | cut -d' ' -f1)
+fi
 { echo "mkdir -p $DIR"
+  if [ "$MODE" = install ]; then
+      echo "mkdir -p $R/kit && base64 -d > $R/kit.tgz <<'B64'"; base64 -w0 "$KITTAR"; echo; echo "B64"
+      echo "[ \"\$(sha256sum $R/kit.tgz | cut -d' ' -f1)\" = $KITSUM ] && tar -xzf $R/kit.tgz -C $R/kit || { echo 'install kit damaged in transit' > $R/driver.log; echo '{\"install_rc\": 99}' > $R/result.json; exit 0; }"
+  fi
   echo "base64 -d > $DIR/pod_run.sh <<'B64'"; base64 -w0 "$HERE/pod_run.sh"; echo; echo "B64"
   echo "base64 -d > $DIR/summarize.py <<'B64'"; base64 -w0 "$HERE/summarize.py"; echo; echo "B64"
-  echo "HK_CI_POD_DIR=$DIR HK_CI_POD_GPUS='$GPUS' HK_CI_NODE_LOCKS=$NODE_LOCKS HK_CI_PROXY=$PROXY nohup setsid bash $DIR/pod_run.sh $SHA $IP $KEY >/dev/null 2>&1 < /dev/null &"
+  echo "HK_CI_MODE=$MODE HK_CI_POD_DIR=$DIR HK_CI_POD_GPUS='$GPUS' HK_CI_NODE_LOCKS=$NODE_LOCKS HK_CI_PROXY=$PROXY nohup setsid bash $DIR/pod_run.sh $SHA $IP $KEY >/dev/null 2>&1 < /dev/null &"
 } | pod || { echo "::error::cannot start the run in the pod (HK_CI_POD)"; exit 1; }
 echo "started in the pod (run $KEY)"
 
@@ -83,4 +97,10 @@ for i in $(seq 360); do     # 3 hours
 done
 echo "cd $R && tar -cf - result.json report.txt build.log driver.log 2>/dev/null" | pod | tar -xf - -C "$OUT"
 [ -f "$OUT/result.json" ] || { echo "::error::no result from the pod"; exit 1; }
+[ -n "$KITSUM" ] && rm -f "$KITTAR"
+if [ "$MODE" = install ]; then
+    rc=$(python3 -c "import json, sys; print(json.load(open(sys.argv[1]))['install_rc'])" "$OUT/result.json")
+    [ "$rc" = 0 ] || echo "::error::install smoke failed (rc $rc); its log is above"
+    exit "$rc"
+fi
 python3 "$HERE/report.py" gfx1100 "$OUT/result.json"
