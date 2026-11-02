@@ -9,6 +9,13 @@ The next version's notes collect here until it is released.
 What is on main after 0.8.0. `pip install hk-dsl` (0.8.0) does not have it;
 the API reference marks such names *New after 0.8.0*.
 
+**`vllm_gptq` leaves Qwen3.8-27B's o_proj and out_proj (5120 x 6144) on vLLM's kernel at one and two
+tokens**, where hk's kernel is slower inside the served decode step: 35.4 us against vLLM's 31.9
+(0.90x), in a rocprofv3 trace of 20 decode steps at one 8k request on a W7900D. The model's other
+GPTQ shapes stay on hk, 1.05-1.19x there. Over the step's GPTQ GEMMs that is 1.128x vLLM's at one
+token, against 1.116x with every shape on hk. The route's fewest tokens are now per (N, K):
+`vllm_gptq.MIN_M_NK`, with `MIN_M` (1) for every other shape.
+
 **Fix: `vllm_gptq` no longer turns off every vLLM route on a vLLM whose `gptq_gemm_rdna3` takes
 `b_g_idx`.** vLLM builds differ in that GEMM's parameters: some take the act-order index, some do not.
 The route's engine contract counted five arguments, so on the other builds it failed, and the

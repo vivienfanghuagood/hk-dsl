@@ -90,6 +90,28 @@ def test_batches_past_64_stay_on_vllms_kernel(monkeypatch):
     assert calls == []                        # hk's plan is not even asked
 
 
+@pytest.mark.parametrize("m,n,k,hk", [
+    (1, 5120, 6144, False), (2, 5120, 6144, False), (3, 5120, 6144, True),
+    (1, 14336, 5120, True), (1, 5120, 17408, True),
+])
+def test_a_shape_slower_in_the_served_step_starts_at_its_own_m(m, n, k, hk, monkeypatch):
+    """Qwen3.8-27B's o_proj / out_proj (5120 x 6144) stays on vLLM's kernel at 1-2 tokens; its
+    other shapes, and that one from 3 tokens, go to hk."""
+    torch = pytest.importorskip("torch")
+    if _common.importable("vllm"):
+        pytest.skip("vllm is installed here; the gpu tier covers the fallback")
+    from hk.ops import w4a16
+
+    assert vllm_gptq.MIN_M_NK == {(5120, 6144): 3}
+    calls = []
+    monkeypatch.setattr(w4a16, "plan", lambda *a: calls.append(a) or None)
+    x = torch.empty(m, k, dtype=torch.float16)
+    s = torch.empty(1, dtype=torch.float16)
+    with pytest.raises(ImportError):          # plan None, or not asked: vLLM's op, absent here
+        vllm_gptq.gptq_w4a16(x, None, None, None, None, torch.empty(n, k // 8), s, s, 32)
+    assert bool(calls) == hk
+
+
 # -- vLLM's gptq_gemm_rdna3 differs between builds; the fallback binds it by name -------------
 
 

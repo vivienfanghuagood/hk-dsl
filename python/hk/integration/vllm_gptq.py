@@ -15,7 +15,8 @@ two entry points:
     points are not all 8 is refused (counted), not assumed.
   * `apply` makes one call of the opaque custom op `hk_vllm::gptq_w4a16`.
     Inside it the token count is a plain number, not a symbolic size. 16-bit
-    batches of `MIN_M` to 64 tokens go to hk's kernel, and the rest to vLLM's.
+    batches of `MIN_M` (or the shape's `MIN_M_NK`) to 64 tokens go to hk's
+    kernel, and the rest to vLLM's.
 
 What it refuses, counted in `REFUSED` by reason: act-order checkpoints
 (`desc_act`, a column permutation hk's layout does not carry), anything but
@@ -43,6 +44,12 @@ _ORIG_APPLY: Optional[Callable] = None
 #: Qwen3.8-27B TP1 shape and 1.07-1.31x at 2-4 (tools/hk-bench/gptq_w4a16.py on a
 #: W7900D); the asymmetric form was 0.87-0.99x at one token, hence 4 before.
 MIN_M = 1
+#: (N, K) whose fewest tokens are not MIN_M: where hk is slower than vLLM's kernel in the
+#: served model's own decode step. Qwen3.8-27B TP1's o_proj and linear-attention out_proj
+#: (5120 x 6144) at one token: 35.4 us against vLLM's 31.9 (0.90x; its other shapes 1.05-1.19x),
+#: medians of 1280 calls in a rocprofv3 trace of 20 decode steps at one 8k request on a W7900D,
+#: vLLM's per-call fill included. At two tokens the microbenchmark has it at 0.99x.
+MIN_M_NK = {(5120, 6144): 3}
 
 #: Layers left on vLLM's path, by reason.
 REFUSED: Counter = Counter()
@@ -70,8 +77,10 @@ def gptq_w4a16(x, w_q, w_zp, w_s, g_idx, hk_qw, hk_s, hk_zs, group: int):
     from ..ops import w4a16 as hk_w4  # noqa: PLC0415
 
     m, k = x.shape
-    run = (hk_w4.plan(m, hk_qw.shape[0], k, group, x.dtype, True)
-           if x.dtype == hk_s.dtype and MIN_M <= m <= hk_w4.MAX_TOKENS * 16 else None)
+    n = hk_qw.shape[0]
+    run = (hk_w4.plan(m, n, k, group, x.dtype, True)
+           if x.dtype == hk_s.dtype and MIN_M_NK.get((n, k), MIN_M) <= m <= hk_w4.MAX_TOKENS * 16
+           else None)
     if run is not None:
         PATCH.count("hk")
         out = torch.empty((m, hk_qw.shape[0]), device=x.device, dtype=hk_s.dtype)
