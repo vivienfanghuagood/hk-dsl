@@ -47,6 +47,8 @@ COVERAGE = {
     ("sgld_attn", "gfx1100"): "test_sdpa.py::test_patch_and_unpatch_round_trip",
     ("sgld_linear", "gfx1100"):
         "test_route_paths.py::test_sgld_linear_takes_a_dit_projection_through_hk",
+    ("vllm_prefill", "gfx1100"):
+        "test_paged_prefill.py::test_vllm_prefill_takes_a_triton_attn_batch_and_matches",
     ("sdpa_k3", "gfx1100"): "test_attn_k3.py::test_sdpa_routes_non_causal_d128_to_k3_when_enabled",
 }
 
