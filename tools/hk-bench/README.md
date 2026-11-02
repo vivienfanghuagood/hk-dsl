@@ -120,4 +120,4 @@ under-rates hk on them. vLLM's per-call fill kernel is in both (it is part of
 | down (5120 x 17408) | 84.1 | 74.2 | 92.8 | 82.7 | 1.10x | 1.12x |
 
 Over the step this is 1.116x in serving with every shape on hk, and 1.128x with o and out left
-on vLLM's kernel at 1-2 tokens, which is what the route does (`vllm_gptq.MIN_M_NK`).
+on vLLM's kernel at 1-2 tokens, which is what the route does (`vllm_gptq.MIN_M_NK`, #207).
