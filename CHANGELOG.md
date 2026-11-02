@@ -9,6 +9,13 @@ The next version's notes collect here until it is released.
 What is on main after 0.8.0. `pip install hk-dsl` (0.8.0) does not have it;
 the API reference marks such names *New after 0.8.0*.
 
+**Use a kernel as a PyTorch op: the recipe, and a test of it.** A new page, docs/torch-ops.md,
+shows a kernel of your own made a `torch.library` custom op by `hk.torch_op`, and says what works:
+eager calls, `torch.compile(fullgraph=True)` with no graph break (also `dynamic=True` and
+`mode="reduce-overhead"`), CUDA-graph capture, and `torch.library.opcheck`. Inductor does not lower
+or fuse the op, and it has no autograd formula. tests/hk/gpu/test_torch_op_recipe.py runs that
+recipe for both registrations (code object, `HK_TORCH_OP=library`) on every GPU of the GPU tier.
+
 **Fix: `vllm_gptq` no longer turns off every vLLM route on a vLLM whose `gptq_gemm_rdna3` takes
 `b_g_idx`.** vLLM builds differ in that GEMM's parameters: some take the act-order index, some do not.
 The route's engine contract counted five arguments, so on the other builds it failed, and the

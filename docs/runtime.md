@@ -341,7 +341,8 @@ the default, since the default is what an unrecorded key gets.
 ## Torch ops and the SDPA drop-in
 
 `hk.torch_op(kernel)` builds a kernel as `torch.ops.hk.<name>`, which is the
-boundary vLLM and SGLang call:
+boundary vLLM and SGLang call. The user-facing recipe, and what works under
+`torch.compile` and CUDA graphs, is [use a kernel as a PyTorch op](torch-ops.md):
 
 ```python
 import hk

@@ -119,6 +119,7 @@ nav:
   - 4 Ops:
       - hk.ops: api/hk.ops.md
   - 5 Serving engines:
+      - "Use a kernel as a PyTorch op": torch-ops.md
       - Integration: integration.md
       - "The end-to-end loop: a model, measured and patched": e2e-loop.md
       - "For agents: kernels in an engine": agents.md
