@@ -97,9 +97,11 @@ in the records, and 12 gfx1100 rows re-measured.**
 - **The routes move the context.** Once every decode M is in, the Ms whose context changed are
   timed again in the routes chosen so far, until none moves (at most 3 passes).
 - **Records.** `meta.timing`, `meta.context_routes` (the context each point was timed in) and
-  `meta.tunableop` (the results file and a hash of it, or "off"). A record timed another way or
-  under another TunableOp state is measured again, and a later start re-times what an earlier one
-  measured in another context.
+  `meta.tunableop` (the results file and a hash of it, or "off"). A later start re-times what an
+  earlier one measured in another context. A record timed another way or under another TunableOp
+  state no longer counts: the overlay leaves it out, as it does a record measured against another
+  engine, so the shipped row stands and the tuning at load measures the shape again. Before, a
+  complete stale record shadowed the shipped row and was never re-measured.
 - **route_tune.** It gains `--timing`, `--nk`, `--merge-into` and `--splice` (replace a row's
   points at the measured Ms only, re-derive its runs), and times a model's shapes in context.
 - **Checked against serving (R9700, MiniCPM5, TunableOp, rocprofv3).** Linear time a layer at

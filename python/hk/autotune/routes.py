@@ -317,6 +317,25 @@ def _record_timing(ent: dict, arch: str) -> Optional[str]:
     return meta.get("timing") or ("queued" if arch == "gfx950" else "burst")
 
 
+def record_stale(ent: dict, arch: str, engine: str, tunableop: Any) -> bool:
+    """Whether a record of this machine's no longer says what this process would measure:
+    measured against another engine, timed another way than the tuner times now (on RDNA
+    "context", "graph" for the LM head; "queued" on gfx950), or under another TunableOp state. A
+    record with no meta says nothing and is kept; one with a meta but no timing was an unqueued
+    burst on RDNA (`_record_timing`)."""
+    meta = ent.get("meta")
+    if meta is None:
+        return False
+    if meta.get("engine") not in (None, engine):
+        return True
+    now = default_timing(arch)
+    if now == "context" and ent.get("name") == "lm_head":
+        now = "graph"                                    # tune_missing times the LM head alone
+    if _record_timing(ent, arch) != now:
+        return True
+    return meta.get("tunableop", tunableop) != tunableop
+
+
 def route_at(points: Sequence[list], m: int, min_gain: float = MIN_GAIN,
              noise_k: float = NOISE_K) -> str:
     """The path measured points take at M by the runs' rule ("engine" where the engine's path
