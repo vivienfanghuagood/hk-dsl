@@ -116,9 +116,12 @@ treatment: the plugin undoes the routes already applied and prints the same
 kind of line.
 
 **The first JIT compile says so.** A route's kernels compile on first use,
-seconds each, in every worker. Run `python3 -m hk.integration warm-routes`
-(and `--warm`) with the server's `HK_CACHE_DIR` first. If you do not, the
-first compile in each process prints one line:
+seconds each, in every worker. On an MI355X, run
+`python3 -m hk.integration warm-routes` (the DeepSeek-V4.1 routes) and `--warm`
+with the server's `HK_CACHE_DIR` first. On other GPUs only `--warm` (hk's
+attention kernels) pre-builds anything: the other routes' kernels compile on
+first use. If no kernel was pre-built, the first compile in each process prints
+one line, naming the command that applies to its GPU:
 
 ```
 [hk] JIT: compiling kernel '...' on first use (pid N): the vLLM plugin's routes were not pre-warmed into ..., so this call waits for hipcc (seconds a kernel, in every worker). Run python3 -m hk.integration warm-routes (and --warm for attention) with the server's HK_CACHE_DIR before starting the server.

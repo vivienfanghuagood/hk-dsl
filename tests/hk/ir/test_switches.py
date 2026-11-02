@@ -346,9 +346,9 @@ def jit(monkeypatch, tmp_path):
     monkeypatch.setattr(C.subprocess, "run", lambda cmd, **kw: subprocess.CompletedProcess(
         cmd, 1, stdout="hipcc stand-in", stderr=""))
 
-    def build(i):
+    def build(i, arch="gfx1100"):
         with pytest.raises(C.CompileError):
-            C.build(f"// kernel {i}\n", "gfx1100", name=f"k{i}")
+            C.build(f"// kernel {i}\n", arch, name=f"k{i}")
     return build
 
 
@@ -359,7 +359,15 @@ def test_the_first_jit_compile_after_a_plugin_applied_routes_says_so_once(jit, c
     err = [x for x in capsys.readouterr().err.splitlines() if x.startswith("[hk] JIT")]
     assert len(err) == 1
     assert "compiling kernel 'k1'" in err[0] and "not pre-warmed" in err[0]
-    assert "python3 -m hk.integration warm-routes" in err[0]
+    # on RDNA, warm-routes (gfx950's DeepSeek-V4.1 routes) would build nothing: only --warm is named
+    assert "python3 -m hk.integration --warm" in err[0] and "warm-routes" not in err[0]
+
+
+def test_the_jit_notice_names_warm_routes_on_gfx950(jit, capsys):
+    C.arm_jit_notice("vLLM plugin")
+    jit(4, arch="gfx950")
+    err = [x for x in capsys.readouterr().err.splitlines() if x.startswith("[hk] JIT")]
+    assert len(err) == 1 and "python3 -m hk.integration warm-routes" in err[0]
 
 
 def test_no_jit_notice_unless_a_plugin_armed_it(jit, capsys):
