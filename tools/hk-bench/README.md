@@ -127,5 +127,6 @@ is in both (it is part of `gptq_gemm_rdna3`).
 | gate_up (34816 x 5120) | 153.6 | 139.8 | 140.7 | 166.2 | 0.92x | 1.19x |
 | down (5120 x 17408) | 83.9 | 74.2 | 92.5 | 82.7 | 1.10x | 1.12x |
 
-Over the step this is 1.116x in serving with every shape on hk, and 1.128x with o and out left
-on vLLM's kernel at 1-2 tokens, which is what the route does (`vllm_gptq.MIN_M_NK`).
+Over the step this is 1.116x in serving with every shape on hk's WMMA kernel. hk's small-batch
+kernel for 1-4 tokens (`hk.gemv_w4`, #210) wins every shape in the same trace, o and out included,
+and takes the step's GPTQ GEMMs from 22.49 to 17.84 ms (1.26x).
