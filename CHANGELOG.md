@@ -39,6 +39,16 @@ recipe for both registrations (code object, `HK_TORCH_OP=library`) on every GPU 
 
 **Engine contracts are held against the production images in CI.** `python3 -m hk.integration.contract --record` writes what a route's contract check reads from the installed engines (each check is now a gather of facts and a judge of them), and `tests/hk/ir/test_engine_facts.py` judges every route that is on by default against the facts recorded in each production image (`tests/hk/ir/engine_facts/`: the MiniCPM5, MiniCPM-V, Qwen3.6 template and sglang-radeon images on gfx1100, the R9700 vLLM image on gfx1201) and in each engine version hk claims (vLLM 0.31.0 on its matched stack and SGLang 0.5.18 on gfx1100, the vLLM 0.32.1 nightly the gfx950 routes were measured on), with no engine installed. A stand-in or check that one of those images would refuse now fails the IR tier, instead of leaving that engine stock at serving time ([testing](docs/testing.md)).
 
+**Engine contracts are per route.** A route whose engine contract is broken, or whose apply raises,
+now stays off with one warning line of its own (`[hk] WARNING: vllm: route vllm_moe_a8w4 OFF --
+engine contract FAILED ...`), and the engine's other routes are applied. Until now one broken
+contract left every route in that engine off, which three engine updates did over a change in one
+route. The plugins' summary line lists the routes that are off. `hk.integration.contract` gains
+`check_each`, `refuse_route` and `apply_routes`; the vLLM, SGLang and SGLang-Diffusion plugins use
+them. A user's own modules (`HK_VLLM_USER`) that fail to load are reported the same way.
+
+**Engine contracts are held against the production images in CI.** `python3 -m hk.integration.contract --record` writes what a route's contract check reads from the installed engines (each check is now a gather of facts and a judge of them), and `tests/hk/ir/test_engine_facts.py` judges every route that is on by default against the facts recorded in each production image (`tests/hk/ir/engine_facts/`: the MiniCPM5, MiniCPM-V, Qwen3.6 template and sglang-radeon images on gfx1100, the R9700 vLLM image on gfx1201) and in each engine version hk claims (vLLM 0.31.0 on its matched stack and SGLang 0.5.18 on gfx1100, the vLLM 0.32.1 nightly the gfx950 routes were measured on), with no engine installed. A stand-in or check that one of those images would refuse now fails the IR tier, instead of turning that route off at serving time ([testing](docs/testing.md)).
+
 **Fix: `vllm_gptq` no longer turns off every vLLM route on a vLLM whose `gptq_gemm_rdna3` takes
 `b_g_idx`.** vLLM builds differ in that GEMM's parameters: some take the act-order index, some do not.
 The route's engine contract counted five arguments, so on the other builds it failed, and the

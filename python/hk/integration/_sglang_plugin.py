@@ -22,8 +22,9 @@ reason the vLLM patch is a vLLM general plugin.
     HK_SGLANG_MOE=0 python -m sglang.launch_server ...            # one route off
 
 If SGLANG_PLUGINS is set, it has to name `hk` for SGLang to load this at all.
-Before patching, the plugin checks the engine contract of the routes it is about to apply
-(`hk.integration.contract`). If one is broken it patches nothing and prints one warning line.
+Before patching, the plugin checks the engine contract of each route it is about to apply
+(`hk.integration.contract`). A route whose contract is broken, or whose apply raises, stays off
+with one warning line of its own; the others are applied.
 `load_plugins()` runs once per process, and each patch reports "already
 patched" if it is reached twice anyway.
 """
@@ -31,7 +32,7 @@ patched" if it is reached twice anyway.
 from __future__ import annotations
 
 import os
-from typing import Callable, List, Tuple
+from typing import Tuple
 
 
 def enabled() -> bool:
@@ -54,46 +55,29 @@ def register() -> None:
     routes = switches.on("sglang")
     if not routes:
         return
-    problems = contract.check(routes)
-    if problems:
-        contract.refuse("sglang", problems)
-        return
-    notes: List[str] = []
-    applied: List[Callable] = []
-    current = ""
-    try:
-        if "sglang_linear" in routes:
-            current = "sglang_linear"
-            from . import sglang as hks  # noqa: PLC0415
+    from . import sglang as hks  # noqa: PLC0415
 
-            notes.append(hks.apply_linear())
-            applied.append(hks.revert)
-        if "sglang_norm" in routes:
-            current = "sglang_norm"
-            from . import sglang as hks  # noqa: PLC0415
+    def moe() -> str:
+        from . import sglang_moe  # noqa: PLC0415
 
-            notes.append(hks.apply_norm())
-            applied.append(hks.revert)
-        if "sglang_moe" in routes:
-            current = "sglang_moe"
-            from . import sglang_moe  # noqa: PLC0415
+        topk_only = routes["sglang_moe"].value.lower() == "topk"
+        return sglang_moe.apply_topk() if topk_only else sglang_moe.apply()
 
-            topk_only = routes["sglang_moe"].value.lower() == "topk"
-            notes.append(sglang_moe.apply_topk() if topk_only else sglang_moe.apply())
-            applied.append(sglang_moe.revert)
-    except BaseException as e:  # noqa: BLE001 -- never half-patched: undo what was applied
-        for revert in reversed(applied):
-            try:
-                revert()
-            except BaseException:  # noqa: BLE001,S110
-                pass
-        contract.refuse("sglang", [f"{current} raised {type(e).__name__}: {e}"], contract.RAISED)
+    # Each route's contract, then each route that holds, one at a time: a broken or raising
+    # route is off with its own warning line, and the others are applied (contract.py).
+    notes, applied, off = contract.apply_routes(
+        "sglang", routes,
+        [("sglang_linear", hks.apply_linear), ("sglang_norm", hks.apply_norm), ("sglang_moe", moe)])
+    if not applied:
+        print(f"[hk] SGLang: no route applied ({len(off)} off, see the warnings), stock "
+              f"(pid {pid})", flush=True)
         return
     from ..runtime.compile import arm_jit_notice  # noqa: PLC0415
 
     arm_jit_notice("SGLang plugin")
-    on = ", ".join(f"{n} ({d.why})" for n, d in routes.items())
-    print(f"[hk] SGLang routes on: {on}; {'; '.join(notes)} (pid {pid})", flush=True)
+    on = ", ".join(f"{n} ({d.why})" for n, d in routes.items() if n in applied)
+    left = f"; OFF: {', '.join(off)}" if off else ""
+    print(f"[hk] SGLang routes on: {on}{left}; {'; '.join(notes)} (pid {pid})", flush=True)
 
 
 __all__: Tuple[str, ...] = ("enabled", "register")

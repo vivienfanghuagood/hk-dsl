@@ -109,9 +109,9 @@ stood at the move (990 no-GPU tests, 386 on the GPU).
   read the GPU while importing, and a route recorded without one is recorded
   as broken. Then add its `image_note` and any `expected_refusals` (a route the
   image breaks today, with the reason). A fixture whose image has an engine hk
-  does not claim lists the ones it is for in `serves` (`["sglang"]`). One broken
-  contract still makes a plugin leave the whole engine stock, so an expected
-  refusal means hk patches nothing in that image while the route is on.
+  does not claim lists the ones it is for in `serves` (`["sglang"]`). An expected
+  refusal turns off only that route in that image; the test holds that the
+  image's other default-on routes are still applied.
 
 The gates are by directory, in `tests/hk/conftest.py`, which also puts
 `python/` on `sys.path`, so the suite runs from a checkout without installing.
