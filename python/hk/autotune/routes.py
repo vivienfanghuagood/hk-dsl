@@ -317,6 +317,25 @@ def _record_timing(ent: dict, arch: str) -> Optional[str]:
     return meta.get("timing") or ("queued" if arch == "gfx950" else "burst")
 
 
+def record_stale(ent: dict, arch: str, engine: str, tunableop: Any) -> bool:
+    """Whether a record of this machine's no longer says what this process would measure:
+    measured against another engine, timed another way than the tuner times now (on RDNA
+    "context", "graph" for the LM head; "queued" on gfx950), or under another TunableOp state. A
+    record with no meta says nothing and is kept; one with a meta but no timing was an unqueued
+    burst on RDNA (`_record_timing`)."""
+    meta = ent.get("meta")
+    if meta is None:
+        return False
+    if meta.get("engine") not in (None, engine):
+        return True
+    now = default_timing(arch)
+    if now == "context" and ent.get("name") == "lm_head":
+        now = "graph"                                    # tune_missing times the LM head alone
+    if _record_timing(ent, arch) != now:
+        return True
+    return meta.get("tunableop", tunableop) != tunableop
+
+
 def route_at(points: Sequence[list], m: int, min_gain: float = MIN_GAIN,
              noise_k: float = NOISE_K) -> str:
     """The path measured points take at M by the runs' rule ("engine" where the engine's path
@@ -778,7 +797,7 @@ def measure_points(n: int, k: int, ms: Sequence[int], *, engine: Callable,
             # kernels included -- what routing the shape so changes in a step.
             base = took.pop(_CONTEXT, [0.0] * rounds)
             for name in order:
-                per[name] = [max((t - b) / calls_n, 1e-4) for t, b in zip(took[name], base)]
+                per[name] = _per_call(took[name], base, calls_n)
             return per
         if queued:
             for name, call in ok.items():
@@ -867,6 +886,13 @@ CONTEXT_PASSES = 3
 #: How many times rotate_bytes each shape of a context-timed graph rotates through (see
 #: measure_points: a W7900D's 96 MB Infinity Cache still served part of 288 MB).
 CONTEXT_ROTATE = 2
+
+
+def _per_call(took: Sequence[float], base: Sequence[float], calls: int) -> List[float]:
+    """A path's ms a call, round by round: its graph's time less the context's own in the same
+    round, over the calls the graph makes. Never 0 -- a ratio is taken of it -- however noisy a
+    round's difference."""
+    return [max((t - b) / calls, 1e-4) for t, b in zip(took, base)]
 
 
 def _context_call(engine, m, n, k, path, dev, g) -> Tuple[Callable, Callable]:

@@ -92,6 +92,34 @@ def test_a_record_against_another_engine_is_stale():
     assert NEW in t.shapes()                                       # no engine named: kept
 
 
+@pytest.mark.parametrize("meta, stale", [
+    ({}, True),                                                   # an unqueued burst, before timing
+    ({"timing": "graph"}, True),                                  # a shape timed alone
+    ({"timing": "context", "tunableop": "off"}, True),            # under another TunableOp state
+    ({"timing": "context", "tunableop": {"file": "a%d.csv", "sha": "1", "tuning": False}}, False),
+])
+def test_a_complete_stale_record_no_longer_shadows_the_shipped_row(monkeypatch, meta, stale):
+    # The shipped gfx1100 table routes QKV to hk's GEMV at M = 16. A complete record of this
+    # machine's that says fallback there shadows it whole -- unless it is stale, when the shipped
+    # row stands and the shape is missing again, for the tuning at load to measure.
+    monkeypatch.setattr(R, "tunableop_state",
+                        lambda: {"file": "a%d.csv", "sha": "1", "tuning": False})
+    eng = "vllm 0.31.0 rocm_unquantized_gemm"
+    _save({QKV: _ent("qkv", [_pt(m, 1.0, hk_decode=1.2) for m in (1, 16, 64)], **meta)})
+    t = engine.shipped_table("vllm_linear", "gfx1100", "HK_VLLM_ROUTES", engine=eng)
+    assert t.lookup(16, *QKV) == ("hk_decode" if stale else "fallback")
+    assert (QKV in t.meta.get("stale", [])) == stale
+    if stale:
+        assert QKV not in t.from_source(str(R.user_path("vllm_linear", "gfx1100")))
+
+
+def test_the_lm_heads_record_is_timed_alone():
+    ent = {"name": "lm_head", "meta": {"engine": "e", "timing": "graph", "tunableop": "off"}}
+    assert not R.record_stale(ent, "gfx1100", "e", "off")
+    assert R.record_stale({**ent, "name": "o"}, "gfx1100", "e", "off")
+    assert not R.record_stale({"runs": []}, "gfx1100", "e", "off")     # no meta: kept
+
+
 def test_records_alone_make_a_table_for_an_arch_with_none():
     with R.records_lock("vllm_linear", "gfx1201"):
         R.save_user("vllm_linear", "gfx1201", {"4608x3584": _ent("qkv", DECODE_WIN)},
