@@ -63,6 +63,12 @@ FAMILIES = [
          entries=["hk.ops.moe.moe_gemm", "hk.ops.moe.moe_align"],
          arches=RDNA_AND_GFX950, dtypes="bf16",
          routes=["vllm_moe", "sglang_moe"], tests=["test_moe.py"]),
+    dict(name="moe_w4", what="the same expert GEMM on 4-bit weights with zero points (AWQ), as "
+                             "vLLM's moe_wna16 holds them",
+         entries=["hk.ops.moe.moe_gemm_w4"],
+         arches=("gfx1100", "gfx1201"), dtypes="4-bit weights with per-group scales and zero "
+                                               "points, fp16 or bf16 activations",
+         routes=["vllm_moe_wna16"], tests=["test_moe_w4.py"]),
     dict(name="attention", what="flash attention, forward; its gfx950 kernel is `attn_cdna`",
          entries=["hk.ops.attention"],
          arches=RDNA_AND_GFX950, dtypes="bf16", routes=[], tests=["test_attn.py"]),
