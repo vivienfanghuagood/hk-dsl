@@ -315,7 +315,9 @@ vLLM picked.
 Head size 64, 128 and 256. At 256 the kernel uses `dsplit`, a query row
 across a pair of warps. Where a kernel does not build spill-free under the
 compiler at hand, its calls stay vLLM's: TRITON_ATTN at d256 under clang 22
-(ROCm 7.2.3). It builds under the vLLM images' clang 23. gfx1100, bf16,
+(ROCm 7.2.3). It builds under the vLLM images' clang 23. gfx1100, bf16 -- and fp16 with
+`HK_VLLM_PREFILL_FP16=1` (an fp16 model's: vLLM serves GPTQ checkpoints in
+fp16; S, softmax and O stay fp32; off by default until its own gate),
 pages of 16 or 32 tokens -- on TRITON_ATTN any multiple of 16: hybrid
 models' attention pages (544 tokens for MiniCPM-V-4.7, 784 for Qwen3.8) hold
 whole 32-key blocks or halves of them, and are read as zero past a
@@ -1185,6 +1187,7 @@ spelled:
 | `HK_VLLM_BACKEND` | `_vllm_plugin.py` | register the decoder attention backend (default off); a value other than `1`/`on`/`yes`/`true` names the slot |
 | `HK_VLLM_BACKEND_SLOT` | `vllm_backend.py` | the `AttentionBackendEnum` member to register over (default `TRITON_ATTN`) |
 | `HK_VLLM_PREFILL` | `_vllm_plugin.py` | prefill attention on vLLM's own cache, ROCM_ATTN and TRITON_ATTN (default on, gfx1100) |
+| `HK_VLLM_PREFILL_FP16` | `vllm_prefill.py` | `1`: the prefill route also takes fp16 models' calls (default off until its end-to-end gate passes) |
 | `HK_VLLM_PREFILL_VT` | `vllm_prefill.py` | `0`: on TRITON_ATTN, transpose V in every workgroup instead of packing the batch's V^T pages once a call (`paged_prefill` `vt_pages`; default on, head size up to 128) |
 | `HK_VLLM_PREFILL_SHADOW` | `vllm_prefill.py` | `1`: also run vLLM's kernel on every call hk takes and print the worst row's difference in bf16 ulps (a diagnostic; syncs) |
 | `HK_VLLM_GEMM` | `_vllm_plugin.py` | route the unquantized linear layers (default on, gfx1100 and gfx1201) |

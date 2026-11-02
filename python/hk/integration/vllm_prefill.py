@@ -13,8 +13,8 @@ are not read.
     vllm serve <model>                     # on by default on gfx1100
     HK_VLLM_PREFILL=0 vllm serve <model>   # off: vLLM's prefill kernels
 
-A call it does not take falls back to vLLM's kernel unchanged and is counted: another dtype
-or an fp8 cache, ALiBi, a sliding window, sinks, fp8 output, non-causal, a head size without a
+A call it does not take falls back to vLLM's kernel unchanged and is counted: a dtype other
+than bf16 or fp16 (q, output and cache alike), an fp8 cache, ALiBi, a sliding window, sinks, fp8 output, non-causal, a head size without a
 kernel, a page other than 16 or 32 tokens, block-table pointers, or another arch. (On
 TRITON_ATTN, below, a page may be any multiple of 16: hybrid models' pages, 544 tokens for
 MiniCPM-V-4.7's, 784 for Qwen3.8's.) Nothing is
@@ -64,19 +64,33 @@ def _built(make):
         return None
 
 
-def _op(head_dim: int, group: int, scale: Optional[float], page: int):
-    key = (head_dim, group, scale, page)
+#: HK_VLLM_PREFILL_FP16=1: also take fp16 models' calls (off until its end-to-end gate passes; a
+#: bf16 call is taken either way).
+FP16 = (__import__("os").environ.get("HK_VLLM_PREFILL_FP16", "")
+        not in ("", "0", "off", "no", "false"))
+
+#: torch dtype name -> paged_prefill's dtype, and its tag in kernel names
+_DTYPES = {"bfloat16": ("bf16", ""), "float16": ("fp16", "_f16")}
+
+
+def _dt(t) -> str:
+    return str(t.dtype).replace("torch.", "")
+
+
+def _op(head_dim: int, group: int, scale: Optional[float], page: int, dtype: str = "bfloat16"):
+    key = (head_dim, group, scale, page, dtype)
+    dt, dtag = _DTYPES[dtype]
     if key not in _OPS:
         from ..ops import paged_prefill as pp  # noqa: PLC0415
 
         def make():
             if head_dim > 128:
                 return pp.paged_prefill_kernel(
-                    f"paged_prefill_rocm_d{head_dim}_g{group}_p{page}_ds"
+                    f"paged_prefill_rocm_d{head_dim}_g{group}_p{page}_ds{dtag}"
                     f"{'' if scale is None else '_s%08x' % (hash(scale) & 0xffffffff)}",
                     head_dim=head_dim, group=group, scale=scale, layout="rocm", page=page,
-                    dsplit=True, warps=12), 96
-            return pp.rocm_kernel_for(head_dim, group, scale, page), pp.Q_TILE
+                    dsplit=True, warps=12, dtype=dt), 96
+            return pp.rocm_kernel_for(head_dim, group, scale, page, dtype=dt), pp.Q_TILE
         _OPS[key] = _built(make)
     return _OPS[key]
 
@@ -91,10 +105,12 @@ def why_not(q, o, kv_cache_dtype, k_cache, v_cache, b_loc, b_start_loc, b_seq_le
 
     if switches.arch() != "gfx1100":
         return f"arch {switches.arch()}"
-    if q.dtype != torch.bfloat16 or o.dtype != torch.bfloat16:
-        return f"dtype {q.dtype}"
-    if not str(kv_cache_dtype).startswith("auto") or k_cache.dtype != torch.bfloat16:
-        return f"kv cache {kv_cache_dtype}"
+    if q.dtype not in (torch.bfloat16, torch.float16) or o.dtype != q.dtype:
+        return f"dtype {q.dtype} / out {o.dtype}"
+    if q.dtype == torch.float16 and not FP16:
+        return "fp16 (HK_VLLM_PREFILL_FP16=1 takes it)"
+    if not str(kv_cache_dtype).startswith("auto") or k_cache.dtype != q.dtype:
+        return f"kv cache {kv_cache_dtype} {k_cache.dtype}"
     if alibi_slopes is not None or sinks is not None or fp8_out_scale is not None:
         return "alibi / sinks / fp8 output"
     if sliding_window is not None and sliding_window > 0:
@@ -183,7 +199,7 @@ def context_attention_fwd(*args, **kwargs):
     n, h, d = q.shape
     sm_scale = g["sm_scale"]
     scale = None if sm_scale is None or sm_scale == d ** -0.5 else float(sm_scale)
-    got = _op(d, h // k_cache.shape[1], scale, int(v_cache.shape[3]))
+    got = _op(d, h // k_cache.shape[1], scale, int(v_cache.shape[3]), _dt(q))
     if got is None:
         PATCH.count("fallback")
         return _ORIG(*args, **kwargs)
@@ -263,8 +279,9 @@ def _otag(order: str) -> str:
 
 
 def _flash_op(head_dim: int, group: int, scale: Optional[float], page: int = 16,
-              order: str = "planes"):
-    key = (head_dim, group, scale, page, order)
+              order: str = "planes", dtype: str = "bfloat16"):
+    key = (head_dim, group, scale, page, order, dtype)
+    dt, dtag = _DTYPES[dtype]
     if key not in _FLASH:
         from ..ops import paged_prefill as pp  # noqa: PLC0415
 
@@ -274,9 +291,9 @@ def _flash_op(head_dim: int, group: int, scale: Optional[float], page: int = 16,
             tag = "" if scale is None else "_s%08x" % (hash(scale) & 0xffffffff)
             return pp.paged_prefill_kernel(
                 f"paged_prefill_flash_d{head_dim}_g{group}{'_ds' if ds else ''}{_ptag(page)}"
-                f"{_otag(order)}{tag}", head_dim=head_dim, group=group, scale=scale,
+                f"{_otag(order)}{dtag}{tag}", head_dim=head_dim, group=group, scale=scale,
                 layout="flash", dsplit=ds, warps=warps, decodes=True, page=page,
-                kv_order=order), 16 * (warps // 2 if ds else warps)
+                kv_order=order, dtype=dt), 16 * (warps // 2 if ds else warps)
         _FLASH[key] = _built(make)
     return _FLASH[key]
 
@@ -292,9 +309,10 @@ _VT_SCRATCH: dict = {}
 
 
 def _vt_ops(head_dim: int, group: int, scale: Optional[float], page: int = 16,
-            order: str = "planes"):
+            order: str = "planes", dtype: str = "bfloat16"):
     """(pack launch, vt_pages launch, Q tile rows), or None (not built here, or head_dim 256)."""
-    key = (head_dim, group, scale, page, order)
+    key = (head_dim, group, scale, page, order, dtype)
+    dt, dtag = _DTYPES[dtype]
     if key not in _VT_OPS:
         _VT_OPS[key] = None
         if head_dim <= 128:
@@ -302,25 +320,26 @@ def _vt_ops(head_dim: int, group: int, scale: Optional[float], page: int = 16,
 
             tag = "" if scale is None else "_s%08x" % (hash(scale) & 0xffffffff)
             main = _built(lambda: (pp.paged_prefill_kernel(
-                f"paged_prefill_flashvt_d{head_dim}_g{group}{_ptag(page)}{_otag(order)}{tag}",
+                f"paged_prefill_flashvt_d{head_dim}_g{group}{_ptag(page)}{_otag(order)}{dtag}{tag}",
                 head_dim=head_dim, group=group, scale=scale, layout="flash", warps=12,
-                decodes=True, vt_pages=True, page=page, kv_order=order), 192))
+                decodes=True, vt_pages=True, page=page, kv_order=order, dtype=dt), 192))
             pack = _built(lambda: (pp.vt_pack_kernel(
-                f"paged_vt_pack_d{head_dim}{_ptag(page)}{_otag(order)}", head_dim=head_dim,
-                page=page, kv_order=order), 0))
+                f"paged_vt_pack_d{head_dim}{_ptag(page)}{_otag(order)}{dtag}", head_dim=head_dim,
+                page=page, kv_order=order, dtype=dt), 0))
             if main is not None and pack is not None:
                 _VT_OPS[key] = (pack[0], main[0], main[1])
     return _VT_OPS[key]
 
 
-def _vt_scratch(device, slots: int, hkv: int, d: int, page: int = 16):
+def _vt_scratch(device, slots: int, hkv: int, d: int, page: int = 16, dtype=None):
     import torch  # noqa: PLC0415
 
-    key = (str(device), hkv, d, page)
+    dtype = dtype or torch.bfloat16
+    key = (str(device), hkv, d, page, dtype)
     got = _VT_SCRATCH.get(key)
     if got is None or got.shape[0] < slots:
         got = _VT_SCRATCH[key] = torch.empty(1 << (slots - 1).bit_length(), hkv, d, page,
-                                             device=device, dtype=torch.bfloat16)
+                                             device=device, dtype=dtype)
     return got
 
 
@@ -419,8 +438,10 @@ def u_why_not(a: dict) -> str:
     if unknown:
         return f"{unknown} set (an argument hk does not know)"
     q, k, v, out = a["q"], a["k"], a["v"], a["out"]
-    if q.dtype != torch.bfloat16 or out.dtype != torch.bfloat16 or k.dtype != torch.bfloat16:
-        return f"dtype {q.dtype} / cache {k.dtype}"
+    if q.dtype not in (torch.bfloat16, torch.float16) or out.dtype != q.dtype or k.dtype != q.dtype:
+        return f"dtype {q.dtype} / out {out.dtype} / cache {k.dtype}"
+    if q.dtype == torch.float16 and not FP16:
+        return "fp16 (HK_VLLM_PREFILL_FP16=1 takes it)"
     if q.dim() != 3 or q.shape[-1] not in (64, 128, 256):
         return f"head size {q.shape[-1]}"
     if k.dim() != 4:
@@ -457,7 +478,7 @@ def unified_attention(*args, **kwargs):
     sc = a["softmax_scale"]
     scale = None if sc is None or sc == d ** -0.5 else float(sc)
     page = int(a["k"].shape[1])
-    got = _flash_op(d, h // a["k"].shape[2], scale, page, order)
+    got = _flash_op(d, h // a["k"].shape[2], scale, page, order, _dt(q))
     if got is None:
         PATCH.count("fallback")
         return _ORIG_U(*args, **kwargs)
@@ -469,11 +490,11 @@ def unified_attention(*args, **kwargs):
         hkv = a["k"].shape[2]
         max_k = int(a.get("max_seqlen_k") or 0)
         slots = len(a["seqused_k"]) * -(-max_k // page)
-        vt_ops = (_vt_ops(d, h // hkv, scale, page, order)
+        vt_ops = (_vt_ops(d, h // hkv, scale, page, order, _dt(q))
                   if 0 < slots * hkv * d * page * 2 <= VT_CAP_BYTES else None)
         if vt_ops is not None:
             pack, op, tile = vt_ops
-            v_src = _vt_scratch(q.device, slots, hkv, d, page)
+            v_src = _vt_scratch(q.device, slots, hkv, d, page, q.dtype)
             pack(kv, a["block_table"], a["seqused_k"], pp.vt_pack_span(max_k, q.device, page),
                  v_src)
     args = [q.reshape(n, h * d), kv, v_src, a["block_table"], a["seqused_k"], a["cu_seqlens_q"],

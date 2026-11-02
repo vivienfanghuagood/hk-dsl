@@ -128,3 +128,24 @@ def test_the_contract_checks_only_what_the_rocm_attn_standin_reads():
     assert "same_parameters(fn, vllm_prefill.context_attention_fwd" not in inspect.getsource(
         contract._vllm_prefill)
 
+
+def test_fp16_is_taken_only_when_switched_on(monkeypatch):
+    def args(dt):
+        q = torch.zeros(8, 4, 64, dtype=dt)
+        kv = torch.zeros(NB, 2, 16, 2, 64, dtype=dt)
+        k, v = kv.unbind(1)
+        return {"q": q, "k": k, "v": v, "out": torch.zeros_like(q), "max_seqlen_q": 8,
+                "causal": True, "softmax_scale": None,
+                "block_table": torch.zeros(1, 4, dtype=torch.int32),
+                "seqused_k": torch.ones(1, dtype=torch.int32),
+                "cu_seqlens_q": torch.tensor([0, 8], dtype=torch.int32)}
+
+    monkeypatch.setattr(vp, "_U_SIG", None)
+    monkeypatch.setattr("hk.integration.switches.arch", lambda: "gfx1100")
+    monkeypatch.setattr("hk.integration.engine.capturing", lambda: False)
+    monkeypatch.setattr(vp, "FP16", False)
+    assert vp.u_why_not(args(torch.float16)) == "fp16 (HK_VLLM_PREFILL_FP16=1 takes it)"
+    assert vp.u_why_not(args(torch.bfloat16)) == ""
+    monkeypatch.setattr(vp, "FP16", True)
+    assert vp.u_why_not(args(torch.float16)) == ""
+
