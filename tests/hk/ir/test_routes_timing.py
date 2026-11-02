@@ -61,3 +61,11 @@ def test_the_tunableop_state_names_the_results_it_runs(tmp_path, monkeypatch):
     assert a["file"] == "res%d.csv" and not a["tuning"] and len(a["sha"]) == 16
     (tmp_path / "res0.csv").write_text("Validator,PT_VERSION,2.13.0\nGemmTunableOp_BFloat16_TN,x\n")
     assert routes.tunableop_state()["sha"] != a["sha"]
+
+
+def test_a_paths_time_is_its_graph_less_the_context_a_call():
+    # Rounds of the path's graph (with the context) and of the context alone, 16 calls each.
+    assert routes._per_call([1.6, 1.7], [1.2, 1.1], 16) == pytest.approx([0.025, 0.0375])
+    # a round where noise put the context above the path: a floor, never 0 or negative
+    assert routes._per_call([1.0], [1.3], 16) == [1e-4]
+    assert routes._per_call([1.0], [0.0], 4) == [0.25]               # no context: the burst's time

@@ -58,11 +58,26 @@ def test_measured_shapes_reach_the_routes(tmp_path, monkeypatch):
         vllm_gemm.set_routes(None)
 
 
-def test_a_context_runs_between_the_calls_and_is_taken_off():
-    # Two layers of ~100 us between calls of a ~5 us GEMM: per call, the GEMM's time, not theirs.
+def test_a_context_is_captured_between_the_calls(monkeypatch):
+    # Plumbing only, no timing asserted (a shared card's noise makes any per-call number flaky):
+    # every timed call of every path runs with the context's layers, each with its input kernel,
+    # and every point comes back with a positive time for each path. What the times are is the
+    # tuner's own runs; how they are combined is tests/hk/ir/test_routes_timing.py.
     lin = torch.nn.functional.linear
-    ctx = [(8192, 4096, lambda m: "engine"), (4096, 4096, lambda m: "hk_decode")]
-    pts, _, done = R.measure_points(512, 1024, [8], engine=lin, timing="context", context=ctx,
+    built = []
+    real = R._context_call
+
+    def counting(engine, m, n, k, path, dev, g):
+        built.append((m, n, k, path))
+        return real(engine, m, n, k, path, dev, g)
+
+    monkeypatch.setattr(R, "_context_call", counting)
+    ctx = [(2048, 1024, lambda m: "engine"), (1024, 2048, lambda m: "hk_decode")]
+    pts, _, done = R.measure_points(512, 1024, [8, 16], engine=lin, timing="context", context=ctx,
                                     **FAST)
-    assert done and set(pts[0][1]) >= {"engine", "hk_decode"}
-    assert all(0 < t < 0.05 for t in pts[0][1].values()), pts[0][1]
+    assert done and [p[0] for p in pts] == [8, 16]
+    assert all(set(p[1]) >= {"engine", "hk_decode"} and all(t > 0 for t in p[1].values())
+               for p in pts)
+    # one context per set of every M (FAST: one set), each layer on the route it was given
+    assert {(m, n, k, path) for m, n, k, path in built} == {
+        (m, 2048, 1024, "engine") for m in (8, 16)} | {(m, 1024, 2048, "hk_decode") for m in (8, 16)}
