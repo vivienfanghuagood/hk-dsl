@@ -437,5 +437,13 @@
   "vllm_sparse_mla": null
  },
  "image": "sha256:731ec9e8521ea33efbf9839974fe6b48e94cfc0c2b7bd3e94b4de524096b2dd8",
- "image_note": "vLLM 0.31.0+rocm721 with torch 2.13.0+rocm7.2 and triton-rocm 3.7.1 (hk.integration.stack.MATCHED), in a venv over the ROCm 7.2.1 vLLM dev image (gfx1100): the stack docs/integration.md says the vLLM routes were measured on"
+ "image_note": "vLLM 0.31.0+rocm721 with torch 2.13.0+rocm7.2 and triton-rocm 3.7.1 (hk.integration.stack.MATCHED), in a venv over the ROCm 7.2.1 vLLM dev image (gfx1100): the stack docs/integration.md says the vLLM routes were measured on",
+ "label": "vLLM 0.31.0, matched stack",
+ "role": "measured",
+ "stack": {
+  "hip": "7.2.53211",
+  "python": "3.12.3",
+  "torch": "2.13.0+rocm7.2",
+  "triton-rocm": "3.7.1"
+ }
 }

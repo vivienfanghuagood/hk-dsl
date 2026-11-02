@@ -122,6 +122,7 @@ nav:
       - Integration: integration.md
       - "The end-to-end loop: a model, measured and patched": e2e-loop.md
       - "For agents: kernels in an engine": agents.md
+      - Support matrix: support-matrix.md
   - 6 Performance:
       - The scorecard: performance/scorecard.md
   - 7 Contributing:

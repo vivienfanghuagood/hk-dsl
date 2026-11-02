@@ -392,5 +392,13 @@
   "vllm_sparse_mla": null
  },
  "image": "sha256:675b9ad73c285df823a16bea4fb7a6bdda1c031fe1872fbb6130a5881b6dd922",
- "image_note": "the Qwen3.6-35B-A3B template vLLM image (ROCm 7.2.1, gfx1100)"
+ "image_note": "the Qwen3.6-35B-A3B template vLLM image (ROCm 7.2.1, gfx1100)",
+ "label": "Qwen3.6-35B-A3B template image",
+ "role": "production",
+ "stack": {
+  "hip": "7.2.53211-e1a6bc5663",
+  "python": "3.12.3",
+  "torch": "2.9.1+gitff65f5b",
+  "triton": "3.5.1"
+ }
 }

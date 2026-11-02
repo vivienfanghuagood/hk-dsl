@@ -61,6 +61,8 @@ def test_every_fixture_is_a_recorded_production_image():
         for r in fx["expected_refusals"]:
             assert r in contract.CHECKS, f"{path.name}: unknown route {r}"
         assert set(fx.get("serves", ())) <= set(fx["engines"]), path.name
+        assert fx["role"] in contract.ROLES and fx["label"], path.name     # the support matrix's
+        assert "python" in fx["stack"] and "torch" in fx["stack"], path.name
 
 
 @pytest.mark.parametrize("image,route", _cases(), ids=[f"{i}-{r}" for i, r in _cases()])

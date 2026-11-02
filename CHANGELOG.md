@@ -9,6 +9,8 @@ The next version's notes collect here until it is released.
 What is on main after 0.8.0. `pip install hk-dsl` (0.8.0) does not have it;
 the API reference marks such names *New after 0.8.0*.
 
+**A support matrix: [docs/support-matrix.md](docs/support-matrix.md).** Per arch, the image each GPU tier of hk's own tests runs in (ROCm, Python, torch), and every serving-engine image whose contract facts are recorded: the engine version, torch, ROCm, Triton and Python it runs on, and which of hk's default-on routes hold in it. `scripts/gen_support_matrix.py` writes it from CI's files and `tests/hk/ir/engine_facts/`, and `tests/hk/ir/test_support_matrix.py` fails while it is stale. `python3 -m hk.integration.contract --record` now records the stack (`contract.stack()`) and takes `--role` (production, measured, development); the eight fixtures carry both.
+
 **Engine contracts are per route.** A route whose engine contract is broken, or whose apply raises,
 now stays off with one warning line of its own (`[hk] WARNING: vllm: route vllm_moe_a8w4 OFF --
 engine contract FAILED ...`), and the engine's other routes are applied. Until now one broken

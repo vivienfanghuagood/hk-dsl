@@ -1017,6 +1017,12 @@ HIP_VISIBLE_DEVICES=3 python3 -m pytest tests/hk/engines -q        # SGLang's
 SGLang reads the GPU's arch while importing its kernels, so its file needs a
 GPU visible, though nothing is launched.
 
+**[The support matrix](support-matrix.md)** is the current list: every image and engine
+version whose contract facts are recorded, per arch, with the torch, ROCm, Triton and Python each
+runs on and which of hk's default-on routes hold in it. It is generated from those fixtures, and
+the IR tier holds the routes to them on every pull request. The table below is the engine-installed
+run it started from.
+
 What was run, on the dev pod (the vLLM pod, gfx1100), 2026-10-16:
 
 | patch | vLLM 0.31.0+rocm721 | vLLM 0.16.1 | SGLang 0.5.18 |
