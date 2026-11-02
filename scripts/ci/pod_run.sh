@@ -104,6 +104,8 @@ done
 fi
 [ -n "$GPU" ] || fail "no idle GPU for two hours"
 touch "$RUN/started"    # minutes count from here, not from the wait
+seen=$(rocminfo 2>/dev/null | grep -o -m1 "gfx[0-9a-f]*")
+[ "$seen" = gfx1100 ] || fail "the pod sees no gfx1100 GPU (rocminfo: ${seen:-no gfx agent})"
 n=$(wc -w <<<"$GPU")
 DEV="W7900D (gfx1100), GPU $GPU"
 [ "$n" -gt 1 ] && DEV="${n}x W7900D (gfx1100), GPUs $GPU"
