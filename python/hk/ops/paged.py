@@ -395,7 +395,7 @@ def split_kernel(head_dim: int, splits: int):
 
 @hk.func
 def _merge_splits(out, o_part, ml_part, req, kv_head, splits, active, cols,
-                  step):
+                  step, at=None, bound=True):
     """Fold `active` normalised split partials of one (request, kv head) into
     the answer, for the 16-column fragments of head_dim starting at `cols`.
 
@@ -456,7 +456,8 @@ def _merge_splits(out, o_part, ml_part, req, kv_head, splits, active, cols,
     l_acc += 1e-30
     for i in range(d_frags):
         acc[i] /= l_acc
-        out[hk.elem_coord(req, kv_head, 0, cols[i])].store(acc[i], bounded=True)
+        out[hk.elem_coord(req if at is None else at, kv_head, 0, cols[i])].store(
+            acc[i], bounded=bound)
 
 
 def paged_merge_kernel(name: str, *, head_dim: int = 128, splits: int = 8,
