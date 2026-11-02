@@ -261,8 +261,9 @@ class Compiler:
             atom = self.arch.mma(dtype)
             # Transposed: the instruction runs with its operands swapped, so the accumulator holds rows on
             # lanes 0-15 -- the shape of an A operand. A dot feeding another dot (attention's P @ V) then
-            # keeps P in registers (see match_operand). Not on RDNA3, whose A operand repeats lanes 16-31.
-            trans = self.arch.family == "cdna" or self.arch.name.startswith("gfx12")
+            # keeps P in registers (see match_operand; on RDNA3, whose A operand repeats lanes 16-31, one
+            # v_permlanex16 per value completes it: half_exchange).
+            trans = True
             if os.environ.get("HK2_NO_TRANS_DOT"):
                 trans = False
             return atom, A.rows_grid(m, n, self.nwarps, atom), trans
@@ -849,6 +850,8 @@ class Compiler:
                 got = self.vals[v.id]
             if got is None:
                 got = self.remap(self.vals[v.id], L)
+            if got is None:
+                got = self.half_exchange(self.vals[v.id], L)
             if got is not None:
                 out[i] = got
             else:
@@ -904,6 +907,54 @@ class Compiler:
             out[i] = tv
             self.memo[-1][("cvt", items[i][0].id, D)] = tv
         return out
+
+    def half_exchange(self, tv: TV, D: Layout) -> Optional[TV]:
+        """A layout change that only moves values across the two 16-lane halves of a wave32 (RDNA3's WMMA A
+        operand repeats lanes 16-31; an accumulator splits rows between them): each value is taken locally
+        or from lane ^ 16 with v_permlanex16 -- registers only, no LDS."""
+        S = tv.layout
+        if self.arch.family != "rdna" or os.environ.get("HK2_NO_XCHG") or S.shape != D.shape or                 S.warp != D.warp or len(S.lane) != 5 or S.lane[:4] != D.lane[:4] or any(D.lane[4]) or                 not any(S.lane[4]):
+            return None
+        e = S.lane[4]
+        where = {}
+        for r in range(S.nregs):
+            where.setdefault(S.reg_offset(r), (r, 0))
+        for r in range(S.nregs):
+            x = tuple(a ^ b for a, b in zip(S.reg_offset(r), e))
+            where.setdefault(x, (r, 1))
+        plan = []
+        for r in range(D.nregs):
+            src = where.get(D.reg_offset(r))
+            if src is None:
+                return None
+            plan.append(src)
+        dt = tv.dtype
+        self.decl("declare i32 @llvm.amdgcn.permlanex16.i32(i32, i32, i32, i32, i1 immarg, i1 immarg)")
+        hi = self.en(("lanehi",), lambda: f"icmp uge i32 {self.lane()}, 16")
+        swapped = {}
+
+        def other(r):
+            if r not in swapped:
+                x = tv.regs[r]
+                if dt.bits == 32:
+                    xi = x if dt.is_int else self.e(f"bitcast {self.ty(dt)} {x} to i32")
+                else:
+                    it = self.int_ty(dt.bits)
+                    xi = self.e(f"zext {it} {self.e(f'bitcast {self.ty(dt)} {x} to {it}') if dt.is_float else x} to i32")
+                y = self.e(f"call i32 @llvm.amdgcn.permlanex16.i32(i32 {xi}, i32 {xi}, i32 1985229328, "
+                           f"i32 -19088744, i1 false, i1 false)")
+                if dt.bits == 32:
+                    swapped[r] = y if dt.is_int else self.e(f"bitcast i32 {y} to {self.ty(dt)}")
+                else:
+                    t = self.e(f"trunc i32 {y} to {self.int_ty(dt.bits)}")
+                    swapped[r] = self.e(f"bitcast {self.int_ty(dt.bits)} {t} to {self.ty(dt)}") if dt.is_float else t
+            return swapped[r]
+        regs = []
+        for r, (sr, h) in enumerate(plan):
+            # lanes of half h hold the value themselves; the other half takes it from across
+            loc, oth = tv.regs[sr], other(sr)
+            regs.append(self.select(hi, loc, oth, dt) if h else self.select(hi, oth, loc, dt))
+        return TV(D, regs, dt)
 
     @staticmethod
     def warp_local(S: Layout, D: Layout) -> bool:
@@ -1484,8 +1535,16 @@ class Compiler:
         """The value of the partner lane for a reduction step over lane bit ``b`` (b < 4), by DPP: a VALU
         move, no LDS traffic. RDNA has an exact xor (row_xmask); CDNA pairs lanes with quad permutes and,
         when the lower bits are already reduced, with the half-row and row mirrors."""
-        if dt.bits != 32 or b > 3 or os.environ.get("HK2_NO_DPP"):
+        if dt.bits != 32 or b > 4 or os.environ.get("HK2_NO_DPP"):
             return None
+        if b == 4:
+            if self.arch.family != "rdna" or self.wave != 32:
+                return None
+            self.decl("declare i32 @llvm.amdgcn.permlanex16.i32(i32, i32, i32, i32, i1 immarg, i1 immarg)")
+            xi = x if dt.is_int else self.e(f"bitcast {self.ty(dt)} {x} to i32")
+            y = self.e(f"call i32 @llvm.amdgcn.permlanex16.i32(i32 {xi}, i32 {xi}, i32 1985229328, i32 -19088744, "
+                       f"i1 false, i1 false)")
+            return y if dt.is_int else self.e(f"bitcast i32 {y} to {self.ty(dt)}")
         if self.arch.family == "rdna":
             ctrl = 0x160 | (1 << b)
         elif b == 0:
