@@ -1,0 +1,541 @@
+{
+ "arch": "gfx950",
+ "deployed_on": "gfx950",
+ "engines": {
+  "sglang": "sglang (version unknown)",
+  "vllm": "vllm 0.32.1rc1.dev36+ge68efc685.rocm100"
+ },
+ "expected_refusals": {},
+ "facts": {
+  "sglang_linear": {
+   "apply": null
+  },
+  "sglang_moe": {
+   "_error": "ModuleNotFoundError: No module named 'sglang'"
+  },
+  "sglang_norm": {
+   "_error": "ModuleNotFoundError: No module named 'sglang'"
+  },
+  "sgld_attn": {
+   "_error": "ModuleNotFoundError: No module named 'sglang'"
+  },
+  "sgld_convrot": null,
+  "sgld_linear": {
+   "_error": "ModuleNotFoundError: No module named 'sglang'"
+  },
+  "vllm_backend": {
+   "backend_slots": [
+    "FLASH_ATTN",
+    "FLASH_ATTN_DIFFKV",
+    "TRITON_ATTN",
+    "TRITON_ATTN_DIFFKV",
+    "TRITON_FLASH_ATTN",
+    "ROCM_ATTN",
+    "ROCM_SEGMENTED_ATTN",
+    "ROCM_AITER_MLA",
+    "ROCM_AITER_TRITON_MLA",
+    "ROCM_AITER_FA",
+    "ROCM_AITER_MLA_SPARSE",
+    "XPU_MLA_SPARSE",
+    "TORCH_SDPA",
+    "FLASHINFER",
+    "TRITON_FLASHINFER",
+    "FLASHINFER_MLA",
+    "TOKENSPEED_MLA",
+    "FLASHINFER_MLA_SPARSE",
+    "FLASHINFER_MLA_SPARSE_SM120",
+    "FLASHINFER_MLA_SPARSE_SM90",
+    "TRITON_MLA",
+    "CUTLASS_MLA",
+    "FLASHMLA",
+    "FLASHMLA_SPARSE",
+    "FLASHMLA_SPARSE_DSV4",
+    "FLASHINFER_MLA_SPARSE_DSV4",
+    "ROCM_FLASHMLA_SPARSE_DSV4",
+    "FLASHMLA_SPARSE_DSV41",
+    "FLASHINFER_MLA_SPARSE_DSV41",
+    "ROCM_FLASHMLA_SPARSE_DSV41",
+    "FLASHMLA_MEGA_ATTN_DSV41",
+    "B12X",
+    "FLASH_ATTN_MLA",
+    "FLASH_ATTN_MLA_SPARSE",
+    "FLASH_ATTN_MLA_SPARSE_FA4",
+    "MINIMAX_M3_SPARSE",
+    "CUTLASS_MSA",
+    "TRITON_MSA",
+    "NO_ATTENTION",
+    "FLEX_ATTENTION",
+    "HPC_ATTN",
+    "ROCM_AITER_UNIFIED_ATTN",
+    "CPU_ATTN",
+    "CPU_MLA",
+    "AMX_MLA",
+    "TURBOQUANT",
+    "ULTRAQUANT",
+    "CUSTOM"
+   ],
+   "register_backend": true
+  },
+  "vllm_dsv41_index": {
+   "args": [
+    "layer",
+    "positions",
+    "normed",
+    "qr"
+   ],
+   "has_layout": true,
+   "has_mono_runner": true
+  },
+  "vllm_gemm": {
+   "dispatch_required": [],
+   "dispatched": [
+    "layer",
+    "x",
+    "weight",
+    "bias"
+   ],
+   "worker_load_model": true
+  },
+  "vllm_gptq": {
+   "apply": [
+    "self",
+    "layer",
+    "x",
+    "bias"
+   ],
+   "pwal": [
+    "self",
+    "layer"
+   ]
+  },
+  "vllm_int4": {
+   "apply": [
+    "self",
+    "layer",
+    "x",
+    "bias"
+   ],
+   "awq_dequantize_nargs": 6,
+   "awq_gemm_nargs": 5,
+   "create_weights_has": {
+    "qweight": true,
+    "qzeros": true,
+    "scales": true
+   },
+   "pwal": [
+    "self",
+    "layer"
+   ]
+  },
+  "vllm_moe": {
+   "invoke_fused_moe_triton_kernel": [
+    [
+     "A",
+     false,
+     null
+    ],
+    [
+     "B",
+     false,
+     null
+    ],
+    [
+     "C",
+     false,
+     null
+    ],
+    [
+     "A_scale",
+     false,
+     null
+    ],
+    [
+     "B_scale",
+     false,
+     null
+    ],
+    [
+     "topk_weights",
+     false,
+     null
+    ],
+    [
+     "sorted_token_ids",
+     false,
+     null
+    ],
+    [
+     "expert_ids",
+     false,
+     null
+    ],
+    [
+     "num_tokens_post_padded",
+     false,
+     null
+    ],
+    [
+     "mul_routed_weight",
+     false,
+     null
+    ],
+    [
+     "top_k",
+     false,
+     null
+    ],
+    [
+     "config",
+     false,
+     null
+    ],
+    [
+     "compute_type",
+     false,
+     null
+    ],
+    [
+     "use_fp8_w8a8",
+     false,
+     null
+    ],
+    [
+     "use_int8_w8a8",
+     false,
+     null
+    ],
+    [
+     "use_int8_w8a16",
+     false,
+     null
+    ],
+    [
+     "use_int4_w4a16",
+     false,
+     null
+    ],
+    [
+     "per_channel_quant",
+     false,
+     null
+    ],
+    [
+     "block_shape",
+     true,
+     "None"
+    ],
+    [
+     "B_bias",
+     true,
+     "None"
+    ]
+   ],
+   "try_get_optimal_moe_config": [
+    [
+     "w1_shape",
+     false,
+     null
+    ],
+    [
+     "w2_shape",
+     false,
+     null
+    ],
+    [
+     "top_k",
+     false,
+     null
+    ],
+    [
+     "dtype",
+     false,
+     null
+    ],
+    [
+     "M",
+     false,
+     null
+    ],
+    [
+     "block_shape",
+     true,
+     "None"
+    ]
+   ]
+  },
+  "vllm_moe_a8w4": {
+   "fused_moe": [
+    "hidden_states",
+    "w1",
+    "w2",
+    "topk_weight",
+    "topk_ids",
+    "expert_mask",
+    "activation",
+    "quant_type",
+    "doweight_stage1",
+    "w1_scale",
+    "w2_scale",
+    "a1_scale",
+    "a2_scale",
+    "block_size_M",
+    "num_local_tokens",
+    "moe_sorting_dispatch_policy",
+    "dtype",
+    "hidden_pad",
+    "intermediate_pad",
+    "bias1",
+    "bias2",
+    "splitk",
+    "swiglu_limit",
+    "beta",
+    "linear_beta",
+    "gate_mode",
+    "shared_w1",
+    "shared_w2",
+    "shared_w1_scale",
+    "shared_w2_scale",
+    "shared_expert_id",
+    "stage2_scatter",
+    "output",
+    "quant_type_a",
+    "quant_dtype_a",
+    "quant_dtype_a2"
+   ],
+   "fused_moe_params": [
+    "hidden_states",
+    "w1",
+    "w2",
+    "topk_weight",
+    "topk_ids",
+    "expert_mask",
+    "activation",
+    "quant_type",
+    "doweight_stage1",
+    "w1_scale",
+    "w2_scale",
+    "a1_scale",
+    "a2_scale",
+    "block_size_M",
+    "num_local_tokens",
+    "moe_sorting_dispatch_policy",
+    "dtype",
+    "hidden_pad",
+    "intermediate_pad",
+    "bias1",
+    "bias2",
+    "splitk",
+    "swiglu_limit",
+    "beta",
+    "linear_beta",
+    "gate_mode",
+    "shared_w1",
+    "shared_w2",
+    "shared_w1_scale",
+    "shared_w2_scale",
+    "shared_expert_id",
+    "stage2_scatter",
+    "output",
+    "quant_type_a",
+    "quant_dtype_a",
+    "quant_dtype_a2"
+   ],
+   "moe_sorting": [
+    "topk_ids",
+    "topk_weights",
+    "num_experts",
+    "model_dim",
+    "moebuf_dtype",
+    "block_size",
+    "expert_mask",
+    "num_local_tokens",
+    "dispatch_policy",
+    "return_local_topk_ids",
+    "accumulate",
+    "flat",
+    "output_aux",
+    "output"
+   ],
+   "quant_sort_nargs": 10
+  },
+  "vllm_moe_wna16": {
+   "invoke_fused_moe_wna16_triton_kernel": [
+    [
+     "A",
+     false,
+     null
+    ],
+    [
+     "B",
+     false,
+     null
+    ],
+    [
+     "C",
+     false,
+     null
+    ],
+    [
+     "B_scale",
+     false,
+     null
+    ],
+    [
+     "B_zp",
+     false,
+     null
+    ],
+    [
+     "topk_weights",
+     false,
+     null
+    ],
+    [
+     "sorted_token_ids",
+     false,
+     null
+    ],
+    [
+     "expert_ids",
+     false,
+     null
+    ],
+    [
+     "num_tokens_post_padded",
+     false,
+     null
+    ],
+    [
+     "mul_routed_weight",
+     false,
+     null
+    ],
+    [
+     "top_k",
+     false,
+     null
+    ],
+    [
+     "config",
+     false,
+     null
+    ],
+    [
+     "compute_type",
+     false,
+     null
+    ],
+    [
+     "use_int8_w8a16",
+     false,
+     null
+    ],
+    [
+     "use_int4_w4a16",
+     false,
+     null
+    ],
+    [
+     "block_shape",
+     false,
+     null
+    ]
+   ],
+   "try_get_optimal_moe_config": [
+    [
+     "w1_shape",
+     false,
+     null
+    ],
+    [
+     "w2_shape",
+     false,
+     null
+    ],
+    [
+     "top_k",
+     false,
+     null
+    ],
+    [
+     "dtype",
+     false,
+     null
+    ],
+    [
+     "M",
+     false,
+     null
+    ],
+    [
+     "block_shape",
+     true,
+     "None"
+    ]
+   ]
+  },
+  "vllm_mxfp8": {
+   "apply_weights": [
+    "self",
+    "layer",
+    "x",
+    "bias"
+   ],
+   "cls": "RocmDotScaledMxfp8LinearKernel",
+   "gemm_nargs": 5,
+   "pwal": [
+    "self",
+    "layer"
+   ],
+   "quantize": [
+    "x",
+    "is_sf_swizzled_layout",
+    "alignment"
+   ]
+  },
+  "vllm_prefill": null,
+  "vllm_sdpa": {
+   "calls_torch_sdpa": true
+  },
+  "vllm_sparse_mla": {
+   "entry_points": {
+    "forward_prefill": [
+     "self",
+     "q",
+     "positions",
+     "compressed_k_cache",
+     "swa_k_cache",
+     "output",
+     "attn_metadata",
+     "swa_metadata",
+     "mxfp8_out"
+    ],
+    "prefill": [
+     "q",
+     "kv",
+     "indices",
+     "topk_length",
+     "scale",
+     "head_dim",
+     "nope_head_dim",
+     "rope_head_dim",
+     "attn_sink",
+     "output",
+     "ragged_indices",
+     "ragged_indptr"
+    ],
+    "quant": [
+     "o",
+     "positions",
+     "cos_sin_cache",
+     "rope_head_dim",
+     "out_data",
+     "out_scale"
+    ]
+   },
+   "has_ragged": true
+  }
+ },
+ "image": "sha256:520e098f54ec96837228aaddea0a833cbf6374dbdffd480c1d65f26ffab7701b",
+ "image_note": "vllm/vllm-openai-rocm:nightly-rocm100-e68efc685 (ROCm 10, gfx950): the image the gfx950 routes were measured on (contract.MEASURED_VLLM) and the gfx950-vllm GPU tier runs in"
+}

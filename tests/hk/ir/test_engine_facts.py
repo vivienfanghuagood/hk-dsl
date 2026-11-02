@@ -1,7 +1,7 @@
-"""Every route that is on by default holds its engine contract in every production image we record,
-judged from the image's recorded facts (tests/hk/ir/engine_facts/, written by `python3 -m
-hk.integration.contract --record` inside the image) -- so a stand-in or a check that changes is held
-to the real engines here, without any image in CI. A route whose contract an image breaks today is
+"""Every route that is on by default holds its engine contract in every production image we record
+and in every engine version hk claims, judged from the recorded facts (tests/hk/ir/engine_facts/,
+written by `python3 -m hk.integration.contract --record` inside the image) -- so a stand-in or a
+check that changes is held to the real engines here, without any image in CI. A route whose contract an image breaks today is
 listed in that fixture's `expected_refusals`, with the reason.
 
 Today a refusal is not per route: one broken contract makes the plugin leave the WHOLE engine stock
@@ -34,7 +34,10 @@ def _load(path):
 
 
 def _installed(fx, engine):
-    return not fx["engines"][ENGINE_MODULE[engine]].endswith("(version unknown)")
+    """The image has `engine`, and the fixture is recorded for it: `serves`, when present, names the
+    engines a fixture holds hk to (an SGLang venv that also has a vLLM hk does not claim)."""
+    mod = ENGINE_MODULE[engine]
+    return mod in fx.get("serves", fx["engines"]) and not fx["engines"][mod].endswith("(version unknown)")
 
 
 def _cases():
@@ -58,6 +61,7 @@ def test_every_fixture_is_a_recorded_production_image():
             f"{path.name}: re-record it, the routes changed ({sorted(set(contract.CHECKS) ^ set(fx['facts']))})"
         for r in fx["expected_refusals"]:
             assert r in contract.CHECKS, f"{path.name}: unknown route {r}"
+        assert set(fx.get("serves", ())) <= set(fx["engines"]), path.name
 
 
 @pytest.mark.parametrize("image,route", _cases(), ids=[f"{i}-{r}" for i, r in _cases()])
