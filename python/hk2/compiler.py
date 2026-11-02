@@ -25,6 +25,16 @@ from . import types as T
 from .layout import Layout, blocked, log2
 
 FLEX = "flex"
+LDS = "lds"  # a tile that lives only in LDS (filled by DMA, read by a dot)
+_SCOPE = ", !alias.scope !903, !noalias !904"  # LDS DMA writes
+_RSCOPE = ", !alias.scope !904, !noalias !903"  # reads of DMA-filled tiles
+
+
+@dataclass
+class LdsTile:
+    """A tile DMA'd into a double-buffered LDS region; ``trans``: viewed transposed (a B operand)."""
+    tag: str
+    trans: bool = False
 INF = 1 << 40
 
 
@@ -108,6 +118,10 @@ class Compiler:
         self.n_barriers = 0
         self.deferred: List[Tuple[int, ir.Op]] = []
         self.rowmode = False
+        self.dma: Dict[str, Dict] = {}
+        self.dma_pending = False
+        self.dma_seen = False
+        self.dma_wait = 0
         self.depth = 0
 
     # ================================================================ pass 1: layouts
@@ -144,9 +158,9 @@ class Compiler:
             L[r.id] = FLEX if x is FLEX else x.expand(op.attrs["axis"])
         elif k == "trans":
             x = L[op.args[0].id]
-            L[r.id] = FLEX if x is FLEX else x.transpose()
+            L[r.id] = x if x in (FLEX, LDS) else x.transpose()
         elif k == "load":
-            L[r.id] = self.blocked_for(sh, dt)
+            L[r.id] = LDS if op.attrs.get("dma") else self.blocked_for(sh, dt)
         elif k in ("ew", "where", "cast"):
             cands = [L[a.id] for a in op.args if a.is_tile and a.type.shape == sh]
             best = max(cands, key=self._score) if cands else FLEX
@@ -166,7 +180,7 @@ class Compiler:
             raise NotImplementedError(k)
 
     def _default(self, v: ir.Value, l):
-        if l is FLEX:
+        if l is FLEX or l is None:
             return self.blocked_for(v.type.shape, v.type.dtype)
         return l
 
@@ -663,6 +677,14 @@ class Compiler:
         return x0 < y1 and y0 < x1
 
     def barrier(self):
+        if self.dma_pending:
+            # The barrier publishes LDS that this wave's DMAs filled: the tile about to be read must have
+            # landed. In an S-stage ring the S-2 newer tiles' DMAs may stay in flight: vmcnt(N).
+            n = min(self.dma_wait, 63)
+            imm = 0x0F70 | (n & 0xF) | (((n >> 4) & 3) << 14)
+            self.decl("declare void @llvm.amdgcn.s.waitcnt(i32 immarg)")
+            self.emit(f"  call void @llvm.amdgcn.s.waitcnt(i32 {imm})")
+            self.dma_pending = False
         self.decl("declare void @llvm.amdgcn.s.barrier()")
         self.emit('  fence syncscope("workgroup") release')
         self.emit("  call void @llvm.amdgcn.s.barrier()")
@@ -687,8 +709,24 @@ class Compiler:
 
     @staticmethod
     def _swap(pend):
-        sw = {"cur": "oth", "oth": "cur", "": ""}
-        return sorted({(sw[s], lo, hi, r0, r1, p) for s, lo, hi, r0, r1, p in pend}, key=repr)
+        """The back edge: this iteration's slots become the previous one's (cur <-> oth; ring slot rK, K
+        slots ahead of the current one, becomes r(K-1))."""
+        out = set()
+        for s, lo, hi, r0, r1, p in pend:
+            if s in ("cur", "oth"):
+                s = "oth" if s == "cur" else "cur"
+            elif s.startswith("r"):
+                n = (r1 - r0) // (hi - lo)
+                s = f"r{(int(s[1:]) - 1) % n}"
+            out.add((s, lo, hi, r0, r1, p))
+        return sorted(out, key=repr)
+
+    def ring(self) -> str:
+        """0..S-1: the slot of the innermost loop's S-stage DMA ring this iteration reads."""
+        lp = self.loops[-1]
+        if lp.get("ring") is None:
+            lp["ring"] = self.t()
+        return lp["ring"]
 
     def parity(self) -> str:
         """0 or 1: which slot of the innermost loop's double buffers this iteration uses."""
@@ -975,6 +1013,10 @@ class Compiler:
 
     def op_trans(self, op):
         L = self.lay[op.result.id]
+        if L is LDS:
+            x = self.vals[op.args[0].id]
+            self.vals[op.result.id] = LdsTile(x.tag, not x.trans)
+            return
         if L is FLEX:
             return
         x = self.vals[op.args[0].id]
@@ -1017,8 +1059,9 @@ class Compiler:
         offs = a[1 + 2 * nd:1 + 3 * nd]
         return ptr, dims, strides, offs
 
-    def _rsrc(self, ptr: str, strides, offs_vals, dt: T.DType) -> str:
-        """A buffer resource whose base is the tile's origin (uniform math, in scalar registers)."""
+    def _rsrc(self, ptr: str, strides, offs_vals, dt: T.DType, records: Optional[str] = None) -> str:
+        """A buffer resource whose base is the tile's origin (uniform math, in scalar registers). ``records``:
+        bytes readable from there (an i32; reads past it return 0), default unbounded."""
         lin = None
         for s, o in zip(strides, offs_vals):
             o64 = self.e(f"sext i32 {o} to i64")
@@ -1031,8 +1074,12 @@ class Compiler:
         base = self.e(f"getelementptr inbounds {self.ty(dt)}, ptr addrspace(1) {ptr}, i64 {lin}")
         nr = "i64" if self.llvm_major >= 21 else "i32"  # LLVM 21 widened num_records
         self.decl(f"declare ptr addrspace(8) @llvm.amdgcn.make.buffer.rsrc.p8.p1(ptr addrspace(1), i16, {nr}, i32)")
+        if records is None:
+            rec = "2147483647"
+        else:
+            rec = self.e(f"zext i32 {records} to i64") if nr == "i64" else records
         return self.e(f"call ptr addrspace(8) @llvm.amdgcn.make.buffer.rsrc.p8.p1(ptr addrspace(1) {base}, i16 0, "
-                      f"{nr} 2147483647, i32 {self.arch.buffer_flags})")
+                      f"{nr} {rec}, i32 {self.arch.buffer_flags})")
 
     def _mem_plan(self, op, L: Layout, dt: T.DType):
         ptr, dims, strides, offs = self._tensor(op)
@@ -1076,7 +1123,147 @@ class Compiler:
         b = self.e(f"mul i32 {lin}, {dt.bytes}")
         return self.e(f"select i1 {ok}, i32 {b}, i32 -2147483648"), ok
 
+    def dma_region(self, tag: str, shape, dt: T.DType, stages: int = 2) -> Dict:
+        if tag not in self.dma:
+            R, C = shape
+            nc = C * dt.bytes // 16
+            size = R * C * dt.bytes
+            self.dma[tag] = dict(name=f"@hk2.{tag}", size=size, R=R, C=C, nc=nc, rb=C * dt.bytes, dt=dt, S=stages,
+                                 fs=log2(max(1, 256 // (nc * 16))), base=(1 << 40) + len(self.dma) * (1 << 30))
+        return self.dma[tag]
+
+    def _swz(self, row: str, g) -> str:
+        """The swizzle of a row: chunks are stored at chunk ^ ((row >> fs) % nc)."""
+        sh = self.en(("swzs", row, g["fs"]), lambda: f"lshr i32 {row}, {g['fs']}")
+        return self.en(("swzf", row, g["fs"], g["nc"]), lambda: f"and i32 {sh}, {g['nc'] - 1}")
+
+    def op_load_dma(self, op):
+        """Global -> LDS with buffer_load ... lds: lane l of instruction q writes 16 bytes at q*1024 + 16*l.
+        Each lane picks the chunk that position holds in the swizzled tile."""
+        dt = op.result.type.dtype
+        g = self.dma_region(op.attrs["dma"], op.result.type.shape, dt, op.attrs.get("stages", 2))
+        ptr, dims, strides, offs = self._tensor(op)
+        nd = op.attrs["ndim"]
+        offv = [self.vals[o.id] for o in offs]
+        lead = nd - 2
+        rem = [self.e(f"sub i32 {d}, {o}") for d, o in zip(dims[lead:], offv[lead:])]
+        lead_ok = None
+        for d, o in zip(dims[:lead], offv[:lead]):
+            c = self.e(f"icmp ult i32 {o}, {d}")
+            lead_ok = c if lead_ok is None else self.e(f"and i1 {lead_ok}, {c}")
+        S, sz, gb = g["S"], g["size"], g["base"]
+        if op.attrs.get("prefetch"):
+            dist = op.attrs.get("dist", 1)
+            t = self.e(f"add i32 {self.ring()}, {dist}")
+            slot = self.e(f"select i1 {self.e(f'icmp sge i32 {t}, {S}')}, i32 {self.e(f'sub i32 {t}, {S}')}, i32 {t}")
+            dyn = self.e(f"mul i32 {slot}, {sz}")
+            acc = (f"r{dist}", gb, gb + sz, gb, gb + S * sz, None)
+        else:
+            st = op.attrs.get("stage", 0)
+            dyn = str(st * sz)
+            acc = ("", gb + st * sz, gb + (st + 1) * sz, 0, 0, None)
+        self.lds_write(acc)
+        R, C = op.result.type.shape
+        nw, nc = self.nwarps, g["nc"]
+        insts = g["size"] // (1024 * nw)
+        kr = nw * 64 // nc  # rows between consecutive instructions of one warp
+        stride0 = strides[lead]
+        # When the columns come in whole tiles (proved from divisibility), rows past the tensor are masked by
+        # the descriptor's size (soffset counts in the range check, probed: bench/hk2/probe_soffset.py) and
+        # every instruction of a warp uses the same lane offsets (the swizzle repeats every kr rows) plus a
+        # scalar offset: one VGPR, no per-lane masks, no branch. Otherwise each instruction masks per lane.
+        whole = self.divisibility(op.args[nd]) % C == 0 and self.divisibility(offs[nd - 1]) % C == 0
+        same = whole and 64 % nc == 0 and kr % (1 << g["fs"]) == 0 and (kr >> g["fs"]) % nc == 0 and             not os.environ.get("HK2_DMA_MASKED")
+        if same:
+            # readable bytes from the tile origin: up to the end of the last row's data, never past the tensor
+            # (prefetches beyond the last K tile start past it): ((rows - 1) * stride + cols), 0 if no rows
+            last = self.e(f"add i32 {self.e(f'mul i32 {self.e(f'sub i32 {rem[0]}, 1')}, {stride0}')}, {rem[1]}")
+            last = self.binop("max", last, "0", T.i32)
+            last = self.e(f"select i1 {self.e(f'icmp sgt i32 {rem[0]}, 0')}, i32 {last}, i32 0")
+            rec = self.e(f"mul i32 {last}, {dt.bytes}")
+            if lead_ok:
+                rec = self.e(f"select i1 {lead_ok}, i32 {rec}, i32 0")
+            rsrc = self._rsrc(ptr, strides, offv, dt, rec)
+        else:
+            rsrc = self._rsrc(ptr, strides, offv, dt)
+        self.decl("declare void @llvm.amdgcn.raw.ptr.buffer.load.lds(ptr addrspace(8), ptr addrspace(3), "
+                  "i32 immarg, i32, i32, i32 immarg, i32 immarg)")
+        wl = self.en(("dmawl",), lambda: f"add i32 {self.en(('dmaw64',), lambda: f'shl i32 {self.warp()}, 6')}, "
+                                         f"{self.lane()}")
+        wbase = self.en(("dmawb",), lambda: f"shl i32 {self.warp()}, 10")
+        m, fs = nc - 1, g["fs"]
+        cshift = log2(16 // dt.bytes)
+        if same:
+            row0 = self.en(("dmarow0", nw, nc), lambda: f"lshr i32 {wl}, {log2(nc)}")
+            chs0 = self.en(("dmachs0", nw, nc), lambda: f"and i32 {wl}, {m}")
+            f0 = self._swz(row0, g)
+            ch0 = self.en(("dmach0", nw, nc, fs), lambda: f"xor i32 {chs0}, {f0}")
+            col0 = self.en(("dmacol0", nw, nc, fs), lambda: f"shl i32 {ch0}, {cshift}")
+            el = self.e(f"add i32 {self.e(f'mul i32 {row0}, {stride0}')}, {col0}")
+            voff = self.e(f"mul i32 {el}, {dt.bytes}")
+            rstride = self.e(f"mul i32 {stride0}, {kr * dt.bytes}")
+        for j in range(insts):
+            lo = self.e(f"add i32 {self.e(f'add i32 {dyn}, {wbase}')}, {j * nw * 1024}")
+            lp = self.e(f"getelementptr inbounds i8, ptr addrspace(3) {g['name']}, i32 {lo}")
+            if same:
+                soff = self.e(f"mul i32 {rstride}, {j}") if j else "0"
+            else:
+                soff = "0"
+                pj = self.e(f"add i32 {wl}, {j * nw * 64}")
+                row = self.e(f"lshr i32 {pj}, {log2(nc)}")
+                chs = self.e(f"and i32 {pj}, {m}")
+                ch = self.e(f"xor i32 {chs}, {self.e(f'and i32 {self.e(f'lshr i32 {row}, {fs}')}, {m}')}")
+                col = self.e(f"shl i32 {ch}, {cshift}")
+                by = self.e(f"mul i32 {self.e(f'add i32 {self.e(f'mul i32 {row}, {stride0}')}, {col}')}, {dt.bytes}")
+                ok = self.e(f"and i1 {self.e(f'icmp slt i32 {row}, {rem[0]}')}, {self.e(f'icmp slt i32 {col}, {rem[1]}')}")
+                if lead_ok:
+                    ok = self.e(f"and i1 {ok}, {lead_ok}")
+                voff = self.e(f"select i1 {ok}, i32 {by}, i32 -2147483648")
+            self.emit(f"  call void @llvm.amdgcn.raw.ptr.buffer.load.lds(ptr addrspace(8) {rsrc}, ptr addrspace(3) "
+                      f"{lp}, i32 16, i32 {voff}, i32 {soff}, i32 0, i32 0){_SCOPE}")
+        self.dma_pending = self.dma_seen = True
+        self.vals[op.result.id] = LdsTile(op.attrs["dma"])
+
+    def lds_tile_reader(self, t: LdsTile, D: Layout, kdim: int) -> TV:
+        """Read an operand layout D out of a DMA-filled, swizzled tile (lazily, fragment by fragment). Storage
+        rows are the tile's dimension 1 - kdim of D, its K the contiguous columns."""
+        g = self.dma[t.tag]
+        dt = g["dt"]
+        rdim, cdim = 1 - kdim, kdim
+        v = min(D.contig(cdim), 16 // 2)
+        assert v == 8, f"hk2: DMA tile read needs 8 contiguous K per fragment, layout {D}"
+        dyn = self.e(f"mul i32 {self.ring()}, {g['size']}") if self.loops else "0"
+        row_lw, col_lw = self.lw(D, rdim), self.lw(D, cdim)
+        f_lw = self._swz(row_lw, g)
+        ch_lw = self.en(("dmachl", D, cdim), lambda: f"lshr i32 {col_lw}, 3")
+        x = self.en(("dmax", D, t.tag), lambda: f"xor i32 {ch_lw}, {f_lw}")
+        rbase = self.en(("dmarb", D, t.tag), lambda: f"mul i32 {row_lw}, {g['rb']}")
+        nm = g["name"]
+
+        def read(r):
+            off = D.reg_offset(r)
+            rc, cc = off[rdim], off[cdim]
+            cst = (cc >> 3) ^ ((rc >> g["fs"]) & (g["nc"] - 1))
+            chv = self.e(f"xor i32 {x}, {cst}") if cst else x
+            b = self.e(f"shl i32 {chv}, 4")
+            b = self.e(f"add i32 {b}, {rbase}")
+            b = self.e(f"add i32 {b}, {dyn}")
+            b = self.e(f"add i32 {b}, {rc * g['rb']}")
+            p = self.e(f"getelementptr inbounds i8, ptr addrspace(3) {nm}, i32 {b}")
+            vec = self.e(f"load <8 x {self.ty(dt)}>, ptr addrspace(3) {p}, align 16{_RSCOPE}")
+            return self.unpack(vec, 8, dt)
+
+        def loader(r, vals):
+            c = D.canonical_reg(r)
+            if vals[c] is None:
+                start = c - c % 8
+                vals[start:start + 8] = read(start)
+            vals[r] = vals[c]
+        return TV(D, LazyRegs(D.nregs, loader), dt)
+
     def op_load(self, op):
+        if op.attrs.get("dma"):
+            return self.op_load_dma(op)
         L = self.lay[op.result.id]
         dt = op.result.type.dtype
         rsrc, rem, strides, v, lead_ok = self._mem_plan(op, L, dt)
@@ -1149,13 +1336,27 @@ class Compiler:
         La = A.a_layout(atom, m, k, n, self.nwarps, grid)
         Lb = A.b_layout(atom, m, k, n, self.nwarps, grid)
         # an A operand already in an operand shape (P from a transposed dot): use it in place
-        if self.lay.get(a.id) is not FLEX and a.id in self.vals and not os.environ.get("HK2_NO_MATCH"):
+        if isinstance(self.vals.get(a.id), TV) and not os.environ.get("HK2_NO_MATCH"):
             pi = self.match_operand(self.vals[a.id].layout, La, 1)
             if pi:
                 La, Lb = self.permute_k(La, pi, 1), self.permute_k(Lb, pi, 0)
         Lc = self.lay[op.result.id]
-        ta, tb = self.convert([(a, La), (b, Lb)], double=self.depth > 0,
-                              lazy=not os.environ.get("HK2_NO_LAZY"))
+        va, vb = self.vals.get(a.id), self.vals.get(b.id)
+        ldsops = [(i, v, L) for i, (v, L) in enumerate(((va, La), (vb, Lb))) if isinstance(v, LdsTile)]
+        got = {}
+        if ldsops:
+            for i, v, L in ldsops:
+                g = self.dma[v.tag]
+                self.lds_read(("r0", g["base"], g["base"] + g["size"], g["base"], g["base"] + g["S"] * g["size"],
+                               None))
+            self.flush_deferred()  # the next tile's DMA, into the other slot
+            for i, v, L in ldsops:
+                got[i] = self.lds_tile_reader(v, L, 1 if i == 0 else 0)
+        rest = [(x, L) for i, (x, L) in enumerate(((a, La), (b, Lb))) if i not in got]
+        conv = self.convert(rest, double=self.depth > 0, lazy=not os.environ.get("HK2_NO_LAZY")) if rest else []
+        it = iter(conv)
+        ta = got[0] if 0 in got else next(it)
+        tb = got[1] if 1 in got else next(it)
         tc = self.get(c, Lc)
         wm, wn = grid
         rm, rn, rk = (m // wm) // atom.m, (n // wn) // atom.n, k // atom.k
@@ -1173,17 +1374,23 @@ class Compiler:
         op_n = int(atom.op_ty.split()[0][1:])
         # transposed: the instruction's first operand is the B fragment, its second the A fragment
         first, second = (tb, ta) if trans else (ta, tb)
+
+        def frags(kk):
+            av = {i: self._operand(first.regs[atom.a_regs * (kk + rk * i):atom.a_regs * (kk + rk * i + 1)], dt,
+                                   atom, op_n) for i in range(rm)}
+            bv = {j: self._operand(second.regs[atom.b_regs * (kk + rk * j):atom.b_regs * (kk + rk * j + 1)], dt,
+                                   atom, op_n) for j in range(rn)}
+            return av, bv
+        # fragments of K step kk+1 are read (from LDS, when lazy) while step kk's instructions issue
+        cur = frags(0)
         for kk in range(rk):
-            avecs = {}
-            for i in range(rm):
-                ab = atom.a_regs * (kk + rk * i)
-                avecs[i] = self._operand(first.regs[ab:ab + atom.a_regs], dt, atom, op_n)
+            nxt = frags(kk + 1) if kk + 1 < rk and not os.environ.get("HK2_NO_FRAG_PREFETCH") else None
+            avecs, bvecs = cur
             for j in range(rn):
-                bb = atom.b_regs * (kk + rk * j)
-                bvec = self._operand(second.regs[bb:bb + atom.b_regs], dt, atom, op_n)
                 for i in range(rm):
                     accs[i, j] = self.e(f"call {atom.c_ty} @{atom.intrinsic}({atom.op_ty} {avecs[i]}, "
-                                        f"{atom.op_ty} {bvec}, {atom.c_ty} {accs[i, j]}{atom.tail})")
+                                        f"{atom.op_ty} {bvecs[j]}, {atom.c_ty} {accs[i, j]}{atom.tail})")
+            cur = nxt if nxt is not None else (frags(kk + 1) if kk + 1 < rk else None)
         for tv in (ta, tb):  # a memoized conversion must not read LDS later, after others wrote it
             if isinstance(tv.regs, LazyRegs):
                 tv.regs.materialize()
@@ -1345,8 +1552,13 @@ class Compiler:
         blk = op.blocks[0]
         lb, ub, step = (self.vals[a.id] for a in op.args[:3])
         params = blk.params[1:]
-        inits = [self._in_layout(i, p) for i, p in zip(op.args[3:], params)]
+        dma_idx = set(op.attrs.get("dma_params", {}))
+        inits = [None if j in dma_idx else self._in_layout(i, p)
+                 for j, (i, p) in enumerate(zip(op.args[3:], params))]
         self._hoist_operands(blk)
+        outer_wait = self.dma_wait
+        if "stages" in op.attrs:
+            self.dma_wait = (op.attrs["stages"] - 2) * op.attrs.get("dma_insts", 0)
         if self.pend_r or self.pend_w:
             self.barrier()  # once here, rather than at the top of every iteration
         pre = self.cur
@@ -1355,11 +1567,13 @@ class Compiler:
         self.start(hdr)
         hdr_block = self.blocks[-1]
         iv = self.t()
-        pnames = [[self.t() for _ in self._phi_vals(p, i)] for p, i in zip(params, inits)]
+        pnames = [[] if j in dma_idx else [self.t() for _ in self._phi_vals(p, i)]
+                  for j, (p, i) in enumerate(zip(params, inits))]
         cond = self.t()
         self.vals[blk.params[0].id] = iv
-        for p, names in zip(params, pnames):
-            self.vals[p.id] = self._from_phis(p, names, self.lay[p.id] if p.is_tile else None)
+        for j, (p, names) in enumerate(zip(params, pnames)):
+            self.vals[p.id] = LdsTile(op.attrs["dma_params"][j]) if j in dma_idx else \
+                self._from_phis(p, names, self.lay[p.id] if p.is_tile else None)
         self.start(body)
         # The LDS state at the loop head is the fixpoint of (state before the loop) and (state at the end of
         # the body, slots swapped): emit the body under an assumed head state, and emit it again from a wider
@@ -1370,6 +1584,7 @@ class Compiler:
             self.memo.append({})
             self.loops.append({"par": None, "bump": self.loops[-1]["bump"] if self.loops else 0})
             self.pend_r, self.pend_w = list(head_r), list(head_w)
+            self.dma_pending = self.dma_pending or self.dma_seen
             self.depth += 1
             self.emit_block(blk)
             self.flush_deferred()
@@ -1386,17 +1601,27 @@ class Compiler:
             self.deferred, self.n_barriers = list(deferred0), nbar0
         else:
             raise RuntimeError("hk2: LDS barrier analysis did not converge")
-        ys = [self._in_layout(y, p) for y, p in zip(blk.ops[-1].args, params)]
+        ys = [None if j in dma_idx else self._in_layout(y, p)
+              for j, (y, p) in enumerate(zip(blk.ops[-1].args, params))]
         ivn = self.e(f"add i32 {iv}, {step}")
         lp = self.loops.pop()
         parn = self.e(f"xor i32 {lp['par']}, 1") if lp["par"] else None
+        ringn = None
+        if lp.get("ring"):
+            S = op.attrs.get("stages", 2)
+            r1 = self.e(f"add i32 {lp['ring']}, 1")
+            ringn = self.e(f"select i1 {self.e(f'icmp eq i32 {r1}, {S}')}, i32 0, i32 {r1}")
         latch = self.cur
         self.emit(f"  br label %{hdr}")
         self.memo.pop()
         lines = [f"  {iv} = phi i32 [ {lb}, %{pre} ], [ {ivn}, %{latch} ]"]
         if parn:
             lines.append(f"  {lp['par']} = phi i32 [ 0, %{pre} ], [ {parn}, %{latch} ]")
+        if ringn:
+            lines.append(f"  {lp['ring']} = phi i32 [ 0, %{pre} ], [ {ringn}, %{latch} ]")
         for p, names, i0, y in zip(params, pnames, inits, ys):
+            if not names:
+                continue
             for nm, a, b in zip(names, self._phi_vals(p, i0), self._phi_vals(p, y)):
                 lines.append(f"  {nm} = phi {self._llty(p)} [ {a}, %{pre} ], [ {b}, %{latch} ]")
         pred = "sgt" if op.attrs.get("neg_step") else "slt"
@@ -1405,6 +1630,7 @@ class Compiler:
         hdr_block[1].extend(lines)
         self.start(exit_)
         self.pend_r, self.pend_w = self._absolute(head_r), self._absolute(head_w)
+        self.dma_wait = outer_wait
         for p, res in zip(params, op.results):
             self.vals[res.id] = self.vals[p.id]
 
@@ -1481,13 +1707,16 @@ class Compiler:
         self.start("body")
         self.emit_block(top)
         self.emit("  ret void")
-        if self.lds_size > self.arch.lds_bytes:
-            raise ValueError(f"hk2: {self.name} needs {self.lds_size} bytes of LDS for its layout changes; "
+        self.lds_size_total = self.lds_size + sum(g["S"] * g["size"] for g in self.dma.values())
+        if self.lds_size_total > self.arch.lds_bytes:
+            raise ValueError(f"hk2: {self.name} needs {self.lds_size_total} bytes of LDS for its layout changes; "
                              f"{self.arch.name} has {self.arch.lds_bytes} per workgroup. Use smaller tiles "
                              f"(the dot operands are staged in LDS: about (BM + BN) * BK * 2 bytes for 16-bit types)")
         out = ['target triple = "amdgcn-amd-amdhsa"']
         if self.lds_size:
             out.append(f"@hk2.lds = internal addrspace(3) global [{self.lds_size} x i8] poison, align 16")
+        for g in self.dma.values():
+            out.append(f"{g['name']} = internal addrspace(3) global [{g['S'] * g['size']} x i8] poison, align 16")
         out += sorted(self.decls)
         sig = ", ".join(f"{t} {'noalias ' if t.startswith('ptr') else ''}%{name}" for _, t, name in params)
         out.append(f"define amdgpu_kernel void @{self.name}({sig}) #0 {{")
@@ -1503,4 +1732,7 @@ class Compiler:
         # NaNs still propagate through arithmetic
         out.append(f'attributes #0 = {{ "amdgpu-flat-work-group-size"="{threads},{threads}" '
                    f'"uniform-work-group-size"="true" "amdgpu-ieee"="false" }}')
+        if self.dma:
+            out += ["!900 = distinct !{!900}", "!901 = distinct !{!901, !900}", "!902 = distinct !{!902, !900}",
+                    "!903 = !{!901}", "!904 = !{!902}"]
         return "\n".join(out) + "\n"

@@ -193,9 +193,10 @@ def _tensor_key(t) -> Tuple:
     vec = max(1, 16 // dt.bytes)
     aligned = contig and t.data_ptr() % 16 == 0 and t.shape[-1] % vec == 0 and all(
         (s * dt.bytes) % 16 == 0 for s in t.stride()[:-1])
-    if t.numel() and t.storage_offset() * dt.bytes + t.untyped_storage().nbytes() >= 2 ** 31:
-        pass  # buffer offsets are 32-bit: checked per launch below
-    return ("T", dt.name, t.dim(), contig, aligned)
+    # the largest power of two (up to 256) dividing the last dimension: lets the compiler prove whole tiles
+    n = t.shape[-1]
+    div = 256 if n == 0 else min(256, n & -n)
+    return ("T", dt.name, t.dim(), contig, aligned, div if aligned else 1)
 
 
 _STAT_RE = {k: re.compile(p) for k, p in {
@@ -258,11 +259,23 @@ class Kernel:
 
     def compile(self, key, ba, arch_name: str, num_warps: int) -> Compiled:
         arch = A.get_arch(arch_name)
-        top, params, packing, param_div = self.trace(key, ba)
-        if os.environ.get("HK2_PIPELINE", "1") != "0":
-            passes.pipeline_loads(top)
-        c = Compiler(arch, num_warps, self.name, rt.llvm_major())
-        text = c.compile(top, params, param_div)
+        use_dma = arch.name == "gfx950" and not os.environ.get("HK2_NO_DMA")
+        # LDS is shared by DMA rings and by layout changes the pass cannot see: when a plan does not fit,
+        # retry with a shallower ring, then without DMA
+        plans = [4, 2, None] if use_dma else [None]
+        for i, plan in enumerate(plans):
+            top, params, packing, param_div = self.trace(key, ba)
+            if plan and Compiler(arch, num_warps, self.name)._detect_rowmode(top):
+                plan = min(plan, 2)  # attention-like loops run few iterations: a deep ring only over-fetches
+            if os.environ.get("HK2_PIPELINE", "1") != "0":
+                passes.pipeline_loads(top, (16, num_warps, arch.lds_bytes, plan) if plan else None)
+            c = Compiler(arch, num_warps, self.name, rt.llvm_major())
+            try:
+                text = c.compile(top, params, param_div)
+                break
+            except ValueError as e:
+                if "bytes of LDS" not in str(e) or i == len(plans) - 1:
+                    raise
         if os.environ.get("HK2_DUMP"):
             print(ir.dump(top))
             print(text)
@@ -295,7 +308,7 @@ class Kernel:
                     call_args[name] = v
                     continue
                 if k[0] == "T":
-                    _, dtn, nd, contig, aligned = k
+                    _, dtn, nd, contig, aligned, divlast = k
                     dt = getattr(T, dtn)
                     ptr = ir.Value(PtrType(dt))
                     params.append((ptr, "ptr addrspace(1)", f"{name}"))
@@ -320,7 +333,7 @@ class Kernel:
                     call_args[name] = hl.TensorArg(name, ptr, dt, shape, strides,
                                                    (16 // dt.bytes) if aligned else 1)
                     if aligned:
-                        param_div[shape[-1].v.id] = 16 // dt.bytes
+                        param_div[shape[-1].v.id] = divlast
                 elif k[0] == "i":
                     sv = ir.Value(ScalarType(T.i32))
                     params.append((sv, "i32", name))

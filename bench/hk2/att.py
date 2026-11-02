@@ -60,6 +60,23 @@ def summarize(code_json):
 def child(which, d):
     import torch
     sys.path.insert(0, os.path.dirname(__file__))
+    if which.startswith("gemm"):
+        m = n = k = 8192
+        a = torch.randn(m, k, device="cuda", dtype=torch.bfloat16)
+        w = torch.randn(n, k, device="cuda", dtype=torch.bfloat16)
+        if which == "gemm-torch":
+            f = lambda: a @ w.T
+        else:
+            import hk2 as hk
+            from gemm import matmul
+            bm, bn, bk, nw = map(int, os.environ.get("HK2_GEMM_CFG", "256x256x64x8").split("x"))
+            c = torch.empty(m, n, device="cuda", dtype=torch.bfloat16)
+            f = lambda: matmul[(hk.cdiv(m, bm), hk.cdiv(n, bn))](a, w, c, BM=bm, BN=bn, BK=bk, TRANS_B=True,
+                                                                  num_warps=nw)
+        for _ in range(3):
+            f()
+        torch.cuda.synchronize()
+        return
     B, H, S = 1, 32, 4096
     q, k, v = (torch.randn(B, H, S, d, device="cuda", dtype=torch.bfloat16) for _ in range(3))
     if which == "triton":
@@ -80,7 +97,7 @@ if __name__ == "__main__":
         child(which, d)
         sys.exit(0)
     out = tempfile.mkdtemp(prefix="att-", dir=os.environ.get("HK2_ATT_DIR", "/hk2home"))
-    regex = "_fa" if which == "triton" else "attn_fwd"
+    regex = {"triton": "_fa", "gemm-torch": "Cijk", "gemm": "matmul"}.get(which, "attn_fwd")
     env = dict(os.environ, HK2_ATT_CHILD="1")
     cmd = ["rocprofv3", "--att", "--att-library-path", os.environ.get("HK2_DEC", "/dec"), "--kernel-include-regex",
            regex, "-d", out, "-o", "x",
