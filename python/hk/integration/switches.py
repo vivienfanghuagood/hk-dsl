@@ -2,9 +2,9 @@
 
 A route is one patch an engine plugin can make: vLLM's MXFP8 linear layers on hk's GEMM, SGLang's
 MoE on hk's, and so on. A route is on by default on a GPU where it meets the default-on rule
-(docs/testing.md#the-default-on-rule): its kernel clearly better than the engine's best at the
-shapes it takes, its correctness suite passing, and one end-to-end smoke per engine with equal
-quality (docs/integration.md#on-by-default-and-turning-it-off has each route's evidence). Lossy
+(docs/testing.md#the-default-on-rule): a time-weighted gain of 1.15x or more over the engine's best
+at a real model's mix of shapes, taking only the shapes where hk is faster beyond noise, its
+correctness suite passing, and one end-to-end smoke per engine with equal quality (docs/integration.md#on-by-default-and-turning-it-off has each route's evidence). Lossy
 routes (ConvRot INT8) and routes without that evidence stay off until you turn them on.
 
 **Precedence.** The first rule that applies decides:

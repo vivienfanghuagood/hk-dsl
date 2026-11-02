@@ -34,9 +34,10 @@ In hk's toolchain hk is on by default. Turning it off is for comparison
 experiments. When vLLM or SGLang loads hk's plugin, the plugin applies every
 **route** (one patch of one engine) that is on in `hk.integration.switches`.
 A route is on by default on a GPU where it meets
-[the default-on rule](testing.md#the-default-on-rule): its kernel is clearly
-better than the engine's best at the shapes it takes, its correctness suite
-passes, and one end-to-end smoke per engine shows hk's calls and equal quality.
+[the default-on rule](testing.md#the-default-on-rule): a time-weighted
+gain of 1.15x or more over the engine's best at a real model's mix of shapes,
+taking only the shapes where hk is faster beyond noise; its correctness suite
+passes; and one end-to-end smoke per engine shows hk's calls and equal quality.
 
 Lossy routes stay off, and so do routes without that evidence.
 `python3 -m hk.integration --status` prints every route, whether it is on,

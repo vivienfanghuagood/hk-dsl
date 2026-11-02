@@ -187,8 +187,9 @@ Details: [install](docs/install.md), [building](docs/building.md).
 
 **hk is on by default.** Once installed, hk's vLLM and SGLang plugins apply
 every route that meets [the default-on rule](docs/testing.md#the-default-on-rule)
-on your GPU: a kernel clearly better than the engine's best at the shapes it
-takes, a passing correctness suite, and an end-to-end smoke with equal quality.
+on your GPU: a 1.15x time-weighted gain over the engine's best at a real model's
+shapes, taking only the shapes where hk is faster, a passing correctness suite,
+and an end-to-end smoke with equal quality.
 Which routes are on for each GPU is the
 generated [route table](docs/supported-hardware.md#engine-routes-on-each)
 (from the switches hk reads, so it cannot drift from them);

@@ -3,7 +3,8 @@
 Issues and pull requests are welcome. These pages cover the mechanics:
 - [testing](docs/testing.md): the tiers, and the gates for a change to the generated code;
 - [the default-on rule](docs/testing.md#the-default-on-rule): what an engine route needs before it
-  is on by default (a clear kernel win, the correctness suite, one end-to-end smoke per engine);
+  is on by default (a 1.15x time-weighted win at a real model's shapes, only on shapes where hk is
+  faster; the correctness suite; one end-to-end smoke per engine);
 - [how numbers are taken](docs/archive/performance-2026-10.md#how-the-numbers-are-taken);
 - [releasing](docs/releasing.md).
 

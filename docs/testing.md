@@ -136,10 +136,14 @@ cases there.
 An engine route (one entry of `hk.integration.switches`) is on by default on a
 GPU when all three of these hold there:
 
-1. **Its kernel is clearly better than the engine's best** at the shapes the
-   route takes. That means measured in one process, on cold weights, against
-   the engine's fastest kernel for those shapes, at 1.15x or more, and never
-   slower on a shape it routes. A shape where it is slower stays on the engine.
+1. **Its kernel is clearly better than the engine's best**, at two levels.
+   Both are measured in one process, on cold weights, against the engine's
+   fastest kernel for each shape:
+   - **The route:** over the shapes the route takes, weighted by the time each
+     takes in a real model's mix, the gain is 1.15x or more.
+   - **Each shape:** a shape goes to hk only if hk is faster on it, measured
+     in context, by more than the measurement noise. A shape that is not stays
+     on the engine, so the route is never slower on a shape it takes.
 2. **Its correctness suite passes:**
    - a float64 reference;
    - an exact probe (`V = 1` for attention, above);
