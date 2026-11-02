@@ -295,6 +295,7 @@ class Kernel:
             self._rw = rewrite(self.fn)
         b = ir.Builder()
         hl._State.builder = b
+        hl._State.arch = key[0] if key and key[0] in A.ARCHES else None
         hl._State.files = {self.fn.__code__.co_filename}
         params: List[Tuple[ir.Value, str, str]] = []
         packing: List[Tuple[str, Tuple]] = []

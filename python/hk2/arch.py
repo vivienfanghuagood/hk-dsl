@@ -55,6 +55,7 @@ class Arch:
     buffer_flags: int       # dword 3 of a raw buffer resource
     atoms: Dict[str, MmaAtom] = field(default_factory=dict)
     big_atoms: Dict[str, MmaAtom] = field(default_factory=dict)  # 32x32 forms, where they exist
+    xcds: int = 1           # dies workgroups are dealt to round-robin (each with its own L2)
 
     def mma(self, dtype: T.DType, m: int = 0, n: int = 0, nwarps: int = 0) -> MmaAtom:
         """The matrix instruction for a dot of this type: the 32x32 form when every warp's share of the
@@ -143,7 +144,7 @@ for _n, _fam, _lds, _atoms in (("gfx942", "cdna", 64 << 10, _GFX942), ("gfx950",
                                ("gfx1200", "rdna", 64 << 10, _GFX12), ("gfx1201", "rdna", 64 << 10, _GFX12)):
     ARCHES[_n] = Arch(_n, _fam, 64 if _fam == "cdna" else 32, _lds,
                       _CDNA_FLAGS if _fam == "cdna" else _RDNA_FLAGS, _atoms,
-                      _GFX950_32 if _n == "gfx950" else {})
+                      _GFX950_32 if _n == "gfx950" else {}, 8 if _fam == "cdna" else 1)
 
 
 def get_arch(name: str) -> Arch:

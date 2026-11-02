@@ -10,7 +10,7 @@ from . import ir
 from . import types as T
 from .ir import PtrType, ScalarType, TileType, Value
 
-__all__ = ["print", "program_id", "zeros", "full", "arange", "load", "store", "dot", "sum", "max", "min", "exp", "exp2",
+__all__ = ["print", "program_id", "xcd_swizzle", "zeros", "full", "arange", "load", "store", "dot", "sum", "max", "min", "exp", "exp2",
            "log", "log2", "sqrt", "rsqrt", "abs", "maximum", "minimum", "where", "cdiv", "static_range", "constexpr",
            "Tile", "Scalar", "TensorArg", "HKError"]
 
@@ -27,6 +27,7 @@ class constexpr:
 class _State:
     builder: Optional[ir.Builder] = None
     files: set = set()
+    arch: Optional[str] = None  # the GPU being compiled for (None in the interpreter)
 
 
 def _b() -> ir.Builder:
@@ -489,6 +490,18 @@ def print(msg: str, *values) -> None:  # noqa: A001
     """Show values when the kernel runs in the interpreter (HK2_INTERPRET=1); compiled kernels ignore it."""
     vs = [v.v for v in values if isinstance(v, (Tile, Scalar))]
     _op("print", vs, [], {"msg": str(msg)})
+
+
+def xcd_swizzle(pid, n):
+    """Renumber program ids so each XCD (a die with its own L2, dealt workgroups round-robin on MI300/MI355)
+    gets a contiguous block of them: neighbouring tiles then share that L2. The identity on single-die GPUs."""
+    from .arch import ARCHES
+    x = ARCHES[_State.arch].xcds if _State.arch in ARCHES else 1
+    if x == 1:
+        return pid
+    per, rem = n // x, n % x
+    xcd, local = pid % x, pid // x
+    return xcd * per + minimum(xcd, rem) + local
 
 
 def cdiv(a, b):
