@@ -333,6 +333,27 @@ def gptq_checkpoint(n, k, group, dev, g):
     return qweight, qzeros, scales, w
 
 
+
+def awq_checkpoint(n, k, group, dev, g):
+    """A random AutoAWQ GEMM checkpoint (qweight [K, N/8] and qzeros [K/group, N/8], both packed
+    along N in AWQ's order; scales [K/group, N]) and the fp32 W [N, K] it means."""
+    import torch
+
+    from hk.ops.w4a16 import AWQ_ORDER
+
+    def pack(v):                        # [R, N] codes -> int32 [R, N/8], AWQ's nibble order
+        words = torch.zeros(v.shape[0], v.shape[1] // 8, device=dev, dtype=torch.int32)
+        for c, o in enumerate(AWQ_ORDER):
+            words |= (v[:, c::8] & 0xF) << (4 * o)
+        return words
+
+    q = torch.randint(0, 16, (k, n), device=dev, dtype=torch.int32, generator=g)
+    z = torch.randint(0, 16, (k // group, n), device=dev, dtype=torch.int32, generator=g)
+    scales = (torch.rand(k // group, n, device=dev, generator=g) * 0.02 + 0.005).half()
+    w = ((q - z.repeat_interleave(group, 0)).float()
+         * scales.float().repeat_interleave(group, 0)).t().contiguous()
+    return pack(q), pack(z), scales, w
+
 #: The checkpoint's modules behind each shape `linear_shapes` names, for `quantized`.
 MODULES = {"qkv": ("self_attn.q_proj", "self_attn.k_proj", "self_attn.v_proj"),
            "o": ("self_attn.o_proj",), "qkvz": ("linear_attn.in_proj_qkvz",),
@@ -352,8 +373,10 @@ def quantized(qc: dict, name: str) -> bool:
 
 
 def run_linear_w4(a, only: set, notes: dict) -> List[dict]:
-    """4-bit GPTQ (symmetric, fp16 activations) linear layers: hk's w4a16 decode GEMM against
-    vLLM's RDNA3 GPTQ kernel and its exllama kernel."""
+    """4-bit linear layers, fp16 activations. A GPTQ checkpoint (symmetric): hk's w4a16 decode
+    GEMM against vLLM's RDNA3 GPTQ kernel and its exllama kernel. An AWQ one (zero points): hk's
+    against what vLLM's AutoAWQLinearMethod runs, its dequantize + matmul (the branch its compiled
+    graph takes at every batch, docs/history/22) and its Triton awq_gemm (below 256 tokens, eager)."""
     import torch
 
     from hk.autotune import routes
@@ -362,6 +385,9 @@ def run_linear_w4(a, only: set, notes: dict) -> List[dict]:
     cfg = routes.model_config(a.model)
     qc = cfg.get("quantization_config") or cfg.get("text_config", {}).get("quantization_config") or {}
     group = int(qc.get("group_size") or 128)
+    awq = qc.get("quant_method") == "awq"
+    if awq:
+        os.environ.setdefault("VLLM_USE_TRITON_AWQ", "1")     # ROCm's AWQ is the Triton kernel
     try:
         from vllm import _custom_ops as ops
     except Exception as e:  # noqa: BLE001
@@ -378,12 +404,16 @@ def run_linear_w4(a, only: set, notes: dict) -> List[dict]:
             skipped.append(name)
             continue
         copies = max(2, math.ceil(a.rotate_mb * 2**20 / (n * k // 2)))
-        ck = [gptq_checkpoint(n, k, group, dev, g) for _ in range(copies)]
-        # The symmetric form, as vllm_gptq loads it: every zero point 8, scales in 16-row blocks.
-        hkw = [W.repack_gptq(qw, qz, sc, group, dtype=torch.float16, symmetric=True)
-               for qw, qz, sc, _ in ck]
+        if awq:
+            ck = [awq_checkpoint(n, k, group, dev, g) for _ in range(copies)]
+            hkw = [W.repack_awq(qw, qz, sc, group, dtype=torch.float16) for qw, qz, sc, _ in ck]
+        else:
+            ck = [gptq_checkpoint(n, k, group, dev, g) for _ in range(copies)]
+            # The symmetric form, as vllm_gptq loads it: every zero point 8, scales in 16-row blocks.
+            hkw = [W.repack_gptq(qw, qz, sc, group, dtype=torch.float16, symmetric=True)
+                   for qw, qz, sc, _ in ck]
         vl = []
-        if ops is not None:
+        if ops is not None and not awq:
             empty = torch.empty(0, device=dev, dtype=torch.int32)        # no act-order g_idx
             for qw, qz, sc, _ in ck:
                 w = qw.clone()
@@ -393,12 +423,26 @@ def run_linear_w4(a, only: set, notes: dict) -> List[dict]:
             x = (torch.randn(m, k, device=dev, generator=g) * 0.5).half()
             ref = x.float() @ ck[0][3].t()
             arms = {}
-            if W.plan(m, n, k, group, torch.float16, True) is not None:
+            if W.plan(m, n, k, group, torch.float16, not awq) is not None:
                 arms["hk w4a16"] = ([lambda i=i, x=x: W.matmul(x, *hkw[i], group)
                                      for i in range(copies)],
-                                    "hk.ops.w4a16.matmul, symmetric form (repack_gptq(symmetric=True), "
-                                    "as vllm_gptq loads it)")
-            if ops is not None and hasattr(ops, "gptq_gemm_rdna3"):
+                                    "hk.ops.w4a16.matmul, " + (
+                                        "zero points (repack_awq, as vllm_int4 loads it)" if awq else
+                                        "symmetric form (repack_gptq(symmetric=True), as vllm_gptq "
+                                        "loads it)"))
+            if awq and ops is not None:
+                arms["vLLM AWQ dequantize + matmul"] = (
+                    [lambda i=i, x=x: torch.matmul(x, ops.awq_dequantize(ck[i][0], ck[i][2], ck[i][1],
+                                                                         0, 0, 0))
+                     for i in range(copies)],
+                    "vllm._custom_ops.awq_dequantize + torch.matmul: what AutoAWQLinearMethod's "
+                    "compiled graph runs (VLLM_USE_TRITON_AWQ=1)")
+                arms["vLLM awq_gemm (Triton)"] = (
+                    [lambda i=i, x=x: ops.awq_gemm(x, ck[i][0], ck[i][2], ck[i][1], 8)
+                     for i in range(copies)],
+                    "vllm._custom_ops.awq_gemm, Triton (VLLM_USE_TRITON_AWQ=1): AutoAWQLinearMethod "
+                    "below 256 tokens, eager")
+            if ops is not None and not awq and hasattr(ops, "gptq_gemm_rdna3"):
                 arms["vLLM gptq_gemm_rdna3"] = (
                     [lambda i=i, x=x: call_by_name(
                         ops.gptq_gemm_rdna3, a=x, b_q_weight=vl[i][0], b_qzeros=vl[i][1],
@@ -406,7 +450,7 @@ def run_linear_w4(a, only: set, notes: dict) -> List[dict]:
                      for i in range(copies)],
                     "vllm._custom_ops.gptq_gemm_rdna3 (vLLM's RDNA3 GPTQ kernel, what its GPTQ "
                     "layers run on gfx11)")
-            if ops is not None and hasattr(ops, "gptq_gemm"):
+            if ops is not None and not awq and hasattr(ops, "gptq_gemm"):
                 arms["vLLM gptq_gemm (exllama)"] = (
                     [lambda i=i, x=x: call_by_name(
                         ops.gptq_gemm, a=x, b_q_weight=vl[i][0], b_gptq_qzeros=vl[i][1],
