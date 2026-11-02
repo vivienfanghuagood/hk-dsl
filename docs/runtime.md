@@ -213,6 +213,30 @@ The gate is `python/hk/runtime/resources.py`. What it enforces:
   (a two-path case, through its own `llc`) is not checked. hk's inline-asm
   LDS reads are the one case it leaves out: a load writes its destination
   when its data returns, long after any window.
+* **The VOPD interlock hazard (gfx11.0, gfx11.5).** A dual-issue instruction
+  (`v_dual_X ... :: v_dual_Y ...`) reads both halves' operands together. When
+  X's and Y's SRC0, or their VSRC1, are distinct VGPRs with the same
+  register-number parity, the destination-buffer forwarding drops the
+  interlock for one of them, and an operand written just before is read stale.
+  LLVM requires only different banks (the number mod 4) there;
+  llvm/llvm-project#220348 requires different parity on gfx11 (#225880 scoped
+  it to gfx11.0 and gfx11.5), and no ROCm release has that fix yet. In
+  `tools/rdna3-probes/vopd_interlock_parity.hip`, the same window gives a wrong
+  value in 88-93 of 100 launches under a partial EXEC when the VSRC1s share a
+  parity, whether or not Y reads X's result, and in none when they differ or
+  EXEC is full. A bounded strip RMSNorm built by AMD clang 23 (TheRock 7.14)
+  had such a VOPD (`v_dual_add_f32 v0, v14, v22 :: v_dual_lshlrev_b32 v53,
+  16, v0`) and got element 1 of every lane's run wrong in 25-65% of launches.
+
+  The gate (`cocheck.vopd_parity_hazard`) applies that rule to every VOPD of
+  a gfx11.0 / gfx11.5 code object. A kernel with any such VOPD is rebuilt
+  with `-mllvm -amdgpu-enable-vopd=0` and checked again (the default,
+  `HK_VOPD_GATE=fix`); kernels without one keep dual issue and their code
+  object is unchanged. Most of hk's gfx1100 kernels have at least one, and
+  the rebuild costs them no measurable time. The build log, the entry's
+  `VOPDHAZ` file and `python3 -m hk.integration --status` say which kernels
+  were rebuilt and which VOPDs they had. `refuse`, `report` and `0` work as
+  for the MFMA gate.
 
 The gate runs at `k.build()`, which needs hipcc but no GPU: the failure most
 likely to bite — generated code that compiles but spills — is caught on a

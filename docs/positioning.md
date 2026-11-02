@@ -41,6 +41,12 @@ kernel:
   ([ROCm/llvm-project#5153](https://github.com/ROCm/llvm-project/issues/5153)).
   By default the gate adds the missing padding and checks again;
   `HK_MFMA_GATE=refuse` refuses the kernel instead.
+- **The VOPD interlock hazard (gfx11).** A dual-issue instruction whose two
+  halves read distinct VGPRs of the same parity in the same operand slot. On
+  gfx1100 an operand written just before can then be read stale
+  (llvm/llvm-project#220348, not in any ROCm release yet;
+  [the resource gates](runtime.md#the-resource-gates)). Such a kernel is
+  rebuilt without dual issue; `HK_VOPD_GATE=refuse` refuses it instead.
 - **EXEC (CDNA).** A warning for an MFMA that the compiler moved into a
   lane-divergent branch.
 - **Schedules are data.** A GEMM or attention schedule is checked for legality
