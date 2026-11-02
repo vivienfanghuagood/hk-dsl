@@ -9,6 +9,15 @@ The next version's notes collect here until it is released.
 What is on main after 0.8.0. `pip install hk-dsl` (0.8.0) does not have it;
 the API reference marks such names *New after 0.8.0*.
 
+**Fix: `vllm_gptq` no longer turns off every vLLM route on a vLLM whose `gptq_gemm_rdna3` takes
+`b_g_idx`.** vLLM builds differ in that GEMM's parameters: some take the act-order index, some do not.
+The route's engine contract counted five arguments, so on the other builds it failed, and the
+contract is all-or-nothing, so hk patched nothing in that engine. The fallback now calls vLLM's GEMM
+by parameter name, whatever this build's signature. Weights are read by the names the kernel was
+given. The contract checks only the two `AutoGPTQLinearMethod` entry points the route wraps. A build
+that lacks something the route needs leaves those layers on vLLM's path, counted in
+`vllm_gptq.REFUSED`; the engine's other routes stay on.
+
 **SGLang: Gemma-style RMSNorm on hk (`HK_SGLANG_NORM`, on by default on gfx1100).** Where
 SGLang's `GemmaRMSNorm` would run its native torch path, which it does on ROCm without aiter or
 vLLM (eleven kernels a norm), it goes through hk's weighted norm kernels. The route passes the

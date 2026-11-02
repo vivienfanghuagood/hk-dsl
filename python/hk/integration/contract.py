@@ -135,27 +135,21 @@ def _vllm_int4() -> List[str]:
 
 
 def _vllm_gptq() -> Optional[List[str]]:
+    """Only what the stand-ins read: the two AutoGPTQLinearMethod entry points they wrap and
+    forward positionally. gptq_gemm_rdna3 is called by name, whatever this build's signature
+    (vllm_gptq.plan_call), and a layer whose kernel or weights lack something the route needs is
+    left on vLLM's path and counted (vllm_gptq.REFUSED) -- never the whole engine."""
     from vllm import _custom_ops as ops  # noqa: PLC0415
     from vllm.model_executor.layers.quantization import auto_gptq  # noqa: PLC0415
 
     if not hasattr(ops, "gptq_gemm_rdna3"):
         return None                 # no RDNA3 GPTQ kernel in this vLLM: nothing to route
-    from vllm.model_executor.kernels.linear.mixed_precision import rdna3_w4a16  # noqa: PLC0415
-
     cls = auto_gptq.AutoGPTQLinearMethod
-    kern = rdna3_w4a16.RDNA3W4A16LinearKernel
-    src = inspect.getsource(cls.create_weights)
     return (_expect(names(cls.process_weights_after_loading) == ["self", "layer"],
                     f"AutoGPTQLinearMethod.process_weights_after_loading takes "
                     f"{names(cls.process_weights_after_loading)}")
             + _expect(names(cls.apply) == ["self", "layer", "x", "bias"],
-                      f"AutoGPTQLinearMethod.apply takes {names(cls.apply)}")
-            + _expect(len(names(ops.gptq_gemm_rdna3)) == 5,
-                      "gptq_gemm_rdna3 no longer takes 5 arguments")
-            + _expect(hasattr(kern, "_get_weight_params"),
-                      "RDNA3W4A16LinearKernel has no _get_weight_params")
-            + [f"GPTQ layers no longer have {p}" for p in ("qweight", "qzeros", "scales")
-               if f'"{p}"' not in src and f"'{p}'" not in src])
+                      f"AutoGPTQLinearMethod.apply takes {names(cls.apply)}"))
 
 
 def _vllm_gemm() -> List[str]:
