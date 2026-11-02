@@ -332,26 +332,6 @@ private:
       if (auto s = a.getShapeAttr())
         allocShape.insert({a.getResult(), s.getValue().str()});
     });
-    // include/cdna4's st_subtile points at the layout's subtile holding its
-    // first element and keeps no offset inside it: a window narrower than
-    // the layout's subtile (32 columns of st_16x64's 64) reads that
-    // subtile's first columns, whatever its index.
-    kernel.walk([&](SubtileOp o) {
-      auto a = sharedRoot(o.getSrc()).getDefiningOp<AllocSharedOp>();
-      if (!a || !a.getShapeAttr())
-        return;
-      StringRef shape = a.getShapeAttr().getValue();
-      unsigned r = shape == "st_32x32" ? 32 : 16, c = shape == "st_32x32" ? 32 : 64;
-      auto t = o.getResult().getType();
-      if (t.getRows() % r || t.getCols() % c) {
-        o.emitError() << "a " << t.getRows() << "x" << t.getCols()
-                      << " window of an LDS tile laid out as " << shape
-                      << " is not whole " << r << "x" << c
-                      << " subtiles of it, which is all include/cdna4's "
-                         "subtile addresses; read whole subtiles";
-        bad = true;
-      }
-    });
     // An allocation only load_fp4_frags_lds reads holds raw bytes in 1 KB chunks: what an fp8
     // 16x128 operand read would pick (an unnamed byte tile has no include/cdna4 layout at all).
     kernel.walk([&](LoadFp4FragsLdsOp l) {
@@ -410,6 +390,45 @@ private:
       if (!fresh && it->second != shape)
         conflicted.insert(key);
     }
+    // include/cdna4's st_subtile points at the layout's subtile holding its
+    // first element and keeps no offset inside it: a window narrower or
+    // shorter than the layout's subtile (32 columns of st_16x64's 64; 16 rows
+    // of the st_32x16 a 32x16 stride-4 col read picks) reads or copies into
+    // that subtile's first rows and columns, whatever its index -- with no
+    // error from HipKittens. That holds for every layout an allocation ends up
+    // with: the one it names, the one its reads' fragment picks, or its type's
+    // (allocCpp / tileCpp below), so every window is held to whole subtiles of
+    // the layout its allocation is declared with.
+    kernel.walk([&](SubtileOp o) {
+      Value root = sharedRoot(o.getSrc());
+      auto rt = dyn_cast<SharedTileType>(root.getType());
+      if (!rt)
+        return;
+      std::string key = rawCpp(rt), shape;
+      auto own = allocShape.find(root);
+      if (conflicted.count(key)) {
+        shape = own != allocShape.end() ? own->second : "st_16x16";
+      } else {
+        auto it = sharedShape.find(key);
+        shape = it != sharedShape.end() ? it->second : "st_16x16";
+      }
+      unsigned r = 0, c = 0;
+      if (sscanf(shape.c_str(), "st_%ux%u", &r, &c) != 2 || !r || !c)
+        return;
+      auto t = o.getResult().getType();
+      if (t.getRows() % r || t.getCols() % c) {
+        bool named = false;
+        if (auto al = root.getDefiningOp<AllocSharedOp>())
+          named = static_cast<bool>(al.getShapeAttr());
+        o.emitError() << "a " << t.getRows() << "x" << t.getCols()
+                      << " window of an LDS tile laid out as " << shape
+                      << (named ? "" : " (the layout its reads' fragment picks, or its type's)")
+                      << " is not whole " << r << "x" << c
+                      << " subtiles of it, which is all include/cdna4's "
+                         "subtile addresses; read and copy whole subtiles";
+        bad = true;
+      }
+    });
   }
 
   /// An allocation's C++ type, with its own shape where its type is
