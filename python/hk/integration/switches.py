@@ -1,10 +1,11 @@
 """Which of hk's engine routes are on. hk is **on by default**; off is for comparisons.
 
 A route is one patch an engine plugin can make: vLLM's MXFP8 linear layers on hk's GEMM, SGLang's
-MoE on hk's, and so on. A route is on by default when it was validated with real weights on that
-GPU, with outputs bit-identical to the engine's or with error within the engine's own noise
-(docs/integration.md#on-by-default has the evidence). Lossy routes (ConvRot INT8) and routes
-without that evidence stay off until you turn them on.
+MoE on hk's, and so on. A route is on by default on a GPU where it meets the default-on rule
+(docs/testing.md#the-default-on-rule): its kernel clearly better than the engine's best at the
+shapes it takes, its correctness suite passing, and one end-to-end smoke per engine with equal
+quality (docs/integration.md#on-by-default-and-turning-it-off has each route's evidence). Lossy
+routes (ConvRot INT8) and routes without that evidence stay off until you turn them on.
 
 **Precedence.** The first rule that applies decides:
 
@@ -17,7 +18,7 @@ without that evidence stay off until you turn them on.
 4. The legacy engine values still mean what they meant. `HK_SGLD=attn,linear,convrot` turns on
    exactly the SGLang-Diffusion routes it names, and `HK_SGLD=1` attention and linear.
    `HK_PATCH_VLLM=1` turns on the vLLM encoder SDPA patch, which it always applied.
-5. Otherwise the route's default applies. It is on only on a GPU the route was validated on.
+5. Otherwise the route's default applies. It is on only on a GPU where the route met the rule.
 
 An empty value counts as unset. Off is `0`, `off`, `no` or `false`. On is `1`, `on`, `yes`,
 `true`, or a route-specific value.
