@@ -83,13 +83,24 @@ workgroup.
    turns `for`/`if` on runtime values into structured ops with carried values.
 2. **Pipeline** (`hk2/passes.py`). In loops that feed the matrix cores, the next iteration's loads are
    issued right after this iteration's tiles reach LDS.
+   - On gfx950, a load whose only use is a dot operand goes straight to LDS with `buffer_load ... lds`: no
+     registers and no `ds_write`, into an XOR-swizzled tile.
+   - Those tiles sit in an S-stage ring (S from the LDS budget; 2 in attention-like kernels).
+   - Barriers wait `vmcnt((S-2) x DMAs per iteration)`, so newer tiles stay in flight.
+   - When the columns come in whole tiles, rows past the tensor are cut off by the buffer descriptor's
+     size: no per-lane masks.
+   - The DMA's lane placement, LLVM's alias-scoped waits and the descriptor range check were probed first:
+     `bench/hk2/probe_*.py`.
 3. **Layouts** (`hk2/layout.py`, `hk2/compiler.py`). A layout is a linear map over GF(2) from (register,
    lane, warp) bits to tile-coordinate bits, the representation Triton's linear layouts use.
    - CDNA vs RDNA differ only in the basis tables of `hk2/arch.py`.
    - Loads are coalesced; dot results are matrix-core accumulators; reductions keep their input's layout.
    - Constants, `arange` and broadcasts are rebuilt in whatever layout each use needs.
-   - Layout changes that only renumber registers move no data. Changes that stay within each warp use LDS
-     without `s_barrier`. Other changes go through LDS.
+   - Layout changes that only renumber registers move no data.
+   - On RDNA3, changes that only cross the two 16-lane halves use `v_permlanex16`.
+   - Changes that stay within each warp use LDS without `s_barrier`. Other changes go through LDS.
+   - LDS storage (orientation, row padding) is chosen by simulating the banks of the actual write and read
+     instructions.
 4. **LDS and barriers.**
    - The emitter tracks which LDS bytes were written or read since the last barrier and puts barriers only
      where a hazard exists.
@@ -98,6 +109,10 @@ workgroup.
 5. **Dots.**
    - The atom and warp grid are chosen per GPU; MI355X uses 32x32 MFMAs when every warp owns at least
      64x64 outputs.
+   - Atoms by GPU:
+     - MI355X: bf16/f16; int8 (16x16x64); fp8 (the double-rate 16x16x128 f8f6f4, unit scales).
+     - W7900D: bf16/f16; int8 WMMA.
+   - Fragments of K step kk+1 are read while step kk's instructions issue.
    - In row-reduction kernels (softmax, attention), dots are issued transposed. An operand already in an
      operand layout, up to a permutation of K, is used in place, with the other operand permuted to match.
      So attention's P never leaves registers.
@@ -126,39 +141,70 @@ workgroup.
   | `HK2_NO_LAZY` | lazy operand reads |
   | `HK2_NO_DPP` | DPP shuffles |
   | `HK2_PRECISE_EXP` | fast `exp2` / `log2` |
+  | `HK2_NO_DMA` | gfx950 global-to-LDS DMA |
+  | `HK2_STAGES` | the DMA ring depth (sets it) |
+  | `HK2_NO_BANKMODEL` | the LDS bank model |
+  | `HK2_NO_XCHG` | the RDNA3 cross-half exchange |
+
+## Autotuning and ready-made kernels
+
+- **`@hk.autotune(configs=[hk.Config(BM=..., num_warps=...), ...], key=[...])`** goes above `@hk.jit`.
+  - The first launch for a key times every configuration that compiles and keeps the fastest.
+  - Configurations that spill must win clearly.
+  - Choices persist per GPU in `$HK2_CACHE_DIR/tune/`.
+- **`hk.xcd_swizzle(pid, n)`** gives each XCD of an MI300/MI355 a contiguous block of program ids. It is the
+  identity on RDNA.
+
+`python/hk2/kernels/`:
+- `gemm.linear(x, w, bias, act)` and `gemm.matmul(a, b)`: autotuned, with silu/gelu/relu epilogues.
+- `attention.attention(q, k, v, causal)`: GQA, any sequence length.
+- `rowwise.rmsnorm / layernorm / softmax`.
 
 ## Performance
 
-Medians of interleaved rounds in one process, bf16, against torch and autotuned Triton 3.6 (the configs of
-Triton's own AMD tutorials). Scripts: `bench/hk2/compare.py`, `bench/hk2/rowwise.py`. Numbers from
-2026-10-30.
+Medians of interleaved rounds in one process, against torch and autotuned Triton 3.6 (the configs of
+Triton's own AMD tutorials). Scripts: `bench/hk2/{compare,linear,lowp,rowwise}.py`. Numbers from
+2026-11-02.
 
-| TF/s | MI355X torch | MI355X Triton | MI355X hk2 | W7900D torch | W7900D Triton | W7900D hk2 |
+| bf16, TF/s | MI355X torch | MI355X Triton | MI355X hk2 | W7900D torch | W7900D Triton | W7900D hk2 |
 |---|---|---|---|---|---|---|
-| GEMM 8192³ (A·Bᵀ) | 1610 | 1076–1102 | 1115–1121 | 67 | 81 | 83 |
-| GEMM 4096³ | 1393 | 951–978 | 942–970 | 69 | 78 | 81 |
-| attention 1x32x4096x128 | 622 (SDPA) | 808 | 821 | 21 | 60 | 39 |
-| attention 1x32x8192x64 | 721 | 755 | 764 | 21 | 62 | 46 |
-| attention 4096x128, causal | 324 | 439 | 430 | 12 | 53 | 32 |
+| GEMM 8192³ (A·Bᵀ) | 1622 | 1087–1106 | 1242–1249 | 65–69 | 81–82 | 83–86 |
+| GEMM 4096³ | 1300–1475 | 886–1130 | 1021–1167 | 67–69 | 78–80 | 81–82 |
+| attention 1x32x4096x128 | 605 (SDPA) | 791 | 835 | 21 | 60 | 60 |
+| attention 1x32x8192x64 | 716 | 750 | 804 | 21 | 62 | 55 |
+| attention 4096x128, causal | 323 | 440 | 450 | 12 | 52 | 49 |
+
+Low precision (TOP/s, 8192³):
+
+| | MI355X torch | MI355X hk2 | W7900D torch | W7900D hk2 |
+|---|---|---|---|---|
+| int8 | 2757 (`_int_mm`) | 2336 | 79 | 91 |
+| fp8 e4m3 | 2758 (`_scaled_mm`) | 2508 | n/a | n/a |
+
+The tuned `gemm.linear` on 8 LLM-shaped problems:
+- **W7900D:** 1.15–1.58x torch (hipBLASLt) and 0.95–1.15x Triton.
+- **MI355X:** 0.70–0.79x torch and 1.01–1.26x Triton. The exception is M=512, at 0.87x Triton.
 
 Row-wise kernels (GB/s):
-- **MI355X:** hk2 is level with Triton or ahead, e.g. softmax at 65536x1024: 6237 vs 4372.
+- **MI355X:** level with Triton or ahead, e.g. softmax at 65536x1024: 6237 vs 4372.
 - **W7900D:** all three reach the memory limit, ~730 GB/s.
 
 **Open gaps:**
-- **MI355X GEMM** is ~0.7x hipBLASLt, the same as Triton. Closing it needs direct-to-LDS loads and the 8-wave
-  ping-pong schedule.
-- **W7900D attention** is ~0.65x Triton: register pressure and global-load waits; see the thread traces
-  from `bench/hk2/att.py`.
-- **Causal D=64 on MI355X** is 0.84x Triton.
-- **Small row-wise shapes on MI355X** (4096x4096 RMSNorm) are 0.5x Triton.
+- **MI355X bf16 GEMM** is ~0.77x hipBLASLt (1.13x Triton). hipBLASLt runs one wave per SIMD with 128x128
+  accumulators in AGPRs and a hand-interleaved schedule. hk2's 4-wave configurations still lose to LLVM's
+  scheduling of the exposed latencies. The HipKittens-style 8-wave ping-pong is the next design item.
+- **Attention, D=64:**
+  - W7900D, non-causal: 0.89x Triton.
+  - MI355X causal (0.93x) and W7900D causal (0.86x).
+- **Small M** (M=512) on MI355X: 0.87x Triton.
+- **Small row-wise shapes on MI355X** (4096x4096 RMSNorm): 0.5x Triton.
 
 ## Not there yet
 
-- fp8, int8 and MX dots.
+- MX block-scaled dots with real scales (the instruction is in use with unit scales).
+- fp8 on RDNA4 (tables exist, untested).
 - Atomics, scans, gathers, sort.
 - Tensors over 2 GB (buffer offsets are 32-bit).
-- An autotuner.
 - The schedules-as-data and correctness gates of hk-dsl 0.x. The compiler-derived waits and barriers here
   replace the hand-written ones those gates checked; an ISA-level gate pass is still to be added.
 - Backward kernels.
@@ -175,6 +221,7 @@ Row-wise kernels (GB/s):
 | `python/hk2/passes.py` | load pipelining |
 | `python/hk2/runtime.py` | ROCm LLVM invocation, code-object cache, HIP launch |
 | `python/hk2/interpret.py` | CPU interpreter |
-| `python/hk2/kernels/` | attention, RMSNorm/LayerNorm/softmax |
-| `tests/hk2/` | 93 tests; all pass on gfx950 and gfx1100 |
-| `bench/hk2/` | GEMM, attention, row-wise, Triton baselines, thread traces, ISA mixes |
+| `python/hk2/autotune.py` | `@autotune`, `Config` |
+| `python/hk2/kernels/` | GEMM (linear, matmul), attention, RMSNorm/LayerNorm/softmax |
+| `tests/hk2/` | 136 tests: all pass on gfx950; fp8 skipped on gfx1100 |
+| `bench/hk2/` | GEMM, linear, low precision, attention, row-wise, Triton baselines, thread traces, ISA mixes, hardware probes |
