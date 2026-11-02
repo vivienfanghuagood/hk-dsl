@@ -426,5 +426,13 @@
   "vllm_sparse_mla": null
  },
  "image": "sha256:414478a59ef918ebcba8eaeed8a2f56be8b6ecedcfe3599a250d801cab7a50fb",
- "image_note": "the MiniCPM5-2B production vLLM image (TheRock ROCm 7.14, gfx1100)"
+ "image_note": "the MiniCPM5-2B production vLLM image (TheRock ROCm 7.14, gfx1100)",
+ "label": "MiniCPM5-2B serving image",
+ "role": "production",
+ "stack": {
+  "hip": "7.14.60850",
+  "python": "3.12.13",
+  "torch": "2.13.0a0+rocm7.14.0a20260612",
+  "triton": "3.7.1+git5d6048aa.rocm7.14.0a20260612"
+ }
 }

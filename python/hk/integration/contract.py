@@ -629,19 +629,47 @@ def refuse(engine: str, problems: List[str], what: str = BROKEN) -> str:
     return line
 
 
+#: The roles a recorded image has (`--role`), in the support matrix's order.
+ROLES = ("production", "measured", "development")
+
+
+def stack() -> dict:
+    """What the engines run on, as the support matrix shows it: the interpreter, torch and the HIP
+    it was built with, Triton's distribution (`triton`, `triton-rocm` or `pytorch-triton-rocm`),
+    AITER and SGLang's Radeon package, each where installed."""
+    import importlib.metadata as md  # noqa: PLC0415
+    import platform  # noqa: PLC0415
+
+    out = {"python": platform.python_version()}
+    for d in ("torch", "triton", "triton-rocm", "pytorch-triton-rocm", "aiter",
+              "sglang-radeon-rdna3"):
+        try:
+            out[d] = md.version(d)
+        except Exception:  # noqa: BLE001
+            pass
+    try:
+        import torch  # noqa: PLC0415
+
+        out["hip"] = torch.version.hip
+    except Exception:  # noqa: BLE001
+        pass
+    return out
+
+
 def record(routes: Optional[Iterable[str]] = None) -> dict:
     """The installed engines' facts for `routes` (default: every route), as a fixture for
-    tests/hk/ir/test_engine_facts.py (tests/hk/ir/engine_facts/): what the engine is, and each
-    route's gathered facts."""
+    tests/hk/ir/test_engine_facts.py (tests/hk/ir/engine_facts/): what the engine is and runs on,
+    and each route's gathered facts."""
     from . import switches  # noqa: PLC0415
 
     return {"engines": {e: engine_version(e) for e in ("vllm", "sglang")},
-            "arch": switches.arch(),
+            "arch": switches.arch(), "stack": stack(),
             "facts": {r: gather(r) for r in (routes or CHECKS)}}
 
 
 def main(argv=None) -> int:
-    """python3 -m hk.integration.contract --record OUT.json [--image DIGEST] [--deployed-on ARCH]"""
+    """python3 -m hk.integration.contract --record OUT.json [--image DIGEST] [--deployed-on ARCH]
+    [--role production|measured|development]"""
     import argparse  # noqa: PLC0415
     import json  # noqa: PLC0415
 
@@ -649,9 +677,12 @@ def main(argv=None) -> int:
     ap.add_argument("--record", required=True, help="write the facts here")
     ap.add_argument("--image", default="", help="the image's digest (sha256:...), for the record")
     ap.add_argument("--deployed-on", default="", help="the arch this image serves on")
+    ap.add_argument("--role", choices=ROLES, default="production",
+                    help="production: an image we serve with; measured: the engine version a "
+                         "route was measured on; development: neither, the newest we have")
     a = ap.parse_args(argv)
     rec = record()
-    rec.update(image=a.image, deployed_on=a.deployed_on or rec["arch"])
+    rec.update(image=a.image, deployed_on=a.deployed_on or rec["arch"], role=a.role)
     with open(a.record, "w") as fh:
         json.dump(rec, fh, indent=1, sort_keys=True)
         fh.write("\n")

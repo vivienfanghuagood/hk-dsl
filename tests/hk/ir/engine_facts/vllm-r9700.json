@@ -380,5 +380,13 @@
   "vllm_sparse_mla": null
  },
  "image": "sha256:5ee0c6e2465b6391af46ec3dbcde3aca85b821a29121da9a5b6a5a4e79ec1f80",
- "image_note": "the newest R9700 vLLM image (TheRock ROCm 7.14, gfx1201): no gfx1201 production image exists, so this is the one the gfx1201 rows of the RDNA scorecard run"
+ "image_note": "the newest R9700 vLLM image (TheRock ROCm 7.14, gfx1201): no gfx1201 production image exists, so this is the one the gfx1201 rows of the RDNA scorecard run",
+ "label": "R9700 vLLM image",
+ "role": "development",
+ "stack": {
+  "hip": "7.14.60850",
+  "python": "3.12.13",
+  "torch": "2.13.0a0+rocm7.14.0a20260612",
+  "triton": "3.7.1+git5d6048aa.rocm7.14.0a20260612"
+ }
 }

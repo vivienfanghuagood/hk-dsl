@@ -537,5 +537,13 @@
   }
  },
  "image": "sha256:520e098f54ec96837228aaddea0a833cbf6374dbdffd480c1d65f26ffab7701b",
- "image_note": "vllm/vllm-openai-rocm:nightly-rocm100-e68efc685 (ROCm 10, gfx950): the image the gfx950 routes were measured on (contract.MEASURED_VLLM) and the gfx950-vllm GPU tier runs in"
+ "image_note": "vllm/vllm-openai-rocm:nightly-rocm100-e68efc685 (ROCm 10, gfx950): the image the gfx950 routes were measured on (contract.MEASURED_VLLM) and the gfx950-vllm GPU tier runs in",
+ "label": "vLLM ROCm nightly e68efc685",
+ "role": "measured",
+ "stack": {
+  "hip": "7.15.26333",
+  "python": "3.12.15",
+  "torch": "2.12.0+rocm10.0.0",
+  "triton": "3.8.0+git669b31ac"
+ }
 }

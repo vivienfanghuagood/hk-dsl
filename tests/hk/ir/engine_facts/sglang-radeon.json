@@ -320,5 +320,14 @@
   "vllm_sparse_mla": null
  },
  "image": "sha256:e9c8365e6e0a7e63c1241aa9d0de8acd104d19ad785a45fc1b76215b541184d1",
- "image_note": "the sglang-radeon production image (SGLang and SGLang-Diffusion, ROCm 7.2.1, gfx1100)"
+ "image_note": "the sglang-radeon production image (SGLang and SGLang-Diffusion, ROCm 7.2.1, gfx1100)",
+ "label": "sglang-radeon image",
+ "role": "production",
+ "stack": {
+  "hip": "7.2.53211-e1a6bc5663",
+  "python": "3.12.3",
+  "sglang-radeon-rdna3": "0.1.5",
+  "torch": "2.9.1+rocm7.2.1.lw.gitff65f5bc",
+  "triton": "3.5.1+rocm7.2.1.gita272dfa8"
+ }
 }

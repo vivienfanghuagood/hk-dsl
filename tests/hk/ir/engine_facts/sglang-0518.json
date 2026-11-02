@@ -642,7 +642,16 @@
  },
  "image": "sha256:731ec9e8521ea33efbf9839974fe6b48e94cfc0c2b7bd3e94b4de524096b2dd8",
  "image_note": "SGLang 0.5.18 in a venv over the ROCm 7.2.1 vLLM dev image (gfx1100): the SGLang the SGLang routes were measured on (docs/integration.md). Only SGLang is judged: the vLLM beside it is the image's 0.16.1, which hk does not claim",
+ "label": "SGLang 0.5.18",
+ "role": "measured",
  "serves": [
   "sglang"
- ]
+ ],
+ "stack": {
+  "hip": "7.2.53211-e1a6bc5663",
+  "python": "3.12.3",
+  "sglang-radeon-rdna3": "0.1.5",
+  "torch": "2.9.1+gitff65f5b",
+  "triton": "3.5.1"
+ }
 }

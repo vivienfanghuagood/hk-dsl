@@ -103,15 +103,18 @@ stood at the move (990 no-GPU tests, 386 on the GPU).
   record it inside the image and commit the file:
 
       HK_ARCH=gfx1100 python3 -m hk.integration.contract --record tests/hk/ir/engine_facts/<image>.json \
-          --image sha256:<digest> --deployed-on gfx1100
+          --image sha256:<digest> --deployed-on gfx1100 --role production
 
   Nothing is launched, but give it one GPU: SGLang, AITER and some vLLM builds
   read the GPU while importing, and a route recorded without one is recorded
-  as broken. Then add its `image_note` and any `expected_refusals` (a route the
-  image breaks today, with the reason). A fixture whose image has an engine hk
-  does not claim lists the ones it is for in `serves` (`["sglang"]`). An expected
-  refusal turns off only that route in that image; the test holds that the
-  image's other default-on routes are still applied.
+  as broken. Then add its `label` (its name in the support matrix), its
+  `image_note`, and any `expected_refusals` (a route the image breaks today,
+  with the reason). A fixture whose image has an engine hk does not claim lists
+  the ones it is for in `serves` (`["sglang"]`). An expected refusal turns off
+  only that route in that image; the test holds that the image's other
+  default-on routes are still applied. Last, regenerate
+  [the support matrix](support-matrix.md) (`python3 scripts/gen_support_matrix.py`):
+  `tests/hk/ir/test_support_matrix.py` fails while it is stale.
 
 The gates are by directory, in `tests/hk/conftest.py`, which also puts
 `python/` on `sys.path`, so the suite runs from a checkout without installing.
