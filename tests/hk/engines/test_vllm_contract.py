@@ -348,3 +348,23 @@ def test_the_installed_hk_registers_the_plugin():
         pytest.skip("hk-dsl is not installed as a distribution here")
     eps = {e.name: e.value for e in md.entry_points(group="vllm.general_plugins")}
     assert eps.get("hk_attention") == "hk.integration._vllm_plugin:register"
+
+
+def test_the_triton_attn_builder_has_what_the_prefill_guard_reads():
+    """vllm_prefill's guard reads each step's exact sizes from the common metadata that
+    TritonAttentionMetadataBuilder.build gets, host arrays only (query_start_loc_cpu, and
+    _seq_lens_cpu or seq_lens_cpu_upper_bound). Without them it keeps its size-only bound and
+    declines more: this vLLM should have them, apply() should wrap build and revert() restore
+    it."""
+    from vllm.v1.attention.backends import triton_attn
+
+    cls = triton_attn.TritonAttentionMetadataBuilder
+    assert vllm_prefill.stats_why_not(cls) == ""
+    orig = cls.build
+    vllm_prefill._apply_stats()
+    try:
+        assert vllm_prefill.STATS_WHY_NOT == "" and cls.build is not orig
+        assert inspect.signature(cls.build) == inspect.signature(orig)
+    finally:
+        vllm_prefill._revert_stats()
+    assert cls.build is orig
