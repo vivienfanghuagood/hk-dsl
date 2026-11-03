@@ -113,6 +113,8 @@ ENTRIES: Dict[str, Entry] = {
                              "two rows to a byte (vLLM's moe_wna16 layout), no zs read"),
     "hk.load_w4(rows=)": Entry("format", "E8", "the zero-code form's row-major codes, int32 [N, K/8] "
                                "(vLLM's uint8 [N, K/2] viewed as int32)"),
+    "hk.gemv_w4": Entry("format", "E8", "hk's int4 layout multiplied by a few tokens without WMMA "
+                        "(a lane's own row, v_dot2): the small-batch decode GEMV, RDNA"),
 }
 
 #: Every other documented name of the language: general, any kernel may use it.
@@ -175,6 +177,7 @@ _OP_KINDS: Dict[str, str] = {
     "mfma_strip": "merge", "granules": "escape", "load_frag": "escape",
     "store_frag": "escape",
     "load_w4": "format",
+    "gemv_w4": "format",
 }
 OPS: Dict[str, str] = {**{op: "primitive" for op in """
 block_idx warp_id xcd_id lane_id coord extent any_ne any_above load store load_rows store_rows
@@ -200,7 +203,9 @@ map yield rcp
 CPP: Dict[str, Dict[str, str]] = {
     # RDNA's symmetric 4-bit decode (hk.load_w4(zero=)); the asymmetric form is the trees'
     "include/hk/rdna/w4.cuh": {"load_w4": "format", "w4_word_sym_f16": "internal",
-                               "load_w4_zp": "format", "w4_word_zp_f16": "internal"},
+                               "load_w4_zp": "format", "w4_word_zp_f16": "internal",
+                               "gemv_w4": "format", "w4_word_zs_f16": "internal",
+                               "gemv_w4_steps": "internal", "gemv_w4_finish": "internal"},
     # RDNA strided globals (`hk.Tensor[dtype, "strided"]`): g.stage's strided form and the
     # type's accessors.
     "include/hk/rdna/strided.cuh": {

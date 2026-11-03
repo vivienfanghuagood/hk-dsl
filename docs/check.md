@@ -81,7 +81,7 @@ hk.check gelu_mul  gfx950 (AMD Radeon Graphics)  [gpu]  hk 0.4.0  torch 2.10.0+r
             compile's own max |err| 0.0312
     time    hk 114.4 us ±0.9%   eager 102.2 us ±0.6%   compile 62.0 us ±1.2%
     speed   hk is 0.90x eager (loss, band 2%)   0.54x compile (loss, band 2%)
-    rate    hk 3081 GB/s = 39% of DRAM peak (inputs + outputs once)
+    rate    hk 3081 GB/s = 39% of DRAM peak (inputs + outputs once; cold: 2 copies of the inputs, rotated past the cache)
     first   hk 0.05 s   eager 0.00 s   compile 1.14 s  (first call: trace, build or cache load, launch)
   hint: case 0: 1.84x slower than torch.compile (...); at 39% of the DRAM peak a streaming
         kernel is not moving bytes fast enough: start from hk.templates (docs/templates/), or
@@ -123,6 +123,24 @@ pass, 56.8 us.
    ratios; above 1 hk is faster) with a verdict inside a noise band, the
    bandwidth (inputs and outputs counted once), and the first call of each
    timed on its own (trace and hipcc, or `torch.compile`'s compile).
+
+   Timing is **cold** by default. Each contender runs on copies of its inputs
+   in turn, enough that together they exceed twice the GPU's last-level cache
+   (96 MiB on a W7900D, 64 MiB on an R9700, 256 MiB on an MI355X). The
+   outputs of the last calls are kept too, so a function that returns a new
+   tensor writes a different buffer each call instead of the one torch's
+   allocator would hand back. Each call then reads and writes DRAM, as a
+   model's layers do, and the bandwidth reported is DRAM traffic. A small input reused over and over would otherwise sit in the cache
+   and report more than the card's DRAM can deliver.
+
+   The run is timed **hot** instead, with a note saying why, when:
+   - the inputs are too small to leave the cache in rotation (they stay there
+     in use too), or
+   - the copies would take over a quarter of the free device memory.
+
+   `--hot` (`cache="hot"`) always times the same inputs every call. A rate past
+   the DRAM peak is reported as what it is: the inputs were cache-resident,
+   and it is not DRAM bandwidth.
 
 ## Telling it what to check
 

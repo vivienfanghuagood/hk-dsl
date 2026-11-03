@@ -8,7 +8,7 @@ hk-dsl builds kernels for four GPU architectures. This page is generated from th
 
 | GPU | arch | status | engine routes on by default |
 |---|---|---|---|
-| Radeon PRO W7900, Radeon PRO W7900D, Radeon RX 7900 | gfx1100 (RDNA3) | **runs**: measured on Radeon PRO W7900D; CI's GPU tier runs on one | 11: vLLM 5, SGLang 3, SGLang-Diffusion 2, `hk.ops` 1 |
+| Radeon PRO W7900, Radeon PRO W7900D, Radeon RX 7900 | gfx1100 (RDNA3) | **runs**: measured on Radeon PRO W7900D; CI's GPU tier runs on one | 12: vLLM 6, SGLang 3, SGLang-Diffusion 2, `hk.ops` 1 |
 | Radeon AI PRO R9700, Radeon RX 9070 | gfx1201 (RDNA4) | **runs**: measured on Radeon AI PRO R9700; CI's GPU tier runs on one | 3: vLLM 3 |
 | Instinct MI300X, Instinct MI325X | gfx942 (CDNA3) | **compile-only**: no part was available, so its numbers are modelled from the compiler. CI builds kernels for it; none has run on one | none |
 | Instinct MI355X, Instinct MI350X | gfx950 (CDNA4) | **runs**: measured on Instinct MI355X; CI's GPU tier runs on one | 5: vLLM 5 |
@@ -29,7 +29,7 @@ gfx950 also has the block-scaled matrix ops (`hk.mma_ABt_mx`: FP8 e4m3 and FP4 o
 
 ## Engine routes on each
 
-A route is on by default only on the GPUs it was validated on (**on** below). Elsewhere it is off: its switch at `1` turns it on anyway, without that validation, and not every route's kernels exist on every arch. A route marked opt-in is off on every GPU until you turn it on. What each route does and the evidence for its default: [integration](integration.md#on-by-default-and-turning-it-off); `python3 -m hk.integration --status` prints the decision on your machine.
+A route is on by default only on the GPUs where it met the [default-on rule](testing.md#the-default-on-rule) (**on** below). Elsewhere it is off: its switch at `1` turns it on anyway, without that evidence, and not every route's kernels exist on every arch. A route marked opt-in is off on every GPU until you turn it on. What each route does and the evidence for its default: [integration](integration.md#on-by-default-and-turning-it-off); `python3 -m hk.integration --status` prints the decision on your machine.
 
 | route | engine | switch | gfx1100 | gfx1201 | gfx942 | gfx950 |
 |---|---|---|---|---|---|---|
@@ -44,7 +44,7 @@ A route is on by default only on the GPUs it was validated on (**on** below). El
 | `vllm_moe_wna16` | vLLM | `HK_VLLM_MOE_WNA16` | opt-in | opt-in | opt-in | opt-in |
 | `vllm_sdpa` | vLLM | `HK_VLLM_SDPA` | **on** | off | off | off |
 | `vllm_backend` | vLLM | `HK_VLLM_BACKEND` | opt-in | opt-in | opt-in | opt-in |
-| `vllm_prefill` | vLLM | `HK_VLLM_PREFILL` | opt-in | opt-in | opt-in | opt-in |
+| `vllm_prefill` | vLLM | `HK_VLLM_PREFILL` | **on** | off | off | off |
 | `sglang_linear` | SGLang | `HK_SGLANG_LINEAR` | **on** | off | off | off |
 | `sglang_norm` | SGLang | `HK_SGLANG_NORM` | **on** | off | off | off |
 | `sglang_moe` | SGLang | `HK_SGLANG_MOE` | **on** | off | off | off |

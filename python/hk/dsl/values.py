@@ -1590,8 +1590,10 @@ class Tile(_Elementwise):
     def as_operand(self, dtype: Optional[DType] = None, *, k_order: str = "natural",
                    into=None) -> "Tile":
         """This accumulator's registers read as an MFMA operand: no data
-        moves across lanes (gfx950). `k_order="even_odd"` is RDNA3's form
-        (gfx1100), below.
+        moves across lanes (gfx950). On RDNA (wave32) the same call is the
+        accumulator's col-layout cast, `.to(dtype)`: the WMMA operand it
+        feeds, so a P.V written this way builds on both. `k_order="even_odd"`
+        is RDNA3's paired form (gfx1100), below.
 
         `self` is a col-layout tile in an accumulator fragment -- an MFMA
         result, or its cast to bf16. Each lane holds a column and four rows
@@ -1629,6 +1631,21 @@ class Tile(_Elementwise):
             raise ValueError(f"as_operand(k_order={k_order!r}): \"natural\" or \"even_odd\"")
         t = self.ty
         dtype = dtype or t.dtype
+        from .arch import target  # noqa: PLC0415
+
+        if target().wave == 32:
+            # RDNA: a WMMA accumulator is not laid out as an operand, and its col-layout cast is
+            # one (the C-to-operand relayout `.to` does) -- so one source can say "this
+            # accumulator as the next mma's operand" on RDNA and on CDNA (#212)
+            if t.layout != "col" or (t.dtype is not fp32 and t.dtype.bits != 16):
+                raise TypeError(f"as_operand reads a col-layout accumulator tile, "
+                                f"fp32 or 16-bit, not {t}")
+            if dtype.bits != 16 or (t.dtype is not fp32 and dtype != t.dtype):
+                raise TypeError(f"as_operand makes a bf16 or fp16 operand of {t}, "
+                                f"not {dtype}")
+            if t.dtype is dtype and into is None:
+                return self
+            return self.to(dtype, into=into)
         if t.layout != "col" or (t.dtype is not fp32 and t.dtype.bits != 16):
             raise TypeError(f"as_operand reads a col-layout accumulator tile, "
                             f"fp32 or 16-bit, not {t}")
@@ -2007,6 +2024,53 @@ def load_w4(ty, qw: "Global", s: "Global", zs: Optional["Global"], n0, k0, *,
                  into=into, name="w4", group=group, **extra)
 
 
+def gemv_w4(x: "Global", qw: "Global", s: "Global", zs: Optional["Global"], n0, k0, kstep, count, *,
+            group: int = 128, tokens: int = 1, zero: Optional[int] = None, s_blocked: bool = False,
+            into=None) -> "Tile":
+    """A warp's partial of W x^T for a few tokens, from 4-bit codes, without WMMA: the 16x16 fp32
+    col-layout accumulator tile (rows: W rows n0..n0+15; columns: tokens) holding, at (r, m), the
+    sum over `count` steps of 64 columns, step c at k0 + c * kstep, of W[n0 + r][k] * x[m][k].
+    Tokens m < min(`tokens`, x's rows) are computed; the other columns are 0. The tile is what an
+    mma accumulator holds, so a kernel reduces it across warps and stores it as it would one.
+
+    W is in hk's 4-bit layout (`hk.load_w4`'s, `hk.ops.w4a16.repack_*`): symmetric with
+    `zero=` (and `s_blocked` scales or not), or asymmetric with `zs`. x [M, K] and the scales are
+    fp16. Each lane dequantizes its own row's 16 bytes of codes a step in packed fp16 and
+    multiplies with v_dot2_f32_f16: a WMMA operand holds every row in both wave halves, so the
+    decode the load_w4 + mma path does twice, this does once, and at a few tokens that decode is
+    what bounds the kernel. RDNA (wave32). `group` a multiple of 32; `tokens` 1..8; k0 and kstep
+    multiples of 64."""
+    from .arch import target  # noqa: PLC0415
+
+    if target().wave != 32:
+        raise TypeError(f"gemv_w4: RDNA's (wave32) primitive, not {target().arch}'s")
+    if not isinstance(group, int) or group <= 0 or group % 32:
+        raise ValueError(f"gemv_w4: group {group!r} must be a positive multiple of 32")
+    if not isinstance(tokens, int) or isinstance(tokens, bool) or not 1 <= tokens <= 8:
+        raise ValueError(f"gemv_w4: tokens is 1..8, not {tokens!r}")
+    if (zs is not None) + (zero is not None) != 1:
+        raise TypeError("gemv_w4 takes zs (asymmetric) or zero= (symmetric: one zero point for "
+                        "every group), exactly one of them")
+    if zero is not None and (not isinstance(zero, int) or isinstance(zero, bool)
+                             or not 0 <= zero <= 15):
+        raise ValueError(f"gemv_w4: zero is a 4-bit code, 0..15, not {zero!r}")
+    if s_blocked and zero is None:
+        raise TypeError("gemv_w4(s_blocked=True) is the symmetric form's scale layout: give zero=")
+    for name, g, want in (("x", x, fp16), ("qw", qw, i32), ("s", s, fp16), ("zs", zs, fp16)):
+        if g is None:
+            continue
+        if not isinstance(g, Global):
+            raise TypeError(f"gemv_w4: {name} must be a tensor parameter, got {g!r}")
+        if g.dtype is not want:
+            raise TypeError(f"gemv_w4: {name} holds {want.name}, not {g.dtype.name}")
+    extra = {"zs": zs.v} if zs is not None else {"zero": _i64(zero)}
+    if s_blocked:
+        extra["s_blocked"] = _unit_attr()
+    return _make(hkd.GemvW4Op, RegTileType(fp32, 16, 16, "col"),
+                 (x.v, qw.v, s.v, as_int(n0).v, as_int(k0).v, as_int(kstep).v, as_int(count).v),
+                 into=into, name="gemv", group=group, tokens=tokens, **extra)
+
+
 def rand(ty, seed, offset, row_stride, *, into=None) -> "Tile":
     """Uniform [0, 1) draws into an fp32 tile: element (r, c) is the draw
     `triton.language.rand(seed, offset + r * row_stride + c)` makes, bit for
@@ -2175,6 +2239,27 @@ class SharedTile(Value):
             raise TypeError(f"load: {tile} from {st}; register and shared tiles "
                             f"must have the same extents")
         n = lds_loads(tile, st, _t().arch)
+        from .arch import target  # noqa: PLC0415
+
+        if (not n and tile.layout == "col" and tile.dtype.bits == 16
+                and target().wave == 32 and tile.frag is None):
+            if not wait:
+                raise TypeError(f"load(wait=False) from {st} into {tile}: on RDNA a col-layout "
+                                f"16-bit operand is a row read and a register transpose, which "
+                                f"waits for its data -- it does not take the vectorised path "
+                                f"asynchronously. Load it with the default wait=True.")
+            # RDNA: a col-layout 16-bit operand read element by element (16 ds_read_u16 a 16x16
+            # tile, and the live values spill a decode at head_dim 128) -- read it row-major in
+            # b128s and transpose in registers: the same values, in the col tile's registers
+            # (a relabelling transpose of the moved data). One source can then read V^T as
+            # gfx950 does, `v_s.load(RT(bf16, 32, 16, "col"))` then `v.T` (#213).
+            row = RegTileType(tile.dtype, tile.rows, tile.cols, "row")
+            r = _make(hkd.LoadSharedOp, row, (self.v, lds_loads(row, st, _t().arch)), name="lds",
+                      wait=False)
+            # the wait that re-binds the registers (hk.lds.wait_for): a plain waited load lets
+            # the compiler hoist the transpose's reads above its lgkmcnt
+            hkd.LdsWaitForOp([r.v], loc=_t().loc())
+            return transpose(transpose_sep(r), into=into)
         if not wait and not n:
             raise TypeError(f"load(wait=False) from {st} into {tile}: this pair "
                             f"does not take the vectorised path, so there is "
@@ -2634,7 +2719,7 @@ __all__ = [
     "SharedTile", "SharedVec", "Granules", "Stage", "Reduction", "MatMul",
     "Transposed", "const", "as_int", "scalar_op", "compare", "i1", "coord",
     "tile_coord", "elem_coord", "binary", "unary", "broadcast", "mma", "zeros",
-    "full", "neg_infty", "rand", "load_w4", "transpose", "transpose_sep", "broadcast_row",
+    "full", "neg_infty", "rand", "load_w4", "gemv_w4", "transpose", "transpose_sep", "broadcast_row",
     "broadcast_col", "as_vec", "lds_loads", "wrap",
 ]
 

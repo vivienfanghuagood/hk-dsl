@@ -43,7 +43,7 @@ def test_on_by_default_on_gfx1100_is_every_route_validated_there():
     assert on(gpu="gfx1100") == {"vllm_int4", "vllm_gptq", "vllm_gemm", "vllm_moe", "vllm_sdpa",
                                  "sglang_linear", "sglang_moe", "sglang_norm", "sgld_attn",
                                  "sgld_linear",
-                                 "sdpa_k3"}
+                                 "sdpa_k3", "vllm_prefill"}
 
 
 def test_on_by_default_on_gfx1201_is_every_route_validated_there():

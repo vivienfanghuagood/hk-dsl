@@ -33,6 +33,27 @@ env:
   ROCM_VERSION: "7.1"
 
 jobs:
+  submodule-pin:
+    # A pull request moves a submodule's pin only on purpose ("HipKittens bump" in its title or
+    # body) and only forward (the new pin descends from main's): a stale worktree's pin committed
+    # with an unrelated change once undid #148's HipKittens fix (scripts/ci/check_submodule_pin.sh).
+    if: github.event_name == 'pull_request'
+    name: submodule pin
+    runs-on: ubuntu-22.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          submodules: false
+      - name: the PR moves no submodule pin by accident, and none backwards
+        env:
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+        run: >-
+          scripts/ci/check_submodule_pin.sh ${{ github.event.pull_request.base.sha }}
+          ${{ github.event.pull_request.head.sha }}
+
   tiers:
     # The codegen tier compiles every kernel it tests, and a branch that edits a header those
     # kernels include compiles them cold: 40-56 min on one 4-core runner (main, warm: 5). So

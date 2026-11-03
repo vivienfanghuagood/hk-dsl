@@ -72,6 +72,23 @@ def _state(done: bool, groups: list) -> str:
     return "failure"
 
 
+#: A GPU tier that skipped more than this share of its tests ran on no GPU, whatever its exit code: a
+#: container that cannot open /dev/kfd (the wrong video/render groups) makes every GPU test skip, and that
+#: once reported "success: 1 passed, 1776 skipped". A normal gfx950 run skips about 15%.
+MAX_SKIP_SHARE = 0.5
+
+
+def _vacuous(counts: dict) -> str:
+    """Why these counts are not a GPU run (no test passed, or nearly all skipped), or ""."""
+    passed, skipped = counts.get("passed", 0), counts.get("skipped", 0)
+    if passed == 0:
+        return "no test passed"
+    if skipped > MAX_SKIP_SHARE * (passed + skipped):
+        return (f"{skipped} of {passed + skipped} tests skipped (over {MAX_SKIP_SHARE:.0%}): "
+                f"the tests saw no GPU")
+    return ""
+
+
 def _describe(state: str, counts: dict, minutes: float, error: str = "") -> str:
     if error:
         return f"error: {error}"
@@ -109,6 +126,10 @@ def main() -> int:
     dead = [f"{g['name']} (exit {g['exit']})" for g in groups if g["exit"] and not g["summary"]]
     if not a.error and dead:
         a.error = f"{', '.join(dead)} ended without a pytest summary"
+    why = _vacuous(counts) if state == "success" else ""
+    if why:
+        state = "failure"
+        a.error = f"{why} ({_describe('', counts, minutes)[2:]})"
     description = _describe(state, counts, minutes, a.error)
 
     result = {

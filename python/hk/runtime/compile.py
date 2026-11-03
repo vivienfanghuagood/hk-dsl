@@ -22,6 +22,7 @@ user can delete.
 from __future__ import annotations
 
 import hashlib
+import logging
 import os
 import re
 import shutil
@@ -778,6 +779,27 @@ def mfma_gate_status() -> List[str]:
     return lines + padded
 
 
+#: Where the VOPD gate's per-kernel detail goes: logging's "hk.compile" logger at INFO (each kernel and its
+#: VOPDs; also in the build's build.log and VOPDHAZ). At default verbosity a process says only, once, that
+#: the gate rebuilt something (_vopd_notice).
+_LOG = logging.getLogger("hk.compile")
+_VOPD_DOC = "https://vivienfanghuagood.github.io/hk-dsl/runtime/#the-resource-gates"
+_vopd_noticed = False
+
+
+def _vopd_notice(name: str, vopd: Sequence[str]) -> None:
+    """The VOPD gate's word on a rebuild: one line per process at default verbosity, the first time it
+    rebuilds anything; the kernel and its VOPDs at INFO."""
+    global _vopd_noticed
+    _LOG.info("hk: %s: HK_VOPD_GATE=fix rebuilt with %s: %d VOPD(s) with gfx11's interlock hazard:\n%s",
+              name, " ".join(NO_VOPD), len(vopd), "".join(f"  {v}\n" for v in vopd))
+    if not _vopd_noticed:
+        _vopd_noticed = True
+        print("hk: rebuilt a kernel without VOPD dual issue to avoid a known gfx11 compiler hazard "
+              "(llvm/llvm-project#220348); results are unaffected. `python3 -m hk.integration --status` "
+              f"lists the kernels; details: {_VOPD_DOC}", file=sys.stderr)
+
+
 def vopd_gate_status() -> List[str]:
     """The VOPD gate for `python3 -m hk.integration --status`: its mode and the cached builds
     it rebuilt without dual issue (each kernel, how many VOPDs; they are in that build's
@@ -1025,7 +1047,7 @@ def _build_once(source: str, target: Target, name: str, extra_flags: Sequence[st
                 line = (f"hk: {name}: HK_VOPD_GATE=fix rebuilt with {' '.join(NO_VOPD)}: "
                         f"{len(vopd)} VOPD(s) with gfx11's interlock hazard:\n"
                         + "".join(f"  {v}\n" for v in vopd))
-                print(line, file=sys.stderr, end="")
+                _vopd_notice(name, vopd)
                 (tmp / "build.log").write_text(log + line)
                 (tmp / "command").write_text(" ".join(cmd))
                 if proc.returncode != 0:

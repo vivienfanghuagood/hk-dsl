@@ -382,8 +382,12 @@ def shipped_table(kind: str, arch: str, env: str, *,
     With `engine` -- the name of the path the installed engine runs, as the
     tuner writes it -- a record of this machine's measured against another
     engine is left out (and listed in `meta["stale"]`): the path a kernel
-    had to beat is not the one it would be beating. `HK_AUTOTUNE=0` leaves
-    every record out, as it does schedule records."""
+    had to beat is not the one it would be beating. So is one timed another
+    way than the tuner times now, or under another TunableOp state
+    (`hk.autotune.routes.tunableop_state`): which kernel the engine runs at
+    an M is what TunableOp's results say. Left out, such a shape is missing
+    again, and the tuning at load measures it. `HK_AUTOTUNE=0` leaves every
+    record out, as it does schedule records."""
     override = os.environ.get(env)
     path = Path(override) if override else (
         Path(__file__).resolve().parents[1] / "tuned" / f"routes_{kind}_{arch}.json")
@@ -401,9 +405,9 @@ def shipped_table(kind: str, arch: str, env: str, *,
     if user is None or user.get("arch") not in (None, arch):
         return t
     shapes, stale = {}, []
+    tunable = _routes.tunableop_state() if engine is not None else None
     for nk, ent in RouteTable.parse(user).items():
-        made = ent.get("meta", {}).get("engine")
-        if engine is not None and made not in (None, engine):
+        if engine is not None and _routes.record_stale(ent, arch, engine, tunable):
             stale.append(nk)
             continue
         shapes[nk] = ent

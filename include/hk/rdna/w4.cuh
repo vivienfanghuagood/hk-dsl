@@ -253,4 +253,170 @@ __device__ inline static void load_w4_zp(RT &dst, const QL &qw, const SL &s, con
     }
 }
 
+namespace detail {
+/// Eight codes of one word -> four half pairs q * s - zs (the asymmetric form, zs the group's
+/// zero-times-scale): half(0x6400 | q) - 1024 is q exactly, then one v_pk_fma rounds once.
+__device__ inline void w4_word_zs_f16(uint32_t word, uint32_t s2, uint32_t nzs2, uint32_t out[4]) {
+    typedef _Float16 h2_t __attribute__((ext_vector_type(2)));
+    const uint32_t lo = word & 0x0F0F0F0Fu;
+    const uint32_t hi = (word >> 4) & 0x0F0F0F0Fu;
+    h2_t sc, nzs;
+    __builtin_memcpy(&sc, &s2, 4);
+    __builtin_memcpy(&nzs, &nzs2, 4);
+    const h2_t bias = {_Float16(-1024), _Float16(-1024)};
+    #pragma unroll
+    for (int t = 0; t < 4; t++) {
+        const uint32_t u = __builtin_amdgcn_perm(hi, lo, 0x0C040C00u + 0x00010001u * t) | 0x64006400u;
+        h2_t h;
+        __builtin_memcpy(&h, &u, 4);
+        const h2_t v = __builtin_elementwise_fma(h + bias, sc, nzs);
+        __builtin_memcpy(&out[t], &v, 4);
+    }
+}
+
+/// hk.gemv_w4's body: `count` steps of 64 columns, step c at k0 + c * kstep, a lane taking row
+/// n0 + lane % 16 and the step's 32-column chunk lane / 16. Per step a lane reads its row's 16
+/// bytes of codes (one int4), one scale (and zs), and every token's 32 columns of x into registers
+/// before it multiplies; acc[m] is its partial for token m. ZERO < 0: asymmetric (zs).
+template<int G, int ZERO, bool SBLK, int MT, ducks::gl::all XL, ducks::gl::all QL, ducks::gl::all SL>
+__device__ inline void gemv_w4_steps(float (&acc)[MT], const XL &x, const QL &qw, const SL &s,
+                                     const SL *zs, int n0, int k0, int kstep, int count) {
+    typedef _Float16 h2_t __attribute__((ext_vector_type(2)));
+    const int lane = laneid();
+    const int r = lane & 15, h = lane >> 4;
+    const long n = n0 + r;
+    const long chunks = qw.cols() / 4;           // 32-column chunks per row
+    const long groups = SBLK ? s.cols() / 16 : s.cols();
+    const long kx = x.cols();
+    const int m_rows = x.rows();
+    const int *qp = reinterpret_cast<const int *>(qw.raw_ptr) + (n >> 4) * chunks * 64 + r * 4;
+    const half *sp = s.raw_ptr;
+    const half *xp = x.raw_ptr;
+    for (int c = 0; c < count; c++) {
+        const long k = k0 + long(c) * kstep + 32 * h;    // this half's 32 columns
+        const long j = k / 32;
+        const int4 w = *reinterpret_cast<const int4 *>(qp + j * 64);
+        const long g = k / G;
+        uint16_t sb;
+        __builtin_memcpy(&sb, &sp[SBLK ? (n >> 4) * groups * 16 + g * 16 + (n & 15) : n * groups + g], 2);
+        const uint32_t s2 = uint32_t(sb) * 0x00010001u;
+        uint32_t nzs2 = 0;
+        if constexpr (ZERO < 0) {
+            const _Float16 z = -reinterpret_cast<const _Float16 *>(zs->raw_ptr)[n * groups + g];
+            uint16_t zb;
+            __builtin_memcpy(&zb, &z, 2);
+            nzs2 = uint32_t(zb) * 0x00010001u;
+        }
+        uint32_t xw[MT][16];
+        #pragma unroll
+        for (int m = 0; m < MT; m++) {
+            if (m < m_rows) {
+                const int4 *xr = reinterpret_cast<const int4 *>(xp + m * kx + k);
+                #pragma unroll
+                for (int q = 0; q < 4; q++) {
+                    const int4 v = xr[q];
+                    __builtin_memcpy(&xw[m][4 * q], &v, 16);
+                }
+            }
+        }
+        uint32_t wv[16];
+        const uint32_t words[4] = {uint32_t(w.x), uint32_t(w.y), uint32_t(w.z), uint32_t(w.w)};
+        #pragma unroll
+        for (int q = 0; q < 4; q++) {
+            if constexpr (ZERO < 0)
+                w4_word_zs_f16(words[q], s2, nzs2, wv + 4 * q);
+            else
+                w4_word_sym_f16<ZERO>(words[q], s2, wv + 4 * q);
+        }
+        #pragma unroll
+        for (int m = 0; m < MT; m++) {
+            if (m < m_rows) {
+                #pragma unroll
+                for (int t = 0; t < 16; t++) {
+                    h2_t a, b;
+                    __builtin_memcpy(&a, &wv[t], 4);
+                    __builtin_memcpy(&b, &xw[m][t], 4);
+                    acc[m] = __builtin_amdgcn_fdot2(a, b, acc[m], false);
+                }
+            }
+        }
+    }
+}
+
+/// The lanes' partials (row lane % 16, half lane / 16) -> dst, the 16 x 16 fp32 accumulator tile
+/// (W rows x tokens) in the target's own layout: the halves added, then each element read from the
+/// lane that holds its row. Tokens past MT are 0.
+template<int MT, ducks::rt::all RT>
+__device__ inline void gemv_w4_finish(RT &dst, float (&acc)[MT]) {
+    using base = rt_base<float, ducks::rt_layout::col>;
+    const int lane = laneid();
+    #pragma unroll
+    for (int m = 0; m < MT; m++)
+        acc[m] += __builtin_bit_cast(float, __builtin_amdgcn_permlanex16(
+            __builtin_bit_cast(int, acc[m]), __builtin_bit_cast(int, acc[m]), 0x76543210u, 0xfedcba98u,
+            false, false));
+    float *out = reinterpret_cast<float *>(&dst.tiles[0][0].data[0]);
+    #pragma unroll
+    for (int e = 0; e < base::elements_per_thread; e++) {
+        const int2 rc = rt_base_coord<float, ducks::rt_layout::col>(e, lane);   // {W row, token}
+        float v = 0.f;
+        #pragma unroll
+        for (int m = 0; m < MT; m++) {
+            const float got = __shfl(acc[m], rc.x);
+            v = rc.y == m ? got : v;
+        }
+        out[e] = v;
+    }
+}
+}  // namespace detail
+
+/**
+ * @brief hk.gemv_w4 (symmetric): a warp's partial of W x^T for a few tokens, without WMMA. dst is
+ * the 16 x 16 fp32 accumulator tile (W rows n0..n0+15 x tokens): the sum over `count` steps of 64
+ * columns, step c at k0 + c * kstep, of W[n][k] x[m][k], W (q - ZERO) * s in hk's interleaved
+ * 4-bit layout (s [N, K/G], or with SBLK [N/16][K/G * 16]) and x half [M, K]; tokens m < min(MT,
+ * M), the rest 0. Each lane dequantizes its own row's codes in packed fp16 and multiplies with
+ * v_dot2_f32_f16, fp32 accumulation: a WMMA operand would need every row in both wave halves,
+ * twice the decode. G a multiple of 32; kstep and k0 multiples of 64.
+ */
+template<int G, int ZERO, bool SBLK, int MT, ducks::rt::all RT, ducks::gl::all XL, ducks::gl::all QL,
+         ducks::gl::all SL>
+__device__ inline static void gemv_w4(RT &dst, const XL &x, const QL &qw, const SL &s, int n0, int k0,
+                                      int kstep, int count) {
+    static_assert(std::is_same_v<typename RT::T, float> && RT::height == 1 && RT::width == 1 &&
+                  std::is_same_v<typename RT::layout, ducks::rt_layout::col>,
+                  "gemv_w4 returns a 16x16 fp32 col-layout accumulator tile");
+    static_assert(std::is_same_v<typename QL::dtype, int>, "codes are packed in int32");
+    static_assert(std::is_same_v<typename SL::dtype, half> && std::is_same_v<typename XL::dtype, half>,
+                  "gemv_w4 takes half x and half scales");
+    static_assert(G % 32 == 0 && ZERO >= 0 && ZERO < 16 && MT >= 1 && MT <= 8);
+    float acc[MT];
+    #pragma unroll
+    for (int m = 0; m < MT; m++) acc[m] = 0.f;
+    detail::gemv_w4_steps<G, ZERO, SBLK, MT>(acc, x, qw, s, static_cast<const SL *>(nullptr), n0, k0,
+                                             kstep, count);
+    detail::gemv_w4_finish<MT>(dst, acc);
+}
+
+/**
+ * @brief hk.gemv_w4 (asymmetric): as the symmetric form, W being q * s - zs, zs [N, K/G] the
+ * group's zero-times-scale (hk.ops.w4a16.repack_awq's layout), decoded as one packed fp16 FMA.
+ */
+template<int G, int MT, ducks::rt::all RT, ducks::gl::all XL, ducks::gl::all QL, ducks::gl::all SL>
+__device__ inline static void gemv_w4(RT &dst, const XL &x, const QL &qw, const SL &s, const SL &zs,
+                                      int n0, int k0, int kstep, int count) {
+    static_assert(std::is_same_v<typename RT::T, float> && RT::height == 1 && RT::width == 1 &&
+                  std::is_same_v<typename RT::layout, ducks::rt_layout::col>,
+                  "gemv_w4 returns a 16x16 fp32 col-layout accumulator tile");
+    static_assert(std::is_same_v<typename QL::dtype, int>, "codes are packed in int32");
+    static_assert(std::is_same_v<typename SL::dtype, half> && std::is_same_v<typename XL::dtype, half>,
+                  "gemv_w4 takes half x, half scales and half zero-times-scales");
+    static_assert(G % 32 == 0 && MT >= 1 && MT <= 8);
+    float acc[MT];
+    #pragma unroll
+    for (int m = 0; m < MT; m++) acc[m] = 0.f;
+    detail::gemv_w4_steps<G, -1, false, MT>(acc, x, qw, s, &zs, n0, k0, kstep, count);
+    detail::gemv_w4_finish<MT>(dst, acc);
+}
+
 }  // namespace kittens

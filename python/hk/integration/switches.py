@@ -1,10 +1,11 @@
 """Which of hk's engine routes are on. hk is **on by default**; off is for comparisons.
 
 A route is one patch an engine plugin can make: vLLM's MXFP8 linear layers on hk's GEMM, SGLang's
-MoE on hk's, and so on. A route is on by default when it was validated with real weights on that
-GPU, with outputs bit-identical to the engine's or with error within the engine's own noise
-(docs/integration.md#on-by-default has the evidence). Lossy routes (ConvRot INT8) and routes
-without that evidence stay off until you turn them on.
+MoE on hk's, and so on. A route is on by default on a GPU where it meets the default-on rule
+(docs/testing.md#the-default-on-rule): a time-weighted gain of 1.15x or more over the engine's best
+at a real model's mix of shapes, taking only the shapes where hk is faster beyond noise, its
+correctness suite passing, and one end-to-end smoke per engine with equal quality (docs/integration.md#on-by-default-and-turning-it-off has each route's evidence). Lossy
+routes (ConvRot INT8) and routes without that evidence stay off until you turn them on.
 
 **Precedence.** The first rule that applies decides:
 
@@ -17,7 +18,7 @@ without that evidence stay off until you turn them on.
 4. The legacy engine values still mean what they meant. `HK_SGLD=attn,linear,convrot` turns on
    exactly the SGLang-Diffusion routes it names, and `HK_SGLD=1` attention and linear.
    `HK_PATCH_VLLM=1` turns on the vLLM encoder SDPA patch, which it always applied.
-5. Otherwise the route's default applies. It is on only on a GPU the route was validated on.
+5. Otherwise the route's default applies. It is on only on a GPU where the route met the rule.
 
 An empty value counts as unset. Off is `0`, `off`, `no` or `false`. On is `1`, `on`, `yes`,
 `true`, or a route-specific value.
@@ -121,11 +122,12 @@ ROUTES: Dict[str, Route] = {r.name: r for r in (
        "off: it replaces ROCm's default decoder attention for every model. It raises, rather "
        "than falls back, on sliding windows, sinks, softcap, an fp8 KV cache, fp16 and other "
        "head sizes. Validated on Qwen3-8B only"),
-    _R("vllm_prefill", "vllm", "HK_VLLM_PREFILL", False, (),
+    _R("vllm_prefill", "vllm", "HK_VLLM_PREFILL", True, ("gfx1100",),
        "prefill attention in place on vLLM's own cache: ROCM_ATTN's prefix-prefill, and "
        "TRITON_ATTN's unified_attention on batches with prefill in them; decode-only steps, "
        "cache write and block size stay vLLM's",
-       "off until its end-to-end gates (16k TTFT on a d128 model, 8k on a d256 one) pass. "
+       "end-to-end gates passed best vs best (16k TTFT on a d128 model; 8k on a d256 hybrid "
+       "model at TP2, also against ROCM_ATTN), quality within stock's spread. "
        "gfx1100, bf16, head size 64 / 128 (and 256 on TRITON_ATTN), pages of 16 or 32 "
        "(on TRITON_ATTN any multiple of 16: hybrid models' 544, 784); any other call falls back to "
        "vLLM's kernel"),

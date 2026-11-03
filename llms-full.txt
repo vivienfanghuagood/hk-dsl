@@ -810,7 +810,7 @@ hk.check gelu_mul  gfx950 (AMD Radeon Graphics)  [gpu]  hk 0.4.0  torch 2.10.0+r
             compile's own max |err| 0.0312
     time    hk 114.4 us ±0.9%   eager 102.2 us ±0.6%   compile 62.0 us ±1.2%
     speed   hk is 0.90x eager (loss, band 2%)   0.54x compile (loss, band 2%)
-    rate    hk 3081 GB/s = 39% of DRAM peak (inputs + outputs once)
+    rate    hk 3081 GB/s = 39% of DRAM peak (inputs + outputs once; cold: 2 copies of the inputs, rotated past the cache)
     first   hk 0.05 s   eager 0.00 s   compile 1.14 s  (first call: trace, build or cache load, launch)
   hint: case 0: 1.84x slower than torch.compile (...); at 39% of the DRAM peak a streaming
         kernel is not moving bytes fast enough: start from hk.templates (docs/templates/), or
@@ -852,6 +852,24 @@ pass, 56.8 us.
    ratios; above 1 hk is faster) with a verdict inside a noise band, the
    bandwidth (inputs and outputs counted once), and the first call of each
    timed on its own (trace and hipcc, or `torch.compile`'s compile).
+
+   Timing is **cold** by default. Each contender runs on copies of its inputs
+   in turn, enough that together they exceed twice the GPU's last-level cache
+   (96 MiB on a W7900D, 64 MiB on an R9700, 256 MiB on an MI355X). The
+   outputs of the last calls are kept too, so a function that returns a new
+   tensor writes a different buffer each call instead of the one torch's
+   allocator would hand back. Each call then reads and writes DRAM, as a
+   model's layers do, and the bandwidth reported is DRAM traffic. A small input reused over and over would otherwise sit in the cache
+   and report more than the card's DRAM can deliver.
+
+   The run is timed **hot** instead, with a note saying why, when:
+   - the inputs are too small to leave the cache in rotation (they stay there
+     in use too), or
+   - the copies would take over a quarter of the free device memory.
+
+   `--hot` (`cache="hot"`) always times the same inputs every call. A rate past
+   the DRAM peak is reported as what it is: the inputs were cache-resident,
+   and it is not DRAM bandwidth.
 
 ## Telling it what to check
 
@@ -2776,8 +2794,10 @@ Tile.as_operand(self, dtype: Optional[DType] = None, *, k_order: str = 'natural'
 *Surface*: `k_order=`: RDNA3's (gfx1100) paired WMMA operand: a 32-row fp32 S^T pair as its even and odd P^T operands.
 
 This accumulator's registers read as an MFMA operand: no data
-moves across lanes (gfx950). `k_order="even_odd"` is RDNA3's form
-(gfx1100), below.
+moves across lanes (gfx950). On RDNA (wave32) the same call is the
+accumulator's col-layout cast, `.to(dtype)`: the WMMA operand it
+feeds, so a P.V written this way builds on both. `k_order="even_odd"`
+is RDNA3's paired form (gfx1100), below.
 
 `self` is a col-layout tile in an accumulator fragment -- an MFMA
 result, or its cast to bf16. Each lane holds a column and four rows
@@ -3911,7 +3931,7 @@ are bounded: any non-empty length. head_dim is 64 or 128 on both.
 
 ## Also exported
 
-`hk.fp4_operand`, `hk.fp8_operand`, `hk.lane_coords`, `hk.mx`, `hk.mx_scales_loose`, `hk.templates`
+`hk.fp4_operand`, `hk.fp8_operand`, `hk.gemv_w4`, `hk.lane_coords`, `hk.mx`, `hk.mx_scales_loose`, `hk.templates`
 
 
 <!-- docs/api/hk.math.md -->
@@ -5123,7 +5143,9 @@ The policy's thresholds, measured on gfx950's attention (PR #55, the 2511.02132 
 
 The kernels hk ships, written in the language, each behind a torch-facing
 function that picks a plan for the shape and the architecture. Call them on
-torch tensors on the GPU; they return the output (or write `out=`).
+torch tensors on the GPU; they return the output (or write `out=`). Every
+kernel family -- the GPUs it runs on, its dtypes, the engine routes that call
+it, the GPU tests that run it -- is in [the op catalog](../ops.md).
 
 Where an op's arguments or behaviour differ between gfx1100 and gfx950 the
 entry says so in a **Per architecture** table; the full audit, with the code
@@ -6949,8 +6971,10 @@ Correctness, resources and timing of a kernel in one call; the guide is [docs/ch
 ### `hk.check.check`
 
 ```python
-hk.check.check(fn, reference: Optional[Callable] = None, inputs=None, *, cases: Optional[Sequence] = None, consts: Optional[Dict[str, Any]] = None, outputs: Optional[Sequence] = None, inplace: Optional[Sequence] = None, sweep: Optional[Dict[str, Sequence]] = None, baselines: Sequence[str] = ('eager', 'compile'), extra: Optional[Dict[str, Callable]] = None, rtol: Optional[float] = None, atol: Optional[float] = None, exact: bool = False, ref_precision: str = 'fp32', time: bool = True, rounds: int = 15, warmup: int = 3, batch_ms: float = 1.0, burn: float = 0.5, compile_mode: Optional[str] = None, bytes: Optional[float] = None, flops: Optional[float] = None, name: Optional[str] = None, gpu: Optional[bool] = None, build: bool = True, seed: int = 0, profile: bool = False) -> Report
+hk.check.check(fn, reference: Optional[Callable] = None, inputs=None, *, cases: Optional[Sequence] = None, consts: Optional[Dict[str, Any]] = None, outputs: Optional[Sequence] = None, inplace: Optional[Sequence] = None, sweep: Optional[Dict[str, Sequence]] = None, baselines: Sequence[str] = ('eager', 'compile'), extra: Optional[Dict[str, Callable]] = None, rtol: Optional[float] = None, atol: Optional[float] = None, exact: bool = False, ref_precision: str = 'fp32', time: bool = True, rounds: int = 15, warmup: int = 3, batch_ms: float = 1.0, burn: float = 0.5, cache: str = 'cold', compile_mode: Optional[str] = None, bytes: Optional[float] = None, flops: Optional[float] = None, name: Optional[str] = None, gpu: Optional[bool] = None, build: bool = True, seed: int = 0, profile: bool = False) -> Report
 ```
+
+*Changed after 0.8.0*: new parameter `cache`
 
 Check `fn` against `reference` on `inputs`; see the module docstring
 and docs/check.md.
@@ -6985,6 +7009,11 @@ ref_precision  "fp32" runs the reference on fp32 copies of the 16-bit
            inputs (the default); "native" on the inputs as they are
 time, rounds, warmup, batch_ms, burn   the timing (burn: seconds of
            memory traffic first, to settle the clocks)
+cache      "cold" (the default): every contender rotates through copies
+           of its inputs that together exceed twice the last-level cache
+           (CARDS), so the rates are DRAM traffic; tiny inputs, or copies
+           that would take over a quarter of the free memory, are timed
+           hot with a note. "hot": the same inputs every call
 bytes, flops   work a call does, for the rates (default bytes: every
            input and output once)
 gpu        False forces build-only; None uses a GPU when one is there
@@ -7196,6 +7225,7 @@ Each card's ceilings, for the bandwidth and FLOP rates the summary prints (tools
 | `--ref-precision {fp32,native}` | run the reference on fp32 copies of 16-bit inputs, or as given (default fp32) |
 | `--no-time` | correctness only |
 | `--rounds ROUNDS` | timing rounds, contenders rotated (default 15) |
+| `--hot` | time on the same inputs every call (default: cold, rotated copies past the cache) |
 | `--warmup WARMUP` | untimed calls of each first (default 3) |
 | `--batch-ms BATCH_MS` | a round's burst of back-to-back calls fills this long (default 1.0) |
 | `--burn BURN` | seconds of clock warm-up (default 0.5) |

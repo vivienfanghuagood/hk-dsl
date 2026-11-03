@@ -9,6 +9,25 @@ The next version's notes collect here until it is released.
 What is on main after 0.8.0. `pip install hk-dsl` (0.8.0) does not have it;
 the API reference marks such names *New after 0.8.0*.
 
+**`hk.gemv_w4`: a few tokens against 4-bit weights without WMMA, and hk.ops.w4a16's small-batch
+form on it.** At 1-4 tokens the w4a16 decode kernel was bound by instruction issue, not memory. A
+WMMA operand holds every row of W in both halves of the wave, so each 16-byte load of codes was
+decoded twice and exchanged: ~125 instructions a wave per 256 bytes, ~620 GB/s on a W7900D.
+`hk.gemv_w4` has each lane decode its own row's codes in packed fp16 and multiply with
+v_dot2_f32_f16. It returns the warp's partial as the 16x16 fp32 accumulator tile an mma gives, so a
+kernel reduces and stores it as before. Symmetric (GPTQ's `zero`, `s_blocked`) and asymmetric
+(`zs`) forms, groups that are multiples of 32, 1-8 tokens, fp16, RDNA.
+
+`hk.ops.w4a16.matmul` takes it for fp16 at 1-4 tokens on gfx1100 (`gemv_takes`; `GEMV_ARCHES`).
+Qwen3.8-27B-GPTQ's shapes at 1-4 tokens run at 715-777 GB/s cold, against vLLM's gptq_gemm_rdna3:
+qkv 1.07-1.17x, o/out 1.10-1.15x, qkvz 1.13-1.30x, gate_up 1.08-1.14x, down 1.27-1.47x. That is
+1.19-1.28x the WMMA form at one token. These are one-process, graph-timed runs with weights rotated
+over 576 MB.
+
+**gfx1201: shipped vLLM linear routes for MiniCPM5-2B and Qwen3.8-27B (TP2).** `routes_vllm_linear_gfx1201.json` gains their twelve (N, K), measured with `route_tune --timing graph` in the R9700 vLLM image, so a server of either model no longer measures them at load (~28 s on MiniCPM5; Qwen3.8's ran out of the 60 s budget). M 1-5 stay on vLLM's skinny GEMM on every shape but `in_proj_ba` (from M 5); hk's decode GEMM takes MiniCPM5's qkv, o and down from M 6. On an R9700, on top of #189: MiniCPM5 TPOT 1.054x at concurrency 8 and = at 1, Qwen3.8 TP2 = stock-fair. A machine's own records for these shapes still override the shipped rows.
+
+**Fix: vLLM with torch.compile and CUDA graphs failed to start with `vllm_gemm` on (#177).** vLLM calls `dispatch_unquantized_gemm()` inside the forward it compiles, and #177's stand-in cached what it returned in a module dict on its first call. That first call was the profile run's traced forward, so Dynamo replayed the write after the graph (`_GEMMS.update`), and vLLM's CUDA-graph guard refused the forward: an `InternalTorchDynamoError` / `DecompilationError` from `vllm/compilation/wrapper.py`'s `bytecode_hook` at startup (MiniCPM5 in its production configuration). The stand-in and each layer's routing decision are now read-only while torch.compile traces: the cache, the decision kept on the layer and the unrouted counts are written only in eager calls, and a decision is kept for the table's generation (bumped by `set_routes`) rather than the table object. Whether it shows depends on the vLLM build: one whose `UnquantizedLinearMethod.apply` calls `dispatch_unquantized_gemm()` on every forward (the MiniCPM5 image's) failed, one that calls it once when the method is built (the MiniCPM-V image's) did not. `tests/hk/ir/test_vllm_gemm_compiled.py` compiles a vLLM-shaped forward whole under vLLM's guard, for the GEMM route and the AWQ / GPTQ `apply` stand-ins, and `tests/hk/engines/test_vllm_compiled_forward.py` does it through the installed vLLM's own `apply`.
+
 **Use a kernel as a PyTorch op: the recipe, and a test of it.** A new page, docs/torch-ops.md,
 shows a kernel of your own made a `torch.library` custom op by `hk.torch_op`, and says what works:
 eager calls, `torch.compile(fullgraph=True)` with no graph break (also `dynamic=True` and
@@ -55,6 +74,13 @@ a W7900D. Both entry points now check the decode's contract (`paged.check_decode
 
 A wrong call raises ValueError naming the tensor, its shape and the one the kernel needs. No kernel
 changes; `decode` checks a set of shapes once. gfx950's decode (hk.ops.paged_cdna) is not affected.
+
+**Fixed: a kernel the compiler refuses could crash the process.** An error raised inside the pass
+pipeline (for example "a mask strip leaves its hk.map" on RDNA) was reported from MLIR's worker
+thread, where the Python bindings' error capture has no Python thread state; when the function ran
+on a worker the process segfaulted instead of raising, about once in a thousand refusals (and once in
+the IR tests' CI). hk's MLIR context now runs passes on the calling thread. The generated code is
+unchanged (V0: byte-identical on gfx950, gfx1100, gfx1201), and compiling is no slower.
 
 **SGLang: Gemma-style RMSNorm on hk (`HK_SGLANG_NORM`, on by default on gfx1100).** Where
 SGLang's `GemmaRMSNorm` would run its native torch path, which it does on ROCm without aiter or
@@ -104,9 +130,11 @@ in the records, and 12 gfx1100 rows re-measured.**
 - **The routes move the context.** Once every decode M is in, the Ms whose context changed are
   timed again in the routes chosen so far, until none moves (at most 3 passes).
 - **Records.** `meta.timing`, `meta.context_routes` (the context each point was timed in) and
-  `meta.tunableop` (the results file and a hash of it, or "off"). A record timed another way or
-  under another TunableOp state is measured again, and a later start re-times what an earlier one
-  measured in another context.
+  `meta.tunableop` (the results file and a hash of it, or "off"). A later start re-times what an
+  earlier one measured in another context. A record timed another way or under another TunableOp
+  state no longer counts: the overlay leaves it out, as it does a record measured against another
+  engine, so the shipped row stands and the tuning at load measures the shape again. Before, a
+  complete stale record shadowed the shipped row and was never re-measured.
 - **route_tune.** It gains `--timing`, `--nk`, `--merge-into` and `--splice` (replace a row's
   points at the measured Ms only, re-derive its runs), and times a model's shapes in context.
 - **Checked against serving (R9700, MiniCPM5, TunableOp, rocprofv3).** Linear time a layer at
