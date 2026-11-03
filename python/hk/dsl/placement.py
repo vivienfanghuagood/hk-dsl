@@ -69,7 +69,7 @@ ORDER_DEPENDENT_OPS = frozenset({
 READ_OPS = frozenset({
     "hk.load", "hk.load_rows", "hk.group_load", "hk.gather_rows", "hk.load_scalar",
     "hk.stage_load", "hk.load_mx_scales", "hk.load_fp4_frags", "hk.load_fp4_frags_lds",
-    "hk.load_w4",
+    "hk.load_w4", "hk.gemv_w4",
 })
 
 

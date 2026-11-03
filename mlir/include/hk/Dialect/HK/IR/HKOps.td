@@ -434,6 +434,34 @@ def HK_LoadW4Op : HK_Op<"load_w4", [AttrSizedOperandSegments]> {
   let hasVerifier = 1;
 }
 
+def HK_GemvW4Op : HK_Op<"gemv_w4", [AttrSizedOperandSegments]> {
+  let summary = "a warp's partial W x^T for a few tokens from 4-bit codes, without WMMA";
+  let description = [{
+    Element (r, m) of the 16x16 f32 col-layout accumulator tile is the sum,
+    over `count` steps of 64 columns at k0 + c * kstep, of W[n0 + r][k] *
+    x[m][k], for tokens m < min(`tokens`, x's rows); the other columns are 0.
+    W is in hk's interleaved 4-bit layout (as load_w4 reads it): symmetric
+    (`zero`, no `zs`), with `s_blocked` scales or not, or asymmetric (`zs`).
+    x and the scales are f16. Each lane dequantizes its own row's codes and
+    multiplies with a two-element dot product (RDNA, wave32): the decode a
+    small batch needs without a WMMA operand's replication. The tile is the
+    warp's partial, in the layout an mma accumulator has.
+  }];
+  let arguments = (ins Optional<HK_RegTileType>:$dst, HK_GlobalType:$x, HK_GlobalType:$qw,
+                       HK_GlobalType:$s, Optional<HK_GlobalType>:$zs, I32:$n0, I32:$k0,
+                       I32:$kstep, I32:$count, I64Attr:$group, I64Attr:$tokens,
+                       OptionalAttr<I64Attr>:$zero, UnitAttr:$s_blocked);
+  let results = (outs Optional<HK_RegTileType>:$result);
+  let assemblyFormat = [{
+    $x `,` $qw `,` $s (`,` $zs^)? `[` $n0 `,` $k0 `,` $kstep `,` $count `]` `group` $group
+    `tokens` $tokens (`into` $dst^)?
+    attr-dict `:` qualified(type($x)) `,` qualified(type($qw)) `,` qualified(type($s))
+    (`,` qualified(type($zs))^)? (`into` qualified(type($dst))^)?
+    (`->` qualified(type($result))^)?
+  }];
+  let hasVerifier = 1;
+}
+
 //===----------------------------------------------------------------------===//
 // LDS
 //===----------------------------------------------------------------------===//

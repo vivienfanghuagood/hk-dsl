@@ -9,6 +9,21 @@ The next version's notes collect here until it is released.
 What is on main after 0.8.0. `pip install hk-dsl` (0.8.0) does not have it;
 the API reference marks such names *New after 0.8.0*.
 
+**`hk.gemv_w4`: a few tokens against 4-bit weights without WMMA, and hk.ops.w4a16's small-batch
+form on it.** At 1-4 tokens the w4a16 decode kernel was bound by instruction issue, not memory. A
+WMMA operand holds every row of W in both halves of the wave, so each 16-byte load of codes was
+decoded twice and exchanged: ~125 instructions a wave per 256 bytes, ~620 GB/s on a W7900D.
+`hk.gemv_w4` has each lane decode its own row's codes in packed fp16 and multiply with
+v_dot2_f32_f16. It returns the warp's partial as the 16x16 fp32 accumulator tile an mma gives, so a
+kernel reduces and stores it as before. Symmetric (GPTQ's `zero`, `s_blocked`) and asymmetric
+(`zs`) forms, groups that are multiples of 32, 1-8 tokens, fp16, RDNA.
+
+`hk.ops.w4a16.matmul` takes it for fp16 at 1-4 tokens on gfx1100 (`gemv_takes`; `GEMV_ARCHES`).
+Qwen3.8-27B-GPTQ's shapes at 1-4 tokens run at 715-777 GB/s cold, against vLLM's gptq_gemm_rdna3:
+qkv 1.07-1.17x, o/out 1.10-1.15x, qkvz 1.13-1.30x, gate_up 1.08-1.14x, down 1.27-1.47x. That is
+1.19-1.28x the WMMA form at one token. These are one-process, graph-timed runs with weights rotated
+over 576 MB.
+
 **Fix: `vllm_gptq` no longer turns off every vLLM route on a vLLM whose `gptq_gemm_rdna3` takes
 `b_g_idx`.** vLLM builds differ in that GEMM's parameters: some take the act-order index, some do not.
 The route's engine contract counted five arguments, so on the other builds it failed, and the
