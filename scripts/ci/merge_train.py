@@ -18,6 +18,15 @@ kicked out and the train rebuilt without it.
     merge_train.py retry                                        rerun the failed jobs (a flake)
     merge_train.py merge   --i-am-the-merger [--admin-bypass]   squash-merge in order, check trees
     merge_train.py cleanup [--abandon] [--prune-yes]            delete the train's refs, prune
+    merge_train.py regen   [--at REF | --round N] [--tests]     the generators on a tree, diff only (no writes)
+
+Generated files (docs/api, the hardware table, the op catalog) go stale inside a train: each PR regenerates
+them on its own base, and a later member changes an input of an earlier one's output. After stacking, `build`
+runs the generators (GENERATORS) on the stacked tree in CI's IR-tier environment (MERGE_TRAIN_GEN_IMAGE, a CPU
+container). If they change anything, and only files they may write, the change becomes one more member, last:
+a train-authored PR "train/<id>: regenerate generated files" on branch `<train>-regen`, READY by construction,
+recomputed on every round. `merge` merges it last, its branch brought to main as a union member's is (its tree
+is the tested train head's). A change outside a generator's files drops the regen, and the train runs as before.
 
 Every command takes --dry-run (no push, dispatch, comment, merge or delete; local git only) and
 --name (default: the current train). Every step is idempotent: rerunning a command after a crash
@@ -33,13 +42,16 @@ required checks (it could not be merged without an admin bypass).
 Environment: MERGE_TRAIN_REPO (owner/name), MERGE_TRAIN_DIR (state; default
 ~/.local/state/hk-merge-train), MERGE_TRAIN_PRUNE (a command cleanup runs; MERGE_TRAIN_PRUNE_YES
 with --prune-yes),
-MERGE_TRAIN_GIT_NAME / MERGE_TRAIN_GIT_EMAIL (author of the train's commits). Needs git >= 2.40
+MERGE_TRAIN_GIT_NAME / MERGE_TRAIN_GIT_EMAIL (author of the train's commits), MERGE_TRAIN_GEN_IMAGE /
+MERGE_TRAIN_GEN_MLIR / MERGE_TRAIN_GEN_DIR / MERGE_TRAIN_GENERATORS (the regen step),
+MERGE_TRAIN_SKIP_GPU_FILE (GPU jobs to leave out of the verdict while their runner is offline). Needs git >= 2.40
 (merge-tree --write-tree --merge-base) and an authenticated `gh`.
 """
 import argparse
 import datetime as dt
 import difflib
 import fcntl
+import fnmatch
 import io
 import json
 import os
@@ -63,6 +75,36 @@ GIT_EMAIL = os.environ.get('MERGE_TRAIN_GIT_EMAIL', 'merge-train@localhost')
 # `occupied-during --gpus --since [--until]`) and the GPUs gpu.yml's gfx950 jobs run on. Unset: no checks.
 GPU_GUARD = os.environ.get('MERGE_TRAIN_GPU_GUARD', '')
 GPU_GUARD_GPUS = os.environ.get('MERGE_TRAIN_GPU_GUARD_GPUS', '3,4')
+
+# Generated files, regenerated on the stacked tree (see `regenerate`): the image the generators run in (CI's
+# IR-tier environment; unset = no regeneration, the train kicks for stale generated files as before), the MLIR
+# install CI builds hk._mlir against (mounted read-only), and a directory for the scratch tree and the build.
+GEN_IMAGE = os.environ.get('MERGE_TRAIN_GEN_IMAGE', '')
+GEN_MLIR = os.path.expanduser(os.environ.get('MERGE_TRAIN_GEN_MLIR', ''))
+GEN_DIR = os.path.expanduser(os.environ.get('MERGE_TRAIN_GEN_DIR', '')) or os.path.join(BASE_DIR, 'gen')
+GEN_JOBS = os.environ.get('MERGE_TRAIN_GEN_JOBS', '16')
+# Each generator: the command (run in /src with PYTHONPATH=python), whether it needs hk._mlir, the files it may
+# write (fnmatch, `*` crosses `/`), files it may change only between two marker lines (the rest must stay
+# byte-identical), the inputs a member's change to which explains its diff (for the regen PR's body), and the
+# IR tests that check its output. MERGE_TRAIN_GENERATORS: a JSON file with this list instead.
+GENERATORS = [
+    {'name': 'hardware', 'cmd': ['python3', 'scripts/gen_hardware_docs.py'], 'mlir': False,
+     'writes': ['docs/supported-hardware.md', 'docs/ops.md'],
+     'regions': {'README.md': ['<!-- hw-table:begin', '<!-- hw-table:end -->'],
+                 'docs/positioning.md': ['<!-- hw-table:begin', '<!-- hw-table:end -->']},
+     'inputs': ['python/hk/target/*', 'python/hk/integration/switches.py', '.github/workflows/gpu.yml',
+                'python/hk/ops/*', 'scripts/gen_hardware_docs.py'],
+     # test_ops_catalog.py is not listed: besides the page it checks the catalog's hand-written data (every
+     # public op and route in a family), which no regeneration fixes -- a red one is still a member's
+     'tests': ['tests/hk/ir/test_hardware_docs.py']},
+    {'name': 'api', 'cmd': ['python3', 'scripts/gen_api_docs.py'], 'mlir': True,
+     'writes': ['docs/api/*', 'llms-full.txt'], 'regions': {},
+     'inputs': ['python/hk/*', 'scripts/gen_api_docs.py', 'scripts/api_baseline_*.json'],
+     'tests': ['tests/hk/ir/test_api_docs.py']},
+]
+if os.environ.get('MERGE_TRAIN_GENERATORS'):
+    with open(os.path.expanduser(os.environ['MERGE_TRAIN_GENERATORS'])) as _f:
+        GENERATORS = json.load(_f)
 
 MAIN = 'main'
 # Append-only entry files: a conflict confined to them is resolved by union while stacking (and the
@@ -633,6 +675,13 @@ def rnd(st):
     return st['rounds'][-1] if st['rounds'] else None
 
 
+def tag(e):
+    """How a stack entry is named in the log: #N, the regen member marked."""
+    if e.get('regen'):
+        return f"#{e['number']} (regen)" if e.get('number') else 'regen (PR not opened yet)'
+    return f"#{e['number']}"
+
+
 # --------------------------------------------------------------------------------------------
 # build
 
@@ -665,6 +714,216 @@ def stack(st, members, main_sha):
                         'union': unioned})
         cur = c
     return entries, conflicts
+
+
+# --------------------------------------------------------------------------------------------
+# regenerate: generated files recomputed on the stacked tree
+
+def regen_branch(name):
+    return f"{name}-regen"
+
+
+def gen_tree(sha):
+    """The scratch tree (a worktree of the bare clone, GEN_DIR/src) at `sha`, clean. A checkout touches only the
+    files that differ, so the hk._mlir build in GEN_DIR/build stays incremental and correct."""
+    src = os.path.join(GEN_DIR, 'src')
+    os.makedirs(os.path.join(GEN_DIR, 'build'), exist_ok=True)
+    if not os.path.isdir(os.path.join(src, '.git')) and not os.path.isfile(os.path.join(src, '.git')):
+        git('worktree', 'prune')
+        git('worktree', 'add', '-q', '--detach', src, sha)
+    sh(['git', '-C', src, 'checkout', '-q', '-f', '--detach', sha])
+    sh(['git', '-C', src, 'clean', '-q', '-ffdx'])
+    return src
+
+
+def gen_snapshot(src):
+    """{path: blob id or None (deleted)} of every path that differs from HEAD in the scratch tree."""
+    out = sh(['git', '-C', src, 'status', '--porcelain=v1', '-z', '--untracked-files=all'], quiet=True).stdout
+    snap = {}
+    for item in filter(None, out.split('\0')):
+        code, path = item[:2], item[3:]
+        full = os.path.join(src, path)
+        snap[path] = (sh(['git', '-C', src, 'hash-object', '--', path], quiet=True).stdout.strip()
+                      if os.path.exists(full) else None)
+    return snap
+
+
+def gen_run(g, src, built):
+    """Run generator g in the image, on /src. -> (ok, output tail). Builds hk._mlir first if g needs it and
+    this tree has not been built yet (built: a one-element list, shared by the generators of one tree)."""
+    script = []
+    if g.get('mlir') and not built[0]:
+        script.append(f"LLVM_INSTALL=/mlir HK_MLIR_BUILD=/build/hk-build-cp310 PYTHON=/usr/bin/python3 "
+                      f"JOBS={GEN_JOBS} scripts/build_hk_mlir.sh > /build/build.log 2>&1 "
+                      f"|| {{ tail -30 /build/build.log; exit 5; }}")
+    script.append(f"PYTHONPATH=python {shlex.join(g['cmd'])}")
+    cmd = ['docker', 'run', '--rm', '--network', 'none', '--ulimit', 'core=0',
+           '--user', f"{os.getuid()}:{os.getgid()}", '-e', 'HOME=/tmp', '-e', 'PYTHONDONTWRITEBYTECODE=1',
+           '-e', 'HK_ARCH=', '--name', f"merge-train-gen-{os.getpid()}",
+           '-v', f"{src}:/src", '-v', f"{os.path.join(GEN_DIR, 'build')}:/build",
+           '-v', f"{GEN_MLIR}:/mlir:ro", '-w', '/src', GEN_IMAGE, 'bash', '-c', ' && '.join(script)]
+    try:
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=3600)
+    except subprocess.TimeoutExpired:
+        sh(['docker', 'kill', f"merge-train-gen-{os.getpid()}"], check=False, quiet=True)
+        return False, f"{g['name']}: timed out after an hour"
+    LOG.write(f"$ docker run ... {GEN_IMAGE} {g['name']} -> {r.returncode}")
+    if r.returncode == 0 and g.get('mlir'):
+        built[0] = True
+    return r.returncode == 0, (r.stdout + r.stderr).strip()[-1500:]
+
+
+def gen_region_ok(src, sha, path, region):
+    """Only the lines between the two markers changed (the markers themselves stay)."""
+    old = (blob(sha, path) or b'').decode(errors='replace').splitlines(True)
+    new = open(os.path.join(src, path), encoding='utf-8', errors='replace').read().splitlines(True)
+
+    def outside(lines):
+        b = [i for i, l in enumerate(lines) if l.startswith(region[0])]
+        e = [i for i, l in enumerate(lines) if l.startswith(region[1])]
+        if len(b) != 1 or len(e) != 1 or e[0] < b[0]:
+            return None
+        return lines[:b[0] + 1], lines[e[0]:]
+    o, n = outside(old), outside(new)
+    return o is not None and o == n
+
+
+def regenerate(sha, label):
+    """The generators on tree `sha`. -> {'ok', 'why', 'files': {generator: [paths]}, 'src', 'diff'}: ok False
+    when regeneration is off or failed (why says so; the train runs without it); files empty when nothing
+    changed. A path outside its generator's `writes`/`regions` makes ok False: nothing is committed."""
+    if not GEN_IMAGE or not GEN_MLIR:
+        return {'ok': False, 'why': 'regeneration is off (MERGE_TRAIN_GEN_IMAGE / MERGE_TRAIN_GEN_MLIR unset)',
+                'files': {}}
+    if not os.path.isdir(GEN_MLIR):
+        return {'ok': False, 'why': f"no MLIR install at {GEN_MLIR}", 'files': {}}
+    LOG.say(f"  regen: generators on {label} ({sha[:7]}) in {GEN_IMAGE}")
+    src = gen_tree(sha)
+    built, files, prev = [False], {}, {}
+    for g in GENERATORS:
+        ok, out = gen_run(g, src, built)
+        if not ok:
+            return {'ok': False, 'why': f"generator {g['name']} failed: {out[-600:]}", 'files': {}, 'src': src}
+        snap = gen_snapshot(src)
+        mine = sorted(p for p in set(snap) | set(prev) if snap.get(p, 'unchanged') != prev.get(p, 'unchanged'))
+        prev = snap
+        bad = [p for p in mine if not (any(fnmatch.fnmatchcase(p, w) for w in g['writes']) or
+                                       (p in g.get('regions', {}) and snap.get(p) and
+                                        gen_region_ok(src, sha, p, g['regions'][p])))]
+        if bad:
+            return {'ok': False, 'why': f"generator {g['name']} changed files it may not write: {', '.join(bad[:8])}",
+                    'files': {}, 'src': src}
+        if mine:
+            files[g['name']] = mine
+        LOG.say(f"    {g['name']}: " + (f"{len(mine)} file(s): {', '.join(mine[:6])}" + (' ...' if len(mine) > 6 else '')
+                                        if mine else "no change"))
+    diff = sh(['git', '-C', src, 'diff', '--stat=120', 'HEAD'], quiet=True).stdout.strip() if files else ''
+    return {'ok': True, 'why': None, 'files': files, 'src': src, 'diff': diff}
+
+
+def regen_commit(st, src, base_sha, files):
+    """Commit the scratch tree's generated changes on base_sha (the stacked head) -> (commit, tree). Dated
+    like the train's commits, so the same stack and outputs give the same commit."""
+    paths = sorted({p for ps in files.values() for p in ps})
+    env = {'GIT_AUTHOR_NAME': GIT_NAME, 'GIT_AUTHOR_EMAIL': GIT_EMAIL, 'GIT_COMMITTER_NAME': GIT_NAME,
+           'GIT_COMMITTER_EMAIL': GIT_EMAIL, 'GIT_AUTHOR_DATE': st['created'], 'GIT_COMMITTER_DATE': st['created']}
+    sh(['git', '-C', src, 'add', '-A', '--', *paths])
+    staged = set(filter(None, sh(['git', '-C', src, 'diff', '--cached', '--name-only', base_sha],
+                                 quiet=True).stdout.splitlines()))
+    if staged != set(paths):
+        raise Fail(f"regen: staged {sorted(staged)} != generated {paths}")
+    t = sh(['git', '-C', src, 'write-tree'], quiet=True).stdout.strip()
+    sh(['git', '-C', src, 'reset', '-q'], quiet=True)
+    msg = (f"{st['name']}: regenerate generated files\n\n"
+           + ''.join(f"{g}: {', '.join(ps)}\n" for g, ps in files.items())
+           + "\nThe generators (merge_train.py GENERATORS) run on the stacked tree in CI's IR-tier environment.\n")
+    c = sh(['git', '-C', repo_dir(), 'commit-tree', t, '-p', base_sha, '-m', msg], env=env).stdout.strip()
+    return c, t
+
+
+def regen_inputs(base, entries, files):
+    """Per member: the generator inputs it changes, for the generators that changed something."""
+    out = []
+    for e in entries:
+        fs = changed_files(git('merge-base', base, e['head']), e['head'])
+        hit = sorted({f for g in GENERATORS if g['name'] in files for f in fs
+                      if any(fnmatch.fnmatchcase(f, i) for i in g['inputs'])})
+        if hit:
+            out.append((e['number'], hit))
+    return out
+
+
+def regen_entry(st, entries, main_sha):
+    """The regen member for a stack, or None (no change, or regeneration off / refused: logged)."""
+    if not entries:
+        return None
+    head = entries[-1]['commit']
+    g = regenerate(head, f"the stacked tree (round head before regen)")
+    if not g['ok']:
+        LOG.say(f"  regen: none ({g['why']})")
+        return None
+    if not g['files']:
+        LOG.say("  regen: the generated files are current: no regen member")
+        return None
+    c, t = regen_commit(st, g['src'], head, g['files'])
+    LOG.say(f"  regen: {g['diff'].splitlines()[-1] if g['diff'] else ''} -> {c[:7]}")
+    return {'number': (st.get('regen') or {}).get('pr'), 'title': f"{st['name']}: regenerate generated files",
+            'head': c, 'ready_at': None, 'position': len(entries) + 1, 'commit': c, 'tree': t, 'union': [],
+            'regen': {'files': g['files'], 'inputs': regen_inputs(main_sha, entries, g['files']),
+                      'stat': g['diff']}}
+
+
+def regen_pr(st, r, e):
+    """Push the regen member's branch and open (or retitle) its PR; e['number'] is set. Resumable."""
+    branch = regen_branch(st['name'])
+    remote = git('ls-remote', 'origin', f'refs/heads/{branch}').split('\t')[0] or None
+    push_ref(branch, e['head'], remote)
+    inputs = '\n'.join(f"- #{n}: {', '.join(f'`{f}`' for f in fs[:12])}" + (' ...' if len(fs) > 12 else '')
+                       for n, fs in e['regen']['inputs']) or '- (no member changes a listed input: a member left its own generated files stale)'
+    body = (f"Generated files, regenerated by the merge train on the stacked tree of `{st['name']}` "
+            f"(round {r['round']}), so that the members' generated outputs agree with each other.\n\n"
+            f"**Changed** (by generator):\n"
+            + ''.join(f"- {g}: {', '.join(f'`{p}`' for p in ps)}\n" for g, ps in e['regen']['files'].items())
+            + f"\n**Members whose changes feed them**:\n{inputs}\n\n"
+            f"```\n{e['regen']['stat'][-3000:]}\n```\n\n"
+            f"Train-authored and READY by construction: the train tests it as its last member and squash-merges "
+            f"it last, after bringing this branch to `{MAIN}` (its tree is the tested train head's). Recomputed "
+            f"on every round; closed if the train is abandoned. Do not push to this branch.")
+    pr_no = (st.get('regen') or {}).get('pr')
+    if pr_no:
+        write_api(f"update regen PR #{pr_no} (round {r['round']})", f"repos/{REPO}/pulls/{pr_no}", 'PATCH',
+                  {'title': e['title'], 'body': body, 'state': 'open'})
+    else:
+        got = write_api(f"open regen PR {branch} -> {MAIN}", f"repos/{REPO}/pulls", 'POST',
+                        {'title': e['title'], 'head': branch, 'base': MAIN, 'body': body})
+        if LOG.dry:
+            return
+        pr_no = got['number']
+        st['regen'] = {'pr': pr_no, 'branch': branch, 'opened': iso(now())}
+    e['number'] = pr_no
+    save(st)
+    # Said in comments too, once a round: on the regen PR what changed and why, and on each member whose
+    # change fed a generator, one line pointing at it.
+    noted = r.setdefault('regen_noted', [])
+    files = "; ".join(f"{g}: {', '.join(ps)}" for g, ps in e['regen']['files'].items())
+    if pr_no not in noted:
+        comment(pr_no, f"{MARK} round {r['round']} of `{st['name']}`: regenerated {files} on the stacked tree "
+                       f"(train head {e['commit'][:7]}). Members whose changes feed them: "
+                       + (", ".join(f"#{n} ({', '.join(fs[:4])}{' ...' if len(fs) > 4 else ''})"
+                                    for n, fs in e['regen']['inputs']) or "none (a member left its own generated "
+                                                                         "files stale)") + ".")
+        if not LOG.dry:
+            noted.append(pr_no)
+            save(st)
+    for n, fs in e['regen']['inputs']:
+        if n in noted:
+            continue
+        comment(n, f"{MARK} this PR changes inputs of generated files ({', '.join(fs[:4])}"
+                   f"{' ...' if len(fs) > 4 else ''}); in train `{st['name']}` round {r['round']} the train "
+                   f"regenerated {files} on the stacked tree, in #{pr_no}. Nothing to do here.")
+        if not LOG.dry:
+            noted.append(n)
+            save(st)
 
 
 def cancel_runs(r):
@@ -733,14 +992,19 @@ def new_round(st, members, why):
     fetch()
     main_sha = rev(f'origin/{MAIN}')
     entries, conflicts = stack(st, members, main_sha)
+    regen = regen_entry(st, entries, main_sha)
+    if regen:
+        entries.append(regen)
     prev = rnd(st)
     r = {'round': len(st['rounds']) + 1, 'at': iso(now()), 'why': why, 'base': main_sha,
          'stack': entries, 'conflicts': conflicts, 'head': entries[-1]['commit'] if entries else None,
          'runs': {}, 'commented': []}
     LOG.say(f"round {r['round']} of {st['name']} on {MAIN} {main_sha[:7]} ({why}):")
     for e in entries:
-        LOG.say(f"  {e['position']}. #{e['number']} head {e['head'][:7]} -> {e['commit'][:7]}  {e['title'][:60]}"
-                + (f"  [union: {', '.join(e['union'])}]" if e.get('union') else ''))
+        LOG.say(f"  {e['position']}. {tag(e)} head {e['head'][:7]} -> {e['commit'][:7]}  {e['title'][:60]}"
+                + (f"  [union: {', '.join(e['union'])}]" if e.get('union') else '')
+                + (f"  [regen: {'; '.join(f'{g}: ' + ', '.join(ps) for g, ps in e['regen']['files'].items())}]"
+                   if e.get('regen') else ''))
     for c in conflicts:
         LOG.say(f"  KICK #{c['number']}: conflicts with {c['against']} in {', '.join(c['files'][:6])}"
                 + (f" ({c['why']})" if c.get('why') else ''))
@@ -771,13 +1035,23 @@ def launch(st, r, wfs):
     if not r['head']:
         LOG.say("the train is empty: nothing to run")
         return
+    for e in r['stack']:
+        if e.get('regen'):
+            regen_pr(st, r, e)
+    rg = st.get('regen') or {}
+    if rg.get('pr') and not any(e.get('regen') for e in r['stack']) and rg.get('closed_round') != r['round']:
+        write_api(f"close regen PR #{rg['pr']}: round {r['round']} needs no regeneration",
+                  f"repos/{REPO}/pulls/{rg['pr']}", 'PATCH', {'state': 'closed'}, check=False)
+        if not LOG.dry:
+            rg['closed_round'] = r['round']
+            save(st)
     prev = [x['head'] for x in st['rounds'][:-1] if x['head']]
     remote = git('ls-remote', 'origin', f"refs/heads/{st['name']}").split('\t')[0] or None
     push_ref(st['name'], r['head'], remote if remote in prev + [r['head']] else (prev[-1] if prev else None))
     dispatch(st, r, st['name'], r['head'], wfs)
     n = len(r['stack'])
     for e in r['stack']:
-        if e['number'] in r['commented']:
+        if e['number'] in r['commented'] or e.get('regen'):
             continue
         links = ' '.join(f"[{wf}]({d['url']})" for wf, d in r['runs'].items() if d.get('url'))
         comment(e['number'], f"{MARK} in train `{st['name']}` at position {e['position']} of {n} "
@@ -896,6 +1170,21 @@ def verdict(runs):
     """runs: {wf: (run, jobs)} -> 'green' | 'red' | 'running'"""
     if not runs:
         return 'running'
+    # HK_TRAIN_SKIP_GPU=gfx1201: a GPU job whose runner is offline; the merger says so by hand (or in the
+    # file MERGE_TRAIN_SKIP_GPU_FILE names, one line, while a runner is off for longer than one train)
+    skip_src = os.environ.get('HK_TRAIN_SKIP_GPU')
+    skip_file = os.path.expanduser(os.environ.get('MERGE_TRAIN_SKIP_GPU_FILE', ''))
+    if skip_src is None and skip_file and os.path.exists(skip_file):
+        skip_src = open(skip_file).read().strip()
+    skip = {s for s in (skip_src or '').split(',') if s}
+    if skip and 'gpu.yml' in runs:
+        run, jobs = runs['gpu.yml']
+        jobs = [j for j in jobs if j['name'] not in skip]
+        done_ = all(j['status'] == 'completed' for j in jobs)
+        ok = all(j['conclusion'] == 'success' for j in jobs)
+        run = dict(run, status='completed' if done_ else run['status'],
+                   conclusion='success' if done_ and ok else ('failure' if done_ else None))
+        runs = dict(runs, **{'gpu.yml': (run, jobs)})
     bad = any(j['conclusion'] in ('failure', 'cancelled', 'timed_out', 'action_required', 'startup_failure')
               for _, jobs in runs.values() for j in jobs)
     bad |= any(run['conclusion'] not in (None, 'success') for run, _ in runs.values())
@@ -906,7 +1195,7 @@ def verdict(runs):
         return 'red-running' if bad else 'running'
     if 'gpu.yml' in runs:
         names = {j['name'] for j in runs['gpu.yml'][1] if j['conclusion'] == 'success'}
-        if not set(GPU_JOBS) <= names:
+        if not set(GPU_JOBS) - skip <= names:
             return 'red'
     return 'green'
 
@@ -966,7 +1255,14 @@ def suspects(st, r, runs):
                 f"; same job on {MAIN} {r['base'][:7]}: {m or 'no run'}")
         if m == 'failure':
             on_main.append(j['name'])
-    touched = {e['number']: changed_files(git('merge-base', r['base'], e['head']), e['head']) for e in r['stack']}
+    gen_tests = {t for g in GENERATORS for t in g.get('tests', [])}
+    if any(e.get('regen') for e in r['stack']) and files & gen_tests:
+        LOG.say(f"  {', '.join(sorted(files & gen_tests))} failed although the train regenerated its files on this "
+                f"stack: the generator is non-deterministic or depends on its environment (MERGE_TRAIN_GEN_IMAGE "
+                f"vs CI). Not a member's fault: fix that, then `build --rebuild`; do not kick for it.")
+        files = files - gen_tests
+    touched = {e['number']: changed_files(git('merge-base', r['base'], e['head']), e['head']) for e in r['stack']
+               if not e.get('regen')}
     strong = [n for n, fs in touched.items() if fs & files]
     code = [n for n, fs in touched.items() if any(not INERT.match(f) or f.startswith('docs/api/') for f in fs)]
     if on_main:
@@ -1042,6 +1338,9 @@ def member_drift(st, r):
     """Members whose PR moved, closed, or lost its READY since the round was built."""
     out = []
     for e in r['stack']:
+        if not e.get('number'):
+            out.append(('regen', "PR not opened yet (`build` resumes it)"))
+            continue
         pr = api(f"repos/{REPO}/pulls/{e['number']}")
         if pr.get('merged_at'):
             continue
@@ -1061,7 +1360,7 @@ def cmd_status(a):
     while True:
         r = rnd(st)
         LOG.say(f"{name}, round {r['round']} ({r['why']}, {r['at']}): head {(r['head'] or '-')[:7]} on "
-                f"{MAIN} {r['base'][:7]}; members " + ', '.join(f"#{e['number']}" for e in r['stack'])
+                f"{MAIN} {r['base'][:7]}; members " + ', '.join(tag(e) for e in r['stack'])
                 + (f"; kicked: {', '.join('#' + k for k in st['kicked'])}" if st['kicked'] else ''))
         if not r['head']:
             return 0
@@ -1117,6 +1416,9 @@ def cmd_kick(a):
     if st['merged']:
         raise Fail("merging has started: kick is for before the merge")
     n = a.pr
+    if (st.get('regen') or {}).get('pr') == n:
+        raise Fail(f"#{n} is the train's regen member: it is recomputed on every round. Kick the member whose "
+                   f"change broke it, or set MERGE_TRAIN_GEN_IMAGE= (off) and `build --rebuild`")
     m = next((x for x in st['members'] if x['number'] == n), None)
     if not m:
         raise Fail(f"#{n} is not in {name}")
@@ -1301,8 +1603,10 @@ def bring_branch(st, r, e, pr, cur, prev_tree):
         raise Fail(f"ALERT: {MAIN} {cur[:7]}'s tree is not the train's before #{n}: not touching its branch")
     env = {'GIT_AUTHOR_NAME': GIT_NAME, 'GIT_AUTHOR_EMAIL': GIT_EMAIL, 'GIT_COMMITTER_NAME': GIT_NAME,
            'GIT_COMMITTER_EMAIL': GIT_EMAIL, 'GIT_AUTHOR_DATE': st['created'], 'GIT_COMMITTER_DATE': st['created']}
+    what = (f"{', '.join(e['union'])} resolved by union" if e.get('union') else
+            "the generated files the train regenerated")
     msg = (f"Merge {MAIN} {cur[:12]} into {branch} for {st['name']} (position {e['position']})\n\n"
-           f"{', '.join(e['union'])} resolved by union, exactly as in the tested train commit\n"
+           f"{what}, exactly as in the tested train commit\n"
            f"{e['commit']} (tree {e['tree']}).\n")
     new = sh(['git', '-C', repo_dir(), 'commit-tree', e['tree'], '-p', e['head'], '-p', cur, '-m', msg],
              env=env).stdout.strip()
@@ -1313,7 +1617,7 @@ def bring_branch(st, r, e, pr, cur, prev_tree):
         raise Fail(f"#{n} head is {pr['head']['sha'][:7]}, neither the tested {e['head'][:7]} nor {new[:7]}")
     if LOG.dry:
         LOG.say(f"  [dry-run] would push {new[:7]} (= {e['head'][:7]} + merge of {MAIN} {cur[:7]}, "
-                f"{', '.join(e['union'])} by union; tree {e['tree'][:10]} == train commit {e['commit'][:7]}) "
+                f"{what}; tree {e['tree'][:10]} == train commit {e['commit'][:7]}) "
                 f"to {branch}, lease {e['head'][:7]}, and say so on #{n}")
         return new
     git('push', '-q', f'--force-with-lease=refs/heads/{branch}:{e["head"]}', 'origin', f'{new}:refs/heads/{branch}')
@@ -1321,8 +1625,8 @@ def bring_branch(st, r, e, pr, cur, prev_tree):
     e['updated_head'] = new
     save(st)
     comment(n, f"{MARK} brought this branch to {new[:7]} for its merge from train `{st['name']}` (position "
-               f"{e['position']}): {e['head'][:7]} (tested, READY) plus a merge of {MAIN} {cur[:7]}, with "
-               f"{', '.join(e['union'])} resolved by union. Its tree, `{e['tree']}`, is exactly the tested train "
+               f"{e['position']}): {e['head'][:7]} (tested{'' if e.get('regen') else ', READY'}) plus a merge of "
+               f"{MAIN} {cur[:7]}, with {what}. Its tree, `{e['tree']}`, is exactly the tested train "
                f"commit {e['commit'][:7]}'s (checked before the push). This head has no required checks of its "
                f"own, so it is squash-merged with an admin bypass, justified by that equality.")
     for _ in range(20):
@@ -1350,6 +1654,8 @@ def cmd_merge(a):
     # resume: adopt merges that happened (a crash after the merge call) in train order
     ours_ = {e['number'] for e in r['stack']}
     for e in r['stack']:
+        if not e.get('number'):
+            break
         if any(m['number'] == e['number'] for m in st['merged']):
             continue
         pr = api(f"repos/{REPO}/pulls/{e['number']}")
@@ -1389,6 +1695,20 @@ def cmd_merge(a):
     required, _ = required_checks()
     prs, lacks = {}, {}
     for e in r['stack']:
+        if e.get('regen'):
+            if not e.get('number'):
+                problems.append("the regen member has no PR yet: `build` resumes it")
+                continue
+            if e['number'] in done:
+                continue
+            pr = prs[e['number']] = api(f"repos/{REPO}/pulls/{e['number']}")
+            if pr['state'] != 'open':
+                problems.append(f"regen PR #{e['number']} is {pr['state']}")
+            elif pr['head']['sha'] not in (e['head'], e.get('updated_head')):
+                problems.append(f"regen PR #{e['number']} head moved {e['head'][:7]} -> {pr['head']['sha'][:7]}")
+            elif (pr['head'].get('repo') or {}).get('full_name') != REPO:
+                problems.append(f"regen PR #{e['number']}'s branch is not in {REPO}")
+            continue   # train-authored: READY by construction; merged by tree equality (bypass, logged)
         if e['number'] in done:
             continue
         pr = prs[e['number']] = api(f"repos/{REPO}/pulls/{e['number']}")
@@ -1428,9 +1748,10 @@ def cmd_merge(a):
         pr = prs[n]
         title = f"{pr['title']} (#{n})"
         head = e['head']
-        if e.get('union'):
-            # GitHub's squash knows nothing of the union: bring the PR's branch to the train's tree at
-            # this position (a merge of main into it), so that its squash onto main is that tree.
+        if e.get('union') or e.get('regen'):
+            # GitHub's squash knows nothing of the union (or of the regen commit, whose merge base with main is
+            # still the train's base): bring the PR's branch to the train's tree at this position (a merge of
+            # main into it), so that its squash onto main is that tree.
             prev_tree = r['stack'][i - 1]['tree'] if i else tree(r['base'])
             head = bring_branch(st, r, e, pr, cur, prev_tree)
         bypass = head != e['head'] or bool(lacks.get(n))
@@ -1440,8 +1761,9 @@ def cmd_merge(a):
             if head != e['head']:
                 if th != e['tree']:
                     raise Fail(f"ALERT: #{n}'s new head {head[:7]} has tree {th}, not the train commit's {e['tree']}")
-                why = (f"{', '.join(e['union'])} resolved by union in the train; the new head has no required "
-                       f"checks of its own")
+                why = ((f"{', '.join(e['union'])} resolved by union in the train" if e.get('union') else
+                        "the train-authored regen member (generated files regenerated on the tested stack)")
+                       + "; the new head has no required checks of its own")
                 eq = f"tree {th} == train commit {e['commit']}'s tree {e['tree']} (verified)"
             else:
                 why = f"the tested head lacks green {', '.join(lacks[n])} (the merger's --admin-bypass)"
@@ -1499,6 +1821,63 @@ def cmd_merge(a):
 
 
 # --------------------------------------------------------------------------------------------
+# regen (read-only): the generators on a tree
+
+def gen_tests(src, tests):
+    """pytest `tests` in the image on the scratch tree (hk._mlir already built there). -> (rc, tail)."""
+    cmd = ['docker', 'run', '--rm', '--network', 'none', '--ulimit', 'core=0',
+           '--user', f"{os.getuid()}:{os.getgid()}", '-e', 'HOME=/tmp', '-e', 'PYTHONDONTWRITEBYTECODE=1',
+           '-e', 'HK_ARCH=', '-v', f"{src}:/src", '-v', f"{os.path.join(GEN_DIR, 'build')}:/build",
+           '-v', f"{GEN_MLIR}:/mlir:ro", '-w', '/src', GEN_IMAGE, 'bash', '-c',
+           f"PYTHONPATH=python /usr/bin/python3 -m pytest -q -p no:cacheprovider {shlex.join(tests)}"]
+    r = subprocess.run(cmd, capture_output=True, text=True, timeout=3600)
+    return r.returncode, (r.stdout + r.stderr).strip()[-2500:]
+
+
+def cmd_regen(a):
+    """What `build` would regenerate, on --at REF (default origin/main) or on round N of the train restacked
+    (--round): the generators' changes and their diff; --tests runs the generators' IR tests (and any given)
+    on the regenerated tree. Writes nothing to GitHub and no train state. Exit 0: no change; 1: a change."""
+    LOG.to(os.path.join(BASE_DIR, 'log'))
+    LOG.dry = True
+    fetch()
+    if a.round:
+        name = current_name(a)
+        st = load(name)
+        r0 = st['rounds'][a.round - 1]
+        members = [{k: e[k] for k in ('number', 'title', 'head')} for e in r0['stack'] if not e.get('regen')]
+        for m in members:
+            if not rev(m['head']):
+                git('fetch', '-q', 'origin', m['head'])
+        entries, conflicts = stack(st, members, r0['base'])
+        if conflicts:
+            LOG.say(f"restacking round {a.round}: conflicts {[c['number'] for c in conflicts]} (left out)")
+        sha = entries[-1]['commit']
+        label = (f"{name} round {a.round} restacked: {MAIN} {r0['base'][:7]} + "
+                 + ', '.join(f"#{e['number']}@{e['head'][:7]}" for e in entries))
+    else:
+        sha = rev(a.at) or (git('fetch', '-q', 'origin', a.at) or rev('FETCH_HEAD'))
+        label = a.at
+    LOG.say(f"regen on {label} = {sha[:12]}")
+    g = regenerate(sha, label)
+    if not g['ok']:
+        LOG.say(f"regen: {g['why']}")
+        return 3
+    if g['files']:
+        LOG.say(g['diff'])
+        d = sh(['git', '-C', g['src'], 'diff', 'HEAD'], quiet=True).stdout
+        LOG.say(d[:a.max_diff] + (f"\n... ({len(d) - a.max_diff} more characters)" if len(d) > a.max_diff else ''))
+    else:
+        LOG.say("regen: no change: every generated file is current on this tree")
+    if a.tests is not None:
+        tests = sorted({t for gg in GENERATORS for t in gg.get('tests', [])} |
+                       {t for t in a.tests.split(',') if t})
+        rc, out = gen_tests(g['src'], tests)
+        LOG.say(f"tests on the regenerated tree ({', '.join(tests)}): rc {rc}\n{out}")
+    return 1 if g['files'] else 0
+
+
+# --------------------------------------------------------------------------------------------
 # cleanup
 
 def cmd_cleanup(a):
@@ -1517,7 +1896,13 @@ def cmd_cleanup(a):
     # the train's branch and its bisect probes (<name>-r<round>-p<k>) only: not a train named <name>-r2
     refs = [ref for ref in (l.split('\t')[1][len('refs/heads/'):] for l in
             git('ls-remote', 'origin', f'refs/heads/{name}', f'refs/heads/{name}-r*').splitlines() if l)
-            if ref == name or re.fullmatch(re.escape(name) + r'-r\d+-p\d+', ref)]
+            if ref == name or ref == regen_branch(name) or re.fullmatch(re.escape(name) + r'-r\d+-p\d+', ref)]
+    rg = st.get('regen') or {}
+    if rg.get('pr'):
+        pr = api(f"repos/{REPO}/pulls/{rg['pr']}", check=False) or {}
+        if pr.get('state') == 'open':
+            write_api(f"close regen PR #{rg['pr']}", f"repos/{REPO}/pulls/{rg['pr']}", 'PATCH', {'state': 'closed'},
+                      check=False)
     for ref in refs:
         assert ref.startswith('train/')
         write_api(f"delete {ref}", f"repos/{REPO}/git/refs/heads/{urllib.parse.quote(ref)}", 'DELETE', check=False)
@@ -1591,6 +1976,12 @@ def main():
     s.add_argument('--i-am-the-merger', action='store_true')
     s.add_argument('--admin-bypass', action='store_true',
                    help='allow PRs whose head lacks main\'s required checks (GitHub then needs an admin)')
+    s = sub.add_parser('regen', parents=[common])
+    s.add_argument('--at', default=f'origin/{MAIN}', help='a ref or sha (default origin/main)')
+    s.add_argument('--round', type=int, help="restack this round of the train (--name) and regenerate on it")
+    s.add_argument('--tests', nargs='?', const='', default=None,
+                   help="run the generators' IR tests on the regenerated tree, plus these (comma-separated)")
+    s.add_argument('--max-diff', type=int, default=20000, help='characters of the diff to print')
     s = sub.add_parser('cleanup', parents=[common])
     s.add_argument('--abandon', action='store_true', help='drop a train that did not (fully) merge')
     s.add_argument('--prune-yes', action='store_true', help='run MERGE_TRAIN_PRUNE_YES instead of MERGE_TRAIN_PRUNE')
