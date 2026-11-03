@@ -29,7 +29,8 @@ from . import _common, engine
 
 PREFIXES = ("vllm",)
 
-PATCH = engine.Patch("hk_vllm::prefill", paths=("hk", "fallback", "decode"), graph="safe")
+PATCH = engine.Patch("hk_vllm::prefill", paths=("hk", "fallback", "decode", "declined"),
+                     graph="safe")
 
 #: The GPUs the kernels are built and tested for: RDNA3 and RDNA4 (wave32, 64 KiB of LDS a
 #: workgroup; the WMMA operand layouts are HipKittens' per arch, behind the same DSL ops).
@@ -450,6 +451,93 @@ def u_why_not(a: dict) -> str:
     return ""
 
 
+#: The default-on rule's per-shape clause on TRITON_ATTN: hk takes a batch with prefill in it
+#: only where its kernel measured faster than vLLM's (tools/hk-bench/attention_bench.py, one
+#: process, cold KV, against the faster of TRITON_ATTN's and ROCM_ATTN's kernels, MiniCPM5-2B,
+#: Qwen3.8-27B and MiniCPM-V-4.7 at TP2). Two kinds of batch it is not faster on:
+#: - decode rows beside a small prefill: hk's kernel walks each decode's whole context as one
+#:   16-row fragment in one workgroup, where vLLM's splits it;
+#: - a short chunk: too few query tiles (query rows x kv heads) to fill the card, as there is
+#:   no KV split.
+#: The route reads nothing on the host, so it judges from the sizes it is given: the requests,
+#: the longest query, the longest context and the kv heads. It bounds the decode work from
+#: above, (requests - 1) x the longest context, and the prefill's from below, the longest
+#: query's square over 2, and declines a batch where the first is more than MIX_RATIO times
+#: the second; it declines a short chunk -- its longest query times its kv heads under
+#: MIN_ROWS -- over a context longer than SHORT_CTX tokens; and any chunk whose context is more
+#: than CTX_PER_Q times its length. Measured per arch and
+#: head size class (up to 128; 256), set with margin: where unsure it declines. It is checked
+#: first, on sizes alone, so a declined batch costs nothing more than vLLM's own call: it goes
+#: to vLLM's kernel unchanged and is counted as "declined".
+#: HK_VLLM_PREFILL_GUARD=0 turns the guard off (to measure it).
+GUARD = __import__("os").environ.get("HK_VLLM_PREFILL_GUARD", "1") != "0"
+#: (arch, head size class) -> (MIX_RATIO, MIN_ROWS, SHORT_CTX, CTX_PER_Q)
+GUARDS = {
+    # gfx1100 (W7900D). Mixed: wins at a ratio <= 0.0039, losses from 0.0078. Up to 128 (2 kv
+    # heads): a short prompt wins (1.33x at 16-256 tokens; 512:64 too), a chunk under 512 rows
+    # over a context of 1k+ loses (1024:64 0.85x, 2048:128 0.91x), 4096:256 (512 rows) wins.
+    # 256: no chunk measured loses (32 tokens x 1 kv head over 32k: a win).
+    ("gfx1100", 128): (0.003, 512, 600, 64),
+    ("gfx1100", 256): (0.003, 16, 0, 1024),
+    # gfx1201 (R9700). Mixed: as gfx1100. Up to 128: under 1024 rows only thin wins (1.03-1.14x)
+    # or losses (32-token chunks over 2k+: 0.77x); 0:512 1.09x. 256: a short prompt wins
+    # (1.7x), a chunk under 512 rows over 1k+ loses or ties (1024:64 0.95-1.00x, 1024:128 0.91x).
+    ("gfx1201", 128): (0.003, 1024, 0, 128),
+    ("gfx1201", 256): (0.003, 512, 600, 128),
+}
+_DECLINED_SAID: list = []
+
+
+def guard_why_not(reqs: int, max_q: int, max_k: int, head_dim: int, kv_heads: int,
+                  arch: str) -> str:
+    """Why the guard declines a TRITON_ATTN batch with prefill in it, from its host-known sizes
+    (`reqs` requests, longest query `max_q`, longest context `max_k`, `kv_heads`), or ""."""
+    if not GUARD:
+        return ""
+    key = (arch, 256 if head_dim > 128 else 128)
+    g = GUARDS.get(key)
+    if g is None:
+        return f"no measured guard for {key}"
+    mix, min_rows, short_ctx, ctx_per_q = g
+    if max_k <= 0:
+        return "no context length given"
+    if reqs > 1 and (reqs - 1) * max_k > mix * max_q * max_q / 2:
+        return (f"up to {reqs - 1} decodes over up to {max_k} tokens beside a {max_q}-token "
+                f"prefill (vLLM's kernel splits a decode's context, hk's does not)")
+    if max_q * kv_heads < min_rows and max_k > short_ctx:
+        return f"a {max_q}-token chunk over a {max_k}-token context, {kv_heads} kv head(s)"
+    if max_k > ctx_per_q * max_q:
+        return f"a {max_q}-token chunk over a {max_k}-token context"
+    return ""
+
+
+def _guard(a: dict) -> str:
+    """guard_why_not for a unified_attention call (`a`: its arguments by name), read before any
+    other check: sizes only. "" for a call whose shapes it does not know (the checks after it
+    refuse those)."""
+    from . import switches  # noqa: PLC0415
+
+    q, k, used = a.get("q"), a.get("k"), a.get("seqused_k")
+    arch = switches.arch()
+    if (not GUARD or arch not in ARCHES or getattr(q, "dim", None) is None or q.dim() != 3
+            or getattr(k, "dim", None) is None or k.dim() != 4 or used is None):
+        return ""
+    return guard_why_not(int(used.shape[0]), int(a.get("max_seqlen_q", 0)),
+                         int(a.get("max_seqlen_k") or 0), int(q.shape[-1]), int(k.shape[2]), arch)
+
+
+def _note_declined(why: str) -> None:
+    """The first declined batch of this process says so, once, with where the rest are counted."""
+    if not _DECLINED_SAID:
+        _DECLINED_SAID.append(True)
+        import sys  # noqa: PLC0415
+
+        print(f"[hk] prefill: a batch went to vLLM's kernel, where hk's is not faster ({why}); "
+              f"such batches are counted as 'declined' in {PATCH.name} "
+              f"(python3 -m hk.integration --status; HK_VLLM_PREFILL_GUARD=0 turns this off)",
+              file=sys.stderr, flush=True)
+
+
 #: A call with only decodes in it (one query a request) goes to hk's split decode
 #: (hk.ops.paged_decode) on the same cache, where `decode_takes` says it does. HK_VLLM_DECODE:
 #: unset, head_dim 256 only -- there hk beats every stock kernel that can read those pages;
@@ -599,6 +687,11 @@ def unified_attention(*args, **kwargs):
                 _compare(a["out"], ref, [r for r in live if r < a["out"].shape[0]])
             return None
         PATCH.count("fallback")
+        return _ORIG_U(*args, **kwargs)
+    why = _guard(a)
+    if why:
+        PATCH.count("declined")
+        _note_declined(why)
         return _ORIG_U(*args, **kwargs)
     if u_why_not(a):
         PATCH.count("fallback")

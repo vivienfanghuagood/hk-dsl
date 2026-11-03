@@ -98,6 +98,26 @@ workgroup; `HK_VLLM_PREFILL_VT=0` turns that off.
 `HK_VLLM_PREFILL_SHADOW=1` also runs vLLM's kernel on every call hk takes and
 compares the rows. It is a diagnostic that syncs; don't serve with it.
 
+**Batches the route leaves to vLLM on TRITON_ATTN.** On some batches hk's kernel
+is not faster than vLLM's, so the route does not take them (the default-on rule:
+never slower on a shape it takes). Two kinds:
+
+- decode rows beside a small prefill: hk's kernel walks each decode's whole
+  context in one workgroup, where vLLM's splits it. A 512-token prompt beside
+  8 decodes over 4k tokens ran at 0.46-0.73x on a W7900D;
+- a short chunk: too few query tiles to fill the card (a 128-token chunk of
+  MiniCPM5-2B at 0.91x on a W7900D).
+
+The route reads nothing on the host, so it decides from the sizes it is given:
+it bounds the decode work from above ((requests - 1) x the longest context) and
+the prefill's from below (the longest query's square over 2), and checks the
+query rows times kv heads and the context per query token, against thresholds
+measured per GPU and head size (`vllm_prefill.GUARDS`), set so that every
+measured batch it takes is at least 1.05x the faster of TRITON_ATTN's and
+ROCM_ATTN's kernels (`tools/hk-bench/results/2026-11-03/`). Such a batch goes to
+vLLM's kernel unchanged and is counted as `declined`; the first one prints one
+line. `HK_VLLM_PREFILL_GUARD=0` turns the guard off, to measure it.
+
 ### Decode-only batches on TRITON_ATTN
 
 A decode step reads the whole KV cache and does one query row a head of maths

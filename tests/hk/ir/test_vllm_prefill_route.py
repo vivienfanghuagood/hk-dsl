@@ -5,6 +5,8 @@ does not know refuses the call."""
 from __future__ import annotations
 
 import inspect
+import json
+from pathlib import Path
 
 import pytest
 
@@ -128,3 +130,102 @@ def test_the_contract_checks_only_what_the_rocm_attn_standin_reads():
     assert "same_parameters(fn, vllm_prefill.context_attention_fwd" not in inspect.getsource(
         contract._vllm_prefill)
 
+
+
+# ---- the guard: batches hk is not faster on go to vLLM's kernel, unchanged --------------------
+
+def _triton_call(reqs, d=128, hkv=2, group=8, page=16):
+    """unified_attention's arguments for `reqs` = [(context, query length)], on CPU: what the
+    route reads on the host, and caches in TRITON_ATTN's planes order."""
+    n = sum(q for _, q in reqs)
+    blocks = sum(-(-(c + q) // page) for c, q in reqs) + 1
+    kv = torch.zeros(blocks, 2, page, hkv, d, dtype=torch.bfloat16)
+    k, v = kv.unbind(1)
+    starts = [0]
+    for _, q in reqs:
+        starts.append(starts[-1] + q)
+    pages = max(-(-(c + q) // page) for c, q in reqs)
+    return dict(q=torch.zeros(n, hkv * group, d, dtype=torch.bfloat16), k=k, v=v,
+                out=torch.zeros(n, hkv * group, d, dtype=torch.bfloat16),
+                cu_seqlens_q=torch.tensor(starts, dtype=torch.int32),
+                max_seqlen_q=max(q for _, q in reqs),
+                seqused_k=torch.tensor([c + q for c, q in reqs], dtype=torch.int32),
+                max_seqlen_k=max(c + q for c, q in reqs), softmax_scale=d ** -0.5, causal=True,
+                window_size=(-1, -1),
+                block_table=torch.zeros(len(reqs), pages, dtype=torch.int32), softcap=0,
+                q_descale=None, k_descale=None, v_descale=None)
+
+
+@pytest.mark.parametrize("arch", ["gfx1100", "gfx1201"])
+def test_a_declined_batch_is_vllms_call_unchanged(monkeypatch, capsys, arch):
+    """A batch the guard declines reaches vLLM's unified_attention with the caller's own
+    arguments -- the same tensors, nothing launched by hk before it -- so its output is stock's;
+    counted as "declined", and said once a process."""
+    from hk.integration import switches
+
+    seen = []
+
+    def unified_attention(q, k, v, out, cu_seqlens_q, max_seqlen_q, seqused_k, max_seqlen_k,
+                          softmax_scale, causal, window_size, block_table, softcap, q_descale,
+                          k_descale, v_descale, alibi_slopes=None, sinks=None):
+        seen.append(dict(q=q, k=k, v=v, out=out, block_table=block_table))
+        out.fill_(3.0)
+
+    monkeypatch.setattr(switches, "arch", lambda: arch)
+    monkeypatch.setattr(vp, "_ORIG_U", unified_attention)
+    monkeypatch.setattr(vp, "_U_SIG", inspect.signature(unified_attention))
+    monkeypatch.setattr(vp, "_DECLINED_SAID", [])
+    monkeypatch.setattr(vp, "_flash_op", lambda *a, **k: pytest.fail("hk's kernel was built"))
+    a = _triton_call([(0, 128), *[(16384, 1)] * 8])        # a small chunk beside 8 long decodes
+    assert vp.u_why_not(a) == ""
+    before = vp.PATCH.stats["declined"]
+    vp.unified_attention(**a)
+    assert vp.PATCH.stats["declined"] == before + 1
+    assert len(seen) == 1 and all(seen[0][n] is a[n] for n in ("q", "k", "v", "out", "block_table"))
+    assert torch.all(a["out"] == 3.0)
+    vp.unified_attention(**a)
+    err = capsys.readouterr().err
+    assert err.count("[hk] prefill: a batch went to vLLM's kernel") == 1
+    assert "declined" in err and "HK_VLLM_PREFILL_GUARD=0" in err
+
+
+def test_the_guard_off_declines_nothing(monkeypatch):
+    monkeypatch.setattr(vp, "GUARD", False)
+    assert vp.guard_why_not(9, 128, 16385, 128, 2, "gfx1100") == ""
+    assert vp.guard_why_not(1, 16, 32768, 256, 1, "gfx1201") == ""
+
+
+def test_an_unmeasured_arch_or_an_unknown_context_is_declined():
+    assert "no measured guard" in vp.guard_why_not(1, 4096, 4096, 128, 2, "gfx1151")
+    assert vp.guard_why_not(1, 4096, 0, 128, 2, "gfx1201") == "no context length given"
+
+
+#: The guard's evidence: tools/hk-bench/attention_bench.py prefill, every shape against the faster
+#: of TRITON_ATTN's and ROCM_ATTN's kernels, one process, cold KV (W7900D gfx1100, R9700 gfx1201).
+SWEEP = Path(__file__).resolve().parents[3] / "tools" / "hk-bench" / "results" / "2026-11-03"
+#: the bench's models: (head size, kv heads)
+DIMS = {"minicpm5": (128, 2), "qwen3.8": (256, 4), "minicpm-v-tp2": (256, 1)}
+
+
+def _reqs(shape):
+    return [(int(c) + int(n), int(n)) for c, n in (x.split(":") for x in shape.split("+"))]
+
+
+@pytest.mark.parametrize("arch", ["gfx1100", "gfx1201"])
+def test_every_measured_shape_the_guard_takes_is_a_clear_win(arch):
+    """The default-on rule's per-shape clause, on the measurements the guard was set from: a
+    batch the route takes was measured at least 1.05x the faster stock kernel; and the guard
+    still takes the clear wins (long prompts, chunks over a prefix, a big chunk beside decodes)."""
+    rows = json.loads((SWEEP / arch / "prefill-guard-sweep.json").read_text())
+    taken = []
+    for r in rows:
+        d, hkv = DIMS[r["model"]]
+        reqs = _reqs(r["shape"])
+        why = vp.guard_why_not(len(reqs), max(q for _, q in reqs), max(s for s, _ in reqs), d,
+                               hkv, arch)
+        if not why:
+            taken.append(r)
+            assert r["hk_speedup"] >= 1.05, (arch, r["model"], r["shape"], r["hk_speedup"])
+    assert len(taken) >= len(rows) // 4, f"the guard takes only {len(taken)} of {len(rows)}"
+    for model in DIMS:
+        assert any(r["model"] == model and r["shape"] == "0:2048+1024:1" for r in taken), model
