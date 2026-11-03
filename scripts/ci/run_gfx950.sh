@@ -41,8 +41,13 @@ SHA=$GITHUB_SHA
 KEY=$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT
 RUN=$STATE/runs/$TIER/$KEY
 OUT=$GITHUB_WORKSPACE/gha-report
-declare -A RENDER=([0]=renderD136 [1]=renderD152 [2]=renderD144 [3]=renderD128
-                   [4]=renderD168 [5]=renderD184 [6]=renderD176 [7]=renderD160)
+# A card's render node, from its PCI address (rocm-smi's index -> the PCI device's drm node): not a table
+# of one machine's numbering.
+render_of() {
+    local pci
+    pci=$(rocm-smi -d "$1" --showbus 2>/dev/null | grep -o "PCI Bus: [0-9A-Fa-f:.]*" | head -1 | awk '{print tolower($3)}')
+    [ -n "$pci" ] && ls "/sys/bus/pci/devices/$pci/drm" 2>/dev/null | grep -m1 '^renderD'
+}
 # The job log is public: it names no host path (the runner's .env has them).
 [ -d "$MLIR/lib/cmake/mlir" ] || { echo "::error::no MLIR install at HK_CI_MLIR"; exit 1; }
 mkdir -p "$RUN" "$OUT" "$CIDIR" "$LOCKS"
@@ -106,7 +111,7 @@ mapped() {
 # or not.
 LOCKFD=
 pick() {
-    local g out use mem m
+    local g out use mem m r
     m=" $(mapped | tr '\n' ' ') "
     for g in ${HK_CI_GPUS:-0 1 2 3 4 5 6 7}; do
         exec {LOCKFD}>>"$LOCKS/gfx950-gpu$g.lock" || continue
@@ -114,8 +119,11 @@ pick() {
             out=$(rocm-smi -d $g --showuse --showmemuse 2>/dev/null)
             use=$(grep -o "GPU use (%): [0-9]*" <<<"$out" | grep -o "[0-9]*$")
             mem=$(grep -o "VRAM%): [0-9]*" <<<"$out" | grep -o "[0-9]*$")
-            if [[ $m == *" /dev/dri/${RENDER[$g]} "* ]]; then
-                echo "GPU $g: an hk-gha container has /dev/dri/${RENDER[$g]}"
+            r=$(render_of "$g")
+            if [ -z "$r" ]; then
+                echo "GPU $g: no render node found for it"
+            elif [[ $m == *" /dev/dri/$r "* ]]; then
+                echo "GPU $g: an hk-gha container has /dev/dri/$r"
             elif [ "${use:-100}" -le 10 ] && [ "${mem:-100}" -le 3 ]; then
                 GPU=$g; return 0
             fi
@@ -134,7 +142,11 @@ for i in $(seq "${HK_CI_PICK_WAIT_MIN:-60}"); do
 done
 [ -n "$GPU" ] || { echo "::error::no idle MI355X for ${HK_CI_PICK_WAIT_MIN:-60} min"; exit 1; }
 echo "holding gfx950-gpu$GPU.lock (HK_CI_LOCKS)"
-echo "GPU $GPU (${RENDER[$GPU]})"
+RENDER=$(render_of "$GPU")
+# The container's user needs the groups of /dev/kfd and of the render node, which differ from host to host
+# (one host's render group is 109, another's 993): taken from the files, not hard-coded.
+GROUPS_ADD=(--group-add "$(stat -c %g /dev/kfd)" --group-add "$(stat -c %g "/dev/dri/$RENDER")")
+echo "GPU $GPU ($RENDER)"
 
 # The reaper holds the lock too; its stdin's write end is REAP, which only this script holds.
 exec {REAP}> >(exec env -u GH_TOKEN RUNNER_TRACKING_ID=0 setsid "$HERE/cancel.sh" --on-eof container "$NAME" \
@@ -143,8 +155,8 @@ touch "$RUN/started"    # minutes count from here, not from the wait
 docker run --rm --ulimit core=0 -e HSA_DISABLE_COREDUMP_ON_EXCEPTION=1 --name "$NAME" --user "$(id -u):$(id -g)" \
     --label hk-gha.runner="$RUNNER" --label hk-gha.run="$GITHUB_RUN_ID" --label hk-gha.attempt="$GITHUB_RUN_ATTEMPT" \
     --label hk-gha.tier="$TIER" --label hk-gha.started="$(date +%s)" \
-    --device /dev/kfd --device "/dev/dri/${RENDER[$GPU]}" \
-    --group-add 44 --group-add 109 --ipc=host \
+    --device /dev/kfd --device "/dev/dri/$RENDER" \
+    "${GROUPS_ADD[@]}" --ipc=host \
     -e HOME=/ci/home -e USER="$(id -un)" -e LOGNAME="$(id -un)" \
     -e HK_CI_TIER="$TIER" -e HK_CI_TESTS="${HK_CI_TESTS:-}" \
     -v "$CIDIR:/ci" -v "$GITHUB_WORKSPACE:/ci/src" -v "$RUN:/ci/run" \

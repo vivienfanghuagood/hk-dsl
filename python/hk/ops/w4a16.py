@@ -220,6 +220,74 @@ def w4a16_kernel(name: str, *, tokens: int = 1, slices: int = 4, warps: int = 16
                      grid=lambda p: (p.qw.rows // rows, 1, 1))
 
 
+def w4a16_gemv_kernel(name: str, *, tokens: int = 1, warps: int = 16, group: int = 128,
+                      symmetric: bool = False):
+    """The small-batch form: up to `tokens` (1..8) rows of fp16 x against one 16-row block of W a
+    workgroup, each warp a share of K through `hk.gemv_w4` -- no WMMA, so each lane decodes only
+    its own row -- and the warps' partials meeting in LDS as `w4a16_kernel`'s do. K is a multiple
+    of 64 * warps; group of 32."""
+    ty_out = hk.RT(fp32, 16, 16, "row")
+    st_part = hk.ST(fp32, 16, 16)
+
+    @hk.func
+    def gemv(x, qw, s, zs, c):
+        n0 = hk.arch.block_idx.x * 16
+        wid = hk.arch.warp_id()
+        count = x.cols // (64 * warps)
+        acc = (hk.gemv_w4(x, qw, s, None, n0, wid * 64, 64 * warps, count, group=group,
+                          tokens=tokens, zero=SYMMETRIC_ZERO, s_blocked=True)
+               if zs is None else
+               hk.gemv_w4(x, qw, s, zs, n0, wid * 64, 64 * warps, count, group=group, tokens=tokens))
+        out = hk.transpose(acc)
+        if warps > 1:
+            parts = hk.lds.alloc(st_part, count=warps, name="parts")
+            parts[wid].store(out)
+            hk.arch.barrier(drain=True)
+        if wid == 0:
+            if warps > 1:
+                for i in range(1, warps):
+                    if i > 1 and (i - 1) % 8 == 0:
+                        hk.arch.sched_barrier()
+                    out += parts[i].load(ty_out)
+            c[hk.elem_coord(0, 0, 0, n0)].store(out, bounded=True)
+
+    if symmetric:
+        def body(x: hk.Tensor[fp16], qw: hk.Tensor[i32], s: hk.Tensor[fp16], c: hk.Tensor[fp16]):
+            gemv(x, qw, s, None, c)
+    else:
+        def body(x: hk.Tensor[fp16], qw: hk.Tensor[i32], s: hk.Tensor[fp16],
+                 zs: hk.Tensor[fp16], c: hk.Tensor[fp16]):
+            gemv(x, qw, s, zs, c)
+
+    body.__name__ = name
+    return hk.kernel(body, warps=warps, name=name, grid=lambda p: (p.qw.rows // 16, 1, 1))
+
+
+#: The most tokens the small-batch form (`w4a16_gemv_kernel`) takes, and its warps.
+GEMV_MAX_M = 4
+GEMV_WARPS = 16
+#: Where it is measured faster than the WMMA form and the engine's kernel.
+GEMV_ARCHES = ("gfx1100",)
+
+
+def gemv_takes(m: int, n: int, k: int, group: int, dtype: str) -> bool:
+    """Whether the small-batch form runs an (M, N, K) GEMM: fp16, M <= GEMV_MAX_M, N a multiple
+    of 16, K of 64 * GEMV_WARPS, group a multiple of 32, on an arch it is measured on."""
+    from ..target import current_arch  # noqa: PLC0415
+
+    return (dtype == "fp16" and 1 <= m <= GEMV_MAX_M and n % 16 == 0 and group % 32 == 0
+            and k % group == 0 and k % (64 * GEMV_WARPS) == 0 and current_arch() in GEMV_ARCHES)
+
+
+def gemv_kernel_for(tokens: int, group: int, symmetric: bool, warps: int = GEMV_WARPS):
+    key = ("gemv", tokens, group, symmetric, warps)
+    if key not in _KERNELS:
+        _KERNELS[key] = w4a16_gemv_kernel(
+            f"w4a16_gemv_t{tokens}_w{warps}_g{group}" + ("_sym" if symmetric else ""),
+            tokens=tokens, warps=warps, group=group, symmetric=symmetric)
+    return _KERNELS[key]
+
+
 #: Per token-tile count: decode_gemm's measured schedules (chapter 9), with
 #: the load kept at a whole group's divisor.
 SCHEDULES: Dict[int, Dict[str, int]] = {
@@ -306,7 +374,13 @@ def plan(m: int, n: int, k: int, group: int, dtype, symmetric: bool = False):
 
     names = {torch.bfloat16: "bf16", torch.float16: "fp16"}
     run = None
-    if dtype in names and takes(m, n, k, group):
+    if dtype in names and gemv_takes(m, n, k, group, names[dtype]):
+        if ("gemv", m, group, symmetric) not in _OPS:
+            from ..runtime.torch_ext import launcher  # noqa: PLC0415
+
+            _OPS[("gemv", m, group, symmetric)] = launcher(gemv_kernel_for(m, group, symmetric))
+        run = _OPS[("gemv", m, group, symmetric)]
+    elif dtype in names and takes(m, n, k, group):
         sch = schedule_for(m, k, group)
         run = _op_for(tokens_for(m), sch["slices"], sch["warps"], group, sch["blocks"],
                       names[dtype], symmetric)
@@ -377,7 +451,8 @@ def _matmul_legacy(x, qw, s, zs, group: int, out=None):
     return out
 
 
-__all__ = ["AWQ_ORDER", "MAX_TOKENS", "SCHEDULES", "SHALLOW_K", "SYMMETRIC_ZERO", "block_scales",
-           "dequant", "kernel_for", "unblock_scales",
+__all__ = ["AWQ_ORDER", "GEMV_ARCHES", "GEMV_MAX_M", "GEMV_WARPS", "MAX_TOKENS", "SCHEDULES",
+           "SHALLOW_K", "SYMMETRIC_ZERO", "block_scales", "dequant", "gemv_kernel_for", "gemv_takes",
+           "kernel_for", "unblock_scales", "w4a16_gemv_kernel",
            "matmul", "plan", "schedule_for",
            "repack_awq", "repack_gptq", "takes", "tokens_for", "w4a16_kernel"]

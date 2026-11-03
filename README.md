@@ -186,9 +186,11 @@ Details: [install](docs/install.md), [building](docs/building.md).
 ## In vLLM and SGLang
 
 **hk is on by default.** Once installed, hk's vLLM and SGLang plugins apply
-every route that was validated with real weights on your GPU. A route is
-validated when its outputs were bit-identical to the engine's, or its error was
-within the engine's own noise. Which routes are on for each GPU is the
+every route that meets [the default-on rule](docs/testing.md#the-default-on-rule)
+on your GPU: a 1.15x time-weighted gain over the engine's best at a real model's
+shapes, taking only the shapes where hk is faster, a passing correctness suite,
+and an end-to-end smoke with equal quality.
+Which routes are on for each GPU is the
 generated [route table](docs/supported-hardware.md#engine-routes-on-each)
 (from the switches hk reads, so it cannot drift from them);
 `python3 -m hk.integration --status` prints the decision on your machine.

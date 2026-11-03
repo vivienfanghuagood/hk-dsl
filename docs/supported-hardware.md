@@ -29,7 +29,7 @@ gfx950 also has the block-scaled matrix ops (`hk.mma_ABt_mx`: FP8 e4m3 and FP4 o
 
 ## Engine routes on each
 
-A route is on by default only on the GPUs it was validated on (**on** below). Elsewhere it is off: its switch at `1` turns it on anyway, without that validation, and not every route's kernels exist on every arch. A route marked opt-in is off on every GPU until you turn it on. What each route does and the evidence for its default: [integration](integration.md#on-by-default-and-turning-it-off); `python3 -m hk.integration --status` prints the decision on your machine.
+A route is on by default only on the GPUs where it met the [default-on rule](testing.md#the-default-on-rule) (**on** below). Elsewhere it is off: its switch at `1` turns it on anyway, without that evidence, and not every route's kernels exist on every arch. A route marked opt-in is off on every GPU until you turn it on. What each route does and the evidence for its default: [integration](integration.md#on-by-default-and-turning-it-off); `python3 -m hk.integration --status` prints the decision on your machine.
 
 | route | engine | switch | gfx1100 | gfx1201 | gfx942 | gfx950 |
 |---|---|---|---|---|---|---|

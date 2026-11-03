@@ -360,6 +360,32 @@ LogicalResult LoadW4Op::verify() {
   return success();
 }
 
+LogicalResult GemvW4Op::verify() {
+  if (failed(verifyDest(*this, getDst(), getResult())))
+    return failure();
+  auto tile = cast<RegTileType>(destType(getDst(), getResult()));
+  if (!tile.getElementType().isF32() || !tile.getColLayout() || tile.isStrip() ||
+      tile.getRows() != 16 || tile.getCols() != 16)
+    return emitOpError("returns a 16x16 f32 col-layout accumulator tile");
+  if (!getX().getType().getElementType().isF16() || !getS().getType().getElementType().isF16() ||
+      (getZs() && !getZs().getType().getElementType().isF16()))
+    return emitOpError("takes f16 x, scales and zero-times-scales");
+  if (!getQw().getType().getElementType().isInteger(32))
+    return emitOpError("reads its codes from an int32 global, eight to a word");
+  if (int(bool(getZs())) + int(getZero().has_value()) != 1)
+    return emitOpError("takes a zero-times-scale tensor zs or one `zero` for every group "
+                       "(symmetric), exactly one of them");
+  if (getZero() && (*getZero() < 0 || *getZero() > 15))
+    return emitOpError("zero is a 4-bit code, 0..15, not ") << *getZero();
+  if (getSBlocked() && !getZero())
+    return emitOpError("s_blocked (scales in 16-row blocks) is the symmetric form's layout");
+  if (getGroup() <= 0 || getGroup() % 32)
+    return emitOpError("group must be a positive multiple of 32, got ") << getGroup();
+  if (getTokens() < 1 || getTokens() > 8)
+    return emitOpError("tokens is 1..8, got ") << getTokens();
+  return success();
+}
+
 LogicalResult LoadMxScalesOp::verify() {
   if (failed(verifyDest(*this, getDst(), getResult())))
     return failure();

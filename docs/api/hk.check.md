@@ -18,8 +18,10 @@ Correctness, resources and timing of a kernel in one call; the guide is [docs/ch
 ### `hk.check.check`
 
 ```python
-hk.check.check(fn, reference: Optional[Callable] = None, inputs=None, *, cases: Optional[Sequence] = None, consts: Optional[Dict[str, Any]] = None, outputs: Optional[Sequence] = None, inplace: Optional[Sequence] = None, sweep: Optional[Dict[str, Sequence]] = None, baselines: Sequence[str] = ('eager', 'compile'), extra: Optional[Dict[str, Callable]] = None, rtol: Optional[float] = None, atol: Optional[float] = None, exact: bool = False, ref_precision: str = 'fp32', time: bool = True, rounds: int = 15, warmup: int = 3, batch_ms: float = 1.0, burn: float = 0.5, compile_mode: Optional[str] = None, bytes: Optional[float] = None, flops: Optional[float] = None, name: Optional[str] = None, gpu: Optional[bool] = None, build: bool = True, seed: int = 0, profile: bool = False) -> Report
+hk.check.check(fn, reference: Optional[Callable] = None, inputs=None, *, cases: Optional[Sequence] = None, consts: Optional[Dict[str, Any]] = None, outputs: Optional[Sequence] = None, inplace: Optional[Sequence] = None, sweep: Optional[Dict[str, Sequence]] = None, baselines: Sequence[str] = ('eager', 'compile'), extra: Optional[Dict[str, Callable]] = None, rtol: Optional[float] = None, atol: Optional[float] = None, exact: bool = False, ref_precision: str = 'fp32', time: bool = True, rounds: int = 15, warmup: int = 3, batch_ms: float = 1.0, burn: float = 0.5, cache: str = 'cold', compile_mode: Optional[str] = None, bytes: Optional[float] = None, flops: Optional[float] = None, name: Optional[str] = None, gpu: Optional[bool] = None, build: bool = True, seed: int = 0, profile: bool = False) -> Report
 ```
+
+*Changed after 0.8.0*: new parameter `cache`
 
 Check `fn` against `reference` on `inputs`; see the module docstring
 and docs/check.md.
@@ -54,6 +56,11 @@ ref_precision  "fp32" runs the reference on fp32 copies of the 16-bit
            inputs (the default); "native" on the inputs as they are
 time, rounds, warmup, batch_ms, burn   the timing (burn: seconds of
            memory traffic first, to settle the clocks)
+cache      "cold" (the default): every contender rotates through copies
+           of its inputs that together exceed twice the last-level cache
+           (CARDS), so the rates are DRAM traffic; tiny inputs, or copies
+           that would take over a quarter of the free memory, are timed
+           hot with a note. "hot": the same inputs every call
 bytes, flops   work a call does, for the rates (default bytes: every
            input and output once)
 gpu        False forces build-only; None uses a GPU when one is there
@@ -265,6 +272,7 @@ Each card's ceilings, for the bandwidth and FLOP rates the summary prints (tools
 | `--ref-precision {fp32,native}` | run the reference on fp32 copies of 16-bit inputs, or as given (default fp32) |
 | `--no-time` | correctness only |
 | `--rounds ROUNDS` | timing rounds, contenders rotated (default 15) |
+| `--hot` | time on the same inputs every call (default: cold, rotated copies past the cache) |
 | `--warmup WARMUP` | untimed calls of each first (default 3) |
 | `--batch-ms BATCH_MS` | a round's burst of back-to-back calls fills this long (default 1.0) |
 | `--burn BURN` | seconds of clock warm-up (default 0.5) |

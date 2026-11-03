@@ -1162,8 +1162,10 @@ Tile.as_operand(self, dtype: Optional[DType] = None, *, k_order: str = 'natural'
 *Surface*: `k_order=`: RDNA3's (gfx1100) paired WMMA operand: a 32-row fp32 S^T pair as its even and odd P^T operands.
 
 This accumulator's registers read as an MFMA operand: no data
-moves across lanes (gfx950). `k_order="even_odd"` is RDNA3's form
-(gfx1100), below.
+moves across lanes (gfx950). On RDNA (wave32) the same call is the
+accumulator's col-layout cast, `.to(dtype)`: the WMMA operand it
+feeds, so a P.V written this way builds on both. `k_order="even_odd"`
+is RDNA3's paired form (gfx1100), below.
 
 `self` is a col-layout tile in an accumulator fragment -- an MFMA
 result, or its cast to bf16. Each lane holds a column and four rows
@@ -2297,4 +2299,4 @@ are bounded: any non-empty length. head_dim is 64 or 128 on both.
 
 ## Also exported
 
-`hk.fp4_operand`, `hk.fp8_operand`, `hk.lane_coords`, `hk.mx`, `hk.mx_scales_loose`, `hk.templates`
+`hk.fp4_operand`, `hk.fp8_operand`, `hk.gemv_w4`, `hk.lane_coords`, `hk.mx`, `hk.mx_scales_loose`, `hk.templates`

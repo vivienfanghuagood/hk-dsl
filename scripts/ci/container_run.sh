@@ -46,6 +46,10 @@ fail() {
     || fail "the dialect did not build (build.log)"
 
 export HK_ARCH=$ARCH HK_CACHE_DIR=/ci/hk-cache
+# The container must see the GPU it was given: without /dev/kfd access (the host's video/render groups
+# not added) every GPU test skips and the tier once read "success: 1 passed, 1776 skipped".
+seen=$(rocminfo 2>/dev/null | grep -o -m1 "gfx[0-9a-f]*")
+[ "$seen" = "$ARCH" ] || fail "the container sees no $ARCH GPU (rocminfo: ${seen:-no gfx agent})"
 if [ -n "${HK_CI_TESTS:-}" ]; then
     # one group, in gpu_suite.sh's output format (a log and a status line)
     mkdir -p /ci/run/gpu
