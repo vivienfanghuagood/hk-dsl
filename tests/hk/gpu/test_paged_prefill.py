@@ -705,3 +705,77 @@ def test_vllm_prefill_leaves_a_mixed_batch_to_vllm(monkeypatch):
     assert vp.PATCH.stats["hk"] == before["hk"]
     assert len(seen) == 1 and seen[0][1] is out
     assert torch.all(out == 3.0)
+
+
+@pytest.mark.skipif(not _route_arch(), reason="the route is gfx1100's and gfx1201's")
+@pytest.mark.parametrize("vt", [False, True])
+@pytest.mark.parametrize("head_dim,h_kv,kv_order,page", [(128, 2, "planes", 16),
+                                                         (128, 2, "tokens", 16),
+                                                         (256, 1, "tokens", 544)])
+def test_vllm_prefill_nan_poisoned_repeats_and_a_side_stream_producer(monkeypatch, head_dim, h_kv,
+                                                                      kv_order, page, vt):
+    """The default-on rule's repeat and stream checks, on the route as vLLM calls it: 200 calls
+    with the output set to NaN before each, every one bitwise the first (nothing left unwritten
+    or read stale, and the result is deterministic); then the query and the cache written by a
+    producer on a torch stream of its own, the route called after torch's stream waits for it:
+    bitwise the same again."""
+    import inspect
+
+    from hk.integration import vllm_prefill as vp
+
+    if head_dim == 256 and not _clang_23():
+        pytest.skip("flash dsplit spills under clang 22: the route leaves d256 to vLLM there")
+
+    def unified_attention(q, k, v, out, cu_seqlens_q, max_seqlen_q, seqused_k, max_seqlen_k,
+                          softmax_scale, causal, window_size, block_table, softcap, q_descale,
+                          k_descale, v_descale, alibi_slopes=None, sinks=None):
+        raise AssertionError("fell back to vLLM's kernel")
+
+    monkeypatch.setattr(vp, "_ORIG_U", unified_attention)
+    monkeypatch.setattr(vp, "_U_SIG", inspect.signature(unified_attention))
+    monkeypatch.setattr(vp, "VT", vt)
+    monkeypatch.setattr(vp, "GUARD", False)  # the mixed batch, so the kernel's decode rows run too
+    reqs = MIXED
+    q, (k, v), _, table, lens, q_start = _rocm_case(reqs, head_dim=head_dim, h_kv=h_kv, group=8,
+                                                    page=page, seed=5)
+    cache = _flash_cache(k, v, kv_order)
+    nb, d = k.shape[0], k.shape[3]
+
+    def run(q_in, cache_in, out):
+        if kv_order == "planes":
+            kc, vc = cache_in.view(nb, 2, page, h_kv, d).unbind(1)
+        else:
+            both = cache_in.view(nb, page, h_kv, 2 * d)
+            kc, vc = both[..., :d], both[..., d:]
+        vp.unified_attention(q=q_in, k=kc, v=vc, out=out, cu_seqlens_q=q_start, max_seqlen_q=300,
+                             seqused_k=lens, max_seqlen_k=int(lens.max()),
+                             softmax_scale=d ** -0.5, causal=True, window_size=(-1, -1),
+                             block_table=table, softcap=0, q_descale=None, k_descale=None,
+                             v_descale=None)
+
+    before = vp.PATCH.stats["hk"]
+    out = torch.empty_like(q)
+    first = None
+    for i in range(200):
+        out.fill_(float("nan"))
+        run(q, cache, out)
+        if first is None:
+            torch.cuda.synchronize()
+            first = out.clone()
+            _attn_ref.check(first, _reference(q, k, v, table, lens, q_start, 8, page=page))
+        else:
+            assert torch.equal(out.view(torch.int16), first.view(torch.int16)), f"call {i}"
+    assert vp.PATCH.stats["hk"] == before + 200
+
+    q_host, cache_host = q.cpu(), cache.cpu()
+    side = torch.cuda.Stream()
+    with torch.cuda.stream(side):
+        q2 = q_host.to("cuda", non_blocking=True)
+        cache2 = cache_host.to("cuda", non_blocking=True)
+        q2.mul_(1.0)
+        cache2.mul_(1.0)
+        out2 = torch.full_like(q2, float("nan"))
+    torch.cuda.current_stream().wait_stream(side)
+    run(q2, cache2, out2)
+    torch.cuda.synchronize()
+    assert torch.equal(out2.view(torch.int16), first.view(torch.int16))
