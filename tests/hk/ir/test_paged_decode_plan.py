@@ -74,3 +74,17 @@ def test_the_portable_walk_plans_its_own_splits(reqs, kv_heads, want):
 
     assert pdp.plan_splits(reqs, kv_heads) == want
     assert pdp.plan_splits(reqs, kv_heads, max_blocks=3) == min(want, 3)
+
+
+@pytest.mark.parametrize("wgps,want", [(48, 48), (32, 32), (8, 16), (100, 64), (None, 32)])
+def test_a_small_d128_decode_takes_a_split_a_wgp(wgps, want):
+    """hk.ops.paged_decode at head_dim 128 and up to 4 (request, kv head) pairs: as many splits
+    as the GPU has WGPs (48 on a W7900D, 32 on an R9700), 16 to 64, 2 warps, both V bands in
+    flight on pages of 16; MAX_SPLITS when the WGPs are not given. Larger batches and head_dim
+    256 keep plan_splits and 4 warps."""
+    from hk.ops import paged_decode as pd
+
+    assert pd.plan(1, 2, 128, 16, wgps=wgps) == (want, 2, True)
+    assert pd.plan(2, 2, 128, 544, wgps=wgps) == (want, 2, False)
+    assert pd.plan(4, 2, 128, 16, wgps=wgps) == (pd.plan_splits(4, 2), 4, False)
+    assert pd.plan(1, 2, 256, 16, wgps=wgps) == (pd.plan_splits(1, 2), 4, False)

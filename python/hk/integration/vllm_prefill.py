@@ -746,7 +746,7 @@ def _decode(a: dict) -> bool:
     kv, order = _flash_kv(k, a["v"])
     sc = a["softmax_scale"]
     scale = None if sc is None or sc == d ** -0.5 else float(sc)
-    splits, warps, v_both = pd.plan(reqs, hkv, d, page)
+    splits, warps, v_both = pd.plan(reqs, hkv, d, page, wgps=pd.device_wgps(q.device))
     ops = _decode_ops(d, group, page, order, splits, scale, warps, v_both)
     scratch = _decode_scratch(q.device, reqs * splits, hkv, group, d) if ops else None
     if ops is None or scratch is None:
