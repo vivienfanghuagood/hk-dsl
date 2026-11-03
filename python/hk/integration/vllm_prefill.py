@@ -482,12 +482,98 @@ GUARDS = {
     ("gfx1100", 256): (0.003, 16, 0, 1024),
     # gfx1201 (R9700). Mixed: up to 128, wins to 0.0068 (>= 1.64x); 256, MiniCPM-V >= 1.19x to
     # 0.0049 and thin from 0.0059, losses from 0.0078. Up to 128: under 1024 rows only thin
-    # wins (1.03-1.14x) or losses (32-token chunks over 2k+: 0.77x); 0:512 1.09x. 256: a short prompt wins
-    # (1.7x), a chunk under 512 rows over 1k+ loses or ties (1024:64 0.95-1.00x, 1024:128 0.91x).
+    # wins (1.03-1.14x) or losses (32-token chunks over 2k+: 0.77x); 0:512 1.09x. 256: a short
+    # prompt wins (1.7x), a chunk under 512 rows over 1k+ loses or ties (1024:64 0.95-1.00x,
+    # 1024:128 0.91x).
     ("gfx1201", 128): (0.006, 1024, 0, 128),
     ("gfx1201", 256): (0.004, 512, 600, 128),
 }
 _DECLINED_SAID: list = []
+
+#: With exact sizes (EXACT below): a batch is declined when its decodes' contexts, summed, are
+#: more than EXACT_RATIO times its prefill's (query, key) pairs. Fitted on the same measured rows
+#: with the batches' true decode contexts, under the first loss: gfx1100 up to 128 clean to
+#: 0.0068, a loss at 0.0078; 256 clean to 0.0039, a loss at 0.0049; gfx1201 up to 128 a loss at
+#: 0.0078; 256 a thin 1.02x at 0.0068.
+EXACT_RATIO = {("gfx1100", 128): 0.006, ("gfx1100", 256): 0.0035,
+               ("gfx1201", 128): 0.006, ("gfx1201", 256): 0.005}
+
+#: The exact sizes of the steps vLLM's TRITON_ATTN metadata builder built, from host arrays it
+#: already has (no sync): {id(the step's query_start_loc): batch_stats(...)}. The stand-in finds
+#: its call's by the identity of `cu_seqlens_q`, which TRITON_ATTN passes as that tensor. A few
+#: entries, the latest kept: one a KV-cache group a step.
+_STATS: dict = {}
+_STATS_KEEP = 8
+#: TritonAttentionMetadataBuilder.build as vLLM had it, while the hook is on (apply())
+_ORIG_BUILD = None
+#: why the hook is not on, if it is not ("" when it is)
+STATS_WHY_NOT = "not applied"
+
+
+def batch_stats(query_start_loc, seq_lens, num_reqs: int) -> dict:
+    """A step's sizes from host arrays (`query_start_loc` num_reqs + 1 long, `seq_lens`): the
+    decode rows (one query), their contexts summed, the prefill's (query, key) pairs under the
+    causal mask, its longest query and that query's context."""
+    import numpy as np  # noqa: PLC0415
+
+    qsl = np.asarray(query_start_loc, dtype=np.int64)[: num_reqs + 1]
+    s = np.asarray(seq_lens, dtype=np.int64)[:num_reqs]
+    q = np.diff(qsl)
+    dec, pre = q == 1, q > 1
+    qp, sp = q[pre], s[pre]
+    i = int(np.argmax(qp)) if qp.size else 0
+    return dict(reqs=int(num_reqs), decodes=int(dec.sum()), dec_work=int(s[dec].sum()),
+                pre_work=float((qp * (sp - qp) + qp * (qp + 1) / 2).sum()),
+                max_q=int(qp[i]) if qp.size else 0, pre_ctx=int(sp[i]) if qp.size else 0)
+
+
+def _stats_hook(orig):
+    """vLLM's TritonAttentionMetadataBuilder.build, unchanged, recording the step's sizes from the
+    common metadata's host arrays: `query_start_loc_cpu`, and the cached `_seq_lens_cpu` or
+    `seq_lens_cpu_upper_bound` -- never the `seq_lens_cpu` property, which copies from the device
+    when nothing is cached (a sync)."""
+    import functools  # noqa: PLC0415
+
+    @functools.wraps(orig)
+    def build(self, common_prefix_len, common_attn_metadata, *args, **kwargs):
+        md = orig(self, common_prefix_len, common_attn_metadata, *args, **kwargs)
+        try:
+            cam = common_attn_metadata
+            seq = getattr(cam, "_seq_lens_cpu", None)
+            if seq is None:
+                seq = getattr(cam, "seq_lens_cpu_upper_bound", None)
+            qsl = getattr(cam, "query_start_loc_cpu", None)
+            key = getattr(md, "query_start_loc", None)
+            if seq is not None and qsl is not None and key is not None:
+                if len(_STATS) >= _STATS_KEEP:
+                    _STATS.pop(next(iter(_STATS)))
+                _STATS[id(key)] = batch_stats(qsl, seq, int(cam.num_reqs))
+        except Exception:  # noqa: BLE001 -- the hook must never break vLLM's build
+            pass
+        return md
+    return build
+
+
+def exact_why_not(st: dict, head_dim: int, kv_heads: int, arch: str) -> str:
+    """guard_why_not with a step's exact sizes (`st`: batch_stats): the decodes' real contexts
+    against the prefill's pairs, and the longest prefill's own query and context."""
+    if not GUARD:
+        return ""
+    key = (arch, 256 if head_dim > 128 else 128)
+    g, exact = GUARDS.get(key), EXACT_RATIO.get(key)
+    if g is None or exact is None:
+        return f"no measured guard for {key}"
+    _mix, min_rows, short_ctx, ctx_per_q = g
+    if st["decodes"] and st["dec_work"] > exact * st["pre_work"]:
+        return (f"{st['decodes']} decodes over {st['dec_work']} tokens beside a prefill of "
+                f"{st['pre_work']:.0f} pairs (vLLM's kernel splits a decode's context, hk's does "
+                f"not)")
+    max_q, ctx = st["max_q"], st["pre_ctx"]
+    if max_q * kv_heads < min_rows and ctx > short_ctx:
+        return f"a {max_q}-token chunk over a {ctx}-token context, {kv_heads} kv head(s)"
+    if ctx > ctx_per_q * max_q:
+        return f"a {max_q}-token chunk over a {ctx}-token context"
+    return ""
 
 
 def guard_why_not(reqs: int, max_q: int, max_k: int, head_dim: int, kv_heads: int,
@@ -524,6 +610,9 @@ def _guard(a: dict) -> str:
     if (not GUARD or arch not in ARCHES or getattr(q, "dim", None) is None or q.dim() != 3
             or getattr(k, "dim", None) is None or k.dim() != 4 or used is None):
         return ""
+    st = _STATS.get(id(a.get("cu_seqlens_q")))
+    if st is not None and st["reqs"] == int(used.shape[0]):
+        return exact_why_not(st, int(q.shape[-1]), int(k.shape[2]), arch)
     return guard_why_not(int(used.shape[0]), int(a.get("max_seqlen_q", 0)),
                          int(a.get("max_seqlen_k") or 0), int(q.shape[-1]), int(k.shape[2]), arch)
 
@@ -770,6 +859,7 @@ def apply() -> str:
     context_attention_fwd.__signature__ = _P_SIG
     names = _common.rebind(PREFIXES, _ORIG, _GUARDED)
     unames = _apply_unified()
+    _apply_stats()
     return (f"prefill -> hk where hk.ops.paged_prefill takes ROCM_ATTN's prefill "
             f"({len(names)} bindings rebound) and TRITON_ATTN's batches with prefill in them "
             f"({len(unames)} rebound)")
@@ -789,10 +879,65 @@ def _apply_unified() -> list:
     return _common.rebind(PREFIXES, _ORIG_U, _GUARDED_U)
 
 
+def stats_why_not(builder_cls) -> str:
+    """Why the batch-size hook cannot go on this vLLM's TRITON_ATTN metadata builder, or "": it
+    wraps `build(common_prefix_len, common_attn_metadata, ...)` and reads the common metadata's
+    host arrays. Without them the guard keeps its size-only bound, which declines when unsure."""
+    import dataclasses  # noqa: PLC0415
+    import inspect  # noqa: PLC0415
+
+    build = getattr(builder_cls, "build", None)
+    if build is None:
+        return "no TritonAttentionMetadataBuilder.build"
+    params = list(inspect.signature(build).parameters)
+    if params[1:3] != ["common_prefix_len", "common_attn_metadata"]:
+        return f"build{tuple(params)}: not (self, common_prefix_len, common_attn_metadata, ...)"
+    try:
+        from vllm.v1.attention.backends.utils import CommonAttentionMetadata  # noqa: PLC0415
+
+        fields = {f.name for f in dataclasses.fields(CommonAttentionMetadata)}
+    except Exception as e:  # noqa: BLE001
+        return f"no CommonAttentionMetadata ({type(e).__name__})"
+    if "query_start_loc_cpu" not in fields or "num_reqs" not in fields:
+        return "CommonAttentionMetadata has no query_start_loc_cpu / num_reqs"
+    if not fields & {"_seq_lens_cpu", "seq_lens_cpu_upper_bound"}:
+        return "CommonAttentionMetadata has no host sequence lengths"
+    return ""
+
+
+def _apply_stats() -> None:
+    global _ORIG_BUILD, STATS_WHY_NOT
+    try:
+        from vllm.v1.attention.backends import triton_attn  # noqa: PLC0415
+
+        cls = triton_attn.TritonAttentionMetadataBuilder
+    except Exception as e:  # noqa: BLE001
+        STATS_WHY_NOT = f"no TRITON_ATTN metadata builder ({type(e).__name__})"
+        return
+    STATS_WHY_NOT = stats_why_not(cls)
+    if STATS_WHY_NOT or _ORIG_BUILD is not None:
+        return
+    _ORIG_BUILD = cls.build
+    cls.build = _stats_hook(cls.build)
+
+
+def _revert_stats() -> None:
+    global _ORIG_BUILD, STATS_WHY_NOT
+    if _ORIG_BUILD is None:
+        return
+    from vllm.v1.attention.backends import triton_attn  # noqa: PLC0415
+
+    triton_attn.TritonAttentionMetadataBuilder.build = _ORIG_BUILD
+    _ORIG_BUILD = None
+    _STATS.clear()
+    STATS_WHY_NOT = "not applied"
+
+
 def revert() -> str:
     global _ORIG
     if _ORIG is None:
         return "prefill: not patched"
+    _revert_stats()
     global _ORIG_U
     names = _common.rebind(PREFIXES, _GUARDED, _ORIG)
     if _ORIG_U is not None:
