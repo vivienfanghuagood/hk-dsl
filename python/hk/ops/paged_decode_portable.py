@@ -77,9 +77,13 @@ def walk_kernel(name: str, *, head_dim: int = 128, group: int = 8, page: int = 1
         raise ValueError(f"head_dim {D}: 64, 128, 192 or 256; page {page}: a multiple of 16; "
                          f"group {group}: 1..{Q_TILE}")
     nw = D // 64                                     # warps: 64 columns of head_dim each
-    dh = 64                                          # a warp's share of head_dim
     cdna = _cdna()
+    dh = 64                                          # a warp's share of head_dim
     band = math.gcd(page, KV_BLOCK)                   # rows a copy brings from one page
+    if not cdna:
+        # RDNA copies a block in 16-row bands whatever the page: a 32-row band's staging took the
+        # 8 VGPRs over 256 that spilled at head_dim 256 on gfx1201 (clang 23, a GQA group of 6)
+        band = min(band, 16)
     ppb = KV_BLOCK // band
     masked = page >= KV_BLOCK and page > 16          # hybrid pages: NaN past the end
     scale_l2e = (scale if scale is not None else D ** -0.5) * math.log2(math.e)
@@ -200,6 +204,27 @@ def walk_kernel(name: str, *, head_dim: int = 128, group: int = 8, page: int = 1
     body.__name__ = name
     return hk.kernel(body, warps=nw, name=name,
                      grid=lambda p: (splits, p.out.depth, p.seq_lens.cols))
+
+
+#: The walk's splits for a batch: about TARGET_WORKGROUPS (request, kv head, split) workgroups,
+#: a power of two from MIN_SPLITS to MAX_SPLITS, from the batch alone (a CUDA graph's replays see
+#: other lengths). Its own plan, not hk.ops.paged_decode's: a split of this walk does less work
+#: than one of the RDNA-tuned walk, so it wants more of them (W7900D, MiniCPM5 B4 @16k: 8 splits
+#: 197 us, 16 splits 128 us, vLLM's Triton 124 us).
+TARGET_WORKGROUPS = 256
+MIN_SPLITS = 16
+MAX_SPLITS = 64
+
+
+def plan_splits(n_reqs: int, n_kv_heads: int, max_blocks: Optional[int] = None) -> int:
+    """Splits for a batch of `n_reqs` requests over `n_kv_heads` kv heads (see TARGET_WORKGROUPS),
+    capped, when known, by the longest request's KV blocks."""
+    have = max(1, n_reqs * n_kv_heads)
+    want = 1 << max(0, (TARGET_WORKGROUPS // have).bit_length() - 1)
+    want = min(max(want, MIN_SPLITS), MAX_SPLITS)
+    if max_blocks is not None:
+        want = max(1, min(want, max_blocks))
+    return want
 
 
 _WALK: Dict[tuple, object] = {}

@@ -63,3 +63,14 @@ def test_the_split_plan_aims_for_256_workgroups():
     # Qwen3-8B's 8 kv heads: 2 splits at 16 requests, 1 from 32 up.
     assert [vllm_backend.decode_splits(n, HKV, PAGES) for n in (4, 8, 16, 24, 32, 64)] == \
         [8, 4, 2, 2, 1, 1]
+
+
+@pytest.mark.parametrize("reqs,kv_heads,want", [(1, 2, 64), (4, 2, 32), (16, 2, 16), (32, 2, 16),
+                                                (1, 4, 64), (4, 4, 16), (1, 8, 32), (64, 8, 16)])
+def test_the_portable_walk_plans_its_own_splits(reqs, kv_heads, want):
+    """hk.ops.paged_decode_portable plans more splits than the RDNA-tuned walk: a power of two
+    near TARGET_WORKGROUPS / (requests x kv heads), 16 to 64, from the batch alone."""
+    from hk.ops import paged_decode_portable as pdp
+
+    assert pdp.plan_splits(reqs, kv_heads) == want
+    assert pdp.plan_splits(reqs, kv_heads, max_blocks=3) == min(want, 3)

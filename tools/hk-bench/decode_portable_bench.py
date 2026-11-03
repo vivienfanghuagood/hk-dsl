@@ -114,7 +114,7 @@ def hk_arm(case, portable: bool, splits: int):
     m = case.m
     hq, hkv, d, page = m["hq"], m["hkv"], m["d"], m["page"]
     grp = hq // hkv
-    s = splits or pd.plan_splits(case.batch, hkv)
+    s = splits or (pdp if portable else pd).plan_splits(case.batch, hkv)
     mod = pdp if portable else pd
     walk = launcher(mod.walk_for(d, grp, page, m["order"], s))
     merge = launcher(pd.merge_for(d, grp, s)) if s > 1 else None
