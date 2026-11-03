@@ -1,0 +1,5 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Documentation
+    url: https://vivienfanghuagood.github.io/hk-dsl/
+    about: Install, the quick start, the language, hk.check, the engine routes.

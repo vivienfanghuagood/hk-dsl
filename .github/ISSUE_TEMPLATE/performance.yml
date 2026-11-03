@@ -1,0 +1,30 @@
+name: Performance report
+description: A kernel or route slower than you expected, or slower than another implementation.
+labels: [performance]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Please measure with `hk.check` (or `python3 -m hk.check`): it times hk against torch eager,
+        torch.compile and any baseline you pass, in one process, and prints the noise band. Two numbers from two processes are not comparable on
+        these GPUs.
+  - type: textarea
+    id: what
+    attributes:
+      label: The kernel or route, the shapes, and what it was compared with
+    validations:
+      required: true
+  - type: textarea
+    id: check
+    attributes:
+      label: hk.check output
+      description: The full report, including its header line (GPU, hk and torch versions).
+      render: text
+    validations:
+      required: true
+  - type: textarea
+    id: env
+    attributes:
+      label: Environment
+      description: The container image or ROCm version, and anything else running on the GPU at the time.
+      render: text
