@@ -132,9 +132,14 @@ launch merges the splits.
   models' attention layers (Qwen3.8, Qwen3.6, MiniCPM-V-4.7): there hk is
   1.02-4.0x the faster of TRITON_ATTN's kernel and ROCM_ATTN's (which runs an
   unsplit Triton fallback on pages that are not a power of two).
-- `HK_VLLM_DECODE=1`: head size 128 too, up to 8 (request, kv head) pairs.
-  It is opt-in: at one request below 16k tokens, ROCM_ATTN's paged decode is
-  as fast.
+- `HK_VLLM_DECODE=1`: head size 128 too, up to 4 (request, kv head) pairs
+  (one or two requests of MiniCPM5-2B), with as many splits as the GPU has
+  WGPs. Serving MiniCPM5-2B on a W7900D against TRITON_ATTN's decode, one
+  request: TPOT 1.03x / 1.08x / 1.20x / 1.40x at 4k / 8k / 16k / 32k tokens;
+  four requests were 0.98x at 4k-8k, so they stay vLLM's. It is opt-in:
+  against ROCM_ATTN's paged decode, the kernel is 0.99-1.27x at one request,
+  and over a real long-context mix about 1.11x, under the 1.15x the
+  default-on rule asks for.
 - `HK_VLLM_DECODE=0`: off.
 
 `tools/hk-bench/attention_bench.py` measures every shape against both stock

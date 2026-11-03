@@ -374,4 +374,5 @@ def test_the_decode_switch(monkeypatch, env, on, d128):
     monkeypatch.setattr(vp, "DECODE_D128", d128)
     assert vp.decode_takes(2, 2, 128) == d128
     assert not vp.decode_takes(8, 2, 128)
+    assert not vp.decode_takes(4, 2, 128)    # 8 pairs: 0.98x in serving at 4k-8k
     assert vp.decode_takes(16, 4, 256)
