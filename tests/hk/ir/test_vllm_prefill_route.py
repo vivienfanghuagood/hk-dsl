@@ -349,3 +349,46 @@ def test_every_measured_shape_taken_with_exact_sizes_is_a_clear_win(arch):
             assert r["hk_speedup"] >= 1.05, (arch, r["model"], r["shape"], r["hk_speedup"])
             short_dec += all(s <= 1024 for s, q in reqs if q == 1)
     assert taken >= 10 and short_dec >= 3, (taken, short_dec)
+
+
+def test_a_vllm_without_the_host_arrays_keeps_the_size_bound(monkeypatch):
+    """A vLLM whose common metadata has no host sequence lengths (only the device's): the hook
+    does not go on (said in STATS_WHY_NOT), build is left as it was, and the guard decides with
+    #233's size-only bound."""
+    import dataclasses
+    import sys
+    import types
+
+    from hk.integration import switches
+
+    @dataclasses.dataclass
+    class CommonAttentionMetadata:
+        query_start_loc: object
+        query_start_loc_cpu: object
+        seq_lens: object
+        num_reqs: int
+
+    class TritonAttentionMetadataBuilder:
+        def build(self, common_prefix_len, common_attn_metadata, fast_build=False):
+            return None
+
+    orig = TritonAttentionMetadataBuilder.build
+    mods = {"vllm": types.ModuleType("vllm"), "vllm.v1": types.ModuleType("vllm.v1"),
+            "vllm.v1.attention": types.ModuleType("vllm.v1.attention"),
+            "vllm.v1.attention.backends": types.ModuleType("vllm.v1.attention.backends"),
+            "vllm.v1.attention.backends.utils": types.ModuleType("u"),
+            "vllm.v1.attention.backends.triton_attn": types.ModuleType("t")}
+    mods["vllm.v1.attention.backends.utils"].CommonAttentionMetadata = CommonAttentionMetadata
+    mods["vllm.v1.attention.backends.triton_attn"].TritonAttentionMetadataBuilder = \
+        TritonAttentionMetadataBuilder
+    mods["vllm.v1.attention.backends"].triton_attn = mods["vllm.v1.attention.backends.triton_attn"]
+    for name, mod in mods.items():
+        monkeypatch.setitem(sys.modules, name, mod)
+    monkeypatch.setattr(vp, "_ORIG_BUILD", None)
+    monkeypatch.setattr(vp, "_STATS", {})
+    vp._apply_stats()
+    assert vp.STATS_WHY_NOT == "CommonAttentionMetadata has no host sequence lengths"
+    assert TritonAttentionMetadataBuilder.build is orig and vp._ORIG_BUILD is None
+    monkeypatch.setattr(switches, "arch", lambda: "gfx1100")
+    a = _triton_call([(2048, 2048)] + [(767, 1)] * 8)
+    assert vp._guard(a) == vp.guard_why_not(9, 2048, 4096, 128, 2, "gfx1100") != ""
