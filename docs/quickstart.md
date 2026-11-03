@@ -220,7 +220,9 @@ an hk kernel on gfx1100, or to run it on a stream of your own, launch it on
 torch's stream: set `HK_LAUNCH=codeobj` before the first call (every
 `@hk.kernel` and template then launches its code object on torch's current
 stream), or call it through `hk.torch_op(k)`
-([the stream](runtime.md#what-a-launch-does)).
+([the stream](runtime.md#what-a-launch-does)). `hk.torch_op` makes the kernel a
+`torch.library` custom op that `torch.compile` traces without a graph break and
+a CUDA graph captures: [use a kernel as a PyTorch op](torch-ops.md).
 The serving engines' patches already do.
 
 ## Your model in vLLM

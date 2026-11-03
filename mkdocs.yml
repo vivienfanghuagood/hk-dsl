@@ -119,6 +119,7 @@ nav:
   - 4 Ops:
       - hk.ops: api/hk.ops.md
   - 5 Serving engines:
+      - "Use a kernel as a PyTorch op": torch-ops.md
       - Integration: integration.md
       - vLLM: vllm.md
       - SGLang and SGLang-Diffusion: sglang.md

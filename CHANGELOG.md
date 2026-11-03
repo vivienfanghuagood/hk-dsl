@@ -28,6 +28,13 @@ over 576 MB.
 
 **Fix: vLLM with torch.compile and CUDA graphs failed to start with `vllm_gemm` on (#177).** vLLM calls `dispatch_unquantized_gemm()` inside the forward it compiles, and #177's stand-in cached what it returned in a module dict on its first call. That first call was the profile run's traced forward, so Dynamo replayed the write after the graph (`_GEMMS.update`), and vLLM's CUDA-graph guard refused the forward: an `InternalTorchDynamoError` / `DecompilationError` from `vllm/compilation/wrapper.py`'s `bytecode_hook` at startup (MiniCPM5 in its production configuration). The stand-in and each layer's routing decision are now read-only while torch.compile traces: the cache, the decision kept on the layer and the unrouted counts are written only in eager calls, and a decision is kept for the table's generation (bumped by `set_routes`) rather than the table object. Whether it shows depends on the vLLM build: one whose `UnquantizedLinearMethod.apply` calls `dispatch_unquantized_gemm()` on every forward (the MiniCPM5 image's) failed, one that calls it once when the method is built (the MiniCPM-V image's) did not. `tests/hk/ir/test_vllm_gemm_compiled.py` compiles a vLLM-shaped forward whole under vLLM's guard, for the GEMM route and the AWQ / GPTQ `apply` stand-ins, and `tests/hk/engines/test_vllm_compiled_forward.py` does it through the installed vLLM's own `apply`.
 
+**Use a kernel as a PyTorch op: the recipe, and a test of it.** A new page, docs/torch-ops.md,
+shows a kernel of your own made a `torch.library` custom op by `hk.torch_op`, and says what works:
+eager calls, `torch.compile(fullgraph=True)` with no graph break (also `dynamic=True` and
+`mode="reduce-overhead"`), CUDA-graph capture, and `torch.library.opcheck`. Inductor does not lower
+or fuse the op, and it has no autograd formula. tests/hk/gpu/test_torch_op_recipe.py runs that
+recipe for both registrations (code object, `HK_TORCH_OP=library`) on every GPU of the GPU tier.
+
 **Fix: `vllm_gptq` no longer turns off every vLLM route on a vLLM whose `gptq_gemm_rdna3` takes
 `b_g_idx`.** vLLM builds differ in that GEMM's parameters: some take the act-order index, some do not.
 The route's engine contract counted five arguments, so on the other builds it failed, and the
