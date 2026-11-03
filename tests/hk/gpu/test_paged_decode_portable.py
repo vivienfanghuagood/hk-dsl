@@ -42,17 +42,19 @@ CASES = [
 LENS = [1, 15, 16, 33, 1000, 2063, 4100]
 
 
-def _refused_by_this_compiler(head_dim, group) -> bool:
-    """gfx1201 under clang 22 (ROCm 7.2.3): head_dim 256 with a GQA group of 6 takes 264 VGPRs and
-    the spill gate refuses the walk (ResourceError); clang 23, the vLLM images', builds it."""
+def _refused_by_this_compiler(head_dim, group, page) -> bool:
+    """gfx1201 under clang 22 (ROCm 7.2.3): head_dim 256 with a GQA group of 6, on hybrid pages
+    (over 16 tokens: V clamped past the sequence's end), takes 264 VGPRs and the spill gate
+    refuses the walk (ResourceError, no result); clang 23, the vLLM images', builds it."""
     from hk.ops.attn import _clang_major
     from hk.target import current_arch
 
-    return (current_arch() == "gfx1201" and head_dim == 256 and group == 6
+    return (current_arch() == "gfx1201" and head_dim == 256 and group == 6 and page > 16
             and (_clang_major() or 0) < 23)
 
 
-REFUSED = "gfx1201, head_dim 256, group 6: spills under clang 22 (clang 23 builds it)"
+REFUSED = ("gfx1201, head_dim 256, group 6, hybrid pages: spills under clang 22, refused by the "
+           "spill gate (clang 23 builds it)")
 
 
 def _run(q, k, v, table, lens, q_start, kv_order, splits):
@@ -74,7 +76,7 @@ def _run(q, k, v, table, lens, q_start, kv_order, splits):
 @pytest.mark.parametrize("splits", [1, 5])
 @pytest.mark.parametrize("head_dim,h_kv,group,page,kv_order,nan_tail", CASES)
 def test_matches_float64(head_dim, h_kv, group, page, kv_order, nan_tail, splits):
-    if _refused_by_this_compiler(head_dim, group):
+    if _refused_by_this_compiler(head_dim, group, page):
         pytest.skip(REFUSED)
     q, k, v, table, lens, q_start = _case(LENS, head_dim=head_dim, h_kv=h_kv, group=group,
                                           page=page, kv_order=kv_order, nan_tail=nan_tail)
@@ -86,7 +88,7 @@ def test_matches_float64(head_dim, h_kv, group, page, kv_order, nan_tail, splits
 @pytest.mark.parametrize("splits", [1, 5])
 @pytest.mark.parametrize("head_dim,h_kv,group,page,kv_order,nan_tail", CASES)
 def test_v_ones_is_exactly_one(head_dim, h_kv, group, page, kv_order, nan_tail, splits):
-    if _refused_by_this_compiler(head_dim, group):
+    if _refused_by_this_compiler(head_dim, group, page):
         pytest.skip(REFUSED)
     q, k, v, table, lens, q_start = _case(LENS, head_dim=head_dim, h_kv=h_kv, group=group,
                                           page=page, kv_order=kv_order, v_ones=True,
