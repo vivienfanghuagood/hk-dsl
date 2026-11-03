@@ -473,17 +473,19 @@ def u_why_not(a: dict) -> str:
 GUARD = __import__("os").environ.get("HK_VLLM_PREFILL_GUARD", "1") != "0"
 #: (arch, head size class) -> (MIX_RATIO, MIN_ROWS, SHORT_CTX, CTX_PER_Q)
 GUARDS = {
-    # gfx1100 (W7900D). Mixed: wins at a ratio <= 0.0039, losses from 0.0078. Up to 128 (2 kv
+    # gfx1100 (W7900D). Mixed: up to 128, wins to a ratio of 0.0068 (>= 1.55x); 256, Qwen3.8
+    # loses from 0.0049 and MiniCPM-V from 0.0059, wins at 0.0039. Up to 128 (2 kv
     # heads): a short prompt wins (1.33x at 16-256 tokens; 512:64 too), a chunk under 512 rows
     # over a context of 1k+ loses (1024:64 0.85x, 2048:128 0.91x), 4096:256 (512 rows) wins.
     # 256: no chunk measured loses (32 tokens x 1 kv head over 32k: a win).
-    ("gfx1100", 128): (0.003, 512, 600, 64),
+    ("gfx1100", 128): (0.006, 512, 600, 64),
     ("gfx1100", 256): (0.003, 16, 0, 1024),
-    # gfx1201 (R9700). Mixed: as gfx1100. Up to 128: under 1024 rows only thin wins (1.03-1.14x)
-    # or losses (32-token chunks over 2k+: 0.77x); 0:512 1.09x. 256: a short prompt wins
+    # gfx1201 (R9700). Mixed: up to 128, wins to 0.0068 (>= 1.64x); 256, MiniCPM-V >= 1.19x to
+    # 0.0049 and thin from 0.0059, losses from 0.0078. Up to 128: under 1024 rows only thin
+    # wins (1.03-1.14x) or losses (32-token chunks over 2k+: 0.77x); 0:512 1.09x. 256: a short prompt wins
     # (1.7x), a chunk under 512 rows over 1k+ loses or ties (1024:64 0.95-1.00x, 1024:128 0.91x).
-    ("gfx1201", 128): (0.003, 1024, 0, 128),
-    ("gfx1201", 256): (0.003, 512, 600, 128),
+    ("gfx1201", 128): (0.006, 1024, 0, 128),
+    ("gfx1201", 256): (0.004, 512, 600, 128),
 }
 _DECLINED_SAID: list = []
 
@@ -690,8 +692,11 @@ def unified_attention(*args, **kwargs):
         return _ORIG_U(*args, **kwargs)
     why = _guard(a)
     if why:
-        PATCH.count("declined")
-        _note_declined(why)
+        # a batch with prefill in it is never captured (piecewise graphs leave attention out, and
+        # full graphs hold decode-only steps), so the count skips the capture query
+        PATCH.stats["declined"] += 1
+        if not _DECLINED_SAID:
+            _note_declined(why)
         return _ORIG_U(*args, **kwargs)
     if u_why_not(a):
         PATCH.count("fallback")
