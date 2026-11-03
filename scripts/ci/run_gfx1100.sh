@@ -31,6 +31,9 @@ GPUS=${HK_CI_POD_GPUS:-6}                  # tried first; then GPU 0 (pod_run.sh
 NODE_LOCKS=${HK_CI_NODE_LOCKS:-1}          # 0: the pod's GPUs are its own (scripts/ci/k8s/)
 SHA=$GITHUB_SHA
 KEY=$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT
+# A hand run (outside GitHub Actions) gets an id of its own, digits only (pod_run.sh checks): two hand
+# runs given the same GITHUB_RUN_ID once shared a run directory.
+[ "${GITHUB_ACTIONS:-}" = true ] || KEY=$(date -u +%Y%m%d%H%M%S)$$-${GITHUB_RUN_ATTEMPT:-1}
 R=$DIR/runs/$KEY
 OUT=$GITHUB_WORKSPACE/gha-report
 mkdir -p "$OUT"
