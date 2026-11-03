@@ -142,7 +142,7 @@ launch merges the splits.
   once per batch size, so one or two requests over a short context are taken
   too, at about 1.03x (4k). Four requests were 0.98x at 4k-8k and stay
   vLLM's. It stays off by default because against ROCM_ATTN's paged decode
-  the kernel is 0.99-1.27x at one request, and about 1.11x over a measured
+  the kernel is 0.99-1.27x at one request, and about 1.10x over a measured
   real serving mix, under the 1.15x the default-on rule asks for.
 - `HK_VLLM_DECODE=0`: off.
 
