@@ -50,7 +50,8 @@ def test_every_public_name_of_hk_ops_is_in_a_family():
     listed = {e for f in cat.FAMILIES for e in f["entries"]}
     modules = {p.stem for p in OPS.glob("*.py")}
     missing = [n for n in _all(OPS / "__init__.py") if n not in modules and f"hk.ops.{n}" not in listed]
-    assert not missing, f"hk.ops names in no catalog family: {missing}"
+    assert not missing, (f"hk.ops names in no catalog family: {missing}: "
+                         "add a family (or the name to one) in python/hk/ops/catalog.py's FAMILIES and run `python3 scripts/gen_hardware_docs.py` (CONTRIBUTING.md: a PR that adds an op or a route carries its row)")
 
 
 def test_every_entry_point_exists():
@@ -82,7 +83,8 @@ def test_routes_and_tests_exist_and_every_kernel_route_has_a_family():
         for t in f["tests"]:
             assert (REPO / "tests" / "hk" / "gpu" / t).exists(), (f["name"], t)
     # every route the switches know runs one of these families
-    assert set(switches.ROUTES) == used, f"routes in no family: {sorted(set(switches.ROUTES) - used)}"
+    assert set(switches.ROUTES) == used, (f"routes in no family: {sorted(set(switches.ROUTES) - used)}: "
+                                          "add a family (or the name to one) in python/hk/ops/catalog.py's FAMILIES and run `python3 scripts/gen_hardware_docs.py` (CONTRIBUTING.md: a PR that adds an op or a route carries its row)")
 
 
 def test_a_family_behind_arch_require_lists_what_it_allows():

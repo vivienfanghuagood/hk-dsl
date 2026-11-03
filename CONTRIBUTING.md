@@ -11,6 +11,18 @@ Issues and pull requests are welcome. These pages cover the mechanics:
 A change to a public signature or docstring regenerates the API reference
 (`python3 scripts/gen_api_docs.py`). The IR tier fails if it is stale.
 
+**A PR that adds an op or an engine route carries its op-catalog row.** The
+catalog (`python/hk/ops/catalog.py`, `FAMILIES`) is written by hand. Each
+family entry gives the op's entry points, GPUs, dtypes, routes and GPU tests.
+`docs/ops.md` is generated from it. A new public `hk.ops` name, or a new route
+in `hk.integration.switches`, goes into a family in the same PR:
+- extend an existing family, or add a new one;
+- run `python3 scripts/gen_hardware_docs.py`.
+
+`tests/hk/ir/test_ops_catalog.py` fails on a name or route that is in no
+family. The merge train regenerates generated files such as `docs/ops.md` on
+its stacked tree, but it cannot write a catalog row.
+
 `python3 scripts/check_public_hygiene.py` keeps internal host names, addresses and user paths out
 of the repository.
 
