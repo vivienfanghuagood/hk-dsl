@@ -554,6 +554,7 @@ def evaluate(pr, required, include_drafts=False, ignore_head_checks=False):
     """-> dict(number, title, head, ready_at, ready_url, ok, why, warn)"""
     n, head = pr['number'], pr['head']['sha']
     e = {'number': n, 'title': pr['title'], 'head': head, 'ready_at': None, 'ready_url': None,
+         'branch': pr['head']['ref'], 'head_repo': (pr['head'].get('repo') or {}).get('full_name'),
          'draft': pr['draft'], 'base': pr['base']['ref'], 'ok': False, 'why': '', 'warn': []}
     ready, other, revoked = ready_comment(head, api_list(f"repos/{REPO}/issues/{n}/comments"))
     if ready:
@@ -685,12 +686,49 @@ def tag(e):
 # --------------------------------------------------------------------------------------------
 # build
 
+def _have_commit(sha):
+    return sh(['git', '-C', repo_dir(), 'cat-file', '-e', f'{sha}^{{commit}}'], check=False, quiet=True).returncode == 0
+
+
+def ensure_commit(m):
+    """Make member m's head -- the PR API's head.sha -- a commit in the train's clone, or Fail saying why.
+    fetch() takes refs/pull/*/head, and GitHub moves that ref after a push with a lag (minutes, once): the
+    PR API already names the new head while its object is not under any ref fetched. So, until the object is
+    there: the PR's branch (refs/heads/<branch>, from its own repository if a fork), the pull ref again, then
+    the sha itself."""
+    sha, n = m['head'], m['number']
+    if _have_commit(sha):
+        return
+    tried = []
+    branch, repo = m.get('branch'), m.get('head_repo') or REPO
+    if branch:
+        src = 'origin' if repo == REPO else f'https://github.com/{repo}.git'
+        git('fetch', '-q', src, f'+refs/heads/{branch}:refs/mt/branch/{n}', check=False)
+        tried.append(f"{'' if repo == REPO else repo + ' '}refs/heads/{branch}")
+        if _have_commit(sha):
+            LOG.say(f"  #{n}: head {sha[:7]} fetched from its branch (refs/pull/{n}/head lags)")
+            return
+    git('fetch', '-q', 'origin', f'+refs/pull/{n}/head:refs/mt/pull/{n}', check=False)
+    tried.append(f'refs/pull/{n}/head')
+    if _have_commit(sha):
+        return
+    git('fetch', '-q', 'origin', sha, check=False)
+    tried.append(sha[:12])
+    if _have_commit(sha):
+        LOG.say(f"  #{n}: head {sha[:7]} fetched by its sha")
+        return
+    raise Fail(f"#{n}: its head {sha[:7]} (the PR's head.sha on GitHub) is not in the train's clone after "
+               f"fetching {', '.join(tried)}: GitHub has not published it yet, or the branch moved again. "
+               f"Run the command again in a minute; if the head moved, the member is re-evaluated.")
+
+
 def stack(st, members, main_sha):
     """Stack `members` (dicts with number/head/title) on main_sha. Returns (entries, conflicts)."""
     env = {'GIT_AUTHOR_NAME': GIT_NAME, 'GIT_AUTHOR_EMAIL': GIT_EMAIL, 'GIT_COMMITTER_NAME': GIT_NAME,
            'GIT_COMMITTER_EMAIL': GIT_EMAIL, 'GIT_AUTHOR_DATE': st['created'], 'GIT_COMMITTER_DATE': st['created']}
     cur, entries, conflicts = main_sha, [], []
     for m in members:
+        ensure_commit(m)
         if sh(['git', '-C', repo_dir(), 'merge-base', '--is-ancestor', m['head'], main_sha], check=False).returncode == 0:
             conflicts.append({**m, 'files': [], 'against': 'already in main'})
             continue
@@ -1122,7 +1160,8 @@ def cmd_build(a):
         return 0
     st = {'name': name, 'window': window, 'created': iso(t), 'repo': REPO, 'workflows': wfs,
           'filter': a.prs, 'include_drafts': a.include_drafts, 'ignore_head_checks': a.ignore_head_checks,
-          'members': [{k: e[k] for k in ('number', 'title', 'head', 'ready_at', 'ready_url')} for e in ready],
+          'members': [{k: e[k] for k in ('number', 'title', 'head', 'ready_at', 'ready_url', 'branch', 'head_repo')}
+                      for e in ready],
           'kicked': {}, 'rounds': [], 'merged': [], 'bisect': None}
     r = new_round(st, st['members'], 'window')
     launch(st, r, wfs)
@@ -1147,7 +1186,8 @@ def refreshed_members(st):
             e = evaluate(pr, required, st.get('include_drafts'), st.get('ignore_head_checks'))
             if e['ok']:
                 LOG.say(f"  #{m['number']} moved {m['head'][:7]} -> {e['head'][:7]} and is READY again: new head")
-                m.update(head=e['head'], ready_at=e['ready_at'], ready_url=e['ready_url'])   # kept in st
+                m.update(head=e['head'], ready_at=e['ready_at'], ready_url=e['ready_url'],   # kept in st
+                         branch=e['branch'], head_repo=e['head_repo'])
             else:
                 do_kick(st, m['number'], pr['head']['sha'],
                         f"its head moved from {m['head'][:7]} to {pr['head']['sha'][:7]} after the train was built",
