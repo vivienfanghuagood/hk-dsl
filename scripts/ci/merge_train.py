@@ -101,6 +101,13 @@ GENERATORS = [
      'writes': ['docs/api/*', 'llms-full.txt'], 'regions': {},
      'inputs': ['python/hk/*', 'scripts/gen_api_docs.py', 'scripts/api_baseline_*.json'],
      'tests': ['tests/hk/ir/test_api_docs.py']},
+    {'name': 'support-matrix', 'cmd': ['python3', 'scripts/gen_support_matrix.py'], 'mlir': True,
+     'writes': ['docs/support-matrix.md'], 'regions': {},
+     'inputs': ['tests/hk/ir/engine_facts/*', 'python/hk/integration/switches.py',
+                'python/hk/integration/contract.py', 'python/hk/__init__.py', '.github/workflows/gpu.yml',
+                '.github/workflows/ci.yml', 'scripts/ci/k8s/gfx1100-ci.yaml', 'scripts/ci/gfx1201/*',
+                'scripts/ci/run_gfx950.sh', 'scripts/gen_support_matrix.py'],
+     'tests': ['tests/hk/ir/test_support_matrix.py']},
 ]
 if os.environ.get('MERGE_TRAIN_GENERATORS'):
     with open(os.path.expanduser(os.environ['MERGE_TRAIN_GENERATORS'])) as _f:
@@ -839,6 +846,10 @@ def regenerate(sha, label):
     src = gen_tree(sha)
     built, files, prev = [False], {}, {}
     for g in GENERATORS:
+        script = next((a for a in g['cmd'] if a.endswith('.py')), None)
+        if script and not os.path.exists(os.path.join(src, script)):
+            LOG.say(f"    {g['name']}: {script} is not in this tree: skipped")
+            continue
         ok, out = gen_run(g, src, built)
         if not ok:
             return {'ok': False, 'why': f"generator {g['name']} failed: {out[-600:]}", 'files': {}, 'src': src}
