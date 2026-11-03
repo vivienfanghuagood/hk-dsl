@@ -120,6 +120,8 @@ nav:
       - hk.ops: api/hk.ops.md
   - 5 Serving engines:
       - Integration: integration.md
+      - vLLM: vllm.md
+      - SGLang and SGLang-Diffusion: sglang.md
       - "The end-to-end loop: a model, measured and patched": e2e-loop.md
       - "For agents: kernels in an engine": agents.md
   - 6 Performance:
