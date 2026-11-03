@@ -356,6 +356,43 @@ for a quarter of an hour, the ratios of hk's large GEMMs moved further than the
 standalone baseline allows, and a required job cannot fail on a measurement
 condition.
 
+### The install matrix
+
+`.github/workflows/install.yml` does what a new user does, on each supported
+ROCm and GPU, from a stock image: it builds the cp312 wheel from the commit, as
+a release builds it (manylinux, glibc 2.35), then in a fresh container per leg
+it runs `scripts/ci/install_smoke.py`. Those steps are:
+
+1. `pip install` of the wheel. The container holds nothing of hk but the wheel,
+   the wheels the image lacks (pybind11), `README.md` and the script. It has no
+   checkout and no package index. `import hk` must come from the installed wheel.
+2. The README's quick start, as written: its `my_kernels.py` block and its
+   `python3 -m hk.check` command, read from `README.md`.
+   `tests/hk/ir/test_install_smoke.py` keeps that extraction working on every PR.
+3. One GPU test with an exact answer: attention with `V = 1` returns exactly 1.0.
+
+The JIT compiles with the image's own hipcc. A toolchain hk does not handle,
+such as ROCm 10.1's clang 24, therefore fails here before a user meets it. A
+leg whose GPU is missing fails: without one, `hk.check` only builds.
+
+| leg | image | hipcc |
+|---|---|---|
+| gfx950, ROCm 7.2.3 | `rocm/pytorch` rocm7.2.3, Python 3.12 | clang 22 |
+| gfx950, ROCm 10.1.0 | `rocm/pytorch` rocm10.1.0, Python 3.12 | clang 24 |
+| gfx1201, ROCm 7.2.3 | `rocm/pytorch` rocm7.2.3, Python 3.12 | clang 22 |
+| gfx1100, ROCm 7.2.4 | the CI pod's image (`rocm/pytorch` rocm7.2.4) | clang 22 |
+
+Not covered yet:
+- gfx1201 on ROCm 10.1: the image is not on its runner.
+- gfx1100 in a container of its own: the pod has no container runtime, so its leg
+  installs with `pip install --target` into a fresh directory. Its ROCm is the
+  pod's.
+- Python 3.14, which TheRock's images use: no cp314 wheel is built.
+
+The matrix runs nightly on main and by hand, and must be green on the commit a
+release candidate is tagged from ([releasing](releasing.md)). It never runs on
+pull requests, because every leg takes a GPU.
+
 ## The merge train
 
 Ready pull requests are merged in batches: stacked on main in order, tested

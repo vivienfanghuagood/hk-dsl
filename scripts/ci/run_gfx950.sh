@@ -152,6 +152,28 @@ echo "GPU $GPU ($RENDER)"
 exec {REAP}> >(exec env -u GH_TOKEN RUNNER_TRACKING_ID=0 setsid "$HERE/cancel.sh" --on-eof container "$NAME" \
                >>"$RUN/reaper.log" 2>&1)
 touch "$RUN/started"    # minutes count from here, not from the wait
+if [ "${HK_CI_MODE:-}" = install ]; then
+    # The install matrix (install.yml): a fresh container of the stock image HK_CI_IMAGE, as root, as a user
+    # runs pip, with nothing but the install kit mounted read-only -- the wheel, the wheels the image lacks,
+    # README.md and install_smoke.py. No checkout, CI directory or MLIR install. An image that is not on
+    # this runner is an error, not a pull.
+    KIT=$GITHUB_WORKSPACE/${HK_INSTALL_KIT:-install-kit}
+    WHL=$(cd "$KIT" 2>/dev/null && ls hk_dsl-*.whl 2>/dev/null | head -1)
+    [ -n "$WHL" ] || { echo "::error::no wheel in the install kit"; exit 1; }
+    docker image inspect "$IMAGE" >/dev/null 2>&1 || { echo "::error::$IMAGE is not on this runner"; exit 1; }
+    docker run --rm --ulimit core=0 -e HSA_DISABLE_COREDUMP_ON_EXCEPTION=1 --name "$NAME" \
+        --label hk-gha.runner="$RUNNER" --label hk-gha.run="$GITHUB_RUN_ID" --label hk-gha.attempt="$GITHUB_RUN_ATTEMPT" \
+        --label hk-gha.tier="$TIER" --label hk-gha.started="$(date +%s)" \
+        --device /dev/kfd --device "/dev/dri/$RENDER" --ipc=host \
+        -e HOME=/tmp -e HK_INSTALL_ARCH=gfx950 -v "$KIT:/inst:ro" -w /tmp \
+        --entrypoint bash "$IMAGE" -c "ulimit -c 0; python3 /inst/install_smoke.py /inst/$WHL /inst/README.md /inst/deps" \
+        {REAP}>&- {LOCKFD}>&- &
+    DPID=$!
+    wait $DPID
+    rc=$?
+    DPID=
+    exit $rc
+fi
 docker run --rm --ulimit core=0 -e HSA_DISABLE_COREDUMP_ON_EXCEPTION=1 --name "$NAME" --user "$(id -u):$(id -g)" \
     --label hk-gha.runner="$RUNNER" --label hk-gha.run="$GITHUB_RUN_ID" --label hk-gha.attempt="$GITHUB_RUN_ATTEMPT" \
     --label hk-gha.tier="$TIER" --label hk-gha.started="$(date +%s)" \

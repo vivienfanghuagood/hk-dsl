@@ -51,6 +51,12 @@ fail() {
     exit 1
 }
 
+# HK_CI_MODE=install (install.yml): no checkout and no build. The install kit, which run_gfx1100.sh put in
+# $RUN/kit (the wheel, the wheels the image lacks, README.md, install_smoke.py), is installed with
+# `pip install --target $RUN/site` -- the pod's Python is shared and stays as it is -- and checked on one GPU.
+INSTALL=0
+[ "${HK_CI_MODE:-}" = install ] && INSTALL=1
+if [ "$INSTALL" = 0 ]; then
 echo "$(date -u +%T) fetching $SHA"
 if [ ! -d "$SRC/.git" ]; then
     git clone -q https://github.com/vivienfanghuagood/hk-dsl.git "$SRC" || fail "git clone through the proxy"
@@ -63,6 +69,7 @@ git submodule sync -q && git submodule update -q --init --recursive || fail "the
 echo "$(date -u +%T) building the dialect"
 HK_LLVM_ROOT=/workspace/llvm HK_MLIR_BUILD=$CI/hk-build-cp312 PYTHON=/opt/venv/bin/python3 JOBS=${HK_CI_JOBS:-32} \
     scripts/build_hk_mlir.sh >"$RUN/build.log" 2>&1 || fail "the dialect did not build (build.log)"
+fi
 
 idle() {
     local out use mem
@@ -104,6 +111,17 @@ done
 fi
 [ -n "$GPU" ] || fail "no idle GPU for two hours"
 touch "$RUN/started"    # minutes count from here, not from the wait
+if [ "$INSTALL" = 1 ]; then
+    GPU=${GPU%% *}
+    echo "$(date -u +%T) GPU $GPU; the install smoke (scripts/ci/install_smoke.py)"
+    WHL=$(cd "$RUN/kit" && ls hk_dsl-*.whl | head -1)
+    HIP_VISIBLE_DEVICES=$GPU HK_INSTALL_ARCH=gfx1100 HK_INSTALL_TARGET=$RUN/site \
+        python3 "$RUN/kit/install_smoke.py" "$RUN/kit/$WHL" "$RUN/kit/README.md" "$RUN/kit/deps"
+    rc=$?
+    echo "{\"install_rc\": $rc}" > "$RUN/result.json"
+    echo "$(date -u +%T) done (rc $rc)"
+    exit 0
+fi
 seen=$(rocminfo 2>/dev/null | grep -o -m1 "gfx[0-9a-f]*")
 [ "$seen" = gfx1100 ] || fail "the pod sees no gfx1100 GPU (rocminfo: ${seen:-no gfx agent})"
 n=$(wc -w <<<"$GPU")
