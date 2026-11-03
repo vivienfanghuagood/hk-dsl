@@ -29,7 +29,7 @@ from . import _common, engine
 
 PREFIXES = ("vllm",)
 
-PATCH = engine.Patch("hk_vllm::prefill", paths=("hk", "fallback"), graph="safe")
+PATCH = engine.Patch("hk_vllm::prefill", paths=("hk", "fallback", "decode"), graph="safe")
 
 #: The GPUs the kernels are built and tested for: RDNA3 and RDNA4 (wave32, 64 KiB of LDS a
 #: workgroup; the WMMA operand layouts are HipKittens' per arch, behind the same DSL ops).
@@ -50,7 +50,7 @@ _ORIG = None
 _OPS: dict = {}
 
 
-def _built(make):
+def _built(make, quiet: bool = False):
     """(launch, Q tile rows) from `make()`, or None where the kernel does not build spill-free
     under this compiler (the build's spill gate refuses it): the call then falls back."""
     from ..runtime.resources import ResourceError  # noqa: PLC0415
@@ -62,6 +62,8 @@ def _built(make):
     except ResourceError as e:
         import sys  # noqa: PLC0415
 
+        if quiet:
+            return None
         print(f"[hk] prefill: {k.name} does not build spill-free here; its calls stay vLLM's "
               f"({str(e).splitlines()[1].strip() if len(str(e).splitlines()) > 1 else e})",
               file=sys.stderr)
@@ -448,10 +450,156 @@ def u_why_not(a: dict) -> str:
     return ""
 
 
+#: A call with only decodes in it (one query a request) goes to hk's split decode
+#: (hk.ops.paged_decode) on the same cache, where `decode_takes` says it does. HK_VLLM_DECODE:
+#: unset, head_dim 256 only -- there hk beats every stock kernel that can read those pages;
+#: "1", head_dim 128 too (opt-in: at one request and 8k tokens ROCM_ATTN's paged decode is as
+#: fast); "0", none.
+def decode_switches(env: str):
+    """(decode on at all, head_dim 128 too) for an HK_VLLM_DECODE value."""
+    v = (env or "").strip().lower()
+    return v not in ("0", "off", "no", "false"), v in ("1", "on", "yes", "true")
+
+
+DECODE, DECODE_D128 = decode_switches(__import__("os").environ.get("HK_VLLM_DECODE", ""))
+
+#: Decode batches hk takes: at head_dim 128, up to this many (request, kv head) pairs -- past
+#: it vLLM's Triton kernel has the machine full and the two read the cache at the same rate
+#: (tools/hk-bench/attention_bench.py: MiniCPM5-2B, B8 at 8k-32k: 0.98-1.0x); at 256 every
+#: batch (Qwen3.8-27B: 1.06-2.2x at B1-B16).
+DECODE_MAX_PAIRS_D128 = 8
+#: The GPUs the decode is measured and tested on.
+DECODE_ARCHES = ("gfx1100",)
+_DEC: dict = {}
+_DEC_SCRATCH: dict = {}
+
+
+def decode_takes(reqs: int, kv_heads: int, head_dim: int) -> bool:
+    """Whether hk's split decode takes a decode batch of `reqs` requests: every batch at head_dim
+    256; at 128 (with HK_VLLM_DECODE=1) up to DECODE_MAX_PAIRS_D128 (request, kv head) pairs."""
+    if head_dim > 128:
+        return True
+    return DECODE_D128 and reqs * kv_heads <= DECODE_MAX_PAIRS_D128
+
+
+def d_why_not(a: dict) -> str:
+    """Why hk's decode does not take this decode-only unified_attention call, or ""."""
+    import torch  # noqa: PLC0415
+
+    from . import switches  # noqa: PLC0415
+
+    if switches.arch() not in DECODE_ARCHES:
+        return f"arch {switches.arch()}"
+    if int(a.get("max_seqlen_q", 1)) != 1:
+        return "not decode-only"
+    for name, ok in _U_OFF.items():
+        if name in a and not ok(a[name]):
+            return f"{name} set"
+    unknown = _unknown_set(a)
+    if unknown:
+        return f"{unknown} set (an argument hk does not know)"
+    q, k, out = a["q"], a["k"], a["out"]
+    if q.dtype != torch.bfloat16 or out.dtype != torch.bfloat16 or k.dtype != torch.bfloat16:
+        return f"dtype {q.dtype} / cache {k.dtype}"
+    if q.dim() != 3 or q.shape[-1] not in (128, 256):
+        return f"head size {q.shape[-1]}"
+    if k.dim() != 4:
+        return f"cache {tuple(k.shape)}"
+    why = page_why_not(int(k.shape[1]))
+    if why:
+        return why
+    if q.shape[1] % k.shape[2] or q.shape[1] // k.shape[2] > 16:
+        return "query heads not a multiple of kv heads, or more than 16 a kv head"
+    for t in (a["block_table"], a["seqused_k"], a["cu_seqlens_q"]):
+        if t.dtype != torch.int32 or not t.is_contiguous():
+            return "metadata not contiguous int32"
+    if q.stride(-1) != 1 or q.stride(-2) != q.shape[-1] or not out.is_contiguous():
+        return "q heads not packed / output not contiguous"
+    if not decode_takes(len(a["seqused_k"]), int(k.shape[2]), int(q.shape[-1])):
+        return ("head_dim 128 decode (HK_VLLM_DECODE=1 takes it)" if not DECODE_D128 else
+                "decode batch past hk's (vLLM's kernel reads as fast)")
+    if _flash_kv(k, a["v"]) is None:
+        return "key/value caches: not a layout hk reads"
+    return ""
+
+
+def _decode_ops(head_dim: int, group: int, page: int, order: str, splits: int,
+                scale: Optional[float], warps: int = 4, v_both: bool = False):
+    key = (head_dim, group, page, order, splits, scale, warps, v_both)
+    if key not in _DEC:
+        from ..ops import paged_decode as pd  # noqa: PLC0415
+
+        walk = _built(lambda: (pd.walk_for(head_dim, group, page, order, splits, scale,
+                                           warps=warps, v_both=v_both), 0), quiet=v_both)
+        if walk is None and v_both:
+            # both V bands in flight spills under some compilers (clang 22): the one-band walk
+            walk = _built(lambda: (pd.walk_for(head_dim, group, page, order, splits, scale,
+                                               warps=warps, v_both=False), 0))
+        merge = (_built(lambda: (pd.merge_for(head_dim, group, splits), 0)) if splits > 1
+                 else (None, 0))
+        _DEC[key] = None if walk is None or merge is None else (walk[0], merge[0])
+    return _DEC[key]
+
+
+def _decode_scratch(device, rows: int, hkv: int, group: int, d: int):
+    """The split partials, kept across calls (a captured graph holds them); grown outside a
+    capture only -- None if a capture needs more than there is."""
+    from ..ops import paged_decode as pd  # noqa: PLC0415
+
+    key = (str(device), hkv, group, d)
+    got = _DEC_SCRATCH.get(key)
+    if got is None or got[0].shape[0] < rows:
+        if engine.capturing():
+            return None
+        got = _DEC_SCRATCH[key] = pd.scratch(max(rows, 256), hkv, group, d, device)
+    return got
+
+
+def _decode(a: dict) -> bool:
+    """hk's split decode on a decode-only batch; False if it cannot (falls back)."""
+    from ..ops import paged_decode as pd  # noqa: PLC0415
+
+    q, out, k = a["q"], a["out"], a["k"]
+    n, h, d = q.shape
+    hkv, page = int(k.shape[2]), int(k.shape[1])
+    group = h // hkv
+    reqs = len(a["seqused_k"])
+    kv, order = _flash_kv(k, a["v"])
+    sc = a["softmax_scale"]
+    scale = None if sc is None or sc == d ** -0.5 else float(sc)
+    splits, warps, v_both = pd.plan(reqs, hkv, d, page)
+    ops = _decode_ops(d, group, page, order, splits, scale, warps, v_both)
+    scratch = _decode_scratch(q.device, reqs * splits, hkv, group, d) if ops else None
+    if ops is None or scratch is None:
+        return False
+    walk, merge = ops
+    o4 = out.view(n, hkv, group, d)
+    walk(q.unsqueeze(0), kv, a["block_table"], a["seqused_k"], a["cu_seqlens_q"], o4, *scratch)
+    if merge is not None:
+        merge(a["seqused_k"], a["cu_seqlens_q"], o4, *scratch)
+    return True
+
+
 def unified_attention(*args, **kwargs):
     """vLLM's unified_attention (its signature, set on apply), hk's flash-layout prefill --
-    the whole batch, decodes included -- where it takes a call with prefill in it."""
+    the whole batch, decodes included -- where it takes a call with prefill in it; with
+    HK_VLLM_DECODE=1, hk's split decode where it takes a decode-only call."""
     a = kwargs if not args else _U_SIG.bind(*args, **kwargs).arguments
+    if DECODE and int(a.get("max_seqlen_q", 1)) <= 1:
+        if not d_why_not(a) and _decode(a):
+            PATCH.count("decode")
+            if SHADOW and not engine.capturing():
+                import torch  # noqa: PLC0415
+
+                ref = torch.empty_like(a["out"])
+                b = dict(a)
+                b["out"] = ref
+                _ORIG_U(**b)
+                live = (a["seqused_k"] > 0).nonzero().flatten().tolist()
+                _compare(a["out"], ref, [r for r in live if r < a["out"].shape[0]])
+            return None
+        PATCH.count("fallback")
+        return _ORIG_U(*args, **kwargs)
     if u_why_not(a):
         PATCH.count("fallback")
         return _ORIG_U(*args, **kwargs)
