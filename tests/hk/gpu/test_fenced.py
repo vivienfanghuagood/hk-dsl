@@ -387,6 +387,40 @@ def test_attention():
     fenced_cases(COMMON, cases)
 
 
+@gfx1100
+def test_sglang_diffusion_kernels():
+    """The SGLang-Diffusion routes' kernels: attn_k3 (sgld_attn's DiT attention) at ragged and
+    cross lengths in both layouts it takes -- (B, H, N, D) and (B, H, N, D) views of (B, N, H, D)
+    memory, SGLang-Diffusion's -- up to Qwen-Image's i2i shape; and sgld_linear's GEMM op
+    (`_gemm_op`, the torch op the route launches) at ragged M around and above MIN_M."""
+    cases = {}
+    for b, h, n, nk in ((1, 2, 128, 32), (1, 2, 129, 33), (2, 3, 255, 1001), (1, 2, 1001, 129),
+                        (1, 4, 4032, 8092)):
+        for bnhd in (False, True):
+            mk = (f"rnd({b}, {{n}}, {h}, 128).transpose(1, 2)" if bnhd else f"rnd({b}, {h}, {{n}}, 128)")
+            cases[f"attn_k3 B{b} H{h} N{n} Nkv{nk} {'bnhd' if bnhd else 'bhnd'}"] = f"""
+            from hk.ops import attn_k3
+            q = {mk.format(n=n)}; k = {mk.format(n=nk)}; v = {mk.format(n=nk)}
+            assert attn_k3.why(q, k, v) == "", attn_k3.why(q, k, v)
+            got = step("attn_k3", lambda: attn_k3.attention(q, k, v))
+            want = F.scaled_dot_product_attention(q.float().cpu(), k.float().cpu(), v.float().cpu())
+            attn("attn_k3", got, want)
+            """
+    for m, n, k in ((1024, 384, 1024), (1025, 384, 1024), (1087, 384, 1024), (1151, 384, 1024),
+                    (1025, 4096, 4096), (4060, 384, 1024)):
+        cases[f"sgld gemm M{m} N{n} K{k}"] = f"""
+        from hk.integration import sglang_diffusion as G
+        from hk.ops import gemm
+        s = gemm.schedule_for({m}, {n}, {k})
+        op = G._gemm_op(s)
+        a = rnd({m}, {k}); b = rnd({n}, {k}, scale={k} ** -0.5)
+        out = torch.empty({m}, {n}, device="cuda", dtype=torch.bfloat16)
+        step("sgld gemm", lambda: op(a, b, out))
+        rel("sgld gemm", out, a.float() @ b.float().T, 2e-2)
+        """
+    fenced_cases(COMMON, cases)
+
+
 PAGED = COMMON + """
 from hk.ops import paged, paged_prefill
 
