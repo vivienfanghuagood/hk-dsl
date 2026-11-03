@@ -26,7 +26,7 @@ commit to be tagged. **If any item fails, do not tag.**
 - [ ] **The documentation sync gate** passes
   ([below](#documentation-sync-must-pass-before-tagging)).
 - [ ] **Every route that is on by default meets
-  [the default-on rule](testing.md)** on each GPU it is on
+  [the default-on rule](testing.md#the-default-on-rule)** on each GPU it is on
   for. `python3 -m hk.integration --status` lists them; the evidence for each
   is in [integration](integration.md#on-by-default-and-turning-it-off).
 - [ ] **The notes quote only the scorecard.** Every performance number in the
