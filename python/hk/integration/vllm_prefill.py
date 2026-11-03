@@ -31,6 +31,10 @@ PREFIXES = ("vllm",)
 
 PATCH = engine.Patch("hk_vllm::prefill", paths=("hk", "fallback"), graph="safe")
 
+#: The GPUs the kernels are built and tested for: RDNA3 and RDNA4 (wave32, 64 KiB of LDS a
+#: workgroup; the WMMA operand layouts are HipKittens' per arch, behind the same DSL ops).
+ARCHES = ("gfx1100", "gfx1201")
+
 #: Head sizes the kernel is instantiated for (256: dsplit, a query row across a pair of warps).
 HEAD_DIMS = (64, 128, 256)
 
@@ -89,7 +93,7 @@ def why_not(q, o, kv_cache_dtype, k_cache, v_cache, b_loc, b_start_loc, b_seq_le
 
     from . import switches  # noqa: PLC0415
 
-    if switches.arch() != "gfx1100":
+    if switches.arch() not in ARCHES:
         return f"arch {switches.arch()}"
     if q.dtype != torch.bfloat16 or o.dtype != torch.bfloat16:
         return f"dtype {q.dtype}"
@@ -404,7 +408,7 @@ def u_why_not(a: dict) -> str:
 
     from . import switches  # noqa: PLC0415
 
-    if switches.arch() != "gfx1100":
+    if switches.arch() not in ARCHES:
         return f"arch {switches.arch()}"
     if engine.capturing():
         return "being captured (a mixed batch's grid follows its max query length)"
