@@ -26,7 +26,7 @@ says what changed and what to write instead.
 - **The switches' names**: every `HK_*` variable that turns a route on or off,
   and `HK_DISABLE`. Which routes are **on by default is not part of this
   promise.** Defaults change from release to release under
-  [the default-on rule](testing.md), and the release notes
+  [the default-on rule](testing.md#the-default-on-rule), and the release notes
   list every change.
 
 ## Experimental
