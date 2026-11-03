@@ -149,9 +149,10 @@ def page() -> str:
                "are in [`hk.target`](api/hk.target.md).\n\n")
 
     out.append("## Engine routes on each\n\n")
-    out.append("A route is on by default only on the GPUs it was validated on (**on** below). "
+    out.append("A route is on by default only on the GPUs where it met the "
+               "[default-on rule](testing.md#the-default-on-rule) (**on** below). "
                "Elsewhere it is off: its switch at `1` turns it on anyway, without that "
-               "validation, and not every route's kernels exist on every arch. A route marked "
+               "evidence, and not every route's kernels exist on every arch. A route marked "
                "opt-in is off "
                "on every GPU until you turn it on. What each route does and the evidence for "
                "its default: [integration](integration.md#on-by-default-and-turning-it-off); "
