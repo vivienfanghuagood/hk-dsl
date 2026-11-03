@@ -211,3 +211,21 @@ def test_a_header_the_kernel_does_not_include_leaves_it_cached(probe):
     put("unrelated.cuh", "PROBE_UNRELATED", 0x5EED0402)
     b1, _ = build()
     assert b1.cached and b1.key == b0.key
+
+
+@pytest.mark.parametrize("kind", ["co", "so"])
+def test_a_zero_filled_binary_behind_its_ok_marker_is_rebuilt(probe, kind, capfd):
+    """hk-dsl#227: after a power loss, entries kept their OK marker while their code object was
+    zeros (the marker reached the disk, the data had not), and every later process failed at
+    launch. Such an entry is a miss now: rebuilt in its place, a whole ELF file again."""
+    _, build = probe
+    b0, _ = build(kind)
+    good = b0.so_path.read_bytes()
+    assert good[:4] == b"\x7fELF" and (b0.so_path.parent / "OK").exists()
+    b0.so_path.write_bytes(bytes(len(good)))
+    b1, has = build(kind)
+    assert not b1.cached and b1.key == b0.key and has["PROBE_INNER"]
+    assert b1.so_path.read_bytes()[:4] == b"\x7fELF"
+    assert "damaged" in capfd.readouterr().err
+    b2, _ = build(kind)
+    assert b2.cached and b2.key == b0.key
