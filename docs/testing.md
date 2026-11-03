@@ -131,6 +131,38 @@ DeepSeek-V4.1 shapes; `HK_FENCE_EACH=1` runs a child per case and reports every
 one that fails. A new op, or a route that takes a new ragged dimension, gets
 cases there.
 
+## The default-on rule
+
+An engine route (one entry of `hk.integration.switches`) is on by default on a
+GPU when all three of these hold there:
+
+1. **Its kernel is clearly better than the engine's best**, at two levels.
+   Both are measured in one process, on cold weights, against the engine's
+   fastest kernel for each shape:
+   - **The route:** over the shapes the route takes, weighted by the time each
+     takes in a real model's mix, the gain is 1.15x or more.
+   - **Each shape:** a shape goes to hk only if hk is faster on it, measured
+     in context, by more than the measurement noise. A shape that is not stays
+     on the engine, so the route is never slower on a shape it takes.
+2. **Its correctness suite passes:**
+   - a float64 reference;
+   - an exact probe (`V = 1` for attention, above);
+   - 200 repeats over outputs poisoned with NaN;
+   - fenced bounds (`test_fenced.py`, above);
+   - a side-stream test (a producer on a torch stream of its own);
+   - the final-ISA gates: spills, MFMA hazards and VOPD
+     ([the resource gates](runtime.md#the-resource-gates)).
+3. **One end-to-end smoke per engine:** one server start with the route on,
+   hk's call count for it above zero, and quality (GSM8K, and ChartQA for a
+   vision model) equal to the engine's own.
+
+The full multi-start A/B of a model (stock against hk, alternating server
+starts) is measured once per release, for the public
+[scorecard](performance/scorecard.md). It is not a gate for each route. A route
+that changes outputs beyond the engine's own noise stays off: the smoke's
+quality check is where that shows. `python3 -m hk.integration --status` prints
+every route's default on your GPU and the rule that decided it.
+
 ## Examples, and checks at full size
 
 Every kernel in [`examples/`](../examples) is held at three tiers, through
@@ -226,6 +258,15 @@ cancels a PR's run in progress, but main's runs always finish:
   build does wrong -- a schedule that spills there, a wait or a layout gfx12 has
   and gfx1100 does not -- without a GPU. Their caches are keyed apart from
   gfx1100's.
+
+- **A pull request moves a submodule's pin only on purpose and only forward**
+  (`submodule pin`, `scripts/ci/check_submodule_pin.sh`). If the PR pins
+  `third_party/HipKittens` at another commit than its base, its title or body
+  must say "HipKittens bump", and the new pin must descend from the base's
+  (`git merge-base --is-ancestor` in HipKittens). A worktree's stale pin
+  committed with an unrelated change would otherwise undo an earlier PR's
+  library fix on main, and the tiers would not notice: the toolchains that
+  needed the fix are not all in them.
 
 A new MLIR, or a CPython other than the runner's, needs a new archive. Build
 it with `scripts/build_mlir.sh`, pack the install tree with LLVM's and MLIR's

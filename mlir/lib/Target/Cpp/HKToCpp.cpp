@@ -1494,6 +1494,19 @@ private:
             name(o.getS()) + ", " + (o.getZs() ? name(o.getZs()) + ", " : std::string()) +
             name(o.getN0()) + ", " + name(o.getK0()) + ");");
         })
+        .Case([&](GemvW4Op o) {
+          // hk/rdna/w4.cuh's gemv_w4: symmetric (zero) or asymmetric (zs)
+          Value d = dest(o.getDst(), o.getResult());
+          std::string tmpl = std::to_string(o.getGroup()) +
+                             (o.getZero() ? ", " + std::to_string(*o.getZero()) +
+                                                (o.getSBlocked() ? ", true" : ", false")
+                                          : std::string()) +
+                             ", " + std::to_string(o.getTokens());
+          w("kittens::gemv_w4<" + tmpl + ">(" + name(d) + ", " + name(o.getX()) + ", " +
+            name(o.getQw()) + ", " + name(o.getS()) + ", " +
+            (o.getZs() ? name(o.getZs()) + ", " : std::string()) + name(o.getN0()) + ", " +
+            name(o.getK0()) + ", " + name(o.getKstep()) + ", " + name(o.getCount()) + ");");
+        })
         .Case([&](GatherPrepOp o) {
           w("kittens::gather_prep<" + std::to_string(o.getRows()) + (o.getRaw() ? ", 1" : "") +
             ">(" + name(o.getIds()) + ", " + name(o.getAt()) + ");");

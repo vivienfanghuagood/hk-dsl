@@ -2297,4 +2297,4 @@ are bounded: any non-empty length. head_dim is 64 or 128 on both.
 
 ## Also exported
 
-`hk.fp4_operand`, `hk.fp8_operand`, `hk.lane_coords`, `hk.mx`, `hk.mx_scales_loose`, `hk.templates`
+`hk.fp4_operand`, `hk.fp8_operand`, `hk.gemv_w4`, `hk.lane_coords`, `hk.mx`, `hk.mx_scales_loose`, `hk.templates`
