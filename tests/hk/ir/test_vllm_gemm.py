@@ -255,6 +255,7 @@ def test_a_new_table_decides_the_layer_again(dispatch, monkeypatch):
     d()(layer, None, w)
     monkeypatch.setattr(vllm_gemm, "routes", lambda: engine.RouteTable(
         {(1024, 4096): dict(runs=[[1, 16, "hk_decode"]])}))      # e.g. measured at load
+    monkeypatch.setattr(vllm_gemm, "_GEN", [vllm_gemm._GEN[0] + 1])   # as set_routes does
     d()(layer, None, w)
     assert [c[0] for c in calls] == ["vllm", "hk"]
 
