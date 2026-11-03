@@ -9,6 +9,72 @@ The next version's notes collect here until it is released.
 What is on main after 0.8.0. `pip install hk-dsl` (0.8.0) does not have it;
 the API reference marks such names *New after 0.8.0*.
 
+### Default changes
+
+Which routes are on by default changes from release to release under
+[the default-on rule](docs/testing.md#the-default-on-rule) ([stability](docs/stability.md)). Since 0.8.0:
+
+**Default change: decode-only batches on TRITON_ATTN at head size 256 run on hk's split decode,
+`hk.ops.paged_decode` (gfx1100, #220).** vLLM's Triton decode cuts each sequence into 16
+segments, so at 1-4 requests most of the card is idle. `hk.ops.paged_decode` reads
+TRITON_ATTN's cache in place, in all three of its orders and on pages of any multiple of 16
+tokens, and cuts the KV axis into splits planned from the batch alone. A split's range is
+computed on the device from the sequence length, so the count a CUDA graph was captured with is
+right for every replay, and a graph's padding requests write nothing. A second launch merges
+the splits.
+
+Within the `vllm_prefill` route, so where that route is on (gfx1100 by default):
+- `HK_VLLM_DECODE` unset (**the new default**): head size 256 at every batch. Those are hybrid
+  models' attention layers (Qwen3.8, Qwen3.6, MiniCPM-V-4.7).
+- `HK_VLLM_DECODE=1`: head size 128 too, up to 8 (request, kv head) pairs (opt-in: at one
+  request below 16k tokens ROCM_ATTN's paged decode is as fast).
+- `HK_VLLM_DECODE=0`, or `HK_VLLM_PREFILL=0`: vLLM's decode, as before.
+
+Calls are counted as the route's `decode` path. `tools/hk-bench/attention_bench.py` is a new
+public benchmark of paged attention, prefill and decode, against vLLM's own kernels
+(`tools/hk-bench/README-attention.md` has every row).
+
+**vLLM prefill attention on vLLM's own cache, on by default on gfx1100 (`vllm_prefill`, #158,
+#167, #190, #196).** With chunked prefill and prefix caching on, a long prompt's time on RDNA is
+mostly prefill attention over the paged KV cache. The route replaces only that kernel:
+ROCM_ATTN's `prefix_prefill.context_attention_fwd`, and TRITON_ATTN's `unified_attention` on
+batches with prefill in them. It reads each backend's cache in place, so the cache, its layout and
+block size, the cache write and the rest of the backend stay vLLM's. bf16, head size 64 and 128,
+and 256 on TRITON_ATTN (a query row across a pair of warps); pages of 16 or 32 tokens, and on
+TRITON_ATTN any multiple of 16, which covers hybrid models' attention pages (544 tokens for
+MiniCPM-V-4.7, 784 for Qwen3.8). Any other call falls back to vLLM's kernel, and is counted.
+On TRITON_ATTN the batch's V pages are transposed once a call for the whole batch
+(`HK_VLLM_PREFILL_VT=0` turns that off). `HK_VLLM_PREFILL_SHADOW=1` also runs vLLM's kernel on
+every call hk takes and prints the worst row's difference (a diagnostic; it syncs).
+
+It is **on by default on gfx1100**; `HK_VLLM_PREFILL=0` turns it off. Its end-to-end results
+(long-prompt TTFT on MiniCPM5-2B and MiniCPM-V-4.7, quality within stock's spread) are on
+[the scorecard](docs/performance/scorecard.md). Under clang 22 (ROCm 7.2.3) the head-size-256 kernel does not build spill-free,
+so those calls stay vLLM's there; the vLLM images' clang 23 builds it.
+
+On gfx1201 (Radeon AI PRO R9700) the route runs with `HK_VLLM_PREFILL=1` (#216).
+
+### Everything else
+
+**Fix (gfx950): LDS windows that are not whole subtiles of their tile's layout are refused
+(#222, #217).** HipKittens' CDNA4 `st_subtile` points at the subtile that holds a window's
+first element and keeps no offset inside it, so a window narrower or shorter than that subtile
+read, or was copied into, the subtile's first rows and columns, whatever its index, with no
+error. The C++ translation refused such windows only on a tile that names its layout. It now
+checks every window against the layout its allocation is actually declared with: the one it
+names, the one its reads' fragment picks, or its type's. The refusal says which. No existing
+kernel is refused, and all 1160 gfx950 kernels generate byte-identical C++.
+
+**RDNA: the CDNA forms of P·V build (#223, #212, #213).** `Tile.as_operand(bf16)` on gfx1100 and
+gfx1201 is now the accumulator's col-layout cast (the WMMA operand `.to(bf16)` makes); it was
+refused. A col-layout 16-bit operand read from LDS on RDNA is now one row-major b128 read and a
+register transpose instead of 16 `ds_read_u16` a 16x16 tile (the budget pass's
+`slow-smem-layout` warning, and spills in a head-dim-128 paged decode). So
+`acc += v_s.load(RT(bf16, 32, 16, "col")).T @ s.as_operand(bf16)` means the same on gfx950 and
+on RDNA, and one attention source builds for both. `load(wait=False)` of such an operand is
+refused: the transpose waits for its data. No existing RDNA kernel changes (1049 kernels each on
+gfx1100 and gfx1201, byte-identical C++).
+
 **`hk.gemv_w4`: a few tokens against 4-bit weights without WMMA, and hk.ops.w4a16's small-batch
 form on it.** At 1-4 tokens the w4a16 decode kernel was bound by instruction issue, not memory. A
 WMMA operand holds every row of W in both halves of the wave, so each 16-byte load of codes was
