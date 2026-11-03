@@ -227,6 +227,15 @@ cancels a PR's run in progress, but main's runs always finish:
   and gfx1100 does not -- without a GPU. Their caches are keyed apart from
   gfx1100's.
 
+- **A pull request moves a submodule's pin only on purpose and only forward**
+  (`submodule pin`, `scripts/ci/check_submodule_pin.sh`). If the PR pins
+  `third_party/HipKittens` at another commit than its base, its title or body
+  must say "HipKittens bump", and the new pin must descend from the base's
+  (`git merge-base --is-ancestor` in HipKittens). A worktree's stale pin
+  committed with an unrelated change would otherwise undo an earlier PR's
+  library fix on main, and the tiers would not notice: the toolchains that
+  needed the fix are not all in them.
+
 A new MLIR, or a CPython other than the runner's, needs a new archive. Build
 it with `scripts/build_mlir.sh`, pack the install tree with LLVM's and MLIR's
 licence files, attach it to a release, and point `MLIR_RELEASE` and
