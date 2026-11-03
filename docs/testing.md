@@ -300,6 +300,9 @@ in the engine's place, called as the engine calls it.
 
 Each job runs the suite in a container that sees only the card it took, under
 a lock of that card, so that a CI run and a measurement never share a GPU. A
+job whose container sees no GPU fails before any test runs (`rocminfo` must
+show the card's arch). One whose tests nearly all skipped also fails (over half
+skipped, or none passed). A tier that skipped everything is never green. A
 job's page has its counts as an annotation and, in its summary, each group's
 result and the failing tests. Its artifact (`gfx950-report`, `gfx1100-report`,
 ...) holds `result.json`, `report.txt` (with the tail of each failed group's
