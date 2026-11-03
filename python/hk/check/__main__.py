@@ -322,6 +322,8 @@ def build_parser() -> argparse.ArgumentParser:
                    help="run the reference on fp32 copies of 16-bit inputs, or as given")
     p.add_argument("--no-time", action="store_true", help="correctness only")
     p.add_argument("--rounds", type=int, default=15, help="timing rounds, contenders rotated")
+    p.add_argument("--hot", action="store_true",
+                   help="time on the same inputs every call (default: cold, rotated copies past the cache)")
     p.add_argument("--warmup", type=int, default=3, help="untimed calls of each first")
     p.add_argument("--batch-ms", type=float, default=1.0,
                    help="a round's burst of back-to-back calls fills this long")
@@ -533,7 +535,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         baselines=baselines,
         extra=extra, rtol=args.rtol, atol=args.atol, exact=args.exact,
         ref_precision=args.ref_precision, time=not args.no_time, rounds=args.rounds,
-        warmup=args.warmup, batch_ms=args.batch_ms, burn=args.burn,
+        warmup=args.warmup, batch_ms=args.batch_ms, burn=args.burn, cache="hot" if args.hot else "cold",
         compile_mode=args.compile_mode, bytes=args.bytes, flops=args.flops,
         gpu=gpu, build=not args.trace_only, seed=args.seed, **cfg)
     if args.profile and report.mode == "gpu" and not report.errors:
