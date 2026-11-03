@@ -233,9 +233,12 @@ The gate is `python/hk/runtime/resources.py`. What it enforces:
   with `-mllvm -amdgpu-enable-vopd=0` and checked again (the default,
   `HK_VOPD_GATE=fix`); kernels without one keep dual issue and their code
   object is unchanged. Most of hk's gfx1100 kernels have at least one, and
-  the rebuild costs them no measurable time. The build log, the entry's
-  `VOPDHAZ` file and `python3 -m hk.integration --status` say which kernels
-  were rebuilt and which VOPDs they had. `refuse`, `report` and `0` work as
+  the rebuild costs them no measurable time. A process says once, in one
+  line on stderr, that the gate rebuilt something. Which kernels were rebuilt
+  and which VOPDs they had is in the build log, the entry's `VOPDHAZ` file,
+  `python3 -m hk.integration --status`, and at INFO on the `hk.compile`
+  logger (`logging.getLogger("hk.compile").setLevel(logging.INFO)` with a
+  handler, e.g. `logging.basicConfig(level=logging.INFO)`). `refuse`, `report` and `0` work as
   for the MFMA gate.
 
 The gate runs at `k.build()`, which needs hipcc but no GPU: the failure most

@@ -18,6 +18,7 @@ Compile-only: hipcc and the ROCm LLVM tools.
 
 from __future__ import annotations
 
+import logging
 import shutil
 
 import pytest
@@ -81,16 +82,22 @@ def _pairs_without_gate(monkeypatch):
     return name, arch, src, b, found
 
 
-def test_default_rebuilds_without_vopd(cache, monkeypatch, capfd):
+def test_default_rebuilds_without_vopd(cache, monkeypatch, capfd, caplog):
     name, arch, src, _, found = _pairs_without_gate(monkeypatch)
     shutil.rmtree(cache)  # the gate-off build is cached under the same key: start over
-    b = hc.build(src, arch, name=name, kind="co")
+    monkeypatch.setattr(hc, "_vopd_noticed", False)   # the notice is once per process
+    capfd.readouterr()
+    with caplog.at_level(logging.INFO, logger="hk.compile"):
+        b = hc.build(src, arch, name=name, kind="co")
     assert cocheck.vopd_hazards(b.so_path, bundled=False) == []
     mark = (b.so_path.parent / hc._VOPD_MARK).read_text()
     assert mark.startswith(f"rebuilt {len(found)}\n")
     assert "-amdgpu-enable-vopd=0" in (b.so_path.parent / "command").read_text()
     assert "HK_VOPD_GATE=fix rebuilt" in (b.so_path.parent / "build.log").read_text()
-    assert "HK_VOPD_GATE=fix rebuilt" in capfd.readouterr().err
+    err = capfd.readouterr().err
+    # one line at default verbosity, not the kernel's VOPDs; those go to the "hk.compile" logger
+    assert err.count("rebuilt a kernel without VOPD dual issue") == 1 and "HK_VOPD_GATE=fix rebuilt" not in err
+    assert any("HK_VOPD_GATE=fix rebuilt" in r.getMessage() and name in r.getMessage() for r in caplog.records)
     status = "\n".join(hc.vopd_gate_status())
     assert "1 cached build(s) rebuilt without VOPD" in status and name in status
 
