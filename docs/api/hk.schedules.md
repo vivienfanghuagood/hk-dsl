@@ -2,6 +2,8 @@
 
 # `hk.schedules`: schedules as data
 
+*Stability*: **experimental**. These names may change in any release ([stability](../stability.md)).
+
 hk.schedules: kernel schedules as data.
 
 A schedule is every knob of one kernel family, as a frozen dataclass: it

@@ -2,6 +2,8 @@
 
 # `hk.target`: the facts per architecture
 
+*Stability*: **experimental**. These names may change in any release ([stability](../stability.md)).
+
 Architecture facts, as data.
 
 Every number here was measured on the part, not read off a datasheet. The

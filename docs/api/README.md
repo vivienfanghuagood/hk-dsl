@@ -2,20 +2,20 @@
 
 # API reference
 
-Generated from the code by `scripts/gen_api_docs.py`: every public name's signature and docstring, and what is new or changed since the hk-dsl 0.8.0 wheel on PyPI ("*New after 0.8.0*": `pip install hk-dsl==0.8.0` does not have it; no release has it yet, only a checkout of main, docs/building.md). For how the language is written, read [the language](../language.md) first.
+Generated from the code by `scripts/gen_api_docs.py`: every public name's signature and docstring, and what is new or changed since the hk-dsl 0.8.0 wheel on PyPI ("*New after 0.8.0*": `pip install hk-dsl==0.8.0` does not have it; no release has it yet, only a checkout of main, docs/building.md). For how the language is written, read [the language](../language.md) first. Which names are stable and which experimental: [stability](../stability.md).
 
 - [`hk`: kernels, types, values](hk.md) -- 70 entries
 - [`hk.math`](hk.math.md) -- 23 entries
 - [`hk.arch`](hk.arch.md) -- 17 entries
 - [`hk.lds`](hk.lds.md) -- 6 entries
-- [`hk.group`](hk.group.md) -- 2 entries
-- [`hk.collective`](hk.collective.md) -- 3 entries
-- [`hk.comm`](hk.comm.md) -- 10 entries
-- [`hk.placement`](hk.placement.md) -- 16 entries
+- [`hk.group`](hk.group.md) -- 2 entries (experimental)
+- [`hk.collective`](hk.collective.md) -- 3 entries (experimental)
+- [`hk.comm`](hk.comm.md) -- 10 entries (experimental)
+- [`hk.placement`](hk.placement.md) -- 16 entries (experimental)
 - [`hk.ops`: the shipped kernels](hk.ops.md) -- 39 entries
 - [`hk.templates`](hk.templates.md) -- 14 entries
-- [`hk.schedules`: schedules as data](hk.schedules.md) -- 19 entries
-- [`hk.tune`: a GEMM schedule search](hk.tune.md) -- 24 entries
+- [`hk.schedules`: schedules as data](hk.schedules.md) -- 19 entries (experimental)
+- [`hk.tune`: a GEMM schedule search](hk.tune.md) -- 24 entries (experimental)
 - [`hk.check`](hk.check.md) -- 10 entries
-- [`hk.profile`](hk.profile.md) -- 22 entries
-- [`hk.target`: the facts per architecture](hk.target.md) -- 3 entries
+- [`hk.profile`](hk.profile.md) -- 22 entries (experimental)
+- [`hk.target`: the facts per architecture](hk.target.md) -- 3 entries (experimental)

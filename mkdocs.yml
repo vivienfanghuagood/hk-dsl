@@ -131,6 +131,7 @@ nav:
       - Building: building.md
       - Testing: testing.md
       - Releasing: releasing.md
+      - API stability: stability.md
   - 8 Archive:
       - archive/README.md
       - Design documents in force:

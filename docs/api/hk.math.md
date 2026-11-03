@@ -2,6 +2,8 @@
 
 # `hk.math`
 
+*Stability*: stable, except where an entry says otherwise ([stability](../stability.md)).
+
 Elementwise functions of a register tile or vector: `hk.math.exp(t)` is
 `t.exp()`; `into=` writes an existing value (`hk.math.exp(t, into=t)` is
 `t.exp_()`). This is the whole list -- there is no `tanh`, `sigmoid`, `sin`

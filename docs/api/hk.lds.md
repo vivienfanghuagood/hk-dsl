@@ -2,6 +2,8 @@
 
 # `hk.lds`
 
+*Stability*: stable, except where an entry says otherwise ([stability](../stability.md)).
+
 hk.lds: shared memory -- allocation, and the wait that retires reads.
 
 - [`hk.lds.alloc`](#hkldsalloc)

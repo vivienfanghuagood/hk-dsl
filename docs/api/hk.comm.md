@@ -2,6 +2,8 @@
 
 # `hk.comm`
 
+*Stability*: **experimental**. These names may change in any release ([stability](../stability.md)).
+
 hk.comm: hand-offs between the XCDs of a GPU and between GPUs (gfx950).
 
 A *scoped* tensor -- `hk.Tensor[dtype, "system"]` for memory other GPUs touch

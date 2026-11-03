@@ -2,6 +2,8 @@
 
 # `hk.placement`
 
+*Stability*: **experimental**. These names may change in any release ([stability](../stability.md)).
+
 Workgroup placement on multi-XCD GPUs: which XCD runs which workgroup.
 
 docs/design/placement-pass.md has the why. In short: a gfx950 deals workgroup

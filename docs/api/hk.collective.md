@@ -2,6 +2,8 @@
 
 # `hk.collective`
 
+*Stability*: **experimental**. These names may change in any release ([stability](../stability.md)).
+
 hk.collective: combining a reduction across the warps of a workgroup.
 
 Every reduction on a tile is per-warp. A workgroup that splits a row across W

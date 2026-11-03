@@ -2,6 +2,8 @@
 
 # `hk.tune`: a GEMM schedule search
 
+*Stability*: **experimental**. These names may change in any release ([stability](../stability.md)).
+
 `hk.tune`: search a GEMM shape's schedule space within a GPU-time budget,
 and keep a winner only when the measurement says it is one.
 
