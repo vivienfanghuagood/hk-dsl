@@ -34,7 +34,7 @@ It has three layers:
 | Radeon PRO W7900, Radeon PRO W7900D, Radeon RX 7900 | gfx1100 (RDNA3) | tested | [12](docs/supported-hardware.md#engine-routes-on-each) |
 | Radeon AI PRO R9700, Radeon RX 9070 | gfx1201 (RDNA4) | tested | [3](docs/supported-hardware.md#engine-routes-on-each) |
 | Instinct MI300X, Instinct MI325X | gfx942 (CDNA3) | compile-only | [none](docs/supported-hardware.md#engine-routes-on-each) |
-| Instinct MI355X, Instinct MI350X | gfx950 (CDNA4) | tested | [5](docs/supported-hardware.md#engine-routes-on-each) |
+| Instinct MI355X, Instinct MI350X | gfx950 (CDNA4) | tested | [1](docs/supported-hardware.md#engine-routes-on-each) |
 
 Tested: measured on the part and run by CI's GPU tier. What the language and each engine route do on each GPU: [supported hardware](docs/supported-hardware.md).
 <!-- hw-table:end -->
@@ -89,9 +89,10 @@ against torch eager and `torch.compile` on your GPU. It exits with 0 (pass),
 We quote only end-to-end serving results from the
 [scorecard](docs/performance/scorecard.md).
 
-- **Instinct MI355X**, DeepSeek-V4.1-Flash on vLLM (TP2): hk's default routes on
-  top of a stock vLLM that already uses AITER's tuned paths give **about +5% on
-  8k-token prefill**. Decode is unchanged.
+- **Instinct MI355X**, DeepSeek-V4.1-Flash on vLLM (TP2): hk's DeepSeek-V4.1 routes (on by
+  default in 0.8.0, opt-in in 0.9.0: [default changes](CHANGELOG.md)) on top of a stock vLLM
+  that already uses AITER's tuned paths give **about +5% on 8k-token prefill**. Decode is
+  unchanged.
 - **Radeon:** RDNA end-to-end results will come with the RDNA scorecard.
 
 ## How it compares

@@ -1,4 +1,4 @@
-"""DeepSeek-V4.1's sparse MLA prefill on hk's kernel (on by default on gfx950; `HK_VLLM_SPARSE_MLA=0` off).
+"""DeepSeek-V4.1's sparse MLA prefill on hk's kernel (opt-in in 0.9.0 on gfx950: `HK_VLLM_SPARSE_MLA=1`).
 
 vLLM's ROCm path (`vllm/models/deepseek_v41/amd/rocm.py`, `DeepseekV41ROCMAiterMLAAttention._forward_prefill`)
 gathers each chunk's KV rows out of its fp8 caches into a bf16 workspace and calls

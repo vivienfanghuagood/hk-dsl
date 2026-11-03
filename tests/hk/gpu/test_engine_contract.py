@@ -184,13 +184,23 @@ def _patched():
             "vllm_mxfp8": cls.apply_weights is PX.apply_weights}
 
 
-def test_with_nothing_set_the_plugin_routes_k1_and_k2(plugin_env, capsys):
+def test_with_nothing_set_the_plugin_leaves_k1_and_k2_to_vllm(plugin_env, capsys):
+    """Opt-in in 0.9.0 (gfx950 work is paused: not re-audited under the default-on rule)."""
     from hk.integration import _vllm_plugin
 
     _vllm_plugin.register()
+    assert _patched() == {"vllm_moe_a8w4": False, "vllm_mxfp8": False}
+
+
+def test_their_switches_make_the_plugin_route_k1_and_k2(plugin_env, capsys):
+    from hk.integration import _vllm_plugin
+
+    plugin_env.setenv("HK_VLLM_MXFP8", "1")
+    plugin_env.setenv("HK_VLLM_MOE_A8W4", "1")
+    _vllm_plugin.register()
     assert _patched() == {"vllm_moe_a8w4": True, "vllm_mxfp8": True}
     out = capsys.readouterr().out
-    assert "vllm_mxfp8 (default on (gfx950))" in out and "vllm_moe_a8w4" in out
+    assert "vllm_mxfp8 (HK_VLLM_MXFP8=1)" in out and "vllm_moe_a8w4" in out
 
 
 def test_with_hk_disable_the_plugin_patches_nothing(plugin_env, capsys):
@@ -217,6 +227,8 @@ def test_an_aiter_that_lost_a_parameter_turns_off_that_route_only(plugin_env, ca
         return real(hidden_states, w1, w2, topk_weight, topk_ids)
 
     plugin_env.setattr(afm, "fused_moe", fused_moe)
+    plugin_env.setenv("HK_VLLM_MXFP8", "1")          # opt-in in 0.9.0: asked for, so the contract is checked
+    plugin_env.setenv("HK_VLLM_MOE_A8W4", "1")
     _vllm_plugin.register()
     assert afm.fused_moe is fused_moe
     assert _patched() == {"vllm_moe_a8w4": False, "vllm_mxfp8": True}

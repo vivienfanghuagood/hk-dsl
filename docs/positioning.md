@@ -151,7 +151,7 @@ Three admissions explain why we quote nothing else:
 | Radeon PRO W7900, Radeon PRO W7900D, Radeon RX 7900 | gfx1100 (RDNA3) | tested | [12](supported-hardware.md#engine-routes-on-each) |
 | Radeon AI PRO R9700, Radeon RX 9070 | gfx1201 (RDNA4) | tested | [3](supported-hardware.md#engine-routes-on-each) |
 | Instinct MI300X, Instinct MI325X | gfx942 (CDNA3) | compile-only | [none](supported-hardware.md#engine-routes-on-each) |
-| Instinct MI355X, Instinct MI350X | gfx950 (CDNA4) | tested | [5](supported-hardware.md#engine-routes-on-each) |
+| Instinct MI355X, Instinct MI350X | gfx950 (CDNA4) | tested | [1](supported-hardware.md#engine-routes-on-each) |
 
 Tested: measured on the part and run by CI's GPU tier. What the language and each engine route do on each GPU: [supported hardware](supported-hardware.md).
 <!-- hw-table:end -->

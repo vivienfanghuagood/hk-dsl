@@ -17,11 +17,9 @@ VLLM_JOB = "gfx950-vllm"
 
 #: (route, arch) -> "file::test" in tests/hk/gpu: the GPU test of that route on that arch.
 COVERAGE = {
-    ("vllm_mxfp8", "gfx950"): "test_vllm_mxfp8.py::test_patched_layer_matches_vllm",
-    ("vllm_moe_a8w4", "gfx950"): "test_vllm_moe_a8w4.py::test_patched_fused_moe_routes_and_agrees",
-    ("vllm_dsv41_index", "gfx950"): "test_vllm_dsv41_index.py::test_the_launch_is_vllms_chain",
-    ("vllm_sparse_mla", "gfx950"):
-        "test_vllm_sparse_mla.py::test_the_route_takes_a_large_call_and_matches_opus",
+    # vllm_mxfp8, vllm_moe_a8w4, vllm_dsv41_index and vllm_sparse_mla are opt-in in 0.9.0 (gfx950 work is paused,
+    # so they were not re-audited under the default-on rule); their GPU tests still run in gfx950-vllm's HK_CI_TESTS
+    # (test_vllm_mxfp8.py, test_vllm_moe_a8w4.py, test_vllm_dsv41_index.py, test_vllm_sparse_mla.py).
     ("vllm_int4", "gfx1100"):
         "test_route_paths.py::test_vllm_int4_takes_up_to_this_archs_limit_and_leaves_the_rest",
     ("vllm_int4", "gfx1201"):

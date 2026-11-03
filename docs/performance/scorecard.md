@@ -17,15 +17,17 @@ opponent was configured.
   parallel over two MI355X.
 - **The baseline:** stock vLLM with AITER's tuned paths. These are its tuned
   GEMM, a MoE table tuned on real routing, and its fused sparse MLA.
-- **What hk adds:** its default routes on top of that baseline. Each arm is
-  run at its best configuration.
+- **What hk adds:** its DeepSeek-V4.1 routes on top of that baseline (its
+  default routes when this was measured, under 0.8.0; opt-in in 0.9.0, see
+  [the default changes](../../CHANGELOG.md)). Each arm is run at its best
+  configuration.
 
 | | against the AITER-tuned stock |
 |---|---|
 | 8k-token prefill throughput | **about +5%** |
 | decode time per output token | unchanged (within the spread) |
 
-Against a stock vLLM *without* AITER's tuned paths, hk's default routes show a
+Against a stock vLLM *without* AITER's tuned paths, these routes show a
 larger gain. A stock vLLM configured with AITER's tuned paths reaches about
 the same gain without hk, so we do not quote it.
 
