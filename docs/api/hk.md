@@ -577,8 +577,10 @@ scaled, and the variant is mma_ABt.
 ### `hk.load_w4`
 
 ```python
-hk.load_w4(ty, qw: Global, s: Global, zs: "Optional['Global']", n0, k0, *, group: int = 128, zero: Optional[int] = None, s_blocked: bool = False, zp: "Optional['Global']" = None, rows: bool = False, into=None) -> Tile
+hk.load_w4(ty, qw: Global, s: Global, zs: "Optional['Global']", n0, k0, *, group: int = 128, zero: Optional[int] = None, s_blocked: bool = False, zp: "Optional['Global']" = None, rows: bool = False, exllama: bool = False, into=None) -> Tile
 ```
+
+*Changed after 0.9.0*: new parameter `exllama`
 
 *Surface*: a format primitive: hk's own int4 layout (hk.ops.w4a16's repack).
 
@@ -623,6 +625,10 @@ through the fp32 path with zs = z * s. RDNA (wave32) only.
 `rows` (zero codes): the codes are row-major, int32 [N, K/8] with nibble
 t of word w column 8w + t -- vLLM's uint8 [N, K/2] viewed as int32 -- not
 hk's interleaved order; each lane loads its own row's 16 bytes.
+
+`exllama` (symmetric, `zero=`, plain scales, an fp16 tile, RDNA): the codes are vLLM's RDNA
+skinny W4A16 layout, read in place -- row-major int32 [N, K/8], word w of a row holding columns
+8w + (0, 2, 4, 6, 1, 3, 5, 7) in nibbles 0..7 (ExLlama's shuffle) -- and s [N, K/group].
 
 ### `hk.coord`
 

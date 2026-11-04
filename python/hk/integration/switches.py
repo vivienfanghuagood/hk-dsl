@@ -89,12 +89,17 @@ ROUTES: Dict[str, Route] = {r.name: r for r in (
        "AWQ 4-bit linear layers on hk's decode GEMM",
        "greedy tokens identical to stock's, Qwen3-8B/14B-AWQ (history 22, 42); gfx1201: "
        "Qwen3-8B-AWQ tokens identical, counts equal round for round (history 50)"),
-    _R("vllm_gptq", "vllm", "HK_VLLM_GPTQ", True, ("gfx1100",),
+    _R("vllm_gptq", "vllm", "HK_VLLM_GPTQ", True, ("gfx1100", "gfx1201"),
        "4-bit symmetric GPTQ linear layers on RDNA3W4A16LinearKernel, on hk's decode GEMM at "
-       "4-64 tokens; act-order checkpoints refused",
+       "1-64 tokens; on gfx1201's RDNAHybridW4A16LinearKernel, the fp16 batches vLLM runs on "
+       "Triton (to 64 tokens) on hk's decode forms, reading vLLM's tensors in place; "
+       "act-order checkpoints refused",
        "gfx1100: Qwen3.8-27B-GPTQ-Int4 in the Radeon TheRock vLLM image against stock-fair "
        "(TRITON_ATTN, TunableOp with a 256 MB rotating buffer), 3 starts an arm: GSM8K-200 equal, "
-       "TPOT ahead at 8-16 concurrent requests and level at 1 (RDNA scorecard)"),
+       "TPOT ahead at 8-16 concurrent requests and level at 1 (RDNA scorecard); gfx1201: "
+       "Qwen3.8-27B-GPTQ-Int4 on one R9700 in the R9700 vLLM image (TRITON_ATTN), 3 alternating "
+       "starts an arm: GSM8K-200 equal, TPOT ahead at 4 and 8 concurrent requests (disjoint), "
+       "level at 1 and for an 8k prompt"),
     _R("vllm_gemm", "vllm", "HK_VLLM_GEMM", True, ("gfx1100", "gfx1201"),
        "unquantized linear layers by the measured route table, plus tuning at load",
        "gfx1100: greedy tokens identical to stock's, or a bf16 near-tie (history 35). "

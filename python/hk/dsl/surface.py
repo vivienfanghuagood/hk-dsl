@@ -205,6 +205,7 @@ CPP: Dict[str, Dict[str, str]] = {
     "include/hk/rdna/w4.cuh": {"load_w4": "format", "w4_word_sym_f16": "internal",
                                "load_w4_zp": "format", "w4_word_zp_f16": "internal",
                                "gemv_w4": "format", "w4_word_zs_f16": "internal",
+                               "w4_word_exl_f16": "internal",
                                "gemv_w4_steps": "internal", "gemv_w4_finish": "internal"},
     # RDNA strided globals (`hk.Tensor[dtype, "strided"]`): g.stage's strided form and the
     # type's accessors.

@@ -1508,7 +1508,7 @@ private:
           // symmetric (zero, no zs): hk/rdna/w4.cuh's or hk/cdna/formats.cuh's form
           std::string tmpl = std::to_string(o.getGroup()) +
                              (o.getZero() ? ", " + std::to_string(*o.getZero()) : std::string()) +
-                             (o.getSBlocked() ? ", true" : "");
+                             (o.getExllama() ? ", false, true" : o.getSBlocked() ? ", true" : "");
           w("kittens::load_w4<" + tmpl + ">(" + name(d) + ", " + name(o.getQw()) + ", " +
             name(o.getS()) + ", " + (o.getZs() ? name(o.getZs()) + ", " : std::string()) +
             name(o.getN0()) + ", " + name(o.getK0()) + ");");
@@ -1520,7 +1520,8 @@ private:
                              (o.getZero() ? ", " + std::to_string(*o.getZero()) +
                                                 (o.getSBlocked() ? ", true" : ", false")
                                           : std::string()) +
-                             ", " + std::to_string(o.getTokens());
+                             ", " + std::to_string(o.getTokens()) +
+                             (o.getExllama() ? ", true" : "");
           w("kittens::gemv_w4<" + tmpl + ">(" + name(d) + ", " + name(o.getX()) + ", " +
             name(o.getQw()) + ", " + name(o.getS()) + ", " +
             (o.getZs() ? name(o.getZs()) + ", " : std::string()) + name(o.getN0()) + ", " +

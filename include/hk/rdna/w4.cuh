@@ -25,6 +25,28 @@ namespace detail {
 /// a v_pk_add and a v_pk_mul: half the work of the fp32 path (two conversions, two FMAs and a
 /// pack, rounding toward zero).
 template<int ZERO>
+__device__ inline void w4_word_sym_f16(uint32_t word, uint32_t s2, uint32_t out[4]);
+
+/// As w4_word_sym_f16 for a word in ExLlama's order (vLLM's RDNA skinny layout): nibbles 0..7 hold
+/// columns 0, 2, 4, 6, 1, 3, 5, 7, so columns (2t, 2t+1) are nibbles t and t + 4 -- one shift and
+/// mask a pair.
+template<int ZERO>
+__device__ inline void w4_word_exl_f16(uint32_t word, uint32_t s2, uint32_t out[4]) {
+    typedef _Float16 h2_t __attribute__((ext_vector_type(2)));
+    h2_t sc;
+    __builtin_memcpy(&sc, &s2, 4);
+    const h2_t bias = {_Float16(-(1024 + ZERO)), _Float16(-(1024 + ZERO))};
+    #pragma unroll
+    for (int t = 0; t < 4; t++) {
+        const uint32_t u = ((word >> (4 * t)) & 0x000F000Fu) | 0x64006400u;
+        h2_t h;
+        __builtin_memcpy(&h, &u, 4);
+        const h2_t v = (h + bias) * sc;
+        __builtin_memcpy(&out[t], &v, 4);
+    }
+}
+
+template<int ZERO>
 __device__ inline void w4_word_sym_f16(uint32_t word, uint32_t s2, uint32_t out[4]) {
     typedef _Float16 h2_t __attribute__((ext_vector_type(2)));
     const uint32_t lo = word & 0x0F0F0F0Fu;          // columns 0, 2, 4, 6
@@ -49,9 +71,12 @@ __device__ inline void w4_word_sym_f16(uint32_t word, uint32_t s2, uint32_t out[
  * (q - ZERO) * s[n][k / G], dequantized into a bf16 or half row-layout tile. The contract of the
  * trees' load_w4 otherwise (a whole number of 32-column chunks, k0 a multiple of 32). SBLK: s is
  * [N/16][K/G * 16], a 16-row block's scales of a group 16 consecutive values (32 contiguous bytes
- * for the 16 rows a k-step reads, where [N][K/G] puts them on 16 lines).
+ * for the 16 rows a k-step reads, where [N][K/G] puts them on 16 lines). EXL (half tiles): the
+ * codes are row-major int32 [N, K/8] in ExLlama's nibble order and s [N, K/G] -- vLLM's RDNA skinny
+ * layout, read in place.
  */
-template<int G, int ZERO, bool SBLK = false, ducks::rt::all RT, ducks::gl::all QL, ducks::gl::all SL>
+template<int G, int ZERO, bool SBLK = false, bool EXL = false, ducks::rt::all RT, ducks::gl::all QL,
+         ducks::gl::all SL>
 __device__ inline static void load_w4(RT &dst, const QL &qw, const SL &s, int n0, int k0) {
     using T = typename base_types::packing<typename RT::dtype>::unpacked_type;
     using L = typename RT::layout;
@@ -67,6 +92,8 @@ __device__ inline static void load_w4(RT &dst, const QL &qw, const SL &s, int n0
     static_assert(G % 16 == 0, "a group spans whole base tiles");
     static_assert(RT::width % 2 == 0, "the tile is a whole number of 32-column chunks");
     static_assert(ZERO >= 0 && ZERO < 16, "a 4-bit zero point");
+    static_assert(!EXL || (std::is_same_v<T, half> && !SBLK),
+                  "ExLlama's layout decodes into half tiles, its scales [N, K/G]");
     constexpr bool one_group = G % (16 * RT::width) == 0;
     constexpr bool halves = base::elements_per_thread == 16;   // gfx11: both halves hold the row
 
@@ -79,7 +106,7 @@ __device__ inline static void load_w4(RT &dst, const QL &qw, const SL &s, int n0
     #pragma unroll
     for (int i = 0; i < dst.height; i++) {
         const int n = n0 + i * dst.tile_size_row + r;
-        const int *blk = qp + (n >> 4) * chunks * 64 + r * 4;
+        const int *blk = EXL ? qp + long(n) * qw.cols() : qp + (n >> 4) * chunks * 64 + r * 4;
         // a group's scale of row n: s[n][g], or with SBLK s[n / 16][16 g + n % 16]
         auto s_at = [&](int g) { return SBLK ? (n >> 4) * groups * 16 + g * 16 + (n & 15) : n * groups + g; };
         float sc = 0.f, zsc = 0.f;
@@ -99,7 +126,7 @@ __device__ inline static void load_w4(RT &dst, const QL &qw, const SL &s, int n0
         #pragma unroll
         for (int j = 0; j < dst.width; j += 2) {
             const int4 w = *reinterpret_cast<const int4 *>(
-                blk + ((k0 + j * dst.tile_size_col) / 32) * 64);
+                blk + ((k0 + j * dst.tile_size_col) / 32) * (EXL ? 4 : 64));
             #pragma unroll
             for (int jj = 0; jj < 2; jj++) {
                 if constexpr (!one_group)
@@ -107,7 +134,9 @@ __device__ inline static void load_w4(RT &dst, const QL &qw, const SL &s, int n0
                 // Word 0 of a base tile is its columns 0..7, word 1 8..15.
                 const uint32_t mine = uint32_t(jj ? (upper ? w.w : w.z) : (upper ? w.y : w.x));
                 uint32_t own[4];
-                if constexpr (std::is_same_v<T, half>)
+                if constexpr (EXL)
+                    detail::w4_word_exl_f16<ZERO>(mine, s2, own);
+                else if constexpr (std::is_same_v<T, half>)
                     detail::w4_word_sym_f16<ZERO>(mine, s2, own);
                 else
                     detail::w4_word<T>(mine, sc, zsc, own);
@@ -277,8 +306,10 @@ __device__ inline void w4_word_zs_f16(uint32_t word, uint32_t s2, uint32_t nzs2,
 /// hk.gemv_w4's body: `count` steps of 64 columns, step c at k0 + c * kstep, a lane taking row
 /// n0 + lane % 16 and the step's 32-column chunk lane / 16. Per step a lane reads its row's 16
 /// bytes of codes (one int4), one scale (and zs), and every token's 32 columns of x into registers
-/// before it multiplies; acc[m] is its partial for token m. ZERO < 0: asymmetric (zs).
-template<int G, int ZERO, bool SBLK, int MT, ducks::gl::all XL, ducks::gl::all QL, ducks::gl::all SL>
+/// before it multiplies; acc[m] is its partial for token m. ZERO < 0: asymmetric (zs). EXL: the
+/// codes are row-major in ExLlama's order (vLLM's RDNA skinny layout), int32 [N, K/8].
+template<int G, int ZERO, bool SBLK, int MT, bool EXL, ducks::gl::all XL, ducks::gl::all QL,
+         ducks::gl::all SL>
 __device__ inline void gemv_w4_steps(float (&acc)[MT], const XL &x, const QL &qw, const SL &s,
                                      const SL *zs, int n0, int k0, int kstep, int count) {
     typedef _Float16 h2_t __attribute__((ext_vector_type(2)));
@@ -289,13 +320,14 @@ __device__ inline void gemv_w4_steps(float (&acc)[MT], const XL &x, const QL &qw
     const long groups = SBLK ? s.cols() / 16 : s.cols();
     const long kx = x.cols();
     const int m_rows = x.rows();
-    const int *qp = reinterpret_cast<const int *>(qw.raw_ptr) + (n >> 4) * chunks * 64 + r * 4;
+    const int *qp = EXL ? reinterpret_cast<const int *>(qw.raw_ptr) + n * qw.cols()
+                        : reinterpret_cast<const int *>(qw.raw_ptr) + (n >> 4) * chunks * 64 + r * 4;
     const half *sp = s.raw_ptr;
     const half *xp = x.raw_ptr;
     for (int c = 0; c < count; c++) {
         const long k = k0 + long(c) * kstep + 32 * h;    // this half's 32 columns
         const long j = k / 32;
-        const int4 w = *reinterpret_cast<const int4 *>(qp + j * 64);
+        const int4 w = *reinterpret_cast<const int4 *>(qp + (EXL ? j * 4 : j * 64));
         const long g = k / G;
         uint16_t sb;
         __builtin_memcpy(&sb, &sp[SBLK ? (n >> 4) * groups * 16 + g * 16 + (n & 15) : n * groups + g], 2);
@@ -325,6 +357,8 @@ __device__ inline void gemv_w4_steps(float (&acc)[MT], const XL &x, const QL &qw
         for (int q = 0; q < 4; q++) {
             if constexpr (ZERO < 0)
                 w4_word_zs_f16(words[q], s2, nzs2, wv + 4 * q);
+            else if constexpr (EXL)
+                w4_word_exl_f16<ZERO>(words[q], s2, wv + 4 * q);
             else
                 w4_word_sym_f16<ZERO>(words[q], s2, wv + 4 * q);
         }
@@ -377,10 +411,11 @@ __device__ inline void gemv_w4_finish(RT &dst, float (&acc)[MT]) {
  * 4-bit layout (s [N, K/G], or with SBLK [N/16][K/G * 16]) and x half [M, K]; tokens m < min(MT,
  * M), the rest 0. Each lane dequantizes its own row's codes in packed fp16 and multiplies with
  * v_dot2_f32_f16, fp32 accumulation: a WMMA operand would need every row in both wave halves,
- * twice the decode. G a multiple of 32; kstep and k0 multiples of 64.
+ * twice the decode. G a multiple of 32; kstep and k0 multiples of 64. EXL: W row-major in
+ * ExLlama's nibble order, int32 [N, K/8], and s [N, K/G] -- vLLM's RDNA skinny layout, read in place.
  */
-template<int G, int ZERO, bool SBLK, int MT, ducks::rt::all RT, ducks::gl::all XL, ducks::gl::all QL,
-         ducks::gl::all SL>
+template<int G, int ZERO, bool SBLK, int MT, bool EXL = false, ducks::rt::all RT, ducks::gl::all XL,
+         ducks::gl::all QL, ducks::gl::all SL>
 __device__ inline static void gemv_w4(RT &dst, const XL &x, const QL &qw, const SL &s, int n0, int k0,
                                       int kstep, int count) {
     static_assert(std::is_same_v<typename RT::T, float> && RT::height == 1 && RT::width == 1 &&
@@ -393,8 +428,9 @@ __device__ inline static void gemv_w4(RT &dst, const XL &x, const QL &qw, const 
     float acc[MT];
     #pragma unroll
     for (int m = 0; m < MT; m++) acc[m] = 0.f;
-    detail::gemv_w4_steps<G, ZERO, SBLK, MT>(acc, x, qw, s, static_cast<const SL *>(nullptr), n0, k0,
-                                             kstep, count);
+    static_assert(!(EXL && SBLK), "ExLlama's layout keeps its scales [N, K/G]");
+    detail::gemv_w4_steps<G, ZERO, SBLK, MT, EXL>(acc, x, qw, s, static_cast<const SL *>(nullptr), n0,
+                                                  k0, kstep, count);
     detail::gemv_w4_finish<MT>(dst, acc);
 }
 
@@ -415,7 +451,7 @@ __device__ inline static void gemv_w4(RT &dst, const XL &x, const QL &qw, const 
     float acc[MT];
     #pragma unroll
     for (int m = 0; m < MT; m++) acc[m] = 0.f;
-    detail::gemv_w4_steps<G, -1, false, MT>(acc, x, qw, s, &zs, n0, k0, kstep, count);
+    detail::gemv_w4_steps<G, -1, false, MT, false>(acc, x, qw, s, &zs, n0, k0, kstep, count);
     detail::gemv_w4_finish<MT>(dst, acc);
 }
 

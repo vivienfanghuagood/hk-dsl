@@ -347,6 +347,9 @@ LogicalResult LoadW4Op::verify() {
     return emitOpError("reads its zero codes from an int8 global, two rows to a byte");
   if (getRows() && !getZp())
     return emitOpError("rows (row-major codes) is the zero-code form's layout: give zp");
+  if (getExllama() && (!getZero() || getSBlocked() || !et.isF16()))
+    return emitOpError("exllama (vLLM's row-major codes) is the symmetric form with plain scales "
+                       "into an f16 tile");
   if (getZero() && (*getZero() < 0 || *getZero() > 15))
     return emitOpError("zero is a 4-bit code, 0..15, not ") << *getZero();
   if (getSBlocked() && !getZero())
@@ -379,6 +382,8 @@ LogicalResult GemvW4Op::verify() {
     return emitOpError("zero is a 4-bit code, 0..15, not ") << *getZero();
   if (getSBlocked() && !getZero())
     return emitOpError("s_blocked (scales in 16-row blocks) is the symmetric form's layout");
+  if (getExllama() && (!getZero() || getSBlocked()))
+    return emitOpError("exllama (vLLM's row-major codes) is the symmetric form with plain scales");
   if (getGroup() <= 0 || getGroup() % 32)
     return emitOpError("group must be a positive multiple of 32, got ") << getGroup();
   if (getTokens() < 1 || getTokens() > 8)

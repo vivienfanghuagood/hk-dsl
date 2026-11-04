@@ -198,6 +198,36 @@ def test_vllm_gptq_takes_min_m_to_64_and_leaves_the_rest(monkeypatch):
     assert seen == [m for m in (vllm_gptq.MIN_M - 1, 65) if m > 0]
 
 
+def test_vllm_gptq_hybrid_takes_vllms_triton_batches_to_64_in_place(monkeypatch):
+    """RDNAHybridW4A16LinearKernel's layers (gfx1201): hk reads vLLM's own skinny-layout tensors and
+    takes the batches vLLM would run on Triton, up to HYBRID_MAX_M tokens; vLLM's op the rest,
+    called without zero points."""
+    _on_here("vllm_gptq")
+    seen = []
+    monkeypatch.setattr(vllm_gptq, "_SKINNY", {"max_m": 5, "limit": int(32768 * 1.2), "gfx115x": False})
+    monkeypatch.setattr(torch.ops, "vllm", types.SimpleNamespace(
+        rdna_hybrid_w4a16_apply=lambda x, w_q, w_s, w_zp, bias, cu, g: seen.append((x.shape[0], w_zp))),
+        raising=False)
+    n, k, group = 512, 7168, 32                # K * 6 > vLLM's LDS limit: Triton from 5 tokens
+    g = torch.Generator("cuda").manual_seed(6)
+    q = torch.randint(0, 16, (n, k), device="cuda", generator=g, dtype=torch.int32)
+    s = (torch.rand(n, k // group, device="cuda", generator=g) * 0.02 + 0.005).half()
+    words = sum(q.to(torch.int64).reshape(n, k // 8, 8)[:, :, c] << (4 * i)
+                for i, c in enumerate((0, 2, 4, 6, 1, 3, 5, 7)))     # ExLlama's nibble order
+    w_q = torch.where(words >= 2 ** 31, words - 2 ** 32, words).to(torch.int32).view(torch.int8)
+    w = (q - 8).float() * s.float().repeat_interleave(group, 1)
+    for m in (6, 13, 40, vllm_gptq.HYBRID_MAX_M):
+        x = torch.randn(m, k, device="cuda", dtype=torch.float16) * 0.1
+        before = vllm_gptq.HYBRID.stats["hk"]
+        y = vllm_gptq.gptq_w4a16_hybrid(x, w_q, s, group, 64)
+        assert vllm_gptq.HYBRID.stats["hk"] == before + 1 and y.shape == (m, n)
+        _close(y, x.float() @ w.t())
+    for m in (1, 4, vllm_gptq.HYBRID_MAX_M + 1):
+        vllm_gptq.gptq_w4a16_hybrid(torch.randn(m, k, device="cuda", dtype=torch.float16),
+                                    w_q, s, group, 64)
+    assert seen == [(1, None), (4, None), (vllm_gptq.HYBRID_MAX_M + 1, None)]
+
+
 # ---------------------------------------------------------------- linear (SGLang, SGLang-Diffusion)
 
 
