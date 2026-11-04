@@ -9,6 +9,8 @@ The next version's notes collect here until it is released.
 What is on main after 0.8.0. `pip install hk-dsl` (0.8.0) does not have it;
 the API reference marks such names *New after 0.8.0*.
 
+**`tools/hk-bench/serving/sglang_toggle_ab.py`: an SGLang A/B in one server process.** It starts one `sglang.launch_server` with hk's plugin on and switches hk's SGLang routes (`sglang_linear`, `sglang_norm`) off and on between rounds by a signal to every process of the server (`serving/sglang_toggle/`). Weights, KV cache and the GPU-to-GPU links are the same in both arms. Two separate server starts on a Radeon PRO W7900 can differ by 13-16%, more than most kernel wins. The arms alternate round by round, each switch is checked in every rank (state file, and hk's call counters move only in the hk arm), and a ratio is reported as a result only when the arms' per-round ranges are disjoint. It needs `--disable-cuda-graph`, since a captured graph does not see the switch.
+
 **Engine contracts are per route.** A route whose engine contract is broken, or whose apply raises,
 now stays off with one warning line of its own (`[hk] WARNING: vllm: route vllm_moe_a8w4 OFF --
 engine contract FAILED ...`), and the engine's other routes are applied. Until now one broken
