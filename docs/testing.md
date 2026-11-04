@@ -320,8 +320,13 @@ image are tested through their stand-ins on the GPU
 in the engine's place, called as the engine calls it.
 
 Each job runs the suite in a container that sees only the card it took, under
-a lock of that card, so that a CI run and a measurement never share a GPU. A
-job whose container sees no GPU fails before any test runs (`rocminfo` must
+a lock of that card, so that a CI run and a measurement never share a GPU. On
+the MI355X a job takes the first card of its runner's list (`HK_CI_GPUS`, in
+order of preference) that is idle. Idle means that its lock is free, it is
+not reserved (`$HK_CI_LOCKS/reserved`, one `<card> <until, UTC> <who>` a line,
+for an announced window), no process of anyone's holds it (KFD), it is under
+10% use and 3% VRAM, and no other CI container has it. The job log names the
+card it took. A job whose container sees no GPU fails before any test runs (`rocminfo` must
 show the card's arch). One whose tests nearly all skipped also fails (over half
 skipped, or none passed). A tier that skipped everything is never green. A
 job's page has its counts as an annotation and, in its summary, each group's
