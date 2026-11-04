@@ -4,10 +4,152 @@ Release notes for each version are also on its
 [GitHub release](https://github.com/vivienfanghuagood/hk-dsl/releases).
 The next version's notes collect here until it is released.
 
-## Unreleased
+## 0.9.0
 
-What is on main after 0.8.0. `pip install hk-dsl` (0.8.0) does not have it;
-the API reference marks such names *New after 0.8.0*.
+hk-dsl 0.9.0: vLLM's prefill and decode attention on RDNA3 run on hk's kernels over vLLM's own
+cache; GPTQ and AWQ 4-bit layers on hk's decode GEMM; engine contracts checked per route and held
+against the production images in CI, with a [support matrix](docs/support-matrix.md); the build
+gates extended to the VOPD and MFMA hazards current compilers miss; ROCm 10.1 (clang 24); and the
+DSL's surface consolidated (`hk.map`, `hk.mma` with scaled operands, `hk.RowIndex`, register views),
+with the old spellings deprecated, not removed. hk stays on by default in vLLM and SGLang for the
+routes that meet [the default-on rule](docs/testing.md#the-default-on-rule) on your GPU:
+`HK_DISABLE=1` turns every route off, `HK_<ROUTE>=0` one of them
+([integration](docs/integration.md#on-by-default-and-turning-it-off)). Performance results are on
+[the scorecard](docs/performance/scorecard.md), not in these notes.
+
+On PyPI: `pip install hk-dsl`, for CPython 3.10 and 3.12 on Linux x86_64 with glibc 2.35 or newer
+(Ubuntu 22.04 and later, and vLLM's ROCm images): one `manylinux_2_35` wheel per interpreter. The
+wheels on the GitHub release are the same files; the manylinux copies are the ones on PyPI. Each
+carries the MLIR bindings for its interpreter and the HipKittens headers, so at run time only
+hipcc is needed. The API reference marks what 0.9.0 adds *New after 0.8.0*.
+
+    pip install hk_dsl-0.9.0-cp312-cp312-manylinux_2_35_x86_64.whl
+
+### Default changes
+
+Which routes are on by default changes from release to release under
+[the default-on rule](docs/testing.md#the-default-on-rule) ([stability](docs/stability.md)).
+`python3 -m hk.integration --status` shows each route's state and why. Since 0.8.0:
+
+**New, on by default on gfx1100: `vllm_prefill`, `vllm_gptq`, `sglang_norm`.**
+- `vllm_prefill` (#158, #167, #190, #196): vLLM's prefill attention on vLLM's own paged cache
+  (ROCM_ATTN's `context_attention_fwd`, and TRITON_ATTN's `unified_attention` on batches with
+  prefill in them), described below. On gfx1201 it runs with `HK_VLLM_PREFILL=1` (#216).
+- Within it, decode-only batches on TRITON_ATTN at head size 256 run on hk's split decode,
+  `hk.ops.paged_decode` (#220). `HK_VLLM_DECODE` unset: head size 256 at every batch (hybrid
+  models' attention layers: Qwen3.8, Qwen3.6, MiniCPM-V-4.7); `=1`: head size 128 too, up to 4
+  (request, kv head) pairs, one split per WGP (opt-in, for one or two requests over long contexts;
+  #239); `=0`, or `HK_VLLM_PREFILL=0`: vLLM's decode, as before. Calls are counted as the route's
+  `decode` path.
+- `vllm_gptq`: 4-bit symmetric GPTQ linear layers on hk's decode GEMM, below.
+- `sglang_norm`: SGLang's Gemma-style RMSNorm on hk's norms, below.
+
+**On by default on gfx1201 too: `vllm_gemm`, `vllm_moe`, `vllm_int4`** (Radeon AI PRO R9700, the
+R9700 vLLM image; below).
+
+### Compatibility notes
+
+- **Python:** `requires-python` is `>=3.10`. Wheels are cp310 and cp312, as in 0.8.0; cp311 and
+  cp313 wheels are planned for a 0.9.x release (build from source until then).
+- **The compile cache rebuilds everything once.** The key now covers every header a kernel's
+  compile reads, torch's and pybind11's versions and hipcc's appended flags, and the dialect
+  version is `hk-dialect-7`. Entries from 0.8.0 are never read again and can be deleted.
+- **Deprecated, still working** (each warns with `DeprecationWarning` and traces to the same IR as
+  its replacement; removed at most two minor releases later,
+  [migrating](docs/migrating.md), `tools/surface/migrate.py`): `hk.mma_ABt_mx` (`hk.mma` with
+  `.scaled`), `hk.copy_mx_scales`, `hk.load_fp4_frags_lds`, `hk.fp8_operand`, `hk.fp4_operand`,
+  `hk.mx_scales_loose` (register views), the `div=` / `sort_topk=` / `staged=` keywords and
+  `g.gather_prep` (`hk.RowIndex`, `g.stage_rows`), `Tile.make_causal` (`tril_` / `triu_`). A call
+  migrated with inline loads in its arguments must keep the old load order (see the S2 entry).
+- **Removed:** `Global.scatter_add_lds` (no user; `SharedTile.load` + `Global.scatter(add=True)`
+  does the same), `runtime.compile.target_headers_fingerprint`.
+- **Semantics:** on gfx950 the fp32 max / min *reductions* are IEEE maximum / minimum: a NaN in
+  the input gives NaN, and -0 orders below +0. `==` / `!=` of two strips make a mask (it was
+  Python's identity test).
+- **Engine plugins:** a route whose engine contract is broken now stays off alone, with one
+  warning line; the engine's other routes are applied.
+- **RDNA:** `k(...)` under a non-default torch stream warns once (`HK_STRICT_STREAM=1` raises);
+  calls on the default stream and the engine routes are unchanged.
+- **gfx942:** an op with no kernel there raises `NotImplementedError` at the call instead of
+  failing in hipcc.
+
+### Known issues
+
+- **RDNA, `hk.ops` entry points under a side stream:** the ops' pybind entry points launch on the
+  null stream and do not warn under a non-default torch stream (the warning covers `k(...)`
+  launches). Calling them directly on a stream of your own is not ordered against it; the engine
+  routes launch on torch's stream. Use `hk.torch_op` or `HK_LAUNCH=codeobj` for your own streams.
+- **Compiler bugs hk gates rather than fixes:** LLVM's missing MFMA wait states behind a branch
+  (llvm/llvm-project#225989, gfx950) and the VOPD interlock hazard (llvm/llvm-project#220348,
+  gfx11) are in every ROCm release to date. hk rebuilds the affected kernels (`HK_MFMA_GATE`,
+  `HK_VOPD_GATE`) and says so once a process ([runtime](docs/runtime.md#the-resource-gates)).
+- **clang 24 (ROCm 10.1)** is tested by hand, not in CI ([toolchains](docs/toolchains.md)).
+- **Under clang 22 (ROCm 7.2.3)** the head-size-256 prefill kernel does not build spill-free, so
+  those calls stay vLLM's; the vLLM images' clang 23 builds it.
+- **gfx942 is compile-only:** nothing has run on an MI300X.
+
+### Changes
+
+**vLLM prefill attention on vLLM's own cache (`vllm_prefill`, on by default on gfx1100; #158,
+#167, #190, #196, #233, #238).** With chunked prefill and prefix caching on, a long prompt's time on
+RDNA is mostly prefill attention over the paged KV cache. The route replaces only that kernel:
+ROCM_ATTN's `prefix_prefill.context_attention_fwd`, and TRITON_ATTN's `unified_attention` on
+batches with prefill in them. It reads each backend's cache in place, so the cache, its layout and
+block size, the cache write and the rest of the backend stay vLLM's. bf16, head size 64 and 128,
+and 256 on TRITON_ATTN (a query row across a pair of warps); pages of 16 or 32 tokens, and on
+TRITON_ATTN any multiple of 16, which covers hybrid models' attention pages (544 tokens for
+MiniCPM-V-4.7, 784 for Qwen3.8). Any other call falls back to vLLM's kernel, and is counted.
+On TRITON_ATTN the batch's V pages are transposed once a call for the whole batch
+(`HK_VLLM_PREFILL_VT=0` turns that off). `HK_VLLM_PREFILL_SHADOW=1` also runs vLLM's kernel on
+every call hk takes and prints the worst row's difference (a diagnostic; it syncs).
+- **Batches hk is not faster on stay vLLM's (#233, #238).** On TRITON_ATTN two kinds of batch were
+  slower on hk's kernel: decode rows beside a small prefill (hk walks each decode's whole context in
+  one workgroup; vLLM splits it), and a short chunk over a context (too few query tiles to fill the
+  card). The route now declines them, deciding from each step's exact sizes, which it reads from
+  the host arrays TRITON_ATTN's metadata builder already has, with no device sync (the builder is
+  wrapped by `apply()` and restored by `revert()`).
+- Its end-to-end results (long-prompt TTFT on MiniCPM5-2B and MiniCPM-V-4.7, quality within stock's
+  spread) are on [the scorecard](docs/performance/scorecard.md).
+
+**`hk.ops.paged_decode_portable`: one decode-attention source on gfx1100, gfx1201 and gfx950
+(#235).** hk.ops.paged_decode's split-KV walk over vLLM's TRITON_ATTN cache, written once: its
+tiles are legal operands on both matrix units, and the two places the hardware differs are the
+DSL's (#223). On gfx1201, head_dim 256 with a GQA group of 6 on hybrid pages builds only with
+clang 23 or newer; under clang 22 the op raises `ResourceError` (no result, never a wrong one). It
+is an op and a benchmark: on RDNA the hand-tuned walk (#220) stays what `vllm_prefill` runs.
+
+**`tools/hk-bench`: public kernel benchmarks (#206, #220).** `kernel_bench.py` times hk's linear,
+4-bit and MoE GEMMs against the engines' own kernels at real models' shapes, with gfx1100 and gfx1201
+results under `tools/hk-bench/results/` (`tools/hk-bench/README.md`); `attention_bench.py` does
+paged prefill and decode against vLLM's kernels (`tools/hk-bench/README-attention.md`). The
+[scorecard](docs/performance/scorecard.md)'s kernel rows are reproducible with them.
+
+**Docs: a new structure.** Install and a quickstart with W7900D and MI355X tracks; concept pages
+(how a kernel runs, tiles / strips / LDS, [the correctness gates](docs/correctness-gates.md), XCDs
+and `hk.comm`; #186); per-engine pages ([vLLM](docs/vllm.md), [SGLang](docs/sglang.md)) with
+correctness evidence (#184); an op catalog generated from the code (#185);
+[supported hardware](docs/supported-hardware.md), [toolchains](docs/toolchains.md),
+[API stability](docs/stability.md) (#211) and [releasing](docs/releasing.md) (#209); older design
+documents and measurements moved to an archive.
+
+**Fix (gfx950): LDS windows that are not whole subtiles of their tile's layout are refused
+(#222, #217).** HipKittens' CDNA4 `st_subtile` points at the subtile that holds a window's
+first element and keeps no offset inside it, so a window narrower or shorter than that subtile
+read, or was copied into, the subtile's first rows and columns, whatever its index, with no
+error. The C++ translation refused such windows only on a tile that names its layout. It now
+checks every window against the layout its allocation is actually declared with: the one it
+names, the one its reads' fragment picks, or its type's. The refusal says which. No existing
+kernel is refused, and all 1160 gfx950 kernels generate byte-identical C++.
+
+**RDNA: the CDNA forms of P·V build (#223, #212, #213).** `Tile.as_operand(bf16)` on gfx1100 and
+gfx1201 is now the accumulator's col-layout cast (the WMMA operand `.to(bf16)` makes); it was
+refused. A col-layout 16-bit operand read from LDS on RDNA is now one row-major b128 read and a
+register transpose instead of 16 `ds_read_u16` a 16x16 tile (the budget pass's
+`slow-smem-layout` warning, and spills in a head-dim-128 paged decode). So
+`acc += v_s.load(RT(bf16, 32, 16, "col")).T @ s.as_operand(bf16)` means the same on gfx950 and
+on RDNA, and one attention source builds for both. `load(wait=False)` of such an operand is
+refused: the transpose waits for its data. No existing RDNA kernel changes (1049 kernels each on
+gfx1100 and gfx1201, byte-identical C++).
 
 **Engine contracts are per route.** A route whose engine contract is broken, or whose apply raises,
 now stays off with one warning line of its own (`[hk] WARNING: vllm: route vllm_moe_a8w4 OFF --
@@ -24,19 +166,17 @@ them. A user's own modules (`HK_VLLM_USER`) that fail to load are reported the s
 **`hk.gemv_w4`: a few tokens against 4-bit weights without WMMA, and hk.ops.w4a16's small-batch
 form on it.** At 1-4 tokens the w4a16 decode kernel was bound by instruction issue, not memory. A
 WMMA operand holds every row of W in both halves of the wave, so each 16-byte load of codes was
-decoded twice and exchanged: ~125 instructions a wave per 256 bytes, ~620 GB/s on a W7900D.
+decoded twice and exchanged: ~125 instructions a wave per 256 bytes.
 `hk.gemv_w4` has each lane decode its own row's codes in packed fp16 and multiply with
 v_dot2_f32_f16. It returns the warp's partial as the 16x16 fp32 accumulator tile an mma gives, so a
 kernel reduces and stores it as before. Symmetric (GPTQ's `zero`, `s_blocked`) and asymmetric
 (`zs`) forms, groups that are multiples of 32, 1-8 tokens, fp16, RDNA.
 
 `hk.ops.w4a16.matmul` takes it for fp16 at 1-4 tokens on gfx1100 (`gemv_takes`; `GEMV_ARCHES`).
-Qwen3.8-27B-GPTQ's shapes at 1-4 tokens run at 715-777 GB/s cold, against vLLM's gptq_gemm_rdna3:
-qkv 1.07-1.17x, o/out 1.10-1.15x, qkvz 1.13-1.30x, gate_up 1.08-1.14x, down 1.27-1.47x. That is
-1.19-1.28x the WMMA form at one token. These are one-process, graph-timed runs with weights rotated
-over 576 MB.
+At Qwen3.8-27B-GPTQ's shapes at 1-4 tokens it measured faster than vLLM's gptq_gemm_rdna3 on every
+projection, and faster than the WMMA form at one token (one process, graph-timed, cold weights).
 
-**gfx1201: shipped vLLM linear routes for MiniCPM5-2B and Qwen3.8-27B (TP2).** `routes_vllm_linear_gfx1201.json` gains their twelve (N, K), measured with `route_tune --timing graph` in the R9700 vLLM image, so a server of either model no longer measures them at load (~28 s on MiniCPM5; Qwen3.8's ran out of the 60 s budget). M 1-5 stay on vLLM's skinny GEMM on every shape but `in_proj_ba` (from M 5); hk's decode GEMM takes MiniCPM5's qkv, o and down from M 6. On an R9700, on top of #189: MiniCPM5 TPOT 1.054x at concurrency 8 and = at 1, Qwen3.8 TP2 = stock-fair. A machine's own records for these shapes still override the shipped rows.
+**gfx1201: shipped vLLM linear routes for MiniCPM5-2B and Qwen3.8-27B (TP2).** `routes_vllm_linear_gfx1201.json` gains their twelve (N, K), measured with `route_tune --timing graph` in the R9700 vLLM image, so a server of either model no longer measures them at load (Qwen3.8's ran out of the 60 s budget). M 1-5 stay on vLLM's skinny GEMM on every shape but `in_proj_ba` (from M 5); hk's decode GEMM takes MiniCPM5's qkv, o and down from M 6. A machine's own records for these shapes still override the shipped rows.
 
 **Fix: vLLM with torch.compile and CUDA graphs failed to start with `vllm_gemm` on (#177).** vLLM calls `dispatch_unquantized_gemm()` inside the forward it compiles, and #177's stand-in cached what it returned in a module dict on its first call. That first call was the profile run's traced forward, so Dynamo replayed the write after the graph (`_GEMMS.update`), and vLLM's CUDA-graph guard refused the forward: an `InternalTorchDynamoError` / `DecompilationError` from `vllm/compilation/wrapper.py`'s `bytecode_hook` at startup (MiniCPM5 in its production configuration). The stand-in and each layer's routing decision are now read-only while torch.compile traces: the cache, the decision kept on the layer and the unrouted counts are written only in eager calls, and a decision is kept for the table's generation (bumped by `set_routes`) rather than the table object. Whether it shows depends on the vLLM build: one whose `UnquantizedLinearMethod.apply` calls `dispatch_unquantized_gemm()` on every forward (the MiniCPM5 image's) failed, one that calls it once when the method is built (the MiniCPM-V image's) did not. `tests/hk/ir/test_vllm_gemm_compiled.py` compiles a vLLM-shaped forward whole under vLLM's guard, for the GEMM route and the AWQ / GPTQ `apply` stand-ins, and `tests/hk/engines/test_vllm_compiled_forward.py` does it through the installed vLLM's own `apply`.
 
@@ -127,12 +267,11 @@ already streams the weights at the memory roof there, and the routed shape lost 
 **The routes tuner times what a decode step runs (RDNA): each call in its model's context, TunableOp
 in the records, and 12 gfx1100 rows re-measured.**
 - **Two biases.** `hk.autotune.routes` (route_tune and the tuning at load) timed an unqueued burst
-  on RDNA, which charged vLLM's ~8 us of Python dispatch at M <= 5 to the engine: 1536x1536 at
-  M = 1 read 17.2 us against hk's 11.5, where a captured graph runs 9.4 against 11.0. InternVL3-2B
-  lost c1 TPOT to it (0.965x of stock-fair). And a shape timed alone flatters a tuned hipBLASLt
-  kernel: on an R9700 with MiniCPM5's TunableOp results, vLLM's o_proj at M = 8 ran 17.1 us back
-  to back and 20.5-21.6 in the served step, while hk's decode GEMV ran 17.3-17.6 either way.
-  Timed alone, the tuning at load left M = 8 on vLLM.
+  on RDNA, which charged vLLM's Python dispatch at M <= 5 to the engine, so shapes went to hk that
+  a captured graph runs faster on vLLM's path; InternVL3-2B lost decode time at one request to it.
+  And a shape timed alone flatters a tuned hipBLASLt kernel: on an R9700 with MiniCPM5's TunableOp
+  results, vLLM's o_proj at M = 8 ran faster back to back than in the served step, while hk's
+  decode GEMV ran the same either way, so the tuning at load left M = 8 on vLLM.
 - **Timing.** `measure_points(timing="context")`, the default on RDNA: each path's calls are
   captured in a CUDA graph and replayed. Every call runs after a norm-like kernel that writes its
   input, then the model's other linear layers follow on their routes at that M, each with an input
@@ -149,20 +288,17 @@ in the records, and 12 gfx1100 rows re-measured.**
   complete stale record shadowed the shipped row and was never re-measured.
 - **route_tune.** It gains `--timing`, `--nk`, `--merge-into` and `--splice` (replace a row's
   points at the measured Ms only, re-derive its runs), and times a model's shapes in context.
-- **Checked against serving (R9700, MiniCPM5, TunableOp, rocprofv3).** Linear time a layer at
-  decode batch 8, routes picked by context timing (qkv and o on hk's GEMV): 166.1 us served
-  against 176.2 for stock-fair; the harness predicted 166.6 against 176.8. Batches 1 and 32 stay
-  on vLLM's path, served equal to stock-fair.
+- **Checked against serving (R9700, MiniCPM5, TunableOp, rocprofv3).** At decode batch 8, with
+  the routes picked by context timing (qkv and o on hk's GEMV), the harness's prediction of a
+  layer's linear time matched the served step's, for hk's routes and for vLLM's. Batches 1 and 32
+  stay on vLLM's path.
 - **The 12 rows.** The shipped gfx1100 rows that sent M <= 5 to hk against the burst floor were
   re-measured at M 1-63 with graph timing and spliced. Small-N rows give M <= 1-5 back to vLLM
   (2048x256: M <= 16). Large rows take hk from M = 2, where vLLM's M = 2-4 is slower than the
   decode GEMV in a graph. M = 1 stays vLLM's everywhere.
-- **Gates.** 3 alternating server starts per arm, TunableOp on (stock-fair), GSM8K level throughout.
-  - gfx1201 (R9700), MiniCPM5-2B with no shipped rows, routes tuned at load: c1 = stock-fair
-    (8.47 ms; main 0.98x), c8 1.05x once the records are complete (main 1.06x), c32 and 16k TTFT
-    equal. With the gfx1201 MiniCPM5 rows that land next to this change c8 is 1.057x.
-  - gfx1100 (W7900D): MiniCPM5-2B c1 = stock-fair and main (7.77 ms), c8 9.65 vs main 9.66 ms
-    (1.10x stock-fair); InternVL3-2B c1 = stock-fair (5.02-5.04 vs 5.04 ms; main 0.965x), c8 1.07x.
+- **Gates.** 3 alternating server starts per arm against vLLM with TunableOp on, GSM8K level
+  throughout, on gfx1201 (MiniCPM5-2B, routes tuned at load) and gfx1100 (MiniCPM5-2B,
+  InternVL3-2B): no concurrency slower than stock, and the InternVL3-2B loss at one request gone.
 
 **RDNA3's paired WMMA operand: `as_operand(k_order="even_odd")` (DSL-surface S11).** On gfx1100,
 `S.as_operand(hk.fp16, k_order="even_odd")` turns a 32x16 fp32 pair of WMMA accumulators into two fp16
@@ -179,8 +315,8 @@ experts (~17 GB on Qwen3.6-35B-A3B-AWQ):
 - `hk.load_w4(..., zp=Z)`: the element is (q - z) * s, with z read from an int8 [N/2, K/group]
   tensor holding two rows to a byte. An fp16 tile decodes as the symmetric form does, so q - z is
   exact and the product rounds once to nearest even. `rows=True`: the codes are row-major, int32
-  [N, K/8], each lane reading its own row's 16 bytes. On a Qwen3.6 microbenchmark this is within 1%
-  of hk's interleaved layout. RDNA only (include/hk/rdna/w4.cuh). The asymmetric and symmetric forms
+  [N, K/8], each lane reading its own row's 16 bytes. On a Qwen3.6 microbenchmark this is as fast as
+  hk's interleaved layout. RDNA only (include/hk/rdna/w4.cuh). The asymmetric and symmetric forms
   print exactly as before: V0 shows 0 differences over the catalog (1049 kernels) and over every
   w4a16 kernel the routes build (66), on gfx1100 and gfx1201.
 - `hk.ops.moe.moe_gemm_kernel` gains `dtype` (fp16), `w4_group` (W in the layout above, expert e's
@@ -190,13 +326,10 @@ experts (~17 GB on Qwen3.6-35B-A3B-AWQ):
   (`VALIDATED`: Qwen3.6-35B-A3B-AWQ's two expert GEMMs; `HK_VLLM_MOE_WNA16=force` takes any).
   Prefill chunks, other shapes, symmetric GPTQ without zero points and int8 weights stay on vLLM's
   kernel, counted by reason in `REFUSED`.
-- Qwen3.6-35B-A3B-AWQ, one W7900D, the Radeon TheRock vLLM image, against stock-fair' (TRITON_ATTN,
-  TunableOp, and the int4 MoE config picked per M by in-vLLM time), 3 alternating starts each:
-  - 1k TPOT: 1.22x at 1 request, **1.48x at 8**, 1.42x at 16;
-  - 8k decode at 4 requests: 1.24x;
-  - GSM8K-200 equal (.870 / .875 / .870 vs .860 / .875 / .860);
-  - every captured decode call took hk's kernel.
-  Kernel alone, with real captured routing and cold weights: 2.6-3.2x vLLM's kernel at 1-16 tokens.
+- Checked on Qwen3.6-35B-A3B-AWQ, one W7900D, the Radeon TheRock vLLM image, against vLLM with
+  TRITON_ATTN, TunableOp and the int4 MoE config picked per M, 3 alternating starts each: decode
+  faster at every measured concurrency (1, 4, 8, 16 requests), GSM8K-200 equal, and every captured decode call took hk's kernel. The
+  route is opt-in; its serving numbers go on the [scorecard](docs/performance/scorecard.md).
 
 **`hk.map` on RDNA strips (gfx1100, gfx1201).** The integer, mask and bit expressions below,
 `hk.map(fn)` and `hk.map_cpp` lower on RDNA too, through include/hk/rdna/map.cuh (the trees'
@@ -225,8 +358,8 @@ Batches of 1-64 tokens run on hk's 4-bit decode GEMM, in the symmetric form belo
 16-row blocks, no zero-times-scale tensor); larger ones stay on vLLM's kernel. Act-order
 checkpoints, other quant types, layers on another kernel and layers whose stored zero points are not
 8 are refused, and `vllm_gptq.REFUSED` counts them by reason. On Qwen3.8-27B-GPTQ-Int4 (W7900D,
-TRITON_ATTN + TunableOp on both sides) TPOT is 1.10x vLLM's at one user (8k and 1k context),
-1.08-1.28x at 4-16.
+TRITON_ATTN + TunableOp on both sides) decode is faster than vLLM's at every measured concurrency
+(1 and 4-16 users).
 - `hk.ops.w4a16`: a quantization group narrower than the load now narrows the load
   (`schedule_for(m, k, group)`). Before, GPTQ's 32-column groups fell to the dequantize path at
   every batch up to 16 tokens.
@@ -270,7 +403,7 @@ path is unchanged on every arch.
 tile's -- followed by the waits it always had; hk/cdna.cuh's second, synchronous copy body is gone.
 In this form the copy's descriptor is read from lane 0, so a descriptor LLVM cannot prove uniform is
 not a waterfall loop around every copy. Only the two kernels with such loads change: `mxfp8.gemm`
-(outputs bit for bit the same at four shapes, 0.4-2.9% faster in one process) and example 02's GEMM.
+(outputs bit for bit the same at four shapes, and no slower) and example 02's GEMM.
 gfx942 is unchanged.
 
 **gfx1100 under clang 24 (ROCm 10.1): the kernels the spill gate refused build again.** With clang
@@ -346,7 +479,7 @@ to hk in the W7900D production images again.** Under its AMD clang 23 the four-t
   spilling at its cap, under whichever hipcc runs it.
 - The shipped gfx1100 vLLM table has rows for MiniCPM5-2B's and MiniCPM-V-4.7-35B-A3B's (TP2)
   linear shapes, measured in their production image, so they start without tuning at load
-  (it had taken MiniCPM-V's startup from 130-140 s to 200-250 s) and every shape is covered --
+  (which had lengthened MiniCPM-V's startup) and every shape is covered --
   tuning at load had run out of its 60 s before MiniCPM-V's down_proj and in_proj_ba. M = 1 stays on vLLM's
   skinny GEMM there. MiniCPM5-2B end to end in that image: GSM8K 87.95% vs 88.02% (1319
   questions, McNemar p = 1.0).
@@ -479,9 +612,9 @@ is in `tests/hk/remark_fixtures` (`tests/hk/ir/test_resource_remarks.py`).
   and a plan with no device assembly at all is now an error.
 - Tested with the three compilers on an MI355X: `01_vector_add.py` (`--build`,
   run, `HK_LAUNCH=codeobj`), the README quick start, and `hk.check` on the
-  getting-started kernel. Known under clang 24: on gfx1100 the fp16/bf16
-  RMSNorm and LayerNorm and the rope of `hk.ops`, and examples 02 and 03,
-  spill and are refused (README, *Install*).
+  getting-started kernel. On gfx1100 the fp16/bf16 RMSNorm and LayerNorm and
+  the rope of `hk.ops`, and examples 02 and 03, still spilled under clang 24;
+  the "gfx1100 under clang 24" entry above fixes them.
 
 **`hk.check` named an MI355X "AMD Radeon Graphics"**, HIP's name for a device
 its libdrm table does not list (rocm/pytorch 7.2.3). For that name it now
@@ -506,8 +639,8 @@ files. An edit to a header a kernel does not include still leaves it cached.
 torch's and pybind11's versions are in the key when their headers are on the
 include path (a torch upgraded in place kept its key), and so are the flags
 hipcc appends from HIPCC_COMPILE_FLAGS_APPEND / HIPCC_LINK_FLAGS_APPEND and
-HIP_CLANG_PATH. Warm path: +0.14-0.18 ms a cached kernel, against a 1.1-2.6 ms
-hit. Every existing entry misses once (a new
+HIP_CLANG_PATH. A cache hit costs slightly more (it re-hashes the listed headers).
+Every existing entry misses once (a new
 key scheme); old entries are never read again and can be deleted.
 `runtime.compile.target_headers_fingerprint` is gone. `tests/hk/ir/test_compile_cache.py`,
 `tests/hk/codegen/test_compile.py`.
@@ -770,7 +903,7 @@ cached + 512 new tokens on 32/8 heads is 64 workgroups for 256 CUs.
   prefill is the single launch as before.
 - Measured on a prefill grid (MI355X; 32/8, 64/8, 32/4 and 8/1 heads; 13
   batches from fresh prompts to 65536 + 2048 chunks) in one process against the
-  previous code: no batch slower by more than 1.1%.
+  previous code: no batch slower beyond noise.
 - Cut tiles' outputs change by the order partials are folded in (within the
   fp32 check; deterministic). Uncut ones are bitwise as before.
 
@@ -783,7 +916,7 @@ grids with few workgroups a batch on a round of long tiles.
   head_dim 128, 8/1 to 64/8 heads, N 1k-32k).
 - It helps most where few heads leave the grid short (8 query / 1 KV heads, a
   70B-class model at TP8, and 16 / 2 heads, at short N); measured in one process
-  against the single-block walk, no other point moves by more than 1.4% either way.
+  against the single-block walk, no other point moves beyond noise either way.
 - `attn_cdna.kernel_for(..., pairs=False)` and the `pairs` knob of
   `hk.schedules.AttnCdna` give back the single-block walk. The spatial
   numbering and the paged prefill do not change.
@@ -984,6 +1117,137 @@ sizes; the shipped one is the one that holds under both).
 - The merge train resolves a conflict in `CHANGELOG.md` by union instead of dropping the PR.
   The union is checked before it is kept: no conflict markers, no entry twice, and each
   version section kept as it was (#128, [testing](docs/testing.md#the-merge-train)).
+
+### All pull requests
+
+Every pull request merged since 0.8.0 (126), by number:
+
+- [#67](https://github.com/vivienfanghuagood/hk-dsl/pull/67) CI: a gfx1201 job on the RDNA4 dev box (remote-registered ephemeral runner, continue-on-error)
+- [#76](https://github.com/vivienfanghuagood/hk-dsl/pull/76) hk.ops.scaled_mm: fp8 GEMM on gfx1201's fp8 WMMA (RDNA4 R3b)
+- [#77](https://github.com/vivienfanghuagood/hk-dsl/pull/77) hk.attention on gfx1201: its own tiling, ties AITER's FlyDSL kernel (RDNA4 R3c)
+- [#78](https://github.com/vivienfanghuagood/hk-dsl/pull/78) norms on gfx1201: strip plans measured there, the last scoreboard losses go (RDNA4 R3d)
+- [#79](https://github.com/vivienfanghuagood/hk-dsl/pull/79) codegen: the torch-op shim builds against both spellings of torch's ROCm headers
+- [#80](https://github.com/vivienfanghuagood/hk-dsl/pull/80) gfx1201 in vLLM: the R9700 image's toolchain, and vllm_gemm on by default there (RDNA4 R4a)
+- [#84](https://github.com/vivienfanghuagood/hk-dsl/pull/84) DeepSeek-V4.1 routes retuned from the MI355X scoreboard (K1 from M 4096, K2 indexer wq_b + engram wkv), and gemm_cdna routes around a candidate the spill gate refuses
+- [#87](https://github.com/vivienfanghuagood/hk-dsl/pull/87) cocheck: the LDS wait scan follows branches (a false refusal)
+- [#88](https://github.com/vivienfanghuagood/hk-dsl/pull/88) Element ops for a whole cache: row= past 4 GB, runs=True loads, 16-byte LDS reads, bf16 LDS element stores (gfx950)
+- [#90](https://github.com/vivienfanghuagood/hk-dsl/pull/90) K1 MoE a8w4 prefill: 16-byte scatter stores, LDS-staged scatter ids, LDS read pipelining (gfx950)
+- [#91](https://github.com/vivienfanghuagood/hk-dsl/pull/91) runtime, integration: host fast paths -- an eager route call no longer re-decides what its shapes decide
+- [#92](https://github.com/vivienfanghuagood/hk-dsl/pull/92) runtime: code-object launches in C (_hkLaunch)
+- [#93](https://github.com/vivienfanghuagood/hk-dsl/pull/93) docs/testing: the GPU allocation on the gfx950 workstation
+- [#94](https://github.com/vivienfanghuagood/hk-dsl/pull/94) attention on gfx1201 at head_dim 64: the 16-warp tilings (RDNA4 R3e)
+- [#95](https://github.com/vivienfanghuagood/hk-dsl/pull/95) post-release 0.8.0: API marks against the 0.8.0 wheel, RELEASE = None, CHANGELOG Unreleased
+- [#96](https://github.com/vivienfanghuagood/hk-dsl/pull/96) lds.alloc: refuse a tile after one allocated in a branch not every warp takes (silent wrong addresses)
+- [#97](https://github.com/vivienfanghuagood/hk-dsl/pull/97) gpu.yml: the gfx1201 job no longer continue-on-error (RDNA4 R2 done)
+- [#98](https://github.com/vivienfanghuagood/hk-dsl/pull/98) Ops for an index top-k in one launch: LDS atomic adds, MXFP4 operands / scales from gathers, first_lane (gfx950)
+- [#99](https://github.com/vivienfanghuagood/hk-dsl/pull/99) vllm_mxfp8: K2 below MIN_M where hk was measured faster -- six of DeepSeek-V4.1's seven MXFP8 linears from M 160-1216 (bitwise vLLM)
+- [#100](https://github.com/vivienfanghuagood/hk-dsl/pull/100) attn_cdna: causal workgroups walk query blocks in pairs
+- [#101](https://github.com/vivienfanghuagood/hk-dsl/pull/101) paged decode on gfx950: a merge on several warps, plans up to 512 splits
+- [#102](https://github.com/vivienfanghuagood/hk-dsl/pull/102) gfx1201's bf16 GEMM at 32-512 rows: shipped hk.tune schedules, and the vLLM table re-measured with them (RDNA4 R3)
+- [#103](https://github.com/vivienfanghuagood/hk-dsl/pull/103) paged prefill on gfx950: cut long KV walks over the cached prefix
+- [#104](https://github.com/vivienfanghuagood/hk-dsl/pull/104) K2 MoE ops: work-queue loops with barriers, hk.fp8_operand, non-temporal stream tensors (gfx950)
+- [#105](https://github.com/vivienfanghuagood/hk-dsl/pull/105) paged decode on gfx950: two pages a step, a cheaper merge, and no point slower than before the 512-split plan
+- [#106](https://github.com/vivienfanghuagood/hk-dsl/pull/106) CI: gfx1201's IR and codegen tiers, and a gfx1201 performance gate (RDNA4 follow-up 1)
+- [#107](https://github.com/vivienfanghuagood/hk-dsl/pull/107) CDNA: hk-mma-fence, a DSL rule for matrix-core accumulators; hk.arch.agpr to hold one in AGPRs
+- [#108](https://github.com/vivienfanghuagood/hk-dsl/pull/108) vllm_moe on gfx1201, up to 2 tokens a step (RDNA4 follow-up 2)
+- [#113](https://github.com/vivienfanghuagood/hk-dsl/pull/113) The merge train: READY PRs stacked twice a day, tested once, squash-merged in order
+- [#114](https://github.com/vivienfanghuagood/hk-dsl/pull/114) gfx1201's bf16 GEMM at 1024-8192 rows: shipped schedules that hold under both compilers; records read by the asked arch (RDNA4 follow-up 3)
+- [#115](https://github.com/vivienfanghuagood/hk-dsl/pull/115) vLLM: DeepSeek-V4.1's index layers under --monokernel as one hk launch
+- [#116](https://github.com/vivienfanghuagood/hk-dsl/pull/116) tests: attention against float64, each output row within 4 bf16 ulps
+- [#117](https://github.com/vivienfanghuagood/hk-dsl/pull/117) gfx950: an LDS tile narrower than its read's st shape was never copied
+- [#118](https://github.com/vivienfanghuagood/hk-dsl/pull/118) gfx950: fp32 LDS vectors and 16-bit col-tile LDS stores are ds ops, not FLAT
+- [#119](https://github.com/vivienfanghuagood/hk-dsl/pull/119) CDNA: an MFMA hazard build gate; pads what LLVM left short (default)
+- [#120](https://github.com/vivienfanghuagood/hk-dsl/pull/120) gfx950: hk.ops.sparse_mla, DeepSeek-V4.1's sparse MLA prefill, and a vLLM route (off)
+- [#121](https://github.com/vivienfanghuagood/hk-dsl/pull/121) gfx950: a matrix-core result as a strip -- lane_strip, lane_coords, run_xor, any group xor offsets
+- [#122](https://github.com/vivienfanghuagood/hk-dsl/pull/122) docs: converging the DSL surface (approved design: inventory, target API, migration) + CONTRIBUTING rule for new kernels
+- [#123](https://github.com/vivienfanghuagood/hk-dsl/pull/123) CI: the gfx950 jobs' wait for a GPU is HK_CI_PICK_WAIT_MIN (runner .env), timeout 360 min
+- [#124](https://github.com/vivienfanghuagood/hk-dsl/pull/124) warm-routes: build every K2 kernel a server can pick (the stages=2 schedule included)
+- [#125](https://github.com/vivienfanghuagood/hk-dsl/pull/125) gfx950: a gathered LDS copy takes a row limit and reads no index past it
+- [#128](https://github.com/vivienfanghuagood/hk-dsl/pull/128) merge train: CHANGELOG.md conflicts are resolved by union, not kicked; readmit
+- [#129](https://github.com/vivienfanghuagood/hk-dsl/pull/129) gfx950: fp32 max/min reductions are IEEE maximum/minimum (v_maximum3_f32)
+- [#130](https://github.com/vivienfanghuagood/hk-dsl/pull/130) DSL surface S0: the surface registry and its lint (hard CI), the V0/V1 snapshot tool, specialization tests
+- [#136](https://github.com/vivienfanghuagood/hk-dsl/pull/136) compile cache: key on every header a kernel's compile reads (a header edit served the old kernel)
+- [#137](https://github.com/vivienfanghuagood/hk-dsl/pull/137) dsv41_index: the candidate source's block top-k and the consumers' mask in the launch (max_model_len 16640)
+- [#139](https://github.com/vivienfanghuagood/hk-dsl/pull/139) Public hygiene: remove internal infrastructure details (no behaviour change)
+- [#140](https://github.com/vivienfanghuagood/hk-dsl/pull/140) ROCm 10.1 (clang 24): read its bare resource remarks; find LLVM tools beside hipcc's clang
+- [#141](https://github.com/vivienfanghuagood/hk-dsl/pull/141) DSL surface S1–S5 + S12: scaled hk.mma, RowIndex, swap_halves, register views, cdna.cuh split (one commit a step) + docs follow-up
+- [#142](https://github.com/vivienfanghuagood/hk-dsl/pull/142) Public hygiene follow-up: CDNA header notes, CHANGELOG process text, removed release links
+- [#143](https://github.com/vivienfanghuagood/hk-dsl/pull/143) gfx1100: the decode GEMM builds under clang 23 (TheRock 7.14) -- LDS-pointer fp32 copies + hk.kernel(max_occupancy=)
+- [#144](https://github.com/vivienfanghuagood/hk-dsl/pull/144) docs: one-screen positioning -- README top, docs/positioning.md, one sentence everywhere
+- [#145](https://github.com/vivienfanghuagood/hk-dsl/pull/145) vLLM: the sparse MLA route on by default on gfx950 (owner's decision)
+- [#147](https://github.com/vivienfanghuagood/hk-dsl/pull/147) DSL: strided globals on RDNA -- hk.Tensor[dtype, "strided"], read by g.stage (#146)
+- [#148](https://github.com/vivienfanghuagood/hk-dsl/pull/148) gfx1100 under clang 24 (ROCm 10.1): the kernels the spill gate refused build again
+- [#149](https://github.com/vivienfanghuagood/hk-dsl/pull/149) docs: performance-claim purge -- only the scorecard is quoted (docs reset, step 2)
+- [#150](https://github.com/vivienfanghuagood/hk-dsl/pull/150) Release wheels for CPython 3.11 and 3.13 (packaging only; cp310/cp312 unchanged)
+- [#151](https://github.com/vivienfanghuagood/hk-dsl/pull/151) docs/supported-hardware.md: one hardware truth table, generated from hk.target and the route table
+- [#152](https://github.com/vivienfanghuagood/hk-dsl/pull/152) S7 (G1): integer, mask and bit expressions on strips -- hk.map, hk.where, hk-map-fuse; paged_cdna and sparse_mla migrated
+- [#153](https://github.com/vivienfanghuagood/hk-dsl/pull/153) hk.templates: rowwise / elementwise stay callable after their module is imported (fixes the test-order failure)
+- [#154](https://github.com/vivienfanghuagood/hk-dsl/pull/154) gfx942 (MI300X): ops with no kernel there refuse at the call, not in hipcc
+- [#155](https://github.com/vivienfanghuagood/hk-dsl/pull/155) examples: a GPU-pinned example (14, hk.comm) says which GPUs and why, and the GPU tier skips it there
+- [#157](https://github.com/vivienfanghuagood/hk-dsl/pull/157) Default-on routes: a GPU test on every arch they're on by default, held by a coverage table
+- [#158](https://github.com/vivienfanghuagood/hk-dsl/pull/158) vLLM prefill attention on vLLM's own cache (opt-in): paged_prefill rocm / flash / dsplit layouts + HK_VLLM_PREFILL route
+- [#159](https://github.com/vivienfanghuagood/hk-dsl/pull/159) README/positioning: the hardware table is generated between hw-table markers (+ gfx1201 strips in the templates guide)
+- [#160](https://github.com/vivienfanghuagood/hk-dsl/pull/160) S7b: hk.map on RDNA strips (gfx1100, gfx1201) -- include/hk/rdna/map.cuh; masks stay inside a map
+- [#161](https://github.com/vivienfanghuagood/hk-dsl/pull/161) gfx1100 routes: Qwen3.8-27B's TP2 linears in the vLLM and SGLang tables; linear_shapes reads hybrid decoders
+- [#162](https://github.com/vivienfanghuagood/hk-dsl/pull/162) vLLM GPTQ-Int4 on RDNA3: vllm_gptq (off by default) on hk's 4-bit decode GEMM; w4a16 takes GPTQ's 32-column groups
+- [#163](https://github.com/vivienfanghuagood/hk-dsl/pull/163) S8 (E1): gfx950's synchronous g.load is the asynchronous copy's DMA body + its waits
+- [#164](https://github.com/vivienfanghuagood/hk-dsl/pull/164) S6 (G3): hk.lane_coords of a strip type; hk.iota is its column alias; the hk.iota op goes
+- [#165](https://github.com/vivienfanghuagood/hk-dsl/pull/165) vllm_gemm: on gfx1201 a single-row linear stays on vLLM's own GEMM (fixes the c1 regression)
+- [#166](https://github.com/vivienfanghuagood/hk-dsl/pull/166) hk.ops norms: weight_offset= (Gemma-style weights, the one added in fp32 in the kernel)
+- [#167](https://github.com/vivienfanghuagood/hk-dsl/pull/167) paged_prefill vt_pages: TRITON_ATTN's V pages transposed once a call (prefill route, step 2)
+- [#168](https://github.com/vivienfanghuagood/hk-dsl/pull/168) S11 (D1): RDNA3 Tile.as_operand(fp16, k_order="even_odd"); attn_k3 drops PairPKernel
+- [#169](https://github.com/vivienfanghuagood/hk-dsl/pull/169) W4A16's symmetric form (GPTQ uint4b8): hk.load_w4(zero=, s_blocked=); vllm_gptq from one token
+- [#170](https://github.com/vivienfanghuagood/hk-dsl/pull/170) S9a (G2): one register-view op, hk.lane_view, behind as_fragment / as_scales
+- [#172](https://github.com/vivienfanghuagood/hk-dsl/pull/172) RDNA: int8 into half / bf16 register tiles (i8 tile cast; int8 global -> 16-bit tile loads)
+- [#173](https://github.com/vivienfanghuagood/hk-dsl/pull/173) docs/toolchains.md: the toolchain compatibility matrix (clang 20-24 x GPU, known issues for 0.8.0 and main)
+- [#174](https://github.com/vivienfanghuagood/hk-dsl/pull/174) CI: a pull request moves a submodule's pin only on purpose ("HipKittens bump") and only forward
+- [#175](https://github.com/vivienfanghuagood/hk-dsl/pull/175) SGLang: GemmaRMSNorm on hk's weighted norm kernels (HK_SGLANG_NORM, on by default on gfx1100)
+- [#176](https://github.com/vivienfanghuagood/hk-dsl/pull/176) Fix: vllm_gptq binds vLLM's gptq_gemm_rdna3 by name, refuses per layer (main patched nothing on the MiniCPM5 image)
+- [#177](https://github.com/vivienfanghuagood/hk-dsl/pull/177) vllm_gemm: decide each layer at load; one the table never routes keeps vLLM's GEMM unwrapped
+- [#179](https://github.com/vivienfanghuagood/hk-dsl/pull/179) RDNA: k(...) under a non-default torch stream warns once (HK_STRICT_STREAM=1 raises)
+- [#180](https://github.com/vivienfanghuagood/hk-dsl/pull/180) README: point to the generated route table instead of a hand-written on-by-default list (M1)
+- [#181](https://github.com/vivienfanghuagood/hk-dsl/pull/181) Examples and --status say what they measured: example 15 over each byte once, pinned examples SKIPPED, MFMA gate only on CDNA (M1)
+- [#182](https://github.com/vivienfanghuagood/hk-dsl/pull/182) docs: getting started in three pages (install, quickstart with W7900D/MI355X tracks, examples); nav in eight sections (M1)
+- [#183](https://github.com/vivienfanghuagood/hk-dsl/pull/183) docs: an archive section (measurement record + superseded design under docs/archive/, banners); user pages stop citing history (M1)
+- [#184](https://github.com/vivienfanghuagood/hk-dsl/pull/184) docs: engine pages -- integration.md for every engine, vllm.md and sglang.md per engine; correctness evidence, not speedups (M1)
+- [#185](https://github.com/vivienfanghuagood/hk-dsl/pull/185) docs: the op catalog -- every hk.ops kernel family, generated from python/hk/ops/catalog.py and held to the code (M1)
+- [#186](https://github.com/vivienfanghuagood/hk-dsl/pull/186) docs: concepts -- how a kernel runs, tiles/strips/LDS, the correctness gates, XCDs and hk.comm (M1)
+- [#188](https://github.com/vivienfanghuagood/hk-dsl/pull/188) VOPD gate: rebuild gfx11.0/11.5 kernels with the VOPD interlock hazard (llvm#220348) without dual issue
+- [#189](https://github.com/vivienfanghuagood/hk-dsl/pull/189) Routes tuner: context timing on RDNA (each call among its model's other layers), TunableOp in the records; 12 gfx1100 rows re-measured
+- [#190](https://github.com/vivienfanghuagood/hk-dsl/pull/190) vllm_prefill: hybrid models' pages (any multiple of 16), vLLM's per-layer KV layouts, and a signature-agnostic ROCM_ATTN stand-in (prefill route, step 3)
+- [#191](https://github.com/vivienfanghuagood/hk-dsl/pull/191) AWQ MoE at decode on RDNA3: hk.load_w4(zp=, rows=True), moe_gemm_w4, and the vLLM route vllm_moe_wna16 (opt-in)
+- [#192](https://github.com/vivienfanghuagood/hk-dsl/pull/192) hk.ops.paged: refuse a decode whose tensors are not the shapes its kernels read
+- [#193](https://github.com/vivienfanghuagood/hk-dsl/pull/193) compiler: run MLIR passes on the calling thread (a refusal inside the pipeline could segfault)
+- [#194](https://github.com/vivienfanghuagood/hk-dsl/pull/194) gfx1201: shipped vLLM linear routes for MiniCPM5-2B and Qwen3.8-27B (TP2), graph-timed (on #189)
+- [#195](https://github.com/vivienfanghuagood/hk-dsl/pull/195) Routes records: a stale local record no longer shadows the shipped row (timing, TunableOp); test_route_tune without microsecond asserts
+- [#196](https://github.com/vivienfanghuagood/hk-dsl/pull/196) vllm_prefill on by default on gfx1100 (prefill route, step 4)
+- [#197](https://github.com/vivienfanghuagood/hk-dsl/pull/197) Engine contracts: recorded per production image and claimed version, applied per route, and a support matrix
+- [#199](https://github.com/vivienfanghuagood/hk-dsl/pull/199) docs: the default-on rule (a clear kernel win, the correctness suite, one e2e smoke per engine) replaces the multi-model gates
+- [#201](https://github.com/vivienfanghuagood/hk-dsl/pull/201) docs + test: use a kernel as a PyTorch op (hk.torch_op) -- eager, torch.compile, CUDA graphs
+- [#203](https://github.com/vivienfanghuagood/hk-dsl/pull/203) CI: the install matrix -- fresh stock-ROCm containers install the wheel, run the README quick start and one GPU test (gfx950/gfx1201/gfx1100 x ROCm 7.2/10.1)
+- [#204](https://github.com/vivienfanghuagood/hk-dsl/pull/204) VOPD gate: one line per process at default verbosity; each kernel's VOPDs at INFO (hk.compile logger)
+- [#205](https://github.com/vivienfanghuagood/hk-dsl/pull/205) hk.check: time cold by default (inputs rotated past the last-level cache, so GB/s is DRAM traffic); --hot for the old way
+- [#206](https://github.com/vivienfanghuagood/hk-dsl/pull/206) tools/hk-bench: a public GEMM/MoE kernel benchmark, with gfx1100 and gfx1201 results
+- [#209](https://github.com/vivienfanghuagood/hk-dsl/pull/209) Issue templates (bug, install, performance) and a release-candidate checklist (docs/releasing.md)
+- [#210](https://github.com/vivienfanghuagood/hk-dsl/pull/210) hk.gemv_w4: 4-bit GEMV for a few tokens without WMMA; w4a16's small-batch form (gfx1100)
+- [#211](https://github.com/vivienfanghuagood/hk-dsl/pull/211) docs: the API stability policy (stable / experimental / not covered), marked on every API reference page
+- [#216](https://github.com/vivienfanghuagood/hk-dsl/pull/216) vllm_prefill on gfx1201 (opt-in): the arch gate takes RDNA4
+- [#219](https://github.com/vivienfanghuagood/hk-dsl/pull/219) CONTRIBUTING: a PR that adds an op or a route carries its op-catalog row (test_ops_catalog says how)
+- [#220](https://github.com/vivienfanghuagood/hk-dsl/pull/220) Decode attention on TRITON_ATTN's cache: hk.ops.paged_decode (head_dim 256 on by default), and a public paged-attention bench
+- [#221](https://github.com/vivienfanghuagood/hk-dsl/pull/221) GPU tier: host's own video/render groups; fail when the container sees no GPU or nearly every test skips
+- [#222](https://github.com/vivienfanghuagood/hk-dsl/pull/222) gfx950: refuse LDS windows that are not whole subtiles of the tile's layout, whichever way the layout was chosen (#217)
+- [#223](https://github.com/vivienfanghuagood/hk-dsl/pull/223) RDNA: the CDNA forms of P.V -- as_operand and col-layout LDS operand reads (#212, #213)
+- [#224](https://github.com/vivienfanghuagood/hk-dsl/pull/224) Fix: vllm_gemm writes nothing while torch.compile traces (vLLM with CUDA graphs failed to start since #177)
+- [#231](https://github.com/vivienfanghuagood/hk-dsl/pull/231) compile cache: a damaged binary behind an OK marker is a miss; flush before the marker (#227)
+- [#233](https://github.com/vivienfanghuagood/hk-dsl/pull/233) vllm_prefill: leave batches hk is not faster on to vLLM's kernel (TRITON_ATTN guard)
+- [#234](https://github.com/vivienfanghuagood/hk-dsl/pull/234) tests: the SGLang-Diffusion routes' kernels at Qwen-Image 2.1's shapes (poisoned repeats, side-stream producer, fenced bounds)
+- [#235](https://github.com/vivienfanghuagood/hk-dsl/pull/235) hk.ops.paged_decode_portable: one decode-attention source on gfx1100, gfx1201 and gfx950
+- [#236](https://github.com/vivienfanghuagood/hk-dsl/pull/236) vLLM on gfx950: the DeepSeek-V4.1 routes are opt-in in 0.9.0 (mxfp8, moe_a8w4, dsv41_index, sparse_mla)
+- [#237](https://github.com/vivienfanghuagood/hk-dsl/pull/237) tests: a8w4 MoE route test against an fp64 MoE, not AITER's fused_moe (nondeterministically wrong)
+- [#238](https://github.com/vivienfanghuagood/hk-dsl/pull/238) vllm_prefill guard: exact batch sizes from TRITON_ATTN's metadata builder (no sync)
+- [#239](https://github.com/vivienfanghuagood/hk-dsl/pull/239) paged_decode: the opt-in head_dim-128 decode takes a split per WGP, up to 4 (request, kv head) pairs
+- [#240](https://github.com/vivienfanghuagood/hk-dsl/pull/240) CI gfx1201: the container wrapper is scripts/ci/gfx1201/run_in_container
+- [#241](https://github.com/vivienfanghuagood/hk-dsl/pull/241) CI gfx950: skip a card any process holds (KFD) and a reserved card; HK_CI_GPUS is a preference list
 
 ## 0.8.0
 
