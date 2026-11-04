@@ -2,7 +2,7 @@
 
 Two tables, both read from the repository, never typed:
 - **hk's own tests**: the image (ROCm, Python, torch) each GPU tier runs in, from the CI files
-  (scripts/ci/k8s/gfx1100-ci.yaml, scripts/ci/gfx1201/hkr9, scripts/ci/run_gfx950.sh,
+  (scripts/ci/k8s/gfx1100-ci.yaml, scripts/ci/gfx1201/run_in_container, scripts/ci/run_gfx950.sh,
   .github/workflows/gpu.yml), and the no-GPU tiers' toolchain (.github/workflows/ci.yml);
 - **the serving engines**: every image recorded in tests/hk/ir/engine_facts/ (engine version, torch,
   HIP, Triton, Python), and for each route that is on by default there, whether its contract holds
@@ -52,7 +52,7 @@ def ci_tiers() -> list:
     rows = []
     for tier, arch, path, pat in (
             ("gfx1100", "gfx1100", "scripts/ci/k8s/gfx1100-ci.yaml", r"^\s*image:\s*(\S+)"),
-            ("gfx1201", "gfx1201", "scripts/ci/gfx1201/hkr9", r"^IMAGE=\$\{HK_IMAGE:-([^}]+)\}"),
+            ("gfx1201", "gfx1201", "scripts/ci/gfx1201/run_in_container", r"^IMAGE=\$\{HK_IMAGE:-([^}]+)\}"),
             ("gfx950", "gfx950", "scripts/ci/run_gfx950.sh", r"^IMAGE=\$\{HK_CI_IMAGE:-([^}]+)\}")):
         image = _find(path, pat)
         rows.append((tier, arch, image.split("/", 1)[-1] if image.startswith("docker.io/")

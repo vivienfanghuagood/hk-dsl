@@ -1,7 +1,7 @@
 #!/bin/bash
 # GPU CI, gfx1201, as a self-hosted Actions job (.github/workflows/gpu.yml): the checked-out commit
 # on one idle Radeon AI PRO R9700 of the gfx1201 dev box, in rocm/pytorch, through
-# scripts/ci/gfx1201/hkr9 -- a container that sees that one GPU (its render node), the checkout, the
+# scripts/ci/gfx1201/run_in_container -- a container that sees that one GPU (its render node), the checkout, the
 # run's directory, CI's own directory and the MLIR install, read-only, with core dumps off; it runs
 # container_run.sh, as gfx950's does.
 #
@@ -112,10 +112,10 @@ if [ "${HK_CI_MODE:-}" = install ]; then
     WHL=$(cd "$KIT" 2>/dev/null && ls hk_dsl-*.whl 2>/dev/null | head -1)
     [ -n "$WHL" ] || { echo "::error::no wheel in the install kit"; exit 1; }
     docker image inspect "$IMAGE" >/dev/null 2>&1 || { echo "::error::$IMAGE is not on this runner"; exit 1; }
-    HK_IMAGE=$IMAGE HKR9_AS_ROOT=1 HKR9_LOCK_HELD=1 HKR9_NAME=$NAME \
-    HKR9_DOCKER_ARGS="--label hk-gha.runner=$RUNNER --label hk-gha.run=$GITHUB_RUN_ID --label hk-gha.attempt=$GITHUB_RUN_ATTEMPT --label hk-gha.tier=$TIER --label hk-gha.started=$(date +%s)" \
-    HKR9_MOUNTS="-v $KIT:/inst:ro -w /tmp" \
-        "$HERE/gfx1201/hkr9" "$GPU" -- \
+    HK_IMAGE=$IMAGE HK_CTR_AS_ROOT=1 HK_CTR_LOCK_HELD=1 HK_CTR_NAME=$NAME \
+    HK_CTR_DOCKER_ARGS="--label hk-gha.runner=$RUNNER --label hk-gha.run=$GITHUB_RUN_ID --label hk-gha.attempt=$GITHUB_RUN_ATTEMPT --label hk-gha.tier=$TIER --label hk-gha.started=$(date +%s)" \
+    HK_CTR_MOUNTS="-v $KIT:/inst:ro -w /tmp" \
+        "$HERE/gfx1201/run_in_container" "$GPU" -- \
         "HK_INSTALL_ARCH=gfx1201 python3 /inst/install_smoke.py /inst/$WHL /inst/README.md /inst/deps" \
         {REAP}>&- {LOCKFD}>&- < /dev/null &
     DPID=$!
@@ -126,10 +126,10 @@ if [ "${HK_CI_MODE:-}" = install ]; then
     cat "$RUN/gpusnap.log" 2>/dev/null
     exit $rc
 fi
-HKR9_LOCK_HELD=1 HKR9_NAME=$NAME \
-HKR9_DOCKER_ARGS="--label hk-gha.runner=$RUNNER --label hk-gha.run=$GITHUB_RUN_ID --label hk-gha.attempt=$GITHUB_RUN_ATTEMPT --label hk-gha.tier=$TIER --label hk-gha.started=$(date +%s)" \
-HKR9_MOUNTS="-v $CIDIR:/ci -v $GITHUB_WORKSPACE:/ci/src -v $RUN:/ci/run -v $MLIR:/ci/mlir:ro -w /ci/src" \
-    "$HERE/gfx1201/hkr9" "$GPU" -- \
+HK_CTR_LOCK_HELD=1 HK_CTR_NAME=$NAME \
+HK_CTR_DOCKER_ARGS="--label hk-gha.runner=$RUNNER --label hk-gha.run=$GITHUB_RUN_ID --label hk-gha.attempt=$GITHUB_RUN_ATTEMPT --label hk-gha.tier=$TIER --label hk-gha.started=$(date +%s)" \
+HK_CTR_MOUNTS="-v $CIDIR:/ci -v $GITHUB_WORKSPACE:/ci/src -v $RUN:/ci/run -v $MLIR:/ci/mlir:ro -w /ci/src" \
+    "$HERE/gfx1201/run_in_container" "$GPU" -- \
     "HK_CI_ARCH=gfx1201 HK_CI_TIER=$TIER HK_CI_DEVICE=\"Radeon AI PRO R9700 (gfx1201), GPU $GPU\" \
      /ci/src/scripts/ci/container_run.sh $SHA $GPU" \
     {REAP}>&- {LOCKFD}>&- < /dev/null &
