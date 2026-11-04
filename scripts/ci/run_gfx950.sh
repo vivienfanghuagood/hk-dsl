@@ -10,9 +10,10 @@
 #   runs/TIER/RUN_ID-ATTEMPT/  the run: build.log, gpu/, result.json, report.txt
 #   x950/ci/                   /ci in the container: hk-build-cp312, pylib, hk-cache
 #   x950v/ci/                  the same for the vLLM image (HK_CI_DIRNAME=x950v, gpu.yml's gfx950-vllm)
-# GPUs: HK_CI_GPUS (default all eight) are the cards this instance may use. It takes the first
-# that is idle and whose lock, $HK_CI_LOCKS/gfx950-gpu<N>.lock, it can take at once, and holds
-# that lock until the container is gone; whoever else measures on these cards takes the same lock.
+# GPUs: HK_CI_GPUS (default all eight) are the cards this instance may use, in order of preference.
+# It takes the first that is idle and whose lock, $HK_CI_LOCKS/gfx950-gpu<N>.lock, it can take at
+# once, and holds that lock until the container is gone; whoever else measures on these cards takes
+# the same lock. A card listed in $HK_CI_LOCKS/reserved is skipped until its window ends (pick()).
 # The container is labelled with the runner and the run (hk-gha.runner, hk-gha.run,
 # hk-gha.attempt), so that a later job of the same runner can tell an orphan from a live run.
 # $HK_CI_MLIR (default ~/hk-ci/mlir/install-cp310) is MLIR 23.1.3 as
@@ -105,25 +106,61 @@ mapped() {
     docker ps -q --filter name=hk-gha- | xargs -r docker inspect --format '{{range .HostConfig.Devices}}{{.PathOnHost}} {{end}}' 2>/dev/null
 }
 
-# The first of HK_CI_GPUS whose lock is free and that is idle (under 10% use and 3% VRAM, and no
-# hk-gha container has its render node), with its lock taken (fd LOCKFD, held by this script and
-# the reaper until the container is gone). Never blocks on a lock: a held card is someone's, busy
-# or not.
+# The processes, anyone's, with KFD state on the card whose render node is $1 (a queue on it or VRAM
+# on it), one pid a line; "?" when KFD has no node for it. Other users' processes take no lock, and
+# one that has just opened the card can still show 0% use and no VRAM in rocm-smi.
+kfd_holders() {
+    local minor=${1#renderD} n p v gid=
+    for n in /sys/class/kfd/kfd/topology/nodes/*; do
+        grep -qx "drm_render_minor $minor" "$n/properties" 2>/dev/null && gid=$(cat "$n/gpu_id")
+    done
+    [ -n "$gid" ] || { echo "?"; return; }
+    for p in /sys/class/kfd/kfd/proc/[0-9]*; do
+        v=$(cat "$p/vram_$gid" 2>/dev/null)
+        if [ "${v:-0}" != 0 ] || grep -qx "$gid" "$p"/queues/*/gpuid 2>/dev/null; then echo "${p##*/}"; fi
+    done
+}
+
+# Reservations: $HK_CI_LOCKS/reserved, one "<card> <until, a UTC time date(1) reads> <who>" a line
+# ('#' starts a comment), for a window someone announced on a card, e.g. a benchmark. Prints the end
+# of card $1's window while it lasts (an unreadable time counts as reserved). The job log is public:
+# it names the card and the time, not who.
+reserved_until() {
+    local card until rest t
+    [ -f "$LOCKS/reserved" ] || return 1
+    while read -r card until rest; do
+        [ "$card" = "$1" ] || continue
+        t=$(date -u -d "$until" +%s 2>/dev/null) || { echo "$until (unreadable)"; return 0; }
+        [ "$t" -gt "$(date +%s)" ] && { echo "$until"; return 0; }
+    done < <(sed 's/#.*//' "$LOCKS/reserved")
+    return 1
+}
+
+# The first of HK_CI_GPUS that is not reserved, whose lock is free and that is idle -- no process
+# holds it (KFD), under 10% use and 3% VRAM, and no hk-gha container has its render node -- with its
+# lock taken (fd LOCKFD, held by this script and the reaper until the container is gone). Never
+# blocks on a lock: a held card is someone's, busy or not.
 LOCKFD=
 pick() {
-    local g out use mem m r
+    local g out use mem m r h u
     m=" $(mapped | tr '\n' ' ') "
     for g in ${HK_CI_GPUS:-0 1 2 3 4 5 6 7}; do
+        if u=$(reserved_until "$g"); then echo "GPU $g: reserved until $u"; continue; fi
         exec {LOCKFD}>>"$LOCKS/gfx950-gpu$g.lock" || continue
         if flock -n "$LOCKFD"; then
             out=$(rocm-smi -d $g --showuse --showmemuse 2>/dev/null)
             use=$(grep -o "GPU use (%): [0-9]*" <<<"$out" | grep -o "[0-9]*$")
             mem=$(grep -o "VRAM%): [0-9]*" <<<"$out" | grep -o "[0-9]*$")
             r=$(render_of "$g")
+            [ -n "$r" ] && h=$(kfd_holders "$r")
             if [ -z "$r" ]; then
                 echo "GPU $g: no render node found for it"
             elif [[ $m == *" /dev/dri/$r "* ]]; then
                 echo "GPU $g: an hk-gha container has /dev/dri/$r"
+            elif [ "$h" = "?" ]; then
+                echo "GPU $g: KFD has no node for /dev/dri/$r"
+            elif [ -n "$h" ]; then
+                echo "GPU $g: $(wc -l <<<"$h") process(es) hold it (KFD)"
             elif [ "${use:-100}" -le 10 ] && [ "${mem:-100}" -le 3 ]; then
                 GPU=$g; return 0
             fi
