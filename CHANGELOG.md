@@ -4,7 +4,29 @@ Release notes for each version are also on its
 [GitHub release](https://github.com/vivienfanghuagood/hk-dsl/releases).
 The next version's notes collect here until it is released.
 
-## Unreleased
+## 0.9.1
+
+hk-dsl 0.9.1: vLLM's prefill attention on by default on gfx1201 (Radeon AI PRO R9700), as it is on
+gfx1100 since 0.9.0. No change to the language, the dialect (`hk-dialect-7`) or the wheels' layout.
+
+On PyPI: `pip install hk-dsl`, for CPython 3.10 to 3.13 on Linux x86_64 with glibc 2.35 or newer
+(Ubuntu 22.04 and later, and vLLM's ROCm images): one `manylinux_2_35` wheel per interpreter. The
+wheels below are the same files.
+
+    pip install hk_dsl-0.9.1-cp312-cp312-manylinux_2_35_x86_64.whl
+
+### Default changes
+
+Since 0.9.0 ([the default-on rule](docs/testing.md#the-default-on-rule); `python3 -m hk.integration
+--status` shows each route's state and why):
+
+**On by default on gfx1201 too: `vllm_prefill`** (#244). vLLM's prefill attention on hk's kernels over
+vLLM's paged cache, the route 0.9.0 has on by default on gfx1100; on gfx1201 it needed
+`HK_VLLM_PREFILL=1`. `HK_VLLM_PREFILL=0` turns it off. The decode-only TRITON_ATTN path
+(`HK_VLLM_DECODE`) keeps its own architectures. The route's correctness suite gains NaN-poisoned
+repeats and a side-stream producer.
+
+### Changes
 
 **`vllm_gptq` on by default on gfx1201 (RDNA4).** On gfx1201, vLLM serves a symmetric GPTQ-Int4 checkpoint with `RDNAHybridW4A16LinearKernel`. That kernel runs a HIP skinny GEMM for the first few tokens of a batch and a Triton GEMM above, and the Triton GEMM is several times slower at the switch. The route now takes those Triton batches, up to 64 tokens, on hk's 4-bit decode forms. It reads vLLM's own tensors in place, so no second copy of the weights is held. vLLM keeps its HIP kernel and every larger batch. The fallback calls vLLM's op without zero points for these symmetric layers: this vLLM passes their stored qzeros to it, and its Triton path then asserts at start. Measured on Qwen3.8-27B-GPTQ-Int4 on one Radeon AI PRO R9700 against vLLM's kernels in the same process, and end to end against the same image with that assert worked around. The batches the route takes are faster, single-request decode and prefill are level, and GSM8K is equal.
 
@@ -17,6 +39,13 @@ The next version's notes collect here until it is released.
 **vLLM's TRITON_ATTN: a short chunk over a long context is split along the KV axis.** A prefill call with few query rows -- the new tokens of a request whose prompt is mostly a prefix-cache hit, a chunked prefill's last chunk -- left most of the card idle in hk's prefill kernel and in vLLM's, and the guard sent it to vLLM's kernel. `hk.ops.paged_prefill` now has `kv_splits`: each query tile walks the context in runs, a workgroup each, and a merge kernel (`paged_prefill.merge_kernel`) combines the runs' partials. The route takes such calls with the KV split where it was measured faster than both stock kernels (TRITON_ATTN's and ROCM_ATTN's) on each GPU and head size (`vllm_prefill.KVSPLITS`); decode rows in the same batch go to vLLM's kernel, as in the split above. `HK_VLLM_PREFILL_KVSPLIT=0` turns it off.
 
 **`tools/hk-bench/serving/sglang_toggle_ab.py`: an SGLang A/B in one server process.** It starts one `sglang.launch_server` with hk's plugin on and switches hk's SGLang routes (`sglang_linear`, `sglang_norm`) off and on between rounds by a signal to every process of the server (`serving/sglang_toggle/`). Weights, KV cache and the GPU-to-GPU links are the same in both arms. Two separate server starts on a Radeon PRO W7900 can differ by 13-16%, more than most kernel wins. The arms alternate round by round, each switch is checked in every rank (state file, and hk's call counters move only in the hk arm), and a ratio is reported as a result only when the arms' per-round ranges are disjoint. It needs `--disable-cuda-graph`, since a captured graph does not see the switch.
+
+**The measurement method as its own page** (#187): [how the numbers are taken](docs/performance/method.md),
+beside the scorecard.
+
+### All pull requests
+
+#187, #242, #244, #245.
 
 ## 0.9.0
 

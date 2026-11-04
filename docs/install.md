@@ -60,12 +60,12 @@ another interpreter, build one ([building](building.md#wheels)).
 It carries the HipKittens headers, the bindings and the shipped tuning
 records, so nothing else is needed at run time but hipcc.
 
-The release on PyPI is 0.9.0. hk is on by default in vLLM and SGLang for the
+The release on PyPI is 0.9.1. hk is on by default in vLLM and SGLang for the
 routes validated on your GPU (`HK_DISABLE=1` turns them all off, `HK_<ROUTE>=0`
 one of them, [integration](integration.md#on-by-default-and-turning-it-off)).
-What 0.9.0 adds and changes, including the routes whose default changed, is
-in the [changelog](../CHANGELOG.md); what main adds after 0.9.0, which no
-release has yet, the API reference marks *New after 0.9.0*.
+What 0.9.1 and 0.9.0 add and change, including the routes whose default changed,
+is in the [changelog](../CHANGELOG.md); the API reference marks the names
+0.9.1 adds *New after 0.9.0*.
 
 ## From source
 
