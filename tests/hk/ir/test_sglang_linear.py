@@ -135,5 +135,5 @@ def test_the_plugin_patches_when_asked_and_never_raises(fake_sglang, monkeypatch
     orig = Unquantized.apply
     _sglang_plugin.register()
     err = capsys.readouterr().err.strip().splitlines()
-    assert len(err) == 1 and "sglang_linear raised RuntimeError: no table" in err[0]
-    assert "patched NOTHING" in err[0] and Unquantized.apply is orig
+    assert len(err) == 1 and "route sglang_linear OFF" in err[0]
+    assert "raised RuntimeError: no table" in err[0] and Unquantized.apply is orig

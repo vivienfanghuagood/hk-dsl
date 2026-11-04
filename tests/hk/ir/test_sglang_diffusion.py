@@ -44,12 +44,14 @@ def test_the_boot_applies_on_import_by_default_and_checks_the_contract(tmp_path,
     r = _env(tmp_path, env_set)
     assert r.returncode == 0, r.stderr
     assert "loaded True" in r.stdout
-    # The stand-in is not SGLang-Diffusion: its contract is broken, so nothing is patched and
-    # one warning line says so.
-    assert "[hk] sglang-diffusion: engine contract failed: nothing patched, stock" in r.stdout
+    # The stand-in is not SGLang-Diffusion: every route's contract is broken, so nothing is
+    # patched and each route on says so in one warning line of its own.
+    assert "[hk] sglang-diffusion: no route applied (" in r.stdout and "): stock" in r.stdout
     warn = [x for x in r.stderr.splitlines() if x.startswith("[hk] WARNING")]
-    assert len(warn) == 1 and "sglang_diffusion: engine contract FAILED" in warn[0]
-    assert "sgld_attn: " in warn[0]
+    want = {"attn": ["sgld_attn"]}.get(env_set.get("HK_SGLD"), ["sgld_attn", "sgld_linear"])
+    assert len(warn) == len(want)
+    for route, line in zip(want, warn):
+        assert f"sglang_diffusion: route {route} OFF -- engine contract FAILED" in line
 
 
 @pytest.mark.parametrize("env_set", [{"HK_DISABLE": "1"}, {"HK_SGLD": "0"}, {"HK_SGLD": "off"}])

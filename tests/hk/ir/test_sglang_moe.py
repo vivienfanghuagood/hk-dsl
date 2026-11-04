@@ -160,7 +160,7 @@ def test_the_plugin_opts_in_by_environment(monkeypatch, capsys, value, want):
     seen = []
     monkeypatch.delenv("HK_DISABLE", raising=False)
     monkeypatch.setenv("HK_SGLANG_LINEAR", "0")
-    monkeypatch.setattr(contract, "check", lambda routes: [])   # no SGLang here
+    monkeypatch.setattr(contract, "check_each", lambda routes: {})   # no SGLang here
     monkeypatch.setenv("HK_SGLANG_MOE", value)
     monkeypatch.setattr(sglang_moe, "apply", lambda: seen.append("apply") or "moe: test")
     monkeypatch.setattr(sglang_moe, "apply_topk",

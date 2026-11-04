@@ -1,0 +1,392 @@
+{
+ "arch": "gfx1201",
+ "deployed_on": "gfx1201",
+ "engines": {
+  "sglang": "sglang (version unknown)",
+  "vllm": "vllm 0.1.dev1+ga50259bb3.rocm714"
+ },
+ "expected_refusals": {},
+ "facts": {
+  "sglang_linear": {
+   "apply": null
+  },
+  "sglang_moe": {
+   "_error": "ModuleNotFoundError: No module named 'sglang'"
+  },
+  "sglang_norm": {
+   "_error": "ModuleNotFoundError: No module named 'sglang'"
+  },
+  "sgld_attn": {
+   "_error": "ModuleNotFoundError: No module named 'sglang'"
+  },
+  "sgld_convrot": null,
+  "sgld_linear": {
+   "_error": "ModuleNotFoundError: No module named 'sglang'"
+  },
+  "vllm_backend": {
+   "backend_slots": [
+    "FLASH_ATTN",
+    "FLASH_ATTN_DIFFKV",
+    "TRITON_ATTN",
+    "TRITON_ATTN_DIFFKV",
+    "TRITON_FLASH_ATTN",
+    "ROCM_ATTN",
+    "ROCM_SEGMENTED_ATTN",
+    "ROCM_AITER_MLA",
+    "ROCM_AITER_TRITON_MLA",
+    "ROCM_AITER_FA",
+    "ROCM_AITER_MLA_SPARSE",
+    "XPU_MLA_SPARSE",
+    "TORCH_SDPA",
+    "FLASHINFER",
+    "TRITON_FLASHINFER",
+    "FLASHINFER_MLA",
+    "TOKENSPEED_MLA",
+    "FLASHINFER_MLA_SPARSE",
+    "FLASHINFER_MLA_SPARSE_SM120",
+    "FLASHINFER_MLA_SPARSE_SM90",
+    "TRITON_MLA",
+    "CUTLASS_MLA",
+    "FLASHMLA",
+    "FLASHMLA_SPARSE",
+    "FLASHMLA_SPARSE_DSV4",
+    "FLASHINFER_MLA_SPARSE_DSV4",
+    "ROCM_FLASHMLA_SPARSE_DSV4",
+    "FLASHMLA_SPARSE_DSV41",
+    "FLASHINFER_MLA_SPARSE_DSV41",
+    "ROCM_FLASHMLA_SPARSE_DSV41",
+    "FLASHMLA_MEGA_ATTN_DSV41",
+    "B12X",
+    "FLASH_ATTN_MLA",
+    "FLASH_ATTN_MLA_SPARSE",
+    "FLASH_ATTN_MLA_SPARSE_FA4",
+    "MINIMAX_M3_SPARSE",
+    "CUTLASS_MSA",
+    "TRITON_MSA",
+    "STEP5_DSA",
+    "NO_ATTENTION",
+    "FLEX_ATTENTION",
+    "HPC_ATTN",
+    "ROCM_AITER_UNIFIED_ATTN",
+    "CPU_ATTN",
+    "CPU_MLA",
+    "AMX_MLA",
+    "TURBOQUANT",
+    "ULTRAQUANT",
+    "CUSTOM"
+   ],
+   "register_backend": true
+  },
+  "vllm_dsv41_index": null,
+  "vllm_gemm": {
+   "dispatch_required": [],
+   "dispatched": [
+    "layer",
+    "x",
+    "weight",
+    "bias"
+   ],
+   "worker_load_model": true
+  },
+  "vllm_gptq": {
+   "apply": [
+    "self",
+    "layer",
+    "x",
+    "bias"
+   ],
+   "pwal": [
+    "self",
+    "layer"
+   ]
+  },
+  "vllm_int4": {
+   "apply": [
+    "self",
+    "layer",
+    "x",
+    "bias"
+   ],
+   "awq_dequantize_nargs": 6,
+   "awq_gemm_nargs": 5,
+   "create_weights_has": {
+    "qweight": true,
+    "qzeros": true,
+    "scales": true
+   },
+   "pwal": [
+    "self",
+    "layer"
+   ]
+  },
+  "vllm_moe": {
+   "invoke_fused_moe_triton_kernel": [
+    [
+     "A",
+     false,
+     null
+    ],
+    [
+     "B",
+     false,
+     null
+    ],
+    [
+     "C",
+     false,
+     null
+    ],
+    [
+     "A_scale",
+     false,
+     null
+    ],
+    [
+     "B_scale",
+     false,
+     null
+    ],
+    [
+     "topk_weights",
+     false,
+     null
+    ],
+    [
+     "sorted_token_ids",
+     false,
+     null
+    ],
+    [
+     "expert_ids",
+     false,
+     null
+    ],
+    [
+     "num_tokens_post_padded",
+     false,
+     null
+    ],
+    [
+     "mul_routed_weight",
+     false,
+     null
+    ],
+    [
+     "top_k",
+     false,
+     null
+    ],
+    [
+     "config",
+     false,
+     null
+    ],
+    [
+     "compute_type",
+     false,
+     null
+    ],
+    [
+     "use_fp8_w8a8",
+     false,
+     null
+    ],
+    [
+     "use_int8_w8a8",
+     false,
+     null
+    ],
+    [
+     "use_int8_w8a16",
+     false,
+     null
+    ],
+    [
+     "use_int4_w4a16",
+     false,
+     null
+    ],
+    [
+     "per_channel_quant",
+     false,
+     null
+    ],
+    [
+     "block_shape",
+     true,
+     "None"
+    ],
+    [
+     "B_bias",
+     true,
+     "None"
+    ]
+   ],
+   "try_get_optimal_moe_config": [
+    [
+     "w1_shape",
+     false,
+     null
+    ],
+    [
+     "w2_shape",
+     false,
+     null
+    ],
+    [
+     "top_k",
+     false,
+     null
+    ],
+    [
+     "dtype",
+     false,
+     null
+    ],
+    [
+     "M",
+     false,
+     null
+    ],
+    [
+     "block_shape",
+     true,
+     "None"
+    ]
+   ]
+  },
+  "vllm_moe_a8w4": null,
+  "vllm_moe_wna16": {
+   "invoke_fused_moe_wna16_triton_kernel": [
+    [
+     "A",
+     false,
+     null
+    ],
+    [
+     "B",
+     false,
+     null
+    ],
+    [
+     "C",
+     false,
+     null
+    ],
+    [
+     "B_scale",
+     false,
+     null
+    ],
+    [
+     "B_zp",
+     false,
+     null
+    ],
+    [
+     "topk_weights",
+     false,
+     null
+    ],
+    [
+     "sorted_token_ids",
+     false,
+     null
+    ],
+    [
+     "expert_ids",
+     false,
+     null
+    ],
+    [
+     "num_tokens_post_padded",
+     false,
+     null
+    ],
+    [
+     "mul_routed_weight",
+     false,
+     null
+    ],
+    [
+     "top_k",
+     false,
+     null
+    ],
+    [
+     "config",
+     false,
+     null
+    ],
+    [
+     "compute_type",
+     false,
+     null
+    ],
+    [
+     "use_int8_w8a16",
+     false,
+     null
+    ],
+    [
+     "use_int4_w4a16",
+     false,
+     null
+    ],
+    [
+     "block_shape",
+     false,
+     null
+    ]
+   ],
+   "try_get_optimal_moe_config": [
+    [
+     "w1_shape",
+     false,
+     null
+    ],
+    [
+     "w2_shape",
+     false,
+     null
+    ],
+    [
+     "top_k",
+     false,
+     null
+    ],
+    [
+     "dtype",
+     false,
+     null
+    ],
+    [
+     "M",
+     false,
+     null
+    ],
+    [
+     "block_shape",
+     true,
+     "None"
+    ]
+   ]
+  },
+  "vllm_mxfp8": null,
+  "vllm_prefill": null,
+  "vllm_sdpa": {
+   "calls_torch_sdpa": true
+  },
+  "vllm_sparse_mla": null
+ },
+ "image": "sha256:5ee0c6e2465b6391af46ec3dbcde3aca85b821a29121da9a5b6a5a4e79ec1f80",
+ "image_note": "the newest R9700 vLLM image (TheRock ROCm 7.14, gfx1201): no gfx1201 production image exists, so this is the one the gfx1201 rows of the RDNA scorecard run",
+ "label": "R9700 vLLM image",
+ "role": "development",
+ "stack": {
+  "hip": "7.14.60850",
+  "python": "3.12.13",
+  "torch": "2.13.0a0+rocm7.14.0a20260612",
+  "triton": "3.7.1+git5d6048aa.rocm7.14.0a20260612"
+ }
+}

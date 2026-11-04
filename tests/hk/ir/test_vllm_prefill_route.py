@@ -125,6 +125,6 @@ def test_the_contract_checks_only_what_the_rocm_attn_standin_reads():
 
     have = set(inspect.signature(_caf_new).parameters)
     assert vp._P_NEED <= have and vp._P_NEED <= set(inspect.signature(_caf_old).parameters)
-    assert "same_parameters(fn, vllm_prefill.context_attention_fwd" not in inspect.getsource(
-        contract._vllm_prefill)
+    src = inspect.getsource(contract.judge_vllm_prefill)
+    assert "same_parameters" not in src and "same_signature" not in src
 
