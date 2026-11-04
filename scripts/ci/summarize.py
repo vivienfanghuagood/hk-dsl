@@ -74,7 +74,8 @@ def _state(done: bool, groups: list) -> str:
 
 #: A GPU tier that skipped more than this share of its tests ran on no GPU, whatever its exit code: a
 #: container that cannot open /dev/kfd (the wrong video/render groups) makes every GPU test skip, and that
-#: once reported "success: 1 passed, 1776 skipped". A normal gfx950 run skips about 15%.
+#: once reported "success: 1 passed, 1776 skipped". A normal gfx950 run skips about 20% (1612 passed,
+#: 417 skipped with the RDNA-only decode tests collected, #220).
 MAX_SKIP_SHARE = 0.5
 
 

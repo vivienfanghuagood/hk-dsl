@@ -39,7 +39,11 @@ LOCKS=${HK_CI_LOCKS:-$USERHOME/.cache/hk-gpu-locks}
 TIER=${HK_CI_TIER:-gfx950}
 SHA=$GITHUB_SHA
 KEY=$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT
+# A hand run (outside GitHub Actions) gets an id of its own, digits only like a run's: two hand runs given
+# the same GITHUB_RUN_ID once shared a run directory, and the second overwrote the first's.
+[ "${GITHUB_ACTIONS:-}" = true ] || KEY=$(date -u +%Y%m%d%H%M%S)$$-${GITHUB_RUN_ATTEMPT:-1}
 RUN=$STATE/runs/$TIER/$KEY
+[ -e "$RUN" ] && { echo "::error::a run directory for id $KEY exists already: not overwriting it"; exit 1; }
 OUT=$GITHUB_WORKSPACE/gha-report
 # A card's render node, from its PCI address (rocm-smi's index -> the PCI device's drm node): not a table
 # of one machine's numbering.

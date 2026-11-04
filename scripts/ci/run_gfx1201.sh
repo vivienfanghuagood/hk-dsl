@@ -29,7 +29,11 @@ TIER=${HK_CI_TIER:-gfx1201}
 GPUS=${HK_CI_GPUS:-7 6 5 4 3 2 1}
 SHA=$GITHUB_SHA
 KEY=$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT
+# A hand run (outside GitHub Actions) gets an id of its own, digits only like a run's: two hand runs given
+# the same GITHUB_RUN_ID once shared a run directory, and the second overwrote the first's.
+[ "${GITHUB_ACTIONS:-}" = true ] || KEY=$(date -u +%Y%m%d%H%M%S)$$-${GITHUB_RUN_ATTEMPT:-1}
 RUN=$STATE/runs/$TIER/$KEY
+[ -e "$RUN" ] && { echo "::error::a run directory for id $KEY exists already: not overwriting it"; exit 1; }
 OUT=$GITHUB_WORKSPACE/gha-report
 [ -d "$MLIR/lib/cmake/mlir" ] || { echo "::error::no MLIR install at $MLIR (HK_CI_MLIR)"; exit 1; }
 mkdir -p "$RUN" "$OUT" "$CIDIR"
