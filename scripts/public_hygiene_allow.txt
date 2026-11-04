@@ -24,10 +24,5 @@ tests/hk/ir/test_vllm_gemm.py   /home/u
 scripts/ci/*.sh             /workspace/(?:gha|locks)
 scripts/ci/*.sh             ~/(?:gha|hk-ci)
 
-# The gfx1201 runner's container wrapper: its name is also the name the runner host's operators
-# and environment use, so renaming it is a change coordinated with that host, not a scrub.
-scripts/ci/gfx1201/hkr9     hkr9
-scripts/ci/run_gfx1201.sh   hkr9
-
 # A made-up PCI address in a unit test of the device name read from sysfs.
 tests/hk/ir/test_check.py   0000:5e:00\.0
