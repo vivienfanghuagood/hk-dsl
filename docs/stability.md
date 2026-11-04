@@ -64,9 +64,8 @@ No release promises these, stable or not:
 
 ## Platforms
 
-Every release ships `manylinux_2_35` wheels (glibc 2.35 or newer) on Linux
-x86_64, on PyPI and as release assets ([building](building.md#wheels)): 0.8.0
-and 0.9.0 for CPython 3.10 and 3.12. Wheels for 3.11 and 3.13 are planned for a
-0.9.x release; until then, build one from source. The GPUs and how
+From 0.9.0, every release ships `manylinux_2_35` wheels (glibc 2.35 or newer)
+for CPython 3.10 to 3.13 on Linux x86_64, on PyPI and as release assets
+([building](building.md#wheels)). 0.8.0 had cp310 and cp312 only. The GPUs and how
 thoroughly each is tested are the tiers of
 [supported hardware](supported-hardware.md).

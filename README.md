@@ -42,7 +42,7 @@ Tested: measured on the part and run by CI's GPU tier. What the language and eac
 - **Compilers (hipcc's clang):** clang 22 (ROCm 7.2.x) in CI's GPU tier;
   clang 23 (ROCm 10.0), tested on gfx950; clang 24 (ROCm 10.1) from 0.9.0,
   not in CI ([toolchains](docs/toolchains.md)).
-- **Python:** wheels for CPython 3.10 and 3.12 ([install](#install)).
+- **Python:** wheels for CPython 3.10 to 3.13 ([install](#install)).
 
 ## Quick start
 
@@ -162,12 +162,12 @@ slow operand layout, a copy racing a barrier ([the traps](docs/correctness-gates
 
 ## Install
 
-`pip install hk-dsl`, for CPython 3.10 or 3.12 on Linux x86_64 with glibc
+`pip install hk-dsl`, for CPython 3.10 to 3.13 on Linux x86_64 with glibc
 2.35 or newer (Ubuntu 22.04 and later). The release is 0.9.0: one
-`manylinux_2_35` wheel for cp310 and one for cp312, both built on glibc 2.35. A
-wheel carries the HipKittens headers, so at run time it needs ROCm's hipcc
+`manylinux_2_35` wheel for each of cp310, cp311, cp312 and cp313, all built on
+glibc 2.35. A wheel carries the HipKittens headers, so at run time it needs ROCm's hipcc
 (on `PATH`, or `HK_HIPCC`) and, to launch, a ROCm build of torch (not a
-dependency). Another CPython 3.x (3.11, 3.13) has no wheel: build from source.
+dependency). Another CPython has no wheel: build from source.
 
 Which ROCm and hipcc versions are tested, and which are known not to work, is
 in [install](docs/install.md).

@@ -32,7 +32,7 @@ them beside hipcc's clang ([the runtime](runtime.md#environment-variables)).
 
 ## From PyPI
 
-For CPython 3.10 or 3.12 on glibc 2.35 or newer (Ubuntu 22.04
+For CPython 3.10 to 3.13 on glibc 2.35 or newer (Ubuntu 22.04
 and later):
 
 ```bash
@@ -40,18 +40,20 @@ pip install hk-dsl
 ```
 
 A wheel is built per Python interpreter, because it carries the MLIR bindings
-for one CPython. 0.9.0 has two on PyPI:
+for one CPython. 0.9.0 has four on PyPI:
 
 | wheel | glibc |
 |---|---|
 | `hk_dsl-0.9.0-cp310-cp310-manylinux_2_35_x86_64.whl` | 2.35+ |
+| `hk_dsl-0.9.0-cp311-cp311-manylinux_2_35_x86_64.whl` | 2.35+ |
 | `hk_dsl-0.9.0-cp312-cp312-manylinux_2_35_x86_64.whl` | 2.35+ |
+| `hk_dsl-0.9.0-cp313-cp313-manylinux_2_35_x86_64.whl` | 2.35+ |
 
-Both are built on glibc 2.35 (cp312 in vLLM's ROCm image), so one wheel per
-interpreter serves Ubuntu 22.04, vLLM's ROCm images and anything newer, and
+All are built on glibc 2.35 (cp312 in vLLM's ROCm image, cp311 and cp313 in
+`scripts/wheel-builder.Dockerfile`), so one wheel per interpreter serves Ubuntu 22.04, vLLM's ROCm images and anything newer, and
 each wheel's glibc is checked against its tag ([building](building.md#wheels)).
-0.7.0 also had a cp312 `manylinux_2_38` wheel; 0.6.0 and earlier had only
-that one for cp312. The same wheels are attached to each
+0.8.0 had cp310 and cp312 only; 0.7.0 also had a cp312 `manylinux_2_38`
+wheel, and 0.6.0 and earlier had only that one for cp312. The same wheels are attached to each
 [GitHub release](https://github.com/vivienfanghuagood/hk-dsl/releases). For
 another interpreter, build one ([building](building.md#wheels)).
 

@@ -17,7 +17,7 @@ routes that meet [the default-on rule](docs/testing.md#the-default-on-rule) on y
 ([integration](docs/integration.md#on-by-default-and-turning-it-off)). Performance results are on
 [the scorecard](docs/performance/scorecard.md), not in these notes.
 
-On PyPI: `pip install hk-dsl`, for CPython 3.10 and 3.12 on Linux x86_64 with glibc 2.35 or newer
+On PyPI: `pip install hk-dsl`, for CPython 3.10 to 3.13 on Linux x86_64 with glibc 2.35 or newer
 (Ubuntu 22.04 and later, and vLLM's ROCm images): one `manylinux_2_35` wheel per interpreter. The
 wheels on the GitHub release are the same files; the manylinux copies are the ones on PyPI. Each
 carries the MLIR bindings for its interpreter and the HipKittens headers, so at run time only
@@ -49,8 +49,8 @@ R9700 vLLM image; below).
 
 ### Compatibility notes
 
-- **Python:** `requires-python` is `>=3.10`. Wheels are cp310 and cp312, as in 0.8.0; cp311 and
-  cp313 wheels are planned for a 0.9.x release (build from source until then).
+- **Python:** `requires-python` is `>=3.10`. Wheels for cp310, cp311, cp312 and cp313 (0.8.0 had
+  cp310 and cp312 only; #150).
 - **The compile cache rebuilds everything once.** The key now covers every header a kernel's
   compile reads, torch's and pybind11's versions and hipcc's appended flags, and the dialect
   version is `hk-dialect-7`. Entries from 0.8.0 are never read again and can be deleted.
