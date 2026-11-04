@@ -3,6 +3,9 @@
 [![PyPI](https://img.shields.io/pypi/v/hk-dsl?color=2a78d6)](https://pypi.org/project/hk-dsl/)
 [![CI](https://github.com/vivienfanghuagood/hk-dsl/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/vivienfanghuagood/hk-dsl/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-2a78d6)](LICENSE)
+[![Docs](https://img.shields.io/badge/docs-online-2a78d6)](https://vivienfanghuagood.github.io/hk-dsl/)
+
+**Documentation: <https://vivienfanghuagood.github.io/hk-dsl/>**
 
 **hk-dsl is a general-purpose Python DSL for AMD GPU kernels on RDNA and CDNA,
 with build-time gates against silent tile-level errors (spills, missing waits,
