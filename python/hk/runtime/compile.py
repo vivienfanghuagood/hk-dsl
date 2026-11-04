@@ -818,11 +818,68 @@ def vopd_gate_status() -> List[str]:
     return lines + rebuilt
 
 
+def _elf_intact(path: Path) -> bool:
+    """Whether `path` is a whole ELF64 little-endian file, as every .so and code object hk
+    builds is: the magic, and a size that holds the program and section header tables its
+    header points at, the last section header not zeroed. A file the disk never received (a
+    crash between the write and the flush: zero-filled, or cut short) fails it."""
+    try:
+        size = path.stat().st_size
+        with open(path, "rb") as f:
+            head = f.read(64)
+            if len(head) < 64 or head[:4] != b"\x7fELF" or head[4] != 2 or head[5] != 1:
+                return False
+            phoff, shoff = int.from_bytes(head[32:40], "little"), int.from_bytes(head[40:48], "little")
+            phentsize, phnum = int.from_bytes(head[54:56], "little"), int.from_bytes(head[56:58], "little")
+            shentsize, shnum = int.from_bytes(head[58:60], "little"), int.from_bytes(head[60:62], "little")
+            if shnum == 0 or shentsize < 64:
+                return False
+            if size < phoff + phentsize * phnum or size < shoff + shentsize * shnum:
+                return False
+            f.seek(shoff + shentsize * (shnum - 1))
+            return any(f.read(shentsize))
+    except OSError:
+        return False
+
+
+def _discard(d: Path) -> None:
+    """Remove the cache entry `d` so that a rebuild can publish in its place: moved aside first
+    (one rename, so no reader sees it half deleted), then deleted."""
+    gone = d.with_name(f".discard-{d.name}-{os.getpid()}")
+    try:
+        os.rename(d, gone)
+    except OSError:
+        gone = d
+    shutil.rmtree(gone, ignore_errors=True)
+
+
+def _fsync(path: Path) -> None:
+    """Flush `path` (a file or a directory) to the disk; a filesystem that cannot sync a
+    directory is left as it is."""
+    try:
+        fd = os.open(path, os.O_RDONLY)
+    except OSError:
+        return
+    try:
+        os.fsync(fd)
+    except OSError:
+        pass
+    finally:
+        os.close(fd)
+
+
 def _load_cached(d: Path, target: Target) -> Optional[Build]:
     so = (next(d.glob("*.so"), None) or next(d.glob("*.*.so"), None)
           or ((d / CODEOBJ) if (d / CODEOBJ).exists() else None))
     marker = d / "OK"
     if so is None or not marker.exists():
+        return None
+    if not _elf_intact(so):
+        # marked OK, but the binary never reached the disk whole (hk-dsl#227: a power loss left
+        # zero-filled code objects behind their markers): a miss, rebuilt in its place
+        print(f"hk: cache entry {d.name[:12]} has a damaged {so.name} (not a whole ELF file); "
+              f"rebuilding it", file=sys.stderr)
+        _discard(d)
         return None
     log = d / "build.log"
     try:
@@ -1085,10 +1142,19 @@ def _build_once(source: str, target: Target, name: str, extra_flags: Sequence[st
                 f"rebuilt {len(unpaired)}\n" + "".join(f"{v}\n" for v in unpaired) if unpaired
                 else "vopd pairs checked\n")
         (tmp / "deps").write_text("\n".join(deps) + "\n")
+        # The marker only after the files it vouches for are on the disk, and the entry only
+        # after its marker (hk-dsl#227): a crash then leaves a miss, never an OK-marked entry
+        # whose binary is zeros.
+        for f in tmp.iterdir():
+            if f.is_file():
+                _fsync(f)
         (tmp / "OK").write_text(module_name)
+        _fsync(tmp / "OK")
+        _fsync(tmp)
         try:
             os.rename(tmp, out)
             moved = True
+            _fsync(out.parent)
         except OSError:
             # A concurrent builder won the race. Its artifact is byte-identical
             # by construction -- the key hashes everything that could differ --
