@@ -638,13 +638,15 @@ SPLIT = _SPLIT_ENV not in ("0", "off", "no", "false")
 SPLIT_ALL = _SPLIT_ENV == "all"
 #: (arch, head size class) -> (the longest query at least, decode work at most this times the
 #: prefill's): the split costs launches and gives the decode rows to TRITON_ATTN's decode, which
-#: ROCM_ATTN's beats, so it pays off on a sizable prefill. Measured with the 68-shape set
-#: (tools/hk-bench/results/2026-11-04/<arch>/prefill-split-sweep.json, against the faster of
-#: TRITON_ATTN and ROCM_ATTN): with a 2048-token query or longer every split batch wins (d128:
-#: gfx1100 1.08-2.02x to a ratio of 0.125, gfx1201 1.22-1.92x to 0.031 and 0.76x at 0.125;
-#: d256: 1.18-4.6x to 0.125); with 128-512, some batches lose (0.26-1.03x), so it declines.
-SPLITS = {("gfx1100", 128): (2048, 0.13), ("gfx1100", 256): (2048, 0.15),
-          ("gfx1201", 128): (2048, 0.05), ("gfx1201", 256): (2048, 0.15)}
+#: ROCM_ATTN's beats, so it pays off on a sizable prefill. Measured against the faster of
+#: TRITON_ATTN and ROCM_ATTN (tools/hk-bench/results/2026-11-04/<arch>/prefill-split-sweep.json:
+#: the 68-shape set, and the chunks vLLM's default 2048-token budget makes -- 1024-2040 tokens,
+#: first or after a prefix, beside 4-16 decodes). From 1024 tokens, gfx1100: d128 1.08-2.59x to
+#: a ratio of 0.125, d256 1.40-5.8x to 0.25; gfx1201: d128 1.21-2.58x to 0.028 (a first chunk
+#: beside heavier decodes 0.70-1.03x), d256 1.16-2.8x to 0.111 (0.97x at 0.125). Prompts of
+#: 128-512 tokens beside decodes: some lose (0.26-1.03x), so they stay declined.
+SPLITS = {("gfx1100", 128): (1024, 0.13), ("gfx1100", 256): (1024, 0.25),
+          ("gfx1201", 128): (1024, 0.03), ("gfx1201", 256): (1024, 0.10)}
 
 
 def split_takes(a: dict) -> bool:
