@@ -27,10 +27,11 @@ def test_apply_without_vllm_reports_rather_than_raises():
     assert vllm_gptq.status() == "not patched"
 
 
-def test_it_is_on_for_gfx1100_only_and_the_plugin_applies_it_when_asked(monkeypatch):
+def test_it_is_on_for_gfx1100_and_gfx1201_and_the_plugin_applies_it_when_asked(monkeypatch):
     from hk.integration import _vllm_plugin, contract, switches
 
-    assert switches.ROUTES["vllm_gptq"].default and switches.ROUTES["vllm_gptq"].arches == ("gfx1100",)
+    assert switches.ROUTES["vllm_gptq"].default
+    assert switches.ROUTES["vllm_gptq"].arches == ("gfx1100", "gfx1201")
     seen = []
     monkeypatch.delenv("HK_DISABLE", raising=False)
     monkeypatch.setattr(contract, "check_each", lambda routes: {})   # no vLLM here
@@ -155,3 +156,95 @@ def test_the_contract_reads_only_the_entry_points_it_wraps(monkeypatch):
                           ("vllm.model_executor.layers.quantization.auto_gptq", auto)):
             monkeypatch.setitem(sys.modules, name, mod)
         assert contract.CHECKS["vllm_gptq"]() == []
+
+
+# -- RDNAHybridW4A16LinearKernel (gfx1201): hk reads vLLM's tensors in place ------------------
+
+
+class RDNAHybridW4A16LinearKernel:     # vLLM's gfx1x kernel, by name
+    w_q_name, w_s_name, w_zp_name = "qweight", "scales", "qzeros"
+
+
+@pytest.fixture
+def _vllm_switch(monkeypatch):
+    """vLLM's own HIP-to-Triton switch, as rdna_hybrid_w4a16 has it (5 tokens, 1.2 x 32K elements)."""
+    monkeypatch.setattr(vllm_gptq, "_SKINNY", {"max_m": 5, "limit": int(32768 * 1.2),
+                                               "gfx115x": False})
+
+
+@pytest.mark.parametrize("arch,why", [("gfx1201", ""),
+                                      ("gfx1100", "kernel RDNAHybridW4A16LinearKernel on gfx1100")])
+def test_hybrid_layers_are_taken_where_measured(monkeypatch, _vllm_switch, arch, why):
+    from hk import target
+
+    monkeypatch.setattr(target, "current_arch", lambda: arch)
+    assert vllm_gptq._why_not(_method(kernel=RDNAHybridW4A16LinearKernel)) == why
+
+
+def test_hybrid_layers_need_vllms_switch(monkeypatch):
+    from hk import target
+
+    monkeypatch.setattr(target, "current_arch", lambda: "gfx1201")
+    monkeypatch.setattr(vllm_gptq, "_SKINNY", {})
+    assert "MAX_SKINNY_BATCH_SIZE" in vllm_gptq._why_not(_method(kernel=RDNAHybridW4A16LinearKernel))
+
+
+@pytest.mark.parametrize("m,k,path", [
+    (1, 5120, "fallback"), (5, 5120, "fallback"),         # vLLM's HIP kernel: left to it
+    (6, 5120, "hk"), (32, 5120, "hk"),                     # vLLM's Triton, to 32 tokens: hk's
+    (33, 5120, "fallback"), (64, 5120, "fallback"),
+    (2, 17408, "fallback"), (3, 17408, "hk"),              # deep K: vLLM leaves HIP at 3 tokens
+])
+def test_hk_takes_the_batches_vllm_sends_to_triton_up_to_32(monkeypatch, _vllm_switch, m, k, path):
+    torch = pytest.importorskip("torch")
+    from hk.ops import w4a16
+
+    seen = []
+    monkeypatch.setattr(w4a16, "exllama_matmul", lambda *a: seen.append("hk") or "hk")
+    monkeypatch.setattr(torch.ops, "vllm", SimpleNamespace(
+        rdna_hybrid_w4a16_apply=lambda x, w_q, w_s, w_zp, bias, cu, g: seen.append(w_zp) or "vllm"),
+        raising=False)
+    x = torch.empty(m, k, dtype=torch.float16)
+    w_q = torch.empty(64, k // 2, dtype=torch.int8)
+    w_s = torch.empty(64, k // 32, dtype=torch.float16)
+    before = dict(vllm_gptq.HYBRID.stats)
+    vllm_gptq.gptq_w4a16_hybrid(x, w_q, w_s, 32, 64)
+    assert vllm_gptq.HYBRID.stats[path] == before[path] + 1
+    # vLLM's op is called without zero points: these layers are symmetric
+    assert seen == (["hk"] if path == "hk" else [None])
+
+
+def test_bf16_batches_stay_on_vllm(monkeypatch, _vllm_switch):
+    torch = pytest.importorskip("torch")
+    monkeypatch.setattr(torch.ops, "vllm", SimpleNamespace(
+        rdna_hybrid_w4a16_apply=lambda *a: "vllm"), raising=False)
+    x = torch.empty(8, 5120, dtype=torch.bfloat16)
+    before = vllm_gptq.HYBRID.stats["fallback"]
+    vllm_gptq.gptq_w4a16_hybrid(x, torch.empty(64, 2560, dtype=torch.int8),
+                                torch.empty(64, 160, dtype=torch.bfloat16), 32, 64)
+    assert vllm_gptq.HYBRID.stats["fallback"] == before + 1
+
+
+def _hybrid_method(zero_points=False, weight_type="uint4b8"):
+    m = _method(kernel=RDNAHybridW4A16LinearKernel)
+    m.kernel.config = SimpleNamespace(zero_points=zero_points, weight_type=weight_type)
+    return m
+
+
+@pytest.mark.parametrize("w_q,w_s,cfg,why", [
+    ((64, 2560), (64, 160), {}, ""),
+    ((64, 2560), (64, 160), {"zero_points": True}, "zero points (not uint4b8)"),
+    ((64, 2304), (64, 144), {}, "shape 64x4608"),           # K not a multiple of 1024
+    ((64, 2560), (64, 80), {}, "scales (64, 80)"),
+])
+def test_a_hybrid_layer_is_checked_after_vllms_repack(monkeypatch, w_q, w_s, cfg, why):
+    torch = pytest.importorskip("torch")
+    layer = SimpleNamespace(qweight=torch.empty(*w_q, dtype=torch.int8),
+                            scales=torch.empty(*w_s, dtype=torch.float16), qzeros=None)
+    ran = []
+    monkeypatch.setattr(vllm_gptq, "_ORIG_PWAL", lambda self, layer: ran.append(1))
+    monkeypatch.setattr(vllm_gptq, "REFUSED", __import__("collections").Counter())
+    vllm_gptq._hybrid_pwal(_hybrid_method(**cfg), layer)
+    assert ran == [1]                                       # vLLM's repack always runs
+    assert getattr(layer, "hk_hybrid", False) == (why == "")
+    assert dict(vllm_gptq.REFUSED) == ({why: 1} if why else {})

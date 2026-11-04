@@ -6,6 +6,10 @@ The next version's notes collect here until it is released.
 
 ## Unreleased
 
+**`vllm_gptq` on by default on gfx1201 (RDNA4).** On gfx1201, vLLM serves a symmetric GPTQ-Int4 checkpoint with `RDNAHybridW4A16LinearKernel`. That kernel runs a HIP skinny GEMM for the first few tokens of a batch and a Triton GEMM above, and the Triton GEMM is several times slower at the switch. The route now takes those Triton batches, up to 32 tokens, on hk's small-batch 4-bit form. It reads vLLM's own tensors in place, so no second copy of the weights is held. vLLM keeps its HIP kernel and every larger batch. The fallback calls vLLM's op without zero points for these symmetric layers: this vLLM passes their stored qzeros to it, and its Triton path then asserts at start. Measured on Qwen3.8-27B-GPTQ-Int4 on one Radeon AI PRO R9700 against vLLM's kernels in the same process, and end to end against the same image with that assert worked around. The batches the route takes are faster, single-request decode and prefill are level, and GSM8K is equal.
+
+**`hk.gemv_w4(..., exllama=True)` and `hk.ops.w4a16.exllama_matmul`.** The small-batch form can read vLLM's RDNA skinny W4A16 layout in place: row-major int32 `[N, K/8]` codes in ExLlama's nibble order, and scales `[N, K/group]`.
+
 **`tools/hk-bench/serving/sglang_toggle_ab.py`: an SGLang A/B in one server process.** It starts one `sglang.launch_server` with hk's plugin on and switches hk's SGLang routes (`sglang_linear`, `sglang_norm`) off and on between rounds by a signal to every process of the server (`serving/sglang_toggle/`). Weights, KV cache and the GPU-to-GPU links are the same in both arms. Two separate server starts on a Radeon PRO W7900 can differ by 13-16%, more than most kernel wins. The arms alternate round by round, each switch is checked in every rank (state file, and hk's call counters move only in the hk arm), and a ratio is reported as a result only when the arms' per-round ranges are disjoint. It needs `--disable-cuda-graph`, since a captured graph does not see the switch.
 
 ## 0.9.0

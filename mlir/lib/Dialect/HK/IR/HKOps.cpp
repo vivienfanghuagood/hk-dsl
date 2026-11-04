@@ -379,6 +379,8 @@ LogicalResult GemvW4Op::verify() {
     return emitOpError("zero is a 4-bit code, 0..15, not ") << *getZero();
   if (getSBlocked() && !getZero())
     return emitOpError("s_blocked (scales in 16-row blocks) is the symmetric form's layout");
+  if (getExllama() && (!getZero() || getSBlocked()))
+    return emitOpError("exllama (vLLM's row-major codes) is the symmetric form with plain scales");
   if (getGroup() <= 0 || getGroup() % 32)
     return emitOpError("group must be a positive multiple of 32, got ") << getGroup();
   if (getTokens() < 1 || getTokens() > 8)

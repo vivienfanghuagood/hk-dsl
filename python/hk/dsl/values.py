@@ -2026,7 +2026,7 @@ def load_w4(ty, qw: "Global", s: "Global", zs: Optional["Global"], n0, k0, *,
 
 def gemv_w4(x: "Global", qw: "Global", s: "Global", zs: Optional["Global"], n0, k0, kstep, count, *,
             group: int = 128, tokens: int = 1, zero: Optional[int] = None, s_blocked: bool = False,
-            into=None) -> "Tile":
+            exllama: bool = False, into=None) -> "Tile":
     """A warp's partial of W x^T for a few tokens, from 4-bit codes, without WMMA: the 16x16 fp32
     col-layout accumulator tile (rows: W rows n0..n0+15; columns: tokens) holding, at (r, m), the
     sum over `count` steps of 64 columns, step c at k0 + c * kstep, of W[n0 + r][k] * x[m][k].
@@ -2039,7 +2039,12 @@ def gemv_w4(x: "Global", qw: "Global", s: "Global", zs: Optional["Global"], n0, 
     multiplies with v_dot2_f32_f16: a WMMA operand holds every row in both wave halves, so the
     decode the load_w4 + mma path does twice, this does once, and at a few tokens that decode is
     what bounds the kernel. RDNA (wave32). `group` a multiple of 32; `tokens` 1..8; k0 and kstep
-    multiples of 64."""
+    multiples of 64.
+
+    `exllama` (symmetric, `zero=`, plain scales): W is vLLM's RDNA skinny W4A16 layout instead,
+    read in place -- row-major int32 [N, K/8] (its uint8 [N, K/2] viewed as int32), word w of a
+    row holding columns 8w + (0, 2, 4, 6, 1, 3, 5, 7) in nibbles 0..7 (ExLlama's shuffle), and s
+    [N, K/group]. No second copy of the weights for an engine that keeps its own."""
     from .arch import target  # noqa: PLC0415
 
     if target().wave != 32:
@@ -2056,6 +2061,9 @@ def gemv_w4(x: "Global", qw: "Global", s: "Global", zs: Optional["Global"], n0, 
         raise ValueError(f"gemv_w4: zero is a 4-bit code, 0..15, not {zero!r}")
     if s_blocked and zero is None:
         raise TypeError("gemv_w4(s_blocked=True) is the symmetric form's scale layout: give zero=")
+    if exllama and (zero is None or s_blocked):
+        raise TypeError("gemv_w4(exllama=True) is the symmetric form (zero=) with plain scales "
+                        "(no s_blocked)")
     for name, g, want in (("x", x, fp16), ("qw", qw, i32), ("s", s, fp16), ("zs", zs, fp16)):
         if g is None:
             continue
@@ -2066,6 +2074,8 @@ def gemv_w4(x: "Global", qw: "Global", s: "Global", zs: Optional["Global"], n0, 
     extra = {"zs": zs.v} if zs is not None else {"zero": _i64(zero)}
     if s_blocked:
         extra["s_blocked"] = _unit_attr()
+    if exllama:
+        extra["exllama"] = _unit_attr()
     return _make(hkd.GemvW4Op, RegTileType(fp32, 16, 16, "col"),
                  (x.v, qw.v, s.v, as_int(n0).v, as_int(k0).v, as_int(kstep).v, as_int(count).v),
                  into=into, name="gemv", group=group, tokens=tokens, **extra)

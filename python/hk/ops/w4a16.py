@@ -221,11 +221,14 @@ def w4a16_kernel(name: str, *, tokens: int = 1, slices: int = 4, warps: int = 16
 
 
 def w4a16_gemv_kernel(name: str, *, tokens: int = 1, warps: int = 16, group: int = 128,
-                      symmetric: bool = False):
+                      symmetric: bool = False, exllama: bool = False):
     """The small-batch form: up to `tokens` (1..8) rows of fp16 x against one 16-row block of W a
     workgroup, each warp a share of K through `hk.gemv_w4` -- no WMMA, so each lane decodes only
     its own row -- and the warps' partials meeting in LDS as `w4a16_kernel`'s do. K is a multiple
-    of 64 * warps; group of 32."""
+    of 64 * warps; group of 32.
+
+    `exllama`: symmetric, W in vLLM's RDNA skinny layout read in place (`hk.gemv_w4`'s
+    `exllama`): qw int32 [N, K/8] row-major in ExLlama's nibble order, s [N, K/group]."""
     ty_out = hk.RT(fp32, 16, 16, "row")
     st_part = hk.ST(fp32, 16, 16)
 
@@ -235,7 +238,8 @@ def w4a16_gemv_kernel(name: str, *, tokens: int = 1, warps: int = 16, group: int
         wid = hk.arch.warp_id()
         count = x.cols // (64 * warps)
         acc = (hk.gemv_w4(x, qw, s, None, n0, wid * 64, 64 * warps, count, group=group,
-                          tokens=tokens, zero=SYMMETRIC_ZERO, s_blocked=True)
+                          tokens=tokens, zero=SYMMETRIC_ZERO, s_blocked=not exllama,
+                          exllama=exllama)
                if zs is None else
                hk.gemv_w4(x, qw, s, zs, n0, wid * 64, 64 * warps, count, group=group, tokens=tokens))
         out = hk.transpose(acc)
@@ -251,6 +255,8 @@ def w4a16_gemv_kernel(name: str, *, tokens: int = 1, warps: int = 16, group: int
                     out += parts[i].load(ty_out)
             c[hk.elem_coord(0, 0, 0, n0)].store(out, bounded=True)
 
+    if exllama and not symmetric:
+        raise ValueError("w4a16_gemv_kernel(exllama=True) is the symmetric form")
     if symmetric:
         def body(x: hk.Tensor[fp16], qw: hk.Tensor[i32], s: hk.Tensor[fp16], c: hk.Tensor[fp16]):
             gemv(x, qw, s, None, c)
@@ -286,6 +292,41 @@ def gemv_kernel_for(tokens: int, group: int, symmetric: bool, warps: int = GEMV_
             f"w4a16_gemv_t{tokens}_w{warps}_g{group}" + ("_sym" if symmetric else ""),
             tokens=tokens, warps=warps, group=group, symmetric=symmetric)
     return _KERNELS[key]
+
+
+#: The most tokens one launch of the in-place form takes (`exllama_matmul` runs a bigger batch in
+#: chunks of this many, each reading W again).
+EXL_CHUNK = 8
+
+
+def exllama_takes(m: int, n: int, k: int, group: int) -> bool:
+    """Whether `exllama_matmul` runs an (M, N, K) GEMM: fp16, N a multiple of 16, K of
+    64 * GEMV_WARPS, group a multiple of 32."""
+    return m >= 1 and n % 16 == 0 and k % (64 * GEMV_WARPS) == 0 and group % 32 == 0 and k % group == 0
+
+
+def exllama_matmul(x, w_q, s, group: int, out=None):
+    """x @ W.T, fp16, for a symmetric 4-bit W (zero point 8) in vLLM's RDNA skinny layout, read in
+    place: w_q int32 [N, K/8] (its int8 [N, K/2] viewed as int32) in ExLlama's nibble order, s
+    [N, K/group]. The small-batch form, `EXL_CHUNK` tokens a launch; `exllama_takes` must hold."""
+    import torch  # noqa: PLC0415
+
+    m, k = x.shape
+    n = w_q.shape[0]
+    if out is None:
+        out = torch.empty((m, n), device=x.device, dtype=torch.float16)
+    xc = x if x.is_contiguous() else x.contiguous()
+    for r0 in range(0, m, EXL_CHUNK):
+        t = min(EXL_CHUNK, m - r0)
+        key = ("exl", t, group)
+        if key not in _OPS:
+            from ..runtime.torch_ext import launcher  # noqa: PLC0415
+
+            _OPS[key] = launcher(w4a16_gemv_kernel(
+                f"w4a16_gemv_t{t}_w{GEMV_WARPS}_g{group}_exl", tokens=t, warps=GEMV_WARPS,
+                group=group, symmetric=True, exllama=True))
+        _OPS[key](xc[r0:r0 + t], w_q, s, out[r0:r0 + t])
+    return out
 
 
 #: Per token-tile count: decode_gemm's measured schedules (chapter 9), with
@@ -451,8 +492,9 @@ def _matmul_legacy(x, qw, s, zs, group: int, out=None):
     return out
 
 
-__all__ = ["AWQ_ORDER", "GEMV_ARCHES", "GEMV_MAX_M", "GEMV_WARPS", "MAX_TOKENS", "SCHEDULES",
-           "SHALLOW_K", "SYMMETRIC_ZERO", "block_scales", "dequant", "gemv_kernel_for", "gemv_takes",
+__all__ = ["AWQ_ORDER", "EXL_CHUNK", "GEMV_ARCHES", "GEMV_MAX_M", "GEMV_WARPS", "MAX_TOKENS", "SCHEDULES",
+           "SHALLOW_K", "SYMMETRIC_ZERO", "block_scales", "dequant", "exllama_matmul",
+           "exllama_takes", "gemv_kernel_for", "gemv_takes",
            "kernel_for", "unblock_scales", "w4a16_gemv_kernel",
            "matmul", "plan", "schedule_for",
            "repack_awq", "repack_gptq", "takes", "tokens_for", "w4a16_kernel"]

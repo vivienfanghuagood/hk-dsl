@@ -442,7 +442,10 @@ def HK_GemvW4Op : HK_Op<"gemv_w4", [AttrSizedOperandSegments]> {
     x[m][k], for tokens m < min(`tokens`, x's rows); the other columns are 0.
     W is in hk's interleaved 4-bit layout (as load_w4 reads it): symmetric
     (`zero`, no `zs`), with `s_blocked` scales or not, or asymmetric (`zs`).
-    x and the scales are f16. Each lane dequantizes its own row's codes and
+    `exllama` (symmetric, plain scales): W is instead row-major, int32 [N, K/8]
+    with word w of a row holding columns 8w + (0, 2, 4, 6, 1, 3, 5, 7) in
+    nibbles 0..7 -- vLLM's RDNA skinny W4A16 layout (ExLlama's shuffle), read
+    in place. x and the scales are f16. Each lane dequantizes its own row's codes and
     multiplies with a two-element dot product (RDNA, wave32): the decode a
     small batch needs without a WMMA operand's replication. The tile is the
     warp's partial, in the layout an mma accumulator has.
@@ -450,7 +453,7 @@ def HK_GemvW4Op : HK_Op<"gemv_w4", [AttrSizedOperandSegments]> {
   let arguments = (ins Optional<HK_RegTileType>:$dst, HK_GlobalType:$x, HK_GlobalType:$qw,
                        HK_GlobalType:$s, Optional<HK_GlobalType>:$zs, I32:$n0, I32:$k0,
                        I32:$kstep, I32:$count, I64Attr:$group, I64Attr:$tokens,
-                       OptionalAttr<I64Attr>:$zero, UnitAttr:$s_blocked);
+                       OptionalAttr<I64Attr>:$zero, UnitAttr:$s_blocked, UnitAttr:$exllama);
   let results = (outs Optional<HK_RegTileType>:$result);
   let assemblyFormat = [{
     $x `,` $qw `,` $s (`,` $zs^)? `[` $n0 `,` $k0 `,` $kstep `,` $count `]` `group` $group
