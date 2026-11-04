@@ -40,9 +40,8 @@ Tested: measured on the part and run by CI's GPU tier. What the language and eac
 <!-- hw-table:end -->
 
 - **Compilers (hipcc's clang):** clang 22 (ROCm 7.2.x) in CI's GPU tier;
-  clang 23 (ROCm 10.0), tested on gfx950; clang 24 (ROCm 10.1), main after
-  0.8.0 only. **Known issue:** with clang 24 on gfx1100, some kernels spill and
-  are refused ([#140](https://github.com/vivienfanghuagood/hk-dsl/pull/140)).
+  clang 23 (ROCm 10.0), tested on gfx950; clang 24 (ROCm 10.1) from 0.9.0,
+  not in CI ([toolchains](docs/toolchains.md)).
 - **Python:** wheels for CPython 3.10 and 3.12 ([install](#install)).
 
 ## Quick start
@@ -164,7 +163,7 @@ slow operand layout, a copy racing a barrier ([the traps](docs/correctness-gates
 ## Install
 
 `pip install hk-dsl`, for CPython 3.10 or 3.12 on Linux x86_64 with glibc
-2.35 or newer (Ubuntu 22.04 and later). The release is 0.8.0: one
+2.35 or newer (Ubuntu 22.04 and later). The release is 0.9.0: one
 `manylinux_2_35` wheel for cp310 and one for cp312, both built on glibc 2.35. A
 wheel carries the HipKittens headers, so at run time it needs ROCm's hipcc
 (on `PATH`, or `HK_HIPCC`) and, to launch, a ROCm build of torch (not a

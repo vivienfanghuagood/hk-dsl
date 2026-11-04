@@ -136,8 +136,8 @@ def render() -> str:
       "tests/hk/ir/engine_facts/. Do not edit; the IR tier fails when it is stale. -->")
     w("")
     w(f"What this checkout of hk-dsl (version {hk.__version__}, and main's changes after it) is "
-      "tested with. A version that is not here may work, but nothing tests it. For the 0.8.0 wheel "
-      "on PyPI, see this page in the 0.8.0 tag.")
+      "tested with. A version that is not here may work, but nothing tests it. 0.8.0 had no such "
+      "page: for it, see docs/install.md and docs/toolchains.md at the v0.8.0 tag.")
     w("")
     w("## hk's own tests")
     w("")
