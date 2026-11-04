@@ -847,3 +847,153 @@ def test_vllm_prefill_rocm_attn_nan_poisoned_repeats_and_a_side_stream_producer(
     run(q2, k2, v2, out2)
     torch.cuda.synchronize()
     assert torch.equal(out2.view(torch.int16), first.view(torch.int16))
+
+
+def _unified_ref(q, k, v, out, cu_seqlens_q, max_seqlen_q, seqused_k, max_seqlen_k,
+                 softmax_scale, causal, window_size, block_table, softcap, q_descale, k_descale,
+                 v_descale, alibi_slopes=None, sinks=None):
+    """vLLM's unified_attention for these tests, in float32 torch over TRITON_ATTN's cache views
+    (blocks, page, kv_heads, head_dim): every request's queries, the last ones of its context."""
+    _, page, hkv, d = k.shape
+    group = q.shape[1] // hkv
+    cu, used = cu_seqlens_q.tolist(), seqused_k.tolist()
+    for i, n_k in enumerate(used):
+        q0, q1 = cu[i], cu[i + 1]
+        if q1 == q0:
+            continue
+        pages = block_table[i, : -(-n_k // page)].long()
+        kk = k[pages].reshape(-1, hkv, d)[:n_k].float().repeat_interleave(group, dim=1)
+        vv = v[pages].reshape(-1, hkv, d)[:n_k].float().repeat_interleave(group, dim=1)
+        s = torch.einsum("qhd,khd->hqk", q[q0:q1].float(), kk) * softmax_scale
+        pos = torch.arange(n_k - (q1 - q0), n_k, device=q.device)
+        s.masked_fill_(torch.arange(n_k, device=q.device)[None, :] > pos[:, None], float("-inf"))
+        out[q0:q1] = torch.einsum("hqk,khd->qhd", s.softmax(-1), vv).to(out.dtype)
+
+
+#: a prompt and a chunk after a prefix, beside decodes over 8k tokens: the guard declines it whole
+#: for the decodes on gfx1100 and gfx1201 (exact sizes), its prefill rows alone it takes
+SPLIT_REQS = [(8191, 1), (0, 2048), (8191, 1), (1000, 1100), (8191, 1), (8191, 1)]
+
+
+def _split_case(monkeypatch, kv_order, page, vt, head_dim=128, h_kv=2, reqs=SPLIT_REQS):
+    """vllm_prefill's unified_attention on `reqs` with the step's exact sizes given (as the
+    TRITON_ATTN builder hook gives them), vLLM's kernel being _unified_ref. Returns run(q, cache,
+    out) and the case."""
+    import inspect
+
+    from hk.integration import vllm_prefill as vp
+
+    monkeypatch.setattr(vp, "_ORIG_U", _unified_ref)
+    monkeypatch.setattr(vp, "_U_SIG", inspect.signature(_unified_ref))
+    monkeypatch.setattr(vp, "VT", vt)
+    monkeypatch.setattr(vp, "GUARD", True)
+    q, (k, v), _, table, lens, q_start = _rocm_case(reqs, head_dim=head_dim, h_kv=h_kv, group=8,
+                                                    page=page, seed=7)
+    cache = _flash_cache(k, v, kv_order)
+    nb, d = k.shape[0], k.shape[3]
+    monkeypatch.setattr(vp, "_STATS", {id(q_start): vp.batch_stats(
+        q_start.tolist(), lens.tolist(), len(reqs))})
+
+    def views(c):
+        if kv_order == "planes":
+            return c.view(nb, 2, page, h_kv, d).unbind(1)
+        both = c.view(nb, page, h_kv, 2 * d)
+        return both[..., :d], both[..., d:]
+
+    def run(q_in, c, out):
+        kc, vc = views(c)
+        vp.unified_attention(q=q_in, k=kc, v=vc, out=out, cu_seqlens_q=q_start,
+                             max_seqlen_q=max(n for _, n in reqs), seqused_k=lens,
+                             max_seqlen_k=int(lens.max()), softmax_scale=d ** -0.5, causal=True,
+                             window_size=(-1, -1), block_table=table, softcap=0, q_descale=None,
+                             k_descale=None, v_descale=None)
+    return run, (q, k, v, cache, table, lens, q_start, views)
+
+
+@pytest.mark.skipif(not _route_arch(), reason="the route is gfx1100's and gfx1201's")
+@pytest.mark.parametrize("vt", [False, True])
+@pytest.mark.parametrize("head_dim,h_kv,kv_order,page", [(128, 2, "planes", 16),
+                                                         (128, 2, "tokens", 544),
+                                                         (256, 1, "tokens", 544)])
+def test_vllm_prefill_splits_a_mixed_batch(monkeypatch, head_dim, h_kv, kv_order, page, vt):
+    """A mixed batch the guard declines for its decodes, with the step's exact sizes: hk's kernel
+    takes the prefill rows (matching the reference) and vLLM's kernel the decode rows -- bitwise
+    its own answer on the batch as one query a request. Counted as hk and as split."""
+    from hk.integration import vllm_prefill as vp
+
+    if head_dim == 256 and not _clang_23():
+        pytest.skip("flash dsplit spills under clang 22: the route leaves d256 to vLLM there")
+    run, (q, k, v, cache, table, lens, q_start, views) = _split_case(
+        monkeypatch, kv_order, page, vt, head_dim, h_kv)
+    assert vp._guard({"q": q, "k": views(cache)[0], "seqused_k": lens, "cu_seqlens_q": q_start})
+    before = dict(vp.PATCH.stats)
+    out = torch.full_like(q, float("nan"))
+    run(q, cache, out)
+    torch.cuda.synchronize()
+    assert vp.PATCH.stats["split"] == before["split"] + 1
+    assert vp.PATCH.stats["hk"] == before["hk"] + 1
+    rows = _prefill_rows(SPLIT_REQS, q_start)
+    want = _reference(q, k, v, table, lens, q_start, 8, page=page)
+    _attn_ref.check(out[rows], want[rows])
+    first = q_start[:-1].long()
+    dec = [i for i, (_, n) in enumerate(SPLIT_REQS) if n == 1]
+    kc, vc = views(cache)
+    ref1 = torch.empty(len(SPLIT_REQS), *q.shape[1:], device=q.device, dtype=q.dtype)
+    used1 = torch.where(q_start[1:] - q_start[:-1] == 1, lens, torch.ones_like(lens))
+    _unified_ref(q[first], kc, vc, ref1, torch.arange(len(SPLIT_REQS) + 1, device=q.device,
+                                                      dtype=torch.int32), 1, used1,
+                 int(lens.max()), head_dim ** -0.5, True, (-1, -1), table, 0, None, None, None)
+    got_dec = out[first[dec]]
+    assert torch.equal(got_dec.view(torch.int16), ref1[dec].view(torch.int16))
+    _attn_ref.check(got_dec, want[first[dec]])
+
+
+@pytest.mark.skipif(not _route_arch(), reason="the route is gfx1100's and gfx1201's")
+def test_vllm_prefill_split_off_declines_the_batch_whole(monkeypatch):
+    """HK_VLLM_PREFILL_SPLIT=0: the same batch goes to vLLM's kernel whole, counted declined."""
+    from hk.integration import vllm_prefill as vp
+
+    run, (q, *_rest) = _split_case(monkeypatch, "planes", 16, False)
+    monkeypatch.setattr(vp, "SPLIT", False)
+    before = dict(vp.PATCH.stats)
+    out = torch.empty_like(q)
+    run(q, _rest[2], out)
+    assert vp.PATCH.stats["declined"] == before["declined"] + 1
+    assert vp.PATCH.stats["hk"] == before["hk"] and vp.PATCH.stats["split"] == before["split"]
+
+
+@pytest.mark.skipif(not _route_arch(), reason="the route is gfx1100's and gfx1201's")
+@pytest.mark.parametrize("vt", [False, True])
+def test_vllm_prefill_split_nan_poisoned_repeats_and_a_side_stream_producer(monkeypatch, vt):
+    """The default-on rule's repeat and stream checks on the split path: 200 calls over a
+    NaN-filled output, each split and bitwise the first; then the query and the cache from a
+    producer on its own stream, bitwise the same."""
+    from hk.integration import vllm_prefill as vp
+
+    run, (q, k, v, cache, table, lens, q_start, views) = _split_case(monkeypatch, "planes", 16,
+                                                                     vt)
+    before = vp.PATCH.stats["split"]
+    out = torch.empty_like(q)
+    first = None
+    for i in range(200):
+        out.fill_(float("nan"))
+        run(q, cache, out)
+        if first is None:
+            torch.cuda.synchronize()
+            first = out.clone()
+            assert not torch.isnan(first).any()
+        else:
+            assert torch.equal(out.view(torch.int16), first.view(torch.int16)), f"call {i}"
+    assert vp.PATCH.stats["split"] == before + 200
+    q_host, cache_host = q.cpu(), cache.cpu()
+    side = torch.cuda.Stream()
+    with torch.cuda.stream(side):
+        q2 = q_host.to("cuda", non_blocking=True)
+        c2 = cache_host.to("cuda", non_blocking=True)
+        q2.mul_(1.0)
+        c2.mul_(1.0)
+        out2 = torch.full_like(q2, float("nan"))
+    torch.cuda.current_stream().wait_stream(side)
+    run(q2, c2, out2)
+    torch.cuda.synchronize()
+    assert torch.equal(out2.view(torch.int16), first.view(torch.int16))

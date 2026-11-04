@@ -252,7 +252,9 @@ def hk_prefill_arm(case):
     """hk's TRITON_ATTN route as vLLM calls it: hk.integration.vllm_prefill's stand-in for
     unified_attention (hk.ops.paged_prefill, with the V^T pre-pack where it applies). A call it
     does not take goes to vLLM's kernel, as in serving -- `hk_calls` in the row says how many
-    it took."""
+    it took. The step's exact sizes are given to the guard as vLLM's TRITON_ATTN metadata
+    builder gives them in serving (vllm_prefill._STATS), so mixed batches are judged -- and split
+    -- as served."""
     import inspect  # noqa: PLC0415
 
     from vllm.v1.attention.ops.triton_unified_attention import unified_attention  # noqa: PLC0415
@@ -261,6 +263,10 @@ def hk_prefill_arm(case):
 
     vp._ORIG_U = unified_attention
     vp._U_SIG = inspect.signature(unified_attention)
+    starts = [0]
+    for _, n in case.reqs:
+        starts.append(starts[-1] + n)
+    vp._STATS[id(case.q_start)] = vp.batch_stats(starts, case.lens_host.tolist(), len(case.reqs))
     out = torch.empty_like(case.q)
     extra = _triton_scratch(case)
 
