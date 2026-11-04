@@ -620,29 +620,22 @@ def _route_arch() -> bool:
     return current_arch() in ARCHES
 
 
-@pytest.mark.skipif(not _route_arch(), reason="the route is gfx1100's and gfx1201's")
-@pytest.mark.parametrize("vt", [False, True])
-@pytest.mark.parametrize("kv_order,page", [("planes", 16), ("tokens", 16), ("tokens", 544),
-                                           ("tokens", 784)])
-def test_vllm_prefill_takes_a_triton_attn_batch_and_matches(monkeypatch, kv_order, page, vt):
-    """The route (vllm_prefill): unified_attention's stand-in, called as
-    TRITON_ATTN calls it on a mixed batch (prefill chunks and decodes), takes it on hk's kernel --
-    counted as hk, vLLM's kernel never called -- and matches the reference. Both of vLLM's
-    cache orders, with and without the V^T pre-pack; vLLM itself is not needed (its signature
-    is the stand-in's own)."""
+#: a mixed batch: a prompt, decodes, a chunk after a prefix -- one the guard leaves to vLLM
+#: (decodes beside a small prefill), so its kernel case runs with the guard off
+MIXED = [(0, 300), (500, 1), (1000, 77), (33, 1)]
+#: a prefill-heavy batch with the same kinds of request, one the guard takes on every arch
+HEAVY = [(0, 2048), (1000, 77), (33, 1)]
+
+
+def _route_case(monkeypatch, reqs, kv_order, page, vt, orig):
+    """vllm_prefill's unified_attention stand-in on `reqs`, vLLM's kernel replaced by `orig`."""
     import inspect
 
     from hk.integration import vllm_prefill as vp
 
-    def unified_attention(q, k, v, out, cu_seqlens_q, max_seqlen_q, seqused_k, max_seqlen_k,
-                          softmax_scale, causal, window_size, block_table, softcap, q_descale,
-                          k_descale, v_descale, alibi_slopes=None, sinks=None):
-        raise AssertionError("fell back to vLLM's kernel")
-
-    monkeypatch.setattr(vp, "_ORIG_U", unified_attention)
-    monkeypatch.setattr(vp, "_U_SIG", inspect.signature(unified_attention))
+    monkeypatch.setattr(vp, "_ORIG_U", orig)
+    monkeypatch.setattr(vp, "_U_SIG", inspect.signature(orig))
     monkeypatch.setattr(vp, "VT", vt)
-    reqs = [(0, 300), (500, 1), (1000, 77), (33, 1)]
     q, (k, v), _, table, lens, q_start = _rocm_case(reqs, head_dim=128, h_kv=2, group=8,
                                                     page=page)
     cache = _flash_cache(k, v, kv_order)
@@ -653,10 +646,62 @@ def test_vllm_prefill_takes_a_triton_attn_batch_and_matches(monkeypatch, kv_orde
         both = cache.view(nb, page, 2, 2 * d)
         kc, vc = both[..., :d], both[..., d:]
     out = torch.full_like(q, 7.0)
+    vp.unified_attention(q=q, k=kc, v=vc, out=out, cu_seqlens_q=q_start,
+                         max_seqlen_q=max(n for _, n in reqs), seqused_k=lens,
+                         max_seqlen_k=int(lens.max()), softmax_scale=d ** -0.5, causal=True,
+                         window_size=(-1, -1), block_table=table, softcap=0, q_descale=None,
+                         k_descale=None, v_descale=None)
+    return out, _reference(q, k, v, table, lens, q_start, 8, page=page)
+
+
+def _vllm_must_not_run(q, k, v, out, cu_seqlens_q, max_seqlen_q, seqused_k, max_seqlen_k,
+                       softmax_scale, causal, window_size, block_table, softcap, q_descale,
+                       k_descale, v_descale, alibi_slopes=None, sinks=None):
+    raise AssertionError("fell back to vLLM's kernel")
+
+
+@pytest.mark.skipif(not _route_arch(), reason="the route is gfx1100's and gfx1201's")
+@pytest.mark.parametrize("vt", [False, True])
+@pytest.mark.parametrize("kv_order,page", [("planes", 16), ("tokens", 16), ("tokens", 544),
+                                           ("tokens", 784)])
+@pytest.mark.parametrize("reqs,guard", [(MIXED, False), (HEAVY, True)], ids=["mixed", "heavy"])
+def test_vllm_prefill_takes_a_triton_attn_batch_and_matches(monkeypatch, kv_order, page, vt,
+                                                            reqs, guard):
+    """The route (vllm_prefill): unified_attention's stand-in, called as TRITON_ATTN calls it
+    on a batch of prompts, chunks after a prefix and decodes, takes it on hk's kernel -- counted
+    as hk, vLLM's kernel never called -- and matches the reference. Both of vLLM's cache orders,
+    with and without the V^T pre-pack; vLLM itself is not needed (its signature is the
+    stand-in's own). A prefill-heavy batch with the guard on, as served; a mixed one, which the
+    guard leaves to vLLM, with it off (HK_VLLM_PREFILL_GUARD=0), so the kernel's decode rows
+    stay tested."""
+    from hk.integration import vllm_prefill as vp
+
+    monkeypatch.setattr(vp, "GUARD", guard)
     before = vp.PATCH.stats["hk"]
-    vp.unified_attention(q=q, k=kc, v=vc, out=out, cu_seqlens_q=q_start, max_seqlen_q=300,
-                         seqused_k=lens, max_seqlen_k=int(lens.max()), softmax_scale=d ** -0.5,
-                         causal=True, window_size=(-1, -1), block_table=table, softcap=0,
-                         q_descale=None, k_descale=None, v_descale=None)
+    out, want = _route_case(monkeypatch, reqs, kv_order, page, vt, _vllm_must_not_run)
     assert vp.PATCH.stats["hk"] == before + 1
-    _attn_ref.check(out, _reference(q, k, v, table, lens, q_start, 8, page=page))
+    _attn_ref.check(out, want)
+
+
+@pytest.mark.skipif(not _route_arch(), reason="the route is gfx1100's and gfx1201's")
+def test_vllm_prefill_leaves_a_mixed_batch_to_vllm(monkeypatch):
+    """With the guard on (the default), the mixed batch -- decodes beside a small prefill, which
+    hk's kernel is slower on -- goes to vLLM's kernel with the caller's own tensors, counted as
+    declined: its output is vLLM's, whatever hk's kernel would have written."""
+    from hk.integration import vllm_prefill as vp
+
+    seen = []
+
+    def unified_attention(q, k, v, out, cu_seqlens_q, max_seqlen_q, seqused_k, max_seqlen_k,
+                          softmax_scale, causal, window_size, block_table, softcap, q_descale,
+                          k_descale, v_descale, alibi_slopes=None, sinks=None):
+        seen.append((q, out))
+        out.fill_(3.0)
+
+    monkeypatch.setattr(vp, "GUARD", True)
+    before = dict(vp.PATCH.stats)
+    out, _ = _route_case(monkeypatch, MIXED, "planes", 16, False, unified_attention)
+    assert vp.PATCH.stats["declined"] == before["declined"] + 1
+    assert vp.PATCH.stats["hk"] == before["hk"]
+    assert len(seen) == 1 and seen[0][1] is out
+    assert torch.all(out == 3.0)

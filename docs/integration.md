@@ -622,6 +622,7 @@ spelled:
 | `HK_VLLM_PREFILL` | `_vllm_plugin.py` | prefill attention on vLLM's own cache, ROCM_ATTN and TRITON_ATTN (default on, gfx1100) |
 | `HK_VLLM_PREFILL_VT` | `vllm_prefill.py` | `0`: on TRITON_ATTN, transpose V in every workgroup instead of packing the batch's V^T pages once a call (`paged_prefill` `vt_pages`; default on, head size up to 128) |
 | `HK_VLLM_PREFILL_SHADOW` | `vllm_prefill.py` | `1`: also run vLLM's kernel on every call hk takes and print the worst row's difference in bf16 ulps (a diagnostic; syncs) |
+| `HK_VLLM_PREFILL_GUARD` | `vllm_prefill.py` | `0`: on TRITON_ATTN, take every batch with prefill in it, also the ones measured slower than vLLM's kernel (decodes beside a small prefill, short chunks); default on: those go to vLLM, counted as `declined` |
 | `HK_VLLM_DECODE` | `vllm_prefill.py` | decode-only TRITON_ATTN calls on hk's split decode (`paged_decode`): unset, head size 256 (default on, gfx1100); `1`, head size 128 too; `0`, off |
 | `HK_VLLM_GEMM` | `_vllm_plugin.py` | route the unquantized linear layers (default on, gfx1100 and gfx1201) |
 | `HK_VLLM_MOE` | `_vllm_plugin.py` | route the bf16 MoE GEMMs up to 256 tokens a step (2 on gfx1201; default on, gfx1100 and gfx1201) |
