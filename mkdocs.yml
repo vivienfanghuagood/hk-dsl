@@ -87,6 +87,10 @@ nav:
       - Quickstart: quickstart.md
       - Examples: examples.md
   - 2 Concepts:
+      - "How a kernel runs: the pipeline": pipeline.md
+      - "Tiles, strips and LDS": tiles-and-strips.md
+      - The correctness gates: correctness-gates.md
+      - "XCDs, placement and hk.comm": xcds-and-comm.md
       - The pipeline and its IR: ir.md
       - Workgroup placement and XCDs: placement.md
   - 3 Language reference:
