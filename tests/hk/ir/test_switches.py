@@ -261,6 +261,7 @@ def test_a_broken_contract_turns_off_that_route_only_with_one_warning(plugin, ca
 def test_every_contract_broken_leaves_vllm_stock_and_says_so(plugin, capsys, monkeypatch):
     applied, _ = plugin
     monkeypatch.setattr(contract, "check_each", lambda routes: {r: ["moved"] for r in routes})
+    _dsv41_on(monkeypatch)
     _vllm_plugin.register()
     assert applied == []
     cap = capsys.readouterr()
