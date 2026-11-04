@@ -7,7 +7,10 @@ The next version's notes collect here until it is released.
 ## 0.9.1
 
 hk-dsl 0.9.1: vLLM's prefill attention on by default on gfx1201 (Radeon AI PRO R9700), as it is on
-gfx1100 since 0.9.0. No change to the language, the dialect (`hk-dialect-7`) or the wheels' layout.
+gfx1100 since 0.9.0, and on TRITON_ATTN it now takes, split, mixed batches with a sizable prompt and
+short chunks over a long context; and vLLM's GPTQ-Int4 layers on gfx1201 on hk's 4-bit decode forms
+by default. The dialect is `hk-dialect-8` (an `exllama` attribute on `load_w4` / `gemv_w4`), so
+kernels cached by 0.9.0 are compiled again once; the wheels' layout is unchanged.
 
 On PyPI: `pip install hk-dsl`, for CPython 3.10 to 3.13 on Linux x86_64 with glibc 2.35 or newer
 (Ubuntu 22.04 and later, and vLLM's ROCm images): one `manylinux_2_35` wheel per interpreter. The
@@ -20,23 +23,22 @@ wheels below are the same files.
 Since 0.9.0 ([the default-on rule](docs/testing.md#the-default-on-rule); `python3 -m hk.integration
 --status` shows each route's state and why):
 
-**On by default on gfx1201 too: `vllm_prefill`** (#244). vLLM's prefill attention on hk's kernels over
-vLLM's paged cache, the route 0.9.0 has on by default on gfx1100; on gfx1201 it needed
-`HK_VLLM_PREFILL=1`. `HK_VLLM_PREFILL=0` turns it off. The decode-only TRITON_ATTN path
-(`HK_VLLM_DECODE`) keeps its own architectures. The route's correctness suite gains NaN-poisoned
-repeats and a side-stream producer.
+**On by default on gfx1201 too: `vllm_prefill`** (#244, #247). vLLM's prefill attention on hk's
+kernels over vLLM's own cache, as on gfx1100 since 0.9.0: ROCM_ATTN's prefix-prefill, and TRITON_ATTN's
+batches with prefill in them, where the guard leaves to vLLM's kernel the batches hk's is not faster on.
+On gfx1201 it needed `HK_VLLM_PREFILL=1`; `HK_VLLM_PREFILL=0` turns it off. The decode-only
+TRITON_ATTN path (`HK_VLLM_DECODE`) keeps its own architectures. The GPU tests run both entry points
+the way vLLM calls them, 200 times over outputs poisoned with NaN and with a producer on another stream.
+
+**`vllm_prefill` on TRITON_ATTN: a mixed batch with a sizable prompt is split instead of declined** (#249, #250). When a prompt or chunk of 1024 tokens or more is batched with decodes, hk's prefill kernel now computes the prompt's rows and vLLM's own kernel the decode rows; before, the guard sent such a batch to vLLM's kernel whole, since hk's prefill kernel walks a decode's context unsplit. It is taken only where every measured batch was faster than both stock kernels (TRITON_ATTN's and ROCM_ATTN's); Its kernels are built at vLLM's warm-up, not on the first such batch (#250). `HK_VLLM_PREFILL_SPLIT=0` turns it off.
+
+**`vllm_prefill` on TRITON_ATTN: a short chunk over a long context is split along the KV axis** (#251). A prefill call with few query rows -- the new tokens of a request whose prompt is mostly a prefix-cache hit, a chunked prefill's last chunk -- left most of the card idle in hk's prefill kernel and in vLLM's, and the guard sent it to vLLM's kernel. `hk.ops.paged_prefill` now has `kv_splits`: each query tile walks the context in runs, a workgroup each, and a merge kernel (`paged_prefill.merge_kernel`) combines the runs' partials. The route takes such calls with the KV split where it was measured faster than both stock kernels (TRITON_ATTN's and ROCM_ATTN's) on each GPU and head size (`vllm_prefill.KVSPLITS`); decode rows in the same batch go to vLLM's kernel, as in the split above; its kernels are built at vLLM's warm-up. `HK_VLLM_PREFILL_KVSPLIT=0` turns it off.
+
+**On by default on gfx1201 too: `vllm_gptq`** (#248). On gfx1201, vLLM serves a symmetric GPTQ-Int4 checkpoint with `RDNAHybridW4A16LinearKernel`. That kernel runs a HIP skinny GEMM for the first few tokens of a batch and a Triton GEMM above, and the Triton GEMM is several times slower at the switch. The route now takes those Triton batches, up to 64 tokens, on hk's 4-bit decode forms. It reads vLLM's own tensors in place, so no second copy of the weights is held. vLLM keeps its HIP kernel and every larger batch. The fallback calls vLLM's op without zero points for these symmetric layers: this vLLM passes their stored qzeros to it, and its Triton path then asserts at start. Measured on Qwen3.8-27B-GPTQ-Int4 on one Radeon AI PRO R9700 against vLLM's kernels in the same process, and end to end against the same image with that assert worked around. The batches the route takes are faster, single-request decode and prefill are level, and GSM8K is equal.
 
 ### Changes
 
-**`vllm_gptq` on by default on gfx1201 (RDNA4).** On gfx1201, vLLM serves a symmetric GPTQ-Int4 checkpoint with `RDNAHybridW4A16LinearKernel`. That kernel runs a HIP skinny GEMM for the first few tokens of a batch and a Triton GEMM above, and the Triton GEMM is several times slower at the switch. The route now takes those Triton batches, up to 64 tokens, on hk's 4-bit decode forms. It reads vLLM's own tensors in place, so no second copy of the weights is held. vLLM keeps its HIP kernel and every larger batch. The fallback calls vLLM's op without zero points for these symmetric layers: this vLLM passes their stored qzeros to it, and its Triton path then asserts at start. Measured on Qwen3.8-27B-GPTQ-Int4 on one Radeon AI PRO R9700 against vLLM's kernels in the same process, and end to end against the same image with that assert worked around. The batches the route takes are faster, single-request decode and prefill are level, and GSM8K is equal.
-
-**`hk.load_w4` / `hk.gemv_w4(..., exllama=True)` and `hk.ops.w4a16.exllama_matmul`.** hk's 4-bit decode forms (the WMMA form and the small-batch form) can read vLLM's RDNA skinny W4A16 layout in place: row-major int32 `[N, K/8]` codes in ExLlama's nibble order, and scales `[N, K/group]`.
-
-**vLLM's prefill attention on hk by default on gfx1201 (Radeon AI PRO R9700)**, as on gfx1100 since 0.8: the `vllm_prefill` route takes ROCM_ATTN's prefix-prefill and TRITON_ATTN's batches with prefill in them, on vLLM's own cache. On TRITON_ATTN the guard leaves to vLLM's kernel the batches hk's is not faster on. `HK_VLLM_PREFILL=0` turns it off. On an R9700, long prompts' time to first token is much shorter, decode speed unchanged. The GPU tests now run both entry points the way vLLM calls them, 200 times over outputs poisoned with NaN and with a producer on another stream.
-
-**vLLM's TRITON_ATTN: a mixed batch with a sizable prompt is split instead of declined.** When a prompt or chunk of 1024 tokens or more is batched with decodes, hk's prefill kernel now computes the prompt's rows and vLLM's own kernel the decode rows; before, the guard sent such a batch to vLLM's kernel whole, since hk's prefill kernel walks a decode's context unsplit. It is taken only where every measured batch was faster than both stock kernels (TRITON_ATTN's and ROCM_ATTN's); `HK_VLLM_PREFILL_SPLIT=0` turns it off.
-
-**vLLM's TRITON_ATTN: a short chunk over a long context is split along the KV axis.** A prefill call with few query rows -- the new tokens of a request whose prompt is mostly a prefix-cache hit, a chunked prefill's last chunk -- left most of the card idle in hk's prefill kernel and in vLLM's, and the guard sent it to vLLM's kernel. `hk.ops.paged_prefill` now has `kv_splits`: each query tile walks the context in runs, a workgroup each, and a merge kernel (`paged_prefill.merge_kernel`) combines the runs' partials. The route takes such calls with the KV split where it was measured faster than both stock kernels (TRITON_ATTN's and ROCM_ATTN's) on each GPU and head size (`vllm_prefill.KVSPLITS`); decode rows in the same batch go to vLLM's kernel, as in the split above. `HK_VLLM_PREFILL_KVSPLIT=0` turns it off.
+**`hk.load_w4` / `hk.gemv_w4(..., exllama=True)` and `hk.ops.w4a16.exllama_matmul`** (#248). hk's 4-bit decode forms (the WMMA form and the small-batch form) can read vLLM's RDNA skinny W4A16 layout in place: row-major int32 `[N, K/8]` codes in ExLlama's nibble order, and scales `[N, K/group]`.
 
 **`tools/hk-bench/serving/sglang_toggle_ab.py`: an SGLang A/B in one server process.** It starts one `sglang.launch_server` with hk's plugin on and switches hk's SGLang routes (`sglang_linear`, `sglang_norm`) off and on between rounds by a signal to every process of the server (`serving/sglang_toggle/`). Weights, KV cache and the GPU-to-GPU links are the same in both arms. Two separate server starts on a Radeon PRO W7900 can differ by 13-16%, more than most kernel wins. The arms alternate round by round, each switch is checked in every rank (state file, and hk's call counters move only in the hk arm), and a ratio is reported as a result only when the arms' per-round ranges are disjoint. It needs `--disable-cuda-graph`, since a captured graph does not see the switch.
 
@@ -45,7 +47,7 @@ beside the scorecard.
 
 ### All pull requests
 
-#187, #242, #244, #245.
+#187, #242, #244, #245, #247, #248, #249, #250, #251.
 
 ## 0.9.0
 
