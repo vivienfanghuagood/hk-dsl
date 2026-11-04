@@ -415,6 +415,13 @@ def test_split_takes_a_mixed_batch_the_guard_declines_for_its_decodes(monkeypatc
     monkeypatch.setattr(vp, "SPLIT", True)
     monkeypatch.setattr(vp, "_STATS", {})
     assert not vp.split_takes(a)
+    small = [(512, 512)] + [(16384, 1)] * 8
+    b = _triton_call([(s - q, q) for s, q in small])
+    monkeypatch.setattr(vp, "_STATS", {id(b["cu_seqlens_q"]): _stats_of(small)})
+    assert not vp.split_takes(b)
+    monkeypatch.setattr(vp, "SPLIT_ALL", True)                 # HK_VLLM_PREFILL_SPLIT=all
+    assert vp.split_takes(b)
+    monkeypatch.setattr(vp, "SPLIT_ALL", False)
     for bad in ([(16416, 32)] + [(16384, 1)] * 8,          # a 32-token chunk over 16k
                 [(512, 512)] + [(16384, 1)] * 8,           # a prefill too small for the split
                 [(2048, 2048)] + [(65536, 1)] * 8,         # decodes too heavy for it

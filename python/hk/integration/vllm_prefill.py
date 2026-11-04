@@ -631,9 +631,11 @@ def _step_stats(a: dict):
 #: prefill rows (the kernel built with decodes=False skips one-query requests) and vLLM's own
 #: kernel the decode rows, as a batch of one query a request (`_split_decodes`) -- vLLM splits a
 #: decode's context, hk's prefill kernel does not. HK_VLLM_PREFILL_SPLIT=0 turns it off (the
-#: guard then declines the whole batch, as before).
-SPLIT = __import__("os").environ.get("HK_VLLM_PREFILL_SPLIT", "1") not in ("0", "off", "no",
-                                                                           "false")
+#: guard then declines the whole batch, as before); "all" splits every such batch, SPLITS aside
+#: (to measure them).
+_SPLIT_ENV = __import__("os").environ.get("HK_VLLM_PREFILL_SPLIT", "1").strip().lower()
+SPLIT = _SPLIT_ENV not in ("0", "off", "no", "false")
+SPLIT_ALL = _SPLIT_ENV == "all"
 #: (arch, head size class) -> (the longest query at least, decode work at most this times the
 #: prefill's): the split costs launches and gives the decode rows to TRITON_ATTN's decode, which
 #: ROCM_ATTN's beats, so it pays off on a sizable prefill. Measured with the 68-shape set
@@ -657,7 +659,8 @@ def split_takes(a: dict) -> bool:
     q, k = a["q"], a["k"]
     d, arch = int(q.shape[-1]), switches.arch()
     sp = SPLITS.get((arch, 256 if d > 128 else 128))
-    if sp is None or st["max_q"] < sp[0] or st["dec_work"] > sp[1] * st["pre_work"]:
+    if not SPLIT_ALL and (sp is None or st["max_q"] < sp[0]
+                          or st["dec_work"] > sp[1] * st["pre_work"]):
         return False
     return not exact_why_not(st, d, int(k.shape[2]), arch, split=True)
 
