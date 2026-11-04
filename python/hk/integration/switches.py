@@ -96,7 +96,10 @@ ROUTES: Dict[str, Route] = {r.name: r for r in (
        "act-order checkpoints refused",
        "gfx1100: Qwen3.8-27B-GPTQ-Int4 in the Radeon TheRock vLLM image against stock-fair "
        "(TRITON_ATTN, TunableOp with a 256 MB rotating buffer), 3 starts an arm: GSM8K-200 equal, "
-       "TPOT ahead at 8-16 concurrent requests and level at 1 (RDNA scorecard)"),
+       "TPOT ahead at 8-16 concurrent requests and level at 1 (RDNA scorecard); gfx1201: "
+       "Qwen3.8-27B-GPTQ-Int4 on one R9700 in the R9700 vLLM image (TRITON_ATTN), 3 alternating "
+       "starts an arm: GSM8K-200 equal, TPOT ahead at 4 and 8 concurrent requests (disjoint), "
+       "level at 1 and for an 8k prompt"),
     _R("vllm_gemm", "vllm", "HK_VLLM_GEMM", True, ("gfx1100", "gfx1201"),
        "unquantized linear layers by the measured route table, plus tuning at load",
        "gfx1100: greedy tokens identical to stock's, or a bf16 near-tie (history 35). "
