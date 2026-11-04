@@ -343,7 +343,7 @@ def _nan_past_ends(k, v, table, lens):
 
 def _flash_run(reqs, head_dim=128, h_kv=2, group=8, dsplit=False, layout="flash", seed=0,
                decodes=True, warps=None, page=ROCM_PAGE, v_ones=False, kv_order="planes",
-               nan_tail=False):
+               nan_tail=False, kv_splits=1):
     q, (k, v), (k5, v4), table, lens, q_start = _rocm_case(reqs, head_dim=head_dim, h_kv=h_kv,
                                                            group=group, seed=seed, page=page,
                                                            v_ones=v_ones)
@@ -355,16 +355,23 @@ def _flash_run(reqs, head_dim=128, h_kv=2, group=8, dsplit=False, layout="flash"
     kern = pp.paged_prefill_kernel(
         f"t_pp_{layout}_d{head_dim}_g{group}{'_ds' if dsplit else ''}_w{warps}"
         f"{'_dec' if decodes else ''}{'' if page == ROCM_PAGE else f'_p{page}'}"
-        f"{'' if kv_order == 'planes' else '_' + kv_order}",
+        f"{'' if kv_order == 'planes' else '_' + kv_order}{f'_ks{kv_splits}' if kv_splits > 1 else ''}",
         head_dim=head_dim, group=group, layout=layout, dsplit=dsplit, warps=warps,
-        decodes=decodes, page=page, kv_order=kv_order)
+        decodes=decodes, page=page, kv_order=kv_order, kv_splits=kv_splits)
     tile = 16 * (warps // 2 if dsplit else warps)
     tiles = pp.q_tiles(max(n for _, n in reqs), q.device, tile)
     if layout == "flash":
         kv = _flash_cache(k, v, kv_order)
         packed = [q.unsqueeze(0), out.unsqueeze(0)] if decodes and not dsplit else []
+        if kv_splits > 1:
+            packed = list(pp.split_parts(kv_splits, len(reqs) * tiles.shape[0] * tile, h, d,
+                                         q.device))
         kern(q.view(n_tok, h * d), kv, kv, table, lens, q_start, tiles, out.view(n_tok, h * d),
              *packed)
+        if kv_splits > 1:
+            pp.merge_kernel(f"t_pp_merge_d{head_dim}_ks{kv_splits}_t{tile}", head_dim=head_dim,
+                            kv_splits=kv_splits, q_tile=tile)(
+                lens, q_start, tiles, *packed, out.view(n_tok, h * d))
     else:
         kern(q.view(n_tok, h * d), *pp.rocm_views(k5, v4), table, lens, q_start, tiles,
              out.view(n_tok, h * d))
@@ -997,3 +1004,32 @@ def test_vllm_prefill_split_nan_poisoned_repeats_and_a_side_stream_producer(monk
     run(q2, c2, out2)
     torch.cuda.synchronize()
     assert torch.equal(out2.view(torch.int16), first.view(torch.int16))
+
+
+#: short chunks over long contexts (what kv_splits is for), a chunk longer than the tile, a split
+#: with no key some rows see, a decode (skipped: decodes=False) and a padded request
+KV_SPLIT_REQS = [(4000, 32), (3000, 1), (900, 150), (0, 70), (63, 2), (5, 0)]
+
+
+@rocm_only
+@pytest.mark.parametrize("kv_splits", [2, 5, 16])
+@pytest.mark.parametrize("page", [16, 544])
+def test_flash_kv_splits(kv_splits, page):
+    got, want, q_start = _flash_run(KV_SPLIT_REQS, decodes=False, warps=4, page=page,
+                                    kv_splits=kv_splits, nan_tail=page == 544)
+    rows = _prefill_rows(KV_SPLIT_REQS, q_start)
+    assert not torch.isnan(got[rows]).any()
+    _attn_ref.check(got[rows], want[rows])
+    rest = sorted(set(range(got.shape[0])) - set(rows))
+    assert torch.all(got[rest] == 7.0)
+
+
+@rocm_only
+@flash_dsplit_builds
+@pytest.mark.parametrize("kv_splits", [3, 8])
+def test_flash_kv_splits_dsplit(kv_splits):
+    got, want, q_start = _flash_run(KV_SPLIT_REQS, head_dim=256, h_kv=1, group=8, dsplit=True,
+                                    decodes=False, warps=8, page=544, kv_order="tokens",
+                                    kv_splits=kv_splits)
+    rows = _prefill_rows(KV_SPLIT_REQS, q_start)
+    _attn_ref.check(got[rows], want[rows])

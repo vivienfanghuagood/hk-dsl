@@ -203,6 +203,8 @@ def test_an_unmeasured_arch_or_an_unknown_context_is_declined():
 #: The guard's evidence: tools/hk-bench/attention_bench.py prefill, every shape against the faster
 #: of TRITON_ATTN's and ROCM_ATTN's kernels, one process, cold KV (W7900D gfx1100, R9700 gfx1201).
 SWEEP = Path(__file__).resolve().parents[3] / "tools" / "hk-bench" / "results" / "2026-11-03"
+#: the KV split's sweep (tools/hk-bench/results/<this>/<arch>/prefill-kvsplit-sweep.json)
+KVSPLIT_SWEEP = "2026-11-04"
 #: the bench's models: (head size, kv heads)
 DIMS = {"minicpm5": (128, 2), "qwen3.8": (256, 4), "minicpm-v-tp2": (256, 1)}
 
@@ -537,7 +539,70 @@ def test_the_split_kernels_are_built_with_the_first_ones(monkeypatch):
             built.append(decodes)
             return (lambda *args: None), 16
 
+        kvs = []
         monkeypatch.setattr(vp, "_flash_op", flash_op)
+        monkeypatch.setattr(vp, "_kvs_ops", lambda *key: kvs.append(key[-2:]))
         monkeypatch.setattr(vp, "SPLIT", split)
         vp.unified_attention(**_triton_call([(0, 4096)]))
         assert built == want, (split, built)
+        plan = vp.KVSPLITS[("gfx1100", 128)]
+        assert sorted(kvs) == sorted({(sp, w) for w, sp in plan[2:]}), kvs
+
+
+# ---- the KV split (paged_prefill's kv_splits) for short chunks over long contexts -------------
+
+def test_kvsplit_plan_takes_a_short_chunk_with_exact_sizes(monkeypatch):
+    """A chunk shorter than KVSPLITS' bound is taken with the KV split, its tile by its length;
+    not without the step's sizes, not with HK_VLLM_PREFILL_KVSPLIT=0, not for a long chunk, not
+    with a request of no queries beside decodes, and not on an arch without a measured plan."""
+    from hk.integration import switches
+
+    monkeypatch.setattr(switches, "arch", lambda: "gfx1100")
+    lim, _, (w_short, s_short), (w_long, s_long) = vp.KVSPLITS[("gfx1100", 128)]
+
+    def plan(reqs):
+        a = _triton_call(reqs)
+        st = [(c + q, q) for c, q in reqs]
+        monkeypatch.setattr(vp, "_STATS", {id(a["cu_seqlens_q"]): _stats_of(st)})
+        return a, vp.kvsplit_plan(a)
+
+    a, p = plan([(16384, 32)])
+    assert p == (s_short, w_short)
+    assert plan([(16384, 128)])[1] == (s_long, w_long)
+    assert plan([(16384, 128), (8192, 1), (8192, 1)])[1] == (s_long, w_long)
+    assert plan([(16384, lim)])[1] is None
+    assert plan([(16384, 128), (8192, 1), (0, 0)])[1] is None
+    monkeypatch.setattr(vp, "_STATS", {})
+    assert vp.kvsplit_plan(a) is None
+    a, _ = plan([(16384, 32)])
+    monkeypatch.setattr(vp, "KVSPLIT", False)
+    assert vp.kvsplit_plan(a) is None
+    monkeypatch.setattr(vp, "KVSPLIT", True)
+    monkeypatch.setattr(switches, "arch", lambda: "gfx1030")
+    assert vp.kvsplit_plan(a) is None
+
+
+@pytest.mark.parametrize("arch", ["gfx1100", "gfx1201"])
+def test_every_measured_shape_the_kvsplit_takes_is_a_clear_win(monkeypatch, arch):
+    """The default-on rule's per-shape clause for the KV split, on its own sweep (hk's route as
+    served, against the faster of TRITON_ATTN and ROCM_ATTN): every shape it takes is >= 1.15x,
+    and it takes the short chunks over long contexts on every model."""
+    from hk.integration import switches
+
+    monkeypatch.setattr(switches, "arch", lambda: arch)
+    rows = json.loads((SWEEP.parent / KVSPLIT_SWEEP / arch / "prefill-kvsplit-sweep.json")
+                      .read_text())
+    taken = {}
+    for r in rows:
+        d, hkv = DIMS[r["model"]]
+        reqs = _reqs(r["shape"])
+        a = _triton_call([(s - q, q) for s, q in reqs], d=d, hkv=hkv, page=16)
+        monkeypatch.setattr(vp, "_STATS", {id(a["cu_seqlens_q"]): _stats_of(reqs)})
+        if vp.kvsplit_plan(a) is None:
+            continue
+        u = r["us"]
+        sp = min(u["triton"], u["rocm_attn"]) / u["hk"]
+        assert sp >= 1.15, (arch, r["model"], r["shape"], sp)
+        taken.setdefault(r["model"], set()).add(r["shape"])
+    for model in DIMS:
+        assert "32768:32" in taken.get(model, ()), (model, sorted(taken.get(model, ())))

@@ -62,7 +62,7 @@ def paged_prefill_kernel(name: str, *, head_dim: int = 128, group: int = 4,
                          max_vgprs: int = 256, min_occupancy: int = 1,
                          layout: str = "hk", page: int = 16, dsplit: bool = False,
                          decodes: bool = False, vt_pages: bool = False,
-                         kv_order: str = "planes"):
+                         kv_order: str = "planes", kv_splits: int = 1):
     """Causal paged prefill: `q` and `o` are the engine's (tokens, heads *
     head_dim) rows, `q_start` the batch's query_start_loc.
 
@@ -113,6 +113,14 @@ def paged_prefill_kernel(name: str, *, head_dim: int = 128, group: int = 4,
     the register transpose. A request's pages are consecutive slots after the earlier requests'
     (the same order the pack uses); K still comes through the block table.
 
+    `kv_splits` (layout="flash", decodes=False): each Q tile's KV walk is cut into that many runs
+    of blocks, a workgroup each (the grid's first extent times kv_splits), for a short chunk over a
+    long context -- a few Q tiles that would leave the card idle. A workgroup then writes its
+    normalised partial and (m, l) instead of the answer: the kernel takes `o_part` (1, kv_splits,
+    requests * tiles * Q tile rows, heads * head_dim) bf16 and `ml_part` (kv_splits, heads, 2,
+    requests * tiles * Q tile rows) fp32 after `o` (which it does not write), a request's rows at
+    request * tiles * Q tile rows on; `merge_kernel` writes `o` from them.
+
     `dsplit` (head_dim 256): a query row's head_dim is split between a pair of
     warps, each holding its half of Q and of O (a d256 row in one warp is 256
     VGPRs of Q and O alone). Each computes its half's partial S, the pair adds
@@ -127,6 +135,8 @@ def paged_prefill_kernel(name: str, *, head_dim: int = 128, group: int = 4,
                          f"layout='flash'")
     if vt_pages and not flash:
         raise ValueError("vt_pages is layout='flash''s")
+    if kv_splits > 1 and not (flash and not decodes):
+        raise ValueError("kv_splits: layout='flash' with decodes=False")
     vstraight = rocm or vt_pages                   # V^T pages staged as they are
     paged = rocm or flash                   # vLLM's pages, the device-side grid
     if dsplit and (warps % 2 or head_dim % 32):
@@ -185,7 +195,8 @@ def paged_prefill_kernel(name: str, *, head_dim: int = 128, group: int = 4,
              v_cache: hk.Tensor[bf16], block_table: hk.Tensor[i32],
              seq_lens: hk.Tensor[i32], q_start: hk.Tensor[i32],
              tiles: hk.Tensor[i32], o: hk.Tensor[bf16],
-             qh: hk.Tensor[bf16, "strided"] = None, oh: hk.Tensor[bf16] = None):
+             qh: hk.Tensor[bf16, "strided"] = None, oh: hk.Tensor[bf16] = None,
+             o_part: hk.Tensor[bf16] = None, ml_part: hk.Tensor[fp32] = None):
         g = hk.group(warps)
         k_s = hk.lds.alloc(st_k, name="k_s")
         vt_s = hk.lds.alloc(st_vt, name="vt_s")
@@ -216,6 +227,9 @@ def paged_prefill_kernel(name: str, *, head_dim: int = 128, group: int = 4,
 
         if paged:
             qb = hk.arch.block_idx.x
+            if kv_splits > 1:
+                split = qb % kv_splits
+                qb = qb // kv_splits
             head = hk.arch.block_idx.y
             req = hk.arch.block_idx.z
         else:
@@ -275,7 +289,12 @@ def paged_prefill_kernel(name: str, *, head_dim: int = 128, group: int = 4,
             q_r = [q[hk.elem_coord(0, 0, q0 + q_local, col + 16 * kk)]
                    .load(ty_q, bounded=left) for kk in range(d_frags)]
         o_c = [hk.zeros(ty_o) for _ in range(d_frags)]
-        m_run = hk.neg_infty(ty_vec)
+        if kv_splits > 1:
+            # finite: a split may hold no key a row sees, and -inf - -inf is NaN
+            m_run = hk.zeros(ty_vec)
+            m_run -= 1e30
+        else:
+            m_run = hk.neg_infty(ty_vec)
         l_run = hk.zeros(ty_vec)
         if not vstraight:
             # V^T through registers: this warp's chunk(s) of its half, each v_bands
@@ -390,7 +409,14 @@ def paged_prefill_kernel(name: str, *, head_dim: int = 128, group: int = 4,
                             for tt in range(vt_frags):
                                 gr_vt.store_frag(v_t, c_chunk[i] * vt_frags + tt, w)
 
-        load_kv(0)
+        if kv_splits > 1:
+            # this split's run of KV blocks, [kv_first, kv_first + kv_blocks)
+            per = hk.max(hk.cdiv(kv_blocks, kv_splits), 1)
+            kv_first = split * per
+            kv_blocks = hk.max(hk.min(kv_blocks, kv_first + per) - kv_first, 0)
+        else:
+            kv_first = 0
+        load_kv(kv_first)
 
         def qk(s_f):
             for kk in range(d_frags):
@@ -449,6 +475,8 @@ def paged_prefill_kernel(name: str, *, head_dim: int = 128, group: int = 4,
                     hk.arch.setprio(0)
 
         for kb in range(kv_blocks):
+            if kv_splits > 1:
+                kb = kv_first + kb
             kv_lo = kb * kv_block
             hk.arch.barrier()
             commit_kv()
@@ -475,6 +503,25 @@ def paged_prefill_kernel(name: str, *, head_dim: int = 128, group: int = 4,
                     qk(s_f)
                     softmax_pv(s_f, kv_lo)
 
+        if kv_splits > 1:
+            # a partial: normalised O and its (m, l), at the (request, row)'s slot -- a request a
+            # run of tiles.rows Q tiles -- for merge_kernel; rows past the request's end and
+            # splits with no key are weightless (l = 0)
+            slot = req * tiles.rows * q_tile + q_local
+            l_safe = l_run.copy()
+            l_safe += 1e-30
+            for i, c in enumerate(o_c):
+                c /= l_safe
+                o_part[hk.elem_coord(0, split, slot, col + 16 * i)].store(hk.transpose(c),
+                                                                          bounded=True)
+            if dsplit:
+                if half == 0:
+                    ml_part[hk.elem_coord(split, head, 0, slot)] = m_run
+                    ml_part[hk.elem_coord(split, head, 1, slot)] = l_run
+            else:
+                ml_part[hk.elem_coord(split, head, 0, slot)] = m_run
+                ml_part[hk.elem_coord(split, head, 1, slot)] = l_run
+            return
         # A warp past the request's end saw only masked keys past its own
         # position and has l = 0 in no row it writes: its stores are bounded
         # to nothing.
@@ -494,14 +541,24 @@ def paged_prefill_kernel(name: str, *, head_dim: int = 128, group: int = 4,
     # the cache's K is strided for layout="rocm" (the annotation is a string
     # under `from __future__ import annotations`; this is its value)
     body.__annotations__["k_cache"] = k_ty
-    if not packed:
-        # the eight tensors; qh and oh are the packed decode's (their defaults are never used)
+    if kv_splits > 1:
+        # the eight tensors and the partials' two
         import inspect  # noqa: PLC0415
 
         sig = inspect.signature(body)
-        body.__signature__ = sig.replace(parameters=list(sig.parameters.values())[:8])
+        ps = list(sig.parameters.values())
+        body.__signature__ = sig.replace(parameters=ps[:8] + ps[10:])
+    else:
+        # the eight tensors, and qh and oh for the packed decodes (defaults never used)
+        import inspect  # noqa: PLC0415
+
+        sig = inspect.signature(body)
+        body.__signature__ = sig.replace(
+            parameters=list(sig.parameters.values())[:10 if packed else 8])
 
     def _grid(p):
+        if kv_splits > 1:
+            return (p.tiles.rows * kv_splits, p.o.cols // head_dim, p.seq_lens.cols)
         if paged:
             return (p.tiles.rows, p.o.cols // head_dim, p.seq_lens.cols)
         return (p.tiles.rows, p.o.cols // head_dim, 1)
@@ -512,6 +569,77 @@ def paged_prefill_kernel(name: str, *, head_dim: int = 128, group: int = 4,
 
 #: (head_dim, group, scale) -> kernel.
 _KERNELS: Dict[tuple, object] = {}
+
+
+def merge_kernel(name: str, *, head_dim: int = 128, kv_splits: int = 2, q_tile: int = Q_TILE,
+                 cols: int = 32):
+    """paged_prefill_kernel's `kv_splits` merge: a request's rows of `o` from the splits'
+    partials, each weighed by l * exp2(m - the rows' max). Tensors: `seq_lens` (the grid's
+    requests; not read), `q_start`, `tiles` (the same view the walk took), `o_part`, `ml_part`,
+    `o`. A one-warp workgroup a (16 rows of a request's Q tiles, head, request), `cols` columns of
+    head_dim at a time; one-query requests (decodes=False's) and rows past a request's end are
+    not written."""
+    cols = min(cols, head_dim)
+    if head_dim % cols:
+        raise ValueError(f"head_dim {head_dim}: a multiple of cols={cols}")
+    t_o = hk.RT(fp32, 16, cols, "row")
+    t_b = hk.RT(bf16, 16, cols, "row")
+    cv = hk.col_vec(t_o)
+
+    def body(seq_lens: hk.Tensor[i32], q_start: hk.Tensor[i32], tiles: hk.Tensor[i32],
+             o_part: hk.Tensor[bf16], ml_part: hk.Tensor[fp32], o: hk.Tensor[bf16]):
+        r0 = hk.arch.block_idx.x * 16
+        head = hk.arch.block_idx.y
+        req = hk.arch.block_idx.z
+        q0 = q_start[hk.elem_coord(0, 0, 0, req)].load_scalar(invariant=True)
+        q_len = q_start[hk.elem_coord(0, 0, 0, req + 1)].load_scalar(invariant=True) - q0
+        left = hk.min(hk.max(q_len - r0, 0), 16) * hk.min(hk.max(q_len - 1, 0), 1)
+        slot = req * tiles.rows * q_tile + r0
+        ms = [ml_part[hk.elem_coord(s, head, 0, slot)].load(cv) for s in range(kv_splits)]
+        top = hk.full(cv, -1e30)
+        for m in ms:
+            top.max_(m)
+        tot = hk.zeros(cv)
+        for s, m in enumerate(ms):
+            m -= top
+            m.exp2_()
+            m *= ml_part[hk.elem_coord(s, head, 1, slot)].load(cv)
+            tot += m
+        tot += 1e-30
+        for c0 in range(0, head_dim, cols):
+            acc = hk.zeros(t_o)
+            for s, m in enumerate(ms):
+                o_s = o_part[hk.elem_coord(0, s, slot, head * head_dim + c0)].load(
+                    t_b, bounded=True).to(fp32)
+                o_s *= m[:, None]
+                acc += o_s
+            acc /= tot[:, None]
+            o[hk.elem_coord(0, 0, q0 + r0, head * head_dim + c0)].store(acc.to(bf16),
+                                                                     bounded=left)
+
+    body.__name__ = name
+    return hk.kernel(body, warps=1, name=name,
+                     grid=lambda p: (p.tiles.rows * (q_tile // 16), p.o.cols // head_dim,
+                                     p.seq_lens.cols))
+
+
+_SPLIT_PARTS: dict = {}
+
+
+def split_parts(kv_splits: int, rows: int, heads: int, head_dim: int, device):
+    """`o_part` and `ml_part` for the kv_splits walk over `rows` = requests * tiles * Q tile
+    rows (at least): one pair a (device, splits, heads, head_dim), grown by powers of two, so a
+    launch allocates nothing once warm."""
+    import torch  # noqa: PLC0415
+
+    key = (str(device), kv_splits, heads, head_dim)
+    have = _SPLIT_PARTS.get(key)
+    if have is None or have[0].shape[2] < rows:
+        cap = 1 << max(0, (max(1, rows) - 1).bit_length())
+        have = _SPLIT_PARTS[key] = (
+            torch.empty(1, kv_splits, cap, heads * head_dim, device=device, dtype=torch.bfloat16),
+            torch.empty(kv_splits, heads, 2, cap, device=device, dtype=torch.float32))
+    return have
 
 
 def _native_cdna() -> bool:
@@ -739,4 +867,5 @@ def split_scratch(n_slots: int, n_heads: int, head_dim: int, device):
 
 __all__ = ["paged_prefill_kernel", "kernel_for", "rocm_kernel_for", "rocm_views", "q_tiles",
            "vt_pack_kernel", "vt_pack_span",
-           "work_list", "split_plan", "split_scratch", "Q_TILE", "KV_BLOCK"]
+           "work_list", "split_plan", "split_scratch", "merge_kernel", "split_parts", "Q_TILE",
+           "KV_BLOCK"]

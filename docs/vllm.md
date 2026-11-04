@@ -143,6 +143,24 @@ decodes, some mixed batches were slower split (0.26-1.03x), so those stay declin
 `HK_VLLM_PREFILL_SPLIT=0` turns the split off, and the guard then declines the
 whole batch as before.
 
+**A short chunk over a long context is split along the KV axis.** The new tokens
+of a request whose prompt is mostly a prefix-cache hit, or a chunked prefill's
+last chunk, are a few query rows over thousands of keys: a few query tiles, so
+hk's prefill kernel and vLLM's both leave most of the card idle, and the guard
+declined such calls. With the step's exact sizes, the route now takes them with
+`hk.ops.paged_prefill`'s `kv_splits`: each query tile walks the context in
+runs, a workgroup each, writes its normalised partial and (m, l), and
+`paged_prefill.merge_kernel` combines a request's runs. Decode rows in the same
+batch go to vLLM's kernel, as in the split above. It is taken where the longest
+query is short and the longest sequence long enough, per GPU and head size
+(`vllm_prefill.KVSPLITS`), from a sweep of every tile size and split count that
+builds against TRITON_ATTN; the route as served was then measured against the
+faster of TRITON_ATTN's and ROCM_ATTN's kernels on 36 shapes a model (contexts
+of 1k-32k tokens, chunks of 16-2048, batches of short chunks, chunks beside
+decodes; `tools/hk-bench/results/2026-11-04/<gpu>/prefill-kvsplit-sweep.json`),
+and every call it takes clears the default-on rule's bar there. A KV-split call
+is counted as `hk` and as `kvsplit`; `HK_VLLM_PREFILL_KVSPLIT=0` turns it off.
+
 **On ROCM_ATTN no batch is declined.** ROCM_ATTN hands the prefix-prefill only
 its requests of more than one query; its own paged decode keeps the decode rows.
 So neither kind of batch above reaches hk's kernel there. Measured in one process

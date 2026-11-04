@@ -29,7 +29,8 @@ from . import _common, engine
 
 PREFIXES = ("vllm",)
 
-PATCH = engine.Patch("hk_vllm::prefill", paths=("hk", "fallback", "decode", "declined", "split"),
+PATCH = engine.Patch("hk_vllm::prefill",
+                     paths=("hk", "fallback", "decode", "declined", "split", "kvsplit"),
                      graph="safe")
 
 #: The GPUs the kernels are built and tested for: RDNA3 and RDNA4 (wave32, 64 KiB of LDS a
@@ -286,6 +287,81 @@ def _flash_op(head_dim: int, group: int, scale: Optional[float], page: int = 16,
                 kv_order=order), 16 * (warps // 2 if ds else warps)
         _FLASH[key] = _built(make)
     return _FLASH[key]
+
+
+#: KV-split prefill (paged_prefill's kv_splits) for a short chunk over a long context: its few Q
+#: tiles a head walk the context in runs, a workgroup each, and merge_kernel combines them.
+#: HK_VLLM_PREFILL_KVSPLIT=0 turns it off; =N (N > 1) takes every prefill call with N splits,
+#: the guard aside (to measure them); HK_VLLM_PREFILL_KVS_WARPS sets its tile (warps x 16 rows).
+_KVS_ENV = __import__("os").environ.get("HK_VLLM_PREFILL_KVSPLIT", "1").strip().lower()
+KVSPLIT = _KVS_ENV not in ("0", "off", "no", "false")
+KVSPLIT_FORCE = int(_KVS_ENV) if _KVS_ENV.isdigit() and int(_KVS_ENV) > 1 else 0
+KVS_WARPS = int(__import__("os").environ.get("HK_VLLM_PREFILL_KVS_WARPS", "0") or 0)
+_KVS_OPS: dict = {}
+
+
+def _kvs_ops(head_dim: int, group: int, scale: Optional[float], page: int, order: str,
+             splits: int, warps: int):
+    """(walk launch, merge launch, Q tile rows) for kv_splits = `splits`, decodes=False, or None
+    (not built spill-free here)."""
+    key = (head_dim, group, scale, page, order, splits, warps)
+    if key not in _KVS_OPS:
+        from ..ops import paged_prefill as pp  # noqa: PLC0415
+
+        ds = head_dim > 128
+        tile = 16 * (warps // 2 if ds else warps)
+        tag = "" if scale is None else "_s%08x" % (hash(scale) & 0xffffffff)
+        walk = _built(lambda: (pp.paged_prefill_kernel(
+            f"paged_prefill_flash_d{head_dim}_g{group}{'_ds' if ds else ''}{_ptag(page)}"
+            f"{_otag(order)}_nd_w{warps}_ks{splits}{tag}", head_dim=head_dim, group=group,
+            scale=scale, layout="flash", dsplit=ds, warps=warps, decodes=False, page=page,
+            kv_order=order, kv_splits=splits), tile))
+        merge = _built(lambda: (pp.merge_kernel(
+            f"paged_prefill_merge_d{head_dim}_ks{splits}_t{tile}", head_dim=head_dim,
+            kv_splits=splits, q_tile=tile), tile))
+        _KVS_OPS[key] = (walk[0], merge[0], tile) if walk and merge else None
+    return _KVS_OPS[key]
+
+
+def kvs_warps(head_dim: int) -> int:
+    return KVS_WARPS or (8 if head_dim > 128 else 4)
+
+
+#: (arch, head size class) -> (the longest query below this, the longest sequence at least,
+#: (warps, splits) up to SHORT_Q queries, (warps, splits) past): where the KV split takes a
+#: prefill call, in place of both the guard's verdict and the unsplit kernel. Fitted on the
+#: 36-shape sweep of three models (contexts 1k-32k x chunks 16-2048, batches of short chunks,
+#: chunks beside decodes) with every (warps, splits) of {4, 8} x {4, 8, 16} that builds
+#: spill-free (d256: 8 warps), against TRITON_ATTN; the route's own sweep against the faster of
+#: TRITON_ATTN and ROCM_ATTN is tools/hk-bench/results/<date>/<arch>/prefill-kvsplit-sweep.json.
+#: gfx1100: d128 1.27-5.2x up to 512-token chunks (longer ones tie the unsplit kernel); d256
+#: 2.5-8.5x up to 128 (the unsplit kernel is as fast past). gfx1201: d128 up to 256 (the unsplit
+#: kernel faster from 512), 1.4-3.3x over 4k+ but 1.06x over 1k; d256 1.5-5.1x up to 256 over 4k+,
+#: ~1.15x over 1k: both from 2048 tokens.
+KVSPLITS = {("gfx1100", 128): (1024, 0, (4, 8), (8, 8)),
+            ("gfx1100", 256): (256, 0, (8, 4), (8, 4)),
+            ("gfx1201", 128): (512, 2048, (4, 8), (8, 8)),
+            ("gfx1201", 256): (512, 2048, (8, 8), (8, 4))}
+SHORT_Q = 64
+
+
+def kvsplit_plan(a: dict):
+    """(splits, warps) where the KV split takes this prefill call, or None: exact sizes known;
+    beside decodes (which go to vLLM's kernel, as in SPLIT) no request without queries, and SPLIT
+    on; the longest query short enough and the longest sequence long enough (KVSPLITS)."""
+    from . import switches  # noqa: PLC0415
+
+    if not KVSPLIT:
+        return None
+    st = _step_stats(a)
+    if st is None or not st["max_q"] or (st["decodes"] and (st["empty"] or not SPLIT)):
+        return None
+    d = int(a["q"].shape[-1])
+    plan = KVSPLITS.get((switches.arch(), 256 if d > 128 else 128))
+    if plan is None or st["max_q"] >= plan[0] or st["pre_ctx"] < plan[1]:
+        return None
+    w, sp = plan[2] if st["max_q"] <= SHORT_Q else plan[3]
+    return sp, w
 
 
 #: V^T pre-pack for TRITON_ATTN (paged_prefill vt_pages): the batch's V pages transposed once a
@@ -843,6 +919,10 @@ def unified_attention(*args, **kwargs):
     the whole batch, decodes included -- where it takes a call with prefill in it; with
     HK_VLLM_DECODE=1, hk's split decode where it takes a decode-only call."""
     a = kwargs if not args else _U_SIG.bind(*args, **kwargs).arguments
+    if int(a.get("max_seqlen_q", 1)) > 1 and not KVSPLIT_FORCE:
+        plan = kvsplit_plan(a)
+        if plan is not None and _kvsplit(a, *plan):
+            return None
     if DECODE and int(a.get("max_seqlen_q", 1)) <= 1:
         if not d_why_not(a) and _decode(a):
             PATCH.count("decode")
@@ -870,6 +950,8 @@ def unified_attention(*args, **kwargs):
     if u_why_not(a):
         PATCH.count("fallback")
         return _ORIG_U(*args, **kwargs)
+    if KVSPLIT_FORCE and _kvsplit(a, KVSPLIT_FORCE):
+        return None
     decodes = not split
     q, out = a["q"], a["out"]
     n, h, d = q.shape
@@ -884,6 +966,8 @@ def unified_attention(*args, **kwargs):
         _flash_op(d, h // a["k"].shape[2], scale, page, order, False)
         if VT and d <= 128:
             _vt_ops(d, h // a["k"].shape[2], scale, page, order, False)
+    if decodes:
+        _kvs_warm(a)                        # the KV split's, likewise
     if got is None:
         PATCH.count("fallback")
         return _ORIG_U(*args, **kwargs)
@@ -921,6 +1005,65 @@ def unified_attention(*args, **kwargs):
         _ORIG_U(**b)
         _compare(out, ref, list(range(n)))
     return None
+
+
+def _kvs_warm(a: dict) -> None:
+    """The KV split's kernels, both plans, built with the whole-batch ones (vLLM's warm-up run is
+    such a batch), so the first short chunk of a fresh cache does not compile them on the serving
+    path."""
+    from . import switches  # noqa: PLC0415
+
+    q, k = a["q"], a["k"]
+    d = int(q.shape[-1])
+    plan = KVSPLITS.get((switches.arch(), 256 if d > 128 else 128)) if KVSPLIT else None
+    if plan is None:
+        return
+    kv = _flash_kv(k, a["v"])
+    sc = a["softmax_scale"]
+    scale = None if sc is None or sc == d ** -0.5 else float(sc)
+    for w, sp in {plan[2], plan[3]}:
+        _kvs_ops(d, int(q.shape[1]) // int(k.shape[2]), scale, int(k.shape[1]), kv[1], sp, w)
+
+
+def _kvsplit(a: dict, splits: int, warps: int = 0) -> bool:
+    """A prefill call with paged_prefill's kv_splits = `splits` and its merge; vLLM's kernel
+    takes the decode rows, if any (`_split_decodes`). False where it does not build here."""
+    if u_why_not(a):
+        return False
+    q, out = a["q"], a["out"]
+    n, h, d = q.shape
+    kv, order = _flash_kv(a["k"], a["v"])
+    sc = a["softmax_scale"]
+    scale = None if sc is None or sc == d ** -0.5 else float(sc)
+    page = int(a["k"].shape[1])
+    got = _kvs_ops(d, h // a["k"].shape[2], scale, page, order, splits, warps or kvs_warps(d))
+    if got is None:
+        return False
+    walk, merge, tile = got
+    from ..ops import paged_prefill as pp  # noqa: PLC0415
+
+    used = a["seqused_k"]
+    tiles = pp.q_tiles(int(a["max_seqlen_q"]), q.device, tile)
+    o_part, ml_part = pp.split_parts(splits, len(used) * tiles.shape[0] * tile, h, d, q.device)
+    o2 = out.reshape(n, h * d)
+    walk(q.reshape(n, h * d), kv, kv, a["block_table"], used, a["cu_seqlens_q"], tiles, o2,
+         o_part, ml_part)
+    merge(used, a["cu_seqlens_q"], tiles, o_part, ml_part, o2)
+    st = _step_stats(a)
+    if st is not None and st["decodes"]:
+        _split_decodes(a)
+        PATCH.count("split")
+    PATCH.count("kvsplit")
+    PATCH.count("hk")
+    if SHADOW:
+        import torch  # noqa: PLC0415
+
+        ref = torch.empty_like(out)
+        b = dict(a)
+        b["out"] = ref
+        _ORIG_U(**b)
+        _compare(out, ref, list(range(n)))
+    return True
 
 
 _U_SIG = None
