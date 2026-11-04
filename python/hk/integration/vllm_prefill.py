@@ -642,11 +642,14 @@ def decode_switches(env: str):
 
 DECODE, DECODE_D128 = decode_switches(__import__("os").environ.get("HK_VLLM_DECODE", ""))
 
-#: Decode batches hk takes: at head_dim 128, up to this many (request, kv head) pairs -- past
-#: it vLLM's Triton kernel has the machine full and the two read the cache at the same rate
-#: (tools/hk-bench/attention_bench.py: MiniCPM5-2B, B8 at 8k-32k: 0.98-1.0x); at 256 every
-#: batch (Qwen3.8-27B: 1.06-2.2x at B1-B16).
-DECODE_MAX_PAIRS_D128 = 8
+#: Decode batches hk takes: at head_dim 128, up to this many (request, kv head) pairs; at 256
+#: every batch (Qwen3.8-27B: 1.06-2.2x at B1-B16). Serving MiniCPM5-2B on a W7900D (TRITON_ATTN +
+#: TunableOp, 3 alternating starts; HK_VLLM_DECODE=1 against vLLM's decode): one request, TPOT
+#: 1.03 / 1.08 / 1.20 / 1.40x at 4k / 8k / 16k / 32k tokens; four requests (8 pairs) 0.98x at
+#: 4k-8k -- so 4 pairs, one or two requests. Decided on the batch alone, not on its lengths: a
+#: decode-only step runs as a CUDA graph captured once a batch size, so what the route takes at
+#: capture is what every replay runs, whatever the lengths.
+DECODE_MAX_PAIRS_D128 = 4
 #: The GPUs the decode is measured and tested on.
 DECODE_ARCHES = ("gfx1100",)
 _DEC: dict = {}
@@ -746,7 +749,7 @@ def _decode(a: dict) -> bool:
     kv, order = _flash_kv(k, a["v"])
     sc = a["softmax_scale"]
     scale = None if sc is None or sc == d ** -0.5 else float(sc)
-    splits, warps, v_both = pd.plan(reqs, hkv, d, page)
+    splits, warps, v_both = pd.plan(reqs, hkv, d, page, wgps=pd.device_wgps(q.device))
     ops = _decode_ops(d, group, page, order, splits, scale, warps, v_both)
     scratch = _decode_scratch(q.device, reqs * splits, hkv, group, d) if ops else None
     if ops is None or scratch is None:

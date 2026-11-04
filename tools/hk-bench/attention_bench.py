@@ -222,7 +222,7 @@ def hk_decode_arm(case, splits=None, warps=None, step=8, v_both=None):
     m = case.m
     hq, hkv, d, page = m["hq"], m["hkv"], m["d"], m["page"]
     grp, n = hq // hkv, len(case.reqs)
-    ps, pw, pv = pd.plan(n, hkv, d, page)
+    ps, pw, pv = pd.plan(n, hkv, d, page, wgps=pd.device_wgps(case.q.device))
     s, warps = splits or ps, warps or pw
     v_both = pv if v_both is None else v_both
     try:

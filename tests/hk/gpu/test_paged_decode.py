@@ -312,9 +312,8 @@ def _arch_in_route() -> bool:
 
 @pytest.mark.skipif(not _arch_in_route(), reason="the route's arches")
 @pytest.mark.parametrize("head_dim,h_kv,group,page,kv_order,reqs", [
-    (128, 2, 8, 16, "planes", 3),          # MiniCPM5-2B
-    (128, 2, 8, 16, "planes", 1),          # (with the padding: 4 pairs, 32 splits of 2 warps)
-    (128, 2, 8, 16, "tokens", 3),
+    (128, 2, 8, 16, "planes", 1),          # MiniCPM5-2B, with the padding: 4 pairs, the most
+    (128, 2, 8, 16, "tokens", 1),          # the head_dim-128 decode takes (DECODE_MAX_PAIRS_D128)
     (256, 4, 6, 784, "heads", 8),          # Qwen3.8-27B
     (256, 2, 8, 2064, "tokens", 2),        # Qwen3.6
 ])
@@ -363,6 +362,52 @@ def test_the_route_takes_a_decode_batch_and_matches(monkeypatch, head_dim, h_kv,
     assert torch.all(out[reqs:] == 7.0)
 
 
+@pytest.mark.parametrize("kv_order", ["planes", "tokens"])
+def test_a_larger_d128_decode_batch_is_vllms(monkeypatch, kv_order):
+    """HK_VLLM_DECODE=1, head_dim 128, 3 requests and a graph's padding request: 8 (request, kv
+    head) pairs, past DECODE_MAX_PAIRS_D128 (four requests were 0.98x in serving). The call goes
+    to vLLM's unified_attention with the caller's own tensors, counted as a fallback; its output
+    is vLLM's."""
+    import inspect
+
+    from hk.integration import vllm_prefill as vp
+
+    seen = []
+
+    def unified_attention(q, k, v, out, cu_seqlens_q, max_seqlen_q, seqused_k, max_seqlen_k,
+                          softmax_scale, causal, window_size, block_table, softcap, q_descale,
+                          k_descale, v_descale, seq_threshold_3D=None,
+                          num_par_softmax_segments=None, softmax_segm_output=None,
+                          softmax_segm_max=None, softmax_segm_expsum=None, alibi_slopes=None,
+                          sinks=None):
+        seen.append((q, out))
+        out.fill_(3.0)
+
+    monkeypatch.setattr(vp, "_ORIG_U", unified_attention)
+    monkeypatch.setattr(vp, "_U_SIG", inspect.signature(unified_attention))
+    monkeypatch.setattr(vp, "DECODE", True)
+    monkeypatch.setattr(vp, "DECODE_D128", True)
+    q, k, v, table, lens, q_start = _case([37, 1537, 3037], head_dim=128, h_kv=2, group=8,
+                                          page=16, kv_order=kv_order, pad=1)
+    cache = _flash(k, v, kv_order)
+    nb = k.shape[0]
+    if kv_order == "planes":
+        kc, vc = cache.view(nb, 2, 16, 2, 128).unbind(1)
+    else:
+        both = cache.view(nb, 16, 2, 256)
+        kc, vc = both[..., :128], both[..., 128:]
+    out = torch.full_like(q, 7.0)
+    before = dict(vp.PATCH.stats)
+    vp.unified_attention(q=q, k=kc, v=vc, out=out, cu_seqlens_q=q_start, max_seqlen_q=1,
+                         seqused_k=lens, max_seqlen_k=int(lens.max()), softmax_scale=128 ** -0.5,
+                         causal=True, window_size=(-1, -1), block_table=table, softcap=0,
+                         q_descale=None, k_descale=None, v_descale=None)
+    assert vp.PATCH.stats["decode"] == before["decode"]
+    assert vp.PATCH.stats["fallback"] == before["fallback"] + 1
+    assert len(seen) == 1 and seen[0][0] is q and seen[0][1] is out
+    assert torch.all(out == 3.0)
+
+
 @pytest.mark.parametrize("env,on,d128", [("", True, False), ("1", True, True), ("0", False, False),
                                          ("off", False, False)])
 def test_the_decode_switch(monkeypatch, env, on, d128):
@@ -374,4 +419,5 @@ def test_the_decode_switch(monkeypatch, env, on, d128):
     monkeypatch.setattr(vp, "DECODE_D128", d128)
     assert vp.decode_takes(2, 2, 128) == d128
     assert not vp.decode_takes(8, 2, 128)
+    assert not vp.decode_takes(4, 2, 128)    # 8 pairs: 0.98x in serving at 4k-8k
     assert vp.decode_takes(16, 4, 256)

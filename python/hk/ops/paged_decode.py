@@ -480,16 +480,38 @@ def plan_splits(n_reqs: int, n_kv_heads: int, max_blocks: Optional[int] = None) 
     return want
 
 
-def plan(n_reqs: int, n_kv_heads: int, head_dim: int, page: int = 16):
+#: The splits a small batch at head_dim 128 takes, as many as the GPU has WGPs, in this range
+SMALL_SPLITS = (16, 64)
+_WGPS: dict = {}
+
+
+def device_wgps(device) -> int:
+    """The WGPs of `device` (torch's multi_processor_count on RDNA: 48 on a W7900D, 32 on an
+    R9700), read once a device."""
+    import torch  # noqa: PLC0415
+
+    i = torch.device(device).index
+    i = torch.cuda.current_device() if i is None else i
+    if i not in _WGPS:
+        _WGPS[i] = torch.cuda.get_device_properties(i).multi_processor_count
+    return _WGPS[i]
+
+
+def plan(n_reqs: int, n_kv_heads: int, head_dim: int, page: int = 16,
+         wgps: Optional[int] = None):
     """(splits, warps, v_both) for a decode batch. At head_dim 128 and up to 4 (request, kv
-    head) pairs, 32 splits of 2 warps: more workgroups at the same warps, and one merge round
-    (tools/hk-bench/attention_bench.py, MiniCPM5-2B: at 2 requests 26.8 us against 30.2 for
-    16 x 4 at 4k tokens, 38.5 against 40.2 at 8k; at one request 25.5 against 26-30 for
-    32 x 4 at 8k), with both of a block's V bands in flight on pages of 16 tokens.
+    head) pairs: 2 warps a workgroup, both of a block's V bands in flight on pages of 16 tokens,
+    and as many splits as the GPU has WGPs (`wgps`; MAX_SPLITS when not given), within
+    SMALL_SPLITS. On a W7900D (48 WGPs), MiniCPM5-2B at one request, 3 processes
+    (tools/hk-bench/attention_bench.py): 48 splits 17.7-18.3 / 25.0-25.3 / 36.1-36.5 /
+    57.0-57.4 us at 4k / 8k / 16k / 32k tokens, against 17.5-19.3 / 25.4-29.3 / 36.8-40.5 /
+    59.6-62.8 for 32 -- whose time depended on the process (where 64 workgroups landed); at two
+    requests 2-4% faster. From the batch and the device alone, so a CUDA graph's replays keep it.
     Otherwise `plan_splits`, 4 warps."""
     pairs = max(1, n_reqs * n_kv_heads)
     if head_dim <= 128 and pairs <= 4:
-        return MAX_SPLITS, 2, page == 16
+        lo, hi = SMALL_SPLITS
+        return (MAX_SPLITS if wgps is None else min(max(wgps, lo), hi)), 2, page == 16
     return plan_splits(n_reqs, n_kv_heads), 4, False
 
 
