@@ -878,6 +878,12 @@ def unified_attention(*args, **kwargs):
     scale = None if sc is None or sc == d ** -0.5 else float(sc)
     page = int(a["k"].shape[1])
     got = _flash_op(d, h // a["k"].shape[2], scale, page, order, decodes)
+    if decodes and SPLIT:
+        # the split's decodes=False kernels, built with the first ones (vLLM's warm-up run) so
+        # the first mixed batch of a fresh cache does not compile them on the serving path
+        _flash_op(d, h // a["k"].shape[2], scale, page, order, False)
+        if VT and d <= 128:
+            _vt_ops(d, h // a["k"].shape[2], scale, page, order, False)
     if got is None:
         PATCH.count("fallback")
         return _ORIG_U(*args, **kwargs)
