@@ -29,7 +29,7 @@ from . import _common, engine
 
 PREFIXES = ("vllm",)
 
-PATCH = engine.Patch("hk_vllm::prefill", paths=("hk", "fallback", "decode", "declined"),
+PATCH = engine.Patch("hk_vllm::prefill", paths=("hk", "fallback", "decode", "declined", "split"),
                      graph="safe")
 
 #: The GPUs the kernels are built and tested for: RDNA3 and RDNA4 (wave32, 64 KiB of LDS a
@@ -270,8 +270,8 @@ def _otag(order: str) -> str:
 
 
 def _flash_op(head_dim: int, group: int, scale: Optional[float], page: int = 16,
-              order: str = "planes"):
-    key = (head_dim, group, scale, page, order)
+              order: str = "planes", decodes: bool = True):
+    key = (head_dim, group, scale, page, order, decodes)
     if key not in _FLASH:
         from ..ops import paged_prefill as pp  # noqa: PLC0415
 
@@ -281,8 +281,8 @@ def _flash_op(head_dim: int, group: int, scale: Optional[float], page: int = 16,
             tag = "" if scale is None else "_s%08x" % (hash(scale) & 0xffffffff)
             return pp.paged_prefill_kernel(
                 f"paged_prefill_flash_d{head_dim}_g{group}{'_ds' if ds else ''}{_ptag(page)}"
-                f"{_otag(order)}{tag}", head_dim=head_dim, group=group, scale=scale,
-                layout="flash", dsplit=ds, warps=warps, decodes=True, page=page,
+                f"{_otag(order)}{'' if decodes else '_nd'}{tag}", head_dim=head_dim, group=group,
+                scale=scale, layout="flash", dsplit=ds, warps=warps, decodes=decodes, page=page,
                 kv_order=order), 16 * (warps // 2 if ds else warps)
         _FLASH[key] = _built(make)
     return _FLASH[key]
@@ -299,9 +299,9 @@ _VT_SCRATCH: dict = {}
 
 
 def _vt_ops(head_dim: int, group: int, scale: Optional[float], page: int = 16,
-            order: str = "planes"):
+            order: str = "planes", decodes: bool = True):
     """(pack launch, vt_pages launch, Q tile rows), or None (not built here, or head_dim 256)."""
-    key = (head_dim, group, scale, page, order)
+    key = (head_dim, group, scale, page, order, decodes)
     if key not in _VT_OPS:
         _VT_OPS[key] = None
         if head_dim <= 128:
@@ -309,9 +309,10 @@ def _vt_ops(head_dim: int, group: int, scale: Optional[float], page: int = 16,
 
             tag = "" if scale is None else "_s%08x" % (hash(scale) & 0xffffffff)
             main = _built(lambda: (pp.paged_prefill_kernel(
-                f"paged_prefill_flashvt_d{head_dim}_g{group}{_ptag(page)}{_otag(order)}{tag}",
+                f"paged_prefill_flashvt_d{head_dim}_g{group}{_ptag(page)}{_otag(order)}"
+                f"{'' if decodes else '_nd'}{tag}",
                 head_dim=head_dim, group=group, scale=scale, layout="flash", warps=12,
-                decodes=True, vt_pages=True, page=page, kv_order=order), 192))
+                decodes=decodes, vt_pages=True, page=page, kv_order=order), 192))
             pack = _built(lambda: (pp.vt_pack_kernel(
                 f"paged_vt_pack_d{head_dim}{_ptag(page)}{_otag(order)}", head_dim=head_dim,
                 page=page, kv_order=order), 0))
@@ -522,7 +523,8 @@ def batch_stats(query_start_loc, seq_lens, num_reqs: int) -> dict:
     dec, pre = q == 1, q > 1
     qp, sp = q[pre], s[pre]
     i = int(np.argmax(qp)) if qp.size else 0
-    return dict(reqs=int(num_reqs), decodes=int(dec.sum()), dec_work=int(s[dec].sum()),
+    return dict(reqs=int(num_reqs), decodes=int(dec.sum()), empty=int((q == 0).sum()),
+                dec_work=int(s[dec].sum()),
                 pre_work=float((qp * (sp - qp) + qp * (qp + 1) / 2).sum()),
                 max_q=int(qp[i]) if qp.size else 0, pre_ctx=int(sp[i]) if qp.size else 0)
 
@@ -554,9 +556,10 @@ def _stats_hook(orig):
     return build
 
 
-def exact_why_not(st: dict, head_dim: int, kv_heads: int, arch: str) -> str:
+def exact_why_not(st: dict, head_dim: int, kv_heads: int, arch: str, split: bool = False) -> str:
     """guard_why_not with a step's exact sizes (`st`: batch_stats): the decodes' real contexts
-    against the prefill's pairs, and the longest prefill's own query and context."""
+    against the prefill's pairs, and the longest prefill's own query and context. `split`: the
+    decodes go to vLLM's kernel apart (SPLIT), so only the prefill's own rules apply."""
     if not GUARD:
         return ""
     key = (arch, 256 if head_dim > 128 else 128)
@@ -564,7 +567,7 @@ def exact_why_not(st: dict, head_dim: int, kv_heads: int, arch: str) -> str:
     if g is None or exact is None:
         return f"no measured guard for {key}"
     _mix, min_rows, short_ctx, ctx_per_q = g
-    if st["decodes"] and st["dec_work"] > exact * st["pre_work"]:
+    if st["decodes"] and st["dec_work"] > exact * st["pre_work"] and not split:
         return (f"{st['decodes']} decodes over {st['dec_work']} tokens beside a prefill of "
                 f"{st['pre_work']:.0f} pairs (vLLM's kernel splits a decode's context, hk's does "
                 f"not)")
@@ -610,11 +613,79 @@ def _guard(a: dict) -> str:
     if (not GUARD or arch not in ARCHES or getattr(q, "dim", None) is None or q.dim() != 3
             or getattr(k, "dim", None) is None or k.dim() != 4 or used is None):
         return ""
-    st = _STATS.get(id(a.get("cu_seqlens_q")))
-    if st is not None and st["reqs"] == int(used.shape[0]):
+    st = _step_stats(a)
+    if st is not None:
         return exact_why_not(st, int(q.shape[-1]), int(k.shape[2]), arch)
     return guard_why_not(int(used.shape[0]), int(a.get("max_seqlen_q", 0)),
                          int(a.get("max_seqlen_k") or 0), int(q.shape[-1]), int(k.shape[2]), arch)
+
+
+def _step_stats(a: dict):
+    """This call's step sizes (batch_stats) from the TRITON_ATTN builder hook, or None."""
+    used = a.get("seqused_k")
+    st = _STATS.get(id(a.get("cu_seqlens_q")))
+    return st if st is not None and used is not None and st["reqs"] == int(used.shape[0]) else None
+
+
+#: Mixed batches the guard declines for their decodes: with the step's exact sizes, hk takes the
+#: prefill rows (the kernel built with decodes=False skips one-query requests) and vLLM's own
+#: kernel the decode rows, as a batch of one query a request (`_split_decodes`) -- vLLM splits a
+#: decode's context, hk's prefill kernel does not. HK_VLLM_PREFILL_SPLIT=0 turns it off (the
+#: guard then declines the whole batch, as before).
+SPLIT = __import__("os").environ.get("HK_VLLM_PREFILL_SPLIT", "1") not in ("0", "off", "no",
+                                                                           "false")
+#: (arch, head size class) -> (the longest query at least, decode work at most this times the
+#: prefill's): the split costs launches and gives the decode rows to TRITON_ATTN's decode, which
+#: ROCM_ATTN's beats, so it pays off on a sizable prefill. Measured with the 68-shape set
+#: (tools/hk-bench/results/2026-11-04/<arch>/prefill-split-sweep.json, against the faster of
+#: TRITON_ATTN and ROCM_ATTN): with a 2048-token query or longer every split batch wins (d128:
+#: gfx1100 1.08-2.02x to a ratio of 0.125, gfx1201 1.22-1.92x to 0.031 and 0.76x at 0.125;
+#: d256: 1.18-4.6x to 0.125); with 128-512, some batches lose (0.26-1.03x), so it declines.
+SPLITS = {("gfx1100", 128): (2048, 0.13), ("gfx1100", 256): (2048, 0.15),
+          ("gfx1201", 128): (2048, 0.05), ("gfx1201", 256): (2048, 0.15)}
+
+
+def split_takes(a: dict) -> bool:
+    """Whether a call the guard declines is taken split: exact sizes known, decodes in it, no
+    request without queries (each request's first row is its own), the prefill sizable enough
+    against the decodes (SPLITS), and the prefill rows alone passing the guard's other rules."""
+    from . import switches  # noqa: PLC0415
+
+    st = _step_stats(a) if SPLIT else None
+    if st is None or not st["decodes"] or st["empty"]:
+        return False
+    q, k = a["q"], a["k"]
+    d, arch = int(q.shape[-1]), switches.arch()
+    sp = SPLITS.get((arch, 256 if d > 128 else 128))
+    if sp is None or st["max_q"] < sp[0] or st["dec_work"] > sp[1] * st["pre_work"]:
+        return False
+    return not exact_why_not(st, d, int(k.shape[2]), arch, split=True)
+
+
+_ARANGE: dict = {}
+
+
+def _split_decodes(a: dict) -> None:
+    """The decode rows of a call hk's decodes=False kernel left alone: vLLM's kernel on the batch
+    as one query a request -- each request's first row, a prefill request as a one-key row whose
+    answer is dropped -- and its answers copied back to the decodes' rows. All on the device: no
+    sync, so it adds launches, not waits."""
+    import torch  # noqa: PLC0415
+
+    q, out, cu, used = a["q"], a["out"], a["cu_seqlens_q"], a["seqused_k"]
+    r = int(used.shape[0])
+    first = cu[:-1].long()
+    is_dec = (cu[1:] - cu[:-1]) == 1
+    key = (str(q.device), r + 1)
+    if key not in _ARANGE:
+        _ARANGE[key] = torch.arange(r + 1, device=q.device, dtype=cu.dtype)
+    q1 = q.index_select(0, first)
+    out1 = torch.empty_like(q1)
+    b = dict(a)
+    b.update(q=q1, out=out1, cu_seqlens_q=_ARANGE[key], max_seqlen_q=1,
+             seqused_k=torch.where(is_dec, used, torch.ones_like(used)))
+    _ORIG_U(**b)
+    out.index_copy_(0, first, torch.where(is_dec[:, None, None], out1, out.index_select(0, first)))
 
 
 def _note_declined(why: str) -> None:
@@ -783,7 +854,8 @@ def unified_attention(*args, **kwargs):
         PATCH.count("fallback")
         return _ORIG_U(*args, **kwargs)
     why = _guard(a)
-    if why:
+    split = bool(why) and split_takes(a)
+    if why and not split:
         # a batch with prefill in it is never captured (piecewise graphs leave attention out, and
         # full graphs hold decode-only steps), so the count skips the capture query
         PATCH.stats["declined"] += 1
@@ -793,13 +865,14 @@ def unified_attention(*args, **kwargs):
     if u_why_not(a):
         PATCH.count("fallback")
         return _ORIG_U(*args, **kwargs)
+    decodes = not split
     q, out = a["q"], a["out"]
     n, h, d = q.shape
     kv, order = _flash_kv(a["k"], a["v"])
     sc = a["softmax_scale"]
     scale = None if sc is None or sc == d ** -0.5 else float(sc)
     page = int(a["k"].shape[1])
-    got = _flash_op(d, h // a["k"].shape[2], scale, page, order)
+    got = _flash_op(d, h // a["k"].shape[2], scale, page, order, decodes)
     if got is None:
         PATCH.count("fallback")
         return _ORIG_U(*args, **kwargs)
@@ -811,7 +884,7 @@ def unified_attention(*args, **kwargs):
         hkv = a["k"].shape[2]
         max_k = int(a.get("max_seqlen_k") or 0)
         slots = len(a["seqused_k"]) * -(-max_k // page)
-        vt_ops = (_vt_ops(d, h // hkv, scale, page, order)
+        vt_ops = (_vt_ops(d, h // hkv, scale, page, order, decodes)
                   if 0 < slots * hkv * d * page * 2 <= VT_CAP_BYTES else None)
         if vt_ops is not None:
             pack, op, tile = vt_ops
@@ -820,10 +893,13 @@ def unified_attention(*args, **kwargs):
                  v_src)
     args = [q.reshape(n, h * d), kv, v_src, a["block_table"], a["seqused_k"], a["cu_seqlens_q"],
             pp.q_tiles(int(a["max_seqlen_q"]), q.device, tile), out.reshape(n, h * d)]
-    if d <= 128:
+    if d <= 128 and decodes:
         # the GQA-packed decodes' views: q and the output as (1, tokens, heads, head_dim)
         args += [q.unsqueeze(0), out.unsqueeze(0)]
     op(*args)
+    if split:
+        _split_decodes(a)
+        PATCH.count("split")
     PATCH.count("hk")
     if SHADOW:
         import torch  # noqa: PLC0415

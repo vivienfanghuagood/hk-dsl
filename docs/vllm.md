@@ -117,6 +117,30 @@ ROCM_ATTN's kernels (`tools/hk-bench/results/2026-11-03/`). Such a batch goes to
 vLLM's kernel unchanged and is counted as `declined`; the first one prints one
 line. `HK_VLLM_PREFILL_GUARD=0` turns the guard off, to measure it.
 
+**A mixed batch with a sizable prefill is split.** When the step's exact sizes
+are known (vLLM's TRITON_ATTN metadata builder hands them over, host arrays only),
+a batch declined for its decodes is taken in two parts. hk's kernel, built to
+skip one-query requests, computes the prefill rows. vLLM's own kernel computes
+the decode rows, as a batch of one query a request; it splits a decode's
+context, which hk's prefill kernel does not. Everything stays on the device: no
+sync, two more launches and a gather. The split costs those launches and gives the
+decode rows to TRITON_ATTN's decode, which ROCM_ATTN's beats, so it is taken only
+when the longest query has at least 2048 tokens and the decodes' contexts sum to
+at most a measured share of the prefill's work (`vllm_prefill.SPLITS`). Measured
+against the faster of TRITON_ATTN's and ROCM_ATTN's kernels on 68 shapes a model
+(`tools/hk-bench/results/2026-11-04/<gpu>/prefill-split-sweep.json`), every
+batch it splits is faster:
+
+| GPU | MiniCPM5-2B (d128) | Qwen3.8-27B, MiniCPM-V-4.7 (d256) |
+|---|---|---|
+| gfx1100 (W7900D) | 1.08-2.02x | 1.40-4.62x |
+| gfx1201 (R9700) | 1.22-1.92x | 1.18-2.81x |
+
+With prompts of 128-512 tokens some mixed batches were slower split (0.26-1.03x),
+so those stay declined. A split call is counted as `hk` and as `split`;
+`HK_VLLM_PREFILL_SPLIT=0` turns the split off, and the guard then declines the
+whole batch as before.
+
 **On ROCM_ATTN no batch is declined.** ROCM_ATTN hands the prefix-prefill only
 its requests of more than one query; its own paged decode keeps the decode rows.
 So neither kind of batch above reaches hk's kernel there. Measured in one process

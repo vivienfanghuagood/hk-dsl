@@ -247,8 +247,8 @@ def test_batch_stats_separate_decodes_from_the_prefill(order):
     reqs = {"decodes first": dec + pre, "decodes last": pre + dec,
             "interleaved": dec[:2] + pre + dec[2:]}[order]
     st = _stats_of(reqs)
-    assert st == dict(reqs=5, decodes=4, dec_work=4 * 768, pre_work=512 * 2048 + 512 * 513 / 2,
-                      max_q=512, pre_ctx=2560)
+    assert st == dict(reqs=5, decodes=4, empty=0, dec_work=4 * 768,
+                      pre_work=512 * 2048 + 512 * 513 / 2, max_q=512, pre_ctx=2560)
 
 
 class _NoSync:
@@ -392,3 +392,115 @@ def test_a_vllm_without_the_host_arrays_keeps_the_size_bound(monkeypatch):
     monkeypatch.setattr(switches, "arch", lambda: "gfx1100")
     a = _triton_call([(2048, 2048)] + [(767, 1)] * 8)
     assert vp._guard(a) == vp.guard_why_not(9, 2048, 4096, 128, 2, "gfx1100") != ""
+
+
+# ---- the split: a mixed batch's prefill rows to hk, its decode rows to vLLM's kernel ----------
+
+def test_split_takes_a_mixed_batch_the_guard_declines_for_its_decodes(monkeypatch):
+    """With the step's exact sizes, a prompt beside long decodes -- declined whole for the
+    decodes -- is taken split; not without the sizes, not with HK_VLLM_PREFILL_SPLIT=0, not with
+    a request of no queries in the batch, not for a prefill too small or decodes too heavy
+    (SPLITS), and not when the prefill itself is one the guard declines (a short chunk over a
+    long context)."""
+    from hk.integration import switches
+
+    monkeypatch.setattr(switches, "arch", lambda: "gfx1100")
+    reqs = [(2048, 2048)] + [(16384, 1)] * 8
+    a = _triton_call([(s - q, q) for s, q in reqs])
+    monkeypatch.setattr(vp, "_STATS", {id(a["cu_seqlens_q"]): _stats_of(reqs)})
+    assert "decodes" in vp._guard(a)
+    assert vp.split_takes(a)
+    monkeypatch.setattr(vp, "SPLIT", False)
+    assert not vp.split_takes(a)
+    monkeypatch.setattr(vp, "SPLIT", True)
+    monkeypatch.setattr(vp, "_STATS", {})
+    assert not vp.split_takes(a)
+    for bad in ([(16416, 32)] + [(16384, 1)] * 8,          # a 32-token chunk over 16k
+                [(512, 512)] + [(16384, 1)] * 8,           # a prefill too small for the split
+                [(2048, 2048)] + [(65536, 1)] * 8,         # decodes too heavy for it
+                [(2048, 2048), (0, 0)] + [(16384, 1)] * 8):  # a request with no queries
+        b = _triton_call([(s - q, q) for s, q in bad])
+        monkeypatch.setattr(vp, "_STATS", {id(b["cu_seqlens_q"]): _stats_of(bad)})
+        assert vp._guard(b) and not vp.split_takes(b)
+
+
+def test_a_split_batch_gives_vllm_one_query_a_request_and_keeps_only_its_decode_rows(monkeypatch):
+    """hk's kernel (here a stand-in writing 5 on the prefill rows, as the decodes=False kernel
+    does) runs first; then vLLM's kernel once, on each request's first row as a one-query batch
+    -- a prefill request a one-key row -- and only the decodes' answers are copied back. Counted
+    as hk and as split."""
+    from hk.integration import switches
+
+    monkeypatch.setattr(switches, "arch", lambda: "gfx1100")
+    monkeypatch.setattr(vp, "VT", False)
+    reqs = [(16384, 1), (2048, 2048), (16384, 1), (16384, 1)]
+    a = _triton_call([(s - q, q) for s, q in reqs])
+    starts = a["cu_seqlens_q"].tolist()
+    pre_rows = list(range(starts[1], starts[2]))
+    built = []
+
+    def flash_op(d, group, scale, page, order, decodes):
+        built.append(decodes)
+
+        def op(q2, kv, v_src, table, used, cu, tiles, o2, *packed):
+            assert not packed
+            o2.view(a["out"].shape)[pre_rows] = 5.0
+        return op, 16
+
+    seen = []
+
+    def unified_attention(q, k, v, out, cu_seqlens_q, max_seqlen_q, seqused_k, max_seqlen_k,
+                          softmax_scale, causal, window_size, block_table, softcap, q_descale,
+                          k_descale, v_descale, alibi_slopes=None, sinks=None):
+        seen.append(dict(q=q.clone(), cu=cu_seqlens_q.tolist(), mq=max_seqlen_q,
+                         used=seqused_k.tolist(), table=block_table))
+        out.copy_(torch.arange(out.shape[0], dtype=out.dtype)[:, None, None] + 100)
+
+    monkeypatch.setattr(vp, "_flash_op", flash_op)
+    monkeypatch.setattr(vp, "_ORIG_U", unified_attention)
+    monkeypatch.setattr(vp, "_U_SIG", inspect.signature(unified_attention))
+    monkeypatch.setattr(vp, "_STATS", {id(a["cu_seqlens_q"]): _stats_of(reqs)})
+    rows = torch.arange(a["q"].shape[0])
+    a["q"][:, 0, 0], a["q"][:, 0, 1] = rows // 64, rows % 64     # a row's index, exact in bf16
+    before = dict(vp.PATCH.stats)
+    vp.unified_attention(**a)
+    assert built == [False]
+    assert len(seen) == 1 and seen[0]["mq"] == 1 and seen[0]["cu"] == [0, 1, 2, 3, 4]
+    assert seen[0]["table"] is a["block_table"]
+    got = (seen[0]["q"][:, 0, 0].float() * 64 + seen[0]["q"][:, 0, 1].float()).int().tolist()
+    assert got == starts[:-1]                                     # each request's first row
+    assert seen[0]["used"] == [16384, 1, 16384, 16384]
+    out = a["out"][:, 0, 0].tolist()
+    for i, (s0, s1) in enumerate(zip(starts, starts[1:])):
+        want = 5.0 if s1 - s0 > 1 else 100.0 + i
+        assert out[s0:s1] == [want] * (s1 - s0), f"request {i}"
+    assert vp.PATCH.stats["hk"] == before["hk"] + 1
+    assert vp.PATCH.stats["split"] == before["split"] + 1
+    assert vp.PATCH.stats["declined"] == before["declined"]
+
+
+@pytest.mark.parametrize("arch", ["gfx1100", "gfx1201"])
+def test_every_measured_batch_taken_split_is_a_clear_win(monkeypatch, arch):
+    """The split's evidence through its decision: the 68-shape set on three models, hk's route
+    against the faster of TRITON_ATTN and ROCM_ATTN. Every batch the guard declines and the split
+    takes is >= 1.05x; and it takes some on every model."""
+    from hk.integration import switches
+
+    monkeypatch.setattr(switches, "arch", lambda: arch)
+    rows = json.loads((SWEEP.parent / "2026-11-04" / arch / "prefill-split-sweep.json")
+                      .read_text())
+    taken = {}
+    for r in rows:
+        d, hkv = DIMS[r["model"]]
+        reqs = _reqs(r["shape"])
+        st = _stats_of(reqs)
+        if not st["decodes"] or not vp.exact_why_not(st, d, hkv, arch):
+            continue
+        a = _triton_call([(s - q, q) for s, q in reqs], d=d, hkv=hkv, page=16)
+        monkeypatch.setattr(vp, "_STATS", {id(a["cu_seqlens_q"]): st})
+        if vp.split_takes(a):
+            u = r["us"]
+            sp = min(u["triton"], u["rocm_attn"]) / u["hk"]
+            assert sp >= 1.05, (arch, r["model"], r["shape"], sp)
+            taken[r["model"]] = taken.get(r["model"], 0) + 1
+    assert sorted(taken) == sorted(DIMS) and min(taken.values()) >= 4, taken
