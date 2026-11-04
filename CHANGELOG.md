@@ -31,6 +31,10 @@ Which routes are on by default changes from release to release under
 [the default-on rule](docs/testing.md#the-default-on-rule) ([stability](docs/stability.md)).
 `python3 -m hk.integration --status` shows each route's state and why. Since 0.8.0:
 
+**New, on by default on gfx950: `vllm_dsv41_index`, `vllm_sparse_mla`.** DeepSeek-V4.1's index layers
+under `--monokernel` as one hk launch, and its sparse MLA prefill (below). `HK_VLLM_DSV41_INDEX=0` and
+`HK_VLLM_SPARSE_MLA=0` turn them off.
+
 **New, on by default on gfx1100: `vllm_prefill`, `vllm_gptq`, `sglang_norm`.**
 - `vllm_prefill` (#158, #167, #190, #196): vLLM's prefill attention on vLLM's own paged cache
   (ROCM_ATTN's `context_attention_fwd`, and TRITON_ATTN's `unified_attention` on batches with
@@ -1120,7 +1124,7 @@ sizes; the shipped one is the one that holds under both).
 
 ### All pull requests
 
-Every pull request merged since 0.8.0 (126), by number:
+Every pull request merged since 0.8.0 (125), by number:
 
 - [#67](https://github.com/vivienfanghuagood/hk-dsl/pull/67) CI: a gfx1201 job on the RDNA4 dev box (remote-registered ephemeral runner, continue-on-error)
 - [#76](https://github.com/vivienfanghuagood/hk-dsl/pull/76) hk.ops.scaled_mm: fp8 GEMM on gfx1201's fp8 WMMA (RDNA4 R3b)
@@ -1242,7 +1246,6 @@ Every pull request merged since 0.8.0 (126), by number:
 - [#233](https://github.com/vivienfanghuagood/hk-dsl/pull/233) vllm_prefill: leave batches hk is not faster on to vLLM's kernel (TRITON_ATTN guard)
 - [#234](https://github.com/vivienfanghuagood/hk-dsl/pull/234) tests: the SGLang-Diffusion routes' kernels at Qwen-Image 2.1's shapes (poisoned repeats, side-stream producer, fenced bounds)
 - [#235](https://github.com/vivienfanghuagood/hk-dsl/pull/235) hk.ops.paged_decode_portable: one decode-attention source on gfx1100, gfx1201 and gfx950
-- [#236](https://github.com/vivienfanghuagood/hk-dsl/pull/236) vLLM on gfx950: the DeepSeek-V4.1 routes are opt-in in 0.9.0 (mxfp8, moe_a8w4, dsv41_index, sparse_mla)
 - [#237](https://github.com/vivienfanghuagood/hk-dsl/pull/237) tests: a8w4 MoE route test against an fp64 MoE, not AITER's fused_moe (nondeterministically wrong)
 - [#238](https://github.com/vivienfanghuagood/hk-dsl/pull/238) vllm_prefill guard: exact batch sizes from TRITON_ATTN's metadata builder (no sync)
 - [#239](https://github.com/vivienfanghuagood/hk-dsl/pull/239) paged_decode: the opt-in head_dim-128 decode takes a split per WGP, up to 4 (request, kv head) pairs
