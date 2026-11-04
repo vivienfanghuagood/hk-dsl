@@ -248,3 +248,27 @@ def test_a_hybrid_layer_is_checked_after_vllms_repack(monkeypatch, w_q, w_s, cfg
     assert ran == [1]                                       # vLLM's repack always runs
     assert getattr(layer, "hk_hybrid", False) == (why == "")
     assert dict(vllm_gptq.REFUSED) == ({why: 1} if why else {})
+
+
+@pytest.mark.parametrize("m,n,k,path", [
+    (1024, 34816, 5120, "fallback"),                       # under PREFILL_MIN_M: vLLM's Triton
+    (2048, 34816, 5120, "dequant"),                        # a big W from 2048 tokens
+    (2048, 5120, 6144, "fallback"), (4096, 5120, 6144, "dequant"),   # a small W from 4096
+])
+def test_prefill_chunks_take_the_dequantize_path(monkeypatch, _vllm_switch, m, n, k, path):
+    torch = pytest.importorskip("torch")
+    from hk.ops import w4a16
+
+    seen = []
+    monkeypatch.setattr(w4a16, "dequant_into", lambda qw, s, g, out, exllama: seen.append(
+        (tuple(out.shape), exllama)) or out)
+    monkeypatch.setattr(torch.ops, "vllm", SimpleNamespace(
+        rdna_hybrid_w4a16_apply=lambda *a: seen.append("vllm")), raising=False)
+    monkeypatch.setattr(torch.nn.functional, "linear", lambda x, w: seen.append("linear"))
+    monkeypatch.setattr(vllm_gptq, "_SCRATCH", {})
+    x = torch.empty(m, k, dtype=torch.float16)
+    before = vllm_gptq.HYBRID.stats[path]
+    vllm_gptq.gptq_w4a16_hybrid(x, torch.empty(n, k // 2, dtype=torch.int8),
+                                torch.empty(n, k // 32, dtype=torch.float16), 32, 64)
+    assert vllm_gptq.HYBRID.stats[path] == before + 1
+    assert seen == ([((n, k), True), "linear"] if path == "dequant" else ["vllm"])

@@ -222,6 +222,54 @@ def w4a16_kernel(name: str, *, tokens: int = 1, slices: int = 4, warps: int = 16
                      grid=lambda p: (p.qw.rows // rows, 1, 1))
 
 
+#: The dequantize kernel's shape: each of DEQ_WARPS warps a workgroup writes one 16-row x
+#: DEQ_COLS-column tile, side by side along K.
+DEQ_COLS = 64
+DEQ_WARPS = 8
+
+
+def w4a16_dequant_kernel(name: str, *, group: int = 128, exllama: bool = False):
+    """W -> fp16 [N, K]: the large-batch path, which then runs one 16-bit GEMM. A symmetric W (zero
+    point 8), in hk's layout (s in 16-row blocks) or, `exllama`, vLLM's RDNA skinny layout read in
+    place (s [N, K/group]); each warp's tile decoded by `hk.load_w4` as the GEMM forms decode it.
+    K a multiple of DEQ_COLS * DEQ_WARPS."""
+    ty_w = hk.RT(fp16, 16, DEQ_COLS, "row")
+
+    @hk.func
+    def deq(qw, s, w):
+        n0 = hk.arch.block_idx.x * 16
+        k = (hk.arch.block_idx.y * DEQ_WARPS + hk.arch.warp_id()) * DEQ_COLS
+        t = hk.load_w4(ty_w, qw, s, None, n0, k, group=group, zero=SYMMETRIC_ZERO,
+                       s_blocked=not exllama, exllama=exllama)
+        w[hk.elem_coord(0, 0, n0, k)].store(t)
+
+    def body(qw: hk.Tensor[i32], s: hk.Tensor[fp16], w: hk.Tensor[fp16]):
+        deq(qw, s, w)
+
+    body.__name__ = name
+    return hk.kernel(body, warps=DEQ_WARPS, name=name,
+                     grid=lambda p: (p.qw.rows // 16, p.w.cols // (DEQ_COLS * DEQ_WARPS), 1))
+
+
+def dequant_takes(n: int, k: int, group: int) -> bool:
+    """Whether `dequant_into` takes an [N, K] W."""
+    return n % 16 == 0 and k % (DEQ_COLS * DEQ_WARPS) == 0 and group % 16 == 0 and k % group == 0
+
+
+def dequant_into(qw, s, group: int, out, exllama: bool = False):
+    """A symmetric 4-bit W, fp16 scales, written as fp16 [N, K] into `out` by hk's kernel
+    (`dequant_takes` must hold); returns out."""
+    key = ("deq", group, exllama)
+    if key not in _OPS:
+        from ..runtime.torch_ext import launcher  # noqa: PLC0415
+
+        _OPS[key] = launcher(w4a16_dequant_kernel(
+            f"w4a16_dequant_g{group}" + ("_exl" if exllama else "_sym"), group=group,
+            exllama=exllama))
+    _OPS[key](qw, s, out)
+    return out
+
+
 def w4a16_gemv_kernel(name: str, *, tokens: int = 1, warps: int = 16, group: int = 128,
                       symmetric: bool = False, exllama: bool = False):
     """The small-batch form: up to `tokens` (1..8) rows of fp16 x against one 16-row block of W a
@@ -511,7 +559,7 @@ def _matmul_legacy(x, qw, s, zs, group: int, out=None):
 
 
 __all__ = ["AWQ_ORDER", "EXL_CHUNK", "EXL_GEMV_MAX", "GEMV_ARCHES", "GEMV_MAX_M", "GEMV_WARPS", "MAX_TOKENS", "SCHEDULES",
-           "SHALLOW_K", "SYMMETRIC_ZERO", "block_scales", "dequant", "exllama_matmul",
+           "SHALLOW_K", "SYMMETRIC_ZERO", "block_scales", "dequant", "dequant_into", "dequant_takes", "exllama_matmul",
            "exllama_takes", "gemv_kernel_for", "gemv_takes",
            "kernel_for", "unblock_scales", "w4a16_gemv_kernel",
            "matmul", "plan", "schedule_for",

@@ -130,6 +130,25 @@ def test_the_wmma_form_runs_from_past_exl_gemv_max_to_64():
     assert any(key[0] == "exl-wmma" for key in w4a16._OPS)
 
 
+@pytest.mark.parametrize("group", [32, 128])
+def test_the_dequantize_kernel_is_exact_in_place_and_in_hks_layout(group):
+    """W written to fp16 by the dequantize kernel is (q - 8) * s rounded once, bit for bit the
+    reference's, from vLLM's layout and from hk's; every element written (NaN-filled output)."""
+    g = torch.Generator(device="cuda").manual_seed(21 + group)
+    n, k = 272, 2048
+    q = torch.randint(0, 16, (n, k), device="cuda", generator=g, dtype=torch.int32)
+    s = (torch.rand(n, k // group, device="cuda", generator=g) * 0.02 + 0.005).half()
+    want = ((q - 8).half() * s.repeat_interleave(group, 1))       # one fp16 rounding
+    assert w4a16.dequant_takes(n, k, group)
+    out = torch.full((n, k), float("nan"), device="cuda", dtype=torch.float16)
+    w4a16.dequant_into(_skinny(q), s, group, out, exllama=True)
+    assert torch.equal(out, want)
+    qw = w4a16._interleave(w4a16._pack_k(q))
+    out.fill_(float("nan"))
+    w4a16.dequant_into(qw, w4a16.block_scales(s), group, out)
+    assert torch.equal(out, want)
+
+
 def test_no_instantiation_spills_or_uses_scratch():
     for t, sch in w4a16.SCHEDULES.items():
         for group in (32, 64, 128):
@@ -138,6 +157,11 @@ def test_no_instantiation_spills_or_uses_scratch():
                                  True).build()
             for r in b.kernels:
                 assert (r.scratch, r.vgpr_spill) == (0, 0), ("wmma", t, group, r)
+    for group in (32, 64, 128):
+        for exl in (True, False):
+            for r in w4a16.w4a16_dequant_kernel(f"deq_g{group}_{exl}", group=group,
+                                                exllama=exl).build().kernels:
+                assert (r.scratch, r.vgpr_spill) == (0, 0), ("dequant", group, exl, r)
     for tokens in range(1, w4a16.EXL_CHUNK + 1):
         for group in (32, 64, 128):
             b = w4a16.w4a16_gemv_kernel(f"exl_t{tokens}_g{group}", tokens=tokens,

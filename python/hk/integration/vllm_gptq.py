@@ -77,6 +77,34 @@ _RDNA3, _HYBRID = "RDNA3W4A16LinearKernel", "RDNAHybridW4A16LinearKernel"
 #: on every shape from where vLLM leaves its HIP kernel to 64 tokens.
 HYBRID_ARCHES = ("gfx1201",)
 HYBRID_MAX_M = 64
+#: Prefill chunks hk takes too: W dequantized in place into one scratch (`hk.ops.w4a16.
+#: dequant_into`, ~540 GB/s) and one fp16 GEMM. On those shapes that is 1.13-3.34x vLLM's Triton
+#: GEMM from 2048 tokens (1.20-3.34x where W has at least PREFILL_BIG_W elements) and 1.18-3.34x
+#: from 4096 on every shape; at 512-1024 tokens 0.89-1.64x, so those stay vLLM's.
+PREFILL_MIN_M = 2048
+PREFILL_ALL_M = 4096
+PREFILL_BIG_W = 64 << 20
+
+#: The fp16 W the prefill path writes, one buffer per (device) for every layer, grown to the
+#: largest layer it has taken.
+_SCRATCH: dict = {}
+
+
+def _prefill_takes(m: int, n: int, k: int, group: int) -> bool:
+    from ..ops import w4a16 as hk_w4  # noqa: PLC0415
+
+    return ((m >= PREFILL_ALL_M or (m >= PREFILL_MIN_M and n * k >= PREFILL_BIG_W))
+            and hk_w4.dequant_takes(n, k, group))
+
+
+def _scratch(n: int, k: int, like):
+    buf = _SCRATCH.get(like.device)
+    if buf is None or buf.numel() < n * k:
+        import torch  # noqa: PLC0415
+
+        _SCRATCH.pop(like.device, None)
+        buf = _SCRATCH[like.device] = torch.empty(n * k, device=like.device, dtype=torch.float16)
+    return buf[:n * k].view(n, k)
 
 
 def _fake_hybrid(x, w_q, w_s, group, cu):
@@ -86,7 +114,7 @@ def _fake_hybrid(x, w_q, w_s, group, cu):
 HYBRID = engine.Op(
     "hk_vllm::gptq_w4a16_hybrid",
     "gptq_w4a16_hybrid(Tensor x, Tensor w_q, Tensor w_s, int group, int cu) -> Tensor",
-    _fake_hybrid, paths=("hk", "fallback"), graph="safe")
+    _fake_hybrid, paths=("hk", "dequant", "fallback"), graph="safe")
 
 #: vLLM's own switch from its HIP to its Triton GEMM (rdna_hybrid_w4a16), read at patch time.
 _SKINNY: dict = {}
@@ -109,6 +137,12 @@ def gptq_w4a16_hybrid(x, w_q, w_s, group: int, cu: int):
             and not _vllm_skinny(m, k)):
         HYBRID.count("hk")
         return hk_w4.exllama_matmul(x, w_q.view(torch.int32), w_s, group)
+    n = w_q.shape[0]
+    if (x.dtype == torch.float16 and w_s.dtype == torch.float16
+            and _prefill_takes(m, n, k, group)):
+        HYBRID.count("dequant")
+        w = hk_w4.dequant_into(w_q.view(torch.int32), w_s, group, _scratch(n, k, x), exllama=True)
+        return torch.nn.functional.linear(x if x.is_contiguous() else x.contiguous(), w)
     HYBRID.count("fallback")
     return torch.ops.vllm.rdna_hybrid_w4a16_apply(x, w_q, w_s, None, None, cu, group)
 
