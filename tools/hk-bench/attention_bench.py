@@ -13,7 +13,9 @@ README.md in this directory has the details. In short:
   `chunked_prefill_paged_decode` on ROCM_ATTN's own cache (prefix-prefill for prefill, its paged
   decode for decode); `hk` is hk's route: for decode hk.ops.paged_decode, for prefill
   hk.integration.vllm_prefill's stand-in for `unified_attention` (hk.ops.paged_prefill), both on
-  TRITON_ATTN's cache in place.
+  TRITON_ATTN's cache in place. `hk_rocm` (prefill) is the route inside ROCM_ATTN: ROCM_ATTN's
+  `chunked_prefill_paged_decode` on its own cache with its prefix-prefill rebound to hk's
+  stand-in, its decode rows still ROCM_ATTN's.
 * **Cold KV.** Every call reads its own layer's cache, and there are enough layers that the
   cycle is at least COLD_BYTES -- several times the last-level cache (a W7900D's Infinity Cache
   is 96 MB, an R9700's 64 MB) -- so no arm is served from it.
@@ -268,6 +270,42 @@ def hk_prefill_arm(case):
     return call, out
 
 
+def hk_rocm_arm(case):
+    """hk's ROCM_ATTN route as vLLM runs it: ROCM_ATTN's chunked_prefill_paged_decode on its own
+    cache, with its prefix-prefill (context_attention_fwd, requests of more than one query)
+    rebound to hk.integration.vllm_prefill's stand-in (hk.ops.paged_prefill, layout="rocm");
+    decode rows stay ROCM_ATTN's paged decode. The rebinding is swapped in around each call, so
+    the rocm_attn arm keeps vLLM's own kernel."""
+    import inspect  # noqa: PLC0415
+
+    from vllm.v1.attention.ops import chunked_prefill_paged_decode as cppd  # noqa: PLC0415
+    from vllm.v1.attention.ops import prefix_prefill  # noqa: PLC0415
+
+    from hk.integration import vllm_prefill as vp  # noqa: PLC0415
+
+    orig = prefix_prefill.context_attention_fwd
+    vp._ORIG = orig
+    vp._P_SIG = inspect.signature(orig)
+    out = torch.empty_like(case.q)
+    one = torch.ones(1, device=case.q.device, dtype=torch.float32)
+    case.rocm(0)
+
+    def call(layer):
+        k5, v4, k_new, v_new = case.rocm(layer)
+        cppd.context_attention_fwd = vp.context_attention_fwd
+        try:
+            cppd.chunked_prefill_paged_decode(
+                query=case.q, key=k_new, value=v_new, output=out,
+                kv_cache_dtype="auto", key_cache=k5, value_cache=v4,
+                block_table=case.block_table, query_start_loc=case.q_start,
+                seq_lens=case.seq_lens, max_seq_len=int(case.lens_host.max()),
+                max_query_len=case.max_q, k_scale=one, v_scale=one, sm_scale=case.scale)
+        finally:
+            cppd.context_attention_fwd = orig
+    call.stats = vp.PATCH.stats
+    return call, out
+
+
 def graphed(call, layers):
     """A CUDA graph of one call a layer; returns its replay."""
     s = torch.cuda.Stream()
@@ -353,6 +391,8 @@ def _arms(args, case, kind):
         arms["rocm_attn"] = rocm_arm(case)
     if "hk" in want:
         arms["hk"] = hk_decode_arm(case) if kind == "decode" else hk_prefill_arm(case)
+    if "hk_rocm" in want:
+        arms["hk_rocm"] = hk_rocm_arm(case)
     for v in (args.variants.split(",") if kind == "decode" and args.variants else ()):
         sp, rest = v.split("x")
         vb = rest.endswith("v")              # ...v: both V bands in flight (v_both)
@@ -366,7 +406,8 @@ def _one(args, m, kind, label, reqs, seed):
     {arm: best us}, plus the row's other fields."""
     case = Case(m, reqs, seed=seed)
     arms = _arms(args, case, kind)
-    before = dict(arms["hk"][0].stats) if kind == "prefill" and "hk" in arms else None
+    hkn = "hk" if "hk" in arms else ("hk_rocm" if "hk_rocm" in arms else None)
+    before = dict(arms[hkn][0].stats) if kind == "prefill" and hkn else None
     errs = check(arms, case)
     ok = {n: a for n, a in arms.items() if errs[n] <= args.tol}
     bursts = {n: (graphed if kind == "decode" else eager)(c, case.layers)
@@ -378,7 +419,7 @@ def _one(args, m, kind, label, reqs, seed):
     if kind == "decode" and "hk" in arms:
         extra["splits"] = arms["hk"][0].splits
     if before is not None:
-        after = arms["hk"][0].stats
+        after = arms[hkn][0].stats
         extra["hk_calls"] = {p: after[p] - before.get(p, 0) for p in after}
     if args.profile:
         extra["kernels_us"] = kernel_times(bursts, case.layers)
@@ -466,7 +507,8 @@ def main():
         p.add_argument("--model", default="minicpm5", choices=sorted(MODELS))
         p.add_argument("--arms", default="hk,triton,rocm_attn",
                        help="hk, triton (TRITON_ATTN), rocm_attn (ROCM_ATTN: its own kernel on "
-                            "pages of a power of two, its Triton fallback on others)")
+                            "pages of a power of two, its Triton fallback on others), hk_rocm "
+                            "(prefill: hk's route inside ROCM_ATTN)")
         p.add_argument("--rounds", type=int, default=5)
         p.add_argument("--burn-in", type=float, default=3.0,
                        help="seconds of memory traffic before the first shape (clock ramp)")
