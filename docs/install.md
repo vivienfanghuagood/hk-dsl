@@ -21,10 +21,10 @@ The GPU tests run with ROCm 7.2 (7.2.4 on gfx1100, 7.2.3 on gfx950) and, on
 gfx950, also with the ROCm 10 of vLLM's ROCm image; the no-GPU CI compiles with
 ROCm 7.1's hipcc ([testing](testing.md#ci)).
 
-Which hipcc (AMD clang 20 to 24) is tested with which GPU, and what is known to break in 0.8.0 and on
-main, is the [toolchain matrix](toolchains.md). In short: clang 22 (ROCm 7.2.x) is what the GPU tests
+Which hipcc (AMD clang 20 to 24) is tested with which GPU, and what is known to break in 0.8.0 and
+0.9.0, is the [toolchain matrix](toolchains.md). In short: clang 22 (ROCm 7.2.x) is what the GPU tests
 run on every supported GPU; **hk 0.8.0 does not compile anything under clang 24 (ROCm 10.1)** -- use
-ROCm 7.2.x or 10.0 with the 0.8.0 wheel, or main.
+0.9.0 there.
 
 In TheRock's layout hipcc is a launcher in `/usr/local/bin` and ROCm is under
 `site-packages/_rocm_sdk_devel`, with none of its LLVM tools on `PATH`; hk finds
@@ -32,7 +32,7 @@ them beside hipcc's clang ([the runtime](runtime.md#environment-variables)).
 
 ## From PyPI
 
-For CPython 3.10 or 3.12 on glibc 2.35 or newer (Ubuntu 22.04
+For CPython 3.10 to 3.13 on glibc 2.35 or newer (Ubuntu 22.04
 and later):
 
 ```bash
@@ -40,32 +40,32 @@ pip install hk-dsl
 ```
 
 A wheel is built per Python interpreter, because it carries the MLIR bindings
-for one CPython. 0.8.0 has two on PyPI:
+for one CPython. 0.9.0 has four on PyPI:
 
 | wheel | glibc |
 |---|---|
-| `hk_dsl-0.8.0-cp310-cp310-manylinux_2_35_x86_64.whl` | 2.35+ |
-| `hk_dsl-0.8.0-cp312-cp312-manylinux_2_35_x86_64.whl` | 2.35+ |
+| `hk_dsl-0.9.0-cp310-cp310-manylinux_2_35_x86_64.whl` | 2.35+ |
+| `hk_dsl-0.9.0-cp311-cp311-manylinux_2_35_x86_64.whl` | 2.35+ |
+| `hk_dsl-0.9.0-cp312-cp312-manylinux_2_35_x86_64.whl` | 2.35+ |
+| `hk_dsl-0.9.0-cp313-cp313-manylinux_2_35_x86_64.whl` | 2.35+ |
 
-Both are built on glibc 2.35 (cp312 in vLLM's ROCm image), so one wheel per
-interpreter serves Ubuntu 22.04, vLLM's ROCm images and anything newer, and
+All are built on glibc 2.35 (cp312 in vLLM's ROCm image, cp311 and cp313 in
+`scripts/wheel-builder.Dockerfile`), so one wheel per interpreter serves Ubuntu 22.04, vLLM's ROCm images and anything newer, and
 each wheel's glibc is checked against its tag ([building](building.md#wheels)).
-0.7.0 also had a cp312 `manylinux_2_38` wheel; 0.6.0 and earlier had only
-that one for cp312. The same wheels are attached to each
+0.8.0 had cp310 and cp312 only; 0.7.0 also had a cp312 `manylinux_2_38`
+wheel, and 0.6.0 and earlier had only that one for cp312. The same wheels are attached to each
 [GitHub release](https://github.com/vivienfanghuagood/hk-dsl/releases). For
 another interpreter, build one ([building](building.md#wheels)).
 
 It carries the HipKittens headers, the bindings and the shipped tuning
 records, so nothing else is needed at run time but hipcc.
 
-The release on PyPI is 0.8.0. hk is on by default in vLLM and SGLang for the
+The release on PyPI is 0.9.0. hk is on by default in vLLM and SGLang for the
 routes validated on your GPU (`HK_DISABLE=1` turns them all off, `HK_<ROUTE>=0`
 one of them, [integration](integration.md#on-by-default-and-turning-it-off)).
-0.8.0 adds workgroup placement as a pass (`hk.kernel(placement=)`),
-`hk.map_cpp` and i32 strips, strip ops and element exchange for megakernel
-roles, and gfx1201 (RDNA4) on hardware, which 0.7.0 lacked
-([changelog](../CHANGELOG.md)). What main adds after 0.8.0, which no release
-has yet, the API reference marks *New after 0.8.0*.
+What 0.9.0 adds and changes, including the routes whose default changed, is
+in the [changelog](../CHANGELOG.md); the API reference marks the names 0.9.0
+adds *New after 0.8.0*.
 
 ## From source
 
@@ -92,11 +92,10 @@ suite are in the repository: clone it at the tag of the release you installed,
 so the examples match the API you have:
 
 ```bash
-git clone --recursive --branch v0.8.0 https://github.com/vivienfanghuagood/hk-dsl.git
+git clone --recursive --branch v0.9.0 https://github.com/vivienfanghuagood/hk-dsl.git
 ```
 
-(`main` documents, and needs, what is newer than the release: the API
-reference marks it *New after 0.8.0*.) From the clone:
+(`main` documents, and needs, what is newer than the release.) From the clone:
 
 ```bash
 python3 -m pytest tests/hk/ir tests/hk/codegen -q    # no GPU, no torch

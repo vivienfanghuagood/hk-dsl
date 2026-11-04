@@ -159,11 +159,8 @@ Tested: measured on the part and run by CI's GPU tier. What the language and eac
 - **Compilers (hipcc's clang):**
   - clang 22 (ROCm 7.2.x) is what CI's GPU tier runs.
   - clang 23 (ROCm 10.0, vLLM's ROCm image) is tested on gfx950.
-  - clang 24 (ROCm 10.1) needs main after 0.8.0; 0.8.0 fails to compile
-    there. **Known issue:** on gfx1100, clang 24 allocates more registers, so
-    some kernels spill and the gate refuses them. These are the 16-bit norms,
-    rope, and examples 02 and 03
-    ([#140](https://github.com/vivienfanghuagood/hk-dsl/pull/140)).
+  - clang 24 (ROCm 10.1) needs 0.9.0; 0.8.0 fails to compile there. It is
+    not in CI ([toolchains](toolchains.md)).
 - **Python:** wheels for CPython 3.10 and 3.12 (Linux x86_64, glibc 2.35 or
   newer). Other versions build from source.
 

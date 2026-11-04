@@ -3,10 +3,10 @@
 hk-dsl compiles every kernel with the hipcc on your `PATH` (or `HK_HIPCC`), so the AMD clang behind
 that hipcc decides what builds. `hipcc --version` prints it (`AMD clang version 22.0.0git ...`). This
 page says which clang each GPU is built and run with, how hk checks it, and what is known to break,
-for the 0.8.0 wheel and for main. Which GPUs are supported at all is
+for the 0.8.0 and 0.9.0 wheels. Which GPUs are supported at all is
 [supported hardware](supported-hardware.md).
 
-## The matrix (main)
+## The matrix (0.9.0)
 
 "Runs" means hk's GPU tests (or the stated measurements) run on that GPU with that compiler; "builds"
 means kernels are compiled and checked (spills, waits, MFMA hazards) without a GPU.
@@ -30,7 +30,7 @@ means kernels are compiled and checked (spills, waits, MFMA hazards) without a G
 
 ## Known issues
 
-| issue | compiler, GPU | hk 0.8.0 | main |
+| issue | compiler, GPU | hk 0.8.0 | hk 0.9.0 |
 |---|---|---|---|
 | Every compile fails, `--build` included: `ResourceError: the build emitted no kernel-resource-usage remarks`. clang 24 prints the resource remarks in a shape 0.8.0 does not read. | clang 24, every GPU | **broken** | fixed: both shapes are read ([changelog](../CHANGELOG.md)) |
 | The fp16/bf16 RMSNorm and LayerNorm of `hk.ops`, its rope, examples 02 and 03, and four decode-attention schedules spill, and hk refuses a spilling kernel (`ResourceError`). clang 24 kept a whole tile's 64-bit element addresses live in the element-by-element global loads and stores. | clang 24, gfx1100 | (every compile fails anyway) | fixed: those paths read and write through a buffer resource under clang 24; ISA under clang 22 and 23 unchanged |
