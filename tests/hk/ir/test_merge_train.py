@@ -277,3 +277,47 @@ def test_readmission_keeps_the_original_ready_time():
                          "2026-10-28T07:28:44Z keeps its place in the queue)")]
     assert mt.ready_comment(HEAD, cs[:2])[0] is None
     assert mt.ready_comment(HEAD, cs)[0]["created_at"] == "2026-10-28T07:28:44Z"
+
+
+# ---------------------------------------------------------------- a member's head: the PR API's sha, fetched
+
+
+def _origin_with_lagging_pull_ref(tmp_path):
+    """An origin whose refs/pull/7/head is still the PR's old head while its branch has the new one (GitHub
+    moves the pull ref after a push with a lag), and an empty train clone with that origin."""
+    env = {**os.environ, "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t", "GIT_COMMITTER_NAME": "t",
+           "GIT_COMMITTER_EMAIL": "t@t", "GIT_CONFIG_GLOBAL": os.devnull}
+    origin = tmp_path / "origin.git"
+    subprocess.run(["git", "init", "-q", "--bare", str(origin)], check=True, env=env)
+
+    def g(*a):
+        return subprocess.run(["git", "-C", str(origin), *a], check=True, capture_output=True, text=True,
+                              env=env).stdout.strip()
+    t = g("write-tree")
+    old = g("commit-tree", t, "-m", "old head")
+    new = g("commit-tree", t, "-p", old, "-m", "new head")
+    g("update-ref", "refs/pull/7/head", old)
+    g("update-ref", "refs/heads/feature", new)
+    repo = tmp_path / "repo.git"
+    subprocess.run(["git", "init", "-q", "--bare", str(repo)], check=True, env=env)
+    subprocess.run(["git", "-C", str(repo), "remote", "add", "origin", str(origin)], check=True, env=env)
+    subprocess.run(["git", "-C", str(repo), "fetch", "-q", "origin", "+refs/pull/*/head:refs/mt/pull/*"],
+                   check=True, env=env)
+    return old, new
+
+
+def test_a_head_the_pull_ref_does_not_have_yet_is_fetched_from_the_branch(tmp_path, monkeypatch):
+    monkeypatch.setattr(mt, "BASE_DIR", str(tmp_path))
+    old, new = _origin_with_lagging_pull_ref(tmp_path)
+    assert mt._have_commit(old) and not mt._have_commit(new)     # what the 2026-11-03 01:00Z build hit
+    mt.ensure_commit({"number": 7, "head": new, "branch": "feature", "head_repo": mt.REPO})
+    assert mt._have_commit(new)
+
+
+def test_a_head_that_is_nowhere_fails_with_a_clear_message(tmp_path, monkeypatch):
+    monkeypatch.setattr(mt, "BASE_DIR", str(tmp_path))
+    _origin_with_lagging_pull_ref(tmp_path)
+    missing = "1234567" + "0" * 33
+    with pytest.raises(mt.Fail, match=r"#7: its head 1234567 .* not in the train's clone after fetching "
+                                      r"refs/heads/feature, refs/pull/7/head, 123456700000"):
+        mt.ensure_commit({"number": 7, "head": missing, "branch": "feature", "head_repo": mt.REPO})
