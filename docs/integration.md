@@ -45,9 +45,9 @@ and which rule decided.
 
 | route | switch | default | evidence |
 |---|---|---|---|
-| MXFP8 linear (DeepSeek-V4.1), M >= 2048 (indexer wq_b >= 2825, engram wkv >= 1024: `MIN_M_NK`), and measured M ranges below that (`RANGES`) | `HK_VLLM_MXFP8` | **on, gfx950** | bit-identical to vLLM's kernel; real weights, GSM8K 94.69% vs stock 94.24-94.39%, with the a8w4 MoE route ARC 96.76% vs 96.93-97.10% (McNemar p >= 0.175; [serving readiness](archive/design/serving-readiness.md) B1) |
-| MoE a8w4, MXFP4 weights (DeepSeek-V4.1), M >= 2560 (`MIN_M`) | `HK_VLLM_MOE_A8W4` | **on, gfx950** | error vs fp32 3.5-6.3e-3 against AITER's 0.97-2.1e-2 on real layers; GSM8K 94.92% (B1) |
-| DeepSeek-V4.1 index layers under `--monokernel`: one launch for the compressor, indexer K / Q, logits and top-k, at decode steps of up to 8 rows | `HK_VLLM_DSV41_INDEX` | **on, gfx950** | caches and q byte-identical to vLLM's chain in vLLM, top-k sets equal ([the index launch](vllm.md#the-deepseek-v41-index-launch)); with `--monokernel` and hk's other default routes, real-weight GSM8K-1319 within stock's noise (McNemar p >= 0.39) |
+| MXFP8 linear (DeepSeek-V4.1), M >= 2048 (indexer wq_b >= 2825, engram wkv >= 1024: `MIN_M_NK`), and measured M ranges below that (`RANGES`) | `HK_VLLM_MXFP8` | opt-in in 0.9.0 (gfx950) | bit-identical to vLLM's kernel; real weights, GSM8K 94.69% vs stock 94.24-94.39%, with the a8w4 MoE route ARC 96.76% vs 96.93-97.10% (McNemar p >= 0.175; [serving readiness](archive/design/serving-readiness.md) B1) |
+| MoE a8w4, MXFP4 weights (DeepSeek-V4.1), M >= 2560 (`MIN_M`) | `HK_VLLM_MOE_A8W4` | opt-in in 0.9.0 (gfx950) | error vs fp32 3.5-6.3e-3 against AITER's 0.97-2.1e-2 on real layers; GSM8K 94.92% (B1) |
+| DeepSeek-V4.1 index layers under `--monokernel`: one launch for the compressor, indexer K / Q, logits and top-k, at decode steps of up to 8 rows | `HK_VLLM_DSV41_INDEX` | opt-in in 0.9.0 (gfx950) | caches and q byte-identical to vLLM's chain in vLLM, top-k sets equal ([the index launch](vllm.md#the-deepseek-v41-index-launch)); with `--monokernel` and hk's other default routes, real-weight GSM8K-1319 within stock's noise (McNemar p >= 0.39) |
 | AWQ 4-bit linear | `HK_VLLM_INT4` | **on, gfx1100, gfx950 and gfx1201** | greedy tokens identical to stock's, Qwen3-8B/14B-AWQ; on gfx1201 Qwen3-8B-AWQ tokens identical |
 | GPTQ 4-bit linear (symmetric, grouped; RDNA3W4A16LinearKernel) | `HK_VLLM_GPTQ` | **on, gfx1100** | Qwen3.8-27B-GPTQ-Int4 against stock-fair (TRITON_ATTN, TunableOp with a 256 MB rotating buffer): GSM8K-200 equal, TPOT in the RDNA scorecard; act-order checkpoints are refused and counted (`vllm_gptq.REFUSED`) |
 | unquantized linear (+ tuning at load) | `HK_VLLM_GEMM` | **on, gfx1100 and gfx1201** | tokens identical, or a bf16 near-tie; on gfx1201 tokens identical and routing counts equal round for round, Qwen3-1.7B and Qwen3.5-9B, also with gfx1201's shipped small-M schedules; on gfx950 it was measured to change nothing against aiter, so it stays off there |
@@ -64,7 +64,7 @@ and which rule decided.
 | prefill attention on vLLM's own cache | `HK_VLLM_PREFILL` | **on, gfx1100** | ROCM_ATTN's prefix-prefill and TRITON_ATTN's batches with prefill in them, in place on each backend's cache, and TRITON_ATTN's decode-only steps at head size 256 (`HK_VLLM_DECODE`); cache write and block size stay vLLM's; any call it does not take falls back. In-situ against vLLM's kernels on every call (`HK_VLLM_PREFILL_SHADOW=1`, MiniCPM5-2B, about 22,000 calls on each backend): at most 2 bf16 ulps of a row's max |
 | ConvRot INT8 (`--quantization convrot_int8`) | `HK_SGLD_CONVROT`, or `HK_SGLD=...,convrot` | **off: opt-in** | lossy by design (PSNR 30.4 dB from bf16, visible drift): a model-level choice, not a toolchain default |
 | MXFP8 at any (N, K) | `HK_MXFP8_ANY` | off | a mode of the MXFP8 linear route; no real-weight run |
-| DeepSeek-V4.1 sparse MLA prefill, calls of T >= 512 queries (`MIN_T`), and the layer's MXFP8 rows for wo_a made in the kernel from O in registers. It runs where vLLM's own sparse MLA does: with `VLLM_ROCM_USE_AITER_TRITON_SPARSE_MLA=1` vLLM takes AITER's path for prefill and decode and the route stands aside | `HK_VLLM_SPARSE_MLA` (`=0` turns it off) | **on, gfx950** | real weights, TP2: GSM8K-1319 equal to stock's (pooled McNemar p 0.12). **Its cost is at decode:** the route needs vLLM's own sparse MLA, whose decode kernel replaces AITER's, so decode steps can be slightly slower than with AITER's (an open item). Serving results: [the scorecard](performance/scorecard.md) |
+| DeepSeek-V4.1 sparse MLA prefill, calls of T >= 512 queries (`MIN_T`), and the layer's MXFP8 rows for wo_a made in the kernel from O in registers. It runs where vLLM's own sparse MLA does: with `VLLM_ROCM_USE_AITER_TRITON_SPARSE_MLA=1` vLLM takes AITER's path for prefill and decode and the route stands aside | `HK_VLLM_SPARSE_MLA` (`=1` turns it on) | opt-in in 0.9.0 (gfx950) | real weights, TP2: GSM8K-1319 equal to stock's (pooled McNemar p 0.12). **Its cost is at decode:** the route needs vLLM's own sparse MLA, whose decode kernel replaces AITER's, so decode steps can be slightly slower than with AITER's (an open item). Serving results: [the scorecard](performance/scorecard.md) |
 
 On a GPU a route was not validated on (gfx942 for every route, and gfx1201 for
 the routes not marked for it above), it is off unless you turn it on.
@@ -138,10 +138,10 @@ first compile in each process prints one line:
 | 4-bit MoE GEMMs (moe_wna16) | `vllm_moe_wna16.py` | `invoke_fused_moe_wna16_triton_kernel` and `try_get_optimal_moe_config`, rebound by identity | `HK_VLLM_MOE_WNA16` (off) |
 | AWQ linear layers | `vllm_int4.py` | `AutoAWQLinearMethod.process_weights_after_loading` and `.apply` | `HK_VLLM_INT4` (on) |
 | GPTQ linear layers | `vllm_gptq.py` | `AutoGPTQLinearMethod.process_weights_after_loading` and `.apply` | `HK_VLLM_GPTQ` (on, gfx1100) |
-| MXFP8 linear layers | `vllm_mxfp8.py` | `RocmDotScaledMxfp8LinearKernel.process_weights_after_loading` and `.apply_weights` | `HK_VLLM_MXFP8` (on, gfx950) |
-| MXFP4 MoE, a8w4 | `vllm_moe_a8w4.py` | `aiter.fused_moe.fused_moe`, with its signature | `HK_VLLM_MOE_A8W4` (on, gfx950) |
-| DeepSeek-V4.1 index layers, `--monokernel` | `vllm_dsv41_index.py` | `mono_decode._select`, through an import hook | `HK_VLLM_DSV41_INDEX` (on, gfx950) |
-| sparse MLA prefill (DeepSeek-V4.1) | `vllm_sparse_mla.py` | `rocm_sparse_attn_prefill` and `rocm_inverse_rope_mxfp8_rows`, rebound by identity, and `DeepseekV41ROCMAiterMLAAttention._forward_prefill`, with their signatures | `HK_VLLM_SPARSE_MLA` (on, gfx950) |
+| MXFP8 linear layers | `vllm_mxfp8.py` | `RocmDotScaledMxfp8LinearKernel.process_weights_after_loading` and `.apply_weights` | `HK_VLLM_MXFP8` (opt-in in 0.9.0 (gfx950)) |
+| MXFP4 MoE, a8w4 | `vllm_moe_a8w4.py` | `aiter.fused_moe.fused_moe`, with its signature | `HK_VLLM_MOE_A8W4` (opt-in in 0.9.0 (gfx950)) |
+| DeepSeek-V4.1 index layers, `--monokernel` | `vllm_dsv41_index.py` | `mono_decode._select`, through an import hook | `HK_VLLM_DSV41_INDEX` (opt-in in 0.9.0 (gfx950)) |
+| sparse MLA prefill (DeepSeek-V4.1) | `vllm_sparse_mla.py` | `rocm_sparse_attn_prefill` and `rocm_inverse_rope_mxfp8_rows`, rebound by identity, and `DeepseekV41ROCMAiterMLAAttention._forward_prefill`, with their signatures | `HK_VLLM_SPARSE_MLA` (opt-in in 0.9.0 (gfx950)) |
 | your kernels | `register.py` | whatever `register.patch` names | `HK_VLLM_USER=<modules or files>` |
 | SGLang linear layers | `sglang.py`, `_sglang_plugin.py` | `UnquantizedLinearMethod.apply` | `HK_SGLANG_LINEAR` (on, gfx1100); `apply_linear()` in-process |
 | SGLang MoE layers | `sglang_moe.py`, `_sglang_plugin.py` | `topk_softmax`, `invoke_fused_moe_kernel` and `try_get_optimal_moe_config`, rebound by identity | `HK_SGLANG_MOE` (on, gfx1100), or `=topk` for the routing alone |
@@ -179,11 +179,11 @@ vllm serve OpenGVLab/InternVL2-2B --mm-encoder-attn-backend TORCH_SDPA
 vllm serve Qwen/Qwen3-8B
 vllm serve allenai/OLMoE-1B-7B-0125-Instruct
 
-# DeepSeek-V4.1's MXFP8 linear layers and a8w4 MoE: on by default on gfx950 (warm their kernels first)
+# DeepSeek-V4.1's MXFP8 linear layers and a8w4 MoE: opt-in in 0.9.0 on gfx950 (warm their kernels first)
 HK_CACHE_DIR=/cache/hk python3 -m hk.integration warm-routes --tp 2
-HK_CACHE_DIR=/cache/hk vllm serve <DeepSeek-V4.1-Flash> --tensor-parallel-size 2
-# ... and with dsv41_mono, the index launch too
-HK_CACHE_DIR=/cache/hk vllm serve <DeepSeek-V4.1-Flash> --tensor-parallel-size 2 --monokernel
+HK_VLLM_MXFP8=1 HK_VLLM_MOE_A8W4=1 HK_CACHE_DIR=/cache/hk vllm serve <DeepSeek-V4.1-Flash> --tensor-parallel-size 2
+# ... and with dsv41_mono, the index launch too (the sparse MLA prefill: HK_VLLM_SPARSE_MLA=1)
+HK_VLLM_MXFP8=1 HK_VLLM_MOE_A8W4=1 HK_VLLM_DSV41_INDEX=1 HK_CACHE_DIR=/cache/hk vllm serve <DeepSeek-V4.1-Flash> --tensor-parallel-size 2 --monokernel
 
 # the decoder attention backend (opt-in), with vLLM's defaults: CUDA graphs,
 # prefix caching and chunked prefill all on
@@ -629,10 +629,10 @@ spelled:
 | `HK_VLLM_MOE_WNA16` | `_vllm_plugin.py` | route the 4-bit MoE GEMMs with zero points (AWQ, moe_wna16) up to 32 tokens a step, on the (experts, N, K, group) it was validated on (`vllm_moe_wna16.VALIDATED`); `force`: any (default off) |
 | `HK_VLLM_INT4` | `_vllm_plugin.py` | route AWQ linear layers' fp16/bf16 batches up to 64 tokens (default on) |
 | `HK_VLLM_GPTQ` | `_vllm_plugin.py` | route 4-bit symmetric GPTQ layers' fp16/bf16 batches of 1-64 tokens (default on, gfx1100) |
-| `HK_VLLM_MXFP8` | `_vllm_plugin.py` | DeepSeek-V4.1's block-scaled MXFP8 linear layers at M >= 2048, two shapes from their own M (`vllm_mxfp8.MIN_M_NK`), six with measured M ranges below that (`vllm_mxfp8.RANGES`) (default on, gfx950) |
+| `HK_VLLM_MXFP8` | `_vllm_plugin.py` | DeepSeek-V4.1's block-scaled MXFP8 linear layers at M >= 2048, two shapes from their own M (`vllm_mxfp8.MIN_M_NK`), six with measured M ranges below that (`vllm_mxfp8.RANGES`) (default off in 0.9.0; was on, gfx950) |
 | `HK_MXFP8_ANY` | `vllm_mxfp8.py` | `1`: the MXFP8 route takes any (N, K) of whole tiles, not only the measured TP2 shapes (default off) |
-| `HK_VLLM_MOE_A8W4` | `_vllm_plugin.py` | DeepSeek-V4.1's AITER a8w4 MoE at M >= `HK_MOE_A8W4_MIN_M` (2560) (default on, gfx950) |
-| `HK_VLLM_DSV41_INDEX` | `_vllm_plugin.py` | DeepSeek-V4.1's index layers under `--monokernel` as one hk launch at decode steps of up to 8 rows (default on, gfx950) |
+| `HK_VLLM_MOE_A8W4` | `_vllm_plugin.py` | DeepSeek-V4.1's AITER a8w4 MoE at M >= `HK_MOE_A8W4_MIN_M` (2560) (default off in 0.9.0; was on, gfx950) |
+| `HK_VLLM_DSV41_INDEX` | `_vllm_plugin.py` | DeepSeek-V4.1's index layers under `--monokernel` as one hk launch at decode steps of up to 8 rows (default off in 0.9.0; was on, gfx950) |
 | `HK_DSV41_INDEX_TOPK` | `vllm_dsv41_index.py` | `0`: the index launch stops at the logits' inputs; vLLM's indexer op does the logits and top-k (default on) |
 | `HK_DSV41_INDEX_CHECK` | `vllm_dsv41_index.py` | `N`: on the first N eager calls of each index layer, run vLLM's chain after the launch and print what differs (default 0) |
 | `HK_VLLM_USER` | `_vllm_plugin.py` | comma-separated modules or `.py` files to import in vLLM's process: your `register.op` / `register.patch` calls |

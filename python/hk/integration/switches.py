@@ -65,22 +65,26 @@ class Route:
 
 _R = Route
 ROUTES: Dict[str, Route] = {r.name: r for r in (
-    _R("vllm_mxfp8", "vllm", "HK_VLLM_MXFP8", True, ("gfx950",),
+    _R("vllm_mxfp8", "vllm", "HK_VLLM_MXFP8", False, (),
        "block-scaled MXFP8 linear layers (DeepSeek-V4.1) at M >= 2048 (indexer wq_b 2825, "
        "engram wkv 1024)",
+       "opt-in in 0.9.0 (gfx950 work is paused, so it was not re-audited under the default-on rule before the release; it returns to default-on after a re-audit). Before: "
        "bit-identical to vLLM's kernel; real-weight GSM8K / ARC within stock's noise "
        "(serving-readiness B1)"),
-    _R("vllm_moe_a8w4", "vllm", "HK_VLLM_MOE_A8W4", True, ("gfx950",),
+    _R("vllm_moe_a8w4", "vllm", "HK_VLLM_MOE_A8W4", False, (),
        "AITER's a8w4 MoE, MXFP4 weights (DeepSeek-V4.1), at M >= 2560",
+       "opt-in in 0.9.0 (gfx950 work is paused, so it was not re-audited under the default-on rule before the release; it returns to default-on after a re-audit). Before: "
        "error vs fp32 at or below AITER's; real-weight GSM8K / ARC within stock's noise (B1)"),
-    _R("vllm_dsv41_index", "vllm", "HK_VLLM_DSV41_INDEX", True, ("gfx950",),
+    _R("vllm_dsv41_index", "vllm", "HK_VLLM_DSV41_INDEX", False, (),
        "DeepSeek-V4.1's index layers under --monokernel: mono_decode._select's chain (compressor, "
        "indexer K / Q, logits, top-k) as one launch at decode steps of <= 8 rows",
+       "opt-in in 0.9.0 (gfx950 work is paused, so it was not re-audited under the default-on rule before the release; it returns to default-on after a re-audit). Before: "
        "caches and q byte-identical to vLLM's chain in vLLM, top-k sets equal at M=1; real-weight "
        "GSM8K-1319 within stock's noise"),
-    _R("vllm_sparse_mla", "vllm", "HK_VLLM_SPARSE_MLA", True, ("gfx950",),
+    _R("vllm_sparse_mla", "vllm", "HK_VLLM_SPARSE_MLA", False, (),
        "DeepSeek-V4.1's sparse MLA prefill (T >= 512 queries a call) and its MXFP8 output rows; "
        "it runs where vLLM's own sparse MLA does (VLLM_ROCM_USE_AITER_TRITON_SPARSE_MLA unset)",
+       "opt-in in 0.9.0 (gfx950 work is paused, so it was not re-audited under the default-on rule before the release; it returns to default-on after a re-audit). Before: "
        "real weights, TP2: GSM8K-1319 equal to stock's. Its cost is at decode: it needs vLLM's "
        "own sparse MLA, whose decode kernel replaces AITER's, so decode steps can be slightly "
        "slower. Inactive while VLLM_ROCM_USE_AITER_TRITON_SPARSE_MLA=1; HK_VLLM_SPARSE_MLA=0 "

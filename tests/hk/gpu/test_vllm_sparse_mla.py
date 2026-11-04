@@ -131,9 +131,9 @@ def test_the_contract_holds_and_catches_a_resigned_entry_point(monkeypatch):
     assert R.apply_patch().startswith("sparse_mla: not patched")
 
 
-def test_the_plugin_applies_it_by_default_and_not_at_0(monkeypatch):
-    """On by default on gfx950 (the owner's decision, 2026-10-29); HK_VLLM_SPARSE_MLA=0 is the off
-    switch."""
+def test_the_plugin_applies_it_at_1_and_not_by_default(monkeypatch):
+    """Opt-in in 0.9.0 (it was on by default on gfx950 from 2026-10-29; gfx950 work is paused, so it was
+    not re-audited under the default-on rule): HK_VLLM_SPARSE_MLA=1 turns it on."""
     from hk.integration import _vllm_plugin, switches
 
     for e in ["HK_DISABLE", "HK_PATCH_VLLM", "HK_VLLM_USER", *[r.env for r in switches.routes("vllm")]]:
@@ -143,12 +143,12 @@ def test_the_plugin_applies_it_by_default_and_not_at_0(monkeypatch):
         for r in switches.routes("vllm"):          # every other route off: nothing else to revert
             if r.name != "vllm_sparse_mla":
                 monkeypatch.setenv(r.env, "0")
-        monkeypatch.setenv("HK_VLLM_SPARSE_MLA", "0")
+        monkeypatch.delenv("HK_VLLM_SPARSE_MLA", raising=False)
         _vllm_plugin.register()
-        assert rocm.rocm_sparse_attn_prefill is ops.rocm_sparse_attn_prefill      # off at 0
-        monkeypatch.delenv("HK_VLLM_SPARSE_MLA")
+        assert rocm.rocm_sparse_attn_prefill is ops.rocm_sparse_attn_prefill      # off by default
+        monkeypatch.setenv("HK_VLLM_SPARSE_MLA", "1")
         _vllm_plugin.register()
-        assert rocm.rocm_sparse_attn_prefill is R.rocm_sparse_attn_prefill        # on by default
+        assert rocm.rocm_sparse_attn_prefill is R.rocm_sparse_attn_prefill        # on at 1
     finally:
         R.revert()
 

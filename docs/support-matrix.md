@@ -44,7 +44,7 @@ Each row is an image whose engines' contract facts are recorded in `tests/hk/ir/
 
 | image | role | engine | ROCm | torch | Triton | Python | routes on by default |
 |---|---|---|---|---|---|---|---|
-| vLLM ROCm nightly e68efc685 | measured | vllm 0.32.1rc1.dev36+ge68efc685.rocm100 | 10.0 | 2.12.0+rocm10.0.0 | triton 3.8.0+git669b31ac | 3.12.15 | `vllm_mxfp8`, `vllm_moe_a8w4`, `vllm_dsv41_index`, `vllm_sparse_mla`, `vllm_int4` |
+| vLLM ROCm nightly e68efc685 | measured | vllm 0.32.1rc1.dev36+ge68efc685.rocm100 | 10.0 | 2.12.0+rocm10.0.0 | triton 3.8.0+git669b31ac | 3.12.15 | `vllm_int4` |
 
 Roles: **production**, an image hk serves in; **measured**, the engine version hk's routes were measured on, end to end; **development**, the newest image on this arch; no production image yet.
 

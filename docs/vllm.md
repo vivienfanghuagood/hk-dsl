@@ -473,8 +473,8 @@ What holds it, on vLLM e68efc685 (MI355X):
   rows).
 
 ```bash
-vllm serve <DeepSeek-V4.1-Flash> --monokernel --tensor-parallel-size 2 ...   # on by default on gfx950
-HK_VLLM_DSV41_INDEX=0 vllm serve ...                    # vLLM's own chain
+HK_VLLM_DSV41_INDEX=1 vllm serve <DeepSeek-V4.1-Flash> --monokernel --tensor-parallel-size 2 ...   # opt-in in 0.9.0 (gfx950)
+vllm serve ...                                          # vLLM's own chain (the default)
 HK_DSV41_INDEX_TOPK=0 vllm serve ...                    # the launch without the logits / top-k
 HK_DSV41_INDEX_CHECK=3 vllm serve ... --enforce-eager   # the in-place check
 ```

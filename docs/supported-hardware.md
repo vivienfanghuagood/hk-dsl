@@ -11,7 +11,7 @@ hk-dsl builds kernels for four GPU architectures. This page is generated from th
 | Radeon PRO W7900, Radeon PRO W7900D, Radeon RX 7900 | gfx1100 (RDNA3) | **runs**: measured on Radeon PRO W7900D; CI's GPU tier runs on one | 12: vLLM 6, SGLang 3, SGLang-Diffusion 2, `hk.ops` 1 |
 | Radeon AI PRO R9700, Radeon RX 9070 | gfx1201 (RDNA4) | **runs**: measured on Radeon AI PRO R9700; CI's GPU tier runs on one | 3: vLLM 3 |
 | Instinct MI300X, Instinct MI325X | gfx942 (CDNA3) | **compile-only**: no part was available, so its numbers are modelled from the compiler. CI builds kernels for it; none has run on one | none |
-| Instinct MI355X, Instinct MI350X | gfx950 (CDNA4) | **runs**: measured on Instinct MI355X; CI's GPU tier runs on one | 5: vLLM 5 |
+| Instinct MI355X, Instinct MI350X | gfx950 (CDNA4) | **runs**: measured on Instinct MI355X; CI's GPU tier runs on one | 1: vLLM 1 |
 
 Other GPUs are not supported, other RDNA3 parts (gfx1101, gfx1102) included. On one, `hk.target.current_arch()` builds for gfx1100, and every engine route is off by default. `HK_ARCH` names the arch to build for, as a gfx name or as one of `CDNA3`, `CDNA4`, `RDNA3`, `RDNA4`, `gfx11`, `gfx12`.
 
@@ -33,10 +33,10 @@ A route is on by default only on the GPUs where it met the [default-on rule](tes
 
 | route | engine | switch | gfx1100 | gfx1201 | gfx942 | gfx950 |
 |---|---|---|---|---|---|---|
-| `vllm_mxfp8` | vLLM | `HK_VLLM_MXFP8` | off | off | off | **on** |
-| `vllm_moe_a8w4` | vLLM | `HK_VLLM_MOE_A8W4` | off | off | off | **on** |
-| `vllm_dsv41_index` | vLLM | `HK_VLLM_DSV41_INDEX` | off | off | off | **on** |
-| `vllm_sparse_mla` | vLLM | `HK_VLLM_SPARSE_MLA` | off | off | off | **on** |
+| `vllm_mxfp8` | vLLM | `HK_VLLM_MXFP8` | opt-in | opt-in | opt-in | opt-in |
+| `vllm_moe_a8w4` | vLLM | `HK_VLLM_MOE_A8W4` | opt-in | opt-in | opt-in | opt-in |
+| `vllm_dsv41_index` | vLLM | `HK_VLLM_DSV41_INDEX` | opt-in | opt-in | opt-in | opt-in |
+| `vllm_sparse_mla` | vLLM | `HK_VLLM_SPARSE_MLA` | opt-in | opt-in | opt-in | opt-in |
 | `vllm_int4` | vLLM | `HK_VLLM_INT4` | **on** | **on** | off | **on** |
 | `vllm_gptq` | vLLM | `HK_VLLM_GPTQ` | **on** | off | off | off |
 | `vllm_gemm` | vLLM | `HK_VLLM_GEMM` | **on** | **on** | off | off |

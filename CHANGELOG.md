@@ -9,6 +9,24 @@ The next version's notes collect here until it is released.
 What is on main after 0.8.0. `pip install hk-dsl` (0.8.0) does not have it;
 the API reference marks such names *New after 0.8.0*.
 
+### Default changes
+
+Which routes are on by default changes from release to release under
+[the default-on rule](docs/testing.md#the-default-on-rule) ([stability](docs/stability.md)). Since 0.8.0:
+
+**The DeepSeek-V4.1 routes on gfx950 are opt-in (off by default): `vllm_mxfp8`, `vllm_moe_a8w4`,
+`vllm_dsv41_index`, `vllm_sparse_mla`.** They were on by default on gfx950 in 0.8.0. Every
+default-on route is re-audited under the default-on rule before 0.9.0: a time-weighted gain at a
+real model's mix, never slower on a routed shape including mixed batches and cold weights, the
+correctness suite, and one end-to-end smoke. gfx950 work is paused, so these four could not be
+re-audited in time. They return to default-on after a re-audit. The code, the kernels and their
+tests are unchanged, and each turns on with its own switch: `HK_VLLM_MXFP8=1`,
+`HK_VLLM_MOE_A8W4=1`, `HK_VLLM_DSV41_INDEX=1` (under `--monokernel`), `HK_VLLM_SPARSE_MLA=1`.
+`python3 -m hk.integration --status` says "default off" for each. `vllm_int4` stays on by default
+on gfx950.
+
+### Everything else
+
 **Engine contracts are per route.** A route whose engine contract is broken, or whose apply raises,
 now stays off with one warning line of its own (`[hk] WARNING: vllm: route vllm_moe_a8w4 OFF --
 engine contract FAILED ...`), and the engine's other routes are applied. Until now one broken

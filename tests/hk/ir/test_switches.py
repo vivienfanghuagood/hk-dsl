@@ -35,8 +35,25 @@ def on(env=None, gpu="gfx950", engine=None):
 # -- the defaults ------------------------------------------------------------------------------
 
 
-def test_on_by_default_on_gfx950_is_k1_k2_the_index_launch_sparse_mla_and_int4():
-    assert on() == {"vllm_mxfp8", "vllm_moe_a8w4", "vllm_dsv41_index", "vllm_sparse_mla", "vllm_int4"}
+DSV41 = ("vllm_mxfp8", "vllm_moe_a8w4", "vllm_dsv41_index", "vllm_sparse_mla")
+
+
+def test_on_by_default_on_gfx950_is_int4():
+    # The DeepSeek-V4.1 routes are opt-in in 0.9.0: gfx950 work is paused, so they were not re-audited
+    # under the default-on rule (docs/testing.md#the-default-on-rule) before the release.
+    assert on() == {"vllm_int4"}
+
+
+def _dsv41_on(mp):
+    """The DeepSeek-V4.1 routes, opt-in in 0.9.0, asked for: the plugin tests below use them as their subjects."""
+    for name in DSV41:
+        mp.setenv(switches.ROUTES[name].env, "1")
+
+
+def test_the_deepseek_routes_are_opt_in_on_gfx950_and_turn_on_with_their_switch():
+    for name in DSV41:
+        assert switches.decide(name, {}, "gfx950").why == "default off"
+        assert name in on({switches.ROUTES[name].env: "1"})
 
 
 def test_on_by_default_on_gfx1100_is_every_route_validated_there():
@@ -53,7 +70,7 @@ def test_on_by_default_on_gfx1201_is_every_route_validated_there():
 @pytest.mark.parametrize("gpu", ["gfx942", None])
 def test_nothing_is_on_by_default_where_nothing_was_validated(gpu):
     assert on(gpu=gpu) == set()
-    assert "validated on" in switches.decide("vllm_mxfp8", {}, gpu).why
+    assert "validated on" in switches.decide("vllm_int4", {}, gpu).why
 
 
 @pytest.mark.parametrize("gpu", ["gfx950", "gfx1100"])
@@ -179,7 +196,7 @@ def plugin(clean):
 def test_the_vllm_plugin_applies_the_defaults_with_nothing_set(plugin, capsys):
     applied, _ = plugin
     _vllm_plugin.register()
-    assert applied == ["vllm_int4", "vllm_moe_a8w4", "vllm_mxfp8", "vllm_dsv41_index", "vllm_sparse_mla"]
+    assert applied == ["vllm_int4"]
     out = capsys.readouterr().out
     assert "[hk] vLLM routes on: " in out and "default on (gfx950)" in out
 
@@ -195,6 +212,7 @@ def test_the_vllm_plugin_with_hk_disable_applies_nothing(plugin, monkeypatch, ca
 
 def test_the_vllm_plugin_leaves_out_a_route_at_0(plugin, monkeypatch):
     applied, _ = plugin
+    _dsv41_on(monkeypatch)
     monkeypatch.setenv("HK_VLLM_MOE_A8W4", "0")
     _vllm_plugin.register()
     assert applied == ["vllm_int4", "vllm_mxfp8", "vllm_dsv41_index", "vllm_sparse_mla"]
@@ -202,6 +220,7 @@ def test_the_vllm_plugin_leaves_out_a_route_at_0(plugin, monkeypatch):
 
 def test_hk_vllm_sparse_mla_0_turns_the_sparse_mla_route_off(plugin, monkeypatch):
     applied, _ = plugin
+    _dsv41_on(monkeypatch)
     monkeypatch.setenv("HK_VLLM_SPARSE_MLA", "0")
     _vllm_plugin.register()
     assert "vllm_sparse_mla" not in applied and "vllm_mxfp8" in applied
@@ -225,6 +244,7 @@ def test_a_broken_contract_turns_off_that_route_only_with_one_warning(plugin, ca
         return {"vllm_moe_a8w4": ["aiter.fused_moe.fused_moe lost ['gate_mode']"]}
 
     monkeypatch.setattr(contract, "check_each", check_each)
+    _dsv41_on(monkeypatch)
     _vllm_plugin.register()
     assert applied == ["vllm_int4", "vllm_mxfp8", "vllm_dsv41_index", "vllm_sparse_mla"]
     assert seen == [["vllm_dsv41_index", "vllm_int4", "vllm_moe_a8w4", "vllm_mxfp8", "vllm_sparse_mla"]]
@@ -241,6 +261,7 @@ def test_a_broken_contract_turns_off_that_route_only_with_one_warning(plugin, ca
 def test_every_contract_broken_leaves_vllm_stock_and_says_so(plugin, capsys, monkeypatch):
     applied, _ = plugin
     monkeypatch.setattr(contract, "check_each", lambda routes: {r: ["moved"] for r in routes})
+    _dsv41_on(monkeypatch)
     _vllm_plugin.register()
     assert applied == []
     cap = capsys.readouterr()
@@ -255,6 +276,7 @@ def test_a_route_that_raises_is_off_and_the_others_stay_on(plugin, capsys, monke
         raise RuntimeError("moved")
 
     monkeypatch.setitem(_vllm_plugin.APPLY, "vllm_mxfp8", boom)
+    _dsv41_on(monkeypatch)
     _vllm_plugin.register()
     assert applied == ["vllm_int4", "vllm_moe_a8w4", "vllm_dsv41_index", "vllm_sparse_mla"]
     assert reverted == []                                       # nothing undone
@@ -304,6 +326,7 @@ def test_a_real_mismatch_leaves_aiter_unwrapped(clean, capsys):
     from hk.integration import stack
 
     clean.setattr(stack, "enforce", lambda *a, **k: "stack: test")
+    clean.setenv("HK_VLLM_MOE_A8W4", "1")         # opt-in in 0.9.0
     for env in ("HK_VLLM_MXFP8", "HK_VLLM_INT4", "HK_VLLM_DSV41_INDEX", "HK_VLLM_SPARSE_MLA"):
         clean.setenv(env, "0")                    # vLLM is not importable here: K1 alone
     _vllm_plugin.register()

@@ -21,8 +21,8 @@ M=8 (head weights within one bf16 ulp: vLLM's weights_proj rounds a few heads di
 serving scorecard, with hk's other default routes, TPOT is 4.5 / 4.4 / 3.1% below mono's at batch
 1 / 4 / 8 and GSM8K-1319 within stock's noise (docs/integration.md, "The DeepSeek-V4.1 index launch").
 
-    vllm serve <DeepSeek-V4.1-Flash> --monokernel ...          # on by default on gfx950
-    HK_VLLM_DSV41_INDEX=0 vllm serve ...                       # mono's own chain
+    HK_VLLM_DSV41_INDEX=1 vllm serve <DeepSeek-V4.1-Flash> --monokernel ...   # opt-in in 0.9.0 (gfx950)
+    vllm serve ...                                             # mono's own chain (the default)
     HK_DSV41_INDEX_TOPK=0 vllm serve ...                       # the launch without the logits / top-k
 
 `HK_DSV41_INDEX_CHECK=N` checks the launch in place: for the first N eager calls of each index
