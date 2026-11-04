@@ -179,8 +179,6 @@ every other workgroup of the XCD. The caller guarantees the placement.
 hk.arch.mma_fence(on: bool = True) -> None
 ```
 
-*New after 0.8.0*
-
 Whether hk-mma-fence guards this kernel (CDNA; on by default). The
 pass puts a scheduling fence between a matrix-core chain and the first
 other access to its accumulator: on gfx950 LLVM threaded accumulator
@@ -193,8 +191,6 @@ computed wrong scores. Turning it off is for an A/B, not a fix.
 ```python
 hk.arch.agpr(tile) -> None
 ```
-
-*New after 0.8.0*
 
 *Surface*: an experiment: behind an option that is off by default; experimental, and may be removed without notice.
 

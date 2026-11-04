@@ -211,8 +211,6 @@ Elementwise min(a, b) (`hk.min(a, b)`, `a.minimum(b)`): what the operator does, 
 hk.math.fma(*xs)
 ```
 
-*New after 0.8.0*
-
 Elementwise a * b + c with one rounding (`__builtin_fmaf`, v_fma_f32): fp32. Of strips (one hk.map) or of hk.map elements; gfx950.
 
 ### `hk.math.rcp`
@@ -220,8 +218,6 @@ Elementwise a * b + c with one rounding (`__builtin_fmaf`, v_fma_f32): fp32. Of 
 ```python
 hk.math.rcp(*xs)
 ```
-
-*New after 0.8.0*
 
 Elementwise 1 / x by the hardware's reciprocal (v_rcp_f32, `__builtin_amdgcn_rcpf`: within 1 ulp, not the division): fp32. Of strips (one hk.map) or of hk.map elements; gfx950.
 
@@ -231,8 +227,6 @@ Elementwise 1 / x by the hardware's reciprocal (v_rcp_f32, `__builtin_amdgcn_rcp
 hk.math.popcount(*xs)
 ```
 
-*New after 0.8.0*
-
 Elementwise the number of set bits of the 32 (`__builtin_popcount`): i32. Of strips (one hk.map) or of hk.map elements; gfx950.
 
 ### `hk.math.ctz`
@@ -240,8 +234,6 @@ Elementwise the number of set bits of the 32 (`__builtin_popcount`): i32. Of str
 ```python
 hk.math.ctz(*xs)
 ```
-
-*New after 0.8.0*
 
 Elementwise the number of trailing zero bits, 32 for 0 (`__builtin_ctzg(x, 32)`): i32. Of strips (one hk.map) or of hk.map elements; gfx950.
 
@@ -251,8 +243,6 @@ Elementwise the number of trailing zero bits, 32 for 0 (`__builtin_ctzg(x, 32)`)
 hk.math.ceil(*xs)
 ```
 
-*New after 0.8.0*
-
 Elementwise the least integer >= x, as a float (`ceilf`): fp32. Of strips (one hk.map) or of hk.map elements; gfx950.
 
 ### `hk.math.floor`
@@ -260,7 +250,5 @@ Elementwise the least integer >= x, as a float (`ceilf`): fp32. Of strips (one h
 ```python
 hk.math.floor(*xs)
 ```
-
-*New after 0.8.0*
 
 Elementwise the greatest integer <= x, as a float (`floorf`): fp32. Of strips (one hk.map) or of hk.map elements; gfx950.
