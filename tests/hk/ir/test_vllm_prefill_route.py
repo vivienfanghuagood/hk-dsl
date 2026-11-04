@@ -229,3 +229,166 @@ def test_every_measured_shape_the_guard_takes_is_a_clear_win(arch):
     assert len(taken) >= len(rows) // 4, f"the guard takes only {len(taken)} of {len(rows)}"
     for model in DIMS:
         assert any(r["model"] == model and r["shape"] == "0:2048+1024:1" for r in taken), model
+
+
+# ---- exact sizes from vLLM's metadata builder (host arrays, no sync) ---------------------------
+
+def _stats_of(reqs):
+    """batch_stats for `reqs` = [(sequence length, query length)], as host arrays."""
+    import numpy as np
+
+    qsl = np.cumsum([0] + [q for _, q in reqs])
+    return vp.batch_stats(qsl, np.array([s for s, _ in reqs]), len(reqs))
+
+
+@pytest.mark.parametrize("order", ["decodes first", "decodes last", "interleaved"])
+def test_batch_stats_separate_decodes_from_the_prefill(order):
+    pre, dec = [(2048 + 512, 512)], [(768, 1)] * 4
+    reqs = {"decodes first": dec + pre, "decodes last": pre + dec,
+            "interleaved": dec[:2] + pre + dec[2:]}[order]
+    st = _stats_of(reqs)
+    assert st == dict(reqs=5, decodes=4, dec_work=4 * 768, pre_work=512 * 2048 + 512 * 513 / 2,
+                      max_q=512, pre_ctx=2560)
+
+
+class _NoSync:
+    """CommonAttentionMetadata's host side, and device fields that must not be read."""
+
+    def __init__(self, reqs, cached):
+        import numpy as np
+
+        self.query_start_loc_cpu = np.cumsum([0] + [q for _, q in reqs])
+        lens = np.array([s for s, _ in reqs])
+        self._seq_lens_cpu = lens if cached else None
+        self.seq_lens_cpu_upper_bound = lens
+        self.num_reqs = len(reqs)
+
+    @property
+    def seq_lens(self):
+        raise AssertionError("read the device's seq_lens")
+
+    @property
+    def seq_lens_cpu(self):
+        raise AssertionError("read seq_lens_cpu (a device copy when nothing is cached)")
+
+
+@pytest.mark.parametrize("cached", [True, False])
+def test_the_hook_returns_vllms_metadata_and_reads_only_host_arrays(monkeypatch, cached):
+    monkeypatch.setattr(vp, "_STATS", {})
+    q_start = torch.zeros(6, dtype=torch.int32)
+
+    class Md:
+        query_start_loc = q_start
+
+    md = Md()
+
+    def build(self, common_prefix_len, common_attn_metadata, fast_build=False):
+        return md
+
+    reqs = [(2560, 512)] + [(768, 1)] * 4
+    got = vp._stats_hook(build)(object(), 0, _NoSync(reqs, cached))
+    assert got is md
+    assert vp._STATS[id(q_start)] == _stats_of(reqs)
+
+
+def test_the_exact_sizes_take_a_prompt_beside_short_decodes_the_bound_declines(monkeypatch):
+    """A 2048-token chunk beside 8 decodes over 768 tokens: the size bound sees the chunk's own
+    context as the longest and declines; the exact sizes take it (hk measured 1.6-2.3x there).
+    A 512-token prompt beside 8 decodes over 16k stays declined either way."""
+    from hk.integration import switches
+
+    monkeypatch.setattr(switches, "arch", lambda: "gfx1100")
+    for reqs, taken in (([(4096, 2048)] + [(768, 1)] * 8, True),
+                        ([(512, 512)] + [(16384, 1)] * 8, False)):
+        a = _triton_call([(s - q, q) for s, q in reqs])
+        assert vp._guard(a) != "", "the size bound alone declines both"
+        monkeypatch.setattr(vp, "_STATS", {id(a["cu_seqlens_q"]): _stats_of(reqs)})
+        assert (vp._guard(a) == "") == taken
+
+
+def test_without_matching_sizes_the_bound_decides(monkeypatch):
+    from hk.integration import switches
+
+    monkeypatch.setattr(switches, "arch", lambda: "gfx1100")
+    a = _triton_call([(2048, 2048)] + [(767, 1)] * 8)
+    monkeypatch.setattr(vp, "_STATS", {id(object()): _stats_of([(4096, 2048)])})
+    assert vp._guard(a) == vp.guard_why_not(9, 2048, 4096, 128, 2, "gfx1100") != ""
+    st = _stats_of([(4096, 2048)] + [(768, 1)] * 7)          # a request short: another step's
+    monkeypatch.setattr(vp, "_STATS", {id(a["cu_seqlens_q"]): st})
+    assert vp._guard(a) != ""
+
+
+@pytest.mark.parametrize("sig,ok", [
+    ("(self, common_prefix_len, common_attn_metadata, fast_build=False)", True),
+    ("(self, common_attn_metadata, fast_build=False)", False)])
+def test_the_hook_goes_on_only_a_builder_it_knows(sig, ok):
+    ns = {}
+    exec(f"def build{sig}: pass", ns)
+    cls = type("B", (), {"build": ns["build"]})
+    why = vp.stats_why_not(cls)
+    if ok:
+        assert why == "" or "CommonAttentionMetadata" in why   # vLLM itself may be absent here
+    else:
+        assert "not (self, common_prefix_len" in why
+
+
+@pytest.mark.parametrize("arch", ["gfx1100", "gfx1201"])
+def test_every_measured_shape_taken_with_exact_sizes_is_a_clear_win(arch):
+    """The same evidence through the exact decision: every measured batch it takes is >= 1.05x,
+    and it takes the prompt-beside-short-decodes batches the size bound gave up."""
+    rows = json.loads((SWEEP / arch / "prefill-guard-sweep.json").read_text())
+    taken = 0
+    short_dec = 0
+    for r in rows:
+        d, hkv = DIMS[r["model"]]
+        reqs = _reqs(r["shape"])
+        if all(q > 1 for _, q in reqs) or all(q == 1 for _, q in reqs):
+            continue
+        if not vp.exact_why_not(_stats_of(reqs), d, hkv, arch):
+            taken += 1
+            assert r["hk_speedup"] >= 1.05, (arch, r["model"], r["shape"], r["hk_speedup"])
+            short_dec += all(s <= 1024 for s, q in reqs if q == 1)
+    assert taken >= 10 and short_dec >= 3, (taken, short_dec)
+
+
+def test_a_vllm_without_the_host_arrays_keeps_the_size_bound(monkeypatch):
+    """A vLLM whose common metadata has no host sequence lengths (only the device's): the hook
+    does not go on (said in STATS_WHY_NOT), build is left as it was, and the guard decides with
+    #233's size-only bound."""
+    import dataclasses
+    import sys
+    import types
+
+    from hk.integration import switches
+
+    @dataclasses.dataclass
+    class CommonAttentionMetadata:
+        query_start_loc: object
+        query_start_loc_cpu: object
+        seq_lens: object
+        num_reqs: int
+
+    class TritonAttentionMetadataBuilder:
+        def build(self, common_prefix_len, common_attn_metadata, fast_build=False):
+            return None
+
+    orig = TritonAttentionMetadataBuilder.build
+    mods = {"vllm": types.ModuleType("vllm"), "vllm.v1": types.ModuleType("vllm.v1"),
+            "vllm.v1.attention": types.ModuleType("vllm.v1.attention"),
+            "vllm.v1.attention.backends": types.ModuleType("vllm.v1.attention.backends"),
+            "vllm.v1.attention.backends.utils": types.ModuleType("u"),
+            "vllm.v1.attention.backends.triton_attn": types.ModuleType("t")}
+    mods["vllm.v1.attention.backends.utils"].CommonAttentionMetadata = CommonAttentionMetadata
+    mods["vllm.v1.attention.backends.triton_attn"].TritonAttentionMetadataBuilder = \
+        TritonAttentionMetadataBuilder
+    mods["vllm.v1.attention.backends"].triton_attn = mods["vllm.v1.attention.backends.triton_attn"]
+    for name, mod in mods.items():
+        monkeypatch.setitem(sys.modules, name, mod)
+    monkeypatch.setattr(vp, "_ORIG_BUILD", None)
+    monkeypatch.setattr(vp, "_STATS", {})
+    vp._apply_stats()
+    assert vp.STATS_WHY_NOT == "CommonAttentionMetadata has no host sequence lengths"
+    assert TritonAttentionMetadataBuilder.build is orig and vp._ORIG_BUILD is None
+    monkeypatch.setattr(switches, "arch", lambda: "gfx1100")
+    a = _triton_call([(2048, 2048)] + [(767, 1)] * 8)
+    assert vp._guard(a) == vp.guard_why_not(9, 2048, 4096, 128, 2, "gfx1100") != ""
