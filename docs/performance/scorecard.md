@@ -7,7 +7,7 @@
 ## The rule
 
 A performance claim from this project quotes an end-to-end serving result
-from the scorecard. Kernel-level numbers (one kernel against another kernel)
+from the scorecard, taken as [the method](method.md) says. Kernel-level numbers (one kernel against another kernel)
 guide the work, but they are not claims. They depend too much on how well the
 opponent was configured.
 

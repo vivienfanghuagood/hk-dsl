@@ -132,6 +132,7 @@ nav:
       - Support matrix: support-matrix.md
   - 6 Performance:
       - The scorecard: performance/scorecard.md
+      - How the numbers are taken: performance/method.md
   - 7 Contributing:
       - Building: building.md
       - Testing: testing.md
