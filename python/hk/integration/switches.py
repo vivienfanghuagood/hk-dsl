@@ -92,7 +92,7 @@ ROUTES: Dict[str, Route] = {r.name: r for r in (
     _R("vllm_gptq", "vllm", "HK_VLLM_GPTQ", True, ("gfx1100", "gfx1201"),
        "4-bit symmetric GPTQ linear layers on RDNA3W4A16LinearKernel, on hk's decode GEMM at "
        "1-64 tokens; on gfx1201's RDNAHybridW4A16LinearKernel, the fp16 batches vLLM runs on "
-       "Triton (to 32 tokens) on hk's small-batch form, reading vLLM's tensors in place; "
+       "Triton (to 64 tokens) on hk's decode forms, reading vLLM's tensors in place; "
        "act-order checkpoints refused",
        "gfx1100: Qwen3.8-27B-GPTQ-Int4 in the Radeon TheRock vLLM image against stock-fair "
        "(TRITON_ATTN, TunableOp with a 256 MB rotating buffer), 3 starts an arm: GSM8K-200 equal, "

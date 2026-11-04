@@ -71,9 +71,12 @@ __device__ inline void w4_word_sym_f16(uint32_t word, uint32_t s2, uint32_t out[
  * (q - ZERO) * s[n][k / G], dequantized into a bf16 or half row-layout tile. The contract of the
  * trees' load_w4 otherwise (a whole number of 32-column chunks, k0 a multiple of 32). SBLK: s is
  * [N/16][K/G * 16], a 16-row block's scales of a group 16 consecutive values (32 contiguous bytes
- * for the 16 rows a k-step reads, where [N][K/G] puts them on 16 lines).
+ * for the 16 rows a k-step reads, where [N][K/G] puts them on 16 lines). EXL (half tiles): the
+ * codes are row-major int32 [N, K/8] in ExLlama's nibble order and s [N, K/G] -- vLLM's RDNA skinny
+ * layout, read in place.
  */
-template<int G, int ZERO, bool SBLK = false, ducks::rt::all RT, ducks::gl::all QL, ducks::gl::all SL>
+template<int G, int ZERO, bool SBLK = false, bool EXL = false, ducks::rt::all RT, ducks::gl::all QL,
+         ducks::gl::all SL>
 __device__ inline static void load_w4(RT &dst, const QL &qw, const SL &s, int n0, int k0) {
     using T = typename base_types::packing<typename RT::dtype>::unpacked_type;
     using L = typename RT::layout;
@@ -89,6 +92,8 @@ __device__ inline static void load_w4(RT &dst, const QL &qw, const SL &s, int n0
     static_assert(G % 16 == 0, "a group spans whole base tiles");
     static_assert(RT::width % 2 == 0, "the tile is a whole number of 32-column chunks");
     static_assert(ZERO >= 0 && ZERO < 16, "a 4-bit zero point");
+    static_assert(!EXL || (std::is_same_v<T, half> && !SBLK),
+                  "ExLlama's layout decodes into half tiles, its scales [N, K/G]");
     constexpr bool one_group = G % (16 * RT::width) == 0;
     constexpr bool halves = base::elements_per_thread == 16;   // gfx11: both halves hold the row
 
@@ -101,7 +106,7 @@ __device__ inline static void load_w4(RT &dst, const QL &qw, const SL &s, int n0
     #pragma unroll
     for (int i = 0; i < dst.height; i++) {
         const int n = n0 + i * dst.tile_size_row + r;
-        const int *blk = qp + (n >> 4) * chunks * 64 + r * 4;
+        const int *blk = EXL ? qp + long(n) * qw.cols() : qp + (n >> 4) * chunks * 64 + r * 4;
         // a group's scale of row n: s[n][g], or with SBLK s[n / 16][16 g + n % 16]
         auto s_at = [&](int g) { return SBLK ? (n >> 4) * groups * 16 + g * 16 + (n & 15) : n * groups + g; };
         float sc = 0.f, zsc = 0.f;
@@ -121,7 +126,7 @@ __device__ inline static void load_w4(RT &dst, const QL &qw, const SL &s, int n0
         #pragma unroll
         for (int j = 0; j < dst.width; j += 2) {
             const int4 w = *reinterpret_cast<const int4 *>(
-                blk + ((k0 + j * dst.tile_size_col) / 32) * 64);
+                blk + ((k0 + j * dst.tile_size_col) / 32) * (EXL ? 4 : 64));
             #pragma unroll
             for (int jj = 0; jj < 2; jj++) {
                 if constexpr (!one_group)
@@ -129,7 +134,9 @@ __device__ inline static void load_w4(RT &dst, const QL &qw, const SL &s, int n0
                 // Word 0 of a base tile is its columns 0..7, word 1 8..15.
                 const uint32_t mine = uint32_t(jj ? (upper ? w.w : w.z) : (upper ? w.y : w.x));
                 uint32_t own[4];
-                if constexpr (std::is_same_v<T, half>)
+                if constexpr (EXL)
+                    detail::w4_word_exl_f16<ZERO>(mine, s2, own);
+                else if constexpr (std::is_same_v<T, half>)
                     detail::w4_word_sym_f16<ZERO>(mine, s2, own);
                 else
                     detail::w4_word<T>(mine, sc, zsc, own);

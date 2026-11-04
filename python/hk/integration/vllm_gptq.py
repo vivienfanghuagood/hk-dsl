@@ -20,8 +20,8 @@ two entry points:
 
 On gfx1201 vLLM gives the layers `RDNAHybridW4A16LinearKernel` instead: its HIP skinny GEMM up to
 5 tokens (2 on a deep K such as down_proj, an LDS limit), its Triton GEMM above, 3.5-4x slower at
-the switch. There hk reads vLLM's own tensors in place (`hk.ops.w4a16.exllama_matmul`: the
-small-batch form on vLLM's ExLlama-shuffled codes), so no second copy is held, and takes exactly
+the switch. There hk reads vLLM's own tensors in place (`hk.ops.w4a16.exllama_matmul`: hk's
+decode forms on vLLM's ExLlama-shuffled codes), so no second copy is held, and takes exactly
 the batches vLLM would send to Triton up to `HYBRID_MAX_M` tokens (`hk_vllm::gptq_w4a16_hybrid`);
 vLLM's own op runs the rest. That op is called without zero points for these symmetric layers:
 this vLLM passes their stored qzeros to it, and its Triton path asserts on their stride at start.
@@ -72,11 +72,11 @@ PATCH = engine.Op(
 STATS = PATCH.stats
 
 _RDNA3, _HYBRID = "RDNA3W4A16LinearKernel", "RDNAHybridW4A16LinearKernel"
-#: Where hk takes RDNAHybridW4A16LinearKernel's layers, and the most tokens it takes there: on
-#: Qwen3.8-27B-GPTQ's shapes (group 32) hk is 1.27-4.3x vLLM's Triton GEMM from where vLLM leaves
-#: its HIP kernel to 32 tokens, and 0.4-0.66x at 48-64, where vLLM's Triton tiles change.
+#: Where hk takes RDNAHybridW4A16LinearKernel's layers, and the most tokens it takes there (its
+#: decode forms' reach): on Qwen3.8-27B-GPTQ's shapes (group 32) hk is 1.8-8.3x vLLM's Triton GEMM
+#: on every shape from where vLLM leaves its HIP kernel to 64 tokens.
 HYBRID_ARCHES = ("gfx1201",)
-HYBRID_MAX_M = 32
+HYBRID_MAX_M = 64
 
 
 def _fake_hybrid(x, w_q, w_s, group, cu):

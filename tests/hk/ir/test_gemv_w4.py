@@ -41,6 +41,21 @@ def test_the_in_place_form_reads_vllms_layout(arch):
     src = w4a16.w4a16_gemv_kernel("gemv_ir_exl", tokens=5, warps=16, group=32, symmetric=True,
                                   exllama=True).source()
     assert "kittens::gemv_w4<32, 8, false, 5, true>(" in src
+    src = w4a16.w4a16_kernel("wmma_ir_exl", tokens=2, slices=2, warps=16, group=32,
+                             dtype=hk.fp16, symmetric=True, exllama=True).source()
+    assert "kittens::load_w4<32, 8, false, true>(" in src
+
+
+def test_load_w4_exllama_is_the_symmetric_fp16_rdna_form():
+    def bad_bf16(qw: hk.Tensor[hk.i32], s: hk.Tensor[hk.bf16], o: hk.Tensor[hk.bf16]):
+        hk.load_w4(hk.RT(hk.bf16, 16, 32, "row"), qw, s, None, 0, 0, group=32, zero=8, exllama=True)
+    with pytest.raises(TypeError, match="fp16 tile"):
+        _src(bad_bf16)
+
+    def cdna(qw: hk.Tensor[hk.i32], s: hk.Tensor[hk.fp16], o: hk.Tensor[hk.fp16]):
+        hk.load_w4(hk.RT(hk.fp16, 16, 32, "row"), qw, s, None, 0, 0, group=32, zero=8, exllama=True)
+    with pytest.raises(TypeError, match="wave32"):
+        _src(cdna, "gfx950")
 
 
 @pytest.mark.parametrize("kw,exc,match", [

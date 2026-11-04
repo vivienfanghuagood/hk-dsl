@@ -198,7 +198,7 @@ def test_vllm_gptq_takes_min_m_to_64_and_leaves_the_rest(monkeypatch):
     assert seen == [m for m in (vllm_gptq.MIN_M - 1, 65) if m > 0]
 
 
-def test_vllm_gptq_hybrid_takes_vllms_triton_batches_to_32_in_place(monkeypatch):
+def test_vllm_gptq_hybrid_takes_vllms_triton_batches_to_64_in_place(monkeypatch):
     """RDNAHybridW4A16LinearKernel's layers (gfx1201): hk reads vLLM's own skinny-layout tensors and
     takes the batches vLLM would run on Triton, up to HYBRID_MAX_M tokens; vLLM's op the rest,
     called without zero points."""
@@ -216,7 +216,7 @@ def test_vllm_gptq_hybrid_takes_vllms_triton_batches_to_32_in_place(monkeypatch)
                 for i, c in enumerate((0, 2, 4, 6, 1, 3, 5, 7)))     # ExLlama's nibble order
     w_q = torch.where(words >= 2 ** 31, words - 2 ** 32, words).to(torch.int32).view(torch.int8)
     w = (q - 8).float() * s.float().repeat_interleave(group, 1)
-    for m in (6, 13, vllm_gptq.HYBRID_MAX_M):
+    for m in (6, 13, 40, vllm_gptq.HYBRID_MAX_M):
         x = torch.randn(m, k, device="cuda", dtype=torch.float16) * 0.1
         before = vllm_gptq.HYBRID.stats["hk"]
         y = vllm_gptq.gptq_w4a16_hybrid(x, w_q, s, group, 64)

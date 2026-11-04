@@ -31,7 +31,7 @@ COVERAGE = {
     ("vllm_gptq", "gfx1100"):
         "test_route_paths.py::test_vllm_gptq_takes_min_m_to_64_and_leaves_the_rest",
     ("vllm_gptq", "gfx1201"):
-        "test_route_paths.py::test_vllm_gptq_hybrid_takes_vllms_triton_batches_to_32_in_place",
+        "test_route_paths.py::test_vllm_gptq_hybrid_takes_vllms_triton_batches_to_64_in_place",
     ("vllm_gemm", "gfx1100"): "test_vllm_gemm.py::test_the_patched_layer_function_matches_f_linear",
     ("vllm_gemm", "gfx1201"): "test_vllm_gemm.py::test_the_patched_layer_function_matches_f_linear",
     ("vllm_moe", "gfx1100"):

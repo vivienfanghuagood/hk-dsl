@@ -191,11 +191,11 @@ def test_hybrid_layers_need_vllms_switch(monkeypatch):
 
 @pytest.mark.parametrize("m,k,path", [
     (1, 5120, "fallback"), (5, 5120, "fallback"),         # vLLM's HIP kernel: left to it
-    (6, 5120, "hk"), (32, 5120, "hk"),                     # vLLM's Triton, to 32 tokens: hk's
-    (33, 5120, "fallback"), (64, 5120, "fallback"),
+    (6, 5120, "hk"), (64, 5120, "hk"),                     # vLLM's Triton, to 64 tokens: hk's
+    (65, 5120, "fallback"), (512, 5120, "fallback"),
     (2, 17408, "fallback"), (3, 17408, "hk"),              # deep K: vLLM leaves HIP at 3 tokens
 ])
-def test_hk_takes_the_batches_vllm_sends_to_triton_up_to_32(monkeypatch, _vllm_switch, m, k, path):
+def test_hk_takes_the_batches_vllm_sends_to_triton_up_to_64(monkeypatch, _vllm_switch, m, k, path):
     torch = pytest.importorskip("torch")
     from hk.ops import w4a16
 

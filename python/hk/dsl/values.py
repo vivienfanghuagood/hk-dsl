@@ -1940,7 +1940,8 @@ def zeros(ty, *, into=None):
 
 def load_w4(ty, qw: "Global", s: "Global", zs: Optional["Global"], n0, k0, *,
             group: int = 128, zero: Optional[int] = None, s_blocked: bool = False,
-            zp: Optional["Global"] = None, rows: bool = False, into=None) -> "Tile":
+            zp: Optional["Global"] = None, rows: bool = False, exllama: bool = False,
+            into=None) -> "Tile":
     """Rows n0.. and columns k0.. of W, dequantized from 4-bit codes into a
     bf16 row-layout tile: element (n, k) is q * s - zs, q being nibble k % 8
     of row n's word k // 8 (int32 [N, K/8], interleaved [N/16][K/32][16][4]),
@@ -1973,7 +1974,11 @@ def load_w4(ty, qw: "Global", s: "Global", zs: Optional["Global"], n0, k0, *,
 
     `rows` (zero codes): the codes are row-major, int32 [N, K/8] with nibble
     t of word w column 8w + t -- vLLM's uint8 [N, K/2] viewed as int32 -- not
-    hk's interleaved order; each lane loads its own row's 16 bytes."""
+    hk's interleaved order; each lane loads its own row's 16 bytes.
+
+    `exllama` (symmetric, `zero=`, plain scales, an fp16 tile, RDNA): the codes are vLLM's RDNA
+    skinny W4A16 layout, read in place -- row-major int32 [N, K/8], word w of a row holding columns
+    8w + (0, 2, 4, 6, 1, 3, 5, 7) in nibbles 0..7 (ExLlama's shuffle) -- and s [N, K/group]."""
     if ty.cols % 32:
         raise ValueError(f"load_w4 reads whole 32-column chunks; the tile is "
                          f"{ty.cols} wide")
@@ -2001,6 +2006,14 @@ def load_w4(ty, qw: "Global", s: "Global", zs: Optional["Global"], n0, k0, *,
         raise ValueError(f"load_w4: zero is a 4-bit code, 0..15, not {zero!r}")
     if s_blocked and zero is None:
         raise TypeError("load_w4(s_blocked=True) is the symmetric form's scale layout: give zero=")
+    if exllama:
+        from .arch import target  # noqa: PLC0415
+
+        if zero is None or s_blocked or ty.dtype.name != "fp16":
+            raise TypeError("load_w4(exllama=True) is the symmetric form (zero=) with plain scales "
+                            "into an fp16 tile")
+        if target().wave != 32:
+            raise TypeError(f"load_w4(exllama=True): RDNA's (wave32) form, not {target().arch}'s")
     for name, g, want in (("qw", qw, i32), ("s", s, None), ("zs", zs, None)):
         if g is None:
             continue
@@ -2020,6 +2033,8 @@ def load_w4(ty, qw: "Global", s: "Global", zs: Optional["Global"], n0, k0, *,
         extra = {"zs": zs.v} if zs is not None else {"zero": _i64(zero)}
     if s_blocked:
         extra["s_blocked"] = _unit_attr()
+    if exllama:
+        extra["exllama"] = _unit_attr()
     return _make(hkd.LoadW4Op, ty, (qw.v, s.v, as_int(n0).v, as_int(k0).v),
                  into=into, name="w4", group=group, **extra)
 

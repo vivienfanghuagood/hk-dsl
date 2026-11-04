@@ -2,9 +2,10 @@
 (ExLlama-shuffled codes, int32 [N, K/8] row-major; scales [N, K/group]), what vllm_gptq runs on
 gfx1201's RDNAHybridW4A16LinearKernel layers.
 
-Against a float64 reference at 1-32 tokens (whole and partial 8-token chunks), exact probes, 200
-launches into NaN-filled outputs, every allocation end-fenced, and no scratch or spill in any
-instantiation.
+Both forms that read it -- the small-batch form (`hk.gemv_w4(exllama=True)`, up to EXL_GEMV_MAX
+tokens) and the WMMA form (`hk.load_w4(exllama=True)`, to 64 tokens): against a float64 reference
+at 1-64 tokens, exact probes, 200 launches into NaN-filled outputs, every allocation end-fenced,
+and no scratch or spill in any instantiation.
 """
 
 from __future__ import annotations
@@ -56,7 +57,7 @@ def test_the_layout_is_vllms():
 
 
 @pytest.mark.parametrize("group", [32, 64, 128])
-@pytest.mark.parametrize("m", [1, 3, 5, 8, 12, 16, 31, 32])
+@pytest.mark.parametrize("m", [1, 3, 4, 5, 8, 12, 16, 17, 31, 32, 33, 48, 64])
 def test_within_two_ulps_a_row_of_float64(m, group):
     g = torch.Generator(device="cuda").manual_seed(500 + 10 * m + group)
     n, k = 272, 2048
@@ -75,7 +76,7 @@ def test_exact_probes():
         q = torch.full((n, k), code, device="cuda", dtype=torch.int32)
         qw, s, _ = _layer(n, k, group, None, q=q,
                           s=torch.ones(n, k // group, device="cuda", dtype=torch.float16))
-        for m in (1, 7, 8, 9, 32):
+        for m in (1, 4, 7, 9, 32, 64):
             x = torch.ones(m, k, device="cuda", dtype=torch.float16)
             got = w4a16.exllama_matmul(x, qw, s, group)
             assert torch.equal(got.cpu(), torch.full((m, n), want, dtype=torch.float16))
@@ -85,7 +86,7 @@ def test_the_same_bits_on_every_launch_into_nan_filled_outputs():
     g = torch.Generator(device="cuda").manual_seed(13)
     n, k, group = 5120, 6144, 32
     qw, s, _ = _layer(n, k, group, g)
-    for m in (3, 8, 13, 32):
+    for m in (3, 8, 13, 32, 64):
         x = torch.randn(m, k, device="cuda", dtype=torch.float16, generator=g)
         first, differ, nan = None, 0, 0
         for _ in range(LAUNCHES):
@@ -111,14 +112,32 @@ def test_every_allocation_end_fenced():
         qw = torch.randint(-2 ** 31, 2 ** 31 - 1, (n, k // 8), device="cuda", generator=g,
                            dtype=torch.int64).to(torch.int32)
         s = torch.rand(n, k // group, device="cuda", generator=g).half()
-        for m in (1, 8, 9):
+        for m in (1, 8, 9, 64):
             x = torch.randn(m, k, device="cuda", generator=g).half()
             y = step(f"exllama N{n} K{k} M{m}", lambda: w4a16.exllama_matmul(x, qw, s, group))
             assert not y.isnan().any()
     ''')
 
 
+def test_the_wmma_form_runs_from_past_exl_gemv_max_to_64():
+    """Past EXL_GEMV_MAX tokens exllama_matmul is one WMMA launch at the decode schedules."""
+    n, k, group = 512, 2048, 32
+    assert all(w4a16.takes(m, n, k, group) for m in range(w4a16.EXL_GEMV_MAX + 1, 65))
+    qw, s, w = _layer(n, k, group, torch.Generator(device="cuda").manual_seed(9))
+    for m in (w4a16.EXL_GEMV_MAX + 1, 64):
+        x = torch.randn(m, k, device="cuda", dtype=torch.float16)
+        w4a16.exllama_matmul(x, qw, s, group)
+    assert any(key[0] == "exl-wmma" for key in w4a16._OPS)
+
+
 def test_no_instantiation_spills_or_uses_scratch():
+    for t, sch in w4a16.SCHEDULES.items():
+        for group in (32, 64, 128):
+            slices = min(sch["slices"], group // 16)
+            b = w4a16.kernel_for(t, slices, sch["warps"], group, sch["blocks"], "fp16", True,
+                                 True).build()
+            for r in b.kernels:
+                assert (r.scratch, r.vgpr_spill) == (0, 0), ("wmma", t, group, r)
     for tokens in range(1, w4a16.EXL_CHUNK + 1):
         for group in (32, 64, 128):
             b = w4a16.w4a16_gemv_kernel(f"exl_t{tokens}_g{group}", tokens=tokens,
