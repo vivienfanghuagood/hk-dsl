@@ -14,6 +14,21 @@ import pytest
 from hk.runtime import compile as C
 
 
+def elf(payload: bytes) -> bytes:
+    """A minimal ELF64 little-endian file around `payload`: the header, the payload, and a
+    section header table of two entries (the null one and one named), as the cache's check
+    (`_elf_intact`) wants a whole binary to look."""
+    shoff = 64 + len(payload)
+    head = bytearray(64)
+    head[:6] = b"\x7fELF\x02\x01"
+    head[40:48] = shoff.to_bytes(8, "little")
+    head[58:60] = (64).to_bytes(2, "little")
+    head[60:62] = (2).to_bytes(2, "little")
+    named = bytearray(64)
+    named[0] = 1
+    return bytes(head) + payload + bytes(64) + bytes(named)
+
+
 @pytest.fixture
 def cc(tmp_path, monkeypatch):
     """compile.build with a stand-in hipcc whose "binary" is its headers' contents.
@@ -44,8 +59,8 @@ def cc(tmp_path, monkeypatch):
     def run(cmd, **kw):
         state["compiles"] += 1
         out = cmd[cmd.index("-o") + 1]
-        with open(out, "w") as f:
-            f.write("".join(open(p).read() for p in sorted(state["deps"])))
+        with open(out, "wb") as f:
+            f.write(elf("".join(open(p).read() for p in sorted(state["deps"])).encode()))
         return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
 
     monkeypatch.setattr(C, "_scan_deps", scan)
@@ -53,7 +68,7 @@ def cc(tmp_path, monkeypatch):
 
     def build(src="// kernel\n"):
         b = C.build(src, "gfx950", name="k", kind="co")
-        return b, b.so_path.read_text()
+        return b, b.so_path.read_bytes()[64:-128].decode()
     state["build"], state["inc"] = build, inc
     return state
 
@@ -171,3 +186,41 @@ def test_flags_hipcc_appends_from_its_environment_are_keyed(monkeypatch):
     k0 = C.cache_key("// k\n", t, (), "co")
     monkeypatch.setenv("HIPCC_COMPILE_FLAGS_APPEND", "-O0")
     assert C.cache_key("// k\n", t, (), "co") != k0
+
+
+@pytest.mark.parametrize("damage", ["zeros", "cut short", "tail zeroed"])
+def test_an_ok_marked_entry_whose_binary_never_reached_the_disk_is_rebuilt(cc, damage, capfd):
+    """hk-dsl#227: a power loss left OK-marked entries whose code objects were zeros; every later
+    process failed at launch until the cache was cleared by hand. Not a whole ELF file -> a
+    miss, rebuilt in its place, and the next build a hit again."""
+    b0, bin0 = cc["build"]()
+    data = b0.so_path.read_bytes()
+    bad = {"zeros": bytes(len(data)), "cut short": data[: len(data) // 2],
+           "tail zeroed": data[:-64] + bytes(64)}[damage]
+    b0.so_path.write_bytes(bad)
+    assert (b0.so_path.parent / "OK").exists()
+    b1, bin1 = cc["build"]()
+    assert not b1.cached and b1.key == b0.key and bin1 == bin0
+    assert cc["compiles"] == 2
+    assert "damaged" in capfd.readouterr().err
+    b2, _ = cc["build"]()
+    assert b2.cached and cc["compiles"] == 2
+
+
+def test_the_ok_marker_is_written_after_the_binary_is_on_the_disk(cc, monkeypatch):
+    """The other half of hk-dsl#227: the binary is flushed while there is no OK marker yet, the
+    marker is flushed after it, and the cache directory last, after the entry is renamed into
+    place -- so a crash at any point leaves a miss, not an OK-marked entry of zeros."""
+    seen = []
+    real = C._fsync
+
+    def fsync(path):
+        seen.append((path, (path.parent / "OK").exists()))
+        real(path)
+    monkeypatch.setattr(C, "_fsync", fsync)
+    b, _ = cc["build"]()
+    names = [p.name for p, _ in seen]
+    co = names.index(C.CODEOBJ)
+    assert seen[co][1] is False, "the binary was flushed after its OK marker existed"
+    assert co < names.index("OK")
+    assert seen[-1][0] == C.cache_dir() == b.so_path.parent.parent

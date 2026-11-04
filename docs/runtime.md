@@ -152,7 +152,11 @@ is not let through by whoever happened to compile the same bytes first.
 The directory is `$HK_CACHE_DIR`, else `$XDG_CACHE_HOME/hk`, else
 `~/.cache/hk`. Entries are never invalidated, only added: a key that hashes
 everything does not need eviction for correctness, and the directory is one
-you can delete. The header hash is the part that matters most —
+you can delete. An entry is written in a scratch directory, its files flushed
+to the disk, then its `OK` marker, then the whole renamed into place, so a
+crash leaves a miss. An entry whose binary is not a whole ELF file anyway (an
+older hk's, after a power loss: zeros behind the marker) is a miss too, and is
+rebuilt in its place. The header hash is the part that matters most —
 editing a header changes the kernel while leaving the generated source
 byte-identical; through 0.8.0 the key hashed a fixed set of files
 (kittens.cuh, pyutils/, the arch tree, include/hk/cdna.cuh) and an edit to
