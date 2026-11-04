@@ -97,24 +97,25 @@ hk.integration ab`, `headroom` and `tools/hk-bench/` set it themselves, and
 apply each arm's patches explicitly.
 
 **The engine contract, at startup.** Before it patches anything, a plugin
-checks every route it is about to apply against the installed engine
+checks each route it is about to apply against the installed engine
 (`hk.integration.contract`). It checks that each patched or fallback entry
 point still exists, with the parameters the route uses: the MXFP8 kernel
 class's two methods, `aiter.fused_moe.fused_moe`'s parameters, the AWQ
-methods, and so on. If any contract is broken, for example by a vLLM or AITER
-other than the one measured, the plugin patches **nothing** in that engine.
-It prints one line to stderr, and the engine runs stock:
+methods, and so on. A route whose contract is broken, for example by a vLLM or
+AITER other than the one measured, stays **off**, and the plugin prints one
+line to stderr for it. The engine's other routes are applied as usual:
 
 ```
-[hk] WARNING: vllm: engine contract FAILED -- hk patched NOTHING in this engine, it runs stock (vllm 0.x; routes measured on vllm 0.32.1rc1.dev36+ge68efc685): vllm_moe_a8w4: aiter.fused_moe.fused_moe lost ['gate_mode']. ...
+[hk] WARNING: vllm: route vllm_moe_a8w4 OFF -- engine contract FAILED (vllm 0.x; routes measured on vllm 0.32.1rc1.dev36+ge68efc685): aiter.fused_moe.fused_moe lost ['gate_mode']. hk's other routes in this engine are unaffected. Use the engine version hk was measured on, or set HK_VLLM_MOE_A8W4=0 to silence this. (pid ...)
 ```
 
-It is all or nothing per engine, not per route. The routes in one engine patch
-different entry points, but one broken contract means the engine is not the
-build they were measured on. A half-patched engine was never measured, and
-nobody chose it. A route that raises while it is being applied gets the same
-treatment: the plugin undoes the routes already applied and prints the same
-kind of line.
+The plugin's summary line names the routes that are on and the ones that are
+off (`[hk] vLLM routes on: ...; OFF: vllm_moe_a8w4`). A route that raises
+while it is being applied is treated the same way: off, with its own line.
+Each route patches its own entry points and falls back by itself for the
+shapes and arches it does not take, so one broken route says nothing about the
+others. Until November 2026 it was all or nothing per engine, and three engine
+updates turned every route off over a change that touched one.
 
 **The first JIT compile says so.** A route's kernels compile on first use,
 seconds each, in every worker. Run `python3 -m hk.integration warm-routes`
@@ -426,8 +427,8 @@ built for pybind does not cover it, since the artifacts differ. Run it and
 Every patch rebinds engine internals by name, so an engine release can break
 one without an error: the rebind finds nothing, a stand-in forwards
 arguments into the wrong slots, or a backend hook becomes dead code.
-At startup each plugin runs `hk.integration.contract.check` on the routes it
-is about to apply, and leaves the engine stock if one is broken
+At startup each plugin runs `hk.integration.contract.check_each` on the routes
+it is about to apply, and leaves each route whose contract is broken off
 ([on by default](#on-by-default-and-turning-it-off)).
 `tests/hk/gpu/test_engine_contract.py` runs that check, and a simulated AITER
 mismatch, in the vLLM image (the gfx950-vllm GPU tier).
@@ -455,6 +456,12 @@ HIP_VISIBLE_DEVICES=3 python3 -m pytest tests/hk/engines -q        # SGLang's
 
 SGLang reads the GPU's arch while importing its kernels, so its file needs a
 GPU visible, though nothing is launched.
+
+**[The support matrix](support-matrix.md)** is the current list: every image and engine
+version whose contract facts are recorded, per arch, with the torch, ROCm, Triton and Python each
+runs on and which of hk's default-on routes hold in it. It is generated from those fixtures, and
+the IR tier holds the routes to them on every pull request. The table below is the engine-installed
+run it started from.
 
 What was run, on the dev pod (the vLLM pod, gfx1100), 2026-10-16:
 

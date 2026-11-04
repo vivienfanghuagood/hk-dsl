@@ -22,8 +22,9 @@ validated with real weights on this GPU. Turning hk off is for comparisons:
     HK_PATCH_VLLM=0 vllm serve ...           # every vLLM route off
 
 Before it patches anything, the plugin checks the engine contract of every route it is about to
-apply (`hk.integration.contract`). If one is broken, for example by a vLLM or AITER other than
-the one measured, it patches nothing, prints one warning line, and vLLM runs stock.
+apply (`hk.integration.contract`). A route whose contract is broken, for example by a vLLM or
+AITER other than the one measured, or whose apply raises, stays off with one warning line of
+its own; the other routes are applied as usual.
 
 `load_general_plugins` warns that plugins may be loaded more than once in one
 process, so `register()` is idempotent: every route's apply is guarded and
@@ -33,7 +34,7 @@ process, so `register()` is idempotent: every route's apply is guarded and
 from __future__ import annotations
 
 import os
-from typing import Callable, Dict, List, Tuple
+from typing import Callable, Dict, Tuple
 
 
 def enabled() -> bool:
@@ -159,37 +160,27 @@ def register() -> None:
         raise
     except BaseException as e:  # noqa: BLE001
         notes.append(f"stack not checked ({type(e).__name__}: {e})")
-    # The contract of every route about to be applied: all of them or none (contract.py).
-    problems = contract.check(routes)
-    if problems:
-        contract.refuse("vllm", problems)
-        return
-    applied: List[Tuple[str, Callable]] = []
-    current = ""
-    try:
-        for name, how in APPLY.items():
-            if name in routes:
-                current = name
-                report, revert = how()
-                applied.append((name, revert))
-                notes.append(report)
-        # A user's own kernels: the modules that register and patch them,
-        # imported here because this is the process the model runs in.
-        if user:
-            current = "HK_VLLM_USER"
+    # Each route's contract, then each route that holds, one at a time: a broken or raising
+    # route is off with its own warning line, and the others are applied (contract.py).
+    reports, applied, off = contract.apply_routes("vllm", routes, list(APPLY.items()))
+    notes += reports
+    # A user's own kernels: the modules that register and patch them, imported here because
+    # this is the process the model runs in.
+    if user:
+        try:
             from . import register as hk_register  # noqa: PLC0415
 
             notes.append(f"user: {', '.join(hk_register.load_user(user))}")
-    except BaseException as e:  # noqa: BLE001 -- never half-patched: undo what was applied
-        for _, revert in reversed(applied):
-            try:
-                revert()
-            except BaseException:  # noqa: BLE001,S110
-                pass
-        contract.refuse("vllm", [f"{current} raised {type(e).__name__}: {e}"], contract.RAISED)
+        except Exception as e:  # noqa: BLE001 -- the user's modules, not hk's routes
+            contract.refuse_route("vllm", "HK_VLLM_USER", [f"raised {type(e).__name__}: {e}"],
+                                  contract.RAISED)
+    if not applied and not user:
+        print(f"[hk] vLLM: no route applied ({len(off)} off, see the warnings), stock "
+              f"(pid {pid})", flush=True)
         return
     from ..runtime.compile import arm_jit_notice  # noqa: PLC0415
 
     arm_jit_notice("vLLM plugin")
-    on = ", ".join(f"{n} ({d.why})" for n, d in routes.items())
-    print(f"[hk] vLLM routes on: {on}; {'; '.join(notes)} (pid {pid})", flush=True)
+    on = ", ".join(f"{n} ({d.why})" for n, d in routes.items() if n in applied)
+    left = f"; OFF: {', '.join(off)}" if off else ""
+    print(f"[hk] vLLM routes on: {on}{left}; {'; '.join(notes)} (pid {pid})", flush=True)

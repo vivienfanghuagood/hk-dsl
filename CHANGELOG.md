@@ -9,6 +9,18 @@ The next version's notes collect here until it is released.
 What is on main after 0.8.0. `pip install hk-dsl` (0.8.0) does not have it;
 the API reference marks such names *New after 0.8.0*.
 
+**Engine contracts are per route.** A route whose engine contract is broken, or whose apply raises,
+now stays off with one warning line of its own (`[hk] WARNING: vllm: route vllm_moe_a8w4 OFF --
+engine contract FAILED ...`), and the engine's other routes are applied. Until now one broken
+contract left every route in that engine off, which three engine updates did over a change in one
+route. The plugins' summary line lists the routes that are off. `hk.integration.contract` gains
+`check_each`, `refuse_route` and `apply_routes`; the vLLM, SGLang and SGLang-Diffusion plugins use
+them. A user's own modules (`HK_VLLM_USER`) that fail to load are reported the same way.
+
+**Engine contracts are held against the production images in CI.** `python3 -m hk.integration.contract --record` writes what a route's contract check reads from the installed engines (each check is now a gather of facts and a judge of them), and `tests/hk/ir/test_engine_facts.py` judges every route that is on by default against the facts recorded in each production image (`tests/hk/ir/engine_facts/`: the MiniCPM5, MiniCPM-V, Qwen3.6 template and sglang-radeon images on gfx1100, the R9700 vLLM image on gfx1201) and in each engine version hk claims (vLLM 0.31.0 on its matched stack and SGLang 0.5.18 on gfx1100, the vLLM 0.32.1 nightly the gfx950 routes were measured on), with no engine installed. A stand-in or check that one of those images would refuse now fails the IR tier, instead of turning that route off at serving time ([testing](docs/testing.md)).
+
+**A support matrix: [docs/support-matrix.md](docs/support-matrix.md).** Per arch, the image each GPU tier of hk's own tests runs in (ROCm, Python, torch), and every serving-engine image whose contract facts are recorded: the engine version, torch, ROCm, Triton and Python it runs on, and which of hk's default-on routes hold in it. `scripts/gen_support_matrix.py` writes it from CI's files and `tests/hk/ir/engine_facts/`, and `tests/hk/ir/test_support_matrix.py` fails while it is stale. `python3 -m hk.integration.contract --record` now records the stack (`contract.stack()`) and takes `--role` (production, measured, development); the eight fixtures carry both.
+
 **`hk.gemv_w4`: a few tokens against 4-bit weights without WMMA, and hk.ops.w4a16's small-batch
 form on it.** At 1-4 tokens the w4a16 decode kernel was bound by instruction issue, not memory. A
 WMMA operand holds every row of W in both halves of the wave, so each 16-byte load of codes was
