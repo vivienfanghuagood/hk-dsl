@@ -64,7 +64,7 @@ indistinguishable from one that works unless something counts.
 ## Prefill attention on vLLM's own cache
 
 With chunked prefill and prefix caching on, a long prompt's time on RDNA is
-mostly prefill attention over the paged cache. The route (on by default on gfx1100; `HK_VLLM_PREFILL=0` turns it off) replaces
+mostly prefill attention over the paged cache. The route (on by default on gfx1100 and gfx1201; `HK_VLLM_PREFILL=0` turns it off) replaces
 only that kernel. The cache, its layout and block size, the cache write, and the
 decode of decode-only steps all stay vLLM's. So does the rest of the backend
 vLLM picked.
@@ -78,8 +78,7 @@ vLLM picked.
 Head size 64, 128 and 256. At 256 the kernel uses `dsplit`, a query row
 across a pair of warps. Where a kernel does not build spill-free under the
 compiler at hand, its calls stay vLLM's: TRITON_ATTN at d256 under clang 22
-(ROCm 7.2.3). It builds under the vLLM images' clang 23. gfx1100 (and gfx1201 with
-`HK_VLLM_PREFILL=1`, until its own gate), bf16,
+(ROCm 7.2.3). It builds under the vLLM images' clang 23. gfx1100 and gfx1201, bf16,
 pages of 16 or 32 tokens -- on TRITON_ATTN any multiple of 16: hybrid
 models' attention pages (544 tokens for MiniCPM-V-4.7, 784 for Qwen3.8) hold
 whole 32-key blocks or halves of them, and are read as zero past a

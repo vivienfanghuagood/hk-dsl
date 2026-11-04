@@ -10,7 +10,7 @@ cache write, the block size, the decode and every other backend stay vLLM's. The
 K/V are in the cache before the call (ROCM_ATTN writes it in do_kv_cache_update), so `k`/`v`
 are not read.
 
-    vllm serve <model>                     # on by default on gfx1100
+    vllm serve <model>                     # on by default on gfx1100 and gfx1201
     HK_VLLM_PREFILL=0 vllm serve <model>   # off: vLLM's prefill kernels
 
 A call it does not take falls back to vLLM's kernel unchanged and is counted: another dtype
