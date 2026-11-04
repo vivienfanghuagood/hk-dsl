@@ -117,6 +117,23 @@ ROCM_ATTN's kernels (`tools/hk-bench/results/2026-11-03/`). Such a batch goes to
 vLLM's kernel unchanged and is counted as `declined`; the first one prints one
 line. `HK_VLLM_PREFILL_GUARD=0` turns the guard off, to measure it.
 
+**On ROCM_ATTN no batch is declined.** ROCM_ATTN hands the prefix-prefill only
+its requests of more than one query; its own paged decode keeps the decode rows.
+So neither kind of batch above reaches hk's kernel there. Measured in one process
+against ROCM_ATTN's own prefill (`attention_bench.py prefill --arms hk_rocm,rocm_attn`,
+68 shapes a model: prompts, chunks after a prefix, prompts beside 1-16 decodes over
+1k-16k tokens), every shape is faster:
+
+| GPU | MiniCPM5-2B | Qwen3-8B |
+|---|---|---|
+| gfx1100 (W7900D) | 1.54-5.35x, geomean 3.08x | 1.16-5.79x, geomean 2.75x |
+| gfx1201 (R9700) | 1.08-3.07x, geomean 1.90x | 1.02-3.05x, geomean 1.91x |
+
+(`tools/hk-bench/results/2026-11-04/`). The thinnest are a short prompt beside
+4-16 decodes over 4k-16k tokens, where ROCM_ATTN's own decode, which the route
+leaves alone, is most of the batch's time. MiniCPM-V-4.7's 544-token pages are not
+taken on ROCM_ATTN (pages of 16 or 32 only, above), so they stay vLLM's there.
+
 ### Decode-only batches on TRITON_ATTN
 
 A decode step reads the whole KV cache and does one query row a head of maths

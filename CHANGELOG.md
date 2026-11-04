@@ -6,6 +6,8 @@ The next version's notes collect here until it is released.
 
 ## Unreleased
 
+**vLLM's prefill attention on hk by default on gfx1201 (Radeon AI PRO R9700)**, as on gfx1100 since 0.8: the `vllm_prefill` route takes ROCM_ATTN's prefix-prefill and TRITON_ATTN's batches with prefill in them, on vLLM's own cache. On TRITON_ATTN the guard leaves to vLLM's kernel the batches hk's is not faster on. `HK_VLLM_PREFILL=0` turns it off. MiniCPM5-2B on one R9700: a 16k-token prompt's time to first token 2.2x shorter, decode unchanged. The GPU tests now run both entry points the way vLLM calls them, 200 times over outputs poisoned with NaN and with a producer on another stream.
+
 **`tools/hk-bench/serving/sglang_toggle_ab.py`: an SGLang A/B in one server process.** It starts one `sglang.launch_server` with hk's plugin on and switches hk's SGLang routes (`sglang_linear`, `sglang_norm`) off and on between rounds by a signal to every process of the server (`serving/sglang_toggle/`). Weights, KV cache and the GPU-to-GPU links are the same in both arms. Two separate server starts on a Radeon PRO W7900 can differ by 13-16%, more than most kernel wins. The arms alternate round by round, each switch is checked in every rank (state file, and hk's call counters move only in the hk arm), and a ratio is reported as a result only when the arms' per-round ranges are disjoint. It needs `--disable-cuda-graph`, since a captured graph does not see the switch.
 
 ## 0.9.0

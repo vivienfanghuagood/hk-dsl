@@ -779,3 +779,71 @@ def test_vllm_prefill_nan_poisoned_repeats_and_a_side_stream_producer(monkeypatc
     run(q2, cache2, out2)
     torch.cuda.synchronize()
     assert torch.equal(out2.view(torch.int16), first.view(torch.int16))
+
+
+def _caf_must_not_run(q, k, v, o, kv_cache_dtype, k_cache, v_cache, b_loc, b_start_loc, b_seq_len,
+                      max_seq_len, max_input_len, k_scale, v_scale, alibi_slopes=None,
+                      sliding_window=None, sm_scale=None, skip_decode=False, fp8_out_scale=None,
+                      sinks=None, is_block_table_ptr=False, causal=True):
+    raise AssertionError("fell back to vLLM's kernel")
+
+
+@pytest.mark.skipif(not _route_arch(), reason="the route is gfx1100's and gfx1201's")
+@pytest.mark.parametrize("head_dim,h_kv,page", [(128, 2, 16), (128, 2, 32), (256, 1, 16)])
+def test_vllm_prefill_rocm_attn_nan_poisoned_repeats_and_a_side_stream_producer(
+        monkeypatch, head_dim, h_kv, page):
+    """The default-on rule's repeat and stream checks on ROCM_ATTN's entry point, as
+    chunked_prefill_paged_decode calls it (skip_decode: its own kernel writes the decode rows):
+    200 calls with the output set to NaN before each, every one taken by hk and bitwise the
+    first, the first matching the reference on the prefill rows and leaving the decode rows
+    untouched; then the query and the caches written by a producer on a torch stream of its own,
+    the route called after torch's stream waits for it: bitwise the same again."""
+    import inspect
+
+    from hk.integration import vllm_prefill as vp
+
+    if head_dim == 256 and not _clang_23():
+        pytest.skip("rocm dsplit spills under clang 22: the route leaves d256 to vLLM there")
+    monkeypatch.setattr(vp, "_ORIG", _caf_must_not_run)
+    monkeypatch.setattr(vp, "_P_SIG", inspect.signature(_caf_must_not_run))
+    reqs = MIXED
+    q, (k, v), (k5, v4), table, lens, q_start = _rocm_case(reqs, head_dim=head_dim, h_kv=h_kv,
+                                                           page=page, seed=5)
+    rows = _prefill_rows(reqs, q_start)
+    dead = sorted(set(range(q.shape[0])) - set(rows))
+    max_q = max(n for _, n in reqs)
+
+    def run(q_in, k_in, v_in, out):
+        vp.context_attention_fwd(q=q_in, k=None, v=None, o=out, kv_cache_dtype="auto",
+                                 k_cache=k_in, v_cache=v_in, b_loc=table, b_start_loc=q_start,
+                                 b_seq_len=lens, max_seq_len=int(lens.max()),
+                                 max_input_len=max_q, k_scale=None, v_scale=None,
+                                 sm_scale=head_dim ** -0.5, skip_decode=True)
+
+    before = vp.PATCH.stats["hk"]
+    out = torch.empty_like(q)
+    first = None
+    for i in range(200):
+        out.fill_(float("nan"))
+        run(q, k5, v4, out)
+        if first is None:
+            torch.cuda.synchronize()
+            first = out.clone()
+            want = _reference(q, k, v, table, lens, q_start, 8, page=page)
+            _attn_ref.check(first[rows], want[rows])
+            assert torch.isnan(first[dead]).all()
+        else:
+            assert torch.equal(out.view(torch.int16), first.view(torch.int16)), f"call {i}"
+    assert vp.PATCH.stats["hk"] == before + 200
+
+    hosts = [t.cpu() for t in (q, k5, v4)]
+    side = torch.cuda.Stream()
+    with torch.cuda.stream(side):
+        q2, k2, v2 = (t.to("cuda", non_blocking=True) for t in hosts)
+        for t in (q2, k2, v2):
+            t.mul_(1.0)
+        out2 = torch.full_like(q2, float("nan"))
+    torch.cuda.current_stream().wait_stream(side)
+    run(q2, k2, v2, out2)
+    torch.cuda.synchronize()
+    assert torch.equal(out2.view(torch.int16), first.view(torch.int16))
