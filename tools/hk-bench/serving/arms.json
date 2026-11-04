@@ -1,0 +1,110 @@
+{
+ "mcpm5": {
+  "ship": {
+   "label": "stock: the image's vLLM with the row's serving configuration, CUDA graphs, hk off"
+  },
+  "ship_to": {
+   "label": "stock + TunableOp",
+   "to": true
+  },
+  "ship_triattn": {
+   "label": "stock with TRITON_ATTN",
+   "args": [
+    "--attention-backend",
+    "TRITON_ATTN"
+   ]
+  },
+  "fair": {
+   "label": "stock-fair (TRITON_ATTN + TunableOp)",
+   "to": true,
+   "args": [
+    "--attention-backend",
+    "TRITON_ATTN"
+   ]
+  },
+  "hk_fair": {
+   "label": "hk on stock-fair (hk's default routes)",
+   "hk": true,
+   "to": true,
+   "args": [
+    "--attention-backend",
+    "TRITON_ATTN"
+   ]
+  },
+  "hk_fair_noprefill": {
+   "label": "hk on stock-fair without the prefill route",
+   "hk": true,
+   "to": true,
+   "args": [
+    "--attention-backend",
+    "TRITON_ATTN"
+   ],
+   "env": {
+    "HK_VLLM_PREFILL": "0"
+   }
+  },
+  "hk_ship": {
+   "label": "hk on stock",
+   "hk": true
+  }
+ },
+ "mcpmv": {
+  "ship": {
+   "label": "stock: the image's vLLM with the row's serving configuration, CUDA graphs, hk off"
+  },
+  "ship_to": {
+   "label": "stock + TunableOp",
+   "to": true
+  },
+  "ship_moe": {
+   "label": "stock + tuned Triton MoE config",
+   "env": {
+    "VLLM_TUNED_CONFIG_FOLDER": "{work}/moecfg"
+   }
+  },
+  "ship_rocmattn": {
+   "label": "stock with ROCM_ATTN instead of TRITON_ATTN",
+   "args": [
+    "--attention-backend",
+    "ROCM_ATTN"
+   ]
+  },
+  "fair": {
+   "label": "stock-fair (TunableOp + tuned MoE config)",
+   "to": true,
+   "env": {
+    "VLLM_TUNED_CONFIG_FOLDER": "{work}/moecfg"
+   }
+  },
+  "hk_fair": {
+   "label": "hk on stock-fair (hk's default routes)",
+   "hk": true,
+   "to": true,
+   "env": {
+    "VLLM_TUNED_CONFIG_FOLDER": "{work}/moecfg"
+   }
+  },
+  "hk_fair_moe": {
+   "label": "hk on stock-fair with the MoE route",
+   "hk": true,
+   "to": true,
+   "env": {
+    "VLLM_TUNED_CONFIG_FOLDER": "{work}/moecfg",
+    "HK_VLLM_MOE": "1"
+   }
+  },
+  "hk_fair_nomoe": {
+   "label": "hk on stock-fair without the MoE route",
+   "hk": true,
+   "to": true,
+   "env": {
+    "VLLM_TUNED_CONFIG_FOLDER": "{work}/moecfg",
+    "HK_VLLM_MOE": "0"
+   }
+  },
+  "hk_ship": {
+   "label": "hk on stock",
+   "hk": true
+  }
+ }
+}

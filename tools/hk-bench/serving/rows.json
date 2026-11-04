@@ -1,0 +1,105 @@
+{
+ "mcpm5": {
+  "label": "MiniCPM5-2B",
+  "note": "a serving configuration for this model (CUDA graphs on), with the flags that matter for performance",
+  "weights": "openbmb/MiniCPM5-2B@f97400052a43d642bbc6e9975e2397e3ae6a6b52",
+  "gpus": 1,
+  "served": "MiniCPM5-2B",
+  "env": {
+   "HSA_NO_SCRATCH_RECLAIM": "1",
+   "TORCH_BLAS_PREFER_HIPBLASLT": "1",
+   "PYTORCH_ALLOC_CONF": "expandable_segments:True",
+   "HK_CACHE_DIR": "{work}/hkcache"
+  },
+  "args": [
+   "--dtype",
+   "bfloat16",
+   "--tensor-parallel-size",
+   "1",
+   "--max-model-len",
+   "131072",
+   "--max-num-seqs",
+   "32",
+   "--gpu-memory-utilization",
+   "0.85",
+   "--enable-prefix-caching"
+  ],
+  "warm": "512/32/32/64",
+  "warm_extra": [
+   "16384/16/1/2"
+  ],
+  "specs": [
+   "512/256/1/8",
+   "512/256/8/32",
+   "512/256/32/96",
+   "16384/16/1/4"
+  ],
+  "quality": {
+   "gsm": 200,
+   "chartqa": 0,
+   "gsm_data": "{work}/data/gsm8k_test.jsonl"
+  },
+  "to_file": "{work}/to/mcpm5%d.csv",
+  "startup_timeout": 480
+ },
+ "mcpmv": {
+  "label": "MiniCPM-V-4.7-35B-A3B",
+  "note": "a serving configuration for this model (CUDA graphs on), with the flags that matter for performance",
+  "weights": "openbmb/MiniCPM-V-4.7-35B-A3B@4c7623a9326e0f74313bbc7292d852a9e3018a70",
+  "gpus": 2,
+  "served": "MiniCPM-V-4.7-35B-A3B",
+  "env": {
+   "VLLM_ROCM_USE_AITER": "0",
+   "VLLM_WORKER_MULTIPROC_METHOD": "spawn",
+   "OMP_NUM_THREADS": "8",
+   "NCCL_P2P_DISABLE": "1",
+   "HK_CACHE_DIR": "{work}/hkcache"
+  },
+  "args": [
+   "--model-impl",
+   "vllm",
+   "--dtype",
+   "bfloat16",
+   "--tensor-parallel-size",
+   "2",
+   "--distributed-executor-backend",
+   "mp",
+   "--moe-backend",
+   "triton",
+   "--disable-custom-all-reduce",
+   "--max-model-len",
+   "262144",
+   "--max-num-seqs",
+   "32",
+   "--max-num-batched-tokens",
+   "4096",
+   "--gpu-memory-utilization",
+   "0.925",
+   "--enable-prefix-caching",
+   "--attention-backend",
+   "TRITON_ATTN",
+   "--mm-encoder-attn-backend",
+   "TORCH_SDPA",
+   "--mm-encoder-tp-mode",
+   "data"
+  ],
+  "warm": "1024/64/16/32",
+  "warm_extra": [
+   "8192/16/1/2"
+  ],
+  "specs": [
+   "1024/128/1/8",
+   "1024/128/4/16",
+   "1024/128/16/48",
+   "8192/16/1/4"
+  ],
+  "quality": {
+   "gsm": 200,
+   "chartqa": 200,
+   "gsm_data": "{work}/data/gsm8k_test.jsonl",
+   "chartqa_dir": "{work}/data/chartqa"
+  },
+  "to_file": "{work}/to/mcpmv%d.csv",
+  "startup_timeout": 1500
+ }
+}
