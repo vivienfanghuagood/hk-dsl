@@ -47,6 +47,8 @@ details.
 | the bind after every wait | translate | closes trap 1 by construction |
 | the resource gate | build | a memory spill, in any instantiation; `max_vgprs` / `min_occupancy` the kernel asked for; a build with no resource report |
 | the MFMA hazard gate | build (CDNA) | an instruction too few wait states after the MFMA whose result it reads or overwrites (a compiler bug before llvm/llvm-project#225989): padded and checked again (`HK_MFMA_GATE=fix`), or refused (`refuse`) |
+| the VOPD gate | build (gfx11.0, gfx11.5) | a dual-issue instruction whose two halves read distinct registers of the same parity, which reads a stale operand under a partial EXEC (llvm/llvm-project#220348, in no ROCm release yet): rebuilt without dual issue and checked again (`HK_VOPD_GATE=fix`, the default), or refused (`refuse`) |
+| the stream guard | launch (RDNA) | `k(...)` on a torch stream other than the default one, where its launch would not be ordered against the stream's work or captured in a graph: warns once per kernel, or raises with `HK_STRICT_STREAM=1` ([what a launch does](runtime.md#what-a-launch-does)); the `hk.ops` entry points do not check yet |
 | `hk.check` | launch | a wrong answer: the output against a torch reference computed in fp32, next to torch's own error |
 
 The resource, wait and MFMA-hazard gates also run on any AMDGPU code object,
@@ -68,8 +70,36 @@ An op the library does not implement for a dtype is caught the same way:
 `gelu` on a bf16 tile raises while tracing rather than failing at the end of a
 30-second compile.
 
-## What the gates do not catch
+A process says once, in one line, that the MFMA or VOPD gate rebuilt
+something; which kernels and which instructions are in the build log,
+`python3 -m hk.integration --status` and the `hk.compile` logger at INFO
+([resource gates](runtime.md#the-resource-gates)).
+
+## What the gates do not catch, and the tests that do
 
 A kernel that computes the wrong function, correctly. That is what
 [`hk.check`](check.md) is for: run it after every edit, against a torch
 reference, at the shapes you ship.
+
+Some wrong answers pass a tolerance, or show up only some runs. The GPU tier
+holds the line on those with tests that have exact answers
+([testing](testing.md)):
+
+- **Exact probes.** With `V = 1`, attention must return exactly 1.0, and with
+  `Q = 0`, the mean of V. A half-ulp rounding bias passed every case of a
+  5% tolerance while changing what a model said; this probe fails on it.
+- **Fenced bounds** (`tests/hk/gpu/test_fenced.py`). A read past a tensor's
+  end usually lands in the allocator's neighbour and changes nothing, until
+  the tensor ends a segment and it faults some runs. In these tests every
+  allocation ends against unmapped memory, so any such read faults at once,
+  at the ragged shapes each route takes.
+- **Repeats over poisoned outputs.** 200 launches over outputs filled with
+  NaN, so a lane that skips a write, or a race that shows up once in many
+  runs, cannot hide behind the previous run's correct value.
+- **A side stream.** The kernel's input is produced on a torch stream of its
+  own, as an engine's model stream does, so a launch that is not ordered
+  against it reads stale data.
+
+Before an engine route is on by default, its kernel must pass all of these,
+a float64 reference and the build gates above, at the route's shapes
+([the default-on rule](testing.md#the-default-on-rule)).
