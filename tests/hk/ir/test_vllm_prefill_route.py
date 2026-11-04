@@ -511,3 +511,33 @@ def test_every_measured_batch_taken_split_is_a_clear_win(monkeypatch, arch):
             assert sp >= 1.05, (arch, r["model"], r["shape"], sp)
             taken[r["model"]] = taken.get(r["model"], 0) + 1
     assert sorted(taken) == sorted(DIMS) and min(taken.values()) >= 4, taken
+
+
+def test_the_split_kernels_are_built_with_the_first_ones(monkeypatch):
+    """A batch hk takes whole builds the split's decodes=False kernel too (vLLM's warm-up run is
+    such a batch), so the first mixed batch of a fresh cache does not compile on the serving
+    path; with HK_VLLM_PREFILL_SPLIT=0 it is not built."""
+    from hk.integration import switches
+
+    monkeypatch.setattr(switches, "arch", lambda: "gfx1100")
+    monkeypatch.setattr(vp, "VT", False)
+    monkeypatch.setattr(vp, "_STATS", {})
+
+    def unified_attention(q, k, v, out, cu_seqlens_q, max_seqlen_q, seqused_k, max_seqlen_k,
+                          softmax_scale, causal, window_size, block_table, softcap, q_descale,
+                          k_descale, v_descale, alibi_slopes=None, sinks=None):
+        pytest.fail("vLLM's kernel was called")
+
+    monkeypatch.setattr(vp, "_ORIG_U", unified_attention)
+    monkeypatch.setattr(vp, "_U_SIG", inspect.signature(unified_attention))
+    for split, want in ((True, [True, False]), (False, [True])):
+        built = []
+
+        def flash_op(d, group, scale, page, order, decodes):
+            built.append(decodes)
+            return (lambda *args: None), 16
+
+        monkeypatch.setattr(vp, "_flash_op", flash_op)
+        monkeypatch.setattr(vp, "SPLIT", split)
+        vp.unified_attention(**_triton_call([(0, 4096)]))
+        assert built == want, (split, built)
