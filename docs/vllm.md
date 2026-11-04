@@ -117,6 +117,49 @@ ROCM_ATTN's kernels (`tools/hk-bench/results/2026-11-03/`). Such a batch goes to
 vLLM's kernel unchanged and is counted as `declined`; the first one prints one
 line. `HK_VLLM_PREFILL_GUARD=0` turns the guard off, to measure it.
 
+**A mixed batch with a sizable prefill is split.** When the step's exact sizes
+are known (vLLM's TRITON_ATTN metadata builder hands them over, host arrays only),
+a batch declined for its decodes is taken in two parts. hk's kernel, built to
+skip one-query requests, computes the prefill rows. vLLM's own kernel computes
+the decode rows, as a batch of one query a request; it splits a decode's
+context, which hk's prefill kernel does not. Everything stays on the device: no
+sync, two more launches and a gather. The split costs those launches and gives the
+decode rows to TRITON_ATTN's decode, which ROCM_ATTN's beats, so it is taken only
+when the longest query has at least 1024 tokens and the decodes' contexts sum to
+at most a measured share of the prefill's work (`vllm_prefill.SPLITS`). Measured
+against the faster of TRITON_ATTN's and ROCM_ATTN's kernels on 68 shapes a model
+and on the chunks vLLM's default 2048-token budget makes (1024-2040 tokens, first
+or after a prefix, beside 4-16 decodes;
+`tools/hk-bench/results/2026-11-04/<gpu>/prefill-split-sweep.json`), every
+batch it splits is faster:
+
+| GPU | MiniCPM5-2B (d128) | Qwen3.8-27B, MiniCPM-V-4.7 (d256) |
+|---|---|---|
+| gfx1100 (W7900D) | 28 batches, 1.08-2.59x | 62 batches, 1.40-5.81x |
+| gfx1201 (R9700) | 17 batches, 1.33-2.58x | 50 batches, 1.23-2.81x |
+
+With prompts of 128-512 tokens, and on gfx1201 with a first chunk beside heavier
+decodes, some mixed batches were slower split (0.26-1.03x), so those stay declined. A split call is counted as `hk` and as `split`;
+`HK_VLLM_PREFILL_SPLIT=0` turns the split off, and the guard then declines the
+whole batch as before.
+
+**On ROCM_ATTN no batch is declined.** ROCM_ATTN hands the prefix-prefill only
+its requests of more than one query; its own paged decode keeps the decode rows.
+So neither kind of batch above reaches hk's kernel there. Measured in one process
+against ROCM_ATTN's own prefill (`attention_bench.py prefill --arms hk_rocm,rocm_attn`,
+68 shapes a model: prompts, chunks after a prefix, prompts beside 1-16 decodes over
+1k-16k tokens), every shape is faster:
+
+| GPU | MiniCPM5-2B | Qwen3-8B |
+|---|---|---|
+| gfx1100 (W7900D) | 1.54-5.35x, geomean 3.08x | 1.16-5.79x, geomean 2.75x |
+| gfx1201 (R9700) | 1.08-3.07x, geomean 1.90x | 1.02-3.05x, geomean 1.91x |
+
+(`tools/hk-bench/results/2026-11-04/`). The thinnest are a short prompt beside
+4-16 decodes over 4k-16k tokens, where ROCM_ATTN's own decode, which the route
+leaves alone, is most of the batch's time. MiniCPM-V-4.7's 544-token pages are not
+taken on ROCM_ATTN (pages of 16 or 32 only, above), so they stay vLLM's there.
+
 ### Decode-only batches on TRITON_ATTN
 
 A decode step reads the whole KV cache and does one query row a head of maths
