@@ -181,8 +181,6 @@ that the caller may not want.
 hk.ops.rms_norm(x, weight, eps: float = 1e-06, out=None, *, weight_offset: float = 0.0)
 ```
 
-*Changed after 0.8.0*: new parameter `weight_offset`
-
 x * rsqrt(mean(x^2) + eps) * (weight + weight_offset) over the last
 axis -- the RMSNorm a model has. Any number of rows, including fewer than
 a tile's. `weight_offset` is added in fp32 inside the kernel: a weight
@@ -195,8 +193,6 @@ weight_offset=1.0 and its stored w, exactly, where folding the one into a
 ```python
 hk.ops.fused_add_rms_norm(x, residual, weight, eps: float = 1e-06, *, weight_offset: float = 0.0)
 ```
-
-*Changed after 0.8.0*: new parameter `weight_offset`
 
 vLLM's fused_add_rms_norm, in place: `residual` becomes x + residual
 and `x` its RMSNorm times `weight` (+ `weight_offset`, as rms_norm's).
@@ -387,8 +383,6 @@ are bounded: any non-empty length. head_dim is 64 or 128 on both.
 hk.ops.scaled_mm(a, b, scale_a, scale_b, *, bias=None, out=None)
 ```
 
-*New after 0.8.0*
-
 bf16 (A @ B.T) * scale_a * scale_b (+ bias), fp8 operands, fp32
 accumulate: torch._scaled_mm's product with hk.ops.matmul's layout.
 
@@ -445,8 +439,6 @@ combines. On gfx950, paged_cdna's (head_dim 64 or 128).
 ```python
 hk.ops.paged.fused_kernel(head_dim: int, splits: int, ablate: tuple = (), defines: Optional[dict] = None, ppstep: int = 1)
 ```
-
-*Changed after 0.8.0*: new parameter `ppstep`
 
 `defines` builds the walk with library knobs, for an A/B in one
 process (tools/hk-bench/paged_variants.py): HK_RDNA_XPOSE_WORDS=0 is the
@@ -666,8 +658,6 @@ device checks the build (see the module docstring). Raises like
 hk.ops.sparse_mla.prefill(q, kv, indices, indptr, attn_sink, scale: float, out)
 ```
 
-*New after 0.8.0* (the `hk.ops.sparse_mla` module is not in the 0.8.0 wheel)
-
 out [T, 32, 512] bf16 <- sparse attention of q over the rows of kv each query's CSR list names.
 
 ### `hk.ops.sparse_mla.prefill_mxfp8`
@@ -675,8 +665,6 @@ out [T, 32, 512] bf16 <- sparse attention of q over the rows of kv each query's 
 ```python
 hk.ops.sparse_mla.prefill_mxfp8(q, kv, indices, indptr, attn_sink, scale: float, positions, cos_sin_cache, mx_data, mx_scale)
 ```
-
-*New after 0.8.0* (the `hk.ops.sparse_mla` module is not in the 0.8.0 wheel)
 
 `prefill`'s rows as wo_a reads them, and no bf16 rows: positions [T] int64, cos_sin_cache [P, 64]
 fp32 (cos | sin), mx_data [T, 32 * 512] e4m3 and mx_scale [T, 512] uint8 E8M0 (row-major), as

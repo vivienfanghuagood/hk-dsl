@@ -162,7 +162,9 @@
 "load_elems": [
 "self",
 "idx",
-"dtype"
+"dtype",
+"runs",
+"row"
 ],
 "post_elems": [
 "self",
@@ -183,22 +185,15 @@
 "count",
 "col",
 "sort_topk",
-"add"
-],
-"scatter_add_lds": [
-"self",
-"src",
-"ids",
-"at",
-"count",
-"col",
-"sort_topk"
+"add",
+"staged"
 ],
 "store_elems": [
 "self",
 "val",
 "idx",
-"runs"
+"runs",
+"row"
 ],
 "take_elems": [
 "self",
@@ -262,7 +257,8 @@
 "self",
 "ids",
 "at",
-"rows"
+"rows",
+"raw"
 ],
 "load": [
 "self",
@@ -285,6 +281,12 @@
 "dst",
 "depth",
 "name"
+],
+"stage_rows": [
+"self",
+"ix",
+"rows",
+"keep_choice"
 ],
 "store": [
 "self",
@@ -401,6 +403,7 @@
 "name",
 "max_vgprs",
 "min_occupancy",
+"max_occupancy",
 "defines",
 "noalias",
 "preload",
@@ -429,6 +432,10 @@
 "_launcher_raw": [
 "self",
 "**const_overrides"
+],
+"_occupancy_floor": [
+"self",
+"src"
 ],
 "_resolve_consts": [
 "self",
@@ -491,6 +498,15 @@
 ]
 }
 },
+"MxScales": {
+"methods": {
+"__slots__": null,
+"copy": [
+"self",
+"into"
+]
+}
+},
 "Placement": {
 "methods": {
 "__post_init__": [
@@ -536,6 +552,38 @@
 "ResourceError": {
 "methods": {}
 },
+"RowIndex": {
+"methods": {
+"__init__": [
+"self",
+"ids",
+"at",
+"count",
+"div",
+"sort_topk"
+],
+"__repr__": [
+"self"
+],
+"__slots__": null,
+"_check_staged": [
+"self",
+"what"
+],
+"_copy": [
+"self"
+],
+"offset": [
+"self",
+"n"
+],
+"staged": [
+"self",
+"rows",
+"keep_choice"
+]
+}
+},
 "ST": {
 "params": [
 "dtype",
@@ -551,6 +599,21 @@
 "count"
 ]
 },
+"Scaled": {
+"methods": {
+"__init__": [
+"self",
+"tile",
+"scales",
+"fmt",
+"at"
+],
+"__repr__": [
+"self"
+],
+"__slots__": null
+}
+},
 "SharedTile": {
 "methods": {
 "__getitem__": [
@@ -558,6 +621,11 @@
 "i"
 ],
 "__slots__": null,
+"atomic_add_elems": [
+"self",
+"val",
+"idx"
+],
 "granules": [
 "self",
 "name"
@@ -571,7 +639,8 @@
 "load_elems": [
 "self",
 "idx",
-"dtype"
+"dtype",
+"runs"
 ],
 "store": [
 "self",
@@ -651,10 +720,19 @@
 "kind",
 "axis"
 ],
+"as_fragment": [
+"self",
+"ty",
+"fmt"
+],
 "as_operand": [
 "self",
 "dtype",
+"k_order",
 "into"
+],
+"as_scales": [
+"self"
 ],
 "bitcast": [
 "self",
@@ -662,6 +740,9 @@
 "into"
 ],
 "dtype": [
+"self"
+],
+"first_lane": [
 "self"
 ],
 "group_max": [
@@ -685,6 +766,10 @@
 "lane_gather": [
 "self",
 "lanes"
+],
+"lane_strip": [
+"self",
+"run"
 ],
 "left_fill_": [
 "self",
@@ -727,6 +812,16 @@
 "idx",
 "value",
 "into"
+],
+"run_xor": [
+"self",
+"mask"
+],
+"scaled": [
+"self",
+"scales",
+"fmt",
+"at"
 ],
 "subtile": [
 "self",
@@ -782,6 +877,10 @@
 ],
 "__repr__": [
 "self"
+],
+"_has_op": [
+"self",
+"op_name"
 ],
 "cpp": [
 "self",
@@ -989,6 +1088,16 @@
 },
 "fp16": {},
 "fp32": {},
+"fp4_operand": {
+"params": [
+"words"
+]
+},
+"fp8_operand": {
+"params": [
+"words"
+]
+},
 "fp8e4m3": {},
 "fp8e5m2": {},
 "full": {
@@ -1001,6 +1110,23 @@
 "func": {
 "params": [
 "fn"
+]
+},
+"gemv_w4": {
+"params": [
+"x",
+"qw",
+"s",
+"zs",
+"n0",
+"k0",
+"kstep",
+"count",
+"group",
+"tokens",
+"zero",
+"s_blocked",
+"into"
 ]
 },
 "get_target": {
@@ -1036,11 +1162,18 @@
 "name",
 "max_vgprs",
 "min_occupancy",
+"max_occupancy",
 "defines",
 "noalias",
 "preload",
 "resident",
 "placement"
+]
+},
+"lane_coords": {
+"params": [
+"tile",
+"run"
 ]
 },
 "lds": {},
@@ -1086,7 +1219,17 @@
 "n0",
 "k0",
 "group",
+"zero",
+"s_blocked",
+"zp",
+"rows",
 "into"
+]
+},
+"map": {
+"params": [
+"fn",
+"*args"
 ]
 },
 "map_cpp": {
@@ -1149,6 +1292,11 @@
 "s",
 "row0",
 "col0"
+]
+},
+"mx_scales_loose": {
+"params": [
+"bytes_"
 ]
 },
 "neg_infty": {
@@ -1225,6 +1373,13 @@
 "uniform": {
 "params": [
 "cond"
+]
+},
+"where": {
+"params": [
+"m",
+"a",
+"b"
 ]
 },
 "zeros": {
@@ -1431,6 +1586,10 @@
 "hk.autotune.routes": {
 "Any": {},
 "CLOSE_K": {},
+"CONTEXT_CALLS": {},
+"CONTEXT_CALLS_MAX": {},
+"CONTEXT_PASSES": {},
+"CONTEXT_ROTATE": {},
 "Callable": {},
 "DECODE_MS": {},
 "Dict": {},
@@ -1465,13 +1624,36 @@
 },
 "SPIN_HZ": {},
 "Sequence": {},
+"TIMINGS": {},
 "Tuple": {},
+"_CONTEXT": {},
 "_OPS": {},
+"_builds": {
+"params": [
+"kernel"
+]
+},
+"_context_call": {
+"params": [
+"engine",
+"m",
+"n",
+"k",
+"path",
+"dev",
+"g"
+]
+},
 "_decode_op": {
 "params": [
 "m",
 "n",
 "k"
+]
+},
+"_engine_or": {
+"params": [
+"path"
 ]
 },
 "_gemm_op": {
@@ -1481,9 +1663,35 @@
 "k"
 ]
 },
+"_glue": {
+"params": [
+"x",
+"dev",
+"g"
+]
+},
 "_noise": {
 "params": [
 "point"
+]
+},
+"_per_call": {
+"params": [
+"took",
+"base",
+"calls"
+]
+},
+"_record_timing": {
+"params": [
+"ent",
+"arch"
+]
+},
+"_routes_sig": {
+"params": [
+"ctx",
+"m"
 ]
 },
 "_tiles": {
@@ -1526,10 +1734,23 @@
 "b_path"
 ]
 },
+"context_of": {
+"params": [
+"order",
+"n",
+"k",
+"path_at"
+]
+},
 "contextlib": {},
 "decisions": {
 "params": [
 "table"
+]
+},
+"default_timing": {
+"params": [
+"arch"
 ]
 },
 "dump": {
@@ -1603,7 +1824,9 @@
 "device",
 "log",
 "tag",
-"queued"
+"queued",
+"timing",
+"context"
 ]
 },
 "measured_ms": {
@@ -1637,6 +1860,14 @@
 "confirm"
 ]
 },
+"record_stale": {
+"params": [
+"ent",
+"arch",
+"engine",
+"tunableop"
+]
+},
 "records_lock": {
 "params": [
 "kind",
@@ -1647,6 +1878,14 @@
 "params": [
 "kind",
 "arch"
+]
+},
+"route_at": {
+"params": [
+"points",
+"m",
+"min_gain",
+"noise_k"
 ]
 },
 "runs": {
@@ -1666,6 +1905,9 @@
 },
 "statistics": {},
 "time": {},
+"tunableop_state": {
+"params": []
+},
 "tune_missing": {
 "params": [
 "kind",
@@ -1679,6 +1921,8 @@
 "grid",
 "by",
 "log",
+"model",
+"route_of",
 "**how"
 ]
 },
@@ -1707,6 +1951,9 @@
 "BAND_CAP": {},
 "BAND_FLOOR": {},
 "CARDS": {},
+"COLD_FACTOR": {},
+"COLD_MAX_COPIES": {},
+"COLD_MEM_SHARE": {},
 "Callable": {},
 "Dict": {},
 "List": {},
@@ -1782,6 +2029,11 @@
 "_SHORT": {},
 "__all__": {},
 "__name__": {},
+"_arg_bytes": {
+"params": [
+"args"
+]
+},
 "_as_tuple": {
 "params": [
 "x"
@@ -1807,6 +2059,14 @@
 "params": [
 "args",
 "fp32"
+]
+},
+"_cold_copies": {
+"params": [
+"cache",
+"contenders",
+"card",
+"out_bytes"
 ]
 },
 "_err": {
@@ -1884,6 +2144,14 @@
 "do_build"
 ]
 },
+"_rotating": {
+"params": [
+"f",
+"args",
+"kw",
+"copies"
+]
+},
 "_spread": {
 "params": [
 "xs"
@@ -1935,6 +2203,7 @@
 "warmup",
 "batch_ms",
 "burn",
+"cache",
 "compile_mode",
 "bytes",
 "flops",
@@ -2134,13 +2403,16 @@
 "self"
 ],
 "dtype": null,
-"scope": null
+"scope": null,
+"strided": null
 }
 },
 "LAYOUT_SYMBOL": {},
 "List": {},
 "MODULE_NAME_MACRO": {},
 "SCAFFOLDS": {},
+"STRIDED_FIELDS": {},
+"STRIDED_SYMBOL": {},
 "TYPE_CHECKING": {},
 "_AT_DTYPE": {},
 "_alias_letters": {
@@ -2157,6 +2429,27 @@
 "_members": {
 "params": [
 "ir"
+]
+},
+"_no_strided": {
+"params": [
+"ir",
+"what"
+]
+},
+"_strided": {
+"params": [
+"ir"
+]
+},
+"_symmetric_w4": {
+"params": [
+"ir"
+]
+},
+"_w4_zp": {
+"params": [
+"op"
 ]
 },
 "annotations": {},
@@ -2417,7 +2710,9 @@
 "load_elems": [
 "self",
 "idx",
-"dtype"
+"dtype",
+"runs",
+"row"
 ],
 "post_elems": [
 "self",
@@ -2438,22 +2733,15 @@
 "count",
 "col",
 "sort_topk",
-"add"
-],
-"scatter_add_lds": [
-"self",
-"src",
-"ids",
-"at",
-"count",
-"col",
-"sort_topk"
+"add",
+"staged"
 ],
 "store_elems": [
 "self",
 "val",
 "idx",
-"runs"
+"runs",
+"row"
 ],
 "take_elems": [
 "self",
@@ -2517,7 +2805,8 @@
 "self",
 "ids",
 "at",
-"rows"
+"rows",
+"raw"
 ],
 "load": [
 "self",
@@ -2540,6 +2829,12 @@
 "dst",
 "depth",
 "name"
+],
+"stage_rows": [
+"self",
+"ix",
+"rows",
+"keep_choice"
 ],
 "store": [
 "self",
@@ -2656,6 +2951,7 @@
 "name",
 "max_vgprs",
 "min_occupancy",
+"max_occupancy",
 "defines",
 "noalias",
 "preload",
@@ -2684,6 +2980,10 @@
 "_launcher_raw": [
 "self",
 "**const_overrides"
+],
+"_occupancy_floor": [
+"self",
+"src"
 ],
 "_resolve_consts": [
 "self",
@@ -2746,6 +3046,15 @@
 ]
 }
 },
+"MxScales": {
+"methods": {
+"__slots__": null,
+"copy": [
+"self",
+"into"
+]
+}
+},
 "Placement": {
 "methods": {
 "__post_init__": [
@@ -2788,6 +3097,38 @@
 "frag"
 ]
 },
+"RowIndex": {
+"methods": {
+"__init__": [
+"self",
+"ids",
+"at",
+"count",
+"div",
+"sort_topk"
+],
+"__repr__": [
+"self"
+],
+"__slots__": null,
+"_check_staged": [
+"self",
+"what"
+],
+"_copy": [
+"self"
+],
+"offset": [
+"self",
+"n"
+],
+"staged": [
+"self",
+"rows",
+"keep_choice"
+]
+}
+},
 "ST": {
 "params": [
 "dtype",
@@ -2803,6 +3144,21 @@
 "count"
 ]
 },
+"Scaled": {
+"methods": {
+"__init__": [
+"self",
+"tile",
+"scales",
+"fmt",
+"at"
+],
+"__repr__": [
+"self"
+],
+"__slots__": null
+}
+},
 "SharedTile": {
 "methods": {
 "__getitem__": [
@@ -2810,6 +3166,11 @@
 "i"
 ],
 "__slots__": null,
+"atomic_add_elems": [
+"self",
+"val",
+"idx"
+],
 "granules": [
 "self",
 "name"
@@ -2823,7 +3184,8 @@
 "load_elems": [
 "self",
 "idx",
-"dtype"
+"dtype",
+"runs"
 ],
 "store": [
 "self",
@@ -2902,10 +3264,19 @@
 "kind",
 "axis"
 ],
+"as_fragment": [
+"self",
+"ty",
+"fmt"
+],
 "as_operand": [
 "self",
 "dtype",
+"k_order",
 "into"
+],
+"as_scales": [
+"self"
 ],
 "bitcast": [
 "self",
@@ -2913,6 +3284,9 @@
 "into"
 ],
 "dtype": [
+"self"
+],
+"first_lane": [
 "self"
 ],
 "group_max": [
@@ -2936,6 +3310,10 @@
 "lane_gather": [
 "self",
 "lanes"
+],
+"lane_strip": [
+"self",
+"run"
 ],
 "left_fill_": [
 "self",
@@ -2978,6 +3356,16 @@
 "idx",
 "value",
 "into"
+],
+"run_xor": [
+"self",
+"mask"
+],
+"scaled": [
+"self",
+"scales",
+"fmt",
+"at"
 ],
 "subtile": [
 "self",
@@ -3033,6 +3421,10 @@
 ],
 "__repr__": [
 "self"
+],
+"_has_op": [
+"self",
+"op_name"
 ],
 "cpp": [
 "self",
@@ -3301,6 +3693,7 @@
 ]
 },
 "_host": {},
+"_maps": {},
 "_scalar_op": {
 "params": [
 "op",
@@ -3368,6 +3761,16 @@
 },
 "fp16": {},
 "fp32": {},
+"fp4_operand": {
+"params": [
+"words"
+]
+},
+"fp8_operand": {
+"params": [
+"words"
+]
+},
 "fp8e4m3": {},
 "fp8e5m2": {},
 "full": {
@@ -3380,6 +3783,23 @@
 "func": {
 "params": [
 "fn"
+]
+},
+"gemv_w4": {
+"params": [
+"x",
+"qw",
+"s",
+"zs",
+"n0",
+"k0",
+"kstep",
+"count",
+"group",
+"tokens",
+"zero",
+"s_blocked",
+"into"
 ]
 },
 "group": {
@@ -3410,11 +3830,18 @@
 "name",
 "max_vgprs",
 "min_occupancy",
+"max_occupancy",
 "defines",
 "noalias",
 "preload",
 "resident",
 "placement"
+]
+},
+"lane_coords": {
+"params": [
+"tile",
+"run"
 ]
 },
 "lds": {},
@@ -3460,7 +3887,17 @@
 "n0",
 "k0",
 "group",
+"zero",
+"s_blocked",
+"zp",
+"rows",
 "into"
+]
+},
+"map": {
+"params": [
+"fn",
+"*args"
 ]
 },
 "map_cpp": {
@@ -3522,6 +3959,11 @@
 "s",
 "row0",
 "col0"
+]
+},
+"mx_scales_loose": {
+"params": [
+"bytes_"
 ]
 },
 "neg_infty": {
@@ -3586,6 +4028,13 @@
 "uniform": {
 "params": [
 "cond"
+]
+},
+"where": {
+"params": [
+"m",
+"a",
+"b"
 ]
 },
 "zeros": {
@@ -3711,7 +4160,9 @@
 "load_elems": [
 "self",
 "idx",
-"dtype"
+"dtype",
+"runs",
+"row"
 ],
 "post_elems": [
 "self",
@@ -3732,22 +4183,15 @@
 "count",
 "col",
 "sort_topk",
-"add"
-],
-"scatter_add_lds": [
-"self",
-"src",
-"ids",
-"at",
-"count",
-"col",
-"sort_topk"
+"add",
+"staged"
 ],
 "store_elems": [
 "self",
 "val",
 "idx",
-"runs"
+"runs",
+"row"
 ],
 "take_elems": [
 "self",
@@ -3772,7 +4216,8 @@
 "self"
 ],
 "dtype": null,
-"scope": null
+"scope": null,
+"strided": null
 }
 },
 "Int": {
@@ -3960,6 +4405,11 @@
 "classes"
 ]
 },
+"agpr": {
+"params": [
+"tile"
+]
+},
 "annotations": {},
 "as_int": {
 "params": [
@@ -3983,6 +4433,11 @@
 "ir": {},
 "lane_id": {
 "params": []
+},
+"mma_fence": {
+"params": [
+"on"
+]
 },
 "pin": {
 "params": [
@@ -4254,7 +4709,8 @@
 "op",
 "a",
 "b",
-"into"
+"into",
+"reduce"
 ]
 },
 "broadcast_col": {
@@ -4916,7 +5372,8 @@
 "self",
 "ids",
 "at",
-"rows"
+"rows",
+"raw"
 ],
 "load": [
 "self",
@@ -4940,6 +5397,12 @@
 "depth",
 "name"
 ],
+"stage_rows": [
+"self",
+"ix",
+"rows",
+"keep_choice"
+],
 "store": [
 "self",
 "dst",
@@ -4955,6 +5418,39 @@
 ]
 }
 },
+"Optional": {},
+"RowIndex": {
+"methods": {
+"__init__": [
+"self",
+"ids",
+"at",
+"count",
+"div",
+"sort_topk"
+],
+"__repr__": [
+"self"
+],
+"__slots__": null,
+"_check_staged": [
+"self",
+"what"
+],
+"_copy": [
+"self"
+],
+"offset": [
+"self",
+"n"
+],
+"staged": [
+"self",
+"rows",
+"keep_choice"
+]
+}
+},
 "SharedTile": {
 "methods": {
 "__getitem__": [
@@ -4962,6 +5458,11 @@
 "i"
 ],
 "__slots__": null,
+"atomic_add_elems": [
+"self",
+"val",
+"idx"
+],
 "granules": [
 "self",
 "name"
@@ -4975,7 +5476,8 @@
 "load_elems": [
 "self",
 "idx",
-"dtype"
+"dtype",
+"runs"
 ],
 "store": [
 "self",
@@ -5090,6 +5592,18 @@
 }
 },
 "__all__": {},
+"_deprecated": {
+"params": [
+"old",
+"new"
+]
+},
+"_max": {
+"params": [
+"a",
+"b"
+]
+},
 "annotations": {},
 "as_int": {
 "params": [
@@ -5339,7 +5853,9 @@
 "load_elems": [
 "self",
 "idx",
-"dtype"
+"dtype",
+"runs",
+"row"
 ],
 "post_elems": [
 "self",
@@ -5360,22 +5876,15 @@
 "count",
 "col",
 "sort_topk",
-"add"
-],
-"scatter_add_lds": [
-"self",
-"src",
-"ids",
-"at",
-"count",
-"col",
-"sort_topk"
+"add",
+"staged"
 ],
 "store_elems": [
 "self",
 "val",
 "idx",
-"runs"
+"runs",
+"row"
 ],
 "take_elems": [
 "self",
@@ -5400,7 +5909,8 @@
 "self"
 ],
 "dtype": null,
-"scope": null
+"scope": null,
+"strided": null
 }
 },
 "Kernel": {
@@ -5419,6 +5929,7 @@
 "name",
 "max_vgprs",
 "min_occupancy",
+"max_occupancy",
 "defines",
 "noalias",
 "preload",
@@ -5447,6 +5958,10 @@
 "_launcher_raw": [
 "self",
 "**const_overrides"
+],
+"_occupancy_floor": [
+"self",
+"src"
 ],
 "_resolve_consts": [
 "self",
@@ -5557,6 +6072,10 @@
 "__repr__": [
 "self"
 ],
+"_has_op": [
+"self",
+"op_name"
+],
 "cpp": [
 "self",
 "includes"
@@ -5579,6 +6098,7 @@
 "VerifyError": {
 "methods": {}
 },
+"_NULL_STREAM_WARNED": {},
 "_RECORDING": {},
 "__all__": {},
 "_const_dtype": {
@@ -5589,6 +6109,17 @@
 "_loc_text": {
 "params": [
 "loc"
+]
+},
+"_null_stream_guard": {
+"params": [
+"name",
+"fn"
+]
+},
+"_off_default_stream": {
+"params": [
+"name"
 ]
 },
 "_symmetric": {},
@@ -5632,6 +6163,7 @@
 "name",
 "max_vgprs",
 "min_occupancy",
+"max_occupancy",
 "defines",
 "noalias",
 "preload",
@@ -5696,6 +6228,11 @@
 "i"
 ],
 "__slots__": null,
+"atomic_add_elems": [
+"self",
+"val",
+"idx"
+],
 "granules": [
 "self",
 "name"
@@ -5709,7 +6246,8 @@
 "load_elems": [
 "self",
 "idx",
-"dtype"
+"dtype",
+"runs"
 ],
 "store": [
 "self",
@@ -5825,10 +6363,19 @@
 "kind",
 "axis"
 ],
+"as_fragment": [
+"self",
+"ty",
+"fmt"
+],
 "as_operand": [
 "self",
 "dtype",
+"k_order",
 "into"
+],
+"as_scales": [
+"self"
 ],
 "bitcast": [
 "self",
@@ -5836,6 +6383,9 @@
 "into"
 ],
 "dtype": [
+"self"
+],
+"first_lane": [
 "self"
 ],
 "group_max": [
@@ -5859,6 +6409,10 @@
 "lane_gather": [
 "self",
 "lanes"
+],
+"lane_strip": [
+"self",
+"run"
 ],
 "left_fill_": [
 "self",
@@ -5902,6 +6456,16 @@
 "value",
 "into"
 ],
+"run_xor": [
+"self",
+"mask"
+],
+"scaled": [
+"self",
+"scales",
+"fmt",
+"at"
+],
 "subtile": [
 "self",
 "rows",
@@ -5940,6 +6504,17 @@
 }
 },
 "__all__": {},
+"_check_uniform_place": {
+"params": [
+"t",
+"name"
+]
+},
+"_divergent_ifs": {
+"params": [
+"t"
+]
+},
 "alloc": {
 "params": [
 "tile",
@@ -5987,6 +6562,307 @@
 ]
 }
 },
+"hk.dsl.maps": {
+"Callable": {},
+"RegTileType": {
+"methods": {
+"__post_init__": [
+"self"
+],
+"__repr__": [
+"self"
+],
+"_check_strip": [
+"self"
+],
+"base_tiles": [
+"self"
+],
+"cols": null,
+"cpp": [
+"self"
+],
+"dtype": null,
+"frag": null,
+"frag_spelling": [
+"self"
+],
+"frag_stride": [
+"self"
+],
+"layout": null,
+"layout_spelling": [
+"self"
+],
+"rows": null,
+"run": null,
+"span": [
+"self"
+],
+"strip": [
+"self"
+],
+"transposed": [
+"self"
+]
+}
+},
+"SCALAR": {},
+"Scalar": {
+"methods": {
+"__abs__": [
+"self"
+],
+"__add__": [
+"self",
+"o"
+],
+"__and__": [
+"self",
+"o"
+],
+"__bool__": [
+"self"
+],
+"__eq__": [
+"self",
+"o"
+],
+"__floordiv__": [
+"self",
+"o"
+],
+"__ge__": [
+"self",
+"o"
+],
+"__gt__": [
+"self",
+"o"
+],
+"__hash__": null,
+"__init__": [
+"self",
+"v",
+"kind"
+],
+"__invert__": [
+"self"
+],
+"__le__": [
+"self",
+"o"
+],
+"__lshift__": [
+"self",
+"o"
+],
+"__lt__": [
+"self",
+"o"
+],
+"__mod__": [
+"self",
+"o"
+],
+"__mul__": [
+"self",
+"o"
+],
+"__ne__": [
+"self",
+"o"
+],
+"__neg__": [
+"self"
+],
+"__or__": [
+"self",
+"o"
+],
+"__radd__": [
+"self",
+"o"
+],
+"__rand__": [
+"self",
+"o"
+],
+"__repr__": [
+"self"
+],
+"__rfloordiv__": [
+"self",
+"o"
+],
+"__rlshift__": [
+"self",
+"o"
+],
+"__rmod__": [
+"self",
+"o"
+],
+"__rmul__": [
+"self",
+"o"
+],
+"__ror__": [
+"self",
+"o"
+],
+"__rrshift__": [
+"self",
+"o"
+],
+"__rshift__": [
+"self",
+"o"
+],
+"__rsub__": [
+"self",
+"o"
+],
+"__rtruediv__": [
+"self",
+"o"
+],
+"__rxor__": [
+"self",
+"o"
+],
+"__slots__": null,
+"__sub__": [
+"self",
+"o"
+],
+"__truediv__": [
+"self",
+"o"
+],
+"__xor__": [
+"self",
+"o"
+],
+"bitcast": [
+"self",
+"dtype"
+],
+"dtype": [
+"self"
+],
+"to": [
+"self",
+"dtype"
+]
+}
+},
+"_CMPF": {},
+"_CMPI": {},
+"_DTYPES": {},
+"_FLOAT": {},
+"_INT": {},
+"_KINDS": {},
+"_MASK": {},
+"_bin": {
+"params": [
+"sym",
+"a",
+"b"
+]
+},
+"_call": {
+"params": [
+"what",
+"kinds",
+"cls",
+"*xs",
+"kind"
+]
+},
+"_check_lowering": {
+"params": [
+"what"
+]
+},
+"_const": {
+"params": [
+"x",
+"kind"
+]
+},
+"_loc": {
+"params": [
+"name"
+]
+},
+"_num_kind": {
+"params": [
+"x"
+]
+},
+"_scalars": {
+"params": [
+"what",
+"*xs"
+]
+},
+"_v": {
+"params": []
+},
+"abs_": {
+"params": [
+"x"
+]
+},
+"annotations": {},
+"arith": {},
+"b1": {},
+"bf16": {},
+"fp32": {},
+"hkd": {},
+"i32": {},
+"ir": {},
+"is_int_strip": {
+"params": [
+"x"
+]
+},
+"lift": {
+"params": [
+"f",
+"*args",
+"name"
+]
+},
+"map_": {
+"params": [
+"fn",
+"*args",
+"name"
+]
+},
+"mathd": {},
+"maximum_": {
+"params": [
+"a",
+"b"
+]
+},
+"minimum_": {
+"params": [
+"a",
+"b"
+]
+},
+"where_": {
+"params": [
+"m",
+"a",
+"b"
+]
+}
+},
 "hk.dsl.math": {
 "_ANY": {},
 "_FP32": {},
@@ -5996,6 +6872,13 @@
 "name",
 "op",
 "sym"
+]
+},
+"_mapped": {
+"params": [
+"name",
+"what",
+"nargs"
 ]
 },
 "_unary": {
@@ -6012,19 +6895,27 @@
 "op",
 "a",
 "b",
-"into"
+"into",
+"reduce"
 ]
 },
+"ceil": {},
+"ctz": {},
 "dgelu": {},
 "div": {},
 "exp": {},
 "exp2": {},
+"floor": {},
+"fma": {},
 "gelu": {},
 "log": {},
 "log2": {},
+"maps": {},
 "maximum": {},
 "minimum": {},
 "mul": {},
+"popcount": {},
+"rcp": {},
 "relu": {},
 "rsqrt": {},
 "silu": {},
@@ -6056,7 +6947,8 @@
 "self"
 ],
 "dtype": null,
-"scope": null
+"scope": null,
+"strided": null
 }
 },
 "GranuleSetType": {
@@ -7063,6 +7955,36 @@
 "params": []
 }
 },
+"hk.dsl.surface": {
+"CPP": {},
+"Dict": {},
+"ENTRIES": {},
+"Entry": {
+"methods": {
+"boundary": null,
+"item": null,
+"kind": null,
+"step": null,
+"target": null
+}
+},
+"FrozenSet": {},
+"KINDS": {},
+"NamedTuple": {},
+"OPS": {},
+"Optional": {},
+"PRIMITIVES": {},
+"_GONE": {},
+"_MX": {},
+"_OP_KINDS": {},
+"__all__": {},
+"annotations": {},
+"kind_of": {
+"params": [
+"name"
+]
+}
+},
 "hk.dsl.values": {
 "Any": {},
 "B": {},
@@ -7195,7 +8117,9 @@
 "load_elems": [
 "self",
 "idx",
-"dtype"
+"dtype",
+"runs",
+"row"
 ],
 "post_elems": [
 "self",
@@ -7216,22 +8140,15 @@
 "count",
 "col",
 "sort_topk",
-"add"
-],
-"scatter_add_lds": [
-"self",
-"src",
-"ids",
-"at",
-"count",
-"col",
-"sort_topk"
+"add",
+"staged"
 ],
 "store_elems": [
 "self",
 "val",
 "idx",
-"runs"
+"runs",
+"row"
 ],
 "take_elems": [
 "self",
@@ -7256,7 +8173,8 @@
 "self"
 ],
 "dtype": null,
-"scope": null
+"scope": null,
+"strided": null
 }
 },
 "GranuleSetType": {
@@ -7297,6 +8215,7 @@
 ]
 }
 },
+"HANDOFF_SCOPES": {},
 "Int": {
 "methods": {
 "__add__": [
@@ -7396,7 +8315,11 @@
 },
 "MxScales": {
 "methods": {
-"__slots__": null
+"__slots__": null,
+"copy": [
+"self",
+"into"
+]
 }
 },
 "MxScalesType": {
@@ -7535,6 +8458,38 @@
 "uniform": null
 }
 },
+"RowIndex": {
+"methods": {
+"__init__": [
+"self",
+"ids",
+"at",
+"count",
+"div",
+"sort_topk"
+],
+"__repr__": [
+"self"
+],
+"__slots__": null,
+"_check_staged": [
+"self",
+"what"
+],
+"_copy": [
+"self"
+],
+"offset": [
+"self",
+"n"
+],
+"staged": [
+"self",
+"rows",
+"keep_choice"
+]
+}
+},
 "SCOPE_AUX": {},
 "Scalar": {},
 "ScalarType": {
@@ -7548,6 +8503,21 @@
 "dtype": null
 }
 },
+"Scaled": {
+"methods": {
+"__init__": [
+"self",
+"tile",
+"scales",
+"fmt",
+"at"
+],
+"__repr__": [
+"self"
+],
+"__slots__": null
+}
+},
 "Sequence": {},
 "SharedTile": {
 "methods": {
@@ -7556,6 +8526,11 @@
 "i"
 ],
 "__slots__": null,
+"atomic_add_elems": [
+"self",
+"val",
+"idx"
+],
 "granules": [
 "self",
 "name"
@@ -7569,7 +8544,8 @@
 "load_elems": [
 "self",
 "idx",
-"dtype"
+"dtype",
+"runs"
 ],
 "store": [
 "self",
@@ -7712,10 +8688,19 @@
 "kind",
 "axis"
 ],
+"as_fragment": [
+"self",
+"ty",
+"fmt"
+],
 "as_operand": [
 "self",
 "dtype",
+"k_order",
 "into"
+],
+"as_scales": [
+"self"
 ],
 "bitcast": [
 "self",
@@ -7723,6 +8708,9 @@
 "into"
 ],
 "dtype": [
+"self"
+],
+"first_lane": [
 "self"
 ],
 "group_max": [
@@ -7746,6 +8734,10 @@
 "lane_gather": [
 "self",
 "lanes"
+],
+"lane_strip": [
+"self",
+"run"
 ],
 "left_fill_": [
 "self",
@@ -7788,6 +8780,16 @@
 "idx",
 "value",
 "into"
+],
+"run_xor": [
+"self",
+"mask"
+],
+"scaled": [
+"self",
+"scales",
+"fmt",
+"at"
 ],
 "subtile": [
 "self",
@@ -7975,10 +8977,30 @@
 "self",
 "o"
 ],
+"__and__": [
+"self",
+"o"
+],
+"__bool__": [
+"self"
+],
+"__eq__": [
+"self",
+"o"
+],
 "__floordiv__": [
 "self",
 "o"
 ],
+"__ge__": [
+"self",
+"o"
+],
+"__gt__": [
+"self",
+"o"
+],
+"__hash__": null,
 "__iadd__": [
 "self",
 "o"
@@ -7987,11 +9009,26 @@
 "self",
 "o"
 ],
+"__invert__": [
+"self"
+],
 "__isub__": [
 "self",
 "o"
 ],
 "__itruediv__": [
+"self",
+"o"
+],
+"__le__": [
+"self",
+"o"
+],
+"__lshift__": [
+"self",
+"o"
+],
+"__lt__": [
 "self",
 "o"
 ],
@@ -8003,14 +9040,30 @@
 "self",
 "o"
 ],
+"__ne__": [
+"self",
+"o"
+],
 "__neg__": [
 "self"
+],
+"__or__": [
+"self",
+"o"
 ],
 "__radd__": [
 "self",
 "o"
 ],
+"__rand__": [
+"self",
+"o"
+],
 "__rfloordiv__": [
+"self",
+"o"
+],
+"__rlshift__": [
 "self",
 "o"
 ],
@@ -8022,11 +9075,27 @@
 "self",
 "o"
 ],
+"__ror__": [
+"self",
+"o"
+],
+"__rrshift__": [
+"self",
+"o"
+],
+"__rshift__": [
+"self",
+"o"
+],
 "__rsub__": [
 "self",
 "o"
 ],
 "__rtruediv__": [
+"self",
+"o"
+],
+"__rxor__": [
 "self",
 "o"
 ],
@@ -8039,9 +9108,20 @@
 "self",
 "o"
 ],
+"__xor__": [
+"self",
+"o"
+],
+"_compare": [
+"self",
+"sym",
+"o"
+],
 "_index_only": [
 "self",
-"sym"
+"sym",
+"a",
+"b"
 ],
 "_inplace": [
 "self",
@@ -8133,6 +9213,8 @@
 ],
 "swap_halves": [
 "self",
+"span",
+"negate_first",
 "into"
 ],
 "zero_": [
@@ -8181,11 +9263,32 @@
 "ty"
 ]
 },
+"_defer": {
+"params": [
+"o"
+]
+},
+"_deprecated": {
+"params": [
+"old",
+"new"
+]
+},
 "_doc": {
 "params": [
 "cls",
 "name",
 "text"
+]
+},
+"_fp4_operand": {
+"params": [
+"words"
+]
+},
+"_fp8_operand": {
+"params": [
+"words"
 ]
 },
 "_i32": {
@@ -8194,6 +9297,12 @@
 "_i64": {
 "params": [
 "v"
+]
+},
+"_int_map": {
+"params": [
+"a",
+"b"
 ]
 },
 "_is_strip": {
@@ -8206,6 +9315,29 @@
 "ty"
 ]
 },
+"_lane_strip_type": {
+"params": [
+"ty",
+"run",
+"dtype"
+]
+},
+"_lift": {
+"params": [
+"sym",
+"a",
+"b"
+]
+},
+"_load_fp4_frags_lds": {
+"params": [
+"ty",
+"src",
+"row0",
+"chunk0",
+"into"
+]
+},
 "_make": {
 "params": [
 "cls",
@@ -8213,6 +9345,7 @@
 "operands",
 "into",
 "name",
+"mark",
 "**attrs"
 ]
 },
@@ -8220,6 +9353,25 @@
 "params": [
 "a",
 "b"
+]
+},
+"_mma_mx": {
+"params": [
+"a",
+"b",
+"acc",
+"sa",
+"sb",
+"into",
+"a_fmt",
+"b_fmt",
+"sa_at",
+"sb_at"
+]
+},
+"_mx_scales_loose": {
+"params": [
+"bytes_"
 ]
 },
 "_no_strip": {
@@ -8231,6 +9383,15 @@
 "_pad4": {
 "params": [
 "idx"
+]
+},
+"_plain_rows": {
+"params": [
+"what",
+"ids",
+"at",
+"count",
+"div"
 ]
 },
 "_reduce_order": {
@@ -8250,6 +9411,13 @@
 "bounded"
 ]
 },
+"_strip_coord": {
+"params": [
+"ty",
+"axis",
+"name"
+]
+},
 "_strip_vec_lds": {
 "params": [
 "vt"
@@ -8263,6 +9431,9 @@
 "self",
 "o"
 ]
+},
+"_unit_attr": {
+"params": []
 },
 "_vec_of": {
 "params": [
@@ -8289,7 +9460,8 @@
 "op",
 "a",
 "b",
-"into"
+"into",
+"reduce"
 ]
 },
 "broadcast": {
@@ -8347,12 +9519,40 @@
 "c"
 ]
 },
+"fp16": {},
 "fp32": {},
+"fp4_operand": {
+"params": [
+"words"
+]
+},
+"fp8_operand": {
+"params": [
+"words"
+]
+},
 "fp8e4m3": {},
 "full": {
 "params": [
 "ty",
 "value",
+"into"
+]
+},
+"gemv_w4": {
+"params": [
+"x",
+"qw",
+"s",
+"zs",
+"n0",
+"k0",
+"kstep",
+"count",
+"group",
+"tokens",
+"zero",
+"s_blocked",
 "into"
 ]
 },
@@ -8375,6 +9575,12 @@
 ]
 },
 "ir": {},
+"lane_coords": {
+"params": [
+"tile",
+"run"
+]
+},
 "lds_loads": {
 "params": [
 "tile",
@@ -8424,6 +9630,10 @@
 "n0",
 "k0",
 "group",
+"zero",
+"s_blocked",
+"zp",
+"rows",
 "into"
 ]
 },
@@ -8478,6 +9688,11 @@
 "s",
 "row0",
 "col0"
+]
+},
+"mx_scales_loose": {
+"params": [
+"bytes_"
 ]
 },
 "neg_infty": {
@@ -8630,8 +9845,6 @@
 }
 },
 "hk.integration._sglang_plugin": {
-"Callable": {},
-"List": {},
 "Tuple": {},
 "__all__": {},
 "annotations": {},
@@ -8647,12 +9860,17 @@
 "APPLY": {},
 "Callable": {},
 "Dict": {},
-"List": {},
 "Tuple": {},
 "_backend": {
 "params": []
 },
+"_dsv41_index": {
+"params": []
+},
 "_gemm": {
+"params": []
+},
+"_gptq": {
 "params": []
 },
 "_int4": {
@@ -8664,10 +9882,19 @@
 "_moe_a8w4": {
 "params": []
 },
+"_moe_wna16": {
+"params": []
+},
 "_mxfp8": {
 "params": []
 },
+"_prefill": {
+"params": []
+},
 "_sdpa": {
+"params": []
+},
+"_sparse_mla": {
 "params": []
 },
 "annotations": {},
@@ -8784,6 +10011,13 @@
 "MEASURED_VLLM": {},
 "Optional": {},
 "RAISED": {},
+"ROLES": {},
+"SPLIT": {},
+"_checker": {
+"params": [
+"name"
+]
+},
 "_expect": {
 "params": [
 "ok",
@@ -8793,50 +10027,32 @@
 "_gfx950": {
 "params": []
 },
+"_has_names": {
+"params": [
+"src",
+"params"
+]
+},
 "_params": {
 "params": [
 "fn",
 "drop_self"
 ]
 },
-"_sglang_linear": {
-"params": []
-},
-"_sglang_moe": {
-"params": []
-},
-"_sgld_attn": {
-"params": []
-},
-"_sgld_convrot": {
-"params": []
-},
-"_sgld_linear": {
-"params": []
-},
-"_vllm_backend": {
-"params": []
-},
-"_vllm_gemm": {
-"params": []
-},
-"_vllm_int4": {
-"params": []
-},
-"_vllm_moe": {
-"params": []
-},
-"_vllm_moe_a8w4": {
-"params": []
-},
-"_vllm_mxfp8": {
-"params": []
-},
-"_vllm_sdpa": {
-"params": []
-},
 "annotations": {},
+"apply_routes": {
+"params": [
+"engine",
+"routes",
+"appliers"
+]
+},
 "check": {
+"params": [
+"routes"
+]
+},
+"check_each": {
 "params": [
 "routes"
 ]
@@ -8846,16 +10062,190 @@
 "engine"
 ]
 },
+"gather": {
+"params": [
+"name"
+]
+},
+"gather_sglang_linear": {
+"params": []
+},
+"gather_sglang_moe": {
+"params": []
+},
+"gather_sglang_norm": {
+"params": []
+},
+"gather_sgld_attn": {
+"params": []
+},
+"gather_sgld_convrot": {
+"params": []
+},
+"gather_sgld_linear": {
+"params": []
+},
+"gather_vllm_backend": {
+"params": []
+},
+"gather_vllm_dsv41_index": {
+"params": []
+},
+"gather_vllm_gemm": {
+"params": []
+},
+"gather_vllm_gptq": {
+"params": []
+},
+"gather_vllm_int4": {
+"params": []
+},
+"gather_vllm_moe": {
+"params": []
+},
+"gather_vllm_moe_a8w4": {
+"params": []
+},
+"gather_vllm_moe_wna16": {
+"params": []
+},
+"gather_vllm_mxfp8": {
+"params": []
+},
+"gather_vllm_prefill": {
+"params": []
+},
+"gather_vllm_sdpa": {
+"params": []
+},
+"gather_vllm_sparse_mla": {
+"params": []
+},
 "inspect": {},
+"judge": {
+"params": [
+"name",
+"facts"
+]
+},
+"judge_sglang_linear": {
+"params": [
+"f"
+]
+},
+"judge_sglang_moe": {
+"params": [
+"f"
+]
+},
+"judge_sglang_norm": {
+"params": [
+"f"
+]
+},
+"judge_sgld_attn": {
+"params": [
+"f"
+]
+},
+"judge_sgld_convrot": {
+"params": [
+"f"
+]
+},
+"judge_sgld_linear": {
+"params": [
+"f"
+]
+},
+"judge_vllm_backend": {
+"params": [
+"f"
+]
+},
+"judge_vllm_dsv41_index": {
+"params": [
+"f"
+]
+},
+"judge_vllm_gemm": {
+"params": [
+"f"
+]
+},
+"judge_vllm_gptq": {
+"params": [
+"f"
+]
+},
+"judge_vllm_int4": {
+"params": [
+"f"
+]
+},
+"judge_vllm_moe": {
+"params": [
+"f"
+]
+},
+"judge_vllm_moe_a8w4": {
+"params": [
+"f"
+]
+},
+"judge_vllm_moe_wna16": {
+"params": [
+"f"
+]
+},
+"judge_vllm_mxfp8": {
+"params": [
+"f"
+]
+},
+"judge_vllm_prefill": {
+"params": [
+"f"
+]
+},
+"judge_vllm_sdpa": {
+"params": [
+"f"
+]
+},
+"judge_vllm_sparse_mla": {
+"params": [
+"f"
+]
+},
+"main": {
+"params": [
+"argv"
+]
+},
 "names": {
 "params": [
 "fn",
 "drop_self"
 ]
 },
+"os": {},
+"record": {
+"params": [
+"routes"
+]
+},
 "refuse": {
 "params": [
 "engine",
+"problems",
+"what"
+]
+},
+"refuse_route": {
+"params": [
+"engine",
+"route",
 "problems",
 "what"
 ]
@@ -8866,6 +10256,22 @@
 "standin",
 "what"
 ]
+},
+"same_signature": {
+"params": [
+"engine_sig",
+"standin",
+"what"
+]
+},
+"signature": {
+"params": [
+"fn",
+"drop_self"
+]
+},
+"stack": {
+"params": []
 },
 "sys": {}
 },
@@ -8986,6 +10392,11 @@
 "n",
 "k"
 ],
+"routes_any": [
+"self",
+"n",
+"k"
+],
 "shapes": [
 "self"
 ]
@@ -8993,6 +10404,8 @@
 },
 "Sequence": {},
 "Tuple": {},
+"_CAPTURING": {},
+"_hostpath": {},
 "annotations": {},
 "bisect": {},
 "capturing": {
@@ -9440,12 +10853,29 @@
 }
 },
 "hk.integration.sglang": {
+"NORM_STATS": {},
 "PREFIXES": {},
 "ROUTES_ENV": {},
 "_APPLIED": {},
 "_LINEAR": {},
 "_LINEAR_HOMES": {},
+"_NORM": {},
+"_NORM_HOME": {},
+"_NORM_OPS": {},
 "_common": {},
+"_norm_op": {
+"params": [
+"kernel",
+"consts"
+]
+},
+"_norm_refusal": {
+"params": [
+"self",
+"x",
+"residual"
+]
+},
 "annotations": {},
 "apply": {
 "params": []
@@ -9453,10 +10883,24 @@
 "apply_linear": {
 "params": []
 },
+"apply_norm": {
+"params": []
+},
 "available": {
 "params": []
 },
+"gemma_rms_norm": {
+"params": [
+"x",
+"residual",
+"weight",
+"eps"
+]
+},
 "importlib": {},
+"norm_stats": {
+"params": []
+},
 "revert": {
 "params": []
 },
@@ -9941,6 +11385,9 @@
 "_SLOT_NAME": {},
 "_TRITON": {},
 "_UNIT": {},
+"_attention_heads": {
+"params": []
+},
 "_build": {
 "params": []
 },
@@ -9957,7 +11404,8 @@
 "params": [
 "kind",
 "head_dim",
-"splits"
+"splits",
+"ppstep"
 ]
 },
 "_prefill_op": {
@@ -9981,6 +11429,22 @@
 "device",
 "n_heads",
 "head_dim"
+]
+},
+"_split_ops": {
+"params": [
+"head_dim",
+"scale"
+]
+},
+"_split_plan": {
+"params": [
+"common_attn_metadata",
+"qs",
+"nd",
+"n_pf",
+"device",
+"n_kv_heads"
 ]
 },
 "_triton_decode": {
@@ -10043,10 +11507,134 @@
 ]
 }
 },
+"hk.integration.vllm_dsv41_index": {
+"CHECK": {},
+"Callable": {},
+"Counter": {},
+"ENABLED": {},
+"MODULE": {},
+"Optional": {},
+"PATCH": {},
+"ROWS": {},
+"STATS": {},
+"STOCK_LAYERS": {},
+"TARGET": {},
+"TOPK": {},
+"_BUFS": {},
+"_CALLS": {},
+"_FINDER": {},
+"_Finder": {
+"methods": {
+"find_spec": [
+"self",
+"name",
+"path",
+"target"
+]
+}
+},
+"_KERN": {},
+"_LAYERS": {},
+"_MOD": {},
+"_NONE": {},
+"_ORIG": {},
+"_bufs": {
+"params": [
+"dev"
+]
+},
+"_check": {
+"params": [
+"layer",
+"positions",
+"normed",
+"qr",
+"q",
+"q_scale",
+"w",
+"written",
+"sel",
+"p",
+"n"
+]
+},
+"_kernel": {
+"params": [
+"wscale"
+]
+},
+"_launch": {
+"params": [
+"module",
+"layer",
+"positions",
+"normed",
+"qr",
+"p"
+]
+},
+"_make_plan": {
+"params": [
+"layer"
+]
+},
+"_none": {
+"params": [
+"dev",
+"m"
+]
+},
+"_patch_module": {
+"params": [
+"module"
+]
+},
+"_plan": {
+"params": [
+"layer"
+]
+},
+"_rows": {
+"params": [
+"t",
+"slot",
+"per_block"
+]
+},
+"_select": {
+"params": [
+"layer",
+"positions",
+"normed",
+"qr"
+]
+},
+"_unhook": {
+"params": []
+},
+"annotations": {},
+"apply_patch": {
+"params": []
+},
+"engine": {},
+"os": {},
+"revert": {
+"params": []
+},
+"source_path": {
+"params": []
+},
+"status": {
+"params": []
+},
+"sys": {}
+},
 "hk.integration.vllm_gemm": {
 "Any": {},
 "Callable": {},
+"Counter": {},
 "Dict": {},
+"ENGINE_KEEPS_M1": {},
 "OPTIONAL": {},
 "Optional": {},
 "PATCH": {},
@@ -10054,10 +11642,18 @@
 "ROUTES_ENV": {},
 "RUN_PATHS": {},
 "STATS": {},
+"UNROUTED": {},
 "_ARCH_OK": {},
 "_FALLBACK": {},
+"_GEMMS": {},
+"_GEN": {},
 "_OPS": {},
+"_OPS_LEGACY": {},
 "_ORIG_DISPATCH": {},
+"_PLANS": {},
+"_PLANS_FOR": {},
+"_PLAN_CAP": {},
+"_REFUSED": {},
 "_TABLE": {},
 "_arch_ok": {
 "params": [
@@ -10070,9 +11666,22 @@
 ]
 },
 "_common": {},
+"_compiling": {
+"params": []
+},
 "_decode_op": {
 "params": [
 "s"
+]
+},
+"_decode_op_legacy": {
+"params": [
+"s"
+]
+},
+"_direct": {
+"params": [
+"kernel"
 ]
 },
 "_fallback": {
@@ -10106,7 +11715,15 @@
 "n"
 ]
 },
+"_hostpath": {},
 "_linear_fake": {
+"params": [
+"x",
+"weight",
+"bias"
+]
+},
+"_linear_legacy": {
 "params": [
 "x",
 "weight",
@@ -10120,14 +11737,64 @@
 "k"
 ]
 },
+"_op_for_legacy": {
+"params": [
+"m",
+"n",
+"k"
+]
+},
 "_own_compile_cache": {
 "params": [
 "name"
 ]
 },
+"_plan": {
+"params": [
+"x",
+"weight",
+"bias",
+"m",
+"n",
+"k"
+]
+},
+"_refused": {
+"params": [
+"path",
+"err"
+]
+},
+"_routed_gemm": {
+"params": [
+"orig",
+"layer",
+"x",
+"weight",
+"bias"
+]
+},
+"_takes_layer": {
+"params": [
+"layer",
+"weight",
+"bias"
+]
+},
+"_unrouted": {
+"params": [
+"weight",
+"bias"
+]
+},
 "annotations": {},
 "apply": {
 "params": []
+},
+"decide_layers": {
+"params": [
+"model"
+]
 },
 "dispatch_unquantized_gemm": {
 "params": [
@@ -10140,6 +11807,7 @@
 "params": []
 },
 "flydsl_gemm": {},
+"functools": {},
 "linear": {
 "params": [
 "x",
@@ -10199,6 +11867,102 @@
 "params": [
 "table"
 ]
+},
+"unrouted_status": {
+"params": []
+}
+},
+"hk.integration.vllm_gptq": {
+"Callable": {},
+"Counter": {},
+"MIN_M": {},
+"Optional": {},
+"PATCH": {},
+"REFUSED": {},
+"STATS": {},
+"_GEMM_ARGS": {},
+"_GEMM_PLAN": {},
+"_ORIG_APPLY": {},
+"_ORIG_PWAL": {},
+"_common": {},
+"_fake": {
+"params": [
+"x",
+"w_q",
+"w_zp",
+"w_s",
+"g_idx",
+"hk_qw",
+"hk_s",
+"hk_zs",
+"group"
+]
+},
+"_gemm_plan": {
+"params": []
+},
+"_vllm_gptq": {
+"params": [
+"x",
+"w_q",
+"w_zp",
+"w_s",
+"g_idx"
+]
+},
+"_weights": {
+"params": [
+"kern",
+"layer"
+]
+},
+"_why_not": {
+"params": [
+"self"
+]
+},
+"annotations": {},
+"apply": {
+"params": [
+"self",
+"layer",
+"x",
+"bias"
+]
+},
+"apply_patch": {
+"params": []
+},
+"engine": {},
+"gptq_w4a16": {
+"params": [
+"x",
+"w_q",
+"w_zp",
+"w_s",
+"g_idx",
+"hk_qw",
+"hk_s",
+"hk_zs",
+"group"
+]
+},
+"plan_call": {
+"params": [
+"fn"
+]
+},
+"process_weights_after_loading": {
+"params": [
+"self",
+"layer"
+]
+},
+"revert": {
+"params": []
+},
+"status": {
+"params": []
 }
 },
 "hk.integration.vllm_int4": {
@@ -10207,6 +11971,7 @@
 "PATCH": {},
 "STATS": {},
 "_HK_MAX_M": {},
+"_MAX_M": {},
 "_ORIG_APPLY": {},
 "_ORIG_PWAL": {},
 "_cdna": {
@@ -10225,6 +11990,7 @@
 "group"
 ]
 },
+"_hostpath": {},
 "_max_m": {
 "params": []
 },
@@ -10234,6 +12000,18 @@
 "qweight",
 "scales",
 "qzeros"
+]
+},
+"_w4a16_legacy": {
+"params": [
+"x",
+"qweight",
+"scales",
+"qzeros",
+"hk_qw",
+"hk_s",
+"hk_zs",
+"group"
 ]
 },
 "annotations": {},
@@ -10276,6 +12054,7 @@
 },
 "hk.integration.vllm_moe": {
 "BLOCK16_MAX_TOKENS": {},
+"BLOCK16_MAX_TOKENS_AT": {},
 "Callable": {},
 "Optional": {},
 "PATCH": {},
@@ -10296,6 +12075,9 @@
 },
 "annotations": {},
 "apply": {
+"params": []
+},
+"block16_max": {
 "params": []
 },
 "engine": {},
@@ -10349,7 +12131,34 @@
 "Optional": {},
 "PATCH": {},
 "STATS": {},
+"_CONSTS": {},
+"_FIVE": {},
+"_FNS": {},
 "_ORIG": {},
+"_SIG": {},
+"_arguments": {
+"params": [
+"args",
+"kwargs",
+"five"
+]
+},
+"_consts": {
+"params": []
+},
+"_consts_legacy": {
+"params": []
+},
+"_fns": {
+"params": []
+},
+"_fns_legacy": {
+"params": []
+},
+"_hostpath": {},
+"_sig": {
+"params": []
+},
 "_takes": {
 "params": [
 "hidden",
@@ -10393,18 +12202,110 @@
 "params": []
 }
 },
+"hk.integration.vllm_moe_wna16": {
+"Callable": {},
+"Counter": {},
+"Dict": {},
+"MAX_TOKENS": {},
+"Optional": {},
+"PATCH": {},
+"PREFIXES": {},
+"REFUSED": {},
+"STATS": {},
+"Tuple": {},
+"VALIDATED": {},
+"_FORCE": {},
+"_GUARDED": {},
+"_ORIG": {},
+"_ORIG_CONFIG": {},
+"_common": {},
+"_int32": {
+"params": []
+},
+"_int8": {
+"params": []
+},
+"_why_not": {
+"params": [
+"A",
+"B",
+"C",
+"B_scale",
+"B_zp",
+"tokens",
+"config",
+"use_int8_w8a16",
+"use_int4_w4a16",
+"block_shape"
+]
+},
+"annotations": {},
+"apply": {
+"params": []
+},
+"engine": {},
+"invoke_fused_moe_wna16_triton_kernel": {
+"params": [
+"A",
+"B",
+"C",
+"B_scale",
+"B_zp",
+"topk_weights",
+"sorted_token_ids",
+"expert_ids",
+"num_tokens_post_padded",
+"mul_routed_weight",
+"top_k",
+"config",
+"compute_type",
+"use_int8_w8a16",
+"use_int4_w4a16",
+"block_shape"
+]
+},
+"revert": {
+"params": []
+},
+"schedule": {
+"params": [
+"k"
+]
+},
+"stats": {
+"params": []
+},
+"status": {
+"params": []
+},
+"try_get_optimal_moe_config": {
+"params": [
+"w1_shape",
+"w2_shape",
+"top_k",
+"dtype",
+"M",
+"block_shape"
+]
+}
+},
 "hk.integration.vllm_mxfp8": {
 "ANY": {},
 "Callable": {},
 "ENABLED": {},
 "MEASURED": {},
 "MIN_M": {},
+"MIN_M_NK": {},
 "Optional": {},
 "PATCH": {},
+"RANGES": {},
 "STATS": {},
 "_ORIG_APPLY": {},
 "_ORIG_PWAL": {},
+"_S2": {},
+"_S3": {},
 "_SMALL_N": {},
+"_VLLM": {},
 "_cls": {
 "params": []
 },
@@ -10418,6 +12319,13 @@
 "hk_wp",
 "out_dtype"
 ]
+},
+"_hostpath": {},
+"_vllm_path": {
+"params": []
+},
+"_vllm_path_legacy": {
+"params": []
 },
 "annotations": {},
 "apply_patch": {
@@ -10462,10 +12370,391 @@
 "params": []
 }
 },
+"hk.integration.vllm_prefill": {
+"ARCHES": {},
+"DECODE": {},
+"DECODE_ARCHES": {},
+"DECODE_D128": {},
+"DECODE_MAX_PAIRS_D128": {},
+"EXACT_RATIO": {},
+"GUARD": {},
+"GUARDS": {},
+"HEAD_DIMS": {},
+"Optional": {},
+"PATCH": {},
+"PREFIXES": {},
+"SHADOW": {},
+"SHADOW_STATS": {},
+"STATS_WHY_NOT": {},
+"VT": {},
+"VT_CAP_BYTES": {},
+"_DEC": {},
+"_DECLINED_SAID": {},
+"_DEC_SCRATCH": {},
+"_FLASH": {},
+"_GUARDED": {},
+"_GUARDED_U": {},
+"_OPS": {},
+"_ORIG": {},
+"_ORIG_BUILD": {},
+"_ORIG_U": {},
+"_P_NEED": {},
+"_P_READ": {},
+"_P_REFUSED": {},
+"_P_SIG": {},
+"_STATS": {},
+"_STATS_KEEP": {},
+"_U_OFF": {},
+"_U_READ": {},
+"_U_SIG": {},
+"_VT_OPS": {},
+"_VT_SCRATCH": {},
+"_apply_stats": {
+"params": []
+},
+"_apply_unified": {
+"params": []
+},
+"_built": {
+"params": [
+"make",
+"quiet"
+]
+},
+"_common": {},
+"_compare": {
+"params": [
+"o",
+"ref",
+"rows"
+]
+},
+"_decode": {
+"params": [
+"a"
+]
+},
+"_decode_ops": {
+"params": [
+"head_dim",
+"group",
+"page",
+"order",
+"splits",
+"scale",
+"warps",
+"v_both"
+]
+},
+"_decode_scratch": {
+"params": [
+"device",
+"rows",
+"hkv",
+"group",
+"d"
+]
+},
+"_flash_kv": {
+"params": [
+"k",
+"v"
+]
+},
+"_flash_op": {
+"params": [
+"head_dim",
+"group",
+"scale",
+"page",
+"order"
+]
+},
+"_guard": {
+"params": [
+"a"
+]
+},
+"_note_declined": {
+"params": [
+"why"
+]
+},
+"_op": {
+"params": [
+"head_dim",
+"group",
+"scale",
+"page"
+]
+},
+"_otag": {
+"params": [
+"order"
+]
+},
+"_p_unknown": {
+"params": [
+"a"
+]
+},
+"_ptag": {
+"params": [
+"page"
+]
+},
+"_revert_stats": {
+"params": []
+},
+"_shadow": {
+"params": [
+"o",
+"args",
+"kwargs",
+"a"
+]
+},
+"_stats_hook": {
+"params": [
+"orig"
+]
+},
+"_unknown_set": {
+"params": [
+"a"
+]
+},
+"_vt_ops": {
+"params": [
+"head_dim",
+"group",
+"scale",
+"page",
+"order"
+]
+},
+"_vt_scratch": {
+"params": [
+"device",
+"slots",
+"hkv",
+"d",
+"page"
+]
+},
+"annotations": {},
+"apply": {
+"params": []
+},
+"batch_stats": {
+"params": [
+"query_start_loc",
+"seq_lens",
+"num_reqs"
+]
+},
+"context_attention_fwd": {
+"params": [
+"*args",
+"**kwargs"
+]
+},
+"d_why_not": {
+"params": [
+"a"
+]
+},
+"decode_switches": {
+"params": [
+"env"
+]
+},
+"decode_takes": {
+"params": [
+"reqs",
+"kv_heads",
+"head_dim"
+]
+},
+"engine": {},
+"exact_why_not": {
+"params": [
+"st",
+"head_dim",
+"kv_heads",
+"arch"
+]
+},
+"guard_why_not": {
+"params": [
+"reqs",
+"max_q",
+"max_k",
+"head_dim",
+"kv_heads",
+"arch"
+]
+},
+"page_why_not": {
+"params": [
+"page"
+]
+},
+"revert": {
+"params": []
+},
+"stats_why_not": {
+"params": [
+"builder_cls"
+]
+},
+"status": {
+"params": []
+},
+"u_why_not": {
+"params": [
+"a"
+]
+},
+"unified_attention": {
+"params": [
+"*args",
+"**kwargs"
+]
+},
+"why_not": {
+"params": [
+"q",
+"o",
+"kv_cache_dtype",
+"k_cache",
+"v_cache",
+"b_loc",
+"b_start_loc",
+"b_seq_len",
+"alibi_slopes",
+"sliding_window",
+"skip_decode",
+"fp8_out_scale",
+"sinks",
+"is_block_table_ptr",
+"causal"
+]
+}
+},
+"hk.integration.vllm_sparse_mla": {
+"Callable": {},
+"Dict": {},
+"ENABLED": {},
+"FUSE": {},
+"List": {},
+"MIN_T": {},
+"Optional": {},
+"PATCH": {},
+"STATS": {},
+"Tuple": {},
+"WANT": {},
+"_CS32": {},
+"_CTX": {},
+"_Layer": {
+"methods": {
+"__init__": [
+"self",
+"q",
+"positions",
+"cos_sin",
+"mxd",
+"mxs"
+],
+"__slots__": null
+}
+},
+"_OPS_MOD": {},
+"_ORIG": {},
+"_ROCM_MOD": {},
+"_cos_sin_fp32": {
+"params": [
+"cs"
+]
+},
+"_entry_points": {
+"params": []
+},
+"_forward_prefill": {
+"params": [
+"self",
+"q",
+"positions",
+"compressed_k_cache",
+"swa_k_cache",
+"output",
+"attn_metadata",
+"swa_metadata",
+"mxfp8_out"
+]
+},
+"_mx_layout_ok": {
+"params": [
+"lay"
+]
+},
+"_takes": {
+"params": [
+"q",
+"kv",
+"attn_sink",
+"output",
+"head_dim",
+"rope_head_dim"
+]
+},
+"annotations": {},
+"apply_patch": {
+"params": []
+},
+"engine": {},
+"os": {},
+"problems": {
+"params": []
+},
+"revert": {
+"params": []
+},
+"rocm_inverse_rope_mxfp8_rows": {
+"params": [
+"o",
+"positions",
+"cos_sin_cache",
+"rope_head_dim",
+"out_data",
+"out_scale"
+]
+},
+"rocm_sparse_attn_prefill": {
+"params": [
+"q",
+"kv",
+"indices",
+"topk_length",
+"scale",
+"head_dim",
+"nope_head_dim",
+"rope_head_dim",
+"attn_sink",
+"output",
+"ragged_indices",
+"ragged_indptr"
+]
+},
+"status": {
+"params": []
+},
+"threading": {}
+},
 "hk.integration.warm_routes": {
 "Dict": {},
 "HIDDEN": {},
-"K2_MS": {},
+"K2_MAX_M": {},
 "List": {},
 "MOE_INTER": {},
 "TOPK": {},
@@ -10482,6 +12771,18 @@
 },
 "annotations": {},
 "argparse": {},
+"k2_plans": {
+"params": [
+"n",
+"k",
+"max_m"
+]
+},
+"k2_shapes": {
+"params": [
+"tp"
+]
+},
 "main": {
 "params": [
 "argv"
@@ -10591,7 +12892,8 @@
 "x",
 "residual",
 "weight",
-"eps"
+"eps",
+"weight_offset"
 ]
 },
 "gelu": {
@@ -10663,7 +12965,8 @@
 "x",
 "weight",
 "eps",
-"out"
+"out",
+"weight_offset"
 ]
 },
 "rmsnorm": {
@@ -10689,6 +12992,16 @@
 "out"
 ]
 },
+"scaled_mm": {
+"params": [
+"a",
+"b",
+"scale_a",
+"scale_b",
+"bias",
+"out"
+]
+},
 "sdpa": {},
 "silu_mul": {
 "params": [
@@ -10708,6 +13021,29 @@
 "a",
 "b",
 "out"
+]
+}
+},
+"hk.ops._arch": {
+"Optional": {},
+"RDNA_AND_GFX950": {},
+"Tuple": {},
+"annotations": {},
+"current_arch": {
+"params": []
+},
+"require": {
+"params": [
+"op",
+"arches",
+"arch"
+]
+},
+"why_not": {
+"params": [
+"op",
+"arches",
+"arch"
 ]
 }
 },
@@ -10798,7 +13134,8 @@
 "self"
 ],
 "dtype": null,
-"scope": null
+"scope": null,
+"strided": null
 }
 },
 "__all__": {},
@@ -10832,14 +13169,22 @@
 "TUNERS": {},
 "TUNERS_BNHD": {},
 "TUNE_KEYS": {},
+"_CLANG": {},
 "_SCALED": {},
+"_TILED": {},
+"_TILING": {},
+"_TILING_FROM_CLANG": {},
 "__all__": {},
+"_arch": {},
 "_autotune": {},
 "_bench_for": {
 "params": [
 "head_dim",
 "causal"
 ]
+},
+"_clang_major": {
+"params": []
 },
 "_derive": {
 "params": [
@@ -10849,7 +13194,8 @@
 "warps",
 "vt_d_chunk",
 "qk_tiles",
-"pv_tiles"
+"pv_tiles",
+"chunks_a_warp"
 ]
 },
 "_kernel_for": {
@@ -10862,6 +13208,13 @@
 "mapping"
 ]
 },
+"_kernel_key": {
+"params": [
+"head_dim",
+"causal",
+"n"
+]
+},
 "_mapping": {
 "params": [
 "q",
@@ -10871,6 +13224,13 @@
 },
 "_native_cdna": {
 "params": []
+},
+"_tiling": {
+"params": [
+"head_dim",
+"causal",
+"n"
+]
 },
 "_tune_key": {
 "params": [
@@ -10918,7 +13278,9 @@
 "setprio",
 "max_vgprs",
 "min_occupancy",
-"bnhd"
+"bnhd",
+"heads_first",
+"warp_skip"
 ]
 },
 "bf16": {},
@@ -10986,7 +13348,11 @@
 "_nomask",
 "paged",
 "mapping",
-"arch"
+"arch",
+"pairs",
+"kv_split",
+"acc",
+"mma_fence"
 ]
 },
 "bf16": {},
@@ -11018,6 +13384,19 @@
 "scale",
 "mapping"
 ]
+},
+"prefill_merge_kernel": {
+"params": [
+"name",
+"head_dim",
+"arch"
+]
+},
+"split_kernels_for": {
+"params": [
+"head_dim",
+"scale"
+]
 }
 },
 "hk.ops.attn_k3": {
@@ -11025,34 +13404,24 @@
 "KV_BLOCK": {},
 "LAZY": {},
 "NEG_INF": {},
-"PairPKernel": {
-"methods": {
-"__init__": [
-"self",
-"fn",
-"n_pair_sites",
-"**kw"
-],
-"preloaded": [
-"self"
-],
-"with_defines": [
-"self",
-"src"
-]
-}
-},
 "Q_BLK": {},
 "_CO": {},
 "_EYE": {},
+"_FAST": {},
 "_K": {},
-"_PAIR_HELPER": {},
 "_PLANS": {},
 "_dsl": {},
+"_hostpath": {},
 "_kernels": {
 "params": []
 },
 "_launch": {
+"params": [
+"kern",
+"*tensors"
+]
+},
+"_launch_legacy": {
 "params": [
 "kern",
 "*tensors"
@@ -11113,7 +13482,6 @@
 "device"
 ]
 },
-"re": {},
 "vt_kernel": {
 "params": [
 "name",
@@ -11129,6 +13497,13 @@
 "scale"
 ]
 }
+},
+"hk.ops.catalog": {
+"ARCHES": {},
+"EVERY": {},
+"FAMILIES": {},
+"RDNA_AND_GFX950": {},
+"annotations": {}
 },
 "hk.ops.convrot": {
 "H4": {},
@@ -11209,10 +13584,12 @@
 "MAX_TOKENS": {},
 "Optional": {},
 "SCHEDULES": {},
+"SCHEDULES_AT": {},
 "Tuple": {},
 "_KERNELS": {},
 "_SCRATCH": {},
 "__all__": {},
+"_arch": {},
 "_epilogue": {},
 "_settle": {
 "params": [
@@ -11232,10 +13609,12 @@
 "combine_depth",
 "resident",
 "splits",
+"occupancy",
 "max_vgprs",
 "min_occupancy",
 "arch",
-"epilogue"
+"epilogue",
+"op_dtype"
 ]
 },
 "fits": {
@@ -11260,7 +13639,8 @@
 "warps",
 "combine_depth",
 "resident",
-"splits"
+"splits",
+"occupancy"
 ]
 },
 "matmul": {
@@ -11288,6 +13668,79 @@
 "tokens_for": {
 "params": [
 "m"
+]
+}
+},
+"hk.ops.dsv41_index": {
+"CBLOCK": {},
+"G1P0": {},
+"H": {},
+"HD": {},
+"KEY": {},
+"KP0": {},
+"KR0": {},
+"LK0": {},
+"LP0": {},
+"MB_PAIRS": {},
+"MB_WORDS": {},
+"NH": {},
+"NQ": {},
+"QP0": {},
+"QR": {},
+"QR0": {},
+"QS_ROWS": {},
+"ROWS": {},
+"TOPK": {},
+"WAVES": {},
+"WIDTH_MAX": {},
+"WIDTH_STEP": {},
+"WPP0": {},
+"WS": {},
+"_ST_C": {},
+"_T_C": {},
+"_T_FP4": {},
+"_T_W8": {},
+"_T_X": {},
+"alloc_select": {
+"params": []
+},
+"annotations": {},
+"bf16": {},
+"fp32": {},
+"fp8e4m3": {},
+"hk": {},
+"i32": {},
+"i8": {},
+"index_kernel": {
+"params": [
+"wscale"
+]
+},
+"mailbox": {
+"params": [
+"device"
+]
+},
+"qr_scratch": {
+"params": [
+"device"
+]
+},
+"select_row": {
+"params": [
+"lk",
+"n",
+"w",
+"topk",
+"r",
+"WIDTH",
+"bufs",
+"K"
+]
+},
+"width": {
+"params": [
+"n"
 ]
 }
 },
@@ -11689,10 +14142,17 @@
 "BLOCK_M": {},
 "BLOCK_N": {},
 "DEFAULT": {},
+"DTYPES": {},
 "Dict": {},
+"FP8": {},
+"FP8_DECODE": {},
+"FP8_DECODE_M": {},
+"FP8_DEFAULT": {},
+"FP8_SMALL_M": {},
 "KERNELS": {},
 "KNOBS": {},
 "K_STEP": {},
+"Optional": {},
 "SPACE": {},
 "THIN": {},
 "TUNER": {},
@@ -11700,6 +14160,7 @@
 "Tuple": {},
 "_USER": {},
 "__all__": {},
+"_arch": {},
 "_autotune": {},
 "_bench_for": {
 "params": [
@@ -11719,13 +14180,57 @@
 "dot_slice",
 "warps",
 "warp_rows",
-"n_split"
+"n_split",
+"elem_bytes"
 ]
 },
 "_epilogue": {},
+"_fp8_block_m": {
+"params": [
+"m"
+]
+},
+"_fp8_decodes": {
+"params": [
+"m",
+"n",
+"k"
+]
+},
 "_make": {
 "params": [
 "**sched"
+]
+},
+"_scale_ab": {
+"params": [
+"acc",
+"ctx"
+]
+},
+"_scale_ab_bias": {
+"params": [
+"acc",
+"ctx"
+]
+},
+"_scale_epilogue": {
+"params": [
+"with_bias"
+]
+},
+"_scaled_decode_kernel": {
+"params": [
+"op",
+"with_bias",
+"tokens"
+]
+},
+"_scaled_kernel": {
+"params": [
+"op",
+"with_bias",
+"block_m"
 ]
 },
 "_sched_name": {
@@ -11738,6 +14243,9 @@
 "params": []
 },
 "fp32": {},
+"fp8e4m3": {},
+"fp8e5m2": {},
+"functools": {},
 "gemm_kernel": {
 "params": [
 "name",
@@ -11777,19 +14285,32 @@
 "out"
 ]
 },
+"scaled_mm": {
+"params": [
+"a",
+"b",
+"scale_a",
+"scale_b",
+"bias",
+"out"
+]
+},
 "schedule_for": {
 "params": [
 "m",
 "n",
 "k",
-"user"
+"user",
+"arch"
 ]
 },
 "user_route": {
 "params": [
 "m",
 "n",
-"k"
+"k",
+"user",
+"arch"
 ]
 }
 },
@@ -11802,20 +14323,37 @@
 "DIRECT_GR": {},
 "Dict": {},
 "K_STEP": {},
+"List": {},
 "Optional": {},
 "SK_MODES": {},
 "SK_REC": {},
 "TAIL": {},
 "_EXTRA": {},
 "_KERNELS": {},
+"_RANKED": {},
+"_REFUSED": {},
 "_ROUTES": {},
 "_SK": {},
 "_USER": {},
 "__all__": {},
 "_epilogue": {},
 "_pl": {},
+"_refuse": {
+"params": [
+"name",
+"err"
+]
+},
 "_routes": {
 "params": []
+},
+"_run": {
+"params": [
+"name",
+"a",
+"b",
+"out"
+]
 },
 "_sched_name": {
 "params": [
@@ -12318,6 +14856,7 @@
 "Optional": {},
 "Tuple": {},
 "_ARANGE": {},
+"_DTYPES": {},
 "_KERNELS": {},
 "_OPS": {},
 "__all__": {},
@@ -12327,6 +14866,7 @@
 "device"
 ]
 },
+"_arch": {},
 "_launch": {
 "params": [
 "a",
@@ -12351,10 +14891,12 @@
 ]
 },
 "bf16": {},
+"fp16": {},
 "fp32": {},
 "functools": {},
 "hk": {},
 "i32": {},
+"i8": {},
 "kernel_for": {
 "params": [
 "block_m",
@@ -12362,7 +14904,10 @@
 "routed",
 "slices",
 "warps",
-"naive"
+"naive",
+"dtype",
+"w4_group",
+"unroll"
 ]
 },
 "moe_align": {
@@ -12393,7 +14938,29 @@
 "routed",
 "slices",
 "warps",
-"naive"
+"naive",
+"dtype",
+"w4_group",
+"unroll"
+]
+},
+"moe_gemm_w4": {
+"params": [
+"a",
+"qw",
+"s",
+"zp",
+"c",
+"sorted_ids",
+"expert_ids",
+"num_tokens_post_padded",
+"top_k",
+"block_m",
+"group",
+"warps",
+"slices",
+"unroll",
+"topk_weights"
 ]
 },
 "schedule_for": {
@@ -12407,6 +14974,19 @@
 "a",
 "w",
 "block_m"
+]
+},
+"takes_w4": {
+"params": [
+"a",
+"qw",
+"s",
+"zp",
+"n",
+"block_m",
+"group",
+"warps",
+"slices"
 ]
 }
 },
@@ -12434,7 +15014,8 @@
 "topk",
 "depth",
 "warps",
-"mxq"
+"mxq",
+"xpipe"
 ]
 },
 "_sorted_grid": {
@@ -12466,7 +15047,8 @@
 "pp",
 "k",
 "topk",
-"nt"
+"nt",
+"xpipe"
 ]
 },
 "_sorted_ring": {
@@ -12482,7 +15064,8 @@
 "warps",
 "xcd",
 "depth",
-"mxq"
+"mxq",
+"xpipe"
 ]
 },
 "_sorted_s1_grid": {
@@ -12519,7 +15102,8 @@
 "k",
 "topk",
 "warps",
-"nt"
+"nt",
+"xpipe"
 ]
 },
 "_stage1": {
@@ -12784,7 +15368,8 @@
 "depth",
 "warps",
 "grid",
-"mxq"
+"mxq",
+"xpipe"
 ]
 },
 "stage2": {
@@ -13036,6 +15621,7 @@
 "STRIP_PRELOAD_PAST": {},
 "WARP_COUNTS": {},
 "_ADD_TPW_INEXACT": {},
+"_BUILT": {},
 "_DTYPES": {},
 "_FOLD_FIRST_KINDS": {},
 "_FOLD_MIN_WARPS": {},
@@ -13043,6 +15629,7 @@
 "_HALF_SPLIT": {},
 "_HALF_SPLIT_DTYPES": {},
 "_NEG_INF": {},
+"_OFFSET_KERNELS": {},
 "_PER_LANE_HERE": {},
 "_PLAN_CACHE": {},
 "_PRELOAD_HERE": {},
@@ -13052,9 +15639,10 @@
 "_STRIP_CACHE_BYTES": {},
 "_STRIP_LONG_ROWS": {},
 "_STRIP_PER_LANE": {},
-"_STRIP_PER_LANE_ARCHS": {},
 "_STRIP_PER_LANE_AT": {},
+"_STRIP_PER_LANE_AT_GFX1201": {},
 "_STRIP_PER_LANE_DEFAULT": {},
+"_STRIP_PER_LANE_TABLES": {},
 "_STRIP_PER_LANE_WAVE64": {},
 "_STRIP_RESERVE": {},
 "_STRIP_RESERVE_AT": {},
@@ -13139,7 +15727,8 @@
 "kind",
 "dtype",
 "cols",
-"rows"
+"rows",
+"offset"
 ]
 },
 "_resolve_weighted": {
@@ -13147,7 +15736,8 @@
 "kind",
 "dtype",
 "cols",
-"rows"
+"rows",
+"offset"
 ]
 },
 "_rms_weighted_kernel": {
@@ -13156,7 +15746,8 @@
 "dtype",
 "warps",
 "residual",
-"split"
+"split",
+"offset"
 ]
 },
 "_row_reduce_kernel": {
@@ -13218,7 +15809,8 @@
 "name",
 "dtype",
 "kind",
-"warps"
+"warps",
+"offset"
 ]
 },
 "_strip_regime": {
@@ -13269,7 +15861,8 @@
 "kind",
 "x",
 "rows",
-"cols"
+"cols",
+"offset"
 ]
 },
 "bf16": {},
@@ -13298,7 +15891,8 @@
 "x",
 "residual",
 "weight",
-"eps"
+"eps",
+"weight_offset"
 ]
 },
 "hk": {},
@@ -13307,6 +15901,12 @@
 "x",
 "eps",
 "out"
+]
+},
+"offset_kernel": {
+"params": [
+"name",
+"offset"
 ]
 },
 "plan": {
@@ -13321,7 +15921,8 @@
 "x",
 "weight",
 "eps",
-"out"
+"out",
+"weight_offset"
 ]
 },
 "rmsnorm": {
@@ -13384,6 +15985,32 @@
 "Optional": {},
 "Q_TILE": {},
 "TARGET_WORKGROUPS": {},
+"_Checked": {
+"methods": {
+"__call__": [
+"self",
+"q",
+"k_cache",
+"v_cache",
+"block_table",
+"seq_lens",
+"o",
+"**const_overrides"
+],
+"__getattr__": [
+"self",
+"name"
+],
+"__init__": [
+"self",
+"kernel",
+"head_dim"
+],
+"__repr__": [
+"self"
+]
+}
+},
 "_FUSED": {},
 "_Kernels": {
 "methods": {
@@ -13399,7 +16026,10 @@
 }
 },
 "_MERGE": {},
+"_PASSED": {},
+"_PASSED_CAP": {},
 "_SPLIT": {},
+"_arch": {},
 "_merge_splits": {
 "params": [
 "out",
@@ -13410,13 +16040,29 @@
 "splits",
 "active",
 "cols",
-"step"
+"step",
+"at",
+"bound"
 ]
 },
 "_native_cdna": {
 "params": []
 },
 "bf16": {},
+"check_decode": {
+"params": [
+"q",
+"k_cache",
+"v_cache",
+"block_table",
+"seq_lens",
+"out",
+"rows",
+"head_dim",
+"scratch",
+"splits"
+]
+},
 "decode": {
 "params": [
 "walk",
@@ -13437,7 +16083,8 @@
 "head_dim",
 "splits",
 "ablate",
-"defines"
+"defines",
+"ppstep"
 ]
 },
 "fused_scratch": {
@@ -13510,6 +16157,12 @@
 "warps"
 ]
 },
+"pages_per_step": {
+"params": [
+"n_reqs",
+"n_kv_heads"
+]
+},
 "plan_splits": {
 "params": [
 "n_reqs",
@@ -13530,13 +16183,19 @@
 "Dict": {},
 "HEAD_DIMS": {},
 "K_SHAPE": {},
+"MAX_SPLITS": {},
 "MERGE_CHUNK": {},
+"MERGE_WARPS": {},
 "MIN_SPLIT_PAGES": {},
+"MIN_SPLIT_PAGES_ALL": {},
 "NEG_INF": {},
 "Optional": {},
 "PAGE": {},
+"PP2_MIN_PAGES": {},
 "Q_TILE": {},
+"SHORT_PAGES": {},
 "TARGET_WORKGROUPS": {},
+"TARGET_WORKGROUPS_FULL": {},
 "V_SHAPE": {},
 "_KERNELS": {},
 "__all__": {},
@@ -13551,7 +16210,18 @@
 "stages",
 "ablate",
 "scale",
-"arch"
+"arch",
+"min_pages",
+"ppstep",
+"fence_qk",
+"short_pages"
+]
+},
+"floor_pages": {
+"params": [
+"n_pages",
+"min_pages",
+"short_pages"
 ]
 },
 "fp32": {},
@@ -13569,7 +16239,10 @@
 "merge_for": {
 "params": [
 "head_dim",
-"splits"
+"splits",
+"min_pages",
+"warps",
+"short_pages"
 ]
 },
 "merge_kernel": {
@@ -13577,7 +16250,206 @@
 "name",
 "head_dim",
 "splits",
-"arch"
+"arch",
+"min_pages",
+"warps",
+"short_pages"
+]
+},
+"merge_reads_all": {
+"params": [
+"splits"
+]
+},
+"merge_warps": {
+"params": [
+"splits"
+]
+},
+"min_pages_for": {
+"params": [
+"splits"
+]
+},
+"pages_per_step": {
+"params": [
+"pairs"
+]
+},
+"target_workgroups": {
+"params": [
+"pairs"
+]
+}
+},
+"hk.ops.paged_decode": {
+"Dict": {},
+"KV_BLOCK": {},
+"MAX_SPLITS": {},
+"NEG_INF": {},
+"Optional": {},
+"Q_TILE": {},
+"SMALL_SPLITS": {},
+"TARGET_WORKGROUPS": {},
+"_MERGE": {},
+"_WALK": {},
+"_WGPS": {},
+"_arch": {},
+"_kv_at": {
+"params": [
+"kv_order",
+"head_dim",
+"head_kv",
+"v_side"
+]
+},
+"_tag": {
+"params": [
+"scale"
+]
+},
+"annotations": {},
+"bf16": {},
+"device_wgps": {
+"params": [
+"device"
+]
+},
+"fp32": {},
+"hk": {},
+"i32": {},
+"math": {},
+"merge_for": {
+"params": [
+"head_dim",
+"group",
+"splits",
+"step"
+]
+},
+"merge_kernel_def": {
+"params": [
+"name",
+"head_dim",
+"group",
+"splits",
+"step"
+]
+},
+"plan": {
+"params": [
+"n_reqs",
+"n_kv_heads",
+"head_dim",
+"page",
+"wgps"
+]
+},
+"plan_splits": {
+"params": [
+"n_reqs",
+"n_kv_heads",
+"max_blocks"
+]
+},
+"scratch": {
+"params": [
+"rows",
+"n_kv_heads",
+"group",
+"head_dim",
+"device"
+]
+},
+"walk_for": {
+"params": [
+"head_dim",
+"group",
+"page",
+"kv_order",
+"splits",
+"scale",
+"warps",
+"v_both"
+]
+},
+"walk_kernel": {
+"params": [
+"name",
+"head_dim",
+"group",
+"page",
+"kv_order",
+"splits",
+"scale",
+"warps",
+"v_both",
+"max_vgprs",
+"min_occupancy"
+]
+}
+},
+"hk.ops.paged_decode_portable": {
+"Dict": {},
+"KV_BLOCK": {},
+"MAX_SPLITS": {},
+"MIN_SPLITS": {},
+"NEG_INF": {},
+"Optional": {},
+"Q_TILE": {},
+"TARGET_WORKGROUPS": {},
+"VC": {},
+"_WALK": {},
+"_cdna": {
+"params": []
+},
+"_kv_at": {
+"params": [
+"kv_order",
+"head_dim",
+"head_kv",
+"v_side"
+]
+},
+"_v_operand": {
+"params": [
+"v_chunk",
+"masked",
+"valid"
+]
+},
+"annotations": {},
+"bf16": {},
+"fp32": {},
+"hk": {},
+"i32": {},
+"math": {},
+"plan_splits": {
+"params": [
+"n_reqs",
+"n_kv_heads",
+"max_blocks"
+]
+},
+"walk_for": {
+"params": [
+"head_dim",
+"group",
+"page",
+"kv_order",
+"splits",
+"scale"
+]
+},
+"walk_kernel": {
+"params": [
+"name",
+"head_dim",
+"group",
+"page",
+"kv_order",
+"splits",
+"scale"
 ]
 }
 },
@@ -13588,7 +16460,10 @@
 "Optional": {},
 "Q_TILE": {},
 "_KERNELS": {},
+"_SPANS": {},
+"_SPLIT_SCRATCH": {},
 "__all__": {},
+"_arch": {},
 "_derive": {
 "params": [
 "head_dim",
@@ -13597,11 +16472,26 @@
 "warps",
 "vt_d_chunk",
 "qk_tiles",
-"pv_tiles"
+"pv_tiles",
+"chunks_a_warp"
+]
+},
+"_kv_at": {
+"params": [
+"kv_order",
+"head_dim",
+"head_kv",
+"v_side"
 ]
 },
 "_native_cdna": {
 "params": []
+},
+"_pack_unit": {
+"params": [
+"page",
+"kv_block"
+]
 },
 "annotations": {},
 "bf16": {},
@@ -13629,7 +16519,68 @@
 "pv_tiles",
 "scale",
 "max_vgprs",
-"min_occupancy"
+"min_occupancy",
+"layout",
+"page",
+"dsplit",
+"decodes",
+"vt_pages",
+"kv_order"
+]
+},
+"q_tiles": {
+"params": [
+"max_query_len",
+"device",
+"tile"
+]
+},
+"rocm_kernel_for": {
+"params": [
+"head_dim",
+"group",
+"scale",
+"page"
+]
+},
+"rocm_views": {
+"params": [
+"key_cache",
+"value_cache"
+]
+},
+"split_plan": {
+"params": [
+"reqs",
+"n_heads",
+"device",
+"target",
+"min_blocks"
+]
+},
+"split_scratch": {
+"params": [
+"n_slots",
+"n_heads",
+"head_dim",
+"device"
+]
+},
+"vt_pack_kernel": {
+"params": [
+"name",
+"head_dim",
+"page",
+"kv_block",
+"kv_order"
+]
+},
+"vt_pack_span": {
+"params": [
+"max_seq_len",
+"device",
+"page",
+"kv_block"
 ]
 },
 "work_list": {
@@ -13838,6 +16789,7 @@
 "_K3_FITS": {},
 "_OPS": {},
 "_PATCHED": {},
+"_RUNS": {},
 "_SEEN": {},
 "_VERBOSE": {},
 "_VERDICTS": {},
@@ -13859,6 +16811,16 @@
 },
 "_k3_on": {
 "params": []
+},
+"_run_for": {
+"params": [
+"head_dim",
+"causal",
+"scale",
+"n",
+"bnhd",
+"mapping"
+]
 },
 "_verdict": {
 "params": [
@@ -13947,19 +16909,158 @@
 ]
 }
 },
+"hk.ops.sparse_mla": {
+"D": {},
+"DH": {},
+"DW": {},
+"Dict": {},
+"H": {},
+"KB": {},
+"KQ": {},
+"LAZY": {},
+"LOG2E": {},
+"MIN_T": {},
+"NEG_INF": {},
+"NKV": {},
+"NOPE": {},
+"ST16": {},
+"ST_KV": {},
+"ST_P": {},
+"ST_SX": {},
+"T_K": {},
+"T_O": {},
+"T_P": {},
+"T_PB": {},
+"T_Q": {},
+"T_S": {},
+"T_V": {},
+"Tuple": {},
+"V_O": {},
+"V_S": {},
+"WARPS": {},
+"_DUMMY": {},
+"_KERNELS": {},
+"_bits": {
+"params": [
+"a"
+]
+},
+"_dl": {
+"params": [
+"c"
+]
+},
+"_dummies": {
+"params": [
+"dev"
+]
+},
+"_lane": {
+"params": [
+"c"
+]
+},
+"_qq": {
+"params": [
+"c"
+]
+},
+"_quant_store": {
+"params": [
+"r",
+"mxd",
+"mxs",
+"t",
+"w"
+]
+},
+"_slot": {
+"params": [
+"own",
+"y4",
+"y8",
+"c"
+]
+},
+"annotations": {},
+"bf16": {},
+"fp32": {},
+"fp8e4m3": {},
+"hk": {},
+"i32": {},
+"i8": {},
+"kernel": {
+"params": [
+"name",
+"scale",
+"mxfp8",
+"arch"
+]
+},
+"kernel_for": {
+"params": [
+"scale",
+"mxfp8"
+]
+},
+"math": {},
+"prefill": {
+"params": [
+"q",
+"kv",
+"indices",
+"indptr",
+"attn_sink",
+"scale",
+"out"
+]
+},
+"prefill_mxfp8": {
+"params": [
+"q",
+"kv",
+"indices",
+"indptr",
+"attn_sink",
+"scale",
+"positions",
+"cos_sin_cache",
+"mx_data",
+"mx_scale"
+]
+},
+"supports": {
+"params": [
+"q",
+"kv",
+"indices",
+"indptr",
+"attn_sink",
+"out"
+]
+}
+},
 "hk.ops.w4a16": {
 "AWQ_ORDER": {},
 "Any": {},
 "Dict": {},
+"GEMV_ARCHES": {},
+"GEMV_MAX_M": {},
+"GEMV_WARPS": {},
 "MAX_TOKENS": {},
 "Optional": {},
 "SCHEDULES": {},
 "SHALLOW_K": {},
+"SYMMETRIC_ZERO": {},
 "Tuple": {},
 "_DTYPES": {},
 "_KERNELS": {},
 "_OPS": {},
+"_OPS_LEGACY": {},
+"_PLANS": {},
+"_PLAN_CAP": {},
 "__all__": {},
+"_arch": {},
 "_deinterleave": {
 "params": [
 "qw"
@@ -13979,7 +17080,22 @@
 "words"
 ]
 },
+"_matmul_legacy": {
+"params": [
+"x",
+"qw",
+"s",
+"zs",
+"group",
+"out"
+]
+},
 "_op_for": {
+"params": [
+"*key"
+]
+},
+"_op_for_legacy": {
 "params": [
 "*key"
 ]
@@ -13996,6 +17112,11 @@
 ]
 },
 "bf16": {},
+"block_scales": {
+"params": [
+"s"
+]
+},
 "dequant": {
 "params": [
 "qw",
@@ -14006,6 +17127,23 @@
 },
 "fp16": {},
 "fp32": {},
+"gemv_kernel_for": {
+"params": [
+"tokens",
+"group",
+"symmetric",
+"warps"
+]
+},
+"gemv_takes": {
+"params": [
+"m",
+"n",
+"k",
+"group",
+"dtype"
+]
+},
 "hk": {},
 "i32": {},
 "kernel_for": {
@@ -14015,7 +17153,8 @@
 "warps",
 "group",
 "blocks",
-"dtype"
+"dtype",
+"symmetric"
 ]
 },
 "matmul": {
@@ -14026,6 +17165,16 @@
 "zs",
 "group",
 "out"
+]
+},
+"plan": {
+"params": [
+"m",
+"n",
+"k",
+"group",
+"dtype",
+"symmetric"
 ]
 },
 "repack_awq": {
@@ -14044,13 +17193,15 @@
 "scales",
 "group",
 "zero_offset",
-"dtype"
+"dtype",
+"symmetric"
 ]
 },
 "schedule_for": {
 "params": [
 "m",
-"k"
+"k",
+"group"
 ]
 },
 "takes": {
@@ -14066,6 +17217,20 @@
 "m"
 ]
 },
+"unblock_scales": {
+"params": [
+"s"
+]
+},
+"w4a16_gemv_kernel": {
+"params": [
+"name",
+"tokens",
+"warps",
+"group",
+"symmetric"
+]
+},
 "w4a16_kernel": {
 "params": [
 "name",
@@ -14074,7 +17239,8 @@
 "warps",
 "group",
 "blocks",
-"dtype"
+"dtype",
+"symmetric"
 ]
 }
 },
@@ -14884,6 +18050,8 @@
 "KFD_NODES": {},
 "List": {},
 "Optional": {},
+"PCI_DEVICES": {},
+"_GENERIC_NAMES": {},
 "_GFX_RE": {},
 "_entries": {
 "params": [
@@ -14919,6 +18087,11 @@
 "device_arch": {
 "params": [
 "device"
+]
+},
+"device_name": {
+"params": [
+"props"
 ]
 },
 "functools": {},
@@ -14959,6 +18132,7 @@
 "line": [
 "self"
 ],
+"mfma": null,
 "name": null,
 "occupancy": null,
 "ok": [
@@ -14969,6 +18143,7 @@
 "sgpr_spill": null,
 "vgpr": null,
 "vgpr_spill": null,
+"vopd": null,
 "warnings": null,
 "wave": null
 }
@@ -14981,10 +18156,13 @@
 "TARGETS": {},
 "Tuple": {},
 "UNUSED_FRAME": {},
+"VOPD_HAZARD_ARCHS": {},
 "_FLAT_MEM": {},
 "_LDS_LOAD": {},
+"_MAX_PATHS": {},
 "_REG": {},
 "_STORE": {},
+"_VGPR": {},
 "_VMEM_ATOMIC": {},
 "_VMEM_LOAD": {},
 "_Walker": {
@@ -15025,6 +18203,11 @@
 "_tool": {
 "params": [
 "name"
+]
+},
+"_vopd_sources": {
+"params": [
+"half"
 ]
 },
 "_wait_keeps": {
@@ -15076,6 +18259,18 @@
 "argv"
 ]
 },
+"mfma_hazards": {
+"params": [
+"binary",
+"bundled"
+]
+},
+"mfma_hazards_in": {
+"params": [
+"insts",
+"arch"
+]
+},
 "parse_notes": {
 "params": [
 "out"
@@ -15103,6 +18298,17 @@
 "bundled"
 ]
 },
+"vopd_hazards": {
+"params": [
+"binary",
+"bundled"
+]
+},
+"vopd_parity_hazard": {
+"params": [
+"ins"
+]
+},
 "wait_hazards": {
 "params": [
 "insts",
@@ -15122,6 +18328,9 @@
 "build"
 ],
 "_argument": [
+"self"
+],
+"_pointer_slots": [
 "self"
 ],
 "_values": [
@@ -15146,6 +18355,18 @@
 "ptrs",
 "row_strides"
 ],
+"launch_values": [
+"self",
+"device",
+"stream",
+"grid",
+"values"
+],
+"launcher": [
+"self",
+"op",
+"native"
+],
 "pack": [
 "self",
 "shapes",
@@ -15163,12 +18384,16 @@
 "Path": {},
 "Sequence": {},
 "Tuple": {},
+"_DIRECT": {},
 "_HIP": {},
 "_LIBS": {},
 "_LOADED": {},
+"_NATIVE": {},
+"_OPCODES": {},
 "_PARAM_BUFFER": {},
 "_PARAM_END": {},
 "_PARAM_SIZE": {},
+"_PLAN_CAP": {},
 "_TORCH_DTYPES": {},
 "__all__": {},
 "_check": {
@@ -15183,14 +18408,38 @@
 "data"
 ]
 },
+"_grid_program": {
+"params": [
+"g",
+"tensors"
+]
+},
 "_layout": {
 "params": [
 "offsets",
-"size"
+"size",
+"extra"
 ]
+},
+"_legacy_impl": {
+"params": [
+"k",
+"qual"
+]
+},
+"_native": {
+"params": []
 },
 "annotations": {},
 "ctypes": {},
+"direct": {
+"params": [
+"kernel",
+"ns",
+"name",
+"**const_overrides"
+]
+},
 "elf_kernel": {
 "params": [
 "data",
@@ -15209,10 +18458,18 @@
 "hip": {
 "params": []
 },
+"hostpath": {},
 "load": {
 "params": [
 "kernel",
 "**const_overrides"
+]
+},
+"strided_args": {
+"params": [
+"t",
+"name",
+"op"
 ]
 },
 "struct": {},
@@ -15277,6 +18534,7 @@
 }
 },
 "List": {},
+"NO_VOPD": {},
 "Optional": {},
 "Path": {},
 "ResourceError": {
@@ -15345,15 +18603,102 @@
 },
 "Tuple": {},
 "WARM_HINT": {},
-"_ARCH_TREE": {},
 "_BUILT": {},
+"_FILE_HASH": {},
+"_HIPCC_ENV": {},
+"_INSIDE": {},
 "_JIT_NOTICE": {},
 "_JIT_SAID": {},
 "_KEY_MODULE": {},
+"_KEY_SCHEME": {},
+"_LOG": {},
+"_MFMA_MARK": {},
+"_RACY_NS": {},
+"_VOPD_DOC": {},
+"_VOPD_MARK": {},
 "_WAIT_MARK": {},
+"_build_once": {
+"params": [
+"source",
+"target",
+"name",
+"extra_flags",
+"kind",
+"gates",
+"verbose",
+"base",
+"key_fl"
+]
+},
+"_device_asm_step": {
+"params": [
+"argv"
+]
+},
+"_device_step": {
+"params": [
+"argv"
+]
+},
 "_dialect_version": {},
+"_discard": {
+"params": [
+"d"
+]
+},
+"_elf_intact": {
+"params": [
+"path"
+]
+},
+"_external_versions": {
+"params": [
+"fl"
+]
+},
+"_file_hash": {
+"params": [
+"path"
+]
+},
+"_fsync": {
+"params": [
+"path"
+]
+},
+"_full_key": {
+"params": [
+"base",
+"digest"
+]
+},
 "_hipcc_version": {
 "params": []
+},
+"_hit": {
+"params": [
+"out",
+"target",
+"kind",
+"gates"
+]
+},
+"_inside_package": {
+"params": [
+"d",
+"mod",
+"sub"
+]
+},
+"_is_pybind_include": {
+"params": [
+"d"
+]
+},
+"_is_torch_include": {
+"params": [
+"d"
+]
 },
 "_jit_notice": {
 "params": [
@@ -15372,6 +18717,26 @@
 "target"
 ]
 },
+"_manifest": {
+"params": [
+"base"
+]
+},
+"_mfma_found": {
+"params": [
+"binary",
+"kind",
+"arch"
+]
+},
+"_mfma_mode": {
+"params": []
+},
+"_mfma_refusal": {
+"params": [
+"found"
+]
+},
 "_note_unused_frames": {
 "params": [
 "kernels",
@@ -15380,8 +18745,39 @@
 "log"
 ]
 },
+"_pad_mfma_hazards": {
+"params": [
+"cmd",
+"tmp",
+"arch"
+]
+},
+"_parse_depfile": {
+"params": [
+"text"
+]
+},
+"_plan": {
+"params": [
+"cmd",
+"tmp"
+]
+},
 "_pybind_includes": {
 "params": []
+},
+"_read_manifest": {
+"params": [
+"base"
+]
+},
+"_scan_deps": {
+"params": [
+"fl",
+"src",
+"kind",
+"tmp"
+]
 },
 "_toolchain_cache": {},
 "_tree_hash": {
@@ -15390,10 +18786,49 @@
 "suffixes"
 ]
 },
+"_under": {
+"params": [
+"p",
+"d"
+]
+},
+"_versioned_dirs": {
+"params": [
+"fl"
+]
+},
+"_vopd_found": {
+"params": [
+"binary",
+"kind",
+"arch"
+]
+},
+"_vopd_mode": {
+"params": []
+},
+"_vopd_notice": {
+"params": [
+"name",
+"vopd"
+]
+},
+"_vopd_noticed": {},
+"_vopd_refusal": {
+"params": [
+"found"
+]
+},
 "_wait_gate": {
 "params": [
 "binary",
 "kind"
+]
+},
+"_write_manifest": {
+"params": [
+"base",
+"deps"
 ]
 },
 "annotations": {},
@@ -15429,11 +18864,17 @@
 "kind"
 ]
 },
+"clang_dir": {
+"params": []
+},
 "codeobj_flags": {
 "params": [
 "target",
 "extra"
 ]
+},
+"compiler_version": {
+"params": []
 },
 "dataclass": {},
 "dialect_version": {
@@ -15455,6 +18896,11 @@
 ]
 },
 "hashlib": {},
+"headers_digest": {
+"params": [
+"deps"
+]
+},
 "hipcc": {
 "params": []
 },
@@ -15464,7 +18910,18 @@
 "include_dirs": {
 "params": []
 },
+"llvm_tool": {
+"params": [
+"name",
+"required"
+]
+},
+"logging": {},
+"mfma_gate_status": {
+"params": []
+},
 "os": {},
+"re": {},
 "resources": {},
 "rocm_path": {
 "params": []
@@ -15473,14 +18930,208 @@
 "subprocess": {},
 "sys": {},
 "sysconfig": {},
-"target_headers_fingerprint": {
-"params": [
-"target"
-]
-},
 "tempfile": {},
+"time": {},
 "toolchain_fingerprint": {
 "params": []
+},
+"vopd_gate_status": {
+"params": []
+}
+},
+"hk.runtime.hostpath": {
+"ENABLED": {},
+"__all__": {},
+"annotations": {},
+"os": {},
+"set_enabled": {
+"params": [
+"on"
+]
+}
+},
+"hk.runtime.mfmahaz": {
+"Deficit": {
+"methods": {
+"consumer": null,
+"have": null,
+"missing": [
+"self"
+],
+"need": null,
+"producer": null,
+"what": null
+}
+},
+"Dict": {},
+"FrozenSet": {},
+"Insn": {
+"methods": {
+"mnem": [
+"self"
+],
+"target": null,
+"text": null,
+"where": null
+}
+},
+"List": {},
+"Mfma": {
+"methods": {
+"dgemm": null,
+"name": null,
+"passes": null,
+"xdl": null
+}
+},
+"Optional": {},
+"PROBE_MIR": {},
+"Regs": {},
+"Sequence": {},
+"Tuple": {},
+"_ATOMIC": {},
+"_BRANCH": {},
+"_DS_RET": {},
+"_FIXED": {},
+"_Facts": {
+"methods": {
+"dst": null,
+"memory": null,
+"mfma": null,
+"reads": null,
+"srcab": null,
+"srcc": null,
+"weight": null,
+"writes": null
+}
+},
+"_LABEL": {},
+"_MFMA": {},
+"_NONE": {},
+"_REG": {},
+"_STORE": {},
+"_blocks": {
+"params": [
+"prog"
+]
+},
+"_facts": {
+"params": [
+"ins",
+"arch"
+]
+},
+"_overlapped_srcc": {
+"params": [
+"c",
+"p",
+"arch"
+]
+},
+"_writes_no_vgpr": {
+"params": [
+"mnem",
+"rest"
+]
+},
+"_xdl_late": {
+"params": [
+"p",
+"gfx950"
+]
+},
+"annotations": {},
+"asm_functions": {
+"params": [
+"text"
+]
+},
+"compiler_fixed": {
+"params": [
+"llc"
+]
+},
+"dataclass": {},
+"deficits": {
+"params": [
+"prog",
+"arch"
+]
+},
+"fix_asm": {
+"params": [
+"text",
+"arch"
+]
+},
+"from_objdump": {
+"params": [
+"insts"
+]
+},
+"heapq": {},
+"max_window": {
+"params": [
+"arch"
+]
+},
+"mfma_info": {
+"params": [
+"mnem",
+"arch"
+]
+},
+"operands": {
+"params": [
+"rest"
+]
+},
+"os": {},
+"re": {},
+"read_window": {
+"params": [
+"p",
+"arch",
+"memory"
+]
+},
+"regs": {
+"params": [
+"operand"
+]
+},
+"report": {
+"params": [
+"prog",
+"found"
+]
+},
+"srcab_window": {
+"params": [
+"p",
+"arch"
+]
+},
+"srcc_window": {
+"params": [
+"c",
+"p",
+"arch",
+"full"
+]
+},
+"subprocess": {},
+"tempfile": {},
+"war_window": {
+"params": [
+"p"
+]
+},
+"waw_window": {
+"params": [
+"p",
+"arch"
+]
 }
 },
 "hk.runtime.module": {
@@ -15589,9 +19240,10 @@
 "wave": null
 }
 },
+"_BARE_RE": {},
+"_BODY": {},
 "_FIELDS": {},
-"_FIELD_RE": {},
-"_NAME_RE": {},
+"_REMARK_RE": {},
 "_demangle": {
 "params": [
 "names"
@@ -15611,10 +19263,16 @@
 "parse": {
 "params": [
 "log",
-"target"
+"target",
+"compiler"
 ]
 },
 "re": {},
+"remark": {
+"params": [
+"line"
+]
+},
 "report": {
 "params": [
 "kernels"
@@ -15744,6 +19402,14 @@
 "params": []
 },
 "functools": {},
+"launcher": {
+"params": [
+"kernel",
+"ns",
+"name",
+"**const_overrides"
+]
+},
 "source": {
 "params": [
 "kernel",
@@ -15877,6 +19543,7 @@
 "causal",
 "scale"
 ],
+"pairs": null,
 "sched": null,
 "setprio": null,
 "skip": null
@@ -16164,6 +19831,7 @@
 ],
 "max_vgprs": null,
 "min_occupancy": null,
+"occupancy": null,
 "resident": null,
 "slices": null,
 "splits": null,
@@ -16903,6 +20571,7 @@
 "causal",
 "scale"
 ],
+"pairs": null,
 "sched": null,
 "setprio": null,
 "skip": null
@@ -17352,6 +21021,7 @@
 ],
 "max_vgprs": null,
 "min_occupancy": null,
+"occupancy": null,
 "resident": null,
 "slices": null,
 "splits": null,
@@ -18002,6 +21672,7 @@
 "CEILINGS": {},
 "GFX1100": {},
 "LDS_WAIT_NEEDS_FRAGMENT_BIND": {},
+"MEASURED_ON": {},
 "MmaShape": {
 "methods": {
 "accum_vgprs": null,
@@ -18011,6 +21682,7 @@
 "operand_vgprs": null
 }
 },
+"PARTS": {},
 "Target": {
 "methods": {
 "arch": null,
@@ -18076,6 +21748,7 @@
 "CEILINGS": {},
 "GFX1201": {},
 "LDS_WAIT_NEEDS_FRAGMENT_BIND": {},
+"MEASURED_ON": {},
 "MmaShape": {
 "methods": {
 "accum_vgprs": null,
@@ -18085,6 +21758,7 @@
 "operand_vgprs": null
 }
 },
+"PARTS": {},
 "Target": {
 "methods": {
 "arch": null,
@@ -18148,6 +21822,7 @@
 },
 "hk.target.gfx942": {
 "GFX942": {},
+"MEASURED_ON": {},
 "MmaShape": {
 "methods": {
 "accum_vgprs": null,
@@ -18157,6 +21832,7 @@
 "operand_vgprs": null
 }
 },
+"PARTS": {},
 "Target": {
 "methods": {
 "arch": null,
@@ -18221,6 +21897,7 @@
 "hk.target.gfx950": {
 "CEILINGS": {},
 "GFX950": {},
+"MEASURED_ON": {},
 "MmaShape": {
 "methods": {
 "accum_vgprs": null,
@@ -18230,6 +21907,7 @@
 "operand_vgprs": null
 }
 },
+"PARTS": {},
 "Target": {
 "methods": {
 "arch": null,
@@ -18331,7 +22009,8 @@
 "self"
 ],
 "dtype": null,
-"scope": null
+"scope": null,
+"strided": null
 }
 },
 "KINDS": {},
@@ -18655,9 +22334,19 @@
 },
 "Sequence": {},
 "Tuple": {},
+"_CallableModule": {
+"methods": {
+"__call__": [
+"self",
+"*args",
+"**kwargs"
+]
+}
+},
 "_FLAT_MIN": {},
 "_MAX_BYTES": {},
 "__all__": {},
+"__name__": {},
 "_build": {
 "params": [
 "fn",
@@ -18707,7 +22396,9 @@
 "override"
 ]
 },
-"replace": {}
+"replace": {},
+"sys": {},
+"types": {}
 },
 "hk.templates.gemm": {
 "Any": {},
@@ -18828,7 +22519,8 @@
 "self"
 ],
 "dtype": null,
-"scope": null
+"scope": null,
+"strided": null
 }
 },
 "List": {},
@@ -19333,6 +23025,15 @@
 },
 "_COMBINE": {},
 "_CTX": {},
+"_CallableModule": {
+"methods": {
+"__call__": [
+"self",
+"*args",
+"**kwargs"
+]
+}
+},
 "_Ctx": {
 "methods": {
 "__init__": [
@@ -19373,6 +23074,7 @@
 "methods": {}
 },
 "__all__": {},
+"__name__": {},
 "_build": {
 "params": [
 "fn",
@@ -19507,7 +23209,9 @@
 "arch",
 "plan"
 ]
-}
+},
+"sys": {},
+"types": {}
 },
 "hk.tune": {
 "BUDGET": {},
@@ -19713,10 +23417,19 @@
 "Path": {},
 "Tuple": {},
 "_CACHE": {},
+"_SHIPPED": {},
 "__all__": {},
 "_empty": {
 "params": [
 "arch"
+]
+},
+"_lookup": {
+"params": [
+"d",
+"m",
+"n",
+"k"
 ]
 },
 "annotations": {},
@@ -19749,6 +23462,14 @@
 "name",
 "spec",
 "point"
+]
+},
+"shipped_route": {
+"params": [
+"arch",
+"m",
+"n",
+"k"
 ]
 },
 "spec_of": {
@@ -20234,7 +23955,8 @@
 "self"
 ],
 "dtype": null,
-"scope": null
+"scope": null,
+"strided": null
 }
 },
 "GranuleSetType": {
@@ -20442,6 +24164,7 @@
 }
 },
 "annotations": {},
+"b1": {},
 "bf16": {},
 "dataclass": {},
 "fp16": {},

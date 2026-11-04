@@ -74,8 +74,6 @@ same.
 Group.stage_rows(self, ix: RowIndex, rows: Optional[int] = None, *, keep_choice: Optional[bool] = None) -> RowIndex
 ```
 
-*New after 0.8.0*
-
 `ix`'s positions [at, at + rows) copied into LDS, then a barrier (every warp must
 call it); returns the staged index, which `g.load(..., gather=)` and
 `Global.scatter` read from LDS -- no vmcnt wait for an index, which in order would
@@ -93,8 +91,6 @@ this makes its copy, here.
 ```python
 Group.gather_prep(self, ids, at, rows: int, *, raw: bool = False) -> None
 ```
-
-*Changed after 0.8.0*: new parameter `raw`
 
 *Surface*: deprecated, removed in the release after the last call from outside the repository is migrated, at most two minor releases after its deprecation; use Group.stage_rows.
 

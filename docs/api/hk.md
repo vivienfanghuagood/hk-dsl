@@ -85,8 +85,6 @@ The language: what `import hk` gives a kernel author. A kernel body is traced on
 hk.kernel(fn=None, *, arch: Optional[str] = None, warps: int = 1, grid=None, name: Optional[str] = None, max_vgprs: Optional[int] = None, min_occupancy: Optional[int] = None, max_occupancy: Optional[int] = None, defines: Optional[Dict[str, Any]] = None, noalias: bool = False, preload: bool = False, resident: bool = False, placement=None)
 ```
 
-*Changed after 0.8.0*: new parameter `max_occupancy`
-
 Mark a function as a tile kernel. See the module docstring for the
 parameter rules. `resident=True`: every workgroup must be on the GPU at
 once (a kernel that waits on its own workgroups); a launch that cannot be
@@ -582,8 +580,6 @@ scaled, and the variant is mma_ABt.
 hk.load_w4(ty, qw: Global, s: Global, zs: "Optional['Global']", n0, k0, *, group: int = 128, zero: Optional[int] = None, s_blocked: bool = False, zp: "Optional['Global']" = None, rows: bool = False, into=None) -> Tile
 ```
 
-*Changed after 0.8.0*: new parameters `zero`, `s_blocked`, `zp`, `rows`
-
 *Surface*: a format primitive: hk's own int4 layout (hk.ops.w4a16's repack).
 
 *Surface*: `zero=`: a format primitive: the symmetric form: one zero point for every group, no zs read (GPTQ's uint4b8).
@@ -762,8 +758,6 @@ Deprecated: `hk.load_fp4_frags(ty, src, row0, chunk0)` with `src` an LDS tile.
 hk.map(fn, *args)
 ```
 
-*New after 0.8.0*
-
 Element (r, c) of the result is `fn` of element (r, c) of each strip argument (an
 `hk.Int` or a Python number argument is passed as itself): one `hk.map` op, `fn` traced
 once. `fn` sees elements (`hk.dsl.maps.Scalar`) with Python's operators at C's semantics
@@ -784,8 +778,6 @@ feeds another map (its strips hold no bool).
 ```python
 hk.where(m, a, b)
 ```
-
-*New after 0.8.0*
 
 Elementwise `a` where the mask `m` holds, else `b` (C's `m ? a : b`): `m` a comparison of
 strips (or of hk.map elements), `a` and `b` strips of one dtype or numbers -- a Python
@@ -945,8 +937,6 @@ The max along `axis`: 1 (default) along each row, one value per row (a col_vec);
 Tile.first_lane(self) -> Int
 ```
 
-*New after 0.8.0*
-
 Lane 0's first element of this i32 strip, as a scalar (v_readfirstlane, gfx950). Uniform
 across the workgroup when every wave holds the same value -- one LDS word read after a
 barrier -- so it may drive hk.uniform branches (an early exit decided by one wave).
@@ -956,8 +946,6 @@ barrier -- so it may drive hk.uniform branches (an early exit decided by one wav
 ```python
 Tile.lane_strip(self, run: int = 8) -> Tile
 ```
-
-*New after 0.8.0*
 
 This tile's registers as a 1-row strip, lane by lane (gfx950): no data moves. Lane l's
 elements, in the tile's per-lane order (a matrix-core tile: its fragments row by row of
@@ -971,8 +959,6 @@ row and column of the tile each element is. 32-bit elements.
 ```python
 Tile.run_xor(self, mask: int) -> Tile
 ```
-
-*New after 0.8.0*
 
 Each element from another element of its lane's run (gfx950): element e of a run becomes
 element e ^ `mask` of the same run, a register move. A rotary pair's partner, when the pair
@@ -1112,8 +1098,6 @@ Keep the lower triangle from diagonal `idx`, the rest set to `value` (default 0)
 Tile.as_fragment(self, ty, *, fmt: str = 'fp8') -> Tile
 ```
 
-*New after 0.8.0*
-
 This i32 strip's registers as a matrix-core operand fragment, no data moved (gfx950):
 lane l's elements, in the strip's per-lane order (rows, chunks, runs), become lane l's
 dwords of `ty` -- the inverse of `lane_strip` on 32-bit data. For operands gathered with
@@ -1132,8 +1116,6 @@ FP4 container (its upper half undefined).
 Tile.as_scales(self) -> MxScales
 ```
 
-*New after 0.8.0*
-
 This i32 strip (1 x 64, run 1) as loose E8M0 scales of a 16x128 operand, no data moved
 (gfx950): lane l's element, the byte in bits 0..7, is the scale of row l % 16, block
 l / 16 -- `Tile.scaled` takes it.
@@ -1143,8 +1125,6 @@ l / 16 -- `Tile.scaled` takes it.
 ```python
 Tile.scaled(self, scales: MxScales, *, fmt: str = 'fp8', at=(0, 0)) -> Scaled
 ```
-
-*New after 0.8.0*
 
 This operand with its E8M0 block scales, for gfx950's block-scaled MFMA:
 `hk.mma("mma_ABt", a.scaled(sa), b.scaled(sb, fmt="fp4"), acc)`. `fmt` is "fp8"
@@ -1158,8 +1138,6 @@ dwords, loaded once, feeding two token tiles over two steps).
 ```python
 Tile.as_operand(self, dtype: Optional[DType] = None, *, k_order: str = 'natural', into=None) -> Tile
 ```
-
-*Changed after 0.8.0*: new parameter `k_order`
 
 *Surface*: `k_order=`: RDNA3's (gfx1100) paired WMMA operand: a 32-row fp32 S^T pair as its even and odd P^T operands.
 
@@ -1339,8 +1317,6 @@ A copy in new registers, or `into=` an existing value.
 ```python
 Tile.swap_halves(self, span: Optional[int] = None, *, negate_first: bool = False, into=None)
 ```
-
-*Changed after 0.8.0*: new parameters `span`, `negate_first`
 
 A strip with the two halves of each `span`-column segment of its rows exchanged (span
 None: the whole row): in a segment's first half column c takes column c + span/2, in
@@ -1583,8 +1559,6 @@ A copy in new registers, or `into=` an existing value.
 Vec.swap_halves(self, span: Optional[int] = None, *, negate_first: bool = False, into=None)
 ```
 
-*Changed after 0.8.0*: new parameters `span`, `negate_first`
-
 A strip with the two halves of each `span`-column segment of its rows exchanged (span
 None: the whole row): in a segment's first half column c takes column c + span/2, in
 its second c - span/2. `negate_first` negates what lands in the first half -- NeoX's
@@ -1697,8 +1671,6 @@ Tile indexing: `x.tile[r, c]` is a View at tile (r, c) of the tile type the load
 Global.load_elems(self, idx: Tile, dtype: Optional[DType] = None, *, runs: bool = False, row=None) -> Tile
 ```
 
-*Changed after 0.8.0*: new parameters `runs`, `row`
-
 Element by element at computed indices (gfx950): element (r, c) of the result is element
 `idx[r, c]` of this tensor, counted flat (rows over batch and depth, at the row stride),
 converted to `dtype` (fp32 or i32; default fp32, i32 for an i32 tensor). An index below
@@ -1715,8 +1687,6 @@ four gathered ones. `row`: as store_elems.
 ```python
 Global.store_elems(self, val: Tile, idx: Tile, *, runs: bool = False, row=None) -> None
 ```
-
-*Changed after 0.8.0*: new parameter `row`
 
 Element by element at computed indices (gfx950): element (r, c) of `val` (an fp32 or
 i32 strip), converted to this tensor's type, to element `idx[r, c]` (flat, as
@@ -1781,8 +1751,6 @@ padding a MoE sort fills its index list with costs no branch. `div=` here is dep
 ```python
 Global.scatter(self, value: Tile, ids, at=None, *, count=None, col=0, sort_topk: Optional[int] = None, add: bool = False, staged: Optional[int] = None) -> None
 ```
-
-*Changed after 0.8.0*: new parameter `staged`
 
 *Surface*: `sort_topk=`: deprecated, removed in the release after the last call from outside the repository is migrated, at most two minor releases after its deprecation; use hk.RowIndex(sort_topk=).
 
@@ -1939,8 +1907,6 @@ An LDS tile, or a stack of them (`As[i]` picks one).
 SharedTile.load_elems(self, idx: Tile, dtype: Optional[DType] = None, *, runs: bool = False) -> Tile
 ```
 
-*Changed after 0.8.0*: new parameter `runs`
-
 Element by element from this fp32 LDS tile (gfx950): element (r, c) of the result is
 element `idx[r, c]` (row-major, through the tile's swizzle) -- fp32, or its bits as i32 with
 dtype=hk.i32; below zero or past the tile, 0. A CTA's own exchange between warps without a
@@ -1969,8 +1935,6 @@ back with `.load` / `.subtile(...).load`.
 ```python
 SharedTile.atomic_add_elems(self, val: Tile, idx: Tile) -> None
 ```
-
-*New after 0.8.0*
 
 Element by element, atomically (gfx950): val's element (r, c), an i32, is added to element
 `idx[r, c]` of this fp32 LDS tile taken as an i32 (ds_add_u32); below zero or past the tile,
@@ -2075,8 +2039,6 @@ The value's hk type (`RegTileType`, `RegVecType`, ...).
 
 ### `hk.MxScales`
 
-*New after 0.8.0*
-
 E8M0 block scales of an fp8 operand tile, in the lanes the scaled MFMA
 reads them from (`load_mx_scales`). An operand takes them with
 `Tile.scaled`.
@@ -2087,8 +2049,6 @@ reads them from (`load_mx_scales`). An operand takes them with
 MxScales.copy(self, *, into: MxScales) -> MxScales
 ```
 
-*New after 0.8.0*
-
 `into` = these scales, register to register -- how a one-stage loop body hands
 the next K-tile's prefetched scales to the current set. Returns `into`.
 
@@ -2098,15 +2058,11 @@ The value's hk type (`RegTileType`, `RegVecType`, ...).
 
 ### `hk.Scaled`
 
-*New after 0.8.0*
-
 An MX operand: an fp8 e4m3 row tile (FP4 in its container with fmt="fp4") and its E8M0
 scales, made by `Tile.scaled`. `hk.mma("mma_ABt", a.scaled(sa), b.scaled(sb), acc)` is
 gfx950's block-scaled MFMA; nothing else takes one.
 
 ### `hk.RowIndex`
-
-*New after 0.8.0*
 
 Which rows a gather, a scatter or a gathered LDS copy moves: row r of the tile is named by
 `ids[at + r]`, an int32 global, for positions below `count` (default: all of `ids`) -- and

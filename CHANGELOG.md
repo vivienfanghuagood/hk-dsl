@@ -4,6 +4,10 @@ Release notes for each version are also on its
 [GitHub release](https://github.com/vivienfanghuagood/hk-dsl/releases).
 The next version's notes collect here until it is released.
 
+## Unreleased
+
+**`tools/hk-bench/serving/sglang_toggle_ab.py`: an SGLang A/B in one server process.** It starts one `sglang.launch_server` with hk's plugin on and switches hk's SGLang routes (`sglang_linear`, `sglang_norm`) off and on between rounds by a signal to every process of the server (`serving/sglang_toggle/`). Weights, KV cache and the GPU-to-GPU links are the same in both arms. Two separate server starts on a Radeon PRO W7900 can differ by 13-16%, more than most kernel wins. The arms alternate round by round, each switch is checked in every rank (state file, and hk's call counters move only in the hk arm), and a ratio is reported as a result only when the arms' per-round ranges are disjoint. It needs `--disable-cuda-graph`, since a captured graph does not see the switch.
+
 ## 0.9.0
 
 hk-dsl 0.9.0: vLLM's prefill and decode attention on RDNA3 run on hk's kernels over vLLM's own
@@ -154,8 +158,6 @@ register transpose instead of 16 `ds_read_u16` a 16x16 tile (the budget pass's
 on RDNA, and one attention source builds for both. `load(wait=False)` of such an operand is
 refused: the transpose waits for its data. No existing RDNA kernel changes (1049 kernels each on
 gfx1100 and gfx1201, byte-identical C++).
-
-**`tools/hk-bench/serving/sglang_toggle_ab.py`: an SGLang A/B in one server process.** It starts one `sglang.launch_server` with hk's plugin on and switches hk's SGLang routes (`sglang_linear`, `sglang_norm`) off and on between rounds by a signal to every process of the server (`serving/sglang_toggle/`). Weights, KV cache and the GPU-to-GPU links are the same in both arms. Two separate server starts on a Radeon PRO W7900 can differ by 13-16%, more than most kernel wins. The arms alternate round by round, each switch is checked in every rank (state file, and hk's call counters move only in the hk arm), and a ratio is reported as a result only when the arms' per-round ranges are disjoint. It needs `--disable-cuda-graph`, since a captured graph does not see the switch.
 
 **Engine contracts are per route.** A route whose engine contract is broken, or whose apply raises,
 now stays off with one warning line of its own (`[hk] WARNING: vllm: route vllm_moe_a8w4 OFF --
