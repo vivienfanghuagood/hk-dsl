@@ -1,77 +1,51 @@
 # Install
 
-What hk-dsl needs, which toolchains it is tested with, and how to install it
-from a wheel or from source. Then: [the quickstart](quickstart.md).
-
-- [What you need](#what-you-need)
-- [From PyPI](#from-pypi)
-- [From source](#from-source)
-- [The examples and tests: a clone](#the-examples-and-tests-a-clone)
-
-## What you need
-
-
-You need Linux x86_64 and ROCm's hipcc to compile; a supported GPU (a Radeon
-W7900 / RX 7900, gfx1100; an R9700, gfx1201; an Instinct MI355X, gfx950:
-[supported hardware](supported-hardware.md) says what runs on each) and torch
-to launch. torch is not a dependency of the package — install the
-ROCm build you already use. hk finds hipcc on `PATH` (or `HK_HIPCC`, and the
-HIP headers under `ROCM_PATH`, [the runtime](runtime.md#environment-variables)).
-The GPU tests run with ROCm 7.2 (7.2.4 on gfx1100, 7.2.3 on gfx950) and, on
-gfx950, also with the ROCm 10 of vLLM's ROCm image; the no-GPU CI compiles with
-ROCm 7.1's hipcc ([testing](testing.md#ci)).
-
-Which hipcc (AMD clang 20 to 24) is tested with which GPU, and what is known to break in 0.8.0 and
-0.9.0, is the [toolchain matrix](toolchains.md). In short: clang 22 (ROCm 7.2.x) is what the GPU tests
-run on every supported GPU; **hk 0.8.0 does not compile anything under clang 24 (ROCm 10.1)** -- use
-0.9.0 there.
-
-In TheRock's layout hipcc is a launcher in `/usr/local/bin` and ROCm is under
-`site-packages/_rocm_sdk_devel`, with none of its LLVM tools on `PATH`; hk finds
-them beside hipcc's clang ([the runtime](runtime.md#environment-variables)).
-
-## From PyPI
-
-For CPython 3.10 to 3.13 on glibc 2.35 or newer (Ubuntu 22.04
-and later):
-
 ```bash
 pip install hk-dsl
 ```
 
-A wheel is built per Python interpreter, because it carries the MLIR bindings
-for one CPython. 0.9.0 has four on PyPI:
+That is the whole install for most users. Then:
 
-| wheel | glibc |
-|---|---|
-| `hk_dsl-0.9.0-cp310-cp310-manylinux_2_35_x86_64.whl` | 2.35+ |
-| `hk_dsl-0.9.0-cp311-cp311-manylinux_2_35_x86_64.whl` | 2.35+ |
-| `hk_dsl-0.9.0-cp312-cp312-manylinux_2_35_x86_64.whl` | 2.35+ |
-| `hk_dsl-0.9.0-cp313-cp313-manylinux_2_35_x86_64.whl` | 2.35+ |
+- **To make vLLM or SGLang faster**, run it in the environment that runs the
+  engine, and read [hk in vLLM](vllm.md) or [hk in SGLang](sglang.md). The
+  engine's image already has everything else hk needs.
+- **To write kernels**, go on to [the quickstart](quickstart.md).
 
-All are built on glibc 2.35 (cp312 in vLLM's ROCm image, cp311 and cp313 in
-`scripts/wheel-builder.Dockerfile`), so one wheel per interpreter serves Ubuntu 22.04, vLLM's ROCm images and anything newer, and
-each wheel's glibc is checked against its tag ([building](building.md#wheels)).
-0.8.0 had cp310 and cp312 only; 0.7.0 also had a cp312 `manylinux_2_38`
-wheel, and 0.6.0 and earlier had only that one for cp312. The same wheels are attached to each
-[GitHub release](https://github.com/vivienfanghuagood/hk-dsl/releases). For
-another interpreter, build one ([building](building.md#wheels)).
+## What you need
 
-It carries the HipKittens headers, the bindings and the shipped tuning
-records, so nothing else is needed at run time but hipcc.
+- **Linux x86_64 with glibc 2.35 or newer** (Ubuntu 22.04 and later), and
+  **CPython 3.10 to 3.13**: there is one `manylinux_2_35` wheel for each.
+  Another interpreter has no wheel: [build from source](#from-source).
+- **ROCm's hipcc**, to compile kernels: on `PATH`, or named by `HK_HIPCC`
+  (hk finds the HIP headers under `ROCM_PATH`). Which hipcc works with which
+  GPU is [the toolchain matrix](toolchains.md); clang 22 (ROCm 7.2) is what
+  CI's GPU tier runs on every supported GPU.
+- **A ROCm build of torch**, to launch kernels on torch tensors. It is not a
+  dependency of the package: install the one you already use.
+- **A supported GPU** to run on: a Radeon W7900 / RX 7900 (gfx1100), an R9700
+  / RX 9070 (gfx1201) or an Instinct MI355X (gfx950).
+  [Supported hardware](supported-hardware.md) says what runs on each; tracing
+  and building need no GPU.
 
-The release on PyPI is 0.9.2. hk is on by default in vLLM and SGLang for the
-routes validated on your GPU (`HK_DISABLE=1` turns them all off, `HK_<ROUTE>=0`
-one of them, [integration](integration.md#on-by-default-and-turning-it-off)).
-What 0.9.1 and 0.9.0 add and change, including the routes whose default changed,
-is in the [changelog](../CHANGELOG.md); what main adds after 0.9.2, which no
-release has yet, the API reference marks *New after 0.9.2*.
+The wheel carries the HipKittens headers, the MLIR bindings and the shipped
+tuning records, so nothing else is needed at run time. Check it:
+
+```bash
+python3 -c "import hk; print(hk.__version__)"
+python3 -m hk.integration --status      # the engine routes hk turns on for this GPU
+```
+
+What each release adds and changes is in the [changelog](../CHANGELOG.md); the
+[API reference](api/README.md) marks what `main` has beyond the release
+*New after* it. The
+same wheels are attached to each
+[GitHub release](https://github.com/vivienfanghuagood/hk-dsl/releases).
 
 ## From source
 
-The backend is the `third_party/HipKittens` submodule, so
-clone with `--recursive` (or run `git submodule update --init`). The dialect
-needs MLIR, built once:
+The backend is the `third_party/HipKittens` submodule, so clone with
+`--recursive` (or run `git submodule update --init`). The dialect needs MLIR,
+built once:
 
 ```bash
 git clone --recursive https://github.com/vivienfanghuagood/hk-dsl.git && cd hk-dsl
@@ -92,7 +66,8 @@ suite are in the repository: clone it at the tag of the release you installed,
 so the examples match the API you have:
 
 ```bash
-git clone --recursive --branch v0.9.0 https://github.com/vivienfanghuagood/hk-dsl.git
+git clone --recursive --branch v$(python3 -c "import hk; print(hk.__version__)") \
+    https://github.com/vivienfanghuagood/hk-dsl.git
 ```
 
 (`main` documents, and needs, what is newer than the release.) From the clone:
