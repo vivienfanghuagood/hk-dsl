@@ -10,6 +10,32 @@ The next version's notes collect here until it is released.
 
 **vLLM's TRITON_ATTN on gfx1201: MiniCPM5's shortest chunks beside more decodes take the packed KV split.** The packed split took a short chunk over a long context beside at most 3 decodes on gfx1201; for MiniCPM5's shape (head size 128, 8 query heads a kv head) it now takes up to 15, while their tokens stay under a measured bound (`vllm_prefill.KVS_PACK_MAX_DECODES` entries are now (decodes, decode tokens)). Measured faster than both stock kernels on every batch it takes.
 
+**vLLM's TRITON_ATTN on gfx1201: Qwen3.8's shortest chunks over 16k+ contexts beside up to 7 decodes take the packed KV split.** The packed split took such a chunk beside at most 3 decodes on gfx1201 for Qwen3.8's shape; over a context of 16k tokens or more it now takes up to 7, while their tokens stay under a measured bound. `vllm_prefill.KVS_PACK_MAX_DECODES` entries are tiers by the longest sequence. Measured faster than both stock kernels on every batch it takes.
+
+## 0.9.5
+
+hk-dsl 0.9.5: on gfx1201, MiniCPM5's shortest prefill chunks beside up to 15 decodes take the packed
+KV split; the language page's first example stores its row sums where it says; documentation
+reorganized. No change to the language, the dialect (`hk-dialect-8`) or which routes are on by default.
+
+On PyPI: `pip install hk-dsl`, for CPython 3.10 to 3.13 on Linux x86_64 with glibc 2.35 or newer
+(Ubuntu 22.04 and later, and vLLM's ROCm images): one `manylinux_2_35` wheel per interpreter. The
+wheels below are the same files.
+
+    pip install hk_dsl-0.9.5-cp312-cp312-manylinux_2_35_x86_64.whl
+
+### Changes
+
+**vLLM's TRITON_ATTN on gfx1201: MiniCPM5's shortest chunks beside more decodes take the packed KV split** (#271). The packed split took a short chunk over a long context beside at most 3 decodes on gfx1201; for MiniCPM5's shape (head size 128, 8 query heads a kv head) it now takes up to 15, while their tokens stay under a measured bound (`vllm_prefill.KVS_PACK_MAX_DECODES` entries are now (decodes, decode tokens)). Measured faster than both stock kernels on every batch it takes.
+
+**Documentation** (#259, #260, #273, #274, #275). docs/language.md's first example (`row_sumsq`) stored its row sums along a row instead of down a column; it now stores them where the text says. Integration route defaults come from the generated route table; the README's comparison is one section; contributor docs (testing, building, releasing) say how, with dated records and version notes moved to docs/archive/.
+
+**Tools** (#269, #276). `kernel_bench` linear-w4 gets vLLM's RDNA hybrid W4A16 kernel as a GPTQ arm (what vLLM runs for GPTQ on gfx1201). The SGLang toggle A/B's stock arm now turns hk's norm route off on layers already built.
+
+### All pull requests
+
+#259, #260, #269, #271, #272, #273, #274, #275, #276.
+
 ## 0.9.4
 
 hk-dsl 0.9.4: `vllm_moe_wna16` takes prefill chunks too (a per-arch token cap: 2048 tokens a step on

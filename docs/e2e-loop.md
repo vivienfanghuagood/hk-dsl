@@ -3,8 +3,9 @@
 The steps a developer's harness -- a person or a coding agent -- takes to make
 a model faster end to end with hk-dsl, in the order they pay off. Each step
 names the tool and what to look at. The worked example is Qwen-Image 2.1 in
-SGLang-Diffusion on a W7900D, 42.2 s -> 28.2 s an image; the same steps apply to
-vLLM, where `hk.integration` has more of them built in.
+SGLang-Diffusion on a W7900D; the same steps apply to vLLM, where
+`hk.integration` has more of them built in. The end-to-end numbers the project
+quotes are on [the scorecard](performance/scorecard.md).
 
 ## 1. Measure the engine as it ships
 
@@ -87,8 +88,7 @@ took hk's kernel and how many fell back, and why (the drop-in's `STATS` and
 The second profile shows what the first one hid. With hk's attention in,
 copies grew: the engine passes transposed views and the kernel wanted
 contiguous tensors. A kernel variant that reads the engine's layout in place
-(`attn_kernel(bnhd=True)`) removed them -- 29.1 -> 28.2 s, the same image to
-the byte. Then measure the whole request again, and more than once: under
+(`attn_kernel(bnhd=True)`) removed them, with the same image to the byte. Then measure the whole request again, and more than once: under
 MiniMax-H3's layer-wise offload, where each denoise step streams the DiT from
 host memory, the same arm varied by 20% between batches on a shared node --
 more than some of the effects being measured. Interleave the arms, one

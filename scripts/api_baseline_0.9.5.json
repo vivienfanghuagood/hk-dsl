@@ -10931,6 +10931,7 @@
 "_NORM": {},
 "_NORM_HOME": {},
 "_NORM_OPS": {},
+"_NORM_PAUSED": {},
 "_common": {},
 "_norm_op": {
 "params": [
@@ -10969,6 +10970,11 @@
 "importlib": {},
 "norm_stats": {
 "params": []
+},
+"pause_norm": {
+"params": [
+"paused"
+]
 },
 "revert": {
 "params": []
