@@ -111,12 +111,15 @@ ROUTES: Dict[str, Route] = {r.name: r for r in (
        "gfx1100: OLMoE greedy tokens identical to stock's (history 21). gfx1201: up to 2 "
        "tokens a step only (vllm_moe.BLOCK16_MAX_TOKENS_AT); OLMoE tokens identical, counts "
        "equal round for round (history 52). gfx950 with aiter: it routes nothing"),
-    _R("vllm_moe_wna16", "vllm", "HK_VLLM_MOE_WNA16", False, (),
+    _R("vllm_moe_wna16", "vllm", "HK_VLLM_MOE_WNA16", True, ("gfx1100", "gfx1201"),
        "4-bit MoE GEMMs with zero points (AWQ through vLLM's moe_wna16) at up to 32 tokens a step, "
-       "on vLLM's own tensors",
-       "off until its e2e gate: Qwen3.6-35B-A3B-AWQ in the Radeon TheRock vLLM image against "
-       "stock-fair'. Microbenchmark (gfx1100, real routing, cold weights): 2.6-3.2x vLLM's kernel "
-       "at 1-16 tokens"),
+       "on vLLM's own tensors, for the validated expert shapes (VALIDATED)",
+       "gfx1100: Qwen3.6-35B-A3B-AWQ (group 32) in the Radeon TheRock vLLM image against "
+       "stock-fair' (TRITON_ATTN, TunableOp, vLLM's MoE config chosen per batch by in-vLLM time), "
+       "3 alternating starts an arm: GSM8K-200 equal, TPOT ahead at 1, 8 and 16 concurrent "
+       "requests and at 8k (disjoint), TTFT level. gfx1201: the same checkpoint on one R9700 in "
+       "the R9700 vLLM image against stock-fair (TRITON_ATTN, a searched MoE config), 3 "
+       "alternating starts an arm"),
     _R("vllm_sdpa", "vllm", "HK_VLLM_SDPA", True, ("gfx1100",),
        "the vision encoder's F.scaled_dot_product_attention (with --mm-encoder-attn-backend "
        "TORCH_SDPA)",
