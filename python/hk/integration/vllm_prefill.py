@@ -408,6 +408,12 @@ KVS_DEC_RATIO = 0.05
 #: gfx1201 d128 over 8k it gains nothing (MiniCPM5, a 32-64-token chunk beside 1-3 decodes over 8k:
 #: 0.89-1.09x), over 16k-32k it does (a 128-256-token chunk beside 2-4: 2.4-3.1x).
 KVS_DEC_MIN_CTX = {("gfx1201", 128): 16384}
+#: (arch, head size class, group) -> the most decode tokens beside the unpacked split, in place of
+#: KVS_DEC_RATIO: gfx1100 Qwen3.8 (d256, group 6), a 64-128-token chunk over 8k-32k beside 1-31
+#: decodes over 8k-32k -- 2.1-10.3x the faster stock kernel up to 15 x 32k or 31 x 8k decode tokens
+#: (ratios to 0.93, which KVS_DEC_RATIO declined: vLLM's kernel there was 0.37-1.0x ROCM_ATTN's),
+#: level (1.0-1.05x) at 31 x 32k.
+KVS_DEC_MAX_TOKENS = {("gfx1100", 256, 6): 1 << 19}
 #: KVS_DEC_RATIO for a packed plan (KVS_PACKED), and the most decodes beside it per (arch, head size
 #: class, group): its prefill part is cheap enough that splitting off the decodes -- vLLM's decode
 #: call splits their contexts, its mixed-batch kernel does not -- wins even where they are most of
@@ -424,7 +430,8 @@ KVS_PACK_MAX_DECODES_ELSE = 15
 def kvsplit_plan(a: dict, pack: bool = True):
     """(splits, warps, pack) where the KV split takes this prefill call, or None: exact sizes known;
     beside decodes (which go to vLLM's kernel, as in SPLIT) no request without queries, SPLIT on and
-    the decodes' work under KVS_DEC_RATIO of the prefill's and its context KVS_DEC_MIN_CTX (packed:
+    the decodes' work under KVS_DEC_RATIO of the prefill's (or KVS_DEC_MAX_TOKENS) and its context
+    KVS_DEC_MIN_CTX (packed:
     KVS_PACK_DEC_RATIO, and at most KVS_PACK_MAX_DECODES of them); the longest query short enough and the longest sequence long enough (KVSPLITS).
     Packed tiles where a KVS_PACKED row fits, first (not with `pack` False: KVSPLITS' plan alone)."""
     from . import switches  # noqa: PLC0415
@@ -449,8 +456,10 @@ def kvsplit_plan(a: dict, pack: bool = True):
         if (st["max_q"] <= max_q and st["pre_ctx"] >= min_ctx and pw <= KVS_PACK_WARPS
                 and decodes_fit(KVS_PACK_DEC_RATIO) and st["decodes"] <= max_dec):
             return sp, pw, True
-    if not decodes_fit(KVS_DEC_RATIO) or (
-            st["decodes"] and st["pre_ctx"] < KVS_DEC_MIN_CTX.get((arch, cls), 0)):
+    max_tok = KVS_DEC_MAX_TOKENS.get((arch, cls, group))
+    fits = (decodes_fit(KVS_DEC_RATIO) if max_tok is None
+            else not st["decodes"] or st["dec_work"] <= max_tok)
+    if not fits or (st["decodes"] and st["pre_ctx"] < KVS_DEC_MIN_CTX.get((arch, cls), 0)):
         return None
     plan = KVSPLITS.get((arch, cls))
     if plan is None or st["max_q"] >= plan[0] or st["pre_ctx"] < plan[1]:

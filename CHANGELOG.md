@@ -6,6 +6,8 @@ The next version's notes collect here until it is released.
 
 ## Unreleased
 
+**vLLM's TRITON_ATTN on gfx1100: Qwen3.8's short chunks beside decodes take the KV split.** A 16-128-token chunk beside decodes went to vLLM's kernel whole when the decodes' work passed a small share of the chunk's, and that kernel walks each decode's context unsplit. For Qwen3.8's shape (head size 256, 6 query heads a kv head) the KV split now takes such a batch up to a measured number of decode tokens (`vllm_prefill.KVS_DEC_MAX_TOKENS`), the decode rows on vLLM's decode kernel; measured faster than both stock kernels on every batch it takes.
+
 **`vllm_moe_wna16` takes prefill chunks too.** Its token cap is now per arch, set where hk's 4-bit MoE GEMM is still ahead of vLLM's kernel at the best of its searched configs: 2048 tokens a step on gfx1100 and 1024 on gfx1201 (32 elsewhere). A prompt or prefill chunk up to that size now runs on hk as well. On a Radeon AI PRO R9700 that shortens time to first token for a 1k-token prompt; decode is unchanged; GSM8K equal.
 
 ## 0.9.3

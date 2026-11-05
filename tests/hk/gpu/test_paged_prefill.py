@@ -883,7 +883,7 @@ def _unified_ref(q, k, v, out, cu_seqlens_q, max_seqlen_q, seqused_k, max_seqlen
 SPLIT_REQS = [(8191, 1), (0, 2048), (8191, 1), (1000, 1100), (8191, 1), (8191, 1)]
 
 
-def _split_case(monkeypatch, kv_order, page, vt, head_dim=128, h_kv=2, reqs=SPLIT_REQS):
+def _split_case(monkeypatch, kv_order, page, vt, head_dim=128, h_kv=2, reqs=SPLIT_REQS, group=8):
     """vllm_prefill's unified_attention on `reqs` with the step's exact sizes given (as the
     TRITON_ATTN builder hook gives them), vLLM's kernel being _unified_ref. Returns run(q, cache,
     out) and the case."""
@@ -895,8 +895,8 @@ def _split_case(monkeypatch, kv_order, page, vt, head_dim=128, h_kv=2, reqs=SPLI
     monkeypatch.setattr(vp, "_U_SIG", inspect.signature(_unified_ref))
     monkeypatch.setattr(vp, "VT", vt)
     monkeypatch.setattr(vp, "GUARD", True)
-    q, (k, v), _, table, lens, q_start = _rocm_case(reqs, head_dim=head_dim, h_kv=h_kv, group=8,
-                                                    page=page, seed=7)
+    q, (k, v), _, table, lens, q_start = _rocm_case(reqs, head_dim=head_dim, h_kv=h_kv,
+                                                    group=group, page=page, seed=7)
     cache = _flash_cache(k, v, kv_order)
     nb, d = k.shape[0], k.shape[3]
     monkeypatch.setattr(vp, "_STATS", {id(q_start): vp.batch_stats(
@@ -905,6 +905,9 @@ def _split_case(monkeypatch, kv_order, page, vt, head_dim=128, h_kv=2, reqs=SPLI
     def views(c):
         if kv_order == "planes":
             return c.view(nb, 2, page, h_kv, d).unbind(1)
+        if kv_order == "heads":
+            both = c.view(nb, h_kv, page, 2 * d).transpose(1, 2)
+            return both[..., :d], both[..., d:]
         both = c.view(nb, page, h_kv, 2 * d)
         return both[..., :d], both[..., d:]
 
@@ -1155,3 +1158,40 @@ def test_a_cache_past_4_gib_goes_to_vllm(monkeypatch):
         torch.cuda.synchronize()
         assert vp.PATCH.stats["hk"] + vp.PATCH.stats["decode"] == before, reqs
         assert torch.equal(out.view(torch.int16), want.view(torch.int16)), reqs
+
+
+#: Qwen3.8's shape: a 64-token chunk beside decodes whose work (0.08 of the chunk's) KVS_DEC_RATIO
+#: declined; KVS_DEC_MAX_TOKENS takes it
+QWEN_DEC_REQS = [(8000, 64)] + [(6000, 1)] * 7
+
+
+@pytest.mark.skipif(not _route_arch(), reason="the route is gfx1100's and gfx1201's")
+def test_vllm_prefill_kv_split_beside_decodes_by_their_tokens(monkeypatch):
+    """The unpacked KV split beside decodes under KVS_DEC_MAX_TOKENS, on Qwen3.8's cache (d256,
+    4 kv heads, group 6, 784-token pages, head-major): the split takes the prefill rows (matching
+    the reference), vLLM's kernel the decode rows (matching it too). Counted as hk, split and kvsplit."""
+    from hk.integration import switches, vllm_prefill as vp
+
+    if not _clang_23():
+        pytest.skip("flash dsplit spills under clang 22: the route leaves d256 to vLLM there")
+    monkeypatch.setattr(vp, "KVS_PACKED", {})
+    monkeypatch.setattr(vp, "KVS_DEC_MAX_TOKENS", {(switches.arch(), 256, 6): 1 << 19})
+    run, (q, k, v, cache, table, lens, q_start, views) = _split_case(
+        monkeypatch, "heads", 784, False, 256, 4, reqs=QWEN_DEC_REQS, group=6)
+    a = {"q": q, "k": views(cache)[0], "seqused_k": lens, "cu_seqlens_q": q_start}
+    plan = vp.kvsplit_plan(a)
+    assert plan is not None and not plan[2]
+    before = dict(vp.PATCH.stats)
+    out = torch.full_like(q, float("nan"))
+    run(q, cache, out)
+    torch.cuda.synchronize()
+    for c in ("hk", "split", "kvsplit"):
+        assert vp.PATCH.stats[c] == before[c] + 1, c
+    rows = _prefill_rows(QWEN_DEC_REQS, q_start)
+    want = _reference(q, k, v, table, lens, q_start, 6, page=784)
+    _attn_ref.check(out[rows], want[rows])
+    first = q_start[:-1].long()
+    dec = [i for i, (_, n) in enumerate(QWEN_DEC_REQS) if n == 1]
+    # vLLM's kernel's answer on the decode rows (its float32 stand-in here is not bit-reproducible
+    # call to call at d256, so against the reference, not bitwise against a second call)
+    _attn_ref.check(out[first[dec]], want[first[dec]])
