@@ -4,6 +4,8 @@ Release notes for each version are also on its
 [GitHub release](https://github.com/vivienfanghuagood/hk-dsl/releases).
 The next version's notes collect here until it is released.
 
+## Unreleased
+
 ## 0.9.6
 
 hk-dsl 0.9.6: on gfx1201, Qwen3.8's shortest prefill chunks over 16k+ contexts beside up to 7 decodes
