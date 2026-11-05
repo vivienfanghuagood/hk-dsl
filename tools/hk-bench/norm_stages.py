@@ -46,7 +46,6 @@ def stage(n, wide=False, w_late=False):
             v *= g if g is not None else load(w, idx)
         o[idx].store(v if wide else v.to(hk.bf16), bounded=True)
     name = f"probe_s{n}{'w' if wide else ''}{'l' if w_late else ''}"
-    body.__name__ = name
     return hk.kernel(body, warps=4, grid=one, name=name)
 
 

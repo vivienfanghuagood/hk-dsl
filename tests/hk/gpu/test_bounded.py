@@ -31,7 +31,6 @@ def _copy_kernel(name, tile_dtype):
         t = x[hk.elem_coord(0, 0, 0, col)].load(ty, bounded=True)
         y[hk.elem_coord(0, 0, 0, col)].store(t, bounded=True)
 
-    body.__name__ = name
     return hk.kernel(body, warps=1, name=name,
                      grid=lambda p: (p.x.cols // 64, 1, 1))
 
@@ -74,7 +73,6 @@ def _zero_probe():
         t = x[hk.elem_coord(0, 0, 0, 0)].load(ty, bounded=True)
         y[hk.elem_coord(0, 0, 0, 0)].store(t)
 
-    body.__name__ = "bounded_zero_probe"
     return hk.kernel(body, warps=1, name="bounded_zero_probe",
                      grid=lambda p: (1, 1, 1))
 

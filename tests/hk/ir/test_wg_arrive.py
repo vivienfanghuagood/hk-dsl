@@ -19,7 +19,6 @@ def _kernel(name, lds_tile_rows=0, counter_dtype=i32):
         if a == 3:
             y[hk.elem_coord(0, 0, 0, 0)] = t
 
-    body.__name__ = name
     body.__annotations__ = {"x": hk.Tensor[fp32], "cnt": hk.Tensor[counter_dtype],
                             "y": hk.Tensor[fp32]}
     return hk.kernel(body, arch="gfx1100", warps=1, name=name,

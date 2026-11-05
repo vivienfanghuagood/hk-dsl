@@ -201,7 +201,6 @@ def walk_kernel(name: str, *, head_dim: int = 128, group: int = 8, page: int = 1
             ml_part[hk.elem_coord(row, kv_head, 0, 0)] = m
             ml_part[hk.elem_coord(row, kv_head, 1, 0)] = ell
 
-    body.__name__ = name
     return hk.kernel(body, warps=nw, name=name,
                      grid=lambda p: (splits, p.out.depth, p.seq_lens.cols))
 

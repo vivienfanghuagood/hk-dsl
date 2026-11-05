@@ -78,7 +78,6 @@ def stage1_kernel(name: str, *, group_rows: int, nb: int = 4, mt: int = 2, warps
                         h[hk.elem_coord(0, 0, (base + i) * TILE, (blk * nb + j) * TILE)].store(
                             hk.transpose(hv))
 
-    body.__name__ = name
     return hk.kernel(body, arch="gfx950", warps=warps, name=name,
                      grid=lambda p: (p.h.cols // (16 * nb), p.tiles.cols - 1, 1))
 
@@ -160,7 +159,6 @@ def stage1_lds_kernel(name: str, *, group_rows: int, mt: int = 4, pp: int = 2,
                     if t0 + rnd * mt + i < t1:
                         h[hk.elem_coord(0, 0, r0 + i * TILE, col0 + j * TILE)].store(hv.subtile(TILE, i))
 
-    body.__name__ = name
     return hk.kernel(body, arch="gfx950", warps=warps, name=name, max_vgprs=512,
                      grid=lambda p: ((p.h.cols // (TILE * pp * warps)) * (p.tiles.cols - 1), 1, 1),
                      placement=_XCD_PLACEMENT if xcd else None)
@@ -316,7 +314,6 @@ def stage1_ring_kernel(name: str, *, group_rows: int, mt: int = 4, pp: int = 4, 
                         if t0 + rnd * mt + i < t1:
                             h[hk.elem_coord(0, 0, r0 + i * TILE, col0 + j * TILE)].store(hv.subtile(TILE, i))
 
-    body.__name__ = name
     return hk.kernel(body, arch="gfx950", warps=warps, name=name, max_vgprs=2048 // warps,
                      grid=lambda p: ((p.h.cols // (TILE * pp * warps)) * (p.tiles.cols - 1), 1, 1),
                      placement=_XCD_PLACEMENT if xcd else None)
@@ -444,7 +441,6 @@ def stage2_kernel(name: str, *, group_rows: int, mt: int = 4, pp: int = 4, depth
                         out = out * wt.sum(axis=1)[:, None]
                     y[hk.elem_coord(0, 0, r0 + i * TILE, col0)].store(out)
 
-    body.__name__ = name
     return hk.kernel(body, arch="gfx950", warps=warps, name=name, max_vgprs=2048 // warps,
                      grid=lambda p: ((p.y.cols // (R * warps)) * (p.tiles.cols - 1), 1, 1),
                      placement=_XCD_PLACEMENT if xcd else None)
@@ -516,7 +512,6 @@ def reduce_kernel(name: str, *, cb: int = 128, topk: int = 6, weighted: bool = T
                 acc += yt.to(fp32)
         out[hk.elem_coord(0, 0, t0, c0)].store(acc, bounded=True)
 
-    body.__name__ = name
     return hk.kernel(body, arch="gfx950", warps=4, name=name,
                      grid=lambda p: (hk.cdiv(p.out.rows, TILE), p.out.cols // (4 * cb), 1))
 
@@ -731,7 +726,6 @@ def _sorted_ring(stage: int, name: str, *, group_rows: int, mt: int, pp: int, k:
                 hk.arch.barrier()
                 hk.mx_quant_store(Hs, out, sq, r0, blk * TILE * pp * warps)
 
-    body.__name__ = name
     return hk.kernel(body, arch="gfx950", warps=warps, name=name, max_vgprs=2048 // warps,
                      grid=lambda p: (p.seids.cols * (p.out.cols // (TILE * pp * warps)), 1, 1))
 
@@ -852,7 +846,6 @@ def _sorted_s2_persistent(name: str, *, group_rows: int, mt: int, pp: int, k: in
             run(b_off[0], b_off[1], ub, unit(2 * it + 2))
         g.wait_for(Xs[0], Xs[1])          # the last unit's dangling first-step copy
 
-    body.__name__ = name
     return hk.kernel(body, arch="gfx950", warps=warps, name=name, max_vgprs=2048 // warps,
                      grid=lambda p: (p.G, 1, 1))
 
@@ -969,7 +962,6 @@ def _sorted_s1_grid(name: str, *, group_rows: int, mt: int, pp: int, k: int, tr:
                     h[hk.elem_coord(0, 0, rh + i * TILE, col0 + j * TILE)].store(
                         hk.transpose(gt.silu() * up))
 
-    body.__name__ = name
     return hk.kernel(body, arch="gfx950", warps=warps, name=name, max_vgprs=2048 // warps,
                      grid=lambda p: (p.seids.cols * (p.h.cols // (TILE * pp * tc)), 1, 1))
 
@@ -1113,7 +1105,6 @@ def _sorted_s2_resident(name: str, *, group_rows: int, mt: int, pp: int, k: int,
                 hk.lds.wait_for(X1s[0])            # the last column tile's dangling read
             hk.arch.barrier()          # (the verifier sees `live` as a loop: Hres reloads at its top)
 
-    body.__name__ = name
     return hk.kernel(body, arch="gfx950", warps=warps, name=name, max_vgprs=2048 // warps,
                      grid=lambda p: (p.seids.cols * (p.out.cols // (TILE * pp * warps * nt)), 1, 1))
 
@@ -1329,7 +1320,6 @@ def stage1_dma_kernel(name: str, *, group_rows: int, mt: int = 4, pp: int = 4, d
                     if t0 + rnd * mt + i < t1:
                         h[hk.elem_coord(0, 0, r0 + i * TILE, col0 + j * TILE)].store(hv.subtile(TILE, i))
 
-    body.__name__ = name
     return hk.kernel(body, arch="gfx950", warps=warps, name=name, max_vgprs=512,
                      grid=lambda p: ((p.h.cols // (TILE * pp * warps)) * (p.tiles.cols - 1), 1, 1),
                      placement=_XCD_PLACEMENT)
@@ -1420,7 +1410,6 @@ def stage1_direct_kernel(name: str, *, group_rows: int, k: int, mt: int = 4, pp:
                     if t0 + i < t1:
                         h[hk.elem_coord(0, 0, r0 + i * TILE, col0 + j * TILE)].store(hv.subtile(TILE, i))
 
-    body.__name__ = name
     return hk.kernel(body, arch="gfx950", warps=warps, name=name, max_vgprs=512,
                      grid=lambda p: ((p.h.cols // (TILE * pp * warps)) * p.units.rows, 1, 1))
 

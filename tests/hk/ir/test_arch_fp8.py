@@ -28,7 +28,6 @@ def _fp8_kernel(arch, b_dtype=fp8e4m3, mma=True, name="fp8_probe"):
             acc += ta @ tb.T
         c[hk.elem_coord(0, 0, hk.arch.block_idx.x * 16, 0)] = acc
 
-    body.__name__ = name
     body.__annotations__ = {"a": hk.Tensor[fp8e4m3], "b": hk.Tensor[b_dtype],
                             "c": hk.Tensor[fp32]}
     return hk.kernel(body, arch=arch, warps=1, name=name,

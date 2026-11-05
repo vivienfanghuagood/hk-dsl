@@ -92,7 +92,6 @@ def _store_f_body(x, q, s, *, ROWS=ROWS, COLS=COLS):
 
 
 def _mk(body, name, anns):
-    body.__name__ = name
     body.__annotations__ = anns
     return hk.kernel(body, arch="gfx1100", warps=1, grid=_grid, name=name)
 

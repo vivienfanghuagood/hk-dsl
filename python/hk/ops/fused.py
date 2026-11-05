@@ -110,7 +110,6 @@ def _silu_mul_kernel(name: str, dtype, warps: int):
             x *= bv
             o[i] = x.to(dtype)
 
-    body.__name__ = name
     return hk.kernel(body, warps=warps, grid=_silu_mul_grid, name=name)
 
 
@@ -139,7 +138,6 @@ def _strip_silu_mul_kernel(name: str, dtype, warps: int):
         x *= y
         o.at[row, c0].store(x, bounded=not EXACT)
 
-    body.__name__ = name
     return hk.kernel(body, warps=warps, name=name, noalias=True,
                      grid=lambda p: (p.o.rows * hk.cdiv(p.o.cols, warps * p.CW), 1, 1))
 
@@ -197,7 +195,6 @@ def _rotary_kernel(name: str, dtype, warps: int, positions: bool):
         def body(x: hk.Tensor[dtype], cs: hk.Tensor[fp32], o: hk.Tensor[dtype], *,
                  H=32, D=128, RUN=2):
             build(x, cs, None, o, H, D, RUN)
-    body.__name__ = name
     return hk.kernel(body, warps=warps, name=name, noalias=True,
                      grid=lambda p: (hk.cdiv(p.x.rows, p.H), 1, 1))
 
@@ -243,7 +240,6 @@ def _rotary16_kernel(name: str, dtype, warps: int, positions: bool):
         def body(x: hk.Tensor[dtype], cs: hk.Tensor[fp32], o: hk.Tensor[dtype], *,
                  D=128, CH=1, RESERVE=0, RUN=8):
             build(x, cs, None, o, D, CH, RESERVE, RUN)
-    body.__name__ = name
     return hk.kernel(body, warps=warps, name=name, noalias=True,
                      grid=lambda p: (p.x.rows, p.x.cols // (warps * p.CH * 64 * p.RUN), 1))
 
@@ -286,7 +282,6 @@ def _rotary_halves_kernel(name: str, dtype, warps: int, positions: bool):
         def body(x: hk.Tensor[dtype], cs: hk.Tensor[fp32], o: hk.Tensor[dtype], *,
                  H=32, D=128, RUN=2):
             build(x, cs, None, o, H, D, RUN)
-    body.__name__ = name
     return hk.kernel(body, warps=warps, name=name, noalias=True,
                      grid=lambda p: (hk.cdiv(p.x.rows, p.H), 1, 1))
 
@@ -331,7 +326,6 @@ def _rope_kernel(name: str, dtype, half: int):
         o[lo] = (xl * cs - xh * sn).to(dtype)
         o[hi] = (xh * cs + xl * sn).to(dtype)
 
-    body.__name__ = name
     return hk.kernel(body, warps=1, grid=_rope_grid, name=name)
 
 

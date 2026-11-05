@@ -573,7 +573,6 @@ def gemm_kernel(name: str, *, block_m: int = 256, block_n: int = 256,
                          "on the reduction (gemm_cdna_dp.reduce)")
     else:
         fn = body_split
-    fn.__name__ = name
 
     def _grid(p):
         if stream_k:

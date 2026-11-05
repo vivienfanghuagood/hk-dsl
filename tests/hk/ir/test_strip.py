@@ -17,8 +17,7 @@ from hk.dsl.collective import cross_warp  # noqa: E402
 
 
 def _kernel(body, warps=2):
-    body.__name__ = body.__name__.lstrip("_")
-    return hk.kernel(body, arch="gfx1100", warps=warps, name=body.__name__,
+    return hk.kernel(body, arch="gfx1100", warps=warps, name=body.__name__.lstrip("_"),
                      grid=lambda p: (p.x.rows, 1, 1))
 
 
@@ -186,8 +185,7 @@ def _rms64(x: hk.Tensor[hk.bf16], w: hk.Tensor[hk.bf16], o: hk.Tensor[hk.bf16]):
 
 
 def _k950(body, warps=2):
-    body.__name__ = body.__name__.lstrip("_") + "_950"
-    return hk.kernel(body, arch="gfx950", warps=warps, name=body.__name__,
+    return hk.kernel(body, arch="gfx950", warps=warps, name=body.__name__.lstrip("_") + "_950",
                      grid=lambda p: (p.x.rows, 1, 1))
 
 

@@ -163,7 +163,6 @@ def paged_decode_kernel(name: str, *, head_dim: int = 128,
             c /= l_run
             o[hk.elem_coord(req, kv_head, 0, 16 * i)] = hk.transpose(c)
 
-    body.__name__ = name
     return hk.kernel(body, warps=1, name=name,
                      grid=lambda p: (1, p.q.depth, p.q.batch),
                      max_vgprs=max_vgprs, min_occupancy=min_occupancy)
@@ -276,7 +275,6 @@ def paged_decode_split_kernel(name: str, *, head_dim: int = 128,
         ml_part[hk.elem_coord(row, kv_head, 0, 0)] = m_run
         ml_part[hk.elem_coord(row, kv_head, 1, 0)] = l_run
 
-    body.__name__ = name
     return hk.kernel(body, warps=1, name=name,
                      grid=lambda p: (splits, p.q.depth, p.q.batch),
                      max_vgprs=max_vgprs, min_occupancy=min_occupancy)
@@ -493,7 +491,6 @@ def paged_merge_kernel(name: str, *, head_dim: int = 128, splits: int = 8,
         _merge_splits(out, o_part, ml_part, req, kv_head, splits, active,
                       [base + 16 * f for f in range(per_warp)], step)
 
-    body.__name__ = name
     return hk.kernel(body, warps=warps, name=name,
                      grid=lambda p: (1, p.out.depth, p.out.batch))
 
@@ -664,7 +661,6 @@ def paged_decode_fused_kernel(name: str, *, head_dim: int = 128,
         ml_part[hk.elem_coord(row, kv_head, 0, 0)] = m_run
         ml_part[hk.elem_coord(row, kv_head, 1, 0)] = l_run
 
-    body.__name__ = name
     return hk.kernel(body, warps=1, name=name,
                      grid=lambda p: (splits, p.q.depth, p.q.batch),
                      max_vgprs=max_vgprs, min_occupancy=min_occupancy,

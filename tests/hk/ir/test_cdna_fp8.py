@@ -24,7 +24,6 @@ def fp8_mma_kernel(arch="gfx950", name="fp8_mma_t"):
         acc += ta @ tb.T
         c[hk.elem_coord(0, 0, hk.arch.block_idx.x * 16, 0)] = acc
 
-    body.__name__ = name
     body.__annotations__ = {"a": hk.Tensor[fp8e4m3], "b": hk.Tensor[fp8e4m3],
                             "c": hk.Tensor[fp32]}
     return hk.kernel(body, arch=arch, warps=1, name=name,
@@ -63,7 +62,6 @@ def mx_mma_kernel(K=256, name="mx_mma_t"):
                      hk.zeros(hk.RT(fp32, 16, 32, "col")))
         c[hk.elem_coord(0, 0, r0, 0)] = acc
 
-    body.__name__ = name
     body.__annotations__ = {"a": hk.Tensor[fp8e4m3], "b": hk.Tensor[fp8e4m3],
                             "sa": hk.Tensor[hk.i8], "sb": hk.Tensor[hk.i8],
                             "c": hk.Tensor[fp32]}

@@ -11,7 +11,6 @@ T = hk.RT(hk.bf16, 16, 64)
 
 
 def _kernel(body, name, arch="gfx950"):
-    body.__name__ = name
     return hk.kernel(body, arch=arch, warps=1, name=name, grid=lambda p: (1, 1, 1))
 
 
@@ -157,8 +156,8 @@ def test_an_unscoped_counter_is_refused():
 def test_resident_is_a_kernel_option_that_survives_specialization():
     def body(cnt: hk.Tensor[i32, "device"], *, N: int = 1):
         hk.comm.barrier(cnt.at[0], N)
-    body.__name__ = "comm_resident"
-    k = hk.kernel(body, arch="gfx950", warps=1, grid=lambda p: (4, 1, 1), resident=True)
+    k = hk.kernel(body, arch="gfx950", warps=1, grid=lambda p: (4, 1, 1), resident=True,
+                  name="comm_resident")
     assert k.resident and k.specialize(N=4).resident and k.preloaded().resident
 
 

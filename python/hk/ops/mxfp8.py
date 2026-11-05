@@ -54,7 +54,6 @@ def mxfp8_kernel(name: str = "mxfp8_gemm_128x128"):
             hk.arch.barrier()
         c.at[row0 + wr * 64, col0 + wc * 64] = acc
 
-    body.__name__ = name
     return hk.kernel(body, arch="gfx950", warps=WARPS, name=name,
                      grid=lambda p: (p.c.cols // BN, p.c.rows // BM, 1))
 
@@ -330,7 +329,6 @@ def mx4w_kernel(name: str = "mxfp8_4w", *, block_m: int = 256, block_n: int = 25
             for j in range(split_n):
                 c[hk.elem_coord(0, 0, m0 + a_row(i), n0 + b_row(j))].store(C[i][j], bounded=True)
 
-    body.__name__ = name
     return hk.kernel(body, arch="gfx950", warps=WARPS, name=name, max_vgprs=512,
                      defines={d: 1 for d in defines.split(",") if d},
                      grid=lambda p: (hk.cdiv(p.a.rows, block_m) * (p.b.rows // block_n), 1, 1),
@@ -495,7 +493,6 @@ def mx4p_kernel(name: str = "mxfp8_4p", *, block_m: int = 256, block_n: int = 25
             m0, n0 = nm0, nn0
         hk.arch.vm_wait(0)
 
-    body.__name__ = name
     return hk.kernel(body, arch="gfx950", warps=WARPS, name=name, max_vgprs=512,
                      grid=lambda p: (grid_size, 1, 1))
 
@@ -630,7 +627,6 @@ def quant_kernel(packed: bool = True):
         hk.mx_quant_store(Xs, q, s, r0, c0)
 
     name = "mxfp8_quant_" + ("packed" if packed else "aiter")
-    mx_quant.__name__ = name
     return hk.kernel(mx_quant, arch="gfx950", warps=4, name=name,
                      grid=lambda p: (p.x.cols // QUANT_COLS, hk.cdiv(p.x.rows, QUANT_ROWS), 1))
 

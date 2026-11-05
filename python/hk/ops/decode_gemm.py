@@ -173,7 +173,6 @@ def decode_gemm_kernel(name: str, *, tokens: int = 1, slices: int = 4,
                 put(c, ops, total, n0, pre)
 
     fn = _epilogue.sign(body if splits == 1 else body_split, epilogue)
-    fn.__name__ = name
 
     return hk.kernel(fn, arch=arch, warps=warps, name=name,
                      grid=lambda p: (p.w.rows // 16, splits, 1),

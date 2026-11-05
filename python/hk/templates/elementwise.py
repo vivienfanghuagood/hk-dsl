@@ -370,7 +370,6 @@ def _build(fn, ops, outs, warps: int, arch: str, name: str, user_consts):
     def body(**kw):
         _trace(kw, spec)
 
-    body.__name__ = name
     body.__signature__ = C.signature(
         [(n, o.dtype) for n, o in zip(names, ops)] +
         [(n, d) for n, d in zip(names[nin:], outs)],

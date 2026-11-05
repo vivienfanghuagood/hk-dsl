@@ -217,7 +217,6 @@ def w4a16_kernel(name: str, *, tokens: int = 1, slices: int = 4, warps: int = 16
                  zs: hk.Tensor[dtype], c: hk.Tensor[dtype]):
             gemm(x, qw, s, zs, c)
 
-    body.__name__ = name
     return hk.kernel(body, warps=warps, name=name,
                      grid=lambda p: (p.qw.rows // rows, 1, 1))
 
@@ -267,7 +266,6 @@ def w4a16_gemv_kernel(name: str, *, tokens: int = 1, warps: int = 16, group: int
                  zs: hk.Tensor[fp16], c: hk.Tensor[fp16]):
             gemv(x, qw, s, zs, c)
 
-    body.__name__ = name
     return hk.kernel(body, warps=warps, name=name, grid=lambda p: (p.qw.rows // 16, 1, 1))
 
 
