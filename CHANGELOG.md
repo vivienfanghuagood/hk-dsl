@@ -6,6 +6,8 @@ The next version's notes collect here until it is released.
 
 ## Unreleased
 
+**vLLM's TRITON_ATTN on gfx1201: Qwen3.8's 64-token-and-longer chunks over 32k+ contexts beside up to 15 decodes take the packed KV split.** Over 32k+ contexts such a chunk was declined beside more than 7 decodes or ~170k decode tokens; it now takes the split beside up to 15, at any count of their tokens. `vllm_prefill.KVS_PACK_MAX_DECODES` tiers also go by the longest query. Measured faster than both stock kernels on every batch it takes.
+
 - `hk.profile` on gfx1201: a counter group of the three counters that count on an R9700 under ROCm 7.2.3
   (`GRBM_GUI_ACTIVE`, `SQ_WAVES`, `SQ_BUSY_CYCLES`; the others read 0). A matrix kernel with no FLOP rate
   -- no counter, thread trace or main-loop trip count to count its WMMAs -- now gets the verdict
