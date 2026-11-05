@@ -420,11 +420,12 @@ KVS_DEC_MAX_TOKENS = {("gfx1100", 256, 6): 1 << 19}
 #: the work. A 16-64-token chunk over 8k-32k beside 1-31 decodes over 8k-32k, against the faster
 #: stock kernel: gfx1100 1.35-20x up to 15 decodes (ratios up to 3.75), where the unpacked route
 #: declined them, but beside 31 short ones the second call costs more than it saves (MiniCPM5,
-#: 0.80-1.06x); gfx1201 MiniCPM-V 1.4-5.7x up to 15, MiniCPM5 and Qwen3.8 1.46-5.65x up to 3 but
-#: from 7 down to 0.72x (Qwen3.8 over 8k).
+#: 0.80-1.06x); gfx1201 MiniCPM-V 1.4-5.7x up to 15, Qwen3.8 1.46-5.65x up to 3 but from 7 down to
+#: 0.72x (over 8k), MiniCPM5 1.64-3.41x up to 2^18 decode tokens (7 x 32k, 15 x 8k) but 1.06-1.16x
+#: at 15 x 32k. Each entry is (most decodes, most decode tokens or None).
 KVS_PACK_DEC_RATIO = 4.0
-KVS_PACK_MAX_DECODES = {("gfx1201", 128, 8): 3, ("gfx1201", 256, 6): 3}
-KVS_PACK_MAX_DECODES_ELSE = 15
+KVS_PACK_MAX_DECODES = {("gfx1201", 128, 8): (15, 1 << 18), ("gfx1201", 256, 6): (3, None)}
+KVS_PACK_MAX_DECODES_ELSE = (15, None)
 
 
 def kvsplit_plan(a: dict, pack: bool = True):
@@ -451,10 +452,11 @@ def kvsplit_plan(a: dict, pack: bool = True):
     group = int(a["q"].shape[1]) // int(a["k"].shape[2])
     pw = kvs_pack_warps(d, group)
     arch, cls = switches.arch(), 256 if d > 128 else 128
-    max_dec = KVS_PACK_MAX_DECODES.get((arch, cls, group), KVS_PACK_MAX_DECODES_ELSE)
+    max_dec, max_dec_tok = KVS_PACK_MAX_DECODES.get((arch, cls, group), KVS_PACK_MAX_DECODES_ELSE)
     for max_q, min_ctx, sp in KVS_PACKED.get((arch, cls, group), ()) if pack else ():
         if (st["max_q"] <= max_q and st["pre_ctx"] >= min_ctx and pw <= KVS_PACK_WARPS
-                and decodes_fit(KVS_PACK_DEC_RATIO) and st["decodes"] <= max_dec):
+                and decodes_fit(KVS_PACK_DEC_RATIO) and st["decodes"] <= max_dec
+                and (max_dec_tok is None or st["dec_work"] <= max_dec_tok)):
             return sp, pw, True
     max_tok = KVS_DEC_MAX_TOKENS.get((arch, cls, group))
     fits = (decodes_fit(KVS_DEC_RATIO) if max_tok is None

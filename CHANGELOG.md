@@ -6,6 +6,8 @@ The next version's notes collect here until it is released.
 
 ## Unreleased
 
+**vLLM's TRITON_ATTN on gfx1201: MiniCPM5's shortest chunks beside more decodes take the packed KV split.** The packed split took a short chunk over a long context beside at most 3 decodes on gfx1201; for MiniCPM5's shape (head size 128, 8 query heads a kv head) it now takes up to 15, while their tokens stay under a measured bound (`vllm_prefill.KVS_PACK_MAX_DECODES` entries are now (decodes, decode tokens)). Measured faster than both stock kernels on every batch it takes.
+
 ## 0.9.4
 
 hk-dsl 0.9.4: `vllm_moe_wna16` takes prefill chunks too (a per-arch token cap: 2048 tokens a step on
