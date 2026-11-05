@@ -4,6 +4,10 @@ Release notes for each version are also on its
 [GitHub release](https://github.com/vivienfanghuagood/hk-dsl/releases).
 The next version's notes collect here until it is released.
 
+## Unreleased
+
+**`vllm_moe_wna16` takes prefill chunks too.** Its token cap is now per arch, set where hk's 4-bit MoE GEMM is still ahead of vLLM's kernel at the best of its searched configs: 2048 tokens a step on gfx1100 and 1024 on gfx1201 (32 elsewhere). A prompt or prefill chunk up to that size now runs on hk as well. On a Radeon AI PRO R9700 that shortens time to first token for a 1k-token prompt; decode is unchanged; GSM8K equal.
+
 ## 0.9.2
 
 hk-dsl 0.9.2: vLLM's 4-bit MoE GEMMs for AWQ checkpoints with zero points (`moe_wna16`) on hk's MoE
