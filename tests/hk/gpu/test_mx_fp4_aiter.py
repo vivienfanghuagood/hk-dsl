@@ -55,7 +55,6 @@ def kernel(K, I, GR, name="mx_fp4_aiter_t"):
             acc = hk.mma("mma_ABt", a.scaled(s_a), b.scaled(s_b, fmt="fp4"), acc, into=acc)
         o[hk.elem_coord(0, e, 0, nb * 32)] = acc
 
-    body.__name__ = name
     body.__annotations__ = {"x": hk.Tensor[fp8e4m3], "xs": hk.Tensor[hk.i8], "w": hk.Tensor[hk.i8],
                             "ws": hk.Tensor[hk.i8], "o": hk.Tensor[fp32]}
     return hk.kernel(body, arch="gfx950", warps=1, name=name,
@@ -111,7 +110,6 @@ def kernel_t(K, I, GR, name="mx_fp4_aiter_t_t"):
             acc = hk.mma("mma_ABt", a.scaled(s_a, fmt="fp4"), b.scaled(s_b), acc, into=acc)
         o[hk.elem_coord(0, e, nb * 32, 0)] = acc
 
-    body.__name__ = name
     body.__annotations__ = {"x": hk.Tensor[fp8e4m3], "xs": hk.Tensor[hk.i8], "w": hk.Tensor[hk.i8],
                             "ws": hk.Tensor[hk.i8], "o": hk.Tensor[fp32]}
     return hk.kernel(body, arch="gfx950", warps=1, name=name,

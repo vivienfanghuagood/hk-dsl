@@ -82,7 +82,6 @@ def vt_kernel(name: str = "attn_k3_vt", warps: int = 2):
                     sub += x @ e
             vt[hk.elem_coord(0, gh, 16 * dd, row)].store(hk.transpose(acc))
 
-    body.__name__ = name
     return hk.kernel(body, warps=warps, name=name,
                      grid=lambda p: (hk.cdiv(p.vt.cols, 64 * warps), p.vt.depth, 1))
 
@@ -241,7 +240,6 @@ def attn_kernel(name: str = "attn_k3", *, kv_block: int = KV_BLOCK, warps: int =
                 c /= l_run
                 o[hk.elem_coord(bb, 0, q_row, col0 + 16 * i)].store(hk.transpose(c))
 
-    body.__name__ = name
     return _dsl.kernel(body, warps=warps, name=name, grid=lambda p: (p.wu.cols, 1, 1),
                        max_vgprs=max_vgprs, min_occupancy=1)
 
@@ -286,7 +284,6 @@ def combine_kernel(name: str = "attn_k3_combine", warps: int = 8):
         acc /= lsum
         o[hk.elem_coord(ob, 0, row, col0)] = acc
 
-    body.__name__ = name
     return hk.kernel(body, warps=warps, name=name, grid=lambda p: (p.wc.cols, 1, 1))
 
 

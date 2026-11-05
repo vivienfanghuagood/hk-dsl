@@ -389,7 +389,6 @@ def decode_kernel(name: str, *, head_dim: int = 128, splits: int = 1,
                     hk.transpose(O), bounded=True)
             walk(q, k_cache, v_cache, block_table, seq_lens, finish)
 
-    body.__name__ = name
     return hk.kernel(body, arch=arch, warps=1, name=name,
                      grid=lambda p: (n_split, p.q.depth, p.q.batch))
 
@@ -557,7 +556,6 @@ def merge_kernel(name: str, *, head_dim: int = 128, splits: int = 8,
         else:
             out[hk.elem_coord(req, kv_head, g, 0)].store(acc)
 
-    body.__name__ = name
     return hk.kernel(body, arch=arch, warps=warps, name=name,
                      grid=lambda p: (p.out.rows, p.out.depth, p.out.batch))
 

@@ -233,7 +233,6 @@ def _quantize_kernel(name: str, dtype, warps: int):
 
         visit(write)
 
-    body.__name__ = name
     return hk.kernel(body, warps=warps, grid=_grid_q, name=name)
 
 
@@ -259,7 +258,6 @@ def _dequantize_kernel(name: str, dtype, warps: int):
             v *= scale
             o[idx] = v.to(dtype)
 
-    body.__name__ = name
     return hk.kernel(body, warps=warps, grid=_grid_dq, name=name)
 
 
@@ -285,7 +283,6 @@ def _strip_quantize_kernel(name: str, dtype, warps: int):
         # uniform by construction.
         s[hk.elem_coord(0, 0, 0, row)].store_scalar(as_vec(amax, S, uniform=True))
 
-    body.__name__ = name
     return hk.kernel(body, warps=warps, grid=lambda p: (p.x.rows, 1, 1), name=name,
                      noalias=True)
 

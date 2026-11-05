@@ -657,7 +657,6 @@ def attn_kernel(name: str, *, head_dim: int = 128, causal: bool = False,
             n_t = hk.cdiv(p.q.rows, Q_TILE)
             return (p.q.depth, hk.cdiv(n_t, 2) if pairs else n_t, p.q.batch)
 
-    body.__name__ = name
     return hk.kernel(body, arch=arch, warps=WARPS, grid=_grid, name=name, placement=placement)
 
 
@@ -704,7 +703,6 @@ def prefill_merge_kernel(name: str, *, head_dim: int = 128, arch: Optional[str] 
         left = hk.max(n_rows - r0, 0)
         o[hk.elem_coord(0, 0, tok0 + r0, head * D)].store(acc, bounded=left)
 
-    body.__name__ = name
     return hk.kernel(body, arch=arch, warps=1, name=name,
                      grid=lambda p: (p.o.cols // D, p.mlist.rows * chunks, 1))
 

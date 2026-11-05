@@ -189,6 +189,37 @@ def test_a_declined_batch_is_vllms_call_unchanged(monkeypatch, capsys, arch):
     assert "declined" in err and "HK_VLLM_PREFILL_GUARD=0" in err
 
 
+def test_a_cache_view_past_4_gib_goes_to_vllm(monkeypatch):
+    """hk's buffer loads address 4 GiB from a tensor's base: span_why_not measures a view's bytes
+    from its strides (no memory needed), and the prefill, decode and ROCM_ATTN checks refuse a
+    cache past SPAN_LIMIT -- the call falls back to vLLM's kernel."""
+    from hk.integration import switches
+
+    elems = vp.SPAN_LIMIT // 2                                   # bf16
+    assert vp.span_why_not(torch.empty(elems - 1, dtype=torch.bfloat16, device="meta")) == ""
+    assert "GiB" in vp.span_why_not(torch.empty(elems, dtype=torch.bfloat16, device="meta"))
+    # a strided view spans what its strides reach, not its element count
+    v = torch.empty(2, 8, dtype=torch.bfloat16, device="meta").as_strided((2, 8), (elems, 1))
+    assert "GiB" in vp.span_why_not(v)
+
+    monkeypatch.setattr(switches, "arch", lambda: "gfx1100")
+    a = _triton_call([(4096, 128)])
+    assert vp.u_why_not(a) == ""
+    monkeypatch.setattr(vp, "SPAN_LIMIT", 1024)
+    assert "GiB" in vp.u_why_not(a)
+    calls = []
+    monkeypatch.setattr(vp, "GUARD", False)
+    monkeypatch.setattr(vp, "_ORIG_U", lambda *x, **k: calls.append(1))
+    before = vp.PATCH.stats["fallback"]
+    vp.unified_attention(**a)
+    assert calls and vp.PATCH.stats["fallback"] == before + 1
+    d = _triton_call([(16384, 1), (8192, 1)], d=256, hkv=1)
+    d["max_seqlen_q"] = 1
+    assert "GiB" in vp.d_why_not(d)
+    monkeypatch.setattr(vp, "SPAN_LIMIT", 1 << 32)
+    assert vp.d_why_not(d) == ""
+
+
 def test_the_guard_off_declines_nothing(monkeypatch):
     monkeypatch.setattr(vp, "GUARD", False)
     assert vp.guard_why_not(9, 128, 16385, 128, 2, "gfx1100") == ""

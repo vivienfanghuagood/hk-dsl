@@ -22,7 +22,9 @@ is the HipKittens C++ hk-translate writes from it.
 from __future__ import annotations
 
 import functools
+import hashlib
 import inspect
+import re
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from .._mlir import ir
@@ -320,7 +322,9 @@ class Kernel:
         self._arch = arch
         self.warps = warps
         self.grid_fn = grid
-        self.name = name or fn.__name__
+        self.name = name or _default_name(fn, warps)
+        #: True when the name was made here rather than passed: hk.specialize may rename it.
+        self._auto_name = name is None
         #: Extra build gates, on top of the unconditional no-spill rule. Set
         #: these when a kernel is only worth having at a given occupancy, so a
         #: change that quietly costs a wave fails the build instead of the
@@ -373,6 +377,9 @@ class Kernel:
         #: kwargs rather than on the resolved constexprs.
         self._launch_cache: Dict[Tuple, Any] = {}
         functools.update_wrapper(self, fn)
+        # The kernel is called what it is built as: a factory's `def body` shows as its
+        # kernel's name in hk.profile, hk.check and tracebacks, with no `body.__name__ = name`.
+        self.__name__ = self.__qualname__ = self.name
 
     @property
     def arch(self) -> str:
@@ -853,8 +860,135 @@ class Kernel:
             self._spec_cache[key] = k
         return self._spec_cache[key]
 
+    def _rename(self, name: str) -> None:
+        """hk.specialize's naming, before anything is traced (the caches are still empty)."""
+        assert not (self._ir_cache or self._build_cache or self._mod_cache), self.name
+        self.name = self.__name__ = self.__qualname__ = name
+        self._auto_name = False
+
     def __repr__(self) -> str:
         return f"<hk.Kernel {self.name} arch={self.arch} warps={self.warps}>"
+
+
+# -- names ----------------------------------------------------------------------------------
+
+#: An automatic kernel name longer than this keeps its head and ends in a hash of the whole.
+_NAME_MAX = 96
+#: Function names that say nothing about the kernel: a factory kernel so named is prefixed
+#: with its factory's name.
+_GENERIC = frozenset({"body", "kernel", "k", "fn", "f", "impl", "inner", "kern"})
+
+
+def _token_value(v: Any) -> Optional[str]:
+    """`v` as name text if it is a plain value a reader recognizes, else None."""
+    if v is None or isinstance(v, bool):
+        return str(int(v)) if isinstance(v, bool) else "None"
+    if isinstance(v, int):
+        return str(v).replace("-", "m")
+    if isinstance(v, float):
+        return repr(v).replace("-", "m").replace(".", "p").replace("+", "")
+    if isinstance(v, str) and re.fullmatch(r"[A-Za-z0-9_]{1,24}", v):
+        return v
+    if isinstance(v, DType):
+        return v.name
+    return None
+
+
+def _stable_repr(v: Any, depth: int = 0) -> str:
+    """A process-independent description of `v` for hashing: no id(), no hash()."""
+    t = _token_value(v)
+    if t is not None:
+        return t
+    if depth > 4:
+        return type(v).__qualname__
+    if isinstance(v, (tuple, list)):
+        return "(" + ",".join(_stable_repr(x, depth + 1) for x in v) + ")"
+    if isinstance(v, dict):
+        return "{" + ",".join(f"{_stable_repr(k, depth + 1)}:{_stable_repr(x, depth + 1)}"
+                              for k, x in sorted(v.items(), key=lambda kv: repr(kv[0]))) + "}"
+    if isinstance(v, Kernel):
+        return "kernel:" + v.name
+    code = getattr(v, "__code__", None)
+    if code is not None:
+        cells = []
+        for c in getattr(v, "__closure__", None) or ():
+            try:
+                cells.append(_stable_repr(c.cell_contents, depth + 1))
+            except ValueError:
+                cells.append("<empty>")
+        return (f"fn:{getattr(v, '__module__', '')}.{getattr(v, '__qualname__', '')}:"
+                f"{_code_text(code)}:{','.join(cells)}")
+    r = repr(v)
+    return type(v).__qualname__ if " at 0x" in r else r
+
+
+def _code_text(code) -> str:
+    consts = ",".join(_code_text(c) if hasattr(c, "co_code") else repr(c) for c in code.co_consts)
+    return f"{code.co_code.hex()}|{consts}|{','.join(code.co_names)}"
+
+
+def _tokens(pairs) -> str:
+    """name=value pairs as `nameVALUE` tokens joined by `_`; values that are not plain become one
+    8-hex hash of all of them, so the text is the same in every process."""
+    plain, other = [], []
+    for k, v in pairs:
+        t = _token_value(v)
+        if t is None:
+            other.append(f"{k}={_stable_repr(v)}")
+        else:
+            plain.append(f"{k}{t}")
+    if other:
+        plain.append(hashlib.sha256("\0".join(other).encode()).hexdigest()[:8])
+    return "_".join(plain)
+
+
+def _clip(name: str) -> str:
+    name = re.sub(r"[^0-9A-Za-z_]", "_", name)
+    if len(name) <= _NAME_MAX:
+        return name
+    return name[:_NAME_MAX - 9] + "_" + hashlib.sha256(name.encode()).hexdigest()[:8]
+
+
+def _default_name(fn, warps: int = 1) -> str:
+    """The name of a kernel given no `name=`.
+
+    A top-level function: its own name, as always. A function defined inside another one (a
+    factory) and not renamed by hand: `<function>__<tokens>` (`<factory>_body__<tokens>` for a
+    generic name such as `body`), the tokens being the
+    factory values the body reads (its closure), the dtypes its annotations name and its warps,
+    so every variant of the factory gets its own stable name with no `body.__name__ = name`.
+    A nested function that reads no factory value keeps its own name; a hand-set `__name__` is
+    kept. (A factory whose only varying value is an annotation's dtype: use hk.specialize.)
+    """
+    code = getattr(fn, "__code__", None)
+    qual = getattr(fn, "__qualname__", fn.__name__)
+    if code is None or "<locals>" not in qual or fn.__name__ != code.co_name:
+        return fn.__name__
+    outer = qual.split(".<locals>.")[-2].split(".")[-1]
+    # `def body` says nothing: the factory's name goes in front. A function with a name of its
+    # own (`def rmsnorm_strip` in `rmsnorm_strip_kernel`) is called by it.
+    head = f"{outer}_{fn.__name__}" if fn.__name__.lstrip("_") in _GENERIC else fn.__name__
+    pairs = []
+    for n, c in zip(code.co_freevars, getattr(fn, "__closure__", None) or ()):
+        try:
+            pairs.append((n, c.cell_contents))
+        except ValueError:
+            pass
+    if not pairs:
+        return fn.__name__
+    # A dtype that only an annotation names (`x: hk.Tensor[dtype]`) is evaluated where the
+    # function is defined, so it is no closure value; name the variant by it too.
+    if not any(isinstance(v, DType) for _, v in pairs):
+        seen = []
+        for ann in getattr(fn, "__annotations__", {}).values():
+            dt = getattr(ann, "dtype", None)
+            if isinstance(dt, DType) and dt.name not in seen:
+                seen.append(dt.name)
+        if seen:
+            pairs.append(("T", "_".join(seen)))
+    pairs.append(("warps", warps))
+    toks = _tokens(pairs)
+    return _clip(f"{head}__{toks}")
 
 
 def kernel(fn=None, *, arch: Optional[str] = None, warps: int = 1, grid=None,
@@ -894,5 +1028,40 @@ def func(fn):
     return call
 
 
-__all__ = ["kernel", "func", "Kernel", "TracedKernel", "Tensor", "Constexpr",
+def specialize(factory):
+    """A kernel factory, memoized on its arguments, whose kernel is named after them.
+
+        @hk.specialize
+        def silu_mul(*, dtype=hk.bf16, warps=4):
+            @hk.kernel(warps=warps, grid=...)
+            def body(a: hk.Tensor[dtype], b: hk.Tensor[dtype], o: hk.Tensor[dtype]): ...
+            return body
+
+    `silu_mul(dtype=hk.fp16)` builds once per distinct set of arguments (defaults included:
+    `silu_mul()` and `silu_mul(warps=4)` are the same kernel) and returns the same Kernel after
+    that, in place of `functools.lru_cache`. A kernel the factory returns without a `name=` is
+    named `<factory>__<arguments>` (`silu_mul__dtypefp16_warps4`), the same in every process.
+    The arguments must be hashable.
+    """
+    sig = inspect.signature(factory)
+    memo: Dict[Tuple, Any] = {}
+
+    @functools.wraps(factory)
+    def build(*args, **kwargs):
+        bound = sig.bind(*args, **kwargs)
+        bound.apply_defaults()
+        key = tuple(bound.arguments.items())
+        if key not in memo:
+            out = factory(*args, **kwargs)
+            if isinstance(out, Kernel) and out._auto_name:
+                out._rename(_clip(f"{factory.__name__}__{_tokens(key)}" if key else factory.__name__))
+            memo[key] = out
+        return memo[key]
+
+    build.cache_clear = memo.clear
+    build.__hk_factory__ = factory
+    return build
+
+
+__all__ = ["kernel", "func", "specialize", "Kernel", "TracedKernel", "Tensor", "Constexpr",
            "verify_error"]

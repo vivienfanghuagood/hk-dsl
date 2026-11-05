@@ -123,7 +123,6 @@ def moe_gemm_kernel(name: str, *, block_m: int = 16, top_k: int = 1,
             body(a, w, c, sorted_ids, expert_ids, ntp, topk_w)
         rows_of = lambda p: p.w.rows  # noqa: E731
 
-    entry.__name__ = name
     if naive:
         grid = lambda p: (rows_of(p) // 16, p.sorted_ids.cols, 1)  # noqa: E731
     else:

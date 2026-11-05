@@ -275,7 +275,6 @@ def kernel(name: str, *, scale: float, mxfp8: bool, arch=None):
             else:
                 _quant_store(xb, mxd, mxs, t, w)
 
-    body.__name__ = name
     return hk.kernel(body, warps=WARPS, grid=lambda p: (p.q.rows // H, 1, 1), name=name, arch=arch)
 
 

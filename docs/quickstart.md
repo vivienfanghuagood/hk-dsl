@@ -173,6 +173,23 @@ register tiles (`hk.RT`), staged through LDS (`hk.ST`), for what feeds the
 matrix core: GEMM and attention, where the examples and the tuned
 `hk.ops` kernels are the models.
 
+One kernel per dtype (or per `warps`, or per anything a constexpr cannot
+carry) is a factory: put `@hk.specialize` on a function that defines the
+kernel and returns it, and it builds each variant once and names it after its
+arguments -- no `lru_cache`, no name string, no `body.__name__`
+([kernels made by a factory](language.md#kernels-made-by-a-factory)):
+
+```python
+@hk.specialize
+def gelu_mul_for(*, dtype=hk.bf16):
+    @hk.kernel(grid=lambda p: (p.o.rows * hk.cdiv(p.o.cols, p.CW), 1, 1))
+    def gelu_mul(a: hk.Tensor[dtype], b: hk.Tensor[dtype], o: hk.Tensor[dtype], *, CW=512):
+        ...                                       # the body above
+    return gelu_mul
+
+gelu_mul_for(dtype=hk.fp16)                       # the kernel `gelu_mul_for__dtypefp16`
+```
+
 `add.build().report()` prints one line per kernel instantiation. Built for
 gfx1100 (ROCm 7.2.4) while writing this page, it read:
 

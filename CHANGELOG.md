@@ -8,6 +8,12 @@ The next version's notes collect here until it is released.
 
 **`vllm_moe_wna16` takes prefill chunks too.** Its token cap is now per arch, set where hk's 4-bit MoE GEMM is still ahead of vLLM's kernel at the best of its searched configs: 2048 tokens a step on gfx1100 and 1024 on gfx1201 (32 elsewhere). A prompt or prefill chunk up to that size now runs on hk as well. On a Radeon AI PRO R9700 that shortens time to first token for a 1k-token prompt; decode is unchanged; GSM8K equal.
 
+**`@hk.specialize`, and factory kernels that need no `body.__name__ = name`.** A kernel defined inside a factory and given no `name=` is now named after the factory values it reads (`<function>__<values>`, or `<factory>_body__<values>` for a `def body`; the same in every process), and a kernel's `__name__` is its name, so `hk.profile`, `hk.check` and tracebacks show it rather than `body`. `@hk.specialize` on a factory memoizes it on its arguments (defaults included) and names the kernel it returns `<factory>__<arguments>`, in place of `functools.lru_cache` and a hand-built name string ([the language](docs/language.md#kernels-made-by-a-factory)). `name=` and a hand-set `__name__` keep working and still win; every kernel in `hk.ops` keeps its name and its generated source.
+
+**Fix: vLLM's attention routes no longer read a KV cache past 4 GiB.** hk's kernels address a tensor through a buffer resource, with 32-bit byte offsets from its base. Over a layer's cache view of 4 GiB or more, the prefill (`vllm_prefill`, both backends) and the split decode read the wrong pages, or faulted; Qwen3.8's shape crosses it at about a million cached tokens a layer. Such a call now goes to vLLM's kernel (`vllm_prefill.SPAN_LIMIT`).
+
+**The KV split's shortest chunks take GQA-packed tiles** (#253). `hk.ops.paged_prefill` has `pack`: a workgroup holds one kv head's query heads of a few tokens instead of one query head's rows, so a kv head's K and V are read once a tile instead of once a query head, and a chunk of a few tokens fills its tile instead of a sliver of it. The route takes it for the shortest chunks over long contexts, per GPU, head size and query heads a kv head, where it was measured faster than the unpacked split (`vllm_prefill.KVS_PACKED`); every call it takes is faster than both stock kernels. Beside decodes, a packed call now takes the batch too: the prefill rows on the packed split, the decode rows on vLLM's decode kernel, which splits a decode's context where its mixed-batch kernel does not. It takes up to a measured number of decodes for each GPU and model shape (`KVS_PACK_MAX_DECODES`); before, such a batch went to vLLM's kernel whole. On gfx1201 with head size 128, the unpacked split no longer takes a short chunk over a context under 16k tokens beside decodes, where it was measured slower.
+
 ## 0.9.2
 
 hk-dsl 0.9.2: vLLM's 4-bit MoE GEMMs for AWQ checkpoints with zero points (`moe_wna16`) on hk's MoE
@@ -29,8 +35,6 @@ Since 0.9.1 ([the default-on rule](docs/testing.md#the-default-on-rule); `python
 ### All pull requests
 
 #252, #254.
-
-**The KV split's shortest chunks take GQA-packed tiles.** `hk.ops.paged_prefill` has `pack`: a workgroup holds one kv head's query heads of a few tokens instead of one query head's rows, so a kv head's K and V are read once a tile instead of once a query head, and a chunk of a few tokens fills its tile instead of a sliver of it. The route takes it for the shortest chunks over long contexts, per GPU, head size and query heads a kv head, where it was measured faster than the unpacked split (`vllm_prefill.KVS_PACKED`); every call it takes is faster than both stock kernels. Beside decodes, a packed call now takes the batch too: the prefill rows on the packed split, the decode rows on vLLM's decode kernel, which splits a decode's context where its mixed-batch kernel does not. It takes up to a measured number of decodes for each GPU and model shape (`KVS_PACK_MAX_DECODES`); before, such a batch went to vLLM's kernel whole. On gfx1201 with head size 128, the unpacked split no longer takes a short chunk over a context under 16k tokens beside decodes, where it was measured slower.
 
 ## 0.9.1
 

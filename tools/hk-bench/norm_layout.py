@@ -50,7 +50,6 @@ def copy_kernel(dtype, split):
         idx = hk.elem_coord(0, 0, hk.arch.block_idx.y * 16,
                             (hk.arch.block_idx.x * WARPS + hk.arch.warp_id()) * 64)
         o[idx].store(x[idx].load(t, bounded=True), bounded=True)
-    body.__name__ = name
     return hk.kernel(body, warps=WARPS, grid=_grid, name=name,
                      defines={"HK_RT_HALF_SPLIT": split} if split else None)
 

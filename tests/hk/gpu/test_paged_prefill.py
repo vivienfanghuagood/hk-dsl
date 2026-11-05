@@ -1106,3 +1106,52 @@ def test_flash_packed_dsplit(kv_splits, group, warps, page, kv_order):
                                     kv_order=kv_order, kv_splits=kv_splits, pack=True)
     rows = _prefill_rows(KV_SPLIT_REQS, q_start)
     _attn_ref.check(got[rows], want[rows])
+
+
+@pytest.mark.skipif(not _route_arch(), reason="the route is gfx1100's and gfx1201's")
+def test_a_cache_past_4_gib_goes_to_vllm(monkeypatch):
+    """hk's buffer loads address 4 GiB from a tensor's base (vllm_prefill.SPAN_LIMIT): over a
+    TRITON_ATTN cache of Qwen3.8's shape past that (4.3 GB, the requests' pages at its far end) a
+    decode batch and a prefill chunk beside a decode go to vLLM's kernel -- its answer exactly,
+    hk's kernels not run (they read the wrong pages there, or fault)."""
+    import inspect
+
+    from hk.integration import vllm_prefill as vp
+
+    free, _ = torch.cuda.mem_get_info()
+    if free < (6 << 30):
+        pytest.skip("needs 6 GB of free device memory")
+    hkv, group, d, page = 4, 6, 256, 16
+    nb = (1 << 32) // (2 * page * hkv * d * 2) + 64
+    st = torch.zeros(nb, 2, page, hkv, d, device="cuda", dtype=torch.bfloat16)
+    k, v = st[:, 0], st[:, 1]
+    assert vp.span_why_not(vp._flash_kv(k, v)[0])
+    g = torch.Generator(device="cuda").manual_seed(5)
+    monkeypatch.setattr(vp, "_ORIG_U", _unified_ref)
+    monkeypatch.setattr(vp, "_U_SIG", inspect.signature(_unified_ref))
+    for reqs in ([(4000, 1), (3000, 1)], [(4000, 64), (3000, 1)]):
+        pages = [-(-(c + n) // page) for c, n in reqs]
+        table = torch.zeros(len(reqs), max(pages), dtype=torch.int32, device="cuda")
+        last = nb
+        for i, p in enumerate(pages):                 # the far end of the cache, past 4 GiB
+            table[i, :p] = torch.arange(last - p, last, dtype=torch.int32, device="cuda")
+            last -= p
+        used = table[table > 0].long().unique()
+        st[used] = torch.randn(st[used].shape, device="cuda", dtype=torch.bfloat16, generator=g)
+        n_tok = sum(n for _, n in reqs)
+        q = torch.randn(n_tok, hkv * group, d, device="cuda", dtype=torch.bfloat16, generator=g)
+        cu = torch.tensor([0] + [sum(n for _, n in reqs[: i + 1]) for i in range(len(reqs))],
+                          dtype=torch.int32, device="cuda")
+        lens = torch.tensor([c + n for c, n in reqs], dtype=torch.int32, device="cuda")
+        args = dict(q=q, k=k, v=v, cu_seqlens_q=cu, max_seqlen_q=max(n for _, n in reqs),
+                    seqused_k=lens, max_seqlen_k=int(lens.max()), softmax_scale=d ** -0.5,
+                    causal=True, window_size=(-1, -1), block_table=table, softcap=0,
+                    q_descale=None, k_descale=None, v_descale=None)
+        want = torch.empty_like(q)
+        _unified_ref(out=want, **args)
+        before = vp.PATCH.stats["hk"] + vp.PATCH.stats["decode"]
+        out = torch.full_like(q, float("nan"))
+        vp.unified_attention(out=out, **args)
+        torch.cuda.synchronize()
+        assert vp.PATCH.stats["hk"] + vp.PATCH.stats["decode"] == before, reqs
+        assert torch.equal(out.view(torch.int16), want.view(torch.int16)), reqs

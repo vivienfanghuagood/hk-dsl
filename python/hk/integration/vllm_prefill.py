@@ -89,6 +89,25 @@ def _op(head_dim: int, group: int, scale: Optional[float], page: int):
     return _OPS[key]
 
 
+#: hk's kernels read a tensor through a buffer resource -- 32-bit byte offsets from its base -- so a
+#: cache view spanning 4 GiB or more wraps: the wrong page read, or a fault. Measured on gfx1100 with
+#: Qwen3.8's cache (4 kv heads, d256): 2^20 tokens a layer (4.3 GB) faults the prefill and the decode,
+#: 983k (4.0 GB) is read right. A call over such a cache goes to vLLM's kernel.
+SPAN_LIMIT = 1 << 32
+
+
+def span_why_not(*ts) -> str:
+    """Why hk cannot address these cache views (each one's bytes from its first element to its
+    last, as its strides lay them out, at least SPAN_LIMIT), or ""."""
+    for t in ts:
+        span = (sum((n - 1) * st for n, st in zip(t.shape, t.stride()) if n > 0) + 1) \
+            * t.element_size()
+        if span >= SPAN_LIMIT:
+            return (f"cache view spans {span / 2 ** 30:.2f} GiB; hk's buffer loads address "
+                    f"{SPAN_LIMIT / 2 ** 30:.0f} GiB")
+    return ""
+
+
 def why_not(q, o, kv_cache_dtype, k_cache, v_cache, b_loc, b_start_loc, b_seq_len,
             alibi_slopes, sliding_window, skip_decode, fp8_out_scale, sinks,
             is_block_table_ptr, causal) -> str:
@@ -122,6 +141,9 @@ def why_not(q, o, kv_cache_dtype, k_cache, v_cache, b_loc, b_start_loc, b_seq_le
                 f"(it stages V^T pages as they are, past a sequence's end too)")
     if q.shape[1] % k_cache.shape[1]:
         return "query heads not a multiple of kv heads"
+    why = span_why_not(k_cache, v_cache)
+    if why:
+        return why
     for t in (b_loc, b_start_loc, b_seq_len):
         if t.dtype != torch.int32 or not t.is_contiguous():
             return "metadata not contiguous int32"
@@ -595,10 +617,11 @@ def u_why_not(a: dict) -> str:
             return "q / out heads not packed"
     if not out.is_contiguous():
         return "output not contiguous"
-    if _flash_kv(k, v) is None:
+    kv = _flash_kv(k, v)
+    if kv is None:
         return (f"key/value caches {tuple(k.shape)} strides {tuple(k.stride())} (V at +"
                 f"{(v.data_ptr() - k.data_ptr()) // k.element_size()}): not a layout hk reads")
-    return ""
+    return span_why_not(kv[0])
 
 
 #: The default-on rule's per-shape clause on TRITON_ATTN: hk takes a batch with prefill in it
@@ -925,9 +948,10 @@ def d_why_not(a: dict) -> str:
     if not decode_takes(len(a["seqused_k"]), int(k.shape[2]), int(q.shape[-1])):
         return ("head_dim 128 decode (HK_VLLM_DECODE=1 takes it)" if not DECODE_D128 else
                 "decode batch past hk's (vLLM's kernel reads as fast)")
-    if _flash_kv(k, a["v"]) is None:
+    kv = _flash_kv(k, a["v"])
+    if kv is None:
         return "key/value caches: not a layout hk reads"
-    return ""
+    return span_why_not(kv[0])
 
 
 def _decode_ops(head_dim: int, group: int, page: int, order: str, splits: int,
