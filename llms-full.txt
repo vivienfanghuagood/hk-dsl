@@ -119,6 +119,40 @@ a configured kernel to something that will call it many times.
 A tensor with fewer than four dimensions fills the trailing ones, so a 2-D
 tensor is `(rows, cols)` (`include/pyutils/hk_bind.cuh`).
 
+### Kernels made by a factory
+
+What a constexpr cannot carry -- a dtype in an annotation, `warps`, the arch,
+a Python function the body calls -- is a factory's argument: a function that
+defines the kernel and returns it. `@hk.specialize` makes the factory build each
+variant once and names the kernel after its arguments:
+
+```python
+@hk.specialize
+def silu_mul(*, dtype=hk.bf16, warps=4):
+    @hk.kernel(warps=warps, grid=lambda p: (hk.cdiv(p.o.cols, 64), hk.cdiv(p.o.rows, 16), 1))
+    def body(a: hk.Tensor[dtype], b: hk.Tensor[dtype], o: hk.Tensor[dtype]):
+        idx = hk.tile_coord(0, 0, hk.arch.block_idx.y, hk.arch.block_idx.x)
+        t = hk.RT(hk.fp32, 16, 64)          # the load converts; silu is fp32
+        g = a[idx].load(t)
+        g.silu(into=g)
+        o[idx] = (g * b[idx].load(t)).to(dtype)
+    return body
+
+k = silu_mul(dtype=hk.fp16)     # built once; silu_mul(dtype=hk.fp16, warps=4) is the same kernel
+k.name                          # 'silu_mul__dtypefp16_warps4'
+```
+
+The arguments, defaults included, are the key, so there is no
+`functools.lru_cache`, no name string spelled from the arguments and no
+`body.__name__ = name`. Without `@hk.specialize`, a kernel defined inside a
+function and given no `name=` is named `<factory>_<function>__<values>`
+from the factory values its body reads (and its annotations' dtypes and its
+warps), the same in every process. A top-level kernel keeps its function's
+name, and `name=` always wins. A kernel's `__name__` is its name, which is
+what `hk.profile`, `hk.check` and tracebacks show. Renaming a kernel changes
+its generated source, so it is compiled once more; nothing else is keyed on
+the name.
+
 ## Types
 
 * **Types are values you build**: `hk.RT(dtype, rows, cols, layout, frag=None)`
@@ -3894,7 +3928,7 @@ are bounded: any non-empty length. head_dim is 64 or 128 on both.
 
 ## Also exported
 
-`hk.fp4_operand`, `hk.fp8_operand`, `hk.gemv_w4`, `hk.lane_coords`, `hk.mx`, `hk.mx_scales_loose`, `hk.templates`
+`hk.fp4_operand`, `hk.fp8_operand`, `hk.gemv_w4`, `hk.lane_coords`, `hk.mx`, `hk.mx_scales_loose`, `hk.specialize`, `hk.templates`
 
 
 <!-- docs/api/hk.math.md -->
