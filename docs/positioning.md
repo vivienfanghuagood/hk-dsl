@@ -6,7 +6,9 @@ MFMA hazards).** Today its largest end-to-end gains are on Radeon (RDNA3 and
 RDNA4), where its kernels plug into vLLM and SGLang.
 
 The gates are its one unique feature. This page says what hk-dsl is, how it
-compares with the alternatives, and where its numbers come from.
+compares with the alternatives, and where its numbers come from. To use its
+kernels in a serving engine, you need none of it: [hk in vLLM](vllm.md),
+[hk in SGLang](sglang.md).
 
 ## How it works
 
@@ -161,7 +163,7 @@ Tested: measured on the part and run by CI's GPU tier. What the language and eac
   - clang 23 (ROCm 10.0, vLLM's ROCm image) is tested on gfx950.
   - clang 24 (ROCm 10.1) needs 0.9.0; 0.8.0 fails to compile there. It is
     not in CI ([toolchains](toolchains.md)).
-- **Python:** wheels for CPython 3.10 and 3.12 (Linux x86_64, glibc 2.35 or
+- **Python:** wheels for CPython 3.10 to 3.13 (Linux x86_64, glibc 2.35 or
   newer). Other versions build from source.
 
 Details: [install](install.md),
