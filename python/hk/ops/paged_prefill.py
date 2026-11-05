@@ -591,19 +591,35 @@ def paged_prefill_kernel(name: str, *, head_dim: int = 128, group: int = 4,
 _KERNELS: Dict[tuple, object] = {}
 
 
+#: merge_kernel: splits up to this unrolled, more in a runtime loop of MERGE_STEP splits a trip.
+MERGE_UNROLL = 32
+MERGE_STEP = 8
+
+
 def merge_kernel(name: str, *, head_dim: int = 128, kv_splits: int = 2, q_tile: int = Q_TILE,
-                 cols: int = 32):
+                 cols: int = 32, step: Optional[int] = None):
     """paged_prefill_kernel's `kv_splits` merge: a request's rows of `o` from the splits'
     partials, each weighed by l * exp2(m - the rows' max). Tensors: `seq_lens` (the grid's
     requests; not read), `q_start`, `tiles` (the same view the walk took), `o_part`, `ml_part`,
     `o`. A one-warp workgroup a (16 rows of a request's Q tiles, `cols` columns of a head,
     request): many small workgroups, as the merge is latency (one of 16 rows and all of a head's
     columns took 23 us a call); one-query requests (decodes=False's) and rows past a request's end are
-    not written."""
+    not written.
+
+    Up to MERGE_UNROLL splits the merge is unrolled: every split's (m, l) is read, then their
+    max, then the weighted sum. Past that (64 splits: one column vector a split no longer fits
+    in registers) it runs online over a runtime loop of `step` splits a trip -- a trip's m's,
+    l's and partials read before any is used, the running max takes theirs, the accumulator is
+    rescaled once (hk.ops.paged's decode merge, the same scheme). `step` = 0 forces the
+    unrolled form; None picks by MERGE_UNROLL."""
     cols = min(cols, head_dim)
     if head_dim % cols:
         raise ValueError(f"head_dim {head_dim}: a multiple of cols={cols}")
     n_cols = head_dim // cols
+    loop = (MERGE_STEP if kv_splits > MERGE_UNROLL else 0) if step is None else step
+    loop = min(loop, kv_splits)
+    if loop and kv_splits % loop:
+        raise ValueError(f"kv_splits {kv_splits}: a multiple of the merge step {loop}")
     t_o = hk.RT(fp32, 16, cols, "row")
     t_b = hk.RT(bf16, 16, cols, "row")
     cv = hk.col_vec(t_o)
@@ -618,6 +634,34 @@ def merge_kernel(name: str, *, head_dim: int = 128, kv_splits: int = 2, q_tile: 
         q_len = q_start[hk.elem_coord(0, 0, 0, req + 1)].load_scalar(invariant=True) - q0
         left = hk.min(hk.max(q_len - r0, 0), 16) * hk.min(hk.max(q_len - 1, 0), 1)
         slot = req * tiles.rows * q_tile + r0
+        if loop:
+            m_run = hk.full(cv, -1e30)
+            tot = hk.zeros(cv)
+            acc = hk.zeros(t_o)
+            for s1 in hk.range(0, kv_splits, loop):
+                ws = [ml_part[hk.elem_coord(s1 + j, head, 0, slot)].load(cv) for j in range(loop)]
+                ls = [ml_part[hk.elem_coord(s1 + j, head, 1, slot)].load(cv) for j in range(loop)]
+                os_ = [o_part[hk.elem_coord(0, s1 + j, slot, head * head_dim + c0)].load(
+                    t_b, bounded=True) for j in range(loop)]
+                m_old = m_run.copy()
+                for w in ws:
+                    m_run.max_(w)
+                alpha = m_old - m_run
+                alpha.exp2_()
+                tot *= alpha
+                acc *= alpha[:, None]
+                for w, l_s, o_b in zip(ws, ls, os_):
+                    w -= m_run
+                    w.exp2_()
+                    w *= l_s
+                    tot += w
+                    o_s = o_b.to(fp32)
+                    o_s *= w[:, None]
+                    acc += o_s
+            tot += 1e-30
+            acc /= tot[:, None]
+            o[hk.elem_coord(0, 0, q0 + r0, head * head_dim + c0)].store(acc.to(bf16), bounded=left)
+            return
         ms = [ml_part[hk.elem_coord(s, head, 0, slot)].load(cv) for s in range(kv_splits)]
         top = hk.full(cv, -1e30)
         for m in ms:

@@ -381,14 +381,17 @@ SHORT_Q = 64
 #: warps (twice that for d256), at most KVS_PACK_WARPS; its call has few workgroups, so the walk is
 #: cut finer. The more query heads a kv head has, the more a packed tile saves: group 8 takes it
 #: further than group 6. Fitted on tools/hk-bench's prefill sweep with every splits of {4, 8, 16,
-#: 32} (64 does not build its merge spill-free) against TRITON_ATTN and the unpacked plan; gfx1100:
+#: 32} against TRITON_ATTN and the unpacked plan; gfx1100:
 #: MiniCPM5 (d128, group 8) 1.2-2.8x the unpacked plan up to 64-token chunks, Qwen3.8 (d256, group
 #: 6) 1.5-2.8x up to 32, MiniCPM-V (d256, group 8) 1.3-4.2x up to 512 (where the unsplit kernel
-#: took it). gfx1201, from 16k (the unpacked plan as fast over 4k): MiniCPM5 1.4-3.4x up to 64,
+#: took it). 64 splits (paged_prefill.merge_kernel's loop form) over 16k-64k, against the rows of
+#: 16 / 32 (tools/hk-bench/results/2026-11-05/gfx1100/prefill-kvsplit-64.json): MiniCPM5 16-token
+#: chunks 1.18-1.28x, MiniCPM-V 32-64-token chunks 1.11-1.21x (16k:32 level); Qwen3.8 at most
+#: 1.04x, not taken. gfx1201, from 16k (the unpacked plan as fast over 4k): MiniCPM5 1.4-3.4x up to 64,
 #: Qwen3.8 1.1-4.2x up to 512 from 2k, MiniCPM-V 1.1-3.3x up to 256.
-KVS_PACKED = {("gfx1100", 128, 8): ((32, 4096, 32), (64, 4096, 16)),
+KVS_PACKED = {("gfx1100", 128, 8): ((16, 16384, 64), (32, 4096, 32), (64, 4096, 16)),
               ("gfx1100", 256, 6): ((16, 16384, 32), (32, 4096, 16)),
-              ("gfx1100", 256, 8): ((16, 16384, 32), (512, 4096, 16)),
+              ("gfx1100", 256, 8): ((16, 16384, 32), (64, 16384, 64), (512, 4096, 16)),
               ("gfx1201", 128, 8): ((16, 16384, 32), (64, 16384, 16)),
               ("gfx1201", 256, 6): ((16, 16384, 16), (512, 2048, 8)),
               ("gfx1201", 256, 8): ((16, 16384, 32), (32, 16384, 16), (256, 16384, 8))}

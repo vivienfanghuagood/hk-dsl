@@ -343,7 +343,7 @@ def _nan_past_ends(k, v, table, lens):
 
 def _flash_run(reqs, head_dim=128, h_kv=2, group=8, dsplit=False, layout="flash", seed=0,
                decodes=True, warps=None, page=ROCM_PAGE, v_ones=False, kv_order="planes",
-               nan_tail=False, kv_splits=1, pack=False):
+               nan_tail=False, kv_splits=1, pack=False, merge_step=None):
     q, (k, v), (k5, v4), table, lens, q_start = _rocm_case(reqs, head_dim=head_dim, h_kv=h_kv,
                                                            group=group, seed=seed, page=page,
                                                            v_ones=v_ones)
@@ -370,8 +370,9 @@ def _flash_run(reqs, head_dim=128, h_kv=2, group=8, dsplit=False, layout="flash"
         kern(q.view(n_tok, h * d), kv, kv, table, lens, q_start, tiles, out.view(n_tok, h * d),
              *packed)
         if kv_splits > 1:
-            pp.merge_kernel(f"t_pp_merge_d{head_dim}_ks{kv_splits}_t{tile}", head_dim=head_dim,
-                            kv_splits=kv_splits, q_tile=tile)(
+            pp.merge_kernel(f"t_pp_merge_d{head_dim}_ks{kv_splits}_t{tile}"
+                            f"{'' if merge_step is None else f'_m{merge_step}'}", head_dim=head_dim,
+                            kv_splits=kv_splits, q_tile=tile, step=merge_step)(
                 lens, q_start, tiles, *packed, out.view(n_tok, h * d))
     else:
         kern(q.view(n_tok, h * d), *pp.rocm_views(k5, v4), table, lens, q_start, tiles,
@@ -1059,11 +1060,14 @@ KV_SPLIT_REQS = [(4000, 32), (3000, 1), (900, 150), (0, 70), (63, 2), (5, 0)]
 
 
 @rocm_only
-@pytest.mark.parametrize("kv_splits", [2, 5, 16])
+@pytest.mark.parametrize("kv_splits,merge_step", [(2, None), (5, None), (16, None), (16, 4),
+                                                   (64, None)])
 @pytest.mark.parametrize("page", [16, 544])
-def test_flash_kv_splits(kv_splits, page):
+def test_flash_kv_splits(kv_splits, merge_step, page):
+    """(16, 4) and 64 splits: the merge's runtime loop (merge_kernel's step; past MERGE_UNROLL)."""
     got, want, q_start = _flash_run(KV_SPLIT_REQS, decodes=False, warps=4, page=page,
-                                    kv_splits=kv_splits, nan_tail=page == 544)
+                                    kv_splits=kv_splits, nan_tail=page == 544,
+                                    merge_step=merge_step)
     rows = _prefill_rows(KV_SPLIT_REQS, q_start)
     assert not torch.isnan(got[rows]).any()
     _attn_ref.check(got[rows], want[rows])
@@ -1085,7 +1089,7 @@ def test_flash_kv_splits_dsplit(kv_splits):
 #: GQA-packed tiles (pack=True): a tile the kv head's query heads of a run of tokens -- with and
 #: without the KV split, tiles of 16 and 32 tokens
 @rocm_only
-@pytest.mark.parametrize("kv_splits", [1, 4, 16])
+@pytest.mark.parametrize("kv_splits", [1, 4, 16, 64])
 @pytest.mark.parametrize("page,group,warps", [(16, 8, 8), (16, 4, 8), (544, 8, 16)])
 def test_flash_packed(kv_splits, page, group, warps):
     got, want, q_start = _flash_run(KV_SPLIT_REQS, group=group, decodes=False, warps=warps,
