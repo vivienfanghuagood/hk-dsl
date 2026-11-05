@@ -406,7 +406,7 @@ def test_verdict_kinds_are_the_documented_ones():
                 assert f["kind"] in KINDS
                 assert set(f) >= {"kind", "cost", "text", "evidence"}
             assert k["verdict"]["bound"] in (None, "memory_bound", "compute_bound",
-                                             "latency_bound")
+                                             "latency_bound", "bound_unknown")
 
 
 def test_cli_parses():
@@ -438,3 +438,88 @@ def test_gfx1100_without_counters():
     assert blas["matrix_core"]["busy"] < hk_["matrix_core"]["busy"]
     assert (blas["isa"]["main_loop"]["mix"]["per_matrix_instruction"]
             > hk_["isa"]["main_loop"]["mix"]["per_matrix_instruction"])
+
+
+# ------------------------------------------------------------------ gfx1201: no WMMA counter, no trace
+
+
+def _gemm_isa(loop_lds=32, outside_lds=8, loop_flops=32 * 8192, outside_flops=32 * 8192):
+    return {"total": {"mma_flops": loop_flops + outside_flops},
+            "matrix_dtype": "bf16",
+            "main_loop": {"mix": {"classes": {"wmma": 32, "ds_read": loop_lds - 8, "ds_write": 8},
+                                  "mma_flops": loop_flops, "instructions": 110}},
+            "prologue": {"mix": {"classes": {"ds_write": outside_lds}, "mma_flops": 0}},
+            "drain": {"mix": {"classes": {"wmma": 32}, "mma_flops": outside_flops}},
+            "epilogue": {"mix": {"classes": {}, "mma_flops": 0}}}
+
+
+def test_matrix_flops_from_the_isa_and_the_lds_count():
+    """A wave's matrix FLOPs where no counter counts WMMAs: the main loop's x
+    its trip count, read off SQ_INSTS_LDS, plus the drain's."""
+    from hk.profile.analyze import isa_matrix_flops_per_wave
+
+    waves, trips = 1000, 63
+    m = {"waves": waves, "instructions": {"lds": waves * (8 + 32 * trips)}}
+    est = isa_matrix_flops_per_wave(_gemm_isa(), m)
+    assert est["trips"] == pytest.approx(trips)
+    assert est["flops_per_wave"] == 32 * 8192 * trips + 32 * 8192
+    assert isa_matrix_flops_per_wave(_gemm_isa(), {"waves": waves}) is None      # no counter
+    assert isa_matrix_flops_per_wave(_gemm_isa(loop_lds=0), m) is None            # nothing to count
+
+
+def test_a_matrix_kernel_without_a_flop_rate_is_not_latency_bound():
+    """No counters, no trace: the compute roof cannot be read, so the verdict
+    says the bound is unknown instead of calling the kernel latency-bound."""
+    from hk.profile.analyze import KINDS, kernel_report
+
+    agent = {"cus": 64, "simds": 128, "ses": 4, "max_clock_mhz": 2900}
+    rec = {"name": "gemm", "median_ns": 1.76e6, "durations_ns": [1.76e6] * 5,
+           "grid": {"workgroups": 1792, "workgroup_size": 256}}
+    k = kernel_report("gfx1201", agent, rec, isa=_gemm_isa(), call_bytes=302e6, single=True)
+    assert k["verdict"]["bound"] == "bound_unknown" and "bound_unknown" in KINDS
+    assert "latency" not in k["verdict"]["line"]
+    # With the counters, the same kernel gets its FLOP rate and a bound.
+    waves = 1792 * 8
+    rec["counters"] = {"SQ_WAVES": waves, "SQ_INSTS_LDS": waves * (8 + 32 * 63)}
+    k = kernel_report("gfx1201", agent, rec, isa=_gemm_isa(), call_bytes=302e6, single=True)
+    assert k["roofline"]["flops"] == waves * 32 * 8192 * 64
+    assert k["roofline"]["main_loop_trips"] == pytest.approx(63)
+    assert k["verdict"]["bound"] in ("compute_bound", "latency_bound", "memory_bound")
+
+
+def test_gfx1201_counters_that_count():
+    """On an R9700 (ROCm 7.2.3) only GRBM_GUI_ACTIVE, SQ_WAVES and SQ_BUSY_CYCLES
+    count; a wave-cycle count of 0 for a kernel whose waves ran is a counter
+    that does not count, not an idle GPU."""
+    from hk.profile.counters import PASSES, derive
+
+    assert PASSES["gfx1201"] == [("core", ["GRBM_GUI_ACTIVE", "SQ_WAVES", "SQ_BUSY_CYCLES"])]
+    raw = {"GRBM_GUI_ACTIVE": 2712046.0, "SQ_WAVES": 8192.0, "SQ_BUSY_CYCLES": 86782073.0,
+           "SQ_WAVE_CYCLES": 0.0}
+    m = derive("gfx1201", raw, {"cus": 64, "simds": 128, "ses": 4}, {"core": dict(raw)})
+    assert m["waves"] == 8192 and "achieved_waves_per_simd" not in m
+
+
+def test_gfx1201_gemm_and_streaming_replayed():
+    """R9700 (ROCm 7.2.3, no thread-trace decoder, only three counters that
+    count): hk.ops.matmul at 4096^3 has no FLOP rate, so its bound is unknown,
+    never latency-bound; given its FLOPs it is compute-bound. The 16x64-tile
+    GELU-and-mul is memory-bound on the call's own bytes."""
+    from hk.profile import replay
+    from hk.profile.analyze import kernel_report
+
+    p = FIX / "gfx1201-gemm.json"
+    if not p.exists():
+        pytest.skip("fixture missing")
+    (gemm,) = replay(p)
+    assert gemm["verdict"]["bound"] == "bound_unknown"
+    assert "latency" not in gemm["verdict"]["line"]
+    doc = json.loads(p.read_text())
+    k = doc["kernels"][0]
+    given = kernel_report(doc["arch"], doc["agent"], k["rec"], build=k.get("build"),
+                          isa=k.get("isa"), call_bytes=doc.get("call_bytes"),
+                          flops=2 * 4096 ** 3, single=doc.get("single", False))
+    assert given["verdict"]["bound"] == "compute_bound"
+    (tiles,) = replay(FIX / "gfx1201-c.json")
+    assert tiles["verdict"]["bound"] == "memory_bound"
+    assert tiles["roofline"]["of_dram_min"] >= 0.8

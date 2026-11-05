@@ -4,7 +4,7 @@ rocprofv3 collects one group of counters per run of the program (a *pass*):
 a group must fit the counter registers of each block, and a group that does
 not makes rocprofv3 abort the program ("Request exceeds the capabilities of
 the hardware to collect"). The groups below were each run on the part they
-are for (MI355X, ROCm 7.2.3; W7900D, ROCm 7.2.4) and fit; `derive()` turns
+are for (MI355X, ROCm 7.2.3; W7900D, ROCm 7.2.4; R9700, ROCm 7.2.3) and fit; `derive()` turns
 their raw sums into the metrics hk.profile reports.
 
 How a raw value is read, measured rather than taken from the counter's
@@ -63,6 +63,12 @@ PASSES: Dict[str, List[Tuple[str, List[str]]]] = {
                  "TA_TA_BUSY_max"]),
         ("latency", ["LdsLatency"]),
     ],
+    # gfx1201: rocprofv3 -L lists most of gfx1100's counters, but on an R9700
+    # (ROCm 7.2.3) every SQ_INSTS_*, SQ_WAVE_CYCLES, SQ_WAIT_*, GL2C_* and TA_*
+    # one reads 0 for every kernel, alone or in a group; these three count.
+    "gfx1201": [
+        ("core", ["GRBM_GUI_ACTIVE", "SQ_WAVES", "SQ_BUSY_CYCLES"]),
+    ],
 }
 
 #: What each arch's counters cannot attribute, said in the report.
@@ -85,6 +91,14 @@ CANNOT: Dict[str, List[str]] = {
         "MALL or GDDR6 served them",
         "per-type active cycles (SQ_ACTIVE_INST_*), VMEM latency and CU busy: not exposed "
         "on gfx11; the thread trace attributes the waits",
+    ],
+    "gfx1201": [
+        "matrix FLOPs: no counter counts WMMA instructions, and the instruction counters "
+        "(SQ_INSTS_*) read 0 under ROCm 7.2.3, so the main loop's trip count cannot be read "
+        "either; only the thread trace counts them. Without one, give the work with --flops",
+        "bytes past the L2, cache hits, wave cycles and waits (GL2C_*, SQ_WAVE_CYCLES, "
+        "SQ_WAIT_*): listed by rocprofv3 but read 0 under ROCm 7.2.3; the call's own bytes "
+        "against DRAM are what the roofline has",
     ],
 }
 
@@ -121,6 +135,12 @@ def derive(arch: str, raw: Dict[str, float], agent: Dict[str, Any],
     does not skew another pass's metrics."""
     g = raw.get
     dicts = [d for d in (by_pass or {}).values() if d]
+    if raw.get("SQ_WAVES") and not raw.get("SQ_WAVE_CYCLES"):
+        # Waves ran, so a wave-cycle count of 0 is a counter that does not
+        # count here (gfx1201 under ROCm 7.2.3), not an idle kernel.
+        raw = {k: v for k, v in raw.items() if k != "SQ_WAVE_CYCLES"}
+        g = raw.get
+        dicts = [{k: v for k, v in dd.items() if k != "SQ_WAVE_CYCLES"} for dd in dicts]
 
     def src(*names):
         for d in dicts:
@@ -157,7 +177,7 @@ def derive(arch: str, raw: Dict[str, float], agent: Dict[str, Any],
     if d is not None and cyc(d) and cus:
         out["cu_busy"] = _r(d["SQ_BUSY_CU_CYCLES"] / (cyc(d) * cus), 3)
     d = src("GRBM_GUI_ACTIVE", "SQ_BUSY_CYCLES")
-    if d is not None and cyc(d) and ses and arch.startswith("gfx11"):
+    if d is not None and cyc(d) and ses and arch.startswith(("gfx11", "gfx12")):
         out["se_busy"] = _r(d["SQ_BUSY_CYCLES"] / (cyc(d) * ses), 3)
     d = src("GRBM_GUI_ACTIVE", "SQ_VALU_MFMA_BUSY_CYCLES")
     if d is not None and cyc(d) and simds:
@@ -191,9 +211,13 @@ def derive(arch: str, raw: Dict[str, float], agent: Dict[str, Any],
     else:
         parts = [(g("GL2C_EA_RDREQ_32B_sum"), 32), (g("GL2C_EA_RDREQ_64B_sum"), 64),
                  (g("GL2C_EA_RDREQ_96B_sum"), 96), (g("GL2C_EA_RDREQ_128B_sum"), 128)]
+        if arch.startswith("gfx12"):
+            parts = [p for p in parts if p[1] != 96]     # gfx12 has no 96-byte request
         if all(v is not None for v, _ in parts):
             out["fetch_bytes"] = sum(v * s for v, s in parts)
-        wr, w64 = g("GL2C_MC_WRREQ_sum"), g("GL2C_EA_WRREQ_64B_sum")
+        wr = g("GL2C_MC_WRREQ_sum") if g("GL2C_MC_WRREQ_sum") is not None \
+            else g("GL2C_EA_WRREQ_sum")
+        w64 = g("GL2C_EA_WRREQ_64B_sum")
         if wr is not None and w64 is not None:
             out["write_bytes"] = (wr - w64) * 32 + w64 * 64
         hit, miss = g("GL2C_HIT_sum"), g("GL2C_MISS_sum")
@@ -233,8 +257,9 @@ def derive(arch: str, raw: Dict[str, float], agent: Dict[str, Any],
             lat[k] = _r(g(name), 1)
     if lat:
         out["latency_cycles"] = lat
-    if g("TA_TA_BUSY_max") is not None and cycles:
-        out["ta_busy"] = _r(g("TA_TA_BUSY_max") / cycles, 3)
+    ta = g("TA_TA_BUSY_max") if g("TA_TA_BUSY_max") is not None else g("TA_BUSY_max")
+    if ta is not None and cycles:
+        out["ta_busy"] = _r(ta / cycles, 3)
     return out
 
 

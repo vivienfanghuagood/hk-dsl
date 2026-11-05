@@ -34,6 +34,10 @@ PLAN = {
         "c": ("gelu_mul_tiles", "gelu_mul_inputs", "strips", "gelu_mul_strips"),
         "gemm": ("matmul", "square_inputs", "hipblaslt", "hipblaslt"),
     },
+    "gfx1201": {
+        "c": ("gelu_mul_tiles", "gelu_mul_inputs", "strips", "gelu_mul_strips"),
+        "gemm": ("matmul", "square_inputs", "hipblaslt", "hipblaslt"),
+    },
 }
 
 
