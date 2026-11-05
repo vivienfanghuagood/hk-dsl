@@ -222,7 +222,8 @@ def w4a16_kernel(name: str, *, tokens: int = 1, slices: int = 4, warps: int = 16
 
 
 def w4a16_large_kernel(name: str, *, group: int = 32, block_m: int = 128, block_n: int = 128,
-                       warps: int = 8, warp_rows: int = 2, prefetch: bool = False):
+                       warps: int = 8, warp_rows: int = 2, prefetch: bool = False,
+                       lds_buffers: int = 1):
     """The large-batch W4A16 GEMM on vLLM's RDNA skinny layout read in place (prefill): C (M, N)
     = x (M, K) @ W.T, fp16, W symmetric (zero point 8) as `exllama_matmul` reads it. A workgroup
     takes a block_m x block_n tile of C; every 64-deep K step its warps stage x's rows into LDS and
@@ -242,6 +243,54 @@ def w4a16_large_kernel(name: str, *, group: int = 32, block_m: int = 128, block_
     ty_a = hk.RT(fp16, rm, 16, "row")
     ty_b = hk.RT(fp16, rn, 16, "row")
     ty_c = hk.RT(fp32, rm, rn, "col")
+
+    def body_db(x: hk.Tensor[fp16], qw: hk.Tensor[i32], s: hk.Tensor[fp16], c: hk.Tensor[fp16]):
+        """Two LDS buffers, one barrier a K step: step t's WMMAs read buffer t % 2 while step t+1's
+        x and W (fetched and decoded into registers first) go into the other. Unrolled by two so
+        the buffer is static; K a multiple of 128."""
+        As = hk.lds.alloc(st_a, count=2, name="As")
+        Bs = hk.lds.alloc(st_b, count=2, name="Bs")
+        n0 = hk.arch.block_idx.x * block_n
+        m0 = hk.arch.block_idx.y * block_m
+        wid = hk.arch.warp_id()
+        wr = wid // warp_cols
+        wc = wid % warp_cols
+        acc = hk.zeros(ty_c)
+        n_k = x.cols // ks
+
+        def fetch(k, a_into=None, w_into=None):
+            a_t = x[hk.elem_coord(0, 0, m0 + wid * (block_m // warps), k)].load(
+                ty_ld_a, bounded=True, into=a_into)
+            w_t = hk.load_w4(ty_ld_b, qw, s, None, n0 + wid * (block_n // warps), k, group=group,
+                             zero=SYMMETRIC_ZERO, exllama=True, into=w_into)
+            return a_t, w_t
+
+        def put(buf, a_t, w_t):
+            As[buf].subtile(block_m // warps, ks, wid, 0).store(a_t)
+            Bs[buf].subtile(block_n // warps, ks, wid, 0).store(w_t)
+
+        def mma(buf):
+            for sl in range(ks // 16):
+                a_s = As[buf].subtile(rm, 16, wr, sl).load(ty_a, wait=False)
+                b_s = Bs[buf].subtile(rn, 16, wc, sl).load(ty_b, wait=False)
+                hk.lds.wait_for(a_s, b_s)
+                acc_ref[0] += a_s @ b_s.T
+
+        acc_ref = [acc]
+        a_t, w_t = fetch(0)
+        put(0, a_t, w_t)
+        hk.arch.barrier()
+        for t2 in hk.range(n_k // 2):
+            k = t2 * (2 * ks)
+            fetch(k + ks, a_into=a_t, w_into=w_t)                 # step 2t2+1 into registers
+            mma(0)                                                # step 2t2 from buffer 0
+            put(1, a_t, w_t)
+            hk.arch.barrier()
+            fetch(hk.min(k + 2 * ks, (n_k - 1) * ks), a_into=a_t, w_into=w_t)
+            mma(1)
+            put(0, a_t, w_t)                                      # (the last one unused)
+            hk.arch.barrier()
+        c[hk.elem_coord(0, 0, m0 + wr * rm, n0 + wc * rn)].store(acc_ref[0], bounded=True)
 
     def body(x: hk.Tensor[fp16], qw: hk.Tensor[i32], s: hk.Tensor[fp16], c: hk.Tensor[fp16]):
         As = hk.lds.alloc(st_a, name="As")
@@ -265,11 +314,13 @@ def w4a16_large_kernel(name: str, *, group: int = 32, block_m: int = 128, block_
             a_t, w_t = fetch(0)
         for t in hk.range(n_k):
             k = t * ks
-            if not prefetch:
-                a_t, w_t = fetch(k)
+            if prefetch:
+                a_c, w_c = a_t, w_t
+            else:
+                a_c, w_c = fetch(k)
             hk.arch.barrier()
-            As.subtile(block_m // warps, ks, wid, 0).store(a_t)
-            Bs.subtile(block_n // warps, ks, wid, 0).store(w_t)
+            As.subtile(block_m // warps, ks, wid, 0).store(a_c)
+            Bs.subtile(block_n // warps, ks, wid, 0).store(w_c)
             hk.arch.barrier()
             if prefetch:
                 # the next K step's x and W in flight, and W decoded, behind this step's WMMAs
@@ -284,8 +335,9 @@ def w4a16_large_kernel(name: str, *, group: int = 32, block_m: int = 128, block_
                 acc += a_s @ b_s.T
         c[hk.elem_coord(0, 0, m0 + wr * rm, n0 + wc * rn)].store(acc, bounded=True)
 
-    body.__name__ = name
-    return hk.kernel(body, warps=warps, name=name,
+    fn = body_db if lds_buffers == 2 else body
+    fn.__name__ = name
+    return hk.kernel(fn, warps=warps, name=name,
                      grid=lambda p: (p.qw.rows // block_n, hk.cdiv(p.x.rows, block_m), 1))
 
 
