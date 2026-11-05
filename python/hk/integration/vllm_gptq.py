@@ -22,8 +22,9 @@ On gfx1201 vLLM gives the layers `RDNAHybridW4A16LinearKernel` instead: its HIP 
 5 tokens (2 on a deep K such as down_proj, an LDS limit), its Triton GEMM above, 3.5-4x slower at
 the switch. There hk reads vLLM's own tensors in place (`hk.ops.w4a16.exllama_matmul`: hk's
 decode forms on vLLM's ExLlama-shuffled codes), so no second copy is held, and takes exactly
-the batches vLLM would send to Triton up to `HYBRID_MAX_M` tokens (`hk_vllm::gptq_w4a16_hybrid`);
-vLLM's own op runs the rest. That op is called without zero points for these symmetric layers:
+every batch vLLM would send to Triton (`hk_vllm::gptq_w4a16_hybrid`): its decode forms up to
+`HYBRID_MAX_M` tokens, its large-batch form above (prefill). vLLM's own op runs the batches its HIP
+kernel takes and any shape hk's forms do not. That op is called without zero points for these symmetric layers:
 this vLLM passes their stored qzeros to it, and its Triton path asserts on their stride at start.
 
 What it refuses, counted in `REFUSED` by reason: act-order checkpoints
@@ -72,9 +73,11 @@ PATCH = engine.Op(
 STATS = PATCH.stats
 
 _RDNA3, _HYBRID = "RDNA3W4A16LinearKernel", "RDNAHybridW4A16LinearKernel"
-#: Where hk takes RDNAHybridW4A16LinearKernel's layers, and the most tokens it takes there (its
-#: decode forms' reach): on Qwen3.8-27B-GPTQ's shapes (group 32) hk is 1.8-8.3x vLLM's Triton GEMM
-#: on every shape from where vLLM leaves its HIP kernel to 64 tokens.
+#: Where hk takes RDNAHybridW4A16LinearKernel's layers, and the most tokens its decode forms take
+#: there: on Qwen3.8-27B-GPTQ's shapes (group 32) hk is 1.8-8.3x vLLM's Triton GEMM on every shape
+#: from where vLLM leaves its HIP kernel to 64 tokens. Above, the large-batch form
+#: (`hk.ops.w4a16.exllama_large_matmul`) takes every batch: 1.12-2.48x vLLM's Triton GEMM at
+#: 65-4096 tokens on those shapes (95-108 TF/s against vLLM's 39-94).
 HYBRID_ARCHES = ("gfx1201",)
 HYBRID_MAX_M = 64
 
@@ -86,7 +89,7 @@ def _fake_hybrid(x, w_q, w_s, group, cu):
 HYBRID = engine.Op(
     "hk_vllm::gptq_w4a16_hybrid",
     "gptq_w4a16_hybrid(Tensor x, Tensor w_q, Tensor w_s, int group, int cu) -> Tensor",
-    _fake_hybrid, paths=("hk", "fallback"), graph="safe")
+    _fake_hybrid, paths=("hk", "hk_large", "fallback"), graph="safe")
 
 #: vLLM's own switch from its HIP to its Triton GEMM (rdna_hybrid_w4a16), read at patch time.
 _SKINNY: dict = {}
@@ -99,16 +102,21 @@ def _vllm_skinny(m: int, k: int) -> bool:
 
 def gptq_w4a16_hybrid(x, w_q, w_s, group: int, cu: int):
     """y = x @ W.T on vLLM's own hybrid-kernel tensors: hk's in-place small-batch form for the
-    batches vLLM would run on Triton (up to HYBRID_MAX_M tokens), vLLM's op otherwise."""
+    batches vLLM would run on Triton up to HYBRID_MAX_M tokens, its large-batch form above, and
+    vLLM's op otherwise."""
     import torch  # noqa: PLC0415
 
     from ..ops import w4a16 as hk_w4  # noqa: PLC0415
 
     m, k = x.shape
-    if (m <= HYBRID_MAX_M and x.dtype == torch.float16 and w_s.dtype == torch.float16
-            and not _vllm_skinny(m, k)):
+    n = w_q.shape[0]
+    fp16 = x.dtype == torch.float16 and w_s.dtype == torch.float16
+    if fp16 and m <= HYBRID_MAX_M and not _vllm_skinny(m, k):
         HYBRID.count("hk")
         return hk_w4.exllama_matmul(x, w_q.view(torch.int32), w_s, group)
+    if fp16 and m > HYBRID_MAX_M and hk_w4.exllama_large_takes(n, k, group):
+        HYBRID.count("hk_large")
+        return hk_w4.exllama_large_matmul(x, w_q.view(torch.int32), w_s, group)
     HYBRID.count("fallback")
     return torch.ops.vllm.rdna_hybrid_w4a16_apply(x, w_q, w_s, None, None, cu, group)
 
@@ -344,7 +352,8 @@ def apply_patch() -> str:
     return (f"gptq -> hk for 4-bit symmetric GPTQ layers on RDNA3W4A16LinearKernel "
             f"(hk's symmetric form), 16-bit batches of {MIN_M} to 64 tokens, and on "
             f"RDNAHybridW4A16LinearKernel ({', '.join(HYBRID_ARCHES)}) the fp16 batches vLLM "
-            f"runs on Triton, to {HYBRID_MAX_M} tokens, in place (compile cache "
+            f"runs on Triton (decode forms to {HYBRID_MAX_M} tokens, the large-batch form "
+            f"above), in place (compile cache "
             f"{_own_compile_cache('hk-gptq')})")
 
 

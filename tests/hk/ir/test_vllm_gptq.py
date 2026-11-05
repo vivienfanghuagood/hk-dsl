@@ -191,27 +191,28 @@ def test_hybrid_layers_need_vllms_switch(monkeypatch):
 
 @pytest.mark.parametrize("m,k,path", [
     (1, 5120, "fallback"), (5, 5120, "fallback"),         # vLLM's HIP kernel: left to it
-    (6, 5120, "hk"), (64, 5120, "hk"),                     # vLLM's Triton, to 64 tokens: hk's
-    (65, 5120, "fallback"), (512, 5120, "fallback"),
+    (6, 5120, "hk"), (64, 5120, "hk"),                     # vLLM's Triton, to 64 tokens: hk's decode
+    (65, 5120, "hk_large"), (512, 5120, "hk_large"),       # above: hk's large-batch form
     (2, 17408, "fallback"), (3, 17408, "hk"),              # deep K: vLLM leaves HIP at 3 tokens
 ])
-def test_hk_takes_the_batches_vllm_sends_to_triton_up_to_64(monkeypatch, _vllm_switch, m, k, path):
+def test_hk_takes_every_batch_vllm_sends_to_triton(monkeypatch, _vllm_switch, m, k, path):
     torch = pytest.importorskip("torch")
     from hk.ops import w4a16
 
     seen = []
     monkeypatch.setattr(w4a16, "exllama_matmul", lambda *a: seen.append("hk") or "hk")
+    monkeypatch.setattr(w4a16, "exllama_large_matmul", lambda *a: seen.append("hk_large") or "hk")
     monkeypatch.setattr(torch.ops, "vllm", SimpleNamespace(
         rdna_hybrid_w4a16_apply=lambda x, w_q, w_s, w_zp, bias, cu, g: seen.append(w_zp) or "vllm"),
         raising=False)
     x = torch.empty(m, k, dtype=torch.float16)
-    w_q = torch.empty(64, k // 2, dtype=torch.int8)
-    w_s = torch.empty(64, k // 32, dtype=torch.float16)
+    w_q = torch.empty(128, k // 2, dtype=torch.int8)            # N: a whole large-form tile
+    w_s = torch.empty(128, k // 32, dtype=torch.float16)
     before = dict(vllm_gptq.HYBRID.stats)
     vllm_gptq.gptq_w4a16_hybrid(x, w_q, w_s, 32, 64)
     assert vllm_gptq.HYBRID.stats[path] == before[path] + 1
     # vLLM's op is called without zero points: these layers are symmetric
-    assert seen == (["hk"] if path == "hk" else [None])
+    assert seen == ([path] if path != "fallback" else [None])
 
 
 def test_bf16_batches_stay_on_vllm(monkeypatch, _vllm_switch):
