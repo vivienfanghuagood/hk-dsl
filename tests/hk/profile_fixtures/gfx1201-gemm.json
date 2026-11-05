@@ -1,0 +1,308 @@
+{
+ "schema": 1,
+ "arch": "gfx1201",
+ "agent": {
+  "name": "gfx1201",
+  "product": "AMD Radeon Graphics",
+  "cus": 64,
+  "simds": 128,
+  "xcc": 1,
+  "ses": 4,
+  "simd_per_cu": 2,
+  "max_waves_per_simd": 16,
+  "max_waves_per_cu": 32,
+  "lds_kb": 64,
+  "max_clock_mhz": 2350,
+  "wave": 32
+ },
+ "call_bytes": 100663296,
+ "single": true,
+ "versions": {
+  "python": "3.12.3",
+  "hk": "0.9.7",
+  "hk_src": "93eecd3adce9",
+  "torch": "2.10.0+rocm7.2.3.git1a270074",
+  "hip": "7.2.53211",
+  "triton": "3.6.0+rocm7.2.3.git4ed88892",
+  "rocprofv3": "1.1.0"
+ },
+ "device": "AMD Radeon Graphics",
+ "kernels": [
+  {
+   "rec": {
+    "key": "0:gemm_bf16_128x128x64_w8r4_s1_d32_g4_p2_l1_kernel(globals)",
+    "name": "gemm_bf16_128x128x64_w8r4_s1_d32_g4_p2_l1_kernel(globals)",
+    "launches": 20,
+    "durations_ns": [
+     1060732,
+     1067652,
+     1077132,
+     1073053,
+     1064732,
+     1076012,
+     1076452,
+     1072932,
+     1072172,
+     1077772,
+     1066812,
+     1076492,
+     1078292,
+     1078852,
+     1060213,
+     1068853,
+     1075612,
+     1078532,
+     1078292,
+     1068412
+    ],
+    "median_ns": 1074332.5,
+    "noise": 0.0037,
+    "grid": {
+     "threads": 262144,
+     "workgroup": 256,
+     "workgroups": 1024,
+     "lds_bytes": 0,
+     "scratch": 0,
+     "vgpr": 200,
+     "agpr": 0,
+     "sgpr": 128
+    },
+    "counters": {
+     "SQ_BUSY_CYCLES": 86824210.0,
+     "SQ_WAVES": 8192.0,
+     "GRBM_GUI_ACTIVE": 2713375.0
+    },
+    "counter_spread": {
+     "SQ_BUSY_CYCLES": 0.0001,
+     "SQ_WAVES": 0.0,
+     "GRBM_GUI_ACTIVE": 0.0001
+    },
+    "counters_by_pass": {
+     "core": {
+      "SQ_BUSY_CYCLES": 86824210.0,
+      "SQ_WAVES": 8192.0,
+      "GRBM_GUI_ACTIVE": 2713375.0
+     }
+    },
+    "counter_pass_ns": {
+     "core": 1078812
+    },
+    "iters": 20
+   },
+   "build": {
+    "kernel": "gemm_bf16_128x128x64_w8r4_s1_d32_g4_p2_l1",
+    "consts": {},
+    "arch": "gfx1201",
+    "warps": 8,
+    "threads": 256,
+    "lds_bytes": 32768,
+    "binary": "<workspace>/hk-dsl-profile/cache/05f1448909bb970d8021ff2a0d13265b/hk_gemm_bf16_128x128x64_w8r4_s1_d32_g4_p2_l1_05f1448909bb.cpython-312-x86_64-linux-gnu.so",
+    "source": "<workspace>/hk-dsl-profile/cache/05f1448909bb970d8021ff2a0d13265b/kernel.cpp",
+    "instantiations": [
+     {
+      "name": "gemm_bf16_128x128x64_w8r4_s1_d32_g4_p2_l1_kernel(globals)",
+      "vgpr": 197,
+      "agpr": 0,
+      "sgpr": 30,
+      "vgpr_charged": 216,
+      "lds": 0,
+      "scratch": 0,
+      "spill": 0,
+      "occupancy_by_regs": 7,
+      "occupancy_by_lds": 8,
+      "occupancy": 7,
+      "max_waves_per_simd": 16
+     }
+    ]
+   },
+   "isa": {
+    "function": "_Z48gemm_bf16_128x128x64_w8r4_s1_d32_g4_p2_l1_kernel7globals",
+    "instructions": 1227,
+    "total": {
+     "instructions": 1227,
+     "classes": {
+      "wmma": 64,
+      "valu": 538,
+      "valu_trans": 2,
+      "salu": 166,
+      "smem": 13,
+      "vmem_load": 24,
+      "vmem_store": 64,
+      "ds_read": 48,
+      "ds_write": 16,
+      "barrier": 6,
+      "branch": 12,
+      "nop": 1,
+      "other": 273
+     },
+     "waits": {},
+     "mma_flops": 524288,
+     "bytes_per_lane": {
+      "vmem_load": {
+       "16": 24
+      },
+      "ds_write": {
+       "16": 16
+      },
+      "ds_read": {
+       "16": 48
+      },
+      "vmem_store": {
+       "2": 64
+      }
+     },
+     "per_matrix_instruction": 18.172
+    },
+    "loops": [
+     {
+      "start": "0x239c",
+      "end": "0x2678",
+      "instructions": 104,
+      "mix": {
+       "instructions": 104,
+       "classes": {
+        "wmma": 32,
+        "valu": 2,
+        "salu": 9,
+        "vmem_load": 8,
+        "ds_read": 24,
+        "ds_write": 8,
+        "barrier": 4,
+        "branch": 1,
+        "other": 16
+       },
+       "waits": {},
+       "mma_flops": 262144,
+       "bytes_per_lane": {
+        "ds_read": {
+         "16": 24
+        },
+        "ds_write": {
+         "16": 8
+        },
+        "vmem_load": {
+         "16": 8
+        }
+       },
+       "per_matrix_instruction": 2.25
+      }
+     }
+    ],
+    "main_loop": {
+     "start": "0x239c",
+     "end": "0x2678",
+     "instructions": 104,
+     "mix": {
+      "instructions": 104,
+      "classes": {
+       "wmma": 32,
+       "valu": 2,
+       "salu": 9,
+       "vmem_load": 8,
+       "ds_read": 24,
+       "ds_write": 8,
+       "barrier": 4,
+       "branch": 1,
+       "other": 16
+      },
+      "waits": {},
+      "mma_flops": 262144,
+      "bytes_per_lane": {
+       "ds_read": {
+        "16": 24
+       },
+       "ds_write": {
+        "16": 8
+       },
+       "vmem_load": {
+        "16": 8
+       }
+      },
+      "per_matrix_instruction": 2.25
+     },
+     "which": 0
+    },
+    "prologue": {
+     "instructions": 590,
+     "mix": {
+      "instructions": 590,
+      "classes": {
+       "valu": 292,
+       "valu_trans": 2,
+       "salu": 147,
+       "smem": 11,
+       "vmem_load": 16,
+       "ds_write": 8,
+       "barrier": 2,
+       "branch": 11,
+       "other": 101
+      },
+      "waits": {},
+      "mma_flops": 0,
+      "bytes_per_lane": {
+       "vmem_load": {
+        "16": 16
+       },
+       "ds_write": {
+        "16": 8
+       }
+      }
+     },
+     "start": "0x1700"
+    },
+    "drain": {
+     "instructions": 362,
+     "mix": {
+      "instructions": 362,
+      "classes": {
+       "wmma": 32,
+       "valu": 209,
+       "salu": 10,
+       "smem": 2,
+       "vmem_store": 51,
+       "ds_read": 24,
+       "other": 34
+      },
+      "waits": {},
+      "mma_flops": 262144,
+      "bytes_per_lane": {
+       "ds_read": {
+        "16": 24
+       },
+       "vmem_store": {
+        "2": 51
+       }
+      },
+      "per_matrix_instruction": 10.312
+     },
+     "start": "0x267c"
+    },
+    "epilogue": {
+     "instructions": 171,
+     "mix": {
+      "instructions": 171,
+      "classes": {
+       "valu": 35,
+       "vmem_store": 13,
+       "nop": 1,
+       "other": 122
+      },
+      "waits": {},
+      "mma_flops": 0,
+      "bytes_per_lane": {
+       "vmem_store": {
+        "2": 13
+       }
+      }
+     },
+     "start": "0x3090"
+    },
+    "source": "code object (llvm-objdump)",
+    "matrix_dtype": "bf16"
+   },
+   "main": true,
+   "flops": null,
+   "bytes": null
+  }
+ ]
+}

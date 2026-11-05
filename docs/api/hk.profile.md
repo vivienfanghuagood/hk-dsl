@@ -233,6 +233,7 @@ compiler's, from the build row, where hk built it).
  "memory_bound",
  "compute_bound",
  "latency_bound",
+ "bound_unknown",
  "tail",
  "underfilled",
  "epilogue",
@@ -429,6 +430,16 @@ does not skew another pass's metrics.
     "LdsLatency"
    ]
   ]
+ ],
+ "gfx1201": [
+  [
+   "core",
+   [
+    "GRBM_GUI_ACTIVE",
+    "SQ_WAVES",
+    "SQ_BUSY_CYCLES"
+   ]
+  ]
  ]
 }
 ```
@@ -446,6 +457,10 @@ does not skew another pass's metrics.
   "MFMA-style per-type instruction counts: only VALU, SALU, LDS, SMEM, texture load/store and FLAT are counted",
   "Infinity Cache (MALL) hits: GL2C_EA/MC requests are past the L2, whether the MALL or GDDR6 served them",
   "per-type active cycles (SQ_ACTIVE_INST_*), VMEM latency and CU busy: not exposed on gfx11; the thread trace attributes the waits"
+ ],
+ "gfx1201": [
+  "matrix FLOPs: no counter counts WMMA instructions, and the instruction counters (SQ_INSTS_*) read 0 under ROCm 7.2.3, so the main loop's trip count cannot be read either; only the thread trace counts them. Without one, give the work with --flops",
+  "bytes past the L2, cache hits, wave cycles and waits (GL2C_*, SQ_WAVE_CYCLES, SQ_WAIT_*): listed by rocprofv3 but read 0 under ROCm 7.2.3; the call's own bytes against DRAM are what the roofline has"
  ]
 }
 ```

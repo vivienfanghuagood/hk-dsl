@@ -427,12 +427,17 @@ KVS_DEC_MAX_TOKENS = {("gfx1100", 256, 6): 1 << 19}
 #: 0.72x (over 8k), MiniCPM5 1.64-3.41x up to 2^18 decode tokens (7 x 32k, 15 x 8k) but 1.06-1.16x
 #: at 15 x 32k; Qwen3.8 over 16k-32k 1.28-2.93x up to 7 decodes and ~170k decode tokens (two seeds,
 #: runs of a 16-64-token chunk beside 5-15 decodes over 8k-32k), but 0.83-1.16x from 11 over 16k and
-#: 1.11x at 7 x 32k. Each entry is tiers (longest sequence at least, most decodes, most decode tokens
-#: or None), the last whose sequence the call reaches.
+#: 1.11x at 7 x 32k. Qwen3.8 over 32k-64k with a chunk of 64+ tokens: 1.21-4.41x beside 7-15
+#: decodes over 8k-32k at any count of their tokens (to 15 x 32k; 64-512-token chunks), where a
+#: 32-token chunk over 32k fell to 0.93x beside 11 x 32k and a 64-token one over 16k to 0.92-1.04x
+#: beside 11-15 x 32k (tools/hk-bench/results/2026-11-05/gfx1201/prefill-kvsplit-qwen3.8-dec.json).
+#: Each entry is tiers (longest sequence at least, longest query at least, most decodes, most decode
+#: tokens or None), the last the call reaches in both.
 KVS_PACK_DEC_RATIO = 4.0
-KVS_PACK_MAX_DECODES = {("gfx1201", 128, 8): ((0, 15, 1 << 18),),
-                        ("gfx1201", 256, 6): ((0, 3, None), (16384, 7, 170000))}
-KVS_PACK_MAX_DECODES_ELSE = ((0, 15, None),)
+KVS_PACK_MAX_DECODES = {("gfx1201", 128, 8): ((0, 0, 15, 1 << 18),),
+                        ("gfx1201", 256, 6): ((0, 0, 3, None), (16384, 0, 7, 170000),
+                                              (32768, 64, 15, None))}
+KVS_PACK_MAX_DECODES_ELSE = ((0, 0, 15, None),)
 
 
 def kvsplit_plan(a: dict, pack: bool = True):
@@ -459,8 +464,9 @@ def kvsplit_plan(a: dict, pack: bool = True):
     group = int(a["q"].shape[1]) // int(a["k"].shape[2])
     pw = kvs_pack_warps(d, group)
     arch, cls = switches.arch(), 256 if d > 128 else 128
-    max_dec, max_dec_tok = [(n, t) for c, n, t in KVS_PACK_MAX_DECODES.get(
-        (arch, cls, group), KVS_PACK_MAX_DECODES_ELSE) if st["pre_ctx"] >= c][-1]
+    max_dec, max_dec_tok = [(n, t) for c, mq, n, t in KVS_PACK_MAX_DECODES.get(
+        (arch, cls, group), KVS_PACK_MAX_DECODES_ELSE)
+        if st["pre_ctx"] >= c and st["max_q"] >= mq][-1]
     for max_q, min_ctx, sp in KVS_PACKED.get((arch, cls, group), ()) if pack else ():
         if (st["max_q"] <= max_q and st["pre_ctx"] >= min_ctx and pw <= KVS_PACK_WARPS
                 and decodes_fit(KVS_PACK_DEC_RATIO) and st["decodes"] <= max_dec

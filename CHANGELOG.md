@@ -8,9 +8,56 @@ The next version's notes collect here until it is released.
 
 **vLLM's TRITON_ATTN on gfx1100: the KV split cuts the longest contexts into 64 runs.** The KV-split prefill's merge (`paged_prefill.merge_kernel`) runs in a loop past 32 splits, where it no longer builds unrolled. MiniCPM5's 16-token chunks and MiniCPM-V's 17-64-token chunks over 16k+ contexts take 64 splits: 1.11-1.25x faster than the 16-32 they took. Measured faster than both stock kernels on every batch it takes.
 
-**GPTQ prefill on hk on gfx1201.** `vllm_gptq` now also takes the prefill batches vLLM's `RDNAHybridW4A16LinearKernel` runs on Triton (above 64 tokens), on a new large-batch form of hk's 4-bit GEMM (`hk.ops.w4a16.exllama_large_matmul`, `w4a16_large_kernel`). Like the decode forms, it reads vLLM's own weight tensors in place. A 128-row tile of W is decoded once into LDS and shared across 128 tokens.
+**vLLM's TRITON_ATTN on gfx1201: Qwen3.8's 64-token-and-longer chunks over 32k+ contexts beside up to 15 decodes take the packed KV split.** Over 32k+ contexts such a chunk was declined beside more than 7 decodes or ~170k decode tokens; it now takes the split beside up to 15, at any count of their tokens. `vllm_prefill.KVS_PACK_MAX_DECODES` tiers also go by the longest query. Measured faster than both stock kernels on every batch it takes.
 
-**vLLM's TRITON_ATTN on gfx1201: MiniCPM5's shortest chunks beside more decodes take the packed KV split.** The packed split took a short chunk over a long context beside at most 3 decodes on gfx1201; for MiniCPM5's shape (head size 128, 8 query heads a kv head) it now takes up to 15, while their tokens stay under a measured bound (`vllm_prefill.KVS_PACK_MAX_DECODES` entries are now (decodes, decode tokens)). Measured faster than both stock kernels on every batch it takes.
+- `hk.profile` on gfx1201: a counter group of the three counters that count on an R9700 under ROCm 7.2.3
+  (`GRBM_GUI_ACTIVE`, `SQ_WAVES`, `SQ_BUSY_CYCLES`; the others read 0). A matrix kernel with no FLOP rate
+  -- no counter, thread trace or main-loop trip count to count its WMMAs -- now gets the verdict
+  `bound_unknown` instead of `latency_bound`; `--flops` gives the rate. Where `SQ_INSTS_LDS` counts, the
+  FLOPs come from the ISA's main loop x its trip count read off it. A wave-cycle count of 0 for a kernel
+  whose waves ran is dropped, not reported as 0 waves a SIMD ([profile](docs/profile.md)).
+
+## 0.9.8
+
+hk-dsl 0.9.8: `hk.torch_op` is stable. Documentation: sample outputs on the check and profile pages
+come from hk 0.9.7 on a Radeon AI PRO R9700, labelled as samples; the landing page links every page.
+No change to the kernels, the dialect (`hk-dialect-8`) or which routes are on by default.
+
+On PyPI: `pip install hk-dsl`, for CPython 3.10 to 3.13 on Linux x86_64 with glibc 2.35 or newer
+(Ubuntu 22.04 and later, and vLLM's ROCm images): one `manylinux_2_35` wheel per interpreter. The
+wheels below are the same files.
+
+    pip install hk_dsl-0.9.8-cp312-cp312-manylinux_2_35_x86_64.whl
+
+### Changes
+
+**`hk.torch_op` is stable** (#291): its signature and behaviour are those of 0.9.0, and `tests/hk/gpu/test_torch_op.py` and `test_torch_op_recipe.py` cover it (eager, `torch.library.opcheck`, `torch.compile`, CUDA graphs) ([stability](docs/stability.md)).
+
+**Documentation** (#292, #293, #294). docs/check.md and docs/profile.md show sample outputs from hk 0.9.7 on an R9700, each block labelled with GPU, hk version and date as a sample, not a benchmark claim. The landing page links every page in the nav, and the op catalog (docs/ops.md) is in the nav. Dated example runs on the agents and tune pages say their GPU, hk version and date.
+
+### All pull requests
+
+#290, #291, #292, #293, #294.
+
+## 0.9.7
+
+hk-dsl 0.9.7: on gfx1201, `vllm_gptq` also takes GPTQ prefill (the batches vLLM runs on Triton, above
+64 tokens) on a new large-batch form of hk's 4-bit GEMM that reads vLLM's weights in place. No change
+to the language or the dialect (`hk-dialect-8`).
+
+On PyPI: `pip install hk-dsl`, for CPython 3.10 to 3.13 on Linux x86_64 with glibc 2.35 or newer
+(Ubuntu 22.04 and later, and vLLM's ROCm images): one `manylinux_2_35` wheel per interpreter. The
+wheels below are the same files.
+
+    pip install hk_dsl-0.9.7-cp312-cp312-manylinux_2_35_x86_64.whl
+
+### Changes
+
+**GPTQ prefill on hk on gfx1201** (#287). `vllm_gptq` now also takes the prefill batches vLLM's `RDNAHybridW4A16LinearKernel` runs on Triton (above 64 tokens), on a new large-batch form of hk's 4-bit GEMM (`hk.ops.w4a16.exllama_large_matmul`, `w4a16_large_kernel`). Like the decode forms, it reads vLLM's own weight tensors in place. A 128-row tile of W is decoded once into LDS and shared across 128 tokens.
+
+### All pull requests
+
+#287, #288.
 
 ## 0.9.6
 

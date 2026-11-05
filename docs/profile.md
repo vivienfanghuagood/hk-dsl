@@ -88,8 +88,10 @@ torch's) are disassembled from the thread trace.
 
 ## Reading the report
 
-An MI355X (gfx950, ROCm 7.2.3, torch 2.10, rocprofv3 1.1.0), Llama-3-8B's
-gate_up GEMM at M = 1024 (`bench/profile/cases.py:gemm_plain`):
+Sample output, not a benchmark claim: an MI355X (gfx950, ROCm 7.2.3, torch
+2.10, rocprofv3 1.1.0), hk 0.5.0, on 2026-10-22, Llama-3-8B's gate_up GEMM at
+M = 1024 (`bench/profile/cases.py:gemm_plain`). It has every line the table
+below explains:
 
 ```text
 hk.profile gemm_plain  gfx950 (AMD Radeon Graphics, 256 CUs)  hk 0.5.0  rocprofv3 1.1.0
@@ -110,10 +112,34 @@ hk.profile gemm_plain  gfx950 (AMD Radeon Graphics, 256 CUs)  hk 0.5.0  rocprofv
     verdict   compute-bound: matrix core 65% busy, 1337 TFLOP/s = 54% of the bf16 peak (66% of it at the 1.97 GHz measured); tail: 1.75 rounds of 256 CUs, the last fills 192/256 (12% idle); matrix core idle at barrier 12%; matrix core idle at vmem_issue 8%; L2 re-fetch: 3.4x the call's bytes cross it
 ```
 
+The same case on an R9700 (gfx1201, ROCm 7.2.3, rocprofv3 1.1.0), hk 0.9.7 with
+this release's hk.profile, on 2026-11-05 (sample output). There rocprofv3 lists
+most counters but only `GRBM_GUI_ACTIVE`, `SQ_WAVES` and `SQ_BUSY_CYCLES` count
+(the instruction, cache and wait counters read 0), and the image has no
+thread-trace decoder. So nothing counts the WMMAs: the verdict says the bound
+is unknown rather than guess, and `--flops` gives the rate (for this call,
+`--flops 240518168576` reads compute-bound):
+
+```text
+hk.profile gemm_plain  gfx1201 (AMD Radeon Graphics, 64 CUs)  hk 0.9.7  rocprofv3 1.1.0
+  call      bf16[1024,4096], bf16[28672,4096], bf16[28672]  1768.29 us of kernels a call, 1 kernel(s)
+  sources   timing: rocprofv3 --kernel-trace; counters: rocprofv3 --pmc, 1 passes; att: unavailable (see notes); isa: llvm-objdump of the code object
+  kernel gemm_bf16_128x128x64_w8r4_s2_d16_g8_p2_l1_kernel  1768.29 us ±0.6%
+    grid      1792 workgroups x 256 threads (8 waves), LDS 32768 B, 165 VGPR -> 4 a WGP (bound by registers and lds); 14.0 rounds of 32 WGPs
+    roofline  302 MB -> 170.81 GB/s = 9% of the cache-resident rate; DRAM at least 27% (the call's 302 MB once)
+    busy      occupancy 8 waves/SIMD (theoretical), clock 2.45 GHz
+    loop      0x2428-0x271c, 110 instructions: 32 wmma, 2 valu, 9 salu, 8 vmem_load, 24 ds_read, 8 ds_write, 4 barrier, 1 branch, 22 other
+    prologue  615 instructions: 321 valu, 2 valu_trans, 149 salu, 11 smem, 16 vmem_load, 8 ds_write, 2 barrier, 11 branch, 95 other
+    drain     319 instructions: 32 wmma, 158 valu, 16 salu, 2 smem, 49 vmem_store, 24 ds_read, 38 other
+    epilogue  154 instructions: 23 valu, 15 vmem_store, 1 nop, 115 other
+    verdict   bound unknown: no FLOP rate for a matrix kernel (no counter, thread trace or main-loop trip count to count its matrix instructions; --flops gives it); 27% of DRAM
+  note: no thread trace: librocprof-trace-decoder.so not found (set HK_ATT_DECODER; docs/profile.md#the-thread-trace); stall reasons come from the counters only
+```
+
 | line | what it says | from |
 |---|---|---|
 | `grid` | workgroups x threads (waves), LDS and registers; how many workgroups a *slot* holds at once (a CU on CDNA, a WGP -- the LDS pool -- on RDNA) and what binds it (`waves`, `registers`, `lds`); the grid's *rounds*: workgroups / (slots x workgroups a slot) | the dispatch (kernel trace), the compiler's resources where hk built it, hk.target |
-| `roofline` | the matrix FLOPs and their rate against the matrix peak; the bytes past the L2 (read and written), their rate against the cache-resident rate, and how many times the call's own bytes that is; the call's own bytes (inputs and outputs once) against DRAM -- what DRAM moved at least -- when they do not fit the cache; the intensity | counters (FLOPs: `SQ_INSTS_VALU_MFMA_MOPS_*` x 512; bytes: `TCC_EA0_RDREQ_DRAM_32B`, `TCC_EA0_WRREQ_WRITE_DRAM_32B` x 32), else the thread trace's matrix instructions x the grid's waves, else `--flops`/`--bytes`; the ceilings below |
+| `roofline` | the matrix FLOPs and their rate against the matrix peak; the bytes past the L2 (read and written), their rate against the cache-resident rate, and how many times the call's own bytes that is; the call's own bytes (inputs and outputs once) against DRAM -- what DRAM moved at least -- when they do not fit the cache; the intensity | counters (FLOPs: `SQ_INSTS_VALU_MFMA_MOPS_*` x 512; bytes: `TCC_EA0_RDREQ_DRAM_32B`, `TCC_EA0_WRREQ_WRITE_DRAM_32B` x 32), else the thread trace's matrix instructions x the grid's waves, else the ISA's main loop x its trip count (read off `SQ_INSTS_LDS`: LDS instructions a wave ran, less those outside the loop, over the loop's) x the waves, else `--flops`/`--bytes`; the ceilings below |
 | `busy` | matrix core busy (gfx950: `SQ_VALU_MFMA_BUSY_CYCLES` over cycles x SIMDs; gfx1100: achieved over peak, no counter); waves a SIMD achieved (`SQ_WAVE_CYCLES` over cycles x SIMDs) of what the resources allow; CUs busy (`SQ_BUSY_CU_CYCLES`); the clock the counter pass ran at (from 50 us up) | counters |
 | `waves` | the share of the waves' time waiting on a dependency (`SQ_WAIT_ANY`: s_waitcnt, a barrier, a result), waiting to issue (`SQ_WAIT_INST_ANY`: the unit is busy, often with another wave's instruction), issuing (`SQ_ACTIVE_INST_ANY`), waiting to issue to the LDS | counters |
 | `memory` | LDS bank conflicts (`SQ_LDS_BANK_CONFLICT` over the LDS's active cycles), the L2 hit rate (`TCC_HIT`/(`TCC_HIT`+`TCC_MISS`)), the average latency of a vector-memory and an LDS instruction in cycles | counters |
@@ -165,7 +191,7 @@ an MI355X); a kernel that ran slower (a power limit) has
 (and `short`, the verdict's words for it); `cost` is the share of the
 kernel's time the finding accounts for where it can be estimated (null for
 a bound or a remark). The verdict's `bound` is the first of `memory_bound`,
-`compute_bound`, `latency_bound`; its `losses` the kinds with a cost,
+`compute_bound`, `latency_bound`, `bound_unknown`; its `losses` the kinds with a cost,
 largest first; its `line` both in words.
 
 | kind | when | cost |
@@ -173,6 +199,7 @@ largest first; its `line` both in words.
 | `memory_bound` | DRAM at >= 60% for sure, or the bytes past the L2 at >= 70% of the cache-resident rate | -- |
 | `compute_bound` | matrix core busy, or matrix FLOP/s of the peak, >= 60% | -- |
 | `latency_bound` | neither: the waves wait (see the stalls) | -- |
+| `bound_unknown` | a kernel with matrix instructions and no FLOP rate (no counter, thread trace or main-loop trip count counts them): the compute roof cannot be read, so it is not called latency-bound; `--flops` gives the rate | -- |
 | `tail` | the grid is not a whole number of rounds of the slots, under 16 rounds | the slot-time the last round leaves idle, (ceil(r) - r) / ceil(r), equal-length workgroups assumed; `cu_busy` measured beside it |
 | `underfilled` | fewer workgroups than slots | the slots with none |
 | `epilogue`, `prologue` | the matrix core idles >= 3% of the kernel while the waves are after the main loop (drain + epilogue) or before it; "not hidden" when one workgroup fills a slot | that idle share (thread trace), else the parts' share of a wave's cycles |
@@ -223,7 +250,7 @@ kernels[]  in a call's launch order:
   grid       {workgroups, threads_per_workgroup, waves_per_workgroup, lds_bytes, vgpr, agpr,
               slot ("CU"|"WGP"), slots, workgroups_per_slot, bound_by, theoretical_waves_per_simd,
               rounds, idle_share, last_round{workgroups, of}}
-  roofline   {flops, flops_source, flop_s, matrix_dtype, compute_peak, of_compute_peak,
+  roofline   {flops, flops_source, main_loop_trips, flop_s, matrix_dtype, compute_peak, of_compute_peak,
               clock_mhz, of_compute_peak_at_clock, bytes, bytes_source, bytes_s, of_dram,
               of_cache, dram_bytes_min, of_dram_min, refetch, memory_ceiling ("dram"|"cache"),
               memory_peak, of_memory_peak, memory_bound_at, intensity, ridge}
@@ -335,6 +362,8 @@ comparison lines.
 (N=28672, K=4096) at M=1024**, `hk.ops.matmul` against `hk.templates.gemm`
 with bias + GELU:
 
+*Sample output: MI355X (gfx950), hk 0.5.0, ROCm 7.2.3, 2026-10-22.*
+
 ```text
 VERDICT compute-bound: matrix core 65% busy, 1337 TFLOP/s = 54% of the bf16 peak (66% of it at the 1.97 GHz measured); tail: 1.75 rounds of 256 CUs, the last fills 192/256 (12% idle); matrix core idle at barrier 12%; matrix core idle at vmem_issue 8%; L2 re-fetch: 3.4x the call's bytes cross it
   vs        bias_gelu takes 1.062x the time of gemm_plain (interleaved in one process: 199.0 vs 187.1 us, band 6%); profiled calls: bias_gelu 192.0 us vs gemm_plain 180.0 us (1.067x the time); matrix core idle after the main loop (drain + epilogue) 4.2% -> 9.9% of the kernel; matrix core busy 65% -> 60%; matrix idle at VALU 2% -> 6%; VALU instructions 1.804e+07 -> 2.222e+07
@@ -354,6 +383,8 @@ GEMM interleaved (hk.check gave 1.049x on the same day); the docs' 1.09x
 **(b) The shape outside the route table -- gfx950, 2048x16384x4096**:
 `route()` has no entry for N x K = 16384 x 4096 and its rule sends M = 2048
 to `dp128`:
+
+*Sample output: MI355X (gfx950), hk 0.5.0, ROCm 7.2.3, 2026-10-22.*
 
 ```text
 VERDICT latency-bound (neither roof): 38% of the matrix peak, 33% of the cache-resident rate (past the L2); matrix core 43% busy; issue-bound at 1 wave(s) a SIMD (lds): the matrix core idles 34% while its waves issue the loop's 2.4 other instructions per matrix one; matrix core idle before the main loop 7% (one workgroup a CU: not hidden); matrix core idle after the main loop 4% (one workgroup a CU: not hidden); L2 re-fetch: 4.0x the call's bytes cross it
@@ -380,6 +411,8 @@ route-table entry).
 **(c) gfx950 and gfx1100: GELU-and-mul at 4096x14336**, the 16x64-tile
 kernel the first page of the docs teaches against llms.txt's strip kernel:
 
+*Sample output: MI355X (gfx950), hk 0.5.0, ROCm 7.2.3, 2026-10-22.*
+
 ```text
 gfx950:
 VERDICT latency-bound (neither roof): 46% of HBM; waves at vmem_issue 69% of their cycles (whole kernel); waves at vmem_wait 11% of their cycles (whole kernel); waves at valu 11% of their cycles (whole kernel); narrow global accesses (loads 8 B; stores 8 B a lane); occupancy 5.1 of 8 waves/SIMD
@@ -401,6 +434,8 @@ are memory-bound, at 77% and 83% of DRAM at least, the strips 0.94x the
 tiles' time -- 864 GB/s of GDDR6 is slow enough that 8-byte accesses keep
 up with it:
 
+*Sample output: W7900D (gfx1100), hk 0.5.0, ROCm 7.2.4, 2026-10-22.*
+
 ```text
 gfx1100:
 VERDICT memory-bound: 77% of DRAM at least (the call's 352 MB in 528.2 us, 0.67 TB/s); waves at vmem_wait 78% of their cycles (main loop); waves at vmem_issue 11% of their cycles (main loop)
@@ -410,6 +445,8 @@ VERDICT memory-bound: 77% of DRAM at least (the call's 352 MB in 528.2 us, 0.67 
 
 **gfx1100: the GEMM at M = 4096 against hipBLASLt** (4096x4096x4096,
 `bench/profile/cases.py:matmul` vs `hipblaslt`):
+
+*Sample output: W7900D (gfx1100), hk 0.5.0, ROCm 7.2.4, 2026-10-22.*
 
 ```text
 VERDICT compute-bound: matrix core 72% busy, 89 TFLOP/s = 72% of the bf16 peak; matrix core idle at vmem_wait 17%; tail: 7.11 rounds of 48 WGPs, the last fills 16/144 (11% idle); matrix core idle at no_instruction 9%

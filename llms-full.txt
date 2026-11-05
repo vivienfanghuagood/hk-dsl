@@ -826,34 +826,42 @@ template, not 16x64 tiles); the `hint:` lines say which page covers it.
 Exit status 0 is pass, 1 a wrong answer, 2 an error, so a script or an agent
 can branch on it; `--json -` puts the report on stdout.
 
-The same kernel, measured on an MI355X (gfx950, ROCm 7.2.3, torch 2.10) at
-4096 x 14336:
+Sample output, not a benchmark claim: an R9700 (gfx1201), hk 0.9.7, ROCm 7.2.3,
+torch 2.10, on 2026-11-05, at 4096 x 14336:
 
 ```text
-hk.check gelu_mul  gfx950 (AMD Radeon Graphics)  [gpu]  hk 0.4.0  torch 2.10.0+rocm7.2.3.git1a270074
-  build  gelu_mul: warps=1 lds=0 B  0.0 s (from the disk cache)
-         vgpr=35 (charged 40, headroom 29)  occupancy=8/8 (regs 8, lds 8)  scratch=0 spill=0
+hk.check gelu_mul  gfx1201 (AMD Radeon Graphics)  [gpu]  hk 0.9.7  torch 2.10.0+rocm7.2.3.git1a270074
+  build  gelu_mul: warps=1 lds=0 B  7.2 s
+         vgpr=70 (charged 72, headroom 26)  occupancy=16/16 (regs 16, lds 16)  scratch=0 spill=0
   case 0: bf16[4096,14336], bf16[4096,14336], bf16[4096,14336]
-    correct ok   out0 bfloat16: max |err| 0.0313 (0.002 of max|ref|), mean 0.000447; allowed 0.0155 + 0.016*|ref|
-            eager's own max |err| 0.0564
-            compile's own max |err| 0.0312
-    time    hk 114.4 us ±0.9%   eager 102.2 us ±0.6%   compile 62.0 us ±1.2%
-    speed   hk is 0.90x eager (loss, band 2%)   0.54x compile (loss, band 2%)
-    rate    hk 3081 GB/s = 39% of DRAM peak (inputs + outputs once; cold: 2 copies of the inputs, rotated past the cache)
-    first   hk 0.05 s   eager 0.00 s   compile 1.14 s  (first call: trace, build or cache load, launch)
-  hint: case 0: 1.84x slower than torch.compile (...); at 39% of the DRAM peak a streaming
-        kernel is not moving bytes fast enough: start from hk.templates (docs/templates/), or
-        put rows on register strips (hk.RS, docs/language.md#register-strips) with 16-byte runs
+    correct ok   out0 bfloat16: max |err| 0.0625 (0.0038 of max|ref|), mean 0.000447; allowed 0.0163 + 0.016*|ref|
+            eager's own max |err| 0.0625
+            compile's own max |err| 0.0625
+    time    hk 601.6 us ±0.2%   eager 985.0 us ±0.2%   compile 605.9 us ±0.8%
+    speed   hk is 1.64x eager (win, band 2%)   1.01x compile (tie, band 2%)
+    rate    hk 586 GB/s = 92% of DRAM peak (inputs + outputs once; cold: 2 copies of the inputs, rotated past the cache)
+    first   hk 7.26 s   eager 0.00 s   compile 1.77 s  (first call: trace, build or cache load, launch)
 PASS
 ```
 
-Correct, fully occupied and half the speed of `torch.compile`: the tile
-kernel the first page of the docs teaches is the wrong shape for a streaming
-op on this card ([the goal](archive/design/dx-goal.md) measured the same, 0.61x).
+On the R9700 this tile kernel is correct, fully occupied and at 92% of the
+DRAM peak, level with `torch.compile`: GDDR6 is slow enough that its 8-byte
+accesses keep up. On a faster memory system the same kernel falls behind,
+and the report says why. Sample output from an MI355X (gfx950, hk 0.4.0,
+ROCm 7.2.3, 2026-10-21), abridged:
+
+```text
+    time    hk 114.4 us ±0.9%   eager 102.2 us ±0.6%   compile 62.0 us ±1.2%
+    speed   hk is 0.90x eager (loss, band 2%)   0.54x compile (loss, band 2%)
+    rate    hk 3081 GB/s = 39% of DRAM peak (inputs + outputs once; cold: 2 copies of the inputs, rotated past the cache)
+  hint: case 0: 1.84x slower than torch.compile (...); at 39% of the DRAM peak a streaming
+        kernel is not moving bytes fast enough: start from hk.templates (docs/templates/), or
+        put rows on register strips (hk.RS, docs/language.md#register-strips) with 16-byte runs
+```
+
 Rewritten on register strips as the hint says -- the ten-line kernel in
-[llms.txt](../llms.txt) -- it measured 61.7 us, a tie with `torch.compile`
-(and 1.02x it on a W7900D); `hk.ops.silu_mul`, the tuned op for the same
-pass, 56.8 us.
+[llms.txt](../llms.txt) -- it tied `torch.compile` there (61.7 us), and
+`hk.ops.silu_mul`, the tuned op for the same pass, took 56.8 us.
 
 ## What it checks
 
@@ -956,49 +964,50 @@ combination) builds, checks and times a raw kernel at each value beside the
 default, as `hk[CW=1024]`, and names the fastest (`best`). A value that does
 not build -- a strip width that is not whole chunks on this arch, a tile
 that spills -- is a note, not an error; a wrong one is reported and not
-timed. On an MI355X, llms.txt's strip kernel at 4096x14336: `CW=512` 61.3
+timed. On an MI355X (hk 0.4.0, 2026-10-21), llms.txt's strip kernel at 4096x14336: `CW=512` 61.3
 us, 1024 64.6, 2048 72.0 (`CW=256` is not a whole 64-lane chunk there).
 
 ## Reading the report
 
-`--json` writes (abridged; this is the run above):
+`--json` writes (abridged; the R9700 run above, sample output):
 
 ```json
 {
- "schema": 1, "name": "gelu_mul", "status": "pass", "arch": "gfx950", "mode": "gpu",
+ "schema": 1, "name": "gelu_mul", "status": "pass", "arch": "gfx1201", "mode": "gpu",
  "device": "AMD Radeon Graphics",
- "versions": {"python": "3.12.3", "hk": "0.4.0", "torch": "2.10.0+rocm7.2.3.git1a270074",
-              "hip": "7.2.53211", "triton": "3.6.0+rocm7.2.3.git4ed88892"},
- "builds": [{"kernel": "gelu_mul", "consts": {}, "arch": "gfx950", "warps": 1, "threads": 64,
-             "lds_bytes": 0, "warnings": [], "build_s": 0.045, "cached": true,
-             "source": ".../hk-cache/f43225c4.../kernel.cpp",
-             "instantiations": [{"name": "gelu_mul_kernel(globals)", "vgpr": 35, "agpr": 0,
-                                 "sgpr": 27, "vgpr_charged": 40, "vgpr_headroom": 29, "lds": 0,
-                                 "scratch": 0, "spill": 0, "occupancy_by_regs": 8,
-                                 "occupancy_by_lds": 8, "occupancy": 8,
-                                 "max_waves_per_simd": 8}]}],
+ "versions": {"python": "3.12.3", "hk": "0.9.7", "hk_src": "baec00a67790",
+              "torch": "2.10.0+rocm7.2.3.git1a270074", "hip": "7.2.53211",
+              "triton": "3.6.0+rocm7.2.3.git4ed88892"},
+ "builds": [{"kernel": "gelu_mul", "consts": {}, "arch": "gfx1201", "warps": 1, "threads": 32,
+             "lds_bytes": 0, "warnings": [], "trace_s": 0.0, "build_s": 7.233, "cached": false,
+             "source": ".../hk-cache/379e5e51.../kernel.cpp",
+             "instantiations": [{"name": "gelu_mul_kernel(globals)", "vgpr": 70, "agpr": 0,
+                                 "sgpr": 15, "vgpr_charged": 72, "vgpr_headroom": 26, "lds": 0,
+                                 "scratch": 0, "spill": 0, "occupancy_by_regs": 16,
+                                 "occupancy_by_lds": 16, "occupancy": 16,
+                                 "max_waves_per_simd": 16}]}],
  "cases": [{"case": 0, "inputs": "bf16[4096,14336], bf16[4096,14336], bf16[4096,14336]",
-            "first_call_s": {"hk": 0.0515, "eager": 0.0002, "compile": 1.1398},
+            "first_call_s": {"hk": 7.256, "eager": 0.0019, "compile": 1.7658},
             "correct": {"ok": true,
                         "outputs": [{"dtype": "bfloat16", "shape": [4096, 14336],
                                      "numel": 58720256, "ok": true, "rtol": 0.016,
-                                     "atol": 0.01547, "scale": 15.47, "max_abs": 0.03125,
-                                     "mean_abs": 0.000447, "max_rel": 0.00202,
+                                     "atol": 0.01631, "scale": 16.31, "max_abs": 0.06248,
+                                     "mean_abs": 0.000447, "max_rel": 0.00383,
                                      "mismatches": 0, "nan": 0}],
-                        "baselines": {"eager": {"max_abs": 0.0564, "ok": true},
-                                      "compile": {"max_abs": 0.0312, "ok": true}}},
-            "time": {"rounds": 15, "calls_per_round": {"hk": 9, "eager": 10, "compile": 13},
-                     "bytes": 352321536, "flops": null,
-                     "ms": {"hk": {"median": 0.11436, "min": 0.11286, "noise": 0.0089,
-                                   "gb_s": 3080.7},
-                            "eager": {"median": 0.10215, "min": 0.10135, "noise": 0.0055,
-                                      "gb_s": 3449.0},
-                            "compile": {"median": 0.06196, "min": 0.06111, "noise": 0.012,
-                                        "gb_s": 5686.0}},
-                     "vs": {"eager": {"x": 0.8954, "band": 0.02, "verdict": "loss"},
-                            "compile": {"x": 0.544, "band": 0.0209, "verdict": "loss"}},
-                     "of_dram_peak": 0.385}}],
- "errors": [], "notes": [], "hints": ["case 0: 1.84x slower than torch.compile ..."]
+                        "baselines": {"eager": {"max_abs": 0.06248, "ok": true},
+                                      "compile": {"max_abs": 0.06248, "ok": true}}},
+            "time": {"rounds": 15, "calls_per_round": {"hk": 2, "eager": 2, "compile": 2},
+                     "bytes": 352321536, "flops": null, "cache": "cold", "copies": 2,
+                     "ms": {"hk": {"median": 0.60162, "min": 0.59938, "noise": 0.0023,
+                                   "gb_s": 585.6},
+                            "eager": {"median": 0.98505, "min": 0.97817, "noise": 0.0021,
+                                      "gb_s": 357.7},
+                            "compile": {"median": 0.60587, "min": 0.59814, "noise": 0.0075,
+                                        "gb_s": 581.5}},
+                     "vs": {"eager": {"x": 1.635, "band": 0.02, "verdict": "win"},
+                            "compile": {"x": 1.0058, "band": 0.02, "verdict": "tie"}},
+                     "of_dram_peak": 0.915}}],
+ "errors": [], "notes": [], "hints": []
 }
 ```
 
@@ -3872,8 +3881,6 @@ and the answer cannot change within a process.
 ```python
 hk.torch_op(kernel, *, ns: str = 'hk', name: str = '', **const_overrides)
 ```
-
-*Experimental* in this release ([stability](../stability.md)).
 
 Build, load and return `torch.ops.<ns>.<name>`.
 
@@ -7460,6 +7467,7 @@ compiler's, from the build row, where hk built it).
  "memory_bound",
  "compute_bound",
  "latency_bound",
+ "bound_unknown",
  "tail",
  "underfilled",
  "epilogue",
@@ -7656,6 +7664,16 @@ does not skew another pass's metrics.
     "LdsLatency"
    ]
   ]
+ ],
+ "gfx1201": [
+  [
+   "core",
+   [
+    "GRBM_GUI_ACTIVE",
+    "SQ_WAVES",
+    "SQ_BUSY_CYCLES"
+   ]
+  ]
  ]
 }
 ```
@@ -7673,6 +7691,10 @@ does not skew another pass's metrics.
   "MFMA-style per-type instruction counts: only VALU, SALU, LDS, SMEM, texture load/store and FLAT are counted",
   "Infinity Cache (MALL) hits: GL2C_EA/MC requests are past the L2, whether the MALL or GDDR6 served them",
   "per-type active cycles (SQ_ACTIVE_INST_*), VMEM latency and CU busy: not exposed on gfx11; the thread trace attributes the waits"
+ ],
+ "gfx1201": [
+  "matrix FLOPs: no counter counts WMMA instructions, and the instruction counters (SQ_INSTS_*) read 0 under ROCm 7.2.3, so the main loop's trip count cannot be read either; only the thread trace counts them. Without one, give the work with --flops",
+  "bytes past the L2, cache hits, wave cycles and waits (GL2C_*, SQ_WAVE_CYCLES, SQ_WAIT_*): listed by rocprofv3 but read 0 under ROCm 7.2.3; the call's own bytes against DRAM are what the roofline has"
  ]
 }
 ```
