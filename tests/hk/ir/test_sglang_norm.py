@@ -42,6 +42,24 @@ def test_it_takes_the_native_path_and_reverts(fake_layernorm):
     assert GemmaRMSNorm.forward_hip is orig
 
 
+def test_pause_reaches_a_layer_that_cached_the_bound_forward(fake_layernorm, monkeypatch):
+    """A layer built while the route was on keeps hk's bound forward_hip; pause_norm makes that
+    method run SGLang's, and unpausing gives hk's back."""
+    monkeypatch.setattr(hks, "gemma_rms_norm", lambda *a: "hk")
+    monkeypatch.setattr(hks, "_norm_refusal", lambda *a: "")
+    hks.apply_norm()
+    layer = GemmaRMSNorm()
+    layer.weight, layer.variance_epsilon = None, 1e-6
+    bound = layer.forward_hip                         # what SGLang's CustomOp keeps
+    assert bound("x") == "hk"
+    hks.pause_norm(True)
+    try:
+        assert bound("x") == "sglang"
+    finally:
+        hks.pause_norm(False)
+    assert bound("x") == "hk"
+
+
 @pytest.mark.parametrize("flag", ["_use_aiter", "_has_vllm_rms_norm"])
 def test_sglangs_own_fused_paths_are_left_alone(fake_layernorm, flag):
     setattr(fake_layernorm, flag, True)

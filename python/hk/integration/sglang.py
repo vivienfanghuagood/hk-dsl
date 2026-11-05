@@ -49,6 +49,17 @@ ROUTES_ENV = "HK_SGLANG_ROUTES"
 _APPLIED = None
 _LINEAR = None
 _NORM = None
+#: While True the norm route's forward_hip runs SGLang's own (`pause_norm`): a layer keeps the
+#: bound method SGLang's CustomOp dispatch cached at construction, so restoring the class
+#: attribute alone does not reach the layers already built.
+_NORM_PAUSED = False
+
+
+def pause_norm(paused: bool) -> None:
+    """Make the installed norm route run SGLang's GemmaRMSNorm (True) or hk's (False) on every
+    layer, already built or not -- what a same-process A/B switches."""
+    global _NORM_PAUSED
+    _NORM_PAUSED = bool(paused)
 
 #: SGLang's GemmaRMSNorm route: calls hk took, and the calls it left to SGLang, by reason.
 NORM_STATS: "Counter[str]" = None  # type: ignore[assignment]
@@ -214,6 +225,8 @@ def apply_norm() -> str:
     orig = cls.forward_hip
 
     def forward_hip(self, x, residual=None, post_residual_addition=None):
+        if _NORM_PAUSED:
+            return orig(self, x, residual, post_residual_addition)
         why = _norm_refusal(self, x, residual)
         if why:
             NORM_STATS[why] += 1

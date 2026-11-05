@@ -66,8 +66,12 @@ def row_sumsq(x: hk.Tensor[hk.bf16], o: hk.Tensor[hk.fp32]):
     for cb in range(hk.arch.warp_id(), hk.cdiv(x.cols, 64), 4):
         v = x.at[row, cb * 64].load(T)       # global -> registers, bf16 -> fp32
         acc += (v * v).sum(axis=1)           # one row_sum, accumulated in place
-    o.at[row, hk.arch.warp_id()] = acc
+    o.at[hk.arch.warp_id(), row] = acc       # a vector is stored along a row
 ```
+
+Each warp sums every fourth 64-column chunk of 16 rows, and stores its 16
+partial sums along a row of `o`: with `o` of shape `(4, rows)`, `o.sum(0)` is
+each row's sum of squares.
 
 `@hk.kernel` takes `warps`, `grid`, and optionally `arch`, `name`,
 `max_vgprs`, `min_occupancy`, `max_occupancy`, `defines`, `resident` and `placement`
@@ -198,8 +202,7 @@ a strip (`!hk.rt<f32, 1x1024, strip<8>>`, `kittens::rs`):
 - **Limits.** It is never an MMA operand or an LDS tile. It exists where
   `Target.strips` says: gfx1100 (include/rdna3), gfx1201 (include/rdna4)
   and gfx950 (hk's wave64 port in `include/hk/cdna.cuh`); gfx942 refuses
-  it while tracing. The gfx950 port arrived in 0.5.0; the 0.4.0 wheel refuses strips
-  there ([what each version has](api/README.md)). Its elements are bf16,
+  it while tracing. Its elements are bf16,
   fp16, fp32 or i32
   ([below](#integer-mask-and-bit-expressions-on-strips-hkmap)).
 
@@ -221,7 +224,7 @@ for `max`, `min` and `prod`, states it:
   tree (`"tree"`), then the lanes over the given xor offsets in that order,
   each of 1, 2, 4, 8, 16 and 32 once;
 - the strip's values are summed as they are: `(x * y).sum(...)` adds the
-  rounded products, and the compiler does not fuse them into the sum (#57);
+  rounded products, and the compiler does not fuse them into the sum;
 - `x.sum(axis=1, lanes="seq", xor=..., times=y)` is the fused form:
   `s = fma(x0, y0, r(x1 * y1))`, then `s = fma(xi, yi, s)`, then the xor
   sums. That is what a compiled `s += a * b` loop computes, and what
@@ -244,10 +247,7 @@ kinds of max and min, with different rules for NaN and signed zeros.
   another vector, the online fold. A NaN anywhere in what is reduced gives
   NaN, however the reduction is split across lanes, warps or blocks (as
   `torch.amax` does), and -0 orders below +0: the max of -0 and +0 is +0, the
-  min -0. Until 0.8.0 they were `fmaxf` / `fminf` (maxNum: a NaN is skipped,
-  -0 against +0 is either); in IEEE mode LLVM quiets a maxNum operand it
-  cannot prove quiet first, a `v_max_f32 x, x` each, which cost attention's
-  row max 3 instructions for 1.
+  min -0.
 - *Elementwise* `hk.max` / `hk.min` (`a.maximum(b)`, `a.minimum(b)`, and with
   a number, a clamp) are `fmaxf` / `fminf` everywhere: a NaN operand gives the
   other operand, like `torch.fmax`.
@@ -324,13 +324,13 @@ def exp_ldexp(x: hk.Tensor[hk.fp32], n: hk.Tensor[hk.i32],
                                 hk.map(lambda x, k: x * hk.math.exp2(k.to(hk.fp32)), v, k), v))
 ```
 
-`tests/hk/gpu/test_map.py` checks the semantics against torch on an MI355X.
+`tests/hk/gpu/test_map.py` checks the semantics against torch.
 
 **The escape hatch: `hk.map_cpp(expr, *args, dtype=None)`** evaluates one
 C++ expression for each element, for what `hk.map` cannot say: an intrinsic
 or instruction hk has no op for (`__builtin_amdgcn_*`), or another kernel's
 exact instruction sequence. Triton's `inline_asm_elementwise` is the same
-escape. New in 0.8.0 (#53); since S7 it is `hk.map` with a string body.
+escape; it is `hk.map` with a string body.
 - **Arguments.** `x0`, `x1`, ... in `expr` are `args` in order. A strip binds
   its element (r, c); an `hk.Int` or a Python int binds its value. Each has its
   C++ type: `float` for an fp32 strip, `int` for an i32 strip, an `hk.Int` or a
@@ -349,8 +349,8 @@ escape. New in 0.8.0 (#53); since S7 it is `hk.map` with a string body.
 
 What a persistent kernel's roles do between its GEMMs -- index arithmetic,
 table lookups, small reductions inside a lane group, hand-offs element by
-element -- written on strips. New in 0.8.0 (#72, #73), all gfx950, and
-written for a K1 that must match a hand-written kernel bit for bit.
+element -- written on strips. All gfx950, and written for a kernel that must
+match a hand-written one bit for bit.
 - **Indices.** `hk.lane_coords(ty)` gives two i32 strips of a strip type's
   shape, element (r, c) holding r and c; `hk.iota(ty)` is the second. Of a
   register tile, `hk.lane_coords(tile, run)` gives each element of
@@ -427,18 +427,16 @@ can be bounded by rows, `x[idx].load(ty, bounded=True)` and
 row read zeros and drop the stores past it, with no branch; a strip
 is bounded by rows and columns alike (`x.at[r, c].load(S, bounded=True)`).
 A workgroup's synchronous copy, `g.load(tile, view)` / `g.store(view, tile)`,
-is bounded by rows without asking on gfx1100 and on gfx950: rows past the
-tensor's last read zero and are not written. On gfx950 that holds from 0.7.0
-(#49); 0.6.0's read up to a tile's rows past the tensor there and its
-`g.store` overwrote them. gfx942's copies are still unbounded.
+is bounded by rows without asking on gfx1100 and on gfx950: rows past
+the tensor's last read zero and are not written. gfx942's copies are still
+unbounded.
 
 LDS offsets and every `lgkmcnt` are derived by the passes, which also prove
 that every asynchronously loaded tile is waited for before it is read: see
 [`hk-lds-alloc` and `hk-lds-pipeline`](ir.md#passes). An `hk.lds.alloc`
 inside a runtime `if` counts toward the launch's LDS (the two arms start at
 the same offset, the larger continues); one inside a runtime `for` or `while`
-is refused, so allocate it before the loop. Before 0.7.0 both lay past the
-LDS the launch requested: reads returned 0, writes were dropped (#56).
+is refused, so allocate it before the loop.
 [`examples/04_gemm.py`](../examples/04_gemm.py) stages through LDS with a
 derived wait.
 
@@ -575,7 +573,7 @@ taken by every warp or none. `if hk.uniform(cond):` (or
 `hk.if_(cond, uniform=True)`) declares `cond` the same in every warp -- made of
 the block index, scalar loads every warp makes and constexprs, never of
 `warp_id` or a lane's value -- and such a branch may hold them: a persistent
-kernel's role dispatch (#73, gfx950). The declaration is the author's: a
+kernel's role dispatch (gfx950). The declaration is the author's: a
 condition that differs between warps deadlocks at the first barrier inside. A
 divergent branch around it is still refused.
 
@@ -606,8 +604,8 @@ litmus suite found correct ([the design and the measurements](design/comm.md)):
   `_or_`, `_and_`, `_xor_`, `_exch_` beside `_add_` and `_max_`) works
   plain or scoped.
 - **Mailboxes.** `hk.comm.post(view, value, tag)` / `hk.comm.take(view, tag)`
-  send one int32 and its tag in one 8-byte scoped store: a 1.51 us round
-  trip between two MI355X. A mailbox orders nothing else.
+  send one int32 and its tag in one 8-byte scoped store. A mailbox orders
+  nothing else.
 - **Residency.** A grid that waits on its own workgroups must all be on the
   GPU at once: `hk.kernel(..., resident=True)` refuses a launch that cannot
   be, with `ResourceError`, instead of deadlocking
@@ -652,12 +650,10 @@ workgroup computes is unchanged, so outputs are bitwise the same:
 On a part with one L2 (gfx1100, `hk.arch.xcd_count() == 1`) every placement
 is the identity. `python -m hk.check FILE.py:NAME --placement --inputs ...`
 checks that a launch covers its grid exactly once
-([check](check.md#which-xcd-runs-which-workgroup---placement)). gfx950's
-attention takes the cluster placement by measurement: 1.05-1.18x at 128 KV
-heads, 8K-128K tokens (#55). The design and its evidence are in
-[workgroup placement](design/placement-pass.md);
+([check](check.md#which-xcd-runs-which-workgroup---placement)). The design and
+its measurements are in [workgroup placement](design/placement-pass.md);
 [`examples/15_placement.py`](../examples/15_placement.py) shows it on a kernel
-of your own. New in 0.8.0 (#63, #65).
+of your own.
 
 ## Namespaces
 
