@@ -441,7 +441,6 @@ def attn_kernel(name: str, *, head_dim: int = 128, q_block: int = 16,
             ot = hk.transpose(c)
             at(o, head, q_row, 16 * i).store(ot)
 
-    body.__name__ = name
 
     def _grid(p):
         heads = p.q.cols // head_dim if bnhd else p.q.depth

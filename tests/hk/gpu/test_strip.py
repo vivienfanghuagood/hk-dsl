@@ -59,7 +59,6 @@ def _stats_kernel(dtype, rows, cols, run, warps, bounded):
         o.at[r0, c0].store(v, bounded=bounded)
 
     name = f"strip_stats_{dt.name}_{rows}x{cols}_r{run}_w{warps}_b{int(bounded)}"
-    body.__name__ = name
     return hk.kernel(body, warps=warps, grid=lambda p: (hk.cdiv(p.x.rows, rows), 1, 1),
                      name=name)
 

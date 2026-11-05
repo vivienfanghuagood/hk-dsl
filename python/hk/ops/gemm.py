@@ -453,7 +453,6 @@ def gemm_kernel(name: str, *, block_m: int = 128, block_n: int = 128,
             else:
                 put(C_acc[s], m_row, (col_tile + s) * split_n)
 
-    body.__name__ = name
     if op_dtype is i8 or op_dtype in FP8:
         # i8 operands: C i32 (raw accumulators) unless an epilogue retypes it;
         # fp8 operands: C bf16, from fp32 accumulators

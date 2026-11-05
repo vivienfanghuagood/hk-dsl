@@ -59,7 +59,6 @@ def strip_rms(n: int, warps: int, residual: bool = False, defines=None, tag=""):
                  *, EPS=1e-6):
             core(x, w, o, None, None, EPS)
     name = f"strip_{'add' if residual else ''}rms_w{warps}{tag}"
-    body.__name__ = name
     defines = dict(defines or {})
     if residual:
         defines["HK_BF16_ROUND"] = 2
@@ -84,7 +83,6 @@ def strip_softmax(n: int, warps: int, defines=None, tag=""):
         v *= inv
         o.at[row, c0].store(v)
     name = f"strip_softmax_w{warps}{tag}"
-    body.__name__ = name
     return hk.kernel(body, warps=warps, grid=lambda p: (p.x.rows, 1, 1), name=name,
                      defines=defines)
 

@@ -234,7 +234,6 @@ def gemm_kernel(name: str, *, block_m: int = 128, block_n: int = 128,
                          "on the reduction (reduce)")
     else:
         fn = body_split
-    fn.__name__ = name
 
     def _grid(p):
         return (hk.cdiv(p.a.rows, block_m) * (p.b.rows // block_n), splits, 1)
@@ -283,7 +282,6 @@ def reduce_kernel(name: str, splits: int, arch: Optional[str] = None):
             total += ws[hk.elem_coord(0, j, r, col)].load(t, bounded=True)
         c[hk.elem_coord(0, 0, r, col)].store(total, bounded=True)
 
-    body.__name__ = name
     return hk.kernel(body, arch=arch, warps=4, name=name,
                      grid=lambda p: (p.c.cols // 128, hk.cdiv(p.c.rows, 64), 1))
 
@@ -321,7 +319,6 @@ def strip_reduce_kernel(name: str, splits: int, warps: int = STRIP_REDUCE_WARPS,
         else:
             epilogue.store(c, ops, total, r, c0, bounded=not EXACT)
 
-    body.__name__ = name
     _epilogue.sign(body, epilogue)
     return hk.kernel(body, arch=arch, warps=warps, name=name,
                      grid=lambda p: (hk.cdiv(p.c.cols, warps * p.CW), p.c.rows, 1))

@@ -25,9 +25,9 @@ from hk import VerifyError, bf16, fp32
 from hk.types import StageBufferType
 
 
-def _trace(body, **kw):
+def _trace(body, name=None, **kw):
     k = hk.kernel(body, arch="gfx1100", warps=8,
-                  grid=lambda p: (1, 1, 1), name=body.__name__)
+                  grid=lambda p: (1, 1, 1), name=name or body.__name__)
     return k.trace(**kw)
 
 
@@ -227,8 +227,7 @@ def _pipelined(write_pos: int):
             drain(1)
             hk.arch.barrier(drain=True)
 
-    body.__name__ = f"pipelined{write_pos}"
-    return _trace(body)
+    return _trace(body, name=f"pipelined{write_pos}")
 
 
 def test_an_interleaved_write_counts_toward_the_wait():

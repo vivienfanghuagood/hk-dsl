@@ -330,7 +330,6 @@ def walk_kernel(name: str, *, head_dim: int = 128, group: int = 8, page: int = 1
                 ml_part[hk.elem_coord(row, kv_head, 0, 0)] = m_run
                 ml_part[hk.elem_coord(row, kv_head, 1, 0)] = l_run
 
-    body.__name__ = name
     return hk.kernel(body, warps=warps, name=name,
                      grid=lambda p: (splits, p.out.depth, p.seq_lens.cols),
                      max_vgprs=max_vgprs, min_occupancy=min_occupancy)
@@ -427,7 +426,6 @@ def merge_kernel_def(name: str, *, head_dim: int = 128, group: int = 8, splits: 
         else:
             emit(acc, l_acc)
 
-    body.__name__ = name
     return hk.kernel(body, warps=warps, name=name,
                      grid=lambda p: (d_frags, p.out.depth, p.seq_lens.cols))
 

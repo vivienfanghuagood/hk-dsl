@@ -658,7 +658,6 @@ def _row_reduce_kernel(name: str, dtype, kind: str, warps: int,
 
         visit(write)
 
-    body.__name__ = name
     return hk.kernel(body, warps=warps, grid=_grid, name=name,
                      defines={"HK_RT_HALF_SPLIT": split} if split else None)
 
@@ -818,7 +817,6 @@ def _rms_weighted_kernel(name: str, dtype, warps: int, residual: bool,
                  EPS=1e-6):
             core(x, w, o, None, None, ROWS, COLS, WARPS, TPW, FOLD, EXACT, EPS)
 
-    body.__name__ = name
     # Ties to even for the residual: a sum of two bf16s is exact in fp32, so
     # its tie bit is set about one time in ten (measured: 10.7% of a 300x4096
     # add), not "essentially never" as HipKittens' default assumes, and ties
@@ -1267,7 +1265,6 @@ def _strip_kernel(name: str, dtype, kind: str, warps: int, offset: float = 0.0):
                  EXACT=1, RESERVE=0, EPS=1e-6):
             core(x, None, o, None, None, ROWS, CHUNKS, RUN, EXACT, RESERVE, EPS)
 
-    body.__name__ = name
     # Ties to even for the residual, as _rms_weighted_kernel says why.
     defines = {"HK_BF16_ROUND": 2} if kind == "addrmsw" else None
     k = hk.kernel(body, warps=warps, grid=_strip_grid, name=name, defines=defines,

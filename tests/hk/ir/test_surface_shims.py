@@ -16,7 +16,6 @@ K = 256
 
 def _trace(body, ann, name):
     body.__annotations__ = ann
-    body.__name__ = name
     k = hk.kernel(body, arch="gfx950", warps=1, name="shim", grid=lambda p: (1, 1, 1))
     with warnings.catch_warnings(record=True) as w:
         warnings.simplefilter("always")

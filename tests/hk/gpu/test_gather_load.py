@@ -31,7 +31,6 @@ def _kernel():
         if hk.arch.warp_id() == 0:
             out[hk.elem_coord(0, 0, at, 0)].store(t)
 
-    body.__name__ = "gather_load_t"
     return hk.kernel(body, arch="gfx950", warps=4, name="gather_load_t",
                      grid=lambda p: (p.ids.cols // 32, 1, 1))
 
@@ -68,7 +67,6 @@ def _kernel_staged():
         if hk.arch.warp_id() == 0:
             out[hk.elem_coord(0, 0, at, 0)].store(t)
 
-    body.__name__ = "gather_load_staged_t"
     return hk.kernel(body, arch="gfx950", warps=4, name="gather_load_staged_t",
                      grid=lambda p: (p.ids.cols // 32, 1, 1))
 
@@ -102,7 +100,6 @@ def _kernel_bounded():
         if hk.arch.warp_id() == 0:
             out[hk.elem_coord(0, 0, at, 0)].store(t)
 
-    body.__name__ = "gather_load_bounded_t"
     return hk.kernel(body, arch="gfx950", warps=4, name="gather_load_bounded_t",
                      grid=lambda p: ((p.ids.cols + 31) // 32 + 1, 1, 1))
 

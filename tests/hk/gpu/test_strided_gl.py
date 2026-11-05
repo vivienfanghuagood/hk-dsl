@@ -41,7 +41,6 @@ def _copy_kernel(name, rows=BLOCK, cols=D):
         if hk.arch.warp_id() == 0:
             o[hk.tile_coord(0, 0, page * src.depth + head, 0)] = s.load(ty)
 
-    body.__name__ = name
     return hk.kernel(body, warps=4, grid=lambda p: (p.src.batch, p.src.depth, 1), name=name)
 
 

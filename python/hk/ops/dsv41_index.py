@@ -746,5 +746,4 @@ def index_kernel(wscale: float):
                                                    hk.map_cpp("(x0 < x1 && x2 == 0.0f) ? x0 : -1", e, nt, fl, dtype=i32))
                             hk.arch.barrier(drain=True)
                     select_row(lk, nt, w, topk, tq_, WIDTH, bufs=selbufs)
-    body.__name__ = "body"
     return hk.kernel(body, arch="gfx950", warps=WAVES, name="dsv41_index", grid=lambda p: (256, 1, 1), resident=True)

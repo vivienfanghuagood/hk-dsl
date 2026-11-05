@@ -557,7 +557,6 @@ def paged_prefill_kernel(name: str, *, head_dim: int = 128, group: int = 4,
                 o[hk.elem_coord(0, 0, q0 + q_local, col + 16 * i)].store(
                     hk.transpose(c), bounded=left)
 
-    body.__name__ = name
     # the cache's K is strided for layout="rocm" (the annotation is a string
     # under `from __future__ import annotations`; this is its value)
     body.__annotations__["k_cache"] = k_ty
@@ -639,7 +638,6 @@ def merge_kernel(name: str, *, head_dim: int = 128, kv_splits: int = 2, q_tile: 
         acc /= tot[:, None]
         o[hk.elem_coord(0, 0, q0 + r0, head * head_dim + c0)].store(acc.to(bf16), bounded=left)
 
-    body.__name__ = name
     return hk.kernel(body, warps=1, name=name,
                      grid=lambda p: (p.tiles.rows * (q_tile // 16), p.o.cols // cols,
                                      p.seq_lens.cols))
@@ -740,7 +738,6 @@ def vt_pack_kernel(name: str = "paged_vt_pack", *, head_dim: int = 128, page: in
             vt[hk.elem_coord(base + pj, h, 16 * c, row)].store(hk.transpose_sep(v),
                                                                 bounded=live * 16)
 
-    body.__name__ = name
     return hk.kernel(body, warps=1, grid=lambda p: (p.span.rows, p.vt.depth, p.seq_lens.cols),
                      name=name)
 

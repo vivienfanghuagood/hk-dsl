@@ -81,7 +81,6 @@ def _kernel(src: str, name: str):
     exec(compile(textwrap.dedent(src), f"<{name}>", "exec"), ns)  # noqa: S102 -- the test kernels are sources
     body = ns["body"]
     body.__annotations__ = ANN
-    body.__name__ = name
     return hk.kernel(body, arch="gfx950", warps=1, name="migrate", grid=lambda p: (1, 1, 1))
 
 
