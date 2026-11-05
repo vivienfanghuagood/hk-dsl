@@ -11,10 +11,10 @@ Needs hk._mlir (the language imports it), not a GPU, hipcc or torch.
 tests/hk/ir/test_api_docs.py runs `--check`, so a change to a public
 signature or docstring that is not regenerated fails the IR tier.
 
-"New after 0.9.3" marks come from scripts/api_baseline_0.9.3.json: every
-module-level name, function parameter and class method of the hk-dsl 0.9.3
+"New after 0.9.4" marks come from scripts/api_baseline_0.9.4.json: every
+module-level name, function parameter and class method of the hk-dsl 0.9.4
 wheel on PyPI, read from its sources with `ast` (`--baseline`, after
-`pip download hk-dsl==0.9.3 --no-deps` and unzipping it). A name the wheel
+`pip download hk-dsl==0.9.4 --no-deps` and unzipping it). A name the wheel
 does not have is new; a function whose parameters differ is changed. What a
 signature cannot show is in BEHAVIOUR below, by hand.
 
@@ -46,8 +46,8 @@ sys.path.insert(0, str(REPO / "python"))
 os.environ["HK_ARCH"] = "gfx1100"
 
 OUT = REPO / "docs" / "api"
-BASELINE = REPO / "scripts" / "api_baseline_0.9.3.json"
-PYPI = "0.9.3"
+BASELINE = REPO / "scripts" / "api_baseline_0.9.4.json"
+PYPI = "0.9.4"
 #: The release these docs ship in: what has every "New after" name. None
 #: between releases: then only a checkout of main has them.
 RELEASE: Optional[str] = None

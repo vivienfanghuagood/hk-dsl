@@ -12312,6 +12312,7 @@
 "Counter": {},
 "Dict": {},
 "MAX_TOKENS": {},
+"MAX_TOKENS_AT": {},
 "Optional": {},
 "PATCH": {},
 "PREFIXES": {},
@@ -12321,6 +12322,7 @@
 "VALIDATED": {},
 "_FORCE": {},
 "_GUARDED": {},
+"_MAX": {},
 "_ORIG": {},
 "_ORIG_CONFIG": {},
 "_common": {},
@@ -12368,6 +12370,9 @@
 "use_int4_w4a16",
 "block_shape"
 ]
+},
+"max_tokens": {
+"params": []
 },
 "revert": {
 "params": []
@@ -12488,6 +12493,7 @@
 "KVSPLIT": {},
 "KVSPLITS": {},
 "KVSPLIT_FORCE": {},
+"KVS_DEC_MAX_TOKENS": {},
 "KVS_DEC_MIN_CTX": {},
 "KVS_DEC_RATIO": {},
 "KVS_PACK": {},
