@@ -49,7 +49,7 @@ and which rule decided.
 | MoE a8w4, MXFP4 weights (DeepSeek-V4.1), M >= 2560 (`MIN_M`) | `HK_VLLM_MOE_A8W4` | **on, gfx950** | error vs fp32 3.5-6.3e-3 against AITER's 0.97-2.1e-2 on real layers; GSM8K 94.92% (B1) |
 | DeepSeek-V4.1 index layers under `--monokernel`: one launch for the compressor, indexer K / Q, logits and top-k, at decode steps of up to 8 rows | `HK_VLLM_DSV41_INDEX` | **on, gfx950** | caches and q byte-identical to vLLM's chain in vLLM, top-k sets equal ([the index launch](vllm-routes.md#the-deepseek-v41-index-launch)); with `--monokernel` and hk's other default routes, real-weight GSM8K-1319 within stock's noise (McNemar p >= 0.39) |
 | AWQ 4-bit linear | `HK_VLLM_INT4` | **on, gfx1100, gfx950 and gfx1201** | greedy tokens identical to stock's, Qwen3-8B/14B-AWQ; on gfx1201 Qwen3-8B-AWQ tokens identical |
-| GPTQ 4-bit linear (symmetric, grouped; RDNA3W4A16LinearKernel) | `HK_VLLM_GPTQ` | **on, gfx1100** | Qwen3.8-27B-GPTQ-Int4 against stock-fair (TRITON_ATTN, TunableOp with a 256 MB rotating buffer): GSM8K-200 equal, TPOT in the RDNA scorecard; act-order checkpoints are refused and counted (`vllm_gptq.REFUSED`) |
+| GPTQ 4-bit linear (symmetric, grouped; RDNA3W4A16LinearKernel) | `HK_VLLM_GPTQ` | **on, gfx1100 and gfx1201** | Qwen3.8-27B-GPTQ-Int4 against stock-fair (TRITON_ATTN, TunableOp with a 256 MB rotating buffer): GSM8K-200 equal, TPOT in the RDNA scorecard; act-order checkpoints are refused and counted (`vllm_gptq.REFUSED`) |
 | unquantized linear (+ tuning at load) | `HK_VLLM_GEMM` | **on, gfx1100 and gfx1201** | tokens identical, or a bf16 near-tie; on gfx1201 tokens identical and routing counts equal round for round, Qwen3-1.7B and Qwen3.5-9B, also with gfx1201's shipped small-M schedules; on gfx950 it was measured to change nothing against aiter, so it stays off there |
 | bf16 MoE GEMMs | `HK_VLLM_MOE` | **on, gfx1100 and gfx1201** | OLMoE tokens identical; with aiter on gfx950 it routes nothing; on gfx1201 up to 2 tokens a step only, OLMoE tokens identical |
 | 4-bit MoE GEMMs with zero points (AWQ through vLLM's moe_wna16), up to 32 tokens a step, on vLLM's own tensors | `HK_VLLM_MOE_WNA16` | **on, gfx1100 and gfx1201** | Qwen3.6-35B-A3B-AWQ end to end against stock: GSM8K equal (#252) |
@@ -137,7 +137,7 @@ first compile in each process prints one line:
 | MoE GEMMs | `vllm_moe.py` | `invoke_fused_moe_triton_kernel` and `try_get_optimal_moe_config`, rebound by identity | `HK_VLLM_MOE` (on, gfx1100 and gfx1201) |
 | 4-bit MoE GEMMs (moe_wna16) | `vllm_moe_wna16.py` | `invoke_fused_moe_wna16_triton_kernel` and `try_get_optimal_moe_config`, rebound by identity | `HK_VLLM_MOE_WNA16` (on, gfx1100 and gfx1201) |
 | AWQ linear layers | `vllm_int4.py` | `AutoAWQLinearMethod.process_weights_after_loading` and `.apply` | `HK_VLLM_INT4` (on) |
-| GPTQ linear layers | `vllm_gptq.py` | `AutoGPTQLinearMethod.process_weights_after_loading` and `.apply` | `HK_VLLM_GPTQ` (on, gfx1100) |
+| GPTQ linear layers | `vllm_gptq.py` | `AutoGPTQLinearMethod.process_weights_after_loading` and `.apply` | `HK_VLLM_GPTQ` (on, gfx1100 and gfx1201) |
 | MXFP8 linear layers | `vllm_mxfp8.py` | `RocmDotScaledMxfp8LinearKernel.process_weights_after_loading` and `.apply_weights` | `HK_VLLM_MXFP8` (on, gfx950) |
 | MXFP4 MoE, a8w4 | `vllm_moe_a8w4.py` | `aiter.fused_moe.fused_moe`, with its signature | `HK_VLLM_MOE_A8W4` (on, gfx950) |
 | DeepSeek-V4.1 index layers, `--monokernel` | `vllm_dsv41_index.py` | `mono_decode._select`, through an import hook | `HK_VLLM_DSV41_INDEX` (on, gfx950) |
@@ -610,29 +610,31 @@ only at some shapes should keep only those, through `route`.
 ## Environment variables
 
 Read by `python/hk/integration` and the kernels it routes to, exactly as
-spelled:
+spelled. Which routes are on by default on which GPU is the generated
+[route table](supported-hardware.md#engine-routes-on-each), so this table does
+not restate it:
 
 | variable | read by | effect |
 |---|---|---|
 | `HK_DISABLE` | `switches.py`, every plugin, the SGLang-Diffusion boot, `ops/sdpa.py` | `1`: every route off, in every engine; beats every other switch |
 | `HK_PATCH_VLLM` | `switches.py`, `_vllm_plugin.py` | `0`: every vLLM route off (and `HK_VLLM_USER`). `1`: also the encoder SDPA patch, as it always applied |
-| `HK_VLLM_SDPA` | `switches.py` | the encoder SDPA patch (default on, gfx1100) |
+| `HK_VLLM_SDPA` | `switches.py` | the encoder SDPA patch (a route) |
 | `HK_VLLM_BACKEND` | `_vllm_plugin.py` | register the decoder attention backend (default off); a value other than `1`/`on`/`yes`/`true` names the slot |
 | `HK_VLLM_BACKEND_SLOT` | `vllm_backend.py` | the `AttentionBackendEnum` member to register over (default `TRITON_ATTN`) |
-| `HK_VLLM_PREFILL` | `_vllm_plugin.py` | prefill attention on vLLM's own cache, ROCM_ATTN and TRITON_ATTN (default on, gfx1100 and gfx1201) |
+| `HK_VLLM_PREFILL` | `_vllm_plugin.py` | prefill attention on vLLM's own cache, ROCM_ATTN and TRITON_ATTN (a route) |
 | `HK_VLLM_PREFILL_VT` | `vllm_prefill.py` | `0`: on TRITON_ATTN, transpose V in every workgroup instead of packing the batch's V^T pages once a call (`paged_prefill` `vt_pages`; default on, head size up to 128) |
 | `HK_VLLM_PREFILL_SHADOW` | `vllm_prefill.py` | `1`: also run vLLM's kernel on every call hk takes and print the worst row's difference in bf16 ulps (a diagnostic; syncs) |
 | `HK_VLLM_PREFILL_GUARD` | `vllm_prefill.py` | `0`: on TRITON_ATTN, take every batch with prefill in it, also the ones measured slower than vLLM's kernel (decodes beside a small prefill, short chunks); default on: those go to vLLM, counted as `declined` |
-| `HK_VLLM_DECODE` | `vllm_prefill.py` | decode-only TRITON_ATTN calls on hk's split decode (`paged_decode`): unset, head size 256 (default on, gfx1100); `1`, head size 128 too; `0`, off |
-| `HK_VLLM_GEMM` | `_vllm_plugin.py` | route the unquantized linear layers (default on, gfx1100 and gfx1201) |
-| `HK_VLLM_MOE` | `_vllm_plugin.py` | route the bf16 MoE GEMMs up to 256 tokens a step (2 on gfx1201; default on, gfx1100 and gfx1201) |
+| `HK_VLLM_DECODE` | `vllm_prefill.py` | decode-only TRITON_ATTN calls on hk's split decode (`paged_decode`): unset, head size 256 wherever the prefill route is on; `1`, head size 128 too; `0`, off |
+| `HK_VLLM_GEMM` | `_vllm_plugin.py` | route the unquantized linear layers (a route) |
+| `HK_VLLM_MOE` | `_vllm_plugin.py` | route the bf16 MoE GEMMs up to 256 tokens a step (2 on gfx1201; a route) |
 | `HK_VLLM_MOE_WNA16` | `_vllm_plugin.py` | route the 4-bit MoE GEMMs with zero points (AWQ, moe_wna16) up to 32 tokens a step, on the (experts, N, K, group) it was validated on (`vllm_moe_wna16.VALIDATED`); `force`: any (default off) |
 | `HK_VLLM_INT4` | `_vllm_plugin.py` | route AWQ linear layers' fp16/bf16 batches up to 64 tokens (default on) |
-| `HK_VLLM_GPTQ` | `_vllm_plugin.py` | route 4-bit symmetric GPTQ layers' fp16/bf16 batches of 1-64 tokens (default on, gfx1100) |
-| `HK_VLLM_MXFP8` | `_vllm_plugin.py` | DeepSeek-V4.1's block-scaled MXFP8 linear layers at M >= 2048, two shapes from their own M (`vllm_mxfp8.MIN_M_NK`), six with measured M ranges below that (`vllm_mxfp8.RANGES`) (default on, gfx950) |
+| `HK_VLLM_GPTQ` | `_vllm_plugin.py` | route 4-bit symmetric GPTQ layers' fp16/bf16 batches of 1-64 tokens (a route) |
+| `HK_VLLM_MXFP8` | `_vllm_plugin.py` | DeepSeek-V4.1's block-scaled MXFP8 linear layers at M >= 2048, two shapes from their own M (`vllm_mxfp8.MIN_M_NK`), six with measured M ranges below that (`vllm_mxfp8.RANGES`) (a route) |
 | `HK_MXFP8_ANY` | `vllm_mxfp8.py` | `1`: the MXFP8 route takes any (N, K) of whole tiles, not only the measured TP2 shapes (default off) |
-| `HK_VLLM_MOE_A8W4` | `_vllm_plugin.py` | DeepSeek-V4.1's AITER a8w4 MoE at M >= `HK_MOE_A8W4_MIN_M` (2560) (default on, gfx950) |
-| `HK_VLLM_DSV41_INDEX` | `_vllm_plugin.py` | DeepSeek-V4.1's index layers under `--monokernel` as one hk launch at decode steps of up to 8 rows (default on, gfx950) |
+| `HK_VLLM_MOE_A8W4` | `_vllm_plugin.py` | DeepSeek-V4.1's AITER a8w4 MoE at M >= `HK_MOE_A8W4_MIN_M` (2560) (a route) |
+| `HK_VLLM_DSV41_INDEX` | `_vllm_plugin.py` | DeepSeek-V4.1's index layers under `--monokernel` as one hk launch at decode steps of up to 8 rows (a route) |
 | `HK_DSV41_INDEX_TOPK` | `vllm_dsv41_index.py` | `0`: the index launch stops at the logits' inputs; vLLM's indexer op does the logits and top-k (default on) |
 | `HK_DSV41_INDEX_CHECK` | `vllm_dsv41_index.py` | `N`: on the first N eager calls of each index layer, run vLLM's chain after the launch and print what differs (default 0) |
 | `HK_VLLM_USER` | `_vllm_plugin.py` | comma-separated modules or `.py` files to import in vLLM's process: your `register.op` / `register.patch` calls |
@@ -643,14 +645,14 @@ spelled:
 | `HK_FLYDSL` | `flydsl_gemm.py` | `0`/`off`/`no`/`false`: never take a table's FlyDSL rows, even with FlyDSL installed |
 | `FLYDSL_ROOT` | `flydsl_gemm.py` | a FlyDSL checkout whose `kernels/` package matches the installed `flydsl`, appended to `sys.path`; where another `kernels` is installed, imported from beside it |
 | `HK_PATCH_SGLANG` | `switches.py` | `0`: every SGLang route off |
-| `HK_SGLANG_LINEAR` | `_sglang_plugin.py` | route SGLang's unquantized linear layers (default on, gfx1100) |
+| `HK_SGLANG_LINEAR` | `_sglang_plugin.py` | route SGLang's unquantized linear layers (a route) |
 | `HK_SGLANG_ROUTES` | `sglang.py`, via `engine.shipped_table` | a routing table for SGLang's linear layers instead of the shipped one |
-| `HK_SGLANG_MOE` | `_sglang_plugin.py` | `1` (default on, gfx1100): the torch top-k and hk's expert GEMMs; `topk`: the torch top-k alone |
-| `HK_SGLANG_NORM` | `_sglang_plugin.py` | route SGLang's GemmaRMSNorm where it would run its native torch path (default on, gfx1100) |
+| `HK_SGLANG_MOE` | `_sglang_plugin.py` | `1` (a route): the torch top-k and hk's expert GEMMs; `topk`: the torch top-k alone |
+| `HK_SGLANG_NORM` | `_sglang_plugin.py` | route SGLang's GemmaRMSNorm where it would run its native torch path (a route) |
 | `HK_SGLD` | `sglang_diffusion.py` and its boot | `0`: every SGLang-Diffusion route off; a list (`attn,linear,convrot`) names exactly the parts; `1`: attention and linear |
-| `HK_SGLD_ATTN`, `HK_SGLD_LINEAR` | `switches.py` | SGLang-Diffusion's attention and linear (default on, gfx1100) |
+| `HK_SGLD_ATTN`, `HK_SGLD_LINEAR` | `switches.py` | SGLang-Diffusion's attention and linear (a route) |
 | `HK_SGLD_CONVROT` | `switches.py` | ConvRot INT8, lossy (default off: opt-in) |
-| `HK_SDPA_K3` | `ops/sdpa.py` | `hk.ops.sdpa`'s non-causal head_dim-128 calls on `attn_k3` (default on, gfx1100) |
+| `HK_SDPA_K3` | `ops/sdpa.py` | `hk.ops.sdpa`'s non-causal head_dim-128 calls on `attn_k3` (a route) |
 | `HK_SPLITS` | `ops/paged.py` | the decode backend's KV split: `auto` (default), `off`/`0`/`1`, or a count |
 | `HK_TRITON_DECODE_ALSO` | `vllm_backend.py` | decode batch sizes past `TRITON_DECODE_MAX` that run Triton's kernel on hk's cache, as ranges: `17-24,49-56` (default none) |
 | `HK_NORM_LAYOUT` | `ops/norm.py` | `strip` (default): the norms and softmax run on the strip kernel wherever a row fits one; `tile`: always on the tile kernels |
