@@ -11,6 +11,8 @@ claims: the performance numbers the project quotes are on
 - [Contributor records](contributor-records.md): what the CI, the performance
   baselines and the wheel builds measured or got wrong, moved off the
   testing, building and releasing pages.
+- [Runtime records](runtime-records.md): the runtime page's measurements
+  (cache-key cost, compile and warm times, host time, the VOPD probe).
 - Superseded design documents: [the DX goal](design/dx-goal.md),
   [the tuning goal](design/tuning-goal.md), [the end-to-end goal](design/e2e-goal.md),
   [CDNA3/4](design/cdna.md), [HipKittens on CDNA4](design/cdna-hipkittens-ops.md),
