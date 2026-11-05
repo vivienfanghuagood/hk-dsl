@@ -91,14 +91,14 @@ nav:
       - "Tiles, strips and LDS": tiles-and-strips.md
       - The correctness gates: correctness-gates.md
       - "XCDs, placement and hk.comm": xcds-and-comm.md
-      - The pipeline and its IR: ir.md
-      - Workgroup placement and XCDs: placement.md
   - 3 Language reference:
       - The language: language.md
+      - "The IR: dialect, passes, tools": ir.md
       - Templates:
           - Elementwise and rowwise: templates/elementwise-rowwise.md
           - GEMM with an epilogue: templates/gemm.md
       - Schedules: schedules.md
+      - "Workgroup placement (gfx950)": placement.md
       - hk.check: check.md
       - "hk.profile: why it is slow": profile.md
       - "Tuning a GEMM: hk.tune": tune.md

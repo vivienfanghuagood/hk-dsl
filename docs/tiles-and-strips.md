@@ -37,15 +37,11 @@ chunk is the wave's lanes times the run -- 32 x 8 on gfx1100 and gfx1201,
 64 x 8 on gfx950 -- and a strip's columns are whole chunks. A bf16 run of 8
 is one 16-byte access, and nothing is held twice.
 
-- It loads and stores by element (`x.at[r, c]`), converting the element type
-  on the way; `bounded=True` reads zero past the tensor's last row and column
-  and writes nothing there.
-- It maps, reduces along a row (the answer lands in every lane) and along
-  columns, and broadcasts its vectors.
-- Its elements are bf16, fp16, fp32 or i32. It is never a matrix-core operand
-  or an LDS tile.
-- It exists on gfx1100, gfx1201 and gfx950; gfx942 refuses it while tracing
-  ([supported hardware](supported-hardware.md#what-the-language-has-on-each)).
+A strip loads and stores by element (`x.at[r, c]`, `bounded=True` for ragged
+edges), maps, reduces along rows and columns, and holds bf16, fp16, fp32 or
+i32. It is never a matrix-core operand or an LDS tile, and it exists on
+gfx1100, gfx1201 and gfx950 ([the language](language.md#register-strips);
+[supported hardware](supported-hardware.md#what-the-language-has-on-each)).
 
 Elementwise and row-wise kernels belong on strips: the same math on 16x64
 register tiles leaves bandwidth unused. `hk.templates.elementwise` and
