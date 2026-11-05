@@ -216,7 +216,7 @@ reports:
 - a pair noisier than the cap is not gated.
 
 How and when to refresh is in
-[building](../building.md#the-performance-gate).
+[testing](../testing.md#the-performance-gate).
 
 The baseline was measured on hk as of chapter 26. While this work was
 merging, [chapter 27](27-strips.md) landed. It puts the norms and softmax

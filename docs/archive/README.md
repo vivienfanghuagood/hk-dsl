@@ -8,6 +8,9 @@ claims: the performance numbers the project quotes are on
 
 - [The measurement record](performance-2026-10.md): kernel-level and
   engine-level measurements through October 2026, RDNA3 and CDNA4 apart.
+- [Contributor records](contributor-records.md): what the CI, the performance
+  baselines and the wheel builds measured or got wrong, moved off the
+  testing, building and releasing pages.
 - Superseded design documents: [the DX goal](design/dx-goal.md),
   [the tuning goal](design/tuning-goal.md), [the end-to-end goal](design/e2e-goal.md),
   [CDNA3/4](design/cdna.md), [HipKittens on CDNA4](design/cdna-hipkittens-ops.md),

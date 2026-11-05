@@ -32,30 +32,6 @@ A tier that cannot run is skipped with a reason, never silently passed.
 Performance has a gate of its own, ratios against the arms beside hk in one
 scoreboard run ([the performance gate](#the-performance-gate)).
 
-**Tests, at chapter 28.**
-- `mlir/test` (lit): 10 files, for:
-  - the op verifiers and a round trip through text;
-  - `hk-verify`, `hk-lds-alloc`, `hk-lds-pipeline` and `hk-check-budgets` on
-    hand-written IR, including the workgroup-operation checks, the budget
-    warning, and the refusal of a plain barrier after an ordinary LDS store.
-    The fifth pass, `hk-fragments`, is tested from Python
-    (`tests/hk/ir/test_cdna.py`);
-  - the translation of a kernel, of indexed and row accesses, and of a
-    `while`.
-- tests/hk/ir and tests/hk/codegen, in CI at `596522c`: 639 passed and 4
-  skipped (the IR tier, with `tests/hk/engines` skipping), and 1033 passed.
-  The one xfail is conditional: HipKittens' CDNA4 attention does not compile
-  with ROCm 7.2's clang.
-- tests/hk/gpu: run in groups by `scripts/gpu_suite.sh`, on main on a
-  W7900D and an MI355X ([the GPU tier](#the-gpu-tier)). On
-  gfx950 the attention and RDNA GEMM tests skip
-  ([chapter 29](history/29-cdna.md)), and so do the register strip tests:
-  strips are include/rdna3's, and there the norms' strip layout runs the
-  tile kernels and is held to their tolerances.
-
-[The MLIR chapter](history/15-mlir-dialect.md) records the counts as they
-stood at the move (990 no-GPU tests, 386 on the GPU).
-
 ## Running each tier
 
 * **lit** — `ninja -C $HK_MLIR_BUILD check-hk`, where `$HK_MLIR_BUILD` is the
@@ -83,11 +59,8 @@ stood at the move (990 no-GPU tests, 386 on the GPU).
   it skips.
 
   On gfx950 every kernel the tier runs has a native path, so a failure is a
-  failure; until [chapter 39](history/39-cdna-paged.md) a rule in
-  `conftest.py` reported the kernels that had none (paged attention, the
-  4-bit GEMM, two RDNA-only tests) as skips. What a target lacks by design
-  -- FlyDSL's RDNA3 GEMM on gfx950, the strips on gfx942 -- is a skip
-  condition in the test itself.
+  failure. What a target lacks by design -- FlyDSL's RDNA3 GEMM on gfx950, the
+  strips on gfx942 -- is a skip condition in the test itself.
 * **engines** — `python3 -m pytest tests/hk/engines -q`, in each engine's
   venv. Every symbol a vLLM or SGLang patch rebinds, with the signature its
   stand-in forwards to and the call sites the rebind must reach; a module is
@@ -262,16 +235,11 @@ cancels a PR's run in progress, but main's runs always finish:
     its own.
   - Each shard keeps its own compile cache in `actions/cache`, falling back to any shard's.
     A run restores the branch's cache, its base branch's, or `main`'s.
-  - Cold, six shards took 8-20 minutes a job (2.5 of setup, 2 of IR tier on the first);
-    hence ten, with the IR tier apart.
   - **What goes cold:** a kernel's cache key is hipcc plus the contents of the
     headers its own compile reads, as the preprocessor lists them
     ([the cache](runtime.md#the-cache)). An edit to `include/hk/cdna.cuh`
     recompiles the kernels that include it -- the CDNA ones -- and leaves the
     RDNA ones cached; an edit to an rdna3/ header, the reverse.
-  - **Before both changes:** every header was in every key, and a branch
-    touching the CDNA shim compiled the whole tier cold on one 4-core runner,
-    40-56 minutes against `main`'s warm 5 (PRs #28-#31).
   - **Warm,** the tier takes about 10 seconds a shard.
 - **gfx1201 has legs of its own**: the IR tier (`IR tier, gfx1201`) and the
   codegen tier in four shards (`codegen tier (I/4), gfx1201`), both with
@@ -347,40 +315,25 @@ change that recompiles the kernels takes about 25 minutes on gfx950 and about
 30 on gfx1100. Before a pull request merges, a maintainer runs the GPU tier on
 its head; `gfx950` and `gfx1100` must pass.
 
-Until 19 October 2026 the tier was a polling CI on the same machines
-(`scripts/gpu_ci/`), posting `gpu/gfx1100` and `gpu/gfx950` commit statuses;
-older commits carry those (the prerelease that held their reports has since
-been removed). [Chapter 40](history/40-gpu-ci-on-actions.md) records the switch.
-
 ### The gfx1201 runner
 
 The `gfx1201` job runs the GPU tier for the RDNA4 port in `rocm/pytorch`
-rocm7.2.3 py3.12 -- the gfx950 job's image. It ran `continue-on-error` until
-the port's GPU tier was green there (RDNA4 R1, #71); it no longer does, so a
-red gfx1201 fails the run.
+rocm7.2.3 py3.12 -- the gfx950 job's image. A red gfx1201 fails the run.
 
 The [performance gate](#the-performance-gate) has a gfx1201 baseline,
 `tests/perf/baselines/gfx1201.json`: gemm, attention, the norms, softmax and
 the fp8 and int8 GEMMs, hk against torch, Inductor and Triton -- the arms the
-job's container has. Its eight runs on R9700s, in two sessions hours apart,
-gate 34 pairs at 3.0-12.6% (median 4.5%). Not gated: the 1- and 32-row norms,
-and the 8192-row fused add + RMSNorm, whose hk time is 445 us in some
-processes and 481 in others (the same kernel source, the opponents unchanged);
-a baseline from one session had gated it at 4.5%, and the later session's runs all
-failed it. Run it as
-gfx1100's is, by hand and alone on a card, before and after a change to a
+job's container has. Pairs too noisy to gate are listed in the file with their
+noise. Run it as gfx1100's is, by hand and alone on a card, before and after a change to a
 kernel it times:
 
 ```bash
 HK_ARCH=gfx1201 HK_GPU=0 scripts/perf_gate.sh
 ```
 
-It is not part of the gfx1201 job. Run there, after the GPU tier, it flagged
-three pairs of an unchanged hk 3.3-6.2% slower (bf16 GEMM against Triton, the
-fp8 GEMM at 2048 rows against hipBLASLt). On a card the tier has just kept busy
-for a quarter of an hour, the ratios of hk's large GEMMs moved further than the
-standalone baseline allows, and a required job cannot fail on a measurement
-condition.
+It is not part of the gfx1201 job: a card the GPU tier has just kept busy moves the large
+GEMMs' ratios further than the standalone baseline allows, and a required job cannot fail on a
+measurement condition.
 
 ### The install matrix
 
@@ -475,28 +428,11 @@ with its reason in the run's log and `--json`, by any of three rules:
 **Each round's calls are queued.** A GPU spin of 1 ms a call goes first in
 each session, so the host has launched every call before the first runs
 and they run back to back, as in a captured graph, whatever the launcher
-costs. Without it a microsecond kernel's time was its launcher's: a call
-that reached the GPU 5-16 us after it went idle took about 10 us longer,
-10-20% of the calls of the arms that launch in 5-8 us (hk's pybind entry,
-torch, FlyDSL) and none of Triton's or Inductor's, which take 21-28 us. That,
-and not hk's kernels, was the one- and 32-row cases' noise
-([chapter 32](history/32-measuring-the-measurements.md)).
+costs. Without it a microsecond kernel's time was its launcher's.
 
 An arm's time is the **median** of the rounds it kept, and its noise their
-median absolute deviation; the best kept round is reported beside it. On
-four runs of the gate's arguments the median and the best round moved the
-41 gated-size pairs' ratios alike between runs (median spread 0.36% and
-0.45%, 90th percentile 3.7% and 3.5%), and the 16 small-row pairs less (90th
-percentile 19% against 28%). The median cannot be set by one round.
-
-Run on the reports kept from [chapter 31](history/31-remeasured.md) (six
-baseline runs, the run it left out, four gate runs, six norm A/B runs:
-`check_regression.py --audit`), the ceiling rejects exactly one round, the
-97.4 us one. Those reports keep only each arm's best round and the second's
-distance from it, so `lone` can only be named there as a candidate: 11
-best rounds, all at 1 and 32 rows, sat 22-42% ahead of their second. On
-the reports that keep every round, the rules rejected 2 of 2,072 rounds (296
-arm-cases) in four clean runs, both `lone`, both at one or 32 rows.
+median absolute deviation; the best kept round is reported beside it. The
+median cannot be set by one round.
 
 `check_regression.py` holds reports to the same rules. A time in a report
 that is still faster than the card can go (one written before the
@@ -517,110 +453,6 @@ not gated, and is listed as such with its noise. The file records every
 run's ratio beside the tolerance it produced. To change a tolerance,
 re-measure the noise; editing the number by hand loosens the gate blindly.
 
-**What the first queued baseline measured.** hk with
-[chapter 32](history/32-measuring-the-measurements.md)'s scoreboard: queued
-rounds, timed by the median of the rounds kept. Ten runs on one W7900D, in the
-engines' container (vLLM 0.31 venv: torch 2.13.0+rocm7.2, Triton 3.8.0, FlyDSL
-0.4.0): six on `28ffe21` with this work, three of them half an hour after the
-others, and four four hours later on `47b40aa`, after
-[chapter 33](history/33-cdna-gemm.md). All ten built the same kernels (one
-`kernels` hash) and none of them had a round rejected:
-- 57 gated pairs over 17 cases, and none left out for noise. The one- and
-  32-row RMSNorm and fused add are gated again: queued, hk's kernels there
-  take 1.95-2.33 us and every arm's rounds sit within about 1%, where
-  before the launch-timing artifact moved their ratios 18-52% between runs.
-- 37 pairs sit at the 3% floor. GEMM tolerances are 3.0-4.4%, attention's
-  3.3-7.3%, and the widest is 12.8% (torch against the one-row RMSNorm,
-  whose ratio moved 4.3% across the runs).
-- The 40 pairs both this and the previous baseline gate moved by a median
-  0.68% (at most 5.1%, Inductor against the 8192-row softmax), from the
-  statistic and the queue; their widest tolerance went from 13.7% to 7.3%.
-- With the norms on the tile kernels instead (`HK_NORM_LAYOUT=tile`, a
-  regression on purpose: chapter 27 measured the strips faster everywhere
-  but the 8192-row fused add), the check failed with exit 1 on 35 pairs:
-  the one- and 32-row norms by 15-26%, the 2048-row ones by 10-27%, the
-  8192-row RMSNorm by 9-12% and three arms of the 8192-row softmax by
-  5.8-7.0%. The GEMM, attention and the 8192-row fused add moved -1.5% to
-  +0.8%, and passed. The check also printed that hk's kernels had changed.
-- `scripts/perf_gate.sh` on `47b40aa` with this baseline, a run after the
-  ten: exit 0, all 57 pairs within tolerance, no note, no round rejected;
-  the largest change used 31% of its pair's tolerance (Inductor against the
-  8192-row softmax, -2.2% of 7.2%).
-
-[Chapter 38](history/38-rdna-losses.md) refreshed it from four
-back-to-back runs on one W7900D, when RDNA's stores began rounding to even and
-V's transpose was packed (a new `kernels` hash, Triton 3.8.0 in the venv):
-57 gated pairs, tolerances 3.0-6.6%, the median pair moved 0.0%, attention
-against torch +6-10%, and a gate run after it passed.
-
-**On the matched stack (2026-10-23).** Every baseline up to here was
-measured in a venv with PyPI's Triton 3.8.0 installed over the triton-rocm
-3.7.1 that torch 2.13.0+rocm7.2 pins ([chapter 44](history/44-matched-stack.md)).
-That venv is retired, and vLLM 0.31's venv is now the matched one
-(torch 2.13.0+rocm7.2, triton-rocm 3.7.1, FlyDSL 0.4.0;
-[integration](integration.md#supported-versions-and-the-contract-tests)).
-The shipped baseline was refreshed there: eight runs on one W7900D, in two
-blocks of four about 50 minutes apart. Each run was interleaved with a run
-of the retired venv, on the same hk tree (`0df64ae`, one `kernels` hash),
-with the arm order rotated. No round of the matched runs was rejected.
-- **The change is the stack, not hk.** The eight retired-venv runs, on
-  today's kernels, reproduce the old baseline. 55 of 57 pairs are within
-  tolerance, and the median change per arm is 0.3-0.8%. A check of those
-  runs against the old baseline exits 0 (with the note that hk's kernels
-  changed). The matched runs differ from them in the arms that run Triton
-  kernels. Against Triton the median ratio moves 3.2%: +2.3% to +3.6% on the
-  GEMMs, +10.9% and +6.3% on the one- and 32-row fused add, -3.5% on the
-  2048-row softmax. Against Inductor the median moves 1.2%. torch and
-  FlyDSL move by a median 0.1-0.2% (at most 1.2%). In other words,
-  triton-rocm 3.7.1's kernels are 2-4% slower than 3.8.0's on these GEMMs,
-  6-11% slower on the small fused adds, and 3.5% faster on the 2048-row
-  softmax. Checked against the old baseline, a matched run exits 1: a
-  REGRESSION at softmax 2048x4096 / triton (-3.2% to -3.3% against 3.0%),
-  7-8 pairs `better`, and the note that Triton changed from 3.8.0 to 3.7.1. The
-  exception on the retired side is Inductor against the 32-row RMSNorm,
-  1.23x against the old 1.04x, under 3.8.0 only: the other arms of that
-  case are within 0.5%, so the move is Inductor's kernel (built in a fresh
-  cache), not hk's.
-- **The new baseline**: 57 gated pairs, none left out. Tolerances are
-  3.0-13.7%, median 3.3%, and 25 pairs sit at the floor (the old baseline:
-  51 at the floor, 3.0-6.6%, from four back-to-back runs). The runs span an
-  hour, so the spread across runs counts for more: it sets the noise of 26
-  pairs, as in the first ten-run baseline (37 at the floor, up to 12.8%).
-  GEMM tolerances are 3.0-3.9% and attention's 3.0%. The widest are the
-  four arms of the 8192-row fused add, 9.3-13.7%. In one of the eight runs,
-  hk's kernel there took 0.3317 ms in all seven rounds, against 0.340-0.347
-  ms in the other fifteen runs of either venv. That is a per-process mode,
-  4% faster, and the gate now counts it as noise. A regression smaller
-  than about 9% in that one case would pass.
-- **Gate runs after the refresh**, `scripts/perf_gate.sh` in the matched
-  venv. The first exited 1 on two 32-row pairs: torch against the RMSNorm
-  (-4.6% of 4.0%) and Inductor against the fused add (-3.9% of 3.5%). In
-  that run every arm of the one- and 32-row cases took 0.15-0.25 us longer
-  a call (hk's 32-row RMSNorm 2.37 us, against 2.09-2.19 us in the eight
-  runs), the large cases did not move, and the scoreboard took 130 s
-  instead of 68 s. A run of the retired venv right after it was slowed the
-  same way. A fixed cost added to every call compresses small cases' ratios
-  towards 1, which a ratio does not cancel. The GPU was idle and the cause
-  was not found. A plain scoreboard run 25 minutes later read the
-  usual times, and the gate run after it exited 0: all 57 pairs within
-  tolerance, the largest drop -0.8% (of 3.0-4.0%). If the gate fails on
-  the small cases alone, look at their absolute times before believing it.
-- **The gate now catches the drift.** A run in the retired venv, checked
-  against the new baseline, exits 1 with five regressions: Triton against
-  the one- and 32-row fused add (-9.6%, -6.2%), the 2048-row fused add and
-  two GEMMs. It also prints the note that Triton changed from 3.7.1 to
-  3.8.0.
-
-The previous baseline, measured on hk as of
-[chapter 26](history/26-the-scoreboard-retuned.md), was the one tested for
-firing. With hk's GEMM made slower on purpose (`k_step` 32 instead of 64 in
-its default schedule, 9-12% a call), the gate failed with exit 1 on all 14
-GEMM pairs (-11.6% to -15.2% against tolerances of 3.0-4.6%) and on nothing
-else; reverted, it passed. The GEMM tolerances are now 3.0-4.8%. Run
-against that baseline, this tree came out with no regression and 33 pairs
-`better`: 11 GEMM pairs by 3.5-5.0%, and 22 norm and softmax pairs by
-6.6-35%.
-
 **Refreshing the baseline.** Refresh it when the opponent changed (a new
 torch, Triton or FlyDSL), when hk's kernels changed, when hk got faster on
 purpose (pairs that beat their tolerance are reported as `better`), or for
@@ -629,11 +461,8 @@ each run record torch's, Triton's and FlyDSL's versions, the device, a hash
 of the generated C++ and hipcc flags of every hk kernel the run built or
 loaded (`kernels`, `hk.runtime.compile.built_fingerprint`), and hipcc's
 version (`hipcc`). hk's own version, the dialect's and `toolchain` (hipcc
-with every header's contents) are recorded and not compared: 0.4.0 bumped
-the first two and changed no kernel, and on it every gate run printed that
-a 0.3.1 baseline was due a refresh; chapter 33's CDNA shim moved the third
-and left every RDNA kernel's C++ as it was. A HipKittens header change that
-leaves the generated C++ alone is the one change the note does not see.
+with every header's contents) are recorded and not compared: they change without
+the kernels changing. A HipKittens header change that leaves the generated C++ alone is the one change the note does not see.
 
 ```bash
 HK_GPU=0 FLYDSL_ROOT=<FlyDSL checkout> scripts/perf_gate.sh --refresh 4
@@ -655,22 +484,17 @@ run left out named there.
 
 The move to MLIR was gated three times, each against the code it replaced,
 and the same gates are the bar for any later change to the generated C++ ("it
-needs Gate B again, resources first"). What each gate checks, with what it
-found at the move; the full account is in
-[the MLIR chapter](history/15-mlir-dialect.md):
+needs Gate B again, resources first"). What each gate checks (what they
+found at the move is in [the MLIR chapter](history/15-mlir-dialect.md)):
 
 - **Gate A — the C++ against the code it replaces.** Every shipped
-  instantiation is rendered both ways and compared. At the move, all 354
-  (708 translations with the tests' constexpr points) were byte-identical,
-  and the whole no-GPU suite ran as the corpus, the error paths included:
-  the new passes had to refuse what the old ones refused, in the same words.
+  instantiation is rendered both ways and compared, and the whole no-GPU
+  suite is the corpus, the error paths included: the new passes must refuse
+  what the old ones refused, in the same words.
 - **Gate B — each kernel family against its old self.** Every instantiation
   is rendered both ways; those that differ beyond names are compiled, and
   VGPRs, SGPRs, scratch, LDS and occupancy must match. Then the GPU tier, and
-  old and new timed in one process, interleaved, the old as control. At the
-  move: 422 instantiations, 92 differing beyond names and all identical in
-  resources; every timing gap inside its row's own round-to-round spread
-  ([performance](archive/performance-2026-10.md#after-the-mlir-move)).
+  old and new timed in one process, interleaved, the old as control.
 - **Gate C — the engine.** vLLM serving Qwen3-8B with the patch, from the
   tree before and after, each against stock vLLM: the routing counters must
   match call for call, and the greedy output must match stock's. Run it with

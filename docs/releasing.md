@@ -46,7 +46,7 @@ candidate. Its wheels must be byte-identical to the candidate's
 
 ## The steps
 
-1. **The release PR** (`release: X.Y.Z`, as #37 for 0.6.0 and #58 for 0.7.0):
+1. **The release PR** (`release: X.Y.Z`):
    - `version` in `pyproject.toml` and `hk.__version__` (`python/hk/__init__.py`);
    - the dialect's semantic version (`mlirHKDialectVersion` in
      `mlir/lib/CAPI/HK.cpp`, part of the compile-cache key) if the dialect
@@ -65,10 +65,10 @@ candidate. Its wheels must be byte-identical to the candidate's
 3. **Tag** the release PR's merge commit (annotated, `vX.Y.Z`), after
    checking that main has not moved past it, and push only the tag.
 4. **Build from the tag**, in a fresh worktree with the submodule: the cp310
-   and cp312 wheels, then their manylinux copies (`scripts/manylinux_tag.sh`).
-   Both are built on glibc 2.35 (cp312 in vLLM's ROCm image), so each is one
+   to cp313 wheels, then their manylinux copies (`scripts/manylinux_tag.sh`).
+   All are built on glibc 2.35 ([building](building.md#wheels)), so each is one
    `manylinux_2_35` wheel. Each wheel's glibc must be within its tag:
-   `scripts/check_wheel_glibc.py dist/*.whl dist/manylinux/*.whl` (#66)
+   `scripts/check_wheel_glibc.py dist/*.whl dist/manylinux/*.whl`
    fails a wheel whose highest `GLIBC_2.N` is above its `manylinux_2_M` tag.
    The build is reproducible ([building](building.md#reproducible-wheels)),
    so the tag's wheels are byte-identical to the rc's.
