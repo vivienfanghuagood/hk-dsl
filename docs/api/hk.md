@@ -2212,8 +2212,6 @@ and the answer cannot change within a process.
 hk.torch_op(kernel, *, ns: str = 'hk', name: str = '', **const_overrides)
 ```
 
-*Experimental* in this release ([stability](../stability.md)).
-
 Build, load and return `torch.ops.<ns>.<name>`.
 
 Memoised on (ns, name): the second call in a process returns the same op

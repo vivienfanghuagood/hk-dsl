@@ -405,7 +405,7 @@ def surface_mark(name: str) -> str:
 #: entries of stable pages that are experimental. Every other page and entry is stable.
 EXPERIMENTAL_PAGES = {"hk.comm.md", "hk.collective.md", "hk.placement.md", "hk.group.md",
                       "hk.schedules.md", "hk.tune.md", "hk.profile.md", "hk.target.md"}
-EXPERIMENTAL_NAMES = {"hk.torch_op"}
+EXPERIMENTAL_NAMES: set = set()   # hk.torch_op: stable from 0.9.8
 STABILITY = "[stability](../stability.md)"
 
 
