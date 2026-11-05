@@ -4,9 +4,27 @@ Release notes for each version are also on its
 [GitHub release](https://github.com/vivienfanghuagood/hk-dsl/releases).
 The next version's notes collect here until it is released.
 
-## Unreleased
+## 0.9.2
 
-**`vllm_moe_wna16` on by default on gfx1100 and gfx1201.** vLLM's 4-bit MoE GEMMs for an AWQ checkpoint with zero points (`moe_wna16`) run on hk's MoE GEMM at decode batches up to 32 tokens a step. It reads vLLM's own expert tensors, so it repacks nothing and holds no second copy. It takes only the expert shapes it was validated on (Qwen3.6-35B-A3B-AWQ, group 32); `HK_VLLM_MOE_WNA16=force` reaches others, and `HK_VLLM_MOE_WNA16=0` turns it off. Measured end to end against stock-fair on a Radeon PRO W7900D and on a Radeon AI PRO R9700, three alternating starts an arm: decode TPOT ahead, TTFT level, GSM8K equal.
+hk-dsl 0.9.2: vLLM's 4-bit MoE GEMMs for AWQ checkpoints with zero points (`moe_wna16`) on hk's MoE
+GEMM by default on gfx1100 and gfx1201. No change to the language or the dialect (`hk-dialect-8`).
+
+On PyPI: `pip install hk-dsl`, for CPython 3.10 to 3.13 on Linux x86_64 with glibc 2.35 or newer
+(Ubuntu 22.04 and later, and vLLM's ROCm images): one `manylinux_2_35` wheel per interpreter. The
+wheels below are the same files.
+
+    pip install hk_dsl-0.9.2-cp312-cp312-manylinux_2_35_x86_64.whl
+
+### Default changes
+
+Since 0.9.1 ([the default-on rule](docs/testing.md#the-default-on-rule); `python3 -m hk.integration
+--status` shows each route's state and why):
+
+**On by default on gfx1100 and gfx1201: `vllm_moe_wna16`** (#252). vLLM's 4-bit MoE GEMMs for an AWQ checkpoint with zero points (`moe_wna16`) run on hk's MoE GEMM at decode batches up to 32 tokens a step. It reads vLLM's own expert tensors, so it repacks nothing and holds no second copy. It takes only the expert shapes it was validated on (Qwen3.6-35B-A3B-AWQ, group 32); `HK_VLLM_MOE_WNA16=force` reaches others, and `HK_VLLM_MOE_WNA16=0` turns it off. Measured end to end against stock-fair on a Radeon PRO W7900D and on a Radeon AI PRO R9700, three alternating starts an arm: decode TPOT ahead, TTFT level, GSM8K equal.
+
+### All pull requests
+
+#252, #254.
 
 ## 0.9.1
 

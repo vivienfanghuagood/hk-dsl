@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "hk-dsl"
-version = "0.9.1"
+version = "0.9.2"
 description = "A general-purpose Python DSL for AMD GPU kernels on RDNA and CDNA, with build-time gates against silent tile-level errors (spills, missing waits, MFMA hazards). Its largest end-to-end gains today are on Radeon (RDNA3/RDNA4), through vLLM and SGLang."
 # Release wheels are cp310, cp311, cp312 and cp313 (each carries MLIR bindings for one
 # CPython); another 3.x builds from source (docs/building.md). CI tests 3.10 and 3.12.
