@@ -164,7 +164,7 @@ hk.placement.MIN_ROUNDS_NONUNIFORM hk.placement.MIN_STREAMS hk.placement.Placeme
 hk.placement.analyze hk.placement.check_emitted hk.placement.check_kernel hk.placement.choose
 hk.placement.emitted_decode hk.placement.place_host hk.placement.recording
 hk.placement.renumber hk.placement.xcd_count hk.placement.xcd_range hk.rand hk.range
-hk.range_constexpr hk.row_vec hk.runtime.SymmetricBuffer hk.scope hk.templates hk.tile_coord
+hk.range_constexpr hk.row_vec hk.runtime.SymmetricBuffer hk.scope hk.specialize hk.templates hk.tile_coord
 hk.torch_op hk.transpose hk.transpose_sep hk.uniform hk.zeros
 """.split())
 

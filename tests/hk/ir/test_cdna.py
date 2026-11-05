@@ -59,7 +59,7 @@ def test_the_cdna_entry_point_takes_the_stream(arch):
     one). RDNA's is unchanged."""
     t = hk.RT(hk.bf16, 16, 64)
 
-    @hk.kernel(arch=arch, grid=lambda p: (1, 1, 1))
+    @hk.kernel(arch=arch, grid=lambda p: (1, 1, 1), name="k")
     def k(a: hk.Tensor[hk.bf16], o: hk.Tensor[hk.bf16]):
         idx = hk.tile_coord(0, 0, 0, 0)
         o[idx] = a[idx].load(t)
