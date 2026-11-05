@@ -4,11 +4,25 @@ Release notes for each version are also on its
 [GitHub release](https://github.com/vivienfanghuagood/hk-dsl/releases).
 The next version's notes collect here until it is released.
 
-## Unreleased
+## 0.9.7
 
-**GPTQ prefill on hk on gfx1201.** `vllm_gptq` now also takes the prefill batches vLLM's `RDNAHybridW4A16LinearKernel` runs on Triton (above 64 tokens), on a new large-batch form of hk's 4-bit GEMM (`hk.ops.w4a16.exllama_large_matmul`, `w4a16_large_kernel`). Like the decode forms, it reads vLLM's own weight tensors in place. A 128-row tile of W is decoded once into LDS and shared across 128 tokens.
+hk-dsl 0.9.7: on gfx1201, `vllm_gptq` also takes GPTQ prefill (the batches vLLM runs on Triton, above
+64 tokens) on a new large-batch form of hk's 4-bit GEMM that reads vLLM's weights in place. No change
+to the language or the dialect (`hk-dialect-8`).
 
-**vLLM's TRITON_ATTN on gfx1201: MiniCPM5's shortest chunks beside more decodes take the packed KV split.** The packed split took a short chunk over a long context beside at most 3 decodes on gfx1201; for MiniCPM5's shape (head size 128, 8 query heads a kv head) it now takes up to 15, while their tokens stay under a measured bound (`vllm_prefill.KVS_PACK_MAX_DECODES` entries are now (decodes, decode tokens)). Measured faster than both stock kernels on every batch it takes.
+On PyPI: `pip install hk-dsl`, for CPython 3.10 to 3.13 on Linux x86_64 with glibc 2.35 or newer
+(Ubuntu 22.04 and later, and vLLM's ROCm images): one `manylinux_2_35` wheel per interpreter. The
+wheels below are the same files.
+
+    pip install hk_dsl-0.9.7-cp312-cp312-manylinux_2_35_x86_64.whl
+
+### Changes
+
+**GPTQ prefill on hk on gfx1201** (#287). `vllm_gptq` now also takes the prefill batches vLLM's `RDNAHybridW4A16LinearKernel` runs on Triton (above 64 tokens), on a new large-batch form of hk's 4-bit GEMM (`hk.ops.w4a16.exllama_large_matmul`, `w4a16_large_kernel`). Like the decode forms, it reads vLLM's own weight tensors in place. A 128-row tile of W is decoded once into LDS and shared across 128 tokens.
+
+### All pull requests
+
+#287, #288.
 
 ## 0.9.6
 
