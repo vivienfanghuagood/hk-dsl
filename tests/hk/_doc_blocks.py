@@ -26,3 +26,20 @@ def load(tmp_path: Path, page: Path = LANGUAGE):
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
     return mod
+
+
+def blocks(page: Path) -> list[str]:
+    return re.findall(r"```python\n(.*?)```", page.read_text(), re.S)
+
+
+def run(page: Path, marker: str, ns: dict) -> dict:
+    """Execute, in `ns`, the one python block of `page` that contains `marker`. The source is
+    registered with linecache, so whatever traces a function from it can read its source."""
+    import linecache  # noqa: PLC0415
+
+    found = [b for b in blocks(page) if marker in b]
+    assert len(found) == 1, f"{page.name}: {len(found)} blocks contain {marker!r}"
+    name = f"<{page.name}: {marker}>"
+    linecache.cache[name] = (len(found[0]), None, found[0].splitlines(True), name)
+    exec(compile(found[0], name, "exec"), ns)
+    return ns
