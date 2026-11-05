@@ -14,6 +14,7 @@ import pytest
 REPO = Path(__file__).resolve().parents[3]
 DOCS = [REPO / "README.md", REPO / "docs" / "README.md", REPO / "docs" / "getting-started.md",
         REPO / "docs" / "install.md", REPO / "docs" / "quickstart.md", REPO / "docs" / "examples.md",
+        REPO / "docs" / "vllm.md", REPO / "docs" / "sglang.md",
         REPO / "docs" / "language.md", REPO / "docs" / "performance.md",
         REPO / "examples" / "README.md"]
 

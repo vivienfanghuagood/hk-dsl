@@ -85,9 +85,11 @@ Coding agents: start from [llms.txt](../llms.txt) and the
 
 | page | |
 |---|---|
+| [hk in vLLM](vllm.md) | enable hk in vLLM in one command, check it is on, which GPUs and models, turn it off, troubleshooting |
+| [hk in SGLang](sglang.md) | the same for SGLang, and SGLang-Diffusion's one install command |
 | [Integration](integration.md) | what applies to every engine: on by default and turning it off, `--status`, the plugins, `Op` / `Patch` / `RouteTable`, host time, routing tables, the CUDA-graph contract, supported versions and contract tests, your own kernel, the environment variables |
-| [vLLM](vllm.md) | each vLLM route: vision-tower SDPA, prefill attention on vLLM's cache, the decoder attention backend, linear layers (and a model no table measured), MoE, 4-bit, DeepSeek-V4.1's index launch |
-| [SGLang and SGLang-Diffusion](sglang.md) | SGLang's linear and MoE routes; SGLang-Diffusion's attention and linear |
+| [vLLM routes](vllm-routes.md) | reference, each vLLM route: vision-tower SDPA, prefill attention on vLLM's cache, the decoder attention backend, linear layers (and a model no table measured), MoE, 4-bit, DeepSeek-V4.1's index launch |
+| [SGLang routes](sglang-routes.md) | reference: SGLang's linear and MoE routes; SGLang-Diffusion's attention and linear |
 | [For agents: kernels in an engine](agents.md) | `headroom`, `new-op`, `ab --json`: find a step's gap, add a kernel, prove it helped; the numbers not to trust |
 
 **For coding agents**
@@ -143,7 +145,7 @@ faster than what the engine runs:
 - **vLLM's MoE**, Triton's `fused_moe`.
 - **vLLM's decoder attention**, Triton's `unified_attention`, through hk's
   attention backend. It is off by default
-  ([integration](vllm.md#the-decoder-attention-backend)).
+  ([integration](vllm-routes.md#the-decoder-attention-backend)).
 
 Each patch can be turned off by an environment variable, sends each shape to
 the kernel that measured fastest for it, and keeps to the CUDA-graph contract
@@ -185,7 +187,7 @@ Each covers part of the space:
 
 So hk-dsl is built to sit beside them. A route table may name FlyDSL's
 kernel, HipKittens' own or the engine's for the shapes where they measured
-fastest ([FlyDSL on the routes](vllm.md#flydsls-gemm-as-an-optional-path)).
+fastest ([FlyDSL on the routes](vllm-routes.md#flydsls-gemm-as-an-optional-path)).
 
 ### The traps, and the gates against them
 
