@@ -6,6 +6,10 @@ The next version's notes collect here until it is released.
 
 ## Unreleased
 
+- `hk.torch_op` is stable: its signature and behaviour are those of 0.9.0, and `tests/hk/gpu/test_torch_op.py`
+  and `test_torch_op_recipe.py` cover it (eager, `torch.library.opcheck`, `torch.compile`, CUDA graphs)
+  ([stability](docs/stability.md)).
+
 ## 0.9.7
 
 hk-dsl 0.9.7: on gfx1201, `vllm_gptq` also takes GPTQ prefill (the batches vLLM runs on Triton, above
