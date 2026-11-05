@@ -128,3 +128,12 @@ def test_a_dtype_only_in_annotations_still_names_the_variant():
     assert f(hk.bf16).name == "body"
     g = hk.specialize(lambda *, dtype: f(dtype))
     assert g(dtype=hk.bf16).name != g(dtype=hk.fp16).name
+
+
+def test_a_function_with_a_name_of_its_own_keeps_it_in_front():
+    def rms_kernel(cols):
+        def rms(x: hk.Tensor[hk.bf16]):
+            hk.cdiv(cols, 2)
+        return hk.kernel(rms, grid=lambda p: (1, 1, 1))
+
+    assert rms_kernel(4096).name == "rms__cols4096_Tbf16_warps1"

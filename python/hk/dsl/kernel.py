@@ -874,6 +874,9 @@ class Kernel:
 
 #: An automatic kernel name longer than this keeps its head and ends in a hash of the whole.
 _NAME_MAX = 96
+#: Function names that say nothing about the kernel: a factory kernel so named is prefixed
+#: with its factory's name.
+_GENERIC = frozenset({"body", "kernel", "k", "fn", "f", "impl", "inner", "kern"})
 
 
 def _token_value(v: Any) -> Optional[str]:
@@ -950,7 +953,8 @@ def _default_name(fn, warps: int = 1) -> str:
     """The name of a kernel given no `name=`.
 
     A top-level function: its own name, as always. A function defined inside another one (a
-    factory) and not renamed by hand: `<factory>_<function>__<tokens>`, the tokens being the
+    factory) and not renamed by hand: `<function>__<tokens>` (`<factory>_body__<tokens>` for a
+    generic name such as `body`), the tokens being the
     factory values the body reads (its closure), the dtypes its annotations name and its warps,
     so every variant of the factory gets its own stable name with no `body.__name__ = name`.
     A nested function that reads no factory value keeps its own name; a hand-set `__name__` is
@@ -961,6 +965,9 @@ def _default_name(fn, warps: int = 1) -> str:
     if code is None or "<locals>" not in qual or fn.__name__ != code.co_name:
         return fn.__name__
     outer = qual.split(".<locals>.")[-2].split(".")[-1]
+    # `def body` says nothing: the factory's name goes in front. A function with a name of its
+    # own (`def rmsnorm_strip` in `rmsnorm_strip_kernel`) is called by it.
+    head = f"{outer}_{fn.__name__}" if fn.__name__.lstrip("_") in _GENERIC else fn.__name__
     pairs = []
     for n, c in zip(code.co_freevars, getattr(fn, "__closure__", None) or ()):
         try:
@@ -981,7 +988,7 @@ def _default_name(fn, warps: int = 1) -> str:
             pairs.append(("T", "_".join(seen)))
     pairs.append(("warps", warps))
     toks = _tokens(pairs)
-    return _clip(f"{outer}_{fn.__name__}__{toks}")
+    return _clip(f"{head}__{toks}")
 
 
 def kernel(fn=None, *, arch: Optional[str] = None, warps: int = 1, grid=None,
