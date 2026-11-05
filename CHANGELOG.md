@@ -4,6 +4,8 @@ Release notes for each version are also on its
 [GitHub release](https://github.com/vivienfanghuagood/hk-dsl/releases).
 The next version's notes collect here until it is released.
 
+## Unreleased
+
 ## 0.9.1
 
 hk-dsl 0.9.1: vLLM's prefill attention on by default on gfx1201 (Radeon AI PRO R9700), as it is on

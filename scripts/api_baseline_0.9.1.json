@@ -1126,6 +1126,7 @@
 "tokens",
 "zero",
 "s_blocked",
+"exllama",
 "into"
 ]
 },
@@ -1223,6 +1224,7 @@
 "s_blocked",
 "zp",
 "rows",
+"exllama",
 "into"
 ]
 },
@@ -3799,6 +3801,7 @@
 "tokens",
 "zero",
 "s_blocked",
+"exllama",
 "into"
 ]
 },
@@ -3891,6 +3894,7 @@
 "s_blocked",
 "zp",
 "rows",
+"exllama",
 "into"
 ]
 },
@@ -9553,6 +9557,7 @@
 "tokens",
 "zero",
 "s_blocked",
+"exllama",
 "into"
 ]
 },
@@ -9634,6 +9639,7 @@
 "s_blocked",
 "zp",
 "rows",
+"exllama",
 "into"
 ]
 },
@@ -11875,6 +11881,9 @@
 "hk.integration.vllm_gptq": {
 "Callable": {},
 "Counter": {},
+"HYBRID": {},
+"HYBRID_ARCHES": {},
+"HYBRID_MAX_M": {},
 "MIN_M": {},
 "Optional": {},
 "PATCH": {},
@@ -11882,8 +11891,11 @@
 "STATS": {},
 "_GEMM_ARGS": {},
 "_GEMM_PLAN": {},
+"_HYBRID": {},
 "_ORIG_APPLY": {},
 "_ORIG_PWAL": {},
+"_RDNA3": {},
+"_SKINNY": {},
 "_common": {},
 "_fake": {
 "params": [
@@ -11898,8 +11910,23 @@
 "group"
 ]
 },
+"_fake_hybrid": {
+"params": [
+"x",
+"w_q",
+"w_s",
+"group",
+"cu"
+]
+},
 "_gemm_plan": {
 "params": []
+},
+"_hybrid_pwal": {
+"params": [
+"self",
+"layer"
+]
 },
 "_vllm_gptq": {
 "params": [
@@ -11908,6 +11935,12 @@
 "w_zp",
 "w_s",
 "g_idx"
+]
+},
+"_vllm_skinny": {
+"params": [
+"m",
+"k"
 ]
 },
 "_weights": {
@@ -11945,6 +11978,15 @@
 "hk_s",
 "hk_zs",
 "group"
+]
+},
+"gptq_w4a16_hybrid": {
+"params": [
+"x",
+"w_q",
+"w_s",
+"group",
+"cu"
 ]
 },
 "plan_call": {
@@ -12380,20 +12422,32 @@
 "GUARD": {},
 "GUARDS": {},
 "HEAD_DIMS": {},
+"KVSPLIT": {},
+"KVSPLITS": {},
+"KVSPLIT_FORCE": {},
+"KVS_DEC_RATIO": {},
+"KVS_WARPS": {},
 "Optional": {},
 "PATCH": {},
 "PREFIXES": {},
 "SHADOW": {},
 "SHADOW_STATS": {},
+"SHORT_Q": {},
+"SPLIT": {},
+"SPLITS": {},
+"SPLIT_ALL": {},
 "STATS_WHY_NOT": {},
 "VT": {},
 "VT_CAP_BYTES": {},
+"_ARANGE": {},
 "_DEC": {},
 "_DECLINED_SAID": {},
 "_DEC_SCRATCH": {},
 "_FLASH": {},
 "_GUARDED": {},
 "_GUARDED_U": {},
+"_KVS_ENV": {},
+"_KVS_OPS": {},
 "_OPS": {},
 "_ORIG": {},
 "_ORIG_BUILD": {},
@@ -12402,6 +12456,7 @@
 "_P_READ": {},
 "_P_REFUSED": {},
 "_P_SIG": {},
+"_SPLIT_ENV": {},
 "_STATS": {},
 "_STATS_KEEP": {},
 "_U_OFF": {},
@@ -12467,12 +12522,36 @@
 "group",
 "scale",
 "page",
-"order"
+"order",
+"decodes"
 ]
 },
 "_guard": {
 "params": [
 "a"
+]
+},
+"_kvs_ops": {
+"params": [
+"head_dim",
+"group",
+"scale",
+"page",
+"order",
+"splits",
+"warps"
+]
+},
+"_kvs_warm": {
+"params": [
+"a"
+]
+},
+"_kvsplit": {
+"params": [
+"a",
+"splits",
+"warps"
 ]
 },
 "_note_declined": {
@@ -12514,9 +12593,19 @@
 "a"
 ]
 },
+"_split_decodes": {
+"params": [
+"a"
+]
+},
 "_stats_hook": {
 "params": [
 "orig"
+]
+},
+"_step_stats": {
+"params": [
+"a"
 ]
 },
 "_unknown_set": {
@@ -12530,7 +12619,8 @@
 "group",
 "scale",
 "page",
-"order"
+"order",
+"decodes"
 ]
 },
 "_vt_scratch": {
@@ -12582,7 +12672,8 @@
 "st",
 "head_dim",
 "kv_heads",
-"arch"
+"arch",
+"split"
 ]
 },
 "guard_why_not": {
@@ -12595,6 +12686,16 @@
 "arch"
 ]
 },
+"kvs_warps": {
+"params": [
+"head_dim"
+]
+},
+"kvsplit_plan": {
+"params": [
+"a"
+]
+},
 "page_why_not": {
 "params": [
 "page"
@@ -12602,6 +12703,11 @@
 },
 "revert": {
 "params": []
+},
+"split_takes": {
+"params": [
+"a"
+]
 },
 "stats_why_not": {
 "params": [
@@ -16461,6 +16567,7 @@
 "Q_TILE": {},
 "_KERNELS": {},
 "_SPANS": {},
+"_SPLIT_PARTS": {},
 "_SPLIT_SCRATCH": {},
 "__all__": {},
 "_arch": {},
@@ -16506,6 +16613,15 @@
 ]
 },
 "math": {},
+"merge_kernel": {
+"params": [
+"name",
+"head_dim",
+"kv_splits",
+"q_tile",
+"cols"
+]
+},
 "paged_prefill_kernel": {
 "params": [
 "name",
@@ -16525,7 +16641,8 @@
 "dsplit",
 "decodes",
 "vt_pages",
-"kv_order"
+"kv_order",
+"kv_splits"
 ]
 },
 "q_tiles": {
@@ -16547,6 +16664,15 @@
 "params": [
 "key_cache",
 "value_cache"
+]
+},
+"split_parts": {
+"params": [
+"kv_splits",
+"rows",
+"heads",
+"head_dim",
+"device"
 ]
 },
 "split_plan": {
@@ -17044,6 +17170,8 @@
 "AWQ_ORDER": {},
 "Any": {},
 "Dict": {},
+"EXL_CHUNK": {},
+"EXL_GEMV_MAX": {},
 "GEMV_ARCHES": {},
 "GEMV_MAX_M": {},
 "GEMV_WARPS": {},
@@ -17125,6 +17253,23 @@
 "group"
 ]
 },
+"exllama_matmul": {
+"params": [
+"x",
+"w_q",
+"s",
+"group",
+"out"
+]
+},
+"exllama_takes": {
+"params": [
+"m",
+"n",
+"k",
+"group"
+]
+},
 "fp16": {},
 "fp32": {},
 "gemv_kernel_for": {
@@ -17154,7 +17299,8 @@
 "group",
 "blocks",
 "dtype",
-"symmetric"
+"symmetric",
+"exllama"
 ]
 },
 "matmul": {
@@ -17228,7 +17374,8 @@
 "tokens",
 "warps",
 "group",
-"symmetric"
+"symmetric",
+"exllama"
 ]
 },
 "w4a16_kernel": {
@@ -17240,7 +17387,8 @@
 "group",
 "blocks",
 "dtype",
-"symmetric"
+"symmetric",
+"exllama"
 ]
 }
 },
