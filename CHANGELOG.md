@@ -6,7 +6,7 @@ The next version's notes collect here until it is released.
 
 ## Unreleased
 
-**vLLM's TRITON_ATTN on gfx1100: the KV split cuts the longest contexts into 64 runs.** The KV-split prefill's merge (`paged_prefill.merge_kernel`) runs in a loop past 32 splits, where it no longer builds unrolled. MiniCPM5's 16-token chunks and MiniCPM-V's 17-64-token chunks over 16k+ contexts take 64 splits: 1.13-1.27x faster than the 16-32 they took. Measured faster than both stock kernels on every batch it takes.
+**vLLM's TRITON_ATTN on gfx1100: the KV split cuts the longest contexts into 64 runs.** The KV-split prefill's merge (`paged_prefill.merge_kernel`) runs in a loop past 32 splits, where it no longer builds unrolled. MiniCPM5's 16-token chunks and MiniCPM-V's 17-64-token chunks over 16k+ contexts take 64 splits: 1.11-1.25x faster than the 16-32 they took. Measured faster than both stock kernels on every batch it takes.
 
 **GPTQ prefill on hk on gfx1201.** `vllm_gptq` now also takes the prefill batches vLLM's `RDNAHybridW4A16LinearKernel` runs on Triton (above 64 tokens), on a new large-batch form of hk's 4-bit GEMM (`hk.ops.w4a16.exllama_large_matmul`, `w4a16_large_kernel`). Like the decode forms, it reads vLLM's own weight tensors in place. A 128-row tile of W is decoded once into LDS and shared across 128 tokens.
 

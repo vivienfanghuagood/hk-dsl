@@ -591,9 +591,11 @@ def paged_prefill_kernel(name: str, *, head_dim: int = 128, group: int = 4,
 _KERNELS: Dict[tuple, object] = {}
 
 
-#: merge_kernel: splits up to this unrolled, more in a runtime loop of MERGE_STEP splits a trip.
+#: merge_kernel: splits up to this unrolled, more in a runtime loop of MERGE_STEP splits a trip. A
+#: trip of 8 (32 columns) took 229 VGPRs under one gfx1100 compiler and spilled under ROCm 7.2.4's
+#: clang (264 wanted); 4 takes 141-174 under both and runs within 1-3% of 8 (2: up to 10% slower).
 MERGE_UNROLL = 32
-MERGE_STEP = 8
+MERGE_STEP = 4
 
 
 def merge_kernel(name: str, *, head_dim: int = 128, kv_splits: int = 2, q_tile: int = Q_TILE,
