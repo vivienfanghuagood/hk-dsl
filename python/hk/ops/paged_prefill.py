@@ -576,12 +576,14 @@ def merge_kernel(name: str, *, head_dim: int = 128, kv_splits: int = 2, q_tile: 
     """paged_prefill_kernel's `kv_splits` merge: a request's rows of `o` from the splits'
     partials, each weighed by l * exp2(m - the rows' max). Tensors: `seq_lens` (the grid's
     requests; not read), `q_start`, `tiles` (the same view the walk took), `o_part`, `ml_part`,
-    `o`. A one-warp workgroup a (16 rows of a request's Q tiles, head, request), `cols` columns of
-    head_dim at a time; one-query requests (decodes=False's) and rows past a request's end are
+    `o`. A one-warp workgroup a (16 rows of a request's Q tiles, `cols` columns of a head,
+    request): many small workgroups, as the merge is latency (one of 16 rows and all of a head's
+    columns took 23 us a call); one-query requests (decodes=False's) and rows past a request's end are
     not written."""
     cols = min(cols, head_dim)
     if head_dim % cols:
         raise ValueError(f"head_dim {head_dim}: a multiple of cols={cols}")
+    n_cols = head_dim // cols
     t_o = hk.RT(fp32, 16, cols, "row")
     t_b = hk.RT(bf16, 16, cols, "row")
     cv = hk.col_vec(t_o)
@@ -589,7 +591,8 @@ def merge_kernel(name: str, *, head_dim: int = 128, kv_splits: int = 2, q_tile: 
     def body(seq_lens: hk.Tensor[i32], q_start: hk.Tensor[i32], tiles: hk.Tensor[i32],
              o_part: hk.Tensor[bf16], ml_part: hk.Tensor[fp32], o: hk.Tensor[bf16]):
         r0 = hk.arch.block_idx.x * 16
-        head = hk.arch.block_idx.y
+        head = hk.arch.block_idx.y // n_cols
+        c0 = (hk.arch.block_idx.y % n_cols) * cols
         req = hk.arch.block_idx.z
         q0 = q_start[hk.elem_coord(0, 0, 0, req)].load_scalar(invariant=True)
         q_len = q_start[hk.elem_coord(0, 0, 0, req + 1)].load_scalar(invariant=True) - q0
@@ -606,20 +609,18 @@ def merge_kernel(name: str, *, head_dim: int = 128, kv_splits: int = 2, q_tile: 
             m *= ml_part[hk.elem_coord(s, head, 1, slot)].load(cv)
             tot += m
         tot += 1e-30
-        for c0 in range(0, head_dim, cols):
-            acc = hk.zeros(t_o)
-            for s, m in enumerate(ms):
-                o_s = o_part[hk.elem_coord(0, s, slot, head * head_dim + c0)].load(
-                    t_b, bounded=True).to(fp32)
-                o_s *= m[:, None]
-                acc += o_s
-            acc /= tot[:, None]
-            o[hk.elem_coord(0, 0, q0 + r0, head * head_dim + c0)].store(acc.to(bf16),
-                                                                     bounded=left)
+        acc = hk.zeros(t_o)
+        for s, m in enumerate(ms):
+            o_s = o_part[hk.elem_coord(0, s, slot, head * head_dim + c0)].load(
+                t_b, bounded=True).to(fp32)
+            o_s *= m[:, None]
+            acc += o_s
+        acc /= tot[:, None]
+        o[hk.elem_coord(0, 0, q0 + r0, head * head_dim + c0)].store(acc.to(bf16), bounded=left)
 
     body.__name__ = name
     return hk.kernel(body, warps=1, name=name,
-                     grid=lambda p: (p.tiles.rows * (q_tile // 16), p.o.cols // head_dim,
+                     grid=lambda p: (p.tiles.rows * (q_tile // 16), p.o.cols // cols,
                                      p.seq_lens.cols))
 
 
