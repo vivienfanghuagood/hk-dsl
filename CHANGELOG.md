@@ -26,6 +26,8 @@ Since 0.9.1 ([the default-on rule](docs/testing.md#the-default-on-rule); `python
 
 #252, #254.
 
+**The KV split's shortest chunks take GQA-packed tiles.** `hk.ops.paged_prefill` has `pack`: a workgroup holds one kv head's query heads of a few tokens instead of one query head's rows, so a kv head's K and V are read once a tile instead of once a query head, and a chunk of a few tokens fills its tile instead of a sliver of it. The route takes it for the shortest chunks over long contexts, per GPU, head size and query heads a kv head, where it was measured faster than the unpacked split (`vllm_prefill.KVS_PACKED`); every call it takes is faster than both stock kernels. Beside decodes, a packed call now takes the batch too: the prefill rows on the packed split, the decode rows on vLLM's decode kernel, which splits a decode's context where its mixed-batch kernel does not. It takes up to a measured number of decodes for each GPU and model shape (`KVS_PACK_MAX_DECODES`); before, such a batch went to vLLM's kernel whole. On gfx1201 with head size 128, the unpacked split no longer takes a short chunk over a context under 16k tokens beside decodes, where it was measured slower.
+
 ## 0.9.1
 
 hk-dsl 0.9.1: vLLM's prefill attention on by default on gfx1201 (Radeon AI PRO R9700), as it is on

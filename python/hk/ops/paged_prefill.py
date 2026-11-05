@@ -62,7 +62,7 @@ def paged_prefill_kernel(name: str, *, head_dim: int = 128, group: int = 4,
                          max_vgprs: int = 256, min_occupancy: int = 1,
                          layout: str = "hk", page: int = 16, dsplit: bool = False,
                          decodes: bool = False, vt_pages: bool = False,
-                         kv_order: str = "planes", kv_splits: int = 1):
+                         kv_order: str = "planes", kv_splits: int = 1, pack: bool = False):
     """Causal paged prefill: `q` and `o` are the engine's (tokens, heads *
     head_dim) rows, `q_start` the batch's query_start_loc.
 
@@ -121,6 +121,13 @@ def paged_prefill_kernel(name: str, *, head_dim: int = 128, group: int = 4,
     requests * tiles * Q tile rows) fp32 after `o` (which it does not write), a request's rows at
     request * tiles * Q tile rows on; `merge_kernel` writes `o` from them.
 
+    `pack` (layout="flash", decodes=False): a workgroup is a (Q tile, kv head, request), its rows
+    the kv head's `group` query heads of q_tile / group tokens -- warp w (a dsplit pair) the
+    query head w % group's tokens (w // group) * q_block on. A short chunk then fills its tiles
+    (a 16-token chunk is 16 of a head's 192 rows unpacked), and a kv head's K and V are read once
+    a tile, not once a query head. Takes `group` dividing the tile's warps; `tiles` rows are
+    q_tile / group tokens (and so are the kv_splits partials').
+
     `dsplit` (head_dim 256): a query row's head_dim is split between a pair of
     warps, each holding its half of Q and of O (a d256 row in one warp is 256
     VGPRs of Q and O alone). Each computes its half's partial S, the pair adds
@@ -137,6 +144,8 @@ def paged_prefill_kernel(name: str, *, head_dim: int = 128, group: int = 4,
         raise ValueError("vt_pages is layout='flash''s")
     if kv_splits > 1 and not (flash and not decodes):
         raise ValueError("kv_splits: layout='flash' with decodes=False")
+    if pack and not (flash and not decodes):
+        raise ValueError("pack: layout='flash' with decodes=False")
     vstraight = rocm or vt_pages                   # V^T pages staged as they are
     paged = rocm or flash                   # vLLM's pages, the device-side grid
     if dsplit and (warps % 2 or head_dim % 32):
@@ -149,6 +158,9 @@ def paged_prefill_kernel(name: str, *, head_dim: int = 128, group: int = 4,
     d = _derive(dh, q_block, kv_block, rows_warps, vt_d_chunk, qk_tiles, pv_tiles,
                 chunks_a_warp=True)
     q_tile, d_frags, kv_frags = q_block * rows_warps, d["d_frags"], d["kv_frags"]
+    if pack and rows_warps % group:
+        raise ValueError(f"pack: group={group} must divide the tile's {rows_warps} warps")
+    tq = q_tile // group if pack else q_tile          # a tile's tokens
     d_chunks, v_bands, vt_frags = d["d_chunks"], d["v_bands"], d["vt_frags"]
     scale_l2e = (scale if scale is not None else head_dim ** -0.5) * math.log2(math.e)
     if paged and page % 16:
@@ -230,7 +242,10 @@ def paged_prefill_kernel(name: str, *, head_dim: int = 128, group: int = 4,
             if kv_splits > 1:
                 split = qb % kv_splits
                 qb = qb // kv_splits
-            head = hk.arch.block_idx.y
+            if pack:
+                head_kv = hk.arch.block_idx.y
+            else:
+                head = hk.arch.block_idx.y
             req = hk.arch.block_idx.z
         else:
             t = hk.arch.block_idx.x
@@ -241,7 +256,14 @@ def paged_prefill_kernel(name: str, *, head_dim: int = 128, group: int = 4,
         q_len = q_start[hk.elem_coord(0, 0, 0, req + 1)].load_scalar() - q0
         seq_len = seq_lens[hk.elem_coord(0, 0, 0, req)].load_scalar()
         ctx = seq_len - q_len
-        head_kv = head // group
+        if not dsplit:
+            wid = hk.arch.warp_id()
+        rw = prow if dsplit else wid                # this warp's q_block rows of the tile
+        if pack:
+            head = head_kv * group + rw % group
+            rw = rw // group
+        else:
+            head_kv = head // group
 
         def kv_at(hkv, v_side):
             return _kv_at(kv_order, head_dim, hkv, v_side)
@@ -249,10 +271,8 @@ def paged_prefill_kernel(name: str, *, head_dim: int = 128, group: int = 4,
         if dsplit:
             col = col + half * dh                   # this warp's half of the head
 
-        tile_lo = qb * q_tile
-        if not dsplit:
-            wid = hk.arch.warp_id()
-        q_local = tile_lo + (prow if dsplit else wid) * q_block   # this warp's first row
+        tile_lo = qb * tq
+        q_local = tile_lo + rw * q_block            # this warp's first row
         left = q_len - q_local                      # its rows the request has
         if paged:
             # 1 for a tile of a prefill's queries; 0 past them and for a decode
@@ -313,7 +333,7 @@ def paged_prefill_kernel(name: str, *, head_dim: int = 128, group: int = 4,
         # Up to the workgroup's last real query, uniform across it: staging
         # has barriers in it. A warp whose rows end sooner is masked per
         # fragment below.
-        last_q = ctx + hk.min(tile_lo + q_tile, q_len) - 1
+        last_q = ctx + hk.min(tile_lo + tq, q_len) - 1
         kv_blocks = hk.cdiv(last_q + 1, kv_block)
         n_pages = kv_blocks
         if paged:
@@ -507,7 +527,7 @@ def paged_prefill_kernel(name: str, *, head_dim: int = 128, group: int = 4,
             # a partial: normalised O and its (m, l), at the (request, row)'s slot -- a request a
             # run of tiles.rows Q tiles -- for merge_kernel; rows past the request's end and
             # splits with no key are weightless (l = 0)
-            slot = req * tiles.rows * q_tile + q_local
+            slot = req * tiles.rows * tq + q_local
             l_safe = l_run.copy()
             l_safe += 1e-30
             for i, c in enumerate(o_c):
@@ -557,10 +577,11 @@ def paged_prefill_kernel(name: str, *, head_dim: int = 128, group: int = 4,
             parameters=list(sig.parameters.values())[:10 if packed else 8])
 
     def _grid(p):
+        heads = p.o.cols // head_dim // (group if pack else 1)
         if kv_splits > 1:
-            return (p.tiles.rows * kv_splits, p.o.cols // head_dim, p.seq_lens.cols)
+            return (p.tiles.rows * kv_splits, heads, p.seq_lens.cols)
         if paged:
-            return (p.tiles.rows, p.o.cols // head_dim, p.seq_lens.cols)
+            return (p.tiles.rows, heads, p.seq_lens.cols)
         return (p.tiles.rows, p.o.cols // head_dim, 1)
 
     return hk.kernel(body, warps=warps, grid=_grid, name=name,

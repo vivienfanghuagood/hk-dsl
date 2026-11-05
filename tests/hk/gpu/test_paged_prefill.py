@@ -343,7 +343,7 @@ def _nan_past_ends(k, v, table, lens):
 
 def _flash_run(reqs, head_dim=128, h_kv=2, group=8, dsplit=False, layout="flash", seed=0,
                decodes=True, warps=None, page=ROCM_PAGE, v_ones=False, kv_order="planes",
-               nan_tail=False, kv_splits=1):
+               nan_tail=False, kv_splits=1, pack=False):
     q, (k, v), (k5, v4), table, lens, q_start = _rocm_case(reqs, head_dim=head_dim, h_kv=h_kv,
                                                            group=group, seed=seed, page=page,
                                                            v_ones=v_ones)
@@ -355,10 +355,11 @@ def _flash_run(reqs, head_dim=128, h_kv=2, group=8, dsplit=False, layout="flash"
     kern = pp.paged_prefill_kernel(
         f"t_pp_{layout}_d{head_dim}_g{group}{'_ds' if dsplit else ''}_w{warps}"
         f"{'_dec' if decodes else ''}{'' if page == ROCM_PAGE else f'_p{page}'}"
-        f"{'' if kv_order == 'planes' else '_' + kv_order}{f'_ks{kv_splits}' if kv_splits > 1 else ''}",
+        f"{'' if kv_order == 'planes' else '_' + kv_order}{f'_ks{kv_splits}' if kv_splits > 1 else ''}"
+        f"{'_pk' if pack else ''}",
         head_dim=head_dim, group=group, layout=layout, dsplit=dsplit, warps=warps,
-        decodes=decodes, page=page, kv_order=kv_order, kv_splits=kv_splits)
-    tile = 16 * (warps // 2 if dsplit else warps)
+        decodes=decodes, page=page, kv_order=kv_order, kv_splits=kv_splits, pack=pack)
+    tile = 16 * (warps // 2 if dsplit else warps) // (group if pack else 1)
     tiles = pp.q_tiles(max(n for _, n in reqs), q.device, tile)
     if layout == "flash":
         kv = _flash_cache(k, v, kv_order)
@@ -955,6 +956,49 @@ def test_vllm_prefill_splits_a_mixed_batch(monkeypatch, head_dim, h_kv, kv_order
     _attn_ref.check(got_dec, want[first[dec]])
 
 
+#: a short chunk over a long context beside decodes: what a packed KV split takes
+PACKED_DEC_REQS = [(8191, 1), (6000, 32), (4000, 1), (8191, 1)]
+
+
+@pytest.mark.skipif(not _route_arch(), reason="the route is gfx1100's and gfx1201's")
+@pytest.mark.parametrize("head_dim,h_kv,kv_order,page", [(128, 2, "planes", 16),
+                                                         (256, 1, "tokens", 544)])
+def test_vllm_prefill_packed_kv_split_beside_decodes(monkeypatch, head_dim, h_kv, kv_order, page):
+    """A packed KV-split plan beside decodes (KVS_PACKED, KVS_PACK_MAX_DECODES): the packed split
+    takes the prefill rows (matching the reference), vLLM's kernel the decode rows -- bitwise its own
+    answer on them as one query a request. Counted as hk, split and kvsplit."""
+    from hk.integration import switches, vllm_prefill as vp
+
+    if head_dim == 256 and not _clang_23():
+        pytest.skip("flash dsplit spills under clang 22: the route leaves d256 to vLLM there")
+    arch, cls = switches.arch(), 256 if head_dim > 128 else 128
+    monkeypatch.setattr(vp, "KVS_PACKED", {(arch, cls, 8): ((64, 1024, 4),)})
+    monkeypatch.setattr(vp, "KVS_PACK_MAX_DECODES", {})
+    monkeypatch.setattr(vp, "KVS_PACK_DEC_RATIO", 1e9)
+    run, (q, k, v, cache, table, lens, q_start, views) = _split_case(
+        monkeypatch, kv_order, page, False, head_dim, h_kv, reqs=PACKED_DEC_REQS)
+    a = {"q": q, "k": views(cache)[0], "seqused_k": lens, "cu_seqlens_q": q_start}
+    assert vp.kvsplit_plan(a) == (4, vp.kvs_pack_warps(head_dim, 8), True)
+    before = dict(vp.PATCH.stats)
+    out = torch.full_like(q, float("nan"))
+    run(q, cache, out)
+    torch.cuda.synchronize()
+    for c in ("hk", "split", "kvsplit"):
+        assert vp.PATCH.stats[c] == before[c] + 1, c
+    rows = _prefill_rows(PACKED_DEC_REQS, q_start)
+    want = _reference(q, k, v, table, lens, q_start, 8, page=page)
+    _attn_ref.check(out[rows], want[rows])
+    first = q_start[:-1].long()
+    dec = [i for i, (_, n) in enumerate(PACKED_DEC_REQS) if n == 1]
+    kc, vc = views(cache)
+    ref1 = torch.empty(len(PACKED_DEC_REQS), *q.shape[1:], device=q.device, dtype=q.dtype)
+    used1 = torch.where(q_start[1:] - q_start[:-1] == 1, lens, torch.ones_like(lens))
+    _unified_ref(q[first], kc, vc, ref1, torch.arange(len(PACKED_DEC_REQS) + 1, device=q.device,
+                                                      dtype=torch.int32), 1, used1,
+                 int(lens.max()), head_dim ** -0.5, True, (-1, -1), table, 0, None, None, None)
+    assert torch.equal(out[first[dec]].view(torch.int16), ref1[dec].view(torch.int16))
+
+
 @pytest.mark.skipif(not _route_arch(), reason="the route is gfx1100's and gfx1201's")
 def test_vllm_prefill_split_off_declines_the_batch_whole(monkeypatch):
     """HK_VLLM_PREFILL_SPLIT=0: the same batch goes to vLLM's kernel whole, counted declined."""
@@ -1031,5 +1075,34 @@ def test_flash_kv_splits_dsplit(kv_splits):
     got, want, q_start = _flash_run(KV_SPLIT_REQS, head_dim=256, h_kv=1, group=8, dsplit=True,
                                     decodes=False, warps=8, page=544, kv_order="tokens",
                                     kv_splits=kv_splits)
+    rows = _prefill_rows(KV_SPLIT_REQS, q_start)
+    _attn_ref.check(got[rows], want[rows])
+
+
+#: GQA-packed tiles (pack=True): a tile the kv head's query heads of a run of tokens -- with and
+#: without the KV split, tiles of 16 and 32 tokens
+@rocm_only
+@pytest.mark.parametrize("kv_splits", [1, 4, 16])
+@pytest.mark.parametrize("page,group,warps", [(16, 8, 8), (16, 4, 8), (544, 8, 16)])
+def test_flash_packed(kv_splits, page, group, warps):
+    got, want, q_start = _flash_run(KV_SPLIT_REQS, group=group, decodes=False, warps=warps,
+                                    page=page, kv_splits=kv_splits, nan_tail=page == 544,
+                                    pack=True)
+    rows = _prefill_rows(KV_SPLIT_REQS, q_start)
+    assert not torch.isnan(got[rows]).any()
+    _attn_ref.check(got[rows], want[rows])
+    rest = sorted(set(range(got.shape[0])) - set(rows))
+    assert torch.all(got[rest] == 7.0)
+
+
+@rocm_only
+@flash_dsplit_builds
+@pytest.mark.parametrize("kv_splits", [1, 8])
+@pytest.mark.parametrize("group,warps,page,kv_order", [(8, 16, 544, "tokens"),
+                                                       (6, 12, 784, "heads")])
+def test_flash_packed_dsplit(kv_splits, group, warps, page, kv_order):
+    got, want, q_start = _flash_run(KV_SPLIT_REQS, head_dim=256, h_kv=1, group=group,
+                                    dsplit=True, decodes=False, warps=warps, page=page,
+                                    kv_order=kv_order, kv_splits=kv_splits, pack=True)
     rows = _prefill_rows(KV_SPLIT_REQS, q_start)
     _attn_ref.check(got[rows], want[rows])
