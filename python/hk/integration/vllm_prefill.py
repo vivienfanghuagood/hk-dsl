@@ -297,25 +297,34 @@ _KVS_ENV = __import__("os").environ.get("HK_VLLM_PREFILL_KVSPLIT", "1").strip().
 KVSPLIT = _KVS_ENV not in ("0", "off", "no", "false")
 KVSPLIT_FORCE = int(_KVS_ENV) if _KVS_ENV.isdigit() and int(_KVS_ENV) > 1 else 0
 KVS_WARPS = int(__import__("os").environ.get("HK_VLLM_PREFILL_KVS_WARPS", "0") or 0)
+#: HK_VLLM_PREFILL_KVS_PACK=1 / 0 forces the GQA-packed tile (paged_prefill's pack) on or off for
+#: the KV split's every call, the plan aside (to measure them)
+_KVS_PACK_ENV = __import__("os").environ.get("HK_VLLM_PREFILL_KVS_PACK", "").strip()
+KVS_PACK = None if _KVS_PACK_ENV == "" else _KVS_PACK_ENV not in ("0", "off", "no", "false")
 _KVS_OPS: dict = {}
 
 
 def _kvs_ops(head_dim: int, group: int, scale: Optional[float], page: int, order: str,
-             splits: int, warps: int):
-    """(walk launch, merge launch, Q tile rows) for kv_splits = `splits`, decodes=False, or None
-    (not built spill-free here)."""
-    key = (head_dim, group, scale, page, order, splits, warps)
+             splits: int, warps: int, pack: bool = False):
+    """(walk launch, merge launch, Q tile tokens) for kv_splits = `splits`, decodes=False, GQA-packed
+    tiles with `pack`, or None (not built spill-free here, or `group` does not divide a packed
+    tile's warps)."""
+    key = (head_dim, group, scale, page, order, splits, warps, pack)
     if key not in _KVS_OPS:
         from ..ops import paged_prefill as pp  # noqa: PLC0415
 
         ds = head_dim > 128
-        tile = 16 * (warps // 2 if ds else warps)
+        rows_warps = warps // 2 if ds else warps
+        if pack and rows_warps % group:
+            _KVS_OPS[key] = None
+            return None
+        tile = 16 * rows_warps // (group if pack else 1)
         tag = "" if scale is None else "_s%08x" % (hash(scale) & 0xffffffff)
         walk = _built(lambda: (pp.paged_prefill_kernel(
             f"paged_prefill_flash_d{head_dim}_g{group}{'_ds' if ds else ''}{_ptag(page)}"
-            f"{_otag(order)}_nd_w{warps}_ks{splits}{tag}", head_dim=head_dim, group=group,
-            scale=scale, layout="flash", dsplit=ds, warps=warps, decodes=False, page=page,
-            kv_order=order, kv_splits=splits), tile))
+            f"{_otag(order)}_nd_w{warps}_ks{splits}{'_pk' if pack else ''}{tag}", head_dim=head_dim,
+            group=group, scale=scale, layout="flash", dsplit=ds, warps=warps, decodes=False,
+            page=page, kv_order=order, kv_splits=splits, pack=pack), tile))
         merge = _built(lambda: (pp.merge_kernel(
             f"paged_prefill_merge_d{head_dim}_ks{splits}_t{tile}", head_dim=head_dim,
             kv_splits=splits, q_tile=tile), tile))
@@ -343,18 +352,59 @@ KVSPLITS = {("gfx1100", 128): (1024, 0, (4, 8), (8, 8)),
             ("gfx1201", 128): (512, 2048, (4, 8), (8, 8)),
             ("gfx1201", 256): (512, 2048, (8, 8), (8, 4))}
 SHORT_Q = 64
+#: (arch, head size class, group) -> rows (longest query at most, longest sequence at least,
+#: splits): where the KV split takes GQA-packed tiles (paged_prefill's pack: a workgroup a kv
+#: head's query heads of 16 tokens, its K and V read once a tile, not once a query head), the first
+#: row that fits, ahead of KVSPLITS' bounds; KVSPLITS' plan elsewhere. A packed tile is group
+#: warps (twice that for d256), at most KVS_PACK_WARPS; its call has few workgroups, so the walk is
+#: cut finer. The more query heads a kv head has, the more a packed tile saves: group 8 takes it
+#: further than group 6. Fitted on tools/hk-bench's prefill sweep with every splits of {4, 8, 16,
+#: 32} (64 does not build its merge spill-free) against TRITON_ATTN and the unpacked plan; gfx1100:
+#: MiniCPM5 (d128, group 8) 1.2-2.8x the unpacked plan up to 64-token chunks, Qwen3.8 (d256, group
+#: 6) 1.5-2.8x up to 32, MiniCPM-V (d256, group 8) 1.3-4.2x up to 512 (where the unsplit kernel
+#: took it). gfx1201, from 16k (the unpacked plan as fast over 4k): MiniCPM5 1.4-3.4x up to 64,
+#: Qwen3.8 1.1-4.2x up to 512 from 2k, MiniCPM-V 1.1-3.3x up to 256.
+KVS_PACKED = {("gfx1100", 128, 8): ((32, 4096, 32), (64, 4096, 16)),
+              ("gfx1100", 256, 6): ((16, 16384, 32), (32, 4096, 16)),
+              ("gfx1100", 256, 8): ((16, 16384, 32), (512, 4096, 16)),
+              ("gfx1201", 128, 8): ((16, 16384, 32), (64, 16384, 16)),
+              ("gfx1201", 256, 6): ((16, 16384, 16), (512, 2048, 8)),
+              ("gfx1201", 256, 8): ((16, 16384, 32), (32, 16384, 16), (256, 16384, 8))}
+KVS_PACK_WARPS = 16
+
+
+def kvs_pack_warps(head_dim: int, group: int) -> int:
+    """A 16-token packed tile's warps: a q_block-row block a query head (a pair for d256)."""
+    return group * (2 if head_dim > 128 else 1)
 #: Beside decodes, the KV split is taken only while their contexts, summed, are at most this times
 #: the prefill's (query, key) pairs: the decodes then go to vLLM's kernel in a second call, and
 #: where they are most of the work the split gains nothing (gfx1201, MiniCPM5: a 32-token chunk
 #: beside 7 decodes over 8k, a ratio of 0.22, 0.97-1.01x; a 64-token chunk over 16k beside 3, 0.023,
 #: 1.98x; the sweep's mixed batches, 0.0024-0.016, 1.6-6.5x).
 KVS_DEC_RATIO = 0.05
+#: (arch, head size class) -> the longest sequence at least for the unpacked split beside decodes:
+#: gfx1201 d128 over 8k it gains nothing (MiniCPM5, a 32-64-token chunk beside 1-3 decodes over 8k:
+#: 0.89-1.09x), over 16k-32k it does (a 128-256-token chunk beside 2-4: 2.4-3.1x).
+KVS_DEC_MIN_CTX = {("gfx1201", 128): 16384}
+#: KVS_DEC_RATIO for a packed plan (KVS_PACKED), and the most decodes beside it per (arch, head size
+#: class, group): its prefill part is cheap enough that splitting off the decodes -- vLLM's decode
+#: call splits their contexts, its mixed-batch kernel does not -- wins even where they are most of
+#: the work. A 16-64-token chunk over 8k-32k beside 1-31 decodes over 8k-32k, against the faster
+#: stock kernel: gfx1100 1.35-20x up to 15 decodes (ratios up to 3.75), where the unpacked route
+#: declined them, but beside 31 short ones the second call costs more than it saves (MiniCPM5,
+#: 0.80-1.06x); gfx1201 MiniCPM-V 1.4-5.7x up to 15, MiniCPM5 and Qwen3.8 1.46-5.65x up to 3 but
+#: from 7 down to 0.72x (Qwen3.8 over 8k).
+KVS_PACK_DEC_RATIO = 4.0
+KVS_PACK_MAX_DECODES = {("gfx1201", 128, 8): 3, ("gfx1201", 256, 6): 3}
+KVS_PACK_MAX_DECODES_ELSE = 15
 
 
-def kvsplit_plan(a: dict):
-    """(splits, warps) where the KV split takes this prefill call, or None: exact sizes known;
+def kvsplit_plan(a: dict, pack: bool = True):
+    """(splits, warps, pack) where the KV split takes this prefill call, or None: exact sizes known;
     beside decodes (which go to vLLM's kernel, as in SPLIT) no request without queries, SPLIT on and
-    the decodes' work under KVS_DEC_RATIO of the prefill's; the longest query short enough and the longest sequence long enough (KVSPLITS)."""
+    the decodes' work under KVS_DEC_RATIO of the prefill's and its context KVS_DEC_MIN_CTX (packed:
+    KVS_PACK_DEC_RATIO, and at most KVS_PACK_MAX_DECODES of them); the longest query short enough and the longest sequence long enough (KVSPLITS).
+    Packed tiles where a KVS_PACKED row fits, first (not with `pack` False: KVSPLITS' plan alone)."""
     from . import switches  # noqa: PLC0415
 
     if not KVSPLIT:
@@ -362,15 +412,29 @@ def kvsplit_plan(a: dict):
     st = _step_stats(a)
     if st is None or not st["max_q"]:
         return None
-    if st["decodes"] and (st["empty"] or not SPLIT
-                          or st["dec_work"] > KVS_DEC_RATIO * st["pre_work"]):
+    if st["decodes"] and (st["empty"] or not SPLIT):
         return None
+
+    def decodes_fit(ratio):
+        return not st["decodes"] or st["dec_work"] <= ratio * st["pre_work"]
+
     d = int(a["q"].shape[-1])
-    plan = KVSPLITS.get((switches.arch(), 256 if d > 128 else 128))
+    group = int(a["q"].shape[1]) // int(a["k"].shape[2])
+    pw = kvs_pack_warps(d, group)
+    arch, cls = switches.arch(), 256 if d > 128 else 128
+    max_dec = KVS_PACK_MAX_DECODES.get((arch, cls, group), KVS_PACK_MAX_DECODES_ELSE)
+    for max_q, min_ctx, sp in KVS_PACKED.get((arch, cls, group), ()) if pack else ():
+        if (st["max_q"] <= max_q and st["pre_ctx"] >= min_ctx and pw <= KVS_PACK_WARPS
+                and decodes_fit(KVS_PACK_DEC_RATIO) and st["decodes"] <= max_dec):
+            return sp, pw, True
+    if not decodes_fit(KVS_DEC_RATIO) or (
+            st["decodes"] and st["pre_ctx"] < KVS_DEC_MIN_CTX.get((arch, cls), 0)):
+        return None
+    plan = KVSPLITS.get((arch, cls))
     if plan is None or st["max_q"] >= plan[0] or st["pre_ctx"] < plan[1]:
         return None
     w, sp = plan[2] if st["max_q"] <= SHORT_Q else plan[3]
-    return sp, w
+    return sp, w, False
 
 
 #: V^T pre-pack for TRITON_ATTN (paged_prefill vt_pages): the batch's V pages transposed once a
@@ -930,6 +994,10 @@ def unified_attention(*args, **kwargs):
     a = kwargs if not args else _U_SIG.bind(*args, **kwargs).arguments
     if int(a.get("max_seqlen_q", 1)) > 1 and not KVSPLIT_FORCE:
         plan = kvsplit_plan(a)
+        if plan is not None and plan[2]:
+            if _kvsplit(a, *plan):
+                return None
+            plan = kvsplit_plan(a, pack=False)        # packed tiles not built here
         if plan is not None and _kvsplit(a, *plan):
             return None
     if DECODE and int(a.get("max_seqlen_q", 1)) <= 1:
@@ -1024,17 +1092,23 @@ def _kvs_warm(a: dict) -> None:
 
     q, k = a["q"], a["k"]
     d = int(q.shape[-1])
-    plan = KVSPLITS.get((switches.arch(), 256 if d > 128 else 128)) if KVSPLIT else None
-    if plan is None:
+    if not KVSPLIT:
         return
     kv = _flash_kv(k, a["v"])
     sc = a["softmax_scale"]
     scale = None if sc is None or sc == d ** -0.5 else float(sc)
-    for w, sp in {plan[2], plan[3]}:
-        _kvs_ops(d, int(q.shape[1]) // int(k.shape[2]), scale, int(k.shape[1]), kv[1], sp, w)
+    group = int(q.shape[1]) // int(k.shape[2])
+    pw = kvs_pack_warps(d, group)
+    plan = KVSPLITS.get((switches.arch(), 256 if d > 128 else 128))
+    packed = KVS_PACKED.get((switches.arch(), 256 if d > 128 else 128, group), ())
+    builds = {(*plan[2], False), (*plan[3], False)} if plan else set()
+    if pw <= KVS_PACK_WARPS:
+        builds |= {(pw, sp, True) for *_, sp in packed}
+    for w, sp, pk in builds:
+        _kvs_ops(d, group, scale, int(k.shape[1]), kv[1], sp, w, pk)
 
 
-def _kvsplit(a: dict, splits: int, warps: int = 0) -> bool:
+def _kvsplit(a: dict, splits: int, warps: int = 0, pack: bool = False) -> bool:
     """A prefill call with paged_prefill's kv_splits = `splits` and its merge; vLLM's kernel
     takes the decode rows, if any (`_split_decodes`). False where it does not build here."""
     if u_why_not(a):
@@ -1045,7 +1119,10 @@ def _kvsplit(a: dict, splits: int, warps: int = 0) -> bool:
     sc = a["softmax_scale"]
     scale = None if sc is None or sc == d ** -0.5 else float(sc)
     page = int(a["k"].shape[1])
-    got = _kvs_ops(d, h // a["k"].shape[2], scale, page, order, splits, warps or kvs_warps(d))
+    if KVS_PACK is not None:
+        pack = KVS_PACK
+    got = _kvs_ops(d, h // a["k"].shape[2], scale, page, order, splits, warps or kvs_warps(d),
+                   pack)
     if got is None:
         return False
     walk, merge, tile = got

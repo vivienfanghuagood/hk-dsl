@@ -157,9 +157,24 @@ query is short and the longest sequence long enough, per GPU and head size
 builds against TRITON_ATTN; the route as served was then measured against the
 faster of TRITON_ATTN's and ROCM_ATTN's kernels on 36 shapes a model (contexts
 of 1k-32k tokens, chunks of 16-2048, batches of short chunks, chunks beside
-decodes; `tools/hk-bench/results/2026-11-04/<gpu>/prefill-kvsplit-sweep.json`),
+decodes; `tools/hk-bench/results/2026-11-05/<gpu>/prefill-kvsplit-sweep.json`),
 and every call it takes clears the default-on rule's bar there. A KV-split call
 is counted as `hk` and as `kvsplit`; `HK_VLLM_PREFILL_KVSPLIT=0` turns it off.
+
+The shortest chunks over the longest contexts take GQA-packed tiles
+(`paged_prefill`'s `pack`): a workgroup holds one kv head's query heads of 16
+tokens instead of one query head's rows, so a kv head's K and V are read once a
+tile rather than once a query head, and a 16-token chunk fills its tile. Which
+calls take them is per GPU, head size and query heads a kv head
+(`vllm_prefill.KVS_PACKED`), from the same kind of sweep against the unpacked
+plan; the more query heads share a kv head, the further it reaches. Beside
+decodes a packed call takes the batch too, the decode rows going to vLLM's
+decode kernel apart, up to a measured number of decodes per GPU and model
+shape (`KVS_PACK_MAX_DECODES`, with the decodes' work at most
+`KVS_PACK_DEC_RATIO` times the prefill's): vLLM's mixed-batch kernel walks a
+decode's context unsplit, so a short chunk beside long decodes is several
+times faster this way.
+`HK_VLLM_PREFILL_KVS_PACK=0` keeps the unpacked tiles (for measuring).
 
 **On ROCM_ATTN no batch is declined.** ROCM_ATTN hands the prefix-prefill only
 its requests of more than one query; its own paged decode keeps the decode rows.

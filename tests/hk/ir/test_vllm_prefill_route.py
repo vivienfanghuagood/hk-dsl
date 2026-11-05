@@ -204,9 +204,11 @@ def test_an_unmeasured_arch_or_an_unknown_context_is_declined():
 #: of TRITON_ATTN's and ROCM_ATTN's kernels, one process, cold KV (W7900D gfx1100, R9700 gfx1201).
 SWEEP = Path(__file__).resolve().parents[3] / "tools" / "hk-bench" / "results" / "2026-11-03"
 #: the KV split's sweep (tools/hk-bench/results/<this>/<arch>/prefill-kvsplit-sweep.json)
-KVSPLIT_SWEEP = "2026-11-04"
+KVSPLIT_SWEEP = "2026-11-05"
 #: the bench's models: (head size, kv heads)
 DIMS = {"minicpm5": (128, 2), "qwen3.8": (256, 4), "minicpm-v-tp2": (256, 1)}
+#: query heads a kv head (the KV split's packed rows are per group)
+GROUPS = {"minicpm5": 8, "qwen3.8": 6, "minicpm-v-tp2": 8}
 
 
 def _reqs(shape):
@@ -541,12 +543,15 @@ def test_the_split_kernels_are_built_with_the_first_ones(monkeypatch):
 
         kvs = []
         monkeypatch.setattr(vp, "_flash_op", flash_op)
-        monkeypatch.setattr(vp, "_kvs_ops", lambda *key: kvs.append(key[-2:]))
+        monkeypatch.setattr(vp, "_kvs_ops", lambda *key: kvs.append(key[-3:]))
         monkeypatch.setattr(vp, "SPLIT", split)
         vp.unified_attention(**_triton_call([(0, 4096)]))
         assert built == want, (split, built)
         plan = vp.KVSPLITS[("gfx1100", 128)]
-        assert sorted(kvs) == sorted({(sp, w) for w, sp in plan[2:]}), kvs
+        want_kvs = {(sp, w, False) for w, sp in plan[2:]} | {
+            (sp, vp.kvs_pack_warps(128, 8), True)
+            for *_, sp in vp.KVS_PACKED.get(("gfx1100", 128, 8), ())}
+        assert sorted(kvs) == sorted(want_kvs), kvs
 
 
 # ---- the KV split (paged_prefill's kv_splits) for short chunks over long contexts -------------
@@ -566,13 +571,35 @@ def test_kvsplit_plan_takes_a_short_chunk_with_exact_sizes(monkeypatch):
         monkeypatch.setattr(vp, "_STATS", {id(a["cu_seqlens_q"]): _stats_of(st)})
         return a, vp.kvsplit_plan(a)
 
+    monkeypatch.setattr(vp, "KVS_PACKED", {})
     a, p = plan([(16384, 32)])
-    assert p == (s_short, w_short)
-    assert plan([(16384, 128)])[1] == (s_long, w_long)
-    assert plan([(16384, 128), (8192, 1), (8192, 1)])[1] == (s_long, w_long)
+    assert p == (s_short, w_short, False)
+    assert plan([(16384, 128)])[1] == (s_long, w_long, False)
+    assert plan([(16384, 128), (8192, 1), (8192, 1)])[1] == (s_long, w_long, False)
+    # GQA-packed rows first, by the longest query and the longest sequence
+    monkeypatch.setattr(vp, "KVS_PACKED", {("gfx1100", 128, 8): ((32, 4096, 32), (lim, 4096, 4))})
+    assert plan([(16384, 32)])[1] == (32, 8, True)               # group 8: 8 warps
+    assert plan([(16384, 33)])[1] == (4, 8, True)
+    assert plan([(16384, lim)])[1] == (4, 8, True)               # past KVSPLITS' bound
+    assert plan([(2048, 32)])[1] == (s_short, w_short, False)
+    assert vp.kvsplit_plan(plan([(16384, 32)])[0], pack=False) == (s_short, w_short, False)
+    # beside decodes a packed plan has its own bound (KVS_PACK_DEC_RATIO), the unpacked one KVS_DEC_RATIO
+    assert plan([(8192, 32)] + [(8192, 1)] * 7)[1] == (32, 8, True)
+    assert plan([(8192, 16)] + [(65536, 1)] * 15)[1] is None      # past KVS_PACK_DEC_RATIO
+    assert plan([(32768, 32)] + [(8192, 1)] * 15)[1] == (32, 8, True)
+    assert plan([(32768, 32)] + [(8192, 1)] * 16)[1] is None       # past KVS_PACK_MAX_DECODES
+    monkeypatch.setattr(vp, "KVS_PACK_MAX_DECODES", {("gfx1100", 128, 8): 3})
+    assert plan([(32768, 32)] + [(8192, 1)] * 3)[1] == (32, 8, True)
+    assert plan([(32768, 32)] + [(8192, 1)] * 4)[1] == (s_short, w_short, False)  # its own bound
+    assert plan([(8192, 32), (8192, 1), (0, 0)])[1] is None        # a request without queries
+    monkeypatch.setattr(vp, "KVS_PACKED", {})
     assert plan([(16384, lim)])[1] is None
     assert plan([(16384, 128), (8192, 1), (0, 0)])[1] is None
     assert plan([(8192, 32)] + [(8192, 1)] * 7)[1] is None        # the decodes are most of it
+    assert plan([(16384, 128), (8192, 1)])[1] == (s_long, w_long, False)
+    monkeypatch.setattr(vp, "KVS_DEC_MIN_CTX", {("gfx1100", 128): 32768})
+    assert plan([(16384, 128), (8192, 1)])[1] is None             # too short beside decodes, per arch
+    assert plan([(16384, 128)])[1] == (s_long, w_long, False)
     monkeypatch.setattr(vp, "_STATS", {})
     assert vp.kvsplit_plan(a) is None
     a, _ = plan([(16384, 32)])
@@ -581,6 +608,20 @@ def test_kvsplit_plan_takes_a_short_chunk_with_exact_sizes(monkeypatch):
     monkeypatch.setattr(vp, "KVSPLIT", True)
     monkeypatch.setattr(switches, "arch", lambda: "gfx1030")
     assert vp.kvsplit_plan(a) is None
+
+
+def test_kvsplit_falls_back_to_unpacked_tiles_where_packed_ones_do_not_build(monkeypatch):
+    """A packed plan whose kernels do not build here takes KVSPLITS' unpacked plan instead."""
+    from hk.integration import switches
+
+    monkeypatch.setattr(switches, "arch", lambda: "gfx1100")
+    monkeypatch.setattr(vp, "KVS_PACKED", {("gfx1100", 128, 8): ((32, 4096, 32),)})
+    a = _triton_call([(16384, 32)])
+    monkeypatch.setattr(vp, "_STATS", {id(a["cu_seqlens_q"]): _stats_of([(16416, 32)])})
+    tried = []
+    monkeypatch.setattr(vp, "_kvsplit", lambda a, sp, w=0, pk=False: tried.append(pk) or not pk)
+    vp.unified_attention(**a)
+    assert tried == [True, False]
 
 
 @pytest.mark.parametrize("arch", ["gfx1100", "gfx1201"])
@@ -597,7 +638,8 @@ def test_every_measured_shape_the_kvsplit_takes_is_a_clear_win(monkeypatch, arch
     for r in rows:
         d, hkv = DIMS[r["model"]]
         reqs = _reqs(r["shape"])
-        a = _triton_call([(s - q, q) for s, q in reqs], d=d, hkv=hkv, page=16)
+        a = _triton_call([(s - q, q) for s, q in reqs], d=d, hkv=hkv, group=GROUPS[r["model"]],
+                         page=16)
         monkeypatch.setattr(vp, "_STATS", {id(a["cu_seqlens_q"]): _stats_of(reqs)})
         if vp.kvsplit_plan(a) is None:
             continue
