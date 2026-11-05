@@ -222,7 +222,7 @@ def w4a16_kernel(name: str, *, tokens: int = 1, slices: int = 4, warps: int = 16
 
 
 def w4a16_large_kernel(name: str, *, group: int = 32, block_m: int = 128, block_n: int = 128,
-                       warps: int = 8, warp_rows: int = 2):
+                       warps: int = 8, warp_rows: int = 2, prefetch: bool = False):
     """The large-batch W4A16 GEMM on vLLM's RDNA skinny layout read in place (prefill): C (M, N)
     = x (M, K) @ W.T, fp16, W symmetric (zero point 8) as `exllama_matmul` reads it. A workgroup
     takes a block_m x block_n tile of C; every 64-deep K step its warps stage x's rows into LDS and
@@ -252,15 +252,29 @@ def w4a16_large_kernel(name: str, *, group: int = 32, block_m: int = 128, block_
         wr = wid // warp_cols
         wc = wid % warp_cols
         acc = hk.zeros(ty_c)
-        for t in hk.range(x.cols // ks):
-            k = t * ks
-            a_t = x[hk.elem_coord(0, 0, m0 + wid * (block_m // warps), k)].load(ty_ld_a, bounded=True)
+        n_k = x.cols // ks
+
+        def fetch(k, a_into=None, w_into=None):
+            a_t = x[hk.elem_coord(0, 0, m0 + wid * (block_m // warps), k)].load(
+                ty_ld_a, bounded=True, into=a_into)
             w_t = hk.load_w4(ty_ld_b, qw, s, None, n0 + wid * (block_n // warps), k, group=group,
-                             zero=SYMMETRIC_ZERO, exllama=True)
+                             zero=SYMMETRIC_ZERO, exllama=True, into=w_into)
+            return a_t, w_t
+
+        if prefetch:
+            a_t, w_t = fetch(0)
+        for t in hk.range(n_k):
+            k = t * ks
+            if not prefetch:
+                a_t, w_t = fetch(k)
             hk.arch.barrier()
             As.subtile(block_m // warps, ks, wid, 0).store(a_t)
             Bs.subtile(block_n // warps, ks, wid, 0).store(w_t)
             hk.arch.barrier()
+            if prefetch:
+                # the next K step's x and W in flight, and W decoded, behind this step's WMMAs
+                # (the last step re-reads its own, unused)
+                fetch(hk.min(k + ks, (n_k - 1) * ks), a_into=a_t, w_into=w_t)
             for sl in range(ks // 16):
                 a_s = As.subtile(rm, 16, wr, sl).load(ty_a, wait=False)
                 b_s = Bs.subtile(rn, 16, wc, sl).load(ty_b, wait=False)
