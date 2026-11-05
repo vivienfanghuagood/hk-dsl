@@ -1,92 +1,134 @@
-# hk in SGLang and SGLang-Diffusion
+# hk in SGLang
 
-The routes hk applies inside SGLang (linear and MoE layers) and SGLang-Diffusion (attention and linear layers of text-to-image and video models). What "on by default" means, `--status`, the engine contract and the environment variables are in [integration](integration.md); the generated [route table](supported-hardware.md#engine-routes-on-each) says which routes are on for each GPU.
+hk replaces some of SGLang's kernels on a Radeon W7900 / RX 7900 (gfx1100)
+with faster ones. You install it next to SGLang; there is nothing to
+configure. For text-to-image and video, see
+[SGLang-Diffusion](#sglang-diffusion-text-to-image-and-video) below: it needs
+one more command.
 
-- [SGLang](#sglang)
-- [SGLang-Diffusion (text to image and video)](#sglang-diffusion-text-to-image-and-video)
+## Enable hk in one command
 
-## SGLang
+In the Python environment that runs SGLang:
 
-Launched with the plugin as in [on by default](integration.md#on-by-default-and-turning-it-off), or patched
-in-process:
-
-```python
-import sglang                      # let SGLang import its modules first
-import hk.integration.sglang as hks
-print(hks.apply_linear())          # unquantized linear layers -> hk_vllm::linear
-print(hks.apply())                 # SDPA, before the engine is built
+```bash
+pip install hk-dsl
 ```
 
-**The linear layers are measured inside SGLang.** The setup was SGLang 0.5.18
-with AMD-AIM/sglang-radeon 0.1.5 and its prebuilt gfx1100 kernel, torch
-2.9.1 on ROCm 7.2.1, and Qwen3-8B in bf16, eager with Triton attention as
-sglang-radeon runs it.
-- `apply_linear()` rebinds `UnquantizedLinearMethod.apply`, whose ROCm path
-  without aiter is `F.linear`, to `torch.ops.hk_vllm.linear`, routed by the
-  SGLang table. Every call took an hk kernel.
-- The patch does not change accuracy: hk's linear and F.linear land equally
-  far from an fp64 matmul, to three digits. In a greedy check, two of three
-  prompts matched stock over 48 tokens; the third took the other side of a
-  near-tie at its ninth token.
+That is all: SGLang loads hk's plugin by itself, in the launcher and in every
+scheduler process. Start SGLang as you always do. On gfx1100 that is with
+Triton attention and without CUDA graphs, which is how SGLang runs on RDNA3:
 
-**MoE models run, and the expert GEMMs are measured inside SGLang**.
-- **Without the patch they do not run.** sgl_kernel's `topk_softmax` fails
-  on gfx1100 on its own, with `unspecified launch failure`, before any
-  expert GEMM. So no softmax-routed MoE model ran in SGLang on this card.
-- **What the patch changes.** `sglang_moe.apply_topk()` computes the top-k
-  in torch, as SGLang's own `fused_topk_torch_native` does, and with only
-  that, OLMoE runs on SGLang's Triton MoE kernel. `sglang_moe.apply()` also
-  routes the bf16 expert GEMMs through `hk.ops.moe`, asking for 16-row
-  blocks up to 256 tokens a step.
-- **Results.** Greedy output identical to Triton's GEMMs over SGLang's
-  correctness prompts. Prefill steps of more than 256 tokens
-  stay on Triton.
+```bash
+python3 -m sglang.launch_server --model-path Qwen/Qwen3-8B \
+    --attention-backend triton --disable-cuda-graph
+```
 
-**Limits.**
-- **No CUDA graphs.** sglang-radeon disables them on RDNA3 because HIP graph
-  capture hangs there, so these are eager numbers. Even so, the decode step
-  is GPU-bound: at batch 1 the linear layers' timings, measured one by one,
-  add up to 42.1 ms of a 44.3 ms step.
-- **Attention is not verified.** SGLang's RDNA3 path selects its Triton
-  attention backend, which does not call `F.scaled_dot_product_attention`.
-  On a text model `apply()` therefore reports that it rebound nothing; it
-  bites with `--attention-backend torch_native` and in the vision encoders
-  of multimodal models.
+**Check that it is on.** Before you start a server, ask hk which routes it
+will apply on this GPU:
+
+```bash
+python3 -m hk.integration --status
+```
+
+```
+routes (hk is on by default; HK_DISABLE=1 turns every route off, HK_<ROUTE>=0 one of them):
+...
+sglang_linear     HK_SGLANG_LINEAR     on   default on (gfx1100)
+sglang_norm       HK_SGLANG_NORM       on   default on (gfx1100)
+sglang_moe        HK_SGLANG_MOE        on   default on (gfx1100)
+...
+```
+
+Once the server runs, its log has one `[hk]` line per SGLang process naming
+the routes it applied:
+
+```
+[hk] SGLang routes on: sglang_linear (default on (gfx1100)), sglang_norm (default on (gfx1100)), sglang_moe (default on (gfx1100)); ...
+```
+
+No `[hk]` line at all means SGLang did not load the plugin, or hk has no
+SGLang route for your GPU: see [troubleshooting](#troubleshooting).
+
+## Supported GPUs and models
+
+| GPU | arch | hk in SGLang |
+|---|---|---|
+| Radeon PRO W7900, W7900D, RX 7900 | gfx1100 (RDNA3) | on by default |
+| Radeon AI PRO R9700, RX 9070 | gfx1201 (RDNA4) | not yet: use [vLLM](vllm.md) |
+| Instinct MI300X, MI325X, MI350X, MI355X | gfx942, gfx950 (CDNA) | off |
+
+What hk takes over depends on what your model has. Each route sends a call to
+hk only where hk measured faster, and leaves every other call to SGLang:
+
+| your model has | route | checked end to end on |
+|---|---|---|
+| bf16 linear layers | `sglang_linear` | Qwen3-8B |
+| Gemma-style RMSNorm (where SGLang would run its torch fallback) | `sglang_norm` | Qwen3.8-27B |
+| bf16 MoE experts, softmax top-k (hk also fixes SGLang's top-k on gfx1100) | `sglang_moe` | OLMoE-1B-7B |
+
+`--status` prints what the version you installed does. Which SGLang builds hk
+was tested with is the [support matrix](support-matrix.md); the full per-GPU
+route table is [supported hardware](supported-hardware.md#engine-routes-on-each).
+
+## Turn it off
+
+```bash
+HK_DISABLE=1 python3 -m sglang.launch_server ...         # stock SGLang: hk patches nothing
+HK_SGLANG_LINEAR=0 python3 -m sglang.launch_server ...   # one route off: HK_<ROUTE>=0
+```
+
+With `HK_DISABLE=1` the log says `[hk] SGLang: off (HK_DISABLE=1), stock`.
+`pip uninstall hk-dsl` removes the plugin entirely.
+
+## Troubleshooting
+
+**No `[hk]` line in the server's log.** On a GPU other than gfx1100 that is
+expected: hk has no SGLang route there (`--status` shows them `off`). On
+gfx1100, check that `pip show hk-dsl` works with the Python that runs SGLang,
+and that `SGLANG_PLUGINS`, if you set it, includes `hk`.
+
+**`[hk] WARNING: sglang: route ... OFF -- engine contract FAILED`.** Your
+SGLang changed a function that route replaces, so hk leaves that route off and
+keeps the others. SGLang still runs correctly. The versions hk was tested with
+are in the [support matrix](support-matrix.md).
+
+**The first requests are slow.** hk compiles each kernel the first time it is
+used (`[hk] JIT: compiling kernel ...` in the log) and keeps it in its cache
+(`~/.cache/hk`, or `HK_CACHE_DIR`; in a container, put it on a volume). A
+model whose linear shapes hk never measured sends them to SGLang until you
+measure them once:
+
+```bash
+python3 -m hk.integration tune --model Qwen/Qwen3-8B --engine sglang
+```
 
 ## SGLang-Diffusion (text to image and video)
 
+SGLang-Diffusion runs its model in worker processes that load no plugins, so
+hk needs one install command in that environment:
+
 ```bash
-python3 -m hk.integration sglang-diffusion install    # once per environment
-python my_generate.py                                # attention and GEMM: on by default (gfx1100)
-HK_SGLD_LINEAR=0 python my_generate.py               # attention only (HK_SGLD_ATTN=0: GEMM only)
-HK_DISABLE=1 python my_generate.py                   # stock
-python3 -m hk.integration sglang-diffusion status
+python3 -m hk.integration sglang-diffusion install     # once per environment
+python3 -m hk.integration sglang-diffusion status      # installed, and which routes are on
 ```
 
-SGLang-Diffusion (`sglang.multimodal_gen`) runs the DiT in worker processes
-and loads no plugins there. So `install` writes `hk_sgld.pth`, and the boot it
-imports, into site-packages. Unless `HK_DISABLE=1` or `HK_SGLD=0`, the boot
-patches whichever process imports the SDPA backend. It checks the engine
-contract first, as the plugins do. An install made before hk was on by
-default keeps the old boot, which needs `HK_SGLD=1`; run `install` again
-(`status` says so). Two patches are on by default:
-- **attention**: `hk.ops.sdpa.patch()` behind the `torch_sdpa` backend (the
-  only one that runs on RDNA3); masked and odd-head-dim calls go to torch;
-- **linear**: `UnquantizedLinearMethod.apply` of
-  `sglang.multimodal_gen.runtime.layers.linear` to `hk.ops.matmul` for bf16
-  projections without bias and with at least `MIN_M` (1024) rows.
+After that, hk's attention and linear kernels are on by default on gfx1100 in
+every SGLang-Diffusion process; generate as you always do. Each patched
+process prints a line with how many calls took hk's kernels (read the
+worker's line: the parent's counts stay 0).
 
-The third, ConvRot INT8 (hk's `convrot_int8` backend, for `--quantization
-convrot_int8`), **stays opt-in**: it is lossy by design.
-`HK_SGLD=attn,linear,convrot` or `HK_SGLD_CONVROT=1` turns it on.
+```bash
+HK_DISABLE=1 ...                                       # stock
+HK_SGLD_LINEAR=0 ...                                   # attention only (HK_SGLD_ATTN=0: linear only)
+python3 -m hk.integration sglang-diffusion uninstall   # remove it
+```
 
-Each patched process prints how many calls took hk's kernels: whenever the
-counts changed, at most every `HK_SGLD_REPORT_S` seconds (60), and as it
-exits. The worker that runs the DiT is torn down without running `atexit`,
-so the line printed at exit is the parent's, whose counts stay 0; read the
-worker's lines (their pid differs).
-Checked on Qwen-Image 2.1 (1024^2, 30 steps, one W7900D): images visually
-identical to stock's; attention reads SGLang's (B, N, H, D) views in place. With sglang-radeon 0.1.5 installed,
-its `h3_denoise_platform_gate` shim must be narrowed first (it makes the global
-platform claim CUDA, and SGLang then picks CUDA-only kernels on gfx1100); the
-chapter has the hook.
+Checked on Qwen-Image 2.1. The lossy ConvRot INT8 route stays opt-in
+(`HK_SGLD_CONVROT=1`).
+
+## Reference
+
+- [SGLang routes](sglang-routes.md): what each route replaces, what it was
+  checked against, and the SGLang-Diffusion boot in detail.
+- [Integration](integration.md): the default-on rule, every switch and
+  environment variable, the engine contract, and adding a kernel of your own.
