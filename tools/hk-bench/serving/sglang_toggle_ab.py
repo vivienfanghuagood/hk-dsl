@@ -186,8 +186,11 @@ def main(argv=None) -> int:
                     after = switch(state, "dump")
                     moved = any(after[p][1:] != before[p][1:] for p in before if p in after)
                     if moved != (arm == "hk"):
+                        diff = {p: (before[p], after[p]) for p in before
+                                if p in after and after[p][1:] != before[p][1:]}
                         raise SystemExit(f"round {r} {arm} {spec}: hk's counters "
-                                         f"{'moved' if moved else 'did not move'}; the switch did not hold")
+                                         f"{'moved' if moved else 'did not move'}; the switch did not hold"
+                                         f" (rank state before, after: {diff or before})")
                     before = after
                     rows.append(dict(row, round=r, arm=arm, spec=spec))
                     print(f"round {r} {arm:5} {spec}: " + " ".join(f"{k}={row[k]}" for k in METRICS), flush=True)

@@ -79,6 +79,8 @@ def _set(on: bool) -> None:
                 S.apply_linear()
             if _WAS_ON.pop("norm", False) and S._NORM is None:
                 S.apply_norm()
+            if hasattr(S, "pause_norm"):
+                S.pause_norm(False)
         else:
             if S._LINEAR is not None:
                 from hk.integration import vllm_gemm
@@ -88,13 +90,19 @@ def _set(on: bool) -> None:
                 S._LINEAR = None
                 vllm_gemm.set_routes(None)
                 _WAS_ON["linear"] = True
-            if S._NORM is not None:
+            if S._NORM is not None and hasattr(S, "pause_norm"):
+                # the layers keep the bound forward_hip SGLang cached at construction: pause the
+                # route in place rather than restoring the class attribute
+                S.pause_norm(True)
+            elif S._NORM is not None:
                 cls, orig = S._NORM
                 cls.forward_hip = orig
                 S._NORM = None
                 _WAS_ON["norm"] = True
         state = "hk" if on else "stock"
-        on_now = [r for r, v in (("linear", S._LINEAR), ("norm", S._NORM)) if v is not None]
+        on_now = [r for r, v in (("linear", S._LINEAR),
+                                 ("norm", S._NORM if not getattr(S, "_NORM_PAUSED", False) else None))
+                  if v is not None]
         _write(f"{state} on={','.join(on_now) or '-'}")
     except Exception as e:  # noqa: BLE001 -- said in the state file, checked by the driver
         _write(f"error {type(e).__name__}: {e}")
