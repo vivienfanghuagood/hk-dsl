@@ -32,7 +32,7 @@ the first tensor's device (`scaffold.takes_stream`). So every hk op there --
 `hk.ops.gemm`'s gfx950 routes, the norms, the decode GEMV -- is ordered
 against torch's work and is captured by a CUDA graph like any torch op;
 `tests/hk/gpu/test_stream_cdna.py` captures and replays them. It costs
-0.2 µs a call on the host (2.97 → 3.18 µs for a tiny kernel, eager). The
+about 0.2 µs a call on the host. The
 RDNA targets' pybind entry point still launches on the null stream, as their
 generated source always has; their serving paths go through
 [`torch_op`](#torch-ops-and-the-sdpa-drop-in), which takes torch's stream.
@@ -48,8 +48,7 @@ or time an hk kernel in a graph on gfx1100, or to run it on a stream of your
 own, set `HK_LAUNCH=codeobj` before its first
 call -- every `@hk.kernel`, and so every template, then launches its
 [device-only code object](#over-a-device-only-code-object) on torch's current
-stream -- or call it through `hk.torch_op(k)`. The DX suite's runner does the
-former on RDNA (`bench/dx/run.py`).
+stream -- or call it through `hk.torch_op(k)`.
 
 A compiled `.so` is never overwritten in place: every build writes a new
 content-hashed path, because rebuilding a `.so` while a process has it mapped
@@ -74,10 +73,9 @@ IR and probes no GPU.
    last resort.
 
 A list says what a build targets, not which GPU is here: vLLM's ROCm image
-sets `PYTORCH_ROCM_ARCH=gfx90a;gfx942;gfx950;...`, and until 0.7.0, which
-read its first entry second, an MI355X was taken for gfx90a and hk built for
-gfx1100 (#54). `HK_ARCH` is the only way to build for a part that is not in
-the machine, which is how the gfx1201 and gfx942 kernels get their compile
+sets `PYTORCH_ROCM_ARCH=gfx90a;gfx942;gfx950;...`, so a list's first entry
+is the last thing tried. `HK_ARCH` is the only way to build for a part that is
+not in the machine, which is how the gfx1201 and gfx942 kernels get their compile
 gate on a gfx1100 box. The gfx1100 fallback exists so that a box with no GPU
 gets the source a W7900 would; a detected GPU that is not one of the targets
 (`hk.target.TARGETS`: gfx1100, gfx1201, gfx942, gfx950) falls back the same
@@ -119,8 +117,7 @@ module, whose device code its new offload driver generates at link time
 (`k.cpp:3:0:     VGPRs: 2`).
 
 A cold compile takes about 4-7 s as a pybind module and about 1 s as a code
-object, attention included; the libtorch op takes about 15 s
-([the table](#over-a-device-only-code-object)).
+object, attention included; the libtorch op takes about 15 s.
 
 ## The cache
 
@@ -140,11 +137,6 @@ leaves an importable half-written `.so`; a header that changes while it compiles
 is noticed and the build redone. Failed builds are kept as `failed-<key>/` with
 their source and log.
 
-Measured on the warm path (20 cached gfx950 kernels, one process, interleaved
-with the previous key, two runs): the key costs 0.27 ms a kernel against 0.13
-(+0.14-0.18 ms; ~70 headers to stat for a CDNA kernel), and +0.7-0.8 ms over
-all 20 on a process's first pass, against a whole cache hit of 1.1-2.6 ms.
-
 The thresholds (`max_vgprs`, `min_occupancy`) are *not* in the key — they are
 re-applied on every cache hit, so a kernel with a strict occupancy requirement
 is not let through by whoever happened to compile the same bytes first.
@@ -158,10 +150,7 @@ crash leaves a miss. An entry whose binary is not a whole ELF file anyway (an
 older hk's, after a power loss: zeros behind the marker) is a miss too, and is
 rebuilt in its place. The header hash is the part that matters most —
 editing a header changes the kernel while leaving the generated source
-byte-identical; through 0.8.0 the key hashed a fixed set of files
-(kittens.cuh, pyutils/, the arch tree, include/hk/cdna.cuh) and an edit to
-`include/hk/cdna_agpr.cuh` or `include/pyutils/hk_bind.cuh` served the old
-kernel. The dialect version is the dialect's semantic version, not a
+byte-identical. The dialect version is the dialect's semantic version, not a
 hash of the library, so a rebuild that changes nothing it means does not throw
 the cache away (`python/hk/runtime/compile.py`).
 
@@ -177,12 +166,12 @@ The gate is `python/hk/runtime/resources.py`. What it enforces:
 * **No spill, ever.** A memory spill -- any `ScratchSize`, or a VGPR spill --
   raises `hk.ResourceError`, and nothing importable is left behind. The
   generated source is kept beside the failure for inspection. SGPR spills to
-  VGPR lanes (ScratchSize 0) are no memory traffic and pass. One exception
-  (#68): a kernel with ScratchSize > 0 but no VGPR spill passes when its code
+  VGPR lanes (ScratchSize 0) are no memory traffic and pass. One exception:
+  a kernel with ScratchSize > 0 but no VGPR spill passes when its code
   object never touches the frame -- no `scratch_*` instruction, no `flat_*`
   memory instruction, no flat scratch, no private segment buffer
   (`hk.runtime.cocheck.unused_scratch_frame`). The compiler can reserve such a
-  frame and never use it (K1's indexer build under ROCm 10: 36 bytes). The
+  frame and never use it. The
   build then records `scratch_note = "reserved-unused scratch frame"`, in its
   report and on stderr. A code object that cannot be read gets no verdict and
   is refused.
@@ -224,13 +213,8 @@ The gate is `python/hk/runtime/resources.py`. What it enforces:
   interlock for one of them, and an operand written just before is read stale.
   LLVM requires only different banks (the number mod 4) there;
   llvm/llvm-project#220348 requires different parity on gfx11 (#225880 scoped
-  it to gfx11.0 and gfx11.5), and no ROCm release has that fix yet. In
-  `tools/rdna3-probes/vopd_interlock_parity.hip`, the same window gives a wrong
-  value in 88-93 of 100 launches under a partial EXEC when the VSRC1s share a
-  parity, whether or not Y reads X's result, and in none when they differ or
-  EXEC is full. A bounded strip RMSNorm built by AMD clang 23 (TheRock 7.14)
-  had such a VOPD (`v_dual_add_f32 v0, v14, v22 :: v_dual_lshlrev_b32 v53,
-  16, v0`) and got element 1 of every lane's run wrong in 25-65% of launches.
+  it to gfx11.0 and gfx11.5), and no ROCm release has that fix yet
+  (`tools/rdna3-probes/vopd_interlock_parity.hip` reproduces it).
 
   The gate (`cocheck.vopd_parity_hazard`) applies that rule to every VOPD of
   a gfx11.0 / gfx11.5 code object. A kernel with any such VOPD is rebuilt
@@ -286,13 +270,12 @@ take their place in its queue.
 
 ## Warming the cache
 
-`python3 -m hk.runtime.warm -j 32` fills the cache in parallel (19x on 24
-kernels), and `python3 -m hk.autotune --aot` does the same for every schedule a
+`python3 -m hk.runtime.warm -j 32` fills the cache in parallel, and
+`python3 -m hk.autotune --aot` does the same for every schedule a
 tuning record can reach. Those two are how the serving path ends up with no
 hipcc in it.
 
-Measured, 24 norm kernels into an empty `HK_CACHE_DIR` on a 256-core box:
-102.9 s at `-j 1` and 5.4 s at `-j 24`. Tracing stays serial — the builder
+Tracing stays serial — the builder
 keeps its state in a module-global stack — and only the hipcc invocations run
 in parallel; the default is one per core, capped at 32
 (`python/hk/runtime/warm.py`).
@@ -339,8 +322,8 @@ and the toolchain fingerprint. Records shipped in the package live in
 one, and a record from another arch is ignored. A record changes nothing
 unless it beat the default by `MIN_GAIN` (1%); the bar is applied at `--ship`
 and again on lookup, `HK_AUTOTUNE_MIN_GAIN` moves it, and `HK_AUTOTUNE=0`
-ignores records entirely. `python/hk/tuned/README.md` says why there are so
-few: when the records were made, 4 of 16 keys cleared the bar, and three attention records ship today (`gemm_bf16.json` is empty).
+ignores records entirely. `python -m hk.autotune --list` shows the records
+that ship; `python/hk/tuned/README.md` says why there are few.
 
 `--aot` prebuilds every schedule production can reach — the recorded ones and
 the default, since the default is what an unrecorded key gets.
@@ -393,16 +376,9 @@ that is most of a build. `hk.runtime.codeobj` compiles the kernel alone
 * The torch op over it (`codeobj.torch_op`) has the same schema, the same
   out-parameters and the same tensor checks as the libtorch one.
 
-Same cache, same gate. Cold compile time, one kernel each
-(`tools/hk-bench/compile_time.py`; the pod has hipcc 7.2 and torch, the
-workstation hipcc 7.1 and no torch):
-
-| kernel | pybind, workstation | code object, workstation | pybind, pod | torch op (libtorch), pod | code object, pod |
-|---|---|---|---|---|---|
-| weighted RMSNorm | 4.15 s | 0.62 s | 6.80 s | 14.69 s | 1.09 s |
-| GEMM 128x128 | 4.24 s | 0.75 s | 7.01 s | 15.05 s | 1.35 s |
-| attention d128 | 4.39 s | 0.83 s | 7.14 s | 15.14 s | 1.46 s |
-| paged decode walk | 4.48 s | 0.88 s | 7.27 s | 15.20 s | 1.52 s |
+Same cache, same gate. A cold compile takes about 1 s as a code object,
+4-7 s as a pybind module and about 15 s as a libtorch op
+(`tools/hk-bench/compile_time.py` measures it).
 
 `hk.torch_op` registers over the code object by default; inside vLLM's
 decode graphs the backend's layer takes the same time either way
@@ -415,9 +391,7 @@ measurable in front of a microsecond kernel run eagerly.
 
 What an eager launch costs on the host is what an eager server pays per hk
 call whenever the CPU, not the GPU, sets the pace. SGLang on RDNA3 decodes
-eagerly. The torch op used to cost 27.3 µs of host time per call on the pod:
-it packed the argument field by field, built a ctypes buffer per launch and
-entered a device context. It now costs 17.8 µs:
+eagerly. So the launch is kept short:
 - one precompiled `struct` packs the whole argument in one call;
 - each thread reuses one argument buffer, since the launch copies the
   argument out before it returns;
@@ -461,8 +435,6 @@ every call:
 | `hipModuleLaunchKernel` through ctypes, argument pre-packed | 2.5 | 4.2 |
 
 Through `torch.ops.hk.<op>` the dispatcher adds 1-3 µs to any of these.
-| the pybind entry point (`Kernel.__call__`'s) | 2.7-4.4 | 4.7 |
-| `hipModuleLaunchKernel` through ctypes, argument pre-packed | 2.3-3.0 | 3.9 |
 
 `hk.ops.sdpa` is `F.scaled_dot_product_attention` on the generated kernel
 where it fits, and torch where it does not:
