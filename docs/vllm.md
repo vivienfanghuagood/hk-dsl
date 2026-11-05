@@ -32,6 +32,9 @@ vllm_int4         HK_VLLM_INT4         on   default on (gfx1201)
 vllm_gptq         HK_VLLM_GPTQ         on   default on (gfx1201)
 vllm_gemm         HK_VLLM_GEMM         on   default on (gfx1201)
 vllm_moe          HK_VLLM_MOE          on   default on (gfx1201)
+vllm_moe_wna16    HK_VLLM_MOE_WNA16    on   default on (gfx1201)
+vllm_sdpa         HK_VLLM_SDPA         off  default off on gfx1201 (validated on gfx1100)
+vllm_backend      HK_VLLM_BACKEND      off  default off
 vllm_prefill      HK_VLLM_PREFILL      on   default on (gfx1201)
 ...
 ```
@@ -40,7 +43,7 @@ Once the server runs, its log has one `[hk]` line per vLLM process, naming
 the routes it applied, and for the linear layers how many took hk's kernel:
 
 ```
-[hk] vLLM routes on: vllm_int4 (default on (gfx1201)), vllm_gptq (default on (gfx1201)), vllm_gemm (default on (gfx1201)), vllm_moe (default on (gfx1201)), vllm_prefill (default on (gfx1201)); ...
+[hk] vLLM routes on: vllm_int4 (default on (gfx1201)), vllm_gptq (default on (gfx1201)), vllm_gemm (default on (gfx1201)), vllm_moe (default on (gfx1201)), vllm_moe_wna16 (default on (gfx1201)), vllm_prefill (default on (gfx1201)); ...
 [hk] linear layers at load: 145 layers through hk's op; unrouted at load: none
 ```
 
