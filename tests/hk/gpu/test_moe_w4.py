@@ -14,6 +14,16 @@ pytestmark = pytest.mark.skipif(
     not torch.cuda.is_available() or "gfx1" not in torch.cuda.get_device_properties(0).gcnArchName,
     reason="hk.load_w4(zp=) is RDNA's")
 
+
+@pytest.fixture(autouse=True, scope="module")
+def _release_cached_memory():
+    """The 256-expert layers take ~20 GiB, and the GPU tier runs other groups on the same GPU: hand
+    the caching allocator's blocks back once this module is done."""
+    yield
+    torch.cuda.synchronize()
+    torch.cuda.empty_cache()
+
+
 G = 32
 #: (slices, warps) of the w13- and w2-shaped GEMMs: the schedules the vLLM route uses.
 W13, W2 = (8, 8), (8, 2)
@@ -32,7 +42,12 @@ def _layer(experts, n, k, g, q=None, z=None, s=None):
     zb = (z[:, 0::2] | (z[:, 1::2] << 4)).to(torch.uint8)
     qw = qb.view(torch.int32).reshape(experts * n, k // 8)
     zp = zb.view(torch.int8).reshape(experts * n // 2, k // G)
-    w = (q - z.repeat_interleave(G, dim=2)).double() * s.double().repeat_interleave(G, dim=2)
+    def w(e):
+        """Expert e's dequantized weights, float64 [N, K]: one expert at a time, as the whole layer
+        in float64 (256 experts) took ~20 GiB with its intermediates."""
+        return (q[e] - z[e].repeat_interleave(G, dim=1)).double() * s[e].double().repeat_interleave(
+            G, dim=1)
+
     return (qw, s.reshape(experts * n, k // G), zp), w
 
 
@@ -62,7 +77,7 @@ def test_within_two_ulps_a_row_of_float64(tokens, shape):
     want = torch.empty(tokens * top_k, n, device="cuda", dtype=torch.float64)
     for p in range(tokens * top_k):
         x = a[p // top_k] if not routed else a[p]
-        want[p] = w[topk_ids.flatten()[p].long()] @ x.double()
+        want[p] = w(int(topk_ids.flatten()[p])) @ x.double()
         if routed:
             want[p] *= topk_w.flatten()[p].double()
     got = c.double()
