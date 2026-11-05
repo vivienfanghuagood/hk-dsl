@@ -22,9 +22,9 @@ def _layer(e, n, k, g):
     return q, s, z
 
 
-@pytest.mark.parametrize("tokens", [1, 7, 16, 32, 40])
+@pytest.mark.parametrize("tokens", [1, 7, 16, 32, 40, 1100, 2100])
 @pytest.mark.parametrize("second", [False, True], ids=["w13", "w2"])
-def test_the_route_matches_vllms_kernel_and_takes_up_to_32_tokens(tokens, second, monkeypatch):
+def test_the_route_matches_vllms_kernel_and_takes_up_to_its_cap(tokens, second, monkeypatch):
     import triton.language as tl
     from vllm.model_executor.layers.fused_moe import fused_moe as fm
     from vllm.model_executor.layers.fused_moe.moe_align_block_size import moe_align_block_size
@@ -49,6 +49,6 @@ def test_the_route_matches_vllms_kernel_and_takes_up_to_32_tokens(tokens, second
     before = dict(r.STATS)
     r.invoke_fused_moe_wna16_triton_kernel(a, q, got, s, z, topk_w, sid, eid, ntp, second, kk, cfg, **args)
     took = r.STATS["hk"] - before["hk"]
-    assert took == (1 if tokens <= r.MAX_TOKENS else 0)
+    assert took == (1 if tokens <= r.max_tokens() else 0)
     top = want.float().abs().amax(dim=-1, keepdim=True).clamp_min(1e-3)
     assert ((got.float() - want.float()).abs() <= 4e-3 * top).all()
