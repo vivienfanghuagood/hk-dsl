@@ -343,18 +343,27 @@ KVSPLITS = {("gfx1100", 128): (1024, 0, (4, 8), (8, 8)),
             ("gfx1201", 128): (512, 2048, (4, 8), (8, 8)),
             ("gfx1201", 256): (512, 2048, (8, 8), (8, 4))}
 SHORT_Q = 64
+#: Beside decodes, the KV split is taken only while their contexts, summed, are at most this times
+#: the prefill's (query, key) pairs: the decodes then go to vLLM's kernel in a second call, and
+#: where they are most of the work the split gains nothing (gfx1201, MiniCPM5: a 32-token chunk
+#: beside 7 decodes over 8k, a ratio of 0.22, 0.97-1.01x; a 64-token chunk over 16k beside 3, 0.023,
+#: 1.98x; the sweep's mixed batches, 0.0024-0.016, 1.6-6.5x).
+KVS_DEC_RATIO = 0.05
 
 
 def kvsplit_plan(a: dict):
     """(splits, warps) where the KV split takes this prefill call, or None: exact sizes known;
-    beside decodes (which go to vLLM's kernel, as in SPLIT) no request without queries, and SPLIT
-    on; the longest query short enough and the longest sequence long enough (KVSPLITS)."""
+    beside decodes (which go to vLLM's kernel, as in SPLIT) no request without queries, SPLIT on and
+    the decodes' work under KVS_DEC_RATIO of the prefill's; the longest query short enough and the longest sequence long enough (KVSPLITS)."""
     from . import switches  # noqa: PLC0415
 
     if not KVSPLIT:
         return None
     st = _step_stats(a)
-    if st is None or not st["max_q"] or (st["decodes"] and (st["empty"] or not SPLIT)):
+    if st is None or not st["max_q"]:
+        return None
+    if st["decodes"] and (st["empty"] or not SPLIT
+                          or st["dec_work"] > KVS_DEC_RATIO * st["pre_work"]):
         return None
     d = int(a["q"].shape[-1])
     plan = KVSPLITS.get((switches.arch(), 256 if d > 128 else 128))

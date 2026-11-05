@@ -572,6 +572,7 @@ def test_kvsplit_plan_takes_a_short_chunk_with_exact_sizes(monkeypatch):
     assert plan([(16384, 128), (8192, 1), (8192, 1)])[1] == (s_long, w_long)
     assert plan([(16384, lim)])[1] is None
     assert plan([(16384, 128), (8192, 1), (0, 0)])[1] is None
+    assert plan([(8192, 32)] + [(8192, 1)] * 7)[1] is None        # the decodes are most of it
     monkeypatch.setattr(vp, "_STATS", {})
     assert vp.kvsplit_plan(a) is None
     a, _ = plan([(16384, 32)])
