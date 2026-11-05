@@ -64,8 +64,8 @@ The release on PyPI is 0.9.2. hk is on by default in vLLM and SGLang for the
 routes validated on your GPU (`HK_DISABLE=1` turns them all off, `HK_<ROUTE>=0`
 one of them, [integration](integration.md#on-by-default-and-turning-it-off)).
 What 0.9.1 and 0.9.0 add and change, including the routes whose default changed,
-is in the [changelog](../CHANGELOG.md); the API reference marks the names
-0.9.2 adds *New after 0.9.1*.
+is in the [changelog](../CHANGELOG.md); what main adds after 0.9.2, which no
+release has yet, the API reference marks *New after 0.9.2*.
 
 ## From source
 
