@@ -8,7 +8,6 @@ see [getting started](getting-started.md).
 - [Wheels](#wheels)
 - [Using a checkout without a wheel](#using-a-checkout-without-a-wheel)
 - [CI](#ci)
-- [The performance gate](#the-performance-gate)
 - [Layout](#layout)
 
 ## The submodule
@@ -67,10 +66,9 @@ builds both scripts twice, once with each `PYTHON`.
 
 **Wheels.** `scripts/build_wheel.sh` builds one per interpreter, because
 `hk._mlir` is nanobind extension modules for one CPython:
-`hk_dsl-<version>-cp310-cp310-linux_x86_64.whl` and its cp312 twin, about
-11 MB each (11.2 and 11.3 MB at 0.2.0, when they were still named
-`hipkittens`). Each carries the package, include/ (the generated kernels
-include it at JIT time) and the bindings. A wheel built for another interpreter installs and
+`hk_dsl-<version>-cp3XY-cp3XY-linux_x86_64.whl`, about 11-13 MB each. Each
+carries the package, include/ (the generated kernels include it at JIT time)
+and the bindings. A wheel built for another interpreter installs and
 then fails at import, so the script refuses to build one. The link-time
 `libHKPythonCAPI.so` symlink is dropped, because a wheel would carry it as a
 second 34 MB copy. Installed outside the checkout, each wheel
@@ -80,7 +78,7 @@ W7900D, with a result equal to torch's bit for bit.
 ```bash
 scripts/build_wheel.sh                                   # python3, wheel in dist/
 PYTHON=/opt/venv/bin/python3 ISOLATION=0 scripts/build_wheel.sh
-pip install dist/hk_dsl-0.4.0-cp310-cp310-linux_x86_64.whl
+pip install dist/hk_dsl-*-cp310-cp310-linux_x86_64.whl
 ```
 
 Releases carry the cp310, cp311, cp312 and cp313 wheels as assets
@@ -98,14 +96,9 @@ touched, since the wheels link only libc, libm, libgcc_s and libstdc++. A cp311 
 about 40 s on top of the MLIR install, and adds 12.5 MB per wheel to the release.
 
 **Build cp312 on glibc 2.35, not newer.** A wheel's tag is the glibc it was
-built against, and a newer one is not accepted by an older system. 0.3.1
-through 0.7.0 built cp312 in rocm/pytorch on Ubuntu 24.04: `libHKPythonCAPI`
-needed `GLIBC_2.38` (`__isoc23_strtol`, which glibc 2.38's headers substitute
-for `strtol`), so the wheel was `manylinux_2_38`, and `pip install hk-dsl`
-found no cp312 wheel in the vLLM ROCm images, which have glibc 2.35. 0.7.0 got
-an extra cp312 `manylinux_2_35` wheel, built in the vLLM image, and from 0.8.0
-it is the only cp312 wheel; pip on a newer glibc takes it too. Building in the
-vLLM image takes three changes from the rocm/pytorch recipe: run it with
+built against, and a newer one is not accepted by an older system. A wheel
+built on Ubuntu 24.04 needs `GLIBC_2.38` and does not install in the vLLM ROCm
+images (glibc 2.35). Building in the vLLM image takes three changes from the rocm/pytorch recipe: run it with
 `--entrypoint bash`; use `/usr/bin/python3` with explicit
 `-DCMAKE_C_COMPILER=/usr/bin/gcc -DCMAKE_CXX_COMPILER=/usr/bin/g++`; and, with
 cmake from pip, put its `cmake/data/bin` on `PATH`, because the `bin/cmake`
@@ -116,13 +109,9 @@ wheel it reads the symbol versions it requires (`readelf -V`). It fails if the
 highest `GLIBC_2.N` is above the wheel's `manylinux_2_M` tag, since such a
 wheel installs on glibc 2.M and then fails at import. With auditwheel
 importable, it also checks every `GLIBCXX`, `CXXABI` and `GCC` version against
-the tag's policy. On 0.7.0's wheels, the cp310 `manylinux_2_35` and both cp312
-wheels (`manylinux_2_38` at `GLIBC_2.38`, `manylinux_2_35` at `GLIBC_2.34`)
-pass; the 2_38 wheel renamed to 2_35 fails. CI runs it on the IR leg against
-the cp310 wheel it builds, and `tests/hk/ir/test_check_wheel_glibc.py` tests
-it on wheels made from a system binary. Installed into a fresh venv, the retagged cp310 wheel pulls its
-three dependencies from PyPI, traces, translates and builds outside the
-checkout.
+the tag's policy. CI runs it on the IR leg against the cp310 wheel it builds,
+and `tests/hk/ir/test_check_wheel_glibc.py` tests it on wheels made from a
+system binary.
 
 ```bash
 PYTHON=/path/with/auditwheel/python3 scripts/manylinux_tag.sh dist/*linux_x86_64.whl
@@ -135,21 +124,13 @@ builds nothing, because a hosted runner has neither the ROCm nor the MLIR
 toolchain. It runs by hand with `gh workflow run pypi.yml -f tag=vX.Y.Z`, and
 on every published release once the repository variable `PYPI_PUBLISH` is
 `true`. It uses the `PYPI_API_TOKEN` secret of the `pypi` environment, or PyPI
-trusted publishing when that secret is not set. The repository has neither
-yet. 0.3.1, the first version on PyPI, through 0.7.0 were uploaded by hand with
-twine from the same manylinux wheels. The release steps, and the checks that
-must pass before a tag, are in [releasing](releasing.md).
-
-**Known issue: the workflow cannot upload yet.** Run for v0.6.0 (run
-40186344465), it downloaded the release's wheels and then PyPI refused the
-exchange: "no corresponding publisher (Publisher with matching claims was not
-found)". The claims it presented were repository `vivienfanghuagood/hk-dsl`,
-workflow `.github/workflows/pypi.yml`, environment `pypi`. Fixing it is the
-PyPI project owner's step, on pypi.org: hk-dsl, Settings, Publishing, add a
-GitHub trusted publisher with those three values (or put a `PYPI_API_TOKEN`
-secret in the repository's `pypi` environment). Until then a release goes up
+trusted publishing when that secret is not set. Neither is configured yet:
+the fix is the PyPI project owner's (a GitHub trusted publisher for this
+repository, `.github/workflows/pypi.yml`, environment `pypi`, or a
+`PYPI_API_TOKEN` secret in that environment). Until then a release goes up
 with twine from the manylinux assets, after checking their sha256 against the
-GitHub release.
+GitHub release. The release steps, and the checks that must pass before a
+tag, are in [releasing](releasing.md).
 
 `pyproject.toml` and `hk.__version__` say the last release's version until
 the next release raises both, so a wheel built from main between releases
@@ -185,12 +166,7 @@ on the machines that have the toolchain.
 ### Reproducible wheels
 
 The same commit, built with the same toolchain, gives the same wheel byte for
-byte, wherever the checkout and the build directory are. 0.7.0's rc and tag
-wheels, built from the same tree, did not: the cp310 build ran in a `mktemp -d`
-directory, whose name ended up in two `__FILE__` strings in
-`libHKPythonCAPI.so` and in the GNU build-id of the three libraries linked
-against it. The zip layer differed too: every entry's timestamp was the
-build time.
+byte, wherever the checkout and the build directory are.
 
 What makes a build reproducible, and where it is done:
 
@@ -205,12 +181,7 @@ What makes a build reproducible, and where it is done:
   (`CFLAGS` and `CXXFLAGS` in the environment work too, on a fresh build
   directory).
 * **RPATH.** The bindings are linked with their install RUNPATH, `$ORIGIN`
-  (`mlir/python/CMakeLists.txt`). Linked with the build tree's absolute
-  `_mlir_libs` path instead, the three libraries that link `libHKPythonCAPI`
-  were patched by `cmake --install`, in place: `.dynstr` kept the old string's
-  length, so the layout followed the length of the build directory's path, and
-  the build-id, hashed at link time, kept the old path itself. That, not code,
-  was the "only the build-id differs" of 0.7.0.
+  (`mlir/python/CMakeLists.txt`).
 * **Timestamps.** `scripts/build_wheel.sh` sets `SOURCE_DATE_EPOCH` to the
   checkout's last commit time unless it is already set, and wheel uses it for
   every zip entry. `scripts/manylinux_tag.sh` rewrites `RECORD`, which takes
@@ -272,10 +243,6 @@ operate, on pushes to main and by hand, runs the GPU tier on gfx950, gfx1100
 and gfx1201; its jobs `gfx950` and `gfx1100` are main's required checks. How,
 what each costs, and how to make a new MLIR archive:
 [testing](testing.md#ci) and [the GPU tier](testing.md#the-gpu-tier).
-
-## The performance gate
-
-Moved to [testing](testing.md#the-performance-gate).
 
 ## Layout
 
