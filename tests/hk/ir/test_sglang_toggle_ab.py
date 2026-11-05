@@ -64,6 +64,47 @@ def test_the_toggle_swaps_the_methods_and_reports_it(tmp_path):
         "started", "stock on=-", "sglang", "sglang", "hk on=linear,norm", "hk", "hk"]
 
 
+def test_stock_reaches_layers_that_cached_the_bound_forward(tmp_path):
+    """SGLang's CustomOp caches a layer's forward_hip as a bound method at construction, so
+    restoring the class attribute does not reach a layer already built: the toggle pauses the
+    norm route in place (`pause_norm`), and stock is stock on such a layer too."""
+    script = textwrap.dedent("""
+        import os, signal, sys, time, types
+        class Norm:
+            def forward_hip(self): return "sglang"
+        class Layer:             # what SGLang's CustomOp does at construction
+            def __init__(self): self._forward_method = Norm.forward_hip.__get__(self)
+            def __call__(self): return self._forward_method()
+        S = types.ModuleType("hk.integration.sglang")
+        S._LINEAR, S._NORM, S._NORM_PAUSED = None, None, False
+        def pause_norm(p): S._NORM_PAUSED = bool(p)
+        def apply_norm():
+            orig = Norm.forward_hip
+            def hk_norm(self):
+                return orig(self) if S._NORM_PAUSED else "hk"
+            S._NORM = (Norm, orig); Norm.forward_hip = hk_norm
+        S.apply_linear, S.apply_norm, S.pause_norm = (lambda: None), apply_norm, pause_norm
+        S.norm_stats = lambda: "{}"
+        hk = types.ModuleType("hk"); I = types.ModuleType("hk.integration"); I.sglang = S
+        sys.modules.update({"hk": hk, "hk.integration": I, "hk.integration.sglang": S})
+        apply_norm()
+        layer = Layer()                                   # built with hk's forward bound
+        d = os.environ["HK_SGLANG_TOGGLE_DIR"]; me = os.path.join(d, str(os.getpid()))
+        def state(): return open(me).read().splitlines()[0]
+        seen = [layer()]
+        os.kill(os.getpid(), signal.SIGRTMIN + 3); time.sleep(0.2)
+        seen += [state(), layer()]
+        os.kill(os.getpid(), signal.SIGRTMIN + 4); time.sleep(0.2)
+        seen += [state(), layer()]
+        print("|".join(seen))
+    """)
+    env = dict(os.environ, HK_SGLANG_TOGGLE_DIR=str(tmp_path),
+               PYTHONPATH=str(SERVING / "sglang_toggle"))
+    r = subprocess.run([sys.executable, "-c", script], env=env, capture_output=True, text=True, timeout=60)
+    assert r.returncode == 0, r.stderr
+    assert r.stdout.strip().split("|") == ["hk", "stock on=-", "sglang", "hk on=norm", "hk"]
+
+
 def test_a_process_without_hk_says_none(tmp_path):
     env = dict(os.environ, HK_SGLANG_TOGGLE_DIR=str(tmp_path), PYTHONPATH=str(SERVING / "sglang_toggle"))
     script = ("import os, signal, time; os.kill(os.getpid(), signal.SIGRTMIN + 3); time.sleep(0.2); "
