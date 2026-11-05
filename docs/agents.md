@@ -102,8 +102,9 @@ No kernel wins it back; graphs or fewer launches do. `--tokens T` adds the
 shares over one request batch of T output tokens, which is what a profile
 of a whole `generate` shows.
 
-**An example of the output**, from one dated run (Qwen3-8B, 16 requests x
-4096, eager, `--arms stock,hk+gemm`); its numbers show what the columns mean
+**An example of the output**, sample output from one dated run (W7900D,
+gfx1100, vLLM 0.31, hk 0.4.0, 2026-10-18; Qwen3-8B, 16 requests x 4096, eager,
+`--arms stock,hk+gemm`); its numbers show what the columns mean
 and are not claims -- the project's performance numbers are on
 [the scorecard](performance/scorecard.md). "of peak" is the family's roofline
 over its time:
@@ -234,8 +235,9 @@ metric (total, prefill, decode step) and arm, every row with the same keys:
   stock's.
 
 `--from raw.json` judges an earlier run again. **An example of the verdicts**,
-from one dated run (Qwen3-8B, the `gemm` arm, vLLM's defaults, three rounds);
-not claims -- the project's numbers are on [the scorecard](performance/scorecard.md):
+sample output from one dated run (W7900D, gfx1100, vLLM 0.31, hk 0.4.0,
+2026-10-18; Qwen3-8B, the `gemm` arm, vLLM's defaults, three rounds); not
+claims -- the project's numbers are on [the scorecard](performance/scorecard.md):
 
 | ctx x batch | total | prefill | decode step |
 |---|---|---|---|
