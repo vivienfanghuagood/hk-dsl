@@ -88,8 +88,10 @@ torch's) are disassembled from the thread trace.
 
 ## Reading the report
 
-An MI355X (gfx950, ROCm 7.2.3, torch 2.10, rocprofv3 1.1.0), Llama-3-8B's
-gate_up GEMM at M = 1024 (`bench/profile/cases.py:gemm_plain`):
+Sample output, not a benchmark claim: an MI355X (gfx950, ROCm 7.2.3, torch
+2.10, rocprofv3 1.1.0), hk 0.5.0, on 2026-10-22, Llama-3-8B's gate_up GEMM at
+M = 1024 (`bench/profile/cases.py:gemm_plain`). It has every line the table
+below explains:
 
 ```text
 hk.profile gemm_plain  gfx950 (AMD Radeon Graphics, 256 CUs)  hk 0.5.0  rocprofv3 1.1.0
@@ -108,6 +110,27 @@ hk.profile gemm_plain  gfx950 (AMD Radeon Graphics, 256 CUs)  hk 0.5.0  rocprofv
     drain     530 instructions: 128 mfma, 197 valu, 56 salu, 1 smem, 2 vmem_lds, 64 vmem_store, 48 ds_read, 11 barrier, 3 nop, 11 other, 9 waitcnt (7 lgkm, 2 vmem); 4% of a wave's cycles
     epilogue  525 instructions: 185 valu, 14 salu, 64 vmem_store, 2 barrier, 1 branch, 257 nop, 2 other; 2% of a wave's cycles
     verdict   compute-bound: matrix core 65% busy, 1337 TFLOP/s = 54% of the bf16 peak (66% of it at the 1.97 GHz measured); tail: 1.75 rounds of 256 CUs, the last fills 192/256 (12% idle); matrix core idle at barrier 12%; matrix core idle at vmem_issue 8%; L2 re-fetch: 3.4x the call's bytes cross it
+```
+
+The same case on an R9700 (gfx1201, ROCm 7.2.3, rocprofv3 1.1.0), hk 0.9.7, on
+2026-11-05 (sample output). hk has no counter groups for gfx1201 yet, and the
+image has no thread-trace decoder, so the report is the timing and the ISA:
+
+```text
+hk.profile gemm_plain  gfx1201 (AMD Radeon Graphics, 64 CUs)  hk 0.9.7  rocprofv3 1.1.0
+  call      bf16[1024,4096], bf16[28672,4096], bf16[28672]  1759.13 us of kernels a call, 1 kernel(s)
+  sources   timing: rocprofv3 --kernel-trace; counters: unavailable (see notes); att: unavailable (see notes); isa: llvm-objdump of the code object
+  kernel gemm_bf16_128x128x64_w8r4_s2_d16_g8_p2_l1_kernel  1759.13 us ±0.5%
+    grid      1792 workgroups x 256 threads (8 waves), LDS 32768 B, 165 VGPR -> 4 a WGP (bound by registers and lds); 14.0 rounds of 32 WGPs
+    roofline  302 MB -> 171.70 GB/s = 9% of the cache-resident rate; DRAM at least 27% (the call's 302 MB once)
+    busy      occupancy 8 waves/SIMD (theoretical)
+    loop      0x2428-0x271c, 110 instructions: 32 wmma, 2 valu, 9 salu, 8 vmem_load, 24 ds_read, 8 ds_write, 4 barrier, 1 branch, 22 other
+    prologue  615 instructions: 321 valu, 2 valu_trans, 149 salu, 11 smem, 16 vmem_load, 8 ds_write, 2 barrier, 11 branch, 95 other
+    drain     319 instructions: 32 wmma, 158 valu, 16 salu, 2 smem, 49 vmem_store, 24 ds_read, 38 other
+    epilogue  154 instructions: 23 valu, 15 vmem_store, 1 nop, 115 other
+    verdict   latency-bound (neither roof): 27% of DRAM
+  note: no counter groups are known for gfx1201: timing and the ISA only
+  note: no thread trace: librocprof-trace-decoder.so not found (set HK_ATT_DECODER; docs/profile.md#the-thread-trace); stall reasons come from the counters only
 ```
 
 | line | what it says | from |
@@ -335,6 +358,8 @@ comparison lines.
 (N=28672, K=4096) at M=1024**, `hk.ops.matmul` against `hk.templates.gemm`
 with bias + GELU:
 
+*Sample output: MI355X (gfx950), hk 0.5.0, ROCm 7.2.3, 2026-10-22.*
+
 ```text
 VERDICT compute-bound: matrix core 65% busy, 1337 TFLOP/s = 54% of the bf16 peak (66% of it at the 1.97 GHz measured); tail: 1.75 rounds of 256 CUs, the last fills 192/256 (12% idle); matrix core idle at barrier 12%; matrix core idle at vmem_issue 8%; L2 re-fetch: 3.4x the call's bytes cross it
   vs        bias_gelu takes 1.062x the time of gemm_plain (interleaved in one process: 199.0 vs 187.1 us, band 6%); profiled calls: bias_gelu 192.0 us vs gemm_plain 180.0 us (1.067x the time); matrix core idle after the main loop (drain + epilogue) 4.2% -> 9.9% of the kernel; matrix core busy 65% -> 60%; matrix idle at VALU 2% -> 6%; VALU instructions 1.804e+07 -> 2.222e+07
@@ -354,6 +379,8 @@ GEMM interleaved (hk.check gave 1.049x on the same day); the docs' 1.09x
 **(b) The shape outside the route table -- gfx950, 2048x16384x4096**:
 `route()` has no entry for N x K = 16384 x 4096 and its rule sends M = 2048
 to `dp128`:
+
+*Sample output: MI355X (gfx950), hk 0.5.0, ROCm 7.2.3, 2026-10-22.*
 
 ```text
 VERDICT latency-bound (neither roof): 38% of the matrix peak, 33% of the cache-resident rate (past the L2); matrix core 43% busy; issue-bound at 1 wave(s) a SIMD (lds): the matrix core idles 34% while its waves issue the loop's 2.4 other instructions per matrix one; matrix core idle before the main loop 7% (one workgroup a CU: not hidden); matrix core idle after the main loop 4% (one workgroup a CU: not hidden); L2 re-fetch: 4.0x the call's bytes cross it
@@ -380,6 +407,8 @@ route-table entry).
 **(c) gfx950 and gfx1100: GELU-and-mul at 4096x14336**, the 16x64-tile
 kernel the first page of the docs teaches against llms.txt's strip kernel:
 
+*Sample output: MI355X (gfx950), hk 0.5.0, ROCm 7.2.3, 2026-10-22.*
+
 ```text
 gfx950:
 VERDICT latency-bound (neither roof): 46% of HBM; waves at vmem_issue 69% of their cycles (whole kernel); waves at vmem_wait 11% of their cycles (whole kernel); waves at valu 11% of their cycles (whole kernel); narrow global accesses (loads 8 B; stores 8 B a lane); occupancy 5.1 of 8 waves/SIMD
@@ -401,6 +430,8 @@ are memory-bound, at 77% and 83% of DRAM at least, the strips 0.94x the
 tiles' time -- 864 GB/s of GDDR6 is slow enough that 8-byte accesses keep
 up with it:
 
+*Sample output: W7900D (gfx1100), hk 0.5.0, ROCm 7.2.4, 2026-10-22.*
+
 ```text
 gfx1100:
 VERDICT memory-bound: 77% of DRAM at least (the call's 352 MB in 528.2 us, 0.67 TB/s); waves at vmem_wait 78% of their cycles (main loop); waves at vmem_issue 11% of their cycles (main loop)
@@ -410,6 +441,8 @@ VERDICT memory-bound: 77% of DRAM at least (the call's 352 MB in 528.2 us, 0.67 
 
 **gfx1100: the GEMM at M = 4096 against hipBLASLt** (4096x4096x4096,
 `bench/profile/cases.py:matmul` vs `hipblaslt`):
+
+*Sample output: W7900D (gfx1100), hk 0.5.0, ROCm 7.2.4, 2026-10-22.*
 
 ```text
 VERDICT compute-bound: matrix core 72% busy, 89 TFLOP/s = 72% of the bf16 peak; matrix core idle at vmem_wait 17%; tail: 7.11 rounds of 48 WGPs, the last fills 16/144 (11% idle); matrix core idle at no_instruction 9%
