@@ -394,42 +394,39 @@
    "hk": 0.00038
   },
   "us": {
-   "triton": 305.33,
-   "rocm_attn": 1323.96,
-   "hk": 56.64
+   "rocm_attn": 1307.94,
+   "triton": 303.71,
+   "hk": 57.94
   },
   "us_by_seed": {
-   "triton": [
-    304.95,
-    305.35,
-    305.33
-   ],
    "rocm_attn": [
-    1342.35,
-    1323.96,
-    1311.62
+    1307.94,
+    1301.2
+   ],
+   "triton": [
+    303.13,
+    303.71
    ],
    "hk": [
-    56.64,
-    55.7,
-    56.98
+    56.78,
+    57.94
    ]
   },
   "tflops": {
-   "triton": 1.76,
    "rocm_attn": 0.41,
-   "hk": 9.5
+   "triton": 1.77,
+   "hk": 9.29
   },
   "hk_calls": {
-   "hk": 1025,
+   "hk": 641,
    "fallback": 0,
    "decode": 0,
    "declined": 0,
    "split": 0,
-   "kvsplit": 1025
+   "kvsplit": 641
   },
   "best_rival": "triton",
-  "hk_speedup": 5.39
+  "hk_speedup": 5.242
  },
  {
   "kind": "prefill",
@@ -442,42 +439,39 @@
    "hk": 0.00041
   },
   "us": {
-   "triton": 307.39,
-   "rocm_attn": 1318.42,
-   "hk": 57.08
+   "rocm_attn": 1305.76,
+   "triton": 305.91,
+   "hk": 58.36
   },
   "us_by_seed": {
-   "triton": [
-    307.2,
-    307.39,
-    307.41
-   ],
    "rocm_attn": [
-    1318.42,
-    1321.65,
-    1311.66
+    1301.11,
+    1305.76
+   ],
+   "triton": [
+    305.74,
+    305.91
    ],
    "hk": [
-    57.23,
-    57.08,
-    55.53
+    58.36,
+    57.66
    ]
   },
   "tflops": {
-   "triton": 3.51,
-   "rocm_attn": 0.82,
-   "hk": 18.89
+   "rocm_attn": 0.83,
+   "triton": 3.52,
+   "hk": 18.47
   },
   "hk_calls": {
-   "hk": 1025,
+   "hk": 641,
    "fallback": 0,
    "decode": 0,
    "declined": 0,
    "split": 0,
-   "kvsplit": 1025
+   "kvsplit": 641
   },
   "best_rival": "triton",
-  "hk_speedup": 5.385
+  "hk_speedup": 5.242
  },
  {
   "kind": "prefill",
@@ -490,42 +484,39 @@
    "hk": 0.00048
   },
   "us": {
-   "triton": 314.37,
-   "rocm_attn": 1330.19,
-   "hk": 68.37
+   "rocm_attn": 1310.43,
+   "triton": 313.29,
+   "hk": 68.31
   },
   "us_by_seed": {
-   "triton": [
-    314.47,
-    314.37,
-    314.3
-   ],
    "rocm_attn": [
-    1340.73,
-    1330.19,
-    1323.15
+    1310.43,
+    1302.59
+   ],
+   "triton": [
+    312.37,
+    313.29
    ],
    "hk": [
-    68.4,
-    68.37,
-    67.83
+    68.31,
+    68.26
    ]
   },
   "tflops": {
-   "triton": 6.89,
-   "rocm_attn": 1.63,
-   "hk": 31.66
+   "rocm_attn": 1.65,
+   "triton": 6.91,
+   "hk": 31.69
   },
   "hk_calls": {
-   "hk": 1025,
+   "hk": 641,
    "fallback": 0,
    "decode": 0,
    "declined": 0,
    "split": 0,
-   "kvsplit": 1025
+   "kvsplit": 641
   },
   "best_rival": "triton",
-  "hk_speedup": 4.598
+  "hk_speedup": 4.587
  },
  {
   "kind": "prefill",
@@ -775,45 +766,42 @@
   "err": {
    "triton": 0.00016,
    "rocm_attn": 0.00016,
-   "hk": 0.00019
+   "hk": 0.00018
   },
   "us": {
-   "triton": 1186.27,
-   "rocm_attn": 4448.84,
-   "hk": 91.48
+   "triton": 1178.95,
+   "rocm_attn": 4480.32,
+   "hk": 80.42
   },
   "us_by_seed": {
    "triton": [
-    1186.27,
-    1186.44,
-    1185.96
+    1178.95,
+    1178.01
    ],
    "rocm_attn": [
-    4448.84,
-    4421.96,
-    4594.22
+    4472.58,
+    4480.32
    ],
    "hk": [
-    91.48,
-    91.49,
-    91.37
+    80.33,
+    80.42
    ]
   },
   "tflops": {
-   "triton": 1.81,
+   "triton": 1.82,
    "rocm_attn": 0.48,
-   "hk": 23.49
+   "hk": 26.72
   },
   "hk_calls": {
-   "hk": 1025,
+   "hk": 641,
    "fallback": 0,
    "decode": 0,
    "declined": 0,
    "split": 0,
-   "kvsplit": 1025
+   "kvsplit": 641
   },
   "best_rival": "triton",
-  "hk_speedup": 12.968
+  "hk_speedup": 14.66
  },
  {
   "kind": "prefill",
@@ -826,42 +814,39 @@
    "hk": 0.00018
   },
   "us": {
-   "triton": 1193.73,
-   "rocm_attn": 4554.72,
-   "hk": 118.08
+   "rocm_attn": 4477.24,
+   "triton": 1187.65,
+   "hk": 117.75
   },
   "us_by_seed": {
-   "triton": [
-    1194.01,
-    1193.26,
-    1193.73
-   ],
    "rocm_attn": [
-    4633.73,
-    4535.89,
-    4554.72
+    4477.24,
+    4469.83
+   ],
+   "triton": [
+    1186.2,
+    1187.65
    ],
    "hk": [
-    118.08,
-    118.23,
-    118.04
+    117.75,
+    117.34
    ]
   },
   "tflops": {
-   "triton": 3.6,
-   "rocm_attn": 0.94,
-   "hk": 36.41
+   "rocm_attn": 0.96,
+   "triton": 3.62,
+   "hk": 36.51
   },
   "hk_calls": {
-   "hk": 1025,
+   "hk": 641,
    "fallback": 0,
    "decode": 0,
    "declined": 0,
    "split": 0,
-   "kvsplit": 1025
+   "kvsplit": 641
   },
   "best_rival": "triton",
-  "hk_speedup": 10.109
+  "hk_speedup": 10.086
  },
  {
   "kind": "prefill",
@@ -874,39 +859,36 @@
    "hk": 0.00021
   },
   "us": {
-   "triton": 1212.55,
-   "rocm_attn": 4578.45,
-   "hk": 194.19
+   "rocm_attn": 4485.09,
+   "triton": 1208.6,
+   "hk": 193.57
   },
   "us_by_seed": {
-   "triton": [
-    1212.55,
-    1212.8,
-    1212.54
-   ],
    "rocm_attn": [
-    4578.45,
-    4627.69,
-    4545.23
+    4485.09,
+    4483.35
+   ],
+   "triton": [
+    1203.53,
+    1208.6
    ],
    "hk": [
-    194.54,
-    194.19,
-    194.05
+    190.69,
+    193.57
    ]
   },
   "tflops": {
-   "triton": 7.1,
-   "rocm_attn": 1.88,
-   "hk": 44.32
+   "rocm_attn": 1.92,
+   "triton": 7.12,
+   "hk": 44.46
   },
   "hk_calls": {
-   "hk": 1025,
+   "hk": 641,
    "fallback": 0,
    "decode": 0,
    "declined": 0,
    "split": 0,
-   "kvsplit": 1025
+   "kvsplit": 641
   },
   "best_rival": "triton",
   "hk_speedup": 6.244
@@ -922,42 +904,39 @@
    "hk": 0.00022
   },
   "us": {
-   "triton": 1317.38,
-   "rocm_attn": 4602.74,
-   "hk": 356.91
+   "rocm_attn": 4490.9,
+   "triton": 1318.23,
+   "hk": 352.46
   },
   "us_by_seed": {
-   "triton": [
-    1317.3,
-    1317.42,
-    1317.38
-   ],
    "rocm_attn": [
-    4601.1,
-    4602.74,
-    4635.78
+    4488.52,
+    4490.9
+   ],
+   "triton": [
+    1314.25,
+    1318.23
    ],
    "hk": [
-    356.91,
-    356.76,
-    356.93
+    352.42,
+    352.46
    ]
   },
   "tflops": {
-   "triton": 13.09,
-   "rocm_attn": 3.75,
-   "hk": 48.32
+   "rocm_attn": 3.84,
+   "triton": 13.08,
+   "hk": 48.94
   },
   "hk_calls": {
-   "hk": 1025,
+   "hk": 641,
    "fallback": 0,
    "decode": 0,
    "declined": 0,
    "split": 0,
-   "kvsplit": 1025
+   "kvsplit": 641
   },
   "best_rival": "triton",
-  "hk_speedup": 3.691
+  "hk_speedup": 3.74
  },
  {
   "kind": "prefill",
@@ -1159,45 +1138,42 @@
   "err": {
    "triton": 0.00014,
    "rocm_attn": 0.00014,
-   "hk": 0.00014
+   "hk": 0.00016
   },
   "us": {
-   "triton": 2352.06,
-   "rocm_attn": 8609.45,
-   "hk": 151.04
+   "triton": 2336.67,
+   "rocm_attn": 9170.99,
+   "hk": 126.73
   },
   "us_by_seed": {
    "triton": [
-    2351.81,
-    2352.85,
-    2352.06
+    2336.67,
+    2335.98
    ],
    "rocm_attn": [
-    8609.45,
-    8671.93,
-    8596.4
+    9170.99,
+    9160.8
    ],
    "hk": [
-    151.04,
-    151.49,
-    151.02
+    126.73,
+    126.65
    ]
   },
   "tflops": {
-   "triton": 1.83,
-   "rocm_attn": 0.5,
-   "hk": 28.44
+   "triton": 1.84,
+   "rocm_attn": 0.47,
+   "hk": 33.9
   },
   "hk_calls": {
-   "hk": 513,
+   "hk": 321,
    "fallback": 0,
    "decode": 0,
    "declined": 0,
    "split": 0,
-   "kvsplit": 513
+   "kvsplit": 321
   },
   "best_rival": "triton",
-  "hk_speedup": 15.572
+  "hk_speedup": 18.439
  },
  {
   "kind": "prefill",
@@ -1210,42 +1186,39 @@
    "hk": 0.00015
   },
   "us": {
-   "triton": 2365.18,
-   "rocm_attn": 8634.02,
-   "hk": 200.38
+   "rocm_attn": 8894.73,
+   "triton": 2362.23,
+   "hk": 201.15
   },
   "us_by_seed": {
-   "triton": [
-    2365.18,
-    2363.85,
-    2365.23
-   ],
    "rocm_attn": [
-    8640.99,
-    8629.22,
-    8634.02
+    8871.69,
+    8894.73
+   ],
+   "triton": [
+    2355.82,
+    2362.23
    ],
    "hk": [
-    200.73,
-    200.13,
-    200.38
+    201.15,
+    201.06
    ]
   },
   "tflops": {
-   "triton": 3.63,
-   "rocm_attn": 1.0,
-   "hk": 42.89
+   "rocm_attn": 0.97,
+   "triton": 3.64,
+   "hk": 42.72
   },
   "hk_calls": {
-   "hk": 513,
+   "hk": 321,
    "fallback": 0,
    "decode": 0,
    "declined": 0,
    "split": 0,
-   "kvsplit": 513
+   "kvsplit": 321
   },
   "best_rival": "triton",
-  "hk_speedup": 11.803
+  "hk_speedup": 11.743
  },
  {
   "kind": "prefill",
@@ -1258,42 +1231,39 @@
    "hk": 0.00016
   },
   "us": {
-   "triton": 2399.74,
-   "rocm_attn": 8654.38,
-   "hk": 355.46
+   "rocm_attn": 8889.87,
+   "triton": 2397.8,
+   "hk": 357.58
   },
   "us_by_seed": {
-   "triton": [
-    2400.12,
-    2399.74,
-    2398.46
-   ],
    "rocm_attn": [
-    8656.99,
-    8654.38,
-    8622.67
+    8889.87,
+    8881.63
+   ],
+   "triton": [
+    2396.96,
+    2397.8
    ],
    "hk": [
-    355.25,
-    355.79,
-    355.46
+    354.26,
+    357.58
    ]
   },
   "tflops": {
+   "rocm_attn": 1.93,
    "triton": 7.17,
-   "rocm_attn": 1.99,
-   "hk": 48.38
+   "hk": 48.09
   },
   "hk_calls": {
-   "hk": 513,
+   "hk": 321,
    "fallback": 0,
    "decode": 0,
    "declined": 0,
    "split": 0,
-   "kvsplit": 513
+   "kvsplit": 321
   },
   "best_rival": "triton",
-  "hk_speedup": 6.751
+  "hk_speedup": 6.706
  },
  {
   "kind": "prefill",
@@ -1306,42 +1276,39 @@
    "hk": 0.00017
   },
   "us": {
-   "triton": 2601.92,
-   "rocm_attn": 8641.69,
-   "hk": 682.52
+   "rocm_attn": 8896.31,
+   "triton": 2602.81,
+   "hk": 675.58
   },
   "us_by_seed": {
-   "triton": [
-    2600.97,
-    2602.73,
-    2601.92
-   ],
    "rocm_attn": [
-    8641.69,
-    8642.21,
-    8630.2
+    8890.05,
+    8896.31
+   ],
+   "triton": [
+    2601.78,
+    2602.81
    ],
    "hk": [
-    682.52,
-    683.08,
-    682.49
+    675.22,
+    675.58
    ]
   },
   "tflops": {
+   "rocm_attn": 3.87,
    "triton": 13.23,
-   "rocm_attn": 3.98,
-   "hk": 50.44
+   "hk": 50.96
   },
   "hk_calls": {
-   "hk": 513,
+   "hk": 321,
    "fallback": 0,
    "decode": 0,
    "declined": 0,
    "split": 0,
-   "kvsplit": 513
+   "kvsplit": 321
   },
   "best_rival": "triton",
-  "hk_speedup": 3.812
+  "hk_speedup": 3.853
  },
  {
   "kind": "prefill",
@@ -3850,42 +3817,39 @@
    "hk": 0.00035
   },
   "us": {
-   "hk": 55.47,
-   "rocm_attn": 1243.0,
-   "triton": 797.64
+   "hk": 59.86,
+   "triton": 796.91,
+   "rocm_attn": 1240.81
   },
   "us_by_seed": {
    "hk": [
-    55.88,
-    54.55,
-    55.47
-   ],
-   "rocm_attn": [
-    1243.0,
-    1241.92,
-    1246.84
+    59.86,
+    59.23
    ],
    "triton": [
-    797.64,
-    798.16,
-    797.13
+    796.91,
+    796.31
+   ],
+   "rocm_attn": [
+    1236.92,
+    1240.81
    ]
   },
   "tflops": {
-   "hk": 9.7,
-   "rocm_attn": 0.43,
-   "triton": 0.67
+   "hk": 8.99,
+   "triton": 0.68,
+   "rocm_attn": 0.43
   },
   "hk_calls": {
-   "hk": 1025,
+   "hk": 641,
    "fallback": 0,
    "decode": 0,
    "declined": 0,
    "split": 0,
-   "kvsplit": 1025
+   "kvsplit": 641
   },
   "best_rival": "triton",
-  "hk_speedup": 14.38
+  "hk_speedup": 13.313
  },
  {
   "kind": "prefill",
@@ -3898,42 +3862,39 @@
    "hk": 0.00036
   },
   "us": {
-   "hk": 55.87,
-   "rocm_attn": 1238.01,
-   "triton": 802.2
+   "hk": 59.18,
+   "triton": 800.49,
+   "rocm_attn": 1241.43
   },
   "us_by_seed": {
    "hk": [
-    55.87,
-    55.17,
-    55.91
-   ],
-   "rocm_attn": [
-    1232.5,
-    1238.01,
-    1240.48
+    59.18,
+    57.33
    ],
    "triton": [
-    802.95,
-    802.2,
-    801.89
+    800.49,
+    798.33
+   ],
+   "rocm_attn": [
+    1237.34,
+    1241.43
    ]
   },
   "tflops": {
-   "hk": 19.3,
-   "rocm_attn": 0.87,
-   "triton": 1.34
+   "hk": 18.22,
+   "triton": 1.35,
+   "rocm_attn": 0.87
   },
   "hk_calls": {
-   "hk": 1025,
+   "hk": 641,
    "fallback": 0,
    "decode": 0,
    "declined": 0,
    "split": 0,
-   "kvsplit": 1025
+   "kvsplit": 641
   },
   "best_rival": "triton",
-  "hk_speedup": 14.359
+  "hk_speedup": 13.526
  },
  {
   "kind": "prefill",
@@ -3946,42 +3907,39 @@
    "hk": 0.00042
   },
   "us": {
-   "hk": 92.43,
-   "rocm_attn": 1308.75,
-   "triton": 815.6
+   "hk": 92.8,
+   "triton": 814.59,
+   "rocm_attn": 1309.12
   },
   "us_by_seed": {
    "hk": [
-    92.4,
-    92.46,
-    92.43
-   ],
-   "rocm_attn": [
-    1313.0,
-    1307.36,
-    1308.75
+    92.2,
+    92.8
    ],
    "triton": [
-    815.56,
-    816.19,
-    815.6
+    814.59,
+    813.34
+   ],
+   "rocm_attn": [
+    1308.99,
+    1309.12
    ]
   },
   "tflops": {
-   "hk": 23.42,
-   "rocm_attn": 1.65,
-   "triton": 2.65
+   "hk": 23.32,
+   "triton": 2.66,
+   "rocm_attn": 1.65
   },
   "hk_calls": {
-   "hk": 1025,
+   "hk": 641,
    "fallback": 0,
    "decode": 0,
    "declined": 0,
    "split": 0,
-   "kvsplit": 1025
+   "kvsplit": 641
   },
   "best_rival": "triton",
-  "hk_speedup": 8.824
+  "hk_speedup": 8.778
  },
  {
   "kind": "prefill",
@@ -4234,42 +4192,39 @@
    "hk": 0.00019
   },
   "us": {
-   "hk": 90.46,
-   "rocm_attn": 4016.1,
-   "triton": 3113.34
+   "hk": 90.06,
+   "triton": 3108.4,
+   "rocm_attn": 4006.58
   },
   "us_by_seed": {
    "hk": [
-    90.64,
-    90.46,
-    90.41
-   ],
-   "rocm_attn": [
-    4016.1,
-    4026.08,
-    3964.27
+    90.06,
+    90.05
    ],
    "triton": [
-    3113.13,
-    3113.34,
-    3113.5
+    3107.39,
+    3108.4
+   ],
+   "rocm_attn": [
+    3963.2,
+    4006.58
    ]
   },
   "tflops": {
-   "hk": 23.75,
-   "rocm_attn": 0.53,
-   "triton": 0.69
+   "hk": 23.86,
+   "triton": 0.69,
+   "rocm_attn": 0.54
   },
   "hk_calls": {
-   "hk": 977,
+   "hk": 611,
    "fallback": 0,
    "decode": 0,
    "declined": 0,
    "split": 0,
-   "kvsplit": 977
+   "kvsplit": 611
   },
   "best_rival": "triton",
-  "hk_speedup": 34.415
+  "hk_speedup": 34.516
  },
  {
   "kind": "prefill",
@@ -4279,45 +4234,42 @@
   "err": {
    "triton": 0.00017,
    "rocm_attn": 0.00017,
-   "hk": 0.0002
+   "hk": 0.00019
   },
   "us": {
-   "hk": 143.79,
-   "rocm_attn": 4013.92,
-   "triton": 3123.63
+   "hk": 140.79,
+   "triton": 3124.43,
+   "rocm_attn": 4013.55
   },
   "us_by_seed": {
    "hk": [
-    143.82,
-    143.74,
-    143.79
-   ],
-   "rocm_attn": [
-    4007.95,
-    4016.31,
-    4013.92
+    140.75,
+    140.79
    ],
    "triton": [
-    3123.63,
-    3124.72,
-    3123.12
+    3111.78,
+    3124.43
+   ],
+   "rocm_attn": [
+    4004.1,
+    4013.55
    ]
   },
   "tflops": {
-   "hk": 29.9,
-   "rocm_attn": 1.07,
-   "triton": 1.38
+   "hk": 30.54,
+   "triton": 1.38,
+   "rocm_attn": 1.07
   },
   "hk_calls": {
-   "hk": 977,
+   "hk": 611,
    "fallback": 0,
    "decode": 0,
    "declined": 0,
    "split": 0,
-   "kvsplit": 977
+   "kvsplit": 611
   },
   "best_rival": "triton",
-  "hk_speedup": 21.724
+  "hk_speedup": 22.192
  },
  {
   "kind": "prefill",
@@ -4327,45 +4279,42 @@
   "err": {
    "triton": 0.00017,
    "rocm_attn": 0.00017,
-   "hk": 0.0002
+   "hk": 0.00019
   },
   "us": {
-   "hk": 268.34,
-   "rocm_attn": 4390.36,
-   "triton": 3157.05
+   "hk": 223.91,
+   "rocm_attn": 4398.9,
+   "triton": 3150.25
   },
   "us_by_seed": {
    "hk": [
-    268.34,
-    268.34,
-    268.34
+    223.91,
+    223.09
    ],
    "rocm_attn": [
-    4402.11,
-    4390.36,
-    4386.08
+    4381.28,
+    4398.9
    ],
    "triton": [
-    3157.05,
-    3155.71,
-    3159.15
+    3147.54,
+    3150.25
    ]
   },
   "tflops": {
-   "hk": 32.08,
+   "hk": 38.44,
    "rocm_attn": 1.96,
    "triton": 2.73
   },
   "hk_calls": {
-   "hk": 977,
+   "hk": 611,
    "fallback": 0,
    "decode": 0,
    "declined": 0,
    "split": 0,
-   "kvsplit": 977
+   "kvsplit": 611
   },
   "best_rival": "triton",
-  "hk_speedup": 11.765
+  "hk_speedup": 14.069
  },
  {
   "kind": "prefill",
@@ -4378,42 +4327,39 @@
    "hk": 0.00023
   },
   "us": {
-   "hk": 401.1,
-   "rocm_attn": 5331.63,
-   "triton": 3428.83
+   "hk": 399.68,
+   "triton": 3431.3,
+   "rocm_attn": 5340.74
   },
   "us_by_seed": {
    "hk": [
-    400.37,
-    401.31,
-    401.1
-   ],
-   "rocm_attn": [
-    5331.63,
-    5331.55,
-    5334.14
+    399.21,
+    399.68
    ],
    "triton": [
-    3445.94,
-    3428.83,
-    3424.3
+    3422.79,
+    3431.3
+   ],
+   "rocm_attn": [
+    5340.74,
+    5338.56
    ]
   },
   "tflops": {
-   "hk": 43.0,
-   "rocm_attn": 3.23,
-   "triton": 5.03
+   "hk": 43.15,
+   "triton": 5.03,
+   "rocm_attn": 3.23
   },
   "hk_calls": {
-   "hk": 977,
+   "hk": 611,
    "fallback": 0,
    "decode": 0,
    "declined": 0,
    "split": 0,
-   "kvsplit": 977
+   "kvsplit": 611
   },
   "best_rival": "triton",
-  "hk_speedup": 8.549
+  "hk_speedup": 8.585
  },
  {
   "kind": "prefill",
@@ -4618,42 +4564,39 @@
    "hk": 0.00015
   },
   "us": {
-   "hk": 150.1,
-   "rocm_attn": 7701.39,
-   "triton": 6199.85
+   "hk": 151.16,
+   "triton": 6191.66,
+   "rocm_attn": 7691.16
   },
   "us_by_seed": {
    "hk": [
-    150.27,
-    150.1,
-    149.65
-   ],
-   "rocm_attn": [
-    7705.94,
-    7701.39,
-    7650.72
+    151.16,
+    151.01
    ],
    "triton": [
-    6199.85,
-    6199.94,
-    6197.09
+    6187.32,
+    6191.66
+   ],
+   "rocm_attn": [
+    7636.73,
+    7691.16
    ]
   },
   "tflops": {
-   "hk": 28.62,
-   "rocm_attn": 0.56,
-   "triton": 0.69
+   "hk": 28.42,
+   "triton": 0.69,
+   "rocm_attn": 0.56
   },
   "hk_calls": {
-   "hk": 513,
+   "hk": 321,
    "fallback": 0,
    "decode": 0,
    "declined": 0,
    "split": 0,
-   "kvsplit": 513
+   "kvsplit": 321
   },
   "best_rival": "triton",
-  "hk_speedup": 41.304
+  "hk_speedup": 40.96
  },
  {
   "kind": "prefill",
@@ -4663,45 +4606,42 @@
   "err": {
    "triton": 0.00012,
    "rocm_attn": 0.00012,
-   "hk": 0.00014
+   "hk": 0.00015
   },
   "us": {
-   "hk": 260.59,
-   "rocm_attn": 7652.13,
-   "triton": 6221.82
+   "hk": 234.88,
+   "rocm_attn": 7762.35,
+   "triton": 6191.04
   },
   "us_by_seed": {
    "hk": [
-    260.74,
-    260.14,
-    260.59
+    233.93,
+    234.88
    ],
    "rocm_attn": [
-    7652.13,
-    7677.37,
-    7647.31
+    7762.35,
+    7727.19
    ],
    "triton": [
-    6215.94,
-    6221.82,
-    6222.57
+    6191.04,
+    6184.45
    ]
   },
   "tflops": {
-   "hk": 32.98,
-   "rocm_attn": 1.12,
-   "triton": 1.38
+   "hk": 36.59,
+   "rocm_attn": 1.11,
+   "triton": 1.39
   },
   "hk_calls": {
-   "hk": 513,
+   "hk": 321,
    "fallback": 0,
    "decode": 0,
    "declined": 0,
    "split": 0,
-   "kvsplit": 513
+   "kvsplit": 321
   },
   "best_rival": "triton",
-  "hk_speedup": 23.876
+  "hk_speedup": 26.359
  },
  {
   "kind": "prefill",
@@ -4711,45 +4651,42 @@
   "err": {
    "triton": 0.00015,
    "rocm_attn": 0.00015,
-   "hk": 0.00015
+   "hk": 0.00016
   },
   "us": {
-   "hk": 500.52,
-   "rocm_attn": 8652.54,
-   "triton": 6281.76
+   "hk": 431.63,
+   "rocm_attn": 8644.75,
+   "triton": 6272.96
   },
   "us_by_seed": {
    "hk": [
-    500.46,
-    500.52,
-    500.58
+    426.66,
+    431.63
    ],
    "rocm_attn": [
-    8652.54,
-    8636.55,
-    8676.95
+    8584.85,
+    8644.75
    ],
    "triton": [
-    6280.87,
-    6281.76,
-    6282.11
+    6269.69,
+    6272.96
    ]
   },
   "tflops": {
-   "hk": 34.36,
+   "hk": 39.84,
    "rocm_attn": 1.99,
    "triton": 2.74
   },
   "hk_calls": {
-   "hk": 513,
+   "hk": 321,
    "fallback": 0,
    "decode": 0,
    "declined": 0,
    "split": 0,
-   "kvsplit": 513
+   "kvsplit": 321
   },
   "best_rival": "triton",
-  "hk_speedup": 12.55
+  "hk_speedup": 14.533
  },
  {
   "kind": "prefill",
@@ -4762,42 +4699,39 @@
    "hk": 0.00016
   },
   "us": {
-   "hk": 760.52,
-   "rocm_attn": 10383.22,
-   "triton": 6792.99
+   "hk": 760.42,
+   "triton": 6791.32,
+   "rocm_attn": 10416.47
   },
   "us_by_seed": {
    "hk": [
-    759.26,
-    763.24,
-    760.52
-   ],
-   "rocm_attn": [
-    10383.22,
-    10380.0,
-    10406.63
+    757.18,
+    760.42
    ],
    "triton": [
-    6786.98,
-    6804.25,
-    6792.99
+    6791.32,
+    6779.99
+   ],
+   "rocm_attn": [
+    10404.6,
+    10416.47
    ]
   },
   "tflops": {
    "hk": 45.27,
-   "rocm_attn": 3.32,
-   "triton": 5.07
+   "triton": 5.07,
+   "rocm_attn": 3.31
   },
   "hk_calls": {
-   "hk": 513,
+   "hk": 321,
    "fallback": 0,
    "decode": 0,
    "declined": 0,
    "split": 0,
-   "kvsplit": 513
+   "kvsplit": 321
   },
   "best_rival": "triton",
-  "hk_speedup": 8.932
+  "hk_speedup": 8.931
  },
  {
   "kind": "prefill",
@@ -6871,45 +6805,42 @@
   "err": {
    "triton": 0.00014,
    "rocm_attn": 0.00015,
-   "hk": 0.00014
+   "hk": 0.00015
   },
   "us": {
-   "triton": 2409.08,
-   "hk": 633.61,
-   "rocm_attn": 10502.82
+   "triton": 2393.49,
+   "rocm_attn": 10501.73,
+   "hk": 628.84
   },
   "us_by_seed": {
    "triton": [
-    2409.82,
-    2406.5,
-    2409.08
-   ],
-   "hk": [
-    633.61,
-    633.7,
-    632.7
+    2391.14,
+    2393.49
    ],
    "rocm_attn": [
-    10560.3,
-    10479.69,
-    10502.82
+    10451.33,
+    10501.73
+   ],
+   "hk": [
+    628.84,
+    622.66
    ]
   },
   "tflops": {
-   "triton": 2.56,
-   "hk": 9.75,
-   "rocm_attn": 0.59
+   "triton": 2.58,
+   "rocm_attn": 0.59,
+   "hk": 9.82
   },
   "hk_calls": {
-   "hk": 65,
+   "hk": 41,
    "fallback": 0,
    "decode": 0,
    "declined": 0,
-   "split": 65,
-   "kvsplit": 65
+   "split": 41,
+   "kvsplit": 41
   },
   "best_rival": "triton",
-  "hk_speedup": 3.802
+  "hk_speedup": 3.806
  },
  {
   "kind": "prefill",
@@ -6967,45 +6898,42 @@
   "err": {
    "triton": 0.00014,
    "rocm_attn": 0.00014,
-   "hk": 0.00014
+   "hk": 0.00015
   },
   "us": {
-   "triton": 2768.68,
-   "hk": 1118.48,
-   "rocm_attn": 11452.68
+   "triton": 2764.9,
+   "rocm_attn": 11395.32,
+   "hk": 1223.98
   },
   "us_by_seed": {
    "triton": [
-    2768.46,
-    2772.01,
-    2768.68
-   ],
-   "hk": [
-    1118.48,
-    1118.29,
-    1129.89
+    2763.91,
+    2764.9
    ],
    "rocm_attn": [
-    11481.51,
-    11452.68,
-    11396.01
+    11395.32,
+    11380.24
+   ],
+   "hk": [
+    1213.88,
+    1223.98
    ]
   },
   "tflops": {
    "triton": 3.01,
-   "hk": 7.44,
-   "rocm_attn": 0.73
+   "rocm_attn": 0.73,
+   "hk": 6.8
   },
   "hk_calls": {
-   "hk": 33,
+   "hk": 21,
    "fallback": 0,
    "decode": 0,
    "declined": 0,
-   "split": 33,
-   "kvsplit": 33
+   "split": 21,
+   "kvsplit": 21
   },
   "best_rival": "triton",
-  "hk_speedup": 2.475
+  "hk_speedup": 2.259
  },
  {
   "kind": "prefill",
@@ -7306,42 +7234,39 @@
    "hk": 0.00027
   },
   "us": {
-   "triton": 2369.22,
-   "hk": 409.8,
-   "rocm_attn": 10330.15
+   "rocm_attn": 10295.8,
+   "triton": 2373.34,
+   "hk": 408.89
   },
   "us_by_seed": {
+   "rocm_attn": [
+    10215.06,
+    10295.8
+   ],
    "triton": [
-    2369.22,
-    2366.59,
-    2369.46
+    2373.34,
+    2371.39
    ],
    "hk": [
-    410.2,
-    409.8,
-    408.89
-   ],
-   "rocm_attn": [
-    10330.15,
-    10263.61,
-    10349.49
+    408.89,
+    408.74
    ]
   },
   "tflops": {
-   "triton": 3.83,
-   "hk": 22.12,
-   "rocm_attn": 0.88
+   "rocm_attn": 0.88,
+   "triton": 3.82,
+   "hk": 22.17
   },
   "hk_calls": {
-   "hk": 193,
+   "hk": 121,
    "fallback": 0,
    "decode": 0,
    "declined": 0,
-   "split": 193,
-   "kvsplit": 193
+   "split": 121,
+   "kvsplit": 121
   },
   "best_rival": "triton",
-  "hk_speedup": 5.781
+  "hk_speedup": 5.804
  },
  {
   "kind": "prefill",
@@ -7834,42 +7759,39 @@
    "hk": 0.00015
   },
   "us": {
-   "triton": 2755.17,
-   "hk": 841.6,
-   "rocm_attn": 10533.33
+   "rocm_attn": 10433.22,
+   "triton": 2759.8,
+   "hk": 841.46
   },
   "us_by_seed": {
+   "rocm_attn": [
+    10423.15,
+    10433.22
+   ],
    "triton": [
-    2758.33,
-    2753.92,
-    2755.17
+    2756.66,
+    2759.8
    ],
    "hk": [
-    841.76,
-    841.5,
-    841.6
-   ],
-   "rocm_attn": [
-    10416.51,
-    10533.33,
-    10588.62
+    839.85,
+    841.46
    ]
   },
   "tflops": {
-   "triton": 6.92,
-   "hk": 22.67,
-   "rocm_attn": 1.81
+   "rocm_attn": 1.83,
+   "triton": 6.91,
+   "hk": 22.67
   },
   "hk_calls": {
-   "hk": 65,
+   "hk": 41,
    "fallback": 0,
    "decode": 0,
    "declined": 0,
-   "split": 65,
-   "kvsplit": 65
+   "split": 41,
+   "kvsplit": 41
   },
   "best_rival": "triton",
-  "hk_speedup": 3.274
+  "hk_speedup": 3.28
  },
  {
   "kind": "prefill",
@@ -12634,42 +12556,39 @@
    "hk": 0.00015
   },
   "us": {
-   "rocm_attn": 12321.23,
-   "triton": 6749.67,
-   "hk": 650.22
+   "hk": 650.22,
+   "triton": 6786.7,
+   "rocm_attn": 12426.16
   },
   "us_by_seed": {
-   "rocm_attn": [
-    12372.28,
-    12272.11,
-    12321.23
-   ],
-   "triton": [
-    6749.67,
-    6806.79,
-    6743.86
-   ],
    "hk": [
     650.22,
-    651.62,
-    648.11
+    645.48
+   ],
+   "triton": [
+    6786.7,
+    6753.53
+   ],
+   "rocm_attn": [
+    12426.16,
+    12391.66
    ]
   },
   "tflops": {
-   "rocm_attn": 0.5,
+   "hk": 9.5,
    "triton": 0.91,
-   "hk": 9.5
+   "rocm_attn": 0.5
   },
   "hk_calls": {
-   "hk": 65,
+   "hk": 41,
    "fallback": 0,
    "decode": 0,
    "declined": 0,
-   "split": 65,
-   "kvsplit": 65
+   "split": 41,
+   "kvsplit": 41
   },
   "best_rival": "triton",
-  "hk_speedup": 10.381
+  "hk_speedup": 10.438
  },
  {
   "kind": "prefill",
@@ -12730,42 +12649,39 @@
    "hk": 0.00016
   },
   "us": {
-   "rocm_attn": 13590.19,
-   "triton": 6905.27,
-   "hk": 1138.24
+   "hk": 1147.44,
+   "triton": 6949.19,
+   "rocm_attn": 13783.44
   },
   "us_by_seed": {
-   "rocm_attn": [
-    13590.19,
-    13628.28,
-    13575.02
+   "hk": [
+    1139.59,
+    1147.44
    ],
    "triton": [
-    6888.98,
-    6905.27,
-    6935.32
+    6945.19,
+    6949.19
    ],
-   "hk": [
-    1138.24,
-    1137.53,
-    1151.3
+   "rocm_attn": [
+    13783.44,
+    13728.73
    ]
   },
   "tflops": {
-   "rocm_attn": 0.61,
-   "triton": 1.21,
-   "hk": 7.31
+   "hk": 7.25,
+   "triton": 1.2,
+   "rocm_attn": 0.6
   },
   "hk_calls": {
-   "hk": 33,
+   "hk": 21,
    "fallback": 0,
    "decode": 0,
    "declined": 0,
-   "split": 33,
-   "kvsplit": 33
+   "split": 21,
+   "kvsplit": 21
   },
   "best_rival": "triton",
-  "hk_speedup": 6.067
+  "hk_speedup": 6.056
  },
  {
   "kind": "prefill",
@@ -13066,42 +12982,39 @@
    "hk": 0.00025
   },
   "us": {
-   "rocm_attn": 9033.15,
-   "triton": 6223.02,
-   "hk": 456.75
+   "hk": 532.91,
+   "rocm_attn": 9119.3,
+   "triton": 6223.74
   },
   "us_by_seed": {
+   "hk": [
+    532.48,
+    532.91
+   ],
    "rocm_attn": [
-    9048.29,
-    9033.15,
-    8986.48
+    9119.3,
+    9023.05
    ],
    "triton": [
-    6223.02,
-    6218.1,
-    6226.98
-   ],
-   "hk": [
-    455.89,
-    456.75,
-    457.48
+    6223.74,
+    6219.91
    ]
   },
   "tflops": {
-   "rocm_attn": 1.0,
-   "triton": 1.46,
-   "hk": 19.84
+   "hk": 17.01,
+   "rocm_attn": 0.99,
+   "triton": 1.46
   },
   "hk_calls": {
-   "hk": 193,
+   "hk": 121,
    "fallback": 0,
    "decode": 0,
    "declined": 0,
-   "split": 193,
-   "kvsplit": 193
+   "split": 121,
+   "kvsplit": 121
   },
   "best_rival": "triton",
-  "hk_speedup": 13.625
+  "hk_speedup": 11.679
  },
  {
   "kind": "prefill",
@@ -13591,45 +13504,42 @@
   "err": {
    "triton": 0.00015,
    "rocm_attn": 0.00015,
-   "hk": 0.00016
+   "hk": 0.00015
   },
   "us": {
-   "rocm_attn": 14070.11,
-   "triton": 6866.56,
-   "hk": 1010.33
+   "hk": 1212.72,
+   "rocm_attn": 14180.89,
+   "triton": 6891.06
   },
   "us_by_seed": {
+   "hk": [
+    1212.72,
+    1203.69
+   ],
    "rocm_attn": [
-    13993.89,
-    14161.42,
-    14070.11
+    14117.96,
+    14180.89
    ],
    "triton": [
-    6866.56,
-    6847.44,
-    6896.69
-   ],
-   "hk": [
-    1011.68,
-    1008.82,
-    1010.33
+    6891.06,
+    6878.68
    ]
   },
   "tflops": {
-   "rocm_attn": 1.36,
-   "triton": 2.78,
-   "hk": 18.88
+   "hk": 15.73,
+   "rocm_attn": 1.35,
+   "triton": 2.77
   },
   "hk_calls": {
-   "hk": 65,
+   "hk": 41,
    "fallback": 0,
    "decode": 0,
    "declined": 0,
-   "split": 65,
-   "kvsplit": 65
+   "split": 41,
+   "kvsplit": 41
   },
   "best_rival": "triton",
-  "hk_speedup": 6.796
+  "hk_speedup": 5.682
  },
  {
   "kind": "prefill",
@@ -14782,5 +14692,995 @@
   },
   "best_rival": "triton",
   "hk_speedup": 0.996
+ },
+ {
+  "kind": "prefill",
+  "model": "minicpm5",
+  "shape": "65536:16",
+  "layers": 16,
+  "err": {
+   "triton": 9e-05,
+   "rocm_attn": 9e-05,
+   "hk": 9e-05
+  },
+  "us": {
+   "triton": 4654.12,
+   "rocm_attn": 17874.34,
+   "hk": 212.88
+  },
+  "us_by_seed": {
+   "triton": [
+    4648.68,
+    4654.12
+   ],
+   "rocm_attn": [
+    17874.34,
+    17800.39
+   ],
+   "hk": [
+    210.71,
+    212.88
+   ]
+  },
+  "tflops": {
+   "triton": 1.85,
+   "rocm_attn": 0.48,
+   "hk": 40.36
+  },
+  "hk_calls": {
+   "hk": 161,
+   "fallback": 0,
+   "decode": 0,
+   "declined": 0,
+   "split": 0,
+   "kvsplit": 161
+  },
+  "best_rival": "triton",
+  "hk_speedup": 21.862
+ },
+ {
+  "kind": "prefill",
+  "model": "minicpm5",
+  "shape": "65536:32",
+  "layers": 16,
+  "err": {
+   "triton": 8e-05,
+   "rocm_attn": 8e-05,
+   "hk": 0.0001
+  },
+  "us": {
+   "rocm_attn": 17517.93,
+   "triton": 4702.21,
+   "hk": 363.31
+  },
+  "us_by_seed": {
+   "rocm_attn": [
+    17452.04,
+    17517.93
+   ],
+   "triton": [
+    4702.21,
+    4699.62
+   ],
+   "hk": [
+    363.31,
+    362.01
+   ]
+  },
+  "tflops": {
+   "rocm_attn": 0.98,
+   "triton": 3.65,
+   "hk": 47.3
+  },
+  "hk_calls": {
+   "hk": 161,
+   "fallback": 0,
+   "decode": 0,
+   "declined": 0,
+   "split": 0,
+   "kvsplit": 161
+  },
+  "best_rival": "triton",
+  "hk_speedup": 12.943
+ },
+ {
+  "kind": "prefill",
+  "model": "minicpm5",
+  "shape": "65536:64",
+  "layers": 16,
+  "err": {
+   "triton": 9e-05,
+   "rocm_attn": 9e-05,
+   "hk": 0.0001
+  },
+  "us": {
+   "rocm_attn": 17561.35,
+   "triton": 4762.54,
+   "hk": 680.4
+  },
+  "us_by_seed": {
+   "rocm_attn": [
+    17561.35,
+    17512.93
+   ],
+   "triton": [
+    4760.8,
+    4762.54
+   ],
+   "hk": [
+    679.83,
+    680.4
+   ]
+  },
+  "tflops": {
+   "rocm_attn": 1.96,
+   "triton": 7.22,
+   "hk": 50.52
+  },
+  "hk_calls": {
+   "hk": 161,
+   "fallback": 0,
+   "decode": 0,
+   "declined": 0,
+   "split": 0,
+   "kvsplit": 161
+  },
+  "best_rival": "triton",
+  "hk_speedup": 7.0
+ },
+ {
+  "kind": "prefill",
+  "model": "minicpm5",
+  "shape": "65536:128",
+  "layers": 16,
+  "err": {
+   "triton": 9e-05,
+   "rocm_attn": 9e-05,
+   "hk": 0.00012
+  },
+  "us": {
+   "rocm_attn": 17488.97,
+   "triton": 5168.59,
+   "hk": 1315.89
+  },
+  "us_by_seed": {
+   "rocm_attn": [
+    17488.97,
+    17484.21
+   ],
+   "triton": [
+    5168.59,
+    5162.58
+   ],
+   "hk": [
+    1305.57,
+    1315.89
+   ]
+  },
+  "tflops": {
+   "rocm_attn": 3.93,
+   "triton": 13.31,
+   "hk": 52.27
+  },
+  "hk_calls": {
+   "hk": 161,
+   "fallback": 0,
+   "decode": 0,
+   "declined": 0,
+   "split": 0,
+   "kvsplit": 161
+  },
+  "best_rival": "triton",
+  "hk_speedup": 3.928
+ },
+ {
+  "kind": "prefill",
+  "model": "minicpm5",
+  "shape": "32768:32+32768:32",
+  "layers": 16,
+  "err": {
+   "triton": 0.00014,
+   "rocm_attn": 0.00014,
+   "hk": 0.00016
+  },
+  "us": {
+   "rocm_attn": 10739.07,
+   "triton": 2402.42,
+   "hk": 371.23
+  },
+  "us_by_seed": {
+   "rocm_attn": [
+    10731.1,
+    10739.07
+   ],
+   "triton": [
+    2402.07,
+    2402.42
+   ],
+   "hk": [
+    371.23,
+    370.67
+   ]
+  },
+  "tflops": {
+   "rocm_attn": 1.6,
+   "triton": 7.15,
+   "hk": 46.3
+  },
+  "hk_calls": {
+   "hk": 161,
+   "fallback": 0,
+   "decode": 0,
+   "declined": 0,
+   "split": 0,
+   "kvsplit": 161
+  },
+  "best_rival": "triton",
+  "hk_speedup": 6.472
+ },
+ {
+  "kind": "prefill",
+  "model": "minicpm5",
+  "shape": "65536:16+65536:16+65536:16+65536:16",
+  "layers": 4,
+  "err": {
+   "triton": 9e-05,
+   "rocm_attn": 9e-05,
+   "hk": 0.0001
+  },
+  "us": {
+   "rocm_attn": 23170.39,
+   "triton": 4789.48,
+   "hk": 688.23
+  },
+  "us_by_seed": {
+   "rocm_attn": [
+    23115.21,
+    23170.39
+   ],
+   "triton": [
+    4787.94,
+    4789.48
+   ],
+   "hk": [
+    686.69,
+    688.23
+   ]
+  },
+  "tflops": {
+   "rocm_attn": 1.48,
+   "triton": 7.17,
+   "hk": 49.93
+  },
+  "hk_calls": {
+   "hk": 41,
+   "fallback": 0,
+   "decode": 0,
+   "declined": 0,
+   "split": 0,
+   "kvsplit": 41
+  },
+  "best_rival": "triton",
+  "hk_speedup": 6.959
+ },
+ {
+  "kind": "prefill",
+  "model": "minicpm5",
+  "shape": "16384:16+8192:1+8192:1+8192:1",
+  "layers": 26,
+  "err": {
+   "triton": 0.00019,
+   "rocm_attn": 0.00024,
+   "hk": 0.00019
+  },
+  "us": {
+   "triton": 1185.1,
+   "rocm_attn": 4827.82,
+   "hk": 314.69
+  },
+  "us_by_seed": {
+   "triton": [
+    1175.37,
+    1185.1
+   ],
+   "rocm_attn": [
+    4805.57,
+    4827.82
+   ],
+   "hk": [
+    314.69,
+    311.15
+   ]
+  },
+  "tflops": {
+   "triton": 1.98,
+   "rocm_attn": 0.49,
+   "hk": 7.47
+  },
+  "hk_calls": {
+   "hk": 261,
+   "fallback": 0,
+   "decode": 0,
+   "declined": 0,
+   "split": 261,
+   "kvsplit": 261
+  },
+  "best_rival": "triton",
+  "hk_speedup": 3.766
+ },
+ {
+  "kind": "prefill",
+  "model": "minicpm5",
+  "shape": "65536:16+8192:1+8192:1+8192:1+8192:1+8192:1+8192:1+8192:1+8192:1+8192:1+8192:1+8192:1+8192:1+8192:1+8192:1+8192:1",
+  "layers": 6,
+  "err": {
+   "triton": 0.00027,
+   "rocm_attn": 0.0003,
+   "hk": 0.00025
+  },
+  "us": {
+   "triton": 4676.03,
+   "rocm_attn": 21680.81,
+   "hk": 665.99
+  },
+  "us_by_seed": {
+   "triton": [
+    4673.28,
+    4676.03
+   ],
+   "rocm_attn": [
+    21680.81,
+    21601.5
+   ],
+   "hk": [
+    664.75,
+    665.99
+   ]
+  },
+  "tflops": {
+   "triton": 2.05,
+   "rocm_attn": 0.44,
+   "hk": 14.41
+  },
+  "hk_calls": {
+   "hk": 61,
+   "fallback": 0,
+   "decode": 0,
+   "declined": 0,
+   "split": 61,
+   "kvsplit": 61
+  },
+  "best_rival": "triton",
+  "hk_speedup": 7.021
+ },
+ {
+  "kind": "prefill",
+  "model": "minicpm5",
+  "shape": "16384:64+8192:1+8192:1+8192:1+8192:1+8192:1+8192:1+8192:1+8192:1+8192:1+8192:1+8192:1+8192:1+8192:1+8192:1+8192:1",
+  "layers": 8,
+  "err": {
+   "triton": 0.00025,
+   "rocm_attn": 0.00033,
+   "hk": 0.00029
+  },
+  "us": {
+   "rocm_attn": 5783.72,
+   "triton": 1271.79,
+   "hk": 573.17
+  },
+  "us_by_seed": {
+   "rocm_attn": [
+    5783.72,
+    5733.81
+   ],
+   "triton": [
+    1271.27,
+    1271.79
+   ],
+   "hk": [
+    571.63,
+    573.17
+   ]
+  },
+  "tflops": {
+   "rocm_attn": 1.66,
+   "triton": 7.56,
+   "hk": 16.77
+  },
+  "hk_calls": {
+   "hk": 81,
+   "fallback": 0,
+   "decode": 0,
+   "declined": 0,
+   "split": 81,
+   "kvsplit": 81
+  },
+  "best_rival": "triton",
+  "hk_speedup": 2.219
+ },
+ {
+  "kind": "prefill",
+  "model": "minicpm5",
+  "shape": "65536:32+32768:1+32768:1+32768:1",
+  "layers": 7,
+  "err": {
+   "triton": 9e-05,
+   "rocm_attn": 0.00011,
+   "hk": 0.0001
+  },
+  "us": {
+   "rocm_attn": 18799.53,
+   "triton": 4721.98,
+   "hk": 676.9
+  },
+  "us_by_seed": {
+   "rocm_attn": [
+    18576.28,
+    18799.53
+   ],
+   "triton": [
+    4721.98,
+    4718.63
+   ],
+   "hk": [
+    676.9,
+    676.69
+   ]
+  },
+  "tflops": {
+   "rocm_attn": 0.96,
+   "triton": 3.81,
+   "hk": 26.58
+  },
+  "hk_calls": {
+   "hk": 71,
+   "fallback": 0,
+   "decode": 0,
+   "declined": 0,
+   "split": 71,
+   "kvsplit": 71
+  },
+  "best_rival": "triton",
+  "hk_speedup": 6.976
+ },
+ {
+  "kind": "prefill",
+  "model": "minicpm5",
+  "shape": "65536:64+32768:1+32768:1+32768:1+32768:1+32768:1+32768:1+32768:1+32768:1+32768:1+32768:1+32768:1+32768:1+32768:1+32768:1+32768:1",
+  "layers": 2,
+  "err": {
+   "triton": 0.00013,
+   "rocm_attn": 0.00015,
+   "hk": 0.00013
+  },
+  "us": {
+   "rocm_attn": 22332.12,
+   "triton": 5119.95,
+   "hk": 1654.64
+  },
+  "us_by_seed": {
+   "rocm_attn": [
+    22301.94,
+    22332.12
+   ],
+   "triton": [
+    5119.95,
+    5088.03
+   ],
+   "hk": [
+    1651.51,
+    1654.64
+   ]
+  },
+  "tflops": {
+   "rocm_attn": 1.72,
+   "triton": 7.5,
+   "hk": 23.21
+  },
+  "hk_calls": {
+   "hk": 21,
+   "fallback": 0,
+   "decode": 0,
+   "declined": 0,
+   "split": 21,
+   "kvsplit": 21
+  },
+  "best_rival": "triton",
+  "hk_speedup": 3.094
+ },
+ {
+  "kind": "prefill",
+  "model": "minicpm-v-tp2",
+  "shape": "65536:16",
+  "layers": 16,
+  "err": {
+   "triton": 8e-05,
+   "rocm_attn": 8e-05,
+   "hk": 0.00011
+  },
+  "us": {
+   "hk": 268.29,
+   "triton": 12346.77,
+   "rocm_attn": 15161.82
+  },
+  "us_by_seed": {
+   "hk": [
+    268.29,
+    268.2
+   ],
+   "triton": [
+    12339.67,
+    12346.77
+   ],
+   "rocm_attn": [
+    15107.48,
+    15161.82
+   ]
+  },
+  "tflops": {
+   "hk": 32.02,
+   "triton": 0.7,
+   "rocm_attn": 0.57
+  },
+  "hk_calls": {
+   "hk": 161,
+   "fallback": 0,
+   "decode": 0,
+   "declined": 0,
+   "split": 0,
+   "kvsplit": 161
+  },
+  "best_rival": "triton",
+  "hk_speedup": 46.02
+ },
+ {
+  "kind": "prefill",
+  "model": "minicpm-v-tp2",
+  "shape": "65536:32",
+  "layers": 16,
+  "err": {
+   "triton": 9e-05,
+   "rocm_attn": 9e-05,
+   "hk": 9e-05
+  },
+  "us": {
+   "hk": 415.08,
+   "rocm_attn": 15184.75,
+   "triton": 12388.92
+  },
+  "us_by_seed": {
+   "hk": [
+    410.7,
+    415.08
+   ],
+   "rocm_attn": [
+    15040.45,
+    15184.75
+   ],
+   "triton": [
+    12388.92,
+    12364.21
+   ]
+  },
+  "tflops": {
+   "hk": 41.4,
+   "rocm_attn": 1.13,
+   "triton": 1.39
+  },
+  "hk_calls": {
+   "hk": 161,
+   "fallback": 0,
+   "decode": 0,
+   "declined": 0,
+   "split": 0,
+   "kvsplit": 161
+  },
+  "best_rival": "triton",
+  "hk_speedup": 29.847
+ },
+ {
+  "kind": "prefill",
+  "model": "minicpm-v-tp2",
+  "shape": "65536:64",
+  "layers": 16,
+  "err": {
+   "triton": 9e-05,
+   "rocm_attn": 9e-05,
+   "hk": 0.0001
+  },
+  "us": {
+   "hk": 806.08,
+   "rocm_attn": 17357.43,
+   "triton": 12516.89
+  },
+  "us_by_seed": {
+   "hk": [
+    806.08,
+    800.39
+   ],
+   "rocm_attn": [
+    17357.43,
+    17152.51
+   ],
+   "triton": [
+    12516.89,
+    12515.76
+   ]
+  },
+  "tflops": {
+   "hk": 42.65,
+   "rocm_attn": 1.98,
+   "triton": 2.75
+  },
+  "hk_calls": {
+   "hk": 161,
+   "fallback": 0,
+   "decode": 0,
+   "declined": 0,
+   "split": 0,
+   "kvsplit": 161
+  },
+  "best_rival": "triton",
+  "hk_speedup": 15.528
+ },
+ {
+  "kind": "prefill",
+  "model": "minicpm-v-tp2",
+  "shape": "65536:128",
+  "layers": 16,
+  "err": {
+   "triton": 0.0001,
+   "rocm_attn": 0.0001,
+   "hk": 0.0001
+  },
+  "us": {
+   "hk": 1458.71,
+   "triton": 13574.94,
+   "rocm_attn": 20614.28
+  },
+  "us_by_seed": {
+   "hk": [
+    1452.57,
+    1458.71
+   ],
+   "triton": [
+    13574.94,
+    13503.65
+   ],
+   "rocm_attn": [
+    20606.55,
+    20614.28
+   ]
+  },
+  "tflops": {
+   "hk": 47.16,
+   "triton": 5.07,
+   "rocm_attn": 3.34
+  },
+  "hk_calls": {
+   "hk": 161,
+   "fallback": 0,
+   "decode": 0,
+   "declined": 0,
+   "split": 0,
+   "kvsplit": 161
+  },
+  "best_rival": "triton",
+  "hk_speedup": 9.306
+ },
+ {
+  "kind": "prefill",
+  "model": "minicpm-v-tp2",
+  "shape": "32768:32+32768:32",
+  "layers": 16,
+  "err": {
+   "triton": 0.00015,
+   "rocm_attn": 0.00015,
+   "hk": 0.00014
+  },
+  "us": {
+   "hk": 432.14,
+   "rocm_attn": 8819.05,
+   "triton": 6337.81
+  },
+  "us_by_seed": {
+   "hk": [
+    432.14,
+    429.61
+   ],
+   "rocm_attn": [
+    8819.05,
+    8711.41
+   ],
+   "triton": [
+    6321.03,
+    6337.81
+   ]
+  },
+  "tflops": {
+   "hk": 39.78,
+   "rocm_attn": 1.95,
+   "triton": 2.71
+  },
+  "hk_calls": {
+   "hk": 161,
+   "fallback": 0,
+   "decode": 0,
+   "declined": 0,
+   "split": 0,
+   "kvsplit": 161
+  },
+  "best_rival": "triton",
+  "hk_speedup": 14.666
+ },
+ {
+  "kind": "prefill",
+  "model": "minicpm-v-tp2",
+  "shape": "65536:16+65536:16+65536:16+65536:16",
+  "layers": 4,
+  "err": {
+   "triton": 9e-05,
+   "rocm_attn": 9e-05,
+   "hk": 0.0001
+  },
+  "us": {
+   "hk": 785.82,
+   "triton": 12817.51,
+   "rocm_attn": 20836.64
+  },
+  "us_by_seed": {
+   "hk": [
+    785.82,
+    785.52
+   ],
+   "triton": [
+    12746.62,
+    12817.51
+   ],
+   "rocm_attn": [
+    20836.64,
+    20780.98
+   ]
+  },
+  "tflops": {
+   "hk": 43.73,
+   "triton": 2.68,
+   "rocm_attn": 1.65
+  },
+  "hk_calls": {
+   "hk": 41,
+   "fallback": 0,
+   "decode": 0,
+   "declined": 0,
+   "split": 0,
+   "kvsplit": 41
+  },
+  "best_rival": "triton",
+  "hk_speedup": 16.311
+ },
+ {
+  "kind": "prefill",
+  "model": "minicpm-v-tp2",
+  "shape": "16384:16+8192:1+8192:1+8192:1",
+  "layers": 25,
+  "err": {
+   "triton": 0.00025,
+   "rocm_attn": 0.00025,
+   "hk": 0.00025
+  },
+  "us": {
+   "hk": 317.8,
+   "triton": 3115.36,
+   "rocm_attn": 5229.29
+  },
+  "us_by_seed": {
+   "hk": [
+    317.8,
+    317.03
+   ],
+   "triton": [
+    3113.67,
+    3115.36
+   ],
+   "rocm_attn": [
+    5182.74,
+    5229.29
+   ]
+  },
+  "tflops": {
+   "hk": 7.39,
+   "triton": 0.75,
+   "rocm_attn": 0.45
+  },
+  "hk_calls": {
+   "hk": 251,
+   "fallback": 0,
+   "decode": 0,
+   "declined": 0,
+   "split": 251,
+   "kvsplit": 251
+  },
+  "best_rival": "triton",
+  "hk_speedup": 9.803
+ },
+ {
+  "kind": "prefill",
+  "model": "minicpm-v-tp2",
+  "shape": "65536:16+8192:1+8192:1+8192:1+8192:1+8192:1+8192:1+8192:1+8192:1+8192:1+8192:1+8192:1+8192:1+8192:1+8192:1+8192:1",
+  "layers": 6,
+  "err": {
+   "triton": 0.0002,
+   "rocm_attn": 0.0002,
+   "hk": 0.0002
+  },
+  "us": {
+   "hk": 619.93,
+   "triton": 12411.73,
+   "rocm_attn": 18745.76
+  },
+  "us_by_seed": {
+   "hk": [
+    617.36,
+    619.93
+   ],
+   "triton": [
+    12373.25,
+    12411.73
+   ],
+   "rocm_attn": [
+    18690.39,
+    18745.76
+   ]
+  },
+  "tflops": {
+   "hk": 15.48,
+   "triton": 0.77,
+   "rocm_attn": 0.51
+  },
+  "hk_calls": {
+   "hk": 61,
+   "fallback": 0,
+   "decode": 0,
+   "declined": 0,
+   "split": 61,
+   "kvsplit": 61
+  },
+  "best_rival": "triton",
+  "hk_speedup": 20.021
+ },
+ {
+  "kind": "prefill",
+  "model": "minicpm-v-tp2",
+  "shape": "16384:64+8192:1+8192:1+8192:1+8192:1+8192:1+8192:1+8192:1+8192:1+8192:1+8192:1+8192:1+8192:1+8192:1+8192:1+8192:1",
+  "layers": 8,
+  "err": {
+   "triton": 0.00024,
+   "rocm_attn": 0.00024,
+   "hk": 0.00025
+  },
+  "us": {
+   "hk": 1346.77,
+   "rocm_attn": 7230.6,
+   "triton": 3159.28
+  },
+  "us_by_seed": {
+   "hk": [
+    1346.77,
+    1342.32
+   ],
+   "rocm_attn": [
+    7079.91,
+    7230.6
+   ],
+   "triton": [
+    3154.74,
+    3159.28
+   ]
+  },
+  "tflops": {
+   "hk": 7.14,
+   "rocm_attn": 1.33,
+   "triton": 3.04
+  },
+  "hk_calls": {
+   "hk": 81,
+   "fallback": 0,
+   "decode": 0,
+   "declined": 0,
+   "split": 81,
+   "kvsplit": 81
+  },
+  "best_rival": "triton",
+  "hk_speedup": 2.346
+ },
+ {
+  "kind": "prefill",
+  "model": "minicpm-v-tp2",
+  "shape": "65536:32+32768:1+32768:1+32768:1",
+  "layers": 7,
+  "err": {
+   "triton": 0.0001,
+   "rocm_attn": 0.0001,
+   "hk": 0.0001
+  },
+  "us": {
+   "hk": 856.44,
+   "rocm_attn": 19997.0,
+   "triton": 12399.6
+  },
+  "us_by_seed": {
+   "hk": [
+    856.44,
+    850.13
+   ],
+   "rocm_attn": [
+    19796.45,
+    19997.0
+   ],
+   "triton": [
+    12399.6,
+    12398.69
+   ]
+  },
+  "tflops": {
+   "hk": 21.0,
+   "rocm_attn": 0.9,
+   "triton": 1.45
+  },
+  "hk_calls": {
+   "hk": 71,
+   "fallback": 0,
+   "decode": 0,
+   "declined": 0,
+   "split": 71,
+   "kvsplit": 71
+  },
+  "best_rival": "triton",
+  "hk_speedup": 14.478
+ },
+ {
+  "kind": "prefill",
+  "model": "minicpm-v-tp2",
+  "shape": "65536:64+32768:1+32768:1+32768:1+32768:1+32768:1+32768:1+32768:1+32768:1+32768:1+32768:1+32768:1+32768:1+32768:1+32768:1+32768:1",
+  "layers": 2,
+  "err": {
+   "triton": 0.0001,
+   "rocm_attn": 0.0001,
+   "hk": 0.0001
+  },
+  "us": {
+   "hk": 2561.29,
+   "rocm_attn": 27268.35,
+   "triton": 12864.84
+  },
+  "us_by_seed": {
+   "hk": [
+    2561.29,
+    2560.42
+   ],
+   "rocm_attn": [
+    27268.35,
+    26997.95
+   ],
+   "triton": [
+    12864.84,
+    12697.23
+   ]
+  },
+  "tflops": {
+   "hk": 14.99,
+   "rocm_attn": 1.41,
+   "triton": 2.99
+  },
+  "hk_calls": {
+   "hk": 21,
+   "fallback": 0,
+   "decode": 0,
+   "declined": 0,
+   "split": 21,
+   "kvsplit": 21
+  },
+  "best_rival": "triton",
+  "hk_speedup": 5.023
  }
 ]
