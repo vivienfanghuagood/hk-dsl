@@ -262,8 +262,11 @@ def w4a16_large_kernel(name: str, *, group: int = 32, block_m: int = 128, block_
             Bs.subtile(block_n // warps, ks, wid, 0).store(w_t)
             hk.arch.barrier()
             for sl in range(ks // 16):
-                a_s = As.subtile(rm, 16, wr, sl).load(ty_a)
-                b_s = Bs.subtile(rn, 16, wc, sl).load(ty_b)
+                a_s = As.subtile(rm, 16, wr, sl).load(ty_a, wait=False)
+                b_s = Bs.subtile(rn, 16, wc, sl).load(ty_b, wait=False)
+                # the operands' LDS reads retired before the WMMA reads them: the compiler may
+                # otherwise copy a ds_load destination ahead of the wait (gfx1100 caught it)
+                hk.lds.wait_for(a_s, b_s)
                 acc += a_s @ b_s.T
         c[hk.elem_coord(0, 0, m0 + wr * rm, n0 + wc * rn)].store(acc, bounded=True)
 
