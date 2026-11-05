@@ -4,6 +4,8 @@ Release notes for each version are also on its
 [GitHub release](https://github.com/vivienfanghuagood/hk-dsl/releases).
 The next version's notes collect here until it is released.
 
+## Unreleased
+
 ## 0.9.3
 
 hk-dsl 0.9.3: a fix for vLLM's attention routes on a KV cache past 4 GiB (hk's 32-bit buffer offsets

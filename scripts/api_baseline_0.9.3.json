@@ -437,6 +437,10 @@
 "self",
 "src"
 ],
+"_rename": [
+"self",
+"name"
+],
 "_resolve_consts": [
 "self",
 "overrides"
@@ -1341,6 +1345,11 @@
 "runtime": {},
 "scope": {
 "params": []
+},
+"specialize": {
+"params": [
+"factory"
+]
 },
 "target": {},
 "templates": {},
@@ -2987,6 +2996,10 @@
 "self",
 "src"
 ],
+"_rename": [
+"self",
+"name"
+],
 "_resolve_consts": [
 "self",
 "overrides"
@@ -4008,6 +4021,11 @@
 },
 "scope": {
 "params": []
+},
+"specialize": {
+"params": [
+"factory"
+]
 },
 "tile_coord": {
 "params": [
@@ -5967,6 +5985,10 @@
 "self",
 "src"
 ],
+"_rename": [
+"self",
+"name"
+],
 "_resolve_consts": [
 "self",
 "overrides"
@@ -6102,12 +6124,30 @@
 "VerifyError": {
 "methods": {}
 },
+"_GENERIC": {},
+"_NAME_MAX": {},
 "_NULL_STREAM_WARNED": {},
 "_RECORDING": {},
 "__all__": {},
+"_clip": {
+"params": [
+"name"
+]
+},
+"_code_text": {
+"params": [
+"code"
+]
+},
 "_const_dtype": {
 "params": [
 "value"
+]
+},
+"_default_name": {
+"params": [
+"fn",
+"warps"
 ]
 },
 "_loc_text": {
@@ -6126,7 +6166,23 @@
 "name"
 ]
 },
+"_stable_repr": {
+"params": [
+"v",
+"depth"
+]
+},
 "_symmetric": {},
+"_token_value": {
+"params": [
+"v"
+]
+},
+"_tokens": {
+"params": [
+"pairs"
+]
+},
 "annotations": {},
 "begin_kernel": {
 "params": [
@@ -6154,6 +6210,7 @@
 },
 "func_d": {},
 "functools": {},
+"hashlib": {},
 "host": {},
 "i32": {},
 "inspect": {},
@@ -6175,9 +6232,15 @@
 "placement"
 ]
 },
+"re": {},
 "rewrite": {
 "params": [
 "fn"
+]
+},
+"specialize": {
+"params": [
+"factory"
 ]
 },
 "verify_error": {
@@ -12425,7 +12488,14 @@
 "KVSPLIT": {},
 "KVSPLITS": {},
 "KVSPLIT_FORCE": {},
+"KVS_DEC_MIN_CTX": {},
 "KVS_DEC_RATIO": {},
+"KVS_PACK": {},
+"KVS_PACKED": {},
+"KVS_PACK_DEC_RATIO": {},
+"KVS_PACK_MAX_DECODES": {},
+"KVS_PACK_MAX_DECODES_ELSE": {},
+"KVS_PACK_WARPS": {},
 "KVS_WARPS": {},
 "Optional": {},
 "PATCH": {},
@@ -12433,6 +12503,7 @@
 "SHADOW": {},
 "SHADOW_STATS": {},
 "SHORT_Q": {},
+"SPAN_LIMIT": {},
 "SPLIT": {},
 "SPLITS": {},
 "SPLIT_ALL": {},
@@ -12448,6 +12519,7 @@
 "_GUARDED_U": {},
 "_KVS_ENV": {},
 "_KVS_OPS": {},
+"_KVS_PACK_ENV": {},
 "_OPS": {},
 "_ORIG": {},
 "_ORIG_BUILD": {},
@@ -12539,7 +12611,8 @@
 "page",
 "order",
 "splits",
-"warps"
+"warps",
+"pack"
 ]
 },
 "_kvs_warm": {
@@ -12551,7 +12624,8 @@
 "params": [
 "a",
 "splits",
-"warps"
+"warps",
+"pack"
 ]
 },
 "_note_declined": {
@@ -12686,6 +12760,12 @@
 "arch"
 ]
 },
+"kvs_pack_warps": {
+"params": [
+"head_dim",
+"group"
+]
+},
 "kvs_warps": {
 "params": [
 "head_dim"
@@ -12693,7 +12773,8 @@
 },
 "kvsplit_plan": {
 "params": [
-"a"
+"a",
+"pack"
 ]
 },
 "page_why_not": {
@@ -12703,6 +12784,11 @@
 },
 "revert": {
 "params": []
+},
+"span_why_not": {
+"params": [
+"*ts"
+]
 },
 "split_takes": {
 "params": [
@@ -16642,7 +16728,8 @@
 "decodes",
 "vt_pages",
 "kv_order",
-"kv_splits"
+"kv_splits",
+"pack"
 ]
 },
 "q_tiles": {
@@ -18751,6 +18838,7 @@
 },
 "Tuple": {},
 "WARM_HINT": {},
+"WARM_HINT_ARCHS": {},
 "_BUILT": {},
 "_FILE_HASH": {},
 "_HIPCC_ENV": {},
@@ -18850,7 +18938,8 @@
 },
 "_jit_notice": {
 "params": [
-"name"
+"name",
+"arch"
 ]
 },
 "_keep": {
