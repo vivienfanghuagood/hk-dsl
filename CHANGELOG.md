@@ -4,11 +4,27 @@ Release notes for each version are also on its
 [GitHub release](https://github.com/vivienfanghuagood/hk-dsl/releases).
 The next version's notes collect here until it is released.
 
-## Unreleased
+## 0.9.8
 
-- `hk.torch_op` is stable: its signature and behaviour are those of 0.9.0, and `tests/hk/gpu/test_torch_op.py`
-  and `test_torch_op_recipe.py` cover it (eager, `torch.library.opcheck`, `torch.compile`, CUDA graphs)
-  ([stability](docs/stability.md)).
+hk-dsl 0.9.8: `hk.torch_op` is stable. Documentation: sample outputs on the check and profile pages
+come from hk 0.9.7 on a Radeon AI PRO R9700, labelled as samples; the landing page links every page.
+No change to the kernels, the dialect (`hk-dialect-8`) or which routes are on by default.
+
+On PyPI: `pip install hk-dsl`, for CPython 3.10 to 3.13 on Linux x86_64 with glibc 2.35 or newer
+(Ubuntu 22.04 and later, and vLLM's ROCm images): one `manylinux_2_35` wheel per interpreter. The
+wheels below are the same files.
+
+    pip install hk_dsl-0.9.8-cp312-cp312-manylinux_2_35_x86_64.whl
+
+### Changes
+
+**`hk.torch_op` is stable** (#291): its signature and behaviour are those of 0.9.0, and `tests/hk/gpu/test_torch_op.py` and `test_torch_op_recipe.py` cover it (eager, `torch.library.opcheck`, `torch.compile`, CUDA graphs) ([stability](docs/stability.md)).
+
+**Documentation** (#292, #293, #294). docs/check.md and docs/profile.md show sample outputs from hk 0.9.7 on an R9700, each block labelled with GPU, hk version and date as a sample, not a benchmark claim. The landing page links every page in the nav, and the op catalog (docs/ops.md) is in the nav. Dated example runs on the agents and tune pages say their GPU, hk version and date.
+
+### All pull requests
+
+#290, #291, #292, #293, #294.
 
 ## 0.9.7
 
