@@ -6,6 +6,8 @@ The next version's notes collect here until it is released.
 
 ## Unreleased
 
+**vLLM's TRITON_ATTN on gfx1100: Qwen3.8's short chunks beside decodes take the KV split.** A 16-128-token chunk beside decodes went to vLLM's kernel whole when the decodes' work passed a small share of the chunk's, and that kernel walks each decode's context unsplit. For Qwen3.8's shape (head size 256, 6 query heads a kv head) the KV split now takes such a batch up to a measured number of decode tokens (`vllm_prefill.KVS_DEC_MAX_TOKENS`), the decode rows on vLLM's decode kernel; measured faster than both stock kernels on every batch it takes.
+
 ## 0.9.3
 
 hk-dsl 0.9.3: a fix for vLLM's attention routes on a KV cache past 4 GiB (hk's 32-bit buffer offsets

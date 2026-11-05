@@ -628,6 +628,12 @@ def test_kvsplit_plan_takes_a_short_chunk_with_exact_sizes(monkeypatch):
     assert plan([(16384, 128), (8192, 1), (0, 0)])[1] is None
     assert plan([(8192, 32)] + [(8192, 1)] * 7)[1] is None        # the decodes are most of it
     assert plan([(16384, 128), (8192, 1)])[1] == (s_long, w_long, False)
+    # a decode-token bound in place of KVS_DEC_RATIO, per (arch, class, group)
+    assert plan([(8192, 128)] + [(8192, 1)] * 7)[1] is None        # past KVS_DEC_RATIO
+    monkeypatch.setattr(vp, "KVS_DEC_MAX_TOKENS", {("gfx1100", 128, 8): 1 << 19})
+    assert plan([(8192, 128)] + [(8192, 1)] * 7)[1] == (s_long, w_long, False)
+    assert plan([(8192, 128)] + [(32768, 1)] * 31)[1] is None       # past its tokens
+    monkeypatch.setattr(vp, "KVS_DEC_MAX_TOKENS", {})
     monkeypatch.setattr(vp, "KVS_DEC_MIN_CTX", {("gfx1100", 128): 32768})
     assert plan([(16384, 128), (8192, 1)])[1] is None             # too short beside decodes, per arch
     assert plan([(16384, 128)])[1] == (s_long, w_long, False)
