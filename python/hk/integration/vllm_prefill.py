@@ -422,10 +422,14 @@ KVS_DEC_MAX_TOKENS = {("gfx1100", 256, 6): 1 << 19}
 #: declined them, but beside 31 short ones the second call costs more than it saves (MiniCPM5,
 #: 0.80-1.06x); gfx1201 MiniCPM-V 1.4-5.7x up to 15, Qwen3.8 1.46-5.65x up to 3 but from 7 down to
 #: 0.72x (over 8k), MiniCPM5 1.64-3.41x up to 2^18 decode tokens (7 x 32k, 15 x 8k) but 1.06-1.16x
-#: at 15 x 32k. Each entry is (most decodes, most decode tokens or None).
+#: at 15 x 32k; Qwen3.8 over 16k-32k 1.28-2.93x up to 7 decodes and ~170k decode tokens (two seeds,
+#: runs of a 16-64-token chunk beside 5-15 decodes over 8k-32k), but 0.83-1.16x from 11 over 16k and
+#: 1.11x at 7 x 32k. Each entry is tiers (longest sequence at least, most decodes, most decode tokens
+#: or None), the last whose sequence the call reaches.
 KVS_PACK_DEC_RATIO = 4.0
-KVS_PACK_MAX_DECODES = {("gfx1201", 128, 8): (15, 1 << 18), ("gfx1201", 256, 6): (3, None)}
-KVS_PACK_MAX_DECODES_ELSE = (15, None)
+KVS_PACK_MAX_DECODES = {("gfx1201", 128, 8): ((0, 15, 1 << 18),),
+                        ("gfx1201", 256, 6): ((0, 3, None), (16384, 7, 170000))}
+KVS_PACK_MAX_DECODES_ELSE = ((0, 15, None),)
 
 
 def kvsplit_plan(a: dict, pack: bool = True):
@@ -452,7 +456,8 @@ def kvsplit_plan(a: dict, pack: bool = True):
     group = int(a["q"].shape[1]) // int(a["k"].shape[2])
     pw = kvs_pack_warps(d, group)
     arch, cls = switches.arch(), 256 if d > 128 else 128
-    max_dec, max_dec_tok = KVS_PACK_MAX_DECODES.get((arch, cls, group), KVS_PACK_MAX_DECODES_ELSE)
+    max_dec, max_dec_tok = [(n, t) for c, n, t in KVS_PACK_MAX_DECODES.get(
+        (arch, cls, group), KVS_PACK_MAX_DECODES_ELSE) if st["pre_ctx"] >= c][-1]
     for max_q, min_ctx, sp in KVS_PACKED.get((arch, cls, group), ()) if pack else ():
         if (st["max_q"] <= max_q and st["pre_ctx"] >= min_ctx and pw <= KVS_PACK_WARPS
                 and decodes_fit(KVS_PACK_DEC_RATIO) and st["decodes"] <= max_dec

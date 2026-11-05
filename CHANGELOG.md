@@ -6,6 +6,8 @@ The next version's notes collect here until it is released.
 
 ## Unreleased
 
+**vLLM's TRITON_ATTN on gfx1201: Qwen3.8's shortest chunks over 16k+ contexts beside up to 7 decodes take the packed KV split.** The packed split took such a chunk beside at most 3 decodes on gfx1201 for Qwen3.8's shape; over a context of 16k tokens or more it now takes up to 7, while their tokens stay under a measured bound. `vllm_prefill.KVS_PACK_MAX_DECODES` entries are tiers by the longest sequence. Measured faster than both stock kernels on every batch it takes.
+
 **vLLM's TRITON_ATTN on gfx1201: MiniCPM5's shortest chunks beside more decodes take the packed KV split.** The packed split took a short chunk over a long context beside at most 3 decodes on gfx1201; for MiniCPM5's shape (head size 128, 8 query heads a kv head) it now takes up to 15, while their tokens stay under a measured bound (`vllm_prefill.KVS_PACK_MAX_DECODES` entries are now (decodes, decode tokens)). Measured faster than both stock kernels on every batch it takes.
 
 ## 0.9.4
