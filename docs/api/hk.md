@@ -580,8 +580,6 @@ scaled, and the variant is mma_ABt.
 hk.load_w4(ty, qw: Global, s: Global, zs: "Optional['Global']", n0, k0, *, group: int = 128, zero: Optional[int] = None, s_blocked: bool = False, zp: "Optional['Global']" = None, rows: bool = False, exllama: bool = False, into=None) -> Tile
 ```
 
-*Changed after 0.9.0*: new parameter `exllama`
-
 *Surface*: a format primitive: hk's own int4 layout (hk.ops.w4a16's repack).
 
 *Surface*: `zero=`: a format primitive: the symmetric form: one zero point for every group, no zs read (GPTQ's uint4b8).
