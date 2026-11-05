@@ -1,0 +1,550 @@
+{
+ "schema": 1,
+ "arch": "gfx1201",
+ "agent": {
+  "name": "gfx1201",
+  "product": "AMD Radeon Graphics",
+  "cus": 64,
+  "simds": 128,
+  "xcc": 1,
+  "ses": 4,
+  "simd_per_cu": 2,
+  "max_waves_per_simd": 16,
+  "max_waves_per_cu": 32,
+  "lds_kb": 64,
+  "max_clock_mhz": 2350,
+  "wave": 32
+ },
+ "call_bytes": 352321536,
+ "single": true,
+ "versions": {
+  "python": "3.12.3",
+  "hk": "0.9.7",
+  "hk_src": "93eecd3adce9",
+  "torch": "2.10.0+rocm7.2.3.git1a270074",
+  "hip": "7.2.53211",
+  "triton": "3.6.0+rocm7.2.3.git4ed88892",
+  "rocprofv3": "1.1.0"
+ },
+ "device": "AMD Radeon Graphics",
+ "kernels": [
+  {
+   "rec": {
+    "key": "0:gelu_mul_tiles_kernel(globals)",
+    "name": "gelu_mul_tiles_kernel(globals)",
+    "launches": 20,
+    "durations_ns": [
+     597224,
+     596864,
+     600224,
+     600784,
+     600905,
+     598104,
+     601224,
+     599944,
+     599664,
+     595664,
+     600785,
+     596345,
+     597545,
+     596824,
+     587024,
+     604104,
+     598904,
+     601344,
+     601664,
+     614344
+    ],
+    "median_ns": 599804.0,
+    "noise": 0.003,
+    "grid": {
+     "threads": 1835008,
+     "workgroup": 32,
+     "workgroups": 57344,
+     "lds_bytes": 0,
+     "scratch": 0,
+     "vgpr": 72,
+     "agpr": 0,
+     "sgpr": 128
+    },
+    "counters": {
+     "SQ_BUSY_CYCLES": 53430021.0,
+     "SQ_WAVES": 57344.0,
+     "GRBM_GUI_ACTIVE": 1676309.0
+    },
+    "counter_spread": {
+     "SQ_BUSY_CYCLES": 0.0116,
+     "SQ_WAVES": 0.0,
+     "GRBM_GUI_ACTIVE": 0.0121
+    },
+    "counters_by_pass": {
+     "core": {
+      "SQ_BUSY_CYCLES": 53430021.0,
+      "SQ_WAVES": 57344.0,
+      "GRBM_GUI_ACTIVE": 1676309.0
+     }
+    },
+    "counter_pass_ns": {
+     "core": 601024
+    },
+    "iters": 20
+   },
+   "build": {
+    "kernel": "gelu_mul_tiles",
+    "consts": {},
+    "arch": "gfx1201",
+    "warps": 1,
+    "threads": 32,
+    "lds_bytes": 0,
+    "binary": "<workspace>/hk-dsl-profile/cache/01cb891a0211b01f3c6b646f17950dde/hk_gelu_mul_tiles_01cb891a0211.cpython-312-x86_64-linux-gnu.so",
+    "source": "<workspace>/hk-dsl-profile/cache/01cb891a0211b01f3c6b646f17950dde/kernel.cpp",
+    "instantiations": [
+     {
+      "name": "gelu_mul_tiles_kernel(globals)",
+      "vgpr": 70,
+      "agpr": 0,
+      "sgpr": 15,
+      "vgpr_charged": 72,
+      "lds": 0,
+      "scratch": 0,
+      "spill": 0,
+      "occupancy_by_regs": 16,
+      "occupancy_by_lds": 16,
+      "occupancy": 16,
+      "max_waves_per_simd": 16
+     }
+    ]
+   },
+   "isa": {
+    "function": "_Z21gelu_mul_tiles_kernel7globals",
+    "instructions": 1745,
+    "total": {
+     "instructions": 1745,
+     "classes": {
+      "valu": 961,
+      "valu_trans": 64,
+      "salu": 81,
+      "smem": 14,
+      "vmem_load": 16,
+      "vmem_store": 36,
+      "branch": 36,
+      "other": 537
+     },
+     "waits": {},
+     "mma_flops": 0,
+     "bytes_per_lane": {
+      "vmem_load": {
+       "16": 16
+      },
+      "vmem_store": {
+       "2": 32,
+       "16": 4
+      }
+     }
+    },
+    "loops": [
+     {
+      "start": "0x16e0",
+      "end": "0x3bc0",
+      "instructions": 1561,
+      "mix": {
+       "instructions": 1561,
+       "classes": {
+        "valu": 952,
+        "valu_trans": 64,
+        "salu": 63,
+        "smem": 4,
+        "vmem_load": 15,
+        "vmem_store": 36,
+        "branch": 23,
+        "other": 404
+       },
+       "waits": {},
+       "mma_flops": 0,
+       "bytes_per_lane": {
+        "vmem_load": {
+         "16": 15
+        },
+        "vmem_store": {
+         "2": 32,
+         "16": 4
+        }
+       }
+      }
+     },
+     {
+      "start": "0x174c",
+      "end": "0x3bc4",
+      "instructions": 1544,
+      "mix": {
+       "instructions": 1544,
+       "classes": {
+        "valu": 945,
+        "valu_trans": 64,
+        "salu": 62,
+        "smem": 4,
+        "vmem_load": 13,
+        "vmem_store": 36,
+        "branch": 22,
+        "other": 398
+       },
+       "waits": {},
+       "mma_flops": 0,
+       "bytes_per_lane": {
+        "vmem_load": {
+         "16": 13
+        },
+        "vmem_store": {
+         "2": 32,
+         "16": 4
+        }
+       }
+      }
+     },
+     {
+      "start": "0x17a4",
+      "end": "0x3bc8",
+      "instructions": 1530,
+      "mix": {
+       "instructions": 1530,
+       "classes": {
+        "valu": 940,
+        "valu_trans": 64,
+        "salu": 61,
+        "smem": 4,
+        "vmem_load": 11,
+        "vmem_store": 36,
+        "branch": 21,
+        "other": 393
+       },
+       "waits": {},
+       "mma_flops": 0,
+       "bytes_per_lane": {
+        "vmem_load": {
+         "16": 11
+        },
+        "vmem_store": {
+         "2": 32,
+         "16": 4
+        }
+       }
+      }
+     },
+     {
+      "start": "0x1810",
+      "end": "0x3be0",
+      "instructions": 1516,
+      "mix": {
+       "instructions": 1516,
+       "classes": {
+        "valu": 935,
+        "valu_trans": 64,
+        "salu": 60,
+        "smem": 4,
+        "vmem_load": 9,
+        "vmem_store": 36,
+        "branch": 20,
+        "other": 388
+       },
+       "waits": {},
+       "mma_flops": 0,
+       "bytes_per_lane": {
+        "vmem_load": {
+         "16": 9
+        },
+        "vmem_store": {
+         "2": 32,
+         "16": 4
+        }
+       }
+      }
+     },
+     {
+      "start": "0x18c0",
+      "end": "0x3be4",
+      "instructions": 1480,
+      "mix": {
+       "instructions": 1480,
+       "classes": {
+        "valu": 929,
+        "valu_trans": 64,
+        "salu": 47,
+        "smem": 4,
+        "vmem_load": 7,
+        "vmem_store": 36,
+        "branch": 19,
+        "other": 374
+       },
+       "waits": {},
+       "mma_flops": 0,
+       "bytes_per_lane": {
+        "vmem_load": {
+         "16": 7
+        },
+        "vmem_store": {
+         "2": 32,
+         "16": 4
+        }
+       }
+      }
+     },
+     {
+      "start": "0x192c",
+      "end": "0x3be8",
+      "instructions": 1463,
+      "mix": {
+       "instructions": 1463,
+       "classes": {
+        "valu": 922,
+        "valu_trans": 64,
+        "salu": 46,
+        "smem": 4,
+        "vmem_load": 5,
+        "vmem_store": 36,
+        "branch": 18,
+        "other": 368
+       },
+       "waits": {},
+       "mma_flops": 0,
+       "bytes_per_lane": {
+        "vmem_load": {
+         "16": 5
+        },
+        "vmem_store": {
+         "2": 32,
+         "16": 4
+        }
+       }
+      }
+     },
+     {
+      "start": "0x1984",
+      "end": "0x3bec",
+      "instructions": 1449,
+      "mix": {
+       "instructions": 1449,
+       "classes": {
+        "valu": 917,
+        "valu_trans": 64,
+        "salu": 45,
+        "smem": 4,
+        "vmem_load": 3,
+        "vmem_store": 36,
+        "branch": 17,
+        "other": 363
+       },
+       "waits": {},
+       "mma_flops": 0,
+       "bytes_per_lane": {
+        "vmem_load": {
+         "16": 3
+        },
+        "vmem_store": {
+         "2": 32,
+         "16": 4
+        }
+       }
+      }
+     },
+     {
+      "start": "0x19f0",
+      "end": "0x3c04",
+      "instructions": 1435,
+      "mix": {
+       "instructions": 1435,
+       "classes": {
+        "valu": 912,
+        "valu_trans": 64,
+        "salu": 44,
+        "smem": 4,
+        "vmem_load": 1,
+        "vmem_store": 36,
+        "branch": 16,
+        "other": 358
+       },
+       "waits": {},
+       "mma_flops": 0,
+       "bytes_per_lane": {
+        "vmem_load": {
+         "16": 1
+        },
+        "vmem_store": {
+         "2": 32,
+         "16": 4
+        }
+       }
+      }
+     },
+     {
+      "start": "0x2288",
+      "end": "0x3c08",
+      "instructions": 1057,
+      "mix": {
+       "instructions": 1057,
+       "classes": {
+        "valu": 679,
+        "valu_trans": 48,
+        "salu": 24,
+        "smem": 4,
+        "vmem_store": 28,
+        "branch": 15,
+        "other": 259
+       },
+       "waits": {},
+       "mma_flops": 0,
+       "bytes_per_lane": {
+        "vmem_store": {
+         "2": 24,
+         "16": 4
+        }
+       }
+      }
+     },
+     {
+      "start": "0x2ae0",
+      "end": "0x3c0c",
+      "instructions": 713,
+      "mix": {
+       "instructions": 713,
+       "classes": {
+        "valu": 457,
+        "valu_trans": 32,
+        "salu": 16,
+        "smem": 4,
+        "vmem_store": 19,
+        "branch": 14,
+        "other": 171
+       },
+       "waits": {},
+       "mma_flops": 0,
+       "bytes_per_lane": {
+        "vmem_store": {
+         "2": 16,
+         "16": 3
+        }
+       }
+      }
+     },
+     {
+      "start": "0x3330",
+      "end": "0x3c10",
+      "instructions": 369,
+      "mix": {
+       "instructions": 369,
+       "classes": {
+        "valu": 234,
+        "valu_trans": 16,
+        "salu": 8,
+        "smem": 4,
+        "vmem_store": 10,
+        "branch": 13,
+        "other": 84
+       },
+       "waits": {},
+       "mma_flops": 0,
+       "bytes_per_lane": {
+        "vmem_store": {
+         "2": 8,
+         "16": 2
+        }
+       }
+      }
+     },
+     {
+      "start": "0x3b68",
+      "end": "0x3c14",
+      "instructions": 28,
+      "mix": {
+       "instructions": 28,
+       "classes": {
+        "valu": 7,
+        "smem": 4,
+        "vmem_store": 1,
+        "branch": 12,
+        "other": 4
+       },
+       "waits": {},
+       "mma_flops": 0,
+       "bytes_per_lane": {
+        "vmem_store": {
+         "16": 1
+        }
+       }
+      }
+     }
+    ],
+    "main_loop": {
+     "start": "0x16e0",
+     "end": "0x3bc0",
+     "instructions": 1561,
+     "mix": {
+      "instructions": 1561,
+      "classes": {
+       "valu": 952,
+       "valu_trans": 64,
+       "salu": 63,
+       "smem": 4,
+       "vmem_load": 15,
+       "vmem_store": 36,
+       "branch": 23,
+       "other": 404
+      },
+      "waits": {},
+      "mma_flops": 0,
+      "bytes_per_lane": {
+       "vmem_load": {
+        "16": 15
+       },
+       "vmem_store": {
+        "2": 32,
+        "16": 4
+       }
+      }
+     },
+     "which": 0
+    },
+    "prologue": {
+     "instructions": 45,
+     "mix": {
+      "instructions": 45,
+      "classes": {
+       "valu": 9,
+       "salu": 18,
+       "smem": 6,
+       "vmem_load": 1,
+       "branch": 2,
+       "other": 9
+      },
+      "waits": {},
+      "mma_flops": 0,
+      "bytes_per_lane": {
+       "vmem_load": {
+        "16": 1
+       }
+      }
+     },
+     "start": "0x1600"
+    },
+    "epilogue": {
+     "instructions": 139,
+     "mix": {
+      "instructions": 139,
+      "classes": {
+       "smem": 4,
+       "branch": 11,
+       "other": 124
+      },
+      "waits": {},
+      "mma_flops": 0
+     },
+     "start": "0x3bc4"
+    },
+    "source": "code object (llvm-objdump)",
+    "matrix_dtype": null
+   },
+   "main": true,
+   "flops": null,
+   "bytes": null
+  }
+ ]
+}

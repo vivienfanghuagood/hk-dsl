@@ -6,6 +6,13 @@ The next version's notes collect here until it is released.
 
 ## Unreleased
 
+- `hk.profile` on gfx1201: a counter group of the three counters that count on an R9700 under ROCm 7.2.3
+  (`GRBM_GUI_ACTIVE`, `SQ_WAVES`, `SQ_BUSY_CYCLES`; the others read 0). A matrix kernel with no FLOP rate
+  -- no counter, thread trace or main-loop trip count to count its WMMAs -- now gets the verdict
+  `bound_unknown` instead of `latency_bound`; `--flops` gives the rate. Where `SQ_INSTS_LDS` counts, the
+  FLOPs come from the ISA's main loop x its trip count read off it. A wave-cycle count of 0 for a kernel
+  whose waves ran is dropped, not reported as 0 waves a SIMD ([profile](docs/profile.md)).
+
 ## 0.9.8
 
 hk-dsl 0.9.8: `hk.torch_op` is stable. Documentation: sample outputs on the check and profile pages

@@ -56,6 +56,7 @@ KINDS = (
     "memory_bound",       # the bytes past the L2 run at >= MEMORY_BOUND of the ceiling
     "compute_bound",      # matrix FLOP/s at >= COMPUTE_BOUND of the peak
     "latency_bound",      # neither roof: the waves wait (see stalls)
+    "bound_unknown",      # a matrix kernel with no FLOP rate: the compute roof cannot be read
     "tail",               # the grid is a fraction of a round of the CUs' slots
     "underfilled",        # fewer workgroups than slots: CUs idle the whole kernel
     "epilogue",           # cycles after the main loop that nothing overlaps
@@ -226,6 +227,36 @@ def _dtype_of(isa: Optional[Dict[str, Any]], c: Dict[str, Any]) -> str:
     return (isa or {}).get("matrix_dtype") or "bf16"
 
 
+def isa_matrix_flops_per_wave(isa: Dict[str, Any],
+                               m: Dict[str, Any]) -> Optional[Dict[str, float]]:
+    """A wave's matrix FLOPs from the static ISA where no counter or trace
+    counts them (gfx11, gfx12): the main loop's matrix FLOPs x its trip count
+    plus those outside it. The trip count comes from a counter that does count
+    a class the loop holds: LDS instructions a wave ran (SQ_INSTS_LDS / SQ_WAVES)
+    less the LDS instructions outside the loop, over the loop's. None when the
+    loop has no LDS instruction or the counters are missing."""
+    ml = isa.get("main_loop") or {}
+    lmix = ml.get("mix") or {}
+    lds_dyn = (m.get("instructions") or {}).get("lds")
+    waves = m.get("waves")
+    if not lmix.get("mma_flops") or lds_dyn is None or not waves:
+        return None
+
+    def lds_of(mx):
+        c = (mx or {}).get("classes") or {}
+        return c.get("ds_read", 0) + c.get("ds_write", 0) + c.get("ds_other", 0)
+    in_loop = lds_of(lmix)
+    if not in_loop:
+        return None
+    outside = [isa.get(k) or {} for k in ("prologue", "drain", "epilogue")]
+    lds_out = sum(lds_of(p.get("mix")) for p in outside)
+    trips = (lds_dyn / waves - lds_out) / in_loop
+    if trips <= 0:
+        return None
+    fl_out = sum((p.get("mix") or {}).get("mma_flops", 0) for p in outside)
+    return {"trips": trips, "flops_per_wave": lmix["mma_flops"] * trips + fl_out}
+
+
 def kernel_report(arch: str, agent: Dict[str, Any], rec: Dict[str, Any], *,
                   build: Optional[Dict[str, Any]] = None,
                   isa: Optional[Dict[str, Any]] = None,
@@ -286,6 +317,14 @@ def kernel_report(arch: str, agent: Dict[str, Any], rec: Dict[str, Any], *,
     if fl is None and isa and isa.get("att_matrix_flops_per_wave") and g.get("workgroups"):
         fl = isa["att_matrix_flops_per_wave"] * g["workgroups"] * g["waves_per_workgroup"]
         fl_src = "thread trace (matrix instructions a wave ran x FLOPs each) x the grid's waves"
+    if fl is None and isa:
+        est = isa_matrix_flops_per_wave(isa, m)
+        waves = m.get("waves") or ((g.get("workgroups") or 0) * (g.get("waves_per_workgroup") or 0))
+        if est and waves:
+            fl = est["flops_per_wave"] * waves
+            fl_src = ("the ISA's matrix instructions, the main loop's x its trip count "
+                      f"({est['trips']:.1f}, from SQ_INSTS_LDS a wave), x the waves")
+            roof["main_loop_trips"] = round(est["trips"], 2)
     dtype = (isa or {}).get("matrix_dtype") or "bf16"
     peak = (ceil.get("matrix_flops") or {}).get(dtype)
     if fl and dur_s:
@@ -360,9 +399,9 @@ def kernel_report(arch: str, agent: Dict[str, Any], rec: Dict[str, Any], *,
         pass
     elif m.get("mfma_busy") is not None:
         mc = {"busy": m["mfma_busy"], "source": "SQ_VALU_MFMA_BUSY_CYCLES / (cycles x SIMDs)"}
-    elif roof.get("of_compute_peak") is not None and arch.startswith("gfx11"):
+    elif roof.get("of_compute_peak") is not None and arch.startswith(("gfx11", "gfx12")):
         mc = {"busy": roof["of_compute_peak"],
-              "source": "derived: achieved WMMA FLOP/s over the peak (gfx1100 has no WMMA "
+              "source": f"derived: achieved WMMA FLOP/s over the peak ({arch} has no WMMA "
                         "counter)"}
     out["matrix_core"] = mc
     # ---- occupancy
@@ -690,14 +729,24 @@ def findings(arch: str, k: Dict[str, Any]) -> List[Dict[str, Any]]:
                     "text": f"scratch {res.get('scratch')} B, {res.get('spill')} spills",
                     "evidence": {"scratch": res.get("scratch"), "spill": res.get("spill")}})
     has_bound = any(f["kind"] in ("memory_bound", "compute_bound") for f in out)
-    if not has_bound and (mem is not None or comp is not None):
+    matrix = bool((isa.get("total") or {}).get("mma_flops") or (isa or {}).get("matrix_dtype"))
+    if not has_bound and comp is None and matrix:
+        # A matrix kernel whose FLOP rate nothing measured: neither roof can be
+        # ruled out, so no "latency-bound".
+        text = ("bound unknown: no FLOP rate for a matrix kernel (no counter, thread trace "
+                "or main-loop trip count to count its matrix instructions; --flops gives it)"
+                + (f"; {_pct(mem)} of {where}" if mem is not None else ""))
+        out.append({"kind": "bound_unknown", "cost": None, "text": text,
+                    "short": "bound unknown (no FLOP rate)",
+                    "evidence": {"of_compute_peak": None, "of_memory_peak": mem}})
+    elif not has_bound and (mem is not None or comp is not None):
         text = "latency-bound (neither roof): " + ", ".join(
             x for x in ((f"{_pct(comp)} of the matrix peak" if comp is not None else ""),
                         (f"{_pct(mem)} of {where}" if mem is not None else "")) if x)
         out.append({"kind": "latency_bound", "cost": None, "text": text,
                     "evidence": {"of_compute_peak": comp, "of_memory_peak": mem}})
     out.sort(key=lambda f: (f["kind"] not in ("memory_bound", "compute_bound",
-                                              "latency_bound"),
+                                              "latency_bound", "bound_unknown"),
                             -(f["cost"] or 0)))
     return out
 
@@ -709,7 +758,7 @@ def verdict(arch: str, k: Dict[str, Any]) -> Dict[str, Any]:
     roof = k.get("roofline") or {}
     mc = (k.get("matrix_core") or {}).get("busy")
     bound = next((f for f in fs if f["kind"] in ("memory_bound", "compute_bound",
-                                                 "latency_bound")), None)
+                                                 "latency_bound", "bound_unknown")), None)
     parts = []
     if bound is not None:
         parts.append(bound["text"])
