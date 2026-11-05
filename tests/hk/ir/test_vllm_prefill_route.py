@@ -619,12 +619,18 @@ def test_kvsplit_plan_takes_a_short_chunk_with_exact_sizes(monkeypatch):
     assert plan([(8192, 16)] + [(65536, 1)] * 15)[1] is None      # past KVS_PACK_DEC_RATIO
     assert plan([(32768, 32)] + [(8192, 1)] * 15)[1] == (32, 8, True)
     assert plan([(32768, 32)] + [(8192, 1)] * 16)[1] is None       # past KVS_PACK_MAX_DECODES
-    monkeypatch.setattr(vp, "KVS_PACK_MAX_DECODES", {("gfx1100", 128, 8): (3, None)})
+    monkeypatch.setattr(vp, "KVS_PACK_MAX_DECODES", {("gfx1100", 128, 8): ((0, 3, None),)})
     assert plan([(32768, 32)] + [(8192, 1)] * 3)[1] == (32, 8, True)
     assert plan([(32768, 32)] + [(8192, 1)] * 4)[1] == (s_short, w_short, False)  # its own bound
-    monkeypatch.setattr(vp, "KVS_PACK_MAX_DECODES", {("gfx1100", 128, 8): (15, 1 << 18)})
+    monkeypatch.setattr(vp, "KVS_PACK_MAX_DECODES", {("gfx1100", 128, 8): ((0, 15, 1 << 18),)})
     assert plan([(32768, 32)] + [(32768, 1)] * 7)[1] == (32, 8, True)
     assert plan([(32768, 32)] + [(32768, 1)] * 9)[1] is None        # past its decode tokens
+    # tiers by the longest sequence: more decodes over a longer context
+    monkeypatch.setattr(vp, "KVS_PACK_MAX_DECODES",
+                        {("gfx1100", 128, 8): ((0, 3, None), (16384, 7, 170000))})
+    assert plan([(16384, 32)] + [(8192, 1)] * 7)[1] == (32, 8, True)
+    assert plan([(8192, 32)] + [(8192, 1)] * 7)[1] is None
+    assert plan([(16384, 32)] + [(32768, 1)] * 6)[1] is None        # past the tier's tokens
     assert plan([(8192, 32), (8192, 1), (0, 0)])[1] is None        # a request without queries
     monkeypatch.setattr(vp, "KVS_PACKED", {})
     assert plan([(16384, lim)])[1] is None
