@@ -169,6 +169,10 @@ a shape, before and after.
 
 ## What it reached
 
+*A dated record, not a release claim: hk 0.5.0 (`3e6a971`, `f0dff9a`),
+2026-10-22, on an MI355X (gfx950) and a W7900D (gfx1100). The numbers the
+project quotes are on [the scorecard](performance/scorecard.md).*
+
 The acceptance split, each shape tuned once at the default budget, then
 scored against every baseline in one process. The tuner was developed on the
 tuning split only and frozen before the acceptance shapes were looked at

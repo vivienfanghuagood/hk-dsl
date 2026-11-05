@@ -20,6 +20,10 @@ says what changed and what to write instead.
   rowwise and the GEMM with an epilogue.
 - **The checker**: [`hk.check`](api/hk.check.md), its Python API and
   `python3 -m hk.check`.
+- **The PyTorch op**: [`hk.torch_op`](api/hk.md#hktorch_op), its signature,
+  the schema it derives (written tensors as out-parameters) and where it
+  launches (torch's current stream), from 0.9.8. It was experimental from
+  0.9.0 to 0.9.7 and did not change in that time.
 - **The shipped kernels' documented entry points**: the functions on the
   [`hk.ops`](api/hk.ops.md) page above its "In the submodules" section. A name
   that page does not document, or one starting with `_`, is private.
@@ -35,8 +39,6 @@ An experimental name may change or go in any release, minor or patch. The
 CHANGELOG still says so when it does. These pages carry an
 *Experimental* line in the API reference:
 
-- [`hk.torch_op`](api/hk.md#hktorch_op), for 0.9.0. It becomes stable after
-  one release of use.
 - [`hk.comm`](api/hk.comm.md), [`hk.collective`](api/hk.collective.md),
   [`hk.placement`](api/hk.placement.md) and [`hk.group`](api/hk.group.md).
 - [`hk.schedules`](api/hk.schedules.md), [`hk.tune`](api/hk.tune.md) and

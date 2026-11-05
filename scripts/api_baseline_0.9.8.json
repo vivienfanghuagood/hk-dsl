@@ -17274,6 +17274,7 @@
 "GEMV_ARCHES": {},
 "GEMV_MAX_M": {},
 "GEMV_WARPS": {},
+"LARGE_TILE": {},
 "MAX_TOKENS": {},
 "Optional": {},
 "SCHEDULES": {},
@@ -17349,6 +17350,22 @@
 "qw",
 "s",
 "zs",
+"group"
+]
+},
+"exllama_large_matmul": {
+"params": [
+"x",
+"w_q",
+"s",
+"group",
+"out"
+]
+},
+"exllama_large_takes": {
+"params": [
+"n",
+"k",
 "group"
 ]
 },
@@ -17488,6 +17505,16 @@
 "dtype",
 "symmetric",
 "exllama"
+]
+},
+"w4a16_large_kernel": {
+"params": [
+"name",
+"group",
+"block_m",
+"block_n",
+"warps",
+"warp_rows"
 ]
 }
 },

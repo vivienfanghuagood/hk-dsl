@@ -122,6 +122,7 @@ nav:
           - hk.target: api/hk.target.md
   - 4 Ops:
       - hk.ops: api/hk.ops.md
+      - Op catalog: ops.md
   - 5 Serving engines:
       - hk in vLLM: vllm.md
       - hk in SGLang: sglang.md
