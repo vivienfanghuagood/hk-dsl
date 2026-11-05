@@ -99,27 +99,20 @@ hk-dsl has three layers:
 - **Engine routes** (`hk.integration`) are thin adapters that send some of
   vLLM's and SGLang's calls to `hk.ops`.
 
-## Performance
+## How it compares, and the numbers
 
-We quote only end-to-end serving results from the
-[scorecard](docs/performance/scorecard.md).
+[Triton](https://github.com/triton-lang/triton) is much cheaper to write: use
+it unless you need control of tiles, LDS and waits.
+[FlyDSL](https://github.com/ROCm/FlyDSL) gives similar control and is
+CDNA-first. hk-dsl emits HipKittens C++, checks it at build time, and treats
+RDNA3 and RDNA4 as first-class; it is not a faster code generator than that
+C++ ([what it is and is not](docs/positioning.md)).
 
-- **Instinct MI355X**, DeepSeek-V4.1-Flash on vLLM (TP2): hk's default routes on
-  top of a stock vLLM that already uses AITER's tuned paths give **about +5% on
-  8k-token prefill**. Decode is unchanged.
-- **Radeon:** RDNA end-to-end results will come with the RDNA scorecard.
-
-## How it compares
-
-- **[Triton](https://github.com/triton-lang/triton)** is compiler-managed and
-  much cheaper to write, on CDNA and RDNA. Use it unless you need control of
-  tiles, LDS and waits.
-- **[FlyDSL](https://github.com/ROCm/FlyDSL)** is AMD's MLIR Python DSL with
-  instruction-level control. It is CDNA-first and used by AITER and vLLM.
-- **hk-dsl** gives tile- and instruction-level control and emits HipKittens C++.
-  Its gates check the result at build time, and RDNA3 and RDNA4 are
-  first-class targets. It is not a faster code generator than that C++
-  ([comparison](docs/positioning.md#how-it-compares)).
+We quote only end-to-end serving results, from the
+[scorecard](docs/performance/scorecard.md). On an Instinct MI355X,
+DeepSeek-V4.1-Flash on vLLM (TP2), hk's default routes on top of AITER's tuned
+paths give **about +5% on 8k-token prefill**, decode unchanged. Radeon
+results come with the RDNA scorecard.
 
 ## Documentation
 
