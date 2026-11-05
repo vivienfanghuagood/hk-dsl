@@ -35,6 +35,21 @@ def _call(tokens=4, k=2048, n=1024, dtype=torch.float16, zp=True, bm=16, int4=Tr
     return r._why_not(a, b, c, s, z, tokens, {"BLOCK_SIZE_M": bm}, False, int4, list(bs))
 
 
+@pytest.fixture(autouse=True)
+def _cap_32(monkeypatch):
+    """The cap of an arch without a measured one, whatever arch this host reports."""
+    monkeypatch.setattr(r, "_MAX", [r.MAX_TOKENS])
+
+
+@pytest.mark.parametrize("arch,cap", [("gfx1100", 2048), ("gfx1201", 1024), ("gfx950", 32)])
+def test_the_cap_is_per_arch(monkeypatch, arch, cap):
+    from hk import target
+
+    monkeypatch.setattr(r, "_MAX", [])
+    monkeypatch.setattr(target, "current_arch", lambda: arch)
+    assert r.max_tokens() == cap
+
+
 def test_what_it_refuses_and_why():
     assert _call() == "dtype"                       # a CPU tensor: not is_cuda
     assert _call(zp=False) == "no zero points"
@@ -58,6 +73,9 @@ def test_the_config_asks_for_16_row_blocks_at_small_batches(monkeypatch):
     assert r.try_get_optimal_moe_config(w1, w2, 8, "int4_w4a16", 8, [0, 32])["BLOCK_SIZE_M"] == 16
     assert r.try_get_optimal_moe_config(w1, w2, 8, "int4_w4a16", 64, [0, 32])["BLOCK_SIZE_M"] == 32
     assert r.try_get_optimal_moe_config(w1, w2, 8, None, 8, None)["BLOCK_SIZE_M"] == 32
+    monkeypatch.setattr(r, "_MAX", [2048])                                  # gfx1100's cap
+    assert r.try_get_optimal_moe_config(w1, w2, 8, "int4_w4a16", 2048, [0, 32])["BLOCK_SIZE_M"] == 16
+    assert r.try_get_optimal_moe_config(w1, w2, 8, "int4_w4a16", 2049, [0, 32])["BLOCK_SIZE_M"] == 32
 
 
 def test_apply_without_vllm_reports_rather_than_raises():

@@ -9,7 +9,7 @@ imported it -- puts hk's GEMM (`hk.ops.moe.moe_gemm_w4`: the MoE GEMM with `hk.l
 rows=True)`) under every such layer, on vLLM's own tensors: no repack, no second copy of the experts,
 and vLLM's sort, activation and top-k sum as they are.
 
-The stand-in takes a call at up to `MAX_TOKENS` tokens a step, with zero codes (AWQ, or GPTQ with
+The stand-in takes a call at up to `max_tokens()` tokens a step (this arch's `MAX_TOKENS_AT`), with zero codes (AWQ, or GPTQ with
 zero points), a 16-bit activation of the scales' type, a K the schedule divides and an (experts, N,
 K, group) in `VALIDATED` (any, with HK_VLLM_MOE_WNA16=force); at those batches the config patch
 below asks vLLM to sort into 16-row blocks. Everything else -- prefill chunks,
@@ -35,6 +35,24 @@ PREFIXES = ("vllm",)
 #: group 32) on a W7900D, real captured routing, cold weights, same process as vLLM's kernel with
 #: the tuned config: 2.6x at 1 token, 3.2x at 4, 2.9x at 8, 2.6x at 16.
 MAX_TOKENS = 32
+#: Per arch, the most tokens a step where hk's GEMM (16-row blocks) is at least 1.15x vLLM's
+#: kernel at the best of 108 searched configs, on those shapes (kernel_bench moe-w4, cold weights,
+#: real routing): gfx1100 1.26x at 2048 tokens and 1.14x at 4096; gfx1201 1.19x at 1024 and 1.09x
+#: at 2048. A prefill chunk up to that size runs on hk too. Other archs: MAX_TOKENS.
+MAX_TOKENS_AT = {"gfx1100": 2048, "gfx1201": 1024}
+_MAX: list = []
+
+
+def max_tokens() -> int:
+    """This process's cap: MAX_TOKENS_AT for its arch, else MAX_TOKENS."""
+    if not _MAX:
+        from ..target import current_arch  # noqa: PLC0415
+
+        try:
+            _MAX.append(MAX_TOKENS_AT.get(current_arch(), MAX_TOKENS))
+        except Exception:  # noqa: BLE001 -- no GPU: the conservative cap
+            _MAX.append(MAX_TOKENS)
+    return _MAX[0]
 
 #: The (experts, N, K, group) the route was validated on -- Qwen3.6-35B-A3B-AWQ's two expert GEMMs
 #: (w13 and w2), its e2e gate. Any other is refused (counted "not validated") unless
@@ -76,7 +94,7 @@ def _why_not(A, B, C, B_scale, B_zp, tokens, config, use_int8_w8a16, use_int4_w4
         return "no zero points"
     if not block_shape or block_shape[0] != 0 or block_shape[1] % 16:
         return "block shape"
-    if tokens > MAX_TOKENS:
+    if tokens > max_tokens():
         return "tokens"
     if config.get("BLOCK_SIZE_M") != 16:
         return "block_m not 16"
@@ -150,7 +168,7 @@ def try_get_optimal_moe_config(w1_shape, w2_shape, top_k, dtype, M, block_shape=
     """vLLM's config, with BLOCK_SIZE_M 16 for a 4-bit layer at a batch hk's GEMM takes: the sort
     and the GEMM both read it, so changing it here changes both together."""
     config = _ORIG_CONFIG(w1_shape, w2_shape, top_k, dtype, M, block_shape)
-    if (dtype == "int4_w4a16" and block_shape and block_shape[0] == 0 and M <= MAX_TOKENS
+    if (dtype == "int4_w4a16" and block_shape and block_shape[0] == 0 and M <= max_tokens()
             and schedule(w1_shape[2] * 2) is not None and schedule(w2_shape[2] * 2) is not None):
         config = dict(config, BLOCK_SIZE_M=16)
     return config
@@ -177,7 +195,7 @@ def apply() -> str:
     names = _common.rebind(PREFIXES, _ORIG, _GUARDED)
     cfg = _common.rebind(PREFIXES, _ORIG_CONFIG, try_get_optimal_moe_config)
     return (f"moe_wna16 -> hk where hk.ops.moe.moe_gemm_w4 takes the GEMM ({len(names)} kernel "
-            f"and {len(cfg)} config bindings rebound; 16-row blocks up to {MAX_TOKENS} tokens; "
+            f"and {len(cfg)} config bindings rebound; 16-row blocks up to {max_tokens()} tokens; "
             + ("any shape (force)" if _FORCE else f"{len(VALIDATED)} validated shapes") + ")")
 
 

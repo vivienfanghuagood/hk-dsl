@@ -116,24 +116,29 @@ def _wna16_case(tokens, second, g, experts=16, top_k=4, n=512, k=1024, group=32)
     sid, eid, ntp = moe.moe_align(topk_ids.to(torch.int32), 16, experts)
     rows = tokens * (top_k if second else 1)
     a = (torch.randn(rows, k, device="cuda", generator=g) * 0.5).half()
-    want = torch.stack([
-        (a[t * top_k + j if second else t].double() @ w[topk_ids[t, j]].t())
-        * (topk_w[t, j].double() if second else 1.0)
-        for t in range(tokens) for j in range(top_k)])
+    want = torch.empty(tokens, top_k, n, device="cuda", dtype=torch.float64)
+    rows = a.double().view(tokens, top_k if second else 1, k).expand(tokens, top_k, k)
+    for e in range(experts):
+        hit = topk_ids == e
+        if hit.any():
+            want[hit] = rows[hit] @ w[e].t()
+    if second:
+        want *= topk_w.double().unsqueeze(-1)
+    want = want.view(tokens * top_k, n)
     c = torch.full((tokens, top_k, n), float("nan"), device="cuda", dtype=torch.float16)
     return a, qb, c, s, zb, topk_w, sid, eid, ntp, want, top_k
 
 
 @pytest.mark.parametrize("second", [False, True], ids=["w13", "w2"])
 def test_vllm_moe_wna16_takes_a_decode_batch_in_vllms_call_and_leaves_past_32(second, monkeypatch):
-    """The stand-in for vLLM's invoke_fused_moe_wna16_triton_kernel: up to MAX_TOKENS it runs hk's
+    """The stand-in for vLLM's invoke_fused_moe_wna16_triton_kernel: up to max_tokens() it runs hk's
     4-bit MoE GEMM on vLLM's own tensors and writes C in place (w2 with the routing weights), past
     it vLLM's kernel."""
     _on_here("vllm_moe_wna16")
     monkeypatch.setattr(vllm_moe_wna16, "_FORCE", True)      # a small layer, not one of VALIDATED
     cfg = {"BLOCK_SIZE_M": 16}
     g = torch.Generator("cuda").manual_seed(31 + second)
-    for tokens in (1, 5, vllm_moe_wna16.MAX_TOKENS):
+    for tokens in sorted({1, 5, 33, 300, vllm_moe_wna16.max_tokens()}):
         a, qb, c, s, zb, tw, sid, eid, ntp, want, top_k = _wna16_case(tokens, second, g)
         monkeypatch.setattr(vllm_moe_wna16, "_ORIG", _never)
         before = vllm_moe_wna16.STATS["hk"]
@@ -144,7 +149,7 @@ def test_vllm_moe_wna16_takes_a_decode_batch_in_vllms_call_and_leaves_past_32(se
         _close(c.view(-1, c.shape[-1]), want.float())
     seen = []
     monkeypatch.setattr(vllm_moe_wna16, "_ORIG", lambda *a: seen.append(a[2].shape[0]))
-    tokens = vllm_moe_wna16.MAX_TOKENS + 1
+    tokens = vllm_moe_wna16.max_tokens() + 1
     a, qb, c, s, zb, tw, sid, eid, ntp, _, top_k = _wna16_case(tokens, second, g)
     vllm_moe_wna16.invoke_fused_moe_wna16_triton_kernel(
         a, qb, c, s, zb, tw, sid, eid, ntp, second, 1 if second else top_k, cfg, None,
