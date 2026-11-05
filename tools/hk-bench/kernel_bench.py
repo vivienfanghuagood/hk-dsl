@@ -397,9 +397,31 @@ def quantized(qc: dict, name: str) -> bool:
                    for rule in (qc.get("dynamic") or {}) for m in mods)
 
 
+def _rdna_hybrid_weights(ck, k, n):
+    """(CU count, [(codes, scales)]) in RDNAHybridW4A16LinearKernel's layout for each GPTQ copy, or
+    None where this vLLM has no such kernel or it does not run on this GPU."""
+    import torch
+
+    try:
+        from vllm.model_executor.kernels.linear.mixed_precision import rdna_hybrid_w4a16 as rh
+        from vllm.utils.platform_utils import num_compute_units
+
+        if not rh._on_gfx1x():
+            return None
+        cu = num_compute_units()
+    except Exception:  # noqa: BLE001
+        return None
+    out = []
+    for qw, _, sc, _ in ck:                 # GPTQ's [K/8, N] words back to [N, K] codes
+        q = torch.stack([(qw >> (4 * t)) & 0xF for t in range(8)], 1).reshape(k, n)
+        out.append((rh.pack_skinny_int4(q.t().contiguous()), sc.t().contiguous()))
+    return cu, out
+
+
 def run_linear_w4(a, only: set, notes: dict) -> List[dict]:
     """4-bit linear layers, fp16 activations. A GPTQ checkpoint (symmetric): hk's w4a16 decode
-    GEMM against vLLM's RDNA3 GPTQ kernel and its exllama kernel. An AWQ one (zero points): hk's
+    GEMM against vLLM's RDNA3 GPTQ kernel, its RDNA hybrid kernel (gfx11/gfx12) and its exllama
+    kernel. An AWQ one (zero points): hk's
     against what vLLM's AutoAWQLinearMethod runs, its dequantize + matmul (the branch its compiled
     graph takes at every batch, docs/history/22) and its Triton awq_gemm (below 256 tokens, eager)."""
     import torch
@@ -446,6 +468,7 @@ def run_linear_w4(a, only: set, notes: dict) -> List[dict]:
                 w = qw.clone()
                 call_by_name(ops.gptq_shuffle, q_weight=w, q_perm=empty, bit=4)
                 vl.append((w, qz, sc))
+        hy = _rdna_hybrid_weights(ck, k, n) if ops is not None and not awq else None
         for m in a.ms:
             x = (torch.randn(m, k, device=dev, generator=g) * 0.5).half()
             ref = x.float() @ ck[0][3].t()
@@ -469,6 +492,14 @@ def run_linear_w4(a, only: set, notes: dict) -> List[dict]:
                      for i in range(copies)],
                     "vllm._custom_ops.awq_gemm, Triton (VLLM_USE_TRITON_AWQ=1): AutoAWQLinearMethod "
                     "below 256 tokens, eager")
+            if hy is not None:
+                cu = hy[0]
+                arms["vLLM rdna_hybrid_w4a16"] = (
+                    [lambda i=i, x=x: torch.ops.vllm.rdna_hybrid_w4a16_apply(
+                        x, hy[1][i][0], hy[1][i][1], None, None, cu, group) for i in range(copies)],
+                    "torch.ops.vllm.rdna_hybrid_w4a16_apply (RDNAHybridW4A16LinearKernel: its HIP "
+                    "skinny GEMM at small batches, Triton above; what vLLM's GPTQ layers run on "
+                    "gfx1201), on pack_skinny_int4's layout, symmetric (no zero points)")
             if ops is not None and not awq and hasattr(ops, "gptq_gemm_rdna3"):
                 arms["vLLM gptq_gemm_rdna3"] = (
                     [lambda i=i, x=x: call_by_name(
@@ -505,7 +536,7 @@ def run_linear_w4(a, only: set, notes: dict) -> List[dict]:
                 row["arms"][arm] = {**{k2: round(v, 3) for k2, v in t.items()}, "err": round(errs.get(arm, 0.0), 4)}
             rows.append(summarise(row))
             print(line(row), flush=True)
-        del ck, hkw, vl
+        del ck, hkw, vl, hy
         torch.cuda.empty_cache()
     if skipped:
         notes["skipped"] = f"{', '.join(skipped)}: left unquantized by the checkpoint"
