@@ -4,13 +4,35 @@ Release notes for each version are also on its
 [GitHub release](https://github.com/vivienfanghuagood/hk-dsl/releases).
 The next version's notes collect here until it is released.
 
-## Unreleased
+## 0.9.3
 
-**`@hk.specialize`, and factory kernels that need no `body.__name__ = name`.** A kernel defined inside a factory and given no `name=` is now named after the factory values it reads (`<function>__<values>`, or `<factory>_body__<values>` for a `def body`; the same in every process), and a kernel's `__name__` is its name, so `hk.profile`, `hk.check` and tracebacks show it rather than `body`. `@hk.specialize` on a factory memoizes it on its arguments (defaults included) and names the kernel it returns `<factory>__<arguments>`, in place of `functools.lru_cache` and a hand-built name string ([the language](docs/language.md#kernels-made-by-a-factory)). `name=` and a hand-set `__name__` keep working and still win; every kernel in `hk.ops` keeps its name and its generated source.
+hk-dsl 0.9.3: a fix for vLLM's attention routes on a KV cache past 4 GiB (hk's 32-bit buffer offsets
+wrapped there; such a cache now goes to vLLM's kernel); a kernel made by a factory needs no
+`body.__name__ = name`, name string or `lru_cache` (`@hk.specialize`, and kernels named after their
+factory's values); and on vLLM's TRITON_ATTN the KV split's shortest chunks take GQA-packed tiles.
+No change to the dialect (`hk-dialect-8`) or to which routes are on by default.
 
-**Fix: vLLM's attention routes no longer read a KV cache past 4 GiB.** hk's kernels address a tensor through a buffer resource, with 32-bit byte offsets from its base. Over a layer's cache view of 4 GiB or more, the prefill (`vllm_prefill`, both backends) and the split decode read the wrong pages, or faulted; Qwen3.8's shape crosses it at about a million cached tokens a layer. Such a call now goes to vLLM's kernel (`vllm_prefill.SPAN_LIMIT`).
+On PyPI: `pip install hk-dsl`, for CPython 3.10 to 3.13 on Linux x86_64 with glibc 2.35 or newer
+(Ubuntu 22.04 and later, and vLLM's ROCm images): one `manylinux_2_35` wheel per interpreter. The
+wheels below are the same files. The API reference marks what 0.9.3 adds *New after 0.9.2*.
+
+    pip install hk_dsl-0.9.3-cp312-cp312-manylinux_2_35_x86_64.whl
+
+### Changes
+
+**Fix: vLLM's attention routes no longer read a KV cache past 4 GiB** (#265). hk's kernels address a tensor through a buffer resource, with 32-bit byte offsets from its base. Over a layer's cache view of 4 GiB or more, the prefill (`vllm_prefill`, both backends) and the split decode read the wrong pages, or faulted; Qwen3.8's shape crosses it at about a million cached tokens a layer. Such a call now goes to vLLM's kernel (`vllm_prefill.SPAN_LIMIT`).
+
+**`@hk.specialize`, and factory kernels that need no `body.__name__ = name`** (#263, #264). A kernel defined inside a factory and given no `name=` is now named after the factory values it reads (`<function>__<values>`, or `<factory>_body__<values>` for a `def body`; the same in every process), and a kernel's `__name__` is its name, so `hk.profile`, `hk.check` and tracebacks show it rather than `body`. `@hk.specialize` on a factory memoizes it on its arguments (defaults included) and names the kernel it returns `<factory>__<arguments>`, in place of `functools.lru_cache` and a hand-built name string ([the language](docs/language.md#kernels-made-by-a-factory)). `name=` and a hand-set `__name__` keep working and still win; every kernel in `hk.ops` keeps its name and its generated source.
 
 **The KV split's shortest chunks take GQA-packed tiles** (#253). `hk.ops.paged_prefill` has `pack`: a workgroup holds one kv head's query heads of a few tokens instead of one query head's rows, so a kv head's K and V are read once a tile instead of once a query head, and a chunk of a few tokens fills its tile instead of a sliver of it. The route takes it for the shortest chunks over long contexts, per GPU, head size and query heads a kv head, where it was measured faster than the unpacked split (`vllm_prefill.KVS_PACKED`); every call it takes is faster than both stock kernels. Beside decodes, a packed call now takes the batch too: the prefill rows on the packed split, the decode rows on vLLM's decode kernel, which splits a decode's context where its mixed-batch kernel does not. It takes up to a measured number of decodes for each GPU and model shape (`KVS_PACK_MAX_DECODES`); before, such a batch went to vLLM's kernel whole. On gfx1201 with head size 128, the unpacked split no longer takes a short chunk over a context under 16k tokens beside decodes, where it was measured slower.
+
+**Docs: hk in vLLM and SGLang in one command** (#257, #258). The README, the quickstart, the install page and the engine pages lead with the one command that enables hk in each engine; the install page no longer names a release.
+
+**The first-JIT notice names the pre-build command for the GPU it runs on** (#256): `warm-routes` on gfx950 only.
+
+### All pull requests
+
+#253, #256, #257, #258, #261, #263, #264, #265.
 
 ## 0.9.2
 
