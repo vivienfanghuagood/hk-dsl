@@ -362,20 +362,29 @@ def jit(monkeypatch, tmp_path):
     monkeypatch.setattr(C.subprocess, "run", lambda cmd, **kw: subprocess.CompletedProcess(
         cmd, 1, stdout="hipcc stand-in", stderr=""))
 
-    def build(i):
+    def build(i, arch="gfx1100"):
         with pytest.raises(C.CompileError):
-            C.build(f"// kernel {i}\n", "gfx1100", name=f"k{i}")
+            C.build(f"// kernel {i}\n", arch, name=f"k{i}")
     return build
 
 
 def test_the_first_jit_compile_after_a_plugin_applied_routes_says_so_once(jit, capsys):
     C.arm_jit_notice("vLLM plugin")
-    jit(1)
-    jit(2)
+    jit(1, "gfx950")
+    jit(2, "gfx950")
     err = [x for x in capsys.readouterr().err.splitlines() if x.startswith("[hk] JIT")]
     assert len(err) == 1
     assert "compiling kernel 'k1'" in err[0] and "not pre-warmed" in err[0]
     assert "python3 -m hk.integration warm-routes" in err[0]
+
+
+def test_the_jit_notice_on_rdna_does_not_point_at_warm_routes(jit, capsys):
+    # warm-routes builds the gfx950 routes' kernels only; an RDNA server is told the cache is kept.
+    C.arm_jit_notice("SGLang plugin")
+    jit(4)
+    err = [x for x in capsys.readouterr().err.splitlines() if x.startswith("[hk] JIT")]
+    assert len(err) == 1 and "warm-routes" not in err[0]
+    assert "a later start with the same HK_CACHE_DIR compiles nothing" in err[0]
 
 
 def test_no_jit_notice_unless_a_plugin_armed_it(jit, capsys):
