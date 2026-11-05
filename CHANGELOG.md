@@ -6,6 +6,8 @@ The next version's notes collect here until it is released.
 
 ## Unreleased
 
+**GPTQ prefill on hk on gfx1201.** `vllm_gptq` now also takes the prefill batches vLLM's `RDNAHybridW4A16LinearKernel` runs on Triton (above 64 tokens), on a new large-batch form of hk's 4-bit GEMM (`hk.ops.w4a16.exllama_large_matmul`, `w4a16_large_kernel`). Like the decode forms, it reads vLLM's own weight tensors in place. A 128-row tile of W is decoded once into LDS and shared across 128 tokens.
+
 **vLLM's TRITON_ATTN on gfx1201: MiniCPM5's shortest chunks beside more decodes take the packed KV split.** The packed split took a short chunk over a long context beside at most 3 decodes on gfx1201; for MiniCPM5's shape (head size 128, 8 query heads a kv head) it now takes up to 15, while their tokens stay under a measured bound (`vllm_prefill.KVS_PACK_MAX_DECODES` entries are now (decodes, decode tokens)). Measured faster than both stock kernels on every batch it takes.
 
 ## 0.9.4

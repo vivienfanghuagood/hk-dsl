@@ -221,6 +221,57 @@ def w4a16_kernel(name: str, *, tokens: int = 1, slices: int = 4, warps: int = 16
                      grid=lambda p: (p.qw.rows // rows, 1, 1))
 
 
+def w4a16_large_kernel(name: str, *, group: int = 32, block_m: int = 128, block_n: int = 128,
+                       warps: int = 8, warp_rows: int = 2):
+    """The large-batch W4A16 GEMM on vLLM's RDNA skinny layout read in place (prefill): C (M, N)
+    = x (M, K) @ W.T, fp16, W symmetric (zero point 8) as `exllama_matmul` reads it. A workgroup
+    takes a block_m x block_n tile of C; every 64-deep K step its warps stage x's rows into LDS and
+    decode W's block_n rows once into LDS (`hk.load_w4(exllama=True)`), then each warp multiplies
+    its (block_m / warp_rows) x (block_n / warp_cols) share from both -- the decode is paid once
+    per block_m tokens, not once per warp. K a multiple of 64; N of block_n."""
+    ks = 64
+    warp_cols = warps // warp_rows
+    rm, rn = block_m // warp_rows, block_n // warp_cols
+    if block_m % (16 * warps) or block_n % (16 * warps) or rm % 16 or rn % 16:
+        raise ValueError(f"w4a16_large_kernel: block {block_m}x{block_n} does not split over "
+                         f"{warps} warps ({warp_rows} rows)")
+    st_a = hk.ST(fp16, block_m, ks)
+    st_b = hk.ST(fp16, block_n, ks)
+    ty_ld_a = hk.RT(fp16, block_m // warps, ks, "row")
+    ty_ld_b = hk.RT(fp16, block_n // warps, ks, "row")
+    ty_a = hk.RT(fp16, rm, 16, "row")
+    ty_b = hk.RT(fp16, rn, 16, "row")
+    ty_c = hk.RT(fp32, rm, rn, "col")
+
+    def body(x: hk.Tensor[fp16], qw: hk.Tensor[i32], s: hk.Tensor[fp16], c: hk.Tensor[fp16]):
+        As = hk.lds.alloc(st_a, name="As")
+        Bs = hk.lds.alloc(st_b, name="Bs")
+        n0 = hk.arch.block_idx.x * block_n
+        m0 = hk.arch.block_idx.y * block_m
+        wid = hk.arch.warp_id()
+        wr = wid // warp_cols
+        wc = wid % warp_cols
+        acc = hk.zeros(ty_c)
+        for t in hk.range(x.cols // ks):
+            k = t * ks
+            a_t = x[hk.elem_coord(0, 0, m0 + wid * (block_m // warps), k)].load(ty_ld_a, bounded=True)
+            w_t = hk.load_w4(ty_ld_b, qw, s, None, n0 + wid * (block_n // warps), k, group=group,
+                             zero=SYMMETRIC_ZERO, exllama=True)
+            hk.arch.barrier()
+            As.subtile(block_m // warps, ks, wid, 0).store(a_t)
+            Bs.subtile(block_n // warps, ks, wid, 0).store(w_t)
+            hk.arch.barrier()
+            for sl in range(ks // 16):
+                a_s = As.subtile(rm, 16, wr, sl).load(ty_a)
+                b_s = Bs.subtile(rn, 16, wc, sl).load(ty_b)
+                acc += a_s @ b_s.T
+        c[hk.elem_coord(0, 0, m0 + wr * rm, n0 + wc * rn)].store(acc, bounded=True)
+
+    body.__name__ = name
+    return hk.kernel(body, warps=warps, name=name,
+                     grid=lambda p: (p.qw.rows // block_n, hk.cdiv(p.x.rows, block_m), 1))
+
+
 def w4a16_gemv_kernel(name: str, *, tokens: int = 1, warps: int = 16, group: int = 128,
                       symmetric: bool = False, exllama: bool = False):
     """The small-batch form: up to `tokens` (1..8) rows of fp16 x against one 16-row block of W a
@@ -341,6 +392,37 @@ def exllama_matmul(x, w_q, s, group: int, out=None):
                 f"w4a16_gemv_t{t}_w{GEMV_WARPS}_g{group}_exl", tokens=t, warps=GEMV_WARPS,
                 group=group, symmetric=True, exllama=True))
         _OPS[key](xc[r0:r0 + t], w_q, s, out[r0:r0 + t])
+    return out
+
+
+#: The large-batch form's tile (`w4a16_large_kernel`): measured best of 128x128 with 8 warps in
+#: 2 or 4 rows and 128x64 with 4 on Qwen3.8-27B-GPTQ's shapes on gfx1201 (65-4096 tokens).
+LARGE_TILE = dict(block_m=128, block_n=128, warps=8, warp_rows=4)
+
+
+def exllama_large_takes(n: int, k: int, group: int) -> bool:
+    """Whether `exllama_large_matmul` takes an [N, K] W: N a multiple of the tile's block_n, K of
+    64, group a multiple of 16 dividing K."""
+    return n % LARGE_TILE["block_n"] == 0 and k % 64 == 0 and group % 16 == 0 and k % group == 0
+
+
+def exllama_large_matmul(x, w_q, s, group: int, out=None):
+    """x @ W.T, fp16, any number of tokens, W in vLLM's RDNA skinny layout read in place (as
+    `exllama_matmul`): the large-batch form, W decoded once per 128 tokens into LDS.
+    `exllama_large_takes` must hold."""
+    import torch  # noqa: PLC0415
+
+    m = x.shape[0]
+    n = w_q.shape[0]
+    if out is None:
+        out = torch.empty((m, n), device=x.device, dtype=torch.float16)
+    key = ("exl-large", group)
+    if key not in _OPS:
+        from ..runtime.torch_ext import launcher  # noqa: PLC0415
+
+        _OPS[key] = launcher(w4a16_large_kernel(f"w4a16_large_g{group}_exl", group=group,
+                                                **LARGE_TILE))
+    _OPS[key](x if x.is_contiguous() else x.contiguous(), w_q, s, out)
     return out
 
 
@@ -508,9 +590,9 @@ def _matmul_legacy(x, qw, s, zs, group: int, out=None):
     return out
 
 
-__all__ = ["AWQ_ORDER", "EXL_CHUNK", "EXL_GEMV_MAX", "GEMV_ARCHES", "GEMV_MAX_M", "GEMV_WARPS", "MAX_TOKENS", "SCHEDULES",
-           "SHALLOW_K", "SYMMETRIC_ZERO", "block_scales", "dequant", "exllama_matmul",
+__all__ = ["AWQ_ORDER", "EXL_CHUNK", "EXL_GEMV_MAX", "GEMV_ARCHES", "LARGE_TILE", "GEMV_MAX_M", "GEMV_WARPS", "MAX_TOKENS", "SCHEDULES",
+           "SHALLOW_K", "SYMMETRIC_ZERO", "block_scales", "dequant", "exllama_large_matmul", "exllama_large_takes", "exllama_matmul",
            "exllama_takes", "gemv_kernel_for", "gemv_takes",
-           "kernel_for", "unblock_scales", "w4a16_gemv_kernel",
+           "kernel_for", "unblock_scales", "w4a16_gemv_kernel", "w4a16_large_kernel",
            "matmul", "plan", "schedule_for",
            "repack_awq", "repack_gptq", "takes", "tokens_for", "w4a16_kernel"]

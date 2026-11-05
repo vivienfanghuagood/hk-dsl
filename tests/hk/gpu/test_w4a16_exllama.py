@@ -119,6 +119,38 @@ def test_every_allocation_end_fenced():
     ''')
 
 
+@pytest.mark.parametrize("m", [1, 65, 128, 129, 300, 1024])
+def test_the_large_batch_form_is_within_two_ulps_a_row_of_float64(m):
+    """The large-batch form (`exllama_large_matmul`: W decoded once per 128 tokens into LDS), at
+    whole and partial 128-token tiles."""
+    g = torch.Generator(device="cuda").manual_seed(700 + m)
+    n, k, group = 256, 2048, 32
+    qw, s, w = _layer(n, k, group, g)
+    assert w4a16.exllama_large_takes(n, k, group)
+    x = torch.randn(m, k, device="cuda", dtype=torch.float16, generator=g)
+    out = torch.full((m, n), float("nan"), device="cuda", dtype=torch.float16)
+    got = w4a16.exllama_large_matmul(x, qw, s, group, out=out)
+    assert _within_two_ulps_a_row(got, x.double() @ w.t()) <= 2
+
+
+def test_the_large_batch_form_gives_the_same_bits_on_every_launch():
+    g = torch.Generator(device="cuda").manual_seed(17)
+    n, k, group = 5120, 6144, 32
+    qw, s, _ = _layer(n, k, group, g)
+    x = torch.randn(300, k, device="cuda", dtype=torch.float16, generator=g)
+    first, differ, nan = None, 0, 0
+    for _ in range(LAUNCHES // 4):
+        out = torch.full((300, n), float("nan"), device="cuda", dtype=torch.float16)
+        w4a16.exllama_large_matmul(x, qw, s, group, out=out)
+        torch.cuda.synchronize()
+        nan += bool(out.isnan().any())
+        if first is None:
+            first = out.clone()
+        else:
+            differ += not torch.equal(out, first)
+    assert (nan, differ) == (0, 0)
+
+
 def test_the_wmma_form_runs_from_past_exl_gemv_max_to_64():
     """Past EXL_GEMV_MAX tokens exllama_matmul is one WMMA launch at the decode schedules."""
     n, k, group = 512, 2048, 32
@@ -131,6 +163,10 @@ def test_the_wmma_form_runs_from_past_exl_gemv_max_to_64():
 
 
 def test_no_instantiation_spills_or_uses_scratch():
+    for group in (32, 64, 128):
+        for r in w4a16.w4a16_large_kernel(f"large_g{group}", group=group,
+                                          **w4a16.LARGE_TILE).build().kernels:
+            assert (r.scratch, r.vgpr_spill) == (0, 0), ("large", group, r)
     for t, sch in w4a16.SCHEDULES.items():
         for group in (32, 64, 128):
             slices = min(sch["slices"], group // 16)
