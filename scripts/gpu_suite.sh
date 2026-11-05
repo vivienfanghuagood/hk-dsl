@@ -37,7 +37,7 @@ group moe    $G/test_moe_a8w4.py $G/test_vllm_moe_a8w4.py     # 69 kernels: TSS 
 # Every op family under the end-fenced allocator, a child process per family (test_fenced.py):
 # its own group, so its serial children overlap the other groups' compiles.
 group fence  $G/test_fenced.py
-rest=$(ls $G/test_*.py | grep -v -E "test_(gemm|autotune|attn|sdpa|decode_gemm|paged|load_scalar|phase2|target_rmsnorm|elementwise|bounded|strided|while|indexed|torch_op|engine|vllm_gemm|flydsl_gemm|moe_a8w4|vllm_moe_a8w4|fenced|templates_[a-z]+)\.py")
+rest=$(ls $G/test_*.py | grep -v -E "test_(gemm|autotune|attn|sdpa|decode_gemm|paged|load_scalar|phase2|target_rmsnorm|elementwise|bounded|strided|while|indexed|torch_op|engine|vllm_gemm|flydsl_gemm|moe_a8w4|vllm_moe_a8w4|fenced|templates_[a-z]+|doc_[a-z_]+)\.py")
 # Every kernel a test builds is a pybind module of its own, each takes one of a process's 1024
 # pthread TSS keys, and one process ran out ("could not initialize the TSS key") once gfx950's
 # strips had preloaded twins: the rest in contiguous shares, two on one GPU and two a GPU on
@@ -53,6 +53,11 @@ group dx tests/dx            # the DX suite (bench/dx): every task and solution 
 # The templates build a kernel per plan they test: a process of their own each (TSS keys).
 for t in $G/test_templates_*.py; do
     group "tmpl_$(basename "$t" .py | sed 's/^test_templates_//')" "$t"
+done
+# The docs' examples (tests/hk/_doc_blocks.py): a process of their own each, so a new page's test
+# does not reshuffle the rest shares, which sit close to the TSS-key limit on gfx950.
+for t in $G/test_doc_*.py; do
+    group "doc_$(basename "$t" .py | sed 's/^test_doc_//')" "$t"
 done
 
 # Slot s runs on gpus[s % #gpus]; pid[s] is its process, empty when free.
