@@ -19,6 +19,7 @@ torch = pytest.importorskip("torch")
 from hk.integration import sglang as hks  # noqa: E402
 from hk.integration import sglang_diffusion as sgld  # noqa: E402
 from hk.integration import sglang_moe, vllm_gemm, vllm_gptq, vllm_int4, vllm_moe  # noqa: E402
+from hk.integration import vllm_moe_wna16  # noqa: E402
 from hk.ops import moe, w4a16  # noqa: E402
 from hk.target import current_arch  # noqa: E402
 
@@ -97,6 +98,57 @@ def test_vllm_moe_leaves_a_batch_past_this_archs_limit_to_vllm(monkeypatch):
     vllm_moe.invoke_fused_moe_triton_kernel(
         a, w, c, None, None, tw, sid, eid, ntp, True, 2, {"BLOCK_SIZE_M": 16}, None,
         False, False, False, False, False)
+    assert seen == [tokens]
+
+
+def _wna16_case(tokens, second, g, experts=16, top_k=4, n=512, k=1024, group=32):
+    """vLLM's moe_wna16 call for one of an AWQ layer's GEMMs (codes uint8 [E, N, K/2], scales
+    [E, N, K/G], zero codes uint8 [E, N/2, K/G]) and its float64 result per (token, choice)."""
+    q = torch.randint(0, 16, (experts, n, k), device="cuda", generator=g, dtype=torch.int32)
+    z = torch.randint(0, 16, (experts, n, k // group), device="cuda", generator=g, dtype=torch.int32)
+    s = (torch.rand(experts, n, k // group, device="cuda", generator=g) * 0.02 + 0.001).half()
+    qb = (q[..., 0::2] | (q[..., 1::2] << 4)).to(torch.uint8).contiguous()
+    zb = (z[:, 0::2] | (z[:, 1::2] << 4)).to(torch.uint8).contiguous()
+    w = (q - z.repeat_interleave(group, dim=2)).double() * s.double().repeat_interleave(group, dim=2)
+    scores = torch.rand(tokens, experts, device="cuda", generator=g)
+    topk_w, topk_ids = scores.topk(top_k, dim=1)
+    topk_w = topk_w.softmax(dim=1).float()
+    sid, eid, ntp = moe.moe_align(topk_ids.to(torch.int32), 16, experts)
+    rows = tokens * (top_k if second else 1)
+    a = (torch.randn(rows, k, device="cuda", generator=g) * 0.5).half()
+    want = torch.stack([
+        (a[t * top_k + j if second else t].double() @ w[topk_ids[t, j]].t())
+        * (topk_w[t, j].double() if second else 1.0)
+        for t in range(tokens) for j in range(top_k)])
+    c = torch.full((tokens, top_k, n), float("nan"), device="cuda", dtype=torch.float16)
+    return a, qb, c, s, zb, topk_w, sid, eid, ntp, want, top_k
+
+
+@pytest.mark.parametrize("second", [False, True], ids=["w13", "w2"])
+def test_vllm_moe_wna16_takes_a_decode_batch_in_vllms_call_and_leaves_past_32(second, monkeypatch):
+    """The stand-in for vLLM's invoke_fused_moe_wna16_triton_kernel: up to MAX_TOKENS it runs hk's
+    4-bit MoE GEMM on vLLM's own tensors and writes C in place (w2 with the routing weights), past
+    it vLLM's kernel."""
+    _on_here("vllm_moe_wna16")
+    monkeypatch.setattr(vllm_moe_wna16, "_FORCE", True)      # a small layer, not one of VALIDATED
+    cfg = {"BLOCK_SIZE_M": 16}
+    g = torch.Generator("cuda").manual_seed(31 + second)
+    for tokens in (1, 5, vllm_moe_wna16.MAX_TOKENS):
+        a, qb, c, s, zb, tw, sid, eid, ntp, want, top_k = _wna16_case(tokens, second, g)
+        monkeypatch.setattr(vllm_moe_wna16, "_ORIG", _never)
+        before = vllm_moe_wna16.STATS["hk"]
+        vllm_moe_wna16.invoke_fused_moe_wna16_triton_kernel(
+            a, qb, c, s, zb, tw, sid, eid, ntp, second, 1 if second else top_k, cfg, None,
+            False, True, [0, 32])
+        assert vllm_moe_wna16.STATS["hk"] == before + 1
+        _close(c.view(-1, c.shape[-1]), want.float())
+    seen = []
+    monkeypatch.setattr(vllm_moe_wna16, "_ORIG", lambda *a: seen.append(a[2].shape[0]))
+    tokens = vllm_moe_wna16.MAX_TOKENS + 1
+    a, qb, c, s, zb, tw, sid, eid, ntp, _, top_k = _wna16_case(tokens, second, g)
+    vllm_moe_wna16.invoke_fused_moe_wna16_triton_kernel(
+        a, qb, c, s, zb, tw, sid, eid, ntp, second, 1 if second else top_k, cfg, None,
+        False, True, [0, 32])
     assert seen == [tokens]
 
 

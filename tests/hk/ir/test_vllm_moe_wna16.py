@@ -14,9 +14,10 @@ def test_the_patch_declares_itself_graph_safe():
     assert set(r.PATCH.paths) == {"hk", "fallback"}
 
 
-def test_it_is_off_until_its_gate():
+def test_it_is_on_by_default_on_rdna():
     route = switches.ROUTES["vllm_moe_wna16"]
-    assert route.env == "HK_VLLM_MOE_WNA16" and not route.default and route.arches == ()
+    assert route.env == "HK_VLLM_MOE_WNA16" and route.default
+    assert route.arches == ("gfx1100", "gfx1201")
 
 
 @pytest.mark.parametrize("k,want", [(2048, (8, 8)), (512, (8, 2)), (4096, (8, 16)), (768, (8, 2)), (1536, (8, 4)),

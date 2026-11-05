@@ -6,6 +6,8 @@ The next version's notes collect here until it is released.
 
 ## Unreleased
 
+**`vllm_moe_wna16` on by default on gfx1100 and gfx1201.** vLLM's 4-bit MoE GEMMs for an AWQ checkpoint with zero points (`moe_wna16`) run on hk's MoE GEMM at decode batches up to 32 tokens a step. It reads vLLM's own expert tensors, so it repacks nothing and holds no second copy. It takes only the expert shapes it was validated on (Qwen3.6-35B-A3B-AWQ, group 32); `HK_VLLM_MOE_WNA16=force` reaches others, and `HK_VLLM_MOE_WNA16=0` turns it off. Measured end to end against stock-fair on a Radeon PRO W7900D and on a Radeon AI PRO R9700, three alternating starts an arm: decode TPOT ahead, TTFT level, GSM8K equal.
+
 ## 0.9.1
 
 hk-dsl 0.9.1: vLLM's prefill attention on by default on gfx1201 (Radeon AI PRO R9700), as it is on

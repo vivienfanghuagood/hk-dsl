@@ -36,6 +36,10 @@ COVERAGE = {
     ("vllm_gemm", "gfx1201"): "test_vllm_gemm.py::test_the_patched_layer_function_matches_f_linear",
     ("vllm_moe", "gfx1100"):
         "test_route_paths.py::test_vllm_moe_takes_a_decode_batch_and_writes_c_in_place",
+    ("vllm_moe_wna16", "gfx1100"):
+        "test_route_paths.py::test_vllm_moe_wna16_takes_a_decode_batch_in_vllms_call_and_leaves_past_32",
+    ("vllm_moe_wna16", "gfx1201"):
+        "test_route_paths.py::test_vllm_moe_wna16_takes_a_decode_batch_in_vllms_call_and_leaves_past_32",
     ("vllm_moe", "gfx1201"):
         "test_route_paths.py::test_vllm_moe_takes_a_decode_batch_and_writes_c_in_place",
     ("vllm_sdpa", "gfx1100"): "test_sdpa.py::test_patch_and_unpatch_round_trip",

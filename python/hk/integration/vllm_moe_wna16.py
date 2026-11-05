@@ -1,4 +1,5 @@
-"""vLLM's 4-bit MoE GEMMs (AWQ through moe_wna16) on hk's kernel (`HK_VLLM_MOE_WNA16=1`).
+"""vLLM's 4-bit MoE GEMMs (AWQ through moe_wna16) on hk's kernel (`HK_VLLM_MOE_WNA16`, on by
+default on gfx1100 and gfx1201 for the validated expert shapes).
 
 On ROCm an AWQ checkpoint's routed experts run `TritonWNA16Experts` (vLLM's moe_wna16): the batch's
 (token, choice) pairs sorted by expert, then each of the layer's two GEMMs one call of
@@ -16,7 +17,7 @@ symmetric GPTQ without zero points, int8 weights -- goes back to vLLM's kernel, 
 in `REFUSED`. The MoE layer is a custom op the compiler does not trace into, so the stand-in runs on
 every call, captured or not.
 
-    HK_VLLM_MOE_WNA16=1 vllm serve Qwen3.6-35B-A3B-AWQ ... --dtype float16
+    vllm serve Qwen3.6-35B-A3B-AWQ ... --dtype float16                  # on by default
     HK_VLLM_MOE_WNA16=force vllm serve <another AWQ MoE checkpoint> --dtype float16   # unvalidated
 """
 
