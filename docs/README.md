@@ -1,21 +1,24 @@
 # hk-dsl documentation
 
-**hk-dsl is a general-purpose Python DSL for AMD GPU kernels on RDNA and CDNA,
-with build-time gates against silent tile-level errors (spills, missing waits,
-MFMA hazards).** Today its largest end-to-end gains are on Radeon (RDNA3 and
-RDNA4), where its kernels plug into vLLM and SGLang.
+**hk-dsl makes vLLM and SGLang faster on Radeon GPUs, and is the Python DSL
+those kernels are written in**, for RDNA and CDNA, with build-time gates
+against silent tile-level errors (spills, missing waits, MFMA hazards).
 [What it is and is not](positioning.md) has the comparison with Triton,
 FlyDSL and AITER, the supported hardware, and where the numbers come from
 ([the scorecard](performance/scorecard.md)).
 
 ## Start here
 
-Five pages, in order, take you from nothing to a kernel that is checked for
-correctness and timed against `torch.compile`:
+**To make vLLM or SGLang faster** on a Radeon W7900 / RX 7900 or R9700 /
+RX 9070: `pip install hk-dsl` in the engine's environment, then
+[hk in vLLM](vllm.md) or [hk in SGLang](sglang.md) -- how to check it is on,
+which GPUs and models, how to turn it off.
+
+**To write kernels**, five pages, in order, take you from nothing to a kernel
+that is checked for correctness and timed against `torch.compile`:
 
 1. [Install](install.md), then the [quickstart](quickstart.md): a first
-   kernel from a template, checking it, and a kernel written by hand, on a
-   W7900D or an MI355X.
+   kernel from a template, checking it, and a kernel written by hand.
 2. The templates: [elementwise and rowwise](templates/elementwise-rowwise.md)
    (the math of an element or a row) and [GEMM with an epilogue](templates/gemm.md).
    Start here whenever one fits.
@@ -44,7 +47,7 @@ Coding agents: start from [llms.txt](../llms.txt) and the
 | page | |
 |---|---|
 | [Install](install.md) | what you need, the tested toolchains, the wheel or a build from source, a clone for the examples and tests |
-| [Quickstart](quickstart.md) | a first kernel from a template, `hk.check`, a kernel written by hand, the four entry points, timing, your model in vLLM; W7900D and MI355X tracks |
+| [Quickstart](quickstart.md) | hk in vLLM or SGLang in one command; a first kernel from a template, `hk.check`, a kernel written by hand, the four entry points, timing |
 | [Supported hardware](supported-hardware.md) | which GPUs, what the language and each engine route do on each (generated) |
 | [Templates: elementwise and rowwise](templates/elementwise-rowwise.md) | `hk.templates.elementwise` / `rowwise`: hooks, operands, the per-GPU plan and how to override it, limits, and a dated record of what they measured |
 | [Templates: GEMM](templates/gemm.md) | `hk.templates.gemm(epilogue=...)`: writing an epilogue, the ready-made ones, how the plan follows `hk.ops.matmul`, limits, and a dated record of what it cost |
