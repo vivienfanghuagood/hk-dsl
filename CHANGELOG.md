@@ -4,9 +4,27 @@ Release notes for each version are also on its
 [GitHub release](https://github.com/vivienfanghuagood/hk-dsl/releases).
 The next version's notes collect here until it is released.
 
-## Unreleased
+## 0.9.6
 
-**vLLM's TRITON_ATTN on gfx1201: Qwen3.8's shortest chunks over 16k+ contexts beside up to 7 decodes take the packed KV split.** The packed split took such a chunk beside at most 3 decodes on gfx1201 for Qwen3.8's shape; over a context of 16k tokens or more it now takes up to 7, while their tokens stay under a measured bound. `vllm_prefill.KVS_PACK_MAX_DECODES` entries are tiers by the longest sequence. Measured faster than both stock kernels on every batch it takes.
+hk-dsl 0.9.6: on gfx1201, Qwen3.8's shortest prefill chunks over 16k+ contexts beside up to 7 decodes
+take the packed KV split; the language and templates pages' examples are now tested against torch on
+the GPUs. No change to the language, the dialect (`hk-dialect-8`) or which routes are on by default.
+
+On PyPI: `pip install hk-dsl`, for CPython 3.10 to 3.13 on Linux x86_64 with glibc 2.35 or newer
+(Ubuntu 22.04 and later, and vLLM's ROCm images): one `manylinux_2_35` wheel per interpreter. The
+wheels below are the same files.
+
+    pip install hk_dsl-0.9.6-cp312-cp312-manylinux_2_35_x86_64.whl
+
+### Changes
+
+**vLLM's TRITON_ATTN on gfx1201: Qwen3.8's shortest chunks over 16k+ contexts beside up to 7 decodes take the packed KV split** (#281). The packed split took such a chunk beside at most 3 decodes on gfx1201 for Qwen3.8's shape; over a context of 16k tokens or more it now takes up to 7, while their tokens stay under a measured bound. `vllm_prefill.KVS_PACK_MAX_DECODES` entries are tiers by the longest sequence. Measured faster than both stock kernels on every batch it takes.
+
+**Documentation and its tests** (#277, #278, #279, #283). The kernels on docs/language.md and the templates pages' examples are extracted and run in the test suite: they translate for gfx1100, gfx1201 and gfx950 and match torch on the GPU tiers. The concepts pages summarise and link to the language page instead of repeating it; the IR and placement pages move to the reference section. docs/e2e-loop.md drops two timings that are not on the scorecard.
+
+### All pull requests
+
+#277, #278, #279, #281, #282, #283.
 
 ## 0.9.5
 
