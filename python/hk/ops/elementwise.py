@@ -71,7 +71,6 @@ def _binary_kernel(name: str, op: str, dtype):
         y = b[idx].load(t)
         o[idx] = fn(x, y)
 
-    body.__name__ = name
     return hk.kernel(body, warps=1, grid=_grid, name=name)
 
 
@@ -83,7 +82,6 @@ def _unary_kernel(name: str, op: str, dtype):
         idx = hk.tile_coord(0, 0, hk.arch.block_idx.y, hk.arch.block_idx.x)
         o[idx] = fn(a[idx].load(t))
 
-    body.__name__ = name
     return hk.kernel(body, warps=1, grid=_grid, name=name)
 
 
@@ -123,7 +121,6 @@ def _strip_kernel(name: str, op: str, dtype, warps: int):
             y = b.at[0, c0].load(S, bounded=not EXACT)
             o.at[0, c0].store(fn(x, y), bounded=not EXACT)
 
-    body.__name__ = name
     return hk.kernel(body, warps=warps, name=name, noalias=True,
                      grid=lambda p: (hk.cdiv(p.o.cols, warps * p.CW), 1, 1))
 
@@ -161,7 +158,6 @@ def _strip_gs_kernel(name: str, op: str, dtype, warps: int):
             for c, (x, y) in zip(cs, xs):
                 o.at[0, c].store(fn(x, y), bounded=True)
 
-    body.__name__ = name
     return hk.kernel(body, warps=warps, name=name, noalias=True,
                      grid=lambda p: (hk.cdiv(p.o.cols, warps * p.CW * p.STEP), 1, 1))
 

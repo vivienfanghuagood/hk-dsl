@@ -45,9 +45,9 @@ def _xcd_kernel(neg: bool):
                     out[hk.tile_coord(r - 1, 0, 0, 0)] = data[at0].load(T)    # scoped read
                 hk.comm.signal(sync.at[ACK], r)
 
-    body.__name__ = f"comm_xcd_mp{'_neg' if neg else ''}"
+    name = f"comm_xcd_mp{'_neg' if neg else ''}"
     # 16 workgroups: 0 and 1 are dealt to different XCDs (round robin over 8)
-    return hk.kernel(body, warps=1, name=body.__name__, grid=lambda p: (16, 1, 1))
+    return hk.kernel(body, warps=1, name=name, grid=lambda p: (16, 1, 1))
 
 
 def _src():

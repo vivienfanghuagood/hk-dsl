@@ -11,8 +11,7 @@ import hk  # noqa: E402
 
 
 def _src(body):
-    body.__name__ = body.__name__.lstrip("_")
-    k = hk.kernel(body, arch="gfx1100", warps=1, name=body.__name__,
+    k = hk.kernel(body, arch="gfx1100", warps=1, name=body.__name__.lstrip("_"),
                   grid=lambda p: (1, 1, 1))
     return k.trace().module.operation.get_asm(), k.source()
 

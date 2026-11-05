@@ -186,12 +186,12 @@ def wq_kernel(BM: int, BN: int, KT: int, il: int = 1, a_loose: bool = False, wgm
             for j in range(2):
                 c[hk.elem_coord(0, 0, ra[i], rb[j])] = hk.transpose(C[i][j]) if tc else C[i][j]
 
-    mx_wq.__name__ = f"mx_wq_{BM}x{BN}_k{KT}_i{il}{'_al' if a_loose else ''}_g{wgm}{'_tc' if tc else ''}{'_bl' if b_loose else ''}"
+    name = f"mx_wq_{BM}x{BN}_k{KT}_i{il}{'_al' if a_loose else ''}_g{wgm}{'_tc' if tc else ''}{'_bl' if b_loose else ''}"
     if wgm:
         grid = lambda p: ((p.c.cols // BN) * (p.c.rows // BM), 1, 1)  # noqa: E731
     else:
         grid = lambda p: (p.c.cols // BN, p.c.rows // BM, 1)  # noqa: E731
-    return hk.kernel(mx_wq, arch="gfx950", warps=4, name=mx_wq.__name__, grid=grid)
+    return hk.kernel(mx_wq, arch="gfx950", warps=4, name=name, grid=grid)
 
 
 def source(kt: int, bm: int = 128, bn: int = 256) -> str:

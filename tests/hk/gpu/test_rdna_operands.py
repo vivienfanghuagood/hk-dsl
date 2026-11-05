@@ -39,7 +39,6 @@ def _kernel(form: str, kv: int, d: int):
         o[hk.elem_coord(0, 0, 0, 0)] = acc
 
     name = f"t_rdna_operand_{form}_{kv}x{d}"
-    body.__name__ = name
     return hk.kernel(body, warps=1, grid=lambda p: (1, 1, 1), name=name)
 
 

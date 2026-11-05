@@ -19,9 +19,9 @@ import hk
 from hk import bf16, fp16, fp32
 
 
-def _trace(body, **kw):
+def _trace(body, name=None, **kw):
     k = hk.kernel(body, arch="gfx1100", warps=1,
-                  grid=lambda p: (1, 1, 1), name=body.__name__)
+                  grid=lambda p: (1, 1, 1), name=name or body.__name__)
     return k.trace(**kw)
 
 
@@ -53,8 +53,7 @@ def test_each_variant_produces_the_shape_its_asserts_promise(variant, a, b, want
         d = hk.mma(variant, at, bt, _acc(*want))
         assert d.type == hk.RT(fp32, *want, "col"), d.type
 
-    body.__name__ = variant
-    _trace(body)
+    _trace(body, name=variant)
 
 
 def test_the_variant_is_chosen_by_the_layouts_you_already_have():

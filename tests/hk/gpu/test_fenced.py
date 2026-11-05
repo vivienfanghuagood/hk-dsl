@@ -926,7 +926,6 @@ def body(x: hk.Tensor[bf16], ids: hk.Tensor[i32], out: hk.Tensor[bf16]):
     if hk.arch.warp_id() == 0:
         out[hk.elem_coord(0, 0, at, 0)].store(t)
 
-body.__name__ = "gather_fenced_t"
 k = hk.kernel(body, arch="gfx950", warps=4, name="gather_fenced_t", grid=lambda p: (4, 1, 1))
 x = rnd(100, 128)
 ids = torch.randint(0, 100, (1, 76), dtype=torch.int32).cuda()     # 304 bytes: ends at the fence
