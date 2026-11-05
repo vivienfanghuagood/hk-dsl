@@ -56,6 +56,19 @@ A competitor that does not run on the GPU (for example AITER on RDNA) is listed 
 
 hk's routes in vLLM and SGLang send a shape to hk only where hk wins it (`python/hk/tuned/routes_*`). A row where a competitor wins is a shape the route leaves on that engine.
 
+## Results, 2026-11-05
+
+Three tables beside the 2026-11-02 set, same method:
+
+- **gfx1201 GPTQ:** the table now has vLLM's RDNA hybrid W4A16 kernel (`RDNAHybridW4A16LinearKernel`). That kernel, not exllama, is what vLLM gives a symmetric GPTQ layer on gfx11/gfx12, so the 2026-11-02 gfx1201 GPTQ table's "best competitor" was the wrong kernel at 1-4 tokens and at 64. Against it, hk is level at 1-4 tokens (where the hybrid kernel is its HIP skinny GEMM, at the memory roof) and ahead from where it switches to Triton.
+- **gfx1100 and gfx1201 AWQ MoE:** the larger token counts behind `vllm_moe_wna16`'s per-arch cap (`MAX_TOKENS_AT`).
+
+| arch | op | model (TP) | rows | hk ≥ 1.15x | 0.95–1.15x | hk < 0.95x | best ratio | table |
+|---|---|---|---:|---:|---:|---:|---:|---|
+| gfx1201 | linear-w4 | palmfuture/Qwen3.8-27B-GPTQ-Int4 (TP1) | 48 | 26 | 22 | 0 | 3.67x | [qwen3.8-gptq-linear-w4.md](results/2026-11-05/gfx1201/qwen3.8-gptq-linear-w4.md) |
+| gfx1100 | moe-w4 | cyankiwi/Qwen3.6-35B-A3B-AWQ-4bit (TP1), 64-4096 tokens | 6 | 5 | 1 | 0 | 2.83x | [qwen3.6-awq-moe-w4-large-m.md](results/2026-11-05/gfx1100/qwen3.6-awq-moe-w4-large-m.md) |
+| gfx1201 | moe-w4 | cyankiwi/Qwen3.6-35B-A3B-AWQ-4bit (TP1), 64-4096 tokens | 6 | 4 | 1 | 1 | 1.80x | [qwen3.6-awq-moe-w4-large-m.md](results/2026-11-05/gfx1201/qwen3.6-awq-moe-w4-large-m.md) |
+
 ## Results, 2026-11-02 (hk-dsl 2ac79b7)
 
 One W7900D (gfx1100) and one Radeon AI PRO R9700 (gfx1201), each in the vLLM image its production serving uses. "hk vs best" is against the fastest competitor at each row. "rows" counts the rows with a ratio (a shape hk's kernel does not take is `--`); the full tables, with every arm's time, version and configuration, are linked.
