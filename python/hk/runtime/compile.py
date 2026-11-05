@@ -906,8 +906,10 @@ def _load_cached(d: Path, target: Target) -> Optional[Build]:
 _JIT_NOTICE: List[str] = []
 _JIT_SAID: List[bool] = []
 
-#: What the notice tells a server to run first.
+#: What the notice tells a server to run first. `warm-routes` builds the gfx950 (DeepSeek-V4.1)
+#: routes' kernels only, so on other arches the notice says how the cache is reused instead.
 WARM_HINT = "python3 -m hk.integration warm-routes (and --warm for attention)"
+WARM_HINT_ARCHS = ("gfx950",)
 
 
 def arm_jit_notice(what: str) -> None:
@@ -917,13 +919,19 @@ def arm_jit_notice(what: str) -> None:
         _JIT_NOTICE.append(what)
 
 
-def _jit_notice(name: str) -> None:
+def _jit_notice(name: str, arch: str = "") -> None:
     if _JIT_NOTICE and not _JIT_SAID:
         _JIT_SAID.append(True)
+        if arch.startswith(WARM_HINT_ARCHS):
+            then = (f"Run {WARM_HINT} with the server's HK_CACHE_DIR before starting the "
+                    f"server.")
+        else:
+            then = ("The kernels are kept there: a later start with the same HK_CACHE_DIR "
+                    "compiles nothing.")
         print(f"[hk] JIT: compiling kernel {name!r} on first use (pid {os.getpid()}): the "
               f"{_JIT_NOTICE[0]}'s routes were not pre-warmed into {cache_dir()}, so this call "
-              f"waits for hipcc (seconds a kernel, in every worker). Run {WARM_HINT} with the "
-              f"server's HK_CACHE_DIR before starting the server.", file=sys.stderr, flush=True)
+              f"waits for hipcc (seconds a kernel, in every worker). {then}",
+              file=sys.stderr, flush=True)
 
 
 def build(
@@ -966,7 +974,7 @@ def build(
         if hit is not None:
             return hit
 
-    _jit_notice(name)
+    _jit_notice(name, arch)
     for _ in range(3):
         got = _build_once(source, target, name, extra_flags, kind, gates, verbose, base, key_fl)
         if got is not None:

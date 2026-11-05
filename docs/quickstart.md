@@ -1,34 +1,34 @@
 # Quickstart
 
-From an installed hk-dsl ([install](install.md)) to a kernel that is right and
-at least as fast as `torch.compile`, then to one you wrote yourself. The same
-steps run on a Radeon and on an MI355X; where they differ is below.
+Two ways in. Pick the one you came for:
 
-- [Two tracks: W7900D and MI355X](#two-tracks-w7900d-and-mi355x)
-- [Your first kernel: a template](#your-first-kernel-a-template)
-- [Check it](#check-it)
-- [Writing the kernel yourself](#writing-the-kernel-yourself)
-- [The four entry points](#the-four-entry-points)
-- [Timing a kernel, and CUDA graphs](#timing-a-kernel-and-cuda-graphs)
-- [Your model in vLLM](#your-model-in-vllm)
-- [Where next](#where-next)
+- [Make vLLM or SGLang faster on your Radeon](#make-vllm-or-sglang-faster):
+  install hk next to the engine. No code.
+- [Write your first kernel](#your-first-kernel-a-template): a template, then
+  `hk.check`, then a kernel written by hand.
 
-## Two tracks: W7900D and MI355X
+## Make vLLM or SGLang faster
 
-Every step below is the same code on both GPUs; hk builds for the GPU it
-finds (or `HK_ARCH`). What differs:
+In the Python environment that runs your engine, on a Radeon W7900 / RX 7900
+(gfx1100) or R9700 / RX 9070 (gfx1201):
 
-| | Radeon W7900D / RX 7900 (gfx1100) | Instinct MI355X (gfx950) |
-|---|---|---|
-| tested toolchain | ROCm 7.2.4 (`rocm/pytorch:rocm7.2.x`, clang 22) | ROCm 7.2.3 (clang 22); vLLM's ROCm 10 image (clang 23) |
-| a register strip's chunk | 32 lanes x 8 values | 64 lanes x 8 values |
-| `k(...)` launches on | the null stream: see [timing](#timing-a-kernel-and-cuda-graphs) | torch's current stream |
-| examples | all but 14 (`hk.comm` is gfx950's) | all |
+```bash
+pip install hk-dsl
+python3 -m hk.integration --status      # the routes hk will apply on this GPU
+```
 
-The full matrix, gfx1201 and gfx942 included, is
-[supported hardware](supported-hardware.md), and which hipcc works with which
-GPU is [the toolchain matrix](toolchains.md); a GPU that is not in the machine
-is a build target with `--arch` (`hk.check`, the examples) or `HK_ARCH`.
+Then start the engine as you always do. hk's plugin loads by itself and prints
+one `[hk] ... routes on: ...` line per process; `HK_DISABLE=1` gives you the
+stock engine back.
+
+```bash
+vllm serve Qwen/Qwen3-8B
+python3 -m sglang.launch_server --model-path Qwen/Qwen3-8B --attention-backend triton --disable-cuda-graph
+```
+
+Which models and GPUs, how to check it worked, and troubleshooting:
+[hk in vLLM](vllm.md), [hk in SGLang](sglang.md) (SGLang is gfx1100 only for
+now).
 
 ## Your first kernel: a template
 
@@ -242,40 +242,6 @@ stream), or call it through `hk.torch_op(k)`
 a CUDA graph captures: [use a kernel as a PyTorch op](torch-ops.md).
 The serving engines' patches already do.
 
-## Your model in vLLM
-
-On a Radeon (gfx1100), with vLLM installed, hk's linear-layer patch runs a
-model's unquantized bf16 linear layers on hk's decode GEMV and GEMM wherever
-they measured faster than vLLM's own kernels. hk is on by default, so there is
-nothing to set; `HK_DISABLE=1` gives stock vLLM, and `HK_VLLM_GEMM=0` turns
-off this route alone:
-
-```bash
-vllm serve Qwen/Qwen2.5-7B-Instruct
-```
-
-The routes shipped in the wheel were measured on Qwen3-8B. For any other
-model, the first start measures the shapes the shipped table lacks, after
-the weights load and before vLLM sizes its cache. It spends at most
-`HK_AUTOTUNE_BUDGET` seconds on that (60 by default), decode-sized batches
-first. The results are kept, so later starts measure nothing. The `[hk]`
-line in the server's log says what was measured and what stayed on vLLM's
-path. To pay that cost ahead of time instead:
-
-```bash
-python3 -m hk.integration tune --model Qwen/Qwen2.5-7B-Instruct   # add --tp N for tensor parallel
-```
-
-To see what it bought on your machine, against vLLM as it ships, in one
-command (greedy outputs are compared too):
-
-```bash
-python3 -m hk.integration ab --model Qwen/Qwen2.5-7B-Instruct --arms stock,gemm
-```
-
-The patches, and what each one replaces, are in
-[integration](integration.md).
-
 ## Where next
 
 * [The templates](templates/elementwise-rowwise.md) and the
@@ -287,6 +253,7 @@ The patches, and what each one replaces, are in
   [hk.math](api/hk.math.md)'s functions.
 * [The runtime](runtime.md): the cache, the gates, the stream, autotune,
   `torch.ops`.
+* [hk in vLLM](vllm.md) and [hk in SGLang](sglang.md): the engines.
 * [The scorecard](performance/scorecard.md): the end-to-end results the
   project quotes.
 * [Examples](examples.md): fifteen examples, from a vector add to flash

@@ -47,12 +47,12 @@ and which rule decided.
 |---|---|---|---|
 | MXFP8 linear (DeepSeek-V4.1), M >= 2048 (indexer wq_b >= 2825, engram wkv >= 1024: `MIN_M_NK`), and measured M ranges below that (`RANGES`) | `HK_VLLM_MXFP8` | **on, gfx950** | bit-identical to vLLM's kernel; real weights, GSM8K 94.69% vs stock 94.24-94.39%, with the a8w4 MoE route ARC 96.76% vs 96.93-97.10% (McNemar p >= 0.175; [serving readiness](archive/design/serving-readiness.md) B1) |
 | MoE a8w4, MXFP4 weights (DeepSeek-V4.1), M >= 2560 (`MIN_M`) | `HK_VLLM_MOE_A8W4` | **on, gfx950** | error vs fp32 3.5-6.3e-3 against AITER's 0.97-2.1e-2 on real layers; GSM8K 94.92% (B1) |
-| DeepSeek-V4.1 index layers under `--monokernel`: one launch for the compressor, indexer K / Q, logits and top-k, at decode steps of up to 8 rows | `HK_VLLM_DSV41_INDEX` | **on, gfx950** | caches and q byte-identical to vLLM's chain in vLLM, top-k sets equal ([the index launch](vllm.md#the-deepseek-v41-index-launch)); with `--monokernel` and hk's other default routes, real-weight GSM8K-1319 within stock's noise (McNemar p >= 0.39) |
+| DeepSeek-V4.1 index layers under `--monokernel`: one launch for the compressor, indexer K / Q, logits and top-k, at decode steps of up to 8 rows | `HK_VLLM_DSV41_INDEX` | **on, gfx950** | caches and q byte-identical to vLLM's chain in vLLM, top-k sets equal ([the index launch](vllm-routes.md#the-deepseek-v41-index-launch)); with `--monokernel` and hk's other default routes, real-weight GSM8K-1319 within stock's noise (McNemar p >= 0.39) |
 | AWQ 4-bit linear | `HK_VLLM_INT4` | **on, gfx1100, gfx950 and gfx1201** | greedy tokens identical to stock's, Qwen3-8B/14B-AWQ; on gfx1201 Qwen3-8B-AWQ tokens identical |
 | GPTQ 4-bit linear (symmetric, grouped; RDNA3W4A16LinearKernel) | `HK_VLLM_GPTQ` | **on, gfx1100** | Qwen3.8-27B-GPTQ-Int4 against stock-fair (TRITON_ATTN, TunableOp with a 256 MB rotating buffer): GSM8K-200 equal, TPOT in the RDNA scorecard; act-order checkpoints are refused and counted (`vllm_gptq.REFUSED`) |
 | unquantized linear (+ tuning at load) | `HK_VLLM_GEMM` | **on, gfx1100 and gfx1201** | tokens identical, or a bf16 near-tie; on gfx1201 tokens identical and routing counts equal round for round, Qwen3-1.7B and Qwen3.5-9B, also with gfx1201's shipped small-M schedules; on gfx950 it was measured to change nothing against aiter, so it stays off there |
 | bf16 MoE GEMMs | `HK_VLLM_MOE` | **on, gfx1100 and gfx1201** | OLMoE tokens identical; with aiter on gfx950 it routes nothing; on gfx1201 up to 2 tokens a step only, OLMoE tokens identical |
-| 4-bit MoE GEMMs with zero points (AWQ through vLLM's moe_wna16), up to 32 tokens a step, on vLLM's own tensors | `HK_VLLM_MOE_WNA16` | off | until its e2e gate (Qwen3.6-35B-A3B-AWQ against stock-fair') |
+| 4-bit MoE GEMMs with zero points (AWQ through vLLM's moe_wna16), up to 32 tokens a step, on vLLM's own tensors | `HK_VLLM_MOE_WNA16` | **on, gfx1100 and gfx1201** | Qwen3.6-35B-A3B-AWQ end to end against stock: GSM8K equal (#252) |
 | encoder SDPA (`--mm-encoder-attn-backend TORCH_SDPA`) | `HK_VLLM_SDPA` | **on, gfx1100** | InternVL2-2B inside the spread of vLLM's own backends; on gfx1201 the drop-in's per-call Python makes the call slower than the R9700 image's torch SDPA, so it stays off there |
 | SGLang linear | `HK_SGLANG_LINEAR` | **on, gfx1100** | Qwen3-8B up to a bf16 near-tie; error equal to F.linear's |
 | SGLang MoE (and the gfx1100 top-k fix) | `HK_SGLANG_MOE` | **on, gfx1100** | OLMoE tokens identical |
@@ -132,10 +132,10 @@ first compile in each process prints one line:
 |---|---|---|---|
 | SDPA drop-in | `vllm.py`, `sglang.py`, `_common.py` | `F.scaled_dot_product_attention`, rebound by identity | `HK_VLLM_SDPA` (on, gfx1100); `apply()` in-process |
 | decoder attention backend | `vllm_backend.py` | vLLM's `TRITON_ATTN` backend slot | `HK_VLLM_BACKEND=1` (off) |
-| prefill attention | `vllm_prefill.py` | `prefix_prefill.context_attention_fwd` (ROCM_ATTN) with its parameters, and `triton_unified_attention.unified_attention` (TRITON_ATTN) with its signature, rebound by identity | `HK_VLLM_PREFILL` (on, gfx1100) |
+| prefill attention | `vllm_prefill.py` | `prefix_prefill.context_attention_fwd` (ROCM_ATTN) with its parameters, and `triton_unified_attention.unified_attention` (TRITON_ATTN) with its signature, rebound by identity | `HK_VLLM_PREFILL` (on, gfx1100 and gfx1201) |
 | linear layers | `vllm_gemm.py` | `dispatch_unquantized_gemm`, rebound by identity | `HK_VLLM_GEMM` (on, gfx1100 and gfx1201) |
 | MoE GEMMs | `vllm_moe.py` | `invoke_fused_moe_triton_kernel` and `try_get_optimal_moe_config`, rebound by identity | `HK_VLLM_MOE` (on, gfx1100 and gfx1201) |
-| 4-bit MoE GEMMs (moe_wna16) | `vllm_moe_wna16.py` | `invoke_fused_moe_wna16_triton_kernel` and `try_get_optimal_moe_config`, rebound by identity | `HK_VLLM_MOE_WNA16` (off) |
+| 4-bit MoE GEMMs (moe_wna16) | `vllm_moe_wna16.py` | `invoke_fused_moe_wna16_triton_kernel` and `try_get_optimal_moe_config`, rebound by identity | `HK_VLLM_MOE_WNA16` (on, gfx1100 and gfx1201) |
 | AWQ linear layers | `vllm_int4.py` | `AutoAWQLinearMethod.process_weights_after_loading` and `.apply` | `HK_VLLM_INT4` (on) |
 | GPTQ linear layers | `vllm_gptq.py` | `AutoGPTQLinearMethod.process_weights_after_loading` and `.apply` | `HK_VLLM_GPTQ` (on, gfx1100) |
 | MXFP8 linear layers | `vllm_mxfp8.py` | `RocmDotScaledMxfp8LinearKernel.process_weights_after_loading` and `.apply_weights` | `HK_VLLM_MXFP8` (on, gfx950) |
@@ -146,7 +146,7 @@ first compile in each process prints one line:
 | SGLang linear layers | `sglang.py`, `_sglang_plugin.py` | `UnquantizedLinearMethod.apply` | `HK_SGLANG_LINEAR` (on, gfx1100); `apply_linear()` in-process |
 | SGLang MoE layers | `sglang_moe.py`, `_sglang_plugin.py` | `topk_softmax`, `invoke_fused_moe_kernel` and `try_get_optimal_moe_config`, rebound by identity | `HK_SGLANG_MOE` (on, gfx1100), or `=topk` for the routing alone |
 | SGLang Gemma-style RMSNorm | `sglang.py`, `_sglang_plugin.py` | `GemmaRMSNorm.forward_hip`, only where `layernorm` has neither aiter's nor vLLM's norms; applied before the model is built | `HK_SGLANG_NORM` (on, gfx1100); `apply_norm()` in-process |
-| SGLang-Diffusion attention, linear, ConvRot | `sglang_diffusion.py` | see [SGLang-Diffusion](sglang.md#sglang-diffusion-text-to-image-and-video) | `HK_SGLD_ATTN`, `HK_SGLD_LINEAR` (on, gfx1100), `HK_SGLD_CONVROT` (off) |
+| SGLang-Diffusion attention, linear, ConvRot | `sglang_diffusion.py` | see [SGLang-Diffusion](sglang-routes.md#sglang-diffusion-text-to-image-and-video) | `HK_SGLD_ATTN`, `HK_SGLD_LINEAR` (on, gfx1100), `HK_SGLD_CONVROT` (off) |
 
 `engine.py` is what every patch but the two SDPA rebinds shares: the custom
 op, the counters, the routing table and the CUDA-graph contract.
@@ -338,7 +338,7 @@ an M as follows:
 
 The measuring is a library, `hk.autotune.routes`: `tune_shape(n, k, ...)`
 returns one shape's entry, and `route_tune.py`, `python3 -m hk.integration
-tune` and the [measuring at load](vllm.md#a-model-no-table-has-measured) are thin
+tune` and the [measuring at load](vllm-routes.md#a-model-no-table-has-measured) are thin
 shells over it. `engine.shipped_table` lays this machine's records over the
 shipped table, shape by shape. A record measured against another engine's
 path (vLLM upgraded, say) is left out, and measured again at the next load.

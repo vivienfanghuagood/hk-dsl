@@ -68,7 +68,7 @@ It traces and runs on both GPUs, ragged shapes (100x1000) included; `hk.check` t
 
 ## Pitfalls
 
-- The docs describe main; `pip install hk-dsl` is 0.9.2 (check `hk.__version__`). The API reference marks what is *New after 0.9.2*: on main only, in no release yet. 0.8.0 added, and 0.7.0 lacks, workgroup placement (`hk.kernel(placement=)`, `hk.Placement`, `hk.arch.xcd_count`), `hk.map_cpp`, the strip ops and element exchange. 0.6.0's synchronous `g.load` / `g.store` on gfx950 read and write past a partial last tile; 0.7.0's do not.
+- The docs describe main; `pip install hk-dsl` is 0.9.3 (check `hk.__version__`). The API reference marks what is *New after 0.9.3*: on main only, in no release yet. 0.8.0 added, and 0.7.0 lacks, workgroup placement (`hk.kernel(placement=)`, `hk.Placement`, `hk.arch.xcd_count`), `hk.map_cpp`, the strip ops and element exchange. 0.6.0's synchronous `g.load` / `g.store` on gfx950 read and write past a partial last tile; 0.7.0's do not.
 - Positional kernel parameters are tensors (`hk.Tensor[dtype]`, 4-D `(batch, depth, rows, cols)`; a 2-D tensor is `(rows, cols)`). Constexprs are keyword-only with a default, baked into the source: a new value is a new compile.
 - The transcendental math (gelu, dgelu, sqrt, rsqrt, silu) is fp32-only: load 16-bit data into an fp32 tile or strip (the load converts) and store it back (the store converts). `hk.math.gelu` is `F.gelu(x, approximate="tanh")`, not the erf default.
 - A strip's columns are whole chunks of `wave x run` (32 x run on gfx1100, 64 x run on gfx950): `CW=512` with `run=8` fits both. Read the wave from `hk.arch.target().wave` when a plan depends on it.
@@ -85,7 +85,7 @@ It traces and runs on both GPUs, ragged shapes (100x1000) included; `hk.check` t
 
 - [The IR](docs/ir.md): the hk dialect, the passes and the C++ translation
 - [Integration](docs/integration.md): what applies to every engine (on by default, `--status`, contracts, env vars)
-- [vLLM](docs/vllm.md) and [SGLang](docs/sglang.md): each engine's routes
+- [hk in vLLM](docs/vllm.md) and [hk in SGLang](docs/sglang.md): turn hk on, check it, turn it off; [vLLM routes](docs/vllm-routes.md) and [SGLang routes](docs/sglang-routes.md): each engine's routes in detail
 - [The scorecard](docs/performance/scorecard.md): the only performance numbers the project quotes (end-to-end serving), taken as [the method](docs/performance/method.md) says; [performance](docs/archive/performance-2026-10.md) is a dated record of older kernel-level measurements, not current claims
 - [CDNA3/4 design](docs/archive/design/cdna.md): what runs on an MI300X / MI355X
 - [Development record](docs/history/README.md): how each number was taken
