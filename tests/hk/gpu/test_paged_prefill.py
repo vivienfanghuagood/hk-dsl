@@ -501,6 +501,53 @@ def test_flash_vt_pages_is_bitwise_the_flash_layout(reqs, page, kv_order):
     _attn_ref.check(outs[1], _reference(q, k, v, table, lens, q_start, 8, page=page))
 
 
+@rocm_only
+@flash_dsplit_builds
+@pytest.mark.parametrize("reqs", [[(0, 300)], [(500, 1), (2047, 1), (0, 300), (1000, 77), (33, 1)],
+                                  [(600, 500), (0, 784), (7, 1)]])
+@pytest.mark.parametrize("page,kv_order,h_kv,group", [(16, "planes", 1, 8), (544, "tokens", 1, 8),
+                                                      (784, "heads", 2, 6)])
+def test_dsplit_vt_pages_longest_first_is_bitwise_the_flash_layout(reqs, page, kv_order, h_kv,
+                                                                     group):
+    """d256's route kernel: V^T pages packed once (vt_pages), 8 warps (64-row Q tiles), the tiles
+    longest first (rev) -- the same bits as the 16-warp dsplit kernel staging V through
+    registers, over NaN past every sequence's end where pages are a hybrid model's (> 16)."""
+    q, (k, v), _, table, lens, q_start = _rocm_case(reqs, head_dim=256, h_kv=h_kv, group=group,
+                                                    page=page)
+    if page > 16:
+        k, v = _nan_past_ends(k, v, table, lens)
+    n_tok, h, d = q.shape
+    kv = _flash_cache(k, v, kv_order)
+    max_q = max(n for _, n in reqs)
+    pt = ("" if page == 16 else f"_p{page}") + ("" if kv_order == "planes" else f"_{kv_order}")
+    outs = []
+    for vt, warps in ((False, 16), (True, 8)):
+        out = torch.full_like(q, 7.0)
+        kern = pp.paged_prefill_kernel(
+            f"t_pp_flash_d256_g{group}_ds_w{warps}_dec{'_vt_r' if vt else ''}{pt}", head_dim=256,
+            group=group, layout="flash", dsplit=True, warps=warps, decodes=True, vt_pages=vt,
+            rev=vt, page=page, kv_order=kv_order)
+        v_src = kv
+        if vt:
+            span = max(-(-s // page) for s in lens.tolist())
+            v_src = torch.full((len(reqs) * span, h_kv, d, page), float("nan"), device="cuda",
+                               dtype=torch.bfloat16)
+            pp.vt_pack_kernel(f"t_vt_pack_d256{pt}", head_dim=256, page=page, kv_order=kv_order)(
+                kv, table, lens, pp.vt_pack_span(max(lens.tolist()), q.device, page), v_src)
+        kern(q.view(n_tok, h * d), kv, v_src, table, lens, q_start,
+             pp.q_tiles(max_q, q.device, 16 * warps // 2), out.view(n_tok, h * d))
+        outs.append(out)
+    assert not torch.isnan(outs[1]).any()
+    assert torch.equal(outs[0], outs[1])
+    _attn_ref.check(outs[1], _reference(q, k.nan_to_num(), v.nan_to_num(), table, lens, q_start,
+                                        group, page=page))
+
+
+def test_rev_needs_the_device_side_grid():
+    with pytest.raises(ValueError, match="rev"):
+        pp.paged_prefill_kernel("t_pp_hk_rev", rev=True)
+
+
 # ---- pages that are whole KV blocks (hybrid models: MiniCPM-V-4.7's are 544 tokens) ----------
 
 #: requests that start, end and cross page and block boundaries of 544-token pages: a prefix

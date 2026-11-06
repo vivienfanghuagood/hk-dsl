@@ -490,30 +490,39 @@ def kvsplit_plan(a: dict, pack: bool = True):
 #: HK_VLLM_PREFILL_VT=0 turns it off.
 VT = __import__("os").environ.get("HK_VLLM_PREFILL_VT", "1") not in ("0", "off", "no", "false")
 VT_CAP_BYTES = 256 << 20
+#: d256's vt_pages kernel (dsplit, longest Q tiles first): its warps -- a 16 * VT_DS_WARPS / 2-row
+#: Q tile. gfx1100, against the 16-warp kernel staging V through registers (runs on MiniCPM-V and
+#: Qwen3.8 TP1/TP2 shapes): 4096-token chunks over 12k-60k 1.23-1.29x (45-50 -> 58-62 TF/s), 2k-32k
+#: prompts 1.29-1.35x, short chunks and mixed batches 1.15-1.30x; 12 warps is within 3% on chunks
+#: (3-5% ahead on 8k+ prompts, 10-15% behind on short and mixed batches).
+VT_DS_WARPS = 8
 _VT_OPS: dict = {}
 _VT_SCRATCH: dict = {}
 
 
 def _vt_ops(head_dim: int, group: int, scale: Optional[float], page: int = 16,
             order: str = "planes", decodes: bool = True):
-    """(pack launch, vt_pages launch, Q tile rows), or None (not built here, or head_dim 256)."""
+    """(pack launch, vt_pages launch, Q tile rows), or None (not built here)."""
+    ds = head_dim > 128
+    warps = VT_DS_WARPS if ds else 12
     key = (head_dim, group, scale, page, order, decodes)
     if key not in _VT_OPS:
         _VT_OPS[key] = None
-        if head_dim <= 128:
-            from ..ops import paged_prefill as pp  # noqa: PLC0415
+        from ..ops import paged_prefill as pp  # noqa: PLC0415
 
-            tag = "" if scale is None else "_s%08x" % (hash(scale) & 0xffffffff)
-            main = _built(lambda: (pp.paged_prefill_kernel(
-                f"paged_prefill_flashvt_d{head_dim}_g{group}{_ptag(page)}{_otag(order)}"
-                f"{'' if decodes else '_nd'}{tag}",
-                head_dim=head_dim, group=group, scale=scale, layout="flash", warps=12,
-                decodes=decodes, vt_pages=True, page=page, kv_order=order), 192))
-            pack = _built(lambda: (pp.vt_pack_kernel(
-                f"paged_vt_pack_d{head_dim}{_ptag(page)}{_otag(order)}", head_dim=head_dim,
-                page=page, kv_order=order), 0))
-            if main is not None and pack is not None:
-                _VT_OPS[key] = (pack[0], main[0], main[1])
+        tag = "" if scale is None else "_s%08x" % (hash(scale) & 0xffffffff)
+        main = _built(lambda: (pp.paged_prefill_kernel(
+            f"paged_prefill_flashvt_d{head_dim}_g{group}{'_ds_r' if ds else ''}"
+            f"{_ptag(page)}"
+            f"{_otag(order)}{'' if decodes else '_nd'}{tag}",
+            head_dim=head_dim, group=group, scale=scale, layout="flash", warps=warps,
+            dsplit=ds, rev=ds, decodes=decodes, vt_pages=True, page=page, kv_order=order),
+            16 * (warps // 2 if ds else warps)))
+        pack = _built(lambda: (pp.vt_pack_kernel(
+            f"paged_vt_pack_d{head_dim}{_ptag(page)}{_otag(order)}", head_dim=head_dim,
+            page=page, kv_order=order), 0))
+        if main is not None and pack is not None:
+            _VT_OPS[key] = (pack[0], main[0], main[1])
     return _VT_OPS[key]
 
 
@@ -1090,7 +1099,7 @@ def unified_attention(*args, **kwargs):
         # the split's decodes=False kernels, built with the first ones (vLLM's warm-up run) so
         # the first mixed batch of a fresh cache does not compile them on the serving path
         _flash_op(d, h // a["k"].shape[2], scale, page, order, False)
-        if VT and d <= 128:
+        if VT:
             _vt_ops(d, h // a["k"].shape[2], scale, page, order, False)
     if decodes:
         _kvs_warm(a)                        # the KV split's, likewise
@@ -1101,7 +1110,7 @@ def unified_attention(*args, **kwargs):
     from ..ops import paged_prefill as pp  # noqa: PLC0415
 
     v_src = kv
-    if VT and d <= 128:
+    if VT:
         hkv = a["k"].shape[2]
         max_k = int(a.get("max_seqlen_k") or 0)
         slots = len(a["seqused_k"]) * -(-max_k // page)
