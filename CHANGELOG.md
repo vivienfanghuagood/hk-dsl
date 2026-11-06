@@ -9,6 +9,8 @@ The next version's notes collect here until it is released.
 - SGLang-Diffusion: new route `sgld_qknorm` (`HK_SGLD_QKNORM`, on by default on gfx1100) runs Qwen-Image 2.1's
   q / k RMSNorm and RoPE as one `hk.ops.fused.rmsnorm_rotary_pairs` launch (five torch launches and the RoPE
   before): 1.044x a request on top of `sgld_rope`.
+- SGLang-Diffusion: `sgld_linear` also takes projections with a bias (Wan's), adding it in the GEMM's store
+  (`hk.templates.gemm`'s bias epilogue): 1.22-1.26x `F.linear` at Wan2.1's shapes, 1.047x a Wan2.1 video.
 
 ## 0.9.11
 

@@ -73,8 +73,12 @@ default keeps the old boot, which needs `HK_SGLD=1`; run `install` again
 - **attention**: `hk.ops.sdpa.patch()` behind the `torch_sdpa` backend (the
   only one that runs on RDNA3); masked and odd-head-dim calls go to torch;
 - **linear**: `UnquantizedLinearMethod.apply` of
-  `sglang.multimodal_gen.runtime.layers.linear` to `hk.ops.matmul` for bf16
-  projections without bias and with at least `MIN_M` (1024) rows;
+  `sglang.multimodal_gen.runtime.layers.linear` to hk's GEMM for bf16
+  projections with at least `MIN_M` (1024) rows. A bias (Wan's projections
+  have one) is added in the GEMM's store, `hk.templates.gemm`'s bias
+  epilogue, as hipBLASLt does: 1.22-1.26x `F.linear` at Wan2.1's shapes,
+  1.047x a Wan2.1 832x480x81 video. `LINEAR_BIAS = False` leaves biased
+  projections to the engine;
 - **vaeconv**: Wan's VAE conv3d (`WanCausalConv3d` of
   `sglang.multimodal_gen.runtime.models.vaes.wanvae`) as calls of 2 output
   frames, each the engine's own conv on a slice of the input. On gfx1100

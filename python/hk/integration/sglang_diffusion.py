@@ -124,15 +124,24 @@ MIN_M = 1024
 
 LINEAR_STATS = {"hk": 0, "engine": 0}
 
+#: Projections with a bias (Wan's) take hk's GEMM with its bias epilogue too; False leaves
+#: every biased projection to the engine.
+LINEAR_BIAS = True
+
 
 def _hk_linear(x, weight, bias):
-    """hk's GEMM for y = x @ weight.T, or None where the engine's should run."""
+    """hk's GEMM for y = x @ weight.T (+ bias), or None where the engine's should run. A bias
+    is added to the fp32 accumulator in the GEMM's store (hk.templates.gemm's bias epilogue),
+    as hipBLASLt's bias epilogue does: one rounding to bf16."""
     import torch  # noqa: PLC0415
 
     from ..ops import gemm  # noqa: PLC0415
 
-    if (bias is not None or x.dtype != torch.bfloat16 or weight.dtype != torch.bfloat16
+    if (x.dtype != torch.bfloat16 or weight.dtype != torch.bfloat16
             or not x.is_cuda or weight.dim() != 2 or not weight.is_contiguous()):
+        return None
+    if bias is not None and (not LINEAR_BIAS or bias.dtype != torch.bfloat16 or bias.dim() != 1
+                             or bias.shape[0] != weight.shape[0]):
         return None
     k = x.shape[-1]
     n = weight.shape[0]
@@ -145,16 +154,20 @@ def _hk_linear(x, weight, bias):
     s = gemm.schedule_for(m, n, k)
     if k % s["k_step"] or n % s["block_n"]:
         return None
-    op = _gemm_op(s)
-    key = (_bucket(m), n, k)
+    op = _gemm_op(s) if bias is None else _gemm_bias_op(s, m, n)
+    key = (_bucket(m), n, k, bias is not None)
     if key not in DECISIONS:
-        DECISIONS[key] = _measure(op, a, weight)
+        DECISIONS[key] = _measure(op, a, weight, bias)
         if os.environ.get("HK_SGLD_LOG", "0") not in _OFF:
-            print(f"[hk] sglang-diffusion linear {m}x{n}x{k}: {DECISIONS[key][1]}", flush=True)
+            print(f"[hk] sglang-diffusion linear {m}x{n}x{k}{' +bias' if bias is not None else ''}: "
+                  f"{DECISIONS[key][1]}", flush=True)
     if not DECISIONS[key][0]:
         return None
     out = torch.empty((m, n), device=x.device, dtype=torch.bfloat16)
-    op(a, weight, out)
+    if bias is None:
+        op(a, weight, out)
+    else:
+        op(a, weight, out, bias.contiguous())
     return out.view(*x.shape[:-1], n)
 
 
@@ -174,7 +187,7 @@ def _bucket(m: int) -> int:
     return b
 
 
-def _measure(op, a, weight):
+def _measure(op, a, weight, bias=None):
     """Time hk's GEMM against F.linear on this call's own operands, interleaved,
     best of 5 each after a warm-up, on the current stream. hk's gfx1100 GEMM
     won at Qwen-Image's DiT shapes (1.27x), and with every M >= 1024 projection
@@ -183,7 +196,11 @@ def _measure(op, a, weight):
     import torch.nn.functional as F  # noqa: PLC0415,N812
 
     out = torch.empty((a.shape[0], weight.shape[0]), device=a.device, dtype=torch.bfloat16)
-    arms = {"hk": lambda: op(a, weight, out), "engine": lambda: F.linear(a, weight)}
+    if bias is None:
+        arms = {"hk": lambda: op(a, weight, out), "engine": lambda: F.linear(a, weight)}
+    else:
+        b = bias.contiguous()
+        arms = {"hk": lambda: op(a, weight, out, b), "engine": lambda: F.linear(a, weight, bias)}
     for f in arms.values():
         f()
     best = {name: float("inf") for name in arms}
@@ -214,6 +231,24 @@ def _gemm_op(sched):
     from ..runtime.torch_ext import launcher  # noqa: PLC0415
 
     kern = gemm.TUNER._kernel_for(sched)
+    op = _OPS.get(kern.name)
+    if op is None:
+        op = _OPS[kern.name] = launcher(kern, ns="hk_sgld")
+    return op
+
+
+def _gemm_bias_op(sched, m, n):
+    """_gemm_op's GEMM with hk.templates.gemm's bias epilogue (acc + bias, bias (N,) bf16),
+    on torch's current stream: launched as op(a, weight, out, bias)."""
+    import torch  # noqa: PLC0415
+
+    from ..runtime.torch_ext import launcher  # noqa: PLC0415
+    # The module's names, not the package's `gemm` (the template object of that name).
+    from ..templates.gemm import Step, bias, bind, kernel_for  # noqa: PLC0415
+    from ..types import bf16  # noqa: PLC0415
+
+    ep = bind(bias, {"bias": torch.empty(n, dtype=torch.bfloat16, device="meta")}, m, n, bf16)
+    kern = kernel_for(Step("rdna", dict(sched), (0, n), True), ep)
     op = _OPS.get(kern.name)
     if op is None:
         op = _OPS[kern.name] = launcher(kern, ns="hk_sgld")
