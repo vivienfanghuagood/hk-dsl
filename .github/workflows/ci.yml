@@ -128,8 +128,17 @@ jobs:
             | sudo tee /etc/apt/sources.list.d/rocm.list
           printf 'Package: *\nPin: release o=repo.radeon.com\nPin-Priority: 600\n' \
             | sudo tee /etc/apt/preferences.d/rocm-pin-600
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq hip-dev rocm-device-libs
+          # repo.radeon.com sometimes stalls a fetch with no error, and the job then hangs until its
+          # 45-minute limit: give apt network timeouts, bound each command, and retry the pair.
+          apt_opts="-o Acquire::Retries=3 -o Acquire::http::Timeout=60 -o Acquire::https::Timeout=60"
+          for try in 1 2 3; do
+            if timeout 300 sudo apt-get $apt_opts update -qq &&
+               timeout 600 sudo apt-get $apt_opts install -y -qq hip-dev rocm-device-libs; then
+              break
+            fi
+            [ "$try" = 3 ] && { echo "::error::apt from repo.radeon.com failed 3 times"; exit 1; }
+            echo "apt attempt $try stalled or failed; retrying"; sleep 20
+          done
           echo /opt/rocm/bin >> "$GITHUB_PATH"
 
       - name: Python packages
