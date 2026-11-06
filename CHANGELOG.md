@@ -4,6 +4,8 @@ Release notes for each version are also on its
 [GitHub release](https://github.com/vivienfanghuagood/hk-dsl/releases).
 The next version's notes collect here until it is released.
 
+## Unreleased
+
 ## 0.9.10
 
 hk-dsl 0.9.10: on gfx1201, `vllm_int4` takes AWQ prefill (fp16 batches of 65-512 tokens) on the
