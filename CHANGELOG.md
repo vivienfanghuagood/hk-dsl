@@ -4,10 +4,26 @@ Release notes for each version are also on its
 [GitHub release](https://github.com/vivienfanghuagood/hk-dsl/releases).
 The next version's notes collect here until it is released.
 
-## Unreleased
+## 0.9.13
 
-- SGLang-Diffusion: `sgld_vaeconv` also keeps Wan's VAE in NCDHW on gfx1100 (SGLang's channels-last path cost a
-  MIOpen layout copy every conv): 1.052x a Wan2.1 832x480x81 video.
+hk-dsl 0.9.13: on gfx1100, SGLang-Diffusion's `sgld_vaeconv` keeps Wan's VAE in NCDHW (1.052x a Wan2.1
+video). No change to the language, the dialect (`hk-dialect-8`) or which routes are on by default.
+
+On PyPI: `pip install hk-dsl`, for CPython 3.10 to 3.13 on Linux x86_64 with glibc 2.35 or newer
+(Ubuntu 22.04 and later, and vLLM's ROCm images): one `manylinux_2_35` wheel per interpreter. The
+wheels below are the same files.
+
+    pip install hk_dsl-0.9.13-cp312-cp312-manylinux_2_35_x86_64.whl
+
+### Changes
+
+**SGLang-Diffusion: `sgld_vaeconv` also keeps Wan's VAE in NCDHW on gfx1100** (#323) (SGLang's channels-last path cost a MIOpen layout copy every conv): 1.052x a Wan2.1 832x480x81 video.
+
+**Documentation and CI** (#319, #322, #324). docs/sglang.md: `sgld_linear` covers Wan2.1 too, and the RoPE route counts 0 where `sgld_qknorm` does the RoPE. CI bounds and retries its ROCm apt install.
+
+### All pull requests
+
+#319, #321, #322, #323, #324.
 
 ## 0.9.12
 
