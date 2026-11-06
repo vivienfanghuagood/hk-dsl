@@ -10154,6 +10154,12 @@
 "gather_sgld_linear": {
 "params": []
 },
+"gather_sgld_rope": {
+"params": []
+},
+"gather_sgld_vaeconv": {
+"params": []
+},
 "gather_vllm_backend": {
 "params": []
 },
@@ -10223,6 +10229,16 @@
 ]
 },
 "judge_sgld_linear": {
+"params": [
+"f"
+]
+},
+"judge_sgld_rope": {
+"params": [
+"f"
+]
+},
+"judge_sgld_vaeconv": {
 "params": [
 "f"
 ]
@@ -10999,13 +11015,20 @@
 "MARGIN": {},
 "MIN_M": {},
 "Path": {},
+"QWEN21_HOME": {},
+"ROPE_STATS": {},
 "TARGET": {},
+"VAE_HOME": {},
+"VAE_STATS": {},
 "_BOOT": {},
 "_LAST": {},
 "_LINEAR_ORIG": {},
 "_OFF": {},
 "_OPS": {},
 "_PTH": {},
+"_ROPE_ORIG": {},
+"_ROPE_TABLES": {},
+"_VAE_ORIG": {},
 "_bucket": {
 "params": [
 "m"
@@ -11038,6 +11061,16 @@
 "_reporter": {
 "params": []
 },
+"_rope_tables": {
+"params": [
+"rope"
+]
+},
+"_version": {
+"params": [
+"t"
+]
+},
 "annotations": {},
 "apply": {
 "params": []
@@ -11046,6 +11079,12 @@
 "params": []
 },
 "apply_linear": {
+"params": []
+},
+"apply_rope": {
+"params": []
+},
+"apply_vaeconv": {
 "params": []
 },
 "install": {
@@ -11060,6 +11099,12 @@
 },
 "os": {},
 "revert_linear": {
+"params": []
+},
+"revert_rope": {
+"params": []
+},
+"revert_vaeconv": {
 "params": []
 },
 "site_dir": {
@@ -12530,6 +12575,7 @@
 "STATS_WHY_NOT": {},
 "VT": {},
 "VT_CAP_BYTES": {},
+"VT_DS_WARPS": {},
 "_ARANGE": {},
 "_C_DEFAULTS": {},
 "_C_READ": {},
@@ -13746,6 +13792,24 @@
 "RDNA_AND_GFX950": {},
 "annotations": {}
 },
+"hk.ops.conv3d": {
+"Callable": {},
+"FRAMES": {},
+"Optional": {},
+"annotations": {},
+"frames": {
+"params": [
+"conv",
+"x",
+"weight",
+"bias",
+"n",
+"time_stride",
+"time_dilation",
+"time_padding"
+]
+}
+},
 "hk.ops.convrot": {
 "H4": {},
 "_MIN_BLOCK": {},
@@ -14191,6 +14255,7 @@
 "ROTARY16_KERNELS": {},
 "ROTARY_HALVES_KERNELS": {},
 "ROTARY_KERNELS": {},
+"ROTARY_PAIRS_KERNELS": {},
 "ROTARY_WARPS": {},
 "ROWS": {},
 "SILU_STRIP_PLANS": {},
@@ -14274,6 +14339,12 @@
 "dtype",
 "warps",
 "positions"
+]
+},
+"_rotary_pairs_kernel": {
+"params": [
+"name",
+"warps"
 ]
 },
 "_rotary_warps": {
@@ -14361,6 +14432,14 @@
 "x",
 "cos_sin",
 "positions",
+"out"
+]
+},
+"rotary_pairs": {
+"params": [
+"x",
+"cos",
+"sin",
 "out"
 ]
 },
@@ -16790,7 +16869,8 @@
 "vt_pages",
 "kv_order",
 "kv_splits",
-"pack"
+"pack",
+"rev"
 ]
 },
 "q_tiles": {
