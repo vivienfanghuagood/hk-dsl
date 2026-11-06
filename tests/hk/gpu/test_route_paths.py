@@ -21,7 +21,7 @@ from hk.integration import sglang_diffusion as sgld  # noqa: E402
 from hk.integration import sglang_moe, vllm_gemm, vllm_gptq, vllm_int4, vllm_moe  # noqa: E402
 from hk.integration import vllm_moe_wna16  # noqa: E402
 from hk.ops import moe, w4a16  # noqa: E402
-from hk.target import current_arch  # noqa: E402
+from hk.target import current_arch, get_target  # noqa: E402
 
 pytestmark = [pytest.mark.gpu,
               pytest.mark.skipif(not torch.cuda.is_available(), reason="needs a GPU")]
@@ -435,3 +435,97 @@ def test_sgld_linear_takes_a_dit_projection_through_hk(monkeypatch):
     finally:
         sgld.revert_linear()
     assert Unquantized.apply is orig
+
+
+def test_sgld_vaeconv_runs_wans_causal_conv3d_in_frame_chunks_and_matches(monkeypatch):
+    _on_here("sgld_vaeconv")
+
+    class WanCausalConv3d(torch.nn.Conv3d):     # pads time itself, as Wan's VAE does
+        def __init__(self, cin, cout, k):
+            super().__init__(cin, cout, k, padding=(1, 1, 1))
+            self.padding = (0, 0, 0)
+
+        def forward(self, x):
+            return super().forward(torch.nn.functional.pad(x, (1, 1, 1, 1, 2, 0)))
+
+    _stand_in(monkeypatch, sgld.VAE_HOME, WanCausalConv3d=WanCausalConv3d)
+    orig = WanCausalConv3d._conv_forward
+    conv = WanCausalConv3d(16, 8, 3).to("cuda", B)
+    g = torch.Generator(device="cuda").manual_seed(0)
+    try:
+        assert "calls of 2 output frames" in sgld.apply_vaeconv()
+        before = dict(sgld.VAE_STATS)
+        for frames in (1, 2, 5, 6):             # 1 and 2: one call; 5 and 6: chunked
+            x = torch.randn(1, 16, frames, 12, 20, device="cuda", dtype=B, generator=g)
+            want = torch.nn.functional.conv3d(
+                torch.nn.functional.pad(x, (1, 1, 1, 1, 2, 0)).float(), conv.weight.float(),
+                conv.bias.float())
+            _close(conv(x), want)
+        assert sgld.VAE_STATS["chunked"] == before["chunked"] + 2
+        assert sgld.VAE_STATS["whole"] == before["whole"] + 2
+    finally:
+        sgld.revert_vaeconv()
+    assert WanCausalConv3d._conv_forward is orig
+
+
+def _complex_rope(x, rope):
+    """The engine's expression (Qwen-Image 2.1's apply_rope fallback)."""
+    z = torch.view_as_complex(x.float().reshape(*x.shape[:-1], -1, 2))
+    return torch.view_as_real(z * rope[None, :, None]).flatten(-2).to(x.dtype)
+
+
+def _rope_case(seq, g, heads=32, d=128):
+    x = torch.randn(1, seq, heads, d, device="cuda", dtype=B, generator=g) * 3
+    ang = torch.rand(seq, d // 2, device="cuda", generator=g) * 100
+    return x, torch.polar(torch.ones_like(ang), ang)
+
+
+@pytest.mark.parametrize("seq", [45, 4096, 4141])
+def test_rotary_pairs_is_torchs_complex_rope_bit_for_bit(seq):
+    from hk.ops import fused
+
+    if not get_target(current_arch()).strips:
+        pytest.skip("rotary_pairs runs on register strips")
+    x, rope = _rope_case(seq, torch.Generator(device="cuda").manual_seed(seq))
+    want = _complex_rope(x, rope)
+    cos, sin = rope.real.contiguous(), rope.imag.contiguous()
+
+    def same(got):
+        # RDNA's torch multiplies complex numbers in the fused form rotary_pairs computes: bit
+        # for bit. gfx950's torch contracts differently: a bf16 unit apart, on a few elements.
+        if current_arch() in ("gfx1100", "gfx1201"):
+            return torch.equal(got, want)
+        _close(got, want, tol=1e-2)
+        return (got != want).float().mean().item() < 1e-4
+
+    assert same(fused.rotary_pairs(x, cos, sin))
+    y = x.clone()
+    assert fused.rotary_pairs(y, cos, sin, out=y) is y and same(y)                   # in place
+    with pytest.raises(ValueError):
+        fused.rotary_pairs(x.float(), cos, sin)
+
+
+def test_sgld_rope_takes_qwen_image_21s_rope_through_hk_and_reverts(monkeypatch):
+    _on_here("sgld_rope")
+
+    def apply_rope(x, rope):
+        return _complex_rope(x, rope)
+
+    mod = _stand_in(monkeypatch, sgld.QWEN21_HOME, apply_rope=apply_rope)
+    g = torch.Generator(device="cuda").manual_seed(1)
+    x, rope = _rope_case(4141, g)
+    try:
+        assert "hk.ops.rotary_pairs" in sgld.apply_rope()
+        before = dict(sgld.ROPE_STATS)
+        assert torch.equal(mod.apply_rope(x, rope), _complex_rope(x, rope))
+        assert torch.equal(mod.apply_rope(x, rope), _complex_rope(x, rope))     # cached tables
+        assert sgld.ROPE_STATS["hk"] == before["hk"] + 2
+        two = torch.cat([x, x])                                     # two sequences: the engine's
+        assert torch.equal(mod.apply_rope(two, rope), _complex_rope(two, rope))
+        assert sgld.ROPE_STATS["engine"] == before["engine"] + 1
+        with torch.inference_mode():                                # as SGLang-Diffusion runs it
+            xi, ri = _rope_case(4096, g)
+            assert torch.equal(mod.apply_rope(xi, ri), _complex_rope(xi, ri))
+    finally:
+        sgld.revert_rope()
+    assert mod.apply_rope is apply_rope

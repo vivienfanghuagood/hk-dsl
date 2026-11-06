@@ -8,9 +8,10 @@
     python3 -m hk.integration sglang-diffusion status
     python3 -m hk.integration sglang-diffusion uninstall
 
-**On by default** once installed, on the GPU it was validated on (gfx1100): attention and
-linear (`hk.integration.switches`). ConvRot INT8 is lossy and stays opt-in. An install made
-before hk was on by default keeps its old boot, which needs HK_SGLD=1; run `install` again.
+**On by default** once installed, on the GPU it was validated on (gfx1100): attention,
+linear, Wan's VAE conv3d and Qwen-Image 2.1's RoPE (`hk.integration.switches`). ConvRot INT8 is lossy and
+stays opt-in. An install made before hk was on by default keeps its old boot, which needs
+HK_SGLD=1; run `install` again.
 
 On RDNA3, `torch_sdpa` is the only attention backend SGLang-Diffusion has
 (aiter is CDNA's, FlashAttention 3 Hopper's), and every DiT layer's attention
@@ -27,6 +28,12 @@ they are bf16, without bias and at least `MIN_M` rows -- at Qwen-Image 2.1's
 1024^2 shapes hk's gfx1100 GEMM measured 1.27-1.28x hipBLASLt -- and to the
 engine's GEMM otherwise. `HK_SGLD=attn` or `HK_SGLD=linear` applies one of the
 two.
+
+Wan's VAE conv3d (`WanCausalConv3d`, sgld_vaeconv) runs as calls of 2 output
+frames (`hk.ops.conv3d.frames`), each the engine's own conv: MIOpen (gfx1100)
+takes the decoder's full-resolution 6-frame convs to its naive reference
+kernel, 100x slower. Qwen-Image 2.1's complex RoPE (`apply_rope`, sgld_rope) runs
+on `hk.ops.rotary_pairs`: one launch for the engine's four, bit for bit the same.
 
 **Why a .pth and an environment variable.** SGLang-Diffusion runs the model
 in worker processes it spawns, and unlike SGLang's LLM engine it loads no
@@ -242,6 +249,123 @@ def apply_linear() -> str:
     return f"linear -> hk.ops.matmul at M >= {MIN_M} ({LINEAR_HOME}.UnquantizedLinearMethod.apply)"
 
 
+#: The module of Wan's VAE, whose WanCausalConv3d every decoder conv3d goes through.
+VAE_HOME = "sglang.multimodal_gen.runtime.models.vaes.wanvae"
+
+VAE_STATS = {"chunked": 0, "whole": 0}
+_VAE_ORIG = []
+
+
+def apply_vaeconv() -> str:
+    """Run Wan's VAE conv3d (WanCausalConv3d) through hk.ops.conv3d.frames: calls of
+    conv3d.FRAMES output frames along time, each the engine's own conv. On gfx1100 MIOpen runs
+    the decoder's full-resolution 6-frame convs on its naive reference kernel otherwise.
+    Idempotent."""
+    import importlib  # noqa: PLC0415
+
+    from ..ops import conv3d  # noqa: PLC0415
+
+    cls = getattr(importlib.import_module(VAE_HOME), "WanCausalConv3d")
+    if getattr(cls._conv_forward, "_hk", False):
+        return "vaeconv: already patched"
+    orig = cls._conv_forward
+
+    def _conv_forward(self, input, weight, bias):  # noqa: A002 -- nn.Conv3d's names
+        # WanCausalConv3d pads time itself and sets the conv's padding to 0: only then is a
+        # slice of the input the conv of a slice of the output.
+        pad = self.padding[0] if isinstance(self.padding, tuple) else -1
+        calls = []
+
+        def conv(x, w, b):
+            calls.append(1)
+            return orig(self, x, w, b)
+
+        y = conv3d.frames(conv, input, weight, bias, time_stride=self.stride[0],
+                          time_dilation=self.dilation[0], time_padding=pad)
+        VAE_STATS["chunked" if len(calls) > 1 else "whole"] += 1
+        return y
+
+    _conv_forward._hk = True
+    cls._conv_forward = _conv_forward
+    _VAE_ORIG[:] = [(cls, orig)]
+    return (f"vaeconv: {VAE_HOME}.WanCausalConv3d in calls of {conv3d.FRAMES} output frames "
+            f"(hk.ops.conv3d.frames)")
+
+
+def revert_vaeconv() -> str:
+    if not _VAE_ORIG:
+        return "vaeconv: not patched"
+    cls, orig = _VAE_ORIG.pop()
+    cls._conv_forward = orig
+    return "vaeconv -> engine"
+
+
+#: Qwen-Image 2.1's DiT module, whose `apply_rope` turns every image and text q and k.
+QWEN21_HOME = "sglang.multimodal_gen.runtime.models.dits.qwen_image21"
+
+ROPE_STATS = {"hk": 0, "engine": 0}
+_ROPE_ORIG = []
+#: The last rope's cos and sin, (rope, its version, cos, sin): one rope serves every block's
+#: q and k of a forward. The rope is held, so `is` cannot match a new tensor at its address.
+_ROPE_TABLES = [None]
+
+
+def _version(t):
+    # an inference-mode tensor (SGLang-Diffusion's forward) has no version counter
+    return None if t.is_inference() else t._version
+
+
+def _rope_tables(rope):
+    got = _ROPE_TABLES[0]
+    if got is not None and got[0] is rope and got[1] == _version(rope):
+        return got[2], got[3]
+    cos, sin = rope.real.contiguous(), rope.imag.contiguous()
+    _ROPE_TABLES[0] = (rope, _version(rope), cos, sin)
+    return cos, sin
+
+
+def apply_rope() -> str:
+    """Qwen-Image 2.1's complex RoPE (`apply_rope` of QWEN21_HOME:
+    `view_as_complex(x.float()) * rope`, back to bf16) on hk.ops.rotary_pairs, one launch for
+    the engine's four (cast, complex multiply, cast, copy), bit for bit the same. bf16 q / k
+    of one sequence (B = 1) with a contiguous complex64 (S, D/2) rope; anything else keeps
+    the engine's. Idempotent."""
+    import importlib  # noqa: PLC0415
+
+    import torch  # noqa: PLC0415
+
+    from ..ops import fused  # noqa: PLC0415
+
+    mod = importlib.import_module(QWEN21_HOME)
+    if getattr(mod.apply_rope, "_hk", False):
+        return "rope: already patched"
+    orig = mod.apply_rope
+
+    def apply_rope(x, rope):
+        if (x.dtype == torch.bfloat16 and x.dim() == 4 and x.shape[0] == 1 and x.is_contiguous()
+                and x.shape[-1] == 128 and rope.dtype == torch.complex64 and rope.is_contiguous()
+                and tuple(rope.shape) == (x.shape[1], 64) and not torch.compiler.is_compiling()):
+            cos, sin = _rope_tables(rope)
+            ROPE_STATS["hk"] += 1
+            return fused.rotary_pairs(x, cos, sin)
+        ROPE_STATS["engine"] += 1
+        return orig(x, rope)
+
+    apply_rope._hk = True
+    mod.apply_rope = apply_rope
+    _ROPE_ORIG[:] = [(mod, orig)]
+    return f"rope: {QWEN21_HOME}.apply_rope -> hk.ops.rotary_pairs (bf16, head_dim 128)"
+
+
+def revert_rope() -> str:
+    if not _ROPE_ORIG:
+        return "rope: not patched"
+    mod, orig = _ROPE_ORIG.pop()
+    mod.apply_rope = orig
+    _ROPE_TABLES[0] = None
+    return "rope -> engine"
+
+
 #: SGLang-Diffusion's ConvRot INT8 config: both of its backends are CUDA-only.
 CONVROT_HOME = "sglang.multimodal_gen.runtime.layers.quantization.configs.convrot_int8_config"
 CONVROT_BACKEND = "hk"
@@ -359,7 +483,8 @@ def revert_linear() -> str:
 
 def apply() -> str:
     """Apply the SGLang-Diffusion routes hk.integration.switches has on: attention and linear
-    by default on gfx1100; convrot only when asked for (HK_SGLD=...,convrot or HK_SGLD_CONVROT=1).
+    Wan's VAE conv3d and Qwen-Image 2.1's RoPE by default on gfx1100; convrot only when asked for
+    (HK_SGLD=...,convrot or HK_SGLD_CONVROT=1).
     Checks each route's engine contract first; a broken or raising route stays off with its own
     warning line and the others are applied. Idempotent."""
     import atexit  # noqa: PLC0415
@@ -387,7 +512,8 @@ def apply() -> str:
     # route is off with its own warning line, and the others are applied (contract.py).
     notes, applied, off = contract.apply_routes(
         "sglang_diffusion", routes,
-        [("sgld_attn", attn), ("sgld_linear", apply_linear), ("sgld_convrot", convrot)])
+        [("sgld_attn", attn), ("sgld_linear", apply_linear), ("sgld_convrot", convrot),
+         ("sgld_vaeconv", apply_vaeconv), ("sgld_rope", apply_rope)])
     if not applied:
         return f"no route applied ({', '.join(off)} off, see the warnings): stock"
     from ..runtime.compile import arm_jit_notice  # noqa: PLC0415
@@ -436,7 +562,9 @@ def stats() -> str:
             + (f" ({fb})" if fb else "")
             + (f"; attn_k3 shapes {dict(list(sdpa.K3_SHAPES.items())[:4])}" if sdpa.K3_SHAPES else "")
             + f"; linear: hk {LINEAR_STATS['hk']}, engine {LINEAR_STATS['engine']}"
-            + f"; convrot: hk {CONVROT_STATS['hk']}, fallback {CONVROT_STATS['fallback']}")
+            + f"; convrot: hk {CONVROT_STATS['hk']}, fallback {CONVROT_STATS['fallback']}"
+            + f"; vaeconv: chunked {VAE_STATS['chunked']}, whole {VAE_STATS['whole']}"
+            + f"; rope: hk {ROPE_STATS['hk']}, engine {ROPE_STATS['engine']}")
 
 
 def site_dir() -> Path:

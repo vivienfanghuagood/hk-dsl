@@ -290,6 +290,23 @@
     "bias"
    ]
   },
+  "sgld_rope": {
+   "apply_rope": [
+    "x",
+    "rope"
+   ],
+   "complex_multiply": true
+  },
+  "sgld_vaeconv": {
+   "conv3d": true,
+   "conv_forward": [
+    "self",
+    "input",
+    "weight",
+    "bias"
+   ],
+   "pads_itself": true
+  },
   "vllm_backend": {
    "_error": "ModuleNotFoundError: No module named 'vllm'"
   },

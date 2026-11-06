@@ -494,13 +494,57 @@ def judge_sgld_convrot(f: dict) -> List[str]:
                    f"{sd.CONVROT_HOME} no longer has the ConvRotInt8Config hooks hk extends")
 
 
+def gather_sgld_vaeconv() -> dict:
+    import importlib  # noqa: PLC0415
+
+    from . import sglang_diffusion as sd  # noqa: PLC0415
+
+    cls = getattr(importlib.import_module(sd.VAE_HOME), "WanCausalConv3d")
+    import torch  # noqa: PLC0415
+
+    return {"conv3d": issubclass(cls, torch.nn.Conv3d),
+            "conv_forward": names(cls._conv_forward),
+            # the time padding is WanCausalConv3d's own, the conv's is 0 (checked per call too)
+            "pads_itself": "self.padding = (0, 0, 0)" in inspect.getsource(cls.__init__)}
+
+
+def judge_sgld_vaeconv(f: dict) -> List[str]:
+    from . import sglang_diffusion as sd  # noqa: PLC0415
+
+    return (_expect(f["conv3d"], f"{sd.VAE_HOME}.WanCausalConv3d is no longer an nn.Conv3d")
+            + _expect(f["conv_forward"][:4] == ["self", "input", "weight", "bias"],
+                      f"nn.Conv3d._conv_forward takes {f['conv_forward']}")
+            + _expect(f["pads_itself"],
+                      f"{sd.VAE_HOME}.WanCausalConv3d no longer pads time itself"))
+
+
+def gather_sgld_rope() -> dict:
+    import importlib  # noqa: PLC0415
+
+    from . import sglang_diffusion as sd  # noqa: PLC0415
+
+    fn = importlib.import_module(sd.QWEN21_HOME).apply_rope
+    src = inspect.getsource(fn)
+    return {"apply_rope": names(fn),
+            # the computation rotary_pairs reproduces
+            "complex_multiply": "view_as_complex(x.float()" in src and "rope[None, :, None]" in src}
+
+
+def judge_sgld_rope(f: dict) -> List[str]:
+    from . import sglang_diffusion as sd  # noqa: PLC0415
+
+    return (_expect(f["apply_rope"] == ["x", "rope"], f"{sd.QWEN21_HOME}.apply_rope takes {f['apply_rope']}")
+            + _expect(f["complex_multiply"],
+                      f"{sd.QWEN21_HOME}.apply_rope no longer multiplies view_as_complex(x.float()) by rope"))
+
+
 #: route -> (gather, judge). gather returns the route's facts, or None where it does not apply here.
 SPLIT: Dict[str, tuple] = {
     r: (globals()[f"gather_{r}"], globals()[f"judge_{r}"]) for r in (
         "vllm_mxfp8", "vllm_moe_a8w4", "vllm_int4", "vllm_gptq", "vllm_gemm", "vllm_moe",
         "vllm_moe_wna16", "vllm_sdpa", "vllm_backend", "vllm_dsv41_index", "vllm_sparse_mla",
         "vllm_prefill", "sglang_linear", "sglang_norm", "sglang_moe", "sgld_attn", "sgld_linear",
-        "sgld_convrot")}
+        "sgld_convrot", "sgld_vaeconv", "sgld_rope")}
 
 
 def _checker(name: str) -> Callable[[], Optional[List[str]]]:

@@ -23,6 +23,12 @@
   "sgld_linear": {
    "_error": "ModuleNotFoundError: No module named 'sglang'"
   },
+  "sgld_rope": {
+   "_error": "ModuleNotFoundError: No module named 'sglang'"
+  },
+  "sgld_vaeconv": {
+   "_error": "ModuleNotFoundError: No module named 'sglang'"
+  },
   "vllm_backend": {
    "backend_slots": [
     "FLASH_ATTN",
