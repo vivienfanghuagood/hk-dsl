@@ -4,17 +4,32 @@ Release notes for each version are also on its
 [GitHub release](https://github.com/vivienfanghuagood/hk-dsl/releases).
 The next version's notes collect here until it is released.
 
-## Unreleased
+## 0.9.12
 
-- SGLang-Diffusion: new route `sgld_qknorm` (`HK_SGLD_QKNORM`, on by default on gfx1100) runs Qwen-Image 2.1's
-  q / k RMSNorm and RoPE as one `hk.ops.fused.rmsnorm_rotary_pairs` launch (five torch launches and the RoPE
-  before): 1.044x a request on top of `sgld_rope`.
-- SGLang-Diffusion: `sgld_linear` also takes projections with a bias (Wan's), adding it in the GEMM's store
-  (`hk.templates.gemm`'s bias epilogue): 1.22-1.26x `F.linear` at Wan2.1's shapes, 1.047x a Wan2.1 video.
+hk-dsl 0.9.12: on gfx1100, SGLang-Diffusion's new route `sgld_qknorm` (on by default) runs Qwen-Image
+2.1's q / k RMSNorm and RoPE as one launch, and `sgld_linear` takes Wan's biased projections; the d128
+prefill routes dispatch the longest Q tiles first. No change to the language or the dialect
+(`hk-dialect-8`).
+
+On PyPI: `pip install hk-dsl`, for CPython 3.10 to 3.13 on Linux x86_64 with glibc 2.35 or newer
+(Ubuntu 22.04 and later, and vLLM's ROCm images): one `manylinux_2_35` wheel per interpreter. The
+wheels below are the same files.
+
+    pip install hk_dsl-0.9.12-cp312-cp312-manylinux_2_35_x86_64.whl
 
 ### Changes
 
+**SGLang-Diffusion: new route `sgld_qknorm` (`HK_SGLD_QKNORM`, on by default on gfx1100)** (#316) runs Qwen-Image 2.1's q / k RMSNorm and RoPE as one `hk.ops.fused.rmsnorm_rotary_pairs` launch (five torch launches and the RoPE before): 1.044x a request on top of `sgld_rope`.
+
+**SGLang-Diffusion: `sgld_linear` also takes projections with a bias** (#317) (Wan's), adding it in the GEMM's store (`hk.templates.gemm`'s bias epilogue): 1.22-1.26x `F.linear` at Wan2.1's shapes, 1.047x a Wan2.1 video.
+
 **Longest Q tiles first on the d128 prefill routes** (#313). The ROCM_ATTN and TRITON_ATTN prefill kernels (the KV split aside) dispatch a request's last Q tile first (`rev`), as #312 does for d256: on gfx1100, MiniCPM5 and Qwen3-8B prompts 1.04-1.08x, 4096-token chunks 1.01-1.04x, none slower; the same bits.
+
+**Documentation** (#318). docs/sglang.md lists the SGLang-Diffusion routes by model (Wan's VAE conv, RoPE, q / k norm) and the Wan2.1 path.
+
+### All pull requests
+
+#313, #315, #316, #317, #318.
 
 ## 0.9.11
 
