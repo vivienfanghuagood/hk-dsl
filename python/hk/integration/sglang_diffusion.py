@@ -300,7 +300,8 @@ def apply_vaeconv() -> str:
 
     from ..ops import conv3d  # noqa: PLC0415
 
-    cls = getattr(importlib.import_module(VAE_HOME), "WanCausalConv3d")
+    mod = importlib.import_module(VAE_HOME)
+    cls = getattr(mod, "WanCausalConv3d")
     if getattr(cls._conv_forward, "_hk", False):
         return "vaeconv: already patched"
     orig = cls._conv_forward
@@ -322,7 +323,12 @@ def apply_vaeconv() -> str:
 
     _conv_forward._hk = True
     cls._conv_forward = _conv_forward
-    _VAE_ORIG[:] = [(cls, orig)]
+    # The VAE in NCDHW: SGLang runs it channels-last when the conv weights are channels-last
+    # (its cat_pad_channels_last_3d path, for cuDNN); MIOpen converts every such conv to NCDHW
+    # and back (10 s of copies a Wan2.1 832x480x81 video). Its test of the weights says no.
+    cl3d = mod._conv3d_weight_is_channels_last_3d
+    mod._conv3d_weight_is_channels_last_3d = lambda weight: False
+    _VAE_ORIG[:] = [(cls, orig, mod, cl3d)]
     return (f"vaeconv: {VAE_HOME}.WanCausalConv3d in calls of {conv3d.FRAMES} output frames "
             f"(hk.ops.conv3d.frames)")
 
@@ -330,8 +336,9 @@ def apply_vaeconv() -> str:
 def revert_vaeconv() -> str:
     if not _VAE_ORIG:
         return "vaeconv: not patched"
-    cls, orig = _VAE_ORIG.pop()
+    cls, orig, mod, cl3d = _VAE_ORIG.pop()
     cls._conv_forward = orig
+    mod._conv3d_weight_is_channels_last_3d = cl3d
     return "vaeconv -> engine"
 
 

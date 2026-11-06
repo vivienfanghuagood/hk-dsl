@@ -307,6 +307,7 @@
    "complex_multiply": true
   },
   "sgld_vaeconv": {
+   "cl3d_switch": true,
    "conv3d": true,
    "conv_forward": [
     "self",

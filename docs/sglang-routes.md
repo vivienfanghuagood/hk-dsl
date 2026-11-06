@@ -84,7 +84,10 @@ default keeps the old boot, which needs `HK_SGLD=1`; run `install` again
   frames, each the engine's own conv on a slice of the input. On gfx1100
   MIOpen runs the decoder's full-resolution convs, which get 6 input frames,
   on its naive reference kernel: 9.5 s a call at 832x480, against 95 ms in
-  2-frame calls. No hk kernel; the route only stops MIOpen's fallback.
+  2-frame calls. It also keeps the VAE in NCDHW: SGLang runs it channels-last
+  when its conv weights are (a cuDNN path), and MIOpen converts every such
+  conv to NCDHW and back, 10 s of copies a video; NCDHW, a Wan2.1 video is
+  1.052x faster again. No hk kernel; the route only stops MIOpen's fallback.
   Wan2.1-T2V-1.3B 832x480x81 on one W7900D: VAE decode 969 s -> 37.8 s, the
   generation 2.77x. 36.2 dB from stock and closer to an fp32 VAE decode than stock (36.9 dB vs 36.1);
 - **rope**: Qwen-Image 2.1's complex RoPE (`apply_rope` of

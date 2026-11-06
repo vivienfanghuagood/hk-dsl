@@ -505,7 +505,10 @@ def gather_sgld_vaeconv() -> dict:
     return {"conv3d": issubclass(cls, torch.nn.Conv3d),
             "conv_forward": names(cls._conv_forward),
             # the time padding is WanCausalConv3d's own, the conv's is 0 (checked per call too)
-            "pads_itself": "self.padding = (0, 0, 0)" in inspect.getsource(cls.__init__)}
+            "pads_itself": "self.padding = (0, 0, 0)" in inspect.getsource(cls.__init__),
+            # the test that puts the VAE in channels-last, which the route answers no
+            "cl3d_switch": callable(getattr(importlib.import_module(sd.VAE_HOME),
+                                            "_conv3d_weight_is_channels_last_3d", None))}
 
 
 def judge_sgld_vaeconv(f: dict) -> List[str]:
@@ -515,7 +518,9 @@ def judge_sgld_vaeconv(f: dict) -> List[str]:
             + _expect(f["conv_forward"][:4] == ["self", "input", "weight", "bias"],
                       f"nn.Conv3d._conv_forward takes {f['conv_forward']}")
             + _expect(f["pads_itself"],
-                      f"{sd.VAE_HOME}.WanCausalConv3d no longer pads time itself"))
+                      f"{sd.VAE_HOME}.WanCausalConv3d no longer pads time itself")
+            + _expect(f.get("cl3d_switch", False),
+                      f"{sd.VAE_HOME} has no _conv3d_weight_is_channels_last_3d"))
 
 
 def gather_sgld_rope() -> dict:
