@@ -4,6 +4,8 @@ Release notes for each version are also on its
 [GitHub release](https://github.com/vivienfanghuagood/hk-dsl/releases).
 The next version's notes collect here until it is released.
 
+## Unreleased
+
 ## 0.9.13
 
 hk-dsl 0.9.13: on gfx1100, SGLang-Diffusion's `sgld_vaeconv` keeps Wan's VAE in NCDHW (1.052x a Wan2.1
