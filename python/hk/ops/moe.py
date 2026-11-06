@@ -130,6 +130,77 @@ def moe_gemm_kernel(name: str, *, block_m: int = 16, top_k: int = 1,
     return hk.kernel(entry, warps=warps, name=name, grid=grid)
 
 
+def moe_gemm_large_kernel(name: str, *, block_m: int = 64, block_n: int = 128, warps: int = 8,
+                          warp_rows: int = 2, top_k: int = 1, routed: bool = False, dtype=bf16):
+    """The prefill form of the MoE GEMM: a workgroup takes one block of `block_m` sorted (token,
+    choice) rows -- one expert's, as vLLM's moe_align_block_size makes them -- against `block_n`
+    rows of that expert's W. Every 64-deep K step its warps gather the rows of A and load W's
+    rows into LDS once, then each warp multiplies its share; the decode form instead splits K
+    over warps on 16 rows of W, which is right for a few tokens and reads W block_m / 16 times
+    as often as this at a prefill's. C is written by `sorted_ids` (scatter), routed rows
+    multiplied by their weight. K a multiple of 64; N (W's rows per expert) of block_n."""
+    ks = 64
+    warp_cols = warps // warp_rows
+    rm, rn = block_m // warp_rows, block_n // warp_cols
+    a_loaders = block_m // 16
+    if (block_m % 16 or block_n % (16 * warps) or a_loaders > warps or rm % 16 or rn % 16):
+        raise ValueError(f"moe_gemm_large_kernel: block {block_m}x{block_n} does not split over "
+                         f"{warps} warps ({warp_rows} rows)")
+    st_a = hk.ST(dtype, block_m, ks)
+    st_b = hk.ST(dtype, block_n, ks)
+    ty_ld_a = hk.RT(dtype, 16, ks, "row")
+    ty_ld_b = hk.RT(dtype, block_n // warps, ks, "row")
+    ty_a = hk.RT(dtype, rm, 16, "row")
+    ty_b = hk.RT(dtype, rn, 16, "row")
+    ty_acc = hk.RT(fp32, rn, rm, "col")          # C^T: W rows x tokens
+    ty_out = hk.RT(fp32, rm, rn, "row")
+
+    @hk.func
+    def body(a, w, c, sorted_ids, expert_ids, ntp, topk_w):
+        As = hk.lds.alloc(st_a, name="As")
+        Bs = hk.lds.alloc(st_b, name="Bs")
+        n0 = hk.arch.block_idx.x * block_n
+        blk = hk.arch.block_idx.y
+        at = blk * block_m
+        count = sorted_ids.cols
+        e = expert_ids.at[0, blk].load_scalar()
+        live = hk.min(hk.max(ntp.at[0, 0].load_scalar() - at, 0), 1) * hk.min(hk.max(e + 1, 0), 1)
+        wid = hk.arch.warp_id()
+        wr = wid // warp_cols
+        wc = wid % warp_cols
+        acc = hk.zeros(ty_acc)
+        for t in hk.range(live * (a.cols // ks)):
+            k = t * ks
+            b_t = w.at[e, n0 + wid * (block_n // warps), k].load(ty_ld_b)
+            a_t = a.gather(ty_ld_a, hk.RowIndex(sorted_ids, at + (wid % a_loaders) * 16,
+                                                count=count, div=top_k), col=k)
+            hk.arch.barrier()
+            if wid < a_loaders:
+                As.subtile(16, ks, wid, 0).store(a_t)
+            Bs.subtile(block_n // warps, ks, wid, 0).store(b_t)
+            hk.arch.barrier()
+            for sl in range(ks // 16):
+                a_s = As.subtile(rm, 16, wr, sl).load(ty_a, wait=False)
+                b_s = Bs.subtile(rn, 16, wc, sl).load(ty_b, wait=False)
+                hk.lds.wait_for(a_s, b_s)
+                acc += b_s @ a_s.T
+        out = hk.transpose(acc)                  # tokens x W rows
+        if routed:
+            rw = topk_w.gather(ty_out, sorted_ids, at + wr * rm, count=count)
+            rw.right_fill_(1, 0.0)
+            out *= rw.sum(axis=1)[:, None]
+        c.scatter(out, sorted_ids, at + wr * rm, count=count, col=n0 + wc * rn)
+
+    def entry(a: hk.Tensor[dtype], w: hk.Tensor[dtype], c: hk.Tensor[dtype],
+              sorted_ids: hk.Tensor[i32], expert_ids: hk.Tensor[i32],
+              ntp: hk.Tensor[i32], topk_w: hk.Tensor[fp32]):
+        body(a, w, c, sorted_ids, expert_ids, ntp, topk_w)
+
+    entry.__name__ = name
+    return hk.kernel(entry, warps=warps, name=name,
+                     grid=lambda p: (p.w.rows // block_n, hk.cdiv(p.sorted_ids.cols, block_m), 1))
+
+
 _KERNELS: Dict[Tuple[Any, ...], Any] = {}
 _OPS: Dict[Tuple[Any, ...], Any] = {}
 _ARANGE: Dict[Tuple[Any, ...], Any] = {}
