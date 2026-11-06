@@ -290,6 +290,15 @@
     "bias"
    ]
   },
+  "sgld_qknorm": {
+   "apply_qk_norm_rope": [
+    "x",
+    "norm",
+    "rope"
+   ],
+   "norm_then_rope": true,
+   "rmsnorm_native": true
+  },
   "sgld_rope": {
    "apply_rope": [
     "x",

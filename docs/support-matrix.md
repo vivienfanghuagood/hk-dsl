@@ -27,11 +27,11 @@ Each row is an image whose engines' contract facts are recorded in `tests/hk/ir/
 
 | image | role | engine | ROCm | torch | Triton | Python | routes on by default |
 |---|---|---|---|---|---|---|---|
-| sglang-radeon image | production | sglang 0.0.0 with sglang-radeon-rdna3 0.1.5 | 7.2 | 2.9.1+rocm7.2.1.lw.gitff65f5bc | triton 3.5.1+rocm7.2.1.gita272dfa8 | 3.12.3 | `sglang_linear`, `sglang_norm`, `sglang_moe`, `sgld_attn`, `sgld_linear`, `sgld_vaeconv`, `sgld_rope` |
+| sglang-radeon image | production | sglang 0.0.0 with sglang-radeon-rdna3 0.1.5 | 7.2 | 2.9.1+rocm7.2.1.lw.gitff65f5bc | triton 3.5.1+rocm7.2.1.gita272dfa8 | 3.12.3 | `sglang_linear`, `sglang_norm`, `sglang_moe`, `sgld_attn`, `sgld_linear`, `sgld_vaeconv`, `sgld_rope`, `sgld_qknorm` |
 | MiniCPM5-2B serving image | production | vllm 0.1.dev1+g3775d5fca.rocm714 | 7.14 | 2.13.0a0+rocm7.14.0a20260612 | triton 3.7.1+git5d6048aa.rocm7.14.0a20260612 | 3.12.13 | `vllm_int4`, `vllm_gptq`, `vllm_gemm`, `vllm_moe`, `vllm_moe_wna16`, `vllm_sdpa`, `vllm_prefill` |
 | MiniCPM-V-4.7 serving image | production | vllm 0.1.dev1+g10cc2f6ae.rocm714 | 7.14 | 2.13.0a0+rocm7.14.0a20260612 | triton 3.7.1+git5d6048aa.rocm7.14.0a20260612 | 3.12.13 | `vllm_int4`, `vllm_gptq`, `vllm_gemm`, `vllm_moe`, `vllm_moe_wna16`, `vllm_sdpa`, `vllm_prefill` |
 | Qwen3.6-35B-A3B template image | production | vllm 0.19.2rc1.dev145+g2f314bc5e.d20260424 | 7.2 | 2.9.1+gitff65f5b | triton 3.5.1 | 3.12.3 | ~~`vllm_int4`~~ (off: vLLM 0.19 has no quantization.auto_awq module (vllm_int4 hooks AutoAWQLinearMethod there)), ~~`vllm_gptq`~~ (off: vLLM 0.19 has no quantization.auto_gptq module), `vllm_gemm`, `vllm_moe`, `vllm_moe_wna16`, `vllm_sdpa`, `vllm_prefill` |
-| SGLang 0.5.18 | measured | sglang 0.5.18 with sglang-radeon-rdna3 0.1.5 | 7.2 | 2.9.1+gitff65f5b | triton 3.5.1 | 3.12.3 | `sglang_linear`, `sglang_norm`, `sglang_moe`, `sgld_attn`, `sgld_linear`, `sgld_vaeconv`, ~~`sgld_rope`~~ (off: SGLang 0.5.18 has no Qwen-Image 2.1 DiT (qwen_image21): nothing to route) |
+| SGLang 0.5.18 | measured | sglang 0.5.18 with sglang-radeon-rdna3 0.1.5 | 7.2 | 2.9.1+gitff65f5b | triton 3.5.1 | 3.12.3 | `sglang_linear`, `sglang_norm`, `sglang_moe`, `sgld_attn`, `sgld_linear`, `sgld_vaeconv`, ~~`sgld_rope`~~ (off: SGLang 0.5.18 has no Qwen-Image 2.1 DiT (qwen_image21): nothing to route), ~~`sgld_qknorm`~~ (off: SGLang 0.5.18 has no Qwen-Image 2.1 DiT (qwen_image21): nothing to route) |
 | vLLM 0.31.0, matched stack | measured | vllm 0.31.0+rocm721 | 7.2 | 2.13.0+rocm7.2 | triton-rocm 3.7.1 | 3.12.3 | `vllm_int4`, `vllm_gptq`, `vllm_gemm`, `vllm_moe`, `vllm_moe_wna16`, `vllm_sdpa`, `vllm_prefill` |
 
 ### gfx1201 (Radeon AI PRO R9700)

@@ -357,6 +357,64 @@ def apply_rope() -> str:
     return f"rope: {QWEN21_HOME}.apply_rope -> hk.ops.rotary_pairs (bf16, head_dim 128)"
 
 
+QKNORM_STATS = {"hk": 0, "engine": 0}
+_QKNORM_ORIG = []
+
+
+def _qknorm_fits(x, norm, rope) -> bool:
+    """SGLang's RMSNorm as rmsnorm_rotary_pairs computes it: cast before the weight, no
+    residual, no variance override, a bf16 (128,) weight, the activation's dtype out."""
+    import torch  # noqa: PLC0415
+
+    w = getattr(norm, "weight", None)
+    return (getattr(norm, "cast_x_before_out_mul", False)
+            and getattr(norm, "variance_size_override", 0) is None
+            and getattr(norm, "override_orig_dtype", 0) is None
+            and isinstance(w, torch.Tensor) and w.dtype == torch.bfloat16
+            and tuple(w.shape) == (128,) and w.is_contiguous()
+            and x.dtype == torch.bfloat16 and x.dim() == 4 and x.shape[0] == 1
+            and x.is_contiguous() and x.shape[-1] == 128 and rope.dtype == torch.complex64
+            and rope.is_contiguous() and tuple(rope.shape) == (x.shape[1], 64)
+            and not torch.compiler.is_compiling())
+
+
+def apply_qknorm() -> str:
+    """Qwen-Image 2.1's q / k RMSNorm and complex RoPE (`apply_qk_norm_rope` of QWEN21_HOME:
+    SGLang's RMSNorm, native on ROCm -- five launches -- then apply_rope) as one
+    hk.ops.fused.rmsnorm_rotary_pairs launch. Where the norm or the shapes are not the ones it
+    computes, the engine's. Idempotent."""
+    import importlib  # noqa: PLC0415
+
+    from ..ops import fused  # noqa: PLC0415
+
+    mod = importlib.import_module(QWEN21_HOME)
+    if getattr(mod.apply_qk_norm_rope, "_hk", False):
+        return "qknorm: already patched"
+    orig = mod.apply_qk_norm_rope
+
+    def apply_qk_norm_rope(x, norm, rope):
+        if _qknorm_fits(x, norm, rope):
+            cos, sin = _rope_tables(rope)
+            QKNORM_STATS["hk"] += 1
+            return fused.rmsnorm_rotary_pairs(x, norm.weight, norm.variance_epsilon, cos, sin)
+        QKNORM_STATS["engine"] += 1
+        return orig(x, norm, rope)
+
+    apply_qk_norm_rope._hk = True
+    mod.apply_qk_norm_rope = apply_qk_norm_rope
+    _QKNORM_ORIG[:] = [(mod, orig)]
+    return (f"qknorm: {QWEN21_HOME}.apply_qk_norm_rope -> hk.ops.fused.rmsnorm_rotary_pairs "
+            f"(bf16, head_dim 128)")
+
+
+def revert_qknorm() -> str:
+    if not _QKNORM_ORIG:
+        return "qknorm: not patched"
+    mod, orig = _QKNORM_ORIG.pop()
+    mod.apply_qk_norm_rope = orig
+    return "qknorm -> engine"
+
+
 def revert_rope() -> str:
     if not _ROPE_ORIG:
         return "rope: not patched"
@@ -513,7 +571,8 @@ def apply() -> str:
     notes, applied, off = contract.apply_routes(
         "sglang_diffusion", routes,
         [("sgld_attn", attn), ("sgld_linear", apply_linear), ("sgld_convrot", convrot),
-         ("sgld_vaeconv", apply_vaeconv), ("sgld_rope", apply_rope)])
+         ("sgld_vaeconv", apply_vaeconv), ("sgld_rope", apply_rope),
+         ("sgld_qknorm", apply_qknorm)])
     if not applied:
         return f"no route applied ({', '.join(off)} off, see the warnings): stock"
     from ..runtime.compile import arm_jit_notice  # noqa: PLC0415
@@ -564,7 +623,8 @@ def stats() -> str:
             + f"; linear: hk {LINEAR_STATS['hk']}, engine {LINEAR_STATS['engine']}"
             + f"; convrot: hk {CONVROT_STATS['hk']}, fallback {CONVROT_STATS['fallback']}"
             + f"; vaeconv: chunked {VAE_STATS['chunked']}, whole {VAE_STATS['whole']}"
-            + f"; rope: hk {ROPE_STATS['hk']}, engine {ROPE_STATS['engine']}")
+            + f"; rope: hk {ROPE_STATS['hk']}, engine {ROPE_STATS['engine']}"
+            + f"; qknorm: hk {QKNORM_STATS['hk']}, engine {QKNORM_STATS['engine']}")
 
 
 def site_dir() -> Path:
