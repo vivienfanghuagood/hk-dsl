@@ -106,26 +106,42 @@ python3 -m hk.integration tune --model Qwen/Qwen3-8B --engine sglang
 ## SGLang-Diffusion (text to image and video)
 
 SGLang-Diffusion runs its model in worker processes that load no plugins, so
-hk needs one install command in that environment:
+hk needs one install step in that environment (an SGLang-Diffusion ROCm
+environment for RDNA3, gfx1100). Then generate as usual. For Qwen-Image 2.1:
 
 ```bash
-python3 -m hk.integration sglang-diffusion install     # once per environment
-python3 -m hk.integration sglang-diffusion status      # installed, and which routes are on
+pip install -U hk-dsl && python3 -m hk.integration sglang-diffusion install   # once per environment
+SGLANG_USE_AITER=0 MIOPEN_FIND_MODE=FAST sglang generate --model-path Qwen/Qwen-Image-2.1 \
+    --prompt "a ginger cat asleep on a stack of books" --height 1024 --width 1024 \
+    --num-inference-steps 30 --attention-backend torch_sdpa --num-gpus 1 --save-output --output-path out
 ```
 
-After that, hk's attention and linear kernels are on by default on gfx1100 in
-every SGLang-Diffusion process; generate as you always do. Each patched
-process prints a line with how many calls took hk's kernels (read the
-worker's line: the parent's counts stay 0).
+The image is written to `out/`. `-U` matters: an older hk-dsl already in the
+environment is not upgraded by a plain `pip install`, and its boot is the one
+that runs.
+
+**Check that it is on.** `python3 -m hk.integration sglang-diffusion status`
+says whether it is installed and which routes are on. During generation, the
+log has a `[hk] sglang-diffusion: routes on: sgld_attn ..., sgld_linear ...`
+line, and the worker that runs the model prints how many calls took hk's
+kernels:
+
+```
+[hk] sglang-diffusion: attention: hk 614 (614 in place, 614 on attn_k3), torch 68 (...); linear: hk ...
+```
+
+Read the worker's line: the parent process prints one too, at exit, whose
+counts stay 0. With `HK_DISABLE=1` there is no `[hk]` line at all.
 
 ```bash
-HK_DISABLE=1 ...                                       # stock
-HK_SGLD_LINEAR=0 ...                                   # attention only (HK_SGLD_ATTN=0: linear only)
+HK_DISABLE=1 sglang generate ...                       # stock
+HK_SGLD_LINEAR=0 sglang generate ...                   # attention only (HK_SGLD_ATTN=0: linear only)
 python3 -m hk.integration sglang-diffusion uninstall   # remove it
 ```
 
-Checked on Qwen-Image 2.1. The lossy ConvRot INT8 route stays opt-in
-(`HK_SGLD_CONVROT=1`).
+The first generation also compiles hk's kernels (a few seconds each, kept in
+`~/.cache/hk`). The lossy ConvRot INT8 route stays opt-in
+(`HK_SGLD_CONVROT=1`). gfx1201 has no SGLang-Diffusion routes yet.
 
 ## Reference
 
