@@ -4,19 +4,32 @@ Release notes for each version are also on its
 [GitHub release](https://github.com/vivienfanghuagood/hk-dsl/releases).
 The next version's notes collect here until it is released.
 
-## Unreleased
+## 0.9.11
+
+hk-dsl 0.9.11: two new SGLang-Diffusion routes on by default on gfx1100 -- `sgld_vaeconv` (Wan's VAE
+decode off MIOpen's naive conv3d kernel) and `sgld_rope` (Qwen-Image 2.1's RoPE in one launch, bit for bit
+torch's); on gfx1100, TRITON_ATTN prefill at head size 256 is faster. No change to the language or the
+dialect (`hk-dialect-8`).
+
+On PyPI: `pip install hk-dsl`, for CPython 3.10 to 3.13 on Linux x86_64 with glibc 2.35 or newer
+(Ubuntu 22.04 and later, and vLLM's ROCm images): one `manylinux_2_35` wheel per interpreter. The
+wheels below are the same files.
+
+    pip install hk_dsl-0.9.11-cp312-cp312-manylinux_2_35_x86_64.whl
 
 ### Changes
 
+**SGLang-Diffusion: new route `sgld_vaeconv` (`HK_SGLD_VAECONV`, on by default on gfx1100)** (#310) runs Wan's VAE conv3d as calls of 2 output frames. MIOpen ran the decoder's full-resolution convs on its naive reference kernel. Wan2.1-T2V-1.3B 832x480x81 on one W7900D: VAE decode 969 s -> 37.8 s, the generation 2.77x faster; closer to an fp32 VAE decode than stock.
+
+**SGLang-Diffusion: new route `sgld_rope` (`HK_SGLD_ROPE`, on by default on gfx1100)** (#310) runs Qwen-Image 2.1's complex RoPE on the new `hk.ops.fused.rotary_pairs` (RoPE on interleaved pairs, bit for bit torch's complex multiply): one launch for four. Qwen-Image 2.1 1024^2, 30 steps, one W7900D: 1.026x a request.
+
 **vLLM's TRITON_ATTN at head size 256 on gfx1100: 1.16-1.33x prefill** (#312). MiniCPM-V-4.7 and Qwen3.8's full-attention layers take the V^T pre-pack d128 had (`vt_pages`: the batch's V pages transposed once a call, not in every workgroup), on an 8-warp kernel whose Q tiles go longest first (`paged_prefill_kernel(rev=True)`: causal, the last tile walks the most KV blocks, so short tiles fill the grid's tail). 4096-token chunks over 12k-28k contexts 48-50 -> 59-61 TF/s; the same bits as before.
 
-- SGLang-Diffusion: new route `sgld_vaeconv` (`HK_SGLD_VAECONV`, on by default on gfx1100) runs Wan's
-  VAE conv3d as calls of 2 output frames. MIOpen ran the decoder's full-resolution convs on its naive
-  reference kernel. Wan2.1-T2V-1.3B 832x480x81 on one W7900D: VAE decode 969 s -> 37.8 s, the generation
-  2.77x faster; closer to an fp32 VAE decode than stock.
-- SGLang-Diffusion: new route `sgld_rope` (`HK_SGLD_ROPE`, on by default on gfx1100) runs Qwen-Image 2.1's
-  complex RoPE on the new `hk.ops.fused.rotary_pairs` (RoPE on interleaved pairs, bit for bit torch's
-  complex multiply): one launch for four. Qwen-Image 2.1 1024^2, 30 steps, one W7900D: 1.026x a request.
+**Documentation and tools** (#305, #307, #309). Every `HK_*` variable is in exactly one reference table, with 0.9.10's switches documented; docs/sglang.md gives the SGLang-Diffusion path for Qwen-Image 2.1; `attention_bench`'s hk_rocm arm uses the opt-in ROCM_ATTN decode.
+
+### All pull requests
+
+#305, #307, #308, #309, #310, #312.
 
 ## 0.9.10
 
