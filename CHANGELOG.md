@@ -4,15 +4,30 @@ Release notes for each version are also on its
 [GitHub release](https://github.com/vivienfanghuagood/hk-dsl/releases).
 The next version's notes collect here until it is released.
 
-## Unreleased
+## 0.9.10
 
-**AWQ prefill on hk on gfx1201.** `vllm_int4` takes fp16 batches of 65-512 tokens on the large-batch W4A16 form, in a variant that reads hk's AWQ layout with zero points. `HK_VLLM_INT4_LARGE_MAX_M` sets the cap, and 0 turns the form off. The form is not used on gfx1100, where vLLM's dequantize-and-matmul path is as fast.
+hk-dsl 0.9.10: on gfx1201, `vllm_int4` takes AWQ prefill (fp16 batches of 65-512 tokens) on the
+large-batch W4A16 form; on gfx1100, `HK_VLLM_ROCM_DECODE=1` (opt-in) runs ROCM_ATTN's decode-only calls
+on hk's split decode over ROCM_ATTN's own cache. No change to the language or the dialect
+(`hk-dialect-8`).
 
-**vLLM's TRITON_ATTN on gfx1100: the KV split cuts the longest contexts into 64 runs.** The KV-split prefill's merge (`paged_prefill.merge_kernel`) runs in a loop past 32 splits, where it no longer builds unrolled. MiniCPM5's 16-token chunks and MiniCPM-V's 17-64-token chunks over 16k+ contexts take 64 splits: 1.11-1.25x faster than the 16-32 they took. Measured faster than both stock kernels on every batch it takes.
+On PyPI: `pip install hk-dsl`, for CPython 3.10 to 3.13 on Linux x86_64 with glibc 2.35 or newer
+(Ubuntu 22.04 and later, and vLLM's ROCm images): one `manylinux_2_35` wheel per interpreter. The
+wheels below are the same files.
+
+    pip install hk_dsl-0.9.10-cp312-cp312-manylinux_2_35_x86_64.whl
 
 ### Changes
 
-**vLLM's ROCM_ATTN on gfx1100: hk's split decode on ROCM_ATTN's own cache, opt-in.** `HK_VLLM_ROCM_DECODE=1` sends ROCM_ATTN's decode-only calls at head size 128 to `hk.ops.paged_decode`, which now reads ROCM_ATTN's cache in place (`kv_order="rocm"`: the x-split K and the per-page V^T, staged through LDS), one-warp workgroups, four a WGP (`paged_decode.plan_rocm`), up to 16 (request, kv head) pairs. ROCM_ATTN's prefill and mixed batches are unchanged. `attention_bench.py`'s `hk_rocm` arm now covers ROCM_ATTN's decode-only calls too.
+**AWQ prefill on hk on gfx1201** (#301). `vllm_int4` takes fp16 batches of 65-512 tokens on the large-batch W4A16 form, in a variant that reads hk's AWQ layout with zero points. `HK_VLLM_INT4_LARGE_MAX_M` sets the cap, and 0 turns the form off. The form is not used on gfx1100, where vLLM's dequantize-and-matmul path is as fast.
+
+**vLLM's ROCM_ATTN on gfx1100: hk's split decode on ROCM_ATTN's own cache, opt-in** (#302). `HK_VLLM_ROCM_DECODE=1` sends ROCM_ATTN's decode-only calls at head size 128 to `hk.ops.paged_decode`, which now reads ROCM_ATTN's cache in place (`kv_order="rocm"`: the x-split K and the per-page V^T, staged through LDS), one-warp workgroups, four a WGP (`paged_decode.plan_rocm`), up to 16 (request, kv head) pairs. ROCM_ATTN's prefill and mixed batches are unchanged. `attention_bench.py`'s `hk_rocm` arm now covers ROCM_ATTN's decode-only calls too.
+
+**Documentation and tests** (#303, #304). README, the quickstart and the vLLM and SGLang pages give one command to serve with hk, each run as written; Python 3.14 troubleshooting. `test_front_page` traces only doc blocks that import hk.
+
+### All pull requests
+
+#300, #301, #302, #303, #304.
 
 ## 0.9.9
 
