@@ -113,7 +113,10 @@ def test_the_raw_kernels_trace(tmp_path, doc, arch):
     pytest.importorskip("hk._mlir")
     import hk
 
-    for i, src in enumerate(b for b in _blocks(doc) if "@hk.kernel" in b):
+    # A block that defines a kernel and imports hk is a program; one that does
+    # not is a sketch of an earlier block (quickstart's `...` body under
+    # @hk.specialize), not something to trace.
+    for i, src in enumerate(b for b in _blocks(doc) if "@hk.kernel" in b and "import hk" in b):
         mod = _module(src, tmp_path, f"doc_{Path(doc).stem}_{i}")
         for k in (v for v in vars(mod).values() if isinstance(v, hk.Kernel)):
             on = hk.kernel(k.fn, arch=arch, grid=k.grid_fn, warps=k.warps, name=k.name)
