@@ -222,7 +222,8 @@ def w4a16_kernel(name: str, *, tokens: int = 1, slices: int = 4, warps: int = 16
 
 
 def w4a16_large_kernel(name: str, *, group: int = 32, block_m: int = 128, block_n: int = 128,
-                       warps: int = 8, warp_rows: int = 2, asym: bool = False):
+                       warps: int = 8, warp_rows: int = 2, asym: bool = False,
+                       sym_blocked: bool = False):
     """The large-batch W4A16 GEMM on vLLM's RDNA skinny layout read in place (prefill): C (M, N)
     = x (M, K) @ W.T, fp16, W symmetric (zero point 8) as `exllama_matmul` reads it. A workgroup
     takes a block_m x block_n tile of C; every 64-deep K step its warps stage x's rows into LDS and
@@ -232,7 +233,8 @@ def w4a16_large_kernel(name: str, *, group: int = 32, block_m: int = 128, block_
 
     `asym`: W in hk's own layout with zero points instead (`repack_awq`: codes interleaved by
     16-row block, s and zs [N, K/group]), the kernel taking (x, qw, s, zs, c) -- AWQ as
-    vllm_int4 holds it."""
+    vllm_int4 holds it. `sym_blocked`: W in hk's symmetric layout (zero point 8, scales in 16-row
+    blocks: `repack_gptq(symmetric=True)`, what vllm_gptq holds on gfx1100), taking (x, qw, s, c)."""
     ks = 64
     warp_cols = warps // warp_rows
     rm, rn = block_m // warp_rows, block_n // warp_cols
@@ -263,7 +265,7 @@ def w4a16_large_kernel(name: str, *, group: int = 32, block_m: int = 128, block_
             w_t = (hk.load_w4(ty_ld_b, qw, s, zs, n0 + wid * (block_n // warps), k, group=group)
                    if zs is not None else
                    hk.load_w4(ty_ld_b, qw, s, None, n0 + wid * (block_n // warps), k, group=group,
-                              zero=SYMMETRIC_ZERO, exllama=True))
+                              zero=SYMMETRIC_ZERO, s_blocked=sym_blocked, exllama=not sym_blocked))
             hk.arch.barrier()
             As.subtile(block_m // warps, ks, wid, 0).store(a_t)
             Bs.subtile(block_n // warps, ks, wid, 0).store(w_t)
