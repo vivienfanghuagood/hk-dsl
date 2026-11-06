@@ -14,6 +14,8 @@ python/hk/ops/attn_k3.py         Granules.load_frag    2     as above
 python/hk/ops/paged_prefill.py   SharedTile.granules   2     gfx1100 paged prefill, attn.py's addressing
 python/hk/ops/paged_prefill.py   Granules.load_frag    2     as above
 python/hk/ops/paged_prefill.py   Granules.store_frag   1     as above
+python/hk/ops/paged_decode.py    SharedTile.granules   3     gfx1100 decode on ROCM_ATTN's cache (kv_order="rocm"): staged K, V^T and Q fragments read from LDS, paged_prefill's addressing
+python/hk/ops/paged_decode.py    Granules.load_frag    3     as above; loaded unwaited and waited on by name (hk.lds.wait_for), or WMMA reads them before the LDS load retires
 python/hk/ops/dsv41_index.py     hk.map_cpp            190   the DeepSeek-V4.1 index front (#115, #137): strip index arithmetic, selects and bit ops the operators cannot write yet, and the scaled fp8 / fp4 conversion intrinsics; the strip operators and hk.map (S7) can write the arithmetic now, its migration is a later step
 python/hk/ops/attn_cdna.py       hk.arch.agpr          1     acc="agpr", off by default (an experiment; may be removed)
 #
