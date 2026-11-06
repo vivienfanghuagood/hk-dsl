@@ -113,7 +113,7 @@ takes, by default:
 | route | switch | what | models |
 |---|---|---|---|
 | `sgld_attn` | `HK_SGLD_ATTN` | the DiT's attention (`--attention-backend torch_sdpa`) | Qwen-Image 2.1, Wan2.1 |
-| `sgld_linear` | `HK_SGLD_LINEAR` | the DiT's projections where hk measured faster | Qwen-Image 2.1 |
+| `sgld_linear` | `HK_SGLD_LINEAR` | the DiT's projections where hk measured faster (with a bias: from 0.9.12) | Qwen-Image 2.1, Wan2.1 |
 | `sgld_rope` | `HK_SGLD_ROPE` | the complex RoPE, bit for bit | Qwen-Image 2.1 |
 | `sgld_qknorm` | `HK_SGLD_QKNORM` | q / k RMSNorm + RoPE as one launch (from 0.9.12) | Qwen-Image 2.1 |
 | `sgld_vaeconv` | `HK_SGLD_VAECONV` | the VAE's conv3d in 2-frame calls, which MIOpen would run on its slow reference kernel | Wan2.1 |
