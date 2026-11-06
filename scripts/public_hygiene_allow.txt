@@ -11,6 +11,11 @@ docs/design/*.md            /dev/shm/hk-llvm
 # root's cache directory inside the vLLM container, as vLLM logged it.
 docs/history/20-vllm-031.md /root/\.cache/vllm/hk-linear
 
+# Volume targets inside the public R9700 vLLM image (it runs as root): where its vLLM and hk
+# look for the Hugging Face and hk caches. Container paths, not a machine's.
+docs/vllm.md                /root/\.cache/huggingface
+docs/vllm.md                /root/\.cache/hk
+
 # A made-up HOME in a unit test of the cache path.
 tests/hk/ir/test_vllm_gemm.py   /home/u
 
