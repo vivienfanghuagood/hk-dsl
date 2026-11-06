@@ -223,7 +223,7 @@ def w4a16_kernel(name: str, *, tokens: int = 1, slices: int = 4, warps: int = 16
 
 def w4a16_large_kernel(name: str, *, group: int = 32, block_m: int = 128, block_n: int = 128,
                        warps: int = 8, warp_rows: int = 2, asym: bool = False,
-                       sym_blocked: bool = False):
+                       sym_blocked: bool = False, dense: bool = False):
     """The large-batch W4A16 GEMM on vLLM's RDNA skinny layout read in place (prefill): C (M, N)
     = x (M, K) @ W.T, fp16, W symmetric (zero point 8) as `exllama_matmul` reads it. A workgroup
     takes a block_m x block_n tile of C; every 64-deep K step its warps stage x's rows into LDS and
@@ -262,7 +262,9 @@ def w4a16_large_kernel(name: str, *, group: int = 32, block_m: int = 128, block_
         for t in hk.range(x.cols // ks):
             k = t * ks
             a_t = x[hk.elem_coord(0, 0, m0 + wid * (block_m // warps), k)].load(ty_ld_a, bounded=True)
-            w_t = (hk.load_w4(ty_ld_b, qw, s, zs, n0 + wid * (block_n // warps), k, group=group)
+            w_t = (qw[hk.elem_coord(0, 0, n0 + wid * (block_n // warps), k)].load(ty_ld_b)
+                   if dense else
+                   hk.load_w4(ty_ld_b, qw, s, zs, n0 + wid * (block_n // warps), k, group=group)
                    if zs is not None else
                    hk.load_w4(ty_ld_b, qw, s, None, n0 + wid * (block_n // warps), k, group=group,
                               zero=SYMMETRIC_ZERO, s_blocked=sym_blocked, exllama=not sym_blocked))
@@ -283,6 +285,9 @@ def w4a16_large_kernel(name: str, *, group: int = 32, block_m: int = 128, block_
         def body(x: hk.Tensor[fp16], qw: hk.Tensor[i32], s: hk.Tensor[fp16],
                  zs: hk.Tensor[fp16], c: hk.Tensor[fp16]):
             gemm(x, qw, s, zs, c)
+    elif dense:     # diagnostic: the same structure on an fp16 W (no decode)
+        def body(x: hk.Tensor[fp16], qw: hk.Tensor[fp16], s: hk.Tensor[fp16], c: hk.Tensor[fp16]):
+            gemm(x, qw, s, None, c)
     else:
         def body(x: hk.Tensor[fp16], qw: hk.Tensor[i32], s: hk.Tensor[fp16], c: hk.Tensor[fp16]):
             gemm(x, qw, s, None, c)
