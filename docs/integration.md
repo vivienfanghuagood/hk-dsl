@@ -624,7 +624,7 @@ not restate it:
 | `HK_VLLM_BACKEND` | `_vllm_plugin.py` | register the decoder attention backend (default off); a value other than `1`/`on`/`yes`/`true` names the slot |
 | `HK_VLLM_BACKEND_SLOT` | `vllm_backend.py` | the `AttentionBackendEnum` member to register over (default `TRITON_ATTN`) |
 | `HK_VLLM_PREFILL` | `_vllm_plugin.py` | prefill attention on vLLM's own cache, ROCM_ATTN and TRITON_ATTN (a route) |
-| `HK_VLLM_PREFILL_VT` | `vllm_prefill.py` | `0`: on TRITON_ATTN, transpose V in every workgroup instead of packing the batch's V^T pages once a call (`paged_prefill` `vt_pages`; default on, head size up to 128) |
+| `HK_VLLM_PREFILL_VT` | `vllm_prefill.py` | `0`: on TRITON_ATTN, transpose V in every workgroup instead of packing the batch's V^T pages once a call (`paged_prefill` `vt_pages`; default on) |
 | `HK_VLLM_PREFILL_SHADOW` | `vllm_prefill.py` | `1`: also run vLLM's kernel on every call hk takes and print the worst row's difference in bf16 ulps (a diagnostic; syncs) |
 | `HK_VLLM_PREFILL_GUARD` | `vllm_prefill.py` | `0`: on TRITON_ATTN, take every batch with prefill in it, also the ones measured slower than vLLM's kernel (decodes beside a small prefill, short chunks); default on: those go to vLLM, counted as `declined` |
 | `HK_VLLM_PREFILL_SPLIT` | `vllm_prefill.py` | `0`: on TRITON_ATTN, decline a mixed batch with a sizable prefill whole instead of splitting it (prefill rows on hk, decode rows on vLLM's kernel); `all`: split every such batch, the measured thresholds aside; default on |

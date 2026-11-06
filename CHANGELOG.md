@@ -6,6 +6,10 @@ The next version's notes collect here until it is released.
 
 ## Unreleased
 
+### Changes
+
+**vLLM's TRITON_ATTN at head size 256 on gfx1100: 1.16-1.33x prefill** (#312). MiniCPM-V-4.7 and Qwen3.8's full-attention layers take the V^T pre-pack d128 had (`vt_pages`: the batch's V pages transposed once a call, not in every workgroup), on an 8-warp kernel whose Q tiles go longest first (`paged_prefill_kernel(rev=True)`: causal, the last tile walks the most KV blocks, so short tiles fill the grid's tail). 4096-token chunks over 12k-28k contexts 48-50 -> 59-61 TF/s; the same bits as before.
+
 - SGLang-Diffusion: new route `sgld_vaeconv` (`HK_SGLD_VAECONV`, on by default on gfx1100) runs Wan's
   VAE conv3d as calls of 2 output frames. MIOpen ran the decoder's full-resolution convs on its naive
   reference kernel. Wan2.1-T2V-1.3B 832x480x81 on one W7900D: VAE decode 969 s -> 37.8 s, the generation

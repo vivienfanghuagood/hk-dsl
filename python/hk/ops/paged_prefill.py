@@ -62,7 +62,8 @@ def paged_prefill_kernel(name: str, *, head_dim: int = 128, group: int = 4,
                          max_vgprs: int = 256, min_occupancy: int = 1,
                          layout: str = "hk", page: int = 16, dsplit: bool = False,
                          decodes: bool = False, vt_pages: bool = False,
-                         kv_order: str = "planes", kv_splits: int = 1, pack: bool = False):
+                         kv_order: str = "planes", kv_splits: int = 1, pack: bool = False,
+                         rev: bool = False):
     """Causal paged prefill: `q` and `o` are the engine's (tokens, heads *
     head_dim) rows, `q_start` the batch's query_start_loc.
 
@@ -128,6 +129,10 @@ def paged_prefill_kernel(name: str, *, head_dim: int = 128, group: int = 4,
     a tile, not once a query head. Takes `group` dividing the tile's warps; `tiles` rows are
     q_tile / group tokens (and so are the kv_splits partials').
 
+    `rev` (layout "rocm" / "flash"): a request's Q tiles in reverse grid order, its last (the
+    one that walks the most KV blocks) dispatched first -- the grid's tail is then short tiles.
+    MiniCPM-V's 8k prompt (d256) 1.10x, MiniCPM5's (d128) 1.07x on gfx1100.
+
     `dsplit` (head_dim 256): a query row's head_dim is split between a pair of
     warps, each holding its half of Q and of O (a d256 row in one warp is 256
     VGPRs of Q and O alone). Each computes its half's partial S, the pair adds
@@ -148,6 +153,8 @@ def paged_prefill_kernel(name: str, *, head_dim: int = 128, group: int = 4,
         raise ValueError("pack: layout='flash' with decodes=False")
     vstraight = rocm or vt_pages                   # V^T pages staged as they are
     paged = rocm or flash                   # vLLM's pages, the device-side grid
+    if rev and not paged:
+        raise ValueError("rev: layout 'rocm' or 'flash' (the device-side grid)")
     if dsplit and (warps % 2 or head_dim % 32):
         raise ValueError(f"dsplit: an even warp count and head_dim a multiple of 32, "
                          f"not {warps} / {head_dim}")
@@ -242,6 +249,10 @@ def paged_prefill_kernel(name: str, *, head_dim: int = 128, group: int = 4,
             if kv_splits > 1:
                 split = qb % kv_splits
                 qb = qb // kv_splits
+            if rev:
+                # the longest tiles first: causal, a request's last Q tile walks the most KV
+                # blocks, so the short ones fill the grid's tail
+                qb = tiles.rows - 1 - qb
             if pack:
                 head_kv = hk.arch.block_idx.y
             else:

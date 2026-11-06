@@ -92,9 +92,10 @@ output, non-causal, or a call made while a graph is captured.
 
 Nothing is read on the host. The grid is (Q tiles of the longest query,
 heads, requests), and a workgroup works out its request from its index.
-On TRITON_ATTN at head size up to 128 the route first transposes the batch's
-V pages once into a scratch of V^T pages (`vt_pages`), instead of in every
-workgroup; `HK_VLLM_PREFILL_VT=0` turns that off.
+On TRITON_ATTN the route first transposes the batch's V pages once into a
+scratch of V^T pages (`vt_pages`), instead of in every workgroup;
+`HK_VLLM_PREFILL_VT=0` turns that off. At head size 256 that kernel also
+dispatches a request's Q tiles longest first.
 `HK_VLLM_PREFILL_SHADOW=1` also runs vLLM's kernel on every call hk takes and
 compares the rows. It is a diagnostic that syncs; don't serve with it.
 
