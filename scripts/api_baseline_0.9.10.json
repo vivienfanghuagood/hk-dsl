@@ -12078,10 +12078,12 @@
 },
 "hk.integration.vllm_int4": {
 "Callable": {},
+"LARGE_MAX_M": {},
 "Optional": {},
 "PATCH": {},
 "STATS": {},
 "_HK_MAX_M": {},
+"_LARGE": {},
 "_MAX_M": {},
 "_ORIG_APPLY": {},
 "_ORIG_PWAL": {},
@@ -12102,6 +12104,9 @@
 ]
 },
 "_hostpath": {},
+"_large_max_m": {
+"params": []
+},
 "_max_m": {
 "params": []
 },
@@ -12512,6 +12517,9 @@
 "Optional": {},
 "PATCH": {},
 "PREFIXES": {},
+"ROCM_DECODE": {},
+"ROCM_DEC_ARCHES": {},
+"ROCM_DEC_MAX_PAIRS": {},
 "SHADOW": {},
 "SHADOW_STATS": {},
 "SHORT_Q": {},
@@ -12523,11 +12531,15 @@
 "VT": {},
 "VT_CAP_BYTES": {},
 "_ARANGE": {},
+"_C_DEFAULTS": {},
+"_C_READ": {},
+"_C_SIG": {},
 "_DEC": {},
 "_DECLINED_SAID": {},
 "_DEC_SCRATCH": {},
 "_FLASH": {},
 "_GUARDED": {},
+"_GUARDED_C": {},
 "_GUARDED_U": {},
 "_KVS_ENV": {},
 "_KVS_OPS": {},
@@ -12535,6 +12547,7 @@
 "_OPS": {},
 "_ORIG": {},
 "_ORIG_BUILD": {},
+"_ORIG_C": {},
 "_ORIG_U": {},
 "_P_NEED": {},
 "_P_READ": {},
@@ -12548,6 +12561,9 @@
 "_U_SIG": {},
 "_VT_OPS": {},
 "_VT_SCRATCH": {},
+"_apply_rocm_decode": {
+"params": []
+},
 "_apply_stats": {
 "params": []
 },
@@ -12558,6 +12574,11 @@
 "params": [
 "make",
 "quiet"
+]
+},
+"_c_unknown": {
+"params": [
+"a"
 ]
 },
 "_common": {},
@@ -12671,6 +12692,11 @@
 "_revert_stats": {
 "params": []
 },
+"_rocm_decode": {
+"params": [
+"a"
+]
+},
 "_shadow": {
 "params": [
 "o",
@@ -12727,6 +12753,12 @@
 "query_start_loc",
 "seq_lens",
 "num_reqs"
+]
+},
+"chunked_prefill_paged_decode": {
+"params": [
+"*args",
+"**kwargs"
 ]
 },
 "context_attention_fwd": {
@@ -12792,6 +12824,11 @@
 "page_why_not": {
 "params": [
 "page"
+]
+},
+"rd_why_not": {
+"params": [
+"a"
 ]
 },
 "revert": {
@@ -16493,6 +16530,8 @@
 "NEG_INF": {},
 "Optional": {},
 "Q_TILE": {},
+"ROCM_MAX_SPLITS": {},
+"ROCM_WGS_PER_WGP": {},
 "SMALL_SPLITS": {},
 "TARGET_WORKGROUPS": {},
 "_MERGE": {},
@@ -16546,6 +16585,13 @@
 "n_kv_heads",
 "head_dim",
 "page",
+"wgps"
+]
+},
+"plan_rocm": {
+"params": [
+"n_reqs",
+"n_kv_heads",
 "wgps"
 ]
 },
@@ -17422,6 +17468,16 @@
 "exllama"
 ]
 },
+"large_matmul": {
+"params": [
+"x",
+"qw",
+"s",
+"zs",
+"group",
+"out"
+]
+},
 "matmul": {
 "params": [
 "x",
@@ -17517,7 +17573,8 @@
 "block_m",
 "block_n",
 "warps",
-"warp_rows"
+"warp_rows",
+"asym"
 ]
 }
 },
