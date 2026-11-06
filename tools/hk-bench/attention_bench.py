@@ -296,6 +296,9 @@ def hk_rocm_arm(case):
     vp._ORIG = orig
     vp._P_SIG = inspect.signature(orig)
     vp._ORIG_C = cppd.chunked_prefill_paged_decode
+    # the decode route is opt-in (HK_VLLM_ROCM_DECODE=1); this arm measures it, so it is on here --
+    # off, every decode-only call would be ROCM_ATTN's own and the arm would time vLLM's kernel
+    vp.ROCM_DECODE = True
     vp._C_SIG = inspect.signature(vp._ORIG_C)
     out = torch.empty_like(case.q)
     one = torch.ones(1, device=case.q.device, dtype=torch.float32)
