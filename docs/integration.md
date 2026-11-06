@@ -625,24 +625,32 @@ not restate it:
 | `HK_VLLM_PREFILL_VT` | `vllm_prefill.py` | `0`: on TRITON_ATTN, transpose V in every workgroup instead of packing the batch's V^T pages once a call (`paged_prefill` `vt_pages`; default on, head size up to 128) |
 | `HK_VLLM_PREFILL_SHADOW` | `vllm_prefill.py` | `1`: also run vLLM's kernel on every call hk takes and print the worst row's difference in bf16 ulps (a diagnostic; syncs) |
 | `HK_VLLM_PREFILL_GUARD` | `vllm_prefill.py` | `0`: on TRITON_ATTN, take every batch with prefill in it, also the ones measured slower than vLLM's kernel (decodes beside a small prefill, short chunks); default on: those go to vLLM, counted as `declined` |
+| `HK_VLLM_PREFILL_SPLIT` | `vllm_prefill.py` | `0`: on TRITON_ATTN, decline a mixed batch with a sizable prefill whole instead of splitting it (prefill rows on hk, decode rows on vLLM's kernel); `all`: split every such batch, the measured thresholds aside; default on |
+| `HK_VLLM_PREFILL_KVSPLIT` | `vllm_prefill.py` | `0`: no KV-split prefill for short chunks over long contexts; `N` (> 1): every prefill call with N splits, the guard aside (to measure); default on, the split count planned |
+| `HK_VLLM_PREFILL_KVS_WARPS` | `vllm_prefill.py` | the KV split's tile, warps x 16 rows (default 0: planned) |
+| `HK_VLLM_PREFILL_KVS_PACK` | `vllm_prefill.py` | `1` / `0`: force the GQA-packed tile on or off for every KV-split call, the plan aside (default unset: planned) |
 | `HK_VLLM_ROCM_DECODE` | `vllm_prefill.py` | `1`: decode-only ROCM_ATTN calls at head size 128 on hk's split decode over ROCM_ATTN's own cache (`paged_decode`, `kv_order="rocm"`), up to 16 (request, kv head) pairs; gfx1100; default off |
 | `HK_VLLM_DECODE` | `vllm_prefill.py` | decode-only TRITON_ATTN calls on hk's split decode (`paged_decode`): unset, head size 256 wherever the prefill route is on; `1`, head size 128 too; `0`, off |
 | `HK_VLLM_GEMM` | `_vllm_plugin.py` | route the unquantized linear layers (a route) |
 | `HK_VLLM_MOE` | `_vllm_plugin.py` | route the bf16 MoE GEMMs up to 256 tokens a step (2 on gfx1201; a route) |
 | `HK_VLLM_MOE_WNA16` | `_vllm_plugin.py` | route the 4-bit MoE GEMMs with zero points (AWQ, moe_wna16) up to 32 tokens a step, on the (experts, N, K, group) it was validated on (`vllm_moe_wna16.VALIDATED`); `force`: any (default off) |
-| `HK_VLLM_INT4` | `_vllm_plugin.py` | route AWQ linear layers' fp16/bf16 batches up to 64 tokens (default on) |
+| `HK_VLLM_INT4` | `_vllm_plugin.py` | route AWQ linear layers: fp16/bf16 batches up to 64 tokens on hk's decode GEMM, and on gfx1201 fp16 batches of 65-512 tokens on the large-batch form (a route) |
+| `HK_VLLM_INT4_LARGE_MAX_M` | `vllm_int4.py` | the most tokens a batch takes the large-batch W4A16 form at (default 512 on gfx1201, unused elsewhere); `0`: the form off |
 | `HK_VLLM_GPTQ` | `_vllm_plugin.py` | route 4-bit symmetric GPTQ layers' fp16/bf16 batches of 1-64 tokens (a route) |
 | `HK_VLLM_MXFP8` | `_vllm_plugin.py` | DeepSeek-V4.1's block-scaled MXFP8 linear layers at M >= 2048, two shapes from their own M (`vllm_mxfp8.MIN_M_NK`), six with measured M ranges below that (`vllm_mxfp8.RANGES`) (a route) |
 | `HK_MXFP8_ANY` | `vllm_mxfp8.py` | `1`: the MXFP8 route takes any (N, K) of whole tiles, not only the measured TP2 shapes (default off) |
 | `HK_VLLM_MOE_A8W4` | `_vllm_plugin.py` | DeepSeek-V4.1's AITER a8w4 MoE at M >= `HK_MOE_A8W4_MIN_M` (2560) (a route) |
+| `HK_MOE_A8W4_MIN_M` | `vllm_moe_a8w4.py` | the fewest tokens the a8w4 MoE route takes (default 2560; below it AITER's kernel is faster) |
+| `HK_MOE_A8W4_MT` | `vllm_moe_a8w4.py` | token tiles a block of the a8w4 MoE kernel (moe_sorting's block size / 16; default 4) |
+| `HK_VLLM_SPARSE_MLA` | `switches.py` | DeepSeek-V4.1's sparse MLA prefill and its MXFP8 output rows (a route) |
+| `HK_SPARSE_MLA_MIN_T` | `vllm_sparse_mla.py` | the fewest queries a sparse-MLA call needs to take hk's kernel (default 512) |
+| `HK_SPARSE_MLA_FUSE` | `vllm_sparse_mla.py` | `0`: leave the MXFP8 rows to vLLM's pass instead of writing them in hk's kernel (default on) |
 | `HK_VLLM_DSV41_INDEX` | `_vllm_plugin.py` | DeepSeek-V4.1's index layers under `--monokernel` as one hk launch at decode steps of up to 8 rows (a route) |
 | `HK_DSV41_INDEX_TOPK` | `vllm_dsv41_index.py` | `0`: the index launch stops at the logits' inputs; vLLM's indexer op does the logits and top-k (default on) |
 | `HK_DSV41_INDEX_CHECK` | `vllm_dsv41_index.py` | `N`: on the first N eager calls of each index layer, run vLLM's chain after the launch and print what differs (default 0) |
 | `HK_VLLM_USER` | `_vllm_plugin.py` | comma-separated modules or `.py` files to import in vLLM's process: your `register.op` / `register.patch` calls |
 | `HK_VLLM_ROUTES` | `vllm_gemm.py`, via `engine.shipped_table` | a routing table to use instead of the shipped one and this machine's records; nothing is measured at load against it |
 | `HK_AUTOTUNE_BUDGET` | `vllm_autotune.py` | seconds the linear patch may spend at load measuring the model's shapes no table has (default 60); `0` measures nothing, `inf` without a limit |
-| `HK_AUTOTUNE` | `hk.autotune`, `engine.shipped_table`, `vllm_autotune.py` | `0`: ignore this machine's records -- schedules and routes -- and measure nothing at load |
-| `HK_TUNE_DIR` | `hk.autotune` | where this machine's records go (default `$HK_CACHE_DIR/autotune`): `routes_<engine>_linear_<arch>.json` for routes |
 | `HK_FLYDSL` | `flydsl_gemm.py` | `0`/`off`/`no`/`false`: never take a table's FlyDSL rows, even with FlyDSL installed |
 | `FLYDSL_ROOT` | `flydsl_gemm.py` | a FlyDSL checkout whose `kernels/` package matches the installed `flydsl`, appended to `sys.path`; where another `kernels` is installed, imported from beside it |
 | `HK_PATCH_SGLANG` | `switches.py` | `0`: every SGLang route off |
@@ -653,6 +661,8 @@ not restate it:
 | `HK_SGLD` | `sglang_diffusion.py` and its boot | `0`: every SGLang-Diffusion route off; a list (`attn,linear,convrot`) names exactly the parts; `1`: attention and linear |
 | `HK_SGLD_ATTN`, `HK_SGLD_LINEAR` | `switches.py` | SGLang-Diffusion's attention and linear (a route) |
 | `HK_SGLD_CONVROT` | `switches.py` | ConvRot INT8, lossy (default off: opt-in) |
+| `HK_SGLD_LOG` | `sglang_diffusion.py` | `1`: print each linear shape's measured decision as it is made (default off) |
+| `HK_SGLD_REPORT_S` | `sglang_diffusion.py` | seconds between the route's `[hk]` counter lines (default 60) |
 | `HK_SDPA_K3` | `ops/sdpa.py` | `hk.ops.sdpa`'s non-causal head_dim-128 calls on `attn_k3` (a route) |
 | `HK_SPLITS` | `ops/paged.py` | the decode backend's KV split: `auto` (default), `off`/`0`/`1`, or a count |
 | `HK_TRITON_DECODE_ALSO` | `vllm_backend.py` | decode batch sizes past `TRITON_DECODE_MAX` that run Triton's kernel on hk's cache, as ranges: `17-24,49-56` (default none) |
@@ -662,11 +672,12 @@ not restate it:
 | `HK_VLLM_DEFAULTS` | `ab.py` | `1`: the A/B builds vLLM with prefix caching and chunked prefill on, as vLLM ships |
 | `HK_EAGER` | `ab.py` | `1` (default): the A/B runs vLLM eager; `0`: with CUDA graphs |
 | `HK_GPU_UTIL` | `ab.py` | the A/B's `gpu_memory_utilization` (default 0.90) |
-| `HK_HOST_FASTPATH` | `runtime/hostpath.py`, every route | `0`: no per-shape memos and no launches without the dispatcher; every call as before them ([host time](#host-time-per-call)) |
 | `HK_STACK_CHECK` | `stack.py`, from `ab.py` and `_vllm_plugin.py` | what to do when vLLM's Triton or torch is not the stack it was measured on: `refuse` (`ab`'s default: exit 2), `warn` (the plugin's default: print to stderr and carry on), `off` |
 
 A route's switch is off at `0`, `off`, `no` or `false`. Unset or empty, the
 route's default applies. The precedence is in
 [on by default](#on-by-default-and-turning-it-off). The benchmark harnesses in `tools/hk-bench/` read
-more; those are theirs, not the library's. The runtime's own variables are in
+more; those are theirs, not the library's. The runtime's own variables --
+the compile cache, the build gates, autotune records (`HK_AUTOTUNE`,
+`HK_TUNE_DIR`), the host fast paths (`HK_HOST_FASTPATH`) -- are in
 [the runtime](runtime.md#environment-variables).

@@ -85,12 +85,13 @@ to vLLM's own kernel:
 | your model has | route | gfx1100 | gfx1201 | checked end to end on |
 |---|---|---|---|---|
 | bf16 linear layers | `vllm_gemm` | on | on | Qwen3-8B, Qwen3-1.7B, Qwen3.5-9B |
-| AWQ 4-bit linear layers | `vllm_int4` | on | on | Qwen3-8B-AWQ, Qwen3-14B-AWQ |
+| AWQ 4-bit linear layers (gfx1201: prefill too, 65-512 tokens) | `vllm_int4` | on | on | Qwen3-8B-AWQ, Qwen3-14B-AWQ |
 | GPTQ 4-bit linear layers (symmetric, no act-order) | `vllm_gptq` | on | on | Qwen3.8-27B-GPTQ-Int4 |
 | bf16 MoE experts | `vllm_moe` | on | on | OLMoE-1B-7B |
 | AWQ 4-bit MoE experts | `vllm_moe_wna16` | on | on | Qwen3.6-35B-A3B-AWQ |
 | attention prefill (head size 64, 128 or 256) | `vllm_prefill` | on | on | MiniCPM5-2B, Qwen3-8B, Qwen3.8-27B, MiniCPM-V-4.7 |
 | a vision encoder, with `--mm-encoder-attn-backend TORCH_SDPA` | `vllm_sdpa` | on | off | InternVL2-2B |
+| attention decode on ROCM_ATTN (head size 128), opt-in with `HK_VLLM_ROCM_DECODE=1` | `vllm_prefill` | off | -- | MiniCPM5-2B |
 
 The table is for the current release; `--status` prints what the version you
 installed does. The full per-GPU table, generated from hk's switches, is
