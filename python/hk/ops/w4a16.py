@@ -222,7 +222,9 @@ def w4a16_kernel(name: str, *, tokens: int = 1, slices: int = 4, warps: int = 16
 
 
 def w4a16_large_kernel(name: str, *, group: int = 32, block_m: int = 128, block_n: int = 128,
-                       warps: int = 8, warp_rows: int = 2, asym: bool = False):
+                       warps: int = 8, warp_rows: int = 2, asym: bool = False,
+                       sym_blocked: bool = False, dense: bool = False, ks: int = 64,
+                       kread: int = 16):
     """The large-batch W4A16 GEMM on vLLM's RDNA skinny layout read in place (prefill): C (M, N)
     = x (M, K) @ W.T, fp16, W symmetric (zero point 8) as `exllama_matmul` reads it. A workgroup
     takes a block_m x block_n tile of C; every 64-deep K step its warps stage x's rows into LDS and
@@ -232,8 +234,8 @@ def w4a16_large_kernel(name: str, *, group: int = 32, block_m: int = 128, block_
 
     `asym`: W in hk's own layout with zero points instead (`repack_awq`: codes interleaved by
     16-row block, s and zs [N, K/group]), the kernel taking (x, qw, s, zs, c) -- AWQ as
-    vllm_int4 holds it."""
-    ks = 64
+    vllm_int4 holds it. `sym_blocked`: W in hk's symmetric layout (zero point 8, scales in 16-row
+    blocks: `repack_gptq(symmetric=True)`, what vllm_gptq holds on gfx1100), taking (x, qw, s, c)."""
     warp_cols = warps // warp_rows
     rm, rn = block_m // warp_rows, block_n // warp_cols
     if block_m % (16 * warps) or block_n % (16 * warps) or rm % 16 or rn % 16:
@@ -243,8 +245,8 @@ def w4a16_large_kernel(name: str, *, group: int = 32, block_m: int = 128, block_
     st_b = hk.ST(fp16, block_n, ks)
     ty_ld_a = hk.RT(fp16, block_m // warps, ks, "row")
     ty_ld_b = hk.RT(fp16, block_n // warps, ks, "row")
-    ty_a = hk.RT(fp16, rm, 16, "row")
-    ty_b = hk.RT(fp16, rn, 16, "row")
+    ty_a = hk.RT(fp16, rm, kread, "row")
+    ty_b = hk.RT(fp16, rn, kread, "row")
     ty_c = hk.RT(fp32, rm, rn, "col")
 
     @hk.func
@@ -257,20 +259,27 @@ def w4a16_large_kernel(name: str, *, group: int = 32, block_m: int = 128, block_
         wr = wid // warp_cols
         wc = wid % warp_cols
         acc = hk.zeros(ty_c)
+        # this warp's rows of x and of W, out of the loop: the loop only advances k
+        ra = m0 + wid * (block_m // warps)
+        rb = n0 + wid * (block_n // warps)
+        a_sub = As.subtile(block_m // warps, ks, wid, 0)
+        b_sub = Bs.subtile(block_n // warps, ks, wid, 0)
         for t in hk.range(x.cols // ks):
             k = t * ks
-            a_t = x[hk.elem_coord(0, 0, m0 + wid * (block_m // warps), k)].load(ty_ld_a, bounded=True)
-            w_t = (hk.load_w4(ty_ld_b, qw, s, zs, n0 + wid * (block_n // warps), k, group=group)
+            a_t = x[hk.elem_coord(0, 0, ra, k)].load(ty_ld_a, bounded=True)
+            w_t = (qw[hk.elem_coord(0, 0, rb, k)].load(ty_ld_b)
+                   if dense else
+                   hk.load_w4(ty_ld_b, qw, s, zs, rb, k, group=group)
                    if zs is not None else
-                   hk.load_w4(ty_ld_b, qw, s, None, n0 + wid * (block_n // warps), k, group=group,
-                              zero=SYMMETRIC_ZERO, exllama=True))
+                   hk.load_w4(ty_ld_b, qw, s, None, rb, k, group=group,
+                              zero=SYMMETRIC_ZERO, s_blocked=sym_blocked, exllama=not sym_blocked))
             hk.arch.barrier()
-            As.subtile(block_m // warps, ks, wid, 0).store(a_t)
-            Bs.subtile(block_n // warps, ks, wid, 0).store(w_t)
+            a_sub.store(a_t)
+            b_sub.store(w_t)
             hk.arch.barrier()
-            for sl in range(ks // 16):
-                a_s = As.subtile(rm, 16, wr, sl).load(ty_a, wait=False)
-                b_s = Bs.subtile(rn, 16, wc, sl).load(ty_b, wait=False)
+            for sl in range(ks // kread):
+                a_s = As.subtile(rm, kread, wr, sl).load(ty_a, wait=False)
+                b_s = Bs.subtile(rn, kread, wc, sl).load(ty_b, wait=False)
                 # the operands' LDS reads retired before the WMMA reads them: the compiler may
                 # otherwise copy a ds_load destination ahead of the wait (gfx1100 caught it)
                 hk.lds.wait_for(a_s, b_s)
@@ -281,6 +290,9 @@ def w4a16_large_kernel(name: str, *, group: int = 32, block_m: int = 128, block_
         def body(x: hk.Tensor[fp16], qw: hk.Tensor[i32], s: hk.Tensor[fp16],
                  zs: hk.Tensor[fp16], c: hk.Tensor[fp16]):
             gemm(x, qw, s, zs, c)
+    elif dense:     # diagnostic: the same structure on an fp16 W (no decode)
+        def body(x: hk.Tensor[fp16], qw: hk.Tensor[fp16], s: hk.Tensor[fp16], c: hk.Tensor[fp16]):
+            gemm(x, qw, s, None, c)
     else:
         def body(x: hk.Tensor[fp16], qw: hk.Tensor[i32], s: hk.Tensor[fp16], c: hk.Tensor[fp16]):
             gemm(x, qw, s, None, c)
