@@ -173,6 +173,11 @@ ROUTES: Dict[str, Route] = {r.name: r for r in (
        "the same conv per output frame (bit-identical where MIOpen picks a real solver for both); "
        "Wan2.1-T2V-1.3B 832x480x81: VAE decode 969 s -> 37.8 s (a generation 2.77x), 36.2 dB from "
        "stock and closer to an fp32 VAE decode than stock (36.9 dB vs 36.1)", part="vaeconv"),
+    _R("sgld_rope", "sglang_diffusion", "HK_SGLD_ROPE", True, ("gfx1100",),
+       "Qwen-Image 2.1's complex RoPE on hk.ops.rotary_pairs (bf16, head_dim 128, one sequence)",
+       "bit-identical to the engine's on every call (rotary_pairs reproduces torch's complex "
+       "multiply); Qwen-Image 2.1 1024^2 30 steps: 28.88 -> 28.15 s a request (1.026x, same "
+       "process, ABBA x3)", part="rope"),
     _R("sdpa_k3", "ops", "HK_SDPA_K3", True, ("gfx1100",),
        "hk.ops.sdpa's non-causal head_dim-128 calls on its newer kernel (hk.ops.attn_k3)",
        "per-call error 2.95e-5 vs the current path's 4.50e-5 at Qwen-Image's shape (#24)"),

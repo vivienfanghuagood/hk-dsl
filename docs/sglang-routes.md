@@ -69,7 +69,7 @@ imports, into site-packages. Unless `HK_DISABLE=1` or `HK_SGLD=0`, the boot
 patches whichever process imports the SDPA backend. It checks the engine
 contract first, as the plugins do. An install made before hk was on by
 default keeps the old boot, which needs `HK_SGLD=1`; run `install` again
-(`status` says so). Three patches are on by default:
+(`status` says so). Four patches are on by default:
 - **attention**: `hk.ops.sdpa.patch()` behind the `torch_sdpa` backend (the
   only one that runs on RDNA3); masked and odd-head-dim calls go to torch;
 - **linear**: `UnquantizedLinearMethod.apply` of
@@ -82,7 +82,14 @@ default keeps the old boot, which needs `HK_SGLD=1`; run `install` again
   on its naive reference kernel: 9.5 s a call at 832x480, against 95 ms in
   2-frame calls. No hk kernel; the route only stops MIOpen's fallback.
   Wan2.1-T2V-1.3B 832x480x81 on one W7900D: VAE decode 969 s -> 37.8 s, the
-  generation 2.77x. 36.2 dB from stock and closer to an fp32 VAE decode than stock (36.9 dB vs 36.1)
+  generation 2.77x. 36.2 dB from stock and closer to an fp32 VAE decode than stock (36.9 dB vs 36.1);
+- **rope**: Qwen-Image 2.1's complex RoPE (`apply_rope` of
+  `sglang.multimodal_gen.runtime.models.dits.qwen_image21`, which runs as four
+  torch launches: cast to fp32, complex multiply, cast back, copy) on
+  `hk.ops.rotary_pairs`, one launch that reproduces torch's complex multiply
+  bit for bit: 42 us instead of 446 us a call at 4141 tokens. Qwen-Image 2.1
+  1024^2, 30 steps, one W7900D (same process, ABBA x3): 28.88 -> 28.15 s a
+  request, 1.026x.
 
 The third, ConvRot INT8 (hk's `convrot_int8` backend, for `--quantization
 convrot_int8`), **stays opt-in**: it is lossy by design.

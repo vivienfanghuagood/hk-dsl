@@ -10,6 +10,9 @@ The next version's notes collect here until it is released.
   VAE conv3d as calls of 2 output frames. MIOpen ran the decoder's full-resolution convs on its naive
   reference kernel. Wan2.1-T2V-1.3B 832x480x81 on one W7900D: VAE decode 969 s -> 37.8 s, the generation
   2.77x faster; closer to an fp32 VAE decode than stock.
+- SGLang-Diffusion: new route `sgld_rope` (`HK_SGLD_ROPE`, on by default on gfx1100) runs Qwen-Image 2.1's
+  complex RoPE on the new `hk.ops.fused.rotary_pairs` (RoPE on interleaved pairs, bit for bit torch's
+  complex multiply): one launch for four. Qwen-Image 2.1 1024^2, 30 steps, one W7900D: 1.026x a request.
 
 ## 0.9.10
 

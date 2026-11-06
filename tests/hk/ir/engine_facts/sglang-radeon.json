@@ -290,6 +290,13 @@
     "bias"
    ]
   },
+  "sgld_rope": {
+   "apply_rope": [
+    "x",
+    "rope"
+   ],
+   "complex_multiply": true
+  },
   "sgld_vaeconv": {
    "conv3d": true,
    "conv_forward": [

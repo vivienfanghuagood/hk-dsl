@@ -55,6 +55,8 @@ COVERAGE = {
         "test_route_paths.py::test_sgld_linear_takes_a_dit_projection_through_hk",
     ("sgld_vaeconv", "gfx1100"):
         "test_route_paths.py::test_sgld_vaeconv_runs_wans_causal_conv3d_in_frame_chunks_and_matches",
+    ("sgld_rope", "gfx1100"):
+        "test_route_paths.py::test_sgld_rope_takes_qwen_image_21s_rope_through_hk_and_reverts",
     ("vllm_prefill", "gfx1100"):
         "test_paged_prefill.py::test_vllm_prefill_takes_a_triton_attn_batch_and_matches",
     ("vllm_prefill", "gfx1201"):

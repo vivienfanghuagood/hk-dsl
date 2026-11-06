@@ -286,6 +286,45 @@ def _rotary_halves_kernel(name: str, dtype, warps: int, positions: bool):
                      grid=lambda p: (hk.cdiv(p.x.rows, p.H), 1, 1))
 
 
+def _rotary_pairs_kernel(name: str, warps: int):
+    """Rotary embedding on interleaved pairs, the complex form (GPT-J; Qwen-Image's
+    `view_as_complex(x) * rope`): pair i of a head, (x[2i], x[2i+1]) = a + bi, turns by
+    the token's (cos_i, sin_i) = c + di,
+
+        out[2i] = a c - b d,   out[2i+1] = a d + b c
+
+    in fp32 as torch's complex multiply computes it -- fma(a, c, -(b d)) and fma(b, c, a d),
+    bit for bit -- each output rounded once to bf16 (to nearest even). A bf16 pair is one 32-bit
+    word, so x and out are read as int32 (T*H, D/2): a lane holds whole pairs, unpacks them
+    with shifts and turns them in place -- no lane exchange, on wave32 strips too. cos and
+    sin are fp32 (T, D/2). One workgroup a token, warp w the heads w, w + WARPS, ...; every
+    head's loads before any store (it runs in place)."""
+    def body(x: hk.Tensor[hk.i32], c: hk.Tensor[fp32], s: hk.Tensor[fp32],
+             o: hk.Tensor[hk.i32], *, H=32, P=64, RUN=2):
+        S = hk.RS(hk.i32, 1, P, RUN)
+        F = hk.RS(fp32, 1, P, RUN)
+        t = hk.arch.block_idx.x
+        w = hk.arch.warp_id() if warps > 1 else 0
+        rows = [t * H + w + h * warps for h in range(H // warps)]
+        ws = [x.at[row, 0].load(S) for row in rows]
+        cv = c.at[t, 0].load(F)
+        sv = s.at[t, 0].load(F)
+        # bf16 bits of an fp32, to nearest even (finite values)
+        rne = ("((__builtin_bit_cast(unsigned, {v}) + 0x7FFFu"
+               " + ((__builtin_bit_cast(unsigned, {v}) >> 16) & 1u)) >> 16)")
+        for row, wv in zip(rows, ws):
+            a = hk.map_cpp("__builtin_bit_cast(float, x0 << 16)", wv, dtype=fp32)
+            b = hk.map_cpp("__builtin_bit_cast(float, x0 & (int)0xFFFF0000)", wv, dtype=fp32)
+            re = hk.map_cpp("__builtin_fmaf(x0, x2, -(x1 * x3))", a, b, cv, sv)
+            im = hk.map_cpp("__builtin_fmaf(x1, x2, x0 * x3)", a, b, cv, sv)
+            out = hk.map_cpp("(int)(" + rne.format(v="x0") + " | (" + rne.format(v="x1")
+                             + " << 16))", re, im, dtype=hk.i32)
+            o.at[row, 0].store(out)
+
+    return hk.kernel(body, warps=warps, name=name, noalias=True,
+                     grid=lambda p: (hk.cdiv(p.x.rows, p.H), 1, 1))
+
+
 def _rope_grid(p):
     # x is (bh, 1, seq, D); one workgroup per (half-head column block, row
     # block, bh). The column axis only covers D/2 because each workgroup
@@ -367,6 +406,10 @@ ROTARY_HALVES_KERNELS = {
     f"rotary_halves_{_s}_w{_w}" + ("_pos" if _p else ""): _rotary_halves_kernel(
         f"rotary_halves_{_s}_w{_w}" + ("_pos" if _p else ""), _dt, _w, _p)
     for _s, _dt in _DTYPES.items() for _w in ROTARY_WARPS for _p in (False, True)}
+
+#: The interleaved-pair (complex) rotary kernels, bf16, by warps; H, P and RUN are constexprs.
+ROTARY_PAIRS_KERNELS = {f"rotary_pairs_bf16_w{_w}": _rotary_pairs_kernel(f"rotary_pairs_bf16_w{_w}", _w)
+                        for _w in ROTARY_WARPS}
 
 #: Where the rotary kernels run on strips: gfx950 (swap_halves and
 #: rotate_half are the wave64 port's).
@@ -768,6 +811,51 @@ def rotary(x, cos_sin, positions=None, out=None):
         k(xv, cos_sin, positions.view(1, tokens), ov, H=h, D=d, RUN=run)
     else:
         k(xv, cos_sin, ov, H=h, D=d, RUN=run)
+    return out
+
+
+def rotary_pairs(x, cos, sin, out=None):
+    """Rotary embedding on interleaved pairs -- the complex form,
+    `view_as_real(view_as_complex(x.float()) * (cos + i sin)).to(bf16)` -- in one
+    launch: `x` is a contiguous bf16 (tokens..., heads, D) with the tokens on the leading
+    axes, `cos` and `sin` contiguous fp32 (tokens, D/2), the angles of each token (row t
+    for the t-th token of x). Pair (x[2i], x[2i+1]) of a head turns by (cos_i, sin_i):
+
+        out[2i] = x[2i] cos_i - x[2i+1] sin_i,   out[2i+1] = x[2i] sin_i + x[2i+1] cos_i
+
+    in fp32 as torch's complex multiply computes it (fma(a, c, -(b d)), fma(b, c, a d)),
+    rounded once to bf16: bit-identical to the torch expression. In place when `out` is `x`. D is 128 (or 64 * a power of two up to 8). On strips: gfx950, gfx1100
+    and gfx1201."""
+    import torch  # noqa: PLC0415
+
+    from ..target import get_target, current_arch  # noqa: PLC0415
+
+    arch = current_arch()
+    if not get_target(arch).strips:
+        raise NotImplementedError(f"hk.ops.rotary_pairs runs on register strips; {arch} has none")
+    if x.dtype != torch.bfloat16 or x.dim() < 2 or not x.is_contiguous():
+        raise ValueError(f"rotary_pairs: x must be a contiguous bf16 (..., heads, D), got "
+                         f"{tuple(x.shape)}/{x.dtype}")
+    h, d = x.shape[-2], x.shape[-1]
+    p = d // 2
+    wave = get_target(arch).wave
+    run = p // wave
+    if p % wave or run not in (1, 2, 4, 8):
+        raise ValueError(f"rotary_pairs: head dim {d} is not 2 x {wave} x a power of two up "
+                         f"to 8 (on {arch})")
+    tokens = x.numel() // (h * d) if h and d else 0
+    for name, t in (("cos", cos), ("sin", sin)):
+        if t.dtype != torch.float32 or not t.is_contiguous() or t.dim() != 2 \
+                or t.shape[1] != p or t.shape[0] < tokens:
+            raise ValueError(f"rotary_pairs: {name} must be a contiguous float32 "
+                             f"({tokens}, {p}), got {tuple(t.shape)}/{t.dtype}")
+    if out is None:
+        out = torch.empty_like(x)
+    if not tokens:
+        return out
+    k = ROTARY_PAIRS_KERNELS[f"rotary_pairs_bf16_w{_rotary_warps(h)}"]
+    k(x.view(torch.int32).view(tokens * h, p), cos, sin,
+      out.view(torch.int32).view(tokens * h, p), H=h, P=p, RUN=run)
     return out
 
 

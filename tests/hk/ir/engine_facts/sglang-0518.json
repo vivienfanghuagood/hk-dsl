@@ -5,7 +5,9 @@
   "sglang": "sglang 0.5.18",
   "vllm": "vllm 0.16.1.dev0+g89a77b108.d20260317.rocm721"
  },
- "expected_refusals": {},
+ "expected_refusals": {
+  "sgld_rope": "SGLang 0.5.18 has no Qwen-Image 2.1 DiT (qwen_image21): nothing to route"
+ },
  "facts": {
   "sglang_linear": {
    "apply": [
@@ -289,6 +291,9 @@
     "x",
     "bias"
    ]
+  },
+  "sgld_rope": {
+   "_error": "ModuleNotFoundError: No module named 'sglang.multimodal_gen.runtime.models.dits.qwen_image21'"
   },
   "sgld_vaeconv": {
    "conv3d": true,
