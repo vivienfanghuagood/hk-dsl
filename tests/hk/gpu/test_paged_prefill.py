@@ -543,6 +543,35 @@ def test_dsplit_vt_pages_longest_first_is_bitwise_the_flash_layout(reqs, page, k
                                         group, page=page))
 
 
+@rocm_only
+@pytest.mark.parametrize("layout", ["rocm", "flash"])
+def test_longest_tiles_first_is_bitwise_the_grid_order(layout):
+    """rev (the routes' d128 kernels) only reorders the grid: the same bits as tile order, on
+    ragged multi-tile requests beside decodes."""
+    reqs = [(7, 2), (0, 700), (500, 1), (2047, 2049), (40, 600), (33, 1)]
+    q, (k, v), (k5, v4), table, lens, q_start = _rocm_case(reqs, head_dim=128, h_kv=2, group=8)
+    n_tok, h, d = q.shape
+    tiles = pp.q_tiles(max(n for _, n in reqs), q.device)
+    outs = []
+    for rev in (False, True):
+        out = torch.full_like(q, 7.0)
+        kern = pp.paged_prefill_kernel(f"t_pp_{layout}_d128_g8{'_dec' if layout == 'flash' else ''}"
+                                       f"{'_r' if rev else ''}", head_dim=128, group=8,
+                                       layout=layout, decodes=layout == "flash", rev=rev)
+        if layout == "rocm":
+            kern(q.view(n_tok, h * d), *pp.rocm_views(k5, v4), table, lens, q_start, tiles,
+                 out.view(n_tok, h * d))
+        else:
+            kv = _flash_cache(k, v, "planes")
+            kern(q.view(n_tok, h * d), kv, kv, table, lens, q_start, tiles, out.view(n_tok, h * d),
+                 q.unsqueeze(0), out.unsqueeze(0))
+        outs.append(out)
+    assert torch.equal(outs[0], outs[1])
+    rows = (list(range(n_tok)) if layout == "flash" else _prefill_rows(reqs, q_start))
+    want = _reference(q, k, v, table, lens, q_start, 8, page=ROCM_PAGE)
+    _attn_ref.check(outs[1][rows], want[rows])
+
+
 def test_rev_needs_the_device_side_grid():
     with pytest.raises(ValueError, match="rev"):
         pp.paged_prefill_kernel("t_pp_hk_rev", rev=True)

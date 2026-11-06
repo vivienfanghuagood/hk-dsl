@@ -10,6 +10,10 @@ The next version's notes collect here until it is released.
   q / k RMSNorm and RoPE as one `hk.ops.fused.rmsnorm_rotary_pairs` launch (five torch launches and the RoPE
   before): 1.044x a request on top of `sgld_rope`.
 
+### Changes
+
+**Longest Q tiles first on the d128 prefill routes** (#313). The ROCM_ATTN and TRITON_ATTN prefill kernels (the KV split aside) dispatch a request's last Q tile first (`rev`), as #312 does for d256: on gfx1100, MiniCPM5 and Qwen3-8B prompts 1.04-1.08x, 4096-token chunks 1.01-1.04x, none slower; the same bits.
+
 ## 0.9.11
 
 hk-dsl 0.9.11: two new SGLang-Diffusion routes on by default on gfx1100 -- `sgld_vaeconv` (Wan's VAE

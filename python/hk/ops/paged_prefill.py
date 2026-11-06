@@ -131,7 +131,8 @@ def paged_prefill_kernel(name: str, *, head_dim: int = 128, group: int = 4,
 
     `rev` (layout "rocm" / "flash"): a request's Q tiles in reverse grid order, its last (the
     one that walks the most KV blocks) dispatched first -- the grid's tail is then short tiles.
-    MiniCPM-V's 8k prompt (d256) 1.10x, MiniCPM5's (d128) 1.07x on gfx1100.
+    The vLLM routes' kernels (KV split aside) take it: gfx1100 MiniCPM-V d256 8k prompt 1.10x;
+    d128 (MiniCPM5, Qwen3-8B) prompts 1.04-1.08x, 4096-token chunks 1.01-1.04x, none slower.
 
     `dsplit` (head_dim 256): a query row's head_dim is split between a pair of
     warps, each holding its half of Q and of O (a d256 row in one warp is 256
@@ -741,8 +742,8 @@ def rocm_kernel_for(head_dim: int, group: int, scale: Optional[float] = None,
         tag = "" if key[3] is None else "_s%016x" % struct.unpack(
             "<Q", struct.pack("<d", key[3]))[0]
         k = _KERNELS[key] = paged_prefill_kernel(
-            f"paged_prefill_rocm_d{head_dim}_g{group}_p{page}{tag}", head_dim=head_dim,
-            group=group, scale=key[3], layout="rocm", page=page)
+            f"paged_prefill_rocm_d{head_dim}_g{group}_p{page}_r{tag}", head_dim=head_dim,
+            group=group, scale=key[3], layout="rocm", page=page, rev=True)
     return k
 
 
