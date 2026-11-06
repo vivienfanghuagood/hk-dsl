@@ -146,7 +146,9 @@ kernels:
 ```
 
 Read the worker's line: the parent process prints one too, at exit, whose
-counts stay 0. With `HK_DISABLE=1` there is no `[hk]` line at all.
+counts stay 0. With `HK_DISABLE=1` there is no `[hk]` line at all. A route
+that does not apply to the model counts 0, and so does `rope` where `qknorm`
+is on: it does the RoPE in its own launch (`qknorm: hk 1984, engine 0`).
 
 **Wan2.1 (text to video)** is the same, with a video model:
 
