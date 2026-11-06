@@ -538,13 +538,42 @@ def judge_sgld_rope(f: dict) -> List[str]:
                       f"{sd.QWEN21_HOME}.apply_rope no longer multiplies view_as_complex(x.float()) by rope"))
 
 
+def gather_sgld_qknorm() -> dict:
+    import importlib  # noqa: PLC0415
+
+    from . import sglang_diffusion as sd  # noqa: PLC0415
+
+    mod = importlib.import_module(sd.QWEN21_HOME)
+    fn = mod.apply_qk_norm_rope
+    from sglang.srt.layers.layernorm import RMSNorm  # noqa: PLC0415
+
+    native = inspect.getsource(RMSNorm.forward_native)
+    return {"apply_qk_norm_rope": names(fn),
+            # the chain rmsnorm_rotary_pairs computes: norm, then apply_rope
+            "norm_then_rope": "apply_rope(apply_qk_norm(x, norm), rope)" in inspect.getsource(fn),
+            "rmsnorm_native": all(s in native for s in (
+                ".pow(2).mean(dim=-1, keepdim=True)", "torch.rsqrt(variance + self.variance_epsilon)",
+                "self.weight * x.to(orig_dtype)"))}
+
+
+def judge_sgld_qknorm(f: dict) -> List[str]:
+    from . import sglang_diffusion as sd  # noqa: PLC0415
+
+    return (_expect(f["apply_qk_norm_rope"] == ["x", "norm", "rope"],
+                    f"{sd.QWEN21_HOME}.apply_qk_norm_rope takes {f['apply_qk_norm_rope']}")
+            + _expect(f["norm_then_rope"],
+                      f"{sd.QWEN21_HOME}.apply_qk_norm_rope no longer falls back to norm then rope")
+            + _expect(f["rmsnorm_native"],
+                      "sglang.srt.layers.layernorm.RMSNorm.forward_native computes differently"))
+
+
 #: route -> (gather, judge). gather returns the route's facts, or None where it does not apply here.
 SPLIT: Dict[str, tuple] = {
     r: (globals()[f"gather_{r}"], globals()[f"judge_{r}"]) for r in (
         "vllm_mxfp8", "vllm_moe_a8w4", "vllm_int4", "vllm_gptq", "vllm_gemm", "vllm_moe",
         "vllm_moe_wna16", "vllm_sdpa", "vllm_backend", "vllm_dsv41_index", "vllm_sparse_mla",
         "vllm_prefill", "sglang_linear", "sglang_norm", "sglang_moe", "sgld_attn", "sgld_linear",
-        "sgld_convrot", "sgld_vaeconv", "sgld_rope")}
+        "sgld_convrot", "sgld_vaeconv", "sgld_rope", "sgld_qknorm")}
 
 
 def _checker(name: str) -> Callable[[], Optional[List[str]]]:

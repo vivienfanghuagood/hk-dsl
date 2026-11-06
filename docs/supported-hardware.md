@@ -8,7 +8,7 @@ hk-dsl builds kernels for four GPU architectures. This page is generated from th
 
 | GPU | arch | status | engine routes on by default |
 |---|---|---|---|
-| Radeon PRO W7900, Radeon PRO W7900D, Radeon RX 7900 | gfx1100 (RDNA3) | **runs**: measured on Radeon PRO W7900D; CI's GPU tier runs on one | 15: vLLM 7, SGLang 3, SGLang-Diffusion 4, `hk.ops` 1 |
+| Radeon PRO W7900, Radeon PRO W7900D, Radeon RX 7900 | gfx1100 (RDNA3) | **runs**: measured on Radeon PRO W7900D; CI's GPU tier runs on one | 16: vLLM 7, SGLang 3, SGLang-Diffusion 5, `hk.ops` 1 |
 | Radeon AI PRO R9700, Radeon RX 9070 | gfx1201 (RDNA4) | **runs**: measured on Radeon AI PRO R9700; CI's GPU tier runs on one | 6: vLLM 6 |
 | Instinct MI300X, Instinct MI325X | gfx942 (CDNA3) | **compile-only**: no part was available, so its numbers are modelled from the compiler. CI builds kernels for it; none has run on one | none |
 | Instinct MI355X, Instinct MI350X | gfx950 (CDNA4) | **runs**: measured on Instinct MI355X; CI's GPU tier runs on one | 5: vLLM 5 |
@@ -53,4 +53,5 @@ A route is on by default only on the GPUs where it met the [default-on rule](tes
 | `sgld_convrot` | SGLang-Diffusion | `HK_SGLD_CONVROT` | opt-in | opt-in | opt-in | opt-in |
 | `sgld_vaeconv` | SGLang-Diffusion | `HK_SGLD_VAECONV` | **on** | off | off | off |
 | `sgld_rope` | SGLang-Diffusion | `HK_SGLD_ROPE` | **on** | off | off | off |
+| `sgld_qknorm` | SGLang-Diffusion | `HK_SGLD_QKNORM` | **on** | off | off | off |
 | `sdpa_k3` | `hk.ops` | `HK_SDPA_K3` | **on** | off | off | off |

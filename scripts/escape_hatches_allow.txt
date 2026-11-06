@@ -17,7 +17,7 @@ python/hk/ops/paged_prefill.py   Granules.store_frag   1     as above
 python/hk/ops/paged_decode.py    SharedTile.granules   3     gfx1100 decode on ROCM_ATTN's cache (kv_order="rocm"): staged K, V^T and Q fragments read from LDS, paged_prefill's addressing
 python/hk/ops/paged_decode.py    Granules.load_frag    3     as above; loaded unwaited and waited on by name (hk.lds.wait_for), or WMMA reads them before the LDS load retires
 python/hk/ops/dsv41_index.py     hk.map_cpp            190   the DeepSeek-V4.1 index front (#115, #137): strip index arithmetic, selects and bit ops the operators cannot write yet, and the scaled fp8 / fp4 conversion intrinsics; the strip operators and hk.map (S7) can write the arithmetic now, its migration is a later step
-python/hk/ops/fused.py           hk.map_cpp            5     rotary_pairs (sgld_rope): torch's complex multiply bit for bit -- unpacking bf16 pair words, two fused multiply-adds (__builtin_fmaf, which the operators cannot spell: they leave contraction to the compiler) and the round-to-nearest-even repack
+python/hk/ops/fused.py           hk.map_cpp            6     rotary_pairs (sgld_rope, sgld_qknorm): torch's complex multiply bit for bit -- unpacking bf16 pair words, two fused multiply-adds (__builtin_fmaf, which the operators cannot spell: they leave contraction to the compiler) and the round-to-nearest-even repack
 python/hk/ops/attn_cdna.py       hk.arch.agpr          1     acc="agpr", off by default (an experiment; may be removed)
 #
 # Kernel subclasses that override with_defines or source (refused unless listed).

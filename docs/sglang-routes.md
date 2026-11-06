@@ -69,7 +69,7 @@ imports, into site-packages. Unless `HK_DISABLE=1` or `HK_SGLD=0`, the boot
 patches whichever process imports the SDPA backend. It checks the engine
 contract first, as the plugins do. An install made before hk was on by
 default keeps the old boot, which needs `HK_SGLD=1`; run `install` again
-(`status` says so). Four patches are on by default:
+(`status` says so). Five patches are on by default:
 - **attention**: `hk.ops.sdpa.patch()` behind the `torch_sdpa` backend (the
   only one that runs on RDNA3); masked and odd-head-dim calls go to torch;
 - **linear**: `UnquantizedLinearMethod.apply` of
@@ -89,7 +89,14 @@ default keeps the old boot, which needs `HK_SGLD=1`; run `install` again
   `hk.ops.rotary_pairs`, one launch that reproduces torch's complex multiply
   bit for bit: 42 us instead of 446 us a call at 4141 tokens. Qwen-Image 2.1
   1024^2, 30 steps, one W7900D (same process, ABBA x3): 28.88 -> 28.15 s a
-  request, 1.026x.
+  request, 1.026x;
+- **qknorm**: Qwen-Image 2.1's q / k RMSNorm and RoPE (`apply_qk_norm_rope`:
+  SGLang's RMSNorm, native fp32 on ROCm, five launches, then the RoPE) as one
+  `hk.ops.fused.rmsnorm_rotary_pairs` launch: 43 us instead of 1,166 us a call.
+  The mean's sum is in hk's order, so a few elements differ from the engine's
+  by a bf16 unit; the error against fp64 is the engine's. 1024^2, 30 steps:
+  27.36 -> 26.22 s a request, 1.044x over the rope route alone. 37.9 dB from
+  stock; torch's own norm with only its sum order changed is 36.5 dB from stock.
 
 The third, ConvRot INT8 (hk's `convrot_int8` backend, for `--quantization
 convrot_int8`), **stays opt-in**: it is lossy by design.
