@@ -4,6 +4,8 @@ Release notes for each version are also on its
 [GitHub release](https://github.com/vivienfanghuagood/hk-dsl/releases).
 The next version's notes collect here until it is released.
 
+## Unreleased
+
 ## 0.9.12
 
 hk-dsl 0.9.12: on gfx1100, SGLang-Diffusion's new route `sgld_qknorm` (on by default) runs Qwen-Image

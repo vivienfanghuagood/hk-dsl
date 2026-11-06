@@ -10154,6 +10154,9 @@
 "gather_sgld_linear": {
 "params": []
 },
+"gather_sgld_qknorm": {
+"params": []
+},
 "gather_sgld_rope": {
 "params": []
 },
@@ -10229,6 +10232,11 @@
 ]
 },
 "judge_sgld_linear": {
+"params": [
+"f"
+]
+},
+"judge_sgld_qknorm": {
 "params": [
 "f"
 ]
@@ -11009,12 +11017,14 @@
 "CONVROT_STATS": {},
 "DECISIONS": {},
 "ENV": {},
+"LINEAR_BIAS": {},
 "LINEAR_HOME": {},
 "LINEAR_STATS": {},
 "List": {},
 "MARGIN": {},
 "MIN_M": {},
 "Path": {},
+"QKNORM_STATS": {},
 "QWEN21_HOME": {},
 "ROPE_STATS": {},
 "TARGET": {},
@@ -11026,12 +11036,20 @@
 "_OFF": {},
 "_OPS": {},
 "_PTH": {},
+"_QKNORM_ORIG": {},
 "_ROPE_ORIG": {},
 "_ROPE_TABLES": {},
 "_VAE_ORIG": {},
 "_bucket": {
 "params": [
 "m"
+]
+},
+"_gemm_bias_op": {
+"params": [
+"sched",
+"m",
+"n"
 ]
 },
 "_gemm_op": {
@@ -11050,7 +11068,15 @@
 "params": [
 "op",
 "a",
-"weight"
+"weight",
+"bias"
+]
+},
+"_qknorm_fits": {
+"params": [
+"x",
+"norm",
+"rope"
 ]
 },
 "_report": {
@@ -11081,6 +11107,9 @@
 "apply_linear": {
 "params": []
 },
+"apply_qknorm": {
+"params": []
+},
 "apply_rope": {
 "params": []
 },
@@ -11099,6 +11128,9 @@
 },
 "os": {},
 "revert_linear": {
+"params": []
+},
+"revert_qknorm": {
 "params": []
 },
 "revert_rope": {
@@ -14251,6 +14283,7 @@
 "COLS": {},
 "KERNELS": {},
 "MAX_TILES": {},
+"RMSNORM_ROTARY_PAIRS_KERNELS": {},
 "ROTARY16_IN_CACHE": {},
 "ROTARY16_KERNELS": {},
 "ROTARY_HALVES_KERNELS": {},
@@ -14267,6 +14300,7 @@
 "WIDTHS": {},
 "_DTYPES": {},
 "_PLAN_CACHE": {},
+"_RNE": {},
 "_ROTARY_CACHE": {},
 "_STRIP_PLANS": {},
 "_TORCH_DTYPES": {},
@@ -14275,6 +14309,11 @@
 "params": [
 "t",
 "what"
+]
+},
+"_bf16_round": {
+"params": [
+"v"
 ]
 },
 "_ftile": {
@@ -14288,6 +14327,14 @@
 "params": [
 "a",
 "b"
+]
+},
+"_pairs_plan": {
+"params": [
+"x",
+"cos",
+"sin",
+"what"
 ]
 },
 "_resolve": {
@@ -14344,7 +14391,8 @@
 "_rotary_pairs_kernel": {
 "params": [
 "name",
-"warps"
+"warps",
+"norm"
 ]
 },
 "_rotary_warps": {
@@ -14404,6 +14452,19 @@
 "t"
 ]
 },
+"_turn_pairs": {
+"params": [
+"a",
+"b",
+"cv",
+"sv"
+]
+},
+"_unpack_pairs": {
+"params": [
+"wv"
+]
+},
 "bf16": {},
 "canonical": {
 "params": [
@@ -14417,6 +14478,16 @@
 "plan": {
 "params": [
 "cols"
+]
+},
+"rmsnorm_rotary_pairs": {
+"params": [
+"x",
+"weight",
+"eps",
+"cos",
+"sin",
+"out"
 ]
 },
 "rope": {
