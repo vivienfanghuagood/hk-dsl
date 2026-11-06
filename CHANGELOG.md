@@ -10,14 +10,32 @@ The next version's notes collect here until it is released.
 
 **vLLM's TRITON_ATTN on gfx1100: the KV split cuts the longest contexts into 64 runs.** The KV-split prefill's merge (`paged_prefill.merge_kernel`) runs in a loop past 32 splits, where it no longer builds unrolled. MiniCPM5's 16-token chunks and MiniCPM-V's 17-64-token chunks over 16k+ contexts take 64 splits: 1.11-1.25x faster than the 16-32 they took. Measured faster than both stock kernels on every batch it takes.
 
-**vLLM's TRITON_ATTN on gfx1201: Qwen3.8's 64-token-and-longer chunks over 32k+ contexts beside up to 15 decodes take the packed KV split.** Over 32k+ contexts such a chunk was declined beside more than 7 decodes or ~170k decode tokens; it now takes the split beside up to 15, at any count of their tokens. `vllm_prefill.KVS_PACK_MAX_DECODES` tiers also go by the longest query. Measured faster than both stock kernels on every batch it takes.
+## 0.9.9
 
-- `hk.profile` on gfx1201: a counter group of the three counters that count on an R9700 under ROCm 7.2.3
-  (`GRBM_GUI_ACTIVE`, `SQ_WAVES`, `SQ_BUSY_CYCLES`; the others read 0). A matrix kernel with no FLOP rate
-  -- no counter, thread trace or main-loop trip count to count its WMMAs -- now gets the verdict
-  `bound_unknown` instead of `latency_bound`; `--flops` gives the rate. Where `SQ_INSTS_LDS` counts, the
-  FLOPs come from the ISA's main loop x its trip count read off it. A wave-cycle count of 0 for a kernel
-  whose waves ran is dropped, not reported as 0 waves a SIMD ([profile](docs/profile.md)).
+hk-dsl 0.9.9: on gfx1100 the KV-split prefill cuts the longest contexts into 64 runs (MiniCPM5 and
+MiniCPM-V over 16k+); on gfx1201 Qwen3.8's 64-token-and-longer chunks over 32k+ contexts beside up to 15
+decodes take the packed KV split; `hk.profile` reports on gfx1201. No change to the language or the
+dialect (`hk-dialect-8`).
+
+On PyPI: `pip install hk-dsl`, for CPython 3.10 to 3.13 on Linux x86_64 with glibc 2.35 or newer
+(Ubuntu 22.04 and later, and vLLM's ROCm images): one `manylinux_2_35` wheel per interpreter. The
+wheels below are the same files.
+
+    pip install hk_dsl-0.9.9-cp312-cp312-manylinux_2_35_x86_64.whl
+
+### Changes
+
+**vLLM's TRITON_ATTN on gfx1100: the KV split cuts the longest contexts into 64 runs** (#284). The KV-split prefill's merge (`paged_prefill.merge_kernel`) runs in a loop past 32 splits, where it no longer builds unrolled. MiniCPM5's 16-token chunks and MiniCPM-V's 17-64-token chunks over 16k+ contexts take 64 splits: 1.11-1.25x faster than the 16-32 they took. Measured faster than both stock kernels on every batch it takes.
+
+**vLLM's TRITON_ATTN on gfx1201: Qwen3.8's 64-token-and-longer chunks over 32k+ contexts beside up to 15 decodes take the packed KV split** (#285). Over 32k+ contexts such a chunk was declined beside more than 7 decodes or ~170k decode tokens; it now takes the split beside up to 15, at any count of their tokens. `vllm_prefill.KVS_PACK_MAX_DECODES` tiers also go by the longest query. Measured faster than both stock kernels on every batch it takes.
+
+**`hk.profile` on gfx1201** (#297): a counter group of the three counters that count on an R9700 under ROCm 7.2.3 (`GRBM_GUI_ACTIVE`, `SQ_WAVES`, `SQ_BUSY_CYCLES`; the others read 0). A matrix kernel with no FLOP rate -- no counter, thread trace or main-loop trip count to count its WMMAs -- now gets the verdict `bound_unknown` instead of `latency_bound`; `--flops` gives the rate. Where `SQ_INSTS_LDS` counts, the FLOPs come from the ISA's main loop x its trip count read off it. A wave-cycle count of 0 for a kernel whose waves ran is dropped, not reported as 0 waves a SIMD ([profile](docs/profile.md)).
+
+**Tests** (#298). `test_moe_w4` runs in a GPU-tier group of its own, with a per-expert float64 reference and its memory released after the module, so it no longer holds most of an R9700's memory while other tests run.
+
+### All pull requests
+
+#284, #285, #296, #297, #298.
 
 ## 0.9.8
 

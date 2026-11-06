@@ -16660,6 +16660,8 @@
 "hk.ops.paged_prefill": {
 "Dict": {},
 "KV_BLOCK": {},
+"MERGE_STEP": {},
+"MERGE_UNROLL": {},
 "NEG_INF": {},
 "Optional": {},
 "Q_TILE": {},
@@ -16717,7 +16719,8 @@
 "head_dim",
 "kv_splits",
 "q_tile",
-"cols"
+"cols",
+"step"
 ]
 },
 "paged_prefill_kernel": {
@@ -17846,6 +17849,12 @@
 "agent",
 "grid",
 "build"
+]
+},
+"isa_matrix_flops_per_wave": {
+"params": [
+"isa",
+"m"
 ]
 },
 "kernel_report": {
