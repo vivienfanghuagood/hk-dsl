@@ -172,10 +172,13 @@ ROUTES: Dict[str, Route] = {r.name: r for r in (
        part="convrot"),
     _R("sgld_vaeconv", "sglang_diffusion", "HK_SGLD_VAECONV", True, ("gfx1100",),
        "Wan's VAE conv3d (WanCausalConv3d) as calls of 2 output frames, the engine's own conv: "
-       "MIOpen runs the full-resolution 6-frame convs on its naive reference kernel",
+       "MIOpen runs the full-resolution 6-frame convs on its naive reference kernel; and the VAE kept "
+       "in NCDHW (SGLang's channels-last path costs MIOpen a layout copy every conv)",
        "the same conv per output frame (bit-identical where MIOpen picks a real solver for both); "
        "Wan2.1-T2V-1.3B 832x480x81: VAE decode 969 s -> 37.8 s (a generation 2.77x), 36.2 dB from "
-       "stock and closer to an fp32 VAE decode than stock (36.9 dB vs 36.1)", part="vaeconv"),
+       "stock and closer to an fp32 VAE decode than stock (36.9 dB vs 36.1); NCDHW: 211.9 -> 201.4 s a "
+       "video with every hk route on (1.052x, same process), inside stock's run-to-run spread",
+       part="vaeconv"),
     _R("sgld_rope", "sglang_diffusion", "HK_SGLD_ROPE", True, ("gfx1100",),
        "Qwen-Image 2.1's complex RoPE on hk.ops.rotary_pairs (bf16, head_dim 128, one sequence)",
        "bit-identical to the engine's on every call (rotary_pairs reproduces torch's complex "

@@ -6,6 +6,9 @@ The next version's notes collect here until it is released.
 
 ## Unreleased
 
+- SGLang-Diffusion: `sgld_vaeconv` also keeps Wan's VAE in NCDHW on gfx1100 (SGLang's channels-last path cost a
+  MIOpen layout copy every conv): 1.052x a Wan2.1 832x480x81 video.
+
 ## 0.9.12
 
 hk-dsl 0.9.12: on gfx1100, SGLang-Diffusion's new route `sgld_qknorm` (on by default) runs Qwen-Image
