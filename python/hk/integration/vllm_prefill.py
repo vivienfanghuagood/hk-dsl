@@ -303,10 +303,10 @@ def _flash_op(head_dim: int, group: int, scale: Optional[float], page: int = 16,
             warps = 16 if ds else 12
             tag = "" if scale is None else "_s%08x" % (hash(scale) & 0xffffffff)
             return pp.paged_prefill_kernel(
-                f"paged_prefill_flash_d{head_dim}_g{group}{'_ds' if ds else ''}{_ptag(page)}"
+                f"paged_prefill_flash_d{head_dim}_g{group}{'_ds' if ds else ''}_r{_ptag(page)}"
                 f"{_otag(order)}{'' if decodes else '_nd'}{tag}", head_dim=head_dim, group=group,
                 scale=scale, layout="flash", dsplit=ds, warps=warps, decodes=decodes, page=page,
-                kv_order=order), 16 * (warps // 2 if ds else warps)
+                kv_order=order, rev=True), 16 * (warps // 2 if ds else warps)
         _FLASH[key] = _built(make)
     return _FLASH[key]
 
@@ -512,11 +512,11 @@ def _vt_ops(head_dim: int, group: int, scale: Optional[float], page: int = 16,
 
         tag = "" if scale is None else "_s%08x" % (hash(scale) & 0xffffffff)
         main = _built(lambda: (pp.paged_prefill_kernel(
-            f"paged_prefill_flashvt_d{head_dim}_g{group}{'_ds_r' if ds else ''}"
+            f"paged_prefill_flashvt_d{head_dim}_g{group}{'_ds' if ds else ''}_r"
             f"{_ptag(page)}"
             f"{_otag(order)}{'' if decodes else '_nd'}{tag}",
             head_dim=head_dim, group=group, scale=scale, layout="flash", warps=warps,
-            dsplit=ds, rev=ds, decodes=decodes, vt_pages=True, page=page, kv_order=order),
+            dsplit=ds, rev=True, decodes=decodes, vt_pages=True, page=page, kv_order=order),
             16 * (warps // 2 if ds else warps)))
         pack = _built(lambda: (pp.vt_pack_kernel(
             f"paged_vt_pack_d{head_dim}{_ptag(page)}{_otag(order)}", head_dim=head_dim,
