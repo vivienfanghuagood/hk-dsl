@@ -8,7 +8,7 @@ from hk.ops import w4a16
 
 def test_the_op_declares_itself_graph_safe():
     assert vllm_int4.PATCH.graph == "safe"
-    assert set(vllm_int4.PATCH.paths) == {"hk", "fallback"}
+    assert set(vllm_int4.PATCH.paths) == {"hk", "hk_large", "fallback"}
 
 
 def test_the_fake_is_tokens_by_output_features():
@@ -51,3 +51,12 @@ def test_a_group_narrower_than_the_load_narrows_the_load():
     assert w4a16.schedule_for(1, 8192, 32)["slices"] == 2
     assert w4a16.takes(1, 4096, 4096, 32) and w4a16.takes(17, 4096, 4096, 32)
     assert not w4a16.takes(1, 4096, 4096, 8)       # no load is that narrow
+
+
+@pytest.mark.parametrize("arch,cap", [("gfx1201", 512), ("gfx1100", 0), ("gfx950", 0)])
+def test_the_large_batch_form_is_gfx1201s(monkeypatch, arch, cap):
+    from hk import target
+
+    monkeypatch.setattr(vllm_int4, "_LARGE", [])
+    monkeypatch.setattr(target, "current_arch", lambda: arch)
+    assert vllm_int4._large_max_m() == cap

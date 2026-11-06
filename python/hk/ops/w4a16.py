@@ -222,13 +222,17 @@ def w4a16_kernel(name: str, *, tokens: int = 1, slices: int = 4, warps: int = 16
 
 
 def w4a16_large_kernel(name: str, *, group: int = 32, block_m: int = 128, block_n: int = 128,
-                       warps: int = 8, warp_rows: int = 2):
+                       warps: int = 8, warp_rows: int = 2, asym: bool = False):
     """The large-batch W4A16 GEMM on vLLM's RDNA skinny layout read in place (prefill): C (M, N)
     = x (M, K) @ W.T, fp16, W symmetric (zero point 8) as `exllama_matmul` reads it. A workgroup
     takes a block_m x block_n tile of C; every 64-deep K step its warps stage x's rows into LDS and
     decode W's block_n rows once into LDS (`hk.load_w4(exllama=True)`), then each warp multiplies
     its (block_m / warp_rows) x (block_n / warp_cols) share from both -- the decode is paid once
-    per block_m tokens, not once per warp. K a multiple of 64; N of block_n."""
+    per block_m tokens, not once per warp. K a multiple of 64; N of block_n.
+
+    `asym`: W in hk's own layout with zero points instead (`repack_awq`: codes interleaved by
+    16-row block, s and zs [N, K/group]), the kernel taking (x, qw, s, zs, c) -- AWQ as
+    vllm_int4 holds it."""
     ks = 64
     warp_cols = warps // warp_rows
     rm, rn = block_m // warp_rows, block_n // warp_cols
@@ -243,7 +247,8 @@ def w4a16_large_kernel(name: str, *, group: int = 32, block_m: int = 128, block_
     ty_b = hk.RT(fp16, rn, 16, "row")
     ty_c = hk.RT(fp32, rm, rn, "col")
 
-    def body(x: hk.Tensor[fp16], qw: hk.Tensor[i32], s: hk.Tensor[fp16], c: hk.Tensor[fp16]):
+    @hk.func
+    def gemm(x, qw, s, zs, c):
         As = hk.lds.alloc(st_a, name="As")
         Bs = hk.lds.alloc(st_b, name="Bs")
         n0 = hk.arch.block_idx.x * block_n
@@ -255,8 +260,10 @@ def w4a16_large_kernel(name: str, *, group: int = 32, block_m: int = 128, block_
         for t in hk.range(x.cols // ks):
             k = t * ks
             a_t = x[hk.elem_coord(0, 0, m0 + wid * (block_m // warps), k)].load(ty_ld_a, bounded=True)
-            w_t = hk.load_w4(ty_ld_b, qw, s, None, n0 + wid * (block_n // warps), k, group=group,
-                             zero=SYMMETRIC_ZERO, exllama=True)
+            w_t = (hk.load_w4(ty_ld_b, qw, s, zs, n0 + wid * (block_n // warps), k, group=group)
+                   if zs is not None else
+                   hk.load_w4(ty_ld_b, qw, s, None, n0 + wid * (block_n // warps), k, group=group,
+                              zero=SYMMETRIC_ZERO, exllama=True))
             hk.arch.barrier()
             As.subtile(block_m // warps, ks, wid, 0).store(a_t)
             Bs.subtile(block_n // warps, ks, wid, 0).store(w_t)
@@ -269,6 +276,14 @@ def w4a16_large_kernel(name: str, *, group: int = 32, block_m: int = 128, block_
                 hk.lds.wait_for(a_s, b_s)
                 acc += a_s @ b_s.T
         c[hk.elem_coord(0, 0, m0 + wr * rm, n0 + wc * rn)].store(acc, bounded=True)
+
+    if asym:
+        def body(x: hk.Tensor[fp16], qw: hk.Tensor[i32], s: hk.Tensor[fp16],
+                 zs: hk.Tensor[fp16], c: hk.Tensor[fp16]):
+            gemm(x, qw, s, zs, c)
+    else:
+        def body(x: hk.Tensor[fp16], qw: hk.Tensor[i32], s: hk.Tensor[fp16], c: hk.Tensor[fp16]):
+            gemm(x, qw, s, None, c)
 
     body.__name__ = name
     return hk.kernel(body, warps=warps, name=name,
@@ -426,6 +441,25 @@ def exllama_large_matmul(x, w_q, s, group: int, out=None):
         _OPS[key] = launcher(w4a16_large_kernel(f"w4a16_large_g{group}_exl", group=group,
                                                 **LARGE_TILE))
     _OPS[key](x if x.is_contiguous() else x.contiguous(), w_q, s, out)
+    return out
+
+
+def large_matmul(x, qw, s, zs, group: int, out=None):
+    """x @ W.T, fp16, any number of tokens, W in hk's layout with zero points (`repack_awq`): the
+    large-batch form's `asym` variant. `exllama_large_takes` must hold for W's [N, K]."""
+    import torch  # noqa: PLC0415
+
+    m = x.shape[0]
+    n = qw.shape[0]
+    if out is None:
+        out = torch.empty((m, n), device=x.device, dtype=torch.float16)
+    key = ("large-asym", group)
+    if key not in _OPS:
+        from ..runtime.torch_ext import launcher  # noqa: PLC0415
+
+        _OPS[key] = launcher(w4a16_large_kernel(f"w4a16_large_g{group}_asym", group=group,
+                                                asym=True, **LARGE_TILE))
+    _OPS[key](x if x.is_contiguous() else x.contiguous(), qw, s, zs, out)
     return out
 
 
@@ -595,7 +629,7 @@ def _matmul_legacy(x, qw, s, zs, group: int, out=None):
 
 __all__ = ["AWQ_ORDER", "EXL_CHUNK", "EXL_GEMV_MAX", "GEMV_ARCHES", "LARGE_TILE", "GEMV_MAX_M", "GEMV_WARPS", "MAX_TOKENS", "SCHEDULES",
            "SHALLOW_K", "SYMMETRIC_ZERO", "block_scales", "dequant", "exllama_large_matmul", "exllama_large_takes", "exllama_matmul",
-           "exllama_takes", "gemv_kernel_for", "gemv_takes",
+           "exllama_takes", "gemv_kernel_for", "gemv_takes", "large_matmul",
            "kernel_for", "unblock_scales", "w4a16_gemv_kernel", "w4a16_large_kernel",
            "matmul", "plan", "schedule_for",
            "repack_awq", "repack_gptq", "takes", "tokens_for", "w4a16_kernel"]
