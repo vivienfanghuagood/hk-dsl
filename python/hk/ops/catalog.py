@@ -121,7 +121,7 @@ FAMILIES = [
          arches=("gfx1100",), dtypes="bf16 in, int8 W8A8, bf16 out",
          routes=["sgld_convrot"], tests=["test_convrot.py"]),
     dict(name="rotary_pairs", what="RoPE on interleaved pairs, the complex form (Qwen-Image 2.1's "
-                                   "`view_as_complex(x) * rope`), bit for bit torch's",
+                                   "`view_as_complex(x) * rope`), bit for bit torch's on RDNA",
          entries=["hk.ops.fused.rotary_pairs"],
          arches=("gfx950", "gfx1100", "gfx1201"), dtypes="bf16; fp32 cos / sin",
          routes=["sgld_rope"], tests=["test_route_paths.py"]),

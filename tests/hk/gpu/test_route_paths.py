@@ -489,9 +489,18 @@ def test_rotary_pairs_is_torchs_complex_rope_bit_for_bit(seq):
     x, rope = _rope_case(seq, torch.Generator(device="cuda").manual_seed(seq))
     want = _complex_rope(x, rope)
     cos, sin = rope.real.contiguous(), rope.imag.contiguous()
-    assert torch.equal(fused.rotary_pairs(x, cos, sin), want)
+
+    def same(got):
+        # RDNA's torch multiplies complex numbers in the fused form rotary_pairs computes: bit
+        # for bit. gfx950's torch contracts differently: a bf16 unit apart, on a few elements.
+        if current_arch() in ("gfx1100", "gfx1201"):
+            return torch.equal(got, want)
+        _close(got, want, tol=1e-2)
+        return (got != want).float().mean().item() < 1e-4
+
+    assert same(fused.rotary_pairs(x, cos, sin))
     y = x.clone()
-    assert fused.rotary_pairs(y, cos, sin, out=y) is y and torch.equal(y, want)    # in place
+    assert fused.rotary_pairs(y, cos, sin, out=y) is y and same(y)                   # in place
     with pytest.raises(ValueError):
         fused.rotary_pairs(x.float(), cos, sin)
 

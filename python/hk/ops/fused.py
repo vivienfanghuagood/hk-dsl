@@ -293,8 +293,9 @@ def _rotary_pairs_kernel(name: str, warps: int):
 
         out[2i] = a c - b d,   out[2i+1] = a d + b c
 
-    in fp32 as torch's complex multiply computes it -- fma(a, c, -(b d)) and fma(b, c, a d),
-    bit for bit -- each output rounded once to bf16 (to nearest even). A bf16 pair is one 32-bit
+    in fp32 as torch's complex multiply computes it on RDNA -- fma(a, c, -(b d)) and
+    fma(b, c, a d), bit for bit on gfx1100 and gfx1201 -- each output rounded once to bf16
+    (to nearest even). A bf16 pair is one 32-bit
     word, so x and out are read as int32 (T*H, D/2): a lane holds whole pairs, unpacks them
     with shifts and turns them in place -- no lane exchange, on wave32 strips too. cos and
     sin are fp32 (T, D/2). One workgroup a token, warp w the heads w, w + WARPS, ...; every
@@ -823,8 +824,10 @@ def rotary_pairs(x, cos, sin, out=None):
 
         out[2i] = x[2i] cos_i - x[2i+1] sin_i,   out[2i+1] = x[2i] sin_i + x[2i+1] cos_i
 
-    in fp32 as torch's complex multiply computes it (fma(a, c, -(b d)), fma(b, c, a d)),
-    rounded once to bf16: bit-identical to the torch expression. In place when `out` is `x`. D is 128 (or 64 * a power of two up to 8). On strips: gfx950, gfx1100
+    in fp32 as torch's complex multiply computes it on RDNA (fma(a, c, -(b d)), fma(b, c, a d)),
+    rounded once to bf16: bit-identical to the torch expression on gfx1100 and gfx1201. gfx950's
+    torch contracts the products differently, so there a few elements differ by a bf16 unit.
+    In place when `out` is `x`. D is 128 (or 64 * a power of two up to 8). On strips: gfx950, gfx1100
     and gfx1201."""
     import torch  # noqa: PLC0415
 
