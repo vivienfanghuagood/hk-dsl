@@ -108,7 +108,7 @@ Paths below are relative to the repository root.
 - On gfx1100 `k(...)` launches on the null stream: a CUDA graph does not
   capture it. Time or capture it with `HK_LAUNCH=codeobj` set (or through
   `hk.torch_op(k)`); `hk.check`'s eager timing is unaffected.
-- Names marked *New after 0.9.10* in
-  [docs/api](../../docs/api/README.md) need hk-dsl 0.9.11 or a checkout
+- Names marked *New after 0.9.11* in
+  [docs/api](../../docs/api/README.md) need a checkout of main
   (`hk.__version__` says which you have).
 - Only same-process, interleaved timing counts; under ~2% is a tie.
