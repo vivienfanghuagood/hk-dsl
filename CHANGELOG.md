@@ -6,6 +6,11 @@ The next version's notes collect here until it is released.
 
 ## Unreleased
 
+- SGLang-Diffusion: new route `sgld_vaeconv` (`HK_SGLD_VAECONV`, on by default on gfx1100) runs Wan's
+  VAE conv3d as calls of 2 output frames. MIOpen ran the decoder's full-resolution convs on its naive
+  reference kernel. Wan2.1-T2V-1.3B 832x480x81 on one W7900D: VAE decode 969 s -> 37.8 s, the generation
+  2.77x faster; closer to an fp32 VAE decode than stock.
+
 ## 0.9.10
 
 hk-dsl 0.9.10: on gfx1201, `vllm_int4` takes AWQ prefill (fp16 batches of 65-512 tokens) on the

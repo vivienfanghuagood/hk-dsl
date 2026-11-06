@@ -69,12 +69,20 @@ imports, into site-packages. Unless `HK_DISABLE=1` or `HK_SGLD=0`, the boot
 patches whichever process imports the SDPA backend. It checks the engine
 contract first, as the plugins do. An install made before hk was on by
 default keeps the old boot, which needs `HK_SGLD=1`; run `install` again
-(`status` says so). Two patches are on by default:
+(`status` says so). Three patches are on by default:
 - **attention**: `hk.ops.sdpa.patch()` behind the `torch_sdpa` backend (the
   only one that runs on RDNA3); masked and odd-head-dim calls go to torch;
 - **linear**: `UnquantizedLinearMethod.apply` of
   `sglang.multimodal_gen.runtime.layers.linear` to `hk.ops.matmul` for bf16
-  projections without bias and with at least `MIN_M` (1024) rows.
+  projections without bias and with at least `MIN_M` (1024) rows;
+- **vaeconv**: Wan's VAE conv3d (`WanCausalConv3d` of
+  `sglang.multimodal_gen.runtime.models.vaes.wanvae`) as calls of 2 output
+  frames, each the engine's own conv on a slice of the input. On gfx1100
+  MIOpen runs the decoder's full-resolution convs, which get 6 input frames,
+  on its naive reference kernel: 9.5 s a call at 832x480, against 95 ms in
+  2-frame calls. No hk kernel; the route only stops MIOpen's fallback.
+  Wan2.1-T2V-1.3B 832x480x81 on one W7900D: VAE decode 969 s -> 37.8 s, the
+  generation 2.77x. 36.2 dB from stock and closer to an fp32 VAE decode than stock (36.9 dB vs 36.1)
 
 The third, ConvRot INT8 (hk's `convrot_int8` backend, for `--quantization
 convrot_int8`), **stays opt-in**: it is lossy by design.

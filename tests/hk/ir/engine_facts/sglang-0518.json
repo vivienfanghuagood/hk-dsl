@@ -290,6 +290,16 @@
     "bias"
    ]
   },
+  "sgld_vaeconv": {
+   "conv3d": true,
+   "conv_forward": [
+    "self",
+    "input",
+    "weight",
+    "bias"
+   ],
+   "pads_itself": true
+  },
   "vllm_backend": {
    "backend_slots": [
     "FLASH_ATTN",

@@ -167,6 +167,12 @@ ROUTES: Dict[str, Route] = {r.name: r for r in (
        "ConvRot W8A8 linear for --quantization convrot_int8",
        "off: lossy by design (PSNR 30.4 dB from bf16, visible drift); a model-level choice",
        part="convrot"),
+    _R("sgld_vaeconv", "sglang_diffusion", "HK_SGLD_VAECONV", True, ("gfx1100",),
+       "Wan's VAE conv3d (WanCausalConv3d) as calls of 2 output frames, the engine's own conv: "
+       "MIOpen runs the full-resolution 6-frame convs on its naive reference kernel",
+       "the same conv per output frame (bit-identical where MIOpen picks a real solver for both); "
+       "Wan2.1-T2V-1.3B 832x480x81: VAE decode 969 s -> 37.8 s (a generation 2.77x), 36.2 dB from "
+       "stock and closer to an fp32 VAE decode than stock (36.9 dB vs 36.1)", part="vaeconv"),
     _R("sdpa_k3", "ops", "HK_SDPA_K3", True, ("gfx1100",),
        "hk.ops.sdpa's non-causal head_dim-128 calls on its newer kernel (hk.ops.attn_k3)",
        "per-call error 2.95e-5 vs the current path's 4.50e-5 at Qwen-Image's shape (#24)"),

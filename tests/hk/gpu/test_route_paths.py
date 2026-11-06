@@ -435,3 +435,34 @@ def test_sgld_linear_takes_a_dit_projection_through_hk(monkeypatch):
     finally:
         sgld.revert_linear()
     assert Unquantized.apply is orig
+
+
+def test_sgld_vaeconv_runs_wans_causal_conv3d_in_frame_chunks_and_matches(monkeypatch):
+    _on_here("sgld_vaeconv")
+
+    class WanCausalConv3d(torch.nn.Conv3d):     # pads time itself, as Wan's VAE does
+        def __init__(self, cin, cout, k):
+            super().__init__(cin, cout, k, padding=(1, 1, 1))
+            self.padding = (0, 0, 0)
+
+        def forward(self, x):
+            return super().forward(torch.nn.functional.pad(x, (1, 1, 1, 1, 2, 0)))
+
+    _stand_in(monkeypatch, sgld.VAE_HOME, WanCausalConv3d=WanCausalConv3d)
+    orig = WanCausalConv3d._conv_forward
+    conv = WanCausalConv3d(16, 8, 3).to("cuda", B)
+    g = torch.Generator(device="cuda").manual_seed(0)
+    try:
+        assert "calls of 2 output frames" in sgld.apply_vaeconv()
+        before = dict(sgld.VAE_STATS)
+        for frames in (1, 2, 5, 6):             # 1 and 2: one call; 5 and 6: chunked
+            x = torch.randn(1, 16, frames, 12, 20, device="cuda", dtype=B, generator=g)
+            want = torch.nn.functional.conv3d(
+                torch.nn.functional.pad(x, (1, 1, 1, 1, 2, 0)).float(), conv.weight.float(),
+                conv.bias.float())
+            _close(conv(x), want)
+        assert sgld.VAE_STATS["chunked"] == before["chunked"] + 2
+        assert sgld.VAE_STATS["whole"] == before["whole"] + 2
+    finally:
+        sgld.revert_vaeconv()
+    assert WanCausalConv3d._conv_forward is orig

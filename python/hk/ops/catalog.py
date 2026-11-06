@@ -120,4 +120,9 @@ FAMILIES = [
          entries=["hk.ops.convrot.linear"],
          arches=("gfx1100",), dtypes="bf16 in, int8 W8A8, bf16 out",
          routes=["sgld_convrot"], tests=["test_convrot.py"]),
+    dict(name="conv3d", what="a conv3d as calls of 2 output frames along time, the engine's own "
+                             "conv: no hk kernel; it keeps MIOpen off its naive reference conv3d",
+         entries=["hk.ops.conv3d.frames"],
+         arches=("gfx1100",), dtypes="any the engine's conv takes (bf16 measured)",
+         routes=["sgld_vaeconv"], tests=["test_route_paths.py"]),
 ]
