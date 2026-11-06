@@ -9,22 +9,19 @@ Two ways in. Pick the one you came for:
 
 ## Make vLLM or SGLang faster
 
-In the Python environment that runs your engine, on a Radeon W7900 / RX 7900
-(gfx1100) or R9700 / RX 9070 (gfx1201):
+One command, in the Python environment that runs your engine, on a Radeon
+W7900 / RX 7900 (gfx1100) or R9700 / RX 9070 (gfx1201):
 
 ```bash
-pip install hk-dsl
-python3 -m hk.integration --status      # the routes hk will apply on this GPU
+pip install hk-dsl && vllm serve Qwen/Qwen3-8B
+pip install hk-dsl && python3 -m sglang.launch_server --model-path Qwen/Qwen3-8B \
+    --attention-backend triton --disable-cuda-graph
 ```
 
-Then start the engine as you always do. hk's plugin loads by itself and prints
-one `[hk] ... routes on: ...` line per process; `HK_DISABLE=1` gives you the
-stock engine back.
-
-```bash
-vllm serve Qwen/Qwen3-8B
-python3 -m sglang.launch_server --model-path Qwen/Qwen3-8B --attention-backend triton --disable-cuda-graph
-```
+hk's plugin loads by itself and prints one `[hk] ... routes on: ...` line per
+process; `python3 -m hk.integration --status` lists the routes before you
+start, and `HK_DISABLE=1` gives you the stock engine back. No vLLM yet on an
+R9700: [one `docker run`](vllm.md#enable-hk-in-one-command).
 
 Which models and GPUs, how to check it worked, and troubleshooting:
 [hk in vLLM](vllm.md), [hk in SGLang](sglang.md) (SGLang is gfx1100 only for

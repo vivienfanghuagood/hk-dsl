@@ -17,17 +17,18 @@ silently (spills, missing waits, MFMA hazards).
 
 ## Quick start
 
-**Faster vLLM and SGLang on Radeon.** In the environment that runs your
-engine:
+**Faster vLLM and SGLang on Radeon.** One command, in the environment that
+runs your engine; hk's plugin loads by itself:
 
 ```bash
-pip install hk-dsl
-python3 -m hk.integration --status     # the routes hk will apply on this GPU
-vllm serve Qwen/Qwen3-8B               # as always: hk's plugin loads by itself
+pip install hk-dsl && vllm serve Qwen/Qwen3-8B                       # vLLM
+pip install hk-dsl && python3 -m sglang.launch_server --model-path Qwen/Qwen3-8B \
+    --attention-backend triton --disable-cuda-graph                 # SGLang (W7900 / RX 7900)
 ```
 
-The server's log then has one `[hk] vLLM routes on: ...` line per process.
-`HK_DISABLE=1` gives you the stock engine back. Each engine's page has the
+The server's log then has a `[hk] vLLM routes on: ...` (or `[hk] SGLang routes
+on: ...`) line per process. `HK_DISABLE=1` gives you the stock engine back.
+No vLLM yet? On an R9700 one `docker run` does both: [hk in vLLM](docs/vllm.md#enable-hk-in-one-command). Each engine's page has the
 GPUs and models, how to check it worked, and troubleshooting:
 **[hk in vLLM](docs/vllm.md)** · **[hk in SGLang](docs/sglang.md)**.
 
