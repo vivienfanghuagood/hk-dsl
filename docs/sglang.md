@@ -107,7 +107,22 @@ python3 -m hk.integration tune --model Qwen/Qwen3-8B --engine sglang
 
 SGLang-Diffusion runs its model in worker processes that load no plugins, so
 hk needs one install step in that environment (an SGLang-Diffusion ROCm
-environment for RDNA3, gfx1100). Then generate as usual. For Qwen-Image 2.1:
+environment for RDNA3, gfx1100). Then generate as usual. On gfx1100 hk then
+takes, by default:
+
+| route | switch | what | models |
+|---|---|---|---|
+| `sgld_attn` | `HK_SGLD_ATTN` | the DiT's attention (`--attention-backend torch_sdpa`) | Qwen-Image 2.1, Wan2.1 |
+| `sgld_linear` | `HK_SGLD_LINEAR` | the DiT's projections where hk measured faster | Qwen-Image 2.1 |
+| `sgld_rope` | `HK_SGLD_ROPE` | the complex RoPE, bit for bit | Qwen-Image 2.1 |
+| `sgld_qknorm` | `HK_SGLD_QKNORM` | q / k RMSNorm + RoPE as one launch (from 0.9.12) | Qwen-Image 2.1 |
+| `sgld_vaeconv` | `HK_SGLD_VAECONV` | the VAE's conv3d in 2-frame calls, which MIOpen would run on its slow reference kernel | Wan2.1 |
+
+All five are gfx1100 only; `HK_<SWITCH>=0` turns one off. The lossy ConvRot
+INT8 route stays opt-in (`HK_SGLD_CONVROT=1`). What each one replaces and what
+it measured: [SGLang routes](sglang-routes.md#sglang-diffusion-text-to-image-and-video).
+
+For Qwen-Image 2.1:
 
 ```bash
 pip install -U hk-dsl && python3 -m hk.integration sglang-diffusion install   # once per environment
@@ -127,21 +142,35 @@ line, and the worker that runs the model prints how many calls took hk's
 kernels:
 
 ```
-[hk] sglang-diffusion: attention: hk 614 (614 in place, 614 on attn_k3), torch 68 (...); linear: hk ...
+[hk] sglang-diffusion: attention: hk 614 (614 in place, 614 on attn_k3), torch 68 (...); linear: hk ...; rope: hk ...
 ```
 
 Read the worker's line: the parent process prints one too, at exit, whose
 counts stay 0. With `HK_DISABLE=1` there is no `[hk]` line at all.
 
+**Wan2.1 (text to video)** is the same, with a video model:
+
+```bash
+SGLANG_USE_AITER=0 MIOPEN_FIND_MODE=FAST sglang generate --model-path Wan-AI/Wan2.1-T2V-1.3B-Diffusers \
+    --prompt "A cat walking on the grass" --num-frames 81 --height 480 --width 832 \
+    --num-inference-steps 20 --attention-backend torch_sdpa --num-gpus 1 --save-output --output-path out
+```
+
+The worker's line then counts the VAE's conv3d calls hk split, `vaeconv: chunked
+261, whole 431`, beside the attention calls. Some ROCm builds of SGLang send
+Wan's fused norm layers to their CUDA kernel, and the first denoising step
+fails with `No module named 'cuda'`, with or without hk: that build needs
+SGLang's fix for it first. `sglang generate` exits 0 even when generation
+fails, so check that `out/` has the video and the log no `Generation failed`.
+
 ```bash
 HK_DISABLE=1 sglang generate ...                       # stock
-HK_SGLD_LINEAR=0 sglang generate ...                   # attention only (HK_SGLD_ATTN=0: linear only)
+HK_SGLD_VAECONV=0 sglang generate ...                  # one route off: HK_<SWITCH>=0
 python3 -m hk.integration sglang-diffusion uninstall   # remove it
 ```
 
 The first generation also compiles hk's kernels (a few seconds each, kept in
-`~/.cache/hk`). The lossy ConvRot INT8 route stays opt-in
-(`HK_SGLD_CONVROT=1`). gfx1201 has no SGLang-Diffusion routes yet.
+`~/.cache/hk`). gfx1201 has no SGLang-Diffusion routes yet.
 
 ## Reference
 
