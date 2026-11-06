@@ -5,17 +5,30 @@ install it next to vLLM; there is nothing to configure.
 
 ## Enable hk in one command
 
-In the Python environment that runs vLLM (a ROCm build of vLLM and torch):
+In the Python environment that runs vLLM (a ROCm build of vLLM and torch,
+Python 3.10 to 3.13):
 
 ```bash
-pip install hk-dsl
+pip install hk-dsl && vllm serve Qwen/Qwen3-8B
 ```
 
-That is all: vLLM loads hk's plugin by itself, in every worker. Start vLLM as
-you always do:
+That is all: vLLM loads hk's plugin by itself, in every worker; later starts
+need only `vllm serve`. **No vLLM yet, on an R9700 / RX 9070?** A community
+vLLM image for gfx1201 runs both in one container (the second volume keeps
+hk's compiled kernels and measurements across starts):
 
 ```bash
-vllm serve Qwen/Qwen3-8B
+docker run --rm -it --device /dev/kfd --device /dev/dri --group-add video --ipc=host -p 8000:8000 \
+    -v ~/.cache/huggingface:/root/.cache/huggingface -v ~/.cache/hk:/root/.cache/hk \
+    --entrypoint bash ghcr.io/inferstation/vllm-rocm-r9700-main:nightly-20261023 \
+    -c "pip install hk-dsl && vllm serve Qwen/Qwen3-8B"
+```
+
+Then send a request:
+
+```bash
+curl localhost:8000/v1/chat/completions -H 'Content-Type: application/json' \
+    -d '{"model": "Qwen/Qwen3-8B", "messages": [{"role": "user", "content": "Hello"}]}'
 ```
 
 **Check that it is on.** Before you start a server, ask hk which routes it
@@ -96,6 +109,11 @@ With `HK_DISABLE=1` the log says `[hk] vLLM: off (HK_DISABLE=1), stock`.
 `pip uninstall hk-dsl` removes the plugin entirely.
 
 ## Troubleshooting
+
+**`pip install hk-dsl`: no matching distribution.** hk-dsl has wheels for
+CPython 3.10 to 3.13 on Linux x86_64. An environment on Python 3.14 -- the
+`rocm/vllm` images tagged `py3.14`, for one -- cannot install it; use one on
+3.12.
 
 **No `[hk]` line in the server's log.** vLLM did not load the plugin.
 Check that `pip show hk-dsl` works with the Python that runs vLLM, and that

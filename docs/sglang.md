@@ -8,19 +8,20 @@ one more command.
 
 ## Enable hk in one command
 
-In the Python environment that runs SGLang:
+In the Python environment that runs SGLang (a ROCm build for RDNA3):
 
 ```bash
-pip install hk-dsl
+pip install hk-dsl && python3 -m sglang.launch_server --model-path Qwen/Qwen3-8B \
+    --attention-backend triton --disable-cuda-graph
 ```
 
 That is all: SGLang loads hk's plugin by itself, in the launcher and in every
-scheduler process. Start SGLang as you always do. On gfx1100 that is with
-Triton attention and without CUDA graphs, which is how SGLang runs on RDNA3:
+scheduler process; later starts need only the `launch_server` part. Triton
+attention without CUDA graphs is how SGLang runs on RDNA3. Then send a request:
 
 ```bash
-python3 -m sglang.launch_server --model-path Qwen/Qwen3-8B \
-    --attention-backend triton --disable-cuda-graph
+curl localhost:30000/v1/chat/completions -H 'Content-Type: application/json' \
+    -d '{"model": "Qwen/Qwen3-8B", "messages": [{"role": "user", "content": "Hello"}]}'
 ```
 
 **Check that it is on.** Before you start a server, ask hk which routes it
