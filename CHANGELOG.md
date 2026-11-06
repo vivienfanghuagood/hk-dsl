@@ -4,6 +4,8 @@ Release notes for each version are also on its
 [GitHub release](https://github.com/vivienfanghuagood/hk-dsl/releases).
 The next version's notes collect here until it is released.
 
+## Unreleased
+
 ## 0.9.9
 
 hk-dsl 0.9.9: on gfx1100 the KV-split prefill cuts the longest contexts into 64 runs (MiniCPM5 and
