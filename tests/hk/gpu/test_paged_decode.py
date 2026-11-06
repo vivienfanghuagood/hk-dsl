@@ -421,3 +421,246 @@ def test_the_decode_switch(monkeypatch, env, on, d128):
     assert not vp.decode_takes(8, 2, 128)
     assert not vp.decode_takes(4, 2, 128)    # 8 pairs: 0.98x in serving at 4k-8k
     assert vp.decode_takes(16, 4, 256)
+
+
+# ---- kv_order="rocm": vLLM ROCM_ATTN's own cache (x-split K, per-page V^T) --------------------
+
+def _rocm(k, v):
+    """ROCM_ATTN's caches of the same values: K (blocks, kv_heads, d / 8, page, 8), V^T
+    (blocks, kv_heads, d, page)."""
+    nb, h_kv, page, d = k.shape
+    k5 = k.reshape(nb, h_kv, page, d // 8, 8).permute(0, 1, 3, 2, 4).contiguous()
+    return k5, v.transpose(2, 3).contiguous()
+
+
+def _decode_rocm(q, k, v, table, lens, q_start, *, splits=None, warps=1, out=None,
+                 scratch=None, poison=False):
+    from hk.ops import paged_prefill as pp
+    from hk.runtime.torch_ext import launcher
+
+    n, h, d = q.shape
+    h_kv = k.shape[1]
+    group = h // h_kv
+    reqs = len(lens)
+    s = splits or pd.plan_rocm(reqs, h_kv)
+    walk = launcher(pd.walk_for(d, group, 16, "rocm", s, warps=warps))
+    kc, vt = pp.rocm_views(*_rocm(k, v))
+    out = torch.full_like(q, 7.0) if out is None else out
+    o_part, ml = scratch or pd.scratch(reqs * s, h_kv, group, d, q.device)
+    if poison:
+        o_part.fill_(float("nan"))
+        ml.fill_(float("nan"))
+    o4 = out.view(n, h_kv, group, d)
+    walk(q.unsqueeze(0), kc, table, lens, q_start, o4, o_part, ml, vt)
+    if s > 1:
+        launcher(pd.merge_for(d, group, s))(lens, q_start, o4, o_part, ml)
+    return out
+
+
+@rdna_only
+@pytest.mark.parametrize("splits", [1, 3, 8, 48, 96])
+@pytest.mark.parametrize("warps", [1, 2])
+def test_rocm_every_split_and_warp_count(splits, warps):
+    """Lengths ending inside a page and a block, shorter than a split's share (empty splits),
+    one shorter than a block."""
+    q, k, v, table, lens, q_start = _case(LENS, seed=11)
+    got = _decode_rocm(q, k, v, table, lens, q_start, splits=splits, warps=warps)
+    _check(got, _reference(q, k, v, table, lens, 8), lens)
+
+
+@rdna_only
+@pytest.mark.parametrize("h_kv,group", [(1, 16), (2, 8), (4, 6), (8, 4), (2, 1)])
+def test_rocm_every_gqa_group(h_kv, group):
+    q, k, v, table, lens, q_start = _case(LENS, h_kv=h_kv, group=group, seed=12)
+    got = _decode_rocm(q, k, v, table, lens, q_start)
+    _check(got, _reference(q, k, v, table, lens, group), lens)
+
+
+@rdna_only
+@pytest.mark.parametrize("reqs", [1, 2, 3, 4, 5, 8])
+def test_rocm_the_planned_splits(reqs):
+    """The plan the route uses (4 one-warp workgroups a WGP of a W7900D), on long and short
+    requests together."""
+    lens_l = [70000 if i % 2 == 0 else 33 + 977 * i for i in range(reqs)]
+    q, k, v, table, lens, q_start = _case(lens_l, seed=13 + reqs)
+    got = _decode_rocm(q, k, v, table, lens, q_start, splits=pd.plan_rocm(reqs, 2, wgps=48))
+    _check(got, _reference(q, k, v, table, lens, 8), lens)
+
+
+@rdna_only
+@pytest.mark.parametrize("splits", [1, 4, 96])
+def test_rocm_graph_padding_writes_nothing(splits):
+    q, k, v, table, lens, q_start = _case([300, 17], pad=3)
+    got = _decode_rocm(q, k, v, table, lens, q_start, splits=splits)
+    _check(got, _reference(q, k, v, table, lens, 8), lens)
+    assert torch.all(got[2:] == 7.0)
+
+
+@rdna_only
+def test_rocm_a_strided_query():
+    q, k, v, table, lens, q_start = _case(LENS, strided_q=True, seed=14)
+    assert not q.is_contiguous()
+    got = _decode_rocm(q, k, v, table, lens, q_start)
+    _check(got, _reference(q, k, v, table, lens, 8), lens)
+
+
+@rdna_only
+@pytest.mark.parametrize("splits", [1, 5, 96])
+def test_rocm_v_ones_is_exactly_one(splits):
+    q, k, v, table, lens, q_start = _case(LENS, v_ones=True, seed=15)
+    got = _decode_rocm(q, k, v, table, lens, q_start, splits=splits)
+    rows = [i for i, s in enumerate(lens.tolist()) if s]
+    assert torch.all(got[rows] == 1.0)
+
+
+@rdna_only
+def test_rocm_nan_poisoned_repeats_are_bitwise_and_on_any_stream():
+    q, k, v, table, lens, q_start = _case(LENS, seed=16)
+    s = 24
+    scratch = pd.scratch(len(LENS) * s, 2, 8, 128, q.device)
+    out = torch.empty_like(q)
+    first = None
+    for _ in range(200):
+        out.fill_(float("nan"))
+        _decode_rocm(q, k, v, table, lens, q_start, splits=s, out=out, scratch=scratch,
+                     poison=True)
+        if first is None:
+            torch.cuda.synchronize()
+            first = out.clone()
+            _check(first, _reference(q, k, v, table, lens, 8), lens)
+    torch.cuda.synchronize()
+    assert torch.equal(out.view(torch.int16), first.view(torch.int16))
+    side = torch.cuda.Stream()
+    side.wait_stream(torch.cuda.current_stream())
+    with torch.cuda.stream(side):
+        out2 = torch.full_like(q, float("nan"))
+        _decode_rocm(q, k, v, table, lens, q_start, splits=s, out=out2, scratch=scratch,
+                     poison=True)
+    torch.cuda.current_stream().wait_stream(side)
+    torch.cuda.synchronize()
+    assert torch.equal(out2.view(torch.int16), first.view(torch.int16))
+
+
+@rdna_only
+def test_rocm_a_cuda_graph_replays_other_lengths():
+    q, k, v, table, lens, q_start = _case([4000, 4000, 4000], seed=17)
+    out = torch.full_like(q, 7.0)
+    s = pd.plan_rocm(3, 2, wgps=48)
+    scratch = pd.scratch(3 * s, 2, 8, 128, q.device)
+    from hk.ops import paged_prefill as pp
+    from hk.runtime.torch_ext import launcher
+
+    k5, vt0 = _rocm(k, v)
+    kc, vt = pp.rocm_views(k5, vt0)
+    walk = launcher(pd.walk_for(128, 8, 16, "rocm", s, warps=1))
+    merge = launcher(pd.merge_for(128, 8, s))
+    o4 = out.view(3, 2, 8, 128)
+
+    def step():
+        walk(q.unsqueeze(0), kc, table, lens, q_start, o4, *scratch, vt)
+        merge(lens, q_start, o4, *scratch)
+    step()
+    torch.cuda.synchronize()
+    g = torch.cuda.CUDAGraph()
+    with torch.cuda.graph(g):
+        step()
+    for new in ([1, 70, 4000], [3999, 2, 31]):
+        lens.copy_(torch.tensor(new, device="cuda", dtype=torch.int32))
+        out.fill_(7.0)
+        g.replay()
+        torch.cuda.synchronize()
+        _check(out, _reference(q, k, v, table, lens, 8), lens)
+
+
+def test_rocm_refuses_what_it_does_not_read():
+    with pytest.raises(ValueError):
+        pd.walk_kernel("t_rocm_page", kv_order="rocm", page=32)
+    with pytest.raises(ValueError):
+        pd.walk_kernel("t_rocm_d256", kv_order="rocm", head_dim=256, warps=2)
+
+
+def test_rocm_plan_keeps_four_workgroups_a_wgp():
+    for reqs, want in ((1, 96), (2, 48), (3, 32), (4, 24), (5, 19), (8, 12), (64, 1)):
+        assert pd.plan_rocm(reqs, 2, wgps=48) == want
+        assert reqs * 2 * pd.plan_rocm(reqs, 2, wgps=48) <= 192 or want == 1
+
+
+# ---- the route: vllm_prefill's ROCM_ATTN chunked_prefill_paged_decode stand-in -----------------
+
+def _rocm_route_arch() -> bool:
+    from hk.integration import vllm_prefill as vp
+    from hk.target import current_arch
+
+    return current_arch() in vp.ROCM_DEC_ARCHES
+
+
+def _cppd_stub(seen):
+    def chunked_prefill_paged_decode(query, key, value, output, kv_cache_dtype, key_cache,
+                                     value_cache, block_table, query_start_loc, seq_lens,
+                                     max_seq_len, max_query_len, k_scale, v_scale,
+                                     alibi_slopes=None, sliding_window=None, sm_scale=None,
+                                     output_scale=None, sinks=None, is_block_table_ptr=False,
+                                     causal=True):
+        seen.append((query, output))
+        output.fill_(3.0)
+    return chunked_prefill_paged_decode
+
+
+def _call_rocm_route(vp, q, k, v, table, lens, q_start, max_query_len=1):
+    k5, vt = _rocm(k, v)
+    out = torch.full_like(q, 7.0)
+    one = torch.ones(1, device="cuda")
+    vp.chunked_prefill_paged_decode(
+        query=q, key=None, value=None, output=out, kv_cache_dtype="auto", key_cache=k5,
+        value_cache=vt, block_table=table, query_start_loc=q_start, seq_lens=lens,
+        max_seq_len=int(lens.max()), max_query_len=max_query_len, k_scale=one, v_scale=one,
+        sliding_window=None, sm_scale=128 ** -0.5)
+    return out
+
+
+@pytest.mark.skipif(not _rocm_route_arch(), reason="the route's arches")
+@pytest.mark.parametrize("reqs", [1, 2, 7])
+def test_the_rocm_route_takes_a_decode_batch_and_matches(monkeypatch, reqs):
+    """ROCM_ATTN's chunked_prefill_paged_decode, as its forward calls it on a decode-only batch
+    with a graph's padding request: hk's split decode takes it (counted as decode, vLLM's
+    function never called) and matches the reference; the padding row is untouched."""
+    import inspect
+
+    from hk.integration import vllm_prefill as vp
+
+    seen = []
+    stub = _cppd_stub(seen)
+    monkeypatch.setattr(vp, "_ORIG_C", stub)
+    monkeypatch.setattr(vp, "_C_SIG", inspect.signature(stub))
+    monkeypatch.setattr(vp, "ROCM_DECODE", True)
+    q, k, v, table, lens, q_start = _case([37 + 9000 * i for i in range(reqs)], pad=1)
+    before = vp.PATCH.stats["decode"]
+    out = _call_rocm_route(vp, q, k, v, table, lens, q_start)
+    assert not seen
+    assert vp.PATCH.stats["decode"] == before + 1
+    _check(out, _reference(q, k, v, table, lens, 8), lens)
+    assert torch.all(out[reqs:] == 7.0)
+
+
+@pytest.mark.parametrize("case", ["batch", "prefill", "off"])
+def test_the_rocm_route_leaves_the_rest_to_vllm(monkeypatch, case):
+    """Past the pair limit (8 requests and a padding one: 18 pairs), a call with prefill in it,
+    or the route off (HK_VLLM_ROCM_DECODE unset): vLLM's function, with the caller's own
+    tensors."""
+    import inspect
+
+    from hk.integration import vllm_prefill as vp
+
+    seen = []
+    stub = _cppd_stub(seen)
+    monkeypatch.setattr(vp, "_ORIG_C", stub)
+    monkeypatch.setattr(vp, "_C_SIG", inspect.signature(stub))
+    monkeypatch.setattr(vp, "ROCM_DECODE", case != "off")
+    n = 8 if case == "batch" else 2
+    q, k, v, table, lens, q_start = _case([100 + i for i in range(n)], pad=1)
+    before = dict(vp.PATCH.stats)
+    out = _call_rocm_route(vp, q, k, v, table, lens, q_start,
+                           max_query_len=2 if case == "prefill" else 1)
+    assert len(seen) == 1 and seen[0][0] is q and seen[0][1] is out
+    assert torch.all(out == 3.0)
+    assert vp.PATCH.stats["decode"] == before["decode"]

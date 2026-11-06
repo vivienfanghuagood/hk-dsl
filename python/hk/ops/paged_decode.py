@@ -7,7 +7,12 @@ changes:
 
 * "planes": (blocks, 2, page, kv_heads * head_dim), K then V a block;
 * "tokens": a head's K and V side by side, token-major, (blocks, 1, page, kv_heads * 2 * head_dim);
-* "heads": the same head-major, (blocks, kv_heads, page, 2 * head_dim).
+* "heads": the same head-major, (blocks, kv_heads, page, 2 * head_dim);
+* "rocm": vLLM ROCM_ATTN's own cache, K x-split -- passed as the strided view (blocks, kv_heads,
+  page, head_dim / 8, 8) -- and V as per-page V^T (blocks, kv_heads, head_dim, page), the extra
+  last argument `vt`. A strided tensor is read by staging, so K goes through LDS: each step the
+  workgroup stages every walker's block; V^T fragments are the PV operand as they are. Pages of
+  16 tokens, head_dim up to 128.
 
 Pages are any multiple of 16 tokens (hybrid models' 544, 784 and 2064 included): the walk steps
 a KV block of 32 keys, in bands of gcd(page, 32) rows, each band through the block table on its
@@ -68,8 +73,12 @@ def walk_kernel(name: str, *, head_dim: int = 128, group: int = 8, page: int = 1
     if head_dim % 16 or page % 16 or not 1 <= group <= Q_TILE:
         raise ValueError(f"head_dim {head_dim} and page {page}: multiples of 16; group "
                          f"{group}: 1..{Q_TILE}")
-    if kv_order not in ("planes", "tokens", "heads"):
+    if kv_order not in ("planes", "tokens", "heads", "rocm"):
         raise ValueError(f"kv_order={kv_order!r}")
+    rocm = kv_order == "rocm"
+    if rocm and (head_dim > 128 or page != 16):
+        raise ValueError(f"kv_order='rocm': head_dim up to 128 and pages of 16 tokens "
+                         f"(ROCM_ATTN's), not {head_dim} / {page}")
     dsplit = head_dim > 128
     if warps & (warps - 1) or (dsplit and warps < 2):
         raise ValueError(f"warps={warps}: a power of two (at least 2 above head_dim 128)")
@@ -94,9 +103,11 @@ def walk_kernel(name: str, *, head_dim: int = 128, group: int = 8, page: int = 1
     ty_v = hk.RT(bf16, 16, 16, "row")
     ty_vec = hk.row_vec(ty_s)
 
-    def body(qh: hk.Tensor[bf16, "strided"], kv: hk.Tensor[bf16], block_table: hk.Tensor[i32],
+    kv_ty = hk.Tensor[bf16, "strided"] if rocm else hk.Tensor[bf16]
+
+    def body(qh: hk.Tensor[bf16, "strided"], kv: kv_ty, block_table: hk.Tensor[i32],
              seq_lens: hk.Tensor[i32], q_start: hk.Tensor[i32], out: hk.Tensor[bf16],
-             o_part: hk.Tensor[bf16], ml_part: hk.Tensor[fp32]):
+             o_part: hk.Tensor[bf16], ml_part: hk.Tensor[fp32], vt: hk.Tensor[bf16] = None):
         split = hk.arch.block_idx.x
         kv_head = hk.arch.block_idx.y
         req = hk.arch.block_idx.z
@@ -124,8 +135,44 @@ def walk_kernel(name: str, *, head_dim: int = 128, group: int = 8, page: int = 1
         wid = hk.arch.warp_id()
         half = wid % 2 if dsplit else 0
         walker = wid // 2 if dsplit else wid
-        k_dep, k_col = _kv_at(kv_order, head_dim, kv_head, False)
-        v_dep, v_col = _kv_at(kv_order, head_dim, kv_head, True)
+        if rocm:
+            # ROCM_ATTN's x-split K goes through LDS (a strided tensor is read by g.stage): each
+            # step the workgroup stages every walker's block, a 16-token page a slot
+            # exactly the walkers' blocks: LDS is what bounds the workgroups a WGP holds here
+            k_s = hk.lds.alloc(hk.ST(bf16, KV_BLOCK, head_dim, walkers), name="k_s")
+            k_w = [k_s[w] if walkers > 1 else k_s for w in range(walkers)]
+            k_pg = [[k_w[w].subtile(16, head_dim, p, 0) for p in range(ppb)]
+                    for w in range(walkers)]
+            # one 16-token page staged at a time: a step's whole block in registers at once
+            # (64 VGPRs a walker at one warp) spills under some compilers (ROCm 7.2.4's)
+            buf_k = g.stage_buffer(k_pg[0][0], depth=walkers * ppb, name="buf_k")
+            gr_k = (k_s[walker] if walkers > 1 else k_s).granules(name="gr_k")
+            # V^T too: register loads of its fragments spill under ROCm 7.2.4's compiler
+            vt_s = hk.lds.alloc(hk.ST(bf16, head_dim, KV_BLOCK, walkers), name="vt_s")
+            v_w = [vt_s[w] if walkers > 1 else vt_s for w in range(walkers)]
+            v_pg = [[v_w[w].subtile(head_dim, 16, 0, p) for p in range(ppb)]
+                    for w in range(walkers)]
+            buf_v = g.stage_buffer(v_pg[0][0], depth=walkers * ppb, name="buf_v")
+            gr_vt = (vt_s[walker] if walkers > 1 else vt_s).granules(name="gr_vt")
+
+            def stage_pages(st, buf, src):
+                # every walker's block of step `st`, a page a slot: loads issued, not waited on
+                for w in range(walkers):
+                    bw = hk.max(hk.min(lo + w + st * walkers, n_blk - 1), 0)
+                    for p in range(ppb):
+                        g.stage(buf, src[hk.elem_coord(page_at(bw, p), kv_head, 0, 0)],
+                                slot=w * ppb + p)
+
+            def commit_pages(dst, buf):
+                hk.arch.vm_wait(0)
+                for w in range(walkers):
+                    for p in range(ppb):
+                        g.commit(dst[w][p], buf, slot=w * ppb + p)
+            gr_q = q_s.granules(name="gr_q")
+            k_dep = k_col = v_dep = v_col = 0
+        else:
+            k_dep, k_col = _kv_at(kv_order, head_dim, kv_head, False)
+            v_dep, v_col = _kv_at(kv_order, head_dim, kv_head, True)
         if dsplit:
             k_col = k_col + half * dh
             v_col = v_col + half * dh
@@ -155,7 +202,7 @@ def walk_kernel(name: str, *, head_dim: int = 128, group: int = 8, page: int = 1
             return q_s.subtile(16, 16, 0, kk + half * d_frags if dsplit else kk).load(ty_q)
 
         o_c = [hk.zeros(ty_o) for _ in range(d_frags)]
-        if dsplit:
+        if dsplit or rocm:
             # finite: a pair's step past its blocks is all masked, and -inf - -inf is NaN
             m_run = hk.zeros(ty_vec)
             m_run -= 1e30
@@ -170,6 +217,16 @@ def walk_kernel(name: str, *, head_dim: int = 128, group: int = 8, page: int = 1
             return (16 * n) // band, (b * KV_BLOCK + 16 * n) % page
 
         def k_dot(pg, b, n, acc):
+            if rocm:
+                # K's and Q's fragments both from LDS, two of each in flight, waited on by name
+                for k0 in range(0, d_frags, 2):
+                    kk_ = range(k0, min(k0 + 2, d_frags))
+                    ks = [gr_k.load_frag(n, kk, ty_k) for kk in kk_]
+                    qs = [gr_q.load_frag(0, kk, ty_q) for kk in kk_]
+                    hk.lds.wait_for(*ks, *qs)
+                    for i in range(len(ks)):
+                        acc += ks[i] @ qs[i].T
+                return acc
             ks = [kv[hk.elem_coord(pg[row_in(b, n)[0]], k_dep, row_in(b, n)[1],
                                    k_col + 16 * kk)].load(ty_k, bounded=True)
                   for kk in range(d_frags)]
@@ -181,6 +238,8 @@ def walk_kernel(name: str, *, head_dim: int = 128, group: int = 8, page: int = 1
             nonlocal m_run, l_run
 
             def v_row(n):
+                if rocm:
+                    return None          # V^T is in LDS, read fragment by fragment below
                 return [kv[hk.elem_coord(pg[row_in(b, n)[0]], v_dep, row_in(b, n)[1],
                                          v_col + 16 * g0)].load(
                     ty_v, bounded=(seq_len - (b * KV_BLOCK + 16 * n)) if masked else True)
@@ -192,13 +251,13 @@ def walk_kernel(name: str, *, head_dim: int = 128, group: int = 8, page: int = 1
             # It does not build everywhere: unsplit, it spills; with bounded V (hybrid pages) the
             # LDS-read hazard check refuses it.
             vs = v_row(0)
-            vs1 = v_row(1) if v_both and kv_frags > 1 else None
+            vs1 = v_row(1) if v_both and kv_frags > 1 and not rocm else None
 
             for n in range(kv_frags):
                 s_f[n] *= scale_l2e
             # keys at or past the sequence's end, and (dsplit) a step past the split's
             valid = seq_len - b * KV_BLOCK
-            if dsplit:
+            if dsplit or rocm:
                 valid = valid * hk.min(hk.max(hi - b, 0), 1)
             if valid < KV_BLOCK:
                 for n in range(kv_frags):
@@ -216,6 +275,8 @@ def walk_kernel(name: str, *, head_dim: int = 128, group: int = 8, page: int = 1
                     c *= alpha
             for n in range(kv_frags):
                 l_run += s_f[n].sum(axis=0)
+            if rocm:
+                return          # PV after V^T's commit (a workgroup op): pv_rocm
             for n in range(kv_frags):
                 p_cvt = s_f[n].to(bf16)
                 if n:
@@ -223,16 +284,50 @@ def walk_kernel(name: str, *, head_dim: int = 128, group: int = 8, page: int = 1
                 for g0 in range(d_frags):
                     o_c[g0] += hk.transpose_sep(vs[g0]) @ p_cvt
 
-        # walker w takes the split's blocks lo + w, lo + w + walkers, ... With dsplit every
-        # walker takes the same number of steps (the pair's barriers), a step past its blocks
+        # walker w takes the split's blocks lo + w, lo + w + walkers, ... With dsplit (or rocm)
+        # every walker takes the same number of steps (the barriers), a step past its blocks
         # masked whole.
-        if dsplit:
+        if rocm:
+            steps = hk.cdiv(hk.max(hi - lo, 0), walkers)
+
+            def pv_rocm(s_f):
+                for n in range(kv_frags):
+                    p_cvt = s_f[n].to(bf16)
+                    # V^T fragments (16 of head_dim by the page's 16 tokens), two in flight
+                    for g0 in range(0, d_frags, 2):
+                        gs = list(range(g0, min(g0 + 2, d_frags)))
+                        vf = [gr_vt.load_frag(gg, n, ty_v) for gg in gs]
+                        hk.lds.wait_for(*vf)
+                        for i in range(len(gs)):
+                            o_c[gs[i]] += vf[i] @ p_cvt
+
+            # The staged block is not prefetched a step ahead: held across the step's maths its
+            # 64 VGPRs spill. The other workgroups on the WGP cover the load.
+            for bi in range(steps):
+                b = lo + walker + bi * walkers
+                bc = hk.max(hk.min(b, n_blk - 1), 0)
+                pg = (page_at(bc, 0), page_at(bc, 1))
+                # K, then V^T, each staged and committed before the maths: a stage buffer held
+                # across it (64 VGPRs) spills under one compiler or the other
+                hk.arch.barrier()
+                stage_pages(bi, buf_k, kv)
+                commit_pages(k_pg, buf_k)
+                stage_pages(bi, buf_v, vt)
+                commit_pages(v_pg, buf_v)
+                hk.arch.barrier(drain=True)
+                with hk.scope():
+                    s_f = [hk.zeros(ty_s) for _ in range(kv_frags)]
+                    for n in range(kv_frags):
+                        s_f[n] = k_dot(pg, b, n, s_f[n])
+                    softmax_pv(pg, b, s_f)
+                    pv_rocm(s_f)
+        elif dsplit:
             steps = hk.cdiv(hk.max(hi - lo, 0), walkers)
         elif walkers > 1:
             steps = hk.cdiv(hk.max(hi - lo - walker, 0), walkers)
         else:
             steps = hk.max(hi - lo, 0)
-        for bi in range(steps):
+        for bi in range(0 if rocm else steps):
             b = lo + walker + bi * walkers if walkers > 1 else lo + bi
             pg0 = nx0
             nx0 = page_at(hk.min(b + walkers, n_blk - 1), 0)
@@ -330,6 +425,12 @@ def walk_kernel(name: str, *, head_dim: int = 128, group: int = 8, page: int = 1
                 ml_part[hk.elem_coord(row, kv_head, 0, 0)] = m_run
                 ml_part[hk.elem_coord(row, kv_head, 1, 0)] = l_run
 
+    body.__annotations__["kv"] = kv_ty
+    if not rocm:
+        import inspect  # noqa: PLC0415
+
+        sig = inspect.signature(body)
+        body.__signature__ = sig.replace(parameters=list(sig.parameters.values())[:8])
     return hk.kernel(body, warps=warps, name=name,
                      grid=lambda p: (splits, p.out.depth, p.seq_lens.cols),
                      max_vgprs=max_vgprs, min_occupancy=min_occupancy)
@@ -511,6 +612,24 @@ def plan(n_reqs: int, n_kv_heads: int, head_dim: int, page: int = 16,
         lo, hi = SMALL_SPLITS
         return (MAX_SPLITS if wgps is None else min(max(wgps, lo), hi)), 2, page == 16
     return plan_splits(n_reqs, n_kv_heads), 4, False
+
+
+#: kv_order="rocm" (ROCM_ATTN's own cache): one-warp workgroups, this many a WGP. Measured on a
+#: W7900D (48 WGPs), MiniCPM5-2B, B1-B8 x 2k-128k against ROCM_ATTN's paged decode (ll4mi), one
+#: process (tools/hk-bench/attention_bench.py): 4 a WGP -- 192 workgroups, B1 96 splits, B2 48,
+#: B4 24 -- is 0.95-1.29x; 200 (B5 at 20 splits) was 0.70-0.80x: a fifth workgroup on a few WGPs
+#: is a whole extra wave of the walk.
+ROCM_WGS_PER_WGP = 4
+#: and the most splits a request takes there
+ROCM_MAX_SPLITS = 96
+
+
+def plan_rocm(n_reqs: int, n_kv_heads: int, wgps: Optional[int] = None) -> int:
+    """Splits for a decode batch on ROCM_ATTN's cache (one warp a workgroup): as many
+    (split, kv head, request) workgroups as ROCM_WGS_PER_WGP a WGP, never more. From the batch
+    and the device alone, so a CUDA graph's replays keep it."""
+    have = max(1, n_reqs * n_kv_heads)
+    return max(1, min(ROCM_MAX_SPLITS, ROCM_WGS_PER_WGP * (wgps or 48) // have))
 
 
 def scratch(rows: int, n_kv_heads: int, group: int, head_dim: int, device):

@@ -13,9 +13,10 @@ README.md in this directory has the details. In short:
   `chunked_prefill_paged_decode` on ROCM_ATTN's own cache (prefix-prefill for prefill, its paged
   decode for decode); `hk` is hk's route: for decode hk.ops.paged_decode, for prefill
   hk.integration.vllm_prefill's stand-in for `unified_attention` (hk.ops.paged_prefill), both on
-  TRITON_ATTN's cache in place. `hk_rocm` (prefill) is the route inside ROCM_ATTN: ROCM_ATTN's
-  `chunked_prefill_paged_decode` on its own cache with its prefix-prefill rebound to hk's
-  stand-in, its decode rows still ROCM_ATTN's.
+  TRITON_ATTN's cache in place. `hk_rocm` is the route inside ROCM_ATTN: ROCM_ATTN's
+  `chunked_prefill_paged_decode` on its own cache through hk's stand-in, its prefix-prefill
+  rebound to hk's; a decode-only batch hk.ops.paged_decode (kv_order="rocm") where the route
+  takes it, a mixed batch's decode rows ROCM_ATTN's.
 * **Cold KV.** Every call reads its own layer's cache, and there are enough layers that the
   cycle is at least COLD_BYTES -- several times the last-level cache (a W7900D's Infinity Cache
   is 96 MB, an R9700's 64 MB) -- so no arm is served from it.
@@ -279,9 +280,11 @@ def hk_prefill_arm(case):
 def hk_rocm_arm(case):
     """hk's ROCM_ATTN route as vLLM runs it: ROCM_ATTN's chunked_prefill_paged_decode on its own
     cache, with its prefix-prefill (context_attention_fwd, requests of more than one query)
-    rebound to hk.integration.vllm_prefill's stand-in (hk.ops.paged_prefill, layout="rocm");
-    decode rows stay ROCM_ATTN's paged decode. The rebinding is swapped in around each call, so
-    the rocm_attn arm keeps vLLM's own kernel."""
+    rebound to hk.integration.vllm_prefill's stand-in (hk.ops.paged_prefill, layout="rocm"), and
+    a decode-only call through the stand-in for chunked_prefill_paged_decode itself
+    (hk.ops.paged_decode, kv_order="rocm", where it takes the batch); a mixed batch's decode rows
+    stay ROCM_ATTN's paged decode. The rebinding is swapped in around each call, so the rocm_attn
+    arm keeps vLLM's own kernels."""
     import inspect  # noqa: PLC0415
 
     from vllm.v1.attention.ops import chunked_prefill_paged_decode as cppd  # noqa: PLC0415
@@ -292,6 +295,8 @@ def hk_rocm_arm(case):
     orig = prefix_prefill.context_attention_fwd
     vp._ORIG = orig
     vp._P_SIG = inspect.signature(orig)
+    vp._ORIG_C = cppd.chunked_prefill_paged_decode
+    vp._C_SIG = inspect.signature(vp._ORIG_C)
     out = torch.empty_like(case.q)
     one = torch.ones(1, device=case.q.device, dtype=torch.float32)
     case.rocm(0)
@@ -300,7 +305,7 @@ def hk_rocm_arm(case):
         k5, v4, k_new, v_new = case.rocm(layer)
         cppd.context_attention_fwd = vp.context_attention_fwd
         try:
-            cppd.chunked_prefill_paged_decode(
+            vp.chunked_prefill_paged_decode(
                 query=case.q, key=k_new, value=v_new, output=out,
                 kv_cache_dtype="auto", key_cache=k5, value_cache=v4,
                 block_table=case.block_table, query_start_loc=case.q_start,
@@ -514,7 +519,7 @@ def main():
         p.add_argument("--arms", default="hk,triton,rocm_attn",
                        help="hk, triton (TRITON_ATTN), rocm_attn (ROCM_ATTN: its own kernel on "
                             "pages of a power of two, its Triton fallback on others), hk_rocm "
-                            "(prefill: hk's route inside ROCM_ATTN)")
+                            "(hk's routes inside ROCM_ATTN: its prefill, and its decode-only calls)")
         p.add_argument("--rounds", type=int, default=5)
         p.add_argument("--burn-in", type=float, default=3.0,
                        help="seconds of memory traffic before the first shape (clock ramp)")
