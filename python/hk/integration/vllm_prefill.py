@@ -1205,6 +1205,161 @@ _U_SIG = None
 _GUARDED_U = PATCH.guard(unified_attention)
 
 
+# ---- ROCM_ATTN's decode: hk's split decode on ROCM_ATTN's own cache --------------------------
+
+#: A ROCM_ATTN call with only decodes in it (`chunked_prefill_paged_decode`, max_query_len 1)
+#: goes to hk.ops.paged_decode over ROCM_ATTN's own cache (kv_order="rocm": the x-split K
+#: staged, the V^T pages read as they are), one-warp workgroups, 4 a WGP (paged_decode.plan_rocm).
+#: Prefill and mixed calls keep vLLM's function (whose prefix-prefill is hk's, above).
+#: Opt-in, HK_VLLM_ROCM_DECODE=1. W7900D, MiniCPM5-2B, one process (attention_bench, hk_rocm arm,
+#: tools/hk-bench/results/2026-11-06/gfx1100/decode-rocm-cache.json): against ROCM_ATTN's paged
+#: decode (ll4mi) 0.95-1.29x, B1 1.19-1.29x from 16k (0.95x at 4k), B2-B8 1.01-1.25x; weighted
+#: by a measured real serving mix 1.10-1.14x against the faster stock kernel, under the 1.15x the
+#: default-on rule asks for. Serving (same process, graphs): TPOT 1.01x (2k-8k) to 1.07x (64k) at
+#: one request, 1.02-1.03x at 2-8, TTFT unchanged.
+ROCM_DECODE = __import__("os").environ.get("HK_VLLM_ROCM_DECODE", "").strip().lower() in (
+    "1", "on", "yes", "true")
+#: Decode batches it takes: up to this many (request, kv head) pairs (B8 at 2 kv heads); B16 was
+#: as fast as vLLM's.
+ROCM_DEC_MAX_PAIRS = 16
+#: Where it is measured and tested.
+ROCM_DEC_ARCHES = ("gfx1100",)
+#: vLLM's chunked_prefill_paged_decode while patched, and its signature
+_ORIG_C = None
+_C_SIG = None
+#: its parameters the stand-in reads; any other one not at its default falls back
+_C_READ = frozenset((
+    "query", "key", "value", "output", "kv_cache_dtype", "key_cache", "value_cache",
+    "block_table", "query_start_loc", "seq_lens", "max_seq_len", "max_query_len", "k_scale",
+    "v_scale", "alibi_slopes", "sliding_window", "sm_scale", "output_scale", "sinks",
+    "is_block_table_ptr", "causal"))
+_C_DEFAULTS = (("alibi_slopes", None), ("sliding_window", None), ("sm_scale", None),
+               ("output_scale", None), ("sinks", None), ("is_block_table_ptr", False),
+               ("causal", True))
+
+
+def _c_unknown(a: dict) -> str:
+    for name, val in a.items():
+        if name in _C_READ:
+            continue
+        p = _C_SIG.parameters.get(name) if _C_SIG is not None else None
+        default = p.default if p is not None else None
+        try:
+            if val is default or (not hasattr(val, "shape") and val == default):
+                continue
+        except Exception:  # noqa: BLE001 -- an uncomparable value is a set one
+            pass
+        return f"{name}={val!r} (a parameter hk does not take)"
+    return ""
+
+
+def rd_why_not(a: dict) -> str:
+    """Why hk's decode does not take this ROCM_ATTN chunked_prefill_paged_decode call, or ""."""
+    import torch  # noqa: PLC0415
+
+    from . import switches  # noqa: PLC0415
+
+    if not ROCM_DECODE:
+        return "HK_VLLM_ROCM_DECODE=1 takes it"
+    if switches.arch() not in ROCM_DEC_ARCHES:
+        return f"arch {switches.arch()}"
+    if int(a.get("max_query_len", 2)) != 1:
+        return "not decode-only"
+    unknown = _c_unknown(a)
+    if unknown:
+        return unknown
+    g = {n: a.get(n, d) for n, d in _C_DEFAULTS}
+    if g["alibi_slopes"] is not None or g["sinks"] is not None or g["output_scale"] is not None:
+        return "alibi / sinks / fp8 output"
+    if g["sliding_window"] is not None and g["sliding_window"] > 0:
+        return "sliding window"
+    if not g["causal"] or g["is_block_table_ptr"]:
+        return "non-causal / block-table pointers"
+    q, out, kc, vc = a["query"], a["output"], a["key_cache"], a["value_cache"]
+    if (q.dtype != torch.bfloat16 or out.dtype != torch.bfloat16 or kc.dtype != torch.bfloat16
+            or not str(a["kv_cache_dtype"]).startswith("auto")):
+        return f"dtype {q.dtype} / cache {a['kv_cache_dtype']}"
+    if kc.dim() != 5 or vc.dim() != 4 or kc.shape[-1] * kc.element_size() != 16:
+        return f"cache layout {tuple(kc.shape)}"
+    if q.dim() != 3 or q.shape[-1] != 128:
+        return f"head size {q.shape[-1]}"
+    if int(vc.shape[3]) != 16 or int(kc.shape[3]) != 16:
+        return f"page {vc.shape[3]}: hk's decode on ROCM_ATTN's cache takes pages of 16"
+    hkv = int(kc.shape[1])
+    if q.shape[1] % hkv or q.shape[1] // hkv > 16:
+        return "query heads not a multiple of kv heads, or more than 16 a kv head"
+    if len(a["seq_lens"]) * hkv > ROCM_DEC_MAX_PAIRS:
+        return "decode batch past hk's (vLLM's kernel reads about as fast)"
+    for t in (a["block_table"], a["seq_lens"], a["query_start_loc"]):
+        if t.dtype != torch.int32 or not t.is_contiguous():
+            return "metadata not contiguous int32"
+    if q.stride(-1) != 1 or q.stride(-2) != q.shape[-1] or not out.is_contiguous():
+        return "q heads not packed / output not contiguous"
+    return span_why_not(kc, vc)
+
+
+def _rocm_decode(a: dict) -> bool:
+    """hk's split decode on ROCM_ATTN's cache; False if it cannot (falls back)."""
+    from ..ops import paged_decode as pd  # noqa: PLC0415
+    from ..ops import paged_prefill as pp  # noqa: PLC0415
+
+    q, out, kc, vc = a["query"], a["output"], a["key_cache"], a["value_cache"]
+    n, h, d = q.shape
+    hkv = int(kc.shape[1])
+    group = h // hkv
+    reqs = len(a["seq_lens"])
+    sc = a.get("sm_scale")
+    scale = None if sc is None or sc == d ** -0.5 else float(sc)
+    splits = pd.plan_rocm(reqs, hkv, wgps=pd.device_wgps(q.device))
+    ops = _decode_ops(d, group, 16, "rocm", splits, scale, 1, False)
+    scratch = _decode_scratch(q.device, reqs * splits, hkv, group, d) if ops else None
+    if ops is None or scratch is None:
+        return False
+    walk, merge = ops
+    kv, vt = pp.rocm_views(kc, vc)
+    o4 = out.view(n, hkv, group, d)
+    walk(q.unsqueeze(0), kv, a["block_table"], a["seq_lens"], a["query_start_loc"], o4,
+         *scratch, vt)
+    if merge is not None:
+        merge(a["seq_lens"], a["query_start_loc"], o4, *scratch)
+    return True
+
+
+def chunked_prefill_paged_decode(*args, **kwargs):
+    """vLLM ROCM_ATTN's chunked_prefill_paged_decode (its signature, set on apply): hk's split
+    decode where it takes a decode-only call; everything else is vLLM's function."""
+    a = dict(kwargs) if not args else _C_SIG.bind(*args, **kwargs).arguments
+    if int(a.get("max_query_len", 2)) == 1:
+        if not rd_why_not(a) and _rocm_decode(a):
+            PATCH.count("decode")
+            if SHADOW and not engine.capturing():
+                import torch  # noqa: PLC0415
+
+                b = dict(a)
+                b["output"] = ref = torch.empty_like(a["output"])
+                _ORIG_C(**b)
+                live = (a["seq_lens"] > 0).nonzero().flatten().tolist()
+                _compare(a["output"], ref, [r for r in live if r < ref.shape[0]])
+            return None
+        PATCH.count("fallback")
+    return _ORIG_C(*args, **kwargs)
+
+
+_GUARDED_C = PATCH.guard(chunked_prefill_paged_decode)
+
+
+def _apply_rocm_decode() -> list:
+    global _ORIG_C, _C_SIG
+    import inspect  # noqa: PLC0415
+
+    from vllm.v1.attention.ops import chunked_prefill_paged_decode as cppd  # noqa: PLC0415
+
+    _ORIG_C = cppd.chunked_prefill_paged_decode
+    _C_SIG = inspect.signature(_ORIG_C)
+    chunked_prefill_paged_decode.__signature__ = _C_SIG
+    return _common.rebind(PREFIXES, _ORIG_C, _GUARDED_C)
+
+
 def apply() -> str:
     """Route ROCM_ATTN's prefill. Returns what happened, in one line."""
     global _ORIG
@@ -1227,10 +1382,17 @@ def apply() -> str:
     context_attention_fwd.__signature__ = _P_SIG
     names = _common.rebind(PREFIXES, _ORIG, _GUARDED)
     unames = _apply_unified()
+    try:
+        cnames = _apply_rocm_decode()
+    except Exception as e:  # noqa: BLE001 -- an older vLLM: the prefill routes stand alone
+        cnames, cwhy = [], f"; ROCM_ATTN decode not patched ({type(e).__name__})"
+    else:
+        cwhy = ""
     _apply_stats()
     return (f"prefill -> hk where hk.ops.paged_prefill takes ROCM_ATTN's prefill "
             f"({len(names)} bindings rebound) and TRITON_ATTN's batches with prefill in them "
-            f"({len(unames)} rebound)")
+            f"({len(unames)} rebound); ROCM_ATTN's decode-only calls -> hk.ops.paged_decode "
+            f"({len(cnames)} rebound){cwhy}")
 
 
 def _apply_unified() -> list:
@@ -1311,6 +1473,10 @@ def revert() -> str:
     if _ORIG_U is not None:
         names += _common.rebind(PREFIXES, _GUARDED_U, _ORIG_U)
         _ORIG_U = None
+    global _ORIG_C
+    if _ORIG_C is not None:
+        names += _common.rebind(PREFIXES, _GUARDED_C, _ORIG_C)
+        _ORIG_C = None
     _ORIG = None
     return f"prefill -> vllm ({len(names)} rebound)"
 

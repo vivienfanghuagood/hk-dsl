@@ -6,6 +6,10 @@ The next version's notes collect here until it is released.
 
 ## Unreleased
 
+### Changes
+
+**vLLM's ROCM_ATTN on gfx1100: hk's split decode on ROCM_ATTN's own cache, opt-in.** `HK_VLLM_ROCM_DECODE=1` sends ROCM_ATTN's decode-only calls at head size 128 to `hk.ops.paged_decode`, which now reads ROCM_ATTN's cache in place (`kv_order="rocm"`: the x-split K and the per-page V^T, staged through LDS), one-warp workgroups, four a WGP (`paged_decode.plan_rocm`), up to 16 (request, kv head) pairs. ROCM_ATTN's prefill and mixed batches are unchanged. `attention_bench.py`'s `hk_rocm` arm now covers ROCM_ATTN's decode-only calls too.
+
 ## 0.9.9
 
 hk-dsl 0.9.9: on gfx1100 the KV-split prefill cuts the longest contexts into 64 runs (MiniCPM5 and

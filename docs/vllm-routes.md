@@ -74,6 +74,7 @@ vLLM picked.
 | `ROCM_ATTN` (ROCm's default) | `prefix_prefill.context_attention_fwd`, which `chunked_prefill_paged_decode` calls for requests with more than one query | `paged_prefill` `layout="rocm"`: K through a strided global over the x-split cache, V's pages already V^T |
 | `TRITON_ATTN` | `unified_attention`, on batches with prefill in them | `paged_prefill` `layout="flash"`, `decodes=True`: the whole batch, a decode row a 16-row fragment |
 | `TRITON_ATTN`, decode-only batches (the FULL CUDA graphs) | `unified_attention` at head size 256 (`HK_VLLM_DECODE`, below) | `paged_decode`: the KV axis split across the card |
+| `ROCM_ATTN`, decode-only batches, opt-in | `chunked_prefill_paged_decode` at head size 128 (`HK_VLLM_ROCM_DECODE=1`, below) | `paged_decode` `kv_order="rocm"`: the same split, over the x-split K and V^T pages |
 
 Head size 64, 128 and 256. At 256 the kernel uses `dsplit`, a query row
 across a pair of warps. Where a kernel does not build spill-free under the
@@ -220,6 +221,27 @@ launch merges the splits.
   the kernel is 0.99-1.27x at one request, and about 1.10x over a measured
   real serving mix, under the 1.15x the default-on rule asks for.
 - `HK_VLLM_DECODE=0`: off.
+
+### Decode-only batches on ROCM_ATTN (opt-in)
+
+`HK_VLLM_ROCM_DECODE=1` sends ROCM_ATTN's decode-only calls at head size 128
+to `hk.ops.paged_decode` reading ROCM_ATTN's own cache (`kv_order="rocm"`):
+K's x-split pages and V's per-page V^T, both staged through LDS. A workgroup
+is one warp, and the split count keeps four workgroups on every WGP
+(`paged_decode.plan_rocm`: 96 splits at one request of a 2-kv-head model on a
+W7900D, 48 at two, 24 at four), from the batch alone, so the CUDA graph a
+batch size is captured with is right for every replay. It takes up to 16
+(request, kv head) pairs, eight requests of MiniCPM5-2B; at 16 requests vLLM's
+kernel is as fast. gfx1100 only.
+
+On a W7900D with MiniCPM5-2B, against ROCM_ATTN's paged decode in one process
+(`attention_bench.py decode --arms rocm_attn,triton,hk_rocm`): one request
+1.19-1.29x from 16k tokens, 0.95x at 4k; two to eight requests 1.01-1.25x.
+Serving, two engines in one process with CUDA graphs: TPOT 1.01x at one
+request over 2k-8k tokens, 1.05x at 32k, 1.07x at 64k, 1.02-1.03x at two to
+eight requests; TTFT unchanged. It stays opt-in: weighted by a measured real
+serving mix the kernel is 1.10-1.14x against the faster stock kernel, under
+the 1.15x the default-on rule asks for.
 
 `tools/hk-bench/attention_bench.py` measures every shape against both stock
 kernels (`tools/hk-bench/README-attention.md`).
