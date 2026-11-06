@@ -492,7 +492,11 @@ only, so an AWQ model is served with `--dtype float16`.
   (`hk.ops.w4a16.repack_awq`), a second copy of the codes;
 - `apply` calls the opaque op `hk_vllm::w4a16`, inside which batches of up
   to 64 tokens take hk's decode GEMM, and the rest vLLM's own path on vLLM's
-  own tensors.
+  own tensors;
+- on gfx1201, fp16 batches of 65-512 tokens (prefill) take hk's large-batch
+  W4A16 form instead, reading hk's AWQ layout with its zero points.
+  `HK_VLLM_INT4_LARGE_MAX_M` moves the 512, and `0` turns the form off. gfx1100
+  keeps vLLM's path there: its dequantize-and-matmul is as fast.
 
 The counters are `vllm_int4.STATS`. The patch changes what compiled graphs
 call, so it uses the compile-cache root `hk-int4`.

@@ -457,7 +457,7 @@ framework with it is [integration](integration.md).
 
 ## Environment variables
 
-Read by `python/hk/runtime`, `python/hk/autotune` and `python/hk/ops`. The
+Read by `python/hk/runtime`, `python/hk/autotune`, `python/hk/ops`, `hk.tune` and `hk.profile`. The
 ones that turn on engine patches, and the ops' own plan switches
 (`HK_SPLITS`, `HK_NORM_LAYOUT`, `HK_NORM_FOLD`, `HK_HIPKITTENS_KERNELS`), are
 listed in [integration](integration.md#environment-variables).
@@ -475,8 +475,15 @@ listed in [integration](integration.md#environment-variables).
 | `HK_TORCH_OP` | `runtime/torch_ext.py` | `library`: `hk.torch_op` builds the libtorch registration (default: over a device-only code object) |
 | `HK_LAUNCH` | `dsl/kernel.py` | `codeobj`: `Kernel.__call__` launches the device-only code object (else the pybind module) |
 | `HK_STRICT_STREAM` | `dsl/kernel.py` | `1`: on RDNA, `k(...)` under a non-default torch stream raises instead of warning once (its pybind launch is on the null stream) |
-| `HK_HOST_FASTPATH` | `runtime/hostpath.py` | `0`/`off`/`no`/`false`: no host fast paths (per-shape memos, launches without the dispatcher); every call takes the path it took before them. Default on |
-| `HK_TUNE_DIR` | `autotune/__init__.py` | where tuning records are written (default: `autotune/` in the cache) |
-| `HK_AUTOTUNE` | `autotune/__init__.py` | `0`, `off` or `no` pins every tuner to its default schedule |
+| `HK_HOST_FASTPATH` | `runtime/hostpath.py`, every engine route | `0`/`off`/`no`/`false`: no host fast paths (per-shape memos, launches without the dispatcher); every call takes the path it took before them ([host time](integration.md#host-time-per-call)). Default on |
+| `HK_TUNE_DIR` | `autotune/__init__.py` | where this machine's tuning records go (default: `autotune/` in the cache), the engines' measured routes too (`routes_<engine>_linear_<arch>.json`) |
+| `HK_AUTOTUNE` | `autotune/__init__.py`, `engine.shipped_table`, `vllm_autotune.py` | `0`, `off` or `no`: pin every tuner to its default schedule, ignore this machine's records -- schedules and routes -- and measure nothing at an engine's load |
+| `HK_TUNE_RECORDS` | `tune/records.py` | `0`: ignore `hk.tune`'s records only (`HK_AUTOTUNE=0` ignores every tuning record); default on |
 | `HK_AUTOTUNE_MIN_GAIN` | `autotune/__init__.py` | the smallest recorded win that changes what launches (default 0.01) |
 | `HK_SDPA_VERBOSE` | `ops/sdpa.py` | non-empty and not `0`: print each distinct fallback reason once |
+| `HK_MFMA_GATE` | `runtime/compile.py` | the MFMA-hazard gate (CDNA): `fix` (default) pads what the compiler missed, `refuse`, `report`, or `0` ([resource gates](#the-resource-gates)) |
+| `HK_VOPD_GATE` | `runtime/compile.py` | the VOPD gate (gfx11.0, gfx11.5): `fix` (default) rebuilds without dual issue, `refuse`, `report`, or `0` |
+| `HK_WAIT_GATE` | `runtime/compile.py` | `0`: skip the check that refuses a binary reading registers an LDS load is still filling -- for looking at such a kernel, never for running one (default on) |
+| `HK_ATT_DECODER` | `profile/run.py` | the directory of `librocprof-trace-decoder.so` for `hk.profile`'s thread trace (else `~/.local/lib`, then ROCm's lib) |
+| `HK_ATTN_GATE` | `ops/_attn_bench.py` | the attention benchmark's pass bar in TFLOP/s (default 64); a benchmark's, not the library's |
+| `HK_ATTN_EXT` | `ops/_attn_ab.py` | the HipKittens attention extension the A/B benchmark compares against (default: the submodule's built `hk_attn_ext.so`) |
