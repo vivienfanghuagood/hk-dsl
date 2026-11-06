@@ -6,6 +6,10 @@ The next version's notes collect here until it is released.
 
 ## Unreleased
 
+**AWQ prefill on hk on gfx1201.** `vllm_int4` takes fp16 batches of 65-512 tokens on the large-batch W4A16 form, in a variant that reads hk's AWQ layout with zero points. `HK_VLLM_INT4_LARGE_MAX_M` sets the cap, and 0 turns the form off. The form is not used on gfx1100, where vLLM's dequantize-and-matmul path is as fast.
+
+**vLLM's TRITON_ATTN on gfx1100: the KV split cuts the longest contexts into 64 runs.** The KV-split prefill's merge (`paged_prefill.merge_kernel`) runs in a loop past 32 splits, where it no longer builds unrolled. MiniCPM5's 16-token chunks and MiniCPM-V's 17-64-token chunks over 16k+ contexts take 64 splits: 1.11-1.25x faster than the 16-32 they took. Measured faster than both stock kernels on every batch it takes.
+
 ## 0.9.9
 
 hk-dsl 0.9.9: on gfx1100 the KV-split prefill cuts the longest contexts into 64 runs (MiniCPM5 and

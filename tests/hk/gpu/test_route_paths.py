@@ -221,9 +221,17 @@ def test_vllm_int4_takes_up_to_this_archs_limit_and_leaves_the_rest(monkeypatch)
         y = vllm_int4.w4a16(x, qweight, scales, qzeros, qw, s, zs, group)
         assert vllm_int4.STATS["hk"] == before + 1 and y.shape == (m, n)
         _close(y, x.float() @ w.t())
-    vllm_int4.w4a16(torch.randn(top + 1, k, device="cuda", dtype=torch.float16),
+    large = vllm_int4._large_max_m()                 # gfx1201: the large-batch form above top
+    for m in ((top + 1, 300, large) if large else ()):
+        x = torch.randn(m, k, device="cuda", dtype=torch.float16) * 0.1
+        before = vllm_int4.STATS["hk_large"]
+        y = vllm_int4.w4a16(x, qweight, scales, qzeros, qw, s, zs, group)
+        assert vllm_int4.STATS["hk_large"] == before + 1 and y.shape == (m, n)
+        _close(y, x.float() @ w.t())
+    past = max(top, large) + 1
+    vllm_int4.w4a16(torch.randn(past, k, device="cuda", dtype=torch.float16),
                     qweight, scales, qzeros, qw, s, zs, group)
-    assert seen == [top + 1]
+    assert seen == [past]
 
 
 def test_vllm_gptq_takes_min_m_to_64_and_leaves_the_rest(monkeypatch):

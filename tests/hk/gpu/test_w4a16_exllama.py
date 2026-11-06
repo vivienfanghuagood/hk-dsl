@@ -133,6 +133,22 @@ def test_the_large_batch_form_is_within_two_ulps_a_row_of_float64(m):
     assert _within_two_ulps_a_row(got, x.double() @ w.t()) <= 2
 
 
+@pytest.mark.parametrize("m", [65, 129, 512])
+def test_the_large_batch_forms_awq_variant_is_within_two_ulps_a_row_of_float64(m):
+    """`large_matmul`: the large-batch form on hk's layout with zero points (AWQ, `repack_awq`)."""
+    g = torch.Generator(device="cuda").manual_seed(900 + m)
+    n, k, group = 256, 2048, 128
+    q = torch.randint(0, 16, (n, k), device="cuda", generator=g, dtype=torch.int32)
+    z = torch.randint(0, 16, (n, k // group), device="cuda", generator=g, dtype=torch.int32)
+    s = (torch.rand(n, k // group, device="cuda", generator=g) * 0.02 + 0.005).half()
+    qw = w4a16._interleave(w4a16._pack_k(q))
+    zs = (z.double() * s.double()).half()
+    w = q.double() * s.double().repeat_interleave(group, 1) - zs.double().repeat_interleave(group, 1)
+    x = torch.randn(m, k, device="cuda", dtype=torch.float16, generator=g)
+    got = w4a16.large_matmul(x, qw, s, zs, group)
+    assert _within_two_ulps_a_row(got, x.double() @ w.t()) <= 2
+
+
 def test_the_large_batch_form_gives_the_same_bits_on_every_launch():
     g = torch.Generator(device="cuda").manual_seed(17)
     n, k, group = 5120, 6144, 32
@@ -164,9 +180,10 @@ def test_the_wmma_form_runs_from_past_exl_gemv_max_to_64():
 
 def test_no_instantiation_spills_or_uses_scratch():
     for group in (32, 64, 128):
-        for r in w4a16.w4a16_large_kernel(f"large_g{group}", group=group,
-                                          **w4a16.LARGE_TILE).build().kernels:
-            assert (r.scratch, r.vgpr_spill) == (0, 0), ("large", group, r)
+        for asym in (False, True):
+            for r in w4a16.w4a16_large_kernel(f"large_g{group}_{asym}", group=group, asym=asym,
+                                              **w4a16.LARGE_TILE).build().kernels:
+                assert (r.scratch, r.vgpr_spill) == (0, 0), ("large", group, asym, r)
     for t, sch in w4a16.SCHEDULES.items():
         for group in (32, 64, 128):
             slices = min(sch["slices"], group // 16)
