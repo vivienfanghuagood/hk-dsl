@@ -23,6 +23,9 @@
   "sgld_linear": {
    "_error": "ModuleNotFoundError: No module named 'sglang'"
   },
+  "sgld_qknorm": {
+   "_error": "ModuleNotFoundError: No module named 'sglang'"
+  },
   "sgld_rope": {
    "_error": "ModuleNotFoundError: No module named 'sglang'"
   },

@@ -529,3 +529,58 @@ def test_sgld_rope_takes_qwen_image_21s_rope_through_hk_and_reverts(monkeypatch)
     finally:
         sgld.revert_rope()
     assert mod.apply_rope is apply_rope
+
+
+class _QwenQKNorm(torch.nn.Module):
+    """SGLang's RMSNorm(cast_x_before_out_mul=True) as forward_native computes it."""
+    def __init__(self, w, eps=1e-6):
+        super().__init__()
+        self.weight, self.variance_epsilon = w, eps
+        self.cast_x_before_out_mul, self.variance_size_override = True, None
+        self.override_orig_dtype = None
+
+    def forward(self, x):
+        xf = x.float()
+        xf = xf * torch.rsqrt(xf.pow(2).mean(dim=-1, keepdim=True) + self.variance_epsilon)
+        return self.weight * xf.to(x.dtype)
+
+
+def test_rmsnorm_rotary_pairs_matches_the_norm_then_rope_chain():
+    from hk.ops import fused
+
+    if not get_target(current_arch()).strips:
+        pytest.skip("rmsnorm_rotary_pairs runs on register strips")
+    g = torch.Generator(device="cuda").manual_seed(7)
+    x, rope = _rope_case(4141, g)
+    norm = _QwenQKNorm((torch.rand(128, device="cuda", generator=g) + 0.5).to(B))
+    want = _complex_rope(norm(x), rope)
+    got = fused.rmsnorm_rotary_pairs(x, norm.weight, 1e-6, rope.real.contiguous(),
+                                     rope.imag.contiguous())
+    # the mean's sum order is hk's: a bf16 unit apart on a few elements, never more
+    assert (got != want).float().mean().item() < 1e-4
+    _close(got, want, tol=1e-2)
+
+
+def test_sgld_qknorm_takes_qwen_image_21s_qk_norm_and_rope_through_hk(monkeypatch):
+    _on_here("sgld_qknorm")
+
+    def apply_qk_norm_rope(x, norm, rope):
+        return _complex_rope(norm(x), rope)
+
+    mod = _stand_in(monkeypatch, sgld.QWEN21_HOME, apply_qk_norm_rope=apply_qk_norm_rope)
+    g = torch.Generator(device="cuda").manual_seed(2)
+    x, rope = _rope_case(4141, g)
+    norm = _QwenQKNorm((torch.rand(128, device="cuda", generator=g) + 0.5).to(B))
+    try:
+        assert "rmsnorm_rotary_pairs" in sgld.apply_qknorm()
+        before = dict(sgld.QKNORM_STATS)
+        with torch.inference_mode():
+            got = mod.apply_qk_norm_rope(x, norm, rope)
+        assert (got != _complex_rope(norm(x), rope)).float().mean().item() < 1e-4
+        assert sgld.QKNORM_STATS["hk"] == before["hk"] + 1
+        norm.cast_x_before_out_mul = False                         # not what the kernel computes
+        mod.apply_qk_norm_rope(x, norm, rope)
+        assert sgld.QKNORM_STATS["engine"] == before["engine"] + 1
+    finally:
+        sgld.revert_qknorm()
+    assert mod.apply_qk_norm_rope is apply_qk_norm_rope

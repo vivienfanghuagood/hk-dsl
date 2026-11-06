@@ -178,6 +178,13 @@ ROUTES: Dict[str, Route] = {r.name: r for r in (
        "bit-identical to the engine's on every call (rotary_pairs reproduces torch's complex "
        "multiply); Qwen-Image 2.1 1024^2 30 steps: 28.88 -> 28.15 s a request (1.026x, same "
        "process, ABBA x3)", part="rope"),
+    _R("sgld_qknorm", "sglang_diffusion", "HK_SGLD_QKNORM", True, ("gfx1100",),
+       "Qwen-Image 2.1's q / k RMSNorm and complex RoPE as one hk.ops.fused.rmsnorm_rotary_pairs "
+       "launch (bf16, head_dim 128, one sequence)",
+       "error vs fp64 equal to the engine's (91 of 17M elements differ by a bf16 unit, the mean's "
+       "sum order); Qwen-Image 2.1 1024^2 30 steps: 27.36 -> 26.22 s a request (1.044x, same "
+       "process, ABBA x3); 37.9 dB from stock, where torch's own norm with only its sum order "
+       "changed is 36.5 dB from stock", part="qknorm"),
     _R("sdpa_k3", "ops", "HK_SDPA_K3", True, ("gfx1100",),
        "hk.ops.sdpa's non-causal head_dim-128 calls on its newer kernel (hk.ops.attn_k3)",
        "per-call error 2.95e-5 vs the current path's 4.50e-5 at Qwen-Image's shape (#24)"),
