@@ -12,7 +12,8 @@ entry points:
   * `apply` makes one call of the opaque custom op `hk_vllm::w4a16`. Inside
     it -- where the token count is a number, not a symbolic shape torch.compile
     would guard on -- fp16 or bf16 batches of up to 64 tokens (16 on
-    gfx950) take hk's kernel and the rest vLLM's path.
+    gfx950) take hk's kernel, on gfx1201 fp16 batches up to LARGE_MAX_M tokens
+    hk's large-batch form, and the rest vLLM's path.
 
 On ROCm vLLM's AWQ path is its Triton kernel (the C++ one is not built
 there, so VLLM_USE_TRITON_AWQ=1), and that kernel takes fp16 only: an AWQ
@@ -45,7 +46,7 @@ PATCH = engine.Op(
     "hk_vllm::w4a16",
     "w4a16(Tensor x, Tensor qweight, Tensor scales, Tensor qzeros, Tensor hk_qw, "
     "Tensor hk_s, Tensor hk_zs, int group) -> Tensor",
-    _fake, paths=("hk", "fallback"), graph="safe")
+    _fake, paths=("hk", "hk_large", "fallback"), graph="safe")
 
 #: Which way each call went; see `engine.Patch` for what a replay counts as.
 STATS = PATCH.stats
@@ -55,6 +56,24 @@ STATS = PATCH.stats
 #: run a slower schedule of it, which loses to the dequantize and hipBLASLt
 #: GEMM vLLM's compiled graph runs there (docs/history/42).
 _HK_MAX_M = {"gfx950": 16}
+#: Per arch, the most tokens the large-batch form (`hk.ops.w4a16.large_matmul`, AWQ in hk's layout)
+#: takes above the decode kernel's reach: on gfx1201 it is 1.15-3.30x vLLM's best AutoAWQ path
+#: (awq_dequantize + matmul, or its Triton awq_gemm) on Qwen3-8B/14B-AWQ's shapes at 65-512 tokens,
+#: and 1.08-1.17x on most at 1024. Not on gfx1100: 0.86-1.20x there.
+LARGE_MAX_M = {"gfx1201": 512}
+_LARGE: list = []
+
+
+def _large_max_m() -> int:
+    """This arch's LARGE_MAX_M; `HK_VLLM_INT4_LARGE_MAX_M` overrides it (0: off)."""
+    if not _LARGE:
+        import os  # noqa: PLC0415
+
+        from ..target import current_arch  # noqa: PLC0415
+
+        env = os.environ.get("HK_VLLM_INT4_LARGE_MAX_M", "").strip()
+        _LARGE.append(int(env) if env else LARGE_MAX_M.get(current_arch(), 0))
+    return _LARGE[0]
 
 
 def _cdna() -> bool:
@@ -93,6 +112,10 @@ def w4a16(x, qweight, scales, qzeros, hk_qw, hk_s, hk_zs, group: int):
         out = torch.empty((m, hk_qw.shape[0]), device=x.device, dtype=hk_s.dtype)
         run(x if x.is_contiguous() else x.contiguous(), hk_qw, hk_s, hk_zs, out)
         return out
+    if (_max_m() < m <= _large_max_m() and x.dtype == torch.float16 and hk_s.dtype == torch.float16
+            and hk_w4.exllama_large_takes(hk_qw.shape[0], k, group)):
+        PATCH.count("hk_large")
+        return hk_w4.large_matmul(x, hk_qw, hk_s, hk_zs, group)
     PATCH.count("fallback")
     return _vllm_awq(x, qweight, scales, qzeros)
 
