@@ -432,6 +432,13 @@ def test_sgld_linear_takes_a_dit_projection_through_hk(monkeypatch):
         small = torch.randn(16, 3072, device="cuda", dtype=B)   # below MIN_M: the engine's
         Unquantized().apply(_Layer(w), small)
         assert sgld.LINEAR_STATS["engine"] == before["engine"] + 1
+        # a bias (Wan's projections): hk's GEMM with the bias in its store
+        bias = torch.randn(3072, device="cuda", dtype=B)
+        _close(Unquantized().apply(_Layer(w), x, bias), torch.nn.functional.linear(x, w, bias))
+        assert sgld.LINEAR_STATS["hk"] == before["hk"] + 2
+        monkeypatch.setattr(sgld, "LINEAR_BIAS", False)              # biased: the engine's
+        Unquantized().apply(_Layer(w), x, bias)
+        assert sgld.LINEAR_STATS["engine"] == before["engine"] + 2
     finally:
         sgld.revert_linear()
     assert Unquantized.apply is orig

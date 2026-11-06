@@ -160,9 +160,12 @@ ROUTES: Dict[str, Route] = {r.name: r for r in (
        "Qwen-Image 2.1: 42.1 dB from stock and closer to an fp32 reference than stock "
        "(history 46)", part="attn"),
     _R("sgld_linear", "sglang_diffusion", "HK_SGLD_LINEAR", True, ("gfx1100",),
-       "the DiT's projections at M >= 1024 where hk measured faster",
+       "the DiT's projections at M >= 1024 where hk measured faster, with or without a bias "
+       "(a bias in the GEMM's store)",
        "Qwen-Image 2.1 with attention: 40.0 dB from stock and closer to fp32 than stock "
-       "(history 46)", part="linear"),
+       "(history 46); Wan2.1 832x480x81's biased projections 1.22-1.26x F.linear, same error vs "
+       "fp32: 221.4 -> 211.4 s a video (1.047x, same process), inside stock's run-to-run spread",
+       part="linear"),
     _R("sgld_convrot", "sglang_diffusion", "HK_SGLD_CONVROT", False, (),
        "ConvRot W8A8 linear for --quantization convrot_int8",
        "off: lossy by design (PSNR 30.4 dB from bf16, visible drift); a model-level choice",
