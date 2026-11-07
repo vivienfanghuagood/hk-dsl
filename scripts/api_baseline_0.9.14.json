@@ -11028,6 +11028,7 @@
 "QWEN21_HOME": {},
 "ROPE_STATS": {},
 "TARGET": {},
+"VAE_CONV2D": {},
 "VAE_HOME": {},
 "VAE_STATS": {},
 "_BOOT": {},
@@ -13829,6 +13830,16 @@
 "FRAMES": {},
 "Optional": {},
 "annotations": {},
+"as_conv2d": {
+"params": [
+"x",
+"weight",
+"bias",
+"stride",
+"padding",
+"dilation"
+]
+},
 "frames": {
 "params": [
 "conv",
