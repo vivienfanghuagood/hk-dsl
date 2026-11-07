@@ -87,7 +87,17 @@ default keeps the old boot, which needs `HK_SGLD=1`; run `install` again
   2-frame calls. It also keeps the VAE in NCDHW: SGLang runs it channels-last
   when its conv weights are (a cuDNN path), and MIOpen converts every such
   conv to NCDHW and back, 10 s of copies a video; NCDHW, a Wan2.1 video is
-  1.052x faster again. No hk kernel; the route only stops MIOpen's fallback.
+  1.052x faster again. And each conv3d runs as one conv2d: the frames are
+  the batch, an output frame's kt input frames are stacked on the channels
+  against the weight's time taps side by side (`hk.ops.conv3d.as_conv2d`),
+  so MIOpen uses its conv2d solvers instead of its conv3d im2col, with the
+  sum over taps in one fp32 accumulation: 1.75-2.7x the 2-frame calls at the
+  same error, 1.055x a video. `VAE_CONV2D = False` goes back to the 2-frame
+  calls. On gfx1201 (on by default there too) MIOpen runs every
+  channels-last VAE conv on its naive reference kernel: a 9-frame Wan2.1
+  decode takes 2,680 s stock and 4.1 s with the route, closer to an fp32 VAE
+  decode than stock (38.60 dB vs 38.53). No hk kernel; the route only steers
+  MIOpen.
   Wan2.1-T2V-1.3B 832x480x81 on one W7900D: VAE decode 969 s -> 37.8 s, the
   generation 2.77x. 36.2 dB from stock and closer to an fp32 VAE decode than stock (36.9 dB vs 36.1);
 - **rope**: Qwen-Image 2.1's complex RoPE (`apply_rope` of
