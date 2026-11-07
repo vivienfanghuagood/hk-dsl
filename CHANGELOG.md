@@ -6,6 +6,12 @@ The next version's notes collect here until it is released.
 
 ## Unreleased
 
+- SGLang-Diffusion: `sgld_vaeconv` runs each of Wan's VAE conv3d as one conv2d over its stacked time taps
+  (`hk.ops.conv3d.as_conv2d`): MIOpen's conv2d solvers instead of its conv3d im2col, one fp32 accumulation,
+  the same error; 1.75-2.7x per conv, 1.055x a Wan2.1 832x480x81 video on a W7900D.
+- SGLang-Diffusion: `sgld_vaeconv` is on by default on gfx1201 too. There MIOpen ran every channels-last VAE conv
+  on its naive reference kernel: a 9-frame Wan2.1 decode 2,680 s -> 4.1 s on an R9700, closer to fp32 than stock.
+
 ## 0.9.13
 
 hk-dsl 0.9.13: on gfx1100, SGLang-Diffusion's `sgld_vaeconv` keeps Wan's VAE in NCDHW (1.052x a Wan2.1

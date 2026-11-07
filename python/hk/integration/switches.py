@@ -170,14 +170,18 @@ ROUTES: Dict[str, Route] = {r.name: r for r in (
        "ConvRot W8A8 linear for --quantization convrot_int8",
        "off: lossy by design (PSNR 30.4 dB from bf16, visible drift); a model-level choice",
        part="convrot"),
-    _R("sgld_vaeconv", "sglang_diffusion", "HK_SGLD_VAECONV", True, ("gfx1100",),
-       "Wan's VAE conv3d (WanCausalConv3d) as calls of 2 output frames, the engine's own conv: "
-       "MIOpen runs the full-resolution 6-frame convs on its naive reference kernel; and the VAE kept "
-       "in NCDHW (SGLang's channels-last path costs MIOpen a layout copy every conv)",
+    _R("sgld_vaeconv", "sglang_diffusion", "HK_SGLD_VAECONV", True, ("gfx1100", "gfx1201"),
+       "Wan's VAE conv3d (WanCausalConv3d) as one conv2d over its stacked time taps (or calls of 2 "
+       "output frames), the engine's own convs: MIOpen runs the full-resolution 6-frame conv3d on its "
+       "naive reference kernel and the rest as an explicit im2col; and the VAE kept in NCDHW "
+       "(SGLang's channels-last path costs MIOpen a layout copy every conv)",
        "the same conv per output frame (bit-identical where MIOpen picks a real solver for both); "
        "Wan2.1-T2V-1.3B 832x480x81: VAE decode 969 s -> 37.8 s (a generation 2.77x), 36.2 dB from "
        "stock and closer to an fp32 VAE decode than stock (36.9 dB vs 36.1); NCDHW: 211.9 -> 201.4 s a "
-       "video with every hk route on (1.052x, same process), inside stock's run-to-run spread",
+       "video with every hk route on (1.052x, same process), inside stock's run-to-run spread; one conv2d: "
+       "convs 1.75-2.7x the 2-frame calls at the same error, 197.6 -> 187.3 s a video (1.055x). gfx1201: "
+       "MIOpen runs every channels-last VAE conv on its naive kernel, a 9-frame decode 2,680 s -> 4.1 s, "
+       "closer to an fp32 VAE decode than stock (38.60 dB vs 38.53)",
        part="vaeconv"),
     _R("sgld_rope", "sglang_diffusion", "HK_SGLD_ROPE", True, ("gfx1100",),
        "Qwen-Image 2.1's complex RoPE on hk.ops.rotary_pairs (bf16, head_dim 128, one sequence)",

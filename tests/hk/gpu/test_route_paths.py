@@ -466,15 +466,20 @@ def test_sgld_vaeconv_runs_wans_causal_conv3d_in_frame_chunks_and_matches(monkey
     try:
         assert "calls of 2 output frames" in sgld.apply_vaeconv()
         assert not mod._conv3d_weight_is_channels_last_3d(None)    # the VAE stays NCDHW
-        before = dict(sgld.VAE_STATS)
-        for frames in (1, 2, 5, 6):             # 1 and 2: one call; 5 and 6: chunked
-            x = torch.randn(1, 16, frames, 12, 20, device="cuda", dtype=B, generator=g)
-            want = torch.nn.functional.conv3d(
-                torch.nn.functional.pad(x, (1, 1, 1, 1, 2, 0)).float(), conv.weight.float(),
-                conv.bias.float())
-            _close(conv(x), want)
-        assert sgld.VAE_STATS["chunked"] == before["chunked"] + 2
-        assert sgld.VAE_STATS["whole"] == before["whole"] + 2
+        for conv2d in (True, False):            # one conv2d over the stacked taps; frame chunks
+            monkeypatch.setattr(sgld, "VAE_CONV2D", conv2d)
+            before = dict(sgld.VAE_STATS)
+            for frames in (1, 2, 5, 6):         # chunks: 1 and 2 one call, 5 and 6 chunked
+                x = torch.randn(1, 16, frames, 12, 20, device="cuda", dtype=B, generator=g)
+                want = torch.nn.functional.conv3d(
+                    torch.nn.functional.pad(x, (1, 1, 1, 1, 2, 0)).float(), conv.weight.float(),
+                    conv.bias.float())
+                _close(conv(x), want)
+            if conv2d:
+                assert sgld.VAE_STATS["conv2d"] == before["conv2d"] + 4
+            else:
+                assert sgld.VAE_STATS["chunked"] == before["chunked"] + 2
+                assert sgld.VAE_STATS["whole"] == before["whole"] + 2
     finally:
         sgld.revert_vaeconv()
     assert WanCausalConv3d._conv_forward is orig and mod._conv3d_weight_is_channels_last_3d is cl3d

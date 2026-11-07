@@ -287,7 +287,11 @@ def apply_linear() -> str:
 #: The module of Wan's VAE, whose WanCausalConv3d every decoder conv3d goes through.
 VAE_HOME = "sglang.multimodal_gen.runtime.models.vaes.wanvae"
 
-VAE_STATS = {"chunked": 0, "whole": 0}
+VAE_STATS = {"conv2d": 0, "chunked": 0, "whole": 0}
+
+#: Wan's VAE conv3d as one conv2d over the stacked time taps (hk.ops.conv3d.as_conv2d) where it
+#: fits (one video, the conv's time padding 0); False: the conv3d in frame chunks for all.
+VAE_CONV2D = True
 _VAE_ORIG = []
 
 
@@ -310,6 +314,12 @@ def apply_vaeconv() -> str:
         # WanCausalConv3d pads time itself and sets the conv's padding to 0: only then is a
         # slice of the input the conv of a slice of the output.
         pad = self.padding[0] if isinstance(self.padding, tuple) else -1
+        if (VAE_CONV2D and input.dim() == 5 and input.shape[0] == 1 and pad == 0
+                and self.stride[0] == 1 and self.dilation[0] == 1
+                and input.shape[2] >= weight.shape[2] and self.padding_mode == "zeros"):
+            VAE_STATS["conv2d"] += 1
+            return conv3d.as_conv2d(input, weight, bias, self.stride[1:], self.padding[1:],
+                                    self.dilation[1:])
         calls = []
 
         def conv(x, w, b):
@@ -664,7 +674,8 @@ def stats() -> str:
             + (f"; attn_k3 shapes {dict(list(sdpa.K3_SHAPES.items())[:4])}" if sdpa.K3_SHAPES else "")
             + f"; linear: hk {LINEAR_STATS['hk']}, engine {LINEAR_STATS['engine']}"
             + f"; convrot: hk {CONVROT_STATS['hk']}, fallback {CONVROT_STATS['fallback']}"
-            + f"; vaeconv: chunked {VAE_STATS['chunked']}, whole {VAE_STATS['whole']}"
+            + f"; vaeconv: conv2d {VAE_STATS['conv2d']}, chunked {VAE_STATS['chunked']}, "
+              f"whole {VAE_STATS['whole']}"
             + f"; rope: hk {ROPE_STATS['hk']}, engine {ROPE_STATS['engine']}"
             + f"; qknorm: hk {QKNORM_STATS['hk']}, engine {QKNORM_STATS['engine']}")
 
