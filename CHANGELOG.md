@@ -4,6 +4,8 @@ Release notes for each version are also on its
 [GitHub release](https://github.com/vivienfanghuagood/hk-dsl/releases).
 The next version's notes collect here until it is released.
 
+## Unreleased
+
 ## 0.9.14
 
 hk-dsl 0.9.14: on gfx1201 (Radeon AI PRO R9700), SGLang-Diffusion's attention (`sgld_attn`) and Wan's VAE
