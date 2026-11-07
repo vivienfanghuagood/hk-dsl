@@ -476,6 +476,121 @@ def revert_rope() -> str:
     return "rope -> engine"
 
 
+#: SGLang-Diffusion's DiT norm layers: (ScaleResidual)LayerNormScaleShift, Wan's block norms.
+DITNORM_HOME = "sglang.multimodal_gen.runtime.layers.layernorm"
+
+DITNORM_STATS = {"hk": 0, "engine": 0}
+#: Why a DiT norm call kept the engine's chain: reason -> calls (the first few kinds).
+DITNORM_FALLBACKS: dict = {}
+
+
+def _ditnorm_why(mod, residual, x, gate, shift, scale) -> str:
+    def desc(t):
+        return (f"{tuple(t.shape)}/{str(t.dtype).replace('torch.', '')}"
+                f"{'' if t.is_contiguous() else '/strided'}") if hasattr(t, "shape") else repr(t)
+    return (f"{type(mod).__name__} norm={getattr(mod, 'norm_type', None)} "
+            f"affine={getattr(getattr(mod, 'norm', None), 'weight', None) is not None} "
+            f"x={desc(x)} r={desc(residual)} gate={desc(gate)} scale={desc(scale)} "
+            f"shift={desc(shift)}")
+
+
+def _ditnorm_engine(mod, residual, x, gate, shift, scale):
+    DITNORM_STATS["engine"] += 1
+    if len(DITNORM_FALLBACKS) < 8:
+        why = _ditnorm_why(mod, residual, x, gate, shift, scale)
+        DITNORM_FALLBACKS[why] = DITNORM_FALLBACKS.get(why, 0) + 1
+_DITNORM_ORIG = []
+
+
+def _vec(t, d, batch):
+    """`t` as a float tensor of d values (or of one, or one row of d a batch row), or None."""
+    import torch  # noqa: PLC0415
+
+    if isinstance(t, torch.Tensor) and t.is_floating_point() and (
+            t.numel() == 1 or (t.shape[-1] == d and t.numel() in (d, batch * d))):
+        return t
+    return None
+
+
+def _ln_fits(mod, x) -> bool:
+    import torch  # noqa: PLC0415
+
+    norm = getattr(mod, "norm", None)
+    d = x.shape[-1] if isinstance(x, torch.Tensor) else -1
+
+    def affine_ok(p):
+        return p is None or (isinstance(p, torch.Tensor) and p.numel() == d)
+
+    return (getattr(mod, "norm_type", None) == "layer" and norm is not None
+            and affine_ok(getattr(norm, "weight", 0)) and affine_ok(getattr(norm, "bias", 0))
+            and isinstance(x, torch.Tensor) and x.dtype == torch.bfloat16 and x.dim() >= 2
+            and x.is_contiguous() and not torch.compiler.is_compiling())
+
+
+def apply_ditnorm() -> str:
+    """SGLang-Diffusion's DiT block norms -- ScaleResidualLayerNormScaleShift (r' = r + x * gate,
+    LayerNorm, * (1 + scale) + shift) and LayerNormScaleShift -- as one
+    hk.ops.norm.layernorm_scale_shift launch a batch row, where SGLang would run its native
+    chain (ROCm without FlyDSL: about ten passes). Unweighted LayerNorm on bf16 activations;
+    gate, scale and shift one value, or one a column (a batch row); each output in the dtype
+    torch's chain gives it (an fp32 gate promotes the residual and the norm to fp32). Anything
+    else keeps the engine's. Idempotent."""
+    import importlib  # noqa: PLC0415
+
+    import torch  # noqa: PLC0415
+
+    from ..ops import norm as hknorm  # noqa: PLC0415
+
+    mod = importlib.import_module(DITNORM_HOME)
+    res_cls, cls = mod._ScaleResidualNormScaleShift, mod._NormScaleShift
+    if getattr(res_cls.forward_native, "_hk", False):
+        return "ditnorm: already patched"
+    res_orig, orig = res_cls.forward_native, cls.forward_native
+
+    def res_forward_native(self, residual, x, gate, shift, scale):
+        if _ln_fits(self, x) and getattr(residual, "shape", None) == x.shape \
+                and residual.dtype == x.dtype and residual.is_contiguous():
+            d, b = x.shape[-1], (x.shape[0] if x.dim() >= 3 else 1)
+            sc, sh = _vec(scale, d, b), _vec(shift, d, b)
+            one = isinstance(gate, int) and gate == 1
+            g = None if one else _vec(gate, d, b)
+            if sc is not None and sh is not None and (one or g is not None):
+                rd = x.dtype if one else torch.promote_types(x.dtype, g.dtype)
+                if rd in (torch.bfloat16, torch.float32):
+                    DITNORM_STATS["hk"] += 1
+                    return hknorm.layernorm_scale_shift(
+                        x, sc, sh, self.norm.eps, residual=residual, gate=g,
+                        round_residual=rd == torch.bfloat16, out_dtype=rd, residual_dtype=rd,
+                        weight=self.norm.weight, bias=self.norm.bias)
+        _ditnorm_engine(self, residual, x, gate, shift, scale)
+        return res_orig(self, residual, x, gate, shift, scale)
+
+    def forward_native(self, x, shift, scale):
+        if _ln_fits(self, x):
+            d, b = x.shape[-1], (x.shape[0] if x.dim() >= 3 else 1)
+            sc, sh = _vec(scale, d, b), _vec(shift, d, b)
+            if sc is not None and sh is not None:
+                DITNORM_STATS["hk"] += 1
+                return hknorm.layernorm_scale_shift(x, sc, sh, self.norm.eps,
+                                                    weight=self.norm.weight, bias=self.norm.bias)
+        _ditnorm_engine(self, None, x, None, shift, scale)
+        return orig(self, x, shift, scale)
+
+    res_forward_native._hk = forward_native._hk = True
+    res_cls.forward_native, cls.forward_native = res_forward_native, forward_native
+    _DITNORM_ORIG[:] = [(res_cls, res_orig, cls, orig)]
+    return (f"ditnorm: {DITNORM_HOME} (ScaleResidual)LayerNormScaleShift -> "
+            f"hk.ops.norm.layernorm_scale_shift")
+
+
+def revert_ditnorm() -> str:
+    if not _DITNORM_ORIG:
+        return "ditnorm: not patched"
+    res_cls, res_orig, cls, orig = _DITNORM_ORIG.pop()
+    res_cls.forward_native, cls.forward_native = res_orig, orig
+    return "ditnorm -> engine"
+
+
 #: SGLang-Diffusion's ConvRot INT8 config: both of its backends are CUDA-only.
 CONVROT_HOME = "sglang.multimodal_gen.runtime.layers.quantization.configs.convrot_int8_config"
 CONVROT_BACKEND = "hk"
@@ -624,7 +739,8 @@ def apply() -> str:
         "sglang_diffusion", routes,
         [("sgld_attn", attn), ("sgld_linear", apply_linear), ("sgld_convrot", convrot),
          ("sgld_vaeconv", apply_vaeconv), ("sgld_rope", apply_rope),
-         ("sgld_qknorm", apply_qknorm)])
+         ("sgld_qknorm", apply_qknorm),
+         ("sgld_ditnorm", apply_ditnorm)])
     if not applied:
         return f"no route applied ({', '.join(off)} off, see the warnings): stock"
     from ..runtime.compile import arm_jit_notice  # noqa: PLC0415
@@ -677,7 +793,10 @@ def stats() -> str:
             + f"; vaeconv: conv2d {VAE_STATS['conv2d']}, chunked {VAE_STATS['chunked']}, "
               f"whole {VAE_STATS['whole']}"
             + f"; rope: hk {ROPE_STATS['hk']}, engine {ROPE_STATS['engine']}"
-            + f"; qknorm: hk {QKNORM_STATS['hk']}, engine {QKNORM_STATS['engine']}")
+            + f"; qknorm: hk {QKNORM_STATS['hk']}, engine {QKNORM_STATS['engine']}"
+            + f"; ditnorm: hk {DITNORM_STATS['hk']}, engine {DITNORM_STATS['engine']}"
+            + (f" ({'; '.join(f'{k}: {v}' for k, v in list(DITNORM_FALLBACKS.items())[:3])})"
+               if DITNORM_FALLBACKS else ""))
 
 
 def site_dir() -> Path:

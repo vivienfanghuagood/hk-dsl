@@ -6,6 +6,8 @@ The next version's notes collect here until it is released.
 
 ## Unreleased
 
+**SGLang-Diffusion: the DiT block norms in one launch** (`sgld_ditnorm`, on by default on gfx1100). `ScaleResidualLayerNormScaleShift` and `LayerNormScaleShift` (Wan's block norms) run on the new `hk.ops.norm.layernorm_scale_shift`: the gated residual, the LayerNorm (affine or not) and the scale and shift in one pass instead of about ten, each output in the dtype torch's chain gives it. 4-7x per call at Wan2.1's shapes; Wan2.1-T2V-1.3B 832x480x81 on a W7900D 1.038x a video.
+
 ## 0.9.14
 
 hk-dsl 0.9.14: on gfx1201 (Radeon AI PRO R9700), SGLang-Diffusion's attention (`sgld_attn`) and Wan's VAE

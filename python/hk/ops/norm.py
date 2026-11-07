@@ -1273,6 +1273,93 @@ def _strip_kernel(name: str, dtype, kind: str, warps: int, offset: float = 0.0):
     return k
 
 
+def _lnss_kernel(name: str, dtype, warps: int, residual: bool, round_r: bool, r_dtype, o_dtype,
+                 affine: bool = False):
+    """A DiT block's norm on a strip, one row a workgroup, the row read once: SGLang-Diffusion's
+    (ScaleResidual)LayerNormScaleShift --
+
+        r' = r + x * gate                       fp32, one rounding into r_out's dtype
+        n  = LayerNorm(r') (* w + b)            fp32; w, b with `affine` (fp32 row vectors)
+        y  = n * (1 + scale) + shift            in fp32, stored in o's dtype
+
+    `round_r`: the bf16 path, where torch's LayerNorm reads r' and returns n in bf16 -- both
+    rounded to bf16 here; otherwise both stay fp32 (an fp32 gate promotes the residual).
+
+    gate, scale and shift fp32 row vectors (one value a column). Without `residual`, n is the
+    LayerNorm of x. The row is held: two passes over registers for the mean and the variance,
+    as `layer` does, so only the sums' order differs from torch's."""
+    @hk.func
+    def core(x, r, g, sc, sh, o, r_out, w, bb, ROWS, CHUNKS, RUN, EXACT, RESERVE, EPS):
+        if RESERVE:
+            hk.lds.reserve(RESERVE)
+        cw = CHUNKS * hk.arch.target().wave * RUN
+        S = hk.RS(fp32, ROWS, cw, RUN)
+        V = hk.row_vec(S)
+        row = hk.arch.block_idx.x * ROWS if ROWS > 1 else hk.arch.block_idx.x
+        c0 = hk.arch.warp_id() * cw if warps > 1 else 0
+        bounded = not EXACT
+        scale = sc.at[0, c0].load(V, bounded=bounded)
+        scale += 1.0
+        shift = sh.at[0, c0].load(V, bounded=bounded)
+        v = x.at[row, c0].load(S, bounded=bounded)
+        if r is not None:
+            gate = g.at[0, c0].load(V, bounded=bounded)
+            v *= gate
+            v += r.at[row, c0].load(S, bounded=bounded)
+            r_out.at[row, c0].store(v, bounded=bounded)
+            if round_r:
+                v = v.to(bf16).to(fp32)
+        n = x.cols
+        tail = None if EXACT else n - c0
+        mean = cross_warp(v.sum(axis=1), "add", warps)
+        mean /= n
+        v -= mean
+        if tail is not None:
+            v.right_fill_(tail, 0.0)
+        var = cross_warp((v * v).sum(axis=1), "add", warps)
+        var /= n
+        var += EPS
+        v *= var.rsqrt()
+        if affine:
+            v *= w.at[0, c0].load(V, bounded=bounded)
+            v += bb.at[0, c0].load(V, bounded=bounded)
+        if round_r:
+            v = v.to(bf16).to(fp32)
+        v *= scale
+        v += shift
+        o.at[row, c0].store(v, bounded=bounded)
+
+    if residual:
+        def body(x: hk.Tensor[dtype], r: hk.Tensor[dtype], g: hk.Tensor[fp32],
+                 sc: hk.Tensor[fp32], sh: hk.Tensor[fp32], w: hk.Tensor[fp32],
+                 bb: hk.Tensor[fp32], o: hk.Tensor[o_dtype], r_out: hk.Tensor[r_dtype], *,
+                 ROWS=1, CHUNKS=1, RUN=8, EXACT=1, RESERVE=0, EPS=1e-6):
+            core(x, r, g, sc, sh, o, r_out, w, bb, ROWS, CHUNKS, RUN, EXACT, RESERVE, EPS)
+    else:
+        def body(x: hk.Tensor[dtype], sc: hk.Tensor[fp32], sh: hk.Tensor[fp32],
+                 w: hk.Tensor[fp32], bb: hk.Tensor[fp32], o: hk.Tensor[o_dtype], *, ROWS=1,
+                 CHUNKS=1, RUN=8, EXACT=1, RESERVE=0, EPS=1e-6):
+            core(x, None, None, sc, sh, o, None, w, bb, ROWS, CHUNKS, RUN, EXACT, RESERVE, EPS)
+    defines = {"HK_BF16_ROUND": 2}      # ties to even, as torch's casts
+    return hk.kernel(body, warps=warps, grid=_strip_grid, name=name, defines=defines,
+                     noalias=True)
+
+
+_LNSS_KERNELS: dict = {}
+
+
+def _lnss_for(warps: int, residual: bool, round_r: bool, r_dtype: str, o_dtype: str,
+              affine: bool = False):
+    key = (warps, residual, round_r, r_dtype, o_dtype, affine)
+    k = _LNSS_KERNELS.get(key)
+    if k is None:
+        name = (f"strip_{'add' if residual else ''}lnss{'_rr' if round_r else ''}"
+                f"{'_aff' if affine else ''}_bf16_r{r_dtype}_o{o_dtype}_w{warps}")
+        k = _LNSS_KERNELS[key] = _lnss_kernel(name, bf16, warps, residual, round_r,
+                                              _DTYPES[r_dtype], _DTYPES[o_dtype], affine)
+    return k
+
+
 def _strip_grid(p):
     return (hk.cdiv(p.x.rows, p.ROWS), 1, 1)
 
@@ -1610,6 +1697,73 @@ def layernorm(x, eps: float = 1e-5, out=None):
     F.layer_norm uses.
     """
     return _run("layer", x, out, eps)
+
+
+def layernorm_scale_shift(x, scale, shift, eps: float = 1e-6, residual=None, gate=None,
+                          round_residual: bool = True, out_dtype=None, residual_dtype=None,
+                          weight=None, bias=None):
+    """A DiT block's norm in one launch a batch row, SGLang-Diffusion's LayerNormScaleShift and
+    ScaleResidualLayerNormScaleShift:
+
+        r' = residual + x * gate                  fp32 (gate 1 if None), stored as residual_dtype
+        y  = LayerNorm(r' or x) * (1 + scale) + shift,   in fp32, stored as out_dtype
+
+    `weight` and `bias` (D values each, or None): the LayerNorm's affine, applied in fp32 as
+    F.layer_norm does. The LayerNorm (fp32, biased variance) reads r' and returns its result rounded
+    to bf16 when `round_residual` (always without a residual: x is bf16), else in fp32. `x` (and `residual`) contiguous bf16 (B, L, D) or
+    (L, D); `scale`, `shift` and `gate` one value a column -- (D,), (1, D) or (B, 1, D), any
+    float dtype -- or one value; out_dtype and residual_dtype bf16 (default) or fp32. Returns y,
+    or (y, r') with a residual. On strips (gfx950, gfx1100, gfx1201), with a D a strip holds;
+    raises NotImplementedError otherwise."""
+    import torch  # noqa: PLC0415
+
+    if x.dtype != torch.bfloat16 or not x.is_contiguous() or x.dim() < 2:
+        raise ValueError(f"layernorm_scale_shift: x must be contiguous bf16 (..., D), got "
+                         f"{tuple(x.shape)}/{x.dtype}")
+    d = x.shape[-1]
+    xb = x.reshape(-1, *x.shape[-2:]) if x.dim() >= 3 else x.unsqueeze(0)
+    batch, rows = xb.shape[0], xb.shape[1]
+
+    def vecs(t, what):
+        """(batch, D) fp32: one row a batch row."""
+        t = torch.as_tensor(t, device=x.device)
+        if t.numel() == 1:
+            return t.float().reshape(1, 1).expand(batch, d).contiguous()
+        if t.shape[-1] != d or t.numel() not in (d, batch * d):
+            raise ValueError(f"layernorm_scale_shift: {what} must hold {d} values a batch row, "
+                             f"got {tuple(t.shape)}")
+        return t.float().reshape(-1, d).expand(batch, d).contiguous()
+
+    sc, sh = vecs(scale, "scale"), vecs(shift, "shift")
+    affine = weight is not None or bias is not None
+    w = (vecs(1.0 if weight is None else weight, "weight")[:1] if affine else sc[:1])
+    bb = (vecs(0.0 if bias is None else bias, "bias")[:1] if affine else sc[:1])
+    p = strip_plan_for("layer", 2, d, rows) if _strips_here() else None
+    if p is None:
+        raise NotImplementedError(f"layernorm_scale_shift: no strip plan for {d} columns here")
+    warps, chunks, run, exact, reserve = p
+    names = {torch.bfloat16: "bf16", torch.float32: "fp32"}
+    od = out_dtype or torch.bfloat16
+    out = torch.empty(x.shape, device=x.device, dtype=od)
+    ob = out.reshape(batch, rows, d)
+    if residual is None:
+        k = _lnss_for(warps, False, True, "bf16", names[od], affine)
+        for b in range(batch):
+            k(xb[b], sc[b:b + 1], sh[b:b + 1], w, bb, ob[b], CHUNKS=chunks, RUN=run,
+              EXACT=exact, RESERVE=reserve, EPS=float(eps))
+        return out
+    if residual.shape != x.shape or residual.dtype != x.dtype or not residual.is_contiguous():
+        raise ValueError("layernorm_scale_shift: residual must be a contiguous bf16 like x")
+    rb = residual.reshape(batch, rows, d)
+    g = vecs(1.0 if gate is None else gate, "gate")
+    rd = residual_dtype or torch.bfloat16
+    r_out = torch.empty(x.shape, device=x.device, dtype=rd)
+    rob = r_out.reshape(batch, rows, d)
+    k = _lnss_for(warps, True, bool(round_residual), names[rd], names[od], affine)
+    for b in range(batch):
+        k(xb[b], rb[b], g[b:b + 1], sc[b:b + 1], sh[b:b + 1], w, bb, ob[b], rob[b],
+          CHUNKS=chunks, RUN=run, EXACT=exact, RESERVE=reserve, EPS=float(eps))
+    return out, r_out
 
 
 def softmax(x, out=None):

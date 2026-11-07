@@ -114,6 +114,14 @@ default keeps the old boot, which needs `HK_SGLD=1`; run `install` again
   by a bf16 unit; the error against fp64 is the engine's. 1024^2, 30 steps:
   27.36 -> 26.22 s a request, 1.044x over the rope route alone. 37.9 dB from
   stock; torch's own norm with only its sum order changed is 36.5 dB from stock.
+- **ditnorm**: the DiT block norms -- `ScaleResidualLayerNormScaleShift`
+  (r' = r + x * gate, LayerNorm, * (1 + scale) + shift) and
+  `LayerNormScaleShift` -- as one `hk.ops.norm.layernorm_scale_shift` launch
+  each where SGLang would run its native chain (ROCm without FlyDSL: about ten
+  passes over the activation). Each output keeps the dtype torch's chain gives
+  it (Wan's fp32 gate promotes the residual and the norm to fp32). At Wan2.1's
+  1x32760x1536 on a W7900D: 2.6 / 2.2 / 3.0 ms -> 0.36 / 0.89 / 0.59 ms a
+  call; a Wan2.1 832x480x81 video 1.038x.
 
 The third, ConvRot INT8 (hk's `convrot_int8` backend, for `--quantization
 convrot_int8`), **stays opt-in**: it is lossy by design.
