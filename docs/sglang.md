@@ -55,7 +55,7 @@ SGLang route for your GPU: see [troubleshooting](#troubleshooting).
 | GPU | arch | hk in SGLang |
 |---|---|---|
 | Radeon PRO W7900, W7900D, RX 7900 | gfx1100 (RDNA3) | on by default |
-| Radeon AI PRO R9700, RX 9070 | gfx1201 (RDNA4) | not yet: use [vLLM](vllm.md) |
+| Radeon AI PRO R9700, RX 9070 | gfx1201 (RDNA4) | language models: not yet, use [vLLM](vllm.md); [SGLang-Diffusion](#sglang-diffusion-text-to-image-and-video): on by default |
 | Instinct MI300X, MI325X, MI350X, MI355X | gfx942, gfx950 (CDNA) | off |
 
 What hk takes over depends on what your model has. Each route sends a call to
@@ -107,18 +107,19 @@ python3 -m hk.integration tune --model Qwen/Qwen3-8B --engine sglang
 
 SGLang-Diffusion runs its model in worker processes that load no plugins, so
 hk needs one install step in that environment (an SGLang-Diffusion ROCm
-environment for RDNA3, gfx1100). Then generate as usual. On gfx1100 hk then
-takes, by default:
+environment for a Radeon W7900 / RX 7900, gfx1100, or an R9700 / RX 9070,
+gfx1201; there is no prebuilt SGLang image for gfx1201, and hk was checked
+there with SGLang 0.5.23). Then generate as usual. hk then takes, by default:
 
-| route | switch | what | models |
-|---|---|---|---|
-| `sgld_attn` | `HK_SGLD_ATTN` | the DiT's attention (`--attention-backend torch_sdpa`) | Qwen-Image 2.1, Wan2.1 |
-| `sgld_linear` | `HK_SGLD_LINEAR` | the DiT's projections where hk measured faster (with a bias: from 0.9.12) | Qwen-Image 2.1, Wan2.1 |
-| `sgld_rope` | `HK_SGLD_ROPE` | the complex RoPE, bit for bit | Qwen-Image 2.1 |
-| `sgld_qknorm` | `HK_SGLD_QKNORM` | q / k RMSNorm + RoPE as one launch (from 0.9.12) | Qwen-Image 2.1 |
-| `sgld_vaeconv` | `HK_SGLD_VAECONV` | the VAE's conv3d in 2-frame calls, which MIOpen would run on its slow reference kernel | Wan2.1 |
+| route | switch | what | models | gfx1100 | gfx1201 |
+|---|---|---|---|---|---|
+| `sgld_attn` | `HK_SGLD_ATTN` | the DiT's attention (`--attention-backend torch_sdpa`) | Qwen-Image 2.1, Wan2.1 | on | on (from 0.9.14) |
+| `sgld_linear` | `HK_SGLD_LINEAR` | the DiT's projections where hk measured faster (with a bias: from 0.9.12) | Qwen-Image 2.1, Wan2.1 | on | off |
+| `sgld_rope` | `HK_SGLD_ROPE` | the complex RoPE, bit for bit | Qwen-Image 2.1 | on | off |
+| `sgld_qknorm` | `HK_SGLD_QKNORM` | q / k RMSNorm + RoPE as one launch (from 0.9.12) | Qwen-Image 2.1 | on | off |
+| `sgld_vaeconv` | `HK_SGLD_VAECONV` | the VAE's conv3d as one conv2d (from 0.9.14; 2-frame calls before), which MIOpen would run on its slow reference kernel | Wan2.1 | on | on (from 0.9.14) |
 
-All five are gfx1100 only; `HK_<SWITCH>=0` turns one off. The lossy ConvRot
+`HK_<SWITCH>=0` turns one off. The lossy ConvRot
 INT8 route stays opt-in (`HK_SGLD_CONVROT=1`). What each one replaces and what
 it measured: [SGLang routes](sglang-routes.md#sglang-diffusion-text-to-image-and-video).
 
@@ -158,8 +159,8 @@ SGLANG_USE_AITER=0 MIOPEN_FIND_MODE=FAST sglang generate --model-path Wan-AI/Wan
     --num-inference-steps 20 --attention-backend torch_sdpa --num-gpus 1 --save-output --output-path out
 ```
 
-The worker's line then counts the VAE's conv3d calls hk split, `vaeconv: chunked
-261, whole 431`, beside the attention calls. Some ROCm builds of SGLang send
+The worker's line then counts the VAE's conv3d calls hk took, `vaeconv: conv2d
+692`, beside the attention calls. Some ROCm builds of SGLang send
 Wan's fused norm layers to their CUDA kernel, and the first denoising step
 fails with `No module named 'cuda'`, with or without hk: that build needs
 SGLang's fix for it first. `sglang generate` exits 0 even when generation
@@ -172,7 +173,7 @@ python3 -m hk.integration sglang-diffusion uninstall   # remove it
 ```
 
 The first generation also compiles hk's kernels (a few seconds each, kept in
-`~/.cache/hk`). gfx1201 has no SGLang-Diffusion routes yet.
+`~/.cache/hk`).
 
 ## Reference
 
