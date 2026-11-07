@@ -6,6 +6,10 @@ The next version's notes collect here until it is released.
 
 ## Unreleased
 
+### Fixes
+
+**MoE routes: a call after `revert()` no longer raises.** `vllm_moe.revert()` (and `vllm_moe_wna16`, `sglang_moe`) restored the engine's `try_get_optimal_moe_config`, but any module that had bound hk's wrapper by name kept it, and the wrapper then called the cleared original: `'NoneType' object is not callable` on the next MoE call. The wrapper now holds the original itself and passes it through once reverted; reverting one of two chained MoE routes leaves a working chain.
+
 ## 0.9.14
 
 hk-dsl 0.9.14: on gfx1201 (Radeon AI PRO R9700), SGLang-Diffusion's attention (`sgld_attn`) and Wan's VAE

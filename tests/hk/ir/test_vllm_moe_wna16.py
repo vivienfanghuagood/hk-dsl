@@ -68,14 +68,17 @@ def test_only_the_validated_shapes_unless_forced(monkeypatch):
 
 
 def test_the_config_asks_for_16_row_blocks_at_small_batches(monkeypatch):
-    monkeypatch.setattr(r, "_ORIG_CONFIG", lambda *a: {"BLOCK_SIZE_M": 32, "BLOCK_SIZE_N": 64})
+    monkeypatch.setattr(r, "_ORIG", object())                               # patched
+    cfg = r._config_wrapper(lambda *a: {"BLOCK_SIZE_M": 32, "BLOCK_SIZE_N": 64})
     w1, w2 = (256, 1024, 1024), (256, 2048, 256)
-    assert r.try_get_optimal_moe_config(w1, w2, 8, "int4_w4a16", 8, [0, 32])["BLOCK_SIZE_M"] == 16
-    assert r.try_get_optimal_moe_config(w1, w2, 8, "int4_w4a16", 64, [0, 32])["BLOCK_SIZE_M"] == 32
-    assert r.try_get_optimal_moe_config(w1, w2, 8, None, 8, None)["BLOCK_SIZE_M"] == 32
+    assert cfg(w1, w2, 8, "int4_w4a16", 8, [0, 32])["BLOCK_SIZE_M"] == 16
+    assert cfg(w1, w2, 8, "int4_w4a16", 64, [0, 32])["BLOCK_SIZE_M"] == 32
+    assert cfg(w1, w2, 8, None, 8, None)["BLOCK_SIZE_M"] == 32
     monkeypatch.setattr(r, "_MAX", [2048])                                  # gfx1100's cap
-    assert r.try_get_optimal_moe_config(w1, w2, 8, "int4_w4a16", 2048, [0, 32])["BLOCK_SIZE_M"] == 16
-    assert r.try_get_optimal_moe_config(w1, w2, 8, "int4_w4a16", 2049, [0, 32])["BLOCK_SIZE_M"] == 32
+    assert cfg(w1, w2, 8, "int4_w4a16", 2048, [0, 32])["BLOCK_SIZE_M"] == 16
+    assert cfg(w1, w2, 8, "int4_w4a16", 2049, [0, 32])["BLOCK_SIZE_M"] == 32
+    monkeypatch.setattr(r, "_ORIG", None)                                   # reverted: vLLM's
+    assert cfg(w1, w2, 8, "int4_w4a16", 8, [0, 32])["BLOCK_SIZE_M"] == 32
 
 
 def test_apply_without_vllm_reports_rather_than_raises():
