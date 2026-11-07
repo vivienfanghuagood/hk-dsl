@@ -68,16 +68,23 @@ def test_only_the_validated_shapes_unless_forced(monkeypatch):
 
 
 def test_the_config_asks_for_16_row_blocks_at_small_batches(monkeypatch):
-    monkeypatch.setattr(r, "_ORIG", object())                               # patched
-    cfg = r._config_wrapper(lambda *a: {"BLOCK_SIZE_M": 32, "BLOCK_SIZE_N": 64})
+    monkeypatch.setattr(r, "_ORIG_CONFIG", lambda *a: {"BLOCK_SIZE_M": 32, "BLOCK_SIZE_N": 64})
     w1, w2 = (256, 1024, 1024), (256, 2048, 256)
-    assert cfg(w1, w2, 8, "int4_w4a16", 8, [0, 32])["BLOCK_SIZE_M"] == 16
-    assert cfg(w1, w2, 8, "int4_w4a16", 64, [0, 32])["BLOCK_SIZE_M"] == 32
-    assert cfg(w1, w2, 8, None, 8, None)["BLOCK_SIZE_M"] == 32
+    assert r.try_get_optimal_moe_config(w1, w2, 8, "int4_w4a16", 8, [0, 32])["BLOCK_SIZE_M"] == 16
+    assert r.try_get_optimal_moe_config(w1, w2, 8, "int4_w4a16", 64, [0, 32])["BLOCK_SIZE_M"] == 32
+    assert r.try_get_optimal_moe_config(w1, w2, 8, None, 8, None)["BLOCK_SIZE_M"] == 32
     monkeypatch.setattr(r, "_MAX", [2048])                                  # gfx1100's cap
-    assert cfg(w1, w2, 8, "int4_w4a16", 2048, [0, 32])["BLOCK_SIZE_M"] == 16
-    assert cfg(w1, w2, 8, "int4_w4a16", 2049, [0, 32])["BLOCK_SIZE_M"] == 32
-    monkeypatch.setattr(r, "_ORIG", None)                                   # reverted: vLLM's
+    assert r.try_get_optimal_moe_config(w1, w2, 8, "int4_w4a16", 2048, [0, 32])["BLOCK_SIZE_M"] == 16
+    assert r.try_get_optimal_moe_config(w1, w2, 8, "int4_w4a16", 2049, [0, 32])["BLOCK_SIZE_M"] == 32
+
+
+def test_the_bound_config_is_vllms_unchanged_once_reverted(monkeypatch):
+    cfg = r._config_wrapper(lambda *a: {"BLOCK_SIZE_M": 32})
+    w1, w2 = (256, 1024, 1024), (256, 2048, 256)
+    monkeypatch.setattr(r, "_ORIG", object())                               # patched
+    assert cfg(w1, w2, 8, "int4_w4a16", 8, [0, 32])["BLOCK_SIZE_M"] == 16
+    monkeypatch.setattr(r, "_ORIG", None)                                   # reverted
+    monkeypatch.setattr(r, "_ORIG_CONFIG", None)
     assert cfg(w1, w2, 8, "int4_w4a16", 8, [0, 32])["BLOCK_SIZE_M"] == 32
 
 

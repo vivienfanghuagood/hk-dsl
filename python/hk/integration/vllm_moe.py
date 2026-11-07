@@ -97,25 +97,34 @@ def invoke_fused_moe_triton_kernel(A, B, C, A_scale, B_scale, topk_weights,
 _GUARDED = PATCH.guard(invoke_fused_moe_triton_kernel)
 
 
-def _config_wrapper(orig: Callable) -> Callable:
-    """vLLM's `try_get_optimal_moe_config` as hk rebinds it: vLLM's config, with BLOCK_SIZE_M 16
-    for an unquantized layer at a batch hk's GEMM takes (the sort and the GEMM both read it, so
-    changing it here changes both together).
+def try_get_optimal_moe_config(w1_shape, w2_shape, top_k, dtype, M,
+                               block_shape=None):
+    """vLLM's config, with BLOCK_SIZE_M 16 for an unquantized layer at a
+    batch hk's GEMM takes: the sort and the GEMM both read it, so changing it
+    here changes both together."""
+    config = _ORIG_CONFIG(w1_shape, w2_shape, top_k, dtype, M, block_shape)
+    return _block16(config, w1_shape, w2_shape, dtype, M, block_shape)
 
-    The original is held here, not in a module global: a binding revert() cannot reach (one
-    taken by name into a module or an object it does not walk) keeps working after a revert, and
-    once reverted it is vLLM's config unchanged."""
+
+def _block16(config, w1_shape, w2_shape, dtype, M, block_shape):
+    from ..ops import moe  # noqa: PLC0415
+
+    if (dtype is None and block_shape is None and M <= block16_max()
+            and moe.schedule_for(16, w1_shape[2]) is not None
+            and moe.schedule_for(16, w2_shape[2]) is not None):
+        config = dict(config, BLOCK_SIZE_M=16)
+    return config
+
+
+def _config_wrapper(orig: Callable) -> Callable:
+    """`try_get_optimal_moe_config` as apply() binds it, on the original held here rather than in
+    a module global: a binding revert() cannot reach (one taken by name into a module or an
+    object it does not walk) keeps working after a revert, as vLLM's config unchanged."""
     def try_get_optimal_moe_config(w1_shape, w2_shape, top_k, dtype, M, block_shape=None):
         config = orig(w1_shape, w2_shape, top_k, dtype, M, block_shape)
         if _ORIG is None:                   # reverted: vLLM's config as it is
             return config
-        from ..ops import moe  # noqa: PLC0415
-
-        if (dtype is None and block_shape is None and M <= block16_max()
-                and moe.schedule_for(16, w1_shape[2]) is not None
-                and moe.schedule_for(16, w2_shape[2]) is not None):
-            config = dict(config, BLOCK_SIZE_M=16)
-        return config
+        return _block16(config, w1_shape, w2_shape, dtype, M, block_shape)
 
     return try_get_optimal_moe_config
 

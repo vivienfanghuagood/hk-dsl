@@ -164,20 +164,29 @@ def _int8():
 _GUARDED = PATCH.guard(invoke_fused_moe_wna16_triton_kernel)
 
 
+def try_get_optimal_moe_config(w1_shape, w2_shape, top_k, dtype, M, block_shape=None):
+    """vLLM's config, with BLOCK_SIZE_M 16 for a 4-bit layer at a batch hk's GEMM takes: the sort
+    and the GEMM both read it, so changing it here changes both together."""
+    config = _ORIG_CONFIG(w1_shape, w2_shape, top_k, dtype, M, block_shape)
+    return _block16(config, w1_shape, w2_shape, dtype, M, block_shape)
+
+
+def _block16(config, w1_shape, w2_shape, dtype, M, block_shape):
+    if (dtype == "int4_w4a16" and block_shape and block_shape[0] == 0 and M <= max_tokens()
+            and schedule(w1_shape[2] * 2) is not None and schedule(w2_shape[2] * 2) is not None):
+        config = dict(config, BLOCK_SIZE_M=16)
+    return config
+
+
 def _config_wrapper(orig: Callable) -> Callable:
-    """vLLM's `try_get_optimal_moe_config` as hk rebinds it: vLLM's config, with BLOCK_SIZE_M 16
-    for a 4-bit layer at a batch hk's GEMM takes (the sort and the GEMM both read it, so changing
-    it here changes both together). The original is held here, not in a module global, so a
-    binding revert() cannot reach -- vllm_moe's wrapper wraps this one when both routes are on --
-    keeps working after a revert, as vLLM's config unchanged."""
+    """`try_get_optimal_moe_config` as apply() binds it, on the original held here rather than in
+    a module global: a binding revert() cannot reach -- vllm_moe's wrapper wraps this one when both
+    routes are on -- keeps working after a revert, as vLLM's config unchanged."""
     def try_get_optimal_moe_config(w1_shape, w2_shape, top_k, dtype, M, block_shape=None):
         config = orig(w1_shape, w2_shape, top_k, dtype, M, block_shape)
         if _ORIG is None:                   # reverted: vLLM's config as it is
             return config
-        if (dtype == "int4_w4a16" and block_shape and block_shape[0] == 0 and M <= max_tokens()
-                and schedule(w1_shape[2] * 2) is not None and schedule(w2_shape[2] * 2) is not None):
-            config = dict(config, BLOCK_SIZE_M=16)
-        return config
+        return _block16(config, w1_shape, w2_shape, dtype, M, block_shape)
 
     return try_get_optimal_moe_config
 

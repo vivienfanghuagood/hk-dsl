@@ -250,7 +250,7 @@ def judge_vllm_moe(f: dict) -> List[str]:
 
     return (same_signature(f["invoke_fused_moe_triton_kernel"],
                            vllm_moe.invoke_fused_moe_triton_kernel, "invoke_fused_moe_triton_kernel")
-            + same_signature(f["try_get_optimal_moe_config"], vllm_moe._config_wrapper(None),
+            + same_signature(f["try_get_optimal_moe_config"], vllm_moe.try_get_optimal_moe_config,
                              "try_get_optimal_moe_config"))
 
 
@@ -268,7 +268,7 @@ def judge_vllm_moe_wna16(f: dict) -> List[str]:
                            vllm_moe_wna16.invoke_fused_moe_wna16_triton_kernel,
                            "invoke_fused_moe_wna16_triton_kernel")
             + same_signature(f["try_get_optimal_moe_config"],
-                             vllm_moe_wna16._config_wrapper(None), "try_get_optimal_moe_config"))
+                             vllm_moe_wna16.try_get_optimal_moe_config, "try_get_optimal_moe_config"))
 
 
 def gather_vllm_sdpa() -> dict:
