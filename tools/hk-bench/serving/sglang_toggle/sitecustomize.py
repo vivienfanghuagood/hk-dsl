@@ -49,6 +49,39 @@ def _routes():
     return sys.modules.get("hk.integration.sglang")
 
 
+def _sgld():
+    return sys.modules.get("hk.integration.sglang_diffusion")
+
+
+#: SGLang-Diffusion's routes with an apply / revert pair: the name, and the module list that is
+#: non-empty while the route is applied.
+_SGLD = (("linear", "_LINEAR_ORIG"), ("vaeconv", "_VAE_ORIG"), ("rope", "_ROPE_ORIG"),
+         ("qknorm", "_QKNORM_ORIG"), ("ditnorm", "_DITNORM_ORIG"))
+
+
+def _sgld_set(D, on: bool) -> list:
+    """Switch SGLang-Diffusion's routes: off reverts the applied ones (remembered), on re-applies
+    those. Attention is hk.ops.sdpa's patch. Returns the routes applied now."""
+    from hk.ops import sdpa
+
+    if on:
+        if _WAS_ON.pop("sgld_attn", False) and not sdpa.patched():
+            sdpa.patch()
+        for name, _ in _SGLD:
+            if _WAS_ON.pop(f"sgld_{name}", False):
+                getattr(D, f"apply_{name}")()
+    else:
+        if sdpa.patched():
+            sdpa.unpatch()
+            _WAS_ON["sgld_attn"] = True
+        for name, orig in _SGLD:
+            if getattr(D, orig, None) and hasattr(D, f"revert_{name}"):
+                getattr(D, f"revert_{name}")()
+                _WAS_ON[f"sgld_{name}"] = True
+    now = ["attn"] if sdpa.patched() else []
+    return now + [n for n, orig in _SGLD if getattr(D, orig, None)]
+
+
 def _counters() -> str:
     out = []
     G = sys.modules.get("hk.integration.vllm_gemm")
@@ -57,6 +90,9 @@ def _counters() -> str:
     S = _routes()
     if S is not None and hasattr(S, "norm_stats"):
         out.append("norm " + S.norm_stats())
+    D = _sgld()
+    if D is not None:
+        out.append("sgld " + D.stats())
     return " | ".join(out)
 
 
@@ -69,6 +105,14 @@ def _write(state: str) -> None:
 
 
 def _set(on: bool) -> None:
+    D = _sgld()
+    if D is not None:                       # SGLang-Diffusion: its own routes
+        try:
+            now = _sgld_set(D, on)
+            _write(f"{'hk' if on else 'stock'} on={','.join(now) or '-'}")
+        except Exception as e:  # noqa: BLE001 -- said in the state file, checked by the driver
+            _write(f"error {type(e).__name__}: {e}")
+        return
     S = _routes()
     if S is None:
         _write("none")
