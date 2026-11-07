@@ -322,6 +322,8 @@ def diffusion_main(a, server_args) -> int:
             "started": time.strftime("%FT%TZ", time.gmtime()),
             "env": {k: v for k, v in os.environ.items()
                     if k.startswith(("HK_", "PYTORCH_TUNABLEOP", "SGLANG_", "MIOPEN_"))}}
+    if os.environ.get("HK_TOGGLE_STOCK_NO_CUDNN", "") not in ("", "0"):
+        meta["stock"] = "tuned: PyTorch's own convolutions (cudnn / MIOpen off) in the stock arm only"
     with open(out / "server.log", "w") as log:
         proc = subprocess.Popen(cmd, env=env, stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
     rows, warm = [], {}

@@ -104,12 +104,28 @@ def _write(state: str) -> None:
         pass
 
 
+#: HK_TOGGLE_STOCK_NO_CUDNN=1: the stock arm runs PyTorch's own convolutions (cudnn / MIOpen off), the
+#: hk arm torch's default -- a tuned stock where MIOpen's choice is the slow part (e.g. its naive conv3d).
+_STOCK_NO_CUDNN = os.environ.get("HK_TOGGLE_STOCK_NO_CUDNN", "") not in ("", "0")
+
+
+def _cudnn(on: bool) -> str:
+    if not _STOCK_NO_CUDNN:
+        return ""
+    torch = sys.modules.get("torch")
+    if torch is None:
+        return ""
+    torch.backends.cudnn.enabled = bool(on)
+    return f" cudnn={'on' if on else 'off'}"
+
+
 def _set(on: bool) -> None:
+    extra = _cudnn(on)
     D = _sgld()
     if D is not None:                       # SGLang-Diffusion: its own routes
         try:
             now = _sgld_set(D, on)
-            _write(f"{'hk' if on else 'stock'} on={','.join(now) or '-'}")
+            _write(f"{'hk' if on else 'stock'} on={','.join(now) or '-'}{extra}")
         except Exception as e:  # noqa: BLE001 -- said in the state file, checked by the driver
             _write(f"error {type(e).__name__}: {e}")
         return

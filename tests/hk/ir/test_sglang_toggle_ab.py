@@ -145,6 +145,32 @@ def test_the_toggle_switches_sglang_diffusions_routes(tmp_path):
         "hk on=attn,linear,vaeconv", "True", "apply_linear,apply_vaeconv", "sgld attention: hk 3"]
 
 
+def test_the_stock_arm_can_run_without_cudnn(tmp_path):
+    """HK_TOGGLE_STOCK_NO_CUDNN=1: stock turns torch's cudnn (MIOpen) off, hk turns it back on."""
+    script = textwrap.dedent("""
+        import os, signal, sys, time, types
+        torch = types.ModuleType("torch"); torch.backends = types.SimpleNamespace(cudnn=types.SimpleNamespace(enabled=True))
+        sys.modules["torch"] = torch
+        P = types.ModuleType("hk.ops.sdpa"); P.patched = lambda: False; P.patch = P.unpatch = lambda: None
+        D = types.ModuleType("hk.integration.sglang_diffusion"); D.stats = lambda: "-"
+        hk = types.ModuleType("hk"); I = types.ModuleType("hk.integration"); O = types.ModuleType("hk.ops")
+        I.sglang_diffusion = D; O.sdpa = P
+        sys.modules.update({"hk": hk, "hk.integration": I, "hk.ops": O, "hk.ops.sdpa": P,
+                            "hk.integration.sglang_diffusion": D})
+        me = os.path.join(os.environ["HK_SGLANG_TOGGLE_DIR"], str(os.getpid()))
+        os.kill(os.getpid(), signal.SIGRTMIN + 3); time.sleep(0.2)
+        seen = [open(me).read().splitlines()[0], str(torch.backends.cudnn.enabled)]
+        os.kill(os.getpid(), signal.SIGRTMIN + 4); time.sleep(0.2)
+        seen += [open(me).read().splitlines()[0], str(torch.backends.cudnn.enabled)]
+        print("|".join(seen))
+    """)
+    env = dict(os.environ, HK_SGLANG_TOGGLE_DIR=str(tmp_path), HK_TOGGLE_STOCK_NO_CUDNN="1",
+               PYTHONPATH=str(SERVING / "sglang_toggle"))
+    r = subprocess.run([sys.executable, "-c", script], env=env, capture_output=True, text=True, timeout=60)
+    assert r.returncode == 0, r.stderr
+    assert r.stdout.strip().split("|") == ["stock on=- cudnn=off", "False", "hk on=- cudnn=on", "True"]
+
+
 def test_a_diffusion_run_reports_seconds_lower_better():
     rows = ([{"spec": "video", "arm": "stock", "seconds": v} for v in (200.0, 201.0, 199.5)]
             + [{"spec": "video", "arm": "hk", "seconds": v} for v in (190.0, 191.0, 190.5)])
