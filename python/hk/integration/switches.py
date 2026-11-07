@@ -155,10 +155,12 @@ ROUTES: Dict[str, Route] = {r.name: r for r in (
     _R("sglang_moe", "sglang", "HK_SGLANG_MOE", True, ("gfx1100",),
        "the softmax top-k that fails on gfx1100, and the bf16 MoE GEMMs (=topk: the top-k only)",
        "OLMoE greedy tokens identical to stock's (history 25)"),
-    _R("sgld_attn", "sglang_diffusion", "HK_SGLD_ATTN", True, ("gfx1100",),
+    _R("sgld_attn", "sglang_diffusion", "HK_SGLD_ATTN", True, ("gfx1100", "gfx1201"),
        "the DiT's attention (torch_sdpa backend)",
        "Qwen-Image 2.1: 42.1 dB from stock and closer to an fp32 reference than stock "
-       "(history 46)", part="attn"),
+       "(history 46); gfx1201 (hk.ops.sdpa): 1.82-1.90x torch's SDPA at Wan2.1 / Qwen-Image "
+       "shapes, error vs fp32 equal to it; Wan2.1 832x480x81 denoise 228.7 -> 142.4 s (1.61x)",
+       part="attn"),
     _R("sgld_linear", "sglang_diffusion", "HK_SGLD_LINEAR", True, ("gfx1100",),
        "the DiT's projections at M >= 1024 where hk measured faster, with or without a bias "
        "(a bias in the GEMM's store)",

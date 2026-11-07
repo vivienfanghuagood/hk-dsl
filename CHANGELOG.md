@@ -6,6 +6,10 @@ The next version's notes collect here until it is released.
 
 ## Unreleased
 
+### Changes
+
+**SGLang-Diffusion attention on by default on gfx1201** (#327). `sgld_attn` now also applies on R9700: the DiT's attention runs on `hk.ops.sdpa`, 1.82-1.90x torch's SDPA at Wan2.1 and Qwen-Image shapes, with the same error against fp32. Wan2.1-T2V-1.3B 832x480x81, 20 steps, one R9700: denoise 228.7 -> 142.4 s (1.61x).
+
 ## 0.9.13
 
 hk-dsl 0.9.13: on gfx1100, SGLang-Diffusion's `sgld_vaeconv` keeps Wan's VAE in NCDHW (1.052x a Wan2.1

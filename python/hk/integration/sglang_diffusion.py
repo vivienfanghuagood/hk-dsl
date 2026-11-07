@@ -8,9 +8,9 @@
     python3 -m hk.integration sglang-diffusion status
     python3 -m hk.integration sglang-diffusion uninstall
 
-**On by default** once installed, on the GPU it was validated on (gfx1100): attention,
-linear, Wan's VAE conv3d and Qwen-Image 2.1's RoPE (`hk.integration.switches`). ConvRot INT8 is lossy and
-stays opt-in. An install made before hk was on by default keeps its old boot, which needs
+**On by default** once installed, on the GPU each was validated on (`hk.integration.switches`):
+attention on gfx1100 and gfx1201; linear, Wan's VAE conv3d and Qwen-Image 2.1's RoPE on gfx1100.
+ConvRot INT8 is lossy and stays opt-in. An install made before hk was on by default keeps its old boot, which needs
 HK_SGLD=1; run `install` again.
 
 On RDNA3, `torch_sdpa` is the only attention backend SGLang-Diffusion has

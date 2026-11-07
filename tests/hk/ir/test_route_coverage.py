@@ -51,6 +51,7 @@ COVERAGE = {
         "test_route_paths.py::test_sglang_moe_takes_a_decode_batch_and_its_top_k_matches_torch",
     # the route is hk.ops.sdpa.patch(), as vllm_sdpa's
     ("sgld_attn", "gfx1100"): "test_sdpa.py::test_patch_and_unpatch_round_trip",
+    ("sgld_attn", "gfx1201"): "test_sdpa.py::test_patch_and_unpatch_round_trip",
     ("sgld_linear", "gfx1100"):
         "test_route_paths.py::test_sgld_linear_takes_a_dit_projection_through_hk",
     ("sgld_vaeconv", "gfx1100"):
