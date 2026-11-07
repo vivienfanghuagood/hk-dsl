@@ -572,13 +572,38 @@ def judge_sgld_qknorm(f: dict) -> List[str]:
                       "sglang.srt.layers.layernorm.RMSNorm.forward_native computes differently"))
 
 
+def gather_sgld_ditnorm() -> dict:
+    import importlib  # noqa: PLC0415
+
+    from . import sglang_diffusion as sd  # noqa: PLC0415
+
+    mod = importlib.import_module(sd.DITNORM_HOME)
+    res, plain = mod._ScaleResidualNormScaleShift, mod._NormScaleShift
+    src = inspect.getsource(res.forward_native) + inspect.getsource(plain.forward_native)
+    return {"res_forward_native": names(res.forward_native),
+            "forward_native": names(plain.forward_native),
+            # the chain the kernel computes: gated residual, the norm, then the scale and shift
+            "chain": all(t in src for t in ("residual + x * gate", "self.norm(", "fuse_scale_shift_kernel("))}
+
+
+def judge_sgld_ditnorm(f: dict) -> List[str]:
+    from . import sglang_diffusion as sd  # noqa: PLC0415
+
+    return (_expect(f["res_forward_native"][:6] == ["self", "residual", "x", "gate", "shift", "scale"],
+                    f"{sd.DITNORM_HOME}._ScaleResidualNormScaleShift.forward_native takes "
+                    f"{f['res_forward_native']}")
+            + _expect(f["forward_native"][:4] == ["self", "x", "shift", "scale"],
+                      f"{sd.DITNORM_HOME}._NormScaleShift.forward_native takes {f['forward_native']}")
+            + _expect(f["chain"], f"{sd.DITNORM_HOME}'s scale-residual-norm chain changed"))
+
+
 #: route -> (gather, judge). gather returns the route's facts, or None where it does not apply here.
 SPLIT: Dict[str, tuple] = {
     r: (globals()[f"gather_{r}"], globals()[f"judge_{r}"]) for r in (
         "vllm_mxfp8", "vllm_moe_a8w4", "vllm_int4", "vllm_gptq", "vllm_gemm", "vllm_moe",
         "vllm_moe_wna16", "vllm_sdpa", "vllm_backend", "vllm_dsv41_index", "vllm_sparse_mla",
         "vllm_prefill", "sglang_linear", "sglang_norm", "sglang_moe", "sgld_attn", "sgld_linear",
-        "sgld_convrot", "sgld_vaeconv", "sgld_rope", "sgld_qknorm")}
+        "sgld_convrot", "sgld_vaeconv", "sgld_rope", "sgld_qknorm", "sgld_ditnorm")}
 
 
 def _checker(name: str) -> Callable[[], Optional[List[str]]]:

@@ -30,7 +30,7 @@ def _env(tmp_path, env_set):
     sgld.install(site)
     env = dict(os.environ, PYTHONPATH=f"{tmp_path / 'pkgs'}{os.pathsep}{REPO / 'python'}")
     for k in ("HK_SGLD", "HK_DISABLE", "HK_SGLD_ATTN", "HK_SGLD_LINEAR", "HK_SGLD_CONVROT",
-              "HK_SGLD_VAECONV", "HK_SGLD_ROPE", "HK_SGLD_QKNORM"):
+              "HK_SGLD_VAECONV", "HK_SGLD_ROPE", "HK_SGLD_QKNORM", "HK_SGLD_DITNORM"):
         env.pop(k, None)
     env["HK_ARCH"] = "gfx1100"
     env.update(env_set)
@@ -50,7 +50,7 @@ def test_the_boot_applies_on_import_by_default_and_checks_the_contract(tmp_path,
     assert "[hk] sglang-diffusion: no route applied (" in r.stdout and "): stock" in r.stdout
     warn = [x for x in r.stderr.splitlines() if x.startswith("[hk] WARNING")]
     want = {"attn": ["sgld_attn"], "1": ["sgld_attn", "sgld_linear"]}.get(
-        env_set.get("HK_SGLD"), ["sgld_attn", "sgld_linear", "sgld_vaeconv", "sgld_rope", "sgld_qknorm"])
+        env_set.get("HK_SGLD"), ["sgld_attn", "sgld_linear", "sgld_vaeconv", "sgld_rope", "sgld_qknorm", "sgld_ditnorm"])
     assert len(warn) == len(want)
     for route, line in zip(want, warn):
         assert f"sglang_diffusion: route {route} OFF -- engine contract FAILED" in line
