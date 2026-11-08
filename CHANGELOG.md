@@ -14,7 +14,9 @@ its own specialization, traced, built and named as before (`silu_mul__Tbf16_warp
 the factory version's but for the name. `hk.TypeVar("U")` adds a second dtype parameter;
 `k.variant(T=..., warps=...)` is a specialization, and `trace` / `source` / `build` / `specialize`
 take the same keywords. Old annotations, factories, `@hk.specialize` and `hk.kernel(warps=)` keep
-their meaning. docs/language.md, "One kernel for every dtype and warp count".
+their meaning. `hk.ops` builds `fused.silu_mul_kernel`, `quant.quantize_kernel` and
+`quant.dequantize_kernel` this way (their tables now hold the specializations, under new kernel
+names: one recompile each). docs/language.md, "One kernel for every dtype and warp count".
 
 ## 0.9.16
 

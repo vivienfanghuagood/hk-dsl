@@ -156,6 +156,15 @@ gated_silu(a, b, o, T=hk.bf16)      # T given: nothing is read
   warps=8)` is that kernel, for whatever takes a `hk.Kernel`; `trace`, `source`,
   `build` and `specialize` take the same keywords (`T=` is required there:
   there are no tensors to read it from).
+- **A launch costs what a plain kernel's does**: the call reads the `.dtype` of
+  each tensor annotated with an inferred parameter and probes one dict. On a
+  W7900D, `k(a, b, o)` is within 0.1 us of calling the specialization itself,
+  and a call with `T=` or `warps=` about 0.2 us more than a plain kernel's call
+  with a constexpr keyword (`tools/hk-bench/generic_launch.py`).
+
+`hk.ops` builds `fused.silu_mul_kernel`, `quant.quantize_kernel` and
+`quant.dequantize_kernel` this way; their tables (`fused.KERNELS[...]`) hold
+the specializations.
 
 ### Kernels made by a factory
 
