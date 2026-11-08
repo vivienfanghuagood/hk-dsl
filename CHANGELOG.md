@@ -6,6 +6,10 @@ The next version's notes collect here until it is released.
 
 ## Unreleased
 
+### Changes
+
+**fp16 prefill on vLLM** (#PRNUM). `vllm_prefill` now takes fp16 calls, not only bf16: fp16-served checkpoints (GPTQ / AWQ models run `--dtype float16`) had every prefill call declined. `paged_prefill_kernel(dtype=)`, `merge_kernel(dtype=)`, `vt_pack_kernel(dtype=)` and `rocm_kernel_for(fp16=)`; scores, softmax and O stay fp32. Qwen3.8-27B's d256 shapes in fp16: 4.0-8.7x vLLM's unified_attention on gfx1100, 2.1-3.2x on gfx1201, the same error.
+
 ## 0.9.14
 
 hk-dsl 0.9.14: on gfx1201 (Radeon AI PRO R9700), SGLang-Diffusion's attention (`sgld_attn`) and Wan's VAE

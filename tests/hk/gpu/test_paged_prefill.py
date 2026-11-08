@@ -222,7 +222,8 @@ def _rdna() -> bool:
 rocm_only = pytest.mark.skipif(not _rdna(), reason="layout='rocm' is RDNA's (strided globals)")
 
 
-def _rocm_case(reqs, head_dim=128, h_kv=2, group=8, seed=0, v_ones=False, page=ROCM_PAGE):
+def _rocm_case(reqs, head_dim=128, h_kv=2, group=8, seed=0, v_ones=False, page=ROCM_PAGE,
+               dtype=torch.bfloat16):
     """reqs: [(ctx, q_len)] over `page`-token pages. The token-major caches (for the reference)
     and ROCM_ATTN's: K x-split (blocks, kv_heads, d / 8, page, 8), V (blocks, kv_heads, d,
     page)."""
@@ -230,15 +231,13 @@ def _rocm_case(reqs, head_dim=128, h_kv=2, group=8, seed=0, v_ones=False, page=R
     seq = [c + n for c, n in reqs]
     max_pages = max(1, max(-(-s // page) for s in seq))
     n_blocks = len(reqs) * max_pages + 3
-    k = torch.randn(n_blocks, h_kv, page, head_dim, device="cuda", dtype=torch.bfloat16,
-                    generator=g)
+    k = torch.randn(n_blocks, h_kv, page, head_dim, device="cuda", dtype=dtype, generator=g)
     v = (torch.ones_like(k) if v_ones else
-         torch.randn(k.shape, device="cuda", dtype=torch.bfloat16, generator=g))
+         torch.randn(k.shape, device="cuda", dtype=dtype, generator=g))
     perm = torch.randperm(n_blocks, generator=g, device="cuda")[: len(reqs) * max_pages]
     table = perm.reshape(len(reqs), max_pages).to(torch.int32).contiguous()
     n_tok = sum(n for _, n in reqs)
-    q = torch.randn(n_tok, h_kv * group, head_dim, device="cuda", dtype=torch.bfloat16,
-                    generator=g)
+    q = torch.randn(n_tok, h_kv * group, head_dim, device="cuda", dtype=dtype, generator=g)
     starts = [0]
     for _, n in reqs:
         starts.append(starts[-1] + n)
@@ -343,10 +342,13 @@ def _nan_past_ends(k, v, table, lens):
 
 def _flash_run(reqs, head_dim=128, h_kv=2, group=8, dsplit=False, layout="flash", seed=0,
                decodes=True, warps=None, page=ROCM_PAGE, v_ones=False, kv_order="planes",
-               nan_tail=False, kv_splits=1, pack=False, merge_step=None):
+               nan_tail=False, kv_splits=1, pack=False, merge_step=None, fp16=False, rev=False,
+               vt=False):
+    tdt = torch.float16 if fp16 else torch.bfloat16
+    hdt = pp.fp16 if fp16 else pp.bf16
     q, (k, v), (k5, v4), table, lens, q_start = _rocm_case(reqs, head_dim=head_dim, h_kv=h_kv,
                                                            group=group, seed=seed, page=page,
-                                                           v_ones=v_ones)
+                                                           v_ones=v_ones, dtype=tdt)
     if nan_tail:
         k, v = _nan_past_ends(k, v, table, lens)
     n_tok, h, d = q.shape
@@ -356,9 +358,10 @@ def _flash_run(reqs, head_dim=128, h_kv=2, group=8, dsplit=False, layout="flash"
         f"t_pp_{layout}_d{head_dim}_g{group}{'_ds' if dsplit else ''}_w{warps}"
         f"{'_dec' if decodes else ''}{'' if page == ROCM_PAGE else f'_p{page}'}"
         f"{'' if kv_order == 'planes' else '_' + kv_order}{f'_ks{kv_splits}' if kv_splits > 1 else ''}"
-        f"{'_pk' if pack else ''}",
+        f"{'_pk' if pack else ''}{'_f16' if fp16 else ''}{'_r' if rev else ''}{'_vt' if vt else ''}",
         head_dim=head_dim, group=group, layout=layout, dsplit=dsplit, warps=warps,
-        decodes=decodes, page=page, kv_order=kv_order, kv_splits=kv_splits, pack=pack)
+        decodes=decodes, page=page, kv_order=kv_order, kv_splits=kv_splits, pack=pack,
+        dtype=hdt, rev=rev, vt_pages=vt)
     tile = 16 * (warps // 2 if dsplit else warps) // (group if pack else 1)
     tiles = pp.q_tiles(max(n for _, n in reqs), q.device, tile)
     if layout == "flash":
@@ -366,13 +369,22 @@ def _flash_run(reqs, head_dim=128, h_kv=2, group=8, dsplit=False, layout="flash"
         packed = [q.unsqueeze(0), out.unsqueeze(0)] if decodes and not dsplit else []
         if kv_splits > 1:
             packed = list(pp.split_parts(kv_splits, len(reqs) * tiles.shape[0] * tile, h, d,
-                                         q.device))
-        kern(q.view(n_tok, h * d), kv, kv, table, lens, q_start, tiles, out.view(n_tok, h * d),
+                                         q.device, dtype=tdt))
+        v_src = kv
+        if vt:
+            span = max(-(-s // page) for s in lens.tolist())
+            v_src = torch.full((len(reqs) * span, h_kv, d, page), float("nan"), device="cuda",
+                               dtype=tdt)
+            pp.vt_pack_kernel(f"t_vt_pack_d{head_dim}_p{page}_{kv_order}{'_f16' if fp16 else ''}",
+                              head_dim=head_dim, page=page, kv_order=kv_order, dtype=hdt)(
+                kv, table, lens, pp.vt_pack_span(max(lens.tolist()), q.device, page), v_src)
+        kern(q.view(n_tok, h * d), kv, v_src, table, lens, q_start, tiles, out.view(n_tok, h * d),
              *packed)
         if kv_splits > 1:
             pp.merge_kernel(f"t_pp_merge_d{head_dim}_ks{kv_splits}_t{tile}"
-                            f"{'' if merge_step is None else f'_m{merge_step}'}", head_dim=head_dim,
-                            kv_splits=kv_splits, q_tile=tile, step=merge_step)(
+                            f"{'' if merge_step is None else f'_m{merge_step}'}{'_f16' if fp16 else ''}",
+                            head_dim=head_dim, kv_splits=kv_splits, q_tile=tile, step=merge_step,
+                            dtype=hdt)(
                 lens, q_start, tiles, *packed, out.view(n_tok, h * d))
     else:
         kern(q.view(n_tok, h * d), *pp.rocm_views(k5, v4), table, lens, q_start, tiles,
@@ -577,6 +589,35 @@ def test_rev_needs_the_device_side_grid():
         pp.paged_prefill_kernel("t_pp_hk_rev", rev=True)
 
 
+# ---- fp16 (fp16-served checkpoints: GPTQ / AWQ models run --dtype float16) ------------------
+
+FP16_REQS = [(0, 300), (500, 1), (1000, 77), (33, 1), (7, 2)]
+
+
+@rocm_only
+@pytest.mark.parametrize("case", [
+    dict(),                                                              # TRITON_ATTN d128, decodes
+    dict(vt=True, rev=True),                                             # the route's V^T kernel
+    dict(layout="rocm", decodes=False, rev=True),                        # ROCM_ATTN's cache
+    dict(decodes=False, kv_splits=4),                                    # the KV split + merge
+    pytest.param(dict(head_dim=256, h_kv=1, dsplit=True, warps=8, vt=True, rev=True, page=544,
+                      kv_order="tokens"), marks=flash_dsplit_builds),    # MiniCPM-V's d256
+    pytest.param(dict(head_dim=256, h_kv=2, group=6, dsplit=True, warps=8, vt=True, rev=True,
+                      page=784, kv_order="heads"), marks=flash_dsplit_builds),   # Qwen3.8's d256
+], ids=["flash", "vt", "rocm", "kvsplit", "d256-544", "d256-784"])
+def test_fp16_matches_the_reference(case):
+    """dtype=fp16: the same kernels on fp16 q / cache / o, against the float64 reference, and the
+    rows a bf16 run computes agree with them to bf16's error."""
+    case = dict(case)
+    layout = case.pop("layout", "flash")
+    got, want, q_start = _flash_run(FP16_REQS, layout=layout, fp16=True, **case)
+    assert got.dtype == torch.float16
+    rows = (list(range(got.shape[0])) if layout == "flash" and case.get("decodes", True)
+            else _prefill_rows(FP16_REQS, q_start))
+    assert not torch.isnan(got[rows]).any()
+    _attn_ref.check(got[rows], want[rows])
+
+
 # ---- pages that are whole KV blocks (hybrid models: MiniCPM-V-4.7's are 544 tokens) ----------
 
 #: requests that start, end and cross page and block boundaries of 544-token pages: a prefix
@@ -712,7 +753,8 @@ MIXED = [(0, 300), (500, 1), (1000, 77), (33, 1)]
 HEAVY = [(0, 2048), (1000, 77), (33, 1)]
 
 
-def _route_case(monkeypatch, reqs, kv_order, page, vt, orig):
+def _route_case(monkeypatch, reqs, kv_order, page, vt, orig, dtype=torch.bfloat16, head_dim=128,
+                h_kv=2):
     """vllm_prefill's unified_attention stand-in on `reqs`, vLLM's kernel replaced by `orig`."""
     import inspect
 
@@ -721,14 +763,14 @@ def _route_case(monkeypatch, reqs, kv_order, page, vt, orig):
     monkeypatch.setattr(vp, "_ORIG_U", orig)
     monkeypatch.setattr(vp, "_U_SIG", inspect.signature(orig))
     monkeypatch.setattr(vp, "VT", vt)
-    q, (k, v), _, table, lens, q_start = _rocm_case(reqs, head_dim=128, h_kv=2, group=8,
-                                                    page=page)
+    q, (k, v), _, table, lens, q_start = _rocm_case(reqs, head_dim=head_dim, h_kv=h_kv, group=8,
+                                                    page=page, dtype=dtype)
     cache = _flash_cache(k, v, kv_order)
     nb, d = k.shape[0], k.shape[3]
     if kv_order == "planes":
-        kc, vc = cache.view(nb, 2, page, 2, d).unbind(1)
+        kc, vc = cache.view(nb, 2, page, h_kv, d).unbind(1)
     else:
-        both = cache.view(nb, page, 2, 2 * d)
+        both = cache.view(nb, page, h_kv, 2 * d)
         kc, vc = both[..., :d], both[..., d:]
     out = torch.full_like(q, 7.0)
     vp.unified_attention(q=q, k=kc, v=vc, out=out, cu_seqlens_q=q_start,
@@ -765,6 +807,25 @@ def test_vllm_prefill_takes_a_triton_attn_batch_and_matches(monkeypatch, kv_orde
     before = vp.PATCH.stats["hk"]
     out, want = _route_case(monkeypatch, reqs, kv_order, page, vt, _vllm_must_not_run)
     assert vp.PATCH.stats["hk"] == before + 1
+    _attn_ref.check(out, want)
+
+
+@pytest.mark.skipif(not _route_arch(), reason="the route is gfx1100's and gfx1201's")
+@pytest.mark.parametrize("vt", [False, True])
+@pytest.mark.parametrize("head_dim,h_kv,kv_order,page", [
+    (128, 2, "planes", 16),
+    pytest.param(256, 1, "tokens", 544, marks=flash_dsplit_builds)])
+def test_vllm_prefill_takes_an_fp16_batch(monkeypatch, head_dim, h_kv, kv_order, page, vt):
+    """fp16-served models (GPTQ / AWQ checkpoints run --dtype float16): the route takes their
+    calls on its fp16 kernels -- counted as hk, vLLM's kernel never called -- and matches."""
+    from hk.integration import vllm_prefill as vp
+
+    monkeypatch.setattr(vp, "GUARD", True)
+    before = vp.PATCH.stats["hk"]
+    out, want = _route_case(monkeypatch, HEAVY, kv_order, page, vt, _vllm_must_not_run,
+                            dtype=torch.float16, head_dim=head_dim, h_kv=h_kv)
+    assert vp.PATCH.stats["hk"] == before + 1
+    assert out.dtype == torch.float16
     _attn_ref.check(out, want)
 
 

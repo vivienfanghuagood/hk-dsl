@@ -72,19 +72,19 @@ def _built(make, quiet: bool = False):
         return None
 
 
-def _op(head_dim: int, group: int, scale: Optional[float], page: int):
-    key = (head_dim, group, scale, page)
+def _op(head_dim: int, group: int, scale: Optional[float], page: int, fp16: bool = False):
+    key = (head_dim, group, scale, page, fp16)
     if key not in _OPS:
         from ..ops import paged_prefill as pp  # noqa: PLC0415
 
         def make():
             if head_dim > 128:
                 return pp.paged_prefill_kernel(
-                    f"paged_prefill_rocm_d{head_dim}_g{group}_p{page}_ds"
+                    f"paged_prefill_rocm_d{head_dim}_g{group}_p{page}_ds{_dt(fp16)[1]}"
                     f"{'' if scale is None else '_s%08x' % (hash(scale) & 0xffffffff)}",
                     head_dim=head_dim, group=group, scale=scale, layout="rocm", page=page,
-                    dsplit=True, warps=12), 96
-            return pp.rocm_kernel_for(head_dim, group, scale, page), pp.Q_TILE
+                    dsplit=True, warps=12, dtype=_dt(fp16)[0]), 96
+            return pp.rocm_kernel_for(head_dim, group, scale, page, fp16=fp16), pp.Q_TILE
         _OPS[key] = _built(make)
     return _OPS[key]
 
@@ -118,9 +118,9 @@ def why_not(q, o, kv_cache_dtype, k_cache, v_cache, b_loc, b_start_loc, b_seq_le
 
     if switches.arch() not in ARCHES:
         return f"arch {switches.arch()}"
-    if q.dtype != torch.bfloat16 or o.dtype != torch.bfloat16:
+    if q.dtype not in (torch.bfloat16, torch.float16) or o.dtype != q.dtype:
         return f"dtype {q.dtype}"
-    if not str(kv_cache_dtype).startswith("auto") or k_cache.dtype != torch.bfloat16:
+    if not str(kv_cache_dtype).startswith("auto") or k_cache.dtype != q.dtype:
         return f"kv cache {kv_cache_dtype}"
     if alibi_slopes is not None or sinks is not None or fp8_out_scale is not None:
         return "alibi / sinks / fp8 output"
@@ -213,7 +213,8 @@ def context_attention_fwd(*args, **kwargs):
     n, h, d = q.shape
     sm_scale = g["sm_scale"]
     scale = None if sm_scale is None or sm_scale == d ** -0.5 else float(sm_scale)
-    got = _op(d, h // k_cache.shape[1], scale, int(v_cache.shape[3]))
+    got = _op(d, h // k_cache.shape[1], scale, int(v_cache.shape[3]),
+              fp16=_is_f16(q))
     if got is None:
         PATCH.count("fallback")
         return _ORIG(*args, **kwargs)
@@ -284,6 +285,17 @@ _ORIG_U = None
 _FLASH: dict = {}
 
 
+def _is_f16(t) -> bool:
+    return str(t.dtype) == "torch.float16"
+
+
+def _dt(fp16: bool):
+    """(hk dtype, kernel-name tag) for the activations: bf16, or fp16 for fp16-served models."""
+    from ..types import bf16, fp16 as f16  # noqa: PLC0415
+
+    return (f16, "_f16") if fp16 else (bf16, "")
+
+
 def _ptag(page: int) -> str:
     return "" if page == 16 else f"_p{page}"
 
@@ -293,8 +305,8 @@ def _otag(order: str) -> str:
 
 
 def _flash_op(head_dim: int, group: int, scale: Optional[float], page: int = 16,
-              order: str = "planes", decodes: bool = True):
-    key = (head_dim, group, scale, page, order, decodes)
+              order: str = "planes", decodes: bool = True, fp16: bool = False):
+    key = (head_dim, group, scale, page, order, decodes, fp16)
     if key not in _FLASH:
         from ..ops import paged_prefill as pp  # noqa: PLC0415
 
@@ -304,9 +316,10 @@ def _flash_op(head_dim: int, group: int, scale: Optional[float], page: int = 16,
             tag = "" if scale is None else "_s%08x" % (hash(scale) & 0xffffffff)
             return pp.paged_prefill_kernel(
                 f"paged_prefill_flash_d{head_dim}_g{group}{'_ds' if ds else ''}_r{_ptag(page)}"
-                f"{_otag(order)}{'' if decodes else '_nd'}{tag}", head_dim=head_dim, group=group,
-                scale=scale, layout="flash", dsplit=ds, warps=warps, decodes=decodes, page=page,
-                kv_order=order, rev=True), 16 * (warps // 2 if ds else warps)
+                f"{_otag(order)}{'' if decodes else '_nd'}{_dt(fp16)[1]}{tag}", head_dim=head_dim,
+                group=group, scale=scale, layout="flash", dsplit=ds, warps=warps, decodes=decodes,
+                page=page, kv_order=order, rev=True, dtype=_dt(fp16)[0]), \
+                16 * (warps // 2 if ds else warps)
         _FLASH[key] = _built(make)
     return _FLASH[key]
 
@@ -327,11 +340,11 @@ _KVS_OPS: dict = {}
 
 
 def _kvs_ops(head_dim: int, group: int, scale: Optional[float], page: int, order: str,
-             splits: int, warps: int, pack: bool = False):
+             splits: int, warps: int, pack: bool = False, fp16: bool = False):
     """(walk launch, merge launch, Q tile tokens) for kv_splits = `splits`, decodes=False, GQA-packed
     tiles with `pack`, or None (not built spill-free here, or `group` does not divide a packed
     tile's warps)."""
-    key = (head_dim, group, scale, page, order, splits, warps, pack)
+    key = (head_dim, group, scale, page, order, splits, warps, pack, fp16)
     if key not in _KVS_OPS:
         from ..ops import paged_prefill as pp  # noqa: PLC0415
 
@@ -344,12 +357,13 @@ def _kvs_ops(head_dim: int, group: int, scale: Optional[float], page: int, order
         tag = "" if scale is None else "_s%08x" % (hash(scale) & 0xffffffff)
         walk = _built(lambda: (pp.paged_prefill_kernel(
             f"paged_prefill_flash_d{head_dim}_g{group}{'_ds' if ds else ''}{_ptag(page)}"
-            f"{_otag(order)}_nd_w{warps}_ks{splits}{'_pk' if pack else ''}{tag}", head_dim=head_dim,
-            group=group, scale=scale, layout="flash", dsplit=ds, warps=warps, decodes=False,
-            page=page, kv_order=order, kv_splits=splits, pack=pack), tile))
+            f"{_otag(order)}_nd_w{warps}_ks{splits}{'_pk' if pack else ''}{_dt(fp16)[1]}{tag}",
+            head_dim=head_dim, group=group, scale=scale, layout="flash", dsplit=ds, warps=warps,
+            decodes=False, page=page, kv_order=order, kv_splits=splits, pack=pack,
+            dtype=_dt(fp16)[0]), tile))
         merge = _built(lambda: (pp.merge_kernel(
-            f"paged_prefill_merge_d{head_dim}_ks{splits}_t{tile}", head_dim=head_dim,
-            kv_splits=splits, q_tile=tile), tile))
+            f"paged_prefill_merge_d{head_dim}_ks{splits}_t{tile}{_dt(fp16)[1]}", head_dim=head_dim,
+            kv_splits=splits, q_tile=tile, dtype=_dt(fp16)[0]), tile))
         _KVS_OPS[key] = (walk[0], merge[0], tile) if walk and merge else None
     return _KVS_OPS[key]
 
@@ -501,11 +515,11 @@ _VT_SCRATCH: dict = {}
 
 
 def _vt_ops(head_dim: int, group: int, scale: Optional[float], page: int = 16,
-            order: str = "planes", decodes: bool = True):
+            order: str = "planes", decodes: bool = True, fp16: bool = False):
     """(pack launch, vt_pages launch, Q tile rows), or None (not built here)."""
     ds = head_dim > 128
     warps = VT_DS_WARPS if ds else 12
-    key = (head_dim, group, scale, page, order, decodes)
+    key = (head_dim, group, scale, page, order, decodes, fp16)
     if key not in _VT_OPS:
         _VT_OPS[key] = None
         from ..ops import paged_prefill as pp  # noqa: PLC0415
@@ -514,26 +528,27 @@ def _vt_ops(head_dim: int, group: int, scale: Optional[float], page: int = 16,
         main = _built(lambda: (pp.paged_prefill_kernel(
             f"paged_prefill_flashvt_d{head_dim}_g{group}{'_ds' if ds else ''}_r"
             f"{_ptag(page)}"
-            f"{_otag(order)}{'' if decodes else '_nd'}{tag}",
+            f"{_otag(order)}{'' if decodes else '_nd'}{_dt(fp16)[1]}{tag}",
             head_dim=head_dim, group=group, scale=scale, layout="flash", warps=warps,
-            dsplit=ds, rev=True, decodes=decodes, vt_pages=True, page=page, kv_order=order),
-            16 * (warps // 2 if ds else warps)))
+            dsplit=ds, rev=True, decodes=decodes, vt_pages=True, page=page, kv_order=order,
+            dtype=_dt(fp16)[0]), 16 * (warps // 2 if ds else warps)))
         pack = _built(lambda: (pp.vt_pack_kernel(
-            f"paged_vt_pack_d{head_dim}{_ptag(page)}{_otag(order)}", head_dim=head_dim,
-            page=page, kv_order=order), 0))
+            f"paged_vt_pack_d{head_dim}{_ptag(page)}{_otag(order)}{_dt(fp16)[1]}",
+            head_dim=head_dim, page=page, kv_order=order, dtype=_dt(fp16)[0]), 0))
         if main is not None and pack is not None:
             _VT_OPS[key] = (pack[0], main[0], main[1])
     return _VT_OPS[key]
 
 
-def _vt_scratch(device, slots: int, hkv: int, d: int, page: int = 16):
+def _vt_scratch(device, slots: int, hkv: int, d: int, page: int = 16, dtype=None):
     import torch  # noqa: PLC0415
 
-    key = (str(device), hkv, d, page)
+    dtype = dtype or torch.bfloat16
+    key = (str(device), hkv, d, page, dtype)
     got = _VT_SCRATCH.get(key)
     if got is None or got.shape[0] < slots:
         got = _VT_SCRATCH[key] = torch.empty(1 << (slots - 1).bit_length(), hkv, d, page,
-                                             device=device, dtype=torch.bfloat16)
+                                             device=device, dtype=dtype)
     return got
 
 
@@ -632,7 +647,8 @@ def u_why_not(a: dict) -> str:
     if unknown:
         return f"{unknown} set (an argument hk does not know)"
     q, k, v, out = a["q"], a["k"], a["v"], a["out"]
-    if q.dtype != torch.bfloat16 or out.dtype != torch.bfloat16 or k.dtype != torch.bfloat16:
+    if (q.dtype not in (torch.bfloat16, torch.float16) or out.dtype != q.dtype
+            or k.dtype != q.dtype):
         return f"dtype {q.dtype} / cache {k.dtype}"
     if q.dim() != 3 or q.shape[-1] not in (64, 128, 256):
         return f"head size {q.shape[-1]}"
@@ -1094,13 +1110,14 @@ def unified_attention(*args, **kwargs):
     sc = a["softmax_scale"]
     scale = None if sc is None or sc == d ** -0.5 else float(sc)
     page = int(a["k"].shape[1])
-    got = _flash_op(d, h // a["k"].shape[2], scale, page, order, decodes)
+    f16 = _is_f16(q)
+    got = _flash_op(d, h // a["k"].shape[2], scale, page, order, decodes, fp16=f16)
     if decodes and SPLIT:
         # the split's decodes=False kernels, built with the first ones (vLLM's warm-up run) so
         # the first mixed batch of a fresh cache does not compile them on the serving path
-        _flash_op(d, h // a["k"].shape[2], scale, page, order, False)
+        _flash_op(d, h // a["k"].shape[2], scale, page, order, False, fp16=f16)
         if VT:
-            _vt_ops(d, h // a["k"].shape[2], scale, page, order, False)
+            _vt_ops(d, h // a["k"].shape[2], scale, page, order, False, fp16=f16)
     if decodes:
         _kvs_warm(a)                        # the KV split's, likewise
     if got is None:
@@ -1114,11 +1131,11 @@ def unified_attention(*args, **kwargs):
         hkv = a["k"].shape[2]
         max_k = int(a.get("max_seqlen_k") or 0)
         slots = len(a["seqused_k"]) * -(-max_k // page)
-        vt_ops = (_vt_ops(d, h // hkv, scale, page, order, decodes)
+        vt_ops = (_vt_ops(d, h // hkv, scale, page, order, decodes, fp16=f16)
                   if 0 < slots * hkv * d * page * 2 <= VT_CAP_BYTES else None)
         if vt_ops is not None:
             pack, op, tile = vt_ops
-            v_src = _vt_scratch(q.device, slots, hkv, d, page)
+            v_src = _vt_scratch(q.device, slots, hkv, d, page, dtype=q.dtype)
             pack(kv, a["block_table"], a["seqused_k"], pp.vt_pack_span(max_k, q.device, page),
                  v_src)
     args = [q.reshape(n, h * d), kv, v_src, a["block_table"], a["seqused_k"], a["cu_seqlens_q"],
@@ -1163,7 +1180,7 @@ def _kvs_warm(a: dict) -> None:
     if pw <= KVS_PACK_WARPS:
         builds |= {(pw, sp, True) for *_, sp in packed}
     for w, sp, pk in builds:
-        _kvs_ops(d, group, scale, int(k.shape[1]), kv[1], sp, w, pk)
+        _kvs_ops(d, group, scale, int(k.shape[1]), kv[1], sp, w, pk, fp16=_is_f16(q))
 
 
 def _kvsplit(a: dict, splits: int, warps: int = 0, pack: bool = False) -> bool:
@@ -1180,7 +1197,7 @@ def _kvsplit(a: dict, splits: int, warps: int = 0, pack: bool = False) -> bool:
     if KVS_PACK is not None:
         pack = KVS_PACK
     got = _kvs_ops(d, h // a["k"].shape[2], scale, page, order, splits, warps or kvs_warps(d),
-                   pack)
+                   pack, fp16=_is_f16(q))
     if got is None:
         return False
     walk, merge, tile = got
@@ -1188,7 +1205,8 @@ def _kvsplit(a: dict, splits: int, warps: int = 0, pack: bool = False) -> bool:
 
     used = a["seqused_k"]
     tiles = pp.q_tiles(int(a["max_seqlen_q"]), q.device, tile)
-    o_part, ml_part = pp.split_parts(splits, len(used) * tiles.shape[0] * tile, h, d, q.device)
+    o_part, ml_part = pp.split_parts(splits, len(used) * tiles.shape[0] * tile, h, d, q.device,
+                                     dtype=q.dtype)
     o2 = out.reshape(n, h * d)
     walk(q.reshape(n, h * d), kv, kv, a["block_table"], used, a["cu_seqlens_q"], tiles, o2,
          o_part, ml_part)
