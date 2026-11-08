@@ -341,6 +341,7 @@
   "vllm_prefill": {
    "_error": "ModuleNotFoundError: No module named 'vllm'"
   },
+  "vllm_quark": null,
   "vllm_sdpa": {
    "_error": "ModuleNotFoundError: No module named 'vllm'"
   },

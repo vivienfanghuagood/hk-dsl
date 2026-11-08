@@ -50,6 +50,7 @@ and which rule decided.
 | DeepSeek-V4.1 index layers under `--monokernel`: one launch for the compressor, indexer K / Q, logits and top-k, at decode steps of up to 8 rows | `HK_VLLM_DSV41_INDEX` | **on, gfx950** | caches and q byte-identical to vLLM's chain in vLLM, top-k sets equal ([the index launch](vllm-routes.md#the-deepseek-v41-index-launch)); with `--monokernel` and hk's other default routes, real-weight GSM8K-1319 within stock's noise (McNemar p >= 0.39) |
 | AWQ 4-bit linear | `HK_VLLM_INT4` | **on, gfx1100, gfx950 and gfx1201** | greedy tokens identical to stock's, Qwen3-8B/14B-AWQ; on gfx1201 Qwen3-8B-AWQ tokens identical |
 | GPTQ 4-bit linear (symmetric, grouped; RDNA3W4A16LinearKernel) | `HK_VLLM_GPTQ` | **on, gfx1100 and gfx1201** | Qwen3.8-27B-GPTQ-Int4 against stock-fair (TRITON_ATTN, TunableOp with a 256 MB rotating buffer): GSM8K-200 equal, TPOT in the RDNA scorecard; act-order checkpoints are refused and counted (`vllm_gptq.REFUSED`) |
+| AMD Quark W4A16 linear (symmetric int4, grouped): gfx1201's RDNAHybridW4A16LinearKernel in place, gfx1100's RDNA3W4A16LinearKernel on a copy | `HK_VLLM_QUARK` | **on, gfx1201** | amd/Qwen3.8-27B-Quark-AWQ-INT4-W4A16 on one R9700, one process, 4 alternating rounds: GSM8K-200 equal, TPOT at 8 concurrent requests 1.64x, TTFT 1.16-1.17x (disjoint), level at 1 and 4; gfx1100 not measured end to end, so off there |
 | unquantized linear (+ tuning at load) | `HK_VLLM_GEMM` | **on, gfx1100 and gfx1201** | tokens identical, or a bf16 near-tie; on gfx1201 tokens identical and routing counts equal round for round, Qwen3-1.7B and Qwen3.5-9B, also with gfx1201's shipped small-M schedules; on gfx950 it was measured to change nothing against aiter, so it stays off there |
 | bf16 MoE GEMMs | `HK_VLLM_MOE` | **on, gfx1100 and gfx1201** | OLMoE tokens identical; with aiter on gfx950 it routes nothing; on gfx1201 up to 2 tokens a step only, OLMoE tokens identical |
 | 4-bit MoE GEMMs with zero points (AWQ through vLLM's moe_wna16), up to 32 tokens a step, on vLLM's own tensors | `HK_VLLM_MOE_WNA16` | **on, gfx1100 and gfx1201** | Qwen3.6-35B-A3B-AWQ end to end against stock: GSM8K equal (#252) |
@@ -141,6 +142,7 @@ first compile in each process prints one line:
 | 4-bit MoE GEMMs (moe_wna16) | `vllm_moe_wna16.py` | `invoke_fused_moe_wna16_triton_kernel` and `try_get_optimal_moe_config`, rebound by identity | `HK_VLLM_MOE_WNA16` (on, gfx1100 and gfx1201) |
 | AWQ linear layers | `vllm_int4.py` | `AutoAWQLinearMethod.process_weights_after_loading` and `.apply` | `HK_VLLM_INT4` (on) |
 | GPTQ linear layers | `vllm_gptq.py` | `AutoGPTQLinearMethod.process_weights_after_loading` and `.apply` | `HK_VLLM_GPTQ` (on, gfx1100 and gfx1201) |
+| Quark W4A16 linear layers | `vllm_quark.py` | `QuarkW4A16Int4.process_weights_after_loading` and `.apply_weights` | `HK_VLLM_QUARK` (on, gfx1201) |
 | MXFP8 linear layers | `vllm_mxfp8.py` | `RocmDotScaledMxfp8LinearKernel.process_weights_after_loading` and `.apply_weights` | `HK_VLLM_MXFP8` (on, gfx950) |
 | MXFP4 MoE, a8w4 | `vllm_moe_a8w4.py` | `aiter.fused_moe.fused_moe`, with its signature | `HK_VLLM_MOE_A8W4` (on, gfx950) |
 | DeepSeek-V4.1 index layers, `--monokernel` | `vllm_dsv41_index.py` | `mono_decode._select`, through an import hook | `HK_VLLM_DSV41_INDEX` (on, gfx950) |
@@ -640,6 +642,7 @@ not restate it:
 | `HK_VLLM_INT4` | `_vllm_plugin.py` | route AWQ linear layers: fp16/bf16 batches up to 64 tokens on hk's decode GEMM, and on gfx1201 fp16 batches of 65-512 tokens on the large-batch form (a route) |
 | `HK_VLLM_INT4_LARGE_MAX_M` | `vllm_int4.py` | the most tokens a batch takes the large-batch W4A16 form at (default 512 on gfx1201, unused elsewhere); `0`: the form off |
 | `HK_VLLM_GPTQ` | `_vllm_plugin.py` | route 4-bit symmetric GPTQ layers' fp16/bf16 batches of 1-64 tokens (a route) |
+| `HK_VLLM_QUARK` | `_vllm_plugin.py` | route AMD Quark W4A16 (symmetric int4) layers: on gfx1201's RDNAHybridW4A16LinearKernel the fp16 batches vLLM runs on Triton, on hk's 4-bit forms in place; on gfx1100's RDNA3W4A16LinearKernel 16-bit batches of 1-64 tokens on hk's decode GEMM (a route; on, gfx1201) |
 | `HK_VLLM_MXFP8` | `_vllm_plugin.py` | DeepSeek-V4.1's block-scaled MXFP8 linear layers at M >= 2048, two shapes from their own M (`vllm_mxfp8.MIN_M_NK`), six with measured M ranges below that (`vllm_mxfp8.RANGES`) (a route) |
 | `HK_MXFP8_ANY` | `vllm_mxfp8.py` | `1`: the MXFP8 route takes any (N, K) of whole tiles, not only the measured TP2 shapes (default off) |
 | `HK_VLLM_MOE_A8W4` | `_vllm_plugin.py` | DeepSeek-V4.1's AITER a8w4 MoE at M >= `HK_MOE_A8W4_MIN_M` (2560) (a route) |

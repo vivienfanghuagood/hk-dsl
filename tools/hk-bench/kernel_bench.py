@@ -393,6 +393,11 @@ def quantized(qc: dict, name: str) -> bool:
     import re
 
     mods = [f"model.layers.0.{m}" for m in MODULES.get(name, (name,))]
+    if qc.get("quant_method") == "quark":        # Quark lists what it leaves in 16 bits by name
+        import fnmatch
+
+        return not any(fnmatch.fnmatch(e, f"model.*layers.*.{m.split('.', 3)[3]}")
+                       and not e.startswith("mtp.") for e in qc.get("exclude") or () for m in mods)
     return not any(rule.startswith("-:") and re.fullmatch(rule[2:], m)
                    for rule in (qc.get("dynamic") or {}) for m in mods)
 
@@ -431,7 +436,8 @@ def run_linear_w4(a, only: set, notes: dict) -> List[dict]:
 
     cfg = routes.model_config(a.model)
     qc = cfg.get("quantization_config") or cfg.get("text_config", {}).get("quantization_config") or {}
-    group = int(qc.get("group_size") or 128)
+    group = int(qc.get("group_size") or ((qc.get("global_quant_config") or {}).get("weight") or {})
+                .get("group_size") or 128)    # Quark: global_quant_config.weight.group_size
     awq = qc.get("quant_method") == "awq"
     if awq:
         os.environ.setdefault("VLLM_USE_TRITON_AWQ", "1")     # ROCm's AWQ is the Triton kernel
@@ -500,6 +506,15 @@ def run_linear_w4(a, only: set, notes: dict) -> List[dict]:
                     "torch.ops.vllm.rdna_hybrid_w4a16_apply (RDNAHybridW4A16LinearKernel: its HIP "
                     "skinny GEMM at small batches, Triton above; what vLLM's GPTQ layers run on "
                     "gfx1201), on pack_skinny_int4's layout, symmetric (no zero points)")
+            if hy is not None and (W.exllama_takes(m, n, k, group) if m <= 64
+                                   else W.exllama_large_takes(n, k, group)):
+                fn = W.exllama_matmul if m <= 64 else W.exllama_large_matmul
+                arms["hk exllama (in place)"] = (
+                    [lambda i=i, x=x, fn=fn: fn(x, hy[1][i][0].view(torch.int32), hy[1][i][1], group)
+                     for i in range(copies)],
+                    "hk.ops.w4a16.exllama_matmul (<= 64 tokens) / exllama_large_matmul on "
+                    "RDNAHybridW4A16LinearKernel's own tensors, as vllm_gptq / vllm_quark run them "
+                    "on gfx1201")
             if ops is not None and not awq and hasattr(ops, "gptq_gemm_rdna3"):
                 arms["vLLM gptq_gemm_rdna3"] = (
                     [lambda i=i, x=x: call_by_name(
