@@ -3,7 +3,7 @@
 hk-dsl compiles every kernel with the hipcc on your `PATH` (or `HK_HIPCC`), so the AMD clang behind
 that hipcc decides what builds. `hipcc --version` prints it (`AMD clang version 22.0.0git ...`). This
 page says which clang each GPU is built and run with, how hk checks it, and what is known to break,
-for the 0.8.0 to 0.9.14 wheels. Which GPUs are supported at all is
+for the 0.8.0 to 0.9.15 wheels. Which GPUs are supported at all is
 [supported hardware](supported-hardware.md).
 
 ## The matrix

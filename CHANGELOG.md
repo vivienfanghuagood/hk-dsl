@@ -4,15 +4,36 @@ Release notes for each version are also on its
 [GitHub release](https://github.com/vivienfanghuagood/hk-dsl/releases).
 The next version's notes collect here until it is released.
 
-## Unreleased
+## 0.9.15
 
-**MoE routes: a call after `revert()` no longer raises.** `vllm_moe.revert()` (and `vllm_moe_wna16`, `sglang_moe`) restored the engine's `try_get_optimal_moe_config`, but any module that had bound hk's wrapper by name kept it, and the wrapper then called the cleared original: `'NoneType' object is not callable` on the next MoE call. The wrapper now holds the original itself and passes it through once reverted; reverting one of two chained MoE routes leaves a working chain.
+hk-dsl 0.9.15: on gfx1201, AMD Quark W4A16 checkpoints run on hk's 4-bit forms (`vllm_quark`, on by
+default); vLLM's prefill route and hk's paged decode take fp16, so fp16-served GPTQ / AWQ checkpoints get
+hk's prefill; a MoE route called after `revert()` no longer raises. No change to the language or the
+dialect (`hk-dialect-8`).
 
-**vLLM: AMD Quark W4A16 checkpoints on hk's 4-bit forms** (`vllm_quark`, on by default on gfx1201). A Quark int4 weight-only checkpoint (e.g. amd/Qwen3.8-27B-Quark-AWQ-INT4-W4A16) loads through vLLM's `QuarkW4A16Int4` onto the kernels GPTQ layers get. On gfx1201 the route runs the fp16 batches vLLM sends to its Triton GEMM on hk's forms in place, no second copy: at the checkpoint's group 128, 1.9-3.6x vLLM at 6-32 tokens and 1.13-1.30x at 128-4096 (prefill) on Qwen3.8-27B's shapes, the same error. End to end on one R9700 (amd/Qwen3.8-27B-Quark-AWQ-INT4-W4A16, 4 alternating rounds): TPOT at 8 concurrent requests 1.64x, TTFT at 512 / 2048 tokens 1.16x / 1.17x, level at 1 and 4, GSM8K-200 equal. On gfx1100 hk keeps a copy of Quark's codes in its symmetric layout (new `hk.ops.w4a16.repack_quark`) for 1-64 tokens; opt-in there (`HK_VLLM_QUARK=1`) until measured.
+On PyPI: `pip install hk-dsl`, for CPython 3.10 to 3.13 on Linux x86_64 with glibc 2.35 or newer
+(Ubuntu 22.04 and later, and vLLM's ROCm images): one `manylinux_2_35` wheel per interpreter. The
+wheels below are the same files.
+
+    pip install hk_dsl-0.9.15-cp312-cp312-manylinux_2_35_x86_64.whl
 
 ### Changes
 
+**vLLM: AMD Quark W4A16 checkpoints on hk's 4-bit forms** (`vllm_quark`, on by default on gfx1201; #336). A Quark int4 weight-only checkpoint (e.g. amd/Qwen3.8-27B-Quark-AWQ-INT4-W4A16) loads through vLLM's `QuarkW4A16Int4` onto the kernels GPTQ layers get. On gfx1201 the route runs the fp16 batches vLLM sends to its Triton GEMM on hk's forms in place, no second copy: at the checkpoint's group 128, 1.9-3.6x vLLM at 6-32 tokens and 1.13-1.30x at 128-4096 (prefill) on Qwen3.8-27B's shapes, the same error. End to end on one R9700 (amd/Qwen3.8-27B-Quark-AWQ-INT4-W4A16, 4 alternating rounds): TPOT at 8 concurrent requests 1.64x, TTFT at 512 / 2048 tokens 1.16x / 1.17x, level at 1 and 4, GSM8K-200 equal. On gfx1100 hk keeps a copy of Quark's codes in its symmetric layout (new `hk.ops.w4a16.repack_quark`) for 1-64 tokens; opt-in there (`HK_VLLM_QUARK=1`) until measured.
+
 **fp16 prefill and decode on vLLM** (#335). `vllm_prefill` now takes fp16 calls, not only bf16: fp16-served checkpoints (GPTQ / AWQ models run `--dtype float16`) had every prefill call declined. `paged_prefill_kernel(dtype=)`, `merge_kernel(dtype=)`, `vt_pack_kernel(dtype=)` and `rocm_kernel_for(fp16=)`; scores, softmax and O stay fp32. Qwen3.8-27B's d256 shapes in fp16: 4.0-8.7x vLLM's unified_attention on gfx1100, 2.1-3.2x on gfx1201, the same error. Its decode-only route (d256) takes fp16 too: `paged_decode`'s walk and merge take `dtype=` / `fp16=` (gfx1100 B1 8k 1.77x, B8 32k 1.08x, as in bf16).
+
+**MoE routes: a call after `revert()` no longer raises** (#334). `vllm_moe.revert()` (and `vllm_moe_wna16`, `sglang_moe`) restored the engine's `try_get_optimal_moe_config`, but any module that had bound hk's wrapper by name kept it, and the wrapper then called the cleared original: `'NoneType' object is not callable` on the next MoE call. The wrapper now holds the original itself and passes it through once reverted; reverting one of two chained MoE routes leaves a working chain.
+
+**Documentation and tools** (#332, #333). docs/sglang.md: SGLang-Diffusion's routes per GPU on 0.9.14. The SGLang A/B tool (`sglang_toggle_ab.py`) gets SGLang-Diffusion arms.
+
+### How this release was verified
+
+The MI355X CI cards were held by another user's workload, so the gfx950 and gfx950-vllm GPU tiers did not run on #334, #335, #336 or this release; CI and the gfx1100 and gfx1201 GPU tiers did (a2, 2026-11-08). The gfx950 tiers run on main when a card frees.
+
+### All pull requests
+
+#330, #332, #333, #334, #335, #336.
 
 ## 0.9.14
 
