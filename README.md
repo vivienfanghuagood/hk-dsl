@@ -75,7 +75,7 @@ against torch eager and `torch.compile` on your GPU. It exits with 0 (pass),
 | GPU | arch | level | engine routes on by default |
 |---|---|---|---|
 | Radeon PRO W7900, Radeon PRO W7900D, Radeon RX 7900 | gfx1100 (RDNA3) | tested | [17](docs/supported-hardware.md#engine-routes-on-each) |
-| Radeon AI PRO R9700, Radeon RX 9070 | gfx1201 (RDNA4) | tested | [8](docs/supported-hardware.md#engine-routes-on-each) |
+| Radeon AI PRO R9700, Radeon RX 9070 | gfx1201 (RDNA4) | tested | [9](docs/supported-hardware.md#engine-routes-on-each) |
 | Instinct MI300X, Instinct MI325X | gfx942 (CDNA3) | compile-only | [none](docs/supported-hardware.md#engine-routes-on-each) |
 | Instinct MI355X, Instinct MI350X | gfx950 (CDNA4) | tested | [5](docs/supported-hardware.md#engine-routes-on-each) |
 
@@ -174,7 +174,7 @@ slow operand layout, a copy racing a barrier ([the traps](docs/correctness-gates
 ## Install
 
 `pip install hk-dsl`, for CPython 3.10 to 3.13 on Linux x86_64 with glibc
-2.35 or newer (Ubuntu 22.04 and later). The release is 0.9.14: one
+2.35 or newer (Ubuntu 22.04 and later). The release is 0.9.15: one
 `manylinux_2_35` wheel for each of cp310, cp311, cp312 and cp313, all built on
 glibc 2.35. A wheel carries the HipKittens headers, so at run time it needs ROCm's hipcc
 (on `PATH`, or `HK_HIPCC`) and, to launch, a ROCm build of torch (not a

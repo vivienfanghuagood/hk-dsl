@@ -78,6 +78,16 @@ def test_the_config_asks_for_16_row_blocks_at_small_batches(monkeypatch):
     assert r.try_get_optimal_moe_config(w1, w2, 8, "int4_w4a16", 2049, [0, 32])["BLOCK_SIZE_M"] == 32
 
 
+def test_the_bound_config_is_vllms_unchanged_once_reverted(monkeypatch):
+    cfg = r._config_wrapper(lambda *a: {"BLOCK_SIZE_M": 32})
+    w1, w2 = (256, 1024, 1024), (256, 2048, 256)
+    monkeypatch.setattr(r, "_ORIG", object())                               # patched
+    assert cfg(w1, w2, 8, "int4_w4a16", 8, [0, 32])["BLOCK_SIZE_M"] == 16
+    monkeypatch.setattr(r, "_ORIG", None)                                   # reverted
+    monkeypatch.setattr(r, "_ORIG_CONFIG", None)
+    assert cfg(w1, w2, 8, "int4_w4a16", 8, [0, 32])["BLOCK_SIZE_M"] == 32
+
+
 def test_apply_without_vllm_reports_rather_than_raises():
     if _common.importable("vllm"):
         pytest.skip("vllm is installed here; the gpu tier covers apply()")

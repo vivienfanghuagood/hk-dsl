@@ -214,6 +214,30 @@ def judge_vllm_gptq(f: dict) -> List[str]:
                       f"AutoGPTQLinearMethod.apply takes {f['apply']}"))
 
 
+def gather_vllm_quark() -> Optional[dict]:
+    """The QuarkW4A16Int4 entry points the stand-ins wrap and forward positionally, and the names
+    it gives its kernel (the route reads the kernel's tensors by them). None where this vLLM has
+    no Quark W4A16 scheme: nothing to route."""
+    try:
+        from vllm.model_executor.layers.quantization.quark.schemes import (  # noqa: PLC0415
+            quark_w4a16_int4 as qs)
+    except ImportError:
+        return None
+    cls = qs.QuarkW4A16Int4
+    return {"pwal": names(cls.process_weights_after_loading), "apply": names(cls.apply_weights),
+            "class_has": {a: a in inspect.getsource(cls)
+                          for a in ("self.is_symmetric", "self.group_size", "self.kernel",
+                                    "self.pack_reorder")}}
+
+
+def judge_vllm_quark(f: dict) -> List[str]:
+    return (_expect(f["pwal"] == ["self", "layer"],
+                    f"QuarkW4A16Int4.process_weights_after_loading takes {f['pwal']}")
+            + _expect(f["apply"] == ["self", "layer", "x", "bias"],
+                      f"QuarkW4A16Int4.apply_weights takes {f['apply']}")
+            + [f"QuarkW4A16Int4 no longer sets {p}" for p, ok in f["class_has"].items() if not ok])
+
+
 def gather_vllm_gemm() -> dict:
     from vllm.model_executor.layers import utils as vu  # noqa: PLC0415
     from vllm.v1.worker import gpu_worker  # noqa: PLC0415
@@ -600,7 +624,7 @@ def judge_sgld_ditnorm(f: dict) -> List[str]:
 #: route -> (gather, judge). gather returns the route's facts, or None where it does not apply here.
 SPLIT: Dict[str, tuple] = {
     r: (globals()[f"gather_{r}"], globals()[f"judge_{r}"]) for r in (
-        "vllm_mxfp8", "vllm_moe_a8w4", "vllm_int4", "vllm_gptq", "vllm_gemm", "vllm_moe",
+        "vllm_mxfp8", "vllm_moe_a8w4", "vllm_int4", "vllm_gptq", "vllm_quark", "vllm_gemm", "vllm_moe",
         "vllm_moe_wna16", "vllm_sdpa", "vllm_backend", "vllm_dsv41_index", "vllm_sparse_mla",
         "vllm_prefill", "sglang_linear", "sglang_norm", "sglang_moe", "sgld_attn", "sgld_linear",
         "sgld_convrot", "sgld_vaeconv", "sgld_rope", "sgld_qknorm", "sgld_ditnorm")}

@@ -101,6 +101,16 @@ ROUTES: Dict[str, Route] = {r.name: r for r in (
        "Qwen3.8-27B-GPTQ-Int4 on one R9700 in the R9700 vLLM image (TRITON_ATTN), 3 alternating "
        "starts an arm: GSM8K-200 equal, TPOT ahead at 4 and 8 concurrent requests (disjoint), "
        "level at 1 and for an 8k prompt"),
+    _R("vllm_quark", "vllm", "HK_VLLM_QUARK", True, ("gfx1201",),
+       "AMD Quark W4A16 (int4, symmetric) linear layers: on gfx1201's RDNAHybridW4A16LinearKernel "
+       "the fp16 batches vLLM runs on Triton on hk's 4-bit forms in place (decode to 64 tokens, "
+       "the large-batch form above: prefill); on gfx1100's RDNA3W4A16LinearKernel 1-64 tokens on "
+       "hk's decode GEMM (a copy of Quark's codes in hk's layout; opt-in there)",
+       "gfx1201: amd/Qwen3.8-27B-Quark-AWQ-INT4-W4A16 on one R9700 in the R9700 vLLM image "
+       "(TRITON_ATTN), one process, engines rebuilt per arm, 4 alternating rounds: GSM8K-200 equal "
+       "(0 discordant), TPOT at 8 concurrent requests 1.64x and TTFT at 512 / 2048 tokens 1.16x / "
+       "1.17x (disjoint), level at 1 and 4; kernel 1.9-3.6x vLLM at 6-32 tokens, 1.13-1.30x at "
+       "128-4096, 1.05-1.20x at 64. gfx1100 not measured end to end: off there"),
     _R("vllm_gemm", "vllm", "HK_VLLM_GEMM", True, ("gfx1100", "gfx1201"),
        "unquantized linear layers by the measured route table, plus tuning at load",
        "gfx1100: greedy tokens identical to stock's, or a bf16 near-tie (history 35). "
@@ -139,7 +149,8 @@ ROUTES: Dict[str, Route] = {r.name: r for r in (
        "stay vLLM's",
        "end-to-end gates passed best vs best (16k TTFT on a d128 model; 8k on a d256 hybrid "
        "model at TP2, also against ROCM_ATTN), quality within stock's spread. "
-       "gfx1100 and gfx1201 (decode-only batches: gfx1100), bf16, head size 64 / 128 "
+       "gfx1100 and gfx1201 (decode-only batches: gfx1100), bf16 (prefill calls: bf16 or fp16), "
+       "head size 64 / 128 "
        "(and 256 on TRITON_ATTN), pages of 16 or 32 "
        "(on TRITON_ATTN any multiple of 16: hybrid models' 544, 784); any other call falls back to "
        "vLLM's kernel"),

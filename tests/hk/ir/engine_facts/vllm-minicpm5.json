@@ -432,6 +432,7 @@
     "mm_prefix_clamp_sliding_window"
    ]
   },
+  "vllm_quark": null,
   "vllm_sdpa": {
    "calls_torch_sdpa": true
   },

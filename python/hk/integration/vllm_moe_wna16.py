@@ -168,15 +168,36 @@ def try_get_optimal_moe_config(w1_shape, w2_shape, top_k, dtype, M, block_shape=
     """vLLM's config, with BLOCK_SIZE_M 16 for a 4-bit layer at a batch hk's GEMM takes: the sort
     and the GEMM both read it, so changing it here changes both together."""
     config = _ORIG_CONFIG(w1_shape, w2_shape, top_k, dtype, M, block_shape)
+    return _block16(config, w1_shape, w2_shape, dtype, M, block_shape)
+
+
+def _block16(config, w1_shape, w2_shape, dtype, M, block_shape):
     if (dtype == "int4_w4a16" and block_shape and block_shape[0] == 0 and M <= max_tokens()
             and schedule(w1_shape[2] * 2) is not None and schedule(w2_shape[2] * 2) is not None):
         config = dict(config, BLOCK_SIZE_M=16)
     return config
 
 
+def _config_wrapper(orig: Callable) -> Callable:
+    """`try_get_optimal_moe_config` as apply() binds it, on the original held here rather than in
+    a module global: a binding revert() cannot reach -- vllm_moe's wrapper wraps this one when both
+    routes are on -- keeps working after a revert, as vLLM's config unchanged."""
+    def try_get_optimal_moe_config(w1_shape, w2_shape, top_k, dtype, M, block_shape=None):
+        config = orig(w1_shape, w2_shape, top_k, dtype, M, block_shape)
+        if _ORIG is None:                   # reverted: vLLM's config as it is
+            return config
+        return _block16(config, w1_shape, w2_shape, dtype, M, block_shape)
+
+    return try_get_optimal_moe_config
+
+
+#: The wrapper apply() bound (revert() rebinds it back to the original).
+_CONFIG_WRAPPER: Optional[Callable] = None
+
+
 def apply() -> str:
     """Route vLLM's 4-bit MoE GEMMs. Returns what happened, in one line."""
-    global _ORIG, _ORIG_CONFIG, _FORCE
+    global _ORIG, _ORIG_CONFIG, _CONFIG_WRAPPER, _FORCE
     if not _common.importable("vllm"):
         return "vllm is not importable; MoE WNA16 not patched"
     import os  # noqa: PLC0415
@@ -191,21 +212,22 @@ def apply() -> str:
     from vllm.model_executor.layers.fused_moe import fused_moe as fm  # noqa: PLC0415
 
     _ORIG = fm.invoke_fused_moe_wna16_triton_kernel
-    _ORIG_CONFIG = fm.try_get_optimal_moe_config
+    _ORIG_CONFIG = fm.try_get_optimal_moe_config      # vLLM's, or another hk route's wrapper of it
+    _CONFIG_WRAPPER = _config_wrapper(_ORIG_CONFIG)
     names = _common.rebind(PREFIXES, _ORIG, _GUARDED)
-    cfg = _common.rebind(PREFIXES, _ORIG_CONFIG, try_get_optimal_moe_config)
+    cfg = _common.rebind(PREFIXES, _ORIG_CONFIG, _CONFIG_WRAPPER)
     return (f"moe_wna16 -> hk where hk.ops.moe.moe_gemm_w4 takes the GEMM ({len(names)} kernel "
             f"and {len(cfg)} config bindings rebound; 16-row blocks up to {max_tokens()} tokens; "
             + ("any shape (force)" if _FORCE else f"{len(VALIDATED)} validated shapes") + ")")
 
 
 def revert() -> str:
-    global _ORIG, _ORIG_CONFIG
+    global _ORIG, _ORIG_CONFIG, _CONFIG_WRAPPER
     if _ORIG is None:
         return "moe_wna16: not patched"
     names = _common.rebind(PREFIXES, _GUARDED, _ORIG)
-    _common.rebind(PREFIXES, try_get_optimal_moe_config, _ORIG_CONFIG)
-    _ORIG = _ORIG_CONFIG = None
+    _common.rebind(PREFIXES, _CONFIG_WRAPPER, _ORIG_CONFIG)
+    _ORIG = _ORIG_CONFIG = _CONFIG_WRAPPER = None
     return f"moe_wna16 -> vllm ({len(names)} rebound)"
 
 

@@ -277,27 +277,48 @@ def process_weights_after_loading(self, layer) -> None:
 
 def _hybrid_pwal(self, layer) -> None:
     """vLLM's own repack, then hk checks it can read the result in place."""
-    import torch  # noqa: PLC0415
-
-    from ..ops import w4a16 as hk_w4  # noqa: PLC0415
-
     _ORIG_PWAL(self, layer)
-    w_q, w_s, _, _ = _weights(self.kernel, layer)
-    why = ""
-    if self.kernel.config.zero_points or str(self.kernel.config.weight_type) != "uint4b8":
-        why = "zero points (not uint4b8)"
-    elif w_q is None or w_s is None or w_q.dtype != torch.int8 or w_q.dim() != 2:
-        why = "vLLM's hybrid tensors are not int8 [N, K/2] codes"
-    elif not w_q.is_contiguous() or not w_s.is_contiguous() or w_s.dim() != 2:
-        why = "vLLM's hybrid tensors are padded or strided"
-    elif not hk_w4.exllama_takes(1, w_q.shape[0], w_q.shape[1] * 2, self.quant_config.group_size):
-        why = f"shape {w_q.shape[0]}x{w_q.shape[1] * 2}"
-    elif w_s.shape != (w_q.shape[0], w_q.shape[1] * 2 // self.quant_config.group_size):
-        why = f"scales {tuple(w_s.shape)}"
+    why = hybrid_why(self.kernel, layer, self.quant_config.group_size)
     if why:
         REFUSED[why] += 1
         return
     layer.hk_hybrid = True
+
+
+def hybrid_why(kernel, layer, group: int) -> str:
+    """'' if hk's forms can read this layer's RDNAHybridW4A16LinearKernel tensors in place (after
+    vLLM's repack), else why not. Shared with vllm_quark, whose layers end on the same kernel."""
+    import torch  # noqa: PLC0415
+
+    from ..ops import w4a16 as hk_w4  # noqa: PLC0415
+
+    w_q, w_s, _, _ = _weights(kernel, layer)
+    if kernel.config.zero_points or str(kernel.config.weight_type) != "uint4b8":
+        return "zero points (not uint4b8)"
+    if w_q is None or w_s is None or w_q.dtype != torch.int8 or w_q.dim() != 2:
+        return "vLLM's hybrid tensors are not int8 [N, K/2] codes"
+    if not w_q.is_contiguous() or not w_s.is_contiguous() or w_s.dim() != 2:
+        return "vLLM's hybrid tensors are padded or strided"
+    if not hk_w4.exllama_takes(1, w_q.shape[0], w_q.shape[1] * 2, group):
+        return f"shape {w_q.shape[0]}x{w_q.shape[1] * 2}"
+    if w_s.shape != (w_q.shape[0], w_q.shape[1] * 2 // group):
+        return f"scales {tuple(w_s.shape)}"
+    return ""
+
+
+def read_skinny() -> bool:
+    """Read vLLM's own HIP/Triton switch (rdna_hybrid_w4a16) into _SKINNY; False where this vLLM
+    has none (its hybrid layers are then refused, counted)."""
+    try:
+        from vllm.model_executor.kernels.linear.mixed_precision import (  # noqa: PLC0415
+            rdna_hybrid_w4a16 as rh)
+
+        _SKINNY.update(max_m=rh.MAX_SKINNY_BATCH_SIZE, limit=rh.MEDIUM_SKINNY_LIMIT_ELEMENTS,
+                       gfx115x=bool(getattr(rh, "_on_gfx115x", lambda: False)()))
+        return True
+    except (ImportError, AttributeError):
+        _SKINNY.clear()
+        return False
 
 
 def apply(self, layer, x, bias=None):
@@ -336,15 +357,8 @@ def apply_patch() -> str:
     from .vllm_gemm import _own_compile_cache  # noqa: PLC0415
 
     PATCH.define(gptq_w4a16)
-    try:
-        from vllm.model_executor.kernels.linear.mixed_precision import (  # noqa: PLC0415
-            rdna_hybrid_w4a16 as rh)
-
-        _SKINNY.update(max_m=rh.MAX_SKINNY_BATCH_SIZE, limit=rh.MEDIUM_SKINNY_LIMIT_ELEMENTS,
-                       gfx115x=bool(getattr(rh, "_on_gfx115x", lambda: False)()))
+    if read_skinny():                       # else its hybrid layers are refused, counted
         HYBRID.define(gptq_w4a16_hybrid)
-    except (ImportError, AttributeError):
-        _SKINNY.clear()                     # its layers are refused, counted
     cls = auto_gptq.AutoGPTQLinearMethod
     _ORIG_PWAL, _ORIG_APPLY = cls.process_weights_after_loading, cls.apply
     cls.process_weights_after_loading = process_weights_after_loading

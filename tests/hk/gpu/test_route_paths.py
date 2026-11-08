@@ -294,6 +294,39 @@ def test_vllm_gptq_hybrid_takes_every_batch_vllm_sends_to_triton_in_place(monkey
     assert seen == [(1, None), (4, None)]
 
 
+def test_vllm_quark_hybrid_takes_every_batch_vllm_sends_to_triton_in_place(monkeypatch):
+    """Quark W4A16 layers on RDNAHybridW4A16LinearKernel (gfx1201), at Quark's group 128: hk reads
+    vLLM's own skinny-layout tensors and takes the batches vLLM would run on Triton (decode forms to
+    HYBRID_MAX_M tokens, the large-batch form above); vLLM's op the rest, without zero points."""
+    from hk.integration import vllm_quark
+
+    _on_here("vllm_quark")
+    seen = []
+    monkeypatch.setattr(vllm_gptq, "_SKINNY", {"max_m": 5, "limit": int(32768 * 1.2), "gfx115x": False})
+    monkeypatch.setattr(torch.ops, "vllm", types.SimpleNamespace(
+        rdna_hybrid_w4a16_apply=lambda x, w_q, w_s, w_zp, bias, cu, g: seen.append((x.shape[0], w_zp, g))),
+        raising=False)
+    n, k, group = 512, 7168, 128
+    g = torch.Generator("cuda").manual_seed(7)
+    q = torch.randint(0, 16, (n, k), device="cuda", generator=g, dtype=torch.int32)
+    s = (torch.rand(n, k // group, device="cuda", generator=g) * 0.02 + 0.005).half()
+    words = sum(q.to(torch.int64).reshape(n, k // 8, 8)[:, :, c] << (4 * i)
+                for i, c in enumerate((0, 2, 4, 6, 1, 3, 5, 7)))     # ExLlama's nibble order
+    w_q = torch.where(words >= 2 ** 31, words - 2 ** 32, words).to(torch.int32).view(torch.int8)
+    w = (q - 8).float() * s.float().repeat_interleave(group, 1)
+    for m in (6, 13, 40, vllm_gptq.HYBRID_MAX_M, vllm_gptq.HYBRID_MAX_M + 1, 300):
+        path = "hk" if m <= vllm_gptq.HYBRID_MAX_M else "hk_large"
+        x = torch.randn(m, k, device="cuda", dtype=torch.float16) * 0.1
+        before = vllm_quark.HYBRID.stats[path]
+        y = vllm_quark.quark_w4a16_hybrid(x, w_q, s, group, 64)
+        assert vllm_quark.HYBRID.stats[path] == before + 1 and y.shape == (m, n)
+        _close(y, x.float() @ w.t())
+    for m in (1, 4):
+        vllm_quark.quark_w4a16_hybrid(torch.randn(m, k, device="cuda", dtype=torch.float16),
+                                      w_q, s, group, 64)
+    assert seen == [(1, None, group), (4, None, group)]
+
+
 # ---------------------------------------------------------------- linear (SGLang, SGLang-Diffusion)
 
 

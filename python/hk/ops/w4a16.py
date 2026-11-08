@@ -131,6 +131,28 @@ def repack_gptq(qweight, qzeros, scales, group: int, *, zero_offset: int = 1,
     return _finish(q.t().contiguous().to(torch.uint8), z, scales, group, dtype)
 
 
+def repack_quark(qweight, scales, group: int, *, qzeros=None, pack_reorder: bool = True,
+                 dtype=None):
+    """An AMD Quark int4 weight-only checkpoint -- `weight` int32 [K, N/8] packed along N,
+    `weight_scale` [K/group, N] -- in hk's layout. `pack_reorder` is Quark's `pack_method:
+    reorder` (AWQ's nibble order; else natural order).
+
+    Symmetric (qzeros None): Quark stores signed codes, so the code is the nibble ^ 8 with every
+    zero point 8; (qw, s, None) in the kernels' symmetric form, as repack_gptq(symmetric=True).
+    Asymmetric: unsigned codes and `weight_zero_point` int32 [K/group, N/8] packed the same way;
+    (qw, s, zs) as repack_awq."""
+    import torch  # noqa: PLC0415
+
+    order = AWQ_ORDER if pack_reorder else None
+    q = _unpack_cols(qweight, order)                # [K, N]
+    if qzeros is None:
+        z = torch.full((q.shape[0] // group, q.shape[1]), SYMMETRIC_ZERO, device=q.device,
+                       dtype=torch.int32)
+        qw, s, _ = _finish((q ^ SYMMETRIC_ZERO).t().contiguous(), z, scales, group, dtype)
+        return qw, block_scales(s), None
+    return _finish(q.t().contiguous(), _unpack_cols(qzeros, order), scales, group, dtype)
+
+
 def block_scales(s):
     """Scales [N, G] -> the symmetric form's 16-row blocks [N/16, G * 16]."""
     n, g = s.shape
@@ -632,4 +654,4 @@ __all__ = ["AWQ_ORDER", "EXL_CHUNK", "EXL_GEMV_MAX", "GEMV_ARCHES", "LARGE_TILE"
            "exllama_takes", "gemv_kernel_for", "gemv_takes", "large_matmul",
            "kernel_for", "unblock_scales", "w4a16_gemv_kernel", "w4a16_large_kernel",
            "matmul", "plan", "schedule_for",
-           "repack_awq", "repack_gptq", "takes", "tokens_for", "w4a16_kernel"]
+           "repack_awq", "repack_gptq", "repack_quark", "takes", "tokens_for", "w4a16_kernel"]

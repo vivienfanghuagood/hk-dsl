@@ -137,7 +137,7 @@ def test_apply_rebinds_every_binding_and_revert_puts_them_back(fake_sglang):
     assert "(3 kernel and 2 config bindings rebound" in out
     fused = sys.modules["sglang.srt.layers.moe.moe_runner.triton_utils.fused_moe"]
     assert fused.invoke_fused_moe_kernel is sglang_moe._GUARDED
-    assert fused.try_get_optimal_moe_config is sglang_moe.try_get_optimal_moe_config
+    assert fused.try_get_optimal_moe_config is sglang_moe._CONFIG_WRAPPER
     assert sys.modules["sglang.srt.layers.moe.topk"].topk_softmax is sglang_moe.topk_softmax
     assert "moe: already patched" in sglang_moe.apply()
 

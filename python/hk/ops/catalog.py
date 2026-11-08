@@ -58,7 +58,7 @@ FAMILIES = [
     dict(name="w4a16", what="4-bit weights (AWQ, GPTQ) against 16-bit activations",
          entries=["hk.ops.w4a16.matmul"],
          arches=RDNA_AND_GFX950, dtypes="int4 weights, fp16 or bf16 activations",
-         routes=["vllm_int4", "vllm_gptq"], tests=["test_w4a16.py"]),
+         routes=["vllm_int4", "vllm_gptq", "vllm_quark"], tests=["test_w4a16.py"]),
     dict(name="moe", what="the expert GEMMs of a MoE layer, on vLLM's sorted token lists",
          entries=["hk.ops.moe.moe_gemm", "hk.ops.moe.moe_align"],
          arches=RDNA_AND_GFX950, dtypes="bf16",
