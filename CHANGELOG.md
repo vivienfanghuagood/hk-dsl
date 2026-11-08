@@ -6,6 +6,10 @@ The next version's notes collect here until it is released.
 
 ## Unreleased
 
+### Changes
+
+**vLLM: AMD Quark W4A16 checkpoints on hk's 4-bit forms** (`vllm_quark`, opt-in: `HK_VLLM_QUARK=1`). A Quark int4 weight-only checkpoint (e.g. amd/Qwen3.8-27B-Quark-AWQ-INT4-W4A16) loads through vLLM's `QuarkW4A16Int4` onto the kernels GPTQ layers get. On gfx1201 the route runs the fp16 batches vLLM sends to its Triton GEMM on hk's forms in place, no second copy: at the checkpoint's group 128, 1.9-3.6x vLLM at 6-32 tokens and 1.13-1.30x at 128-4096 (prefill) on Qwen3.8-27B's shapes, the same error. On gfx1100 hk keeps a copy of Quark's codes in its symmetric layout (new `hk.ops.w4a16.repack_quark`) for 1-64 tokens. Off by default until measured end to end.
+
 ## 0.9.14
 
 hk-dsl 0.9.14: on gfx1201 (Radeon AI PRO R9700), SGLang-Diffusion's attention (`sgld_attn`) and Wan's VAE
