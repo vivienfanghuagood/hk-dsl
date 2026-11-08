@@ -38,16 +38,16 @@ ODD_PAGES = [(16, "planes"), (16, "tokens"), (16, "heads"), (32, "planes"), (48,
 
 
 def _case(lens, *, head_dim=128, h_kv=2, group=8, page=16, kv_order="planes", seed=0,
-          v_ones=False, nan_tail=False, pad=0, strided_q=False):
+          v_ones=False, nan_tail=False, pad=0, strided_q=False, dtype=torch.bfloat16):
     """lens: each request's sequence length; `pad` requests with no query after them (a CUDA
     graph's padding: query_start_loc repeats, seq_lens 0)."""
     g = torch.Generator(device="cuda").manual_seed(seed)
     r = len(lens)
     pages = [max(1, -(-n // page)) for n in lens]
     nb = sum(pages) + 3
-    k = torch.randn(nb, h_kv, page, head_dim, device="cuda", dtype=torch.bfloat16, generator=g)
+    k = torch.randn(nb, h_kv, page, head_dim, device="cuda", dtype=dtype, generator=g)
     v = (torch.ones_like(k) if v_ones else
-         torch.randn(k.shape, device="cuda", dtype=torch.bfloat16, generator=g))
+         torch.randn(k.shape, device="cuda", dtype=dtype, generator=g))
     perm = torch.randperm(nb, generator=g, device="cuda")
     table = torch.zeros(r + pad, max(pages), dtype=torch.int32, device="cuda")
     at = 0
@@ -69,7 +69,7 @@ def _case(lens, *, head_dim=128, h_kv=2, group=8, page=16, kv_order="planes", se
                           dtype=torch.bfloat16, generator=g)
         q = qkv[:, : h * head_dim].view(r + pad, h, head_dim)
     else:
-        q = torch.randn(r + pad, h, head_dim, device="cuda", dtype=torch.bfloat16, generator=g)
+        q = torch.randn(r + pad, h, head_dim, device="cuda", dtype=dtype, generator=g)
     q_start = torch.tensor(list(range(r + 1)) + [r] * pad, device="cuda", dtype=torch.int32)
     return q, k, v, table, lens_t, q_start
 
@@ -110,23 +110,39 @@ def _decode(q, k, v, table, lens, q_start, *, kv_order, splits=None, warps=4, st
     s = splits or pd.plan_splits(reqs, h_kv)
     from hk.runtime.torch_ext import launcher
 
-    walk = launcher(pd.walk_for(d, group, page, kv_order, s, warps=warps, v_both=v_both))
+    f16 = q.dtype == torch.float16
+    walk = launcher(pd.walk_for(d, group, page, kv_order, s, warps=warps, v_both=v_both, fp16=f16))
     kv = _flash(k, v, kv_order)
     out = torch.full_like(q, 7.0) if out is None else out
-    o_part, ml = scratch or pd.scratch(reqs * s, h_kv, group, d, q.device)
+    o_part, ml = scratch or pd.scratch(reqs * s, h_kv, group, d, q.device, dtype=q.dtype)
     if poison:
         o_part.fill_(float("nan"))
         ml.fill_(float("nan"))
     o4 = out.view(n, h_kv, group, d)
     walk(q.unsqueeze(0), kv, table, lens, q_start, o4, o_part, ml)
     if s > 1:
-        launcher(pd.merge_for(d, group, s))(lens, q_start, o4, o_part, ml)
+        launcher(pd.merge_for(d, group, s, fp16=f16))(lens, q_start, o4, o_part, ml)
     return out
 
 
 def _check(got, want, lens):
     rows = [i for i, s in enumerate(lens.tolist()) if s]
     _attn_ref.check(got[rows], want[rows])
+
+
+@rdna_only
+@pytest.mark.parametrize("head_dim,h_kv,group,page,kv_order", [
+    (128, 2, 8, 16, "planes"), (256, 4, 6, 784, "heads"), (256, 1, 8, 544, "tokens")])
+@pytest.mark.parametrize("splits", [1, 8])
+def test_fp16(head_dim, h_kv, group, page, kv_order, splits):
+    """dtype fp16 (fp16-served models): the walk and merge on fp16 q / cache / out match the
+    float64 reference, over hybrid models' NaN-tailed pages too."""
+    q, k, v, table, lens, q_start = _case(LENS, head_dim=head_dim, h_kv=h_kv, group=group,
+                                          page=page, kv_order=kv_order, dtype=torch.float16,
+                                          nan_tail=page > 16)
+    got = _decode(q, k, v, table, lens, q_start, kv_order=kv_order, splits=splits)
+    assert got.dtype == torch.float16
+    _check(got, _reference(q, k, v, table, lens, group), lens)
 
 
 @rdna_only

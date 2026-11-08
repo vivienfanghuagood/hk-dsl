@@ -8,7 +8,7 @@ The next version's notes collect here until it is released.
 
 ### Changes
 
-**fp16 prefill on vLLM** (#335). `vllm_prefill` now takes fp16 calls, not only bf16: fp16-served checkpoints (GPTQ / AWQ models run `--dtype float16`) had every prefill call declined. `paged_prefill_kernel(dtype=)`, `merge_kernel(dtype=)`, `vt_pack_kernel(dtype=)` and `rocm_kernel_for(fp16=)`; scores, softmax and O stay fp32. Qwen3.8-27B's d256 shapes in fp16: 4.0-8.7x vLLM's unified_attention on gfx1100, 2.1-3.2x on gfx1201, the same error.
+**fp16 prefill and decode on vLLM** (#335). `vllm_prefill` now takes fp16 calls, not only bf16: fp16-served checkpoints (GPTQ / AWQ models run `--dtype float16`) had every prefill call declined. `paged_prefill_kernel(dtype=)`, `merge_kernel(dtype=)`, `vt_pack_kernel(dtype=)` and `rocm_kernel_for(fp16=)`; scores, softmax and O stay fp32. Qwen3.8-27B's d256 shapes in fp16: 4.0-8.7x vLLM's unified_attention on gfx1100, 2.1-3.2x on gfx1201, the same error. Its decode-only route (d256) takes fp16 too: `paged_decode`'s walk and merge take `dtype=` / `fp16=` (gfx1100 B1 8k 1.77x, B8 32k 1.08x, as in bf16).
 
 ## 0.9.14
 

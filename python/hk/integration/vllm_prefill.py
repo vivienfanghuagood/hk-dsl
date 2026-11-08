@@ -979,7 +979,8 @@ def d_why_not(a: dict) -> str:
     if unknown:
         return f"{unknown} set (an argument hk does not know)"
     q, k, out = a["q"], a["k"], a["out"]
-    if q.dtype != torch.bfloat16 or out.dtype != torch.bfloat16 or k.dtype != torch.bfloat16:
+    if (q.dtype not in (torch.bfloat16, torch.float16) or out.dtype != q.dtype
+            or k.dtype != q.dtype):
         return f"dtype {q.dtype} / cache {k.dtype}"
     if q.dim() != 3 or q.shape[-1] not in (128, 256):
         return f"head size {q.shape[-1]}"
@@ -1005,34 +1006,34 @@ def d_why_not(a: dict) -> str:
 
 
 def _decode_ops(head_dim: int, group: int, page: int, order: str, splits: int,
-                scale: Optional[float], warps: int = 4, v_both: bool = False):
-    key = (head_dim, group, page, order, splits, scale, warps, v_both)
+                scale: Optional[float], warps: int = 4, v_both: bool = False, fp16: bool = False):
+    key = (head_dim, group, page, order, splits, scale, warps, v_both, fp16)
     if key not in _DEC:
         from ..ops import paged_decode as pd  # noqa: PLC0415
 
         walk = _built(lambda: (pd.walk_for(head_dim, group, page, order, splits, scale,
-                                           warps=warps, v_both=v_both), 0), quiet=v_both)
+                                           warps=warps, v_both=v_both, fp16=fp16), 0), quiet=v_both)
         if walk is None and v_both:
             # both V bands in flight spills under some compilers (clang 22): the one-band walk
             walk = _built(lambda: (pd.walk_for(head_dim, group, page, order, splits, scale,
-                                               warps=warps, v_both=False), 0))
-        merge = (_built(lambda: (pd.merge_for(head_dim, group, splits), 0)) if splits > 1
+                                               warps=warps, v_both=False, fp16=fp16), 0))
+        merge = (_built(lambda: (pd.merge_for(head_dim, group, splits, fp16=fp16), 0)) if splits > 1
                  else (None, 0))
         _DEC[key] = None if walk is None or merge is None else (walk[0], merge[0])
     return _DEC[key]
 
 
-def _decode_scratch(device, rows: int, hkv: int, group: int, d: int):
+def _decode_scratch(device, rows: int, hkv: int, group: int, d: int, dtype=None):
     """The split partials, kept across calls (a captured graph holds them); grown outside a
     capture only -- None if a capture needs more than there is."""
     from ..ops import paged_decode as pd  # noqa: PLC0415
 
-    key = (str(device), hkv, group, d)
+    key = (str(device), hkv, group, d, str(dtype))
     got = _DEC_SCRATCH.get(key)
     if got is None or got[0].shape[0] < rows:
         if engine.capturing():
             return None
-        got = _DEC_SCRATCH[key] = pd.scratch(max(rows, 256), hkv, group, d, device)
+        got = _DEC_SCRATCH[key] = pd.scratch(max(rows, 256), hkv, group, d, device, dtype=dtype)
     return got
 
 
@@ -1049,8 +1050,9 @@ def _decode(a: dict) -> bool:
     sc = a["softmax_scale"]
     scale = None if sc is None or sc == d ** -0.5 else float(sc)
     splits, warps, v_both = pd.plan(reqs, hkv, d, page, wgps=pd.device_wgps(q.device))
-    ops = _decode_ops(d, group, page, order, splits, scale, warps, v_both)
-    scratch = _decode_scratch(q.device, reqs * splits, hkv, group, d) if ops else None
+    ops = _decode_ops(d, group, page, order, splits, scale, warps, v_both, fp16=_is_f16(q))
+    scratch = (_decode_scratch(q.device, reqs * splits, hkv, group, d, dtype=q.dtype) if ops
+               else None)
     if ops is None or scratch is None:
         return False
     walk, merge = ops
