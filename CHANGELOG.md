@@ -4,11 +4,33 @@ Release notes for each version are also on its
 [GitHub release](https://github.com/vivienfanghuagood/hk-dsl/releases).
 The next version's notes collect here until it is released.
 
-## Unreleased
+## 0.9.16
 
-**SGLang-Diffusion: the DiT block norms in one launch** (`sgld_ditnorm`, on by default on gfx1100). `ScaleResidualLayerNormScaleShift` and `LayerNormScaleShift` (Wan's block norms) run on the new `hk.ops.norm.layernorm_scale_shift`: the gated residual, the LayerNorm (affine or not) and the scale and shift in one pass instead of about ten, each output in the dtype torch's chain gives it. 4-7x per call at Wan2.1's shapes; Wan2.1-T2V-1.3B 832x480x81 on a W7900D 1.038x a video.
+hk-dsl 0.9.16: on gfx1100, AMD Quark W4A16 checkpoints run on hk's 4-bit forms by default (`vllm_quark`,
+already on by default on gfx1201), and SGLang-Diffusion's DiT block norms run in one hk launch
+(`sgld_ditnorm`). No change to the language or the dialect (`hk-dialect-8`).
 
-**vLLM: Quark W4A16 on by default on gfx1100 too** (`vllm_quark`). One W7900D, amd/Qwen3.8-27B-Quark-AWQ-INT4-W4A16, 4 alternating rounds: TPOT 1.13x / 1.18x / 1.25x at 1 / 4 / 8 concurrent requests, TTFT level (prefill stays vLLM's there), GSM8K-200 equal.
+On PyPI: `pip install hk-dsl`, for CPython 3.10 to 3.13 on Linux x86_64 with glibc 2.35 or newer
+(Ubuntu 22.04 and later, and vLLM's ROCm images): one `manylinux_2_35` wheel per interpreter. The
+wheels below are the same files.
+
+    pip install hk_dsl-0.9.16-cp312-cp312-manylinux_2_35_x86_64.whl
+
+### Changes
+
+**SGLang-Diffusion: the DiT block norms in one launch** (`sgld_ditnorm`, on by default on gfx1100; #331). `ScaleResidualLayerNormScaleShift` and `LayerNormScaleShift` (Wan's block norms) run on the new `hk.ops.norm.layernorm_scale_shift`: the gated residual, the LayerNorm (affine or not) and the scale and shift in one pass instead of about ten, each output in the dtype torch's chain gives it. 4-7x per call at Wan2.1's shapes; Wan2.1-T2V-1.3B 832x480x81 on a W7900D 1.038x a video.
+
+**vLLM: Quark W4A16 on by default on gfx1100 too** (`vllm_quark`; #338). One W7900D, amd/Qwen3.8-27B-Quark-AWQ-INT4-W4A16, 4 alternating rounds: TPOT 1.13x / 1.18x / 1.25x at 1 / 4 / 8 concurrent requests, TTFT level (prefill stays vLLM's there), GSM8K-200 equal.
+
+**Documentation** (#340). docs/vllm.md and docs/vllm-routes.md: Quark W4A16 (`vllm_quark`) in the route table, `--status` and a reference section; the fp16 prefill note.
+
+### How this release was verified
+
+The MI355X CI cards were held by another user's workload, so the gfx950 and gfx950-vllm GPU tiers did not run on #331, #338 or this release, and the MI355X wheel smokes did not run; CI and the gfx1100 and gfx1201 GPU tiers did (a2, 2026-11-08). The gfx950 tiers run on main when a card frees.
+
+### All pull requests
+
+#331, #338, #339, #340.
 
 ## 0.9.15
 
