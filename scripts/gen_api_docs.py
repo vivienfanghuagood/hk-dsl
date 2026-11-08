@@ -546,6 +546,8 @@ def page_hk(since: Since) -> Page:
                     mark=_mark(since, "hk", n, obj, f"hk.{n}"))
             if inspect.isclass(obj) and n in ("Kernel", "GenericKernel", "TracedKernel"):
                 for mn, mv, _ in members(obj):
+                    if n == "GenericKernel" and mn not in vars(obj):
+                        continue        # inherited: documented under hk.Kernel
                     p.entry(f"hk.{n}.{mn}", mv, display=f"{n}.{mn}", level=4,
                             mark=since.mark("hk.dsl.kernel", mn, mv, cls=n),
                             signature=not isinstance(mv, property))

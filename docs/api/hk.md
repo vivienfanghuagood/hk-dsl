@@ -189,6 +189,19 @@ Kernel.compile(self, **const_overrides: Any)
 
 Generate, compile and load. Returns the loaded extension module.
 
+#### `Kernel.for_arch`
+
+```python
+Kernel.for_arch(self, arch: str, name: Optional[str] = None) -> Kernel
+```
+
+*New after 0.9.16*
+
+This kernel built for `arch`: the same body, warps, grid, constexpr defaults and
+options (a specialization keeps its dtypes), its own traces and builds. `name=` renames
+it. What a test or a probe that targets another arch wants, in place of re-wrapping
+`k.fn` (which a dtype-parameter specialization cannot be).
+
 #### `Kernel.placed`
 
 ```python
@@ -342,6 +355,14 @@ GenericKernel.placement_choice(self, *tensors: Any, **kw: Any)
 hk.dsl.placement.choose for these tensors: whether
 placement="auto" launches the cluster placement, and why.
 
+#### `GenericKernel.for_arch`
+
+```python
+GenericKernel.for_arch(self, arch: str, name: Optional[str] = None) -> GenericKernel
+```
+
+This kernel, every specialization of it built for `arch`.
+
 #### `GenericKernel.placed`
 
 ```python
@@ -359,28 +380,6 @@ GenericKernel.preloaded(self) -> Kernel
 ```
 
 This kernel with `preload` set: its own builds, the same body.
-
-#### `GenericKernel.arch (property)`
-
-The arch it builds for: `arch=` if given, else
-`hk.target.current_arch()` ($HK_ARCH, else the GPU).
-
-#### `GenericKernel.with_defines`
-
-```python
-GenericKernel.with_defines(self, src: str) -> str
-```
-
-`src` with this kernel's preprocessor definitions ahead of it, and
-its occupancy cap (`max_occupancy`) at the top of its body.
-
-#### `GenericKernel.build_flags`
-
-```python
-GenericKernel.build_flags(self, traced: TracedKernel) -> Tuple[str, ...]
-```
-
-hipcc flags of this kernel's builds beyond the target's.
 
 ### `hk.TracedKernel`
 

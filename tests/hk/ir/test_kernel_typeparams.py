@@ -162,3 +162,12 @@ def test_plain_kernels_are_untouched():
 
     assert type(plain) is hk.Kernel and plain.name == "plain"
     assert re.search(r"void plain_kernel", plain.source())
+
+
+def test_for_arch_keeps_a_specialization_bound():
+    v = scale.variant(T=hk.fp16, warps=4)
+    on = v.for_arch("gfx950")
+    assert on.arch == "gfx950" and on.name == v.name and on.warps == 4
+    assert on.trace().arch == "gfx950" and on.source() != v.source()
+    g = scale.for_arch("gfx950")
+    assert isinstance(g, hk.GenericKernel) and g.variant(T=hk.bf16).arch == "gfx950"

@@ -785,6 +785,21 @@ class Kernel:
 
         return checked
 
+    def for_arch(self, arch: str, name: Optional[str] = None) -> "Kernel":
+        """This kernel built for `arch`: the same body, warps, grid, constexpr defaults and
+        options (a specialization keeps its dtypes), its own traces and builds. `name=` renames
+        it. What a test or a probe that targets another arch wants, in place of re-wrapping
+        `k.fn` (which a dtype-parameter specialization cannot be)."""
+        k = _with_bind(
+            type(self), self._bind,
+            self.fn, arch=arch, warps=self.warps, grid=self.grid_fn,
+            name=name or self.name, max_vgprs=self.max_vgprs,
+            min_occupancy=self.min_occupancy, max_occupancy=self.max_occupancy, defines=self.defines,
+            noalias=self.noalias, preload=self.preload, resident=self.resident,
+            placement=self.placement)
+        k._defaults = dict(self._defaults)
+        return k
+
     def placed(self, placement=None) -> "Kernel":
         """This kernel with `placement` (default: the analysis's cluster
         placement) installed: its own name (a suffix for the placement),
@@ -1126,6 +1141,16 @@ class GenericKernel(Kernel):
     def placement_choice(self, *tensors: Any, **kw: Any):
         key, rest = self._split(kw, tensors)
         return self._variant(key).placement_choice(*tensors, **rest)
+
+    def for_arch(self, arch: str, name: Optional[str] = None) -> "GenericKernel":
+        """This kernel, every specialization of it built for `arch`."""
+        k = GenericKernel(self.fn, arch=arch, warps=1 if self._warps_param is not None else self.warps,
+                          grid=self.grid_fn, name=name or self.name, max_vgprs=self.max_vgprs,
+                          min_occupancy=self.min_occupancy, max_occupancy=self.max_occupancy,
+                          defines=self.defines, noalias=self.noalias, preload=self.preload,
+                          resident=self.resident, placement=self.placement)
+        k._defaults = dict(self._defaults)
+        return k
 
     def placed(self, placement=None) -> "Kernel":
         raise TypeError(f"{self.name}: placed() is per specialization: "
