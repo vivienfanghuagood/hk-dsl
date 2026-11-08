@@ -540,14 +540,14 @@ int4 routes above hook AutoAWQ and AutoGPTQ, so they never see these layers;
   repack, hk reads its tensors in place. The fp16 batches vLLM would run on its
   Triton GEMM go to hk's 4-bit forms, the decode GEMM up to 64 tokens and the
   large-batch form above that; vLLM's own HIP skinny GEMM keeps its batches.
-- **gfx1100** (`RDNA3W4A16LinearKernel`, opt-in in 0.9.15): hk writes its
+- **gfx1100** (`RDNA3W4A16LinearKernel`, on by default; opt-in in 0.9.15): hk writes its
   symmetric layout of Quark's codes first (`hk.ops.w4a16.repack_quark`), and
   16-bit batches of 1-64 tokens take hk's decode GEMM.
 - Asymmetric checkpoints, other kernels, and shapes the forms do not take keep
   vLLM's path; `vllm_quark.REFUSED` counts them by reason.
 
 Checked end to end on amd/Qwen3.8-27B-Quark-AWQ-INT4-W4A16 on one R9700 (fp16,
-TRITON_ATTN): GSM8K-200 equal to stock's. The measured numbers are in the
+TRITON_ATTN) and on one W7900D: GSM8K-200 equal to stock's on both. The measured numbers are in the
 [switch's evidence](integration.md#on-by-default-and-turning-it-off).
 `HK_VLLM_QUARK=0` turns the route off; `=1` turns it on where it is off by default.
 
