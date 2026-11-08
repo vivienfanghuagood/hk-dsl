@@ -61,7 +61,7 @@ from .runtime.torch_ext import torch_op
 from .target import TARGETS, get_target
 from .types import DTYPES
 
-__version__ = "0.9.15"
+__version__ = "0.9.16"
 
 
 def __getattr__(name):
