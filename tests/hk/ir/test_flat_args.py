@@ -19,8 +19,7 @@ CONSTS = dict(CHUNKS=4, RUN=8, EXACT=1)
 
 
 def _on(k, arch):
-    return hk.kernel(k.fn, arch=arch, warps=k.warps, grid=k.grid_fn,
-                     name=f"{k.name}_{arch}", defines=k.defines, noalias=k.noalias)
+    return k.for_arch(arch, name=f"{k.name}_{arch}")
 
 
 def _addrmsw(arch):
@@ -38,7 +37,7 @@ def test_on_gfx950_a_noalias_kernel_takes_flat_arguments():
     tr = _addrmsw("gfx950").trace(**CONSTS)
     assert tr.flat_args
     src = scaffold.render(tr, "bare")
-    name = "strip_addrmsw_bf16_w2_gfx950_kernel"
+    name = "strip_addrmsw__Tbf16_warps2_gfx950_kernel"
     ptrs = ", ".join(f"bf16 *__restrict__ hk_{t}" for t in ("x", "r", "w", "o", "r_out"))
     assert f"namespace hk_flat {{\n__global__ __launch_bounds__(128, 1)\nvoid {name}({ptrs}, " \
            "int hk_x_rs, int hk_r_rs, " in src

@@ -299,7 +299,7 @@ def test_the_16_byte_rope_reads_its_positions_through_the_scalar_cache(monkeypat
     from hk.ops import fused
 
     monkeypatch.setattr(target, "_CURRENT", ["gfx950"])
-    src = scaffold.bare(fused._rotary16_kernel("rot16_t", hk.bf16, 1, True).trace())
+    src = scaffold.bare(fused.ROTARY16[True].variant(T=hk.bf16, warps=1).for_arch("gfx950").trace())
     assert "kittens::load_scalar_invariant(g.pos" in src
     assert "kittens::swap_halves<128, true>(" in src
 

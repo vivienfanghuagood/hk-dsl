@@ -59,8 +59,7 @@ COPIES = {f"{d.name} tile s{s}": copy_kernel(d, s) for d in (hk.bf16, hk.fp32) f
 
 def norm_kernel(kind, warps, split):
     """norm's own weighted kernel, built with HK_RT_HALF_SPLIT=split."""
-    return norm._rms_weighted_kernel(f"{kind}_bf16_w{warps}_s{split}", hk.bf16,
-                                     warps, kind == "addrmsw", split=split)
+    return norm._rms_weighted_kernel(kind == "addrmsw", split=split).variant(T=hk.bf16, warps=warps)
 
 
 def section_copy(torch, gpu_times):
@@ -95,8 +94,8 @@ SOFTMAX = {"hk shipped": (False, 0), "hk bounded": (True, 0),
 
 
 def softmax_kernel(warps, bounded, split):
-    return norm._row_reduce_kernel(f"softmax_bf16_w{warps}_b{int(bounded)}s{split}",
-                                   hk.bf16, "softmax", warps, bounded=bounded, split=split)
+    return norm._row_reduce_kernel("softmax", bounded=bounded, split=split).variant(T=hk.bf16,
+                                                                                   warps=warps)
 
 
 def section_softmax(torch, gpu_times):

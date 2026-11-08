@@ -114,39 +114,37 @@ def silu_mul_kernel(a: hk.Tensor[T], b: hk.Tensor[T], o: hk.Tensor[T], *, warps=
         o[i] = x.to(T)
 
 
-def _strip_silu_mul_kernel(name: str, dtype, warps: int):
+@hk.kernel(name="strip_silu_mul", noalias=True,
+           grid=lambda p: (p.o.rows * hk.cdiv(p.o.cols, p.warps * p.CW), 1, 1))
+def strip_silu_mul_kernel(a: hk.Tensor[T], b: hk.Tensor[T], o: hk.Tensor[T], *, warps=1,
+                          CW=512, RUN=8, EXACT=1, RESERVE=0):
     """silu_mul on strips: workgroup i is row i / G, block g = i % G of it (G
-    blocks a row), its warp w the columns [(g*WARPS + w)*CW, +CW), CW whole
+    blocks a row), its warp w the columns [(g*warps + w)*CW, +CW), CW whole
     wave x RUN chunks. Consecutive workgroups walk along a row, not down a
     column, as the memory lies. Each operand is its own global with its own
     row stride, so a and b can be the two halves of one (rows, 2I) gate/up
     output, read in place. Without EXACT the accesses are bounded: a run at
     or past the row's end is neither read nor written."""
-    def body(a: hk.Tensor[dtype], b: hk.Tensor[dtype], o: hk.Tensor[dtype], *,
-             CW=512, RUN=8, EXACT=1, RESERVE=0):
-        if RESERVE:
-            hk.lds.reserve(RESERVE)
-        S = hk.RS(fp32, 1, CW, RUN)
-        per_row = hk.cdiv(o.cols, warps * CW)
-        i = hk.arch.block_idx.x
-        row = i // per_row
-        g = i - row * per_row
-        blk = g * warps + hk.arch.warp_id() if warps > 1 else g
-        c0 = blk * CW
-        x = a.at[row, c0].load(S, bounded=not EXACT)
-        y = b.at[row, c0].load(S, bounded=not EXACT)
-        x.silu(into=x)
-        x *= y
-        o.at[row, c0].store(x, bounded=not EXACT)
-
-    return hk.kernel(body, warps=warps, name=name, noalias=True,
-                     grid=lambda p: (p.o.rows * hk.cdiv(p.o.cols, warps * p.CW), 1, 1))
+    if RESERVE:
+        hk.lds.reserve(RESERVE)
+    S = hk.RS(fp32, 1, CW, RUN)
+    per_row = hk.cdiv(o.cols, warps * CW)
+    i = hk.arch.block_idx.x
+    row = i // per_row
+    g = i - row * per_row
+    blk = g * warps + hk.arch.warp_id() if warps > 1 else g
+    c0 = blk * CW
+    x = a.at[row, c0].load(S, bounded=not EXACT)
+    y = b.at[row, c0].load(S, bounded=not EXACT)
+    x.silu(into=x)
+    x *= y
+    o.at[row, c0].store(x, bounded=not EXACT)
 
 
 # ---------------------------------------------------------------- rope
 
 
-def _rotary_kernel(name: str, dtype, warps: int, positions: bool):
+def _rotary_kernel(positions: bool):
     """vLLM's rotary_embedding, NeoX style, on strips: token t's heads are
     rows t*H .. t*H+H-1 of x viewed (T*H, D); its angles are row pos[t] (or
     t) of cs, (P, D) fp32 holding [cos | sin]. One workgroup a token, warp w
@@ -157,7 +155,7 @@ def _rotary_kernel(name: str, dtype, warps: int, positions: bool):
 
     with both factors built once a warp from the one row of cs, by the same
     swap and a fill on each side of D/2."""
-    def build(x, cs, pos, o, H, D, RUN):
+    def build(x, cs, pos, o, H, D, RUN, warps):
         S = hk.RS(fp32, 1, D, RUN)
         t = hk.arch.block_idx.x
         prow = pos.at[0, t].load_scalar() if positions else t
@@ -189,18 +187,18 @@ def _rotary_kernel(name: str, dtype, warps: int, positions: bool):
             o.at[row, 0].store(v)
 
     if positions:
-        def body(x: hk.Tensor[dtype], cs: hk.Tensor[fp32], pos: hk.Tensor[hk.i32],
-                 o: hk.Tensor[dtype], *, H=32, D=128, RUN=2):
-            build(x, cs, pos, o, H, D, RUN)
+        def body(x: hk.Tensor[T], cs: hk.Tensor[fp32], pos: hk.Tensor[hk.i32],
+                 o: hk.Tensor[T], *, warps=1, H=32, D=128, RUN=2):
+            build(x, cs, pos, o, H, D, RUN, warps)
     else:
-        def body(x: hk.Tensor[dtype], cs: hk.Tensor[fp32], o: hk.Tensor[dtype], *,
+        def body(x: hk.Tensor[T], cs: hk.Tensor[fp32], o: hk.Tensor[T], *, warps=1,
                  H=32, D=128, RUN=2):
-            build(x, cs, None, o, H, D, RUN)
-    return hk.kernel(body, warps=warps, name=name, noalias=True,
+            build(x, cs, None, o, H, D, RUN, warps)
+    return hk.kernel(body, name="rotary" + ("_pos" if positions else ""), noalias=True,
                      grid=lambda p: (hk.cdiv(p.x.rows, p.H), 1, 1))
 
 
-def _rotary16_kernel(name: str, dtype, warps: int, positions: bool):
+def _rotary16_kernel(positions: bool):
     """_rotary_kernel with a lane's run RUN bf16 -- eight, one 16-byte
     access, or four, eight bytes: x viewed (T, H*D), a token one row, and a
     head of D columns D/RUN lanes of a chunk (at D = 128 and RUN 8, 16 lanes,
@@ -213,7 +211,7 @@ def _rotary16_kernel(name: str, dtype, warps: int, positions: bool):
 
         out = x * cos + rotate_half(x) * sin
     """
-    def build(x, cs, pos, o, D, CH, RESERVE, RUN):
+    def build(x, cs, pos, o, D, CH, RESERVE, RUN, warps):
         if RESERVE:
             hk.lds.reserve(RESERVE)
         cw = 64 * RUN
@@ -234,18 +232,18 @@ def _rotary16_kernel(name: str, dtype, warps: int, positions: bool):
             o.at[t, c0 + j * cw].store(v)
 
     if positions:
-        def body(x: hk.Tensor[dtype], cs: hk.Tensor[fp32], pos: hk.Tensor[hk.i32],
-                 o: hk.Tensor[dtype], *, D=128, CH=1, RESERVE=0, RUN=8):
-            build(x, cs, pos, o, D, CH, RESERVE, RUN)
+        def body(x: hk.Tensor[T], cs: hk.Tensor[fp32], pos: hk.Tensor[hk.i32],
+                 o: hk.Tensor[T], *, warps=1, D=128, CH=1, RESERVE=0, RUN=8):
+            build(x, cs, pos, o, D, CH, RESERVE, RUN, warps)
     else:
-        def body(x: hk.Tensor[dtype], cs: hk.Tensor[fp32], o: hk.Tensor[dtype], *,
+        def body(x: hk.Tensor[T], cs: hk.Tensor[fp32], o: hk.Tensor[T], *, warps=1,
                  D=128, CH=1, RESERVE=0, RUN=8):
-            build(x, cs, None, o, D, CH, RESERVE, RUN)
-    return hk.kernel(body, warps=warps, name=name, noalias=True,
-                     grid=lambda p: (p.x.rows, p.x.cols // (warps * p.CH * 64 * p.RUN), 1))
+            build(x, cs, None, o, D, CH, RESERVE, RUN, warps)
+    return hk.kernel(body, name="rotary16" + ("_pos" if positions else ""), noalias=True,
+                     grid=lambda p: (p.x.rows, p.x.cols // (p.warps * p.CH * 64 * p.RUN), 1))
 
 
-def _rotary_halves_kernel(name: str, dtype, warps: int, positions: bool):
+def _rotary_halves_kernel(positions: bool):
     """vLLM's rotary_embedding on strips without a lane exchange, for a
     target whose strips have no swap_halves (gfx1100): a head's halves are
     two strips of D/2 columns read at 0 and D/2, and its angles the two
@@ -256,7 +254,7 @@ def _rotary_halves_kernel(name: str, dtype, warps: int, positions: bool):
     One workgroup a token, warp w the heads w, w + WARPS, ...; every head's
     loads before any store, so it runs in place (a lane writes only what it
     read)."""
-    def build(x, cs, pos, o, H, D, RUN):
+    def build(x, cs, pos, o, H, D, RUN, warps):
         half = D // 2
         S = hk.RS(fp32, 1, half, RUN)
         t = hk.arch.block_idx.x
@@ -276,14 +274,14 @@ def _rotary_halves_kernel(name: str, dtype, warps: int, positions: bool):
             o.at[row, half].store(o2)
 
     if positions:
-        def body(x: hk.Tensor[dtype], cs: hk.Tensor[fp32], pos: hk.Tensor[hk.i32],
-                 o: hk.Tensor[dtype], *, H=32, D=128, RUN=2):
-            build(x, cs, pos, o, H, D, RUN)
+        def body(x: hk.Tensor[T], cs: hk.Tensor[fp32], pos: hk.Tensor[hk.i32],
+                 o: hk.Tensor[T], *, warps=1, H=32, D=128, RUN=2):
+            build(x, cs, pos, o, H, D, RUN, warps)
     else:
-        def body(x: hk.Tensor[dtype], cs: hk.Tensor[fp32], o: hk.Tensor[dtype], *,
+        def body(x: hk.Tensor[T], cs: hk.Tensor[fp32], o: hk.Tensor[T], *, warps=1,
                  H=32, D=128, RUN=2):
-            build(x, cs, None, o, H, D, RUN)
-    return hk.kernel(body, warps=warps, name=name, noalias=True,
+            build(x, cs, None, o, H, D, RUN, warps)
+    return hk.kernel(body, name="rotary_halves" + ("_pos" if positions else ""), noalias=True,
                      grid=lambda p: (hk.cdiv(p.x.rows, p.H), 1, 1))
 
 
@@ -429,26 +427,28 @@ del _s, _dt, _w
 
 #: Warp counts a strip silu_mul workgroup may have.
 STRIP_WARPS = (1, 2, 4, 8)
-STRIP_KERNELS = {f"strip_silu_mul_{_s}_w{_w}": _strip_silu_mul_kernel(
-                     f"strip_silu_mul_{_s}_w{_w}", _dt, _w)
+STRIP_KERNELS = {f"strip_silu_mul_{_s}_w{_w}": strip_silu_mul_kernel.variant(T=_dt, warps=_w)
                  for _s, _dt in _DTYPES.items() for _w in STRIP_WARPS}
 
 #: The rotary kernels: (dtype suffix, warps, with positions) -> Kernel; H,
 #: D and RUN are constexprs.
 ROTARY_WARPS = (1, 2, 4, 5, 8, 10, 16)
 #: The 16-byte form's kernels; its plan is ROTARY16_PLAN.
-ROTARY16_KERNELS = {f"rotary16_{_s}_w{_w}" + ("_pos" if _p else ""): _rotary16_kernel(
-                        f"rotary16_{_s}_w{_w}" + ("_pos" if _p else ""), _dt, _w, _p)
+#: The rotary kernels, one definition each (hk.T, warps) per form: without and with a positions
+#: tensor (a different signature, so a kernel of its own).
+ROTARY16 = {_p: _rotary16_kernel(_p) for _p in (False, True)}
+ROTARY = {_p: _rotary_kernel(_p) for _p in (False, True)}
+ROTARY_HALVES = {_p: _rotary_halves_kernel(_p) for _p in (False, True)}
+ROTARY16_KERNELS = {f"rotary16_{_s}_w{_w}" + ("_pos" if _p else ""):
+                    ROTARY16[_p].variant(T=_dt, warps=_w)
                     for _s, _dt in (("bf16", hk.bf16), ("fp16", hk.fp16))
                     for _w in ROTARY_WARPS for _p in (False, True)}
-ROTARY_KERNELS = {f"rotary_{_s}_w{_w}" + ("_pos" if _p else ""): _rotary_kernel(
-                      f"rotary_{_s}_w{_w}" + ("_pos" if _p else ""), _dt, _w, _p)
+ROTARY_KERNELS = {f"rotary_{_s}_w{_w}" + ("_pos" if _p else ""): ROTARY[_p].variant(T=_dt, warps=_w)
                   for _s, _dt in _DTYPES.items() for _w in ROTARY_WARPS
                   for _p in (False, True)}
 #: The rotary kernels of a target whose strips have no swap_halves (gfx1100).
 ROTARY_HALVES_KERNELS = {
-    f"rotary_halves_{_s}_w{_w}" + ("_pos" if _p else ""): _rotary_halves_kernel(
-        f"rotary_halves_{_s}_w{_w}" + ("_pos" if _p else ""), _dt, _w, _p)
+    f"rotary_halves_{_s}_w{_w}" + ("_pos" if _p else ""): ROTARY_HALVES[_p].variant(T=_dt, warps=_w)
     for _s, _dt in _DTYPES.items() for _w in ROTARY_WARPS for _p in (False, True)}
 
 #: The interleaved-pair (complex) rotary kernels, bf16, by warps; H, P and RUN are constexprs.
