@@ -481,7 +481,7 @@ def test_a_split_batch_gives_vllm_one_query_a_request_and_keeps_only_its_decode_
     pre_rows = list(range(starts[1], starts[2]))
     built = []
 
-    def flash_op(d, group, scale, page, order, decodes):
+    def flash_op(d, group, scale, page, order, decodes, fp16=False):
         built.append(decodes)
 
         def op(q2, kv, v_src, table, used, cu, tiles, o2, *packed):
@@ -568,13 +568,13 @@ def test_the_split_kernels_are_built_with_the_first_ones(monkeypatch):
     for split, want in ((True, [True, False]), (False, [True])):
         built = []
 
-        def flash_op(d, group, scale, page, order, decodes):
+        def flash_op(d, group, scale, page, order, decodes, fp16=False):
             built.append(decodes)
             return (lambda *args: None), 16
 
         kvs = []
         monkeypatch.setattr(vp, "_flash_op", flash_op)
-        monkeypatch.setattr(vp, "_kvs_ops", lambda *key: kvs.append(key[-3:]))
+        monkeypatch.setattr(vp, "_kvs_ops", lambda *key, **kw: kvs.append(key[-3:]))
         monkeypatch.setattr(vp, "SPLIT", split)
         vp.unified_attention(**_triton_call([(0, 4096)]))
         assert built == want, (split, built)
