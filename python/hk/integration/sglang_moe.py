@@ -112,6 +112,28 @@ def invoke_fused_moe_kernel(A, B, bias, C, A_scale, B_scale, B_zp, topk_weights,
 _GUARDED = PATCH.guard(invoke_fused_moe_kernel)
 
 
+def _config_wrapper(orig: Callable) -> Callable:
+    """SGLang's `try_get_optimal_moe_config` as hk rebinds it (`try_get_optimal_moe_config` below,
+    on the original held here rather than in a module global: a binding revert() cannot reach keeps
+    working after a revert, as SGLang's config unchanged)."""
+    def wrapped(w1_shape, w2_shape, top_k, dtype, M, is_marlin=False, block_shape=None,
+                per_channel_quant=False, return_down_config=False):
+        out = orig(w1_shape, w2_shape, top_k, dtype, M, is_marlin=is_marlin,
+                   block_shape=block_shape, per_channel_quant=per_channel_quant,
+                   return_down_config=return_down_config)
+        if _ORIG is None:                   # reverted: SGLang's config as it is
+            return out
+        return _block16(out, w1_shape, w2_shape, dtype, M, is_marlin, block_shape,
+                        return_down_config)
+
+    wrapped.__name__ = "try_get_optimal_moe_config"
+    return wrapped
+
+
+#: The wrapper apply() bound (revert() rebinds it back to the original).
+_CONFIG_WRAPPER: Optional[Callable] = None
+
+
 def try_get_optimal_moe_config(w1_shape, w2_shape, top_k, dtype, M, is_marlin=False,
                                block_shape=None, per_channel_quant=False,
                                return_down_config=False):
@@ -121,6 +143,10 @@ def try_get_optimal_moe_config(w1_shape, w2_shape, top_k, dtype, M, is_marlin=Fa
     out = _ORIG_CONFIG(w1_shape, w2_shape, top_k, dtype, M, is_marlin=is_marlin,
                        block_shape=block_shape, per_channel_quant=per_channel_quant,
                        return_down_config=return_down_config)
+    return _block16(out, w1_shape, w2_shape, dtype, M, is_marlin, block_shape, return_down_config)
+
+
+def _block16(out, w1_shape, w2_shape, dtype, M, is_marlin, block_shape, return_down_config):
     from ..ops import moe  # noqa: PLC0415
 
     if not (dtype is None and block_shape is None and not is_marlin
@@ -166,7 +192,7 @@ def apply_topk() -> str:
 
 def apply() -> str:
     """The routing, and SGLang's MoE GEMMs on hk where it takes them."""
-    global _ORIG, _ORIG_CONFIG
+    global _ORIG, _ORIG_CONFIG, _CONFIG_WRAPPER
     if not _common.importable("sglang"):
         return "sglang is not importable; MoE not patched"
     notes = [apply_topk()]
@@ -175,8 +201,9 @@ def apply() -> str:
     _, kernels, config = _homes()
     _ORIG = kernels.invoke_fused_moe_kernel
     _ORIG_CONFIG = config.try_get_optimal_moe_config
+    _CONFIG_WRAPPER = _config_wrapper(_ORIG_CONFIG)
     names = _common.rebind(PREFIXES, _ORIG, _GUARDED)
-    cfg = _common.rebind(PREFIXES, _ORIG_CONFIG, try_get_optimal_moe_config)
+    cfg = _common.rebind(PREFIXES, _ORIG_CONFIG, _CONFIG_WRAPPER)
     notes.append(f"moe -> hk where hk.ops.moe takes the GEMM ({len(names)} kernel and "
                  f"{len(cfg)} config bindings rebound; 16-row blocks up to "
                  f"{BLOCK16_MAX_TOKENS} tokens)")
@@ -184,12 +211,12 @@ def apply() -> str:
 
 
 def revert() -> str:
-    global _ORIG, _ORIG_CONFIG, _ORIG_TOPK
+    global _ORIG, _ORIG_CONFIG, _ORIG_TOPK, _CONFIG_WRAPPER
     out = []
     if _ORIG is not None:
         names = _common.rebind(PREFIXES, _GUARDED, _ORIG)
-        _common.rebind(PREFIXES, try_get_optimal_moe_config, _ORIG_CONFIG)
-        _ORIG = _ORIG_CONFIG = None
+        _common.rebind(PREFIXES, _CONFIG_WRAPPER, _ORIG_CONFIG)
+        _ORIG = _ORIG_CONFIG = _CONFIG_WRAPPER = None
         out.append(f"moe -> sglang ({len(names)} rebound)")
     if _ORIG_TOPK is not None:
         _common.rebind(PREFIXES, topk_softmax, _ORIG_TOPK)
