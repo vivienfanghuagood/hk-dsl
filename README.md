@@ -174,7 +174,7 @@ slow operand layout, a copy racing a barrier ([the traps](docs/correctness-gates
 ## Install
 
 `pip install hk-dsl`, for CPython 3.10 to 3.13 on Linux x86_64 with glibc
-2.35 or newer (Ubuntu 22.04 and later). The release is 0.9.14: one
+2.35 or newer (Ubuntu 22.04 and later). The release is 0.9.15: one
 `manylinux_2_35` wheel for each of cp310, cp311, cp312 and cp313, all built on
 glibc 2.35. A wheel carries the HipKittens headers, so at run time it needs ROCm's hipcc
 (on `PATH`, or `HK_HIPCC`) and, to launch, a ROCm build of torch (not a

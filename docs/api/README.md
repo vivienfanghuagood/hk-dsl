@@ -2,7 +2,7 @@
 
 # API reference
 
-Generated from the code by `scripts/gen_api_docs.py`: every public name's signature and docstring, and what is new or changed since the hk-dsl 0.9.14 wheel on PyPI ("*New after 0.9.14*": `pip install hk-dsl==0.9.14` does not have it; no release has it yet, only a checkout of main, docs/building.md). For how the language is written, read [the language](../language.md) first. Which names are stable and which experimental: [stability](../stability.md).
+Generated from the code by `scripts/gen_api_docs.py`: every public name's signature and docstring, and what is new or changed since the hk-dsl 0.9.14 wheel on PyPI ("*New after 0.9.14*": `pip install hk-dsl==0.9.14` does not have it; 0.9.15 does, and a checkout, docs/building.md). For how the language is written, read [the language](../language.md) first. Which names are stable and which experimental: [stability](../stability.md).
 
 - [`hk`: kernels, types, values](hk.md) -- 70 entries
 - [`hk.math`](hk.math.md) -- 23 entries
