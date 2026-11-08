@@ -524,7 +524,8 @@ def page_hk(since: Since) -> Page:
              "[hk.profile](hk.profile.md), the per-arch facts "
              "[hk.target](hk.target.md).")
     groups = [
-        ("Kernels", ["kernel", "func", "Kernel", "TracedKernel", "Tensor", "Constexpr"]),
+        ("Kernels", ["kernel", "func", "Kernel", "GenericKernel", "TracedKernel", "Tensor", "TypeVar",
+                     "T", "Constexpr"]),
         ("Types", ["RT", "RS", "ST", "SV", "col_vec", "row_vec", "DType"]),
         ("Control flow", ["range", "range_constexpr", "if_", "scope", "uniform"]),
         ("Functions", ["cdiv", "min", "max", "zeros", "full", "neg_infty", "rand",
@@ -543,7 +544,7 @@ def page_hk(since: Since) -> Page:
             documented.add(n)
             p.entry(f"hk.{n}", obj, display=f"hk.{n}",
                     mark=_mark(since, "hk", n, obj, f"hk.{n}"))
-            if inspect.isclass(obj) and n in ("Kernel", "TracedKernel"):
+            if inspect.isclass(obj) and n in ("Kernel", "GenericKernel", "TracedKernel"):
                 for mn, mv, _ in members(obj):
                     p.entry(f"hk.{n}.{mn}", mv, display=f"{n}.{mn}", level=4,
                             mark=since.mark("hk.dsl.kernel", mn, mv, cls=n),
