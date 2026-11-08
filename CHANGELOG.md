@@ -6,7 +6,7 @@ The next version's notes collect here until it is released.
 
 ## Unreleased
 
-**One kernel for every dtype and warp count** (#PR). A tensor annotated `hk.Tensor[hk.T]` takes its
+**One kernel for every dtype and warp count** (#345). A tensor annotated `hk.Tensor[hk.T]` takes its
 dtype from the call -- read from the first tensor annotated with it (every tensor sharing it must
 agree), or given as `T=hk.fp16` -- and a keyword-only parameter named `warps` makes the warp count a
 per-call argument (`k(a, b, o, warps=8)`; the grid reads it as `p.warps`). Each (dtype, warps) is
