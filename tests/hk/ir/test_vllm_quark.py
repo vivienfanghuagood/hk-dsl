@@ -30,10 +30,11 @@ def test_apply_without_vllm_reports_rather_than_raises():
     assert vllm_quark.status() == "not patched"
 
 
-def test_it_is_opt_in_and_the_plugin_applies_it_when_asked(monkeypatch):
+def test_it_is_on_for_gfx1201_and_the_plugin_applies_it_when_asked(monkeypatch):
     from hk.integration import _vllm_plugin, contract, switches
 
-    assert not switches.ROUTES["vllm_quark"].default
+    assert switches.ROUTES["vllm_quark"].default
+    assert switches.ROUTES["vllm_quark"].arches == ("gfx1201",)
     seen = []
     monkeypatch.delenv("HK_DISABLE", raising=False)
     monkeypatch.setattr(contract, "check_each", lambda routes: {})   # no vLLM here
