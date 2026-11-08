@@ -125,6 +125,12 @@ FAMILIES = [
          entries=["hk.ops.fused.rotary_pairs", "hk.ops.fused.rmsnorm_rotary_pairs"],
          arches=("gfx950", "gfx1100", "gfx1201"), dtypes="bf16; fp32 cos / sin",
          routes=["sgld_rope", "sgld_qknorm"], tests=["test_route_paths.py"]),
+    dict(name="dit_norm", what="a DiT block's norm in one launch: the gated residual, LayerNorm "
+                               "(optionally affine) and the scale and shift (SGLang-Diffusion's "
+                               "(ScaleResidual)LayerNormScaleShift)",
+         entries=["hk.ops.norm.layernorm_scale_shift"],
+         arches=("gfx950", "gfx1100", "gfx1201"), dtypes="bf16 activations; fp32 or bf16 vectors; "
+         "bf16 or fp32 outputs", routes=["sgld_ditnorm"], tests=["test_route_paths.py"]),
     dict(name="conv3d", what="a conv3d as one conv2d over its time taps stacked on the channels, or "
                              "as calls of 2 output frames, the engine's own convs: no hk kernel; it "
                              "keeps MIOpen off its naive reference conv3d and its im2col",

@@ -20,6 +20,9 @@
    "_error": "ModuleNotFoundError: No module named 'sglang'"
   },
   "sgld_convrot": null,
+  "sgld_ditnorm": {
+   "_error": "ModuleNotFoundError: No module named 'sglang'"
+  },
   "sgld_linear": {
    "_error": "ModuleNotFoundError: No module named 'sglang'"
   },

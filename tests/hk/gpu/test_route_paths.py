@@ -664,3 +664,93 @@ def test_sgld_qknorm_takes_qwen_image_21s_qk_norm_and_rope_through_hk(monkeypatc
     finally:
         sgld.revert_qknorm()
     assert mod.apply_qk_norm_rope is apply_qk_norm_rope
+
+
+def _lnss_ref(x, scale, shift, eps=1e-6, residual=None, gate=None, weight=None, bias=None):
+    """torch's chain as SGLang-Diffusion runs it: r' = r + x * gate (the gate's dtype promotes),
+    FP32LayerNorm(r') back in r''s dtype, then * (1 + scale) + shift."""
+    r = x if residual is None else residual + (x if gate is None else x * gate)
+    n = torch.nn.functional.layer_norm(r.float(), (r.shape[-1],), weight, bias, eps).to(r.dtype)
+    y = (n.float() * (1 + scale.float()) + shift.float()).to(r.dtype)
+    return y if residual is None else (y, r)
+
+
+@pytest.mark.parametrize("fp32_gate", [False, True])
+def test_layernorm_scale_shift_is_the_dit_norm_chain(fp32_gate):
+    from hk.ops import norm
+
+    if not get_target(current_arch()).strips:
+        pytest.skip("layernorm_scale_shift runs on register strips")
+    g = torch.Generator(device="cuda").manual_seed(3)
+    d = 1536
+    x = torch.randn(2, 640, d, device="cuda", dtype=B, generator=g)
+    r = torch.randn(2, 640, d, device="cuda", dtype=B, generator=g) * 4
+    sc = torch.randn(2, 1, d, device="cuda", generator=g) * 0.1
+    sh = torch.randn(2, 1, d, device="cuda", generator=g) * 0.1
+    gate = torch.randn(2, 1, d, device="cuda", generator=g)
+    w = torch.rand(d, device="cuda", generator=g) + 0.5
+    b = torch.randn(d, device="cuda", generator=g) * 0.1
+    _close(norm.layernorm_scale_shift(x, sc, sh), _lnss_ref(x, sc, sh))
+    gate = gate if fp32_gate else None
+    rd = torch.float32 if fp32_gate else B
+    y, ro = norm.layernorm_scale_shift(x, sc, sh, residual=r, gate=gate, weight=w, bias=b,
+                                       round_residual=not fp32_gate, out_dtype=rd,
+                                       residual_dtype=rd)
+    want_y, want_r = _lnss_ref(x, sc, sh, residual=r, gate=gate, weight=w, bias=b)
+    assert y.dtype == want_y.dtype and ro.dtype == want_r.dtype
+    _close(ro, want_r, tol=1e-6 if fp32_gate else 1e-2)
+    _close(y, want_y)
+
+
+def test_sgld_ditnorm_takes_a_dit_blocks_norms_through_hk(monkeypatch):
+    _on_here("sgld_ditnorm")
+
+    class _Norm:
+        def __init__(self, d, affine):
+            self.eps = 1e-6
+            self.weight = torch.rand(d, device="cuda") + 0.5 if affine else None
+            self.bias = torch.randn(d, device="cuda") * 0.1 if affine else None
+
+    class _ScaleResidualNormScaleShift:
+        def __init__(self, d, affine=False, norm_type="layer"):
+            self.norm_type, self.norm = norm_type, _Norm(d, affine)
+
+        def forward_native(self, residual, x, gate, shift, scale):
+            return _lnss_ref(x, scale, shift, self.norm.eps, residual=residual,
+                             gate=None if isinstance(gate, int) else gate,
+                             weight=self.norm.weight, bias=self.norm.bias)
+
+    class _NormScaleShift:
+        def __init__(self, d):
+            self.norm_type, self.norm = "layer", _Norm(d, False)
+
+        def forward_native(self, x, shift, scale):
+            return _lnss_ref(x, scale, shift, self.norm.eps)
+
+    _stand_in(monkeypatch, sgld.DITNORM_HOME, _ScaleResidualNormScaleShift=_ScaleResidualNormScaleShift,
+              _NormScaleShift=_NormScaleShift)
+    orig = _ScaleResidualNormScaleShift.forward_native
+    g = torch.Generator(device="cuda").manual_seed(4)
+    d = 1536
+    h = torch.randn(1, 1024, d, device="cuda", dtype=B, generator=g) * 4
+    a = torch.randn(1, 1024, d, device="cuda", dtype=B, generator=g)
+    sc, sh, gate = (torch.randn(1, 1, d, device="cuda", generator=g) * 0.1 for _ in range(3))
+    zero = torch.zeros((1,), device="cuda", dtype=B)
+    try:
+        assert "layernorm_scale_shift" in sgld.apply_ditnorm()
+        before = dict(sgld.DITNORM_STATS)
+        with torch.inference_mode():                       # Wan's three calls
+            _close(_NormScaleShift(d).forward_native(h, sh, sc), _lnss_ref(h, sc, sh))
+            aff = _ScaleResidualNormScaleShift(d, affine=True)
+            y, r = aff.forward_native(h, a, gate, zero, zero)
+            wy, wr = orig(aff, h, a, gate, zero, zero)
+            assert y.dtype == wy.dtype == torch.float32 and r.dtype == wr.dtype
+            _close(y, wy)
+            y, r = _ScaleResidualNormScaleShift(d).forward_native(h, a, 1, sh, sc)
+            assert torch.equal(r, h + a)
+        assert sgld.DITNORM_STATS["hk"] == before["hk"] + 3
+        _ScaleResidualNormScaleShift(d, norm_type="rms").forward_native(h, a, 1, sh, sc)
+        assert sgld.DITNORM_STATS["engine"] == before["engine"] + 1     # not a LayerNorm
+    finally:
+        sgld.revert_ditnorm()
+    assert _ScaleResidualNormScaleShift.forward_native is orig

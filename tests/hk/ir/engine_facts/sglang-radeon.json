@@ -282,6 +282,23 @@
    "calls_sdpa": true
   },
   "sgld_convrot": null,
+  "sgld_ditnorm": {
+   "chain": true,
+   "forward_native": [
+    "self",
+    "x",
+    "shift",
+    "scale"
+   ],
+   "res_forward_native": [
+    "self",
+    "residual",
+    "x",
+    "gate",
+    "shift",
+    "scale"
+   ]
+  },
   "sgld_linear": {
    "apply": [
     "self",

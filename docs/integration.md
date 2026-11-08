@@ -63,6 +63,7 @@ and which rule decided.
 | SGLang-Diffusion Wan VAE conv3d in 2-frame calls (MIOpen's naive conv3d otherwise) | `HK_SGLD_VAECONV` | **on, gfx1100** | Wan2.1-T2V-1.3B 832x480x81: VAE decode 969 s -> 37.8 s, a generation 2.77x; 36.2 dB from stock and closer to an fp32 VAE decode than stock (36.9 dB vs 36.1) |
 | SGLang-Diffusion Qwen-Image 2.1 complex RoPE on `hk.ops.rotary_pairs` | `HK_SGLD_ROPE` | **on, gfx1100** | bit-identical to the engine's on every call; Qwen-Image 2.1 1024^2 30 steps: 28.88 -> 28.15 s a request, 1.026x (one W7900D, same process, ABBA x3), every RoPE call on hk |
 | SGLang-Diffusion Qwen-Image 2.1 q / k RMSNorm + RoPE as one `hk.ops.fused.rmsnorm_rotary_pairs` launch | `HK_SGLD_QKNORM` | **on, gfx1100** | error vs fp64 equal to the engine's per call; Qwen-Image 2.1 1024^2 30 steps: 27.36 -> 26.22 s a request, 1.044x (same process, ABBA x3); 37.9 dB from stock, where torch's own norm with only its sum order changed is 36.5 dB from stock |
+| SGLang-Diffusion DiT block norms ((ScaleResidual)LayerNormScaleShift) as one `hk.ops.norm.layernorm_scale_shift` launch | `HK_SGLD_DITNORM` | **on, gfx1100** | outputs in stock's dtypes, mean error vs fp64 equal to stock's; Wan2.1 832x480x81: 197.9 -> 190.6 s a video, 1.038x (same process, ABBA x2), inside stock's run-to-run spread |
 | DiT attention in `hk.ops.sdpa` (non-causal, head_dim 128, on `hk.ops.attn_k3`) | `HK_SDPA_K3` | **on, gfx1100** | per-call error 2.95e-5 against the current path's 4.50e-5 (#24) |
 | decoder attention backend | `HK_VLLM_BACKEND` | off | replaces ROCm's default decoder attention for every model, and raises rather than falls back on sliding windows, sinks, softcap, an fp8 KV cache, fp16 or other head sizes; validated on Qwen3-8B only |
 | prefill attention on vLLM's own cache | `HK_VLLM_PREFILL` | **on, gfx1100 and gfx1201** | ROCM_ATTN's prefix-prefill and TRITON_ATTN's batches with prefill in them, in place on each backend's cache, and TRITON_ATTN's decode-only steps at head size 256 (`HK_VLLM_DECODE`); cache write and block size stay vLLM's; any call it does not take falls back. In-situ against vLLM's kernels on every call (`HK_VLLM_PREFILL_SHADOW=1`, MiniCPM5-2B, about 22,000 calls on each backend): at most 2 bf16 ulps of a row's max |
@@ -664,12 +665,13 @@ not restate it:
 | `HK_SGLANG_ROUTES` | `sglang.py`, via `engine.shipped_table` | a routing table for SGLang's linear layers instead of the shipped one |
 | `HK_SGLANG_MOE` | `_sglang_plugin.py` | `1` (a route): the torch top-k and hk's expert GEMMs; `topk`: the torch top-k alone |
 | `HK_SGLANG_NORM` | `_sglang_plugin.py` | route SGLang's GemmaRMSNorm where it would run its native torch path (a route) |
-| `HK_SGLD` | `sglang_diffusion.py` and its boot | `0`: every SGLang-Diffusion route off; a list (`attn,linear,convrot,vaeconv,rope,qknorm`) names exactly the parts; `1`: attention and linear |
+| `HK_SGLD` | `sglang_diffusion.py` and its boot | `0`: every SGLang-Diffusion route off; a list (`attn,linear,convrot,vaeconv,rope,qknorm,ditnorm`) names exactly the parts; `1`: attention and linear |
 | `HK_SGLD_ATTN`, `HK_SGLD_LINEAR` | `switches.py` | SGLang-Diffusion's attention and linear (a route) |
 | `HK_SGLD_CONVROT` | `switches.py` | ConvRot INT8, lossy (default off: opt-in) |
 | `HK_SGLD_VAECONV` | `switches.py` | Wan's VAE conv3d in calls of 2 output frames (a route) |
 | `HK_SGLD_ROPE` | `switches.py` | Qwen-Image 2.1's complex RoPE on `hk.ops.rotary_pairs` (a route) |
 | `HK_SGLD_QKNORM` | `switches.py` | Qwen-Image 2.1's q / k RMSNorm + RoPE on `hk.ops.fused.rmsnorm_rotary_pairs` (a route) |
+| `HK_SGLD_DITNORM` | `switches.py` | the DiT block norms on `hk.ops.norm.layernorm_scale_shift` (a route) |
 | `HK_SGLD_LOG` | `sglang_diffusion.py` | `1`: print each linear shape's measured decision as it is made (default off) |
 | `HK_SGLD_REPORT_S` | `sglang_diffusion.py` | seconds between the route's `[hk]` counter lines (default 60) |
 | `HK_SDPA_K3` | `ops/sdpa.py` | `hk.ops.sdpa`'s non-causal head_dim-128 calls on `attn_k3` (a route) |

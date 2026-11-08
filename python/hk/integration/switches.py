@@ -209,6 +209,12 @@ ROUTES: Dict[str, Route] = {r.name: r for r in (
        "sum order); Qwen-Image 2.1 1024^2 30 steps: 27.36 -> 26.22 s a request (1.044x, same "
        "process, ABBA x3); 37.9 dB from stock, where torch's own norm with only its sum order "
        "changed is 36.5 dB from stock", part="qknorm"),
+    _R("sgld_ditnorm", "sglang_diffusion", "HK_SGLD_DITNORM", True, ("gfx1100",),
+       "the DiT block norms (Scale)ResidualLayerNormScaleShift / LayerNormScaleShift, unweighted, "
+       "as one hk.ops.norm.layernorm_scale_shift launch a batch row",
+       "outputs in stock's dtypes, mean error vs fp64 equal to stock's; Wan2.1-T2V-1.3B 832x480x81 "
+       "20 steps: 201.9 -> 194.2 s a video (1.040x, same process, ABBA x2), inside stock's "
+       "run-to-run spread", part="ditnorm"),
     _R("sdpa_k3", "ops", "HK_SDPA_K3", True, ("gfx1100",),
        "hk.ops.sdpa's non-causal head_dim-128 calls on its newer kernel (hk.ops.attn_k3)",
        "per-call error 2.95e-5 vs the current path's 4.50e-5 at Qwen-Image's shape (#24)"),
