@@ -226,7 +226,8 @@ def gather_vllm_quark() -> Optional[dict]:
     cls = qs.QuarkW4A16Int4
     return {"pwal": names(cls.process_weights_after_loading), "apply": names(cls.apply_weights),
             "class_has": {a: a in inspect.getsource(cls)
-                          for a in ("self.is_symmetric", "self.group_size", "self.kernel")}}
+                          for a in ("self.is_symmetric", "self.group_size", "self.kernel",
+                                    "self.pack_reorder")}}
 
 
 def judge_vllm_quark(f: dict) -> List[str]:

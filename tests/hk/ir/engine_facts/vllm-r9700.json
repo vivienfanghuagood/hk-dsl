@@ -393,7 +393,8 @@
    "class_has": {
     "self.group_size": true,
     "self.is_symmetric": true,
-    "self.kernel": true
+    "self.kernel": true,
+    "self.pack_reorder": true
    },
    "pwal": [
     "self",

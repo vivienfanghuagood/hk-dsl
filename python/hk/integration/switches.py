@@ -102,9 +102,10 @@ ROUTES: Dict[str, Route] = {r.name: r for r in (
        "starts an arm: GSM8K-200 equal, TPOT ahead at 4 and 8 concurrent requests (disjoint), "
        "level at 1 and for an 8k prompt"),
     _R("vllm_quark", "vllm", "HK_VLLM_QUARK", False, (),
-       "AMD Quark W4A16 (int4, symmetric) linear layers on gfx1201's RDNAHybridW4A16LinearKernel: "
-       "the fp16 batches vLLM runs on Triton on hk's 4-bit forms (decode to 64 tokens, the "
-       "large-batch form above: prefill), reading vLLM's tensors in place",
+       "AMD Quark W4A16 (int4, symmetric) linear layers: on gfx1201's RDNAHybridW4A16LinearKernel "
+       "the fp16 batches vLLM runs on Triton on hk's 4-bit forms in place (decode to 64 tokens, "
+       "the large-batch form above: prefill); on gfx1100's RDNA3W4A16LinearKernel 1-64 tokens on "
+       "hk's decode GEMM (a copy of Quark's codes in hk's layout)",
        "opt-in until measured against the >= 1.15x rule on amd/Qwen3.8-27B-Quark-AWQ-INT4-W4A16"),
     _R("vllm_gemm", "vllm", "HK_VLLM_GEMM", True, ("gfx1100", "gfx1201"),
        "unquantized linear layers by the measured route table, plus tuning at load",

@@ -6,22 +6,23 @@ scheme. Quark stores AutoAWQ's tensor layout -- `weight` int32 [K, N/8], `weight
 N], `weight_zero_point` int32 [K/group, N/8] -- with its own nibble order (`pack_method`) and, for
 a symmetric checkpoint, signed codes. The scheme's `process_weights_after_loading` canonicalizes
 that to AWQ's codes, converts them to the standard (GPTQ) format and hands the layer to the
-MPLinearKernel vLLM chose for a uint4b8 (symmetric) or uint4 (zero points) weight. On gfx1201
-that is `RDNAHybridW4A16LinearKernel`, the kernel vLLM's GPTQ layers get there.
+MPLinearKernel vLLM chose for a uint4b8 (symmetric) weight -- the kernels vLLM's GPTQ layers get:
 
-The patch wraps the scheme's two entry points:
-
-  * `process_weights_after_loading` runs vLLM's, then checks hk can read what it left in place
-    (`vllm_gptq.hybrid_why`: int8 [N, K/2] ExLlama-shuffled codes, [N, K/group] scales, no zero
-    points). No second copy of the weights is held.
-  * `apply_weights` makes one call of the opaque custom op `hk_vllm::quark_w4a16_hybrid`: the
-    fp16 batches vLLM would run on its Triton GEMM go to hk's forms (`hk.ops.w4a16.exllama_matmul`
-    up to `vllm_gptq.HYBRID_MAX_M` tokens, `exllama_large_matmul` above: prefill), the batches
-    its HIP skinny GEMM takes and every shape hk's forms do not stay on vLLM's op.
+  * gfx1201, `RDNAHybridW4A16LinearKernel`. After vLLM's repack hk reads its tensors in place
+    (`vllm_gptq.hybrid_why` checks them: int8 [N, K/2] ExLlama-shuffled codes, [N, K/group]
+    scales), so no second copy is held. The opaque op `hk_vllm::quark_w4a16_hybrid` runs the fp16
+    batches vLLM would send to its Triton GEMM on hk's forms (`hk.ops.w4a16.exllama_matmul` up to
+    `vllm_gptq.HYBRID_MAX_M` tokens, `exllama_large_matmul` above: prefill); vLLM's HIP skinny
+    GEMM keeps the batches it takes.
+  * gfx1100, `RDNA3W4A16LinearKernel`, which shuffles the codes in place. Before vLLM's repack hk
+    writes its symmetric layout of Quark's own codes beside them (`hk.ops.w4a16.repack_quark`), a
+    second copy the size of the first, and the opaque op `hk_vllm::quark_w4a16` runs 16-bit
+    batches of `vllm_gptq.MIN_M` to 64 tokens on hk's decode GEMM, the rest on vLLM's
+    `gptq_gemm_rdna3` on vLLM's tensors.
 
 What it refuses, counted in `REFUSED` by reason (each such layer keeps vLLM's path): asymmetric
-checkpoints (zero points), layers vLLM gave another kernel, and anything `hybrid_why` names. Off
-by default until measured against the >= 1.15x rule; `HK_VLLM_QUARK=1` turns it on.
+checkpoints (zero points), layers vLLM gave another kernel, and shapes hk's forms do not take.
+Off by default until measured against the >= 1.15x rule; `HK_VLLM_QUARK=1` turns it on.
 
     HK_PATCH_VLLM=1 HK_VLLM_QUARK=1 vllm serve amd/Qwen3.8-27B-Quark-AWQ-INT4-W4A16 --dtype float16
 """
@@ -40,17 +41,28 @@ _ORIG_APPLY: Optional[Callable] = None
 REFUSED: Counter = Counter()
 
 
-def _fake(x, w_q, w_s, group, cu):
+def _fake_hybrid(x, w_q, w_s, group, cu):
     return x.new_empty((x.shape[0], w_q.shape[0]))
 
 
-PATCH = engine.Op(
+HYBRID = engine.Op(
     "hk_vllm::quark_w4a16_hybrid",
     "quark_w4a16_hybrid(Tensor x, Tensor w_q, Tensor w_s, int group, int cu) -> Tensor",
-    _fake, paths=("hk", "hk_large", "fallback"), graph="safe")
+    _fake_hybrid, paths=("hk", "hk_large", "fallback"), graph="safe")
 
-#: Which way each call went; see `engine.Patch` for what a replay counts as.
-STATS = PATCH.stats
+
+def _fake(x, w_q, w_zp, w_s, hk_qw, hk_s, group):
+    return x.new_empty((x.shape[0], hk_qw.shape[0]))
+
+
+PATCH = engine.Op(
+    "hk_vllm::quark_w4a16",
+    "quark_w4a16(Tensor x, Tensor w_q, Tensor w_zp, Tensor w_s, Tensor hk_qw, Tensor hk_s, "
+    "int group) -> Tensor",
+    _fake, paths=("hk", "fallback"), graph="safe")
+
+#: Which way each call went, by op; see `engine.Patch` for what a replay counts as.
+STATS = {"hybrid": HYBRID.stats, "rdna3": PATCH.stats}
 
 
 def quark_w4a16_hybrid(x, w_q, w_s, group: int, cu: int):
@@ -64,54 +76,116 @@ def quark_w4a16_hybrid(x, w_q, w_s, group: int, cu: int):
     n = w_q.shape[0]
     fp16 = x.dtype == torch.float16 and w_s.dtype == torch.float16
     if fp16 and m <= vllm_gptq.HYBRID_MAX_M and not vllm_gptq._vllm_skinny(m, k):
-        PATCH.count("hk")
+        HYBRID.count("hk")
         return hk_w4.exllama_matmul(x, w_q.view(torch.int32), w_s, group)
     if fp16 and m > vllm_gptq.HYBRID_MAX_M and hk_w4.exllama_large_takes(n, k, group):
-        PATCH.count("hk_large")
+        HYBRID.count("hk_large")
         return hk_w4.exllama_large_matmul(x, w_q.view(torch.int32), w_s, group)
-    PATCH.count("fallback")
+    HYBRID.count("fallback")
     return torch.ops.vllm.rdna_hybrid_w4a16_apply(x, w_q, w_s, None, None, cu, group)
 
 
+def quark_w4a16(x, w_q, w_zp, w_s, hk_qw, hk_s, group: int):
+    """y = x @ W.T for a Quark W held both ways: hk's symmetric decode GEMM where it takes the
+    batch, vLLM's RDNA3 kernel on vLLM's tensors otherwise."""
+    import torch  # noqa: PLC0415
+
+    from ..ops import w4a16 as hk_w4  # noqa: PLC0415
+
+    m, k = x.shape
+    run = (hk_w4.plan(m, hk_qw.shape[0], k, group, x.dtype, True)
+           if x.dtype == hk_s.dtype and vllm_gptq.MIN_M <= m <= hk_w4.MAX_TOKENS * 16 else None)
+    if run is not None:
+        PATCH.count("hk")
+        out = torch.empty((m, hk_qw.shape[0]), device=x.device, dtype=hk_s.dtype)
+        run(x if x.is_contiguous() else x.contiguous(), hk_qw, hk_s, out)
+        return out
+    PATCH.count("fallback")
+    return vllm_gptq._vllm_gptq(x, w_q, w_zp, w_s, None)
+
+
 def _why_not(self) -> str:
-    """'' if the scheme's layer can be hk's after vLLM's repack, else why not (before looking at
-    the tensors)."""
+    """'' if the scheme's layer can be hk's, else why not (before looking at the tensors)."""
     from ..target import current_arch  # noqa: PLC0415
 
     kern = type(getattr(self, "kernel", None)).__name__
-    if kern != vllm_gptq._HYBRID:
+    if kern == vllm_gptq._HYBRID:
+        if current_arch() not in vllm_gptq.HYBRID_ARCHES:
+            return f"kernel {kern} on {current_arch()}"
+    elif kern != vllm_gptq._RDNA3:
         return f"kernel {kern}"
-    if current_arch() not in vllm_gptq.HYBRID_ARCHES:
-        return f"kernel {kern} on {current_arch()}"
     if not getattr(self, "is_symmetric", False):
         return "zero points (asymmetric)"
-    if not vllm_gptq._SKINNY:
-        return "this vLLM's rdna_hybrid_w4a16 has no MAX_SKINNY_BATCH_SIZE / MEDIUM_SKINNY_LIMIT"
-    if self.group_size <= 0 or self.group_size % 32:
+    if kern == vllm_gptq._HYBRID:
+        if not vllm_gptq._SKINNY:
+            return "this vLLM's rdna_hybrid_w4a16 has no MAX_SKINNY_BATCH_SIZE / MEDIUM_SKINNY_LIMIT"
+        if self.group_size <= 0 or self.group_size % 32:
+            return f"group {self.group_size}"
+        return ""
+    if self.group_size <= 0 or self.group_size % 16:
         return f"group {self.group_size}"
-    return ""
+    if any(n == "b_g_idx" for n, _ in vllm_gptq._gemm_plan()[0]):
+        return "this vLLM's gptq_gemm_rdna3 takes an act-order index the Quark layers do not hold"
+    return vllm_gptq._gemm_plan()[1]
 
 
 def process_weights_after_loading(self, layer) -> None:
-    """vLLM's, then hk checks it can read the result in place."""
-    _ORIG_PWAL(self, layer)
-    why = _why_not(self) or vllm_gptq.hybrid_why(self.kernel, layer, self.group_size)
+    """On the hybrid kernel vLLM's repack, then hk checks it can read the result in place; on the
+    RDNA3 kernel hk's layout of Quark's codes first (vLLM's repack shuffles them in place)."""
+    import torch  # noqa: PLC0415
+
+    from ..ops import w4a16 as hk_w4  # noqa: PLC0415
+
+    why = _why_not(self)
+    if not why and type(self.kernel).__name__ == vllm_gptq._HYBRID:
+        _ORIG_PWAL(self, layer)
+        why = vllm_gptq.hybrid_why(self.kernel, layer, self.group_size)
+        if why:
+            REFUSED[why] += 1
+        else:
+            layer.hk_hybrid = True
+        return
+    hq = None
+    if not why:
+        w, s = getattr(layer, "weight", None), getattr(layer, "weight_scale", None)
+        if w is None or s is None or s.dtype not in (torch.float16, torch.bfloat16):
+            why = f"scales {getattr(s, 'dtype', None)}"
+        elif w.shape[1] * 8 != s.shape[1] or s.shape[1] % 16 or w.shape[0] % 32:
+            why = f"shape {s.shape[1]}x{w.shape[0]}"
+        else:
+            hq, hs, _ = hk_w4.repack_quark(w.data, s.data, self.group_size,
+                                           pack_reorder=getattr(self, "pack_reorder", True),
+                                           dtype=s.dtype)
     if why:
         REFUSED[why] += 1
+        _ORIG_PWAL(self, layer)
         return
-    layer.hk_quark = True
+    _ORIG_PWAL(self, layer)
+    w_q, w_s, w_zp, _ = vllm_gptq._weights(self.kernel, layer)
+    if w_q is None or w_s is None or w_zp is None:
+        REFUSED["vLLM's kernel holds no zero points here"] += 1
+        return                              # vLLM's layer, untouched: its own apply runs
+    layer.hk_qw = torch.nn.Parameter(hq, requires_grad=False)
+    layer.hk_s = torch.nn.Parameter(hs, requires_grad=False)
 
 
 def apply_weights(self, layer, x, bias=None):
-    if not getattr(layer, "hk_quark", False):
-        return _ORIG_APPLY(self, layer, x, bias)
-    from vllm.utils.platform_utils import num_compute_units  # noqa: PLC0415
+    if getattr(layer, "hk_hybrid", False):
+        from vllm.utils.platform_utils import num_compute_units  # noqa: PLC0415
 
-    w_q, w_s, _, _ = vllm_gptq._weights(self.kernel, layer)
-    out = PATCH(x.reshape(-1, x.shape[-1]), w_q, w_s, self.group_size, num_compute_units())
+        w_q, w_s, _, _ = vllm_gptq._weights(self.kernel, layer)
+        out = HYBRID(x.reshape(-1, x.shape[-1]), w_q, w_s, self.group_size, num_compute_units())
+        n = w_q.shape[0]
+    elif hasattr(layer, "hk_qw"):
+        w_q, w_s, w_zp, _ = vllm_gptq._weights(self.kernel, layer)
+        out = PATCH(x.reshape(-1, x.shape[-1]), w_q, w_zp, w_s, layer.hk_qw, layer.hk_s,
+                    self.group_size)
+        n = layer.hk_qw.shape[0]
+    else:
+        return _ORIG_APPLY(self, layer, x, bias)
     if bias is not None:
         out.add_(bias)
-    return out.reshape(*x.shape[:-1], w_q.shape[0])
+    return out.reshape(*x.shape[:-1], n)
 
 
 def apply_patch() -> str:
@@ -130,16 +204,18 @@ def apply_patch() -> str:
 
     from .vllm_gemm import _own_compile_cache  # noqa: PLC0415
 
-    vllm_gptq.read_skinny()                 # without it every layer is refused, counted
-    PATCH.define(quark_w4a16_hybrid)
+    PATCH.define(quark_w4a16)
+    if vllm_gptq.read_skinny():             # else its hybrid layers are refused, counted
+        HYBRID.define(quark_w4a16_hybrid)
     cls = qs.QuarkW4A16Int4
     _ORIG_PWAL, _ORIG_APPLY = cls.process_weights_after_loading, cls.apply_weights
     cls.process_weights_after_loading = process_weights_after_loading
     cls.apply_weights = apply_weights
-    return (f"quark -> hk for symmetric Quark W4A16 layers on RDNAHybridW4A16LinearKernel "
-            f"({', '.join(vllm_gptq.HYBRID_ARCHES)}): the fp16 batches vLLM runs on Triton "
-            f"(decode forms to {vllm_gptq.HYBRID_MAX_M} tokens, the large-batch form above), in "
-            f"place (compile cache {_own_compile_cache('hk-quark')})")
+    return (f"quark -> hk for symmetric Quark W4A16 layers: on RDNAHybridW4A16LinearKernel "
+            f"({', '.join(vllm_gptq.HYBRID_ARCHES)}) the fp16 batches vLLM runs on Triton, in "
+            f"place (decode forms to {vllm_gptq.HYBRID_MAX_M} tokens, the large-batch form "
+            f"above); on RDNA3W4A16LinearKernel 16-bit batches of {vllm_gptq.MIN_M} to 64 tokens "
+            f"(compile cache {_own_compile_cache('hk-quark')})")
 
 
 def revert() -> str:
@@ -159,4 +235,5 @@ def status() -> str:
     if _ORIG_APPLY is None:
         return "not patched"
     refused = ", ".join(f"{k}: {v}" for k, v in REFUSED.items())
-    return PATCH.summary() + (f"; layers left on vLLM's path: {refused}" if refused else "")
+    hyb = f"; {HYBRID.summary()}" if HYBRID.defined else ""
+    return PATCH.summary() + hyb + (f"; layers left on vLLM's path: {refused}" if refused else "")
